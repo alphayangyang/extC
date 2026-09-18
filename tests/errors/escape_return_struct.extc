@@ -1,0 +1,7 @@
+// 逃逸：返回一个**装着**局部视图的 struct（深度要递归地看进去）
+struct holder { s: slice<i32> }
+fn bad() -> holder {
+    var a: [4]i32 = [1, 2, 3, 4]
+    return holder { s: a[..] }
+}
+fn main() -> i32 { return 0 }

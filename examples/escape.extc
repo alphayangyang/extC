@@ -1,0 +1,64 @@
+// 逃逸检查：**引用不能活得比被指对象长**
+//
+// 这条是 DESIGN §2 的「唯一引用规则」，而它是**纯词法**的：
+//     若引用 r 指向值 v，则 depth(r) ≥ depth(v)
+// 深度就是「几层花括号」（参数 = 0，函数体 = 1，每进一层块 +1）——
+// **比两个整数**，不需要生命周期标注。
+// **这就是「Rust 的安全 + 不写生命周期」。**
+
+struct board {
+    cell: [4][4]i32
+}
+
+// ✅ 从**参数**借（深度 0）：视图指向调用者的棋盘，活得比本函数长
+fn rowView(b: ref board, y: i32) -> slice<i32> {
+    return b.cell[y][0..4]
+}
+
+// ✅ 按值返回：拷贝，不带引用 —— 想把数据带出去就这么写
+fn copyRow(b: ref board, y: i32) -> [4]i32 {
+    return [b.cell[y][0], b.cell[y][1], b.cell[y][2], b.cell[y][3]]
+}
+
+// ✅ 局部视图只在函数内部用：一起生、一起死，完全合法
+fn sumRow() -> i32 {
+    var a: [4]i32 = [10, 20, 30, 40]
+    let v = a[..]              // v 和 a 同深度 ⇒ 安全
+    var s: i32 = 0
+    var i: i64 = 0
+    while i < v.len {
+        s = s + v[i]
+        i = i + 1
+    }
+    return s
+}
+
+// ❌ 下面这些**编不过**（错误信息见 tests/errors/escape_*.extc）：
+//
+//   fn bad() -> slice<i32> {
+//       var a: [8]i32
+//       return a[..]          // error: this return value would hold a reference
+//   }                         //        to a local variable that dies first
+//
+//   fn bad2() -> ref i32 {
+//       var n: i32 = 7
+//       return ref n          // 同上（返回引用本身也一样）
+//   }
+//
+//   struct holder { s: slice<i32> }
+//   fn bad3() -> holder {
+//       var a: [4]i32
+//       return holder { s: a[..] }   // 深度会**递归地**看进 struct 里
+//   }
+
+fn main() -> i32 {
+    var b: board
+    b.cell[1][0] = 7
+    b.cell[1][1] = 8
+
+    let row = rowView(ref b, 1)
+    println("从参数借来的视图 = ", row[0], ",", row[1])   // 7,8
+    println("按值拷出来的行   = ", copyRow(ref b, 1))      // [7, 8, 0, 0]
+    println("局部视图求和     = ", sumRow())               // 100
+    return 0
+}

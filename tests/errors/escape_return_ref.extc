@@ -1,0 +1,6 @@
+// 逃逸：返回指向局部标量的引用
+fn bad() -> ref i32 {
+    var n: i32 = 7
+    return ref n
+}
+fn main() -> i32 { return 0 }

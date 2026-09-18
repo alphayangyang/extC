@@ -20,6 +20,8 @@ typedef struct {
     const char *name;
     Type       *type;
     bool        mut;
+    int         depth;   /* 词法深度：参数 = 0，函数体里的局部 = 1，每进一层块 +1。
+                          * 逃逸检查就比这个数 —— 见 REFS.md §4 */
     int         line;
 } Sym;
 
@@ -70,7 +72,7 @@ static void popScope(Checker *c) {
     if (c->scopes.len) c->scopes.len--;
 }
 
-static void declare(Checker *c, const char *name, Type *t, bool mut, int line) {
+static void declare(Checker *c, const char *name, Type *t, bool mut, int line, int depth) {
     Scope *top = *(Scope **)vecAt(&c->scopes, c->scopes.len - 1);
 
     for (size_t i = 0; i < top->syms.len; i++) {
@@ -85,6 +87,7 @@ static void declare(Checker *c, const char *name, Type *t, bool mut, int line) {
     s->name = name;
     s->type = t;
     s->mut = mut;
+    s->depth = depth;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
 }
@@ -269,6 +272,81 @@ static bool isWritablePlace(Checker *c, Expr *e) {
 
 /* 往一个「地方」里写之前，先看它的根是不是 `var`。
  * 返回 true = 已经报过错（调用点直接放弃）。 */
+/* ---------------------------------------------------------------- 逃逸检查
+ *
+ * DESIGN §2 的「唯一引用规则」：
+ *     若引用 `r` 指向值 `v`，则 depth(r) ≥ depth(v)。
+ * 人话：**引用不能活得比被指对象长。**
+ *
+ * 深度是**纯词法属性**（参数 = 0，函数体 = 1，每进一层块 +1），比两个整数就行 ——
+ * 不需要生命周期标注。**这正是「Rust 的安全 + 不写生命周期」的落点。**
+ *
+ * 今天查三条，第四条故意不查（要跨函数分析）：
+ *   ① 返回的引用/视图：被指对象必须在**参数或静态数据**里（深度 0）
+ *   ② 局部变量初始化：被指对象不能比它深
+ *   ③ 给字段/元素赋值（`o.f = v`）：被指对象不能比它深
+ *   ④ ⬜ 把引用传给函数、函数把它存起来 —— 需要「传染性」分析，见 REFS.md §6
+ */
+
+static int maxInt(int a, int b) { return a > b ? a : b; }
+
+/* 这个「地方」根上的绑定有多深？（参数、非绑定 = 0） */
+static int placeDepth(Checker *c, Expr *e) {
+    Sym *root = placeRoot(c, e);
+    return root ? root->depth : 0;
+}
+
+/* 表达式里的引用**指向的活物**有多深？
+ * **类型里没有引用就直接 0** —— 纯值拷贝永远不会悬垂，
+ * 不然后面 `let x: i32 = <深层局部>` 会被误报。 */
+static int exprRefDepth(Checker *c, Expr *e) {
+    if (!e) return 0;
+    if (!typeContainsRef(c->tt, e->type)) return 0;
+    if (e->refDepth) return e->refDepth;              /* 算过就缓存 */
+
+    int d = 0;
+    switch (e->kind) {
+    case EX_REF:
+        d = placeDepth(c, e->u.ref.operand);
+        break;
+    case EX_SLICE:
+        d = placeDepth(c, e->u.slice.obj);
+        break;
+    case EX_IDENT: case EX_FIELD: case EX_INDEX:
+        d = placeDepth(c, e);
+        break;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            d = maxInt(d, exprRefDepth(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value));
+        break;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
+        break;
+    default:
+        /* 函数/方法调用返回的引用：由**被调用者自己的返回检查**担保 ⇒ 0。
+         * （它要是返回自己的局部，那边就报错了 ✓） */
+        d = 0;
+        break;
+    }
+    e->refDepth = d;
+    return d;
+}
+
+/* 把一个值放进「深度 at」的地方：它里面的引用活得够不够久？ */
+static bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
+    if (!val) return false;
+    int d = exprRefDepth(c, val);
+    if (d <= at) return false;
+    ckError(c, line,
+            "A reference may not outlive what it points to. Borrow from a parameter "
+            "(depth 0) or copy the data instead.",
+            "%s would hold a reference to a local variable that dies first "
+            "(borrowed from depth %d, but this can only hold up to depth %d)",
+            what, d, at);
+    return true;
+}
+
 /* 沿一个「地方」往内走，路上有没有**只读引用**？
  *
  * 「绑定是不是 `let`」和「路上有没有只读引用」是**两件事**：
@@ -1407,7 +1485,7 @@ static void checkStmt(Checker *c, Stmt *s) {
                             s->u.var.name);
                 }
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
-                declare(c, s->u.var.name, s->type, s->u.var.mut, s->line);
+                declare(c, s->u.var.name, s->type, s->u.var.mut, s->line, c->scopes.len);
                 return;
             }
 
@@ -1425,8 +1503,10 @@ static void checkStmt(Checker *c, Stmt *s) {
             if (s->u.var.ann)
                 checkAssignable(c, s->u.var.ann, it, s->u.var.init, "initializer");
 
+            /* 逃逸②：初始化的引用不能指向比自己更深的局部 */
+            checkEscape(c, s->u.var.init, c->scopes.len, s->line, "this initializer");
             s->type = ttIsError(declT) ? ttError(c->tt) : declT;
-            declare(c, s->u.var.name, s->type, s->u.var.mut, s->line);
+            declare(c, s->u.var.name, s->type, s->u.var.mut, s->line, c->scopes.len);
             return;
         }
 
@@ -1460,6 +1540,9 @@ static void checkStmt(Checker *c, Stmt *s) {
             Type *vt = checkMaybeTry(c, s->u.assign.value);
 
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
+            /* 逃逸③：给字段/元素赋值时，被指对象不能比目标更深 */
+            checkEscape(c, s->u.assign.value, placeDepth(c, s->u.assign.target),
+                        s->line, "this assignment");
             if (ttIsError(tt_)) return;
             checkAssignable(c, tt_, vt, s->u.assign.value, "assignment");
             return;
@@ -1516,6 +1599,8 @@ static void checkStmt(Checker *c, Stmt *s) {
             adoptContextType(s->u.ret.value, want);
             Type *vt = checkMaybeTry(c, s->u.ret.value);
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
+            /* 逃逸①：返回的引用，被指对象必须在参数或静态数据里（深度 0）*/
+            checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }
 
@@ -1682,7 +1767,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
         Param *p = *(Param **)vecAt(&f->params, i);
         /* 参数是**可变的** —— 它是调用者给的局部副本（跟 C 一致），
          * 所以 `fn f(real: Board)` 里可以 `ref real` */
-        declare(c, p->name, p->type, true, p->line);
+        declare(c, p->name, p->type, true, p->line, 0);
     }
     /* 函数体不另开作用域 —— 参数和函数体的局部变量同一层，
      * 这样「局部变量遮蔽参数」会直接报错 */
