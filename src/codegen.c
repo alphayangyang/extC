@@ -722,7 +722,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             return arenaPrintf(g->arena,
-                "(%s *)extc_arena_alloc((int64_t)(%s) * (int64_t)sizeof(%s))",
+                "(%s *)extc_arena_alloc(&__extc_arena, (int64_t)(%s) * (int64_t)sizeof(%s))",
                 tn, n, tn);
         }
 
@@ -853,7 +853,7 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     ti.tmp = arenaPrintf(g->arena, "__extc_try%d", g->tmpSeq++);
 
     cgLine(g, "%s %s = %s;", cType(g, ot), ti.tmp, genExpr(g, e->u.try_.operand));
-    cgLine(g, "if (!%s.%s) { extc_arena_release(__extc_amark); return %s; }",
+    cgLine(g, "if (!%s.%s) { extc_arena_release(&__extc_arena); return %s; }",
            ti.tmp, ti.tag, genTryFail(g, &ti));
     return ti;
 }
@@ -924,7 +924,7 @@ static void genStmt(CG *g, Stmt *s) {
         case ST_RETURN: {
             /* 返回之前**一定**要归还这一帧的 arena —— 释放时机是词法的，
              * 所以每个 return 都是一个释放点（包括 `?` 生成的那些）。 */
-            const char *rel = "extc_arena_release(__extc_amark);";
+            const char *rel = "extc_arena_release(&__extc_arena);";
             if (!s->u.ret.value) {
                 cgLine(g, "%s", rel);
                 cgLine(g, "return;");
@@ -1006,7 +1006,10 @@ static void genFunc(CG *g, FuncDef *f) {
      * 每个函数都记一个（不管是它自己分配还是被调用者分配）——
      * 代价是两条语句，换来「释放时机是词法的」这条可证明性。
      * 将来可以只给「真的会分配」的函数发，属于优化。 */
-    cgLine(g, "extc_amark __extc_amark = extc_arena_mark();");
+    /* 每帧一只 arena：**arena = 函数帧**。分配走它，返回时整条链释放。
+     * 每个函数都开一只（代价是三条语句），换来「释放时机是词法的」这条可证明性。
+     * 将来可以只给「真的会分配」的函数发，属于优化。 */
+    cgLine(g, "extc_arena __extc_arena; extc_arena_init(&__extc_arena);");
     genBlockBody(g, f->body);
     g->retType = savedRet;
     g->tmpSeq = savedSeq;
@@ -1271,49 +1274,37 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "}\n\n");
     bufPuts(out,
         /* ------------------------------------------------------------------
-         * arena：**bump 分配 + 每帧 mark/release**
+         * arena：**每帧一只 + 按句柄分配**
          *
-         * 一只 arena = 一个词法作用域（函数帧）。实现是**一个块栈**：
-         * mark 记下当前位置，release 回到那里并把多出来的整块还给系统。
-         * 分配本身就是一个指针加法 —— 跟栈的 `sub rsp` 是同一个动作。
+         * 一只 arena 就是一个词法作用域。它是个**块链表**：
+         * 分配 = 往当前块里推一个指针；释放 = 把整条链还给系统。
          *
-         * 为什么它必须由编译器生成、不能写在 extC 里：
-         * **库要用它来分配自己** ⇒ 链条总得有个底，底就是这里（BOOTSTRAP 规则二）。
+         * 为什么「按句柄」（`extc_arena *`）而不是「当前的」：
+         * 容器（varArray）要记住**自己出生在哪只 arena**，增长时从那只要 ——
+         * 于是**方法分配的内存活得过方法返回** ✓
+         * 这正是 DESIGN 表里「VarArray<T> → arena = 所在 region」的落地。
          *
-         * ⚠️ 线程化的时候 `extc_arena_top` 要变成 thread-local（还没做线程）。
-         * ⚠️ 释放时机是**函数返回**（词法、可证明），所以 alloc 出来的东西
-         *    深度 = 1，**不能从函数里返回** —— 逃逸检查会拦住 ✓ 见 REFS.md §6。
+         * ⚠️ 进程内没有共享状态了（每帧一个对象），线程化时不用改结构。
          * ------------------------------------------------------------------ */
         "typedef struct extc_ablock { struct extc_ablock *prev; int64_t cap, used; char data[1]; } extc_ablock;\n"
-        "typedef struct { extc_ablock *blk; int64_t used; } extc_amark;\n"
-        "extc_ablock *extc_arena_top = NULL;\n"
-        "extc_amark extc_arena_mark(void) {\n"
-        "    extc_amark m;\n"
-        "    m.blk = extc_arena_top;\n"
-        "    m.used = extc_arena_top ? extc_arena_top->used : 0;\n"
-        "    return m;\n"
+        "typedef struct extc_arena { extc_ablock *top; } extc_arena;\n"
+        "void extc_arena_init(extc_arena *a) { a->top = NULL; }\n"
+        "void extc_arena_release(extc_arena *a) {\n"
+        "    while (a->top) { extc_ablock *p = a->top->prev; free(a->top); a->top = p; }\n"
         "}\n"
-        "void extc_arena_release(extc_amark m) {\n"
-        "    while (extc_arena_top && extc_arena_top != m.blk) {\n"
-        "        extc_ablock *p = extc_arena_top->prev;\n"
-        "        free(extc_arena_top);\n"
-        "        extc_arena_top = p;\n"
-        "    }\n"
-        "    if (extc_arena_top) extc_arena_top->used = m.used;\n"
-        "}\n"
-        "void *extc_arena_alloc(int64_t n) {\n"
+        "void *extc_arena_alloc(extc_arena *a, int64_t n) {\n"
         "    if (n <= 0) n = 1;\n"
         "    n = (n + 7) & ~(int64_t)7;\n"
-        "    if (!extc_arena_top || extc_arena_top->cap - extc_arena_top->used < n) {\n"
+        "    if (!a->top || a->top->cap - a->top->used < n) {\n"
         "        int64_t cap = n > 4096 ? n : 4096;\n"
         "        extc_ablock *b = (extc_ablock *)malloc(sizeof(extc_ablock) + (size_t)cap);\n"
         "        if (!b) { fprintf(stderr, \"extc: out of arena memory\\n\"); exit(1); }\n"
-        "        b->prev = extc_arena_top; b->cap = cap; b->used = 0;\n"
-        "        extc_arena_top = b;\n"
+        "        b->prev = a->top; b->cap = cap; b->used = 0;\n"
+        "        a->top = b;\n"
         "    }\n"
         "    {\n"
-        "        void *p = extc_arena_top->data + extc_arena_top->used;\n"
-        "        extc_arena_top->used += n;\n"
+        "        void *p = a->top->data + a->top->used;\n"
+        "        a->top->used += n;\n"
         "        return p;\n"
         "    }\n"
         "}\n\n");
