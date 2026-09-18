@@ -195,8 +195,7 @@ static bool asIntLit(Expr *e, long long *out) {
     return false;
 }
 
-/* 这个表达式是不是一个「地方」（place）—— 变量 / 字段 / 索引组成的链？
- * 只有切**固定数组**时才要求（因为要取元素的地址）。
+/* 这个表达式是不是一个「地方」（place）—— 变量 / 字段 / 索引组成的链？ * 只有切**固定数组**时才要求（因为要取元素的地址）。
  * 理由很实在：`f()[1..2]` 会切到函数返回值的临时存储上，那是**指向已死对象**的视图。
  * `"abcdef"[1..3]` 不受这条限制 —— 它切的是 slice 值（指针+长度），字节有静态生命期。
  * 完整的逃逸检查在 week-4，这条先挡住最脏的一种。 */
@@ -209,6 +208,43 @@ static bool isPlace(Expr *e) {
     case EX_SLICE: return isPlace(e->u.slice.obj);
     default:       return false;
     }
+}
+
+/* 一个「地方」的**根** —— 穿过字段和下标，找到最里面那个变量。
+ *
+ * `let` 管的是**根**：`p.x = 1` / `a[i] = 1` / `v[0] = 1` 的根都是那个变量。
+ * 只查裸标识符（`v = ...`）是不够的 —— `let p: point; p.x = 1` 会整条漏过去，
+ * 而那正是「忘了写 var」最常犯的形态。
+ *
+ * ⚠️ 这条规则是**浅的**：它管名字，不管数据。把 `let` 视图拷给一个 `var`
+ * （或者传进函数）之后，那边照样能写同一块内存。要管到数据层得让可变性进类型
+ * （Rust 的 `&` / `&mut`），那是 week-4 引用规则的范围。见 DECISIONS 定案 28。 */
+static Sym *placeRoot(Checker *c, Expr *e) {
+    while (e) {
+        if (e->kind == EX_IDENT)  return lookup(c, e->u.ident.name);
+        if (e->kind == EX_FIELD)  { e = e->u.field.obj; continue; }
+        if (e->kind == EX_INDEX)  { e = e->u.index.obj; continue; }
+        if (e->kind == EX_SLICE)  { e = e->u.slice.obj; continue; }
+        return NULL;
+    }
+    return NULL;
+}
+
+/* 往一个「地方」里写之前，先看它的根是不是 `var`。
+ * 返回 true = 已经报过错（调用点直接放弃）。 */
+static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
+    Sym *root = placeRoot(c, e);
+    if (!root || root->mut) return false;
+    if (e->kind == EX_IDENT) {
+        ckError(c, line, "use `var` to allow reassignment (`let` is an immutable binding)",
+                "cannot assign to `%s`, which is a `let`", root->name);
+    } else {
+        ckError(c, line,
+                "`let` means the value is read-only: no reassignment, no field or element writes. "
+                "Use `var` for a value you intend to write through.",
+                "cannot %s through `%s`, which is a `let`", what, root->name);
+    }
+    return true;
 }
 
 /* 一个类型是不是「视图」？视图的协议是 `data` + `len`（编译器认这条协议，
@@ -784,16 +820,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             /* `ref T` 是**可变**引用（方法靠它改调用者的数据），
-             * 所以不能对 `let` 取引用 */
-            if (op->kind == EX_IDENT) {
-                Sym *s = lookup(c, op->u.ident.name);
-                if (s && !s->mut) {
-                    ckError(c, e->line, "`ref T` is a *mutable* reference; pass read-only values by value instead",
-                            "cannot take a mutable reference to `%s`, which is a `let`",
-                            s->name);
-                    return ttError(tt);
-                }
-            }
+             * 所以不能对 `let` 取引用。跟赋值一样，查的是**根**：
+             * `ref p.x` 里的 p 是 `let` 也不行。 */
+            if (requireMutable(c, op, e->line, "take a reference")) return ttError(tt);
             return ttRef(tt, ot);
         }
 
@@ -844,7 +873,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * 实参本身就是引用的话，直接传即可。*/
                 if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
-                            "`.` means \"operate on this value\", so free functions need `ref` spelled out."
+                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
                             "`ref` is a mutable reference, so the target must be a `var`",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, p->type));
@@ -906,7 +935,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *at = checkExpr(c, a);
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
-                            "`.` means \"operate on this value\", so free functions need `ref` spelled out."
+                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
                             "`ref` is a mutable reference, so the target must be a `var`",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, pt));
@@ -1047,14 +1076,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             adoptContextType(s->u.assign.value, tt_);
             Type *vt = checkExpr(c, s->u.assign.value);
 
-            if (s->u.assign.target->kind == EX_IDENT) {
-                Sym *sym = lookup(c, s->u.assign.target->u.ident.name);
-                if (sym && !sym->mut) {
-                    ckError(c, s->line, "use `var` to allow reassignment (`let` is an immutable binding)",
-                            "cannot assign to `%s`, which is a `let`", sym->name);
-                    return;
-                }
-            }
+            if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
             if (ttIsError(tt_)) return;
             checkAssignable(c, tt_, vt, s->u.assign.value, "assignment");
             return;
@@ -1360,7 +1382,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
             if (!typeSupportsEq(lt, ec->op)) {
                 ckError(&c, ec->node->line,
-                        "`==` inside a generic is checked at instantiation, not on the template -- the price of having no traits."
+                        "`==` inside a generic is checked at instantiation, not on the template -- the price of having no traits. "
                         "Add a `fn ==` to that type.",
                         "`%s` needs `%s` to define `==`",
                         inst->name, typeStr(&c, lt));

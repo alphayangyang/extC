@@ -1,0 +1,6 @@
+struct point { x: i32  y: i32 }
+fn main() -> i32 {
+    let p: point = { x: 1, y: 2 }
+    p.x = 99
+    return 0
+}

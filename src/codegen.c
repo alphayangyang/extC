@@ -329,7 +329,7 @@ static const char *genBin(CG *g, Expr *e) {
                                    genExpr(g, e->u.bin.right));
 
             ctxError(g->ctx, e->line, 1,
-                     "`==` inside a generic is checked at instantiation, not on the template -- the price of having no traits."
+                     "`==` inside a generic is checked at instantiation, not on the template -- the price of having no traits. "
                      "Add a `fn ==` to that type.",
                      "`%s` needs to define `%s`", cType(g, lt), op);
             return "0";

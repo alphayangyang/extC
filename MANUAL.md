@@ -317,14 +317,22 @@ println(a[7])      // trap: index 7 out of range (length 5) —— 带文件名�
 
 ```extc
 var a: [8]i32 = [10, 20, 30, 40, 50, 60, 70, 80]
-let s1 = a[2..5]      // [30, 40, 50]      slice<i32>
-let s2 = a[6..]       // [70, 80]          到尾
+var s1 = a[2..5]      // [30, 40, 50]      slice<i32>，var ⇒ 能写
+let s2 = a[6..]       // [70, 80]          到尾，let ⇒ 只读
 let s3 = a[..3]       // [10, 20, 30]      从头
 let s4 = a[..]        // 整个数组
 s1[0] = 999           // 视图是同一块内存 —— a[2] 也变成 999
 ```
 
-**视图元素是可写的**（`slice<T>` 里的 `data` 本来就是 `ref T`，而引用在 extC 里必须显式可见）。
+**视图本身没有「只读视图」这种类型** —— 能不能透过它写，由 `let` / `var` 决定：
+
+```extc
+let v = a[1..3]
+v[0] = 9              // error: cannot write through `v`, which is a `let`
+```
+
+（`slice<T>` 里的 `data` 本来就是 `ref T`，而引用在 extC 里必须显式可见 ——
+`var` / `let` 就是那个显式的地方。）
 
 **编译期能证明的，运行时不留痕迹**：
 
@@ -356,12 +364,31 @@ var name: Type               // 零初始化（定案 8）
   C 里最大的 UB 来源之一就是「读到未初始化内存」，它只能在运行时发现；
   默认清零把它变成编译期就能保证的东西。
 - `ref T` **不能零初始化** —— 它是不可为空的引用，没有「零值」。
-- 给 `let` 赋值是**编译错误**。
+- **`let` 是只读的，而且管的是「根」** —— 不只是不能重新绑定，
+  **也不能透过它写字段 / 数组元素 / 视图元素**：
 
 ```extc
 let x = 1
 x = 2              // error: cannot assign to `x`, which is a `let`
 
+let p: point = { x: 1, y: 2 }
+p.x = 9            // error: cannot write through `p`, which is a `let`
+
+let a: [3]i32 = [1, 2, 3]
+a[0] = 9           // error: cannot write through `a`, which is a `let`
+
+let n = 7
+let r = ref n      // error: cannot take a reference through `n`, which is a `let`
+                   //（`ref T` 是**可变**引用 —— 见 §7.5）
+```
+
+> **⚠️ 这条规则是「浅」的：它管名字，不管数据。**
+> 把 `let` 视图拷给一个 `var`、或者传进函数，那边照样能写同一块内存；
+> 调用一个 `self: ref T` 的方法也算（`let p; p.moveBy(1)` 现在是允许的）。
+> 要管到数据层，可变性就得进**类型**（Rust 的 `&` / `&mut`）——
+> 那是 week-4 引用规则的范围，见 [`DECISIONS.md`](DECISIONS.md) 定案 28。
+
+```extc
 var b: board       // 所有字段清零
 var n: i32         // 0
 var ok: bool       // false
