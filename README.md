@@ -104,9 +104,11 @@ fn main() -> i32 {
 
 `i8..i64 / u8..u64 / f32 / f64 / bool / str`、`let`/`var`（含零初始化）、
 `if`/`else if`/`else`、`while`、`return`/`break`/`continue`、
-`struct` + 方法（写在体内）、`type` 枚举、**泛型 `struct Name<T>`（单态化）**、`ref` 表达式、`print`/`println`。
+`struct` + 方法（写在体内）、`type` 枚举、**泛型 `struct Name<T>`（单态化）**、**`==` 通过 `eq` 方法**、
+`ref` 表达式、`print`/`println`。
 
-**类型系统**：只自动做**无损失**的拓宽；收窄一律禁止；字面量按值适配。
+**类型系统**：只自动做**无损失**的拓宽；收窄一律禁止；字面量按值适配；
+`==` 需要类型自己定义 `eq`（不引入 trait）。
 
 **还没有**：`Slice`/`Array`（泛型机制已通，容器本体等 T4b）、`Option`/`Result`/`?`、`match`、`for`、格式串、
 模块系统、全局变量、`region`、`@recursive`、**逃逸检查**。
@@ -121,7 +123,9 @@ src/          C 实现的编译器（正史）
   parser.[ch]   递归下降
   codegen.[ch]  C 代码生成（带 #line 映射）
   main.c        驱动
-examples/     样例
+examples/     样例（hello / fizzbuzz / types / structs / enums / refs / generics / eq / debug）
+stdlib/       prelude.extc —— 用 extC 写的预lude（T4b 会把 Slice<T> 放这里）
+tools/        embed.c —— 把 stdlib/*.extc 嵌成 C 字节数组（C 写的，无解释器依赖）
 tests/        回归测试（正例 + 反例）
 prototype-python/   作废的 Python 草稿，只作语法参考
 ```

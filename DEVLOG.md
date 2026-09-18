@@ -7,6 +7,46 @@
 
 ---
 
+## 2026-09-18 · `==` 支持（主人要求提前做）+ 工具改用 C
+
+主人问「为什么不能早点支持运算符重载 operator== 这种」——
+**问得对，奶昔之前把 `==` 排到 T4b 之后是判断失误。它现在就能做，而且应该现在做**
+（因为它把之前那个「`str ==` 变指针比较」的临时补丁换成了**真规则**）。
+
+**实现**：`==` / `!=` 是语法糖，不是万能比较。
+
+| 两边 | 生成 |
+|---|---|
+| 数值 / bool / 枚举 | C 的原生 `==` |
+| struct / 泛型实例 | 找 `eq` 方法 → `Type_eq(&a, b)`；**没有就报错** |
+| `str` | **拒绝**（它的 `==` 是指针比较） |
+
+泛型里含类型参数的比较**推迟到实例化**再检查（`Expr.needEq` + `Checker.eqChecks`），
+错误信息会点明是哪个实例：`` `Wrapper_Tag` needs `Tag` to have an `eq` method ``。
+
+### 踩到的三个坑
+
+1. **codegen 不知道内建类型原生可比** —— check 的推迟复查通过了 `i32`，
+   但 codegen 生成时又去找 `eq`，于是 `Wrapper<i32>` 报「int32_t 需要 eq 方法」。
+   codegen 也得有一份"原生可比"的判断。
+2. **`cFuncName` 带的是「当前正在生成的实例」前缀** —— 在 `Wrapper<Point>` 里调
+   `Point.eq`，它拼出了 `Wrapper_Point_eq`。**被调用的方法属于别的类型，必须用
+   `f->owner` 而不是 `g->ownerPrefix`**。为此把方法名解析单独抽成 `cMethodName`。
+3. **`eq` 的 `other` 按值传更顺手** —— 取 `ref` 时调用点的实参要写 `ref`
+   （方法参数的规则），所以 `same(self, other: Wrapper<T>)` 比 `other: ref Wrapper<T>` 好用。
+
+### 顺带：工具改成 C
+
+主人提醒「不要使用 python」—— 对，尤其这是 C 程设作业。
+`tools/embed.py` 改成 **`tools/embed.c`**（把文件嵌成 C 字节数组，给 T4b 的 prelude 用）。
+好处：**make 只需要一个 C 编译器**，不引入任何解释器依赖。
+这个工具跟编译器一样跑一次就退出，所以也**不手动 free**。
+
+**测试**：28 → 32 个（新增正例 `examples/eq.extc` + 三个反例：
+`eq_missing` / `eq_deferred` / `eq_bad_sig`）。
+
+---
+
 ## 2026-09-18 · 泛型约束定案 + prelude 说清楚
 
 主人对 `Pair<A,B>.swap` 写不出来这件事的判断：**「因为类型是静态检查的，除非重载运算符否则

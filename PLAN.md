@@ -96,7 +96,7 @@
 编译器要能单独运行，不能依赖外部文件路径。用脚本把文本变成 C 数组：
 
 ```
-tools/embed.py stdlib/prelude.extc build/prelude_data.c extc_prelude_src
+tools/embed.c stdlib/prelude.extc build/prelude_data.c extc_prelude_src
 ```
 生成：
 ```c
@@ -104,12 +104,16 @@ const unsigned char extc_prelude_src[] = { 0x73, 0x74, ... };
 const unsigned long extc_prelude_len = 1234;
 ```
 （用字节数组而不是字符串字面量 —— 免掉一切转义问题。）
+工具本身用 **C** 写（`tools/embed.c`），不引入解释器依赖。
 
 Makefile 加：
 ```make
 STDLIB := stdlib
-$(BUILDDIR)/prelude_data.c: $(STDLIB)/prelude.extc tools/embed.py | $(BUILDDIR)
-	python3 tools/embed.py $< $@ extc_prelude_src
+$(EMBED): $(TOOLDIR)/embed.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILDDIR)/prelude_data.c: $(STDLIB)/prelude.extc $(EMBED)
+	./$(EMBED) $< $@ extc_prelude_src
 ```
 再用 `src/prelude.h` / `src/prelude.c` 把它包成 `const char *preludeSource(size_t *len);`。
 

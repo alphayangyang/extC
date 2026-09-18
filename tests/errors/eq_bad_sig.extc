@@ -1,0 +1,14 @@
+struct Thing {
+    n: i32
+
+    fn eq(self: ref Thing, other: ref Thing) -> i32 {
+        return 1
+    }
+}
+
+fn main() -> i32 {
+    let a: Thing = { n: 1 }
+    let b: Thing = { n: 1 }
+    println(a == b)
+    return 0
+}

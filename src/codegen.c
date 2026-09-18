@@ -109,6 +109,7 @@ static const char *cType(CG *g, Type *t) {
 
 static const char *genExpr(CG *g, Expr *e);
 
+    
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
  * （在 extC 里它们本来就是两个不同的名字，见 DECISIONS 决策 9）*/
 static const char *cFuncName(CG *g, FuncDef *f) {
@@ -116,6 +117,77 @@ static const char *cFuncName(CG *g, FuncDef *f) {
         return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, f->name);
     if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, f->name);
     return f->name;
+}
+
+/* 方法名修饰：接收者是泛型实例时用实例名（`Pair_i32_u8_getFirst`） */
+static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
+    Type *rb = ttBase(subst(g, recvType));
+    if (rb && rb->kind == TY_GENERIC)
+        return arenaPrintf(g->arena, "%s_%s", rb->name, f->name);
+    /* ⚠️ 这里**不能**用 cFuncName —— 它带的是「当前正在生成的实例」前缀。
+     * 被调用的方法可能属于另一个类型（在 Wrapper<Point> 里调 Point.eq）。*/
+    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, f->name);
+    return f->name;
+}
+
+/* C 原生就能比的类型：数值 / bool / 枚举（`str` 不算 —— 那是指针比较） */
+static bool nativeCmp(Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_ENUM) return true;
+    if (t->kind != TY_BUILTIN) return false;
+    return strcmp(t->name, "str") != 0;
+}
+
+/* `==` 走的是 eq 方法：找一下这个类型的 eq */
+static FuncDef *findEqMethod(Type *t) {
+    Type *b = ttBase(t);
+    if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return NULL;
+    StructDef *sd = b->sdef;
+    for (size_t i = 0; i < sd->methods.len; i++) {
+        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
+        if (strcmp(m->name, "eq") == 0) return m;
+    }
+    return NULL;
+}
+
+/* 二元运算。
+ * `==` / `!=` 在 check 里被解析成 eq 方法调用（找不到 eq 就报错）；
+ * 泛型里含类型参数的比较被推迟到这里，用实例上下文再解析一次。 */
+static const char *genBin(CG *g, Expr *e) {
+    const char *op = e->u.bin.op;
+
+    if (e->func || e->needEq) {
+        Type *lt = ttBase(subst(g, e->u.bin.left->type));
+        FuncDef *m = e->func ? e->func : findEqMethod(lt);
+
+        if (!m) {
+            /* 内建数值 / bool / 枚举：C 原生就能比，不需要 eq */
+            if (nativeCmp(lt))
+                return arenaPrintf(g->arena, "(%s %s %s)",
+                                   genExpr(g, e->u.bin.left), op,
+                                   genExpr(g, e->u.bin.right));
+
+            ctxError(g->ctx, e->line, 1,
+                     "泛型里的 `==` 推迟到实例化才检查 —— 这是「不引入 trait」换来的代价。"
+                     "给那个类型加一个 `eq` 方法即可。",
+                     "`%s` needs an `eq` method (for `%s`)", cType(g, lt), op);
+            return "0";
+        }
+
+        Param *p0 = *(Param **)vecAt(&m->params, 0);
+        Param *p1 = *(Param **)vecAt(&m->params, 1);
+        const char *l = genExpr(g, e->u.bin.left);
+        const char *r = genExpr(g, e->u.bin.right);
+        if (p0->type->kind == TY_REF) l = arenaPrintf(g->arena, "&(%s)", l);
+        if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
+
+        const char *call = arenaPrintf(g->arena, "%s(%s, %s)",
+                                       cMethodName(g, e->u.bin.left->type, m), l, r);
+        return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
+    }
+
+    return arenaPrintf(g->arena, "(%s %s %s)",
+                       genExpr(g, e->u.bin.left), op, genExpr(g, e->u.bin.right));
 }
 
 /* 零值表达式。
@@ -279,13 +351,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
     if (wantRef && !haveRef)      recvC = arenaPrintf(g->arena, "&(%s)", recvC);
     else if (!wantRef && haveRef) recvC = arenaPrintf(g->arena, "*(%s)", recvC);
 
-    /* 方法名修饰：接收者是泛型实例时用实例名（`Pair_i32_u8_getFirst`） */
-    const char *fname;
-    Type *rb = ttBase(subst(g, recvT));
-    if (rb && rb->kind == TY_GENERIC)
-        fname = arenaPrintf(g->arena, "%s_%s", rb->name, f->name);
-    else
-        fname = cFuncName(g, f);
+    const char *fname = cMethodName(g, recvT, f);
 
     Buf b;
     bufInit(&b, g->arena);
@@ -349,10 +415,7 @@ static const char *genExpr(CG *g, Expr *e) {
         case EX_STR:   return arenaPrintf(g->arena, "\"%s\"", e->u.str.text);
         case EX_IDENT: return e->u.ident.name;
 
-        case EX_BIN:
-            return arenaPrintf(g->arena, "(%s %s %s)",
-                               genExpr(g, e->u.bin.left), e->u.bin.op,
-                               genExpr(g, e->u.bin.right));
+        case EX_BIN: return genBin(g, e);
 
         case EX_UN:
             return arenaPrintf(g->arena, "(%s%s)", e->u.un.op, genExpr(g, e->u.un.operand));

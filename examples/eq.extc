@@ -1,0 +1,42 @@
+// `==` 是语法糖：struct 上写一个 eq 方法就能比较（不需要 trait / trait 约束）
+
+struct Point {
+    x: i32
+    y: i32
+
+    fn eq(self: ref Point, other: ref Point) -> bool {
+        return self.x == other.x && self.y == other.y
+    }
+}
+
+struct Tag {
+    id: i32          // 故意不写 eq
+}
+
+// 泛型里也能用 ==：推迟到实例化再检查
+struct Wrapper<T> {
+    value: T
+
+    fn same(self: ref Wrapper<T>, other: Wrapper<T>) -> bool {
+        return self.value == other.value      // T 是类型参数 → 推迟
+    }
+}
+
+fn main() -> i32 {
+    let a: Point = { x: 1, y: 2 }
+    let b: Point = { x: 1, y: 2 }
+    let c: Point = { x: 9, y: 9 }
+
+    println(a == b)      // true
+    println(a == c)      // false
+    println(a != c)      // true
+
+    var wa: Wrapper<i32> = { value: 7 }        // i32 是内建 → 天生能比
+    var wb: Wrapper<i32> = { value: 7 }
+    println(wa.same(wb))                       // true
+
+    var pa: Wrapper<Point> = { value: a }      // Point 有 eq → 也能比
+    var pb: Wrapper<Point> = { value: b }
+    println(pa.same(pb))                       // true
+    return 0
+}

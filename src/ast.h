@@ -65,8 +65,9 @@ struct Expr {
 
     /* ---- 由类型检查 pass 填写 ---- */
     Type     *type;
-    FuncDef  *func;     /* EX_CALL / EX_METHOD 解析到的函数 */
+    FuncDef  *func;     /* EX_CALL / EX_METHOD 解析到的函数；`==` 时是 eq 方法 */
     FieldDef *field;    /* EX_FIELD 解析到的字段 */
+    bool      needEq;   /* `==` 的操作数含类型参数 → 推迟到实例化再检查 */
 
     union {
         long long ival;

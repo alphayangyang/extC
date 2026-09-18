@@ -33,6 +33,7 @@ typedef struct {
     Vec        scopes;      /* Scope* */
     FuncDef   *curFunc;
     Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
+    Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
 
     Type *tI32, *tF64, *tBool, *tStr;
 } Checker;
@@ -146,6 +147,48 @@ static Variant *findVariant(TypeDef *td, const char *name) {
 static bool isLvalue(Expr *e) {
     return e->kind == EX_IDENT || e->kind == EX_FIELD;
 }
+
+/* C 原生就能比的类型：数值 / bool / 枚举。
+ * `str` **不在**这里 —— 它的 `==` 会退化成指针比较（陷阱），必须有 eq 才行。 */
+static bool cmpIsNative(Type *t) {
+    if (!t) return false;
+    if (ttIsError(t)) return true;
+    if (ttIsInteger(t) || ttIsFloat(t) || ttIs(t, "bool")) return true;
+    return ttBase(t)->kind == TY_ENUM;
+}
+
+/* eq 方法的签名必须是：(self: ref T, other: T 或 ref T) -> bool */
+static bool eqSignatureOk(TypeTable *tt, FuncDef *m, Type *lt, Vec *sp, Vec *sa) {
+    if (!m || !m->ret || !ttIs(m->ret, "bool")) return false;
+    if (m->params.len != 2) return false;
+
+    Param *p0 = *(Param **)vecAt(&m->params, 0);
+    Param *p1 = *(Param **)vecAt(&m->params, 1);
+    Type *t0 = ttSubstitute(tt, p0->type, sp, sa);
+    Type *t1 = ttSubstitute(tt, p1->type, sp, sa);
+
+    if (t0->kind != TY_REF) return false;
+    return ttEquals(ttBase(t0), lt) && ttEquals(ttBase(t1), lt);
+}
+
+/* 这个类型能不能用 `==`？*/
+static bool typeSupportsEq(Checker *c, Type *t) {
+    if (!t) return false;
+    if (ttIsError(t)) return true;
+    if (cmpIsNative(t)) return true;
+
+    Type *b = ttBase(t);
+    StructDef *sd = structOf(b);
+    if (!sd) return false;
+
+    FuncDef *m = findMethod(b, "eq");
+    Vec *sp = NULL, *sa = NULL;
+    if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
+    return eqSignatureOk(c->tt, m, b, sp, sa);
+}
+
+/* 泛型里的 `==` 推迟到实例化才检查 —— 这里记一笔 */
+typedef struct { Expr *node; StructDef *owner; } EqCheck;
 
 /* ---------------------------------------------------------------- 小工具 */
 
@@ -319,24 +362,68 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (isCmpOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return c->tBool;
 
-                /* ⚠️ `str` 的 == / != 现在是 C 的**指针比较**（陷阱，见 MIGRATION.md）。
-                 * 与其让它安静地给出错的答案，不如先报错。
-                 * T4c 把字符串字面量换成 Slice<u8> 之后会给正确的比较。 */
-                if ((strcmp(op, "==") == 0 || strcmp(op, "!=") == 0) &&
-                    (ttIs(lt, "str") || ttIs(rt, "str"))) {
-                    ckError(c, e->line,
-                            "字符串内容比较还没实现 —— 现在会退化成 C 的指针比较，"
-                            "而它只是因为 gcc 折叠了相同字面量才看起来对。"
-                            "等 `Slice<u8>` 到位会给正确的比较。",
-                            "`str` does not support `%s` yet", op);
+                bool isEqOp = (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0);
+
+                /* ---- `==` / `!=`：内建原生比；struct 走 eq 方法 ---- */
+                if (isEqOp && ttEquals(lt, rt)) {
+                    if (cmpIsNative(lt)) return c->tBool;
+
+                    /* 泛型参数 → 推迟到实例化再检查（规则 2） */
+                    if (lt->kind == TY_PARAM) {
+                        e->needEq = true;
+                        if (c->curFunc && c->curFunc->owner) {
+                            EqCheck *ec = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
+                            ec->node = e;
+                            ec->owner = c->curFunc->owner;
+                            *(EqCheck **)vecPush(&c->eqChecks) = ec;
+                        }
+                        return c->tBool;
+                    }
+
+                    Type *b = ttBase(lt);
+                    StructDef *sd = structOf(b);
+                    if (!sd) {
+                        ckError(c, e->line,
+                                "`str` 的 `==` 会退化成 C 的指针比较 —— 那是个陷阱，所以现在不许比。"
+                                "等 T4c 把字符串换成 `Slice<u8>` 之后，prelude 会给它一个按内容比较的 `eq`。",
+                                "`%s` does not support `%s`", typeStr(c, lt), op);
+                        return c->tBool;
+                    }
+
+                    FuncDef *m = findMethod(b, "eq");
+                    if (!m) {
+                        Buf note;
+                        bufInit(&note, c->arena);
+                        bufPrintf(&note,
+                                  "在 `%s` 里加一个方法即可：\n"
+                                  "      fn eq(self: ref %s, other: ref %s) -> bool { ... }",
+                                  sd->name, sd->name, sd->name);
+                        ckError(c, e->line, bufCstr(&note),
+                                "`%s` has no `eq`, so it cannot be compared with `%s`",
+                                sd->name, op);
+                        return c->tBool;
+                    }
+
+                    Vec *sp = NULL, *sa = NULL;
+                    if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
+                    if (!eqSignatureOk(tt, m, b, sp, sa)) {
+                        ckError(c, e->line,
+                                "`eq` 的签名必须是 `fn eq(self: ref T, other: ref T) -> bool`",
+                                "`%s.eq` has the wrong signature for `%s`", sd->name, op);
+                        return c->tBool;
+                    }
+                    e->func = m;        /* codegen 用它生成 `Type_eq(&a, &b)` */
                     return c->tBool;
                 }
 
-                if (ttEquals(lt, rt) || ttCanWiden(lt, rt) || ttCanWiden(rt, lt)) return c->tBool;
+                /* ---- 其余比较：只对数值有意义 ---- */
+                if (ttIsNumeric(lt) && ttIsNumeric(rt) &&
+                    (ttCanWiden(lt, rt) || ttCanWiden(rt, lt))) return c->tBool;
                 if (isNumericLit(e->u.bin.left)  && literalFits(e->u.bin.left, rt))  return c->tBool;
                 if (isNumericLit(e->u.bin.right) && literalFits(e->u.bin.right, lt)) return c->tBool;
-                ckError(c, e->line, NULL, "cannot compare `%s` with `%s`",
-                        typeStr(c, lt), typeStr(c, rt));
+
+                ckError(c, e->line, isEqOp ? "只有数值、bool、枚举和带 `eq` 的 struct 能比" : NULL,
+                        "cannot compare `%s` with `%s`", typeStr(c, lt), typeStr(c, rt));
                 return c->tBool;
             }
             return checkArith(c, e, lt, rt);
@@ -887,6 +974,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.tt = tt;
     c.m = m;
     vecInit(&c.scopes, arena, sizeof(void *));
+    vecInit(&c.eqChecks, arena, sizeof(void *));
 
     c.tI32  = ttFromName(tt, "i32");
     c.tF64  = ttFromName(tt, "f64");
@@ -930,6 +1018,30 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
     for (size_t i = 0; i < m->funcs.len; i++)
         checkFunc(&c, *(FuncDef **)vecAt(&m->funcs, i));
+
+    /* 推迟的 `==` 检查：对每个具体实例复查一遍。
+     * 这是「不引入 trait」的代价 —— 错误晚到这里，但信息要说清是哪个实例。 */
+    for (size_t i = 0; i < c.eqChecks.len; i++) {
+        EqCheck *ec = *(EqCheck **)vecAt(&c.eqChecks, i);
+        for (size_t j = 0; j < tt->instances.len; j++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, j);
+            if (inst->sdef != ec->owner) continue;
+
+            Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type,
+                                    &ec->owner->typeParams, &inst->targs);
+            if (!ttEquals(lt, ttSubstitute(tt, ec->node->u.bin.right->type,
+                                          &ec->owner->typeParams, &inst->targs)))
+                continue;
+
+            if (!typeSupportsEq(&c, lt)) {
+                ckError(&c, ec->node->line,
+                        "泛型里的 `==` 推迟到实例化才检查 —— 这是「不引入 trait」换来的代价。"
+                        "给那个类型加一个 `eq` 方法就行。",
+                        "`%s` needs `%s` to have an `eq` method (for `==`)",
+                        inst->name, typeStr(&c, lt));
+            }
+        }
+    }
 
     return !ctx->hasError;
 }

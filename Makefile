@@ -11,11 +11,14 @@ CSTD     ?= -std=c11
 CFLAGS   ?= $(CSTD) -Wall -Wextra -Wpedantic -O1 -g
 DEPFLAGS := -MMD -MP
 SRCDIR   := src
+TOOLDIR  := tools
+STDLIB   := stdlib
 BUILDDIR := build
 SRCS     := $(wildcard $(SRCDIR)/*.c)
 OBJS     := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
 DEPS     := $(OBJS:.o=.d)
 BIN      := $(BUILDDIR)/extc
+EMBED    := $(BUILDDIR)/embed
 
 all: $(BIN)
 
@@ -27,6 +30,14 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
+
+# 把 stdlib/*.extc 嵌进编译器（prelude 机制，见 PLAN.md 的 T4b）。
+# 用 C 写的工具 —— 不引入解释器依赖。
+$(EMBED): $(TOOLDIR)/embed.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILDDIR)/prelude_data.c: $(STDLIB)/prelude.extc $(EMBED)
+	./$(EMBED) $< $@ extc_prelude_src
 
 test: $(BIN)
 	./tests/run.sh

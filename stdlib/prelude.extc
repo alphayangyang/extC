@@ -1,0 +1,7 @@
+// extC 的 prelude —— 每次编译都先于用户文件被处理的一段 extC 源码。
+//
+// 它存在的理由：**能在 extC 里写的东西，就在 extC 里写。**
+// 没有它，Slice<T> / Array<T> 只能在 codegen.c 里硬编码（= 把库塞进编译器）。
+//
+// 现在还是空的 —— T4b 会把 Slice<T> 写在这里。
+// 验收标准：grep -i slice src/*.c  应该一无所获。
