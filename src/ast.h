@@ -40,6 +40,9 @@ struct Type {
     const char *name;    /* TY_UNRESOLVED / TY_BUILTIN / TY_STRUCT / TY_ENUM；
                           * TY_GENERIC 时是**修饰过的名字**（见 ttMangle） */
     Type       *inner;   /* TY_REF */
+    bool        mut;     /* TY_REF：可写？
+                          * **只读是默认**（安全是默认）；`mut ref T` 才是可写。
+                          * 见 DECISIONS「引用语义定案」与 REFS.md §3。 */
     StructDef  *sdef;    /* TY_STRUCT / TY_GENERIC */
     TypeDef    *edef;    /* TY_ENUM */
     Vec         targs;   /* TY_GENERIC：类型实参（Type*） */

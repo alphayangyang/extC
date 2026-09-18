@@ -243,10 +243,25 @@ static Sym *placeRoot(Checker *c, Expr *e) {
     return NULL;
 }
 
+/* 这个「地方」可不可写？（取引用时决定 `mut ref T` 还是 `ref T`）
+ *
+ * 三条来源，正好对应「一个值是从哪拿到的」：
+ *   ① 绑定：`var` 可写 / `let` 只读
+ *   ② 参数：`mut ref T` 可写 / `ref T` 只读（类型里写着）
+ *   ③ 字段/元素：看它的根（跟赋值查的是同一个东西）
+ * 见 DECISIONS「引用语义定案」。 */
+static bool isWritablePlace(Checker *c, Expr *e) {
+    if (!e) return false;
+    /* ② 参数（或者任何 ref 类型的表达式）：类型上的 `mut` 说了算 */
+    if (e->type && e->type->kind == TY_REF) return e->type->mut;
+    /* ① 绑定 + ③ 字段/元素：走到根 */
+    Sym *root = placeRoot(c, e);
+    return root && root->mut;
+}
+
 /* 往一个「地方」里写之前，先看它的根是不是 `var`。
  * 返回 true = 已经报过错（调用点直接放弃）。 */
-static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
-    Sym *root = placeRoot(c, e);
+static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {    Sym *root = placeRoot(c, e);
     if (!root || root->mut) return false;
     if (e->kind == EX_IDENT) {
         ckError(c, line, "use `var` to allow reassignment (`let` is an immutable binding)",
@@ -513,6 +528,13 @@ static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const
     }
 
     if (ttEquals(want, got)) return true;
+
+    /* **降级**：`mut ref T` 可以当 `ref T` 用（能写的地方当然能读）——
+     * 单向、永远安全，所以自动允许。反过来不行：那是要写权限，必须写 `mut`。
+     * 「安全是默认」的直接体现：往安全的方向收窄不需要打招呼。 */
+    if (want->kind == TY_REF && got->kind == TY_REF && got->mut && !want->mut &&
+        ttEquals(want->inner, got->inner))
+        return true;
     if (ttCanWiden(got, want)) return true;
     if (node && literalFits(node, want)) return true;
 
@@ -970,11 +992,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot take a reference to this expression");
                 return ttError(tt);
             }
-            /* `ref T` 是**可变**引用（方法靠它改调用者的数据），
-             * 所以不能对 `let` 取引用。跟赋值一样，查的是**根**：
-             * `ref p.x` 里的 p 是 `let` 也不行。 */
-            if (requireMutable(c, op, e->line, "take a reference")) return ttError(tt);
-            return ttRef(tt, ot);
+            /* **取哪种引用，看这个「地方」可不可写**：
+             *   `var` 变量 / `mut ref` 参数 ⇒ `mut ref T`
+             *   `let` 变量 / `ref` 参数     ⇒ `ref T`（只读）
+             *
+             * 只读借用**随时可以取** —— 那正是借用存在的理由。
+             * （以前 `ref` 只有可变一种，所以对 `let` 取引用被一律拒绝，
+             *   连「只是想读一下」都写不出来。） */
+            Type *r = ttRef(tt, ot);
+            r->mut = isWritablePlace(c, op);
+            return r;
         }
 
         case EX_TRY:

@@ -1,0 +1,7 @@
+// 对 `let` 只能取**只读**引用；声明成可写的引用是错的
+struct point { x: i32  y: i32 }
+fn main() -> i32 {
+    let p: point = { x: 1, y: 2 }
+    let r: mut ref i32 = ref p.x
+    return 0
+}

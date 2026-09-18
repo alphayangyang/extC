@@ -1,0 +1,44 @@
+// `ref T`（只读借用）与 `mut ref T`（可写借用）—— A2 的地基
+//
+// 规则只有一条：**可写性看「这个值是从哪拿到的」**，而只有三个地方
+//   ① 绑定：var 可写 / let 只读
+//   ② 参数：mut ref T 可写 / ref T 只读
+//   ③ 字段：类型上写 mut
+// 取引用时**权限从源头继承**（var 变量给 mut ref，let 变量给 ref），
+// 所以日常代码里一个 `mut` 都不用写；只有**声明**才写。
+
+struct counter {
+    n: i64
+
+    // 只读借用：`let` 的 counter 也能调
+    fn peek(self: ref counter) -> i64 {
+        return self.n
+    }
+
+    // 可写借用：接收者必须可写
+    fn bump(self: mut ref counter) {
+        self.n = self.n + 1
+    }
+}
+
+fn read(c: ref counter) -> i64 { return c.n }
+fn addTwo(c: mut ref counter) { c.n = c.n + 2 }
+
+fn main() -> i32 {
+    var c: counter
+    c.bump()                       // var ⇒ 可写借用 ✓
+    c.bump()
+    println("两次 bump 之后 = ", c.peek())     // 2
+
+    addTwo(ref c)                  // var 取引用 ⇒ mut ref ✓
+    println("再加 2 = ", read(ref c))          // 4
+
+    let frozen: counter = { n: 100 }
+    println("只读的也能读 = ", frozen.peek())  // 100
+    println("传只读借用也行 = ", read(ref frozen))   // 100
+
+    // 下面两条会被拒绝（写出来给读者看）：
+    //   frozen.bump()        // error: 需要可写借用，而 frozen 是 let
+    //   addTwo(ref frozen)   // error: expects `mut ref counter`, found `ref counter`
+    return 0
+}

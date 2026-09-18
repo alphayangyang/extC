@@ -320,6 +320,24 @@ static FuncDef *parseFunc(Parser *p) {
 }
 
 static Type *parseType(Parser *p) {
+    /* `mut ref T` = 可写的引用；`ref T` = 只读的引用。
+     * 只读是**默认**（安全是默认），要写就显式写 `mut`。 */
+    if (at(p, "mut")) {
+        Token *m = take(p);
+        if (!at(p, "ref")) {
+            ctxError(p->ctx, m->line, m->col,
+                     "`mut` is a qualifier on a reference, not a type by itself: "
+                     "write `mut ref T`.",
+                     "expected `ref` after `mut`");
+            return NULL;
+        }
+        take(p);
+        Type *inner = parseType(p);
+        if (!inner) return NULL;
+        Type *t = typeRef(p->arena, inner);
+        t->mut = true;
+        return t;
+    }
     if (at(p, "ref")) {
         take(p);
         Type *inner = parseType(p);

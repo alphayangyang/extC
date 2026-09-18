@@ -7,7 +7,7 @@
 
 static const char *KEYWORDS[] = {
     "fn", "let", "var", "if", "else", "while", "return",
-    "break", "continue", "struct", "type", "true", "false", "ref",
+    "break", "continue", "struct", "type", "true", "false", "ref", "mut",
     NULL
 };
 

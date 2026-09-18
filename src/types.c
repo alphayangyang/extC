@@ -88,6 +88,13 @@ Type *ttRef(TypeTable *tt, Type *inner) {
     return t;
 }
 
+/* 造一个跟 `src` 同样**可写性**的引用 —— 解析和替换时 `mut` 不能丢。 */
+static Type *refLike(TypeTable *tt, Type *src, Type *inner) {
+    Type *t = ttRef(tt, inner);
+    t->mut = src->mut;
+    return t;
+}
+
 Type *ttFromName(TypeTable *tt, const char *name) {
     if (strcmp(name, "void") == 0) return tt->tVoid;
 
@@ -171,7 +178,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
             return base;
         }
         case TY_REF:
-            return ttRef(tt, ttResolve(tt, ctx, t->inner, line, params));
+            return refLike(tt, t, ttResolve(tt, ctx, t->inner, line, params));
         case TY_ARRAY: {
             Type *e = ttResolve(tt, ctx, t->inner, line, params);
             if (e->kind == TY_PARAM) {
@@ -277,7 +284,7 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
             }
             return t;
         case TY_REF:
-            return ttRef(tt, ttSubstitute(tt, t->inner, params, args));
+            return refLike(tt, t, ttSubstitute(tt, t->inner, params, args));
         case TY_ARRAY:
             return ttArray(tt, t->asize, ttSubstitute(tt, t->inner, params, args));
         case TY_GENERIC: {
@@ -301,7 +308,8 @@ bool ttEquals(Type *a, Type *b) {
     if (a->kind != b->kind) return false;
 
     /* 除了 ref / 泛型参数 / 泛型实例，其余类型都是驻留的 —— 指针不等就是不相等 */
-    if (a->kind == TY_REF) return ttEquals(a->inner, b->inner);
+    if (a->kind == TY_REF)
+        return a->mut == b->mut && ttEquals(a->inner, b->inner);
 
     if (a->kind == TY_ARRAY)
         return a->asize == b->asize && ttEquals(a->inner, b->inner);
@@ -385,6 +393,16 @@ bool ttCanWiden(Type *from, Type *to) {
     if (ttIsError(from) || ttIsError(to)) return true;   /* 抑制级联报错 */
     if (ttEquals(from, to)) return true;
 
+    /* ⚠️ **引用不参与「拓宽」。**
+     *
+     * `ref T` 和 `mut ref T` 是**不同的权限**，只能单向降级（`checkAssignable`
+     * 里专门处理），绝不能在这里被抹平 —— `intInfo()` 会把 ref 剥掉，
+     * 于是 `ref i32` 到 `mut ref i32` 就变成了「i32 拓宽到 i32」而放过去。
+     *
+     * 这是**第四次**踩这个坑了（`ttBase` / `intInfo` 这类 helper 隐式抹掉 ref
+     * 或者不代入泛型实参，把信息悄悄丢掉）。见 DEVLOG。 */
+    if (from->kind == TY_REF || to->kind == TY_REF) return false;
+
     const IntInfo *fi = intInfo(from);
     const IntInfo *ti = intInfo(to);
 
@@ -414,7 +432,7 @@ void ttRender(Type *t, Buf *out) {
     if (!t) { bufPuts(out, "void"); return; }
     switch (t->kind) {
         case TY_REF:
-            bufPuts(out, "ref ");
+            bufPuts(out, t->mut ? "mut ref " : "ref ");
             ttRender(t->inner, out);
             return;
         case TY_GENERIC:

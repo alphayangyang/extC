@@ -1,0 +1,8 @@
+// 只读借用不能交给要写权限的参数
+struct point { x: i32  y: i32 }
+fn bump(p: mut ref point) { p.x = p.x + 1 }
+fn main() -> i32 {
+    let q: point = { x: 1, y: 2 }
+    bump(ref q)
+    return 0
+}
