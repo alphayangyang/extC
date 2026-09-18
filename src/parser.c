@@ -144,8 +144,23 @@ static StructDef *parseStruct(Parser *p) {
     StructDef *sd = (StructDef *)arenaAllocZero(p->arena, sizeof(StructDef));
     sd->name = name->text;
     sd->line = kw->line;
+    vecInit(&sd->typeParams, p->arena, sizeof(void *));
     vecInit(&sd->fields, p->arena, sizeof(void *));
     vecInit(&sd->methods, p->arena, sizeof(void *));
+
+    /* 泛型参数表：`struct Pair<A, B> { ... }` */
+    if (accept(p, "<")) {
+        skipNl(p);
+        for (;;) {
+            Token *tp = expectIdent(p, "a type parameter name");
+            if (!tp) return NULL;
+            *(const char **)vecPush(&sd->typeParams) = tp->text;
+            if (accept(p, ",")) { skipNl(p); continue; }
+            break;
+        }
+        skipNl(p);
+        if (!expect(p, ">", NULL)) return NULL;
+    }
 
     if (!expect(p, "{", NULL)) return NULL;
     skipJunk(p);
@@ -261,7 +276,24 @@ static Type *parseType(Parser *p) {
     Token *t = cur(p);
     if (t->kind == TK_TYPE || t->kind == TK_IDENT) {
         take(p);
-        return typeNamed(p->arena, t->text);
+        Type *ty = typeNamed(p->arena, t->text);
+
+        /* 泛型实参：`Pair<i32, u8>` */
+        if (at(p, "<")) {
+            take(p);
+            skipNl(p);
+            vecInit(&ty->targs, p->arena, sizeof(void *));
+            for (;;) {
+                Type *a = parseType(p);
+                if (!a) return NULL;
+                *(Type **)vecPush(&ty->targs) = a;
+                if (accept(p, ",")) { skipNl(p); continue; }
+                break;
+            }
+            skipNl(p);
+            if (!expect(p, ">", NULL)) return NULL;
+        }
+        return ty;
     }
     ctxError(p->ctx, t->line, t->col, NULL, "expected a type, found `%s`", shown(t));
     return NULL;

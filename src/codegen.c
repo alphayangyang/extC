@@ -48,9 +48,15 @@ typedef struct {
     const char *path;
     bool        lineMap;
 
-    Vec structs;        /* StructDef* */
-    Vec funcs;          /* FuncDef*  */
-    int indent;
+    TypeTable  *tt;
+    Vec         structs;        /* StructDef* —— 非泛型 */
+    Vec         funcs;          /* FuncDef*  —— 非泛型 struct 的方法 + 自由函数 */
+    int         indent;
+
+    /* 单态化上下文：生成某个泛型实例的代码时，把 T 换成实参 */
+    Vec        *substParams;    /* const char* */
+    Vec        *substArgs;      /* Type* */
+    const char *ownerPrefix;    /* 方法名修饰用的实例名，如 "Pair_i32_u8" */
 } CG;
 
 static void cgLine(CG *g, const char *fmt, ...) {
@@ -65,13 +71,26 @@ static void cgLine(CG *g, const char *fmt, ...) {
     bufPutc(g->out, '\n');
 }
 
+/* 单态化：把当前实例上下文里的 TY_PARAM 换成实参 */
+static Type *subst(CG *g, Type *t) {
+    if (!g->substParams || !g->substArgs) return t;
+    return ttSubstitute(g->tt, t, g->substParams, g->substArgs);
+}
+
 static const char *cType(CG *g, Type *t) {
     if (!t) return "void";
+
+    /* 先**整体**替换一次 —— ref 和泛型实例里都可能嵌着 T。
+     * （只处理裸 TY_PARAM 是不够的：`ref Pair<A, B>` 外层是 ref。）*/
+    t = subst(g, t);
+
+    if (t->kind == TY_PARAM) return "int";  /* 没有上下文可替换 —— 不该发生 */
 
     switch (t->kind) {
         case TY_REF:   return arenaPrintf(g->arena, "%s *", cType(g, t->inner));
         case TY_VOID:  return "void";
         case TY_STRUCT: return t->name;
+        case TY_GENERIC: return t->name;    /* 已经是修饰过的名字 */
         case TY_ENUM:  return t->name;      /* C 里就是一个 enum typedef */
         case TY_ERROR: return "int";
         case TY_BUILTIN:
@@ -80,6 +99,8 @@ static const char *cType(CG *g, Type *t) {
             return "int";
         case TY_UNRESOLVED:
             return "int";       /* check 跑完之后不该出现 */
+        case TY_PARAM:
+            return "int";       /* 上面已经拦住了；这里只为消 -Wswitch */
     }
     return "int";
 }
@@ -91,6 +112,8 @@ static const char *genExpr(CG *g, Expr *e);
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
  * （在 extC 里它们本来就是两个不同的名字，见 DECISIONS 决策 9）*/
 static const char *cFuncName(CG *g, FuncDef *f) {
+    if (g->ownerPrefix)
+        return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, f->name);
     if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, f->name);
     return f->name;
 }
@@ -115,9 +138,55 @@ static bool needsExplicitZero(Type *t) {
     return false;
 }
 
+/* 在有泛型实例上下文的保护下生成子表达式。
+ * **坑**：泛型实例的字段必须用它**自己的**实参替换，不能用环境里碰巧留着的上下文
+ * （否则 subst 原样返回，零值生成会自己递归自己 → 栈溢出）。 */
+static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **saveA, const char **saveN) {
+    *saveP = g->substParams;
+    *saveA = g->substArgs;
+    *saveN = g->ownerPrefix;
+    g->substParams = &sd->typeParams;
+    g->substArgs   = targs;
+}
+
+static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
+    g->substParams = saveP;
+    g->substArgs   = saveA;
+    g->ownerPrefix = saveN;
+}
+
 static const char *zeroValue(CG *g, Type *t) {
     if (!t) return "0";
     if (t->kind == TY_ENUM) return "0";
+
+    if (t->kind == TY_PARAM) {
+        Type *a = subst(g, t);
+        if (a == t) return "0";     /* 没有上下文 —— 不该发生，但绝不死循环 */
+        return zeroValue(g, a);
+    }
+
+    /* 泛型实例：用它**自己的**实参替换字段类型，再逐字段写零值 */
+    if (t->kind == TY_GENERIC && t->sdef) {
+        StructDef *sd = t->sdef;
+        if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", t->name);
+
+        Vec *sp, *sa;
+        const char *sn;
+        substEnterInst(g, sd, &t->targs, &sp, &sa, &sn);
+
+        Buf b;
+        bufInit(&b, g->arena);
+        bufPrintf(&b, "(%s){ ", t->name);
+        for (size_t i = 0; i < sd->fields.len; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+            if (i) bufPuts(&b, ", ");
+            bufPrintf(&b, ".%s = %s", fd->name, zeroValue(g, fd->type));
+        }
+        bufPuts(&b, " }");
+
+        substLeaveInst(g, sp, sa, sn);
+        return bufCstr(&b);
+    }
 
     if (t->kind == TY_STRUCT && t->sdef) {
         StructDef *sd = t->sdef;
@@ -152,7 +221,7 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
 
     for (size_t i = 0; i < args->len; i++) {
         Expr *a = *(Expr **)vecAt(args, i);
-        Type *bt = ttBase(a->type);
+        Type *bt = ttBase(subst(g, a->type));
         const char *code = genExpr(g, a);
 
         if (i) bufPuts(&b, ", ");
@@ -163,8 +232,8 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
             bufPrintf(&b, "printf(\"%%s\", %s_name(%s))", bt->name, code);
             continue;
         }
-        /* struct 自动递归打印 */
-        if (bt->kind == TY_STRUCT) {
+        /* struct / 泛型实例自动递归打印 */
+        if (bt->kind == TY_STRUCT || bt->kind == TY_GENERIC) {
             bufPrintf(&b, "%s_debug(%s)", bt->name, code);
             continue;
         }
@@ -210,9 +279,17 @@ static const char *genMethodCall(CG *g, Expr *e) {
     if (wantRef && !haveRef)      recvC = arenaPrintf(g->arena, "&(%s)", recvC);
     else if (!wantRef && haveRef) recvC = arenaPrintf(g->arena, "*(%s)", recvC);
 
+    /* 方法名修饰：接收者是泛型实例时用实例名（`Pair_i32_u8_getFirst`） */
+    const char *fname;
+    Type *rb = ttBase(subst(g, recvT));
+    if (rb && rb->kind == TY_GENERIC)
+        fname = arenaPrintf(g->arena, "%s_%s", rb->name, f->name);
+    else
+        fname = cFuncName(g, f);
+
     Buf b;
     bufInit(&b, g->arena);
-    bufPrintf(&b, "%s(%s", cFuncName(g, f), recvC);
+    bufPrintf(&b, "%s(%s", fname, recvC);
     for (size_t i = 0; i < e->u.method.args.len; i++)
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
     bufPutc(&b, ')');
@@ -228,28 +305,39 @@ static Expr *litValueFor(Expr *lit, const char *fname) {
 }
 
 static const char *genStructLit(CG *g, Expr *e) {
-    const char *sname = e->u.lit.name;
-    StructDef *sd = NULL;
-    if (e->type && e->type->kind == TY_STRUCT) {
-        sd = e->type->sdef;
-        if (!sname) sname = e->type->name;
+    Type *t = e->type;
+    StructDef *sd = (t && (t->kind == TY_STRUCT || t->kind == TY_GENERIC)) ? t->sdef : NULL;
+    if (!sd) return "(int){0}";
+
+    const char *cname = cType(g, t);       /* 泛型实例拿到的是修饰名 */
+    if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", cname);
+
+    /* 泛型实例的字面量也要用它**自己的**实参替换字段类型 */
+    Vec *sp = g->substParams, *sa = g->substArgs;
+    const char *sn = g->ownerPrefix;
+    if (t->kind == TY_GENERIC) {
+        g->substParams = &sd->typeParams;
+        g->substArgs   = &t->targs;
     }
-    if (!sd) return sname ? arenaPrintf(g->arena, "(%s){0}", sname) : "(int){0}";
-    if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", sd->name);
 
     /* **所有**字段都写出来：省略的字段填它的零值。
      * 不能让 C 自己去零填充 —— 那会把省略的 `str` 字段变成 NULL。 */
     Buf b;
     bufInit(&b, g->arena);
-    bufPrintf(&b, "(%s){", sd->name);
+    bufPrintf(&b, "(%s){", cname);
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        Type *ft = subst(g, fd->type);
         Expr *v = litValueFor(e, fd->name);
         if (i) bufPuts(&b, ", ");
         bufPrintf(&b, ".%s = %s", fd->name,
-                  v ? genExpr(g, v) : zeroValue(g, fd->type));
+                  v ? genExpr(g, v) : zeroValue(g, ft));
     }
     bufPuts(&b, "}");
+
+    g->substParams = sp;
+    g->substArgs   = sa;
+    g->ownerPrefix = sn;
     return bufCstr(&b);
 }
 
@@ -342,15 +430,15 @@ static void genPrintValue(CG *g, Type *t, const char *expr) {
     cgLine(g, "printf(\"?\");");
 }
 
-static void genStructDebug(CG *g, StructDef *sd) {
-    cgLine(g, "void %s_debug(%s v) {", sd->name, sd->name);
+static void genStructDebug(CG *g, const char *cname, StructDef *sd) {
+    cgLine(g, "void %s_debug(%s v) {", cname, cname);
     g->indent++;
-    cgLine(g, "printf(\"%s { \");", sd->name);
+    cgLine(g, "printf(\"%s { \");", sd->name);      /* 显示名用 extC 原名 */
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
         if (i) cgLine(g, "printf(\", \");");
         cgLine(g, "printf(\"%s: \");", fd->name);
-        genPrintValue(g, fd->type, arenaPrintf(g->arena, "v.%s", fd->name));
+        genPrintValue(g, subst(g, fd->type), arenaPrintf(g->arena, "v.%s", fd->name));
     }
     cgLine(g, "printf(\" }\");");
     g->indent--;
@@ -463,7 +551,60 @@ static void genFunc(CG *g, FuncDef *f) {
     cgLine(g, "}");
 }
 
-bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
+/* ---------------------------------------------------------------- 泛型实例（单态化）
+ *
+ * check 只对模板检查一遍；这里**按实例生成 N 份 C**。
+ * 容器的源码是 extC 写的（预lude），编译器只做「按实参把 T 代进去」这一件事。
+ */
+
+static void substEnter(CG *g, Type *inst) {
+    g->substParams = &inst->sdef->typeParams;
+    g->substArgs   = &inst->targs;
+    g->ownerPrefix = inst->name;
+}
+
+static void substLeave(CG *g) {
+    g->substParams = NULL;
+    g->substArgs   = NULL;
+    g->ownerPrefix = NULL;
+}
+
+static void genFuncProto(CG *g, FuncDef *f) {
+    Buf sig;
+    bufInit(&sig, g->arena);
+    bufPrintf(&sig, "%s %s(", cType(g, f->ret), cFuncName(g, f));
+    if (f->params.len == 0) {
+        bufPuts(&sig, "void");
+    } else {
+        for (size_t j = 0; j < f->params.len; j++) {
+            Param *p = *(Param **)vecAt(&f->params, j);
+            if (j) bufPuts(&sig, ", ");
+            bufPrintf(&sig, "%s %s", cType(g, p->type), p->name);
+        }
+    }
+    bufPuts(&sig, ");");
+    cgLine(g, "%s", bufCstr(&sig));
+}
+
+static void genInstanceStruct(CG *g, Type *inst) {
+    StructDef *sd = inst->sdef;
+    substEnter(g, inst);
+
+    cgLine(g, "typedef struct %s %s;", inst->name, inst->name);
+    cgLine(g, "struct %s {", inst->name);
+    g->indent++;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        cgLine(g, "%s %s;", cType(g, fd->type), fd->name);
+    }
+    g->indent--;
+    cgLine(g, "};");
+    cgLine(g, "");
+
+    substLeave(g);
+}
+
+bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     CG g;
     memset(&g, 0, sizeof g);
     g.arena = arena;
@@ -472,11 +613,13 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
     g.path = ctx->path;
     g.lineMap = lineMap;
     g.indent = 0;
+    g.tt = tt;
 
     vecInit(&g.structs, arena, sizeof(void *));
     vecInit(&g.funcs, arena, sizeof(void *));
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        if (sd->typeParams.len > 0) continue;   /* 泛型：按实例生成，不走这里 */
         *(StructDef **)vecPush(&g.structs) = sd;
         /* 方法也是函数 —— 一起进原型/定义的表 */
         for (size_t j = 0; j < sd->methods.len; j++)
@@ -548,10 +691,44 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
         }
     }
 
-    /* struct 的自动调试打印：必须在 struct 定义**之后**（要完整类型）、
-     * 用户函数定义**之前**（函数体里会调它）*/
+    /* 泛型实例的结构体定义：**必须在普通 struct 之后** ——
+     * 实例的字段里可能有普通 struct（如 `Box<Point>` 的 `Point value`） */
+    for (size_t i = 0; i < tt->instances.len; i++)
+        genInstanceStruct(&g, *(Type **)vecAt(&tt->instances, i));
+
+    /* _debug 的原型先全出来：实例和普通 struct 会互相递归打印 */
     for (size_t i = 0; i < g.structs.len; i++)
-        genStructDebug(&g, *(StructDef **)vecAt(&g.structs, i));
+        cgLine(&g, "void %s_debug(%s v);",
+               (*(StructDef **)vecAt(&g.structs, i))->name,
+               (*(StructDef **)vecAt(&g.structs, i))->name);
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        const char *n = (*(Type **)vecAt(&tt->instances, i))->name;
+        cgLine(&g, "void %s_debug(%s v);", n, n);
+    }
+    if (g.structs.len || tt->instances.len) cgLine(&g, "");
+
+    /* 实例的自动调试打印（字段类型要先替换） */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        substEnter(&g, inst);
+        genStructDebug(&g, inst->name, inst->sdef);
+        substLeave(&g);
+    }
+
+    /* struct 的自动调试打印 */
+    for (size_t i = 0; i < g.structs.len; i++)
+        genStructDebug(&g, (*(StructDef **)vecAt(&g.structs, i))->name,
+                       *(StructDef **)vecAt(&g.structs, i));
+
+    /* 实例的方法原型 */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        substEnter(&g, inst);
+        for (size_t j = 0; j < inst->sdef->methods.len; j++)
+            genFuncProto(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));
+        substLeave(&g);
+    }
+    if (tt->instances.len) cgLine(&g, "");
 
     /* 原型：顺序无关，顺带支持互相调用 */
     for (size_t i = 0; i < g.funcs.len; i++) {
@@ -574,6 +751,17 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
         cgLine(&g, "%s", bufCstr(&sig));
     }
     if (g.funcs.len) cgLine(&g, "");
+
+    /* 实例的方法定义 */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        substEnter(&g, inst);
+        for (size_t j = 0; j < inst->sdef->methods.len; j++) {
+            genFunc(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));
+            cgLine(&g, "");
+        }
+        substLeave(&g);
+    }
 
     for (size_t i = 0; i < g.funcs.len; i++) {
         genFunc(&g, *(FuncDef **)vecAt(&g.funcs, i));

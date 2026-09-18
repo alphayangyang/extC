@@ -104,11 +104,11 @@ fn main() -> i32 {
 
 `i8..i64 / u8..u64 / f32 / f64 / bool / str`、`let`/`var`（含零初始化）、
 `if`/`else if`/`else`、`while`、`return`/`break`/`continue`、
-`struct` + 方法（写在体内）、`type` 枚举、`ref` 表达式、`print`/`println`。
+`struct` + 方法（写在体内）、`type` 枚举、**泛型 `struct Name<T>`（单态化）**、`ref` 表达式、`print`/`println`。
 
 **类型系统**：只自动做**无损失**的拓宽；收窄一律禁止；字面量按值适配。
 
-**还没有**：泛型、`Slice`/`Array`、`Option`/`Result`/`?`、`match`、`for`、格式串、
+**还没有**：`Slice`/`Array`（泛型机制已通，容器本体等 T4b）、`Option`/`Result`/`?`、`match`、`for`、格式串、
 模块系统、全局变量、`region`、`@recursive`、**逃逸检查**。
 
 ## 目录

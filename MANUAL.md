@@ -168,6 +168,60 @@ if s == 0 { ... }              // error: 类型不匹配
 println(s)                     // warn
 ```
 
+### 泛型
+
+```extc
+struct Pair<A, B> {
+    first: A
+    second: B
+
+    fn getFirst(self: ref Pair<A, B>) -> A {
+        return self.first
+    }
+}
+
+struct Box<T> {
+    value: T
+    fn set(self: ref Box<T>, v: T) { self.value = v }
+    fn get(self: ref Box<T>) -> T { return self.value }
+}
+
+fn main() -> i32 {
+    var p: Pair<i32, u8> = { first: 1, second: 2 }
+    println(p.getFirst())            // 1
+
+    var q: Pair<bool, Point> = { first: true, second: { x: 7, y: 8 } }
+    println(q)                       // 实例也能自动调试打印
+
+    var b: Box<i64>
+    b.set(42)
+    println(b.get())                 // 42
+    return 0
+}
+```
+
+- 泛型参数写在 struct 名后：`struct Name<T> { ... }`
+- 使用时**必须写出实参**：`Name<i32>`（不写是编译错误）
+- 编译器**按实例生成 C**（单态化）：`Pair<i32, u8>` → C 里的 `Pair_i32_u8`，
+  方法变成 `Pair_i32_u8_getFirst`
+- 泛型 struct 的方法里，泛型参数可见（`fn get(self: ref Box<T>) -> T`）
+
+> ⚠️ **已知限制（「模板检查一遍」换来的代价）**
+>
+> 类型检查是对**模板**做的，所以模板里 `A` 和 `B` 是不确定的。要求两边同类型的操作写不出来：
+>
+> ```extc
+> fn swap(self: ref Pair<A, B>) {
+>     let tmp: A = self.first
+>     self.first = self.second   // error: assignment expects `A`, found `B`
+> }
+> ```
+>
+> 要写这种操作，就**用一个参数**：`struct Pair<T> { first: T  second: T }`。
+>
+> 收益是：错误只报一次、错误信息指向模板而不是某个实例 ——
+> 反面就是 C++ 那种「实例化时才炸出一屏模板错误」。
+
 ### 结构体类型
 
 顶层 `struct` 定义的类型就是类型名，PascalCase：
@@ -439,7 +493,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
-| **泛型** | `Slice<T>` / `Array<T>`，靠 C 代码生成实现 | T4 |
+| **`Slice<T>` / `Array<T>`** | 泛型机制✅已通；容器本体要用 extC 预lude 写 | T4b |
 | **字符串字面量 = `Slice<u8>`** | `str` 作废 | T4 |
 | **`Option<T>` / `Result<T,E>` / `?`** | | T5 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | T5 之后 |

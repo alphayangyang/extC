@@ -164,14 +164,15 @@ int main(int argc, char **argv) {
 
     /* 类型检查：一遍**独立**的 pass，把结果写回 AST。
      * 之后的代码生成不再做任何类型推理（T1）。 */
+    TypeTable *tt = NULL;
     if (!ctx.hasError) {
-        TypeTable *tt = ttNew(&arena, &m);
+        tt = ttNew(&arena, &m);
         checkModule(&ctx, &arena, tt, &m);
     }
 
     Buf c;
     bufInit(&c, &arena);
-    if (!ctx.hasError) generateC(&ctx, &arena, &m, lineMap, &c);
+    if (!ctx.hasError) generateC(&ctx, &arena, tt, &m, lineMap, &c);
 
     if (ctx.hasError) {
         Buf diag;

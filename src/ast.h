@@ -29,19 +29,26 @@ typedef enum {
     TY_STRUCT,
     TY_ENUM,        /* type Status = | ok | warn */
     TY_REF,         /* ref T */
+    TY_PARAM,       /* 泛型参数本身：模板里出现的 `T` */
+    TY_GENERIC,     /* 泛型实例：`Pair<i32, u8>` */
     TY_ERROR        /* 类型检查失败时的哑类型：抑制级联报错 */
 } TypeKind;
 
 struct Type {
     TypeKind    kind;
-    const char *name;    /* TY_UNRESOLVED / TY_BUILTIN / TY_STRUCT / TY_ENUM */
+    const char *name;    /* TY_UNRESOLVED / TY_BUILTIN / TY_STRUCT / TY_ENUM；
+                          * TY_GENERIC 时是**修饰过的名字**（见 ttMangle） */
     Type       *inner;   /* TY_REF */
-    StructDef  *sdef;    /* TY_STRUCT */
+    StructDef  *sdef;    /* TY_STRUCT / TY_GENERIC */
     TypeDef    *edef;    /* TY_ENUM */
+    Vec         targs;   /* TY_GENERIC：类型实参（Type*） */
+    const char *param;   /* TY_PARAM：参数名，如 "T" */
+    int         tpIndex; /* TY_PARAM：第几个参数 */
 };
 
-Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED */
+Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED（可能带 targs）*/
 Type *typeRef(Arena *a, Type *inner);
+Type *typeParam(Arena *a, const char *name, int idx);
 
 /* ---------------------------------------------------------------- 表达式 */
 
@@ -136,9 +143,10 @@ struct TypeDef {                 /* type Status = | ok | warn | error */
 
 struct StructDef {
     const char *name;
+    Vec         typeParams;      /* const char* —— 泛型参数名，如 "T"；空 = 非泛型 */
     Vec         fields;          /* FieldDef* */
     Vec         methods;         /* FuncDef* —— 方法写在 struct 体内（定案 9） */
-    Type       *type;            /* 驻留后的类型，由 check 填写 */
+    Type       *type;            /* 非泛型 struct 的驻留类型（泛型见 ttGeneric） */
     int         line;
 };
 

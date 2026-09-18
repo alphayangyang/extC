@@ -32,6 +32,7 @@ typedef struct {
     Module    *m;
     Vec        scopes;      /* Scope* */
     FuncDef   *curFunc;
+    Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
 
     Type *tI32, *tF64, *tBool, *tStr;
 } Checker;
@@ -114,10 +115,17 @@ static FieldDef *findField(StructDef *sd, const char *name) {
     return NULL;
 }
 
+/* TY_STRUCT 和 TY_GENERIC 都指向一个 StructDef */
+static StructDef *structOf(Type *t) {
+    if (!t) return NULL;
+    if (t->kind == TY_STRUCT || t->kind == TY_GENERIC) return t->sdef;
+    return NULL;
+}
+
 /* 方法只住在 struct 体内（定案 9）*/
 static FuncDef *findMethod(Type *st, const char *name) {
-    if (!st || st->kind != TY_STRUCT || !st->sdef) return NULL;
-    StructDef *sd = st->sdef;
+    StructDef *sd = structOf(st);
+    if (!sd) return NULL;
     for (size_t i = 0; i < sd->methods.len; i++) {
         FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
         if (strcmp(m->name, name) == 0) return m;
@@ -161,8 +169,8 @@ static bool isPrintable(Type *t) {
     if (b->kind == TY_BUILTIN) return true;
     /* 定案 11：无载荷枚举自动有名字文本 */
     if (b->kind == TY_ENUM) return true;
-    /* struct 由编译器生成 <Type>_debug 递归打印 */
-    return b->kind == TY_STRUCT;
+    /* struct 由编译器生成 <Type>_debug 递归打印；泛型实例同理 */
+    return b->kind == TY_STRUCT || b->kind == TY_GENERIC;
 }
 
 /* 字面量的类型按**值**适配目标类型（DESIGN §5 的「字面量类型推导」）。 */
@@ -197,8 +205,11 @@ static bool literalFits(Expr *e, Type *want) {
 static void adoptContextType(Expr *e, Type *want) {
     if (!e || !want) return;
     Type *w = ttBase(want);
-    if (!w || w->kind != TY_STRUCT) return;
-    if (e->kind == EX_STRUCTLIT && !e->u.lit.name) e->u.lit.name = w->name;
+    if (!w) return;
+    if (w->kind != TY_STRUCT && w->kind != TY_GENERIC) return;
+    /* 把上下文类型**寄放**在 e->type 上（checkExpr 之后会被覆盖成同一个类型）。
+     * 泛型实例没有名字可查，所以必须走这条路。 */
+    if (e->kind == EX_STRUCTLIT && !e->u.lit.name) e->type = w;
 }
 
 static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *what) {
@@ -376,24 +387,27 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
 
             Type *bt = ttBase(checkExpr(c, e->u.field.obj));
-            if (!bt || ttIsError(bt)) return ttError(tt);
-            if (bt->kind != TY_STRUCT) {
+            StructDef *sd = structOf(bt);
+            if (!sd) {
                 ckError(c, e->line, NULL, "`%s` is not a struct, so it has no field `%s`",
-                        typeStr(c, bt), e->u.field.name);
+                        typeStr(c, bt ? bt : e->type), e->u.field.name);
                 return ttError(tt);
             }
-            FieldDef *fd = findField(bt->sdef, e->u.field.name);
+            FieldDef *fd = findField(sd, e->u.field.name);
             if (!fd) {
                 Buf note;
                 bufInit(&note, c->arena);
-                bufPrintf(&note, "%s 的字段：", bt->name);
-                for (size_t i = 0; i < bt->sdef->fields.len; i++)
-                    bufPrintf(&note, " %s", (*(FieldDef **)vecAt(&bt->sdef->fields, i))->name);
+                bufPrintf(&note, "%s 的字段：", sd->name);
+                for (size_t i = 0; i < sd->fields.len; i++)
+                    bufPrintf(&note, " %s", (*(FieldDef **)vecAt(&sd->fields, i))->name);
                 ckError(c, e->line, bufCstr(&note),
-                        "struct `%s` has no field `%s`", bt->name, e->u.field.name);
+                        "struct `%s` has no field `%s`", sd->name, e->u.field.name);
                 return ttError(tt);
             }
             e->field = fd;
+            /* 字段的类型里可能有泛型参数 —— 用接收者的实参替换掉 */
+            if (bt->kind == TY_GENERIC)
+                return ttSubstitute(tt, fd->type, &sd->typeParams, &bt->targs);
             return fd->type;
         }
 
@@ -491,14 +505,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             FuncDef *f = findMethod(rb, e->u.method.name);
             if (!f) {
+                StructDef *sd = structOf(rb);
                 Buf note;
                 bufInit(&note, c->arena);
-                if (rb && rb->kind == TY_STRUCT && rb->sdef) {
-                    bufPrintf(&note, "%s 的方法：", rb->name);
-                    if (rb->sdef->methods.len == 0) bufPuts(&note, " （一个都没有）");
-                    for (size_t i = 0; i < rb->sdef->methods.len; i++)
+                if (sd) {
+                    bufPrintf(&note, "%s 的方法：", sd->name);
+                    if (sd->methods.len == 0) bufPuts(&note, " （一个都没有）");
+                    for (size_t i = 0; i < sd->methods.len; i++)
                         bufPrintf(&note, " %s",
-                                  (*(FuncDef **)vecAt(&rb->sdef->methods, i))->name);
+                                  (*(FuncDef **)vecAt(&sd->methods, i))->name);
                     bufPuts(&note, "；方法必须写在 struct 体内（定案 9）");
                 } else {
                     bufPuts(&note, "只有 struct 的值有方法");
@@ -509,49 +524,64 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             e->func = f;
 
+            /* 接收者是泛型实例时，方法签名里的 T 要换成实参 */
+            StructDef *msd = structOf(rb);
+            Vec *sp = NULL, *sa = NULL;
+            if (rb && rb->kind == TY_GENERIC && msd) {
+                sp = &msd->typeParams;
+                sa = &rb->targs;
+            }
+
             size_t want = f->params.len - 1;
+            Type *rt = f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
 
             if (e->u.method.args.len != want) {
                 ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
                         e->u.method.name, want, e->u.method.args.len);
-                return f->ret ? f->ret : ttVoid(tt);
+                return rt;
             }
             for (size_t i = 0; i < want; i++) {
                 Param *p = *(Param **)vecAt(&f->params, i + 1);
                 Expr  *a = *(Expr **)vecAt(&e->u.method.args, i);
-                adoptContextType(a, p->type);
+                Type *pt = ttSubstitute(tt, p->type, sp, sa);
+
+                adoptContextType(a, pt);
                 Type *at = checkExpr(c, a);
-                if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
+                if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`. 表示在这个值上操作，而自由函数的引用参数要点明。"
                             "`ref` 是可变引用，所以被引用的东西必须是 `var`",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
-                            typeStr(c, p->type));
+                            typeStr(c, pt));
                     continue;
                 }
-                checkAssignable(c, p->type, at, a, "argument");
+                checkAssignable(c, pt, at, a, "argument");
             }
-            return f->ret ? f->ret : ttVoid(tt);
+            return rt;
         }
 
         case EX_STRUCTLIT: {
-            if (!e->u.lit.name) {
+            /* 类型要么来自字面量里的名字，要么来自上下文（泛型实例只能靠上下文） */
+            Type *st = e->u.lit.name ? ttFromName(tt, e->u.lit.name) : e->type;
+
+            if (e->u.lit.name && (!st || ttIsError(st))) {
+                ckError(c, e->line, NULL, "unknown struct `%s`", e->u.lit.name);
+                return ttError(tt);
+            }
+            StructDef *sd = structOf(st);
+            if (!sd) {
                 ckError(c, e->line,
                         "裸 `{}` 只在上下文能唯一确定类型的地方可用："
                         "`var x: T = {}` / `return {}` / `f({})`",
                         "cannot infer the type of a bare `{}` here");
                 return ttError(tt);
             }
-            Type *st = ttFromName(tt, e->u.lit.name);
-            if (!st || st->kind == TY_ERROR) {
-                ckError(c, e->line, NULL, "unknown struct `%s`", e->u.lit.name);
+            if (st->kind == TY_STRUCT && sd->typeParams.len > 0) {
+                ckError(c, e->line, "泛型要写出实参，例如 `Pair<i32, i32> { ... }`",
+                        "`%s` is generic; type arguments cannot be inferred here", sd->name);
                 return ttError(tt);
             }
-            if (st->kind != TY_STRUCT) {
-                ckError(c, e->line, NULL, "`%s` is not a struct", e->u.lit.name);
-                return ttError(tt);
-            }
-            StructDef *sd = st->sdef;
+
             for (size_t i = 0; i < e->u.lit.inits.len; i++) {
                 FieldInit *fi = *(FieldInit **)vecAt(&e->u.lit.inits, i);
                 FieldDef *fd = findField(sd, fi->name);
@@ -565,12 +595,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             "struct `%s` has no field `%s`", sd->name, fi->name);
                     continue;
                 }
-                adoptContextType(fi->value, fd->type);
+                Type *want = fd->type;
+                if (st->kind == TY_GENERIC)
+                    want = ttSubstitute(tt, want, &sd->typeParams, &st->targs);
+
+                adoptContextType(fi->value, want);
                 Type *vt = checkExpr(c, fi->value);
                 Buf what;
                 bufInit(&what, c->arena);
                 bufPrintf(&what, "field `%s`", fi->name);
-                checkAssignable(c, fd->type, vt, fi->value, bufCstr(&what));
+                checkAssignable(c, want, vt, fi->value, bufCstr(&what));
             }
             return st;
         }
@@ -602,7 +636,7 @@ static void checkStmt(Checker *c, Stmt *s) {
         case ST_VAR: {
             /* 局部变量声明的类型标注也要解析（parser 只造「类型名」） */
             if (s->u.var.ann)
-                s->u.var.ann = ttResolve(c->tt, c->ctx, s->u.var.ann, s->line);
+                s->u.var.ann = ttResolve(c->tt, c->ctx, s->u.var.ann, s->line, c->curParams);
             if (ttIsError(s->u.var.ann)) s->u.var.ann = NULL;
 
             /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
@@ -700,11 +734,14 @@ static void checkStmt(Checker *c, Stmt *s) {
 /* ---------------------------------------------------------------- 顶层 */
 
 static void resolveSignature(Checker *c, FuncDef *f) {
+    /* 方法里，它所属 struct 的泛型参数是可见的 */
+    Vec *params = f->owner ? &f->owner->typeParams : NULL;
+
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
-        p->type = ttResolve(c->tt, c->ctx, p->type, p->line);
+        p->type = ttResolve(c->tt, c->ctx, p->type, p->line, params);
     }
-    if (f->ret) f->ret = ttResolve(c->tt, c->ctx, f->ret, f->line);
+    if (f->ret) f->ret = ttResolve(c->tt, c->ctx, f->ret, f->line, params);
     if (f->ret && ttIs(f->ret, "void")) f->ret = NULL;
 }
 
@@ -799,17 +836,17 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
         return;
     }
 
-    f->owner->type = ttFromName(c->tt, f->owner->name);
-    Type *wantSelf = ttRef(c->tt, f->owner->type);
-
     Param *p0 = f->params.len ? *(Param **)vecAt(&f->params, 0) : NULL;
     if (!p0 || strcmp(p0->name, "self") != 0) {
         ckError(c, f->line, NULL,
                 "method `%s.%s` must take `self: ref %s` as its first parameter",
                 f->owner->name, f->name, f->owner->name);
-    } else if (!ttEquals(p0->type, wantSelf)) {
-        ckError(c, p0->line, NULL, "`self` of `%s.%s` must be `ref %s`",
-                f->owner->name, f->name, f->owner->name);
+    } else {
+        /* 比 sdef 而不是比类型指针 —— 泛型 struct 的 self 是 `ref Pair<A, B>` */
+        Type *sb = ttBase(p0->type);
+        if (p0->type->kind != TY_REF || !sb || sb->sdef != f->owner)
+            ckError(c, p0->line, NULL, "`self` of `%s.%s` must be `ref %s`",
+                    f->owner->name, f->name, f->owner->name);
     }
     for (size_t i = 1; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
@@ -819,7 +856,11 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
 }
 
 static void checkFunc(Checker *c, FuncDef *f) {
+    FuncDef *savedFunc = c->curFunc;
+    Vec     *savedParams = c->curParams;
+
     c->curFunc = f;
+    c->curParams = f->owner ? &f->owner->typeParams : NULL;
     pushScope(c);
 
     for (size_t i = 0; i < f->params.len; i++) {
@@ -834,7 +875,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 
     popScope(c);
-    c->curFunc = NULL;
+    c->curFunc = savedFunc;
+    c->curParams = savedParams;
 }
 
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
@@ -862,7 +904,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->fields.len; j++) {
             FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, j);
-            fd->type = ttResolve(tt, ctx, fd->type, fd->line);
+            fd->type = ttResolve(tt, ctx, fd->type, fd->line, &sd->typeParams);
         }
         for (size_t j = 0; j < sd->methods.len; j++)
             resolveSignature(&c, *(FuncDef **)vecAt(&sd->methods, j));

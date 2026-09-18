@@ -7,6 +7,52 @@
 
 ---
 
+## 2026-09-18 · T4a：泛型 + 单态化通了
+
+**做了什么**：`struct Name<T> { ... }` 声明 + `Name<Args>` 使用 + 单态化。
+一份 extC 源码 → 编译器按实例生成 N 份 C。
+
+```
+Pair<i32, u8>    →  Pair_i32_u8_getFirst / Pair_i32_u8_getSecond
+Pair<bool, Point> →  Pair_bool_Point_...
+Box<i64>         →  Box_i64_set / Box_i64_get
+Box<Point>       →  Box_Point_set / Box_Point_get
+```
+
+四份实例同时工作，嵌套 struct、自动调试打印都对。
+
+**设计**：check 只对**模板**检查一遍（用 `TY_PARAM` 表示 `T`）；
+codegen 在「实例上下文」里把 `T` 换成实参。实例**驻留**（全局一份）。
+
+### 踩到的三个坑（都不是小坑）
+
+1. **参数化实例混进了实例表** → codegen 去生成 `Box_T_set` 这种东西。
+   检查 `ref Pair<A, B>` 时会产生「实参是类型参数」的实例 —— 那只是拿来比类型的，
+   **绝不能进实例表**。修法：只有**完全具体**的实例才驻留。
+2. **泛型实例的字段必须用它自己的实参替换，不能用环境里碰巧留着的上下文。**
+   踩得很惨：`zeroValue` 里 `subst` 在没有上下文时原样返回，于是它自己递归自己 →
+   **栈溢出**，而且 ASAN 报的是「stack-overflow in zeroValue」这一行重复几十遍。
+   **教训：泛型相关的地方，「用谁的上下文」必须显式进出配对，不能靠环境。**
+3. **实例结构体必须排在普通 struct 之后**（`Box<Point>` 的字段是 `Point`）；
+   而且 `_debug` 要先出原型（实例和普通 struct 会互相递归打印）。
+
+另外还漏了一次：`cType` 只在「裸 `TY_PARAM`」上做替换，但 `ref Pair<A, B>` 外层是 `ref`
+—— 必须**整体**替换一次。
+
+### 发现的真限制：模板检查的代价
+
+`Pair<A,B>` 里的 `swap`（`self.first = self.second`）**写不出来** ——
+模板里 `A` 和 `B` 不确定相等，checker 只能报 `expects A, found B`。
+
+要写这种操作就**用一个参数**：`struct Pair<T> { first: T  second: T }`。
+
+这是「检查一遍、错误只报一次、错误指向模板」的代价；反面是 C++ 那种实例化时才炸。
+**这是一条要写进 MANUAL 的已知限制。**
+
+**测试**：27 → 28 个（新增正例 `examples/generics.extc`）。
+
+---
+
 ## 2026-09-18 · 搬迁审计：编译器里哪些该用 extC 写
 
 主人问「前面有什么东西适合用 extC 写」。写了 `MIGRATION.md`，逐函数体检。

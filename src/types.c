@@ -31,6 +31,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
     vecInit(&tt->builtins, a, sizeof(void *));
     vecInit(&tt->structs, a, sizeof(void *));
     vecInit(&tt->enums, a, sizeof(void *));
+    vecInit(&tt->instances, a, sizeof(void *));
 
     for (size_t i = 0; BUILTIN_NAMES[i]; i++)
         *(Type **)vecPush(&tt->builtins) = mkType(a, TY_BUILTIN, BUILTIN_NAMES[i]);
@@ -87,22 +88,160 @@ Type *ttFromName(TypeTable *tt, const char *name) {
     return NULL;
 }
 
-Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line) {
+Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
     if (!t) return NULL;
 
     switch (t->kind) {
         case TY_UNRESOLVED: {
-            Type *r = ttFromName(tt, t->name);
-            if (!r) {
+            /* 1) 是不是泛型参数？*/
+            if (params) {
+                for (size_t i = 0; i < params->len; i++) {
+                    if (strcmp(*(const char **)vecAt(params, i), t->name) == 0)
+                        return typeParam(tt->arena, t->name, (int)i);
+                }
+            }
+
+            Type *base = ttFromName(tt, t->name);
+            if (!base) {
                 ctxError(ctx, line, 1,
                          "内建类型是 i8/i16/i32/i64/u8/u16/u32/u64/f32/f64/bool/str/void",
                          "unknown type `%s`", t->name);
                 return tt->tError;
             }
-            return r;
+
+            /* 2) 带类型实参 → 泛型实例 */
+            if (t->targs.len > 0) {
+                if (base->kind != TY_STRUCT || !base->sdef) {
+                    ctxError(ctx, line, 1, NULL,
+                             "`%s` is not a generic type, so it takes no type arguments",
+                             t->name);
+                    return tt->tError;
+                }
+                if (base->sdef->typeParams.len != t->targs.len) {
+                    ctxError(ctx, line, 1, NULL,
+                             "`%s` expects %zu type argument(s), got %zu",
+                             t->name, base->sdef->typeParams.len, t->targs.len);
+                    return tt->tError;
+                }
+                Vec args;
+                vecInit(&args, tt->arena, sizeof(void *));
+                for (size_t i = 0; i < t->targs.len; i++)
+                    *(Type **)vecPush(&args) =
+                        ttResolve(tt, ctx, *(Type **)vecAt(&t->targs, i), line, params);
+                return ttGeneric(tt, base->sdef, &args);
+            }
+
+            /* 3) 泛型 struct 不带实参 → 报错 */
+            if (base->kind == TY_STRUCT && base->sdef && base->sdef->typeParams.len > 0) {
+                ctxError(ctx, line, 1,
+                         "泛型要写出实参，例如 `%s<i32>`",
+                         "`%s` is generic and needs type arguments", t->name);
+                return tt->tError;
+            }
+            return base;
         }
         case TY_REF:
-            return ttRef(tt, ttResolve(tt, ctx, t->inner, line));
+            return ttRef(tt, ttResolve(tt, ctx, t->inner, line, params));
+        default:
+            return t;
+    }
+}
+
+/* ================================================================ 泛型 */
+
+bool ttIsParam(Type *t, const char *name) {
+    return t && t->kind == TY_PARAM && strcmp(t->param, name) == 0;
+}
+
+const char *ttMangle(TypeTable *tt, Type *t) {
+    if (!t) return "void";
+    switch (t->kind) {
+        case TY_REF:
+            return arenaPrintf(tt->arena, "Ref_%s", ttMangle(tt, t->inner));
+        case TY_GENERIC: {
+            Buf b;
+            bufInit(&b, tt->arena);
+            bufPuts(&b, t->sdef->name);
+            for (size_t i = 0; i < t->targs.len; i++) {
+                bufPutc(&b, '_');
+                bufPuts(&b, ttMangle(tt, *(Type **)vecAt(&t->targs, i)));
+            }
+            return bufCstr(&b);
+        }
+        case TY_PARAM: return t->param;
+        case TY_VOID:  return "void";
+        case TY_ERROR: return "Error";
+        default:       return t->name ? t->name : "?";
+    }
+}
+
+static bool typeHasParam(Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_PARAM) return true;
+    if (t->kind == TY_REF) return typeHasParam(t->inner);
+    if (t->kind == TY_GENERIC) {
+        for (size_t i = 0; i < t->targs.len; i++)
+            if (typeHasParam(*(Type **)vecAt(&t->targs, i))) return true;
+    }
+    return false;
+}
+
+Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
+    /* 只有**完全具体**的实例才驻留、才需要生成 C。
+     * 检查模板时会出现 `Pair<A, B>`（实参是类型参数）—— 那只是拿来比类型的，
+     * 绝不能混进实例表，否则 codegen 会去生成 `Box_T_set` 这种东西。 */
+    bool concrete = true;
+    for (size_t j = 0; j < args->len; j++) {
+        if (typeHasParam(*(Type **)vecAt(args, j))) { concrete = false; break; }
+    }
+
+    if (concrete) {
+        /* 驻留：同一个实例全局只有一份 */
+        for (size_t i = 0; i < tt->instances.len; i++) {
+            Type *c = *(Type **)vecAt(&tt->instances, i);
+            if (c->sdef != sd || c->targs.len != args->len) continue;
+            bool same = true;
+            for (size_t j = 0; j < args->len; j++) {
+                if (!ttEquals(*(Type **)vecAt(&c->targs, j), *(Type **)vecAt(args, j))) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return c;
+        }
+    }
+
+    Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
+    t->kind = TY_GENERIC;
+    t->sdef = sd;
+    vecInit(&t->targs, tt->arena, sizeof(void *));
+    for (size_t j = 0; j < args->len; j++)
+        *(Type **)vecPush(&t->targs) = *(Type **)vecAt(args, j);
+    t->name = ttMangle(tt, t);
+    if (concrete) *(Type **)vecPush(&tt->instances) = t;
+    return t;
+}
+
+Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
+    if (!t || !params || params->len == 0 || !args) return t;
+
+    switch (t->kind) {
+        case TY_PARAM:
+            for (size_t i = 0; i < params->len && i < args->len; i++) {
+                if (strcmp(*(const char **)vecAt(params, i), t->param) == 0)
+                    return *(Type **)vecAt(args, i);
+            }
+            return t;
+        case TY_REF:
+            return ttRef(tt, ttSubstitute(tt, t->inner, params, args));
+        case TY_GENERIC: {
+            Vec na;
+            vecInit(&na, tt->arena, sizeof(void *));
+            for (size_t i = 0; i < t->targs.len; i++)
+                *(Type **)vecPush(&na) =
+                    ttSubstitute(tt, *(Type **)vecAt(&t->targs, i), params, args);
+            return ttGeneric(tt, t->sdef, &na);
+        }
         default:
             return t;
     }
@@ -114,8 +253,20 @@ bool ttEquals(Type *a, Type *b) {
     if (a == b) return true;
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
-    /* 除了 ref，其余类型都是驻留的 —— 指针不等就是不相等 */
+
+    /* 除了 ref / 泛型参数 / 泛型实例，其余类型都是驻留的 —— 指针不等就是不相等 */
     if (a->kind == TY_REF) return ttEquals(a->inner, b->inner);
+
+    if (a->kind == TY_PARAM)
+        return a->tpIndex == b->tpIndex && strcmp(a->param, b->param) == 0;
+
+    if (a->kind == TY_GENERIC) {
+        if (a->sdef != b->sdef || a->targs.len != b->targs.len) return false;
+        for (size_t i = 0; i < a->targs.len; i++)
+            if (!ttEquals(*(Type **)vecAt(&a->targs, i), *(Type **)vecAt(&b->targs, i)))
+                return false;
+        return true;
+    }
     return false;
 }
 
@@ -217,6 +368,16 @@ void ttRender(Type *t, Buf *out) {
             bufPuts(out, "ref ");
             ttRender(t->inner, out);
             return;
+        case TY_GENERIC:
+            bufPuts(out, t->sdef->name);
+            bufPutc(out, '<');
+            for (size_t i = 0; i < t->targs.len; i++) {
+                if (i) bufPuts(out, ", ");
+                ttRender(*(Type **)vecAt(&t->targs, i), out);
+            }
+            bufPutc(out, '>');
+            return;
+        case TY_PARAM: bufPuts(out, t->param); return;
         case TY_VOID:  bufPuts(out, "void"); return;
         case TY_ERROR: bufPuts(out, "<error>"); return;
         default:       bufPuts(out, t->name ? t->name : "?"); return;

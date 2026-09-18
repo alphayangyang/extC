@@ -18,6 +18,15 @@ Type *typeRef(Arena *a, Type *inner) {
     return t;
 }
 
+Type *typeParam(Arena *a, const char *name, int idx) {
+    Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
+    t->kind = TY_PARAM;
+    t->param = name;
+    t->name = name;
+    t->tpIndex = idx;
+    return t;
+}
+
 Expr *exprNew(Arena *a, ExprKind kind, int line) {
     Expr *e = (Expr *)arenaAllocZero(a, sizeof(Expr));
     e->kind = kind;

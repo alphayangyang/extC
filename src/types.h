@@ -20,6 +20,7 @@ typedef struct {
     Vec    builtins;    /* Type* —— 内建类型，驻留 */
     Vec    structs;     /* StructDef* */
     Vec    enums;       /* TypeDef*  */
+    Vec    instances;   /* Type* —— 泛型实例，驻留 */
     Type  *tVoid;
     Type  *tError;
 } TypeTable;
@@ -41,8 +42,20 @@ Type *ttError(TypeTable *tt);
 Type *ttRef(TypeTable *tt, Type *inner);
 
 /* 把 parser 造出来的 TY_UNRESOLVED / TY_REF 解析成驻留类型。
+ * `params` 是当前可见的泛型参数名（NULL 或空 = 不在泛型上下文里）。
  * 解析不出来时报告错误并返回哑类型（抑制级联报错）。*/
-Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line);
+Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params);
+
+/* 泛型实例：驻留（`Pair<i32,u8>` 全局只有一份） */
+Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args);
+
+/* 把类型里的 TY_PARAM 换成实际类型（单态化用） */
+Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args);
+
+/* 类型 → C 标识符：`Pair<i32, u8>` → `Pair_i32_u8` */
+const char *ttMangle(TypeTable *tt, Type *t);
+
+bool  ttIsParam(Type *t, const char *name);
 
 bool  ttEquals(Type *a, Type *b);
 bool  ttIs(Type *t, const char *builtinName);
