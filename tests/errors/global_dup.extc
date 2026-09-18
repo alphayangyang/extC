@@ -1,0 +1,4 @@
+// 全局不能重名
+var x: i64
+var x: i64
+fn main() -> i32 { return 0 }

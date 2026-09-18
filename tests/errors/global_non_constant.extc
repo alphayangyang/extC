@@ -1,0 +1,4 @@
+// 全局的初始化式必须是常量 —— 它比任何函数都先存在
+fn work() -> i64 { return 7 }
+let A = work()
+fn main() -> i32 { return 0 }

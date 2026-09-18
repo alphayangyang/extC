@@ -193,10 +193,25 @@ struct FuncDef {
     int         line;
 };
 
+/* 全局变量 / 常量（顶层 `let` / `var`）。
+ *
+ * **全局 = 深度 0** —— 它活得比谁都长。所以逃逸规则自动禁止把局部的东西存进全局
+ * （`0 ≥ 1` 为假 ⇒ 编译错误），**不需要为全局写任何特殊规则**。
+ * 定长的全局**不需要 arena**：它就是 C 的静态对象。 */
+typedef struct {
+    const char *name;
+    Type       *ann;         /* 类型标注（可省，从初始化式推） */
+    Expr       *init;        /* 初始化式；NULL = 零初始化 */
+    bool        mut;         /* var = true */
+    bool        reserved;
+    int         line;
+} GlobalDef;
+
 typedef struct {
     Vec structs;                 /* StructDef* */
     Vec types;                   /* TypeDef*（type 枚举） */
     Vec funcs;                   /* FuncDef*  */
+    Vec globals;                 /* GlobalDef* —— 顶层 let / var */
 } Module;
 
 void moduleInit(Module *m, Arena *a);

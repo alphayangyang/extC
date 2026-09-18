@@ -36,6 +36,7 @@ typedef struct {
     FuncDef   *curFunc;
     Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
+    Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
 
     Type *tI32, *tF64, *tBool;
     StructDef *sliceDef;/* prelude 里的 `slice<T>` 声明（视图协议）*/
@@ -93,12 +94,19 @@ static void declare(Checker *c, const char *name, Type *t, bool mut, int line, i
 }
 
 static Sym *lookup(Checker *c, const char *name) {
+    /* 局部作用域（从内往外）优先 —— 所以局部可以遮蔽全局 */
     for (size_t i = c->scopes.len; i-- > 0; ) {
         Scope *s = *(Scope **)vecAt(&c->scopes, i);
         for (size_t j = 0; j < s->syms.len; j++) {
             Sym *sym = *(Sym **)vecAt(&s->syms, j);
             if (strcmp(sym->name, name) == 0) return sym;
         }
+    }
+    /* 全局（深度 0）。**不放 in scopes**：函数体要知道自己的深度是 1，
+     * 而深度是按作用域层数算的 —— 给全局单开一层会把所有局部都推深一层。 */
+    for (size_t i = 0; i < c->globals.len; i++) {
+        Sym *sym = *(Sym **)vecAt(&c->globals, i);
+        if (strcmp(sym->name, name) == 0) return sym;
     }
     return NULL;
 }
@@ -1779,6 +1787,86 @@ static void checkFunc(Checker *c, FuncDef *f) {
     c->curParams = savedParams;
 }
 
+/* 全局变量 / 常量（顶层 `let` / `var`）。
+ *
+ * **全局 = 深度 0** —— 它活得比谁都长。所以：
+ *   ① 逃逸规则自动禁止把局部的东西存进全局（`0 ≥ 1` 为假）—— 不需要为全局写特殊规则
+ *   ② 定长全局**不需要 arena**：它就是 C 的静态对象
+ *   ③ 初始化式必须是**字面量**（C 的全局初始化器只能是常量表达式）
+ */
+/* 全局的初始化式必须是**常量**（C 的静态初始化器只能含常量表达式）。
+ * 今天「常量」= 字面量 / 负字面量 / 枚举常量。
+ * ⚠️ 还没有常量求值器，所以 `let A = 1 + 2` 会被拒 —— 报错信息要说清怎么办。 */
+static bool isConstInit(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: return true;
+    case EX_ENUMVAL: return true;                       /* `status.ok` 是常量 */
+    case EX_BIN:                                         /* `15 * 15` —— C 会折叠 */
+        return isConstInit(e->u.bin.left) && isConstInit(e->u.bin.right);
+    case EX_UN:                                          /* `-1` */
+        return e->u.un.operand && isConstInit(e->u.un.operand);
+    default: return false;
+    }
+}
+static void checkGlobals(Checker *c) {
+    Module *m = c->m;
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *g = *(GlobalDef **)vecAt(&m->globals, i);
+
+        /* 重名检查 */
+        for (size_t j = 0; j < c->globals.len; j++)
+            if (strcmp((*(Sym **)vecAt(&c->globals, j))->name, g->name) == 0)
+                ckError(c, g->line, NULL, "`%s` is already a global", g->name);
+        for (size_t j = 0; j < m->funcs.len; j++)
+            if (strcmp((*(FuncDef **)vecAt(&m->funcs, j))->name, g->name) == 0)
+                ckError(c, g->line, NULL, "`%s` is already a function", g->name);
+
+        if (g->ann) g->ann = ttResolve(c->tt, c->ctx, g->ann, g->line, NULL);
+        if (ttIsError(g->ann)) g->ann = NULL;
+
+        if (!g->init) {
+            /* 零初始化：C 的静态存储期自动清零（跟定案 8 一致）。
+             * 但含引用的类型没有零值 —— 全局又是深度 0，没有东西可借。 */
+            if (g->ann && typeContainsRef(c->tt, g->ann))
+                ckError(c, g->line,
+                        "a global is depth 0, so a reference inside it has nothing to "
+                        "borrow from without an initializer.",
+                        "cannot zero-initialize the global `%s`: it contains a reference",
+                        g->name);
+            if (!g->ann) g->ann = ttError(c->tt);
+        } else {
+            Type *it = checkValue(c, g->init);
+            Type *declT = g->ann ? g->ann : it;
+            if (g->ann) checkAssignable(c, g->ann, it, g->init, "initializer");
+
+            /* 常量检查放在**类型检查之后** —— `color.empty` 要到那时才被改写成
+             * 枚举常量节点（EX_ENUMVAL），在那之前它还是个 EX_FIELD。 */
+            if (!isConstInit(g->init)) {
+                ckError(c, g->line,
+                        "A global exists before any function runs, so its initializer has to be "
+                        "a constant (a literal, an enum constant, or arithmetic on those). "
+                        "Anything computed belongs inside a function.",
+                        "the global `%s` must be initialized with a constant", g->name);
+                continue;
+            }
+
+            /* **深度 0** ⇒ 逃逸规则自动生效：把局部的东西存进全局会被拒 */
+            checkEscape(c, g->init, 0, g->line, "this global");
+
+            g->ann = ttIsError(declT) ? ttError(c->tt) : declT;
+        }
+
+        Sym *s = (Sym *)arenaAllocZero(c->arena, sizeof(Sym));
+        s->name  = g->name;
+        s->type  = g->ann;
+        s->mut   = g->mut;
+        s->depth = 0;                     /* 全局 = 深度 0 */
+        s->line  = g->line;
+        *(Sym **)vecPush(&c->globals) = s;
+    }
+}
+
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     Checker c;
     memset(&c, 0, sizeof c);
@@ -1788,6 +1876,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.m = m;
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.eqChecks, arena, sizeof(void *));
+    vecInit(&c.globals, arena, sizeof(void *));
 
     c.tI32  = ttFromName(tt, "i32");
     c.tF64  = ttFromName(tt, "f64");
@@ -1830,6 +1919,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++)
         resolveSignature(&c, *(FuncDef **)vecAt(&m->funcs, i));
 
+    checkGlobals(&c);
     checkDeclarations(&c);
 
     for (size_t i = 0; i < m->structs.len; i++) {

@@ -1344,6 +1344,21 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         SUnit *u = *(SUnit **)vecAt(&units, i);
         if (!u->done) { unitBody(&g, u); u->done = true; }
     }
+    /* 全局变量 / 常量 —— **直接就是 C 的静态对象**（定长的全局不需要 arena）。
+     * C 自动把静态对象清零，所以零初始化的全局不用 generate 任何初始化式。 */
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
+        if (ttIsError(gd->ann)) continue;
+        const char *ct = cType(&g, gd->ann);
+        if (gd->init) {
+            cgLine(&g, "%s %s = %s;", ct, gd->name, genExpr(&g, gd->init));
+        } else {
+            /* 没有初始化式 ⇒ C 的静态存储期自动清零（跟定案 8 一致）*/
+            cgLine(&g, "%s %s;", ct, gd->name);
+        }
+    }
+    if (m->globals.len) cgLine(&g, "");
+
 
     /* ------------------------------------------------------------------
      * 原型区：**所有**函数的原型都得在**任何**函数体之前出来。

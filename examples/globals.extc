@@ -1,0 +1,42 @@
+// 全局变量 / 常量（顶层 `let` / `var`）
+//
+// **全局 = 深度 0** —— 它活得比谁都长。这条不是新规则，而是
+// 「引用不能活得比被指对象长」的直接推论：`0 ≥ 1` 为假 ⇒ 局部的东西存不进全局。
+//
+// 定长的全局**不需要 arena**：它就是 C 的静态对象（C 自动清零，跟定案 8 一致）。
+
+let BOARD_SIZE: i64 = 15 * 15        // 常量（常量表达式，C 会折叠）
+let VERSION = "extC 0.1"             // 字符串常量 = 指向静态数据的只读视图
+let NEG: i32 = -1
+
+var gomokuGames: i64                 // 零初始化：C 的静态存储期自动清零
+var lastWinner: i32 = -1
+
+type color = | empty | black | white
+
+let DEFAULT_COLOR: color = color.empty   // 枚举常量也行
+
+fn recordWin(winner: color) {
+    gomokuGames = gomokuGames + 1
+    if winner == color.black {
+        lastWinner = 1
+    }
+}
+
+fn main() -> i32 {
+    println("棋盘格数 = ", BOARD_SIZE)        // 225
+    println("版本     = ", VERSION)           // extC 0.1
+    println("负数常量 = ", NEG)               // -1
+
+    println("一开始   = ", gomokuGames, " 局，赢家 ", lastWinner)   // 0 局，赢家 -1
+    recordWin(color.black)
+    recordWin(color.white)
+    println("两局之后 = ", gomokuGames, " 局，赢家 ", lastWinner)   // 2 局，赢家 -1
+    println("默认颜色 = ", DEFAULT_COLOR)     // empty
+
+    // 下面这些**编不过**：
+    //   BOARD_SIZE = 1          // ✗ let 的全局不能写
+    //   let A = 1 + work()      // ✗ 全局初始化式必须是常量（还没有常量求值器）
+    //   var s: slice<i32>       // ✗ 含引用的全局不能零初始化（没有东西可借）
+    return 0
+}

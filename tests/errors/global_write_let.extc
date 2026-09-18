@@ -1,0 +1,6 @@
+// let 的全局是只读的
+let MOD: i64 = 7
+fn main() -> i32 {
+    MOD = 8
+    return 0
+}

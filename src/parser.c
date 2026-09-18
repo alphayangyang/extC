@@ -81,6 +81,7 @@ static Type    *parseType(Parser *p);
 static Stmt    *parseBlock(Parser *p);
 static Stmt    *parseStmt(Parser *p);
 static Stmt    *parseVarDecl(Parser *p);
+static GlobalDef *parseGlobalDecl(Parser *p);
 static Stmt    *parseIf(Parser *p);
 static Stmt    *parseWhile(Parser *p);
 static StructDef *parseStruct(Parser *p);
@@ -134,6 +135,10 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             TypeDef *td = parseTypeDecl(&p);
             if (!td) return false;
             *(TypeDef **)vecPush(&out->types) = td;
+        } else if (at(&p, "let") || at(&p, "var")) {
+            GlobalDef *g = parseGlobalDecl(&p);
+            if (!g) return false;
+            *(GlobalDef **)vecPush(&out->globals) = g;
         } else if (at(&p, "fn")) {
             FuncDef *f = parseFunc(&p);
             if (!f) return false;
@@ -141,8 +146,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else {
             Token *t = cur(&p);
             ctxError(ctx, t->line, t->col,
-                     "the top level allows only `fn`, `struct` and `type` declarations",
-                     "expected `fn`, `struct` or `type` at the top level, found `%s`", shown(t));
+                     "the top level allows `fn`, `struct`, `type`, and `let`/`var` (globals)",
+                     "expected `fn`, `struct`, `type`, `let` or `var`, found `%s`", shown(t));
             return false;
         }
         skipJunk(&p);
@@ -463,6 +468,41 @@ static Stmt *parseStmt(Parser *p) {
     return s;
 }
 
+/* 顶层的 `let` / `var` —— 全局变量 / 常量。
+ * 跟局部声明同一套语法（类型可省、省略初始化式即零初始化），
+ * 但**初始化式必须是字面量**：C 的全局初始化器只能是常量表达式。 */
+static GlobalDef *parseGlobalDecl(Parser *p) {
+    Token *kw = take(p);
+    Token *name = expectIdent(p, "a variable name");
+    if (!name) return NULL;
+
+    Type *ann = NULL;
+    if (accept(p, ":")) {
+        ann = parseType(p);
+        if (!ann) return NULL;
+    }
+
+    Expr *init = NULL;
+    if (accept(p, "=")) {
+        skipNl(p);
+        init = parseExpr(p);
+        if (!init) return NULL;
+    } else if (ann == NULL) {
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col,
+                 "without an initializer you must write the type: `var x: T`",
+                 "`%s %s` needs a type or an initializer", kw->text, name->text);
+        return NULL;
+    }
+
+    GlobalDef *g = (GlobalDef *)arenaAllocZero(p->arena, sizeof(GlobalDef));
+    g->name = name->text;
+    g->ann  = ann;
+    g->init = init;
+    g->mut  = (strcmp(kw->text, "var") == 0);
+    g->line = kw->line;
+    return g;
+}
 static Stmt *parseVarDecl(Parser *p) {
     Token *kw = take(p);
     Token *name = expectIdent(p, "a variable name");
