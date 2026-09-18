@@ -62,7 +62,7 @@
 |---|---|---|---|
 | 12 | **`for` 循环** | 没有，只有 `while` | **四种形态全要**（主人已明确）：`for d in dirs` / `for i in 0..n` / `for dy in -2..3` / C-style。待定的是**实现顺序**，以及 §4 范围类型要不要随之落地 |
 | 13 | **`int` 还是 `i32`** | 实现是 `i32` 系列 | 主人自己写过 `var thisIsAGoodName: i32`；示例里的 `int` 是 AI 写的。**奶昔按 `i32` 走**，除非主人反对 |
-| 14 | **`type` 还是 `enum`** | 都没做 | 示例写的是 `export type Player = \| Black \| White \| Empty` |
+| 14 | ~~**`type` 还是 `enum`**~~ | ✅ **已定：`type Status = \| ok \| warn`**（跟示例一致，一个关键字管到底，将来带载荷的标签联合也用它） | 已移出待办 |
 | 15 | **`Result<void, E>` 还是 `Result<(), E>`** | 都没做 | 示例用 `void` |
 | 16 | **`@main` vs `module main`** | 已定 `@main`，但示例是 `module main` + `fn main` | 两者并存？还是优先关系？ |
 | 17 | **`Sandbox` 的 undo 栈** | 示例有，主人自己的 gomoku v1.3 说「全项目零 unmake」 | 建议以 v1.3 为准（那份是复审过的） |
