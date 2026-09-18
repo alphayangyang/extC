@@ -981,7 +981,9 @@ static Expr *parsePrimary(Parser *p) {
 static bool looksLikeAssoc(Parser *p) {
     size_t i = 0;
 
+    bool sawTargs = false;
     if (strcmp(pk(p, i)->text, "<") == 0) {
+        sawTargs = true;
         int depth = 0;
         for (;; i++) {
             Token *t = pk(p, i);
@@ -994,15 +996,20 @@ static bool looksLikeAssoc(Parser *p) {
                        t->kind == TK_INT) {
                 /* 类型名 / 内建类型 / 数组长度 */
             } else if (t->kind == TK_KEYWORD) {
-                /* `ref` */
+                /* `ref` / `mut` */
             } else if (strcmp(t->text, ",") == 0 || strcmp(t->text, "[") == 0 ||
                        strcmp(t->text, "]") == 0) {
             } else {
-                return false;       /* 出现不可能属于类型的东西 ⇒ 不是关联调用 */
+                return false;       /* 出现不可能属于类型的东西 ⇒ 不是类型实参 */
             }
         }
     }
-    return strcmp(pk(p, i)->text, "::") == 0;
+    /* `Name<T>::fn(...)` = **关联调用**
+     * `name<T>(...)`     = **泛型调用**（目前只有内置原语用它，比如 `alloc<i32>(n)`）
+     * 两者共用同一套「先看不动」的类型实参扫描，判据分别是 `::` 和 `(`。 */
+    /* 只有**见过类型实参**才可能是泛型调用 —— 否则 `f(x)` 会被误认。 */
+    return strcmp(pk(p, i)->text, "::") == 0 ||
+           (sawTargs && strcmp(pk(p, i)->text, "(") == 0);
 }
 
 /* 真的解析：`Name<targs>::name(args)` 或 `Name::name(args)`（类型名已吃掉） */
@@ -1021,7 +1028,17 @@ static Expr *parseAssoc(Parser *p, const char *name, int line) {
         skipNl(p);
         if (!expect(p, ">", NULL)) return NULL;
     }
-    if (!expect(p, "::", NULL)) return NULL;
+    /* 没有 `::` ⇒ 是**泛型调用** `name<T>(args)`（`alloc<i32>(n)`）*/
+    if (!at(p, "::")) {
+        Vec gargs;
+        if (!parseArgs(p, &gargs)) return NULL;
+        Expr *g = exprNew(p->arena, EX_GENCALL, line);
+        g->u.gencall.name  = name;
+        g->u.gencall.targs = targs;
+        g->u.gencall.args  = gargs;
+        return g;
+    }
+    take(p);   /* `::` */
 
     Token *fn = expectIdent(p, "an associated function name");
     if (!fn) return NULL;

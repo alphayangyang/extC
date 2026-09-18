@@ -66,6 +66,7 @@ typedef enum {
     EX_ARRAYLIT,  /* [1, 2, 3] —— 数组字面量 */
     EX_REF,       /* ref x —— 取引用（T3：ref 从类型修饰升级成表达式） */
     EX_ASSOC,     /* option<i64>::some(x) —— 关联函数（不带 self 的函数） */
+    EX_GENCALL,   /* alloc<i32>(n) —— 泛型调用（目前只有内置原语用） */
     EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
     EX_ENUMVAL    /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
 } ExprKind;
@@ -111,6 +112,7 @@ struct Expr {
          * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
         struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
         struct { Expr *operand; } try_;   /* `e?` */
+        struct { const char *name; Vec targs; Vec args; } gencall;
         struct { const char *typeName; const char *variant; } enumval;
     } u;
 };

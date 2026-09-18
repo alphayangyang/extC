@@ -716,6 +716,16 @@ static const char *genExprInner(CG *g, Expr *e) {
             return bufCstr(&b);
         }
 
+        case EX_GENCALL: {
+            /* 泛型调用 —— 目前只有内置原语 `alloc<T>(n)`：
+             * 向**当前函数帧**的 arena 要 n 个 T 的地方。 */
+            const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
+            const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
+            return arenaPrintf(g->arena,
+                "(%s *)extc_arena_alloc((int64_t)(%s) * (int64_t)sizeof(%s))",
+                tn, n, tn);
+        }
+
         case EX_METHOD:    return genMethodCall(g, e);
         case EX_STRUCTLIT: return genStructLit(g, e);
 
@@ -843,7 +853,8 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     ti.tmp = arenaPrintf(g->arena, "__extc_try%d", g->tmpSeq++);
 
     cgLine(g, "%s %s = %s;", cType(g, ot), ti.tmp, genExpr(g, e->u.try_.operand));
-    cgLine(g, "if (!%s.%s) return %s;", ti.tmp, ti.tag, genTryFail(g, &ti));
+    cgLine(g, "if (!%s.%s) { extc_arena_release(__extc_amark); return %s; }",
+           ti.tmp, ti.tag, genTryFail(g, &ti));
     return ti;
 }
 
@@ -910,8 +921,12 @@ static void genStmt(CG *g, Stmt *s) {
             cgLine(g, "}");
             return;
 
-        case ST_RETURN:
+        case ST_RETURN: {
+            /* 返回之前**一定**要归还这一帧的 arena —— 释放时机是词法的，
+             * 所以每个 return 都是一个释放点（包括 `?` 生成的那些）。 */
+            const char *rel = "extc_arena_release(__extc_amark);";
             if (!s->u.ret.value) {
+                cgLine(g, "%s", rel);
                 cgLine(g, "return;");
                 return;
             }
@@ -919,6 +934,7 @@ static void genStmt(CG *g, Stmt *s) {
                 /* `return e?` —— 成功就把载荷装回**外层**返回类型 */
                 TryInfo ti = genTryHead(g, s->u.ret.value);
                 Type *rt = subst(g, g->retType);
+                cgLine(g, "%s", rel);
                 if (ti.isOpt) {
                     cgLine(g, "return (%s){ .has = true, .value = %s.value };",
                            cType(g, rt), ti.tmp);
@@ -929,8 +945,11 @@ static void genStmt(CG *g, Stmt *s) {
                 }
                 return;
             }
-            cgLine(g, "return %s;", genExpr(g, s->u.ret.value));
+            const char *v = genExpr(g, s->u.ret.value);
+            cgLine(g, "%s", rel);
+            cgLine(g, "return %s;", v);
             return;
+        }
 
         case ST_BREAK:    cgLine(g, "break;");    return;
         case ST_CONTINUE: cgLine(g, "continue;"); return;
@@ -983,6 +1002,11 @@ static void genFunc(CG *g, FuncDef *f) {
     int   savedSeq = g->tmpSeq;
     g->retType = subst(g, f->ret);
     g->tmpSeq = 0;
+    /* 每帧一个 arena 标记：**arena = 函数帧**。分配走 bump，返回时回到标记。
+     * 每个函数都记一个（不管是它自己分配还是被调用者分配）——
+     * 代价是两条语句，换来「释放时机是词法的」这条可证明性。
+     * 将来可以只给「真的会分配」的函数发，属于优化。 */
+    cgLine(g, "extc_amark __extc_amark = extc_arena_mark();");
     genBlockBody(g, f->body);
     g->retType = savedRet;
     g->tmpSeq = savedSeq;
@@ -1245,6 +1269,57 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    }\n"
         "    return lo;\n"
         "}\n\n");
+    bufPuts(out,
+        /* ------------------------------------------------------------------
+         * arena：**bump 分配 + 每帧 mark/release**
+         *
+         * 一只 arena = 一个词法作用域（函数帧）。实现是**一个块栈**：
+         * mark 记下当前位置，release 回到那里并把多出来的整块还给系统。
+         * 分配本身就是一个指针加法 —— 跟栈的 `sub rsp` 是同一个动作。
+         *
+         * 为什么它必须由编译器生成、不能写在 extC 里：
+         * **库要用它来分配自己** ⇒ 链条总得有个底，底就是这里（BOOTSTRAP 规则二）。
+         *
+         * ⚠️ 线程化的时候 `extc_arena_top` 要变成 thread-local（还没做线程）。
+         * ⚠️ 释放时机是**函数返回**（词法、可证明），所以 alloc 出来的东西
+         *    深度 = 1，**不能从函数里返回** —— 逃逸检查会拦住 ✓ 见 REFS.md §6。
+         * ------------------------------------------------------------------ */
+        "typedef struct extc_ablock { struct extc_ablock *prev; int64_t cap, used; char data[1]; } extc_ablock;\n"
+        "typedef struct { extc_ablock *blk; int64_t used; } extc_amark;\n"
+        "extc_ablock *extc_arena_top = NULL;\n"
+        "extc_amark extc_arena_mark(void) {\n"
+        "    extc_amark m;\n"
+        "    m.blk = extc_arena_top;\n"
+        "    m.used = extc_arena_top ? extc_arena_top->used : 0;\n"
+        "    return m;\n"
+        "}\n"
+        "void extc_arena_release(extc_amark m) {\n"
+        "    while (extc_arena_top && extc_arena_top != m.blk) {\n"
+        "        extc_ablock *p = extc_arena_top->prev;\n"
+        "        free(extc_arena_top);\n"
+        "        extc_arena_top = p;\n"
+        "    }\n"
+        "    if (extc_arena_top) extc_arena_top->used = m.used;\n"
+        "}\n"
+        "void *extc_arena_alloc(int64_t n) {\n"
+        "    if (n <= 0) n = 1;\n"
+        "    n = (n + 7) & ~(int64_t)7;\n"
+        "    if (!extc_arena_top || extc_arena_top->cap - extc_arena_top->used < n) {\n"
+        "        int64_t cap = n > 4096 ? n : 4096;\n"
+        "        extc_ablock *b = (extc_ablock *)malloc(sizeof(extc_ablock) + (size_t)cap);\n"
+        "        if (!b) { fprintf(stderr, \"extc: out of arena memory\\n\"); exit(1); }\n"
+        "        b->prev = extc_arena_top; b->cap = cap; b->used = 0;\n"
+        "        extc_arena_top = b;\n"
+        "    }\n"
+        "    {\n"
+        "        void *p = extc_arena_top->data + extc_arena_top->used;\n"
+        "        extc_arena_top->used += n;\n"
+        "        return p;\n"
+        "    }\n"
+        "}\n\n");
+
+
+
 
     /* 枚举最靠前 —— C11 不能前置声明 enum tag，
      * 所以 struct 字段里用到枚举时必须先有定义 */

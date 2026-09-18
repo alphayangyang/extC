@@ -514,7 +514,9 @@ static Type *checkValue(Checker *c, Expr *e) {
     /* `ref x` 是**显式**要一个引用 ⇒ 不再自动解引用 ——
      * 否则就等于「解掉自己刚取的那个引用」，纯属自相矛盾。
      * 所以 `let r = ref n` 得到的是引用；而 `let y = r` 得到的是 r 指向的**值**。 */
-    if (t && t->kind == TY_REF && e->kind != EX_REF) {
+    /* `ref x` 和 `alloc<T>(n)` 都是**显式**要一个引用 ⇒ 不再自动解引用 ——
+     * 否则就是「解掉自己刚取/刚要来那个引用」，纯属自相矛盾。 */
+    if (t && t->kind == TY_REF && e->kind != EX_REF && e->kind != EX_GENCALL) {
         e->deref = true;
         return t->inner;
     }
@@ -1255,6 +1257,48 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
         }
 
+        case EX_GENCALL: {
+            /* 泛型调用 —— 目前**只有内置原语**用它：`alloc<i32>(n)`。
+             * 它向当前函数帧的 arena 要 `n` 个 T 的地方，返回可写引用。
+             *
+             * 为什么它是原语而不是库函数：**arena 本身必须由编译器生成**
+             * （库要用它来分配自己 ⇒ 不能由库提供）。见 BOOTSTRAP 规则二。 */
+            if (strcmp(e->u.gencall.name, "alloc") != 0) {
+                ckError(c, e->line, "only the built-in primitives may be called this way",
+                        "`%s` is not a built-in primitive (only `alloc<T>(n)` is)",
+                        e->u.gencall.name);
+                return ttError(tt);
+            }
+            if (e->u.gencall.targs.len != 1) {
+                ckError(c, e->line, NULL, "`alloc` needs exactly one type argument, e.g. `alloc<i32>(4)`");
+                return ttError(tt);
+            }
+            Type *elem = ttResolve(tt, c->ctx, *(Type **)vecAt(&e->u.gencall.targs, 0),
+                                   e->line, c->curParams);
+            if (ttIsError(elem)) return ttError(tt);
+            /* 把**解析后的**类型写回去 —— codegen 看的是 targs，不是局部变量 */
+            *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
+            if (e->u.gencall.args.len != 1) {
+                ckError(c, e->line, NULL, "`alloc` takes one argument (how many elements)");
+                return ttError(tt);
+            }
+            Expr *n = *(Expr **)vecAt(&e->u.gencall.args, 0);
+            Type *nt = checkValue(c, n);
+            if (!ttIsError(nt) && !ttIsInteger(nt)) {
+                ckError(c, n->line, NULL, "the element count must be an integer, found `%s`",
+                        typeStr(c, nt));
+                return ttError(tt);
+            }
+
+            /* 这块内存活到**函数返回**（arena = 函数帧）⇒ 深度 1。
+             * 于是「返回一块刚 alloc 的内存」会被逃逸检查拦住 ✓ 正确 ——
+             * 想把它交出去，就得让调用者提供 buffer/arena。见 REFS.md §6。 */
+            e->refDepth = 1;
+            Type *r = ttRef(tt, elem);
+            r->mut = true;                       /* 刚分配的地方当然可写 */
+            return r;
+        }
+
         case EX_ENUMVAL:
             return ttFromName(tt, e->u.enumval.typeName);
 
@@ -1605,7 +1649,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             }
 
             adoptContextType(s->u.ret.value, want);
-            Type *vt = checkMaybeTry(c, s->u.ret.value);
+            Type *vt = checkInto(c, want, s->u.ret.value);   /* 期望是引用就别解 */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
             /* 逃逸①：返回的引用，被指对象必须在参数或静态数据里（深度 0）*/
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
