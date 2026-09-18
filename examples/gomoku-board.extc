@@ -1,0 +1,79 @@
+// 目标里程碑：五子棋的棋盘 —— 固定数组到位之后，这份能编能跑了
+
+struct board {
+    cell: [15][15]i32
+    moves: i32
+
+    fn place(self: ref board, x: i32, y: i32, p: i32) -> bool {
+        if x < 0 || x >= 15 || y < 0 || y >= 15 {
+            return false
+        }
+        if self.cell[y][x] != 0 {
+            return false
+        }
+        self.cell[y][x] = p
+        self.moves = self.moves + 1
+        return true
+    }
+
+    fn get(self: ref board, x: i32, y: i32) -> i32 {
+        return self.cell[y][x]
+    }
+
+    // 从 (x,y) 沿 (dx,dy) 方向数连子
+    fn countDir(self: ref board, x: i32, y: i32, dx: i32, dy: i32, p: i32) -> i32 {
+        var n: i32 = 0
+        var cx: i32 = x + dx
+        var cy: i32 = y + dy
+        while cx >= 0 && cx < 15 && cy >= 0 && cy < 15 {
+            if self.cell[cy][cx] != p {
+                break
+            }
+            n = n + 1
+            cx = cx + dx
+            cy = cy + dy
+        }
+        return n
+    }
+
+    fn checkWin(self: ref board, x: i32, y: i32) -> bool {
+        let dirs: [4][2]i32 = [[1, 0], [0, 1], [1, 1], [1, -1]]
+        let p: i32 = self.cell[y][x]
+        if p == 0 {
+            return false
+        }
+        var d: i32 = 0
+        while d < 4 {
+            var count: i32 = 1
+            count = count + self.countDir(x, y, dirs[d][0], dirs[d][1], p)
+            count = count + self.countDir(x, y, -dirs[d][0], -dirs[d][1], p)
+            if count >= 5 {
+                return true
+            }
+            d = d + 1
+        }
+        return false
+    }
+}
+
+fn main() -> i32 {
+    var b: board
+
+    b.place(7, 7, 1)
+    b.place(8, 7, 2)
+    b.place(7, 8, 1)
+    b.place(8, 8, 2)
+    b.place(7, 9, 1)
+    b.place(8, 9, 2)
+    b.place(7, 10, 1)
+    b.place(8, 10, 2)
+    b.place(7, 11, 1)
+
+    println("moves = ", b.moves)
+    println("(7,11) = ", b.get(7, 11))
+    println("黑棋竖着五连？", b.checkWin(7, 11))
+    println("白棋竖着四连？", b.checkWin(8, 10))
+    println("重复落子？   ", b.place(7, 7, 2))
+    println("出界？       ", b.place(-1, 5, 1))
+    return 0
+}

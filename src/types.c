@@ -65,6 +65,22 @@ void ttRegister(TypeTable *tt, Module *m) {
 Type *ttVoid(TypeTable *tt)  { return tt->tVoid; }
 Type *ttError(TypeTable *tt) { return tt->tError; }
 
+/* 固定数组：也驻留（`[15]i32` 全局只有一份），放在跟泛型实例同一张表里 —— 
+ * 它们都要生成 C 结构体，codegen 一视同仁。 */
+Type *ttArray(TypeTable *tt, int64_t n, Type *elem) {
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *c = *(Type **)vecAt(&tt->instances, i);
+        if (c->kind == TY_ARRAY && c->asize == n && ttEquals(c->inner, elem)) return c;
+    }
+    Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
+    t->kind = TY_ARRAY;
+    t->asize = n;
+    t->inner = elem;
+    t->name = ttMangle(tt, t);
+    *(Type **)vecPush(&tt->instances) = t;
+    return t;
+}
+
 Type *ttRef(TypeTable *tt, Type *inner) {
     Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
     t->kind = TY_REF;
@@ -156,6 +172,17 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
         }
         case TY_REF:
             return ttRef(tt, ttResolve(tt, ctx, t->inner, line, params));
+        case TY_ARRAY: {
+            Type *e = ttResolve(tt, ctx, t->inner, line, params);
+            if (e->kind == TY_PARAM) {
+                ctxError(ctx, line, 1,
+                         "The element type of a fixed array must be concrete "
+                         "(its size is part of the type).",
+                         "cannot make a fixed array of the type parameter `%s`", e->param);
+                return tt->tError;
+            }
+            return ttArray(tt, t->asize, e);
+        }
         default:
             return t;
     }
@@ -172,6 +199,9 @@ const char *ttMangle(TypeTable *tt, Type *t) {
     switch (t->kind) {
         case TY_REF:
             return arenaPrintf(tt->arena, "Ref_%s", ttMangle(tt, t->inner));
+        case TY_ARRAY:
+            return arenaPrintf(tt->arena, "array_%lld_%s",
+                               (long long)t->asize, ttMangle(tt, t->inner));
         case TY_GENERIC: {
             Buf b;
             bufInit(&b, tt->arena);
@@ -248,6 +278,8 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
             return t;
         case TY_REF:
             return ttRef(tt, ttSubstitute(tt, t->inner, params, args));
+        case TY_ARRAY:
+            return ttArray(tt, t->asize, ttSubstitute(tt, t->inner, params, args));
         case TY_GENERIC: {
             Vec na;
             vecInit(&na, tt->arena, sizeof(void *));
@@ -270,6 +302,9 @@ bool ttEquals(Type *a, Type *b) {
 
     /* 除了 ref / 泛型参数 / 泛型实例，其余类型都是驻留的 —— 指针不等就是不相等 */
     if (a->kind == TY_REF) return ttEquals(a->inner, b->inner);
+
+    if (a->kind == TY_ARRAY)
+        return a->asize == b->asize && ttEquals(a->inner, b->inner);
 
     if (a->kind == TY_PARAM)
         return a->tpIndex == b->tpIndex && strcmp(a->param, b->param) == 0;
@@ -390,6 +425,12 @@ void ttRender(Type *t, Buf *out) {
                 ttRender(*(Type **)vecAt(&t->targs, i), out);
             }
             bufPutc(out, '>');
+            return;
+        case TY_ARRAY:
+            bufPutc(out, '[');
+            bufPrintf(out, "%lld", (long long)t->asize);
+            bufPutc(out, ']');
+            ttRender(t->inner, out);
             return;
         case TY_PARAM: bufPuts(out, t->param); return;
         case TY_VOID:  bufPuts(out, "void"); return;

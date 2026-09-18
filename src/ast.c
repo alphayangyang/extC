@@ -18,6 +18,14 @@ Type *typeRef(Arena *a, Type *inner) {
     return t;
 }
 
+Type *typeArray(Arena *a, int64_t n, Type *elem) {
+    Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
+    t->kind = TY_ARRAY;
+    t->asize = n;
+    t->inner = elem;
+    return t;
+}
+
 Type *typeParam(Arena *a, const char *name, int idx) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
     t->kind = TY_PARAM;

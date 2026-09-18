@@ -54,6 +54,9 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params);
 /* 泛型实例：驻留（`Pair<i32,u8>` 全局只有一份） */
 Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args);
 
+/* 固定数组：也驻留（`[15]i32` 全局只有一份） */
+Type *ttArray(TypeTable *tt, int64_t n, Type *elem);
+
 /* 把类型里的 TY_PARAM 换成实际类型（单态化用） */
 Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args);
 

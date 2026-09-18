@@ -31,6 +31,7 @@ typedef enum {
     TY_REF,         /* ref T */
     TY_PARAM,       /* 泛型参数本身：模板里出现的 `T` */
     TY_GENERIC,     /* 泛型实例：`Pair<i32, u8>` */
+    TY_ARRAY,       /* 固定数组：`[15]i32` —— 长度是类型的一部分 */
     TY_ERROR        /* 类型检查失败时的哑类型：抑制级联报错 */
 } TypeKind;
 
@@ -44,18 +45,22 @@ struct Type {
     Vec         targs;   /* TY_GENERIC：类型实参（Type*） */
     const char *param;   /* TY_PARAM：参数名，如 "T" */
     int         tpIndex; /* TY_PARAM：第几个参数 */
+    int64_t     asize;   /* TY_ARRAY：长度（编译期常量） */
 };
 
 Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED（可能带 targs）*/
 Type *typeRef(Arena *a, Type *inner);
 Type *typeParam(Arena *a, const char *name, int idx);
+Type *typeArray(Arena *a, int64_t n, Type *elem);   /* TY_ARRAY */
 
 /* ---------------------------------------------------------------- 表达式 */
 
 typedef enum {
     EX_INT, EX_FLOAT, EX_BOOL, EX_STR, EX_IDENT,
     EX_BIN, EX_UN, EX_CALL, EX_METHOD, EX_FIELD, EX_STRUCTLIT,
-    EX_INDEX,     /* a[i] —— 索引（读；写等数组那一步）*/
+    EX_INDEX,     /* a[i] —— 索引 */
+    EX_SLICE,     /* a[i..j] —— 切一个视图出来（只读）*/
+    EX_ARRAYLIT,  /* [1, 2, 3] —— 数组字面量 */
     EX_REF,       /* ref x —— 取引用（T3：ref 从类型修饰升级成表达式） */
     EX_ENUMVAL    /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
 } ExprKind;
@@ -83,6 +88,8 @@ struct Expr {
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */
         struct { Expr *obj; Expr *index; } index;
+        struct { Expr *obj; Expr *lo; Expr *hi; } slice;   /* lo / hi 可为 NULL */
+        struct { Vec elems; bool rest; } arraylit;         /* elems: Expr*；rest = 末尾有 ... */
         struct { Expr *operand; } ref;
         struct { const char *typeName; const char *variant; } enumval;
     } u;

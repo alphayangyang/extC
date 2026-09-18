@@ -57,9 +57,13 @@
 - **T5a-1 · `slice` 索引 + prelude 字符串库** ✅ **已完成**
   `s[i]`（带边界检查，越界 trap 并报 extC 位置）+ prelude 里的
   `get` / `==`（按内容）/ `find` / `startsWith` —— **全部用 extC 写**。
-- **T5a-2 · 固定数组** ⬜ 待做
-  `[N]T` 类型 + 字面量 `[1,2,3]` + 数组索引 + 切片视图 `a[i..j]`。
+- **T5a-2 · 固定数组** ✅ **已完成**
+  `[N]T` 类型（多维递归）+ 字面量 `[1,2,3]`（严格计数，末尾 `...` 补零）
+  + 索引 `a[i]`（越界 trap）+ 数组 `==`（编译器生成）+ `println` 调试打印。
+  **副产品**：G2 里程碑达成 —— `examples/gomoku-board.extc` 能编能跑。
   **注意**：动态数组 `array<T>` 要等 arena（week-4），见 ARRAYS.md §5。
+- **T5a-3 · 切片视图 `a[lo..hi]`** ⬜ 待做
+  语法已经能解析，codegen 里还是 `error: slicing is not implemented yet`。
 
 ### T5 · `option<T>` / `result<T,E>` + `?`
 

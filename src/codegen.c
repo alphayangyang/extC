@@ -104,6 +104,7 @@ static const char *cType(CG *g, Type *t) {
         case TY_VOID:  return "void";
         case TY_STRUCT: return t->name;
         case TY_GENERIC: return t->name;    /* 已经是修饰过的名字 */
+        case TY_ARRAY:  return t->name;     /* 同上：array_15_i32 */
         case TY_ENUM:  return t->name;      /* C 里就是一个 enum typedef */
         case TY_ERROR: return "int";
         case TY_BUILTIN:
@@ -221,11 +222,48 @@ static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback) {
     return hit;
 }
 
+/* 元素能不能比？数组的 `==` 是**编译器派生**的（跟 `_debug` 一样）——
+ * 数组类型用户写不出来，也就没法给它们写 `fn ==`。条件是元素能比，递归定义。 */
+static bool typeHasEq(Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_ARRAY) return typeHasEq(t->inner);
+    if (t->kind == TY_BUILTIN || t->kind == TY_ENUM) return true;
+    return findOpMethod(t, "==", NULL) != NULL;
+}
+
+/* 元素比较的 C 表达式（递归：内建直接比，struct 走它的 `==`）*/
+static const char *genEqTest(CG *g, Type *t, const char *x, const char *y) {
+    if (!t) return "0";
+    if (t->kind == TY_ARRAY)
+        return arenaPrintf(g->arena, "%s_eq(%s, %s)", t->name, x, y);
+    if (t->kind == TY_BUILTIN || t->kind == TY_ENUM)
+        return arenaPrintf(g->arena, "((%s) == (%s))", x, y);
+
+    FuncDef *m = findOpMethod(t, "==", NULL);
+    if (!m) return "0";
+    Param *p0 = *(Param **)vecAt(&m->params, 0);
+    Param *p1 = *(Param **)vecAt(&m->params, 1);
+    const char *a = p0->type->kind == TY_REF ? arenaPrintf(g->arena, "&(%s)", x) : x;
+    const char *b = p1->type->kind == TY_REF ? arenaPrintf(g->arena, "&(%s)", y) : y;
+    return arenaPrintf(g->arena, "%s(%s, %s)", cMethodName(g, t, m), a, b);
+}
+
 /* 二元运算。
  * `==` / `!=` 在 check 里被解析成 eq 方法调用（找不到 eq 就报错）；
  * 泛型里含类型参数的比较被推迟到这里，用实例上下文再解析一次。 */
 static const char *genBin(CG *g, Expr *e) {
     const char *op = e->u.bin.op;
+
+    /* 数组：编译器派生的 `==` */
+    if (!e->func && !e->needEq) {
+        Type *lt = ttBase(subst(g, e->u.bin.left->type));
+        if (lt && lt->kind == TY_ARRAY &&
+            (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)) {
+            const char *call = genEqTest(g, lt, genExpr(g, e->u.bin.left),
+                                                 genExpr(g, e->u.bin.right));
+            return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
+        }
+    }
 
     if (e->func || e->needEq) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
@@ -304,6 +342,7 @@ static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
 static const char *zeroValue(CG *g, Type *t) {
     if (!t) return "0";
     if (t->kind == TY_ENUM) return "0";
+    if (t->kind == TY_ARRAY) return arenaPrintf(g->arena, "(%s){0}", t->name);
 
     if (t->kind == TY_PARAM) {
         Type *a = subst(g, t);
@@ -388,8 +427,8 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
             bufPrintf(&b, "%s_writeText(%s)", bt->name, code);
             continue;
         }
-        /* struct / 泛型实例自动递归打印 */
-        if (bt->kind == TY_STRUCT || bt->kind == TY_GENERIC) {
+        /* struct / 泛型实例 / 数组：自动递归打印 */
+        if (bt->kind == TY_STRUCT || bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
             bufPrintf(&b, "%s_debug(%s)", bt->name, code);
             continue;
         }
@@ -534,15 +573,42 @@ static const char *genExpr(CG *g, Expr *e) {
         case EX_INDEX: {
             Type *ot = e->u.index.obj->type;
             Type *ob = ttBase(subst(g, ot));
-            if (!isView(ob)) return "0";
-
             const char *obj = genExpr(g, e->u.index.obj);
             const char *idx = genExpr(g, e->u.index.index);
+
+            /* 数组：长度是**编译期常数** —— 所以 obj 只出现一次，不存在重复求值 */
+            if (ob && ob->kind == TY_ARRAY) {
+                return arenaPrintf(g->arena,
+                    "%s.data[extc_checkedIndex((int64_t)(%s), %lld, \"%s\", %d)]",
+                    obj, idx, (long long)ob->asize, g->path, e->line);
+            }
+            if (!isView(ob)) return "0";
             /* 原语按值收视图，所以引用要解一层 */
             if (ot && ot->kind == TY_REF) obj = arenaPrintf(g->arena, "*(%s)", obj);
 
             return arenaPrintf(g->arena, "%s_index(%s, (int64_t)(%s), \"%s\", %d)",
                                ob->name, obj, idx, g->path, e->line);
+        }
+
+        case EX_ARRAYLIT: {
+            Type *t = e->type;
+            if (!t || t->kind != TY_ARRAY) return "0";
+            Buf b;
+            bufInit(&b, g->arena);
+            bufPrintf(&b, "(%s){ .data = {", cType(g, t));
+            for (size_t i = 0; i < e->u.arraylit.elems.len; i++) {
+                if (i) bufPuts(&b, ", ");
+                bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
+            }
+            /* 末尾的 `...` 不用额外做什么 —— C 的初始化器本来就把剩下的补零 */
+            bufPuts(&b, "} }");
+            return bufCstr(&b);
+        }
+
+        case EX_SLICE: {
+            /* 切片视图：见 T5a-3（先报错，别静默生成错的 C）*/
+            ctxError(g->ctx, e->line, 1, NULL, "slicing is not implemented yet");
+            return "0";
         }
 
         case EX_METHOD:    return genMethodCall(g, e);
@@ -571,6 +637,7 @@ static void genPrintValue(CG *g, Type *t, const char *expr) {
     if (!t) { cgLine(g, "printf(\"?\");"); return; }
 
     if (isByteView(t))         { cgLine(g, "%s_writeText(%s);", t->name, expr); return; }
+    if (t->kind == TY_ARRAY)   { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
     if (t->kind == TY_ENUM)    { cgLine(g, "printf(\"%%s\", %s_name(%s));", t->name, expr); return; }
     if (t->kind == TY_STRUCT)  { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
     if (t->kind == TY_REF)     { cgLine(g, "printf(\"<ref>\");"); return; }
@@ -742,34 +809,81 @@ static void genFuncProto(CG *g, FuncDef *f) {
  */
 
 typedef struct {
-    StructDef *sd;
-    Type      *inst;    /* NULL = 普通 struct */
+    StructDef *sd;      /* 普通 struct；泛型实例和数组为 NULL */
+    Type      *inst;    /* 泛型实例或数组；普通 struct 为 NULL */
     Vec        deps;    /* int* —— 依赖的 unit 下标 */
     bool       done;
 } SUnit;
+
+static const char *unitName(const SUnit *u) {
+    return u->inst ? u->inst->name : u->sd->name;
+}
 
 static int unitFind(Vec *units, Type *t) {
     if (!t) return -1;
     for (size_t i = 0; i < units->len; i++) {
         SUnit *u = *(SUnit **)vecAt(units, i);
         if (t->kind == TY_GENERIC && u->inst == t) return (int)i;
+        if (t->kind == TY_ARRAY   && u->inst == t) return (int)i;
         if (t->kind == TY_STRUCT && !u->inst && u->sd == t->sdef) return (int)i;
     }
     return -1;
 }
 
 static void unitBody(CG *g, SUnit *u) {
-    if (u->inst) substEnter(g, u->inst);
-    cgLine(g, "struct %s {", u->inst ? u->inst->name : u->sd->name);
+    bool generic = u->inst && u->inst->kind == TY_GENERIC;
+    if (generic) substEnter(g, u->inst);
+
+    cgLine(g, "struct %s {", unitName(u));
     g->indent++;
-    for (size_t i = 0; i < u->sd->fields.len; i++) {
-        FieldDef *fd = *(FieldDef **)vecAt(&u->sd->fields, i);
-        cgLine(g, "%s %s;", cType(g, fd->type), fd->name);
+    if (u->inst && u->inst->kind == TY_ARRAY) {
+        /* 数组就是一个「装着裸数组的结构体」—— 这就是值语义的来源 */
+        cgLine(g, "%s data[%lld];", cType(g, u->inst->inner),
+               (long long)u->inst->asize);
+    } else {
+        for (size_t i = 0; i < u->sd->fields.len; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&u->sd->fields, i);
+            cgLine(g, "%s %s;", cType(g, fd->type), fd->name);
+        }
     }
     g->indent--;
     cgLine(g, "};");
     cgLine(g, "");
-    if (u->inst) substLeave(g);
+    if (generic) substLeave(g);
+}
+
+/* 数组的自动调试打印：`[1, 2, 3]` */
+static void genArrayDebug(CG *g, Type *arr) {
+    cgLine(g, "void %s_debug(%s v) {", arr->name, arr->name);
+    g->indent++;
+    cgLine(g, "printf(\"[\");");
+    cgLine(g, "for (int64_t i = 0; i < %lld; i++) {", (long long)arr->asize);
+    g->indent++;
+    cgLine(g, "if (i) printf(\", \");");
+    genPrintValue(g, arr->inner, "v.data[i]");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "printf(\"]\");");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
+}
+
+/* 数组的 `==`：编译器派生（数组类型用户写不出来，所以没法用 fn == 实现）*/
+static void genArrayEq(CG *g, Type *arr) {
+    if (!typeHasEq(arr->inner)) return;
+    cgLine(g, "bool %s_eq(%s a, %s b) {", arr->name, arr->name, arr->name);
+    g->indent++;
+    cgLine(g, "for (int64_t i = 0; i < %lld; i++) {", (long long)arr->asize);
+    g->indent++;
+    cgLine(g, "if (!%s) return false;",
+           genEqTest(g, arr->inner, "a.data[i]", "b.data[i]"));
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "return true;");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
 }
 
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
@@ -810,6 +924,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
         "            file, line, (long long)i, (long long)n);\n"
         "    exit(1);\n"
+        "}\n"
+        "/* 带越界检查的下标：**返回下标**，所以调用点只求值一次。*/\n"
+        "int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {\n"
+        "    if (i < 0 || i >= n) extc_trap(file, line, i, n);\n"
+        "    return i;\n"
         "}\n\n");
 
     /* 枚举最靠前 —— C11 不能前置声明 enum tag，
@@ -856,9 +975,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         *(SUnit **)vecPush(&units) = u;
     }
     for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *it = *(Type **)vecAt(&tt->instances, i);
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
-        u->sd = (*(Type **)vecAt(&tt->instances, i))->sdef;
-        u->inst = *(Type **)vecAt(&tt->instances, i);
+        u->sd = it->sdef;              /* 数组为 NULL */
+        u->inst = it;
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
@@ -866,14 +986,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* 先出**全部** typedef —— 指针字段（`ref T`）只需要它 */
     for (size_t i = 0; i < units.len; i++) {
         SUnit *u = *(SUnit **)vecAt(&units, i);
-        const char *n = u->inst ? u->inst->name : u->sd->name;
-        cgLine(&g, "typedef struct %s %s;", n, n);
+        cgLine(&g, "typedef struct %s %s;", unitName(u), unitName(u));
     }
     if (units.len) cgLine(&g, "");
 
     /* 算依赖：字段类型**按值**包含的另一个 struct 类 */
     for (size_t i = 0; i < units.len; i++) {
         SUnit *u = *(SUnit **)vecAt(&units, i);
+        if (u->inst && u->inst->kind == TY_ARRAY) {
+            int j = unitFind(&units, u->inst->inner);
+            if (j >= 0 && j != (int)i) *(int *)vecPush(&u->deps) = j;
+            continue;
+        }
         for (size_t k = 0; k < u->sd->fields.len; k++) {
             FieldDef *fd = *(FieldDef **)vecAt(&u->sd->fields, k);
             Type *ft = fd->type;
@@ -912,14 +1036,22 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                (*(StructDef **)vecAt(&g.structs, i))->name,
                (*(StructDef **)vecAt(&g.structs, i))->name);
     for (size_t i = 0; i < tt->instances.len; i++) {
-        const char *n = (*(Type **)vecAt(&tt->instances, i))->name;
-        cgLine(&g, "void %s_debug(%s v);", n, n);
+        Type *it = *(Type **)vecAt(&tt->instances, i);
+        cgLine(&g, "void %s_debug(%s v);", it->name, it->name);
+        /* 数组的 `==` 也要原型 —— 嵌套数组之间是递归调用的 */
+        if (it->kind == TY_ARRAY && typeHasEq(it->inner))
+            cgLine(&g, "bool %s_eq(%s a, %s b);", it->name, it->name, it->name);
     }
     if (g.structs.len || tt->instances.len) cgLine(&g, "");
 
     /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (inst->kind == TY_ARRAY) {
+            genArrayDebug(&g, inst);
+            genArrayEq(&g, inst);
+            continue;
+        }
         substEnter(&g, inst);
         genStructDebug(&g, inst->name, inst->sdef);
         if (isView(inst))      genViewIndexer(&g, inst);
@@ -936,9 +1068,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         genStructDebug(&g, (*(StructDef **)vecAt(&g.structs, i))->name,
                        *(StructDef **)vecAt(&g.structs, i));
 
-    /* 实例的方法原型 */
+    /* 实例的方法原型（数组没有方法，也没有 sdef）*/
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++)
             genFuncProto(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));
@@ -971,6 +1104,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* 实例的方法定义 */
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             genFunc(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));

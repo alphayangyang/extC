@@ -320,6 +320,29 @@ static Type *parseType(Parser *p) {
         if (!inner) return NULL;
         return typeRef(p->arena, inner);
     }
+    /* 固定数组 `[N]T` —— 多维天然递归（`[15][15]i32` 就是 15 个 `[15]i32`）*/
+    if (at(p, "[")) {
+        Token *br = take(p);
+        if (!atKind(p, TK_INT)) {
+            Token *bad = cur(p);
+            ctxError(p->ctx, bad->line, bad->col,
+                     "For now a fixed array's length must be an integer literal. "
+                     "(Compile-time constants will come with `const`.)",
+                     "array length must be an integer literal, found `%s`", shown(bad));
+            return NULL;
+        }
+        Token *n = take(p);
+        if (!expect(p, "]", NULL)) return NULL;
+        Type *elem = parseType(p);
+        if (!elem) return NULL;
+        if (n->ival <= 0) {
+            ctxError(p->ctx, br->line, br->col, NULL,
+                     "array length must be positive, got %lld", (long long)n->ival);
+            return NULL;
+        }
+        return typeArray(p->arena, n->ival, elem);
+    }
+
     Token *t = cur(p);
     if (t->kind == TK_TYPE || t->kind == TK_IDENT) {
         take(p);
@@ -623,20 +646,44 @@ static Expr *parsePostfix(Parser *p) {
                 e = f;
             }
         } else if (at(p, "[")) {
-            /* 索引：`a[i]`。括号里是普通表达式（字面量不受条件位置限制）*/
+            /* `a[i]` 索引、`a[lo..hi]` 切片。括号里是普通表达式。 */
             Token *br = take(p);
             skipNl(p);
             const bool savedC = p->inCond;
             p->inCond = false;
-            Expr *idx = parseExpr(p);
+
+            Expr *lo = NULL, *hi = NULL;
+            bool isRange = false;
+            if (!at(p, "..")) {
+                lo = parseExpr(p);
+                if (!lo) { p->inCond = savedC; return NULL; }
+                skipNl(p);
+            }
+            if (at(p, "..")) {
+                isRange = true;
+                take(p);
+                skipNl(p);
+                if (!at(p, "]")) {
+                    hi = parseExpr(p);
+                    if (!hi) { p->inCond = savedC; return NULL; }
+                }
+                skipNl(p);
+            }
             p->inCond = savedC;
-            if (!idx) return NULL;
-            skipNl(p);
             if (!expect(p, "]", NULL)) return NULL;
-            Expr *ix = exprNew(p->arena, EX_INDEX, br->line);
-            ix->u.index.obj = e;
-            ix->u.index.index = idx;
-            e = ix;
+
+            if (isRange) {
+                Expr *sl = exprNew(p->arena, EX_SLICE, br->line);
+                sl->u.slice.obj = e;
+                sl->u.slice.lo  = lo;
+                sl->u.slice.hi  = hi;
+                e = sl;
+            } else {
+                Expr *ix = exprNew(p->arena, EX_INDEX, br->line);
+                ix->u.index.obj = e;
+                ix->u.index.index = lo;
+                e = ix;
+            }
         } else if (at(p, "(")) {
             Vec args;
             if (!parseArgs(p, &args)) return NULL;
@@ -708,6 +755,37 @@ static Expr *parsePrimary(Parser *p) {
         return e;
     }
     if (at(p, "{")) return parseStructLit(p, NULL);
+
+    /* 数组字面量 `[1, 2, 3]`；末尾的 `...` 表示「剩下的是零值」 */
+    if (at(p, "[")) {
+        Token *br = take(p);
+        Expr *e = exprNew(p->arena, EX_ARRAYLIT, br->line);
+        vecInit(&e->u.arraylit.elems, p->arena, sizeof(void *));
+        e->u.arraylit.rest = false;
+
+        skipNl(p);
+        while (!at(p, "]")) {
+            if (at(p, "...")) {
+                take(p);
+                e->u.arraylit.rest = true;
+                skipNl(p);
+                break;
+            }
+            const bool savedC = p->inCond;
+            p->inCond = false;
+            Expr *el = parseExpr(p);
+            p->inCond = savedC;
+            if (!el) return NULL;
+            *(Expr **)vecPush(&e->u.arraylit.elems) = el;
+
+            skipNl(p);
+            if (accept(p, ",")) { skipNl(p); continue; }
+            break;
+        }
+        skipNl(p);
+        if (!expect(p, "]", NULL)) return NULL;
+        return e;
+    }
 
     if (t->kind == TK_IDENT) {
         take(p);

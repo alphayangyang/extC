@@ -36,7 +36,8 @@ typedef struct {
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
 
     Type *tI32, *tF64, *tBool;
-    Type *tSliceU8;     /* 字符串字面量的类型：`slice<u8>`（定义在 prelude 里）*/
+    StructDef *sliceDef;/* prelude 里的 `slice<T>` 声明（视图协议）*/
+    Type *tSliceU8;     /* 字符串字面量的类型：`slice<u8>` */
 } Checker;
 
 /* ---------------------------------------------------------------- 报错 */
@@ -149,6 +150,7 @@ static Variant *findVariant(TypeDef *td, const char *name) {
 static bool typeContainsRef(Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
+    if (t->kind == TY_ARRAY) return typeContainsRef(t->inner);
     StructDef *sd = structOf(t);
     if (!sd) return false;
     for (size_t i = 0; i < sd->fields.len; i++)
@@ -159,6 +161,15 @@ static bool typeContainsRef(Type *t) {
 /* 能取引用的东西：变量和字段 */
 static bool isLvalue(Expr *e) {
     return e->kind == EX_IDENT || e->kind == EX_FIELD;
+}
+
+/* 拼一个 `slice<elem>`（视图协议来自 prelude）*/
+static Type *sliceOf(Checker *c, Type *elem) {
+    if (!c->sliceDef) return ttError(c->tt);
+    Vec args;
+    vecInit(&args, c->arena, sizeof(void *));
+    *(Type **)vecPush(&args) = elem;
+    return ttGeneric(c->tt, c->sliceDef, &args);
 }
 
 /* 一个类型是不是「视图」？视图的协议是 `data` + `len`（编译器认这条协议，
@@ -242,6 +253,8 @@ static bool typeSupportsEq(Type *t, const char *op) {
     if (!t) return false;
     if (ttIsError(t)) return true;
     if (cmpIsNative(t)) return true;
+    /* 数组的 `==` 由编译器派生 —— 条件是元素能比 */
+    if (t->kind == TY_ARRAY) return typeSupportsEq(t->inner, op);
 
     Type *b = ttBase(t);
     if (!structOf(b)) return false;
@@ -273,8 +286,8 @@ static bool isPrintable(Type *t) {
     if (b->kind == TY_BUILTIN) return true;
     /* 定案 11：无载荷枚举自动有名字文本 */
     if (b->kind == TY_ENUM) return true;
-    /* struct 由编译器生成 <Type>_debug 递归打印；泛型实例同理 */
-    return b->kind == TY_STRUCT || b->kind == TY_GENERIC;
+    /* struct / 泛型实例 / 数组都由编译器生成 <Type>_debug 递归打印 */
+    return b->kind == TY_STRUCT || b->kind == TY_GENERIC || b->kind == TY_ARRAY;
 }
 
 /* 字面量的类型按**值**适配目标类型（DESIGN §5 的「字面量类型推导」）。 */
@@ -309,9 +322,10 @@ static void adoptContextType(Expr *e, Type *want) {
     if (!e || !want) return;
     Type *w = ttBase(want);
     if (!w) return;
-    if (w->kind != TY_STRUCT && w->kind != TY_GENERIC) return;
     /* 把上下文类型**寄放**在 e->type 上（checkExpr 之后会被覆盖成同一个类型）。
-     * 泛型实例没有名字可查，所以必须走这条路。 */
+     * 泛型实例没有名字可查、数组字面量也不知道长度，所以必须走这条路。 */
+    if (e->kind == EX_ARRAYLIT) { e->type = w; return; }
+    if (w->kind != TY_STRUCT && w->kind != TY_GENERIC) return;
     if (e->kind == EX_STRUCTLIT && !e->u.lit.name) e->type = w;
 }
 
@@ -427,6 +441,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* ---- `==` / `!=`：内建原生比；struct 走 eq 方法 ---- */
                 if (isEqOp && ttEquals(lt, rt)) {
                     if (cmpIsNative(lt)) return c->tBool;
+
+                    /* 数组：`==` 由**编译器派生**（数组类型用户写不出来，没法用 fn == 实现）*/
+                    if (lt->kind == TY_ARRAY) {
+                        if (!typeSupportsEq(lt->inner, op))
+                            ckError(c, e->line,
+                                    "An array's `==` is derived by the compiler, "
+                                    "so its elements have to be comparable.",
+                                    "`%s` cannot be compared: its element type `%s` does not define `==`",
+                                    typeStr(c, lt), typeStr(c, ttBase(lt)->inner));
+                        return c->tBool;
+                    }
 
                     /* 泛型参数 → 推迟到实例化再检查（规则 2） */
                     if (lt->kind == TY_PARAM) {
@@ -557,11 +582,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *it = checkExpr(c, e->u.index.index);
             if (ttIsError(ot) || ttIsError(it)) return ttError(tt);
 
-            Type *elem = viewElemOf(ttBase(ot));
+            Type *ob = ttBase(ot);
+            Type *elem = NULL;
+            if (ob && ob->kind == TY_ARRAY) elem = ob->inner;
+            else                              elem = viewElemOf(ob);
             if (!elem) {
-                ckError(c, e->line,
-                        "For now only a view (like `slice<T>`) can be indexed -- "
-                        "fixed arrays come next.",
+                ckError(c, e->line, NULL,
                         "cannot index a value of type `%s`", typeStr(c, ot));
                 return ttError(tt);
             }
@@ -571,6 +597,89 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             return elem;
+        }
+
+        case EX_SLICE: {
+            /* `a[lo..hi]` —— 只读视图。lo / hi 可以为空（前端 / 后端省略）*/
+            Type *ot = checkExpr(c, e->u.slice.obj);
+            if (ttIsError(ot)) return ttError(tt);
+
+            Type *ob = ttBase(ot);
+            Type *elem = NULL;
+            if (ob && ob->kind == TY_ARRAY) elem = ob->inner;
+            else                              elem = viewElemOf(ob);
+            if (!elem) {
+                ckError(c, e->line, "Only a fixed array or a view can be sliced.",
+                        "cannot slice a value of type `%s`", typeStr(c, ot));
+                return ttError(tt);
+            }
+            for (int k = 0; k < 2; k++) {
+                Expr *b = k == 0 ? e->u.slice.lo : e->u.slice.hi;
+                if (!b) continue;
+                Type *bt = checkExpr(c, b);
+                if (!ttIsError(bt) && !ttIsInteger(bt))
+                    ckError(c, b->line, "A slice bound must be an integer.",
+                            "slice bound must be an integer, found `%s`", typeStr(c, bt));
+            }
+            return sliceOf(c, elem);
+        }
+
+        case EX_ARRAYLIT: {
+            /* 类型从上下文来（`var a: [3]i32 = [...]`）或者从元素推 */
+            Type *want = (e->type && e->type->kind == TY_ARRAY) ? e->type : NULL;
+            Type *elemT = NULL;
+
+            for (size_t i = 0; i < e->u.arraylit.elems.len; i++) {
+                Expr *el = *(Expr **)vecAt(&e->u.arraylit.elems, i);
+                if (want) adoptContextType(el, want->inner);
+                Type *t = checkExpr(c, el);
+                if (ttIsError(t)) continue;
+
+                if (!elemT) {
+                    elemT = want ? want->inner : t;
+                }
+                Buf what;
+                bufInit(&what, c->arena);
+                bufPrintf(&what, "array element %zu", i);
+                checkAssignable(c, elemT, t, el, bufCstr(&what));
+            }
+
+            if (!elemT && want) elemT = want->inner;
+            if (!elemT || ttIsError(elemT)) {
+                ckError(c, e->line,
+                        "An empty array literal needs the length and element type from context: "
+                        "`var a: [3]i32 = [...]`.",
+                        "cannot infer the element type of this array literal");
+                return ttError(tt);
+            }
+
+            int64_t n = (int64_t)e->u.arraylit.elems.len;
+            if (e->u.arraylit.rest) {
+                if (!want) {
+                    ckError(c, e->line,
+                            "`...` fills the rest with zero values, so the length has to "
+                            "come from the type.",
+                            "`...` needs the array length from context");
+                    return ttError(tt);
+                }
+                n = want->asize;
+                if (n < (int64_t)e->u.arraylit.elems.len)
+                    ckError(c, e->line, NULL,
+                            "too many elements: `%s` holds %lld",
+                            typeStr(c, want), (long long)want->asize);
+            } else if (want && n != want->asize) {
+                ckError(c, e->line,
+                        "An array literal must give every element. Use a trailing `...` "
+                        "to fill the rest with zero values.",
+                        "`%s` needs %lld element(s), got %lld",
+                        typeStr(c, want), (long long)want->asize, (long long)n);
+                return ttError(tt);
+            }
+
+            Type *arr = ttArray(tt, n, elemT);
+            if (want && !ttEquals(want, arr))
+                ckError(c, e->line, NULL, "array literal does not match `%s`", typeStr(c, want));
+            return arr;
         }
 
         case EX_REF: {
@@ -618,7 +727,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
                     Type *at = checkExpr(c, a);
                     if (!isPrintable(at) || ttIs(at, "void")) {
-                        ckError(c, a->line, "`println` only supports built-in types for now",
+                        ckError(c, a->line, NULL,
                                 "cannot print a value of type `%s`", typeStr(c, at));
                     }
                 }
@@ -1098,6 +1207,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     {
         Type *base = ttFromName(tt, "slice");
         if (base && base->kind == TY_STRUCT && base->sdef) {
+            c.sliceDef = base->sdef;
             Vec args;
             vecInit(&args, arena, sizeof(void *));
             *(Type **)vecPush(&args) = ttFromName(tt, "u8");

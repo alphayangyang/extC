@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    var a: [3]i32 = [1, 2, 3]
+    let s = "abc"
+    println(a[s])
+    return 0
+}

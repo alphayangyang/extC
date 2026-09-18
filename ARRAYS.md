@@ -5,6 +5,20 @@
 >
 > 现在的标准见 [`DESIGN.md`](DESIGN.md)（一条原则）和 [`DECISIONS.md`](DECISIONS.md)（已定案）。
 
+## 实施状态
+
+| 块 | 状态 | 说明 |
+|---|---|---|
+| §2 固定数组类型 `[N]T`（多维递归） | ✅ 已实现 | `TypeKind::TY_ARRAY`，`asize` 存长度 |
+| §2 统一套 struct + C 名字修饰 | ✅ 已实现 | `array_15_i32` / `array_15_array_15_i32` |
+| §2 初始化：零值默认 + 字面量 + `...` | ✅ 已实现 | 字面量严格计数；`...` 只能补尾 |
+| §3 索引 `a[i]` + 边界检查 | ✅ 已实现 | 越界 trap 并报 extC 位置 |
+| 数组 `==`（编译器生成） | ✅ 已实现 | `typeSupportsEq` 递归；`println` 调试打印 |
+| §4 切片视图 `a[lo..hi]` | ⬜ **未实现**（T5a-3） | 语法已能解析，codegen 报 `slicing is not implemented yet` |
+| §5 动态数组 `array<T>` | ⬜ 等 arena（week-4） | 见 §5 的两个前置问题 |
+
+**验证**：`examples/arrays.extc`、`examples/gomoku-board.extc`（G2 里程碑）；`tests/run.sh` 53 通过。
+
 ---
 
 ## 0. 旧文档里**保留**的部分
