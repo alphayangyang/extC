@@ -351,6 +351,73 @@ let v = a[2..9]       // error: slice end 9 is not inside `[5]i32` (length 5)
 
 ---
 
+### `option<T>` / `result<T,E>`：把「可能没有」「可能失败」写进类型
+
+两个类型**都写在 `stdlib/prelude.extc` 里**（extC 源码），不用 import：
+
+| 类型 | 意思 | 零值 |
+|---|---|---|
+| `option<T>` | 可能有值，也可能没有 | **就是「没有」**（`has = false`） |
+| `result<T,E>` | 要么成功给你值，要么失败给你错误 | **失败侧**（`ok = false`） |
+
+「零值就是没有 / 失败」不是巧合 —— 它是定案 8（默认零初始化）的直接结果，
+所以不需要任何新机制。
+
+```extc
+let a = option<i64>::some(42)
+let b = option<i64>::none()          // 也可以：var b: option<i64>  ← 零值就是 none
+if a.has {
+    println(a.value)
+}
+println(b.valueOr(-1))               // 没值就用兜底值
+
+let r = result<unit, gameError>::failure(gameError.occupied)
+if r.ok { ... } else { println(r.err) }
+```
+
+用**关联函数**构造：写在 `struct` 体内但**不带 `self`** 的函数，
+调用时类型写全（不靠上下文猜，见 [`DECISIONS.md`](DECISIONS.md) 定案 27/29）：
+
+```extc
+struct box<T> {
+    value: T
+    fn make(v: T) -> box<T> { return { value: v } }   // 关联函数
+}
+let b = box<i32>::make(5)
+```
+
+### `?`：失败就顺着往上抛
+
+```extc
+fn placeLine(b: ref board, y: i32, from: i32, to: i32) -> result<unit, gameError> {
+    var x: i32 = from
+    while x <= to {
+        place(b, x, y, 1)?           // ← 任何一步失败，整行就失败（可见、无栈展开）
+        x = x + 1
+    }
+    return result<unit, gameError>::success(unit {})
+}
+```
+
+**四个合法位置**（`?` 要在语句级展开成「求值一次 + 判断 + return」）：
+
+| 写法 | 意思 |
+|---|---|
+| `f()?` | 这一步必须成功，否则整串失败 |
+| `let x = e?` | 取出载荷 |
+| `x = e?` | 同上，赋给已有的地方 |
+| `return e?` | 把载荷装回外层类型 |
+
+**载荷类型可以不同**（里层 `result<i64, E>` 放进返回 `result<point, E>` 的函数 ✓），
+**错误类型必须相同** —— `?` 是原样转发，不编造转换。
+
+⚠️ 别的写法（`f(e? + 1)`）会**报错**，不会生成编不过的 C。
+
+⚠️ 已知限制：`option<T>` / `result<T,E>` 的 `T` **不能含 `ref`**
+（`option<slice<u8>>` 不行）—— `None` 的那个 `value` 字段没有合法的值可填。
+
+---
+
 ## 4. 变量与声明
 
 ```extc
