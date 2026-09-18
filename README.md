@@ -110,6 +110,7 @@ fn main() -> i32 {
 ```
 
 `i8..i64 / u8..u64 / f32 / f64 / bool`、`let`/`var`（含零初始化）、
+**位运算 `& | ^ ~ << >>`（优先级跟 C 一致）**、
 `if`/`else if`/`else`、`while`、`return`/`break`/`continue`、
 `struct` + 方法（写在体内）、`type` 枚举、**泛型 `struct Name<T>`（单态化）**、**`==` 由用户显式定义 `fn ==`**、**索引 `a[i]`**、
 **固定数组 `[N]T`（多维、字面量、`...` 补零、越界 trap、值语义）**、
