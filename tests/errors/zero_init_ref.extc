@@ -1,11 +1,11 @@
-struct Point {
+struct point {
     x: i32
 }
 
-fn take(p: ref Point) {
+fn take(p: ref point) {
 }
 
 fn main() -> i32 {
-    var p: ref Point
+    var p: ref point
     return 0
 }

@@ -1,5 +1,5 @@
-struct A {
+struct a {
     n: i32
-    fn ==(self: ref A, other: i32) -> bool { return true }
+    fn ==(self: ref a, other: i32) -> bool { return true }
 }
 fn main() -> i32 { return 0 }

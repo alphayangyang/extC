@@ -1,34 +1,34 @@
 // 自动调试打印：编译器为每个 struct 生成 <Type>_debug，递归打印所有字段
 // （等价于 Rust 的 #[derive(Debug)]）
 
-type Color = | red | green | blue
+type color = | red | green | blue
 
-struct Point {
+struct point {
     x: i32
     y: i32
 }
 
-struct Player {
+struct player {
     name: str
     score: i64
     alive: bool
-    pos: Point          // 嵌套 struct 会递归打印
-    color: Color        // 枚举打印名字
+    pos: point          // 嵌套 struct 会递归打印
+    color: color        // 枚举打印名字
 }
 
 fn main() -> i32 {
-    var p: Point = { x: 3, y: 4 }
-    println(p)                       // Point { x: 3, y: 4 }
+    var p: point = { x: 3, y: 4 }
+    println(p)                       // point { x: 3, y: 4 }
 
-    var pl: Player
+    var pl: player
     pl.name = "naixi"
     pl.score = 100
     pl.alive = true
     pl.pos = p
-    pl.color = Color.green
+    pl.color = color.green
     println(pl)                      // 递归 + 枚举
 
-    var empty: Player                // 零初始化也能直接打
+    var empty: player                // 零初始化也能直接打
     println(empty)
     return 0
 }

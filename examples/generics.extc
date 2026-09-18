@@ -1,51 +1,51 @@
 // T4a：泛型 struct + 单态化
 // 一份 extC 源码 → 编译器按每个实例生成一份 C
 
-struct Point {
+struct point {
     x: i32
     y: i32
 }
 
-struct Pair<A, B> {
+struct pair<A, B> {
     first: A
     second: B
 
-    fn getFirst(self: ref Pair<A, B>) -> A {
+    fn getFirst(self: ref pair<A, B>) -> A {
         return self.first
     }
 
-    fn getSecond(self: ref Pair<A, B>) -> B {
+    fn getSecond(self: ref pair<A, B>) -> B {
         return self.second
     }
 }
 
-struct Box<T> {
+struct box<T> {
     value: T
 
-    fn set(self: ref Box<T>, v: T) {
+    fn set(self: ref box<T>, v: T) {
         self.value = v
     }
 
-    fn get(self: ref Box<T>) -> T {
+    fn get(self: ref box<T>) -> T {
         return self.value
     }
 }
 
 fn main() -> i32 {
-    var p: Pair<i32, u8> = { first: 1, second: 2 }
+    var p: pair<i32, u8> = { first: 1, second: 2 }
     println(p)
     println(p.getFirst())
     println(p.getSecond())
 
-    var q: Pair<bool, Point> = { first: true, second: { x: 7, y: 8 } }
+    var q: pair<bool, point> = { first: true, second: { x: 7, y: 8 } }
     println(q)
 
-    var b: Box<i64>
+    var b: box<i64>
     b.set(42)
     println(b)
     println(b.get())
 
-    var b2: Box<Point>
+    var b2: box<point>
     b2.set({ x: 3, y: 4 })
     println(b2)
     return 0

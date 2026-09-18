@@ -1,6 +1,6 @@
-type Status = | ok | warn
+type status = | ok | warn
 
 fn main() -> i32 {
-    let s = Status.nope
+    let s = status.nope
     return 0
 }

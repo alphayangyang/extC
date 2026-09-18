@@ -38,7 +38,6 @@ static bool inList(const char **list, const char *s, size_t n) {
 
 bool isKeyword(const char *s)     { return inList(KEYWORDS, s, strlen(s)); }
 bool isBuiltinType(const char *s) { return inList(BUILTIN_TYPES, s, strlen(s)); }
-bool isUpperCase(const char *s)   { return s[0] >= 'A' && s[0] <= 'Z'; }
 
 /* ================================================================ 字符类 */
 

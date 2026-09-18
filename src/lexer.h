@@ -33,6 +33,5 @@ void        tokenDescribe(const Token *t, Buf *out);
 
 bool isKeyword(const char *s);
 bool isBuiltinType(const char *s);
-bool isUpperCase(const char *s);
 
 #endif /* EXTC_LEXER_H */

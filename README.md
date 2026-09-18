@@ -74,34 +74,34 @@ make clean
 ## 支持的语法
 
 ```extc
-type Status = | ok | warn | error        // 枚举（无载荷）；变体用 Status.ok 访问
+type status = | ok | warn | error        // 枚举（无载荷）；变体用 status.ok 访问
 
-struct Point {
+struct point {
     x: i32
     y: i32
 
-    fn moveBy(self: ref Point, dx: i32, dy: i32) {   // 方法写在 struct 体内
+    fn moveBy(self: ref point, dx: i32, dy: i32) {   // 方法写在 struct 体内
         self.x = self.x + dx
     }
 
-    fn magnitudeSquared(self: ref Point) -> i32 {
+    fn magnitudeSquared(self: ref point) -> i32 {
         return self.x * self.x + self.y * self.y
     }
 }
 
-fn origin() -> Point {
+fn origin() -> point {
     return { x: 0, y: 0 }                // 裸 {} 从返回类型推导
 }
 
-fn addTo(p: ref Point, dx: i32) {
+fn addTo(p: ref point, dx: i32) {
     p.moveBy(dx, 0)                      // 方法接收者自动取地址
 }
 
 fn main() -> i32 {
-    var p: Point = { x: 1, y: 2 }
+    var p: point = { x: 1, y: 2 }
     addTo(ref p, 3)                      // 自由函数的引用实参要写 ref
-    let q: Point = {}                    // 零初始化
-    var s: Status                        // 零初始化：第一个变体
+    let q: point = {}                    // 零初始化
+    var s: status                        // 零初始化：第一个变体
     println(p.magnitudeSquared())
     println(s)                           // ok —— 枚举自动有名字文本
     return 0
@@ -116,7 +116,7 @@ fn main() -> i32 {
 **类型系统**：只自动做**无损失**的拓宽；收窄一律禁止；字面量按值适配；
 `==` 需要类型自己**显式定义 `fn ==`**（不引入 trait，也不用约定名）。
 
-**还没有**：`Slice`/`Array`（泛型机制已通，容器本体等 T4b）、`Option`/`Result`/`?`、`match`、`for`、格式串、
+**还没有**：`slice`/`array`（泛型机制已通，容器本体等 T4b）、`option`/`result`/`?`、`match`、`for`、格式串、
 模块系统、全局变量、`region`、`@recursive`、**逃逸检查**。
 
 ## 目录
@@ -130,7 +130,7 @@ src/          C 实现的编译器（正史）
   codegen.[ch]  C 代码生成（带 #line 映射）
   main.c        驱动
 examples/     样例（hello / fizzbuzz / types / structs / enums / refs / generics / eq / debug）
-stdlib/       prelude.extc —— 用 extC 写的预lude（T4b 会把 Slice<T> 放这里）
+stdlib/       prelude.extc —— 用 extC 写的预lude（T4b 会把 slice<T> 放这里）
 tools/        embed.c —— 把 stdlib/*.extc 嵌成 C 字节数组（C 写的，无解释器依赖）
 tests/        回归测试（正例 + 反例）
 prototype-python/   作废的 Python 草稿，只作语法参考

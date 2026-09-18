@@ -9,6 +9,10 @@ typedef struct {
     Arena *arena;
     Vec   *toks;
     size_t pos;
+    /* 是否正在解析 `if` / `while` 的条件。
+     * 在条件位置里，`{` 属于**块**而不是结构体字面量 —— 这就是「位置规则」，
+     * 它取代了以前那套「首字母大写才算结构体字面量」的隐藏魔法。 */
+    bool   inCond;
 } Parser;
 
 /* ---------------------------------------------------------------- 前瞻 */
@@ -109,7 +113,7 @@ static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
 /* 把 toks 里的声明**追加**到 out（不重置 —— out 由调用方初始化一次）。
  * prelude 和用户文件就是靠这个进同一个 Module 的，将来多文件编译也一样。 */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
-    Parser p = { ctx, arena, toks, 0 };
+    Parser p = { ctx, arena, toks, 0, false };
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
@@ -418,7 +422,10 @@ static Stmt *parseVarDecl(Parser *p) {
 
 static Stmt *parseIf(Parser *p) {
     Token *kw = take(p);                    /* if */
+    const bool saved = p->inCond;
+    p->inCond = true;
     Expr *cond = parseExpr(p);
+    p->inCond = saved;
     if (!cond) return NULL;
 
     Stmt *thenBody = parseBlock(p);
@@ -442,7 +449,10 @@ static Stmt *parseIf(Parser *p) {
 
 static Stmt *parseWhile(Parser *p) {
     Token *kw = take(p);                    /* while */
+    const bool saved = p->inCond;
+    p->inCond = true;
     Expr *cond = parseExpr(p);
+    p->inCond = saved;
     if (!cond) return NULL;
 
     Stmt *body = parseBlock(p);
@@ -599,6 +609,8 @@ static bool parseArgs(Parser *p, Vec *out) {
     vecInit(out, p->arena, sizeof(void *));
     if (!expect(p, "(", NULL)) return false;
     skipNl(p);
+    const bool savedCond = p->inCond;
+    p->inCond = false;
     while (!at(p, ")")) {
         Expr *a = parseExpr(p);
         if (!a) return false;
@@ -607,6 +619,7 @@ static bool parseArgs(Parser *p, Vec *out) {
         else break;
     }
     skipNl(p);
+    p->inCond = savedCond;
     return expect(p, ")", NULL);
 }
 
@@ -640,7 +653,10 @@ static Expr *parsePrimary(Parser *p) {
     if (at(p, "(")) {
         take(p);
         skipNl(p);
+        const bool saved = p->inCond;
+        p->inCond = false;          /* 括号里是普通表达式，字面量不再受限 */
         Expr *e = parseExpr(p);
+        p->inCond = saved;
         if (!e) return NULL;
         skipNl(p);
         if (!expect(p, ")", NULL)) return NULL;
@@ -650,9 +666,25 @@ static Expr *parsePrimary(Parser *p) {
 
     if (t->kind == TK_IDENT) {
         take(p);
-        /* `Name { ... }` 只在首字母大写时当结构体字面量 ——
-         * 用命名规范（类型 PascalCase）消歧义，省掉一个关键字。 */
-        if (at(p, "{") && isUpperCase(t->text)) return parseStructLit(p, t->text);
+        /* `name { ... }` 是结构体字面量。
+         *
+         * 位置规则（跟 Go 一样）：在 `if` / `while` 的**条件位置**里 `{` 属于块，
+         * 所以那里不加括号就写不出字面量：`if x == (point { a: 1 }) { }`。
+         * 这样类型名不必靠大小写来消歧义 —— 规则写在语法里，不藏在命名里。 */
+        if (at(p, "{") && !p->inCond) return parseStructLit(p, t->text);
+
+        /* 条件位置里的 `{` 属于块 —— 但如果括号里明显是字面量（`{ ident :`），
+         * 那就是忘了加括号，给一条能直接照抄的提示 */
+        if (at(p, "{") && p->inCond &&
+            pk(p, 1)->kind == TK_IDENT && strcmp(pk(p, 2)->text, ":") == 0) {
+            Token *bt = cur(p);
+            ctxError(p->ctx, bt->line, bt->col,
+                     "Inside an `if` / `while` condition a `{` starts the body block. "
+                     "To write a struct literal there, wrap it in parentheses.",
+                     "struct literal in a condition needs parentheses: `(%s { ... })`",
+                     t->text);
+            return NULL;
+        }
 
         Expr *e = exprNew(p->arena, EX_IDENT, t->line);
         e->u.ident.name = t->text;

@@ -70,22 +70,22 @@ fn main() -> i32 { ... }
 
 | 类型 | 方法 |
 |---|---|
-| `Slice<T>` | `isEmpty()` / `hasAt(i)` |
+| `slice<T>` | `isEmpty()` / `hasAt(i)` |
 
 ```extc
 var n: i32 = 42
-var s: Slice<i32> = { data: ref n, len: 1 }    // 指向 n 的一片
+var s: slice<i32> = { data: ref n, len: 1 }    // 指向 n 的一片
 println(s.isEmpty())     // false
 println(s.hasAt(0))      // true
 println(s.hasAt(1))      // false
 ```
 
 > **为什么要有 prelude？** 因为「能在 extC 里写的东西，就在 extC 里写」。
-> 没有它，`Slice<T>` 只能在编译器的代码生成器里硬编码 —— 那就成了**把库塞进编译器**。
+> 没有它，`slice<T>` 只能在编译器的代码生成器里硬编码 —— 那就成了**把库塞进编译器**。
 > 验收方式很机械：`grep -in slice src/*.c src/*.h` 应该**一无所获**。
 >
-> ⚠️ 现在 `Slice` 的方法很少（没有数组索引和 `Option` 就写不出 `get`），
-> 而且**空 Slice 造不出来** —— `ref` 不可为空，长度 0 的切片没有合法的 `data`。
+> ⚠️ 现在 `slice` 的方法很少（没有数组索引和 `option` 就写不出 `get`），
+> 而且**空 slice 造不出来** —— `ref` 不可为空，长度 0 的切片没有合法的 `data`。
 
 ---
 
@@ -120,7 +120,7 @@ let b = 2
 | 无符号整数 | `u8` `u16` `u32` `u64` | `uint8_t` … `uint64_t` |
 | 浮点 | `f32` `f64` | `float` / `double` |
 | 布尔 | `bool` | `bool` |
-| 字符串字面量 | `str` ⚠️ **临时，week-1 会改成 `Slice<u8>`** | `const char *` |
+| 字符串字面量 | `str` ⚠️ **临时，week-1 会改成 `slice<u8>`** | `const char *` |
 | 空 | `void` | `void` |
 
 **没有 `int` / `long` / `char` / `double`** —— 类型名一律带位宽（见 [`SYNTAX.md`](SYNTAX.md) 的命名规范）。
@@ -178,18 +178,18 @@ let c = a + b           // error: `u32` and `i32` have no common type for `+`
 ### 枚举类型
 
 ```extc
-type Status = | ok | warn | error      // 前导 `|` 可写可不写
+type status = | ok | warn | error      // 前导 `|` 可写可不写
 ```
 
-- 变体用 **`类型名.变体名`** 访问：`Status.ok`
-- 变体名不必全局唯一 —— `Status.ok` 和 `Result.ok` 是两个不同的东西
+- 变体用 **`类型名.变体名`** 访问：`status.ok`
+- 变体名不必全局唯一 —— `status.ok` 和 `result.ok` 是两个不同的东西
 - 只有**同类型**才能比较和赋值（不能拿 `i32` 跟枚举比）
 - 枚举**自动有名字文本**（定案 11）：`println(s)` 直接打印 `warn`
 
 ```extc
-type Status = | ok | warn | error
+type status = | ok | warn | error
 
-if s == Status.ok { ... }      // 可以
+if s == status.ok { ... }      // 可以
 if s == 0 { ... }              // error: 类型不匹配
 println(s)                     // warn
 ```
@@ -197,29 +197,29 @@ println(s)                     // warn
 ### 泛型
 
 ```extc
-struct Pair<A, B> {
+struct pair<A, B> {
     first: A
     second: B
 
-    fn getFirst(self: ref Pair<A, B>) -> A {
+    fn getFirst(self: ref pair<A, B>) -> A {
         return self.first
     }
 }
 
-struct Box<T> {
+struct box<T> {
     value: T
-    fn set(self: ref Box<T>, v: T) { self.value = v }
-    fn get(self: ref Box<T>) -> T { return self.value }
+    fn set(self: ref box<T>, v: T) { self.value = v }
+    fn get(self: ref box<T>) -> T { return self.value }
 }
 
 fn main() -> i32 {
-    var p: Pair<i32, u8> = { first: 1, second: 2 }
+    var p: pair<i32, u8> = { first: 1, second: 2 }
     println(p.getFirst())            // 1
 
-    var q: Pair<bool, Point> = { first: true, second: { x: 7, y: 8 } }
+    var q: pair<bool, point> = { first: true, second: { x: 7, y: 8 } }
     println(q)                       // 实例也能自动调试打印
 
-    var b: Box<i64>
+    var b: box<i64>
     b.set(42)
     println(b.get())                 // 42
     return 0
@@ -228,32 +228,32 @@ fn main() -> i32 {
 
 - 泛型参数写在 struct 名后：`struct Name<T> { ... }`
 - 使用时**必须写出实参**：`Name<i32>`（不写是编译错误）
-- 编译器**按实例生成 C**（单态化）：`Pair<i32, u8>` → C 里的 `Pair_i32_u8`，
-  方法变成 `Pair_i32_u8_getFirst`
-- 泛型 struct 的方法里，泛型参数可见（`fn get(self: ref Box<T>) -> T`）
+- 编译器**按实例生成 C**（单态化）：`pair<i32, u8>` → C 里的 `pair_i32_u8`，
+  方法变成 `pair_i32_u8_getFirst`
+- 泛型 struct 的方法里，泛型参数可见（`fn get(self: ref box<T>) -> T`）
 
 > ⚠️ **已知限制（「模板检查一遍」换来的代价）**
 >
 > 类型检查是对**模板**做的，所以模板里 `A` 和 `B` 是不确定的。要求两边同类型的操作写不出来：
 >
 > ```extc
-> fn swap(self: ref Pair<A, B>) {
+> fn swap(self: ref pair<A, B>) {
 >     let tmp: A = self.first
 >     self.first = self.second   // error: assignment expects `A`, found `B`
 > }
 > ```
 >
-> 要写这种操作，就**用一个参数**：`struct Pair<T> { first: T  second: T }`。
+> 要写这种操作，就**用一个参数**：`struct pair<T> { first: T  second: T }`。
 >
 > 收益是：错误只报一次、错误信息指向模板而不是某个实例 ——
 > 反面就是 C++ 那种「实例化时才炸出一屏模板错误」。
 
 ### 结构体类型
 
-顶层 `struct` 定义的类型就是类型名，PascalCase：
+顶层 `struct` 定义的类型就是类型名，camelCase（**跟变量一样**，不用 PascalCase）：
 
 ```extc
-struct Point {
+struct point {
     x: i32
     y: i32
 }
@@ -266,7 +266,7 @@ struct Point {
 **目前 `ref T` 只在函数参数上有用** —— 因为还没有「产生一个引用」的语法（`ref x` 表达式是 week-1 的任务 T3）。
 
 ```extc
-fn moveBy(self: ref Point, dx: i32) {
+fn moveBy(self: ref point, dx: i32) {
     self.x = self.x + dx      // ref 用 `.` 访问字段，编译器生成 `->`
 }
 ```
@@ -282,7 +282,7 @@ var name: Type               // 零初始化（定案 8）
 ```
 
 - **类型标注可以省**（局部变量）：`var y = 4` 从初始化式推导。
-- **省略初始化式就必须写类型**：`var b: Board` 会**自动清零** ——
+- **省略初始化式就必须写类型**：`var b: board` 会**自动清零** ——
   C 里最大的 UB 来源之一就是「读到未初始化内存」，它只能在运行时发现；
   默认清零把它变成编译期就能保证的东西。
 - `ref T` **不能零初始化** —— 它是不可为空的引用，没有「零值」。
@@ -292,7 +292,7 @@ var name: Type               // 零初始化（定案 8）
 let x = 1
 x = 2              // error: cannot assign to `x`, which is a `let`
 
-var b: Board       // 所有字段清零
+var b: board       // 所有字段清零
 var n: i32         // 0
 var ok: bool       // false
 ```
@@ -329,9 +329,9 @@ var ok: bool       // false
 ### 结构体字面量
 
 ```extc
-let p: Point = { x: 1, y: 2 }    // 靠声明类型补全
-let q = Point { x: 1, y: 2 }     // 写全类型名也行
-let o: Point = {}                // 空字面量 = 零初始化（靠声明类型补全）
+let p: point = { x: 1, y: 2 }    // 靠声明类型补全
+let q = point { x: 1, y: 2 }     // 写全类型名也行
+let o: point = {}                // 空字面量 = 零初始化（靠声明类型补全）
 ```
 
 裸 `{}` 的类型**从上下文推导**，只在上下文能唯一确定类型的地方允许：
@@ -342,7 +342,22 @@ let o: Point = {}                // 空字面量 = 零初始化（靠声明类�
 
 推导不出来就报错，**绝不猜**。
 
-> `Name { ... }` 只在名字**首字母大写**时被当作结构体字面量 —— 用命名规范消歧义，省掉一个关键字。
+> **位置规则（跟 Go 一样）**：`name { ... }` 是结构体字面量，
+> 但在 `if` / `while` 的**条件位置**里，`{` 属于代码块 —— 想在那里写字面量就加一对括号：
+>
+> ```extc
+> let p = point { x: 1 }                    // 可以：这里 `{` 就是字面量
+> if p == point { x: 1 } { }                // ✗ 报错：条件里的 `{` 是块
+> if p == (point { x: 1 }) { }              // ✓ 加括号
+> ```
+>
+> 规则写在**语法**里，不藏在**命名**里（以前是靠「首字母大写」当字面量，那是隐藏魔法）。
+>
+> 报错也会直接告诉你加括号：
+> ```
+> error: struct literal in a condition needs parentheses: `(point { ... })`
+>   note: Inside an `if` / `while` condition a `{` starts the body block. To write a struct literal there, wrap it in parentheses.
+> ```
 
 ### `==` 与运算符定义
 
@@ -357,22 +372,22 @@ let o: Point = {}                // 空字面量 = 零初始化（靠声明类�
 想让自己的类型能比，就在 struct 里**显式定义 `==`**：
 
 ```extc
-struct Point {
+struct point {
     x: i32
     y: i32
 
-    fn ==(self: ref Point, other: Point) -> bool {
+    fn ==(self: ref point, other: point) -> bool {
         return self.x == other.x && self.y == other.y
     }
 }
 
-let a: Point = { x: 1, y: 2 }
-let b: Point = { x: 1, y: 2 }
-println(a == b)      // true —— 生成 Point_eq(&a, b)
+let a: point = { x: 1, y: 2 }
+let b: point = { x: 1, y: 2 }
+println(a == b)      // true —— 生成 point_eq(&a, b)
 ```
 
 **把 `==` 写出来，而不是约定一个隐式的方法名** —— 读代码的人一眼就知道
-`p1 == p2` 的行为从哪来。（在 C 里它被拼成 `Point_eq`，因为 C 的标识符不能叫 `==`。）
+`p1 == p2` 的行为从哪来。（在 C 里它被拼成 `point_eq`，因为 C 的标识符不能叫 `==`。）
 
 **签名约定（在定义处强制检查）**：`fn ==(self: ref T, other: T 或 ref T) -> bool`
 
@@ -386,14 +401,14 @@ println(a == b)      // true —— 生成 Point_eq(&a, b)
 >
 > ⇒ 所以 `==` 只能是 `bool`，否则它根本没法用在条件里。
 >
-> **想要别的结果？换个方法名就行** —— `fn compare(...) -> Ordering`、`fn diff(...) -> Diff`
+> **想要别的结果？换个方法名就行** —— `fn compare(...) -> ordering`、`fn diff(...) -> diff`
 > 之类**没有任何限制**，随便返回什么。只有 `==` 这个名字被绑定了 `bool`，
 > 因为它在源码里的位置决定了它是「一个条件」。
 >
 > 编译器在**你写下定义的那一刻**就查这条，而不是等到某处用到它才查。
 
-- `other` 取**值**时，`a == b` 生成 `Point_eq(&a, b)`，最省事 —— 小类型建议这样。
-- `other` 取 **`ref`** 时，生成 `Point_eq(&a, &b)`（编译器自动加 `&`）；
+- `other` 取**值**时，`a == b` 生成 `point_eq(&a, b)`，最省事 —— 小类型建议这样。
+- `other` 取 **`ref`** 时，生成 `point_eq(&a, &b)`（编译器自动加 `&`）；
   但要是**手动**写 `a.==(b)`，`other` 是 ref 就必须写 `a.==(ref b)` ——
   因为**方法参数**（不是接收者）是引用时，调用点要显式写 `ref`。
 
@@ -401,36 +416,36 @@ println(a == b)      // true —— 生成 Point_eq(&a, b)
 所以取反永远合法）：
 
 ```extc
-if a != b { }        // 没定义 `fn !=` 时，生成 !(Point_eq(&a, b))
+if a != b { }        // 没定义 `fn !=` 时，生成 !(point_eq(&a, b))
 ```
 
 **运算符必须写在 struct 体内**（它是一个方法）：
 
 ```extc
-fn ==(self: ref Point, other: Point) -> bool { ... }    // error: 自由函数不能定义运算符
+fn ==(self: ref point, other: point) -> bool { ... }    // error: 自由函数不能定义运算符
 ```
 
 **泛型里的 `==` 会推迟到实例化才检查**：
 
 ```extc
-struct Wrapper<T> {
+struct wrapper<T> {
     value: T
 
-    fn same(self: ref Wrapper<T>, other: Wrapper<T>) -> bool {
+    fn same(self: ref wrapper<T>, other: wrapper<T>) -> bool {
         return self.value == other.value      // T 能不能比？实例化时才知道
     }
 }
 
-var a: Wrapper<i32> = { value: 7 }     // i32 内建 → ✓
-var b: Wrapper<Tag> = { ... }          // Tag 没定义 == → ❌
-// error: `Wrapper_Tag` needs `Tag` to define `==`
+var a: wrapper<i32> = { value: 7 }     // i32 内建 → ✓
+var b: wrapper<tag> = { ... }          // tag 没定义 == → ❌
+// error: `wrapper_tag` needs `tag` to define `==`
 ```
 
 > **这是「不引入 trait」的代价**：错误晚到实例化，但信息里会点明是哪个实例。
 > 收益是语言里**一个新概念都不加** —— `fn ==` 就只是一个方法。
 
 ⚠️ **`str` 不能比较**。它的 `==` 会退化成 C 的**指针比较**（陷阱），所以编译器直接拒绝。
-T4c 把字符串换成 `Slice<u8>` 之后，prelude 会给它一个**按内容比较**的 `fn ==`。
+T4c 把字符串换成 `slice<u8>` 之后，prelude 会给它一个**按内容比较**的 `fn ==`。
 
 ---
 
@@ -466,22 +481,22 @@ continue
 **方法写在 `struct` 体内**（定案 9），首参数必须是 `self: ref 本类型`：
 
 ```extc
-struct Point {
+struct point {
     x: i32
     y: i32
 
-    fn moveBy(self: ref Point, dx: i32, dy: i32) {
+    fn moveBy(self: ref point, dx: i32, dy: i32) {
         self.x = self.x + dx
         self.y = self.y + dy
     }
 
-    fn magnitudeSquared(self: ref Point) -> i32 {
+    fn magnitudeSquared(self: ref point) -> i32 {
         return self.x * self.x + self.y * self.y
     }
 }
 
 fn main() -> i32 {
-    var p: Point = { x: 1, y: 2 }
+    var p: point = { x: 1, y: 2 }
     p.moveBy(3, 4)                  // 接收者自动取地址，调用点不用写 ref
     println(p.magnitudeSquared())   // 52
     return 0
@@ -490,12 +505,12 @@ fn main() -> i32 {
 
 细节：
 
-- **接收者自动取地址**：`p.moveBy(...)` 里 `p` 是值、`self` 是 `ref Point`，编译器生成 `&p`。
+- **接收者自动取地址**：`p.moveBy(...)` 里 `p` 是值、`self` 是 `ref point`，编译器生成 `&p`。
   反过来（接收者是 `ref T`、`self` 是值类型）会自动解引用。
   > 规则：**`.` 本身就表示「在这个值上操作」**，所以方法接收者不用写 `ref`；
   > 而**自由函数的 `ref T` 实参必须在调用点写 `ref`**（见下）。
-- **方法名有命名空间**：`Point.eq` 和 `Board.eq` 是两个不同的名字，
-  顶层不用为了避冲突而发明 `point_eq` 这种名字。C 里生成 `Point_eq` 做区分。
+- **方法名有命名空间**：`point.eq` 和 `board.eq` 是两个不同的名字，
+  顶层不用为了避冲突而发明 `point_eq` 这种名字。C 里生成 `point_eq` 做区分。
 - 字段访问按类型决定用 `.` 还是 `->`，用户不用管。
 - **自由函数不能有 `self` 参数** —— `self` 只属于方法。
 
@@ -506,17 +521,17 @@ fn main() -> i32 {
 **`ref` 在调用点要显式写**（定案 10）——让读代码的人一眼看出这里传的是引用不是拷贝：
 
 ```extc
-struct Counter {
+struct counter {
     n: i32
-    fn bump(self: ref Counter, by: i32) { self.n = self.n + by }
+    fn bump(self: ref counter, by: i32) { self.n = self.n + by }
 }
 
-fn addTo(c: ref Counter, by: i32) {     // 自由函数的引用参数
+fn addTo(c: ref counter, by: i32) {     // 自由函数的引用参数
     c.bump(by)                          // 方法接收者自动取地址
 }
 
 fn main() -> i32 {
-    var c: Counter = { n: 10 }
+    var c: counter = { n: 10 }
     addTo(ref c, 7)                     // ← 必须写 ref
     println(c.n)                        // 17
     return 0
@@ -526,7 +541,7 @@ fn main() -> i32 {
 - 实参**本身就是引用**时，不用再写 `ref`，直接传。
 - `ref` 是**可变**引用，所以**不能对 `let` 取引用**：
   ```extc
-  let c: Counter = {}
+  let c: counter = {}
   addTo(ref c, 1)      // error: cannot take a mutable reference to `c`, which is a `let`
   ```
 - 只有变量和字段能取引用（`ref f()` 不行）。
@@ -553,7 +568,7 @@ println(42)         // 42
 println(3.14)       // 3.14
 println(true)       // true
 println("hi")       // hi
-println(Status.warn)// warn   ← 枚举自动有名字文本（定案 11）
+println(status.warn)// warn   ← 枚举自动有名字文本（定案 11）
 ```
 
 > ⚠️ **格式串 `{}` 已定案要加**（编译期展开，不是运行时解析），但 week-0 还没实现。见第 10 节。
@@ -590,7 +605,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 **结构 / 枚举 / 引用（T3）**
 - 重名的 struct / type / 函数 / 字段 / 方法 / 变体
 - 字段和方法同名
-- 不存在的变体（`Status.nope`）
+- 不存在的变体（`status.nope`）
 - `self` 不在 struct 体内、`self` 类型不对、`self` 不是首参数
 - 对 `let` 取引用、对不是变量/字段的东西取引用
 - 自由函数的 `ref` 实参没写 `ref`
@@ -607,9 +622,9 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
-| **`Slice<T>` / `Array<T>`** | 泛型机制✅已通；容器本体要用 extC 预lude 写 | T4b |
-| **字符串字面量 = `Slice<u8>`** | `str` 作废 | T4 |
-| **`Option<T>` / `Result<T,E>` / `?`** | | T5 |
+| **`slice<T>` / `array<T>`** | 泛型机制✅已通；容器本体要用 extC 预lude 写 | T4b |
+| **字符串字面量 = `slice<u8>`** | `str` 作废 | T4 |
+| **`option<T>` / `result<T,E>` / `?`** | | T5 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | T5 之后 |
 | **全局变量** | 全局 = 深度 0 的 arena，`static` 关键字因此消失 | week-2 |
 | **`@main` 注解** | 标在任意函数上，不再硬编码 `main` | week-2 |
@@ -625,7 +640,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 ## 11. 还没定的
 
-`Result<void,E>` 还是 `Result<(),E>`、`@main` 和 `module main` 的优先关系、`+=` 复合赋值、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
+`result<void,E>` 还是 `result<(),E>`、`@main` 和 `module main` 的优先关系、`+=` 复合赋值、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
 
 ---
 
@@ -639,12 +654,12 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | `fizzbuzz.extc` | `else if` 链、`%`、`while` |
 | `types.extc` | 拓宽自动、字面量按值适配（T2） |
 | `structs.extc` | struct、**方法写在 struct 体内**、裸 `{}` 推导、**零初始化** |
-| `enums.extc` | `type` 枚举、`Status.ok`、枚举自动打印名字 |
+| `enums.extc` | `type` 枚举、`status.ok`、枚举自动打印名字 |
 | `refs.extc` | **`ref` 表达式**、自由函数实参写 `ref`、方法接收者自动取地址 |
 | `generics.extc` | **泛型 `struct Name<T>`**：四份实例同时工作、嵌套 struct、实例的自动调试打印 |
 | `eq.extc` | **显式定义 `fn ==`**：普通 struct、`!=` 取反、泛型里推迟到实例化检查 |
 | `debug.extc` | **自动调试打印**：递归打印 struct、枚举打名字、零初始化直接打 |
-| `prelude.extc` | **prelude 里的 `Slice<T>`** 直接用，两份实例 |
+| `prelude.extc` | **prelude 里的 `slice<T>`** 直接用，两份实例 |
 
 跑测试：
 

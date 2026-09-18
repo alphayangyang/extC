@@ -39,7 +39,7 @@
 
 ### P 管辖什么、不管什么（2026-09-18 补，这条很重要）
 
-看五子棋代码时撞上的问题：`var b: Board` 默认清零（900 字节 memset）、递归里 `var child = b` 拷贝 900 字节 —— **这些在 P 的字面意思下都是「运行时开销」，那 P 岂不是连 `x + y` 都要禁？**
+看五子棋代码时撞上的问题：`var b: board` 默认清零（900 字节 memset）、递归里 `var child = b` 拷贝 900 字节 —— **这些在 P 的字面意思下都是「运行时开销」，那 P 岂不是连 `x + y` 都要禁？**
 
 > **P 禁止的是「隐藏的机制」**（GC、异常、运行时元数据、隐藏分配、运行时类型标签），
 > **不是「数据拷贝」。**
@@ -114,7 +114,7 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 
 ### 词法，不是动态（这条写死，2026-09-18）
 
-五子棋示例代码正好撞上这个问题：`alphabeta` 在每个节点都调 `candidates()`，每次都分配一个 `VarArray<Point>`。
+五子棋示例代码正好撞上这个问题：`alphabeta` 在每个节点都调 `candidates()`，每次都分配一个 `VarArray<point>`。
 
 | 如果 arena 是… | 后果 |
 |---|---|
@@ -135,10 +135,10 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 | v0 里的东西 | 现在是什么 | 说明 |
 |---|---|---|
 | 局部变量 / 栈 | arena = 函数帧 | 同一个东西 |
-| `Box<T>` | arena = 所在作用域，**只有值**的 arena | 不是独立机制 |
+| `box<T>` | arena = 所在作用域，**只有值**的 arena | 不是独立机制 |
 | `VarArray<T>` | arena = 所在 region | — |
-| `String` | arena = 所在作用域 | 它只是个缓冲区 |
-| `File` | arena = 所在作用域 | OS 句柄也在 arena 里 |
+| `string` | arena = 所在作用域 | 它只是个缓冲区 |
+| `file` | arena = 所在作用域 | OS 句柄也在 arena 里 |
 | `region` | **显式命名的 arena** | 全语言唯一为 arena 新增的语法：给 arena 起个名，用来推迟释放 |
 
 **没有析构函数、没有析构顺序、没有所有权转移、没有 move 检查的必然性。** 「谁拥有它」这个问题消失了 —— **arena 拥有它**。
@@ -151,7 +151,7 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 
 于是不需要为全局写任何特殊规则，而且 `static` 关键字直接消失：
 
-1. 在最外层写 `var board: Board` 就是全局，没有关键字要记。
+1. 在最外层写 `var board: board` 就是全局，没有关键字要记。
 2. **引用规则自动兜住危险用法** —— 全局（深度 0）存一个指向局部（深度 ≥ 1）的 `ref`：`0 ≥ 1` 为假 → 编译错误。
 3. **真正危险的那个 `static`（局部变量活得比函数调用久）在语法上不可达** —— 局部的作用域就是它的 arena，作用域结束它就死。「局部但活得比局部久」这句话说不出来。
 
@@ -167,7 +167,7 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 
 | 形态 | 例 | 何时用 |
 |---|---|---|
-| **传 out-arena** | `fn make(into: ref Arena) -> ref T` | 变长堆值（String、VarArray） |
+| **传 out-arena** | `fn make(into: ref Arena) -> ref T` | 变长堆值（string、VarArray） |
 | **按值返回** | `fn make() -> T` | 定长值免费；变长堆值仍需 arena 来源 |
 
 **「结果自动落到调用者帧」被判出局**（这是最容易顺手做的一个语法糖）：语法上看不见那块内存在哪儿 —— 违反 P′；而且在循环里会静默堆积内存 —— 这正是 Zig 逼你传 allocator 的原因。
@@ -182,7 +182,7 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 |---|---|---|
 | 无 GC | P″ | §6 ✅ |
 | 无引用计数 | P：refcount 是运行时字段 | （v0 没写，补上） |
-| 无异常 | 异常是运行时展开的控制流；`Result<T,E>` 是**值** | §6 ✅ |
+| 无异常 | 异常是运行时展开的控制流；`result<T,E>` 是**值** | §6 ✅ |
 | `?` 合法 | 可见的语法、静态解析、无栈展开的转发 | §7 ✅ |
 | 无 vtable / RTTI | 运行时分派；标签联合 + `match` + 穷尽检查 = 写出来的分派 | §6 ✅ |
 | **无 `any` / `interface` / 反射** | 需要运行时类型标签 | **v0 没写，补上** |
@@ -191,7 +191,7 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 | 收窄必须显式、且必须命名失败方式 | 收窄是运行时动作（回绕/舍入/检查），不可证明 ⇒ P′ 要求可见 | §5 ✅ |
 | 无 `as` 链 | 同上 | §5 ✅ |
 | 格式串 = **编译期展开的语法糖** | 运行时没有解析 ⇒ 不违反 P。见下面「一处改判」 | 2026-09-18 改判 |
-| 默认零初始化（`var b: Board` 合法，自动清零） | 未初始化 UB 从语言里消失 —— P 的胜利 | 2026-09-18 新增 |
+| 默认零初始化（`var b: board` 合法，自动清零） | 未初始化 UB 从语言里消失 —— P 的胜利 | 2026-09-18 新增 |
 | 无变参 `...T` | `va_list` 是运行时参数元数据 | §8，**理由要换** |
 | 索引/越界 | P 要求能证明的零痕迹 ⇒ 逼出范围类型 | §6，但**要重写**（见 §4） |
 
@@ -225,7 +225,7 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 
 **更根本的一条：异常和 arena 天生冲突。** `throw` 穿过一个 `region` 块时，谁来释放那个 arena？
 要么给每层栈帧加 unwinding cleanup（运行时簿记 ⇒ 违反 P），要么泄漏。
-`Result` 没这个问题 —— 作用域照样正常结束，arena 照样死。
+`result` 没这个问题 —— 作用域照样正常结束，arena 照样死。
 
 附带的好处：**`?` 不像异常那样能被忘掉**，编译器逼你处理。
 
@@ -233,13 +233,13 @@ P′ 不能只是一句话，它得有个符号。就是这个：
 
 | | 用什么 | 例子 |
 |---|---|---|
-| **可恢复的失败** | `Result<T,E>` + `?` | 文件不存在、落子位置被占 |
+| **可恢复的失败** | `result<T,E>` + `?` | 文件不存在、落子位置被占 |
 | **bug** | **trap**（直接崩） | 数组越界、除零 |
 
 把 bug 也做成可捕获的异常是错的 —— 那会让「我懒得处理」伪装成「我 catch 一下就算了」。
 
-**已知缺口（要提前想）**：`?` 要求错误类型兼容。`fn f() -> Result<T, E1>` 里 `?` 一个
-`Result<U, E2>` 需要转换，Rust 用 `From` 解决。extC 现在没有 `From`，**所以这是个待定项**。
+**已知缺口（要提前想）**：`?` 要求错误类型兼容。`fn f() -> result<T, E1>` 里 `?` 一个
+`result<U, E2>` 需要转换，Rust 用 `From` 解决。extC 现在没有 `From`，**所以这是个待定项**。
 
 ### 多线程：不做，但有一条红线现在就要守住
 
@@ -354,7 +354,7 @@ foo.extc:12:9: trap: index 15 out of range for `[15]i32`
 
 ### 泛型的约束：靠签名，不靠 trait，不靠运算符重载（2026-09-18 定）
 
-既然类型是静态检查的，那 **`Pair<A,B>.swap` 写不出来就是对的** —— 它本来就不能对任意的 A、B 成立。
+既然类型是静态检查的，那 **`pair<A,B>.swap` 写不出来就是对的** —— 它本来就不能对任意的 A、B 成立。
 
 两条都不做：
 
@@ -364,7 +364,7 @@ foo.extc:12:9: trap: index 15 out of range for `[15]i32`
 | **trait / interface 约束** | 同上，而且它是「运行时多态」的入口（vtable 违反 P） |
 
 **约束靠签名表达**：需要两边同类型，就用一个参数 ——
-`struct Pair<T> { first: T  second: T }`。想要的功能用「多写一个类型参数」换，不引入新概念。
+`struct pair<T> { first: T  second: T }`。想要的功能用「多写一个类型参数」换，不引入新概念。
 
 ### prelude：编译器自带的「总是先加载的一段库源码」
 
@@ -375,22 +375,22 @@ foo.extc:12:9: trap: index 15 out of range for `[15]i32`
 
 > **能在 extC 里写的东西，就在 extC 里写。**
 
-没有 prelude 的话，`Slice<T>` 只能这么实现：
+没有 prelude 的话，`slice<T>` 只能这么实现：
 
 ```c
 /* codegen.c 里硬编码 —— ❌ 这是「把库塞进编译器」 */
-if (strcmp(t->name, "Slice") == 0) { /* 手写生成 C 结构体和方法 */ }
+if (strcmp(t->name, "slice") == 0) { /* 手写生成 C 结构体和方法 */ }
 ```
 
 有 prelude 之后：
 
 ```extc
 // stdlib/prelude.extc —— ✅ 用 extC 写的
-struct Slice<T> {
+struct slice<T> {
     data: ref T
     len: i64
 
-    fn isEmpty(self: ref Slice<T>) -> bool { return self.len == 0 }
+    fn isEmpty(self: ref slice<T>) -> bool { return self.len == 0 }
 }
 ```
 
@@ -419,17 +419,17 @@ a == b   →
 ```
 
 ```extc
-struct Point {
+struct point {
     x: i32
     y: i32
 
-    fn ==(self: ref Point, other: Point) -> bool {     // ← 就写 `==`，不查约定名
+    fn ==(self: ref point, other: point) -> bool {     // ← 就写 `==`，不查约定名
         return self.x == other.x && self.y == other.y
     }
 }
 ```
 
-- **C 里拼成 `Point_eq`**（C 的标识符不能叫 `==`）
+- **C 里拼成 `point_eq`**（C 的标识符不能叫 `==`）
 - `!=` 可以单独定义；**不定义就退回用 `==` 取反**
 - **`fn ==` 必须写在 struct 体内** —— 它是一个方法，自由函数不能定义运算符
 - **签名在定义处强制检查**：返回值必须 `bool`（否则 `!=` 的取反不成立）、
@@ -441,7 +441,7 @@ struct Point {
 **这条规则顺手把之前那个陷阱彻底堵死了**：「`str ==` 变成 C 的指针比较」之所以能发生，
 就是因为编译器默许了「没定义比较也能比」。现在没定义就报错。
 
-而且 `Slice<u8>` 的 `fn ==`（**按内容比较**）会写在 prelude 里，是 extC 源码 ——
+而且 `slice<u8>` 的 `fn ==`（**按内容比较**）会写在 prelude 里，是 extC 源码 ——
 落到「能写在 extC 里就写在 extC 里」。
 
 #### 规则 2：泛型里，`==` **推迟到实例化**再检查
@@ -451,9 +451,9 @@ struct Point {
 
 | 实例 | 结果 |
 |---|---|
-| `Map<i32, V>` | `i32` 是内建 → 天生能比 ✓ |
-| `Map<Point, V>`，而 `Point` 有 `eq` | ✓ |
-| `Map<Point, V>`，而 `Point` **没定义 `==`** | ❌ **在实例化点报错**：`` `Map_Point_int` needs `Point` to define `==` `` |
+| `map<i32, V>` | `i32` 是内建 → 天生能比 ✓ |
+| `map<point, V>`，而 `point` 有 `eq` | ✓ |
+| `map<point, V>`，而 `point` **没定义 `==`** | ❌ **在实例化点报错**：`` `Map_point_int` needs `point` to define `==` `` |
 
 代价：这个错误晚到实例化。收益：**不需要 trait / bound 这套机制**。
 
@@ -475,7 +475,7 @@ struct Point {
 
 | 属于**编译器** | 属于 **extC 源码**（预lude / 标准库） |
 |---|---|
-| 语法本身（词法、语法、AST） | 容器（`Array<T>`、`Map<K,V>`） |
+| 语法本身（词法、语法、AST） | 容器（`array<T>`、`map<K,V>`） |
 | 类型系统、单态化 | 字符串算法（`find` / `split` / `parseInt`） |
 | 内存模型（arena 的实现） | 错误类型、各种逻辑 |
 | **编译器生成代码**（见下） | 任何「用 extC 写得出来」的东西 |
@@ -486,7 +486,7 @@ struct Point {
    `<Type>_debug`（自动调试打印）和 `<Type>_name`（枚举名字）都是前者 ——
    等价于 Rust 的 `#[derive(Debug)]`。extC 没有反射，「遍历所有字段」这句话
    在语言里**写不出来**，所以只能由编译器生成。
-   而 `Array<T>` 的 `push` 是后者 —— 那句话用 extC 写得出来，就该用 extC 写。
+   而 `array<T>` 的 `push` 是后者 —— 那句话用 extC 写得出来，就该用 extC 写。
 
 2. **泛型的实现方式要顺这条原则设计。**
    单态化不应该意味着「容器硬编码在 codegen 里」，而应该是：
@@ -546,7 +546,7 @@ struct Point {
 
 ```extc
 @recursive(maxDepth: 64)
-fn vcf(b: ref Board, x: i32, y: i32) -> i32 {
+fn vcf(b: ref board, x: i32, y: i32) -> i32 {
     if depth >= 60 { return 0 }        // depth 是隐式的只读绑定，像 self
     ...
 }
@@ -628,7 +628,7 @@ for i in 0 .. a.len      // i 不是 int
 | 情况 | 结果 |
 |---|---|
 | 可证明在范围内 | **不生成任何检查，运行时零痕迹** —— P 完美达成 |
-| 不可证明 | `a[i]` **带检查**（越界 trap）；不想 trap 就写 `a.at(i)?`（返回 `Option<T>`） |
+| 不可证明 | `a[i]` **带检查**（越界 trap）；不想 trap 就写 `a.at(i)?`（返回 `option<T>`） |
 
 > **⚠️ 本条已被真实用例证伪并修正（2026-09-18）。**
 > 初版写的是「不可证明 → 编译错误」。可五子棋里满屏都是 `b.cell[py][px]`，`py` / `px` 是运行时算出来的、证不出来 —— 初版规则会让**五子棋根本写不出来**（见 `SYNTAX.md` 里那段代码）。
@@ -674,7 +674,7 @@ tokenize → parse（完整 AST） → arena/类型检查 → 单态化 → C �
 
 主人说「模板类我直接大手一挥宏定义，或者我编译器生成对应的 C 代码即可」—— **两条都对，而且是同一个办法**：
 
-> **泛型不靠类型系统实现，靠 C 的宏 / 代码生成实现。** `Array<int>` → 生成一份 `array_int` 的 C 代码，或展开一个 `ARRAY_DEFINE(int)` 宏。
+> **泛型不靠类型系统实现，靠 C 的宏 / 代码生成实现。** `array<int>` → 生成一份 `array_int` 的 C 代码，或展开一个 `ARRAY_DEFINE(int)` 宏。
 
 这比「真单态化」便宜得多（编译器里不需要维护实例化图），代价是 C 输出膨胀要量（§8 问题 5）。术语上这叫**语法层泛型**，对自举和五子棋都够用。
 
@@ -686,12 +686,12 @@ tokenize → parse（完整 AST） → arena/类型检查 → 单态化 → C �
 |---|---|---|
 | §2 不建语法树 / token 重写 | **删** | §5 |
 | §3 的三套生命周期机制 | **合为一套** | P″ |
-| §4 五种「指针替代品」 | **合为两件**：`ref` + arena | `Box`/`region` 都只是 arena |
+| §4 五种「指针替代品」 | **合为两件**：`ref` + arena | `box`/`region` 都只是 arena |
 | §5 `From` / `Into` | **删** | 用户扩展点，编译器不需要 |
 | §6 / §8 / §10 的 C 互操作 | **统一为一句话**（见下） | 三处说法矛盾 |
 | §6 多线程 | 保留为 v2 | 数据竞争不是编译期可证明的，要么禁止共享要么可证明，见 §8 |
-| §7 `String<T>` 泛型 | **删泛型**，`String` = UTF-8 bytes | 泛型 String 不服务于 P；`WString` 让 `find`/`substr` 同名不同义，违反 v0 §11.7 |
-| §7 `WString` | **删** | 自举不需要（v0 §11.4 自己的标准） |
+| §7 `string<T>` 泛型 | **删泛型**，`string` = UTF-8 bytes | 泛型 string 不服务于 P；`wString` 让 `find`/`substr` 同名不同义，违反 v0 §11.7 |
+| §7 `wString` | **删** | 自举不需要（v0 §11.4 自己的标准） |
 | §7 `concat` | **改带 `into:`，或改成 `append`** | 变长堆值返回需要 arena 来源（§2） |
 | §7 `substr`（返回新串） | **删，改 `view`（零分配）** | 词法分析器要的是源码视图，不是拷贝。顺带让 tokenizer 零分配 |
 | §7 `to_bytes` | **删**（被 `view` 取代） | — |
@@ -713,7 +713,7 @@ v0 §6 说「不做」、§8 说「往后放」、§10 说是定位卖点。真�
 主人的性能直觉（「C 的 mem/str 系列很快」）把这件事判死了：**要 `memchr` 级别的速度，就必须能碰 libc。**
 
 > **定案：标准库实现可以调用 libc（由编译器生成），用户代码不能。**
-> 用户写不出 `extern`，但 `String<u8>.find` 内部就是 `memchr`。
+> 用户写不出 `extern`，但 `string<u8>.find` 内部就是 `memchr`。
 
 **P 没被违反**：用户手上的逃生舱依然只有一个；编译器自己生成 `memchr` 不是逃生舱，是后端细节。
 
@@ -729,7 +729,7 @@ v0 §6 说「不做」、§8 说「往后放」、§10 说是定位卖点。真�
 | 4 不做没人用的特性 | 保留（**是 I/O 预算，不是原则**） |
 | 5 用已知技术拼装 | 保留（**是策略，不是原则**） |
 | 6 错误信息是语言的一部分 | 保留（**是 P′ 的实现要求**：看不见就谈不上可见） |
-| 7 语法一致无特例 | 保留（**是审美**，但可用来判 §7 的 `WString` 出局） |
+| 7 语法一致无特例 | 保留（**是审美**，但可用来判 §7 的 `wString` 出局） |
 | 8 默认值语义、引用显式 | = **P′** 的一个实例 |
 | 9 编译到 C 不是汇编 | 保留（**是手段**：C 是我们的后端，不是我们的目标） |
 | 10 语言是给人用的 | 保留（**是 P′ 的另一面**：规则要能被人读懂） |
@@ -745,7 +745,7 @@ v0 §6 说「不做」、§8 说「往后放」、§10 说是定位卖点。真�
 - `let` 默认不可变 / `var` 显式可变（弱推导：不可变更可证明；但这是倾向，不是定理）
 - 语法像 Go、可读性像 Python（这是**招募口号的品味**，可以要，别说它是推导）
 - 管道 `|>`、契约（v2 候选）
-- **命名规范**（camelCase / PascalCase / `name: Type`；整数写 `i32` 不写 `int`）—— **已确认的主人口味**，不是推导，但也不用再争
+- **命名规范**（全 camelCase：`var thisIsAGoodName: i32`；整数写 `i32` 不写 `int`）—— **已确认的主人口味**，不是推导，但也不用再争
 - **`let` 不可变 / `var` 可变** —— 同上，主人的 `var thisIsAGoodName: i32` 已经把答案写在脸上了
 - ~~`@recursive`~~ —— **已移出本表**：它是 P 的直接推论，见 §3
 - 契约的 P 视角备注：**运行时的契约断言违反 P**，所以契约只能是「编译期可证明的义务」，证明不了就不许写。这一点值得想清楚再决定要不要契约。
@@ -757,36 +757,36 @@ v0 §6 说「不做」、§8 说「往后放」、§10 说是定位卖点。真�
 1. **arena 粒度**：函数帧就是一个 arena，还是每条语句/每个循环体一个？循环体里分配会不会静默堆积成 OOM？→ 决定 `for` 体是不是独立 arena，以及最常见的踩坑形态。
 2. **`into:` 的语法形态**：位置参数？命名参数？后缀 `.into(a)`？→ 影响所有 API 的手感，越早定越好。
 3. **范围类型 × 别名**（最硬）：`ref VarArray` 传进函数后，调用者那边的长度不变性还证得出来吗？可能逼出「传出去就作废，回来重新取」。**这条决定 §4 是不是真能落地。**
-4. **`Box<T>` 的 move 语义**：既然「arena 拥有它」，那按值传 `Box` 之后源还能用吗？—— 可能真的可以完全不要 move 检查。**如果成立，这是相对 Rust 的一次真减法，值得专门验证。**
+4. **`box<T>` 的 move 语义**：既然「arena 拥有它」，那按值传 `box` 之后源还能用吗？—— 可能真的可以完全不要 move 检查。**如果成立，这是相对 Rust 的一次真减法，值得专门验证。**
 5. **单态化代码膨胀**：`VarArray<T>` 到处用，生成的 C 会不会爆？可接受，但要量过。
 
 ---
 
 ## 9. 标准库最小自举集（按新规则重写）
 
-### String：泛型只做存储，单位语义进类型名
+### string：泛型只做存储，单位语义进类型名
 
 主人要 Unicode（byte 和 u32 两套都能用）—— **泛型保留**，但要划一条界线：
 
-> `String<T>` 只是「变长的 T 缓冲区」。**单位语义属于类型名，不属于泛型参数。**
+> `string<T>` 只是「变长的 T 缓冲区」。**单位语义属于类型名，不属于泛型参数。**
 
-因为 `len` 在 `String<byte>` 上是字节数、在 `String<u32>` 上是码点数 —— 同名不同义正是 v0 §11.7 要禁的特例。
+因为 `len` 在 `string<byte>` 上是字节数、在 `string<u32>` 上是码点数 —— 同名不同义正是 v0 §11.7 要禁的特例。
 
 ```
-struct String<T> {
+struct string<T> {
     data: ref T
     len:  size_t
     cap:  size_t          // ← v0 漏了，没有 cap 的 push 无法扩容
 }
 
-fn view(self: ref String, start: size_t, len: size_t) -> StringView  // 零分配
-fn find(self: ref String, needle: StringView) -> Option<size_t>
-fn eq(self: ref String, other: StringView) -> bool
-fn append(self: ref String, other: StringView)      // 原地增长，需要 cap
-fn push(self: ref String, c: byte)
-fn len(self: ref String) -> size_t
-fn is_empty(self: ref String) -> bool
-fn at(self: ref String, i: size_t) -> Option<byte>
+fn view(self: ref string, start: size_t, len: size_t) -> StringView  // 零分配
+fn find(self: ref string, needle: StringView) -> option<size_t>
+fn eq(self: ref string, other: StringView) -> bool
+fn append(self: ref string, other: StringView)      // 原地增长，需要 cap
+fn push(self: ref string, c: byte)
+fn len(self: ref string) -> size_t
+fn is_empty(self: ref string) -> bool
+fn at(self: ref string, i: size_t) -> option<byte>
 ```
 
 **关键收获：tokenizer 不需要任何堆分配 —— token 是源代码的 `view`。** 只有符号表才分配。这让自举里最热的那条路径零堆操作，也顺手让 arena 的压力小得多。
@@ -798,10 +798,10 @@ fn at(self: ref String, i: size_t) -> Option<byte>
 | 组件 | 备注 |
 |---|---|
 | `VarArray<T>` | arena 里，单态化 |
-| `HashMap<K,V>` | 符号表、关键字表；v0 可用「字符串 → int」的小实现起步 |
-| `File` | 读源文件、写生成代码；arena 里 |
-| `Result<T,E>` + `?` | 解析错误、IO 错误 |
-| `Option<T>` | 可空 |
+| `hashMap<K,V>` | 符号表、关键字表；v0 可用「字符串 → int」的小实现起步 |
+| `file` | 读源文件、写生成代码；arena 里 |
+| `result<T,E>` + `?` | 解析错误、IO 错误 |
+| `option<T>` | 可空 |
 | `match` + 标签联合 | token 类型、AST 节点、错误类型 |
 | `struct` + `fn` + `self` | 编译器对象 |
 | 递归 | 递归下降解析 |
@@ -815,7 +815,7 @@ v0 的版本是四个「替代」，那是对其他语言的投诉清单。新�
 
 > **凡是编译期能证明的，运行时不留痕迹。**
 
-推出：内存归 **arena**、错误归 **Result**、多态归 **标签联合 + match**、分派归 **单态化**、越界归 **范围类型**。
+推出：内存归 **arena**、错误归 **result**、多态归 **标签联合 + match**、分派归 **单态化**、越界归 **范围类型**。
 推不出来的，当面承认是品味。
 
 ---
@@ -825,4 +825,4 @@ v0 的版本是四个「替代」，那是对其他语言的投诉清单。新�
 - [ ] 主人对着 §6 砍 v0 文档（这是一张可直接执行的清单）
 - [ ] 定 §8 的问题 2（`into:` 语法）和问题 3（范围类型 × 别名）—— 这两个决定语言手感，越早越好
 - [ ] 写 week-0 骨架：Python tokenizer + parser + C 代码生成，最小闭环（`int` / `let` / `if` / `while` / `fn` / 输出），跑通 `extC → C → gcc → 可执行`
-- [ ] 拿问题 4（`Box` 要不要 move 检查）当第一个真实验：它是相对 Rust 最大的潜在减法
+- [ ] 拿问题 4（`box` 要不要 move 检查）当第一个真实验：它是相对 Rust 最大的潜在减法

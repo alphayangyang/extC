@@ -1,8 +1,8 @@
-struct Point {
+struct point {
     x: i32
 }
 
-fn moveBy(self: ref Point, dx: i32) {
+fn moveBy(self: ref point, dx: i32) {
     self.x = self.x + dx
 }
 

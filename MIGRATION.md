@@ -8,7 +8,7 @@
 
 ## 0. 机制（✅ 已落地，见 T4b）
 
-> **现状**：`stdlib/prelude.extc` 里的 `Slice<T>` 已经能用了。
+> **现状**：`stdlib/prelude.extc` 里的 `slice<T>` 已经能用了。
 > `grep -in slice src/*.c src/*.h` → **一无所获**。
 > 编译器有两张表：一张是它自己的 C 代码，一张是它自带的 extC prelude。
 
@@ -38,10 +38,10 @@
 | 文件 | 内容 | 判定 | 卡在哪 |
 |---|---|---|---|
 | `base.c` | `Arena`（bump 分配器） | ❌ | 内存模型**本身** = 运行时 |
-| `base.c` | `Buf`（可增长字节缓冲） | ✅ | 要 `Array<u8>` / `String<T>` |
-| `base.c` | `Vec`（定长元素动态数组） | ✅ | 要泛型 `Array<T>` |
+| `base.c` | `Buf`（可增长字节缓冲） | ✅ | 要 `array<u8>` / `string<T>` |
+| `base.c` | `Vec`（定长元素动态数组） | ✅ | 要泛型 `array<T>` |
 | `base.c` | `ctxInit` / `ctxError` | ❌ | 编译器状态的结构形状 |
-| `base.c` | **`ctxRenderDiag`（诊断渲染，40 行）** | ✅ **首选** | 要 `Slice<u8>` + 索引 + 拼接 |
+| `base.c` | **`ctxRenderDiag`（诊断渲染，40 行）** | ✅ **首选** | 要 `slice<u8>` + 索引 + 拼接 |
 | `lexer.c` | `isDigit/isHex/isAlpha/isAlnum/isUpperCase` | ✅ | 要字符索引 `s[i]` |
 | `lexer.c` | 关键字表 / 内建类型表 / 标点表 | ✅ | 要数组/切片常量 |
 | `lexer.c` | **整个词法器（状态机 + 四个 lex\*）** | ✅ **自举第一块砖** | 要字符串扫描 + 数组 |
@@ -51,7 +51,7 @@
 | `types.c` | `ttEquals` / `ttBase` / `ttIsError` | ✅ | 要 tag 检查（`match` 更好） |
 | `types.c` | `ttRender`（类型渲染） | ✅ | 要 `Buf` |
 | `types.c` | `ttFromName` / `ttNew` | 🟡 | 要容器 + 分配 |
-| `check.c` | `lookup` / `findFunc` / `findField` / `findMethod` / `findVariant` | ✅ | 要 `Map<K,V>` 或数组（它们都是线性查找） |
+| `check.c` | `lookup` / `findFunc` / `findField` / `findMethod` / `findVariant` | ✅ | 要 `map<K,V>` 或数组（它们都是线性查找） |
 | `check.c` | 作用域管理 / AST 遍历 / 各条检查 | ❌ | 编译器逻辑骨架（终局是自举，不是搬迁） |
 | `codegen.c` | `C_TYPES` / `PRINT_FMT` 表 | ✅ | 要数组/切片常量 |
 | `codegen.c` | `cType` / `cFuncName` / `zeroValue` / `genPrintValue` | ✅ | 纯字符串生成，要 `Buf` |
@@ -68,7 +68,7 @@
 现在的 extC 有：`i32..u64 / f32 / f64 / bool / str / void`、`struct` + 方法、`type` 枚举、
 `let`/`var`、`if`/`while`、`fn`、`ref`、零初始化、自动调试打印。
 
-**没有：数组、索引、字符串操作、泛型、`Option`、`match`。**
+**没有：数组、索引、字符串操作、泛型、`option`、`match`。**
 
 对着上面的表看：
 
@@ -103,7 +103,7 @@ if ((a == b)) { ... }    // ← 这是**指针**比较
 
 **处置（2026-09-18）**：现在 `str` 的 `==` / `!=` **直接报错**，而不是安静地给错答案。
 
-> 与其让它假装能比较，不如让它诚实地不能。等 T4c 把字符串换成 `Slice<u8>`
+> 与其让它假装能比较，不如让它诚实地不能。等 T4c 把字符串换成 `slice<u8>`
 > 之后再给一个**按内容比较**的正确实现。
 >
 > 这也是一条通用原则：**语言层承诺的语义，生成的 C 必须真的实现 ——
@@ -118,7 +118,7 @@ if ((a == b)) { ... }    // ← 这是**指针**比较
 | 1 | **`ctxRenderDiag`（诊断渲染，40 行）** | 纯字符串处理、无副作用、无外部状态；输入输出明确好测；**收益立刻可见**（它就是当前显示错误的那条路径）；是 extC 字符串库的第一个真实用户 |
 | 2 | **`ttCanWiden` + 整数表** | 最纯的一块规则，零 IO、零分配 |
 | 3 | **词法器** | 自举的第一块砖 |
-| 4 | `Buf` / `Vec` → `Array<T>` | 库化 |
-| 5 | `lookup` / `find*` → `Map<K,V>` | 最后（最依赖容器） |
+| 4 | `Buf` / `Vec` → `array<T>` | 库化 |
+| 5 | `lookup` / `find*` → `map<K,V>` | 最后（最依赖容器） |
 
-**第 1 件要等 T4c（`Slice<u8>`），第 2 件要等字符串相等，第 3 件要等上面全部。**
+**第 1 件要等 T4c（`slice<u8>`），第 2 件要等字符串相等，第 3 件要等上面全部。**

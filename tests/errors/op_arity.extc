@@ -1,5 +1,5 @@
-struct W {
+struct w {
     n: i32
-    fn ==(self: ref W, other: W, extra: i32) -> bool { return true }
+    fn ==(self: ref w, other: w, extra: i32) -> bool { return true }
 }
 fn main() -> i32 { return 0 }

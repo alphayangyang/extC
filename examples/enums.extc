@@ -1,28 +1,28 @@
 // type 枚举（无载荷）+ 枚举自动打印名字（定案 11）
 
-type Status = | ok | warn | error
+type status = | ok | warn | error
 
-fn describe(s: Status) -> i32 {
-    if s == Status.ok {
+fn describe(s: status) -> i32 {
+    if s == status.ok {
         return 1
     }
-    if s == Status.warn {
+    if s == status.warn {
         return 2
     }
     return 3
 }
 
 fn main() -> i32 {
-    let a = Status.ok              // 类型从初始化式推导
-    var b: Status = Status.warn
+    let a = status.ok              // 类型从初始化式推导
+    var b: status = status.warn
 
     println("a = ", a)             // 枚举自动有名字文本
     println("b = ", b)
     println(describe(a))           // 1
     println(describe(b))           // 2
-    println(describe(Status.error))// 3
+    println(describe(status.error))// 3
 
-    b = Status.error               // 同类型才能赋值
+    b = status.error               // 同类型才能赋值
     println("b = ", b)
     return 0
 }

@@ -1,42 +1,42 @@
 // `==` 是显式定义的：在 struct 里写 `fn ==(...)`（不需要 trait）
 
-struct Point {
+struct point {
     x: i32
     y: i32
 
-    fn ==(self: ref Point, other: Point) -> bool {
+    fn ==(self: ref point, other: point) -> bool {
         return self.x == other.x && self.y == other.y
     }
 }
 
-struct Tag {
+struct tag {
     id: i32          // 故意不定义 ==
 }
 
 // 泛型里也能用 ==：推迟到实例化再检查
-struct Wrapper<T> {
+struct wrapper<T> {
     value: T
 
-    fn same(self: ref Wrapper<T>, other: Wrapper<T>) -> bool {
+    fn same(self: ref wrapper<T>, other: wrapper<T>) -> bool {
         return self.value == other.value      // T 是类型参数 → 推迟
     }
 }
 
 fn main() -> i32 {
-    let a: Point = { x: 1, y: 2 }
-    let b: Point = { x: 1, y: 2 }
-    let c: Point = { x: 9, y: 9 }
+    let a: point = { x: 1, y: 2 }
+    let b: point = { x: 1, y: 2 }
+    let c: point = { x: 9, y: 9 }
 
     println(a == b)      // true
     println(a == c)      // false
     println(a != c)      // true
 
-    var wa: Wrapper<i32> = { value: 7 }        // i32 是内建 → 天生能比
-    var wb: Wrapper<i32> = { value: 7 }
+    var wa: wrapper<i32> = { value: 7 }        // i32 是内建 → 天生能比
+    var wb: wrapper<i32> = { value: 7 }
     println(wa.same(wb))                       // true
 
-    var pa: Wrapper<Point> = { value: a }      // Point 有 eq → 也能比
-    var pb: Wrapper<Point> = { value: b }
+    var pa: wrapper<point> = { value: a }      // point 有 eq → 也能比
+    var pb: wrapper<point> = { value: b }
     println(pa.same(pb))                       // true
     return 0
 }

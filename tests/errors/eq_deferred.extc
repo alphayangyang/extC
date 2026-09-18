@@ -1,18 +1,18 @@
-struct Tag {
+struct tag {
     id: i32
 }
 
-struct Wrapper<T> {
+struct wrapper<T> {
     value: T
 
-    fn same(self: ref Wrapper<T>, other: Wrapper<T>) -> bool {
+    fn same(self: ref wrapper<T>, other: wrapper<T>) -> bool {
         return self.value == other.value
     }
 }
 
 fn main() -> i32 {
-    var a: Wrapper<Tag> = { value: { id: 1 } }
-    var b: Wrapper<Tag> = { value: { id: 2 } }
+    var a: wrapper<tag> = { value: { id: 1 } }
+    var b: wrapper<tag> = { value: { id: 2 } }
     println(a.same(b))
     return 0
 }

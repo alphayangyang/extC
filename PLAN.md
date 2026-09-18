@@ -2,7 +2,7 @@
 
 > **决策依据（主人的直觉 + 奶昔的细化）**：
 >
-> > **能随时加的是「语法」（数组、`for`、`match`、模块）；改起来贵的是「类型的形状」（泛型、`ref`、`Result`/`Option`、值语义）。**
+> > **能随时加的是「语法」（数组、`for`、`match`、模块）；改起来贵的是「类型的形状」（泛型、`ref`、`result`/`option`、值语义）。**
 >
 > 数组和 `for` 加错了改一星期；泛型和 `ref` 的语义长歪了，**所有基于它的代码全得重写**。
 > 所以 week-1 **一行语法糖都不碰**，全花在类型层。
@@ -42,27 +42,27 @@
 
 | 定案 | 状态 |
 |---|---|
-| 8 · 默认零初始化（`var b: Board` 合法） | ✅ `ref T` 除外（没有零值） |
+| 8 · 默认零初始化（`var b: board` 合法） | ✅ `ref T` 除外（没有零值） |
 | 9 · 方法写在 struct 体内 | ✅ 自由函数带 `self` 现在报错 |
 | 14 · `type` 枚举 | ✅ 含定案 11 的「枚举自动有名字文本」 |
 
-### T4 · 泛型 + `Slice<T>` / `Array<T>`
+### T4 · 泛型 + `slice<T>` / `array<T>`
 
 - 泛型**靠 C 代码生成实现**（不建实例化图 —— 这是主人自己的直觉，比真单态化便宜）
-- 第一条真实用例：`Slice<T>`
-- 顺带执行定案 3：**`str` 作废，字符串字面量 = `Slice<u8>`**
+- 第一条真实用例：`slice<T>`
+- 顺带执行定案 3：**`str` 作废，字符串字面量 = `slice<u8>`**
 
-### T5 · `Option<T>` / `Result<T,E>` + `?`
+### T5 · `option<T>` / `result<T,E>` + `?`
 
 - 第一个「有真实语义」的泛型类型
 - `?` 是**可见的、静态解析的、无栈展开的**转发 ⇒ 不违反 P
 
-### T4 · 泛型 + `Slice<T>`（按「能写在 extC 里的就写在 extC 里」重新设计）
+### T4 · 泛型 + `slice<T>`（按「能写在 extC 里的就写在 extC 里」重新设计）
 
 > **核心决定：容器用 extC 源码写（预lude），编译器只负责「按实例生成 C」。**
 >
 > 单态化**不应该**意味着「容器硬编码在 codegen 里」。
-> `Slice<T>` 的 `len` / `get` 用 extC 写得出来 ⇒ 就该用 extC 写。
+> `slice<T>` 的 `len` / `get` 用 extC 写得出来 ⇒ 就该用 extC 写。
 > 编译器只做它唯一能做的事：**为每个实例生成一份 C 代码**。
 
 分三步，每步都能独立跑通：
@@ -72,26 +72,26 @@
 - **语法**：`struct Name<T> { ... }` 声明；`Name<Args>` 使用
 - **类型表示**：`TY_GENERIC`（泛型声明 + 类型实参）＋ `TY_PARAM`（模板里的 `T`）
 - **单态化**：check 对**模板**检查一遍；codegen 按实例生成 N 份 C
-  （`Pair<i32, u8>` → `Pair_i32_u8`，方法 → `Pair_i32_u8_getFirst`）
+  （`pair<i32, u8>` → `pair_i32_u8`，方法 → `pair_i32_u8_getFirst`）
 - 实例**驻留**（同一实例全局一份）；**带类型参数的实例不进实例表**（那是拿来比类型的）
-- **验收**：`Pair<i32, u8>` / `Pair<bool, Point>` / `Box<i64>` / `Box<Point>` 四份实例同时工作 ✅
+- **验收**：`pair<i32, u8>` / `pair<bool, point>` / `box<i64>` / `box<point>` 四份实例同时工作 ✅
 
 > **踩到的三个坑**（都记在 DEVLOG）：
-> ① 参数化实例污染实例表 → 生成 `Box_T_set`
+> ① 参数化实例污染实例表 → 生成 `box_T_set`
 > ② 泛型实例的字段必须用它**自己的**实参替换，不能用环境里留着的上下文（会死循环）
 > ③ 实例结构体必须排在普通 struct **之后**（实例字段里可能有普通 struct）；`_debug` 要原型
 >
-> **发现的真限制**：模板检查意味着 `Pair<A,B>.swap` 写不出来（`A`/`B` 不确定相等）。
+> **发现的真限制**：模板检查意味着 `pair<A,B>.swap` 写不出来（`A`/`B` 不确定相等）。
 > 要同类型就用一个参数。这是「错误只报一次」的代价。
 
 #### T4b · prelude 机制 ✅ 已完成
 
-**目标**：`Slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，
-**编译器源码里一行硬编码的 Slice 都没有**。
+**目标**：`slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，
+**编译器源码里一行硬编码的 slice 都没有**。
 
 **步骤 1 · 写文件** ✅
 `stdlib/prelude.extc` —— 普通的 extC 源码，只不过它总在用户文件**之前**被处理。
-里面现在有 `Slice<T>`（`isEmpty` / `hasAt`）。
+里面现在有 `slice<T>`（`isEmpty` / `hasAt`）。
 
 **步骤 2 · 把它嵌进编译器**
 编译器要能单独运行，不能依赖外部文件路径。用脚本把文本变成 C 数组：
@@ -133,7 +133,7 @@ prelude  ：tokenize → parse → 追加进 Module
 prelude 用**自己的 `Ctx`**（路径显示成 `<extc prelude>`），这样它的错误不会跟用户的混。
 
 **步骤 5 · 收尾**
-`str` 内建类型作废（T4c 的活）；`Slice<u8>` 从此来自 prelude。
+`str` 内建类型作废（T4c 的活）；`slice<u8>` 从此来自 prelude。
 
 **验收标准（可机械检查）**：
 ```sh
@@ -141,15 +141,15 @@ grep -i slice src/*.c src/*.h     # 应该一无所获
 ```
 > 这就是「能在 extC 里写就写在 extC 里」的硬指标 —— 不是靠自觉，是靠 grep。
 
-#### T4c · 字符串字面量变成 `Slice<u8>`
+#### T4c · 字符串字面量变成 `slice<u8>`
 
-- `"abc"` → `(Slice_u8){ .data = (const uint8_t *)"abc", .len = 3 }` —— **零分配**
+- `"abc"` → `(slice_u8){ .data = (const uint8_t *)"abc", .len = 3 }` —— **零分配**
 - **`str` 内建类型作废**
 - `println(slice)` → `printf("%.*s", (int)len, (const char *)data)`
 - **验收**：`examples/` 里用字符串的例子照跑，且编译器里不再有 `str` 这个类型
 
-> ⚠️ **T4b 要解决一个真建模问题**：长度 0 的 `Slice` 没有合法的 `ref T` 可指
-> （`ref` 不可为空）。要么给 `Slice` 的内部表示开一个受控的口子，
+> ⚠️ **T4b 要解决一个真建模问题**：长度 0 的 `slice` 没有合法的 `ref T` 可指
+> （`ref` 不可为空）。要么给 `slice` 的内部表示开一个受控的口子，
 > 要么让空切片指向一个静态哨兵。这个必须想清楚再写。
 
 ### 顺手：三条已定案但没实现
@@ -161,28 +161,28 @@ grep -i slice src/*.c src/*.h     # 应该一无所获
 week-1 结束时，下面这段必须**能编译、能跑、且类型错误能被 extC 自己抓到**：
 
 ```extc
-type Status = | ok | warn | error
+type status = | ok | warn | error
 
-struct Counter {
+struct counter {
     n: i32
 
-    fn bump(self: ref Counter, by: i32) -> Result<i32, CounterError> {
+    fn bump(self: ref counter, by: i32) -> result<i32, counterError> {
         if by < 0 {
-            return Err(CounterError.negative)
+            return Err(counterError.negative)
         }
         self.n += by
         return Ok(self.n)
     }
 }
 
-fn describe(s: Status) -> Slice<u8> {
-    if s == Status.warn {
+fn describe(s: status) -> slice<u8> {
+    if s == status.warn {
         return "careful"
     }
     return "fine"
 }
 
-fn tryBump(c: ref Counter, times: i32) -> Result<i32, CounterError> {
+fn tryBump(c: ref counter, times: i32) -> result<i32, counterError> {
     var i = 0
     while i < times {
         c.bump(2)?          // 方法接收者自动取地址
@@ -192,16 +192,16 @@ fn tryBump(c: ref Counter, times: i32) -> Result<i32, CounterError> {
 }
 
 fn main() -> i32 {
-    var c: Counter = {}                  // 零初始化
+    var c: counter = {}                  // 零初始化
     println("start: {}", c.n)
     let total = tryBump(ref c, 3)?       // 自由函数必须显式写 ref
     println("total = {}", total)
-    println("{}", describe(Status.warn))
+    println("{}", describe(status.warn))
     return 0
 }
 ```
 
-它一次练到：`type` 枚举、方法进 struct、`ref` 表达式、零初始化、泛型（`Result`/`Slice`）、`?`、格式串。
+它一次练到：`type` 枚举、方法进 struct、`ref` 表达式、零初始化、泛型（`result`/`slice`）、`?`、格式串。
 
 ---
 

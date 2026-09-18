@@ -11,11 +11,12 @@
 | 规矩 | 结论 |
 |---|---|
 | 变量 / 函数 / 方法 | **camelCase**（`thisIsAGoodName`、`longestRun`、`isEmpty`） |
-| 类型 / 模块 | **PascalCase**（`Board`、`Array`、`MoveError`） |
+| 类型 / 模块 | **camelCase**（`board`、`array`、`moveError`） |
 | 变量的类型写在哪 | **名字后面**：`name: Type` |
 | 声明关键字 | `var`（可变）/ `let`（不可变） |
 | 整数类型 | **`i32` / `i64` / `u8`**，不是 C 的 `int` / `long` |
 | 数组类型 | 前缀式：`[15][15]i32` |
+| 泛型参数 | **单个大写字母**：`T` / `K` / `V`（Go / Rust / TS 都这样，而且一眼就把「占位符」和「真类型名」分开） |
 
 **这就是 v0 丑的地方：不是骨架丑，是名字丑。** 看第 3 节的对照表。
 
@@ -24,21 +25,21 @@
 ## 2. 样板：同一段五子棋，按主人的规矩写
 
 ```extc
-struct Board {
+struct board {
     cell: [15][15]i32
     moves: i32
 }
 
-fn place(self: ref Board, x: i32, y: i32, color: i32) -> Result<(), MoveError> {
+fn place(self: ref board, x: i32, y: i32, color: i32) -> result<(), moveError> {
     if self.cell[y][x] != EMPTY {
-        return Err(MoveError::Occupied)
+        return Err(moveError::Occupied)
     }
     self.cell[y][x] = color
     self.moves += 1
     return Ok(())
 }
 
-fn longestRun(b: ref Board, x: i32, y: i32, dx: i32, dy: i32, color: i32) -> i32 {
+fn longestRun(b: ref board, x: i32, y: i32, dx: i32, dy: i32, color: i32) -> i32 {
     var n: i32 = 0
     for var i: i32 = 0; i < 5; i += 1 {
         let px: i32 = x + i * dx
@@ -51,7 +52,7 @@ fn longestRun(b: ref Board, x: i32, y: i32, dx: i32, dy: i32, color: i32) -> i32
 }
 
 fn main() -> i32 {
-    var b: Board = {}                    // 清零；b 属于 main 的 arena
+    var b: board = {}                    // 清零；b 属于 main 的 arena
     b.cell[7][7] = BLACK
     println(longestRun(b, 7, 7, 1, 0, BLACK))
     return 0                             // 全程序没有一个 malloc / free / static
@@ -62,10 +63,10 @@ fn main() -> i32 {
 
 ```extc
 // 形式 1（v0 的写法）：首参数是 self
-fn place(self: ref Board, x: i32, y: i32, color: i32) -> Result<(), MoveError>
+fn place(self: ref board, x: i32, y: i32, color: i32) -> result<(), moveError>
 
 // 形式 2（Go 的 receiver 味）
-fn (self: ref Board) place(x: i32, y: i32, color: i32) -> Result<(), MoveError>
+fn (self: ref board) place(x: i32, y: i32, color: i32) -> result<(), moveError>
 ```
 
 两者调用点都是 `b.place(7, 7, BLACK)`，**零差别** —— 纯粹看哪个读起来顺。
@@ -76,17 +77,17 @@ fn (self: ref Board) place(x: i32, y: i32, color: i32) -> Result<(), MoveError>
 
 | v0 | 现在 | 为什么 |
 |---|---|---|
-| `VarArray<T>` | `Array<T>` | `Var` 是废话（数组本来就是变长的），而且跟 `var` 关键字撞车 |
-| `WString` | `Utf32String` | `W` 来自 Win32 的 `wchar_t`，是 C 的历史包袱，不是 extC 的概念 |
-| `HashMap<K, V>` | `Map<K, V>` | Hash 是实现细节，不该进名字（Go / TS 都叫 Map） |
+| `VarArray<T>` | `array<T>` | `Var` 是废话（数组本来就是变长的），而且跟 `var` 关键字撞车 |
+| `wString` | `Utf32String` | `W` 来自 Win32 的 `wchar_t`，是 C 的历史包袱，不是 extC 的概念 |
+| `hashMap<K, V>` | `map<K, V>` | Hash 是实现细节，不该进名字（Go / TS 都叫 map） |
 | `is_empty()` | `isEmpty()` | camelCase |
 | `to_bytes()` | `toBytes()` | camelCase |
 | `checked_to_int()` | `toIntChecked()` | camelCase，且意图在前 |
-| `slice<T>` | `Slice<T>` | 类型 PascalCase |
+| `slice<T>` | `slice<T>` | 类型也是 camelCase |
 | `substr()` | `view()` | 零分配 —— 由 P 推出（能证明的拷贝就不该发生） |
-| `String<T>` | 保留 | 主人要 Unicode，泛型留着 |
-| `Box<T>` | **待定** | 见 §6 |
-| `String<T> { data: Box<[T]> }` | `data: ref T` | 原写法是 `Box<slice>` = 双重间接 + 缺 `cap` |
+| `string<T>` | 保留 | 主人要 Unicode，泛型留着 |
+| `box<T>` | **待定** | 见 §6 |
+| `string<T> { data: box<[T]> }` | `data: ref T` | 原写法是 `box<slice>` = 双重间接 + 缺 `cap` |
 
 ---
 
@@ -106,7 +107,7 @@ C 的 `static` 一个关键字有三层意思，被骂的只是中间那层：
 
 于是三件事同时成立：
 
-1. **`static` 关键字消失** —— 你在最外层写 `var board: Board` 就是全局，没有任何关键字要记。
+1. **`static` 关键字消失** —— 你在最外层写 `var board: board` 就是全局，没有任何关键字要记。
 2. **引用规则自动兜住危险用法** —— 全局（深度 0）想存一个指向局部（深度 ≥ 1）的 `ref`，`0 ≥ 1` 为假 → **直接编译错误**。没为全局写一行特殊规则。
 3. **真正该死的那个 `static` 在语言里说不出来** —— 「局部但活得比局部久」在 arena 模型里无法表达：局部的作用域就是它的 arena，作用域结束它就死。**这比「禁止」更强 —— 是语法上不可达。**
 
@@ -122,15 +123,15 @@ C 的 `static` 一个关键字有三层意思，被骂的只是中间那层：
 
 | 类型 | `find` 的生成实现 |
 |---|---|
-| `String<u8>` | 调 `memchr` —— 就是 C 里最快的那种 |
-| `String<u32>` | 按机器字比较的手写循环 |
+| `string<u8>` | 调 `memchr` —— 就是 C 里最快的那种 |
+| `string<u32>` | 按机器字比较的手写循环 |
 
 接口一样，实现各自最优。**但这就把 v0 §6 的「不做 C 互操作」判死了** —— 要 `memchr` 级别的速度，就必须能碰 libc。
 
 ### 定案
 
 > **标准库实现可以调用 libc（由编译器生成），用户代码不能。**
-> 用户写不出 `extern`，但 `String<u8>.find` 内部就是 `memchr`。
+> 用户写不出 `extern`，但 `string<u8>.find` 内部就是 `memchr`。
 
 **P 没被违反**：用户手上的逃生舱依然只有一个；编译器自己生成 `memchr` 不是逃生舱，是后端细节。
 
@@ -140,6 +141,6 @@ C 的 `static` 一个关键字有三层意思，被骂的只是中间那层：
 
 ## 6. 面还没定的三件事
 
-1. **`Box<T>` 还需要吗？** arena 已经拥有所有堆对象，`Box` 只买到「比 arena 更早释放」。如果砍掉，v0 §4 的「五种指针替代品」直接降到三件（`ref T` / `Option<T>` / 索引）。
+1. **`box<T>` 还需要吗？** arena 已经拥有所有堆对象，`box` 只买到「比 arena 更早释放」。如果砍掉，v0 §4 的「五种指针替代品」直接降到三件（`ref T` / `option<T>` / 索引）。
 2. **方法语法**：形式 1 还是形式 2（§2）？
 3. **类型标注能不能省**：`var n = 0`（推导）还是必须 `var n: i32 = 0`（写全）？

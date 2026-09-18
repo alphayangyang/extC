@@ -1,14 +1,14 @@
-struct Thing {
+struct thing {
     n: i32
 
-    fn ==(self: ref Thing, other: ref Thing) -> i32 {
+    fn ==(self: ref thing, other: ref thing) -> i32 {
         return 1
     }
 }
 
 fn main() -> i32 {
-    let a: Thing = { n: 1 }
-    let b: Thing = { n: 1 }
+    let a: thing = { n: 1 }
+    let b: thing = { n: 1 }
     println(a == b)
     return 0
 }

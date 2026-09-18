@@ -1,0 +1,11 @@
+struct point {
+    x: i32
+}
+
+fn main() -> i32 {
+    let p = point { x: 1 }
+    if p == point { x: 1 } {
+        println(1)
+    }
+    return 0
+}

@@ -1,10 +1,10 @@
-struct Tag {
+struct tag {
     id: i32
 }
 
 fn main() -> i32 {
-    let a: Tag = { id: 1 }
-    let b: Tag = { id: 1 }
+    let a: tag = { id: 1 }
+    let b: tag = { id: 1 }
     println(a == b)
     return 0
 }

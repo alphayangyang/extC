@@ -7,9 +7,71 @@
 
 ---
 
-## 2026-09-18 · T4b 落地：prelude 机制通了，Slice<T> 是 extC 写的
+## 2026-09-18 · 类型名改成 camelCase + 用「位置规则」替掉大小写魔法
 
-**目标**：`Slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，编译器源码里一行硬编码都没有。
+主人问：「为什么要首字母大写？」—— 问得好，因为**那不是审美，是 parser 的消歧义手段**，
+而且奶昔之前没交代过：
+
+```c
+if (at(p, "{") && isUpperCase(t->text)) return parseStructLit(p, t->text);
+```
+
+`if cond { }` 和 `let p = point { ... }` 里两个 `{` 光看 token 分不出来，
+所以当时用「首字母大写」当判据。**这是个隐藏魔法** —— 跟之前那个「约定方法名叫 `eq`」
+是同一类东西。
+
+### 提案与评估
+
+主人先提了更雷霆的方案：**每个块都显式标种类**（`do` = 栈 / `region` = 堆）。
+奶昔的评估是**方向对但过度**：
+
+- ✅ 抓到了真事实：**在 extC 里每个块确实就是一个 arena**（不是比喻，是定义）
+- ❌ 但「`do` = 在栈里」这个语义**我们没有** —— extC 里块本身就是 arena 边界，
+  没有栈/堆的语言层区分；`do` 如果什么都不改变，就是必须写的噪音
+- ❌ **最关键**：`region` 之所以一眼可见，正因为周围都是普通的 `{ }`。
+  如果每个块都写 `do`，`region` 就淹没在一堆 `do` 里 —— **反着破坏了 P′**
+- ❌ 还有硬伤：`fn f() do { }` / `struct P do { }` 要不要写？不写就有例外，写就满屏 `do`
+
+> **P′ 要求的是「要变化的东西必须看得见」，不是「所有东西都写一遍」。**
+> extC 的显式原则是「**例外要响**」，不是「默认要吵」。
+
+主人也澄清了一个诉求：**不希望运行时隐性推导** —— 奶昔解释了「编译期的类型确定」
+和「运行时的隐性推导（interface{} / 鸭子类型 / 反射）」是两回事，后者才违反 P。
+
+另外交代清楚了一件奶昔一直没说明白的事：
+**`region` / arena / 逃逸检查现在一个都没实现**，它们全是设计文档里的东西（week-4）。
+编译器 `src/base.h` 里那个 `Arena` 是编译器**自己**的内存管理器（C 写的），
+跟 extC 语言层的 arena 同名但无关。
+
+### 定案（主人选 B）
+
+- **类型名也 camelCase**：`slice<T>` / `point` / `gameError`（内建类型本来就是小写，现在一致了）
+- **消歧义改成 Go 的位置规则**：在 `if` / `while` 的**条件位置**里 `{` 属于代码块，
+  其他位置 `标识符 {` 就是结构体字面量。括号里恢复成普通表达式。
+- 唯一代价：`if p == point { x: 1 } { }` 要写 `if p == (point { x: 1 }) { }`
+- **类型参数保留单个大写字母**（`T` / `K` / `V`）—— 通行写法，而且一眼区分「占位符 / 真类型名」
+
+**顺手做了一条好报错**（认得出「忘了加括号」）：
+
+```
+error: struct literal in a condition needs parentheses: `(point { ... })`
+  note: Inside an `if` / `while` condition a `{` starts the body block.
+        To write a struct literal there, wrap it in parentheses.
+```
+
+> **规则写在语法里，不藏在命名里。** 这跟「`==` 要显式定义」是同一条路线的第三次落地。
+
+改动：parser 加 `inCond` 状态（约 20 行），删掉 `isUpperCase`；
+31 个文件的类型名改名（例子 / 测试 / prelude / 文档）；
+`REVIEW-gomoku-sample.md` 不动（那是主人原样本的审读记录，里面的 PascalCase 是样本自带的）。
+
+**测试** 39 → 40 个。
+
+---
+
+## 2026-09-18 · T4b 落地：prelude 机制通了，slice<T> 是 extC 写的
+
+**目标**：`slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，编译器源码里一行硬编码都没有。
 
 **验收（可机械检查）**：
 ```sh
@@ -22,15 +84,15 @@ grep -in slice src/*.c src/*.h     # 一无所获 ✓
 
 ```extc
 // stdlib/prelude.extc —— 用 extC 写的
-struct Slice<T> {
+struct slice<T> {
     data: ref T
     len: i64
-    fn isEmpty(self: ref Slice<T>) -> bool { return self.len == 0 }
-    fn hasAt(self: ref Slice<T>, i: i64) -> bool { return i >= 0 && i < self.len }
+    fn isEmpty(self: ref slice<T>) -> bool { return self.len == 0 }
+    fn hasAt(self: ref slice<T>, i: i64) -> bool { return i >= 0 && i < self.len }
 }
 ```
 
-用户不用 import 就能用，而且**泛型实例照常单态化**（`Slice_i32` / `Slice_u8`），
+用户不用 import 就能用，而且**泛型实例照常单态化**（`slice_i32` / `slice_u8`），
 自动调试打印也跟着来。
 
 ### 踩到的两个坑
@@ -58,7 +120,7 @@ extc: internal error -- the bundled prelude does not compile
 
 ### 顺手修的一个真问题
 
-`Slice` 含 `ref` 字段 ⇒ `var s: Slice<i32>` 零初始化会造出**空引用**。
+`slice` 含 `ref` 字段 ⇒ `var s: slice<i32>` 零初始化会造出**空引用**。
 把「`ref T` 不能零初始化」这条规则**扩展到「含 ref 的 struct」**：
 
 ```
@@ -110,8 +172,8 @@ Rust（`PartialEq::eq -> bool`）和 Haskell（`(==) :: a -> a -> Bool`）都定
 **换个方法名就行**。
 
 ```extc
-fn compare(self: ref Point, other: Point) -> Ordering { ... }   // 随便返回什么
-fn diff(self: ref Point, other: Point) -> Diff { ... }           // 随便返回什么
+fn compare(self: ref point, other: point) -> ordering { ... }   // 随便返回什么
+fn diff(self: ref point, other: point) -> diff { ... }           // 随便返回什么
 ```
 
 **只有 `==` 这个名字被绑定了 `bool`**，因为它在源码里的位置决定了它是「一个条件」。
@@ -172,23 +234,23 @@ error: operator `!=` must return `bool`
 **改成让用户直接把 `==` 写出来**：
 
 ```extc
-struct Point {
+struct point {
     x: i32
     y: i32
 
-    fn ==(self: ref Point, other: Point) -> bool {     // ← 不查约定名
+    fn ==(self: ref point, other: point) -> bool {     // ← 不查约定名
         return self.x == other.x && self.y == other.y
     }
 }
 ```
 
-- C 里拼成 `Point_eq`（C 的标识符不能叫 `==`）—— 加了 `cSymName` 做这层映射
+- C 里拼成 `point_eq`（C 的标识符不能叫 `==`）—— 加了 `cSymName` 做这层映射
 - `!=` 可以单独定义；不定义就退回用 `==` 取反
 - **`fn ==` 必须写在 struct 体内**（自由函数不能定义运算符）
 - **错误信息变成自解释的**：
-  - `` `Tag` does not define `==`, so it cannot be compared `` + 「在 `Tag` 里定义它即可：`fn ==(self: ref Tag, other: Tag) -> bool`」
-  - `` `Thing.==` has the wrong signature ``
-  - `` `Wrapper_Tag` needs `Tag` to define `==` ``
+  - `` `tag` does not define `==`, so it cannot be compared `` + 「在 `tag` 里定义它即可：`fn ==(self: ref tag, other: tag) -> bool`」
+  - `` `thing.==` has the wrong signature ``
+  - `` `wrapper_tag` needs `tag` to define `==` ``
 
 **教训：一个「约定名字」看起来省事，但它把语义藏起来了 ——
 而 extC 的全部卖点就是「不藏东西」。宁可多打四个字符（`fn ==` vs `fn eq`），也不留隐藏约定。**
@@ -214,18 +276,18 @@ struct Point {
 | `str` | **拒绝**（它的 `==` 是指针比较） |
 
 泛型里含类型参数的比较**推迟到实例化**再检查（`Expr.needEq` + `Checker.eqChecks`），
-错误信息会点明是哪个实例：`` `Wrapper_Tag` needs `Tag` to have an `eq` method ``。
+错误信息会点明是哪个实例：`` `wrapper_tag` needs `tag` to have an `eq` method ``。
 
 ### 踩到的三个坑
 
 1. **codegen 不知道内建类型原生可比** —— check 的推迟复查通过了 `i32`，
-   但 codegen 生成时又去找 `eq`，于是 `Wrapper<i32>` 报「int32_t 需要 eq 方法」。
+   但 codegen 生成时又去找 `eq`，于是 `wrapper<i32>` 报「int32_t 需要 eq 方法」。
    codegen 也得有一份"原生可比"的判断。
-2. **`cFuncName` 带的是「当前正在生成的实例」前缀** —— 在 `Wrapper<Point>` 里调
-   `Point.eq`，它拼出了 `Wrapper_Point_eq`。**被调用的方法属于别的类型，必须用
+2. **`cFuncName` 带的是「当前正在生成的实例」前缀** —— 在 `wrapper<point>` 里调
+   `point.eq`，它拼出了 `wrapper_point_eq`。**被调用的方法属于别的类型，必须用
    `f->owner` 而不是 `g->ownerPrefix`**。为此把方法名解析单独抽成 `cMethodName`。
 3. **`eq` 的 `other` 按值传更顺手** —— 取 `ref` 时调用点的实参要写 `ref`
-   （方法参数的规则），所以 `same(self, other: Wrapper<T>)` 比 `other: ref Wrapper<T>` 好用。
+   （方法参数的规则），所以 `same(self, other: wrapper<T>)` 比 `other: ref wrapper<T>` 好用。
 
 ### 顺带：工具改成 C
 
@@ -241,25 +303,25 @@ struct Point {
 
 ## 2026-09-18 · 泛型约束定案 + prelude 说清楚
 
-主人对 `Pair<A,B>.swap` 写不出来这件事的判断：**「因为类型是静态检查的，除非重载运算符否则
+主人对 `pair<A,B>.swap` 写不出来这件事的判断：**「因为类型是静态检查的，除非重载运算符否则
 都不应该支持，我觉得限制是对的。」** —— 采纳，并写进 DESIGN：
 
 - **不做运算符重载**（用户可扩展的多态 = 一大片特性面）
 - **不做 trait / interface 约束**（同上，而且是运行时多态的入口，违反 P）
-- **约束靠签名表达**：需要两边同类型就用一个参数 `struct Pair<T>`
+- **约束靠签名表达**：需要两边同类型就用一个参数 `struct pair<T>`
 
 同时把 **prelude** 的定义写清楚（奶昔之前用黑话没说清）：
 
 > prelude = 每次编译都**先于用户文件**被 parse + check 的一段 extC 源码，用户不用 import。
-> 存在理由是「能在 extC 里写就在 extC 里写」：没有它，`Slice<T>` 只能在 codegen 里硬编码
-> （❌ 把库塞进编译器）；有了它，`Slice<T>` 就是一个用 extC 写的 prelude 类型（✅）。
+> 存在理由是「能在 extC 里写就在 extC 里写」：没有它，`slice<T>` 只能在 codegen 里硬编码
+> （❌ 把库塞进编译器）；有了它，`slice<T>` 就是一个用 extC 写的 prelude 类型（✅）。
 
 ### ⚠️ 顺带暴露一个真缺口：需要「T 有某种能力」时怎么办
 
-`Map<K,V>` 的 `find`（要 `K` 能比较）、`Slice<T>.indexOf`（要 `T` 能比较）——
+`map<K,V>` 的 `find`（要 `K` 能比较）、`slice<T>.indexOf`（要 `T` 能比较）——
 模板检查时不知道 `K` 能不能比。三个出路（推迟到实例化 / 具体类型专用 / 最小能力约束）
-记在 DESIGN 里，**T4b 先走「具体类型专用」**（`Slice<u8>` 是眼下的真实需求），
-`Map<K,V>` 真需要时再定。
+记在 DESIGN 里，**T4b 先走「具体类型专用」**（`slice<u8>` 是眼下的真实需求），
+`map<K,V>` 真需要时再定。
 
 ---
 
@@ -269,10 +331,10 @@ struct Point {
 一份 extC 源码 → 编译器按实例生成 N 份 C。
 
 ```
-Pair<i32, u8>    →  Pair_i32_u8_getFirst / Pair_i32_u8_getSecond
-Pair<bool, Point> →  Pair_bool_Point_...
-Box<i64>         →  Box_i64_set / Box_i64_get
-Box<Point>       →  Box_Point_set / Box_Point_get
+pair<i32, u8>    →  pair_i32_u8_getFirst / pair_i32_u8_getSecond
+pair<bool, point> →  pair_bool_point_...
+box<i64>         →  box_i64_set / box_i64_get
+box<point>       →  box_point_set / box_point_get
 ```
 
 四份实例同时工作，嵌套 struct、自动调试打印都对。
@@ -282,25 +344,25 @@ codegen 在「实例上下文」里把 `T` 换成实参。实例**驻留**（全
 
 ### 踩到的三个坑（都不是小坑）
 
-1. **参数化实例混进了实例表** → codegen 去生成 `Box_T_set` 这种东西。
-   检查 `ref Pair<A, B>` 时会产生「实参是类型参数」的实例 —— 那只是拿来比类型的，
+1. **参数化实例混进了实例表** → codegen 去生成 `box_T_set` 这种东西。
+   检查 `ref pair<A, B>` 时会产生「实参是类型参数」的实例 —— 那只是拿来比类型的，
    **绝不能进实例表**。修法：只有**完全具体**的实例才驻留。
 2. **泛型实例的字段必须用它自己的实参替换，不能用环境里碰巧留着的上下文。**
    踩得很惨：`zeroValue` 里 `subst` 在没有上下文时原样返回，于是它自己递归自己 →
    **栈溢出**，而且 ASAN 报的是「stack-overflow in zeroValue」这一行重复几十遍。
    **教训：泛型相关的地方，「用谁的上下文」必须显式进出配对，不能靠环境。**
-3. **实例结构体必须排在普通 struct 之后**（`Box<Point>` 的字段是 `Point`）；
+3. **实例结构体必须排在普通 struct 之后**（`box<point>` 的字段是 `point`）；
    而且 `_debug` 要先出原型（实例和普通 struct 会互相递归打印）。
 
-另外还漏了一次：`cType` 只在「裸 `TY_PARAM`」上做替换，但 `ref Pair<A, B>` 外层是 `ref`
+另外还漏了一次：`cType` 只在「裸 `TY_PARAM`」上做替换，但 `ref pair<A, B>` 外层是 `ref`
 —— 必须**整体**替换一次。
 
 ### 发现的真限制：模板检查的代价
 
-`Pair<A,B>` 里的 `swap`（`self.first = self.second`）**写不出来** ——
+`pair<A,B>` 里的 `swap`（`self.first = self.second`）**写不出来** ——
 模板里 `A` 和 `B` 不确定相等，checker 只能报 `expects A, found B`。
 
-要写这种操作就**用一个参数**：`struct Pair<T> { first: T  second: T }`。
+要写这种操作就**用一个参数**：`struct pair<T> { first: T  second: T }`。
 
 这是「检查一遍、错误只报一次、错误指向模板」的代价；反面是 C++ 那种实例化时才炸。
 **这是一条要写进 MANUAL 的已知限制。**
@@ -351,7 +413,7 @@ codegen 在「实例上下文」里把 `T` 换成实参。实例**驻留**（全
 
 1. **编译器「生成」代码 ≠ 把库塞进编译器。** `<Type>_debug` / `<Type>_name` 是前者 ——
    等价于 Rust 的 `#[derive(Debug)]`。extC 没有反射，「遍历所有字段」这句话在语言里
-   **写不出来**，只能由编译器生成。而 `Array<T>.push` 是后者，它写得出来。
+   **写不出来**，只能由编译器生成。而 `array<T>.push` 是后者，它写得出来。
 2. **这条原则直接决定 T4 怎么设计**：泛型不应该意味着把容器硬编码进 codegen，
    而应该是「**容器用 extC 源码写，编译器按实例生成 C**」。
 
@@ -359,8 +421,8 @@ codegen 在「实例上下文」里把 `T` 换成实参。实例**驻留**（全
 （嵌套 struct 递归、枚举打名字、零初始化也能直接打）。
 
 ```
-Point { x: 3, y: 4 }
-Player { name: naixi, score: 100, alive: true, pos: Point { x: 3, y: 4 }, color: green }
+point { x: 3, y: 4 }
+player { name: naixi, score: 100, alive: true, pos: point { x: 3, y: 4 }, color: green }
 ```
 
 ### 一次测试揪出三个同源的 landmine
@@ -371,8 +433,8 @@ Player { name: naixi, score: 100, alive: true, pos: Point { x: 3, y: 4 }, color:
 > 而 `printf("%s", NULL)` 是 **UB**（glibc 恰好打 `(null)` 骗过你）。
 
 1. `var s: str` 零初始化 → NULL（先修了这条，但没修好）
-2. `var p: Player`（含 `str` 字段）→ `{0}` 把字段也变成 NULL ← **真正的根因**
-3. **`Player { score: 7 }` 这种省略字段的字面量** → C 自动零填充，同样产生 NULL
+2. `var p: player`（含 `str` 字段）→ `{0}` 把字段也变成 NULL ← **真正的根因**
+3. **`player { score: 7 }` 这种省略字段的字面量** → C 自动零填充，同样产生 NULL
 
 修法：零值要**递归**算 —— 含 `str` 的 struct 逐字段写出零值（不含的仍用 `{0}` 省事）；
 结构体字面量**所有字段都写出来**，省略的填零值，不让 C 去零填充。
@@ -472,13 +534,13 @@ extC 的每个不方便之处都可能藏着一个 C 的 UB，这类地方要主
 
 | | 用什么 | 例子 |
 |---|---|---|
-| 可恢复的失败 | `Result<T,E>` + `?` | 文件不存在、落子位置被占 |
+| 可恢复的失败 | `result<T,E>` + `?` | 文件不存在、落子位置被占 |
 | **bug** | **trap**（直接崩） | 数组越界、除零 |
 
 把 bug 也做成可捕获的异常，会让「我懒得处理」伪装成「我 catch 一下就算了」。
 
-**待定项被暴露出来**：`?` 要求错误类型兼容。`fn f() -> Result<T, E1>` 里 `?` 一个
-`Result<U, E2>` 需要转换，Rust 用 `From` 解决。extC 现在没有 `From` —— 这是个真缺口。
+**待定项被暴露出来**：`?` 要求错误类型兼容。`fn f() -> result<T, E1>` 里 `?` 一个
+`result<U, E2>` 需要转换，Rust 用 `From` 解决。extC 现在没有 `From` —— 这是个真缺口。
 
 **问题二：多线程要不要？**
 
@@ -497,16 +559,16 @@ extC 的每个不方便之处都可能藏着一个 C 的 UB，这类地方要主
 ## 2026-09-18 · T3 + 顺手三条：`ref` 表达式 / 零初始化 / 方法进 struct / `type` 枚举
 
 **做了什么**：
-- **零初始化**（定案 8）：`var b: Board` 合法，自动清零。C 里最大的 UB 来源之一
+- **零初始化**（定案 8）：`var b: board` 合法，自动清零。C 里最大的 UB 来源之一
   （读到未初始化内存）**从语言里消失**。`ref T` 不能零初始化 —— 它是不可为空的引用。
 - **方法写在 struct 体内**（定案 9）：parser 在 struct body 里允许 `fn`；check 按接收者
-  类型找方法；codegen 做 C 名字修饰（`Point_eq`）。**自由函数带 `self` 现在直接报错**。
-- **`type` 枚举**（定案 11/14）：`type Status = | ok | warn | error`，`Status.ok` 访问变体；
+  类型找方法；codegen 做 C 名字修饰（`point_eq`）。**自由函数带 `self` 现在直接报错**。
+- **`type` 枚举**（定案 11/14）：`type status = | ok | warn | error`，`status.ok` 访问变体；
   **枚举自动有名字文本**（codegen 生成 `<Type>_name`），`println(s)` 直接可用。
 - **`ref` 升级成表达式**（定案 10 / T3）：`ref x` 是表达式；自由函数的 `ref T` 实参
   必须在调用点写 `ref`；方法接收者自动取地址。`ref` 是**可变**引用，所以不能对 `let` 取。
 
-**意外的好收益**：方法进 struct 之后**方法名有命名空间了** —— `Point.eq` 和 `Board.eq`
+**意外的好收益**：方法进 struct 之后**方法名有命名空间了** —— `point.eq` 和 `board.eq`
 是两个不同的名字，顶层不用为了避冲突而发明 `point_eq`。这是对「丑名字」的系统性改善。
 
 **一个必须记的坑（浪费了半小时）**：
@@ -561,11 +623,11 @@ extC 的每个不方便之处都可能藏着一个 C 的 UB，这类地方要主
 **为什么**：主人问「哪个最好用且最有价值」，并给出了直觉「类型安全优先级比较高，否则后面很难改」。
 奶昔把这个直觉精确化成一句话：
 
-> **能随时加的是「语法」（数组、`for`、`match`、模块）；改起来贵的是「类型的形状」（泛型、`ref`、`Result`/`Option`、值语义）。**
+> **能随时加的是「语法」（数组、`for`、`match`、模块）；改起来贵的是「类型的形状」（泛型、`ref`、`result`/`option`、值语义）。**
 
 数组和 `for` 加错了改一星期；泛型和 `ref` 的语义长歪了，所有基于它的代码全得重写。
 
-**产出**：`PLAN.md`（T1 拔类型信息 / T2 真类型检查 / T3 `ref` 升级 / T4 泛型 / T5 `Option`+`Result`）。
+**产出**：`PLAN.md`（T1 拔类型信息 / T2 真类型检查 / T3 `ref` 升级 / T4 泛型 / T5 `option`+`result`）。
 
 ---
 
@@ -574,7 +636,7 @@ extC 的每个不方便之处都可能藏着一个 C 的 UB，这类地方要主
 **做了什么**：主人给了一份完整的五子棋示例（`board`/`errors`/`sandbox`/`ai`/`main` 五模块），逐行读完，写出 `REVIEW-gomoku-sample.md`。
 
 **最大收获**：数整份代码里**看得见的安全机制**只有 `ref` 一处，**机制痕迹**只有 `region search` 一处 —— 其余全是普通高层写法。
-**主人要的是一门「表面普通的语言」，安全全沉底。** 这回头解释了最早那句「这个 idea 有点丑」：丑的不是糖多，是文档里 `VarArray`/`WString` 那几个名字和「四个替代」的腔调。
+**主人要的是一门「表面普通的语言」，安全全沉底。** 这回头解释了最早那句「这个 idea 有点丑」：丑的不是糖多，是文档里 `VarArray`/`wString` 那几个名字和「四个替代」的腔调。
 
 **定案 5 条**：格式串（编译期展开）、默认零初始化、方法进 struct 体内、`ref` 调用点显式、枚举自动有名字文本。
 
@@ -585,7 +647,7 @@ extC 的每个不方便之处都可能藏着一个 C 的 UB，这类地方要主
 2. **这段代码正好证明「arena 必须是词法的」** —— `alphabeta` 每个节点都调 `candidates()` 分配数组。动态 arena 会让它们全部活着（O(节点数)，直接爆）；词法 arena 是 O(深度×分支)。
    顺带收紧 `region` 的定义：它**只是给一个词法作用域起名字**，不是「子树 arena」。
 3. **发散臂** —— `match` 是表达式，但示例里有臂是 `continue`。类型检查器必须要有 never 类型。
-4. **示例里的 `Sandbox` undo 栈跟主人自己的 gomoku DESIGN v1.3 矛盾** —— v1.3 明写「全项目零 unmake，拷贝沙箱替代 make/unmake」。这份是 AI 按通用套路写的。
+4. **示例里的 `sandbox` undo 栈跟主人自己的 gomoku DESIGN v1.3 矛盾** —— v1.3 明写「全项目零 unmake，拷贝沙箱替代 make/unmake」。这份是 AI 按通用套路写的。
    **教训：同一个主人，对着 AI 说的和写在设计文档里的是两套，要以认真复审过的那份为准。**
 
 ### P 的两处重要澄清（本日最值钱的产出）
@@ -617,7 +679,7 @@ C 最大的 UB 来源之一是「读到未初始化内存」，它**只能在运
 **三个发现**：
 
 1. **arena 模型很好用** —— `Ctx` 传着走一点也不烦，不用想 free 太爽了。（主人五子棋引擎里的 `SearchCtx` 果然是同一路写法。）
-2. **arena 的代价也暴露了** —— `Vec`/`Buf` 增长时旧块**还不了**，只能留给 arena。编译器无所谓，但这是真代价：`Array<T>` 要不要 `reserve(n)`？
+2. **arena 的代价也暴露了** —— `Vec`/`Buf` 增长时旧块**还不了**，只能留给 arena。编译器无所谓，但这是真代价：`array<T>` 要不要 `reserve(n)`？
 3. **「不建 AST」在写完第三行代码时就撞墙了** —— `typeOf` 必须在表达式生成阶段可用（`println` 按静态类型选格式、字段访问要判 `.` 还是 `->`、`let` 检查要可变性），这些信息只在符号表和类型里，也就是只在「建了 AST」的世界里。
    > 注意措辞：**AST 本身不难**，难的是绕过它之后那些检查没处放。
 4. **抓到一个真 bug**：`#line` 的文件名打成了 `(null)`（`CG.path` 忘了赋值）。修完之后 gcc 的报错能准确指回 `.extc` 的第 3 行并带插入符。
@@ -626,9 +688,9 @@ C 最大的 UB 来源之一是「读到未初始化内存」，它**只能在运
 
 ## 2026-09-18 · 语法决策第一批（6 条）
 
-分号（换行即结束）、类型标注（局部可省 / 签名与字段必须写）、字符串字面量（`Slice<u8>` 视图）、全局变量（加，深度 0 的 arena）、常量与枚举（`const` + 简单 `type`）、程序入口（`@main` 注解）。
+分号（换行即结束）、类型标注（局部可省 / 签名与字段必须写）、字符串字面量（`slice<u8>` 视图）、全局变量（加，深度 0 的 arena）、常量与枚举（`const` + 简单 `type`）、程序入口（`@main` 注解）。
 
-**连带影响**：`Slice<T>` 要泛型 ⇒ 泛型变 week-1 必做；`str` 作废 ⇒ `println` 要认识 `Slice<u8>`；`@main` ⇒ 代码生成要产出 C `main` 当 shim。
+**连带影响**：`slice<T>` 要泛型 ⇒ 泛型变 week-1 必做；`str` 作废 ⇒ `println` 要认识 `slice<u8>`；`@main` ⇒ 代码生成要产出 C `main` 当 shim。
 
 ---
 
@@ -660,7 +722,7 @@ C 最大的 UB 来源之一是「读到未初始化内存」，它**只能在运
 | 「不喜欢语法范式」= 嫌语法风格 | ❌ 指的是**命名规范** |
 
 主人的口味：`var thisIsAGoodName: i32` —— `name: Type`、camelCase、PascalCase 类型、`i32` 不用 `int`。
-所以 v0 丑的地方**不是骨架，是名字**：`VarArray`（`Var` 是废话还撞关键字）、`WString`（Win32 遗留）、`is_empty`（该 camelCase）、`Box<[T]>`（双重间接且缺 `cap`）。
+所以 v0 丑的地方**不是骨架，是名字**：`VarArray`（`Var` 是废话还撞关键字）、`wString`（Win32 遗留）、`is_empty`（该 camelCase）、`box<[T]>`（双重间接且缺 `cap`）。
 
 **另一个重要背景**：主人是 **OI 出身** —— 习惯全局数组、不手动释放内存、重视性能；也因此知道 C 的 `mem*`/`str*` 很快（虽危险）。
 这条直接判死了 v0「不做 C 互操作」：要 `memchr` 级别的速度就必须能碰 libc。
@@ -689,14 +751,14 @@ C 最大的 UB 来源之一是「读到未初始化内存」，它**只能在运
 
 v0 的十条里，**三条是 P 的化身，两条是 P′ 的化身**；剩下五条不是原则，是预算、策略、审美和手段。
 
-**最大的结构发现**：v0 把「arena / 作用域释放」和「逃逸检查」当成两个设计块，其实 **arena 不是第二条原则，是 P + 「内存自动回收」这个前提的推论**（P″）。一条规则吃掉 v0 §3 的三套机制（局部变量/Box/region 全都是 arena）。
+**最大的结构发现**：v0 把「arena / 作用域释放」和「逃逸检查」当成两个设计块，其实 **arena 不是第二条原则，是 P + 「内存自动回收」这个前提的推论**（P″）。一条规则吃掉 v0 §3 的三套机制（局部变量/box/region 全都是 arena）。
 
 **顺手解决**：
 - **全局变量** = 深度 0 的 arena（见上）
 - **返回值**：引用规则自动禁止返回指向自己栈帧的引用 ⇒ 要返回引用就必须由调用者提供 arena。**这不是我们挑了 Zig 的风格，是规则不允许别的写法。**
 - **越界**：范围类型让可证明的索引零开销。⚠️ 但这条**当场被五子棋证伪了一次** —— 初版写「不可证明就编译错误」，而五子棋满屏 `b.cell[py][px]`，全是运行时算出来的索引，那样五子棋根本写不出来。改成「`a[i]` 带检查（可证明则消除）」，范围类型从**门槛**降级成**优化**。
 
-**判出局**（v0 里删掉的东西）：不建 AST、`From`/`Into`、`String<T>` 泛型、`WString`、`substr`、`to_bytes`、`VarArray`/`HashMap` 这些名字、全部 6 种转换里的冗余……
+**判出局**（v0 里删掉的东西）：不建 AST、`From`/`Into`、`string<T>` 泛型、`wString`、`substr`、`to_bytes`、`VarArray`/`hashMap` 这些名字、全部 6 种转换里的冗余……
 
 ---
 

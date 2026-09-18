@@ -1,31 +1,31 @@
 // extC 的 prelude —— 每次编译都**先于用户文件**被处理的一段 extC 源码。
 //
 // 它存在的理由：**能在 extC 里写的东西，就在 extC 里写。**
-// 没有它，Slice<T> 只能在 codegen.c 里硬编码 —— 那就成了「把库塞进编译器」。
+// 没有它，slice<T> 只能在 codegen.c 里硬编码 —— 那就成了「把库塞进编译器」。
 //
 // 写在这里的类型，用户不用 import 就能用。
 //
-// ⚠️ 现在能写的东西还很少，因为语言还没有数组 / 索引 / Option：
+// ⚠️ 现在能写的东西还很少，因为语言还没有数组 / 索引 / option：
 //    · 没有索引 ⇒ 写不出 `data[i]`
-//    · 没有 Option ⇒ 写不出安全的 `get`
-//    · `Slice<T>` 的 `fn ==` 需要元素可比较（T:Eq 那件事）
+//    · 没有 option ⇒ 写不出安全的 `get`
+//    · `slice<T>` 的 `fn ==` 需要元素可比较（T:Eq 那件事）
 //  这些到位之后，find / view / parse 之类都会搬到这里。
 
-struct Slice<T> {
+struct slice<T> {
     data: ref T
     len: i64
 
-    fn isEmpty(self: ref Slice<T>) -> bool {
+    fn isEmpty(self: ref slice<T>) -> bool {
         return self.len == 0
     }
 
-    // 边界查询（不是取元素 —— 取元素要先有 Option）
-    fn hasAt(self: ref Slice<T>, i: i64) -> bool {
+    // 边界查询（不是取元素 —— 取元素要先有 option）
+    fn hasAt(self: ref slice<T>, i: i64) -> bool {
         return i >= 0 && i < self.len
     }
 }
 
-// ⚠️ 已知建模问题：**空 Slice 现在造不出来**。
+// ⚠️ 已知建模问题：**空 slice 现在造不出来**。
 // 因为 `ref` 不可为空，而长度 0 的切片没有合法的 `data` 可指。
-// 要么给 Slice 的内部表示开一个受控的口子，要么让空切片指向一个静态哨兵 ——
-// 等有 Option / 索引的时候一并解决。
+// 要么给 slice 的内部表示开一个受控的口子，要么让空切片指向一个静态哨兵 ——
+// 等有 option / 索引的时候一并解决。
