@@ -1,0 +1,34 @@
+// T3：`ref` 从类型修饰升级成**表达式**，并且自由函数的引用实参必须写 `ref`
+
+struct Counter {
+    n: i32
+
+    fn bump(self: ref Counter, by: i32) {
+        self.n = self.n + by
+    }
+}
+
+// 自由函数：引用参数在调用点要点明 `ref`
+fn addTo(c: ref Counter, by: i32) {
+    c.bump(by)              // 方法接收者自动取地址，这里不用写 ref
+}
+
+fn total(c: ref Counter) -> i32 {
+    return c.n
+}
+
+fn main() -> i32 {
+    var c: Counter = { n: 10 }
+    c.bump(5)
+    println(c.n)            // 15
+
+    addTo(ref c, 7)         // ← 自由函数要写 ref
+    println(c.n)            // 22
+
+    println(total(ref c))   // 22
+
+    var d: Counter          // 零初始化
+    d.bump(1)
+    println(d.n)            // 1
+    return 0
+}

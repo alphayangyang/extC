@@ -1,29 +1,35 @@
-// 结构体 + 方法（`a.f(x)` 就是 `f(a, x)` 的糖，self 自动取地址）
+// 结构体 + 方法（方法写在 struct 体内 —— 定案 9）
+// + 零初始化（定案 8）+ 裸 {} 从返回类型推导
 
 struct Point {
     x: i32
     y: i32
-}
 
-fn moveBy(self: ref Point, dx: i32, dy: i32) {
-    self.x = self.x + dx
-    self.y = self.y + dy
+    fn moveBy(self: ref Point, dx: i32, dy: i32) {
+        self.x = self.x + dx
+        self.y = self.y + dy
+    }
+
+    fn magnitudeSquared(self: ref Point) -> i32 {
+        return self.x * self.x + self.y * self.y
+    }
 }
 
 fn origin() -> Point {
-    return { x: 0, y: 0 }
+    return { x: 0, y: 0 }        // 裸 {} 从函数的返回类型推导
 }
 
 fn main() -> i32 {
     var p: Point = { x: 1, y: 2 }
-    p.moveBy(3, 4)
-    println(p.x)          // 4
-    println(p.y)          // 6
+    p.moveBy(3, 4)               // 接收者自动取地址，不用写 ref
+    println(p.x)                 // 4
+    println(p.y)                 // 6
+    println(p.magnitudeSquared())// 52
 
-    let q: Point = {}     // 裸 {} 靠声明类型补全，等价于零初始化
-    println(q.x)          // 0
+    var q: Point                 // 零初始化：所有字段清零
+    println(q.x)                 // 0
 
     let o: Point = origin()
-    println(o.x)          // 0
+    println(o.x)                 // 0
     return 0
 }

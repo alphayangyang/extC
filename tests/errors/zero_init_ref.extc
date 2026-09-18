@@ -1,0 +1,11 @@
+struct Point {
+    x: i32
+}
+
+fn take(p: ref Point) {
+}
+
+fn main() -> i32 {
+    var p: ref Point
+    return 0
+}

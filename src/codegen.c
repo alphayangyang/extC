@@ -72,7 +72,7 @@ static const char *cType(CG *g, Type *t) {
         case TY_REF:   return arenaPrintf(g->arena, "%s *", cType(g, t->inner));
         case TY_VOID:  return "void";
         case TY_STRUCT: return t->name;
-        case TY_ENUM:  return "int";
+        case TY_ENUM:  return t->name;      /* C 里就是一个 enum typedef */
         case TY_ERROR: return "int";
         case TY_BUILTIN:
             for (size_t i = 0; C_TYPES[i].extc; i++)
@@ -88,6 +88,21 @@ static const char *cType(CG *g, Type *t) {
 
 static const char *genExpr(CG *g, Expr *e);
 
+/* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
+ * （在 extC 里它们本来就是两个不同的名字，见 DECISIONS 决策 9）*/
+static const char *cFuncName(CG *g, FuncDef *f) {
+    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, f->name);
+    return f->name;
+}
+
+/* 零初始化（定案 8）：struct / enum 用 `{0}`，bool 用 false，其余用 0 */
+static const char *zeroInit(CG *g, Type *t) {
+    (void)g;
+    if (t && (t->kind == TY_STRUCT || t->kind == TY_ENUM)) return "{0}";
+    if (t && ttIs(t, "bool")) return "false";
+    return "0";
+}
+
 static const char *genPrint(CG *g, Vec *args, bool newline) {
     Buf b;
     bufInit(&b, g->arena);
@@ -99,7 +114,14 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
         const char *code = genExpr(g, a);
 
         if (i) bufPuts(&b, ", ");
-        if (!bt || bt->kind != TY_BUILTIN) { bufPuts(&b, "0"); continue; }
+        if (!bt) { bufPuts(&b, "0"); continue; }
+
+        /* 定案 11：无载荷枚举自动有名字文本 */
+        if (bt->kind == TY_ENUM) {
+            bufPrintf(&b, "printf(\"%%s\", %s_name(%s))", bt->name, code);
+            continue;
+        }
+        if (bt->kind != TY_BUILTIN) { bufPuts(&b, "0"); continue; }
 
         if (strcmp(bt->name, "bool") == 0) {
             bufPrintf(&b, "printf(\"%%s\", (%s) ? \"true\" : \"false\")", code);
@@ -143,7 +165,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
 
     Buf b;
     bufInit(&b, g->arena);
-    bufPrintf(&b, "%s(%s", f->name, recvC);
+    bufPrintf(&b, "%s(%s", cFuncName(g, f), recvC);
     for (size_t i = 0; i < e->u.method.args.len; i++)
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
     bufPutc(&b, ')');
@@ -213,6 +235,12 @@ static const char *genExpr(CG *g, Expr *e) {
 
         case EX_METHOD:    return genMethodCall(g, e);
         case EX_STRUCTLIT: return genStructLit(g, e);
+
+        case EX_REF:
+            return arenaPrintf(g->arena, "&(%s)", genExpr(g, e->u.ref.operand));
+
+        case EX_ENUMVAL:
+            return arenaPrintf(g->arena, "%s_%s", e->u.enumval.typeName, e->u.enumval.variant);
     }
     return "0";
 }
@@ -235,10 +263,12 @@ static void genStmt(CG *g, Stmt *s) {
     lineMark(g, s);
 
     switch (s->kind) {
-        case ST_VAR:
-            cgLine(g, "%s %s = %s;", cType(g, s->type), s->u.var.name,
-                   genExpr(g, s->u.var.init));
+        case ST_VAR: {
+            const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
+                                             : zeroInit(g, s->type);
+            cgLine(g, "%s %s = %s;", cType(g, s->type), s->u.var.name, init);
             return;
+        }
 
         case ST_ASSIGN:
             cgLine(g, "%s = %s;", genExpr(g, s->u.assign.target),
@@ -295,12 +325,12 @@ static void genStmt(CG *g, Stmt *s) {
 /* ---------------------------------------------------------------- 顶层 */
 
 static void genFunc(CG *g, FuncDef *f) {
-    if (strcmp(f->name, "main") == 0) {
+    if (!f->owner && strcmp(f->name, "main") == 0) {
         cgLine(g, "int main(void) {");
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
-        bufPrintf(&sig, "%s %s(", cType(g, f->ret), f->name);
+        bufPrintf(&sig, "%s %s(", cType(g, f->ret), cFuncName(g, f));
         if (f->params.len == 0) {
             bufPuts(&sig, "void");
         } else {
@@ -332,8 +362,13 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
 
     vecInit(&g.structs, arena, sizeof(void *));
     vecInit(&g.funcs, arena, sizeof(void *));
-    for (size_t i = 0; i < m->structs.len; i++)
-        *(StructDef **)vecPush(&g.structs) = *(StructDef **)vecAt(&m->structs, i);
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        *(StructDef **)vecPush(&g.structs) = sd;
+        /* 方法也是函数 —— 一起进原型/定义的表 */
+        for (size_t j = 0; j < sd->methods.len; j++)
+            *(FuncDef **)vecPush(&g.funcs) = *(FuncDef **)vecAt(&sd->methods, j);
+    }
     for (size_t i = 0; i < m->funcs.len; i++)
         *(FuncDef **)vecPush(&g.funcs) = *(FuncDef **)vecAt(&m->funcs, i);
 
@@ -345,6 +380,40 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
         "#include <stdint.h>\n"
         "#include <stdbool.h>\n"
         "#include <stdio.h>\n\n");
+
+    /* 枚举最靠前 —— C11 不能前置声明 enum tag，
+     * 所以 struct 字段里用到枚举时必须先有定义 */
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+
+        Buf b;
+        bufInit(&b, arena);
+        bufPuts(&b, "typedef enum { ");
+        for (size_t j = 0; j < td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            if (j) bufPuts(&b, ", ");
+            bufPrintf(&b, "%s_%s = %zu", td->name, v->name, j);
+        }
+        bufPrintf(&b, " } %s;", td->name);
+        cgLine(&g, "%s", bufCstr(&b));
+
+        /* 定案 11：无载荷枚举自动有名字文本。
+         * 不写 static —— 免得没用到的枚举触发 -Wunused-function。 */
+        cgLine(&g, "const char *%s_name(%s v) {", td->name, td->name);
+        g.indent++;
+        cgLine(&g, "switch (v) {");
+        g.indent++;
+        for (size_t j = 0; j < td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            cgLine(&g, "case %s_%s: return \"%s\";", td->name, v->name, v->name);
+        }
+        cgLine(&g, "default: return \"<%s>\";", td->name);
+        g.indent--;
+        cgLine(&g, "}");
+        g.indent--;
+        cgLine(&g, "}");
+        cgLine(&g, "");
+    }
 
     if (g.structs.len) {
         for (size_t i = 0; i < g.structs.len; i++) {
@@ -369,10 +438,11 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
     /* 原型：顺序无关，顺带支持互相调用 */
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
-        const char *ret = strcmp(f->name, "main") == 0 ? "int" : cType(&g, f->ret);
+        const char *ret = (!f->owner && strcmp(f->name, "main") == 0)
+                              ? "int" : cType(&g, f->ret);
         Buf sig;
         bufInit(&sig, arena);
-        bufPrintf(&sig, "%s %s(", ret, f->name);
+        bufPrintf(&sig, "%s %s(", ret, cFuncName(&g, f));
         if (f->params.len == 0) {
             bufPuts(&sig, "void");
         } else {

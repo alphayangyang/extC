@@ -81,6 +81,7 @@ static Stmt    *parseIf(Parser *p);
 static Stmt    *parseWhile(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
+static TypeDef   *parseTypeDecl(Parser *p);
 
 static Expr *parseExpr(Parser *p);
 static Expr *parseOr(Parser *p);
@@ -115,6 +116,10 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             StructDef *s = parseStruct(&p);
             if (!s) return false;
             *(StructDef **)vecPush(&out->structs) = s;
+        } else if (at(&p, "type")) {
+            TypeDef *td = parseTypeDecl(&p);
+            if (!td) return false;
+            *(TypeDef **)vecPush(&out->types) = td;
         } else if (at(&p, "fn")) {
             FuncDef *f = parseFunc(&p);
             if (!f) return false;
@@ -122,8 +127,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else {
             Token *t = cur(&p);
             ctxError(ctx, t->line, t->col,
-                     "extC 的顶层只允许函数和结构体定义",
-                     "expected `fn` or `struct` at the top level, found `%s`", shown(t));
+                     "extC 的顶层只允许 `fn`、`struct` 和 `type` 定义",
+                     "expected `fn`, `struct` or `type` at the top level, found `%s`", shown(t));
             return false;
         }
         skipJunk(&p);
@@ -140,10 +145,21 @@ static StructDef *parseStruct(Parser *p) {
     sd->name = name->text;
     sd->line = kw->line;
     vecInit(&sd->fields, p->arena, sizeof(void *));
+    vecInit(&sd->methods, p->arena, sizeof(void *));
 
     if (!expect(p, "{", NULL)) return NULL;
     skipJunk(p);
     while (!at(p, "}")) {
+        /* 方法写在 struct 体内（定案 9）*/
+        if (at(p, "fn")) {
+            FuncDef *m = parseFunc(p);
+            if (!m) return NULL;
+            m->owner = sd;
+            *(FuncDef **)vecPush(&sd->methods) = m;
+            skipJunk(p);
+            continue;
+        }
+
         Token *fname = expectIdent(p, "a field name");
         if (!fname) return NULL;
         if (!expect(p, ":", NULL)) return NULL;
@@ -159,6 +175,39 @@ static StructDef *parseStruct(Parser *p) {
     }
     if (!expect(p, "}", NULL)) return NULL;
     return sd;
+}
+
+/* type Status = | ok | warn | error
+ * 前导 `|` 可写可不写。 */
+static TypeDef *parseTypeDecl(Parser *p) {
+    Token *kw = take(p);                    /* type */
+    Token *name = expectIdent(p, "a type name");
+    if (!name) return NULL;
+
+    TypeDef *td = (TypeDef *)arenaAllocZero(p->arena, sizeof(TypeDef));
+    td->name = name->text;
+    td->line = kw->line;
+    vecInit(&td->variants, p->arena, sizeof(void *));
+
+    if (!expect(p, "=", NULL)) return NULL;
+    skipNl(p);
+    accept(p, "|");
+    skipNl(p);
+
+    for (;;) {
+        Token *v = expectIdent(p, "a variant name");
+        if (!v) return NULL;
+
+        Variant *va = (Variant *)arenaAllocZero(p->arena, sizeof(Variant));
+        va->name = v->text;
+        va->line = v->line;
+        *(Variant **)vecPush(&td->variants) = va;
+
+        skipNl(p);
+        if (accept(p, "|")) { skipNl(p); continue; }
+        break;
+    }
+    return td;
 }
 
 static FuncDef *parseFunc(Parser *p) {
@@ -298,18 +347,21 @@ static Stmt *parseVarDecl(Parser *p) {
         if (!ann) return NULL;
     }
 
-    if (!at(p, "=")) {
+    /* 初始化式可省 —— 省略即**零初始化**（定案 8）。
+     * C 里最大的 UB 来源之一就是「读到未初始化内存」，它只能在运行时发现；
+     * 默认清零把它变成编译期就能保证的东西。 */
+    Expr *init = NULL;
+    if (accept(p, "=")) {
+        skipNl(p);
+        init = parseExpr(p);
+        if (!init) return NULL;
+    } else if (ann == NULL) {
         Token *t = cur(p);
         ctxError(p->ctx, t->line, t->col,
-                 "week-0 还不支持先声明后赋值（这样 `let` 的不可变语义才成立）",
-                 "`%s %s` needs an initializer", kw->text, name->text);
+                 "省略初始化式就必须写类型：`var x: T`（否则推导不出类型）",
+                 "`%s %s` needs a type or an initializer", kw->text, name->text);
         return NULL;
     }
-    take(p);
-    skipNl(p);
-
-    Expr *init = parseExpr(p);
-    if (!init) return NULL;
 
     Stmt *s = stmtNew(p->arena, ST_VAR, kw->line);
     s->u.var.name = name->text;
@@ -447,6 +499,15 @@ static Expr *parseUnary(Parser *p) {
         Expr *e = exprNew(p->arena, EX_UN, op->line);
         e->u.un.op = op->text;
         e->u.un.operand = operand;
+        return e;
+    }
+    /* T3：`ref` 在表达式位置是「取引用」(`f(ref x)`)，在类型位置是「引用类型」 */
+    if (at(p, "ref")) {
+        Token *kw = take(p);
+        Expr *operand = parseUnary(p);
+        if (!operand) return NULL;
+        Expr *e = exprNew(p->arena, EX_REF, kw->line);
+        e->u.ref.operand = operand;
         return e;
     }
     return parsePostfix(p);

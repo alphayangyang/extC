@@ -31,8 +31,11 @@
 
 ## 状态
 
-**week-0**：链路通了（extC → C → gcc → 可执行），但 **arena / 逃逸检查还没接上** ——
-现在它是一门「语法像 Go 的普通语言」，不是 extC。见 `DECISIONS.md` 末尾的缺口表。
+**week-1 进行中**：T1（类型检查独立成 pass）、T2（真类型检查）、T3（`ref` 表达式）
+已完成，外加零初始化 / 方法进 struct / `type` 枚举。
+
+⚠️ 但 **arena / 逃逸检查还没接上** —— 现在它是一门「语法像 Go 的普通语言」，还不是 extC。
+逃逸检查才是 extC 的命。缺口表见 [`DECISIONS.md`](DECISIONS.md) 和 [`PLAN.md`](PLAN.md)。
 
 ## 构建
 
@@ -61,36 +64,51 @@ make clean
 
 正例跑通 + 反例必须被编译期挡掉。目前 10/10。
 
-## 支持的语法（week-0）
+## 支持的语法
 
 ```extc
+type Status = | ok | warn | error        // 枚举（无载荷）；变体用 Status.ok 访问
+
 struct Point {
     x: i32
     y: i32
-}
 
-fn moveBy(self: ref Point, dx: i32, dy: i32) {
-    self.x = self.x + dx
+    fn moveBy(self: ref Point, dx: i32, dy: i32) {   // 方法写在 struct 体内
+        self.x = self.x + dx
+    }
+
+    fn magnitudeSquared(self: ref Point) -> i32 {
+        return self.x * self.x + self.y * self.y
+    }
 }
 
 fn origin() -> Point {
-    return { x: 0, y: 0 }
+    return { x: 0, y: 0 }                // 裸 {} 从返回类型推导
+}
+
+fn addTo(p: ref Point, dx: i32) {
+    p.moveBy(dx, 0)                      // 方法接收者自动取地址
 }
 
 fn main() -> i32 {
     var p: Point = { x: 1, y: 2 }
-    p.moveBy(3, 4)              // a.f(x) 就是 f(a, x) 的糖
-    let q: Point = {}           // 裸 {} 从声明类型推导
-    println(p.x)
+    addTo(ref p, 3)                      // 自由函数的引用实参要写 ref
+    let q: Point = {}                    // 零初始化
+    var s: Status                        // 零初始化：第一个变体
+    println(p.magnitudeSquared())
+    println(s)                           // ok —— 枚举自动有名字文本
     return 0
 }
 ```
 
-`i8..i64 / u8..u64 / f32 / f64 / bool / str`、`let`/`var`、`if`/`else if`/`else`、
-`while`、`return`/`break`/`continue`、`struct` + 方法、函数调用、`print`/`println`。
+`i8..i64 / u8..u64 / f32 / f64 / bool / str`、`let`/`var`（含零初始化）、
+`if`/`else if`/`else`、`while`、`return`/`break`/`continue`、
+`struct` + 方法（写在体内）、`type` 枚举、`ref` 表达式、`print`/`println`。
 
-**还没有**：数组、`Option`/`Result`/`?`、`enum`/`match`、`for`、`region`、`@recursive`、
-顶层全局变量、逃逸检查。
+**类型系统**：只自动做**无损失**的拓宽；收窄一律禁止；字面量按值适配。
+
+**还没有**：泛型、`Slice`/`Array`、`Option`/`Result`/`?`、`match`、`for`、格式串、
+模块系统、全局变量、`region`、`@recursive`、**逃逸检查**。
 
 ## 目录
 

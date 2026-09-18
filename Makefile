@@ -1,14 +1,20 @@
 # extC 编译器（C 实现）
 #
 # 写这份 C 代码的规矩 = extC 将来要强制的规矩，详见 src/base.h 顶部。
+#
+# ⚠️ `-MMD -MP` 生成头文件依赖，**不能去掉**。
+#    踩过：改 ast.h 让 sizeof(StructDef) 变了，但只有部分 .o 重编，
+#    结果新旧 ABI 混在一起 → 段错误，而且症状看起来像代码 bug。
 
 CC       ?= gcc
 CSTD     ?= -std=c11
 CFLAGS   ?= $(CSTD) -Wall -Wextra -Wpedantic -O1 -g
+DEPFLAGS := -MMD -MP
 SRCDIR   := src
 BUILDDIR := build
 SRCS     := $(wildcard $(SRCDIR)/*.c)
 OBJS     := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
+DEPS     := $(OBJS:.o=.d)
 BIN      := $(BUILDDIR)/extc
 
 all: $(BIN)
@@ -17,16 +23,17 @@ $(BUILDDIR):
 	@mkdir -p $(BUILDDIR)
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
 
-# 便利目标：对 examples 里的文件 dump token
-tokens: $(BIN)
-	./$(BIN) --dump-tokens examples/hello.extc
+test: $(BIN)
+	./tests/run.sh
 
 clean:
 	rm -rf $(BUILDDIR)
 
-.PHONY: all clean tokens
+-include $(DEPS)
+
+.PHONY: all test clean

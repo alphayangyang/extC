@@ -43,10 +43,11 @@ extC 编译到 C，再由系统的 C 编译器编成可执行文件。生成的 
 
 ## 1. 程序结构
 
-一个 `.extc` 文件里，顶层只允许两种东西：
+一个 `.extc` 文件里，顶层只允许三种东西：
 
 ```extc
-struct 名字 { ... }        // 结构体定义
+type 名字 = | 变体 | 变体      // 枚举（无载荷的标签联合）
+struct 名字 { ... }            // 结构体定义
 fn 名字(参数) -> 返回类型 { ... }   // 函数定义
 ```
 
@@ -148,6 +149,25 @@ var b: i32 = 2
 let c = a + b           // error: `u32` and `i32` have no common type for `+`
 ```
 
+### 枚举类型
+
+```extc
+type Status = | ok | warn | error      // 前导 `|` 可写可不写
+```
+
+- 变体用 **`类型名.变体名`** 访问：`Status.ok`
+- 变体名不必全局唯一 —— `Status.ok` 和 `Result.ok` 是两个不同的东西
+- 只有**同类型**才能比较和赋值（不能拿 `i32` 跟枚举比）
+- 枚举**自动有名字文本**（定案 11）：`println(s)` 直接打印 `warn`
+
+```extc
+type Status = | ok | warn | error
+
+if s == Status.ok { ... }      // 可以
+if s == 0 { ... }              // error: 类型不匹配
+println(s)                     // warn
+```
+
 ### 结构体类型
 
 顶层 `struct` 定义的类型就是类型名，PascalCase：
@@ -178,15 +198,23 @@ fn moveBy(self: ref Point, dx: i32) {
 ```extc
 let name: Type = 表达式      // 不可变绑定
 var name: Type = 表达式      // 可变变量
+var name: Type               // 零初始化（定案 8）
 ```
 
 - **类型标注可以省**（局部变量）：`var y = 4` 从初始化式推导。
-- **必须写初始化式**。⚠️ `var b: Board` 这种「无初始化式 + 自动清零」**已定案但没有实现**（定案 8）。
+- **省略初始化式就必须写类型**：`var b: Board` 会**自动清零** ——
+  C 里最大的 UB 来源之一就是「读到未初始化内存」，它只能在运行时发现；
+  默认清零把它变成编译期就能保证的东西。
+- `ref T` **不能零初始化** —— 它是不可为空的引用，没有「零值」。
 - 给 `let` 赋值是**编译错误**。
 
 ```extc
 let x = 1
 x = 2              // error: cannot assign to `x`, which is a `let`
+
+var b: Board       // 所有字段清零
+var n: i32         // 0
+var ok: bool       // false
 ```
 
 ### 作用域
@@ -267,34 +295,75 @@ continue
 
 ## 7. 结构体与方法
 
-**week-0 的方法 = 首参数名为 `self` 的自由函数。** 调用点写 `a.f(x)`，等价于 `f(a, x)`：
+**方法写在 `struct` 体内**（定案 9），首参数必须是 `self: ref 本类型`：
 
 ```extc
 struct Point {
     x: i32
     y: i32
-}
 
-fn moveBy(self: ref Point, dx: i32, dy: i32) {
-    self.x = self.x + dx
-    self.y = self.y + dy
+    fn moveBy(self: ref Point, dx: i32, dy: i32) {
+        self.x = self.x + dx
+        self.y = self.y + dy
+    }
+
+    fn magnitudeSquared(self: ref Point) -> i32 {
+        return self.x * self.x + self.y * self.y
+    }
 }
 
 fn main() -> i32 {
     var p: Point = { x: 1, y: 2 }
-    p.moveBy(3, 4)          // 就是 moveBy(p, 3, 4)，接收者自动取地址
-    println(p.x)            // 4
+    p.moveBy(3, 4)                  // 接收者自动取地址，调用点不用写 ref
+    println(p.magnitudeSquared())   // 52
     return 0
 }
 ```
 
 细节：
 
-- 接收者是**值**、而 `self` 是 `ref T` 时，编译器自动取地址（`&p`）。
-- 接收者已经是 `ref T`、而 `self` 是值类型时，编译器自动解引用（`*p`）。
+- **接收者自动取地址**：`p.moveBy(...)` 里 `p` 是值、`self` 是 `ref Point`，编译器生成 `&p`。
+  反过来（接收者是 `ref T`、`self` 是值类型）会自动解引用。
+  > 规则：**`.` 本身就表示「在这个值上操作」**，所以方法接收者不用写 `ref`；
+  > 而**自由函数的 `ref T` 实参必须在调用点写 `ref`**（见下）。
+- **方法名有命名空间**：`Point.eq` 和 `Board.eq` 是两个不同的名字，
+  顶层不用为了避冲突而发明 `point_eq` 这种名字。C 里生成 `Point_eq` 做区分。
 - 字段访问按类型决定用 `.` 还是 `->`，用户不用管。
+- **自由函数不能有 `self` 参数** —— `self` 只属于方法。
 
-> ⚠️ **已定案：方法要写在 struct 体内**（定案 9）。week-0 还没改，见第 10 节。
+## 7.5 引用：`ref` 是表达式
+
+`ref T` 是「不可为空、不可做算术的**可变**引用」。
+
+**`ref` 在调用点要显式写**（定案 10）——让读代码的人一眼看出这里传的是引用不是拷贝：
+
+```extc
+struct Counter {
+    n: i32
+    fn bump(self: ref Counter, by: i32) { self.n = self.n + by }
+}
+
+fn addTo(c: ref Counter, by: i32) {     // 自由函数的引用参数
+    c.bump(by)                          // 方法接收者自动取地址
+}
+
+fn main() -> i32 {
+    var c: Counter = { n: 10 }
+    addTo(ref c, 7)                     // ← 必须写 ref
+    println(c.n)                        // 17
+    return 0
+}
+```
+
+- 实参**本身就是引用**时，不用再写 `ref`，直接传。
+- `ref` 是**可变**引用，所以**不能对 `let` 取引用**：
+  ```extc
+  let c: Counter = {}
+  addTo(ref c, 1)      // error: cannot take a mutable reference to `c`, which is a `let`
+  ```
+- 只有变量和字段能取引用（`ref f()` 不行）。
+
+> ⚠️ **逃逸检查还没做**（week-4）。现在能拿到指向函数局部变量的引用而不被检查。
 
 ---
 
@@ -309,13 +378,14 @@ println()           // 只换行
 println(a, b, c)    // 按顺序连续打印，中间没有分隔
 ```
 
-**格式由编译器按静态类型选** —— 用户永远不写 `"%d"`。支持的类型：所有整数、浮点、`bool`、`str`。
+**格式由编译器按静态类型选** —— 用户永远不写 `"%d"`。支持的类型：所有整数、浮点、`bool`、`str`、**枚举**。
 
 ```extc
 println(42)         // 42
 println(3.14)       // 3.14
 println(true)       // true
 println("hi")       // hi
+println(Status.warn)// warn   ← 枚举自动有名字文本（定案 11）
 ```
 
 > ⚠️ **格式串 `{}` 已定案要加**（编译期展开，不是运行时解析），但 week-0 还没实现。见第 10 节。
@@ -348,7 +418,15 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 - 整数字面量超出目标类型范围
 - 条件不是 `bool`
 - 两种类型没有公共类型的运算
-- `self` 不是 `ref T`，或不是首参数
+
+**结构 / 枚举 / 引用（T3）**
+- 重名的 struct / type / 函数 / 字段 / 方法 / 变体
+- 字段和方法同名
+- 不存在的变体（`Status.nope`）
+- `self` 不在 struct 体内、`self` 类型不对、`self` 不是首参数
+- 对 `let` 取引用、对不是变量/字段的东西取引用
+- 自由函数的 `ref` 实参没写 `ref`
+- 零初始化 `ref T`
 
 **只报第一个错误**，没有错误恢复。
 
@@ -356,12 +434,11 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 ## 10. 已定案、但还没实现
 
+> ✅ **刚做完（2026-09-18）**：默认零初始化、方法进 struct 体内、`type` 枚举、
+> `ref` 表达式与调用点显式。下面剩下的都还没做。
+
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
-| **默认零初始化** | `var b: Board` 合法，自动清零 | T1（顺手） |
-| **方法写在 struct 体内** | 跟示例一致，收益是方法名有命名空间 | T1（顺手） |
-| **`type` 枚举** | `type Status = \| ok \| warn \| error` | T1（顺手） |
-| **`ref` 显式** | `ref` 升级成表达式；自由函数实参必须写 `ref` | T3 |
 | **泛型** | `Slice<T>` / `Array<T>`，靠 C 代码生成实现 | T4 |
 | **字符串字面量 = `Slice<u8>`** | `str` 作废 | T4 |
 | **`Option<T>` / `Result<T,E>` / `?`** | | T5 |
@@ -392,7 +469,10 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 |---|---|
 | `hello.extc` | 变量、`if/else`、`while`、函数调用、打印 |
 | `fizzbuzz.extc` | `else if` 链、`%`、`while` |
-| `structs.extc` | struct、方法、结构体字面量、`{}` 推导、`ref` |
+| `types.extc` | 拓宽自动、字面量按值适配（T2） |
+| `structs.extc` | struct、**方法写在 struct 体内**、裸 `{}` 推导、**零初始化** |
+| `enums.extc` | `type` 枚举、`Status.ok`、枚举自动打印名字 |
+| `refs.extc` | **`ref` 表达式**、自由函数实参写 `ref`、方法接收者自动取地址 |
 
 跑测试：
 

@@ -7,7 +7,7 @@
 
 static const char *KEYWORDS[] = {
     "fn", "let", "var", "if", "else", "while", "return",
-    "break", "continue", "struct", "true", "false", "ref",
+    "break", "continue", "struct", "type", "true", "false", "ref",
     NULL
 };
 
@@ -23,6 +23,7 @@ static const char *BUILTIN_TYPES[] = {
 static const char *PUNCTS[] = {
     "->", "==", "!=", "<=", ">=", "&&", "||",
     "+=", "-=", "*=", "/=",
+    "|", "&", "^", "~",
     "+", "-", "*", "/", "%", "=", "<", ">", "!",
     "(", ")", "{", "}", "[", "]", ",", ":", ";", ".",
     NULL

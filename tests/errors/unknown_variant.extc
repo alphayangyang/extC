@@ -1,0 +1,6 @@
+type Status = | ok | warn
+
+fn main() -> i32 {
+    let s = Status.nope
+    return 0
+}

@@ -1,0 +1,12 @@
+struct Counter {
+    n: i32
+}
+
+fn total(c: ref Counter) -> i32 {
+    return c.n
+}
+
+fn main() -> i32 {
+    let c: Counter = {}
+    return total(ref c)
+}

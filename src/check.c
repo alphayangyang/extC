@@ -114,6 +114,31 @@ static FieldDef *findField(StructDef *sd, const char *name) {
     return NULL;
 }
 
+/* 方法只住在 struct 体内（定案 9）*/
+static FuncDef *findMethod(Type *st, const char *name) {
+    if (!st || st->kind != TY_STRUCT || !st->sdef) return NULL;
+    StructDef *sd = st->sdef;
+    for (size_t i = 0; i < sd->methods.len; i++) {
+        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
+        if (strcmp(m->name, name) == 0) return m;
+    }
+    return NULL;
+}
+
+static Variant *findVariant(TypeDef *td, const char *name) {
+    if (!td) return NULL;
+    for (size_t i = 0; i < td->variants.len; i++) {
+        Variant *v = *(Variant **)vecAt(&td->variants, i);
+        if (strcmp(v->name, name) == 0) return v;
+    }
+    return NULL;
+}
+
+/* 能取引用的东西：变量和字段 */
+static bool isLvalue(Expr *e) {
+    return e->kind == EX_IDENT || e->kind == EX_FIELD;
+}
+
 /* ---------------------------------------------------------------- 小工具 */
 
 static bool isCmpOp(const char *op) {
@@ -133,8 +158,9 @@ static bool isNumericLit(Expr *e) {
 static bool isPrintable(Type *t) {
     Type *b = ttBase(t);
     if (!b) return false;
-    if (b->kind != TY_BUILTIN) return false;
-    return true;    /* 内建类型全部可打印（void 会在这里被挡掉，见下） */
+    if (b->kind == TY_BUILTIN) return true;
+    /* 定案 11：无载荷枚举自动有名字文本 */
+    return b->kind == TY_ENUM;
 }
 
 /* 字面量的类型按**值**适配目标类型（DESIGN §5 的「字面量类型推导」）。 */
@@ -304,6 +330,35 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_FIELD: {
+            /* 先看是不是枚举变体：`Status.warn`
+             * （`Status` 不是变量，而是一个 type 名字）*/
+            if (e->u.field.obj->kind == EX_IDENT) {
+                const char *tn   = e->u.field.obj->u.ident.name;
+                const char *vn   = e->u.field.name;
+                if (!lookup(c, tn)) {
+                    Type *et = ttFromName(tt, tn);
+                    if (et && et->kind == TY_ENUM) {
+                        Variant *v = findVariant(et->edef, vn);
+                        if (!v) {
+                            Buf note;
+                            bufInit(&note, c->arena);
+                            bufPrintf(&note, "%s 的变体：", et->name);
+                            for (size_t i = 0; i < et->edef->variants.len; i++)
+                                bufPrintf(&note, " %s",
+                                          (*(Variant **)vecAt(&et->edef->variants, i))->name);
+                            ckError(c, e->line, bufCstr(&note),
+                                    "`%s` has no variant `%s`", et->name, vn);
+                            return ttError(tt);
+                        }
+                        /* 改写成枚举值节点，codegen 直接用 */
+                        e->kind = EX_ENUMVAL;
+                        e->u.enumval.typeName = et->name;
+                        e->u.enumval.variant  = v->name;
+                        return et;
+                    }
+                }
+            }
+
             Type *bt = ttBase(checkExpr(c, e->u.field.obj));
             if (!bt || ttIsError(bt)) return ttError(tt);
             if (bt->kind != TY_STRUCT) {
@@ -325,6 +380,38 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             e->field = fd;
             return fd->type;
         }
+
+        case EX_REF: {
+            Expr *op = e->u.ref.operand;
+            Type *ot = checkExpr(c, op);
+            if (ttIsError(ot)) return ttError(tt);
+
+            if (ot->kind == TY_REF) {
+                ckError(c, e->line, "它本来就是引用，直接传就行",
+                        "`ref` applied to a value that is already a reference");
+                return ot;
+            }
+            if (!isLvalue(op)) {
+                ckError(c, e->line, "只有变量和字段可以取引用",
+                        "cannot take a reference to this expression");
+                return ttError(tt);
+            }
+            /* `ref T` 是**可变**引用（方法靠它改调用者的数据），
+             * 所以不能对 `let` 取引用 */
+            if (op->kind == EX_IDENT) {
+                Sym *s = lookup(c, op->u.ident.name);
+                if (s && !s->mut) {
+                    ckError(c, e->line, "`ref T` 是可变引用；只读的值直接按值传",
+                            "cannot take a mutable reference to `%s`, which is a `let`",
+                            s->name);
+                    return ttError(tt);
+                }
+            }
+            return ttRef(tt, ot);
+        }
+
+        case EX_ENUMVAL:
+            return ttFromName(tt, e->u.enumval.typeName);
 
         case EX_CALL: {
             if (e->u.call.callee->kind != EX_IDENT) {
@@ -364,34 +451,50 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
                 adoptContextType(a, p->type);
                 Type *at = checkExpr(c, a);
+
+                /* T3：形参是 `ref T` 时，值必须在调用点显式写 `ref` ——
+                 * 「这里传的是引用不是拷贝」要让读代码的人一眼看见（P′）。
+                 * 实参本身就是引用的话，直接传即可。*/
+                if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
+                    ckError(c, a->line,
+                            "`. 表示在这个值上操作，而自由函数的引用参数要点明。"
+                            "`ref` 是可变引用，所以被引用的东西必须是 `var`",
+                            "argument expects `%s`; write `ref ...` here to pass a reference",
+                            typeStr(c, p->type));
+                    continue;
+                }
                 checkAssignable(c, p->type, at, a, "argument");
             }
             return f->ret ? f->ret : ttVoid(tt);
         }
 
         case EX_METHOD: {
-            FuncDef *f = findFunc(c, e->u.method.name);
+            /* 方法只住在 struct 体内 —— 按接收者的类型去找 */
+            Type *recvT = checkExpr(c, e->u.method.recv);
+            Type *rb = ttBase(recvT);
+
+            FuncDef *f = findMethod(rb, e->u.method.name);
             if (!f) {
-                ckError(c, e->line, NULL, "call to undefined method `%s`", e->u.method.name);
-                return ttError(tt);
-            }
-            if (!funcIsMethod(f)) {
-                ckError(c, e->line,
-                        "方法 = 首参数名为 `self` 的函数，例如 `fn f(self: ref T, ...)`",
-                        "`%s` is not a method", e->u.method.name);
+                Buf note;
+                bufInit(&note, c->arena);
+                if (rb && rb->kind == TY_STRUCT && rb->sdef) {
+                    bufPrintf(&note, "%s 的方法：", rb->name);
+                    if (rb->sdef->methods.len == 0) bufPuts(&note, " （一个都没有）");
+                    for (size_t i = 0; i < rb->sdef->methods.len; i++)
+                        bufPrintf(&note, " %s",
+                                  (*(FuncDef **)vecAt(&rb->sdef->methods, i))->name);
+                    bufPuts(&note, "；方法必须写在 struct 体内（定案 9）");
+                } else {
+                    bufPuts(&note, "只有 struct 的值有方法");
+                }
+                ckError(c, e->line, bufCstr(&note), "no method `%s` on `%s`",
+                        e->u.method.name, typeStr(c, rb ? rb : recvT));
                 return ttError(tt);
             }
             e->func = f;
 
-            Type *recvT = checkExpr(c, e->u.method.recv);
-            Param *p0 = *(Param **)vecAt(&f->params, 0);
-
-            /* 接收者可以是值也可以是 ref —— 编译器按需取地址 / 解引用 */
-            if (!ttEquals(ttBase(p0->type), ttBase(recvT)))
-                ckError(c, e->line, NULL, "`%s` expects `%s`, found `%s`",
-                        e->u.method.name, typeStr(c, p0->type), typeStr(c, recvT));
-
             size_t want = f->params.len - 1;
+
             if (e->u.method.args.len != want) {
                 ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
                         e->u.method.name, want, e->u.method.args.len);
@@ -402,6 +505,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr  *a = *(Expr **)vecAt(&e->u.method.args, i);
                 adoptContextType(a, p->type);
                 Type *at = checkExpr(c, a);
+                if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
+                    ckError(c, a->line,
+                            "`. 表示在这个值上操作，而自由函数的引用参数要点明。"
+                            "`ref` 是可变引用，所以被引用的东西必须是 `var`",
+                            "argument expects `%s`; write `ref ...` here to pass a reference",
+                            typeStr(c, p->type));
+                    continue;
+                }
                 checkAssignable(c, p->type, at, a, "argument");
             }
             return f->ret ? f->ret : ttVoid(tt);
@@ -477,6 +588,19 @@ static void checkStmt(Checker *c, Stmt *s) {
             if (s->u.var.ann)
                 s->u.var.ann = ttResolve(c->tt, c->ctx, s->u.var.ann, s->line);
             if (ttIsError(s->u.var.ann)) s->u.var.ann = NULL;
+
+            /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
+            if (!s->u.var.init) {
+                if (s->u.var.ann && s->u.var.ann->kind == TY_REF) {
+                    ckError(c, s->line, "`ref T` 是不可为空的引用，所以它没有「零值」",
+                            "cannot zero-initialize `%s`: a reference has no zero value",
+                            s->u.var.name);
+                }
+                s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
+                declare(c, s->u.var.name, s->type, s->u.var.mut, s->line);
+                return;
+            }
+
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
             Type *it = checkExpr(c, s->u.var.init);
@@ -485,11 +609,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             if (s->u.var.ann)
                 checkAssignable(c, s->u.var.ann, it, s->u.var.init, "initializer");
 
-            if (ttIsError(declT)) {
-                s->type = ttError(c->tt);
-            } else {
-                s->type = declT;
-            }
+            s->type = ttIsError(declT) ? ttError(c->tt) : declT;
             declare(c, s->u.var.name, s->type, s->u.var.mut, s->line);
             return;
         }
@@ -593,7 +713,7 @@ static void checkDeclarations(Checker *c) {
         }
     }
 
-    /* 字段重名 */
+    /* 字段重名 + 方法重名 + 方法撞字段名 */
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->fields.len; j++) {
@@ -605,22 +725,80 @@ static void checkDeclarations(Checker *c) {
                             sd->name, fb->name);
             }
         }
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *ma = *(FuncDef **)vecAt(&sd->methods, j);
+            if (findField(sd, ma->name))
+                ckError(c, ma->line, NULL, "`%s.%s`: a field and a method cannot share a name",
+                        sd->name, ma->name);
+            for (size_t k = j + 1; k < sd->methods.len; k++) {
+                FuncDef *mb = *(FuncDef **)vecAt(&sd->methods, k);
+                if (strcmp(ma->name, mb->name) == 0)
+                    ckError(c, mb->line, NULL, "struct `%s` has duplicate method `%s`",
+                            sd->name, mb->name);
+            }
+        }
+    }
+
+    /* type 重名 / 变体重名 / 空枚举 */
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *a = *(TypeDef **)vecAt(&m->types, i);
+        for (size_t j = i + 1; j < m->types.len; j++) {
+            TypeDef *b = *(TypeDef **)vecAt(&m->types, j);
+            if (strcmp(a->name, b->name) == 0)
+                ckError(c, b->line, NULL, "duplicate type `%s`", b->name);
+        }
+        if (a->variants.len == 0)
+            ckError(c, a->line, NULL, "type `%s` has no variants", a->name);
+        for (size_t j = 0; j < a->variants.len; j++) {
+            Variant *va = *(Variant **)vecAt(&a->variants, j);
+            for (size_t k = j + 1; k < a->variants.len; k++) {
+                Variant *vb = *(Variant **)vecAt(&a->variants, k);
+                if (strcmp(va->name, vb->name) == 0)
+                    ckError(c, vb->line, NULL, "type `%s` has duplicate variant `%s`",
+                            a->name, vb->name);
+            }
+        }
+    }
+
+    /* struct 和 type 之间也不能重名 */
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < m->types.len; j++) {
+            TypeDef *td = *(TypeDef **)vecAt(&m->types, j);
+            if (strcmp(sd->name, td->name) == 0)
+                ckError(c, td->line, NULL, "`%s` is already a struct", td->name);
+        }
     }
 }
 
 static void checkMethodShape(Checker *c, FuncDef *f) {
-    for (size_t i = 0; i < f->params.len; i++) {
-        Param *p = *(Param **)vecAt(&f->params, i);
-        if (strcmp(p->name, "self") == 0 && i != 0) {
-            ckError(c, p->line, "方法 = 首参数名为 `self` 的函数",
-                    "`self` must be the first parameter of `%s`", f->name);
+    if (!f->owner) {
+        /* 自由函数不能有 `self` —— 方法必须写在 struct 体内（定案 9）*/
+        for (size_t i = 0; i < f->params.len; i++) {
+            Param *p = *(Param **)vecAt(&f->params, i);
+            if (strcmp(p->name, "self") == 0)
+                ckError(c, p->line, "方法要写在 struct 体内（定案 9）",
+                        "`self` is only allowed in a method declared inside a `struct`");
         }
+        return;
     }
-    if (funcIsMethod(f)) {
-        Param *p0 = *(Param **)vecAt(&f->params, 0);
-        if (p0->type->kind != TY_REF)
-            ckError(c, p0->line, "`self` 应该是 `ref T`，否则方法改不了调用者的数据",
-                    "`self` of `%s` must be a reference", f->name);
+
+    f->owner->type = ttFromName(c->tt, f->owner->name);
+    Type *wantSelf = ttRef(c->tt, f->owner->type);
+
+    Param *p0 = f->params.len ? *(Param **)vecAt(&f->params, 0) : NULL;
+    if (!p0 || strcmp(p0->name, "self") != 0) {
+        ckError(c, f->line, NULL,
+                "method `%s.%s` must take `self: ref %s` as its first parameter",
+                f->owner->name, f->name, f->owner->name);
+    } else if (!ttEquals(p0->type, wantSelf)) {
+        ckError(c, p0->line, NULL, "`self` of `%s.%s` must be `ref %s`",
+                f->owner->name, f->name, f->owner->name);
+    }
+    for (size_t i = 1; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (strcmp(p->name, "self") == 0)
+            ckError(c, p->line, NULL, "`self` must be the first parameter");
     }
 }
 
@@ -630,7 +808,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
 
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
-        declare(c, p->name, p->type, false, p->line);
+        /* 参数是**可变的** —— 它是调用者给的局部副本（跟 C 一致），
+         * 所以 `fn f(real: Board)` 里可以 `ref real` */
+        declare(c, p->name, p->type, true, p->line);
     }
     /* 函数体不另开作用域 —— 参数和函数体的局部变量同一层，
      * 这样「局部变量遮蔽参数」会直接报错 */
@@ -655,6 +835,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.tBool = ttFromName(tt, "bool");
     c.tStr  = ttFromName(tt, "str");
 
+    /* 先把所有 struct / type 的类型驻留出来（方法签名比较要用）*/
+    for (size_t i = 0; i < m->structs.len; i++)
+        ttFromName(tt, (*(StructDef **)vecAt(&m->structs, i))->name);
+    for (size_t i = 0; i < m->types.len; i++)
+        ttFromName(tt, (*(TypeDef **)vecAt(&m->types, i))->name);
+
     /* 第一遍：解析所有签名与字段里的类型名 */
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -662,15 +848,28 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, j);
             fd->type = ttResolve(tt, ctx, fd->type, fd->line);
         }
+        for (size_t j = 0; j < sd->methods.len; j++)
+            resolveSignature(&c, *(FuncDef **)vecAt(&sd->methods, j));
     }
     for (size_t i = 0; i < m->funcs.len; i++)
         resolveSignature(&c, *(FuncDef **)vecAt(&m->funcs, i));
 
     checkDeclarations(&c);
+
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < sd->methods.len; j++)
+            checkMethodShape(&c, *(FuncDef **)vecAt(&sd->methods, j));
+    }
     for (size_t i = 0; i < m->funcs.len; i++)
         checkMethodShape(&c, *(FuncDef **)vecAt(&m->funcs, i));
 
     /* 第二遍：检查函数体 */
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < sd->methods.len; j++)
+            checkFunc(&c, *(FuncDef **)vecAt(&sd->methods, j));
+    }
     for (size_t i = 0; i < m->funcs.len; i++)
         checkFunc(&c, *(FuncDef **)vecAt(&m->funcs, i));
 

@@ -1,0 +1,13 @@
+struct Point {
+    x: i32
+
+    fn moveBy(self: Point, dx: i32) {
+        self.x = self.x + dx
+    }
+}
+
+fn main() -> i32 {
+    var p: Point
+    p.moveBy(1)
+    return 0
+}
