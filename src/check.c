@@ -307,6 +307,20 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             if (isCmpOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return c->tBool;
+
+                /* ⚠️ `str` 的 == / != 现在是 C 的**指针比较**（陷阱，见 MIGRATION.md）。
+                 * 与其让它安静地给出错的答案，不如先报错。
+                 * T4c 把字符串字面量换成 Slice<u8> 之后会给正确的比较。 */
+                if ((strcmp(op, "==") == 0 || strcmp(op, "!=") == 0) &&
+                    (ttIs(lt, "str") || ttIs(rt, "str"))) {
+                    ckError(c, e->line,
+                            "字符串内容比较还没实现 —— 现在会退化成 C 的指针比较，"
+                            "而它只是因为 gcc 折叠了相同字面量才看起来对。"
+                            "等 `Slice<u8>` 到位会给正确的比较。",
+                            "`str` does not support `%s` yet", op);
+                    return c->tBool;
+                }
+
                 if (ttEquals(lt, rt) || ttCanWiden(lt, rt) || ttCanWiden(rt, lt)) return c->tBool;
                 if (isNumericLit(e->u.bin.left)  && literalFits(e->u.bin.left, rt))  return c->tBool;
                 if (isNumericLit(e->u.bin.right) && literalFits(e->u.bin.right, lt)) return c->tBool;

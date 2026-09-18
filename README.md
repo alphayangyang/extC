@@ -15,6 +15,7 @@
 | [`DEVLOG.md`](DEVLOG.md) | 想知道「发生过什么」 | 开发记录：决策与发现的来龙去脉 |
 | [`SYNTAX.md`](SYNTAX.md) | 想知道「名字该怎么起」 | 命名规范 + 样板 |
 | [`REVIEW-gomoku-sample.md`](REVIEW-gomoku-sample.md) | 想知道「真实程序需要什么」 | 五子棋示例代码审读 |
+| [`MIGRATION.md`](MIGRATION.md) | 想知道「编译器自己哪些代码该用 extC 写」 | 搬迁审计 + 两阶段构建机制 |
 
 ### 维护规矩
 
