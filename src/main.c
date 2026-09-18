@@ -21,6 +21,7 @@
 #include "codegen.h"
 #include "lexer.h"
 #include "parser.h"
+#include "prelude.h"
 #include "types.h"
 
 /* ---------------------------------------------------------------- 工具 */
@@ -92,6 +93,56 @@ static void usage(const char *argv0) {
         argv0);
 }
 
+/* ---------------------------------------------------------------- prelude
+
+ * 把编译器自带的 prelude 解析 + 检查一遍，然后合并进主 Module。
+ *
+ * 它用**自己的 Ctx**（路径显示成 <extc prelude>），这样它出错时错误位置是对的。
+ * 而 prelude 是编译器自带的 —— 它出错就说明**编译器坏了**，不是用户的问题，
+ * 所以这里报 internal error。
+ *
+ * 注：prelude 会被检查两遍（这里一遍、合并后一遍）。它很小，代价可忽略；
+ * 换来的是「prelude 的错误位置永远正确」。
+ */
+static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
+    size_t len = 0;
+    const char *src = preludeSource(&len);
+
+    Ctx ctx;
+    ctxInit(&ctx, arena, PRELUDE_PATH, src, len);
+
+    Module pm;
+    memset(&pm, 0, sizeof pm);
+    moduleInit(&pm, arena);
+
+    Vec toks;
+    vecInit(&toks, arena, sizeof(Token));
+    lexAll(&ctx, &toks);
+    if (!ctx.hasError) parseModule(&ctx, arena, &toks, &pm);
+    if (!ctx.hasError) {
+        ttRegister(tt, &pm);        /* 跟用户文件共用同一张表 */
+        checkModule(&ctx, arena, tt, &pm);
+    }
+
+    if (ctx.hasError) {
+        Buf diag;
+        bufInit(&diag, arena);
+        ctxRenderDiag(&ctx, &diag);
+        fputs("extc: internal error -- the bundled prelude does not compile\n", stderr);
+        fputs(bufCstr(&diag), stderr);
+        return false;
+    }
+
+    /* 合并进主 Module：prelude 的声明排在用户的前面 */
+    for (size_t i = 0; i < pm.structs.len; i++)
+        *(StructDef **)vecPush(&m->structs) = *(StructDef **)vecAt(&pm.structs, i);
+    for (size_t i = 0; i < pm.types.len; i++)
+        *(TypeDef **)vecPush(&m->types) = *(TypeDef **)vecAt(&pm.types, i);
+    for (size_t i = 0; i < pm.funcs.len; i++)
+        *(FuncDef **)vecPush(&m->funcs) = *(FuncDef **)vecAt(&pm.funcs, i);
+    return true;
+}
+
 /* ---------------------------------------------------------------- main */
 
 int main(int argc, char **argv) {
@@ -158,15 +209,25 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* Module 只初始化一次；prelude 和用户文件都**追加**进同一个它 */
     Module m;
     memset(&m, 0, sizeof m);
+    moduleInit(&m, &arena);
+
+    /* **全程一张类型表** —— 类型是驻留的、相等是指针比较，
+     * 分成两张表会让同一个 bool 变成两个指针。 */
+    TypeTable *tt = ttNew(&arena, NULL);
+
+    /* ① prelude */
+    if (!ctx.hasError && !loadPrelude(&arena, tt, &m)) return 1;
+
+    /* ② 用户文件 */
     if (!ctx.hasError) parseModule(&ctx, &arena, &toks, &m);
 
     /* 类型检查：一遍**独立**的 pass，把结果写回 AST。
      * 之后的代码生成不再做任何类型推理（T1）。 */
-    TypeTable *tt = NULL;
     if (!ctx.hasError) {
-        tt = ttNew(&arena, &m);
+        ttRegister(tt, &m);
         checkModule(&ctx, &arena, tt, &m);
     }
 

@@ -15,7 +15,8 @@ TOOLDIR  := tools
 STDLIB   := stdlib
 BUILDDIR := build
 SRCS     := $(wildcard $(SRCDIR)/*.c)
-OBJS     := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
+GENSRC   := $(BUILDDIR)/prelude_data.c
+OBJS     := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS)) $(BUILDDIR)/prelude_data.o
 DEPS     := $(OBJS:.o=.d)
 BIN      := $(BUILDDIR)/extc
 EMBED    := $(BUILDDIR)/embed
@@ -37,7 +38,10 @@ $(EMBED): $(TOOLDIR)/embed.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILDDIR)/prelude_data.c: $(STDLIB)/prelude.extc $(EMBED)
-	./$(EMBED) $< $@ extc_prelude_src
+	./$(EMBED) $< $@ extc_prelude
+
+$(BUILDDIR)/prelude_data.o: $(BUILDDIR)/prelude_data.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 test: $(BIN)
 	./tests/run.sh

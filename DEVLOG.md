@@ -7,6 +7,69 @@
 
 ---
 
+## 2026-09-18 · T4b 落地：prelude 机制通了，Slice<T> 是 extC 写的
+
+**目标**：`Slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，编译器源码里一行硬编码都没有。
+
+**验收（可机械检查）**：
+```sh
+grep -in slice src/*.c src/*.h     # 一无所获 ✓
+```
+
+**做法**：`tools/embed.c`（C 写的）把 `stdlib/prelude.extc` 变成 C 字节数组 → 链进编译器。
+`main` 里 parse 两遍（prelude 用自己的 `Ctx`，路径显示成 `<extc prelude>`），
+再合并进同一个 `Module`，然后 check 一次、生成一次。`parseModule` 从「重置」改成「追加」。
+
+```extc
+// stdlib/prelude.extc —— 用 extC 写的
+struct Slice<T> {
+    data: ref T
+    len: i64
+    fn isEmpty(self: ref Slice<T>) -> bool { return self.len == 0 }
+    fn hasAt(self: ref Slice<T>, i: i64) -> bool { return i >= 0 && i < self.len }
+}
+```
+
+用户不用 import 就能用，而且**泛型实例照常单态化**（`Slice_i32` / `Slice_u8`），
+自动调试打印也跟着来。
+
+### 踩到的两个坑
+
+1. **跨表 bug（很值得记）**：最初给 prelude 自检开了一张**独立的类型表**。
+   但类型是**驻留**的、相等是**指针比较** —— 于是 prelude 里的 `bool` 和合并后的 `bool`
+   成了两个指针，报出一句鬼话：`` return value expects `bool`, found `bool` ``。
+   **修法：全程只有一张类型表**（加了 `ttRegister`，可重复调用、按名字去重）。
+   > 教训：**驻留 + 指针比较 ⇒ 表的生命周期必须是全局的**，不能一个阶段一张。
+
+2. **符号名不一致**：`embed` 生成的是 `<符号名>_len`，而 `prelude.c` 声明了另一个名字
+   → `undefined reference`。统一成 `extc_prelude` / `extc_prelude_len`。
+
+### 一个设计决定：prelude 出错算「编译器坏了」
+
+prelude 用**自己的 Ctx** 检查，出错时报：
+
+```
+extc: internal error -- the bundled prelude does not compile
+<extc prelude>:33:1: error: return value expects `i32`, found `str`
+```
+
+因为 prelude 是**编译器自带的** —— 它出错就说明编译器坏了，不是用户的问题。
+这样错误位置永远正确（不会显示成用户的文件名），代价是 prelude 被检查两遍（它很小）。
+
+### 顺手修的一个真问题
+
+`Slice` 含 `ref` 字段 ⇒ `var s: Slice<i32>` 零初始化会造出**空引用**。
+把「`ref T` 不能零初始化」这条规则**扩展到「含 ref 的 struct」**：
+
+```
+error: cannot zero-initialize `s`: it contains a reference
+  note: `ref` is a non-nullable reference, so it has no zero value -- and neither does any struct that contains one
+```
+
+**测试** 38 → 39 个（新增 `examples/prelude.extc`）。
+
+---
+
 ## 2026-09-18 · 诊断信息统一英文（主人要求）
 
 主人指出：**`error:` 是英文、`note:` 是中文**，不统一 → 以后 notes 全部用英文。

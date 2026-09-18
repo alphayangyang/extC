@@ -143,6 +143,18 @@ static Variant *findVariant(TypeDef *td, const char *name) {
     return NULL;
 }
 
+/* 这个类型里（递归地）有没有 `ref`？
+ * 有的话就不能零初始化 —— `ref` 不可为空，它没有「零值」。 */
+static bool typeContainsRef(Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_REF) return true;
+    StructDef *sd = structOf(t);
+    if (!sd) return false;
+    for (size_t i = 0; i < sd->fields.len; i++)
+        if (typeContainsRef((*(FieldDef **)vecAt(&sd->fields, i))->type)) return true;
+    return false;
+}
+
 /* 能取引用的东西：变量和字段 */
 static bool isLvalue(Expr *e) {
     return e->kind == EX_IDENT || e->kind == EX_FIELD;
@@ -424,7 +436,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     if (!sd) {
                         ckError(c, e->line,
                                 "`str`'s `==` would degrade to C pointer comparison -- a trap, so it is rejected for now."
-                                "Once strings become `Slice<u8>`, the prelude will give it a content-based `fn ==`.",
+                                "Once the string type is reworked into a byte view, the prelude will give it a content-based `fn ==`.",
                                 "`%s` does not support `%s`", typeStr(c, lt), op);
                         return c->tBool;
                     }
@@ -762,9 +774,11 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
             if (!s->u.var.init) {
-                if (s->u.var.ann && s->u.var.ann->kind == TY_REF) {
-                    ckError(c, s->line, "`ref T` is a non-nullable reference, so it has no zero value",
-                            "cannot zero-initialize `%s`: a reference has no zero value",
+                if (s->u.var.ann && typeContainsRef(s->u.var.ann)) {
+                    ckError(c, s->line,
+                            "`ref` is a non-nullable reference, so it has no zero value -- "
+                            "and neither does any struct that contains one",
+                            "cannot zero-initialize `%s`: it contains a reference",
                             s->u.var.name);
                 }
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);

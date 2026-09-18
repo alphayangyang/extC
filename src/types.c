@@ -39,13 +39,27 @@ TypeTable *ttNew(Arena *a, Module *m) {
     tt->tVoid  = mkType(a, TY_VOID, "void");
     tt->tError = mkType(a, TY_ERROR, "<error>");
 
-    if (m) {
-        for (size_t i = 0; i < m->structs.len; i++)
-            *(StructDef **)vecPush(&tt->structs) = *(StructDef **)vecAt(&m->structs, i);
-        for (size_t i = 0; i < m->types.len; i++)
-            *(TypeDef **)vecPush(&tt->enums) = *(TypeDef **)vecAt(&m->types, i);
-    }
+    if (m) ttRegister(tt, m);
     return tt;
+}
+
+void ttRegister(TypeTable *tt, Module *m) {
+    if (!m) return;
+
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        bool seen = false;
+        for (size_t j = 0; j < tt->structs.len && !seen; j++)
+            seen = strcmp((*(StructDef **)vecAt(&tt->structs, j))->name, sd->name) == 0;
+        if (!seen) *(StructDef **)vecPush(&tt->structs) = sd;
+    }
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        bool seen = false;
+        for (size_t j = 0; j < tt->enums.len && !seen; j++)
+            seen = strcmp((*(TypeDef **)vecAt(&tt->enums, j))->name, td->name) == 0;
+        if (!seen) *(TypeDef **)vecPush(&tt->enums) = td;
+    }
 }
 
 Type *ttVoid(TypeTable *tt)  { return tt->tVoid; }

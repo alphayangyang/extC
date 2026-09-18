@@ -26,8 +26,13 @@ typedef struct {
 } TypeTable;
 
 /* parser 不碰类型表（它只造 TY_UNRESOLVED 的「类型名」），
- * 所以类型表在 parse 之后造。 */
+ * 所以类型表在 parse 之后造。m 可以为 NULL，之后用 ttRegister 补登记。 */
 TypeTable *ttNew(Arena *a, Module *m);
+
+/* 把 Module 里的 struct / type 登记进表（**按名字去重，可重复调用**）。
+ * prelude 和用户文件共用**同一张表** —— 类型是驻留的、相等是指针比较，
+ * 用两张表会让同一个 `bool` 变成两个指针，然后到处报「bool 不是 bool」。 */
+void ttRegister(TypeTable *tt, Module *m);
 
 /* 内建类型名（i8/i32/f64/bool/str/void…）*/
 bool  ttIsBuiltinName(const char *name);

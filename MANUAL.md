@@ -63,6 +63,32 @@ fn main() -> i32 { ... }
 
 ---
 
+### prelude：自带类型不用 import
+
+编译器自带一小段 extC 源码（`stdlib/prelude.extc`），**每次编译都先于你的文件被处理**。
+里面定义的类型不用 import 就能用。现在有：
+
+| 类型 | 方法 |
+|---|---|
+| `Slice<T>` | `isEmpty()` / `hasAt(i)` |
+
+```extc
+var n: i32 = 42
+var s: Slice<i32> = { data: ref n, len: 1 }    // 指向 n 的一片
+println(s.isEmpty())     // false
+println(s.hasAt(0))      // true
+println(s.hasAt(1))      // false
+```
+
+> **为什么要有 prelude？** 因为「能在 extC 里写的东西，就在 extC 里写」。
+> 没有它，`Slice<T>` 只能在编译器的代码生成器里硬编码 —— 那就成了**把库塞进编译器**。
+> 验收方式很机械：`grep -in slice src/*.c src/*.h` 应该**一无所获**。
+>
+> ⚠️ 现在 `Slice` 的方法很少（没有数组索引和 `Option` 就写不出 `get`），
+> 而且**空 Slice 造不出来** —— `ref` 不可为空，长度 0 的切片没有合法的 `data`。
+
+---
+
 ## 2. 词法
 
 | 元素 | 写法 |
@@ -618,6 +644,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | `generics.extc` | **泛型 `struct Name<T>`**：四份实例同时工作、嵌套 struct、实例的自动调试打印 |
 | `eq.extc` | **显式定义 `fn ==`**：普通 struct、`!=` 取反、泛型里推迟到实例化检查 |
 | `debug.extc` | **自动调试打印**：递归打印 struct、枚举打名字、零初始化直接打 |
+| `prelude.extc` | **prelude 里的 `Slice<T>`** 直接用，两份实例 |
 
 跑测试：
 

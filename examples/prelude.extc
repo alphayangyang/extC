@@ -1,0 +1,17 @@
+// prelude 里的类型不用 import 就能用。
+// Slice<T> 是**用 extC 写的**（见 stdlib/prelude.extc）——
+// 编译器源码里没有一行硬编码的 Slice。
+
+fn main() -> i32 {
+    var n: i32 = 42
+    var s: Slice<i32> = { data: ref n, len: 1 }     // 指向 n 的一片
+    println(s.isEmpty())     // false
+    println(s.hasAt(0))      // true
+    println(s.hasAt(1))      // false
+
+    var u: u8 = 7
+    var b: Slice<u8> = { data: ref u, len: 1 }      // 另一份实例
+    println(b.isEmpty())     // false
+    println(b.hasAt(0))      // true
+    return 0
+}

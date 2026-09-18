@@ -106,9 +106,10 @@ static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
 
 /* ================================================================ 顶层 */
 
+/* 把 toks 里的声明**追加**到 out（不重置 —— out 由调用方初始化一次）。
+ * prelude 和用户文件就是靠这个进同一个 Module 的，将来多文件编译也一样。 */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     Parser p = { ctx, arena, toks, 0 };
-    moduleInit(out, arena);
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
