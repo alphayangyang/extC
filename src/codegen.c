@@ -939,8 +939,10 @@ static void genArrayEq(CG *g, Type *arr) {
 /* 登记一个切片 helper（去重）。base 是底的类型（数组或视图），
  * st 是结果切片类型，tail = 「切到尾」（`s[lo..]`，省略的界是底的长度）。
  *
- * 名字用底的 C 名字修饰：`extc_slice_array_15_i32` / `extc_slice_slice_i32`
- * / `extc_sliceTo_slice_i32`。一个底类型只会切成一种切片，所以不会撞。 */
+ * 名字 = `extc_slice`（或 `extc_sliceTo`）+ 底的 C 名字 —— 一个底类型只会切成
+ * 一种切片，所以不会撞。
+ * 这里**故意不写出拼接后的例子**：ARRAYS.md 有一条机械验收（源码里不许出现
+ * 切片类型的 C 名字模式），注释也不破例。 */
 static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
     const char *name = arenaPrintf(g->arena, "extc_slice%s_%s",
                                    tail ? "To" : "", ob->name);
