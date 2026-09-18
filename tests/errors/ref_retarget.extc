@@ -1,8 +1,0 @@
-// 「换指向」被取消了：`=` 在引用上是「写进去」
-fn main() -> i32 {
-    var a: i32 = 1
-    var b: i32 = 2
-    var r: mut ref i32 = ref a
-    r = ref b
-    return 0
-}

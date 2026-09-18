@@ -1,0 +1,41 @@
+// 换指向（让引用改指别人）—— **靠右边是什么来区分，不靠禁用**
+//
+// `p = ?` 在引用上有两种读法，而 `=` 只能有一个意思。
+// 判据是**右边**：
+//     右边是**值** `T`       ⇒ 写进它指向的地方   `*p = v`
+//     右边是**引用** `ref T`  ⇒ 换指向             `p = q`
+// 类型把歧义消掉了，而且右边就在源码里看得见（P′）。
+
+struct slot {
+    p: mut ref i64
+    tag: i32
+
+    fn bind(self: mut ref slot, target: mut ref i64, name: i32) {
+        self.p = target            // 换指向：字段也是引用
+        self.tag = name
+    }
+    fn poke(self: mut ref slot, v: i64) {
+        self.p = v                 // 右边是值 ⇒ 写进它指向的地方
+    }
+}
+
+fn main() -> i32 {
+    var a: i64 = 1
+    var b: i64 = 2
+
+    var r: mut ref i64 = ref a
+    println("指向 a = ", r)            // 1
+    r = 99                             // 值 ⇒ 写进 a
+    println("a = ", a)                 // 99
+    r = ref b                          // 引用 ⇒ 换指向
+    r = 7                              // 这次写的是 b
+    println("a = ", a, " b = ", b)     // 99 7
+
+    var s: slot = { p: ref a, tag: 0 }
+    s.poke(5)                          // 写进 a
+    println("a = ", a)                 // 5
+    s.bind(ref b, 1)                   // 字段换指向 b
+    s.poke(6)
+    println("a = ", a, " b = ", b)     // 5 6
+    return 0
+}

@@ -1573,18 +1573,27 @@ static void checkStmt(Checker *c, Stmt *s) {
                 if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
 
                 Expr *v = s->u.assign.value;
-                if (v && v->kind == EX_REF) {
-                    ckError(c, s->line,
-                            "`=` on a reference writes **into** what it points to; "
-                            "rebinding (making it point elsewhere) was removed on purpose "
-                            "-- declare a new binding instead.",
-                            "cannot retarget a reference");
+
+                /* **看右边是什么，就知道是哪件事 —— 歧义靠类型消掉，不靠禁用。**
+                 *   右边是**值** `T`      ⇒ 写进它指向的地方   `*p = v`
+                 *   右边是**引用** `ref T` ⇒ 换指向             `p = q`
+                 *
+                 * 这两件事类型不同、而且右边就在源码里看得见（P′）——
+                 * 所以不需要像之前那样把换指向整个禁掉。 */
+                adoptContextType(v, tt_->inner);
+                Type *vt0 = checkExpr(c, v);          /* 自然类型：引用保留 */
+
+                if (vt0->kind == TY_REF) {
+                    /* 换指向：类型要对得上（`mut ref` → `ref` 降级照旧允许），
+                     * 而且新指向的东西不能活得比这个引用短。 */
+                    checkAssignable(c, tt_, vt0, v, "assignment");
+                    checkEscape(c, v, placeDepth(c, s->u.assign.target),
+                                s->line, "this reference");
                     return;
                 }
-                adoptContextType(v, tt_->inner);
-                Type *vt = checkValue(c, v);
-                s->u.assign.target->deref = true;      /* 生成 `*(p) = v` */
-                checkAssignable(c, tt_->inner, vt, v, "assignment");
+
+                s->u.assign.target->deref = true;     /* 生成 `*(p) = v` */
+                checkAssignable(c, tt_->inner, checkValue(c, v), v, "assignment");
                 return;
             }
 
