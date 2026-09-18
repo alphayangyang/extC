@@ -1,0 +1,25 @@
+// T4c：字符串字面量就是 slice<u8>（**零分配、零拷贝**），`str` 内建类型没了。
+//
+//   字面量 → { data 指向只读内存里的字节, len = 字节数 }
+//
+// 长度是**显式**的 —— 不像 C 的 char* 得靠 \0 猜（那正是 strlen 又慢又危险的原因）。
+
+fn shout(s: slice<u8>) -> i64 {
+    println(s)                    // 字节视图按文本打印
+    return s.len
+}
+
+fn main() -> i32 {
+    let hello = "hello"
+    println(hello)                // hello
+    println(hello.len)            // 5   —— len 是个普通字段
+    println(hello.isEmpty())      // false —— prelude 里的方法
+    println(hello.hasAt(4))       // true
+
+    let n = shout("passed as a slice<u8>")
+    println(n)                    // 21
+
+    println("")                   // 空串：指向长度 0 的视图，合法
+    println("转义也能算对: \t|")   // 长度由 C 的 sizeof 算，转义不用管
+    return 0
+}

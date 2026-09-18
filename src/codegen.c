@@ -23,7 +23,7 @@ static const TypeMap C_TYPES[] = {
     { "i8",  "int8_t"  }, { "i16", "int16_t" }, { "i32", "int32_t" }, { "i64", "int64_t" },
     { "u8",  "uint8_t" }, { "u16", "uint16_t" }, { "u32", "uint32_t" }, { "u64", "uint64_t" },
     { "f32", "float"   }, { "f64", "double"  },
-    { "bool", "bool"   }, { "str", "const char *" },
+    { "bool", "bool"   },
     { NULL, NULL }
 };
 
@@ -142,12 +142,33 @@ static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     return f->name;
 }
 
-/* C 原生就能比的类型：数值 / bool / 枚举（`str` 不算 —— 那是指针比较） */
+/* 一个类型是不是「字节视图」？是的话 `println` 按文本打印。
+ *
+ * 这是编译器知道的**唯一**一件跟 slice 有关的事，而且它是**输出约定**：
+ * 「指向 byte 的视图」该按文本打印 —— 这是输出的基本操作，不是容器的实现。
+ * 容器的定义、字段、方法全在 stdlib/prelude.extc 里（见 MIGRATION.md 的验收标准）。
+ */
+static bool isByteView(Type *t) {
+    if (!t || t->kind != TY_GENERIC || !t->sdef) return false;
+    if (strcmp(t->sdef->name, "slice") != 0) return false;
+    return t->targs.len == 1 && ttIs(*(Type **)vecAt(&t->targs, 0), "u8");
+}
+
+/* 按值收一个字节视图再打印 —— 保证实参只求值一次 */
+static void genByteViewWriter(CG *g, const char *cname) {
+    cgLine(g, "void %s_writeText(%s v) {", cname, cname);
+    g->indent++;
+    cgLine(g, "printf(\"%%.*s\", (int)v.len, (const char *)v.data);");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
+}
+
+/* C 原生就能比的类型：数值 / bool / 枚举 */
 static bool nativeCmp(Type *t) {
     if (!t) return false;
     if (t->kind == TY_ENUM) return true;
-    if (t->kind != TY_BUILTIN) return false;
-    return strcmp(t->name, "str") != 0;
+    return t->kind == TY_BUILTIN;
 }
 
 /* `==` 找的是用户定义的 `fn ==(...)`（`!=` 没定义就退回用 `==` 取反） */
@@ -214,10 +235,11 @@ static const char *genBin(CG *g, Expr *e) {
  * 所以含 `str` 的 struct 必须逐字段写出零值。 */
 static const char *zeroValue(CG *g, Type *t);
 
-/* struct 里（递归地）有没有 `str`？没有的话可以省事用 `{0}` */
+/* struct 里（递归地）有没有 `ref`？
+ * 有的话就不能用 `{0}` —— 那会造出空引用，走防御分支让 C 编译器报错。 */
 static bool needsExplicitZero(Type *t) {
     if (!t) return false;
-    if (ttIs(t, "str")) return true;
+    if (t->kind == TY_REF) return true;
     if (t->kind != TY_STRUCT || !t->sdef) return false;
     for (size_t i = 0; i < t->sdef->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
@@ -294,7 +316,12 @@ static const char *zeroValue(CG *g, Type *t) {
     }
 
     if (ttIs(t, "bool")) return "false";
-    if (ttIs(t, "str"))  return "\"\"";
+
+    /* 防御：`ref` 没有零值。check 保证走不到这里（含 ref 的 struct 不许零初始化、
+     * 含 ref 的字段不许省略）—— 万一将来有路径漏过，这里生成一个**不存在的标识符**，
+     * 让 C 编译器报错，而不是悄悄塞一个空引用。 */
+    if (t->kind == TY_REF) return "__extc_reference_has_no_zero_value__";
+
     return "0";
 }
 
@@ -320,6 +347,11 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
             bufPrintf(&b, "printf(\"%%s\", %s_name(%s))", bt->name, code);
             continue;
         }
+        /* 字节视图按文本打印 */
+        if (isByteView(bt)) {
+            bufPrintf(&b, "%s_writeText(%s)", bt->name, code);
+            continue;
+        }
         /* struct / 泛型实例自动递归打印 */
         if (bt->kind == TY_STRUCT || bt->kind == TY_GENERIC) {
             bufPrintf(&b, "%s_debug(%s)", bt->name, code);
@@ -329,10 +361,6 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
 
         if (strcmp(bt->name, "bool") == 0) {
             bufPrintf(&b, "printf(\"%%s\", (%s) ? \"true\" : \"false\")", code);
-            continue;
-        }
-        if (strcmp(bt->name, "str") == 0) {
-            bufPrintf(&b, "printf(\"%%s\", %s)", code);
             continue;
         }
         const PrintFmt *pf = NULL;
@@ -428,7 +456,12 @@ static const char *genExpr(CG *g, Expr *e) {
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
         case EX_FLOAT: return arenaPrintf(g->arena, "%g", e->u.fval);
         case EX_BOOL:  return e->u.bval ? "true" : "false";
-        case EX_STR:   return arenaPrintf(g->arena, "\"%s\"", e->u.str.text);
+        case EX_STR:
+            /* `"abc"` → 一个字节视图，指向只读内存里的字面量。
+             * 长度用 `sizeof("...") - 1` —— 让 C 去处理转义，我们不用自己解析。 */
+            return arenaPrintf(g->arena,
+                "(%s){ .data = (uint8_t *)\"%s\", .len = sizeof(\"%s\") - 1 }",
+                cType(g, e->type), e->u.str.text, e->u.str.text);
         case EX_IDENT: return e->u.ident.name;
 
         case EX_BIN: return genBin(g, e);
@@ -487,6 +520,7 @@ static const char *genExpr(CG *g, Expr *e) {
 static void genPrintValue(CG *g, Type *t, const char *expr) {
     if (!t) { cgLine(g, "printf(\"?\");"); return; }
 
+    if (isByteView(t))         { cgLine(g, "%s_writeText(%s);", t->name, expr); return; }
     if (t->kind == TY_ENUM)    { cgLine(g, "printf(\"%%s\", %s_name(%s));", t->name, expr); return; }
     if (t->kind == TY_STRUCT)  { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
     if (t->kind == TY_REF)     { cgLine(g, "printf(\"<ref>\");"); return; }
@@ -494,10 +528,6 @@ static void genPrintValue(CG *g, Type *t, const char *expr) {
 
     if (strcmp(t->name, "bool") == 0) {
         cgLine(g, "printf(\"%%s\", (%s) ? \"true\" : \"false\");", expr);
-        return;
-    }
-    if (strcmp(t->name, "str") == 0) {
-        cgLine(g, "printf(\"%%s\", %s);", expr);
         return;
     }
     for (size_t i = 0; PRINT_FMT[i].extc; i++) {
@@ -665,22 +695,43 @@ static void genFuncProto(CG *g, FuncDef *f) {
     cgLine(g, "%s", bufCstr(&sig));
 }
 
-static void genInstanceStruct(CG *g, Type *inst) {
-    StructDef *sd = inst->sdef;
-    substEnter(g, inst);
+/* ---------------------------------------------------------------- struct 定义顺序
+ *
+ * 普通 struct 和泛型实例会**互相包含**（`player` 里有 `slice<u8>`，
+ * 而 `slice<u8>` 的字段又是普通的 `i64`），所以不能简单地「先普通再实例」。
+ * 这里按**依赖顺序**出定义 —— 一劳永逸，将来 `array<point>` 之类也不会有问题。
+ * 环只可能通过 `ref`（指针），而指针只需要前面的 typedef，所以先出全部 typedef。
+ */
 
-    cgLine(g, "typedef struct %s %s;", inst->name, inst->name);
-    cgLine(g, "struct %s {", inst->name);
+typedef struct {
+    StructDef *sd;
+    Type      *inst;    /* NULL = 普通 struct */
+    Vec        deps;    /* int* —— 依赖的 unit 下标 */
+    bool       done;
+} SUnit;
+
+static int unitFind(Vec *units, Type *t) {
+    if (!t) return -1;
+    for (size_t i = 0; i < units->len; i++) {
+        SUnit *u = *(SUnit **)vecAt(units, i);
+        if (t->kind == TY_GENERIC && u->inst == t) return (int)i;
+        if (t->kind == TY_STRUCT && !u->inst && u->sd == t->sdef) return (int)i;
+    }
+    return -1;
+}
+
+static void unitBody(CG *g, SUnit *u) {
+    if (u->inst) substEnter(g, u->inst);
+    cgLine(g, "struct %s {", u->inst ? u->inst->name : u->sd->name);
     g->indent++;
-    for (size_t i = 0; i < sd->fields.len; i++) {
-        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+    for (size_t i = 0; i < u->sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&u->sd->fields, i);
         cgLine(g, "%s %s;", cType(g, fd->type), fd->name);
     }
     g->indent--;
     cgLine(g, "};");
     cgLine(g, "");
-
-    substLeave(g);
+    if (u->inst) substLeave(g);
 }
 
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
@@ -750,30 +801,65 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         cgLine(&g, "");
     }
 
-    if (g.structs.len) {
-        for (size_t i = 0; i < g.structs.len; i++) {
-            StructDef *sd = *(StructDef **)vecAt(&g.structs, i);
-            cgLine(&g, "typedef struct %s %s;", sd->name, sd->name);
-        }
-        cgLine(&g, "");
-        for (size_t i = 0; i < g.structs.len; i++) {
-            StructDef *sd = *(StructDef **)vecAt(&g.structs, i);
-            cgLine(&g, "struct %s {", sd->name);
-            g.indent++;
-            for (size_t j = 0; j < sd->fields.len; j++) {
-                FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, j);
-                cgLine(&g, "%s %s;", cType(&g, fd->type), fd->name);
-            }
-            g.indent--;
-            cgLine(&g, "};");
-            cgLine(&g, "");
+    /* 收集所有「struct 类」的东西：普通 struct + 泛型实例 */
+    Vec units;
+    vecInit(&units, arena, sizeof(void *));
+    for (size_t i = 0; i < g.structs.len; i++) {
+        SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+        u->sd = *(StructDef **)vecAt(&g.structs, i);
+        vecInit(&u->deps, arena, sizeof(int));
+        *(SUnit **)vecPush(&units) = u;
+    }
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+        u->sd = (*(Type **)vecAt(&tt->instances, i))->sdef;
+        u->inst = *(Type **)vecAt(&tt->instances, i);
+        vecInit(&u->deps, arena, sizeof(int));
+        *(SUnit **)vecPush(&units) = u;
+    }
+
+    /* 先出**全部** typedef —— 指针字段（`ref T`）只需要它 */
+    for (size_t i = 0; i < units.len; i++) {
+        SUnit *u = *(SUnit **)vecAt(&units, i);
+        const char *n = u->inst ? u->inst->name : u->sd->name;
+        cgLine(&g, "typedef struct %s %s;", n, n);
+    }
+    if (units.len) cgLine(&g, "");
+
+    /* 算依赖：字段类型**按值**包含的另一个 struct 类 */
+    for (size_t i = 0; i < units.len; i++) {
+        SUnit *u = *(SUnit **)vecAt(&units, i);
+        for (size_t k = 0; k < u->sd->fields.len; k++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&u->sd->fields, k);
+            Type *ft = fd->type;
+            if (u->inst) ft = ttSubstitute(tt, ft, &u->sd->typeParams, &u->inst->targs);
+            if (ft->kind == TY_REF) continue;
+            int j = unitFind(&units, ft);
+            if (j >= 0 && j != (int)i) *(int *)vecPush(&u->deps) = j;
         }
     }
 
-    /* 泛型实例的结构体定义：**必须在普通 struct 之后** ——
-     * 实例的字段里可能有普通 struct（如 `Box<Point>` 的 `Point value`） */
-    for (size_t i = 0; i < tt->instances.len; i++)
-        genInstanceStruct(&g, *(Type **)vecAt(&tt->instances, i));
+    /* 按依赖顺序出定义；有环（只可能通过值，C 本来就不允许）时硬出，让 C 去报 */
+    for (;;) {
+        bool progressed = false, allDone = true;
+        for (size_t i = 0; i < units.len; i++) {
+            SUnit *u = *(SUnit **)vecAt(&units, i);
+            if (u->done) continue;
+            allDone = false;
+            bool ready = true;
+            for (size_t k = 0; k < u->deps.len && ready; k++)
+                ready = (*(SUnit **)vecAt(&units, *(int *)vecAt(&u->deps, k)))->done;
+            if (!ready) continue;
+            unitBody(&g, u);
+            u->done = true;
+            progressed = true;
+        }
+        if (allDone || !progressed) break;
+    }
+    for (size_t i = 0; i < units.len; i++) {
+        SUnit *u = *(SUnit **)vecAt(&units, i);
+        if (!u->done) { unitBody(&g, u); u->done = true; }
+    }
 
     /* _debug 的原型先全出来：实例和普通 struct 会互相递归打印 */
     for (size_t i = 0; i < g.structs.len; i++)
@@ -786,12 +872,17 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
     if (g.structs.len || tt->instances.len) cgLine(&g, "");
 
-    /* 实例的自动调试打印（字段类型要先替换） */
+    /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
         substEnter(&g, inst);
         genStructDebug(&g, inst->name, inst->sdef);
+        if (isByteView(inst)) genByteViewWriter(&g, inst->name);
         substLeave(&g);
+    }
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (isByteView(inst)) cgLine(&g, "void %s_writeText(%s v);", inst->name, inst->name);
     }
 
     /* struct 的自动调试打印 */

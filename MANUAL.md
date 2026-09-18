@@ -72,6 +72,8 @@ fn main() -> i32 { ... }
 |---|---|
 | `slice<T>` | `isEmpty()` / `hasAt(i)` |
 
+而且 **`slice<u8>` 就是字符串的类型** —— `println("hello")` 之所以能打文本，就是因为它是字节视图。
+
 ```extc
 var n: i32 = 42
 var s: slice<i32> = { data: ref n, len: 1 }    // 指向 n 的一片
@@ -120,7 +122,7 @@ let b = 2
 | 无符号整数 | `u8` `u16` `u32` `u64` | `uint8_t` … `uint64_t` |
 | 浮点 | `f32` `f64` | `float` / `double` |
 | 布尔 | `bool` | `bool` |
-| 字符串字面量 | `str` ⚠️ **临时，week-1 会改成 `slice<u8>`** | `const char *` |
+| （字符串） | 没有内建字符串类型 —— 见下面的 **`slice<u8>`** | — |
 | 空 | `void` | `void` |
 
 **没有 `int` / `long` / `char` / `double`** —— 类型名一律带位宽（见 [`SYNTAX.md`](SYNTAX.md) 的命名规范）。
@@ -367,7 +369,7 @@ let o: point = {}                // 空字面量 = 零初始化（靠声明类�
 |---|---|
 | 整数 / 浮点 / `bool` / 枚举 | 编译器直接生成 C 的 `==` |
 | **struct / 泛型实例** | 找它定义的 **`fn ==`**；**没定义就报错** |
-| `str` | ⚠️ **现在不许比**（见下） |
+| **`slice<u8>`**（字符串） | ⚠️ **现在还不能比** —— 按内容比较要遍历元素，而那需要索引（week-2） |
 
 想让自己的类型能比，就在 struct 里**显式定义 `==`**：
 
@@ -444,8 +446,36 @@ var b: wrapper<tag> = { ... }          // tag 没定义 == → ❌
 > **这是「不引入 trait」的代价**：错误晚到实例化，但信息里会点明是哪个实例。
 > 收益是语言里**一个新概念都不加** —— `fn ==` 就只是一个方法。
 
-⚠️ **`str` 不能比较**。它的 `==` 会退化成 C 的**指针比较**（陷阱），所以编译器直接拒绝。
-T4c 把字符串换成 `slice<u8>` 之后，prelude 会给它一个**按内容比较**的 `fn ==`。
+### 字符串就是 `slice<u8>`
+
+**extC 没有内建的字符串类型。** 字符串字面量就是**指向字节的视图**：
+
+```extc
+let s = "hello"          // 类型是 slice<u8>
+println(s)               // hello —— 字节视图按文本打印
+println(s.len)           // 5     —— len 是个普通字段
+println(s.isEmpty())     // false —— prelude 里的方法
+println(s.hasAt(4))      // true
+```
+
+生成的 C 只有这么点：
+
+```c
+slice_u8 s = (slice_u8){ .data = (uint8_t *)"hello", .len = sizeof("hello") - 1 };
+```
+
+**零分配、零拷贝**，而且**长度是显式的** —— 不像 C 的 `char *` 得靠 `\0` 猜（那正是 `strlen`
+又慢又危险的原因）。长度交给 C 的 `sizeof` 算，所以转义和 UTF-8 都不用语言自己处理。
+
+⚠️ **字符串现在不能比较**：
+
+```extc
+let a = "hi"
+if a == "hi" { }          // error: `slice` does not define `==`, so it cannot be compared
+```
+
+按内容比较要逐个看字节，而那**需要索引**（`data[i]`）—— 索引要等数组落地（week-2）。
+在那之前，编译器宁可报错，也不给你一个**指针比较**的假答案。
 
 ---
 
@@ -561,7 +591,7 @@ println()           // 只换行
 println(a, b, c)    // 按顺序连续打印，中间没有分隔
 ```
 
-**格式由编译器按静态类型选** —— 用户永远不写 `"%d"`。支持的类型：所有整数、浮点、`bool`、`str`、**枚举**。
+**格式由编译器按静态类型选** —— 用户永远不写 `"%d"`。支持的类型：所有整数、浮点、`bool`、**枚举**、**struct**（递归）、**`slice<u8>`（按文本）**。
 
 ```extc
 println(42)         // 42
@@ -623,7 +653,6 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
 | **`slice<T>` / `array<T>`** | 泛型机制✅已通；容器本体要用 extC 预lude 写 | T4b |
-| **字符串字面量 = `slice<u8>`** | `str` 作废 | T4 |
 | **`option<T>` / `result<T,E>` / `?`** | | T5 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | T5 之后 |
 | **全局变量** | 全局 = 深度 0 的 arena，`static` 关键字因此消失 | week-2 |
@@ -660,6 +689,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | `eq.extc` | **显式定义 `fn ==`**：普通 struct、`!=` 取反、泛型里推迟到实例化检查 |
 | `debug.extc` | **自动调试打印**：递归打印 struct、枚举打名字、零初始化直接打 |
 | `prelude.extc` | **prelude 里的 `slice<T>`** 直接用，两份实例 |
+| `strings.extc` | **字符串 = `slice<u8>`**：字面量、`len`、prelude 的方法、空串、转义 |
 
 跑测试：
 

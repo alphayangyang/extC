@@ -35,7 +35,8 @@ typedef struct {
     Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
 
-    Type *tI32, *tF64, *tBool, *tStr;
+    Type *tI32, *tF64, *tBool;
+    Type *tSliceU8;     /* 字符串字面量的类型：`slice<u8>`（定义在 prelude 里）*/
 } Checker;
 
 /* ---------------------------------------------------------------- 报错 */
@@ -289,7 +290,6 @@ static bool literalFits(Expr *e, Type *want) {
     }
 
     if (e->kind == EX_FLOAT) return ttIsFloat(w);
-    if (e->kind == EX_STR)   return ttIs(w, "str");
     if (e->kind == EX_BOOL)  return ttIs(w, "bool");
     return false;
 }
@@ -387,7 +387,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_INT:   return c->tI32;
         case EX_FLOAT: return c->tF64;
         case EX_BOOL:  return c->tBool;
-        case EX_STR:   return c->tStr;
+        case EX_STR:   return c->tSliceU8;
 
         case EX_IDENT: {
             Sym *s = lookup(c, e->u.ident.name);
@@ -434,9 +434,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Type *b = ttBase(lt);
                     StructDef *sd = structOf(b);
                     if (!sd) {
-                        ckError(c, e->line,
-                                "`str`'s `==` would degrade to C pointer comparison -- a trap, so it is rejected for now."
-                                "Once the string type is reworked into a byte view, the prelude will give it a content-based `fn ==`.",
+                        ckError(c, e->line, NULL,
                                 "`%s` does not support `%s`", typeStr(c, lt), op);
                         return c->tBool;
                     }
@@ -739,6 +737,25 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 bufPrintf(&what, "field `%s`", fi->name);
                 checkAssignable(c, want, vt, fi->value, bufCstr(&what));
             }
+
+            /* 省略的字段靠「零值」补齐 —— 但 `ref` 没有零值。
+             * 不管的话会生成 `.field = 0`，也就是一个**空引用**，
+             * 而语言层明明说 `ref` 不可为空。（跟 str 那次是同一类洞。）*/
+            for (size_t i = 0; i < sd->fields.len; i++) {
+                FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+                bool given = false;
+                for (size_t k = 0; k < e->u.lit.inits.len && !given; k++)
+                    given = strcmp((*(FieldInit **)vecAt(&e->u.lit.inits, k))->name, fd->name) == 0;
+                if (given) continue;
+
+                Type *ft = fd->type;
+                if (st->kind == TY_GENERIC)
+                    ft = ttSubstitute(tt, ft, &sd->typeParams, &st->targs);
+                if (typeContainsRef(ft))
+                    ckError(c, e->line,
+                            "`ref` has no default value (it is a non-nullable reference)",
+                            "field `%s` must be given explicitly", fd->name);
+            }
             return st;
         }
     }
@@ -1032,7 +1049,23 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.tI32  = ttFromName(tt, "i32");
     c.tF64  = ttFromName(tt, "f64");
     c.tBool = ttFromName(tt, "bool");
-    c.tStr  = ttFromName(tt, "str");
+    /* 字符串字面量的类型 = `slice<u8>`。
+     * 它来自 prelude —— 也就是说**字符串类型是 extC 写的**，
+     * 编译器只负责把字面量变成它的一个值。 */
+    {
+        Type *base = ttFromName(tt, "slice");
+        if (base && base->kind == TY_STRUCT && base->sdef) {
+            Vec args;
+            vecInit(&args, arena, sizeof(void *));
+            *(Type **)vecPush(&args) = ttFromName(tt, "u8");
+            c.tSliceU8 = ttGeneric(tt, base->sdef, &args);
+        } else {
+            c.tSliceU8 = ttError(tt);
+            ctxError(ctx, 1, 1,
+                     "the prelude (stdlib/prelude.extc) must define `slice<T>`",
+                     "the prelude does not define `slice`, so string literals cannot work");
+        }
+    }
 
     /* 先把所有 struct / type 的类型驻留出来（方法签名比较要用）*/
     for (size_t i = 0; i < m->structs.len; i++)

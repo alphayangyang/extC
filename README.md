@@ -29,8 +29,9 @@
    并把它加进 `examples/`。
    *语言的能力由能跑的代码证明，不由文档里的形容词证明。*
 6. **能在 extC 里写的东西，就在 extC 里写**（见 `MIGRATION.md`）。
-   验收方式很机械：`grep -in slice src/*.c src/*.h` 应该一无所获 ——
-   *不靠自觉，靠 grep。*
+   验收方式很机械：
+   `grep -inE 'struct slice|slice_[a-z]' src/*.c src/*.h` 应该**一无所获** ——
+   容器的结构和方法只能活在 `stdlib/prelude.extc` 里。*不靠自觉，靠 grep。*
 7. **编译器的输出一律英文**（`error:` / `note:` / `--help` / 生成代码的头注释）。
    文档和代码注释可以是中文，但**用户看到的东西**统一英文 ——
    一个程序两种语言很怪。
@@ -108,7 +109,7 @@ fn main() -> i32 {
 }
 ```
 
-`i8..i64 / u8..u64 / f32 / f64 / bool / str`、`let`/`var`（含零初始化）、
+`i8..i64 / u8..u64 / f32 / f64 / bool`、`let`/`var`（含零初始化）、
 `if`/`else if`/`else`、`while`、`return`/`break`/`continue`、
 `struct` + 方法（写在体内）、`type` 枚举、**泛型 `struct Name<T>`（单态化）**、**`==` 由用户显式定义 `fn ==`**、
 `ref` 表达式、`print`/`println`。

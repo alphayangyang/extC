@@ -1,5 +1,4 @@
 // 自动调试打印：编译器为每个 struct 生成 <Type>_debug，递归打印所有字段
-// （等价于 Rust 的 #[derive(Debug)]）
 
 type color = | red | green | blue
 
@@ -9,26 +8,34 @@ struct point {
 }
 
 struct player {
-    name: str
+    name: slice<u8>       // 字符串字面量的类型就是它（T4c）
     score: i64
     alive: bool
-    pos: point          // 嵌套 struct 会递归打印
-    color: color        // 枚举打印名字
+    pos: point            // 嵌套 struct 会递归打印
+    color: color          // 枚举打印名字
 }
 
 fn main() -> i32 {
     var p: point = { x: 3, y: 4 }
     println(p)                       // point { x: 3, y: 4 }
 
-    var pl: player
-    pl.name = "naixi"
-    pl.score = 100
-    pl.alive = true
-    pl.pos = p
-    pl.color = color.green
-    println(pl)                      // 递归 + 枚举
+    var pl: player = {
+        name: "naixi",               // 字面量就是 slice<u8>，打印时按文本
+        score: 100,
+        alive: true,
+        pos: p,
+        color: color.green,
+    }
+    println(pl)
 
-    var empty: player                // 零初始化也能直接打
-    println(empty)
+    // ⚠️ 含 ref 的字段必须显式给（ref 没有零值）—— name 就是这种
+    var blank: player = {
+        name: "",                    // 空串是合法的：指向一个长度 0 的字节视图
+        score: 0,
+        alive: false,
+        pos: { x: 0, y: 0 },
+        color: color.red,
+    }
+    println(blank)
     return 0
 }
