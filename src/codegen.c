@@ -506,6 +506,18 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
     return bufCstr(&b);
 }
 
+/* 这个表达式在 C 里是 lvalue 吗（能取地址）？跟 check 里那个 isPlace 同一个判断，
+ * 只不过这里是**为了生成的 C 合法**：`&(f())` 在 C 里非法。 */
+static bool isPlaceExpr(const Expr *e) {
+    switch (e->kind) {
+    case EX_IDENT: return true;
+    case EX_FIELD: return isPlaceExpr(e->u.field.obj);
+    case EX_INDEX: return isPlaceExpr(e->u.index.obj);
+    case EX_SLICE: return isPlaceExpr(e->u.slice.obj);
+    default:       return false;
+    }
+}
+
 static const char *genMethodCall(CG *g, Expr *e) {
     FuncDef *f = e->func;
     if (!f) return "0";
@@ -517,8 +529,24 @@ static const char *genMethodCall(CG *g, Expr *e) {
     /* 接收者按需取地址 / 解引用 —— 这就是 `a.f(x)` == `f(a, x)` 的全部机制 */
     bool wantRef = p0->type && p0->type->kind == TY_REF;
     bool haveRef = recvT && recvT->kind == TY_REF;
-    if (wantRef && !haveRef)      recvC = arenaPrintf(g->arena, "&(%s)", recvC);
-    else if (!wantRef && haveRef) recvC = arenaPrintf(g->arena, "*(%s)", recvC);
+    if (wantRef && !haveRef) {
+        /* 接收者是**临时值**时不能直接 `&`（C 里 `&(f())` 非法）。
+         * 先落进一个临时存储再取地址。用**单元素数组**的复合字面量：
+         *     `(T[]){ f() }`  →  类型是 `T *`（数组退化成指针）
+         * 别写成 `&((T){ f() })` —— `(T){ x }` 在 C 里**不是拷贝**，
+         * 它拿 x 去初始化**第一个成员**（`_Bool has = <option_i64>` 那种瞎报错）。
+         * 数组初始化才是逐元素的，`{ f() }` 就是「用一个 T 初始化元素 0」。
+         * 存储期到语句结束，正好够这次调用（Rust 的 `next().unwrap()` 同理）。
+         * 注意：只有**不是地方**的才这么处理，否则会把「写进元素」变成「写进副本」。 */
+        if (isPlaceExpr(e->u.method.recv)) {
+            recvC = arenaPrintf(g->arena, "&(%s)", recvC);
+        } else {
+            recvC = arenaPrintf(g->arena, "(%s[]){ %s }",
+                                cType(g, subst(g, recvT)), recvC);
+        }
+    } else if (!wantRef && haveRef) {
+        recvC = arenaPrintf(g->arena, "*(%s)", recvC);
+    }
 
     const char *fname = cMethodName(g, recvT, f);
 
@@ -540,7 +568,10 @@ static Expr *litValueFor(Expr *lit, const char *fname) {
 }
 
 static const char *genStructLit(CG *g, Expr *e) {
-    Type *t = e->type;
+    /* ⚠️ 先整体替换一次：在泛型实例里，字面量记的类型还是**模板**（`result<T,E>`），
+     * 直接拿它会看到 targs 是类型参数 —— 于是零值那条路拿到裸 `T`、
+     * 退化成 `0`，生成的 C 里变成 `.value = 0`（真踩过：`result<unit, E>::failure`）。 */
+    Type *t = subst(g, e->type);
     StructDef *sd = (t && (t->kind == TY_STRUCT || t->kind == TY_GENERIC)) ? t->sdef : NULL;
     if (!sd) return "(int){0}";
 
@@ -657,6 +688,21 @@ static const char *genExpr(CG *g, Expr *e) {
         }
 
         case EX_SLICE: return genSlice(g, e);
+
+        case EX_ASSOC: {
+            /* 关联函数：C 名字用**实例名**修饰（`option_i64_some`）——
+             * 跟方法同一套修饰规则，所以直接复用 cMethodName。 */
+            Buf b;
+            bufInit(&b, g->arena);
+            bufPuts(&b, cMethodName(g, e->assocOwner, e->func));
+            bufPutc(&b, '(');
+            for (size_t i = 0; i < e->u.assoc.args.len; i++) {
+                if (i) bufPuts(&b, ", ");
+                bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.assoc.args, i)));
+            }
+            bufPutc(&b, ')');
+            return bufCstr(&b);
+        }
 
         case EX_METHOD:    return genMethodCall(g, e);
         case EX_STRUCTLIT: return genStructLit(g, e);
@@ -895,6 +941,11 @@ static void unitBody(CG *g, SUnit *u) {
             FieldDef *fd = *(FieldDef **)vecAt(&u->sd->fields, i);
             cgLine(g, "%s %s;", cType(g, fd->type), fd->name);
         }
+        /* C 不允许**空 struct**（`struct unit { };` 是 GNU 扩展，而且
+         * `(unit){0}` 会触发 excess elements 警告）。所以零字段的 struct
+         * 补一个占位字节 —— 用户看不见它，`(T){0}` 也就合法了。
+         * `unit`（`result<unit, E>` 用）就是靠这条活下来的。 */
+        if (u->sd->fields.len == 0) cgLine(g, "char __extc_empty;");
     }
     g->indent--;
     cgLine(g, "};");

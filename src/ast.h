@@ -59,9 +59,10 @@ typedef enum {
     EX_INT, EX_FLOAT, EX_BOOL, EX_STR, EX_IDENT,
     EX_BIN, EX_UN, EX_CALL, EX_METHOD, EX_FIELD, EX_STRUCTLIT,
     EX_INDEX,     /* a[i] —— 索引 */
-    EX_SLICE,     /* a[i..j] —— 切一个视图出来（只读）*/
+    EX_SLICE,     /* a[i..j] —— 切一个视图出来 */
     EX_ARRAYLIT,  /* [1, 2, 3] —— 数组字面量 */
     EX_REF,       /* ref x —— 取引用（T3：ref 从类型修饰升级成表达式） */
+    EX_ASSOC,     /* option<i64>::some(x) —— 关联函数（不带 self 的函数） */
     EX_ENUMVAL    /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
 } ExprKind;
 
@@ -73,6 +74,7 @@ struct Expr {
     Type     *type;
     FuncDef  *func;     /* EX_CALL / EX_METHOD 解析到的函数；`==` 时是 eq 方法 */
     FieldDef *field;    /* EX_FIELD 解析到的字段 */
+    Type     *assocOwner; /* EX_ASSOC：解析到的**实例**类型（用来修饰 C 名字） */
     bool      needEq;   /* `==` 的操作数含类型参数 → 推迟到实例化再检查 */
 
     union {
@@ -91,6 +93,9 @@ struct Expr {
         struct { Expr *obj; Expr *lo; Expr *hi; } slice;   /* lo / hi 可为 NULL */
         struct { Vec elems; bool rest; } arraylit;         /* elems: Expr*；rest = 末尾有 ... */
         struct { Expr *operand; } ref;
+        /* 关联函数调用：`typeName<targs>::name(args)`
+         * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
+        struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
         struct { const char *typeName; const char *variant; } enumval;
     } u;
 };
@@ -168,6 +173,7 @@ struct FuncDef {
     Type       *ret;             /* NULL 表示无返回值 */
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* 方法所属的 struct；自由函数为 NULL */
+    bool        isAssoc;         /* 写在 struct 体内但**不带 `self`** —— 关联函数 */
     bool        reserved;        /* 来自 prelude */
     int         line;
 };

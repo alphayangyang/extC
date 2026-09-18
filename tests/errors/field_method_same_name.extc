@@ -1,0 +1,5 @@
+struct thing {
+    value: i32
+    fn value() -> thing { return { value: 0 } }
+}
+fn main() -> i32 { return 0 }

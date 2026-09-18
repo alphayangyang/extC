@@ -1,0 +1,8 @@
+struct point {
+    x: i32
+    fn get(self: ref point) -> i32 { return self.x }
+}
+fn main() -> i32 {
+    let v = point::get()
+    return 0
+}

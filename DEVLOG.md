@@ -7,6 +7,86 @@
 
 ---
 
+## 2026-09-18 · T5a：`option` / `result` —— 先把「怎么构造」这条路打通
+
+**主人的反应值得记下来**：奶昔一口气抛了三个「构造怎么写 / 无载荷失败怎么写 /
+`T` 不能含 `ref` 接受吗」的技术选择题，主人回了一句**「等等等等我看不懂了」**。
+
+—— 这是奶昔的问题。**抽象选项不如能跑的代码**：主人一直是「看代码」的人
+（README 维护规矩第 5 条就是他定的）。所以奶昔改成：讲清楚 `option`/`result`
+**是什么**（用五子棋举例），写法细节自己按推荐的定，做完直接给能跑的例子。
+
+### 做了三件事
+
+**① `::` 关联函数** —— 写在 `struct` 体内但**不带 `self`** 的函数：
+
+```extc
+struct option<T> {
+    fn some(v: T) -> option<T> { return { has: true, value: v } }
+}
+let o = option<i64>::some(42)
+```
+
+为什么非有它不可：查了一下，**泛型自由函数压根不解析**（`fn wrap<T>(...)` → `expected '('`），
+而**方法必须有 `self`**。两样都没有 ⇒ **prelude 里根本没法写构造器**。
+顺带它还是 `array<T>::new()` 的前置（ARRAYS.md 里卡住的那个问题）。
+
+解析上的坑：`option<i64>::some` 里的 `<` 跟小于号撞车。做法是**先只看不动地**
+扫一遍（平衡 `<` `>`，看后面是不是 `::`），是才真解析 —— 判据 `::` 不是合法运算符，
+所以两种解释互斥。这样试探阶段不会喷假错误。
+
+**② prelude 里的 `option` / `result` / `unit`**（都是 extC 源码）。
+
+**③ 三处修出来的真 bug**（都不在 `option` 本身，是**新用法逼出来的老问题**）：
+
+- **C 不允许空 struct**。`struct unit { };` 是 GNU 扩展，而且 `(unit){0}` 会报
+  `excess elements in struct initializer`。修法：零字段的 struct 由编译器补一个
+  `char __extc_empty;` —— 用户看不见，`(T){0}` 就合法了。
+- **泛型实例里字面量记的类型还是「模板」**。`result<unit, E>::failure` 里的
+  `{ ok: false, err: e }` 省略了 `value`，零值那条路拿到裸 `T` → 退化成 `0` →
+  生成的 C 里 `.value = 0`（而 value 是 `unit`）。修法：`genStructLit` 开头
+  `subst(g, e->type)` 先整体替换一次。
+- **`typeContainsRef` 不代入泛型实参**。`option<slice<u8>>` 的 value 是 slice
+  （里面有 `ref`）⇒ 没有零值，检查却整条漏过去，最后在生成的 C 里露出
+  `__extc_reference_has_no_zero_value__`。修法：递归前 `ttSubstitute`。
+  **同一个模式第三次出现了**（都是「递归时忘了实例上下文」）。
+
+### 一个被编译器拦住的命名错误
+
+奶昔本来把构造器写成 `result<T,E>::ok(v)` / `::err(e)` —— 编译 prelude 时当场报：
+
+```
+error: `result.ok`: a field and a method cannot share a name
+```
+
+标签字段已经叫 `ok` 了，而**字段和方法不许同名**。这条规则是主人早先定的，
+这次它自己抓出了奶昔的疏忽。改成 `success` / `failure`。
+
+### 顺手修的两个 C 层面的坑
+
+**① `ref self` 方法不能作用在临时值上。** `firstEmpty(...).valueOr(-1)` 生成
+`&(f())` —— C 里非法。第一反应是写 `&((T){ f() })`，**结果更糟**：
+
+```
+error: incompatible types when initializing type '_Bool' using type 'option_i64'
+```
+
+因为 `(T){ x }` 在 C 里**不是拷贝**，它拿 `x` 去初始化**第一个成员**（`has = <option>`）！
+正确的写法是**单元素数组**的复合字面量：
+
+```c
+option_i64_valueOr((option_i64[]){ firstEmpty(...) }, -1)   /* 数组退化成 T* */
+```
+
+数组初始化是逐元素的，`{ f() }` 就是「用一个 T 初始化元素 0」。单独写了 5 行 C
+验证过 `-Wpedantic` 下也干净。
+
+**② 零字段 struct 的占位**（见上）。
+
+**教训**：C 的复合字面量 `(T){x}` 和「拷贝构造」**长得一样但意思完全不同**，
+这种「看起来对、其实初始化了别的成员」的坑，编译器给的错误信息离真因很远
+（报 `_Bool` 初始化失败，而问题在 `{ }` 的语义上）。
+
 ## 2026-09-18 · 主人一句「我不是有 let 和 var 吗」点醒了奶昔
 
 **起因**：奶昔把「视图元素该不该可写」当成一个**新设计问题**去问主人。

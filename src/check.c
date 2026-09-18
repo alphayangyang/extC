@@ -147,14 +147,27 @@ static Variant *findVariant(TypeDef *td, const char *name) {
 
 /* 这个类型里（递归地）有没有 `ref`？
  * 有的话就不能零初始化 —— `ref` 不可为空，它没有「零值」。 */
-static bool typeContainsRef(Type *t) {
+/* 这个类型里有没有「进不去零值」的东西？`ref T` 没有零值，**含 ref 的聚合也没有**。
+ *
+ * ⚠️ 泛型实例必须**代入实参**再往下走：`option<i64>` 的 value 是 i64（有零值），
+ * 但 `option<slice<u8>>` 的 value 是 slice（里面有 ref）⇒ 没有零值。
+ * 不代入的话 `T` 是个类型参数、看着人畜无害，检查整条漏过去，
+ * 最后在生成的 C 里露出 `__extc_reference_has_no_zero_value__`（真踩过）。 */
+static bool typeContainsRef(TypeTable *tt, Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
-    if (t->kind == TY_ARRAY) return typeContainsRef(t->inner);
+    if (t->kind == TY_ARRAY) return typeContainsRef(tt, t->inner);
     StructDef *sd = structOf(t);
     if (!sd) return false;
-    for (size_t i = 0; i < sd->fields.len; i++)
-        if (typeContainsRef((*(FieldDef **)vecAt(&sd->fields, i))->type)) return true;
+    Vec *sp = NULL, *sa = NULL;
+    if (t->kind == TY_GENERIC && t->targs.len == sd->typeParams.len) {
+        sp = &sd->typeParams;
+        sa = &t->targs;
+    }
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
+        if (typeContainsRef(tt, ttSubstitute(tt, ft, sp, sa))) return true;
+    }
     return false;
 }
 
@@ -826,6 +839,73 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return ttRef(tt, ot);
         }
 
+        case EX_ASSOC: {
+            /* `option<i64>::some(x)` —— 关联函数（struct 体内不带 `self` 的函数）。
+             * 类型实参**写全**，不从参数或上下文倒推（定案 27：显式优于推导）。 */
+            Type *raw = typeNamed(c->arena, e->u.assoc.typeName);
+            raw->targs = e->u.assoc.targs;
+            Type *t = ttResolve(tt, c->ctx, raw, e->line, c->curParams);
+            if (ttIsError(t)) return ttError(tt);
+            e->assocOwner = t;
+
+            StructDef *sd = structOf(t);
+            FuncDef *f = NULL;
+            if (sd) {
+                for (size_t i = 0; i < sd->methods.len; i++) {
+                    FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
+                    if (m->isAssoc && strcmp(m->name, e->u.assoc.name) == 0) { f = m; break; }
+                }
+            }
+            if (!f) {
+                Buf note;
+                bufInit(&note, c->arena);
+                if (sd) {
+                    bufPrintf(&note, "associated functions of %s:", sd->name);
+                    bool any = false;
+                    for (size_t i = 0; i < sd->methods.len; i++) {
+                        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
+                        if (!m->isAssoc) continue;
+                        bufPrintf(&note, " %s", m->name);
+                        any = true;
+                    }
+                    if (!any) bufPuts(&note, " (none)");
+                    bufPuts(&note, "; a function written inside a `struct` without"
+                                  " `self` is an associated function");
+                } else {
+                    bufPuts(&note, "only struct types have associated functions");
+                }
+                ckError(c, e->line, bufCstr(&note), "no associated function `%s` on `%s`",
+                        e->u.assoc.name, e->u.assoc.typeName);
+                return ttError(tt);
+            }
+            e->func = f;
+
+            Vec *sp = NULL, *sa = NULL;
+            if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
+
+            if (e->u.assoc.args.len != f->params.len) {
+                ckError(c, e->line, NULL, "`%s::%s` expects %zu argument(s), got %zu",
+                        e->u.assoc.typeName, f->name, f->params.len, e->u.assoc.args.len);
+                return ttError(tt);
+            }
+            for (size_t i = 0; i < f->params.len; i++) {
+                Param *p = *(Param **)vecAt(&f->params, i);
+                Expr  *a = *(Expr **)vecAt(&e->u.assoc.args, i);
+                Type *pt = ttSubstitute(tt, p->type, sp, sa);
+                adoptContextType(a, pt);
+                Type *at = checkExpr(c, a);
+                if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
+                    ckError(c, a->line,
+                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. ",
+                            "argument expects `%s`; write `ref ...` here to pass a reference",
+                            typeStr(c, pt));
+                    continue;
+                }
+                checkAssignable(c, pt, at, a, "argument");
+            }
+            return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
+        }
+
         case EX_ENUMVAL:
             return ttFromName(tt, e->u.enumval.typeName);
 
@@ -1006,7 +1086,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *ft = fd->type;
                 if (st->kind == TY_GENERIC)
                     ft = ttSubstitute(tt, ft, &sd->typeParams, &st->targs);
-                if (typeContainsRef(ft))
+                if (typeContainsRef(tt, ft))
                     ckError(c, e->line,
                             "`ref` has no default value (it is a non-nullable reference)",
                             "field `%s` must be given explicitly", fd->name);
@@ -1046,7 +1126,7 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
             if (!s->u.var.init) {
-                if (s->u.var.ann && typeContainsRef(s->u.var.ann)) {
+                if (s->u.var.ann && typeContainsRef(c->tt, s->u.var.ann)) {
                     ckError(c, s->line,
                             "`ref` is a non-nullable reference, so it has no zero value -- "
                             "and neither does any struct that contains one",
@@ -1253,9 +1333,10 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
 
     Param *p0 = f->params.len ? *(Param **)vecAt(&f->params, 0) : NULL;
     if (!p0 || strcmp(p0->name, "self") != 0) {
-        ckError(c, f->line, NULL,
-                "method `%s.%s` must take `self: ref %s` as its first parameter",
-                f->owner->name, f->name, f->owner->name);
+        /* 不带 `self` = **关联函数**：`option<i64>::some(x)` / `point::origin()`。
+         * 它属于这个类型，但不作用于某个值 —— 容器要的构造器就靠它，
+         * 而且它是**显式**的（调用点写全类型，不靠上下文猜，定案 27）。 */
+        f->isAssoc = true;
     } else {
         /* 比 sdef 而不是比类型指针 —— 泛型 struct 的 self 是 `ref Pair<A, B>` */
         Type *sb = ttBase(p0->type);

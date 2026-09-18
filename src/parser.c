@@ -101,6 +101,8 @@ static Expr *parseUnary(Parser *p);
 static Expr *parsePostfix(Parser *p);
 static Expr *parsePrimary(Parser *p);
 static Expr *parseStructLit(Parser *p, const char *name);
+static bool  looksLikeAssoc(Parser *p);
+static Expr *parseAssoc(Parser *p, const char *name, int line);
 static bool  parseArgs(Parser *p, Vec *out);
 
 static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
@@ -796,6 +798,13 @@ static Expr *parsePrimary(Parser *p) {
          * 这样类型名不必靠大小写来消歧义 —— 规则写在语法里，不藏在命名里。 */
         if (at(p, "{") && !p->inCond) return parseStructLit(p, t->text);
 
+        /* 关联函数调用 `option<i64>::some(x)` / `point::origin()`。
+         *
+         * `IDENT <` 跟小于号撞车，所以先**只看不动**地判断题实参到哪里结束、
+         * 后面跟的是不是 `::`；是才真的解析（这样错误信息不会在试探里乱喷）。
+         * 判据 `::` 本身不是合法运算符，所以两种解释互斥，不会误判。 */
+        if (looksLikeAssoc(p)) return parseAssoc(p, t->text, t->line);
+
         /* 条件位置里的 `{` 属于块 —— 但如果括号里明显是字面量（`{ ident :`），
          * 那就是忘了加括号，给一条能直接照抄的提示 */
         if (at(p, "{") && p->inCond &&
@@ -819,8 +828,70 @@ static Expr *parsePrimary(Parser *p) {
     return NULL;
 }
 
-static Expr *parseStructLit(Parser *p, const char *name) {
-    Token *open = cur(p);
+/* `Name` 后面是不是接 `类型实参? :: 名字 (`？
+ *
+ * **只看，不动 pos** —— 因为 `IDENT <` 跟小于号撞车，必须在真的解析之前拿定主意，
+ * 否则试探会喷出一堆假错误。判据是 `::`：它不是合法的二元运算符，
+ * 所以「关联调用」和「a < b」这两种解释互斥，不会误判。 */
+static bool looksLikeAssoc(Parser *p) {
+    size_t i = 0;
+
+    if (strcmp(pk(p, i)->text, "<") == 0) {
+        int depth = 0;
+        for (;; i++) {
+            Token *t = pk(p, i);
+            if (t->kind == TK_EOF) return false;
+            if (strcmp(t->text, "<") == 0) {
+                depth++;
+            } else if (strcmp(t->text, ">") == 0) {
+                if (--depth == 0) { i++; break; }
+            } else if (t->kind == TK_IDENT || t->kind == TK_TYPE ||
+                       t->kind == TK_INT) {
+                /* 类型名 / 内建类型 / 数组长度 */
+            } else if (t->kind == TK_KEYWORD) {
+                /* `ref` */
+            } else if (strcmp(t->text, ",") == 0 || strcmp(t->text, "[") == 0 ||
+                       strcmp(t->text, "]") == 0) {
+            } else {
+                return false;       /* 出现不可能属于类型的东西 ⇒ 不是关联调用 */
+            }
+        }
+    }
+    return strcmp(pk(p, i)->text, "::") == 0;
+}
+
+/* 真的解析：`Name<targs>::name(args)` 或 `Name::name(args)`（类型名已吃掉） */
+static Expr *parseAssoc(Parser *p, const char *name, int line) {
+    Vec targs;
+    vecInit(&targs, p->arena, sizeof(void *));
+    if (accept(p, "<")) {
+        skipNl(p);
+        for (;;) {
+            Type *a = parseType(p);
+            if (!a) return NULL;
+            *(Type **)vecPush(&targs) = a;
+            if (accept(p, ",")) { skipNl(p); continue; }
+            break;
+        }
+        skipNl(p);
+        if (!expect(p, ">", NULL)) return NULL;
+    }
+    if (!expect(p, "::", NULL)) return NULL;
+
+    Token *fn = expectIdent(p, "an associated function name");
+    if (!fn) return NULL;
+    Vec args;
+    if (!parseArgs(p, &args)) return NULL;
+
+    Expr *e = exprNew(p->arena, EX_ASSOC, line);
+    e->u.assoc.typeName = name;
+    e->u.assoc.targs = targs;
+    e->u.assoc.name = fn->text;
+    e->u.assoc.args = args;
+    return e;
+}
+
+static Expr *parseStructLit(Parser *p, const char *name) {    Token *open = cur(p);
     if (!expect(p, "{", NULL)) return NULL;
 
     Expr *e = exprNew(p->arena, EX_STRUCTLIT, open->line);
