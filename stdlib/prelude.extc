@@ -5,11 +5,12 @@
 //
 // 写在这里的类型，用户不用 import 就能用。
 //
-// ⚠️ 现在能写的东西还很少，因为语言还没有数组 / 索引 / option：
-//    · 没有索引 ⇒ 写不出 `data[i]`
-//    · 没有 option ⇒ 写不出安全的 `get`
-//    · `slice<T>` 的 `fn ==` 需要元素可比较（T:Eq 那件事）
-//  这些到位之后，find / view / parse 之类都会搬到这里。
+// ⚠️ `slice` 是**保留定义**：用户不能重定义它（重名即报错），
+//    而且 extC 没有 impl 块、方法必须写在 struct 体内 ——
+//    所以**「给已有类型加方法」在语法上不可达**。这正好防住了混乱。
+//
+// ⚠️ 编译器只认这个类型的**协议**：`data` + `len`（因为 `s[i]` 是一条语法）。
+//    字段名不能改；方法随便加。分界线见 ARRAYS.md。
 
 struct slice<T> {
     data: ref T
@@ -19,13 +20,69 @@ struct slice<T> {
         return self.len == 0
     }
 
-    // 边界查询（不是取元素 —— 取元素要先有 option）
     fn hasAt(self: ref slice<T>, i: i64) -> bool {
         return i >= 0 && i < self.len
     }
-}
 
-// ⚠️ 已知建模问题：**空 slice 现在造不出来**。
-// 因为 `ref` 不可为空，而长度 0 的切片没有合法的 `data` 可指。
-// 要么给 slice 的内部表示开一个受控的口子，要么让空切片指向一个静态哨兵 ——
-// 等有 option / 索引的时候一并解决。
+    // 读第 i 个。越界会 **trap**（带位置）—— 想优雅处理就先查 hasAt。
+    // 注意库里**没有一行指针算术，也没有一行手工边界检查**：`self[i]` 那一条语法
+    // 会让编译器生成带检查的索引原语。
+    fn get(self: ref slice<T>, i: i64) -> T {
+        return self[i]
+    }
+
+    // 按内容比较。`!=` 是它的取反（语言自动派生）。
+    // 元素能不能比，**推迟到实例化**才检查 —— 这是「不引入 trait」的代价。
+    fn ==(self: ref slice<T>, other: slice<T>) -> bool {
+        if self.len != other.len {
+            return false
+        }
+        var i: i64 = 0
+        while i < self.len {
+            if self[i] != other[i] {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    // 找子串。找不到返回 -1（等 `option` 到位会改成 `option<i64>`）。
+    // 词法分析器的核心就是它。
+    fn find(self: ref slice<T>, needle: slice<T>) -> i64 {
+        if needle.len > self.len {
+            return -1
+        }
+        var i: i64 = 0
+        while i + needle.len <= self.len {
+            var j: i64 = 0
+            var same: bool = true
+            while j < needle.len {
+                if self[i + j] != needle[j] {
+                    same = false
+                    break
+                }
+                j = j + 1
+            }
+            if same {
+                return i
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+    fn startsWith(self: ref slice<T>, prefix: slice<T>) -> bool {
+        if prefix.len > self.len {
+            return false
+        }
+        var i: i64 = 0
+        while i < prefix.len {
+            if self[i] != prefix[i] {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+}

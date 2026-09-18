@@ -52,6 +52,15 @@
 - 第一条真实用例：`slice<T>`
 - 顺带执行定案 3：**`str` 作废，字符串字面量 = `slice<u8>`**
 
+### T5a · 数组 + 索引（见 [`ARRAYS.md`](ARRAYS.md)）
+
+- **T5a-1 · `slice` 索引 + prelude 字符串库** ✅ **已完成**
+  `s[i]`（带边界检查，越界 trap 并报 extC 位置）+ prelude 里的
+  `get` / `==`（按内容）/ `find` / `startsWith` —— **全部用 extC 写**。
+- **T5a-2 · 固定数组** ⬜ 待做
+  `[N]T` 类型 + 字面量 `[1,2,3]` + 数组索引 + 切片视图 `a[i..j]`。
+  **注意**：动态数组 `array<T>` 要等 arena（week-4），见 ARRAYS.md §5。
+
 ### T5 · `option<T>` / `result<T,E>` + `?`
 
 - 第一个「有真实语义」的泛型类型

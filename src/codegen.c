@@ -77,6 +77,19 @@ static Type *subst(CG *g, Type *t) {
     return ttSubstitute(g->tt, t, g->substParams, g->substArgs);
 }
 
+static void substEnter(CG *g, Type *inst) {
+    g->substParams = &inst->sdef->typeParams;
+    g->substArgs   = &inst->targs;
+    g->ownerPrefix = inst->name;
+}
+
+static void substLeave(CG *g) {
+    g->substParams = NULL;
+    g->substArgs   = NULL;
+    g->ownerPrefix = NULL;
+}
+
+
 static const char *cType(CG *g, Type *t) {
     if (!t) return "void";
 
@@ -148,10 +161,33 @@ static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
  * 「指向 byte 的视图」该按文本打印 —— 这是输出的基本操作，不是容器的实现。
  * 容器的定义、字段、方法全在 stdlib/prelude.extc 里（见 MIGRATION.md 的验收标准）。
  */
+static bool isView(Type *t) {
+    return t && t->kind == TY_GENERIC && t->sdef
+        && strcmp(t->sdef->name, "slice") == 0 && t->targs.len == 1;
+}
+
 static bool isByteView(Type *t) {
-    if (!t || t->kind != TY_GENERIC || !t->sdef) return false;
-    if (strcmp(t->sdef->name, "slice") != 0) return false;
-    return t->targs.len == 1 && ttIs(*(Type **)vecAt(&t->targs, 0), "u8");
+    return isView(t) && ttIs(*(Type **)vecAt(&t->targs, 0), "u8");
+}
+
+/* 视图的索引原语（每个视图类型一份）。
+ *
+ * **按值**收视图 —— 这样下标表达式只求值一次，而且不用为「值 / 引用」写两条路径。
+ * 它带边界检查；越界就 trap（带 extC 的位置）。
+ * prelude 里的 `get` / `==` / `find` 全都通过 `self[i]` 用它 ——
+ * 也就是说**库里没有一行指针算术，也没有一行手工边界检查**（见 ARRAYS.md）。*/
+static void genViewIndexer(CG *g, Type *inst) {
+    Type *elem = *(Type **)vecAt(&inst->targs, 0);
+    substEnter(g, inst);
+    cgLine(g, "%s %s_index(%s v, int64_t i, const char *file, int line) {",
+           cType(g, elem), inst->name, inst->name);
+    g->indent++;
+    cgLine(g, "if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);");
+    cgLine(g, "return v.data[i];");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
+    substLeave(g);
 }
 
 /* 按值收一个字节视图再打印 —— 保证实参只求值一次 */
@@ -495,6 +531,20 @@ static const char *genExpr(CG *g, Expr *e) {
             return bufCstr(&b);
         }
 
+        case EX_INDEX: {
+            Type *ot = e->u.index.obj->type;
+            Type *ob = ttBase(subst(g, ot));
+            if (!isView(ob)) return "0";
+
+            const char *obj = genExpr(g, e->u.index.obj);
+            const char *idx = genExpr(g, e->u.index.index);
+            /* 原语按值收视图，所以引用要解一层 */
+            if (ot && ot->kind == TY_REF) obj = arenaPrintf(g->arena, "*(%s)", obj);
+
+            return arenaPrintf(g->arena, "%s_index(%s, (int64_t)(%s), \"%s\", %d)",
+                               ob->name, obj, idx, g->path, e->line);
+        }
+
         case EX_METHOD:    return genMethodCall(g, e);
         case EX_STRUCTLIT: return genStructLit(g, e);
 
@@ -666,18 +716,6 @@ static void genFunc(CG *g, FuncDef *f) {
  * 容器的源码是 extC 写的（预lude），编译器只做「按实参把 T 代进去」这一件事。
  */
 
-static void substEnter(CG *g, Type *inst) {
-    g->substParams = &inst->sdef->typeParams;
-    g->substArgs   = &inst->targs;
-    g->ownerPrefix = inst->name;
-}
-
-static void substLeave(CG *g) {
-    g->substParams = NULL;
-    g->substArgs   = NULL;
-    g->ownerPrefix = NULL;
-}
-
 static void genFuncProto(CG *g, FuncDef *f) {
     Buf sig;
     bufInit(&sig, g->arena);
@@ -765,7 +803,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " */\n"
         "#include <stdint.h>\n"
         "#include <stdbool.h>\n"
-        "#include <stdio.h>\n\n");
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n\n"
+        "/* 越界 trap：带 extC 的位置（由 `#line` 与调用点传进来的 file/line 保证）*/\n"
+        "void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n"
+        "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
+        "            file, line, (long long)i, (long long)n);\n"
+        "    exit(1);\n"
+        "}\n\n");
 
     /* 枚举最靠前 —— C11 不能前置声明 enum tag，
      * 所以 struct 字段里用到枚举时必须先有定义 */
@@ -877,7 +922,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         Type *inst = *(Type **)vecAt(&tt->instances, i);
         substEnter(&g, inst);
         genStructDebug(&g, inst->name, inst->sdef);
-        if (isByteView(inst)) genByteViewWriter(&g, inst->name);
+        if (isView(inst))      genViewIndexer(&g, inst);
+        if (isByteView(inst))  genByteViewWriter(&g, inst->name);
         substLeave(&g);
     }
     for (size_t i = 0; i < tt->instances.len; i++) {

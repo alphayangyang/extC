@@ -104,6 +104,22 @@ static void usage(const char *argv0) {
  * 注：prelude 会被检查两遍（这里一遍、合并后一遍）。它很小，代价可忽略；
  * 换来的是「prelude 的错误位置永远正确」。
  */
+/* 编译器认 `slice` 的协议：第一个字段是 `data: ref T`，第二个是 `len`。
+ * 见 ARRAYS.md「语言认识协议，库提供方法」。 */
+static bool viewContractOk(Module *m) {
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        if (strcmp(sd->name, "slice") != 0) continue;
+        if (sd->typeParams.len != 1 || sd->fields.len < 2) return false;
+        FieldDef *f0 = *(FieldDef **)vecAt(&sd->fields, 0);
+        FieldDef *f1 = *(FieldDef **)vecAt(&sd->fields, 1);
+        if (strcmp(f0->name, "data") != 0 || f0->type->kind != TY_REF) return false;
+        if (strcmp(f1->name, "len") != 0) return false;
+        return true;
+    }
+    return false;
+}
+
 static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     size_t len = 0;
     const char *src = preludeSource(&len);
@@ -130,6 +146,23 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
         ctxRenderDiag(&ctx, &diag);
         fputs("extc: internal error -- the bundled prelude does not compile\n", stderr);
         fputs(bufCstr(&diag), stderr);
+        return false;
+    }
+
+    /* 标记成「保留定义」—— 用户不能重定义它们（重名即报错，而且错误信息会说清原因）*/
+    for (size_t i = 0; i < pm.structs.len; i++)
+        (*(StructDef **)vecAt(&pm.structs, i))->reserved = true;
+    for (size_t i = 0; i < pm.types.len; i++)
+        (*(TypeDef **)vecAt(&pm.types, i))->reserved = true;
+    for (size_t i = 0; i < pm.funcs.len; i++)
+        (*(FuncDef **)vecAt(&pm.funcs, i))->reserved = true;
+
+    /* 契约检查：编译器认 `slice` 的协议（`data` + `len`，因为 `s[i]` 是一条语法）。
+     * prelude 必须真的这么写 —— 否则「改个字段名」会变成「生成的 C 编译不过」
+     * 这种莫名其妙的错误。**把隐式契约变成显式检查。** */
+    if (!viewContractOk(&pm)) {
+        fputs("extc: internal error -- the prelude's `slice` does not have the shape "
+              "the compiler expects (`data: ref T` then `len`)\n", stderr);
         return false;
     }
 

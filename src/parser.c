@@ -592,6 +592,21 @@ static Expr *parsePostfix(Parser *p) {
                 f->u.field.name = name->text;
                 e = f;
             }
+        } else if (at(p, "[")) {
+            /* 索引：`a[i]`。括号里是普通表达式（字面量不受条件位置限制）*/
+            Token *br = take(p);
+            skipNl(p);
+            const bool savedC = p->inCond;
+            p->inCond = false;
+            Expr *idx = parseExpr(p);
+            p->inCond = savedC;
+            if (!idx) return NULL;
+            skipNl(p);
+            if (!expect(p, "]", NULL)) return NULL;
+            Expr *ix = exprNew(p->arena, EX_INDEX, br->line);
+            ix->u.index.obj = e;
+            ix->u.index.index = idx;
+            e = ix;
         } else if (at(p, "(")) {
             Vec args;
             if (!parseArgs(p, &args)) return NULL;

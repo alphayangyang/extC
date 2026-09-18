@@ -161,6 +161,16 @@ static bool isLvalue(Expr *e) {
     return e->kind == EX_IDENT || e->kind == EX_FIELD;
 }
 
+/* 一个类型是不是「视图」？视图的协议是 `data` + `len`（编译器认这条协议，
+ * 但它的结构和方法都在 stdlib/prelude.extc 里）。返回元素类型，不是视图就返回 NULL。
+ * 见 ARRAYS.md：语言认识「协议」，库提供「方法」。 */
+static Type *viewElemOf(Type *t) {
+    if (!t || t->kind != TY_GENERIC || !t->sdef) return NULL;
+    if (strcmp(t->sdef->name, "slice") != 0) return NULL;
+    if (t->targs.len != 1) return NULL;
+    return *(Type **)vecAt(&t->targs, 0);
+}
+
 /* C 原生就能比的类型：数值 / bool / 枚举。
  * `str` **不在**这里 —— 它的 `==` 会退化成指针比较（陷阱），必须有 eq 才行。 */
 static bool cmpIsNative(Type *t) {
@@ -542,6 +552,27 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return fd->type;
         }
 
+        case EX_INDEX: {
+            Type *ot = checkExpr(c, e->u.index.obj);
+            Type *it = checkExpr(c, e->u.index.index);
+            if (ttIsError(ot) || ttIsError(it)) return ttError(tt);
+
+            Type *elem = viewElemOf(ttBase(ot));
+            if (!elem) {
+                ckError(c, e->line,
+                        "For now only a view (like `slice<T>`) can be indexed -- "
+                        "fixed arrays come next.",
+                        "cannot index a value of type `%s`", typeStr(c, ot));
+                return ttError(tt);
+            }
+            if (!ttIsInteger(it)) {
+                ckError(c, e->line, "An index must be an integer.",
+                        "index must be an integer, found `%s`", typeStr(c, it));
+                return ttError(tt);
+            }
+            return elem;
+        }
+
         case EX_REF: {
             Expr *op = e->u.ref.operand;
             Type *ot = checkExpr(c, op);
@@ -906,7 +937,13 @@ static void checkDeclarations(Checker *c) {
         for (size_t j = i + 1; j < m->structs.len; j++) {
             StructDef *b = *(StructDef **)vecAt(&m->structs, j);
             if (strcmp(a->name, b->name) == 0)
-                ckError(c, b->line, NULL, "duplicate struct `%s`", b->name);
+                ckError(c, b->line,
+                        (a->reserved || b->reserved)
+                            ? "It comes from stdlib/prelude.extc and is part of the language contract."
+                            : NULL,
+                        (a->reserved || b->reserved)
+                            ? "`%s` is a reserved definition and cannot be redefined"
+                            : "duplicate struct `%s`", b->name);
         }
     }
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -914,7 +951,13 @@ static void checkDeclarations(Checker *c) {
         for (size_t j = i + 1; j < m->funcs.len; j++) {
             FuncDef *b = *(FuncDef **)vecAt(&m->funcs, j);
             if (strcmp(a->name, b->name) == 0)
-                ckError(c, b->line, NULL, "duplicate function `%s`", b->name);
+                ckError(c, b->line,
+                        (a->reserved || b->reserved)
+                            ? "It comes from stdlib/prelude.extc and is part of the language contract."
+                            : NULL,
+                        (a->reserved || b->reserved)
+                            ? "`%s` is a reserved definition and cannot be redefined"
+                            : "duplicate function `%s`", b->name);
         }
     }
 

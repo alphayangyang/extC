@@ -7,6 +7,107 @@
 
 ---
 
+## 2026-09-18 · T5a-1 落地：`slice` 索引 + 字符串库（全部用 extC 写）
+
+主人说「现在的 slice 用起来有点怪」。奶昔诊断：**怪的不是缺语法糖，是缺索引** ——
+它是个「只能问长度、读不了内容」的东西。
+
+### 关键发现：不用等数组
+
+奶昔本来以为「索引 = 数组」，但其实 `slice` 的索引**单独就能做**，
+而且字符串字面量已经能造出 slice 了（T4c）—— **不需要数组当垫脚石**。
+
+于是拆成两小步，先做小的那个，怪味当场消失：
+
+```extc
+let s = "hello world"
+println(s[0])                    // 104
+println(s == "hello world")      // true  ← 按内容比较！
+println(s.find("world"))         // 6     ← 词法分析器的核心
+println(s.startsWith("hello"))   // true
+```
+
+**那个之前被拒绝的「`str ==` 是指针比较」的陷阱，从这里开始变成正确的按内容比较。**
+
+### 设计：语言认识「协议」，库提供「方法」
+
+索引要么让编译器认 slice 的协议（`data` + `len`），要么就得暴露一个**无检查的原语**：
+
+```extc
+// 反面教材：如果编译器不认协议，库只能这么写
+fn get(self: ref slice<T>, i: i64) -> T {
+    if i < 0 || i >= self.len { ... }     // ← 每个方法都要自己查一遍，漏一个就 UB
+    return readAt(self.data, i)            // ← 而这个原语本身是 UB 的
+}
+```
+
+**所以让编译器认识协议不只是更清晰，它是唯一能同时保住「库用 extC 写」和「没有 UB」的做法。**
+
+一句话概括这个模式：
+
+> **语言认识某个东西的「协议」（因为它有语法），库提供它的「方法」。**
+
+| 语法 | 语言必须认识的协议 | 库提供什么 |
+|---|---|---|
+| `a == b` | 有个叫 `==` 的方法 | 那个方法的实现 |
+| `a[i]` | 它是视图：`data` + `len` | `get` / `==` / `find` 全部方法 |
+| `for x in xs`（将来） | 它有迭代器 | 迭代器的实现 |
+
+**协议是小的、固定的；方法是多的、可变的。**
+
+### 一个细节：索引原语**按值**收视图
+
+如果直接生成 `a.data[checked(i, a.len, ...)]`，那 **`a` 会被求值两次** ——
+`f()[i]` 就会调用 `f` 两次。所以生成的是每类型一份的原语：
+
+```c
+uint8_t slice_u8_index(slice_u8 v, int64_t i, const char *file, int line) {
+    if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
+    return v.data[i];
+}
+```
+
+**按值收视图 ⇒ 实参只求值一次**，而且不用为「值 / 引用」写两条路径。
+越界时 trap 会带上 extC 的 file/line（由调用点传进去）：
+
+```
+foo.extc:12:9: trap: index 99 out of range (length 11)
+```
+
+### 主人在这一轮补的原则：保留定义不许乱改
+
+> 「不应该允许用户随意修改保留的定义（比如 slice 这种）的重载，这会导致混乱」
+
+**好消息：我们天生就防住了。** 因为 extC **没有 impl 块、方法必须写在 struct 体内** ——
+**「给已有类型加方法」在语法上不可达**。这不是运气，是「语法一致、不要有特例」的副产品。
+
+另外做了两件把**隐式契约变成显式检查**的事：
+
+1. **`reserved` 标记**：prelude 里的定义都标上。用户重定义时报
+   `` `slice` is a reserved definition and cannot be redefined ``，
+   note 说明它来自 `stdlib/prelude.extc`、是语言契约的一部分。
+2. **契约检查**：prelude 加载后验证 `slice` 真的是「第一个字段 `data: ref T`、第二个 `len`」。
+   不检查的话，prelude 改个字段名会变成**「生成的 C 编译不过」**这种莫名其妙的错误：
+
+```
+extc: internal error -- the prelude's `slice` does not have the shape
+the compiler expects (`data: ref T` then `len`)
+```
+
+### 验收
+
+```sh
+grep -cE 'struct slice|slice_[a-z]' src/*.c src/*.h    # ① 结构和方法：一无所获 ✓
+grep -in 'slice' src/*.c src/*.h                        # ② 只剩三处「规定」+ 注释
+```
+
+三处**规定**：① 字符串字面量是什么类型 ② 字节序列怎么输出 ③ 视图的协议是 data+len。
+**没有一处是实现。**
+
+**测试** 43 个全过（`examples/strings.extc` 更新成展示新能力）。
+
+---
+
 ## 2026-09-18 · `examples/tour.extc`：一份能跑的完整语言巡礼
 
 主人问「来个完整的示例代码展示这个语言」。写了 `examples/tour.extc`，

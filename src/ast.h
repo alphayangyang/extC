@@ -55,6 +55,7 @@ Type *typeParam(Arena *a, const char *name, int idx);
 typedef enum {
     EX_INT, EX_FLOAT, EX_BOOL, EX_STR, EX_IDENT,
     EX_BIN, EX_UN, EX_CALL, EX_METHOD, EX_FIELD, EX_STRUCTLIT,
+    EX_INDEX,     /* a[i] —— 索引（读；写等数组那一步）*/
     EX_REF,       /* ref x —— 取引用（T3：ref 从类型修饰升级成表达式） */
     EX_ENUMVAL    /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
 } ExprKind;
@@ -81,6 +82,7 @@ struct Expr {
         struct { Expr *recv; const char *name; Vec args; } method;
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */
+        struct { Expr *obj; Expr *index; } index;
         struct { Expr *operand; } ref;
         struct { const char *typeName; const char *variant; } enumval;
     } u;
@@ -135,10 +137,11 @@ typedef struct {
     int         line;
 } Variant;
 
-struct TypeDef {                 /* type Status = | ok | warn | error */
+struct TypeDef {                 /* type status = | ok | warn | error */
     const char  *name;
     Vec          variants;       /* Variant* */
     Type        *type;           /* 驻留后的类型，由 check 填写 */
+    bool         reserved;       /* 来自 prelude —— 不许用户重定义 */
     int          line;
 };
 
@@ -148,6 +151,7 @@ struct StructDef {
     Vec         fields;          /* FieldDef* */
     Vec         methods;         /* FuncDef* —— 方法写在 struct 体内（定案 9） */
     Type       *type;            /* 非泛型 struct 的驻留类型（泛型见 ttGeneric） */
+    bool        reserved;        /* 来自 prelude —— 不许用户重定义，也不许加方法 */
     int         line;
 };
 
@@ -157,6 +161,7 @@ struct FuncDef {
     Type       *ret;             /* NULL 表示无返回值 */
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* 方法所属的 struct；自由函数为 NULL */
+    bool        reserved;        /* 来自 prelude */
     int         line;
 };
 

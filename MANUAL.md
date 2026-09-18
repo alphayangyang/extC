@@ -70,7 +70,7 @@ fn main() -> i32 { ... }
 
 | 类型 | 方法 |
 |---|---|
-| `slice<T>` | `isEmpty()` / `hasAt(i)` |
+| `slice<T>` | `isEmpty()` · `hasAt(i)` · `get(i)` · `==` · `find(needle)` · `startsWith(prefix)` |
 
 而且 **`slice<u8>` 就是字符串的类型** —— `println("hello")` 之所以能打文本，就是因为它是字节视图。
 
@@ -451,12 +451,23 @@ var b: wrapper<tag> = { ... }          // tag 没定义 == → ❌
 **extC 没有内建的字符串类型。** 字符串字面量就是**指向字节的视图**：
 
 ```extc
-let s = "hello"          // 类型是 slice<u8>
-println(s)               // hello —— 字节视图按文本打印
-println(s.len)           // 5     —— len 是个普通字段
-println(s.isEmpty())     // false —— prelude 里的方法
-println(s.hasAt(4))      // true
+let s = "hello world"    // 类型是 slice<u8>
+
+println(s)                       // hello world —— 字节视图按文本打印
+println(s.len)                   // 11  —— len 是个普通字段
+println(s[0])                    // 104 —— 索引（越界会 trap，带位置）
+println(s.get(1))                // 101
+
+println(s == "hello world")      // true —— **按内容比较**
+println(s.find("world"))         // 6
+println(s.startsWith("hello"))   // true
 ```
+
+**索引 `s[i]` 是带边界检查的**：可证明时零开销（将来有范围类型之后），
+不能证明时生成检查、越界就 **trap 并报出 extC 的位置**。
+
+而且 prelude 里的实现**没有一行指针算术，也没有一行手工边界检查** ——
+`self[i]` 那一条语法让编译器生成带检查的索引原语。
 
 生成的 C 只有这么点：
 
