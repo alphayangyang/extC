@@ -160,7 +160,9 @@ static bool isPrintable(Type *t) {
     if (!b) return false;
     if (b->kind == TY_BUILTIN) return true;
     /* 定案 11：无载荷枚举自动有名字文本 */
-    return b->kind == TY_ENUM;
+    if (b->kind == TY_ENUM) return true;
+    /* struct 由编译器生成 <Type>_debug 递归打印 */
+    return b->kind == TY_STRUCT;
 }
 
 /* 字面量的类型按**值**适配目标类型（DESIGN §5 的「字面量类型推导」）。 */

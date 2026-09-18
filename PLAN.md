@@ -57,6 +57,44 @@
 - 第一个「有真实语义」的泛型类型
 - `?` 是**可见的、静态解析的、无栈展开的**转发 ⇒ 不违反 P
 
+### T4 · 泛型 + `Slice<T>`（按「能写在 extC 里的就写在 extC 里」重新设计）
+
+> **核心决定：容器用 extC 源码写（预lude），编译器只负责「按实例生成 C」。**
+>
+> 单态化**不应该**意味着「容器硬编码在 codegen 里」。
+> `Slice<T>` 的 `len` / `get` 用 extC 写得出来 ⇒ 就该用 extC 写。
+> 编译器只做它唯一能做的事：**为每个实例生成一份 C 代码**。
+
+分三步，每步都能独立跑通：
+
+#### T4a · 泛型声明与单态化机制
+
+- **语法**：`struct Name<T> { ... }` 声明；`Name<Args>` 使用
+- **类型表示**：`Type` 增加「泛型实例」形态（泛型声明 + 类型实参列表）
+- **单态化**：check 期间收集所有实例；codegen 为每份实例生成独立的 C 结构体与方法
+  （`Slice<u8>` → `Slice_u8`，`Slice<Point>` → `Slice_Point`）
+- 名字修饰要能处理嵌套（`Map<str, Array<i32>>` → `Map_str_Array_i32`）
+- **验收**：一个泛型 `Pair<A, B>`，两份不同实例同时工作
+
+#### T4b · prelude 机制
+
+- `stdlib/prelude.extc` —— **用 extC 写的**基础类型
+- Makefile 把它嵌进编译器（`tools/embed.py` → `build/prelude_data.c`）
+- 编译器启动时先 parse + check prelude，再 parse 用户文件
+- **验收**：`Slice<T>` 的方法全在 `prelude.extc` 里，
+  **编译器源码里没有任何一行硬编码的 Slice 逻辑**
+
+#### T4c · 字符串字面量变成 `Slice<u8>`
+
+- `"abc"` → `(Slice_u8){ .data = (const uint8_t *)"abc", .len = 3 }` —— **零分配**
+- **`str` 内建类型作废**
+- `println(slice)` → `printf("%.*s", (int)len, (const char *)data)`
+- **验收**：`examples/` 里用字符串的例子照跑，且编译器里不再有 `str` 这个类型
+
+> ⚠️ **T4b 要解决一个真建模问题**：长度 0 的 `Slice` 没有合法的 `ref T` 可指
+> （`ref` 不可为空）。要么给 `Slice` 的内部表示开一个受控的口子，
+> 要么让空切片指向一个静态哨兵。这个必须想清楚再写。
+
 ### 顺手：三条已定案但没实现
 
 ---

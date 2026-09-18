@@ -95,12 +95,54 @@ static const char *cFuncName(CG *g, FuncDef *f) {
     return f->name;
 }
 
-/* 零初始化（定案 8）：struct / enum 用 `{0}`，bool 用 false，其余用 0 */
-static const char *zeroInit(CG *g, Type *t) {
-    (void)g;
-    if (t && (t->kind == TY_STRUCT || t->kind == TY_ENUM)) return "{0}";
-    if (t && ttIs(t, "bool")) return "false";
+/* 零值表达式。
+ *
+ * ⚠️ 这里有个坑值得记：**零初始化不能一律用 `{0}`**。
+ * `str` 是不可为空的，而 `{0}` 会把 `const char *` 变成 NULL ——
+ * `printf("%s", NULL)` 在 C 里是 UB（glibc 恰好打 "(null)" 骗过你）。
+ * 所以含 `str` 的 struct 必须逐字段写出零值。 */
+static const char *zeroValue(CG *g, Type *t);
+
+/* struct 里（递归地）有没有 `str`？没有的话可以省事用 `{0}` */
+static bool needsExplicitZero(Type *t) {
+    if (!t) return false;
+    if (ttIs(t, "str")) return true;
+    if (t->kind != TY_STRUCT || !t->sdef) return false;
+    for (size_t i = 0; i < t->sdef->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+        if (needsExplicitZero(fd->type)) return true;
+    }
+    return false;
+}
+
+static const char *zeroValue(CG *g, Type *t) {
+    if (!t) return "0";
+    if (t->kind == TY_ENUM) return "0";
+
+    if (t->kind == TY_STRUCT && t->sdef) {
+        StructDef *sd = t->sdef;
+        if (sd->fields.len == 0 || !needsExplicitZero(t))
+            return arenaPrintf(g->arena, "(%s){0}", sd->name);
+
+        Buf b;
+        bufInit(&b, g->arena);
+        bufPrintf(&b, "(%s){ ", sd->name);
+        for (size_t i = 0; i < sd->fields.len; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+            if (i) bufPuts(&b, ", ");
+            bufPrintf(&b, ".%s = %s", fd->name, zeroValue(g, fd->type));
+        }
+        bufPuts(&b, " }");
+        return bufCstr(&b);
+    }
+
+    if (ttIs(t, "bool")) return "false";
+    if (ttIs(t, "str"))  return "\"\"";
     return "0";
+}
+
+static const char *zeroInit(CG *g, Type *t) {
+    return zeroValue(g, t);
 }
 
 static const char *genPrint(CG *g, Vec *args, bool newline) {
@@ -119,6 +161,11 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
         /* 定案 11：无载荷枚举自动有名字文本 */
         if (bt->kind == TY_ENUM) {
             bufPrintf(&b, "printf(\"%%s\", %s_name(%s))", bt->name, code);
+            continue;
+        }
+        /* struct 自动递归打印 */
+        if (bt->kind == TY_STRUCT) {
+            bufPrintf(&b, "%s_debug(%s)", bt->name, code);
             continue;
         }
         if (bt->kind != TY_BUILTIN) { bufPuts(&b, "0"); continue; }
@@ -172,22 +219,37 @@ static const char *genMethodCall(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
+static Expr *litValueFor(Expr *lit, const char *fname) {
+    for (size_t i = 0; i < lit->u.lit.inits.len; i++) {
+        FieldInit *fi = *(FieldInit **)vecAt(&lit->u.lit.inits, i);
+        if (strcmp(fi->name, fname) == 0) return fi->value;
+    }
+    return NULL;
+}
+
 static const char *genStructLit(CG *g, Expr *e) {
     const char *sname = e->u.lit.name;
-    if ((!sname) && e->type && e->type->kind == TY_STRUCT) sname = e->type->name;
-    if (!sname) return "(int){0}";
+    StructDef *sd = NULL;
+    if (e->type && e->type->kind == TY_STRUCT) {
+        sd = e->type->sdef;
+        if (!sname) sname = e->type->name;
+    }
+    if (!sd) return sname ? arenaPrintf(g->arena, "(%s){0}", sname) : "(int){0}";
+    if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", sd->name);
 
-    if (e->u.lit.inits.len == 0) return arenaPrintf(g->arena, "(%s){0}", sname);
-
+    /* **所有**字段都写出来：省略的字段填它的零值。
+     * 不能让 C 自己去零填充 —— 那会把省略的 `str` 字段变成 NULL。 */
     Buf b;
     bufInit(&b, g->arena);
-    bufPrintf(&b, "(%s){ ", sname);
-    for (size_t i = 0; i < e->u.lit.inits.len; i++) {
-        FieldInit *fi = *(FieldInit **)vecAt(&e->u.lit.inits, i);
+    bufPrintf(&b, "(%s){", sd->name);
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        Expr *v = litValueFor(e, fd->name);
         if (i) bufPuts(&b, ", ");
-        bufPrintf(&b, ".%s = %s", fi->name, genExpr(g, fi->value));
+        bufPrintf(&b, ".%s = %s", fd->name,
+                  v ? genExpr(g, v) : zeroValue(g, fd->type));
     }
-    bufPuts(&b, " }");
+    bufPuts(&b, "}");
     return bufCstr(&b);
 }
 
@@ -243,6 +305,57 @@ static const char *genExpr(CG *g, Expr *e) {
             return arenaPrintf(g->arena, "%s_%s", e->u.enumval.typeName, e->u.enumval.variant);
     }
     return "0";
+}
+
+/* ---------------------------------------------------------------- 自动调试打印
+ *
+ * 每个 struct 生成一个 `<Type>_debug`，**递归**打印所有字段。
+ *
+ * 这一件必须由**编译器**做 —— 它等价于 Rust 的 `#[derive(Debug)]`：
+ * extC 没有反射，「遍历所有字段」这件事在语言里写不出来。
+ * 注意这跟「把标准库塞进编译器」是两回事：这是**编译器生成代码**。
+ * 分界线见 DESIGN.md「能写在 extC 里的，就别写在编译器里」。
+ */
+
+static void genPrintValue(CG *g, Type *t, const char *expr) {
+    if (!t) { cgLine(g, "printf(\"?\");"); return; }
+
+    if (t->kind == TY_ENUM)    { cgLine(g, "printf(\"%%s\", %s_name(%s));", t->name, expr); return; }
+    if (t->kind == TY_STRUCT)  { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
+    if (t->kind == TY_REF)     { cgLine(g, "printf(\"<ref>\");"); return; }
+    if (t->kind != TY_BUILTIN) { cgLine(g, "printf(\"?\");"); return; }
+
+    if (strcmp(t->name, "bool") == 0) {
+        cgLine(g, "printf(\"%%s\", (%s) ? \"true\" : \"false\");", expr);
+        return;
+    }
+    if (strcmp(t->name, "str") == 0) {
+        cgLine(g, "printf(\"%%s\", %s);", expr);
+        return;
+    }
+    for (size_t i = 0; PRINT_FMT[i].extc; i++) {
+        if (strcmp(PRINT_FMT[i].extc, t->name) == 0) {
+            cgLine(g, "printf(\"%s\", %s(%s));", PRINT_FMT[i].fmt, PRINT_FMT[i].cast, expr);
+            return;
+        }
+    }
+    cgLine(g, "printf(\"?\");");
+}
+
+static void genStructDebug(CG *g, StructDef *sd) {
+    cgLine(g, "void %s_debug(%s v) {", sd->name, sd->name);
+    g->indent++;
+    cgLine(g, "printf(\"%s { \");", sd->name);
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        if (i) cgLine(g, "printf(\", \");");
+        cgLine(g, "printf(\"%s: \");", fd->name);
+        genPrintValue(g, fd->type, arenaPrintf(g->arena, "v.%s", fd->name));
+    }
+    cgLine(g, "printf(\" }\");");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
 }
 
 /* ---------------------------------------------------------------- 语句 */
@@ -434,6 +547,11 @@ bool generateC(Ctx *ctx, Arena *arena, Module *m, bool lineMap, Buf *out) {
             cgLine(&g, "");
         }
     }
+
+    /* struct 的自动调试打印：必须在 struct 定义**之后**（要完整类型）、
+     * 用户函数定义**之前**（函数体里会调它）*/
+    for (size_t i = 0; i < g.structs.len; i++)
+        genStructDebug(&g, *(StructDef **)vecAt(&g.structs, i));
 
     /* 原型：顺序无关，顺带支持互相调用 */
     for (size_t i = 0; i < g.funcs.len; i++) {
