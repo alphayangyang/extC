@@ -84,13 +84,57 @@
 > **发现的真限制**：模板检查意味着 `Pair<A,B>.swap` 写不出来（`A`/`B` 不确定相等）。
 > 要同类型就用一个参数。这是「错误只报一次」的代价。
 
-#### T4b · prelude 机制
+#### T4b · prelude 机制（详细步骤）
 
-- `stdlib/prelude.extc` —— **用 extC 写的**基础类型
-- Makefile 把它嵌进编译器（`tools/embed.py` → `build/prelude_data.c`）
-- 编译器启动时先 parse + check prelude，再 parse 用户文件
-- **验收**：`Slice<T>` 的方法全在 `prelude.extc` 里，
-  **编译器源码里没有任何一行硬编码的 Slice 逻辑**
+**目标**：`Slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，
+**编译器源码里一行硬编码的 Slice 都没有**。
+
+**步骤 1 · 写文件**
+`stdlib/prelude.extc` —— 就是普通的 extC 源码，只不过它总在用户文件**之前**被处理。
+
+**步骤 2 · 把它嵌进编译器**
+编译器要能单独运行，不能依赖外部文件路径。用脚本把文本变成 C 数组：
+
+```
+tools/embed.py stdlib/prelude.extc build/prelude_data.c extc_prelude_src
+```
+生成：
+```c
+const unsigned char extc_prelude_src[] = { 0x73, 0x74, ... };
+const unsigned long extc_prelude_len = 1234;
+```
+（用字节数组而不是字符串字面量 —— 免掉一切转义问题。）
+
+Makefile 加：
+```make
+STDLIB := stdlib
+$(BUILDDIR)/prelude_data.c: $(STDLIB)/prelude.extc tools/embed.py | $(BUILDDIR)
+	python3 tools/embed.py $< $@ extc_prelude_src
+```
+再用 `src/prelude.h` / `src/prelude.c` 把它包成 `const char *preludeSource(size_t *len);`。
+
+**步骤 3 · 让 `parseModule` 能「追加」而不是「重置」**
+现在它在内部调 `moduleInit`（会重置 Vec）。要把它挪到外面：
+`main` 里 `moduleInit(&m, &arena)` 调一次，prelude 和用户文件都往**同一个 Module** 里追加。
+（顺带：这天然支持将来的多文件编译。）
+
+**步骤 4 · 跑两遍 parse，只 check 一次**
+```
+prelude  ：tokenize → parse → 追加进 Module
+用户文件 ：tokenize → parse → 追加进 Module
+────────────────────────────────
+然后 check 一次、生成一次
+```
+prelude 用**自己的 `Ctx`**（路径显示成 `<extc prelude>`），这样它的错误不会跟用户的混。
+
+**步骤 5 · 收尾**
+`str` 内建类型作废（T4c 的活）；`Slice<u8>` 从此来自 prelude。
+
+**验收标准（可机械检查）**：
+```sh
+grep -i slice src/*.c src/*.h     # 应该一无所获
+```
+> 这就是「能在 extC 里写就写在 extC 里」的硬指标 —— 不是靠自觉，是靠 grep。
 
 #### T4c · 字符串字面量变成 `Slice<u8>`
 
