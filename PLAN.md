@@ -62,8 +62,11 @@
   + 索引 `a[i]`（越界 trap）+ 数组 `==`（编译器生成）+ `println` 调试打印。
   **副产品**：G2 里程碑达成 —— `examples/gomoku-board.extc` 能编能跑。
   **注意**：动态数组 `array<T>` 要等 arena（week-4），见 ARRAYS.md §5。
-- **T5a-3 · 切片视图 `a[lo..hi]`** ⬜ 待做
-  语法已经能解析，codegen 里还是 `error: slicing is not implemented yet`。
+- **T5a-3 · 切片视图 `a[lo..hi]`** ✅ **已完成**
+  四种写法（`a[2..5]` / `a[6..]` / `a[..3]` / `a[..]`）+ 多维切最后一段
+  + 编译期能证明的**零检查**（P）+ 字面量越界的**编译期报错** + 底必须是「地方」。
+  顺带修了两个真 bug：视图索引器返回指针（否则 `slice<struct>` 编不出来、
+  且 `s[i] = x` 报 gcc 原始错误）、非字节视图打印成 `slice { data: <ref> }`。
 
 ### T5 · `option<T>` / `result<T,E>` + `?`
 

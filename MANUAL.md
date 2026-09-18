@@ -313,7 +313,33 @@ println(a[0])      // 1
 println(a[7])      // trap: index 7 out of range (length 5) —— 带文件名和行号
 ```
 
-**切片视图 `a[lo..hi]` 还没实现**（见 [`ARRAYS.md`](ARRAYS.md)「实施状态」）。
+**切片视图 `a[lo..hi]`** —— 四种写法，**不拷贝数据**（见 [`ARRAYS.md`](ARRAYS.md) §4）：
+
+```extc
+var a: [8]i32 = [10, 20, 30, 40, 50, 60, 70, 80]
+let s1 = a[2..5]      // [30, 40, 50]      slice<i32>
+let s2 = a[6..]       // [70, 80]          到尾
+let s3 = a[..3]       // [10, 20, 30]      从头
+let s4 = a[..]        // 整个数组
+s1[0] = 999           // 视图是同一块内存 —— a[2] 也变成 999
+```
+
+**视图元素是可写的**（`slice<T>` 里的 `data` 本来就是 `ref T`，而引用在 extC 里必须显式可见）。
+
+**编译期能证明的，运行时不留痕迹**：
+
+| 情况 | 结果 |
+|---|---|
+| 两个界都是字面量 | 生成的 C 里**零检查**，就是 `&a.data[2]` |
+| 界里有变量 | 运行时检查，越界 trap 带 extC 位置 |
+| 字面量界越界（含负数） | **编译期报错** |
+
+```extc
+let v = a[2..9]       // error: slice end 9 is not inside `[5]i32` (length 5)
+```
+
+**底必须是「地方」**：切固定数组要取元素地址，所以 `make()[1..3]` 被拒
+（那会切到临时存储上）。切 **slice** 不受此限 —— `"abcdef"[1..3]` 合法。
 
 ---
 
@@ -713,7 +739,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | **全局变量** | 全局 = 深度 0 的 arena，`static` 关键字因此消失 | week-2 |
 | **`@main` 注解** | 标在任意函数上，不再硬编码 `main` | week-2 |
 | ~~**数组 + 下标**~~ | ✅ **已完成** —— `[15][15]i32`、字面量、越界 trap（见 §3「数组类型」） | ✅ |
-| **切片视图 `a[lo..hi]`** | 语法已通，codegen 未实现 | T5a-3 |
+| ~~**切片视图 `a[lo..hi]`**~~ | ✅ **已完成** —— 四种写法 + 编译期证明 + 可写视图 | ✅ |
 | **动态数组 `array<T>`** | 等 arena 到位 | week-4 |
 | **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | week-2 |
 | **`match`** | 语句和表达式都能用；能匹配变体和常量；臂可发散 | week-3 |
@@ -728,17 +754,17 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 `result<void,E>` 还是 `result<(),E>`、`@main` 和 `module main` 的优先关系、`+=` 复合赋值、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
 
-**`==` 右边的裸 `{}` 能不能推？** 现在推不出来：
+**`==` 右边的裸 `{}` 不推**（✅ 已定，见 [`DECISIONS.md`](DECISIONS.md) 定案 27）：
 
 ```extc
 println(ps[0] == { x: 1, y: 2 })        // ✗ cannot infer the type of a bare `{}` here
-println(ps[0] == point { x: 1, y: 2 })  // ✓ 写全名字就行
+println(ps[0] == point { x: 1, y: 2 })  // ✓ 写全名字
 ```
 
-`==` 是语法糖，展开成 `T.==(lhs, rhs)` 后右边**是有**参数类型的，所以这是**能补**的洞。
-难点在 `ref`：`fn ==(self: ref point, other: point)` 与 `other: ref point` 都可能存在，
-「拿左边的类型当右边的期望类型」在左操作数是 `ref T` 时会推错。
-**待定。**
+`==` 是语法糖，展开成 `T.==(lhs, rhs)` 后右边**确实有**参数类型可推 —— 所以这是
+「能推但不推」。**主人定调：显式是对的，不要那么多自动推导。**
+（顺带避开一个坑：`fn ==(self: ref point, other: point)` 与 `other: ref point` 都存在时，
+「拿左边类型当右边期望类型」在左操作数是 `ref T` 时会推错。）
 
 ---
 

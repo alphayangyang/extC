@@ -57,7 +57,20 @@ typedef struct {
     Vec        *substParams;    /* const char* */
     Vec        *substArgs;      /* Type* */
     const char *ownerPrefix;    /* 方法名修饰用的实例名，如 "Pair_i32_u8" */
+
+    /* 切片 helper（T5a-3）。见 SliceHelper 的注释：它们是**生成过程中才发现**
+     * 需要的，所以函数体得先写进 body，最后再按「原型 → helper → 函数体」拼。 */
+    Vec         helpers;        /* SliceHelper */
+    Buf         body;
 } CG;
+
+/* 一个切片 helper：把 `a[lo..hi]` 的边界检查＋视图构造收进一个函数。
+ * 收进函数而不是写成表达式，是为了 **lo / hi 只求值一次**（表达式里 `hi - lo`
+ * 会让两个界各出现两次）。 */
+typedef struct {
+    const char *name;
+    char       *text;
+} SliceHelper;
 
 static void cgLine(CG *g, const char *fmt, ...) {
     char tmp[4096];
@@ -122,6 +135,8 @@ static const char *cType(CG *g, Type *t) {
 /* ---------------------------------------------------------------- 表达式 */
 
 static const char *genExpr(CG *g, Expr *e);
+static const char *genSlice(CG *g, Expr *e);
+static void genPrintValue(CG *g, Type *t, const char *expr);
 
     
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
@@ -177,18 +192,48 @@ static bool isByteView(Type *t) {
  * 它带边界检查；越界就 trap（带 extC 的位置）。
  * prelude 里的 `get` / `==` / `find` 全都通过 `self[i]` 用它 ——
  * 也就是说**库里没有一行指针算术，也没有一行手工边界检查**（见 ARRAYS.md）。*/
+/* 视图的下标原语：**返回指针**，调用点再解引用（`(*v_index(...))`）。
+ *
+ * 为什么不是按值返回？两个都会炸：
+ *   ① `ref` 参数要 lvalue —— prelude 里 `slice<T>::==` 写 `self[i] != other[i]`，
+ *      而 `fn ==(self: ref T, ...)` 收 `ref`，`&(按值返回的临时值)` 在 C 里非法，
+ *      于是 `slice<struct>` 的比较根本编不出来（真 bug）。
+ *   ② 赋值 `s[i] = x` / `s[i].field = x` 也需要 lvalue。
+ * 返回指针两条都解决，而且视图本来就只有一种引用语义（`data: ref T` 里那个 `ref`）。 */
 static void genViewIndexer(CG *g, Type *inst) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
     substEnter(g, inst);
-    cgLine(g, "%s %s_index(%s v, int64_t i, const char *file, int line) {",
+    cgLine(g, "%s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
     cgLine(g, "if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);");
-    cgLine(g, "return v.data[i];");
+    cgLine(g, "return &v.data[i];");
     g->indent--;
     cgLine(g, "}");
     cgLine(g, "");
     substLeave(g);
+}
+
+/* 非字节视图的调试打印：跟数组一样打成一列元素。
+ *
+ * 不这么做的话 `println(v)` 会掉进 struct 的调试打印、输出
+ * `slice { data: <ref>, len: 3 }` —— 一个**给不出信息**的地址占位。
+ * 视图是「一片元素」，那就按元素打。字节视图不走这里（它按文本打）。 */
+static void genViewDebug(CG *g, Type *v) {
+    Type *elem = subst(g, *(Type **)vecAt(&v->targs, 0));
+    cgLine(g, "void %s_debug(%s v) {", v->name, v->name);
+    g->indent++;
+    cgLine(g, "printf(\"[\");");
+    cgLine(g, "for (int64_t i = 0; i < v.len; i++) {");
+    g->indent++;
+    cgLine(g, "if (i) printf(\", \");");
+    genPrintValue(g, elem, "v.data[i]");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "printf(\"]\");");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
 }
 
 /* 按值收一个字节视图再打印 —— 保证实参只求值一次 */
@@ -254,8 +299,13 @@ static const char *genEqTest(CG *g, Type *t, const char *x, const char *y) {
 static const char *genBin(CG *g, Expr *e) {
     const char *op = e->u.bin.op;
 
-    /* 数组：编译器派生的 `==` */
-    if (!e->func && !e->needEq) {
+    /* 数组：编译器派生的 `==` / `!=`（数组没有 sdef，找不到方法）。
+     *
+     * 这里**不能**加 `!e->needEq` 的条件 —— 泛型里的比较推迟到实例化才解析，
+     * 代入实参后元素类型可能正好是数组（`slice<[6]i32>` 里比较两行就是）。
+     * 之前挡着，于是那种情况掉进下面的方法查找、报
+     * 「`array_6_i32` needs to define `!=`」—— 一个假错误。 */
+    if (!e->func) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         if (lt && lt->kind == TY_ARRAY &&
             (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)) {
@@ -586,7 +636,8 @@ static const char *genExpr(CG *g, Expr *e) {
             /* 原语按值收视图，所以引用要解一层 */
             if (ot && ot->kind == TY_REF) obj = arenaPrintf(g->arena, "*(%s)", obj);
 
-            return arenaPrintf(g->arena, "%s_index(%s, (int64_t)(%s), \"%s\", %d)",
+            /* 原语返回指针 —— 解引用后是个 lvalue：能读、能取地址（`ref` 参数）、能赋值 */
+            return arenaPrintf(g->arena, "(*%s_index(%s, (int64_t)(%s), \"%s\", %d))",
                                ob->name, obj, idx, g->path, e->line);
         }
 
@@ -605,11 +656,7 @@ static const char *genExpr(CG *g, Expr *e) {
             return bufCstr(&b);
         }
 
-        case EX_SLICE: {
-            /* 切片视图：见 T5a-3（先报错，别静默生成错的 C）*/
-            ctxError(g->ctx, e->line, 1, NULL, "slicing is not implemented yet");
-            return "0";
-        }
+        case EX_SLICE: return genSlice(g, e);
 
         case EX_METHOD:    return genMethodCall(g, e);
         case EX_STRUCTLIT: return genStructLit(g, e);
@@ -641,6 +688,9 @@ static void genPrintValue(CG *g, Type *t, const char *expr) {
     if (t->kind == TY_ENUM)    { cgLine(g, "printf(\"%%s\", %s_name(%s));", t->name, expr); return; }
     if (t->kind == TY_STRUCT)  { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
     if (t->kind == TY_REF)     { cgLine(g, "printf(\"<ref>\");"); return; }
+    /* 泛型实例（含视图）：走它自己的 `_debug` —— 之前这里落到 "?"，
+     * 于是「struct 里放一个 slice<i32> 字段」打印出来是个问号 */
+    if (t->kind == TY_GENERIC) { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
     if (t->kind != TY_BUILTIN) { cgLine(g, "printf(\"?\");"); return; }
 
     if (strcmp(t->name, "bool") == 0) {
@@ -886,6 +936,88 @@ static void genArrayEq(CG *g, Type *arr) {
     cgLine(g, "");
 }
 
+/* 登记一个切片 helper（去重）。base 是底的类型（数组或视图），
+ * st 是结果切片类型，tail = 「切到尾」（`s[lo..]`，省略的界是底的长度）。
+ *
+ * 名字用底的 C 名字修饰：`extc_slice_array_15_i32` / `extc_slice_slice_i32`
+ * / `extc_sliceTo_slice_i32`。一个底类型只会切成一种切片，所以不会撞。 */
+static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
+    const char *name = arenaPrintf(g->arena, "extc_slice%s_%s",
+                                   tail ? "To" : "", ob->name);
+    for (size_t i = 0; i < g->helpers.len; i++)
+        if (strcmp(((SliceHelper *)vecAt(&g->helpers, i))->name, name) == 0)
+            return name;
+
+    const char *ret = cType(g, st);
+    Buf b;
+    bufInit(&b, g->arena);
+    if (ob->kind == TY_ARRAY) {
+        /* 固定数组：长度是编译期常数，直接写死 */
+        bufPrintf(&b, "static %s %s(%s *a, int64_t lo, int64_t hi,\n",
+                  ret, name, ob->name);
+        bufPrintf(&b, "                       const char *f, int ln) {\n");
+        bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, %lld, f, ln);\n",
+                  (long long)ob->asize);
+        bufPrintf(&b, "    return (%s){ .data = &a->data[s], .len = hi - lo };\n}\n", ret);
+    } else if (tail) {
+        /* 切到尾：hi 就是 s.len —— 收参数而不是就地展开，所以 s 只求值一次 */
+        bufPrintf(&b, "static %s %s(%s v, int64_t lo, const char *f, int ln) {\n",
+                  ret, name, ob->name);
+        bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, v.len, v.len, f, ln);\n");
+        bufPrintf(&b, "    return (%s){ .data = v.data + s, .len = v.len - lo };\n}\n", ret);
+    } else {
+        bufPrintf(&b, "static %s %s(%s v, int64_t lo, int64_t hi,\n",
+                  ret, name, ob->name);
+        bufPrintf(&b, "                       const char *f, int ln) {\n");
+        bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, v.len, f, ln);\n");
+        bufPrintf(&b, "    return (%s){ .data = v.data + s, .len = hi - lo };\n}\n", ret);
+    }
+
+    SliceHelper *h = (SliceHelper *)vecPush(&g->helpers);
+    h->name = name;
+    h->text = bufCstr(&b);
+    return name;
+}
+
+/* `a[lo..hi]` —— 切一个只读视图出来。
+ *
+ * **P（凡是编译期能证明的，运行时不留痕迹）在这里分两条路**：
+ *   ① 底是固定数组，且两个界都是字面量（省略的界由 check 补成字面量）
+ *      → 范围在 check 阶段就算清楚了，越界早就报过错了，
+ *        生成的 C 就是 `&a.data[2]` / `.len = 3`，**一个检查都没有**。
+ *   ② 其余情况 → 生成一个 helper 做运行时检查（trap 带 extC 位置）。 */
+static const char *genSlice(CG *g, Expr *e) {
+    Type *ob = ttBase(subst(g, e->u.slice.obj->type));
+    Type *st = subst(g, e->type);
+    if (!ob || !st || !ob->name) {
+        ctxError(g->ctx, e->line, 1, NULL, "cannot generate a slice of this type");
+        return "0";
+    }
+
+    const char *obj = genExpr(g, e->u.slice.obj);
+    Expr *lo = e->u.slice.lo, *hi = e->u.slice.hi;
+
+    if (ob->kind == TY_ARRAY && lo && hi &&
+        lo->kind == EX_INT && hi->kind == EX_INT) {
+        return arenaPrintf(g->arena, "(%s){ .data = &(%s.data[%lld]), .len = %lld }",
+                           cType(g, st), obj, lo->u.ival, hi->u.ival - lo->u.ival);
+    }
+
+    const char *loS = lo ? genExpr(g, lo) : "0";
+    const char *arg = ob->kind == TY_ARRAY
+                          ? arenaPrintf(g->arena, "&(%s)", obj) : obj;
+    if (!hi) {
+        /* 只可能是视图底 —— 数组底在 check 里已经把界补成字面量了 */
+        const char *fn = sliceHelper(g, ob, st, true);
+        return arenaPrintf(g->arena, "%s(%s, (int64_t)(%s), \"%s\", %d)",
+                           fn, arg, loS, g->path, e->line);
+    }
+    const char *fn = sliceHelper(g, ob, st, false);
+    const char *hiS = genExpr(g, hi);
+    return arenaPrintf(g->arena, "%s(%s, (int64_t)(%s), (int64_t)(%s), \"%s\", %d)",
+                       fn, arg, loS, hiS, g->path, e->line);
+}
+
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     CG g;
     memset(&g, 0, sizeof g);
@@ -899,6 +1031,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
 
     vecInit(&g.structs, arena, sizeof(void *));
     vecInit(&g.funcs, arena, sizeof(void *));
+    vecInit(&g.helpers, arena, sizeof(SliceHelper));
+    bufInit(&g.body, arena);
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         if (sd->typeParams.len > 0) continue;   /* 泛型：按实例生成，不走这里 */
@@ -929,6 +1063,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {\n"
         "    if (i < 0 || i >= n) extc_trap(file, line, i, n);\n"
         "    return i;\n"
+        "}\n"
+        "/* 带范围检查的切片：要求 0 <= lo <= hi <= n，返回 lo。*/\n"
+        "int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,\n"
+        "                          const char *file, int line) {\n"
+        "    if (lo < 0 || hi < lo || hi > n) {\n"
+        "        fprintf(stderr, \"%s:%d: trap: slice %lld..%lld is out of range (length %lld)\\n\",\n"
+        "                file, line, (long long)lo, (long long)hi, (long long)n);\n"
+        "        exit(1);\n"
+        "    }\n"
+        "    return lo;\n"
         "}\n\n");
 
     /* 枚举最靠前 —— C11 不能前置声明 enum tag，
@@ -1087,6 +1231,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
 
     /* ================= 函数体区（下面全是定义，不再是原型） ============== */
 
+    /* 函数体先写进临时 buf：切片 helper 是**生成过程中才发现**需要的，
+     * 而 C 要求「先定义后使用」。所以最后按 原型 → helper → 函数体 拼回去。 */
+    g.out = &g.body;
+
     /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
@@ -1096,7 +1244,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             continue;
         }
         substEnter(&g, inst);
-        genStructDebug(&g, inst->name, inst->sdef);
+        if (isView(inst) && !isByteView(inst))
+            genViewDebug(&g, inst);
+        else
+            genStructDebug(&g, inst->name, inst->sdef);
         if (isView(inst))      genViewIndexer(&g, inst);
         if (isByteView(inst))  genByteViewWriter(&g, inst->name);
         substLeave(&g);
@@ -1123,6 +1274,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         genFunc(&g, *(FuncDef **)vecAt(&g.funcs, i));
         cgLine(&g, "");
     }
+
+    /* 收尾：先把函数体区攒下来的切片 helper 放出来，再接上函数体 */
+    g.out = out;
+    for (size_t i = 0; i < g.helpers.len; i++)
+        bufPuts(out, ((SliceHelper *)vecAt(&g.helpers, i))->text);
+    bufPuts(out, bufCstr(&g.body));
 
     return !ctx->hasError;
 }

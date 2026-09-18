@@ -172,6 +172,45 @@ static Type *sliceOf(Checker *c, Type *elem) {
     return ttGeneric(c->tt, c->sliceDef, &args);
 }
 
+/* 造一个整数字面量节点。
+ * 用途：`a[2..]` 省略的界由**编译器**补成字面量（见 EX_SLICE），
+ * 这样 codegen 只要看到「两个界都是字面量」就知道范围能证明、无需运行时检查。 */
+static Expr *intLit(Checker *c, long long v, int line) {
+    Expr *e = exprNew(c->arena, EX_INT, line);
+    e->u.ival = v;
+    e->type = c->tI32;
+    return e;
+}
+
+/* 这个表达式是不是一个字面整数？`-1` 也算 —— 它是 `EX_UN` 套 `EX_INT`，
+ * 而负数界正是最容易写错的地方（`a[-1..n]` 必须当场报错，不能等到运行时）。 */
+static bool asIntLit(Expr *e, long long *out) {
+    if (!e) return false;
+    if (e->kind == EX_INT) { *out = e->u.ival; return true; }
+    if (e->kind == EX_UN && e->u.un.op && strcmp(e->u.un.op, "-") == 0 &&
+        e->u.un.operand && e->u.un.operand->kind == EX_INT) {
+        *out = -e->u.un.operand->u.ival;
+        return true;
+    }
+    return false;
+}
+
+/* 这个表达式是不是一个「地方」（place）—— 变量 / 字段 / 索引组成的链？
+ * 只有切**固定数组**时才要求（因为要取元素的地址）。
+ * 理由很实在：`f()[1..2]` 会切到函数返回值的临时存储上，那是**指向已死对象**的视图。
+ * `"abcdef"[1..3]` 不受这条限制 —— 它切的是 slice 值（指针+长度），字节有静态生命期。
+ * 完整的逃逸检查在 week-4，这条先挡住最脏的一种。 */
+static bool isPlace(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_IDENT: return true;
+    case EX_FIELD: return isPlace(e->u.field.obj);
+    case EX_INDEX: return isPlace(e->u.index.obj);
+    case EX_SLICE: return isPlace(e->u.slice.obj);
+    default:       return false;
+    }
+}
+
 /* 一个类型是不是「视图」？视图的协议是 `data` + `len`（编译器认这条协议，
  * 但它的结构和方法都在 stdlib/prelude.extc 里）。返回元素类型，不是视图就返回 NULL。
  * 见 ARRAYS.md：语言认识「协议」，库提供「方法」。 */
@@ -613,6 +652,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot slice a value of type `%s`", typeStr(c, ot));
                 return ttError(tt);
             }
+
+            /* 切固定数组要取元素的地址 ⇒ 底必须是个「地方」。
+             * 切 slice 只是对值做指针算术，不需要（所以字符串字面量可以切）。 */
+            if (ob->kind == TY_ARRAY && !isPlace(e->u.slice.obj)) {
+                ckError(c, e->line, "Slicing takes the address of an element, so the base must be a place.",
+                        "cannot slice a temporary value; `%s` needs a variable, a field or an index",
+                        typeStr(c, ot));
+                return ttError(tt);
+            }
+
+            /* 底是固定数组 ⇒ 长度是**编译期常数**，省略的界直接补成字面量：
+             *     a[2..] → a[2..15]      a[..] → a[0..15]
+             * 于是 codegen 看到的是「两个界都是字面量」，能生成**没有检查**的代码（P）。 */
+            if (ob->kind == TY_ARRAY) {
+                if (!e->u.slice.lo) e->u.slice.lo = intLit(c, 0, e->line);
+                if (!e->u.slice.hi) e->u.slice.hi = intLit(c, ob->asize, e->line);
+            }
+
             for (int k = 0; k < 2; k++) {
                 Expr *b = k == 0 ? e->u.slice.lo : e->u.slice.hi;
                 if (!b) continue;
@@ -620,6 +677,35 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (!ttIsError(bt) && !ttIsInteger(bt))
                     ckError(c, b->line, "A slice bound must be an integer.",
                             "slice bound must be an integer, found `%s`", typeStr(c, bt));
+            }
+
+            /* 编译期能证明的错误**当场报**，一个都不留到运行时。
+             * 每个界单独看：越界的字面量永远错，跟另一个界是什么无关。 */
+            if (ob->kind == TY_ARRAY) {
+                long long n = (long long)ob->asize;
+                Expr *lp = e->u.slice.lo, *hp = e->u.slice.hi;
+                long long lv = 0, hv = 0;
+                bool lOk = asIntLit(lp, &lv);
+                bool hOk = asIntLit(hp, &hv);
+
+                /* 每个界单独看：越界的字面量永远错，跟另一个界是什么无关。 */
+                if (hOk && (hv > n || hv < 0)) {
+                    ckError(c, e->line, "The compiler can prove this slice is out of range.",
+                            "slice end %lld is not inside `%s` (length %lld)",
+                            hv, typeStr(c, ot), n);
+                    return ttError(tt);
+                }
+                if (lOk && (lv < 0 || lv > n)) {
+                    ckError(c, e->line, "The compiler can prove this slice is out of range.",
+                            "slice start %lld is not inside `%s` (length %lld)",
+                            lv, typeStr(c, ot), n);
+                    return ttError(tt);
+                }
+                if (lOk && hOk && hv < lv) {
+                    ckError(c, e->line, "The compiler can prove this slice is out of range.",
+                            "slice `%lld..%lld` ends before it starts", lv, hv);
+                    return ttError(tt);
+                }
             }
             return sliceOf(c, elem);
         }

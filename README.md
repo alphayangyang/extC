@@ -113,13 +113,14 @@ fn main() -> i32 {
 `if`/`else if`/`else`、`while`、`return`/`break`/`continue`、
 `struct` + 方法（写在体内）、`type` 枚举、**泛型 `struct Name<T>`（单态化）**、**`==` 由用户显式定义 `fn ==`**、**索引 `a[i]`**、
 **固定数组 `[N]T`（多维、字面量、`...` 补零、越界 trap、值语义）**、
+**切片视图 `a[lo..hi]`（四种写法、编译期能证明的零检查、元素可写）**、
 `ref` 表达式、`print`/`println`。
 
 **类型系统**：只自动做**无损失**的拓宽；收窄一律禁止；字面量按值适配；
 `==` 需要类型自己**显式定义 `fn ==`**（不引入 trait，也不用约定名）；
 数组的 `==` 和 `println` 由**编译器递归生成**。
 
-**还没有**：切片视图 `a[lo..hi]`、动态数组 `array<T>`（等 arena）、`option`/`result`/`?`、`match`、`for`、格式串、
+**还没有**：动态数组 `array<T>`（等 arena）、`option`/`result`/`?`、`match`、`for`、格式串、
 模块系统、全局变量、`region`、`@recursive`、**逃逸检查**。
 
 ## 目录

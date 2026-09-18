@@ -54,6 +54,32 @@ struct board {
         }
         return false
     }
+
+    // 取第 y 行的 [lo, hi) 一段 —— 返回的是**视图**，不拷贝。
+    // 一行本来就是连续内存，所以横行天然可以切（竖列有步长，切不了）。
+    fn rowView(self: ref board, y: i32, lo: i32, hi: i32) -> slice<i32> {
+        return self.cell[y][lo..hi]
+    }
+
+    // 这一行里 p 最长连着几个 —— 拿视图当普通容器遍历
+    fn longestRun(self: ref board, y: i32, p: i32) -> i32 {
+        let line = self.rowView(y, 0, 15)
+        var best: i32 = 0
+        var run: i32 = 0
+        var i: i64 = 0
+        while i < line.len {
+            if line[i] == p {
+                run = run + 1
+                if run > best {
+                    best = run
+                }
+            } else {
+                run = 0
+            }
+            i = i + 1
+        }
+        return best
+    }
 }
 
 fn main() -> i32 {
@@ -75,5 +101,15 @@ fn main() -> i32 {
     println("白棋竖着四连？", b.checkWin(8, 10))
     println("重复落子？   ", b.place(7, 7, 2))
     println("出界？       ", b.place(-1, 5, 1))
+
+    // 再横着摆五个白子，然后用「行视图」数一遍
+    b.place(2, 5, 2)
+    b.place(3, 5, 2)
+    b.place(4, 5, 2)
+    b.place(5, 5, 2)
+    b.place(6, 5, 2)
+    println("白棋横着五连？", b.checkWin(6, 5))
+    println("第 5 行 [2,7) = ", b.rowView(5, 2, 7))
+    println("第 5 行最长白连 = ", b.longestRun(5, 2))
     return 0
 }
