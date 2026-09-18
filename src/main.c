@@ -305,7 +305,20 @@ int main(int argc, char **argv) {
     }
 
     const char *cc = getenv("CC") ? getenv("CC") : "cc";
-    char *ccArgv[] = { (char *)cc, "-std=c11", "-O1", "-o", (char *)binPath, (char *)cPath, NULL };
+    /* `-fwrapv`：让**有符号溢出绕回**成为确定的语义。
+     *
+     * 不加的话，`x + 1`（x 是 i32 的最大值）在生成的 C 里是**有符号溢出 = UB**：
+     * `-O1` 下碰巧绕回，但 C 标准不保证，而且 `-O2` 的 strict-overflow 假设
+     * 会让 `if (x + 1 > x)` 这类判断被优化掉。
+     *
+     * extC 的承诺是「不给 UB」，所以生成的代码里一个 UB 都不该留 ——
+     * 这一行把它从 UB 变成**确定的绕回**。
+     *
+     * ⚠️ 但「溢出绕回」这个**语言语义本身还没定案**（也可以选 trap）。
+     *    在主人拍板前取的是最小干预：跟 gcc 在 -O1 下的实际行为一致，
+     *    只把「碰巧」变成「保证」。见 DECISIONS 的待定项。 */
+    char *ccArgv[] = { (char *)cc, "-std=c11", "-O1", "-fwrapv", "-o",
+                       (char *)binPath, (char *)cPath, NULL };
     int rc = runCmd(ccArgv);
     if (rc != 0) {
         fprintf(stderr, "extc: C compiler failed (exit %d) on `%s`\n", rc, cPath);
