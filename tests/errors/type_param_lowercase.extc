@@ -1,0 +1,5 @@
+struct box<t> {
+    value: t
+}
+
+fn main() -> i32 { return 0 }

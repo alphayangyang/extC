@@ -1,0 +1,6 @@
+struct slice<T> {
+    data: ref T
+    len:  i64
+}
+
+fn main() -> i32 { return 0 }

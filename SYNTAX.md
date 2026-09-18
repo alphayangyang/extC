@@ -11,12 +11,24 @@
 | 规矩 | 结论 |
 |---|---|
 | 变量 / 函数 / 方法 | **camelCase**（`thisIsAGoodName`、`longestRun`、`isEmpty`） |
-| 类型 / 模块 | **camelCase**（`board`、`array`、`moveError`） |
+| 类型 / 模块 | **camelCase**（`board`、`array`、`moveError`）—— **强制检查** |
 | 变量的类型写在哪 | **名字后面**：`name: Type` |
 | 声明关键字 | `var`（可变）/ `let`（不可变） |
 | 整数类型 | **`i32` / `i64` / `u8`**，不是 C 的 `int` / `long` |
 | 数组类型 | 前缀式：`[15][15]i32` |
-| 泛型参数 | **单个大写字母**：`T` / `K` / `V`（Go / Rust / TS 都这样，而且一眼就把「占位符」和「真类型名」分开） |
+| 泛型参数 | **首字母大写**：`T` / `K` / `V`（也可以写 `Element`）—— **强制检查** |
+
+**类型名和泛型参数的大小写规则是强制检查的，因为它解决一个真问题**：
+
+```extc
+struct T { x: i32 }        // ✗ error: type name `T` must start with a lowercase letter
+struct box<T> { ... }      // T 是参数 ✓
+
+struct box<t> { value: t } // ✗ error: type parameter `t` must start with an uppercase letter
+```
+
+只靠约定的话，`struct T` + `struct box<T>` 是**能编译过**的 —— 里面的 `T` 会遮蔽外面的。
+**能编译但读者看不懂，就是坏设计。** 强制大小写之后，两者**集合不相交 ⇒ 语法上不可能同名**。
 
 **这就是 v0 丑的地方：不是骨架丑，是名字丑。** 看第 3 节的对照表。
 

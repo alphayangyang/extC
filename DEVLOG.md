@@ -7,6 +7,56 @@
 
 ---
 
+## 2026-09-18 · 主人问到点子上：`T` 会不会跟用户类型撞？
+
+主人问：「直接用 `T` 真的是好的吗，万一用户自定义结构体叫 `T` 呢」
+
+**奶昔去验了，真的能撞**：
+
+```extc
+struct T { x: i32 }        // 用户自定义的类型
+struct box<T> { value: T } // 里面的 T 是参数还是那个结构体？
+```
+编译**通过**，行为是**遮蔽**（参数赢）。但**读者根本看不出来**。
+
+奶昔之前只给了**约定**（「单个大写字母是通行写法，Go/Rust/TS 都这样」），
+没给**保证**。这正是这一个晚上反复出现的同一个毛病：**把语义藏在命名约定里。**
+
+### 修法：让两者集合不相交
+
+强制两条：
+
+- **类型名首字母必须小写**（camelCase）
+- **泛型参数首字母必须大写**（`T` / `K` / `V`，也可以写 `Element`）
+
+⇒ **语法上不可能同名。**
+
+```
+error: type name `T` must start with a lowercase letter
+  note: Type names are camelCase (lowercase first letter). A leading uppercase
+        letter is reserved for type parameters, so the two can never collide.
+
+error: type parameter `t` must start with an uppercase letter
+```
+
+**「能编译但读者看不懂」是坏设计** —— 而这次的解法跟前面几次一样：
+**把约定升级成检查**。
+
+### 顺带：保留定义的完整处理（主人的原则）
+
+主人同轮提出「不应该允许用户随意修改保留的定义（比如 slice）」。三件事：
+
+1. **`reserved` 标记** —— prelude 的定义都标上，重定义时错误信息说清原因
+2. **契约检查** —— prelude 加载后验证 `slice` 的形状，不符合就报 internal error
+   （否则 prelude 改个字段名会变成「生成的 C 编译不过」这种莫名其妙的错误）
+3. **确认了一件事：extC 天生防住「给已有类型加方法」** ——
+   没有 impl 块、方法必须写在 struct 体内 ⇒ 用户**没有办法**扩展 `slice`。
+   这不是运气，是「语法一致、不要有特例」的副产品。
+
+**测试** 43 → 46 个（三个反例：`type_name_uppercase` / `type_param_lowercase` / `redefine_slice`）。
+
+---
+
 ## 2026-09-18 · T5a-1 落地：`slice` 索引 + 字符串库（全部用 extC 写）
 
 主人说「现在的 slice 用起来有点怪」。奶昔诊断：**怪的不是缺语法糖，是缺索引** ——

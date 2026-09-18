@@ -87,6 +87,9 @@ static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
 static TypeDef   *parseTypeDecl(Parser *p);
 
+static bool   startsUpper(const char *s);
+static Token *expectTypeName(Parser *p, const char *what);
+
 static Expr *parseExpr(Parser *p);
 static Expr *parseOr(Parser *p);
 static Expr *parseAnd(Parser *p);
@@ -143,7 +146,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
 
 static StructDef *parseStruct(Parser *p) {
     Token *kw = take(p);                    /* struct */
-    Token *name = expectIdent(p, "a struct name");
+    Token *name = expectTypeName(p, "a struct name");
     if (!name) return NULL;
 
     StructDef *sd = (StructDef *)arenaAllocZero(p->arena, sizeof(StructDef));
@@ -159,6 +162,13 @@ static StructDef *parseStruct(Parser *p) {
         for (;;) {
             Token *tp = expectIdent(p, "a type parameter name");
             if (!tp) return NULL;
+            if (!startsUpper(tp->text)) {
+                ctxError(p->ctx, tp->line, tp->col,
+                         "Type parameters start with an uppercase letter, so they can never "
+                         "collide with a type name (which is camelCase).",
+                         "type parameter `%s` must start with an uppercase letter", tp->text);
+                return NULL;
+            }
             *(const char **)vecPush(&sd->typeParams) = tp->text;
             if (accept(p, ",")) { skipNl(p); continue; }
             break;
@@ -201,7 +211,7 @@ static StructDef *parseStruct(Parser *p) {
  * 前导 `|` 可写可不写。 */
 static TypeDef *parseTypeDecl(Parser *p) {
     Token *kw = take(p);                    /* type */
-    Token *name = expectIdent(p, "a type name");
+    Token *name = expectTypeName(p, "a type name");
     if (!name) return NULL;
 
     TypeDef *td = (TypeDef *)arenaAllocZero(p->arena, sizeof(TypeDef));
@@ -228,6 +238,26 @@ static TypeDef *parseTypeDecl(Parser *p) {
         break;
     }
     return td;
+}
+
+static bool startsUpper(const char *s) { return s[0] >= 'A' && s[0] <= 'Z'; }
+
+/* 类型名必须首字母小写、泛型参数必须首字母大写 —— **两者集合不相交**，
+ * 所以「泛型参数和用户类型重名」在语法上不可能发生。
+ * （之前只靠约定，而 `struct T` + `struct box<T>` 是能编译过的：里面的 T 会遮蔽外面的。
+ *   能编译但读者看不懂，就是坏设计。）*/
+static Token *expectTypeName(Parser *p, const char *what) {
+    Token *t = expectIdent(p, what);
+    if (!t) return NULL;
+    if (startsUpper(t->text)) {
+        ctxError(p->ctx, t->line, t->col,
+                 "Type names are camelCase (lowercase first letter). "
+                 "A leading uppercase letter is reserved for type parameters, "
+                 "so the two can never collide.",
+                 "type name `%s` must start with a lowercase letter", t->text);
+        return NULL;
+    }
+    return t;
 }
 
 /* 函数/方法的名字：普通标识符，或者可重载的运算符（`fn ==(...)`）。
