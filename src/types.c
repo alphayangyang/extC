@@ -32,6 +32,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
     vecInit(&tt->structs, a, sizeof(void *));
     vecInit(&tt->enums, a, sizeof(void *));
     vecInit(&tt->instances, a, sizeof(void *));
+    vecInit(&tt->viewShadows, a, sizeof(void *));
 
     for (size_t i = 0; BUILTIN_NAMES[i]; i++)
         *(Type **)vecPush(&tt->builtins) = mkType(a, TY_BUILTIN, BUILTIN_NAMES[i]);
@@ -165,7 +166,21 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                 for (size_t i = 0; i < t->targs.len; i++)
                     *(Type **)vecPush(&args) =
                         ttResolve(tt, ctx, *(Type **)vecAt(&t->targs, i), line, params);
-                return ttGeneric(tt, base->sdef, &args);
+                Type *g = ttGeneric(tt, base->sdef, &args);
+                if (t->mut) {
+                    /* `mut slice<T>` —— 只有**视图**能有可写版。
+                     * 别的泛型加 `mut` 是「深可变性」，那是更大的概念，明确拒绝。 */
+                    if (!ttIsViewType(g)) {
+                        ctxError(ctx, line, 1,
+                                 "`mut` on a type means \"the references inside are writable\", "
+                                 "which only makes sense for a view. Everything else is written "
+                                 "through a `mut ref` or a `var` binding.",
+                                 "`mut` cannot qualify `%s`", t->name);
+                        return tt->tError;
+                    }
+                    return ttViewMut(tt, g, true);
+                }
+                return g;
             }
 
             /* 3) 泛型 struct 不带实参 → 报错 */
@@ -273,6 +288,36 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
     return t;
 }
 
+/* `mut slice<T>` —— 可写视图。
+ *
+ * 为什么要「影子」而不是新实例：可写视图和只读视图在 C 里是**同一个结构体**
+ * （布局、名字、方法集都一样），只有 checker 眼里的**权限**不同。
+ * 所以影子共用 `name`、**不进 instances** ⇒ codegen 只生成一份。
+ * 这正是「`mut` 是限定词，不是第二个类型」的落地方式。 */
+Type *ttViewMut(TypeTable *tt, Type *base, bool mut) {
+    if (!mut || !base || base->kind != TY_GENERIC) return base;
+    if (base->mut) return base;                 /* 已经是可写的了 */
+    for (size_t i = 0; i < tt->viewShadows.len; i++) {
+        Type *s = *(Type **)vecAt(&tt->viewShadows, i);
+        if (s->inner == base) return s;          /* inner 拿来记「我是谁的可写版」 */
+    }
+    Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
+    t->kind  = TY_GENERIC;
+    t->sdef  = base->sdef;
+    t->targs = base->targs;
+    t->name  = base->name;                       /* ★ 同一个 C 名字 */
+    t->inner = base;
+    t->mut   = true;
+    *(Type **)vecPush(&tt->viewShadows) = t;
+    return t;
+}
+
+/* 拿掉 `mut` 限定词（可写视图 → 只读视图）。降级是单向安全的，所以到处要用。 */
+Type *ttViewReadonly(TypeTable *tt, Type *t) {
+    if (!t || t->kind != TY_GENERIC || !t->mut) return t;
+    return t->inner ? t->inner : ttGeneric(tt, t->sdef, &t->targs);
+}
+
 Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
     if (!t || !params || params->len == 0 || !args) return t;
 
@@ -293,7 +338,8 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
             for (size_t i = 0; i < t->targs.len; i++)
                 *(Type **)vecPush(&na) =
                     ttSubstitute(tt, *(Type **)vecAt(&t->targs, i), params, args);
-            return ttGeneric(tt, t->sdef, &na);
+            /* 可写性要跟着走（`mut` 是类型的一部分，替换时不能丢） */
+            return ttViewMut(tt, ttGeneric(tt, t->sdef, &na), t->mut);
         }
         default:
             return t;
@@ -318,6 +364,7 @@ bool ttEquals(Type *a, Type *b) {
         return a->tpIndex == b->tpIndex && strcmp(a->param, b->param) == 0;
 
     if (a->kind == TY_GENERIC) {
+        if (a->mut != b->mut) return false;   /* 可写视图 ≠ 只读视图 */
         if (a->sdef != b->sdef || a->targs.len != b->targs.len) return false;
         for (size_t i = 0; i < a->targs.len; i++)
             if (!ttEquals(*(Type **)vecAt(&a->targs, i), *(Type **)vecAt(&b->targs, i)))
@@ -436,6 +483,9 @@ void ttRender(Type *t, Buf *out) {
             ttRender(t->inner, out);
             return;
         case TY_GENERIC:
+            /* 可写视图要打出 `mut` —— 否则报错信息会成为
+             * 「expects `slice<i32>`, found `slice<i32>`」，谁也看不懂 */
+            if (t->mut) bufPuts(out, "mut ");
             bufPuts(out, t->sdef->name);
             bufPutc(out, '<');
             for (size_t i = 0; i < t->targs.len; i++) {
@@ -455,4 +505,10 @@ void ttRender(Type *t, Buf *out) {
         case TY_ERROR: bufPuts(out, "<error>"); return;
         default:       bufPuts(out, t->name ? t->name : "?"); return;
     }
+}
+
+/* 是不是视图？（见 types.h 的说明） */
+bool ttIsViewType(Type *t) {
+    return t && t->kind == TY_GENERIC && t->sdef && t->targs.len == 1 &&
+           strcmp(t->sdef->name, "slice") == 0;
 }

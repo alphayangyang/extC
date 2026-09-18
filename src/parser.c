@@ -320,23 +320,24 @@ static FuncDef *parseFunc(Parser *p) {
 }
 
 static Type *parseType(Parser *p) {
-    /* `mut ref T` = 可写的引用；`ref T` = 只读的引用。
-     * 只读是**默认**（安全是默认），要写就显式写 `mut`。 */
+    /* `mut` = 「透过这个值能写」，只对**含引用的东西**有意义：
+     *     `mut ref T`      可写的引用
+     *     `mut slice<T>`   元素可写的**视图**
+     * 裸值不需要（它在 `var` 里本来就写得到）。是不是视图 parser 不知道
+     * （名字还没解析），所以这里只标上，合法性由 check 判。 */
     if (at(p, "mut")) {
         Token *m = take(p);
-        if (!at(p, "ref")) {
+        Type *ty = parseType(p);
+        if (!ty) return NULL;
+        if (ty->kind != TY_REF && ty->kind != TY_UNRESOLVED) {
             ctxError(p->ctx, m->line, m->col,
-                     "`mut` is a qualifier on a reference, not a type by itself: "
-                     "write `mut ref T`.",
-                     "expected `ref` after `mut`");
+                     "`mut` qualifies a reference (`mut ref T`) or a view (`mut slice<T>`); "
+                     "a plain value does not need it -- put it in a `var`.",
+                     "`mut` cannot qualify this type");
             return NULL;
         }
-        take(p);
-        Type *inner = parseType(p);
-        if (!inner) return NULL;
-        Type *t = typeRef(p->arena, inner);
-        t->mut = true;
-        return t;
+        ty->mut = true;
+        return ty;
     }
     if (at(p, "ref")) {
         take(p);

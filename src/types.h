@@ -21,6 +21,11 @@ typedef struct {
     Vec    structs;     /* StructDef* */
     Vec    enums;       /* TypeDef*  */
     Vec    instances;   /* Type* —— 泛型实例，驻留 */
+    /* 可写视图的「影子」实例（`mut slice<T>`）。
+     * 它跟只读版**共用同一个 C 结构体名**，所以**不进 instances** ——
+     * 进去的话 codegen 会生成两份一模一样的结构体。
+     * 「一个视图类型、一套方法集」靠这个成立（Rust 是给切片造两个类型）。 */
+    Vec    viewShadows; /* Type* */
     Type  *tVoid;
     Type  *tError;
 } TypeTable;
@@ -53,6 +58,10 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params);
 
 /* 泛型实例：驻留（`Pair<i32,u8>` 全局只有一份） */
 Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args);
+/* `mut slice<T>`：拿只读实例的影子（共用 C 名字，不进实例表）。mut=false 就原样返回 */
+Type *ttViewMut(TypeTable *tt, Type *base, bool mut);
+/* 拿掉 `mut`（可写视图 → 只读视图）；本来就是只读的原样返回 */
+Type *ttViewReadonly(TypeTable *tt, Type *t);
 
 /* 固定数组：也驻留（`[15]i32` 全局只有一份） */
 Type *ttArray(TypeTable *tt, int64_t n, Type *elem);
@@ -83,3 +92,6 @@ void  ttRender(Type *t, Buf *out);
 bool  ttCanWiden(Type *from, Type *to);
 
 #endif /* EXTC_TYPES_H */
+/* 这个类型是不是「视图」？（协议：名字叫 slice 且带一个类型实参）
+ * 编译器认它，是因为 `s[i]` 是一条语法 —— 跟 `data` + `len` 那条协议同源。 */
+bool ttIsViewType(Type *t);

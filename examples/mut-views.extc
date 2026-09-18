@@ -1,0 +1,63 @@
+// 视图的可写性：`slice<T>`（只读）/ `mut slice<T>`（可写）
+//
+// 只有一个视图类型、一套方法集 —— `mut` 是**限定词**，不是第二个类型。
+// 可写性**从切出来的源头继承**：
+//     var a        → mut slice<T>
+//     let a        → slice<T>
+//     "字面量"      → slice<T>（只读段，写它是编译错误而不是段错误）
+//
+// 所以日常代码不用写 `mut`，只有**声明**才写 —— 而签名一旦写了，
+// 调用点和读代码的人就都知道这个函数会不会改你的数据。
+
+// 只读：签名说了它不改（`let` 的数组/仅有的视图都能传）
+fn sum(v: slice<i32>) -> i32 {
+    var s: i32 = 0
+    var i: i64 = 0
+    while i < v.len {
+        s = s + v[i]
+        i = i + 1
+    }
+    return s
+}
+
+// 可写：签名说了它会改（调用者必须给得出手可写的东西）
+fn fill(v: mut slice<i32>, value: i32) {
+    var i: i64 = 0
+    while i < v.len {
+        v[i] = value
+        i = i + 1
+    }
+}
+
+// 就地反转：`swap` 现在也能写了
+fn reverse(v: mut slice<i32>) {
+    var i: i64 = 0
+    var j: i64 = v.len - 1
+    while i < j {
+        let t = v[i]
+        v[i] = v[j]
+        v[j] = t
+        i = i + 1
+        j = j - 1
+    }
+}
+
+fn main() -> i32 {
+    var a: [6]i32 = [1, 2, 3, 4, 5, 6]
+
+    println("一开始   ", a[..])            // [1, 2, 3, 4, 5, 6]
+    println("求和     ", sum(a[..]))        // 21
+
+    var mid = a[1..4]                      // var ⇒ 可写视图
+    reverse(mid)
+    println("反转中间 ", a[..])             // [1, 4, 3, 2, 5, 6]
+
+    fill(a[3..6], 9)                       // 可写视图传参 ✓
+    println("填 9 之后 ", a[..])            // [1, 4, 3, 9, 9, 9]
+
+    let frozen: [3]i32 = [7, 8, 9]
+    println("只读数组求和 ", sum(frozen[..]))   // 24
+    // frozen[0] = 1        // ✗ let ⇒ 不能写
+    // fill(frozen[..], 0)  // ✗ 从 let 切出来是只读视图，交不出去
+    return 0
+}

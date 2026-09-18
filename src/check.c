@@ -250,11 +250,19 @@ static Sym *placeRoot(Checker *c, Expr *e) {
  *   ② 参数：`mut ref T` 可写 / `ref T` 只读（类型里写着）
  *   ③ 字段/元素：看它的根（跟赋值查的是同一个东西）
  * 见 DECISIONS「引用语义定案」。 */
+static bool pathHasReadonlyRef(Expr *e);
+
 static bool isWritablePlace(Checker *c, Expr *e) {
     if (!e) return false;
-    /* ② 参数（或者任何 ref 类型的表达式）：类型上的 `mut` 说了算 */
+    /* 路上有只读引用 ⇒ 写不进去 */
+    if (pathHasReadonlyRef(e)) return false;
+    /* 表达式本身就是引用：`mut ref` 才可写 */
     if (e->type && e->type->kind == TY_REF) return e->type->mut;
-    /* ① 绑定 + ③ 字段/元素：走到根 */
+    /* 表达式是视图：**视图自己的类型**必须可写（`mut slice<T>`）。
+     * 字符串字面量也走这条 —— 它的类型是只读视图 ⇒ 不可写 ✓ */
+    if (e->type && e->type->kind == TY_GENERIC && ttIsViewType(e->type) && !e->type->mut)
+        return false;
+    /* 绑定 + 字段/元素：走到根，根必须是 `var` */
     Sym *root = placeRoot(c, e);
     return root && root->mut;
 }
@@ -287,6 +295,20 @@ static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
         return true;
     }
     Sym *root = placeRoot(c, e);
+    /* **视图的元素可不可写，看视图的类型带不带 `mut`。**
+     * 这条关掉的是「按值传进来的视图」那个洞：
+     *     fn f(v: slice<i32>) { v[0] = 1 }   // ✗ 参数是副本，但元素是调用者的！
+     * 要写就得在签名上写 `mut slice<i32>`（或者 `mut ref slice<i32>`）。 */
+    if (root && root->type && root->type->kind == TY_GENERIC &&
+        ttIsViewType(root->type) && !root->type->mut) {
+        ckError(c, line,
+                "a view is read-only unless its type carries `mut`. Writing through a "
+                "by-value view would change the caller's data without the signature "
+                "saying so.",
+                "cannot %s through `%s`: it is a read-only view `%s`",
+                what, root->name, typeStr(c, root->type));
+        return true;
+    }
     if (!root || root->mut) return false;
     if (e->kind == EX_IDENT) {
         ckError(c, line, "use `var` to allow reassignment (`let` is an immutable binding)",
@@ -586,12 +608,15 @@ static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const
 
     if (ttEquals(want, got)) return true;
 
-    /* **降级**：`mut ref T` 可以当 `ref T` 用（能写的地方当然能读）——
-     * 单向、永远安全，所以自动允许。反过来不行：那是要写权限，必须写 `mut`。
-     * 「安全是默认」的直接体现：往安全的方向收窄不需要打招呼。 */
-    if (want->kind == TY_REF && got->kind == TY_REF && got->mut && !want->mut &&
-        ttEquals(want->inner, got->inner))
-        return true;
+    /* **降级**：可写的可以当只读的用（能写当然能读）—— 单向、永远安全，自动允许。
+     * 反过来不行：那是在要写权限，必须显式写 `mut`。
+     * 「安全是默认」的直接体现：往安全的方向收窄不用打招呼。
+     * 两种东西都适用：引用（`mut ref T` → `ref T`）和视图（`mut slice<T>` → `slice<T>`）。 */
+    if (got->mut && !want->mut && want->kind == got->kind) {
+        if (want->kind == TY_REF && ttEquals(want->inner, got->inner)) return true;
+        if (want->kind == TY_GENERIC &&
+            ttEquals(want, ttViewReadonly(c->tt, got))) return true;
+    }
     if (ttCanWiden(got, want)) return true;
     if (node && literalFits(node, want)) return true;
 
@@ -973,7 +998,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
             }
-            return sliceOf(c, elem);
+            /* 视图的**可写性从切出来的源头继承**：
+             *   `var a` / `mut ref` 参数 ⇒ `mut slice<T>`
+             *   `let a` / 字符串字面量 / 只读视图 ⇒ `slice<T>`
+             * 这就是「一个视图类型」能同时表达两种权限的办法 ——
+             * 不用像 Rust 那样给切片造两个类型。 */
+            return ttViewMut(tt, sliceOf(c, elem),
+                             isWritablePlace(c, e->u.slice.obj));
         }
 
         case EX_ARRAYLIT: {
