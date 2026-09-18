@@ -728,6 +728,18 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 `result<void,E>` 还是 `result<(),E>`、`@main` 和 `module main` 的优先关系、`+=` 复合赋值、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
 
+**`==` 右边的裸 `{}` 能不能推？** 现在推不出来：
+
+```extc
+println(ps[0] == { x: 1, y: 2 })        // ✗ cannot infer the type of a bare `{}` here
+println(ps[0] == point { x: 1, y: 2 })  // ✓ 写全名字就行
+```
+
+`==` 是语法糖，展开成 `T.==(lhs, rhs)` 后右边**是有**参数类型的，所以这是**能补**的洞。
+难点在 `ref`：`fn ==(self: ref point, other: point)` 与 `other: ref point` 都可能存在，
+「拿左边的类型当右边的期望类型」在左操作数是 `ref T` 时会推错。
+**待定。**
+
 ---
 
 ## 12. 完整示例
