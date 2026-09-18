@@ -349,8 +349,78 @@ static bool typeSupportsEq(Type *t, const char *op) {
     return findOp(b, op, strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
 }
 
+/* `?` 只在这三处合法，所以这三处走这个入口；别处遇到 EX_TRY 一律报错 */
+static Type *checkExpr(Checker *c, Expr *e);
+static Type *checkTryInner(Checker *c, Expr *e);
+
+static Type *checkMaybeTry(Checker *c, Expr *e) {
+    if (e && e->kind == EX_TRY) return checkTryInner(c, e);
+    return checkExpr(c, e);
+}
+
 /* 泛型里的 `==` 推迟到实例化才检查 —— 这里记一笔 */
 typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
+
+/* prelude 里两个「有真实语义」的容器，按名字 + 实参个数认（它们是**保留定义**，
+ * 用户不能重定义，所以按名字认是安全的）。`?` 要用到它们的标签字段名 ——
+ * 跟视图协议 `data` + `len` 是同一种分工：**语言认识协议，库提供结构**。 */
+static bool isProtoType(Type *t, const char *name, size_t nargs) {
+    return t && t->kind == TY_GENERIC && t->sdef &&
+           strcmp(t->sdef->name, name) == 0 && t->targs.len == nargs;
+}
+
+/* `e?` —— 失败就顺着往上抛。
+ * 只在三处语句位置上合法（C 没有语句表达式，得展开成语句），
+ * 所以这个函数**只**从 checkStmt 的那三处调用；checkExprInner 遇到 EX_TRY 会报错。 */
+static Type *checkTryInner(Checker *c, Expr *e) {
+    Type *ot = checkExpr(c, e->u.try_.operand);
+    if (ttIsError(ot)) return ttError(c->tt);
+    Type *ob = ttBase(ot);
+
+    Type *rt = (c->curFunc && c->curFunc->ret) ? ttBase(c->curFunc->ret) : NULL;
+    const char *fw = NULL;   /* 外层返回类型的写法，用来拼错误信息 */
+
+    if (isProtoType(ob, "option", 1)) {
+        if (!isProtoType(rt, "option", 1)) {
+            fw = "option<...>";
+            goto mismatch;
+        }
+    } else if (isProtoType(ob, "result", 2)) {
+        if (!isProtoType(rt, "result", 2)) {
+            fw = "result<..., E>";
+            goto mismatch;
+        }
+        /* 错误类型必须一模一样 —— 否则「搬过去」就是在编一个不存在的转换 */
+        Type *oe = *(Type **)vecAt(&ob->targs, 1);
+        Type *re = *(Type **)vecAt(&rt->targs, 1);
+        if (!ttEquals(oe, re)) {
+            ckError(c, e->line,
+                    "`?` forwards the failure as-is, so it cannot change the error type. "
+                    "Use the same `E` in the return type.",
+                    "`?` here would change the error type from `%s` to `%s`",
+                    typeStr(c, oe), typeStr(c, re));
+            return ttError(c->tt);
+        }
+    } else {
+        ckError(c, e->line, "`?` works on the `option` / `result` from the prelude.",
+                "`?` needs an `option<...>` or `result<...>`, found `%s`",
+                typeStr(c, ot));
+        return ttError(c->tt);
+    }
+
+    Type *payload = *(Type **)vecAt(&ob->targs, 0);
+    e->type = payload;
+    return payload;
+
+mismatch:
+    ckError(c, e->line,
+            "`?` returns the failure from the enclosing function, so the two must be "
+            "the same kind.",
+            "`?` on `%s` needs the enclosing function to return `%s`, but it returns `%s`",
+            typeStr(c, ot), fw,
+            c->curFunc && c->curFunc->ret ? typeStr(c, c->curFunc->ret) : "void");
+    return ttError(c->tt);
+}
 
 /* ---------------------------------------------------------------- 小工具 */
 
@@ -839,8 +909,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return ttRef(tt, ot);
         }
 
-        case EX_ASSOC: {
-            /* `option<i64>::some(x)` —— 关联函数（struct 体内不带 `self` 的函数）。
+        case EX_TRY:
+            /* `?` 是**语句级**的转发：要展开成「求值一次 + 判断 + return」。
+             * C 没有语句表达式，所以它只在这三处合法：
+             *     let x = e?   /   x = e?   /   return e?
+             * 别的地方（比如 `f(e? + 1)`）要报清楚，而不是生成编不过的 C。 */
+            ckError(c, e->line,
+                    "`?` has to expand into statements (evaluate once, test, return), "
+                    "so it only fits where a whole statement can be rewritten.",
+                    "`?` may only be used as `f()?`, `let x = e?`, `x = e?` or `return e?`");
+            return ttError(tt);
+
+        case EX_ASSOC: {            /* `option<i64>::some(x)` —— 关联函数（struct 体内不带 `self` 的函数）。
              * 类型实参**写全**，不从参数或上下文倒推（定案 27：显式优于推导）。 */
             Type *raw = typeNamed(c->arena, e->u.assoc.typeName);
             raw->targs = e->u.assoc.targs;
@@ -1140,7 +1220,8 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
-            Type *it = checkExpr(c, s->u.var.init);
+            /* `let x = e?` —— `?` 的合法位置之一 */
+            Type *it = checkMaybeTry(c, s->u.var.init);
             Type *declT = s->u.var.ann ? s->u.var.ann : it;
 
             if (s->u.var.ann)
@@ -1154,7 +1235,7 @@ static void checkStmt(Checker *c, Stmt *s) {
         case ST_ASSIGN: {
             Type *tt_ = checkExpr(c, s->u.assign.target);
             adoptContextType(s->u.assign.value, tt_);
-            Type *vt = checkExpr(c, s->u.assign.value);
+            Type *vt = checkMaybeTry(c, s->u.assign.value);
 
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
             if (ttIsError(tt_)) return;
@@ -1176,6 +1257,12 @@ static void checkStmt(Checker *c, Stmt *s) {
             checkBlockBody(c, s->u.whiles.body);
             return;
 
+        case ST_EXPR:
+            /* `f()?` 单独成句 —— `?` 的第四个合法位置（最有用的那个：
+             * 「这一步必须成功，否则整串失败」）*/
+            checkMaybeTry(c, s->u.expr.expr);
+            return;
+
         case ST_RETURN: {
             Type *want = c->curFunc ? c->curFunc->ret : NULL;
             if (!s->u.ret.value) {
@@ -1191,8 +1278,21 @@ static void checkStmt(Checker *c, Stmt *s) {
                         c->curFunc ? c->curFunc->name : "this function");
                 return;
             }
+            /* `return e?` —— 表达式本身的值是**载荷**，而函数要交出的是外层类型，
+             * 所以这里比的是「载荷能不能放进外层的载荷」（装回去由 codegen 做）。
+             * 不能走下面那条 adoptContextType + checkAssignable：那会拿
+             * option<i64> 去要求一个 i64。 */
+            if (s->u.ret.value->kind == EX_TRY) {
+                Type *vt = checkTryInner(c, s->u.ret.value);
+                Type *wb = ttBase(want);
+                if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
+                    checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
+                                    s->u.ret.value, "return value");
+                return;
+            }
+
             adoptContextType(s->u.ret.value, want);
-            Type *vt = checkExpr(c, s->u.ret.value);
+            Type *vt = checkMaybeTry(c, s->u.ret.value);
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
             return;
         }
@@ -1201,12 +1301,7 @@ static void checkStmt(Checker *c, Stmt *s) {
         case ST_CONTINUE:
             return;
 
-        case ST_EXPR:
-            checkExpr(c, s->u.expr.expr);
-            return;
-
-        case ST_BLOCK:
-            checkBlockBody(c, s);
+        case ST_BLOCK:            checkBlockBody(c, s);
             return;
     }
 }

@@ -50,6 +50,25 @@ fn describe(e: gameError) -> slice<u8> {
     return "那格已经有子了"
 }
 
+// `?` —— 失败就顺着往上抛，不用一层层写 `if 失败 { return ... }`。
+//
+// 四个合法位置（都是**整个语句**能重写的地方，因为要展开成语句）：
+//     place(b, x, y, p)?        一步必须成功，否则整串失败
+//     let v = e?                取出载荷
+//     v = e?                    同上，赋给已有的地方
+//     return e?                 把载荷装回外层类型
+//
+// 载荷类型可以不同（里层 unit、外层也是 unit；换成 i64 → point 也行），
+// 但**错误类型必须一样** —— `?` 是原样转发，不做转换。
+fn placeLine(b: ref board, y: i32, from: i32, to: i32, p: i32) -> result<unit, gameError> {
+    var x: i32 = from
+    while x <= to {
+        place(b, x, y, p)?        // 中间撞车 ⇒ 整行失败（失败之前的已经落下）
+        x = x + 1
+    }
+    return result<unit, gameError>::success(unit {})
+}
+
 fn main() -> i32 {
     var b: board
 
@@ -82,6 +101,18 @@ fn main() -> i32 {
     // ④ result<unit, E>：成功了也没什么值给你 —— 用 unit 而不是开 void 的特例
     let u = result<unit, gameError>::success(unit {})
     println("unit 也 ok？ ", u.ok)                 // true
+
+    // ⑤ `?`：一整行落子，任何一步失败就整行失败
+    var b2: board
+    let line = placeLine(ref b2, 5, 2, 6, 2)
+    println("一整行白子？", line.ok)               // true
+    println("落了几格？  ", b2.cell[5][2], b2.cell[5][6])   // 22
+
+    let again = placeLine(ref b2, 5, 0, 3, 1)      // 0、1 落得下，到 2 撞车 ⇒ 中途失败
+    println("撞车那一行？", again.ok)              // false
+    println("为什么？    ", describe(again.err))   // 那格已经有子了
+    println("失败前落的  ", b2.cell[5][0], b2.cell[5][1])   // 11 —— 失败**之前**的保留
+    println("失败处没动  ", b2.cell[5][2])         // 2 —— 失败之后一步都没走
 
     return 0
 }

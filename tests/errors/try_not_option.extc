@@ -1,0 +1,5 @@
+fn f() -> option<i64> {
+    let x = 5?
+    return option<i64>::none()
+}
+fn main() -> i32 { return 0 }

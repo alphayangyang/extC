@@ -62,6 +62,11 @@ typedef struct {
      * 需要的，所以函数体得先写进 body，最后再按「原型 → helper → 函数体」拼。 */
     Vec         helpers;        /* SliceHelper */
     Buf         body;
+
+    /* `?` 展开要用：当前函数的返回类型（失败时要往上构造），
+     * 以及临时变量编号（每个 `?` 一个，函数内唯一）。 */
+    Type       *retType;
+    int         tmpSeq;
 } CG;
 
 /* 一个切片 helper：把 `a[lo..hi]` 的边界检查＋视图构造收进一个函数。
@@ -689,6 +694,13 @@ static const char *genExpr(CG *g, Expr *e) {
 
         case EX_SLICE: return genSlice(g, e);
 
+        case EX_TRY:
+            /* `?` 不该走到这里 —— 它是语句级展开的，由 genStmt 那三处直接处理。
+             * 走到这儿说明 check 的位置限制漏了，报出来别静默生成错的 C。 */
+            ctxError(g->ctx, e->line, 1, NULL,
+                     "internal: `?` reached expression codegen (position check missed it)");
+            return "0";
+
         case EX_ASSOC: {
             /* 关联函数：C 名字用**实例名**修饰（`option_i64_some`）——
              * 跟方法同一套修饰规则，所以直接复用 cMethodName。 */
@@ -772,6 +784,56 @@ static void genStructDebug(CG *g, const char *cname, StructDef *sd) {
 
 static void genStmt(CG *g, Stmt *s);
 
+/* ---------------------------------------------------------------- `?` 展开
+ *
+ * `?` 是**语句级**的：C 没有语句表达式，所以要展开成
+ *     <求值一次>  →  <失败就 return>  →  <接着用载荷>
+ *
+ * 编译器在这里认识的是**协议**（跟视图的 `data` + `len` 是同一种分工，
+ * 见 MANUAL「语言认识协议，库提供结构」）：
+ *     option：标签 `has`、载荷 `value`
+ *     result：标签 `ok`、载荷 `value`、错误 `err`
+ * 结构、方法、构造器**全在 prelude 里**，编译器只认这几个名字。
+ * 这些名字在主程序里被 viewContractOk 那一套校验过（见 main.c）。
+ */
+typedef struct {
+    const char *tmp;      /* 临时变量名（求值就一次，装在这里） */
+    const char *tag;      /* 标签字段：has / ok */
+    Type       *payload;  /* 载荷类型 T */
+    bool        isOpt;    /* option 还是 result */
+} TryInfo;
+
+static bool isProtoType(Type *t, const char *name, size_t nargs) {
+    return t && t->kind == TY_GENERIC && t->sdef &&
+           strcmp(t->sdef->name, name) == 0 && t->targs.len == nargs;
+}
+
+/* 失败时该 return 什么：往**外层**的返回类型上构造失败值。
+ * option 的零值就是 none（定案 8）；result 要带上内层的错误。 */
+static const char *genTryFail(CG *g, TryInfo *ti) {
+    Type *rt = subst(g, g->retType);
+    if (!rt) return "0";
+    if (ti->isOpt) return zeroValue(g, rt);
+    return arenaPrintf(g->arena, "(%s){ .ok = false, .value = %s, .err = %s.err }",
+                       cType(g, rt), zeroValue(g, *(Type **)vecAt(&rt->targs, 0)),
+                       ti->tmp);
+}
+
+/* 出「求值一次」和「失败就 return」两句，返回临时变量名 */
+static TryInfo genTryHead(CG *g, Expr *e) {
+    TryInfo ti;
+    Type *ot = ttBase(subst(g, e->u.try_.operand->type));
+    ti.isOpt = isProtoType(ot, "option", 1);
+    ti.tag = ti.isOpt ? "has" : "ok";
+    ti.payload = subst(g, *(Type **)vecAt(&ot->targs, 0));
+    ti.tmp = arenaPrintf(g->arena, "__extc_try%d", g->tmpSeq++);
+
+    cgLine(g, "%s %s = %s;", cType(g, ot), ti.tmp, genExpr(g, e->u.try_.operand));
+    cgLine(g, "if (!%s.%s) return %s;", ti.tmp, ti.tag, genTryFail(g, &ti));
+    return ti;
+}
+
+
 static void lineMark(CG *g, Stmt *s) {
     if (g->lineMap && s->line > 0)
         bufPrintf(g->out, "#line %d \"%s\"\n", s->line, g->path);
@@ -787,6 +849,12 @@ static void genStmt(CG *g, Stmt *s) {
 
     switch (s->kind) {
         case ST_VAR: {
+            if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
+                TryInfo ti = genTryHead(g, s->u.var.init);
+                cgLine(g, "%s %s = %s.value;",
+                       cType(g, s->type), s->u.var.name, ti.tmp);
+                return;
+            }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
                                              : zeroInit(g, s->type);
             cgLine(g, "%s %s = %s;", cType(g, s->type), s->u.var.name, init);
@@ -794,6 +862,11 @@ static void genStmt(CG *g, Stmt *s) {
         }
 
         case ST_ASSIGN:
+            if (s->u.assign.value && s->u.assign.value->kind == EX_TRY) {
+                TryInfo ti = genTryHead(g, s->u.assign.value);
+                cgLine(g, "%s = %s.value;", genExpr(g, s->u.assign.target), ti.tmp);
+                return;
+            }
             cgLine(g, "%s = %s;", genExpr(g, s->u.assign.target),
                    genExpr(g, s->u.assign.value));
             return;
@@ -824,14 +897,36 @@ static void genStmt(CG *g, Stmt *s) {
             return;
 
         case ST_RETURN:
-            if (!s->u.ret.value) cgLine(g, "return;");
-            else                 cgLine(g, "return %s;", genExpr(g, s->u.ret.value));
+            if (!s->u.ret.value) {
+                cgLine(g, "return;");
+                return;
+            }
+            if (s->u.ret.value->kind == EX_TRY) {
+                /* `return e?` —— 成功就把载荷装回**外层**返回类型 */
+                TryInfo ti = genTryHead(g, s->u.ret.value);
+                Type *rt = subst(g, g->retType);
+                if (ti.isOpt) {
+                    cgLine(g, "return (%s){ .has = true, .value = %s.value };",
+                           cType(g, rt), ti.tmp);
+                } else {
+                    cgLine(g, "return (%s){ .ok = true, .value = %s.value, .err = %s };",
+                           cType(g, rt), ti.tmp,
+                           zeroValue(g, *(Type **)vecAt(&rt->targs, 1)));
+                }
+                return;
+            }
+            cgLine(g, "return %s;", genExpr(g, s->u.ret.value));
             return;
 
         case ST_BREAK:    cgLine(g, "break;");    return;
         case ST_CONTINUE: cgLine(g, "continue;"); return;
 
         case ST_EXPR:
+            /* `f()?` 单独成句：只要「求值一次 + 失败就 return」两句，后面没有用法 */
+            if (s->u.expr.expr->kind == EX_TRY) {
+                (void)genTryHead(g, s->u.expr.expr);
+                return;
+            }
             cgLine(g, "%s;", genExpr(g, s->u.expr.expr));
             return;
 
@@ -868,7 +963,15 @@ static void genFunc(CG *g, FuncDef *f) {
     }
 
     g->indent++;
+    /* `?` 要靠它构造「失败时往上一层返回什么」。临时变量编号在每个函数里重置，
+     * 所以 `__extc_try0` 各函数各一份，不会撞。 */
+    Type *savedRet = g->retType;
+    int   savedSeq = g->tmpSeq;
+    g->retType = subst(g, f->ret);
+    g->tmpSeq = 0;
     genBlockBody(g, f->body);
+    g->retType = savedRet;
+    g->tmpSeq = savedSeq;
     g->indent--;
     cgLine(g, "}");
 }
@@ -1086,6 +1189,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
     bufInit(&g.body, arena);
+    g.tmpSeq = 0;
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         if (sd->typeParams.len > 0) continue;   /* 泛型：按实例生成，不走这里 */

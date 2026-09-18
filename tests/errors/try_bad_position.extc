@@ -1,0 +1,4 @@
+fn f(n: i64) -> option<i64> {
+    return option<i64>::some(option<i64>::some(n)? + 1)
+}
+fn main() -> i32 { return 0 }

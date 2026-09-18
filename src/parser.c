@@ -628,6 +628,14 @@ static Expr *parsePostfix(Parser *p) {
     if (!e) return NULL;
 
     for (;;) {
+        /* `e?` —— 失败就顺着往上抛。位置限制在 check 里查（只在三处语句位置上合法） */
+        if (at(p, "?")) {
+            Token *q = take(p);
+            Expr *t = exprNew(p->arena, EX_TRY, q->line);
+            t->u.try_.operand = e;
+            e = t;
+            continue;
+        }
         if (at(p, ".")) {
             Token *dot = take(p);
             Token *name = expectIdent(p, "a field or method name");

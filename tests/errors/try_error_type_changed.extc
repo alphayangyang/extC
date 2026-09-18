@@ -1,0 +1,8 @@
+type a = | x
+type b = | y
+fn g() -> result<i64, a> { return result<i64, a>::success(1) }
+fn h() -> result<i64, b> {
+    let v = g()?
+    return result<i64, b>::success(v)
+}
+fn main() -> i32 { return 0 }

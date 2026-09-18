@@ -1,0 +1,4 @@
+fn f(n: i64) {
+    let x = option<i64>::some(n)?
+}
+fn main() -> i32 { return 0 }
