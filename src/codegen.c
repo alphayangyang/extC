@@ -112,10 +112,22 @@ static const char *genExpr(CG *g, Expr *e);
     
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
  * （在 extC 里它们本来就是两个不同的名字，见 DECISIONS 决策 9）*/
+/* extC 的符号名 → C 标识符片段。
+ * 运算符在 extC 里就叫 `==`，但 C 里不能这么拼，所以映射一下。 */
+static const char *cSymName(const char *name) {
+    static const struct { const char *extc, *c; } MAP[] = {
+        { "==", "eq" }, { "!=", "ne" },
+        { NULL, NULL }
+    };
+    for (size_t i = 0; MAP[i].extc; i++)
+        if (strcmp(MAP[i].extc, name) == 0) return MAP[i].c;
+    return name;
+}
+
 static const char *cFuncName(CG *g, FuncDef *f) {
     if (g->ownerPrefix)
-        return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, f->name);
-    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, f->name);
+        return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, cSymName(f->name));
+    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(f->name));
     return f->name;
 }
 
@@ -123,10 +135,10 @@ static const char *cFuncName(CG *g, FuncDef *f) {
 static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     Type *rb = ttBase(subst(g, recvType));
     if (rb && rb->kind == TY_GENERIC)
-        return arenaPrintf(g->arena, "%s_%s", rb->name, f->name);
+        return arenaPrintf(g->arena, "%s_%s", rb->name, cSymName(f->name));
     /* ⚠️ 这里**不能**用 cFuncName —— 它带的是「当前正在生成的实例」前缀。
-     * 被调用的方法可能属于另一个类型（在 Wrapper<Point> 里调 Point.eq）。*/
-    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, f->name);
+     * 被调用的方法可能属于另一个类型（在 Wrapper<Point> 里调 Point.==）。*/
+    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(f->name));
     return f->name;
 }
 
@@ -138,16 +150,18 @@ static bool nativeCmp(Type *t) {
     return strcmp(t->name, "str") != 0;
 }
 
-/* `==` 走的是 eq 方法：找一下这个类型的 eq */
-static FuncDef *findEqMethod(Type *t) {
+/* `==` 找的是用户定义的 `fn ==(...)`（`!=` 没定义就退回用 `==` 取反） */
+static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback) {
     Type *b = ttBase(t);
     if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return NULL;
     StructDef *sd = b->sdef;
+    FuncDef *hit = NULL;
     for (size_t i = 0; i < sd->methods.len; i++) {
         FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
-        if (strcmp(m->name, "eq") == 0) return m;
+        if (strcmp(m->name, sym) == 0) return m;
+        if (fallback && strcmp(m->name, fallback) == 0) hit = m;
     }
-    return NULL;
+    return hit;
 }
 
 /* 二元运算。
@@ -158,7 +172,9 @@ static const char *genBin(CG *g, Expr *e) {
 
     if (e->func || e->needEq) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
-        FuncDef *m = e->func ? e->func : findEqMethod(lt);
+        FuncDef *m = e->func
+                     ? e->func
+                     : findOpMethod(lt, op, strcmp(op, "!=") == 0 ? "==" : NULL);
 
         if (!m) {
             /* 内建数值 / bool / 枚举：C 原生就能比，不需要 eq */
@@ -170,7 +186,7 @@ static const char *genBin(CG *g, Expr *e) {
             ctxError(g->ctx, e->line, 1,
                      "泛型里的 `==` 推迟到实例化才检查 —— 这是「不引入 trait」换来的代价。"
                      "给那个类型加一个 `eq` 方法即可。",
-                     "`%s` needs an `eq` method (for `%s`)", cType(g, lt), op);
+                     "`%s` needs to define `%s`", cType(g, lt), op);
             return "0";
         }
 

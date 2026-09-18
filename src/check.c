@@ -157,7 +157,15 @@ static bool cmpIsNative(Type *t) {
     return ttBase(t)->kind == TY_ENUM;
 }
 
-/* eq 方法的签名必须是：(self: ref T, other: T 或 ref T) -> bool */
+/* 找类型上定义的运算符方法。
+ * `!=` 是特例：没定义 `!=` 就退回用 `==` 取反（codegen 那边会自动取反）。*/
+static FuncDef *findOp(Type *b, const char *sym, const char *fallback) {
+    FuncDef *m = findMethod(b, sym);
+    if (!m && fallback) m = findMethod(b, fallback);
+    return m;
+}
+
+/* 运算符方法的签名必须是：(self: ref T, other: T 或 ref T) -> bool */
 static bool eqSignatureOk(TypeTable *tt, FuncDef *m, Type *lt, Vec *sp, Vec *sa) {
     if (!m || !m->ret || !ttIs(m->ret, "bool")) return false;
     if (m->params.len != 2) return false;
@@ -181,7 +189,7 @@ static bool typeSupportsEq(Checker *c, Type *t) {
     StructDef *sd = structOf(b);
     if (!sd) return false;
 
-    FuncDef *m = findMethod(b, "eq");
+    FuncDef *m = findOp(b, "==", NULL);
     Vec *sp = NULL, *sa = NULL;
     if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
     return eqSignatureOk(c->tt, m, b, sp, sa);
@@ -390,17 +398,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
 
-                    FuncDef *m = findMethod(b, "eq");
+                    FuncDef *m = findOp(b, op, strcmp(op, "!=") == 0 ? "==" : NULL);
                     if (!m) {
                         Buf note;
                         bufInit(&note, c->arena);
                         bufPrintf(&note,
-                                  "在 `%s` 里加一个方法即可：\n"
-                                  "      fn eq(self: ref %s, other: ref %s) -> bool { ... }",
+                                  "在 `%s` 里定义它即可：\n"
+                                  "      fn ==(self: ref %s, other: %s) -> bool { ... }",
                                   sd->name, sd->name, sd->name);
                         ckError(c, e->line, bufCstr(&note),
-                                "`%s` has no `eq`, so it cannot be compared with `%s`",
-                                sd->name, op);
+                                "`%s` does not define `==`, so it cannot be compared",
+                                sd->name);
                         return c->tBool;
                     }
 
@@ -408,8 +416,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
                     if (!eqSignatureOk(tt, m, b, sp, sa)) {
                         ckError(c, e->line,
-                                "`eq` 的签名必须是 `fn eq(self: ref T, other: ref T) -> bool`",
-                                "`%s.eq` has the wrong signature for `%s`", sd->name, op);
+                                "运算符方法的签名必须是 `fn ==(self: ref T, other: T) -> bool`",
+                                "`%s.%s` has the wrong signature", sd->name, m->name);
                         return c->tBool;
                     }
                     e->func = m;        /* codegen 用它生成 `Type_eq(&a, &b)` */
@@ -914,6 +922,9 @@ static void checkDeclarations(Checker *c) {
 static void checkMethodShape(Checker *c, FuncDef *f) {
     if (!f->owner) {
         /* 自由函数不能有 `self` —— 方法必须写在 struct 体内（定案 9）*/
+        if (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0)
+            ckError(c, f->line, "运算符要写在 struct 体内（它是一个方法）",
+                    "operator `%s` must be defined inside a `struct`", f->name);
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
             if (strcmp(p->name, "self") == 0)
@@ -1037,7 +1048,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 ckError(&c, ec->node->line,
                         "泛型里的 `==` 推迟到实例化才检查 —— 这是「不引入 trait」换来的代价。"
                         "给那个类型加一个 `eq` 方法就行。",
-                        "`%s` needs `%s` to have an `eq` method (for `==`)",
+                        "`%s` needs `%s` to define `==`",
                         inst->name, typeStr(&c, lt));
             }
         }

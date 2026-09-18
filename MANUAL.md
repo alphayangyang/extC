@@ -318,24 +318,24 @@ let o: Point = {}                // 空字面量 = 零初始化（靠声明类�
 
 > `Name { ... }` 只在名字**首字母大写**时被当作结构体字面量 —— 用命名规范消歧义，省掉一个关键字。
 
-### `==` 与 `eq`
+### `==` 与运算符定义
 
 `==` / `!=` 是**语法糖**，不是万能比较：
 
 | 两边是什么 | 比较方式 |
 |---|---|
 | 整数 / 浮点 / `bool` / 枚举 | 编译器直接生成 C 的 `==` |
-| **struct / 泛型实例** | 找它的 `eq` 方法；**没有就报错** |
+| **struct / 泛型实例** | 找它定义的 **`fn ==`**；**没定义就报错** |
 | `str` | ⚠️ **现在不许比**（见下） |
 
-想让自己的类型能比，就写一个 `eq`：
+想让自己的类型能比，就在 struct 里**显式定义 `==`**：
 
 ```extc
 struct Point {
     x: i32
     y: i32
 
-    fn eq(self: ref Point, other: Point) -> bool {
+    fn ==(self: ref Point, other: Point) -> bool {
         return self.x == other.x && self.y == other.y
     }
 }
@@ -345,12 +345,27 @@ let b: Point = { x: 1, y: 2 }
 println(a == b)      // true —— 生成 Point_eq(&a, b)
 ```
 
-**签名约定**：`fn eq(self: ref T, other: T 或 ref T) -> bool`。
+**把 `==` 写出来，而不是约定一个隐式的方法名** —— 读代码的人一眼就知道
+`p1 == p2` 的行为从哪来。（在 C 里它被拼成 `Point_eq`，因为 C 的标识符不能叫 `==`。）
+
+**签名约定**：`fn ==(self: ref T, other: T 或 ref T) -> bool`
 
 - `other` 取**值**时，`a == b` 生成 `Point_eq(&a, b)`，最省事 —— 小类型建议这样。
 - `other` 取 **`ref`** 时，生成 `Point_eq(&a, &b)`（编译器自动加 `&`）；
-  但你要是**手动**写 `a.eq(b)`，`other` 是 ref 就必须写 `a.eq(ref b)` ——
+  但要是**手动**写 `a.==(b)`，`other` 是 ref 就必须写 `a.==(ref b)` ——
   因为**方法参数**（不是接收者）是引用时，调用点要显式写 `ref`。
+
+**`!=` 可以单独定义；不定义的话退回用 `==` 取反**：
+
+```extc
+if a != b { }        // 没定义 `fn !=` 时，生成 !(Point_eq(&a, b))
+```
+
+**运算符必须写在 struct 体内**（它是一个方法）：
+
+```extc
+fn ==(self: ref Point, other: Point) -> bool { ... }    // error: 自由函数不能定义运算符
+```
 
 **泛型里的 `==` 会推迟到实例化才检查**：
 
@@ -364,15 +379,15 @@ struct Wrapper<T> {
 }
 
 var a: Wrapper<i32> = { value: 7 }     // i32 内建 → ✓
-var b: Wrapper<Tag> = { ... }          // Tag 没有 eq → ❌
-// error: `Wrapper_Tag` needs `Tag` to have an `eq` method (for `==`)
+var b: Wrapper<Tag> = { ... }          // Tag 没定义 == → ❌
+// error: `Wrapper_Tag` needs `Tag` to define `==`
 ```
 
 > **这是「不引入 trait」的代价**：错误晚到实例化，但信息里会点明是哪个实例。
-> 收益是语言里**一个新概念都不加** —— `eq` 就只是一个普通方法。
+> 收益是语言里**一个新概念都不加** —— `fn ==` 就只是一个方法。
 
 ⚠️ **`str` 不能比较**。它的 `==` 会退化成 C 的**指针比较**（陷阱），所以编译器直接拒绝。
-T4c 把字符串换成 `Slice<u8>` 之后，prelude 会给它一个**按内容比较**的 `eq`。
+T4c 把字符串换成 `Slice<u8>` 之后，prelude 会给它一个**按内容比较**的 `fn ==`。
 
 ---
 
@@ -584,7 +599,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | `enums.extc` | `type` 枚举、`Status.ok`、枚举自动打印名字 |
 | `refs.extc` | **`ref` 表达式**、自由函数实参写 `ref`、方法接收者自动取地址 |
 | `generics.extc` | **泛型 `struct Name<T>`**：四份实例同时工作、嵌套 struct、实例的自动调试打印 |
-| `eq.extc` | **`==` 通过 `eq` 方法**：普通 struct、泛型里推迟到实例化检查 |
+| `eq.extc` | **显式定义 `fn ==`**：普通 struct、`!=` 取反、泛型里推迟到实例化检查 |
 | `debug.extc` | **自动调试打印**：递归打印 struct、枚举打名字、零初始化直接打 |
 
 跑测试：

@@ -1,16 +1,16 @@
-// `==` 是语法糖：struct 上写一个 eq 方法就能比较（不需要 trait / trait 约束）
+// `==` 是显式定义的：在 struct 里写 `fn ==(...)`（不需要 trait）
 
 struct Point {
     x: i32
     y: i32
 
-    fn eq(self: ref Point, other: ref Point) -> bool {
+    fn ==(self: ref Point, other: Point) -> bool {
         return self.x == other.x && self.y == other.y
     }
 }
 
 struct Tag {
-    id: i32          // 故意不写 eq
+    id: i32          // 故意不定义 ==
 }
 
 // 泛型里也能用 ==：推迟到实例化再检查

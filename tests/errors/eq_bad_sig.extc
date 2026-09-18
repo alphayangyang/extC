@@ -1,7 +1,7 @@
 struct Thing {
     n: i32
 
-    fn eq(self: ref Thing, other: ref Thing) -> i32 {
+    fn ==(self: ref Thing, other: ref Thing) -> i32 {
         return 1
     }
 }

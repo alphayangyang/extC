@@ -225,9 +225,21 @@ static TypeDef *parseTypeDecl(Parser *p) {
     return td;
 }
 
+/* 函数/方法的名字：普通标识符，或者可重载的运算符（`fn ==(...)`）。
+ * 让「定义 ==」这件事在源码里**看得见** —— 不用去查一个隐式的约定名。 */
+static Token *expectFuncName(Parser *p) {
+    if (atKind(p, TK_IDENT)) return take(p);
+    if (at(p, "==") || at(p, "!=")) return take(p);
+    Token *t = cur(p);
+    ctxError(p->ctx, t->line, t->col,
+             "可重载的运算符现在只有 `==` 和 `!=`（其余还没做）",
+             "expected a function name, found `%s`", shown(t));
+    return NULL;
+}
+
 static FuncDef *parseFunc(Parser *p) {
     Token *kw = take(p);                    /* fn */
-    Token *name = expectIdent(p, "a function name");
+    Token *name = expectFuncName(p);
     if (!name) return NULL;
 
     FuncDef *fd = (FuncDef *)arenaAllocZero(p->arena, sizeof(FuncDef));
