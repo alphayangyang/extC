@@ -1,0 +1,147 @@
+// 树状数组（Fenwick / BIT）：单点加 + 区间求和
+//
+// 这是 extC 上的第一道真算法题，所以顺手做成**自检**的：
+// 拿树状数组跟暴力求和跑同一串随机操作，对不上就把它数出来。
+// 没有输入、也没有随机数库，所以随机数自己写（LCG）—— 好处是**可复现**：
+// 出错时重跑同一串操作，错在第几次是确定的。
+//
+// 两个语言的注意点（都不是 bug，是设计）：
+//   · 数组长度必须是**编译期常数**，所以这里写字面量 1025（还没有全局常量）。
+//   · extC 是**值语义**：这个结构体 8KB 左右，传参默认是整份拷贝 ——
+//     所以每个方法都收 `ref self`，一份都不拷。
+
+struct fenwick {
+    tree: [1025]i64          // 下标 1..n（0 号位不用，这是树状数组的惯例）
+    n: i64
+
+    fn new(n: i64) -> fenwick {
+        return { n: n }      // tree 零初始化（定案 8）
+    }
+
+    // 单点加：a[i] += delta —— lowbit 一路往上爬
+    fn add(self: ref fenwick, i: i64, delta: i64) {
+        var x: i64 = i
+        while x <= self.n {
+            self.tree[x] = self.tree[x] + delta
+            x = x + (x & (-x))            // x += lowbit(x)
+        }
+    }
+
+    // 前缀和：a[1] + ... + a[i]
+    fn prefixSum(self: ref fenwick, i: i64) -> i64 {
+        var s: i64 = 0
+        var x: i64 = i
+        while x > 0 {
+            s = s + self.tree[x]
+            x = x - (x & (-x))            // x -= lowbit(x)
+        }
+        return s
+    }
+
+    // 区间和：a[l] + ... + a[r]
+    fn rangeSum(self: ref fenwick, l: i64, r: i64) -> i64 {
+        return self.prefixSum(r) - self.prefixSum(l - 1)
+    }
+}
+
+// 暴力求和 —— 只用来对拍
+struct brute {
+    a: [1025]i64
+    n: i64
+
+    fn new(n: i64) -> brute {
+        return { n: n }
+    }
+
+    fn add(self: ref brute, i: i64, delta: i64) {
+        self.a[i] = self.a[i] + delta
+    }
+
+    fn rangeSum(self: ref brute, l: i64, r: i64) -> i64 {
+        var s: i64 = 0
+        var x: i64 = l
+        while x <= r {
+            s = s + self.a[x]
+            x = x + 1
+        }
+        return s
+    }
+}
+
+// 可复现的伪随机数（线性同余）。
+// 放在 struct 里是因为**没法透过 `ref i64` 写标量**（见 MANUAL），
+// 而随机数发生器天生要改自己的状态 —— 包一层就能写 `self.state = ...`。
+// 乘数特意选得不会溢出 i64（C 里有符号溢出是 UB，extC 不给 UB）。
+struct rng {
+    state: i64
+
+    fn next(self: ref rng) -> i64 {
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        return self.state
+    }
+
+    fn below(self: ref rng, bound: i64) -> i64 {
+        return self.next() % bound
+    }
+}
+
+fn main() -> i32 {
+    let N: i64 = 1000
+
+    // ---- ① 对拍：2 万次随机操作，树状数组 vs 暴力 ----
+    var bit = fenwick::new(N)
+    var bf = brute::new(N)
+    var rand: rng = { state: 12345 }
+
+    var mismatches: i32 = 0
+    var t: i32 = 0
+    while t < 20000 {
+        let i = rand.below(N) + 1
+        if rand.below(2) == 0 {
+            let delta = rand.below(201) - 100
+            bit.add(i, delta)
+            bf.add(i, delta)
+        } else {
+            let l = rand.below(N) + 1
+            let r = rand.below(N) + 1
+            if l <= r {
+                if bit.rangeSum(l, r) != bf.rangeSum(l, r) {
+                    mismatches = mismatches + 1
+                }
+            }
+        }
+        t = t + 1
+    }
+    println("随机对拍 20000 次，结果不一致的次数 = ", mismatches)
+
+    // ---- ② 手算一个小例子，肉眼可验 ----
+    var f2 = fenwick::new(8)
+    f2.add(1, 1)
+    f2.add(2, 2)
+    f2.add(3, 3)
+    f2.add(4, 4)
+    f2.add(5, 5)                                    // a = [1, 2, 3, 4, 5, 0, 0, 0]
+    println("a = [1, 2, 3, 4, 5, 0, 0, 0]")
+    println("区间和 [2,4]   = ", f2.rangeSum(2, 4))   // 2+3+4 = 9
+    println("前缀和 [1,5]   = ", f2.prefixSum(5))     // 15
+    f2.add(3, 10)                                    // a[3] = 13
+    println("a[3] += 10 后：")
+    println("  区间和 [2,4] = ", f2.rangeSum(2, 4))   // 2+13+4 = 19
+    println("  前缀和 [1,5] = ", f2.prefixSum(5))     // 25
+    println("  单点 a[3]    = ", f2.rangeSum(3, 3))   // 13
+
+    // ---- ③ 树状数组的经典用途：求逆序对（权值树状数组） ----
+    var inv = fenwick::new(1000)                     // 只用到下标 1..100
+    let arr: [6]i64 = [5, 1, 4, 2, 8, 3]
+    var count: i64 = 0
+    var k: i64 = 0
+    while k < 6 {
+        let v = arr[k]
+        count = count + (inv.prefixSum(100) - inv.prefixSum(v))   // 前面比 v 大的有几个
+        inv.add(v, 1)
+        k = k + 1
+    }
+    println("逆序对 [5,1,4,2,8,3] = ", count)        // 7
+
+    return 0
+}

@@ -489,6 +489,29 @@ static void adoptContextType(Expr *e, Type *want) {
 
 static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *what) {
     if (ttIsError(want) || ttIsError(got)) return true;
+
+    /* ⚠️ `ref T` 两边都必须真是引用。
+     *
+     * 这个坑很隐蔽：字面量适配那条路会 `ttBase(want)` 把 ref 抹掉，
+     * 于是 `p = 5`（p 是 `ref i64`）被判成「5 能放进 i64」而放过去 ——
+     * 生成的 C 是 `int64_t * p; p = 5;`，只有 gcc 会抱怨一句
+     * `makes pointer from integer without a cast`。**extC 必须在类型层挡住它。** */
+    if (want->kind == TY_REF && got->kind != TY_REF) {
+        ckError(c, node ? node->line : 0,
+                "a `ref` can only be assigned another reference; "
+                "to write through it, assign to what it points to (`p.field = ...`, `p[i] = ...`)",
+                "%s expects `%s`, found `%s` -- a value is not a reference",
+                what, typeStr(c, want), typeStr(c, got));
+        return false;
+    }
+    if (want->kind != TY_REF && got->kind == TY_REF) {
+        ckError(c, node ? node->line : 0,
+                "a `ref` is not a value; extC has no implicit dereference",
+                "%s expects `%s`, found `%s` -- dereference it first",
+                what, typeStr(c, want), typeStr(c, got));
+        return false;
+    }
+
     if (ttEquals(want, got)) return true;
     if (ttCanWiden(got, want)) return true;
     if (node && literalFits(node, want)) return true;
@@ -560,6 +583,27 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
             "`%s` and `%s` have no common type for `%s`",
             typeStr(c, lt), typeStr(c, rt), op);
     return err;
+}
+
+/* 位运算：只许整数（`&` `|` `^` `<<` `>>`）。
+ * 结果类型跟算术走同一套（不拓宽就报错）——
+ * 特意**不**在这里抄一份类型规则，免得两处规则漂开。 */
+static bool isBitOp(const char *op) {
+    return strcmp(op, "&") == 0 || strcmp(op, "|") == 0 || strcmp(op, "^") == 0 ||
+           strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0;
+}
+
+static bool isRef(Type *t) { return t && t->kind == TY_REF; }
+
+/* `ref T` 上的算术/比较是**没有意义**的：C 里那是指针算术，语义完全不是用户想的。
+ * extC 宁可报错，也不给一个「看起来对、其实在挪指针」的答案。 */
+static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *op) {
+    Type *bad = isRef(lt) ? lt : rt;
+    ckError(c, e->line,
+            "a `ref` is not a number: in C this would silently become pointer arithmetic. "
+            "Use `.field` / `[i]` to operate on what it points to.",
+            "cannot apply `%s` to `%s` (a reference)", op, typeStr(c, bad));
+    return ttError(c->tt);
 }
 
 static Type *checkExprInner(Checker *c, Expr *e) {
@@ -663,6 +707,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot compare `%s` with `%s`", typeStr(c, lt), typeStr(c, rt));
                 return c->tBool;
             }
+            if (isBitOp(op)) {
+                if (ttIsError(lt) || ttIsError(rt)) return ttError(tt);
+                if (isRef(lt) || isRef(rt)) return refNotANumber(c, e, lt, rt, op);
+                if (!ttIsInteger(lt) || !ttIsInteger(rt)) {
+                    ckError(c, e->line, "bitwise operators only accept integers",
+                            "cannot apply `%s` to `%s` and `%s`",
+                            op, typeStr(c, lt), typeStr(c, rt));
+                    return ttError(tt);
+                }
+            }
+            /* 同样的坑：`ttIsNumeric` 会把 `ref T` 抹成 `T`，
+             * 于是 `p + 1`（p 是 `ref i64`）被当成数字运算放过去，
+             * 生成的 C 却是**指针算术** `p + 1` —— 静默地做完全不是那个意思的事。 */
+            if (isRef(lt) || isRef(rt)) return refNotANumber(c, e, lt, rt, op);
+            /* 结果类型交给算术那一套统一处理（含字面量适配）——不在这里抄第二份规则 */
             return checkArith(c, e, lt, rt);
         }
 
@@ -673,6 +732,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tBool;
             }
             if (ttIsError(ot)) return ot;
+            /* `~` 按位取反只对整数有意义 */
+            if (strcmp(e->u.un.op, "~") == 0) {
+                if (!ttIsInteger(ot)) {
+                    ckError(c, e->line, "bitwise operators only accept integers",
+                            "cannot apply `~` to `%s`", typeStr(c, ot));
+                    return ttError(tt);
+                }
+                return ot;
+            }
             if (!ttIsNumeric(ot)) {
                 ckError(c, e->line, NULL, "cannot negate `%s`", typeStr(c, ot));
                 return ttError(tt);

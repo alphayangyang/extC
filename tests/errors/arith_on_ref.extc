@@ -1,0 +1,4 @@
+fn bump(p: ref i64) {
+    let y = p + 1
+}
+fn main() -> i32 { return 0 }

@@ -93,8 +93,12 @@ static Token *expectTypeName(Parser *p, const char *what);
 static Expr *parseExpr(Parser *p);
 static Expr *parseOr(Parser *p);
 static Expr *parseAnd(Parser *p);
+static Expr *parseBitOr(Parser *p);
+static Expr *parseBitXor(Parser *p);
+static Expr *parseBitAnd(Parser *p);
 static Expr *parseEquality(Parser *p);
 static Expr *parseComparison(Parser *p);
+static Expr *parseShift(Parser *p);
 static Expr *parseTerm(Parser *p);
 static Expr *parseFactor(Parser *p);
 static Expr *parseUnary(Parser *p);
@@ -537,14 +541,58 @@ static Expr *parseOr(Parser *p) {
 }
 
 static Expr *parseAnd(Parser *p) {
-    Expr *e = parseEquality(p);
+    Expr *e = parseBitOr(p);
     if (!e) return NULL;
     while (at(p, "&&")) {
         Token *op = take(p);
         skipNl(p);
-        Expr *r = parseEquality(p);
+        Expr *r = parseBitOr(p);
         if (!r) return NULL;
         e = mkBin(p, "&&", e, r, op->line);
+    }
+    return e;
+}
+
+/* 位运算三层，优先级跟 C 一致（也跟 Go 一致）：
+ *     `|`  <  `^`  <  `&`  <  `== !=`  <  `< <=` …  <  `<< >>`  <  `+ -`
+ * 跟 C 一致是有意的 —— 写算法题的人手上有 C 的肌肉记忆，
+ * 这里要是「设计得更好」反而天天出错。*/
+static Expr *parseBitOr(Parser *p) {
+    Expr *e = parseBitXor(p);
+    if (!e) return NULL;
+    while (at(p, "|")) {
+        Token *op = take(p);
+        skipNl(p);
+        Expr *r = parseBitXor(p);
+        if (!r) return NULL;
+        e = mkBin(p, "|", e, r, op->line);
+    }
+    return e;
+}
+
+static Expr *parseBitXor(Parser *p) {
+    Expr *e = parseBitAnd(p);
+    if (!e) return NULL;
+    while (at(p, "^")) {
+        Token *op = take(p);
+        skipNl(p);
+        Expr *r = parseBitAnd(p);
+        if (!r) return NULL;
+        e = mkBin(p, "^", e, r, op->line);
+    }
+    return e;
+}
+
+static Expr *parseBitAnd(Parser *p) {
+    Expr *e = parseEquality(p);
+    if (!e) return NULL;
+    /* `&` 必须跟 `&&` 分开看：`at(p,"&")` 在 `&&` 上是假的（整词比较）*/
+    while (at(p, "&")) {
+        Token *op = take(p);
+        skipNl(p);
+        Expr *r = parseEquality(p);
+        if (!r) return NULL;
+        e = mkBin(p, "&", e, r, op->line);
     }
     return e;
 }
@@ -563,14 +611,44 @@ static Expr *parseEquality(Parser *p) {
 }
 
 static Expr *parseComparison(Parser *p) {
-    Expr *e = parseTerm(p);
+    Expr *e = parseShift(p);
     if (!e) return NULL;
     while (at(p, "<") || at(p, "<=") || at(p, ">") || at(p, ">=")) {
         Token *op = take(p);
         skipNl(p);
-        Expr *r = parseTerm(p);
+        Expr *r = parseShift(p);
         if (!r) return NULL;
         e = mkBin(p, op->text, e, r, op->line);
+    }
+    return e;
+}
+
+/* `<<` 和 `>>` —— **故意不放进词法表**。
+ *
+ * 因为 `box<box<i32>>` 里的 `>>` 必须是两个独立的 `>`（类型实参靠它配对，
+ * 见 parseType / looksLikeAssoc）。要是词法层就把 `>>` 合成一个 token，
+ * 泛型嵌套类型当场解析不了 —— C++ 当年正是这么踩的坑。
+ * 所以在**表达式**这一层用「两个相邻的 `<` / `>`」来认，类型那一层不受影响。 */
+static bool atShift(Parser *p, const char *ch, const char **op) {
+    if (strcmp(pk(p, 0)->text, ch) != 0 || strcmp(pk(p, 1)->text, ch) != 0) return false;
+    if (pk(p, 1)->kind != TK_PUNCT) return false;
+    *op = strcmp(ch, "<") == 0 ? "<<" : ">>";
+    return true;
+}
+
+static Expr *parseShift(Parser *p) {
+    Expr *e = parseTerm(p);
+    if (!e) return NULL;
+    for (;;) {
+        const char *op = NULL;
+        if (!atShift(p, "<", &op) && !atShift(p, ">", &op)) break;
+        int line = cur(p)->line;
+        take(p);
+        take(p);
+        skipNl(p);
+        Expr *r = parseTerm(p);
+        if (!r) return NULL;
+        e = mkBin(p, op, e, r, line);
     }
     return e;
 }
@@ -602,7 +680,7 @@ static Expr *parseFactor(Parser *p) {
 }
 
 static Expr *parseUnary(Parser *p) {
-    if (at(p, "!") || at(p, "-")) {
+    if (at(p, "!") || at(p, "-") || at(p, "~")) {
         Token *op = take(p);
         Expr *operand = parseUnary(p);
         if (!operand) return NULL;
