@@ -1030,7 +1030,17 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (!u->done) { unitBody(&g, u); u->done = true; }
     }
 
-    /* _debug 的原型先全出来：实例和普通 struct 会互相递归打印 */
+    /* ------------------------------------------------------------------
+     * 原型区：**所有**函数的原型都得在**任何**函数体之前出来。
+     *
+     * 这一区里**只许放原型**，函数体一律不许出现。原因是真实踩过的坑：
+     * 数组的 `==` 是编译器生成的，它的循环体要调用元素类型的 `fn ==`
+     * （比如 `point_eq`）。曾经数组 `==` 的定义排在 `point_eq` 的原型前面，
+     * C 就把 `point_eq` 当成隐式声明（`int()`），紧接着真原型一到就
+     * "conflicting types for 'point_eq'" —— **示例代码抓出来的真 bug**。
+     *
+     * 教训跟 T4 那次一样：**顺序问题不要靠「碰巧对了」，要结构上排掉。**
+     * ---------------------------------------------------------------- */
     for (size_t i = 0; i < g.structs.len; i++)
         cgLine(&g, "void %s_debug(%s v);",
                (*(StructDef **)vecAt(&g.structs, i))->name,
@@ -1041,33 +1051,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         /* 数组的 `==` 也要原型 —— 嵌套数组之间是递归调用的 */
         if (it->kind == TY_ARRAY && typeHasEq(it->inner))
             cgLine(&g, "bool %s_eq(%s a, %s b);", it->name, it->name, it->name);
+        if (it->kind == TY_GENERIC && isByteView(it))
+            cgLine(&g, "void %s_writeText(%s v);", it->name, it->name);
     }
-    if (g.structs.len || tt->instances.len) cgLine(&g, "");
-
-    /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
-        if (inst->kind == TY_ARRAY) {
-            genArrayDebug(&g, inst);
-            genArrayEq(&g, inst);
-            continue;
-        }
-        substEnter(&g, inst);
-        genStructDebug(&g, inst->name, inst->sdef);
-        if (isView(inst))      genViewIndexer(&g, inst);
-        if (isByteView(inst))  genByteViewWriter(&g, inst->name);
-        substLeave(&g);
-    }
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
-        if (isByteView(inst)) cgLine(&g, "void %s_writeText(%s v);", inst->name, inst->name);
-    }
-
-    /* struct 的自动调试打印 */
-    for (size_t i = 0; i < g.structs.len; i++)
-        genStructDebug(&g, (*(StructDef **)vecAt(&g.structs, i))->name,
-                       *(StructDef **)vecAt(&g.structs, i));
-
     /* 实例的方法原型（数组没有方法，也没有 sdef）*/
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
@@ -1077,9 +1063,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             genFuncProto(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));
         substLeave(&g);
     }
-    if (tt->instances.len) cgLine(&g, "");
-
-    /* 原型：顺序无关，顺带支持互相调用 */
+    /* 普通 struct 的方法 + 自由函数：顺序无关，顺带支持互相调用 */
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
         const char *ret = (!f->owner && strcmp(f->name, "main") == 0)
@@ -1099,7 +1083,29 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         bufPuts(&sig, ");");
         cgLine(&g, "%s", bufCstr(&sig));
     }
-    if (g.funcs.len) cgLine(&g, "");
+    if (g.structs.len || tt->instances.len || g.funcs.len) cgLine(&g, "");
+
+    /* ================= 函数体区（下面全是定义，不再是原型） ============== */
+
+    /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (inst->kind == TY_ARRAY) {
+            genArrayDebug(&g, inst);
+            genArrayEq(&g, inst);
+            continue;
+        }
+        substEnter(&g, inst);
+        genStructDebug(&g, inst->name, inst->sdef);
+        if (isView(inst))      genViewIndexer(&g, inst);
+        if (isByteView(inst))  genByteViewWriter(&g, inst->name);
+        substLeave(&g);
+    }
+
+    /* struct 的自动调试打印 */
+    for (size_t i = 0; i < g.structs.len; i++)
+        genStructDebug(&g, (*(StructDef **)vecAt(&g.structs, i))->name,
+                       *(StructDef **)vecAt(&g.structs, i));
 
     /* 实例的方法定义 */
     for (size_t i = 0; i < tt->instances.len; i++) {

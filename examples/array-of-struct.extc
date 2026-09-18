@@ -1,0 +1,67 @@
+// 数组 + struct + fn ==  —— 回归示例
+//
+// 这个例子存在的唯一理由是**抓一个真 bug**：
+// 数组的 `==` 是编译器生成的，它的循环体要调用元素类型的 `fn ==`。
+// 曾经「数组 `==` 的定义」排在「`point_eq` 的原型」前面，
+// C 就把 `point_eq` 当成隐式声明（`int()`），紧接着真原型一到就
+// `conflicting types for 'point_eq'` —— 编译器自己编得出来、gcc 编不过。
+//
+// 只要 examples/ 会被 tests/run.sh 跑，这个坑就再也回不来。
+
+struct point {
+    x: i32
+    y: i32
+
+    fn ==(self: ref point, other: point) -> bool {
+        return self.x == other.x && self.y == other.y
+    }
+}
+
+struct stone {
+    at: point
+    color: i32          // 0 = 空，1 = 黑，2 = 白
+
+    fn ==(self: ref stone, other: stone) -> bool {
+        return self.at == other.at && self.color == other.color
+    }
+}
+
+fn main() -> i32 {
+    // ① 元素是「有 fn == 的 struct」的数组 —— 这就是当初炸掉的那个
+    var ps: [2]point = [{ x: 1, y: 2 }, { x: 3, y: 4 }]
+    println(ps[0] == ps[1])              // false
+    println(ps[0] == point { x: 1, y: 2 })   // true（裸 {} 还推不出来，见 MANUAL）
+
+    // ② 数组整体比较：编译器递归下去，落到 point_eq
+    let same: [2]point = [{ x: 1, y: 2 }, { x: 3, y: 4 }]
+    println(ps == same)                  // true
+
+    // ③ struct 里嵌 struct，再套两层数组
+    var stones: [2]stone = [{ at: point { x: 0, y: 0 }, color: 1 },
+                            { at: point { x: 7, y: 7 }, color: 2 }]
+    println(stones[0].at.x)              // 0
+    println(stones[1].color)             // 2
+    println(stones[0] == stones[1])      // false
+
+    // ④ 二维数组，元素还是 struct
+    //
+    // 注意这里用了**裸 `{}`** —— 能推出来是因为外层数组字面量已经由
+    // `var grid: [2][2]stone` 钉死了类型，上下文一层层传下去。
+    var grid: [2][2]stone = [
+        [{ at: { x: 0, y: 0 }, color: 0 }, { at: { x: 1, y: 0 }, color: 0 }],
+        [{ at: { x: 0, y: 1 }, color: 1 }, { at: { x: 1, y: 1 }, color: 0 }],
+    ]
+    println(grid[0][0].at.y)             // 0
+    println(grid[1][0].at.y)             // 1 —— 跟 stones[0].at.y 差一个，所以：
+    println(grid[1][0] == stones[0])     // false
+    println(grid[1][0] == stone { at: point { x: 0, y: 1 }, color: 1 })   // true
+    println(grid[0][0] == stone { at: point { x: 0, y: 0 }, color: 0 })   // true
+
+    // ⑤ 值语义：改一个副本，原件不动
+    var copy = ps
+    copy[0].x = 99
+    println(ps[0].x)                     // 1
+    println(copy[0].x)                   // 99
+
+    return 0
+}
