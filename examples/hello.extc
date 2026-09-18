@@ -1,0 +1,27 @@
+// extC week-0 样例：先喂给词法器看结果
+// 注释（行注释和 /* 块注释 */ 都要能吃掉）
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn main() -> i32 {
+    let x: i32 = 3
+    var y: i32 = 4
+    y = y + 1
+
+    if x < y {
+        println(add(x, y))
+    } else {
+        println(x)
+    }
+
+    var i: i32 = 0
+    while i < 3 {
+        i = i + 1
+        println("loop")
+    }
+
+    println(3.14)
+    return 0
+}
