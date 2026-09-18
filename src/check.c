@@ -368,9 +368,41 @@ static bool typeSupportsEq(Type *t, const char *op) {
 static Type *checkExpr(Checker *c, Expr *e);
 static Type *checkTryInner(Checker *c, Expr *e);
 
+/* **值位置**：把 `ref T` 当 `T` 用（形状 3「值位置自动解引用」）。
+ *
+ * 跟 `checkExpr` 的分工：
+ *   `checkValue` = 这里要的是**值** ⇒ `p` 就是 p 指向的东西，打 `deref` 标记
+ *   `checkExpr`  = 这里要的是**地方/引用本身** ⇒ 赋值目标、`ref x` 的操作数、
+ *                  字段/下标/切片的底、方法接收者（要取地址）
+ *
+ * 权限（能不能写）不在这里管 —— 那是 `ref` / `mut ref` 的事。 */
+static Type *checkValue(Checker *c, Expr *e) {
+    Type *t = checkExpr(c, e);
+    /* `ref x` 是**显式**要一个引用 ⇒ 不再自动解引用 ——
+     * 否则就等于「解掉自己刚取的那个引用」，纯属自相矛盾。
+     * 所以 `let r = ref n` 得到的是引用；而 `let y = r` 得到的是 r 指向的**值**。 */
+    if (t && t->kind == TY_REF && e->kind != EX_REF) {
+        e->deref = true;
+        return t->inner;
+    }
+    return t;
+}
+
+/* 实参 / 字段初值：**期望类型是引用时不自动解引用** ——
+ * 那里是「放一个引用进去」（`{ data: ref n, ... }`、`f(ref c)`），不是取它的值。
+ * 其余情况按值位置处理（形状 3）。 */
+static Type *checkInto(Checker *c, Type *want, Expr *e) {
+    Type *got = checkExpr(c, e);
+    if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
+        e->deref = true;
+        return got->inner;
+    }
+    return got;
+}
+
 static Type *checkMaybeTry(Checker *c, Expr *e) {
     if (e && e->kind == EX_TRY) return checkTryInner(c, e);
-    return checkExpr(c, e);
+    return checkValue(c, e);
 }
 
 /* 泛型里的 `==` 推迟到实例化才检查 —— 这里记一笔 */
@@ -648,8 +680,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_BIN: {
-            Type *lt = checkExpr(c, e->u.bin.left);
-            Type *rt = checkExpr(c, e->u.bin.right);
+            Type *lt = checkValue(c, e->u.bin.left);
+            Type *rt = checkValue(c, e->u.bin.right);
             const char *op = e->u.bin.op;
 
             if (isLogicOp(op)) {
@@ -748,7 +780,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_UN: {
-            Type *ot = checkExpr(c, e->u.un.operand);
+            Type *ot = checkValue(c, e->u.un.operand);
             if (strcmp(e->u.un.op, "!") == 0) {
                 expectBool(c, ot, e->u.un.operand);
                 return c->tBool;
@@ -827,7 +859,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
         case EX_INDEX: {
             Type *ot = checkExpr(c, e->u.index.obj);
-            Type *it = checkExpr(c, e->u.index.index);
+            Type *it = checkValue(c, e->u.index.index);
             if (ttIsError(ot) || ttIsError(it)) return ttError(tt);
 
             Type *ob = ttBase(ot);
@@ -882,7 +914,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             for (int k = 0; k < 2; k++) {
                 Expr *b = k == 0 ? e->u.slice.lo : e->u.slice.hi;
                 if (!b) continue;
-                Type *bt = checkExpr(c, b);
+                Type *bt = checkValue(c, b);
                 if (!ttIsError(bt) && !ttIsInteger(bt))
                     ckError(c, b->line, "A slice bound must be an integer.",
                             "slice bound must be an integer, found `%s`", typeStr(c, bt));
@@ -927,7 +959,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             for (size_t i = 0; i < e->u.arraylit.elems.len; i++) {
                 Expr *el = *(Expr **)vecAt(&e->u.arraylit.elems, i);
                 if (want) adoptContextType(el, want->inner);
-                Type *t = checkExpr(c, el);
+                Type *t = checkValue(c, el);
                 if (ttIsError(t)) continue;
 
                 if (!elemT) {
@@ -1068,7 +1100,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr  *a = *(Expr **)vecAt(&e->u.assoc.args, i);
                 Type *pt = ttSubstitute(tt, p->type, sp, sa);
                 adoptContextType(a, pt);
-                Type *at = checkExpr(c, a);
+                Type *at = checkInto(c, pt, a);
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. ",
@@ -1095,7 +1127,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
-                    Type *at = checkExpr(c, a);
+                    Type *at = checkValue(c, a);   /* 打印的是**值** ⇒ 解引用 ✓ */
                     if (!isPrintable(at) || ttIs(at, "void")) {
                         ckError(c, a->line, NULL,
                                 "cannot print a value of type `%s`", typeStr(c, at));
@@ -1121,7 +1153,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
                 adoptContextType(a, p->type);
-                Type *at = checkExpr(c, a);
+                Type *at = checkInto(c, p->type, a);
 
                 /* T3：形参是 `ref T` 时，值必须在调用点显式写 `ref` ——
                  * 「这里传的是引用不是拷贝」要让读代码的人一眼看见（P′）。
@@ -1187,7 +1219,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *pt = ttSubstitute(tt, p->type, sp, sa);
 
                 adoptContextType(a, pt);
-                Type *at = checkExpr(c, a);
+                Type *at = checkInto(c, pt, a);
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
@@ -1241,7 +1273,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     want = ttSubstitute(tt, want, &sd->typeParams, &st->targs);
 
                 adoptContextType(fi->value, want);
-                Type *vt = checkExpr(c, fi->value);
+                Type *vt = checkInto(c, fd->type, fi->value);
                 Buf what;
                 bufInit(&what, c->arena);
                 bufPrintf(&what, "field `%s`", fi->name);
@@ -1315,8 +1347,13 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
-            /* `let x = e?` —— `?` 的合法位置之一 */
-            Type *it = checkMaybeTry(c, s->u.var.init);
+            /* `let x = e?` —— `?` 的合法位置之一。
+             * 有类型标注时按**标注**决定要不要解引用（标的是引用 ⇒ 别解）；
+             * 没标注时按值位置（形状 3）。 */
+            Type *it;
+            if (s->u.var.init->kind == EX_TRY) it = checkTryInner(c, s->u.var.init);
+            else if (s->u.var.ann)             it = checkInto(c, s->u.var.ann, s->u.var.init);
+            else                               it = checkValue(c, s->u.var.init);
             Type *declT = s->u.var.ann ? s->u.var.ann : it;
 
             if (s->u.var.ann)
@@ -1329,6 +1366,30 @@ static void checkStmt(Checker *c, Stmt *s) {
 
         case ST_ASSIGN: {
             Type *tt_ = checkExpr(c, s->u.assign.target);
+
+            /* **目标是引用 ⇒ 写进去**（形状 3：`p = v` 写 p 指向的那个地方）。
+             *
+             * 「换指向」已经取消（见 DECISIONS 引用语义定案），所以给引用赋值
+             * 必须对得上**被指的类型**；想改指向哪儿，只能重新声明一个绑定。 */
+            if (tt_->kind == TY_REF) {
+                if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
+
+                Expr *v = s->u.assign.value;
+                if (v && v->kind == EX_REF) {
+                    ckError(c, s->line,
+                            "`=` on a reference writes **into** what it points to; "
+                            "rebinding (making it point elsewhere) was removed on purpose "
+                            "-- declare a new binding instead.",
+                            "cannot retarget a reference");
+                    return;
+                }
+                adoptContextType(v, tt_->inner);
+                Type *vt = checkValue(c, v);
+                s->u.assign.target->deref = true;      /* 生成 `*(p) = v` */
+                checkAssignable(c, tt_->inner, vt, v, "assignment");
+                return;
+            }
+
             adoptContextType(s->u.assign.value, tt_);
             Type *vt = checkMaybeTry(c, s->u.assign.value);
 
@@ -1339,7 +1400,7 @@ static void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_IF:
-            expectBool(c, checkExpr(c, s->u.ifs.cond), s->u.ifs.cond);
+            expectBool(c, checkValue(c, s->u.ifs.cond), s->u.ifs.cond);
             checkBlockBody(c, s->u.ifs.thenBody);
             if (s->u.ifs.elseBody) {
                 if (s->u.ifs.elseBody->kind == ST_BLOCK) checkBlockBody(c, s->u.ifs.elseBody);
@@ -1348,7 +1409,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             return;
 
         case ST_WHILE:
-            expectBool(c, checkExpr(c, s->u.whiles.cond), s->u.whiles.cond);
+            expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
             checkBlockBody(c, s->u.whiles.body);
             return;
 

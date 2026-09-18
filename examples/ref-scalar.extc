@@ -1,0 +1,44 @@
+// 标量引用终于能用了 —— A2 做完「自动解引用 + 写穿」之后
+//
+// 以前 `ref i64` 是个**死类型**：没有字段也没有元素，所以
+//   ① 「透过它写」表达不出来   ② 能表达的「换指向」对标量毫无意义
+// 形状 3 把 `=` 判给「写进去」，于是两条都通了：
+//   读 `p`   ⇒ 得到它指向的**值**（自动解引用）
+//   写 `p=v` ⇒ 写进它指向的**地方**
+
+fn bump(p: mut ref i64) {
+    p = p + 1                    // 读 p 是值，写 p 是写穿
+}
+
+fn swap(a: mut ref i64, b: mut ref i64) {
+    let t = a                    // 拷的是值（自动解引用）
+    a = b
+    b = t
+}
+
+fn twice(v: ref i64) -> i64 {    // 只读借用：let 的变量也能传
+    return v * 2
+}
+
+fn main() -> i32 {
+    var n: i64 = 10
+    bump(ref n)
+    println("bump 之后 = ", n)             // 11
+
+    var x: i64 = 1
+    var y: i64 = 2
+    swap(ref x, ref y)
+    println("swap 之后 x=", x, " y=", y)   // 2 1
+
+    println("透过引用读 = ", n)             // 11（值，不是指针）
+    let m: i64 = ref n                     // 值位置 ⇒ 拷值
+    println("拷出来的 m = ", m)             // 11
+
+    let frozen: i64 = 7
+    println("只读借用也能读 = ", twice(ref frozen))   // 14
+
+    var r: mut ref i64 = ref n
+    r = r + 5                              // 写穿：n 变成 16
+    println("写穿之后 n = ", n)             // 16
+    return 0
+}

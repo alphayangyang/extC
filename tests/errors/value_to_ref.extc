@@ -1,4 +1,0 @@
-fn setZero(p: ref i64) {
-    p = 5
-}
-fn main() -> i32 { return 0 }

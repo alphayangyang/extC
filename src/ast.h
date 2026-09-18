@@ -80,6 +80,11 @@ struct Expr {
     FieldDef *field;    /* EX_FIELD 解析到的字段 */
     Type     *assocOwner; /* EX_ASSOC：解析到的**实例**类型（用来修饰 C 名字） */
     bool      needEq;   /* `==` 的操作数含类型参数 → 推迟到实例化再检查 */
+    bool      deref;    /* 这个表达式在**值位置**被用到，而它的类型是 `ref T`
+                         * ⇒ 生成 `*(...)`。
+                         * 这是形状 3「值位置自动解引用」的落点：类型检查阶段
+                         * 把 `ref T` 当 `T` 用（权限由 `ref` / `mut ref` 承担），
+                         * 代码生成阶段就补一次解引用。见 DECISIONS 引用语义定案。 */
 
     union {
         long long ival;

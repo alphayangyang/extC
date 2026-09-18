@@ -1,6 +1,0 @@
-fn main() -> i32 {
-    var n: i64 = 1
-    let r = ref n
-    var m: i64 = r
-    return 0
-}

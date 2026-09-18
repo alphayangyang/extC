@@ -612,7 +612,7 @@ static const char *genStructLit(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
-static const char *genExpr(CG *g, Expr *e) {
+static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
         case EX_FLOAT: return arenaPrintf(g->arena, "%g", e->u.fval);
@@ -726,6 +726,20 @@ static const char *genExpr(CG *g, Expr *e) {
             return arenaPrintf(g->arena, "%s_%s", e->u.enumval.typeName, e->u.enumval.variant);
     }
     return "0";
+}
+
+/* 值位置的**自动解引用**（形状 3）。
+ *
+ * 类型检查阶段把 `ref T` 在值位置当 `T` 用（并在那个节点上打 `deref` 标记），
+ * 这里就补一次解引用 —— 于是 `let y = p` 拷的是值，`p + 1` 加的是值，
+ * 而「能不能写」由 `ref` / `mut ref` 在类型层承担。
+ *
+ * 包一层是因为**所有**生成表达式的路径都要经过它（含递归调用）——
+ * 放在唯一的出口上，就不会有哪条路忘了解引用。 */
+static const char *genExpr(CG *g, Expr *e) {
+    const char *s = genExprInner(g, e);
+    if (e->deref) return arenaPrintf(g->arena, "*(%s)", s);
+    return s;
 }
 
 /* ---------------------------------------------------------------- 自动调试打印
