@@ -17,9 +17,11 @@
 #include <unistd.h>
 
 #include "base.h"
+#include "check.h"
 #include "codegen.h"
 #include "lexer.h"
 #include "parser.h"
+#include "types.h"
 
 /* ---------------------------------------------------------------- 工具 */
 
@@ -157,7 +159,15 @@ int main(int argc, char **argv) {
     }
 
     Module m;
+    memset(&m, 0, sizeof m);
     if (!ctx.hasError) parseModule(&ctx, &arena, &toks, &m);
+
+    /* 类型检查：一遍**独立**的 pass，把结果写回 AST。
+     * 之后的代码生成不再做任何类型推理（T1）。 */
+    if (!ctx.hasError) {
+        TypeTable *tt = ttNew(&arena, &m);
+        checkModule(&ctx, &arena, tt, &m);
+    }
 
     Buf c;
     bufInit(&c, &arena);

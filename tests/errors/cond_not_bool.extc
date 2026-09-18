@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    if 1 {
+        println("no implicit truthiness")
+    }
+    return 0
+}

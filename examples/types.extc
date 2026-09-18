@@ -1,0 +1,36 @@
+// T1/T2 之后新支持的写法：真类型检查 + 字面量按值适配 + 拓宽自动、收窄禁止
+
+fn scale(x: i32, factor: f64) -> f64 {
+    // i32 在这里被拓宽成 f64（无损失，自动）
+    return x * factor
+}
+
+fn widenTo64(v: i32) -> i64 {
+    return v              // i32 → i64：拓宽，自动
+}
+
+fn main() -> i32 {
+    let a: i32 = 3
+    let b: i64 = 42              // 字面量按值适配：42 放得进 i64
+    let c: u8 = 200              // 200 放得进 u8
+    let big: u16 = 60000         // 60000 放得进 u16
+    let d: f64 = 7               // 整数字面量 → 浮点
+    let e: f32 = 3.14            // 浮点字面量 → f32
+
+    var total: i64 = b           // 同类型
+    total = total + a            // i32 拓宽到 i64，自动
+
+    let scaled = scale(a, 2.5)   // i32 实参拓宽成 f64
+    let w = widenTo64(100)
+
+    println("a = ", a)
+    println("b = ", b)
+    println("c = ", c)
+    println("big = ", big)
+    println("d = ", d)
+    println("e = ", e)
+    println("total = ", total)
+    println("scaled = ", scaled)
+    println("w = ", w)
+    return 0
+}

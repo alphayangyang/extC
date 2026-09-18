@@ -212,7 +212,7 @@ static Type *parseType(Parser *p) {
     Token *t = cur(p);
     if (t->kind == TK_TYPE || t->kind == TK_IDENT) {
         take(p);
-        return typeName(p->arena, t->text);
+        return typeNamed(p->arena, t->text);
     }
     ctxError(p->ctx, t->line, t->col, NULL, "expected a type, found `%s`", shown(t));
     return NULL;

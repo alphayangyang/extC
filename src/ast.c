@@ -2,35 +2,20 @@
 
 #include <string.h>
 
-Type *typeName(Arena *a, const char *name) {
+/* 只造数据形状。类型名的解析、相等、渲染都在 types.c / check.c。 */
+
+Type *typeNamed(Arena *a, const char *name) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
-    t->isRef = false;
+    t->kind = TY_UNRESOLVED;
     t->name = name;
-    t->inner = NULL;
     return t;
 }
 
 Type *typeRef(Arena *a, Type *inner) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
-    t->isRef = true;
-    t->name = NULL;
+    t->kind = TY_REF;
     t->inner = inner;
     return t;
-}
-
-Type *typeBase(Type *t) {
-    while (t && t->isRef) t = t->inner;
-    return t;
-}
-
-void typeRender(const Type *t, Buf *out) {
-    if (!t) { bufPuts(out, "void"); return; }
-    if (t->isRef) {
-        bufPuts(out, "ref ");
-        typeRender(t->inner, out);
-        return;
-    }
-    bufPuts(out, t->name);
 }
 
 Expr *exprNew(Arena *a, ExprKind kind, int line) {
@@ -49,6 +34,7 @@ Stmt *stmtNew(Arena *a, StmtKind kind, int line) {
 
 void moduleInit(Module *m, Arena *a) {
     vecInit(&m->structs, a, sizeof(void *));
+    vecInit(&m->types, a, sizeof(void *));
     vecInit(&m->funcs, a, sizeof(void *));
 }
 
