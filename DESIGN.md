@@ -326,8 +326,8 @@ extC 里它是一个**带源码位置、带值、带调用链的 trap**。这一
 foo.extc:12:9: trap: index 15 out of range for `[15]i32`
       cell[15] = 1
           ^
-  note: 这个边界检查编译器没能证明，所以留到了运行时
-  调用链: main -> place -> checkWin
+  note: the compiler could not prove this bound, so the check stayed at run time
+  call chain: main -> place -> checkWin
 ```
 
 #### 便宜且高价值的四件事

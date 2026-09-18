@@ -127,7 +127,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else {
             Token *t = cur(&p);
             ctxError(ctx, t->line, t->col,
-                     "extC 的顶层只允许 `fn`、`struct` 和 `type` 定义",
+                     "the top level allows only `fn`, `struct` and `type` declarations",
                      "expected `fn`, `struct` or `type` at the top level, found `%s`", shown(t));
             return false;
         }
@@ -232,7 +232,7 @@ static Token *expectFuncName(Parser *p) {
     if (at(p, "==") || at(p, "!=")) return take(p);
     Token *t = cur(p);
     ctxError(p->ctx, t->line, t->col,
-             "可重载的运算符现在只有 `==` 和 `!=`（其余还没做）",
+             "only `==` and `!=` can be overloaded for now",
              "expected a function name, found `%s`", shown(t));
     return NULL;
 }
@@ -253,7 +253,7 @@ static FuncDef *parseFunc(Parser *p) {
     while (!at(p, ")")) {
         Token *pn = expectIdent(p, "a parameter name");
         if (!pn) return NULL;
-        if (!expect(p, ":", "参数必须写类型：`name: Type`")) return NULL;
+        if (!expect(p, ":", "parameters must be typed: `name: Type`")) return NULL;
         Type *pt = parseType(p);
         if (!pt) return NULL;
 
@@ -354,7 +354,7 @@ static Stmt *parseStmt(Parser *p) {
     if (at(p, "continue")) { take(p); return stmtNew(p->arena, ST_CONTINUE, t->line); }
 
     if (at(p, "struct") || at(p, "fn")) {
-        ctxError(p->ctx, t->line, t->col, "extC 不支持嵌套定义",
+        ctxError(p->ctx, t->line, t->col, "extC does not allow nested declarations",
                  "`%s` cannot appear inside a function body", t->text);
         return NULL;
     }
@@ -402,7 +402,7 @@ static Stmt *parseVarDecl(Parser *p) {
     } else if (ann == NULL) {
         Token *t = cur(p);
         ctxError(p->ctx, t->line, t->col,
-                 "省略初始化式就必须写类型：`var x: T`（否则推导不出类型）",
+                 "without an initializer you must write the type: `var x: T`",
                  "`%s %s` needs a type or an initializer", kw->text, name->text);
         return NULL;
     }

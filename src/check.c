@@ -177,7 +177,7 @@ static void checkOperatorSig(Checker *c, FuncDef *f) {
     bool isOp = (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0);
     if (!isOp || !f->owner) return;
 
-    const char *want = "签名必须是 `fn ==(self: ref T, other: T) -> bool`";
+    const char *want = "signature must be `fn ==(self: ref T, other: T) -> bool`";
 
     /* 为什么必须是 bool —— 三个前提推出来的，不是拍的：
      *   ① `a == b` 天然会被用在 `if` / `while` / `&&` / `||` 里
@@ -186,9 +186,9 @@ static void checkOperatorSig(Checker *c, FuncDef *f) {
      * 所以 `==` 只能是 `bool`，否则它就没法用在条件里。
      * 想要别的结果？换个方法名（`compare` / `diff` 之类），那些没有任何限制。 */
     const char *why =
-        "它要能被用在 `if` / `&&` / `||` 里，而 extC 没有隐式真值转换；"
-        "而且 `!=` 是靠 `==` 取反实现的。"
-        "想返回别的东西，就换个方法名（比如 `compare` / `diff`）—— 那些没有任何限制。";
+        "`a == b` gets used in `if` / `&&` / `||`, and extC has no implicit truthiness; "
+        "`!=` is also derived by negating `==`. "
+        "To return something else, use a different method name (`compare` / `diff` etc.) -- those are unrestricted.";
 
     if (f->params.len != 2) {
         ckError(c, f->line, want, "operator `%s` must take exactly 2 parameters", f->name);
@@ -309,7 +309,7 @@ static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const
     }
 
     ckError(c, node ? node->line : 0,
-            "extC 只自动做**无损失**的拓宽；有损转换必须显式写出来",
+            "extC only widens implicitly (lossless); a lossy conversion must be written out",
             "%s expects `%s`, found `%s`", what, typeStr(c, want), typeStr(c, got));
     return false;
 }
@@ -317,7 +317,7 @@ static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const
 static void expectBool(Checker *c, Type *t, Expr *node) {
     if (ttIsError(t)) return;
     if (!ttIs(t, "bool")) {
-        ckError(c, node ? node->line : 0, "条件必须是 `bool`（extC 没有隐式真值转换）",
+        ckError(c, node ? node->line : 0, "conditions must be `bool` -- extC has no implicit truthiness",
                 "expected `bool`, found `%s`", typeStr(c, t));
     }
 }
@@ -332,12 +332,12 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
 
     const char *op = e->u.bin.op;
     if (!ttIsNumeric(lt) || !ttIsNumeric(rt)) {
-        ckError(c, e->line, "算术运算符只接受数值类型",
+        ckError(c, e->line, "arithmetic operators only accept numeric types",
                 "cannot apply `%s` to `%s` and `%s`", op, typeStr(c, lt), typeStr(c, rt));
         return err;
     }
     if (strcmp(op, "%") == 0 && (!ttIsInteger(lt) || !ttIsInteger(rt))) {
-        ckError(c, e->line, "`%` 只对整数有意义",
+        ckError(c, e->line, "`%` is only meaningful for integers",
                 "cannot apply `%%` to `%s` and `%s`", typeStr(c, lt), typeStr(c, rt));
         return err;
     }
@@ -362,7 +362,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
     if (ttCanWiden(lt, rt)) return rt;
     if (ttCanWiden(rt, lt)) return lt;
 
-    ckError(c, e->line, "两种类型之间没有无损失的转换，先显式转一下再来运算",
+    ckError(c, e->line, "these two types have no lossless conversion; convert explicitly first",
             "`%s` and `%s` have no common type for `%s`",
             typeStr(c, lt), typeStr(c, rt), op);
     return err;
@@ -380,7 +380,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_IDENT: {
             Sym *s = lookup(c, e->u.ident.name);
             if (!s) {
-                ckError(c, e->line, "所有名字都要先声明（week-1 还没有全局变量）",
+                ckError(c, e->line, "every name must be declared first (extC has no globals yet)",
                         "undefined name `%s`", e->u.ident.name);
                 return ttError(tt);
             }
@@ -423,8 +423,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     StructDef *sd = structOf(b);
                     if (!sd) {
                         ckError(c, e->line,
-                                "`str` 的 `==` 会退化成 C 的指针比较 —— 那是个陷阱，所以现在不许比。"
-                                "等 T4c 把字符串换成 `Slice<u8>` 之后，prelude 会给它一个按内容比较的 `eq`。",
+                                "`str`'s `==` would degrade to C pointer comparison -- a trap, so it is rejected for now."
+                                "Once strings become `Slice<u8>`, the prelude will give it a content-based `fn ==`.",
                                 "`%s` does not support `%s`", typeStr(c, lt), op);
                         return c->tBool;
                     }
@@ -434,7 +434,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         Buf note;
                         bufInit(&note, c->arena);
                         bufPrintf(&note,
-                                  "在 `%s` 里定义它即可：\n"
+                                  "define it inside `%s`:\n"
                                   "      fn ==(self: ref %s, other: %s) -> bool { ... }",
                                   sd->name, sd->name, sd->name);
                         ckError(c, e->line, bufCstr(&note),
@@ -456,7 +456,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (isNumericLit(e->u.bin.left)  && literalFits(e->u.bin.left, rt))  return c->tBool;
                 if (isNumericLit(e->u.bin.right) && literalFits(e->u.bin.right, lt)) return c->tBool;
 
-                ckError(c, e->line, isEqOp ? "只有数值、bool、枚举和带 `eq` 的 struct 能比" : NULL,
+                ckError(c, e->line, isEqOp ? "only numbers, `bool`, enums, and structs that define `==` can be compared" : NULL,
                         "cannot compare `%s` with `%s`", typeStr(c, lt), typeStr(c, rt));
                 return c->tBool;
             }
@@ -490,7 +490,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         if (!v) {
                             Buf note;
                             bufInit(&note, c->arena);
-                            bufPrintf(&note, "%s 的变体：", et->name);
+                            bufPrintf(&note, "variants of %s:", et->name);
                             for (size_t i = 0; i < et->edef->variants.len; i++)
                                 bufPrintf(&note, " %s",
                                           (*(Variant **)vecAt(&et->edef->variants, i))->name);
@@ -518,7 +518,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (!fd) {
                 Buf note;
                 bufInit(&note, c->arena);
-                bufPrintf(&note, "%s 的字段：", sd->name);
+                bufPrintf(&note, "fields of %s:", sd->name);
                 for (size_t i = 0; i < sd->fields.len; i++)
                     bufPrintf(&note, " %s", (*(FieldDef **)vecAt(&sd->fields, i))->name);
                 ckError(c, e->line, bufCstr(&note),
@@ -538,12 +538,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (ttIsError(ot)) return ttError(tt);
 
             if (ot->kind == TY_REF) {
-                ckError(c, e->line, "它本来就是引用，直接传就行",
+                ckError(c, e->line, "it is already a reference -- just pass it as is",
                         "`ref` applied to a value that is already a reference");
                 return ot;
             }
             if (!isLvalue(op)) {
-                ckError(c, e->line, "只有变量和字段可以取引用",
+                ckError(c, e->line, "only variables and fields can be referenced",
                         "cannot take a reference to this expression");
                 return ttError(tt);
             }
@@ -552,7 +552,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (op->kind == EX_IDENT) {
                 Sym *s = lookup(c, op->u.ident.name);
                 if (s && !s->mut) {
-                    ckError(c, e->line, "`ref T` 是可变引用；只读的值直接按值传",
+                    ckError(c, e->line, "`ref T` is a *mutable* reference; pass read-only values by value instead",
                             "cannot take a mutable reference to `%s`, which is a `let`",
                             s->name);
                     return ttError(tt);
@@ -566,7 +566,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
         case EX_CALL: {
             if (e->u.call.callee->kind != EX_IDENT) {
-                ckError(c, e->line, "week-1 只支持直接调用函数名",
+                ckError(c, e->line, "only direct calls to a function name are supported for now",
                         "only direct function calls are supported");
                 return ttError(tt);
             }
@@ -577,7 +577,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
                     Type *at = checkExpr(c, a);
                     if (!isPrintable(at) || ttIs(at, "void")) {
-                        ckError(c, a->line, "week-1 的 println 只支持内建类型",
+                        ckError(c, a->line, "`println` only supports built-in types for now",
                                 "cannot print a value of type `%s`", typeStr(c, at));
                     }
                 }
@@ -586,7 +586,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             FuncDef *f = findFunc(c, name);
             if (!f) {
-                ckError(c, e->line, "可用内建： print(x) / println(x)",
+                ckError(c, e->line, "built-ins available: `print(x)` / `println(x)`",
                         "call to undefined function `%s`", name);
                 return ttError(tt);
             }
@@ -608,8 +608,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * 实参本身就是引用的话，直接传即可。*/
                 if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
-                            "`. 表示在这个值上操作，而自由函数的引用参数要点明。"
-                            "`ref` 是可变引用，所以被引用的东西必须是 `var`",
+                            "`.` means \"operate on this value\", so free functions need `ref` spelled out."
+                            "`ref` is a mutable reference, so the target must be a `var`",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, p->type));
                     continue;
@@ -630,14 +630,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Buf note;
                 bufInit(&note, c->arena);
                 if (sd) {
-                    bufPrintf(&note, "%s 的方法：", sd->name);
-                    if (sd->methods.len == 0) bufPuts(&note, " （一个都没有）");
+                    bufPrintf(&note, "methods of %s:", sd->name);
+                    if (sd->methods.len == 0) bufPuts(&note, " (none)");
                     for (size_t i = 0; i < sd->methods.len; i++)
                         bufPrintf(&note, " %s",
                                   (*(FuncDef **)vecAt(&sd->methods, i))->name);
-                    bufPuts(&note, "；方法必须写在 struct 体内（定案 9）");
+                    bufPuts(&note, "; methods must be declared inside their `struct`");
                 } else {
-                    bufPuts(&note, "只有 struct 的值有方法");
+                    bufPuts(&note, "only struct values have methods");
                 }
                 ckError(c, e->line, bufCstr(&note), "no method `%s` on `%s`",
                         e->u.method.name, typeStr(c, rb ? rb : recvT));
@@ -670,8 +670,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *at = checkExpr(c, a);
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
-                            "`. 表示在这个值上操作，而自由函数的引用参数要点明。"
-                            "`ref` 是可变引用，所以被引用的东西必须是 `var`",
+                            "`.` means \"operate on this value\", so free functions need `ref` spelled out."
+                            "`ref` is a mutable reference, so the target must be a `var`",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, pt));
                     continue;
@@ -692,13 +692,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             StructDef *sd = structOf(st);
             if (!sd) {
                 ckError(c, e->line,
-                        "裸 `{}` 只在上下文能唯一确定类型的地方可用："
+                        "a bare `{}` works only where the context pins the type down: "
                         "`var x: T = {}` / `return {}` / `f({})`",
                         "cannot infer the type of a bare `{}` here");
                 return ttError(tt);
             }
             if (st->kind == TY_STRUCT && sd->typeParams.len > 0) {
-                ckError(c, e->line, "泛型要写出实参，例如 `Pair<i32, i32> { ... }`",
+                ckError(c, e->line, "a generic needs explicit type arguments, e.g. `Pair<i32, i32> { ... }`",
                         "`%s` is generic; type arguments cannot be inferred here", sd->name);
                 return ttError(tt);
             }
@@ -709,7 +709,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (!fd) {
                     Buf note;
                     bufInit(&note, c->arena);
-                    bufPrintf(&note, "%s 的字段：", sd->name);
+                    bufPrintf(&note, "fields of %s:", sd->name);
                     for (size_t k = 0; k < sd->fields.len; k++)
                         bufPrintf(&note, " %s", (*(FieldDef **)vecAt(&sd->fields, k))->name);
                     ckError(c, fi->value->line, bufCstr(&note),
@@ -763,7 +763,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
             if (!s->u.var.init) {
                 if (s->u.var.ann && s->u.var.ann->kind == TY_REF) {
-                    ckError(c, s->line, "`ref T` 是不可为空的引用，所以它没有「零值」",
+                    ckError(c, s->line, "`ref T` is a non-nullable reference, so it has no zero value",
                             "cannot zero-initialize `%s`: a reference has no zero value",
                             s->u.var.name);
                 }
@@ -793,7 +793,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             if (s->u.assign.target->kind == EX_IDENT) {
                 Sym *sym = lookup(c, s->u.assign.target->u.ident.name);
                 if (sym && !sym->mut) {
-                    ckError(c, s->line, "改成 `var` 才能重新赋值（`let` 是不可变绑定）",
+                    ckError(c, s->line, "use `var` to allow reassignment (`let` is an immutable binding)",
                             "cannot assign to `%s`, which is a `let`", sym->name);
                     return;
                 }
@@ -949,12 +949,12 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
     if (!f->owner) {
         /* 自由函数不能有 `self` —— 方法必须写在 struct 体内（定案 9）*/
         if (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0)
-            ckError(c, f->line, "运算符要写在 struct 体内（它是一个方法）",
+            ckError(c, f->line, "an operator is a method, so it must be declared inside a `struct`",
                     "operator `%s` must be defined inside a `struct`", f->name);
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
             if (strcmp(p->name, "self") == 0)
-                ckError(c, p->line, "方法要写在 struct 体内（定案 9）",
+                ckError(c, p->line, "methods must be declared inside their `struct`",
                         "`self` is only allowed in a method declared inside a `struct`");
         }
         return;
@@ -1074,8 +1074,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
             if (!typeSupportsEq(lt, ec->op)) {
                 ckError(&c, ec->node->line,
-                        "泛型里的 `==` 推迟到实例化才检查 —— 这是「不引入 trait」换来的代价。"
-                        "给那个类型加一个 `eq` 方法就行。",
+                        "`==` inside a generic is checked at instantiation, not on the template -- the price of having no traits."
+                        "Add a `fn ==` to that type.",
                         "`%s` needs `%s` to define `==`",
                         inst->name, typeStr(&c, lt));
             }

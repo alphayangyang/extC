@@ -79,16 +79,16 @@ static int runCmd(char *const argv[]) {
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-        "extC compiler (week-0)\n"
+        "extC compiler\n"
         "\n"
         "usage: %s [options] <file.extc>\n"
         "\n"
         "options:\n"
-        "  -o <file>       把生成的 C 写到这个文件（默认打到 stdout）\n"
-        "  --run           生成 C、用 C 编译器编译，然后运行\n"
-        "  --dump-tokens   只做词法分析，打印 token 表\n"
-        "  --no-line-map   不生成 `#line` 指令（默认生成）\n"
-        "  -h, --help      显示这份帮助\n",
+        "  -o <file>       write the generated C to this file (default: stdout)\n"
+        "  --run           compile the generated C, then run it\n"
+        "  --dump-tokens   lex only; print the token table\n"
+        "  --no-line-map   do not emit `#line` directives (default: emit them)\n"
+        "  -h, --help      show this help\n",
         argv0);
 }
 

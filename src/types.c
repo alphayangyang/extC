@@ -104,7 +104,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
             Type *base = ttFromName(tt, t->name);
             if (!base) {
                 ctxError(ctx, line, 1,
-                         "内建类型是 i8/i16/i32/i64/u8/u16/u32/u64/f32/f64/bool/str/void",
+                         "built-in types: i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool str void",
                          "unknown type `%s`", t->name);
                 return tt->tError;
             }
@@ -134,7 +134,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
             /* 3) 泛型 struct 不带实参 → 报错 */
             if (base->kind == TY_STRUCT && base->sdef && base->sdef->typeParams.len > 0) {
                 ctxError(ctx, line, 1,
-                         "泛型要写出实参，例如 `%s<i32>`",
+                         "a generic needs explicit type arguments, e.g. `%s<i32>`",
                          "`%s` is generic and needs type arguments", t->name);
                 return tt->tError;
             }

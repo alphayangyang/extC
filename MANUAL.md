@@ -542,7 +542,7 @@ println(Status.warn)// warn   ← 枚举自动有名字文本（定案 11）
 examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
       x = 2
           ^
-  note: 改成 `var` 才能重新赋值（`let` 是不可变绑定）
+  note: use `var` to allow reassignment (`let` is an immutable binding)
 ```
 
 现在检查这些，**全部由 extC 自己报，不再漏给 gcc**：
