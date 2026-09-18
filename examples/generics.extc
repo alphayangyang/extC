@@ -22,7 +22,7 @@ struct pair<A, B> {
 struct box<T> {
     value: T
 
-    fn set(self: ref box<T>, v: T) {
+    fn set(self: mut ref box<T>, v: T) {
         self.value = v
     }
 

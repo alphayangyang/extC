@@ -19,7 +19,7 @@ struct fenwick {
     }
 
     // 单点加：a[i] += delta —— lowbit 一路往上爬
-    fn add(self: ref fenwick, i: i64, delta: i64) {
+    fn add(self: mut ref fenwick, i: i64, delta: i64) {
         var x: i64 = i
         while x <= self.n {
             self.tree[x] = self.tree[x] + delta
@@ -53,7 +53,7 @@ struct brute {
         return { n: n }
     }
 
-    fn add(self: ref brute, i: i64, delta: i64) {
+    fn add(self: mut ref brute, i: i64, delta: i64) {
         self.a[i] = self.a[i] + delta
     }
 
@@ -75,12 +75,12 @@ struct brute {
 struct rng {
     state: i64
 
-    fn next(self: ref rng) -> i64 {
+    fn next(self: mut ref rng) -> i64 {
         self.state = (self.state * 1103515245 + 12345) % 2147483648
         return self.state
     }
 
-    fn below(self: ref rng, bound: i64) -> i64 {
+    fn below(self: mut ref rng, bound: i64) -> i64 {
         return self.next() % bound
     }
 }

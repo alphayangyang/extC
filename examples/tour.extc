@@ -17,7 +17,7 @@ struct counter {
         return self.value == other.value && self.st == other.st
     }
 
-    fn bump(self: ref counter, amount: i64) {
+    fn bump(self: mut ref counter, amount: i64) {
         self.value = self.value + amount
         if self.value >= 100 {
             self.st = state.done

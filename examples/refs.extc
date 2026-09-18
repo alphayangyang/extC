@@ -3,13 +3,13 @@
 struct counter {
     n: i32
 
-    fn bump(self: ref counter, by: i32) {
+    fn bump(self: mut ref counter, by: i32) {
         self.n = self.n + by
     }
 }
 
 // 自由函数：引用参数在调用点要点明 `ref`
-fn addTo(c: ref counter, by: i32) {
+fn addTo(c: mut ref counter, by: i32) {
     c.bump(by)              // 方法接收者自动取地址，这里不用写 ref
 }
 

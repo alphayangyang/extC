@@ -1,0 +1,10 @@
+// 可写借用不能从 `let` 拿
+struct counter {
+    n: i64
+    fn bump(self: mut ref counter) { self.n = self.n + 1 }
+}
+fn main() -> i32 {
+    let c: counter = { n: 0 }
+    c.bump()
+    return 0
+}

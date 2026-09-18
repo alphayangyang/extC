@@ -4,7 +4,7 @@ struct board {
     cell: [15][15]i32
     moves: i32
 
-    fn place(self: ref board, x: i32, y: i32, p: i32) -> bool {
+    fn place(self: mut ref board, x: i32, y: i32, p: i32) -> bool {
         if x < 0 || x >= 15 || y < 0 || y >= 15 {
             return false
         }

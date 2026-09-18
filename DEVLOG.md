@@ -7,6 +7,79 @@
 
 ---
 
+## 2026-09-18 · A2-3：只读引用真的只读了（签名终于说实话）
+
+上一步留了一个**故意的中间状态**：`ref T` 名义上是只读，但写它还不报错。
+这一步把闸门关上，然后让**编译器自己指出每一处该改成 `mut ref` 的地方**。
+
+### 加了两道检查（各管一半）
+
+| # | 检查 | 效果 |
+|---|---|---|
+| 1 | **沿「地方」往内走，遇到只读引用就拒** | `fn f(b: ref board) { b.x = 1 }` ⇒ 报错 |
+| 2 | **会写的方法（`self: mut ref T`）要求接收者可写** | 只读引用上不能调 `bump()` |
+
+关键区分：**「绑定是不是 `let`」和「路上有没有只读引用」是两件事** ——
+`var` 的东西里也可能装着一个只读引用（比如 `fn f(v: ref board)` 里的 v）。
+写进去要**两样都满足**。
+
+### 最漂亮的一点：**「逐处判断」不用人做了**
+
+原计划 A2-4 是「全仓库 ~80 处 `ref` 逐处人工判断该不该改成 `mut ref`」。
+闸门一关，**编译器把每一处都指了出来** —— 实际只有 **9 处**：
+
+| 文件 | 问题 | 修法 |
+|---|---|---|
+| `fenwick` | `add` / `brute::add` / `rng::next` 写 `self` | `mut ref self` |
+| `generics` | `box::set` 写 `self` | `mut ref self` |
+| `gomoku-board` | `board::place` 写 `self` | `mut ref self` |
+| `option-result` | `place` / `placeLine` 写 `b` | `b: mut ref board` |
+| `refs` | `counter::bump` 写 `self` | `mut ref self` |
+| `structs` | `point::moveBy` 写 `self` | `mut ref self` |
+| `tour` | `counter::bump` 写 `self` | `mut ref self` |
+
+**而且有两条是「连锁」**（特别值钱，因为它证明了检查真的沿着调用图在走）：
+
+```extc
+fn below(self: ref rng, bound: i64) -> i64 { return self.next() % bound }
+//  ↑ next() 要可写接收者 ⇒ below 也得改成 mut ref
+
+fn addTo(c: ref counter, by: i32) { c.bump(by) }
+//  ↑ bump() 要可写接收者 ⇒ addTo 的签名也得改
+```
+
+**光看函数体是看不出这种问题的** —— 是「标注了权限」之后检查器追出来的。
+
+### prelude 一行都没改
+
+`slice<T>` 的 6 个方法（`isEmpty` / `hasAt` / `get` / `==` / `find` / `startsWith`）
+**全是只读的**，所以它们自动变成「`let` 的视图也能调」。
+
+> 这本身就是对设计的验证：**当初把它们写成只读方法，今天白拿到一个好处。**
+
+### 一路上的另一件事：错误信息
+
+三道检查的信息都写清了「为什么」：
+
+```
+error: cannot write through a read-only reference
+  note: `ref T` is a **read-only** borrow; writing through it needs `mut ref T`
+        in the declaration. Read-only is the default so that a signature says what it does.
+```
+
+### 还剩下的（下一步是「视图的可写性」）
+
+闸门只关了 `ref T`，**还有两个洞**是「按值传进来的视图」造成的：
+
+| 洞 | 例子 | 为什么现在拦不住 |
+|---|---|---|
+| ① 按值参数写进调用者的数组 | `fn f(v: slice<i32>) { v[0] = 1 }` | 参数是**调用者的局部副本**（`mut = true`），但 slice 的内容是共享的 |
+| ② 写字符串字面量 | `var s = "abc"` → `s[0] = 1` | 字面量在只读段；**视图没有记「它从哪切出来的」** |
+
+两个洞是**同一个原因**：视图的可写性是**来源的属性**，而现在的 `slice<T>` 只有一种。
+下一步就是把那个设计落下来（`mut` 当限定词、切出来时从源头继承）——
+做完之后这两条都会变成编译错误。见 DECISIONS。
+
 ## 2026-09-18 · A2 第一步 + 第二步：标量引用活了，`swap` 能写了
 
 主人拍板了引用语义的形状（**形状 3：值位置自动解引用 + `mut ref`**），

@@ -261,7 +261,32 @@ static bool isWritablePlace(Checker *c, Expr *e) {
 
 /* 往一个「地方」里写之前，先看它的根是不是 `var`。
  * 返回 true = 已经报过错（调用点直接放弃）。 */
-static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {    Sym *root = placeRoot(c, e);
+/* 沿一个「地方」往内走，路上有没有**只读引用**？
+ *
+ * 「绑定是不是 `let`」和「路上有没有只读引用」是**两件事**：
+ * `var` 的东西里也可能装着一个只读引用（比如 `fn f(v: ref slice<i32>)` 里的 v）。
+ * 写进去要**两样都满足**。 */
+static bool pathHasReadonlyRef(Expr *e) {
+    for (Expr *x = e; x; ) {
+        if (x->type && x->type->kind == TY_REF && !x->type->mut) return true;
+        if (x->kind == EX_FIELD) { x = x->u.field.obj; continue; }
+        if (x->kind == EX_INDEX) { x = x->u.index.obj; continue; }
+        if (x->kind == EX_SLICE) { x = x->u.slice.obj; continue; }
+        break;
+    }
+    return false;
+}
+
+static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
+    if (pathHasReadonlyRef(e)) {
+        ckError(c, line,
+                "`ref T` is a **read-only** borrow; writing through it needs `mut ref T` "
+                "in the declaration. Read-only is the default so that a signature says "
+                "what it does.",
+                "cannot %s through a read-only reference", what);
+        return true;
+    }
+    Sym *root = placeRoot(c, e);
     if (!root || root->mut) return false;
     if (e->kind == EX_IDENT) {
         ckError(c, line, "use `var` to allow reassignment (`let` is an immutable binding)",
@@ -1196,6 +1221,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             e->func = f;
+
+            /* 方法要**可写借用**（`self: mut ref T`）⇒ 接收者必须可写。
+             * 这是「签名不说实话」的另一半：光看调用点 `x.bump()` 看不出它会不会改 x，
+             * 而 `self: mut ref` 让**签名说了**，这里就把它落实。 */
+            {
+                Param *selfP = *(Param **)vecAt(&f->params, 0);
+                if (selfP->type->kind == TY_REF && selfP->type->mut &&
+                    requireMutable(c, e->u.method.recv, e->line, "call a method that writes"))
+                    return ttError(tt);
+            }
 
             /* 接收者是泛型实例时，方法签名里的 T 要换成实参 */
             StructDef *msd = structOf(rb);

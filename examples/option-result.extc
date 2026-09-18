@@ -20,7 +20,7 @@ fn at(b: ref board, x: i32, y: i32) -> option<i32> {
 }
 
 // 「可能失败」：失败了还要说清**为什么**（枚举，不是字符串）
-fn place(b: ref board, x: i32, y: i32, p: i32) -> result<unit, gameError> {
+fn place(b: mut ref board, x: i32, y: i32, p: i32) -> result<unit, gameError> {
     if x < 0 || x >= 15 || y < 0 || y >= 15 {
         return result<unit, gameError>::failure(gameError.outOfRange)
     }
@@ -60,7 +60,7 @@ fn describe(e: gameError) -> slice<u8> {
 //
 // 载荷类型可以不同（里层 unit、外层也是 unit；换成 i64 → point 也行），
 // 但**错误类型必须一样** —— `?` 是原样转发，不做转换。
-fn placeLine(b: ref board, y: i32, from: i32, to: i32, p: i32) -> result<unit, gameError> {
+fn placeLine(b: mut ref board, y: i32, from: i32, to: i32, p: i32) -> result<unit, gameError> {
     var x: i32 = from
     while x <= to {
         place(b, x, y, p)?        // 中间撞车 ⇒ 整行失败（失败之前的已经落下）

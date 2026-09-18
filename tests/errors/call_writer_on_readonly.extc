@@ -1,0 +1,9 @@
+// 会写的方法必须有可写接收者
+struct counter {
+    n: i64
+    fn bump(self: mut ref counter) { self.n = self.n + 1 }
+}
+fn touch(c: ref counter) {
+    c.bump()
+}
+fn main() -> i32 { return 0 }

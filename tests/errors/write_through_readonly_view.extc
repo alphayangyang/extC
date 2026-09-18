@@ -1,0 +1,5 @@
+// 只读借用到的视图，元素也写不了
+fn fill(v: ref slice<i32>) {
+    v[0] = 1
+}
+fn main() -> i32 { return 0 }

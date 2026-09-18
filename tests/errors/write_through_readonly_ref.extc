@@ -1,0 +1,6 @@
+// 只读借用不能写 —— 这正是 `mut ref` 存在的理由
+struct point { x: i32  y: i32 }
+fn moveIt(p: ref point) {
+    p.x = 1
+}
+fn main() -> i32 { return 0 }
