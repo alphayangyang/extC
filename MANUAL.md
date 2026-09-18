@@ -679,6 +679,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 | 文件 | 演示 |
 |---|---|
+| `tour.extc` | **语言巡礼** —— 一份能跑的完整示例，把现在能用的东西全用上了 |
 | `hello.extc` | 变量、`if/else`、`while`、函数调用、打印 |
 | `fizzbuzz.extc` | `else if` 链、`%`、`while` |
 | `types.extc` | 拓宽自动、字面量按值适配（T2） |

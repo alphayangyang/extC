@@ -130,7 +130,7 @@ src/          C 实现的编译器（正史）
   parser.[ch]   递归下降
   codegen.[ch]  C 代码生成（带 #line 映射）
   main.c        驱动
-examples/     样例（hello / fizzbuzz / types / structs / enums / refs / generics / eq / debug）
+examples/     样例（tour 是语言巡礼；其余按特性分类）
 stdlib/       prelude.extc —— 用 extC 写的预lude（T4b 会把 slice<T> 放这里）
 tools/        embed.c —— 把 stdlib/*.extc 嵌成 C 字节数组（C 写的，无解释器依赖）
 tests/        回归测试（正例 + 反例）

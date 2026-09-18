@@ -7,6 +7,43 @@
 
 ---
 
+## 2026-09-18 · `examples/tour.extc`：一份能跑的完整语言巡礼
+
+主人问「来个完整的示例代码展示这个语言」。写了 `examples/tour.extc`，
+把现在能用的东西全用上，而且**输出是真实的**：
+
+```
+=== extC 语言巡礼 ===
+counter { label: alpha, value: 210, st: done }
+counter { label: beta, value: 330, st: done }
+a == b ? false
+a.labelSize() = 5
+a.describe()  = done
+a.st == done  = true
+pair { first: 6765, second: true }
+pair { first: nested, second: counter { label: alpha, value: 210, st: done } }
+counter { label: , value: 0, st: idle }
+area-ish = 28.2743
+small = 200  widened = 200
+```
+
+一份代码编出这些 C 结构体（单态化）：
+
+```c
+typedef struct state state;
+typedef struct counter counter;
+typedef struct pair_i64_bool pair_i64_bool;
+typedef struct pair_slice_u8_counter pair_slice_u8_counter;
+```
+
+**注意 `pair_slice_u8_counter`** —— 泛型实参里嵌了一个**泛型实例**（`slice<u8>`），
+名字修饰是递归的，而且**结构体定义顺序是按依赖排出来的**（T4c 踩的那个循环依赖坑就在这里）。
+
+**一句话**：`println(a)` 能打出 `counter { label: alpha, value: 210, st: done }`
+—— 递归打印 struct、枚举打名字、字节视图打文本，**用户一行 printf 都没写**。
+
+---
+
 ## 2026-09-18 · T4c 落地：字符串就是 slice<u8>，`str` 内建类型没了
 
 ```extc

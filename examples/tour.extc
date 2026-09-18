@@ -1,0 +1,102 @@
+// extC 语言巡礼 —— 一份能跑的完整示例
+//
+// 【现在能用的】struct + 方法 · type 枚举 · 泛型（单态化）· slice<u8>（= 字符串）
+//              · 显式定义 `fn ==` · 零初始化 · 自动调试打印 · while/if · f64 运算
+//              · ref 引用 · 字面量按值适配 · 无损失拓宽
+// 【还没有的】数组 / 索引 / for / match / Result / Option / 模块 / 全局变量 / region
+
+type state = | idle | running | done
+
+struct counter {
+    label: slice<u8>
+    value: i64
+    st:    state
+
+    // `==` 要显式定义（不引入 trait）；`!=` 自动是它的取反
+    fn ==(self: ref counter, other: counter) -> bool {
+        return self.value == other.value && self.st == other.st
+    }
+
+    fn bump(self: ref counter, amount: i64) {
+        self.value = self.value + amount
+        if self.value >= 100 {
+            self.st = state.done
+        } else {
+            self.st = state.running
+        }
+    }
+
+    fn labelSize(self: ref counter) -> i64 {
+        return self.label.len
+    }
+
+    fn describe(self: ref counter) -> state {
+        return self.st
+    }
+}
+
+// 泛型 struct：编译器按实例生成 C（pair_i64_bool / pair_slice_u8_counter ...）
+struct pair<A, B> {
+    first:  A
+    second: B
+}
+
+fn makeCounter(name: slice<u8>) -> counter {
+    return { label: name, value: 0, st: state.idle }   // 裸 {} 从返回类型推导
+}
+
+fn fib(n: i64) -> i64 {
+    var a: i64 = 0
+    var b: i64 = 1
+    var i: i64 = 0
+    while i < n {
+        let next: i64 = a + b
+        a = b
+        b = next
+        i = i + 1
+    }
+    return a
+}
+
+fn main() -> i32 {
+    println("=== extC 语言巡礼 ===")
+
+    var a: counter = makeCounter("alpha")
+    var b: counter = makeCounter("beta")
+
+    var round: i64 = 0
+    while round < 30 {
+        a.bump(7)          // 方法接收者自动取地址
+        b.bump(11)
+        round = round + 1
+    }
+
+    // 自动调试打印：递归打印字段、枚举打名字、字节视图打文本
+    println(a)
+    println(b)
+
+    println("a == b ? ", a == b)
+    println("a.labelSize() = ", a.labelSize())
+    println("a.describe()  = ", a.describe())
+    println("a.st == done  = ", a.st == state.done)
+
+    // 泛型：两份不同的实例化
+    var p1: pair<i64, bool> = { first: fib(20), second: true }
+    var p2: pair<slice<u8>, counter> = { first: "nested", second: a }
+    println(p1)
+    println(p2)
+
+    // 零初始化（不含 ref 的类型才能这么写）
+    var plain: counter = { label: "", value: 0, st: state.idle }
+    println(plain)
+
+    // 浮点 + 无损失拓宽（整数字面量给 f64）
+    let r: f64 = 3
+    println("area-ish = ", r * r * 3.14159)
+
+    // 字面量按值适配 + 拓宽
+    let small: u8 = 200
+    let wide: i64 = small
+    println("small = ", small, "  widened = ", wide)
+    return 0
+}
