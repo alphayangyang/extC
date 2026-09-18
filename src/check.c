@@ -179,12 +179,23 @@ static void checkOperatorSig(Checker *c, FuncDef *f) {
 
     const char *want = "签名必须是 `fn ==(self: ref T, other: T) -> bool`";
 
+    /* 为什么必须是 bool —— 三个前提推出来的，不是拍的：
+     *   ① `a == b` 天然会被用在 `if` / `while` / `&&` / `||` 里
+     *   ② extC 没有隐式真值转换（`if 1` 是错的）
+     *   ③ `!=` 是靠 `==` 取反实现的
+     * 所以 `==` 只能是 `bool`，否则它就没法用在条件里。
+     * 想要别的结果？换个方法名（`compare` / `diff` 之类），那些没有任何限制。 */
+    const char *why =
+        "它要能被用在 `if` / `&&` / `||` 里，而 extC 没有隐式真值转换；"
+        "而且 `!=` 是靠 `==` 取反实现的。"
+        "想返回别的东西，就换个方法名（比如 `compare` / `diff`）—— 那些没有任何限制。";
+
     if (f->params.len != 2) {
         ckError(c, f->line, want, "operator `%s` must take exactly 2 parameters", f->name);
         return;
     }
     if (!f->ret || !ttIs(f->ret, "bool")) {
-        ckError(c, f->line, want, "operator `%s` must return `bool`", f->name);
+        ckError(c, f->line, why, "operator `%s` must return `bool`", f->name);
         return;
     }
     Param *p0 = *(Param **)vecAt(&f->params, 0);
