@@ -1,0 +1,29 @@
+// 结构体 + 方法（`a.f(x)` 就是 `f(a, x)` 的糖，self 自动取地址）
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+fn moveBy(self: ref Point, dx: i32, dy: i32) {
+    self.x = self.x + dx
+    self.y = self.y + dy
+}
+
+fn origin() -> Point {
+    return { x: 0, y: 0 }
+}
+
+fn main() -> i32 {
+    var p: Point = { x: 1, y: 2 }
+    p.moveBy(3, 4)
+    println(p.x)          // 4
+    println(p.y)          // 6
+
+    let q: Point = {}     // 裸 {} 靠声明类型补全，等价于零初始化
+    println(q.x)          // 0
+
+    let o: Point = origin()
+    println(o.x)          // 0
+    return 0
+}
