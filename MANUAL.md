@@ -41,6 +41,64 @@ extC 编译到 C，再由系统的 C 编译器编成可执行文件。生成的 
 
 ---
 
+## 0.5 内存安全：承诺 × 现状
+
+> **这一章回答一个问题：extC 到底承诺了什么，今天实现了多少。**
+> 每条都标了「实测状态」，不是设计愿望。
+
+### 三条前提（一开始就定的）
+
+| # | 前提 | 现在 |
+|---|---|---|
+| **G1** | **内存自动回收** —— 用户永不写 `malloc` / `free` / `close` | ✅ 语言里**连 `malloc` 都没有**（生成的 C 里出现 0 次） |
+| **G2** | **第一个真实用户是五子棋**（不是自举） | ✅ 棋盘/五连判定/`result` 都能写 |
+| **G3** | 能自举 | 🔸 **修正**：主人 2026-09-18 说「不一定完全自举」⇒ 降级成**可选的验证手段** |
+
+### 一条原则
+
+> **P：凡是编译期能证明的，运行时不留痕迹。**
+
+它禁的是**隐藏的机制**（GC / 异常 / 运行时元数据 / 隐藏分配 / 运行时类型标签），
+**不是数据拷贝**（值语义的拷贝是写在类型上的、看得见的）。
+
+> **P′（同一句话的另一面）：不能证明的，语法上必须看得见。**
+
+### 内存安全的九条承诺
+
+| # | 承诺 | 状态 | 说明 |
+|---|---|---|---|
+| 1 | **无 GC、无引用计数** | ✅ | 从来就没有（运行时零分配） |
+| 2 | **无异常、无栈展开** | ✅ | 失败归 `result`，`?` 展开成三句语句 |
+| 3 | **未初始化 UB 消失** | ✅ | 默认零初始化：`var b: board` 自动清零 |
+| 4 | **`ref` 不可为空** | ✅ | 没有 `null`；`ref` 也没有零值 |
+| 5 | **越界 = trap 带 extC 位置** | ✅ | `a[i]` 越界 → `trap: index 7 out of range (length 3)` + 文件行号 |
+| 6 | **切片越界** | ✅ | 能证明的**编译期报错**，不能证明的运行时 trap 带位置 |
+| 7 | **只读 / 可写看得见** | ✅ | `ref T` / `mut ref T`、`slice<T>` / `mut slice<T>`（见 §3） |
+| 8 | **算术无 UB** | ⚠️ **部分** | 溢出用 `-fwrapv` 兜成确定行为；**除零崩了没位置**、**移位超宽静默错**（待补） |
+| 9 | **引用不能活得比被指对象长**（逃逸检查） | ⬜ **0%** | **这是目前唯一还开着的洞**，见下 |
+
+### 唯一还开着的洞：逃逸
+
+```extc
+fn bad() -> slice<i32> {
+    var a: [8]i32 = [1, 2, 3, 4, 5, 6, 7, 8]
+    return a[..]        // ✗ 返回指向**已经死掉的局部数组**的视图 —— 今天编得过！
+}
+```
+
+实测它不但编得过，还**跑出了 `0`** —— 也就是说它是**静默错**，
+比崩掉更危险。**这就是 extC 距离「安全像 Rust」最远的一处。**
+
+修法在 DESIGN §2 里早就定好了，而且**不需要堆**：
+
+> **若引用 `r` 指向值 `v`，则 `depth(r) ≥ depth(v)`。**
+> 深度是**纯词法属性**（几层 `{}`；函数帧 = 1，参数 = 0），**比两个整数**，
+> 不需要生命周期标注 —— 这正是「Rust 的安全 + 不写生命周期」的落点。
+
+⇨ 下一个大块就是它（见 [`REFS.md`](REFS.md) 块 B 与 [`BOOTSTRAP.md`](BOOTSTRAP.md) §7）。
+
+---
+
 ## 1. 程序结构
 
 一个 `.extc` 文件里，顶层只允许三种东西：
@@ -102,6 +160,13 @@ println(s.hasAt(1))      // false
 | 整数 | `42`、`0x1F` |
 | 浮点 | `3.14`、`1e-3` |
 | 布尔 | `true` / `false` |
+
+**关键字**：`fn` `let` `var` `if` `else` `while` `return` `break` `continue`
+`struct` `type` `true` `false` `ref` `mut`。内建类型名（`i32` `u8` `bool` …）不是关键字，
+但也不能拿来当变量名。
+
+**符号**：`+ - * / %` `== != < <= > >=` `&& ||` `& | ^ ~` `<< >>` `=`
+`( ) { } [ ]` `, : ; .` `::` `->` `..` `...` `?` `ref`。
 
 **连续多个换行会合并成一个语句结束符**，所以空行随便加。
 
@@ -261,18 +326,80 @@ struct point {
 }
 ```
 
-### 引用类型 `ref T`
+### 引用类型 `ref T` / `mut ref T`
 
-`ref T` 是「不可为空、不可做算术的引用」，在 C 里就是 `T *`。
+- **`ref T`** —— **只读**借用（默认）
+- **`mut ref T`** —— **可写**借用
 
-用 `ref x` 产生一个引用（见 §7.5），**不能为空** —— 所以省掉字段初始化时
-编译器会给一个**明确的错误**，而不是塞个 `NULL` 埋雷。
+两者都「不可为空、不可做算术」，在 C 里都是 `T *`（只读那档可以用 `const T *` 表示）。
 
 ```extc
-fn moveBy(self: ref point, dx: i32) {
-    self.x = self.x + dx      // ref 用 `.` 访问字段，编译器生成 `->`
-}
+fn peek(self: ref counter) -> i64 { return self.n }        // 只读：let 的也能调
+fn bump(self: mut ref counter) { self.n = self.n + 1 }     // 可写：接收者必须可写
 ```
+
+**可写性看「这个值是从哪拿到的」，只有三个地方**：
+
+| 从哪拿到 | 可写性 |
+|---|---|
+| **绑定** | `var` 可写 / `let` 只读 |
+| **参数** | `mut ref T` 可写 / `ref T` 只读 |
+| **字段** | 类型上写 `mut` |
+
+而**取引用时权限从源头继承**，所以日常代码**一个 `mut` 都不用写**：
+
+```extc
+var n: i64 = 10
+bump(ref n)          // var ⇒ 取出来就是 mut ref ✓
+let m: i64 = 7
+// bump(ref m)       // ✗ 对 let 只能取到只读引用 ⇒ 交不给要写权限的参数
+```
+
+**降级是自动的、单向的**：`mut ref T` 可以当 `ref T` 用（能写当然能读）；
+反过来不行，必须显式写 `mut` —— 「安全是默认」的直接体现。
+
+#### 值位置自动解引用（`ref` 在表达式里的行为）
+
+`ref T` 的值在**当值用**的时候自动解引用 —— 于是标量引用也能用了：
+
+```extc
+fn bump(p: mut ref i64) { p = p + 1 }        // 读 p 得值；写 p 写进所指的地方
+fn swap(a: mut ref i64, b: mut ref i64) {
+    let t = a
+    a = b
+    b = t
+}
+
+var n: i64 = 10
+bump(ref n)              // n = 11
+println(n)               // 11
+let m: i64 = ref n       // 值位置 ⇒ 拷值
+println(m)               // 11
+```
+
+两条要记住的规则：
+
+- **`ref x` 自己永远不解引用** —— 否则就是「解掉自己刚取的那个引用」，自相矛盾。
+  所以 `let r = ref n` 拿到的是**引用**，而 `let y = r` 拿到的是**值**。
+- **「换指向」取消了**：`r = ref b` 是错的。`=` 在引用上只有一个意思
+  ——**写进它指向的地方**。（换指向全仓库 0 处使用，见 [`DECISIONS.md`](DECISIONS.md)）
+
+```extc
+var r: mut ref i64 = ref n
+r = r + 5                // ✓ 写穿：n 变成 16
+// r = ref other         // ✗ cannot retarget a reference
+```
+
+#### 透过只读引用写 = 编译错误
+
+```extc
+fn f(b: ref board) { b.cell[0] = 1 }
+// error: cannot write through a read-only reference
+//   note: `ref T` is a **read-only** borrow; writing through it needs `mut ref T` …
+```
+
+这条会**顺着调用图追**：`rng::below` 因为里面调了 `next()`（要可写接收者），
+自己的签名也得改成 `mut ref` —— 光看函数体是看不出这种问题的。
 
 ---
 
@@ -317,22 +444,59 @@ println(a[7])      // trap: index 7 out of range (length 5) —— 带文件名�
 
 ```extc
 var a: [8]i32 = [10, 20, 30, 40, 50, 60, 70, 80]
-var s1 = a[2..5]      // [30, 40, 50]      slice<i32>，var ⇒ 能写
-let s2 = a[6..]       // [70, 80]          到尾，let ⇒ 只读
-let s3 = a[..3]       // [10, 20, 30]      从头
+var s1 = a[2..5]      // [30, 40, 50]   mut slice<i32>（从 var 切出来 ⇒ 可写）
+let s2 = a[6..]       // [70, 80]       到尾
+let s3 = a[..3]       // [10, 20, 30]   从头
 let s4 = a[..]        // 整个数组
 s1[0] = 999           // 视图是同一块内存 —— a[2] 也变成 999
 ```
 
-**视图本身没有「只读视图」这种类型** —— 能不能透过它写，由 `let` / `var` 决定：
+#### 视图的可写性：`slice<T>` / `mut slice<T>`
+
+**只有一个视图类型、一套方法集** —— `mut` 是**限定词**，不是第二个类型
+（不像 Rust 要给切片造 `&[T]` / `&mut [T]` 两个）。
+
+**可写性从切出来的源头继承**：
+
+| 从哪切出来 | 得到的类型 | 能写吗 |
+|---|---|---|
+| `var a` | `mut slice<T>` | ✅ |
+| `let a` | `slice<T>` | ❌ |
+| `"字面量"` | `slice<T>` | ❌（在只读段） |
+| `mut ref` 参数 | `mut slice<T>` | ✅ |
+| 只读视图 | `slice<T>` | ❌ |
 
 ```extc
-let v = a[1..3]
-v[0] = 9              // error: cannot write through `v`, which is a `let`
+var a: [6]i32 = [1, 2, 3, 4, 5, 6]
+var mid = a[1..4]         // var ⇒ mut slice<i32> ✓ 能写
+reverse(mid)              // 就地反转
+
+let frozen: [3]i32 = [7, 8, 9]
+// frozen[0] = 1          // ✗ let ⇒ 不能写
+// fill(frozen[..], 0)    // ✗ 从 let 切出来是只读视图
+
+var s = "abc"
+// s[0] = 88              // ✗ 字面量是只读视图 ⇒ **编译错误（以前是段错误）**
 ```
 
-（`slice<T>` 里的 `data` 本来就是 `ref T`，而引用在 extC 里必须显式可见 ——
-`var` / `let` 就是那个显式的地方。）
+#### 函数签名上的可写性
+
+```extc
+fn sum(v: slice<i32>) -> i32          // 只读：签名说了它不改；两种视图都能传
+fn fill(v: mut slice<i32>, x: i32)    // 可写：调用者必须给得出手可写的东西
+fn reverse(v: mut slice<i32>)         // 就地算法
+```
+
+**这条关掉的是「按值参数偷写调用者的数据」**：
+
+```extc
+fn fill(v: slice<i32>) { v[0] = 1 }
+// error: cannot write through `v`: it is a read-only view `slice<i32>`
+//   note: a view is read-only unless its type carries `mut`. Writing through a
+//         by-value view would change the caller's data without the signature saying so.
+```
+
+降级是自动的、单向的：`mut slice<T>` 可以传给要 `slice<T>` 的地方；反过来不行。
 
 **编译期能证明的，运行时不留痕迹**：
 
@@ -774,37 +938,50 @@ fn main() -> i32 {
 
 ## 7.5 引用：`ref` 是表达式
 
-`ref T` 是「不可为空、不可做算术的**可变**引用」。
+`ref T`（只读）/ `mut ref T`（可写）都「不可为空、不可做算术」。
 
 **`ref` 在调用点要显式写**（定案 10）——让读代码的人一眼看出这里传的是引用不是拷贝：
 
 ```extc
 struct counter {
     n: i32
-    fn bump(self: ref counter, by: i32) { self.n = self.n + by }
+    fn bump(self: mut ref counter, by: i32) { self.n = self.n + by }   // 会写 ⇒ mut
+    fn peek(self: ref counter) -> i32 { return self.n }               // 只读 ⇒ ref
 }
 
-fn addTo(c: ref counter, by: i32) {     // 自由函数的引用参数
-    c.bump(by)                          // 方法接收者自动取地址
+fn addTo(c: mut ref counter, by: i32) {     // 自由函数的可写引用参数
+    c.bump(by)                              // 方法接收者自动取地址
 }
 
 fn main() -> i32 {
     var c: counter = { n: 10 }
     addTo(ref c, 7)                     // ← 必须写 ref
-    println(c.n)                        // 17
+    println(c.peek())                   // 17
     return 0
 }
 ```
 
+**取到哪种引用，由「这个地方可不可写」自动决定**（不用你写 `mut`）：
+
+| 对什么取引用 | 得到 |
+|---|---|
+| `var` 变量 | `mut ref T` |
+| `let` 变量 | `ref T`（只读借用**随时可以取**） |
+| `mut ref` 参数 / `ref` 参数 | 跟着参数本身的可写性 |
+| `var` 的字段/元素 | `mut ref T` |
+
 - 实参**本身就是引用**时，不用再写 `ref`，直接传。
-- `ref` 是**可变**引用，所以**不能对 `let` 取引用**：
+- **`let` 的变量可以取只读引用**（「只是想读一下」），但交不给要写权限的参数：
   ```extc
-  let c: counter = {}
-  addTo(ref c, 1)      // error: cannot take a mutable reference to `c`, which is a `let`
+  let c: counter = { n: 1 }
+  println(read(ref c))     // ✓ 只读借用
+  addTo(ref c, 1)          // ✗ expects `mut ref counter`, found `ref counter`
   ```
 - 只有变量和字段能取引用（`ref f()` 不行）。
+- 值位置上自动解引用（`println(r)` 打的是**值**）；**`ref x` 自己不解引用**。见 §3。
 
-> ⚠️ **逃逸检查还没做**（week-4）。现在能拿到指向函数局部变量的引用而不被检查。
+> ⚠️ **逃逸检查还没做** —— 现在能拿到指向函数局部变量的引用/视图而不被检查，
+> 而且**它是静默错**（不是崩溃）。这是 extC 唯一还开着的内存安全洞，见 §0.5。
 
 ---
 
@@ -875,25 +1052,32 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 ## 10. 已定案、但还没实现
 
-> ✅ **刚做完（2026-09-18）**：默认零初始化、方法进 struct 体内、`type` 枚举、
-> `ref` 表达式与调用点显式。下面剩下的都还没做。
+> ✅ **已完成（截至 2026-09-18）**：默认零初始化、方法进 struct 体内、`type` 枚举、
+> `ref` 表达式与调用点显式、泛型单态化、prelude 机制。
+> **`slice<T>` 索引与字符串库**、**固定数组 `[N]T`**、**切片视图 + 可写性**、
+> **`option`/`result`/`?`**、**`::` 关联函数**、**位运算**、
+> **引用语义（`mut ref` + 视图可写性）** 也都在跑了。
+>
+> 下面剩下的**都还没做**。
 
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
-| **`slice<T>` / `array<T>`** | 泛型机制✅已通；容器本体要用 extC 预lude 写 | T4b |
-| **`option<T>` / `result<T,E>` / `?`** | | T5 |
-| **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | T5 之后 |
-| **全局变量** | 全局 = 深度 0 的 arena，`static` 关键字因此消失 | week-2 |
-| **`@main` 注解** | 标在任意函数上，不再硬编码 `main` | week-2 |
-| ~~**数组 + 下标**~~ | ✅ **已完成** —— `[15][15]i32`、字面量、越界 trap（见 §3「数组类型」） | ✅ |
-| ~~**切片视图 `a[lo..hi]`**~~ | ✅ **已完成** —— 四种写法 + 编译期证明 + 可写视图 | ✅ |
-| **动态数组 `array<T>`** | 等 arena 到位 | week-4 |
-| **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | week-2 |
-| **`match`** | 语句和表达式都能用；能匹配变体和常量；臂可发散 | week-3 |
-| **模块系统** | `module` / `export` / `import` / `::` | week-3 |
-| **`region` / 逃逸检查** | **这是 extC 的命** | week-4 |
+| **逃逸检查** | 词法深度 `depth(r) ≥ depth(v)` —— **这是 extC 的命**，也是唯一还开着的内存安全洞（见 §0.5） | **下一步** |
+| **arena / `region`** | 分配绑词法作用域，永不 `free`；`region` = 显式命名的 arena | arena 到位之后（今天完全不需要分配） |
+| **动态数组 `array<T>`** | 等 arena 到位 | arena 之后 |
+| **算术 UB 三处** | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | 小活，随时 |
+| **全局常量 / 全局变量** | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | 中 |
+| **输入（`readLine` / `argv`）** | 由调用者给 buffer，零分配零隐藏状态 | 中 —— 五子棋能真的跟人下的门槛 |
+| **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
+| **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | 中 |
+| **`match` + 带载荷枚举** | 语句和表达式都能用；能匹配变体和常量；臂可发散 | 中 |
+| **`@main` 注解** | 标在任意函数上，不再硬编码 `main` | 低 |
+| **模块系统** | `module` / `export` / `import` | 低 —— 主人说不一定完全自举 ⇒ 优先级降了 |
+| **`@recursive`** | 编译器展开成「显式栈 + 循环」，深度上限是编译期常数 | 低 |
+| **线程** | 保守的 fork-join + 归约；「引用不过线程」 | 低 |
 
-完整清单和理由见 [`DECISIONS.md`](DECISIONS.md) 和 [`PLAN.md`](PLAN.md)。
+完整清单和理由见 [`DECISIONS.md`](DECISIONS.md)、[`PLAN.md`](PLAN.md)、
+[`BOOTSTRAP.md`](BOOTSTRAP.md)（依赖顺序与优先级）。
 
 ---
 
@@ -933,6 +1117,15 @@ println(ps[0] == point { x: 1, y: 2 })  // ✓ 写全名字
 | `debug.extc` | **自动调试打印**：递归打印 struct、枚举打名字、零初始化直接打 |
 | `prelude.extc` | **prelude 里的 `slice<T>`** 直接用，两份实例 |
 | `strings.extc` | **字符串 = `slice<u8>`**：字面量、`len`、prelude 的方法、空串、转义 |
+| `arrays.extc` | **固定数组 `[N]T`**：多维、字面量、`...` 补零、越界 trap、值语义 |
+| `slices.extc` | **切片视图**：四种写法、编译期证明的零检查、透过视图写 |
+| `mut-views.extc` | **`slice<T>` / `mut slice<T>`**：源头继承、就地 `reverse`/`fill`、签名说实话 |
+| `refs.extc` · `mut-ref.extc` | **`ref T` / `mut ref T`**：只读借用 vs 可写借用、`let` 也能借 |
+| `ref-scalar.extc` | **标量引用**：自动解引用、写穿、**`swap`**（以前写不出来） |
+| `array-of-struct.extc` | 数组元素是带 `fn ==` 的 struct（含一个**回归 bug** 的守卫） |
+| `option-result.extc` | **`option` / `result` / `?`**：五子棋的落子与寻位 |
+| `fenwick.extc` | **树状数组**：对拍 2 万次零不一致 + 逆序对（第一道真算法题） |
+| `gomoku-board.extc` | **五子棋棋盘**：G2 里程碑 |
 
 跑测试：
 
