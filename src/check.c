@@ -165,38 +165,57 @@ static FuncDef *findOp(Type *b, const char *sym, const char *fallback) {
     return m;
 }
 
-/* 运算符方法的签名必须是：(self: ref T, other: T 或 ref T) -> bool */
-static bool eqSignatureOk(TypeTable *tt, FuncDef *m, Type *lt, Vec *sp, Vec *sa) {
-    if (!m || !m->ret || !ttIs(m->ret, "bool")) return false;
-    if (m->params.len != 2) return false;
+/* 运算符方法的签名，在**定义处**就检查。
+ *
+ * ⚠️ 这里踩过一个坑：最初只在**使用处**检查签名，于是
+ *   ① 定义了签名错误的 `fn !=` 但没直接用到 → 一直没人查
+ *   ② 泛型里 `a != b` 推迟到实例化，codegen 找到了那个 void 的 `!=`
+ *      → 直接把 C 的 "invalid use of void expression" 漏给用户
+ * 挪到定义处之后，无论从哪条路径使用它都是安全的。
+ */
+static void checkOperatorSig(Checker *c, FuncDef *f) {
+    bool isOp = (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0);
+    if (!isOp || !f->owner) return;
 
-    Param *p0 = *(Param **)vecAt(&m->params, 0);
-    Param *p1 = *(Param **)vecAt(&m->params, 1);
-    Type *t0 = ttSubstitute(tt, p0->type, sp, sa);
-    Type *t1 = ttSubstitute(tt, p1->type, sp, sa);
+    const char *want = "签名必须是 `fn ==(self: ref T, other: T) -> bool`";
 
-    if (t0->kind != TY_REF) return false;
-    return ttEquals(ttBase(t0), lt) && ttEquals(ttBase(t1), lt);
+    if (f->params.len != 2) {
+        ckError(c, f->line, want, "operator `%s` must take exactly 2 parameters", f->name);
+        return;
+    }
+    if (!f->ret || !ttIs(f->ret, "bool")) {
+        ckError(c, f->line, want, "operator `%s` must return `bool`", f->name);
+        return;
+    }
+    Param *p0 = *(Param **)vecAt(&f->params, 0);
+    Param *p1 = *(Param **)vecAt(&f->params, 1);
+
+    if (p0->type->kind != TY_REF) {
+        ckError(c, p0->line, want, "`self` of operator `%s` must be a reference", f->name);
+        return;
+    }
+    Type *b0 = ttBase(p0->type);
+    Type *b1 = ttBase(p1->type);
+    if (!b0 || b0->sdef != f->owner || !b1 || b1->sdef != f->owner) {
+        ckError(c, f->line, want,
+                "both operands of operator `%s` must be `%s`", f->name, f->owner->name);
+    }
 }
 
-/* 这个类型能不能用 `==`？*/
-static bool typeSupportsEq(Checker *c, Type *t) {
+/* 这个类型能不能用 `op` 比较？
+ * 签名合法性已经在**定义处**查过了，所以这里只要「找得到」就行。 */
+static bool typeSupportsEq(Type *t, const char *op) {
     if (!t) return false;
     if (ttIsError(t)) return true;
     if (cmpIsNative(t)) return true;
 
     Type *b = ttBase(t);
-    StructDef *sd = structOf(b);
-    if (!sd) return false;
-
-    FuncDef *m = findOp(b, "==", NULL);
-    Vec *sp = NULL, *sa = NULL;
-    if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
-    return eqSignatureOk(c->tt, m, b, sp, sa);
+    if (!structOf(b)) return false;
+    return findOp(b, op, strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
 }
 
 /* 泛型里的 `==` 推迟到实例化才检查 —— 这里记一笔 */
-typedef struct { Expr *node; StructDef *owner; } EqCheck;
+typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
 
 /* ---------------------------------------------------------------- 小工具 */
 
@@ -383,6 +402,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             EqCheck *ec = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
                             ec->node = e;
                             ec->owner = c->curFunc->owner;
+                            ec->op = op;
                             *(EqCheck **)vecPush(&c->eqChecks) = ec;
                         }
                         return c->tBool;
@@ -414,12 +434,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
                     Vec *sp = NULL, *sa = NULL;
                     if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
-                    if (!eqSignatureOk(tt, m, b, sp, sa)) {
-                        ckError(c, e->line,
-                                "运算符方法的签名必须是 `fn ==(self: ref T, other: T) -> bool`",
-                                "`%s.%s` has the wrong signature", sd->name, m->name);
-                        return c->tBool;
-                    }
+                    (void)sp; (void)sa;
                     e->func = m;        /* codegen 用它生成 `Type_eq(&a, &b)` */
                     return c->tBool;
                 }
@@ -951,6 +966,8 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
         if (strcmp(p->name, "self") == 0)
             ckError(c, p->line, NULL, "`self` must be the first parameter");
     }
+
+    checkOperatorSig(c, f);
 }
 
 static void checkFunc(Checker *c, FuncDef *f) {
@@ -1044,7 +1061,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                                           &ec->owner->typeParams, &inst->targs)))
                 continue;
 
-            if (!typeSupportsEq(&c, lt)) {
+            if (!typeSupportsEq(lt, ec->op)) {
                 ckError(&c, ec->node->line,
                         "泛型里的 `==` 推迟到实例化才检查 —— 这是「不引入 trait」换来的代价。"
                         "给那个类型加一个 `eq` 方法就行。",
