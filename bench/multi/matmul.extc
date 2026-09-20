@@ -1,0 +1,22 @@
+var a: [262144]i32
+var b: [262144]i32
+var c: [262144]i32
+fn main() -> i32 {
+    let n: i64 = 512
+    var i: i64 = 0
+    while i < 262144 { a[i] = 1  b[i] = 2  i = i + 1 }
+    var x: i64 = 0
+    while x < n {
+        var y: i64 = 0
+        while y < n {
+            var s: i32 = 0
+            var k: i64 = 0
+            while k < n { s = s + a[x * n + k] * b[k * n + y]  k = k + 1 }
+            c[x * n + y] = s
+            y = y + 1
+        }
+        x = x + 1
+    }
+    println("c[0] = ", c[0])
+    return 0
+}
