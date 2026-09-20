@@ -495,3 +495,22 @@ week-0 只做这几项检查：
 
 **顺带解开一个限制**：`option<slice<u8>>` 那种「载荷含 ref」的枚举，现在**语言层面完全支持** ✓
 （第三刀把它用起来。）
+
+## ⑳ 视图的只读降级是**递归**的（2026-09-18）
+
+主人问：「现在能不能写 `mut slice<mut slice<T>>` 的啊，或者设想中可以吗」
+
+**实测**：能写，而且两级写穿、元素级换指向都工作 ✓ 但**只读降级只剥了一层** ⇒
+`mut slice<mut slice<i32>>` 传不进 `slice<slice<i32>>` 参数 ✗
+
+| # | 定案 |
+|---|---|
+| 53 | **`mut` 是权限，不是布局** ⇒ 视图之间的转换规则是「**只许去掉 `mut`，不许加**」，而且**递归到每一层**（`ttViewDowngradable`）|
+| 53′ | ⚠️ `ttEquals` 判「是不是同一个类型」（`mut` 算身份），`ttViewDowngradable` 判「能不能当它用」（`mut` 只是权限）—— **两件事**。所以同一个 C 名字会有**两个实例** ⇒ codegen 必须**按 C 名字对实例去重**（struct / `_debug` / `_eq` / `writeText` 各生成一份）|
+
+**为什么递归去掉是安全的**：C 里 `slice<mut slice<i32>>` 和 `slice<slice<i32>>`
+是**同一个结构体** ⇒ 少一份权限不改变任何字节 ✓
+
+**验收**：`examples/nested-views.extc`（两级写穿 + 递归降级）
+· `tests/errors/view_add_mut.extc`（只读→可写必须报错）
+· `tests/errors/view_write_readonly.extc`（透过只读视图写必须报错）✓

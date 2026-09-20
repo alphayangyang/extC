@@ -378,10 +378,33 @@ Type *ttViewMut(TypeTable *tt, Type *base, bool mut) {
     return t;
 }
 
-/* 拿掉 `mut` 限定词（可写视图 → 只读视图）。降级是单向安全的，所以到处要用。 */
+/* 拿掉 `mut` 限定词（可写视图 → 只读视图）。降级是单向安全的，所以到处要用。
+ *
+ * **递归**：元素的 `mut` 也要降 —— `mut slice<mut slice<T>>` 应该能用在任何
+ * 只读的地方（`slice<slice<T>>` 参数）。
+ *
+ * 为什么递归是安全的：**`mut` 是权限，不是布局**。C 里
+ * `slice<mut slice<i32>>` 和 `slice<slice<i32>>` 是**同一个结构体**
+ * （名字都叫 `slice_slice_i32`，`mut` 不出现在 C 类型里）⇒ 传参零风险 ✓
+ *
+ * 反方向（只读 → 可写）**永远不允许**：不能凭空加权限 ✓ */
 Type *ttViewReadonly(TypeTable *tt, Type *t) {
-    if (!t || t->kind != TY_GENERIC || !t->mut) return t;
-    return t->inner ? t->inner : ttGeneric(tt, t->sdef, &t->targs);
+    if (!t || t->kind != TY_GENERIC || !t->sdef) return t;
+
+    /* 先递归降元素的（哪怕外层本来就不带 mut：`slice<mut slice<T>>` 也要降）*/
+    bool argChanged = false;
+    Vec args;
+    vecInit(&args, tt->arena, sizeof(void *));
+    for (size_t i = 0; i < t->targs.len; i++) {
+        Type *a  = *(Type **)vecAt(&t->targs, i);
+        Type *na = ttViewReadonly(tt, a);
+        if (na != a) argChanged = true;
+        *(Type **)vecPush(&args) = na;
+    }
+
+    if (t->mut) return ttGeneric(tt, t->sdef, &args);     /* 顶层降：影子 → 实例 */
+    if (argChanged) return ttGeneric(tt, t->sdef, &args); /* 元素降了，重建一次 */
+    return t;
 }
 
 Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
@@ -577,4 +600,29 @@ void ttRender(Type *t, Buf *out) {
 bool ttIsViewType(Type *t) {
     return t && t->kind == TY_GENERIC && t->sdef && t->targs.len == 1 &&
            strcmp(t->sdef->name, "slice") == 0;
+}
+
+/* `got` 能不能当 `want` 用？—— **只许去掉 `mut`（任何一层），不许加。**
+ *
+ * 为什么去掉永远安全：**`mut` 是权限，不是布局**。C 里
+ * `slice<mut slice<i32>>` 和 `slice<slice<i32>>` 是**同一个结构体**
+ * （名字都叫 `slice_slice_i32`）⇒ 少一份权限不改变任何字节 ✓
+ *
+ * 反方向（只读 → 可写）是在**要**权限 ⇒ 必须显式写 `mut` ✓
+ *
+ * 注意这跟 `ttEquals` 是**两件事**：`ttEquals` 判"是不是同一个类型"（`mut` 算身份），
+ * 这里判"能不能当它用"（`mut` 只是权限）✓ */
+bool ttViewDowngradable(Type *want, Type *got) {
+    if (!want || !got) return false;
+    /* 一模一样 ⇒ 通过（元素多半走到这一支：`i32` 不是视图，没法“降”）*/
+    if (ttEquals(want, got)) return true;
+    if (want->kind != got->kind) return false;
+    if (want->kind != TY_GENERIC) return false;
+    if (want->sdef != got->sdef || want->targs.len != got->targs.len) return false;
+    /* 顶层：要去掉 mut 可以，要加不行 */
+    if (got->mut != want->mut && want->mut) return false;
+    for (size_t i = 0; i < want->targs.len; i++)
+        if (!ttViewDowngradable(*(Type **)vecAt(&want->targs, i),
+                                *(Type **)vecAt(&got->targs, i))) return false;
+    return true;
 }

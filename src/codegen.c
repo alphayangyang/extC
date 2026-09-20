@@ -67,6 +67,7 @@ typedef struct {
      * 以及临时变量编号（每个 `?` 一个，函数内唯一）。 */
     Type       *retType;
     int         tmpSeq;
+    Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
 } CG;
 
 /* 一个切片 helper：把 `a[lo..hi]` 的边界检查＋视图构造收进一个函数。
@@ -1370,6 +1371,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     g.tt = tt;
 
     vecInit(&g.structs, arena, sizeof(void *));
+    /* **按 C 名字去重**：可写视图和只读视图是**同一个 C 结构体**
+     * （`slice<mut slice<T>>` 和 `slice<slice<T>>` 都叫 `slice_slice_T`），
+     * 而 `ttEquals` 把 `mut` 算进身份 ⇒ 类型表里会有**两个实例、一个名字**。
+     * 按名字去重，后面的 struct / `_debug` / `_eq` / `writeText` 才不会各生成两份 ✓ */
+    vecInit(&g.insts, arena, sizeof(void *));
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *it = *(Type **)vecAt(&tt->instances, i);
+        bool dup = false;
+        for (size_t k = 0; k < g.insts.len && !dup; k++)
+            dup = strcmp((*(Type **)vecAt(&g.insts, k))->name, it->name) == 0;
+        if (!dup) *(Type **)vecPush(&g.insts) = it;
+    }
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
     bufInit(&g.body, arena);
@@ -1514,14 +1527,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* 收集所有「struct 类」的东西：普通 struct + 泛型实例 */
     Vec units;
     vecInit(&units, arena, sizeof(void *));
+    /* ⚠️ **按 C 名字去重**：可写视图和只读视图是同一个 C 结构体
+     * （`slice<mut slice<T>>` 和 `slice<slice<T>>` 都叫 `slice_slice_T`），
+     * 而 `ttEquals` 把 `mut` 算进身份 ⇒ 类型表里会有**两个实例、一个名字**。
+     * 不去重的话 C 里会出现两份一模一样的 `struct` 定义 ⇒ redefinition 错误 ✓ */
     for (size_t i = 0; i < g.structs.len; i++) {
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->sd = *(StructDef **)vecAt(&g.structs, i);
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *it = *(Type **)vecAt(&tt->instances, i);
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g.insts, i);
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->sd = it->sdef;              /* 数组为 NULL */
         u->inst = it;
@@ -1692,8 +1709,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         cgLine(&g, "void %s_debug(%s v);",
                (*(StructDef **)vecAt(&g.structs, i))->name,
                (*(StructDef **)vecAt(&g.structs, i))->name);
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *it = *(Type **)vecAt(&tt->instances, i);
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g.insts, i);
         cgLine(&g, "void %s_debug(%s v);", it->name, it->name);
         /* 数组的 `==` 也要原型 —— 嵌套数组之间是递归调用的 */
         if (it->kind == TY_ARRAY && typeHasEq(it->inner))
@@ -1702,8 +1719,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             cgLine(&g, "void %s_writeText(%s v);", it->name, it->name);
     }
     /* 实例的方法原型（数组没有方法，也没有 sdef）*/
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *inst = *(Type **)vecAt(&g.insts, i);
         if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++)
@@ -1730,7 +1747,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         bufPuts(&sig, ");");
         cgLine(&g, "%s", bufCstr(&sig));
     }
-    if (g.structs.len || tt->instances.len || g.funcs.len) cgLine(&g, "");
+    if (g.structs.len || g.insts.len || g.funcs.len) cgLine(&g, "");
 
     /* ================= 函数体区（下面全是定义，不再是原型） ============== */
 
@@ -1739,8 +1756,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     g.out = &g.body;
 
     /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *inst = *(Type **)vecAt(&g.insts, i);
         if (inst->kind == TY_ARRAY) {
             genArrayDebug(&g, inst);
             genArrayEq(&g, inst);
@@ -1762,8 +1779,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                        *(StructDef **)vecAt(&g.structs, i));
 
     /* 实例的方法定义 */
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *inst = *(Type **)vecAt(&g.insts, i);
         if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {

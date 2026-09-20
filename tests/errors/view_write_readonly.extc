@@ -1,0 +1,4 @@
+fn tryWrite(g: slice<slice<i32>>) {
+    g[0][1] = 9            // ✗ 只读视图不能写
+}
+fn main() -> i32 { return 0 }

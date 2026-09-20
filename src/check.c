@@ -900,10 +900,13 @@ static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const
      * 反过来不行：那是在要写权限，必须显式写 `mut`。
      * 「安全是默认」的直接体现：往安全的方向收窄不用打招呼。
      * 两种东西都适用：引用（`mut ref T` → `ref T`）和视图（`mut slice<T>` → `slice<T>`）。 */
-    if (got->mut && !want->mut && want->kind == got->kind) {
-        if (want->kind == TY_REF && ttEquals(want->inner, got->inner)) return true;
-        if (want->kind == TY_GENERIC &&
-            ttEquals(want, ttViewReadonly(c->tt, got))) return true;
+    if (want->kind == got->kind) {
+        if (want->kind == TY_REF && got->mut && !want->mut &&
+            ttEquals(want->inner, got->inner)) return true;
+        /* 视图：**递归**只许去掉 `mut`（`mut slice<mut slice<T>>` 能当
+         * `slice<slice<T>>` 用；反过来不行）—— 见 ttViewDowngradable 的注释 */
+        if (want->kind == TY_GENERIC && ttViewDowngradable(want, got) &&
+            !ttEquals(want, got)) return true;
     }
     if (ttCanWiden(got, want)) return true;
     if (node && literalFits(node, want)) return true;

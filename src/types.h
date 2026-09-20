@@ -63,6 +63,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params);
 /* 泛型实例：驻留（`Pair<i32,u8>` 全局只有一份） */
 Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args);
 Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args);
+bool  ttViewDowngradable(Type *want, Type *got);
 /* `mut slice<T>`：拿只读实例的影子（共用 C 名字，不进实例表）。mut=false 就原样返回 */
 Type *ttViewMut(TypeTable *tt, Type *base, bool mut);
 /* 拿掉 `mut`（可写视图 → 只读视图）；本来就是只读的原样返回 */
