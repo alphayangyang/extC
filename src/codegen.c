@@ -1200,8 +1200,13 @@ static int unitFind(Vec *units, Type *t) {
     for (size_t i = 0; i < units->len; i++) {
         SUnit *u = *(SUnit **)vecAt(units, i);
         if (t->kind == TY_ENUM && u->td && t->edef == u->td) return (int)i;
-        if (t->kind == TY_GENERIC && u->inst == t) return (int)i;
-        if (t->kind == TY_ARRAY   && u->inst == t) return (int)i;
+        /* ⚠️ 泛型实例按 **C 名字** 找，不按指针比：
+         *   ① `mut slice<T>` 是**影子**（跟只读版共用名字、共用结构体）——
+         *      拿指针比会找不到 ⇒ 依赖排序漏掉它 ⇒
+         *      `struct reader { chunk: mut slice<u8> }` 报 **incomplete type** ✗
+         *   ② 同一个 C 名字可能有两个实例（可写/只读视图各一个）✓ */
+        if ((t->kind == TY_GENERIC || t->kind == TY_ARRAY) && u->inst &&
+            strcmp(u->inst->name, t->name) == 0) return (int)i;
         if (t->kind == TY_STRUCT && !u->inst && u->sd == t->sdef) return (int)i;
     }
     return -1;

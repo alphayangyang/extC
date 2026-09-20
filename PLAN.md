@@ -20,11 +20,17 @@
 
 | # | 做什么 | 为什么挡着 | 大小 |
 |---|---|---|---|
-| **1** | **`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）| 今天**造不出 buffer**：`alloc<T>(n)` 返回 `mut ref T`，不能索引也不能切片。IO 里到处假设"调用者给 buffer"，而那个 buffer 现在造不出来 ⚠️ 清零还兑现 LANGUAGE.md §0.6 那条承诺 | 小 |
-| **2** | **IO-0**：原语 `rawRead`/`rawWrite` + `readLine` / `readAll` / `nextInt` 一族 + `ioError` | **没有输入** ⇒ 只能写"自己跟自己玩"的程序 | 中（设计已定，见 [`IO.md`](IO.md)）|
-| **3** | **IO-1**：`open` + **帧拥有文件**（跟 arena 并排）+ `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 |
+| **1** | **IO-0**：原语 `rawRead`/`rawWrite` + `readLine` / `readAll` / `nextInt` 一族 + `ioError` | **没有输入** ⇒ 只能写"自己跟自己玩"的程序。**定长数组就能当 buffer**（实测 `var buf: [256]u8` + `buf[..]` ✓）⇒ **它不挡 IO-0** | 中（设计已定，见 [`IO.md`](IO.md)）|
+| **2** | **IO-1**：`open` + **帧拥有文件**（跟 arena 并排）+ `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 |
+| **3** | **`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）| **长度运行时才知道**的 buffer：读未知大小的文件、`reader` 自动要 4KB、`varArray` 增长。也兑现 `LANGUAGE.md` §0.6 那条承诺（清零 ⇒ 过期读到的也是**确定的**字节）| 小 |
 
-> **做完 1+2，主人就有一个真的能跟人下棋的引擎了** ✓ 大约 200 行。
+> ⚠️ **更正**（2026-09-18，主人追问"造不出 buffer 什么意思"时实测发现）：
+> 我原来写「今天造不出 buffer」**说过头了**。
+> **定长数组当 buffer 是能用的** —— `var buf: [256]u8` + `buf[..]` + 传进 `mut slice<u8>` 参数 ✓
+> （顺带抓出并修掉一个真 bug：`struct reader { chunk: mut slice<u8> }` 报
+> **incomplete type** —— 依赖排序按**指针**找实例，而可写视图是**影子** ⇒ 找不到 ⇒ 排错顺序。）
+>
+> **所以 IO-0 不被任何东西挡着，可以立刻做** ✓ 里程碑比原来估的更近。
 
 ---
 
