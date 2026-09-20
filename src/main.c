@@ -325,7 +325,12 @@ int main(int argc, char **argv) {
      *     —— 但那会牺牲可移植性，先不开。）
      *
      * ⇒ 性能跟 C 同级的最后一公里其实是**旗子**，不是语言 ✓ */
-    char *ccArgv[] = { (char *)cc, "-std=c11", "-O2", "-fwrapv", "-o",
+    char *ccArgv[] = { (char *)cc, "-std=c11", "-O2", "-fwrapv",
+                       /* 编译器会给用到的每种类型**自动派生** `_debug` / `_eq` /
+                        * `_find` …… 程序里没用到的那部分本来会留在二进制里
+                        * （实测：hello 的 text 3215 → 1446 字节，euler-sieve 6852 → 3475）。
+                        * 让链接器把没人引用的段丢掉 —— 零语义变化，白赚 ✓ */
+                       "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-o",
                        (char *)binPath, (char *)cPath, NULL };
     int rc = runCmd(ccArgv);
     if (rc != 0) {
