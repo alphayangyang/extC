@@ -1,102 +1,143 @@
-// extC 语言巡礼 —— 一份能跑的完整示例
-//
-// 【现在能用的】struct + 方法 · type 枚举 · 泛型（单态化）· slice<u8>（= 字符串）
-//              · 显式定义 `fn ==` · 零初始化 · 自动调试打印 · while/if · f64 运算
-//              · ref 引用 · 字面量按值适配 · 无损失拓宽
-// 【还没有的】数组 / 索引 / for / match / Result / Option / 模块 / 全局变量 / region
+// ============================================================================
+// extC 一页游览 —— 这个语言现在的样子（每个小节都真能跑）
+// ============================================================================
 
-type state = | idle | running | done
+// ---- ① 枚举：无载荷（只是名字）和带载荷（名字 + 数据）---------------------
+type color  = | red | green | blue
+type shape  = | circle(f64) | rect(f64, f64) | dot
 
-struct counter {
-    label: slice<u8>
-    value: i64
-    st:    state
-
-    // `==` 要显式定义（不引入 trait）；`!=` 自动是它的取反
-    fn ==(self: ref counter, other: counter) -> bool {
-        return self.value == other.value && self.st == other.st
-    }
-
-    fn bump(self: mut ref counter, amount: i64) {
-        self.value = self.value + amount
-        if self.value >= 100 {
-            self.st = state.done
-        } else {
-            self.st = state.running
-        }
-    }
-
-    fn labelSize(self: ref counter) -> i64 {
-        return self.label.len
-    }
-
-    fn describe(self: ref counter) -> state {
-        return self.st
+// `match` 穷尽检查：漏一个变体就**编不过**
+fn chromaticity(c: color) -> f64 {
+    match c {
+        red   => { return 1.0 }
+        green => { return 0.5 }
+        blue  => { return 0.2 }
     }
 }
 
-// 泛型 struct：编译器按实例生成 C（pair_i64_bool / pair_slice_u8_counter ...）
-struct pair<A, B> {
-    first:  A
-    second: B
+// 带载荷的变体：**想拿载荷，必须先 match 它**
+fn area(s: shape) -> f64 {
+    match s {
+        circle(r)  => { return 3.14159 * r * r }
+        rect(w, h) => { return w * h }
+        dot        => { return 0.0 }
+    }
 }
 
-fn makeCounter(name: slice<u8>) -> counter {
-    return { label: name, value: 0, st: state.idle }   // 裸 {} 从返回类型推导
+// ---- ② 结构体是值语义；数组定长且长度是类型的一部分 ----------------------
+struct board {
+    cell: [4][4]color
+    moves: i64
 }
 
-fn fib(n: i64) -> i64 {
-    var a: i64 = 0
-    var b: i64 = 1
+fn put(b: mut ref board, x: i32, y: i32, c: color) {
+    b.cell[y][x] = c
+    b.moves = b.moves + 1
+}
+
+// ---- ③ 视图：只读 / 可写；嵌套视图；可写性**从来源继承** ----------------
+fn sum(v: slice<i32>) -> i64 {                 // 只要读 → 谁来都行
+    var s: i64 = 0
     var i: i64 = 0
-    while i < n {
-        let next: i64 = a + b
-        a = b
-        b = next
+    while i < v.len { s = s + v[i]  i = i + 1 }
+    return s
+}
+
+fn fill(v: mut slice<i32>, x: i32) {           // 要写 → 签名上写清楚
+    var i: i64 = 0
+    while i < v.len { v[i] = x  i = i + 1 }
+}
+
+fn clearAll(g: mut slice<mut slice<i32>>) {    // 嵌套：两级都写得进去
+    var i: i64 = 0
+    while i < g.len {
+        fill(g[i], 0)
         i = i + 1
     }
-    return a
+}
+
+// ---- ④ 引用：值位置自动解引用（拿**拷贝**）；标类型才拿引用本身 ----------
+fn swap(a: mut ref i32, b: mut ref i32) {
+    let t = a          // 值位置 ⇒ 解引用 ⇒ t 是**拷贝**（t: i32）
+    let u = b
+    a = u              // 右边是**值** ⇒ 写进 a 指向的地方（*a = u）
+    b = t              // 同理。右边换成引用就变成「换指向」了
+}
+
+// ---- ⑤ 泛型：struct / 枚举都能带类型参数（单态化，没有间接调用）---------
+type maybe<T> = | nothing | just(T)
+
+struct pair<A, B> { first: A  second: B }
+
+fn unwrapOr(m: maybe<i64>, fallback: i64) -> i64 {
+    match m {
+        nothing => { return fallback }
+        just(v) => { return v }
+    }
+}
+
+// ---- ⑥ result / option：失败和「没有」都是**类型**的一部分 ---------------
+type gameError = | occupied | outOfRange
+
+fn place(b: mut ref board, x: i32, y: i32, c: color) -> result<unit, gameError> {
+    if x < 0 || x >= 4 || y < 0 || y >= 4 { return failure(gameError.outOfRange) }
+    if b.cell[y][x] != color.red          { return failure(gameError.occupied) }
+    put(b, x, y, c)
+    return success(unit {})
+}
+
+fn find(v: slice<i32>, want: i32) -> option<i64> {
+    var i: i64 = 0
+    while i < v.len {
+        if v[i] == want { return some(i) }
+        i = i + 1
+    }
+    return none()
+}
+
+// ---- ⑦ `?`：失败就顺着往上抛（编译期展开成语句，没有栈展开）-------------
+fn placeTwo(b: mut ref board) -> result<unit, gameError> {
+    place(b, 0, 0, color.green)?      // 失败 ⇒ 整个函数失败
+    place(b, 1, 1, color.blue)?
+    return success(unit {})
+}
+
+// ---- ⑧ `let` 是**命名**，不是存储：同一层可以再 let 一次 -----------------
+fn shadowDemo() -> i32 {
+    let n: i32 = 1
+    let n: i32 = n + 1        // 新名字，新值；上一个 n 还在（谁指着它谁还指着）
+    let n: i32 = n * 10
+    return n                  // 20
 }
 
 fn main() -> i32 {
-    println("=== extC 语言巡礼 ===")
+    println("① 枚举+match   ", chromaticity(color.green), " 面积 ", area(shape.rect(3.0, 4.0)), " ", area(shape.circle(1.0)))
 
-    var a: counter = makeCounter("alpha")
-    var b: counter = makeCounter("beta")
+    var b: board
+    put(ref b, 2, 2, color.blue)
+    println("② 结构体/数组  ", b.cell[2][2], " 手数 ", b.moves)
 
-    var round: i64 = 0
-    while round < 30 {
-        a.bump(7)          // 方法接收者自动取地址
-        b.bump(11)
-        round = round + 1
-    }
+    var a: [6]i32 = [1, 2, 3, 4, 5, 6]
+    fill(a[1..4], 9)                       // 可写视图：真的改到 a
+    println("③ 视图         ", a, " 求和 ", sum(a[..]))
+    var rows: [2]mut slice<i32> = [a[0..3], a[3..6]]
+    clearAll(rows[..])                     // 嵌套视图，两级写穿
+    println("   嵌套视图     ", a)
 
-    // 自动调试打印：递归打印字段、枚举打名字、字节视图打文本
-    println(a)
-    println(b)
+    var x: i32 = 1
+    var y: i32 = 2
+    swap(ref x, ref y)
+    println("④ 引用         ", x, " ", y)   // 2 1
 
-    println("a == b ? ", a == b)
-    println("a.labelSize() = ", a.labelSize())
-    println("a.describe()  = ", a.describe())
-    println("a.st == done  = ", a.st == state.done)
+    println("⑤ 泛型枚举     ", unwrapOr(maybe<i64>::just(42), -1), " ", unwrapOr(maybe<i64>::nothing, -1))
+    let p: pair<i32, slice<u8>> = { first: 7, second: "hi" }
+    println("   泛型 struct  ", p.first, " ", p.second)
 
-    // 泛型：两份不同的实例化
-    var p1: pair<i64, bool> = { first: fib(20), second: true }
-    var p2: pair<slice<u8>, counter> = { first: "nested", second: a }
-    println(p1)
-    println(p2)
+    let r = place(ref b, 2, 2, color.red)
+    println("⑥ result       ", r.ok, " 错误 ", r.err == gameError.occupied)
+    println("   option       ", find(a[..], 0).valueOr(-1), " / 找 99 有没有 ", find(a[..], 99).has)
+    println("⑦ `?`          ", placeTwo(ref b).ok, " 手数 ", b.moves)
 
-    // 零初始化（不含 ref 的类型才能这么写）
-    var plain: counter = { label: "", value: 0, st: state.idle }
-    println(plain)
-
-    // 浮点 + 无损失拓宽（整数字面量给 f64）
-    let r: f64 = 3
-    println("area-ish = ", r * r * 3.14159)
-
-    // 字面量按值适配 + 拓宽
-    let small: u8 = 200
-    let wide: i64 = small
-    println("small = ", small, "  widened = ", wide)
+    println("⑧ let 遮蔽     ", shadowDemo())
     return 0
 }
