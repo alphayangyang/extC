@@ -1,0 +1,7 @@
+// `var` 声明的是**存储** —— 同一层两个同名的 `var` 几乎肯定是想写 `a = ...`
+// （`let` 可以遮蔽，见 examples/shadowing.extc；`var` 不行）
+fn main() -> i32 {
+    var v: i32 = 1
+    var v: i32 = 2
+    return v
+}

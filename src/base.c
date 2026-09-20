@@ -232,3 +232,29 @@ void ctxRenderDiag(Ctx *c, Buf *out) {
         bufPrintf(out, "  note: %s\n", c->errNote);
     }
 }
+
+/* ---------------------------------------------------------------- C 关键字 */
+
+/* extC 的名字要当 C 名字用。**绝大多数名字直接照抄**（生成的 C 才读得懂），
+ * 但有几类会撞车，撞了就得改名 —— 见 DECISIONS 定案 48：
+ *   ① C 关键字：`fn double(...)` 在 extC 里完全合法（extC 的浮点是 `f64`），
+ *      但生成的 C 里 `int32_t double(int32_t);` 编不过，而且报错落在生成的 C 上，
+ *      用户看不见自己的源码
+ *   ② `<stdbool.h>` 的 `bool` / `true` / `false`（生成的 C 里是宏，撞了连累后面的代码）
+ *   ③ GNU C 的 `asm` / `typeof`（gcc 默认 gnu11 认它们）*/
+bool cIdentIsKeyword(const char *name) {
+    static const char *KW[] = {
+        "auto", "break", "case", "char", "const", "continue", "default", "do",
+        "double", "else", "enum", "extern", "float", "for", "goto", "if",
+        "inline", "int", "long", "register", "restrict", "return", "short",
+        "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+        "unsigned", "void", "volatile", "while",
+        "_Bool", "_Complex", "_Imaginary",
+        "bool", "true", "false",
+        "asm", "typeof",
+        NULL
+    };
+    for (size_t i = 0; KW[i]; i++)
+        if (strcmp(KW[i], name) == 0) return true;
+    return false;
+}

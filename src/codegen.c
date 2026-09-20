@@ -147,33 +147,40 @@ static void genPrintValue(CG *g, Type *t, const char *expr);
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
  * （在 extC 里它们本来就是两个不同的名字，见 DECISIONS 决策 9）*/
 /* extC 的符号名 → C 标识符片段。
- * 运算符在 extC 里就叫 `==`，但 C 里不能这么拼，所以映射一下。 */
-static const char *cSymName(const char *name) {
+ * 运算符在 extC 里就叫 `==`，但 C 里不能这么拼，所以映射一下。
+ *
+ * 还有一类：**名字正好是 C 的关键字**（`fn double(...)` —— 写测试时就撞上了）。
+ * extC 里 `double` 不是关键字（extC 的浮点是 `f64`），所以它是个完全合法的用户名字，
+ * 但生成的 C 里 `int32_t double(int32_t);` 编不过，而且报错落在**生成的 C** 上，
+ * 用户看不到自己的源码。加个 `__c` 后缀回避 ⇒ extC 源码里的名字一个字都不改 ✓
+ * （关键字表在 base.c 的 `cIdentIsKeyword` —— 类型检查那边也要用同一份。）*/
+static const char *cSymName(CG *g, const char *name) {
     static const struct { const char *extc, *c; } MAP[] = {
         { "==", "eq" }, { "!=", "ne" },
         { NULL, NULL }
     };
     for (size_t i = 0; MAP[i].extc; i++)
         if (strcmp(MAP[i].extc, name) == 0) return MAP[i].c;
+    if (cIdentIsKeyword(name)) return arenaPrintf(g->arena, "%s__c", name);
     return name;
 }
 
 static const char *cFuncName(CG *g, FuncDef *f) {
     if (g->ownerPrefix)
-        return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, cSymName(f->name));
-    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(f->name));
-    return f->name;
+        return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, cSymName(g, f->name));
+    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(g, f->name));
+    return cSymName(g, f->name);
 }
 
 /* 方法名修饰：接收者是泛型实例时用实例名（`Pair_i32_u8_getFirst`） */
 static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     Type *rb = ttBase(subst(g, recvType));
     if (rb && rb->kind == TY_GENERIC)
-        return arenaPrintf(g->arena, "%s_%s", rb->name, cSymName(f->name));
+        return arenaPrintf(g->arena, "%s_%s", rb->name, cSymName(g, f->name));
     /* ⚠️ 这里**不能**用 cFuncName —— 它带的是「当前正在生成的实例」前缀。
      * 被调用的方法可能属于另一个类型（在 Wrapper<Point> 里调 Point.==）。*/
-    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(f->name));
-    return f->name;
+    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(g, f->name));
+    return cSymName(g, f->name);
 }
 
 /* 一个类型是不是「字节视图」？是的话 `println` 按文本打印。
@@ -623,7 +630,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             return arenaPrintf(g->arena,
                 "(%s){ .data = (uint8_t *)\"%s\", .len = sizeof(\"%s\") - 1 }",
                 cType(g, e->type), e->u.str.text, e->u.str.text);
-        case EX_IDENT: return e->u.ident.name;
+        case EX_IDENT: return e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
 
         case EX_BIN: return genBin(g, e);
 
@@ -644,6 +651,10 @@ static const char *genExprInner(CG *g, Expr *e) {
             if (strcmp(name, "println") == 0) return genPrint(g, &e->u.call.args, true);
             if (!e->func) return "0";
 
+            /* 只用 `cSymName`（**不带** ownerPrefix）：调用点写的是被调用者自己的名字，
+             * 而 ownerPrefix 是「当前正在生成谁的实例」。同一件事在 cFuncName 里
+             * 得分清楚，见那个函数上的注释。这里顺手把 C 关键字改掉（`fn double`）。*/
+            name = cSymName(g, name);
             Buf b;
             bufInit(&b, g->arena);
             bufPuts(&b, name);
@@ -874,15 +885,17 @@ static void genStmt(CG *g, Stmt *s) {
 
     switch (s->kind) {
         case ST_VAR: {
+            /* `cname` = 检查器定下的名字（同层遮蔽过的会带 `__2` 后缀）*/
+            const char *nm = s->u.var.cname ? s->u.var.cname : s->u.var.name;
             if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.var.init);
                 cgLine(g, "%s %s = %s.value;",
-                       cType(g, s->type), s->u.var.name, ti.tmp);
+                       cType(g, s->type), nm, ti.tmp);
                 return;
             }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
                                              : zeroInit(g, s->type);
-            cgLine(g, "%s %s = %s;", cType(g, s->type), s->u.var.name, init);
+            cgLine(g, "%s %s = %s;", cType(g, s->type), nm, init);
             return;
         }
 
@@ -988,7 +1001,7 @@ static void genFunc(CG *g, FuncDef *f) {
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p = *(Param **)vecAt(&f->params, i);
                 if (i) bufPuts(&sig, ", ");
-                bufPrintf(&sig, "%s %s", cType(g, p->type), p->name);
+                bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
             }
         }
         bufPuts(&sig, ") {");
@@ -1033,7 +1046,7 @@ static void genFuncProto(CG *g, FuncDef *f) {
         for (size_t j = 0; j < f->params.len; j++) {
             Param *p = *(Param **)vecAt(&f->params, j);
             if (j) bufPuts(&sig, ", ");
-            bufPrintf(&sig, "%s %s", cType(g, p->type), p->name);
+            bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
         }
     }
     bufPuts(&sig, ");");

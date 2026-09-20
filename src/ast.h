@@ -101,7 +101,11 @@ struct Expr {
         double    fval;
         bool      bval;
         struct { const char *text; } str;                 /* 不含引号，转义原样 */
-        struct { const char *name; } ident;
+        struct { const char *name;
+                 /* 解析到的绑定的 C 名字（遮蔽时会跟 `name` 不同）。
+                  * 由类型检查阶段填 —— 名字的**解析**是检查器的活，
+                  * 代码生成只管照着印。见 DECISIONS 定案 47。 */
+                 const char *cname; } ident;
         struct { const char *op; Expr *left, *right; } bin;
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
@@ -139,7 +143,10 @@ struct Stmt {
     Type    *type;      /* ST_VAR：变量声明的最终类型（由 check 填写） */
 
     union {
-        struct { const char *name; Type *ann; Expr *init; bool mut; } var;
+        struct { const char *name; Type *ann; Expr *init; bool mut;
+                 /* 生成 C 时用的名字（同一层 `let` 遮蔽 ⇒ `a` → `a__2`）。
+                  * 由类型检查阶段填，见 DECISIONS 定案 47。 */
+                 const char *cname; } var;
         struct { Expr *target; Expr *value; } assign;
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
         struct { Expr *cond; Stmt *body; } whiles;
@@ -155,6 +162,7 @@ Stmt *stmtNew(Arena *a, StmtKind kind, int line);
 
 typedef struct {
     const char *name;
+    const char *cname;   /* 生成 C 时用的名字（同上，见 DECISIONS 定案 47） */
     Type       *type;
     int         line;
 } Param;

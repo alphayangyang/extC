@@ -87,6 +87,10 @@ typedef struct {
     char errNote[EXTC_MAXERR];
 } Ctx;
 
+/* 这个标识符是不是 C 的关键字？extC 的名字要避开它们才能当 C 名字用。
+ * 规则：**不改 extC 源码里的名字**，只在生成 C 时加后缀（见 DECISIONS 定案 48）。 */
+bool cIdentIsKeyword(const char *name);
+
 void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen);
 void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...);
 void ctxRenderDiag(Ctx *c, Buf *out);

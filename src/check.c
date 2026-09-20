@@ -18,12 +18,15 @@
 
 typedef struct {
     const char *name;
+    const char *cname;   /* 生成 C 的名字 —— 同层遮蔽时 `a` → `a__2`，见 §名字 */
     Type       *type;
     bool        mut;
     int         depth;   /* 词法深度：参数 = 0，函数体里的局部 = 1，每进一层块 +1。
                           * 逃逸检查就比这个数 —— 见 REFS.md §4 */
     int         line;
 } Sym;
+
+typedef struct { const char *name; int count; } NameUse;
 
 typedef struct { Vec syms; } Scope;
 
@@ -37,6 +40,7 @@ typedef struct {
     Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
     Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
+    Vec        nameUses;    /* NameUse* —— 当前函数里每个名字用过几次（生成 C 的改名用）*/
 
     Type *tI32, *tF64, *tBool;
     StructDef *sliceDef;/* prelude 里的 `slice<T>` 声明（视图协议）*/
@@ -61,6 +65,57 @@ static const char *typeStr(Checker *c, Type *t) {
     return bufCstr(&b);
 }
 
+/* ------------------------------------------------- 生成 C 的名字（改名） */
+
+/* **`let` 是命名，不是存储。** 所以同一层里 `let a = 1` / `let a = a + 1` 是合法的 ——
+ * 第二个 `a` 只是**重新给这个名字一个含义**，不是写进原来那个地方（老的那个 `a`
+ * 连同它的存储一起留在原地，谁指着它谁还指着它）。
+ *
+ * 但 C 不允许同一个块里重名 ⇒ 第二个以后的名字在**生成的 C** 里改叫 `a__2`。
+ * extC 源码里的名字**不变** —— 改名是编译器内部的事，不许漏给用户看。
+ *
+ * 两条约束：
+ *   ① 同一个函数内**单调不重复**（不复用 `a__2`）—— 生成的 C 读起来才确定，
+ *      也不用去推敲 C 自己的块作用域规则；
+ *   ② 还要避开**模块级**的名字（函数 / 结构体 / 全局）—— 否则局部变量会在生成的 C 里
+ *      盖住函数名，`foo()` 就调不到了。 */
+static bool moduleNameTaken(Module *m, const char *name) {
+    for (size_t i = 0; i < m->funcs.len; i++)
+        if (strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0) return true;
+    for (size_t i = 0; i < m->structs.len; i++)
+        if (strcmp((*(StructDef **)vecAt(&m->structs, i))->name, name) == 0) return true;
+    for (size_t i = 0; i < m->types.len; i++)
+        if (strcmp((*(TypeDef **)vecAt(&m->types, i))->name, name) == 0) return true;
+    for (size_t i = 0; i < m->globals.len; i++)
+        if (strcmp((*(GlobalDef **)vecAt(&m->globals, i))->name, name) == 0) return true;
+    return false;
+}
+
+static const char *cNameFor(Checker *c, const char *name) {
+    NameUse *u = NULL;
+    for (size_t i = 0; i < c->nameUses.len; i++) {
+        NameUse *it = *(NameUse **)vecAt(&c->nameUses, i);
+        if (strcmp(it->name, name) == 0) { u = it; break; }
+    }
+    int n = u ? u->count : 0;
+
+    const char *cand;
+    do {
+        n++;
+        cand = (n == 1) ? name : arenaPrintf(c->arena, "%s__%d", name, n);
+        /* 也要避开 C 关键字（`let double = 3` 合法，但生成的 C 里不能叫 double）*/
+    } while (moduleNameTaken(c->m, cand) || cIdentIsKeyword(cand));
+
+    if (u) u->count = n;
+    else {
+        NameUse *fresh = (NameUse *)arenaAllocZero(c->arena, sizeof(NameUse));
+        fresh->name = name;
+        fresh->count = n;
+        *(NameUse **)vecPush(&c->nameUses) = fresh;
+    }
+    return cand;
+}
+
 /* ---------------------------------------------------------------- 作用域 */
 
 static void pushScope(Checker *c) {
@@ -73,31 +128,50 @@ static void popScope(Checker *c) {
     if (c->scopes.len) c->scopes.len--;
 }
 
-static void declare(Checker *c, const char *name, Type *t, bool mut, int line, int depth) {
+/* 声明一个绑定。
+ *
+ * **`shadow`**：能不能遮蔽同层已有的同名绑定？
+ *   `let` ⇒ 可以（命名，不是存储 —— 见 §名字）
+ *   `var` ⇒ 不可以（声明**存储**；同一层写两个同名的 `var`，几乎肯定是想写 `a = ...`）
+ * 参数按 `var` 算（它本来就是可写的局部副本）。
+ *
+ * 返回新建的 Sym（`cname` 由调用者写回 AST —— 参数写回 Param，局部写回 Stmt）。 */
+static Sym *declare(Checker *c, const char *name, Type *t, bool mut,
+                    bool shadow, int line, int depth) {
     Scope *top = *(Scope **)vecAt(&c->scopes, c->scopes.len - 1);
 
-    for (size_t i = 0; i < top->syms.len; i++) {
-        Sym *old = *(Sym **)vecAt(&top->syms, i);
-        if (strcmp(old->name, name) == 0) {
-            ckError(c, line, NULL, "`%s` is already declared in this scope", name);
-            return;
+    if (!shadow) {
+        for (size_t i = 0; i < top->syms.len; i++) {
+            Sym *old = *(Sym **)vecAt(&top->syms, i);
+            if (strcmp(old->name, name) == 0) {
+                ckError(c, line,
+                        "`var` declares storage, so two `var`s with the same name in one scope "
+                        "is almost always a typo -- write `x = ...` to assign the existing one, "
+                        "or `let x = ...` if you really mean a new name",
+                        "`%s` is already declared in this scope", name);
+                return old;
+            }
         }
     }
 
     Sym *s = (Sym *)arenaAllocZero(c->arena, sizeof(Sym));
     s->name = name;
+    s->cname = cNameFor(c, name);
     s->type = t;
     s->mut = mut;
     s->depth = depth;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
+    return s;
 }
 
 static Sym *lookup(Checker *c, const char *name) {
     /* 局部作用域（从内往外）优先 —— 所以局部可以遮蔽全局 */
     for (size_t i = c->scopes.len; i-- > 0; ) {
         Scope *s = *(Scope **)vecAt(&c->scopes, i);
-        for (size_t j = 0; j < s->syms.len; j++) {
+        /* **从后往前**扫：同一层里最新的 `let` 赢（遮蔽）。顺序反了的话
+         * `let a = 1  let a = a + 1` 里的第二个 `a` 会解析回第一个 ✓ */
+        for (size_t j = s->syms.len; j-- > 0; ) {
             Sym *sym = *(Sym **)vecAt(&s->syms, j);
             if (strcmp(sym->name, name) == 0) return sym;
         }
@@ -893,6 +967,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "undefined name `%s`", e->u.ident.name);
                 return ttError(tt);
             }
+            /* 名字的**解析**在这里定格 ⇒ 代码生成直接印 `cname`。
+             * 遮蔽过的名字（`a` vs `a__2`）就靠这一行分开 ✓ */
+            e->u.ident.cname = s->cname;
             return s->type;
         }
 
@@ -1616,7 +1693,9 @@ static void checkStmt(Checker *c, Stmt *s) {
                             s->u.var.name);
                 }
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
-                declare(c, s->u.var.name, s->type, s->u.var.mut, s->line, c->scopes.len);
+                Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
+                                   !s->u.var.mut, s->line, c->scopes.len);
+                s->u.var.cname = sym->cname;
                 return;
             }
 
@@ -1637,7 +1716,9 @@ static void checkStmt(Checker *c, Stmt *s) {
             /* 逃逸②：初始化的引用不能指向比自己更深的局部 */
             checkEscape(c, s->u.var.init, c->scopes.len, s->line, "this initializer");
             s->type = ttIsError(declT) ? ttError(c->tt) : declT;
-            declare(c, s->u.var.name, s->type, s->u.var.mut, s->line, c->scopes.len);
+            Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
+                               !s->u.var.mut, s->line, c->scopes.len);
+            s->u.var.cname = sym->cname;
             return;
         }
 
@@ -1903,15 +1984,21 @@ static void checkFunc(Checker *c, FuncDef *f) {
     c->curFunc = f;
     c->curParams = f->owner ? &f->owner->typeParams : NULL;
     pushScope(c);
+    /* 每个函数单独一套 C 名字 —— 不同函数里的 `a` 互不影响（生成 C 时它们本来就在
+     * 不同的函数体里）。泛型实例化会**再检查一遍同一个函数体**，但遍历顺序一样 ⇒
+     * 算出来的名字也一样，不会漂移 ✓ */
+    c->nameUses.len = 0;
 
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
         /* 参数是**可变的** —— 它是调用者给的局部副本（跟 C 一致），
          * 所以 `fn f(real: Board)` 里可以 `ref real` */
-        declare(c, p->name, p->type, true, p->line, 0);
+        Sym *sym = declare(c, p->name, p->type, true, false, p->line, 0);
+        p->cname = sym->cname;
     }
-    /* 函数体不另开作用域 —— 参数和函数体的局部变量同一层，
-     * 这样「局部变量遮蔽参数」会直接报错 */
+    /* 函数体不另开作用域 —— 参数和函数体的局部变量同一层。
+     * 所以 `let a = ...` 遮蔽参数 = **命名**（合法，生成 C 里改叫 `a__2`）；
+     * 而 `var a = ...` 遮蔽参数 = 声明第二个存储（报错，见 declare）✓ */
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 
@@ -2010,6 +2097,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.eqChecks, arena, sizeof(void *));
     vecInit(&c.globals, arena, sizeof(void *));
+    vecInit(&c.nameUses, arena, sizeof(void *));
 
     c.tI32  = ttFromName(tt, "i32");
     c.tF64  = ttFromName(tt, "f64");
