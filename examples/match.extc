@@ -1,0 +1,71 @@
+// `match` —— 穷尽检查的"分支"（2026-09-18，第 3 步的第一刀：先只用在**无载荷枚举**上）
+//
+// 今天为什么需要它：
+//     if e == gameError.outOfRange { ... } else { ... }
+// 两个毛病 —— ① `else` 得**手写**；② 以后给 `type gameError` **加了第三个变体**，
+// 编译器**不会提醒你**这里有地方漏了。
+// `match` 会提醒：**漏一个变体就编不过** ✓
+//
+// ⚠️ `match` 是**语句，不是表达式** —— 跟 `?` 同一个理由：C 没有语句表达式，
+//    所以它不"返回一个值"。想往外传值就在分支里 `return` / 赋值 ✓
+//
+// ⚠️ 被 match 的表达式**只求值一次**（生成的 C 就是一个 `switch`）。
+
+type gameError = | outOfRange | occupied | gameOver
+
+struct board {
+    cell: [15][15]i32
+    finished: bool
+}
+
+// 用法一：每个分支 return 一个值（最常用）
+fn describe(e: gameError) -> slice<u8> {
+    match e {
+        outOfRange => { return "出界了" }
+        occupied   => { return "那格已经有子了" }
+        gameOver   => { return "棋局已经结束了" }
+    }
+}
+
+// 用法二：分支体可以是一个语句（不用写花括号）
+fn isFatal(e: gameError) -> bool {
+    var bad: bool = false
+    match e {
+        outOfRange => bad = false
+        occupied   => bad = false
+        gameOver   => bad = true
+    }
+    return bad
+}
+
+// 用法三：在别的东西里面套着用（`match` 里的分支体是完整的块）
+fn place(b: mut ref board, x: i32, y: i32) -> gameError {
+    if b.finished {
+        return gameError.gameOver
+    }
+    if x < 0 || x >= 15 || y < 0 || y >= 15 {
+        return gameError.outOfRange
+    }
+    if b.cell[y][x] != 0 {
+        return gameError.occupied
+    }
+    b.cell[y][x] = 1
+    return gameError.outOfRange      // 这里只是随手返回一个（演示用）
+}
+
+fn main() -> i32 {
+    var b: board
+
+    let e = place(ref b, 3, 3)
+    match e {
+        outOfRange => { println("落子结果：出界") }
+        occupied   => { println("落子结果：有子") }
+        gameOver   => { println("落子结果：已结束") }
+    }
+
+    println("describe = ", describe(gameError.occupied))
+    println("fatal？   ", isFatal(gameError.gameOver))
+
+    // 新增一个变体时，上面**每一个** `match` 都会被编译器点名 —— 这就是它值钱的地方
+    return 0
+}

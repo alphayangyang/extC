@@ -307,6 +307,32 @@ if s == 0 { ... }              // error: 类型不匹配
 println(s)                     // warn
 ```
 
+### `match`：穷尽检查的分支
+
+```extc
+type gameError = | outOfRange | occupied | gameOver
+
+fn describe(e: gameError) -> slice<u8> {
+    match e {
+        outOfRange => { return "出界了" }
+        occupied   => { return "那格已经有子了" }
+        gameOver   => { return "棋局已经结束了" }
+    }
+}
+```
+
+- **漏一个变体就编不过** —— 这就是它存在的理由。
+  用 `if e == gameError.outOfRange { ... } else { ... }` 时，
+  以后给枚举**加了新变体，编译器不会提醒你漏了**；`match` 会 ✓
+- 分支名必须是**被 match 的枚举的变体**（写错会报出该枚举的所有变体）
+- 分支体可以是**一个块**，也可以是**一个语句**（`outOfRange => n = 1`）
+- 被 match 的表达式**只求值一次**（生成的 C 就是一个 `switch`）
+- ⚠️ **是语句，不是表达式** —— 它不返回一个值（跟 `?` 同一个理由：C 没有语句表达式）。
+  想往外传就在分支里 `return` / 赋值
+- ⬜ 暂时**没有 `_ =>` 兜底**：穷尽列出所有变体才是它的价值。
+  （带载荷枚举是下一步，见 `BOOTSTRAP.md` §8 第 3 步）
+
+
 ### 泛型
 
 ```extc
@@ -1203,7 +1229,8 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | **输入（`readLine` / `argv`）** | 由调用者给 buffer，零分配零隐藏状态 | 中 —— 五子棋能真的跟人下的门槛 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
 | **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | 中 |
-| **`match` + 带载荷枚举** | 语句和表达式都能用；能匹配变体和常量；臂可发散 | 中 |
+| **`match`** | ✅ **做完第一刀（2026-09-18）**：穷尽检查 + 无载荷枚举（语句，不是表达式） |
+| **带载荷枚举**（tagged union）| 下一刀 —— `type shape = \| circle(f64) \| rect(f64, f64)`，绑定载荷 `circle(r) => ...`。做完之后 `option<slice<u8>>` 才可能存在（`none` 里没有 `value` 字段可填），而且 `option`/`result` 可以重写成**普通枚举** | 中 |
 | **`@main` 注解** | 标在任意函数上，不再硬编码 `main` | 低 |
 | **模块系统** | `module` / `export` / `import` | 低 —— 主人说不一定完全自举 ⇒ 优先级降了 |
 | **`@recursive`** | 编译器展开成「显式栈 + 循环」，深度上限是编译期常数 | 低 |

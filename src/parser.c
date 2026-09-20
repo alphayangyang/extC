@@ -419,12 +419,73 @@ static Stmt *parseBlock(Parser *p) {
     return b;
 }
 
+/* `match e { 变体 => 语句 ... }`
+ *
+ * **是语句，不是表达式** —— 跟 `?` 同一个理由：C 没有语句表达式，
+ * 所以"match 能返回一个值"这件事在 extC 里做不到（除非引入新机制，那是另一条路）。
+ * 每条分支的 body 就是一个语句（通常是个块）。
+ *
+ * 分支名必须是**枚举的变体名**（编译器对着类型检查，见 check.c）。
+ * 暂时不做 `_ =>` 兜底：**穷尽列出所有变体**才是 match 的价值所在 ✓ */
+static Stmt *parseMatch(Parser *p) {
+    Token *kw = take(p);                    /* match */
+    /* ⚠️ 跟 `if` / `while` 的条件一样要**关掉结构体字面量** ——
+     * 否则 `match e { ... }` 里的 `{` 会被当成 `e { 字段: 值 }` ✓ */
+    const bool saved = p->inCond;
+    p->inCond = true;
+    Expr *scrut = parseExpr(p);
+    p->inCond = saved;
+    if (!scrut) return NULL;
+
+    if (!expect(p, "{", "a `match` arm is written `variant => { ... }`")) return NULL;
+
+    Stmt *s = stmtNew(p->arena, ST_MATCH, kw->line);
+    s->u.match.scrutinee = scrut;
+    vecInit(&s->u.match.arms, p->arena, sizeof(void *));
+
+    skipJunk(p);
+    while (!at(p, "}")) {
+        Token *name = cur(p);
+        if (name->kind != TK_IDENT && name->kind != TK_KEYWORD) {
+            ctxError(p->ctx, name->line, name->col,
+                     "a `match` arm names one of the enum's variants, e.g. `occupied => { ... }`",
+                     "expected a variant name, found `%s`", name->text);
+            return NULL;
+        }
+        take(p);
+
+        if (!expect(p, "=>", NULL)) return NULL;
+
+        MatchArm *arm = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
+        arm->variant = name->text;
+        arm->line = name->line;
+
+        /* 分支体：一个块，或者单个语句（`occupied => return 1` 也要能写）*/
+        skipNl(p);
+        if (at(p, "{")) {
+            arm->body = parseBlock(p);
+        } else {
+            Stmt *inner = parseStmt(p);
+            if (!inner) return NULL;
+            arm->body = stmtNew(p->arena, ST_BLOCK, inner->line);
+            vecInit(&arm->body->u.block.stmts, p->arena, sizeof(void *));
+            *(Stmt **)vecPush(&arm->body->u.block.stmts) = inner;
+        }
+        *(MatchArm **)vecPush(&s->u.match.arms) = arm;
+
+        skipJunk(p);
+    }
+    if (!expect(p, "}", NULL)) return NULL;
+    return s;
+}
+
 static Stmt *parseStmt(Parser *p) {
     Token *t = cur(p);
 
     if (at(p, "let") || at(p, "var"))  return parseVarDecl(p);
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);
+    if (at(p, "match"))                return parseMatch(p);
 
     if (at(p, "return")) {
         take(p);

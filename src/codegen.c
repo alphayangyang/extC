@@ -983,6 +983,24 @@ static void genStmt(CG *g, Stmt *s) {
             g->indent--;
             cgLine(g, "}");
             return;
+
+        case ST_MATCH: {
+            /* `match` → 一个 `switch`（枚举的变体在 C 里就是常量 `枚举名_变体名`）。
+             * **穷尽性由类型检查担保**（check.c），所以这里不需要 `default` ——
+             * 真漏了根本编不过，轮不到生成 C ✓ */
+            Type *et = ttBase(s->u.match.scrutinee->type);
+            cgLine(g, "switch (%s) {", genExpr(g, s->u.match.scrutinee));
+            for (size_t i = 0; i < s->u.match.arms.len; i++) {
+                MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+                cgLine(g, "case %s_%s:", et ? et->name : "?", arm->variant);
+                g->indent++;
+                genBlockBody(g, arm->body);     /* 分支体自带一层块 */
+                g->indent--;
+                cgLine(g, "    break;");
+            }
+            cgLine(g, "}");
+            return;
+        }
     }
 }
 

@@ -133,8 +133,16 @@ Expr *exprNew(Arena *a, ExprKind kind, int line);
 
 typedef enum {
     ST_VAR, ST_ASSIGN, ST_IF, ST_WHILE, ST_RETURN,
-    ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK
+    ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK, ST_MATCH
 } StmtKind;
+
+/* `match` 的一条分支：`circle => { ... }`
+ * （带载荷之后会多一个「绑定载荷的名字」列表，见 IO.md / BOOTSTRAP §8 第 3 步。）*/
+typedef struct {
+    const char *variant;   /* 变体名；`_` 表示兜底（暂时不支持，先留着位置）*/
+    Stmt       *body;
+    int         line;
+} MatchArm;
 
 struct Stmt {
     StmtKind kind;
@@ -153,6 +161,7 @@ struct Stmt {
         struct { Expr *value; } ret;
         struct { Expr *expr; } expr;
         struct { Vec stmts; } block;                      /* stmts: Stmt* */
+        struct { Expr *scrutinee; Vec arms; } match;      /* arms: MatchArm* */
     } u;
 };
 

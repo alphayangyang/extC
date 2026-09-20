@@ -1,0 +1,10 @@
+// 漏一个变体 ⇒ 编不过（这正是 match 存在的理由）
+type gameError = | outOfRange | occupied
+
+fn f(e: gameError) -> i32 {
+    match e {
+        outOfRange => { return 1 }
+    }
+    return 0
+}
+fn main() -> i32 { return f(gameError.occupied) }

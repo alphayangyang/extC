@@ -1,0 +1,11 @@
+// 分支名必须是被 match 的枚举的变体
+type gameError = | outOfRange | occupied
+
+fn f(e: gameError) -> i32 {
+    match e {
+        outOfRange => { return 1 }
+        nope       => { return 2 }
+    }
+    return 0
+}
+fn main() -> i32 { return 0 }

@@ -1867,6 +1867,75 @@ static void checkStmt(Checker *c, Stmt *s) {
         case ST_CONTINUE:
             return;
 
+        case ST_MATCH: {
+            /* `match e { 变体 => ... }`
+             *
+             * **这个特性的全部价值就在穷尽检查这一件事上** ——
+             * 今天写 `if e == gameError.outOfRange { } else { }` 得手写 else，
+             * 而且**以后加了新变体，编译器不会提醒你漏了**。match 会 ✓ */
+            Type *st = checkValue(c, s->u.match.scrutinee);
+            Type *sb = ttBase(st);
+            if (ttIsError(st)) return;
+
+            if (!sb || sb->kind != TY_ENUM || !sb->edef) {
+                ckError(c, s->line,
+                        "`match` works on enums (`type color = | red | green`); "
+                        "everything else is compared with `==`",
+                        "cannot `match` on a value of type `%s`", typeStr(c, st));
+                return;
+            }
+            TypeDef *td = sb->edef;
+
+            /* 每条分支：名字要是这个枚举的变体，而且不能重复 */
+            for (size_t i = 0; i < s->u.match.arms.len; i++) {
+                MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+                if (!findVariant(td, arm->variant)) {
+                    Buf note;
+                    bufInit(&note, c->arena);
+                    bufPuts(&note, "variants of ");
+                    bufPuts(&note, sb->name);
+                    bufPuts(&note, ":");
+                    for (size_t j = 0; j < td->variants.len; j++)
+                        bufPrintf(&note, " %s", (*(Variant **)vecAt(&td->variants, j))->name);
+                    ckError(c, arm->line, bufCstr(&note),
+                            "`%s` is not a variant of `%s`", arm->variant, sb->name);
+                    return;
+                }
+                for (size_t j = 0; j < i; j++) {
+                    MatchArm *prev = *(MatchArm **)vecAt(&s->u.match.arms, j);
+                    if (strcmp(prev->variant, arm->variant) == 0) {
+                        ckError(c, arm->line, NULL,
+                                "`%s` is matched twice", arm->variant);
+                        return;
+                    }
+                }
+            }
+
+            /* **穷尽**：一个都不能漏 */
+            for (size_t j = 0; j < td->variants.len; j++) {
+                const char *vn = (*(Variant **)vecAt(&td->variants, j))->name;
+                bool covered = false;
+                for (size_t i = 0; i < s->u.match.arms.len && !covered; i++)
+                    covered = strcmp((*(MatchArm **)vecAt(&s->u.match.arms, i))->variant, vn) == 0;
+                if (covered) continue;
+
+                Buf note;
+                bufInit(&note, c->arena);
+                bufPuts(&note, "add a `");
+                bufPuts(&note, vn);
+                bufPuts(&note, " => { ... }` arm");
+                ckError(c, s->line, bufCstr(&note),
+                        "`match` does not handle `%s` -- every variant must be listed",
+                        vn);
+                return;
+            }
+
+            /* 分支体各自开一层作用域（跟块一样）*/
+            for (size_t i = 0; i < s->u.match.arms.len; i++)
+                checkBlockBody(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body);
+            return;
+        }
+
         case ST_BLOCK:            checkBlockBody(c, s);
             return;
     }
