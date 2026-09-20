@@ -1,0 +1,19 @@
+fn sieve(n: i64, composite: mut slice<bool>) -> i64 {
+    var cnt: i64 = 0
+    var i: i64 = 2
+    while i <= n {
+        if !composite[i] {
+            cnt = cnt + 1
+            var j: i64 = i * i
+            while j <= n { composite[j] = true  j = j + i }
+        }
+        i = i + 1
+    }
+    return cnt
+}
+fn main() -> i32 {
+    let n: i64 = 3000000
+    var composite: [3000001]bool
+    println("pi = ", sieve(n, composite[..]))
+    return 0
+}

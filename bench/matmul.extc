@@ -1,0 +1,25 @@
+fn mul(n: i64, a: slice<i32>, b: slice<i32>, c: mut slice<i32>) {
+    var i: i64 = 0
+    while i < n {
+        var j: i64 = 0
+        while j < n {
+            var s: i32 = 0
+            var k: i64 = 0
+            while k < n { s = s + a[i * n + k] * b[k * n + j]  k = k + 1 }
+            c[i * n + j] = s
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+fn main() -> i32 {
+    let n: i64 = 200
+    var a: [40000]i32
+    var b: [40000]i32
+    var c: [40000]i32
+    var i: i64 = 0
+    while i < 40000 { a[i] = 1  b[i] = 2  i = i + 1 }
+    mul(n, a[..], b[..], c[..])
+    println("c[0] = ", c[0])
+    return 0
+}
