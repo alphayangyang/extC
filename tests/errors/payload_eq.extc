@@ -1,0 +1,4 @@
+// 带载荷枚举没有 `==`（C 里它是 struct）
+type shape = | circle(f64) | dot
+fn f(a: shape, b: shape) -> bool { return a == b }
+fn main() -> i32 { return 0 }

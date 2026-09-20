@@ -1,0 +1,6 @@
+// 零值 = tag 0 ⇒ tag 0 的载荷含 ref 时，这个类型就没有零值
+type box = | holding(slice<u8>) | nothing
+fn main() -> i32 {
+    var b: box
+    return 0
+}

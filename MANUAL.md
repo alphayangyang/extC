@@ -330,7 +330,43 @@ fn describe(e: gameError) -> slice<u8> {
 - ⚠️ **是语句，不是表达式** —— 它不返回一个值（跟 `?` 同一个理由：C 没有语句表达式）。
   想往外传就在分支里 `return` / 赋值
 - ⬜ 暂时**没有 `_ =>` 兜底**：穷尽列出所有变体才是它的价值。
-  （带载荷枚举是下一步，见 `BOOTSTRAP.md` §8 第 3 步）
+
+### 带载荷枚举（tagged union）：变体自己带数据
+
+无载荷回答「**是哪一种**」；带载荷回答「**是哪一种 + 附带的东西是什么**」。
+
+```extc
+type shape = | circle(f64) | rect(f64, f64) | dot
+
+let a = shape.circle(2.0)        // 构造：类型名.变体名(载荷...)
+let b = shape.rect(3.0, 4.0)
+let c = shape.dot                // 无载荷变体照旧
+
+match a {
+    circle(r)    => { println(r) }          // 载荷**绑定**出来，位置对位置
+    rect(w, h)   => { println(w * h) }
+    dot          => { println("点") }
+}
+```
+
+C 里这个东西要**手写**，而且容易写错：
+
+```c
+struct shape { int tag; union { double r; struct { double w, h; } rect; } u; };
+// 读 u.r 之前你得**自己记得**先看 tag 是不是 0 —— 忘了就是 bug
+```
+
+这里编译器替你记：**想拿载荷，必须先 match 那个变体** ✓
+
+**几条要记住的**：
+
+| | |
+|---|---|
+| **零值 = tag 0** | 所以**变体顺序有意义**。`type box = \| nothing \| holding(slice<u8>)` 的 `var b: box` 合法（零值是 `nothing`）；把 `holding` 排在第一位就不合法（含 `ref` 的类型没有零值）|
+| **打印** | 打印的是**变体名**（`circle`），载荷不打印 —— 想要具体格式自己写方法 |
+| **没有 `==`** | C 里它是 struct，而 C 的 struct 不能用 `==` ⇒ 要比就 `match`，或者写一个方法 |
+| **载荷里可以有 `ref` / 视图** | 这正是无载荷的 `option<T>` 做不到的事（见 `IO.md`：`none` 得给 `value` 字段填值，而 `ref` 没有零值）|
+
 
 
 ### 泛型

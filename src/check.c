@@ -230,6 +230,16 @@ static Variant *findVariant(TypeDef *td, const char *name) {
     return NULL;
 }
 
+/* 这个枚举有**带载荷**的变体吗？（`| circle(f64)`）
+ * 有的话：C 里它不再是 `enum` 而是 `struct { tag; union }` ⇒
+ * ① 不能用 `==`（C 的 struct 不能比）② 打印只打变体名 */
+static bool enumHasPayload(TypeDef *td) {
+    if (!td) return false;
+    for (size_t i = 0; i < td->variants.len; i++)
+        if ((*(Variant **)vecAt(&td->variants, i))->types.len > 0) return true;
+    return false;
+}
+
 /* 这个类型里（递归地）有没有 `ref`？
  * 有的话就不能零初始化 —— `ref` 不可为空，它没有「零值」。 */
 /* 这个类型里有没有「进不去零值」的东西？`ref T` 没有零值，**含 ref 的聚合也没有**。
@@ -242,6 +252,18 @@ static bool typeContainsRef(TypeTable *tt, Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
     if (t->kind == TY_ARRAY) return typeContainsRef(tt, t->inner);
+    /* 带载荷枚举：**零值 = tag 0 + 载荷清零** ⇒ 只有**第一个变体**的载荷
+     * 会影响「有没有零值」。所以 `type box = | nothing | holding(slice<u8>)`
+     * 的 `var b: box` 是合法的（零值 = nothing），而
+     * `type box = | holding(slice<u8>) | nothing` 的不合法 ✓
+     * 顺序不是随便排的 —— 见 BOOTSTRAP §8 第 3 步第二刀。 */
+    if (t->kind == TY_ENUM && t->edef) {
+        if (t->edef->variants.len == 0) return false;
+        Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
+        for (size_t i = 0; i < v0->types.len; i++)
+            if (typeContainsRef(tt, *(Type **)vecAt(&v0->types, i))) return true;
+        return false;
+    }
     StructDef *sd = structOf(t);
     if (!sd) return false;
     Vec *sp = NULL, *sa = NULL;
@@ -425,6 +447,12 @@ static int exprRefDepth(Checker *c, Expr *e) {
         for (size_t i = 0; i < e->u.method.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
         break;
+    case EX_ENUMVAL:
+        /* 带载荷构造 `shape.holding(a[..])` —— 载荷装进这个值里，
+         * 所以它的深度就是载荷的深度（跟数组字面量同一个道理）✓ */
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.enumval.args, i)));
+        break;
     case EX_ASSOC:
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
@@ -475,6 +503,11 @@ static bool exprBorrowed(Checker *c, Expr *e) {
     case EX_ASSOC:
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             if (exprBorrowed(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        /* 带载荷构造：载荷是借来的 ⇒ 这个值也是借来的（跟数组字面量同理）*/
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprBorrowed(c, *(Expr **)vecAt(&e->u.enumval.args, i))) return true;
         return false;
     default: return false;      /* 字面量 / 全局 / alloc 出来的是本帧的 ✓ */
     }
@@ -577,7 +610,11 @@ static bool cmpIsNative(Type *t) {
     if (!t) return false;
     if (ttIsError(t)) return true;
     if (ttIsInteger(t) || ttIsFloat(t) || ttIs(t, "bool")) return true;
-    return ttBase(t)->kind == TY_ENUM;
+    /* 无载荷枚举在 C 里就是整数 ⇒ 直接比 ✓
+     * **带载荷**的不行：C 里它是 `struct { tag; union }`，而 C 的 struct 不能用 `==`。
+     * 用 `match` 比（以后可以派生出 `_eq` —— 那要递归比载荷，先不做）。 */
+    if (ttBase(t)->kind == TY_ENUM) return !enumHasPayload(ttBase(t)->edef);
+    return false;
 }
 
 /* 找类型上定义的运算符方法。
@@ -1019,8 +1056,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Type *b = ttBase(lt);
                     StructDef *sd = structOf(b);
                     if (!sd) {
-                        ckError(c, e->line, NULL,
-                                "`%s` does not support `%s`", typeStr(c, lt), op);
+                        /* 带载荷枚举是最容易撞上这个的类型：C 里它是 struct，
+                         * 而 C 的 struct 不能用 `==` ⇒ 告诉用户改用 match ✓ */
+                        bool ep = b && b->kind == TY_ENUM && enumHasPayload(b->edef);
+                        ckError(c, e->line,
+                                ep ? "an enum with a payload is a tagged union -- "
+                                     "compare it with `match`, or write a method that does"
+                                   : NULL,
+                                ep ? "`%s` is an enum with a payload, so it has no `%s`"
+                                   : "`%s` does not support `%s`", typeStr(c, lt), op);
                         return c->tBool;
                     }
 
@@ -1455,10 +1499,71 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return r;
         }
 
-        case EX_ENUMVAL:
-            return ttFromName(tt, e->u.enumval.typeName);
+        case EX_ENUMVAL: {
+            Type *et = ttFromName(tt, e->u.enumval.typeName);
+            if (!et || et->kind != TY_ENUM || !et->edef) return ttError(tt);
+            Variant *v = findVariant(et->edef, e->u.enumval.variant);
+            if (!v) return ttError(tt);
+
+            /* 无载荷变体：`status.ok` —— 不能带参数 */
+            if (v->types.len == 0) {
+                if (e->u.enumval.args.len > 0) {
+                    ckError(c, e->line, NULL,
+                            "`%s.%s` carries no payload, so it takes no arguments",
+                            et->name, v->name);
+                    return ttError(tt);
+                }
+                return et;
+            }
+
+            /* **带载荷变体的构造**：`shape.circle(2.0)` —— 载荷按位置对 */
+            if (e->u.enumval.args.len != v->types.len) {
+                ckError(c, e->line, NULL,
+                        "`%s.%s` carries %zu value(s), got %zu",
+                        et->name, v->name, v->types.len, e->u.enumval.args.len);
+                return ttError(tt);
+            }
+            for (size_t i = 0; i < v->types.len; i++) {
+                Type *pt  = *(Type **)vecAt(&v->types, i);
+                Expr *arg = *(Expr **)vecAt(&e->u.enumval.args, i);
+                Type *at  = checkInto(c, pt, arg);
+                checkAssignable(c, pt, at, arg, "payload value");
+                /* 载荷装进这个值里 ⇒ 它的引用不能活得比这个值短 */
+                checkEscape(c, arg, c->scopes.len, e->line, "this payload value");
+            }
+            return et;
+        }
 
         case EX_CALL: {
+            /* **带载荷变体的构造**：`shape.circle(2.0)` —— 它长得像"字段访问 + 调用"，
+             * 但 `shape` 是个类型名不是变量 ⇒ 认出它是枚举构造，改写成 EX_ENUMVAL ✓ */
+            if (e->u.call.callee->kind == EX_FIELD) {
+                Expr *fld = e->u.call.callee;
+                if (fld->u.field.obj->kind == EX_IDENT && !lookup(c, fld->u.field.obj->u.ident.name)) {
+                    Type *et = ttFromName(tt, fld->u.field.obj->u.ident.name);
+                    if (et && et->kind == TY_ENUM && et->edef) {
+                        Variant *v = findVariant(et->edef, fld->u.field.name);
+                        if (!v) {
+                            Buf note;
+                            bufInit(&note, c->arena);
+                            bufPrintf(&note, "variants of %s:", et->name);
+                            for (size_t i = 0; i < et->edef->variants.len; i++)
+                                bufPrintf(&note, " %s",
+                                          (*(Variant **)vecAt(&et->edef->variants, i))->name);
+                            ckError(c, e->line, bufCstr(&note),
+                                    "`%s` has no variant `%s`", et->name, fld->u.field.name);
+                            return ttError(tt);
+                        }
+                        Vec args = e->u.call.args;      /* union：先拿出来再改 kind */
+                        e->kind = EX_ENUMVAL;
+                        e->u.enumval.typeName = et->name;
+                        e->u.enumval.variant  = v->name;
+                        e->u.enumval.args     = args;
+                        return checkExprInner(c, e);    /* 剩下的交给 EX_ENUMVAL 那条 */
+                    }
+                }
+            }
+
             if (e->u.call.callee->kind != EX_IDENT) {
                 ckError(c, e->line, "only direct calls to a function name are supported for now",
                         "only direct function calls are supported");
@@ -1514,6 +1619,34 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_METHOD: {
+            /* **带载荷变体的构造**也可能长这样：`shape.circle(2.0)` 的语法形状
+             * 跟"方法调用"一模一样（`接收者.名字(参数)`）—— 区别在于 `shape`
+             * 是个**类型名**而不是变量。所以先在这里认一次 ✓ （跟 `status.ok`
+             * 在 EX_FIELD 那条路上被认出来是同一件事。）*/
+            if (e->u.method.recv->kind == EX_IDENT && !lookup(c, e->u.method.recv->u.ident.name)) {
+                Type *et = ttFromName(tt, e->u.method.recv->u.ident.name);
+                if (et && et->kind == TY_ENUM && et->edef) {
+                    Variant *v = findVariant(et->edef, e->u.method.name);
+                    if (!v) {
+                        Buf note;
+                        bufInit(&note, c->arena);
+                        bufPrintf(&note, "variants of %s:", et->name);
+                        for (size_t i = 0; i < et->edef->variants.len; i++)
+                            bufPrintf(&note, " %s",
+                                      (*(Variant **)vecAt(&et->edef->variants, i))->name);
+                        ckError(c, e->line, bufCstr(&note),
+                                "`%s` has no variant `%s`", et->name, e->u.method.name);
+                        return ttError(tt);
+                    }
+                    Vec args = e->u.method.args;
+                    e->kind = EX_ENUMVAL;
+                    e->u.enumval.typeName = et->name;
+                    e->u.enumval.variant  = v->name;
+                    e->u.enumval.args     = args;
+                    return checkExprInner(c, e);
+                }
+            }
+
             /* 方法只住在 struct 体内 —— 按接收者的类型去找 */
             Type *recvT = checkExpr(c, e->u.method.recv);
             Type *rb = ttBase(recvT);
@@ -1930,9 +2063,30 @@ static void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
 
-            /* 分支体各自开一层作用域（跟块一样）*/
-            for (size_t i = 0; i < s->u.match.arms.len; i++)
-                checkBlockBody(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body);
+            /* 分支体各自开一层作用域；**绑定的载荷**（`circle(r) => ...`）
+             * 就住在这里 —— 第 i 个名字拿第 i 个载荷字段 ✓ */
+            for (size_t i = 0; i < s->u.match.arms.len; i++) {
+                MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+                Variant  *v   = findVariant(td, arm->variant);
+
+                if (arm->binds.len != v->types.len) {
+                    ckError(c, arm->line, NULL,
+                            "`%s` carries %zu value(s), so this arm binds %zu name(s), not %zu",
+                            v->name, v->types.len, v->types.len, arm->binds.len);
+                    return;
+                }
+                pushScope(c);
+                for (size_t k = 0; k < arm->binds.len; k++) {
+                    const char *bn = *(const char **)vecAt(&arm->binds, k);
+                    Type *bt = *(Type **)vecAt(&v->types, k);
+                    /* 绑定的载荷是**这个值的副本**（值语义），名字只读 ——
+                     * 想改就自己 `var` 一份 */
+                    declare(c, bn, bt, false, false, arm->line, c->scopes.len);
+                }
+                for (size_t k = 0; k < arm->body->u.block.stmts.len; k++)
+                    checkStmt(c, *(Stmt **)vecAt(&arm->body->u.block.stmts, k));
+                popScope(c);
+            }
             return;
         }
 
@@ -2234,6 +2388,16 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         ttFromName(tt, (*(TypeDef **)vecAt(&m->types, i))->name);
 
     /* 第一遍：解析所有签名与字段里的类型名 */
+    /* 枚举的**载荷**类型也是这里解析（`| circle(f64) | rect(f64, f64)`）*/
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        for (size_t j = 0; j < td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            for (size_t k = 0; k < v->types.len; k++)
+                *(Type **)vecAt(&v->types, k) =
+                    ttResolve(tt, ctx, *(Type **)vecAt(&v->types, k), v->line, NULL);
+        }
+    }
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->fields.len; j++) {

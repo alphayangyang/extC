@@ -1,0 +1,70 @@
+// **带载荷枚举**（tagged union）—— 变体自己带数据（2026-09-18，第 3 步第二刀）
+//
+// 无载荷的枚举回答「**是哪一种**」；带载荷的回答「**是哪一种 + 附带的东西是什么**」✓
+//
+// C 里这个东西要**手写**，而且很容易写错：
+//     struct shape { int tag; union { double r; struct { double w, h; } rect; } u; };
+//     // 读 u.r 之前你得**自己记得**先看 tag 是不是 0 —— 忘了就是 bug
+// 这里编译器替你记：**想拿载荷，必须先 match 那个变体** ✓
+
+type shape = | circle(f64) | rect(f64, f64) | dot
+
+// 构造：`类型名.变体名(载荷...)`
+// 无载荷的变体还是老样子：`shape.dot`
+fn area(s: shape) -> f64 {
+    match s {
+        circle(r)    => { return 3.14159 * r * r }     // r 是**从变体里绑定出来的**
+        rect(w, h)   => { return w * h }               // 位置对位置
+        dot          => { return 0.0 }                 // 没有载荷就不写括号
+    }
+}
+
+// 载荷可以是**引用**（视图、`mut ref`）—— 无载荷枚举做不到这件事，
+// 因为那时候"没有值"的那个分支必须给每个字段填点东西，而引用没有零值。
+type maybeName = | nothing | named(slice<u8>)
+
+// ⚠️ 这里撞上一个**已知的保守**（不是这次新引入的，`let v = m; return v` 也一样报错）：
+//     `named(s) => { return s }` 会被逃逸检查挡住 —— 因为绑定 `s` 住在**本帧**的
+//     作用域里，而检查器看的是「名字的存储深度」，不是「里面的引用指哪儿」。
+//     也就是说**借来的视图拷进一个局部之后就不能再返回了**。
+//     想要这个写法成立，得把「存储深度」和「引用深度」在检查器里分开
+//     （`Sym.refDepth`）—— 那是一次独立的改动，先记着。见 DEVLOG 2026-09-18。
+fn lenOf(m: maybeName) -> i64 {
+    match m {
+        nothing    => { return 0 }
+        named(s)   => { return s.len }     // 载荷**能用**（读长度、比较、打印都行）
+    }
+}
+
+// 一个更实际的形状：棋盘上发生的事（协议命令、棋型、AST 节点都是这个味道）
+type move = | place(i32, i32, i32) | undo | resign
+
+fn show(m: move) -> slice<u8> {
+    match m {
+        place(x, y, p) => { return "落子" }
+        undo           => { return "悔棋" }
+        resign         => { return "认输" }
+    }
+}
+
+fn main() -> i32 {
+    let a = shape.circle(2.0)
+    let b = shape.rect(3.0, 4.0)
+    let c = shape.dot
+    println("圆面积   = ", area(a))
+    println("矩形面积 = ", area(b))
+    println("点面积   = ", area(c))
+
+    // 打印带载荷的枚举 = 打印**变体名**（载荷不打印 —— 想要具体格式自己写）
+    println("打印     = ", a, " ", b, " ", c)
+
+    let n = maybeName.named("奶昔")
+    println("名字长度 = ", lenOf(n))
+    println("空       = ", lenOf(maybeName.nothing))
+
+    println("命令     = ", show(move.place(7, 7, 1)), " ", show(move.undo))
+
+    // ⚠️ 带载荷枚举**不能用 `==`**（C 里它是 struct，而 C 的 struct 不能比）——
+    //    要比就 match，或者自己写一个方法 ✓
+    return 0
+}

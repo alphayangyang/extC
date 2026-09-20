@@ -121,7 +121,8 @@ struct Expr {
         struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
         struct { Expr *operand; } try_;   /* `e?` */
         struct { const char *name; Vec targs; Vec args; } gencall;
-        struct { const char *typeName; const char *variant; } enumval;
+        struct { const char *typeName; const char *variant; Vec args; } enumval;
+        /*   ↑ args 空 = 无载荷变体（`status.ok`）；非空 = 带载荷构造（`shape.circle(2.0)`）*/
     } u;
 };
 
@@ -140,6 +141,7 @@ typedef enum {
  * （带载荷之后会多一个「绑定载荷的名字」列表，见 IO.md / BOOTSTRAP §8 第 3 步。）*/
 typedef struct {
     const char *variant;   /* 变体名；`_` 表示兜底（暂时不支持，先留着位置）*/
+    Vec         binds;     /* const char* —— 绑定载荷的名字：`circle(r) => ...` 里的 `r` */
     Stmt       *body;
     int         line;
 } MatchArm;
@@ -185,6 +187,10 @@ struct FieldDef {
 typedef struct {
     const char *name;
     int         line;
+    /* **载荷**：`| circle(f64) | rect(f64, f64)` 里括号中的类型（types: Type*）。
+     * 空 = 无载荷变体（`| outOfRange`）。位置式，不带字段名 ——
+     * `match` 绑定也是位置的：`circle(r) => ...` ✓ */
+    Vec         types;
 } Variant;
 
 struct TypeDef {                 /* type status = | ok | warn | error */

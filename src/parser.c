@@ -242,6 +242,24 @@ static TypeDef *parseTypeDecl(Parser *p) {
         Variant *va = (Variant *)arenaAllocZero(p->arena, sizeof(Variant));
         va->name = v->text;
         va->line = v->line;
+        vecInit(&va->types, p->arena, sizeof(void *));
+
+        /* **载荷**：`| circle(f64) | rect(f64, f64)`
+         * 括号里是类型，位置式（不带字段名）—— match 绑定也是位置的 ✓ */
+        skipNl(p);
+        if (at(p, "(")) {
+            take(p);
+            skipNl(p);
+            while (!at(p, ")")) {
+                Type *pt = parseType(p);
+                if (!pt) return NULL;
+                *(Type **)vecPush(&va->types) = pt;
+                skipNl(p);
+                if (accept(p, ",")) { skipNl(p); continue; }
+                break;
+            }
+            if (!expect(p, ")", NULL)) return NULL;
+        }
         *(Variant **)vecPush(&td->variants) = va;
 
         skipNl(p);
@@ -454,11 +472,30 @@ static Stmt *parseMatch(Parser *p) {
         }
         take(p);
 
-        if (!expect(p, "=>", NULL)) return NULL;
-
         MatchArm *arm = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
         arm->variant = name->text;
         arm->line = name->line;
+        vecInit(&arm->binds, p->arena, sizeof(void *));
+
+        /* **绑定载荷**：`circle(r) => ...` / `rect(w, h) => ...`
+         * ⚠️ 必须**在 `=>` 之前**解析 —— 名字后面紧跟的就是它 ✓ */
+        skipNl(p);
+        if (at(p, "(")) {
+            take(p);
+            skipNl(p);
+            while (!at(p, ")")) {
+                Token *b = expectIdent(p, "a name to bind the payload to");
+                if (!b) return NULL;
+                *(const char **)vecPush(&arm->binds) = b->text;
+                skipNl(p);
+                if (accept(p, ",")) { skipNl(p); continue; }
+                break;
+            }
+            if (!expect(p, ")", NULL)) return NULL;
+            skipNl(p);
+        }
+
+        if (!expect(p, "=>", NULL)) return NULL;
 
         /* 分支体：一个块，或者单个语句（`occupied => return 1` 也要能写）*/
         skipNl(p);

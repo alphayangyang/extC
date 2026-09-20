@@ -154,6 +154,14 @@ static void genPrintValue(CG *g, Type *t, const char *expr);
  * 但生成的 C 里 `int32_t double(int32_t);` 编不过，而且报错落在**生成的 C** 上，
  * 用户看不到自己的源码。加个 `__c` 后缀回避 ⇒ extC 源码里的名字一个字都不改 ✓
  * （关键字表在 base.c 的 `cIdentIsKeyword` —— 类型检查那边也要用同一份。）*/
+/* 这个枚举有带载荷的变体吗？有 ⇒ C 里是 `struct { tag; union }` 而不是 `enum` */
+static bool enumHasPayload(TypeDef *td) {
+    if (!td) return false;
+    for (size_t i = 0; i < td->variants.len; i++)
+        if ((*(Variant **)vecAt(&td->variants, i))->types.len > 0) return true;
+    return false;
+}
+
 static const char *cSymName(CG *g, const char *name) {
     static const struct { const char *extc, *c; } MAP[] = {
         { "==", "eq" }, { "!=", "ne" },
@@ -403,7 +411,11 @@ static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
 
 static const char *zeroValue(CG *g, Type *t) {
     if (!t) return "0";
-    if (t->kind == TY_ENUM) return "0";
+    /* 带载荷枚举的零值 = **tag 0 + 载荷清零** ⇒ `(形状){0}` 正好是这个意思
+     * （C 的 `{0}` 会把 tag 和整个 union 清零，而 union 的哪个成员有意义由 tag 决定）。
+     * tag 0 的载荷里含 `ref` 时，类型检查阶段就会报「不能零初始化」✓ */
+    if (t->kind == TY_ENUM)
+        return enumHasPayload(t->edef) ? arenaPrintf(g->arena, "(%s){0}", t->name) : "0";
     if (t->kind == TY_ARRAY) return arenaPrintf(g->arena, "(%s){0}", t->name);
 
     if (t->kind == TY_PARAM) {
@@ -743,8 +755,32 @@ static const char *genExprInner(CG *g, Expr *e) {
         case EX_REF:
             return arenaPrintf(g->arena, "&(%s)", genExpr(g, e->u.ref.operand));
 
-        case EX_ENUMVAL:
-            return arenaPrintf(g->arena, "%s_%s", e->u.enumval.typeName, e->u.enumval.variant);
+        case EX_ENUMVAL: {
+            const char *tn = e->u.enumval.typeName;
+            const char *vn = e->u.enumval.variant;
+            Type *et = g->tt ? ttFromName(g->tt, tn) : NULL;
+            bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
+
+            /* 无载荷枚举（C 里就是 `enum`）⇒ 变体本身就是一个常量 */
+            if (!payload)
+                return arenaPrintf(g->arena, "%s_%s", tn, vn);
+
+            /* 带载荷枚举（C 里是 `struct { tag; union }`）⇒ 连无载荷的变体
+             * 也要"构造"一下：`(shape){ .tag = shape_dot }` */
+            if (e->u.enumval.args.len == 0)
+                return arenaPrintf(g->arena, "(%s){ .tag = %s_%s }", tn, tn, vn);
+
+            /* **带载荷构造**：`(shape){ .tag = shape_circle, .u.circle = { ._0 = 2.0 } }` */
+            Buf b;
+            bufInit(&b, g->arena);
+            bufPrintf(&b, "(%s){ .tag = %s_%s, .u.%s = {", tn, tn, vn, vn);
+            for (size_t i = 0; i < e->u.enumval.args.len; i++) {
+                if (i) bufPuts(&b, ", ");
+                bufPrintf(&b, "._%zu = %s", i, genExpr(g, *(Expr **)vecAt(&e->u.enumval.args, i)));
+            }
+            bufPuts(&b, "} }");
+            return bufCstr(&b);
+        }
     }
     return "0";
 }
@@ -987,14 +1023,43 @@ static void genStmt(CG *g, Stmt *s) {
         case ST_MATCH: {
             /* `match` → 一个 `switch`（枚举的变体在 C 里就是常量 `枚举名_变体名`）。
              * **穷尽性由类型检查担保**（check.c），所以这里不需要 `default` ——
-             * 真漏了根本编不过，轮不到生成 C ✓ */
+             * 真漏了根本编不过，轮不到生成 C ✓
+             *
+             * 被 match 的表达式**只求值一次**：先装进一个临时变量。
+             * （带载荷时要读 `.u.xxx`，重新求值就错了 —— 比如 `match f() { ... }`。）*/
             Type *et = ttBase(s->u.match.scrutinee->type);
-            cgLine(g, "switch (%s) {", genExpr(g, s->u.match.scrutinee));
+            bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
+            const char *subj = genExpr(g, s->u.match.scrutinee);
+            if (payload) {
+                const char *tmp = arenaPrintf(g->arena, "__extc_m%d", g->tmpSeq++);
+                cgLine(g, "%s %s = %s;", cType(g, et), tmp, subj);
+                subj = tmp;
+            }
+
+            cgLine(g, "switch (%s%s) {", subj, payload ? ".tag" : "");
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
                 cgLine(g, "case %s_%s:", et ? et->name : "?", arm->variant);
                 g->indent++;
-                genBlockBody(g, arm->body);     /* 分支体自带一层块 */
+                cgLine(g, "{");
+                g->indent++;
+                /* 绑定载荷：`circle(r) => ...` ⇒ `double r = tmp.u.circle._0;` */
+                for (size_t k = 0; k < arm->binds.len; k++) {
+                    Variant *v = et && et->edef ? NULL : NULL;
+                    (void)v;
+                    Type *bt = NULL;
+                    if (et && et->edef) {
+                        for (size_t j = 0; j < et->edef->variants.len; j++) {
+                            Variant *vv = *(Variant **)vecAt(&et->edef->variants, j);
+                            if (strcmp(vv->name, arm->variant) == 0) { bt = *(Type **)vecAt(&vv->types, k); break; }
+                        }
+                    }
+                    cgLine(g, "%s %s = %s.u.%s._%zu;", cType(g, bt), *(const char **)vecAt(&arm->binds, k),
+                           subj, arm->variant, k);
+                }
+                genBlockBody(g, arm->body);
+                g->indent--;
+                cgLine(g, "}");
                 g->indent--;
                 cgLine(g, "    break;");
             }
@@ -1082,11 +1147,13 @@ static void genFuncProto(CG *g, FuncDef *f) {
 typedef struct {
     StructDef *sd;      /* 普通 struct；泛型实例和数组为 NULL */
     Type      *inst;    /* 泛型实例或数组；普通 struct 为 NULL */
+    TypeDef   *td;      /* **带载荷的枚举**；其他为 NULL */
     Vec        deps;    /* int* —— 依赖的 unit 下标 */
     bool       done;
 } SUnit;
 
 static const char *unitName(const SUnit *u) {
+    if (u->td) return u->td->name;
     return u->inst ? u->inst->name : u->sd->name;
 }
 
@@ -1094,6 +1161,7 @@ static int unitFind(Vec *units, Type *t) {
     if (!t) return -1;
     for (size_t i = 0; i < units->len; i++) {
         SUnit *u = *(SUnit **)vecAt(units, i);
+        if (t->kind == TY_ENUM && u->td && t->edef == u->td) return (int)i;
         if (t->kind == TY_GENERIC && u->inst == t) return (int)i;
         if (t->kind == TY_ARRAY   && u->inst == t) return (int)i;
         if (t->kind == TY_STRUCT && !u->inst && u->sd == t->sdef) return (int)i;
@@ -1102,6 +1170,36 @@ static int unitFind(Vec *units, Type *t) {
 }
 
 static void unitBody(CG *g, SUnit *u) {
+    /* **带载荷的枚举**：`struct { tag; union }` —— 跟 struct 一样参与依赖排序，
+     * 因为载荷里可能有别的 struct（`| holding(slice<u8>)` 就是一个真踩过的坑：
+     * 排在 `slice_u8` 前面会报 unknown type name）✓ */
+    if (u->td) {
+        cgLine(g, "struct %s {", u->td->name);
+        g->indent++;
+        cgLine(g, "int tag;");
+        cgLine(g, "union {");
+        g->indent++;
+        for (size_t j = 0; j < u->td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&u->td->variants, j);
+            if (v->types.len == 0) continue;
+            Buf b;
+            bufInit(&b, g->arena);
+            bufPrintf(&b, "struct { ");
+            for (size_t k = 0; k < v->types.len; k++) {
+                if (k) bufPuts(&b, " ");
+                bufPrintf(&b, "%s _%zu;", cType(g, *(Type **)vecAt(&v->types, k)), k);
+            }
+            bufPrintf(&b, " } %s;", v->name);
+            cgLine(g, "%s", bufCstr(&b));
+        }
+        g->indent--;
+        cgLine(g, "} u;");
+        g->indent--;
+        cgLine(g, "};");
+        cgLine(g, "");
+        return;
+    }
+
     bool generic = u->inst && u->inst->kind == TY_GENERIC;
     if (generic) substEnter(g, u->inst);
 
@@ -1350,16 +1448,36 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
 
         Buf b;
         bufInit(&b, arena);
-        bufPuts(&b, "typedef enum { ");
-        for (size_t j = 0; j < td->variants.len; j++) {
-            Variant *v = *(Variant **)vecAt(&td->variants, j);
-            if (j) bufPuts(&b, ", ");
-            bufPrintf(&b, "%s_%s = %zu", td->name, v->name, j);
+        if (!enumHasPayload(td)) {
+            /* 无载荷：还是 C 的枚举（跟以前一模一样，一个字节都没变）*/
+            bufPuts(&b, "typedef enum { ");
+            for (size_t j = 0; j < td->variants.len; j++) {
+                Variant *v = *(Variant **)vecAt(&td->variants, j);
+                if (j) bufPuts(&b, ", ");
+                bufPrintf(&b, "%s_%s = %zu", td->name, v->name, j);
+            }
+            bufPrintf(&b, " } %s;", td->name);
+            cgLine(&g, "%s", bufCstr(&b));
+            cgLine(&g, "");
+        } else {
+            /* **带载荷**：tag 常量现在就能出（它们不依赖任何东西），
+             * 而 `struct { tag; union }` 的定义交给下面的**依赖排序**那一区 ——
+             * 因为载荷里可能含别的 struct（`| holding(slice<u8>)`）✓ */
+            Buf e2;
+            bufInit(&e2, arena);
+            bufPrintf(&e2, "enum { ");
+            for (size_t j = 0; j < td->variants.len; j++) {
+                Variant *v = *(Variant **)vecAt(&td->variants, j);
+                if (j) bufPuts(&e2, ", ");
+                bufPrintf(&e2, "%s_%s = %zu", td->name, v->name, j);
+            }
+            bufPrintf(&e2, " };");
+            cgLine(&g, "%s", bufCstr(&e2));
+            cgLine(&g, "");
+            continue;               /* `_name` 也推迟到定义之后（它要读 v.tag）*/
         }
-        bufPrintf(&b, " } %s;", td->name);
-        cgLine(&g, "%s", bufCstr(&b));
 
-        /* 定案 11：无载荷枚举自动有名字文本。
+        /* 定案 11：枚举自动有名字文本（带载荷的打印的是**变体名**，载荷不打印）。
          * 不写 static —— 免得没用到的枚举触发 -Wunused-function。 */
         cgLine(&g, "const char *%s_name(%s v) {", td->name, td->name);
         g.indent++;
@@ -1394,6 +1512,15 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
+    /* **带载荷的枚举**也是「struct 类」的东西：它的 union 里按值装着载荷类型 */
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        if (!enumHasPayload(td)) continue;
+        SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+        u->td = td;
+        vecInit(&u->deps, arena, sizeof(int));
+        *(SUnit **)vecPush(&units) = u;
+    }
 
     /* 先出**全部** typedef —— 指针字段（`ref T`）只需要它 */
     for (size_t i = 0; i < units.len; i++) {
@@ -1405,6 +1532,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* 算依赖：字段类型**按值**包含的另一个 struct 类 */
     for (size_t i = 0; i < units.len; i++) {
         SUnit *u = *(SUnit **)vecAt(&units, i);
+        if (u->td) {                    /* 枚举：载荷类型按值装在 union 里 */
+            for (size_t j = 0; j < u->td->variants.len; j++) {
+                Variant *v = *(Variant **)vecAt(&u->td->variants, j);
+                for (size_t k = 0; k < v->types.len; k++) {
+                    Type *pt = *(Type **)vecAt(&v->types, k);
+                    if (pt->kind == TY_REF) continue;
+                    int d = unitFind(&units, pt);
+                    if (d >= 0 && d != (int)i) *(int *)vecPush(&u->deps) = d;
+                }
+            }
+            continue;
+        }
         if (u->inst && u->inst->kind == TY_ARRAY) {
             int j = unitFind(&units, u->inst->inner);
             if (j >= 0 && j != (int)i) *(int *)vecPush(&u->deps) = j;
@@ -1440,6 +1579,27 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < units.len; i++) {
         SUnit *u = *(SUnit **)vecAt(&units, i);
         if (!u->done) { unitBody(&g, u); u->done = true; }
+    }
+
+    /* **带载荷枚举**的 `_name`（定案 11）：它要读 `v.tag`，所以必须排在
+     * 上面的定义之后。无载荷的那些在文件开头就出掉了 ✓ */
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        if (!enumHasPayload(td)) continue;
+        cgLine(&g, "const char *%s_name(%s v) {", td->name, td->name);
+        g.indent++;
+        cgLine(&g, "switch (v.tag) {");
+        g.indent++;
+        for (size_t j = 0; j < td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            cgLine(&g, "case %s_%s: return \"%s\";", td->name, v->name, v->name);
+        }
+        cgLine(&g, "default: return \"<%s>\";", td->name);
+        g.indent--;
+        cgLine(&g, "}");
+        g.indent--;
+        cgLine(&g, "}");
+        cgLine(&g, "");
     }
     /* 全局变量 / 常量 —— **直接就是 C 的静态对象**（定长的全局不需要 arena）。
      * C 自动把静态对象清零，所以零初始化的全局不用 generate 任何初始化式。 */

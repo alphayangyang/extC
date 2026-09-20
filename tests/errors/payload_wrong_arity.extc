@@ -1,0 +1,6 @@
+// 载荷个数要对得上
+type shape = | circle(f64) | dot
+fn main() -> i32 {
+    let a = shape.circle(1.0, 2.0)
+    return 0
+}

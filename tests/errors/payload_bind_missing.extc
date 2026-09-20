@@ -1,0 +1,10 @@
+// 带载荷的变体在 match 里必须绑定载荷
+type shape = | circle(f64) | dot
+fn f(s: shape) -> i32 {
+    match s {
+        circle => { return 1 }
+        dot    => { return 0 }
+    }
+    return 0
+}
+fn main() -> i32 { return 0 }

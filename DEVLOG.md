@@ -7,6 +7,69 @@
 
 ---
 
+## 2026-09-18 · **带载荷枚举落地**（第 3 步第二刀）—— 主人说「来吧，得带载荷了」
+
+```extc
+type shape = | circle(f64) | rect(f64, f64) | dot
+
+let a = shape.circle(2.0)          // 构造
+match a {
+    circle(r)  => { return 3.14159 * r * r }    // 载荷绑定出来
+    rect(w, h) => { return w * h }
+    dot        => { return 0.0 }
+}
+```
+
+C 里这个东西要**手写**，而且很容易写错：
+
+```c
+struct shape { int tag; union { double r; struct { double w, h; } rect; } u; };
+// 读 u.r 之前你得**自己记得**先看 tag 是不是 0 —— 忘了就是 bug
+```
+
+这里编译器替你记：**想拿载荷，必须先 match 那个变体** ✓
+
+### 两个真踩到的 C 层面的坑
+
+| 坑 | 现象 | 解法 |
+|---|---|---|
+| **定义顺序** | `type box = \| nothing \| holding(slice<u8>)` 生成的 C 里 `slice_u8` 还没定义 ⇒ `unknown type name ‘slice_u8’` | 让带载荷枚举**进依赖排序那一区**（`SUnit` 多一个 `td` 字段）—— 跟 struct 走同一套机制 ✓ **结构上排掉，不靠碰巧对了** |
+| **`enum` vs `struct`** | 无载荷还是 `typedef enum`（一个字节没变 ✓），带载荷必须是 `struct { tag; union }`，于是"常量"也要变成"构造"（`(shape){ .tag = shape_dot }`）| 生成器里按 `enumHasPayload` 分叉 |
+
+### 一个**被示例抓出来的老毛病**（不是这次引入的）
+
+写示例时很自然地写了：
+
+```extc
+fn describe(m: maybeName) -> slice<u8> {
+    match m {
+        nothing  => { return "（没有名字）" }
+        named(s) => { return s }        // ✗ 被逃逸检查挡住
+    }
+}
+```
+
+理由是：**绑定 `s` 住在本帧的作用域里**，而检查器看的是「**名字的存储深度**」，
+不是「**里面的引用指哪儿**」。同一件事在没有 match 的时候也成立：
+
+```extc
+fn g(m: slice<u8>) -> slice<u8> { let v = m  return v }   // ✗ 一样被挡住
+```
+
+**这是保守，不是错**（挡住的是合法代码，不是放过了非法代码），但它挡住了
+`maybeName` 这种类型**最有用的用法**（条件性地把借来的视图交出去）。
+真正的修法是把两个深度**在检查器里分开**：
+
+| 名字 | 含义 | 用在哪 |
+|---|---|---|
+| `Sym.depth` | **存储**在哪一层（词法）| 取 `ref s`、判断能不能存进别处 |
+| `Sym.refDepth` | 它**里面的引用**活到哪一层（= 初始化式的 refDepth）| 返回、赋值出去 |
+
+⚠️ 这个改动动的是逃逸检查的**核心规则**，所以单独做、单独验（不能让 115 个测试里任何一个变红）。
+先记着，见 DECISIONS ⑱ 的尾巴。
+
+---
+
 ## 2026-09-18 · **`match` 落地（第一刀：无载荷枚举）** —— 主人问「是不是可以落地了」
 
 主人的原话是：**「match 是不是可以落地了，因为我有个想法，就是 result 和 option 或许可以用 match 重写？」**

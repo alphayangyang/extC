@@ -450,3 +450,25 @@ week-0 只做这几项检查：
 **实现**（四处，都不大）：`lexer` 加 `match` 关键字和 `=>`；`parser` 的 `parseMatch`
 （⚠️ 被 match 的表达式要**关掉结构体字面量**，否则 `match e { ... }` 里的 `{` 会被当成 `e { 字段: 值 }`）；
 `check.c` 校验「变体存在 / 不重复 / 穷尽」；`codegen` 发一个 `switch`（**不需要 `default`** —— 漏了根本编不过）。
+
+## ⑱ 带载荷枚举（tagged union）（2026-09-18，第 3 步第二刀）
+
+| # | 定案 |
+|---|---|
+| 51 | **`type shape = \| circle(f64) \| rect(f64, f64) \| dot`** —— 变体括号里是**载荷**，**位置式**（不带字段名）⇒ `match` 的绑定也是位置的：`circle(r) => ...` |
+| 51′ | **零值 = tag 0** ⇒ **变体顺序有意义**。`type option<T> = \| none \| some(T)`、`type result<T,E> = \| failure(E) \| success(T)` —— 这正好保住今天「零值就是没有 / 失败」两条语义 ✓ tag 0 的载荷含 `ref` ⇒ 按现有的「不能零初始化」规则报错（**不新增概念**）|
+| 51″ | 构造：`shape.circle(2.0)`（认出来靠"`shape` 是类型名不是变量"）· 打印：只打**变体名** · **没有 `==`**（C 的 struct 不能比 ⇒ 用 match，或自己写方法）|
+| 51‴ | C 表示：**无载荷还是 `enum`**（一个字节没变），**带载荷是 `struct { tag; union }`** |
+
+**两个 C 层面的坑**（都真踩到了）：
+
+1. **顺序**：带载荷枚举的定义要进**依赖排序**那一区 —— `| holding(slice<u8>)` 排在
+   `slice_u8` 前面会报 `unknown type name`。这跟 struct 是同一个问题，所以走同一套机制
+   （`SUnit` 多一个 `td` 字段）✓ **结构上排掉，不靠碰巧对了**。
+2. **`typeContainsRef` 被拆成两个问题**：
+   - **有没有零值** ⇒ 只看 **tag 0** 的载荷（`typeContainsRef` 里的枚举分支）
+   - **能不能携带引用**（要不要跟踪 refDepth / 全局能不能存）⇒ 看**所有**变体
+   ⚠️ 这里其实**还没拆干净**：今天 `typeContainsRef` 的枚举分支只看了 tag 0，
+   所以 `type maybeName = | nothing | named(slice<u8>)` 这种类型在
+   `exprRefDepth` 的早退判断里被当成"不含引用" ⇒ 绑定的载荷深度算成了字面量深度。
+   **待修**（跟下面那条注一起做）。
