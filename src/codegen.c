@@ -96,7 +96,8 @@ static Type *subst(CG *g, Type *t) {
 }
 
 static void substEnter(CG *g, Type *inst) {
-    g->substParams = &inst->sdef->typeParams;
+    /* 泛型枚举实例没有 `sdef`（它的 owner 是 `edef`）*/
+    g->substParams = inst->sdef ? &inst->sdef->typeParams : &inst->edef->typeParams;
     g->substArgs   = &inst->targs;
     g->ownerPrefix = inst->name;
 }
@@ -758,7 +759,10 @@ static const char *genExprInner(CG *g, Expr *e) {
         case EX_ENUMVAL: {
             const char *tn = e->u.enumval.typeName;
             const char *vn = e->u.enumval.variant;
-            Type *et = g->tt ? ttFromName(g->tt, tn) : NULL;
+            /* 泛型枚举的实例名（`maybe_i64`）在类型表里查不到名字 —— 检查器
+             * 解析好的类型记在 `assocOwner` 上，优先用它 ✓ */
+            Type *et = e->assocOwner;
+            if (!et && g->tt) et = ttFromName(g->tt, tn);
             bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
 
             /* 无载荷枚举（C 里就是 `enum`）⇒ 变体本身就是一个常量 */
@@ -1051,7 +1055,13 @@ static void genStmt(CG *g, Stmt *s) {
                     if (et && et->edef) {
                         for (size_t j = 0; j < et->edef->variants.len; j++) {
                             Variant *vv = *(Variant **)vecAt(&et->edef->variants, j);
-                            if (strcmp(vv->name, arm->variant) == 0) { bt = *(Type **)vecAt(&vv->types, k); break; }
+                            if (strcmp(vv->name, arm->variant) != 0) continue;
+                            bt = *(Type **)vecAt(&vv->types, k);
+                            /* 泛型枚举实例：载荷类型按实参替换（`just(T)` ⇒ `slice_u8`）*/
+                            if (et->edef->typeParams.len > 0 &&
+                                et->targs.len == et->edef->typeParams.len)
+                                bt = ttSubstitute(g->tt, bt, &et->edef->typeParams, &et->targs);
+                            break;
                         }
                     }
                     cgLine(g, "%s %s = %s.u.%s._%zu;", cType(g, bt), *(const char **)vecAt(&arm->binds, k),
@@ -1153,8 +1163,9 @@ typedef struct {
 } SUnit;
 
 static const char *unitName(const SUnit *u) {
-    if (u->td) return u->td->name;
-    return u->inst ? u->inst->name : u->sd->name;
+    if (u->inst) return u->inst->name;      /* 泛型实例/数组（含泛型枚举实例）*/
+    if (u->td) return u->td->name;          /* 非泛型带载荷枚举 */
+    return u->sd->name;
 }
 
 static int unitFind(Vec *units, Type *t) {
@@ -1174,7 +1185,9 @@ static void unitBody(CG *g, SUnit *u) {
      * 因为载荷里可能有别的 struct（`| holding(slice<u8>)` 就是一个真踩过的坑：
      * 排在 `slice_u8` 前面会报 unknown type name）✓ */
     if (u->td) {
-        cgLine(g, "struct %s {", u->td->name);
+        /* 泛型枚举实例（`option<i64>`）：进替换上下文，载荷类型交给 `cType` 替换 ✓ */
+        if (u->inst) substEnter(g, u->inst);
+        cgLine(g, "struct %s {", unitName(u));
         g->indent++;
         cgLine(g, "int tag;");
         cgLine(g, "union {");
@@ -1197,6 +1210,7 @@ static void unitBody(CG *g, SUnit *u) {
         g->indent--;
         cgLine(g, "};");
         cgLine(g, "");
+        if (u->inst) substLeave(g);
         return;
     }
 
@@ -1459,6 +1473,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             bufPrintf(&b, " } %s;", td->name);
             cgLine(&g, "%s", bufCstr(&b));
             cgLine(&g, "");
+        } else if (td->typeParams.len > 0) {
+            continue;      /* 泛型枚举：tag 常量和定义都由**实例**负责（见下）*/
         } else {
             /* **带载荷**：tag 常量现在就能出（它们不依赖任何东西），
              * 而 `struct { tag; union }` 的定义交给下面的**依赖排序**那一区 ——
@@ -1516,8 +1532,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < m->types.len; i++) {
         TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
         if (!enumHasPayload(td)) continue;
+        if (td->typeParams.len > 0) continue;    /* 泛型枚举：实例见下面 */
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->td = td;
+        vecInit(&u->deps, arena, sizeof(int));
+        *(SUnit **)vecPush(&units) = u;
+    }
+    /* 泛型枚举的**实例**（`option<i64>`）各自是一份结构体定义 */
+    for (size_t i = 0; i < tt->enumInstances.len; i++) {
+        Type *it = *(Type **)vecAt(&tt->enumInstances, i);
+        SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+        u->td = it->edef;
+        u->inst = it;
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
@@ -1537,6 +1563,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 Variant *v = *(Variant **)vecAt(&u->td->variants, j);
                 for (size_t k = 0; k < v->types.len; k++) {
                     Type *pt = *(Type **)vecAt(&v->types, k);
+                    if (u->inst)                 /* 泛型实例：按实参替换 */
+                        pt = ttSubstitute(tt, pt, &u->td->typeParams, &u->inst->targs);
                     if (pt->kind == TY_REF) continue;
                     int d = unitFind(&units, pt);
                     if (d >= 0 && d != (int)i) *(int *)vecPush(&u->deps) = d;
@@ -1586,6 +1614,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < m->types.len; i++) {
         TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
         if (!enumHasPayload(td)) continue;
+        if (td->typeParams.len > 0) continue;      /* 泛型：实例见下 */
         cgLine(&g, "const char *%s_name(%s v) {", td->name, td->name);
         g.indent++;
         cgLine(&g, "switch (v.tag) {");
@@ -1595,6 +1624,37 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             cgLine(&g, "case %s_%s: return \"%s\";", td->name, v->name, v->name);
         }
         cgLine(&g, "default: return \"<%s>\";", td->name);
+        g.indent--;
+        cgLine(&g, "}");
+        g.indent--;
+        cgLine(&g, "}");
+        cgLine(&g, "");
+    }
+    for (size_t i = 0; i < tt->enumInstances.len; i++) {
+        Type *it = *(Type **)vecAt(&tt->enumInstances, i);
+        TypeDef *td = it->edef;
+        /* 实例的 tag 常量（`maybe_i64_nothing = 0`）—— 值跟基类型一致
+         * （都按变体顺序，所以**零值 = tag 0** 这条对实例同样成立 ✓）*/
+        Buf tb;
+        bufInit(&tb, arena);
+        bufPuts(&tb, "enum { ");
+        for (size_t j = 0; j < td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            if (j) bufPuts(&tb, ", ");
+            bufPrintf(&tb, "%s_%s = %zu", it->name, v->name, j);
+        }
+        bufPuts(&tb, " };");
+        cgLine(&g, "%s", bufCstr(&tb));
+
+        cgLine(&g, "const char *%s_name(%s v) {", it->name, it->name);
+        g.indent++;
+        cgLine(&g, "switch (v.tag) {");
+        g.indent++;
+        for (size_t j = 0; j < td->variants.len; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            cgLine(&g, "case %s_%s: return \"%s\";", it->name, v->name, v->name);
+        }
+        cgLine(&g, "default: return \"<%s>\";", it->name);
         g.indent--;
         cgLine(&g, "}");
         g.indent--;

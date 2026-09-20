@@ -21,6 +21,10 @@ typedef struct {
     Vec    structs;     /* StructDef* */
     Vec    enums;       /* TypeDef*  */
     Vec    instances;   /* Type* —— 泛型实例，驻留 */
+    /* 泛型**枚举**的实例（`option<i64>`）—— 单独一张表：
+     * 它们的 owner 是 `edef`（TypeDef）而 `sdef` 是空的，混进 `instances`
+     * 会让那些按 `sdef` 走的循环出岔子 ✓ */
+    Vec    enumInstances; /* Type* */
     /* 可写视图的「影子」实例（`mut slice<T>`）。
      * 它跟只读版**共用同一个 C 结构体名**，所以**不进 instances** ——
      * 进去的话 codegen 会生成两份一模一样的结构体。
@@ -58,6 +62,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params);
 
 /* 泛型实例：驻留（`Pair<i32,u8>` 全局只有一份） */
 Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args);
+Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args);
 /* `mut slice<T>`：拿只读实例的影子（共用 C 名字，不进实例表）。mut=false 就原样返回 */
 Type *ttViewMut(TypeTable *tt, Type *base, bool mut);
 /* 拿掉 `mut`（可写视图 → 只读视图）；本来就是只读的原样返回 */

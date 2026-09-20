@@ -230,6 +230,16 @@ static Variant *findVariant(TypeDef *td, const char *name) {
     return NULL;
 }
 
+/* 枚举实例的载荷类型：泛型实例要**按实参替换**
+ * （`type maybe<T> = | nothing | just(T)` 的实例 `maybe<i64>` 里，`just` 的载荷是 `i64`）✓ */
+static Type *payloadType(TypeTable *tt, Type *et, Variant *v, size_t k) {
+    Type *pt = *(Type **)vecAt(&v->types, k);
+    if (et && et->kind == TY_ENUM && et->edef &&
+        et->edef->typeParams.len > 0 && et->targs.len == et->edef->typeParams.len)
+        pt = ttSubstitute(tt, pt, &et->edef->typeParams, &et->targs);
+    return pt;
+}
+
 /* 这个枚举有**带载荷**的变体吗？（`| circle(f64)`）
  * 有的话：C 里它不再是 `enum` 而是 `struct { tag; union }` ⇒
  * ① 不能用 `==`（C 的 struct 不能比）② 打印只打变体名 */
@@ -261,7 +271,7 @@ static bool typeContainsRef(TypeTable *tt, Type *t) {
         if (t->edef->variants.len == 0) return false;
         Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
         for (size_t i = 0; i < v0->types.len; i++)
-            if (typeContainsRef(tt, *(Type **)vecAt(&v0->types, i))) return true;
+            if (typeContainsRef(tt, payloadType(tt, t, v0, i))) return true;
         return false;
     }
     StructDef *sd = structOf(t);
@@ -1165,6 +1175,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->kind = EX_ENUMVAL;
                         e->u.enumval.typeName = et->name;
                         e->u.enumval.variant  = v->name;
+                        e->assocOwner = et;      /* 解析好的类型（泛型实例要用）*/
                         return et;
                     }
                 }
@@ -1399,6 +1410,30 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (ttIsError(t)) return ttError(tt);
             e->assocOwner = t;
 
+            /* **枚举变体的构造**也走这条路：`option<i64>::some(3)` / `maybe<i64>::nothing`。
+             * 也就是说 `::` 对枚举可以有两种读法，但**含义只有一种**（造一个值）——
+             * 而且这样 prelude 和现有代码里的写法一个字都不用改 ✓ */
+            StructDef *esd = structOf(t);
+            if (!esd && t->kind == TY_ENUM && t->edef) {
+                Variant *v = findVariant(t->edef, e->u.assoc.name);
+                if (!v) {
+                    Buf note;
+                    bufInit(&note, c->arena);
+                    bufPrintf(&note, "variants of %s:", t->name);
+                    for (size_t i = 0; i < t->edef->variants.len; i++)
+                        bufPrintf(&note, " %s", (*(Variant **)vecAt(&t->edef->variants, i))->name);
+                    ckError(c, e->line, bufCstr(&note),
+                            "`%s` has no variant `%s`", t->name, e->u.assoc.name);
+                    return ttError(tt);
+                }
+                Vec evargs = e->u.assoc.args;      /* union：先拿出来 */
+                e->kind = EX_ENUMVAL;
+                e->u.enumval.typeName = t->name;   /* 实例名，如 `maybe_i64` */
+                e->u.enumval.variant  = v->name;
+                e->u.enumval.args     = evargs;
+                return checkExprInner(c, e);
+            }
+
             StructDef *sd = structOf(t);
             FuncDef *f = NULL;
             if (sd) {
@@ -1500,7 +1535,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_ENUMVAL: {
-            Type *et = ttFromName(tt, e->u.enumval.typeName);
+            /* 泛型枚举的**实例**（`maybe<i64>`）不在类型表的按名字表里 ——
+             * 它是实例化出来的。所以走 EX_ASSOC 那条路构造时会把解析好的类型
+             * 记在 `assocOwner` 上，这里优先用它 ✓ */
+            Type *et = e->assocOwner ? e->assocOwner : ttFromName(tt, e->u.enumval.typeName);
             if (!et || et->kind != TY_ENUM || !et->edef) return ttError(tt);
             Variant *v = findVariant(et->edef, e->u.enumval.variant);
             if (!v) return ttError(tt);
@@ -1524,7 +1562,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             for (size_t i = 0; i < v->types.len; i++) {
-                Type *pt  = *(Type **)vecAt(&v->types, i);
+                Type *pt  = payloadType(tt, et, v, i);
                 Expr *arg = *(Expr **)vecAt(&e->u.enumval.args, i);
                 Type *at  = checkInto(c, pt, arg);
                 checkAssignable(c, pt, at, arg, "payload value");
@@ -1559,6 +1597,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.enumval.typeName = et->name;
                         e->u.enumval.variant  = v->name;
                         e->u.enumval.args     = args;
+                        e->assocOwner = et;
                         return checkExprInner(c, e);    /* 剩下的交给 EX_ENUMVAL 那条 */
                     }
                 }
@@ -1643,6 +1682,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->u.enumval.typeName = et->name;
                     e->u.enumval.variant  = v->name;
                     e->u.enumval.args     = args;
+                    e->assocOwner = et;
                     return checkExprInner(c, e);
                 }
             }
@@ -2078,7 +2118,7 @@ static void checkStmt(Checker *c, Stmt *s) {
                 pushScope(c);
                 for (size_t k = 0; k < arm->binds.len; k++) {
                     const char *bn = *(const char **)vecAt(&arm->binds, k);
-                    Type *bt = *(Type **)vecAt(&v->types, k);
+                    Type *bt = payloadType(c->tt, sb, v, k);
                     /* 绑定的载荷是**这个值的副本**（值语义），名字只读 ——
                      * 想改就自己 `var` 一份 */
                     declare(c, bn, bt, false, false, arm->line, c->scopes.len);
@@ -2395,7 +2435,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             Variant *v = *(Variant **)vecAt(&td->variants, j);
             for (size_t k = 0; k < v->types.len; k++)
                 *(Type **)vecAt(&v->types, k) =
-                    ttResolve(tt, ctx, *(Type **)vecAt(&v->types, k), v->line, NULL);
+                    ttResolve(tt, ctx, *(Type **)vecAt(&v->types, k), v->line, &td->typeParams);
         }
     }
     for (size_t i = 0; i < m->structs.len; i++) {

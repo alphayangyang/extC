@@ -1,0 +1,31 @@
+// **泛型枚举** —— 第三刀的前置（2026-09-18）：`option<T>` / `result<T,E>` 要重写成
+// 普通枚举，先得让 `type 名字<T> = | ...` 能用 ✓
+//
+// 构造走 `名字<实参>::变体(载荷)`（无载荷变体连括号都能省），
+// 而 `match` 绑定出来的载荷类型**按实参替换**（`just(T)` ⇒ `i64`）✓
+type maybe<T> = | nothing | just(T)
+
+fn unwrapOr(m: maybe<i64>, fallback: i64) -> i64 {
+    match m {
+        nothing => { return fallback }
+        just(v) => { return v }
+    }
+}
+
+fn describe(m: maybe<slice<u8>>) -> i64 {
+    match m {
+        nothing => { return 0 }
+        just(s) => { return s.len }
+    }
+}
+
+fn main() -> i32 {
+    let a = maybe<i64>::just(42)
+    let b = maybe<i64>::nothing
+    println("a = ", unwrapOr(a, -1))
+    println("b = ", unwrapOr(b, -1))
+    let c = maybe<slice<u8>>::just("hi")
+    println("c = ", describe(c))
+    println("打印 = ", a, " ", b)
+    return 0
+}

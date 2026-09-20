@@ -195,6 +195,7 @@ typedef struct {
 
 struct TypeDef {                 /* type status = | ok | warn | error */
     const char  *name;
+    Vec          typeParams;     /* const char* —— 泛型参数名（`type option<T>`）*/
     Vec          variants;       /* Variant* */
     Type        *type;           /* 驻留后的类型，由 check 填写 */
     bool         reserved;       /* 来自 prelude —— 不许用户重定义 */

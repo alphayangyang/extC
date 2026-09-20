@@ -32,6 +32,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
     vecInit(&tt->structs, a, sizeof(void *));
     vecInit(&tt->enums, a, sizeof(void *));
     vecInit(&tt->instances, a, sizeof(void *));
+    vecInit(&tt->enumInstances, a, sizeof(void *));
     vecInit(&tt->viewShadows, a, sizeof(void *));
 
     for (size_t i = 0; BUILTIN_NAMES[i]; i++)
@@ -149,6 +150,21 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
 
             /* 2) 带类型实参 → 泛型实例 */
             if (t->targs.len > 0) {
+                /* **泛型枚举**：`option<i64>`（载荷类型在用到时按实参替换）*/
+                if (base->kind == TY_ENUM && base->edef) {
+                    if (base->edef->typeParams.len != t->targs.len) {
+                        ctxError(ctx, line, 1, NULL,
+                                 "`%s` expects %zu type argument(s), got %zu",
+                                 t->name, base->edef->typeParams.len, t->targs.len);
+                        return tt->tError;
+                    }
+                    Vec eargs;
+                    vecInit(&eargs, tt->arena, sizeof(void *));
+                    for (size_t i = 0; i < t->targs.len; i++)
+                        *(Type **)vecPush(&eargs) =
+                            ttResolve(tt, ctx, *(Type **)vecAt(&t->targs, i), line, params);
+                    return ttEnumGeneric(tt, base->edef, &eargs);
+                }
                 if (base->kind != TY_STRUCT || !base->sdef) {
                     ctxError(ctx, line, 1, NULL,
                              "`%s` is not a generic type, so it takes no type arguments",
@@ -183,8 +199,14 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                 return g;
             }
 
-            /* 3) 泛型 struct 不带实参 → 报错 */
+            /* 3) 泛型 struct / 泛型枚举不带实参 → 报错 */
             if (base->kind == TY_STRUCT && base->sdef && base->sdef->typeParams.len > 0) {
+                ctxError(ctx, line, 1,
+                         "a generic needs explicit type arguments, e.g. `%s<i32>`",
+                         "`%s` is generic and needs type arguments", t->name);
+                return tt->tError;
+            }
+            if (base->kind == TY_ENUM && base->edef && base->edef->typeParams.len > 0) {
                 ctxError(ctx, line, 1,
                          "a generic needs explicit type arguments, e.g. `%s<i32>`",
                          "`%s` is generic and needs type arguments", t->name);
@@ -285,6 +307,50 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
         *(Type **)vecPush(&t->targs) = *(Type **)vecAt(args, j);
     t->name = ttMangle(tt, t);
     if (concrete) *(Type **)vecPush(&tt->instances) = t;
+    return t;
+}
+
+/* **泛型枚举的实例**（`option<i64>`）。
+ *
+ * 跟 `ttGeneric` 是同一个套路，但有两点不同：
+ *   ① owner 是 `TypeDef`（`edef`），不是 `StructDef` ⇒ C 名字在 `enumInstances` 里驻留
+ *   ② 载荷类型**不在这里替换** —— 变体的载荷声明写在 `TypeDef` 上（`some(T)`），
+ *      用到的时候按 `edef->typeParams` + `t->targs` 现场替换（`ttSubstitute`）。
+ *      这样 `TypeDef` 本身只有一个，实例只是"名字 + 实参" ✓
+ *      codegen 那边靠 `substEnter(inst)` 把上下文摆好，`cType` 自动替换 ✓ */
+Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args) {
+    bool concrete = true;
+    for (size_t j = 0; j < args->len; j++)
+        if (typeHasParam(*(Type **)vecAt(args, j))) { concrete = false; break; }
+
+    if (concrete) {
+        for (size_t i = 0; i < tt->enumInstances.len; i++) {
+            Type *c = *(Type **)vecAt(&tt->enumInstances, i);
+            if (c->edef != td || c->targs.len != args->len) continue;
+            bool same = true;
+            for (size_t j = 0; j < args->len; j++)
+                if (!ttEquals(*(Type **)vecAt(&c->targs, j), *(Type **)vecAt(args, j))) { same = false; break; }
+            if (same) return c;
+        }
+    }
+
+    Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
+    t->kind = TY_ENUM;
+    t->edef = td;
+    vecInit(&t->targs, tt->arena, sizeof(void *));
+    for (size_t j = 0; j < args->len; j++)
+        *(Type **)vecPush(&t->targs) = *(Type **)vecAt(args, j);
+
+    Buf b;
+    bufInit(&b, tt->arena);
+    bufPuts(&b, td->name);
+    for (size_t j = 0; j < t->targs.len; j++) {
+        bufPutc(&b, '_');
+        bufPuts(&b, ttMangle(tt, *(Type **)vecAt(&t->targs, j)));
+    }
+    t->name = bufCstr(&b);
+
+    if (concrete) *(Type **)vecPush(&tt->enumInstances) = t;
     return t;
 }
 

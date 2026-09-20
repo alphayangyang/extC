@@ -472,3 +472,26 @@ week-0 只做这几项检查：
    所以 `type maybeName = | nothing | named(slice<u8>)` 这种类型在
    `exprRefDepth` 的早退判断里被当成"不含引用" ⇒ 绑定的载荷深度算成了字面量深度。
    **待修**（跟下面那条注一起做）。
+
+## ⑲ 泛型枚举（`type option<T> = | none | some(T)`）（2026-09-18，第三刀的前置）
+
+第三刀（把 `option` / `result` 重写成普通枚举）**需要它**，所以先补。
+
+| # | 定案 |
+|---|---|
+| 52 | **`type 名字<T> = | ...`** —— 类型参数表跟 `struct` 同一套语法、同一条大小写规则 |
+| 52′ | 构造：`maybe<i64>::just(42)`（**无载荷变体连括号都能省**：`maybe<i64>::nothing`）—— 认出来靠的是"这个类型是枚举而且这个名字是变体" ⇒ **原地改写成 `EX_ENUMVAL`**，跟非泛型那条路完全一样 ✓ |
+| 52″ | 载荷类型**不预存到实例上**：`TypeDef` 上写的还是 `T`，用到时按 `edef->typeParams` + `t->targs` 现场替换（`ttSubstitute`）⇒ 一个 `TypeDef`、多个实例，跟泛型 struct 同构 ✓ |
+| 52‴ | 实例单独一张表 **`tt->enumInstances`**（不混进 `tt->instances`）—— 它们的 owner 是 `edef` 而不是 `sdef`，混进去会让那些按 `sdef` 走的循环出岔子 |
+
+**实心踩到的四处**（都值得记）：
+
+| 坑 | 现象 |
+|---|---|
+| `substEnter` 假定有 `sdef` | 枚举实例没有 ⇒ 取 `edef->typeParams` |
+| 载荷类型解析时要带 `td->typeParams` | 否则 `just(T)` 报 `unknown type T` |
+| 实例名不在类型表里 | `ttFromName("maybe_i64")` 返回 NULL ⇒ 用 `assocOwner` 把**解析好的类型**带到 codegen |
+| tag 常量要**按实例**出 | 基类型出 `maybe_nothing`，实例却用 `maybe_i64_nothing` ⇒ 名字对不上 |
+
+**顺带解开一个限制**：`option<slice<u8>>` 那种「载荷含 ref」的枚举，现在**语言层面完全支持** ✓
+（第三刀把它用起来。）

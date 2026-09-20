@@ -228,7 +228,29 @@ static TypeDef *parseTypeDecl(Parser *p) {
     TypeDef *td = (TypeDef *)arenaAllocZero(p->arena, sizeof(TypeDef));
     td->name = name->text;
     td->line = kw->line;
+    vecInit(&td->typeParams, p->arena, sizeof(void *));
     vecInit(&td->variants, p->arena, sizeof(void *));
+
+    /* 泛型参数表：`type option<T> = | none | some(T)` —— 跟 struct 同一套写法 ✓ */
+    if (accept(p, "<")) {
+        skipNl(p);
+        for (;;) {
+            Token *tp = expectIdent(p, "a type parameter name");
+            if (!tp) return NULL;
+            if (!startsUpper(tp->text)) {
+                ctxError(p->ctx, tp->line, tp->col,
+                         "Type parameters start with an uppercase letter, so they can never "
+                         "collide with a type name (which is camelCase).",
+                         "type parameter `%s` must start with an uppercase letter", tp->text);
+                return NULL;
+            }
+            *(const char **)vecPush(&td->typeParams) = tp->text;
+            if (accept(p, ",")) { skipNl(p); continue; }
+            break;
+        }
+        skipNl(p);
+        if (!expect(p, ">", NULL)) return NULL;
+    }
 
     if (!expect(p, "=", NULL)) return NULL;
     skipNl(p);
@@ -1141,7 +1163,10 @@ static Expr *parseAssoc(Parser *p, const char *name, int line) {
     Token *fn = expectIdent(p, "an associated function name");
     if (!fn) return NULL;
     Vec args;
-    if (!parseArgs(p, &args)) return NULL;
+    vecInit(&args, p->arena, sizeof(void *));
+    /* 参数表可以**省掉**：`maybe<i64>::nothing` —— 无载荷变体就是这么写的 ✓
+     * （有载荷的必须写括号：`option<i64>::some(3)`）*/
+    if (at(p, "(") && !parseArgs(p, &args)) return NULL;
 
     Expr *e = exprNew(p->arena, EX_ASSOC, line);
     e->u.assoc.typeName = name;
