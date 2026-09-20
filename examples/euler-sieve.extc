@@ -1,0 +1,42 @@
+// 欧拉筛（线性筛）—— 每个合数只被它的**最小质因子**筛掉一次 ⇒ O(n)
+//
+// extC 现在还没有动态数组，所以缓冲由**调用者给**：
+//     var composite: [10001]bool      ← 你给地方
+//     let cnt = sieve(n, composite[..], primes[..])
+// 这正是 extC 的拿手形状（「谁的内存谁给」），而且**零隐藏状态**：
+// 筛到哪儿了、筛掉了谁，全在你自己的两个数组里 ✓
+fn sieve(n: i64, composite: mut slice<bool>, primes: mut slice<i64>) -> i64 {
+    var cnt: i64 = 0
+    var i: i64 = 2
+    while i <= n {
+        if !composite[i] {
+            primes[cnt] = i          // i 是质数 ⇒ 收进表里
+            cnt = cnt + 1
+        }
+        var j: i64 = 0
+        while j < cnt {
+            let p = primes[j]
+            if i * p > n { break }
+            composite[i * p] = true  // 筛掉，而且**只筛这一次**
+            if i % p == 0 { break }  // p 是 i 的最小质因子 ⇒ 该换下一个 i 了
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return cnt
+}
+
+fn main() -> i32 {
+    var composite: [10001]bool
+    var primes:    [10001]i64
+
+    // 跑三遍（同一个数组复用），对着已知的 π 值检查
+    let c100   = sieve(100,   composite[..], primes[..])
+    println("pi(100)   = ", c100)                    // 25
+    let c1000  = sieve(1000,  composite[..], primes[..])
+    println("pi(1000)  = ", c1000)                   // 168
+    let c10000 = sieve(10000, composite[..], primes[..])
+    println("pi(10000) = ", c10000)                  // 1229
+    println("前 25 个素数：", primes[0..c100])
+    return 0
+}
