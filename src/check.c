@@ -331,9 +331,31 @@ static int exprRefDepth(Checker *c, Expr *e) {
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
         break;
+    case EX_CALL:
+        /* **调用结果的深度 = 所有实参深度的最大值。**
+         *
+         * 为什么这是成立的上界：被调函数能返回的引用只有两种来源 ——
+         * 全局/静态（深度 0），或者**实参**（深度 ≤ max(实参)）。
+         * 它返回不了**自己的局部**（那条已被它自己的返回检查挡住 ✓）⇒ 没有第三种来源 ✓
+         *
+         * 以前的写法是「调用结果深度 = 0」，那是**错的**：
+         *     fn identity(r: ref i32) -> ref i32 { return r }
+         *     fn bad() -> ref i32 { var x: i32 = 5  return identity(ref x) }
+         * 实测能编过、打印 0（悬垂）。现在：max(实参) = 1 > 0 ⇒ 编译错误 ✓
+         */
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
+        break;
+    case EX_METHOD:
+        d = maxInt(d, exprRefDepth(c, e->u.method.recv));   /* 接收者也是实参 */
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
+        break;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
+        break;
     default:
-        /* 函数/方法调用返回的引用：由**被调用者自己的返回检查**担保 ⇒ 0。
-         * （它要是返回自己的局部，那边就报错了 ✓） */
         d = 0;
         break;
     }
@@ -342,6 +364,61 @@ static int exprRefDepth(Checker *c, Expr *e) {
 }
 
 /* 把一个值放进「深度 at」的地方：它里面的引用活得够不够久？ */
+/* 这个值里的引用是不是「**从外面借来的**」？—— 参数来的，或者函数调用回来的。
+ *
+ * 借来的东西**不能存进比这次调用活得更长的地方**（全局、或者别的参数指向的对象）：
+ * 编译器**不知道它的真实寿命** —— 它可能指向调用者帧里比本函数更内层的局部。
+ * 这就是 BOOTSTRAP §8 的 ④（参数洗白），跟「调用结果深度 = max(实参)」是同一件事的两半。 */
+static bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what);
+
+static bool isGlobalSym(Checker *c, Sym *s) {
+    for (size_t i = 0; i < c->globals.len; i++)
+        if (*(Sym **)vecAt(&c->globals, i) == s) return true;
+    return false;
+}
+
+static bool exprBorrowed(Checker *c, Expr *e) {
+    if (!e) return false;
+    if (!typeContainsRef(c->tt, e->type)) return false;
+    switch (e->kind) {
+    case EX_IDENT: case EX_FIELD: case EX_INDEX: {
+        Sym *root = placeRoot(c, e);
+        /* 参数：深度 0 且不是全局 ⇒ 借来的 ✓
+         * 全局 / 静态：也深度 0，但**谁都存得下它** ✓ */
+        return root && root->depth == 0 && !isGlobalSym(c, root);
+    }
+    case EX_REF:   return exprBorrowed(c, e->u.ref.operand);
+    case EX_SLICE: return exprBorrowed(c, e->u.slice.obj);
+    case EX_CALL:
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprBorrowed(c, *(Expr **)vecAt(&e->u.call.args, i))) return true;
+        return false;
+    case EX_METHOD:
+        if (exprBorrowed(c, e->u.method.recv)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprBorrowed(c, *(Expr **)vecAt(&e->u.method.args, i))) return true;
+        return false;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprBorrowed(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+        return false;
+    default: return false;      /* 字面量 / 全局 / alloc 出来的是本帧的 ✓ */
+    }
+}
+
+/* 把一个值**存进**某个地方之前的全部检查（深度 + 借来的东西）。 */
+static bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
+    bool bad = checkEscape(c, val, placeDepth(c, target), line, "this assignment");
+    if (placeDepth(c, target) == 0 && exprBorrowed(c, val)) {
+        ckError(c, line,
+                "A borrowed value may not be stored where it outlives the call: its real "
+                "lifetime is unknown here. Copy it, or store it into a local of this frame.",
+                "cannot store a borrowed value into something that outlives this call");
+        return true;
+    }
+    return bad;
+}
+
 static bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     if (!val) return false;
     int d = exprRefDepth(c, val);
@@ -386,7 +463,9 @@ static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
      *     fn f(v: slice<i32>) { v[0] = 1 }   // ✗ 参数是副本，但元素是调用者的！
      * 要写就得在签名上写 `mut slice<i32>`（或者 `mut ref slice<i32>`）。 */
     if (root && root->type && root->type->kind == TY_GENERIC &&
-        ttIsViewType(root->type) && !root->type->mut) {
+        ttIsViewType(root->type) && !root->type->mut &&
+        /* 写**元素**才受视图可写性管；给视图**整体赋值**（换绑）不受它管 */
+        !(e->type && ttIsViewType(e->type))) {
         ckError(c, line,
                 "a view is read-only unless its type carries `mut`. Writing through a "
                 "by-value view would change the caller's data without the signature "
@@ -1602,7 +1681,8 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
             /* 逃逸③：给字段/元素赋值时，被指对象不能比目标更深 */
-            checkEscape(c, s->u.assign.value, placeDepth(c, s->u.assign.target),
+            checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
+            if (0) checkEscape(c, s->u.assign.value, placeDepth(c, s->u.assign.target),
                         s->line, "this assignment");
             if (ttIsError(tt_)) return;
             checkAssignable(c, tt_, vt, s->u.assign.value, "assignment");

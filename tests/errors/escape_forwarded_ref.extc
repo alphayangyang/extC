@@ -1,0 +1,14 @@
+fn identity(r: ref i32) -> ref i32 {
+    return r                    // 纯粹的转发：返回值来自参数 ⇒ 合法 ✓
+}
+
+fn bad() -> ref i32 {
+    var x: i32 = 5
+    return identity(ref x)      // 应该报错：x 是 bad 的局部
+}
+
+fn main() -> i32 {
+    let r = bad()               // 读一块已经死掉的栈
+    println("r = ", r)          // 应该是 5
+    return 0
+}

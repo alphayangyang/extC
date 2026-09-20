@@ -1,0 +1,17 @@
+var g: slice<u8> = "hi"          // 全局：比谁都活得长
+
+fn stash(s: slice<u8>) {
+    g = s                        // 把「借来的」东西存进全局
+}
+
+fn f() -> i32 {
+    var a: [4]u8 = [65, 66, 67, 68]
+    stash(a[..])                 // a 的视图被交出去 —— 参数把它「洗白」成深度 0
+    return 0
+}                                 // a 死了，但 g 还指着它
+
+fn main() -> i32 {
+    f()
+    println("全局里现在是 = ", g)   // 悬垂读！
+    return 0
+}
