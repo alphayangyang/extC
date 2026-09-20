@@ -1,0 +1,8 @@
+// 除零：C 里是 UB ⇒ extC 里必须 **trap 带源码位置**，不能静默也不能崩得没头没尾
+fn main() -> i32 {
+    var a: i32 = 10
+    var z: i32 = 0
+    println("算之前")
+    println("结果 ", a / z)
+    return 0
+}

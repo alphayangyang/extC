@@ -36,6 +36,23 @@ if [ -d tests/errors ]; then
     done
 fi
 
+echo "== 反例·运行时：必须 trap（带源码位置）=="
+if [ -d tests/traps ]; then
+    for f in tests/traps/*.extc; do
+        name=$(basename "$f" .extc)
+        out=$($EXTC --run "$f" 2>&1)
+        status=$?
+        if [ $status -eq 0 ]; then
+            bad "$name （应该 trap，却正常退出了）"
+        elif echo "$out" | grep -q "trap:"; then
+            ok "$name  ->  $(echo "$out" | grep -o 'trap:.*' | head -1)"
+        else
+            bad "$name （退出了，但没有 trap 消息）"
+            echo "$out" | sed 's/^/        /'
+        fi
+    done
+fi
+
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

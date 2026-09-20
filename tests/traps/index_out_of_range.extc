@@ -1,0 +1,8 @@
+// 越界：能证明的编译期报错；不能证明的运行时 trap 带位置（这条是既有行为，锁住它）
+fn main() -> i32 {
+    var a: [3]i32 = [1, 2, 3]
+    var i: i64 = 0
+    while i < 3 { println(a[i])  i = i + 1 }
+    println(a[i])              // i = 3 ⇒ trap
+    return 0
+}

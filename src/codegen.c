@@ -369,6 +369,32 @@ static const char *genBin(CG *g, Expr *e) {
         return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
     }
 
+    /* **算术不静默**（LANGUAGE.md §0.5）：除零 / 移位超宽在 C 里是 UB。
+     * 我们让它们 **trap 带源码位置** —— 而且每个操作数**只求值一次**
+     * （所以走 helper，不用 `(check(r), l op r)` 那种会求值两次的逗号表达式）✓ */
+    {
+        Type *lt   = ttBase(subst(g, e->u.bin.left->type));
+        bool  sint = lt && lt->kind == TY_BUILTIN && lt->name && lt->name[0] == 'i';
+        bool  uint = lt && lt->kind == TY_BUILTIN && lt->name && lt->name[0] == 'u';
+
+        if ((sint || uint) && (strcmp(op, "/") == 0 || strcmp(op, "%") == 0)) {
+            const char *fn = strcmp(op, "/") == 0 ? (sint ? "extc_divI" : "extc_divU")
+                                                  : (sint ? "extc_modI" : "extc_modU");
+            const char *ity = sint ? "int64_t" : "uint64_t";
+            return arenaPrintf(g->arena, "(%s)%s((%s)(%s), (%s)(%s), \"%s\", %d)",
+                               cType(g, lt), fn, ity, genExpr(g, e->u.bin.left),
+                               ity, genExpr(g, e->u.bin.right), g->path, e->line);
+        }
+        if ((sint || uint) && (strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0)) {
+            int bits = 0;
+            for (const char *q = lt->name + 1; *q >= '0' && *q <= '9'; q++) bits = bits * 10 + (*q - '0');
+            if (bits > 0)
+                return arenaPrintf(g->arena, "(%s %s extc_shiftCount((int64_t)(%s), %d, \"%s\", %d))",
+                                   genExpr(g, e->u.bin.left), op,
+                                   genExpr(g, e->u.bin.right), bits, g->path, e->line);
+        }
+    }
+
     return arenaPrintf(g->arena, "(%s %s %s)",
                        genExpr(g, e->u.bin.left), op, genExpr(g, e->u.bin.right));
 }
@@ -1412,6 +1438,36 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
         "            file, line, (long long)i, (long long)n);\n"
         "    exit(1);\n"
+        "}\n"
+        "/* ---- 算术的失败必须**响亮**（LANGUAGE.md 0.5）：\n"
+        " * 除零、除法的溢出、移位超宽，在 C 里都是 UB —— 我们让它 trap 带源码位置。\n"
+        " * 不静默算错，也不留 UB ✓ */\n"
+        "void extc_trapMsg(const char *file, int line, const char *msg) {\n"
+        "    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n"
+        "    exit(1);\n"
+        "}\n"
+        "int64_t extc_divI(int64_t a, int64_t b, const char *f, int l) {\n"
+        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
+        "    if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, \"integer overflow in division\");\n"
+        "    return a / b;\n"
+        "}\n"
+        "int64_t extc_modI(int64_t a, int64_t b, const char *f, int l) {\n"
+        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
+        "    if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, \"integer overflow in division\");\n"
+        "    return a % b;\n"
+        "}\n"
+        "uint64_t extc_divU(uint64_t a, uint64_t b, const char *f, int l) {\n"
+        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
+        "    return a / b;\n"
+        "}\n"
+        "uint64_t extc_modU(uint64_t a, uint64_t b, const char *f, int l) {\n"
+        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
+        "    return a % b;\n"
+        "}\n"
+        "/* 移位：C 里移 >= 位宽 或 负数 都是 UB ⇒ 检查移位数，返回它（求值一次）*/\n"
+        "int64_t extc_shiftCount(int64_t b, int64_t w, const char *f, int l) {\n"
+        "    if (b < 0 || b >= w) extc_trapMsg(f, l, \"shift count out of range\");\n"
+        "    return b;\n"
         "}\n"
         "/* 带越界检查的下标：**返回下标**，所以调用点只求值一次。*/\n"
         "int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {\n"

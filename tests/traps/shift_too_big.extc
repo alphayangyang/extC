@@ -1,0 +1,8 @@
+// 移位超宽（>= 位宽）：C 里是 UB ⇒ 必须 trap
+fn main() -> i32 {
+    var a: i32 = 1
+    var b: i32 = 64
+    println("移之前")
+    println("结果 ", a << b)
+    return 0
+}
