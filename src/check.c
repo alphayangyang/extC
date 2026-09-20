@@ -1666,6 +1666,40 @@ static Type *checkExpr(Checker *c, Expr *e) {
 
 /* ---------------------------------------------------------------- 语句 */
 
+/* **裸写构造器**：`return success(v)` / `failure(e)` / `some(v)` / `none()`。
+ *
+ * 类型从**函数签名里已经写好的返回类型**来 —— 这不是"推导"，是**没让你重复一遍**：
+ * 编译器没有猜任何东西，它读的是你自己写的那一行 `-> result<i64, gameError>`。
+ *
+ * 为什么值得：`result<i64, gameError>::failure(...)` 那串类型长到把重点盖住了，
+ * 而重点从来是「失败」本身。`?` 负责收，`failure` 负责发，两头都不该啰嗦 ✓
+ *
+ * 落点是**原地改写成 EX_ASSOC** —— 后面检查/生成的路一条都不变（零新机制）。 */
+static void desugarBareCtor(Checker *c, Expr *e, Type *want) {
+    if (!e || e->kind != EX_CALL) return;
+    if (e->u.call.callee->kind != EX_IDENT) return;
+
+    const char *nm = e->u.call.callee->u.ident.name;
+    const char *proto = NULL;
+    size_t nargs = 0;
+    if      (strcmp(nm, "success") == 0 || strcmp(nm, "failure") == 0) { proto = "result"; nargs = 2; }
+    else if (strcmp(nm, "some")    == 0 || strcmp(nm, "none")    == 0) { proto = "option"; nargs = 1; }
+    else return;
+
+    /* 用户自己写的同名函数优先 —— 裸写只是**在没歧义时**的省事 */
+    if (findFunc(c, nm)) return;
+    /* 返回类型不是对应容器 ⇒ 不认，照原样走（报「未定义的名字」，那是实话）*/
+    if (!isProtoType(want, proto, nargs)) return;
+
+    /* ⚠️ union：先把 args 拿**出来**再改 kind，否则会被自己的新字段覆盖 */
+    Vec args = e->u.call.args;
+    e->kind = EX_ASSOC;
+    e->u.assoc.typeName = want->sdef->name;   /* "result" / "option" */
+    e->u.assoc.targs    = want->targs;        /* 已经是解析好的类型 ✓ */
+    e->u.assoc.name     = nm;
+    e->u.assoc.args     = args;
+}
+
 static void checkStmt(Checker *c, Stmt *s);
 
 static void checkBlockBody(Checker *c, Stmt *block) {
@@ -1805,6 +1839,9 @@ static void checkStmt(Checker *c, Stmt *s) {
                         c->curFunc ? c->curFunc->name : "this function");
                 return;
             }
+            /* 裸写构造器（`return failure(e)`）—— 类型从上面这个 `want` 来 ✓ */
+            desugarBareCtor(c, s->u.ret.value, want);
+
             /* `return e?` —— 表达式本身的值是**载荷**，而函数要交出的是外层类型，
              * 所以这里比的是「载荷能不能放进外层的载荷」（装回去由 codegen 做）。
              * 不能走下面那条 adoptContextType + checkAssignable：那会拿

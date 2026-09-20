@@ -1,0 +1,94 @@
+// `result` / `option` 怎么用 —— 一页看完（2026-09-18 加：return 位置可以裸写构造器）
+//
+// 为什么要有它们：用一个魔法值表示失败是**看不见的**
+//     fn find(...) -> i32        // 返回 -1 表示「没找到」
+// -1 分不清「没找到」和「下标恰好是 -1」，而且**从签名上完全看不出来**。
+// 现在这两种情况都是类型的一部分（P′：不能证明的，语法上看得见）。
+
+type gameError = | outOfRange | occupied
+
+struct board {
+    cell: [15][15]i32
+}
+
+// ---------------------------------------------------------------- ① 造
+//
+// 在 `return` 位置上可以**裸写**构造器：类型从函数签名来。
+// 这不是"推导" —— 编译器没有猜，它读的是你自己写的那行 `-> option<i32>`；
+// 省掉的纯粹是重复劳动（原来要写 `option<i32>::none()`）。
+//
+// ⚠️ 只有这四个名字（success / failure / some / none）、只有 return 位置、
+//    只有返回类型正好是对应容器时才认。别的位置照旧写全类型。
+
+fn at(b: ref board, x: i32, y: i32) -> option<i32> {
+    if x < 0 || x >= 15 || y < 0 || y >= 15 {
+        return none()                        // 没有就是没有（不是 -1）
+    }
+    return some(b.cell[y][x])
+}
+
+fn place(b: mut ref board, x: i32, y: i32, p: i32) -> result<unit, gameError> {
+    if x < 0 || x >= 15 || y < 0 || y >= 15 {
+        return failure(gameError.outOfRange) // 说清**为什么**失败（枚举，不是字符串）
+    }
+    if b.cell[y][x] != 0 {
+        return failure(gameError.occupied)
+    }
+    b.cell[y][x] = p
+    return success(unit {})
+}
+
+// ---------------------------------------------------------------- ② 用
+
+// 招数一：`?` —— 不成功我就不干了（顺着往上抛）
+fn placeRow(b: mut ref board, y: i32, p: i32) -> result<unit, gameError> {
+    var x: i32 = 0
+    while x < 15 {
+        place(b, x, y, p)?      // ← 任何一步失败，整行就失败
+        x = x + 1
+    }
+    return success(unit {})
+}
+
+// 招数二：就地判断（`.ok` / `.err`）
+fn describe(e: gameError) -> slice<u8> {
+    if e == gameError.outOfRange { return "出界了" }
+    return "那格已经有子了"
+}
+
+// 招数三：`option` 的三件套 `.has` / `.value` / `.valueOr(兜底)`
+fn firstEmpty(row: slice<i32>) -> option<i64> {
+    var i: i64 = 0
+    while i < row.len {
+        if row[i] == 0 { return some(i) }
+        i = i + 1
+    }
+    return none()
+}
+
+fn main() -> i32 {
+    var b: board
+
+    let r1 = place(ref b, 3, 3, 1)
+    println("落子成功？   ", r1.ok)                  // true
+
+    let r2 = place(ref b, 3, 3, 2)
+    println("重复落子？   ", r2.ok)                  // false
+    println("为什么？     ", describe(r2.err))       // 那格已经有子了
+
+    let r3 = place(ref b, 99, 0, 1)
+    println("出界？       ", r3.ok)                  // false
+    println("为什么？     ", describe(r3.err))       // 出界了
+
+    let r4 = placeRow(ref b, 7, 1)
+    println("整行落子？   ", r4.ok)                  // true
+
+    let c = at(ref b, 3, 3)
+    println("(3,3) 有值？ ", c.has, "  里面是 ", c.value)   // true 1
+
+    let e = at(ref b, 99, 99)
+    println("(99,99) 有值？", e.has)                        // false
+
+    println("找第一个空位：", firstEmpty(b.cell[7][0..15]).valueOr(-1))   // -1（整行都满了）
+    return 0
+}

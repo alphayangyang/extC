@@ -602,6 +602,24 @@ let r = result<unit, gameError>::failure(gameError.occupied)
 if r.ok { ... } else { println(r.err) }
 ```
 
+#### 一页速查：拿到一个 `option` / `result` 之后能干什么
+
+```extc
+// ① 造一个（写在函数 return 里，类型在签名上；也可以裸写，见下）
+fn find(...) -> option<i32> { return some(3) }        // 有
+fn find(...) -> option<i32> { return none() }         // 没有
+
+// ② 用的时候只有这么几招
+let v = find()?          // 成功 → v 是里面的值；失败/没有 → 顺着往上抛
+                         //   （本函数的返回类型必须装得下那个失败）
+let ok  = r.ok           // 成不成（bool）
+let why = r.err          // 为什么失败
+println(a.value)         // option 里的值 / result 成功时的值
+println(a.has)           // option 有没有值
+```
+
+`?` 就是「**不成功我就不干了**」。它在**四个位置**合法（见下节）。
+
 用**关联函数**构造：写在 `struct` 体内但**不带 `self`** 的函数，
 调用时类型写全（不靠上下文猜，见 [`DECISIONS.md`](DECISIONS.md) 定案 27/29）：
 
@@ -612,6 +630,28 @@ struct box<T> {
 }
 let b = box<i32>::make(5)
 ```
+
+#### 在 `return` 位置上可以**裸写**构造器（定案 49）
+
+```extc
+fn at(...) -> option<i32> {
+    if x < 0 { return none() }               // ← 不用写 option<i32>::none()
+    return some(b.cell[y][x])
+}
+
+fn place(...) -> result<unit, gameError> {
+    if 那格有子 { return failure(gameError.occupied) }
+    return success(unit {})
+}
+```
+
+**类型从函数签名里写好的返回类型来** —— 这不是"推导"：
+编译器**没有猜**任何东西，它读的是你自己写的那一行 `-> result<unit, gameError>`。
+省掉的纯粹是重复劳动 ✓
+
+⚠️ 只有**这四个名字**（`success` / `failure` / `some` / `none`）、
+只有 **`return` 位置**、而且**只有返回类型正好是对应容器时**才认；
+其他位置照旧要写全类型。名字被用户自己的函数占着时也照旧走普通查找 ✓
 
 ### `?`：失败就顺着往上抛
 
