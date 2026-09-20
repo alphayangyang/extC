@@ -1,0 +1,10 @@
+fn main() -> i32 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < 300000000 {
+        s = s + (i % 7) + (i % 1000003)
+        i = i + 1
+    }
+    println("s = ", s)
+    return 0
+}
