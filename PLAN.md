@@ -1,256 +1,83 @@
-# PLAN.md —— week-1：类型层地基
+# PLAN.md —— 还剩什么（唯一路线图）
 
-> **决策依据（主人的直觉 + 奶昔的细化）**：
+> **2026-09-18 重写。** 以后再问「还有什么要做」，只看这一份就够了。
 >
-> > **能随时加的是「语法」（数组、`for`、`match`、模块）；改起来贵的是「类型的形状」（泛型、`ref`、`result`/`option`、值语义）。**
->
-> 数组和 `for` 加错了改一星期；泛型和 `ref` 的语义长歪了，**所有基于它的代码全得重写**。
-> 所以 week-1 **一行语法糖都不碰**，全花在类型层。
+> 现状：**122 个测试全绿** · 正式设计文档在 [`LANGUAGE.md`](LANGUAGE.md) ·
+> 原则与承诺在 [`LANGUAGE.md`](LANGUAGE.md) §0.5 / §1
 
 ---
 
-## 任务
+## 0. 先说三句话
 
-### T1 · 把类型信息从代码生成里拔出来（架构动作，最要紧）✅ 已完成
+1. **没有什么是"必须现在做"的。** 语言今天**已经能写纯计算程序**（算法、棋盘、解析、状态机、
+   协议分发）—— 剩下的几乎全是**加法** ✓
+2. **设计阶段基本结束了。** 剩下的活**不需要新的原则**，是"力气活" ✓
+3. **只有一条主线的里程碑**：让**五子棋引擎能跟人下**（那是项目一开始瞄的靶子）。
 
-现在 `typeOf` 寄生在 `codegen.c` 里 —— 这是**架构错误**：类型检查必须**独立于**代码生成，否则每加一个特性，两边都要改一遍，而且会互相打架。
+---
 
-- 新建 `src/types.[ch]`：类型表（内建类型、struct 表、函数签名表）
-- 新建 `src/check.[ch]`：一遍**独立的类型检查 pass**，给每个表达式定类型并做全部检查
-- `codegen.c` 删掉 `typeOf`，改成读检查结果
+## 1. ⭐ 主线：让它**能读东西**（做完 = 五子棋能跟人下）
 
-**验收**：codegen 里不出现任何类型推导逻辑。✅
+| # | 做什么 | 为什么挡着 | 大小 |
+|---|---|---|---|
+| **1** | **`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）| 今天**造不出 buffer**：`alloc<T>(n)` 返回 `mut ref T`，不能索引也不能切片。IO 里到处假设"调用者给 buffer"，而那个 buffer 现在造不出来 ⚠️ 清零还兑现 LANGUAGE.md §0.6 那条承诺 | 小 |
+| **2** | **IO-0**：原语 `rawRead`/`rawWrite` + `readLine` / `readAll` / `nextInt` 一族 + `ioError` | **没有输入** ⇒ 只能写"自己跟自己玩"的程序 | 中（设计已定，见 [`IO.md`](IO.md)）|
+| **3** | **IO-1**：`open` + **帧拥有文件**（跟 arena 并排）+ `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 |
 
-### T2 · 补全类型检查规则 + 好错误信息 ✅ 已完成
+> **做完 1+2，主人就有一个真的能跟人下棋的引擎了** ✓ 大约 200 行。
 
-- 赋值 / 传参 / 返回 / 二元运算 / 字段 / 方法调用 的类型一致性
-- 拓宽允许、**收窄禁止**、**无隐式转换**
-- 错误信息统一 `expected X, found Y` + note
+---
 
-**验收**：`let x: i32 = "abc"` 由 extC **自己**报错。✅
-（附带：字面量按值适配、无隐式真值转换、无公共类型报错、重名检查、`self` 形态检查）
+## 2. 原则欠账（都是"让承诺成真"，不是新功能）
 
-### T3 · `ref` 升级成表达式 + 调用点显式（定案 10）✅ 已完成
+| # | 做什么 | 现在的问题 | 大小 |
+|---|---|---|---|
+| **4** | **`option<slice<u8>>` 报成检查器错误** | 现在报错落在 **prelude 里**（`__extc_reference_has_no_zero_value__`）⇒ 用户看不见自己的代码，**违反 P′** | 小 |
+| **5** | **`Sym.refDepth` 拆分** | 检查器看「名字的存储深度」而不是「里面的引用指哪」⇒ `let v = m; return v` 被**误挡**（保守，不是错）。⚠️ 必须同时保证 `ref v` **仍然用存储深度**，否则引入真悬垂 | 中（动逃逸检查核心，要单独验）|
+| **6** | **第三刀：`option`/`result` 重写成普通枚举** + `?` 跟上 + 迁 examples | 今天它们是"struct + bool 标签"⇒ **不能 `match`**、`option<slice<u8>>` 编不过。第二刀的前置（泛型枚举）已经做完了 | 中（迁移面大）|
 
-- `ref` 从「类型修饰」升级成「**表达式**」：`ref s.board` 产生一个引用值
-- 自由函数的 `ref T` 实参**必须在调用点写 `ref`**
-- **方法接收者自动取地址**（`.` 表示「在这个值上操作」）
-- `ref` 是**可变**引用 ⇒ 不能对 `let` 取引用
-- 类型层为**逃逸检查留位**（现在不做检查，但 `Type` 已经能挂 arena 深度）
+---
 
-### 顺手三条 ✅ 已完成
+## 3. 语言能力（"好用"的部分，全是加法）
 
-| 定案 | 状态 |
+| # | 做什么 | 什么时候需要 | 大小 |
+|---|---|---|---|
+| **7** | **`varArray<T>`**（prelude 用 extC 写）| 需要**动态**容器时（棋盘是定长的，所以不急）| 中 |
+| **8** | **`for` 循环**（+ range）| 每次写 `var i`/`while` 三行的时候 | 小~中 |
+| **9** | **lambda**（传 / `let` 存 / 捕获；身份编译期唯一）| 想给算法传"怎么比较"时（协议能顶一部分）| 中 |
+| **10** | **协议补全**：`fn <`（排序）、hash | 写 `sort` / `HashMap` 时 | 小 |
+| **11** | 模块 / 多文件 + `@main` 多入口 | 自举：`gomoku` + `gomoku-engine` 两个可执行文件 | 中 |
+| **12** | **块 `{ }` 变释放点**（arena mark/release）| 长循环里反复分配时（现在只有"帧"一个释放点）| 小~中 |
+
+---
+
+## 4. 可选的（不做也不挡路）
+
+| 项 | 说明 |
 |---|---|
-| 8 · 默认零初始化（`var b: board` 合法） | ✅ `ref T` 除外（没有零值） |
-| 9 · 方法写在 struct 体内 | ✅ 自由函数带 `self` 现在报错 |
-| 14 · `type` 枚举 | ✅ 含定案 11 的「枚举自动有名字文本」 |
-
-### T4 · 泛型 + `slice<T>` / `array<T>`
-
-- 泛型**靠 C 代码生成实现**（不建实例化图 —— 这是主人自己的直觉，比真单态化便宜）
-- 第一条真实用例：`slice<T>`
-- 顺带执行定案 3：**`str` 作废，字符串字面量 = `slice<u8>`**
-
-### T5a · 数组 + 索引（见 [`ARRAYS.md`](ARRAYS.md)）
-
-- **T5a-1 · `slice` 索引 + prelude 字符串库** ✅ **已完成**
-  `s[i]`（带边界检查，越界 trap 并报 extC 位置）+ prelude 里的
-  `get` / `==`（按内容）/ `find` / `startsWith` —— **全部用 extC 写**。
-- **T5a-2 · 固定数组** ✅ **已完成**
-  `[N]T` 类型（多维递归）+ 字面量 `[1,2,3]`（严格计数，末尾 `...` 补零）
-  + 索引 `a[i]`（越界 trap）+ 数组 `==`（编译器生成）+ `println` 调试打印。
-  **副产品**：G2 里程碑达成 —— `examples/gomoku-board.extc` 能编能跑。
-  **注意**：动态数组 `array<T>` 要等 arena（week-4），见 ARRAYS.md §5。
-- **T5a-3 · 切片视图 `a[lo..hi]`** ✅ **已完成**
-  四种写法（`a[2..5]` / `a[6..]` / `a[..3]` / `a[..]`）+ 多维切最后一段
-  + 编译期能证明的**零检查**（P）+ 字面量越界的**编译期报错** + 底必须是「地方」。
-  顺带修了两个真 bug：视图索引器返回指针（否则 `slice<struct>` 编不出来、
-  且 `s[i] = x` 报 gcc 原始错误）、非字节视图打印成 `slice { data: <ref> }`。
-
-### T5 · `option<T>` / `result<T,E>` + `?`
-
-**T5a · 类型与构造** ✅ **已完成**
-
-- **`::` 关联函数**：写在 `struct` 体内但**不带 `self`** 的函数，调用写全类型
-  `option<i64>::some(3)`。顺带解锁了 ARRAYS.md 里卡住的 `array<T>::new()`。
-- **prelude 里的 `option<T>` / `result<T,E>` / `unit`** —— 全部用 extC 写
-  （「能写在 extC 里的就写在 extC 里」）。零值就是 `none` / 失败侧，
-  这是定案 8（默认零初始化）的直接结果。
-- 限制（已写进 DECISIONS）：`T` 里不能含 `ref`（`option<slice<u8>>` 等 week-4）；
-  故意不定义 `==`（泛型的 `==` 一实例化就检查，会强迫每个 `option<X>` 的 X 都有 `==`）。
-
-**T5b · `?`** ✅ **已完成**
-
-- `?` 是**可见的、静态解析的、无栈展开的**转发 ⇒ 不违反 P
-- 四个合法位置（都是整个语句能重写的地方，因为要展开成语句）：
-  `f()?` / `let x = e?` / `x = e?` / `return e?`
-- 载荷类型可以不同，**错误类型必须相同**（`?` 原样转发，不做转换）
-- 编译器认识的是**协议**（跟视图的 `data` + `len` 同一种分工）：
-  option 的 `has` / `value`，result 的 `ok` / `value` / `err`
-
-### T4 · 泛型 + `slice<T>`（按「能写在 extC 里的就写在 extC 里」重新设计）
-
-> **核心决定：容器用 extC 源码写（预lude），编译器只负责「按实例生成 C」。**
->
-> 单态化**不应该**意味着「容器硬编码在 codegen 里」。
-> `slice<T>` 的 `len` / `get` 用 extC 写得出来 ⇒ 就该用 extC 写。
-> 编译器只做它唯一能做的事：**为每个实例生成一份 C 代码**。
-
-分三步，每步都能独立跑通：
-
-#### T4a · 泛型声明与单态化机制 ✅ 已完成
-
-- **语法**：`struct Name<T> { ... }` 声明；`Name<Args>` 使用
-- **类型表示**：`TY_GENERIC`（泛型声明 + 类型实参）＋ `TY_PARAM`（模板里的 `T`）
-- **单态化**：check 对**模板**检查一遍；codegen 按实例生成 N 份 C
-  （`pair<i32, u8>` → `pair_i32_u8`，方法 → `pair_i32_u8_getFirst`）
-- 实例**驻留**（同一实例全局一份）；**带类型参数的实例不进实例表**（那是拿来比类型的）
-- **验收**：`pair<i32, u8>` / `pair<bool, point>` / `box<i64>` / `box<point>` 四份实例同时工作 ✅
-
-> **踩到的三个坑**（都记在 DEVLOG）：
-> ① 参数化实例污染实例表 → 生成 `box_T_set`
-> ② 泛型实例的字段必须用它**自己的**实参替换，不能用环境里留着的上下文（会死循环）
-> ③ 实例结构体必须排在普通 struct **之后**（实例字段里可能有普通 struct）；`_debug` 要原型
->
-> **发现的真限制**：模板检查意味着 `pair<A,B>.swap` 写不出来（`A`/`B` 不确定相等）。
-> 要同类型就用一个参数。这是「错误只报一次」的代价。
-
-#### T4b · prelude 机制 ✅ 已完成
-
-**目标**：`slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，
-**编译器源码里一行硬编码的 slice 都没有**。
-
-**步骤 1 · 写文件** ✅
-`stdlib/prelude.extc` —— 普通的 extC 源码，只不过它总在用户文件**之前**被处理。
-里面现在有 `slice<T>`（`isEmpty` / `hasAt`）。
-
-**步骤 2 · 把它嵌进编译器**
-编译器要能单独运行，不能依赖外部文件路径。用脚本把文本变成 C 数组：
-
-```
-tools/embed.c stdlib/prelude.extc build/prelude_data.c extc_prelude_src
-```
-生成：
-```c
-const unsigned char extc_prelude_src[] = { 0x73, 0x74, ... };
-const unsigned long extc_prelude_len = 1234;
-```
-（用字节数组而不是字符串字面量 —— 免掉一切转义问题。）
-工具本身用 **C** 写（`tools/embed.c`），不引入解释器依赖。
-
-Makefile 加：
-```make
-STDLIB := stdlib
-$(EMBED): $(TOOLDIR)/embed.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $< -o $@
-
-$(BUILDDIR)/prelude_data.c: $(STDLIB)/prelude.extc $(EMBED)
-	./$(EMBED) $< $@ extc_prelude_src
-```
-再用 `src/prelude.h` / `src/prelude.c` 把它包成 `const char *preludeSource(size_t *len);`。
-
-**步骤 3 · 让 `parseModule` 能「追加」而不是「重置」**
-现在它在内部调 `moduleInit`（会重置 Vec）。要把它挪到外面：
-`main` 里 `moduleInit(&m, &arena)` 调一次，prelude 和用户文件都往**同一个 Module** 里追加。
-（顺带：这天然支持将来的多文件编译。）
-
-**步骤 4 · 跑两遍 parse，只 check 一次**
-```
-prelude  ：tokenize → parse → 追加进 Module
-用户文件 ：tokenize → parse → 追加进 Module
-────────────────────────────────
-然后 check 一次、生成一次
-```
-prelude 用**自己的 `Ctx`**（路径显示成 `<extc prelude>`），这样它的错误不会跟用户的混。
-
-**步骤 5 · 收尾**
-`str` 内建类型作废（T4c 的活）；`slice<u8>` 从此来自 prelude。
-
-**验收标准（可机械检查）**：
-```sh
-grep -i slice src/*.c src/*.h     # 应该一无所获
-```
-> 这就是「能在 extC 里写就写在 extC 里」的硬指标 —— 不是靠自觉，是靠 grep。
-
-#### T4c · 字符串字面量变成 `slice<u8>`
-
-- `"abc"` → `(slice_u8){ .data = (const uint8_t *)"abc", .len = 3 }` —— **零分配**
-- **`str` 内建类型作废**
-- `println(slice)` → `printf("%.*s", (int)len, (const char *)data)`
-- **验收**：`examples/` 里用字符串的例子照跑，且编译器里不再有 `str` 这个类型
-
-> ⚠️ **T4b 要解决一个真建模问题**：长度 0 的 `slice` 没有合法的 `ref T` 可指
-> （`ref` 不可为空）。要么给 `slice` 的内部表示开一个受控的口子，
-> 要么让空切片指向一个静态哨兵。这个必须想清楚再写。
-
-### 顺手：三条已定案但没实现
+| **自举** | 已降级为**可选的验证手段**（主人：「我不一定完全自举，C 写语法解析底层效率很高」）|
+| **TUI（termios raw mode）** | `IO.md` 里定过：不包 ncurses，只要"读一个字节 + 开关 raw 模式" |
+| arena 帧内留垃圾 | 可加 `reserve()`；**不是不安全** |
+| 容器拷贝 = 共享存储 | 写文档说明即可；**不是不安全** |
+| `scan(mut a, mut b, ...)` 变参 | 主人要，但**明确推迟**（细节多）|
 
 ---
 
-## 验收程序
+## 5. ⛔ 永远不做（不是"还没做"）
 
-week-1 结束时，下面这段必须**能编译、能跑、且类型错误能被 extC 自己抓到**：
+运行期换实现（插件 / 热替换）· GC · 异常 · 裸指针 · 继承 / 虚函数 ·
+手动 `free` / `close` · `errno` / 隐藏全局状态 —— 见 [`LANGUAGE.md`](LANGUAGE.md) §9 ✓
 
-```extc
-type status = | ok | warn | error
+---
 
-struct counter {
-    n: i32
+## 6. 建议的顺序
 
-    fn bump(self: ref counter, by: i32) -> result<i32, counterError> {
-        if by < 0 {
-            return Err(counterError.negative)
-        }
-        self.n += by
-        return Ok(self.n)
-    }
-}
-
-fn describe(s: status) -> slice<u8> {
-    if s == status.warn {
-        return "careful"
-    }
-    return "fine"
-}
-
-fn tryBump(c: ref counter, times: i32) -> result<i32, counterError> {
-    var i = 0
-    while i < times {
-        c.bump(2)?          // 方法接收者自动取地址
-        i += 1
-    }
-    return Ok(c.n)
-}
-
-fn main() -> i32 {
-    var c: counter = {}                  // 零初始化
-    println("start: {}", c.n)
-    let total = tryBump(ref c, 3)?       // 自由函数必须显式写 ref
-    println("total = {}", total)
-    println("{}", describe(status.warn))
-    return 0
-}
 ```
-
-它一次练到：`type` 枚举、方法进 struct、`ref` 表达式、零初始化、泛型（`result`/`slice`）、`?`、格式串。
-
----
-
-## 不碰（week-2 以后）
-
-数组、`for`（四种形态）、`match`、模块系统、`region` / 逃逸检查、`@recursive`。
-
-> 这些**全是语法或局部机制**，加的时候不会推翻类型层。
-
----
-
-## 做法：降级版五子棋当靶子
-
-不再「先造语言再写程序」，而是：
-
-1. 把主人的五子棋示例**裁成一个降级版**（切掉当前语言编不了的部分），放进 `examples/gomoku/`
-2. **每完成一块语言特性，就把降级版往前推一格**（把被切掉的那段加回来）
-3. 每一周结束都有个**真实程序在跑**，而不是只有一堆单元测试
-
-这样「语言够不够用」永远由真实程序回答，不是由设计文档回答。
+allocSlice ──▶ IO-0 ──▶ (五子棋能跟人下 ✓ 里程碑)
+                │
+                ├──▶ IO-1（文件 + argv）
+                │
+                └──▶ 原则欠账 4 / 5 / 6（趁手热，都小）
+                       │
+                       └──▶ varArray ──▶ for ──▶ lambda（好用，不挡路）
+```
