@@ -8,7 +8,7 @@
 #include <stdlib.h>
 
 /* 越界 trap：带 extC 的位置（由 `#line` 与调用点传进来的 file/line 保证）*/
-void extc_trap(const char *file, int line, int64_t i, int64_t n) {
+static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {
     fprintf(stderr, "%s:%d: trap: index %lld out of range (length %lld)\n",
             file, line, (long long)i, (long long)n);
     exit(1);
@@ -16,40 +16,40 @@ void extc_trap(const char *file, int line, int64_t i, int64_t n) {
 /* ---- 算术的失败必须**响亮**（LANGUAGE.md 0.5）：
  * 除零、除法的溢出、移位超宽，在 C 里都是 UB —— 我们让它 trap 带源码位置。
  * 不静默算错，也不留 UB ✓ */
-void extc_trapMsg(const char *file, int line, const char *msg) {
+static inline void extc_trapMsg(const char *file, int line, const char *msg) {
     fprintf(stderr, "%s:%d: trap: %s\n", file, line, msg);
     exit(1);
 }
-int64_t extc_divI(int64_t a, int64_t b, const char *f, int l) {
+static inline int64_t extc_divI(int64_t a, int64_t b, const char *f, int l) {
     if (b == 0) extc_trapMsg(f, l, "division by zero");
     if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, "integer overflow in division");
     return a / b;
 }
-int64_t extc_modI(int64_t a, int64_t b, const char *f, int l) {
+static inline int64_t extc_modI(int64_t a, int64_t b, const char *f, int l) {
     if (b == 0) extc_trapMsg(f, l, "division by zero");
     if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, "integer overflow in division");
     return a % b;
 }
-uint64_t extc_divU(uint64_t a, uint64_t b, const char *f, int l) {
+static inline uint64_t extc_divU(uint64_t a, uint64_t b, const char *f, int l) {
     if (b == 0) extc_trapMsg(f, l, "division by zero");
     return a / b;
 }
-uint64_t extc_modU(uint64_t a, uint64_t b, const char *f, int l) {
+static inline uint64_t extc_modU(uint64_t a, uint64_t b, const char *f, int l) {
     if (b == 0) extc_trapMsg(f, l, "division by zero");
     return a % b;
 }
 /* 移位：C 里移 >= 位宽 或 负数 都是 UB ⇒ 检查移位数，返回它（求值一次）*/
-int64_t extc_shiftCount(int64_t b, int64_t w, const char *f, int l) {
+static inline int64_t extc_shiftCount(int64_t b, int64_t w, const char *f, int l) {
     if (b < 0 || b >= w) extc_trapMsg(f, l, "shift count out of range");
     return b;
 }
 /* 带越界检查的下标：**返回下标**，所以调用点只求值一次。*/
-int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {
+static inline int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {
     if (i < 0 || i >= n) extc_trap(file, line, i, n);
     return i;
 }
 /* 带范围检查的切片：要求 0 <= lo <= hi <= n，返回 lo。*/
-int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,
+static inline int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,
                           const char *file, int line) {
     if (lo < 0 || hi < lo || hi > n) {
         fprintf(stderr, "%s:%d: trap: slice %lld..%lld is out of range (length %lld)\n",
@@ -61,8 +61,8 @@ int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,
 
 typedef struct extc_ablock { struct extc_ablock *prev; int64_t cap, used; char data[1]; } extc_ablock;
 typedef struct extc_arena { extc_ablock *top; } extc_arena;
-void extc_arena_init(extc_arena *a) { a->top = NULL; }
-void extc_arena_release(extc_arena *a) {
+static inline void extc_arena_init(extc_arena *a) { a->top = NULL; }
+static inline void extc_arena_release(extc_arena *a) {
     while (a->top) { extc_ablock *p = a->top->prev; free(a->top); a->top = p; }
 }
 void *extc_arena_alloc(extc_arena *a, int64_t n) {
@@ -136,7 +136,7 @@ void slice_u8_debug(slice_u8 v) {
     printf(" }");
 }
 
-uint8_t *slice_u8_index(slice_u8 v, int64_t i, const char *file, int line) {
+static inline uint8_t *slice_u8_index(slice_u8 v, int64_t i, const char *file, int line) {
     if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
     return &v.data[i];
 }
@@ -154,7 +154,7 @@ void slice_bool_debug(slice_bool v) {
     printf("]");
 }
 
-bool *slice_bool_index(slice_bool v, int64_t i, const char *file, int line) {
+static inline bool *slice_bool_index(slice_bool v, int64_t i, const char *file, int line) {
     if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
     return &v.data[i];
 }
