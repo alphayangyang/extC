@@ -181,11 +181,24 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
 int main(int argc, char **argv) {
     const char *path = NULL;
     const char *outPath = NULL;
+    const char *optLevel = NULL;     /* `-O0..-O3`（默认 -O2）*/
+    bool marchNative = false;        /* `-march=native`（默认关：牺牲可移植性）*/
     bool dumpTokens = false;
     bool doRun = false;
     bool lineMap = true;
 
     for (int i = 1; i < argc; i++) {
+        /* ⭐ 优化开关（PLAN #11，2026-09-20）：默认还是 `-O2`，
+         * 但 `-march=native` 那种白送的 2~4× 得能拿到 ✓
+         * （实测：矩阵乘 `-O2` → `-O2 -march=native` 能再翻倍；
+         *   代价是**牺牲可移植性** —— 所以默认不开，要性能自己开 ✓）*/
+        if (strncmp(argv[i], "-O", 2) == 0 && argv[i][2] >= '0' && argv[i][2] <= '3'
+            && argv[i][3] == 0) {
+            optLevel = argv[i];
+            i++;
+            continue;
+        }
+        if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; i++; continue; }
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
         } else if (strcmp(argv[i], "--run") == 0) {
@@ -325,13 +338,24 @@ int main(int argc, char **argv) {
      *     —— 但那会牺牲可移植性，先不开。）
      *
      * ⇒ 性能跟 C 同级的最后一公里其实是**旗子**，不是语言 ✓ */
-    char *ccArgv[] = { (char *)cc, "-std=c11", "-O2", "-fwrapv",
+    char *ccArgv[16];
+    int n = 0;
+    ccArgv[n++] = (char *)cc;
+    ccArgv[n++] = "-std=c11";
+    ccArgv[n++] = (char *)(optLevel ? optLevel : "-O2");
+    ccArgv[n++] = "-fwrapv";
+    if (marchNative) ccArgv[n++] = "-march=native";
                        /* 编译器会给用到的每种类型**自动派生** `_debug` / `_eq` /
                         * `_find` …… 程序里没用到的那部分本来会留在二进制里
                         * （实测：hello 的 text 3215 → 1446 字节，euler-sieve 6852 → 3475）。
                         * 让链接器把没人引用的段丢掉 —— 零语义变化，白赚 ✓ */
-                       "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-o",
-                       (char *)binPath, (char *)cPath, NULL };
+    ccArgv[n++] = "-ffunction-sections";
+    ccArgv[n++] = "-fdata-sections";
+    ccArgv[n++] = "-Wl,--gc-sections";
+    ccArgv[n++] = "-o";
+    ccArgv[n++] = (char *)binPath;
+    ccArgv[n++] = (char *)cPath;
+    ccArgv[n] = NULL;
     int rc = runCmd(ccArgv);
     if (rc != 0) {
         fprintf(stderr, "extc: C compiler failed (exit %d) on `%s`\n", rc, cPath);
