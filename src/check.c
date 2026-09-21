@@ -2027,6 +2027,19 @@ static void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
 
+            /* ⚠️ **`let`（将来叫 `const`）是只读绑定** ⇒ 类型里不许出现 `mut` ✗
+             * （"又 let 又 mut"很诡异 —— 主人 2026-09-20 拍板）*/
+            if (!s->u.var.mut && s->u.var.ann) {
+                Type *at = s->u.var.ann;
+                if (at && ((at->kind == TY_REF && at->mut) ||
+                           (at->kind == TY_GENERIC && at->mut))) {
+                    ckError(c, s->line,
+                            "a read-only binding cannot carry a writable reference or view; "
+                            "write `var` if you need to modify through it",
+                            "`let %s` cannot be declared with a `mut` type", s->u.var.name);
+                }
+            }
+
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
             /* `let x = e?` —— `?` 的合法位置之一。
@@ -2039,6 +2052,20 @@ static void checkStmt(Checker *c, Stmt *s) {
              * 想要值的拷贝就写 `let v = *p` —— 显式 ✓
              * （否则 `let r = pickFirst(ref a, ref b)` 这种"绑定一个引用"写不出来 ✗）*/
             else                               it = checkExpr(c, s->u.var.init);
+
+            /* ⭐ **`let` 推断出来的东西自动降级成只读**（主人 2026-09-20）：
+             * `let p = ref x` ⇒ `p: ref T`（不是 `mut ref T`）✓
+             * `let s = a[..]` ⇒ `s: slice<T>` ✓（跟视图那边原本的行为**统一**了 ✓）
+             * ⇒ 于是"看见 let ⇒ 整条链只读"成立 ✓
+             * ⇒ 权限**写在类型里** ⇒ 拷到哪儿都跟着（`var q = p` 也洗不掉 ✓✓）*/
+            if (!s->u.var.mut && !s->u.var.ann) {
+                if (it && it->kind == TY_REF && it->mut) {
+                    Type *ro = ttRef(c->tt, it->inner);
+                    it = ro;
+                } else if (it && it->kind == TY_GENERIC && it->mut && ttIsViewType(it)) {
+                    it = ttViewReadonly(c->tt, it);
+                }
+            }
             Type *declT = s->u.var.ann ? s->u.var.ann : it;
 
             if (s->u.var.ann)
@@ -2061,7 +2088,20 @@ static void checkStmt(Checker *c, Stmt *s) {
              * 「换指向」已经取消（见 DECISIONS 引用语义定案），所以给引用赋值
              * 必须对得上**被指的类型**；想改指向哪儿，只能重新声明一个绑定。 */
             if (tt_->kind == TY_REF) {
-                if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
+                /* ⚠️ 这里**不能**用 `requireMutable` —— 它看的是"引用类型是不是 mut" ✗
+                 * 而"换指向"写的是**那个槽位**（变量/字段本身）⇒
+                 * 只要求**绑定/字段可写**（`var`）✓
+                 * ⇒ 于是 `var p: ref T = ref x;  p = ref y` 合法 ✓（主人 2026-09-20）*/
+                Sym *slotRoot = placeRoot(c, s->u.assign.target);
+                if (!slotRoot || !slotRoot->mut) {
+                    ckError(c, s->line,
+                            "rebinding a reference writes the binding itself, so the binding"
+                            " must be `var` (the reference's own `mut` is about writing through"
+                            " it, not about rebinding)",
+                            "cannot rebind `%s`: the binding is read-only",
+                            slotRoot ? slotRoot->name : "this");
+                    return;
+                }
 
                 Expr *v = s->u.assign.value;
 

@@ -1,0 +1,29 @@
+// 只读游标遍历链表（2026-09-20 修完之后才能这么写 ✓）
+//
+// 两句正交的话：
+//   `var` / `let` 管「**这个名字**能不能换」      ⇒ `var p` 能换绑 ✓
+//   `ref T` / `mut ref T` 管「**透过它**能不能写」⇒ `ref T` 只读 ✓
+// ⇒ 想要"能往前走、但不能改节点" ⇒ `var p: ref T` ✓（以前这格表达不出来 ✗）
+
+struct node { val: i32  next: mut ref node }
+
+fn sum(head: mut ref node) -> i32 {
+    var p: ref node = head          // 只读游标（从 mut ref **降级**得到 ✓）
+    var total: i32 = 0
+    while p.val != -1 {             // 哨兵收尾（没有空引用 ⇒ 环或哨兵）
+        total = total + p.val
+        p = p.next                  // ✓ 能往前走（绑定是 var ✓）
+        // *p.val = 9               // ✗ 不能改（类型是 ref ⇒ 只读 ✓）
+    }
+    return total
+}
+
+fn main() -> i32 {
+    var c = alloc<node>(1); c.val = 3; c.next = c
+    var b = alloc<node>(1); b.val = 2; b.next = c
+    var a = alloc<node>(1); a.val = 1; a.next = b
+    var s = alloc<node>(1); s.val = -1; s.next = s
+    c.next = s
+    println("只读游标遍历求和 = ", sum(a))
+    return 0
+}

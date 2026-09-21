@@ -1,0 +1,2 @@
+// "又 let 又 mut" ⇒ 拒（只读绑定不能拿可写引用）
+fn main() -> i32 { var x: i32 = 7  let p: mut ref i32 = ref x  return 0 }

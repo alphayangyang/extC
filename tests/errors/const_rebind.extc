@@ -1,0 +1,2 @@
+// 只读绑定不能换绑（换绑写的是"这个名字"）
+fn main() -> i32 { var x: i32 = 1  var y: i32 = 2  let p = ref x  p = ref y  return 0 }

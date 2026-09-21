@@ -1,0 +1,8 @@
+// 只读权限**洗不掉**：拷进 var 也还是只读（权限写在类型里 ⇒ 跟着值走）
+fn main() -> i32 {
+    var x: i32 = 7
+    let p = ref x
+    var q = p
+    *q = 9
+    return 0
+}
