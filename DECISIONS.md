@@ -845,3 +845,53 @@ numpy 2.5.2 在 ComfyUI 的 venv 里。源码在 `bench/multi/`。
 | 出块 | 什么都不做 | **reset 那只**（垃圾立刻回收）✓ |
 | 分配 | 一律进函数那只 | 进**当前块**那只；**逃逸 ⇒ 提升到祖先** ✓ |
 | 收获 | —— | "帧内留垃圾"这条代价**直接消失** ✓（而且不需要单独的"块级释放点"特性 ✓）|
+
+### ㉘ 附：**循环结构会生成什么 C**（2026-09-20 主人问）
+
+```extc
+fn sum(n: i64) -> i64 {
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var t = alloc<node>(1)      // 每轮一个节点，不逃逸 ⇒ 住进**循环体那只** arena
+        t.value = 1
+        total = total + t.value
+        i = i + 1
+    }
+    return total
+}
+```
+
+```c
+int64_t sum(int64_t n) {
+    extc_arena __a1; extc_arena_init(&__a1);      /* 函数体（深度 1）*/
+    extc_arena __a2; extc_arena_init(&__a2);      /* while 体（深度 2）—— **对象提到函数开头** */
+    int64_t total = 0, i = 0;
+    while (i < n) {
+        extc_arena_reset(&__a2);                  /* ← 每轮回到起点：一个 store，**不 malloc / 不 free** */
+        node *t = (node *)extc_arena_alloc(&__a2, sizeof(node));
+        t->value = 1;
+        total = total + t->value;
+        i = i + 1;
+    }
+    extc_arena_release(&__a2);                    /* 循环结束：块还回去（不留到函数退出）*/
+    extc_arena_release(&__a1);
+    return total;
+}
+```
+
+**四条要点**：
+
+1. **arena 对象提到块外面**（这里是函数开头）—— 否则每轮 init/release 会变成
+   malloc/free 抖动 ✗ 提到外面之后，**每轮只是一个 `top->used = 0`** ✓
+2. **进块 reset，出块 release**：循环体每轮 reset（复用块）；整个循环结束时 release ✓
+3. ⭐ **"提升"在生成的 C 里看得见**：如果 `t` 逃逸（比如被塞进返回值），
+   那一行会变成 `extc_arena_alloc(&__a1, …)`（**父作用域那只**）✓ 一眼可查 ✓
+4. **每个 `return` 按内→外释放所有活着的 arena** ✓（`?` 生成的 return、`trap` 也一样）；
+   `break`/`continue` 处同理（`continue` 反正下一轮会 reset）✓
+
+**一条省事的规则：只有"含分配"的块才生成 arena** ⇒ 绝大多数块**零开销** ✓
+（只接收提升的块也不需要自己那只 —— 需要的是**发起分配**的块 ✓）
+
+**成本**：每块一个栈槽（8 字节）+ 函数开头一次 init（一个 store）+ 每轮一次 reset（一个 store）
++ 出口的 release —— 内联后都是几条指令 ✓ 而它换来的是 **malloc/free 全消失** ✓
