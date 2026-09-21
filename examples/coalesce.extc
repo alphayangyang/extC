@@ -67,14 +67,21 @@ fn main() {
     var opt: ?i64 = some(99)
     println("字段 = ", opt ?? table[2])
 
-    /* ⑤ 右结合：`a ?? b ?? c` = `a ?? (b ?? c)` */
+    /* ⑤ **数组里的 option**：`[4]?i64` —— 第三刀（option 变枚举）之后才合法 ✓
+     * （零槽位就是 `none` ⇒ "哈希表的空位"白送）*/
+    var slots: [4]?i64
+    slots[0] = some(11)
+    slots[3] = some(44)
+    println("空槽位 = ", slots[1] ?? -1, " 有值的 = ", slots[3] ?? -1)
+
+    /* ⑥ 右结合：`a ?? b ?? c` = `a ?? (b ?? c)` */
     println("链式 = ", seven ?? ten ?? -1)
 
-    /* ⑥ **只算一边**：主体有值时，兜底那侧（带副作用的函数）根本不会跑 ✓ */
+    /* ⑦ **只算一边**：主体有值时，兜底那侧（带副作用的函数）根本不会跑 ✓ */
     println("有值时   = ", ten ?? shout())
     println("没有时   = ", seven ?? shout())
 
-    /* ⑦ 主体是调用 ⇒ 先绑一行（显式，而且一行就够）*/
+    /* ⑧ 主体是调用 ⇒ 先绑一行（显式，而且一行就够）*/
     var picked = find(ref b, 3)
     println("先绑再兜 = ", picked ?? hit)
 }

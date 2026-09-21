@@ -1,0 +1,9 @@
+// 兜底是**本帧的局部**，而结果要活着出去 ⇒ 悬垂 ⇒ 必须报错
+// （`??` 的两边都要进深度计算，只算主体那一侧就会漏风）
+struct node { value: i64  next: ?ref node }
+fn bad() -> ?ref node {
+    var f: node = { value: 9, next: null }
+    var m: ?ref node = null
+    return m ?? ref f
+}
+fn main() {}

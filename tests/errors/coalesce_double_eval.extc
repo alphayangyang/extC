@@ -1,0 +1,7 @@
+// 主体里带调用 ⇒ C 三元会让它跑两次 ⇒ 必须报错（要求先绑一行）
+fn idx() -> i64 { return 2 }
+fn main() {
+    var t: [4]?i64
+    t[0] = option<i64>::some(1)
+    println(t[idx()] ?? -1)
+}

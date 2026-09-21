@@ -1,0 +1,8 @@
+// 同上，但存进"活得更久的对象" —— 也要报错
+struct node { value: i64  next: ?ref node }
+fn bad(bx: mut ref node) {
+    var f: node = { value: 9, next: null }
+    var m: ?ref node = null
+    bx.next = m ?? ref f
+}
+fn main() {}

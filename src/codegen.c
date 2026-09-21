@@ -295,7 +295,12 @@ static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback) {
 static bool typeHasEq(Type *t) {
     if (!t) return false;
     if (t->kind == TY_ARRAY) return typeHasEq(t->inner);
-    if (t->kind == TY_BUILTIN || t->kind == TY_ENUM) return true;
+    if (t->kind == TY_BUILTIN) return true;
+    /* ⚠️ 枚举**要分开看**（2026-09-20 第三刀之后撞出来的真 bug）：
+     * 带载荷的枚举在 C 里是 `struct { tag; union }` ⇒ **没有 `==`** ✗
+     * 类型检查那边本来就禁止比它，这里必须跟它一致 —— 否则 `[4]?i64` 这种
+     * 数组类型会生成一个编不过的 `_eq` helper（gcc: invalid operands to binary ==）✗ */
+    if (t->kind == TY_ENUM) return !(t->edef && enumHasPayload(t->edef));
     return findOpMethod(t, "==", NULL) != NULL;
 }
 
@@ -799,14 +804,31 @@ static const char *genExprInner(CG *g, Expr *e) {
             Type *mt = e->u.coalesce.main->type;
             const char *m = genExpr(g, e->u.coalesce.main);
             const char *fb = genExpr(g, e->u.coalesce.fallback);
+
+            /* ⚠️ **兜底那侧显式转成结果类型**（2026-09-20 主人指出）：
+             * C 的 `?:` 会对两支做"通常算术转换" —— `(int64_t)` 和 `int` 拼一起
+             * 结果可能被悄悄**拓宽**（f32 载荷配 double 字面量就是典型）。
+             * 类型检查那边已经保证了兜底能放进结果类型，所以这只是**保险 + 自证**，
+             * 但它让生成的 C 一眼就能看出"我要的就是这个类型" ✓
+             * ⚠️ 只给**内置标量**加：C 里**不能** cast 到数组类型，
+             *    `option<[3]i32> ?? arr` 加了会直接编不过 ✗（实测踩过）*/
+            /* ⚠️ 要转的是**结果类型**（载荷 T），不是 `option<T>` 本身 ——
+             * 拿 option 的类型去转是错的（第一版就写错了，生成的 C 里根本没出现 cast ✗）*/
+            Type *rt = mt;
+            if (mt && mt->kind != TY_REF && mt->targs.len > 0)
+                rt = *(Type **)vecAt(&mt->targs, 0);
+            bool scalar = rt && (rt->kind == TY_BUILTIN || rt->kind == TY_REF);
+            const char *rhs = scalar
+                ? arenaPrintf(g->arena, "((%s)(%s))", cType(g, rt), fb) : fb;
+
             if (mt && mt->kind == TY_REF) {
                 /* `?ref T`：C 里就是普通指针 ⇒ 判空即可 ✓ */
-                return arenaPrintf(g->arena, "((%s) != ((void *)0) ? (%s) : (%s))", m, m, fb);
+                return arenaPrintf(g->arena, "((%s) != ((void *)0) ? (%s) : %s)", m, m, rhs);
             }
             bool isOpt = isProtoType(mt, "option", 1);
             const char *tag = isOpt ? "some" : "success";
-            return arenaPrintf(g->arena, "((%s).tag == %s_%s ? (%s).u.%s._0 : (%s))",
-                               m, cType(g, mt), tag, m, tag, fb);
+            return arenaPrintf(g->arena, "((%s).tag == %s_%s ? (%s).u.%s._0 : %s)",
+                               m, cType(g, mt), tag, m, tag, rhs);
         }
 
         /* `e!` —— **我签字，没有运行时痕迹** ✓
