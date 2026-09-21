@@ -1,0 +1,14 @@
+// struct 自己写了 `fn ==`，但里面比的是**带载荷枚举**字段 ⇒ 必须拒绝 ✓
+type st = | empty | holding(i32)
+struct pair {
+    a: st
+    b: i32
+    fn ==(self: ref pair, other: pair) -> bool {
+        return self.a == other.a && self.b == other.b
+    }
+}
+fn main() {
+    var p: pair = { a: st.empty, b: 1 }
+    var q: pair = { a: st.empty, b: 1 }
+    println(p == q)
+}

@@ -1,0 +1,7 @@
+// 无载荷枚举的数组可以比 ✓
+type st = | ok | warn | bad
+fn main() {
+    var a: [3]st = [st.ok, st.warn, st.bad]
+    var b: [3]st = [st.ok, st.warn, st.bad]
+    println(a == b)
+}

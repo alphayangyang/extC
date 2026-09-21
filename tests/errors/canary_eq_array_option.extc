@@ -1,0 +1,6 @@
+// `option<i64>` 是带载荷枚举 ⇒ `[4]option<i64>` 也不能比 ✓
+fn main() {
+    var a: [4]?i64
+    var b: [4]?i64
+    println(a == b)
+}

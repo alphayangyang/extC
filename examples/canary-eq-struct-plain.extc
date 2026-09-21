@@ -1,0 +1,15 @@
+// 无载荷枚举字段 + 数字 ⇒ 可以 ✓
+type st = | ok | warn
+struct pair {
+    a: st
+    b: i32
+    fn ==(self: ref pair, other: pair) -> bool {
+        return self.a == other.a && self.b == other.b
+    }
+}
+fn main() {
+    var p: pair = { a: st.ok, b: 1 }
+    var q: pair = { a: st.ok, b: 1 }
+    var r: pair = { a: st.warn, b: 1 }
+    println(p == q, " ", p == r)
+}

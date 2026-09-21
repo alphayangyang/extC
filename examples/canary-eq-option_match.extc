@@ -1,0 +1,8 @@
+// 想比 option 就 match（穷尽检查）✓
+fn main() {
+    var a: ?i64 = some(7)
+    match a {
+        some(v) => { println("有值 ", v) }
+        none    => { println("没有") }
+    }
+}

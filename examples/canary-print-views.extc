@@ -1,0 +1,11 @@
+// 视图/可空引用/嵌套视图都能打印 ✓
+struct node { value: i64  next: ?ref node }
+fn main() {
+    var c: node = { value: 3, next: null }
+    var b: node = { value: 2, next: ref c }
+    var s: slice<u8> = "abc"
+    var m: mut slice<i32> = new i32[3]
+    m[1] = 7
+    println("字符串 = ", s, " 数组 = ", m)
+    println("链表头 = ", b)
+}

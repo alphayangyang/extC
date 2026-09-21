@@ -1,0 +1,7 @@
+// 二维数组里装着带载荷枚举 ⇒ 递归派生也派生不出来 ⇒ 拒绝 ✓
+type st = | empty | holding(i32)
+fn main() {
+    var g: [2][2]st
+    var h: [2][2]st
+    println(g == h)
+}

@@ -1,0 +1,8 @@
+// 数组的 `==` 是编译器派生的；元素是**带载荷枚举**（C 里是 struct）⇒ 派生不出来 ⇒ 必须拒绝 ✓
+// （这条正是 PLAN #20 那个真 bug 的形状：以前会生成一个 gcc 编不过的 `_eq` ✗）
+type st = | empty | holding(i32)
+fn main() {
+    var a: [4]st
+    var b: [4]st
+    println(a == b)
+}
