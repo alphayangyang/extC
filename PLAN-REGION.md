@@ -30,8 +30,8 @@
 |---|---|---|---|
 | **1.1** ✅ **完成**（2026-09-21）| **算摘要**：`FuncDef` 加 `addrMask`/`contMask`/`homeAddrMask`/`homeContMask`（位 = 参数）；区分**目的地**（形参容器 vs **本帧新分配的对象**）与**来源**（地址流 / 内容流 / Fresh）| `src/ast.h`、`src/check_top.c` | **已验收**：`--dump-effects` 打印；golden **逐字节相同**（71 文件）✓ 216 测试全绿 ✓ 攻击库基线不动 ✓ **关键证据**：链表 `push` = `toParam[Addr=0 Cont=0] toHome[Addr=0 Cont=1]` ⇒ **地址流为空**（今天规则 ④ 却按非空处理 ✗）；`sneaky`（`n.owner = ref l.head`）= `toHome[Addr=1]` ⇒ 这类**必须继续挡** ✓ |
 | **1.2** | **调用点求解**：`H = ⨆(调用者侧落点, Cont 已知的 δ)`；**只在 `Addr ≠ ∅` 时**施加 `R_slot(arg) ⊒ H`（规则 ④ 收窄成"按实际流"）| `src/check_top.c`（`callHomeDepth`/`checkCallRefArgs`）、`src/check_expr.c`（三处调用点）| 攻击库**仍全挡** ✓；golden 差异只允许出现在"家 arena 实参"那一类 ✓ |
-| **1.3** | **删掉甲′**：移除 `raiseMutRefTargets`（它记的深度由 1.2 的求解替代）| `src/check_top.c`、`src/check_expr.c` | 三条 canary 里**安全的那几条变正例** ✓；攻击库不动 ✓ |
-| **1.4** | **翻正例**：把三条 canary 从 `tests/errors/` 搬到 `examples/`，各带 `// expect:` 断言；真正的 unsafe 形状（`sneaky` 系）**留在 `tests/errors/`** | `tests/`、`examples/` | 双向判据同时成立 ✓ |
+| **1.3** ✅ **完成**：`raiseMutRefTargets` 已删（深度的记账改由 1.2 的求解承担）✓ | — | 三条 canary 变正例 ✓ 攻击库不动 ✓ |
+| **1.4** ✅ **完成**：三个安全形状进 `examples/`（各带 `// expect:`，ASan 复核干净 ✓）；`tests/canary-gaps/` 已清空 ✓ | `tests/`、`examples/` | 双向判据同时成立 ✓ |
 | **1.5** | **文档**：MANUAL §7.9（asSlice 的规矩改成"由推导决定"）、PLAN #31/#34 改状态、DECISIONS 定案、DEVLOG | 文档 | `check.sh` 全绿 ✓ |
 
 ### 工程降法（§8.5）在档 1 的落地

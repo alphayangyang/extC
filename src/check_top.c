@@ -351,6 +351,48 @@ static bool stmtStoresThroughDeref(Stmt *s, FuncDef *f) {
  *     var keeper: slot                       // 深度 1
  *     { var n: i32 = 1  bind(ref keeper, ref n) }   // n 深度 2 > h=1 ⇒ 调用点报错 ✓
  */
+
+/* ⭐ 1.2a（`PLAN-REGION.md` §6）：**效果摘要的传递闭包**
+ *
+ * 为什么必须有它：`Addr` 全空才允许跳过规则 ④，可"callee 里再转一手"（调另一个
+ * 会存地址的函数）时，**直接**扫描看不到 ⇒ "Addr 全空"是**假的** ⇒ 收窄就等于放行悬垂 ✗
+ * （这条是 `tests/errors/ref_arg_too_deep` 从"必须报错"变成"通过"抓出来的 ✓）
+ *
+ * 三条纪律：
+ *   · **惰性 + memo**（`effState`）：只在真需要时算，算过就缓存 ✓
+ *   · **环保护**：正在算的（`effState == 3`）⇒ 环 ⇒ 标"不完整"（保守）✓
+ *   · **拿不准也标不完整**：`effUnknown`（有解析不出来的调用）⇒ 永远不完整 ✓
+ * ⇒ 只有 `computeEffectsTransitive` 返回 **true** 时，才允许拿摘要去"跳过"任何检查 ✓
+ */
+bool computeEffectsTransitive(Checker *c, FuncDef *f) {
+    if (!f) return false;
+    if (f->effState == 1) return f->effComplete;
+    if (f->effState == 3) { f->effComplete = false; return false; }   /* 环 ⇒ 不完整 */
+    f->effState = 3;
+    bool complete = !f->effUnknown;
+    for (size_t i = 0; i < f->callees.len; i++) {
+        FuncDef *g = *(FuncDef **)vecAt(&f->callees, i);
+        if (g == f) { complete = false; continue; }                   /* 自递归 ⇒ 保守 */
+        if (computeEffectsTransitive(c, g)) {                         /* 合并 callee 的摘要 */
+            f->addrMask     |= g->addrMask;
+            f->contMask     |= g->contMask;
+            f->homeAddrMask |= g->homeAddrMask;
+            f->homeContMask |= g->homeContMask;
+            f->otherMask    |= g->otherMask;
+            f->addrFromLocal |= g->addrFromLocal;
+        } else {
+            complete = false;
+        }
+    }
+    f->effComplete = complete;
+    f->effState = 1;
+    if (getenv("EXTC_DUMP_EFFECTS"))
+        fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%x Cont=0x%x] toHome[Addr=0x%x Cont=0x%x] other=0x%x\n",
+                f->name, (int)f->effComplete, f->addrMask, f->contMask,
+                f->homeAddrMask, f->homeContMask, f->otherMask);
+    return complete;
+}
+
 void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int homeDepth,
                        int line, const char *fname) {
     if (params->len != args->len) return;
@@ -366,7 +408,10 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * ⇒ 纪律：**摘要完整之前，规则 ④ 保持保守**（宁可误拒，不可漏 UB）✓
      * 下一步（PLAN-REGION 1.2b）：照 §8.5 做**惰性传递闭包**（memo + 环保护），
      * 并且只在"摘要可判为完整"时才跳过本规则 ✓ */
-    (void)callee;
+    /* ⭐ 1.2a：**只有摘要被证明完整**时，才允许按"没有地址流"跳过下面的保守检查 ✓ */
+    if (callee && computeEffectsTransitive(c, callee)
+        && callee->addrMask == 0 && callee->homeAddrMask == 0
+        && !callee->addrFromLocal && callee->otherMask == 0) return;
     int h;
     if (homeDepth != 0) h = (homeDepth < 0) ? 0 : homeDepth;
     else h = (c->curFunc && c->curFunc->needsHome) ? 0 : c->scopes.len;
@@ -414,6 +459,13 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params) {
         Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
         int d = placeDepth(c, place);   /* 参数 = 0；局部 = 它的块深度 ✓ */
         if (d == 0) d = -1;             /* 参数那边 ⇒ 传我的家 ✓ */
+        else {
+            /* ⭐ 1.2b（ARENA-FORMAL §9）：这个实参**会被搬出本函数**吗？会 ⇒ 家 arena
+             * 必须活得比"它的内容可能去的任何地方"更久 ⇒ 传**我的家** ✓
+             * 不会 ⇒ 保持实参所在的那只 arena（PLAN #24 的紧致性不丢 ✓）*/
+            const char *rn = placeRootName(place);
+            if (rn && isEscapeeName(c, rn)) d = -1;
+        }
         if (best == 0 || d < best) best = d;
     }
     return best;
@@ -527,7 +579,7 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
         /* 同上：循环条件不算逃逸 ✓ */
         grew |= markNamesInStmt(c, f, s->u.whiles.body);
         return grew;
-    case ST_EXPR: return markNamesInExpr(c, s->u.expr.expr);
+    case ST_EXPR: return false;   /* 表达式语句里的名字**不算**逃逸 ✓（第一版漏改 ⇒ E 过大 ✗）*/
     case ST_BLOCK:
         for (size_t k = 0; k < s->u.block.stmts.len; k++)
             grew |= markNamesInStmt(c, f, *(Stmt **)vecAt(&s->u.block.stmts, k));
@@ -623,15 +675,27 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
         }
         return;
     }
-    /* 内容流：存「从形参读出来的指针」⇒ 需要 ρ_j ⊒ 目的地所在区域 */
+    /* 形参来的值：**必须分清"指针本身"还是"从容器里读出来的指针"** ✓
+     *   · `s.r = target`（`target` 是**指针形参**）⇒ 存进去的是**调用者的指针**
+     *     ⇒ 这是**地址流**：调用点必须保证"它指的东西"活得 ≥ 目的地 ✓
+     *   · `n.next = l.head`（从形参的**内容里**读出来）⇒ **内容流** ✓
+     * ⚠️ 第一版把两者都当内容流 ⇒ tests/errors/ref_arg_too_deep 从"必须报错"变成**通过** ✗
+     *    （双向判据抓的：这一格错了，收窄规则 ④ 就等于放行悬垂）✓ */
     {
         int j = paramIndex(f, placeRootName(e));
         if (j >= 0) {
-            /* ⚠️ 标量元素不带引用 ⇒ 不构成寿命约束（不然 varArray<i32>::push 会假报）*/
+            /* ⚠️ 标量不带引用 ⇒ 不构成寿命约束（不然 varArray<i32>::push 会假报）*/
             bool carrier = (c && e->type) ? typeContainsRef(c->tt, e->type) : true;
+            bool isPtr = (e->kind == EX_IDENT) && e->type &&
+                         (e->type->kind == TY_REF || ttIsViewType(e->type));
             if (carrier) {
-                if (intoHome) f->homeContMask |= (1u << j);
-                else if (i >= 0) f->contMask |= (1u << j);
+                if (isPtr) {                      /* ① 地址流：调用者的指针被存进去了 */
+                    if (intoHome) f->homeAddrMask |= (1u << j);
+                    else if (i >= 0) f->addrMask |= (1u << j);
+                } else {                          /* ② 内容流：从容器里读出来的指针 */
+                    if (intoHome) f->homeContMask |= (1u << j);
+                    else if (i >= 0) f->contMask |= (1u << j);
+                }
             }
             return;
         }
@@ -695,6 +759,8 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
 /* 表达式里"藏着"的调用：callee 的效果靠摘要传递（§8.5 的调用图 / SCC）✓ */
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!e) return;
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !e->func)
+        f->effUnknown = true;   /* 解析不出来 ⇒ 摘要永远不完整 ⇒ 保守 ✓ */
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func) {
         bool seen = false;
         for (size_t k = 0; k < f->callees.len; k++)

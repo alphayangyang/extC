@@ -33,6 +33,7 @@ beb89aedff3d0801911955ea1078e2d6  examples_globals
 8ab847b412eb4c3624940042f0772528  examples_gomoku-board
 c53cad0984849f3af80f9e240202b9a0  examples_growth-factor
 9f463721014fe5ae7693a581a838d62f  examples_hello
+f0518c411c66de34aec1d84103c26ff2  examples_list-return
 22fa85097e3a5569c71e2644aed43a3f  examples_match
 5206d911bb4923684c6065e3571a3015  examples_mut-ref
 2143f525c677b1d71901a932fe4594bf  examples_mut-views
@@ -59,8 +60,10 @@ cca0d8967a24f5b8d1eefe074235abed  examples_retarget
 b2a024f00d350d136f4e9671e82ba624  examples_structs
 29a6c8638eb4cf1206df6bb87823aec0  examples_tour
 19c1d89d9deafffbd2b29d8132a76fa4  examples_types
+df7d7a065c91a0212f96846d63b0116e  examples_varArray-asSlice-return
 bd157d4946d23a9a9dd49ebfe3c26bcc  examples_varArray-asSlice
 835f663fcc05aca57eb43ff265a195ba  examples_varArray-outparam
+a9ec19a69d3c7426e00f1135be3ef915  examples_varArray-return
 6ea9bb8e2cbfc6d748ed76175e7cda82  examples_varArray
 bddfb90be24605677ece7b2c0958a107  bench_heavy_bt
 69d64c4d25daf5b1513ff39e11f9ea74  bench_heavy_mb

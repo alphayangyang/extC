@@ -286,6 +286,12 @@ struct FuncDef {
     unsigned    addrMask, contMask, otherMask;      /* 目的地 = 形参所指的容器 */
     unsigned    homeAddrMask, homeContMask;         /* 目的地 = 本函数**新分配**的对象（家内存）*/
     unsigned    freshCount;                         /* 只是统计：这次收集看到几个 fresh 局部 */
+    /* ⭐ 1.2a（PLAN-REGION §6）：摘要的**传递闭包**状态
+     *   0 = 还没算，1 = 算完了（effComplete 说它可不可信），3 = **正在算**（环保护）
+     *   effUnknown：有没有"解析不出来"的调用（那摘要就永远不完整 ⇒ 保守）✓ */
+    int         effState;
+    bool        effComplete;
+    bool        effUnknown;
 
     bool        addrFromLocal;
     Vec         callees;      /* FuncDef*：它调了谁（画调用图用，§8.5 的 SCC）*/

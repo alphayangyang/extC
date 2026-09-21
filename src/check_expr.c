@@ -1067,6 +1067,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Param *selfP = *(Param **)vecAt(&f->params, 0);
                 if (selfP->type && selfP->type->kind == TY_REF && selfP->type->mut) {
                     int d = placeDepth(c, e->u.method.recv);
+                    /* ⭐ 1.2b：`self: mut ref` 这条分支**不经过** callHomeDepth ⇒ 这里也要看 E ✓
+                     * （第一版漏了它 ⇒ ASan 抓到 use-after-free ✗）*/
+                    const char *rrn = placeRootName(e->u.method.recv);
+                    if (d != 0 && rrn && isEscapeeName(c, rrn)) d = -1;
                     e->homeDepth = (d == 0) ? -1 : d;
                 } else {
                     e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params);
