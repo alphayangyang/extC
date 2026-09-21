@@ -935,7 +935,12 @@ static Type *checkValue(Checker *c, Expr *e) {
 /* 实参 / 字段初值：**期望类型是引用时不自动解引用** ——
  * 那里是「放一个引用进去」（`{ data: ref n, ... }`、`f(ref c)`），不是取它的值。
  * 其余情况按值位置处理（形状 3）。 */
+static void desugarBareCtor(Checker *c, Expr *e, Type *want);   /* 定义在后面 */
+
 static Type *checkInto(Checker *c, Type *want, Expr *e) {
+    /* 期望类型是 `option<...>` / `result<...>` ⇒ 裸写构造器也认 ✓
+     * （`f(some(3))`、`var x: ?i32 = some(3)` —— 类型从上下文来，不用写全名）*/
+    if (want) desugarBareCtor(c, e, want);
     Type *got = checkExpr(c, e);
     /* 同样：**显式解引用** —— 期望的不是引用却给了引用 ⇒ 报错 ✓ */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
@@ -2402,6 +2407,7 @@ static void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
 
+            desugarBareCtor(c, s->u.assign.value, tt_);
             adoptContextType(s->u.assign.value, tt_);
             Type *vt = checkMaybeTry(c, s->u.assign.value);
 
