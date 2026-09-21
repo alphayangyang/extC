@@ -73,6 +73,11 @@ typedef enum {
     EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
     EX_DEREF,     /* `*p` —— 显式解引用：读=p指的值，写=p指的地方 */
     EX_ENUMVAL,   /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
+    EX_COALESCE,  /* `a ?? b` —— **可能没有就兜底**（`?` 那一族的第三个记号）：
+                   *   `opt ?? 兜底`   ⇒ 有就给值，没有就给兜底
+                   *   `r ?? 兜底`     ⇒ 成功给值，失败给兜底
+                   *   `p ?? q`（?ref）⇒ null 就给另一个引用
+                   * 语义 = `match a { 有(v) => v  _ => b }`，但**只算一边** ✓ */
     EX_SIGN,      /* `e!` —— **我签字**（定案 1.3 的 `!`）："
                    *   `opt!` / `r!`  ⇒ 直接给我载荷（编译期**不检查**有没有）；
                    *   `p!`（`?ref T`）⇒ 我知道非空，给我 `ref T` ✓
@@ -128,7 +133,8 @@ struct Expr {
         struct { Vec elems; bool rest; } arraylit;         /* elems: Expr*；rest = 末尾有 ... */
         struct { Expr *operand; } ref;
         struct { Expr *operand; } deref;
-        struct { Expr *operand; } sign;   /* `e!` —— 我签字 */        /* 关联函数调用：`typeName<targs>::name(args)`
+        struct { Expr *operand; } sign;   /* `e!` —— 我签字 */
+        struct { Expr *main, *fallback; } coalesce;   /* `a ?? b` */        /* 关联函数调用：`typeName<targs>::name(args)`
          * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
         struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
         struct { Expr *operand; } try_;   /* `e?` */

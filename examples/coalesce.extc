@@ -1,0 +1,80 @@
+/* `??` —— **可能没有就兜底**（`?` 那一族的第三个记号）
+
+ *   `opt ?? 兜底`    有值就给值，没有就给兜底
+ *   `r ?? 兜底`      成功给值，失败给兜底
+ *   `p ?? q`（?ref） null 就给另一个引用
+ *
+ * 语义 = `match 主体 { 有(v) => v  _ => 兜底 }`，但**只算一边** ✓
+ * （生成的是 C 的三元运算符 ⇒ 有值时兜底那侧根本不求值 —— 副作用不会白跑）
+ *
+ * ⚠️ 一条位置规则：**主体必须没有副作用**（`??` 生成的三元里主体出现两次，
+ *    `f() ?? -1` 会让 f() 跑两遍）⇒ 主体是调用时先 `let r = f()` 一行 ✓
+ *    这不是妥协，是"不许偷偷改变调用次数"的代价，报错信息会直接教他改。
+ */
+
+struct node {
+    value: i64
+    next: ?ref node
+}
+
+fn find(head: ?ref node, want: i64) -> ?ref node {
+    var cur: ?ref node = head
+    while cur != null {
+        if cur.value == want { return cur }
+        cur = cur.next
+    }
+    return null
+}
+
+fn half(n: i64) -> ?i64 {
+    if n % 2 != 0 { return none }
+    return some(n / 2)
+}
+
+fn checked(n: i64) -> result<i64, i32> {
+    if n < 0 { return failure(7) }
+    return success(n * 2)
+}
+
+fn shout() -> i64 {
+    println("（兜底那侧被求值了）")
+    return -1
+}
+
+fn main() {
+    /* ① option：一行代替昨天那个五行小函数 `orElse` ✓ */
+    var ten = half(10)
+    var seven = half(7)
+    println("half(10) ?? -1 = ", ten ?? -1)
+    println("half(7)  ?? -1 = ", seven ?? -1)
+
+    /* ② result：失败就给兜底 */
+    var good = checked(3)
+    var bad = checked(-3)
+    println("checked(3)  ?? -1 = ", good ?? -1)
+    println("checked(-3) ?? -1 = ", bad ?? -1)
+
+    /* ③ `?ref`：null 就换成另一个引用（考场上"找不到就用哨兵"的写法）*/
+    var c: node = { value: 3, next: null }
+    var b: node = { value: 2, next: ref c }
+    var hit  = find(ref b, 2)
+    var miss = find(ref b, 99)
+    var p: ?ref node = miss ?? hit
+    println("兜底后的值 = ", p!.value)
+
+    /* ④ 主体可以是字段/下标（纯的 ✓） */
+    var table: [4]i64 = [10, 20, 30, 40]
+    var opt: ?i64 = some(99)
+    println("字段 = ", opt ?? table[2])
+
+    /* ⑤ 右结合：`a ?? b ?? c` = `a ?? (b ?? c)` */
+    println("链式 = ", seven ?? ten ?? -1)
+
+    /* ⑥ **只算一边**：主体有值时，兜底那侧（带副作用的函数）根本不会跑 ✓ */
+    println("有值时   = ", ten ?? shout())
+    println("没有时   = ", seven ?? shout())
+
+    /* ⑦ 主体是调用 ⇒ 先绑一行（显式，而且一行就够）*/
+    var picked = find(ref b, 3)
+    println("先绑再兜 = ", picked ?? hit)
+}

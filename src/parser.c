@@ -723,7 +723,25 @@ static Stmt *parseWhile(Parser *p) {
 
 /* ================================================================ 表达式 */
 
-static Expr *parseExpr(Parser *p) { return parseOr(p); }
+/* `a ?? b` —— 最低优先级的二元运算，**右结合**（`a ?? b ?? c` = `a ?? (b ?? c)`）
+ * 位置规则在 check 里查（主体必须是 option / result / `?ref T`）✓ */
+static Expr *parseCoalesce(Parser *p) {
+    Expr *l = parseOr(p);
+    if (!l) return NULL;
+    while (at(p, "??")) {
+        Token *op = take(p);
+        skipNl(p);
+        Expr *r = parseCoalesce(p);        /* 右结合 */
+        if (!r) return NULL;
+        Expr *e = exprNew(p->arena, EX_COALESCE, op->line);
+        e->u.coalesce.main = l;
+        e->u.coalesce.fallback = r;
+        l = e;
+    }
+    return l;
+}
+
+static Expr *parseExpr(Parser *p) { return parseCoalesce(p); }
 
 static Expr *parseOr(Parser *p) {
     Expr *e = parseAnd(p);

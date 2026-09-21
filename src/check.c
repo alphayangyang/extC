@@ -431,6 +431,29 @@ static bool typeLacksZeroValue(TypeTable *tt, Type *t) {
     return false;
 }
 
+/* `??` 生成的是 C 的三元运算符，**主体在 C 里出现两次** ⇒ 主体必须**没有副作用**，
+ * 否则 `f() ?? -1` 会让 f() 跑两遍 ✗
+ * 判据是保守的**语法**检查：树里只要出现调用（或 `?` / `??`）就不许 —— 不猜纯不纯 ✓
+ * （宁可让他先 `let r = f()` 一行，也不偷偷改变调用次数。）*/
+static bool repeatablePure(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: case EX_NULL:
+    case EX_IDENT:
+    case EX_ENUMVAL:
+        return true;
+    case EX_FIELD: return repeatablePure(e->u.field.obj);
+    case EX_SIGN:  return repeatablePure(e->u.sign.operand);
+    case EX_DEREF: return repeatablePure(e->u.deref.operand);
+    case EX_INDEX: return repeatablePure(e->u.index.obj) &&
+                          repeatablePure(e->u.index.index);
+    case EX_UN:    return repeatablePure(e->u.un.operand);
+    case EX_BIN:   return repeatablePure(e->u.bin.left) &&
+                          repeatablePure(e->u.bin.right);
+    default:       return false;   /* 调用 / 方法 / `?` / `??` / 字面量构造 … 一律不行 */
+    }
+}
+
 /* 能取引用的东西：变量和字段 */
 static bool isLvalue(Expr *e) {
     /* `*p` 也是**地方**（p 指的那个地方）✓ */
@@ -596,6 +619,11 @@ static int exprRefDepth(Checker *c, Expr *e) {
         /* `p!` 只是"把可空的说法去掉"，指的还是同一块地方 ⇒ 深度跟着主体 ✓ */
         d = exprRefDepth(c, e->u.sign.operand);
         break;
+    case EX_COALESCE:
+        /* 两边都可能成为结果 ⇒ 取**最深**的那个（保守 = 安全方向）✓ */
+        d = maxInt(exprRefDepth(c, e->u.coalesce.main),
+                   exprRefDepth(c, e->u.coalesce.fallback));
+        break;
     case EX_SLICE:
         d = placeDepth(c, e->u.slice.obj);
         break;
@@ -688,6 +716,10 @@ static bool exprBorrowed(Checker *c, Expr *e) {
     case EX_SIGN:
         /* 签字只是换个说法，来源没变 ⇒ "借来的"这条照样跟着走 ✓ */
         return exprBorrowed(c, e->u.sign.operand);
+    case EX_COALESCE:
+        /* 两边都可能是结果 ⇒ 任一边借来的就算借来的 ✓ */
+        return exprBorrowed(c, e->u.coalesce.main) ||
+               exprBorrowed(c, e->u.coalesce.fallback);
     case EX_REF:
         /* ⚠️ **`ref *p` 是洗白路径**（2026-09-20 攻击测试打出来）：
          * `b.r = ref *p` —— 重新取一次引用，就看不出它来自参数了 ✗
@@ -1874,6 +1906,47 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *r = ttRef(tt, elem);
             r->mut = true;                       /* 刚分配的地方当然可写 */
             return r;
+        }
+
+        case EX_COALESCE: {
+            /* `a ?? b` —— **可能没有就兜底**。语义 = `match a { 有(v) => v  _ => b }`，
+             * 但**只算一边**：有值时 b 不求值 ✓（跟 `&&` / `||` 的短路同一件事）*/
+            Type *mt = checkExpr(c, e->u.coalesce.main);
+            if (ttIsError(mt)) { checkExpr(c, e->u.coalesce.fallback); return ttError(tt); }
+
+            bool isOpt = isProtoType(mt, "option", 1);
+            bool isRes = isProtoType(mt, "result", 2);
+            Type *want = NULL;
+            if (isOpt || isRes) {
+                want = *(Type **)vecAt(&mt->targs, 0);          /* 载荷类型 T */
+            } else if (mt->kind == TY_REF && mt->nullable) {
+                want = mt;                                       /* `?ref T` ⇒ 兜底也是引用 */
+            } else {
+                /* ⚠️ 位置规则：`??` 只对"可能没有"的东西有意义 —— 说得清楚、报得响 ✓ */
+                checkExpr(c, e->u.coalesce.fallback);
+                ckError(c, e->line,
+                        "`??` means \"if there is nothing, use this instead\", so the left"
+                        " side must be an `option`, a `result`, or a `?ref T`",
+                        "left of `??` is `%s`, which always has a value", typeStr(c, mt));
+                return ttError(tt);
+            }
+
+            /* ⚠️ **主体只许是"没有副作用的东西"**：`??` 生成 C 三元，主体会出现两次。
+             * 这一条同时是"不用前缀机制"的代价与担保 —— 位置规则说得清、报得响 ✓ */
+            if (!repeatablePure(e->u.coalesce.main)) {
+                checkExpr(c, e->u.coalesce.fallback);
+                ckError(c, e->line,
+                        "`??` may evaluate its left side twice, so bind it to a name first",
+                        "the left side of `??` is not side-effect free -- write"
+                        " `let r = <expr>` and then `r ?? ...`");
+                return ttError(tt);
+            }
+
+            adoptContextType(e->u.coalesce.fallback, want);
+            Type *ft = checkInto(c, want, e->u.coalesce.fallback);
+            checkAssignable(c, want, ft, e->u.coalesce.fallback, "the right side of `??`");
+            e->type = want;
+            return want;
         }
 
         case EX_SIGN: {

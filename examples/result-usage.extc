@@ -68,14 +68,6 @@ fn describe(e: gameError) -> slice<u8> {
     return "那格已经有子了"
 }
 
-// `option` 的"有就用、没有就兜底"
-fn orElse(o: option<i32>, fallback: i32) -> i32 {
-    match o {
-        some(v) => { return v }
-        none    => { return fallback }
-    }
-}
-
 // `result` 的"成不成功"
 fn isOk(r: result<unit, gameError>) -> bool {
     match r {
@@ -119,11 +111,12 @@ fn main() -> i32 {
     let r4 = placeRow(ref b, 7, 1)
     println("整行落子？   ", isOk(r4))                // true
 
+    // `??` 就是"有就用、没有就兜底"，一句话，而且不用自己包函数 ✓
     let c = at(ref b, 3, 3)
-    println("(3,3) 有值？ ", orElse(c, -1))           // 1（有就给你）
+    println("(3,3) 有值？ ", c ?? -1)                 // 1（有就给你）
 
     let e = at(ref b, 99, 99)
-    println("(99,99) 兜底 ", orElse(e, -1))           // -1（没有就用兜底）
+    println("(99,99) 兜底 ", e ?? -1)                 // -1（没有就用兜底）
 
     // 第 7 行整行都满了 ⇒ 「找不到」是**正常结果**，不是错误 —— 就地 match 处理 ✓
     // （写 `orElse` 那种小函数是按类型写的；泛型的辅助函数等"泛型自由函数/枚举方法"

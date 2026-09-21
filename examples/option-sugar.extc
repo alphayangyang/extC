@@ -29,30 +29,21 @@ fn pick(a: ?i64, b: ?i64) -> ?i64 {
     }
 }
 
-/* 想短一点就自己包一个 —— 这层故意留在用户代码里（prelude 不给 unwrap）。
- * ⚠️ 辅助函数是**按类型**写的：泛型的辅助函数要等"泛型自由函数 / 枚举方法"（PLAN #16）*/
-fn orElse(o: ?i64, fallback: i64) -> i64 {
-    match o {
-        some(v) => { return v }
-        none    => { return fallback }
-    }
-}
-
-fn orElseI32(o: ?i32, fallback: i32) -> i32 {
-    match o {
-        some(v) => { return v }
-        none    => { return fallback }
-    }
-}
+/* ⭐ 第三刀之后 `.valueOr` 没了，**但不需要自己包小函数** —— 用 `??` ✓
+ * （`opt ?? 兜底` 就是它，而且是编译器提供的、对所有 T 通用 ——
+ *   所以"泛型方法 / 泛型自由函数"那一仗根本不用打 ✓）*/
 
 fn main() {
     /* 带标注的 var：裸构造器也认 ✓ */
     var r: ?i64 = some(21)
-    println("r = ", orElse(r, -1))
+    println("r = ", r ?? -1)
 
-    /* 实参位置：类型从参数来 ✓ */
-    println("pick = ", orElse(pick(none, some(9)), -1))
-    println("pick = ", orElse(pick(some(4), none), -1))
+    /* 实参位置：类型从参数来 ✓
+     * ⚠️ 结果是**调用**时要先绑一行（`??` 会让主体出现两次，不许偷偷调用两次）*/
+    var p1 = pick(none, some(9))
+    var p2 = pick(some(4), none)
+    println("pick = ", p1 ?? -1)
+    println("pick = ", p2 ?? -1)
 
     match half(10) {
         some(v) => { println("half(10) = ", v) }
@@ -65,7 +56,7 @@ fn main() {
 
     /* 结构体字段是 `?i32` ⇒ 零值是"没有"（option 本身有零值）✓ */
     var c: config
-    println("默认 = ", orElseI32(c.retries, -1), " / ", orElseI32(c.limit, -1))
+    println("默认 = ", c.retries ?? -1, " / ", c.limit ?? -1)
     c.retries = some(3)          // 赋值位置：类型从目标来 ✓
     match c.retries {
         some(v) => { println("retries = ", v) }
@@ -74,5 +65,5 @@ fn main() {
 
     /* 显式写全类型也永远可以（不靠上下文猜）✓ */
     var full: ?i64 = option<i64>::some(5)
-    println("full = ", orElse(full, -1))
+    println("full = ", full ?? -1)
 }

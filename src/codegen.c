@@ -788,6 +788,27 @@ static const char *genExprInner(CG *g, Expr *e) {
         case EX_REF:
             return arenaPrintf(g->arena, "&(%s)", genExpr(g, e->u.ref.operand));
 
+        /* `a ?? b` —— 可能没有就兜底。
+         *
+         * ⚠️ **主体必须是"地方"**（变量/字段/下标）⇒ 生成 C 的三元运算符，
+         * **不需要"前缀"机制**（`(x.tag == t_some ? x.u.some._0 : b)`）。
+         * 主体是调用/字面量时（`f() ?? -1`）check 已经报错并教他先绑一个 `let` ——
+         * 那条路要往语句前面吐临时变量（`?` 用的是同一套），是**下一步**的事 ✓
+         * 顺带的好处：三元**只算一边** ⇒ 兜底表达式的副作用不会白跑 ✓ */
+        case EX_COALESCE: {
+            Type *mt = e->u.coalesce.main->type;
+            const char *m = genExpr(g, e->u.coalesce.main);
+            const char *fb = genExpr(g, e->u.coalesce.fallback);
+            if (mt && mt->kind == TY_REF) {
+                /* `?ref T`：C 里就是普通指针 ⇒ 判空即可 ✓ */
+                return arenaPrintf(g->arena, "((%s) != ((void *)0) ? (%s) : (%s))", m, m, fb);
+            }
+            bool isOpt = isProtoType(mt, "option", 1);
+            const char *tag = isOpt ? "some" : "success";
+            return arenaPrintf(g->arena, "((%s).tag == %s_%s ? (%s).u.%s._0 : (%s))",
+                               m, cType(g, mt), tag, m, tag, fb);
+        }
+
         /* `e!` —— **我签字，没有运行时痕迹** ✓
          *   `opt!` / `r!` ⇒ 直接取载荷（union 成员），**不判 tag**
          *   `p!`（`?ref T`）⇒ C 里就是那个指针本身，一个字都不用生成 ✓ */
