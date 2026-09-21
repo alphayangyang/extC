@@ -10,10 +10,6 @@ Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
 void recordNewSizeCheck(Checker *c, Type *t, int line);   /* 同上 */
 bool typeContainsRef(TypeTable *tt, Type *t);   /* 同上 */
 int callHomeDepth(Checker *c, Vec *args, Vec *params);   /* 定义在后面 */
-void markCallHomeIfEscaping(Checker *c, Expr *v, int at);   /* 定义在后面 */
-void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth,
-                             int line, const char *fname);   /* 同上 */
-
 bool isNarrowed(Checker *c, const char *cname) {
     if (!cname) return false;
     for (size_t i = 0; i < c->narrow.len; i++)

@@ -1,27 +1,25 @@
-/* ⚠️ tests/canary-gaps/（**甲′ 的假阳性**，见 PLAN #34）—— 故意不进套件
- *
- * 这个形状**其实安全**（容量够 ⇒ 全程不扩容 ⇒ buffer 一直待在"家" arena 里 ✓），
- * 但甲′ 是**静态保守**的：`v.push(…)` 这一刀"可能会分配"（`push → grow → new`），
- * 检查器不知道"运行时其实没扩容" ⇒ 把 v 的深度抬到 1 ⇒ `return v.asSlice()` 被挡住 ✗
- *
- * 两条**能过**的写法：
- *   · 在**拥有它的作用域**里建，用 `mut ref` 传下去填（examples/varArray-outparam.extc ✓）
- *   · 直接拿 `new` 出来的缓冲区切片（`new` 在"有家函数"里进的是家 arena ⇒ 深度 0 ✓）
- *     —— 见 examples/escape-promotion.extc ✓
- */
-/* 对照：**没扩容**的容器，它的 buffer 在"这个函数的家 arena"里（`withCap` 走的是家）✓
- * ⇒ 把视图返回出去是**合法且安全**的（活得比本帧久 ✓）
- * ⇒ 甲′ 不会误报它（这正是"假阳性"的对照）✓
- * 一旦中途扩容（push 超过 cap），存储就落到本帧的块 arena 里 ⇒ 返回立刻变成编译错误 ✓
- * （见 tests/errors/canary_return_asSlice_after_grow.extc）✓
- */
+// expect: 拿到的 = [7, 8]
+/* 「把容器里那块存储**当视图借出去**（返回 `slice<T>`）」—— 安全形状 ✓
+ * 扩容过的容器也能返回：因为扩容的存储跟着"逃逸需求"落在了调用者的家 arena 里 ✓ */
 fn build() -> slice<i32> {
-    var v: varArray<i32> = varArray<i32>::withCap(4)   // 容量够 ⇒ 全程不扩容 ✓
+    var v: varArray<i32> = varArray<i32>::withCap(0)   // 会扩容 ✓
     v.push(7)
     v.push(8)
     return v.asSlice()
 }
 
+fn churn() {
+    var k: i32 = 0
+    while k < 8 {
+        var w: varArray<i32> = varArray<i32>::withCap(500)
+        w.push(k)
+        k = k + 1
+    }
+}
+
 fn main() {
-    println("拿到的 = ", build(), "  size = ", build().len)
+    var s: slice<i32> = build()
+    churn()
+    println("拿到的 = ", s)
+    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
 }

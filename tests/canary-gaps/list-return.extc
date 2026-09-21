@@ -1,0 +1,44 @@
+// expect: 求和 = 30  （20 + 10 + 0）
+/* 「往本地容器里造链表、再返回」—— PLAN #31 的第二个安全形状 ✓
+ * 判据：内容落在**调用者的 arena**（家）里 ⇒ 活得比 `build` 的帧久 ✓
+ * 用 churn() 真踩内存 + ASan 验过：没有 UAF ✓（修之前打印 `0`，静默错数据 ✗）*/
+struct node { value: i64  next: ?ref node }
+struct list { head: ?ref node }
+
+fn push(l: mut ref list, v: i64) {
+    var n: mut ref node = new node
+    n.value = v
+    n.next = l.head
+    l.head = n
+}
+
+fn build() -> list {
+    var l: list = { head: null }
+    var i: i64 = 0
+    while i < 3 { push(ref l, i * 10)  i = i + 1 }
+    return l
+}
+
+fn sumNodes(head: ?ref node) -> i64 {
+    var t: i64 = 0
+    var c: ?ref node = head
+    while c != null { t = t + c.value  c = c.next }
+    return t
+}
+
+fn churn() {
+    var k: i32 = 0
+    while k < 8 {
+        var w: varArray<i64> = varArray<i64>::withCap(500)
+        w.push(i64(k))
+        k = k + 1
+    }
+}
+
+fn main() {
+    var l: list = build()
+    churn()
+    println("求和 = ", sumNodes(l.head))
+    var probe: varArray<i64> = varArray<i64>::withCap(1)
+    println("逼出 option_i64: ", probe.get(0) ?? probe.size())
+}

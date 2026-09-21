@@ -7,6 +7,10 @@
 
 #include <stdlib.h>   /* getenv（EXTC_DUMP_EFFECTS 这个调试开关）*/
 
+/* 前向声明：下面这几件在"效果摘要"和"E 分析"里互相引用 ✓ */
+static int  paramIndex(FuncDef *f, const char *name);
+bool isEscapeeName(Checker *c, const char *n);
+
 /* ---------------------------------------------------------------- 顶层 */
 
 static void resolveSignature(Checker *c, FuncDef *f) {
@@ -293,7 +297,7 @@ static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body); }
 /* 目标是"参数那边"的地方吗？`*head = cell` / `l.head = cell` / `l.buf[i] = cell` 都算 ✓
  * （`?ref node` 这种引用型变量没法再取 `ref`，所以出参惯用"包一层 struct"——
  *   而 `varArray<T>` 本来就是这个形状 ✓）*/
-static const char *placeRootName(Expr *e) {
+const char *placeRootName(Expr *e) {
     while (e) {
         if (e->kind == EX_IDENT) return e->u.ident.name;
         if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
@@ -347,9 +351,22 @@ static bool stmtStoresThroughDeref(Stmt *s, FuncDef *f) {
  *     var keeper: slot                       // 深度 1
  *     { var n: i32 = 1  bind(ref keeper, ref n) }   // n 深度 2 > h=1 ⇒ 调用点报错 ✓
  */
-void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth, int line,
-                             const char *fname) {
+void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int homeDepth,
+                       int line, const char *fname) {
     if (params->len != args->len) return;
+    /* ⭐ 档1（引理 1 / ARENA-FORMAL §3.4）：**只有真的发生"地址流"时**，才需要
+     * 要求实参活得 ≥ 家 arena ✓
+     *   · 效果摘要 Addr 全空 ⇒ 被调者从没存过 `&实参` ⇒ 这条约束**不存在** ✓
+     *     （这就是 `push` 那类"只往容器里塞新东西"的 callee —— 今天却按最坏情况处理 ✗）
+     *   · 拿不准（摘要不完整 / `otherMask` 非空）⇒ 退回今天那条保守规则 ✓ */
+    /* ⚠️⚠️ **这里曾经收窄过**（"Addr 全空就跳过规则 ④"）—— 被双向判据当场打回 ✗
+     * 证据：tests/errors/ref_arg_too_deep 从"必须报错"变成**通过** ✗
+     * 根因：效果摘要**还没有传递闭包**（callee 里再转一手就漏）⇒ 摘要不完整时
+     * "Addr 全空"是**假的** ⇒ 收窄就等于放行悬垂 ✗
+     * ⇒ 纪律：**摘要完整之前，规则 ④ 保持保守**（宁可误拒，不可漏 UB）✓
+     * 下一步（PLAN-REGION 1.2b）：照 §8.5 做**惰性传递闭包**（memo + 环保护），
+     * 并且只在"摘要可判为完整"时才跳过本规则 ✓ */
+    (void)callee;
     int h;
     if (homeDepth != 0) h = (homeDepth < 0) ? 0 : homeDepth;
     else h = (c->curFunc && c->curFunc->needsHome) ? 0 : c->scopes.len;
@@ -455,6 +472,136 @@ static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
     }
 }
 
+
+/* ⭐ 档1（`PLAN-REGION.md` 步骤 1.2 / `ARENA-FORMAL` §3.4、§9）：
+ * **E 分析 —— 哪些局部会被"搬出本函数"？**
+ *
+ * 为什么要它：被调者分配出来的东西住在"家" arena 里，而**家 arena 必须活得比
+ * "这个容器的内容可能去的任何地方"更久** ✗（§3.2 的 C3/C4）
+ * ⇒ 调用点必须知道"这个实参会不会逃出我这个函数" ✓
+ *
+ * 规则（保守方向 = **宁可多算**，多算只会费内存，漏算才会悬垂 ✗）：
+ *   · `return e`：`e` 里出现的**每个名字**都进 E（不管它是不是真被拷出去）✓
+ *   · `x = e` / `var x = e` 且 `x ∈ E`：`e` 里的名字进 E（传递）✓
+ *   · 存进"形参所指的容器"里的东西：名字进 E（那只容器活得更久）✓
+ * 不动点：反复走，直到集合不再长大 ✓（函数体大小有限 ⇒ 一定停）
+ */
+bool isEscapeeName(Checker *c, const char *n) {
+    if (!n) return false;
+    for (size_t i = 0; i < c->escapees.len; i++)
+        if (strcmp(*(const char **)vecAt(&c->escapees, i), n) == 0) return true;
+    return false;
+}
+static bool addEscapee(Checker *c, const char *n) {
+    if (!n || isEscapeeName(c, n)) return false;
+    *(const char **)vecPush(&c->escapees) = n;
+    return true;
+}
+
+/* 把表达式里出现的名字加进 E；"真的加了新名字"返回 true（给不动点用）*/
+static bool markNamesInExpr(Checker *c, Expr *e);
+static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
+    if (!s) return false;
+    bool grew = false;
+    switch (s->kind) {
+    case ST_RETURN:
+        return markNamesInExpr(c, s->u.ret.value);          /* 交出去的都算逃逸 ✓ */
+    case ST_VAR:
+        /* ⚠️ 只在"声明的这个名字本身会逃逸"时才传递（第一版无条件传递 ⇒ E 变成
+         * "所有出现过的名字" ⇒ 全都在逃逸 ⇒ 浪费内存 + golden 全变 ✗ 已修）*/
+        if (isEscapeeName(c, s->u.var.name)) grew |= markNamesInExpr(c, s->u.var.init);
+        return grew;
+    case ST_ASSIGN: {
+        /* 只有"写进 E 里的东西"或"写进形参所指的容器"才传递 ✓（第一版无条件 ⇒ E 过大 ✗）*/
+        const char *rn = placeRootName(s->u.assign.target);
+        if (rn && (isEscapeeName(c, rn) || paramIndex(f, rn) >= 0))
+            grew |= markNamesInExpr(c, s->u.assign.value);
+        return grew;
+    }
+    case ST_IF:
+        /* 条件里的名字**不算**逃逸（第一版无条件加 ⇒ E 过大 ⇒ 家 arena 到处变、误拒 out-param ✗）*/
+        grew |= markNamesInStmt(c, f, s->u.ifs.thenBody);
+        grew |= markNamesInStmt(c, f, s->u.ifs.elseBody);
+        return grew;
+    case ST_WHILE:
+        /* 同上：循环条件不算逃逸 ✓ */
+        grew |= markNamesInStmt(c, f, s->u.whiles.body);
+        return grew;
+    case ST_EXPR: return markNamesInExpr(c, s->u.expr.expr);
+    case ST_BLOCK:
+        for (size_t k = 0; k < s->u.block.stmts.len; k++)
+            grew |= markNamesInStmt(c, f, *(Stmt **)vecAt(&s->u.block.stmts, k));
+        return grew;
+    case ST_MATCH:
+        /* 同上：match 主体不算逃逸 ✓ */
+        for (size_t k = 0; k < s->u.match.arms.len; k++)
+            grew |= markNamesInStmt(c, f, (*(MatchArm **)vecAt(&s->u.match.arms, k))->body);
+        return grew;
+    default: return false;
+    }
+}
+static bool markNamesInExpr(Checker *c, Expr *e) {
+    if (!e) return false;
+    bool grew = false;
+    switch (e->kind) {
+    case EX_IDENT: return addEscapee(c, e->u.ident.name);
+    case EX_BIN:   grew |= markNamesInExpr(c, e->u.bin.left);
+                   grew |= markNamesInExpr(c, e->u.bin.right); return grew;
+    case EX_UN:    return markNamesInExpr(c, e->u.un.operand);
+    case EX_REF:   return markNamesInExpr(c, e->u.ref.operand);
+    case EX_DEREF: return markNamesInExpr(c, e->u.deref.operand);
+    case EX_SIGN:  return markNamesInExpr(c, e->u.sign.operand);
+    case EX_TRY:   return markNamesInExpr(c, e->u.try_.operand);
+    case EX_SLICE: return markNamesInExpr(c, e->u.slice.obj);
+    case EX_FIELD: return markNamesInExpr(c, e->u.field.obj);
+    case EX_INDEX: grew |= markNamesInExpr(c, e->u.index.obj);
+                   grew |= markNamesInExpr(c, e->u.index.index); return grew;
+    case EX_COALESCE:
+        grew |= markNamesInExpr(c, e->u.coalesce.main);
+        grew |= markNamesInExpr(c, e->u.coalesce.fallback); return grew;
+    case EX_NEW:   return markNamesInExpr(c, e->u.new_.count);
+    case EX_CALL:
+        for (size_t k = 0; k < e->u.call.args.len; k++)
+            grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.call.args, k));
+        return grew;
+    case EX_METHOD:
+        grew |= markNamesInExpr(c, e->u.method.recv);
+        for (size_t k = 0; k < e->u.method.args.len; k++)
+            grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.method.args, k));
+        return grew;
+    case EX_ASSOC:
+        for (size_t k = 0; k < e->u.assoc.args.len; k++)
+            grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.assoc.args, k));
+        return grew;
+    case EX_ENUMVAL:
+        for (size_t k = 0; k < e->u.enumval.args.len; k++)
+            grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.enumval.args, k));
+        return grew;
+    case EX_STRUCTLIT:
+        for (size_t k = 0; k < e->u.lit.inits.len; k++)
+            grew |= markNamesInExpr(c, (*(FieldInit **)vecAt(&e->u.lit.inits, k))->value);
+        return grew;
+    case EX_ARRAYLIT:
+        for (size_t k = 0; k < e->u.arraylit.elems.len; k++)
+            grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.arraylit.elems, k));
+        return grew;
+    default: return false;
+    }
+}
+
+/* 不动点：谁被搬出去，谁的内容也就跟着搬出去 ✓ */
+static void computeEscapes(Checker *c, FuncDef *f) {
+    if (!c->escapees.arena) vecInit(&c->escapees, c->arena, sizeof(const char *));
+    c->escapees.len = 0;
+    for (int round = 0; round < 32; round++)
+        if (!markNamesInStmt(c, f, f->body)) break;   /* 不长大了就停 ✓ */
+    if (getenv("EXTC_DUMP_EFFECTS")) {
+        fprintf(stderr, "[escapes] %-22s { ", f->name);
+        for (size_t i = 0; i < c->escapees.len; i++)
+            fprintf(stderr, "%s ", *(const char **)vecAt(&c->escapees, i));
+        fprintf(stderr, "}\n");
+    }
+}
 static int paramIndex(FuncDef *f, const char *name) {
     if (!name) return -1;
     for (size_t i = 0; i < f->params.len; i++)
@@ -591,6 +738,9 @@ static void collectEffects(Checker *c, FuncDef *f) {
     /* ⚠️ Vec 自带 arena 指针（base.h）；FuncDef 是 arenaAllocZero 出来的 ⇒
      *   这里必须显式 vecInit，不然 vecPush 会拿 NULL arena 去分配 ⇒ 段错误 ✗（踩过）*/
     if (!f->callees.arena) vecInit(&f->callees, c->arena, sizeof(FuncDef *));
+    computeEscapes(c, f);      /* ⭐ 档1：先算 E（"谁会被搬出本函数"），再用它选家 arena ✓ */
+    c->escapeesFor = (int)(size_t)f;   /* 只是标记"算过了"（用地址当 id）*/
+    if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", f->name);
     Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
     collectFreshLocals(c->arena, &fresh, f->body);
     f->freshCount = (unsigned)fresh.len;
@@ -613,6 +763,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
     Vec     *savedParams = c->curParams;
 
     c->curFunc = f;
+    computeEscapes(c, f);   /* ⭐ 档1：**必须**在检查函数体**之前**算 E ——
+                             * 选家 arena 时要靠它（放晚了就等于没算 ✗ 踩过）*/
     c->curParams = f->owner ? &f->owner->typeParams : NULL;
     pushScope(c);
     /* 每个函数单独一套 C 名字 —— 不同函数里的 `a` 互不影响（生成 C 时它们本来就在
@@ -1024,39 +1176,3 @@ static bool exprCallsAllocator(Checker *c, Expr *e) {
     }
 }
 
-/* ⭐ 甲′（PLAN #31 / §0.6）：被调者**往容器里塞的东西住哪只 arena**，要记回容器的深度 ✓
- *
- * 为什么需要：`push(ref l, …)` 这一刀的家 arena = **实参 `l` 所在的那只**
- * （`callHomeDepth` 取 `placeDepth(l)`，即"l 的槽位在哪一层块" —— ARENA.md §1.2 的规则）✓
- * 于是 `new node` 落在 **调用者的函数体块**里 ⇒ 被调者一走这块就 release。
- * 如果调用者之后让**容器逃出去**（`return l` / `return v.asSlice()` / 塞进更浅的 struct），
- * 那个容器指着的就是**已经释放的 arena 内存** ⇒ 悬垂 / 静默错数据 ✗（ASan 实锤过）
- *
- * 但"被调者能往容器里塞什么"**是调用点知道、容器自己不知道**的 ——
- * 所以正确做法是：调用点把这个事实**写回容器的深度**，后面**现成的逃逸检查**就会拦住 ✓
- *
- * 三条边界（都是"少报好过漏报"）：
- *   · 只对**被调者会分配**（`needsHome`）的调用做 —— 不分配的 callee 不会往容器里放新内存 ✓
- *   · 家是本函数的家（`homeDepth <= 0`，参数级/祖先那只）⇒ 内容**活得够久** ⇒ 不用抬 ✓
- *   · 容器类型里装不了引用（`!typeContainsRef`）⇒ 里面没有指针 ⇒ 不用管 ✓
- */
-static void raiseOneMutRefTarget(Checker *c, Param *p, Expr *a, int h) {
-    if (!p || !p->type || p->type->kind != TY_REF || !p->type->mut) return;
-    if (!a) return;
-    Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
-    Sym *s = placeRoot(c, place);
-    if (!s || !s->type || !typeContainsRef(c->tt, s->type)) return;
-    if (h > s->refDepth) s->refDepth = h;      /* 取 max = 上界 = 保守方向 ✓ */
-}
-
-void raiseMutRefTargets(Checker *c, FuncDef *callee, Expr *recv, Vec *args, Vec *params, int homeDepth) {
-    /* 甲′(#33)：用**惰性**的 funcAllocates，而不是查完之后才有值的 callee->needsHome ✓ */
-    if (!funcAllocates(c, callee)) return;
-    if (homeDepth <= 0) return;                /* 家是参数级 ⇒ 活得够久 ✓ */
-    if (recv && params->len >= 1)
-        raiseOneMutRefTarget(c, *(Param **)vecAt(params, 0), recv, homeDepth);
-    size_t off = recv ? 1 : 0;
-    for (size_t i = off; i < params->len && (i - off) < args->len; i++)
-        raiseOneMutRefTarget(c, *(Param **)vecAt(params, i),
-                             *(Expr **)vecAt(args, i - off), homeDepth);
-}

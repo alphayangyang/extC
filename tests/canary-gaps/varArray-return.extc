@@ -1,0 +1,34 @@
+// expect: 拿到的 = [42, 43]  size = 2
+/* 「**造完返回容器**」—— PLAN #31 的安全形状，现在由**推导**放行 ✓
+ *
+ * 为什么它安全（`ARENA-FORMAL.md` §4.4 的约束集）：
+ *   · `push` 的效果摘要 `Addr = ∅`（它从没存过 `&实参`）⇒ 那条"实参必须活得 ≥ 家 arena"
+ *     的约束**不存在** ✓（今天以前一律按最坏情况处理 ⇒ 误拒 ✗）
+ *   · 于是家 arena 可以按**调用者的逃逸需求**选：`v` 会被 `return` 出去
+ *     ⇒ 创建与扩容都落在**这个函数的家**（= 调用者的 arena）⇒ 活得比本帧久 ✓
+ *   · 所以 `return v` 合法，而且运行时**没有悬垂**（下面用 churn() 真踩过内存 + ASan 验过）✓
+ * 修之前：这个形状**编过但静默错数据**（打印 [1002, 0]），ASan 报 heap-use-after-free ✗
+ */
+fn mk() -> varArray<i32> {
+    var v: varArray<i32> = varArray<i32>::withCap(0)   // cap 0 ⇒ 第一次 push 就扩容
+    v.push(42)
+    v.push(43)
+    return v
+}
+
+/* 把刚被释放的 arena 块踩掉 —— 没有这一步，"其实是悬垂"会看不出来 ✓ */
+fn churn() {
+    var i: i32 = 0
+    while i < 4 {
+        var w: varArray<i32> = varArray<i32>::withCap(500)
+        w.push(i + 1000)
+        i = i + 1
+    }
+}
+
+fn main() {
+    var v: varArray<i32> = mk()
+    churn()
+    println("拿到的 = ", v.asSlice(), "  size = ", v.size())
+    println("逼出 option_i32（PLAN #27）: ", varArray<i32>::withCap(1).get(0) ?? -1)
+}

@@ -71,6 +71,11 @@ typedef struct {
     Vec       *substArgs;
     int        noHoist;
     Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
+    /* ⭐ 档1（ARENA-FORMAL §9）：**E 分析** —— 本函数里会被"搬出本函数"的局部名 ✓
+     * 只影响"家 arena 选哪只"（保守方向 = 多算只会费内存）✓ */
+    Vec        escapees;    /* const char* */
+    int        escapeesFor; /* 已经为哪个函数算过 E（-1 = 还没算）*/
+
     Vec        narrowMarks; /* size_t —— 每个作用域进来时的 narrow.len（出作用域回退用）*/
 
     Type *tI32, *tF64, *tBool;
@@ -161,14 +166,15 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  const char *narrowTarget (Checker *c, Expr *cond, _Bool *whenTrue);
  const char *typeStr (Checker *c, Type *t);
  extern _Bool checkModule (Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
- int callHomeDepth (Checker *, Vec *, Vec *);
+ bool isEscapeeName (Checker *, const char *);
+ const char *placeRootName (Expr *);
+ int  callHomeDepth (Checker *, Vec *, Vec *);
  int callHomeDepth (Checker *c, Vec *args, Vec *params);
  int exprRefDepth (Checker *, Expr *);
  int exprRefDepth (Checker *c, Expr *e);
  int placeDepth (Checker *c, Expr *e);
  void adoptContextType (Expr *e, Type *want);
- void checkCallRefArgs (Checker *, Vec *, Vec *, int, int, const char *);
- void checkCallRefArgs (Checker *c, Vec *args, Vec *params, int homeDepth, int line, const char *fname);
+ void checkCallRefArgs (Checker *, FuncDef *, Vec *, Vec *, int, int, const char *);
  void checkOperatorSig (Checker *c, FuncDef *f);
  void checkStmt (Checker *, Stmt *);
  void checkStmt (Checker *c, Stmt *s);
@@ -186,8 +192,5 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  void recordNewSizeCheck (Checker *c, Type *t, int line);
  void recordZeroCheck (Checker *c, Type *t, int line, const char *name);
  void unNarrow (Checker *c, const char *cname);
-
-/* 甲′（PLAN #31）：把"被调者塞进容器的东西住哪只 arena"记回容器深度 */
-void raiseMutRefTargets (Checker *, FuncDef *, Expr *, Vec *, Vec *, int);
 
 #endif /* EXTC_CHECK_INTERNAL_H */

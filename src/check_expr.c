@@ -618,9 +618,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
              * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
             e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params);
-            raiseMutRefTargets(c, f, NULL, &e->u.assoc.args, &f->params, e->homeDepth);
             if (f->needsHome)
-                checkCallRefArgs(c, &e->u.assoc.args, &f->params, e->homeDepth,
+                checkCallRefArgs(c, f, &e->u.assoc.args, &f->params, e->homeDepth,
                                  e->line, e->u.assoc.name);
 
             if (e->u.assoc.args.len != f->params.len) {
@@ -972,9 +971,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
-            raiseMutRefTargets(c, f, NULL, &e->u.call.args, &f->params, e->homeDepth);
             if (f->needsHome)
-                checkCallRefArgs(c, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
+                checkCallRefArgs(c, f, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
@@ -1076,9 +1074,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* 甲′(#31)：不管实参是本地的还是参数，都要记"往容器里塞的东西住哪" ✓
                  * ⚠️ 第一版只加在 else 分支里 ⇒ `self: mut ref` 那条（`v.push(…)` 正是它）
                  * 走的是 if 分支 ⇒ **一次都没执行** ✗ 调试才看出来 ✓ */
-                raiseMutRefTargets(c, f, e->u.method.recv, &e->u.method.args, &f->params, e->homeDepth);
                 if (f->needsHome)
-                    checkCallRefArgs(c, &e->u.method.args, &f->params, e->homeDepth,
+                    checkCallRefArgs(c, f, &e->u.method.args, &f->params, e->homeDepth,
                                      e->line, e->u.method.name);
             }
 
