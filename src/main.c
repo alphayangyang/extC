@@ -185,6 +185,10 @@ int main(int argc, char **argv) {
     bool marchNative = false;        /* `-march=native`（默认关：牺牲可移植性）*/
     bool dumpTokens = false;
     bool doRun = false;
+    /* ⭐ `--check-c`（2026-09-20）：生成 C 之后**先过一遍 `cc -fsyntax-only`** ——
+     * "生成的 C 编不过"是 extC 最该防的一类 bug（承诺是"编过就一定编得过"），
+     * 而这一条**不依赖运行、也不依赖用户去跑 gcc** ✓ 代价一次 gcc 调用（~50ms）*/
+    bool doCheckC = false;
     bool lineMap = true;
 
     for (int i = 1; i < argc; i++) {
@@ -201,6 +205,8 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; i++; continue; }
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
+        } else if (strcmp(argv[i], "--check-c") == 0) {
+            doCheckC = true;          /* 生成 C 之后先过 `cc -fsyntax-only` ✓ */
         } else if (strcmp(argv[i], "--run") == 0) {
             doRun = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
@@ -289,6 +295,25 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* ⭐ `--check-c`：生成 C 之后**先过一遍 `cc -fsyntax-only`** ——
+     * "生成的 C 编不过"是 extC 最该防的一类 bug（承诺是"编过就一定编得过"），
+     * 这一条**不依赖运行、也不依赖用户去跑 gcc** ✓ 代价一次 gcc 调用（~50ms）
+     * ⚠️ 必须放在 `if (!doRun)` 的**输出/提前返回之前**，否则只有 `--run` 才走到 ✗ */
+    if (doCheckC && !doRun) {
+        const char *ccx = getenv("CC") ? getenv("CC") : "cc";
+        const char *tmp = "/tmp/extc-syntaxcheck.c";
+        if (!writeFile(tmp, bufCstr(&c), c.len)) {
+            fprintf(stderr, "extc: cannot write the syntax-check file\n");
+            return 1;
+        }
+        char *argv2[] = { (char *)ccx, "-std=c11", "-fsyntax-only", "-w", (char *)tmp, NULL };
+        if (runCmd(argv2) != 0) {
+            fprintf(stderr, "extc: **the generated C does not compile** -- this is an extc"
+                            " bug, not a mistake in your program\n");
+            return 1;
+        }
+    }
+
     if (!doRun) {
         if (outPath) {
             char *text = bufCstr(&c);
@@ -296,7 +321,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "extc: cannot write `%s`\n", outPath);
                 return 1;
             }
-        } else {
+        } else if (!doCheckC) {      /* `--check-c` 且没给 `-o` 时不用把 C 倒到 stdout ✓ */
             fputs(bufCstr(&c), stdout);
         }
         return 0;
@@ -318,6 +343,8 @@ int main(int argc, char **argv) {
     }
 
     const char *cc = getenv("CC") ? getenv("CC") : "cc";
+
+
     /* `-fwrapv`：让**有符号溢出绕回**成为确定的语义。
      *
      * 不加的话，`x + 1`（x 是 i32 的最大值）在生成的 C 里是**有符号溢出 = UB**：
