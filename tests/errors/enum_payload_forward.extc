@@ -1,0 +1,8 @@
+// 载荷经过**转发函数**洗白（深度 = max(实参) 该接住）
+type box = | empty | holding(slice<u8>)
+fn id(r: slice<u8>) -> slice<u8> { return r }
+fn make() -> box {
+    var local: [8]u8 = [65, 66, 67, 68, 0, 0, 0, 0]
+    return box.holding(id(local[..]))
+}
+fn main() -> i32 { return 0 }

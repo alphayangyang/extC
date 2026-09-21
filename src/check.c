@@ -258,20 +258,27 @@ static bool enumHasPayload(TypeDef *td) {
  * 但 `option<slice<u8>>` 的 value 是 slice（里面有 ref）⇒ 没有零值。
  * 不代入的话 `T` 是个类型参数、看着人畜无害，检查整条漏过去，
  * 最后在生成的 C 里露出 `__extc_reference_has_no_zero_value__`（真踩过）。 */
+/* ⚠️ **两个不同的问题**（2026-09-20 修洞时拆开 —— 以前是同一个函数，于是漏了一个）：
+
+ *   ① 「这个类型**能不能携带引用**」⇒ 看**所有**变体 / 所有字段  ⇒ `typeContainsRef`
+ *   ② 「这个类型**有没有零值**」  ⇒ 带载荷枚举**只看 tag 0**（零值 = tag 0 + 载荷清零）
+ *                                   ⇒ `typeLacksZeroValue`
+ *
+ * 混在一起的后果（真出过的洞）：`type box = | empty | holding(slice<u8>)` 问"有没有引用"时
+ * 只看 tag 0 的 `empty` ⇒ 回答"没有" ⇒ `exprRefDepth` 早退返回 0 ⇒
+ * **载荷的深度从来没算过** ⇒ `return box.holding(local[..])` 编过 ⇒ **悬垂 / UB** ✗
+ */
 static bool typeContainsRef(TypeTable *tt, Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
     if (t->kind == TY_ARRAY) return typeContainsRef(tt, t->inner);
-    /* 带载荷枚举：**零值 = tag 0 + 载荷清零** ⇒ 只有**第一个变体**的载荷
-     * 会影响「有没有零值」。所以 `type box = | nothing | holding(slice<u8>)`
-     * 的 `var b: box` 是合法的（零值 = nothing），而
-     * `type box = | holding(slice<u8>) | nothing` 的不合法 ✓
-     * 顺序不是随便排的 —— 见 BOOTSTRAP §8 第 3 步第二刀。 */
+    /* 带载荷枚举：**任何一个**变体的载荷可能带 ref 就算 ⇒ 看全部 ✓ */
     if (t->kind == TY_ENUM && t->edef) {
-        if (t->edef->variants.len == 0) return false;
-        Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
-        for (size_t i = 0; i < v0->types.len; i++)
-            if (typeContainsRef(tt, payloadType(tt, t, v0, i))) return true;
+        for (size_t v = 0; v < t->edef->variants.len; v++) {
+            Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
+            for (size_t i = 0; i < va->types.len; i++)
+                if (typeContainsRef(tt, payloadType(tt, t, va, i))) return true;
+        }
         return false;
     }
     StructDef *sd = structOf(t);
@@ -284,6 +291,35 @@ static bool typeContainsRef(TypeTable *tt, Type *t) {
     for (size_t i = 0; i < sd->fields.len; i++) {
         Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
         if (typeContainsRef(tt, ttSubstitute(tt, ft, sp, sa))) return true;
+    }
+    return false;
+}
+
+/* 「有没有零值」——`ref` 没有零值；含 ref 的聚合也没有。
+ * 带载荷枚举：**零值 = tag 0 + 载荷清零** ⇒ **只看第一个变体** ✓
+ * （所以 `| nothing | holding(slice<u8>)` 的 `var b: box` 合法，
+ *   而 `| holding(slice<u8>) | nothing` 的不合法 —— **变体顺序有意义** ✓）*/
+static bool typeLacksZeroValue(TypeTable *tt, Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_REF) return true;
+    if (t->kind == TY_ARRAY) return typeLacksZeroValue(tt, t->inner);
+    if (t->kind == TY_ENUM && t->edef) {
+        if (t->edef->variants.len == 0) return false;
+        Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
+        for (size_t i = 0; i < v0->types.len; i++)
+            if (typeLacksZeroValue(tt, payloadType(tt, t, v0, i))) return true;
+        return false;
+    }
+    StructDef *sd = structOf(t);
+    if (!sd) return false;
+    Vec *sp = NULL, *sa = NULL;
+    if (t->kind == TY_GENERIC && t->targs.len == sd->typeParams.len) {
+        sp = &sd->typeParams;
+        sa = &t->targs;
+    }
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
+        if (typeLacksZeroValue(tt, ttSubstitute(tt, ft, sp, sa))) return true;
     }
     return false;
 }
@@ -1821,7 +1857,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *ft = fd->type;
                 if (st->kind == TY_GENERIC)
                     ft = ttSubstitute(tt, ft, &sd->typeParams, &st->targs);
-                if (typeContainsRef(tt, ft))
+                if (typeLacksZeroValue(tt, ft))
                     ckError(c, e->line,
                             "`ref` has no default value (it is a non-nullable reference)",
                             "field `%s` must be given explicitly", fd->name);
@@ -1895,7 +1931,7 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
             if (!s->u.var.init) {
-                if (s->u.var.ann && typeContainsRef(c->tt, s->u.var.ann)) {
+                if (s->u.var.ann && typeLacksZeroValue(c->tt, s->u.var.ann)) {
                     ckError(c, s->line,
                             "`ref` is a non-nullable reference, so it has no zero value -- "
                             "and neither does any struct that contains one",

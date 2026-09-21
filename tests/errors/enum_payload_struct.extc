@@ -1,0 +1,8 @@
+// 载荷是**含引用的结构体**（要递归进字段才查得到）
+struct holder { s: slice<u8>  n: i64 }
+type box = | empty | holding(holder)
+fn make() -> box {
+    var local: [8]u8 = [65, 66, 67, 68, 0, 0, 0, 0]
+    return box.holding(holder { s: local[..], n: 1 })
+}
+fn main() -> i32 { return 0 }
