@@ -1,0 +1,3 @@
+// 返回一块刚分配的内存：它活到当前块结束（函数体）⇒ 走出去就是悬垂 ✓
+fn f() -> ref i32 { return alloc<i32>(1) }
+fn main() { println(*f()) }

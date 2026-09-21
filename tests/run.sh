@@ -53,6 +53,17 @@ if [ -d tests/traps ]; then
     done
 fi
 
+echo "== arena：按块细化（150MB 上限下不许涨）=="
+if [ -x tests/arena/run.sh ]; then
+    if out=$(tests/arena/run.sh 2>&1); then
+        echo "$out" | grep -E "ok |FAIL" | while read -r line; do echo "$line"; done
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "arena 用例"
+    fi
+fi
+
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

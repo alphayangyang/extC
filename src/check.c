@@ -1998,10 +1998,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* 这块内存活到**函数返回**（arena = 函数帧）⇒ 深度 1。
-             * 于是「返回一块刚 alloc 的内存」会被逃逸检查拦住 ✓ 正确 ——
-             * 想把它交出去，就得让调用者提供 buffer/arena。见 REFS.md §6。 */
-            e->refDepth = 1;
+            /* ⭐ 这块内存活到**当前块结束**（arena 按块细化，PLAN A2）⇒
+             * 它的深度就是**当前块的深度** `c->scopes.len` ✓
+             *
+             * ⚠️ 这一行是"深度模型"和"arena 粒度"的**接缝** —— 两边必须是同一个数：
+             *   检查器用块深度判断"引用能不能存进这里"，
+             *   生成的 C 用块深度选 `__extc_a[k]`、出块就 release。
+             *   写死 1（老行为）的话，`while { p = alloc<i32>(1) }` 里 p 会在
+             *   下一次迭代时指向**已经释放**的内存 ⇒ 悬垂 ✗（A2 之后实测过）✓
+             * 于是「返回一块刚 alloc 的内存」「把循环里分配的东西存到循环外」
+             * 都会被逃逸检查拦住 ✓ 想把它交出去，就得让调用者提供 buffer/arena ✓ */
+            e->refDepth = c->scopes.len;
             Type *r = ttRef(tt, elem);
             r->mut = true;                       /* 刚分配的地方当然可写 */
             return r;

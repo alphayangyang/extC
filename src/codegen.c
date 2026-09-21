@@ -73,6 +73,14 @@ typedef struct {
      * `prefixBlk` = 现在在不在"语句里" —— 不在（比如文件作用域的初始化式）就不许吐 ✓ */
     Buf         prefix;
     int         prefixBlk;
+    /* ---- arena 按**块**细化（PLAN A2）----
+     * `__extc_a[k]` = 第 k 层块的 arena。k 是**编译期已知的块深度** ——
+     * 跟检查器算引用的那个"词法深度"是同一个概念 ✓
+     * `loopLevel[]` = 当前套着的各个循环体所在的块层（`break`/`continue` 要知道
+     * 该释放到哪一层）*/
+    int         blkLevel;
+    int         loopLevel[64];
+    int         loopLen;
     Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
 } CG;
 
@@ -691,6 +699,8 @@ static const char *genStructLit(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
+static const char *arenaRef(CG *g);
+
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
@@ -805,12 +815,12 @@ static const char *genExprInner(CG *g, Expr *e) {
 
         case EX_GENCALL: {
             /* 泛型调用 —— 目前只有内置原语 `alloc<T>(n)`：
-             * 向**当前函数帧**的 arena 要 n 个 T 的地方。 */
+             * 向**当前块**的 arena 要 n 个 T 的地方（按块细化之后就是这句话的意思 ✓）*/
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             return arenaPrintf(g->arena,
-                "(%s *)extc_arena_alloc(&__extc_arena, (int64_t)(%s) * (int64_t)sizeof(%s))",
-                tn, n, tn);
+                "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s))",
+                tn, arenaRef(g), n, tn);
         }
 
         case EX_METHOD:    return genMethodCall(g, e);
@@ -1053,8 +1063,16 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     const char *operand = genExpr(g, e->u.try_.operand);
     flushPrefix(g);
     cgLine(g, "%s %s = %s;", ti.inst, ti.tmp, operand);
-    cgLine(g, "if (%s.tag != %s_%s) { extc_arena_release(&__extc_arena); return %s; }",
-           ti.tmp, ti.inst, ti.okVar, genTryFail(g, &ti));
+    /* 失败要 return ⇒ 把**所有**层的 arena 都放掉（跟 `return` 一样）✓
+     * ⚠️ 这件事必须在吐出这一行**之前**做：那行已经写着 `return` 了 */
+    {
+        Buf rel;
+        bufInit(&rel, g->arena);
+        for (int lv = g->blkLevel; lv >= 1; lv--)
+            bufPrintf(&rel, "extc_arena_release(&__extc_a[%d]); ", lv);
+        cgLine(g, "if (%s.tag != %s_%s) { %sreturn %s; }",
+               ti.tmp, ti.inst, ti.okVar, bufCstr(&rel), genTryFail(g, &ti));
+    }
     return ti;
 }
 
@@ -1064,9 +1082,63 @@ static void lineMark(CG *g, Stmt *s) {
         bufPrintf(g->out, "#line %d \"%s\"\n", s->line, g->path);
 }
 
+/* 当前块的 arena（分配走它、出块释放它）✓ */
+static const char *arenaRef(CG *g) {
+    return arenaPrintf(g->arena, "__extc_a[%d]", g->blkLevel);
+}
+
+/* 释放第 lv 层（`lvl > 0`；第 0 层不用）*/
+static void cgReleaseLevel(CG *g, int lvl) {
+    if (lvl <= 0) return;
+    cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
+}
+
+/* **这个函数最多会用到几层块**（用来定 `__extc_a` 的大小 —— 栈上定长，零分配）*/
+static int blkMaxLevel(Stmt *s);
+static int blkMaxOfBlock(Stmt *block) {
+    int m = 0;
+    if (!block || block->kind != ST_BLOCK) return blkMaxLevel(block);
+    for (size_t i = 0; i < block->u.block.stmts.len; i++)
+        if (blkMaxLevel(*(Stmt **)vecAt(&block->u.block.stmts, i)) > m)
+            m = blkMaxLevel(*(Stmt **)vecAt(&block->u.block.stmts, i));
+    return m;
+}
+static int blkMaxLevel(Stmt *s) {
+    if (!s) return 0;
+    switch (s->kind) {
+    case ST_BLOCK: return 1 + blkMaxOfBlock(s);
+    case ST_IF: {
+        int a = 1 + blkMaxOfBlock(s->u.ifs.thenBody);
+        int b = s->u.ifs.elseBody
+                  ? 1 + (s->u.ifs.elseBody->kind == ST_BLOCK
+                           ? blkMaxOfBlock(s->u.ifs.elseBody)
+                           : blkMaxLevel(s->u.ifs.elseBody))
+                  : 0;
+        return a > b ? a : b;
+    }
+    case ST_WHILE: return 1 + blkMaxOfBlock(s->u.whiles.body);
+    case ST_MATCH: {
+        int m = 0;
+        for (size_t i = 0; i < s->u.match.arms.len; i++) {
+            MatchArm *a = *(MatchArm **)vecAt(&s->u.match.arms, i);
+            int d = 1 + blkMaxOfBlock(a->body);
+            if (d > m) m = d;
+        }
+        return m;
+    }
+    default: return 0;
+    }
+}
+
+/* 进/出**一个块**：reset 进来、release 出去 ✓
+ * ⚠️ 循环体也是一个块 ⇒ 每轮进来都 reset ⇒ **内存上界 = 一次迭代** ✓（这就是 A2 的目的）*/
 static void genBlockBody(CG *g, Stmt *block) {
+    g->blkLevel++;
+    cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* 进来先清（防御性）*/
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         genStmt(g, *(Stmt **)vecAt(&block->u.block.stmts, i));
+    cgReleaseLevel(g, g->blkLevel);
+    g->blkLevel--;
 }
 
 static void genStmtInner(CG *g, Stmt *s);
@@ -1137,16 +1209,22 @@ static void genStmtInner(CG *g, Stmt *s) {
             flushPrefix(g);
             cgLine(g, "while (%s) {", cnd);
             g->indent++;
+            g->loopLevel[g->loopLen++] = g->blkLevel + 1;   /* 循环体是下一层 */
             genBlockBody(g, s->u.whiles.body);
+            g->loopLen--;
             g->indent--;
             cgLine(g, "}");
             return;
         }
 
         case ST_RETURN: {
-            /* 返回之前**一定**要归还这一帧的 arena —— 释放时机是词法的，
-             * 所以每个 return 都是一个释放点（包括 `?` 生成的那些）。 */
-            const char *rel = "extc_arena_release(&__extc_arena);";
+            /* 返回之前**一定**要把所有层的 arena 都放掉 —— 释放时机是词法的，
+             * 所以每个 return 都是一个释放点（包括 `?` 生成的那些）✓ */
+            Buf relBuf;
+            bufInit(&relBuf, g->arena);
+            for (int lv = g->blkLevel; lv >= 1; lv--)
+                bufPrintf(&relBuf, "extc_arena_release(&__extc_a[%d]); ", lv);
+            const char *rel = bufCstr(&relBuf);
             if (!s->u.ret.value) {
                 cgLine(g, "%s", rel);
                 cgLine(g, "return;");
@@ -1169,8 +1247,15 @@ static void genStmtInner(CG *g, Stmt *s) {
             return;
         }
 
-        case ST_BREAK:    cgLine(g, "break;");    return;
-        case ST_CONTINUE: cgLine(g, "continue;"); return;
+        case ST_BREAK:
+        case ST_CONTINUE: {
+            /* `break` / `continue` 要跳出这几层块 ⇒ 先把它们放掉 ✓
+             * （放到**循环体那一层**为止；循环体自己的 arena 由下一轮进来时 reset）*/
+            int to = g->loopLen ? g->loopLevel[g->loopLen - 1] : 1;
+            for (int lv = g->blkLevel; lv >= to; lv--) cgReleaseLevel(g, lv);
+            cgLine(g, "%s", s->kind == ST_BREAK ? "break;" : "continue;");
+            return;
+        }
 
         case ST_EXPR:
             /* `f()?` 单独成句：只要「求值一次 + 失败就 return」两句，后面没有用法 */
@@ -1276,14 +1361,14 @@ static void genFunc(CG *g, FuncDef *f) {
     int   savedSeq = g->tmpSeq;
     g->retType = subst(g, f->ret);
     g->tmpSeq = 0;
-    /* 每帧一个 arena 标记：**arena = 函数帧**。分配走 bump，返回时回到标记。
-     * 每个函数都记一个（不管是它自己分配还是被调用者分配）——
-     * 代价是两条语句，换来「释放时机是词法的」这条可证明性。
-     * 将来可以只给「真的会分配」的函数发，属于优化。 */
-    /* 每帧一只 arena：**arena = 函数帧**。分配走它，返回时整条链释放。
-     * 每个函数都开一只（代价是三条语句），换来「释放时机是词法的」这条可证明性。
-     * 将来可以只给「真的会分配」的函数发，属于优化。 */
-    cgLine(g, "extc_arena __extc_arena; extc_arena_init(&__extc_arena);");
+    /* ---- arena 按**块**细化（PLAN A2）----
+     * 一只数组，**层数在编译期就算好了**（就是块嵌套的最大深度）⇒ 栈上定长、零分配 ✓
+     * `{0}` 就够了（`extc_arena` 里只有个 `top` 指针，NULL = 空）✓
+     * 函数体本身是**第 1 层**（`genBlockBody` 进来就 +1）✓ */
+    int maxLv = 1 + blkMaxOfBlock(f->body);
+    cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    g->blkLevel = 0;
+    g->loopLen  = 0;
     genBlockBody(g, f->body);
     g->retType = savedRet;
     g->tmpSeq = savedSeq;

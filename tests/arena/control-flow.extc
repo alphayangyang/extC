@@ -1,0 +1,38 @@
+/* 控制流出口都是**释放点** —— 漏一个就是"提前释放"或者"泄着不放"。
+ * 这个用例在 150MB 上限下跑：只要有一处没释放，就会 out of arena memory ✓ */
+fn inner(n: i32) {
+    // 里层块也要放掉
+    {
+        var q = alloc<i32>(250000)      // 1MB
+        *q = n
+    }
+}
+
+fn withBreak() -> i32 {
+    var n: i32 = 0
+    while n < 300 {
+        var p = alloc<i32>(250000)
+        *p = n
+        inner(n)
+        if n == 5 { return 999 }        // ① 函数体里 early return（嵌套在循环里）
+        n = n + 1
+    }
+    return n
+}
+
+fn withContinue() -> i32 {
+    var n: i32 = 0
+    while n < 300 {
+        var p = alloc<i32>(250000)
+        *p = n
+        n = n + 1
+        if n < 300 { continue }         // ② continue
+        break                           // ③ break
+    }
+    return n
+}
+
+fn main() {
+    println("early return = ", withBreak())
+    println("continue/break = ", withContinue())
+}
