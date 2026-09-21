@@ -7,6 +7,73 @@
 
 ---
 
+## 2026-09-20 · **修 #17：泛型体的引用规矩按实例复查** —— 主人说「可以修17，我认可了」
+
+### 洞是什么（实测，不是推的）
+
+```extc
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, value: T) { self.v = value }
+}
+var bt: boxT<slice<u8>> = { v: "abc" }
+{ var deeper: [8]u8 = [...]  bt.stash(deeper[..]) }
+println(bt.v)          // 编过、跑起来、指向已死的栈帧
+```
+
+同一个操作**具体类型写就会被挡**（`stashU` 报 "cannot store a borrowed value"）。
+根因：泛型体是照模板查一次，`T` 不透明，而"这个类型里有引用吗"对 `T` 只能答 false ⇒
+`exprRefDepth` / `exprBorrowed` **整片早退** ⇒ 检查从没跑过 ✗
+
+顺着这条线还挖出**同族的另两个形状**（都有测试）：
+
+| 形状 | 后果 |
+|---|---|
+| `var local: T`（零值）| 实例化成 `(slice_u8){0}` = **一个 null 引用**（破坏了"ref 永不为空"）|
+| `var local: T = self.v  return local` | 返回**本帧**的引用 ⇒ 悬垂 |
+
+### 为什么不用那个 2 行的保守修法
+
+我第一反应是"看到 `T` 就当它含引用"（改 2 行）。洞确实关掉了 —— 但
+**`box<T>::set` 这种教科书写法被一起拒掉**了（152 个测试当场挂 1 个，正是
+`examples/generics.extc` 的 `set`）。而对 `T = i64` 它完全安全 ✗
+⇒ **"安全"不等于"把正常代码也拒掉"**，所以只能按实例算 ✓
+
+### 修法
+
+跟 `==` 的 `eqChecks` 同一个模式，推广成三类（`==` / 引用规矩 / 零值）：
+
+1. 走路函数对"类型里提到 `T`"的节点**不再早退**（按"`T` 可能带引用"算）
+2. 模板期把这条规矩**记进 `refChecks`**，连**深度和借用**一起记好（那时作用域还在）
+3. 全部查完后，对每个具体实例：`vt = tsub(类型)`；
+   **`typeContainsRef(vt)` 为假 ⇒ 这条规矩本来就不适用**（`T = i64` 全跳过 ✓）；
+   为真 ⇒ 用记好的数字报错，**点名实例**：
+
+```
+error: in instance `boxT_slice_u8`: cannot store a borrowed value into something that outlives this call
+note:  A generic body is checked once on the template, where `T` is opaque -- so the
+       reference rules are re-checked for every concrete instance.
+```
+
+### ⚠️ 踩的坑（最坑的那种失败）
+
+第一版我把"算深度"也推到实例化再做 —— 那时**函数作用域已经没了**，
+`lookup("value")` 找不到参数 ⇒ 深度算成 **0** ⇒ 比较 `0 > 0` 不成立 ⇒
+**检查静默失灵，攻击代码照样编过，而且一个字都不报** ✗
+
+我是靠"加了记录器却还是编过"才发现不对的（要是只看"没报错就当修好了"，
+这个洞会带着一个"修好了"的假标签继续躺着）。教训写进 DECISIONS：
+
+> **推迟的只能是"结论"，不能是"上下文"。** ✓
+
+### 验收
+
+三个攻击形状全部报错；`box<i64>::set` / `generics.extc` 照旧通过；
+`/tmp/hack` 27 个攻击文件通过集合与改动前**完全一致**（没放松一条）；
+**165 测试全绿**（+3 个反例）✓
+
+---
+
 ## 2026-09-20 · **语句前缀机制**（PLAN #19）—— `println(f() ?? -1)` 现在直接能写
 
 昨天给 `??` 定了一条"主体必须没有副作用"的规则（因为 C 三元里主体出现两次，
