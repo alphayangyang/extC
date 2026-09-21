@@ -1220,6 +1220,68 @@ fn main() -> i32 {
 
 ---
 
+## 7.6 可空引用 `?ref T`（定案 ㊻）
+
+`ref T` **永远非空** —— 那正是它的意义。所以「可能没有」需要一个**单独的类型**：
+
+| 写法 | 含义 |
+|---|---|
+| `?ref T` | 可空的**只读**引用 |
+| `mut ?ref T` | 可空的**可写**引用 |
+| `null` | `?ref T` 的**零值** |
+| `?T`（T 不是 ref）| `option<T>` 的语法糖：`?i64` 就是 `option<i64>` ✓ |
+
+**为什么需要它**：链表/树的 `next` 得能表示"没有"。
+
+```extc
+struct node {
+    value: i64
+    next: ?ref node          // ← 有零值（null）⇒ 下面这些都合法 ✓
+}
+
+var n: node                  // 不需要初始化式 ✓
+var slots: [16]?ref node     // 哈希表的空槽位 ✓
+
+fn find(head: ?ref node, want: i64) -> ?ref node {
+    var cur: ?ref node = head
+    while cur != null {
+        if cur.value == want { return cur }
+        cur = cur.next
+    }
+    return null
+}
+```
+
+**规则**
+
+- **不能直接解**：`p.value` / `*p` / `p.method()` 全是**编译错误**（P′：不能证明的，语法上必须看得见）。
+- 必须先**证明非空** —— 能证明的写法就这五种：
+
+| 写法 | 哪里被证明 |
+|---|---|
+| `if p != null { ... }` | then 分支 |
+| `if p == null { ... } else { ... }` | else 分支 |
+| `if p == null { return }`（护栏形态）| 后面**整个作用域** |
+| `while cur != null { ... }` | 循环体 |
+| `p != null && p.value == 1` | `&&` **右边**（`\|\|` 右边认的是 `p == null` 的反面）|
+
+- 证明之后 **一行运行时检查都不生成**：上面 `find` 生成的 C 就是
+  `while (cur != ((void *)0)) { ... }` ✓（P：编译期能证明的，运行时不留痕迹）
+- **收窄只认绑定名**，不认 `p.next` 这种**路径**：链上往下走就绑一个名字 ——
+  `var nxt: ?ref node = p.next` 然后 `if nxt != null { ... nxt.value ... }` ✓
+  （显式、零开销，而且不用去想别名问题。）
+- 给可空引用赋 `null` 或换指向 ⇒ 之前的证明**作废**（循环里下一轮会重新证明 ✓）。
+- `?ref T` 不能当 `ref T` 用（**没有**别的转换办法，除非你已经证明过）；反过来永远可以 ✓。
+- `ref T` 跟 `null` 比是**编译错误**（它不可能为空，比了就是写错了）。
+- `null` 的类型**只能从上下文来**（`var p: ?ref node = null`、参数/返回类型、
+  `p.next = null`、`f(null)`）—— 上下文不清楚就报错，**绝不猜** ✓。
+
+生成 C 里 `?ref T` 就是一个普通指针（空指针 = `null`）—— **没有 tag、没有包装、零成本** ✓。
+
+完整可运行的例子见 `examples/nullable-ref.extc`。
+
+---
+
 ## 8. 内建函数
 
 ### `print` / `println`
@@ -1292,6 +1354,9 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 > **`slice<T>` 索引与字符串库**、**固定数组 `[N]T`**、**切片视图 + 可写性**、
 > **`option`/`result`/`?`**、**`::` 关联函数**、**位运算**、
 > **引用语义（`mut ref` + 视图可写性）** 也都在跑了。
+> **`*p` 显式解引用**、**`?T` 语法糖**、**可空引用 `?ref T` + `null` + 非空收窄**
+> （见 §7.6）**2026-09-20 完成** ✓
+> ⇒ **链表/树/搜索函数今天就能写**（跨函数接线还差 arena 的 `new`）。
 >
 > 下面剩下的**都还没做**。
 
