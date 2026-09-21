@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 
 /* ⚠️ 下面这些原语全部 `static inline` —— **这不是风格问题**：
@@ -69,6 +70,19 @@ static inline void extc_arena_init(extc_arena *a) { a->top = NULL; }
 static inline void extc_arena_release(extc_arena *a) {
     while (a->top) { extc_ablock *p = a->top->prev; free(a->top); a->top = p; }
 }
+/* 显式转换用（PLAN #23）：整数收窄 / 换符号 / 浮点转整数 ⇒ 装不下就 trap（带位置）*/
+static inline int64_t extc_narrowI(int64_t v, int64_t lo, int64_t hi, const char *f, int l) {
+    if (v < lo || v > hi) extc_trapMsg(f, l, "value does not fit in the target type");
+    return v;
+}
+static inline uint64_t extc_narrowU(uint64_t v, uint64_t hi, const char *f, int l) {
+    if (v > hi) extc_trapMsg(f, l, "value does not fit in the target type");
+    return v;
+}
+static inline int64_t extc_convFloat(double v, int64_t lo, int64_t hi, const char *f, int l) {
+    if (!(v >= (double)lo && v <= (double)hi)) extc_trapMsg(f, l, "float does not fit in the target integer type");
+    return (int64_t)v;   /* 向零截断 = C 的规则 ✓ */
+}
 void *extc_arena_alloc(extc_arena *a, int64_t n) {
     if (n <= 0) n = 1;
     n = (n + 7) & ~(int64_t)7;
@@ -82,15 +96,23 @@ void *extc_arena_alloc(extc_arena *a, int64_t n) {
     {
         void *p = a->top->data + a->top->used;
         a->top->used += n;
+        memset(p, 0, (size_t)n);   /* ⭐ 分配**永远清零** */
         return p;
     }
 }
 
 typedef struct unit unit;
+typedef struct pcg32 pcg32;
 typedef struct slice_u8 slice_u8;
+typedef struct slice_i32 slice_i32;
 
 struct unit {
     char __extc_empty;
+};
+
+struct pcg32 {
+    uint64_t state;
+    uint64_t inc;
 };
 
 struct slice_u8 {
@@ -98,16 +120,35 @@ struct slice_u8 {
     int64_t len;
 };
 
+struct slice_i32 {
+    int32_t * data;
+    int64_t len;
+};
+
 void unit_debug(unit v);
+void pcg32_debug(pcg32 v);
 void slice_u8_debug(slice_u8 v);
 void slice_u8_writeText(slice_u8 v);
+void slice_i32_debug(slice_i32 v);
 bool slice_u8_isEmpty(slice_u8 * self);
 bool slice_u8_hasAt(slice_u8 * self, int64_t i);
 uint8_t slice_u8_get(slice_u8 * self, int64_t i);
 bool slice_u8_eq(slice_u8 * self, slice_u8 other);
 int64_t slice_u8_find(slice_u8 * self, slice_u8 needle);
 bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix);
-int64_t fib(int64_t);
+bool slice_i32_isEmpty(slice_i32 * self);
+bool slice_i32_hasAt(slice_i32 * self, int64_t i);
+int32_t slice_i32_get(slice_i32 * self, int64_t i);
+bool slice_i32_eq(slice_i32 * self, slice_i32 other);
+int64_t slice_i32_find(slice_i32 * self, slice_i32 needle);
+bool slice_i32_startsWith(slice_i32 * self, slice_i32 prefix);
+uint64_t pcg32_next(pcg32 * self);
+pcg32 pcg32_withStream(uint64_t seed, uint64_t stream);
+pcg32 pcg32_seeded(uint64_t seed);
+uint64_t pcg32_nextBounded(pcg32 * self, uint64_t bound);
+double nextFloat(pcg32 * r);
+void shuffleI32(pcg32 * r, slice_i32 a);
+int64_t fib(int64_t n);
 int main(void);
 
 void slice_u8_debug(slice_u8 v) {
@@ -129,145 +170,471 @@ void slice_u8_writeText(slice_u8 v) {
     printf("%.*s", (int)v.len, (const char *)v.data);
 }
 
+void slice_i32_debug(slice_i32 v) {
+    printf("[");
+    for (int64_t i = 0; i < v.len; i++) {
+        if (i) printf(", ");
+        printf("%d", (int)(v.data[i]));
+    }
+    printf("]");
+}
+
+static inline int32_t *slice_i32_index(slice_i32 v, int64_t i, const char *file, int line) {
+    if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
+    return &v.data[i];
+}
+
 void unit_debug(unit v) {
     printf("unit { ");
     printf(" }");
 }
 
+void pcg32_debug(pcg32 v) {
+    printf("pcg32 { ");
+    printf("state: ");
+    printf("%llu", (unsigned long long)(v.state));
+    printf(", ");
+    printf("inc: ");
+    printf("%llu", (unsigned long long)(v.inc));
+    printf(" }");
+}
+
 bool slice_u8_isEmpty(slice_u8 * self) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
-#line 101 "fib.extc"
-    extc_arena_release(&__extc_arena);
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 140 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
     return (self->len == 0);
+    extc_arena_release(&__extc_a[1]);
 }
 
 bool slice_u8_hasAt(slice_u8 * self, int64_t i) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
-#line 105 "fib.extc"
-    extc_arena_release(&__extc_arena);
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 144 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
     return ((i >= 0) && (i < self->len));
+    extc_arena_release(&__extc_a[1]);
 }
 
 uint8_t slice_u8_get(slice_u8 * self, int64_t i) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
-#line 112 "fib.extc"
-    extc_arena_release(&__extc_arena);
-    return (*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 112));
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 151 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 151));
+    extc_arena_release(&__extc_a[1]);
 }
 
 bool slice_u8_eq(slice_u8 * self, slice_u8 other) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
-#line 118 "fib.extc"
-    if ((self->len != other.len)) {
-#line 119 "fib.extc"
-        extc_arena_release(&__extc_arena);
-        return false;
-    }
-#line 121 "fib.extc"
-    int64_t i = 0;
-#line 122 "fib.extc"
-    while ((i < self->len)) {
-#line 123 "fib.extc"
-        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 123)) != (*slice_u8_index(other, (int64_t)(i), "fib.extc", 123)))) {
-#line 124 "fib.extc"
-            extc_arena_release(&__extc_arena);
-            return false;
-        }
-#line 126 "fib.extc"
-        i = (i + 1);
-    }
-#line 128 "fib.extc"
-    extc_arena_release(&__extc_arena);
-    return true;
-}
-
-int64_t slice_u8_find(slice_u8 * self, slice_u8 needle) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
-#line 134 "fib.extc"
-    if ((needle.len > self->len)) {
-#line 135 "fib.extc"
-        extc_arena_release(&__extc_arena);
-        return (-1);
-    }
-#line 137 "fib.extc"
-    int64_t i = 0;
-#line 138 "fib.extc"
-    while (((i + needle.len) <= self->len)) {
-#line 139 "fib.extc"
-        int64_t j = 0;
-#line 140 "fib.extc"
-        bool same = true;
-#line 141 "fib.extc"
-        while ((j < needle.len)) {
-#line 142 "fib.extc"
-            if (((*slice_u8_index(*(self), (int64_t)((i + j)), "fib.extc", 142)) != (*slice_u8_index(needle, (int64_t)(j), "fib.extc", 142)))) {
-#line 143 "fib.extc"
-                same = false;
-#line 144 "fib.extc"
-                break;
-            }
-#line 146 "fib.extc"
-            j = (j + 1);
-        }
-#line 148 "fib.extc"
-        if (same) {
-#line 149 "fib.extc"
-            extc_arena_release(&__extc_arena);
-            return i;
-        }
-#line 151 "fib.extc"
-        i = (i + 1);
-    }
-#line 153 "fib.extc"
-    extc_arena_release(&__extc_arena);
-    return (-1);
-}
-
-bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
+    extc_arena __extc_a[4] = {0};
+    extc_arena_release(&__extc_a[1]);
 #line 157 "fib.extc"
-    if ((prefix.len > self->len)) {
+    if ((self->len != other.len)) {
+        extc_arena_release(&__extc_a[2]);
 #line 158 "fib.extc"
-        extc_arena_release(&__extc_arena);
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
+        extc_arena_release(&__extc_a[2]);
     }
 #line 160 "fib.extc"
     int64_t i = 0;
 #line 161 "fib.extc"
-    while ((i < prefix.len)) {
+    while ((i < self->len)) {
+        extc_arena_release(&__extc_a[2]);
 #line 162 "fib.extc"
-        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 162)) != (*slice_u8_index(prefix, (int64_t)(i), "fib.extc", 162)))) {
+        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 162)) != (*slice_u8_index(other, (int64_t)(i), "fib.extc", 162)))) {
+            extc_arena_release(&__extc_a[3]);
 #line 163 "fib.extc"
-            extc_arena_release(&__extc_arena);
+            extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
+            extc_arena_release(&__extc_a[3]);
         }
 #line 165 "fib.extc"
         i = (i + 1);
+        extc_arena_release(&__extc_a[2]);
     }
 #line 167 "fib.extc"
-    extc_arena_release(&__extc_arena);
+    extc_arena_release(&__extc_a[1]); 
     return true;
+    extc_arena_release(&__extc_a[1]);
+}
+
+int64_t slice_u8_find(slice_u8 * self, slice_u8 needle) {
+    extc_arena __extc_a[5] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 173 "fib.extc"
+    if ((needle.len > self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 174 "fib.extc"
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+        return (-1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 176 "fib.extc"
+    int64_t i = 0;
+#line 177 "fib.extc"
+    while (((i + needle.len) <= self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 178 "fib.extc"
+        int64_t j = 0;
+#line 179 "fib.extc"
+        bool same = true;
+#line 180 "fib.extc"
+        while ((j < needle.len)) {
+            extc_arena_release(&__extc_a[3]);
+#line 181 "fib.extc"
+            if (((*slice_u8_index(*(self), (int64_t)((i + j)), "fib.extc", 181)) != (*slice_u8_index(needle, (int64_t)(j), "fib.extc", 181)))) {
+                extc_arena_release(&__extc_a[4]);
+#line 182 "fib.extc"
+                same = false;
+#line 183 "fib.extc"
+                extc_arena_release(&__extc_a[4]);
+                extc_arena_release(&__extc_a[3]);
+                break;
+                extc_arena_release(&__extc_a[4]);
+            }
+#line 185 "fib.extc"
+            j = (j + 1);
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 187 "fib.extc"
+        if (same) {
+            extc_arena_release(&__extc_a[3]);
+#line 188 "fib.extc"
+            extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+            return i;
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 190 "fib.extc"
+        i = (i + 1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 192 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (-1);
+    extc_arena_release(&__extc_a[1]);
+}
+
+bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix) {
+    extc_arena __extc_a[4] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 196 "fib.extc"
+    if ((prefix.len > self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 197 "fib.extc"
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+        return false;
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 199 "fib.extc"
+    int64_t i = 0;
+#line 200 "fib.extc"
+    while ((i < prefix.len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 201 "fib.extc"
+        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 201)) != (*slice_u8_index(prefix, (int64_t)(i), "fib.extc", 201)))) {
+            extc_arena_release(&__extc_a[3]);
+#line 202 "fib.extc"
+            extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+            return false;
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 204 "fib.extc"
+        i = (i + 1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 206 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return true;
+    extc_arena_release(&__extc_a[1]);
+}
+
+bool slice_i32_isEmpty(slice_i32 * self) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 140 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (self->len == 0);
+    extc_arena_release(&__extc_a[1]);
+}
+
+bool slice_i32_hasAt(slice_i32 * self, int64_t i) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 144 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return ((i >= 0) && (i < self->len));
+    extc_arena_release(&__extc_a[1]);
+}
+
+int32_t slice_i32_get(slice_i32 * self, int64_t i) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 151 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 151));
+    extc_arena_release(&__extc_a[1]);
+}
+
+bool slice_i32_eq(slice_i32 * self, slice_i32 other) {
+    extc_arena __extc_a[4] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 157 "fib.extc"
+    if ((self->len != other.len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 158 "fib.extc"
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+        return false;
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 160 "fib.extc"
+    int64_t i = 0;
+#line 161 "fib.extc"
+    while ((i < self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 162 "fib.extc"
+        if (((*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 162)) != (*slice_i32_index(other, (int64_t)(i), "fib.extc", 162)))) {
+            extc_arena_release(&__extc_a[3]);
+#line 163 "fib.extc"
+            extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+            return false;
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 165 "fib.extc"
+        i = (i + 1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 167 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return true;
+    extc_arena_release(&__extc_a[1]);
+}
+
+int64_t slice_i32_find(slice_i32 * self, slice_i32 needle) {
+    extc_arena __extc_a[5] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 173 "fib.extc"
+    if ((needle.len > self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 174 "fib.extc"
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+        return (-1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 176 "fib.extc"
+    int64_t i = 0;
+#line 177 "fib.extc"
+    while (((i + needle.len) <= self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 178 "fib.extc"
+        int64_t j = 0;
+#line 179 "fib.extc"
+        bool same = true;
+#line 180 "fib.extc"
+        while ((j < needle.len)) {
+            extc_arena_release(&__extc_a[3]);
+#line 181 "fib.extc"
+            if (((*slice_i32_index(*(self), (int64_t)((i + j)), "fib.extc", 181)) != (*slice_i32_index(needle, (int64_t)(j), "fib.extc", 181)))) {
+                extc_arena_release(&__extc_a[4]);
+#line 182 "fib.extc"
+                same = false;
+#line 183 "fib.extc"
+                extc_arena_release(&__extc_a[4]);
+                extc_arena_release(&__extc_a[3]);
+                break;
+                extc_arena_release(&__extc_a[4]);
+            }
+#line 185 "fib.extc"
+            j = (j + 1);
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 187 "fib.extc"
+        if (same) {
+            extc_arena_release(&__extc_a[3]);
+#line 188 "fib.extc"
+            extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+            return i;
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 190 "fib.extc"
+        i = (i + 1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 192 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (-1);
+    extc_arena_release(&__extc_a[1]);
+}
+
+bool slice_i32_startsWith(slice_i32 * self, slice_i32 prefix) {
+    extc_arena __extc_a[4] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 196 "fib.extc"
+    if ((prefix.len > self->len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 197 "fib.extc"
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+        return false;
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 199 "fib.extc"
+    int64_t i = 0;
+#line 200 "fib.extc"
+    while ((i < prefix.len)) {
+        extc_arena_release(&__extc_a[2]);
+#line 201 "fib.extc"
+        if (((*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 201)) != (*slice_i32_index(prefix, (int64_t)(i), "fib.extc", 201)))) {
+            extc_arena_release(&__extc_a[3]);
+#line 202 "fib.extc"
+            extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+            return false;
+            extc_arena_release(&__extc_a[3]);
+        }
+#line 204 "fib.extc"
+        i = (i + 1);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 206 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return true;
+    extc_arena_release(&__extc_a[1]);
+}
+
+uint64_t pcg32_next(pcg32 * self) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 82 "fib.extc"
+    uint64_t old = self->state;
+#line 83 "fib.extc"
+    self->state = ((old * 6364136223846793005) + self->inc);
+#line 84 "fib.extc"
+    uint64_t x = ((((old >> extc_shiftCount((int64_t)(18), 64, "fib.extc", 84)) ^ old) >> extc_shiftCount((int64_t)(27), 64, "fib.extc", 84)) & 4294967295);
+#line 85 "fib.extc"
+    uint64_t rot = (old >> extc_shiftCount((int64_t)(59), 64, "fib.extc", 85));
+#line 86 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (((x >> extc_shiftCount((int64_t)(rot), 64, "fib.extc", 86)) | (x << extc_shiftCount((int64_t)(((32 - rot) & 31)), 64, "fib.extc", 86))) & 4294967295);
+    extc_arena_release(&__extc_a[1]);
+}
+
+pcg32 pcg32_withStream(uint64_t seed, uint64_t stream) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 91 "fib.extc"
+    pcg32 r = (pcg32){.state = 0, .inc = ((stream << extc_shiftCount((int64_t)(1), 64, "fib.extc", 91)) | 1)};
+#line 92 "fib.extc"
+    uint64_t skip = pcg32_next(&(r));
+#line 93 "fib.extc"
+    r.state = (r.state + seed);
+#line 94 "fib.extc"
+    skip = pcg32_next(&(r));
+#line 95 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return r;
+    extc_arena_release(&__extc_a[1]);
+}
+
+pcg32 pcg32_seeded(uint64_t seed) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 100 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return pcg32_withStream(seed, 54);
+    extc_arena_release(&__extc_a[1]);
+}
+
+uint64_t pcg32_nextBounded(pcg32 * self, uint64_t bound) {
+    extc_arena __extc_a[3] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 105 "fib.extc"
+    if ((bound == 0)) {
+        extc_arena_release(&__extc_a[2]);
+#line 105 "fib.extc"
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
+        return 0;
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 106 "fib.extc"
+    uint64_t threshold = (uint64_t)extc_modU((uint64_t)((0 - bound)), (uint64_t)(bound), "fib.extc", 106);
+#line 107 "fib.extc"
+    uint64_t x = pcg32_next(self);
+#line 108 "fib.extc"
+    while ((x < threshold)) {
+        extc_arena_release(&__extc_a[2]);
+#line 109 "fib.extc"
+        x = pcg32_next(self);
+        extc_arena_release(&__extc_a[2]);
+    }
+#line 111 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (uint64_t)extc_modU((uint64_t)(x), (uint64_t)(bound), "fib.extc", 111);
+    extc_arena_release(&__extc_a[1]);
+}
+
+double nextFloat(pcg32 * r) {
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 117 "fib.extc"
+    uint64_t hi = pcg32_next(r);
+#line 118 "fib.extc"
+    uint64_t lo = pcg32_next(r);
+#line 119 "fib.extc"
+    uint64_t x = (((hi << extc_shiftCount((int64_t)(32), 64, "fib.extc", 119)) | lo) >> extc_shiftCount((int64_t)(11), 64, "fib.extc", 119));
+#line 120 "fib.extc"
+    extc_arena_release(&__extc_a[1]); 
+    return (((double)extc_narrowU((uint64_t)(x), UINT64_MAX, "fib.extc", 120)) * (1 / 9.0072e+15));
+    extc_arena_release(&__extc_a[1]);
+}
+
+void shuffleI32(pcg32 * r, slice_i32 a) {
+    extc_arena __extc_a[3] = {0};
+    extc_arena_release(&__extc_a[1]);
+#line 125 "fib.extc"
+    int64_t i = (a.len - 1);
+#line 126 "fib.extc"
+    while ((i > 0)) {
+        extc_arena_release(&__extc_a[2]);
+#line 127 "fib.extc"
+        int64_t j = ((int64_t)extc_narrowI((int64_t)(pcg32_nextBounded(r, ((uint64_t)extc_narrowU((uint64_t)((i + 1)), UINT64_MAX, "fib.extc", 127)))), INT64_MIN, INT64_MAX, "fib.extc", 127));
+#line 128 "fib.extc"
+        int32_t t = (*slice_i32_index(a, (int64_t)(i), "fib.extc", 128));
+#line 129 "fib.extc"
+        (*slice_i32_index(a, (int64_t)(i), "fib.extc", 129)) = (*slice_i32_index(a, (int64_t)(j), "fib.extc", 129));
+#line 130 "fib.extc"
+        (*slice_i32_index(a, (int64_t)(j), "fib.extc", 130)) = t;
+#line 131 "fib.extc"
+        i = (i - 1);
+        extc_arena_release(&__extc_a[2]);
+    }
+    extc_arena_release(&__extc_a[1]);
 }
 
 int64_t fib(int64_t n) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
+    extc_arena __extc_a[3] = {0};
+    extc_arena_release(&__extc_a[1]);
 #line 1 "fib.extc"
     if ((n < 2)) {
+        extc_arena_release(&__extc_a[2]);
 #line 1 "fib.extc"
-        extc_arena_release(&__extc_arena);
+        extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return n;
+        extc_arena_release(&__extc_a[2]);
     }
 #line 1 "fib.extc"
-    extc_arena_release(&__extc_arena);
+    extc_arena_release(&__extc_a[1]); 
     return (fib((n - 1)) + fib((n - 2)));
+    extc_arena_release(&__extc_a[1]);
 }
 
 int main(void) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
+    extc_arena __extc_a[2] = {0};
+    extc_arena_release(&__extc_a[1]);
 #line 2 "fib.extc"
     (slice_u8_writeText((slice_u8){ .data = (uint8_t *)"fib = ", .len = sizeof("fib = ") - 1 }), printf("%lld", (long long)(fib(32))), printf("\n"));
 #line 2 "fib.extc"
-    extc_arena_release(&__extc_arena);
+    extc_arena_release(&__extc_a[1]); 
     return 0;
+    extc_arena_release(&__extc_a[1]);
 }
 
