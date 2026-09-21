@@ -513,6 +513,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_REF: {
             Expr *op = e->u.ref.operand;
             Type *ot = checkExpr(c, op);
+            /* ⭐ 档2：取地址 ⇒ 记下"这个绑定的地址出去过"（别名可能出现 ⇒ 禁止强更新）✓ */
+            { Sym *rs = placeRoot(c, op); if (rs) rs->addressed = true; }
             if (ttIsError(ot)) return ttError(tt);
 
             if (ot->kind == TY_REF) {

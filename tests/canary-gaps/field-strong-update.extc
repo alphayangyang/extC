@@ -1,0 +1,28 @@
+/* ⚠️ tests/canary-gaps/ —— **档2 的目标形状**（等 2.3 字段级深度做完就能收）
+ *
+ * 现在被拒 ✗：`h.p = null` 走的是 **retarget 路径**（`?ref` 型字段赋值 ⇒ 只更新**槽位**的
+ * refDepth）⇒ 根 `h` 的深度没被覆盖 ⇒ `return h` 报"指向更深的局部" ✗
+ * ⇒ 教训：**强更新必须配合"字段级深度"**（PLAN-REGION 2.3）—— 单靠 `addressed` 位不够 ✓
+ */
+/* 档2（`ARENA-FORMAL` §7.4）：**强更新**消掉的误拒 ✓
+ *
+ * `h.p` 先被塞进"指向本帧局部"的引用，随后**置空**；`h` 从来没被取过地址
+ * ⇒ 编译器可以**确定** h.p 现在就是 null（覆盖，而不是取 max）⇒ `return h` 合法 ✓
+ * 取过地址的版本（别名可能指别处）仍然会拒绝 —— 见
+ * tests/errors/field_weak_update_aliased.extc ✓
+ */
+struct holder { p: ?ref i32 }
+
+fn build() -> holder {
+    var x: i32 = 5
+    var h: holder = { p: ref x }      // 指向本帧局部（危险）
+    h.p = null                        // ← 强更新：覆盖掉那个深度 ✓
+    return h                          // ⇒ 合法 ✓
+}
+
+fn main() {
+    var h: holder = build()
+    println("逃出去之前置空 ⇒ 合法")
+    println("p 是空的？ ", h.p == null)
+    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
+}
