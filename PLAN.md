@@ -192,7 +192,8 @@ fn make() -> box {
 | **A0old** | **修 #1 那个洞**：`typeContainsRef` 拆成「有没有零值」（看 tag 0）和「能不能携带引用」（看所有变体）| **arena 的逃逸分析必须长在同一片代码上**；不修则提升分析也漏 ✓ |
 | ~~**A1**~~ ✅ | **`new` 形式**（**2026-09-20 完成**）：`new T` / `new [N]T` / `new T[n]`，**分配出来的一定是零**（运行时那条 alloc 自己 memset）✓ 深度 = 当前块深度（跟 A2 的接缝同一个数）| **造 buffer 解锁了** ⇒ IO 的最后一块拼图 ✓ |
 | ~~**A2**~~ ✅ | **每个词法作用域一只 arena**（**2026-09-20 完成**）| `extc_arena __extc_a[DEPTH] = {0}`（层数编译期算好、栈上定长）+ 进块 reset + 出块 release；`break`/`continue` 放到循环体那层、`return`/`?` 放到第 1 层 ✓ ⭐ 接缝：`alloc` 的深度改成**当前块深度**（跟选 arena 的那个数必须是同一个）✓ 验收 `tests/arena/`（150MB 上限下不许涨）|
-| ~~**A3**~~ 🟡 | **逃逸提升**（**2026-09-20 第一半完成**）：**函数体有分配 + 返回类型含引用/视图** ⇒ 多收一只隐藏参数 `extc_arena *__extc_home`，`new` 分配到**调用者选的那只** arena（调用点：自己有家就传家，没有就传当前块）✓ `needsHome` 取传递闭包 ✓ ⚠️ **剩下的**：**出参**（`fn fill(d: mut ref ?ref node) { *d = new node }`）—— 那要把家从"函数级"细化到"按调用点/按 `mut ref` 实参" | ✅ `fn build() -> mut ref node` 能写了（`examples/escape-promotion.extc`）✓ 而且**返回 `i32` 的函数不要家** ⇒ A2 的"循环不涨内存"没丢 ✓ |
+| ~~**A3**~~ ✅ | **逃逸提升**（**2026-09-20 三半全齐**）① 返回值提升（`fn build() -> mut ref node` ✓）② 出参按**最浅的 `mut ref` 实参**选 arena（= ARENA.md §1.2 ✓）③ **规则 ④**（调用点实参活得 ≥ 家 arena）+ callee 放宽 ⇒ **链表出参 `push` 也能写** ✓ | ✅ 见 `examples/escape-promotion.extc` / `out-param.extc` |
+| **A3old** | **逃逸提升**（旧记录）：**函数体有分配 + 返回类型含引用/视图** ⇒ 多收一只隐藏参数 `extc_arena *__extc_home`，`new` 分配到**调用者选的那只** arena（调用点：自己有家就传家，没有就传当前块）✓ `needsHome` 取传递闭包 ✓ ⚠️ **剩下的**：**出参**（`fn fill(d: mut ref ?ref node) { *d = new node }`）—— 那要把家从"函数级"细化到"按调用点/按 `mut ref` 实参" | ✅ `fn build() -> mut ref node` 能写了（`examples/escape-promotion.extc`）✓ 而且**返回 `i32` 的函数不要家** ⇒ A2 的"循环不涨内存"没丢 ✓ |
 | **A4** | 显式命名 + 显式指定 home（名字待定，主人说"不急"）| 逃生舱，最后做 ✓ |
 | **A5** | 测试：跨函数链表 · AST 递归 · 循环不涨内存 · 攻击测试全绿 | 验收 ✓ |
 

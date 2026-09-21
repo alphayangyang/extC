@@ -1414,7 +1414,23 @@ var buf: mut slice<i32> = new i32[1000]   // **n 个元素** —— 造 buffer �
 | 活到**当前块结束** | arena 按块细化（每只 `{}` 一只）⇒ 循环里 `new` **不会涨内存** ✓ |
 | 引用深度 = **当前块深度** | 跟"哪只 arena"是同一个数 ⇒ 引用逃不出它所在的块 ✓ |
 
-⚠️ **`new` 出来的东西现在还交不出去**：`fn make() -> mut ref node { return new node }`
+**跨函数怎么传**（逃逸提升 / A3，2026-09-20 三半全齐）：
+
+| 想干的事 | 写法 | 谁决定它活多久 |
+|---|---|---|
+| 函数里建好东西**返回** | `fn build() -> mut ref node { … return head }` ✓ | 调用者：自己有家传家、没有传当前块 |
+| 往**调用者给的容器**里塞（出参）| `fn push(l: mut ref list, v: i64) { … l.head = cell }` ✓ | **拥有 `l` 的那只 arena**（= `ARENA.md` §1.2：最浅的 `mut ref` 实参）|
+| 纯草稿（不外传）| 函数里 `new` 但不写进参数、也不返回 | **本函数当前块** ⇒ 循环里不涨 ✓ |
+
+⚠️ **规则 ④**：传给 `ref`/`mut ref` 的实参，它指的东西必须**活得 ≥ 这一刀的家 arena** ——
+因为被调函数可能把它存进那只 arena。传**更深的局部**会被当场拦下：
+
+```
+error: argument 2 of `stash` points into a deeper scope (depth 2)
+       than the arena this call may store it in (depth 1)
+```
+
+⚠️ （旧限制，已解）`new` 出来的东西以前交不出去 —— 现在上面三种都行 ✓：`fn make() -> mut ref node { return new node }`
 是**编译错误**（它活不过当前块）。跨函数接线要等 **A3 逃逸提升** ✓
 （今天要在函数间传递，就让**调用者**提供 buffer/`mut ref` —— 这也是 `IO.md` 的设计 ✓）
 

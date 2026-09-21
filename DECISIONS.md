@@ -1715,3 +1715,35 @@ var buf: mut slice<i32> = new i32[1000]   // n 个元素 ⇒ `mut slice<T>`（**
 
 **验收**：`examples/escape-promotion.extc`（函数里建链表并返回，两次调用各一条链）；
 原来那个"必须报错"的反例 `new_return_escapes` **删掉** —— 它现在是正例 ✓ 172 测试全绿。
+
+---
+
+## ✅ 定案 58：规则 ④ + callee 放宽 —— **链表出参能写了**（2026-09-20，A3 第三半）
+
+**要解决的事**：`fn push(l: mut ref list, v: i64) { … cell.next = l.head … }` 被
+"借来的值不许存进活得更久的地方"挡住 ✗ 而按 `ARENA.md` §7，这个形状**本来就是安全的**：
+
+> `cell` 进的家 arena = **拥有 `l` 的那只**（A3 第二半）；`l.head` 指向的东西
+> 也只能在同一根链上（**链式只读**堵死了别的路），而且每次往 `l.head` 存东西
+> 都按"目标深度 = 字段所在对象的深度"验过 ⇒ 它活得 ≥ 家 arena ⇒ 存进去安全 ✓
+
+⇒ 那条老规则**比模型保守**。补法是把它的**前提**补上（两件事必须一起做）：
+
+| # | 做什么 | 对应 ARENA.md |
+|---|---|---|
+| **① 规则 ④** | 调用点：传给 `ref`/`mut ref` 的实参，它指的东西必须**活得 ≥ 这一刀的家 arena**（`referentDepth ≤ h`）| §7 归纳的**前提**（"外面弄不进来东西"）|
+| **② callee 放宽** | 有家函数里，"参数来的引用"可以存进深度 0 | §7 那句"分配的东西比所有可写目标都长寿 ⇒ 写进哪都安全"✓ |
+
+报错样例：
+
+```
+error: argument 2 of `stash` points into a deeper scope (depth 2)
+       than the arena this call may store it in (depth 1)
+```
+
+⚠️ **② 单独做是洞**（实测：`fn bind(s: mut ref slot, target: mut ref i32) { s.r = target }`
+会被放行 ✗，而调用点可以传更深的局部进来）—— 这条洞被现有反例 `ref_launder_field`
+当场抓住 ⇒ **①②必须一起** ✓
+
+⚠️ **放宽只对"会分配的 callee"生效**（它才有家 arena）⇒ `ref_launder_field` 那种
+**不分配**的 `bind` 照旧被拒 ✓（我一度预测它会变正例，实测**错了**，记在这里 ✓）
