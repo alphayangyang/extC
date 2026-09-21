@@ -149,3 +149,23 @@
 
 **判据**：正例 `if h.p != null { … h.p.value … }`（`h` 是没取过地址的局部）能编过；
 `p.next.value`（`p` 是**参数**）**仍要报错**（PLAN #14 原文那个形状 ⇒ 硬门槛在别名上）✗
+
+## 10. 档 3 ✅（sound 子集落地，2026-09-21）
+
+| 步 | 状态 | 做法 |
+|---|---|---|
+| **3.1 只读路径收窄** | ✅ | `narrowTarget` 认**一层字段路径**，但只认「根是 `depth ≥ 1` 且 `!addressed` 的**局部**」；`unNarrow` 随根作废；`EX_FIELD` 命中路径 key ⇒ 返回**非空**版本；`EX_REF` 先作废再置 `addressed` ✓ |
+| **3.2 参数根** | ⛔ **不做**（并记进"硬门槛"）| 调用者可能持有别名 ⇒ 事实不稳定 ✗ ⇒ 需要**别名分析**（`ARENA-FORMAL` §7.4 那条门槛）⇒ 记为**长期不做**，报错文案里已给合法替代（`var x = p.next`）✓ |
+
+**判据**：`examples/path-narrowing.extc`（局部根 ⇒ 编过，带 expect）✓ ·
+`tests/errors/path_narrow_param_root.extc`（参数根 ⇒ 仍报错）✓ ·
+`check.sh` 全量 **通过 4，失败 0**（220 测试）✓ · 攻击库基线**一字不动** ✓
+
+## 11. 🏁 三档总账（goal 完成度）
+
+| 档 | 结果 | 关键证据 |
+|---|---|---|
+| **档1** 摘要 + 闭包 + E + 删甲′ | ✅ | `varArray-return` / `list-return` / `varArray-asSlice-return` 进 `examples/`（ASan 干净）· `ref_arg_too_deep` 仍被挡 · 老例子生成 C 逐字节不变 |
+| **档2** 字段级深度 + 取地址跟踪 ⇒ 强更新 | ✅ | `field-strong-update`（放）· `field_weak_update_aliased`（挡）· golden 逐字节不变 |
+| **档3** 路径事实 | ✅（sound 子集）| `path-narrowing`（放）· `path_narrow_param_root`（挡）|
+| **§8.5 工程降法** | 部分用到 | ① 惰性闭包（memo + 环保护 + "是否完整"位）✓ ② 实例去重（沿用 codegen 的实例集合）✓ ③ SCC/模板级摘要：**目前不需要**（摘要按函数算、调用图小，未出现超限）⇒ 留作扩展点 ✓ |
