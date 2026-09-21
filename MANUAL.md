@@ -1372,6 +1372,32 @@ fn find(head: ?ref node, want: i64) -> ?ref node {
 
 ---
 
+## 7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）
+
+```extc
+var n: mut ref node     = new node        // 一个 T 的**地方**（清零）
+var a: mut ref [3]i32   = new [3]i32      // 定长数组的地方
+var buf: mut slice<i32> = new i32[1000]   // **n 个元素** —— 造 buffer 就是它 ✓
+```
+
+**三条规矩**（都是一句话）：
+
+| 规矩 | 为什么 |
+|---|---|
+| **分配出来的一定是零** | 跟定案 8（默认零初始化）同源 ⇒ 没有 C 那种 `malloc`/`calloc` 两条路的陷阱 ✓（新 `node` 的 `next` 天生是 `null`、新 buffer 全是 0）|
+| 活到**当前块结束** | arena 按块细化（每只 `{}` 一只）⇒ 循环里 `new` **不会涨内存** ✓ |
+| 引用深度 = **当前块深度** | 跟"哪只 arena"是同一个数 ⇒ 引用逃不出它所在的块 ✓ |
+
+⚠️ **`new` 出来的东西现在还交不出去**：`fn make() -> mut ref node { return new node }`
+是**编译错误**（它活不过当前块）。跨函数接线要等 **A3 逃逸提升** ✓
+（今天要在函数间传递，就让**调用者**提供 buffer/`mut ref` —— 这也是 `IO.md` 的设计 ✓）
+
+⚠️ `new T` 的 `T` 必须是**具体类型**（模板里的 `T` 大小不知道 ⇒ 报错）✓
+
+`new T[n]` 里的 `n` **只求值一次**（不纯时编译器自己引临时变量 ✓）。
+
+---
+
 ## 8. 内建函数
 
 ### `print` / `println`
