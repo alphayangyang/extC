@@ -1,0 +1,3 @@
+// 洞：`*p = v` 漏了只读检查（`placeRoot` 认不出 `*p` ⇒ 被当成可写）
+fn f(p: ref i32) { *p = 9 }
+fn main() -> i32 { var n: i32 = 1  f(ref n)  return 0 }

@@ -1,0 +1,4 @@
+// 同一条限制的正常形状：把借来的引用存进「参数指向的对象」
+struct slot { r: mut ref i32 }
+fn bind(s: mut ref slot, target: mut ref i32) { s.r = target }
+fn main() -> i32 { var k: i32 = 0  var keeper: slot = { r: ref k }  var n: i32 = 1  bind(ref keeper, ref n)  return 0 }

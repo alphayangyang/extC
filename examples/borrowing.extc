@@ -17,8 +17,13 @@ struct holder {
     tag: i32
 }
 
-fn bind(h: mut ref holder, target: mut ref i32) {
-    h.inner = target                // 换指向：把「借来的」存进**本帧**的 h ✓ 合法
+// ✅ 存进**本帧的局部**：合法（两个东西都在本帧）
+// ⚠️ 但**不能**存进「参数指向的对象」里 —— 那个对象活得多久编译器不知道 ✗：
+//     fn bind(h: mut ref holder, target: mut ref i32) { h.inner = target }   // ✗ 报错
+fn bindLocal(target: mut ref i32) {
+    var h: holder = { inner: target, tag: 1 }   // 本帧的局部
+    h.inner = target                            // ✓ 合法（同层）
+    println("本帧的 h 拿着 ", *h.inner)
 }
 
 fn main() -> i32 {
@@ -26,6 +31,8 @@ fn main() -> i32 {
     var other: i32 = 200
 
     // ✓ 存进本帧的局部：实参深度 ≤ 本帧 ⇒ 合法
+    bindLocal(ref other)
+
     let r = pickFirst(ref outer, ref other)
     println("挑出来的值 = ", *r)          // 100
 

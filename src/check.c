@@ -540,6 +540,19 @@ static bool isGlobalSym(Checker *c, Sym *s) {
     return false;
 }
 
+/* 「这个**地方**是借来的吗」—— 跟 `exprBorrowed` 的区别：
+ * 它**不看值类型**（`*p` 的值可能完全没有引用），只问"这块存储是谁的" ✓
+ * 用在 `ref *p` 这种"重新取一次引用"的洗白路径上 ✓ */
+static bool placeIsBorrowed(Checker *c, Expr *e) {
+    if (!e) return false;
+    if (e->kind == EX_DEREF) return placeIsBorrowed(c, e->u.deref.operand);
+    if (e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_INDEX) {
+        Sym *root = placeRoot(c, e);
+        return root && root->depth == 0 && !isGlobalSym(c, root);
+    }
+    return false;
+}
+
 static bool exprBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
     if (!typeContainsRef(c->tt, e->type)) return false;
@@ -550,7 +563,14 @@ static bool exprBorrowed(Checker *c, Expr *e) {
          * 全局 / 静态：也深度 0，但**谁都存得下它** ✓ */
         return root && root->depth == 0 && !isGlobalSym(c, root);
     }
-    case EX_REF:   return exprBorrowed(c, e->u.ref.operand);
+    case EX_REF:
+        /* ⚠️ **`ref *p` 是洗白路径**（2026-09-20 攻击测试打出来）：
+         * `b.r = ref *p` —— 重新取一次引用，就看不出它来自参数了 ✗
+         * `*p` 是"p 指的那个地方" ⇒ 要看**那个地方**借没借来 ✓
+         * （注意不能走 exprBorrowed：`*p` 的**值**可能是 `i32`，会被早退挡掉 ✗）*/
+        if (e->u.ref.operand->kind == EX_DEREF)
+            return placeIsBorrowed(c, e->u.ref.operand->u.deref.operand);
+        return exprBorrowed(c, e->u.ref.operand);
     case EX_SLICE: return exprBorrowed(c, e->u.slice.obj);
     case EX_CALL:
         for (size_t i = 0; i < e->u.call.args.len; i++)
@@ -617,6 +637,16 @@ static bool pathHasReadonlyRef(Expr *e) {
 }
 
 static bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
+    /* ⚠️ `*p` 要走**自己那条**：`placeRoot` 认不出它（会返回 NULL ⇒ 被当成可写）✗
+     * 可写性由**引用的类型**给：只有 `mut ref` 才能 `*p = v` ✓ */
+    if (e && e->kind == EX_DEREF) {
+        Type *ot = e->u.deref.operand->type;
+        if (ot && ot->kind == TY_REF && ot->mut) return false;
+        ckError(c, line,
+                "`*p = v` needs `p` to be `mut ref T`; a `ref T` is a read-only borrow",
+                "cannot %s through a read-only reference", what);
+        return true;
+    }
     if (pathHasReadonlyRef(e)) {
         ckError(c, line,
                 "`ref T` is a **read-only** borrow; writing through it needs `mut ref T` "
@@ -2050,6 +2080,12 @@ static void checkStmt(Checker *c, Stmt *s) {
                     checkAssignable(c, tt_, vt0, v, "assignment");
                     checkEscape(c, v, placeDepth(c, s->u.assign.target),
                                 s->line, "this reference");
+                    /* ⚠️ **换指向也要查"借来的值"**（2026-09-20 攻击测试打出来）：
+                     *     struct slot { r: mut ref i32 }
+                     *     fn stash(b: mut ref slot, p: mut ref i32) { b.r = ref *p }
+                     * 权限够、深度也够（p 是参数 = 0），只有"它其实是调用者的东西"这条能拦 ✗
+                     * ⇒ 少了这一句就是一个**真悬垂**（实测打印出过期数据）✓ */
+                    checkStoreEscape(c, v, s->u.assign.target, s->line);
                     return;
                 }
 

@@ -10,13 +10,12 @@ struct slot {
     p: mut ref i64
     tag: i32
 
-    fn bind(self: mut ref slot, target: mut ref i64, name: i32) {
-        self.p = target            // 换指向：字段也是引用
-        self.tag = name
-    }
     fn poke(self: mut ref slot, v: i64) {
         *self.p = v                // 写穿要显式 `*`（`self.p = v` 现在是错的）
     }
+    // ⚠️ **不能**写 `fn set(self: mut ref slot, target: mut ref i64) { self.p = target }`
+    //    —— target 是「借来的」，而 self 指向的对象活得多久编译器不知道 ⇒ 拒 ✗
+    //    换指向要在**同一个帧里**做（下面 main 里那样）✓
 }
 
 fn main() -> i32 {
@@ -34,7 +33,7 @@ fn main() -> i32 {
     var s: slot = { p: ref a, tag: 0 }
     s.poke(5)                          // 写进 a
     println("a = ", a)                 // 5
-    s.bind(ref b, 1)                   // 字段换指向 b
+    s.p = ref b                        // 换指向：同一个帧里的两个东西 ✓
     s.poke(6)
     println("a = ", a, " b = ", b)     // 5 6
     return 0

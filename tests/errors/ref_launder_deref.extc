@@ -1,0 +1,6 @@
+// 洞：`b.r = ref *p` 洗白 —— 把参数的引用**重新取一次**，就绕过了"借来的"检查
+// （实测真的悬垂：outer 返回后 keeper.r 指着死掉的 local）
+struct slot { r: mut ref i32 }
+fn stash(b: mut ref slot, p: mut ref i32) { b.r = ref *p }
+fn outer(s: mut ref slot) { var local: i32 = 42  stash(s, ref local) }
+fn main() -> i32 { var k: i32 = 0  var keeper: slot = { r: ref k }  outer(ref keeper)  return 0 }
