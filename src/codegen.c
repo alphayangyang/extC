@@ -2085,6 +2085,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     {
         bool grew = true;
         int round = 0;
+        const char *srcName = NULL, *newName = NULL;   /* 超限时报"谁造出了谁" ✓ */
         while (grew && round < 64) {
             grew = false;
             round++;
@@ -2093,12 +2094,25 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 SUnit *u = *(SUnit **)vecAt(&units, i);
                 size_t before = units.len;
                 scanUnitForUnits(arena, tt, &units, u);
-                if (units.len != before) grew = true;
+                if (units.len != before) {
+                    grew = true;
+                    srcName = unitName(u);
+                    for (size_t k = before; k < units.len; k++)
+                        newName = unitName(*(SUnit **)vecAt(&units, k));
+                }
             }
         }
         if (grew) {
-            fprintf(stderr, "extc: internal: generic instance closure did not settle"
-                            " in 64 rounds (PLAN #27) -- please report this program\n");
+            /* ⭐ 上限不是给"写挂的循环"兜底的，是防**实例套娃不收敛**
+             * （单态化语言的共同做法：C++ 的 `-ftemplate-depth` / rustc 的 `recursion_limit`）；
+             * 人家只报"太深了"，我们顺便报**是哪个实例在套娃** ⇒ 好定位 ✓ */
+            fprintf(stderr,
+                    "extc: error: generic instance closure did not settle in 64 rounds.\n"
+                    "      last expansion: `%s` mentions `%s`, which needs more instances.\n"
+                    "      This usually means instances nest without bound (such as\n"
+                    "      `option<option<option<...>>>`). Use a concrete type, or report\n"
+                    "      this program if you think it should compile.\n",
+                    srcName ? srcName : "?", newName ? newName : "?");
             exit(1);
         }
     }
