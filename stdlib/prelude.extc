@@ -25,73 +25,34 @@ struct unit {
 // ---------------------------------------------------------------------------
 // option<T> —— 「可能有值，也可能没有」
 //
-// **零值就是 none。** 这不是巧合，是定案 8（默认零初始化）的直接结果：
-// `var o: option<i64>` 里 has 就是 false，那本来就叫「没有」。
-// 所以 `none()` 只是返回零值，不需要任何特殊机制。
+// **它就是普通枚举**（第三刀，2026-09-20）：`| none | some(T)`
 //
-// 为什么要有它：`find` 返回 -1 那种魔法数字分不清「没找到」和「下标 -1」。
-// 把「可能没有」写进类型，调用点就必须处理两种情况（P′：不能证明的语法上看得见）。
-//
-// ⚠️ 两个已知限制（都写在 DECISIONS 里）：
-//   ① T 里**不能含 ref**（`option<slice<u8>>` 不行）—— None 的那个 value
-//      字段没有合法的值可填，而「ref 不可为空」是 extC 的承诺。等 week-4。
-//   ② 这里**故意不定义 `==`**：泛型的 `==` 是「一实例化就检查」的，
-//      给了它就意味着任何 `option<point>` 都强迫 point 定义 `==`。
-//      暂时用 `o.has` / `o.value` 自己比。
+//   · 零值 = tag 0 = `none`（**不带载荷**）⇒ `var o: option<i64>` 就是「没有」✓
+//     这不是巧合，是定案 8（默认零初始化）的直接结果。**变体顺序有意义**：
+//     `| some(T) | none` 会让 `var o: option<i64>` 变成「有值但值是零」✗
+//   · `T` 里**可以有 ref / 视图**了 ⇒ `option<slice<u8>>` 合法 ✓
+//     （以前是 struct，`none` 那个 `value` 字段没东西可填，而「ref 不可为空」
+//      是 extC 的承诺 ⇒ 只能报 `__extc_reference_has_no_zero_value__` ✗
+//      现在是「tag 0 = none，载荷根本不存在」⇒ 洞封上了 ✓ 见 IO.md）
+//   · 拿值只有两条路：**`match`**（穷尽检查），或者 **`?` 顺着往上抛**。
+//     **故意没有 `unwrap()`** —— 那需要一条 trap 原语，而「会 trap 的库」不符合
+//      extC 的性格：要 trap 就让调用者自己写。也**故意没有** `valueOr` 之类的方法：
+//      枚举加方法还没做（PLAN #16），而且 `match` 更显式 ✓
 // ---------------------------------------------------------------------------
 
-struct option<T> {
-    has: bool
-    value: T
-
-    // 关联函数：写在 struct 体内但没有 `self`，调用写全类型 `option<i64>::some(3)`
-    fn some(v: T) -> option<T> {
-        return { has: true, value: v }
-    }
-
-    fn none() -> option<T> {
-        return {}                          // 零值 ⇒ has = false
-    }
-
-    // 有值就给值，没有就给 fallback（不 trap、不隐藏）
-    fn valueOr(self: ref option<T>, fallback: T) -> T {
-        if self.has {
-            return self.value
-        }
-        return fallback
-    }
-}
+type option<T> = | none | some(T)
 
 // ---------------------------------------------------------------------------
 // result<T, E> —— 「要么成功给你值，要么失败给你一个错误」
 //
-// 跟 option 一样，零值是**失败**那一侧（ok = false），所以构造成功必须显式写。
-// `valueOr` 之外没有 `unwrap()` —— 那需要一条 trap 原语，
-// 而「不 trap 的库」比「会 trap 的库」更符合 extC 的性格（要 trap 就让调用者说）。
+// 同样**就是普通枚举**：`| failure(E) | success(T)`
+// 零值 = tag 0 = `failure`（`E` 的零值）⇒ 跟以前「零值就是失败侧」一致 ✓
+//
+// 构造器名字是 success / failure（不叫 ok / err —— 那两个词要留给读的地方，
+// 现在读的地方是 `match` 的变体名 ✓）
 // ---------------------------------------------------------------------------
 
-struct result<T, E> {
-    ok: bool
-    value: T
-    err: E
-
-    // 构造器名字不能叫 `ok` —— 标签字段已经叫 ok 了，而**字段和方法不许同名**
-    // （编译器会把这种撞名当场报出来）。所以用一对能读的：success / failure。
-    fn success(v: T) -> result<T, E> {
-        return { ok: true, value: v }
-    }
-
-    fn failure(e: E) -> result<T, E> {
-        return { ok: false, err: e }
-    }
-
-    fn valueOr(self: ref result<T, E>, fallback: T) -> T {
-        if self.ok {
-            return self.value
-        }
-        return fallback
-    }
-}
+type result<T, E> = | failure(E) | success(T)
 
 struct slice<T> {
     data: ref T

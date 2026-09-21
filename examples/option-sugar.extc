@@ -5,6 +5,9 @@
  * 两个写法都认：类型位置的 `?T`，和**类型已知时**的裸构造器
  * （`none` / `some(x)` / `success(x)` / `failure(e)`）——
  * 返回位置、带标注的 `var`、赋值、实参位置都算"类型已知" ✓
+ *
+ * ⭐ 第三刀之后 `option` 就是一个**普通泛型枚举**（`| none | some(T)`），
+ * 所以读值用 `match` —— 见 option-result.extc 里的标准姿势。
  */
 
 struct config {
@@ -20,29 +23,56 @@ fn half(n: i64) -> ?i64 {
 
 /* 两个里挑一个"有"的 */
 fn pick(a: ?i64, b: ?i64) -> ?i64 {
-    if a.has { return a }
-    return b
+    match a {
+        some(v) => { return a }
+        none    => { return b }
+    }
+}
+
+/* 想短一点就自己包一个 —— 这层故意留在用户代码里（prelude 不给 unwrap）。
+ * ⚠️ 辅助函数是**按类型**写的：泛型的辅助函数要等"泛型自由函数 / 枚举方法"（PLAN #16）*/
+fn orElse(o: ?i64, fallback: i64) -> i64 {
+    match o {
+        some(v) => { return v }
+        none    => { return fallback }
+    }
+}
+
+fn orElseI32(o: ?i32, fallback: i32) -> i32 {
+    match o {
+        some(v) => { return v }
+        none    => { return fallback }
+    }
 }
 
 fn main() {
     /* 带标注的 var：裸构造器也认 ✓ */
     var r: ?i64 = some(21)
-    println("r = ", r.valueOr(-1))
+    println("r = ", orElse(r, -1))
 
     /* 实参位置：类型从参数来 ✓ */
-    println("pick = ", pick(none, some(9)).valueOr(-1))
-    println("pick = ", pick(some(4), none).valueOr(-1))
+    println("pick = ", orElse(pick(none, some(9)), -1))
+    println("pick = ", orElse(pick(some(4), none), -1))
 
-    println("half(10) = ", half(10).valueOr(-1))
-    println("half(7)  = ", half(7).valueOr(-1))
+    match half(10) {
+        some(v) => { println("half(10) = ", v) }
+        none    => { println("half(10) = 没有") }
+    }
+    match half(7) {
+        some(v) => { println("half(7)  = ", v) }
+        none    => { println("half(7)  = 没有") }
+    }
 
     /* 结构体字段是 `?i32` ⇒ 零值是"没有"（option 本身有零值）✓ */
     var c: config
-    println("默认 = ", c.retries.has, " / ", c.limit.has)
+    println("默认 = ", orElseI32(c.retries, -1), " / ", orElseI32(c.limit, -1))
     c.retries = some(3)          // 赋值位置：类型从目标来 ✓
-    if c.retries.has { println("retries = ", c.retries.value) }
+    match c.retries {
+        some(v) => { println("retries = ", v) }
+        none    => { println("retries = 没有") }
+    }
 
     /* 显式写全类型也永远可以（不靠上下文猜）✓ */
     var full: ?i64 = option<i64>::some(5)
-    println("full = ", full.valueOr(-1))
+    println("full = ", orElse(full, -1))
 }

@@ -1,4 +1,0 @@
-fn main() -> i32 {
-    var s: option<slice<u8>>
-    return 0
-}

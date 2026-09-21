@@ -980,8 +980,13 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  * 用户不能重定义，所以按名字认是安全的）。`?` 要用到它们的标签字段名 ——
  * 跟视图协议 `data` + `len` 是同一种分工：**语言认识协议，库提供结构**。 */
 static bool isProtoType(Type *t, const char *name, size_t nargs) {
-    return t && t->kind == TY_GENERIC && t->sdef &&
-           strcmp(t->sdef->name, name) == 0 && t->targs.len == nargs;
+    if (!t || t->targs.len != nargs) return false;
+    /* 泛型 struct：`slice<T>`、`varArray<T>` */
+    if (t->kind == TY_GENERIC && t->sdef) return strcmp(t->sdef->name, name) == 0;
+    /* 泛型**枚举**：`option<T>` / `result<T,E>`（第三刀之后它们就是枚举，
+     * 实例的类型是 TY_ENUM + 具体 targs ✓）*/
+    if (t->kind == TY_ENUM && t->edef)    return strcmp(t->edef->name, name) == 0;
+    return false;
 }
 
 /* `e?` —— 失败就顺着往上抛。
@@ -2224,11 +2229,13 @@ static void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     Vec args;
     if (noParens) vecInit(&args, c->arena, sizeof(void *));
     else          args = e->u.call.args;
-    e->kind = EX_ASSOC;
-    e->u.assoc.typeName = want->sdef->name;   /* "result" / "option" */
-    e->u.assoc.targs    = want->targs;        /* 已经是解析好的类型 ✓ */
-    e->u.assoc.name     = nm;
-    e->u.assoc.args     = args;
+    /* `option` / `result` 现在是**普通枚举** ⇒ 裸构造器就是一个变体构造 ✓
+     * （`typeName` 要写**实例名**：codegen 拿它拼 C 的 tag 常量 `option_i64_some`）*/
+    e->kind = EX_ENUMVAL;
+    e->u.enumval.typeName = want->name;
+    e->u.enumval.variant  = nm;
+    e->u.enumval.args     = args;
+    e->assocOwner = want;
 }
 
 static void checkStmt(Checker *c, Stmt *s);
@@ -2594,7 +2601,12 @@ static void checkStmt(Checker *c, Stmt *s) {
                     Type *bt = payloadType(c->tt, sb, v, k);
                     /* 绑定的载荷是**这个值的副本**（值语义），名字只读 ——
                      * 想改就自己 `var` 一份 */
-                    declare(c, bn, bt, false, false, arm->line, c->scopes.len);
+                    Sym *bs = declare(c, bn, bt, false, false, arm->line, c->scopes.len);
+                    /* ⚠️ 把**解析后的 C 名字**写回绑定表（跟 `Param.cname` / `Stmt.u.var.cname`
+                     * 同一个套路）。不写回的话，同一层里两个 `match` 绑同名时，
+                     * 声明用原名、而分支体里查到的却是 `s__2` ⇒ 生成的 C 编不过
+                     * （`'s__2' undeclared`）✗ —— 这就是 PLAN §0.4 #2 ✓ */
+                    *(const char **)vecAt(&arm->binds, k) = bs->cname;
                 }
                 for (size_t k = 0; k < arm->body->u.block.stmts.len; k++)
                     checkStmt(c, *(Stmt **)vecAt(&arm->body->u.block.stmts, k));

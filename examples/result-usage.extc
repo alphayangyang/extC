@@ -1,9 +1,21 @@
-// `result` / `option` 怎么用 —— 一页看完（2026-09-18 加：return 位置可以裸写构造器）
+// `result` / `option` 怎么用 —— 一页看完（2026-09-20 第三刀：它们现在是**普通枚举**）
 //
 // 为什么要有它们：用一个魔法值表示失败是**看不见的**
 //     fn find(...) -> i32        // 返回 -1 表示「没找到」
 // -1 分不清「没找到」和「下标恰好是 -1」，而且**从签名上完全看不出来**。
 // 现在这两种情况都是类型的一部分（P′：不能证明的，语法上看得见）。
+//
+// ⭐ 第三刀之后 `option` / `result` 就是**两个普通的泛型枚举**（写在 prelude 里）：
+//
+//     type option<T>    = | none | some(T)
+//     type result<T, E> = | failure(E) | success(T)
+//
+// 于是：`option<slice<u8>>` **合法**了（以前 `none` 那个字段没东西可填 ✗），
+// 而且它们跟用户自己写的枚举**完全一样** —— 没有隐藏字段、没有魔法方法 ✓
+//
+// 读值只有两条路：**`match`**（下面写了标准姿势）或者 **`?`**（不成功就不干了）。
+// prelude **故意不给** `unwrap()`：那需要一条 trap 原语，而"会 trap 的库"不符合
+// extC 的性格 —— 要 trap 就让调用者自己写 ✓
 
 type gameError = | outOfRange | occupied
 
@@ -13,16 +25,13 @@ struct board {
 
 // ---------------------------------------------------------------- ① 造
 //
-// 在 `return` 位置上可以**裸写**构造器：类型从函数签名来。
-// 这不是"推导" —— 编译器没有猜，它读的是你自己写的那行 `-> option<i32>`；
-// 省掉的纯粹是重复劳动（原来要写 `option<i32>::none()`）。
-//
-// ⚠️ 只有这四个名字（success / failure / some / none）、只有 return 位置、
-//    只有返回类型正好是对应容器时才认。别的位置照旧写全类型。
+// 在**类型已知**的位置可以裸写构造器：return、带标注的 var、赋值、实参。
+// 这不是"推导" —— 编译器没有猜，它读的是你自己写的 `-> option<i32>`；
+// 省掉的纯粹是重复劳动（否则要写 `option<i32>::some(x)`）。
 
 fn at(b: ref board, x: i32, y: i32) -> option<i32> {
     if x < 0 || x >= 15 || y < 0 || y >= 15 {
-        return none()                        // 没有就是没有（不是 -1）
+        return none                          // 没有就是没有（不是 -1）
     }
     return some(b.cell[y][x])
 }
@@ -50,45 +59,78 @@ fn placeRow(b: mut ref board, y: i32, p: i32) -> result<unit, gameError> {
     return success(unit {})
 }
 
-// 招数二：就地判断（`.ok` / `.err`）
+// 招数二：`match` —— **读值唯一的标准姿势**（穷尽检查：少写一个变体就编不过）
+//
+// 想让调用点短一点，就自己包一个小函数（下面两个就是）——
+// 这一层**故意留在你的代码里**，不塞进 prelude：你怎么处理"没有"是你的事 ✓
 fn describe(e: gameError) -> slice<u8> {
     if e == gameError.outOfRange { return "出界了" }
     return "那格已经有子了"
 }
 
-// 招数三：`option` 的三件套 `.has` / `.value` / `.valueOr(兜底)`
+// `option` 的"有就用、没有就兜底"
+fn orElse(o: option<i32>, fallback: i32) -> i32 {
+    match o {
+        some(v) => { return v }
+        none    => { return fallback }
+    }
+}
+
+// `result` 的"成不成功"
+fn isOk(r: result<unit, gameError>) -> bool {
+    match r {
+        success(u) => { return true }
+        failure(e) => { return false }
+    }
+}
+
+// 具体哪个变体失败？`match` 里直接读出来（不用先问 bool 再读值）
+fn whyFailed(r: result<unit, gameError>) -> slice<u8> {
+    match r {
+        success(u) => { return "没失败" }
+        failure(e) => { return describe(e) }
+    }
+}
+
+// 招数三：就地判断（不用写辅助函数的最短形式）
 fn firstEmpty(row: slice<i32>) -> option<i64> {
     var i: i64 = 0
     while i < row.len {
         if row[i] == 0 { return some(i) }
         i = i + 1
     }
-    return none()
+    return none
 }
 
 fn main() -> i32 {
     var b: board
 
     let r1 = place(ref b, 3, 3, 1)
-    println("落子成功？   ", r1.ok)                  // true
+    println("落子成功？   ", isOk(r1))                // true
 
     let r2 = place(ref b, 3, 3, 2)
-    println("重复落子？   ", r2.ok)                  // false
-    println("为什么？     ", describe(r2.err))       // 那格已经有子了
+    println("重复落子？   ", isOk(r2))                // false
+    println("为什么？     ", whyFailed(r2))           // 那格已经有子了
 
     let r3 = place(ref b, 99, 0, 1)
-    println("出界？       ", r3.ok)                  // false
-    println("为什么？     ", describe(r3.err))       // 出界了
+    println("出界？       ", isOk(r3))                // false
+    println("为什么？     ", whyFailed(r3))           // 出界了
 
     let r4 = placeRow(ref b, 7, 1)
-    println("整行落子？   ", r4.ok)                  // true
+    println("整行落子？   ", isOk(r4))                // true
 
     let c = at(ref b, 3, 3)
-    println("(3,3) 有值？ ", c.has, "  里面是 ", c.value)   // true 1
+    println("(3,3) 有值？ ", orElse(c, -1))           // 1（有就给你）
 
     let e = at(ref b, 99, 99)
-    println("(99,99) 有值？", e.has)                        // false
+    println("(99,99) 兜底 ", orElse(e, -1))           // -1（没有就用兜底）
 
-    println("找第一个空位：", firstEmpty(b.cell[7][0..15]).valueOr(-1))   // -1（整行都满了）
+    // 第 7 行整行都满了 ⇒ 「找不到」是**正常结果**，不是错误 —— 就地 match 处理 ✓
+    // （写 `orElse` 那种小函数是按类型写的；泛型的辅助函数等"泛型自由函数/枚举方法"
+    //   那个特性，见 PLAN #16 —— 今天要么就地 match，要么就具体类型写一个）
+    match firstEmpty(b.cell[7][0..15]) {
+        some(i) => { println("第一个空位：", i) }
+        none    => { println("第一个空位：没有（整行都满了）") }
+    }
     return 0
 }

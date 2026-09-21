@@ -1,0 +1,86 @@
+/* `option<slice<u8>>` —— 第三刀顺手封上的那个洞（2026-09-20）
+ *
+ * 以前 `option<T>` 是个 struct `{ has: bool, value: T }`，而 `none` 的那个
+ * `value` 字段**没东西可填**（「ref 不可为空」是 extC 的承诺）⇒
+ * `var s: option<slice<u8>>` 报 `__extc_reference_has_no_zero_value__`，
+ * 而且错还落在 prelude 的行上，用户看不见自己的代码 ✗
+ *
+ * 现在 `option<T>` 是**普通枚举** `| none | some(T)`：
+ * 零值的 tag 是 `none`，**载荷根本不存在** ⇒ 里面有 ref 也照样有零值 ✓
+ *
+ * 为什么这件事重要：**「找到没有」+「视图」是 IO 和解析器的基本形状** ——
+ * 读取的行是一个指向缓冲区的视图（零拷贝），"没有更多了"就是 `none` ✓
+ * 见 IO.md。
+ */
+
+/* 在字节串里找第一个匹配的字符，返回**它之后**的剩余部分（一个视图，零拷贝）*/
+fn afterChar(text: slice<u8>, ch: u8) -> option<slice<u8>> {
+    var i: i64 = 0
+    while i < text.len {
+        if text[i] == ch {
+            return some(text[i + 1..text.len])
+        }
+        i = i + 1
+    }
+    return none
+}
+
+/* 「有就打印，没有就说没有」—— 视图装在 option 里，照样是零拷贝 ✓ */
+fn report(label: slice<u8>, got: option<slice<u8>>) {
+    match got {
+        some(rest) => { println(label, " = ", rest) }
+        none       => { println(label, " = 没有") }
+    }
+}
+
+struct lineReader {
+    buf: slice<u8>
+    pos: i64
+    /* 「还有下一行吗」—— 这里的 option 装的是**视图**：
+     * 它就是 lineReader 存在的理由（读完的每一行都指向同一块 buf）✓ */
+    eof: bool
+}
+
+fn nextLine(r: mut ref lineReader) -> option<slice<u8>> {
+    if r.eof { return none }
+    var start: i64 = r.pos
+    var i: i64 = r.pos
+    while i < r.buf.len {
+        if r.buf[i] == 10 {                      // '\n'
+            r.pos = i + 1
+            return some(r.buf[start..i])         // 不含换行符的视图 ✓
+        }
+        i = i + 1
+    }
+    r.eof = true
+    r.pos = r.buf.len
+    if start < r.buf.len { return some(r.buf[start..r.buf.len]) }
+    return none
+}
+
+fn main() {
+    /* ① 零值就是 none —— 以前这一行编不过 ✓ */
+    var notFound: option<slice<u8>>
+    report("零值", notFound)
+
+    /* ② 找到就拿到一个视图（零拷贝，直接能当文本打印）*/
+    report("冒号后面", afterChar("name: 奶昔", 58))     // 58 = ':'
+    report("找不到",   afterChar("name: 奶昔", 64))     // 64 = '@'
+
+    /* ③ 逐行读 —— 「没有下一行了」就是 `none`，不用哨兵值 ✓ */
+    var r: lineReader = { buf: "第一行\n第二行\n", pos: 0, eof: false }
+    var n: i32 = 0
+    while true {
+        var more: option<slice<u8>> = nextLine(ref r)
+        match more {
+            some(line) => { n = n + 1  println("第 ", n, " 行：", line) }
+            none       => { break }
+        }
+    }
+    /* ④ 装在 option 里的视图可以存进字段、可以返回 —— 它就是普通值 ✓ */
+    var again: option<slice<u8>> = afterChar("a,b,c", 44)    // 44 = ','
+    match again {
+        some(rest) => { println("再一次：", rest) }
+        none       => { println("再一次：没有") }
+    }
+}

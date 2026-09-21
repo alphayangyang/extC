@@ -908,16 +908,31 @@ static void genStmt(CG *g, Stmt *s);
  * 结构、方法、构造器**全在 prelude 里**，编译器只认这几个名字。
  * 这些名字在主程序里被 viewContractOk 那一套校验过（见 main.c）。
  */
+/* `e?` 的 codegen（第三刀之后 option/result 是**普通枚举**了）。
+ *
+ * 以前它们是有 `has` / `ok` 字段的 struct ⇒ 这里是"读字段、拼字段"；
+ * 现在是 `tag + union` ⇒ 全部走 **tag 比较 + 载荷路径** ✓ */
 typedef struct {
     const char *tmp;      /* 临时变量名（求值就一次，装在这里） */
-    const char *tag;      /* 标签字段：has / ok */
-    Type       *payload;  /* 载荷类型 T */
+    const char *inst;     /* 实例的 C 名字：option_i64 / result_unit_gameError */
+    const char *okVar;    /* 成功变体名：some / success */
+    const char *failVar;  /* 失败变体名：none / failure */
+    Type       *payload;  /* 载荷类型 T（成功那一侧装的） */
     bool        isOpt;    /* option 还是 result */
 } TryInfo;
 
 static bool isProtoType(Type *t, const char *name, size_t nargs) {
-    return t && t->kind == TY_GENERIC && t->sdef &&
-           strcmp(t->sdef->name, name) == 0 && t->targs.len == nargs;
+    if (!t || t->targs.len != nargs) return false;
+    /* 泛型 struct：`slice<T>`、`varArray<T>` */
+    if (t->kind == TY_GENERIC && t->sdef) return strcmp(t->sdef->name, name) == 0;
+    /* 泛型**枚举**：`option<T>` / `result<T,E>`（第三刀之后它们就是枚举 ✓）*/
+    if (t->kind == TY_ENUM && t->edef)    return strcmp(t->edef->name, name) == 0;
+    return false;
+}
+
+/* 成功侧载荷的 C 路径：`x.u.some._0` / `x.u.success._0` */
+static const char *tryPayloadPath(CG *g, TryInfo *ti) {
+    return arenaPrintf(g->arena, "%s.u.%s._0", ti->tmp, ti->okVar);
 }
 
 /* 失败时该 return 什么：往**外层**的返回类型上构造失败值。
@@ -926,9 +941,11 @@ static const char *genTryFail(CG *g, TryInfo *ti) {
     Type *rt = subst(g, g->retType);
     if (!rt) return "0";
     if (ti->isOpt) return zeroValue(g, rt);
-    return arenaPrintf(g->arena, "(%s){ .ok = false, .value = %s, .err = %s.err }",
-                       cType(g, rt), zeroValue(g, *(Type **)vecAt(&rt->targs, 0)),
-                       ti->tmp);
+    /* result：把内层的错误**原样搬过去**（同一个 E ⇒ C 里直接抄那个成员）✓ */
+    return arenaPrintf(g->arena,
+                       "(%s){ .tag = %s_%s, .u.%s = { ._0 = %s.u.%s._0 } }",
+                       cType(g, rt), rt->name, ti->failVar, ti->failVar,
+                       ti->tmp, ti->failVar);
 }
 
 /* 出「求值一次」和「失败就 return」两句，返回临时变量名 */
@@ -936,13 +953,15 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     TryInfo ti;
     Type *ot = ttBase(subst(g, e->u.try_.operand->type));
     ti.isOpt = isProtoType(ot, "option", 1);
-    ti.tag = ti.isOpt ? "has" : "ok";
+    ti.inst = cType(g, ot);
+    ti.okVar = ti.isOpt ? "some" : "success";
+    ti.failVar = ti.isOpt ? "none" : "failure";
     ti.payload = subst(g, *(Type **)vecAt(&ot->targs, 0));
     ti.tmp = arenaPrintf(g->arena, "__extc_try%d", g->tmpSeq++);
 
-    cgLine(g, "%s %s = %s;", cType(g, ot), ti.tmp, genExpr(g, e->u.try_.operand));
-    cgLine(g, "if (!%s.%s) { extc_arena_release(&__extc_arena); return %s; }",
-           ti.tmp, ti.tag, genTryFail(g, &ti));
+    cgLine(g, "%s %s = %s;", ti.inst, ti.tmp, genExpr(g, e->u.try_.operand));
+    cgLine(g, "if (%s.tag != %s_%s) { extc_arena_release(&__extc_arena); return %s; }",
+           ti.tmp, ti.inst, ti.okVar, genTryFail(g, &ti));
     return ti;
 }
 
@@ -966,8 +985,8 @@ static void genStmt(CG *g, Stmt *s) {
             const char *nm = s->u.var.cname ? s->u.var.cname : s->u.var.name;
             if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.var.init);
-                cgLine(g, "%s %s = %s.value;",
-                       cType(g, s->type), nm, ti.tmp);
+                cgLine(g, "%s %s = %s;",
+                       cType(g, s->type), nm, tryPayloadPath(g, &ti));
                 return;
             }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
@@ -979,7 +998,8 @@ static void genStmt(CG *g, Stmt *s) {
         case ST_ASSIGN:
             if (s->u.assign.value && s->u.assign.value->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.assign.value);
-                cgLine(g, "%s = %s.value;", genExpr(g, s->u.assign.target), ti.tmp);
+                cgLine(g, "%s = %s;", genExpr(g, s->u.assign.target),
+                       tryPayloadPath(g, &ti));
                 return;
             }
             cgLine(g, "%s = %s;", genExpr(g, s->u.assign.target),
@@ -1025,14 +1045,9 @@ static void genStmt(CG *g, Stmt *s) {
                 TryInfo ti = genTryHead(g, s->u.ret.value);
                 Type *rt = subst(g, g->retType);
                 cgLine(g, "%s", rel);
-                if (ti.isOpt) {
-                    cgLine(g, "return (%s){ .has = true, .value = %s.value };",
-                           cType(g, rt), ti.tmp);
-                } else {
-                    cgLine(g, "return (%s){ .ok = true, .value = %s.value, .err = %s };",
-                           cType(g, rt), ti.tmp,
-                           zeroValue(g, *(Type **)vecAt(&rt->targs, 1)));
-                }
+                cgLine(g, "return (%s){ .tag = %s_%s, .u.%s = { ._0 = %s } };",
+                       cType(g, rt), rt->name, ti.okVar, ti.okVar,
+                       tryPayloadPath(g, &ti));
                 return;
             }
             const char *v = genExpr(g, s->u.ret.value);
@@ -1077,12 +1092,15 @@ static void genStmt(CG *g, Stmt *s) {
                 subj = tmp;
             }
 
-            cgLine(g, "switch (%s%s) {", subj, payload ? ".tag" : "");
+            /* ⚠️ **故意不用 `switch`**（2026-09-20 真踩过，读行循环当场卡死）：
+             * 分支体里的 `break` / `continue` 是要跳出**外面那个循环**的，
+             * 而在 `switch` 里它只会跳出 switch ⇒ `while true` + `break` 永远不结束 ✗
+             * if/else 链里没有这层"别人的 break" ✓
+             * 穷尽性由类型检查担保 ⇒ 最后不需要 `else` ✓ */
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
-                cgLine(g, "case %s_%s:", et ? et->name : "?", arm->variant);
-                g->indent++;
-                cgLine(g, "{");
+                cgLine(g, "%s (%s%s == %s_%s) {", i == 0 ? "if" : "} else if",
+                       subj, payload ? ".tag" : "", et ? et->name : "?", arm->variant);
                 g->indent++;
                 /* 绑定载荷：`circle(r) => ...` ⇒ `double r = tmp.u.circle._0;` */
                 for (size_t k = 0; k < arm->binds.len; k++) {
@@ -1106,9 +1124,6 @@ static void genStmt(CG *g, Stmt *s) {
                 }
                 genBlockBody(g, arm->body);
                 g->indent--;
-                cgLine(g, "}");
-                g->indent--;
-                cgLine(g, "    break;");
             }
             cgLine(g, "}");
             return;

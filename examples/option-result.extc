@@ -1,9 +1,14 @@
-// T5a：`option<T>` / `result<T, E>` —— 把「可能没有」「可能失败」写进**类型**
+// `option<T>` / `result<T, E>` —— 把「可能没有」「可能失败」写进**类型**
 //
 // 以前只能靠魔法数字：
 //     fn find(...) -> i32        // 返回 -1 表示「没找到」
 // -1 分不清「没找到」和「下标恰好是 -1」，而且**从签名上完全看不出来**。
 // 现在这两种情况都是类型的一部分，调用点必须处理（P′：不能证明的，语法上看得见）。
+//
+// ⭐ 第三刀（2026-09-20）：这两个类型现在是**普通泛型枚举**（`stdlib/prelude.extc`）：
+//     type option<T>    = | none | some(T)
+//     type result<T, E> = | failure(E) | success(T)
+// 零值分别是 `none` / `failure`（tag 0）—— 跟以前一致，但**没有隐藏字段**了。
 
 type gameError = | outOfRange | occupied
 
@@ -14,21 +19,21 @@ struct board {
 // 「可能没有」：越界就没有值
 fn at(b: ref board, x: i32, y: i32) -> option<i32> {
     if x < 0 || x >= 15 || y < 0 || y >= 15 {
-        return option<i32>::none()
+        return none
     }
-    return option<i32>::some(b.cell[y][x])
+    return some(b.cell[y][x])
 }
 
 // 「可能失败」：失败了还要说清**为什么**（枚举，不是字符串）
 fn place(b: mut ref board, x: i32, y: i32, p: i32) -> result<unit, gameError> {
     if x < 0 || x >= 15 || y < 0 || y >= 15 {
-        return result<unit, gameError>::failure(gameError.outOfRange)
+        return failure(gameError.outOfRange)
     }
     if b.cell[y][x] != 0 {
-        return result<unit, gameError>::failure(gameError.occupied)
+        return failure(gameError.occupied)
     }
     b.cell[y][x] = p
-    return result<unit, gameError>::success(unit {})
+    return success(unit {})
 }
 
 // 在一行里找第一个空位 —— 「找不到」是正常结果，不是错误
@@ -36,11 +41,11 @@ fn firstEmpty(row: slice<i32>) -> option<i64> {
     var i: i64 = 0
     while i < row.len {
         if row[i] == 0 {
-            return option<i64>::some(i)
+            return some(i)
         }
         i = i + 1
     }
-    return option<i64>::none()
+    return none
 }
 
 fn describe(e: gameError) -> slice<u8> {
@@ -66,53 +71,67 @@ fn placeLine(b: mut ref board, y: i32, from: i32, to: i32, p: i32) -> result<uni
         place(b, x, y, p)?        // 中间撞车 ⇒ 整行失败（失败之前的已经落下）
         x = x + 1
     }
-    return result<unit, gameError>::success(unit {})
+    return success(unit {})
 }
 
 fn main() -> i32 {
     var b: board
 
-    // ① result：成功 / 两种失败，各自能读出来
-    let r1 = place(ref b, 7, 7, 1)
-    println("落子成功？  ", r1.ok)                 // true
+    // ① result：`match` 一次就把「成没成 + 值/为什么」都读出来（穷尽检查 ✓）
+    match place(ref b, 7, 7, 1) {
+        success(u) => { println("落子成功？   true") }
+        failure(e) => { println("落子成功？   false —— ", describe(e)) }
+    }
 
-    let r2 = place(ref b, 7, 7, 2)
-    println("重复落子？  ", r2.ok)                 // false
-    println("为什么？    ", describe(r2.err))      // 那格已经有子了
+    match place(ref b, 7, 7, 2) {
+        success(u) => { println("重复落子？   true") }
+        failure(e) => { println("重复落子？   false —— ", describe(e)) }   // 那格已经有子了
+    }
 
-    let r3 = place(ref b, 99, 0, 1)
-    println("出界？      ", r3.ok)                 // false
-    println("为什么？    ", describe(r3.err))      // 出界了
+    match place(ref b, 99, 0, 1) {
+        success(u) => { println("出界？       true") }
+        failure(e) => { println("出界？       false —— ", describe(e)) }   // 出界了
+    }
 
     // ② option：有值 / 没值
-    let c = at(ref b, 7, 7)
-    println("(7,7) 有值？ ", c.has)                // true
-    println("里面是      ", c.value)               // 1
+    match at(ref b, 7, 7) {
+        some(v) => { println("(7,7) 有值？ true，里面是 ", v) }
+        none    => { println("(7,7) 有值？ false") }
+    }
 
-    let oob = at(ref b, 99, 0)
-    println("(99,0) 有值？", oob.has)              // false
-    println("兜底值      ", oob.valueOr(-1))       // -1
+    match at(ref b, 99, 0) {
+        some(v) => { println("(99,0) 有值？true，里面是 ", v) }
+        none    => { println("(99,0) 有值？false") }
+    }
 
-    // ③ 「找不到」是正常结果 —— 第 3 行全满，第 4 行第一个空位是 0
+    // ③ 「找不到」是正常结果 —— 第 3 行全满 ⇒ 没有空位
     var full: [3]i32 = [1, 2, 1]
-    println("满行里找空位", firstEmpty(full[..]).has)        // false
-    println("用兜底值    ", firstEmpty(full[..]).valueOr(-1)) // -1
+    match firstEmpty(full[..]) {
+        some(i) => { println("满行里找空位：", i) }
+        none    => { println("满行里找空位：没有") }
+    }
 
     // ④ result<unit, E>：成功了也没什么值给你 —— 用 unit 而不是开 void 的特例
     let u = result<unit, gameError>::success(unit {})
-    println("unit 也 ok？ ", u.ok)                 // true
+    match u {
+        success(x) => { println("unit 也成功？ true") }
+        failure(e) => { println("unit 也成功？ false") }
+    }
 
     // ⑤ `?`：一整行落子，任何一步失败就整行失败
     var b2: board
-    let line = placeLine(ref b2, 5, 2, 6, 2)
-    println("一整行白子？", line.ok)               // true
-    println("落了几格？  ", b2.cell[5][2], b2.cell[5][6])   // 22
+    match placeLine(ref b2, 5, 2, 6, 2) {
+        success(u) => { println("一整行白子？ true") }
+        failure(e) => { println("一整行白子？ false") }
+    }
+    println("落了几格？   ", b2.cell[5][2], b2.cell[5][6])   // 22
 
-    let again = placeLine(ref b2, 5, 0, 3, 1)      // 0、1 落得下，到 2 撞车 ⇒ 中途失败
-    println("撞车那一行？", again.ok)              // false
-    println("为什么？    ", describe(again.err))   // 那格已经有子了
-    println("失败前落的  ", b2.cell[5][0], b2.cell[5][1])   // 11 —— 失败**之前**的保留
-    println("失败处没动  ", b2.cell[5][2])         // 2 —— 失败之后一步都没走
+    match placeLine(ref b2, 5, 0, 3, 1) {        // 0、1 落得下，到 2 撞车 ⇒ 中途失败
+        success(u) => { println("撞车那一行？ true") }
+        failure(e) => { println("撞车那一行？ false —— ", describe(e)) }   // 那格已经有子了
+    }
+    println("失败前落的   ", b2.cell[5][0], b2.cell[5][1])   // 11 —— 失败**之前**的保留
+    println("失败处没动   ", b2.cell[5][2])                  // 2 —— 失败之后一步都没走
 
     return 0
 }

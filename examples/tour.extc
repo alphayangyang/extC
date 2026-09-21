@@ -91,7 +91,29 @@ fn find(v: slice<i32>, want: i32) -> option<i64> {
         if v[i] == want { return some(i) }
         i = i + 1
     }
-    return none()
+    return none
+}
+
+// ⑥ 读值用 `match`（穷尽检查）；想短一点就自己包一个小函数 ✓
+fn findOr(v: slice<i32>, want: i32, fallback: i64) -> i64 {
+    match find(v, want) {
+        some(i) => { return i }
+        none    => { return fallback }
+    }
+}
+
+fn isOccupied(r: result<unit, gameError>) -> bool {
+    match r {
+        success(u) => { return false }
+        failure(e) => { return e == gameError.occupied }
+    }
+}
+
+fn isOk(r: result<unit, gameError>) -> bool {
+    match r {
+        success(u) => { return true }
+        failure(e) => { return false }
+    }
 }
 
 // ---- ⑦ `?`：失败就顺着往上抛（编译期展开成语句，没有栈展开）-------------
@@ -133,9 +155,9 @@ fn main() -> i32 {
     println("   泛型 struct  ", p.first, " ", p.second)
 
     let r = place(ref b, 2, 2, color.red)
-    println("⑥ result       ", r.ok, " 错误 ", r.err == gameError.occupied)
-    println("   option       ", find(a[..], 0).valueOr(-1), " / 找 99 有没有 ", find(a[..], 99).has)
-    println("⑦ `?`          ", placeTwo(ref b).ok, " 手数 ", b.moves)
+    println("⑥ result       成功？ ", isOk(r), " 是「已占用」？ ", isOccupied(r))
+    println("   option       找 0 = ", findOr(a[..], 0, -1), " / 找 99 = ", findOr(a[..], 99, -1))
+    println("⑦ `?`          成功？ ", isOk(placeTwo(ref b)), " 手数 ", b.moves)
 
     println("⑧ let 遮蔽     ", shadowDemo())
     return 0
