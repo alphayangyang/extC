@@ -1,0 +1,7 @@
+// canary：`?ref` 也是引用 ⇒ 指向局部就不能返回 ✓（检查悄悄失效的话这条会编过）
+struct node { value: i64  next: ?ref node }
+fn bad() -> ?ref node {
+    var local: node = { value: 1, next: null }
+    return ref local
+}
+fn main() {}

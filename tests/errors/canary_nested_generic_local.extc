@@ -1,0 +1,8 @@
+// canary：struct 里放 `option<slice<u8>>` ⇒ 引用藏在**两层**里面 ✓
+struct cfg { name: option<slice<u8>> }
+fn bad() -> cfg {
+    var local: [8]u8 = [65, 66, 0, 0, 0, 0, 0, 0]
+    var c: cfg = { name: option<slice<u8>>::some(local[..]) }
+    return c
+}
+fn main() {}

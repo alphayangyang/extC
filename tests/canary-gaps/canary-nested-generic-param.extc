@@ -1,0 +1,7 @@
+struct cfg { name: option<slice<u8>> }
+fn ok(p: ref [8]u8) -> cfg { var c: cfg = { name: option<slice<u8>>::some(p[..]) }  return c }
+fn main() {
+    var a: [8]u8 = [104, 105, 0, 0, 0, 0, 0, 0]
+    var c: cfg = ok(ref a)
+    match c.name { some(s) => { println("nested = ", s) }  none => { println("没有") } }
+}

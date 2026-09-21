@@ -1,0 +1,9 @@
+// canary：`[4]?ref` 是聚合体，含引用 ⇒ 不能零初始化，也不能带着局部出去 ✓
+struct node { value: i64  next: ?ref node }
+fn bad() -> [2]?ref node {
+    var local: node = { value: 1, next: null }
+    var a: [2]?ref node
+    a[0] = ref local
+    return a
+}
+fn main() {}

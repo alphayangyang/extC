@@ -179,6 +179,7 @@ static bool mentionsParam(Type *t) {
 
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
 static Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
+static bool typeContainsRef(TypeTable *tt, Type *t);   /* 同上 */
 static int callHomeDepth(Checker *c, Vec *args, Vec *params);   /* 定义在后面 */
 static void markCallHomeIfEscaping(Checker *c, Expr *v, int at);   /* 定义在后面 */
 static void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth,
@@ -294,7 +295,7 @@ static Sym *declare(Checker *c, const char *name, Type *t, bool mut,
     /* 引用型绑定的**默认**指向深度 = 槽位深度（保守 = 老行为）。
      * 声明/换指向的地方知道初始值是什么，会把这里**收紧**到真实深度 ✓
      * （比如 `var cur: ?ref node = head` ⇒ 0 —— 它指的是参数那边的东西）*/
-    s->refDepth = (t && t->kind == TY_REF) ? depth : 0;
+    s->refDepth = (t && typeContainsRef(c->tt, t)) ? depth : 0;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
     return s;
@@ -665,7 +666,19 @@ static int exprRefDepth(Checker *c, Expr *e) {
     case EX_SLICE:
         d = placeDepth(c, e->u.slice.obj);
         break;
-    case EX_IDENT: case EX_FIELD: case EX_INDEX:
+    case EX_IDENT: {
+        /* ⭐ PLAN #8 的另一半（2026-09-20 canary 抓出来的 4 个假阳性）：
+         * **含引用的值绑定**（struct/数组/泛型实例里装着 ref/slice）——
+         * 问"它里面的引用指哪"该用 `refDepth`，而不是"这个槽位在本帧" ✗
+         *     var h: holder = { n: ref *p }        // p 是参数 ⇒ 里面指向深度 0
+         *     return h                             // 以前按槽位深度 1 算 ⇒ 误报 ✗
+         *（槽位深度仍然用于"往这里存东西" —— 那条走 placeDepth ✓ 两件事分开）*/
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = sy->refDepth;
+        else d = placeDepth(c, e);
+        break;
+    }
+    case EX_FIELD: case EX_INDEX:
         d = placeDepth(c, e);
         break;
     case EX_STRUCTLIT:
@@ -2603,6 +2616,10 @@ static void checkStmt(Checker *c, Stmt *s) {
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
                 Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                    !s->u.var.mut, s->line, c->scopes.len);
+                /* 零初始化的含引用值：**里面只可能是 `null`**（非空引用没零值 ⇒ 早被拒了）
+                 * ⇒ "里面的引用指哪" = 深度 0 ✓（不是槽位深度！否则
+                 *   `var a: [2]?ref node  a[0] = ref *p  return a` 会被误报 ✗）*/
+                if (s->type && typeContainsRef(c->tt, s->type)) sym->refDepth = 0;
                 s->u.var.cname = sym->cname;
                 return;
             }
@@ -2663,7 +2680,7 @@ static void checkStmt(Checker *c, Stmt *s) {
             s->u.var.cname = sym->cname;
             /* 引用型绑定：它指的东西有多深，**从初始值数出来** ✓
              * （`var cur: ?ref node = head` ⇒ head 是参数 ⇒ 0 ⇒ 这个游标可以返回 ✓）*/
-            if (s->type && s->type->kind == TY_REF)
+            if (s->type && typeContainsRef(c->tt, s->type))
                 sym->refDepth = exprRefDepth(c, s->u.var.init);
             return;
         }
@@ -2748,6 +2765,18 @@ static void checkStmt(Checker *c, Stmt *s) {
                         if (slot0 && slot0->type && slot0->type->kind == TY_REF)
                             slot0->refDepth = exprRefDepth(c, v);
                     }
+                    /* ⚠️ **元素/字段**是引用型时的换指向（`a[0] = ref local`）也要记！
+                     * 不记的话：`var a: [2]?ref node`（零初始化 ⇒ 里面全 null ⇒ 深度 0）
+                     * 之后 `a[0] = ref local`（深度 1）⇒ 上界还是 0 ⇒ `return a` 被放行 ✗✗
+                     * （canary 当场抓出来：`canary_array_nullref_local` 从"挡住"变成"编过"）
+                     * 取 max：refDepth 是"里面那些引用指哪"的**上界** ✓ */
+                    {
+                        Sym *rootA = placeRoot(c, s->u.assign.target);
+                        if (rootA && rootA->type && typeContainsRef(c->tt, rootA->type)) {
+                            int dA = exprRefDepth(c, v);
+                            if (dA > rootA->refDepth) rootA->refDepth = dA;
+                        }
+                    }
                     /* ⚠️ **换指向也要查"借来的值"**（2026-09-20 攻击测试打出来）：
                      *     struct slot { r: mut ref i32 }
                      *     fn stash(b: mut ref slot, p: mut ref i32) { b.r = ref *p }
@@ -2774,6 +2803,16 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             markCallHomeIfEscaping(c, s->u.assign.value,
                                    placeDepth(c, s->u.assign.target));
+            /* 含引用的值绑定被写（整块赋值 或 写它的字段/元素）⇒
+             * "里面那些引用指哪"要跟着**放宽**（取 max：refDepth 是上界 ✓）*/
+            {
+                Sym *vs = placeRoot(c, s->u.assign.target);
+                if (vs && vs->type && typeContainsRef(c->tt, vs->type)) {
+                    int d2 = exprRefDepth(c, s->u.assign.value);
+                    if (s->u.assign.target->kind == EX_IDENT) vs->refDepth = d2;
+                    else if (d2 > vs->refDepth) vs->refDepth = d2;
+                }
+            }
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
             /* 逃逸③：给字段/元素赋值时，被指对象不能比目标更深 */
             checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);

@@ -1,0 +1,8 @@
+// canary：泛型实例化之后 T = slice<u8> ⇒ **含引用** ⇒ 逃逸检查必须在场 ✓（#17 同族）
+struct box<T> { v: T }
+fn bad() -> box<slice<u8>> {
+    var local: [8]u8 = [65, 66, 67, 0, 0, 0, 0, 0]
+    var b: box<slice<u8>> = { v: local[..] }
+    return b
+}
+fn main() {}

@@ -1,0 +1,4 @@
+// canary 的正例：指向**参数**就可以返回 ✓
+struct node { value: i64  next: ?ref node }
+fn ok(p: ref node) -> ?ref node { return ref *p }
+fn main() { var n: node = { value: 1, next: null }  println(ok(ref n)!.value) }

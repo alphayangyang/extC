@@ -1,0 +1,7 @@
+struct node { value: i64  next: ?ref node }
+fn ok(p: ref node) -> [2]?ref node {
+    var a: [2]?ref node
+    a[0] = ref *p
+    return a
+}
+fn main() { var n: node = { value: 3, next: null }  println(ok(ref n)[0]!.value) }

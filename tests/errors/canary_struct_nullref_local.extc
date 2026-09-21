@@ -1,0 +1,9 @@
+// canary：结构体里含 `?ref` ⇒ 是个"携带引用"的值 ⇒ 带着局部出去必须报错 ✓
+struct node { value: i64  next: ?ref node }
+struct holder { n: ?ref node }
+fn bad() -> holder {
+    var local: node = { value: 1, next: null }
+    var h: holder = { n: ref local }
+    return h
+}
+fn main() {}

@@ -1,0 +1,4 @@
+struct node { value: i64  next: ?ref node }
+struct holder { n: ?ref node }
+fn ok(p: ref node) -> holder { var h: holder = { n: ref *p }  return h }
+fn main() { var n: node = { value: 2, next: null }  println(ok(ref n).n!.value) }

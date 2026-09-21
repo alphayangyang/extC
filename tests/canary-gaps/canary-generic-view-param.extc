@@ -1,0 +1,3 @@
+struct box<T> { v: T }
+fn ok(p: ref [8]u8) -> box<slice<u8>> { var b: box<slice<u8>> = { v: p[..] }  return b }
+fn main() { var a: [8]u8 = [104, 105, 0, 0, 0, 0, 0, 0]  println(ok(ref a).v) }
