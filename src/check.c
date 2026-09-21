@@ -179,6 +179,7 @@ static bool mentionsParam(Type *t) {
 
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
 static Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
+static int callHomeDepth(Checker *c, Vec *args, Vec *params);   /* 定义在后面 */
 
 static bool isNarrowed(Checker *c, const char *cname) {
     if (!cname) return false;
@@ -2260,6 +2261,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         name, f->params.len, e->u.call.args.len);
                 return f->ret ? f->ret : ttVoid(tt);
             }
+            /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
+            e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
@@ -2346,6 +2349,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (selfP->type->kind == TY_REF && selfP->type->mut &&
                     requireMutable(c, e->u.method.recv, e->line, "call a method that writes"))
                     return ttError(tt);
+            }
+
+            /* A3 第二半：**接收者就是那个"最浅的 `mut ref` 实参"**（`self` 排第一）
+             * ⇒ 新东西跟着接收者所在的 arena 走 ✓ */
+            {
+                Param *selfP = *(Param **)vecAt(&f->params, 0);
+                if (selfP->type && selfP->type->kind == TY_REF && selfP->type->mut) {
+                    int d = placeDepth(c, e->u.method.recv);
+                    e->homeDepth = (d == 0) ? -1 : d;
+                } else {
+                    e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params);
+                }
             }
 
             /* 接收者是泛型实例时，方法签名里的 T 要换成实参 */
@@ -3196,11 +3211,75 @@ static bool exprCallsNeedsHome(Expr *e) {
 }
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body); }
 
+/* 体里有没有"往 `*p` 里写"？（出参形状：`fn push(head: mut ref ?ref node) { *head = cell }`）
+ * 有 ⇒ 这个函数要一只家 arena（分配得进"实参那边"的 arena）✓ */
+/* 目标是"参数那边"的地方吗？`*head = cell` / `l.head = cell` / `l.buf[i] = cell` 都算 ✓
+ * （`?ref node` 这种引用型变量没法再取 `ref`，所以出参惯用"包一层 struct"——
+ *   而 `varArray<T>` 本来就是这个形状 ✓）*/
+static const char *placeRootName(Expr *e) {
+    while (e) {
+        if (e->kind == EX_IDENT) return e->u.ident.name;
+        if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
+        if (e->kind == EX_INDEX) { e = e->u.index.obj; continue; }
+        if (e->kind == EX_DEREF) { e = e->u.deref.operand; continue; }
+        return NULL;
+    }
+    return NULL;
+}
+static bool isParamName(FuncDef *f, const char *n) {
+    for (size_t i = 0; i < f->params.len; i++)
+        if (strcmp((*(Param **)vecAt(&f->params, i))->name, n) == 0) return true;
+    return false;
+}
+
+static bool stmtStoresThroughDeref(Stmt *s, FuncDef *f) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_ASSIGN: {
+        const char *rn = placeRootName(s->u.assign.target);
+        return rn && isParamName(f, rn);      /* 写进参数指的地方/字段 ⇒ 出参形状 ✓ */
+    }
+    case ST_IF:     return stmtStoresThroughDeref(s->u.ifs.thenBody, f) ||
+                           stmtStoresThroughDeref(s->u.ifs.elseBody, f);
+    case ST_WHILE:  return stmtStoresThroughDeref(s->u.whiles.body, f);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtStoresThroughDeref(*(Stmt **)vecAt(&s->u.block.stmts, i), f)) return true;
+        return false;
+    case ST_MATCH:
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtStoresThroughDeref((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, f))
+                return true;
+        return false;
+    default: return false;
+    }
+}
+
+/* ⭐ 调用点该传哪只 arena？（A3 第二半）
+ * 依据 = **最浅的那个 `mut ref` 实参**所指对象住哪儿（ARENA.md §1.2）：
+ *   · 实参是我自己的局部/字段/元素 ⇒ `&__extc_a[它的块深度]` （**精确**：新东西跟着它走 ✓）
+ *   · 实参是我自己的参数           ⇒ 我的家（祖先那只）✓
+ *   · 没有 `mut ref` 实参           ⇒ 0（退回老规则：有家传家、没有传当前块）✓ */
+static int callHomeDepth(Checker *c, Vec *args, Vec *params) {
+    int best = 0;                       /* 0 = 没找到 */
+    for (size_t i = 0; i < params->len && i < args->len; i++) {
+        Param *p = *(Param **)vecAt(params, i);
+        if (!p->type || p->type->kind != TY_REF || !p->type->mut) continue;
+        Expr *a = *(Expr **)vecAt(args, i);
+        Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
+        int d = placeDepth(c, place);   /* 参数 = 0；局部 = 它的块深度 ✓ */
+        if (d == 0) d = -1;             /* 参数那边 ⇒ 传我的家 ✓ */
+        if (best == 0 || d < best) best = d;
+    }
+    return best;
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     FuncDef *savedFunc = c->curFunc;
     /* A3：**有分配 + 返回有用的东西（含引用/视图）** ⇒ 这个函数要一只"家"arena ✓
      * （返回 `i32` 的函数不要 —— 它的分配留在自己块里，A2 的紧致性不丢 ✓）*/
-    if (stmtHasNew(f->body) && f->ret && typeContainsRef(c->tt, f->ret))
+    if (stmtHasNew(f->body) &&
+        ((f->ret && typeContainsRef(c->tt, f->ret)) || stmtStoresThroughDeref(f->body, f)))
         f->needsHome = true;
 
     Vec     *savedParams = c->curParams;

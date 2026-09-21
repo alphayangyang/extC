@@ -611,6 +611,8 @@ static bool isPlaceExpr(const Expr *e) {
     }
 }
 
+static const char *homeArg(CG *g, int marked);   /* 定义在后面 */
+
 static const char *genMethodCall(CG *g, Expr *e) {
     FuncDef *f = e->func;
     if (!f) return "0";
@@ -648,6 +650,8 @@ static const char *genMethodCall(CG *g, Expr *e) {
     bufPrintf(&b, "%s(%s", fname, recvC);
     for (size_t i = 0; i < e->u.method.args.len; i++)
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
+    /* A3：方法也要把家 arena 传过去（接收者就是那个"最浅的 mut ref 实参"✓）*/
+    if (f->needsHome) bufPrintf(&b, ", %s", homeArg(g, e->homeDepth));
     bufPutc(&b, ')');
     return bufCstr(&b);
 }
@@ -701,7 +705,6 @@ static const char *genStructLit(CG *g, Expr *e) {
 }
 
 static const char *arenaRef(CG *g);
-static const char *homeArg(CG *g);
 
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
@@ -754,7 +757,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* A3：被调用者需要一只"家"arena ⇒ 我传我的（或者传当前块的 ✓ 紧）*/
             if (e->func->needsHome) {
                 if (e->u.call.args.len) bufPuts(&b, ", ");
-                bufPuts(&b, homeArg(g));
+                bufPuts(&b, homeArg(g, e->homeDepth));
             }
             bufPutc(&b, ')');
             return bufCstr(&b);
@@ -1119,10 +1122,16 @@ static void lineMark(CG *g, Stmt *s) {
 /* 调用一个"需要家 arena"的函数时，我该传哪只？
  *   我自己有家 ⇒ 传我的家（那是最外层的、祖先那只 ✓）
  *   我没有家 ⇒ 传**当前块**那只（更紧：被调用者分配的东西活到本块结束 ✓）*/
-static const char *homeArg(CG *g) {
+static const char *homeArg(CG *g, int marked) {
     /* 这个是**当实参传**的（不是给 `&` 用的）⇒ 直接给指针 ✓
-     * ⚠️ 别跟 `arenaRef` 搞混：那个的结果外面会套一层 `&`，所以它返回 `(*__extc_home)` ✓ */
-    if (g->hasHome) return "__extc_home";
+     * ⚠️ 别跟 `arenaRef` 搞混：那个的结果外面会套一层 `&`，所以它返回 `(*__extc_home)` ✓
+     *
+     * `marked`（A3 第二半，检查器标的）：
+     *   -1 ⇒ 传我的家（祖先那只）；>=1 ⇒ 传 `&__extc_a[那个块]`（精确）*/
+    if (marked >= 1) return arenaPrintf(g->arena, "&__extc_a[%d]", marked);
+    if (marked == -1 || g->hasHome) {
+        if (g->hasHome) return "__extc_home";
+    }
     return arenaPrintf(g->arena, "&__extc_a[%d]", g->blkLevel);
 }
 

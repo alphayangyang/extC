@@ -121,6 +121,13 @@ struct Expr {
      * 由**检查器**判定并标记（它已经算过 repeatablePure），codegen 只管照做 ✓
      * 标记的含义："两边都不能重复求值，主体只能算一次" */
     bool      needTemp;
+    /* ---- A3 第二半（出参）：这个调用点该传哪只 arena 给"有家"的被调用者？----
+     *   0  = 没标（退回老规则：我有家传家、没有传当前块）
+     *  -1  = 传我的 `__extc_home`（祖先那只）
+     *  >=1 = 传 `&__extc_a[这个块深度]` ✓
+     * 取值依据：**最浅的那个 `mut ref` 实参**所指对象住在哪只 arena 里
+     * （"新东西的寿命跟着你给我的那条链走" —— ARENA.md §1.2 那条规则 ✓）*/
+    int       homeDepth;
 
     union {
         long long ival;

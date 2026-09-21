@@ -1,0 +1,37 @@
+/* 出参的**能跑形状**：往调用者的容器里塞东西（`varArray<T>` 就是这个形状）*/
+struct buf {
+    data: mut slice<i32>
+    len: i64
+}
+
+fn append(b: mut ref buf, v: i32) {
+    b.data[b.len] = v          // 写进调用者的容器
+    b.len = b.len + 1
+}
+
+/* 带分配的出参：新东西进"容器所在的那只 arena" ✓ */
+struct boxes {
+    store: mut slice<i32>
+    n: i64
+}
+
+fn makeAndStore(b: mut ref boxes) {
+    var p: mut ref i32 = new i32        // 分配
+    *p = 99
+    b.store[b.n] = *p                   // 存进调用者的容器（出参）
+    b.n = b.n + 1
+}
+
+fn main() {
+    var storage: mut slice<i32> = new i32[8]
+    var b: buf = { data: storage, len: 0 }
+    append(ref b, 7)
+    append(ref b, 8)
+    println("buffer = ", storage, " len = ", b.len)
+
+    var s2: mut slice<i32> = new i32[4]
+    var bx: boxes = { store: s2, n: 0 }
+    makeAndStore(ref bx)
+    makeAndStore(ref bx)
+    println("store = ", s2, " n = ", bx.n)
+}
