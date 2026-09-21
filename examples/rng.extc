@@ -1,0 +1,63 @@
+/* pcg32 —— 随机数引擎（在 `stdlib/prelude.extc` 里，用 extC 写的）
+
+ * 形状：**显式持有状态、没有全局**（16 字节、栈上、零分配、同种子可复现）✓
+ *   var rng: pcg32 = pcg32::seeded(42)
+ *   println(rng.nextBounded(100))
+ *
+ * ⚠️ 值是 `u64`（都在 0..2^32-1 里）：extC 只自动做**无损失拓宽**，
+ *    收窄要显式转换，而那个语法还没做（PLAN #23）⇒ 这版没有 i64/f64 接口、
+ *    也没法用 `u64` 当下标去洗牌 ✓
+ */
+fn main() {
+    /* ① 跟 **C 官方参考实现**逐位对拍（seed 42 / stream 54）—— 序列必须一模一样 ✓ */
+    var want: [6]u64 = [2707161783, 2068313097, 3122475824,
+                        2211639955, 3215226955, 3421331566]
+    var r: pcg32 = pcg32::seeded(42)
+    var i: i64 = 0
+    var same: bool = true
+    while i < 6 {
+        var got: u64 = r.next()
+        if got != want[i] {
+            same = false
+            println("   第 ", i, " 个不对：", got)
+        }
+        i = i + 1
+    }
+    println("① 跟 C 参考实现逐位相同？ ", same)
+
+    /* ② 同一个种子 ⇒ 同一个序列（失败可复现的前提）*/
+    var a: pcg32 = pcg32::seeded(7)
+    var b: pcg32 = pcg32::seeded(7)
+    var eq: bool = true
+    var k: i64 = 0
+    while k < 1000 {
+        if a.next() != b.next() { eq = false }
+        k = k + 1
+    }
+    println("② 同种子可复现（1000 次）？ ", eq)
+
+    /* ③ 不同"流"是独立序列（换个 stream 就是另一条，比再开一个引擎便宜）*/
+    var s1: pcg32 = pcg32::withStream(7, 1)
+    var s2: pcg32 = pcg32::withStream(7, 2)
+    println("③ 不同流的首值 = ", s1.next(), " / ", s2.next())
+
+    /* ④ 分布自检：nextBounded(1000) < 100 应该≈十分之一（不含取模偏置 ✓）*/
+    var c: pcg32 = pcg32::seeded(2026)
+    var small: i64 = 0
+    var n: i64 = 0
+    while n < 100000 {
+        if c.nextBounded(1000) < 100 { small = small + 1 }
+        n = n + 1
+    }
+    println("④ 1/10 桶命中 = ", small, "（期望 ≈ 10000）")
+
+    /* ⑤ 值域自检：nextBounded(6) 永远在 0..5（拒绝采样不该越界）*/
+    var d: pcg32 = pcg32::seeded(9)
+    var bad: i64 = 0
+    var m: i64 = 0
+    while m < 100000 {
+        if d.nextBounded(6) > 5 { bad = bad + 1 }
+        m = m + 1
+    }
+    println("⑤ 越界次数 = ", bad, "（必须是 0）")
+}

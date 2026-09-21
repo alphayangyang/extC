@@ -54,6 +54,68 @@ type option<T> = | none | some(T)
 
 type result<T, E> = | failure(E) | success(T)
 
+// ---------------------------------------------------------------------------
+// pcg32 —— 随机数引擎（小而快，**显式持有状态，没有全局**）
+//
+//     var rng: pcg32 = pcg32::seeded(42)
+//     println(rng.nextBounded(100))
+//
+// 为什么不用 `rand()` / 全局引擎：那是**隐藏状态** —— 谁什么时候动了它看不见，
+// 跑一百遍为什么不一样也查不出来。extC 的形状是"你持有一个值"：
+//     · 全部在栈上（16 字节），**零分配** ✓
+//     · 同一个种子 ⇒ 同一个序列（跨平台、跨优化级别都一样）⇒ 失败可复现 ✓
+//     · 想要"另一条独立序列"就换 `stream`（比如 Zobrist 表一列一条流）✓
+//
+// 为什么是 pcg32 而不是 mt19937：状态 16 字节 vs **2.5KB**、代码 ~20 行 vs ~60 行，
+// 统计质量同样是第一梯队（TestU01 BigCrush 全过）✓
+//
+// ⚠️ 值全部是 `u64`（都在 0 .. 2^32-1 里）：extC **只自动做无损失的拓宽**，
+//    收窄要显式转换 —— 而那个语法还没做（PLAN #23），所以这版先不给 i64/f64 接口 ✓
+// ---------------------------------------------------------------------------
+
+struct pcg32 {
+    state: u64
+    inc: u64
+
+    // 官方 PCG32 的 XSH-RR 输出函数（把 32 位状态搅成一个 32 位输出）
+    fn next(self: mut ref pcg32) -> u64 {
+        var old: u64 = self.state
+        self.state = old * 6364136223846793005 + self.inc
+        var x: u64 = (((old >> 18) ^ old) >> 27) & 4294967295
+        var rot: u64 = old >> 59
+        return ((x >> rot) | (x << ((32 - rot) & 31))) & 4294967295
+    }
+
+    // 带流的播种（官方 pcg32_srandom_r 那套：先走两步把状态搅开）
+    fn withStream(seed: u64, stream: u64) -> pcg32 {
+        var r: pcg32 = { state: 0, inc: (stream << 1) | 1 }
+        var skip: u64 = r.next()
+        r.state = r.state + seed
+        skip = r.next()
+        return r
+    }
+
+    // 常用形状：固定流（54 是 PCG 例子里的默认流号，跟官方参考实现能逐位对上 ✓）
+    fn seeded(seed: u64) -> pcg32 {
+        return pcg32::withStream(seed, 54)
+    }
+
+    // 0 .. bound-1，**没有取模偏置**（拒绝采样：先丢掉会让分布偏掉的那一小段）
+    fn nextBounded(self: mut ref pcg32, bound: u64) -> u64 {
+        if bound == 0 { return 0 }
+        var threshold: u64 = (0 - bound) % bound
+        var x: u64 = self.next()
+        while x < threshold {
+            x = self.next()
+        }
+        return x % bound
+    }
+}
+
+// ⚠️ 洗牌（Fisher-Yates）暂时写不了：下标是 `i64`，而引擎给的是 `u64`，
+//    转回来要**收窄转换** —— 那个语法还没做（PLAN #23）✓ 先记着。
+//    （同理 `nextFloat` / i64 区间也要它 ✓）
+
 struct slice<T> {
     data: ref T
     len: i64
