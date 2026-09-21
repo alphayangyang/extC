@@ -1453,7 +1453,9 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
 | ~~**逃逸检查**~~ ✅ | 词法深度 `depth(r) ≥ depth(v)` —— **这是 extC 的命**，**已实现**（返回 / 局部 / 赋值 / **借来的值不进深度 0**，见 §0.5） | ~~下一步~~ **2026-09-18 完成** |
-| **arena / `region`** | 分配绑词法作用域，永不 `free`；`region` = 显式命名的 arena；`alloc<T>(n)` ⇒ **引用深度 1**（活不过本帧） | arena 到位之后（今天完全不需要分配） |
+| ~~**arena 按块细化**~~ ✅ | 分配绑**词法作用域**（每个 `{}` 一只）：`extc_arena __extc_a[DEPTH] = {0}` + 进块 reset / 出块 release，`break`/`continue`/`return`/`?` 各释放该退的层。`alloc<T>(n)` 的引用深度 = **当前块深度** ✓ | **2026-09-20 完成**（`tests/arena/` 验收：150MB 上限下循环里分配 300×1MB 跑得完）|
+| **`new` 的写法** | `new node` / `new i32[1000]` / `new [4]i32`（清零），语义 = 分配进**当前作用域**的 arena | 下一步（A1）|
+| **`region` 显式命名 / 逃逸提升** | 显式指定 home；跨函数接线（`fn build() -> mut ref node`）| 之后（A3/A4）|
 | **动态数组 `varArray<T>`** | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | **算术 UB 三处** | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | 小活，随时 |
 | ~~**全局常量 / 全局变量**~~ ✅ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
