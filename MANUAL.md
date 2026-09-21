@@ -652,8 +652,20 @@ let v = a[2..9]       // error: slice end 9 is not inside `[5]i32` (length 5)
 「零值就是没有 / 失败」不是巧合 —— 它是定案 8（默认零初始化）的直接结果，
 所以不需要任何新机制。
 
+**`?T` 就是 `option<T>` 的语法糖**（定案 ㊻）—— 类型位置写 `?i64` 跟写 `option<i64>` 完全一样：
+
 ```extc
-let a = option<i64>::some(42)
+fn half(n: i64) -> ?i64 {            // ≡ -> option<i64>
+    if n % 2 != 0 { return none }    // 裸写 `none`（类型从返回类型来）
+    return some(n / 2)               // 裸写 `some(x)`
+}
+
+struct config { retries: ?i32 }      // 字段也能用 ✓
+var c: config                        // option 有零值 ⇒ 不用初始化式 ✓
+c.retries = some(3)                  // 赋值位置也认裸构造器 ✓
+println(pick(none, some(9)))         // 实参位置也认 ✓
+
+let a = option<i64>::some(42)        // 想写全名当然也可以（不靠上下文猜）✓
 let b = option<i64>::none()          // 也可以：var b: option<i64>  ← 零值就是 none
 if a.has {
     println(a.value)
@@ -667,7 +679,8 @@ if r.ok { ... } else { println(r.err) }
 #### 一页速查：拿到一个 `option` / `result` 之后能干什么
 
 ```extc
-// ① 造一个（写在函数 return 里，类型在签名上；也可以裸写，见下）
+// ① 造一个 —— 裸写的 `some` / `none` / `success` / `failure` 在**类型已知**的四个
+//    位置都认：return、带标注的 var、赋值、实参 ✓（类型不清楚就要写全名）
 fn find(...) -> option<i32> { return some(3) }        // 有
 fn find(...) -> option<i32> { return none() }         // 没有
 
