@@ -1,0 +1,7 @@
+// 传给「要值」的参数 ⇒ 必须显式 `*p`
+fn take(x: i32) -> i32 { return x }
+fn main() -> i32 {
+    var n: i32 = 5
+    var p = ref n
+    return take(p)
+}

@@ -1,0 +1,6 @@
+// `*` 只能作用在引用上
+fn main() -> i32 {
+    var n: i32 = 5
+    var m: i32 = *n
+    return m
+}

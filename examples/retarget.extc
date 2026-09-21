@@ -15,7 +15,7 @@ struct slot {
         self.tag = name
     }
     fn poke(self: mut ref slot, v: i64) {
-        self.p = v                 // 右边是值 ⇒ 写进它指向的地方
+        *self.p = v                // 写穿要显式 `*`（`self.p = v` 现在是错的）
     }
 }
 
@@ -25,10 +25,10 @@ fn main() -> i32 {
 
     var r: mut ref i64 = ref a
     println("指向 a = ", r)            // 1
-    r = 99                             // 值 ⇒ 写进 a
+    *r = 99                             // 值 ⇒ 写进 a
     println("a = ", a)                 // 99
     r = ref b                          // 引用 ⇒ 换指向
-    r = 7                              // 这次写的是 b
+    *r = 7                              // 这次写的是 b
     println("a = ", a, " b = ", b)     // 99 7
 
     var s: slot = { p: ref a, tag: 0 }

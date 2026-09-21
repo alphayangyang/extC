@@ -672,6 +672,10 @@ static const char *genExprInner(CG *g, Expr *e) {
                 cType(g, e->type), e->u.str.text, e->u.str.text);
         case EX_IDENT: return e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
 
+        /* `*p` —— 显式解引用就是一个 C 的解引用 ✓（只读/可写由类型检查管）*/
+        case EX_DEREF:
+            return arenaPrintf(g->arena, "(*(%s))", genExpr(g, e->u.deref.operand));
+
         case EX_BIN: return genBin(g, e);
 
         case EX_UN:

@@ -1,0 +1,7 @@
+// 引用用于**算术** ⇒ 必须显式 `*p`（不能靠隐式解引用）
+fn main() -> i32 {
+    var n: i32 = 5
+    var p = ref n
+    var m: i32 = p + 1
+    return m
+}

@@ -1,0 +1,9 @@
+// 两个引用直接比 ⇒ 报错（要比指的值：`*p == *q`）
+fn main() -> i32 {
+    var a: i32 = 1
+    var b: i32 = 1
+    var p = ref a
+    var q = ref b
+    if p == q { println("同") } else { println("不同") }
+    return 0
+}

@@ -1,0 +1,46 @@
+// **显式解引用**：`*p`（2026-09-20 起，不再有隐式解引用）
+//
+//   `*p`    读 = "p 指的那个值"          `let t = *p`
+//   `*p = v` 写 = "p 指的那个地方"        `*p = 9`
+//   `p = q` **换指向**（`=` 在引用上只剩这一个含义，不用看右边分辨 ✓）
+//
+// 为什么 `p + 1` 现在是错的：那是"拿一个引用去做算术"，
+// 读者得靠规则推断"这里会自动解引用"✗ ⇒ 显式优于推导 ✓
+
+fn swap(a: mut ref i32, b: mut ref i32) {
+    let t = *a          // 取值要 `*`
+    *a = *b             // 写穿也要 `*`
+    *b = t
+}
+
+fn bump(p: mut ref i32) {
+    *p = *p + 1         // 读和写都显式
+}
+
+// 两个例外（就这两个）：
+//   ① **输出**自动解引用 —— 地址不可打印，`println(r)` 打的就是值 ✓
+//   ② **成员选择**自动穿透 —— `p.field` / `p.method()` 是"导航"，不是"取值" ✓
+struct box { inner: mut ref i32  tag: i32 }
+fn readTag(b: ref box) -> i32 { return b.tag }
+
+fn main() -> i32 {
+    var x: i32 = 1
+    var y: i32 = 2
+    swap(ref x, ref y)
+    println("swap 之后 x = ", x, "  y = ", y)      // 2 1
+
+    var p = ref x
+    println("① 输出自动解：p = ", p)                // 2 ← 不用写 *p ✓
+    *p = 9
+    println("写穿之后 x = ", x)                     // 9
+    bump(p)
+    println("bump 之后 x = ", x)                    // 10
+
+    var q = ref y
+    p = q                                           // **换指向**（唯一含义）
+    println("换指向后 *p = ", *p, "  x = ", x)      // 1  10
+
+    var b: box = { inner: ref x, tag: 7 }
+    println("② 成员自动穿透：tag = ", readTag(ref b), "  底下的值 = ", *b.inner)  // 7  10
+    return 0
+}

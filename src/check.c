@@ -326,7 +326,8 @@ static bool typeLacksZeroValue(TypeTable *tt, Type *t) {
 
 /* 能取引用的东西：变量和字段 */
 static bool isLvalue(Expr *e) {
-    return e->kind == EX_IDENT || e->kind == EX_FIELD;
+    /* `*p` 也是**地方**（p 指的那个地方）✓ */
+    return e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_DEREF;
 }
 
 /* 拼一个 `slice<elem>`（视图协议来自 prelude）*/
@@ -407,6 +408,11 @@ static bool pathHasReadonlyRef(Expr *e);
 
 static bool isWritablePlace(Checker *c, Expr *e) {
     if (!e) return false;
+    /* `*p` 可写 ⇔ **引用本身**是 `mut ref`（可写性来自引用的类型）✓ */
+    if (e->kind == EX_DEREF) {
+        Type *ot = e->u.deref.operand->type;
+        return ot && ot->kind == TY_REF && ot->mut;
+    }
     /* 路上有只读引用 ⇒ 写不进去 */
     if (pathHasReadonlyRef(e)) return false;
     /* 表达式本身就是引用：`mut ref` 才可写 */
@@ -441,7 +447,12 @@ static bool isWritablePlace(Checker *c, Expr *e) {
 static int maxInt(int a, int b) { return a > b ? a : b; }
 
 /* 这个「地方」根上的绑定有多深？（参数、非绑定 = 0） */
+static int exprRefDepth(Checker *c, Expr *e);
+
 static int placeDepth(Checker *c, Expr *e) {
+    /* `*p` 的"地方"不在本帧的哪个绑定里，而是 p 指的地方 ⇒
+     * 它的寿命就是**那个引用的寿命** ✓（解引用不创造存储，只换了个入口）*/
+    if (e && e->kind == EX_DEREF) return exprRefDepth(c, e->u.deref.operand);
     Sym *root = placeRoot(c, e);
     return root ? root->depth : 0;
 }
@@ -458,6 +469,10 @@ static int exprRefDepth(Checker *c, Expr *e) {
     switch (e->kind) {
     case EX_REF:
         d = placeDepth(c, e->u.ref.operand);
+        break;
+    case EX_DEREF:
+        /* `*p` 的值住在 **p 指的地方** ⇒ 深度跟 p 一样 ✓ */
+        d = exprRefDepth(c, e->u.deref.operand);
         break;
     case EX_SLICE:
         d = placeDepth(c, e->u.slice.obj);
@@ -752,8 +767,15 @@ static Type *checkValue(Checker *c, Expr *e) {
      * 所以 `let r = ref n` 得到的是引用；而 `let y = r` 得到的是 r 指向的**值**。 */
     /* `ref x` 和 `alloc<T>(n)` 都是**显式**要一个引用 ⇒ 不再自动解引用 ——
      * 否则就是「解掉自己刚取/刚要来那个引用」，纯属自相矛盾。 */
+    /* ⚠️ **不再有隐式解引用**（2026-09-20 主人拍板：`(ref i32) + 1` 必须非法）：
+     * 值位置给了引用 ⇒ **报错**，教他写 `*p` ✓
+     * 例外：`ref x` / `alloc`（本来就是"要一个引用"）、
+     *       以及**成员选择**（`p.field` / `p.method()` —— 那是"导航"不是"取值"，仍然自动穿透 ✓）*/
     if (t && t->kind == TY_REF && e->kind != EX_REF && e->kind != EX_GENCALL) {
-        e->deref = true;
+        ckError(c, e->line,
+                "write `*p` where the value is needed (`*p + 1`, `let v = *p`, `f(*p)`)",
+                "`%s` is a **reference**, not a value -- dereference it first: `*p`",
+                typeStr(c, t));
         return t->inner;
     }
     return t;
@@ -764,11 +786,27 @@ static Type *checkValue(Checker *c, Expr *e) {
  * 其余情况按值位置处理（形状 3）。 */
 static Type *checkInto(Checker *c, Type *want, Expr *e) {
     Type *got = checkExpr(c, e);
+    /* 同样：**显式解引用** —— 期望的不是引用却给了引用 ⇒ 报错 ✓ */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
-        e->deref = true;
+        ckError(c, e->line, "write `*p` here",
+                "`%s` is a **reference**, not a value -- dereference it first: `*p`",
+                typeStr(c, got));
         return got->inner;
     }
     return got;
+}
+
+/* **输出位置**：`println(r)` / `print(r)` 自动解引用 ✓
+ * 理由（主人 2026-09-20）：「但你总不能真暴露地址了」——
+ * 打印一个引用**只可能**是想看它指的值，而地址本身对用户毫无意义也不该暴露 ✓
+ * ⇒ 这是唯一保留"自动解引用"的**值位置** ✓ */
+static Type *checkPrintArg(Checker *c, Expr *e) {
+    Type *t = checkExpr(c, e);
+    if (t && t->kind == TY_REF) {
+        e->deref = true;
+        return t->inner;
+    }
+    return t;
 }
 
 static Type *checkMaybeTry(Checker *c, Expr *e) {
@@ -1573,6 +1611,20 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return r;
         }
 
+        case EX_DEREF: {
+            /* `*p` = "p 指的那个值/那个地方"。可写性由 **p 的类型** 给（`mut ref`）✓ */
+            Type *ot = checkExpr(c, e->u.deref.operand);
+            if (ttIsError(ot)) return ttError(tt);
+            if (ot->kind != TY_REF) {
+                ckError(c, e->line,
+                        "`*` means \"the value this reference points at\"; a plain value has"
+                        " nothing to dereference",
+                        "cannot dereference `%s`, which is not a reference", typeStr(c, ot));
+                return ttError(tt);
+            }
+            return ot->inner;
+        }
+
         case EX_ENUMVAL: {
             /* 泛型枚举的**实例**（`maybe<i64>`）不在类型表的按名字表里 ——
              * 它是实例化出来的。所以走 EX_ASSOC 那条路构造时会把解析好的类型
@@ -1652,7 +1704,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
-                    Type *at = checkValue(c, a);   /* 打印的是**值** ⇒ 解引用 ✓ */
+                    Type *at = checkPrintArg(c, a);   /* 打印的是**值** ⇒ 自动解引用 ✓ */
                     if (!isPrintable(at) || ttIs(at, "void")) {
                         ckError(c, a->line, NULL,
                                 "cannot print a value of type `%s`", typeStr(c, at));
@@ -1953,7 +2005,10 @@ static void checkStmt(Checker *c, Stmt *s) {
             Type *it;
             if (s->u.var.init->kind == EX_TRY) it = checkTryInner(c, s->u.var.init);
             else if (s->u.var.ann)             it = checkInto(c, s->u.var.ann, s->u.var.init);
-            else                               it = checkValue(c, s->u.var.init);
+            /* **无标注 ⇒ 自然类型**（引用就还是引用）✓
+             * 想要值的拷贝就写 `let v = *p` —— 显式 ✓
+             * （否则 `let r = pickFirst(ref a, ref b)` 这种"绑定一个引用"写不出来 ✗）*/
+            else                               it = checkExpr(c, s->u.var.init);
             Type *declT = s->u.var.ann ? s->u.var.ann : it;
 
             if (s->u.var.ann)
@@ -1998,8 +2053,14 @@ static void checkStmt(Checker *c, Stmt *s) {
                     return;
                 }
 
-                s->u.assign.target->deref = true;     /* 生成 `*(p) = v` */
-                checkAssignable(c, tt_->inner, checkValue(c, v), v, "assignment");
+                /* ⚠️ **引用上不再有隐式写穿**（2026-09-20 加了 `*p` 之后）：
+                 * `p = v` 只有"换指向"一个含义；想写穿就写 `*p = v` ✓
+                 * ⇒ **每个写法只有一个含义，不用看右边分辨**（显式优于推导）✓ */
+                ckError(c, s->line,
+                        "write through the reference instead: `*p = v` -- `=` on a reference"
+                        " only ever retargets it",
+                        "cannot assign a value to `%s`: it is a reference, not a place",
+                        typeStr(c, tt_));
                 return;
             }
 

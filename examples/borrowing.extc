@@ -27,7 +27,7 @@ fn main() -> i32 {
 
     // ✓ 存进本帧的局部：实参深度 ≤ 本帧 ⇒ 合法
     let r = pickFirst(ref outer, ref other)
-    println("挑出来的值 = ", r)          // 100
+    println("挑出来的值 = ", *r)          // 100
 
     // ✓ 视图整体赋值（换绑）是合法的 —— 它只动那两个词，不写别人的内存
     var a: [4]i32 = [1, 2, 3, 4]

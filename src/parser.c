@@ -868,6 +868,17 @@ static Expr *parseUnary(Parser *p) {
         e->u.un.operand = operand;
         return e;
     }
+    /* `*p` —— **显式解引用**（`ref x` 的对偶）。
+     * 读 = "p 指的那个值"；写 = "p 指的那个地方"（`*p = v`）✓
+     * `*` 的前缀位置本来是空的（乘法是二元的）✓ */
+    if (at(p, "*")) {
+        Token *op = take(p);
+        Expr *operand = parseUnary(p);
+        if (!operand) return NULL;
+        Expr *e = exprNew(p->arena, EX_DEREF, op->line);
+        e->u.deref.operand = operand;
+        return e;
+    }
     /* T3：`ref` 在表达式位置是「取引用」(`f(ref x)`)，在类型位置是「引用类型」 */
     if (at(p, "ref")) {
         Token *kw = take(p);

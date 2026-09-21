@@ -68,6 +68,7 @@ typedef enum {
     EX_ASSOC,     /* option<i64>::some(x) —— 关联函数（不带 self 的函数） */
     EX_GENCALL,   /* alloc<i32>(n) —— 泛型调用（目前只有内置原语用） */
     EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
+    EX_DEREF,     /* `*p` —— 显式解引用：读=p指的值，写=p指的地方 */
     EX_ENUMVAL    /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
 } ExprKind;
 
@@ -116,6 +117,7 @@ struct Expr {
         struct { Expr *obj; Expr *lo; Expr *hi; } slice;   /* lo / hi 可为 NULL */
         struct { Vec elems; bool rest; } arraylit;         /* elems: Expr*；rest = 末尾有 ... */
         struct { Expr *operand; } ref;
+        struct { Expr *operand; } deref;
         /* 关联函数调用：`typeName<targs>::name(args)`
          * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
         struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
