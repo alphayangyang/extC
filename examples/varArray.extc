@@ -1,3 +1,5 @@
+// expect: size = 10 cap = 16
+// （上面这行是给 tests/run.sh 的输出断言：扩容 2→4→8→16 都发生了）
 fn main() {
     var v: varArray<i32> = varArray<i32>::withCap(2)
     println("初始 size = ", v.size(), " 空？ ", v.isEmpty())

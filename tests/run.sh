@@ -14,10 +14,21 @@ echo "== 构建 =="
 if make -s 2>/tmp/extc-build.log; then ok "make"; else bad "make"; cat /tmp/extc-build.log; exit 1; fi
 
 echo "== 正例：extC -> C -> gcc -> 运行 =="
+# ⭐ 输出断言：例子文件里写 `// expect: <片段>` 的行 ⇒ 输出**必须包含**它 ✓
+# （以前只查退出码 ⇒ "算出来是错的数据但正常退出"这种**抓不到** ✗ ——
+#   PLAN #31 那个 UB 就是这种形状：打印 [1002, 0] 而不是 [42, 43]，退出码还是 0）
 for f in examples/*.extc; do
     name=$(basename "$f" .extc)
     if out=$($EXTC --run "$f" 2>&1); then
-        ok "$name  ->  $(echo "$out" | tr '\n' '|')"
+        if ! grep -q '// expect:' "$f"; then
+            ok "$name  ->  $(echo "$out" | tr '\n' '|')"
+        elif want=$(grep -o '// expect:.*' "$f" | sed 's|// expect: *||' | head -1) \
+             && echo "$out" | grep -qF -- "$want"; then
+            ok "$name  ->  含「$want」（$(echo "$out" | wc -l) 行输出）"
+        else
+            bad "$name （输出里没有「$want」）"
+            echo "$out" | sed 's/^/        /'
+        fi
     else
         bad "$name"; echo "$out" | sed 's/^/        /'
     fi
