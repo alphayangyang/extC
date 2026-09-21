@@ -431,6 +431,24 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
             /* 可写性要跟着走（`mut` 是类型的一部分，替换时不能丢） */
             return ttViewMut(tt, ttGeneric(tt, t->sdef, &na), t->mut);
         }
+        /* ⚠️ **泛型枚举实例**也要替换（2026-09-20 抓到的真 bug）：
+         * 第三刀把 `option` / `result` 变成泛型**枚举**之后，这里没跟上 ——
+         * 枚举实例的 kind 是 `TY_ENUM`（不是 `TY_GENERIC`）⇒ 掉进 default 原样返回 ✗
+         * 后果：泛型实例的方法返回 `option<T>` 时**没代入** ⇒
+         *   `var v: varArray<i32>  v.get(0)` 得到 `option_T` 而不是 `option_i32` ✗
+         *   （用户看到 "expects option_i32, found option_T" 这种没法理解的报错）
+         * 同一个坑的另一半早前修过（`typeContainsRef` 的枚举分支）✓ ——
+         * **教训：加一种类型构造时，`ttSubstitute` / `ttEquals` / `typeContainsRef` /
+         * `ttRender` 这一族"按 kind 分派"的函数全都要扫一遍** ✓ */
+        case TY_ENUM: {
+            if (!t->edef || t->targs.len == 0) return t;
+            Vec na;
+            vecInit(&na, tt->arena, sizeof(void *));
+            for (size_t i = 0; i < t->targs.len; i++)
+                *(Type **)vecPush(&na) =
+                    ttSubstitute(tt, *(Type **)vecAt(&t->targs, i), params, args);
+            return ttEnumGeneric(tt, t->edef, &na);
+        }
         default:
             return t;
     }

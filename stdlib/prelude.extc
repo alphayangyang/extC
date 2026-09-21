@@ -132,6 +132,82 @@ fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// varArray<T> —— **能增长的数组**（对标 `std::vector` 的基础部分 ✓）
+//
+//     var v: varArray<i32> = varArray<i32>::withCap(4)
+//     v.push(7)                       // 满了自己扩（倍增）
+//     println(v.size(), " ", v.get(0) ?? -1)
+//
+// 三条设计决定（跟 extC 的内存模型缝在一起）：
+//   · **不带自己的 arena** —— 扩容时 `new T[cap*2]` 分配到**拥有 `self` 的那只 arena**
+//     （A3 第三半那条规则 ✓）⇒ 容器活得多久，存储就活多久 ✓ 不用像 C++ 那样塞个 Alloc ✓
+//   · **不能 free** ⇒ `clear()` 只把 `len` 归零（内存不动）、**没有 `shrink_to_fit`**
+//     （缩不回内存 ⇒ 有也比没有好：假装能缩是骗人 ✓）
+//   · 读值用 `?T`（「可能没有」✓），越界由**下标检查 trap（带源码位置）**承担 ✓
+//
+// ⚠️ 已知限制（跟 `std::vector` 一样，但这里**没有任何缓解**）：
+//   **扩容会让指向元素的引用失效** —— `var p: mut ref i32 = ref v[0]` 之后 `v.push(..)`
+//   换了新 buffer，`p` 还指着**旧 buffer**（arena 保证旧内存没被回收 ⇒ 不崩，
+//   但写进去就是**静默写丢** ✗）⇒ 别长期持有元素引用；要改就用 `set(i, v)` ✓
+// ⚠️ `set(i, v)` 只在 `i` 超出 **cap** 时 trap；`i` 落在 `[len, cap)` 之间会写进未使用区
+//   （跟 C++ 的 `operator[]` 同款）⇒ 想安全读就 `get(i)` ✓
+// ---------------------------------------------------------------------------
+
+struct varArray<T> {
+    buf: mut slice<T>
+    len: i64
+    cap: i64
+
+    fn withCap(cap: i64) -> varArray<T> {
+        if cap < 0 { cap = 0 }
+        var v: varArray<T> = { buf: new T[cap], len: 0, cap: cap }
+        return v
+    }
+
+    fn size(self: ref varArray<T>) -> i64 { return self.len }
+    fn isEmpty(self: ref varArray<T>) -> bool { return self.len == 0 }
+
+    // 满了就**倍增**（0 ⇒ 先给 4）；新 buffer 进"拥有 self 的那只 arena" ✓
+    fn grow(self: mut ref varArray<T>) {
+        var ncap: i64 = self.cap * 2
+        if ncap < 4 { ncap = 4 }
+        var nb: mut slice<T> = new T[ncap]
+        var i: i64 = 0
+        while i < self.len {
+            nb[i] = self.buf[i]
+            i = i + 1
+        }
+        self.buf = nb
+        self.cap = ncap
+    }
+
+    fn push(self: mut ref varArray<T>, v: T) {
+        if self.len == self.cap { self.grow() }
+        self.buf[self.len] = v
+        self.len = self.len + 1
+    }
+
+    // 空 ⇒ none（**不 trap**：调用点用 `??` 或 match ✓）
+    fn pop(self: mut ref varArray<T>) -> ?T {
+        if self.len == 0 { return none }
+        self.len = self.len - 1
+        return some(self.buf[self.len])
+    }
+
+    fn get(self: ref varArray<T>, i: i64) -> ?T {
+        if i < 0 || i >= self.len { return none }
+        return some(self.buf[i])
+    }
+
+    fn set(self: mut ref varArray<T>, i: i64, v: T) {
+        self.buf[i] = v
+    }
+
+    // 只归零（**内存不动** —— arena 不能 free ✓）
+    fn clear(self: mut ref varArray<T>) { self.len = 0 }
+}
+
 struct slice<T> {
     data: ref T
     len: i64

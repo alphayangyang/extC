@@ -1001,6 +1001,13 @@ static const char *genExprInner(CG *g, Expr *e) {
              * 解析好的类型记在 `assocOwner` 上，优先用它 ✓ */
             Type *et = e->assocOwner;
             if (!et && g->tt) et = ttFromName(g->tt, tn);
+            /* ⚠️ **泛型实例里**：`tn` 是**模板**的名字（`option_T`），而实例的 C 名字是
+             * `option_i32` ⇒ 有 `assocOwner` 时一律走 `subst` + `cType` 拿真名 ✓
+             * （真 bug：`varArray<i32>::get()` 会生成 `option_T` 这种不存在的类型 ✗）*/
+            if (et) {
+                Type *rt = subst(g, et);
+                if (rt && rt->name) tn = rt->name;
+            }
             bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
 
             /* 无载荷枚举（C 里就是 `enum`）⇒ 变体本身就是一个常量 */

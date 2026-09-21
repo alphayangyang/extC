@@ -1,0 +1,8 @@
+// `set(i, v)` 超出 cap ⇒ 下标检查 **trap（带源码位置）** ✓
+fn main() {
+    var v: varArray<i32> = varArray<i32>::withCap(2)
+    v.push(1)
+    println(v.get(0) ?? -1)      // 用到 get ⇒ option<i32> 会被实例化 ✓
+    v.set(5, 9)
+    println(v.size())
+}
