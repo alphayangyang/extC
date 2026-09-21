@@ -55,8 +55,9 @@
 | **28** | ✅ **`ttSubstitute` 不认泛型枚举实例**（真 bug，已修）| 第三刀把 `option`/`result` 变成**泛型枚举**之后 `ttSubstitute` 没跟上（枚举实例 kind 是 `TY_ENUM`，掉进 `default` 原样返回）⇒ 泛型实例的方法返回 `option<T>` **没代入** ⇒ 用户看到 `expects option_i32, found option_T` 这种没法理解的报错 ✗（同一个坑的另一半早前修过：`typeContainsRef` 的枚举分支）⚠️ **教训**：加一种类型构造时，`ttSubstitute` / `ttEquals` / `typeContainsRef` / `ttRender` 这一族"按 kind 分派"的函数**全都要扫一遍** ✓ 连带的 codegen 一点：裸构造器把模板名（`option_T`）当 C 名字用 ⇒ 改成走 `subst` + `cType` ✓ | — | — |
 | **29** | 📌 **`varArray<T>` 分块化（chunked）—— 留 v2 拍板**（定案 60：**是新类型，不是替代品** —— `varArray` 永远保持连续；连续性要靠 `asSlice`/`asMutSlice` 兑现，但那被 #31 挡着）| 定案 59 算出来：**在"不能 free"的 arena 模型里，分块严格优于倍增** —— 累计分配 `⌈n/c⌉·c ≤ n + c`（chunk=256 ⇒ 1.001n）vs 倍增的最坏 4n，零拷贝，而且**块永不搬** ⇒ 顺手解决 §7.9 那条"扩容让元素引用失效"✗ 代价：存取多一次间接寻址 + **不再连续**（`slice<T>` 给不出来）⇒ 跟 `insertAt`/`eraseAt` 一起拍 ✓ 验算程序 `examples/growth-factor.extc` | 设计（内存 + 引用稳定性）| 中 |
 | **30** | 📌 **"运行时原地扩"—— 记着，不选**（定案 59 §四）| 对立面是"运行时自适应"：`realloc` 式先试原地扩、不行才搬（libc / Go `growslice`）。我们的 arena 是 **bump 分配器** ⇒ 只要"这次分配还是当前块的最后一次分配"，原地扩 = `used` 往后推（零拷贝、一次指针比较）⇒ 要补：arena 记"最后一次分配 + 大小"、块留 slack（现在 `cap = n` 没余量）✗ 不选的原因：它把"引用失效"从**必然**变成**看运气**（更难解释），而且是运行时代码（不违反 P，但按 P′ 精神该让用户知道）⇒ chunked（#29）目标相同且**永不失效**，优先 ✓ | 设计备选 | 小 |
-| **31** | 🚨 **能拿 UB：函数里扩容过的 `varArray` 返回出去 ⇒ use-after-free**（见 §0.6，**当前最高优先级**）—— **已拍板走丙**（owner depth，设计见 `ARENA.md` §9）；**顺序 = 先拆 src、再上丙** | ASan 实锤。根因 = 建容器（`EX_ASSOC`）与扩容（`EX_METHOD` 的本地接收者）**落在两只不同的 arena**，且 `refDepth` 停在 0 ⇒ 逃逸检查看不见 ✗ 修法 = **E 分析 + owner depth**（E1 创建 / E2 扩容 / E3 逃逸检查）✓ 复现 `tests/canary-gaps/return-grown-varArray.extc` | **soundness（UB）** | 中 |
+| **31** | 🚨 **能拿 UB：把"被调者分配出来的存储"带出本函数**（见 §0.6）—— **甲′ 已落地一半**（2026-09-21）| **两个形状**：① varArray 扩容后返回容器 ② 往本地容器里 push 造链表再返回 —— 实测都是静默错数据（ASan 实锤 use-after-free）。修法 **甲′**：带 `mut ref` 实参、且被调者**会分配**的调用 ⇒ 把实参那个绑定的有效深度**抬到 ≥ 该刀的家深度** ⇒ 之后任何逃逸被现成的逃逸检查挡住 ✓ 已修：**直接 `new` 的 callee**（链表形状 ⇒ 现在编译错误 ✓）；还差：**转发一层才分配**的 callee（`push → grow → new`）⇒ **#33** ✓ 复现 `tests/canary-gaps/return-{grown-varArray2,built-list}.extc`（后者已转成 `tests/errors/` 回归）| **soundness（UB）** | 小 |
 | **32** | 📌 **有家函数里 `new` 一律进家**（`ARENA.md` §9.8）| `arenaRef(g)` 只看 `hasHome` ⇒ 有家函数里**任何** `new` 都进家 arena ⇒ 循环里累积到函数结束（PLAN #24 的紧致性在"自己的 `new`"这一侧丢了）✗ 同一份 E 分析就能精确化（`cell ∉ E` ⇒ 进当前块）—— 独立一小步，别跟 #31 混 ✓ | 内存 | 小 |
+| **33** | 🐛 **甲′ 漏掉“转发一层才分配”的 callee**（PLAN #31 剩下的那一半）| `raiseMutRefTargets` 现在看 `f->needsHome`，而它的**传递闭包**（check_top.c 里那个 fixpoint）要等**所有函数查完**才跑 —— 那时调用者的函数体早查完了 ✗ ⇒ `varArray::push` 自己不 `new`（是它调的 `grow` 才 `new`）⇒ **varArray 那条还漏着**（复现 `tests/canary-gaps/return-grown-varArray2.extc`）| 修法：检查器加一个**按名字的惰性传递闭包** `calleeAllocates(f)`（体里有 `new` 或调用会分配的函数；方法按名字保守匹配 ⇒ 只要有一个同名方法分配就算它分配），带 memo + 环保护（`正在算`标记），在 `raiseMutRefTargets` 里替代 `f->needsHome` ✓ | soundness（UB 的一半）| 小 |
 | **12** | 📌 **文档债** | `;` 和 `/* */` **其实早就可用**，但没写进 MANUAL；块注释**不嵌套**也没说 | 文档 | 小 |
 
 **建议的开工顺序**：**31（UB 优先）→ 27（生成的 C 编不过）→** 1 → 2 → 3（1 挡着"能安全写链表"，2/3 是真 bug 且都小），
@@ -177,6 +178,25 @@ fn build() -> list {
    —— 只是检查器**忘了把这个事实写回容器** ✗
 
 ⚠️ `varArray` 的 `asSlice`/`asMutSlice` **要等这条修好再上** ✓
+
+### ✅ 2026-09-21 半夜：**甲′ 已落地一半**（`raiseMutRefTargets`）
+
+一行代码量级的修法（检查器侧，**codegen 一个字节没动** —— 70 个例子的生成 C 逐字节相同 ✓）：
+
+> 带 `mut ref` 实参、且**被调者会分配**（`needsHome`）的调用 ⇒ 把**实参那个绑定的有效深度**
+> 抬到 ≥ 这一刀的**家深度**（`Sym.refDepth = max(refDepth, homeDepth)`）✓
+
+实测（同一台机器）：
+
+| 形状 | 修前 | 修后 |
+|---|---|---|
+| 往本地容器 push 造链表再返回（`push` 体内直接有 `new`）| 打印 `拿到 = 0`（正确 `20 10 0`）✗ 静默错数据 | **编译错误** ✓ |
+| varArray 扩容后返回容器（`push → grow → new`，**转发一层**）| ASan `heap-use-after-free` ✗ | **还漏着** ⇒ **#33** |
+| 现有 213 个测试 + 攻击库基线 | 全绿 | **全绿**（甲′ 一个都没破坏 ✓）|
+
+⇒ 结论：**甲′ 是对的方向**（把"静默 UB"变成"响亮的编译错误"，正是 P′），
+   只差"被调者是否分配"这一问算得不够早（`needsHome` 的传递闭包跑在所有函数查完之后）✗
+⇒ 正例仍然好写：`examples/varArray-outparam.extc`（在**拥有它的作用域**里建、用 `mut ref` 传下去填）✓
 ## 0.5 ✅ **soundness 洞已修**（2026-09-20，A0）—— 原记录见下
 
 **修法**：把 `typeContainsRef` 拆成**两个问题** ——

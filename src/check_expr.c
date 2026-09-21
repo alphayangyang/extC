@@ -618,6 +618,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
              * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
             e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params);
+            raiseMutRefTargets(c, NULL, &e->u.assoc.args, &f->params, e->homeDepth);
             if (f->needsHome)
                 checkCallRefArgs(c, &e->u.assoc.args, &f->params, e->homeDepth,
                                  e->line, e->u.assoc.name);
@@ -971,6 +972,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
+            raiseMutRefTargets(c, NULL, &e->u.call.args, &f->params, e->homeDepth);
             if (f->needsHome)
                 checkCallRefArgs(c, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
             for (size_t i = 0; i < f->params.len; i++) {
@@ -1070,6 +1072,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->homeDepth = (d == 0) ? -1 : d;
                 } else {
                     e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params);
+                    raiseMutRefTargets(c, e->u.method.recv, &e->u.method.args, &f->params, e->homeDepth);
                 }
                 if (f->needsHome)
                     checkCallRefArgs(c, &e->u.method.args, &f->params, e->homeDepth,

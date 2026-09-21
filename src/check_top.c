@@ -733,3 +733,38 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
     return !ctx->hasError;
 }
+
+/* ⭐ 甲′（PLAN #31 / §0.6）：被调者**往容器里塞的东西住哪只 arena**，要记回容器的深度 ✓
+ *
+ * 为什么需要：`push(ref l, …)` 这一刀的家 arena = **实参 `l` 所在的那只**
+ * （`callHomeDepth` 取 `placeDepth(l)`，即"l 的槽位在哪一层块" —— ARENA.md §1.2 的规则）✓
+ * 于是 `new node` 落在 **调用者的函数体块**里 ⇒ 被调者一走这块就 release。
+ * 如果调用者之后让**容器逃出去**（`return l` / `return v.asSlice()` / 塞进更浅的 struct），
+ * 那个容器指着的就是**已经释放的 arena 内存** ⇒ 悬垂 / 静默错数据 ✗（ASan 实锤过）
+ *
+ * 但"被调者能往容器里塞什么"**是调用点知道、容器自己不知道**的 ——
+ * 所以正确做法是：调用点把这个事实**写回容器的深度**，后面**现成的逃逸检查**就会拦住 ✓
+ *
+ * 三条边界（都是"少报好过漏报"）：
+ *   · 只对**被调者会分配**（`needsHome`）的调用做 —— 不分配的 callee 不会往容器里放新内存 ✓
+ *   · 家是本函数的家（`homeDepth <= 0`，参数级/祖先那只）⇒ 内容**活得够久** ⇒ 不用抬 ✓
+ *   · 容器类型里装不了引用（`!typeContainsRef`）⇒ 里面没有指针 ⇒ 不用管 ✓
+ */
+static void raiseOneMutRefTarget(Checker *c, Param *p, Expr *a, int h) {
+    if (!p || !p->type || p->type->kind != TY_REF || !p->type->mut) return;
+    if (!a) return;
+    Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
+    Sym *s = placeRoot(c, place);
+    if (!s || !s->type || !typeContainsRef(c->tt, s->type)) return;
+    if (h > s->refDepth) s->refDepth = h;      /* 取 max = 上界 = 保守方向 ✓ */
+}
+
+void raiseMutRefTargets(Checker *c, Expr *recv, Vec *args, Vec *params, int homeDepth) {
+    if (homeDepth <= 0) return;                /* 家是参数级 ⇒ 活得够久 ✓ */
+    if (recv && params->len >= 1)
+        raiseOneMutRefTarget(c, *(Param **)vecAt(params, 0), recv, homeDepth);
+    size_t off = recv ? 1 : 0;
+    for (size_t i = off; i < params->len && (i - off) < args->len; i++)
+        raiseOneMutRefTarget(c, *(Param **)vecAt(params, i),
+                             *(Expr **)vecAt(args, i - off), homeDepth);
+}

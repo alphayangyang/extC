@@ -1,0 +1,32 @@
+// expect: 交错 = 0 10 20 30 40
+/* varArray 的**正确**用法（PLAN #31 的修法甲′ 之后）：
+ *
+ * 容器要在**拥有它的那个作用域**里建，再作为 `mut ref` 传下去填 ✓
+ *   · 填空的那个函数只**往里塞**、不把容器交出去 ⇒ 里面分配的存储跟着
+ *     "实参 `v` 所在的那只 arena" 走 ⇒ 活得跟 v 一样久 ✓ 安全 ✓
+ *   · 反过来（在被调者里建、然后 `return` 出去）会被**编译期挡住** ✗
+ *     —— 因为那意味着容器里会留着指向"已经结束的帧"的内存
+ *     （见 tests/errors/canary_return_grown_varArray.extc）✓
+ *
+ * 这条形状正是 A3 / 规则 ④ 存在的理由（`examples/out-param.extc` 的链表版）✓
+ */
+fn fill(out: mut ref varArray<i32>, n: i32) {
+    var i: i32 = 0
+    while i < n {
+        out.push(i * 10)
+        i = i + 1
+    }
+}
+
+fn main() {
+    var v: varArray<i32> = varArray<i32>::withCap(0)   // 建在 main 里 ⇒ 活到最后 ✓
+    fill(ref v, 5)                                     // 只交出去"填"，不交出去"拥有"
+    print("交错 = ")
+    var i: i32 = 0
+    while i < v.size() {
+        print(v.get(i) ?? -1, " ")
+        i = i + 1
+    }
+    println("")
+    println("size = ", v.size(), " cap = ", v.cap)
+}

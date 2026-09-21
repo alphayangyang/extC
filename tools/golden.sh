@@ -45,6 +45,7 @@ save)
     echo "ok   基线已存：$MANIFEST（$(wc -l < "$MANIFEST") 个文件）"
     ;;
 check)
+    mkdir -p "$DIR"
     [ -f "$MANIFEST" ] || { echo "没有基线，先跑 tools/golden.sh save"; exit 2; }
     gen "$DIR/now" > "$DIR/now.manifest"
     if diff -u "$MANIFEST" "$DIR/now.manifest" > /tmp/extc-golden.diff 2>&1; then

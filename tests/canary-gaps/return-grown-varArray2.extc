@@ -1,0 +1,21 @@
+/* ⚠️ 还是 tests/canary-gaps/（**没修完**）—— 甲′ 只抓到一半：
+ * `push` 自己体内没有 `new`，是它调的 `grow` 才有 ⇒ `needsHome` 的**传递闭包**
+ * 要等所有函数查完才跑，而 `mk` 那时早查完了 ⇒ 这条还漏着 ✗ 见 PLAN #33 ✓
+ *
+ * PLAN #31 回归（第二个形状）：
+ * 函数里让 varArray 扩容、然后把**容器**返回出去 ⇒ 必须被编译期挡住 ✗
+ * （修之前：编过 + ASan 报 heap-use-after-free，打印 [1002, 0] ✗）
+ * 理由：`v.push(…)` 那一刀的家 arena = 本地的 `v` 所在的那只（函数体块）
+ *       ⇒ 扩容出来的 buffer 跟块同命 ⇒ 容器一逃出去就悬垂 ✓
+ * 合法写法见 examples/varArray-outparam.extc（在调用者作用域里建、用 mut ref 传下去）✓ */
+fn mk() -> varArray<i32> {
+    var v: varArray<i32> = varArray<i32>::withCap(0)
+    v.push(42)
+    v.push(43)
+    return v
+}
+
+fn main() {
+    var v: varArray<i32> = mk()
+    println("size = ", v.size(), " ", varArray<i32>::withCap(1).get(0) ?? -1)
+}

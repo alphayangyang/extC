@@ -59,6 +59,7 @@ b361f66c398e2455fc58fabc10d5a466  examples_strings
 13a53f033035e430b35d3f79a8cab155  examples_structs
 c9ddbd7e2662fed5de8590404bc0f4ad  examples_tour
 8f59bd35b1920733ab4becbeafb1053c  examples_types
+f4a484c9ec36e5aee48f5bfe5e3bb344  examples_varArray-outparam
 81055bd2e5f8aca9662662bbb717c15a  examples_varArray
 22631ec6a50614952e66c76cb5d63abb  bench_heavy_bt
 d92de3652dff886a651a1a81b0e81a0c  bench_heavy_mb
