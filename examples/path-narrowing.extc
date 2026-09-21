@@ -1,0 +1,25 @@
+// expect: 非空 = 1
+/* 档3（PLAN #14 的 **sound 子集**）：**路径收窄** ✓
+ *
+ * `if n.next != null { … n.next.value … }` —— 不用再写 `var x = n.next` 那一行了 ✓
+ * 判据（编译器自己定）：根绑定 `n` 是**没取过地址的局部** ⇒ 没人能通过别名改它的字段
+ * ⇒ "n.next 非空"这个事实**稳定** ✓
+ * ⚠️ 根是**参数**时仍然拒绝（调用者可能持有别名）—— 见
+ *    tests/errors/path_narrow_param_root.extc ✓
+ *    这正是 ARENA-FORMAL §7.4 那条"别名硬门槛"在路径上的样子 ✓
+ */
+struct node { value: i32  next: ?ref node }
+
+fn main() {
+    var n: node = { value: 1, next: null }
+    var m: node = { value: 2, next: ref n }        // 让 n 挂在 m 后面
+    if m.next != null {
+        println("非空 = ", m.next.value)            // ← 路径收窄直接用 ✓
+        if m.next.next != null {                     // 两层路径：第二层根是 `m.next`（不是局部）⇒ 仍要收窄 ✗
+            println("再深一层")
+        }
+    } else {
+        println("空")
+    }
+    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
+}

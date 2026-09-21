@@ -1,0 +1,19 @@
+/* 档3 的**另一半**（该挡的要挡）：根是**参数**的路径**不许收窄** ✗
+ *
+ * 为什么：调用者可能持有别名（另一个 `mut ref` 指向同一个对象），
+ * 也可能在两次读之间把 `p.next` 改掉 ⇒ "p.next 非空"这个事实**不稳定** ✗
+ * （这就是 ARENA-FORMAL §7.4 那条"别名硬门槛"；PLAN #14 原文那个形状就是它）
+ * 合法替代：先 `var x = p.next` 把值拿到本地，再 `if x != null { x.value }` ✓
+ *          —— 见 MANUAL 里"收窄只认绑定名"那条说明 ✓
+ */
+struct node { value: i32  next: ?ref node }
+
+fn useParam(p: ref node) {
+    if p.next != null { println(p.next.value) }
+}
+
+fn main() {
+    var n: node = { value: 1, next: null }
+    useParam(ref n)
+    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
+}

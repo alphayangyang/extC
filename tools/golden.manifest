@@ -46,6 +46,7 @@ f4ecdba7e6b103a0259c0cd61e59e6c4  examples_option-ref-payload
 d9fb2a3b9f51465daf5abd0082e453e4  examples_option-result
 2bb09492106db7864d703457dd1f1bed  examples_option-sugar
 ca0eae131291376e909d7bfb7e4b7a1a  examples_out-param
+7f3902955632997f0fee1e10de1775d2  examples_path-narrowing
 2329d522caa178f91331e6ceb3389dc6  examples_payload-enum
 7712ccfdf82ffa01dde5bcfbd52a9d6f  examples_prelude
 f8320ea4c3bdd9a02ee8ddc957120945  examples_readonly-cursor

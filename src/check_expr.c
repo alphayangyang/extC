@@ -347,9 +347,25 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             e->field = fd;
             /* 字段的类型里可能有泛型参数 —— 用接收者的实参替换掉 */
-            if (bt->kind == TY_GENERIC)
-                return ttSubstitute(tt, fd->type, &sd->typeParams, &bt->targs);
-            return fd->type;
+            Type *ftype = (bt->kind == TY_GENERIC)
+                          ? ttSubstitute(tt, fd->type, &sd->typeParams, &bt->targs)
+                          : fd->type;
+            /* ⭐ 档3：路径收窄 —— `if h.p != null { … }` 里读 `h.p` 直接给**非空**版本 ✓
+             * （`narrowTarget` 只在"根是没取过地址的局部"时才发这个事实 ⇒ 这里照用 ✓）
+             * 这跟 `EX_IDENT` 那条规则（见本文件上方 `isNarrowed(c, s->cname)`）完全对称 ✓ */
+            if (ftype && ftype->kind == TY_REF && ftype->nullable &&
+                e->u.field.obj->kind == EX_IDENT && e->u.field.obj->u.ident.cname) {
+                const char *rc = e->u.field.obj->u.ident.cname;
+                size_t kn = strlen(rc) + strlen(e->u.field.name) + 2;
+                char *key = (char *)arenaAlloc(c->arena, kn);
+                snprintf(key, kn, "%s.%s", rc, e->u.field.name);
+                if (isNarrowed(c, key)) {
+                    Type *nn = ttRef(tt, ftype->inner);
+                    nn->mut = ftype->mut;
+                    return nn;
+                }
+            }
+            return ftype;
         }
 
         case EX_INDEX: {
@@ -513,8 +529,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_REF: {
             Expr *op = e->u.ref.operand;
             Type *ot = checkExpr(c, op);
-            /* ⭐ 档2：取地址 ⇒ 记下"这个绑定的地址出去过"（别名可能出现 ⇒ 禁止强更新）✓ */
-            { Sym *rs = placeRoot(c, op); if (rs) rs->addressed = true; }
+            /* ⭐ 档2：取地址 ⇒ 记下"这个绑定的地址出去过"（别名可能出现 ⇒ 禁止强更新）✓
+             * ⭐ 档3：同时**作废它的路径收窄事实**（`h.p` 非空这件事不再可靠）✓ */
+            { Sym *rs = placeRoot(c, op); if (rs) { unNarrow(c, rs->cname); rs->addressed = true; } }
             if (ttIsError(ot)) return ttError(tt);
 
             if (ot->kind == TY_REF) {

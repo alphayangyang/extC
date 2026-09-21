@@ -25,8 +25,14 @@ void pushNarrow(Checker *c, const char *cname) {
 /* 这个绑定又被赋成 null / 换了指向 ⇒ 之前的证明**作废**（收窄是栈式的，砍到它为止）*/
 void unNarrow(Checker *c, const char *cname) {
     if (!cname) return;
-    for (size_t i = 0; i < c->narrow.len; i++)
-        if (strcmp(*(const char **)vecAt(&c->narrow, i), cname) == 0) { c->narrow.len = i; return; }
+    for (size_t i = 0; i < c->narrow.len; i++) {
+        const char *k = *(const char **)vecAt(&c->narrow, i);
+        if (strcmp(k, cname) == 0) { c->narrow.len = i; return; }
+        /* ⭐ 档3：路径事实（`h.p`）也要跟着作废 —— 前缀相同就砍掉 ✓
+         * 对根 `h` 的任何写、或"取它的地址"都可能让 `h.p` 非空不再成立 ✓ */
+        size_t l = strlen(cname);
+        if (strncmp(k, cname, l) == 0 && k[l] == '.') { c->narrow.len = i; return; }
+    }
 }
 
 /* 这个条件式证明了**谁**非空？认不出来返回 NULL，`*whenTrue` 说证明在哪个分支里。
@@ -41,6 +47,21 @@ const char *narrowTarget(Checker *c, Expr *cond, bool *whenTrue) {
     if (cond->u.bin.right->kind == EX_NULL)      var = cond->u.bin.left;
     else if (cond->u.bin.left->kind == EX_NULL)  var = cond->u.bin.right;
     else return NULL;
+    /* ⭐ 档3（PLAN #14 的 **sound 子集**）：路径收窄 `if h.p != null { … }` ✓
+     * 只认**没取过地址的局部**（depth ≥ 1 且 `!addressed`）当根 —— 那时
+     * **没人能通过别名改它的字段** ⇒ "h.p 非空"这个事实稳定 ✓
+     * ⚠️ 参数当根**不行**（调用者可能持有别名，或另有 `mut ref` 指向同一对象）✗
+     *    取过地址也不行 ✗ —— 这正是 ARENA-FORMAL §7.4 那条"别名硬门槛"在路径上的样子 ✓ */
+    if (var && var->kind == EX_FIELD && var->u.field.obj->kind == EX_IDENT) {
+        Sym *rs = lookup(c, var->u.field.obj->u.ident.name);
+        if (!rs || !rs->type || rs->depth < 1 || rs->addressed) return NULL;
+        if (!var->type || var->type->kind != TY_REF || !var->type->nullable) return NULL;
+        size_t kn = strlen(rs->cname) + strlen(var->u.field.name) + 2;
+        char *key = (char *)arenaAlloc(c->arena, kn);
+        snprintf(key, kn, "%s.%s", rs->cname, var->u.field.name);
+        *whenTrue = (strcmp(op, "!=") == 0);
+        return key;
+    }
     if (!var || var->kind != EX_IDENT) return NULL;
     Sym *sy = lookup(c, var->u.ident.name);
     if (!sy || !sy->type || sy->type->kind != TY_REF || !sy->type->nullable) return NULL;
