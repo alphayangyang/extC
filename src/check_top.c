@@ -734,6 +734,93 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     return !ctx->hasError;
 }
 
+/* ⭐ 甲′（PLAN #31/#33）：**这个函数（传递地）会不会分配？**
+ *
+ * 跟 `needsHome` 的传递闭包是同一个问题，但要**惰性**算：
+ * 那个闭包是所有函数查完之后才跑的，而调用者在查**自己**的函数体时就得知道
+ * "这一刀会不会往我的容器里塞新存储" ✗（`varArray::push` 自己不 `new`，
+ * 是它调的 `grow` 才有 ⇒ 只看 `f->needsHome` 会漏掉"转发一层"的 callee）✓
+ *
+ * 环保护：**正在算**的当"会"（保守方向）✓ 结果缓存在 `FuncDef.allocState` ✓
+ */
+static bool stmtCallsAllocator(Checker *c, Stmt *s);   /* 定义在下面（互相递归）*/
+static bool funcAllocates(Checker *c, FuncDef *f) {
+    if (!f) return true;                     /* 拿不准 ⇒ 当"会" ✓ */
+    if (f->allocState == 1) return true;
+    if (f->allocState == 2) return false;
+    if (f->allocState == 3) return true;     /* 环上 ⇒ 保守 */
+    f->allocState = 3;
+    bool r = stmtHasNew(f->body) || stmtCallsAllocator(c, f->body);
+    f->allocState = r ? 1 : 2;
+    return r;
+}
+
+/* 体里有没有调用"有家"的函数？（检查完之后 `e->func` 已经填好了 ✓）*/
+static bool exprCallsAllocator(Checker *c, Expr *e);
+static bool stmtCallsAllocator(Checker *c, Stmt *s) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR:    return exprCallsAllocator(c, s->u.var.init);
+    case ST_ASSIGN: return exprCallsAllocator(c, s->u.assign.value) ||
+                           exprCallsAllocator(c, s->u.assign.target);
+    case ST_IF:     return exprCallsAllocator(c, s->u.ifs.cond) ||
+                           stmtCallsAllocator(c, s->u.ifs.thenBody) ||
+                           stmtCallsAllocator(c, s->u.ifs.elseBody);
+    case ST_WHILE:  return exprCallsAllocator(c, s->u.whiles.cond) ||
+                           stmtCallsAllocator(c, s->u.whiles.body);
+    case ST_RETURN: return exprCallsAllocator(c, s->u.ret.value);
+    case ST_EXPR:   return exprCallsAllocator(c, s->u.expr.expr);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtCallsAllocator(c, *(Stmt **)vecAt(&s->u.block.stmts, i))) return true;
+        return false;
+    case ST_MATCH:
+        if (exprCallsAllocator(c, s->u.match.scrutinee)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtCallsAllocator(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
+        return false;
+    default: return false;
+    }
+}
+static bool exprCallsAllocator(Checker *c, Expr *e) {
+    if (!e) return false;
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && (!e->func || funcAllocates(c, e->func)))
+        return true;
+    switch (e->kind) {
+    case EX_BIN: return exprCallsAllocator(c, e->u.bin.left) || exprCallsAllocator(c, e->u.bin.right);
+    case EX_UN:  return exprCallsAllocator(c, e->u.un.operand);
+    case EX_REF: return exprCallsAllocator(c, e->u.ref.operand);
+    case EX_DEREF: return exprCallsAllocator(c, e->u.deref.operand);
+    case EX_SIGN:  return exprCallsAllocator(c, e->u.sign.operand);
+    case EX_TRY:   return exprCallsAllocator(c, e->u.try_.operand);
+    case EX_INDEX:
+        return exprCallsAllocator(c, e->u.index.obj) || exprCallsAllocator(c, e->u.index.index);
+    case EX_SLICE: return exprCallsAllocator(c, e->u.slice.obj);
+    case EX_FIELD: return exprCallsAllocator(c, e->u.field.obj);
+    case EX_COALESCE:
+        return exprCallsAllocator(c, e->u.coalesce.main) ||
+               exprCallsAllocator(c, e->u.coalesce.fallback);
+    case EX_METHOD: {
+        if (exprCallsAllocator(c, e->u.method.recv)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.method.args, i))) return true;
+        return false;
+    }
+    case EX_CALL: {
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.call.args, i))) return true;
+        return false;
+    }
+    case EX_ASSOC: {
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+        return false;
+    }
+    case EX_NEW: return exprCallsAllocator(c, e->u.new_.count);
+    default: return false;
+    }
+}
+
 /* ⭐ 甲′（PLAN #31 / §0.6）：被调者**往容器里塞的东西住哪只 arena**，要记回容器的深度 ✓
  *
  * 为什么需要：`push(ref l, …)` 这一刀的家 arena = **实参 `l` 所在的那只**
@@ -759,7 +846,9 @@ static void raiseOneMutRefTarget(Checker *c, Param *p, Expr *a, int h) {
     if (h > s->refDepth) s->refDepth = h;      /* 取 max = 上界 = 保守方向 ✓ */
 }
 
-void raiseMutRefTargets(Checker *c, Expr *recv, Vec *args, Vec *params, int homeDepth) {
+void raiseMutRefTargets(Checker *c, FuncDef *callee, Expr *recv, Vec *args, Vec *params, int homeDepth) {
+    /* 甲′(#33)：用**惰性**的 funcAllocates，而不是查完之后才有值的 callee->needsHome ✓ */
+    if (!funcAllocates(c, callee)) return;
     if (homeDepth <= 0) return;                /* 家是参数级 ⇒ 活得够久 ✓ */
     if (recv && params->len >= 1)
         raiseOneMutRefTarget(c, *(Param **)vecAt(params, 0), recv, homeDepth);

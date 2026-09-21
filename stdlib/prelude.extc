@@ -206,6 +206,17 @@ struct varArray<T> {
 
     // 只归零（**内存不动** —— arena 不能 free ✓）
     fn clear(self: mut ref varArray<T>) { self.len = 0 }
+
+    // ⭐ **连续性的兑现**：把存储当视图借出去 —— 排序 / 查找 / println / 传给 `extern!`
+    // 的 C 函数，全都只认 `slice<T>` ⇒ 没有这两个就没法用 ✓
+    // ⚠️ 借出去的视图**不能在扩容后再用**，也不能带出"存储活得不够久"的作用域
+    //   —— 后者由编译器挡（甲′：扩容过的容器一逃逸就报错 ✓ 见 PLAN #31）
+    fn asSlice(self: ref varArray<T>) -> slice<T> { return self.buf[0..self.len] }
+
+    // 可写视图：只给前 len 个（`cap` 那截是未使用区，不该露出去 ✓）
+    fn asMutSlice(self: mut ref varArray<T>) -> mut slice<T> {
+        return self.buf[0..self.len]
+    }
 }
 
 struct slice<T> {

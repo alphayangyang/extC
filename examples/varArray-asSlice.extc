@@ -1,0 +1,28 @@
+// expect: 求和 = 150
+/* **连续性的兑现**：`asSlice()` / `asMutSlice()` —— 把 varArray 的存储当 `slice<T>` 借出去 ✓
+ *
+ * 为什么必须有它俩：`sort` / 查找 / `println` / 传给 `extern!` 的 C 函数，
+ * 全都只认 `slice<T>` ⇒ 没有这两个，varArray 的"连续"就**兑现不了** ✓
+ *
+ * ⚠️ 两条规矩（第二条由编译器保证 ✓）：
+ *   ① 扩容会让借出去的视图指向旧 buffer ⇒ **借了就别再 push**（会静默写丢）
+ *   ② 视图不能带出"存储活得不够久"的作用域 ⇒ 甲′ 会把它变成**编译错误**
+ *      （`return v.asSlice()` 在 v 扩容过之后编不过 ✓ 见 PLAN #31）
+ */
+fn sum(v: slice<i32>) -> i32 {
+    var s: i32 = 0
+    var i: i64 = 0
+    while i < v.len { s = s + v[i]  i = i + 1 }
+    return s
+}
+
+fn main() {
+    var v: varArray<i32> = varArray<i32>::withCap(2)
+    var i: i32 = 1
+    while i <= 5 { v.push(i * 10)  i = i + 1 }        // 这里扩容了（2→4→8）✓
+    println("求和 = ", sum(v.asSlice()))               // 借给只认 slice 的函数 ✓
+    println("前 3 个 = ", sum(v.asSlice()[0..3]))       // 切片也认（视图套视图）✓
+    var w: mut slice<i32> = v.asMutSlice()            // 可写视图：只给前 len 个 ✓
+    w[0] = 999
+    println("改完 get(0) = ", v.get(0) ?? -1)
+}

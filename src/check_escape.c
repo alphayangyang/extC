@@ -308,7 +308,11 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     if (d <= at) return false;
     ckError(c, line,
             "A reference may not outlive what it points to. Borrow from a parameter "
-            "(depth 0) or copy the data instead.",
+            "(depth 0) or copy the data instead. "
+            "If this value is a container (varArray and friends), the storage inside it "
+            "was allocated in this frame's arena: build the container in the caller's "
+            "scope and fill it through a `mut ref` argument, or build it here with `new` "
+            "(that allocates in this function's home arena, so it may escape).",
             "%s would hold a reference to a local variable that dies first "
             "(borrowed from depth %d, but this can only hold up to depth %d)",
             what, d, at);

@@ -188,6 +188,6 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  void unNarrow (Checker *c, const char *cname);
 
 /* 甲′（PLAN #31）：把"被调者塞进容器的东西住哪只 arena"记回容器深度 */
-void raiseMutRefTargets (Checker *, Expr *, Vec *, Vec *, int);
+void raiseMutRefTargets (Checker *, FuncDef *, Expr *, Vec *, Vec *, int);
 
 #endif /* EXTC_CHECK_INTERNAL_H */

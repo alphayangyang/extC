@@ -1,0 +1,13 @@
+/* PLAN #31 回归（第三个形状：视图）：扩容过的容器，**把它的视图带出本函数** ⇒ 必须报错 ✗
+ * 理由：扩容出来的 buffer 跟"容器所在的块"同命 ⇒ 视图一出去就悬垂 ✓
+ * 对照（合法）：容量够、**没扩容**时视图可以返回 —— 那时 buffer 在本函数的"家" arena 里 ✓
+ *              见 examples/varArray-asSlice-return.extc */
+fn leak() -> slice<i32> {
+    var v: varArray<i32> = varArray<i32>::withCap(0)
+    v.push(7)
+    return v.asSlice()
+}
+
+fn main() {
+    println(leak()[0], varArray<i32>::withCap(1).get(0) ?? -1)
+}
