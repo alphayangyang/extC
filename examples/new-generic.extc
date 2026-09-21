@@ -1,0 +1,13 @@
+/* `new T[n]` 在泛型体里推迟到实例化 ✓ */
+struct bufT<T> {
+    data: mut slice<T>
+    fn make(n: i64) -> bufT<T> {
+        var b: bufT<T> = { data: new T[n] }
+        return b
+    }
+}
+fn main() {
+    var b: bufT<i32> = bufT<i32>::make(4)
+    b.data[0] = 7
+    println("len = ", b.data.len, " 值 = ", b.data[0])
+}

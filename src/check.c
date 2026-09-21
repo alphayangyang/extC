@@ -179,6 +179,7 @@ static bool mentionsParam(Type *t) {
 
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
 static Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
+static void recordNewSizeCheck(Checker *c, Type *t, int line);   /* 同上 */
 static bool typeContainsRef(TypeTable *tt, Type *t);   /* 同上 */
 static int callHomeDepth(Checker *c, Vec *args, Vec *params);   /* 定义在后面 */
 static void markCallHomeIfEscaping(Checker *c, Expr *v, int at);   /* 定义在后面 */
@@ -843,6 +844,9 @@ typedef struct {
      * 但 `T = slice<u8>` 的实例化会得到 `(slice_u8){0}` = **一个 null 引用** ✗
      * （extC 承诺"`ref` 永不为空"）⇒ 也推迟到实例化再查 ✓ */
     bool        isZero;
+    /* ---- 第三类：**`new T[n]` 的大小**（2026-09-20，为了让 `varArray<T>` 写得出来）----
+     * 模板期 `T` 没有大小 ⇒ 不能报错、也不能放行 ⇒ 记录一笔，实例化时对每个具体实例查 ✓ */
+    bool        isNewSize;
     Type       *declType;
     int         line;
     const char *what;
@@ -852,6 +856,18 @@ typedef struct {
 /* 记一条推迟的规矩。**只在泛型体里、且值提到了类型参数时**才记 ✓
  * （具体类型的值现在就查得清楚，不用推迟 —— 推迟只会让报错变晚）*/
 /* 记一条"零值"的推迟检查（跟引用规矩同一族，见 RefCheck 的注释）*/
+/* 记一条"`new T[n]` 的大小"的推迟检查（第三类，见 RefCheck 的注释）*/
+static void recordNewSizeCheck(Checker *c, Type *t, int line) {
+    if (!c->curFunc || !c->curFunc->owner) return;
+    if (c->curFunc->owner->typeParams.len == 0) return;
+    RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
+    rc->isNewSize = true;
+    rc->declType  = t;
+    rc->line      = line;
+    rc->func      = c->curFunc;
+    *(RefCheck **)vecPush(&c->refChecks) = rc;
+}
+
 static void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
     if (!c->curFunc || !c->curFunc->owner) return;
     if (c->curFunc->owner->typeParams.len == 0) return;
@@ -1969,6 +1985,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Vec *sp = NULL, *sa = NULL;
             if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
 
+            /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
+             * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
+            e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params);
+            if (f->needsHome)
+                checkCallRefArgs(c, &e->u.assoc.args, &f->params, e->homeDepth,
+                                 e->line, e->u.assoc.name);
+
             if (e->u.assoc.args.len != f->params.len) {
                 ckError(c, e->line, NULL, "`%s::%s` expects %zu argument(s), got %zu",
                         e->u.assoc.typeName, f->name, f->params.len, e->u.assoc.args.len);
@@ -2032,10 +2055,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (ttIsError(w)) return ttError(tt);
             e->u.new_.type = w;
 
-            if (ttIs(w, "void") || w->kind == TY_PARAM || ttHasParam(w)) {
+            if (w->kind == TY_PARAM || ttHasParam(w)) {
+                /* ⭐ 模板期 `T` 没有大小 ⇒ **推迟到实例化再查**（记录一笔）✓
+                 * 这样 `varArray<T>` 里的 `new T[cap]` 才写得出来 ✓
+                 * ⚠️ 实例化后还是不确定的（比如嵌套泛型没传到底）要在那里报错 ✓ */
+                recordNewSizeCheck(c, w, e->line);
+            } else if (ttIs(w, "void") || ttIsError(w)) {
                 ckError(c, e->line,
-                        "`new` needs a concrete type: its size is decided at compile time,"
-                        " and a type parameter has no size on the template",
+                        "`new` needs a concrete type: its size is decided at compile time",
                         "cannot `new` `%s` -- its size is not known here", typeStr(c, w));
                 return ttError(tt);
             }
@@ -3670,6 +3697,20 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             /* 这个实例里那个 `T` 到底含不含引用？不含 ⇒ 这条规矩本来就不适用 ✓
              * （所以 `box<i64>::set` 照样合法，而 `boxT<slice<u8>>::stash` 会被挡住 ——
              *   这正是"不能简单地把 `T` 一律当成含引用"的原因）*/
+            if (rc->isNewSize) {
+                /* 实例化之后还带类型参数（或 void）⇒ 大小仍然不知道 ⇒ 报错点名实例 ✓ */
+                Type *nt = tsub(&c, rc->declType);
+                c.substParams = NULL;
+                c.substArgs   = NULL;
+                if (nt->kind == TY_PARAM || ttHasParam(nt) || ttIs(nt, "void"))
+                    ckError(&c, rc->line,
+                            "`new` needs a concrete type: its size is decided at compile time,"
+                            " and this one is still not concrete after instantiation.",
+                            "in instance `%s`: cannot `new` `%s` -- its size is not known"
+                            " even here", inst->name, typeStr(&c, nt));
+                continue;
+            }
+
             if (rc->isZero) {
                 /* 零值这一类：这个实例的 `T` 到底有没有零值？*/
                 Type *zt = tsub(&c, rc->declType);

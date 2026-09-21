@@ -828,6 +828,11 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (i) bufPuts(&b, ", ");
                 bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.assoc.args, i)));
             }
+            /* A3：被调用者需要家 arena ⇒ 补上（`Type::make()` 这类关联函数会分配 ✓）*/
+            if (e->func->needsHome) {
+                if (e->u.assoc.args.len) bufPuts(&b, ", ");
+                bufPuts(&b, homeArg(g, e->homeDepth));
+            }
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
