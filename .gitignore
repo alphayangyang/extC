@@ -18,3 +18,16 @@ examples/*.generated.c
 .vscode/
 .idea/
 *.swp
+
+# bench 的构建产物（跑 bench/run.sh / heavy / stress 就会重新生成）
+#   · 生成物：`*.extc.c`（由 .extc 翻出来的 C）、以及编译出来的可执行文件
+#   · **源码照旧入库**：`*.extc`、手写对照的 `*.c`、`*.js`/`*.py`、`run.sh` ✓
+bench/**/*.extc.c
+bench/*.extc.c
+bench/**/*_extc
+bench/**/*_extc_o2
+bench/**/*_c
+bench/**/*_c_o2
+bench/**/*_chk
+bench/**/*_rs
+bench/**/*_cpp
