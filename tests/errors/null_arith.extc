@@ -1,0 +1,5 @@
+// null 不是数字，也不能参与运算
+fn main() {
+    var p: ?ref i64 = null
+    println(p + 1)
+}

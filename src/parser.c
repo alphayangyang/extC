@@ -1033,6 +1033,13 @@ static Expr *parsePrimary(Parser *p) {
         e->u.str.text = t->text;
         return e;
     }
+    /* `null` —— **上下文关键字**（跟 `ref` / `mut` 一样：只在表达式位置上认）。
+     * 它的类型完全由上下文给：`var p: ?ref node = null`、
+     * `if p != null`、`return null`（返回类型是 `?ref T` 时）✓ */
+    if (at(p, "null")) {
+        take(p);
+        return exprNew(p->arena, EX_NULL, t->line);
+    }
     if (at(p, "true") || at(p, "false")) {
         take(p);
         Expr *e = exprNew(p->arena, EX_BOOL, t->line);

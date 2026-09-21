@@ -72,7 +72,10 @@ typedef enum {
     EX_GENCALL,   /* alloc<i32>(n) —— 泛型调用（目前只有内置原语用） */
     EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
     EX_DEREF,     /* `*p` —— 显式解引用：读=p指的值，写=p指的地方 */
-    EX_ENUMVAL    /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
+    EX_ENUMVAL,   /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
+    EX_NULL       /* `null` —— **可空引用的零值**（`?ref T`）。
+                   * 只能出现在「上下文已经说清楚是哪个 `?ref T`」的地方，
+                   * 类型由 adoptContextType 寄放（跟 `[]` 数组字面量一个套路）✓ */
 } ExprKind;
 
 struct Expr {

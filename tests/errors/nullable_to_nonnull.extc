@@ -1,0 +1,4 @@
+// 可空引用不能当非空引用用 —— 没有别的办法转（除非证明过）
+struct node { value: i64  next: ?ref node }
+fn f(p: ?ref node) -> ref node { return p }
+fn main() {}

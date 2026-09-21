@@ -787,6 +787,12 @@ static const char *genExprInner(CG *g, Expr *e) {
         case EX_REF:
             return arenaPrintf(g->arena, "&(%s)", genExpr(g, e->u.ref.operand));
 
+        /* `null` —— 可空引用的零值。C 里的表示就是一个空指针：
+         * 类型检查已经保证了「用之前先查过 null」（narrowing），
+         * 所以这里**不生成任何运行时检查** —— 编译期能证明的，运行时不留痕迹 ✓ */
+        case EX_NULL:
+            return "((void *)0)";
+
         case EX_ENUMVAL: {
             const char *tn = e->u.enumval.typeName;
             const char *vn = e->u.enumval.variant;

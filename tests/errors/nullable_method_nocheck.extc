@@ -1,0 +1,7 @@
+// 方法调用也是解引用的一种（`p.f()` 会走到 `p` 指的对象上）
+struct counter {
+    n: i64
+    fn get(self: ref counter) -> i64 { return self.n }
+}
+fn f(p: ?ref counter) -> i64 { return p.get() }
+fn main() {}

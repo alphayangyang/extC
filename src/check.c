@@ -23,6 +23,17 @@ typedef struct {
     bool        mut;
     int         depth;   /* 词法深度：参数 = 0，函数体里的局部 = 1，每进一层块 +1。
                           * 逃逸检查就比这个数 —— 见 REFS.md §4 */
+    /* **引用型绑定**：这个引用**指向的东西**有多深？
+     *
+     * 为什么它跟 `depth` 是两回事：`var cur: ?ref node = head` 里，装引用的那个
+     * **槽位**在本帧（深度 1），但它指的节点在外面（深度 0）。
+     * 「引用不能活得比被指对象长」这条规则问的是**被指对象** ⇒ 必须用这个数 ✓
+     * （以前一律拿槽位深度 ⇒ `while cur != null { ... return cur }` 这种
+     *   最正常的链表搜索被误报成"指向会死的局部" ✗ 见 PLAN.md §0.4 #8）
+     *
+     * 只在**类型是引用**时有意义；默认值 = 槽位深度（保守：跟老行为一样），
+     * 声明和换指向时按初始值的真实深度**收紧** ✓ */
+    int         refDepth;
     int         line;
 } Sym;
 
@@ -41,6 +52,13 @@ typedef struct {
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
     Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
     Vec        nameUses;    /* NameUse* —— 当前函数里每个名字用过几次（生成 C 的改名用）*/
+    /* ---- `?ref T` 的**非空收窄**（narrowing）----
+     * 可空引用不能直接解 —— 必须先**证明**它非空，唯一的证明方式是在 `if` 里跟
+     * `null` 比过。这里记的就是"当前这个位置上，哪些绑定已经被证明非空"。
+     * 收窄是**词法作用域的**（跟着 pushScope/popScope 自动回退），
+     * 而且证明完之后**不生成任何运行时检查** —— 编译期能证明的，运行时不留痕迹（P）✓ */
+    Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
+    Vec        narrowMarks; /* size_t —— 每个作用域进来时的 narrow.len（出作用域回退用）*/
 
     Type *tI32, *tF64, *tBool;
     StructDef *sliceDef;/* prelude 里的 `slice<T>` 声明（视图协议）*/
@@ -122,10 +140,94 @@ static void pushScope(Checker *c) {
     Scope *s = (Scope *)arenaAllocZero(c->arena, sizeof(Scope));
     vecInit(&s->syms, c->arena, sizeof(void *));
     *(Scope **)vecPush(&c->scopes) = s;
+    /* 收窄也是词法作用域的：进块时记下水位，出块时退回去 ✓ */
+    *(size_t *)vecPush(&c->narrowMarks) = c->narrow.len;
 }
 
 static void popScope(Checker *c) {
     if (c->scopes.len) c->scopes.len--;
+    if (c->narrowMarks.len) {
+        c->narrow.len = *(size_t *)vecAt(&c->narrowMarks, c->narrowMarks.len - 1);
+        c->narrowMarks.len--;
+    }
+}
+
+/* --------------------------------------------------- `?ref T` 的非空收窄 */
+static Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
+
+static bool isNarrowed(Checker *c, const char *cname) {
+    if (!cname) return false;
+    for (size_t i = 0; i < c->narrow.len; i++)
+        if (strcmp(*(const char **)vecAt(&c->narrow, i), cname) == 0) return true;
+    return false;
+}
+
+static void pushNarrow(Checker *c, const char *cname) {
+    if (!cname || isNarrowed(c, cname)) return;
+    *(const char **)vecPush(&c->narrow) = cname;
+}
+
+/* 这个绑定又被赋成 null / 换了指向 ⇒ 之前的证明**作废**（收窄是栈式的，砍到它为止）*/
+static void unNarrow(Checker *c, const char *cname) {
+    if (!cname) return;
+    for (size_t i = 0; i < c->narrow.len; i++)
+        if (strcmp(*(const char **)vecAt(&c->narrow, i), cname) == 0) { c->narrow.len = i; return; }
+}
+
+/* 这个条件式证明了**谁**非空？认不出来返回 NULL，`*whenTrue` 说证明在哪个分支里。
+ *    `p != null` ⇒ then 分支里 p 非空
+ *    `p == null` ⇒ **else** 分支里 p 非空（也就是 `if p == null { return }` 那个护栏形态）
+ * 只有**可空引用**才算 —— 非空引用跟 null 比本身就是错（下面 checkBin 会报）。*/
+static const char *narrowTarget(Checker *c, Expr *cond, bool *whenTrue) {
+    if (!cond || cond->kind != EX_BIN) return NULL;
+    const char *op = cond->u.bin.op;
+    if (strcmp(op, "!=") != 0 && strcmp(op, "==") != 0) return NULL;
+    Expr *var = NULL;
+    if (cond->u.bin.right->kind == EX_NULL)      var = cond->u.bin.left;
+    else if (cond->u.bin.left->kind == EX_NULL)  var = cond->u.bin.right;
+    else return NULL;
+    if (!var || var->kind != EX_IDENT) return NULL;
+    Sym *sy = lookup(c, var->u.ident.name);
+    if (!sy || !sy->type || sy->type->kind != TY_REF || !sy->type->nullable) return NULL;
+    *whenTrue = (strcmp(op, "!=") == 0);
+    return sy->cname;
+}
+
+/* 一个条件式能证明的**全部**非空事实。
+ * `&&` 两边都要走 —— 能走到这个条件成立的分支，说明两边都成立过 ✓
+ * （`if p != null && p.next != null { ... }` 就是这个形状；链越深越需要）*/
+static void narrowFactsOf(Checker *c, Expr *cond) {
+    if (!cond) return;
+    if (cond->kind == EX_BIN && strcmp(cond->u.bin.op, "&&") == 0) {
+        narrowFactsOf(c, cond->u.bin.left);
+        narrowFactsOf(c, cond->u.bin.right);
+        return;
+    }
+    bool whenTrue = false;
+    const char *tg = narrowTarget(c, cond, &whenTrue);
+    if (tg && whenTrue) pushNarrow(c, tg);
+}
+
+/* 这个块**一定会离开**（return / break / continue）？
+ * 用来认护栏形态：`if p == null { return }` ⇒ 走到后面就说明 p 非空 ✓ */
+static bool blockExits(Stmt *s) {
+    if (!s) return false;
+    if (s->kind == ST_BLOCK) {
+        if (s->u.block.stmts.len == 0) return false;
+        return blockExits(*(Stmt **)vecAt(&s->u.block.stmts, s->u.block.stmts.len - 1));
+    }
+    return s->kind == ST_RETURN || s->kind == ST_BREAK || s->kind == ST_CONTINUE;
+}
+
+/* 可空引用**不能**直接解 —— 先查 null（P′：不能证明的，语法上必须看得见）*/
+static bool rejectNullableDeref(Checker *c, Type *t, Expr *node, const char *what) {
+    if (!t || t->kind != TY_REF || !t->nullable) return false;
+    ckError(c, node->line,
+            "write `if p != null { ... }` (or `if p == null { return }`) first: inside"
+            " that branch the compiler knows it is not null and generates no runtime check",
+            "`%s` is a nullable reference (`?ref T`), so %s needs a non-null one",
+            typeStr(c, t), what);
+    return true;
 }
 
 /* 声明一个绑定。
@@ -160,6 +262,10 @@ static Sym *declare(Checker *c, const char *name, Type *t, bool mut,
     s->type = t;
     s->mut = mut;
     s->depth = depth;
+    /* 引用型绑定的**默认**指向深度 = 槽位深度（保守 = 老行为）。
+     * 声明/换指向的地方知道初始值是什么，会把这里**收紧**到真实深度 ✓
+     * （比如 `var cur: ?ref node = head` ⇒ 0 —— 它指的是参数那边的东西）*/
+    s->refDepth = (t && t->kind == TY_REF) ? depth : 0;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
     return s;
@@ -301,7 +407,8 @@ static bool typeContainsRef(TypeTable *tt, Type *t) {
  *   而 `| holding(slice<u8>) | nothing` 的不合法 —— **变体顺序有意义** ✓）*/
 static bool typeLacksZeroValue(TypeTable *tt, Type *t) {
     if (!t) return false;
-    if (t->kind == TY_REF) return true;
+    /* `?ref T` 的零值就是 `null` —— 这正是它存在的理由：链表/树的 `next` 终于有零值了 ✓ */
+    if (t->kind == TY_REF) return !t->nullable;
     if (t->kind == TY_ARRAY) return typeLacksZeroValue(tt, t->inner);
     if (t->kind == TY_ENUM && t->edef) {
         if (t->edef->variants.len == 0) return false;
@@ -450,9 +557,20 @@ static int maxInt(int a, int b) { return a > b ? a : b; }
 static int exprRefDepth(Checker *c, Expr *e);
 
 static int placeDepth(Checker *c, Expr *e) {
+    if (!e) return 0;
     /* `*p` 的"地方"不在本帧的哪个绑定里，而是 p 指的地方 ⇒
      * 它的寿命就是**那个引用的寿命** ✓（解引用不创造存储，只换了个入口）*/
-    if (e && e->kind == EX_DEREF) return exprRefDepth(c, e->u.deref.operand);
+    if (e->kind == EX_DEREF) return exprRefDepth(c, e->u.deref.operand);
+    /* **引用型绑定**：这个"地方"在它指的那边 ⇒ 问的是被指对象的深度 ✓
+     * （`var cur: ?ref node = head` 的槽位在本帧，但节点在外面）*/
+    if (e->kind == EX_IDENT) {
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (sy && sy->type && sy->type->kind == TY_REF) return sy->refDepth;
+        return sy ? sy->depth : 0;
+    }
+    /* 字段/元素住在**它所在的那个对象**里 ⇒ 跟着对象走 ✓ */
+    if (e->kind == EX_FIELD) return placeDepth(c, e->u.field.obj);
+    if (e->kind == EX_INDEX) return placeDepth(c, e->u.index.obj);
     Sym *root = placeRoot(c, e);
     return root ? root->depth : 0;
 }
@@ -803,7 +921,10 @@ static Type *checkValue(Checker *c, Expr *e) {
      *       以及**成员选择**（`p.field` / `p.method()` —— 那是"导航"不是"取值"，仍然自动穿透 ✓）*/
     if (t && t->kind == TY_REF && e->kind != EX_REF && e->kind != EX_GENCALL) {
         ckError(c, e->line,
-                "write `*p` where the value is needed (`*p + 1`, `let v = *p`, `f(*p)`)",
+                t->nullable
+                  ? "it is a nullable reference (`?ref T`) -- check it first:"
+                    " `if p != null { ... *p ... }`"
+                  : "write `*p` where the value is needed (`*p + 1`, `let v = *p`, `f(*p)`)",
                 "`%s` is a **reference**, not a value -- dereference it first: `*p`",
                 typeStr(c, t));
         return t->inner;
@@ -818,7 +939,10 @@ static Type *checkInto(Checker *c, Type *want, Expr *e) {
     Type *got = checkExpr(c, e);
     /* 同样：**显式解引用** —— 期望的不是引用却给了引用 ⇒ 报错 ✓ */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
-        ckError(c, e->line, "write `*p` here",
+        ckError(c, e->line,
+                got->nullable ? "it is a nullable reference (`?ref T`) -- check it first:"
+                                " `if p != null { ... *p ... }`"
+                              : "write `*p` here",
                 "`%s` is a **reference**, not a value -- dereference it first: `*p`",
                 typeStr(c, got));
         return got->inner;
@@ -964,6 +1088,11 @@ static bool literalFits(Expr *e, Type *want) {
 /* 裸 `{}` 从上下文拿类型。只在上下文能唯一确定类型的地方成立。 */
 static void adoptContextType(Expr *e, Type *want) {
     if (!e || !want) return;
+    /* `null` —— 它的类型**只能**从上下文来（`?ref T` 里的 T 是什么，字面量自己是不知道的）*/
+    if (e->kind == EX_NULL) {
+        if (want->kind == TY_REF && want->nullable) e->type = want;
+        return;
+    }
     Type *w = ttBase(want);
     if (!w) return;
     /* 把上下文类型**寄放**在 e->type 上（checkExpr 之后会被覆盖成同一个类型）。
@@ -998,7 +1127,24 @@ static bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const
         return false;
     }
 
+    /* `?ref T` → `ref T`：**这是"我保证它非空"，必须证明过** ✗
+     * 反过来（非空 → 可空）永远安全，自动允许 ✓ */
+    if (want->kind == TY_REF && got->kind == TY_REF && got->nullable && !want->nullable &&
+        ttEquals(want->inner, got->inner)) {
+        ckError(c, node ? node->line : 0,
+                "check it first: `if p != null { ... }` -- inside that branch the compiler"
+                " knows it is not null and generates no runtime check; there is no other"
+                " way to turn a `?ref T` into a `ref T`",
+                "%s expects `%s`, found `%s` -- a nullable reference", 
+                what, typeStr(c, want), typeStr(c, got));
+        return false;
+    }
+
     if (ttEquals(want, got)) return true;
+
+    /* 非空 → 可空：往安全的方向走，自动允许（跟 `mut ref` → `ref` 同一种降级）✓ */
+    if (want->kind == TY_REF && got->kind == TY_REF && want->nullable && !got->nullable &&
+        want->mut == got->mut && ttEquals(want->inner, got->inner)) return true;
 
     /* **降级**：可写的可以当只读的用（能写当然能读）—— 单向、永远安全，自动允许。
      * 反过来不行：那是在要写权限，必须显式写 `mut`。
@@ -1114,6 +1260,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_BOOL:  return c->tBool;
         case EX_STR:   return c->tSliceU8;
 
+        case EX_NULL: {
+            /* 类型是上下文寄放在 e->type 上的（adoptContextType）。
+             * 上下文没说清楚 ⇒ 报错，**绝不猜**（显式优于推导）✓ */
+            Type *nt = e->type;
+            if (nt && nt->kind == TY_REF && nt->nullable) return nt;
+            ckError(c, e->line,
+                    "`null` is the zero value of a nullable reference, so its type must be"
+                    " clear from context -- e.g. `var p: ?ref node = null`, or a parameter"
+                    " or return type of `?ref T`",
+                    "`null` here does not know which `?ref T` it is");
+            return ttError(tt);
+        }
+
         case EX_IDENT: {
             Sym *s = lookup(c, e->u.ident.name);
             if (!s) {
@@ -1124,19 +1283,76 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* 名字的**解析**在这里定格 ⇒ 代码生成直接印 `cname`。
              * 遮蔽过的名字（`a` vs `a__2`）就靠这一行分开 ✓ */
             e->u.ident.cname = s->cname;
-            return s->type;
+            /* 已经被 `if p != null` 证明过 ⇒ 交出**非空**引用。
+             * 于是 `p.field`、`p.method()`、传给 `ref T` 参数全部自动成立，
+             * 而且**一行运行时检查都不用加** ✓ */
+            Type *sty = s->type;
+            if (sty && sty->kind == TY_REF && sty->nullable && isNarrowed(c, s->cname)) {
+                Type *nn = ttRef(tt, sty->inner);
+                nn->mut = sty->mut;
+                return nn;
+            }
+            return sty;
         }
 
         case EX_BIN: {
+            const char *op0 = e->u.bin.op;
+
+            /* `&&` / `||` 的**短路**也是收窄点：`p != null && p.value > 3`
+             * 右边能直接解 —— 因为走到右边就说明左边成立过 ✓ */
+            if (isLogicOp(op0)) {
+                Type *lt = checkValue(c, e->u.bin.left);
+                expectBool(c, lt, e->u.bin.left);
+
+                bool whenTrue = false;
+                const char *tg = narrowTarget(c, e->u.bin.left, &whenTrue);
+                const size_t mark = c->narrow.len;
+                if (strcmp(op0, "&&") == 0) {
+                    /* 走到右边 ⟺ 左边**为真** ⇒ 左边的全部事实都成立 ✓ */
+                    narrowFactsOf(c, e->u.bin.left);
+                } else if (tg && !whenTrue) {
+                    /* `a || b`：走到右边 ⟺ 左边为假。只有最简单的 `p == null` 形态
+                     * 能反推出 `p` 非空（`||` 的完整反推要先会否定一个合取，先不做）*/
+                    pushNarrow(c, tg);
+                }
+
+                Type *rt = checkValue(c, e->u.bin.right);
+                expectBool(c, rt, e->u.bin.right);
+                c->narrow.len = mark;
+                return c->tBool;
+            }
+
+            /* `p == null` / `p != null` —— 可空引用**唯一**的用法就是跟 null 比。
+             * 必须抢在下面 `checkValue` 之前：`null` 自己是不知道类型的 ✓ */
+            if ((strcmp(op0, "==") == 0 || strcmp(op0, "!=") == 0) &&
+                (e->u.bin.left->kind == EX_NULL || e->u.bin.right->kind == EX_NULL)) {
+                Expr *nv = (e->u.bin.left->kind == EX_NULL) ? e->u.bin.left : e->u.bin.right;
+                Expr *ov = (nv == e->u.bin.left) ? e->u.bin.right : e->u.bin.left;
+                Type *ot = checkExpr(c, ov);
+                if (ttIsError(ot)) return c->tBool;
+                if (ot->kind == TY_REF && ot->nullable) {
+                    adoptContextType(nv, ot);
+                    checkExpr(c, nv);
+                    return c->tBool;
+                }
+                if (ot->kind == TY_REF) {
+                    ckError(c, e->line,
+                            "only a nullable reference (`?ref T`) can be null -- a plain"
+                            " `ref T` is guaranteed non-null, that is what it means",
+                            "`%s` is not nullable, so it can never be `null`", typeStr(c, ot));
+                    return c->tBool;
+                }
+                ckError(c, e->line,
+                        "`null` is the zero value of a nullable reference, so compare it"
+                        " with one: `if p != null { ... }`",
+                        "`null` cannot be compared with `%s`", typeStr(c, ot));
+                return c->tBool;
+            }
+
             Type *lt = checkValue(c, e->u.bin.left);
             Type *rt = checkValue(c, e->u.bin.right);
             const char *op = e->u.bin.op;
 
-            if (isLogicOp(op)) {
-                expectBool(c, lt, e->u.bin.left);
-                expectBool(c, rt, e->u.bin.right);
-                return c->tBool;
-            }
             if (isCmpOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return c->tBool;
 
@@ -1288,7 +1504,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
             }
 
-            Type *bt = ttBase(checkExpr(c, e->u.field.obj));
+            Type *rawT = checkExpr(c, e->u.field.obj);
+            if (rejectNullableDeref(c, rawT, e->u.field.obj, "field access")) return ttError(tt);
+            Type *bt = ttBase(rawT);
             StructDef *sd = structOf(bt);
             if (!sd) {
                 ckError(c, e->line, NULL, "`%s` is not a struct, so it has no field `%s`",
@@ -1652,6 +1870,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot dereference `%s`, which is not a reference", typeStr(c, ot));
                 return ttError(tt);
             }
+            if (rejectNullableDeref(c, ot, e->u.deref.operand, "`*`")) return ttError(tt);
             return ot->inner;
         }
 
@@ -1810,6 +2029,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             /* 方法只住在 struct 体内 —— 按接收者的类型去找 */
             Type *recvT = checkExpr(c, e->u.method.recv);
+            if (rejectNullableDeref(c, recvT, e->u.method.recv, "a method call")) return ttError(tt);
             Type *rb = ttBase(recvT);
 
             FuncDef *f = findMethod(rb, e->u.method.name);
@@ -2089,11 +2309,25 @@ static void checkStmt(Checker *c, Stmt *s) {
             Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                !s->u.var.mut, s->line, c->scopes.len);
             s->u.var.cname = sym->cname;
+            /* 引用型绑定：它指的东西有多深，**从初始值数出来** ✓
+             * （`var cur: ?ref node = head` ⇒ head 是参数 ⇒ 0 ⇒ 这个游标可以返回 ✓）*/
+            if (s->type && s->type->kind == TY_REF)
+                sym->refDepth = exprRefDepth(c, s->u.var.init);
             return;
         }
 
         case ST_ASSIGN: {
             Type *tt_ = checkExpr(c, s->u.assign.target);
+
+            /* 目标是**已经收窄过**的绑定 ⇒ 这里比的是槽位的**声明类型**。
+             * 收窄只影响"读出来的是什么"，不影响"这个槽位能装什么" ✓
+             * （所以 `while cur != null { cur = cur.next }` 合法 —— 循环体里
+             *   收窄被这次赋值作废，下一轮循环条件重新证明 ✓）*/
+            if (s->u.assign.target->kind == EX_IDENT) {
+                Sym *slot = lookup(c, s->u.assign.target->u.ident.name);
+                if (slot && slot->type && slot->type->kind == TY_REF && slot->type->nullable &&
+                    tt_->kind == TY_REF && !tt_->nullable) tt_ = slot->type;
+            }
 
             /* **目标是引用 ⇒ 写进去**（形状 3：`p = v` 写 p 指向的那个地方）。
              *
@@ -2123,15 +2357,31 @@ static void checkStmt(Checker *c, Stmt *s) {
                  *
                  * 这两件事类型不同、而且右边就在源码里看得见（P′）——
                  * 所以不需要像之前那样把换指向整个禁掉。 */
-                adoptContextType(v, tt_->inner);
+                /* `null` 要的上下文是**引用本身**（`?ref T`），不是它指的东西 ✓
+                 * （`p.next = null` 会走到这条"换指向"的路上 —— 右边是引用）*/
+                adoptContextType(v, v->kind == EX_NULL ? tt_ : tt_->inner);
                 Type *vt0 = checkExpr(c, v);          /* 自然类型：引用保留 */
+
+                /* ⚠️ 作废非空证明要**等右边查完**：`cur = cur.next` 里右边的 `cur`
+                 * 用的还是循环条件证明过的那份非空信息 ✓（踩过：放在前面会误报）*/
+                if (s->u.assign.target->kind == EX_IDENT)
+                    unNarrow(c, s->u.assign.target->u.ident.cname);
 
                 if (vt0->kind == TY_REF) {
                     /* 换指向：类型要对得上（`mut ref` → `ref` 降级照旧允许），
-                     * 而且新指向的东西不能活得比这个引用短。 */
+                     * 而且新指向的东西不能活得比这个引用短。
+                     * ⚠️ 深度比较用的是**旧的** refDepth（这个槽位原来指多深）——
+                     * 所以更新被指深度必须等这些都查完，否则等于拿新值跟新值比，
+                     * `p = ref <更深的局部>` 会整条漏过去 ✗（真踩过，攻击测试 h1 打出来）*/
+                    int at0 = placeDepth(c, s->u.assign.target);
                     checkAssignable(c, tt_, vt0, v, "assignment");
-                    checkEscape(c, v, placeDepth(c, s->u.assign.target),
-                                s->line, "this reference");
+                    checkEscape(c, v, at0, s->line, "this reference");
+                    /* 换指向 ⇒ 被指对象的深度跟着换 ✓（`cur = cur.next`）*/
+                    if (s->u.assign.target->kind == EX_IDENT) {
+                        Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);
+                        if (slot0 && slot0->type && slot0->type->kind == TY_REF)
+                            slot0->refDepth = exprRefDepth(c, v);
+                    }
                     /* ⚠️ **换指向也要查"借来的值"**（2026-09-20 攻击测试打出来）：
                      *     struct slot { r: mut ref i32 }
                      *     fn stash(b: mut ref slot, p: mut ref i32) { b.r = ref *p }
@@ -2165,19 +2415,48 @@ static void checkStmt(Checker *c, Stmt *s) {
             return;
         }
 
-        case ST_IF:
+        case ST_IF: {
             expectBool(c, checkValue(c, s->u.ifs.cond), s->u.ifs.cond);
+
+            /* **`?ref T` 的收窄**：`if p != null` / `if p == null ... else` /
+             * 护栏形态 `if p == null { return }` —— 三种写法都能让编译器知道
+             * "这里是那个分支，p 一定不是 null"，于是里面**一行运行时检查都不用加** ✓ */
+            bool whenTrue = false;
+            const char *tg = narrowTarget(c, s->u.ifs.cond, &whenTrue);
+            const size_t mark = c->narrow.len;
+
+            if (tg && whenTrue) narrowFactsOf(c, s->u.ifs.cond);
             checkBlockBody(c, s->u.ifs.thenBody);
+            c->narrow.len = mark;              /* 出了 then 分支，证明就不算数了 ✓ */
+
             if (s->u.ifs.elseBody) {
+                if (tg && !whenTrue) pushNarrow(c, tg);
                 if (s->u.ifs.elseBody->kind == ST_BLOCK) checkBlockBody(c, s->u.ifs.elseBody);
                 else                                      checkStmt(c, s->u.ifs.elseBody);
+                c->narrow.len = mark;
+            } else if (tg && !whenTrue && blockExits(s->u.ifs.thenBody)) {
+                /* 护栏：条件成立就离开函数/循环 ⇒ 走到后面 ⟺ p 非空。
+                 * 证明**留在当前作用域**（到本层块结束为止）✓ */
+                pushNarrow(c, tg);
             }
             return;
+        }
 
-        case ST_WHILE:
+        case ST_WHILE: {
             expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
+
+            /* `while cur != null { cur = cur.next }` —— 链表**整个语言的存在理由**，
+             * 所以循环条件也是收窄点：循环体里那个绑定一定非空 ✓
+             * （循环体里给它赋了新值 ⇒ unNarrow 会作废，所以下一轮要重新比 —— 
+             *   这跟 C 里 `while (p) { p = p->next; }` 的写法完全一致 ✓）*/
+            bool whenTrue = false;
+            const char *tg = narrowTarget(c, s->u.whiles.cond, &whenTrue);
+            const size_t mark = c->narrow.len;
+            if (tg && whenTrue) narrowFactsOf(c, s->u.whiles.cond);
             checkBlockBody(c, s->u.whiles.body);
+            c->narrow.len = mark;
             return;
+        }
 
         case ST_EXPR:
             /* `f()?` 单独成句 —— `?` 的第四个合法位置（最有用的那个：
@@ -2586,6 +2865,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.eqChecks, arena, sizeof(void *));
     vecInit(&c.globals, arena, sizeof(void *));
     vecInit(&c.nameUses, arena, sizeof(void *));
+    vecInit(&c.narrow, arena, sizeof(void *));
+    vecInit(&c.narrowMarks, arena, sizeof(size_t));
 
     c.tI32  = ttFromName(tt, "i32");
     c.tF64  = ttFromName(tt, "f64");

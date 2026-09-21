@@ -1,0 +1,7 @@
+// 收窄只认**绑定名**：`p.next.value` 要先绑一个名字（链上的路径不追）
+struct node { value: i64  next: ?ref node }
+fn f(p: ?ref node) -> i64 {
+    if p == null { return 0 }
+    return p.next.value
+}
+fn main() {}

@@ -1,0 +1,4 @@
+// `*p` 同样要先证明非空
+struct node { value: i64  next: ?ref node }
+fn f(p: ?ref node) -> i64 { return *p }
+fn main() {}

@@ -1,0 +1,4 @@
+// `?ref T` 不能直接解 —— 先证明非空（P′：不能证明的，语法上必须看得见）
+struct node { value: i64  next: ?ref node }
+fn f(p: ?ref node) -> i64 { return p.value }
+fn main() {}
