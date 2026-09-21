@@ -34,4 +34,44 @@ fn main() {
     makeAndStore(ref bx)
     makeAndStore(ref bx)
     println("store = ", s2, " n = ", bx.n)
+
+    listDemo()
+}
+
+/* ---- A3 第三半之后：**链表出参**也能写了 ✓ ----
+ * 靠两件事一起：① 调用点保证"实参活得 ≥ 家 arena"（规则 ④）
+ *              ② 于是 callee 里"参数来的引用"可以存进那只家 arena（ARENA.md §7）✓ */
+struct node {
+    value: i64
+    next: ?ref node
+}
+struct list {
+    head: ?ref node
+    count: i64
+}
+
+fn push(l: mut ref list, v: i64) {
+    var cell: mut ref node = new node
+    cell.value = v
+    cell.next = l.head        // ← 以前这行报"借来的值不许存进活得更久的地方" ✗
+    l.head = cell
+    l.count = l.count + 1
+}
+
+fn sumNodes(head: ?ref node) -> i64 {
+    var t: i64 = 0
+    var c: ?ref node = head
+    while c != null {
+        t = t + c.value
+        c = c.next
+    }
+    return t
+}
+
+fn listDemo() {
+    var l: list
+    push(ref l, 1)
+    push(ref l, 2)
+    push(ref l, 3)
+    println("linked = ", l.count, " 求和 = ", sumNodes(l.head))
 }

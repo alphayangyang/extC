@@ -180,6 +180,8 @@ static bool mentionsParam(Type *t) {
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
 static Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
 static int callHomeDepth(Checker *c, Vec *args, Vec *params);   /* 定义在后面 */
+static void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth,
+                             int line, const char *fname);   /* 同上 */
 
 static bool isNarrowed(Checker *c, const char *cname) {
     if (!cname) return false;
@@ -801,6 +803,11 @@ static bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     }
     bool bad = checkEscape(c, val, placeDepth(c, target), line, "this assignment");
     if (placeDepth(c, target) == 0 && exprBorrowed(c, val)) {
+        /* ⭐ A3 第三半：**有家函数里放行** —— 调用点已经保证了"每个 `ref`/`mut ref`
+         * 实参都活得 ≥ 这一刀的家 arena"（规则 ④ ✓），而被调函数分配的东西**就进那只
+         * 家 arena** ⇒ 写进去的东西跟它一样长寿 ✓
+         * ⚠️ 没有 ④ 直接放行就是洞（`ref_launder_field` 当场抓过 ✗）*/
+        if (c->curFunc && c->curFunc->needsHome) return bad;
         ckError(c, line,
                 "A borrowed value may not be stored where it outlives the call: its real "
                 "lifetime is unknown here. Copy it, or store it into a local of this frame.",
@@ -2293,6 +2300,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
+            if (f->needsHome)
+                checkCallRefArgs(c, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
@@ -2391,6 +2400,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 } else {
                     e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params);
                 }
+                if (f->needsHome)
+                    checkCallRefArgs(c, &e->u.method.args, &f->params, e->homeDepth,
+                                     e->line, e->u.method.name);
             }
 
             /* 接收者是泛型实例时，方法签名里的 T 要换成实参 */
@@ -3290,6 +3302,39 @@ static bool stmtStoresThroughDeref(Stmt *s, FuncDef *f) {
  *   · 实参是我自己的局部/字段/元素 ⇒ `&__extc_a[它的块深度]` （**精确**：新东西跟着它走 ✓）
  *   · 实参是我自己的参数           ⇒ 我的家（祖先那只）✓
  *   · 没有 `mut ref` 实参           ⇒ 0（退回老规则：有家传家、没有传当前块）✓ */
+/* ⭐ 规则 ④（A3 第三半，2026-09-20）：**实参指向的东西必须活得 ≥ 这一刀的家 arena**
+ *
+ * 为什么需要它：被调函数可以把它存进**自己的家 arena**（ARENA.md §7 的链式论证：
+ * "分配的东西比所有可写目标都长寿 ⇒ 写进哪都安全"）。但那句话只对**活得够久的实参**
+ * 成立 —— 调用者要是把"更深的局部"传进来，家 arena 就比它长寿 ⇒ 悬垂 ✗
+ *
+ *     fn bind(s: mut ref slot, target: mut ref i32) { s.r = target }
+ *     var keeper: slot                       // 深度 1
+ *     { var n: i32 = 1  bind(ref keeper, ref n) }   // n 深度 2 > h=1 ⇒ 调用点报错 ✓
+ */
+static void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth, int line,
+                             const char *fname) {
+    if (params->len != args->len) return;
+    int h;
+    if (homeDepth != 0) h = (homeDepth < 0) ? 0 : homeDepth;
+    else h = (c->curFunc && c->curFunc->needsHome) ? 0 : c->scopes.len;
+
+    for (size_t i = 0; i < params->len; i++) {
+        Param *p = *(Param **)vecAt(params, i);
+        if (!p->type || p->type->kind != TY_REF) continue;
+        Expr *a = *(Expr **)vecAt(args, i);
+        Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
+        if (mentionsParam(p->type) || mentionsParam(place->type)) continue;  /* 泛型推迟 ✓ */
+        int d = placeDepth(c, place);
+        if (d == 0 || d <= h) continue;              /* 活得够久 ✓ */
+        ckError(c, line,
+                "The callee may store this reference into the arena it was given, so the"
+                " argument must live at least that long. Move it to a shallower scope.",
+                "argument %zu of `%s` points into a deeper scope (depth %d) than the arena"
+                " this call may store it in (depth %d)", i + 1, fname, d, h);
+    }
+}
+
 static int callHomeDepth(Checker *c, Vec *args, Vec *params) {
     int best = 0;                       /* 0 = 没找到 */
     for (size_t i = 0; i < params->len && i < args->len; i++) {

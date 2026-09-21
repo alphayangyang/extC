@@ -1,0 +1,14 @@
+// A3 第三半（规则 ④）：实参指向的东西必须活得 ≥ 这一刀的家 arena
+// 这里 `deep` 比 `keeper` 深，而 callee 会把 target 存进"拥有 keeper 的那只 arena"
+// ⇒ 家 arena 比 deep 长寿 ⇒ 悬垂 ⇒ **调用点报错** ✓
+struct slot { r: mut ref i32 }
+fn stash(s: mut ref slot, target: mut ref i32) {
+    var j: mut ref i32 = new i32
+    *j = 1
+    s.r = target
+}
+fn main() {
+    var holder: i32 = 0
+    var keeper: slot = { r: ref holder }
+    { var deep: i32 = 2  stash(ref keeper, ref deep) }
+}
