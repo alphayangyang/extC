@@ -1,0 +1,78 @@
+struct node {
+    value: i64
+    next: ?ref node
+}
+
+/* 随机构建链表并返回（A3 逃逸提升 ✓）*/
+fn buildList(r: mut ref pcg32, n: i64) -> mut ref node {
+    var head: mut ref node = new node
+    head.value = i64(r.nextBounded(1000))
+    var cur: mut ref node = head
+    var i: i64 = 0
+    while i < n {
+        var cell: mut ref node = new node
+        cell.value = i64(r.nextBounded(1000))
+        cur.next = cell
+        cur = cell
+        i = i + 1
+    }
+    return head
+}
+
+fn sumList(head: ?ref node) -> i64 {
+    var t: i64 = 0
+    var c: ?ref node = head
+    while c != null {
+        t = t + c.value
+        c = c.next
+    }
+    return t
+}
+
+/* 深递归：每层分配 64×i64（栈 + arena 双压力）*/
+fn deep(r: mut ref pcg32, n: i64) -> i64 {
+    if n == 0 { return 0 }
+    var buf: mut slice<i64> = new i64[64]
+    buf[0] = i64(r.nextBounded(100))
+    return buf[0] + deep(r, n - 1)
+}
+
+fn main() {
+    var r: pcg32 = pcg32::seeded(20260920)      // ← 固定种子 ⇒ 四语言同一序列 ✓
+    var total: i64 = 0
+
+    /* ① 300 轮 × 2000 节点链表（每轮建、每轮丢 ⇒ 分配/回收压力）*/
+    var round: i64 = 0
+    while round < 300 {
+        var l: mut ref node = buildList(ref r, 2000)
+        total = total + sumList(l)
+        round = round + 1
+    }
+    println("① 链表 = ", total)
+
+    /* ② 洗牌 + 随机访问（缓存压力）*/
+    var a: [1024]i32
+    var i: i64 = 0
+    while i < 1024 { a[i] = i32(i)  i = i + 1 }
+    shuffleI32(ref r, a[..])
+    var hits: i64 = 0
+    var k: i64 = 0
+    while k < 200000 {
+        var idx: i64 = i64(r.nextBounded(1024))
+        hits = hits + i64(a[idx])
+        k = k + 1
+    }
+    println("② 随机访问 = ", hits)
+
+    /* ③ 深递归 2000 层（每层分配）*/
+    println("③ 深递归 = ", deep(ref r, 2000))
+
+    /* ④ 4MB buffer 随机触碰 */
+    var big: mut slice<u8> = new u8[4194304]
+    var b: i64 = 0
+    while b < 100000 {
+        big[i64(r.nextBounded(4194304))] = u8(r.nextBounded(256))
+        b = b + 1
+    }
+    println("④ 大 buffer 首字节 = ", big[0])
+}
