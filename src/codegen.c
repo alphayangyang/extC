@@ -775,6 +775,11 @@ static const char *genExprInner(CG *g, Expr *e) {
 
             /* 数组：长度是**编译期常数** —— 所以 obj 只出现一次，不存在重复求值 */
             if (ob && ob->kind == TY_ARRAY) {
+                /* ⚠️ 底是 **`ref [N]T`** 时，C 里 `obj` 是**指针** ⇒ 要先解一层 ✗
+                 * （PLAN #25：`p[..]` / `p[i]` 切 `ref [8]u8` 会生成 `p.data[..]`，
+                 *   gcc 报 "'p' is a pointer; did you mean to use '->'?"）*/
+                if (ot && ot->kind == TY_REF)
+                    obj = arenaPrintf(g->arena, "(*%s)", obj);
                 return arenaPrintf(g->arena,
                     "%s.data[extc_checkedIndex((int64_t)(%s), %lld, \"%s\", %d)]",
                     obj, idx, (long long)ob->asize, g->path, e->line);
@@ -1710,16 +1715,23 @@ static const char *genSlice(CG *g, Expr *e) {
 
     const char *obj = genExpr(g, e->u.slice.obj);
     Expr *lo = e->u.slice.lo, *hi = e->u.slice.hi;
+    /* ⚠️ 底是 **`ref [N]T`**（C 里是指针）时：
+     *   · 取 `.data` 要**解一层**：`(*p).data[..]`
+     *   · 但传给切片原语的**参数本身就是那个指针**（原语收 `array_*` ✓）
+     *   （PLAN #25：不处理就生成 `p.data[..]` ⇒ gcc 报 'p' is a pointer ✗）*/
+    bool objIsRef = e->u.slice.obj->type &&
+                    subst(g, e->u.slice.obj->type)->kind == TY_REF;
 
     if (ob->kind == TY_ARRAY && lo && hi &&
         lo->kind == EX_INT && hi->kind == EX_INT) {
+        const char *arr = objIsRef ? arenaPrintf(g->arena, "(*%s)", obj) : obj;
         return arenaPrintf(g->arena, "(%s){ .data = &(%s.data[%lld]), .len = %lld }",
-                           cType(g, st), obj, lo->u.ival, hi->u.ival - lo->u.ival);
+                           cType(g, st), arr, lo->u.ival, hi->u.ival - lo->u.ival);
     }
 
     const char *loS = lo ? genExpr(g, lo) : "0";
-    const char *arg = ob->kind == TY_ARRAY
-                          ? arenaPrintf(g->arena, "&(%s)", obj) : obj;
+    const char *arg = ob->kind != TY_ARRAY ? obj
+                      : (objIsRef ? obj : arenaPrintf(g->arena, "&(%s)", obj));
     if (!hi) {
         /* 只可能是视图底 —— 数组底在 check 里已经把界补成字面量了 */
         const char *fn = sliceHelper(g, ob, st, true);
