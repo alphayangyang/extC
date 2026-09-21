@@ -1,0 +1,1 @@
+fn main() { var x: i64 = 5  println(x!) }

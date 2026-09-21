@@ -1,0 +1,2 @@
+fn f(p: ref i64) -> i64 { return p! }
+fn main() {}

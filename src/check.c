@@ -592,6 +592,10 @@ static int exprRefDepth(Checker *c, Expr *e) {
         /* `*p` 的值住在 **p 指的地方** ⇒ 深度跟 p 一样 ✓ */
         d = exprRefDepth(c, e->u.deref.operand);
         break;
+    case EX_SIGN:
+        /* `p!` 只是"把可空的说法去掉"，指的还是同一块地方 ⇒ 深度跟着主体 ✓ */
+        d = exprRefDepth(c, e->u.sign.operand);
+        break;
     case EX_SLICE:
         d = placeDepth(c, e->u.slice.obj);
         break;
@@ -681,6 +685,9 @@ static bool exprBorrowed(Checker *c, Expr *e) {
          * 全局 / 静态：也深度 0，但**谁都存得下它** ✓ */
         return root && root->depth == 0 && !isGlobalSym(c, root);
     }
+    case EX_SIGN:
+        /* 签字只是换个说法，来源没变 ⇒ "借来的"这条照样跟着走 ✓ */
+        return exprBorrowed(c, e->u.sign.operand);
     case EX_REF:
         /* ⚠️ **`ref *p` 是洗白路径**（2026-09-20 攻击测试打出来）：
          * `b.r = ref *p` —— 重新取一次引用，就看不出它来自参数了 ✗
@@ -1867,6 +1874,39 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *r = ttRef(tt, elem);
             r->mut = true;                       /* 刚分配的地方当然可写 */
             return r;
+        }
+
+        case EX_SIGN: {
+            /* `e!` —— **我签字**（定案 1.3）。
+             * 编译器证不出来的事，用户签字负责 ⇒ **一行检查都不生成** ✓
+             * 三个用途：
+             *   `opt!`（`option<T>`）⇒ 直接给载荷 T
+             *   `r!`（`result<T,E>`）⇒ 直接给载荷 T（失败时的行为 = 签字，UB 算他的）
+             *   `p!`（`?ref T`）⇒ 我知道非空，给我 `ref T` ✓（定案 ㊻ 留的逃生舱）
+             * 不是这三样 ⇒ 报错：签字也要签在对的地方 ✓ */
+            Type *ot = checkExpr(c, e->u.sign.operand);
+            if (ttIsError(ot)) return ttError(tt);
+            if (isProtoType(ot, "option", 1) || isProtoType(ot, "result", 2)) {
+                return *(Type **)vecAt(&ot->targs, 0);      /* 载荷类型 */
+            }
+            if (ot->kind == TY_REF) {
+                if (!ot->nullable) {
+                    ckError(c, e->line, "it is already a plain `ref T`, which can never be null",
+                            "`%s` is not nullable, so `!` has nothing to assert",
+                            typeStr(c, ot));
+                    return ttError(tt);
+                }
+                Type *nn = ttRef(tt, ot->inner);            /* 非空版本 ✓ */
+                nn->mut = ot->mut;
+                e->type = nn;
+                return nn;
+            }
+            ckError(c, e->line,
+                    "`!` means \"I sign for it\": it turns an `option` / `result` / `?ref T`"
+                    " into the value / non-null reference without any check",
+                    "`!` needs an `option`, a `result`, or a nullable reference, found `%s`",
+                    typeStr(c, ot));
+            return ttError(tt);
         }
 
         case EX_DEREF: {

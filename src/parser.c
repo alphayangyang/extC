@@ -915,6 +915,15 @@ static Expr *parsePostfix(Parser *p) {
     if (!e) return NULL;
 
     for (;;) {
+        /* `e!` —— **我签字**（定案 1.3）。后缀位置，跟前缀的"非"不冲突
+         * （`!x` 是取反，`x!` 是签字）；`!=` 词法上是另一个记号，也不会撞 ✓ */
+        if (at(p, "!")) {
+            Token *b = take(p);
+            Expr *sg = exprNew(p->arena, EX_SIGN, b->line);
+            sg->u.sign.operand = e;
+            e = sg;
+            continue;
+        }
         /* `e?` —— 失败就顺着往上抛。位置限制在 check 里查（只在三处语句位置上合法） */
         if (at(p, "?")) {
             Token *q = take(p);

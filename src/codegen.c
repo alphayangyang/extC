@@ -141,6 +141,7 @@ static const char *cType(CG *g, Type *t) {
 
 /* ---------------------------------------------------------------- 表达式 */
 
+static bool isProtoType(Type *t, const char *name, size_t nargs);
 static const char *genExpr(CG *g, Expr *e);
 static const char *genSlice(CG *g, Expr *e);
 static void genPrintValue(CG *g, Type *t, const char *expr);
@@ -786,6 +787,18 @@ static const char *genExprInner(CG *g, Expr *e) {
 
         case EX_REF:
             return arenaPrintf(g->arena, "&(%s)", genExpr(g, e->u.ref.operand));
+
+        /* `e!` —— **我签字，没有运行时痕迹** ✓
+         *   `opt!` / `r!` ⇒ 直接取载荷（union 成员），**不判 tag**
+         *   `p!`（`?ref T`）⇒ C 里就是那个指针本身，一个字都不用生成 ✓ */
+        case EX_SIGN: {
+            Type *ot = e->u.sign.operand->type;
+            if (ot && ot->kind == TY_REF) return genExpr(g, e->u.sign.operand);
+            bool isOpt = isProtoType(ot, "option", 1);
+            const char *var = isOpt ? "some" : "success";
+            return arenaPrintf(g->arena, "(%s).u.%s._0",
+                               genExpr(g, e->u.sign.operand), var);
+        }
 
         /* `null` —— 可空引用的零值。C 里的表示就是一个空指针：
          * 类型检查已经保证了「用之前先查过 null」（narrowing），
