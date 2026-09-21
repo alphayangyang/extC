@@ -654,6 +654,57 @@ static void computeEscapes(Checker *c, FuncDef *f) {
         fprintf(stderr, "}\n");
     }
 }
+
+/* ⭐ 档2.3（`ARENA-FORMAL` §7.4 / `PLAN-REGION` §7）：**字段级深度**
+ *
+ * 问题：`Sym.refDepth` 只有一个数（"这个绑定里面那些引用指哪"的上界）。
+ * 于是 `h.p = null` 只能用**弱更新**（取 max）⇒ 旧的 1 留着 ⇒ `return h` 误拒 ✗
+ *
+ * 做法：给每个绑定记一张**小的字段表**（最多 4 格，超了就记进 `otherDepth` 保守兜底）：
+ *   · 根的有效深度 = `max(otherDepth, 各字段深度)` ✓（读 `h` 时用它）
+ *   · 读 `h.p` ⇒ 直接读那一格 ✓
+ *   · 写 `h.p = v` ⇒ **没取过地址就强更新**（覆盖那一格）✓；取过地址 ⇒ 弱更新（保守）✗
+ *   · 整块赋值（`h = …`）⇒ 清表重填（取过地址 ⇒ 保守兜底）✓
+ * `otherDepth` 是"归不到某一格"的那部分（元素写、超过 4 个字段……）⇒ 只增不减 ✓ 保守 ✓
+ */
+int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
+    if (!s || !field) return NULL;
+    for (int i = 0; i < s->nfields; i++)
+        if (s->fields[i].name && strcmp(s->fields[i].name, field) == 0) return &s->fields[i].depth;
+    if (!create) return NULL;
+    if (s->nfields >= 4) return NULL;             /* 满了 ⇒ 交给 otherDepth 兜底 ✓ */
+    s->fields[s->nfields].name  = field;          /* 名字是驻留的（AST 里的），不会悬垂 ✓ */
+    s->fields[s->nfields].depth = 0;
+    return &s->fields[s->nfields++].depth;
+}
+
+/* 写某一格之后，把"根的有效深度"重算成 max(otherDepth, 各格) ✓ */
+static void refreshRootDepth(Sym *s) {
+    if (!s) return;
+    int m = s->otherDepth;
+    for (int i = 0; i < s->nfields; i++) if (s->fields[i].depth > m) m = s->fields[i].depth;
+    s->refDepth = m;
+}
+
+/* 记一次"往引用型地方写"的深度（`field == NULL` 表示**整块赋值**或归不到字段）*/
+void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
+    if (!root) return;
+    if (!field) {                                  /* 整块赋值 / 元素写 ⇒ 保守 */
+        if (!root->addressed) { root->nfields = 0; root->otherDepth = d2; }
+        else if (d2 > root->otherDepth) root->otherDepth = d2;
+        refreshRootDepth(root);
+        return;
+    }
+    int *slot = fieldDepthEntry(c, root, field, true);
+    if (!slot) {                                   /* 表满了 ⇒ 兜底那一格只能取 max ✓ */
+        if (d2 > root->otherDepth) root->otherDepth = d2;
+    } else if (root->addressed) {                  /* 取过地址 ⇒ 别名可能写别处 ⇒ 弱更新 ✗ */
+        if (d2 > *slot) *slot = d2;
+    } else {
+        *slot = d2;                                /* 没取过地址 ⇒ **强更新**（覆盖）✓ */
+    }
+    refreshRootDepth(root);
+}
 static int paramIndex(FuncDef *f, const char *name) {
     if (!name) return -1;
     for (size_t i = 0; i < f->params.len; i++)

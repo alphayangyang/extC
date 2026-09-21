@@ -25,6 +25,13 @@ typedef struct {
      *   取过 ⇒ 别人可能通过**别名**改它的内容 ⇒ 只能**弱更新**（保守）✗
      *   没取过 ⇒ 可以直接**强更新**（覆盖深度）⇒ 消掉"置空/换值救不回来"的误拒 ✓ */
     bool        addressed;
+    /* ⭐ 档2.3（ARENA-FORMAL §7.4）：**字段级深度** ——
+     * `h.p` 有自己的深度，不再跟 `h` 共用一个数 ⇒ `h.p = null` 能真正**覆盖**那一格 ✓
+     * 最多 4 格；满了 / 归不到某一格的（元素写、对象字段）走 `otherDepth` 保守兜底 ✓
+     * 根的有效深度 = max(otherDepth, 各格) ✓ */
+    struct { const char *name; int depth; } fields[4];
+    int         nfields;
+    int         otherDepth;
     int         depth;   /* 词法深度：参数 = 0，函数体里的局部 = 1，每进一层块 +1。
                           * 逃逸检查就比这个数 —— 见 REFS.md §4 */
     /* **引用型绑定**：这个引用**指向的东西**有多深？
@@ -172,6 +179,9 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  const char *typeStr (Checker *c, Type *t);
  extern _Bool checkModule (Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
  bool isEscapeeName (Checker *, const char *);
+ bool computeEffectsTransitive (Checker *, FuncDef *);
+ int *fieldDepthEntry (Checker *, Sym *, const char *, bool);
+ void noteFieldDepthWrite (Checker *, Sym *, const char *, int);
  const char *placeRootName (Expr *);
  int  callHomeDepth (Checker *, Vec *, Vec *);
  int callHomeDepth (Checker *c, Vec *args, Vec *params);

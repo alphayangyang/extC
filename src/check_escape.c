@@ -96,6 +96,14 @@ int exprRefDepth(Checker *c, Expr *e) {
         break;
     }
     case EX_FIELD: case EX_INDEX:
+        /* ⭐ 档2.3（ARENA-FORMAL §7.4）：**字段级深度** —— `h.p` 读的是"p 那一格记的数"，
+         * 而不是"h 这个槽位在本帧"（后者会误拒；而且 `h.p = null` 之后也救不回来 ✗）✓
+         * 没有那一格（比如刚声明 / 字段名对不上）⇒ 退回旧的保守算法 ✓ */
+        if (e->kind == EX_FIELD) {
+            Sym *rf = placeRoot(c, e);
+            int *slot = rf ? fieldDepthEntry(c, rf, e->u.field.name, false) : NULL;
+            if (slot) { d = *slot; break; }
+        }
         d = placeDepth(c, e);
         break;
     case EX_STRUCTLIT:

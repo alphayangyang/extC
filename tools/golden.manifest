@@ -26,6 +26,7 @@ d0328c2cb95974a9a70973d6cb6e20eb  examples_eq
 b4998011ad95638894d20155051bbf66  examples_escape
 3cf0c3b520177bdf6b15bea69d8348cc  examples_euler-sieve
 c54fce5391a3d1dc612255efd337a7d8  examples_fenwick
+13271e0d49bb666ae4bc627b13959b22  examples_field-strong-update
 ddd8dc8ca4e824214597c838d25b0661  examples_fizzbuzz
 7592c51abd510c85493454a063d05db4  examples_generic-enum
 1f0f0d15ef05d6a96b30c6f3e8e3afd9  examples_generics

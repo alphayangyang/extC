@@ -153,6 +153,15 @@ void checkStmt(Checker *c, Stmt *s) {
              * （`var cur: ?ref node = head` ⇒ head 是参数 ⇒ 0 ⇒ 这个游标可以返回 ✓）*/
             if (s->type && typeContainsRef(c->tt, s->type))
                 sym->refDepth = exprRefDepth(c, s->u.var.init);
+            /* ⭐ 档2.3：结构体字面量 ⇒ 把**每个字段**的深度记进字段表 ✓
+             * （没写出来的字段 = 零初始化 ⇒ 里面只可能是 null ⇒ 深度 0；
+             *   我们不给它建格，读它时退回保守算法 —— 代价是可能误拒，不是洞 ✓）*/
+            if (s->u.var.init && s->u.var.init->kind == EX_STRUCTLIT && sym) {
+                for (size_t fi = 0; fi < s->u.var.init->u.lit.inits.len; fi++) {
+                    FieldInit *fip = *(FieldInit **)vecAt(&s->u.var.init->u.lit.inits, fi);
+                    noteFieldDepthWrite(c, sym, fip->name, exprRefDepth(c, fip->value));
+                }
+            }
             return;
         }
 
@@ -245,7 +254,11 @@ void checkStmt(Checker *c, Stmt *s) {
                         Sym *rootA = placeRoot(c, s->u.assign.target);
                         if (rootA && rootA->type && typeContainsRef(c->tt, rootA->type)) {
                             int dA = exprRefDepth(c, v);
-                            if (dA > rootA->refDepth) rootA->refDepth = dA;
+                            /* ⭐ 档2.3：按**字段**记；没取过地址就强更新（覆盖）⇒ `h.p = null`
+                             * 之后根的有效深度真的会降下来 ✓（以前一律取 max ⇒ 误拒 ✗）*/
+                            const char *fn_ = (s->u.assign.target->kind == EX_FIELD)
+                                              ? s->u.assign.target->u.field.name : NULL;
+                            noteFieldDepthWrite(c, rootA, fn_, dA);
                         }
                     }
                     /* ⚠️ **换指向也要查"借来的值"**（2026-09-20 攻击测试打出来）：
