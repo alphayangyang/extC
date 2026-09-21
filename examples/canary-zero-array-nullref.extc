@@ -1,0 +1,3 @@
+// `[4]?ref node` 有零值（全是 null）✓
+struct node { value: i64 }
+fn main() { var a: [4]?ref node  println(a[0] == null, a[3] == null) }

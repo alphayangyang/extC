@@ -1,0 +1,3 @@
+// 视图里是**非空** ref ⇒ 没有零值 ✓
+struct cfg { name: slice<u8> }
+fn main() { var c: cfg }

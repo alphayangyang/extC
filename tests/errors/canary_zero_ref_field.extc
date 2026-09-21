@@ -1,0 +1,4 @@
+// 零值维度：含**非空 ref** 的结构体没有零值 ⇒ 必须拒绝 ✓
+struct node { value: i64 }
+struct holder { n: ref node }
+fn main() { var h: holder }

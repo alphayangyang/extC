@@ -1,0 +1,2 @@
+// `[4]slice<u8>` 没有零值 ✓
+fn main() { var a: [4]slice<u8> }

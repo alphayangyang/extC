@@ -1,0 +1,3 @@
+struct box<T> { v: T }
+struct node { value: i64 }
+fn main() { var b: box<?ref node>  println(b.v == null) }

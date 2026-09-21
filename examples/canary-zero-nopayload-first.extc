@@ -1,0 +1,7 @@
+// 无载荷变体在**前** ⇒ 零值 = 它 ✓
+type boxE = | empty | holding(slice<u8>)
+fn main() { var b: boxE
+    match b {
+        empty     => { println("零值 = empty ✓") }
+        holding(x) => { println("不该到这里") }
+    } }

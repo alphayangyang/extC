@@ -1,0 +1,7 @@
+// `option<slice<u8>>` 有零值（none ⇒ 载荷不存在）✓
+struct cfg { name: option<slice<u8>> }
+fn main() { var c: cfg
+    match c.name {
+        some(s) => { println("有值") }
+        none    => { println("零值 = 没有 ✓") }
+    } }

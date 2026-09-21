@@ -1,0 +1,4 @@
+// 可空引用有零值（null）⇒ 必须允许 ✓
+struct node { value: i64 }
+struct holder { n: ?ref node }
+fn main() { var h: holder  println(h.n == null) }

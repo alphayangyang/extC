@@ -1,0 +1,3 @@
+// 带载荷变体在**前** ⇒ 零值要给它填载荷，而 slice 没零值 ⇒ 拒绝 ✓
+type boxE = | holding(slice<u8>) | empty
+fn main() { var b: boxE }

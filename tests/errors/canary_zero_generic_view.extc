@@ -1,0 +1,3 @@
+// `box<slice<u8>>` 实例化之后含引用 ⇒ 没有零值 ✓（#17 同族：模板期看不出来）
+struct box<T> { v: T }
+fn main() { var b: box<slice<u8>> }
