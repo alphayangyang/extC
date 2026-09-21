@@ -63,6 +63,8 @@ typedef struct {
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
     Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
     Vec        nameUses;    /* NameUse* —— 当前函数里每个名字用过几次（生成 C 的改名用）*/
+    Vec        moduleNames;     /* const char*（已排序）—— 编译时长优化见 check.c */
+    size_t     moduleNamesSize;
     /* ---- `?ref T` 的**非空收窄**（narrowing）----
      * 可空引用不能直接解 —— 必须先**证明**它非空，唯一的证明方式是在 `if` 里跟
      * `null` 比过。这里记的就是"当前这个位置上，哪些绑定已经被证明非空"。

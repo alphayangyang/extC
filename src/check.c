@@ -12,6 +12,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>   /* qsort（模块级名字排序表）*/
 #include <string.h>
 
 
@@ -48,15 +49,38 @@ const char *typeStr(Checker *c, Type *t) {
  *      也不用去推敲 C 自己的块作用域规则；
  *   ② 还要避开**模块级**的名字（函数 / 结构体 / 全局）—— 否则局部变量会在生成的 C 里
  *      盖住函数名，`foo()` 就调不到了。 */
-static bool moduleNameTaken(Module *m, const char *name) {
-    for (size_t i = 0; i < m->funcs.len; i++)
-        if (strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0) return true;
-    for (size_t i = 0; i < m->structs.len; i++)
-        if (strcmp((*(StructDef **)vecAt(&m->structs, i))->name, name) == 0) return true;
-    for (size_t i = 0; i < m->types.len; i++)
-        if (strcmp((*(TypeDef **)vecAt(&m->types, i))->name, name) == 0) return true;
-    for (size_t i = 0; i < m->globals.len; i++)
-        if (strcmp((*(GlobalDef **)vecAt(&m->globals, i))->name, name) == 0) return true;
+static int cmpNamePtr(const void *a, const void *b) {
+    return strcmp(*(const char **)a, *(const char **)b);
+}
+/* ⭐ 编译时长优化（2026-09-21 压测量出来的）：原来**每次起 C 名字都要线性扫整个 module**
+ * ⇒ 对 "N 个函数 + N 个结构体" 的程序是 O(N²)（实测前端 500→4000 是 35ms→1029ms，
+ *   指数 ~1.7~2 ✓）。改成**一次建排序表 + 二分** ✓
+ * 模块级名字在检查期间稳定（泛型实例走 tt->enumInstances / codegen 的 g.insts，
+ * 不往 m->* 里加）⇒ 只建一次；用三个长度做"过期校验"兜底 ✓ */
+static bool moduleNameTaken(Checker *c, const char *name) {
+    Module *m = c->m;
+    size_t want = m->funcs.len + m->structs.len + m->types.len + m->globals.len;
+    if (!c->moduleNames.arena) vecInit(&c->moduleNames, c->arena, sizeof(const char *));
+    if (c->moduleNamesSize != want) {
+        c->moduleNames.len = 0;
+        for (size_t i = 0; i < m->funcs.len; i++)
+            *(const char **)vecPush(&c->moduleNames) = (*(FuncDef **)vecAt(&m->funcs, i))->name;
+        for (size_t i = 0; i < m->structs.len; i++)
+            *(const char **)vecPush(&c->moduleNames) = (*(StructDef **)vecAt(&m->structs, i))->name;
+        for (size_t i = 0; i < m->types.len; i++)
+            *(const char **)vecPush(&c->moduleNames) = (*(TypeDef **)vecAt(&m->types, i))->name;
+        for (size_t i = 0; i < m->globals.len; i++)
+            *(const char **)vecPush(&c->moduleNames) = (*(GlobalDef **)vecAt(&m->globals, i))->name;
+        qsort(c->moduleNames.data, c->moduleNames.len, sizeof(const char *), cmpNamePtr);
+        c->moduleNamesSize = want;
+    }
+    size_t lo = 0, hi = c->moduleNames.len;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        int r = strcmp(name, *(const char **)vecAt(&c->moduleNames, mid));
+        if (r == 0) return true;
+        if (r < 0) hi = mid; else lo = mid + 1;
+    }
     return false;
 }
 
@@ -73,7 +97,7 @@ const char *cNameFor(Checker *c, const char *name) {
         n++;
         cand = (n == 1) ? name : arenaPrintf(c->arena, "%s__%d", name, n);
         /* 也要避开 C 关键字（`let double = 3` 合法，但生成的 C 里不能叫 double）*/
-    } while (moduleNameTaken(c->m, cand) || cIdentIsKeyword(cand));
+    } while (moduleNameTaken(c, cand) || cIdentIsKeyword(cand));
 
     if (u) u->count = n;
     else {

@@ -37,6 +37,14 @@ if [ "${1:-}" != "quick" ]; then
     ./bench/heavy/run.sh 2>&1 | sed 's/^/  /'
     echo "== 基准：随机负载压力（同种子对拍 C）=="
     ./bench/stress/run.sh 2>&1 | sed 's/^/  /'
+    echo "== 基准：**编译时长**（合成大程序；顺带抓「生成的 C 编不过」那类问题）=="
+    if cout=$(NS=500 RUNS=1 ./bench/compile/run.sh 2>&1); then
+        echo "$cout" | sed -n '/^N /,$p' | sed 's/^/  /'
+        if echo "$cout" | grep -q "ERR"; then bad "编译时长压测（有 ERR）"
+        else ok "编译时长压测（N=500 全通）"; fi
+    else
+        bad "编译时长压测"
+    fi
 fi
 
 echo
