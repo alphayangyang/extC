@@ -218,18 +218,22 @@ fn place(b: mut ref board, x: i32, y: i32, p: cell) -> result<unit, i32> {
 fn main() -> i32 {
     var b: board                                // 默认零初始化
     let r = place(ref b, 7, 7, cell.black)
-    if r.ok {                                   // 今天读的是协议字段
-        println("落子成功，第 ", b.moves, " 手")
-    } else {
-        println("失败，原因码 ", r.err)
+    match r {                                   // 穷尽检查：漏一个变体就编不过
+        success(u) => { println("落子成功，第 ", b.moves, " 手") }
+        failure(e) => { println("失败，原因码 ", e) }
     }
     return 0
 }
 ```
 
-> ⬜ 第三刀之后，`result` 会变成**普通枚举**，上面那两行会写成
-> `match r { success(u) => ...  failure(e) => ... }`（而且漏一个分支就编不过）。
-> 今天 `result` 还是"struct + bool 标签"，所以它**不能** `match` ✓
+> ✅ **第三刀已落地（2026-09-20）**：`option` / `result` 现在是 `stdlib/prelude.extc` 里的
+> 两个**普通泛型枚举** ——
+> ```extc
+> type option<T>    = | none | some(T)
+> type result<T, E> = | failure(E) | success(T)
+> ```
+> 零值是 tag 0（`none` / `failure`，跟以前一致），没有隐藏字段、没有魔法方法，
+> 而且**载荷里可以有 `ref`**（`option<slice<u8>>` 合法 ⇒ IO 的洞封上了）✓
 
 ### 2.2 名字的规矩
 

@@ -644,13 +644,22 @@ let v = a[2..9]       // error: slice end 9 is not inside `[5]i32` (length 5)
 
 两个类型**都写在 `stdlib/prelude.extc` 里**（extC 源码），不用 import：
 
+⭐ **第三刀（2026-09-20）之后它们就是两个普通的泛型枚举**（`stdlib/prelude.extc` 里只有两行）：
+
+```extc
+type option<T>    = | none | some(T)
+type result<T, E> = | failure(E) | success(T)
+```
+
 | 类型 | 意思 | 零值 |
 |---|---|---|
-| `option<T>` | 可能有值，也可能没有 | **就是「没有」**（`has = false`） |
-| `result<T,E>` | 要么成功给你值，要么失败给你错误 | **失败侧**（`ok = false`） |
+| `option<T>` | 可能有值，也可能没有 | **就是 `none`**（tag 0） |
+| `result<T,E>` | 要么成功给你值，要么失败给你错误 | **`failure(E 的零值)`**（tag 0） |
 
-「零值就是没有 / 失败」不是巧合 —— 它是定案 8（默认零初始化）的直接结果，
-所以不需要任何新机制。
+「零值就是 `none` / `failure`」不是巧合 —— 它是定案 8（默认零初始化）的直接结果
+（**所以变体顺序有意义**：写成 `| some(T) | none` 就是错的）。
+因为它们是普通枚举，`option<slice<u8>>` **合法**（里面有 ref 也照样有零值 ✓）——
+这正是 IO 需要的东西（见 `examples/option-ref-payload.extc`）。
 
 **`?T` 就是 `option<T>` 的语法糖**（定案 ㊻）—— 类型位置写 `?i64` 跟写 `option<i64>` 完全一样：
 
@@ -667,13 +676,16 @@ println(pick(none, some(9)))         // 实参位置也认 ✓
 
 let a = option<i64>::some(42)        // 想写全名当然也可以（不靠上下文猜）✓
 let b = option<i64>::none()          // 也可以：var b: option<i64>  ← 零值就是 none
-if a.has {
-    println(a.value)
+match a {
+    some(v) => { println(v) }
+    none    => { println("没有") }
 }
-println(b.valueOr(-1))               // 没值就用兜底值
 
 let r = result<unit, gameError>::failure(gameError.occupied)
-if r.ok { ... } else { println(r.err) }
+match r {
+    success(u) => { println("成功了") }
+    failure(e) => { println("失败：", e) }      // e 就是那个错误枚举 ✓
+}
 ```
 
 #### 一页速查：拿到一个 `option` / `result` 之后能干什么
@@ -682,16 +694,27 @@ if r.ok { ... } else { println(r.err) }
 // ① 造一个 —— 裸写的 `some` / `none` / `success` / `failure` 在**类型已知**的四个
 //    位置都认：return、带标注的 var、赋值、实参 ✓（类型不清楚就要写全名）
 fn find(...) -> option<i32> { return some(3) }        // 有
-fn find(...) -> option<i32> { return none() }         // 没有
+fn find(...) -> option<i32> { return none }           // 没有（括号也能省）
 
-// ② 用的时候只有这么几招
+// ② 用的时候只有两招：
+//    招数一：`match` —— **读值唯一的标准姿势**（穷尽检查：少写一个变体编不过）
+match find(3) {
+    some(v) => { println("找到了 ", v) }
+    none    => { println("没有") }
+}
+
+//    招数二：`?` —— 不成功我就不干了（顺着往上抛）
 let v = find()?          // 成功 → v 是里面的值；失败/没有 → 顺着往上抛
                          //   （本函数的返回类型必须装得下那个失败）
-let ok  = r.ok           // 成不成（bool）
-let why = r.err          // 为什么失败
-println(a.value)         // option 里的值 / result 成功时的值
-println(a.has)           // option 有没有值
 ```
+
+⚠️ **prelude 里故意没有 `unwrap()` / `valueOr` / `has` / `ok`**：
+
+- 读值就是 `match`。想让调用点短一点，就**自己包一个小函数**（`examples/` 里到处都是
+  这种三行小函数）—— 这层"没有值的时候怎么办"的决定权留在你的代码里 ✓
+- `unwrap()` 需要一条 trap 原语，而"会 trap 的库"不符合 extC 的性格：要 trap 就让调用者自己写 ✓
+- 为什么不干脆做成方法？**枚举加方法还没做**（见 [`PLAN.md`](PLAN.md) #16），
+  泛型自由函数也还没做 —— 所以今天的小函数是**按类型**写的
 
 `?` 就是「**不成功我就不干了**」。它在**四个位置**合法（见下节）。
 
@@ -724,9 +747,10 @@ fn place(...) -> result<unit, gameError> {
 编译器**没有猜**任何东西，它读的是你自己写的那一行 `-> result<unit, gameError>`。
 省掉的纯粹是重复劳动 ✓
 
-⚠️ 只有**这四个名字**（`success` / `failure` / `some` / `none`）、
-只有 **`return` 位置**、而且**只有返回类型正好是对应容器时**才认；
-其他位置照旧要写全类型。名字被用户自己的函数占着时也照旧走普通查找 ✓
+⚠️ 只有**这四个名字**（`success` / `failure` / `some` / `none`），而且**类型必须是已知的** ——
+能认的四个位置：**`return` / 带标注的 `var` / 赋值 / 实参**。
+类型不清楚（比如裸的 `var x = some(1)`）就照旧走普通查找，报"未定义的名字"。
+名字被用户自己的函数占着时也照旧走普通查找 ✓
 
 ### `?`：失败就顺着往上抛
 
@@ -755,8 +779,11 @@ fn placeLine(b: ref board, y: i32, from: i32, to: i32) -> result<unit, gameError
 
 ⚠️ 别的写法（`f(e? + 1)`）会**报错**，不会生成编不过的 C。
 
-⚠️ 已知限制：`option<T>` / `result<T,E>` 的 `T` **不能含 `ref`**
-（`option<slice<u8>>` 不行）—— `None` 的那个 `value` 字段没有合法的值可填。
+✅ **`?` 的载荷可以有 `ref` / 视图**（`option<slice<u8>>`、`result<slice<u8>, E>` 都行）——
+第三刀把 `option`/`result` 改成普通枚举之后就自然成立了（tag 0 的载荷根本不存在）。
+
+⚠️ 已知限制：`?` 是**原样转发**，所以里层的错误类型必须跟外层**一模一样**；
+而且 `?` 只在上面那四个位置合法（`f(e? + 1)` 要自己拆成两句）。
 
 ---
 

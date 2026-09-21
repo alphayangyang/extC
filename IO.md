@@ -23,6 +23,15 @@
 | **2 · prelude** | **extC 写**（`stdlib/prelude.extc`） | `file`、`ioError`、`readAll`、**切片解析函数族**、`reader`、`open` |
 | **3 · 用户** | 主人 | 协议循环、读源文件、写生成的 C |
 
+> ✅ **先决条件已满足（2026-09-20，第三刀）**：`option` / `result` 现在是**普通枚举**
+> （`type option<T> = | none | some(T)`）⇒ **`option<slice<u8>>` 合法** ——
+> 也就是「读到没有」和「一个零拷贝的视图」能装进同一个返回值里了
+> （见 `examples/option-ref-payload.extc` 里那个逐行读取循环）。
+> 以前这是本文的隐性障碍：`none` 的载荷没东西可填，而「ref 不可为空」是硬承诺 ✗
+>
+> ⬜ **剩下的门槛只有一个**：缓冲区的来源 —— `new i32[4096]`（PLAN §6 的 **A1**）。
+> 有了它本文的 `reader` / `readAll` / `nextInt` 族就能按下面写的原样落地 ✓
+
 ---
 
 ## 1. 「快」到底由什么决定 —— 先把 `cin` 刨开

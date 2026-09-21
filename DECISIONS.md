@@ -1486,3 +1486,37 @@ fn find(head: ?ref node, want: i64) -> ?ref node {
 以前一律拿槽位深度 ⇒ 上面这个最正常的写法被误报成"返回会死的局部" ✗。
 现在：默认值仍是槽位深度（保守 = 老行为），只在**声明**和**换指向**时按初始值的真实深度收紧 ✓
 （攻击形状 `var cur = ref local; return cur`、`cur = ref local; return cur` 仍然全部报错 ✓）
+
+---
+
+## ✅ 定案 52′：第三刀 —— `option` / `result` 就是**普通枚举**（2026-09-20）
+
+```extc
+type option<T>    = | none | some(T)
+type result<T, E> = | failure(E) | success(T)
+```
+
+**为什么不继续用 struct + `has`/`ok` 字段**（原来那样）：
+
+| 问题 | 旧（struct） | 新（枚举） |
+|---|---|---|
+| **载荷里有 `ref`** | ✗ **不行** —— `none` 的 `value: T` 没东西可填，而「ref 不可为空」是硬承诺 ⇒ `option<slice<u8>>` 报 `__extc_reference_has_no_zero_value__`（错还落在 prelude 上）| ✅ 行 —— tag 0 = `none`，**载荷根本不存在** ⇒ IO / 解析器的基本形状成立了 |
+| **`?` 怎么读** | 靠**约定的字段名**（`.ok` / `.value` / `.err`）—— 语言偷偷认识一个库的字段布局 | 靠 **tag + 载荷**，跟用户自己写的枚举走**同一条** codegen ✓ |
+| **`match`** | ✗ 不能 match（它是个 struct）| ✅ 穷尽检查 ✓ |
+| 零值 | `has = false` / `ok = false` | tag 0（**变体顺序有意义**：`none` 必须在第一个）✓ |
+
+**代价（诚实记下来）**：`option` 上的 `valueOr` / `has` 这类**方法写不出来了** ——
+方法只住在 struct 体内（定案 29），而枚举不能带方法。今天的写法是
+**`match`，或者自己包一个按类型的小函数**（`examples/` 里到处都是）。
+⇒ 记成 `PLAN.md` #16（枚举方法 / 泛型自由函数），**修哪一头都行**。
+
+**顺带修的两个真 bug**（都是这次撞出来的）：
+
+1. `match` 分支绑定：声明用原名、分支体用 cname ⇒ 同一层两个 `match` 绑同名时报
+   `'s__2' undeclared`。修法：check 时把 `cname` 写回 `MatchArm.binds`（PLAN #2 ✓）
+2. **`match` 的 codegen 不再用 `switch`**：分支体里的 `break` / `continue` 是要跳出
+   **外面那个循环**的，而在 `switch` 里只会跳出 switch ⇒ `while true` + `break` 的
+   读行循环**当场死循环**（写 `examples/option-ref-payload.extc` 时真踩了）✗
+   改成 if/else 链（穷尽性仍由类型检查担保，不需要 `else`）✓
+
+**验收**：152 测试全绿；`?` 的四个位置 + `option<slice<u8>>` 的传递都有例子 ✓

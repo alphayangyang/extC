@@ -7,6 +7,67 @@
 
 ---
 
+## 2026-09-20 · **第三刀：`option` / `result` 重写成泛型枚举** —— 主人说「可以启动第三刀了」
+
+```extc
+type option<T>    = | none | some(T)
+type result<T, E> = | failure(E) | success(T)
+```
+
+### 它到底换来了什么
+
+**一句话：`option<slice<u8>>` 从"编不过"变成了"合法"。**
+
+以前 `option<T>` 是 `struct { has: bool, value: T }`，而 `none` 的那个 `value`
+**没东西可填** —— 「ref 不可为空」是 extC 的硬承诺 ⇒ `var s: option<slice<u8>>`
+报 `__extc_reference_has_no_zero_value__`，而且**错落在 prelude 的行上**，
+用户根本看不见自己的代码（`PLAN` #7）✗
+
+现在 tag 0 = `none`、**不带载荷** ⇒ 载荷里有 ref 也照样有零值 ✓
+这就是 IO 和解析器的基本形状：**「读到没有」+ 一个零拷贝的视图**。
+新增的 `examples/option-ref-payload.extc` 里那个逐行读取循环就靠它：
+
+```extc
+fn nextLine(r: mut ref lineReader) -> option<slice<u8>> {
+    if r.eof { return none }
+    ...
+    return some(r.buf[start..i])      // 指向同一块 buf 的视图 ✓
+}
+```
+
+第二个好处是**诚实**：`?` 以前靠约定的字段名（`.ok` / `.value` / `.err`）——
+语言偷偷认识一个库的字段布局。现在它读 **tag + 载荷**，跟用户自己写的枚举
+走**同一条** codegen；`match` 也自然能用（穷尽检查）✓
+
+### 两个当场撞出来的真 bug
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 同一个函数里两个 `match` 绑同名 ⇒ gcc 报 `'s__2' undeclared` | 绑定的**声明**用原名，而分支体里查到的是 cname | check 时把 `cname` 写回 `MatchArm.binds`（`Param.cname` 同一套路）✓ **PLAN #2 关掉** |
+| `while true { match x { some(v) => {...break} ... } }` **死循环** | 用 `switch` 生成的 match：分支体里的 `break` 只跳出 **switch**，跳不出外面的循环 ✗ | match 的 codegen 改成 **if/else 链**（穷尽性仍由类型检查担保，不需要 `else`）✓ |
+
+第二个是写 `option-ref-payload.extc` 的时候**真的卡死**才发现的（60 秒超时）——
+不然它会一直躺在那里，等哪天有人写"读到结尾就停"的循环时中招 ✗
+
+### 代价（诚实记）
+
+`valueOr` / `has` 这类方法**写不出来了**：方法只住在 struct 体内（定案 29），
+而枚举不能带方法。今天的写法是 `match`，或者自己包一个**按类型**的小函数
+（`examples/` 里现在全是这种三行小函数：`orElse` / `isOk` / `whyFailed`）。
+⇒ 记成 `PLAN.md` #16：**枚举方法**或者**泛型自由函数**，修哪一头都行，
+工作量差不多，等主人拍板 ✓
+
+### 迁移
+
+`examples/option-result.extc`、`result-usage.extc`、`option-sugar.extc`、`tour.extc`
+全部从 `.has` / `.value` / `.ok` / `.err` / `valueOr` 改成 `match`；
+`tests/errors/option_ref_payload.extc`（"这个必须报错"的反例）**删掉** ——
+它现在是正例，也就是**洞封上了的证据** ✓
+
+**验收**：152 测试全绿。
+
+---
+
 ## 2026-09-20 · **`?ref T` + `null` + 非空收窄落地** —— 主人说「可以，启动！」
 
 第三刀的前置做完之后（泛型枚举 ✓），`?` 家族剩下的三件事一起做完了：
