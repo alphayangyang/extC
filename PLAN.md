@@ -53,11 +53,68 @@
 | **26** | ✅ **canary 第一批（携带引用维度）** | 5 对用例当场抓出 **4 个假阳性**（`var h: holder = { n: ref *p }  return h` 这类"从参数来的引用装进 struct/数组/泛型再返回"全被误拒 ✗）= PLAN #8 的另一半 ⇒ **已修**：含引用的值绑定也跟踪 `refDepth`（声明/赋值/元素写 三处，取 max 上界），零初始化按 0（里面只可能是 null ✓）⚠️ 修的过程中**自己开了一个洞**（`a[0] = ref local` 是**换指向**路径，更新没跟上 ⇒ `return a` 被放行 ✗），又靠同一条 canary 抓住 ⇒ 记进 #26 当"canary 的价值"实证 ✓ |
 | **27** | 🐛 **codegen 的实例集合没做传递闭包** | 一个实例的**方法签名**里提到的另一个实例（`varArray<i32>::get() -> option<i32>`）如果没在程序里被"用到过"，就**不会被生成** ⇒ 生成的 C 报 `unknown type name 'option_i32'` ✗（用户什么都没写错）。试过一版闭包（扫方法签名跑到不动点）—— **它让编译器死循环了** ✗（我上下文见底，先撤回；下次要带上"名字去重 + 上限"再上）| 生成的 C 编不过（**最该防的一类**）| 中 |
 | **28** | ✅ **`ttSubstitute` 不认泛型枚举实例**（真 bug，已修）| 第三刀把 `option`/`result` 变成**泛型枚举**之后 `ttSubstitute` 没跟上（枚举实例 kind 是 `TY_ENUM`，掉进 `default` 原样返回）⇒ 泛型实例的方法返回 `option<T>` **没代入** ⇒ 用户看到 `expects option_i32, found option_T` 这种没法理解的报错 ✗（同一个坑的另一半早前修过：`typeContainsRef` 的枚举分支）⚠️ **教训**：加一种类型构造时，`ttSubstitute` / `ttEquals` / `typeContainsRef` / `ttRender` 这一族"按 kind 分派"的函数**全都要扫一遍** ✓ 连带的 codegen 一点：裸构造器把模板名（`option_T`）当 C 名字用 ⇒ 改成走 `subst` + `cType` ✓ | — | — |
-| **29** | 📌 **`varArray<T>` 分块化（chunked）—— 留 v2 拍板** | 定案 59 算出来：**在"不能 free"的 arena 模型里，分块严格优于倍增** —— 累计分配 `⌈n/c⌉·c ≤ n + c`（chunk=256 ⇒ 1.001n）vs 倍增的最坏 4n，零拷贝，而且**块永不搬** ⇒ 顺手解决 §7.9 那条"扩容让元素引用失效"✗ 代价：存取多一次间接寻址 + **不再连续**（`slice<T>` 给不出来）⇒ 跟 `insertAt`/`eraseAt` 一起拍 ✓ 验算程序 `examples/growth-factor.extc` | 设计（内存 + 引用稳定性）| 中 |
+| **29** | 📌 **`varArray<T>` 分块化（chunked）—— 留 v2 拍板**（定案 60：**是新类型，不是替代品** —— `varArray` 永远保持连续；连续性要靠 `asSlice`/`asMutSlice` 兑现，但那被 #31 挡着）| 定案 59 算出来：**在"不能 free"的 arena 模型里，分块严格优于倍增** —— 累计分配 `⌈n/c⌉·c ≤ n + c`（chunk=256 ⇒ 1.001n）vs 倍增的最坏 4n，零拷贝，而且**块永不搬** ⇒ 顺手解决 §7.9 那条"扩容让元素引用失效"✗ 代价：存取多一次间接寻址 + **不再连续**（`slice<T>` 给不出来）⇒ 跟 `insertAt`/`eraseAt` 一起拍 ✓ 验算程序 `examples/growth-factor.extc` | 设计（内存 + 引用稳定性）| 中 |
 | **30** | 📌 **"运行时原地扩"—— 记着，不选**（定案 59 §四）| 对立面是"运行时自适应"：`realloc` 式先试原地扩、不行才搬（libc / Go `growslice`）。我们的 arena 是 **bump 分配器** ⇒ 只要"这次分配还是当前块的最后一次分配"，原地扩 = `used` 往后推（零拷贝、一次指针比较）⇒ 要补：arena 记"最后一次分配 + 大小"、块留 slack（现在 `cap = n` 没余量）✗ 不选的原因：它把"引用失效"从**必然**变成**看运气**（更难解释），而且是运行时代码（不违反 P，但按 P′ 精神该让用户知道）⇒ chunked（#29）目标相同且**永不失效**，优先 ✓ | 设计备选 | 小 |
+| **31** | 🚨 **能拿 UB：函数里扩容过的 `varArray` 返回出去 ⇒ use-after-free**（见 §0.6，**当前最高优先级**）| ASan 实锤。根因 = 建容器（`EX_ASSOC`）与扩容（`EX_METHOD` 的本地接收者）**落在两只不同的 arena**，且 `refDepth` 停在 0 ⇒ 逃逸检查看不见 ✗ 修法三方向（甲保守拒绝 / 乙家=我的家（跟规则 ④ 打架）/ 丙容器记住出生 arena）见 §0.6 ✓ 复现 `tests/canary-gaps/return-grown-varArray.extc` | **soundness（UB）** | 中 |
+| **12** | 📌 **文档债** | `;` 和 `/* */` **其实早就可用**，但没写进 MANUAL；块注释**不嵌套**也没说 | 文档 | 小 |
 
-**建议的开工顺序**：**1 → 2 → 3**（1 挡着"能安全写链表"，2/3 是真 bug 且都小），
+**建议的开工顺序**：**31（UB 优先）→ 27（生成的 C 编不过）→** 1 → 2 → 3（1 挡着"能安全写链表"，2/3 是真 bug 且都小），
 然后 **4–7**（都是"让失败响亮"，一鼓作气），最后 8 → 9 → IO ✓
+
+---
+
+## 0.6 🚨 **又一条能拿 UB 的路**（2026-09-21，**待修 = 当前最高优先级**）
+
+```extc
+fn mk() -> varArray<i32> {
+    var v: varArray<i32> = varArray<i32>::withCap(0)   // cap 0 ⇒ 第一次 push 就扩容
+    v.push(42)
+    v.push(43)
+    return v                                          // ⚠️ **编译通过**
+}
+```
+**实测**（`tests/canary-gaps/return-grown-varArray.extc`）：打印 `[1002, 0]`，正确值是 `[42, 43]` ✗
+`cc -fsanitize=address` 报得清清楚楚：
+
+```
+ERROR: AddressSanitizer: heap-use-after-free ... READ of size 4
+freed by thread T0 here:
+    #1 extc_arena_release  (t12.c:71)
+    #2 mk                  (t12.extc:6)      ← 就在 return 那一刻
+```
+
+**这条为什么刺眼**：它是**最自然的写法**（"函数里造一个数组、填好、返回"），
+五子棋/IO 到处都会这么写；而且**不用 `!`、不用 `extern!`** 就能拿到 ✗
+
+### 根因：同一个容器的 buffer 落在**两只不同的 arena** 里（一处不一致）
+
+| 动作 | 走哪条路 | 家 arena 是谁 | 结果 |
+|---|---|---|---|
+| **建**容器 `withCap(4)` | `EX_ASSOC`（检查器**没**给它标 `homeDepth`）| `homeArg(0)` ⇒ 有家函数的 `__extc_home` | **活的** ✓ |
+| **扩容** `v.push(..)` | `EX_METHOD`，实参是本地的 `v` | `callHomeDepth` 取 `placeDepth(v)` = 1 ⇒ `&__extc_a[1]` | **块 arena，`return` 时释放** ✗ |
+
+⇒ 新 buffer 比容器先死。容器里的指针于是悬垂，**而检查器完全不知道**：
+`sym->refDepth = exprRefDepth(withCap(...))` = `EX_ASSOC` 的"取实参最大深度" = **0**（实参是 `4`），
+所以 `return v` 的逃逸检查看到的是深度 0 ⇒ 放行 ✗
+
+⚠️ **注意这里的自相矛盾**：`markCallHomeIfEscaping`（PLAN #24）**只为 `EX_CALL`/`EX_METHOD` 标**，
+`EX_ASSOC` 走 `homeDepth = 0` 的默认分支 ⇒ 恰好拿到 `__extc_home`（"碰巧对了"）。
+两个入口对同一个容器给出**不同**的家 ⇒ 一致性问题，不是单点 bug ✓
+
+### 修法三个方向（**主人拍板**；都牵到 ARENA.md §7 的证明）
+
+| 方向 | 做法 | 代价 |
+|---|---|---|
+| **甲 · 保守拒绝** | 调用点带 `mut ref` 实参、家深度 > 0 时，把**实参那个绑定的 `refDepth` 抬到 ≥ 家深度**（就是 `a[0] = ref local` 那条更新路径的推广）| **声音（sound）但杀掉这个写法** ✗ —— `return v` 会报错，"造完返回"就写不了了 |
+| **乙 · 家 = 我的家** | `callHomeDepth` 对本地实参返回 `-1`（`__extc_home`）⇒ 跟"建"那边一致 | ⚠️ 与**规则 ④** 打架：`h` 变成 0 ⇒ 接收者自己（深度 1）就被拒 ✗ 把接收者豁免掉的话，被调者就能把**接收者的地址**存进家 arena 内存（活得比调用者帧还久）⇒ **换个洞** ✗ |
+| **丙 · 容器记住出生 arena**（设计上的正解）| 给每个绑定引入「**自己内容分配在哪只 arena**」（owner depth）：`var v = f(...)` 时按该调用的家深度记下来；`push` 这类 `mut ref` 调用就传 **owner depth**，而不是 `placeDepth(v)` | 检查器 + codegen 都要加一档（正是 `codegen.c` 里 arena 那段注释写的"容器要记住自己出生在哪只 arena"），**能力上最对**：`mk` 里 `withCap` 的家是 `__extc_home` ⇒ owner = 0 ⇒ `push` 也传 `__extc_home` ⇒ buffer 活得 ≥ 调用者 ✓ 而且 `return v` 合法 ✓ |
+
+**丙的两个已知坑（要一起做）**：① `owner` 要跟着赋值传播（`v = w`）；
+② 规则 ④ 的 `h` 要用 owner 而不是 `placeDepth`，否则接收者仍会被拒。
+**甲** 可以作为"当天止血"（把静默错数据变成编译错误），**丙** 才是让它能用的修法 ✓
+
+⚠️ **在修好之前**：`varArray` 只保证"**别把在函数里扩过容的容器/元素引用带出这个函数**" ✓
+（不扩容没事 —— 对照组实测正确：`withCap(4)` 装 2 个再返回 ✓）
 
 ---
 
