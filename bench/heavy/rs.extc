@@ -1,0 +1,36 @@
+/* radix sort：内存带宽 + 数组（8 趟 × 1M）*/
+var src: [1048576]u32
+var dst: [1048576]u32
+var cnt: [256]i64
+
+fn main() {
+    var n: i64 = 1048576
+    var r: pcg32 = pcg32::seeded(7)
+    var i: i64 = 0
+    while i < n { src[i] = u32(r.next())  i = i + 1 }
+    var pass: i64 = 0
+    while pass < 4 {
+        var shift: u64 = u64(pass * 8)
+        var k: i64 = 0
+        while k < 256 { cnt[k] = 0  k = k + 1 }
+        i = 0
+        while i < n { cnt[i64((u64(src[i]) >> shift) & 255)] = cnt[i64((u64(src[i]) >> shift) & 255)] + 1  i = i + 1 }
+        var sum: i64 = 0
+        k = 0
+        while k < 256 { var c: i64 = cnt[k]  cnt[k] = sum  sum = sum + c  k = k + 1 }
+        i = 0
+        while i < n {
+            var b: i64 = i64((u64(src[i]) >> shift) & 255)
+            dst[cnt[b]] = src[i]
+            cnt[b] = cnt[b] + 1
+            i = i + 1
+        }
+        i = 0
+        while i < n { src[i] = dst[i]  i = i + 1 }
+        pass = pass + 1
+    }
+    var chk: i64 = 0
+    i = 0
+    while i < n { chk = chk + i64(src[i])  i = i + 1 }
+    println("radix = ", chk)
+}

@@ -1,0 +1,30 @@
+/* mandelbrot：浮点 + 写内存（1600×1200，200 次迭代）*/
+var img: [1920000]u8
+fn main() {
+    var w: i64 = 1600
+    var h: i64 = 1200
+    var y: i64 = 0
+    var acc: i64 = 0
+    while y < h {
+        var x: i64 = 0
+        while x < w {
+            var cr: f64 = f64(x) / f64(w) * 3.5 - 2.5
+            var ci: f64 = f64(y) / f64(h) * 2.0 - 1.0
+            var zr: f64 = 0.0
+            var zi: f64 = 0.0
+            var it: i64 = 0
+            while it < 200 {
+                var t: f64 = zr * zr - zi * zi + cr
+                zi = 2.0 * zr * zi + ci
+                zr = t
+                if zr * zr + zi * zi > 4.0 { break }
+                it = it + 1
+            }
+            img[y * w + x] = u8(it & 255)
+            acc = acc + it
+            x = x + 1
+        }
+        y = y + 1
+    }
+    println("mandel = ", acc, " 首字节 = ", img[0])
+}
