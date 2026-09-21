@@ -225,7 +225,7 @@ void pcg32_debug(pcg32 v) {
 bool slice_u8_isEmpty(slice_u8 * self) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 140 "matmul.extc"
+#line 216 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return (self->len == 0);
     extc_arena_release(&__extc_a[1]);
@@ -234,7 +234,7 @@ bool slice_u8_isEmpty(slice_u8 * self) {
 bool slice_u8_hasAt(slice_u8 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 144 "matmul.extc"
+#line 220 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return ((i >= 0) && (i < self->len));
     extc_arena_release(&__extc_a[1]);
@@ -243,41 +243,41 @@ bool slice_u8_hasAt(slice_u8 * self, int64_t i) {
 uint8_t slice_u8_get(slice_u8 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 151 "matmul.extc"
+#line 227 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
-    return (*slice_u8_index(*(self), (int64_t)(i), "matmul.extc", 151));
+    return (*slice_u8_index(*(self), (int64_t)(i), "matmul.extc", 227));
     extc_arena_release(&__extc_a[1]);
 }
 
 bool slice_u8_eq(slice_u8 * self, slice_u8 other) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 157 "matmul.extc"
+#line 233 "matmul.extc"
     if ((self->len != other.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 158 "matmul.extc"
+#line 234 "matmul.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 160 "matmul.extc"
+#line 236 "matmul.extc"
     int64_t i = 0;
-#line 161 "matmul.extc"
+#line 237 "matmul.extc"
     while ((i < self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 162 "matmul.extc"
-        if (((*slice_u8_index(*(self), (int64_t)(i), "matmul.extc", 162)) != (*slice_u8_index(other, (int64_t)(i), "matmul.extc", 162)))) {
+#line 238 "matmul.extc"
+        if (((*slice_u8_index(*(self), (int64_t)(i), "matmul.extc", 238)) != (*slice_u8_index(other, (int64_t)(i), "matmul.extc", 238)))) {
             extc_arena_release(&__extc_a[3]);
-#line 163 "matmul.extc"
+#line 239 "matmul.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 165 "matmul.extc"
+#line 241 "matmul.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 167 "matmul.extc"
+#line 243 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
@@ -286,54 +286,54 @@ bool slice_u8_eq(slice_u8 * self, slice_u8 other) {
 int64_t slice_u8_find(slice_u8 * self, slice_u8 needle) {
     extc_arena __extc_a[5] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 173 "matmul.extc"
+#line 249 "matmul.extc"
     if ((needle.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 174 "matmul.extc"
+#line 250 "matmul.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return (-1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 176 "matmul.extc"
+#line 252 "matmul.extc"
     int64_t i = 0;
-#line 177 "matmul.extc"
+#line 253 "matmul.extc"
     while (((i + needle.len) <= self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 178 "matmul.extc"
+#line 254 "matmul.extc"
         int64_t j = 0;
-#line 179 "matmul.extc"
+#line 255 "matmul.extc"
         bool same = true;
-#line 180 "matmul.extc"
+#line 256 "matmul.extc"
         while ((j < needle.len)) {
             extc_arena_release(&__extc_a[3]);
-#line 181 "matmul.extc"
-            if (((*slice_u8_index(*(self), (int64_t)((i + j)), "matmul.extc", 181)) != (*slice_u8_index(needle, (int64_t)(j), "matmul.extc", 181)))) {
+#line 257 "matmul.extc"
+            if (((*slice_u8_index(*(self), (int64_t)((i + j)), "matmul.extc", 257)) != (*slice_u8_index(needle, (int64_t)(j), "matmul.extc", 257)))) {
                 extc_arena_release(&__extc_a[4]);
-#line 182 "matmul.extc"
+#line 258 "matmul.extc"
                 same = false;
-#line 183 "matmul.extc"
+#line 259 "matmul.extc"
                 extc_arena_release(&__extc_a[4]);
                 extc_arena_release(&__extc_a[3]);
                 break;
                 extc_arena_release(&__extc_a[4]);
             }
-#line 185 "matmul.extc"
+#line 261 "matmul.extc"
             j = (j + 1);
             extc_arena_release(&__extc_a[3]);
         }
-#line 187 "matmul.extc"
+#line 263 "matmul.extc"
         if (same) {
             extc_arena_release(&__extc_a[3]);
-#line 188 "matmul.extc"
+#line 264 "matmul.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return i;
             extc_arena_release(&__extc_a[3]);
         }
-#line 190 "matmul.extc"
+#line 266 "matmul.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 192 "matmul.extc"
+#line 268 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return (-1);
     extc_arena_release(&__extc_a[1]);
@@ -342,32 +342,32 @@ int64_t slice_u8_find(slice_u8 * self, slice_u8 needle) {
 bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 196 "matmul.extc"
+#line 272 "matmul.extc"
     if ((prefix.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 197 "matmul.extc"
+#line 273 "matmul.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 199 "matmul.extc"
+#line 275 "matmul.extc"
     int64_t i = 0;
-#line 200 "matmul.extc"
+#line 276 "matmul.extc"
     while ((i < prefix.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 201 "matmul.extc"
-        if (((*slice_u8_index(*(self), (int64_t)(i), "matmul.extc", 201)) != (*slice_u8_index(prefix, (int64_t)(i), "matmul.extc", 201)))) {
+#line 277 "matmul.extc"
+        if (((*slice_u8_index(*(self), (int64_t)(i), "matmul.extc", 277)) != (*slice_u8_index(prefix, (int64_t)(i), "matmul.extc", 277)))) {
             extc_arena_release(&__extc_a[3]);
-#line 202 "matmul.extc"
+#line 278 "matmul.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 204 "matmul.extc"
+#line 280 "matmul.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 206 "matmul.extc"
+#line 282 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
@@ -376,7 +376,7 @@ bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix) {
 bool slice_i32_isEmpty(slice_i32 * self) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 140 "matmul.extc"
+#line 216 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return (self->len == 0);
     extc_arena_release(&__extc_a[1]);
@@ -385,7 +385,7 @@ bool slice_i32_isEmpty(slice_i32 * self) {
 bool slice_i32_hasAt(slice_i32 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 144 "matmul.extc"
+#line 220 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return ((i >= 0) && (i < self->len));
     extc_arena_release(&__extc_a[1]);
@@ -394,41 +394,41 @@ bool slice_i32_hasAt(slice_i32 * self, int64_t i) {
 int32_t slice_i32_get(slice_i32 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 151 "matmul.extc"
+#line 227 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
-    return (*slice_i32_index(*(self), (int64_t)(i), "matmul.extc", 151));
+    return (*slice_i32_index(*(self), (int64_t)(i), "matmul.extc", 227));
     extc_arena_release(&__extc_a[1]);
 }
 
 bool slice_i32_eq(slice_i32 * self, slice_i32 other) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 157 "matmul.extc"
+#line 233 "matmul.extc"
     if ((self->len != other.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 158 "matmul.extc"
+#line 234 "matmul.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 160 "matmul.extc"
+#line 236 "matmul.extc"
     int64_t i = 0;
-#line 161 "matmul.extc"
+#line 237 "matmul.extc"
     while ((i < self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 162 "matmul.extc"
-        if (((*slice_i32_index(*(self), (int64_t)(i), "matmul.extc", 162)) != (*slice_i32_index(other, (int64_t)(i), "matmul.extc", 162)))) {
+#line 238 "matmul.extc"
+        if (((*slice_i32_index(*(self), (int64_t)(i), "matmul.extc", 238)) != (*slice_i32_index(other, (int64_t)(i), "matmul.extc", 238)))) {
             extc_arena_release(&__extc_a[3]);
-#line 163 "matmul.extc"
+#line 239 "matmul.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 165 "matmul.extc"
+#line 241 "matmul.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 167 "matmul.extc"
+#line 243 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
@@ -437,54 +437,54 @@ bool slice_i32_eq(slice_i32 * self, slice_i32 other) {
 int64_t slice_i32_find(slice_i32 * self, slice_i32 needle) {
     extc_arena __extc_a[5] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 173 "matmul.extc"
+#line 249 "matmul.extc"
     if ((needle.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 174 "matmul.extc"
+#line 250 "matmul.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return (-1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 176 "matmul.extc"
+#line 252 "matmul.extc"
     int64_t i = 0;
-#line 177 "matmul.extc"
+#line 253 "matmul.extc"
     while (((i + needle.len) <= self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 178 "matmul.extc"
+#line 254 "matmul.extc"
         int64_t j = 0;
-#line 179 "matmul.extc"
+#line 255 "matmul.extc"
         bool same = true;
-#line 180 "matmul.extc"
+#line 256 "matmul.extc"
         while ((j < needle.len)) {
             extc_arena_release(&__extc_a[3]);
-#line 181 "matmul.extc"
-            if (((*slice_i32_index(*(self), (int64_t)((i + j)), "matmul.extc", 181)) != (*slice_i32_index(needle, (int64_t)(j), "matmul.extc", 181)))) {
+#line 257 "matmul.extc"
+            if (((*slice_i32_index(*(self), (int64_t)((i + j)), "matmul.extc", 257)) != (*slice_i32_index(needle, (int64_t)(j), "matmul.extc", 257)))) {
                 extc_arena_release(&__extc_a[4]);
-#line 182 "matmul.extc"
+#line 258 "matmul.extc"
                 same = false;
-#line 183 "matmul.extc"
+#line 259 "matmul.extc"
                 extc_arena_release(&__extc_a[4]);
                 extc_arena_release(&__extc_a[3]);
                 break;
                 extc_arena_release(&__extc_a[4]);
             }
-#line 185 "matmul.extc"
+#line 261 "matmul.extc"
             j = (j + 1);
             extc_arena_release(&__extc_a[3]);
         }
-#line 187 "matmul.extc"
+#line 263 "matmul.extc"
         if (same) {
             extc_arena_release(&__extc_a[3]);
-#line 188 "matmul.extc"
+#line 264 "matmul.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return i;
             extc_arena_release(&__extc_a[3]);
         }
-#line 190 "matmul.extc"
+#line 266 "matmul.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 192 "matmul.extc"
+#line 268 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return (-1);
     extc_arena_release(&__extc_a[1]);
@@ -493,32 +493,32 @@ int64_t slice_i32_find(slice_i32 * self, slice_i32 needle) {
 bool slice_i32_startsWith(slice_i32 * self, slice_i32 prefix) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 196 "matmul.extc"
+#line 272 "matmul.extc"
     if ((prefix.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 197 "matmul.extc"
+#line 273 "matmul.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 199 "matmul.extc"
+#line 275 "matmul.extc"
     int64_t i = 0;
-#line 200 "matmul.extc"
+#line 276 "matmul.extc"
     while ((i < prefix.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 201 "matmul.extc"
-        if (((*slice_i32_index(*(self), (int64_t)(i), "matmul.extc", 201)) != (*slice_i32_index(prefix, (int64_t)(i), "matmul.extc", 201)))) {
+#line 277 "matmul.extc"
+        if (((*slice_i32_index(*(self), (int64_t)(i), "matmul.extc", 277)) != (*slice_i32_index(prefix, (int64_t)(i), "matmul.extc", 277)))) {
             extc_arena_release(&__extc_a[3]);
-#line 202 "matmul.extc"
+#line 278 "matmul.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 204 "matmul.extc"
+#line 280 "matmul.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 206 "matmul.extc"
+#line 282 "matmul.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);

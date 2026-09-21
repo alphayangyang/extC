@@ -202,7 +202,7 @@ void pcg32_debug(pcg32 v) {
 bool slice_u8_isEmpty(slice_u8 * self) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 140 "fib.extc"
+#line 216 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return (self->len == 0);
     extc_arena_release(&__extc_a[1]);
@@ -211,7 +211,7 @@ bool slice_u8_isEmpty(slice_u8 * self) {
 bool slice_u8_hasAt(slice_u8 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 144 "fib.extc"
+#line 220 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return ((i >= 0) && (i < self->len));
     extc_arena_release(&__extc_a[1]);
@@ -220,41 +220,41 @@ bool slice_u8_hasAt(slice_u8 * self, int64_t i) {
 uint8_t slice_u8_get(slice_u8 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 151 "fib.extc"
+#line 227 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
-    return (*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 151));
+    return (*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 227));
     extc_arena_release(&__extc_a[1]);
 }
 
 bool slice_u8_eq(slice_u8 * self, slice_u8 other) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 157 "fib.extc"
+#line 233 "fib.extc"
     if ((self->len != other.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 158 "fib.extc"
+#line 234 "fib.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 160 "fib.extc"
+#line 236 "fib.extc"
     int64_t i = 0;
-#line 161 "fib.extc"
+#line 237 "fib.extc"
     while ((i < self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 162 "fib.extc"
-        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 162)) != (*slice_u8_index(other, (int64_t)(i), "fib.extc", 162)))) {
+#line 238 "fib.extc"
+        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 238)) != (*slice_u8_index(other, (int64_t)(i), "fib.extc", 238)))) {
             extc_arena_release(&__extc_a[3]);
-#line 163 "fib.extc"
+#line 239 "fib.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 165 "fib.extc"
+#line 241 "fib.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 167 "fib.extc"
+#line 243 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
@@ -263,54 +263,54 @@ bool slice_u8_eq(slice_u8 * self, slice_u8 other) {
 int64_t slice_u8_find(slice_u8 * self, slice_u8 needle) {
     extc_arena __extc_a[5] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 173 "fib.extc"
+#line 249 "fib.extc"
     if ((needle.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 174 "fib.extc"
+#line 250 "fib.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return (-1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 176 "fib.extc"
+#line 252 "fib.extc"
     int64_t i = 0;
-#line 177 "fib.extc"
+#line 253 "fib.extc"
     while (((i + needle.len) <= self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 178 "fib.extc"
+#line 254 "fib.extc"
         int64_t j = 0;
-#line 179 "fib.extc"
+#line 255 "fib.extc"
         bool same = true;
-#line 180 "fib.extc"
+#line 256 "fib.extc"
         while ((j < needle.len)) {
             extc_arena_release(&__extc_a[3]);
-#line 181 "fib.extc"
-            if (((*slice_u8_index(*(self), (int64_t)((i + j)), "fib.extc", 181)) != (*slice_u8_index(needle, (int64_t)(j), "fib.extc", 181)))) {
+#line 257 "fib.extc"
+            if (((*slice_u8_index(*(self), (int64_t)((i + j)), "fib.extc", 257)) != (*slice_u8_index(needle, (int64_t)(j), "fib.extc", 257)))) {
                 extc_arena_release(&__extc_a[4]);
-#line 182 "fib.extc"
+#line 258 "fib.extc"
                 same = false;
-#line 183 "fib.extc"
+#line 259 "fib.extc"
                 extc_arena_release(&__extc_a[4]);
                 extc_arena_release(&__extc_a[3]);
                 break;
                 extc_arena_release(&__extc_a[4]);
             }
-#line 185 "fib.extc"
+#line 261 "fib.extc"
             j = (j + 1);
             extc_arena_release(&__extc_a[3]);
         }
-#line 187 "fib.extc"
+#line 263 "fib.extc"
         if (same) {
             extc_arena_release(&__extc_a[3]);
-#line 188 "fib.extc"
+#line 264 "fib.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return i;
             extc_arena_release(&__extc_a[3]);
         }
-#line 190 "fib.extc"
+#line 266 "fib.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 192 "fib.extc"
+#line 268 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return (-1);
     extc_arena_release(&__extc_a[1]);
@@ -319,32 +319,32 @@ int64_t slice_u8_find(slice_u8 * self, slice_u8 needle) {
 bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 196 "fib.extc"
+#line 272 "fib.extc"
     if ((prefix.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 197 "fib.extc"
+#line 273 "fib.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 199 "fib.extc"
+#line 275 "fib.extc"
     int64_t i = 0;
-#line 200 "fib.extc"
+#line 276 "fib.extc"
     while ((i < prefix.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 201 "fib.extc"
-        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 201)) != (*slice_u8_index(prefix, (int64_t)(i), "fib.extc", 201)))) {
+#line 277 "fib.extc"
+        if (((*slice_u8_index(*(self), (int64_t)(i), "fib.extc", 277)) != (*slice_u8_index(prefix, (int64_t)(i), "fib.extc", 277)))) {
             extc_arena_release(&__extc_a[3]);
-#line 202 "fib.extc"
+#line 278 "fib.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 204 "fib.extc"
+#line 280 "fib.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 206 "fib.extc"
+#line 282 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
@@ -353,7 +353,7 @@ bool slice_u8_startsWith(slice_u8 * self, slice_u8 prefix) {
 bool slice_i32_isEmpty(slice_i32 * self) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 140 "fib.extc"
+#line 216 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return (self->len == 0);
     extc_arena_release(&__extc_a[1]);
@@ -362,7 +362,7 @@ bool slice_i32_isEmpty(slice_i32 * self) {
 bool slice_i32_hasAt(slice_i32 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 144 "fib.extc"
+#line 220 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return ((i >= 0) && (i < self->len));
     extc_arena_release(&__extc_a[1]);
@@ -371,41 +371,41 @@ bool slice_i32_hasAt(slice_i32 * self, int64_t i) {
 int32_t slice_i32_get(slice_i32 * self, int64_t i) {
     extc_arena __extc_a[2] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 151 "fib.extc"
+#line 227 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
-    return (*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 151));
+    return (*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 227));
     extc_arena_release(&__extc_a[1]);
 }
 
 bool slice_i32_eq(slice_i32 * self, slice_i32 other) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 157 "fib.extc"
+#line 233 "fib.extc"
     if ((self->len != other.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 158 "fib.extc"
+#line 234 "fib.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 160 "fib.extc"
+#line 236 "fib.extc"
     int64_t i = 0;
-#line 161 "fib.extc"
+#line 237 "fib.extc"
     while ((i < self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 162 "fib.extc"
-        if (((*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 162)) != (*slice_i32_index(other, (int64_t)(i), "fib.extc", 162)))) {
+#line 238 "fib.extc"
+        if (((*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 238)) != (*slice_i32_index(other, (int64_t)(i), "fib.extc", 238)))) {
             extc_arena_release(&__extc_a[3]);
-#line 163 "fib.extc"
+#line 239 "fib.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 165 "fib.extc"
+#line 241 "fib.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 167 "fib.extc"
+#line 243 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
@@ -414,54 +414,54 @@ bool slice_i32_eq(slice_i32 * self, slice_i32 other) {
 int64_t slice_i32_find(slice_i32 * self, slice_i32 needle) {
     extc_arena __extc_a[5] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 173 "fib.extc"
+#line 249 "fib.extc"
     if ((needle.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 174 "fib.extc"
+#line 250 "fib.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return (-1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 176 "fib.extc"
+#line 252 "fib.extc"
     int64_t i = 0;
-#line 177 "fib.extc"
+#line 253 "fib.extc"
     while (((i + needle.len) <= self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 178 "fib.extc"
+#line 254 "fib.extc"
         int64_t j = 0;
-#line 179 "fib.extc"
+#line 255 "fib.extc"
         bool same = true;
-#line 180 "fib.extc"
+#line 256 "fib.extc"
         while ((j < needle.len)) {
             extc_arena_release(&__extc_a[3]);
-#line 181 "fib.extc"
-            if (((*slice_i32_index(*(self), (int64_t)((i + j)), "fib.extc", 181)) != (*slice_i32_index(needle, (int64_t)(j), "fib.extc", 181)))) {
+#line 257 "fib.extc"
+            if (((*slice_i32_index(*(self), (int64_t)((i + j)), "fib.extc", 257)) != (*slice_i32_index(needle, (int64_t)(j), "fib.extc", 257)))) {
                 extc_arena_release(&__extc_a[4]);
-#line 182 "fib.extc"
+#line 258 "fib.extc"
                 same = false;
-#line 183 "fib.extc"
+#line 259 "fib.extc"
                 extc_arena_release(&__extc_a[4]);
                 extc_arena_release(&__extc_a[3]);
                 break;
                 extc_arena_release(&__extc_a[4]);
             }
-#line 185 "fib.extc"
+#line 261 "fib.extc"
             j = (j + 1);
             extc_arena_release(&__extc_a[3]);
         }
-#line 187 "fib.extc"
+#line 263 "fib.extc"
         if (same) {
             extc_arena_release(&__extc_a[3]);
-#line 188 "fib.extc"
+#line 264 "fib.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return i;
             extc_arena_release(&__extc_a[3]);
         }
-#line 190 "fib.extc"
+#line 266 "fib.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 192 "fib.extc"
+#line 268 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return (-1);
     extc_arena_release(&__extc_a[1]);
@@ -470,32 +470,32 @@ int64_t slice_i32_find(slice_i32 * self, slice_i32 needle) {
 bool slice_i32_startsWith(slice_i32 * self, slice_i32 prefix) {
     extc_arena __extc_a[4] = {0};
     extc_arena_release(&__extc_a[1]);
-#line 196 "fib.extc"
+#line 272 "fib.extc"
     if ((prefix.len > self->len)) {
         extc_arena_release(&__extc_a[2]);
-#line 197 "fib.extc"
+#line 273 "fib.extc"
         extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
         return false;
         extc_arena_release(&__extc_a[2]);
     }
-#line 199 "fib.extc"
+#line 275 "fib.extc"
     int64_t i = 0;
-#line 200 "fib.extc"
+#line 276 "fib.extc"
     while ((i < prefix.len)) {
         extc_arena_release(&__extc_a[2]);
-#line 201 "fib.extc"
-        if (((*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 201)) != (*slice_i32_index(prefix, (int64_t)(i), "fib.extc", 201)))) {
+#line 277 "fib.extc"
+        if (((*slice_i32_index(*(self), (int64_t)(i), "fib.extc", 277)) != (*slice_i32_index(prefix, (int64_t)(i), "fib.extc", 277)))) {
             extc_arena_release(&__extc_a[3]);
-#line 202 "fib.extc"
+#line 278 "fib.extc"
             extc_arena_release(&__extc_a[3]); extc_arena_release(&__extc_a[2]); extc_arena_release(&__extc_a[1]); 
             return false;
             extc_arena_release(&__extc_a[3]);
         }
-#line 204 "fib.extc"
+#line 280 "fib.extc"
         i = (i + 1);
         extc_arena_release(&__extc_a[2]);
     }
-#line 206 "fib.extc"
+#line 282 "fib.extc"
     extc_arena_release(&__extc_a[1]); 
     return true;
     extc_arena_release(&__extc_a[1]);
