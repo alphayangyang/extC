@@ -1,0 +1,15 @@
+/* A2 的验收用例：**循环里分配，内存不该涨**
+
+ * 每帧 arena 会一路累积到函数返回 ⇒ 300 次 × 1MB = 300MB ⇒
+ * 在 `ulimit -v 150000` 下直接 `extc: out of arena memory` ✗
+ * 按块细化之后，循环体那只 arena 每轮 reset ⇒ 内存上界 = **一次迭代** ⇒ 跑完 ✓
+ */
+fn main() {
+    var n: i32 = 0
+    while n < 300 {
+        var p = alloc<i32>(250000)      // 1MB
+        *p = n
+        n = n + 1
+    }
+    println("跑完了")
+}
