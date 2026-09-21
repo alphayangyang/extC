@@ -2628,14 +2628,28 @@ static void checkStmt(Checker *c, Stmt *s) {
                  * 而"换指向"写的是**那个槽位**（变量/字段本身）⇒
                  * 只要求**绑定/字段可写**（`var`）✓
                  * ⇒ 于是 `var p: ref T = ref x;  p = ref y` 合法 ✓（主人 2026-09-20）*/
-                Sym *slotRoot = placeRoot(c, s->u.assign.target);
-                if (!slotRoot || !slotRoot->mut) {
+                /* 换指向写的是**槽位本身** ⇒ 只要求"这个槽位可写"：
+                 *   · 变量 / 字段 / 元素 ⇒ 根是 `var` ✓
+                 *   · **`*p`（`mut ref`）⇒ 可写性由 p 的类型给** ✓
+                 *     ⚠️ 这里以前只走 `placeRoot`，而它对 `*p` 返回 NULL ⇒
+                 *        `fn push(head: mut ref ?ref node) { *head = cell }` 被误报成
+                 *        "the binding is read-only" ✗（真 bug，2026-09-20 修）*/
+                bool slotOk;
+                if (s->u.assign.target->kind == EX_DEREF) {
+                    Type *ot = s->u.assign.target->u.deref.operand->type;
+                    slotOk = ot && ot->kind == TY_REF && ot->mut;
+                } else {
+                    Sym *slotRoot = placeRoot(c, s->u.assign.target);
+                    slotOk = slotRoot && slotRoot->mut;
+                }
+                if (!slotOk) {
                     ckError(c, s->line,
                             "rebinding a reference writes the binding itself, so the binding"
-                            " must be `var` (the reference's own `mut` is about writing through"
-                            " it, not about rebinding)",
+                            " must be writable (`var`, or a `mut ref`)",
                             "cannot rebind `%s`: the binding is read-only",
-                            slotRoot ? slotRoot->name : "this");
+                            s->u.assign.target->kind == EX_DEREF
+                              ? typeStr(c, s->u.assign.target->u.deref.operand->type)
+                              : "this");
                     return;
                 }
 
