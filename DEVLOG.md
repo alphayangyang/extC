@@ -2695,3 +2695,23 @@ v0 的十条里，**三条是 P 的化身，两条是 P′ 的化身**；剩下�
 
 ⚠️ 同时提醒了一个硬冲突：**期末只剩十几周，语言不可能赶上作业**。两者必须分开 —— 五子棋照原计划用 C 写，extC 是并行的副线。
 ---
+
+## 2026-09-21 · 修掉 **PLAN #27**（实例集合的传递闭包）+ 五处"绕它"的探针全删
+
+**症状**（写例子时第 N 次撞到）：`varArray<i64>::get() -> option<i64>`，程序里如果**从没直接写过**
+`option<i64>`，codegen 就不会生成它 ⇒ 生成的 C 报 `unknown type name 'option_i64'` ✗
+（用户什么都没写错，纯编译器自己的账没算全）
+
+**修法**：`units` 收集完之后跑一遍**传递闭包** —— 扫每个 unit 的
+**字段 + 方法签名（代入 T）+ 枚举载荷**，把里面提到的"结构体类"补进来，跑到不动点 ✓
+带**轮数上限**（64），超了**响亮报错**（`internal: instance closure did not settle`）✓
+
+**前后对照**（同一个程序）：
+```
+新编译器： size = 1（生成的 C 里 option_i64 出现 15 次 ✓）
+旧编译器： extc: C compiler failed (exit 1)        ✗
+```
+**副产品**：五处 `println("逼出 option_i32…")` 探针**全删了**（`varArray-return` / `list-return` /
+`varArray-asSlice-return` / `field-strong-update` / `path-narrowing`）—— 它们本来就是**绕 #27 的**
+⇒ 删掉之后套件仍全绿，正是修复的旁证 ✓
+**回归用例**：`examples/instance-closure.extc` ✓

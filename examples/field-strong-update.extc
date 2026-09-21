@@ -20,5 +20,4 @@ fn main() {
     var h: holder = build()
     println("逃出去之前置空 ⇒ 合法")
     println("p 是空的？ ", h.p == null)
-    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
 }

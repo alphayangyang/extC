@@ -10,6 +10,7 @@
 #include "codegen.h"
 
 #include <stdarg.h>
+#include <stdlib.h>   /* exit：PLAN #27 的闭包超限要响亮报错 ✓ */
 #include <stdio.h>
 #include <string.h>
 
@@ -1756,6 +1757,72 @@ static const char *genSlice(CG *g, Expr *e) {
                        fn, arg, loS, hiS, g->path, e->line);
 }
 
+
+/* ⭐ PLAN #27：**实例集合的传递闭包**（2026-09-21）
+ *
+ * 问题：方法签名里提到的实例如果没在程序里被"直接用到过"，就不会进 `units`
+ *   `varArray<i64>::get() -> option<i64>` ⇒ 生成的 C 报 `unknown type name 'option_i64'` ✗
+ *   （用户什么都没写错 —— 是编译器自己的账没算全）
+ *
+ * 做法：扫每个 unit 的**字段 + 方法签名 + 枚举载荷**（泛型实例要**代入** T），
+ * 把里面提到的"结构体类"补进 `units`，反复跑到不动点 ✓
+ * 带**轮数上限**，超了**响亮报错** —— 不许静默少生成（ARENA-FORMAL §8.5 那条规矩）✗
+ */
+static void addInstanceUnit(Arena *arena, Vec *units, Type *t) {
+    if (!t) return;
+    bool isStructInst = (t->kind == TY_GENERIC && t->sdef);          /* varArray<i32> 这种 */
+    bool isEnumInst   = (t->kind == TY_ENUM && t->edef && t->edef->typeParams.len > 0);
+    if (!isStructInst && !isEnumInst) return;
+    if (unitFind(units, t) >= 0) return;                             /* 按 **C 名字** 去重 ✓ */
+    SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+    if (isStructInst) u->sd = t->sdef; else u->td = t->edef;
+    u->inst = t;
+    vecInit(&u->deps, arena, sizeof(int));
+    *(SUnit **)vecPush(units) = u;
+}
+
+/* 扫一个类型：它自己 + 里面提到的（引用/切片的内层、数组元素、泛型实参）✓ */
+static void scanTypeForUnits(Arena *arena, Vec *units, Type *t, int depth) {
+    if (!t || depth > 12) return;                                    /* 自我引用靠 depth 兜底 ✓ */
+    addInstanceUnit(arena, units, t);
+    if (t->inner) scanTypeForUnits(arena, units, t->inner, depth + 1);
+    for (size_t i = 0; i < t->targs.len; i++)
+        scanTypeForUnits(arena, units, *(Type **)vecAt(&t->targs, i), depth + 1);
+}
+
+static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) {
+    Vec *tps = NULL; Vec *tas = NULL;
+    StructDef *sd = u->sd ? u->sd : (u->inst ? u->inst->sdef : NULL);
+    if (u->inst && sd) { tps = &sd->typeParams; tas = &u->inst->targs; }
+    /* ① 字段 */
+    if (sd) for (size_t i = 0; i < sd->fields.len; i++) {
+        Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
+        if (tps && ft) ft = ttSubstitute(tt, ft, tps, tas);
+        scanTypeForUnits(arena, units, ft, 0);
+    }
+    /* ② 方法签名（参数 + 返回值）—— **#27 漏的就是这里** */
+    if (sd) for (size_t i = 0; i < sd->methods.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&sd->methods, i);
+        for (size_t j = 0; j < f->params.len; j++) {
+            Type *pt = (*(Param **)vecAt(&f->params, j))->type;
+            if (tps && pt) pt = ttSubstitute(tt, pt, tps, tas);
+            scanTypeForUnits(arena, units, pt, 0);
+        }
+        Type *rt = f->ret;
+        if (tps && rt) rt = ttSubstitute(tt, rt, tps, tas);
+        scanTypeForUnits(arena, units, rt, 0);
+    }
+    /* ③ 枚举载荷 */
+    if (u->td) for (size_t i = 0; i < u->td->variants.len; i++) {
+        Variant *v = *(Variant **)vecAt(&u->td->variants, i);
+        for (size_t k = 0; k < v->types.len; k++) {
+            Type *pt = *(Type **)vecAt(&v->types, k);
+            if (tps && pt) pt = ttSubstitute(tt, pt, tps, tas);
+            scanTypeForUnits(arena, units, pt, 0);
+        }
+    }
+}
+
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     CG g;
     memset(&g, 0, sizeof g);
@@ -2011,6 +2078,29 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         u->inst = it;
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
+    }
+
+    /* ⭐ PLAN #27：**跑到不动点**把"方法签名里提到的实例"补进来 ✓
+     * 带轮数上限；超了说明有意外情况 ⇒ **响亮报错**（不许静默少生成 ✗）*/
+    {
+        bool grew = true;
+        int round = 0;
+        while (grew && round < 64) {
+            grew = false;
+            round++;
+            size_t cur = units.len;                 /* 只看这一轮开始时的长度 ✓ */
+            for (size_t i = 0; i < cur; i++) {
+                SUnit *u = *(SUnit **)vecAt(&units, i);
+                size_t before = units.len;
+                scanUnitForUnits(arena, tt, &units, u);
+                if (units.len != before) grew = true;
+            }
+        }
+        if (grew) {
+            fprintf(stderr, "extc: internal: generic instance closure did not settle"
+                            " in 64 rounds (PLAN #27) -- please report this program\n");
+            exit(1);
+        }
     }
 
     /* 先出**全部** typedef —— 指针字段（`ref T`）只需要它 */

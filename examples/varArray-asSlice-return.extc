@@ -21,5 +21,4 @@ fn main() {
     var s: slice<i32> = build()
     churn()
     println("拿到的 = ", s)
-    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
 }

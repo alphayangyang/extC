@@ -30,5 +30,4 @@ fn main() {
     var v: varArray<i32> = mk()
     churn()
     println("拿到的 = ", v.asSlice(), "  size = ", v.size())
-    println("逼出 option_i32（PLAN #27）: ", varArray<i32>::withCap(1).get(0) ?? -1)
 }

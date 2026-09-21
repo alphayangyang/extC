@@ -1,0 +1,13 @@
+// expect: size = 1
+/* PLAN #27 回归：**只用到一个实例、却间接需要另一个实例** ✓
+ *
+ * `varArray<i64>` 的方法签名里有 `option<i64>`（`get`/`pop` 的返回类型），
+ * 而这个程序**从没直接写过** `option<i64>` ⇒ 以前 codegen 不会生成它 ⇒
+ * 生成的 C 报 `unknown type name 'option_i64'` ✗（用户什么都没写错）
+ * 现在 instances 跑**传递闭包**（扫字段 + 方法签名 + 枚举载荷，泛型实例要代入 T）✓
+ */
+fn main() {
+    var v: varArray<i64> = varArray<i64>::withCap(2)
+    v.push(7)
+    println("size = ", v.size())
+}

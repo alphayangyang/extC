@@ -39,6 +39,4 @@ fn main() {
     var l: list = build()
     churn()
     println("求和 = ", sumNodes(l.head))
-    var probe: varArray<i64> = varArray<i64>::withCap(1)
-    println("逼出 option_i64: ", probe.get(0) ?? probe.size())
 }
