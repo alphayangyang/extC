@@ -407,6 +407,28 @@ fn main() -> i32 {
   方法变成 `pair_i32_u8_getFirst`
 - 泛型 struct 的方法里，泛型参数可见（`fn get(self: ref box<T>) -> T`）
 
+> ⭐ **引用安全规则按实例复查**（2026-09-20 起）
+>
+> 模板期 `T` 不透明，"这个类型里有引用吗"答不了 —— 所以**涉及 `T` 的引用规矩
+> （深度 / 借来的值 / 零值）会推迟到实例化，按实例再查一遍**：
+>
+> ```extc
+> struct boxT<T> {
+>     v: T
+>     fn stash(self: mut ref boxT<T>, value: T) { self.v = value }
+> }
+> var b: boxT<i64> = { v: 5 }          // ✓ 通过（i64 里没有引用）
+> b.stash(7)
+> var c: boxT<slice<u8>> = { v: "abc" }
+> c.stash(someSlice)                    // ✗ 报错，而且要**点名实例**：
+> // error: in instance `boxT_slice_u8`: cannot store a borrowed value into
+> //        something that outlives this call
+> ```
+>
+> 同一条也管**零值**（`var local: T` ⇒ 实例化成 `slice<u8>` 就是一个 null 引用 ✗）
+> 和**返回值**（返回本帧的 `T` ⇒ 悬垂 ✗）✓
+> 实现见 `DECISIONS.md` 定案 54；**没有**为了安全把 `box<i64>::set` 这种正常写法拒掉 ✓
+
 > ⚠️ **已知限制（「模板检查一遍」换来的代价）**
 >
 > 类型检查是对**模板**做的，所以模板里 `A` 和 `B` 是不确定的。要求两边同类型的操作写不出来：
