@@ -1773,7 +1773,16 @@ static void addInstanceUnit(Arena *arena, Vec *units, Type *t) {
     bool isStructInst = (t->kind == TY_GENERIC && t->sdef);          /* varArray<i32> 这种 */
     bool isEnumInst   = (t->kind == TY_ENUM && t->edef && t->edef->typeParams.len > 0);
     if (!isStructInst && !isEnumInst) return;
-    if (unitFind(units, t) >= 0) return;                             /* 按 **C 名字** 去重 ✓ */
+    /* ⚠️ 去重必须按 **C 名字**，不能直接用 `unitFind`：
+     *   `unitFind` 对**泛型枚举实例**是按 `edef`（模板）比的 ⇒ `option_i64` 会匹配到
+     *   已经存在的 `option_i32`（两者共用 `edef`）⇒ 误判"已经有了" ⇒ 不生成 ⇒
+     *   生成的 C 报 `unknown type name 'option_i64'` ✗（压测程序里抓出来的 ✓）
+     *   （原始收集走的是 `tt->enumInstances` 列表 ⇒ 那时没暴露这个问题 ✓）*/
+    for (size_t i = 0; i < units->len; i++) {
+        SUnit *u = *(SUnit **)vecAt(units, i);
+        if (u->inst && t->name && strcmp(u->inst->name, t->name) == 0) return;
+        if (u->td && t->kind == TY_ENUM && u->inst == NULL && u->td == t->edef) return;
+    }
     SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
     if (isStructInst) u->sd = t->sdef; else u->td = t->edef;
     u->inst = t;
