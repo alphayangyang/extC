@@ -813,6 +813,32 @@ static const char *genExprInner(CG *g, Expr *e) {
             return bufCstr(&b);
         }
 
+        /* `new T` / `new [N]T` / `new T[n]`（PLAN A1）—— 分配进**当前块**的 arena、
+         * **清零**（运行时那条 alloc 本身就清零 ⇒ extC 里只有一条规则 ✓）*/
+        case EX_NEW: {
+            Type *w = subst(g, e->u.new_.type);
+            if (!e->u.new_.count) {
+                /* 一个 T（或一个 [N]T）的**地方** ⇒ 就是它的地址 ✓ */
+                return arenaPrintf(g->arena, "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)))",
+                                   cType(g, w), arenaRef(g), cType(g, w));
+            }
+            /* `T[n]` ⇒ 视图 `{ data, len }`；个数只求值一次
+             * （个数不纯时检查器打过 needTemp ⇒ 先吐一句把它装进临时变量 ✓）*/
+            const char *n;
+            if (e->needTemp) {
+                const char *tmp = arenaPrintf(g->arena, "__extc_n%d", g->tmpSeq++);
+                pfLine(g, "int64_t %s = (int64_t)(%s);", tmp, genExpr(g, e->u.new_.count));
+                n = tmp;
+            } else {
+                n = genExpr(g, e->u.new_.count);
+            }
+            Type *st = subst(g, e->type);      /* 检查器算好的 `slice<T>` ✓ */
+            return arenaPrintf(g->arena,
+                "(%s){ .data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s)),"
+                " .len = (int64_t)(%s) }",
+                cType(g, st), cType(g, w), arenaRef(g), n, cType(g, w), n);
+        }
+
         case EX_GENCALL: {
             /* 泛型调用 —— 目前只有内置原语 `alloc<T>(n)`：
              * 向**当前块**的 arena 要 n 个 T 的地方（按块细化之后就是这句话的意思 ✓）*/
@@ -1664,6 +1690,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "#include <stdint.h>\n"
         "#include <stdbool.h>\n"
         "#include <stdio.h>\n"
+        "#include <string.h>\n"
         "#include <stdlib.h>\n\n"
         "/* ⚠️ 下面这些原语全部 `static inline` —— **这不是风格问题**：\n"
         " * 不内联的话，gcc 在 -O1 下**看不见检查体**，于是既不能消掉检查、\n"
@@ -1753,6 +1780,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    {\n"
         "        void *p = a->top->data + a->top->used;\n"
         "        a->top->used += n;\n"
+        "        memset(p, 0, (size_t)n);   /* ⭐ 分配**永远清零** */\n"
         "        return p;\n"
         "    }\n"
         "}\n\n");

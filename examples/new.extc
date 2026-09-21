@@ -1,0 +1,73 @@
+/* `new` —— 从**当前块**的 arena 拿一块**清零**的地方（PLAN A1）
+
+ * 三种形式：
+ *     `new node`       ⇒ `mut ref node`     一个 T 的**地方**
+ *     `new [3]i32`     ⇒ `mut ref [3]i32`   一个定长数组的地方
+ *     `new i32[1000]`  ⇒ `mut slice<i32>`   **n 个元素** —— 造 buffer 就是它 ✓
+ *
+ * 三条规矩：
+ *   · **分配出来的一定是零**（跟定案 8 一样；arena 那条分配原语自己就清零 ✓）
+ *     ⇒ 新 `node` 的 `next` 自动是 `null`，新 buffer 全是 0，不用手动初始化 ✓
+ *   · 活到**当前块结束**（arena 按块细化，A2）⇒ 循环里 `new` 不会涨内存 ✓
+ *   · 引用深度 = **当前块深度** ⇒ "返回一块刚 new 的内存"会被挡住（那是 A3 逃逸提升的事）✓
+ *
+ * 为什么它是**原语**而不是库函数：arena 本身必须由编译器生成
+ * （库要用它分配自己 ⇒ 不能由库提供）✓
+ */
+
+struct node {
+    value: i64
+    next: ?ref node
+}
+
+fn sumList(head: ?ref node) -> i64 {
+    var total: i64 = 0
+    var cur: ?ref node = head
+    while cur != null {
+        total = total + cur.value
+        cur = cur.next
+    }
+    return total
+}
+
+/* 往 buffer 里填值 —— 收的是 `mut slice<i32>`（**能写**的视图）✓ */
+fn fill(buf: mut slice<i32>, v: i32) {
+    var i: i64 = 0
+    while i < buf.len {
+        buf[i] = v
+        i = i + 1
+    }
+}
+
+fn main() {
+    /* ① 链表：`new node` 清零 ⇒ `next` 天生就是 null，不用管 ✓ */
+    var a: mut ref node = new node
+    a.value = 1
+    var b: mut ref node = new node
+    b.value = 2
+    b.next = a
+    println("① 求和 = ", sumList(b), "（b -> a -> null）")
+    println("   a.next 是 null？ ", a.next == null)
+
+    /* ② buffer：`new i32[n]` ⇒ 可写视图，长度就是 n ✓ */
+    var buf: mut slice<i32> = new i32[8]
+    println("② 长度 = ", buf.len, " 分配后全是零？ ", buf[3] == 0)
+    fill(buf, 7)
+    println("   填 7 之后 = ", buf)
+
+    /* ③ 定长数组的地方：`new [3]i32` */
+    var arr: mut ref [3]i32 = new [3]i32
+    (*arr)[1] = 42
+    println("③ ", *arr)
+
+    /* ④ 循环里分配：每轮结束就回收（A2）⇒ 内存不涨 ✓ */
+    var n: i32 = 0
+    var total: i64 = 0
+    while n < 5 {
+        var cell: mut ref node = new node
+        cell.value = n
+        total = total + cell.value
+        n = n + 1
+    }
+    println("④ 循环里 new 出来又丢掉 = ", total)
+}

@@ -1073,6 +1073,33 @@ static Expr *parsePrimary(Parser *p) {
         e->u.bval = (t->text[0] == 't');
         return e;
     }
+    /* `new T` / `new T[n]` / `new [N]T` —— 从当前块的 arena 拿一块**清零**的地方 ✓
+     * （上下文关键字，跟 `ref` 一样只在表达式位置上认）*/
+    if (at(p, "new")) {
+        Token *kw = take(p);
+        skipNl(p);
+        Expr *e = exprNew(p->arena, EX_NEW, kw->line);
+        Type *ty = parseType(p);
+        if (!ty) return NULL;
+        e->u.new_.type = ty;
+        /* ⚠️ **这里不许 `skipNl`**：extC 靠换行断语句，吃掉它就等于把下一行
+         * 并进同一个表达式（真踩过：`new [3]i32` 的下一行整条被吞掉，
+         * 报 "expected an expression, found `=`"）✗
+         * `new T[n]` 要写成同一行 —— 这跟 `a[..]` 那些一致 ✓ */
+        if (at(p, "[")) {
+            take(p);
+            skipNl(p);
+            const bool savedC = p->inCond;
+            p->inCond = false;
+            Expr *n = parseExpr(p);
+            p->inCond = savedC;
+            if (!n) return NULL;
+            e->u.new_.count = n;
+            skipNl(p);
+            if (!expect(p, "]", NULL)) return NULL;
+        }
+        return e;
+    }
     if (at(p, "(")) {
         take(p);
         skipNl(p);

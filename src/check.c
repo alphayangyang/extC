@@ -648,6 +648,11 @@ static int exprRefDepth(Checker *c, Expr *e) {
         /* `p!` 只是"把可空的说法去掉"，指的还是同一块地方 ⇒ 深度跟着主体 ✓ */
         d = exprRefDepth(c, e->u.sign.operand);
         break;
+    case EX_NEW:
+    case EX_GENCALL:
+        /* 分配出来的东西：活到**当前块**结束 ⇒ 深度就是检查器记账时那个数 ✓ */
+        d = e->refDepth;
+        break;
     case EX_COALESCE:
         /* 两边都可能成为结果 ⇒ 取**最深**的那个（保守 = 安全方向）✓ */
         d = maxInt(exprRefDepth(c, e->u.coalesce.main),
@@ -1963,6 +1968,47 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 checkAssignable(c, pt, at, a, "argument");
             }
             return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
+        }
+
+        case EX_NEW: {
+            /* `new T` / `new [N]T` / `new T[n]`（PLAN A1）
+             *   单个 T        ⇒ `mut ref T`
+             *   固定数组 [N]T ⇒ `mut ref [N]T`
+             *   `T[n]`        ⇒ `mut slice<T>`（**造 buffer 靠这个** ✓）
+             * 分配进**当前块**的 arena、**清零**（extC 里分配出来的一定是零 ✓）*/
+            Type *w = ttResolve(tt, c->ctx, e->u.new_.type, e->line, c->curParams);
+            if (ttIsError(w)) return ttError(tt);
+            e->u.new_.type = w;
+
+            if (ttIs(w, "void") || w->kind == TY_PARAM || ttHasParam(w)) {
+                ckError(c, e->line,
+                        "`new` needs a concrete type: its size is decided at compile time,"
+                        " and a type parameter has no size on the template",
+                        "cannot `new` `%s` -- its size is not known here", typeStr(c, w));
+                return ttError(tt);
+            }
+
+            /* ⭐ 深度 = **当前块深度** —— 跟生成的 C 选 `__extc_a[k]` 用同一个数 ✓
+             * （`new` 出来的东西活到当前块结束；想活更久就得是 A3 的逃逸提升）*/
+            e->refDepth = c->scopes.len;
+
+            if (!e->u.new_.count) {
+                Type *r = ttRef(tt, w);
+                r->mut = true;                  /* 刚分配的地方当然可写 ✓ */
+                return r;
+            }
+
+            /* `T[n]` —— 个数必须是整数；个数不纯的话要引临时变量（别求值两次）*/
+            Type *nt = checkValue(c, e->u.new_.count);
+            if (!ttIsError(nt) && !ttIsInteger(nt)) {
+                ckError(c, e->u.new_.count->line, NULL,
+                        "the element count must be an integer, found `%s`", typeStr(c, nt));
+                return ttError(tt);
+            }
+            if (!repeatablePure(e->u.new_.count)) e->needTemp = true;
+            /* 刚分配出来的内存当然**可写** ⇒ 给 `mut slice<T>` ✓
+             * （跟 `a[..]` 在可写的地方切片得到 `mut slice<T>` 是同一条规则）*/
+            return ttViewMut(tt, sliceOf(c, w), true);
         }
 
         case EX_GENCALL: {

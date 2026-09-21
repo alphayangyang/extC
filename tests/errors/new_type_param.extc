@@ -1,0 +1,9 @@
+// `new T` 不行：模板里 T 的大小不知道（A1 的限制，记在 PLAN 里）
+struct box<T> {
+    v: T
+    fn mk(self: ref box<T>) -> T {
+        var p: mut ref T = new T
+        return *p
+    }
+}
+fn main() { }

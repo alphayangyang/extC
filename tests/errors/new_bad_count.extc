@@ -1,0 +1,6 @@
+// 元素个数必须是整数
+struct node { value: i64 }
+fn main() {
+    var p: mut slice<node> = new node["三个"]
+    println(p.len)
+}

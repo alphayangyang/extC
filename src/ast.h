@@ -73,6 +73,11 @@ typedef enum {
     EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
     EX_DEREF,     /* `*p` —— 显式解引用：读=p指的值，写=p指的地方 */
     EX_ENUMVAL,   /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
+    EX_NEW,       /* `new T` / `new T[n]` / `new [N]T` —— 从**当前块的 arena** 拿一块
+                   * **清零**的地方（PLAN A1）。内容：
+                   *   `new T`     ⇒ `mut ref T`（一个 T 的地方）
+                   *   `new [N]T`  ⇒ `mut ref [N]T`
+                   *   `new T[n]`  ⇒ `mut slice<T>`（n 个元素 —— 这就是"造 buffer"）✓ */
     EX_COALESCE,  /* `a ?? b` —— **可能没有就兜底**（`?` 那一族的第三个记号）：
                    *   `opt ?? 兜底`   ⇒ 有就给值，没有就给兜底
                    *   `r ?? 兜底`     ⇒ 成功给值，失败给兜底
@@ -139,7 +144,8 @@ struct Expr {
         struct { Expr *operand; } ref;
         struct { Expr *operand; } deref;
         struct { Expr *operand; } sign;   /* `e!` —— 我签字 */
-        struct { Expr *main, *fallback; } coalesce;   /* `a ?? b` */        /* 关联函数调用：`typeName<targs>::name(args)`
+        struct { Expr *main, *fallback; } coalesce;   /* `a ?? b` */
+        struct { const char *typeName; Type *type; Expr *count; } new_;  /* `new T[n]` */        /* 关联函数调用：`typeName<targs>::name(args)`
          * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
         struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
         struct { Expr *operand; } try_;   /* `e?` */
