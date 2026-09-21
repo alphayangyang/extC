@@ -205,6 +205,9 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; i++; continue; }
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
+        } else if (strcmp(argv[i], "--dump-effects") == 0) {
+            /* 档1 调试开关：打印每个函数的 Addr/Cont 效果摘要（ARENA-FORMAL §3.4）*/
+            setenv("EXTC_DUMP_EFFECTS", "1", 1);
         } else if (strcmp(argv[i], "--check-c") == 0) {
             doCheckC = true;          /* 生成 C 之后先过 `cc -fsyntax-only` ✓ */
         } else if (strcmp(argv[i], "--run") == 0) {

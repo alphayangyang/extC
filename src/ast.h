@@ -277,6 +277,18 @@ struct FuncDef {
      * ⇒ 按**名字/AST**惰性算一遍并缓存：0 = 还没算，1 = 会，2 = 不会，3 = **正在算**（环保护，
      * 环上保守地当"会" ✓）见 check_top.c 的 `funcAllocates` ✓ */
     int         allocState;
+    /* ⭐ 档1（ARENA-FORMAL §3.4）：**效果摘要** —— 这个函数往它的" mut ref "
+     * 参数里存了什么？位 i = 第 i 个参数 ✓
+     *   addrMask  : 存了「实参 j 的地址/字段地址」（地址流 ⇒ 要 `R_slot(arg_j) ⊒ H`）
+     *   contMask  : 存了「从实参 j 读出来的指针」（内容流 ⇒ 要 `ρ_j ⊒ H`）
+     *   otherMask : 装不了引用却能流出去的东西（拿不准 ⇒ 保守）
+     * 还有 addrFromLocal：存了「本帧局部的地址」（那类调用点本来就该被挡）✓ */
+    unsigned    addrMask, contMask, otherMask;      /* 目的地 = 形参所指的容器 */
+    unsigned    homeAddrMask, homeContMask;         /* 目的地 = 本函数**新分配**的对象（家内存）*/
+    unsigned    freshCount;                         /* 只是统计：这次收集看到几个 fresh 局部 */
+
+    bool        addrFromLocal;
+    Vec         callees;      /* FuncDef*：它调了谁（画调用图用，§8.5 的 SCC）*/
     int         line;
 };
 

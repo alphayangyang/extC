@@ -5,6 +5,8 @@
 
 #include "check_internal.h"
 
+#include <stdlib.h>   /* getenv（EXTC_DUMP_EFFECTS 这个调试开关）*/
+
 /* ---------------------------------------------------------------- 顶层 */
 
 static void resolveSignature(Checker *c, FuncDef *f) {
@@ -400,6 +402,206 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params) {
     return best;
 }
 
+
+/* ⭐ 档1（`ARENA-FORMAL.md` §3.4 / `PLAN-REGION.md` 步骤 1.1）：**效果摘要**
+ *
+ * 要回答的问题：**这个函数往它的 `mut ref` 实参所指的容器里，存了什么东西？**
+ * 这正是原规则 ④ 缺的那一问 —— 它一律按"最坏情况（地址流）"处理 ✗（ARENA-FORMAL §2.3）✓
+ *
+ * 三种来源（ARENA-FORMAL §2.1）：
+ *   · **地址流 Addr(j)**：存 `ref 形参_j` / `ref 形参_j.字段` ⇒ 需要 `R_slot(实参 j) ⊒ H`
+ *   · **内容流 Cont(j)**：存「从形参 j 读出来的指针」（`l.head` 那种）⇒ 需要 `ρ_j ⊒ H`
+ *   · **Fresh**：存 `new` 出来的、字面量、标量 ⇒ **恒真**（不用记）
+ * 另外：存「本帧局部的地址」是另一回事（调用点本来就该挡）⇒ 记 `addrFromLocal` ✓
+ *
+ * ⚠️ 这一步**只算、不用**（PLAN-REGION 的规矩：先做到"行为零变化"，
+ * 由 `tools/golden.sh` 逐字节判据背书）✓
+ */
+static bool vecHasName(Vec *v, const char *n) {
+    for (size_t i = 0; i < v->len; i++)
+        if (strcmp(*(const char **)vecAt(v, i), n) == 0) return true;
+    return false;
+}
+/* 初始值是不是"本帧新分配的东西"？`new X` / 全是 fresh 或标量的结构体字面量 ✓ */
+static bool exprIsFresh(Expr *e) {
+    if (!e) return false;
+    if (e->kind == EX_NEW) return true;
+    if (e->kind == EX_STRUCTLIT) {
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (!exprIsFresh((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return false;
+        return true;
+    }
+    return false;
+}
+/* 收集"fresh 局部"（一步：直接 `var x = new …`）—— 保守起见不做别名传播 ✓ */
+static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_VAR:
+        if (exprIsFresh(s->u.var.init)) *(const char **)vecPush(fresh) = s->u.var.name;
+        return;
+    case ST_IF:    collectFreshLocals(a, fresh, s->u.ifs.thenBody);
+                   collectFreshLocals(a, fresh, s->u.ifs.elseBody); return;
+    case ST_WHILE: collectFreshLocals(a, fresh, s->u.whiles.body); return;
+    case ST_BLOCK:
+        for (size_t k = 0; k < s->u.block.stmts.len; k++)
+            collectFreshLocals(a, fresh, *(Stmt **)vecAt(&s->u.block.stmts, k));
+        return;
+    case ST_MATCH:
+        for (size_t k = 0; k < s->u.match.arms.len; k++)
+            collectFreshLocals(a, fresh, (*(MatchArm **)vecAt(&s->u.match.arms, k))->body);
+        return;
+    default: return;
+    }
+}
+
+static int paramIndex(FuncDef *f, const char *name) {
+    if (!name) return -1;
+    for (size_t i = 0; i < f->params.len; i++)
+        if (strcmp((*(Param **)vecAt(&f->params, i))->name, name) == 0) return (int)i;
+    return -1;
+}
+
+/* 值 `e` 被存进 `f` 的第 `i` 个 `mut ref` 参数所指的容器 ⇒ 记哪一位 */
+static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool intoHome, Vec *fresh) {
+    if (!e || !f) return;
+    /* 地址流：存「某个地方的地址」⇒ 需要 R_slot(那个地方) ⊒ 目的地所在区域 */
+    if (e->kind == EX_REF) {
+        int j = paramIndex(f, placeRootName(e->u.ref.operand));
+        if (j >= 0) {
+            if (intoHome) f->homeAddrMask |= (1u << j);
+            else if (i >= 0) f->addrMask |= (1u << j);
+        } else {
+            f->addrFromLocal = true;              /* 本帧局部的地址（另一类问题）*/
+        }
+        return;
+    }
+    /* 内容流：存「从形参读出来的指针」⇒ 需要 ρ_j ⊒ 目的地所在区域 */
+    {
+        int j = paramIndex(f, placeRootName(e));
+        if (j >= 0) {
+            /* ⚠️ 标量元素不带引用 ⇒ 不构成寿命约束（不然 varArray<i32>::push 会假报）*/
+            bool carrier = (c && e->type) ? typeContainsRef(c->tt, e->type) : true;
+            if (carrier) {
+                if (intoHome) f->homeContMask |= (1u << j);
+                else if (i >= 0) f->contMask |= (1u << j);
+            }
+            return;
+        }
+    }
+    if (e->kind == EX_NEW) return;                /* Fresh ⇒ 恒真 ✓ */
+    { const char *vr = placeRootName(e);          /* `l.head = n`：n 是 fresh 局部 ⇒ 也恒真 ✓ */
+      if (vr && vecHasName(fresh, vr)) return; }
+    if (c && e->type && !typeContainsRef(c->tt, e->type)) return;   /* 标量 ⇒ 恒真 ✓ */
+    if (i >= 0) f->otherMask |= (1u << i);        /* 拿不准 ⇒ 保守 ✓ */
+}
+
+static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
+
+/* 语句里所有"往地方里存东西"的形状 */
+static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_ASSIGN: {
+        /* 目标是"某个 mut ref 参数所指的容器"吗？`l.head = …` / `*p = …` / `l.buf[i] = …` ✓ */
+        const char *dstRoot = placeRootName(s->u.assign.target);
+        int i = paramIndex(f, dstRoot);
+        if (i >= 0) {
+            /* 目的地 = 形参 i 所指的容器 */
+            Param *p = *(Param **)vecAt(&f->params, i);
+            if (p->type && p->type->kind == TY_REF && p->type->mut)
+                classifyStoredValue(c, f, s->u.assign.value, i, false, fresh);
+        } else if (dstRoot && vecHasName(fresh, dstRoot)) {
+            /* ⭐ 目的地 = **本帧新分配的对象**（`n.next = l.head`、`n.owner = ref l`）
+             * —— 这才是 §3.4 里"往家内存里存"的那一类（`push` 的内容流就在这）✓ */
+            classifyStoredValue(c, f, s->u.assign.value, -1, true, fresh);
+        }
+        collectEffectsExpr(c, f, s->u.assign.target);
+        collectEffectsExpr(c, f, s->u.assign.value);
+        return;
+    }
+    case ST_VAR:    collectEffectsExpr(c, f, s->u.var.init); return;
+    case ST_IF:
+        collectEffectsExpr(c, f, s->u.ifs.cond);
+        collectEffectsStmt(c, f, s->u.ifs.thenBody, fresh);
+        collectEffectsStmt(c, f, s->u.ifs.elseBody, fresh);
+        return;
+    case ST_WHILE:
+        collectEffectsExpr(c, f, s->u.whiles.cond);
+        collectEffectsStmt(c, f, s->u.whiles.body, fresh);
+        return;
+    case ST_RETURN: collectEffectsExpr(c, f, s->u.ret.value); return;
+    case ST_EXPR:   collectEffectsExpr(c, f, s->u.expr.expr); return;
+    case ST_BLOCK:
+        for (size_t k = 0; k < s->u.block.stmts.len; k++)
+            collectEffectsStmt(c, f, *(Stmt **)vecAt(&s->u.block.stmts, k), fresh);
+        return;
+    case ST_MATCH:
+        collectEffectsExpr(c, f, s->u.match.scrutinee);
+        for (size_t k = 0; k < s->u.match.arms.len; k++)
+            collectEffectsStmt(c, f, (*(MatchArm **)vecAt(&s->u.match.arms, k))->body, fresh);
+        return;
+    default: return;
+    }
+}
+
+/* 表达式里"藏着"的调用：callee 的效果靠摘要传递（§8.5 的调用图 / SCC）✓ */
+static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
+    if (!e) return;
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func) {
+        bool seen = false;
+        for (size_t k = 0; k < f->callees.len; k++)
+            if (*(FuncDef **)vecAt(&f->callees, k) == e->func) { seen = true; break; }
+        if (!seen) *(FuncDef **)vecPush(&f->callees) = e->func;
+    }
+    switch (e->kind) {
+    case EX_BIN:   collectEffectsExpr(c, f, e->u.bin.left);
+                   collectEffectsExpr(c, f, e->u.bin.right); return;
+    case EX_UN:    collectEffectsExpr(c, f, e->u.un.operand); return;
+    case EX_REF:   collectEffectsExpr(c, f, e->u.ref.operand); return;
+    case EX_DEREF: collectEffectsExpr(c, f, e->u.deref.operand); return;
+    case EX_SIGN:  collectEffectsExpr(c, f, e->u.sign.operand); return;
+    case EX_TRY:   collectEffectsExpr(c, f, e->u.try_.operand); return;
+    case EX_SLICE: collectEffectsExpr(c, f, e->u.slice.obj); return;
+    case EX_FIELD: collectEffectsExpr(c, f, e->u.field.obj); return;
+    case EX_INDEX: collectEffectsExpr(c, f, e->u.index.obj);
+                   collectEffectsExpr(c, f, e->u.index.index); return;
+    case EX_COALESCE:
+        collectEffectsExpr(c, f, e->u.coalesce.main);
+        collectEffectsExpr(c, f, e->u.coalesce.fallback); return;
+    case EX_NEW:   collectEffectsExpr(c, f, e->u.new_.count); return;
+    case EX_CALL:
+        for (size_t k = 0; k < e->u.call.args.len; k++)
+            collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.call.args, k));
+        return;
+    case EX_METHOD:
+        collectEffectsExpr(c, f, e->u.method.recv);
+        for (size_t k = 0; k < e->u.method.args.len; k++)
+            collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.method.args, k));
+        return;
+    case EX_ASSOC:
+        for (size_t k = 0; k < e->u.assoc.args.len; k++)
+            collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.assoc.args, k));
+        return;
+    default: return;
+    }
+}
+
+static void collectEffects(Checker *c, FuncDef *f) {
+    /* ⚠️ Vec 自带 arena 指针（base.h）；FuncDef 是 arenaAllocZero 出来的 ⇒
+     *   这里必须显式 vecInit，不然 vecPush 会拿 NULL arena 去分配 ⇒ 段错误 ✗（踩过）*/
+    if (!f->callees.arena) vecInit(&f->callees, c->arena, sizeof(FuncDef *));
+    Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
+    collectFreshLocals(c->arena, &fresh, f->body);
+    f->freshCount = (unsigned)fresh.len;
+    collectEffectsStmt(c, f, f->body, &fresh);
+    if (getenv("EXTC_DUMP_EFFECTS"))
+        fprintf(stderr, "[effects] %-22s toParam[Addr=0x%x Cont=0x%x Other=0x%x] toHome[Addr=0x%x Cont=0x%x] localAddr=%d fresh=%u callees=%zu\n",
+                f->name, f->addrMask, f->contMask, f->otherMask,
+                f->homeAddrMask, f->homeContMask,
+                (int)f->addrFromLocal, f->freshCount, f->callees.len);
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     FuncDef *savedFunc = c->curFunc;
     /* A3：**有分配 + 返回有用的东西（含引用/视图）** ⇒ 这个函数要一只"家"arena ✓
@@ -431,6 +633,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 
+    collectEffects(c, f);      /* 档1 步骤 1.1：算效果摘要（**只算不用**，行为零变化）✓ */
     popScope(c);
     c->curFunc = savedFunc;
     c->curParams = savedParams;
