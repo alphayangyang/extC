@@ -1,0 +1,158 @@
+/* 扩容因子该选多大？—— 用**我们自己的模型**算一遍（不是抄 std::vector）
+
+ * 网上给"该不该倍增"的答案全都建立在**旧内存能被回收**的前提上：
+ *   · Folly/FBVector：因子 2 "严格最差"，因为 1+2+4+…+2^n = 2^(n+1)−1
+ *     ⇒ 新块永远比之前所有块之和还大 ⇒ 永远回不到已释放的地方（1.5 才能复用）
+ *   · Tarjan & Zwick, Optimal Resizable Arrays（SOSA 2023）：几何倍增根本**不是空间最优**，
+ *     能做到 N + O(N^(1/r)) 常驻 + N + O(N^(1−1/r)) 临时峰值，摊还 O(r)，且 Ω(r) 下界
+ *
+ * extC 是 **arena**：栈 + arena + 静态，没有堆、**没有 free**。
+ * 旧 buffer 一直占着，直到所在块退出 ⇒ 上面那些"能不能复用"的论证在这里**全不适用**。
+ * 于是正确的指标变成：
+ *
+ *     R = max  ( 累计分配的元素数 / 数组当前长度 )
+ *
+ * （最坏点出现在刚扩容完那一瞬间：长度 = 上一块容量 + 1）
+ *
+ * 下面这个 DP 是**精确**的（不是采样）：状态 =「当前容量 v」时累计分配的最小值 S，
+ * 同一容量下 S 越小越占优 ⇒ 可以只留最小值。转移：下一步容量 c' 必须满足
+ *      S + c' ≤ r · v      （否则 R 就超过 r 了）
+ * 若能把容量涨到 limit 以上，说明 R ≤ r 是可行的。
+ *
+ * 结论（程序自己会算）：**任何 R < 4 都只能撑到某个有限的 N 就爆**，
+ * 4 是"任意大都能保证"的最小常数 —— 而把 R 精确打到 4 的唯一方式是
+ * 容量按 ×2 走（下面 ③ 的收敛过程就是这个意思）✓
+ */
+fn feasible(r: f64, limit: i32) -> bool {
+    var best: mut slice<i32> = new i32[limit + 1]
+    var next: mut slice<i32> = new i32[limit + 1]
+    var INF: i32 = 1000000000
+    var v: i32 = 0
+    while v <= limit {
+        best[v] = INF
+        next[v] = INF
+        v = v + 1
+    }
+    best[1] = 1                                  // 第一块容量 1，累计 1
+    var round: i32 = 0
+    while round < 40 {
+        v = 1
+        while v <= limit {
+            next[v] = INF
+            v = v + 1
+        }
+        v = 1
+        while v <= limit {
+            if best[v] < INF {
+                var s: i32 = best[v]
+                var hi: i32 = i32(r * f64(v) - f64(s))     // 这一步的最大容量
+                if hi > limit { hi = limit }
+                var c: i32 = v + 1
+                while c <= hi {
+                    if s + c < next[c] { next[c] = s + c } // 新的累计 = S + 新容量
+                    c = c + 1
+                }
+            }
+            v = v + 1
+        }
+        var reach: i32 = 0
+        v = 1
+        while v <= limit {
+            if next[v] < INF { reach = v }
+            v = v + 1
+        }
+        if reach >= limit { return true }
+        if reach == 0 { return false }
+        v = 1
+        while v <= limit {
+            best[v] = next[v]
+            v = v + 1
+        }
+        round = round + 1
+    }
+    return false
+}
+
+/* 二分开出"只要求长到 limit 为止"的最小 R（有限视野会比 4 略小） */
+fn infR(limit: i32) -> f64 {
+    var lo: f64 = 1.0
+    var hi: f64 = 8.0
+    var step: i32 = 0
+    while step < 40 {
+        var mid: f64 = (lo + hi) / 2.0
+        if feasible(mid, limit) { hi = mid } else { lo = mid }
+        step = step + 1
+    }
+    return hi
+}
+
+/* 真的模拟一遍 varArray：初值 4、每次 ×r，问"到长度 n 为止累计开了多少元素" */
+fn sim(n: i32, r: f64) -> f64 {
+    var cap: f64 = 4.0
+    var total: f64 = 4.0                          // 第一块也算进累计
+    var len: i32 = 0
+    while len < n {
+        if f64(len) >= cap {                      // 满了 ⇒ 扩容
+            var nc: f64 = cap * r
+            if nc < f64(len) + 1.0 { nc = f64(len) + 1.0 }
+            cap = nc
+            total = total + cap
+        }
+        len = len + 1
+    }
+    return total
+}
+
+fn main() {
+    /* ① 几何因子 r 的最坏累计/长度 = r + r/(r−1) = r²/(r−1)，最小值在 r = 2 */
+    println("① 几何因子 r 的最坏比值 r²/(r−1)：")
+    var rs: [9]f64 = [1.25, 1.5, 1.618, 1.75, 2.0, 2.5, 3.0, 4.0, 8.0]
+    var k: i32 = 0
+    while k < 9 {
+        var r: f64 = rs[k]
+        println("   r = ", r, "  ⇒  ", r * r / (r - 1.0))
+        k = k + 1
+    }
+
+    /* ② 精确 DP：卡边界（不是只看几何序列，是**所有**递增容量序列！）*/
+    println("② DP：存在容量序列满足「累计 ≤ R × 长度」吗？（视野 = 长到 300 为止）")
+    var test: [7]f64 = [1.5, 2.0, 3.0, 3.5, 3.8, 3.875, 4.0]
+    k = 0
+    while k < 7 {
+        println("   R = ", test[k], "  ⇒  ", feasible(test[k], 300))
+        k = k + 1
+    }
+
+    /* ③ 视野越大，阈值越逼近 4 —— 说明 R < 4 只能"撑一段" */
+    println("③ 只要求长到 N 为止的最小 R（N 变大 ⇒ 逼近 4）：")
+    var ns: [4]i32 = [100, 300, 1000, 3000]
+    k = 0
+    while k < 4 {
+        println("   N = ", ns[k], "  ⇒  inf R = ", infR(ns[k]))
+        k = k + 1
+    }
+
+    /* ④ 真的数一遍 n = 100000 个元素时，arena 里累计堆了多少（单位=元素个数）*/
+    println("④ n = 100000 时累计分配 / n（i32 的话再 ×4 字节）：")
+    var factors: [5]f64 = [1.25, 1.5, 2.0, 3.0, 4.0]
+    k = 0
+    while k < 5 {
+        var t: f64 = sim(100000, factors[k])
+        println("   ×", factors[k], "：累计 = ", t / 100000.0, " × n",
+                "   （最坏 = ", factors[k] * factors[k] / (factors[k] - 1.0), " × n）")
+        k = k + 1
+    }
+
+    /* ⑤ 同一个模型里，**分块**（chunked，永不 realloc）严格更好：累计 ≈ n + c */
+    println("⑤ 分块方案：累计 = ceil(n/c)×c ≤ n + c（零拷贝、引用永不失效）：")
+    var chunks: [4]i32 = [64, 256, 1024, 4096]
+    k = 0
+    while k < 4 {
+        var c: i32 = chunks[k]
+        var n: i32 = 100000
+        var total: i64 = i64((n + c - 1) / c) * i64(c)
+        println("   chunk = ", c, "：累计 = ", total, " 元素 = ",
+                f64(total) / f64(n), " × n   （额外只要一个指针表）")
+        k = k + 1
+    }
+}
