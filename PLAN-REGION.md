@@ -130,3 +130,22 @@
 - 3.1 收窄支持**只读路径**：`p.next != null` ⇒ 在"整条链只读且中间没有 `mut ref` 写入"的前提下证明该路径非空 ✓
 - 3.2 深度按路径传播（同理，仅只读路径）✓
 - 判据：#14 的用例能编过；`mut` 链上的同名形状**仍要挡** ✓
+
+### 9.1 ⛔ 一轮失败记录（2026-09-21）：路径收窄**手工拼接把两处代码弄坏了**，已回滚
+
+试的是 9.1 那一小块（sound 子集），做法是对的，但**用 awk/sed 按行号拼接多行 C 代码**
+在上下文快用尽时不可靠 ✗（`check_lookup.c` 的 `unNarrow` 和 `narrowTarget` 被拼坏、
+`check_expr.c:517` 也被替换坏了）⇒ **回滚**（`git checkout -- src/`），树回到已验证状态 ✓
+
+**下次的正确做法**：用 `edit` 工具（按语义做**小步替换**），一步一编译一验证 ✓
+**设计已经想清楚**（照抄下面的位置即可）：
+
+| 位置 | 改什么 |
+|---|---|
+| `check_lookup.c` `narrowTarget` | 除了 `EX_IDENT`，再加一条：`var` 是 **一层字段路径**（`obj` 是 `EX_IDENT`）且根绑定是 **depth ≥ 1 且 `!addressed`** 的局部 ⇒ 造一个路径 key `"<cname>.<field>"`（`arenaAlloc` + `snprintf`）✓ **参数不行**（调用者可能有别名）✗ |
+| `check_lookup.c` `unNarrow` | 除了精确匹配，还要砍掉**同前缀**的路径 key（`k[l] == '.'`）⇒ 对根的写 / 取地址都会让路径事实作废 ✓ |
+| `check_expr.c` `EX_FIELD` | 算出字段类型后：若它是**可空引用**且路径 key 在 `isNarrowed` 里 ⇒ 返回**非空**版本（`ttRef(tt, ftype->inner)` + 抄 `mut`）—— 与 `EX_IDENT` 那条规则（`check_expr.c:111`）完全对称 ✓ |
+| `check_expr.c` `EX_REF` | 置 `addressed = true` 之前先 `unNarrow(c, rs->cname)`（取地址 ⇒ 路径事实作废）✓ |
+
+**判据**：正例 `if h.p != null { … h.p.value … }`（`h` 是没取过地址的局部）能编过；
+`p.next.value`（`p` 是**参数**）**仍要报错**（PLAN #14 原文那个形状 ⇒ 硬门槛在别名上）✗
