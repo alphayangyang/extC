@@ -1970,15 +1970,25 @@ static Type *checkExpr(Checker *c, Expr *e) {
  *
  * 落点是**原地改写成 EX_ASSOC** —— 后面检查/生成的路一条都不变（零新机制）。 */
 static void desugarBareCtor(Checker *c, Expr *e, Type *want) {
-    if (!e || e->kind != EX_CALL) return;
-    if (e->u.call.callee->kind != EX_IDENT) return;
+    if (!e) return;
 
-    const char *nm = e->u.call.callee->u.ident.name;
+    const char *nm = NULL;
     const char *proto = NULL;
     size_t nargs = 0;
+    bool noParens = false;
+
+    if (e->kind == EX_CALL && e->u.call.callee->kind == EX_IDENT) {
+        nm = e->u.call.callee->u.ident.name;
+    } else if (e->kind == EX_IDENT) {
+        /* 没载荷的构造器连括号都能省 —— `return none`（跟枚举变体一个待遇）*/
+        nm = e->u.ident.name;
+        noParens = true;
+    } else return;
+
     if      (strcmp(nm, "success") == 0 || strcmp(nm, "failure") == 0) { proto = "result"; nargs = 2; }
     else if (strcmp(nm, "some")    == 0 || strcmp(nm, "none")    == 0) { proto = "option"; nargs = 1; }
     else return;
+    if (noParens && strcmp(nm, "none") != 0) return;   /* 只有 `none` 是零参数的 */
 
     /* 用户自己写的同名函数优先 —— 裸写只是**在没歧义时**的省事 */
     if (findFunc(c, nm)) return;
@@ -1986,7 +1996,9 @@ static void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     if (!isProtoType(want, proto, nargs)) return;
 
     /* ⚠️ union：先把 args 拿**出来**再改 kind，否则会被自己的新字段覆盖 */
-    Vec args = e->u.call.args;
+    Vec args;
+    if (noParens) vecInit(&args, c->arena, sizeof(void *));
+    else          args = e->u.call.args;
     e->kind = EX_ASSOC;
     e->u.assoc.typeName = want->sdef->name;   /* "result" / "option" */
     e->u.assoc.targs    = want->targs;        /* 已经是解析好的类型 ✓ */

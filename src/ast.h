@@ -40,6 +40,9 @@ struct Type {
     const char *name;    /* TY_UNRESOLVED / TY_BUILTIN / TY_STRUCT / TY_ENUM；
                           * TY_GENERIC 时是**修饰过的名字**（见 ttMangle） */
     Type       *inner;   /* TY_REF */
+    bool        nullable;/* TY_REF：`?ref T` —— **可能为空**（`null` 是它的零值，见 DECISIONS 定案 ㊻）。
+                          * 非空时零值不存在；可空时零值 = null。
+                          * `?T`（非 ref）在 parser 里就变成 `option<T>`，不走这个标记。 */
     bool        mut;     /* TY_REF：可写？
                           * **只读是默认**（安全是默认）；`mut ref T` 才是可写。
                           * 见 DECISIONS「引用语义定案」与 REFS.md §3。 */

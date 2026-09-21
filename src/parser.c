@@ -384,6 +384,25 @@ static Type *parseType(Parser *p) {
         ty->mut = true;
         return ty;
     }
+    /* ⭐ `?T` = 「**可能没有**」（主人 2026-09-20 的写法，跟后缀 `?` 一个含义 ✓）
+     *   `?ref T` / `mut ?ref T`  ⇒ **可空引用**（`null` 就是它的零值 ✓）
+     *   `?T`（其它）              ⇒ `option<T>` 的**语法糖** ✓
+     * 位置不同（类型 vs 表达式）⇒ 跟后缀 `?` 不冲突 ✓ */
+    if (at(p, "?")) {
+        Token *q = take(p);
+        Type *inner = parseType(p);
+        if (!inner) return NULL;
+        if (inner->kind == TY_REF) {          /* `?ref T` */
+            inner->nullable = true;
+            return inner;
+        }
+        /* 其它 ⇒ 造一个 `option<inner>`（名字解析交给 check ✓）*/
+        Type *o = typeNamed(p->arena, "option");
+        (void)q;
+        vecInit(&o->targs, p->arena, sizeof(void *));
+        *(Type **)vecPush(&o->targs) = inner;
+        return o;
+    }
     if (at(p, "ref")) {
         take(p);
         Type *inner = parseType(p);

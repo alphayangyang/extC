@@ -94,6 +94,7 @@ Type *ttRef(TypeTable *tt, Type *inner) {
 static Type *refLike(TypeTable *tt, Type *src, Type *inner) {
     Type *t = ttRef(tt, inner);
     t->mut = src->mut;
+    t->nullable = src->nullable;   /* `?ref T` 的可空性也是类型的一部分，解析/替换时不能丢 */
     return t;
 }
 
@@ -444,7 +445,8 @@ bool ttEquals(Type *a, Type *b) {
 
     /* 除了 ref / 泛型参数 / 泛型实例，其余类型都是驻留的 —— 指针不等就是不相等 */
     if (a->kind == TY_REF)
-        return a->mut == b->mut && ttEquals(a->inner, b->inner);
+        return a->mut == b->mut && a->nullable == b->nullable &&
+               ttEquals(a->inner, b->inner);
 
     if (a->kind == TY_ARRAY)
         return a->asize == b->asize && ttEquals(a->inner, b->inner);
@@ -568,6 +570,7 @@ void ttRender(Type *t, Buf *out) {
     if (!t) { bufPuts(out, "void"); return; }
     switch (t->kind) {
         case TY_REF:
+            if (t->nullable) bufPuts(out, "?");
             bufPuts(out, t->mut ? "mut ref " : "ref ");
             ttRender(t->inner, out);
             return;
