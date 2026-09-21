@@ -73,6 +73,10 @@ Type *ttViewReadonly(TypeTable *tt, Type *t);
 Type *ttArray(TypeTable *tt, int64_t n, Type *elem);
 
 /* 把类型里的 TY_PARAM 换成实际类型（单态化用） */
+/* 这个类型里**提到了类型参数**吗？（泛型模板里的 `T`）
+ * 用途：泛型体的引用规矩要"推迟到实例化再查" —— 见 check.c 的 RefCheck ✓ */
+bool ttHasParam(Type *t);
+
 Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args);
 
 /* 类型 → C 标识符：`Pair<i32, u8>` → `Pair_i32_u8` */

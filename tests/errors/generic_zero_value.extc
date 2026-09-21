@@ -1,0 +1,12 @@
+// 同一个家族的另一半：泛型体里的**零值**
+struct boxT<T> {
+    v: T
+    fn mk(self: ref boxT<T>) -> T {
+        var local: T            // ← 零值的 T
+        return local
+    }
+}
+fn main() {
+    var b: boxT<slice<u8>> = { v: "abc" }
+    println(b.mk())
+}

@@ -1,0 +1,13 @@
+// 泛型体里返回一个**本帧的 T**：T = i64 没事，T = slice<u8> 就是悬垂
+// ⇒ 模板期看不出，**实例化时按实例查** ✓
+struct boxT<T> {
+    v: T
+    fn pick(self: ref boxT<T>) -> T {
+        var local: T = self.v
+        return local
+    }
+}
+fn main() {
+    var b: boxT<slice<u8>> = { v: "abc" }
+    println(b.pick())
+}

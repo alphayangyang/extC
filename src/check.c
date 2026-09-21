@@ -60,6 +60,16 @@ typedef struct {
     /* 这个位置上**吐不出"语句前缀"** ⇒ 需要提前求值的 `??` 一律报错。
      * 两个地方：`while` 的条件（吐出来就变成"进循环前算一次"，不是每轮算 ✗）
      * 和全局初始化式（没有语句可挂）✓ */
+    /* ---- 泛型体的**推迟检查**（PLAN #17/#18）----
+     * 泛型体是照**模板**查一次的，那时 `T` 不透明 ⇒ "含引用才查"的规矩全早退 ⇒
+     * `T = slice<u8>` 的实例化**根本没人查** ✗
+     * 修法：**记录时就把深度按"`T` 可能带引用"算好**（那时作用域还在、`lookup` 找得到），
+     * 实例化时只回答一个问题："这个实例的 `T` 到底带不带引用" ✓
+     * ⚠️ 走过的弯路：第一版把"算深度"也推到实例化再做 —— 那时**函数作用域已经没了**，
+     *    `lookup` 找不到参数 ⇒ 深度算成 0 ⇒ 检查静默失灵 ✗（真踩了）*/
+    Vec        refChecks;   /* RefCheck* —— 推迟到实例化复查的引用规矩 */
+    Vec       *substParams; /* 实例化复查时正在用的替换（NULL = 不在复查）*/
+    Vec       *substArgs;
     int        noHoist;
     Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
     Vec        narrowMarks; /* size_t —— 每个作用域进来时的 narrow.len（出作用域回退用）*/
@@ -154,6 +164,17 @@ static void popScope(Checker *c) {
         c->narrow.len = *(size_t *)vecAt(&c->narrowMarks, c->narrowMarks.len - 1);
         c->narrowMarks.len--;
     }
+}
+
+/* 实例化时把类型里的 TY_PARAM 换成实参 ✓（不在实例化里就是原样返回）*/
+static Type *tsub(Checker *c, Type *t) {
+    if (!c->substParams || !c->substArgs || !t) return t;
+    return ttSubstitute(c->tt, t, c->substParams, c->substArgs);
+}
+
+/* 这个类型里"提到了类型参数"吗？提到了就不能现在下结论 ⇒ 推迟到实例化 ✓ */
+static bool mentionsParam(Type *t) {
+    return t && (t->kind == TY_PARAM || ttHasParam(t));
 }
 
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
@@ -592,7 +613,7 @@ static int placeDepth(Checker *c, Expr *e) {
      * （`var cur: ?ref node = head` 的槽位在本帧，但节点在外面）*/
     if (e->kind == EX_IDENT) {
         Sym *sy = lookup(c, e->u.ident.name);
-        if (sy && sy->type && sy->type->kind == TY_REF) return sy->refDepth;
+        if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy->refDepth;
         return sy ? sy->depth : 0;
     }
     /* 字段/元素住在**它所在的那个对象**里 ⇒ 跟着对象走 ✓ */
@@ -607,8 +628,12 @@ static int placeDepth(Checker *c, Expr *e) {
  * 不然后面 `let x: i32 = <深层局部>` 会被误报。 */
 static int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
-    if (!typeContainsRef(c->tt, e->type)) return 0;
-    if (e->refDepth) return e->refDepth;              /* 算过就缓存 */
+    /* 早退的唯一理由：**这个类型里不可能有引用**。
+     * ⚠️ 提到 `T` 的类型**不许早退** —— 泛型体的推迟检查要靠这份深度
+     * （按"`T` 可能带引用"算，实例化时再决定这条规矩适不适用）✓
+     * ⚠️ 也不许缓存（见函数末尾）*/
+    if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return 0;
+    if (!c->substParams && !mentionsParam(e->type) && e->refDepth) return e->refDepth;
 
     int d = 0;
     switch (e->kind) {
@@ -676,7 +701,8 @@ static int exprRefDepth(Checker *c, Expr *e) {
         d = 0;
         break;
     }
-    e->refDepth = d;
+    /* 提到 `T` 的节点**不缓存**（那份深度是"假设 T 带引用"算出来的）✓ */
+    if (!c->substParams && !mentionsParam(e->type)) e->refDepth = d;
     return d;
 }
 
@@ -709,7 +735,9 @@ static bool placeIsBorrowed(Checker *c, Expr *e) {
 
 static bool exprBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
-    if (!typeContainsRef(c->tt, e->type)) return false;
+    /* 早退的唯一理由：这个类型里不可能有引用。
+     * ⚠️ 提到 `T` 的**不许早退** —— 泛型体的推迟检查要用这个答案 ✓ */
+    if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return false;
     switch (e->kind) {
     case EX_IDENT: case EX_FIELD: case EX_INDEX: {
         Sym *root = placeRoot(c, e);
@@ -756,7 +784,15 @@ static bool exprBorrowed(Checker *c, Expr *e) {
 }
 
 /* 把一个值**存进**某个地方之前的全部检查（深度 + 借来的东西）。 */
+static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
+                           int line, const char *what);   /* 定义在后面 */
+
 static bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
+    /* 同上：提到 `T` 就整条推迟 ✓（这里**直接返回**，别让里面的 checkEscape 再记一遍）*/
+    if (mentionsParam(val->type)) {
+        recordRefCheck(c, val, target, placeDepth(c, target), line, "this assignment");
+        return false;
+    }
     bool bad = checkEscape(c, val, placeDepth(c, target), line, "this assignment");
     if (placeDepth(c, target) == 0 && exprBorrowed(c, val)) {
         ckError(c, line,
@@ -768,8 +804,67 @@ static bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     return bad;
 }
 
+/* 一条"推迟到实例化再算"的引用规矩（PLAN #17/#18）*/
+typedef struct {
+    Expr       *val;     /* 被检查的值 */
+    Expr       *target;  /* 非 NULL = "把它存进这个目标"（原来是 checkStoreEscape）*/
+    int         at;      /* 目标深度（记录时算好：那时作用域还在 ✓）*/
+    int         depth;   /* 值里引用的深度（同上，**按"T 可能带引用"算**）*/
+    bool        borrowed;/* 值是不是借来的（同上）*/
+    /* ---- 第二类：**零值**（同一族的另一半）----
+     * `var local: T`（没有初始化式）在模板期看不出问题（`T` 不透明），
+     * 但 `T = slice<u8>` 的实例化会得到 `(slice_u8){0}` = **一个 null 引用** ✗
+     * （extC 承诺"`ref` 永不为空"）⇒ 也推迟到实例化再查 ✓ */
+    bool        isZero;
+    Type       *declType;
+    int         line;
+    const char *what;
+    FuncDef    *func;    /* 这条规矩属于哪个泛型函数 */
+} RefCheck;
+
+/* 记一条推迟的规矩。**只在泛型体里、且值提到了类型参数时**才记 ✓
+ * （具体类型的值现在就查得清楚，不用推迟 —— 推迟只会让报错变晚）*/
+/* 记一条"零值"的推迟检查（跟引用规矩同一族，见 RefCheck 的注释）*/
+static void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
+    if (!c->curFunc || !c->curFunc->owner) return;
+    if (c->curFunc->owner->typeParams.len == 0) return;
+    RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
+    rc->isZero   = true;
+    rc->declType = t;
+    rc->line     = line;
+    rc->what     = name;
+    rc->func     = c->curFunc;
+    *(RefCheck **)vecPush(&c->refChecks) = rc;
+}
+
+static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
+                           int line, const char *what) {
+    if (!c->curFunc || !c->curFunc->owner) return;
+    if (c->curFunc->owner->typeParams.len == 0) return;
+    RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
+    rc->val    = val;
+    rc->target = target;
+    rc->at     = at;
+    rc->line   = line;
+    rc->what   = what;
+    rc->func   = c->curFunc;
+    /* ⚠️ **数字现在就算好**（那时作用域还在、`lookup` 找得到参数）：
+     * 走路函数对"提到 `T`"的节点不会早退，所以这份深度是按"`T` 可能带引用"算的 ——
+     * 正是实例化时要用的那一个 ✓
+     * （踩过的弯路：推到实例化再算 ⇒ 那时函数作用域已经没了，深度算成 0，检查静默失灵 ✗）*/
+    rc->depth    = exprRefDepth(c, val);
+    rc->borrowed = exprBorrowed(c, val);
+    *(RefCheck **)vecPush(&c->refChecks) = rc;
+}
+
 static bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     if (!val) return false;
+    /* ⚠️ 值里提到 `T` ⇒ 现在下不了结论（`T` 可能是 `i64` 也可能是 `slice<u8>`）
+     * ⇒ **记下来，等实例化再算** ✓ （这就是 #17 那个洞的封口）*/
+    if (mentionsParam(val->type)) {
+        recordRefCheck(c, val, NULL, at, line, what);
+        return false;
+    }
     int d = exprRefDepth(c, val);
     if (d <= at) return false;
     ckError(c, line,
@@ -2381,7 +2476,10 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
             if (!s->u.var.init) {
-                if (s->u.var.ann && typeLacksZeroValue(c->tt, s->u.var.ann)) {
+                /* 标注里提到 `T` ⇒ 现在看不出有没有零值，推到实例化再查 ✓ */
+                if (s->u.var.ann && mentionsParam(s->u.var.ann))
+                    recordZeroCheck(c, s->u.var.ann, s->line, s->u.var.name);
+                else if (s->u.var.ann && typeLacksZeroValue(c->tt, s->u.var.ann)) {
                     ckError(c, s->line,
                             "`ref` is a non-nullable reference, so it has no zero value -- "
                             "and neither does any struct that contains one",
@@ -3015,6 +3113,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.globals, arena, sizeof(void *));
     vecInit(&c.nameUses, arena, sizeof(void *));
     vecInit(&c.narrow, arena, sizeof(void *));
+    vecInit(&c.refChecks, arena, sizeof(void *));
+    vecInit(&c.refChecks, arena, sizeof(void *));
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
 
     c.tI32  = ttFromName(tt, "i32");
@@ -3108,6 +3208,71 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                         "Add a `fn ==` to that type.",
                         "`%s` needs `%s` to define `==`",
                         inst->name, typeStr(&c, lt));
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------- 泛型体的推迟复查
+     *
+     * `==` 那一批上面查过了；下面是**引用规矩**那一批（PLAN #17/#18）：
+     * 模板期遇到"值里提到 `T`"就只记了一笔（那时 `T` 不透明），
+     * 现在对每个具体实例带上替换重算一遍 ✓
+     *
+     * 为什么必须这么修：`typeContainsRef(T)` 对不透明的 `T` 只能回答 false，
+     * 于是 `exprRefDepth` / `exprBorrowed` 全部早退 ——
+     *     struct boxT<T> { v: T  fn stash(self: mut ref boxT<T>, value: T) { self.v = value } }
+     * 用 `boxT<slice<u8>>` 实例化后能把这个视图洗进活得更久的对象 ⇒ **悬垂** ✗
+     * 而"看到 `T` 就当它含引用"那种 2 行的保守修法，会把 `box<T>::set`
+     * 这种教科书写法一起拒掉（对 `T = i64` 它完全安全）⇒ 只能按实例算 ✓ */
+    for (size_t i = 0; i < c.refChecks.len; i++) {
+        RefCheck *rc = *(RefCheck **)vecAt(&c.refChecks, i);
+        StructDef *owner = rc->func->owner;
+        for (size_t j = 0; j < tt->instances.len; j++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, j);
+            if (inst->sdef != owner) continue;
+
+            c.substParams = &owner->typeParams;
+            c.substArgs   = &inst->targs;
+
+            /* 这个实例里那个 `T` 到底含不含引用？不含 ⇒ 这条规矩本来就不适用 ✓
+             * （所以 `box<i64>::set` 照样合法，而 `boxT<slice<u8>>::stash` 会被挡住 ——
+             *   这正是"不能简单地把 `T` 一律当成含引用"的原因）*/
+            if (rc->isZero) {
+                /* 零值这一类：这个实例的 `T` 到底有没有零值？*/
+                Type *zt = tsub(&c, rc->declType);
+                c.substParams = NULL;
+                c.substArgs   = NULL;
+                if (typeLacksZeroValue(tt, zt))
+                    ckError(&c, rc->line,
+                            "A generic body is checked once on the template, where `T` is"
+                            " opaque -- so this is re-checked for every concrete instance."
+                            " Give the local an initializer.",
+                            "in instance `%s`: `%s` has no zero value (it contains a"
+                            " reference)", inst->name, rc->what);
+                continue;
+            }
+
+            Type *vt = tsub(&c, rc->val->type);
+            c.substParams = NULL;
+            c.substArgs   = NULL;
+            if (!typeContainsRef(tt, vt)) continue;
+
+            if (rc->depth > rc->at) {
+                ckError(&c, rc->line,
+                        "A generic body is checked once on the template, where `T` is"
+                        " opaque -- so the reference rules are re-checked for every"
+                        " concrete instance.",
+                        "in instance `%s`: %s would hold a reference to something that"
+                        " dies first (depth %d, but this can only hold up to %d)",
+                        inst->name, rc->target ? "this assignment" : rc->what,
+                        rc->depth, rc->at);
+            } else if (rc->target && rc->at == 0 && rc->borrowed) {
+                ckError(&c, rc->line,
+                        "A generic body is checked once on the template, where `T` is"
+                        " opaque -- so the reference rules are re-checked for every"
+                        " concrete instance.",
+                        "in instance `%s`: cannot store a borrowed value into something"
+                        " that outlives this call", inst->name);
             }
         }
     }

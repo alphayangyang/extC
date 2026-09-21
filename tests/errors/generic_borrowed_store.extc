@@ -1,0 +1,14 @@
+// 泛型**方法**版（今天能写）：T 在模板里是不透明的
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, value: T) { self.v = value }
+}
+
+fn main() {
+    var bt: boxT<slice<u8>> = { v: "abc" }
+    {
+        var deeper: [8]u8 = [65, 66, 67, 0, 0, 0, 0, 0]
+        bt.stash(deeper[..])            // 把指向更深局部的视图存进 bt
+    }
+    println("T = ", bt.v)               // bt 还活着，但那块内存已经死了
+}

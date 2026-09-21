@@ -264,13 +264,13 @@ const char *ttMangle(TypeTable *tt, Type *t) {
     }
 }
 
-static bool typeHasParam(Type *t) {
+bool ttHasParam(Type *t) {
     if (!t) return false;
     if (t->kind == TY_PARAM) return true;
-    if (t->kind == TY_REF) return typeHasParam(t->inner);
+    if (t->kind == TY_REF) return ttHasParam(t->inner);
     if (t->kind == TY_GENERIC) {
         for (size_t i = 0; i < t->targs.len; i++)
-            if (typeHasParam(*(Type **)vecAt(&t->targs, i))) return true;
+            if (ttHasParam(*(Type **)vecAt(&t->targs, i))) return true;
     }
     return false;
 }
@@ -281,7 +281,7 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
      * 绝不能混进实例表，否则 codegen 会去生成 `Box_T_set` 这种东西。 */
     bool concrete = true;
     for (size_t j = 0; j < args->len; j++) {
-        if (typeHasParam(*(Type **)vecAt(args, j))) { concrete = false; break; }
+        if (ttHasParam(*(Type **)vecAt(args, j))) { concrete = false; break; }
     }
 
     if (concrete) {
@@ -322,7 +322,7 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
 Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args) {
     bool concrete = true;
     for (size_t j = 0; j < args->len; j++)
-        if (typeHasParam(*(Type **)vecAt(args, j))) { concrete = false; break; }
+        if (ttHasParam(*(Type **)vecAt(args, j))) { concrete = false; break; }
 
     if (concrete) {
         for (size_t i = 0; i < tt->enumInstances.len; i++) {
