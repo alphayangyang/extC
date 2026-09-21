@@ -1657,3 +1657,24 @@ println(ps[0] == point { x: 1, y: 2 })  // ✓ 写全名字
 ```sh
 ./tests/run.sh     # 正例跑通 + 反例必须被编译期挡掉
 ```
+
+### 7.9.1 容器能不能"造完返回"？—— **由推导决定，不是一刀切**（2026-09-21）
+
+```extc
+fn mk() -> varArray<i32> {          // ✅ 合法：内容落在**调用者的家** arena 里 ⇒ 活得比本帧久
+    var v: varArray<i32> = varArray<i32>::withCap(0)
+    v.push(42)  v.push(43)
+    return v
+}
+fn mkSlice() -> slice<i32> {        // ✅ 合法：扩容过的容器，把视图返回也可以
+    var v: varArray<i32> = varArray<i32>::withCap(0)
+    v.push(7)  v.push(8)
+    return v.asSlice()
+}
+```
+判据（编译器自动算，用户不写注解）：**被调者会不会把"&实参"存进它分配的东西里**（地址流）✓
+- **不会**（`push` 这类"只往容器里塞新东西"的）⇒ 家 arena 按**逃逸需求**选 ⇒ 想返回就活得够久 ✓
+- **会**（`s.r = target` 这种把调用者的指针存进容器/家内存的）⇒ 仍然要求实参活得够家 arena ⇒
+  想让它逃出去就**报错** ✓（`tests/errors/ref_arg_too_deep` 就是这个形状）
+
+⚠️ 推导见 [`ARENA-FORMAL.md`](ARENA-FORMAL.md) §2/§3/§8，执行计划见 [`PLAN-REGION.md`](PLAN-REGION.md) ✓
