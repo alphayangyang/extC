@@ -1,20 +1,22 @@
-/* radix sort：内存带宽 + 数组（8 趟 × 1M）*/
-var src: [1048576]u32
-var dst: [1048576]u32
-var cnt: [256]i64
+/* radix sort：**OI 量级的数据范围**
+ *   ① 1e7 个 u32（**32 位全值域**，4 趟 × 8 位）
+ *   ② 4e6 个 u64（**64 位全值域**，8 趟）—— 值域到 1e18 那一档
+ * 每趟：计数 → 前缀和 → 分散 → 拷回（内存带宽压力）
+ * 最后**验一遍真的有序** ✓（只看校验和不叫对拍）*/
+var src:    [10000000]u32
+var dst:    [10000000]u32
+var big:    [4000000]u64
+var bigTmp: [4000000]u64
+var cnt:    [256]i64
 
-fn main() {
-    var n: i64 = 1048576
-    var r: pcg32 = pcg32::seeded(7)
-    var i: i64 = 0
-    while i < n { src[i] = u32(r.next())  i = i + 1 }
+fn sortU32(n: i64, passes: i64) {
     var pass: i64 = 0
-    while pass < 4 {
+    while pass < passes {
         var shift: u64 = u64(pass * 8)
         var k: i64 = 0
         while k < 256 { cnt[k] = 0  k = k + 1 }
-        i = 0
-        while i < n { cnt[i64((u64(src[i]) >> shift) & 255)] = cnt[i64((u64(src[i]) >> shift) & 255)] + 1  i = i + 1 }
+        var i: i64 = 0
+        while i < n { var b: i64 = i64((u64(src[i]) >> shift) & 255)  cnt[b] = cnt[b] + 1  i = i + 1 }
         var sum: i64 = 0
         k = 0
         while k < 256 { var c: i64 = cnt[k]  cnt[k] = sum  sum = sum + c  k = k + 1 }
@@ -29,8 +31,55 @@ fn main() {
         while i < n { src[i] = dst[i]  i = i + 1 }
         pass = pass + 1
     }
-    var chk: i64 = 0
+}
+
+fn sortU64(n: i64, passes: i64) {
+    var pass: i64 = 0
+    while pass < passes {
+        var shift: u64 = u64(pass * 8)
+        var k: i64 = 0
+        while k < 256 { cnt[k] = 0  k = k + 1 }
+        var i: i64 = 0
+        while i < n { var b: i64 = i64((big[i] >> shift) & 255)  cnt[b] = cnt[b] + 1  i = i + 1 }
+        var sum: i64 = 0
+        k = 0
+        while k < 256 { var c: i64 = cnt[k]  cnt[k] = sum  sum = sum + c  k = k + 1 }
+        i = 0
+        while i < n {
+            var b: i64 = i64((big[i] >> shift) & 255)
+            bigTmp[cnt[b]] = big[i]
+            cnt[b] = cnt[b] + 1
+            i = i + 1
+        }
+        i = 0
+        while i < n { big[i] = bigTmp[i]  i = i + 1 }
+        pass = pass + 1
+    }
+}
+
+fn isSortedU32(n: i64) -> bool {
+    var i: i64 = 1
+    while i < n { if src[i - 1] > src[i] { return false }  i = i + 1 }
+    return true
+}
+
+fn isSortedU64(n: i64) -> bool {
+    var i: i64 = 1
+    while i < n { if big[i - 1] > big[i] { return false }  i = i + 1 }
+    return true
+}
+
+fn main() {
+    var r: pcg32 = pcg32::seeded(7)
+    var n: i64 = 10000000
+    var i: i64 = 0
+    while i < n { src[i] = u32(r.next() & 4294967295)  i = i + 1 }
+    sortU32(n, 4)
+    println("① 1e7 u32 有序？ ", isSortedU32(n), "  首/末 = ", src[0], " ", src[n - 1])
+
+    var m: i64 = 4000000
     i = 0
-    while i < n { chk = chk + i64(src[i])  i = i + 1 }
-    println("radix = ", chk)
+    while i < m { big[i] = (r.next() << 32) | r.next()  i = i + 1 }
+    sortU64(m, 8)
+    println("② 4e6 u64 有序？ ", isSortedU64(m), "  末 = ", big[m - 1])
 }
