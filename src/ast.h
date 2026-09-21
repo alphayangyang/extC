@@ -111,6 +111,11 @@ struct Expr {
      * 借来的东西不能存进比这次调用活得更长的地方 —— 编译器不知道它的真实寿命。
      * 这是 BOOTSTRAP §8 里那条 ④（参数洗白）。 */
     bool      borrowed;
+    /* `??` 的主体**不是**"没有副作用的东西" ⇒ codegen 必须在所在语句之前
+     * 吐一个临时变量（先求值一次），再对临时变量做三元。
+     * 由**检查器**判定并标记（它已经算过 repeatablePure），codegen 只管照做 ✓
+     * 标记的含义："两边都不能重复求值，主体只能算一次" */
+    bool      needTemp;
 
     union {
         long long ival;

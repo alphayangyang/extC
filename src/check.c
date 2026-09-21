@@ -57,6 +57,10 @@ typedef struct {
      * `null` 比过。这里记的就是"当前这个位置上，哪些绑定已经被证明非空"。
      * 收窄是**词法作用域的**（跟着 pushScope/popScope 自动回退），
      * 而且证明完之后**不生成任何运行时检查** —— 编译期能证明的，运行时不留痕迹（P）✓ */
+    /* 这个位置上**吐不出"语句前缀"** ⇒ 需要提前求值的 `??` 一律报错。
+     * 两个地方：`while` 的条件（吐出来就变成"进循环前算一次"，不是每轮算 ✗）
+     * 和全局初始化式（没有语句可挂）✓ */
+    int        noHoist;
     Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
     Vec        narrowMarks; /* size_t —— 每个作用域进来时的 narrow.len（出作用域回退用）*/
 
@@ -1931,15 +1935,26 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* ⚠️ **主体只许是"没有副作用的东西"**：`??` 生成 C 三元，主体会出现两次。
-             * 这一条同时是"不用前缀机制"的代价与担保 —— 位置规则说得清、报得响 ✓ */
+            /* 主体**不是**"没有副作用的东西"（比如 `f() ?? -1`）⇒ 不能直接生成三元
+             * （主体在 C 里出现两次 ⇒ `f()` 会跑两遍 ✗）⇒ 必须**提前求值到一个临时变量**。
+             * 那需要"往所在语句前面吐前缀"的能力：大多数位置有，**两个位置没有** ✓ */
             if (!repeatablePure(e->u.coalesce.main)) {
                 checkExpr(c, e->u.coalesce.fallback);
-                ckError(c, e->line,
-                        "`??` may evaluate its left side twice, so bind it to a name first",
-                        "the left side of `??` is not side-effect free -- write"
-                        " `let r = <expr>` and then `r ?? ...`");
-                return ttError(tt);
+                if (c->noHoist) {
+                    ckError(c, e->line,
+                            c->noHoist == 2
+                              ? "a global initializer has no statement to put the temporary in"
+                              : "`while` re-evaluates its condition every round, but a"
+                                " temporary can only be computed once, before the loop",
+                            c->noHoist == 2
+                              ? "`??` here cannot be evaluated ahead of time (no statement"
+                                " to put the temporary in)"
+                              : "`??` here cannot be evaluated ahead of time -- it would run"
+                                " once instead of every round");
+                    return ttError(tt);
+                }
+                e->needTemp = true;        /* codegen 照做：先算一次，再对临时变量做三元 */
+                return want;
             }
 
             adoptContextType(e->u.coalesce.fallback, want);
@@ -2569,7 +2584,10 @@ static void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_WHILE: {
+            /* ⚠️ `while` 的条件**不许**提前求值（吐出来只算一次，不是每轮）*/
+            c->noHoist++;
             expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
+            c->noHoist--;
 
             /* `while cur != null { cur = cur.next }` —— 链表**整个语言的存在理由**，
              * 所以循环条件也是收窄点：循环体里那个绑定一定非空 ✓
@@ -2954,7 +2972,10 @@ static void checkGlobals(Checker *c) {
                         g->name);
             if (!g->ann) g->ann = ttError(c->tt);
         } else {
+            /* 全局初始化式**没有语句可挂前缀** ⇒ 需要提前求值的 `??` 在这里报错 ✓ */
+            c->noHoist += 2;
             Type *it = checkValue(c, g->init);
+            c->noHoist -= 2;
             Type *declT = g->ann ? g->ann : it;
             if (g->ann) checkAssignable(c, g->ann, it, g->init, "initializer");
 

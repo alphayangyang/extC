@@ -1,0 +1,5 @@
+fn get() -> ?i64 { return some(1) }
+fn main() {
+    var i: i64 = 0
+    while (get() ?? 0) > 0 { i = i + 1 }
+}

@@ -67,6 +67,12 @@ typedef struct {
      * 以及临时变量编号（每个 `?` 一个，函数内唯一）。 */
     Type       *retType;
     int         tmpSeq;
+    /* **语句前缀**（PLAN #19）：`??` 的主体不能重复求值时，先把它算进一个临时变量，
+     * 那几行要吐在**所在语句之前**（C 没有语句表达式，只能这么干）。
+     * `?` 早就在手写这套（genTryHead）；这里把它变成通用机制 ✓
+     * `prefixBlk` = 现在在不在"语句里" —— 不在（比如文件作用域的初始化式）就不许吐 ✓ */
+    Buf         prefix;
+    int         prefixBlk;
     Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
 } CG;
 
@@ -88,6 +94,26 @@ static void cgLine(CG *g, const char *fmt, ...) {
     for (int i = 0; i < g->indent; i++) bufPuts(g->out, "    ");
     bufPuts(g->out, tmp);
     bufPutc(g->out, '\n');
+}
+
+/* 往**语句前缀**里追加一行（缩进照旧，先攒着不输出）*/
+static void pfLine(CG *g, const char *fmt, ...) {
+    char tmp[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    for (int i = 0; i < g->indent; i++) bufPuts(&g->prefix, "    ");
+    bufPuts(&g->prefix, tmp);
+    bufPutc(&g->prefix, '\n');
+}
+
+/* 把攒下的前缀吐出去 —— **必须在所在语句的第一行之前**调用 ✓
+ * （调用点是程序里的"求值顺序保证"：前缀里的临时变量先算完，语句才开始 ✓）*/
+static void flushPrefix(CG *g) {
+    if (g->prefix.len == 0) return;
+    bufPuts(g->out, bufCstr(&g->prefix));
+    bufInit(&g->prefix, g->arena);
 }
 
 /* 单态化：把当前实例上下文里的 TY_PARAM 换成实参 */
@@ -802,7 +828,17 @@ static const char *genExprInner(CG *g, Expr *e) {
          * 顺带的好处：三元**只算一边** ⇒ 兜底表达式的副作用不会白跑 ✓ */
         case EX_COALESCE: {
             Type *mt = e->u.coalesce.main->type;
-            const char *m = genExpr(g, e->u.coalesce.main);
+            const char *m;
+            if (e->needTemp) {
+                /* 主体**有副作用**（`f() ?? -1`）⇒ 先算一次装进临时变量，
+                 * 后面三元里出现的是这个变量（重复读同一个变量没有副作用 ✓）
+                 * 这几行由 flushPrefix 吐在**所在语句之前** ✓ */
+                const char *tmp = arenaPrintf(g->arena, "__extc_c%d", g->tmpSeq++);
+                pfLine(g, "%s %s = %s;", cType(g, mt), tmp, genExpr(g, e->u.coalesce.main));
+                m = tmp;
+            } else {
+                m = genExpr(g, e->u.coalesce.main);
+            }
             const char *fb = genExpr(g, e->u.coalesce.fallback);
 
             /* ⚠️ **兜底那侧显式转成结果类型**（2026-09-20 主人指出）：
@@ -1015,7 +1051,9 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     ti.payload = subst(g, *(Type **)vecAt(&ot->targs, 0));
     ti.tmp = arenaPrintf(g->arena, "__extc_try%d", g->tmpSeq++);
 
-    cgLine(g, "%s %s = %s;", ti.inst, ti.tmp, genExpr(g, e->u.try_.operand));
+    const char *operand = genExpr(g, e->u.try_.operand);
+    flushPrefix(g);
+    cgLine(g, "%s %s = %s;", ti.inst, ti.tmp, operand);
     cgLine(g, "if (%s.tag != %s_%s) { extc_arena_release(&__extc_arena); return %s; }",
            ti.tmp, ti.inst, ti.okVar, genTryFail(g, &ti));
     return ti;
@@ -1032,21 +1070,31 @@ static void genBlockBody(CG *g, Stmt *block) {
         genStmt(g, *(Stmt **)vecAt(&block->u.block.stmts, i));
 }
 
+static void genStmtInner(CG *g, Stmt *s);
+
+/* 每条语句都在这一层里生成 ⇒ 语句内需要"提前求值"的东西把前缀吐在这里 ✓ */
 static void genStmt(CG *g, Stmt *s) {
     lineMark(g, s);
+    g->prefixBlk++;
+    genStmtInner(g, s);
+    g->prefixBlk--;
+}
 
+static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
         case ST_VAR: {
             /* `cname` = 检查器定下的名字（同层遮蔽过的会带 `__2` 后缀）*/
             const char *nm = s->u.var.cname ? s->u.var.cname : s->u.var.name;
             if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.var.init);
+                flushPrefix(g);
                 cgLine(g, "%s %s = %s;",
                        cType(g, s->type), nm, tryPayloadPath(g, &ti));
                 return;
             }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
                                              : zeroInit(g, s->type);
+            flushPrefix(g);
             cgLine(g, "%s %s = %s;", cType(g, s->type), nm, init);
             return;
         }
@@ -1054,16 +1102,21 @@ static void genStmt(CG *g, Stmt *s) {
         case ST_ASSIGN:
             if (s->u.assign.value && s->u.assign.value->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.assign.value);
-                cgLine(g, "%s = %s;", genExpr(g, s->u.assign.target),
-                       tryPayloadPath(g, &ti));
+                const char *at = genExpr(g, s->u.assign.target);
+                flushPrefix(g);
+                cgLine(g, "%s = %s;", at, tryPayloadPath(g, &ti));
                 return;
             }
-            cgLine(g, "%s = %s;", genExpr(g, s->u.assign.target),
-                   genExpr(g, s->u.assign.value));
+            const char *tgt = genExpr(g, s->u.assign.target);
+            const char *val = genExpr(g, s->u.assign.value);
+            flushPrefix(g);
+            cgLine(g, "%s = %s;", tgt, val);
             return;
 
-        case ST_IF:
-            cgLine(g, "if (%s) {", genExpr(g, s->u.ifs.cond));
+        case ST_IF: {
+            const char *cnd = genExpr(g, s->u.ifs.cond);
+            flushPrefix(g);
+            cgLine(g, "if (%s) {", cnd);
             g->indent++;
             genBlockBody(g, s->u.ifs.thenBody);
             g->indent--;
@@ -1078,14 +1131,18 @@ static void genStmt(CG *g, Stmt *s) {
             g->indent--;
             cgLine(g, "}");
             return;
+        }
 
-        case ST_WHILE:
-            cgLine(g, "while (%s) {", genExpr(g, s->u.whiles.cond));
+        case ST_WHILE: {
+            const char *cnd = genExpr(g, s->u.whiles.cond);
+            flushPrefix(g);
+            cgLine(g, "while (%s) {", cnd);
             g->indent++;
             genBlockBody(g, s->u.whiles.body);
             g->indent--;
             cgLine(g, "}");
             return;
+        }
 
         case ST_RETURN: {
             /* 返回之前**一定**要归还这一帧的 arena —— 释放时机是词法的，
@@ -1107,6 +1164,7 @@ static void genStmt(CG *g, Stmt *s) {
                 return;
             }
             const char *v = genExpr(g, s->u.ret.value);
+            flushPrefix(g);              /* ⚠️ 必须在 release **之前**（见上）*/
             cgLine(g, "%s", rel);
             cgLine(g, "return %s;", v);
             return;
@@ -1121,7 +1179,9 @@ static void genStmt(CG *g, Stmt *s) {
                 (void)genTryHead(g, s->u.expr.expr);
                 return;
             }
-            cgLine(g, "%s;", genExpr(g, s->u.expr.expr));
+            const char *ex = genExpr(g, s->u.expr.expr);
+            flushPrefix(g);
+            cgLine(g, "%s;", ex);
             return;
 
         case ST_BLOCK:
@@ -1153,6 +1213,7 @@ static void genStmt(CG *g, Stmt *s) {
              * 而在 `switch` 里它只会跳出 switch ⇒ `while true` + `break` 永远不结束 ✗
              * if/else 链里没有这层"别人的 break" ✓
              * 穷尽性由类型检查担保 ⇒ 最后不需要 `else` ✓ */
+            flushPrefix(g);
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
                 cgLine(g, "%s (%s%s == %s_%s) {", i == 0 ? "if" : "} else if",
@@ -1483,6 +1544,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     g.tt = tt;
 
     vecInit(&g.structs, arena, sizeof(void *));
+    bufInit(&g.prefix, arena);          /* 语句前缀（PLAN #19）—— 忘初始化就是段错误 ✗ */
     /* **按 C 名字去重**：可写视图和只读视图是**同一个 C 结构体**
      * （`slice<mut slice<T>>` 和 `slice<slice<T>>` 都叫 `slice_slice_T`），
      * 而 `ttEquals` 把 `mut` 算进身份 ⇒ 类型表里会有**两个实例、一个名字**。
