@@ -180,6 +180,7 @@ static bool mentionsParam(Type *t) {
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
 static Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
 static int callHomeDepth(Checker *c, Vec *args, Vec *params);   /* 定义在后面 */
+static void markCallHomeIfEscaping(Checker *c, Expr *v, int at);   /* 定义在后面 */
 static void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth,
                              int line, const char *fname);   /* 同上 */
 
@@ -2632,6 +2633,10 @@ static void checkStmt(Checker *c, Stmt *s) {
              * （否则 `let r = pickFirst(ref a, ref b)` 这种"绑定一个引用"写不出来 ✗）*/
             else                               it = checkExpr(c, s->u.var.init);
 
+            /* #24：**查完之后**再定（`checkExpr` 里会把 homeDepth 设成"按实参选"）
+             * ⇒ 这一句按"我把它存到多深"覆盖掉 ✓ */
+            markCallHomeIfEscaping(c, s->u.var.init, (int)c->scopes.len);
+
             /* ⭐ **`let` 推断出来的东西自动降级成只读**（主人 2026-09-20）：
              * `let p = ref x` ⇒ `p: ref T`（不是 `mut ref T`）✓
              * `let s = a[..]` ⇒ `s: slice<T>` ✓（跟视图那边原本的行为**统一**了 ✓）
@@ -2767,6 +2772,8 @@ static void checkStmt(Checker *c, Stmt *s) {
             adoptContextType(s->u.assign.value, tt_);
             Type *vt = checkMaybeTry(c, s->u.assign.value);
 
+            markCallHomeIfEscaping(c, s->u.assign.value,
+                                   placeDepth(c, s->u.assign.target));
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
             /* 逃逸③：给字段/元素赋值时，被指对象不能比目标更深 */
             checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
@@ -2862,6 +2869,7 @@ static void checkStmt(Checker *c, Stmt *s) {
 
             adoptContextType(s->u.ret.value, want);
             Type *vt = checkInto(c, want, s->u.ret.value);   /* 期望是引用就别解 */
+            markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* 要交出去 ⇒ 用家 ✓ */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
             /* 逃逸①：返回的引用，被指对象必须在参数或静态数据里（深度 0）*/
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
@@ -3333,6 +3341,24 @@ static void checkCallRefArgs(Checker *c, Vec *args, Vec *params, int homeDepth, 
                 "argument %zu of `%s` points into a deeper scope (depth %d) than the arena"
                 " this call may store it in (depth %d)", i + 1, fname, d, h);
     }
+}
+
+/* ⭐ PLAN #24：**调用点按"结果逃不逃出当前块"选 arena**（2026-09-20 压测实测出来的）
+ *
+ * 背景：被调用者（有家）的分配进"我传给它的那只 arena"。以前一律传**我的家**
+ * （= 函数体那只）⇒ 在**循环里**调用 ⇒ 每一轮的东西都累积到函数结束 ✗
+ * 压测量到：300 轮 × 2001 节点链表 ⇒ 峰值 15.3MB vs C 5.9MB（≈14.4MB = 算得出来）✗
+ *
+ * 修法：看我把它**存到多深的地方**：
+ *   · 存进**当前块**（`var l = build(…)` 就在循环体里）⇒ 传**当前块**那只
+ *     ⇒ 每轮出块就回收 ✓ **峰值常数级** ✓
+ *   · 存进**更浅的地方 / 返回出去**（`return build(…)`、赋给外层局部）⇒ 传我的家 ✓
+ * 参数位置（`g(build(…))`）保守地不标 ⇒ 退回老规则（传家）✓ */
+static void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
+    if (!v) return;
+    if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !v->func) return;
+    if (!v->func->needsHome) return;
+    v->homeDepth = (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len;
 }
 
 static int callHomeDepth(Checker *c, Vec *args, Vec *params) {
