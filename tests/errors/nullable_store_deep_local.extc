@@ -1,0 +1,11 @@
+// 往「参数那边的东西」里塞一个指向本帧更深处局部的引用 ⇒ 必须报错
+// （换了深度模型之后这条要仍然成立：被指深度变准了，但不能变松）
+struct node { value: i64  next: ?ref node }
+fn bad(head: ?ref node) {
+    var cur: ?ref node = head
+    if cur != null {
+        var local: node = { value: 1, next: null }
+        cur.next = ref local
+    }
+}
+fn main() {}
