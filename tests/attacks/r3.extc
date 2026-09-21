@@ -1,0 +1,6 @@
+// ③ ⭐ `ref *p` 洗白：把参数的引用**重新取一次**，再存进全局
+struct slot { r: ref i32 }
+var G: slot = { r: ref GLOBAL }      // hmm 占位
+let GLOBAL: i32 = 0
+fn stash(p: ref i32) { G.r = ref *p }
+fn main() -> i32 { var local: i32 = 42  stash(ref local)  println(*G.r)  return 0 }

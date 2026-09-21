@@ -1,0 +1,6 @@
+// ② arena 要来的地方**没初始化** ⇒ 读到垃圾？
+fn main() -> i32 {
+    let p = alloc<[4]i32>(1)
+    println("未初始化读到 ", p[0])
+    return 0
+}

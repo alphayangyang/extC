@@ -1,0 +1,8 @@
+// ⑨ 泛型类型混淆：pair<i32,u8> 和 pair<u8,i32> 会不会混掉
+struct pair<A, B> { first: A  second: B }
+fn main() -> i32 {
+    var a: pair<i32, u8> = { first: 1, second: 2 }
+    var b: pair<u8, i32> = { first: 3, second: 4 }
+    a = b                            // 应该编不过
+    return 0
+}

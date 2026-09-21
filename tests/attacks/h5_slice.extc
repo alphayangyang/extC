@@ -1,0 +1,7 @@
+// ⑤ 切片边界乱来
+fn main() -> i32 {
+    var a: [8]i32
+    let s = a[3..100]
+    println(s.len)
+    return 0
+}

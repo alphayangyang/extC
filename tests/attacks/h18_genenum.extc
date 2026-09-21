@@ -1,0 +1,7 @@
+// ⑱ **泛型**枚举的载荷来自本帧
+type maybe<T> = | nothing | just(T)
+fn bad() -> maybe<slice<u8>> {
+    var local: [4]u8 = [65, 66, 67, 68]
+    return maybe<slice<u8>>::just(local[..])
+}
+fn main() -> i32 { return 0 }

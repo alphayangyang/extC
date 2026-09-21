@@ -1,0 +1,10 @@
+// ⑧ 把借来的视图**塞进参数的字段**（洗白）
+struct box { s: slice<u8> }
+fn stash(b: mut ref box, s: slice<u8>) { b.s = s }
+fn main() -> i32 {
+    var outer: box = { s: "keep" }
+    var local: [4]u8 = [65, 66, 67, 68]
+    stash(ref outer, local[..])       // local 比 outer 短命
+    println("outer.s = ", outer.s)
+    return 0
+}

@@ -1,0 +1,4 @@
+// ② 用成员选择绕过"显式解引用"去写只读引用指向的结构
+struct box { tag: i32 }
+fn f(b: ref box) { b.tag = 9 }
+fn main() -> i32 { var x: box = { tag: 1 }  f(ref x)  return 0 }

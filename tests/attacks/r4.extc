@@ -1,0 +1,8 @@
+// ④ 打印引用套引用：会不会打印出**地址**？
+fn main() -> i32 {
+    var x: i32 = 7
+    var p = ref x
+    var pp = ref p
+    println("pp = ", pp)
+    return 0
+}

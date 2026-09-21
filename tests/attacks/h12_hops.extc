@@ -1,0 +1,6 @@
+// ⑫ 三层函数**接力转发**，看深度会不会被洗掉
+fn id1(r: ref i32) -> ref i32 { return r }
+fn id2(r: ref i32) -> ref i32 { return id1(r) }
+fn id3(r: ref i32) -> ref i32 { return id2(r) }
+fn bad() -> ref i32 { var x: i32 = 5  return id3(ref x) }
+fn main() -> i32 { println(bad())  return 0 }

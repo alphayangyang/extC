@@ -1,0 +1,20 @@
+// 证明 ⑰ 是真洞：让返回的载荷**指向已经死掉的栈帧**
+type box = | empty | holding(slice<u8>)
+
+fn make() -> box {
+    var local: [8]u8 = [65, 66, 67, 68, 33, 33, 33, 33]
+    return box.holding(local[..])       // ← 编译通过（应该报错）
+}
+
+fn clobber() -> i64 {                   // 覆盖栈：拿一个同样大小的局部
+    var junk: [8]u8 = [120, 120, 120, 120, 120, 120, 120, 120]
+    return junk[0]
+}
+
+fn main() -> i32 {
+    let b = make()
+    match b { empty => { println("空") }  holding(s) => { println("拿到   = ", s) } }
+    clobber()
+    match b { empty => { println("空") }  holding(s) => { println("覆盖后 = ", s) } }
+    return 0
+}

@@ -1,0 +1,16 @@
+// ⑲ 【正例】载荷来自**参数** ⇒ 应该合法（这是新能力：option<slice<u8>> 那种）
+type maybe<T> = | nothing | just(T)
+fn head(g: slice<slice<i32>>) -> maybe<slice<i32>> {
+    if g.len == 0 { return nothing() }
+    return just(g[0])
+}
+fn main() -> i32 {
+    var a: [2][3]i32 = [[1,2,3],[4,5,6]]
+    var rows: [2]slice<i32> = [a[0][..], a[1][..]]
+    let r = head(rows[..])
+    match r {
+        nothing => { println("空的") }
+        just(s) => { println("第一行 = ", s) }
+    }
+    return 0
+}

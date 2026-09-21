@@ -1,0 +1,7 @@
+// ⑭ 返回「一半参数、一半局部」的结构体（深度取 max 的边界）
+struct two { a: slice<i32>  b: slice<i32> }
+fn mix(outer: slice<i32>) -> two {
+    var local: [3]i32 = [1, 2, 3]
+    return two { a: outer, b: local[..] }
+}
+fn main() -> i32 { return 0 }

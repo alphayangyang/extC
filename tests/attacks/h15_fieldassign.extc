@@ -1,0 +1,9 @@
+// ⑮ 先建好结构体，再往字段里**塞一个本帧视图**
+struct two { a: slice<i32>  b: slice<i32> }
+fn mix2(outer: slice<i32>) -> two {
+    var h: two = { a: outer, b: outer }
+    var local: [3]i32 = [1, 2, 3]
+    h.b = local[..]
+    return h
+}
+fn main() -> i32 { return 0 }

@@ -1,0 +1,11 @@
+// ① 把引用换指向一个**更短命**的局部
+fn main() -> i32 {
+    var outer: i32 = 7
+    var p: mut ref i32 = ref outer
+    {
+        var inner: i32 = 99
+        p = ref inner
+    }
+    println("p = ", p)
+    return 0
+}

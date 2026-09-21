@@ -1,0 +1,4 @@
+// ⑦ 返回一个指向局部**字段**的引用
+struct pt { x: i32  y: i32 }
+fn bad() -> ref i32 { var p: pt = { x: 1, y: 2 }  return ref p.x }
+fn main() -> i32 { println(bad())  return 0 }

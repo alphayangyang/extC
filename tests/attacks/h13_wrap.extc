@@ -1,0 +1,5 @@
+// ⑬ 把参数引用**装进结构体**再返回（转发合法，但洗白不行）
+struct holder { r: ref i32 }
+fn wrap(r: ref i32) -> holder { return holder { r: r } }
+fn bad() -> holder { var x: i32 = 5  return wrap(ref x) }
+fn main() -> i32 { println(wrap(ref x).r)  return 0 }

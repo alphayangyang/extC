@@ -1,0 +1,10 @@
+// ⑥ 把局部视图**洗白**存进全局结构体的字段
+struct box { s: slice<u8> }
+var g: box
+fn stash(b: box) { g = b }
+fn main() -> i32 {
+    var local: [4]u8 = [65, 66, 67, 68]
+    stash(box { s: local[..] })
+    println("全局里存的：", g.s)
+    return 0
+}

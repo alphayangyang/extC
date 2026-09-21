@@ -1,0 +1,7 @@
+// ⑰ 枚举**载荷**来自本帧
+type box = | empty | holding(slice<u8>)
+fn bad() -> box {
+    var local: [4]u8 = [65, 66, 67, 68]
+    return box.holding(local[..])
+}
+fn main() -> i32 { return 0 }

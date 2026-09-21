@@ -1,0 +1,7 @@
+// ③ 要到一块**装着 ref 的**地方 ⇒ 那个 ref 是垃圾指针？
+struct holder { s: slice<u8> }
+fn main() -> i32 {
+    let p = alloc<holder>(1)
+    println("s[0] = ", p.s[0])
+    return 0
+}
