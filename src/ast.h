@@ -249,6 +249,12 @@ struct FuncDef {
     StructDef  *owner;           /* 方法所属的 struct；自由函数为 NULL */
     bool        isAssoc;         /* 写在 struct 体内但**不带 `self`** —— 关联函数 */
     bool        reserved;        /* 来自 prelude */
+    /* ---- A3 逃逸提升：这个函数要不要一只"家"arena？----
+     * 规则：**函数体里有分配，且返回类型含引用/视图** ⇒ 它多收一个隐藏参数
+     * `extc_arena *__extc_home`，里面的 `new` 分配到**调用者选的那只** arena ✓
+     * （调用点为此传 `__extc_home` 或 `&__extc_a[当前块]`）
+     * 传递闭包也要（调用它的人得有东西可传）⇒ 见 check.c 里的不动点计算 ✓ */
+    bool        needsHome;
     int         line;
 };
 

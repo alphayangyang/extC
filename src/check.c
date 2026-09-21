@@ -1989,8 +1989,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
 
             /* ⭐ 深度 = **当前块深度** —— 跟生成的 C 选 `__extc_a[k]` 用同一个数 ✓
-             * （`new` 出来的东西活到当前块结束；想活更久就得是 A3 的逃逸提升）*/
-            e->refDepth = c->scopes.len;
+             * ⚠️ 例外：这个函数有"家"arena（A3：它会把自己的分配交给调用者）⇒
+             *    分配出来的东西活到**调用者选的那个作用域** ⇒ 深度按 0 算 ✓
+             *    （0 = "外面/参数那一级"，正是逃逸检查里"可以带出去"那一档 ✓）
+             *    这样 `fn build() -> mut ref node` 里那句 `return h` 才成立 ✓ */
+            e->refDepth = c->curFunc && c->curFunc->needsHome ? 0 : c->scopes.len;
 
             if (!e->u.new_.count) {
                 Type *r = ttRef(tt, w);
@@ -3040,8 +3043,152 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
     checkOperatorSig(c, f);
 }
 
+/* 函数体里有没有**分配**（`new`）？—— 决定这个函数要不要一只"家"arena（A3）
+ * 纯语法扫（在类型检查之前就能回答），所以下面 `new` 的深度当场就能定 ✓ */
+static bool stmtHasNew(Stmt *s);
+static bool exprHasNew(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_NEW: return true;
+    case EX_BIN: return exprHasNew(e->u.bin.left) || exprHasNew(e->u.bin.right);
+    case EX_UN:  return exprHasNew(e->u.un.operand);
+    case EX_REF: return exprHasNew(e->u.ref.operand);
+    case EX_DEREF: return exprHasNew(e->u.deref.operand);
+    case EX_SIGN:  return exprHasNew(e->u.sign.operand);
+    case EX_TRY:   return exprHasNew(e->u.try_.operand);
+    case EX_INDEX: return exprHasNew(e->u.index.obj) || exprHasNew(e->u.index.index);
+    case EX_SLICE: return exprHasNew(e->u.slice.obj);
+    case EX_FIELD: return exprHasNew(e->u.field.obj);
+    case EX_METHOD:
+        if (exprHasNew(e->u.method.recv)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprHasNew(*(Expr **)vecAt(&e->u.method.args, i))) return true;
+        return false;
+    case EX_COALESCE:
+        return exprHasNew(e->u.coalesce.main) || exprHasNew(e->u.coalesce.fallback);
+    case EX_CALL:
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprHasNew(*(Expr **)vecAt(&e->u.call.args, i))) return true;
+        return false;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprHasNew(*(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprHasNew(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+        return false;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprHasNew((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprHasNew(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+        return false;
+    default: return false;
+    }
+}
+static bool stmtHasNew(Stmt *s) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR:    return exprHasNew(s->u.var.init);
+    case ST_ASSIGN: return exprHasNew(s->u.assign.value) || exprHasNew(s->u.assign.target);
+    case ST_IF:     return exprHasNew(s->u.ifs.cond) || stmtHasNew(s->u.ifs.thenBody) ||
+                           stmtHasNew(s->u.ifs.elseBody);
+    case ST_WHILE:  return exprHasNew(s->u.whiles.cond) || stmtHasNew(s->u.whiles.body);
+    case ST_RETURN: return exprHasNew(s->u.ret.value);
+    case ST_EXPR:   return exprHasNew(s->u.expr.expr);
+    case ST_BLOCK: case ST_MATCH: {
+        Vec *v = s->kind == ST_BLOCK ? &s->u.block.stmts : NULL;
+        if (v) {
+            for (size_t i = 0; i < v->len; i++)
+                if (stmtHasNew(*(Stmt **)vecAt(v, i))) return true;
+            return false;
+        }
+        if (exprHasNew(s->u.match.scrutinee)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtHasNew((*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
+        return false;
+    }
+    default: return false;
+    }
+}
+
+/* 体里有没有调用"有家"的函数？（检查完之后 `e->func` 已经填好了 ✓）*/
+static bool exprCallsNeedsHome(Expr *e);
+static bool stmtCallsNeedsHome(Stmt *s) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR:    return exprCallsNeedsHome(s->u.var.init);
+    case ST_ASSIGN: return exprCallsNeedsHome(s->u.assign.value) ||
+                           exprCallsNeedsHome(s->u.assign.target);
+    case ST_IF:     return exprCallsNeedsHome(s->u.ifs.cond) ||
+                           stmtCallsNeedsHome(s->u.ifs.thenBody) ||
+                           stmtCallsNeedsHome(s->u.ifs.elseBody);
+    case ST_WHILE:  return exprCallsNeedsHome(s->u.whiles.cond) ||
+                           stmtCallsNeedsHome(s->u.whiles.body);
+    case ST_RETURN: return exprCallsNeedsHome(s->u.ret.value);
+    case ST_EXPR:   return exprCallsNeedsHome(s->u.expr.expr);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtCallsNeedsHome(*(Stmt **)vecAt(&s->u.block.stmts, i))) return true;
+        return false;
+    case ST_MATCH:
+        if (exprCallsNeedsHome(s->u.match.scrutinee)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtCallsNeedsHome((*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
+        return false;
+    default: return false;
+    }
+}
+static bool exprCallsNeedsHome(Expr *e) {
+    if (!e) return false;
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD) && e->func && e->func->needsHome)
+        return true;
+    switch (e->kind) {
+    case EX_BIN: return exprCallsNeedsHome(e->u.bin.left) || exprCallsNeedsHome(e->u.bin.right);
+    case EX_UN:  return exprCallsNeedsHome(e->u.un.operand);
+    case EX_REF: return exprCallsNeedsHome(e->u.ref.operand);
+    case EX_DEREF: return exprCallsNeedsHome(e->u.deref.operand);
+    case EX_SIGN:  return exprCallsNeedsHome(e->u.sign.operand);
+    case EX_TRY:   return exprCallsNeedsHome(e->u.try_.operand);
+    case EX_INDEX:
+        return exprCallsNeedsHome(e->u.index.obj) || exprCallsNeedsHome(e->u.index.index);
+    case EX_SLICE: return exprCallsNeedsHome(e->u.slice.obj);
+    case EX_FIELD: return exprCallsNeedsHome(e->u.field.obj);
+    case EX_COALESCE:
+        return exprCallsNeedsHome(e->u.coalesce.main) ||
+               exprCallsNeedsHome(e->u.coalesce.fallback);
+    case EX_METHOD: {
+        if (exprCallsNeedsHome(e->u.method.recv)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.method.args, i))) return true;
+        return false;
+    }
+    case EX_CALL: {
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.call.args, i))) return true;
+        return false;
+    }
+    case EX_ASSOC: {
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+        return false;
+    }
+    case EX_NEW: return exprCallsNeedsHome(e->u.new_.count);
+    default: return false;
+    }
+}
+static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body); }
+
 static void checkFunc(Checker *c, FuncDef *f) {
     FuncDef *savedFunc = c->curFunc;
+    /* A3：**有分配 + 返回有用的东西（含引用/视图）** ⇒ 这个函数要一只"家"arena ✓
+     * （返回 `i32` 的函数不要 —— 它的分配留在自己块里，A2 的紧致性不丢 ✓）*/
+    if (stmtHasNew(f->body) && f->ret && typeContainsRef(c->tt, f->ret))
+        f->needsHome = true;
+
     Vec     *savedParams = c->curParams;
 
     c->curFunc = f;
@@ -3326,6 +3473,27 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                         " concrete instance.",
                         "in instance `%s`: cannot store a borrowed value into something"
                         " that outlives this call", inst->name);
+            }
+        }
+    }
+
+    /* ---- A3：`needsHome` 的**传递闭包** ----
+     * 调用一个"有家"的函数时，调用者必须**有东西可传**（`__extc_home` 或
+     * `&__extc_a[当前块]`）⇒ 调用者自己也得收一只家 arena ✓
+     * 到不动点为止（函数不多，直接多跑几轮）✓ */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            if (f->needsHome) continue;
+            if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
+        }
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (f->needsHome) continue;
+                if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
             }
         }
     }

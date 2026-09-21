@@ -79,6 +79,7 @@ typedef struct {
      * `loopLevel[]` = 当前套着的各个循环体所在的块层（`break`/`continue` 要知道
      * 该释放到哪一层）*/
     int         blkLevel;
+    bool        hasHome;   /* 当前函数有"家"arena ⇒ `new` 分配到 `*__extc_home`（A3）*/
     int         loopLevel[64];
     int         loopLen;
     Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
@@ -700,6 +701,7 @@ static const char *genStructLit(CG *g, Expr *e) {
 }
 
 static const char *arenaRef(CG *g);
+static const char *homeArg(CG *g);
 
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
@@ -748,6 +750,11 @@ static const char *genExprInner(CG *g, Expr *e) {
             for (size_t i = 0; i < e->u.call.args.len; i++) {
                 if (i) bufPuts(&b, ", ");
                 bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.call.args, i)));
+            }
+            /* A3：被调用者需要一只"家"arena ⇒ 我传我的（或者传当前块的 ✓ 紧）*/
+            if (e->func->needsHome) {
+                if (e->u.call.args.len) bufPuts(&b, ", ");
+                bufPuts(&b, homeArg(g));
             }
             bufPutc(&b, ')');
             return bufCstr(&b);
@@ -1109,7 +1116,19 @@ static void lineMark(CG *g, Stmt *s) {
 }
 
 /* 当前块的 arena（分配走它、出块释放它）✓ */
+/* 调用一个"需要家 arena"的函数时，我该传哪只？
+ *   我自己有家 ⇒ 传我的家（那是最外层的、祖先那只 ✓）
+ *   我没有家 ⇒ 传**当前块**那只（更紧：被调用者分配的东西活到本块结束 ✓）*/
+static const char *homeArg(CG *g) {
+    /* 这个是**当实参传**的（不是给 `&` 用的）⇒ 直接给指针 ✓
+     * ⚠️ 别跟 `arenaRef` 搞混：那个的结果外面会套一层 `&`，所以它返回 `(*__extc_home)` ✓ */
+    if (g->hasHome) return "__extc_home";
+    return arenaPrintf(g->arena, "&__extc_a[%d]", g->blkLevel);
+}
+
 static const char *arenaRef(CG *g) {
+    /* 有家（A3）⇒ 分配到调用者选的那只；否则分配到**当前块** ✓ */
+    if (g->hasHome) return "(*__extc_home)";   /* 外面还会套一层 `&` ✓ */
     return arenaPrintf(g->arena, "__extc_a[%d]", g->blkLevel);
 }
 
@@ -1360,23 +1379,36 @@ static void genStmtInner(CG *g, Stmt *s) {
 
 /* ---------------------------------------------------------------- 顶层 */
 
+/* 函数参数表的 C 文本。**`needsHome` 的函数在最后多收一只隐藏的 arena 指针**
+ * （A3 逃逸提升）：它里面的 `new` 分配到**调用者选的那只** arena ✓ */
+static const char *cgParamList(CG *g, FuncDef *f) {
+    Buf sig;
+    bufInit(&sig, g->arena);
+    /* ⚠️ `main` 的签名是 C 定死的（不能加隐藏参数）—— 它的"家"是自己函数体里
+     * 那句 `extc_arena *__extc_home = &__extc_a[1];` ✓ */
+    if (!f->owner && strcmp(f->name, "main") == 0) { bufPuts(&sig, "void"); return bufCstr(&sig); }
+    if (f->params.len == 0 && !f->needsHome) { bufPuts(&sig, "void"); return bufCstr(&sig); }
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (i) bufPuts(&sig, ", ");
+        bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
+    }
+    if (f->needsHome) {
+        if (f->params.len) bufPuts(&sig, ", ");
+        bufPuts(&sig, "extc_arena *__extc_home");
+    }
+    return bufCstr(&sig);
+}
+
 static void genFunc(CG *g, FuncDef *f) {
-    if (!f->owner && strcmp(f->name, "main") == 0) {
+    bool isMain = !f->owner && strcmp(f->name, "main") == 0;
+    if (isMain) {
+        /* `main` 不能有隐藏参数（C 的签名定死了）⇒ 它的"家"就是自己函数体的 arena ✓ */
         cgLine(g, "int main(void) {");
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
-        bufPrintf(&sig, "%s %s(", cType(g, f->ret), cFuncName(g, f));
-        if (f->params.len == 0) {
-            bufPuts(&sig, "void");
-        } else {
-            for (size_t i = 0; i < f->params.len; i++) {
-                Param *p = *(Param **)vecAt(&f->params, i);
-                if (i) bufPuts(&sig, ", ");
-                bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
-            }
-        }
-        bufPuts(&sig, ") {");
+        bufPrintf(&sig, "%s %s(%s) {", cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
         cgLine(g, "%s", bufCstr(&sig));
     }
 
@@ -1395,9 +1427,14 @@ static void genFunc(CG *g, FuncDef *f) {
     cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
     g->blkLevel = 0;
     g->loopLen  = 0;
+    bool savedHome = g->hasHome;
+    g->hasHome = f->needsHome;
+    if (isMain && f->needsHome)
+        cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main 的家 = 自己函数体 */");
     genBlockBody(g, f->body);
     g->retType = savedRet;
     g->tmpSeq = savedSeq;
+    g->hasHome = savedHome;
     g->indent--;
     cgLine(g, "}");
 }
@@ -1411,17 +1448,7 @@ static void genFunc(CG *g, FuncDef *f) {
 static void genFuncProto(CG *g, FuncDef *f) {
     Buf sig;
     bufInit(&sig, g->arena);
-    bufPrintf(&sig, "%s %s(", cType(g, f->ret), cFuncName(g, f));
-    if (f->params.len == 0) {
-        bufPuts(&sig, "void");
-    } else {
-        for (size_t j = 0; j < f->params.len; j++) {
-            Param *p = *(Param **)vecAt(&f->params, j);
-            if (j) bufPuts(&sig, ", ");
-            bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
-        }
-    }
-    bufPuts(&sig, ");");
+    bufPrintf(&sig, "%s %s(%s);", cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
 
@@ -2054,17 +2081,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                               ? "int" : cType(&g, f->ret);
         Buf sig;
         bufInit(&sig, arena);
-        bufPrintf(&sig, "%s %s(", ret, cFuncName(&g, f));
-        if (f->params.len == 0) {
-            bufPuts(&sig, "void");
-        } else {
-            for (size_t j = 0; j < f->params.len; j++) {
-                Param *p = *(Param **)vecAt(&f->params, j);
-                if (j) bufPuts(&sig, ", ");
-                bufPuts(&sig, cType(&g, p->type));
-            }
-        }
-        bufPuts(&sig, ");");
+        /* ⚠️ 参数表**必须**跟定义用同一套（`cgParamList`）—— 有家 arena 的函数
+         * 多一只隐藏参数，原型漏了就是"C 的类型对不上" ✗（真踩过）*/
+        bufPrintf(&sig, "%s %s(%s);", ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
     }
     if (g.structs.len || g.insts.len || g.funcs.len) cgLine(&g, "");

@@ -1,9 +1,0 @@
-// 返回一块刚 new 的内存：它活到**当前块**结束 ⇒ 走出去就是悬垂 ✓
-// （想把它交出去要等 A3 的逃逸提升）
-struct node { value: i64  next: ?ref node }
-fn make() -> mut ref node {
-    var n: mut ref node = new node
-    n.value = 1
-    return n
-}
-fn main() { }
