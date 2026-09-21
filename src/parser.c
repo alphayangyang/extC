@@ -105,6 +105,13 @@ static Expr *parseFactor(Parser *p);
 static Expr *parseUnary(Parser *p);
 static Expr *parsePostfix(Parser *p);
 static Expr *parsePrimary(Parser *p);
+
+/* 十个标量内建类型名（显式转换用）—— `bool` 不算：extC 没有隐式真值转换 ✓ */
+static bool isScalarTypeName(const char *n) {
+    static const char *N[] = { "i8","i16","i32","i64","u8","u16","u32","u64","f32","f64", NULL };
+    for (size_t i = 0; N[i]; i++) if (strcmp(N[i], n) == 0) return true;
+    return false;
+}
 static Expr *parseStructLit(Parser *p, const char *name);
 static bool  looksLikeAssoc(Parser *p);
 static Expr *parseAssoc(Parser *p, const char *name, int line);
@@ -1145,8 +1152,45 @@ static Expr *parsePrimary(Parser *p) {
         return e;
     }
 
+    /* ⚠️ 十个标量类型名在词法上是 **TK_TYPE**（不是 IDENT、也不是 KEYWORD）
+     * ⇒ 这条必须放在最前面 ✓ */
+    if (t->kind == TK_TYPE && isScalarTypeName(t->text)) {
+        take(p);
+        if (!at(p, "(")) {
+            ctxError(p->ctx, t->line, t->col,
+                     "a type name only appears in expression position as an explicit"
+                     " conversion, e.g. `i32(x)`",
+                     "`%s` is a type, not a value -- did you mean `%s(x)`?", t->text, t->text);
+            return NULL;
+        }
+        take(p);                                   /* ( */
+        skipNl(p);
+        Expr *in = parseExpr(p);
+        if (!in) return NULL;
+        skipNl(p);
+        if (!expect(p, ")", NULL)) return NULL;
+        Expr *cv2 = exprNew(p->arena, EX_CONV, t->line);
+        cv2->u.conv.typeName = t->text;
+        cv2->u.conv.operand  = in;
+        return cv2;
+    }
     if (t->kind == TK_IDENT) {
         take(p);
+        /* `i32(x)` / `f64(y)` —— **显式转换**（收窄 / 换符号 / 整数↔浮点）✓
+         * C 写成 `(T)x`，但那在 extC 里跟括号表达式二义（parser 不查符号表）⇒
+         * 换个括号位置：`T(x)` ✓ 语义完全一样 */
+        if (isScalarTypeName(t->text) && at(p, "(")) {
+            take(p);                                  /* ( */
+            skipNl(p);
+            Expr *in = parseExpr(p);
+            if (!in) return NULL;
+            skipNl(p);
+            if (!expect(p, ")", NULL)) return NULL;
+            Expr *cv = exprNew(p->arena, EX_CONV, t->line);
+            cv->u.conv.typeName = t->text;
+            cv->u.conv.operand  = in;
+            return cv;
+        }
         /* `name { ... }` 是结构体字面量。
          *
          * 位置规则（跟 Go 一样）：在 `if` / `while` 的**条件位置**里 `{` 属于块，

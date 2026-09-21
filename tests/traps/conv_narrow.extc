@@ -1,0 +1,6 @@
+// 显式收窄装不下 ⇒ **trap（带源码位置）** ✓
+fn main() {
+    var big: i64 = 300
+    var a: u8 = u8(big)
+    println(a)
+}

@@ -73,6 +73,10 @@ typedef enum {
     EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
     EX_DEREF,     /* `*p` —— 显式解引用：读=p指的值，写=p指的地方 */
     EX_ENUMVAL,   /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
+    EX_CONV,      /* `i32(x)` / `f64(y)` —— **显式转换**（PLAN #23）：
+                   * extC 只自动做无损失拓宽，收窄/换符号/整数↔浮点都必须写出来 ✓
+                   * 语法写成 `T(x)` 而不是 C 的 `(T)x`：extC 的 parser **不查符号表**，
+                   * `(T)x` 会跟"括号表达式"二义 ✗（C 靠符号表才分得开）*/
     EX_NEW,       /* `new T` / `new T[n]` / `new [N]T` —— 从**当前块的 arena** 拿一块
                    * **清零**的地方（PLAN A1）。内容：
                    *   `new T`     ⇒ `mut ref T`（一个 T 的地方）
@@ -128,6 +132,9 @@ struct Expr {
      * 取值依据：**最浅的那个 `mut ref` 实参**所指对象住在哪只 arena 里
      * （"新东西的寿命跟着你给我的那条链走" —— ARENA.md §1.2 那条规则 ✓）*/
     int       homeDepth;
+    /* 显式转换：要不要**运行时检查**（整数收窄 / 换符号 / 浮点转整数）？
+     * 能证明装得下就不查（P：编译期能证明的运行时不留痕迹）✓ */
+    bool      convCheck;
 
     union {
         long long ival;
@@ -152,7 +159,8 @@ struct Expr {
         struct { Expr *operand; } deref;
         struct { Expr *operand; } sign;   /* `e!` —— 我签字 */
         struct { Expr *main, *fallback; } coalesce;   /* `a ?? b` */
-        struct { const char *typeName; Type *type; Expr *count; } new_;  /* `new T[n]` */        /* 关联函数调用：`typeName<targs>::name(args)`
+        struct { const char *typeName; Type *type; Expr *count; } new_;  /* `new T[n]` */
+        struct { const char *typeName; Type *type; Expr *operand; } conv; /* `i32(x)` */        /* 关联函数调用：`typeName<targs>::name(args)`
          * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
         struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
         struct { Expr *operand; } try_;   /* `e?` */

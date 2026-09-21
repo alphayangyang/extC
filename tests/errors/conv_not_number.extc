@@ -1,0 +1,5 @@
+// 只有数值之间能转
+fn main() {
+    var s: slice<u8> = "abc"
+    println(i32(s))
+}

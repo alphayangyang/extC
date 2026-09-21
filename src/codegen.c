@@ -825,6 +825,56 @@ static const char *genExprInner(CG *g, Expr *e) {
 
         /* `new T` / `new [N]T` / `new T[n]`（PLAN A1）—— 分配进**当前块**的 arena、
          * **清零**（运行时那条 alloc 本身就清零 ⇒ extC 里只有一条规则 ✓）*/
+        case EX_CONV: {
+            Type *t = subst(g, e->u.conv.type);          /* 目标类型（检查器解析好的）*/
+            const char *x = genExpr(g, e->u.conv.operand);
+            if (!e->convCheck)
+                return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
+
+            /* 带检查：拿一张范围表，走上面那三个 `static inline` 助手 ✓ */
+            const char *tn = t->name;
+            bool isF = ttIsFloat(subst(g, e->u.conv.operand->type));
+            if (isF) {
+                int64_t lo = 0, hi = 0;
+                if (strcmp(tn,"i8")==0)  { lo = -128; hi = 127; }
+                else if (strcmp(tn,"i16")==0) { lo = -32768; hi = 32767; }
+                else if (strcmp(tn,"i32")==0) { lo = -2147483648LL; hi = 2147483647LL; }
+                else if (strcmp(tn,"i64")==0) { lo = 1; hi = 0; }   /* 用宏，见下 */
+                else if (strcmp(tn,"u8")==0)  { lo = 0; hi = 255; }
+                else if (strcmp(tn,"u16")==0) { lo = 0; hi = 65535; }
+                else if (strcmp(tn,"u32")==0) { lo = 0; hi = 4294967295LL; }
+                else { lo = 0; hi = INT64_MAX; }        /* u64（浮点源）：按 i64 上限查 */
+                return arenaPrintf(g->arena,
+                    "((%s)extc_convFloat((double)(%s), %lldLL, %lldLL, \"%s\", %d))",
+                    cType(g, t), x, (long long)lo, (long long)hi, g->path, e->line);
+            }
+            bool sign = (tn[0] == 'i');
+            if (sign) {
+                int64_t lo = 0, hi = 0;
+                if (strcmp(tn,"i8")==0)  { lo = -128; hi = 127; }
+                else if (strcmp(tn,"i16")==0) { lo = -32768; hi = 32767; }
+                else if (strcmp(tn,"i32")==0) { lo = -2147483648LL; hi = 2147483647LL; }
+                else
+                    return arenaPrintf(g->arena,
+                        "((%s)extc_narrowI((int64_t)(%s), INT64_MIN, INT64_MAX, \"%s\", %d))",
+                        cType(g, t), x, g->path, e->line);
+                return arenaPrintf(g->arena,
+                    "((%s)extc_narrowI((int64_t)(%s), %lldLL, %lldLL, \"%s\", %d))",
+                    cType(g, t), x, (long long)lo, (long long)hi, g->path, e->line);
+            }
+            unsigned long long hi = 0;
+            if (strcmp(tn,"u8")==0)  hi = 255ULL;
+            else if (strcmp(tn,"u16")==0) hi = 65535ULL;
+            else if (strcmp(tn,"u32")==0) hi = 4294967295ULL;
+            else
+                return arenaPrintf(g->arena,
+                    "((%s)extc_narrowU((uint64_t)(%s), UINT64_MAX, \"%s\", %d))",
+                    cType(g, t), x, g->path, e->line);
+            return arenaPrintf(g->arena,
+                "((%s)extc_narrowU((uint64_t)(%s), %lluULL, \"%s\", %d))",
+                cType(g, t), x, hi, g->path, e->line);
+        }
+
         case EX_NEW: {
             Type *w = subst(g, e->u.new_.type);
             if (!e->u.new_.count) {
@@ -1803,8 +1853,22 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "static inline void extc_arena_release(extc_arena *a) {\n"
         "    while (a->top) { extc_ablock *p = a->top->prev; free(a->top); a->top = p; }\n"
         "}\n"
-        "void *extc_arena_alloc(extc_arena *a, int64_t n) {\n"
-        "    if (n <= 0) n = 1;\n"
+        "/* 显式转换用（PLAN #23）：整数收窄 / 换符号 / 浮点转整数 ⇒ 装不下就 trap（带位置）*/\n"
+        "static inline int64_t extc_narrowI(int64_t v, int64_t lo, int64_t hi, const char *f, int l) {\n"
+        "    if (v < lo || v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n"
+        "    return v;\n"
+        "}\n"
+        "static inline uint64_t extc_narrowU(uint64_t v, uint64_t hi, const char *f, int l) {\n"
+        "    if (v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n"
+        "    return v;\n"
+        "}\n"
+        "static inline int64_t extc_convFloat(double v, int64_t lo, int64_t hi,"
+        " const char *f, int l) {\n"
+        "    if (!(v >= (double)lo && v <= (double)hi))"
+        " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
+        "    return (int64_t)v;   /* 向零截断 = C 的规则 ✓ */\n"
+        "}\n"
+        "void *extc_arena_alloc(extc_arena *a, int64_t n) {\n"        "    if (n <= 0) n = 1;\n"
         "    n = (n + 7) & ~(int64_t)7;\n"
         "    if (!a->top || a->top->cap - a->top->used < n) {\n"
         "        int64_t cap = n > 4096 ? n : 4096;\n"

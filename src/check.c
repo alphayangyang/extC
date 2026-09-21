@@ -1971,6 +1971,36 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
         }
 
+        case EX_CONV: {
+            /* `i32(x)` —— 显式转换（PLAN #23）：
+             *   · 拓宽（已经自动）⇒ 写出来也行，**不生成任何检查** ✓
+             *   · **收窄 / 换符号** ⇒ 装不下就 **trap（带源码位置）** ✓
+             *   · 整数 ↔ 浮点 ⇒ C 的规则（截断 / 就近舍入），浮点转整数要查范围 ✓
+             * 能**证明**装得下的（比如 `i32(u8 值)`）⇒ 零检查 ✓（P）*/
+            Type *t = ttFromName(tt, e->u.conv.typeName);
+            if (!t || t->kind != TY_BUILTIN) {
+                ckError(c, e->line, NULL, "`%s` is not a scalar type", e->u.conv.typeName);
+                return ttError(tt);
+            }
+            e->u.conv.type = t;
+            Type *src = checkValue(c, e->u.conv.operand);
+            if (ttIsError(src)) return ttError(tt);
+            bool si = ttIsInteger(src), sf = ttIsFloat(src);
+            bool ti = ttIsInteger(t),   tf = ttIsFloat(t);
+            if (!((si || sf) && (ti || tf))) {
+                ckError(c, e->line,
+                        "explicit conversions are between numbers: integers and floats",
+                        "cannot convert `%s` to `%s`", typeStr(c, src), typeStr(c, t));
+                return ttError(tt);
+            }
+            /* 浮点之间的转换按 C 走（就近舍入；超出范围变 ±inf）⇒ 不查 ✓
+             * 整数之间能**拓宽**的（无损失、同符号方向）也不查 ✓
+             * 其余（收窄 / 换符号 / 浮点转整数）查 ✓ */
+            bool lossless = (si && ti && ttCanWiden(src, t)) || (sf && tf);
+            e->convCheck = !lossless;
+            return t;
+        }
+
         case EX_NEW: {
             /* `new T` / `new [N]T` / `new T[n]`（PLAN A1）
              *   单个 T        ⇒ `mut ref T`

@@ -1,0 +1,6 @@
+// 负数转无符号 ⇒ trap ✓
+fn main() {
+    var neg: i32 = -1
+    var u: u32 = u32(neg)
+    println(u)
+}

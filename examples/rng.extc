@@ -8,6 +8,23 @@
  *    收窄要显式转换，而那个语法还没做（PLAN #23）⇒ 这版没有 i64/f64 接口、
  *    也没法用 `u64` 当下标去洗牌 ✓
  */
+/* ⑥ 浮点 + 洗牌（有了显式转换 `f64(x)` / `i64(y)` 之后才写得出来 ✓）*/
+fn extra() {
+    var e: pcg32 = pcg32::seeded(99)
+    var acc: f64 = 0.0
+    var i: i64 = 0
+    while i < 10000 {
+        acc = acc + nextFloat(ref e)
+        i = i + 1
+    }
+    println("⑥ nextFloat 均值 = ", acc / 10000.0, "（期望 ≈ 0.5）")
+
+    var a: [10]i32 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    var g: pcg32 = pcg32::seeded(1)
+    shuffleI32(ref g, a[..])
+    println("⑦ 洗完 = ", a)
+}
+
 fn main() {
     /* ① 跟 **C 官方参考实现**逐位对拍（seed 42 / stream 54）—— 序列必须一模一样 ✓ */
     var want: [6]u64 = [2707161783, 2068313097, 3122475824,
@@ -60,4 +77,6 @@ fn main() {
         m = m + 1
     }
     println("⑤ 越界次数 = ", bad, "（必须是 0）")
+
+    extra()
 }
