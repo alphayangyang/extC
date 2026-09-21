@@ -1942,15 +1942,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 checkExpr(c, e->u.coalesce.fallback);
                 if (c->noHoist) {
                     ckError(c, e->line,
-                            c->noHoist == 2
-                              ? "a global initializer has no statement to put the temporary in"
-                              : "`while` re-evaluates its condition every round, but a"
-                                " temporary can only be computed once, before the loop",
-                            c->noHoist == 2
-                              ? "`??` here cannot be evaluated ahead of time (no statement"
-                                " to put the temporary in)"
-                              : "`??` here cannot be evaluated ahead of time -- it would run"
-                                " once instead of every round");
+                            "`while` re-evaluates its condition every round, but a temporary"
+                            " can only be computed once, before the loop. Bind it inside the"
+                            " loop body: `while true { let r = f()  if ... { break } }`",
+                            "`??` here cannot be evaluated ahead of time -- the temporary"
+                            " would run once instead of every round");
                     return ttError(tt);
                 }
                 e->needTemp = true;        /* codegen 照做：先算一次，再对临时变量做三元 */
@@ -2972,10 +2968,11 @@ static void checkGlobals(Checker *c) {
                         g->name);
             if (!g->ann) g->ann = ttError(c->tt);
         } else {
-            /* 全局初始化式**没有语句可挂前缀** ⇒ 需要提前求值的 `??` 在这里报错 ✓ */
-            c->noHoist += 2;
+            /* ⚠️ 全局这里**故意不设 noHoist**：全局初始化式本来就有一条更根本的规则
+             * —— "必须是常量"（C 的静态初始化；全局是 C 的静态对象）。
+             * 让那条报出来，比让 `??` 报"没地方放临时变量"清楚得多 ✓
+             * （`get() ?? -1` 里的 `get()` 本来就不是常量，跟 `??` 无关。）*/
             Type *it = checkValue(c, g->init);
-            c->noHoist -= 2;
             Type *declT = g->ann ? g->ann : it;
             if (g->ann) checkAssignable(c, g->ann, it, g->init, "initializer");
 
