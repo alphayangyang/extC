@@ -538,7 +538,11 @@ static const char *zeroValue(CG *g, Type *t) {
     /* 防御：`ref` 没有零值。check 保证走不到这里（含 ref 的 struct 不许零初始化、
      * 含 ref 的字段不许省略）—— 万一将来有路径漏过，这里生成一个**不存在的标识符**，
      * 让 C 编译器报错，而不是悄悄塞一个空引用。 */
-    if (t->kind == TY_REF) return "__extc_reference_has_no_zero_value__";
+    /* `?ref T` 的零值就是 `null`（可空引用有零值 ✓，见定案 ㊻）——
+     * ⚠️ 这里以前一律当成"没有零值"，于是**含 `?ref` 字段的结构体**零初始化时
+     * 会生成那个不存在的标识符 ✗（真 bug，2026-09-20 修：`var l: list` 编不过）*/
+    if (t->kind == TY_REF) return t->nullable ? "((void *)0)"
+                                              : "__extc_reference_has_no_zero_value__";
 
     return "0";
 }
