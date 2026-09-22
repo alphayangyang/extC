@@ -79,6 +79,17 @@ for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/m
         leak=1
     fi
 done
-[ "$leak" = 0 ] && echo "  ok   所有模块测试的诊断/输出里都没有 \$ ✓" || fail=1
+# 调试开关的输出也算（`EXTC_DUMP_EFFECTS` 原来把 `pair$make` 打得到处都是 ✓）
+# ⚠️ `EXTC_DBG_M` **故意**不在这里 —— 它的用途就是打印"谁被改名成了什么"
+#    （`pair->pair$pair`），`$` 正是它要展示的东西 ✓ 唯一的例外 ✓
+for env in EXTC_DUMP_EFFECTS EXTC_DBG_MOD; do
+    out=$(env "$env=1" "$EXTC" tests/modules/crossmod/main.extc -o /dev/null 2>&1 || true)
+    if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
+        echo "  FAIL $env  ->  调试输出里出现了 mangle 名"
+        echo "$out" | grep -E '[A-Za-z0-9_]\$[A-Za-z0-9_]' | head -2 | sed 's/^/        /'
+        leak=1
+    fi
+done
+[ "$leak" = 0 ] && echo "  ok   所有模块测试的诊断/输出/调试开关里都没有 \$ ✓" || fail=1
 
 exit $fail

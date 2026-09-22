@@ -2302,7 +2302,7 @@ fn helper() -> i32 { return 1 }          // 默认**公开** ✓
 | `extern!` | **一律不改** —— 那是 ABI（见下）✓ |
 | 报错回显 | 打印**源码里写的那个名字**（`Expr.u.ident.srcName` 存着 ✓）|
 
-**五条必须记住的不变式**（每条都是踩出来的，细节见 DEVLOG 同日条目）：
+**六条必须记住的不变式**（每条都是踩出来的，细节见 DEVLOG 同日条目）：
 
 1. **`extern!` 的名字就是链接器要找的符号** ⇒ 加前缀只会得到
    `undefined reference to sys$read`，而报错来自 `ld`，跟"模块改名"八竿子打不着 ✗
@@ -2319,10 +2319,21 @@ fn helper() -> i32 { return 1 }          // 默认**公开** ✓
    ⇒ 别名表**不去重**（同名同名两条都登记），`ttResolve` 数出 ≥2 个匹配就报
    `ambiguous type \`pair\` -- 2 modules export it, write \`module::pair\`` ✓
    （代价：一个模块被 `use` 两次会登记两条一模一样的别名 —— 已按 `(from,to)` 对去重 ✓）
+6. **内部名与显示名必须分家** ✗ —— `name` 是 `io$reader`（C 里要唯一），
+   `srcName` 是 `io::reader`（用户写的那个词）。诊断、`typeStr`、调试开关
+   一律走 `DN(x)` / `FN(f)`，codegen 一律走 `name`。
+   把 `alpha$pair` 印给用户，等于把编译器的内部编码漏出去 —— 用户从没写过那个词 ✗
+   （踩过：`struct \`alpha$pair\` has no field \`zzz\``）
+   **唯一的例外是 `EXTC_DBG_M`** —— 它的用途就是展示"谁被改名成了什么" ✓
 
-**验收（全绿 ✓）**：新增常设正例 `tests/modules/samenames` —— 两个模块
+**验收（全绿 ✓）**：`tests/modules/run.sh` 里有一条**自动判据** ——
+所有模块测试的诊断 / 输出 / 调试开关里都不许出现 `标识符$标识符`
+（`$EXTC_STD` 这种文案不算；`EXTC_DBG_M` 是唯一例外 ✓）；
+另加常设正例 `tests/modules/samenames` —— 两个模块
 **逐声明重名**（都叫 `pair`/`make`/`which`，而两个 `pair` 字段名相同、**类型不同**）
-也必须互不干扰（`2 正例` → `3 正例`）✓；`tests/modules/run.sh` **7 条**反例全过
+也必须互不干扰 ✓；再加常设正例 `tests/modules/crossmod` ——
+**跨模块泛型 + 枚举 + 泛型自由函数**，而且模块名与类型名故意同名（`pair::pair`）✓
+⇒ `tests/modules/run.sh` **4 正例 + 7 反例**全过
 （新增 `ambiguous-type`：裸名歧义必须报错 ✓）；
 `tests/run.sh` **255** 全过；golden **94** 文件逐字节相同（单文件程序不受影响 ✓）；
 `check.sh` **14/14** ✓

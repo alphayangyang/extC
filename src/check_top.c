@@ -461,7 +461,7 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     f->effState = 1;
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%x Cont=0x%x] toHome[Addr=0x%x Cont=0x%x] other=0x%x\n",
-                f->name, (int)f->effComplete, f->addrMask, f->contMask,
+                FN(f), (int)f->effComplete, f->addrMask, f->contMask,
                 f->homeAddrMask, f->homeContMask, f->otherMask);
     return complete;
 }
@@ -843,7 +843,7 @@ static void computeEscapes(Checker *c, FuncDef *f) {
     for (int round = 0; round < 32; round++)
         if (!markNamesInStmt(c, f, f->body)) break;   /* 不长大了就停 ✓ */
     if (getenv("EXTC_DUMP_EFFECTS")) {
-        fprintf(stderr, "[escapes] %-22s { ", f->name);
+        fprintf(stderr, "[escapes] %-22s { ", FN(f));
         for (size_t i = 0; i < c->escapees.len; i++)
             fprintf(stderr, "%s ", *(const char **)vecAt(&c->escapees, i));
         fprintf(stderr, "}\n");
@@ -1089,14 +1089,14 @@ static void collectEffects(Checker *c, FuncDef *f) {
     if (!f->callees.arena) vecInit(&f->callees, c->arena, sizeof(FuncDef *));
     computeEscapes(c, f);      /* ⭐ 档1：先算 E（"谁会被搬出本函数"），再用它选家 arena ✓ */
     c->escapeesFor = (int)(size_t)f;   /* 只是标记"算过了"（用地址当 id）*/
-    if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", f->name);
+    if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", FN(f));
     Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
     collectFreshLocals(c->arena, &fresh, f->body);
     f->freshCount = (unsigned)fresh.len;
     collectEffectsStmt(c, f, f->body, &fresh);
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects] %-22s toParam[Addr=0x%x Cont=0x%x Other=0x%x] toHome[Addr=0x%x Cont=0x%x] localAddr=%d fresh=%u callees=%zu\n",
-                f->name, f->addrMask, f->contMask, f->otherMask,
+                FN(f), f->addrMask, f->contMask, f->otherMask,
                 f->homeAddrMask, f->homeContMask,
                 (int)f->addrFromLocal, f->freshCount, f->callees.len);
 }

@@ -502,6 +502,21 @@ note:  two modules must not depend on each other (each one's type is
 | 模块里写 `main` | `` `main` must live in the entry file, not in a module `` |
 | 两个模块都导出 `pair` 而这里裸写 `pair` | `` ambiguous type `pair` -- 2 modules export it, write `module::pair` `` |
 
+### 11.5 内部名 vs 显示名（改这条的人必读）
+
+mangle 之后每个声明有**两个**名字，混用就会出微妙的问题：
+
+| | 值 | 谁用 |
+|---|---|---|
+| `name` | `io$reader` | **codegen**（C 里必须唯一）、查表、比较 |
+| `srcName` | `io::reader` | **诊断 / `typeStr` / 调试开关** —— 用户写的那个词 |
+
+规矩：**内部名与显示名必须分家**。把 `alpha$pair` 印给用户，等于把编译器的
+内部编码漏出去 ✗（`tests/modules/run.sh` 有一条自动判据在查这件事 ✓）
+唯一的例外是 `EXTC_DBG_M` —— 它的用途就是展示"谁被改名成了什么" ✓
+
+泛型实例名与模块前缀的顺序：**前缀在最外**（`pair::pair<i32>` → `pair$pair_i32`）✓
+
 ### 11.4 限制（下一步，别当已经解决 ✗）
 
 1. ~~**顶层名字要全局唯一**~~ ✅ **已解**（2026-09-23 per-module **名字 mangle**）：

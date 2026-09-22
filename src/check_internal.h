@@ -14,6 +14,13 @@
  * （真踩过：`struct \`alpha$pair\` has no field \`zzz\``）✓ */
 #define DN(d) ttDispName((d) ? (d)->srcName : NULL, (d) ? (d)->name : NULL)
 
+/* ⭐ **诊断/调试输出里显示函数名用 `FN(f)`** —— mangle 之后 `f->name` 是
+ * `pair$make`，而用户写的是 `pair::make` ✗（`EXTC_DUMP_EFFECTS` 那几行踩过 ✓）
+ * 根模块/单文件程序 `modName` 为空 ⇒ 直接 `name`（就是源码名 ✓）
+ * 实现：把 mangle 前缀 `mod$` 换成 `mod::`（前缀一定等于 `modName` ✓）*/
+const char *checkFnDisplay(const char *name, const char *modName);
+#define FN(f) checkFnDisplay((f) ? (f)->name : NULL, (f) ? (f)->modName : NULL)
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>

@@ -3,6 +3,7 @@
  * 从 check.c 拆出来的 —— **纯移动**：注释与逻辑一个字节没动 ✓
  */
 
+#include <string.h>
 #include "check_internal.h"
 
 /* --------------------------------------------------- `?ref T` 的非空收窄 */
@@ -168,6 +169,23 @@ Sym *lookup(Checker *c, const char *name) {
 }
 
 /* ---------------------------------------------------------------- 查找 */
+
+/* ⭐ 调试/诊断里显示函数名：`pair$make` ⇒ `pair::make`（根模块原样 ✓）
+ * 为什么要这一层：`EXTC_DUMP_EFFECTS` 那几行原来直接把 `f->name` 印出来，
+ * 于是调试输出里全是内部编码 `pair$make` ✗（跟"诊断不许露 mangle 名"是同一条规矩）*/
+const char *checkFnDisplay(const char *name, const char *modName) {
+    if (!name) return "?";
+    if (!modName || !*modName) return name;    /* 根模块/单文件 ⇒ 原名 ✓ */
+    const char *d = strchr(name, '$');
+    if (!d) return name;                       /* 没加前缀（`extern!`）⇒ 原样 ✓ */
+    static char buf[512];
+    size_t nl = (size_t)(d - name);
+    if (nl + 2 + strlen(d + 1) + 1 > sizeof buf) return name;
+    memcpy(buf, name, nl);
+    buf[nl] = ':'; buf[nl + 1] = ':';
+    strcpy(buf + nl + 2, d + 1);
+    return buf;
+}
 
 FuncDef *findFunc(Checker *c, const char *name) {
     for (size_t i = 0; i < c->m->funcs.len; i++) {

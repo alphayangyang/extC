@@ -80,11 +80,44 @@ var p: pair = alpha::make(5)   // 编过了，绑到了 alpha —— 一声没�
 `ambiguous type \`pair\` -- 2 modules export it, write \`module::pair\`` ✓
 新增常设反例 `tests/modules/errors/ambiguous-type` ✓
 
+### ⑧ 判据③没做到：诊断里印的是 `alpha$pair`（第二轮补）
+
+第一轮只顾着"能编过、各自独立"，忘了目标里那条**③ 诊断里要还原成 `io::reader`**：
+
+```
+error: struct `alpha$pair` has no field `zzz`
+```
+
+用户从没写过 `alpha$pair` 那个词 ✗ 这是**不影响编译结果**的那类 bug，
+只有人眼才看得出来 —— 所以光靠"测试全绿"是发现不了的。
+
+做法：`TypeDef`/`StructDef` 加 `srcName`（给用户看的 `alpha::pair`），
+新增 `ttDispName()` 给 `ttRender`（= `typeStr`，**62 处调用**）用 ⇒ 一处改、全站生效 ✓
+诊断点统一走 `DN(x)` / `FN(f)` 宏，codegen 继续走 `name` ✓
+
+⚠️ **踩到一个顺序坑**：`srcName` 一开始填在 `mergeUnit` 里 —— 那时 `d->name`
+**已经**是 mangle 名了 ⇒ 填成 `alpha::alpha$pair` ✗
+⇒ 必须挪到 `mangleUnitDecls` 里、趁 `name` 还是源码名时填 ✓
+
+顺带发现同族的两个：
+* `lib::box<alpha::pair>` 里提到没导入的模块，消息是"add `use alpha::pair`" ——
+  照着写会得到一个**不存在的模块** ✗ ⇒ 只说模块名 `use alpha` ✓
+* `EXTC_DUMP_EFFECTS` 把 `pair$make` 打得到处都是 ⇒ 加 `FN(f)` ⇒ `pair::make` ✓
+
+**判据④（泛型实例名与前缀顺序）抽查确认本来就是对的**：
+`pair::make` → `pair$make`、`pair::pair<i32>` → `pair$pair_i32`（前缀在最外 ✓）。
+
+**新增一条自动判据**（比人眼可靠）：所有模块测试的诊断/输出/调试开关里
+都不许出现 `标识符$标识符` —— `$EXTC_STD` 这种文案不算，`EXTC_DBG_M` 是唯一例外 ✓
+
 ### 验收
 
+* 新增常设正例 `tests/modules/crossmod`：跨模块**泛型 + 枚举 + 泛型自由函数**，
+  模块名与类型名故意同名（`pair::pair`）⇒ 前缀接错一眼就看得出 ✓
 * 新增常设正例 `tests/modules/samenames`：**逐声明重名**且两个 `pair` 的**字段类型不同**
   ⇒ 任何串台都会让输出立刻不对，不存在"看着能跑其实绑错了"的中间状态 ✓
-* `tests/modules/run.sh` 3 正例 + **7** 反例全过；`tests/run.sh` **255** 全过；
+* `tests/modules/run.sh` **4** 正例 + **7** 反例全过（外加"诊断不许露 `$`"那条自动判据 ✓）；
+  `tests/run.sh` **255** 全过；
   golden **94** 文件逐字节相同；`check.sh` **14/14**；`make` 零警告 ✓
 
 ---
