@@ -1,0 +1,14 @@
+// PLAN #10：**裸写枚举变体要指路**（不是"该做推断"）
+//
+// 定案 27 明确：关联调用写全类型**是故意的** —— 「不靠上下文猜」，符合"显式优于推导" ✓
+// ⇒ 所以这里**不做类型推断**，只把**正确写法说出来** ✓
+//
+// 以前报的是 `call to undefined function `circle`` + 「built-ins available: print/println」
+// ⇒ 用户完全看不出"这其实是个变体、要写 `shape.circle(...)`" ✗
+// 无载荷变体那条路（`let s: st = ok`）以前报 `undefined name `ok``，同样没有指路 ✗
+fn main() -> i32 {
+    var s: shape = circle(2.0)
+    return 0
+}
+type shape = | circle(f64) | rect(f64, f64)
+// expect: did you mean `shape.circle(...)`

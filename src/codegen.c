@@ -85,6 +85,12 @@ typedef struct {
                             * （判据在检查器里算：`f->mayUseArena`，编译时长优化）*/
     int         loopLevel[64];
     int         loopLen;
+    /* ⭐ PLAN #5：本函数是不是**自递归**（自己（传递地）调到自己）？
+     * 是 ⇒ 序言递增 `__extc_rec_depth`、每个出口递减，并由那两句守卫挡爆栈 ✓
+     * ⚠️ 只对自递归函数吐这个（不是所有函数）——
+     *    `EX_GEN` 那类真环要走 `funcCallsItself` 的 SCC 判定，代价是**编译期**的，
+     *    运行时那两句只落在真正需要守卫的函数里 ✓ */
+    bool        isRecursive;
     /* ⭐ 定案 65：本函数的 `@overwrite` 站点（`Stmt*`，按出现顺序）。
      * 函数序言要为每个站点吐一个**存储格子**（指针 + 懒分配标记）✓
      * 用"站点表 + 查表"而不是把编号写进 AST —— 泛型实例化会**多次查同一个函数体**，
@@ -1212,12 +1218,29 @@ static const char *genExprInner(CG *g, Expr *e) {
         }
 
         case EX_GENCALL: {
-            /* 泛型调用 —— 目前只有内置原语 `alloc<T>(n)`：
-             * 向**当前块**的 arena 要 n 个 T 的地方（按块细化之后就是这句话的意思 ✓）*/
+            /* 泛型调用 —— 两个内置原语：
+             *   `alloc<T>(n)`      ⇒ 向**当前块**的 arena 要 n 个 T 的地方，返回指针 ✓
+             *   `allocSlice<T>(n)` ⇒ 同样要一块，但返回 `{data, len}` 视图，
+             *                        **而且清零**（PLAN #9）✓
+             * ⭐ 为什么 `allocSlice` 要清零：`LANGUAGE.md` §0.6 的承诺是
+             * 「**过期读到的字节永远是初始化过的**」—— 而裸 bump 分配不清零 ⇒
+             * 读没写过的地方是**不确定值** ✗ ⇒ 清零这条承诺才成立 ✓
+             * （`new` 那条路本来就清零，这里补齐另一半 ✓）*/
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             /* ⭐ 定案 68：层号也来自检查器（`alloc` = 当前块）⇒ 不再自己数 `g->blkLevel` ✓ */
             const char *ar = arenaRefAt(g, e->arenaLevel);
+            if (strcmp(e->u.gencall.name, "allocSlice") == 0) {
+                const char *vt = cType(g, subst(g, e->type));
+                const char *tmp = arenaPrintf(g->arena, "__extc_s%d", g->tmpSeq++);
+                pfLine(g, "%s %s;", vt, tmp);
+                pfLine(g, "%s.data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d);",
+                       tmp, tn, ar, n, tn, g->path, e->line);
+                pfLine(g, "%s.len = (int64_t)(%s);", tmp, n);
+                pfLine(g, "memset(%s.data, 0, (size_t)(%s.len * (int64_t)sizeof(%s)));",
+                       tmp, tmp, tn);
+                return tmp;
+            }
             return arenaPrintf(g->arena,
                 "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
                 tn, ar, n, tn, g->path, e->line);
@@ -1425,13 +1448,38 @@ static const char *genTryFail(CG *g, TryInfo *ti) {
  * 语义没变：都是"先算好值、再放 arena、再返回" ✓
  * （值先落进 `__extc_ret_v`，比原来"先释放再求值"更保守一点 ✓）
  * `noArena` 的函数（不会分配、连数组都没有）⇒ 保持直接 return ✓ */
+/* ⭐ PLAN #5：自递归函数的**每个出口**都要把深度减回去。
+ *
+ * ⚠️⚠️ 这里有两个都实测踩过的坑：
+ *
+ * **坑 1：顺序**。第一版把递减写在**取值之前** ⇒
+ *     `return spin(n)` 生成成 `--depth; return spin(n);`
+ *     ⇒ 尾调用每帧都把计数**清回 0** ⇒ 守卫永远不触发 ✗✗
+ *     （`-O0` 下 gcc 真折成尾调用 ⇒ **秒退零输出**；`-O2` 下死循环 —— 两种都不对 ⚠️）
+ *   ⇒ 必须**先算值、再递减** ✓
+ *
+ * **坑 2：`return` 不是唯一的出口**。第二版只挂在 `cgReturn` 上 ⇒
+ *     **函数体自然结束**（隐式返回）那条路**一次都不递减** ✗✗
+ *     实测：`bench/oi/p3810.extc` 的 `cdq`（末尾没有显式 return）⇒
+ *     深度**只增不减** ⇒ 跑到 10 万层就误报 `recursion too deep`，
+ *     把 OI 横评那个**合法**程序整个弄挂 ✗（被 `./check.sh` 的基准那一节抓到 ✓）
+ *   ⇒ 所以函数体末尾（非 `noArena` 要跳去 epilogue 之前）**也要**递减一次 ✓
+ *     （显式 return 的路径已经在 `cgReturn` 里减过了 ⇒ 那一条路不会重复减 ✓）*/
+static void cgRecLeave(CG *g) {
+    if (g->isRecursive) cgLine(g, "--__extc_rec_depth;");
+}
+
 static void cgReturn(CG *g, const char *val) {
     if (g->noArena) {
-        if (val) cgLine(g, "return %s;", val);
-        else     cgLine(g, "return;");
+        if (g->isRecursive) {
+            if (val) cgLine(g, "{ int64_t __r = (int64_t)(%s); --__extc_rec_depth; return __r; }", val);
+            else     cgLine(g, "{ --__extc_rec_depth; return; }");
+        } else if (val) cgLine(g, "return %s;", val);
+        else            cgLine(g, "return;");
         return;
     }
     if (val) cgLine(g, "__extc_ret_v = %s;", val);
+    cgRecLeave(g);
     cgLine(g, "goto __extc_ret;");
 }
 
@@ -1984,6 +2032,55 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     return bufCstr(&sig);
 }
 
+/* 这个语句是不是**一定返回**？（只认最朴素的形状：`return`，或块的最后一句一定是它）
+ * ⚠️ 故意**保守**：判不准就返回 false ⇒ 那就"多吐一句 return"（死代码但能编译 ✓）
+ *    比反过来（该吐不吐 ⇒ 缺 return ⇒ gcc 报错）安全 ✓ */
+static bool stmtIsDefiniteReturn(Stmt *s) {
+    if (!s) return false;
+    if (s->kind == ST_RETURN) return true;
+    if (s->kind == ST_BLOCK && s->u.block.stmts.len > 0)
+        return stmtIsDefiniteReturn(*(Stmt **)vecAt(&s->u.block.stmts,
+                                                    s->u.block.stmts.len - 1));
+    return false;
+}
+
+/* ⭐ PLAN #5：本函数**（传递地）调到自己**吗？
+ *
+ * 为什么要它：无限递归以前是**静默**的 —— 要么被 gcc 折成死循环（零输出），
+ * 要么爆栈让 OS 报 Segmentation fault（不是 extC 的消息、更没有位置）✗
+ * ⇒ 只对**自递归**的函数吐深度守卫（不是所有函数 ⇒ 正常运行零代价，只多一次自增）✓
+ *
+ * ⚠️ 判据用**调用图**（`e->func` 检查器早就填好了 ⇒ 不用再写一遍 AST 遍历器 ✗），
+ *    而且要**传递闭包**：`g → h → g` 这种互递归里，`g` 也算自递归 ✓
+ *    （那正是 PLAN #5 实测里"跑 60 秒没动静"的形状 ✓）
+ * ⚠️ 阈内可达的上限：调用图很小、只在生成时算一次 ⇒ 用最朴素的不动点 ✓ */
+static bool funcCallsItself(CG *g, FuncDef *f) {
+    if (!f || !f->body) return false;
+    /* 直接调用者（含 `EX_ASSOC`/`EX_METHOD` —— 它们也走 `e->func` ✓）*/
+    Vec seen;  vecInit(&seen, g->arena, sizeof(FuncDef *));
+    Vec work;  vecInit(&work, g->arena, sizeof(FuncDef *));
+    *(FuncDef **)vecPush(&work) = f;
+    *(FuncDef **)vecPush(&seen) = f;
+    bool hit = false;
+    for (size_t i = 0; i < work.len; i++) {
+        FuncDef *cur = *(FuncDef **)vecAt(&work, i);
+        if (!cur || !cur->body) continue;
+        if (cur == f && i > 0) { hit = true; break; }   /* 绕回来就是自递归 ✓ */
+        for (size_t j = 0; j < cur->callees.len; j++) {
+            FuncDef *nx = *(FuncDef **)vecAt(&cur->callees, j);
+            if (!nx) continue;
+            if (nx == f) { hit = true; break; }
+            bool dup = false;
+            for (size_t k = 0; k < seen.len && !dup; k++)
+                if (*(FuncDef **)vecAt(&seen, k) == nx) dup = true;
+            if (!dup) { *(FuncDef **)vecPush(&seen) = nx;
+                        *(FuncDef **)vecPush(&work) = nx; }
+        }
+        if (hit) break;
+    }
+    return hit;
+}
+
 static void genFunc(CG *g, FuncDef *f) {
     bool isMain = cgIsMain(f);
     if (isMain) {
@@ -2050,7 +2147,33 @@ static void genFunc(CG *g, FuncDef *f) {
     g->loopLen  = 0;
     if (isMain && f->needsHome)
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main 的家 = 自己函数体 */");
+    /* ⭐ PLAN #5：**自递归**才要深度守卫（见 `funcCallsItself`）——
+     * 进来 +1、每个出口 −1，超限由 `extc_rec_enter` trap 带位置 ✓
+     * ⚠️ 用函数**自己的行号**当位置（调用点那里才是用户想看的行，
+     *    但递归是"绕回来的" ⇒ 报函数声明处最可读）✓ */
+    g->isRecursive = funcCallsItself(g, f);
+    if (g->isRecursive)
+        cgLine(g, "extc_rec_enter(\"%s\", %d);", g->path, f->line);
     genBlockBody(g, f->body);
+    /* ⭐ PLAN #5（坑 2）：函数体**自然结束**（末尾没有显式 return）也是一条出口 ⇒
+     * 这里补一次递减，否则深度只增不减 ⇒ 合法程序会被误判成爆栈 ✗
+     * ⚠️ `noArena` 时下面没有 epilogue ⇒ 递减后要**自己 return**，
+     *    否则尾部的 `return` 语句够不着它（变成死代码 + 计数不减 ✗）*/
+    if (g->isRecursive) {
+        cgRecLeave(g);
+        /* ⚠️ 只有当函数体**可能自然结束**时才补这句 return ——
+         *    末尾就是 `return …` 时它是**不可达**的：
+         *    · `noArena` 下 `__extc_ret_v` 根本没声明 ⇒ **gcc 直接报错** ✗（踩过）
+         *    · 其它情况也只是死代码 ⇒ 干脆不吐 ✓ */
+        if (!(f->body && f->body->kind == ST_BLOCK && f->body->u.block.stmts.len > 0
+              && stmtIsDefiniteReturn(*(Stmt **)vecAt(&f->body->u.block.stmts,
+                                                       f->body->u.block.stmts.len - 1)))) {
+            if (g->noArena) {
+                if (retVoid) cgLine(g, "return;");
+                else         cgLine(g, "return __extc_ret_v;");
+            }
+        }
+    }
     /* ⭐ A：**统一出口** —— 释放串只吐一遍；自然结束也走这里 ✓
      * （`goto` 保证 label 一定有人用 ⇒ 不会有 `-Wunused-label` 警告 ✓）
      * ⚠️ 释放**所有**层：return 可能从更深的块里跳出来 ⇒ 各层都得放 ✓
@@ -2453,6 +2576,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n"
         "    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n"
         "    exit(1);\n"
+        "}\n"
+         /* ⭐ PLAN #5：**递归深度守卫** —— 只被"自递归"的函数用到。
+          * 以前无限递归的两种表现都很难查：被 gcc 折成循环 ⇒ **静默死循环**（零输出），
+          * 真爆栈 ⇒ OS 报 Segmentation fault（**不是 extC 的消息、更没有位置**）✗
+          * 现在：自递归函数进出时维护一个深度计数，超限就 **trap 带位置** ✓
+          * 阈值比真爆栈早得多（默认栈 8MB、帧几百字节 ⇒ 10 万层绰绰有余）✓ */
+         "#ifndef EXTC_REC_LIMIT\n"
+         "#define EXTC_REC_LIMIT 100000\n"
+         "#endif\n"
+         "static int64_t __extc_rec_depth = 0;\n"
+        /* 自递归函数的序言调用它：超限就 trap（带**调用点**的位置 ⇒ 指得到那一行）✓ */
+        "static inline void extc_rec_enter(const char *f, int l) {\n"
+        "    if (++__extc_rec_depth > EXTC_REC_LIMIT)\n"
+        "        extc_trapMsg(f, l, \"recursion too deep (unbounded recursion?)\");\n"
         "}\n"
         "static inline int64_t extc_divI(int64_t a, int64_t b, const char *f, int l) {\n"
         "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"

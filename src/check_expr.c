@@ -101,6 +101,25 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (s && s->modName && !e->qualified)
                 requireQualified(c, e->u.ident.name, s->modName, false, e->line);
             if (!s) {
+                /* ⭐ PLAN #10（同一族的另一半）：**裸写枚举变体（无载荷）** ——
+                 * `type st = | ok | bad` 之后写 `let s: st = ok` 报的是
+                 * `undefined name `ok`` ⇒ 同样看不出"要写 `st.ok`" ✗
+                 * ⇒ 跟"裸写构造器"那条**用同一套指路**（都是"变体要带类型名"）✓ */
+                TypeDef *owner = NULL;
+                for (size_t i = 0; i < c->tt->enums.len && !owner; i++) {
+                    TypeDef *td = *(TypeDef **)vecAt(&c->tt->enums, i);
+                    if (findVariant(td, e->u.ident.name)) owner = td;
+                }
+                if (owner) {
+                    const char *note = arenaPrintf(c->arena,
+                            "A variant is named by its type -- write `%s.%s`. "
+                            "(extC never guesses a type from context: DECISIONS ruling 27.)",
+                            owner->name, e->u.ident.name);
+                    ckError(c, e->line, note,
+                            "`%s` is a variant of `%s`, not a value -- did you mean `%s.%s`?",
+                            e->u.ident.name, owner->name, owner->name, e->u.ident.name);
+                    return ttError(tt);
+                }
                 ckError(c, e->line, "every name must be declared first (extC has no globals yet)",
                         "undefined name `%s`", e->u.ident.name);
                 return ttError(tt);
@@ -802,7 +821,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* ⭐ PLAN #47：`maxOf<i32>(4, 3)` —— **显式类型实参**的自由函数调用 ✓
              * （`T` 只出现在返回类型时只能这么写 ✓）
              * 剩下的就是老规矩：只有内建原语能走泛型调用这条路（`alloc<T>(n)` ✓）*/
-            if (strcmp(e->u.gencall.name, "alloc") != 0) {
+            /* ⭐ PLAN #9：两个**分配原语**走同一条路，只有返回类型不同：
+             *   `alloc<T>(n)      -> mut ref T`     （指向 1 块地方）
+             *   `allocSlice<T>(n) -> mut slice<T>`  （`{data,len}` 视图，**清零**）
+             * 为什么要有第二个：**长度运行时才知道**的 buffer（读未知大小的文件、
+             * `reader` 自动要 4KB）用 `alloc` 造不出来 —— 它是 `mut ref T`，
+             * 不能索引也不能切片 ✗ 见 PLAN §0.4 #9 与 LANGUAGE.md §0.6（清零的承诺）✓ */
+            bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
+            bool isAllocS = strcmp(e->u.gencall.name, "allocSlice") == 0;
+            if (!isAlloc && !isAllocS) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
                     Vec targs;
@@ -838,7 +865,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (e->u.gencall.targs.len != 1) {
-                ckError(c, e->line, NULL, "`alloc` needs exactly one type argument, e.g. `alloc<i32>(4)`");
+                ckError(c, e->line, NULL, "`%s` needs exactly one type argument, e.g. `%s<i32>(4)`",
+                        e->u.gencall.name, e->u.gencall.name);
                 return ttError(tt);
             }
             Type *elem = ttResolve(tt, c->ctx, *(Type **)vecAt(&e->u.gencall.targs, 0),
@@ -847,7 +875,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* 把**解析后的**类型写回去 —— codegen 看的是 targs，不是局部变量 */
             *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
             if (e->u.gencall.args.len != 1) {
-                ckError(c, e->line, NULL, "`alloc` takes one argument (how many elements)");
+                ckError(c, e->line, NULL, "`%s` takes one argument (how many elements)",
+                        e->u.gencall.name);
                 return ttError(tt);
             }
             Expr *n = *(Expr **)vecAt(&e->u.gencall.args, 0);
@@ -873,6 +902,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * 自己数块层（以前它走 `arenaRef(g)` = `g->blkLevel`，那是"第二个权威"里
              * 最隐蔽的一个：两个数必须永远相等，一旦不等就是内存问题）✓ */
             e->arenaLevel = (int)c->scopes.len;
+            if (isAllocS) {
+                /* `allocSlice<T>(n) -> mut slice<T>` —— 视图本身就是可写的
+                 * （`mut` 落在**视图**上，不是落在指向它的引用上）✓ */
+                return ttViewMut(tt, sliceOf(c, elem), true);
+            }
             Type *r = ttRef(tt, elem);
             r->mut = true;                       /* 刚分配的地方当然可写 */
             return r;
@@ -1103,6 +1137,33 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (f && !f->reserved && f->modName && !e->qualified)
                 requireQualified(c, name, f->modName, false, e->line);
             if (!f) {
+                /* ⭐ PLAN #10：**裸写枚举构造器** —— 报错要**指路**，别只说"没这个函数" ✗
+                 *
+                 * `type shape = | circle(f64) | ...` 之后写 `circle(2.0)` 报的原来是
+                 * `call to undefined function `circle`` + 「built-ins available: print/println」
+                 * ⇒ 用户完全看不出"这其实是个变体、要写全路径" ✗
+                 *
+                 * ⚠️ **不做类型推断**：定案 27 明确「关联调用写全类型**是故意的** —— 不靠上下文猜」
+                 * （符合"显式优于推导"）⇒ 这里只**把正确写法说出来**，不替他补 ✓
+                 * ⚠️ 只对**带载荷**的变体提示（无载荷的 `status.ok` 本来就当值用，
+                 * 报的是另一条路）✓ */
+                TypeDef *owner = NULL;
+                for (size_t i = 0; i < c->tt->enums.len && !owner; i++) {
+                    TypeDef *td = *(TypeDef **)vecAt(&c->tt->enums, i);
+                    if (findVariant(td, name)) owner = td;
+                }
+                if (owner) {
+                    /* ⚠️ `ckError` 的 `note` 是**原样**传下去的（不像 fmt 那样吃可变参数）
+                     * ⇒ 要带值就得先自己 `arenaPrintf` 好 ✓（踩过：直接写 `%s` 会印出字面量）*/
+                    const char *note = arenaPrintf(c->arena,
+                            "A payload variant is named by its type -- write `%s.%s(...)`. "
+                            "(extC never guesses a type from context: DECISIONS ruling 27.)",
+                            owner->name, name);
+                    ckError(c, e->line, note,
+                            "`%s` is a variant of `%s`, not a function -- did you mean `%s.%s(...)`?",
+                            name, owner->name, owner->name, name);
+                    return ttError(tt);
+                }
                 ckError(c, e->line, "built-ins available: `print(x)` / `println(x)`",
                         "call to undefined function `%s`", name);
                 return ttError(tt);

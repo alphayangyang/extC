@@ -1,0 +1,44 @@
+// ⭐ PLAN #9：**`allocSlice<T>(n) -> mut slice<T>`** —— 长度**运行时才知道**的 buffer。
+//
+// 以前只有 `alloc<T>(n)`，它返回 `mut ref T`（指向**一个** T）⇒ 不能索引、不能切片 ✗
+// ⇒ "读未知大小的文件"、"`reader` 自动要 4KB"这类形状**根本写不出来** ✗
+//
+// 两个原语的分工（只有返回类型不同）：
+//     alloc<T>(n)      -> mut ref T      指向 1 块地方
+//     allocSlice<T>(n) -> mut slice<T>   `{data, len}` 视图，**而且清零**
+//
+// ⭐ 为什么 `allocSlice` **必须清零**：`LANGUAGE.md` §0.6 的承诺是
+// 「**过期读到的字节永远是初始化过的**」—— 裸 bump 分配不清零 ⇒ 读没写过的地方是
+// **不确定值**（虽然不崩）⇒ 那条承诺就不成立 ✗ 清零之后才成立 ✓
+// （`new` 那条路本来就清零，这个补上另一半 ✓）
+//
+// 逃逸语义跟 `alloc` **完全一致**（都是"活到当前块结束"）：
+//   返回它 / 循环里分配到循环外 ⇒ 都被挡（见 tests/errors/ 那两条）✓
+fn fill(n: i64) -> i32 {
+    var buf = allocSlice<u8>(n)          // ← 长度来自参数（运行时才知道）
+    var i: i64 = 0
+    while i < n { buf[i] = u8(65 + i)  i = i + 1 }
+
+    var total: i32 = 0
+    i = 0
+    while i < n { total = total + i32(buf[i])  i = i + 1 }
+    return total
+}
+
+fn main() -> i32 {
+    println("sum = ", fill(4))            // 65+66+67+68 = 266
+
+    var s = allocSlice<i32>(4)
+    s[0] = 7
+    s[3] = 9
+    println("s[0] = ", s[0], " s[3] = ", s[3], " len = ", s.len)
+
+    let v = s[0..2]                       // 视图还能再切 ✓
+    println("v.len = ", v.len, " v[0] = ", v[0])
+
+    var z = allocSlice<i32>(3)            // 没写过 ⇒ **应该全是 0**（清零的承诺）
+    println("零值 = ", z[0], " ", z[1], " ", z[2])
+    return 0
+}
+// expect: sum = 266
+// expect: 零值 = 0   0   0
