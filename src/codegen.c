@@ -183,7 +183,8 @@ static const char *cType(CG *g, Type *t) {
 static bool isProtoType(Type *t, const char *name, size_t nargs);
 static const char *genExpr(CG *g, Expr *e);
 static const char *genSlice(CG *g, Expr *e);
-static void genPrintValue(CG *g, Type *t, const char *expr);
+static const char *descRef(CG *g, Type *t);
+static void genDebugShim(CG *g, const char *cname);
 
     
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
@@ -276,25 +277,84 @@ static void genViewIndexer(CG *g, Type *inst) {
     substLeave(g);
 }
 
-/* 非字节视图的调试打印：跟数组一样打成一列元素。
+/* ---------------------------------------------------------------- 类型描述表
  *
- * 不这么做的话 `println(v)` 会掉进 struct 的调试打印、输出
- * `slice { data: <ref>, len: 3 }` —— 一个**给不出信息**的地址占位。
- * 视图是「一片元素」，那就按元素打。字节视图不走这里（它按文本打）。 */
-static void genViewDebug(CG *g, Type *v) {
+ * 打印**不再派生代码**：每类型只出一份 `static const ExtcDesc`（数据 ✓），
+ * 全程序共用一个 `extc_print`（运行时那一段，在生成文件开头）✓
+ *
+ * （旧方案见 git 历史：`genStructDebug` 给每个 struct 派生一整段 printf 序列。
+ *   合成压测程序里那样堆出 2028 个 `_debug`、占生成 C 的 22.9% 行，而**一次都没打印** ✗）
+ *
+ * `descRef` 把 extC 类型映射到"描述它的那份常量"的地址：
+ *   · 标量 / ref / slice<u8> ⇒ 全程序共享的那几只，不占额外空间 ✓
+ *   · struct / 泛型实例 / 数组 / 枚举 ⇒ 自己的 `<C 名>_desc`
+ *
+ * ⚠️ 描述表之间会**互相引用**（`struct s { xs: slice<s> }` 就是一个环）——
+ * 所以每个描述常量都在区首先有一句 `static const ExtcDesc X_desc;`
+ * （C 的 tentative definition），于是定义顺序彻底无关 ✓ */
+static const char *descRef(CG *g, Type *t) {
+    if (!t) return "&extc_desc_i32";
+    if (t->kind == TY_BUILTIN) return arenaPrintf(g->arena, "&extc_desc_%s", t->name);
+    if (t->kind == TY_REF)     return "&extc_desc_ref";
+    if (isByteView(t))         return "&extc_desc_text";
+    /* 其余都有自己的一份（泛型实例用**自己的 C 名**：list_i32_desc）*/
+    return arenaPrintf(g->arena, "&%s_desc", t->name);
+}
+
+/* struct 的描述：字段名 + **offsetof**（漏一个字段、算错一次布局，都编不过 ✓）
+ * 显示名用 extC 原名字（泛型实例打的是**模板名**：`varArray { … }`，跟以前一致）*/
+static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef *sd) {
+    size_t n = sd->fields.len;
+    if (n) {
+        cgLine(g, "static const ExtcField %s_fields[] = {", cname);
+        g->indent++;
+        for (size_t i = 0; i < n; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+            cgLine(g, "{ \"%s\", offsetof(%s, %s), %s },", fd->name, cname, fd->name,
+                   descRef(g, subst(g, fd->type)));
+        }
+        g->indent--;
+        cgLine(g, "};");
+    }
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL };",
+           cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_fields", cname) : "NULL");
+}
+
+/* 数组：count 个 elem，**没有名字**（打印就是 `[1, 2, 3]` ✓）*/
+static void genArrayDesc(CG *g, Type *arr) {
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ARRAY, \"%s\", sizeof(%s), %lld, NULL, %s };",
+           arr->name, arr->name, cType(g, arr->inner), (long long)arr->asize,
+           descRef(g, arr->inner));
+}
+
+/* 视图（非字节）：一片元素 ⇒ `[a, b]`；字节视图共用 `extc_desc_text`，没有自己的一份 */
+static void genViewDesc(CG *g, Type *v) {
     Type *elem = subst(g, *(Type **)vecAt(&v->targs, 0));
-    cgLine(g, "void %s_debug(%s v) {", v->name, v->name);
-    g->indent++;
-    cgLine(g, "printf(\"[\");");
-    cgLine(g, "for (int64_t i = 0; i < v.len; i++) {");
-    g->indent++;
-    cgLine(g, "if (i) printf(\", \");");
-    genPrintValue(g, elem, "v.data[i]");
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "printf(\"]\");");
-    g->indent--;
-    cgLine(g, "}");
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_SLICE, \"%s\", sizeof(%s), 0, NULL, %s };",
+           v->name, v->name, cType(g, elem), descRef(g, elem));
+}
+
+/* 枚举：只印**变体名**（定案 11），表外值印 `<类型名>` —— 跟旧的 `_name` 函数逐字节一致 ✓ */
+static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td) {
+    size_t n = td->variants.len;
+    if (n) {
+        Buf b;
+        bufInit(&b, g->arena);
+        for (size_t j = 0; j < n; j++) {
+            Variant *v = *(Variant **)vecAt(&td->variants, j);
+            if (j) bufPuts(&b, ", ");
+            bufPrintf(&b, "\"%s\"", v->name);
+        }
+        cgLine(g, "static const char *const %s_variants[] = { %s };", cname, bufCstr(&b));
+    }
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ENUM, \"%s\", sizeof(%s), %zu, %s, NULL };",
+           cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_variants", cname) : "NULL");
+}
+
+/* `_debug` 现在只是**一行转发**：真正的打印逻辑全在 `extc_print` 里 ✓
+ * 保留它是因为这一刀先"只换实现、不换调用点"，好让"输出逐字节不变"这条判据单独生效。 */
+static void genDebugShim(CG *g, const char *cname) {
+    cgLine(g, "void %s_debug(%s v) { extc_print(&v, &%s_desc); }", cname, cname, cname);
     cgLine(g, "");
 }
 
@@ -1054,55 +1114,14 @@ static const char *genExpr(CG *g, Expr *e) {
 
 /* ---------------------------------------------------------------- 自动调试打印
  *
- * 每个 struct 生成一个 `<Type>_debug`，**递归**打印所有字段。
- *
- * 这一件必须由**编译器**做 —— 它等价于 Rust 的 `#[derive(Debug)]`：
- * extC 没有反射，「遍历所有字段」这件事在语言里写不出来。
+ * 每个 struct 有 `<Type>_debug`（**递归**打印所有字段），这一件必须由**编译器**做 ——
+ * 它等价于 Rust 的 `#[derive(Debug)]`：extC 没有反射，「遍历所有字段」在语言里写不出来。
  * 注意这跟「把标准库塞进编译器」是两回事：这是**编译器生成代码**。
  * 分界线见 DESIGN.md「能写在 extC 里的，就别写在编译器里」。
+ *
+ * ⚠️ 现在它**不再是"生成的代码"**，而是"生成的数据 + 一个通用打印器" ——
+ * 见上面的 `genStructDesc` 与生成文件开头的 `extc_print` ✓
  */
-
-static void genPrintValue(CG *g, Type *t, const char *expr) {
-    if (!t) { cgLine(g, "printf(\"?\");"); return; }
-
-    if (isByteView(t))         { cgLine(g, "%s_writeText(%s);", t->name, expr); return; }
-    if (t->kind == TY_ARRAY)   { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
-    if (t->kind == TY_ENUM)    { cgLine(g, "printf(\"%%s\", %s_name(%s));", t->name, expr); return; }
-    if (t->kind == TY_STRUCT)  { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
-    if (t->kind == TY_REF)     { cgLine(g, "printf(\"<ref>\");"); return; }
-    /* 泛型实例（含视图）：走它自己的 `_debug` —— 之前这里落到 "?"，
-     * 于是「struct 里放一个 slice<i32> 字段」打印出来是个问号 */
-    if (t->kind == TY_GENERIC) { cgLine(g, "%s_debug(%s);", t->name, expr); return; }
-    if (t->kind != TY_BUILTIN) { cgLine(g, "printf(\"?\");"); return; }
-
-    if (strcmp(t->name, "bool") == 0) {
-        cgLine(g, "printf(\"%%s\", (%s) ? \"true\" : \"false\");", expr);
-        return;
-    }
-    for (size_t i = 0; PRINT_FMT[i].extc; i++) {
-        if (strcmp(PRINT_FMT[i].extc, t->name) == 0) {
-            cgLine(g, "printf(\"%s\", %s(%s));", PRINT_FMT[i].fmt, PRINT_FMT[i].cast, expr);
-            return;
-        }
-    }
-    cgLine(g, "printf(\"?\");");
-}
-
-static void genStructDebug(CG *g, const char *cname, StructDef *sd) {
-    cgLine(g, "void %s_debug(%s v) {", cname, cname);
-    g->indent++;
-    cgLine(g, "printf(\"%s { \");", sd->name);      /* 显示名用 extC 原名 */
-    for (size_t i = 0; i < sd->fields.len; i++) {
-        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
-        if (i) cgLine(g, "printf(\", \");");
-        cgLine(g, "printf(\"%s: \");", fd->name);
-        genPrintValue(g, subst(g, fd->type), arenaPrintf(g->arena, "v.%s", fd->name));
-    }
-    cgLine(g, "printf(\" }\");");
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "");
-}
 
 /* ---------------------------------------------------------------- 语句 */
 
@@ -1676,23 +1695,6 @@ static void unitBody(CG *g, SUnit *u) {
     if (generic) substLeave(g);
 }
 
-/* 数组的自动调试打印：`[1, 2, 3]` */
-static void genArrayDebug(CG *g, Type *arr) {
-    cgLine(g, "void %s_debug(%s v) {", arr->name, arr->name);
-    g->indent++;
-    cgLine(g, "printf(\"[\");");
-    cgLine(g, "for (int64_t i = 0; i < %lld; i++) {", (long long)arr->asize);
-    g->indent++;
-    cgLine(g, "if (i) printf(\", \");");
-    genPrintValue(g, arr->inner, "v.data[i]");
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "printf(\"]\");");
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "");
-}
-
 /* 数组的 `==`：编译器派生（数组类型用户写不出来，所以没法用 fn == 实现）*/
 static void genArrayEq(CG *g, Type *arr) {
     if (!typeHasEq(arr->inner)) return;
@@ -1923,6 +1925,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " */\n"
         "#include <stdint.h>\n"
         "#include <stdbool.h>\n"
+        "#include <stddef.h>\n"      /* offsetof —— 描述表要用 */
         "#include <stdio.h>\n"
         "#include <string.h>\n"
         "#include <stdlib.h>\n\n"
@@ -2030,6 +2033,130 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        a->top->used += n;\n"
         "        memset(p, 0, (size_t)n);   /* ⭐ 分配**永远清零** */\n"
         "        return p;\n"
+        "    }\n"
+        "}\n\n");
+
+    /* ==================================================================
+     * 类型描述表（descriptor table）+ **一份**通用打印器
+     *
+     * 以前：「每种用到的类型」派生一份 `_debug` 打印**代码** ——
+     *       合成压测程序（N=1000）里有 2028 个、占生成 C 的 **22.9% 行**，
+     *       而那个程序**一次都没打印过结构体**（全是废的 ✗）。
+     * 现在：每类型只剩一份编译期**常量**（进 .rodata），打印逻辑全程序**一份** ✓
+     *       而且"要不要印"能按需决定（见 generate() 里描述表的可达性闭包）。
+     *
+     * ⚠️ 这**不是**运行时反射：描述表是静态数据，类型、字段偏移、变体名
+     *    全是编译期常量，gcc 全程看得见 ⇒ P′（"不可证必须响亮"）一点没松 ✓
+     *
+     * 同一张表以后还能喂给 `extc_eq`（结构化 ==）· 序列化 · hash ✓
+     * ================================================================== */
+    bufPuts(out,
+        "/* ---- 类型描述表 ----\n"
+        " * 每类型一份静态数据；`extc_print` 全程序只有一份。\n"
+        " * size 的含义：标量/结构体 = sizeof(T)；数组/切片 = **元素步长**。\n"
+        " * 视图的 C 布局固定是 `{ T *data; int64_t len; }`（见 genViewUnit）。\n"
+        " */\n"
+        "enum {\n"
+        "    EXTC_D_I8, EXTC_D_I16, EXTC_D_I32, EXTC_D_I64,\n"
+        "    EXTC_D_U8, EXTC_D_U16, EXTC_D_U32, EXTC_D_U64,\n"
+        "    EXTC_D_F32, EXTC_D_F64, EXTC_D_BOOL,\n"
+        "    EXTC_D_ENUM,      /* table = const char *const[]，tag 在偏移 0 */\n"
+        "    EXTC_D_STRUCT,    /* table = ExtcField[] */\n"
+        "    EXTC_D_ARRAY,     /* 定长数组：count 个 elem */\n"
+        "    EXTC_D_SLICE,     /* 视图：{ T *data; int64_t len; } */\n"
+        "    EXTC_D_TEXT,      /* slice<u8>：按**文本**印（跟别的切片不一样）*/\n"
+        "    EXTC_D_REF        /* ref / ?ref：一律印 <ref> */\n"
+        "};\n"
+        "\n"
+        "typedef struct ExtcDesc ExtcDesc;\n"
+        "typedef struct { const char *name; size_t off; const ExtcDesc *desc; } ExtcField;\n"
+        "\n"
+        "struct ExtcDesc {\n"
+        "    int             kind;\n"
+        "    const char     *name;    /* 结构体/枚举的显示名（打印用）*/\n"
+        "    size_t          size;    /* 标量/结构体 = sizeof(T)；数组/切片 = 元素步长 */\n"
+        "    size_t          count;   /* 字段数 / 变体数 / 数组长度 */\n"
+        "    const void     *table;   /* ExtcField[] 或 const char *const[] */\n"
+        "    const ExtcDesc *elem;    /* 数组/切片的元素 */\n"
+        "};\n"
+        "\n"
+        "/* 不依赖具体类型的四只：引用 / 字节视图 / 标量 —— 全程序共享 ✓ */\n"
+        "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i8  = { EXTC_D_I8,  \"i8\",  sizeof(int8_t),  0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i16 = { EXTC_D_I16, \"i16\", sizeof(int16_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i32 = { EXTC_D_I32, \"i32\", sizeof(int32_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i64 = { EXTC_D_I64, \"i64\", sizeof(int64_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u8  = { EXTC_D_U8,  \"u8\",  sizeof(uint8_t),  0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u16 = { EXTC_D_U16, \"u16\", sizeof(uint16_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u32 = { EXTC_D_U32, \"u32\", sizeof(uint32_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u64 = { EXTC_D_U64, \"u64\", sizeof(uint64_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_f32 = { EXTC_D_F32, \"f32\", sizeof(float),  0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_f64 = { EXTC_D_F64, \"f64\", sizeof(double), 0, NULL, NULL };\n"
+        "\n");
+    /* ⚠️ 分成两次 `bufPuts`：C99 只保证支持 4095 字符的字符串字面量，
+     * 整块拼一起会触发 -Woverlength-strings（不是错，但没必要留着噪声）*/
+    bufPuts(out,
+        "/* 通用递归打印器 —— 输出格式必须跟以前派生的 `_debug` **逐字节一致** ✓\n"
+        " * （真值表见 tools/print-formats.txt：浮点 %g、[N]u8 按数字、slice<u8> 按文本 ……）*/\n"
+        "static void extc_print(const void *p, const ExtcDesc *d) {\n"
+        "    switch (d->kind) {\n"
+        "    case EXTC_D_I8:   printf(\"%d\", (int)*(const int8_t *)p); return;\n"
+        "    case EXTC_D_I16:  printf(\"%d\", (int)*(const int16_t *)p); return;\n"
+        "    case EXTC_D_I32:  printf(\"%d\", (int)*(const int32_t *)p); return;\n"
+        "    case EXTC_D_I64:  printf(\"%lld\", (long long)*(const int64_t *)p); return;\n"
+        "    case EXTC_D_U8:   printf(\"%u\", (unsigned)*(const uint8_t *)p); return;\n"
+        "    case EXTC_D_U16:  printf(\"%u\", (unsigned)*(const uint16_t *)p); return;\n"
+        "    case EXTC_D_U32:  printf(\"%u\", (unsigned)*(const uint32_t *)p); return;\n"
+        "    case EXTC_D_U64:  printf(\"%llu\", (unsigned long long)*(const uint64_t *)p); return;\n"
+        "    case EXTC_D_F32:  printf(\"%g\", (double)*(const float *)p); return;\n"
+        "    case EXTC_D_F64:  printf(\"%g\", (double)*(const double *)p); return;\n"
+        "    case EXTC_D_BOOL: printf(\"%s\", *(const bool *)p ? \"true\" : \"false\"); return;\n"
+        "    case EXTC_D_REF:  printf(\"<ref>\"); return;\n"
+        "    case EXTC_D_TEXT: {\n"
+        "        int64_t n = *(const int64_t *)((const char *)p + sizeof(void *));\n"
+        "        printf(\"%.*s\", (int)n, (const char *)*(const void *const *)p);\n"
+        "        return;\n"
+        "    }\n"
+        "    case EXTC_D_ENUM: {\n"
+        "        const char *const *names = (const char *const *)d->table;\n"
+        "        int tag = *(const int *)p;\n"
+        "        if (tag < 0 || (size_t)tag >= d->count) printf(\"<%s>\", d->name);\n"
+        "        else                                    printf(\"%s\", names[tag]);\n"
+        "        return;\n"
+        "    }\n"
+        "    case EXTC_D_STRUCT: {\n"
+        "        const ExtcField *f = (const ExtcField *)d->table;\n"
+        "        printf(\"%s { \", d->name);\n"
+        "        for (size_t i = 0; i < d->count; i++) {\n"
+        "            if (i) printf(\", \");\n"
+        "            printf(\"%s: \", f[i].name);\n"
+        "            extc_print((const char *)p + f[i].off, f[i].desc);\n"
+        "        }\n"
+        "        printf(\" }\");\n"
+        "        return;\n"
+        "    }\n"
+        "    case EXTC_D_ARRAY:\n"
+        "    case EXTC_D_SLICE: {\n"
+        "        const char *data;\n"
+        "        size_t n;\n"
+        "        if (d->kind == EXTC_D_SLICE) {\n"
+        "            const int64_t len = *(const int64_t *)((const char *)p + sizeof(void *));\n"
+        "            data = (const char *)*(const void *const *)p;\n"
+        "            n = len > 0 ? (size_t)len : 0;\n"
+        "        } else {\n"
+        "            data = (const char *)p;\n"
+        "            n = d->count;\n"
+        "        }\n"
+        "        printf(\"[\");\n"
+        "        for (size_t i = 0; i < n; i++) {\n"
+        "            if (i) printf(\", \");\n"
+        "            extc_print(data + i * d->size, d->elem);\n"
+        "        }\n"
+        "        printf(\"]\");\n"
+        "        return;\n"
+        "    }\n"
         "    }\n"
         "}\n\n");
 
@@ -2283,6 +2410,58 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         cgLine(&g, "}");
         cgLine(&g, "");
     }
+
+    /* ------------------------------------------------------------------
+     * **类型描述表**：所有类型定义都出完了 ⇒ 到这里才能 `offsetof` / `sizeof` ✓
+     *
+     * ⚠️ 描述常量之间会互相引用（`struct s { xs: slice<s> }` 就是个环），
+     * 所以先出**全部**前向声明（C 的 tentative definition），定义顺序就无关了 ✓
+     * ------------------------------------------------------------------ */
+    for (size_t i = 0; i < g.structs.len; i++)
+        cgLine(&g, "static const ExtcDesc %s_desc;",
+               (*(StructDef **)vecAt(&g.structs, i))->name);
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g.insts, i);
+        if (isByteView(it)) continue;      /* 字节视图共用 `extc_desc_text`，没有自己的一份 ✓ */
+        cgLine(&g, "static const ExtcDesc %s_desc;", it->name);
+    }
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        if (td->typeParams.len > 0) continue;      /* 泛型：实例见下 */
+        cgLine(&g, "static const ExtcDesc %s_desc;", td->name);
+    }
+    for (size_t i = 0; i < tt->enumInstances.len; i++)
+        cgLine(&g, "static const ExtcDesc %s_desc;",
+               (*(Type **)vecAt(&tt->enumInstances, i))->name);
+    cgLine(&g, "");
+
+    /* 普通 struct */
+    for (size_t i = 0; i < g.structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&g.structs, i);
+        genStructDesc(&g, sd->name, sd->name, sd);
+    }
+    /* 数组 / 视图 / 泛型 struct 实例（字段类型要替换 ⇒ substEnter）*/
+    for (size_t i = 0; i < g.insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g.insts, i);
+        if (isByteView(it)) continue;
+        if (it->kind == TY_ARRAY) { genArrayDesc(&g, it); continue; }
+        substEnter(&g, it);
+        if (isView(it)) genViewDesc(&g, it);
+        else            genStructDesc(&g, it->name, it->sdef->name, it->sdef);
+        substLeave(&g);
+    }
+    /* 枚举（无载荷 / 带载荷都只印变体名）+ 泛型枚举实例 */
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        if (td->typeParams.len > 0) continue;
+        genEnumDesc(&g, td->name, td->name, td);
+    }
+    for (size_t i = 0; i < tt->enumInstances.len; i++) {
+        Type *it = *(Type **)vecAt(&tt->enumInstances, i);
+        genEnumDesc(&g, it->name, it->name, it->edef);
+    }
+    cgLine(&g, "");
+
     /* 全局变量 / 常量 —— **直接就是 C 的静态对象**（定长的全局不需要 arena）。
      * C 自动把静态对象清零，所以零初始化的全局不用 generate 任何初始化式。 */
     for (size_t i = 0; i < m->globals.len; i++) {
@@ -2316,7 +2495,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                (*(StructDef **)vecAt(&g.structs, i))->name);
     for (size_t i = 0; i < g.insts.len; i++) {
         Type *it = *(Type **)vecAt(&g.insts, i);
-        cgLine(&g, "void %s_debug(%s v);", it->name, it->name);
+        if (!isByteView(it)) cgLine(&g, "void %s_debug(%s v);", it->name, it->name);
         /* 数组的 `==` 也要原型 —— 嵌套数组之间是递归调用的 */
         if (it->kind == TY_ARRAY && typeHasEq(it->inner))
             cgLine(&g, "bool %s_eq(%s a, %s b);", it->name, it->name, it->name);
@@ -2356,15 +2535,15 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < g.insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g.insts, i);
         if (inst->kind == TY_ARRAY) {
-            genArrayDebug(&g, inst);
+            genDebugShim(&g, inst->name);
             genArrayEq(&g, inst);
             continue;
         }
         substEnter(&g, inst);
-        if (isView(inst) && !isByteView(inst))
-            genViewDebug(&g, inst);
-        else
-            genStructDebug(&g, inst->name, inst->sdef);
+        /* 字节视图**没有** `_debug`：它按文本打（`writeText`），
+         * 旧的 `slice_u8_debug`（打 `slice { data: <ref>, len: 2 }`）从来没被调用过 ——
+         * 那是死代码，这里顺手去掉 ⇒ 真有人调用它的话会**立刻编不过** ✓ */
+        if (!isByteView(inst)) genDebugShim(&g, inst->name);
         if (isView(inst))      genViewIndexer(&g, inst);
         if (isByteView(inst))  genByteViewWriter(&g, inst->name);
         substLeave(&g);
@@ -2372,8 +2551,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
 
     /* struct 的自动调试打印 */
     for (size_t i = 0; i < g.structs.len; i++)
-        genStructDebug(&g, (*(StructDef **)vecAt(&g.structs, i))->name,
-                       *(StructDef **)vecAt(&g.structs, i));
+        genDebugShim(&g, (*(StructDef **)vecAt(&g.structs, i))->name);
 
     /* 实例的方法定义 */
     for (size_t i = 0; i < g.insts.len; i++) {
