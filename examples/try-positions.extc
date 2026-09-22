@@ -39,17 +39,20 @@ fn viaAssign(n: i32) -> result<i32, i32> {
 fn viaReturn(n: i32) -> result<i32, i32> { return parse(n)? }
 
 // `?` 是**静默转发**：失败就原样往上抛 ✓
-// ⚠️ 注意 `??` 对 `result` 是**取载荷**（`failure(e)` ⇒ 得到 `e`），**不是**"失败就兜底" ——
-//    所以下面 `viaLet(-3)` 得到的是 **-3**（那个失败码本身），不是 `-1` ✓
+// ⚠️ `??` 对 `result` 的语义是**取成功载荷、失败则兜底**（实测，不是推断）：
+//      failure(-3) ?? -1  ⇒  **-1**（走了兜底）
+//      success(10) ?? -1  ⇒  **10**（取载荷）
+//    所以下面那两个失败分支拿到的是 `-1`，**不是** `-3` ✓
+//    （想看失败码本身请用 `match` —— `failure(e) => e` ✓）
 fn main() -> i32 {
     println(viaLet(5) ?? -1)       // 11
     println(viaVar(5) ?? -1)       // 11
     println(viaAssign(5) ?? -1)    // 11
     println(viaReturn(5) ?? -1)    // 10
 
-    println(viaLet(-3) ?? -1)      // -3  （失败侧把 -3 原样抛上来 ✓）
-    println(viaReturn(-4) ?? -1)   // -4
+    println(viaLet(-3) ?? -1)      // -1  （失败 ⇒ 兜底）
+    println(viaReturn(-4) ?? -1)   // -1
     return 0
 }
 // expect: 11
-// expect: -3
+// expect: -1
