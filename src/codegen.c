@@ -1171,8 +1171,9 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *ar = arenaRefAt(g, e->arenaLevel);
             if (!e->u.new_.count) {
                 /* 一个 T（或一个 [N]T）的**地方** ⇒ 就是它的地址 ✓ */
-                return arenaPrintf(g->arena, "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)))",
-                                   cType(g, w), ar, cType(g, w));
+                return arenaPrintf(g->arena,
+                    "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s), \"%s\", %d))",
+                    cType(g, w), ar, cType(g, w), g->path, e->line);
             }
             /* `T[n]` ⇒ 视图 `{ data, len }`；个数只求值一次
              * （个数不纯时检查器打过 needTemp ⇒ 先吐一句把它装进临时变量 ✓）*/
@@ -1186,9 +1187,9 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             Type *st = subst(g, e->type);      /* 检查器算好的 `slice<T>` ✓ */
             return arenaPrintf(g->arena,
-                "(%s){ .data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s)),"
-                " .len = (int64_t)(%s) }",
-                cType(g, st), cType(g, w), ar, n, cType(g, w), n);
+                "(%s){ .data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s),"
+                " \"%s\", %d), .len = (int64_t)(%s) }",
+                cType(g, st), cType(g, w), ar, n, cType(g, w), g->path, e->line, n);
         }
 
         case EX_GENCALL: {
@@ -1197,8 +1198,8 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             return arenaPrintf(g->arena,
-                "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s))",
-                tn, arenaRef(g), n, tn);
+                "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
+                tn, arenaRef(g), n, tn, g->path, e->line);
         }
 
         case EX_METHOD:    return genMethodCall(g, e);
@@ -1714,9 +1715,9 @@ static void genStmtInner(CG *g, Stmt *s) {
                          * ⚠️ 绑定**必须先声明**（在 if/else 里的声明出了块就没了 ✗）*/
                         cgLine(g, "%s %s;", cType(g, s->type), nm);
                         cgLine(g, "if (!__owc || !__owc->p) { void *p = extc_arena_alloc(&%s,"
-                                  " (int64_t)sizeof(%s));  if (__owc) __owc->p = p;"
+                                  " (int64_t)sizeof(%s), \"%s\", %d);  if (__owc) __owc->p = p;"
                                   "  %s = (%s)p; }",     /* ⚠️ 绑定的 C 类型本身就是指针 ✗ 别再补一个 `*` */
-                                ar, ct, nm, cType(g, s->type));
+                                ar, ct, g->path, nx->line, nm, cType(g, s->type));
                         cgLine(g, "else { memset(__owc->p, 0, (size_t)sizeof(%s));"
                                   "  %s = (%s)__owc->p; }",
                                 ct, nm, cType(g, s->type));
@@ -1734,14 +1735,14 @@ static void genStmtInner(CG *g, Stmt *s) {
                                   " \"negative length\"); }", g->path, nx->line);
                         cgLine(g, "%s %s;", cType(g, s->type), nm);
                         cgLine(g, "if (!__owc) { %s = (%s){ .data = (%s *)extc_arena_alloc(&%s,"
-                                  " __owk * (int64_t)sizeof(%s)), .len = __owk }; }",
-                                nm, cType(g, s->type), ct, ar, ct);
+                                  " __owk * (int64_t)sizeof(%s), \"%s\", %d), .len = __owk }; }",
+                                nm, cType(g, s->type), ct, ar, ct, g->path, nx->line);
                         cgLine(g, "else { if (__owk > __owc->cap) { int64_t c = __owc->cap * 2;"
                                   " if (c < __owk) c = __owk;"
-                                  "  __owc->p = extc_arena_alloc(&%s, c * (int64_t)sizeof(%s));"
-                                  "  __owc->cap = c; }"
+                                  "  __owc->p = extc_arena_alloc(&%s, c * (int64_t)sizeof(%s),"
+                                  " \"%s\", %d);  __owc->cap = c; }"
                                   "  %s = (%s){ .data = (%s *)__owc->p, .len = __owk }; }",
-                                ar, ct, nm, cType(g, s->type), ct);
+                                ar, ct, g->path, nx->line, nm, cType(g, s->type), ct);
                         cgLine(g, "memset(%s.data, 0, (size_t)(__owk * (int64_t)sizeof(%s)));",
                                 nm, ct);
                     }
@@ -2501,12 +2502,17 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
         "    return (int64_t)v;   /* 向零截断 = C 的规则 ✓ */\n"
         "}\n"
-        "void *extc_arena_alloc(extc_arena *a, int64_t n) {\n"        "    if (n <= 0) n = 1;\n"
+        "void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
+        "    if (n <= 0) n = 1;\n"
         "    n = (n + 7) & ~(int64_t)7;\n"
         "    if (!a->top || a->top->cap - a->top->used < n) {\n"
         "        int64_t cap = n > 4096 ? n : 4096;\n"
         "        extc_ablock *b = (extc_ablock *)malloc(sizeof(extc_ablock) + (size_t)cap);\n"
-        "        if (!b) { fprintf(stderr, \"extc: out of arena memory\\n\"); exit(1); }\n"
+        /* ⭐ PLAN #6：跟所有 trap 一样**带源码位置**（以前只有光秃秃一句 `extc: out of
+         * arena memory` + exit(1) ✗ —— 违反 P'：能说清是哪一行却没说）✓ */
+        "        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n"
+        "                        \" (this allocation wanted %lld bytes)\\n\",\n"
+        "                        f, l, (long long)n); exit(1); }\n"
         "        b->prev = a->top; b->cap = cap; b->used = 0;\n"
         "        a->top = b;\n"
         "    }\n"

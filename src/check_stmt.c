@@ -65,6 +65,7 @@ static void checkBlockBody(Checker *c, Stmt *block) {
 }
 
 void checkStmt(Checker *c, Stmt *s) {
+    c->stmtFx = 0;      /* ⭐ PLAN #22：每语句重新数"前面有没有副作用" ✓ */
     switch (s->kind) {
         case ST_VAR: {
             /* 局部变量声明的类型标注也要解析（parser 只造「类型名」） */

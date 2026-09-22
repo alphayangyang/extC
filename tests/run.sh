@@ -56,7 +56,13 @@ if [ -d tests/traps ]; then
         if [ $status -eq 0 ]; then
             bad "$name （应该 trap，却正常退出了）"
         elif echo "$out" | grep -q "trap:"; then
-            ok "$name  ->  $(echo "$out" | grep -o 'trap:.*' | head -1)"
+            # ⭐ 顺便咬住"**带源码位置**"这条（PLAN #6 那种退化就再也回不来了 ✓）
+            if echo "$out" | grep -qE "extc|\.extc:[0-9]+: trap:"; then
+                ok "$name  ->  $(echo "$out" | grep -o 'trap:.*' | head -1)"
+            else
+                bad "$name （trap 消息没有源码位置）"
+                echo "$out" | sed 's/^/        /'
+            fi
         else
             bad "$name （退出了，但没有 trap 消息）"
             echo "$out" | sed 's/^/        /'

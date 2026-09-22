@@ -9,6 +9,8 @@
 
 Type *checkExpr(Checker *c, Expr *e);
 
+static bool exprHasCall(Checker *c, Expr *e);   /* ⭐ PLAN #22（定义在文件末尾 ✓）*/
+
 static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
     Type *err = ttError(c->tt);
     if (ttIsError(lt) || ttIsError(rt)) return err;
@@ -806,6 +808,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_COALESCE: {
             /* `a ?? b` —— **可能没有就兜底**。语义 = `match a { 有(v) => v  _ => b }`，
              * 但**只算一边**：有值时 b 不求值 ✓（跟 `&&` / `||` 的短路同一件事）*/
+            /* ⚠️ 旗子必须在**主体还没查之前**取 ✗（主体自己是个调用 ⇒ 查完就把旗子举起来了，
+             * 踩过：`var a = h() ?? 0` 这条**第一句**被误报 ✓）*/
+            bool priorFx = c->stmtFx != 0;
             Type *mt = checkExpr(c, e->u.coalesce.main);
             if (ttIsError(mt)) { checkExpr(c, e->u.coalesce.fallback); return ttError(tt); }
 
@@ -829,8 +834,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* 主体**不是**"没有副作用的东西"（比如 `f() ?? -1`）⇒ 不能直接生成三元
              * （主体在 C 里出现两次 ⇒ `f()` 会跑两遍 ✗）⇒ 必须**提前求值到一个临时变量**。
              * 那需要"往所在语句前面吐前缀"的能力：大多数位置有，**两个位置没有** ✓ */
+            /* ⭐ PLAN #22（2026-09-22）：主体不纯 ⇒ 要**先算进临时变量**，而那个前缀是吐在
+             * **整条语句之前**的 ⇒ 它会跳到同语句里更靠前的副作用前头去 ✗
+             *     `g() + (h() ?? 0)`   源码是 g 先、h 后，实际是 **h 先**跑 ✗（实测过）
+             * ⇒ 与其偷偷换顺序，不如**报错让他拆两行** ✓（主人：「显式是对的」）✓
+             * ⚠️ 判据只看**调用**：`new` / 字面量 / 转换的顺序不可观测 ⇒ 不报 ✓ */
             if (!repeatablePure(e->u.coalesce.main)) {
                 checkExpr(c, e->u.coalesce.fallback);
+                if (priorFx && !c->noHoist) {
+                    ckError(c, e->line,
+                            "The subject of `??` is computed into a temporary **before the whole"
+                            " statement** (that is what makes it run only once). So an earlier"
+                            " side effect in the same statement would run *after* it -- the"
+                            " opposite of what the line reads like. Split the statement in two"
+                            " (`var t = f() ?? 0` then use `t`).",
+                            "`??` here would run **before** the call that comes earlier in this"
+                            " statement; split the line so the order you read is the order it runs");
+                    return ttError(tt);
+                }
                 if (c->noHoist) {
                     ckError(c, e->line,
                             "`while` re-evaluates its condition every round, but a temporary"
@@ -841,6 +862,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
                 e->needTemp = true;        /* codegen 照做：先算一次，再对临时变量做三元 */
+                /* ⚠️ 主体的**全部**副作用都是被"提前算"的（而且跟别的临时变量按源码顺序排 ✓）
+                 * ⇒ 它**不算**"留在原地的调用" ✗（踩过：同一个 `println` 里两个 `f() ?? -1`
+                 * 被误报 ✓ —— 语料当场抓出来 ✓）
+                 * 兜底那边**留在三元里**（只有主体没值才跑）⇒ 它算 ✓ */
+                c->stmtFx = priorFx ? 1 : 0;
+                if (exprHasCall(c, e->u.coalesce.fallback)) c->stmtFx = 1;
                 return want;
             }
 
@@ -1221,9 +1248,169 @@ static Type *checkExprInner(Checker *c, Expr *e) {
     return ttError(tt);
 }
 
+/* ⭐ PLAN #22：这个函数（传递地）**会不会打印**？（走 AST，环保护 ✓）
+ * ⚠️ **运行时**的坑：`FuncDef.callees` 是"查完体"之后才填的 ⇒ 查体期间不能靠它 ✗
+ * ⇒ 直接走被调者的 AST，自带环保护 ✓ */
+static bool funcMayPrint(Checker *c, FuncDef *f);
+
+static bool stmtMayPrint(Checker *c, Stmt *s);
+
+static bool exprMayPrint(Checker *c, Expr *e) {
+    if (!e) return false;
+    if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+        const char *n = e->u.call.callee->u.ident.name;
+        if (strcmp(n, "print") == 0 || strcmp(n, "println") == 0) return true;
+    }
+    switch (e->kind) {
+    case EX_CALL:
+        if (e->func && funcMayPrint(c, e->func)) return true;
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprMayPrint(c, *(Expr **)vecAt(&e->u.call.args, i))) return true;
+        return false;
+    case EX_METHOD:
+        if (e->func && funcMayPrint(c, e->func)) return true;
+        if (exprMayPrint(c, e->u.method.recv)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprMayPrint(c, *(Expr **)vecAt(&e->u.method.args, i))) return true;
+        return false;
+    case EX_ASSOC:
+        if (e->func && funcMayPrint(c, e->func)) return true;
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprMayPrint(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+        return false;
+    case EX_BIN:   return exprMayPrint(c, e->u.bin.left) || exprMayPrint(c, e->u.bin.right);
+    case EX_UN:    return exprMayPrint(c, e->u.un.operand);
+    case EX_FIELD: return exprMayPrint(c, e->u.field.obj);
+    case EX_INDEX: return exprMayPrint(c, e->u.index.obj) || exprMayPrint(c, e->u.index.index);
+    case EX_SLICE: return exprMayPrint(c, e->u.slice.obj) || exprMayPrint(c, e->u.slice.lo) ||
+                          exprMayPrint(c, e->u.slice.hi);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprMayPrint(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprMayPrint(c, *(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+        return false;
+    case EX_REF:   return exprMayPrint(c, e->u.ref.operand);
+    case EX_DEREF: return exprMayPrint(c, e->u.deref.operand);
+    case EX_SIGN:  return exprMayPrint(c, e->u.sign.operand);
+    case EX_CONV:  return exprMayPrint(c, e->u.conv.operand);
+    case EX_TRY:   return exprMayPrint(c, e->u.try_.operand);
+    case EX_NEW:   return exprMayPrint(c, e->u.new_.count);
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            if (exprMayPrint(c, *(Expr **)vecAt(&e->u.gencall.args, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprMayPrint(c, *(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+        return false;
+    case EX_COALESCE:
+        return exprMayPrint(c, e->u.coalesce.main) || exprMayPrint(c, e->u.coalesce.fallback);
+    default: return false;
+    }
+}
+
+static bool stmtMayPrint(Checker *c, Stmt *s) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR:    return exprMayPrint(c, s->u.var.init);
+    case ST_ASSIGN: return exprMayPrint(c, s->u.assign.target) || exprMayPrint(c, s->u.assign.value);
+    case ST_EXPR:   return exprMayPrint(c, s->u.expr.expr);
+    case ST_RETURN: return exprMayPrint(c, s->u.ret.value);
+    case ST_IF:     return exprMayPrint(c, s->u.ifs.cond) ||
+                           stmtMayPrint(c, s->u.ifs.thenBody) || stmtMayPrint(c, s->u.ifs.elseBody);
+    case ST_WHILE:  return exprMayPrint(c, s->u.whiles.cond) || stmtMayPrint(c, s->u.whiles.body);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtMayPrint(c, *(Stmt **)vecAt(&s->u.block.stmts, i))) return true;
+        return false;
+    case ST_MATCH:
+        if (exprMayPrint(c, s->u.match.scrutinee)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtMayPrint(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
+        return false;
+    default: return false;
+    }
+}
+
+static bool funcMayPrint(Checker *c, FuncDef *f) {
+    if (!f) return true;                       /* 拿不准 ⇒ 当"会"（保守 ✓）*/
+    if (f->mayPrintState == 1) return true;
+    if (f->mayPrintState == 2) return false;
+    if (f->mayPrintState == 3) return true;    /* 环 ⇒ 当"会" ✓ */
+    f->mayPrintState = 3;
+    bool r = stmtMayPrint(c, f->body);
+    f->mayPrintState = r ? 1 : 2;
+    return r;
+}
+
+/* ⭐ PLAN #22：这个表达式里有没有**可观测的副作用**？
+ * ⇒ 只认：① `print`/`println` ② **带 `mut ref`/`mut` 视图形参的函数**（它可能写实参）
+ *         ③ （传递地）会打印的函数 ④ 拿不准的（解析不出来）✓
+ * ⚠️ **纯 getter 不算** —— 顺序换了也看不出来 ✓
+ *    （踩过：这一条一开始按"含调用"判 ⇒ 把编译时长基准的合成程序
+ *      `t.get() + (v.get(0) ?? 0)` 也拒了 ✗ —— 那是个纯访问器 ✓）*/
+static bool callIsEffectful(Checker *c, FuncDef *f) {
+    if (!f) return true;
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (!p->type) continue;
+        if (p->type->kind == TY_REF && p->type->mut) return true;      /* 可能写实参 ✓ */
+        if (p->type->kind == TY_GENERIC && p->type->mut) return true;  /* mut 视图 ✓ */
+    }
+    return funcMayPrint(c, f);
+}
+
+static bool exprHasCall(Checker *c, Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_CALL: case EX_METHOD: case EX_ASSOC:
+        if (callIsEffectful(c, e->func)) return true;
+        break;
+    case EX_BIN:      return exprHasCall(c, e->u.bin.left) || exprHasCall(c, e->u.bin.right);
+    case EX_UN:       return exprHasCall(c, e->u.un.operand);
+    case EX_FIELD:    return exprHasCall(c, e->u.field.obj);
+    case EX_INDEX:    return exprHasCall(c, e->u.index.obj) || exprHasCall(c, e->u.index.index);
+    case EX_SLICE:    return exprHasCall(c, e->u.slice.obj) || exprHasCall(c, e->u.slice.lo) ||
+                             exprHasCall(c, e->u.slice.hi);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprHasCall(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprHasCall(c, *(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+        return false;
+    case EX_REF: case EX_DEREF: case EX_SIGN: case EX_CONV: case EX_TRY:
+        return exprHasCall(c, e->kind == EX_REF ? e->u.ref.operand :
+                              e->kind == EX_DEREF ? e->u.deref.operand :
+                              e->kind == EX_SIGN ? e->u.sign.operand :
+                              e->kind == EX_CONV ? e->u.conv.operand : e->u.try_.operand);
+    case EX_NEW:      return exprHasCall(c, e->u.new_.count);
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            if (exprHasCall(c, *(Expr **)vecAt(&e->u.gencall.args, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprHasCall(c, *(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+        return false;
+    case EX_COALESCE: return exprHasCall(c, e->u.coalesce.main) || exprHasCall(c, e->u.coalesce.fallback);
+    default:          return false;      /* 字面量 / 绑定 / null ✓ */
+    }
+}
+
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
+    /* ⭐ PLAN #22：记下"本语句里已经有**留在原位**的调用了" ⇒ 后面再遇到"要临时变量的 `??`"
+     * 就报错（那个临时变量会跳到它前面去 ✗）✓
+     * ⚠️ **`??` 自己的主体不算**：它的临时变量跟别的临时变量是**按源码顺序一起**提前算的
+     *    ⇒ 它们之间的顺序**没变** ✓（踩过：`println(a, v.get(3) ?? -1, b, v.get(99) ?? -1)`
+     *    被误报了 ✗ —— 语料里 5 个例子当场抓出来 ✓）*/
+    if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && e->needTemp)) c->stmtFx = 1;
     if (!t) t = ttError(c->tt);
     e->type = t;
     return t;

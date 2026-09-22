@@ -1,0 +1,11 @@
+// arena 要不到内存：跟所有 trap 一样**带源码位置**（PLAN #6，2026-09-22 修）✓
+// 以前只有光秃秃一句 `extc: out of arena memory` + exit(1) ✗ —— 违反 P′
+// （能说清是哪一行却没说）；现在报 `文件:行: trap: out of arena memory (this allocation
+//  wanted N bytes)` ✓
+// 要 1PB ⇒ malloc 必然失败（不依赖 ulimit、也不依赖 overcommit 的运气 ✓）
+fn main() -> i32 {
+    println("算之前")
+    var p = alloc<i32>(1000000000000000)
+    println("要到了？", *p)
+    return 0
+}
