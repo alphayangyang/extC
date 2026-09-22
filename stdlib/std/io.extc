@@ -2,10 +2,68 @@
  *
  * ⭐ 这就是 `IO.md` 说的"档 2 wrapper"：把它底下那层裸原语包成好用的形状 ✓
  *    `slice<u8>` 在 C 那边是两个参数 ⇒ 这里把 `s.data` / `s.len` 分下去 ✓
+ *
+ * ================================================================ 两种输入风格
+ *
+ * 谁都需要"读一行"/"读一个整数"，但**两种场景的形状不一样**，所以这里并存：
+ *
+ *   | 场景 | 用什么 | 为什么 |
+ *   |---|---|---|
+ *   | **OI / 竞赛**（空格分词、一坨数字） | `nextInt` / `nextToken` | 不用先读成行再切，省一次拷贝 ✓ |
+ *   | **协议 / 交互**（一行一个命令） | `nextLine` | 行是协议的单位 ✓ |
+ *
+ * 两个都建在同一个 `reader` 上 ⇒ 可以混着用（`nextInt` 会跳过空白，正好吃掉行尾 ✓）
+ *
+ * ================================================================ 为什么有 `reader`
+ *
+ * ⚠️ **逐字节读是个坑**（原来那个 `readLine` 就是这么写的）：实测 19MB / 50 万行
+ *    **2.30 s**，而按块读 **0.012 s** —— **190×** ✗
+ *    原因不是"读得慢"，是**每读一个字节都进一次内核**。
+ *
+ * 所以真正干活的是 `reader`：它一次 `read(2)` 拿回 64KB，然后在内存里切 ✓
+ * 这就是 `IO.md` §0 那句话：**读 = 整块读 + 内存里切**。
+ *
+ * ⚠️ 缓冲**不用调用者给**（`readerOf(fd)` 就够）：那 64KB 是 `new` 出来的，
+ *    住在**调用点所在那个块的 arena** 里 ⇒ 跟 `reader` 自己同寿 ✓
+ *    （代价：`reader` 不能比创建它的块活得久 —— 这条由逃逸检查管着，
+ *      越界是**编译错误**，不是悬垂 ✓）
+ *
+ * ================================================================ 三条路必须分得开
+ *
+ * 失败的**原因**不一样，就不该挤成一个返回值（P′：不能证明的，语法上必须看得见）：
+ *
+ *   | 情况 | 返回 |
+ *   |---|---|
+ *   | **读到 EOF** | `success(0)` —— 这不是错误 ✓ |
+ *   | **行比 `out` 长** | `failure(lineTooLong)` —— 数据**没读全** ✗ |
+ *   | **read(2) 出错** | `failure(readFailed)` —— 上次读的结果可能已经坏了 ✗ |
+ *
+ * ⚠️ 原 `readLine` 把后两条**都当成 EOF**（`if got <= 0 { return n }`）⇒
+ *    读错误看起来就是"文件结束了"，而超长行会被**静默切成两"行"** ✗✗
+ *    这种"看不出来的数据损坏"正是 P′ 要挡的东西 ✓
  */
 use std::sys
 
-type ioError = | failed(i32)
+/* 读失败了、**为什么**失败 —— 枚举而不是魔法值 ✓
+ * ⚠️ 为什么带上 `i64`：报错时要能说清"读了多少" / "是哪个 fd" ——
+ *    `failed(5)` 这种消息对用户毫无用处 ✗ */
+type ioError = | readFailed(i32) | lineTooLong(i64)
+
+/* 块大小：**64KB**（实测量出来的最优档之一）✓
+ * 实测（291MB 文件）：64B 0.62s/469MB/s（470 万次 syscall）· 4KB 0.05s/5820MB/s ·
+ *   **16KB 与 64KB 都是 0.04s/7275MB/s** · 1MB 0.05s
+ * ⇒ 16KB 以上就平了；取 64KB（对"一次读几行"的协议场景更省 syscall）✓
+ * ⇒ `IO.md` §9 原来写的 4KB 因此改成 64KB ✓ */
+let BLK: i64 = 65536
+
+/* `i64` 的最大值 —— `nextInt` 的溢出检测要用 ✓
+ * ⚠️ 为什么手写这个数而不是用内建：**没有内建**（实测 `grep I64_MAX` 全仓为空）✗
+ *    `9223372036854775807` = 2^63 - 1 ✓ */
+let I64_MAX: i64 = 9223372036854775807
+
+/* 标准输入 / 输出的 fd ✓（`sys` 里也有，这里再导出一次是为了**用户只 `use std::io` 就够** ✓）*/
+let STDIN_FD: i32  = 0
+let STDOUT_FD: i32 = 1
 
 /* 把 `println` 那边的缓冲刷出去 ✓（跟下面的 fd 直写混用时**必须**刷，
  *  不然顺序会乱 —— 交互式程序最难忍那条 ✗）*/
@@ -16,23 +74,192 @@ fn writeBytes(buf: slice<u8>) -> i64 {
     return sys::write(sys::STDOUT, buf.data, buf.len)
 }
 
-/* 从 fd 读一次，返回**读到的字节数**（0 = EOF ✓；负数 = 出错 ⇒ 自己看 errno 之前的形状 ✗）*/
+/* 从 fd 读一次，返回**读到的字节数**（0 = EOF ✓；负数 = 出错）
+ * ⚠️ 这是**裸原语那一层**，调用者自己看返回值；要好用的形状就用 `reader` ✓ */
 fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
     return sys::read(fd, buf.data, buf.len)
 }
 
-/* ⭐ 读一行：**调用者给 buffer**（`IO.md` 拍过板：行缓冲必须调用者给 ✓）
- * 返回读到的字节数（不含换行）；0 = 一开始就 EOF ✓ */
-fn readLine(buf: mut slice<u8>) -> i64 {
-    var n: i64 = 0
-    while n < buf.len {
-        var ch: [1]u8
-        var cs: mut slice<u8> = ch[..]      /* 数组没有 `.data`，视图才有 ✓ */
-        let got = sys::read(sys::STDIN, cs.data, 1)
-        if got <= 0 { return n }
-        if ch[0] == u8(10) { return n }          /* '\n' ⇒ 一行结束 ✓ */
-        buf[n] = ch[0]
-        n = n + 1
+/* ================================================================ reader */
+
+struct reader {
+    fd:    i32
+    chunk: mut slice<u8>
+    len:   i64              /* chunk 里有多少有效字节 */
+    pos:   i64              /* 已经消费到哪儿 */
+
+    /* 还剩几个没消费的字节 ✓ */
+    fn avail(self: ref reader) -> i64 { return self.len - self.pos }
+
+    /* 还缓冲着字节吗（**不碰 fd** ✓） */
+    fn buffered(self: ref reader) -> bool { return self.pos < self.len }
+
+    /* 补货：一次 `read(2)` 读满一块 ✓ 返回读到的字节数，**0 = EOF** ✓
+     * ⚠️ 这条是"一次进内核拿一整块"，不是"读一个字节" —— 快慢全在这儿 ✗ */
+    fn fill(self: mut ref reader) -> result<i64, ioError> {
+        let n = sys::read(self.fd, self.chunk.data, self.chunk.len)
+        if n < i64(0) { return failure(ioError.readFailed(self.fd)) }
+        self.len = n
+        self.pos = 0
+        return success(n)
     }
-    return n
+
+    /* 下一个字节。返回值 **< 0 = EOF**（不是错误 ✓ 错误走 failure 那条路 ✓） */
+    fn nextByte(self: mut ref reader) -> result<i64, ioError> {
+        if self.pos >= self.len {
+            let n = self.fill()?
+            if n == i64(0) { return success(i64(-1)) }
+        }
+        let b = i64(self.chunk[self.pos])
+        self.pos = self.pos + 1
+        return success(b)
+    }
+
+    /* 结束了吗？（**会把缓冲耗完再看 fd**，所以答案一定准 ✓）
+     * ⚠️ 判据只能是"fd 上真没数据了"，不能只看 `avail() == 0` ——
+     *    缓冲空了不等于文件结束 ✗（那正是原来 `readLine` 把超长行切成两行的一半原因）*/
+    fn eof(self: mut ref reader) -> result<bool, ioError> {
+        if self.pos < self.len { return success(false) }
+        if self.chunk.len == i64(0) { return success(true) }
+        let n = self.fill()?
+        return success(n == i64(0))
+    }
+
+    /* ---------------------------------------------------------------- 行 */
+
+    /* 读一行到 `out`（**不含换行**）✓
+     * 返回值：读到的字节数；**0 = 一开始就 EOF** ✓
+     * ⚠️ 行比 `out` 长 ⇒ `failure(lineTooLong)` ——
+     *    绝不像以前那样**静默切一半**，那会让调用者把一行当成两行 ✗✗ */
+    fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
+        var n: i64 = 0
+        while true {
+            let b = self.nextByte()?
+            if b < i64(0) { return success(n) }              /* EOF 收尾（最后一行没换行也算一行 ✓）*/
+            if b == i64(10) { return success(n) }            /* '\n' ⇒ 行结束 ✓ */
+            if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
+            out[n] = u8(b)
+            n = n + 1
+        }
+        return success(n)
+    }
+
+    /* ---------------------------------------------------------------- 空白与词 */
+
+    /* 跳过空白（空格/制表/CR/LF/VT/FF）✓ 返回跳掉了几字节 */
+    fn skipSpace(self: mut ref reader) -> result<i64, ioError> {
+        var n: i64 = 0
+        while true {
+            let b = self.nextByte()?
+            if b < i64(0) { return success(n) }
+            if !isSpaceByte(b) { self.pos = self.pos - i64(1)  return success(n) }
+            n = n + 1
+        }
+        return success(n)
+    }
+
+    /* 读一个词（**连续的非空白**）到 `out` ✓ 返回长度；0 = 先遇到 EOF ✓
+     * 前导空白会跳过 ⇒ 可以直接连着调 ✓ */
+    fn nextToken(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
+        self.skipSpace()?
+        var n: i64 = 0
+        while true {
+            let b = self.nextByte()?
+            if b < i64(0) { return success(n) }
+            if isSpaceByte(b) { self.pos = self.pos - i64(1)  return success(n) }
+            if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
+            out[n] = u8(b)
+            n = n + 1
+        }
+        return success(n)
+    }
+
+    /* ---------------------------------------------------------------- 整数 */
+
+    /* 读一个整数（`IO.md` §4.4 的 A 档）✓
+     *   · 前导空白跳过 ⇒ 连着调就是 OI 那种"一坨数字"的读法 ✓
+     *   · 支持 `-`；**不收 `+`**（OI 数据里没有，收了反而会掩盖坏数据 ✗）
+     *   · 数字后面**不是数字就停**，那个字节推回去 ⇒ `12,34` 连读两次得到 12 和 34 ✓
+     * ⚠️ **溢出检测**：`i64` 上溢是 UB ⇒ 这里显式挡（不然就是"能证明却没证明" ✗）
+     *    挡下来用 `lineTooLong` 报 —— 错误种类不够时宁可复用，
+     *    也不要**静默截断**（截断会算出错答案还正常退出 ✗✗）*/
+    fn nextInt(self: mut ref reader) -> result<i64, ioError> {
+        self.skipSpace()?
+        var neg: bool = false
+        var v: i64 = 0
+        var got: bool = false
+
+        /* 先看一个字节：`-` 就是负号，别的**推回去**当数字继续读 ✓ */
+        let b0 = self.nextByte()?
+        if b0 < i64(0) { return success(i64(0)) }            /* 没东西了 ⇒ 0（跟 OI 惯例一致 ✓）*/
+        if b0 == i64(45) {
+            neg = true
+        } else {
+            self.pos = self.pos - i64(1)
+        }
+
+        while true {
+            let b = self.nextByte()?
+            if b < i64(0) { break }                          /* EOF ⇒ 数字到此为止 ✓ */
+
+            if b >= i64(48) && b <= i64(57) {
+                got = true
+                let d = b - i64(48)
+                /* ⚠️ **先查再加** —— 不查就是 UB ✗ */
+                if v > (I64_MAX - d) / i64(10) { return failure(ioError.lineTooLong(v)) }
+                v = v * i64(10) + d
+                continue
+            }
+
+            /* ⚠️⚠️ **空白一律吃掉，不推回** —— 这是"两种风格混着用"的前提 ✗
+             * 推回的后果（实测踩过）：输入 `5 7\nhello world\n`，两个 `nextInt` 之后
+             * 位置停在那个 `\n` 上 ⇒ 紧接着的 `nextLine` 返回**空行**（长度 0），
+             * 真正的第一行要等下一次调用 ⇒ **整个读取错位一行** ✗✗
+             * CRLF 要一起吃，不然会留一个裸 `\r` ⇒ 下一行前多一个空行 ✗ */
+            if b == i64(32) || b == i64(9) || b == i64(10) || b == i64(13) || b == i64(11) || b == i64(12) {
+                if b == i64(13) && self.pos < self.len {
+                    if i64(self.chunk[self.pos]) == i64(10) { self.pos = self.pos + i64(1) }
+                }
+                continue
+            }
+
+            /* 非空白的分隔符（`12,34` 里的 `,`）：
+             *   · **还没读到数字** ⇒ **吃掉它**，继续找数字 ✓
+             *     （不吃就麻烦了：推回去 ⇒ 下一次调用又停在同一个 `,` 上 ⇒
+             *       `nextInt` 永远返回 0 并**卡死**在那儿 ✗✗ 实测踩过）
+             *   · **已经读到数字** ⇒ 这是数字的边界（`12abc` 的 `a`）⇒ 推回去，
+             *     留给调用者处理 ✓ —— 这样 `12` 后面跟什么都不会被悄悄吃掉 ✓ */
+            if !got {
+                continue
+            }
+            self.pos = self.pos - i64(1)
+            break
+        }
+
+        if !got { return success(i64(0)) }                   /* 只有符号、没有数字 ⇒ 0 ✓ */
+        if neg { return success(i64(0) - v) }
+        return success(v)
+    }
+}
+
+/* ⭐ **建一个 reader**：`fd` + **隐式 64KB 缓冲** ✓
+ * 那 64KB 是本函数的 `new` ⇒ 落到**调用点**那只 arena（"有家函数"那条路 ✓）⇒
+ * 它跟 `reader` 自己**同寿**，调用者什么都不用管 ✓
+ * ⚠️ 也就是说 `reader` 活在**哪个块**，缓冲就活到哪个块 —— 往块外传会被逃逸检查挡住 ✓ */
+fn readerOf(fd: i32) -> reader {
+    var c: mut slice<u8> = new u8[BLK]
+    return { fd: fd, chunk: c, len: 0, pos: 0 }
+}
+
+/* ================================================================ 小工具 */
+
+/* 是不是空白字节（**词法上的**，不是 `isspace` 那套 locale 相关的东西 ✓） */
+fn isSpaceByte(b: i64) -> bool {
+    if b == i64(32) { return true }      /* 空格 */
+    if b == i64(9)  { return true }      /* \t   */
+    if b == i64(10) { return true }      /* \n   */
+    if b == i64(13) { return true }      /* \r   */
+    if b == i64(11) { return true }      /* \v   */
+    if b == i64(12) { return true }      /* \f   */
+    return false
 }

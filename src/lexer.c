@@ -169,6 +169,15 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
     lxAdvance(lx);                              /* 闭引号 */
 }
 
+/* 见 lexer.h 的说明：字符串字面量的 text 可能**恰好等于**某个标点 ⇒
+ * parser 的 `at()` 必须能排除掉"文本碰巧一样但不是标点"的 token ✓ */
+bool lexIsPunct(const char *value) {
+    if (!value || !*value) return false;
+    for (size_t i = 0; PUNCTS[i]; i++)
+        if (strcmp(PUNCTS[i], value) == 0) return true;
+    return false;
+}
+
 static bool lexPunct(Lexer *lx, Vec *out, int line, int col) {
     for (size_t i = 0; PUNCTS[i]; i++) {
         size_t n = strlen(PUNCTS[i]);

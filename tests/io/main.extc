@@ -1,35 +1,54 @@
-// expect: 求和 = 12|回显：hello world
-/* ⭐ 里程碑的第一步：**能读东西了**（`IO.md` 的档 1 + 档 2 落地 ✓）
+// expect: 求和 = 12|回显：hello world|下一个 = 99
+/* ⭐ IO-0 的常设验收：**OI 式输入 + 协议式输入，都走同一个 `reader`** ✓
  *   `std::sys` —— 特权层：只有它声明 C 原语（+ 签字 ✓）
- *   `std::io`  —— 普通库：把它包成 `readLine` / `readSome` / `writeBytes` ✓
- * 判据：这个程序从 **stdin** 读两行，算个和，再回显一行 ✓（`tests/io/run.sh` 喂输入）
+ *   `std::io`  —— 普通库：`reader` / `nextInt` / `nextLine` / `nextToken` / `writeBytes` ✓
+ *
+ * 这个程序**故意混着用两种风格**（这正是 `reader` 的设计目的）：
+ *   ① `nextInt` 读两个数（OI 式：不用先读行再切 ✓）
+ *   ② `nextLine` 读一整行原样回显（协议式：行是单位 ✓）
+ *   ③ `nextInt` 再读一个（证明前一次 `nextLine` 把位置交接对了 ✓）
+ *
+ * ⚠️ 形状：错误处理写在 `run()` 里（`?` 只在返回 `result` 的函数里能用 ✓），
+ *    `main` 只负责把失败**说出来**并把退出码定下来 ✓
+ *
+ * ⚠️ 判据里还有一条**看不见的**：这里不再是逐字节读。
+ *    老 `readLine` 每读一个字节进一次内核（实测 19MB/50 万行要 2.30s），
+ *    现在一次 64KB（0.012s）—— 快慢在 `tests/io/run.sh` 里单独量 ✓
  */
 use std::io
 
-fn main() -> i32 {
+fn run() -> result<unit, io::ioError> {
     var line: [64]u8
+    var r = io::readerOf(io::STDIN_FD)
 
-    /* 第一行：读进来自己解析两个数（还没有 `nextInt` 那一族 ✓）*/
-    let n1 = io::readLine(line[..])
-    var i: i64 = 0
-    var a: i64 = 0
-    while i < n1 && line[i] != u8(32) {
-        a = a * 10 + i64(line[i] - u8(48))
-        i = i + 1
-    }
-    i = i + 1
-    var b: i64 = 0
-    while i < n1 {
-        b = b * 10 + i64(line[i] - u8(48))
-        i = i + 1
-    }
+    /* ① 两个数：`nextInt` 自己跳空白，不用先读成行 ✓ */
+    let a = r.nextInt()?
+    let b = r.nextInt()?
     println("求和 = ", a + b)
 
-    /* 第二行：原样回显（走 fd 直写 ⇒ **先 flush**，不然 `println` 那边的缓冲还没出来 ✗）*/
-    let n2 = io::readLine(line[..])
+    /* ② 下一行**原样**回显（走 fd 直写 ⇒ 必须先 flush，
+     *   不然 `println` 那边的缓冲还没出来 ⇒ 顺序会乱 ✗）*/
+    let n = r.nextLine(line[..])?
     io::flushOut()
     io::writeBytes("回显：")
-    io::writeBytes(line[0..n2])
+    io::writeBytes(line[0..n])
     io::writeBytes("\n")
-    return 0
+
+    /* ③ 再读一个整数：证明 `nextLine` 之后位置是对的（换行已经被它吃掉 ✓） */
+    let c = r.nextInt()?
+    println("下一个 = ", c)
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match run() {
+        success(u) => { return 0 }
+        failure(er) => {
+            match er {
+                readFailed(fd) => println("io: 读失败 (fd = ", fd, ")")
+                lineTooLong(n) => println("io: 一行太长了（", n, " 字节）")
+            }
+            return 1
+        }
+    }
 }

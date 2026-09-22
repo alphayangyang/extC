@@ -26,8 +26,16 @@ static Token *pk(Parser *p, size_t k) {
 
 static Token *cur(Parser *p) { return pk(p, 0); }
 
+/* ⚠️⚠️ **不能只看文本** —— 字符串字面量 token 的 `text` 是**不含引号的内容** ⇒
+ * 内容恰好是 `")"` 的字符串会让 `at(p, ")")` 成立 ✗✗
+ * （实测：`println(")")` 报 "expected an expression, found `)`"，
+ *   而 `println("x)")` 正常 —— 差别只在那一个字节 ✓ 真踩过）
+ * ⇒ 只比对**标点**时才要求 token 真的是标点 ✓
+ * 反过来说：关键字/标识符照旧纯文本比对（`match` / `true` 那些没有这个冲突 ✓）*/
 static bool at(Parser *p, const char *value) {
-    return strcmp(cur(p)->text, value) == 0;
+    Token *t = cur(p);
+    if (t->kind == TK_STRING && lexIsPunct(value)) return false;
+    return strcmp(t->text, value) == 0;
 }
 
 static bool atKind(Parser *p, TokenKind k) { return cur(p)->kind == k; }
