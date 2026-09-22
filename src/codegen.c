@@ -87,6 +87,23 @@ typedef struct {
     int         loopLevel[64];
     int         loopLen;
     Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
+
+    /* ---- ⭐ 描述表**按需**生成（编译时长优化第三步）----
+     * 打印（以及以后的结构化 `==`）都要用它，但**只有真会被用到的类型**才需要 ✓
+     * 收法：`descRef` 一边给出 `&X_desc` 一边把 X 登记进来 ⇒ 跑到不动点就是闭包；
+     * 根 = `genPrint` 里那些 `extc_print(&x, &x_desc)` 的实参类型。
+     *
+     * ⚠️ 顺序上必须先**生成完函数体**才知道要哪些，所以描述区写在
+     *    「原型区之后、函数体之前」（跟切片 helper 同一个套路 ✓）*/
+    Vec         descs;          /* Type* —— 需要描述表的类型（按 C 名去重）*/
+    Buf         desc;           /* 描述区（最后拼在 body 前面）*/
+    Buf         rt;             /* 打印运行时（描述表类型 + extc_print）—— **按需**才拼进去 ✓ */
+    /* ⚠️ 判"要不要打印运行时"**不能**看 `descs.len`：
+     *   `slice<u8>`（字符串字面量！）用的是**共享**的 `extc_desc_text`，
+     *   压根不进 `descs` ⇒ 只看 descs 就会漏掉 `extc_print` / `extc_desc_text` ✗
+     *   （真踩过：`println("x = ", n)` 这种最常见的一句就编不过）
+     * 所以由 `genPrint` 直接举手 ✓ */
+    bool        needRuntime;
 } CG;
 
 /* 一个切片 helper：把 `a[lo..hi]` 的边界检查＋视图构造收进一个函数。
@@ -293,8 +310,19 @@ static void genViewIndexer(CG *g, Type *inst) {
  * ⚠️ 描述表之间会**互相引用**（`struct s { xs: slice<s> }` 就是一个环）——
  * 所以每个描述常量都在区首先有一句 `static const ExtcDesc X_desc;`
  * （C 的 tentative definition），于是定义顺序彻底无关 ✓ */
+/* ⭐ **按需**：登记"这个类型需要一份描述"。按 **C 名**去重（可写视图/只读视图
+ * 是同一个 C 结构体 ⇒ 一份 ✓）。标量 / `ref` / `slice<u8>` 用共享的那几只，不登记 ✓ */
+static void needDesc(CG *g, Type *t) {
+    if (!t || !t->name) return;
+    if (t->kind == TY_BUILTIN || t->kind == TY_REF || isByteView(t)) return;
+    for (size_t i = 0; i < g->descs.len; i++)
+        if (strcmp((*(Type **)vecAt(&g->descs, i))->name, t->name) == 0) return;
+    *(Type **)vecPush(&g->descs) = t;
+}
+
 static const char *descRef(CG *g, Type *t) {
     if (!t) return "&extc_desc_i32";
+    needDesc(g, t);                       /* ← 顺手登记依赖：这就是可达性闭包 ✓ */
     if (t->kind == TY_BUILTIN) return arenaPrintf(g->arena, "&extc_desc_%s", t->name);
     if (t->kind == TY_REF)     return "&extc_desc_ref";
     if (isByteView(t))         return "&extc_desc_text";
@@ -350,6 +378,62 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
     }
     cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ENUM, \"%s\", sizeof(%s), %zu, %s, NULL };",
            cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_variants", cname) : "NULL");
+}
+
+/* ------------------------------------------------------------------ 按需出描述表
+ *
+ * ⭐ 第三步的关键：**只有真会被打印的类型**才出描述 ✓
+ *    （合成压测程序 N=1000：一个结构体都没打印 ⇒ 描述区整块为空 ✓）
+ *
+ * 根 = `genPrint` 里 `extc_print(&x, &x_desc)` 的实参类型（`descRef` 登记的）；
+ * 闭包 = 描述之间互相引用（struct 字段 / 数组元素 / 切片元素）⇒ 跑到不动点 ✓
+ *
+ * ⚠️ 两个必须交代的东西：
+ *  ① **顺序**：要哪些描述得先**生成完函数体**才知道（`genPrint` 在函数体里），
+ *     而 C 要求"先定义后使用" ⇒ 描述区写在「原型区之后、函数体之前」，
+ *     最后跟切片 helper 一样拼回去 ✓
+ *  ② **环**：`struct s { xs: slice<s> }` ⇒ `s_desc → slice_s_desc → s_desc`。
+ *     所以先出**全部**前向声明（C 的 tentative definition，合法 ✓），
+ *     定义顺序就无关了 —— 为此得先"空跑一遍"把集合收全（阶段 A）✓
+ *     空跑没有副作用（那几个 emitter 只写 `g->out` + arena）✓
+ */
+static void emitDescDefs(CG *g) {
+    /* ⚠️ 循环条件每次重读 `len`：`descRef` 会在定义过程中追加新依赖 ✓ */
+    for (size_t i = 0; i < g->descs.len; i++) {
+        Type *t = *(Type **)vecAt(&g->descs, i);
+        if (t->kind == TY_STRUCT && t->sdef) {
+            genStructDesc(g, t->name, t->name, t->sdef);
+        } else if (t->kind == TY_ENUM && t->edef) {
+            genEnumDesc(g, t->name, t->name, t->edef);
+        } else if (t->kind == TY_ARRAY) {
+            genArrayDesc(g, t);
+        } else if (t->kind == TY_GENERIC && t->sdef) {
+            substEnter(g, t);              /* 字段里的 T 要换成实参 ✓ */
+            if (isView(t)) genViewDesc(g, t);
+            else           genStructDesc(g, t->name, t->sdef->name, t->sdef);
+            substLeave(g);
+        } else {
+            /* 漏了一种就**响亮地炸** —— 静默少出一个描述等于生成的 C 里
+             * 引用一个不存在的符号 ✗（项目纪律：不许静默少生成）*/
+            ctxError(g->ctx, 0, 1, NULL,
+                     "internal: no descriptor generator for this type");
+        }
+    }
+}
+
+static void emitDescRegion(CG *g) {
+    if (g->descs.len == 0) return;         /* 没人打印结构化类型 ⇒ 打印机制整块不要 ✓ */
+    Buf *saved = g->out;
+    g->out = &g->desc;
+    emitDescDefs(g);                       /* 阶段 A：空跑，把依赖收全（输出丢掉）*/
+    bufInit(&g->desc, g->arena);
+    cgLine(g, "/* ---- 类型描述表（**按需**：只出真会被打印的那些）---- */");
+    for (size_t i = 0; i < g->descs.len; i++)   /* 全部前向声明 ⇒ 定义顺序无关 ✓ */
+        cgLine(g, "static const ExtcDesc %s_desc;", (*(Type **)vecAt(&g->descs, i))->name);
+    cgLine(g, "");
+    emitDescDefs(g);                       /* 阶段 B：真正出定义 */
+    cgLine(g, "");
+    g->out = saved;
 }
 
 /* 打印相关的**派生函数**现在全没了 ✓
@@ -649,6 +733,7 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
          *   表达式去初始化聚合体 ⇒ gcc 报 incompatible types ✗）*/
         if (bt->kind == TY_ENUM || isByteView(bt) || bt->kind == TY_STRUCT ||
             bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
+            g->needRuntime = true;              /* 打印运行时得跟着出来 ✓ */
             if (printArgIsPlace(a)) {
                 bufPrintf(&b, "extc_print(&(%s), %s)", code, descRef(g, bt));
             } else {
@@ -1920,6 +2005,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
+    vecInit(&g.descs, arena, sizeof(void *));
+    bufInit(&g.desc, arena);
+    bufInit(&g.rt, arena);              /* 打印运行时：**按需**才拼进输出 ✓ */
     bufInit(&g.body, arena);
     g.tmpSeq = 0;
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -2065,7 +2153,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      *
      * 同一张表以后还能喂给 `extc_eq`（结构化 ==）· 序列化 · hash ✓
      * ================================================================== */
-    bufPuts(out,
+    bufPuts(&g.rt,
         "/* ---- 类型描述表 ----\n"
         " * 每类型一份静态数据；`extc_print` 全程序只有一份。\n"
         " * size 的含义：标量/结构体 = sizeof(T)；数组/切片 = **元素步长**。\n"
@@ -2112,7 +2200,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "\n");
     /* ⚠️ 分成两次 `bufPuts`：C99 只保证支持 4095 字符的字符串字面量，
      * 整块拼一起会触发 -Woverlength-strings（不是错，但没必要留着噪声）*/
-    bufPuts(out,
+    bufPuts(&g.rt,
         "/* 通用递归打印器 —— 输出格式必须跟以前派生的 `_debug` **逐字节一致** ✓\n"
         " * （真值表见 tools/print-formats.txt：浮点 %g、[N]u8 按数字、slice<u8> 按文本 ……）*/\n"
         "static void extc_print(const void *p, const ExtcDesc *d) {\n"
@@ -2381,55 +2469,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
 
     /* ------------------------------------------------------------------
-     * **类型描述表**：所有类型定义都出完了 ⇒ 到这里才能 `offsetof` / `sizeof` ✓
-     *
-     * ⚠️ 描述常量之间会互相引用（`struct s { xs: slice<s> }` 就是个环），
-     * 所以先出**全部**前向声明（C 的 tentative definition），定义顺序就无关了 ✓
+     * ⚠️ **类型描述表不在这里出** —— 它在「原型区之后、函数体之前」，
+     * 因为**要哪些描述得先看函数体**（`genPrint` 打谁）⇒ 见 `emitDescRegion` ✓
      * ------------------------------------------------------------------ */
-    for (size_t i = 0; i < g.structs.len; i++)
-        cgLine(&g, "static const ExtcDesc %s_desc;",
-               (*(StructDef **)vecAt(&g.structs, i))->name);
-    for (size_t i = 0; i < g.insts.len; i++) {
-        Type *it = *(Type **)vecAt(&g.insts, i);
-        if (isByteView(it)) continue;      /* 字节视图共用 `extc_desc_text`，没有自己的一份 ✓ */
-        cgLine(&g, "static const ExtcDesc %s_desc;", it->name);
-    }
-    for (size_t i = 0; i < m->types.len; i++) {
-        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
-        if (td->typeParams.len > 0) continue;      /* 泛型：实例见下 */
-        cgLine(&g, "static const ExtcDesc %s_desc;", td->name);
-    }
-    for (size_t i = 0; i < tt->enumInstances.len; i++)
-        cgLine(&g, "static const ExtcDesc %s_desc;",
-               (*(Type **)vecAt(&tt->enumInstances, i))->name);
-    cgLine(&g, "");
-
-    /* 普通 struct */
-    for (size_t i = 0; i < g.structs.len; i++) {
-        StructDef *sd = *(StructDef **)vecAt(&g.structs, i);
-        genStructDesc(&g, sd->name, sd->name, sd);
-    }
-    /* 数组 / 视图 / 泛型 struct 实例（字段类型要替换 ⇒ substEnter）*/
-    for (size_t i = 0; i < g.insts.len; i++) {
-        Type *it = *(Type **)vecAt(&g.insts, i);
-        if (isByteView(it)) continue;
-        if (it->kind == TY_ARRAY) { genArrayDesc(&g, it); continue; }
-        substEnter(&g, it);
-        if (isView(it)) genViewDesc(&g, it);
-        else            genStructDesc(&g, it->name, it->sdef->name, it->sdef);
-        substLeave(&g);
-    }
-    /* 枚举（无载荷 / 带载荷都只印变体名）+ 泛型枚举实例 */
-    for (size_t i = 0; i < m->types.len; i++) {
-        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
-        if (td->typeParams.len > 0) continue;
-        genEnumDesc(&g, td->name, td->name, td);
-    }
-    for (size_t i = 0; i < tt->enumInstances.len; i++) {
-        Type *it = *(Type **)vecAt(&tt->enumInstances, i);
-        genEnumDesc(&g, it->name, it->name, it->edef);
-    }
-    cgLine(&g, "");
 
     /* 全局变量 / 常量 —— **直接就是 C 的静态对象**（定长的全局不需要 arena）。
      * C 自动把静态对象清零，所以零初始化的全局不用 generate 任何初始化式。 */
@@ -2524,8 +2566,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         cgLine(&g, "");
     }
 
-    /* 收尾：先把函数体区攒下来的切片 helper 放出来，再接上函数体 */
+    /* 收尾：把"生成过程中才知道要哪些"的东西接到函数体前面 ——
+     *   ⭐ 打印运行时 + **类型描述表**（第三步：按需，看 genPrint 打过谁）
+     *   ⭐ 切片 helper
+     * 顺序：原型 → 描述 → 函数体 ✓（C 要求"先定义后使用"）*/
     g.out = out;
+    emitDescRegion(&g);
+    if (g.needRuntime) bufPuts(out, bufCstr(&g.rt));
+    bufPuts(out, bufCstr(&g.desc));
     for (size_t i = 0; i < g.helpers.len; i++)
         bufPuts(out, ((SliceHelper *)vecAt(&g.helpers, i))->text);
     bufPuts(out, bufCstr(&g.body));

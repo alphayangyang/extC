@@ -1,0 +1,29 @@
+// expect: varArray = varArray { buf: [7, 8, 0, 0], len: 2, cap: 4 }
+/* 描述表打印的**覆盖用例**（2026-09-22）：把每种"换线前后必须逐字节一致"的形状
+ * 都过一遍 —— struct / 泛型 struct 实例 / 嵌套数组 / 枚举 / option /
+ * ?ref / 浮点 / 字节视图 ✓
+ *
+ * 跟 `print-desc-check.extc` 的分工：那个是**跟 C 侧手搭描述表对拍**用的，
+ * 这个是**全形状回归**（`// expect:` 钉住泛型那行，其余靠 golden 快照 ✓）*/
+type color = | red | green | blue
+
+struct pair { a: i32  b: i64 }
+struct holder { p: ?ref pair  f: f64  tag: color  name: slice<u8> }
+
+fn main() {
+    var v: varArray<i32> = varArray<i32>::withCap(4)
+    v.push(7)
+    v.push(8)
+    println("varArray = ", v)
+
+    var ps: [2]pair = [{ a: 1, b: 2 }, { a: 3, b: 4 }]
+    println("数组 = ", ps)
+
+    println("枚举 = ", color.blue)
+
+    var o: option<i32> = option<i32>::some(5)
+    println("option = ", o)
+
+    var h: holder = { p: null, f: 1.0, tag: color.red, name: "hi" }
+    println("holder = ", h)
+}
