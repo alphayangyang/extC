@@ -131,17 +131,6 @@ void checkStmt(Checker *c, Stmt *s) {
                             " allocation");
                     return;
                 }
-                /* ⚠️ 临时缺口（步骤③ 之前）：运行时长度的复用还没实现 ——
-                 * **报错，别静默退化成"每轮分配"** ✗（P′：答应了就得做到）✓ */
-                if (s->u.var.init->u.new_.count) {
-                    ckError(c, s->line,
-                            "For a length known only at run time there is nothing to size the"
-                            " reused storage with yet. Use a fixed maximum --"
-                            " `@overwrite var b = new [4096]u8` -- and slice it as needed.",
-                            "`@overwrite` with a run-time length (`new T[k]`) is not implemented"
-                            " yet; use a fixed-size buffer (`new [N]T`)");
-                    return;
-                }
                 s->u.var.init->reuse = true;
             }
 

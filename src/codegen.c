@@ -1693,50 +1693,60 @@ static void genStmtInner(CG *g, Stmt *s) {
              * 第一次执行到这句才分配（懒分配 ✓），之后每次只**清零复用** ✓
              * 生成的就是几行内联 C：`extc_arena_alloc` + `memset` ⇒ 零新运行时 ✓ */
             if (s->u.var.overwrite) {
+                /* ⭐ 定案 65：**复用一块存储** —— 三档（单值 / 定长缓冲 / 运行时长度）
+                 * 共用一个格子（`extc_owcell` = 块 + 容量）✓
+                 *   第一次执行到这句 ⇒ 分配（**懒分配** ✓）
+                 *   之后每次        ⇒ 清零复用（`new` 的零值契约不变 ✓）
+                 * 格子从哪来：自己的站点 ⇒ 本帧；被调者的站点 ⇒ 调用点传进来的 ✓ */
                 int k = owIndex(g, s);
                 Expr *nx = s->u.var.init;
                 Type *st_t = subst(g, nx->u.new_.type);
-                if (k >= 0 && !nx->u.new_.count) {
-                    /* 格子地址：自己的帧 ⇒ `&__extc_ow<k>`；调用者给的 ⇒ `void**` 参数 ✓ */
-                    const char *cell = arenaPrintf(g->arena, "__extc_ow%d", k);
-                    const char *caddr = f_owLocal(g, s)
-                        ? arenaPrintf(g->arena, "&%s", cell)
-                        : arenaPrintf(g->arena, "__extc_owarg%d", k);
+                bool loc = f_owLocal(g, s);
+                if (k >= 0) {
+                    const char *cell = loc ? arenaPrintf(g->arena, "&__extc_ow%d", k)
+                                           : arenaPrintf(g->arena, "__extc_owarg%d", k);
                     const char *ar = arenaRefAt(g, nx->arenaLevel);
+                    const char *ct = cType(g, st_t);
                     flushPrefix(g);
-                    if (f_owLocal(g, s)) {
-                        /* 自己的格子：永久有效，只有"分配过了吗"一种判断 ✓ */
-                        cgLine(g, "if (!%s) { %s = (%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)); }",
-                                cell, cell, cType(g, st_t), ar, cType(g, st_t));
-                        cgLine(g, "else { memset(%s, 0, (size_t)sizeof(%s)); }", cell, cType(g, st_t));
-                        cgLine(g, "%s %s = %s;", cType(g, s->type), nm, cell);
+                    cgLine(g, "extc_owcell *__owc = %s;", cell);
+                    if (!nx->u.new_.count) {
+                        /* 单值 / 定长数组 `new T` / `new [N]T` ⇒ 恒定大小 ✓
+                         * ⚠️ 绑定**必须先声明**（在 if/else 里的声明出了块就没了 ✗）*/
+                        cgLine(g, "%s %s;", cType(g, s->type), nm);
+                        cgLine(g, "if (!__owc || !__owc->p) { void *p = extc_arena_alloc(&%s,"
+                                  " (int64_t)sizeof(%s));  if (__owc) __owc->p = p;"
+                                  "  %s = (%s)p; }",     /* ⚠️ 绑定的 C 类型本身就是指针 ✗ 别再补一个 `*` */
+                                ar, ct, nm, cType(g, s->type));
+                        cgLine(g, "else { memset(__owc->p, 0, (size_t)sizeof(%s));"
+                                  "  %s = (%s)__owc->p; }",
+                                ct, nm, cType(g, s->type));
                     } else {
-                        /* 调用者给的格子（`void **`）：它可能是 NULL（没走过那个调用点）
-                         * ⇒ **保命分支**：退化成一次普通分配 ✓（宁可多花内存，不可 UB ✓）*/
-                        cgLine(g, "void **__owl = %s;", caddr);
-                        cgLine(g, "%s *__owv;", cType(g, st_t));
-                        cgLine(g, "if (!__owl) { __owv = (%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)); }",
-                                cType(g, st_t), ar, cType(g, st_t));
-                        cgLine(g, "else if (!*__owl) { *__owl = (%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s));"
-                                  "  __owv = (%s *)*__owl; }",
-                                cType(g, st_t), ar, cType(g, st_t), cType(g, st_t));
-                        cgLine(g, "else { memset(*__owl, 0, (size_t)sizeof(%s));  __owv = (%s *)*__owl; }",
-                                cType(g, st_t), cType(g, st_t));
-                        cgLine(g, "%s %s = __owv;", cType(g, s->type), nm);
+                        /* 运行时长度 ⇒ `{ptr, cap}` + **翻倍**（定案 59 同源 ✓）
+                         * 内存上界 ≤ 2 × 见过的最大长度（与迭代数无关 ✓）*/
+                        const char *cnt = genExpr(g, nx->u.new_.count);
+                        if (nx->needTemp) {
+                            const char *t = arenaPrintf(g->arena, "__extc_n%d", g->tmpSeq++);
+                            pfLine(g, "int64_t %s = (int64_t)(%s);", t, cnt);
+                            cnt = t;
+                        }
+                        cgLine(g, "int64_t __owk = (int64_t)(%s);", cnt);
+                        cgLine(g, "if (__owk < 0) { extc_trapMsg(\"%s\", %d,"
+                                  " \"negative length\"); }", g->path, nx->line);
+                        cgLine(g, "%s %s;", cType(g, s->type), nm);
+                        cgLine(g, "if (!__owc) { %s = (%s){ .data = (%s *)extc_arena_alloc(&%s,"
+                                  " __owk * (int64_t)sizeof(%s)), .len = __owk }; }",
+                                nm, cType(g, s->type), ct, ar, ct);
+                        cgLine(g, "else { if (__owk > __owc->cap) { int64_t c = __owc->cap * 2;"
+                                  " if (c < __owk) c = __owk;"
+                                  "  __owc->p = extc_arena_alloc(&%s, c * (int64_t)sizeof(%s));"
+                                  "  __owc->cap = c; }"
+                                  "  %s = (%s){ .data = (%s *)__owc->p, .len = __owk }; }",
+                                ar, ct, nm, cType(g, s->type), ct);
+                        cgLine(g, "memset(%s.data, 0, (size_t)(__owk * (int64_t)sizeof(%s)));",
+                                nm, ct);
                     }
                     return;
                 }
-                /* 只有"运行时长度"（`new T[k]`）会走到这里 ⇒ 还没实现 ⇒
-                 * 检查器已经挡在前面了（见 check_stmt.c 那条 @overwrite 检查）✓
-                 * 万一漏了，就按普通 `new` 走（**不静默假装复用**：那是 P′ 的反面 ✗）*/
-                (void)st_t;
-            }
-            if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
-                TryInfo ti = genTryHead(g, s->u.var.init);
-                flushPrefix(g);
-                cgLine(g, "%s %s = %s;",
-                       cType(g, s->type), nm, tryPayloadPath(g, &ti));
-                return;
             }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
                                              : zeroInit(g, s->type);
@@ -1929,7 +1939,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     if (!f->owLocal) {
         for (int i = 0; i < f->owSites; i++) {
             if (f->params.len || f->needsHome || i) bufPuts(&sig, ", ");
-            bufPrintf(&sig, "void **__extc_owarg%d", i);
+            bufPrintf(&sig, "extc_owcell *__extc_owarg%d", i);
         }
     }
     return bufCstr(&sig);
@@ -1979,17 +1989,9 @@ static void genFunc(CG *g, FuncDef *f) {
     g->owSites = owNow;
     /* ⭐ 定案 65：格子放哪 —— 本函数自己的站点（`owLocal`）放自己的帧；
      * 放别人的（被调者需要格子）⇒ 每个调用点替它准备 `owSites` 个 `void *` ✓ */
-    for (size_t i = 0; i < owNow.len; i++) {
-        if (!f->owLocal) continue;                     /* 我的站点由调用者给格子 ✓ */
-        Stmt *st = *(Stmt **)vecAt(&owNow, i);
-        Expr *nx = st->u.var.init;
-        Type *st_t = subst(g, nx->u.new_.type);        /* 存储的类型（不是绑定的类型）*/
-        if (!nx->u.new_.count)                          /* 单值 / 定长数组 [N]T ✓ */
-            cgLine(g, "%s *__extc_ow%zu = ((void *)0);", cType(g, st_t), i);
-        else                                            /* 运行时长度（步骤③）*/
-            cgLine(g, "%s *__extc_ow%zu = ((void *)0); int64_t __extc_owc%zu = 0;",
-                   cType(g, st_t), i, i);
-    }
+    if (f->owLocal)
+        for (size_t i = 0; i < owNow.len; i++)
+            cgLine(g, "extc_owcell __extc_ow%zu = { 0, 0 };", i);   /* 自己的站点 ⇒ 本帧一个格子 ✓ */
     Vec savedOwCalls = g->owCalls;
     Vec owcNow; vecInit(&owcNow, g->arena, sizeof(Expr *));
     collectOwCallsStmt(f->body, &owcNow);
@@ -1997,7 +1999,7 @@ static void genFunc(CG *g, FuncDef *f) {
     for (size_t j = 0; j < owcNow.len; j++) {
         Expr *ce = *(Expr **)vecAt(&owcNow, j);
         for (int k = 0; k < ce->func->owSites; k++)
-            cgLine(g, "void *__extc_owc%zu_%d = ((void *)0);", j, k);
+            cgLine(g, "extc_owcell __extc_owc%zu_%d = { 0, 0 };", j, k);   /* 替被调者备的 ✓ */
     }
     /* ⚠️ 别在这里恢复 `owSites` ✗ —— 函数体还没生成呢（踩过：查表永远 -1 ⇒
      * 静默退化成"每轮分配"）⇒ 恢复挪到 genFunc 收尾，跟 `noArena`/`hasHome` 一起 ✓ */
@@ -2448,6 +2450,21 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    }\n"
         "    return lo;\n"
         "}\n\n");
+    /* ⭐ 定案 65：`@overwrite` 的存储格子类型 —— **只在真用到时才吐** ✓
+     * （无条件吐的话，每个程序的生成 C 都会多一行 ⇒ golden 全是噪声 ✗）*/
+    {
+        bool needOw = false;
+        for (size_t i = 0; i < m->funcs.len && !needOw; i++)
+            if ((*(FuncDef **)vecAt(&m->funcs, i))->owSites > 0) needOw = true;
+        for (size_t i = 0; i < m->structs.len && !needOw; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++)
+                if ((*(FuncDef **)vecAt(&sd->methods, j))->owSites > 0) { needOw = true; break; }
+        }
+        if (needOw)
+            bufPuts(out, "typedef struct extc_owcell { void *p; int64_t cap; }"
+                         " extc_owcell;   /* 定案 65：\\@overwrite 的复用格子 */\n");
+    }
     bufPuts(out,
         /* ------------------------------------------------------------------
          * arena：**每帧一只 + 按句柄分配**
@@ -2464,6 +2481,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * ------------------------------------------------------------------ */
         "typedef struct extc_ablock { struct extc_ablock *prev; int64_t cap, used; char data[1]; } extc_ablock;\n"
         "typedef struct extc_arena { extc_ablock *top; } extc_arena;\n"
+
         "static inline void extc_arena_init(extc_arena *a) { a->top = NULL; }\n"
         "static inline void extc_arena_release(extc_arena *a) {\n"
         "    while (a->top) { extc_ablock *p = a->top->prev; free(a->top); a->top = p; }\n"
