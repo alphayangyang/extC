@@ -2364,3 +2364,48 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32      // 没签字
 ⚠️ v1 还说清两件事：① **特权没做**（谁都能写 `extern!` —— 设计上原语该只住在 `std::sys` ✓）
 ② 跟 runtime 已引用的头冲突的函数名（`memcpy`/`printf`…）会报 `conflicting types` ⇒
    声明前先看生成的 C 引了哪些头 ✓（`read`/`write` 这类没引 unistd.h ⇒ 不冲突 ✓）
+
+## 定案 73 · **IO 的第一块：`std::sys`（原语）+ `std::io`（库）+ `flush()`**（2026-09-22）
+
+> 里程碑的第一步：**先能读东西**（`IO.md` §1 的"做完 = 五子棋能跟人下"）
+
+**分层落地**（`IO.md` 拍过的三档，现在前两档真的在跑 ✓）：
+
+```extc
+// stdlib/std/sys.extc —— 特权层：只有它声明 C 原语（+ **签字** ✓）
+extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+let STDIN: i32 = 0
+
+// stdlib/std/io.extc —— 普通库（用 extC 写，自己不碰 extern ✓）
+use std::sys
+fn readLine(buf: mut slice<u8>) -> i64 { … }     // 调用者给 buffer（IO.md 拍过板 ✓）
+fn writeBytes(buf: slice<u8>) -> i64 { … }
+fn flushOut() { flush() }
+```
+
+```extc
+// 用户程序：能读 stdin 了 ✓
+use std::io
+var line: [64]u8
+let n = io::readLine(line[..])
+```
+
+**`use std::io` 怎么找到文件**：搜索顺序 = 项目根（入口文件所在目录）→ `-I` →
+**`$EXTC_STD`** → **默认 `<extc 可执行文件所在目录>/../stdlib`** ✓（prelude 是内嵌的，
+所以它不在这；`std::io` 这种**真模块**需要真文件 ✓）
+
+**顺手做掉的一个真问题**：`println` 走 printf（**有缓冲**），而 `std::io` 的 `writeBytes`
+走 fd 直写（无缓冲）⇒ 混用时**顺序会乱**（交互式程序最难忍：提示语还没出来就在等你输入 ✗）
+⇒ 新增内建 `flush()`（⇒ `fflush(NULL)`）+ `std::io::flushOut()` wrapper ✓
+（**故意不自动刷** —— 代价要看得见 ✓，`tests/io/main.extc` 里就是这个写法 ✓）
+
+**验收**：`tests/io/run.sh`（stdin 两行：解析求和 + 回显；+ 分层结构检查）接进 `check.sh` ✓
+⇒ 现在 **`./check.sh` 14 节全绿**（245 测试 · ASan 8 · arena 5 · 攻击库基线不动 ·
+模块 8 · 泛型 4 · extern 4 · IO 3 · golden 逐字节不变 ✓）
+
+### ⬜ 还欠的（IO 的其余部分，按 `IO.md`）
+
+`open`/`close` + **帧拥有文件**（要"帧拥有资源"那套，跟 `owned` 同一个前置 ✗）·
+`nextInt` 一族 + `reader`（`IO.md` 档 2 的其余部分）· `main(args)` · `allocSlice<T>(n)` ·
+`scan(...)` 真变参 ✓ —— 都不挡"能读能写"这个里程碑本身 ✓

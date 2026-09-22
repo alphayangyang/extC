@@ -1032,6 +1032,8 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *name = e->u.call.callee->u.ident.name;
             if (strcmp(name, "print") == 0)   return genPrint(g, &e->u.call.args, false);
             if (strcmp(name, "println") == 0) return genPrint(g, &e->u.call.args, true);
+            /* ⭐ 定案 73：`flush()` ⇒ `fflush(NULL)`（`<stdio.h>` 已经在运行时里引过 ✓）*/
+            if (strcmp(name, "flush") == 0) return "(fflush((void *)0), 0)";
             if (!e->func) return "0";
 
             /* 只用 `cSymName`（**不带** ownerPrefix）：调用点写的是被调用者自己的名字，

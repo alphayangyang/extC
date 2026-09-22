@@ -1,0 +1,38 @@
+/* std/io.extc —— **普通库**（用 extC 写，没有任何特权 ✓）
+ *
+ * ⭐ 这就是 `IO.md` 说的"档 2 wrapper"：把它底下那层裸原语包成好用的形状 ✓
+ *    `slice<u8>` 在 C 那边是两个参数 ⇒ 这里把 `s.data` / `s.len` 分下去 ✓
+ */
+use std::sys
+
+type ioError = | failed(i32)
+
+/* 把 `println` 那边的缓冲刷出去 ✓（跟下面的 fd 直写混用时**必须**刷，
+ *  不然顺序会乱 —— 交互式程序最难忍那条 ✗）*/
+fn flushOut() { flush() }
+
+/* 把一整块字节写出去（`println` 管"打印值"，这里管"写字节" ✓）*/
+fn writeBytes(buf: slice<u8>) -> i64 {
+    return sys::write(sys::STDOUT, buf.data, buf.len)
+}
+
+/* 从 fd 读一次，返回**读到的字节数**（0 = EOF ✓；负数 = 出错 ⇒ 自己看 errno 之前的形状 ✗）*/
+fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
+    return sys::read(fd, buf.data, buf.len)
+}
+
+/* ⭐ 读一行：**调用者给 buffer**（`IO.md` 拍过板：行缓冲必须调用者给 ✓）
+ * 返回读到的字节数（不含换行）；0 = 一开始就 EOF ✓ */
+fn readLine(buf: mut slice<u8>) -> i64 {
+    var n: i64 = 0
+    while n < buf.len {
+        var ch: [1]u8
+        var cs: mut slice<u8> = ch[..]      /* 数组没有 `.data`，视图才有 ✓ */
+        let got = sys::read(sys::STDIN, cs.data, 1)
+        if got <= 0 { return n }
+        if ch[0] == u8(10) { return n }          /* '\n' ⇒ 一行结束 ✓ */
+        buf[n] = ch[0]
+        n = n + 1
+    }
+    return n
+}

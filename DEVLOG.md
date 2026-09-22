@@ -6,6 +6,36 @@
 > 倒序，最新的在最上面。
 
 ---
+## 2026-09-22 · **IO 的第一块：能读东西了**（定案 73）—— `std::sys` + `std::io`
+
+四块里的最后一块。目标是 **"先能读"**（`IO.md` 说的"做完 = 五子棋能跟人下"那条路的第一步）✓
+
+```extc
+use std::io
+var line: [64]u8
+let n = io::readLine(line[..])      // ← 从 stdin 读一行 ✓
+io::writeBytes("回显：")
+```
+
+**分层真的落地了**（不再只是文档）：`stdlib/std/sys.extc`（**特权层**：只有它写 `extern!` +
+签字）· `stdlib/std/io.extc`（**普通库**：用 extC 写，自己不碰 extern）✓
+
+**`use std::io` 怎么找文件**：项目根 → `-I` → `$EXTC_STD` →
+**默认 `<extc 所在目录>/../stdlib`**（用 `/proc/self/exe` 算 ✓ —— prelude 是内嵌的，
+但 `std::io` 这种真模块需要真文件 ✓）
+
+**顺手抓到并修掉一个真问题**（不然交互式程序没法用 ✗）：
+`println` 走 printf（**有缓冲**）、`std::io` 的 `writeBytes` 走 fd 直写（无缓冲）
+⇒ **顺序会乱**（提示语还没出来，程序已经在等你输入 ✗）
+⇒ 新增内建 `flush()`（⇒ `fflush(NULL)`）+ `std::io::flushOut()` ✓
+⚠️ 挂在"帧拥有资源"上的 `owned`（`extern!` 那条）**还没实现** ⇒ `std::io` 只声明
+"往你给的 buffer 里读/写"的那两个（`read`/`write`）✓ 这是有意选的形状 ✓
+
+**验收**：`tests/io/run.sh`（stdin 两行：解析求和 + 回显 + 分层结构检查）✓
+**`./check.sh` 现在 14 节全绿**：245 测试 · ASan 8 · arena 5 · 攻击库基线一字不动 ·
+模块 8 · 泛型 4 · extern 4 · IO 3 · 漂移哨兵 92 语料零漂移 · golden **逐字节不变** ✓
+
+---
 ## 2026-09-22 · **`extern!` + 信任声明 v1**（定案 72）—— 库怎么碰系统
 
 主线的第三块。库要碰系统只有一条路：**声明 C 的函数**，而 C 那边是黑盒 ⇒ **必须有人签字** ✓

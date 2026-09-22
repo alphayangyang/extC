@@ -423,5 +423,9 @@ fn main(args: slice<slice<u8>>) -> i32 {
 | `scan(mut a, mut b, ...)` | **要，但走「真变参」，而且现在不写**（主人：细节多、工程量大，`nextInt` 那一族现在够用）✓ |
 | 长度 `i64` vs `u64` | ✅ **定了 `i64`**（2026-09-22，定案 69）—— 第 2 节的市面对照仍然值得读 ✓ |
 
-> ⏸ **IO 暂时停在这里**：设计都在本文，代码一行没写。
+> ⭐ **2026-09-22：第一块落地了**（定案 73）—— `stdlib/std/sys.extc`（原语 + 签字）+
+> `stdlib/std/io.extc`（普通库：`readLine` / `writeBytes` / `flushOut`）+ 内建 `flush()` ✓
+> 用户程序 `use std::io` 就能从 **stdin** 读了（`tests/io/` 是常设验收 ✓）
+> ⏸ **剩下的**（`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `reader` · `main(args)` ·
+> `allocSlice`）还没做 —— 其中"帧拥有文件"跟 `extern!` 的 `owned` 是**同一个前置** ✓
 > 主人 2026-09-18：「然后后面 IO 我想再讨论」。

@@ -1,0 +1,35 @@
+// expect: 求和 = 12|回显：hello world
+/* ⭐ 里程碑的第一步：**能读东西了**（`IO.md` 的档 1 + 档 2 落地 ✓）
+ *   `std::sys` —— 特权层：只有它声明 C 原语（+ 签字 ✓）
+ *   `std::io`  —— 普通库：把它包成 `readLine` / `readSome` / `writeBytes` ✓
+ * 判据：这个程序从 **stdin** 读两行，算个和，再回显一行 ✓（`tests/io/run.sh` 喂输入）
+ */
+use std::io
+
+fn main() -> i32 {
+    var line: [64]u8
+
+    /* 第一行：读进来自己解析两个数（还没有 `nextInt` 那一族 ✓）*/
+    let n1 = io::readLine(line[..])
+    var i: i64 = 0
+    var a: i64 = 0
+    while i < n1 && line[i] != u8(32) {
+        a = a * 10 + i64(line[i] - u8(48))
+        i = i + 1
+    }
+    i = i + 1
+    var b: i64 = 0
+    while i < n1 {
+        b = b * 10 + i64(line[i] - u8(48))
+        i = i + 1
+    }
+    println("求和 = ", a + b)
+
+    /* 第二行：原样回显（走 fd 直写 ⇒ **先 flush**，不然 `println` 那边的缓冲还没出来 ✗）*/
+    let n2 = io::readLine(line[..])
+    io::flushOut()
+    io::writeBytes("回显：")
+    io::writeBytes(line[0..n2])
+    io::writeBytes("\n")
+    return 0
+}

@@ -1066,6 +1066,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             const char *name = e->u.call.callee->u.ident.name;
 
+            /* ⭐ 定案 73：`flush()` —— 把 `println` 那边的缓冲刷出去 ✓
+             * 为什么需要它：`std::io` 的 `writeBytes` 走 **fd 直写**（无缓冲，`write(2)`），
+             * 而 `println` 走 printf（**有缓冲**）⇒ 混用时**顺序会乱** ✗
+             * （交互式程序最难忍：提示语还没出来，程序已经在等你输入了 ✗）*/
+            if (strcmp(name, "flush") == 0) {
+                if (e->u.call.args.len != 0) {
+                    ckError(c, e->line, "`flush()` takes no arguments.",
+                            "`flush` takes no arguments");
+                }
+                return ttVoid(tt);
+            }
+
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
@@ -1412,6 +1424,7 @@ static bool exprMayPrint(Checker *c, Expr *e) {
     if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
         const char *n = e->u.call.callee->u.ident.name;
         if (strcmp(n, "print") == 0 || strcmp(n, "println") == 0) return true;
+        if (strcmp(n, "flush") == 0) return false;      /* 不是"可观测副作用"里的打印 ✗ */
     }
     switch (e->kind) {
     case EX_CALL:

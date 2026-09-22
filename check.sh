@@ -27,6 +27,11 @@ if out=$(./tests/generics/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
 else bad "tests/generics/run.sh"; echo "$out"; fi
 
+echo "== IO 第一块（定案 73：std::sys 原语 + std::io 库 —— 能从 stdin 读了）=="
+if out=$(./tests/io/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层）"
+else bad "tests/io/run.sh"; echo "$out"; fi
+
 echo "== extern! + 信任声明（定案 72：签字才放行 · 默认最保守）=="
 if out=$(./tests/extern/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"

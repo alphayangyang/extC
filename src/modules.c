@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>   /* readlink：找 <extc>/../stdlib ✓ */
 
 /* ---------------------------------------------------------------- 小工具 */
 
@@ -104,6 +105,7 @@ typedef struct {
     Vec       *ctxs;        /* Ctx* —— 交给上层渲染报错 ✓（**指针**：len 要传出去 ✗ 别按值拷）*/
     Vec        searchDirs;  /* const char*（`-I` ✓）*/
     const char *rootDir;    /* 项目根 = 入口文件所在目录（`use a::b` 一律相对它 ✓）*/
+    const char *stdDir;     /* 标准库目录（`std/io.extc` 住那儿 ✓）*/
     int         errors;
 } Loader;
 
@@ -133,7 +135,7 @@ static char *resolveModFile(Loader *L, const char *modPath, const char *importer
         if (fileExists(q)) return q;
         bufPrintf(&tried, "\n        %s", q);
     }
-    const char *stdDir = getenv("EXTC_STD");
+    const char *stdDir = L->stdDir;
     if (stdDir && *stdDir) {
         char *r = arenaPrintf(L->a, "%s/%s", stdDir, cand);
         if (fileExists(r)) return r;
@@ -167,7 +169,7 @@ static bool moduleExists(Loader *L, const char *modPath) {
         const char *sd = *(const char **)vecAt(&L->searchDirs, i);
         if (fileExists(arenaPrintf(L->a, "%s/%s", sd, cand))) return true;
     }
-    const char *stdDir = getenv("EXTC_STD");
+    const char *stdDir = L->stdDir;
     if (stdDir && *stdDir && fileExists(arenaPrintf(L->a, "%s/%s", stdDir, cand))) return true;
     return false;
 }
@@ -531,6 +533,21 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     L.a = a;
     L.out = out;
     L.rootDir = dirOf(a, rootPath);          /* 项目根 ✓ */
+    /* 标准库目录：`$EXTC_STD` 优先，否则 `<extc 可执行文件所在目录>/../stdlib` ✓
+     * （prelude 是**内嵌**的，所以它不在这；`std::io` 那种**真模块**需要真文件 ✓）*/
+    {
+        const char *env = getenv("EXTC_STD");
+        if (env && *env) L.stdDir = env;
+        else {
+            char buf[4096];
+            ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+            if (n > 0) {
+                buf[n] = '\0';
+                char *slash = strrchr(buf, '/');
+                if (slash) { *slash = '\0'; L.stdDir = arenaPrintf(a, "%s/../stdlib", buf); }
+            }
+        }
+    }
     vecInit(&L.units, a, sizeof(void *));
     vecInit(&L.order, a, sizeof(void *));
     if (outCtxs) { L.ctxs = outCtxs; if (!outCtxs->arena) vecInit(outCtxs, a, sizeof(void *)); }
