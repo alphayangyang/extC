@@ -712,6 +712,7 @@ match e {
 | [`DECISIONS.md`](DECISIONS.md) | 哪条定了（编号定案）、哪条还欠着 |
 | [`BOOTSTRAP.md`](BOOTSTRAP.md) | 自举路线、六步计划、ISO C 边界、沙箱 |
 | [`IO.md`](IO.md) | 输入输出的设计（未实现）|
+| [`MODULES.md`](MODULES.md) | **模块系统的调研 + 候选方案**（IO 的前置条件 —— 12 门语言怎么做、六个待拍板问题）|
 | [`REFS.md`](REFS.md) / [`ARRAYS.md`](ARRAYS.md) | 引用 / 数组的专题设计 |
 | [`SYNTAX.md`](SYNTAX.md) | 命名规范与样板 |
 | [`DEVLOG.md`](DEVLOG.md) | 发生过什么（决策与发现的来龙去脉）|
