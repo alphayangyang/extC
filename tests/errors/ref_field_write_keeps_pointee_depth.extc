@@ -1,0 +1,35 @@
+/* 引用型绑定上的字段写**不许**把「我指着谁」的深度刷低（PLAN #39，2026-09-22 修）✓
+ *
+ * 形状：**引用型绑定的「档2.3 字段表」会把它的 `refDepth` 刷低** ✗
+ *   `n` 指着本块的局部 `x`（深度 2）⇒ n->refDepth 本该是 2；
+ *   可 `n.next = null` 走了一次「字段写记录」⇒ `refreshRootDepth` 把根深度
+ *   重算成 max(各字段) = 0 ⇒ n->refDepth 变成 **0**（「指向活到永远的东西」）✗
+ * ⇒ 下一句 `keeper = n` 就放行了，而 `x` 出块即死 ⇒ **悬垂** ✓
+ *
+ * 实测（修之前，ASan）：`stack-use-after-scope`（读 `(*c).val` 那一行）✗
+ * ⚠️ 它是**修之前就有**的（老编译器同样放行），跟定案 63 的「提升」**正交** ✓
+ * 修法：引用型绑定的 `refDepth` 只许往「更长命」的方向调、**不许降** ✓
+ * 老位置：`tests/canary-gaps/`（缺口登记）⇒ 修好之后挪进 `tests/errors/` ✓
+ */
+struct node {
+    val: i32
+    next: ?ref node
+}
+
+fn probe() -> i32 {
+    var keeper: ?ref node = null
+    {
+        var x: node
+        x.val = 42
+        var n: mut ref node = ref x
+        n.next = null
+        keeper = n
+    }
+    var c: ?ref node = keeper
+    if c != null { println("val = ", (*c).val) }
+    return 0
+}
+
+fn main() -> i32 {
+    return probe()
+}

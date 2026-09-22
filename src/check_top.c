@@ -720,10 +720,19 @@ static void refreshRootDepth(Sym *s) {
 /* 记一次"往引用型地方写"的深度（`field == NULL` 表示**整块赋值**或归不到字段）*/
 void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     if (!root) return;
+    /* ⭐ PLAN #39：**引用型绑定**（`n: mut ref node`）上的字段写，写的是
+     * **被指对象**的字段 —— 而 `refreshRootDepth` 把根的有效深度重算成
+     * "max(各字段)"，等于把"我指着谁"（深度 2）覆盖成了"我指的那个东西里
+     * 装着什么"（字段 0）✗ ⇒ 之后 `keeper = n` 被放行 ⇒ 悬垂（ASan 实锤）✗
+     * 修法：**引用型绑定的 `refDepth` 只许往"更长命"的方向调，不许降** ✓
+     * （非引用型的结构体绑定照旧可以降 —— 那正是档2.3 强更新的用处 ✓）*/
+    bool isRefRoot = root->type && tsub(c, root->type)->kind == TY_REF;
+    int  before    = root->refDepth;
     if (!field) {                                  /* 整块赋值 / 元素写 ⇒ 保守 */
         if (!root->addressed) { root->nfields = 0; root->otherDepth = d2; }
         else if (d2 > root->otherDepth) root->otherDepth = d2;
         refreshRootDepth(root);
+        if (isRefRoot && root->refDepth < before) root->refDepth = before;   /* #39 ✓ */
         return;
     }
     int *slot = fieldDepthEntry(c, root, field, true);
@@ -735,6 +744,8 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
         *slot = d2;                                /* 没取过地址 ⇒ **强更新**（覆盖）✓ */
     }
     refreshRootDepth(root);
+    /* ⭐ PLAN #39：不要忘记"我指着谁" ✓（字段表说的是"我指的那个东西里装着什么"）*/
+    if (isRefRoot && root->refDepth < before) root->refDepth = before;
 }
 static int paramIndex(FuncDef *f, const char *name) {
     if (!name) return -1;
