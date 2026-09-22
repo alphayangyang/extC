@@ -18,6 +18,13 @@ for f in tests/arena/*.extc; do
         echo "  FAIL $name  ->  内存涨到超过 150MB（有块没释放）"
         echo "$out" | sed 's/^/        /'
         fail=1
+    elif echo "$out" | grep -q "error:"; then
+        # ⚠️ 这一支是补的：以前只查 "out of arena memory"，
+        # 于是**根本编不过**的用例也算 ok ⇒ 验收是空转的 ✗
+        # （2026-09-22 真撞上：control-flow.extc 一直编不过，见 check_top.c 的 EX_GENCALL）
+        echo "  FAIL $name  ->  没跑起来（编译/检查就报错了）"
+        echo "$out" | sed 's/^/        /'
+        fail=1
     else
         echo "  ok   $name  ->  $out"
     fi

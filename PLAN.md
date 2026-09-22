@@ -60,6 +60,7 @@
 | **33** | ✅ **"被调者会不会分配"算得太晚**（2026-09-21 修完，跟 #31 一起）| `needsHome` 的传递闭包跑在**所有函数查完之后**，而调用者查自己函数体时就得知道答案 ✗ ⇒ `varArray::push` 自己不 `new`（是它调的 `grow` 才有）⇒ 甲′ 抓不到 varArray 那条。修法：**惰性**的 `funcAllocates`（`stmtHasNew` 或调用会分配的函数；方法按 `e->func` 递归；**环保护**：正在算的当"会"；拿不准（`func` 为空）也当"会"；结果缓存在 `FuncDef.allocState`）✓ ⚠️ 踩坑：第一版把调用插在 `else` 分支里，而 `self: mut ref` 那条走的是 `if` 分支 ⇒ **一次都没执行**（调试才看出来）✗ | soundness | — |
 | **34** | ✅ **甲′ 的假阳性：容量足够的容器其视图也不能返回**（2026-09-21 随 #31 一起消失）| 根因是"规则用错了东西"：旧规则把**地址流**当非空地施加于所有实参（`ARENA-FORMAL` §2.3）⇒ 摘要 + E 之后，"容量够不够"根本不需要证明 —— `varArray-asSlice-return.extc`（**扩容过**的容器返回视图）现在是**正例**且 ASan 干净 ✓ | 精度 | — |
 | **12** | 📌 **文档债** | `;` 和 `/* */` **其实早就可用**，但没写进 MANUAL；块注释**不嵌套**也没说 | 文档 | 小 |
+| ~~**35**~~ ✅ | 🐛 **`alloc<T>(n)` 不算"用了 arena"**（**2026-09-22 撞到并修掉**）| `alloc<T>(n)` 是**内建原语**（AST 里是 `EX_GENCALL`，检查器保证只有它走这条路），而 `mayUseArena` 的判据 `exprHasNew` 只认 `new` ⇒ **只在内层块里分配**的函数被判成"不用 arena"（连 `extc_arena __extc_a[N]` 都不声明），可块里照样吐 `&__extc_a[2]` ✗ ⇒ 生成的 C **根本编不过**（gcc: `__extc_a` undeclared）。修法**一行**：`exprHasNew` 加 `case EX_GENCALL: return true;`（`stmtHasNew` 的三个用处——`mayUseArena` / `needsHome` / `funcAllocates`——语义上本来就都该算它 ✓）回归用例 `examples/alloc-in-block.extc`（旧编译器**编不过**、新的输出 `和 = 12`）✓ ⚠️ **教训比 bug 值钱**：`tests/arena/control-flow.extc` **从头到尾就是这个形状** ⇒ 它**从来没跑起来过**，而验收脚本只 grep "out of arena memory" ⇒ **A2 的验收一直是空转的** ✗ 脚本已同步收紧（编译报错也算 FAIL）—— **"没报错"不等于"跑过了"** | 真 bug（生成的 C 编不过）+ 测试空转 | 一行 |
 
 **建议的开工顺序**：**31（UB 优先）→ 27（生成的 C 编不过）→** 1 → 2 → 3（1 挡着"能安全写链表"，2/3 是真 bug 且都小），
 然后 **4–7**（都是"让失败响亮"，一鼓作气），最后 8 → 9 → IO ✓

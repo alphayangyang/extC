@@ -160,6 +160,16 @@ static bool exprHasNew(Expr *e) {
     if (!e) return false;
     switch (e->kind) {
     case EX_NEW: return true;
+    /* ⚠️ `alloc<T>(n)` 是**内建原语**（`EX_GENCALL`，检查器保证只有它走这条路），
+     * 它跟 `new` 一样是**从当前块 arena 里要地方** ✓
+     *
+     * 这里以前漏了 ⇒ 真 bug（2026-09-22 撞到）：只在内层块里分配的
+     *     fn inner(n: i32) { { var q = alloc<i32>(250000)  *q = n } }
+     * 被判成"不用 arena"（不声明 `__extc_a`），而块里照样吐 `&__extc_a[2]`
+     * ⇒ 生成的 C **编不过**（gcc: `__extc_a` undeclared）✗
+     * 更糟的是 `tests/arena/control-flow.extc` 正是这个形状，而验收脚本只
+     * grep "out of arena memory" ⇒ **那条用例一直是空转的** ✗（脚本已同步收紧 ✓）*/
+    case EX_GENCALL: return true;
     case EX_BIN: return exprHasNew(e->u.bin.left) || exprHasNew(e->u.bin.right);
     case EX_UN:  return exprHasNew(e->u.un.operand);
     case EX_REF: return exprHasNew(e->u.ref.operand);

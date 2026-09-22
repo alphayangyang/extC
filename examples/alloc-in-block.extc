@@ -1,0 +1,25 @@
+// expect: 和 = 12
+/* 回归用例（2026-09-22）：**只在内层块里分配**的函数也必须带 arena ✓
+ *
+ * `alloc<T>(n)` 是**内建原语**（AST 里是 `EX_GENCALL`），而"这个函数要不要 arena"
+ * 的判据 `stmtHasNew` 以前只认 `new` ⇒ 这类函数被判成"不用 arena"（连
+ * `extc_arena __extc_a[N]` 都不声明），可**块里照样吐 `&__extc_a[2]`** ✗
+ * ⇒ 生成的 C 根本编不过（gcc: `__extc_a` undeclared）。
+ *
+ * ⚠️ 有意思的是 `tests/arena/control-flow.extc` **一直就是这个形状** ——
+ * 而它那个验收脚本只 grep "out of arena memory" ⇒ **空转了不知道多久** ✗
+ * （脚本已同步收紧：编译报错也算 FAIL ✓）
+ */
+fn inner(n: i32) -> i32 {
+    var total: i32 = 0
+    {
+        var q = alloc<i32>(n)      // ← 分配只发生在这个块里
+        *q = n * 2
+        total = *q
+    }
+    return total
+}
+
+fn main() {
+    println("和 = ", inner(3) * 2)
+}

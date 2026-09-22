@@ -2715,3 +2715,61 @@ v0 的十条里，**三条是 P 的化身，两条是 P′ 的化身**；剩下�
 `varArray-asSlice-return` / `field-strong-update` / `path-narrowing`）—— 它们本来就是**绕 #27 的**
 ⇒ 删掉之后套件仍全绿，正是修复的旁证 ✓
 **回归用例**：`examples/instance-closure.extc` ✓
+
+---
+
+## 2026-09-22 · 打印不再"每种类型派一份代码"（描述表第一步）+ 撞到并修掉 PLAN #35
+
+**起因**（上一轮的量化）：编译时长压测里，合成程序（N=1000）生成了 **2028 个 `_debug`、
+11,250 行 = 生成 C 的 22.9%**，而那个程序**一次都没打印过结构体** ⇒ 全是废的 ✗
+（真实例子里只有 4~9 个 ⇒ 收益集中在"类型多"的程序上）
+
+**这一刀做了什么**：把"每个类型派生一段 printf 代码"换成"**每个类型一份静态数据** +
+**全程序一份**通用递归打印器" ✓
+
+```
+以前                                   现在
+void pair_debug(pair v) {              static const ExtcField pair_fields[] = {
+    printf("pair { ");                     { "a",  offsetof(pair, a),  &extc_desc_i32 },
+    printf("a: ");                         { "b",  offsetof(pair, b),  &extc_desc_i64 },
+    printf("%d", (int)(v.a));              { "xs", offsetof(pair, xs), &slice_i32_desc },
+    printf(", ");                      };
+    printf("b: ");                     static const ExtcDesc pair_desc =
+    printf("%lld", (long long)(v.b));      { EXTC_D_STRUCT, "pair", sizeof(pair), 3, pair_fields, NULL };
+    printf(", ");
+    printf("xs: ");                    void pair_debug(pair v) {          ← 只剩一行转发
+    slice_i32_debug(v.xs);                 extc_print(&v, &pair_desc);
+    printf(" }");                      }
+}
+```
+
+细节与踩坑：
+- **字段偏移由 `offsetof` 填** —— 漏一个字段、算错一次布局，都**编不过** ✓（不用自己数偏移）
+- **描述常量之间会成环**：`struct s { xs: slice<s> }` ⇒ `s_desc → slice_s_desc → s_desc`。
+  解法：区首先出**全部** `static const ExtcDesc X_desc;`（C 的 tentative definition），
+  定义顺序就无关了 ✓（先写了个小 C 文件验证这个写法在 `-Wall -Wextra` 下干净）
+- 枚举只印**变体名**（定案 11），表外值印 `<类型名>` —— 描述表里就是一张
+  `const char *const[]`，跟旧的 `<E>_name()` 逐字节一致 ✓
+- `slice<u8>`（按文本印）· `ref`/`?ref`（一律 `<ref>`）· 13 种标量 ⇒ **全程序共享**那几只，
+  不占额外空间 ✓
+- 顺手删掉**死代码** `slice_u8_debug`（它打 `slice { data: <ref>, len: N }`，
+  而字节视图的打印路径一直走 `writeText` ⇒ 从来没被调用过）——
+  真有人调用它的话现在会**立刻编不过**，这本身就是证明 ✓
+- 分两次 `bufPuts`：整块拼一起会触发 `-Woverlength-strings`（C99 只保证 4095 字符）
+
+**判据（最硬的那条先跑）**：用 `git worktree` 检出**旧编译器**，把 examples + tests 共
+**73 个程序**逐个跑一遍，**实际输出 73/73 逐字节一致**（含退出码）✓
+外加：测试 **223 通过 / 0 失败**、arena 2 ✓、攻击库通过集合与 BASELINE **一字不差** ✓、
+golden 差异逐行核对过 —— `examples/tour` 265 行变化 = 27 行 `_debug`（定义→转发）
++ 新增的 prologue/描述数据，**被删掉的行全部是旧 `_debug` 的 printf 体** ✓
+
+**顺手撞到的真 bug（PLAN #35）**：写完对着 golden 时发现 `tests/arena/control-flow.extc`
+**根本编不过** —— `alloc<T>(n)` 是内建原语（`EX_GENCALL`），而"这个函数用不用 arena"的
+判据 `exprHasNew` **只认 `new`** ⇒ 只在内层块里分配的函数被判成"不用 arena"，
+块里却照样吐 `&__extc_a[2]` ⇒ gcc 报 `__extc_a undeclared` ✗
+**更值得记的是**：这个用例**一直是这个形状** ⇒ 它**从来没跑起来过**，而验收脚本只
+grep "out of arena memory" ⇒ **A2 的验收空转了不知道多久** ✗
+⇒ 一行修掉（`case EX_GENCALL: return true`）+ 回归用例 `examples/alloc-in-block.extc`
++ **把脚本收紧**（编译报错也算 FAIL）✓ 现在它真的跑：
+`early return = 999` / `continue/break = 300` ✓
+教训：**"没报错"不等于"跑过了"** —— 判据要写成"必须出现什么"，而不是"不许出现什么"。
