@@ -640,6 +640,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
              * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
             e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params);
+            setCallArenaArg(c, e);      /* 定案 68：解析成最终要传的那只 arena ✓ */
             /* ⚠️ 检查挪到实参查完之后 ✓ 见本分支末尾 */
 
             if (e->u.assoc.args.len != f->params.len) {
@@ -722,22 +723,33 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             /* ⭐ 深度 = **当前块深度** —— 跟生成的 C 选 `__extc_a[k]` 用同一个数 ✓
              * ⚠️ 例外：这个函数有"家"arena（A3：它会把自己的分配交给调用者）⇒
-             *    分配出来的东西活到**调用者选的那个作用域** ⇒ 深度按 0 算 ✓
-             *    （0 = "外面/参数那一级"，正是逃逸检查里"可以带出去"那一档 ✓）
-             *    这样 `fn build() -> mut ref node` 里那句 `return h` 才成立 ✓
+             *    分配出来的东西活到**调用者选的那个作用域** ⇒ 记成 `ARENA_HOME`
+             *    （对 `refDepth` 来说是 0 = "外面/参数那一级"，正是逃逸检查里
+             *     "可以带出去"那一档 ✓）这样 `fn build() -> mut ref node` 里那句
+             *    `return h` 才成立 ✓
              *
              * ⭐ 定案 63（PLAN #38）：**这一层是"起点"，不是"终点"** ——
              * 逃逸检查发现"这个新东西被存进了活得更久的地方" ⇒ 把 `arenaLevel`
              * **提升**到那一层（`check_escape.c` 的 `promoteInto`）✓
              * `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）✓
              * ⚠️ 同一个节点**可能被查两遍** ⇒ 只第一次定层、只往"更长寿"的方向调 ✓ */
+            /* ⭐ 定案 68：**层号由检查器算定，codegen 只翻译** ——
+             * 有家 ⇒ `ARENA_HOME`（家 arena）；否则按块（`@overwrite` 的存储要跨循环每轮
+             * ⇒ 住本帧那层 = 1）✓
+             * ⚠️ 这里用的是**当时的** `needsHome`（只有直接判据）；"因为调用而有家"的那种
+             * 函数由 `checkModule` 在闭包之后用 `FuncDef.newSites` 再定一次 ✓ */
             if (e->arenaLevel == 0)
-                e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? 0
-                              /* ⭐ 定案 65：`@overwrite` 的存储**只有一块**，要跨过循环的每一轮
-                               * ⇒ 它住在本**帧**那层（= 函数体，深度 1），而不是语句所在的块 ✗ */
+                e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len);
-            if (e->refDepth == 0 || e->refDepth > e->arenaLevel)
-                e->refDepth = e->arenaLevel;
+            /* 顺手记下站点（见 `FuncDef.arenaSites` 的注释：闭包之后要回头定它们）✓ */
+            *(Expr **)vecPush(&c->curArenaSites) = e;
+            /* `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）——
+             * ⚠️ 只有 `ARENA_HOME` 例外：那个哨兵是 -1，而 `refDepth` 的语言是
+             * "0 = 外面那一级"，所以**映射回 0**（家 = 调用者选的作用域 = 深度 0 ✓）*/
+            {
+                int depth = (e->arenaLevel == ARENA_HOME) ? 0 : e->arenaLevel;
+                if (e->refDepth == 0 || e->refDepth > depth) e->refDepth = depth;
+            }
 
             if (!e->u.new_.count) {
                 Type *r = ttRef(tt, w);
@@ -802,6 +814,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * 于是「返回一块刚 alloc 的内存」「把循环里分配的东西存到循环外」
              * 都会被逃逸检查拦住 ✓ 想把它交出去，就得让调用者提供 buffer/arena ✓ */
             e->refDepth = c->scopes.len;
+            /* ⭐ 定案 68：`alloc` 也一样，**层号由检查器算定**（= 当前块）⇒ codegen 不再
+             * 自己数块层（以前它走 `arenaRef(g)` = `g->blkLevel`，那是"第二个权威"里
+             * 最隐蔽的一个：两个数必须永远相等，一旦不等就是内存问题）✓ */
+            e->arenaLevel = (int)c->scopes.len;
             Type *r = ttRef(tt, elem);
             r->mut = true;                       /* 刚分配的地方当然可写 */
             return r;
@@ -1031,6 +1047,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
+            setCallArenaArg(c, e);      /* 定案 68 ✓ */
             /* ⚠️ 定案 67 的检查必须在**实参查完之后** ✗（不然 `a->type` 还没填 ⇒
              * `typeContainsRef` 一律答"否" ⇒ **静默漏放** ✗✗ —— 方法那条踩过同一个坑 ✓）
              * ⇒ 见本分支末尾 ✓ */
@@ -1140,6 +1157,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 } else {
                     e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params);
                 }
+                /* ⭐ 定案 68：解析成"最终传哪只 arena"（两个数都在检查器里定完）✓ */
+                setCallArenaArg(c, e);
                 /* 甲′(#31)：不管实参是本地的还是参数，都要记"往容器里塞的东西住哪" ✓
                  * ⚠️ 第一版只加在 else 分支里 ⇒ `self: mut ref` 那条（`v.push(…)` 正是它）
                  * 走的是 if 分支 ⇒ **一次都没执行** ✗ 调试才看出来 ✓ */
@@ -1390,7 +1409,13 @@ static bool exprHasCall(Checker *c, Expr *e) {
     switch (e->kind) {
     case EX_CALL: case EX_METHOD: case EX_ASSOC:
         if (callIsEffectful(c, e->func)) return true;
-        break;
+        /* ⚠️⚠️ **这里以前写的是 `break`**（2026-09-22 修）—— 那会掉出 switch、
+         * **落到函数末尾返回一个不确定的值** ✗（编译器自己的 UB！
+         *  `-Wreturn-type` 早就报了，只是没人看那份 warning）
+         * 后果：`pure(x)` 这种**无副作用**的调用会让本函数返回垃圾 ⇒
+         * PLAN #22 那条"前面有没有留在原位的调用"的判据**时灵时不灵** ✗
+         * ⇒ 老老实实 `return false` ✓ */
+        return false;
     case EX_BIN:      return exprHasCall(c, e->u.bin.left) || exprHasCall(c, e->u.bin.right);
     case EX_UN:       return exprHasCall(c, e->u.un.operand);
     case EX_FIELD:    return exprHasCall(c, e->u.field.obj);

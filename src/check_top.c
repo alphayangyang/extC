@@ -578,6 +578,33 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !v->func) return;
     if (!v->func->needsHome) return;
     v->homeDepth = (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len;
+    setCallArenaArg(c, v);          /* ⭐ 定案 68：两个数一起更新，永远不脱节 ✓ */
+}
+
+/* ⭐ 定案 68：**把 `homeDepth` 解析成"最终要传的那只 arena"**（`Expr.arenaArg`）——
+ * 由检查器算定，codegen 只翻译成 C 文本 ✓
+ *
+ * 为什么要两个字段：`homeDepth` 是**判据**（算规则 ④ 的 `h`；`0` 那一档故意按深度 0 查
+ * ⇒ 宁可误拒 ✓），而这里是**实际执行的选择**（`0` 那一档 = 当前块 ⇒ 更紧、少占内存 ✓）。
+ * 两个数都在检查器里算完 ⇒ codegen 不用再看 `g->hasHome` 兜底（那就是"两个权威"）✗ */
+void setCallArenaArg(Checker *c, Expr *e) {
+    if (!e) return;
+    if (e->homeDepth == -1) {                 /* "传我的家"（实参就在家那一级）✓ */
+        e->arenaArg = ARENA_HOME;
+        e->arenaArgPending = false;
+    } else if (e->homeDepth >= 1) {           /* 明确的块层 ✓ */
+        e->arenaArg = e->homeDepth;
+        e->arenaArgPending = false;
+    } else {
+        /* 没有 `mut ref` 实参给出依据 ⇒ 老规矩："**我有家就传家**，没有就传当前块" ✓
+         * ⚠️ "我有没有家"要看 `needsHome` 的**传递闭包**（查完所有函数体才有）✗
+         * ⇒ 这里先按"当前块"记下，并打上 pending ⇒ 收尾 pass 再定 ✓
+         * （这就是以前 codegen 里那句 `if (g->hasHome) return "__extc_home";` 的职责，
+         *   现在挪到检查器里 —— **只此一处**，不再两边各判一次 ✓）*/
+        e->arenaArg = (int)c->scopes.len;
+        e->arenaArgPending = true;
+        *(Expr **)vecPush(&c->curArenaSites) = e;   /* 收尾 pass 要回头找它 ✓ */
+    }
 }
 
 int callHomeDepth(Checker *c, Vec *args, Vec *params) {
@@ -1032,6 +1059,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
     computeEscapes(c, f);   /* ⭐ 档1：**必须**在检查函数体**之前**算 E ——
                              * 选家 arena 时要靠它（放晚了就等于没算 ✗ 踩过）*/
     c->curParams = f->owner ? &f->owner->typeParams : NULL;
+    /* ⭐ 定案 68：这一遍查体时顺手记下所有"等闭包之后再定"的节点 ✓ */
+    vecInit(&c->curArenaSites, c->arena, sizeof(Expr *));
     pushScope(c);
     /* 每个函数单独一套 C 名字 —— 不同函数里的 `a` 互不影响（生成 C 时它们本来就在
      * 不同的函数体里）。泛型实例化会**再检查一遍同一个函数体**，但遍历顺序一样 ⇒
@@ -1052,6 +1081,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 
     collectEffects(c, f);      /* 档1 步骤 1.1：算效果摘要（**只算不用**，行为零变化）✓ */
+    f->arenaSites = c->curArenaSites;   /* ⭐ 定案 68：交给闭包之后的那个 pass ✓ */
     popScope(c);
     c->curFunc = savedFunc;
     c->curParams = savedParams;
@@ -1356,6 +1386,46 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
             }
         }
+    }
+
+    /* ⭐ 定案 68（2026-09-22 主人拍板：「checker 操作完之后应该把全部生成信息给 codegen，
+     * codegen 就不用再做校验」）—— **层号的唯一权威**：
+     *
+     * 查体的时候 `needsHome` 只有**直接判据**（体里有 `new` + 返回含引用），而"因为调用了
+     * 有家函数才有家"这一半要等上面那个传递闭包 ✗ ⇒ 那时算出来的 `arenaLevel` 是**块层**，
+     * 而生成的 C 按"有家"分配（家更长命 ⇒ 只会更安全 ⇒ 以前没有洞，但**有两个权威**）✗
+     * （PLAN #38 的 golden 就是这么撞出来的：`out-param` 的分配从家 arena 掉回块 arena ✗）
+     *
+     * 现在：闭包跑完之后，把"有家"函数里**每一处 `new`** 都改写成 `ARENA_HOME` ✓
+     * ⇒ codegen 的 `arenaRefAt` 不再看 `g->hasHome`（它只翻译检查器给的数）✓✓ */
+    {
+        Vec all; vecInit(&all, arena, sizeof(FuncDef *));
+        for (size_t i = 0; i < m->funcs.len; i++)
+            *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&m->funcs, i);
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++)
+                *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&sd->methods, j);
+        }
+        int fixed = 0;
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (!f->needsHome) continue;
+            for (size_t j = 0; j < f->arenaSites.len; j++) {
+                Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+                if (site->kind == EX_NEW) {
+                    /* 分配：有家 ⇒ 每处 `new` 都进家 ✓ */
+                    if (site->arenaLevel != ARENA_HOME) { site->arenaLevel = ARENA_HOME; fixed++; }
+                } else if (site->arenaArgPending) {
+                    /* 调用点：pending 的那一档 ⇒ "有家传家" ✓ */
+                    site->arenaArg = ARENA_HOME;
+                    site->arenaArgPending = false;
+                    fixed++;
+                }
+            }
+        }
+        if (getenv("EXTC_DUMP_OW"))
+            fprintf(stderr, "[arena] 唯一权威：%d 处（`new` / 调用点）落到了家 arena ✓\n", fixed);
     }
 
     /* ---- ⭐ 定案 65：`@overwrite` 的站点数 + 格子该放哪 ----

@@ -273,6 +273,8 @@ static bool exprBorrowed(Checker *c, Expr *e) {
  * 追得到形参 ⇒ 调用点能用 `Cont(j)` 那条规则算 ✓；追不到（调用结果 / 本帧局部 /
  * 不明来路）⇒ 两边都**不放** ✗（与摘要 `otherMask` 的口径一致 ✓）*/
 bool valTracesToParam(Checker *c, FuncDef *f, Expr *val) {
+    (void)c;                                  /* 现在只用得到"函数 + 值"（留着参数是为了
+                                               * 跟别的谓词一个形状 ✓）*/
     if (!val || !f) return false;
     const char *root = placeRootName(val);
     if (!root) return false;
@@ -333,12 +335,17 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     switch (val->kind) {
 
     case EX_NEW: {
-        /* 第 0 层 = 调用者那层（"家"arena）—— **只有"有家"的函数有** ✓
-         * 没有家 ⇒ 提不到那一层 ⇒ 原样返回 false（照旧报错，安全方向）✓ */
+        /* 目的地深度 0 = "调用者那一级"（"家"arena）—— **只有"有家"的函数有** ✓
+         * 没有家 ⇒ 提不到那一层 ⇒ 原样返回 false（照旧报错，安全方向）✓
+         * ⚠️ 定案 68：那一档现在用 `ARENA_HOME` 表示（以前是拿 0 **兼职**的 ✗ ——
+         *    0 在新编码里是"还没定"）⇒ 写回去之前必须翻译一下 ✓ */
         if (at == 0 && !(c->curFunc && c->curFunc->needsHome)) return false;
-        if (val->arenaLevel > at) val->arenaLevel = at;
-        if (val->refDepth > val->arenaLevel || val->refDepth == 0)
-            val->refDepth = val->arenaLevel;
+        if (val->arenaLevel == ARENA_HOME) return true;   /* 已经在家：家最长寿，不用再提 ✓ */
+        int target = (at == 0) ? ARENA_HOME : at;
+        if (val->arenaLevel > target) val->arenaLevel = target;
+        int depth = (val->arenaLevel == ARENA_HOME) ? 0 : val->arenaLevel;
+        if (val->refDepth > depth || val->refDepth == 0)
+            val->refDepth = depth;
         return true;
     }
 

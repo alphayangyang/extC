@@ -80,7 +80,6 @@ typedef struct {
      * `loopLevel[]` = 当前套着的各个循环体所在的块层（`break`/`continue` 要知道
      * 该释放到哪一层）*/
     int         blkLevel;
-    bool        hasHome;   /* 当前函数有"家"arena ⇒ `new` 分配到 `*__extc_home`（A3）*/
     bool        noArena;   /* ⭐ 这个函数不会往自己的块 arena 里放东西
                             * ⇒ 连 `extc_arena __extc_a[N]` 和 release 都不吐 ✓
                             * （判据在检查器里算：`f->mayUseArena`，编译时长优化）*/
@@ -924,7 +923,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
     for (size_t i = 0; i < e->u.method.args.len; i++)
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
     /* A3：方法也要把家 arena 传过去（接收者就是那个"最浅的 mut ref 实参"✓）*/
-    if (f->needsHome) bufPrintf(&b, ", %s", homeArg(g, e->homeDepth));
+    if (f->needsHome) bufPrintf(&b, ", %s", homeArg(g, e->arenaArg));
     /* ⭐ 定案 65：方法也要传格子（接收者算第 1 个实参 ⇒ 逗号判断跟着它 ✓）*/
     owPassCells(g, &b, e, e->u.method.args.len + 1, f->needsHome);
     bufPutc(&b, ')');
@@ -979,8 +978,8 @@ static const char *genStructLit(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
-static const char *arenaRef(CG *g);
-static const char *arenaRefAt(CG *g, int level);   /* ⭐ 定案 63：按层选 arena ✓ */
+static const char *arenaRefAt(CG *g, int level);
+static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* ⭐ 定案 63：按层选 arena ✓ */
 
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
@@ -1033,7 +1032,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* A3：被调用者需要一只"家"arena ⇒ 我传我的（或者传当前块的 ✓ 紧）*/
             if (e->func->needsHome) {
                 if (e->u.call.args.len) bufPuts(&b, ", ");
-                bufPuts(&b, homeArg(g, e->homeDepth));
+                bufPuts(&b, homeArg(g, e->arenaArg));
             }
             /* ⭐ 定案 65：被调用者要 `@overwrite` 格子 ⇒ 传**我这一帧**里的 ✓ */
             owPassCells(g, &b, e, e->u.call.args.len, e->func->needsHome);
@@ -1105,7 +1104,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* A3：被调用者需要家 arena ⇒ 补上（`Type::make()` 这类关联函数会分配 ✓）*/
             if (e->func->needsHome) {
                 if (e->u.assoc.args.len) bufPuts(&b, ", ");
-                bufPuts(&b, homeArg(g, e->homeDepth));
+                bufPuts(&b, homeArg(g, e->arenaArg));
             }
             owPassCells(g, &b, e, e->u.assoc.args.len, e->func->needsHome);   /* ⭐ 定案 65 ✓ */
             bufPutc(&b, ')');
@@ -1168,6 +1167,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             Type *w = subst(g, e->u.new_.type);
             /* ⭐ 定案 63：分配进检查器算好的那一层（可能因为"要存进更外层的地方"
              * 而**提升**过）—— 这是"自动清理的堆"那条路的具体落点 ✓ */
+            if (getenv("EXTC_DBG_ARENA")) arenaDriftCheck(g, e, "new");
             const char *ar = arenaRefAt(g, e->arenaLevel);
             if (!e->u.new_.count) {
                 /* 一个 T（或一个 [N]T）的**地方** ⇒ 就是它的地址 ✓ */
@@ -1197,9 +1197,11 @@ static const char *genExprInner(CG *g, Expr *e) {
              * 向**当前块**的 arena 要 n 个 T 的地方（按块细化之后就是这句话的意思 ✓）*/
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
+            /* ⭐ 定案 68：层号也来自检查器（`alloc` = 当前块）⇒ 不再自己数 `g->blkLevel` ✓ */
+            const char *ar = arenaRefAt(g, e->arenaLevel);
             return arenaPrintf(g->arena,
                 "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
-                tn, arenaRef(g), n, tn, g->path, e->line);
+                tn, ar, n, tn, g->path, e->line);
         }
 
         case EX_METHOD:    return genMethodCall(g, e);
@@ -1445,44 +1447,49 @@ static void lineMark(CG *g, Stmt *s) {
         bufPrintf(g->out, "#line %d \"%s\"\n", s->line, g->path);
 }
 
-/* 当前块的 arena（分配走它、出块释放它）✓ */
 /* 调用一个"需要家 arena"的函数时，我该传哪只？
- *   我自己有家 ⇒ 传我的家（那是最外层的、祖先那只 ✓）
- *   我没有家 ⇒ 传**当前块**那只（更紧：被调用者分配的东西活到本块结束 ✓）*/
-static const char *homeArg(CG *g, int marked) {
-    /* 这个是**当实参传**的（不是给 `&` 用的）⇒ 直接给指针 ✓
-     * ⚠️ 别跟 `arenaRef` 搞混：那个的结果外面会套一层 `&`，所以它返回 `(*__extc_home)` ✓
-     *
-     * `marked`（A3 第二半，检查器标的）：
-     *   -1 ⇒ 传我的家（祖先那只）；>=1 ⇒ 传 `&__extc_a[那个块]`（精确）*/
-    if (marked >= 1) return arenaPrintf(g->arena, "&__extc_a[%d]", marked);
-    if (marked == -1 || g->hasHome) {
-        if (g->hasHome) return "__extc_home";
-    }
-    return arenaPrintf(g->arena, "&__extc_a[%d]", g->blkLevel);
+ * ⭐ **定案 68：这个决定全部在检查器里做完**（`Expr.arenaArg`：`ARENA_HOME` = 我的家；
+ *    `>=1` = `&__extc_a[k]`）—— codegen **只翻译**，一句判断都不做 ✓
+ * （以前这里会看 `g->hasHome` 兜底 ⇒ 那是"两个权威"里的第二个 ✗）*/
+static const char *homeArg(CG *g, int arenaArg) {
+    /* 当**实参传** ⇒ 直接给指针 ✓
+     * ⚠️ 别跟 `arenaRefAt` 搞混：那个的结果外面会套一层 `&`，所以它返回 `(*__extc_home)` ✓ */
+    if (arenaArg == ARENA_HOME) return "__extc_home";
+    return arenaPrintf(g->arena, "&__extc_a[%d]", arenaArg);
 }
 
-static const char *arenaRef(CG *g) {
-    /* 有家（A3）⇒ 分配到调用者选的那只；否则分配到**当前块** ✓ */
-    if (g->hasHome) return "(*__extc_home)";   /* 外面还会套一层 `&` ✓ */
-    return arenaPrintf(g->arena, "__extc_a[%d]", g->blkLevel);
-}
-
-/* ⭐ 定案 63（PLAN #38）：这个 `new` 该进**哪一层** arena？
- * 数由**检查器**算好（`Expr.arenaLevel`）—— 默认是语句所在的块，被"存进更外层
- * 的地方"时已经**提升**过了 ✓ 这里只负责翻译成 C 文本：
- *     k>0 ⇒ `__extc_a[k]`，出第 k 层块时 release ✓
+/* ⭐ 定案 63（PLAN #38）+ **定案 68**：这个 `new` 该进**哪一只** arena？
+ * 数由**检查器**算定（`Expr.arenaLevel`）—— 默认是语句所在的块，被"存进更外层
+ * 的地方"时已经**提升**过了、有家函数里的每一处都已经是 `ARENA_HOME` 了 ✓
+ * 这里只负责翻译成 C 文本：
+ *     ARENA_HOME ⇒ `(*__extc_home)`（调用者选的那只，最长寿）✓
+ *     k >= 1     ⇒ `__extc_a[k]`，出第 k 层块时 release ✓
  *
- * ⚠️⚠️ **有家的函数一律以 `hasHome` 为准**（不看那个数）—— 两个原因：
- *   ① 检查器算层数时**还不知道传递闭包**（"我调的人有家 ⇒ 我也有家"是查完
- *      所有函数体之后才算的）⇒ 那种函数里算出来的数是"以为自己没家"的 ✗
- *      （golden 当场抓出来：`out-param` 的分配从家 arena 掉回了块 arena）
- *   ② 家 arena 比块 arena **长寿 ⇒ 只会更安全**，方向永远对 ✓
- *      代价：这类函数里"其实没逃逸"的分配也活到调用者那块结束（A3 的老行为）✓
- *   ③ 提升只会把层数**变小**（往长寿方向），所以"被提升过"这件事在有家时不丢 ✓ */
+ * ⚠️⚠️ 以前这里有 `if (g->hasHome) return "(*__extc_home)";` 的兜底 ——
+ *   **删掉了**：那是"层号有两个权威"（检查器算一遍、codegen 再判一次）✗
+ *   当时它的理由是"检查器算层数时还不知道传递闭包"⇒ 现在检查器在闭包之后
+ *   用 `FuncDef.arenaSites` 统一改写过了（见 check_top.c），所以兜底不再需要，
+ *   而且**去掉之后生成物逐字节不变**（证明两个权威本来就一致 ✓）*/
 static const char *arenaRefAt(CG *g, int level) {
-    if (g->hasHome) return "(*__extc_home)";
+    if (level == ARENA_HOME) return "(*__extc_home)";
     return arenaPrintf(g->arena, "__extc_a[%d]", level);
+}
+
+/* ⭐ 定案 68 的**漂移哨兵**（只在 `EXTC_DBG_ARENA=1` 时说话，**不改变任何输出**）——
+ * "检查器算的层号"和"codegen 正在生成的那一层块"必须对得上；对不上就是
+ * "两个权威又开始各算一遍"的回归（这次统一掉的正是它 ✗）。
+ * 判据（都是单向的，宽松但要紧）：
+ *   · 层号不能是 0（0 = "还没定" ⇒ 检查器漏了一次定案）✗
+ *   · 层号不能比当前块**更深**（提升只会往长寿方向走 ⇒ 浅于当前块是合法的 ✓）✗ */
+static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
+    if (getenv("EXTC_DBG_ARENA_VERBOSE"))
+        fprintf(stderr, "[arena-ok?] %s: 层号=%d 当前块=%d %s:%d\n",
+                what, e->arenaLevel, g->blkLevel, g->path, e->line);
+    if (e->arenaLevel == 0)
+        fprintf(stderr, "[arena!] %s 的层号是 0（没定）✗  %s:%d\n", what, g->path, e->line);
+    else if (e->arenaLevel != ARENA_HOME && e->arenaLevel > g->blkLevel)
+        fprintf(stderr, "[arena!] %s 的层号 %d 比当前块 %d 还深 ⇒ 两个权威漂了 ✗  %s:%d\n",
+                what, e->arenaLevel, g->blkLevel, g->path, e->line);
 }
 
 /* 释放第 lv 层（`lvl > 0`；第 0 层不用）*/
@@ -1701,6 +1708,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * 格子从哪来：自己的站点 ⇒ 本帧；被调者的站点 ⇒ 调用点传进来的 ✓ */
                 int k = owIndex(g, s);
                 Expr *nx = s->u.var.init;
+                if (getenv("EXTC_DBG_ARENA")) arenaDriftCheck(g, nx, "@overwrite 的 new");
                 Type *st_t = subst(g, nx->u.new_.type);
                 bool loc = f_owLocal(g, s);
                 if (k >= 0) {
@@ -2003,15 +2011,13 @@ static void genFunc(CG *g, FuncDef *f) {
             cgLine(g, "extc_owcell __extc_owc%zu_%d = { 0, 0 };", j, k);   /* 替被调者备的 ✓ */
     }
     /* ⚠️ 别在这里恢复 `owSites` ✗ —— 函数体还没生成呢（踩过：查表永远 -1 ⇒
-     * 静默退化成"每轮分配"）⇒ 恢复挪到 genFunc 收尾，跟 `noArena`/`hasHome` 一起 ✓ */
+     * 静默退化成"每轮分配"）⇒ 恢复挪到 genFunc 收尾，跟 `noArena` 一起 ✓ */
     /* ⭐ A：统一出口要用的**返回值落地变量**（只在本函数真的有出口释放时用）✓ */
     bool retVoid = !g->retType || g->retType->kind == TY_VOID;
     if (!g->noArena && !retVoid)
         cgLine(g, "%s __extc_ret_v;", cType(g, g->retType));
     g->blkLevel = 0;
     g->loopLen  = 0;
-    bool savedHome = g->hasHome;
-    g->hasHome = f->needsHome;
     if (isMain && f->needsHome)
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main 的家 = 自己函数体 */");
     genBlockBody(g, f->body);
@@ -2032,7 +2038,6 @@ static void genFunc(CG *g, FuncDef *f) {
     }
     g->retType = savedRet;
     g->tmpSeq = savedSeq;
-    g->hasHome = savedHome;
     g->noArena = savedNoArena;
     g->owSites = savedOw;          /* ⭐ 函数尾才恢复（见上面那句注释）✓ */
     g->owCalls = savedOwCalls;

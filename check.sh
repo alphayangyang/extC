@@ -27,6 +27,20 @@ if out=$(./tests/asan/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 个形状 ASan 干净"
 else bad "tests/asan/run.sh"; echo "$out"; fi
 
+echo "== arena 层号（定案 68：检查器是唯一权威，codegen 只翻译 —— 不许漂）=="
+# 哨兵 `EXTC_DBG_ARENA=1` 在**生成时**比对"检查器算的层号"与"codegen 当前块"✓
+# 它不改变输出（golden 照旧逐字节相同 ✓），只是把"两个权威漂了"变成看得见的一行 ✗
+drift=0; dsn=0
+for f in examples/*.extc bench/*/*.extc bench/oi/*.extc bench/oi/persist/*.extc; do
+    [ -f "$f" ] || continue
+    dsn=$((dsn+1))
+    if EXTC_DBG_ARENA=1 ./build/extc "$f" -o /dev/null 2>&1 | grep -q "arena!"; then
+        drift=$((drift+1)); echo "        ✗ $f"
+    fi
+done
+if [ "$drift" -eq 0 ]; then ok "$dsn 个语料：层号零漂移 ✓"
+else bad "arena 层号漂移 $drift 处 ✗"; fi
+
 echo "== 攻击库（通过的必须是 BASELINE 里那几条 ⇒ 没放松）=="
 now=$(mktemp)
 for f in tests/attacks/*.extc; do

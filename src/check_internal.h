@@ -97,6 +97,10 @@ typedef struct {
      * ⇒ 一旦发现"前面已经有副作用"且这个 `??` 要临时变量 ⇒ **报错让他拆行** ✓
      * 判据用**调用**（EX_CALL/EX_METHOD/EX_ASSOC）—— 分配/字面量/转换的顺序不可观测 ✓ */
     int        stmtFx;
+    /* ⭐ 定案 68：**当前函数体里"等闭包之后再定一次"的节点**（`Expr*`，`new` 站点 +
+     * 那些 arena 归属待定的调用点）—— 查完体之后交给 `FuncDef.arenaSites`，
+     * 等 `needsHome` 闭包跑完再统一定案 ✓ */
+    Vec        curArenaSites;
     Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
     /* ⭐ 档1（ARENA-FORMAL §9）：**E 分析** —— 本函数里会被"搬出本函数"的局部名 ✓
      * 只影响"家 arena 选哪只"（保守方向 = 多算只会费内存）✓ */
@@ -221,6 +225,7 @@ typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } 
  void expectBool (Checker *c, Type *t, Expr *node);
  void markCallHomeIfEscaping (Checker *, Expr *, int);
  void markCallHomeIfEscaping (Checker *c, Expr *v, int at);
+ void setCallArenaArg (Checker *c, Expr *e);   /* 定案 68：解析出"最终传哪只 arena" ✓ */
  void narrowFactsOf (Checker *c, Expr *cond);
  void popScope (Checker *c);
  void pushNarrow (Checker *c, const char *cname);
