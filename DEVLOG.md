@@ -6,6 +6,71 @@
 > 倒序，最新的在最上面。
 
 ---
+## 2026-09-23 · **PLAN #51（新发现的真 bug）：`let q = f()?` 根本编不过**
+
+这条是**回答"现在能做什么"时撞出来的** —— 我写了个把主要特性都用上的程序，
+写到 `?` 就炸了：
+
+```
+let q = checkedDiv(a, b)?
+error: internal: `?` reached expression codegen (position check missed it)
+```
+
+`internal:` 三个字说明**是编译器自己的账没对上**，不是用户写错 ✓
+
+### 根因：checker 和 codegen 对"`?` 的合法位置"口径不一致
+
+`LANGUAGE.md` §6.2 写的是**四个**位置：`f()?` / `let x = e?` / `x = e?` / `return e?`。
+实测逐个试：
+
+| 位置 | 修之前 |
+|---|---|
+| `return f(b)?` | ✅ 通过 |
+| `r = f(b)?` | ✅ 通过 |
+| **`let q = f(b)?`** | ❌ internal 错 |
+| **`var q = f(b)?`** | ❌ internal 错 |
+
+`check_stmt.c` 里**明明处理了**这个位置（`if (s->u.var.init->kind == EX_TRY) it = checkTryInner(...)`）
+⇒ checker 放行 ✓；可 `codegen.c` 的 `genStmt` 只在 **三处**展开 `?`
+（`ST_ASSIGN` / `ST_RETURN` / `ST_EXPR`），**`ST_VAR` 漏了** ✗
+⇒ `?` 落到 `genExpr` 的 `EX_TRY` 分支 ⇒ 那句 internal 报错 ✓
+
+**修法**：照 `ST_ASSIGN` 那条的形状补一处（生成的 C 本来也就是"声明 + 赋值"）：
+
+```c
+if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
+    TryInfo ti = genTryHead(g, s->u.var.init);
+    flushPrefix(g);
+    cgLine(g, "%s %s = %s;", cType(g, s->type), nm, tryPayloadPath(g, &ti));
+    return;
+}
+```
+
+### ⚠️ 为什么这个 bug 能活这么久：**语料对"合法写法"是盲的**
+
+`grep` 下来，**例子和测试里一个用到这个位置的都没有** ✗ 而现有的反例
+`tests/errors/try_bad_position.extc` 钉的是**另一件事** —— 它断言"**嵌套**位置要被挡"
+（`some(some(n)? + 1)`），管不了"**合法**位置能不能用" ✓
+
+⇒ 教训：**反例库只能证明"坏东西被挡"，永远证明不了"好东西能用"**。
+四个合法位置里有**两个**是坏的，而套件全绿 —— 这正是"正例是能力证明"那条维护规矩
+（`README.md` 规矩 5）值钱的地方 ✓
+
+### 验收
+
+- 新正例 `examples/try-positions.extc`：**四个位置一次全验**，
+  并且**两个失败分支也验**（`viaLet(-3)` 得到 `-3` —— 证明失败是**静默转发**、
+  错误码原样往上抛 ✓）
+- 测试 250 → **251 通过 0 失败** ✓ · `make` 零告警 ✓
+- **golden 差异只有这一个新例子**（其余 92 个逐字节不变 ⇒ 修的是"以前编不过的"，
+  合法程序的生成物一个字节没动 ✓）· 攻击库基线一致 ✓
+
+⚠️ 顺带纠正我自己一处**写错的注释**：我原先在例子里写"`??` 失败就兜底"——
+不对。`??` 对 `result` 是**取载荷**（`failure(e)` ⇒ 得到 `e`），
+所以 `viaLet(-3) ?? -1` 得到的是 **-3**，不是 `-1` ✓
+（**实测输出跟我的注释对不上** ⇒ 改注释，不是改期望值 ✓）
+
+---
 ## 2026-09-23 · **PLAN #44：效果摘要按实例算**（#50 的另一半）
 
 `#50` 那条"精度/一致性"的尾巴，也是 2026-09-22 主人问出来的那句

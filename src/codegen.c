@@ -1776,6 +1776,17 @@ static void genStmtInner(CG *g, Stmt *s) {
                     return;
                 }
             }
+            /* `let q = f()?` / `var q = f()?` —— `?` 的四个合法位置之一 ✓
+             * 之前这里**漏了**：checker 放行（`check_stmt.c:166` 走 `checkTryInner`），
+             * 可 codegen 只在 `ST_ASSIGN`/`ST_RETURN`/`ST_EXPR` 三处展开 `?`
+             * ⇒ 落到 genExpr 的 `EX_TRY` 分支 ⇒ 报 **internal** 错 ✗（实测复现）
+             * 形状跟 `ST_ASSIGN` 那条一致（生成的 C 本来就是"声明 + 赋值"）✓ */
+            if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
+                TryInfo ti = genTryHead(g, s->u.var.init);
+                flushPrefix(g);
+                cgLine(g, "%s %s = %s;", cType(g, s->type), nm, tryPayloadPath(g, &ti));
+                return;
+            }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
                                              : zeroInit(g, s->type);
             flushPrefix(g);

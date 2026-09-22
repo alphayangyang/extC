@@ -1,0 +1,55 @@
+// `?` 的四个合法位置，一次全验（`LANGUAGE.md` §6.2 写的是四个 ✓）
+//
+// ⚠️ 这一个例子是**被一个真 bug 逼出来的**（2026-09-23 实测发现）：
+//     `let q = f()?` / `var q = f()?` 两个位置**根本编不过** ——
+//     checker 是放行的（`check_stmt.c` 里它走 `checkTryInner`），
+//     可 codegen 只在 ST_ASSIGN / ST_RETURN / ST_EXPR 三处展开 `?` ✗
+//     ⇒ `?` 落到 genExpr 的 `EX_TRY` 分支 ⇒ 报
+//        `internal: '?' reached expression codegen (position check missed it)`
+//     ⇒ 而**语料里一个用到这个位置的例子都没有**（grep 不到）⇒ 一直没被发现 ✗
+//
+// 顺带说明为什么以前抓不到：`tests/errors/try_bad_position.extc` 只能钉住
+// "**嵌套**位置要被挡"（`some(some(n)? + 1)`），管不了"**合法**位置能不能用" ✓
+
+fn parse(n: i32) -> result<i32, i32> {
+    if n < 0 { return failure(n) }
+    return success(n * 2)
+}
+
+// ① `let x = e?`（**这个位置原来编不过** ✗）
+fn viaLet(n: i32) -> result<i32, i32> {
+    let v = parse(n)?
+    return success(v + 1)
+}
+
+// ② `var x = e?`（同上，也是这次修的）
+fn viaVar(n: i32) -> result<i32, i32> {
+    var v = parse(n)?
+    return success(v + 1)
+}
+
+// ③ `x = e?`（本来就能用 ✓）
+fn viaAssign(n: i32) -> result<i32, i32> {
+    var v: i32 = 0
+    v = parse(n)?
+    return success(v + 1)
+}
+
+// ④ `return e?`（本来就能用 ✓）
+fn viaReturn(n: i32) -> result<i32, i32> { return parse(n)? }
+
+// `?` 是**静默转发**：失败就原样往上抛 ✓
+// ⚠️ 注意 `??` 对 `result` 是**取载荷**（`failure(e)` ⇒ 得到 `e`），**不是**"失败就兜底" ——
+//    所以下面 `viaLet(-3)` 得到的是 **-3**（那个失败码本身），不是 `-1` ✓
+fn main() -> i32 {
+    println(viaLet(5) ?? -1)       // 11
+    println(viaVar(5) ?? -1)       // 11
+    println(viaAssign(5) ?? -1)    // 11
+    println(viaReturn(5) ?? -1)    // 10
+
+    println(viaLet(-3) ?? -1)      // -3  （失败侧把 -3 原样抛上来 ✓）
+    println(viaReturn(-4) ?? -1)   // -4
+    return 0
+}
+// expect: 11
+// expect: -3
