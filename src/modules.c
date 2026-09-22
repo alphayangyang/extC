@@ -394,9 +394,13 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
          * ⇒ 自己声明的类型名一律放过；指向**本文件**的那个模块名也放过 ✓ */
         bool isSelfFile = strcmp(baseNameNoExt(L->a, self->file), tn) == 0;
         if (!isOwnType(self, tn) && !isSelfFile && moduleExists(L, tn)) {
-            ctxError(self->ctx, e->line, 1,
-                     "Modules are imported explicitly (semantic import, not a textual include)."
-                     " Add `use %s` at the top of the file.",
+            /* ⚠️ `note` 是**原样**传下去的（不像 fmt 那样吃可变参数）⇒ 要带值
+             * 就得先自己 `arenaPrintf` 好 ✗（踩过两次：直接写 `%s` 会印出字面量
+             * `Add \`use %s\` at the top of the file.`，用户完全照抄不了 ✓）*/
+            const char *note = arenaPrintf(L->a,
+                    "Modules are imported explicitly (semantic import, not a textual include)."
+                    " Add `use %s` at the top of the file.", tn);
+            ctxError(self->ctx, e->line, 1, note,
                      "module `%s` is not imported here -- add `use %s`", tn, tn);
             L->errors++;
         }
