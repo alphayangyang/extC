@@ -81,6 +81,9 @@ typedef struct {
      * 该释放到哪一层）*/
     int         blkLevel;
     bool        hasHome;   /* 当前函数有"家"arena ⇒ `new` 分配到 `*__extc_home`（A3）*/
+    bool        noArena;   /* ⭐ 这个函数不会往自己的块 arena 里放东西
+                            * ⇒ 连 `extc_arena __extc_a[N]` 和 release 都不吐 ✓
+                            * （判据在检查器里算：`f->mayUseArena`，编译时长优化）*/
     int         loopLevel[64];
     int         loopLen;
     Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
@@ -1176,7 +1179,7 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     {
         Buf rel;
         bufInit(&rel, g->arena);
-        for (int lv = g->blkLevel; lv >= 1; lv--)
+        for (int lv = g->noArena ? 0 : g->blkLevel; lv >= 1; lv--)
             bufPrintf(&rel, "extc_arena_release(&__extc_a[%d]); ", lv);
         cgLine(g, "if (%s.tag != %s_%s) { %sreturn %s; }",
                ti.tmp, ti.inst, ti.okVar, bufCstr(&rel), genTryFail(g, &ti));
@@ -1216,6 +1219,7 @@ static const char *arenaRef(CG *g) {
 /* 释放第 lv 层（`lvl > 0`；第 0 层不用）*/
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
+    if (g->noArena) return;   /* ⭐ 这个函数不会分配 ⇒ 连 release 都不用吐 ✓ */
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -1260,7 +1264,7 @@ static int blkMaxLevel(Stmt *s) {
  * ⚠️ 循环体也是一个块 ⇒ 每轮进来都 reset ⇒ **内存上界 = 一次迭代** ✓（这就是 A2 的目的）*/
 static void genBlockBody(CG *g, Stmt *block) {
     g->blkLevel++;
-    cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* 进来先清（防御性）*/
+    if (!g->noArena) cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* 进来先清（防御性）*/
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         genStmt(g, *(Stmt **)vecAt(&block->u.block.stmts, i));
     cgReleaseLevel(g, g->blkLevel);
@@ -1348,7 +1352,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * 所以每个 return 都是一个释放点（包括 `?` 生成的那些）✓ */
             Buf relBuf;
             bufInit(&relBuf, g->arena);
-            for (int lv = g->blkLevel; lv >= 1; lv--)
+            for (int lv = g->noArena ? 0 : g->blkLevel; lv >= 1; lv--)
                 bufPrintf(&relBuf, "extc_arena_release(&__extc_a[%d]); ", lv);
             const char *rel = bufCstr(&relBuf);
             if (!s->u.ret.value) {
@@ -1505,7 +1509,14 @@ static void genFunc(CG *g, FuncDef *f) {
      * `{0}` 就够了（`extc_arena` 里只有个 `top` 指针，NULL = 空）✓
      * 函数体本身是**第 1 层**（`genBlockBody` 进来就 +1）✓ */
     int maxLv = 1 + blkMaxOfBlock(f->body);
-    cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    /* ⭐ 编译时长优化（2026-09-21）：**不会往自己的块 arena 里放东西的函数，连数组都不吐** ✓
+     * 判据在检查器里算好（`f->mayUseArena`：体里有 `new`，或调用了"有家"的函数）✓
+     * 省掉的是"纯计算"函数的样板 —— 真实例子里约一半函数属于这种 ✓
+     * （`cgReleaseLevel` 里也同步跳过，见那边 ✓）*/
+    bool savedNoArena = g->noArena;
+    g->noArena = !f->mayUseArena;
+    if (!g->noArena)
+        cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
     g->blkLevel = 0;
     g->loopLen  = 0;
     bool savedHome = g->hasHome;
@@ -1516,6 +1527,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->retType = savedRet;
     g->tmpSeq = savedSeq;
     g->hasHome = savedHome;
+    g->noArena = savedNoArena;
     g->indent--;
     cgLine(g, "}");
 }

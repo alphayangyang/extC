@@ -1203,6 +1203,23 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
+    /* ---- ⭐ 编译时长优化：算"会不会往**自己的块 arena** 里放东西"（`mayUseArena`）
+     * 必须在上面那个闭包**跑完之后**算 ✓ 判据：体里有 `new`，或调用了"有家"的函数 ✓
+     * 不会 ⇒ codegen 连 arena 数组和 release 都省掉（生成 C 约 −20% 行，见压测量）✓
+     * ⚠️ `main` 恒为真（它是根"家"，`__extc_home = &__extc_a[1]` 需要那只数组）✓ */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body) ||
+                         (f->name && strcmp(f->name, "main") == 0);
+    }
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+            f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
+        }
+    }
+
     return !ctx->hasError;
 }
 
