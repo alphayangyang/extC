@@ -1,0 +1,29 @@
+/* ⭐ 反例：**"在块里造、往块外存"** —— 有家被调者的结果不能存到更浅的地方 ✗
+ *
+ * `make()` 分配进"调用点选的那只 arena"，而调用点在**循环体**里 ⇒ 那只 arena
+ * 就是循环体那一块 ⇒ 块一退，`b.p` 悬垂 ✗（ASan 当场报 heap-use-after-free ✓ 真踩过）
+ *
+ * ⚠️ 为什么这条特别该常设：**单跑一次不会崩** —— 只有"块里造 + 块外存"才现形。
+ * 所以以前逃逸检查漏掉它时，测试全绿、基准全绿，什么都没响 ✗
+ * 根因：`let t = make()` 这种"初始化式是**调用**"的绑定，没人记过它内容物的深度
+ * （字段表只在初始化式是结构体字面量时才填）⇒ `exprRefDepth(t)` 兜底成 0 ⇒ 放行 ✗
+ */
+struct box { p: mut slice<i32> }
+
+fn make() -> box {
+    var c: mut slice<i32> = new i32[4]
+    return { p: c }
+}
+
+fn main() -> i32 {
+    var b: box = { p: new i32[4] }
+    var i: i32 = 0
+    while i < 3 {
+        let t = make()
+        b = t
+        i = i + 1
+    }
+    b.p[0] = 7
+    println(b.p[0])
+    return 0
+}

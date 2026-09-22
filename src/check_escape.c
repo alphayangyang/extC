@@ -353,8 +353,11 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         /* 顺着绑定的**来路**往回走：`var n = new node` / `mid = n` ⇒ 找到那个 `new` ✓ */
         Sym *sy = lookup(c, val->u.ident.name);
         if (!sy || !sy->origin) return false;
-        /* 槽位本来就活到 at 之外（更浅）⇒ 里面的 `new` 本来就住在那一层 ✓
-         * （初始化式是在**同一条语句**里求值的 ⇒ 它的层 = 槽位的深度）✓ */
+                /* 槽位本来就活到 `at` 之外（更浅）⇒ 里面的东西本来就住在那一层 ✓
+         * （初始化式是在**同一条语句**里求值的 ⇒ 它的层 = 槽位的深度 ✓）
+         * ⚠️ **但"调用结果"是例外** —— 有家被调者分配进的那只 arena 是**调用点**
+         * 选的，不一定是槽位这一层 ⇒ 那份深度在**绑定时**就记进 `Sym.refDepth` 了
+         * （见 `check_stmt.c` 里那段"初始化式是调用"的处理）⇒ 那才是这家事的权威 ✗ */
         if (sy->depth <= at) return true;
         /* ⚠️ 来路是**压平的根**（见 `noteOrigin`）⇒ 这里链长最多一层，不会再查绑定 ✓ */
         if (!promoteInto2(c, sy->origin, at, hops + 1)) return false;

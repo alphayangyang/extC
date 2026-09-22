@@ -63,6 +63,7 @@ d6904ba2627cd626b9bbc27b90ffdf48  examples_option-sugar
 3015f89de43a150c7287d724f35c16fc  examples_prelude
 94f190128130ca7214713d79040983b6  examples_print-desc-check
 00cf20b5f7d1a5af124e09fcafb2565c  examples_print-desc-nested
+95d0fa43a4ac27df503e0fc591dc5a47  examples_reader-home-arena
 e7d69f0cb885cdf5048cb750f0be0c4e  examples_readonly-cursor
 88c23c02d7dca94ebc307d16112de0a1  examples_ref-field-write
 f6cadf63b6847aa4f264d587b3b4c773  examples_ref-scalar

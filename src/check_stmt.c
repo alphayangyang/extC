@@ -204,8 +204,25 @@ void checkStmt(Checker *c, Stmt *s) {
             noteOrigin(c, sym, s->u.var.init);
             /* 引用型绑定：它指的东西有多深，**从初始值数出来** ✓
              * （`var cur: ?ref node = head` ⇒ head 是参数 ⇒ 0 ⇒ 这个游标可以返回 ✓）*/
-            if (s->type && typeContainsRef(c->tt, s->type))
-                sym->refDepth = exprRefDepth(c, s->u.var.init);
+            /* ⚠️⚠️ **`let t = make()` 这种"初始化式是调用"的情形必须单独记** ✗
+             * 为什么：调用结果里那些引用住哪，唯一知道的人是**调用点**（它选了
+             * arenaArg）；而下面那张**字段表**只在初始化式是 `EX_STRUCTLIT` 时才填 ✗
+             * ⇒ 于是 `t.p` 没有任何格子 ⇒ `exprRefDepth(t)` 从 `sym->refDepth`
+             * 兜底得到 **0**（"里面没有指向深处的引用"）⇒ 之后 `b = t`（b 更浅）
+             * 被判成安全 ⇒ 块一退就悬垂 ✗✗
+             * （真踩过：ASan `heap-use-after-free`，而单跑一次还不崩 ——
+             *   只有"在块里造、往块外存"才现形 ✓）
+             * 判据：被调者**有家** ⇒ 它分配进"我传的那只 arena"，而那只就是
+             * `markCallHomeIfEscaping` 上面刚按 `at` 定下来的 ⇒ 结果的深度 = `at` ✓
+             * （`at` 取的是 `c->scopes.len` = 绑定所在那一层 ✓）*/
+            if (s->type && typeContainsRef(c->tt, s->type)) {
+                int d = exprRefDepth(c, s->u.var.init);
+                Expr *ini = s->u.var.init;
+                if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
+                    && ini->func && ini->func->needsHome && (int)c->scopes.len > d)
+                    d = (int)c->scopes.len;      /* 有家被调者 ⇒ 住在我传的那只 arena ✓ */
+                sym->refDepth = d;
+            }
             /* ⭐ 档2.3：结构体字面量 ⇒ 把**每个字段**的深度记进字段表 ✓
              * （没写出来的字段 = 零初始化 ⇒ 里面只可能是 null ⇒ 深度 0；
              *   我们不给它建格，读它时退回保守算法 —— 代价是可能误拒，不是洞 ✓）*/

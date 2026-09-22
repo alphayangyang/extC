@@ -266,6 +266,7 @@ typedef struct {
  void desugarBareCtor (Checker *c, Expr *e, Type *want);
  void expectBool (Checker *c, Type *t, Expr *node);
  void markCallHomeIfEscaping (Checker *, Expr *, int);
+
  void markCallHomeIfEscaping (Checker *c, Expr *v, int at);
  void setCallArenaArg (Checker *c, Expr *e);
  void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);

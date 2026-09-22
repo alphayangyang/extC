@@ -1,0 +1,49 @@
+// ⭐ **隐式缓冲的 `reader` —— 有家被调者把 64KB 分配进"调用点选的 arena"** ✓
+//
+// 这是 `IO.md` §4.3 那个 `reader` 的**能编过的形状**：`readerOf(fd)` 不给缓冲，
+// 内部 `new u8[65536]`，靠被调者的**家 arena** 把结果交出来 ✓
+//
+// ⚠️ 为什么这条要常设（2026-09-23 查出来的洞）：
+//   "有家被调者的结果不能存到更浅的地方"—— 以前**没查** ⇒
+//       while … { let t = make()   b = t }      // 块里造、块外存
+//   编得过，而 `b.p` 悬垂（ASan: heap-use-after-free）✗
+//   ⇒ 补上检查之后，**这个正例必须还能编过** —— 它才是"隐式缓冲"能不能用的判据 ✓
+//   （反例见 `tests/errors/escape_call_result_to_outer.extc` ✓）
+// ⚠️ 本例子**不读 stdin** —— 例子是不喂输入跑的，一读就挂住整个套件 ✗
+//
+// 判据：`var r = readerOf(sys::STDIN)` 里 r 与它内部那 64KB **同层** ⇒ 安全 ✓
+use std::sys
+
+struct reader {
+    fd:    i32
+    chunk: mut slice<u8>
+    len:   i64
+    pos:   i64
+}
+
+/* 零实参 ⇒ 64KB 隐式缓冲（`new` ⇒ 分配进本函数的**家** arena ⇒ 可以交出去 ✓）*/
+fn readerOf(fd: i32) -> reader {
+    var c: mut slice<u8> = new u8[65536]
+    return { fd: fd, chunk: c, len: 0, pos: 0 }
+}
+
+fn fill(r: mut ref reader) -> i64 {
+    let n = sys::read(r.fd, r.chunk.data, r.chunk.len)
+    r.len = n
+    r.pos = 0
+    return n
+}
+
+fn main() -> i32 {
+    // expect: cap = 65536
+    var r = readerOf(sys::STDIN)
+    println("cap = ", r.chunk.len)
+    println("pos = ", r.pos)
+
+    /* ⚠️ **这里故意不真的读**：`tests/run.sh` 跑例子时**不给 stdin**，
+     *   一读就阻塞在那儿 ⇒ 整个测试套件挂住 ✗（真踩过，一次 300 秒超时 ✓）
+     *   本例子要证的只是**寿命**（那 64KB 跟 r 同层、不会被提前回收）✓
+     *   要读的例子在 `tests/io/`，那边的 run.sh 负责喂输入 ✓ */
+    println("OK")
+    return 0
+}
