@@ -1614,25 +1614,25 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 > **引用语义（`mut ref` + 视图可写性）** 也都在跑了。
 > **`*p` 显式解引用**、**`?T` 语法糖**、**可空引用 `?ref T` + `null` + 非空收窄**
 > （见 §7.6）**2026-09-20 完成** ✓
-> ⇒ **链表/树/搜索函数今天就能写**（跨函数接线还差 arena 的 `new`）。
+> ⇒ **链表/树/搜索函数今天就能写**（跨函数接线也已经通了：`new` + 逃逸提升 ✓）。
 >
-> 下面剩下的**都还没做**。
+> ⚠️ **这张表 2026-09-22 逐行复核过**（✅ = 已经在跑）—— 权威的"还剩什么"看 `PLAN.md` ✓
 
 | 特性 | 定案内容 | 计划 |
 |---|---|---|
 | ~~**逃逸检查**~~ ✅ | 词法深度 `depth(r) ≥ depth(v)` —— **这是 extC 的命**，**已实现**（返回 / 局部 / 赋值 / **借来的值不进深度 0**，见 §0.5） | ~~下一步~~ **2026-09-18 完成** |
 | ~~**arena 按块细化**~~ ✅ | 分配绑**词法作用域**（每个 `{}` 一只）：`extc_arena __extc_a[DEPTH] = {0}` + 进块 reset / 出块 release，`break`/`continue`/`return`/`?` 各释放该退的层。`alloc<T>(n)` 的引用深度 = **当前块深度** ✓ | **2026-09-20 完成**（`tests/arena/` 验收：150MB 上限下循环里分配 300×1MB 跑得完）|
 | ~~**块级逃逸提升**~~ ✅ | `new` 的东西被**存进更外层**的地方 ⇒ 把那只 arena **提升**到那一层（**不拒绝**）：`arenaLevel = min(当前块, 各目的地)`。代价 = 这些分配活到那一层结束（最坏 = 函数级、自动清理的堆）；**没存出去的东西照样按块回收** ✓ | **2026-09-22 完成**（定案 63；`tests/asan/` 常设验收 + `examples/store-promotion.extc`）|
-| **`new` 的写法** | `new node` / `new i32[1000]` / `new [4]i32`（清零），语义 = 分配进**当前作用域**的 arena | 下一步（A1）|
-| **`region` 显式命名 / 逃逸提升** | 显式指定 home；跨函数接线（`fn build() -> mut ref node`）| 之后（A3/A4）|
-| **动态数组 `varArray<T>`** | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
-| **算术 UB 三处** | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | 小活，随时 |
+| ~~**`new` 的写法**~~ ✅ | `new node` / `new i32[1000]` / `new [4]i32`（清零），分配进**当前块**的 arena，存进更外层的地方会**提升**（定案 63）| **2026-09-20 完成**（A1）+ 提升 2026-09-22 ✓ |
+| 🟡 **`region` 显式命名**（**逃逸提升 A3 已完成** ✓）| 跨函数接线（`fn build() -> mut ref node` / 出参 `mut ref`）**已经在跑** ✓；**只剩"显式给一个分配命名区域"**（A4，主人说"不急"）| A4 待定 |
+| ~~**动态数组 `varArray<T>`**~~ ✅ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
+| ~~**算术 UB 三处**~~ ✅ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap ✓）|
 | ~~**全局常量 / 全局变量**~~ ✅ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
 | **输入（`readLine` / `argv`）** | 由调用者给 buffer，零分配零隐藏状态 | 中 —— 五子棋能真的跟人下的门槛 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
 | **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | 中 |
-| **`match`** | ✅ **做完第一刀（2026-09-18）**：穷尽检查 + 无载荷枚举（语句，不是表达式） |
-| **带载荷枚举**（tagged union）| 下一刀 —— `type shape = \| circle(f64) \| rect(f64, f64)`，绑定载荷 `circle(r) => ...`。做完之后 `option<slice<u8>>` 才可能存在（`none` 里没有 `value` 字段可填），而且 `option`/`result` 可以重写成**普通枚举** | 中 |
+| ~~**`match`**~~ ✅ | 穷尽检查 + 无载荷枚举（语句，不是表达式）—— **带载荷也做完了**（见下一行）|
+| ~~**带载荷枚举**~~ ✅（tagged union）| `type shape = \| circle(f64) \| rect(f64, f64)`，绑定载荷 `circle(r) => ...`。之后 `option<slice<u8>>` 才可能存在（`none` 里没有 `value` 字段可填），而且 `option`/`result` 可以重写成**普通枚举** | 中 |
 | **`@main` 注解** | 标在任意函数上，不再硬编码 `main` | 低 |
 | **模块系统** | `module` / `export` / `import` | 低 —— 主人说不一定完全自举 ⇒ 优先级降了 |
 | **`@recursive`** | 编译器展开成「显式栈 + 循环」，深度上限是编译期常数 | 低 |
