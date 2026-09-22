@@ -500,6 +500,7 @@ note:  two modules must not depend on each other (each one's type is
 | 环 | `import cycle: `a` is still being loaded` |
 | 文件不存在 | `cannot find module `nowhere`` + **列出找过的每个路径** ✓ |
 | 模块里写 `main` | `` `main` must live in the entry file, not in a module `` |
+| 两个模块都导出 `pair` 而这里裸写 `pair` | `` ambiguous type `pair` -- 2 modules export it, write `module::pair` `` |
 
 ### 11.4 限制（下一步，别当已经解决 ✗）
 

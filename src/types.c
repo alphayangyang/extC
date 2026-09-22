@@ -148,10 +148,27 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
              * 只在**源码名**查不到时才走它 ⇒ 本文件/内建/prelude 优先级不变 ✓ */
             const char *nm0 = t->name;
             if (!ttFromName(tt, nm0)) {
+                /* ⚠️⚠️ **歧义必须报错，绝不能挑一个** ✗
+                 * 两个模块都导出 `pair` 时，裸写 `var p: pair = alpha::make(5)`
+                 * 如果"挑第一个匹配"，就会**静默绑成先注册的那个模块的类型** ——
+                 * 编得过、类型是错的，违反 P′「不能证明的，语法上必须看得见」✗✗
+                 * （真踩过：`pair` 命中 alpha 而用户以为是 beta）
+                 * ⇒ 数出所有匹配：0 个 ⇒ 未知类型；≥2 个 ⇒ 歧义，要求写限定名 ✓ */
+                const char *hit = NULL;
+                int nHit = 0;
                 for (size_t i = 0; i < tt->aliases.len; i++) {
                     Alias *al = (Alias *)vecAt(&tt->aliases, i);
-                    if (strcmp(al->from, nm0) == 0) { nm0 = al->to; break; }
+                    if (strcmp(al->from, nm0) == 0) { hit = al->to; nHit++; }
                 }
+                if (nHit >= 2) {
+                    ctxError(ctx, line, 1,
+                             "More than one imported module exports this name, so a bare name"
+                             " cannot say which one you mean. Write `module::Name`.",
+                             "ambiguous type `%s` -- %d modules export it, write `module::%s`",
+                             t->name, nHit, t->name);
+                    return tt->tError;
+                }
+                if (nHit == 1) nm0 = hit;
             }
             Type *base = ttFromName(tt, nm0);
             if (!base) {

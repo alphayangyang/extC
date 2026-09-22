@@ -5,7 +5,7 @@
 #   ① 正例：**一个模块 = 一个文件**，`use a::b` + `a::name` 跨模块引用必须跑得通
 #      · `samenames` 是**模块 mangle 的验收**：两个模块逐声明重名也必须互不干扰 ✓
 #   ② 反例：该挡的必须**编译期**挡住，而且消息要指对文件、说清怎么办 ✓
-#      （未 use · @private · 漏限定名 · 环 · 文件不存在 · 模块里写 main）
+#      （未 use · @private · 漏限定名 · 环 · 文件不存在 · 模块里写 main · 同名类型歧义）
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -51,5 +51,6 @@ check_err unqualified    "write \`lib::open\`"
 check_err cycle          "import cycle"
 check_err missing-file   "cannot find module"
 check_err main-in-module "must live in the entry file"
+check_err ambiguous-type  "ambiguous type \`pair\`"
 
 exit $fail

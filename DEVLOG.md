@@ -64,11 +64,27 @@
 **按"要写限定名"报**（判据：名字里有没有 `$` —— 它在 extC 标识符里不合法，
 出现就一定是 mangle 名 ✓）。
 
+### ⑦ 裸名有歧义时**静默挑了一个**（最后补的一个洞）
+
+上面都修完之后，我顺手试了"两个模块都有 `pair`，而入口文件**裸写** `pair`"：
+
+```extc
+use alpha
+use beta
+var p: pair = alpha::make(5)   // 编过了，绑到了 alpha —— 一声没吭 ✗
+```
+
+这是**同一个洞的另一半**：别名表当初是"同名只留第一条" ⇒ 查表必然命中一个 ⇒
+没有歧义这个概念 ✗ 而"挑一个"是**编得过、类型是错的**，正是 P′ 要挡的东西。
+⇒ 别名表改成**不去重**（同名同名两条都登记），`ttResolve` 数出 ≥2 个匹配就报
+`ambiguous type \`pair\` -- 2 modules export it, write \`module::pair\`` ✓
+新增常设反例 `tests/modules/errors/ambiguous-type` ✓
+
 ### 验收
 
 * 新增常设正例 `tests/modules/samenames`：**逐声明重名**且两个 `pair` 的**字段类型不同**
   ⇒ 任何串台都会让输出立刻不对，不存在"看着能跑其实绑错了"的中间状态 ✓
-* `tests/modules/run.sh` 3 正例 + 6 反例全过；`tests/run.sh` **255** 全过；
+* `tests/modules/run.sh` 3 正例 + **7** 反例全过；`tests/run.sh` **255** 全过；
   golden **94** 文件逐字节相同；`check.sh` **14/14**；`make` 零警告 ✓
 
 ---

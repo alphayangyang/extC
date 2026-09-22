@@ -1,0 +1,2 @@
+struct pair { a: i32  b: i32 }
+fn make(x: i32) -> pair { return { a: x, b: x } }

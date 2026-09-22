@@ -833,10 +833,15 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         ModUnit *dep = *(ModUnit **)vecAt(&L.order, i);
         for (size_t j = 0; j < dep->ren.len; j++) {
             Ren *r = (Ren *)vecAt(&dep->ren, j);
-            bool dup = false;
-            for (size_t k = 0; k < out->aliases.len && !dup; k++)
-                if (strcmp(((Alias *)vecAt(&out->aliases, k))->from, r->from) == 0) dup = true;
-            if (dup) continue;                 /* 歧义 ⇒ 不登记（要求写限定名 ✓）*/
+            /* ⚠️ **不去重**：两条同名别名**都要登记** ⇒ 类型表数得出"≥2 个匹配"
+             * 才能报"歧义，请写限定名" ✗（去重成一条的话，裸名会被**静默**
+             * 解析成先注册的那个模块的类型 —— 编得过、类型是错的 ✗✗ 真踩过）*/
+            bool same = false;
+            for (size_t k = 0; k < out->aliases.len && !same; k++) {
+                Alias *a = (Alias *)vecAt(&out->aliases, k);
+                if (strcmp(a->from, r->from) == 0 && strcmp(a->to, r->to) == 0) same = true;
+            }
+            if (same) continue;                /* 同一条别名（同一个模块被 use 两次）✓ */
             Alias *al = (Alias *)vecPush(&out->aliases);
             al->from = r->from;  al->to = r->to;
         }
