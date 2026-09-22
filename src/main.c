@@ -85,12 +85,17 @@ static void usage(const char *argv0) {
         "usage: %s [options] <file.extc>\n"
         "\n"
         "options:\n"
-        "  -o <file>       write the generated C to this file (default: stdout)\n"
-        "  --run           compile the generated C, then run it\n"
-        "  -w              suppress warnings\n"
-        "  --dump-tokens   lex only; print the token table\n"
-        "  --no-line-map   do not emit `#line` directives (default: emit them)\n"
-        "  -h, --help      show this help\n",
+        "  -o <file>        write the generated C to this file (default: stdout)\n"
+        "  --run            write generated C to build/<name>.c, compile it, run it\n"
+        "                   (uses $CC, default `cc`; creates ./build/ in the CWD)\n"
+        "  --check-c        syntax-check the generated C with `$CC -fsyntax-only`\n"
+        "  -w               suppress warnings\n"
+        "  -O0 .. -O3       optimisation level for the generated C (default: -O2)\n"
+        "  -march=native    allow host-specific instructions (faster, less portable)\n"
+        "  --dump-tokens    lex only; print the token table\n"
+        "  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)\n"
+        "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
+        "  -h, --help       show this help\n",
         argv0);
 }
 

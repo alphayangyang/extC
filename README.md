@@ -58,20 +58,36 @@ make clean
 ## 用法
 
 ```sh
-./build/extc --run examples/hello.extc     # 生成 C、编译、直接运行
+./build/extc --run examples/hello.extc     # 生成 C、编译、直接运行（用到 ./build/）
 ./build/extc examples/hello.extc           # 把生成的 C 打到 stdout
 ./build/extc -o /tmp/hello.c examples/hello.extc
+./build/extc --check-c examples/hello.extc # 生成 C 后再过一遍 `cc -fsyntax-only`
+./build/extc -O3 -march=native --run examples/hello.extc
 ./build/extc --dump-tokens examples/hello.extc
 ./build/extc --no-line-map examples/hello.extc
+./build/extc --help                        # 全部开关
 ```
+
+**装到 PATH 里**（可选，`build/extc` 是自带的：prelude 已经嵌进二进制，拷到哪都能跑）✓
+
+```sh
+ln -sfn "$PWD/build/extc" ~/.local/bin/extc     # 之后任何目录直接 `extc foo.extc`
+```
+
+⚠️ 两个要记住的点：
+
+- **`--run` / `--check-c` 用 `$CC`**（默认 `cc`，即系统 gcc）编生成出来的 C；
+  `--run` 会在**当前目录**建 `build/<名字>.c` 和 `build/<名字>` ✓
+- `-march=native` 能白拿 2~4×（矩阵乘那种），代价是**牺牲可移植性** ⇒ 默认不开 ✓
 
 ## 测试
 
 ```sh
-./tests/run.sh
+./tests/run.sh     # 正例跑通 + 反例必须被编译期挡掉
+./check.sh         # 全套：上面这些 + ASan + 攻击库 + 基准（一条命令跑完）
 ```
 
-正例跑通 + 反例必须被编译期挡掉。目前 10/10。
+正例跑通 + 反例必须被编译期挡掉（当前 **244 通过 / 0 失败**）✓
 
 ## 支持的语法
 
