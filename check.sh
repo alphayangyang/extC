@@ -17,6 +17,11 @@ if out=$(./tests/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"; else bad "tes
 echo "== arena（按块细化：150MB 上限下不许涨）=="
 if out=$(./tests/arena/run.sh 2>&1); then ok "$(echo "$out" | wc -l) 个用例"; else bad "tests/arena/run.sh"; echo "$out"; fi
 
+echo "== ASan（内存安全的形状必须真的跑得干净）=="
+if out=$(./tests/asan/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 个形状 ASan 干净"
+else bad "tests/asan/run.sh"; echo "$out"; fi
+
 echo "== 攻击库（通过的必须是 BASELINE 里那几条 ⇒ 没放松）=="
 now=$(mktemp)
 for f in tests/attacks/*.extc; do
