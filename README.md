@@ -27,6 +27,7 @@
 | [`IO.md`](IO.md) | 想知道输入输出 | 设计 + **三段顺序（IO-0/1/2）**；第一块已落地 |
 | [`LIBS.md`](LIBS.md) | 想知道「库怎么做」| **编译到 C 意味着什么**（C 当 ABI / 两种消费者 / 跨边界签字）+ 四种分发模型 |
 | [`MODULES.md`](MODULES.md) | 想知道「模块系统怎么做」| 调研 + 候选方案（12 门语言怎么做）；**模块 v1 已落地**（定案 70）|
+| [`CONCURRENCY.md`](CONCURRENCY.md) | 想知道**协程 / 线程**该怎么做 | ⚠️ **设想 + 风险清单**（**一个字都没实现**）：为什么必须无栈 · 帧与 arena 怎么结合 · 已知代价 · 落地顺序 |
 | [`BOOTSTRAP.md`](BOOTSTRAP.md) | 想知道依赖顺序与「鸡生蛋」| 四条破环规则 + ISO C 边界 + 沙箱 + 六步计划 |
 | [`SYNTAX.md`](SYNTAX.md) | 想知道「名字该怎么起」 | 命名规范 + 样板 |
 | [`REVIEW-gomoku-sample.md`](REVIEW-gomoku-sample.md) | 想知道「真实程序需要什么」 | 五子棋示例代码审读 |
