@@ -1,4 +1,6 @@
-// 自动调试打印：编译器为每个 struct 生成 <Type>_debug，递归打印所有字段
+// 自动调试打印：编译器为每个类型生成一份**描述表**（`<Type>_desc`，
+// 字段偏移由 offsetof 填），`println` 交给全程序**一份**通用打印器
+// `extc_print(&x, &x_desc)` 递归打印 ⇒ 不是"每类型一份代码" ✓
 
 type color = | red | green | blue
 

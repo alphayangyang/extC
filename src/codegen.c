@@ -184,7 +184,8 @@ static bool isProtoType(Type *t, const char *name, size_t nargs);
 static const char *genExpr(CG *g, Expr *e);
 static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
-static void genDebugShim(CG *g, const char *cname);
+
+static bool isPlaceExpr(const Expr *e);
 
     
 /* 方法在 C 里要加 struct 前缀 —— `Point_eq` 和 `Board_eq` 不能撞。
@@ -351,22 +352,11 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
            cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_variants", cname) : "NULL");
 }
 
-/* `_debug` 现在只是**一行转发**：真正的打印逻辑全在 `extc_print` 里 ✓
- * 保留它是因为这一刀先"只换实现、不换调用点"，好让"输出逐字节不变"这条判据单独生效。 */
-static void genDebugShim(CG *g, const char *cname) {
-    cgLine(g, "void %s_debug(%s v) { extc_print(&v, &%s_desc); }", cname, cname, cname);
-    cgLine(g, "");
-}
-
-/* 按值收一个字节视图再打印 —— 保证实参只求值一次 */
-static void genByteViewWriter(CG *g, const char *cname) {
-    cgLine(g, "void %s_writeText(%s v) {", cname, cname);
-    g->indent++;
-    cgLine(g, "printf(\"%%.*s\", (int)v.len, (const char *)v.data);");
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "");
-}
+/* 打印相关的**派生函数**现在全没了 ✓
+ * （以前这里是 `_debug` / `_writeText` / `_name` 三个派生器：
+ *   每个类型一份 printf 序列 —— 合成压测程序里堆出 2028 个、占生成 C 的 22.9% 行，
+ *   而那个程序一次都没打印过 ✗。现在只剩描述数据 + 一个 `extc_print` ✓）
+ */
 
 /* C 原生就能比的类型：数值 / bool / 枚举 */
 static bool nativeCmp(Type *t) {
@@ -615,6 +605,26 @@ static const char *zeroInit(CG *g, Type *t) {
     return zeroValue(g, t);
 }
 
+/* `println(x)` 里 x 的**生成 C 表达式是不是 lvalue**（能取地址）？
+ *
+ * ⚠️ 这跟 `isPlaceExpr`（"extC 里的地方"）**不是一回事**，混了就出事：
+ *   · 切片表达式 `s[0..5]` 在 extC 里是地方，但生成的 C 是
+ *     `slice_u8_slice(s, 0, 5, "…", 54)` —— 一个**函数调用**，`&` 它不合法 ✗
+ *     （真踩过：`examples/slices.extc` + `euler-sieve.extc` 当场编不过）
+ *   · 枚举变体 `color.red` 在 extC 里长得像字段访问，但检查器早就换成了
+ *     非地方的构造式 ⇒ 这里自然落到 false ✓
+ *
+ * **拿不准就返回 false**：代价只是多一次拷贝（跟旧 `_debug(expr)` 传值一样 ✓），
+ * 猜错的代价是**生成的 C 编不过** ✗ */
+static bool printArgIsPlace(const Expr *e) {
+    switch (e->kind) {
+    case EX_IDENT: return true;                                  /* `x` / `p.f` 的根 */
+    case EX_FIELD: return printArgIsPlace(e->u.field.obj);
+    case EX_INDEX: return printArgIsPlace(e->u.index.obj);
+    default:       return false;
+    }
+}
+
 static const char *genPrint(CG *g, Vec *args, bool newline) {
     Buf b;
     bufInit(&b, g->arena);
@@ -628,19 +638,24 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
         if (i) bufPuts(&b, ", ");
         if (!bt) { bufPuts(&b, "0"); continue; }
 
-        /* 定案 11：无载荷枚举自动有名字文本 */
-        if (bt->kind == TY_ENUM) {
-            bufPrintf(&b, "printf(\"%%s\", %s_name(%s))", bt->name, code);
-            continue;
-        }
-        /* 字节视图按文本打印 */
-        if (isByteView(bt)) {
-            bufPrintf(&b, "%s_writeText(%s)", bt->name, code);
-            continue;
-        }
-        /* struct / 泛型实例 / 数组：自动递归打印 */
-        if (bt->kind == TY_STRUCT || bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
-            bufPrintf(&b, "%s_debug(%s)", bt->name, code);
+        /* ⭐ 结构化类型（枚举 / 字节视图 / struct / 泛型实例 / 数组）**一律走描述表**：
+         *      extc_print(&x, &x_desc)
+         * 于是"每种类型一份打印代码"彻底没了 —— 只剩每类型一份数据 ✓
+         *
+         * ⚠️ 描述表要**地址**（`extc_print` 是泛型打印器）⇒ 实参必须是个地方。
+         * 不是地方（`println("字面量")` / `println(makePoint())`）⇒ 先落进
+         * **临时变量**再取地址，那行由"语句前缀"机制吐在所在语句之前 ✓
+         * （试过 C 的复合字面量 `(T){expr}`，**不行**：C 不允许用同类型的
+         *   表达式去初始化聚合体 ⇒ gcc 报 incompatible types ✗）*/
+        if (bt->kind == TY_ENUM || isByteView(bt) || bt->kind == TY_STRUCT ||
+            bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
+            if (printArgIsPlace(a)) {
+                bufPrintf(&b, "extc_print(&(%s), %s)", code, descRef(g, bt));
+            } else {
+                const char *tmp = arenaPrintf(g->arena, "__extc_p%d", g->tmpSeq++);
+                pfLine(g, "%s %s = %s;", cType(g, bt), tmp, code);
+                bufPrintf(&b, "extc_print(&%s, %s)", tmp, descRef(g, bt));
+            }
             continue;
         }
         if (bt->kind != TY_BUILTIN) { bufPuts(&b, "0"); continue; }
@@ -2201,22 +2216,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             continue;               /* `_name` 也推迟到定义之后（它要读 v.tag）*/
         }
 
-        /* 定案 11：枚举自动有名字文本（带载荷的打印的是**变体名**，载荷不打印）。
-         * 不写 static —— 免得没用到的枚举触发 -Wunused-function。 */
-        cgLine(&g, "const char *%s_name(%s v) {", td->name, td->name);
-        g.indent++;
-        cgLine(&g, "switch (v) {");
-        g.indent++;
-        for (size_t j = 0; j < td->variants.len; j++) {
-            Variant *v = *(Variant **)vecAt(&td->variants, j);
-            cgLine(&g, "case %s_%s: return \"%s\";", td->name, v->name, v->name);
-        }
-        cgLine(&g, "default: return \"<%s>\";", td->name);
-        g.indent--;
-        cgLine(&g, "}");
-        g.indent--;
-        cgLine(&g, "}");
-        cgLine(&g, "");
+        /* 定案 11：枚举自动有名字文本 —— 现在由**描述表里的变体名数组**提供
+         * （`<Type>_desc` 的 `table`），不再派生 `<Type>_name` 函数 ✓ */
     }
 
     /* 收集所有「struct 类」的东西：普通 struct + 泛型实例 */
@@ -2358,27 +2359,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (!u->done) { unitBody(&g, u); u->done = true; }
     }
 
-    /* **带载荷枚举**的 `_name`（定案 11）：它要读 `v.tag`，所以必须排在
-     * 上面的定义之后。无载荷的那些在文件开头就出掉了 ✓ */
-    for (size_t i = 0; i < m->types.len; i++) {
-        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
-        if (!enumHasPayload(td)) continue;
-        if (td->typeParams.len > 0) continue;      /* 泛型：实例见下 */
-        cgLine(&g, "const char *%s_name(%s v) {", td->name, td->name);
-        g.indent++;
-        cgLine(&g, "switch (v.tag) {");
-        g.indent++;
-        for (size_t j = 0; j < td->variants.len; j++) {
-            Variant *v = *(Variant **)vecAt(&td->variants, j);
-            cgLine(&g, "case %s_%s: return \"%s\";", td->name, v->name, v->name);
-        }
-        cgLine(&g, "default: return \"<%s>\";", td->name);
-        g.indent--;
-        cgLine(&g, "}");
-        g.indent--;
-        cgLine(&g, "}");
-        cgLine(&g, "");
-    }
+    /* ⚠️ 以前这里给**带载荷枚举**出 `_name`（读 `v.tag`），所以必须排在定义之后。
+     * 现在变体名在描述表的 `table` 里 ⇒ 整段没了 ✓
+     * （枚举的 tag 常量在上面各自的位置就出完了，不受影响）*/
+
     for (size_t i = 0; i < tt->enumInstances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->enumInstances, i);
         TypeDef *td = it->edef;
@@ -2394,21 +2378,6 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         }
         bufPuts(&tb, " };");
         cgLine(&g, "%s", bufCstr(&tb));
-
-        cgLine(&g, "const char *%s_name(%s v) {", it->name, it->name);
-        g.indent++;
-        cgLine(&g, "switch (v.tag) {");
-        g.indent++;
-        for (size_t j = 0; j < td->variants.len; j++) {
-            Variant *v = *(Variant **)vecAt(&td->variants, j);
-            cgLine(&g, "case %s_%s: return \"%s\";", it->name, v->name, v->name);
-        }
-        cgLine(&g, "default: return \"<%s>\";", it->name);
-        g.indent--;
-        cgLine(&g, "}");
-        g.indent--;
-        cgLine(&g, "}");
-        cgLine(&g, "");
     }
 
     /* ------------------------------------------------------------------
@@ -2489,18 +2458,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      *
      * 教训跟 T4 那次一样：**顺序问题不要靠「碰巧对了」，要结构上排掉。**
      * ---------------------------------------------------------------- */
-    for (size_t i = 0; i < g.structs.len; i++)
-        cgLine(&g, "void %s_debug(%s v);",
-               (*(StructDef **)vecAt(&g.structs, i))->name,
-               (*(StructDef **)vecAt(&g.structs, i))->name);
+    /* ⚠️ `_debug` / `_writeText` / `_name` 的原型**都不再有了** ——
+     * 打印走描述表（数据），没有派生函数要提前声明 ✓ */
     for (size_t i = 0; i < g.insts.len; i++) {
         Type *it = *(Type **)vecAt(&g.insts, i);
-        if (!isByteView(it)) cgLine(&g, "void %s_debug(%s v);", it->name, it->name);
-        /* 数组的 `==` 也要原型 —— 嵌套数组之间是递归调用的 */
+        /* 数组的 `==` 要原型 —— 嵌套数组之间是递归调用的 */
         if (it->kind == TY_ARRAY && typeHasEq(it->inner))
             cgLine(&g, "bool %s_eq(%s a, %s b);", it->name, it->name, it->name);
-        if (it->kind == TY_GENERIC && isByteView(it))
-            cgLine(&g, "void %s_writeText(%s v);", it->name, it->name);
     }
     /* 实例的方法原型（数组没有方法，也没有 sdef）*/
     for (size_t i = 0; i < g.insts.len; i++) {
@@ -2531,27 +2495,17 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * 而 C 要求「先定义后使用」。所以最后按 原型 → helper → 函数体 拼回去。 */
     g.out = &g.body;
 
-    /* 实例的自动调试打印（字段类型要先替换）+ 字节视图的文本输出 */
+    /* 视图的下标原语 + 数组的 `==`（打印**不再派生任何函数**，见描述表 ✓）*/
     for (size_t i = 0; i < g.insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g.insts, i);
         if (inst->kind == TY_ARRAY) {
-            genDebugShim(&g, inst->name);
             genArrayEq(&g, inst);
             continue;
         }
         substEnter(&g, inst);
-        /* 字节视图**没有** `_debug`：它按文本打（`writeText`），
-         * 旧的 `slice_u8_debug`（打 `slice { data: <ref>, len: 2 }`）从来没被调用过 ——
-         * 那是死代码，这里顺手去掉 ⇒ 真有人调用它的话会**立刻编不过** ✓ */
-        if (!isByteView(inst)) genDebugShim(&g, inst->name);
-        if (isView(inst))      genViewIndexer(&g, inst);
-        if (isByteView(inst))  genByteViewWriter(&g, inst->name);
+        if (isView(inst)) genViewIndexer(&g, inst);
         substLeave(&g);
     }
-
-    /* struct 的自动调试打印 */
-    for (size_t i = 0; i < g.structs.len; i++)
-        genDebugShim(&g, (*(StructDef **)vecAt(&g.structs, i))->name);
 
     /* 实例的方法定义 */
     for (size_t i = 0; i < g.insts.len; i++) {
