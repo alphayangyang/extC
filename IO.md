@@ -391,6 +391,8 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 ## 8. 顺序（三段，全是加法）
 
+> ⚠️ **状态口径（2026-09-23）**：本文里的"进度/状态"表**可能滞后** —— "还剩什么"的权威只看 [`PLAN.md`](PLAN.md) §0.4（缺陷清单）+ §1（主线），或直接跑 `examples/` 实测 ✓
+
 | 段 | 内容 | 做完能干什么 | 进度（2026-09-23 实测） |
 |---|---|---|---|
 | **IO-0** | 原语 `rawRead`/`rawWrite` + `file`/`ioError` + **`readAll`** + **切片解析函数族** | **OI 式输入**能用了；gomoku 能读协议 | 🟡 **做到一半** —— 原语**已落地**（名字是 `read`/`write`，在 `stdlib/std/sys.extc`，带 `extern!` 签字）+ `std::io` 的 `readLine`/`writeBytes`/`flushOut` + 内建 `flush()` ✓（定案 73，`tests/io/` 常设验收）⬜ **还欠**：`readAll` · 切片解析函数族（`nextInt`/`nextToken`/`nextLine`/`skipSpace`）· `reader` · `ioError` |
