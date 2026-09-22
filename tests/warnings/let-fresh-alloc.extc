@@ -1,0 +1,18 @@
+// expect-warning: this allocation can never be written
+/* `let` 绑一个**新鲜分配** ⇒ 可判定地"永远是零"（2026-09-22，主人：「let new 真是难绷完了」）
+
+ * 为什么能判定（零误报）：
+ *   · 分配出来**只有一条引用**（就是这个名字）
+ *   · `let` 给的是**只读**引用，而只读引用**提权不回来**（链式只读 ✓）：
+ *       `var w: mut ref node = ref *n`  ⇒ 类型不匹配 ✗
+ *       传进要 `mut ref` 的参数        ⇒ 类型不匹配 ✗
+ *       透过它写字段 `n.value = 1`     ⇒ cannot write through a read-only reference ✗
+ *   ⇒ **没有任何路径能写它** ⇒ 全零 ✓
+ * ⚠️ 只警告不拦（合法角落：拿一块全零块喂给只读消费者）✓
+ * ⚠️ `var w = new node  let r = w` **不警告**（对象有可写的源头 —— 那才是 `let` 的主场 ✓）
+ */
+fn main() {
+    let n = new node
+    println("读到的（永远是 0）= ", n.value)
+}
+struct node { value: i64  next: ?ref node }

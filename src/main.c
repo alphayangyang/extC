@@ -87,6 +87,7 @@ static void usage(const char *argv0) {
         "options:\n"
         "  -o <file>       write the generated C to this file (default: stdout)\n"
         "  --run           compile the generated C, then run it\n"
+        "  -w              suppress warnings\n"
         "  --dump-tokens   lex only; print the token table\n"
         "  --no-line-map   do not emit `#line` directives (default: emit them)\n"
         "  -h, --help      show this help\n",
@@ -182,6 +183,7 @@ int main(int argc, char **argv) {
     const char *path = NULL;
     const char *outPath = NULL;
     const char *optLevel = NULL;     /* `-O0..-O3`（默认 -O2）*/
+    bool        noWarn = false;      /* `-w`：一条警告都不吐（Ctx 下面才建 ⇒ 先记在局部 ✓）*/
     bool marchNative = false;        /* `-march=native`（默认关：牺牲可移植性）*/
     bool dumpTokens = false;
     bool doRun = false;
@@ -199,10 +201,10 @@ int main(int argc, char **argv) {
         if (strncmp(argv[i], "-O", 2) == 0 && argv[i][2] >= '0' && argv[i][2] <= '3'
             && argv[i][3] == 0) {
             optLevel = argv[i];
-            i++;
-            continue;
+            continue;          /* ⚠️ 别 `i++`：for 自己会加 ⇒ 会**多吞一个参数** ✗（2026-09-22 修）*/
         }
-        if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; i++; continue; }
+        if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; continue; }
+        if (strcmp(argv[i], "-w") == 0) { noWarn = true; continue; }   /* 关警告 ✓ */
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
         } else if (strcmp(argv[i], "--dump-effects") == 0) {
@@ -248,6 +250,7 @@ int main(int argc, char **argv) {
 
     Ctx ctx;
     ctxInit(&ctx, &arena, path, src, srcLen);
+    ctx.noWarn = noWarn;
 
     Vec toks;
     vecInit(&toks, &arena, sizeof(Token));

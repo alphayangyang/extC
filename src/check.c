@@ -28,6 +28,17 @@ void ckError(Checker *c, int line, const char *note, const char *fmt, ...) {
     ctxError(c->ctx, line, 1, note, "%s", tmp);
 }
 
+/* ⭐ 警告（2026-09-22）：**该说但不该拦**的那些事走这条路 ✓
+ * 跟 `ckError` 的唯一区别：不设 `hasError` ⇒ 编译继续、退出码不变 ✓ */
+void ckWarn(Checker *c, int line, const char *note, const char *fmt, ...) {
+    char tmp[EXTC_MAXERR];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    ctxWarn(c->ctx, line, 1, note, "%s", tmp);
+}
+
 const char *typeStr(Checker *c, Type *t) {
     Buf b;
     bufInit(&b, c->arena);

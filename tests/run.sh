@@ -75,6 +75,17 @@ if [ -x tests/arena/run.sh ]; then
     fi
 fi
 
+echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
+if [ -x tests/warnings/run.sh ]; then
+    if out=$(tests/warnings/run.sh 2>&1); then
+        echo "$out" | grep -E "ok |FAIL" | while read -r line; do echo "$line"; done
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "警告用例"
+    fi
+fi
+
 echo "== ASan：内存安全形状必须**真的**跑得干净（不是"编过了"就算）=="
 if [ -x tests/asan/run.sh ]; then
     if out=$(tests/asan/run.sh 2>&1); then

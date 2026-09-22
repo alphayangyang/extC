@@ -202,6 +202,38 @@ void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...)
     else c->errNote[0] = '\0';
 }
 
+/* ⭐ 警告通道：格式跟错误一样（file:line:col: warning: msg + 那一行 + 插入符），
+ * 但**不设 hasError** ⇒ 编译继续 ✓ 不改变退出码 ✓ */
+void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) {
+    if (c->noWarn) return;
+    c->warnCount++;
+
+    char msg[EXTC_MAXERR];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+
+    fprintf(stderr, "%s:%d:%d: warning: %s\n", c->path, line, col, msg);
+
+    int ln = 1;
+    size_t i = 0;
+    while (i < c->srcLen && ln < line) {
+        if (c->src[i] == '\n') ln++;
+        i++;
+    }
+    if (ln == line) {
+        size_t start = i, end = start;
+        while (end < c->srcLen && c->src[end] != '\n') end++;
+        fprintf(stderr, "  ");
+        fwrite(c->src + start, 1, end - start, stderr);
+        fprintf(stderr, "\n  ");
+        for (int k = 1; k < (col > 0 ? col : 1); k++) fputc(' ', stderr);
+        fprintf(stderr, "^\n");
+    }
+    if (note) fprintf(stderr, "  note: %s\n", note);
+}
+
 void ctxRenderDiag(Ctx *c, Buf *out) {
     bufPrintf(out, "%s:%d:%d: error: %s\n", c->path, c->errLine, c->errCol, c->errMsg);
 

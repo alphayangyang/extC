@@ -134,6 +134,28 @@ void checkStmt(Checker *c, Stmt *s) {
                 s->u.var.init->reuse = true;
             }
 
+            /* ⭐ 2026-09-22（主人：「let new 真是难绷完了」）：
+             * `let x = new T` ⇒ **这块存储永远是零** ✗ —— 可判定、零误报：
+             *   · 分配出来只有一条引用（就是这个名字），而 `let` 给的是**只读**引用
+             *   · 只读引用**既写不了、也提权不回来**（链式只读 ✓：`ref *n` / 传进 `mut ref`
+             *     参数 / `.f = v` 全部被挡 ✓ 实测过）
+             * ⇒ 没有任何路径能写它 ⇒ 全零 ✓
+             * ⚠️ 只**警告**不拦：有一个合法小角落 —— 拿一块全零块喂给只读消费者
+             *    （`let buf = new [64]u8  hash(buf[..])`）✓
+             * ⚠️ 校准：`var w = new T  let r = w` **不警告**（对象有可写的源头 ✓
+             *    —— `let` 的主场就是"把已有别名降级成只读视图"）✓ */
+            if (!s->u.var.mut && s->u.var.init &&
+                (s->u.var.init->kind == EX_NEW || s->u.var.init->kind == EX_GENCALL)) {
+                ckWarn(c, s->line,
+                       "`let` is about the **name**, not the object: it promises you will not"
+                       " write through this name. A fresh allocation has no other name, so"
+                       " nothing can ever write into it and the storage stays zero. Use `var`"
+                       " to write into it -- or, for a read-only view, bind one of something"
+                       " writable: `var w = new T  let r = w`.",
+                       "this allocation can never be written: `let` bound a fresh allocation,"
+                       " and a read-only reference cannot be turned back into `mut ref`");
+            }
+
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
             /* `let x = e?` —— `?` 的合法位置之一。

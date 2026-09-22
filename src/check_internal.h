@@ -207,6 +207,7 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  void checkStmt (Checker *, Stmt *);
  void checkStmt (Checker *c, Stmt *s);
  void ckError (Checker *c, int line, const char *note, const char *fmt, ...);
+ void ckWarn  (Checker *c, int line, const char *note, const char *fmt, ...);   /* ⭐ 警告：不拦 ✓ */
  void desugarBareCtor (Checker *, Expr *, Type *);
  void desugarBareCtor (Checker *c, Expr *e, Type *want);
  void expectBool (Checker *c, Type *t, Expr *node);

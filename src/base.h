@@ -82,6 +82,10 @@ typedef struct {
     size_t      srcLen;
 
     bool hasError;
+    /* ⭐ 警告通道（2026-09-22 加）：**不改变退出码**的诊断（P′ 的另一半 ——
+     * 有些事"该说但不该拦"：拦下来只是烦人 ✗）*/
+    int  warnCount;
+    bool noWarn;      /* `-w`：一条警告都不吐 ✓ */
     int  errLine, errCol;
     char errMsg[EXTC_MAXERR];
     char errNote[EXTC_MAXERR];
@@ -93,6 +97,8 @@ bool cIdentIsKeyword(const char *name);
 
 void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen);
 void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...);
+/* 警告：**不设 hasError**（编译照常继续）✓ 立即打到 stderr ✓ 同 errors 的格式 ✓ */
+void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...);
 void ctxRenderDiag(Ctx *c, Buf *out);
 
 #endif /* EXTC_BASE_H */
