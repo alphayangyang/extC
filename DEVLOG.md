@@ -6,6 +6,53 @@
 > 倒序，最新的在最上面。
 
 ---
+## 2026-09-22 · **#40 + #41 修掉**：透过 `mut ref` 写字段（误拒）与写穿只读引用（洞）
+
+同一次改动的两半 —— 都在"写一个「地方」可不可写"这个问题上。
+
+**#40（误拒）**：`fn clear(cell: mut ref node) { (*cell).next = null }` 被拒，
+报的还是**误导人**的话（`cannot rebind this: the binding is read-only`，可 cell 明明是 `mut ref`）✗
+根因：换指向那一支的 `slotOk` 只走 `placeRoot`，而它对 `*p` 返回 NULL ——
+**同一个坑 2026-09-20 修过裸 `*p`，带字段的漏了** ✗
+
+**#41（反向的洞，顺手实测出来的）**：写穿**只读**引用却**整条没人管** ✗
+```extc
+fn g(p: ref node) { (*p).val = 7 }     // 以前：编译通过 ✗
+fn h(p: ref node) { p.next = null }    // 以前：编译通过 ✗
+```
+两条路各漏一边：`pathHasReadonlyRef` 走到 `EX_DEREF` 就 `break`，而 DEREF 自己的类型是
+**被指对象**（不是引用）⇒ 那只引用的 mut 从来没查过 ✗；隐式的 `p.f` 走的是换指向那一支，
+而那一支**根本不看**只读引用（只看 `placeRoot` 是不是 `var`）✗
+
+**修法**（一个助手两处用）：
+```c
+/* 写这个「地方」要**穿过**哪些引用？每一只都得是 `mut ref` ✓
+ *   显式 `*p` · 隐式 `p.f`/`v[i]`（p 是引用 ⇒ 那块存储住在 `*p` 里）
+ * ⚠️ 目标自己的类型**不算** —— `cur = v` 写的是槽位，跟"cur 是不是只读引用"无关 ✓ */
+bool pathRefsAllMut(Expr *e, bool *crossed);
+```
+`crossed` 顺便回答"存储到底在不在本帧"（穿过引用 ⇒ 没有本帧的根）⇒
+换指向那一支的可写性判断变成"路走通 + 落地那个槽位的绑定可写" ✓
+报错也分成两句（写穿只读引用 / 绑定只读），不再乱指 ✓
+
+⚠️ **差点自己弄坏一处**（记账）：第一版我把 `requireMutable` 里的 `pathHasReadonlyRef`
+整个**换掉**了 ⇒ `call_writer_on_readonly`（只读接收者调会写的方法）**从被挡变成通过** ✗
+—— 是那一支反例在套件里当场抓出来的（`226 通过 1 失败`）✓
+**教训**：这两件事看着像，其实不是一个问题：
+  · **能不能写穿**（值写 / 方法接收者）⇒ 看**每个路口那只引用的 mut** ⇒ `pathHasReadonlyRef`
+  · **槽位在不在本帧、那个绑定可不可写**（换指向）⇒ `pathRefsAllMut` + `placeRoot`
+⇒ 改成**扩展** `pathHasReadonlyRef`（补 DEREF 那一支）而不是替换 ✓
+
+**判据**：227 测试全通 · 攻击库基线**一字不动** · ASan 5 形状干净 · 新正例
+`examples/ref-field-write.extc`（ASan 干净）+ 两个新反例
+（`tests/errors/write_through_readonly_{deref,field}.extc`：都必须报错 ✓）·
+golden 只多一个新例子 ✓
+
+**没松的那条**（写进例子注释了）：**借来的引用**照旧不许存进活得更久的地方 ——
+`fn join(a: mut ref node, b: mut ref node) { (*a).next = b }` 仍然报错 ✗
+（编译器不知道 `b` 的真实寿命 ⇒ 定案 ㊲ 那一族 ✓）
+
+---
 ## 2026-09-22 · **#39 修掉**：引用型绑定的字段表会把「我指着谁」刷低（11 行）
 
 主人问「39 40 怎么修？」⇒ 我先把两条都在**临时 worktree** 里改一遍、验证完再回报

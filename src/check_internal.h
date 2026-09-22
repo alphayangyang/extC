@@ -175,6 +175,7 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  _Bool literalFits (Expr *e, Type *want);
  _Bool mentionsParam (Type *t);
  _Bool pathHasReadonlyRef (Expr *);
+ _Bool pathRefsAllMut (Expr *e, _Bool *crossed);   /* ⭐ #40/#41：写要穿过的引用都得是 mut ✓ */
  _Bool pathHasReadonlyRef (Expr *e);
  _Bool rejectNullableDeref (Checker *c, Type *t, Expr *node, const char *what);
  _Bool repeatablePure (Expr *e);

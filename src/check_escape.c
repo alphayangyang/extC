@@ -497,9 +497,57 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
  * 「绑定是不是 `let`」和「路上有没有只读引用」是**两件事**：
  * `var` 的东西里也可能装着一个只读引用（比如 `fn f(v: ref slice<i32>)` 里的 v）。
  * 写进去要**两样都满足**。 */
+/* ⭐ PLAN #40 / #41：**写这个「地方」要穿过哪些引用？每一只都必须是 `mut ref`** ✓
+ *
+ * "穿过"只有两种：
+ *   · **显式**：`*p` ✓
+ *   · **隐式**：`p.f` / `v[i]` 里 `p` 是引用 ⇒ 那块存储住在 **`*p`** 里（自动解引用）✓
+ * ⚠️⚠️ **目标自己的类型不算**：`cur = v`（换指向）写的是**槽位**，
+ *    "cur 是不是只读引用"跟这件事**无关** ✗
+ *    （老实现把这两件事混在 `pathHasReadonlyRef` 里 ⇒ 一边误拒 `(*cell).next = v`
+ *      （字段类型是只读引用 `?ref node`）、一边漏掉真正的写穿 ✗ 见 PLAN #40/#41）✓
+ *
+ * `*crossed` 回填"存储到底在不在本帧"：穿过引用 ⇒ 存储在被指对象里（`placeRoot` 会是 NULL）✓ */
+bool pathRefsAllMut(Expr *e, bool *crossed) {
+    if (crossed) *crossed = false;
+    for (Expr *x = e; x; ) {
+        if (x->kind == EX_DEREF) {                       /* 显式穿过 ✓ */
+            Type *ot = x->u.deref.operand->type;
+            if (!(ot && ot->kind == TY_REF && ot->mut)) return false;
+            if (crossed) *crossed = true;
+            x = x->u.deref.operand;
+            if (x->type && x->type->kind == TY_REF) return true;   /* 落地 = p 指的地方 ✓ */
+            continue;
+        }
+        Expr *o = NULL;
+        if (x->kind == EX_FIELD)      o = x->u.field.obj;
+        else if (x->kind == EX_INDEX) o = x->u.index.obj;
+        else if (x->kind == EX_SLICE) o = x->u.slice.obj;
+        if (!o) break;                                   /* 落到绑定/别的形状 ⇒ 到此为止 ✓ */
+        if (o->type && o->type->kind == TY_REF) {        /* 字段住在 o **指的对象**里 ✓ */
+            if (!o->type->mut) return false;
+            if (crossed) *crossed = true;
+            return true;
+        }
+        x = o;
+    }
+    return true;
+}
+
 bool pathHasReadonlyRef(Expr *e) {
     for (Expr *x = e; x; ) {
         if (x->type && x->type->kind == TY_REF && !x->type->mut) return true;
+        /* ⭐ PLAN #41：**显式穿过**（`(*p).f` / `(*p).f.g`）——
+         * 老实现走到 `EX_DEREF` 就 `break`，而 DEREF 自己的类型是**被指对象**
+         * （不是引用）⇒ 那只引用的 mut 从来没查过 ⇒ 写穿只读引用整条放行 ✗
+         * （实测：`fn g(p: ref node) { (*p).val = 7 }` 编译通过 ✗）✓ */
+        if (x->kind == EX_DEREF) {
+            Type *ot = x->u.deref.operand->type;
+            if (ot && ot->kind == TY_REF && !ot->mut) return true;
+            x = x->u.deref.operand;
+            if (x->type && x->type->kind == TY_REF) return false;   /* 落地 = p 指的地方 ✓ */
+            continue;
+        }
         if (x->kind == EX_FIELD) { x = x->u.field.obj; continue; }
         if (x->kind == EX_INDEX) { x = x->u.index.obj; continue; }
         if (x->kind == EX_SLICE) { x = x->u.slice.obj; continue; }
@@ -519,6 +567,10 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
                 "cannot %s through a read-only reference", what);
         return true;
     }
+    /* ⚠️ 这里问的是「**能不能写穿**」—— 看的是**每个路口那只引用的 mut**：
+     *   · 这个"地方"自己的类型是只读引用（`c.bump()` 里 c 是 `ref counter`）✗
+     *   · 路上**显式穿过**了只读引用（`(*p).f`，PLAN #41 的洞）✗
+     * 两件都由 `pathHasReadonlyRef` 答（#41 就是给它补上 DEREF 那一支 ✓）*/
     if (pathHasReadonlyRef(e)) {
         ckError(c, line,
                 "`ref T` is a **read-only** borrow; writing through it needs `mut ref T` "

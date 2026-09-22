@@ -197,22 +197,35 @@ void checkStmt(Checker *c, Stmt *s) {
                  *     ⚠️ 这里以前只走 `placeRoot`，而它对 `*p` 返回 NULL ⇒
                  *        `fn push(head: mut ref ?ref node) { *head = cell }` 被误报成
                  *        "the binding is read-only" ✗（真 bug，2026-09-20 修）*/
-                bool slotOk;
-                if (s->u.assign.target->kind == EX_DEREF) {
-                    Type *ot = s->u.assign.target->u.deref.operand->type;
-                    slotOk = ot && ot->kind == TY_REF && ot->mut;
-                } else {
+                /* ⭐ PLAN #40：**先把路走通，再看落地那个槽位**
+                 *   · 路上穿过的引用都得是 `mut ref`（`*p` / `cur.f` / `(*p).f`）✓
+                 *   · 穿过了引用 ⇒ 存储在被指对象里（没有本帧的根）⇒ 到此为止 ✓
+                 *   · 没穿过 ⇒ 存储是本帧某个绑定的槽位 ⇒ 那只绑定得可写（`var`/参数）✓
+                 * ⚠️ 老写法只认"目标自己是 `*p`" + `placeRoot` ⇒ `(*cell).next = v`
+                 *    既被误拒（`placeRoot` 返回 NULL）又漏掉写穿只读引用 ✗ 见 #40/#41 ✓ */
+                bool crossed  = false;
+                bool refsOk   = pathRefsAllMut(s->u.assign.target, &crossed);
+                bool slotOk   = refsOk;
+                if (slotOk && !crossed) {
                     Sym *slotRoot = placeRoot(c, s->u.assign.target);
                     slotOk = slotRoot && slotRoot->mut;
                 }
                 if (!slotOk) {
-                    ckError(c, s->line,
-                            "rebinding a reference writes the binding itself, so the binding"
-                            " must be writable (`var`, or a `mut ref`)",
-                            "cannot rebind `%s`: the binding is read-only",
-                            s->u.assign.target->kind == EX_DEREF
-                              ? typeStr(c, s->u.assign.target->u.deref.operand->type)
-                              : "this");
+                    /* 两种原因**报两种话**（不然用户会以为是自己的绑定写错了 ✗）✓ */
+                    if (!refsOk)
+                        ckError(c, s->line,
+                                "`ref T` is a **read-only** borrow; writing the object it "
+                                "points to needs `mut ref T` in the declaration. Read-only "
+                                "is the default so that a signature says what it does.",
+                                "cannot write through a read-only reference");
+                    else
+                        ckError(c, s->line,
+                                "rebinding a reference writes the binding itself, so the binding"
+                                " must be writable (`var`, or a `mut ref`)",
+                                "cannot rebind `%s`: the binding is read-only",
+                                s->u.assign.target->kind == EX_DEREF
+                                  ? typeStr(c, s->u.assign.target->u.deref.operand->type)
+                                  : "this");
                     return;
                 }
 

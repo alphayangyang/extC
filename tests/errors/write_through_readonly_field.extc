@@ -1,0 +1,16 @@
+// 写穿**只读**引用必须被挡 —— 隐式那条路（`p.f`，字段住在 `*p` 里）✓
+// PLAN #41：换指向那一支以前只查 `placeRoot`，而 `p.f` 的根是**只读引用** p
+// ⇒ 把 pointee 的字段改了也算不出错 ✗
+struct node { val: i32  next: ?ref node }
+
+fn clear(p: ref node) -> i32 {
+    p.next = null
+    return 0
+}
+
+fn setVal(p: ref node, v: i32) -> i32 {
+    p.val = v
+    return 0
+}
+
+fn main() -> i32 { return 0 }

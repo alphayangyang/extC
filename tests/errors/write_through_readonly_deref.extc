@@ -1,0 +1,16 @@
+// 写穿**只读**引用必须被挡 —— 显式 `*p` 那条路（PLAN #41，2026-09-22 修）✓
+// 老实现走到 `EX_DEREF` 就 break，而 DEREF 自己的类型是**被指对象**（不是引用）
+// ⇒ 那只引用的 mut 从来没查过 ⇒ `fn g(p: ref node) { (*p).val = 7 }` 编译通过 ✗
+struct node { val: i32  next: ?ref node }
+
+fn g(p: ref node) -> i32 {
+    (*p).val = 7
+    return 0
+}
+
+fn h(p: ref node) -> i32 {
+    (*p).next = null
+    return 0
+}
+
+fn main() -> i32 { return 0 }

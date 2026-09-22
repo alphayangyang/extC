@@ -1,0 +1,60 @@
+// expect: next.value = 99
+/* **透过 `mut ref` 写字段**（PLAN #40，2026-09-22 修）
+
+ * 以前这写法被误拒，而且报的是一句**误导人**的话：
+
+ *     fn clear(cell: mut ref node) { (*cell).next = null }
+ *     error: cannot rebind `this`: the binding is read-only        ← cell 明明是 mut ✗
+
+ * 根因：换指向那一支的可写性判断只走 `placeRoot`，而它对 `*p` 返回 NULL ——
+ * 同一个坑 2026-09-20 修过**裸 `*p`**（`*p = v`），**带字段的漏了** ✗
+
+ * 修法（#40/#41 是同一刀）：新的 `pathRefsAllMut` 回答"写这个「地方」要
+ * **穿过**哪些引用、每一只是不是 `mut ref`"：
+ *   · 显式 `*p` ✓
+ *   · 隐式 `p.f` / `v[i]`（`p` 是引用 ⇒ 那块存储住在 `*p` 里）✓
+ *   · **目标自己的类型不算** —— `cur = v`（换指向）写的是**槽位**，
+ *     "cur 是不是只读引用"跟这件事无关 ✓
+ * 顺带把**反向的洞**（#41）堵上：写穿**只读**引用以前整条放行 ✗
+ *     fn g(p: ref node) { (*p).val = 7 }      // 以前能编过 ✗ 现在是错误 ✓
+
+ * ⚠️ 没松的那条：**借来的引用**（参数派生）仍然不许存进活得更久的地方
+ *    （`fn join(a: mut ref node, b: mut ref node) { (*a).next = b }` 照旧报错 ✗
+ *       —— 编译器不知道 b 的真实寿命 ⇒ 见 `DECISIONS` 定案 ㊲ 那一族）✓
+ */
+struct node {
+    value: i64
+    next: ?ref node
+}
+
+/* 写**值**字段：一直都能写（走的是另一条路）✓ */
+fn setValue(cell: mut ref node, v: i64) {
+    (*cell).value = v
+}
+
+/* 写**引用**字段：这一条以前被误拒（#40）✓ */
+fn clearNext(cell: mut ref node) {
+    (*cell).next = null
+}
+
+/* 有 `new` + 写穿 ⇒ 这个函数"有家"（A3）⇒ 新东西进**调用者选的那只** arena
+ * ⇒ 接上去安全 ✓（这就是"造链表"该有的写法）*/
+fn appendFresh(a: mut ref node, v: i64) {
+    var fresh = new node
+    fresh.value = v
+    (*a).next = fresh
+}
+
+fn main() {
+    var head = new node
+    setValue(head, 10)
+    appendFresh(head, 99)          /* head -> (99) ✓ */
+    var c: ?ref node = (*head).next
+    if c != null { println("next.value = ", (*c).value) }
+
+    clearNext(head)                /* 写引用字段 = null：以前**误拒**的地方 ✓ */
+    var d: ?ref node = (*head).next
+    if d == null { println("清空之后 head.next 是空的 = ", true) }
+}
+
+// expect: 清空之后 head.next 是空的 = true

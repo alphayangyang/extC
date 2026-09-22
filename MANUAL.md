@@ -571,6 +571,19 @@ fn f(b: ref board) { b.cell[0] = 1 }
 //   note: `ref T` is a **read-only** borrow; writing through it needs `mut ref T` …
 ```
 
+**"穿过"有两种写法，两种都查**（PLAN #40/#41，2026-09-22 修齐）：
+
+```extc
+fn h(p: ref node) { (*p).val  = 7 }    // 显式穿过 `*p` ⇒ 要 mut ref ✗ 报错 ✓
+fn k(p: ref node) {  p.next   = null } // 隐式穿过（字段住在 `*p` 里）⇒ 也要 mut ref ✗ 报错 ✓
+
+fn ok(cell: mut ref node) { (*cell).next = null }   // mut ref ⇒ 合法 ✓
+```
+
+**判据一句话**：写一个「地方」要**穿过**哪些引用，每一只都得是 `mut ref` ✓
+⚠️ **目标自己的类型不算** —— `cur = v`（换指向）写的是**槽位**，
+跟"`cur` 是不是只读引用"无关（`var cur: ?ref node` 照样可以换指向 ✓）
+
 这条会**顺着调用图追**：`rng::below` 因为里面调了 `next()`（要可写接收者），
 自己的签名也得改成 `mut ref` —— 光看函数体是看不出这种问题的。
 

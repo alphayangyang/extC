@@ -54,6 +54,7 @@ bd01cd7dafffc15b9c27f66d44f0f439  examples_out-param
 c5d879d225cd29b4db1371f426358be8  examples_print-desc-check
 ed6b3d3734c2e9facfdff321a70584a5  examples_print-desc-nested
 040993a8102978f9510a1bbdd96ea40b  examples_readonly-cursor
+f5de5ee2140d7279c4f20faa554a57a5  examples_ref-field-write
 1ec5bbb8433a835a3c3ce1d58f87e36d  examples_ref-scalar
 4af0a20458fdce8273bdc6428dd80e66  examples_refs
 105cf37113351862db765213ea3d88db  examples_result-usage
