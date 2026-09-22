@@ -1,0 +1,26 @@
+// expect: 求和 = 28
+/* 定案 63 的主形状：**循环里建链表，head 在循环外**（PLAN #38 的 UB 形状）✓
+ * 修之前：检查器放行、节点分配在循环体那只 arena、每轮 release ⇒
+ *        ASan `heap-use-after-free`（读 head 的 val 时炸）✗
+ * 修之后：`head = n` 把那个 `new` 提升到函数那一层 ⇒ 活到函数结束 ✓ */
+struct node { val: i32  next: ?ref node }
+
+fn build(n: i32) -> i64 {
+    var head: ?ref node = null
+    var i: i32 = 0
+    while i < n {
+        var cell = new node
+        cell.val = i
+        cell.next = head
+        head = cell
+        i = i + 1
+    }
+    var t: i64 = 0
+    var c: ?ref node = head
+    while c != null { t = t + i64((*c).val)  c = (*c).next }
+    return t
+}
+
+fn main() {
+    println("求和 = ", build(8))
+}

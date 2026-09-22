@@ -1,0 +1,12 @@
+// expect: b0 = 11 b1 = 22
+/* `new T[n]`（视图）也走同一条路 ✓ —— `buf = t` 把 `t` 的来路提升到 buf 那层 ✓ */
+fn main() {
+    var buf: mut slice<i64> = new i64[1]
+    {
+        var t = new i64[4]
+        t[0] = 11
+        t[1] = 22
+        buf = t
+    }
+    println("b0 = ", buf[0], " b1 = ", buf[1])
+}

@@ -1,0 +1,15 @@
+// expect: val = 7
+/* 不需要循环：**普通嵌套块**里 `new`、存到块外的局部 ⇒ 一样提升 ✓
+ * （修之前这条是**误拒**（"can only hold up to depth 0"），不是 UB ✓）*/
+struct node { val: i32  next: ?ref node }
+
+fn main() {
+    var head: ?ref node = null
+    {
+        var n = new node
+        n.val = 7
+        head = n
+    }
+    var c: ?ref node = head
+    if c != null { println("val = ", (*c).val) }
+}

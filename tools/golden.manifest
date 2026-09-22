@@ -62,6 +62,7 @@ c6f9598c3b27ca88e68d1506fa02b571  examples_retarget
 4a9383538283170765f39f2c3e08c0c4  examples_shadowing
 bdd4e3d9b098f1466f9d4575759670c9  examples_sign
 d5f8e9441ffc47bcc80f8ea304e32987  examples_slices
+5ee0e917383814b40f285d45ccfc741b  examples_store-promotion
 e14df13eae58dafaa7c6ec8e85f6541a  examples_strings
 228decb01ac1420c087853842d0035ef  examples_structs
 a8db8c76d4a7a1069eed8659c2629c90  examples_tour
@@ -77,4 +78,5 @@ a3b9c4866ae1eaada127690470261925  examples_varArray
 ec1d63a8774d6cb12be05c21f2f91488  bench_multi_matmul
 436d0f64c1ebc677e0de5e121831ec73  bench_multi_mod
 f6ec7f6f371596e685438aa623aede47  bench_multi_sieve
+c8aeeabbd52185be7553f77297e42266  bench_oi_p3810
 576d732388878a273bbc0b4261eb94a3  bench_stress_stress

@@ -1,0 +1,104 @@
+// expect: ① 循环里建链 0..7 求和 = 28
+/* **块级逃逸提升**（DECISIONS 定案 63 / PLAN #38）：`new` 被存进活得**更久**的地方
+ * ⇒ 把那只 arena **提升**到那一层（**不拒绝**）✓
+ *
+ * ⚠️ 别跟 `escape-promotion.extc`（A3，**函数级**）搞混：那个管"分配的东西要
+ * **返回给调用者**"（靠隐藏参数 `__extc_home`）；这个管"分配的东西存进了
+ * **本函数更外层的某个地方**"（靠把 `new` 的层数往上提）✓ 两件事互补：
+ * 前者跨函数、后者在本函数内 ✓
+ *
+ * 起点是 A2「按块细化」：`new` 默认分配进**当前块**的 arena，出块就回收 ——
+ * 省内存，但"在循环里建链表、head 在循环外"这种**最正常**的写法会中招：
+ *
+ *     var head: ?ref node = null
+ *     while cond {
+ *         var n = new node        // ← 以前分配在**循环体**那只 arena
+ *         n.next = head           //    每轮结束就 release ✗
+ *         head = n                //    ⇒ head 指着已经释放的内存（ASan 实锤 UAF）
+ *     }
+ *
+ * 现在：`head = n` 把"n 的**来路**"（那个 `new`）提升到 head 那一层
+ * ⇒ 节点活到**函数结束** ⇒ 正确 ✓
+ * 代价：这类分配不再每轮回收 —— 最坏 = 一个**函数级、自动清理的堆**
+ * （主人 2026-09-22 拍板：为这个拒绝掉最正常的写法不值得 ✓）
+ *
+ * 规则一句话：`arenaLevel = min(当前块深度, 所有目的地的层)`
+ *   · 深度越小 = 活得越久 ⇒ 取 min = 跟着**最长寿的那个目的地**走 ✓
+ *   · **只往更深处存**（min 没变）⇒ 行为一个字都不变（零影响）✓
+ *   · 提不动的（借来的引用、函数返回值……）**照旧报错** ⇒ 永远是安全方向 ✓
+ *
+ * 下面三条都实测 ASan 干净（`tests/asan/` 是常设验收）✓
+ */
+struct node {
+    value: i64
+    next: ?ref node
+}
+
+fn sumFrom(head: ?ref node) -> i64 {
+    var total: i64 = 0
+    var c: ?ref node = head
+    while c != null {
+        total = total + c.value
+        c = c.next
+    }
+    return total
+}
+
+/* ① 循环里建、存到循环**外**的局部 ⇒ 提升到函数那一层 ✓
+ * ⚠️ 这个函数返回 `i64` ⇒ 它**不需要**"家"arena（A3 只管"返回引用"那种）
+ * ⇒ 以前想建这条链只能把建链包进一个"返回它"的函数绕开（`bench/stress` 的写法）✓ */
+fn buildInLoop(n: i64) -> i64 {
+    var head: ?ref node = null
+    var i: i64 = 0
+    while i < n {
+        var cell = new node
+        cell.value = i
+        cell.next = head
+        head = cell
+        i = i + 1
+    }
+    return sumFrom(head)
+}
+
+/* ② 普通嵌套块 / `if` 体里分配也一样（层数不再是"哪块分配就在哪块死"）✓ */
+fn buildInBlock() -> i64 {
+    var head: ?ref node = null
+    {
+        var a = new node
+        a.value = 10
+        head = a
+    }
+    var flag: i32 = 1
+    if flag == 1 {
+        var b = new node
+        b.value = 20
+        b.next = head
+        head = b
+    }
+    return sumFrom(head)
+}
+
+/* ③ 中间经手一个变量也追得到（`mid = cell` ⇒ mid 的**来路**就是那个 cell）✓ */
+fn buildThroughMid() -> i64 {
+    var head: ?ref node = null
+    var i: i64 = 0
+    while i < 3 {
+        var mid: ?ref node = null
+        var cell = new node
+        cell.value = 100
+        cell.next = head
+        mid = cell
+        head = mid
+        i = i + 1
+    }
+    return sumFrom(head)
+}
+
+fn main() {
+    println("① 循环里建链 0..7 求和 = ", buildInLoop(8))
+    println("② 嵌套块/if 里建链 = ", buildInBlock())
+    println("③ 经手一个变量 = ", buildThroughMid())
+}
+
+// expect: ② 嵌套块/if 里建链 = 30
+// expect: ③ 经手一个变量 = 300

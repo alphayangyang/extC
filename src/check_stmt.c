@@ -149,6 +149,10 @@ void checkStmt(Checker *c, Stmt *s) {
             Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                !s->u.var.mut, s->line, c->scopes.len);
             s->u.var.cname = sym->cname;
+            /* ⭐ 定案 63（PLAN #38）：记下这个绑定的**来路**（初始值表达式）——
+             * 提升要顺着它往回走：`var n = new node` 之后别处 `head = n`
+             * ⇒ 顺着 n 找回那个 `new`，把它提到 head 那一层 ✓（没初始化式 ⇒ NULL）*/
+            noteOrigin(c, sym, s->u.var.init);
             /* 引用型绑定：它指的东西有多深，**从初始值数出来** ✓
              * （`var cur: ?ref node = head` ⇒ head 是参数 ⇒ 0 ⇒ 这个游标可以返回 ✓）*/
             if (s->type && typeContainsRef(c->tt, s->type))
@@ -236,7 +240,13 @@ void checkStmt(Checker *c, Stmt *s) {
                      * ⚠️ 深度比较用的是**旧的** refDepth（这个槽位原来指多深）——
                      * 所以更新被指深度必须等这些都查完，否则等于拿新值跟新值比，
                      * `p = ref <更深的局部>` 会整条漏过去 ✗（真踩过，攻击测试 h1 打出来）*/
-                    int at0 = placeDepth(c, s->u.assign.target);
+                    /* ⚠️ `storeLayer`：这里问的是「往哪一层存」——
+                     * 引用型绑定的坑见 `storeLayer` 的注释（PLAN #38 的根因）✓ */
+                    int at0 = storeLayer(c, s->u.assign.target);
+                    /* ⭐ 定案 63（PLAN #38）：先试着**提升** —— 这个值里的 `new`
+                     * 能不能住到 at0 这一层？（提不动 ⇒ 下面那句照旧报错）✓
+                     * ⚠️ 必须在 `checkEscape` **之前**：它读的是值里那份深度 ✓ */
+                    promoteInto(c, v, at0);
                     checkAssignable(c, tt_, vt0, v, "assignment");
                     checkEscape(c, v, at0, s->line, "this reference");
                     /* 换指向 ⇒ 被指对象的深度跟着换 ✓（`cur = cur.next`）*/
@@ -244,6 +254,12 @@ void checkStmt(Checker *c, Stmt *s) {
                         Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);
                         if (slot0 && slot0->type && slot0->type->kind == TY_REF)
                             slot0->refDepth = exprRefDepth(c, v);
+                        /* ⭐ 定案 63：**来路也跟着换**（`mid = n` ⇒ mid 的来路就是 n）——
+                         * 提升要顺着来路往回走，中间经手的变量也得追得到 ✓
+                         * ⚠️ 只在这一支（引用型目标的强更新）里记；槽位取过地址
+                         *    ⇒ 别名可能改它 ⇒ 不记（保守：退回老行为报错）✓
+                         * ⚠️ 环（`a = b  b = a`）由 `promoteInto` 的步数上限兜住 ✓ */
+                        if (slot0) noteOrigin(c, slot0, v);
                     }
                     /* ⚠️ **元素/字段**是引用型时的换指向（`a[0] = ref local`）也要记！
                      * 不记的话：`var a: [2]?ref node`（零初始化 ⇒ 里面全 null ⇒ 深度 0）
@@ -285,8 +301,12 @@ void checkStmt(Checker *c, Stmt *s) {
             adoptContextType(s->u.assign.value, tt_);
             Type *vt = checkMaybeTry(c, s->u.assign.value);
 
-            markCallHomeIfEscaping(c, s->u.assign.value,
-                                   placeDepth(c, s->u.assign.target));
+            /* ⭐ 定案 63（PLAN #38）：**先把目的地的深度回填给值里的 `new`**。
+             * 顺序要紧：下面紧跟着那两处会拿 `exprRefDepth(值)` 记进目标的深度表，
+             * 晚提一步就会把**老那个数**记下来 ⇒ 之后全是误拒 ✗（真踩过）✓ */
+            int atDst = storeLayer(c, s->u.assign.target);
+            promoteInto(c, s->u.assign.value, atDst);
+            markCallHomeIfEscaping(c, s->u.assign.value, atDst);
             /* 含引用的值绑定被写（整块赋值 或 写它的字段/元素）⇒
              * "里面那些引用指哪"要跟着**放宽**（取 max：refDepth 是上界 ✓）*/
             {

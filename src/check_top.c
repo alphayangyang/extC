@@ -446,7 +446,14 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         Expr *a = *(Expr **)vecAt(args, i);
         Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
         if (mentionsParam(p->type) || mentionsParam(place->type)) continue;  /* 泛型推迟 ✓ */
-        int d = placeDepth(c, place);
+        /* ⚠️ 实参**不是一个"地方"**（最典型：`stash(ref l, new node)` 直接传一个 `new`）⇒
+         * `placeDepth` 对非地方返回 0，那个数会被当成"活到永远"⇒ 这条规矩等于没查 ✗
+         * （2026-09-22 修：那种实参的寿命就是它那块 arena 的**层**）✓ */
+        int d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, place);
+        /* ⭐ 定案 63（PLAN #38）：够不着就先试着**提升**（跟赋值边同一条规则）——
+         * 提不动 ⇒ 下面照旧报错；提得动 ⇒ 它确实活到了这一层 ✓ */
+        if (d != 0 && d > h && promoteInto(c, place, h))
+            d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, place);
         if (d == 0 || d <= h) continue;              /* 活得够久 ✓ */
         ckError(c, line,
                 "The callee may store this reference into the arena it was given, so the"

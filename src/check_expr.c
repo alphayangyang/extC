@@ -720,8 +720,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * ⚠️ 例外：这个函数有"家"arena（A3：它会把自己的分配交给调用者）⇒
              *    分配出来的东西活到**调用者选的那个作用域** ⇒ 深度按 0 算 ✓
              *    （0 = "外面/参数那一级"，正是逃逸检查里"可以带出去"那一档 ✓）
-             *    这样 `fn build() -> mut ref node` 里那句 `return h` 才成立 ✓ */
-            e->refDepth = c->curFunc && c->curFunc->needsHome ? 0 : c->scopes.len;
+             *    这样 `fn build() -> mut ref node` 里那句 `return h` 才成立 ✓
+             *
+             * ⭐ 定案 63（PLAN #38）：**这一层是"起点"，不是"终点"** ——
+             * 逃逸检查发现"这个新东西被存进了活得更久的地方" ⇒ 把 `arenaLevel`
+             * **提升**到那一层（`check_escape.c` 的 `promoteInto`）✓
+             * `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）✓
+             * ⚠️ 同一个节点**可能被查两遍** ⇒ 只第一次定层、只往"更长寿"的方向调 ✓ */
+            if (e->arenaLevel == 0)
+                e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? 0 : (int)c->scopes.len;
+            if (e->refDepth == 0 || e->refDepth > e->arenaLevel)
+                e->refDepth = e->arenaLevel;
 
             if (!e->u.new_.count) {
                 Type *r = ttRef(tt, w);

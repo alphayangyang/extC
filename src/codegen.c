@@ -967,6 +967,7 @@ static const char *genStructLit(CG *g, Expr *e) {
 }
 
 static const char *arenaRef(CG *g);
+static const char *arenaRefAt(CG *g, int level);   /* ⭐ 定案 63：按层选 arena ✓ */
 
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
@@ -1149,10 +1150,13 @@ static const char *genExprInner(CG *g, Expr *e) {
 
         case EX_NEW: {
             Type *w = subst(g, e->u.new_.type);
+            /* ⭐ 定案 63：分配进检查器算好的那一层（可能因为"要存进更外层的地方"
+             * 而**提升**过）—— 这是"自动清理的堆"那条路的具体落点 ✓ */
+            const char *ar = arenaRefAt(g, e->arenaLevel);
             if (!e->u.new_.count) {
                 /* 一个 T（或一个 [N]T）的**地方** ⇒ 就是它的地址 ✓ */
                 return arenaPrintf(g->arena, "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)))",
-                                   cType(g, w), arenaRef(g), cType(g, w));
+                                   cType(g, w), ar, cType(g, w));
             }
             /* `T[n]` ⇒ 视图 `{ data, len }`；个数只求值一次
              * （个数不纯时检查器打过 needTemp ⇒ 先吐一句把它装进临时变量 ✓）*/
@@ -1168,7 +1172,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             return arenaPrintf(g->arena,
                 "(%s){ .data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s)),"
                 " .len = (int64_t)(%s) }",
-                cType(g, st), cType(g, w), arenaRef(g), n, cType(g, w), n);
+                cType(g, st), cType(g, w), ar, n, cType(g, w), n);
         }
 
         case EX_GENCALL: {
@@ -1445,6 +1449,23 @@ static const char *arenaRef(CG *g) {
     /* 有家（A3）⇒ 分配到调用者选的那只；否则分配到**当前块** ✓ */
     if (g->hasHome) return "(*__extc_home)";   /* 外面还会套一层 `&` ✓ */
     return arenaPrintf(g->arena, "__extc_a[%d]", g->blkLevel);
+}
+
+/* ⭐ 定案 63（PLAN #38）：这个 `new` 该进**哪一层** arena？
+ * 数由**检查器**算好（`Expr.arenaLevel`）—— 默认是语句所在的块，被"存进更外层
+ * 的地方"时已经**提升**过了 ✓ 这里只负责翻译成 C 文本：
+ *     k>0 ⇒ `__extc_a[k]`，出第 k 层块时 release ✓
+ *
+ * ⚠️⚠️ **有家的函数一律以 `hasHome` 为准**（不看那个数）—— 两个原因：
+ *   ① 检查器算层数时**还不知道传递闭包**（"我调的人有家 ⇒ 我也有家"是查完
+ *      所有函数体之后才算的）⇒ 那种函数里算出来的数是"以为自己没家"的 ✗
+ *      （golden 当场抓出来：`out-param` 的分配从家 arena 掉回了块 arena）
+ *   ② 家 arena 比块 arena **长寿 ⇒ 只会更安全**，方向永远对 ✓
+ *      代价：这类函数里"其实没逃逸"的分配也活到调用者那块结束（A3 的老行为）✓
+ *   ③ 提升只会把层数**变小**（往长寿方向），所以"被提升过"这件事在有家时不丢 ✓ */
+static const char *arenaRefAt(CG *g, int level) {
+    if (g->hasHome) return "(*__extc_home)";
+    return arenaPrintf(g->arena, "__extc_a[%d]", level);
 }
 
 /* 释放第 lv 层（`lvl > 0`；第 0 层不用）*/

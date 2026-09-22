@@ -1,0 +1,32 @@
+/* 定案 63 的**另一半**：提升之后，「没逃逸的那些」仍然按块回收 ✓
+ *
+ * 两件事**同时**发生才说明"提升是按值判的"，不是一刀切地把整块都留下：
+ *   ① 循环里 `alloc<i64>(250000)`（1MB）**没逃逸** ⇒ 出块就回收
+ *      ⇒ 300 轮 = 300MB 也必须在 `ulimit -v 150000` 下跑完 ✓
+ *   ② 链表节点**逃逸**到函数那一层 ⇒ 活到函数结束（这就是"自动清理的堆"）✓
+ */
+struct node { val: i64  next: ?ref node }
+
+fn main() {
+    var n: i32 = 0
+    while n < 300 {
+        var p = alloc<i64>(250000)
+        *p = i64(n)
+        n = n + 1
+    }
+    println("① 循环里 300MB 没涨（走到这里就说明按块回收还是好的）")
+
+    var head: ?ref node = null
+    var i: i64 = 0
+    while i < 20000 {
+        var cell = new node
+        cell.val = i
+        cell.next = head
+        head = cell
+        i = i + 1
+    }
+    var t: i64 = 0
+    var c: ?ref node = head
+    while c != null { t = t + (*c).val  c = (*c).next }
+    println("② 提升到函数层的链表求和 = ", t)
+}

@@ -23,6 +23,8 @@
 
 static int maxInt(int a, int b) { return a > b ? a : b; }
 
+static bool isGlobalSym(Checker *c, Sym *s);   /* 定义在后面（storeLayer 要用）*/
+
 /* 这个「地方」根上的绑定有多深？（参数、非绑定 = 0） */
 int exprRefDepth(Checker *c, Expr *e);
 
@@ -43,6 +45,42 @@ int placeDepth(Checker *c, Expr *e) {
     if (e->kind == EX_INDEX) return placeDepth(c, e->u.index.obj);
     Sym *root = placeRoot(c, e);
     return root ? root->depth : 0;
+}
+
+/* ⭐ **这个"地方"的存储住在哪一层？**（"往里存一个值"要问的就是这个）
+ *
+ * 它跟 `placeDepth` 是**两个问题**（`DECISIONS.md` 定案 ㊲ 那张表）：
+ *   | 问什么 | 谁来答 |
+ *   |---|---|
+ *   | **被它指着的对象**活多久 | `placeDepth`（引用型绑定 ⇒ 答被指对象的深度）✓ |
+ *   | **这块存储本身**住在哪 | 这个函数 ✓ |
+ *
+ * 为什么必须分开：`head = n` 是**往 head 这个槽里存**一个指针 ——
+ * 槽位在本帧（深度 1），所以"n 指的东西至少得活到 head 的槽位死" ⇒ 上界是 1 ✓
+ * 可 `placeDepth(head)`（引用型）答的是"head **指着**的地方在哪"（`= null` ⇒ **0**）✗
+ * ⇒ 于是"链表头结点活到函数结束"这种最正常的写法被判成"只能活到 0" ⇒ 悬垂/误报 ✓
+ * （PLAN #38 的直接根因：深度数被当成两个意思用了四次，这是第四次 ✓）
+ *
+ * 分工（跟定案 ㊲ 的表一致）：
+ *   · **绑定的槽位**（`x` / `head`）⇒ 槽位在**本帧** ⇒ 绑定的 `depth`：
+ *       局部 = 它的块深度 · **参数 = 1**（实参只是个副本，槽位在本帧 · 见下面代码）·
+ *       全局 = 0（静态，活得比谁都长）✓
+ *   · **透过引用/参数投影出来的地方**（`s.r` / `a[i]`）⇒ 存储**在调用者的对象里**
+ *     ⇒ 仍然走 `placeDepth`（⇒ 深度 0）✓ —— `b.r = ref *p` 那条攻击照旧被挡 ✓
+ *   · **`*p`** ⇒ 存储就是 p 指的地方 ⇒ `placeDepth` ✓
+ */
+int storeLayer(Checker *c, Expr *e) {
+    if (e && e->kind == EX_IDENT) {
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (sy) {
+            /* ⭐ **参数的槽位在本帧**（实参只是个**副本** —— 写它调用者的指针一个字不动）
+             * ⇒ 深度 1 ✓（定案 ㊲ 的表：`a = b` 两个都是参数 ⇒ 该放行 ✓）
+             * ⚠️ 全局 = 静态 ⇒ 0（它活得比谁都长）✓ */
+            if (sy->depth == 0 && !isGlobalSym(c, sy)) return 1;
+            return sy->depth;
+        }
+    }
+    return placeDepth(c, e);
 }
 
 /* 表达式里的引用**指向的活物**有多深？
@@ -234,14 +272,141 @@ static bool exprBorrowed(Checker *c, Expr *e) {
 static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
                            int line, const char *what);   /* 定义在后面 */
 
+/* ⭐ 定案 63（PLAN #38）：**块级逃逸提升** —— "`new` 出来的东西被存进活得
+ * 更久的地方 ⇒ 把那只 arena 提升到那一层，**不拒绝**"（主人 2026-09-22 拍板）✓
+ *
+ * 起点：`new` 默认分配进**当前块**的 arena（A2 按块细化：出块就回收）。
+ * 可"在循环里建链表"这种**最正常**的写法，节点是在**循环体那一层**分配的，
+ * 而 `head` 活在循环外 ⇒ 下一轮出块就把它释放了 ⇒ 悬垂（PLAN #38，ASan 实锤）✗
+ *
+ * 规则（一句话）：`arenaLevel = min(当前块深度, 所有目的地的深度)`
+ *   · 深度越小 = 活得越久 ⇒ 取 min = 跟着**最长寿的那个目的地**走 ✓
+ *   · 只往更深处存（min 没变）⇒ 行为**一个字都不变**（零假阳性）✓
+ *   · 往更外层存 ⇒ 提升到那一层。最坏情况 = 一个**函数级、自动清理的堆**
+ *     （主人原话：「最多就一直退化成一个会自动清理的类似堆的东西，没必要拒绝」）✓
+ *
+ * 为什么提升是**安全方向**（ARENA-FORMAL §7 那只旋钮：**把 region 拉长**，
+ * 而不是"把事实变细"）：拉长寿命不会让任何还活着的引用悬垂；反过来"变细"
+ * 要别名分析、会带来误拒 ✗ 见 `DECISIONS.md` 定案 63 ✓
+ *
+ * ⚠️ 只沿**值的载体**往回找（绑定 / `!` / `??` / 结构体字面量 / 枚举载荷 /
+ *    数组字面量），**不追别名、不做跨函数推理** —— 提不动的照旧走原来的深度检查
+ *    ⇒ 这个函数**永远不会**把"本来该报错的东西"放过去 ✓
+ *
+ * 返回 true = 这个值里所有 `new` 都确实活得到 `at`（可以放行 ✓）
+ *      false = 里面有提不动的东西（调用方照旧报错）✓
+ * ⚠️ 两个方向都要对：**父节点缓存的深度只有在全部子节点都成功时才能改** ——
+ *    否则会记下一个"比实际更长寿"的数 ⇒ 那是**洞**（不是误拒）✗ */
+static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
+bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at, 0); }
+
+/* **这个值的"根来路"是哪个表达式？**（定义在下面 —— 记来路时用它**压平**链条）*/
+Expr *originOf(Checker *c, Expr *val, int hops);
+
+/* 记下"这个绑定的来路"（`var n = new node` 的初始化式 / `mid = n` 的右式）——
+ * ⚠️ **压平成根来路**再记：链条里的中间变量可能**已经出了作用域**，
+ * 那时 `lookup` 找不到 ⇒ 链就断了 ✗（真踩过：双层循环里的 `head = mid`）
+ * ⇒ 记的时候（作用域还在）就一路走到根 ✓ */
+void noteOrigin(Checker *c, Sym *sy, Expr *val) {
+    if (sy && !sy->addressed) sy->origin = originOf(c, val, 0);
+}
+
+static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
+    if (!val) return true;
+    if (at < 0) return false;                      /* 说不清的层 ⇒ 别动 ✓ */
+    /* ⚠️ **步数上限**：绑定之间可能成环（`a = b  b = a` —— 赋值会更新"来路"）⇒
+     * 不设限就是死循环 ✗ 撞上限 = 提不动 = 退回老行为报错（安全方向）✓ */
+    if (hops > 32) return false;
+    switch (val->kind) {
+
+    case EX_NEW: {
+        /* 第 0 层 = 调用者那层（"家"arena）—— **只有"有家"的函数有** ✓
+         * 没有家 ⇒ 提不到那一层 ⇒ 原样返回 false（照旧报错，安全方向）✓ */
+        if (at == 0 && !(c->curFunc && c->curFunc->needsHome)) return false;
+        if (val->arenaLevel > at) val->arenaLevel = at;
+        if (val->refDepth > val->arenaLevel || val->refDepth == 0)
+            val->refDepth = val->arenaLevel;
+        return true;
+    }
+
+    case EX_IDENT: {
+        /* 顺着绑定的**来路**往回走：`var n = new node` / `mid = n` ⇒ 找到那个 `new` ✓ */
+        Sym *sy = lookup(c, val->u.ident.name);
+        if (!sy || !sy->origin) return false;
+        /* 槽位本来就活到 at 之外（更浅）⇒ 里面的 `new` 本来就住在那一层 ✓
+         * （初始化式是在**同一条语句**里求值的 ⇒ 它的层 = 槽位的深度）✓ */
+        if (sy->depth <= at) return true;
+        /* ⚠️ 来路是**压平的根**（见 `noteOrigin`）⇒ 这里链长最多一层，不会再查绑定 ✓ */
+        if (!promoteInto2(c, sy->origin, at, hops + 1)) return false;
+        if (sy->type && typeContainsRef(c->tt, tsub(c, sy->type)) && sy->refDepth > at)
+            sy->refDepth = at;
+        if (val->refDepth > at || val->refDepth == 0) val->refDepth = at;
+        return true;
+    }
+
+    case EX_SIGN:
+        return promoteInto2(c, val->u.sign.operand, at, hops + 1);
+
+    case EX_COALESCE: {
+        /* ⚠️ 两边都要试（不能短路）—— 只提一边就会漏掉另一边那个 `new` ✗ */
+        bool a = promoteInto2(c, val->u.coalesce.main, at, hops + 1);
+        bool b = promoteInto2(c, val->u.coalesce.fallback, at, hops + 1);
+        return a && b;
+    }
+
+    case EX_STRUCTLIT: {
+        bool ok = true;
+        for (size_t i = 0; i < val->u.lit.inits.len; i++)
+            if (!promoteInto2(c, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value, at, hops + 1))
+                ok = false;
+        if (ok && val->refDepth > at) val->refDepth = at;     /* 缓存跟着收紧 ✓ */
+        return ok;
+    }
+
+    case EX_ARRAYLIT: {
+        bool ok = true;
+        for (size_t i = 0; i < val->u.arraylit.elems.len; i++)
+            if (!promoteInto2(c, *(Expr **)vecAt(&val->u.arraylit.elems, i), at, hops + 1)) ok = false;
+        if (ok && val->refDepth > at) val->refDepth = at;
+        return ok;
+    }
+
+    case EX_ENUMVAL: {                       /* 带载荷构造：载荷要一起提 ✓ */
+        bool ok = true;
+        for (size_t i = 0; i < val->u.enumval.args.len; i++)
+            if (!promoteInto2(c, *(Expr **)vecAt(&val->u.enumval.args, i), at, hops + 1)) ok = false;
+        if (ok && val->refDepth > at) val->refDepth = at;
+        return ok;
+    }
+
+    default:
+        /* 别的形状一概提不动（`ref 局部` / 函数调用的结果 / 切片…）——
+         * **不猜**：照旧走原来的深度检查报错 ✓ */
+        return false;
+    }
+}
+
+Expr *originOf(Checker *c, Expr *val, int hops) {
+    if (!val || hops > 32) return val;
+    if (val->kind != EX_IDENT) return val;          /* 结构体字面量 / `new` / 别的形状 ⇒ 就是它自己 ✓ */
+    Sym *sy = lookup(c, val->u.ident.name);
+    if (!sy || !sy->origin) return val;             /* 没有来路 ⇒ 它自己（提不动就照旧报错）✓ */
+    return originOf(c, sy->origin, hops + 1);
+}
+
 bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* 同上：提到 `T` 就整条推迟 ✓（这里**直接返回**，别让里面的 checkEscape 再记一遍）*/
     if (mentionsParam(val->type)) {
         recordRefCheck(c, val, target, placeDepth(c, target), line, "this assignment");
         return false;
     }
-    bool bad = checkEscape(c, val, placeDepth(c, target), line, "this assignment");
-    if (placeDepth(c, target) == 0 && exprBorrowed(c, val)) {
+    /* ⚠️ 这里问的是「**往哪一层**存」⇒ 用 `storeLayer`（不是 `placeDepth`）：
+     * 引用型绑定那个坑见 `storeLayer` 的注释 ✓ */
+    int at = storeLayer(c, target);
+    /* ⭐ 定案 63：先试着**提升**（提不动的话下面那句照旧报错 —— 这里是安全网，幂等）✓ */
+    promoteInto(c, val, at);
+    bool bad = checkEscape(c, val, at, line, "this assignment");
+    if (storeLayer(c, target) == 0 && exprBorrowed(c, val)) {
         /* ⭐ A3 第三半：**有家函数里放行** —— 调用点已经保证了"每个 `ref`/`mut ref`
          * 实参都活得 ≥ 这一刀的家 arena"（规则 ④ ✓），而被调函数分配的东西**就进那只
          * 家 arena** ⇒ 写进去的东西跟它一样长寿 ✓

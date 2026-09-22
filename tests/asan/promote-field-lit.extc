@@ -1,0 +1,14 @@
+// expect: val = 3 tag = 1
+/* 另外两个载体：**结构体字段**（`h.n = n`）与**结构体字面量**（`h = holder { n: n }`）✓
+ * 提升是"顺着值的来路往回走" ⇒ 字面量里的字段也要一起走到 ✓ */
+struct node { val: i32  next: ?ref node }
+struct holder { n: ?ref node  tag: i32 }
+
+fn main() {
+    var h: holder
+    { var n = new node  n.val = 3  h.n = n }
+    var k: holder
+    { var m = new node  m.val = 5  k = holder { n: m, tag: 1 } }
+    var c: ?ref node = h.n
+    if c != null { println("val = ", (*c).val, " tag = ", k.tag) }
+}

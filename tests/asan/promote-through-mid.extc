@@ -1,0 +1,24 @@
+// expect: 求和 = 300
+/* **来路要跟着赋值走**：`mid = cell` 之后 `head = mid` ——
+ * 中间经手的变量（还在里面那层块里）也得被追到 ✓
+ * ⚠️ 来路在**记的时候**就压平成根（`noteOrigin`）——
+ *    否则等外面那句查到时，`cell` 早已出了作用域、链就断了 ✗ */
+struct node { val: i32  next: ?ref node }
+
+fn main() {
+    var head: ?ref node = null
+    var i: i32 = 0
+    while i < 3 {
+        var mid: ?ref node = null
+        var cell = new node
+        cell.val = 100
+        cell.next = head
+        mid = cell
+        head = mid
+        i = i + 1
+    }
+    var t: i64 = 0
+    var c: ?ref node = head
+    while c != null { t = t + i64((*c).val)  c = (*c).next }
+    println("求和 = ", t)
+}

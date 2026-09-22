@@ -1,0 +1,10 @@
+// 把**借来的**引用存进"参数指的地方" ⇒ 必须挡住 ✓
+// 定案 63 的"提升"只管 `new` 出来的东西（"来路"从 `new` 起）——
+// 借来的值（参数派生 / 调用结果）**真实寿命编译器不知道** ⇒ 那条规则一字不动 ✗
+struct node { val: i32  next: ?ref node }
+struct list { head: ?ref node }
+
+fn stash(l: mut ref list, cell: mut ref node) {
+    l.head = cell
+}
+fn main() {}

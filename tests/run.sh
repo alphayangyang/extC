@@ -75,6 +75,17 @@ if [ -x tests/arena/run.sh ]; then
     fi
 fi
 
+echo "== ASan：内存安全形状必须**真的**跑得干净（不是"编过了"就算）=="
+if [ -x tests/asan/run.sh ]; then
+    if out=$(tests/asan/run.sh 2>&1); then
+        echo "$out" | grep -E "ok |FAIL|skip" | while read -r line; do echo "$line"; done
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "ASan 用例"
+    fi
+fi
+
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

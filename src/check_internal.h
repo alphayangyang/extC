@@ -45,6 +45,13 @@ typedef struct {
      * 只在**类型是引用**时有意义；默认值 = 槽位深度（保守：跟老行为一样），
      * 声明和换指向时按初始值的真实深度**收紧** ✓ */
     int         refDepth;
+    /* ⭐ 定案 63（PLAN #38）：这个绑定的**初始值表达式**（没有初始化式 ⇒ NULL）✓
+     *
+     * 为什么要有它：提升是**顺着值的来路往回走**的 ——
+     *     var n = new node        // n 的"来路"就是这个 `new`
+     *     head = n                // 存进更外层的地方 ⇒ 顺着 n 找回那个 `new` 提升它 ✓
+     * ⚠️ 只跟**初始值**（不追后续赋值、不追别名）：提不动的照旧报错 ⇒ 安全方向 ✓ */
+    Expr       *origin;
     int         line;
 } Sym;
 
@@ -190,6 +197,9 @@ typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
  int exprRefDepth (Checker *, Expr *);
  int exprRefDepth (Checker *c, Expr *e);
  int placeDepth (Checker *c, Expr *e);
+ int storeLayer (Checker *c, Expr *e);   /* ⭐ 「这块存储住在哪一层」（≠ placeDepth）✓ */
+ _Bool promoteInto (Checker *c, Expr *val, int at);   /* ⭐ 定案 63：块级逃逸提升 ✓ */
+ void noteOrigin (Checker *c, Sym *sy, Expr *val);   /* ⭐ 记「这个绑定的来路」（压平）✓ */
  void adoptContextType (Expr *e, Type *want);
  void checkCallRefArgs (Checker *, FuncDef *, Vec *, Vec *, int, int, const char *);
  void checkOperatorSig (Checker *c, FuncDef *f);
