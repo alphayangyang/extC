@@ -1,0 +1,11 @@
+// expect: pair { a: 7, b: 99, xs: [1, 2, 3] }
+/* 描述表打印器的**对拍用例**：它的输出必须跟现在这条路径**逐字节一致** ✓
+ * （C 侧 tools/print-desc.c 里手搭同一份描述表来打印同样的数据 ⇒ diff 必须是空 ✓）*/
+struct pair { a: i32  b: i64  xs: slice<i32> }
+
+fn main() {
+    var arr: [3]i32 = [1, 2, 3]
+    var p: pair = { a: 7, b: 99, xs: arr[..] }
+    println(p)
+    println("逼出 option_i32: ", varArray<i32>::withCap(1).get(0) ?? -1)
+}
