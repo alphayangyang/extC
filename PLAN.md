@@ -138,7 +138,8 @@
 > 只是"少了一种糖"（链式 null 检查）。占着"还能拿 UB / 违反承诺的"那一栏会误导读者，
 > 以为它是安全问题 ✗ ⇒ 归到"已知边界"，跟 `LANGUAGE.md` §4.5 那类**设计上接受的损失**同档 ✓
 
-**然后就是加法（`LANGUAGE.md` 主线）**：**IO-0/IO-1**（`rawRead`/`rawWrite` + `reader` + 文件帧拥有 + `main(args)`）
+**然后就是加法（`LANGUAGE.md` 主线）**：**IO-1**（`open` + 文件帧拥有 + `main(args)`）——
+IO-0 主体**已落地**（2026-09-23 定案 74：`reader` + `nextInt` 一族 + 三条路 ✓）
 → `allocSlice` → `for` → lambda → 协议补全 → 模块/`@main` —— 一路到**五子棋能跟人下**那个里程碑 ✓
 
 ⚠️ **这块地方踩过三次**（记账）：① 原来写着「31 → **27** → 1 → 2 → 3」，可 #27 早在 09-21 就修完了
@@ -351,7 +352,7 @@ fn make() -> box {
 
 | # | 做什么 | 为什么挡着 | 大小 |
 |---|---|---|---|
-| **1** | ✅ **做到一半（2026-09-22，定案 73）**：`std::sys` 原语（`read`/`write` + 签字）+ `std::io` 的 `readLine`/`writeBytes`/`flushOut` + 内建 `flush()` **已落地** ✓（`tests/io/` 常设验收 ✓）⬜ **还欠**：`nextInt` 一族 · `reader` · `readAll`。**原打算做的 IO-0 原话**：原语 `rawRead`/`rawWrite` + `readLine` / `readAll` / `nextInt` 一族 + `ioError` | **没有输入** ⇒ 只能写"自己跟自己玩"的程序。**定长数组就能当 buffer**（实测 `var buf: [256]u8` + `buf[..]` ✓）⇒ **它不挡 IO-0** | 中（设计已定，见 [`IO.md`](IO.md)）|
+| **1** | 🟢 **主体已落地（2026-09-23，定案 73 + 74）**：`std::sys` 原语（`read`/`write` + 签字）+ **`reader`（隐式 64KB）** + **`nextInt`/`nextToken`/`nextLine`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/内建 `flush()` ✓（`tests/io/` **7 条**常设验收 ✓，含三条路 + 分块读性能）⬜ **还欠**：`readAll` · 格式化输入 B · 写指定 fd。**实测**：12MB/100 万行，逐字节 1.444s vs 分块 0.032s = **45×** ✓ | **OI 式输入能用了**；gomoku 能读协议 | 中（设计已定，见 [`IO.md`](IO.md)）|
 | **2** | **IO-1**：`open` + **帧拥有文件**（跟 arena 并排）+ `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 |
 | **3** | **`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）| **长度运行时才知道**的 buffer：读未知大小的文件、`reader` 自动要 4KB、`varArray` 增长。也兑现 `LANGUAGE.md` §0.6 那条承诺（清零 ⇒ 过期读到的也是**确定的**字节）| 小 |
 
