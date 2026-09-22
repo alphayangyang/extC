@@ -1,3 +1,4 @@
+// expect: 非 main 里调关联函数 = 9
 /* `new T[n]` 在泛型体里推迟到实例化 ✓ */
 struct bufT<T> {
     data: mut slice<T>
@@ -6,8 +7,23 @@ struct bufT<T> {
         return b
     }
 }
+
+/* ⚠️ 回归（2026-09-22）：**非 main** 的函数调用"会分配的关联函数"时，
+ * 这个函数也必须带 arena ✓
+ * （`T::assoc(...)` 在 AST 里是 `EX_ASSOC`，而 `exprCallsNeedsHome` 以前只认
+ *   `EX_CALL`/`EX_METHOD` ⇒ 这个函数被判成"不用 arena"，调用点却照样吐
+ *   `&__extc_a[k]` ⇒ **生成的 C 编不过** ✗。以前只有 main 被那句
+ *   `mayUseArena || 是 main` 兜住 —— 而那句兜底让**主函数白带一整套 arena 样板**，
+ *   实测矩阵乘因此慢 **3.0×**）*/
+fn makeAndFill(n: i64, v: i32) -> i32 {
+    var b: bufT<i32> = bufT<i32>::make(n)
+    b.data[0] = v
+    return b.data[0]
+}
+
 fn main() {
     var b: bufT<i32> = bufT<i32>::make(4)
     b.data[0] = 7
     println("len = ", b.data.len, " 值 = ", b.data[0])
+    println("非 main 里调关联函数 = ", makeAndFill(4, 9))
 }

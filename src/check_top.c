@@ -264,7 +264,21 @@ static bool stmtCallsNeedsHome(Stmt *s) {
 }
 static bool exprCallsNeedsHome(Expr *e) {
     if (!e) return false;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD) && e->func && e->func->needsHome)
+    /* ⚠️ **`EX_ASSOC` 也要算**（2026-09-22 修）：
+     * `T::assoc(...)`（`varArray<i32>::withCap(1)` / `bufT<i32>::make(4)`）
+     * 走的也是 `e->func`（check_expr.c 里 `e->func = f` 那条对 assoc 同样生效 ✓），
+     * 可这里以前**只认 EX_CALL / EX_METHOD** ⇒ 调用了"会分配的关联函数"的函数
+     * 被判成"不用 arena"（`mayUseArena = false`，连 `__extc_a` 都不声明），
+     * 而调用点照样吐 `&__extc_a[k]` ⇒ **生成的 C 编不过** ✗
+     * （复现：`fn helper() { var b: bufT<i32> = bufT<i32>::make(4) }`，`make` 里有 `new`）
+     *
+     * 这个洞以前**只对 main** 被 `mayUseArena` 里那句 `|| 是 main` 遮住了 ——
+     * 而那句兜底的代价是：**主函数永远白带一整套 arena 样板**，于是每个 `while` 体
+     * 都吐 `extc_arena_release(...)` ⇒ 实测矩阵乘 **103 ms → 34 ms（3.0×）** ✗
+     * （是在"OI 数量级多语言横评"上量出来的 ✓）
+     * 现在把根因堵上，兜底那句就可以去掉了 ✓ */
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) &&
+        e->func && e->func->needsHome)
         return true;
     switch (e->kind) {
     case EX_BIN: return exprCallsNeedsHome(e->u.bin.left) || exprCallsNeedsHome(e->u.bin.right);
@@ -1219,8 +1233,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * ⚠️ `main` 恒为真（它是根"家"，`__extc_home = &__extc_a[1]` 需要那只数组）✓ */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body) ||
-                         (f->name && strcmp(f->name, "main") == 0);
+        f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
     }
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);

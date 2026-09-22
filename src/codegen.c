@@ -207,6 +207,7 @@ static const char *genExpr(CG *g, Expr *e);
 static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
 static bool printArgIsPlace(const Expr *e);
+static bool cgIsMain(const FuncDef *f);
 
 static bool isPlaceExpr(const Expr *e);
 
@@ -1711,14 +1712,15 @@ static const char *cgParamList(CG *g, FuncDef *f) {
 }
 
 static void genFunc(CG *g, FuncDef *f) {
-    bool isMain = !f->owner && strcmp(f->name, "main") == 0;
+    bool isMain = cgIsMain(f);
     if (isMain) {
         /* `main` 不能有隐藏参数（C 的签名定死了）⇒ 它的"家"就是自己函数体的 arena ✓ */
         cgLine(g, "int main(void) {");
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
-        bufPrintf(&sig, "%s %s(%s) {", cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
+        bufPrintf(&sig, "static %s %s(%s) {", cType(g, f->ret), cFuncName(g, f),
+                  cgParamList(g, f));
         cgLine(g, "%s", bufCstr(&sig));
     }
 
@@ -1782,10 +1784,26 @@ static void genFunc(CG *g, FuncDef *f) {
  * 容器的源码是 extC 写的（预lude），编译器只做「按实参把 T 代进去」这一件事。
  */
 
+/* ⭐ **生成的东西一律 `static`**（除了 C 定位死的 `main`）——
+ * 这不是风格，是**性能**：extC 只吐**一个 .c**（单 TU），外链毫无用处，
+ * 却让 gcc 必须假设"别处还会调它、指针会别名" ⇒ **外层循环向量化被直接拒掉** ✗
+ *
+ * 实测（OI 数量级矩阵乘 n=1000，10⁹ 次乘加，同一份代码只差链接性）：
+ *     static 208 ms   vs   extern 660 ms   ⇒ **3.2×** ✓
+ * （`-fopt-info-vec-missed` 的原文：extern 那版报 "unsupported outerloop form"，
+ *   static 那版报 "outer-loop already vectorized"）
+ * 内链还白送：跨函数内联 / 常量传播更狠，`-Wl,--gc-sections` 也不再是唯一兜底 ✓
+ *
+ * ⚠️ 将来若真要**多 TU**（extC 现在不支持），这条得改成"只导出被别的 TU 用到的" ✓ */
+static bool cgIsMain(const FuncDef *f) {
+    return f && !f->owner && f->name && strcmp(f->name, "main") == 0;
+}
+
 static void genFuncProto(CG *g, FuncDef *f) {
     Buf sig;
     bufInit(&sig, g->arena);
-    bufPrintf(&sig, "%s %s(%s);", cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
+    bufPrintf(&sig, "%s%s %s(%s);", cgIsMain(f) ? "" : "static ", cType(g, f->ret),
+              cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
 
@@ -2621,16 +2639,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * ------------------------------------------------------------------ */
 
     /* 全局变量 / 常量 —— **直接就是 C 的静态对象**（定长的全局不需要 arena）。
-     * C 自动把静态对象清零，所以零初始化的全局不用 generate 任何初始化式。 */
+     * C 自动把静态对象清零，所以零初始化的全局不用 generate 任何初始化式。
+     * ⚠️ 加 `static`（内链）是**性能**决定，理由见 `cgIsMain` 上面的注释：
+     *    外链会让 gcc 拒掉外层循环向量化，OI 数量级的矩阵乘因此慢 **3.2×** ✗ */
     for (size_t i = 0; i < m->globals.len; i++) {
         GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
         if (ttIsError(gd->ann)) continue;
         const char *ct = cType(&g, gd->ann);
         if (gd->init) {
-            cgLine(&g, "%s %s = %s;", ct, gd->name, genExpr(&g, gd->init));
+            cgLine(&g, "static %s %s = %s;", ct, gd->name, genExpr(&g, gd->init));
         } else {
             /* 没有初始化式 ⇒ C 的静态存储期自动清零（跟定案 8 一致）*/
-            cgLine(&g, "%s %s;", ct, gd->name);
+            cgLine(&g, "static %s %s;", ct, gd->name);
         }
     }
     if (m->globals.len) cgLine(&g, "");
@@ -2661,13 +2681,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* 普通 struct 的方法 + 自由函数：顺序无关，顺带支持互相调用 */
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
-        const char *ret = (!f->owner && strcmp(f->name, "main") == 0)
-                              ? "int" : cType(&g, f->ret);
+        const char *ret = cgIsMain(f) ? "int" : cType(&g, f->ret);
         Buf sig;
         bufInit(&sig, arena);
         /* ⚠️ 参数表**必须**跟定义用同一套（`cgParamList`）—— 有家 arena 的函数
          * 多一只隐藏参数，原型漏了就是"C 的类型对不上" ✗（真踩过）*/
-        bufPrintf(&sig, "%s %s(%s);", ret, cFuncName(&g, f), cgParamList(&g, f));
+        bufPrintf(&sig, "%s%s %s(%s);", cgIsMain(f) ? "" : "static ", ret,
+                  cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
     }
     if (g.structs.len || g.insts.len || g.funcs.len) cgLine(&g, "");
