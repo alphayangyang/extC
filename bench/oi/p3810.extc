@@ -1,0 +1,186 @@
+/* 三维偏序（CDQ 分治 + 树状数组）—— extC 实现
+ *
+ * 跟 `p3810.c` / `p3810.cpp` / `p3810.rs` **同一套算法**，逐行对应：
+ *   ① pcg32 造数据（种子 20260922、流 54 —— 四语言必须逐位一致）
+ *   ② 归并排序（extC **没有 std 排序**，四个语言都手写同一套 ⇒ 苹果对苹果）
+ *   ③ 相邻去重 + 记 cnt
+ *   ④ CDQ：左半 → 右半，权值树状数组按 c 统计；顺带按 b 归并
+ *   ⑤ 校验和 sum(cnt * ans)（u64 回绕）
+ *
+ * extC 侧要留意的（**都是设计决定，不是 bug**）：
+ *   · 数组长度是**编译期常数**，大数组只能当**全局**（栈上放 80MB 会炸）
+ *   · 没有 `+=` / `++` / 三元 / `for`，一律写全（`i = i + 1`、if-else）
+ *   · 值语义：`P[i]` 是一个 20 字节的值，赋值就是整份拷贝 ✓
+ *   · `i32(...)` 是**显式转换**（能证明装得下 ⇒ 零运行时检查）
+ */
+
+struct pt {
+    a: i32
+    b: i32
+    c: i32
+    cnt: i32
+    ans: i32
+}
+
+var P: [4000000]pt
+var TMP: [4000000]pt
+var BIT: [1000001]i32
+
+let N: i64 = 4000000
+let V: i64 = 1000000
+
+/* ---------------- 权值树状数组（1-indexed：调用点一律 c+1）---------------- */
+fn bitAdd(i: i64, v: i32) {
+    var x: i64 = i
+    while x <= V {
+        BIT[x] = BIT[x] + v
+        x = x + (x & (-x))
+    }
+}
+
+fn bitSum(i: i64) -> i32 {
+    var s: i32 = 0
+    var x: i64 = i
+    while x > 0 {
+        s = s + BIT[x]
+        x = x - (x & (-x))
+    }
+    return s
+}
+
+/* ---------------- CDQ 分治 ---------------- */
+fn cdq(l: i64, r: i64) {
+    if l >= r { return }
+    let mid: i64 = l + (r - l) / 2
+    cdq(l, mid)
+    cdq(mid + 1, r)
+
+    // 左半 → 右半：两边都按 b 有序 ⇒ 双指针，c 进树状数组
+    var i: i64 = l
+    var j: i64 = mid + 1
+    while j <= r {
+        while i <= mid && P[i].b <= P[j].b {
+            bitAdd(P[i].c + 1, P[i].cnt)
+            i = i + 1
+        }
+        P[j].ans = P[j].ans + bitSum(P[j].c + 1)
+        j = j + 1
+    }
+    var t: i64 = l
+    while t < i {                    // 撤销
+        bitAdd(P[t].c + 1, 0 - P[t].cnt)
+        t = t + 1
+    }
+
+    // 按 b 归并（上一层拿到的两半仍然有序）
+    i = l
+    j = mid + 1
+    var k: i64 = l
+    while i <= mid && j <= r {
+        if P[i].b <= P[j].b {
+            TMP[k] = P[i]
+            i = i + 1
+        } else {
+            TMP[k] = P[j]
+            j = j + 1
+        }
+        k = k + 1
+    }
+    while i <= mid { TMP[k] = P[i]  i = i + 1  k = k + 1 }
+    while j <= r   { TMP[k] = P[j]  j = j + 1  k = k + 1 }
+    var q: i64 = l
+    while q <= r { P[q] = TMP[q]  q = q + 1 }
+}
+
+/* ---------------- 归并排序（按 a,b,c）---------------- */
+fn mergeSort(src: mut ref [4000000]pt, buf: mut ref [4000000]pt, lo: i64, hi: i64) {
+    if hi - lo < 2 { return }
+    let mid: i64 = lo + (hi - lo) / 2
+    mergeSort(ref *src, ref *buf, lo, mid)
+    mergeSort(ref *src, ref *buf, mid, hi)
+    var i: i64 = lo
+    var j: i64 = mid
+    var k: i64 = lo
+    while i < mid && j < hi {
+        var takeLeft: bool = false
+        if (*src)[i].a != (*src)[j].a {
+            takeLeft = (*src)[i].a < (*src)[j].a
+        } else if (*src)[i].b != (*src)[j].b {
+            takeLeft = (*src)[i].b < (*src)[j].b
+        } else {
+            takeLeft = (*src)[i].c < (*src)[j].c
+        }
+        if takeLeft {
+            (*buf)[k] = (*src)[i]
+            i = i + 1
+        } else {
+            (*buf)[k] = (*src)[j]
+            j = j + 1
+        }
+        k = k + 1
+    }
+    while i < mid { (*buf)[k] = (*src)[i]  i = i + 1  k = k + 1 }
+    while j < hi  { (*buf)[k] = (*src)[j]  j = j + 1  k = k + 1 }
+    var q: i64 = lo
+    while q < hi { (*src)[q] = (*buf)[q]  q = q + 1 }
+}
+
+fn main() -> i32 {
+    var r: pcg32 = pcg32::seeded(u64(20260922))
+
+    var i: i64 = 0
+    while i < N {
+        P[i].a = i32(r.nextBounded(u64(V)))
+        P[i].b = i32(r.nextBounded(u64(V)))
+        P[i].c = i32(r.nextBounded(u64(V)))
+        P[i].cnt = 1
+        P[i].ans = 0
+        i = i + 1
+    }
+
+    // 输入本身的校验和 —— 四语言必须一致，不然就是 PRNG 抄错了
+    var inSum: u64 = 0
+    i = 0
+    while i < N {
+        inSum = inSum * 1000003 + u64(P[i].a) * 3 + u64(P[i].b) * 5 + u64(P[i].c) * 7
+        i = i + 1
+    }
+
+    // ② 排序
+    mergeSort(ref P, ref TMP, 0, N)
+
+    // ③ 相邻去重
+    var m: i64 = 0
+    i = 0
+    while i < N {
+        if m > 0 && P[m - 1].a == P[i].a && P[m - 1].b == P[i].b && P[m - 1].c == P[i].c {
+            P[m - 1].cnt = P[m - 1].cnt + 1
+        } else {
+            P[m] = P[i]
+            P[m].cnt = 1
+            P[m].ans = 0
+            m = m + 1
+        }
+        i = i + 1
+    }
+
+    // ④ 分治
+    cdq(0, m - 1)
+
+    // ⑤ 校验和
+    var sum: u64 = 0
+    var maxAns: u64 = 0
+    i = 0
+    while i < m {
+        let ans: i32 = P[i].ans + P[i].cnt - 1      // 含自己 ⇒ 减 1
+        sum = sum + u64(P[i].cnt) * u64(ans)
+        if u64(ans) > maxAns { maxAns = u64(ans) }
+        i = i + 1
+    }
+
+    println("in   = ", inSum)
+    println("m    = ", m)
+    println("max  = ", maxAns)
+    println("sum  = ", sum)
+    return 0
+}

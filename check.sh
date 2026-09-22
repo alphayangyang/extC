@@ -45,6 +45,15 @@ if [ "${1:-}" != "quick" ]; then
     else
         bad "编译时长压测"
     fi
+
+    echo "== 基准：**OI 数量级四语言横评**（三维偏序 CDQ+BIT；缩小规模当回归）=="
+    if oout=$(N=500000 RUNS=1 ./bench/oi/run.sh 2>&1); then
+        echo "$oout" | sed -n '/^语言/,/^$/p' | sed 's/^/  /'
+        ok "OI 横评（四语言输出一致 ✓）"
+    else
+        bad "OI 横评（有构建失败 / 语言之间对拍不一致 ✗）"
+        echo "$oout" | sed 's/^/  /' | tail -20
+    fi
 fi
 
 echo
