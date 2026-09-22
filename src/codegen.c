@@ -1160,6 +1160,26 @@ static const char *genTryFail(CG *g, TryInfo *ti) {
                        ti->tmp, ti->failVar);
 }
 
+/* ⭐ A（编译时长优化，2026-09-21）：**统一出口** —— Linux 内核那种 `goto out;` 套路 ✓
+ *
+ * 以前每个 `return` / `?` 失败点都把整串释放**内联展开**一遍
+ * （`extc_arena_release(&__extc_a[3]); …(&__extc_a[1]); return x;`）⇒
+ * 同一串在每个出口复制一次，gcc 要挨个看 ✗（压测量：这是 gcc 时间的大头之一）
+ * 现在：每个出口只吐 `__extc_ret_v = <值>; goto __extc_ret;`，**释放串只吐一遍** ✓
+ *
+ * 语义没变：都是"先算好值、再放 arena、再返回" ✓
+ * （值先落进 `__extc_ret_v`，比原来"先释放再求值"更保守一点 ✓）
+ * `noArena` 的函数（不会分配、连数组都没有）⇒ 保持直接 return ✓ */
+static void cgReturn(CG *g, const char *val) {
+    if (g->noArena) {
+        if (val) cgLine(g, "return %s;", val);
+        else     cgLine(g, "return;");
+        return;
+    }
+    if (val) cgLine(g, "__extc_ret_v = %s;", val);
+    cgLine(g, "goto __extc_ret;");
+}
+
 /* 出「求值一次」和「失败就 return」两句，返回临时变量名 */
 static TryInfo genTryHead(CG *g, Expr *e) {
     TryInfo ti;
@@ -1176,14 +1196,12 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     cgLine(g, "%s %s = %s;", ti.inst, ti.tmp, operand);
     /* 失败要 return ⇒ 把**所有**层的 arena 都放掉（跟 `return` 一样）✓
      * ⚠️ 这件事必须在吐出这一行**之前**做：那行已经写着 `return` 了 */
-    {
-        Buf rel;
-        bufInit(&rel, g->arena);
-        for (int lv = g->noArena ? 0 : g->blkLevel; lv >= 1; lv--)
-            bufPrintf(&rel, "extc_arena_release(&__extc_a[%d]); ", lv);
-        cgLine(g, "if (%s.tag != %s_%s) { %sreturn %s; }",
-               ti.tmp, ti.inst, ti.okVar, bufCstr(&rel), genTryFail(g, &ti));
-    }
+    /* ⭐ A：失败出口也走**统一出口**（释放串不再内联展开 ✓）*/
+    cgLine(g, "if (%s.tag != %s_%s) {", ti.tmp, ti.inst, ti.okVar);
+    g->indent++;
+    cgReturn(g, genTryFail(g, &ti));
+    g->indent--;
+    cgLine(g, "}");
     return ti;
 }
 
@@ -1348,32 +1366,27 @@ static void genStmtInner(CG *g, Stmt *s) {
         }
 
         case ST_RETURN: {
-            /* 返回之前**一定**要把所有层的 arena 都放掉 —— 释放时机是词法的，
-             * 所以每个 return 都是一个释放点（包括 `?` 生成的那些）✓ */
-            Buf relBuf;
-            bufInit(&relBuf, g->arena);
-            for (int lv = g->noArena ? 0 : g->blkLevel; lv >= 1; lv--)
-                bufPrintf(&relBuf, "extc_arena_release(&__extc_a[%d]); ", lv);
-            const char *rel = bufCstr(&relBuf);
+            /* ⭐ A：**统一出口** —— 这里只吐 `__extc_ret_v = …; goto __extc_ret;`
+             * （释放串在函数尾部吐**一遍**，不再每个 return 复制一份 ✓）*/
             if (!s->u.ret.value) {
-                cgLine(g, "%s", rel);
-                cgLine(g, "return;");
+                cgReturn(g, NULL);           /* ⭐ A：统一出口（释放串只吐一遍 ✓）*/
                 return;
             }
             if (s->u.ret.value->kind == EX_TRY) {
                 /* `return e?` —— 成功就把载荷装回**外层**返回类型 */
                 TryInfo ti = genTryHead(g, s->u.ret.value);
                 Type *rt = subst(g, g->retType);
-                cgLine(g, "%s", rel);
-                cgLine(g, "return (%s){ .tag = %s_%s, .u.%s = { ._0 = %s } };",
-                       cType(g, rt), rt->name, ti.okVar, ti.okVar,
-                       tryPayloadPath(g, &ti));
+                Buf rb;
+                bufInit(&rb, g->arena);
+                bufPrintf(&rb, "(%s){ .tag = %s_%s, .u.%s = { ._0 = %s } }",
+                          cType(g, rt), rt->name, ti.okVar, ti.okVar,
+                          tryPayloadPath(g, &ti));
+                cgReturn(g, bufCstr(&rb));
                 return;
             }
             const char *v = genExpr(g, s->u.ret.value);
-            flushPrefix(g);              /* ⚠️ 必须在 release **之前**（见上）*/
-            cgLine(g, "%s", rel);
-            cgLine(g, "return %s;", v);
+            flushPrefix(g);              /* ⚠️ 必须在出口 **之前**（见上）*/
+            cgReturn(g, v);
             return;
         }
 
@@ -1517,6 +1530,10 @@ static void genFunc(CG *g, FuncDef *f) {
     g->noArena = !f->mayUseArena;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    /* ⭐ A：统一出口要用的**返回值落地变量**（只在本函数真的有出口释放时用）✓ */
+    bool retVoid = !g->retType || g->retType->kind == TY_VOID;
+    if (!g->noArena && !retVoid)
+        cgLine(g, "%s __extc_ret_v;", cType(g, g->retType));
     g->blkLevel = 0;
     g->loopLen  = 0;
     bool savedHome = g->hasHome;
@@ -1524,6 +1541,21 @@ static void genFunc(CG *g, FuncDef *f) {
     if (isMain && f->needsHome)
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main 的家 = 自己函数体 */");
     genBlockBody(g, f->body);
+    /* ⭐ A：**统一出口** —— 释放串只吐一遍；自然结束也走这里 ✓
+     * （`goto` 保证 label 一定有人用 ⇒ 不会有 `-Wunused-label` 警告 ✓）
+     * ⚠️ 释放**所有**层：return 可能从更深的块里跳出来 ⇒ 各层都得放 ✓
+     *    （放一只空 arena 是 no-op，代价可忽略 ✓）*/
+    if (!g->noArena) {
+        cgLine(g, "goto __extc_ret;");
+        g->indent--;
+        cgLine(g, "__extc_ret:");
+        g->indent++;
+        for (int lv = 1; lv <= maxLv; lv++)
+            cgLine(g, "extc_arena_release(&__extc_a[%d]);", lv);
+        if (isMain)       cgLine(g, "return 0;");   /* 生成的 C 里 main 是 int ✓ */
+        else if (retVoid) cgLine(g, "return;");
+        else              cgLine(g, "return __extc_ret_v;");
+    }
     g->retType = savedRet;
     g->tmpSeq = savedSeq;
     g->hasHome = savedHome;
