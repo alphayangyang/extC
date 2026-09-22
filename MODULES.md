@@ -501,8 +501,13 @@ note:  two modules must not depend on each other (each one's type is
 | 文件不存在 | `cannot find module `nowhere`` + **列出找过的每个路径** ✓ |
 | 模块里写 `main` | `` `main` must live in the entry file, not in a module `` |
 
-### 11.4 v1 的三条限制（下一步，别当已经解决 ✗）
+### 11.4 限制（下一步，别当已经解决 ✗）
 
-1. **顶层名字要全局唯一**（两个模块各有一个 `helper` ⇒ 重名报错）—— 名字 mangle 是下一步 ✓
+1. ~~**顶层名字要全局唯一**~~ ✅ **已解**（2026-09-23 per-module **名字 mangle**）：
+   每条顶层声明改写成模块内唯一的内部名（`pair` → `liba$pair`，`$` 在 extC
+   标识符里不合法 ⇒ 不撞用户名字 ✓）
+   常设验收 `tests/modules/samenames`：两个模块**逐声明重名**也必须互不干扰 ✓
+   ⚠️ 一条不变式：**`extern!` 的名字是 ABI，绝不能被 mangle** ✗
+   （`extern!("libc") fn read(…)` 里的 `read` 就是链接器要找的符号 ✓）
 2. **类型名的"必须限定"还没挡严**（函数/全局已经挡严 ✓）
 3. 没有 `as` 别名（短名 = 路径最后一段）；没有 per-module 的 `use` 可见性传递（`use` 不重新导出 ✓）
