@@ -213,6 +213,24 @@ struct varArray<T> {
     //   —— 后者由编译器挡（甲′：扩容过的容器一逃逸就报错 ✓ 见 PLAN #31）
     fn asSlice(self: ref varArray<T>) -> slice<T> { return self.buf[0..self.len] }
 
+    // 按内容比较（跟 slice 一个道理：**元素能不能比推迟到实例化**才检查 ✓）
+    // ⚠️ 为什么必须有它：`asSlice()` 的签名里有 `slice<T>` ⇒ 实例化 `varArray<X>` 会
+    // 顺带实例化 `slice<X>`，而 `slice<X>::==` 要求 `X: ==` ✗
+    // ⇒ 嵌套容器（`varArray<varArray<i32>>`）以前**写不出来**（2026-09-22 实测撞上 ✓）
+    fn ==(self: ref varArray<T>, other: varArray<T>) -> bool {
+        if self.len != other.len {
+            return false
+        }
+        var i: i64 = 0
+        while i < self.len {
+            if self.buf[i] != other.buf[i] {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
     // 可写视图：只给前 len 个（`cap` 那截是未使用区，不该露出去 ✓）
     fn asMutSlice(self: mut ref varArray<T>) -> mut slice<T> {
         return self.buf[0..self.len]
