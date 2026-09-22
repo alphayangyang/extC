@@ -183,3 +183,188 @@ namespace std.io { ... }          // 没有可见性、没有依赖图
    用户模块**拿不到**原语（拿不到 ⇒ 非法；要特权就得自己写 `extern!` 签字 ✓）
 5. **编译时长**：`bench/compile` 的 N=500 那一格**不明显变差**（如果 Q5 选 A）✓
 6. **同一套常设验收照跑**：244 测试 · ASan 8 · arena 5 · 攻击库基线一字不动 ✓
+
+---
+
+## 9. 目标长相（示例代码 —— **还没实现**，但每一行都按 extC 已有规则写 ✓）
+
+> 主人的要求：「你要不直接给一些你期待中的带模块/库的示例代码给我看看吧。
+> **但是无论如何，我总不能真的跟 C++ 一样雷霆展开吧**」
+>
+> 设计目标一句话：**一个模块 = 一个文件；一个 `use` 就够；没有 .h、没有重复声明、没有构建系统** ✓
+
+### 9.1 特权模块：`std/sys.extc`（只有它能碰系统）
+
+```extc
+// std/sys.extc —— 特权模块。别的模块**拿不到它**（见 §5 的可见性规则）✓
+extern!("libc") fn read(fd: i32, buf: mut slice<u8>) -> i64
+    effects Addr=0 Cont=0          // 我签字：只往你给的 buffer 里写，不存你的指针 ✓
+extern!("libc") fn write(fd: i32, buf: slice<u8>) -> i64
+    effects Addr=0 Cont=0
+extern!("libc") fn open(path: slice<u8>, flags: i32) -> i32
+    effects Addr=0 Cont=0
+extern!("libc") fn close(fd: i32) -> i32
+    effects Addr=0 Cont=0
+
+let STDIN: i32 = 0
+let STDOUT: i32 = 1
+```
+
+⚠️ C 那侧的签名是 `read(int, void*, size_t)` —— extC 的 `slice<u8>` 在边界上**展开成两个参数** ✓
+（§5 的映射表；路径那种 NUL 字符串要顺手写个 `cstr()` 转换器 ✓）
+
+### 9.2 普通库：`std/io.extc`（用 extC 写，没有任何特权）
+
+```extc
+// std/io.extc —— 一个文件就是一个模块 ✓
+use std::sys                                   // 只 import 我需要的那一个 ✓
+
+type IoError = | notFound | denied | other(i32)
+
+struct File {
+    fd: i32
+    @private name: slice<u8>                   // 默认公开，**要藏才写** ✓ 不雷霆展开
+}
+
+fn open(path: slice<u8>) -> result<mut ref File, IoError> {
+    let fd = sys::open(path, 0)
+    if fd < 0 { return failure(denied) }
+    var f: mut ref File = new File             // 帧拥有：函数一返回，文件自动关 ✓（IO.md §5）
+    f.fd = fd
+    f.name = path
+    return success(f)
+}
+
+fn readLine(f: mut ref File, buf: mut slice<u8>) -> result<i64, IoError> {
+    var n: i64 = 0
+    while n < buf.len {
+        let got = sys::read(f.fd, buf[n..])?   // `?` = 失败就顺着往上抛 ✓
+        if got == 0 { break }                  // EOF ✓
+        if buf[n] == u8(10) { break }          // '\n' ✓
+        n = n + got
+    }
+    return success(n)
+}
+```
+
+⭐ **注意这里没有的东西**：没有头文件、没有"声明抄两遍"、没有 `#pragma once`、
+没有构建清单、**没有一行效果摘要在手写**（编译器从源码算 ✓ —— `LIBS.md` §4.2 说的就是它，
+用户只在报错信息里见到它 ✓）
+
+### 9.3 用户库：`algo/sort.extc`（顺路暴露一个真缺口）
+
+```extc
+// algo/sort.extc
+type order = | asc | desc                    // 闭集"比较方式" = enum + match（不需要闭包 ✓）
+
+fn sortI32(a: mut slice<i32>, o: order) { ... }
+
+// ⚠️ 而这个"本该长这样"的泛型版，**今天写不出来** —— `fn f<T>(…)` 泛型自由函数还不支持 ✗
+// fn sort<T>(a: mut slice<T>, less: fn(ref T, ref T) -> bool) { ... }
+```
+
+⇒ **库最先撞上的三件事**（都不是这次的模块讨论，但会立刻挡路）：
+
+| # | 缺什么 | 为什么库立刻就要它 | 大小 |
+|---|---|---|---|
+| 1 | **泛型自由函数** `fn f<T>(…)` | `sort`/`map`/`max` 这些**没法挂在某个 struct 上** ✗（实测：`fn maxOf<T>` = 语法错误）| 中 |
+| 2 | **函数值（6a，不捕获）** | 比较器/回调的参数位（`less: fn(ref T, ref T) -> bool`）✗ | 中 |
+| 3 | **`extern!` + 签字** | 库碰系统的唯一入口（IO 的前提 ✓）| 中 |
+
+（现在的替代写法：`sortI32`/`sortF64` 一个类型一个函数，或者把比较器写成 enum + match ✓ 能用，就是啰嗦 ✓）
+
+### 9.4 游戏库 + 主程序：`gomoku/board.extc` 与 `gomoku.extc`
+
+```extc
+// gomoku/board.extc —— 一个游戏的库（闭集操作，不需要闭包 ✓）
+type cell = | empty | black | white
+type move = | place(x: i32, y: i32) | undo
+type outcome = | playing | win(cell) | draw
+
+struct Board {
+    @private grid: [225]cell
+    @private n: i32
+    side: cell
+}
+
+fn empty(n: i32) -> Board { var b: Board  b.n = n  b.side = cell.black  return b }
+fn play(b: mut ref Board, m: move) -> outcome { ... }
+fn show(b: ref Board) { ... }                 // 打印棋盘（用 println ✓）
+fn parse(s: slice<u8>) -> move { ... }        // "8 8" / "undo" ⇒ move ✓
+```
+
+```extc
+// gomoku.extc —— 主程序：两行 import，然后就是主循环 ✓
+use std::io
+use gomoku::board
+
+fn main() -> i32 {
+    var b: board::Board = board::empty(15)     // 类型也带模块名 ✓（`board::Board`）
+    var line: [64]u8
+
+    while true {
+        board::show(ref b)                     // 函数也带模块名 ✓（`board::show`）
+        let f = io::open("")?                  // 略：真实写法是 io::stdin()
+        let n = io::readLine(f, line[..])?
+        match board::play(ref b, board::parse(line[0..n])) {
+            win(c) => { board::show(ref b)  println("赢了：", c)  return 0 }
+            draw   => { println("平局")  return 0 }
+            playing => { }
+        }
+    }
+    return 0
+}
+```
+
+**跑它只要一条命令** ✓（`use` 的文件自动跟着编，最后合成一个 `.c`）：
+
+```sh
+extc --run gomoku.extc        # 找模块：先看本目录，再看 -I 给的那些，最后看 $EXTC_HOME/std
+```
+
+### 9.5 为什么这不叫"雷霆展开"（C++ 同一件事要写什么）
+
+```cpp
+// geometry.h ── 头文件（声明 + 私有字段被迫暴露 ✗）
+#pragma once
+#include <vector>
+namespace geo {
+struct Point { double x, y; };
+class Polygon {
+public:
+    explicit Polygon(std::vector<Point> pts);
+    double area() const;          // ← 声明
+private:
+    std::vector<Point> pts_;
+    mutable double cached_ = -1; // ← 内部细节也在这个"给外面看"的文件里 ✗
+};
+}
+
+// geometry.cpp ── 实现（同样的签名**再抄一遍** ✗）
+#include "geometry.h"
+namespace geo {
+Polygon::Polygon(std::vector<Point> pts) : pts_(std::move(pts)) {}
+double Polygon::area() const { /* … */ }    // ← 抄第二遍
+}
+```
+
+| | C++ | extC（上面那套） |
+|---|---|---|
+| 声明写几遍 | **两遍**（.h 一遍、.cpp 一遍）✗ | **一遍** ✓ |
+| 私有细节 | 必须写在头文件里 ✗ | `@private` 藏着 ✓ |
+| 重复包含 | `#pragma once` / include guard ✗ | 不存在（语义导入 ✓）|
+| 构建清单 | CMake/Makefile + 链接 | `extc --run gomoku.extc` ✓ |
+| 模块级私有函数 | `static`（还得自己想）| 默认就是**文件内私有** ✓ |
+| 跨模块内联 | 要 LTO | **天生一个 TU** ⇒ 不用 ✓ |
+
+### 9.6 这些写法里，哪些今天就有、哪些要新做
+
+| 写法 | 今天 | 工作量 |
+|---|---|---|
+| `use std::io` · `io::open(…)` · `board::Board` | ❌ 新 | 模块系统本体（`MODULES.md` §4 方案 A）|
+| `@private` | ❌ 新（**注解机制已有**：`@overwrite` 就是它 ✓ 加一项白名单即可）| 一行 |
+| `extern!("libc") … effects Addr=0 Cont=0` | ❌ 新 | `LIBS.md` LQ3（签字）|
+| `result` / `?` / `failure(…)` / enum + match | ✅ **今天就能跑** | —— |
+| `slice` 切片 `line[0..n]` · `[64]u8` · `ref`/`mut ref`/`?ref` | ✅ 今天就能跑 | —— |
+| `new File` + "帧拥有 ⇒ 自动关" | ⚠️ 设计已定（`IO.md` §5），未实现 | 检查器**零新规则** ✓ |
+| `fn sort<T>(…)` 泛型自由函数 | ❌ 今天没有 | 中（§9.3 那张表）|
