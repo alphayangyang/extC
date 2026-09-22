@@ -1,0 +1,6 @@
+/* 一个模块 = 一个文件 ✓（`use greet` 去找同目录的 greet.extc）*/
+let LIMIT: i32 = 42              // 顶层常量也会被导出 ✓
+
+@private fn twice(n: i32) -> i32 { return n + n }   // 藏起来：别的模块看不见 ✓
+
+fn shout(n: i32) -> i32 { return twice(n) }

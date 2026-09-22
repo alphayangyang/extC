@@ -21,6 +21,7 @@
 #include "codegen.h"
 #include "lexer.h"
 #include "parser.h"
+#include "modules.h"
 #include "prelude.h"
 #include "types.h"
 
@@ -90,6 +91,7 @@ static void usage(const char *argv0) {
         "                   (uses $CC, default `cc`; creates ./build/ in the CWD)\n"
         "  --check-c        syntax-check the generated C with `$CC -fsyntax-only`\n"
         "  -w               suppress warnings\n"
+        "  -I <dir>         add a module search directory (for `use a::b`)\n"
         "  -O0 .. -O3       optimisation level for the generated C (default: -O2)\n"
         "  -march=native    allow host-specific instructions (faster, less portable)\n"
         "  --dump-tokens    lex only; print the token table\n"
@@ -197,6 +199,10 @@ int main(int argc, char **argv) {
      * 而这一条**不依赖运行、也不依赖用户去跑 gcc** ✓ 代价一次 gcc 调用（~50ms）*/
     bool doCheckC = false;
     bool lineMap = true;
+    /* ⭐ 定案 70：`-I <dir>` —— ⚠️ 参数解析发生在 `arenaInit` **之前**，
+     * 所以这里先用一块**定长数组**收着（往没初始化的 Vec 里 push 会段错误 ✗ 踩过）*/
+    const char *stdDirArgs[16];
+    int         nStdDirArgs = 0;
 
     for (int i = 1; i < argc; i++) {
         /* ⭐ 优化开关（PLAN #11，2026-09-20）：默认还是 `-O2`，
@@ -221,6 +227,10 @@ int main(int argc, char **argv) {
             doRun = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
             lineMap = false;
+        } else if (strcmp(argv[i], "-I") == 0) {
+            if (++i >= argc) { fprintf(stderr, "extc: `-I` needs a directory\n"); return 2; }
+            if (nStdDirArgs < 16) stdDirArgs[nStdDirArgs++] = argv[i];
+            else { fprintf(stderr, "extc: too many `-I` directories (max 16)\n"); return 2; }
         } else if (strcmp(argv[i], "-o") == 0) {
             if (++i >= argc) { fprintf(stderr, "extc: `-o` needs a file name\n"); return 2; }
             outPath = argv[i];
@@ -253,6 +263,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    Vec searchDirs;                                       /* ⭐ 定案 70：`-I` 目录 ✓ */
+    vecInit(&searchDirs, &arena, sizeof(const char *));
+    for (int k = 0; k < nStdDirArgs; k++)
+        *(const char **)vecPush(&searchDirs) = stdDirArgs[k];
+
     Ctx ctx;
     ctxInit(&ctx, &arena, path, src, srcLen);
     ctx.noWarn = noWarn;
@@ -284,8 +299,37 @@ int main(int argc, char **argv) {
     /* ① prelude */
     if (!ctx.hasError && !loadPrelude(&arena, tt, &m)) return 1;
 
-    /* ② 用户文件 */
-    if (!ctx.hasError) parseModule(&ctx, &arena, &toks, &m);
+    /* ② 根文件先解析到**它自己**的 Module 里（模块要等它的 `use` 才知道装谁 ✓）*/
+    Module rootm;
+    memset(&rootm, 0, sizeof rootm);
+    moduleInit(&rootm, &arena);
+    if (!ctx.hasError) parseModule(&ctx, &arena, &toks, &rootm);
+
+    /* ③ 定案 70：按 `use` 递归装载模块，**拓扑序**合进 m ⇒ 之后检查器看到的
+     * 还是一张平表（限定名已经在装载器里解析掉了 ✓）*/
+    Vec moduleCtxs;
+    vecInit(&moduleCtxs, &arena, sizeof(Ctx *));
+    bool modsOk = true;
+    if (!ctx.hasError)
+        modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
+
+    /* ⚠️ 模块文件里的报错走**它自己的 Ctx** ⇒ 这里要把它们渲染出来（文件/源码行才对 ✓）*/
+    bool modDiag = false;
+    for (size_t i = 0; i < moduleCtxs.len; i++) {
+        Ctx *mc = *(Ctx **)vecAt(&moduleCtxs, i);
+        if (mc && mc->hasError) {
+            Buf d;
+            bufInit(&d, &arena);
+            ctxRenderDiag(mc, &d);
+            fputs(bufCstr(&d), stderr);
+            modDiag = true;
+        }
+    }
+    if (modDiag || (!modsOk && !ctx.hasError)) {
+        /* 模块这一层出错了 ⇒ 到此为止（别拿半成品往下走 ✗）*/
+        if (!modDiag && ctx.hasError) { /* 根文件的错由下面统一渲染 ✓ */ }
+        else return 1;
+    }
 
     /* 类型检查：一遍**独立**的 pass，把结果写回 AST。
      * 之后的代码生成不再做任何类型推理（T1）。 */

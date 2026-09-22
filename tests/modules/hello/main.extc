@@ -1,0 +1,15 @@
+// expect: 你好，主人！|shout(21) = 42|LIMIT = 42
+/* ⭐ 定案 70：**语义导入**（不是 C 的文本包含 ✗）
+ *   `use greet`       —— 一个文件就是一个模块
+ *   `greet::shout(…)` —— 跨模块引用要写**限定名** ✓
+ *   `greet::LIMIT`    —— 常量也能取 ✓
+ *   `twice` 是 `@private` ⇒ 这里根本够不着（写 `greet::twice` 会编译错误 ✓）
+ */
+use greet
+
+fn main() -> i32 {
+    println("你好，", "主人", "！")
+    println("shout(21) = ", greet::shout(21))
+    println("LIMIT = ", greet::LIMIT)
+    return 0
+}

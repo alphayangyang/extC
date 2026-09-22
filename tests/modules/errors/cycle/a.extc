@@ -1,0 +1,2 @@
+use b
+fn fa() -> i32 { return b::fb() }

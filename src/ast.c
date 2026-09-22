@@ -54,6 +54,7 @@ void moduleInit(Module *m, Arena *a) {
     vecInit(&m->types, a, sizeof(void *));
     vecInit(&m->funcs, a, sizeof(void *));
     vecInit(&m->globals, a, sizeof(void *));
+    vecInit(&m->uses, a, sizeof(void *));      /* 定案 70 ✓ */
 }
 
 bool funcIsMethod(const FuncDef *f) {

@@ -53,6 +53,9 @@ typedef struct {
      * ⚠️ 只跟**初始值**（不追后续赋值、不追别名）：提不动的照旧报错 ⇒ 安全方向 ✓ */
     Expr       *origin;
     int         line;
+    /* ⭐ 定案 70：这个绑定属于哪个模块（全局才有；局部 = NULL）——
+     * 用它在解析处挡"不带限定地引用别的模块的名字" ✓ */
+    const char *modName;
 } Sym;
 
 typedef struct { const char *name; int count; } NameUse;
@@ -225,7 +228,8 @@ typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } 
  void expectBool (Checker *c, Type *t, Expr *node);
  void markCallHomeIfEscaping (Checker *, Expr *, int);
  void markCallHomeIfEscaping (Checker *c, Expr *v, int at);
- void setCallArenaArg (Checker *c, Expr *e);   /* 定案 68：解析出"最终传哪只 arena" ✓ */
+ void setCallArenaArg (Checker *c, Expr *e);
+ void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);   /* 定案 68：解析出"最终传哪只 arena" ✓ */
  void narrowFactsOf (Checker *c, Expr *cond);
  void popScope (Checker *c);
  void pushNarrow (Checker *c, const char *cname);

@@ -1,0 +1,2 @@
+@private fn secret() -> i32 { return 7 }
+fn open() -> i32 { return secret() }

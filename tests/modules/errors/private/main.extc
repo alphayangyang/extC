@@ -1,0 +1,2 @@
+use lib
+fn main() -> i32 { println(lib::secret())  return 0 }

@@ -129,26 +129,79 @@ static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
 
 /* 把 toks 里的声明**追加**到 out（不重置 —— out 由调用方初始化一次）。
  * prelude 和用户文件就是靠这个进同一个 Module 的，将来多文件编译也一样。 */
+/* ⭐ 定案 70：`use a::b::c` —— 短名 = 最后一段（v1 不做 `as` 别名 ✓）
+ * 「文件即模块」：`use std::io` ⇒ 找 `std/io.extc`（装载器负责搜索路径 ✓）*/
+static UseDecl *parseUse(Parser *p) {
+    Token *kw = take(p);                       /* use */
+    Token *first = expectTypeName(p, "a module path (e.g. `use std::io`)");
+    if (!first) return NULL;
+    Buf  path;
+    bufInit(&path, p->arena);
+    bufPuts(&path, first->text);
+    const char *shortName = first->text;
+    while (at(p, "::")) {
+        take(p);
+        Token *seg = expectTypeName(p, "a module path segment");
+        if (!seg) return NULL;
+        bufPuts(&path, "::");
+        bufPuts(&path, seg->text);
+        shortName = seg->text;                 /* 短名 = 最后一段 ✓ */
+    }
+    UseDecl *u = (UseDecl *)arenaAllocZero(p->arena, sizeof(UseDecl));
+    u->path      = bufCstr(&path);
+    u->shortName = shortName;
+    u->line      = kw->line;
+    return u;
+}
+
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     Parser p = { ctx, arena, toks, 0, false };
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
+        /* ⭐ 定案 70：`use a::b` —— **语义导入**（装载器负责找文件/查环/解析限定名 ✓）*/
+        if (at(&p, "use")) {
+            UseDecl *u = parseUse(&p);
+            if (!u) return false;
+            *(UseDecl **)vecPush(&out->uses) = u;
+            skipJunk(&p);
+            continue;
+        }
+        /* ⭐ 定案 70：顶层注解 `@private` —— 默认公开，**要藏才写** ✓ */
+        bool isPrivate = false;
+        if (at(&p, "@")) {
+            Token *a = take(&p);
+            Token *nm = expectIdent(&p, "an annotation name (only `private` at the top level)");
+            if (!nm) return false;
+            if (strcmp(nm->text, "private") != 0) {
+                ctxError(ctx, a->line, a->col,
+                         "The only top-level annotation today is `@private` (hide a"
+                         " declaration from other modules). `@overwrite` is for locals.",
+                         "unknown top-level annotation `@%s`", nm->text);
+                return false;
+            }
+            isPrivate = true;
+            skipJunk(&p);
+        }
         if (at(&p, "struct")) {
             StructDef *s = parseStruct(&p);
             if (!s) return false;
+            s->isPrivate = isPrivate;
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "type")) {
             TypeDef *td = parseTypeDecl(&p);
             if (!td) return false;
+            td->isPrivate = isPrivate;
             *(TypeDef **)vecPush(&out->types) = td;
         } else if (at(&p, "let") || at(&p, "var")) {
             GlobalDef *g = parseGlobalDecl(&p);
             if (!g) return false;
+            g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
         } else if (at(&p, "fn")) {
             FuncDef *f = parseFunc(&p);
             if (!f) return false;
+            f->isPrivate = isPrivate;
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else {
             Token *t = cur(&p);
@@ -442,7 +495,23 @@ static Type *parseType(Parser *p) {
     Token *t = cur(p);
     if (t->kind == TK_TYPE || t->kind == TK_IDENT) {
         take(p);
-        Type *ty = typeNamed(p->arena, t->text);
+        /* ⭐ 定案 70：类型名可以是模块限定的 `io::File` —— parser **不查符号表**，
+         * 所以这里只把路径原样收集成一个字符串，解析交给装载器 ✓ */
+        const char *nm = t->text;
+        if (at(p, "::")) {
+            Buf b;
+            bufInit(&b, p->arena);
+            bufPuts(&b, t->text);
+            while (at(p, "::")) {
+                take(p);
+                Token *seg = expectTypeName(p, "a type name");
+                if (!seg) return NULL;
+                bufPuts(&b, "::");
+                bufPuts(&b, seg->text);
+            }
+            nm = bufCstr(&b);
+        }
+        Type *ty = typeNamed(p->arena, nm);
 
         /* 泛型实参：`Pair<i32, u8>` */
         if (at(p, "<")) {

@@ -1,0 +1,8 @@
+// 路径 `lib::util` ⇒ 文件 lib/util.extc ✓
+struct pair { a: i32  b: i32 }
+
+fn make(a: i32, b: i32) -> pair {
+    var p: pair = { a: a, b: b }
+    return p
+}
+fn total(p: pair) -> i32 { return p.a + p.b }

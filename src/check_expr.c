@@ -98,6 +98,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
         case EX_IDENT: {
             Sym *s = lookup(c, e->u.ident.name);
+            if (s && s->modName && !e->qualified)
+                requireQualified(c, e->u.ident.name, s->modName, false, e->line);
             if (!s) {
                 ckError(c, e->line, "every name must be declared first (extC has no globals yet)",
                         "undefined name `%s`", e->u.ident.name);
@@ -1033,6 +1035,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
 
             FuncDef *f = findFunc(c, name);
+            if (f && !f->reserved && f->modName && !e->qualified)
+                requireQualified(c, name, f->modName, false, e->line);
             if (!f) {
                 ckError(c, e->line, "built-ins available: `print(x)` / `println(x)`",
                         "call to undefined function `%s`", name);

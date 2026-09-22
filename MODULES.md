@@ -93,6 +93,10 @@
 
 ## 4. 三个候选方案（摆出来，等主人拍）
 
+> ⭐ **2026-09-22 已落地：方案 A 的 v1**（主人：「可以，先切模块吧」）——
+> 见 `DECISIONS.md` **定案 70** 与本文 **§11 落地实录** ✓
+> 用法：`use lib::util` · 默认公开 + `@private` · `lib::helper()` · 禁环 · `-I <dir>` ✓
+
 ### 方案 A · **语义化单 TU**（Oberon / Zig 味）
 
 ```extc
@@ -423,3 +427,82 @@ C++20 modules 的 BMI、Rust 的 codegen unit 在做的事；Zig/Go 则干脆全
 - **文件数量**：主人自己也提到了（硬盘换时间 ✓ 值得，但要先量出来值多少）
 
 ⇒ **结论**：记成 PLAN 行（可选优化），**前置 = 先把 1/2/3 试掉**（它们不需要动语言 ✓）
+
+---
+
+## 11. 落地实录（v1，2026-09-22）—— 定案 70 ✓
+
+### 11.1 现在能写的东西（真跑过的 ✓）
+
+```extc
+// lib/util.extc —— 一个文件就是一个模块 ✓
+struct pair { a: i32  b: i32 }              // ⚠️ 类型名 camelCase（大写开头留给类型参数 T ✓）
+
+fn make(a: i32, b: i32) -> pair { var p: pair = { a: a, b: b }  return p }
+fn total(p: pair) -> i32 { return p.a + p.b }
+```
+
+```extc
+// lib/calc.extc —— 模块里也能 use（**禁止环** ✗）
+use lib::util                                // 一律相对**项目根**（= 入口文件所在目录 ✓）
+
+fn sum(n: i32) -> i32 {
+    var p: util::pair = util::make(n, n)     // 跨模块**类型** + 跨模块**函数** ✓
+    return util::total(p)
+}
+```
+
+```extc
+// main.extc —— 入口：两行 import，然后就是主循环 ✓
+use lib::calc
+
+fn main() -> i32 {
+    println("sum(7) = ", calc::sum(7))
+    return 0
+}
+```
+
+```sh
+extc --run main.extc              # 一条命令，`use` 的文件自动跟着编，最后合成**一个** .c ✓
+extc -I libs --run app/main.extc  # 也可以把库放在别的目录 ✓
+```
+
+### 11.2 实现方式（**检查器与 codegen 几乎没动** ✗ 这是刻意的）
+
+全部机制在**装载器**（`src/modules.c`）：
+
+| 步骤 | 干什么 |
+|---|---|
+| ① 找文件 | `use a::b` ⇒ `<项目根>/a/b.extc`；找不到再试 `-I` 与 `$EXTC_STD`；**找不到就印出找过的地方** ✓ |
+| ② 递归 + 查环 | 状态机（`正在装载` 又被打到 ⇒ `import cycle` ✓）；同一个文件只装一次（去重 ✓）|
+| ③ 拓扑序合并 | **后序入表** ⇒ 依赖先合进主 Module（跟 prelude 同一条路 ✓）|
+| ④ **检查之前**解析限定名 | `io::readLine(…)` ⇒ `EX_CALL(readLine)`；`io::STDIN` ⇒ `EX_IDENT(STDIN)`；`io::File` ⇒ `File` ✓ |
+| ⑤ 可见性 | `@private` 在**这一步**挡（限定引用）；**不带限定地引用别模块的名字**在检查器解析处挡 ✓ |
+
+⇒ 检查器看到的还是**一张平表** —— 它一行都没改 ✓ codegen 一行都没改 ✓
+⇒ 所以 **golden 88 个文件逐字节相同**（单文件程序完全不受影响 ✓）
+
+### 11.3 报错长什么样（**指对文件**是硬要求 ✓）
+
+模块文件的报错走**它自己那份 `Ctx`**（每个声明都带 `ctx` + `modName` ✓）：
+
+```
+tests/modules/errors/cycle/b.extc:1: error: import cycle: `a` is still being loaded
+note:  two modules must not depend on each other (each one's type is
+       needed to check the other). Put the shared part in a third module.
+```
+
+| 反例 | 消息 |
+|---|---|
+| 没 `use` 就写限定名 | ``module `greet` is not imported here -- add `use greet` `` |
+| 碰 `@private` | ``` `lib::secret` is private to module `lib` ``` |
+| 漏了限定名 | ``` `open` belongs to module `lib` -- write `lib::open` ``` |
+| 环 | `import cycle: `a` is still being loaded` |
+| 文件不存在 | `cannot find module `nowhere`` + **列出找过的每个路径** ✓ |
+| 模块里写 `main` | `` `main` must live in the entry file, not in a module `` |
+
+### 11.4 v1 的三条限制（下一步，别当已经解决 ✗）
+
+1. **顶层名字要全局唯一**（两个模块各有一个 `helper` ⇒ 重名报错）—— 名字 mangle 是下一步 ✓
+2. **类型名的"必须限定"还没挡严**（函数/全局已经挡严 ✓）
+3. 没有 `as` 别名（短名 = 路径最后一段）；没有 per-module 的 `use` 可见性传递（`use` 不重新导出 ✓）

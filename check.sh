@@ -22,6 +22,11 @@ if out=$(./tests/warnings/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（含正例语料零误报 ✓）"
 else bad "tests/warnings/run.sh"; echo "$out"; fi
 
+echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
+if out=$(./tests/modules/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（2 正例 + 6 反例）"
+else bad "tests/modules/run.sh"; echo "$out"; fi
+
 echo "== ASan（内存安全的形状必须真的跑得干净）=="
 if out=$(./tests/asan/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 个形状 ASan 干净"

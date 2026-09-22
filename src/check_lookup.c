@@ -177,6 +177,29 @@ FuncDef *findFunc(Checker *c, const char *name) {
     return NULL;
 }
 
+/* ⭐ 定案 70：**别的模块的名字必须写限定名**（`mod::name`）——
+ * 不加这一条，`use greet` 就只是装饰（平表里什么都够得着 ✗），
+ * `@private` 也就挡不住（私有名同样够得着 ✗）。
+ * 判据：被调者属于别的模块、且**这个引用不是限定名改写来的** ⇒ 报错 ✓
+ * （限定名在**装载器**里就改写成平名字了，所以靠 `Expr.qualified` 那个位区分 ✓）
+ * 豁免：prelude（`reserved` = 自动导入 ✓）与同一个文件里的名字 ✓ */
+void requireQualified(Checker *c, const char *what, const char *whatMod, bool qualified, int line) {
+    if (qualified) return;
+    if (!whatMod) return;
+    if (!c->curFunc || !c->curFunc->modName) {
+        if (c->curFunc) {                        /* 根文件：别的模块的名字一律要限定 ✓ */
+            ckError(c, line++, "Write `mod::name` (and `use mod` at the top of the file)."
+                               " A module's `@private` names are not reachable here at all.",
+                    "`%s` belongs to module `%s` -- write `%s::%s`", what, whatMod, whatMod, what);
+        }
+        return;
+    }
+    if (strcmp(c->curFunc->modName, whatMod) == 0) return;   /* 自己模块的 ✓ */
+    ckError(c, line, "Write `mod::name` (and `use mod` at the top of the file)."
+                     " A module's `@private` names are not reachable here at all.",
+            "`%s` belongs to module `%s` -- write `%s::%s`", what, whatMod, whatMod, what);
+}
+
 FieldDef *findField(StructDef *sd, const char *name) {
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);

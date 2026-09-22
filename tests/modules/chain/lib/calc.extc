@@ -1,0 +1,6 @@
+use lib::util                        // 模块里也能 use ✓（**禁止环** ✗）
+
+fn sum(n: i32) -> i32 {
+    var p: util::pair = util::make(n, n)
+    return util::total(p)            // 跨模块类型 + 跨模块函数 ✓
+}

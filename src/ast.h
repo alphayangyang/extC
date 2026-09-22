@@ -177,6 +177,9 @@ struct Expr {
      * ⇒ 只能等 `checkModule` 的收尾 pass 再把它改成 `ARENA_HOME` ✓
      * （`arenaArg` 此刻记着"当前块层号"，万一那个 pass 判出"没家"就照它用 ✓）*/
     bool      arenaArgPending;
+    /* ⭐ 定案 70：这个引用是**限定名改写来的**吗？（`io::readLine` ⇒ 平名字）
+     * 装载器只在这一路上置位 ⇒ 检查器拿它区分"用户写了限定名"与"用户漏了限定名" ✓ */
+    bool      qualified;
     /* 显式转换：要不要**运行时检查**（整数收窄 / 换符号 / 浮点转整数）？
      * 能证明装得下就不查（P：编译期能证明的运行时不留痕迹）✓ */
     bool      convCheck;
@@ -292,6 +295,10 @@ struct TypeDef {                 /* type status = | ok | warn | error */
     Vec          variants;       /* Variant* */
     Type        *type;           /* 驻留后的类型，由 check 填写 */
     bool         reserved;       /* 来自 prelude —— 不许用户重定义 */
+    /* ⭐ 定案 70（模块）：来自哪个文件 / 哪个模块 / 是不是 `@private` ✓ */
+    Ctx        *ctx;
+    const char *modName;
+    bool        isPrivate;
     int          line;
 };
 
@@ -302,6 +309,10 @@ struct StructDef {
     Vec         methods;         /* FuncDef* —— 方法写在 struct 体内（定案 9） */
     Type       *type;            /* 非泛型 struct 的驻留类型（泛型见 ttGeneric） */
     bool        reserved;        /* 来自 prelude —— 不许用户重定义，也不许加方法 */
+    /* ⭐ 定案 70（模块）：来自哪个文件 / 哪个模块 / 是不是 `@private` ✓ */
+    Ctx        *ctx;
+    const char *modName;
+    bool        isPrivate;
     int         line;
 };
 
@@ -377,6 +388,13 @@ struct FuncDef {
 
     bool        addrFromLocal;
     Vec         callees;      /* FuncDef*：它调了谁（画调用图用，§8.5 的 SCC）*/
+    /* ⭐ 定案 70（模块）：这个声明**来自哪个文件**、属于哪个模块？
+     *   ctx       —— 它那个文件的 Ctx（报错要走它：才能指对文件、印对源码行 ✓）
+     *   modName   —— 模块短名（`use foo` 里的 `foo`）；根文件 = NULL；prelude = NULL
+     *   isPrivate —— `@private`：别的模块引用它 ⇒ **编译期报错** ✓（默认公开 ✓）*/
+    Ctx        *ctx;
+    const char *modName;
+    bool        isPrivate;
     int         line;
 };
 
@@ -391,14 +409,33 @@ typedef struct {
     Expr       *init;        /* 初始化式；NULL = 零初始化 */
     bool        mut;         /* var = true */
     bool        reserved;
+    /* ⭐ 定案 70（模块）：这个声明**来自哪个文件**、属于哪个模块？
+     *   ctx       —— 它那个文件的 Ctx（报错要走它：才能指对文件、印对源码行 ✓）
+     *   modName   —— 模块短名（`use foo` 里的 `foo`）；根文件 = NULL；prelude = NULL
+     *   isPrivate —— `@private`：别的模块引用它 ⇒ **编译期报错** ✓（默认公开 ✓）*/
+    Ctx        *ctx;
+    const char *modName;
+    bool        isPrivate;
     int         line;
 } GlobalDef;
+
+/* ⭐ 定案 70（2026-09-22，主人拍板）：**语义导入**（不是 C 的文本包含 ✗）
+ *     use std::io        ⇒ 装载器去找 std/io.extc、解析它，
+ *                          并在**检查之前**把本文件里 `io::name` 解析成平名字 ✓
+ *     短名 = 路径最后一段（v1 不做 `as` 别名）；环 = 编译期错误 ✓ */
+typedef struct {
+    const char *path;      /* "std::io"（原样，报错用）*/
+    const char *shortName; /* "io" —— 引用时写 `io::name` ✓ */
+    const char *file;      /* 装载器填：解析到的文件 */
+    int         line;
+} UseDecl;
 
 typedef struct {
     Vec structs;                 /* StructDef* */
     Vec types;                   /* TypeDef*（type 枚举） */
     Vec funcs;                   /* FuncDef*  */
     Vec globals;                 /* GlobalDef* —— 顶层 let / var */
+    Vec uses;                    /* UseDecl* —— 定案 70 */
 } Module;
 
 void moduleInit(Module *m, Arena *a);

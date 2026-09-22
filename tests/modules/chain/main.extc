@@ -1,0 +1,7 @@
+// expect: sum(7) = 14
+use lib::calc
+
+fn main() -> i32 {
+    println("sum(7) = ", calc::sum(7))
+    return 0
+}

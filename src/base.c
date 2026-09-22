@@ -235,7 +235,10 @@ void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) 
 }
 
 void ctxRenderDiag(Ctx *c, Buf *out) {
-    bufPrintf(out, "%s:%d:%d: error: %s\n", c->path, c->errLine, c->errCol, c->errMsg);
+    if (c->errLine > 0)
+        bufPrintf(out, "%s:%d:%d: error: %s\n", c->path, c->errLine, c->errCol, c->errMsg);
+    else
+        bufPrintf(out, "%s: error: %s\n", c->path, c->errMsg);   /* 装载阶段的错误没有行号 ✓ */
 
     /* 找到出错的源码行 */
     int line = 1;

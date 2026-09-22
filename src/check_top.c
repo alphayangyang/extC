@@ -1167,6 +1167,7 @@ static void checkGlobals(Checker *c) {
         s->mut   = g->mut;
         s->depth = 0;                     /* 全局 = 深度 0 */
         s->line  = g->line;
+        s->modName = g->modName;          /* ⭐ 定案 70 ✓ */
         *(Sym **)vecPush(&c->globals) = s;
     }
 }
