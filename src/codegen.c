@@ -97,7 +97,12 @@ typedef struct {
      *    「原型区之后、函数体之前」（跟切片 helper 同一个套路 ✓）*/
     Vec         descs;          /* Type* —— 需要描述表的类型（按 C 名去重）*/
     Buf         desc;           /* 描述区（最后拼在 body 前面）*/
-    Buf         rt;             /* 打印运行时（描述表类型 + extc_print）—— **按需**才拼进去 ✓ */
+    Buf         rt;             /* 描述表类型 + 共享标量描述 —— 打印/比较任一需要就得有 ✓ */
+    Buf         rtPrint;        /* `extc_print` —— 真打印过结构化类型才要 ✓ */
+    Buf         rtEq;           /* `extc_eq` —— 真比过数组/切片才要 ✓ */
+    /* ⭐ 第④步：**结构化 `==` 也走描述表** —— 这张表是"哪些类型要用 `extc_eq`"。
+     * 闭包：容器要 eq ⇒ 元素也得能 eq（struct 就得给它生成一行适配器）✓ */
+    Vec         eqNeed;         /* Type*（按 C 名去重）*/
     /* ⚠️ 判"要不要打印运行时"**不能**看 `descs.len`：
      *   `slice<u8>`（字符串字面量！）用的是**共享**的 `extc_desc_text`，
      *   压根不进 `descs` ⇒ 只看 descs 就会漏掉 `extc_print` / `extc_desc_text` ✗
@@ -201,6 +206,7 @@ static bool isProtoType(Type *t, const char *name, size_t nargs);
 static const char *genExpr(CG *g, Expr *e);
 static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
+static bool printArgIsPlace(const Expr *e);
 
 static bool isPlaceExpr(const Expr *e);
 
@@ -320,6 +326,15 @@ static void needDesc(CG *g, Type *t) {
     *(Type **)vecPush(&g->descs) = t;
 }
 
+/* ⭐ **按需**：登记"这个类型要用 `extc_eq`"（第④步）。按 C 名去重 ✓
+ * 容器（数组/切片）比的时候元素也要能比 ⇒ 闭包在 `emitDescRegion` 里跑 ✓ */
+static void needEq(CG *g, Type *t) {
+    if (!t || !t->name) return;
+    for (size_t i = 0; i < g->eqNeed.len; i++)
+        if (strcmp((*(Type **)vecAt(&g->eqNeed, i))->name, t->name) == 0) return;
+    *(Type **)vecPush(&g->eqNeed) = t;
+}
+
 static const char *descRef(CG *g, Type *t) {
     if (!t) return "&extc_desc_i32";
     needDesc(g, t);                       /* ← 顺手登记依赖：这就是可达性闭包 ✓ */
@@ -332,7 +347,8 @@ static const char *descRef(CG *g, Type *t) {
 
 /* struct 的描述：字段名 + **offsetof**（漏一个字段、算错一次布局，都编不过 ✓）
  * 显示名用 extC 原名字（泛型实例打的是**模板名**：`varArray { … }`，跟以前一致）*/
-static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef *sd) {
+static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef *sd,
+                          const char *eqFn) {
     size_t n = sd->fields.len;
     if (n) {
         cgLine(g, "static const ExtcField %s_fields[] = {", cname);
@@ -345,8 +361,9 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
         g->indent--;
         cgLine(g, "};");
     }
-    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL };",
-           cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_fields", cname) : "NULL");
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL, %s };",
+           cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_fields", cname) : "NULL",
+           eqFn ? eqFn : "NULL");
 }
 
 /* 数组：count 个 elem，**没有名字**（打印就是 `[1, 2, 3]` ✓）*/
@@ -397,12 +414,20 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
  *     定义顺序就无关了 —— 为此得先"空跑一遍"把集合收全（阶段 A）✓
  *     空跑没有副作用（那几个 emitter 只写 `g->out` + arena）✓
  */
+static bool eqNeeded(CG *g, Type *t);
+static void closeEqNeeds(CG *g);
+static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback);
+static void genEqAdapter(CG *g, Type *t, FuncDef *m);
+
 static void emitDescDefs(CG *g) {
     /* ⚠️ 循环条件每次重读 `len`：`descRef` 会在定义过程中追加新依赖 ✓ */
     for (size_t i = 0; i < g->descs.len; i++) {
         Type *t = *(Type **)vecAt(&g->descs, i);
+        /* 这一格 eq 只有"真被 `extc_eq` 递归到的 struct"才填（其余留 NULL ✓）*/
+        const char *eqFn = eqNeeded(g, t) ? arenaPrintf(g->arena, "%s_eqD", t->name)
+                                          : NULL;
         if (t->kind == TY_STRUCT && t->sdef) {
-            genStructDesc(g, t->name, t->name, t->sdef);
+            genStructDesc(g, t->name, t->name, t->sdef, eqFn);
         } else if (t->kind == TY_ENUM && t->edef) {
             genEnumDesc(g, t->name, t->name, t->edef);
         } else if (t->kind == TY_ARRAY) {
@@ -410,7 +435,7 @@ static void emitDescDefs(CG *g) {
         } else if (t->kind == TY_GENERIC && t->sdef) {
             substEnter(g, t);              /* 字段里的 T 要换成实参 ✓ */
             if (isView(t)) genViewDesc(g, t);
-            else           genStructDesc(g, t->name, t->sdef->name, t->sdef);
+            else           genStructDesc(g, t->name, t->sdef->name, t->sdef, eqFn);
             substLeave(g);
         } else {
             /* 漏了一种就**响亮地炸** —— 静默少出一个描述等于生成的 C 里
@@ -421,13 +446,54 @@ static void emitDescDefs(CG *g) {
     }
 }
 
+/* 这个类型要不要生成 / 填 `eq`？（按 C 名查 ✓）*/
+static bool eqNeeded(CG *g, Type *t) {
+    if (!t || !t->name) return false;
+    for (size_t i = 0; i < g->eqNeed.len; i++)
+        if (strcmp((*(Type **)vecAt(&g->eqNeed, i))->name, t->name) == 0) return true;
+    return false;
+}
+
+/* eq 的**闭包**：容器要 eq ⇒ 元素也得能 eq ✓
+ * （struct 到此为止 —— 它靠 `d->eq` 委托给用户写的 `fn ==`，不再往下走 ✓）*/
+static void closeEqNeeds(CG *g) {
+    for (size_t i = 0; i < g->eqNeed.len; i++) {   /* 循环条件重读：会追加 ✓ */
+        Type *t = *(Type **)vecAt(&g->eqNeed, i);
+        if (t->kind == TY_ARRAY) { needEq(g, t->inner); continue; }
+        if (t->kind == TY_GENERIC && isView(t) && !isByteView(t))
+            needEq(g, *(Type **)vecAt(&t->targs, 0));
+    }
+}
+
 static void emitDescRegion(CG *g) {
-    if (g->descs.len == 0) return;         /* 没人打印结构化类型 ⇒ 打印机制整块不要 ✓ */
+    /* 没人打印结构化类型、也没比过数组 ⇒ 描述表/打印/比较整块都不要 ✓ */
+    if (g->descs.len == 0 && g->eqNeed.len == 0) return;
+    closeEqNeeds(g);
     Buf *saved = g->out;
     g->out = &g->desc;
     emitDescDefs(g);                       /* 阶段 A：空跑，把依赖收全（输出丢掉）*/
     bufInit(&g->desc, g->arena);
-    cgLine(g, "/* ---- 类型描述表（**按需**：只出真会被打印的那些）---- */");
+
+    /* ---- 结构化 `==` 的**适配器**（必须在描述之前：描述里要取它的地址 ✓）
+     * 只有"真被 `extc_eq` 递归到的 struct"才需要 —— 那是用户写的 `fn ==`，
+     * 是任意代码，只能委托 ✓ 其余 kind 由 `extc_eq` 自己递归 ✓ */
+    for (size_t i = 0; i < g->eqNeed.len; i++) {
+        Type *t = *(Type **)vecAt(&g->eqNeed, i);
+        if (t->kind != TY_STRUCT && t->kind != TY_GENERIC) continue;
+        if (t->kind == TY_GENERIC && isView(t)) continue;   /* 视图由 extc_eq 自己递归 ✓ */
+        FuncDef *m = findOpMethod(t, "==", NULL);
+        if (!m) {
+            /* 到不了这里（检查器已经保证"元素可比"才让比）——
+             * 真到了就是**响亮地炸**，不许生成一个编不过的 C ✗ */
+            ctxError(g->ctx, 0, 1, NULL,
+                     "internal: structural equality needs a `fn ==` on this type");
+            continue;
+        }
+        genEqAdapter(g, t, m);
+    }
+    if (g->eqNeed.len) cgLine(g, "");
+
+    cgLine(g, "/* ---- 类型描述表（**按需**：只出真会被用到的那些）---- */");
     for (size_t i = 0; i < g->descs.len; i++)   /* 全部前向声明 ⇒ 定义顺序无关 ✓ */
         cgLine(g, "static const ExtcDesc %s_desc;", (*(Type **)vecAt(&g->descs, i))->name);
     cgLine(g, "");
@@ -463,36 +529,59 @@ static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback) {
     return hit;
 }
 
-/* 元素能不能比？数组的 `==` 是**编译器派生**的（跟 `_debug` 一样）——
- * 数组类型用户写不出来，也就没法给它们写 `fn ==`。条件是元素能比，递归定义。 */
-static bool typeHasEq(Type *t) {
-    if (!t) return false;
-    if (t->kind == TY_ARRAY) return typeHasEq(t->inner);
-    if (t->kind == TY_BUILTIN) return true;
-    /* ⚠️ 枚举**要分开看**（2026-09-20 第三刀之后撞出来的真 bug）：
-     * 带载荷的枚举在 C 里是 `struct { tag; union }` ⇒ **没有 `==`** ✗
-     * 类型检查那边本来就禁止比它，这里必须跟它一致 —— 否则 `[4]?i64` 这种
-     * 数组类型会生成一个编不过的 `_eq` helper（gcc: invalid operands to binary ==）✗ */
-    if (t->kind == TY_ENUM) return !(t->edef && enumHasPayload(t->edef));
-    return findOpMethod(t, "==", NULL) != NULL;
+/* ⚠️ 旧的 `typeHasEq`（"元素能不能比，递归判断"）**没了** ——
+ * 第④步之后 codegen 不再为数组派生 `_eq`，所以这个判据在 codegen 这一侧
+ * 没有用户了；"能不能比"由**检查器**判（不通过就报
+ * `` [2]p` cannot be compared: its element type `p` does not define `==` ``）✓
+ * 两处判据以前必须**手动保持一致**（PLAN #20 那个真 bug 就是这么来的），
+ * 现在只剩一处 ⇒ 那个不同步的坑从结构上没了 ✓ */
+
+/* ---------------------------------------------------------------- 结构化 `==`
+ *
+ * ⭐ 第④步：以前给**每个数组类型**派生一份 `<T>_eq`（压测：200 个数组类型
+ * ⇒ 2450 行代码，占生成 C 的 32% ✗）；现在一律走**通用** `extc_eq` + 描述表 ✓
+ *
+ * ⚠️ 要**地址**（`extc_eq(a, b, desc)` 是泛型实现）⇒ 实参得是地方；
+ *    不是就先落进临时变量（语句前缀）—— 跟 `println` 那边同一个理由 ✓
+ */
+static const char *eqOperand(CG *g, Expr *x, Type *t) {
+    const char *code = genExpr(g, x);
+    if (printArgIsPlace(x)) return arenaPrintf(g->arena, "&(%s)", code);
+    const char *tmp = arenaPrintf(g->arena, "__extc_q%d", g->tmpSeq++);
+    pfLine(g, "%s %s = %s;", cType(g, t), tmp, code);
+    return arenaPrintf(g->arena, "&%s", tmp);
 }
 
-/* 元素比较的 C 表达式（递归：内建直接比，struct 走它的 `==`）*/
-static const char *genEqTest(CG *g, Type *t, const char *x, const char *y) {
-    if (!t) return "0";
-    if (t->kind == TY_ARRAY)
-        return arenaPrintf(g->arena, "%s_eq(%s, %s)", t->name, x, y);
-    if (t->kind == TY_BUILTIN || t->kind == TY_ENUM)
-        return arenaPrintf(g->arena, "((%s) == (%s))", x, y);
+static const char *genEqCall(CG *g, Expr *e, Type *arr) {
+    /* ⚠️ 顺序：左右各求值一次、**按源码顺序**（前缀行也是）✓ */
+    const char *l = eqOperand(g, e->u.bin.left, arr);
+    const char *r = eqOperand(g, e->u.bin.right, arr);
+    return arenaPrintf(g->arena, "extc_eq(%s, %s, %s)", l, r, descRef(g, arr));
+}
 
-    FuncDef *m = findOpMethod(t, "==", NULL);
-    if (!m) return "0";
+/* struct 的 `==` 适配器：把"用户写的 `fn ==`"接到 `extc_eq` 的
+ * `bool (*)(const void *, const void *)` 上（只有 struct 需要 ——
+ * 那是**任意代码**，只能委托 ✓）。
+ *
+ * ⚠️ `&` 与否要跟旧 `genEqTest` 一模一样：看那个方法**每一个形参**是不是 `ref`。 */
+static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
+    const char *tn = cType(g, t);
+    cgLine(g, "static bool %s_eqD(const void *a, const void *b) {", t->name);
+    g->indent++;
     Param *p0 = *(Param **)vecAt(&m->params, 0);
     Param *p1 = *(Param **)vecAt(&m->params, 1);
-    const char *a = p0->type->kind == TY_REF ? arenaPrintf(g->arena, "&(%s)", x) : x;
-    const char *b = p1->type->kind == TY_REF ? arenaPrintf(g->arena, "&(%s)", y) : y;
-    return arenaPrintf(g->arena, "%s(%s, %s)", cMethodName(g, t, m), a, b);
+    const char *a = p0->type->kind == TY_REF ? arenaPrintf(g->arena, "(%s *)a", tn)
+                                             : arenaPrintf(g->arena, "*(const %s *)a", tn);
+    const char *b = p1->type->kind == TY_REF ? arenaPrintf(g->arena, "(%s *)b", tn)
+                                             : arenaPrintf(g->arena, "*(const %s *)b", tn);
+    cgLine(g, "return %s(%s, %s);", cMethodName(g, t, m), a, b);
+    g->indent--;
+    cgLine(g, "}");
 }
+
+/* 元素比较的 C 表达式（递归：内建直接比，struct 走它的 `==`）
+ * ⚠️ 第④步之后**没有调用者了** —— 数组的 `==` 改走 `genEqCall`（通用 `extc_eq`），
+ * 而 struct/slice 的 `==` 走下面那一大段（用户方法的调用点，不经这里）✓ */
 
 /* 二元运算。
  * `==` / `!=` 在 check 里被解析成 eq 方法调用（找不到 eq 就报错）；
@@ -502,6 +591,10 @@ static const char *genBin(CG *g, Expr *e) {
 
     /* 数组：编译器派生的 `==` / `!=`（数组没有 sdef，找不到方法）。
      *
+     * ⭐ 第④步之后**不再为每个数组类型派生 `_eq` 函数** —— 改成通用的
+     * `extc_eq(&a, &b, &arr_desc)`：一张描述表 + 一份递归实现 ✓
+     * （语义一模一样：逐元素递归；元素是 struct 就调用户写的 `fn ==` ✓）
+     *
      * 这里**不能**加 `!e->needEq` 的条件 —— 泛型里的比较推迟到实例化才解析，
      * 代入实参后元素类型可能正好是数组（`slice<[6]i32>` 里比较两行就是）。
      * 之前挡着，于是那种情况掉进下面的方法查找、报
@@ -510,8 +603,8 @@ static const char *genBin(CG *g, Expr *e) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         if (lt && lt->kind == TY_ARRAY &&
             (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)) {
-            const char *call = genEqTest(g, lt, genExpr(g, e->u.bin.left),
-                                                 genExpr(g, e->u.bin.right));
+            needEq(g, lt);                 /* 登记：这个类型要能用 extc_eq ✓ */
+            const char *call = genEqCall(g, e, lt);
             return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
         }
     }
@@ -1795,22 +1888,9 @@ static void unitBody(CG *g, SUnit *u) {
     if (generic) substLeave(g);
 }
 
-/* 数组的 `==`：编译器派生（数组类型用户写不出来，所以没法用 fn == 实现）*/
-static void genArrayEq(CG *g, Type *arr) {
-    if (!typeHasEq(arr->inner)) return;
-    cgLine(g, "bool %s_eq(%s a, %s b) {", arr->name, arr->name, arr->name);
-    g->indent++;
-    cgLine(g, "for (int64_t i = 0; i < %lld; i++) {", (long long)arr->asize);
-    g->indent++;
-    cgLine(g, "if (!%s) return false;",
-           genEqTest(g, arr->inner, "a.data[i]", "b.data[i]"));
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "return true;");
-    g->indent--;
-    cgLine(g, "}");
-    cgLine(g, "");
-}
+/* ⚠️ 数组的派生 `_eq` **没了**（第④步）：数组的 `==` 现在一律走
+ * `extc_eq(&a, &b, &arr_desc)` —— 一张描述表 + 一份递归实现 ✓
+ * （旧形状：每个数组类型一份循环体 —— 压测里 200 个类型 = 2450 行、占 32% ✗）*/
 
 /* 登记一个切片 helper（去重）。base 是底的类型（数组或视图），
  * st 是结果切片类型，tail = 「切到尾」（`s[lo..]`，省略的界是底的长度）。
@@ -2006,8 +2086,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
     vecInit(&g.descs, arena, sizeof(void *));
+    vecInit(&g.eqNeed, arena, sizeof(void *));
     bufInit(&g.desc, arena);
-    bufInit(&g.rt, arena);              /* 打印运行时：**按需**才拼进输出 ✓ */
+    bufInit(&g.rt, arena);              /* 打印/比较运行时：**按需**才拼进输出 ✓ */
+    bufInit(&g.rtPrint, arena);
+    bufInit(&g.rtEq, arena);
     bufInit(&g.body, arena);
     g.tmpSeq = 0;
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -2181,6 +2264,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    size_t          count;   /* 字段数 / 变体数 / 数组长度 */\n"
         "    const void     *table;   /* ExtcField[] 或 const char *const[] */\n"
         "    const ExtcDesc *elem;    /* 数组/切片的元素 */\n"
+        "    /* ⭐ 结构化 `==` 用：**只有 struct 才填** —— 那是用户（或库）写的 `fn ==`，\n"
+        "     * 是**任意代码**，只能委托不能重造 ✓ codegen 为它生成一行适配器。\n"
+        "     * 其余 kind 由 `extc_eq` 自己递归 ⇒ 这一格留空（位置在最后 ⇒ 老初始化式\n"
+        "     * 少写一个也自动补 0 ✓）*/\n"
+        "    bool          (*eq)(const void *a, const void *b);\n"
         "};\n"
         "\n"
         "/* 不依赖具体类型的四只：引用 / 字节视图 / 标量 —— 全程序共享 ✓ */\n"
@@ -2200,7 +2288,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "\n");
     /* ⚠️ 分成两次 `bufPuts`：C99 只保证支持 4095 字符的字符串字面量，
      * 整块拼一起会触发 -Woverlength-strings（不是错，但没必要留着噪声）*/
-    bufPuts(&g.rt,
+    bufPuts(&g.rtPrint,
         "/* 通用递归打印器 —— 输出格式必须跟以前派生的 `_debug` **逐字节一致** ✓\n"
         " * （真值表见 tools/print-formats.txt：浮点 %g、[N]u8 按数字、slice<u8> 按文本 ……）*/\n"
         "static void extc_print(const void *p, const ExtcDesc *d) {\n"
@@ -2263,8 +2351,67 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    }\n"
         "}\n\n");
 
-
-
+    /* ⭐ 结构化 `==`：跟 `extc_print` **共用同一张描述表**（goal 第④步）✓
+     *
+     * 语义必须跟旧的"给每个数组类型派生一份 `_eq`"**逐位一致**：
+     *   · 标量 / 枚举 ⇒ 直接 `==`（枚举只比 **tag** —— 载荷枚举本来就不可比，
+     *     `typeHasEq` 挡着，走不到这里 ✓）
+     *   · 数组 ⇒ 逐元素递归；**切片 ⇒ 长度相等 + 逐元素递归**
+     *     （跟 prelude 里 `slice<T>::==` 一字不差：先比 len 再逐个比 ✓）
+     *   · **struct ⇒ 调用户/库写的 `fn ==`** —— 描述表里那格 `eq` 就是它，
+     *     由 codegen 生成一行适配器填上 ✓
+     * ⇒ 于是"每个数组类型一份 `_eq` 函数"变成"每类型一份数据" ✓
+     *   （压测：200 个不同的数组类型 ⇒ 2450 行派生代码 → 数据 + 适配器）
+     */
+    bufPuts(&g.rtEq,
+        "static bool extc_eq(const void *a, const void *b, const ExtcDesc *d) {\n"
+        "    switch (d->kind) {\n"
+        "    case EXTC_D_I8:  return *(const int8_t *)a  == *(const int8_t *)b;\n"
+        "    case EXTC_D_I16: return *(const int16_t *)a == *(const int16_t *)b;\n"
+        "    case EXTC_D_I32: return *(const int32_t *)a == *(const int32_t *)b;\n"
+        "    case EXTC_D_I64: return *(const int64_t *)a == *(const int64_t *)b;\n"
+        "    case EXTC_D_U8:  return *(const uint8_t *)a  == *(const uint8_t *)b;\n"
+        "    case EXTC_D_U16: return *(const uint16_t *)a == *(const uint16_t *)b;\n"
+        "    case EXTC_D_U32: return *(const uint32_t *)a == *(const uint32_t *)b;\n"
+        "    case EXTC_D_U64: return *(const uint64_t *)a == *(const uint64_t *)b;\n"
+        "    case EXTC_D_F32: return *(const float *)a  == *(const float *)b;\n"
+        "    case EXTC_D_F64: return *(const double *)a == *(const double *)b;\n"
+        "    case EXTC_D_BOOL: return *(const bool *)a == *(const bool *)b;\n"
+        "    case EXTC_D_REF:  return *(const void *const *)a == *(const void *const *)b;\n"
+        "    case EXTC_D_ENUM: return *(const int *)a == *(const int *)b;\n"
+        "    case EXTC_D_TEXT: {\n"
+        "        const int64_t la = *(const int64_t *)((const char *)a + sizeof(void *));\n"
+        "        const int64_t lb = *(const int64_t *)((const char *)b + sizeof(void *));\n"
+        "        if (la != lb) return false;\n"
+        "        if (la <= 0) return true;      /* 空视图：data 可能是 null ⇒ 不比 ✓ */\n"
+        "        return memcmp(*(const void *const *)a, *(const void *const *)b, (size_t)la) == 0;\n"
+        "    }\n"
+        "    case EXTC_D_STRUCT:\n"
+        "        /* 用户写的 `fn ==`（适配器）；没有就说明根本不该被比 ✓ */\n"
+        "        return d->eq ? d->eq(a, b) : false;\n"
+        "    case EXTC_D_ARRAY:\n"
+        "    case EXTC_D_SLICE: {\n"
+        "        const char *pa, *pb;\n"
+        "        size_t n;\n"
+        "        if (d->kind == EXTC_D_SLICE) {\n"
+        "            const int64_t la = *(const int64_t *)((const char *)a + sizeof(void *));\n"
+        "            const int64_t lb = *(const int64_t *)((const char *)b + sizeof(void *));\n"
+        "            if (la != lb) return false;\n"
+        "            pa = (const char *)*(const void *const *)a;\n"
+        "            pb = (const char *)*(const void *const *)b;\n"
+        "            n = la > 0 ? (size_t)la : 0;\n"
+        "        } else {\n"
+        "            pa = (const char *)a;\n"
+        "            pb = (const char *)b;\n"
+        "            n = d->count;\n"
+        "        }\n"
+        "        for (size_t i = 0; i < n; i++)\n"
+        "            if (!extc_eq(pa + i * d->size, pb + i * d->size, d->elem)) return false;\n"
+        "        return true;\n"
+        "    }\n"
+        "    }\n"
+        "    return false;\n"
+        "}\n\n");
 
     /* 枚举最靠前 —— C11 不能前置声明 enum tag，
      * 所以 struct 字段里用到枚举时必须先有定义 */
@@ -2500,14 +2647,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      *
      * 教训跟 T4 那次一样：**顺序问题不要靠「碰巧对了」，要结构上排掉。**
      * ---------------------------------------------------------------- */
-    /* ⚠️ `_debug` / `_writeText` / `_name` 的原型**都不再有了** ——
-     * 打印走描述表（数据），没有派生函数要提前声明 ✓ */
-    for (size_t i = 0; i < g.insts.len; i++) {
-        Type *it = *(Type **)vecAt(&g.insts, i);
-        /* 数组的 `==` 要原型 —— 嵌套数组之间是递归调用的 */
-        if (it->kind == TY_ARRAY && typeHasEq(it->inner))
-            cgLine(&g, "bool %s_eq(%s a, %s b);", it->name, it->name, it->name);
-    }
+    /* ⚠️ `_debug` / `_writeText` / `_name` / 数组 `_eq` 的原型**都不再有了** ——
+     * 打印和结构化 `==` 都走描述表（数据），没有派生函数要提前声明 ✓ */
     /* 实例的方法原型（数组没有方法，也没有 sdef）*/
     for (size_t i = 0; i < g.insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g.insts, i);
@@ -2537,13 +2678,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * 而 C 要求「先定义后使用」。所以最后按 原型 → helper → 函数体 拼回去。 */
     g.out = &g.body;
 
-    /* 视图的下标原语 + 数组的 `==`（打印**不再派生任何函数**，见描述表 ✓）*/
+    /* 视图的下标原语（打印/比较**都不再派生任何函数**，见描述表 ✓）*/
     for (size_t i = 0; i < g.insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g.insts, i);
-        if (inst->kind == TY_ARRAY) {
-            genArrayEq(&g, inst);
-            continue;
-        }
+        if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         if (isView(inst)) genViewIndexer(&g, inst);
         substLeave(&g);
@@ -2572,7 +2710,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * 顺序：原型 → 描述 → 函数体 ✓（C 要求"先定义后使用"）*/
     g.out = out;
     emitDescRegion(&g);
-    if (g.needRuntime) bufPuts(out, bufCstr(&g.rt));
+    /* 描述表类型 + 共享标量描述：打印或比较**任一**需要就得有 ✓ */
+    if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
+    if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
+    if (g.eqNeed.len)                  bufPuts(out, bufCstr(&g.rtEq));
     bufPuts(out, bufCstr(&g.desc));
     for (size_t i = 0; i < g.helpers.len; i++)
         bufPuts(out, ((SliceHelper *)vecAt(&g.helpers, i))->text);

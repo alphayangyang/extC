@@ -38,5 +38,23 @@ fn main() -> i32 {
     var pa: wrapper<point> = { value: a }      // point 有 eq → 也能比
     var pb: wrapper<point> = { value: b }
     println(pa.same(pb))                       // true
+
+    // ⭐ 数组的 `==`：数组类型用户写不出来 ⇒ 编译器派生 ✓
+    // 元素是内建就直接比；元素是 struct 就调它的 `fn ==`
+    //（第④步之后一律走通用 `extc_eq(&a, &b, &arr_desc)` + 描述表 ✓）
+    var ra: [3]i32 = [1, 2, 3]
+    var rb: [3]i32 = [1, 2, 3]
+    var rc: [3]i32 = [1, 2, 9]
+    println(ra == rb)                          // true
+    println(ra != rc)                          // true
+
+    var ap: [2]point = [a, c]
+    var bp: [2]point = [b, c]
+    println(ap == bp)                          // true（元素走 point 的 fn ==）
+
+    // 嵌套数组也递归 ✓
+    let m1: [2][2]i32 = [[1, 2], [3, 4]]
+    let m2: [2][2]i32 = [[1, 2], [3, 4]]
+    println(m1 == m2)                          // true
     return 0
 }
