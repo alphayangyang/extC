@@ -115,10 +115,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     const char *note = arenaPrintf(c->arena,
                             "A variant is named by its type -- write `%s.%s`. "
                             "(extC never guesses a type from context: DECISIONS ruling 27.)",
-                            owner->name, e->u.ident.name);
+                            DN(owner), e->u.ident.name);
                     ckError(c, e->line, note,
                             "`%s` is a variant of `%s`, not a value -- did you mean `%s.%s`?",
-                            e->u.ident.name, owner->name, owner->name, e->u.ident.name);
+                            e->u.ident.name, DN(owner), DN(owner), e->u.ident.name);
                     return ttError(tt);
                 }
                 ckError(c, e->line, "every name must be declared first (extC has no globals yet)",
@@ -257,10 +257,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         bufPrintf(&note,
                                   "define it inside `%s`:\n"
                                   "      fn ==(self: ref %s, other: %s) -> bool { ... }",
-                                  sd->name, sd->name, sd->name);
+                                  DN(sd), DN(sd), DN(sd));
                         ckError(c, e->line, bufCstr(&note),
                                 "`%s` does not define `==`, so it cannot be compared",
-                                sd->name);
+                                DN(sd));
                         return c->tBool;
                     }
 
@@ -366,11 +366,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (!fd) {
                 Buf note;
                 bufInit(&note, c->arena);
-                bufPrintf(&note, "fields of %s:", sd->name);
+                bufPrintf(&note, "fields of %s:", DN(sd));
                 for (size_t i = 0; i < sd->fields.len; i++)
                     bufPrintf(&note, " %s", (*(FieldDef **)vecAt(&sd->fields, i))->name);
                 ckError(c, e->line, bufCstr(&note),
-                        "struct `%s` has no field `%s`", sd->name, e->u.field.name);
+                        "struct `%s` has no field `%s`", DN(sd), e->u.field.name);
                 return ttError(tt);
             }
             e->field = fd;
@@ -657,7 +657,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Buf note;
                 bufInit(&note, c->arena);
                 if (sd) {
-                    bufPrintf(&note, "associated functions of %s:", sd->name);
+                    bufPrintf(&note, "associated functions of %s:", DN(sd));
                     bool any = false;
                     for (size_t i = 0; i < sd->methods.len; i++) {
                         FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
@@ -1178,10 +1178,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     const char *note = arenaPrintf(c->arena,
                             "A payload variant is named by its type -- write `%s.%s(...)`. "
                             "(extC never guesses a type from context: DECISIONS ruling 27.)",
-                            owner->name, name);
+                            DN(owner), name);
                     ckError(c, e->line, note,
                             "`%s` is a variant of `%s`, not a function -- did you mean `%s.%s(...)`?",
-                            name, owner->name, owner->name, name);
+                            name, DN(owner), DN(owner), name);
                     return ttError(tt);
                 }
                 ckError(c, e->line, "built-ins available: `print(x)` / `println(x)`",
@@ -1336,7 +1336,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Buf note;
                 bufInit(&note, c->arena);
                 if (sd) {
-                    bufPrintf(&note, "methods of %s:", sd->name);
+                    bufPrintf(&note, "methods of %s:", DN(sd));
                     if (sd->methods.len == 0) bufPuts(&note, " (none)");
                     for (size_t i = 0; i < sd->methods.len; i++)
                         bufPrintf(&note, " %s",
@@ -1454,7 +1454,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             if (st->kind == TY_STRUCT && sd->typeParams.len > 0) {
                 ckError(c, e->line, "a generic needs explicit type arguments, e.g. `Pair<i32, i32> { ... }`",
-                        "`%s` is generic; type arguments cannot be inferred here", sd->name);
+                        "`%s` is generic; type arguments cannot be inferred here", DN(sd));
                 return ttError(tt);
             }
 
@@ -1464,11 +1464,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (!fd) {
                     Buf note;
                     bufInit(&note, c->arena);
-                    bufPrintf(&note, "fields of %s:", sd->name);
+                    bufPrintf(&note, "fields of %s:", DN(sd));
                     for (size_t k = 0; k < sd->fields.len; k++)
                         bufPrintf(&note, " %s", (*(FieldDef **)vecAt(&sd->fields, k))->name);
                     ckError(c, fi->value->line, bufCstr(&note),
-                            "struct `%s` has no field `%s`", sd->name, fi->name);
+                            "struct `%s` has no field `%s`", DN(sd), fi->name);
                     continue;
                 }
                 Type *want = fd->type;

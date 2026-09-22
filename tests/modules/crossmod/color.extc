@@ -1,0 +1,2 @@
+type color = | red | green | blue
+fn name(c: color) -> i32 { if c == color.green { return 99 }  return 0 }

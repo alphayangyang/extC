@@ -8,6 +8,12 @@
 
 #include "check.h"
 
+/* ⭐ **诊断里显示声明名用 `DN(x)`** —— `StructDef*` / `TypeDef*` 都行 ✓
+ * 为什么要有这一层：模块 mangle 之后 `name` 是内部的 `io$reader`，而 `srcName`
+ * 才是用户写的 `io::reader` ✗ 直接印 `->name` 就是把编译器内部编码漏给用户
+ * （真踩过：`struct \`alpha$pair\` has no field \`zzz\``）✓ */
+#define DN(d) ttDispName((d) ? (d)->srcName : NULL, (d) ? (d)->name : NULL)
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>

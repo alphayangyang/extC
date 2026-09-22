@@ -83,6 +83,9 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args);
 
 /* 类型 → C 标识符：`Pair<i32, u8>` → `Pair_i32_u8` */
 const char *ttMangle(TypeTable *tt, Type *t);
+/* ⭐ **给用户看**的类型名（`io::reader`）—— 不是内部 mangle 名 `io$reader` ✗
+ * 根模块/单文件程序回落到 `name`（就是源码名 ✓）见 types.c 的说明 */
+const char *ttDispName(const char *srcName, const char *name);
 
 bool  ttIsParam(Type *t, const char *name);
 

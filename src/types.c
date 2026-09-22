@@ -268,6 +268,12 @@ bool ttIsParam(Type *t, const char *name) {
     return t && t->kind == TY_PARAM && strcmp(t->param, name) == 0;
 }
 
+/* ⭐ **给用户看**的类型名：模块里的声明显示成 `io::reader`，不是内部 mangle 名
+ * `io$reader` ✗ 根模块/单文件程序的 `srcName` 没设过 ⇒ 回落到 `name`（就是源码名 ✓）*/
+const char *ttDispName(const char *srcName, const char *name) {
+    return (srcName && *srcName) ? srcName : (name ? name : "?");
+}
+
 const char *ttMangle(TypeTable *tt, Type *t) {
     if (!t) return "void";
     switch (t->kind) {
@@ -625,7 +631,7 @@ void ttRender(Type *t, Buf *out) {
             /* 可写视图要打出 `mut` —— 否则报错信息会成为
              * 「expects `slice<i32>`, found `slice<i32>`」，谁也看不懂 */
             if (t->mut) bufPuts(out, "mut ");
-            bufPuts(out, t->sdef->name);
+            bufPuts(out, ttDispName(t->sdef->srcName, t->sdef->name));
             bufPutc(out, '<');
             for (size_t i = 0; i < t->targs.len; i++) {
                 if (i) bufPuts(out, ", ");
@@ -642,7 +648,14 @@ void ttRender(Type *t, Buf *out) {
         case TY_PARAM: bufPuts(out, t->param); return;
         case TY_VOID:  bufPuts(out, "void"); return;
         case TY_ERROR: bufPuts(out, "<error>"); return;
-        default:       bufPuts(out, t->name ? t->name : "?"); return;
+        default: {
+            /* ⭐ 结构体 / 枚举：优先显示**源码名**（模块声明 ⇒ `io::reader`）✗
+             * 露 `io$reader` 就是漏内部编码 —— 用户从没写过那个词 ✗（真踩过）*/
+            if (t->sdef)      { bufPuts(out, ttDispName(t->sdef->srcName, t->sdef->name)); return; }
+            if (t->edef)      { bufPuts(out, ttDispName(t->edef->srcName, t->edef->name)); return; }
+            bufPuts(out, t->name ? t->name : "?");
+            return;
+        }
     }
 }
 

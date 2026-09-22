@@ -75,19 +75,19 @@ static void checkDeclarations(Checker *c) {
                 FieldDef *fb = *(FieldDef **)vecAt(&sd->fields, k);
                 if (strcmp(fa->name, fb->name) == 0)
                     ckError(c, fb->line, NULL, "struct `%s` has duplicate field `%s`",
-                            sd->name, fb->name);
+                            DN(sd), fb->name);
             }
         }
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *ma = *(FuncDef **)vecAt(&sd->methods, j);
             if (findField(sd, ma->name))
                 ckError(c, ma->line, NULL, "`%s.%s`: a field and a method cannot share a name",
-                        sd->name, ma->name);
+                        DN(sd), ma->name);
             for (size_t k = j + 1; k < sd->methods.len; k++) {
                 FuncDef *mb = *(FuncDef **)vecAt(&sd->methods, k);
                 if (strcmp(ma->name, mb->name) == 0)
                     ckError(c, mb->line, NULL, "struct `%s` has duplicate method `%s`",
-                            sd->name, mb->name);
+                            DN(sd), mb->name);
             }
         }
     }
@@ -119,7 +119,7 @@ static void checkDeclarations(Checker *c) {
         for (size_t j = 0; j < m->types.len; j++) {
             TypeDef *td = *(TypeDef **)vecAt(&m->types, j);
             if (strcmp(sd->name, td->name) == 0)
-                ckError(c, td->line, NULL, "`%s` is already a struct", td->name);
+                ckError(c, td->line, NULL, "`%s` is already a struct", DN(td));
         }
     }
 }
@@ -150,7 +150,7 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
         Type *sb = ttBase(p0->type);
         if (p0->type->kind != TY_REF || !sb || sb->sdef != f->owner)
             ckError(c, p0->line, NULL, "`self` of `%s.%s` must be `ref %s`",
-                    f->owner->name, f->name, f->owner->name);
+                    DN(f->owner), f->name, DN(f->owner));
     }
     for (size_t i = 1; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);

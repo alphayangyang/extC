@@ -305,6 +305,11 @@ struct TypeDef {                 /* type status = | ok | warn | error */
     const char *modName;
     bool        isPrivate;
     int          line;
+    /* ⭐ 模块 mangle：**给用户看**的名字（`io::reader`），`name` 是内部 mangle 名
+     * （`io$reader`）✗ 二者必须分开：诊断里露出 `io$reader` 等于把编译器的内部
+     * 编码漏给用户，而用户从没写过那个词 ✗（真踩过：`struct \`alpha$pair\` has no
+     * field \`zzz\``）—— 根模块/单文件程序两者相同 ✓ */
+    const char *srcName;
 };
 
 struct StructDef {
@@ -319,6 +324,11 @@ struct StructDef {
     const char *modName;
     bool        isPrivate;
     int         line;
+    /* ⭐ 模块 mangle：**给用户看**的名字（`io::reader`），`name` 是内部 mangle 名
+     * （`io$reader`）✗ 二者必须分开：诊断里露出 `io$reader` 等于把编译器的内部
+     * 编码漏给用户，而用户从没写过那个词 ✗（真踩过：`struct \`alpha$pair\` has no
+     * field \`zzz\``）—— 根模块/单文件程序两者相同 ✓ */
+    const char *srcName;
 };
 
 struct FuncDef {

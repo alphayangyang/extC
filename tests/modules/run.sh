@@ -13,7 +13,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -52,5 +52,33 @@ check_err cycle          "import cycle"
 check_err missing-file   "cannot find module"
 check_err main-in-module "must live in the entry file"
 check_err ambiguous-type  "ambiguous type \`pair\`"
+
+# ⭐ **判据③：诊断里不许出现 mangle 名**（`$` 在 extC 标识符里不合法 ⇒
+#    消息里出现 `$` 就一定是把内部编码漏给了用户 ✗）
+#    为什么单独抓一条：这类泄漏**不影响编译结果**，只有人眼才看得出来
+#    （踩过：`struct \`alpha$pair\` has no field \`zzz\``）✓
+echo "== 判据③：诊断里不许泄漏 mangle 名（消息里不许出现 \$）=="
+leak=0
+for d in tests/modules/errors/*/ tests/modules/samenames/; do
+    [ -f "$d/main.extc" ] || continue
+    out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
+    # 判据：`$` 夹在标识符字符之间（`alpha$pair`）才叫泄漏；
+    # `$EXTC_STD` 这种**环境变量名**是正常文案 ⇒ 前后要是标识符字符 ✓
+    if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
+        echo "  FAIL $(basename "$d")  ->  诊断里出现了 mangle 名（\$）"
+        echo "$out" | grep -E '[A-Za-z0-9_]\$[A-Za-z0-9_]' | head -2 | sed 's/^/        /'
+        leak=1
+    fi
+done
+# 正例也不能漏（含跨模块的类型/枚举/泛型实例 —— 那几种最容易漏 ✓）
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod; do
+    out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
+    if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
+        echo "  FAIL $(basename "$d")(正例)  ->  输出里出现了 mangle 名（\$）"
+        echo "$out" | grep -E '[A-Za-z0-9_]\$[A-Za-z0-9_]' | head -2 | sed 's/^/        /'
+        leak=1
+    fi
+done
+[ "$leak" = 0 ] && echo "  ok   所有模块测试的诊断/输出里都没有 \$ ✓" || fail=1
 
 exit $fail

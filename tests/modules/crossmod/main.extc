@@ -1,0 +1,21 @@
+// expect: pair = 3/3|color = green|name = 99
+/* ⭐ **跨模块的泛型 + 枚举 + 泛型自由函数** —— 判据③④的主要战场 ✓
+ * 为什么单列一条：这三种是 mangle 最容易漏的地方 ——
+ *   · 泛型实例名是**拼出来**的（`pair$pair_i32`）⇒ 前缀顺序必须跟类型名一致 ④
+ *   · 泛型实例的类型实参里也可能出现模块类型（`lib::box<mod::pair>`）
+ *   · 枚举变体要写成 `color::color.green` ⇒ 类型名与变体名分两次解析
+ * 判据：编译过、输出对、而且**诊断/输出里不许出现 `$`**（`tests/modules/run.sh` 会查 ✓）
+ */
+use pair
+use color
+
+fn main() -> i32 {
+    /* `pair::pair<i32>` —— 模块名(小写) 与 类型名 同名，最容易看出前缀有没有接错 ✓ */
+    var p: pair::pair<i32> = pair::make(3)
+    println("pair = ", p.a, "/", p.b)
+
+    var c: color::color = color::color.green
+    if c == color::color.green { println("color = green") }
+    println("name = ", color::name(c))
+    return 0
+}

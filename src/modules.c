@@ -281,7 +281,7 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s);
 static void rwExpr(Loader *L, ModUnit *self, Expr *e);
 static void rwExprName(ModUnit *self, Expr *e);
 
-/* 类型位置：`io::File` ⇒ `File`（顺便查可见性 ✓）*/
+/* 类型位置：`io::File` ⇒ mangle 名（顺便查可见性 ✓）*/
 static void rwType(Loader *L, ModUnit *self, Type *t) {
     if (!t) return;
     if (t->kind == TY_REF) { rwType(L, self, t->inner); return; }
@@ -302,12 +302,18 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
     }
     const char *shortName = arenaStrndup(L->a, t->name, (size_t)(sep - t->name));
     const char *rest = sep + 2;
+    /* ⚠️ 诊断里 `use …` 只能写**模块名**：`rest` 里还可能带 `::`
+     * （`alpha::pair` 出现在 `lib::box<alpha::pair>` 的实参里 ⇒ `rest` = `pair`，
+     * 而 `beta::color` ⇒ `rest` = `color`；但 `a::b::c` 那种就会把 `b::c` 拼进去 ✗）
+     * 踩过：消息是"add `use alpha::pair`"，用户照着写会得到一个不存在的模块 ✗ */
+    const char *restSep = strstr(rest, "::");
+    const char *restTop = restSep ? arenaStrndup(L->a, rest, (size_t)(restSep - rest)) : rest;
     ModUnit *target = importedAs(L, self, shortName);
     if (!target) {
         ctxError(self->ctx, 0, 1,
                  "Modules are imported explicitly (semantic import, not a textual include)."
                  " Write `use a::b` at the top of the file, then use `b::Name`.",
-                 "`%s` is not imported here -- add `use %s::%s`", shortName, shortName, rest);
+                 "`%s` is not imported here -- add `use %s`", shortName, shortName);
         L->errors++;
         t->name = rest;
         return;
@@ -318,12 +324,12 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
         ctxError(self->ctx, 0, 1,
                  "`@private` means other modules must not name it. Drop the annotation if it is"
                  " meant to be used from here.",
-                 "`%s::%s` is private to module `%s`", shortName, rest, shortName);
+                 "`%s::%s` is private to module `%s`", shortName, restTop, shortName);
         L->errors++;
     } else if (!sd && !td) {
         ctxError(self->ctx, 0, 1,
                  "A module exports its top-level declarations; `@private` ones are hidden.",
-                 "module `%s` has no type `%s`", shortName, rest);
+                 "module `%s` has no type `%s`", shortName, restTop);
         L->errors++;
     }
     t->name = renOfTarget(target, rest);
@@ -569,10 +575,19 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
      * ⇒ 修法：**先把所有名字算完**（4 个循环全是分配），**再**填表（只存指针，不再分配）✓ */
     const char **names = (const char **)arenaAlloc(L->a, sizeof(char *) * 64);
     size_t n = 0;
-    for (size_t i = 0; i < src->structs.len && n < 64; i++)
-        names[n++] = mangleName(L, u, (*(StructDef **)vecAt(&src->structs, i))->name);
-    for (size_t i = 0; i < src->types.len && n < 64; i++)
-        names[n++] = mangleName(L, u, (*(TypeDef **)vecAt(&src->types, i))->name);
+    /* ⚠️ **`srcName` 必须在这里、按"源码名"填**：等到 `mergeUnit` 里再填时
+     * `d->name` 已经变成 mangle 名了 ⇒ 会填成 `alpha::alpha$pair` ✗（真踩过）
+     * ⇒ 顺手在这一趟把给用户看的名字定下来（`alpha::pair`）✓ */
+    for (size_t i = 0; i < src->structs.len && n < 64; i++) {
+        StructDef *d = *(StructDef **)vecAt(&src->structs, i);
+        d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
+        names[n++] = mangleName(L, u, d->name);
+    }
+    for (size_t i = 0; i < src->types.len && n < 64; i++) {
+        TypeDef *d = *(TypeDef **)vecAt(&src->types, i);
+        d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
+        names[n++] = mangleName(L, u, d->name);
+    }
     for (size_t i = 0; i < src->globals.len && n < 64; i++)
         names[n++] = mangleName(L, u, (*(GlobalDef **)vecAt(&src->globals, i))->name);
     for (size_t i = 0; i < src->funcs.len && n < 64; i++) {
