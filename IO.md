@@ -58,11 +58,17 @@
 
 | 操作 | 数量级 |
 |---|---|
-| 一次 `read(2)` syscall | **~0.5–1 µs**（WSL 里还要更贵一点）|
+| 一次 `read(2)` syscall | **~0.13 µs**（2026-09-23 实测：page-cache 热的时候）|
 | 内存里扫一个字节 | **~0.3 ns** |
 
-**差 1000 倍以上。** 一个 10 万个数的输入，逐字节读 = **上亿次 syscall ≈ 100 秒**；
-整块读进缓冲再在内存里切 = **0.1 秒**。
+**差几百倍。** 2026-09-23 实测（12MB / 100 万行，`-O2`，两者都读满）：
+
+| 读法 | 时间 | syscall 次数 |
+|---|---|---|
+| 逐字节（老 `readLine`） | **1.444 s** | 1200 万 |
+| 一次 64KB（`reader`） | **0.032 s** | ~183 |
+
+⇒ **45×** ✓ 而且差距全在 `sys` 时间上（1.060s → 0.008s）—— 正是"每字节进一次内核"的代价 ✓
 
 > 所以 **extC 里不提供逐字节的 `readLine`** —— 不为别的，
 > **不能让"方便的那个"比"快的那个"慢 1000 倍**。C++ 提供了（`getchar` / 带同步的 `cin`），
@@ -209,31 +215,38 @@ fn parseInt (s: slice<u8>) -> result<i64, ioError>          // 整个切片当�
 
 gomoku 引擎这种**一行一行来、而且不能假设能把输入全塞进内存**的场合：
 
+✅ **已落地（定案 74）** —— 形状跟下面写的完全一致：
+
 ```extc
 struct reader {
-    f:     file
-    chunk: mut slice<u8>    // ← 调用者给的块缓冲，比如 [4096]u8
+    fd:    i32
+    chunk: mut slice<u8>    // ← **64KB，`readerOf` 自己给**（不是调用者给 ✓）
     len:   i64              // chunk 里有多少有效字节
     pos:   i64              // 已经消费到哪儿
+
+    fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError>
+    fn nextToken(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError>
+    fn nextInt(self: mut ref reader) -> result<i64, ioError>
+    fn skipSpace(self: mut ref reader) -> result<i64, ioError>
 }
 
-fn readerOf(f: file, chunk: mut slice<u8>) -> reader
-fn readLine(r: mut ref reader, out: mut slice<u8>) -> result<i64, ioError>   // 拷进 out ✓
-fn nextIntR(r: mut ref reader) -> result<i64, ioError>
+fn readerOf(fd: i32) -> reader
 ```
 
 ```extc
-var chunk: [4096]u8
-var line:  [256]u8
-var r = readerOf(stdin(), mut chunk[..])
+var line: [256]u8
+var r = readerOf(io::STDIN_FD)
 while true {
-    let n = readLine(mut r, mut line[..])?
-    if n == 0 { break }
+    let n = r.nextLine(line[..])?
+    if n == 0 { break }              // 0 = EOF（**不是错误** ✓）
     ...
 }
 ```
 
-**每次 `rawRead` 管 4KB**（一整个 chunk），不是每字节一次 syscall ✓
+**每次 `read(2)` 管 64KB**（一整个 chunk），不是每字节一次 syscall ✓
+**行缓冲仍然调用者给**（拷进 `out` ⇒ 你手上的 `line` 一直是你的 ✓）——
+"块缓冲隐式给"跟"行缓冲调用者给"**不矛盾**：前者是**实现细节**（一次读多大），
+后者是**数据归属**（那行字节归谁）✓
 **行是拷进 `out` 的**，所以不存在"这个视图下次调用就失效"的隐藏约定 ——
 你手上的 `line` 一直是你的 ✓
 
@@ -395,7 +408,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 | 段 | 内容 | 做完能干什么 | 进度（2026-09-23 实测） |
 |---|---|---|---|
-| **IO-0** | 原语 `rawRead`/`rawWrite` + `file`/`ioError` + **`readAll`** + **切片解析函数族** | **OI 式输入**能用了；gomoku 能读协议 | 🟡 **做到一半** —— 原语**已落地**（名字是 `read`/`write`，在 `stdlib/std/sys.extc`，带 `extern!` 签字）+ `std::io` 的 `readLine`/`writeBytes`/`flushOut` + 内建 `flush()` ✓（定案 73，`tests/io/` 常设验收）⬜ **还欠**：`readAll` · 切片解析函数族（`nextInt`/`nextToken`/`nextLine`/`skipSpace`）· `reader` · `ioError` |
+| **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
 | **IO-1** | `open` + 帧拥有的 `extc_files` + `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**（跟 `extern!` 的 `owned` 是**同一个前置**：要"帧拥有资源"那套）|
 | **IO-2** | `exit(code)`、`close(f)!`、`writer`（可见缓冲）、termios raw mode | TUI + 刷量输出 | ⬜ **没有** |
 
@@ -413,7 +426,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 | 3 | **`readAll` 读满之后剩的怎么办** | 本文选「返回读到的字节数，剩下的还在 fd 里，再调一次」（零状态）；另一条是 `readExactly`（读不满就报错）—— 两个都要吗 |
 | 4 | **格式化输入 B（编译期格式串）什么时候做** | 现在就跟 A 一起规划接口形状 vs 先只做 A（`nextInt` 那一族），B 记为「以后」|
 | 5 | **`{ }` 块要不要变成释放点** | 现在是「帧 = 释放点」；块级释放要 arena 支持 mark/release |
-| 6 | **`reader` 的缓冲谁给** ✅ | 主人 2026-09-18：`readerOf(stdin())` 不用给（内部 `alloc` 4KB），行缓冲 `line(mut buf[..])` **必须给** |
+| 6 | ~~**`reader` 的缓冲谁给**~~ ✅ **已定案（定案 74，2026-09-23 落地）** | **块缓冲隐式给**（`readerOf(fd)` 内部 `new u8[65536]`，落到调用点的 arena ⇒ 跟 reader 同寿 ✓）；**行缓冲调用者给**（拷进 `out` ✓）。⚠️ 本文 §4.3 原来写的是"调用者给块"，跟这里**自相矛盾** —— 已按后者统一 ✓ |
 
 ### 已经拍板的（不用再想）
 

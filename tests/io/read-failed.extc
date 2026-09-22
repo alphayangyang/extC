@@ -1,0 +1,17 @@
+/* ⭐ 判据③：**read(2) 出错 ⇒ failure(readFailed)**，绝不许当成 EOF ✗✗
+ * 用不存在的 fd（99999）逼出这个错 ✓
+ * 老实现的 `if got <= 0 { return n }` 会让"读失败"看起来就是"文件结束了" ✓ */
+use std::io
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(99999)
+    var buf: [8]u8
+    match r.nextLine(buf[..]) {
+        success(n) => println("当成 EOF 了 ✗ n = ", n)
+        failure(er) => match er {
+            readFailed(fd) => println("readFailed ✓ (fd = ", fd, ")")
+            lineTooLong(k) => println("错报成行太长 ✗")
+        }
+    }
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

@@ -1,0 +1,19 @@
+/* ⭐ 判据⑤：**分块读** —— 10 万行 × 3 个数要毫秒级跑完 ✓
+ * 老实现逐字节读同一份输入要 ~0.5s（实测 19MB/50 万行 2.30s）✗
+ * 期望和 = 100000 × (123 + 456 + 789) = 136800000 */
+use std::io
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    var sum: i64 = 0
+    var i: i32 = 0
+    while i < 100000 {
+        let a = r.nextInt()?
+        let b = r.nextInt()?
+        let c = r.nextInt()?
+        sum = sum + a + b + c
+        i = i + 1
+    }
+    println("sum = ", sum)
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

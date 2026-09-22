@@ -1,0 +1,11 @@
+/* ⭐ 判据①：**读到 EOF 不是错误** ⇒ `success(0)` ✓
+ * （老 `readLine` 分不清 EOF 和读错误 —— 那正是这一条要钉住的 ✓） */
+use std::io
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    var buf: [64]u8
+    let n = r.nextLine(buf[..])?
+    if n == i64(0) { println("EOF ✓") } else { println("读到了 ", n, " 字节 ✗") }
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

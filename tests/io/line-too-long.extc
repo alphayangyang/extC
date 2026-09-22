@@ -1,0 +1,18 @@
+/* ⭐ 判据②：**行比缓冲长 ⇒ failure(lineTooLong)**，绝不许静默切一半 ✗✗
+ * 老实现会把一行切成两"行"返回 —— 那是**看不出来的数据损坏** ✓ */
+use std::io
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    var buf: [8]u8
+    let n1 = r.nextLine(buf[..])?          /* "ab" ⇒ 2 ✓ */
+    println("第一行 = ", n1)
+    match r.nextLine(buf[..]) {            /* 19 字节 > 8 ⇒ 必须失败 ✓ */
+        success(n) => println("静默切一半了 ✗ n = ", n)
+        failure(er) => match er {
+            lineTooLong(k) => println("lineTooLong ✓ (", k, " 字节)")
+            readFailed(fd) => println("错报成读失败 ✗")
+        }
+    }
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }
