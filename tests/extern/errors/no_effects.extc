@@ -1,0 +1,3 @@
+/* 反例：没签字 ⇒ 按最坏情况（可能存你的指针）⇒ 传本帧的地址必须被挡 ✗ */
+extern!("libc") fn fill(p: ref i32, n: i32) -> i32
+fn main() -> i32 { var x: i32 = 7  let r = fill(ref x, 3)  println(r)  return 0 }

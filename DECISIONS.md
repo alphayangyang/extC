@@ -2328,3 +2328,39 @@ indexOf<i32>(nums[..], 50)   // ③ **显式实参**（`T` 只在返回类型时
    （摘要按实例算）**是同一片地盘** ⇒ 一起做 ✓
 2. **`T` 上的 `<` / `>` 还不支持**（`maxOf` 那种要"给 T 一个比较协议"）⇒ 等**函数值/协议（6a）** ✓
    现在只能对具体类型写（`fn maxI32(a: i32, b: i32) → i32`）✓ 而 `==` / `!=` 已经行了 ✓
+
+## 定案 72 · **`extern!` + 信任声明 v1**（`LIBS.md` LQ3，2026-09-22）
+
+> 库这条线的第二块：**库怎么碰系统**（`LIBS.md` §4.3）。主人拍板 LIBS.md 时说过
+> 「extern!那个就很对」✓
+
+```extc
+extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0        // ← 我签字：我没存你的指针 ✓
+
+extern!("libc") fn fill(p: ref i32, n: i32) -> i32      // 没签字
+```
+
+| 写法 | 编译器的态度 |
+|---|---|
+| `effects Addr=0 Cont=0` | 相信它 ⇒ 实参**不受任何寿命约束** ⇒ 好用 ✓ |
+| **不写** | **按最坏情况**：每个参数都可能被 C 存进"活到帧外"的地方 ⇒ 传**本帧地址**（`ref x`）**编译错误** ✓ 默认安全 ✓ |
+| `owned` | **明确报错"还没实现"** ✗（返回的 C 内存得有人释放，而 extC 没有 `free` ⇒ 要等"帧拥有资源"那套，跟 `IO.md` §5 的文件同形 ✓）|
+
+**形状限制**（`LIBS.md` §5 的映射表落地）：跨边界**只用标量或单个指针**（`ref T` / `?ref T`）✓
+`slice<T>` 在 C 那边是**两个**参数（ptr + len）⇒ 名字对不上 ✗ ⇒ slice 版的 wrapper 用 extC 写、
+把 `s.data` / `s.len` 分别传下去 ✓（这正是 `IO.md` 的"档 2 wrapper" ✓）
+
+**实现**：
+- parser：`extern!("lib") fn …`（借道 `parseFunc`，`noBody` 标志 ✓）+ 信任声明子句 ✓
+- 检查器：`collectEffects` 对 extern **直接用签字 / 最坏情况**（⚠️ 少了这条 = 摘要全空 =
+  "它什么都不存" = **放行悬垂** ✗✗）；`computeEffectsTransitive` 认它是完整的 ✓；
+  规则 ④ 之外**单开一条**：extern 只按签名判（"可能存"⇒ 那一档实参必须活到深度 0 ✓）
+- codegen：只吐原型、**不加 `static`**、不进函数体循环 ✓
+
+**验收**：`tests/extern/run.sh`（1 正例 + 3 反例）已接进 `check.sh` ✓ 正例真调 libc：
+`getpid()` + `write(1, …)` 直接把字节写到 stdout ✓ 245 测试全绿 · golden 逐字节不变 ✓
+
+⚠️ v1 还说清两件事：① **特权没做**（谁都能写 `extern!` —— 设计上原语该只住在 `std::sys` ✓）
+② 跟 runtime 已引用的头冲突的函数名（`memcpy`/`printf`…）会报 `conflicting types` ⇒
+   声明前先看生成的 C 引了哪些头 ✓（`read`/`write` 这类没引 unistd.h ⇒ 不冲突 ✓）

@@ -9,6 +9,7 @@ static const char *KEYWORDS[] = {
     "fn", "let", "var", "if", "else", "while", "return", "match",
     "break", "continue", "struct", "type", "true", "false", "ref", "mut",
     "use",                            /* 定案 70：语义导入 ✓ */
+    "extern",                         /* 定案 72：`extern!("libc")` + 信任声明 ✓ */
     NULL
 };
 

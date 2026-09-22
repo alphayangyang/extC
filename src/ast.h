@@ -330,6 +330,15 @@ struct FuncDef {
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* 方法所属的 struct；自由函数为 NULL */
     bool        isAssoc;         /* 写在 struct 体内但**不带 `self`** —— 关联函数 */
+    /* ⭐ 定案 72（`LIBS.md` LQ3）：**外部声明**（`extern!("libc") fn …`）——
+     * C 那边是黑盒 ⇒ 谁碰了它谁就得**签字**：
+     *   hasEffects  —— 写了 `effects Addr=… Cont=…`（= 我保证它不干别的）
+     *   没写        —— **按最坏情况算**（每个参数都可能被存下来 ⇒ 几乎不可用但安全 ✓）
+     *   owned       —— 返回的内存归我 ⇒ **v1 直接报错**（要等"帧拥有资源"那套 ✓）*/
+    bool        isExtern;
+    const char *externLib;       /* `extern!("libc")` 里的那个名字（诊断用 ✓）*/
+    bool        hasEffects;
+    unsigned    extAddrMask, extContMask;
     bool        reserved;        /* 来自 prelude */
     /* ---- A3 逃逸提升：这个函数要不要一只"家"arena？----
      * 规则：**函数体里有分配，且返回类型含引用/视图** ⇒ 它多收一个隐藏参数

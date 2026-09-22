@@ -1,0 +1,6 @@
+/* 正例：`extern!` + **信任声明**（`effects Addr=0 Cont=0` = "我不存你的指针" ✓）
+ * ⚠️ 这些原语在真正落地时属于**特权模块 std::sys**（`LIBS.md` §5）—— 这里为了测试
+ *    直接写在入口文件里 ✓（v1 还没做"只有特权模块能声明原语"那条 ✗）*/
+extern!("libc") fn getpid() -> i32
+extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0

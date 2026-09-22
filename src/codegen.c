@@ -3006,8 +3006,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         bufInit(&sig, arena);
         /* ⚠️ 参数表**必须**跟定义用同一套（`cgParamList`）—— 有家 arena 的函数
          * 多一只隐藏参数，原型漏了就是"C 的类型对不上" ✗（真踩过）*/
-        bufPrintf(&sig, "%s%s %s(%s);", cgIsMain(f) ? "" : "static ", ret,
-                  cFuncName(&g, f), cgParamList(&g, f));
+        /* ⭐ 定案 72：外部声明**不加 `static`**（要给链接器看得见 ✓）—— 而且只吐原型 ✓ */
+        bufPrintf(&sig, "%s%s %s(%s);",
+                  (cgIsMain(f) || f->isExtern) ? "" : "static ",
+                  ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
         substLeaveFunc(&g, svP, svA);
     }
@@ -3044,6 +3046,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
 
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
+        if (f->isExtern) continue;              /* ⭐ 定案 72：外部声明没有体 ✓ */
         Vec *svP, *svA;
         substEnterFunc(&g, f, &svP, &svA);      /* ⭐ PLAN #47：实例要开替换 ✓ */
         genFunc(&g, f);

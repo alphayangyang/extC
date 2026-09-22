@@ -436,6 +436,9 @@ static bool stmtStoresThroughDeref(Stmt *s, FuncDef *f) {
  */
 bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     if (!f) return false;
+    /* ⭐ 定案 72：外部声明的摘要**就是那张签字**（`collectEffects` 已经填好）⇒
+     * 它"完整"（我们选择相信声明 ✓）—— 别拿"没有体"去算成空摘要 ✗✗ */
+    if (f->isExtern) return true;
     if (f->effState == 1) return f->effComplete;
     if (f->effState == 3) { f->effComplete = false; return false; }   /* 环 ⇒ 不完整 */
     f->effState = 3;
@@ -479,6 +482,33 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * 下一步（PLAN-REGION 1.2b）：照 §8.5 做**惰性传递闭包**（memo + 环保护），
      * 并且只在"摘要可判为完整"时才跳过本规则 ✓ */
     /* ⭐ 1.2a：**只有摘要被证明完整**时，才允许按"没有地址流"跳过下面的保守检查 ✓ */
+    /* ⭐ 定案 72：**外部声明**单独一条路 —— 它是 C 那边的黑盒，
+     * 签名里写的效果就是**全部**依据，而"它可能存下来"意味着那份存储可能
+     * 活到**帧外**（C 那边可以塞进全局/静态）⇒ 那一档的实参必须活到**深度 0** ✓
+     * （没签字 ⇒ 每个参数都按"会存"算 ⇒ 传局部会被挡 —— **默认安全** ✓
+     *   签了 `effects Addr=0 Cont=0` ⇒ 一个参数都不查 ⇒ 好用 ✓）*/
+    if (callee && callee->isExtern) {
+        unsigned stored = callee->addrMask | callee->contMask | callee->otherMask;
+        if (stored == 0) return;                 /* 签字说不存 ⇒ 无约束 ✓ */
+        for (size_t j = 0; j < params->len && j < args->len && j < 32; j++) {
+            if (!((stored >> j) & 1u)) continue;
+            Expr *a = *(Expr **)vecAt(args, j);
+            Param *p = *(Param **)vecAt(params, j);
+            if (!p->type || p->type->kind != TY_REF) continue;   /* 标量没有寿命 ✓ */
+            Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
+            int d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, a);
+            if (d == 0) continue;                /* 本来就活到帧外 ✓ */
+            ckError(c, line,
+                    "A C function is a black box: unless the `extern!` declaration says it does"
+                    " not keep the pointer (`effects Addr=0 Cont=0`), it may store it somewhere"
+                    " that outlives this frame. Sign the declaration, or pass something that"
+                    " lives longer.",
+                    "argument %zu of `%s` may be kept by C forever, but it points into this"
+                    " frame (depth %d)", j + 1, fname, d);
+        }
+        return;
+    }
+
     bool complete = callee && computeEffectsTransitive(c, callee);
     /* ⚠️⚠️ **两个检查各自决定跳不跳，别共用一个 early return** ✗
      * （共用的代价踩过：`push` 有 `Cont` 位就会让**地址流**那条也跑起来 ⇒
@@ -1036,6 +1066,24 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
 }
 
 static void collectEffects(Checker *c, FuncDef *f) {
+    /* ⭐ 定案 72：**外部声明没有体** ⇒ 摘要只能来自签字（或者最坏情况）✓
+     * ⚠️ 少了这一条就是"摘要全空 = 它什么都不存"✗✗ —— 那是**放行悬垂**的方向 ✗ */
+    if (f->isExtern) {
+        if (f->hasEffects) {
+            f->addrMask = f->extAddrMask;
+            f->contMask = f->extContMask;
+        } else {
+            /* 没签字 ⇒ 每个参数都可能被存下来（保守到"几乎不能用"，但安全 ✓
+             * —— 这正是"默认安全"该有的样子：想用得舒服就得签 ✓）*/
+            unsigned all = 0;
+            for (size_t i = 0; i < f->params.len && i < 32; i++) all |= (1u << i);
+            f->addrMask = all;
+            f->contMask = all;
+        }
+        f->effComplete = true;      /* 声明就是权威（跟"体算出来的"等价 ✓）*/
+        f->otherMask   = 0;
+        return;
+    }
     /* ⚠️ Vec 自带 arena 指针（base.h）；FuncDef 是 arenaAllocZero 出来的 ⇒
      *   这里必须显式 vecInit，不然 vecPush 会拿 NULL arena 去分配 ⇒ 段错误 ✗（踩过）*/
     if (!f->callees.arena) vecInit(&f->callees, c->arena, sizeof(FuncDef *));
@@ -1054,10 +1102,47 @@ static void collectEffects(Checker *c, FuncDef *f) {
 }
 
 static void checkFunc(Checker *c, FuncDef *f) {
+    /* ⭐ 定案 72：外部声明**没有体** ⇒ 只查签名（参数类型在别处已经解析过 ✓）*/
+    if (f->isExtern) {
+        f->mayUseArena = false;
+        f->needsHome   = false;
+        /* ⚠️ 形状限制（`LIBS.md` §5 的映射表）：跨边界只用**标量或单个指针** ✓
+         * 为什么：`slice<T>` 在 C 那边是**两个**参数（ptr + len）⇒ 名字对不上 ✗
+         * （`memcpy` 那种 `(dst, src, n)` 就写三个参数；slice 版的 wrapper 用 extC 写在
+         *   stdlib 里，把 `s.data` / `s.len` 分别传下去 ✓）*/
+        for (size_t i = 0; i < f->params.len; i++) {
+            Param *p = *(Param **)vecAt(&f->params, i);
+            Type *t = ttBase(p->type);
+            bool ok = t && (t->kind == TY_BUILTIN ||
+                            (t->kind == TY_REF && ttBase(t->inner) &&
+                             ttBase(t->inner)->kind == TY_BUILTIN));
+            if (!ok)
+                ckError(c, p->line,
+                        "A C function's arguments are scalars and single pointers. A `slice<T>`"
+                        " becomes two C arguments (data + len), and a struct's layout is not"
+                        " frozen -- wrap those in an extC function that passes `s.data` / `s.len`"
+                        " explicitly.",
+                        "`extern!` argument %zu has type `%s`, which cannot cross the C boundary",
+                        i + 1, typeStr(c, p->type));
+        }
+        {
+            Type *r = f->ret ? ttBase(f->ret) : NULL;
+            bool ok = !r || r->kind == TY_BUILTIN ||
+                      (r->kind == TY_REF && ttBase(r->inner) && ttBase(r->inner)->kind == TY_BUILTIN);
+            if (!ok)
+                ckError(c, f->line,
+                        "A C function can return a scalar or a single pointer; anything else has"
+                        " no C-level representation here.",
+                        "`extern!` return type `%s` cannot cross the C boundary",
+                        typeStr(c, f->ret));
+        }
+        collectEffects(c, f);            /* 摘要 = 签字（或最坏情况）✓ */
+        return;
+    }
     FuncDef *savedFunc = c->curFunc;
     /* A3：**有分配 + 返回有用的东西（含引用/视图）** ⇒ 这个函数要一只"家"arena ✓
      * （返回 `i32` 的函数不要 —— 它的分配留在自己块里，A2 的紧致性不丢 ✓）*/
-    if (stmtHasNew(f->body) &&
+    if (!f->isExtern && stmtHasNew(f->body) &&
         ((f->ret && typeContainsRef(c->tt, f->ret)) || stmtStoresThroughDeref(f->body, f)))
         f->needsHome = true;
 
@@ -1509,7 +1594,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         changed = false;
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-            if (f->needsHome) continue;
+            if (f->needsHome || f->isExtern || !f->body) continue;   /* extern 没有体 ✓ */
             if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
         }
         for (size_t i = 0; i < m->structs.len; i++) {
@@ -1594,6 +1679,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * ⚠️ `main` 恒为真（它是根"家"，`__extc_home = &__extc_a[1]` 需要那只数组）✓ */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (f->isExtern || !f->body) { f->mayUseArena = false; continue; }   /* 定案 72 ✓ */
         f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
     }
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -1619,6 +1705,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 static bool stmtCallsAllocator(Checker *c, Stmt *s);   /* 定义在下面（互相递归）*/
 static bool funcAllocates(Checker *c, FuncDef *f) {
     if (!f) return true;                     /* 拿不准 ⇒ 当"会" ✓ */
+    if (f->isExtern) return false;           /* 外部函数不碰我们的 arena ✓ */
     if (f->allocState == 1) return true;
     if (f->allocState == 2) return false;
     if (f->allocState == 3) return true;     /* 环上 ⇒ 保守 */

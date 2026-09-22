@@ -1,0 +1,4 @@
+/* 反例：`owned` 还没实现（要等"帧拥有资源"那套 ✓）*/
+extern!("zlib") fn gzalloc(n: i64) -> ref u8
+    owned
+fn main() { println(1) }

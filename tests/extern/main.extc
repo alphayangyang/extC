@@ -1,0 +1,12 @@
+// expect: pid 是一个正数 ✓ 写了 5 字节 ✓
+use libc
+
+fn main() -> i32 {
+    if libc::getpid() > 0 { println("pid 是一个正数 ✓") }
+
+    var msg: [8]u8 = [104, 105, 10, 33, 10, 0, 0, 0]   /* "hi\n!\n" */
+    var s: slice<u8> = msg[..]
+    let n = libc::write(1, s.data, 5)                  /* 直接写 fd=1 */
+    if n == 5 { println("写了 5 字节 ✓") }
+    return 0
+}

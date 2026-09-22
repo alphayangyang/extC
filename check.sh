@@ -27,6 +27,11 @@ if out=$(./tests/generics/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
 else bad "tests/generics/run.sh"; echo "$out"; fi
 
+echo "== extern! + 信任声明（定案 72：签字才放行 · 默认最保守）=="
+if out=$(./tests/extern/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
+else bad "tests/extern/run.sh"; echo "$out"; fi
+
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(./tests/modules/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（2 正例 + 6 反例）"

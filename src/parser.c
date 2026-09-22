@@ -13,6 +13,7 @@ typedef struct {
      * 在条件位置里，`{` 属于**块**而不是结构体字面量 —— 这就是「位置规则」，
      * 它取代了以前那套「首字母大写才算结构体字面量」的隐藏魔法。 */
     bool   inCond;
+    bool   noBody;      /* ⭐ 定案 72：`extern!` 的声明只解析签名（没有体 ✓）*/
 } Parser;
 
 /* ---------------------------------------------------------------- 前瞻 */
@@ -154,8 +155,87 @@ static UseDecl *parseUse(Parser *p) {
     return u;
 }
 
+/* ⭐ 定案 72：`extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64`
+ *                          effects Addr=0 Cont=0        // ← 我签字：不存你的指针 ✓
+ *
+ * **形状上的硬规矩**（v1，`LIBS.md` §5 的映射表）：参数/返回只用**标量或单个指针**
+ * （`ref T` / `?ref T`）—— 因为 C 那边就是这些；`slice<T>`（ptr+len 两个参数）
+ * 那种"语法糖展开"在跨边界时没人对得上 ⇒ **让 stdlib 的 wrapper 去写** ✓
+ *
+ * 效果摘要：**写了就按写的算，没写就按最坏情况算**（每个参数都可能被存 ⇒ 安全但难用 ✓）*/
+static FuncDef *parseExtern(Parser *p) {
+    Token *kw = take(p);                       /* extern */
+    if (!expect(p, "!", NULL)) return NULL;
+    if (!expect(p, "(", NULL)) return NULL;
+    Token *lib = cur(p);
+    if (lib->kind != TK_STRING) {
+        ctxError(p->ctx, lib->line, lib->col, NULL,
+                 "`extern!(\"lib\")` needs the C library's name as a string (for diagnostics)");
+        return NULL;
+    }
+    take(p);
+    if (!expect(p, ")", NULL)) return NULL;
+    if (!at(p, "fn")) {
+        ctxError(p->ctx, kw->line, kw->col, NULL, "`extern!` must be followed by a `fn` declaration");
+        return NULL;
+    }
+    p->noBody = true;                          /* ⭐ 只解析签名，不要体 ✓ */
+    FuncDef *f = parseFunc(p);
+    p->noBody = false;
+    if (!f) return NULL;
+    f->isExtern  = true;
+    f->externLib = lib->text;
+    f->body = NULL;                            /* 外部声明**没有体** ✓ */
+
+    /* 信任声明（可以写多行）—— ⚠️ 每轮先跳空行/换行，不然 `at()` 看到的是换行符 ✗ */
+    while (true) {
+        skipJunk(p);
+        if (at(p, "effects")) {
+            take(p);
+            f->hasEffects = true;
+            for (;;) {
+                Token *nm = expectIdent(p, "`Addr` or `Cont`");
+                if (!nm) return NULL;
+                if (!expect(p, "=", NULL)) return NULL;
+                Token *val = cur(p);
+                if (val->kind != TK_INT) {
+                    ctxError(p->ctx, val->line, val->col, NULL,
+                             "`effects` takes small integers, e.g. `effects Addr=0 Cont=0`");
+                    return NULL;
+                }
+                take(p);
+                unsigned bits = (unsigned)val->ival;
+                if (strcmp(nm->text, "Addr") == 0)      f->extAddrMask = bits;
+                else if (strcmp(nm->text, "Cont") == 0) f->extContMask = bits;
+                else {
+                    ctxError(p->ctx, nm->line, nm->col,
+                             "`Addr` = it stores `&argument`; `Cont` = it stores a pointer it"
+                             " read out of an argument. Bit i = the i-th argument.",
+                             "unknown effect `%s` (only `Addr` and `Cont` exist)", nm->text);
+                    return NULL;
+                }
+                if (at(p, "Addr") || at(p, "Cont")) continue;
+                break;
+            }
+            continue;
+        }
+        if (at(p, "owned")) {
+            Token *ow = take(p);
+            ctxError(p->ctx, ow->line, ow->col,
+                     "Memory returned by C has to be released, and extC has no `free` -- the plan"
+                     " is a frame-owned resource object (same shape as `IO.md` §5's files)."
+                     " Until that exists, only declare C functions that write into memory you"
+                     " already own.",
+                     "`owned` is not implemented yet");
+            return NULL;
+        }
+        break;
+    }
+    return f;
+}
+
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
-    Parser p = { ctx, arena, toks, 0, false };
+    Parser p = { ctx, arena, toks, 0, false, false };
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
@@ -198,6 +278,11 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!g) return false;
             g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
+        } else if (at(&p, "extern")) {
+            FuncDef *f = parseExtern(&p);
+            if (!f) return false;
+            f->isPrivate = isPrivate;
+            *(FuncDef **)vecPush(&out->funcs) = f;
         } else if (at(&p, "fn")) {
             FuncDef *f = parseFunc(&p);
             if (!f) return false;
@@ -437,6 +522,9 @@ static FuncDef *parseFunc(Parser *p) {
         if (!fd->ret) return NULL;
     }
 
+    /* ⭐ 定案 72：`extern!` 的声明**没有体** —— 用 `p->noBody` 告诉 parseFunc ✓
+     * （比复制一份 parseFunc 好：参数/返回/泛型那几段都一样，抄一遍迟早会走样 ✗）*/
+    if (p->noBody) return fd;
     fd->body = parseBlock(p);
     if (!fd->body) return NULL;
     return fd;
