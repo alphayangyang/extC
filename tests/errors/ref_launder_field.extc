@@ -1,4 +1,18 @@
-// 同一条限制的正常形状：把借来的引用存进「参数指向的对象」
+// 把借来的引用存进「参数指向的对象」⇒ 调用点必须挡住 ✓（定案 67）
+// ⚠️ **同层**的那种调用（`keeper` 和 `n` 在同一个块里）现在是**合法**的 ✓
+//    —— 它本来就安全（两个一起死），以前被 blanket 规则连带拒掉 ✗
+//    这里用的是**危险**的那种：`n` 在更深的块里 ✗
+var g: i32 = 0
+
 struct slot { r: mut ref i32 }
+
 fn bind(s: mut ref slot, target: mut ref i32) { s.r = target }
-fn main() -> i32 { var k: i32 = 0  var keeper: slot = { r: ref k }  var n: i32 = 1  bind(ref keeper, ref n)  return 0 }
+
+fn main() {
+    var keeper: slot = { r: ref g }
+    {
+        var n: i32 = 1
+        bind(ref keeper, ref n)      /* n 出块就死 ⇒ keeper.r 悬垂 ✗ */
+    }
+    println("keeper.r = ", *keeper.r)
+}

@@ -29,10 +29,12 @@
 | # | 做什么 | 改哪 | 验收 |
 |---|---|---|---|
 | **1.1** ✅ **完成**（2026-09-21）| **算摘要**：`FuncDef` 加 `addrMask`/`contMask`/`homeAddrMask`/`homeContMask`（位 = 参数）；区分**目的地**（形参容器 vs **本帧新分配的对象**）与**来源**（地址流 / 内容流 / Fresh）| `src/ast.h`、`src/check_top.c` | **已验收**：`--dump-effects` 打印；golden **逐字节相同**（71 文件）✓ 216 测试全绿 ✓ 攻击库基线不动 ✓ **关键证据**：链表 `push` = `toParam[Addr=0 Cont=0] toHome[Addr=0 Cont=1]` ⇒ **地址流为空**（今天规则 ④ 却按非空处理 ✗）；`sneaky`（`n.owner = ref l.head`）= `toHome[Addr=1]` ⇒ 这类**必须继续挡** ✓ |
-| **1.2** | **调用点求解**：`H = ⨆(调用者侧落点, Cont 已知的 δ)`；**只在 `Addr ≠ ∅` 时**施加 `R_slot(arg) ⊒ H`（规则 ④ 收窄成"按实际流"）| `src/check_top.c`（`callHomeDepth`/`checkCallRefArgs`）、`src/check_expr.c`（三处调用点）| 攻击库**仍全挡** ✓；golden 差异只允许出现在"家 arena 实参"那一类 ✓ |
+| **1.2** ✅ **完成**（2026-09-22，= PLAN **#43**）| **调用点求解**：`H = ⨆(调用者侧落点, Cont 已知的 δ)`；`Addr` 那条 = 规则 ④ ✓；⭐ `Cont` 那条 = 新增 `exprRefDepth(实参 j) ≤ h` ✓ | `src/check_top.c`（`checkCallRefArgs`）、`src/check_expr.c`（三处调用点）| **已验收**：攻击库**仍全挡**（`stash_view_from_deeper`/`ref_arg_too_deep`/`borrowed_into_param_place`/`ref_launder_field`/`_deref`/`generic_borrowed_store` 一条不少）✓ 新正例 `container-of-view`/`container-nested`/`borrowed-stash-sameframe`（ASan 干净）✓ 老编译器对这三条**全误拒**（`git worktree` 里的 HEAD 副本对拍 ✓）· golden 差异 = **只多两个新例子** ✓ 详见 `ARENA-FORMAL` §9.5 |
+| **1.2b** ✅ **完成**（2026-09-22）| **摘要不完整 / `otherMask` 非空 ⇒ 调用点保守拒**（"不可分割的一半" ✓ 只放不挡 = 把误拒换成洞 ✗）| 同上 | 已验收：`!complete` 时对**每个含引用的实参**按最坏情况查 ✓ 消息说清"分析不出来" ✓ |
+| **1.2c** ⚠️ **偏离（记账）**| 判据原写"攻击基线**一字不动**"，实做时发现 `h8_launder` 是**假阳性被当战功** ✗ ⇒ 改准账：它进基线（已知安全），危险变体另立反例 ✓ 纪律升级：**"挡住"必须同时是"这条程序真的不安全"** ✓ | `tests/attacks/BASELINE`、`tests/errors/stash_view_from_deeper.extc` | 见 `ARENA-FORMAL` §9.5 与 定案 67 补记 |
 | **1.3** ✅ **完成**：`raiseMutRefTargets` 已删（深度的记账改由 1.2 的求解承担）✓ | — | 三条 canary 变正例 ✓ 攻击库不动 ✓ |
 | **1.4** ✅ **完成**：三个安全形状进 `examples/`（各带 `// expect:`，ASan 复核干净 ✓）；`tests/canary-gaps/` 已清空 ✓ | `tests/`、`examples/` | 双向判据同时成立 ✓ |
-| **1.5** | **文档**：MANUAL §7.9（asSlice 的规矩改成"由推导决定"）、PLAN #31/#34 改状态、DECISIONS 定案、DEVLOG | 文档 | `check.sh` 全绿 ✓ |
+| **1.5** ✅ **完成**（2026-09-22）| **文档**：`ARENA-FORMAL` §9.5（落地实录）· PLAN #43 ✅ + #44（尾巴）· PLAN 下一步表重写 · DECISIONS 定案 67 补记 · DEVLOG · MANUAL（`stash` 一族的新正例）| 文档 | `check.sh` **8 通过 0 失败** ✓ golden 只多两个新例子 ✓ |
 
 ### 工程降法（§8.5）在档 1 的落地
 
@@ -40,6 +42,10 @@
   （类型参数只影响"会不会装引用"一个布尔 ⇒ 2^k 种形状）⇒ **不要每实例重算** ✓
 - **实例去重**：`varArray<i32>` 只算一份（沿用 codegen 的实例集合）✓
 - **上限 + 响亮报错**：若某个形状的组合数超限 ⇒ **报错**（不许静默保守）✗
+- ⚠️ **2026-09-22 实做时的代价（= PLAN #44）**：模板里 `T` 是 opaque ⇒ 收集器判不出"值里有没有引用"
+  ⇒ 只能保守地"**含类型参数就当含引用**" ✓ sound ✓ 但 `varArray<i32>` 这类**纯值实例**也背 `Cont` 位 ⇒
+  调用点对它走"最坏情况"那条 ⇒ **误拒面偏大**（今天不误拒靠的是 `exprRefDepth` 对纯值实参返回 0 ✓）✗
+  ⇒ #44 按实例算摘要（照 `RefCheck`/`EqCheck` 的实例化复查做 ✓ 机制现成）✓
 
 ## 2. 档 2：字段/槽位级深度 + 取地址跟踪（消 §7.4 的硬门槛）
 

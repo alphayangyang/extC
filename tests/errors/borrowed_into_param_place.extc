@@ -1,10 +1,20 @@
-// 把**借来的**引用存进"参数指的地方" ⇒ 必须挡住 ✓
-// 定案 63 的"提升"只管 `new` 出来的东西（"来路"从 `new` 起）——
-// 借来的值（参数派生 / 调用结果）**真实寿命编译器不知道** ⇒ 那条规则一字不动 ✗
+// 把**借来的**引用存进"参数指的地方" ⇒ 必须在**调用点**挡住 ✓（定案 67）
+// 被调者只**发布**约束（"我要求：你给我的 cell 活得 ≥ 你给我的容器"）✓
+// ⇒ 调用点拿具体深度判 ✓
+// ⚠️ 用 `ref x`（本帧局部对象）而不是 `new`：后者会被 #38 的**提升**救下来
+//    （提升到容器那层 ⇒ 真的安全 ⇒ 该放行 ✓ 见 tests/errors/... 之外的正例）
 struct node { val: i32  next: ?ref node }
 struct list { head: ?ref node }
 
 fn stash(l: mut ref list, cell: mut ref node) {
     l.head = cell
 }
-fn main() {}
+
+fn main() {
+    var l: list
+    {
+        var x: node                      /* 深度 2：出块就死；而且不是 `new` ⇒ 提升救不了 ✗ */
+        stash(ref l, ref x)
+    }
+    println("l.head 非空？ ", l.head != null)
+}

@@ -471,14 +471,24 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * 下一步（PLAN-REGION 1.2b）：照 §8.5 做**惰性传递闭包**（memo + 环保护），
      * 并且只在"摘要可判为完整"时才跳过本规则 ✓ */
     /* ⭐ 1.2a：**只有摘要被证明完整**时，才允许按"没有地址流"跳过下面的保守检查 ✓ */
-    if (callee && computeEffectsTransitive(c, callee)
-        && callee->addrMask == 0 && callee->homeAddrMask == 0
-        && !callee->addrFromLocal && callee->otherMask == 0) return;
+    bool complete = callee && computeEffectsTransitive(c, callee);
+    /* ⚠️⚠️ **两个检查各自决定跳不跳，别共用一个 early return** ✗
+     * （共用的代价踩过：`push` 有 `Cont` 位就会让**地址流**那条也跑起来 ⇒
+     *   `examples/list-return` 被一条"本来被早退挡住的"过严组合误拒 ✗
+     *   —— E 分析那条路 `homeDepth = -1 ⇒ h = 0` 对**本地 mut ref 实参**过严 ✗）*/
+    bool addrMaybe = !complete || !callee
+                   || callee->addrMask != 0 || callee->homeAddrMask != 0
+                   || callee->addrFromLocal || callee->otherMask != 0;
+    bool contMaybe = !complete || !callee
+                   || callee->contMask != 0 || callee->homeContMask != 0
+                   || callee->addrMask != 0 || callee->homeAddrMask != 0
+                   || callee->otherMask != 0;
+    if (!addrMaybe && !contMaybe) return;
     int h;
     if (homeDepth != 0) h = (homeDepth < 0) ? 0 : homeDepth;
     else h = (c->curFunc && c->curFunc->needsHome) ? 0 : c->scopes.len;
 
-    for (size_t i = 0; i < params->len; i++) {
+    for (size_t i = 0; addrMaybe && i < params->len; i++) {
         Param *p = *(Param **)vecAt(params, i);
         if (!p->type || p->type->kind != TY_REF) continue;
         Expr *a = *(Expr **)vecAt(args, i);
@@ -498,6 +508,57 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 " argument must live at least that long. Move it to a shallower scope.",
                 "argument %zu of `%s` points into a deeper scope (depth %d) than the arena"
                 " this call may store it in (depth %d)", i + 1, fname, d, h);
+    }
+
+    /* ⭐ 定案 67 / `ARENA-FORMAL` §9.2：**内容流** —— 被调者把「从实参 j 读出的指针 /
+     * 含引用的**值**」存进容器 ⇒ 那份**数据**也得活得 ≥ 目的地所在层 h ✓
+     * （这正是"借用规则挪到调用点"的那一条：被调者一次编译、不知道调用者的区域，
+     *   所以它只**发布**约束；代入求解在这里 ✓）
+     *   · 摘要完整 ⇒ 只查摘要点名的那些 j ✓
+     *   · 摘要**不完整**（环 / 有解析不出来的调用）或 `otherMask` 非空 ⇒ 对**每个
+     *     含引用的实参**都按最坏情况查 ✓
+     *     ⚠️ 这条是**不可分割的一半**：不放它，被调者侧一放宽就等于放行悬垂 ✗
+     *     （`PLAN #31` 那次收窄规则 ④ 的教训 ✓）*/
+    if (contMaybe && (!complete || (callee && callee->otherMask != 0))) {
+        for (size_t j = 0; j < args->len; j++) {
+            Expr *a = *(Expr **)vecAt(args, j);
+            if (mentionsParam(a->type)) continue;                  /* 泛型推迟 ✓ */
+            if (!typeContainsRef(c->tt, tsub(c, a->type))) continue; /* 不带引用 ⇒ 恒真 ✓ */
+            int d = exprRefDepth(c, a);
+            if (d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);
+            if (d == 0 || d <= h) continue;
+            ckError(c, line,
+                    "Nothing was stored here that could be checked at this call, so the"
+                    " compiler has to assume the worst: this value may end up in the place"
+                    " the callee stores into. Make it live at least that long (or give the"
+                    " callee a decidable body).",
+                    "argument %zu of `%s` carries a reference into a deeper scope (depth %d)"
+                    " than the place the callee may store it (depth %d); the callee's"
+                    " effects could not be fully analyzed", j + 1, fname, d, h);
+        }
+    } else if (contMaybe && callee) {
+        /* ⚠️ 四种位**都要查** ✗：摘要对"按值的视图/含引用的参数"可能记成 `Addr` 也可能记成
+         * `Cont`（收集器按"它本身是不是指针/视图"分 ✗），但对**按值参数**来说两件事
+         * 归纳成同一句话：**它携带的那份数据必须活得 ≥ h** ✓
+         * （踩过：只查 Cont ⇒ `names.push(buf[..])`（buf 在更深的块里）**漏放**了 ✗
+         *   那是真悬垂 ⇒ 判据当场抓出来 ✓）*/
+        unsigned cont = callee->contMask | callee->homeContMask
+                      | callee->addrMask | callee->homeAddrMask;
+        for (size_t j = 0; j < args->len && j < 32; j++) {
+            if (!((cont >> j) & 1u)) continue;
+            Param *pj = *(Param **)vecAt(params, j);
+            if (pj->type && pj->type->kind == TY_REF) continue;   /* `ref` 形参归规则 ④ ✓ */
+            Expr *a = *(Expr **)vecAt(args, j);
+            if (mentionsParam(a->type)) continue;
+            if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
+            int d = exprRefDepth(c, a);
+            if (d == 0 || d <= h) continue;
+            ckError(c, line,
+                    "The callee stores what this value points at into a container it was"
+                    " given, so that data must live at least as long as that container.",
+                    "argument %zu of `%s` carries a reference into a deeper scope (depth %d)"
+                    " than the place the callee may store it (depth %d)", j + 1, fname, d, h);
+        }
     }
 }
 
@@ -737,6 +798,7 @@ static void computeEscapes(Checker *c, FuncDef *f) {
  * `otherDepth` 是"归不到某一格"的那部分（元素写、超过 4 个字段……）⇒ 只增不减 ✓ 保守 ✓
  */
 int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
+    (void)c;                                       /* 早就用不上了 ⇒ 顺手消掉那条老 warning ✓ */
     if (!s || !field) return NULL;
     for (int i = 0; i < s->nfields; i++)
         if (s->fields[i].name && strcmp(s->fields[i].name, field) == 0) return &s->fields[i].depth;
@@ -815,8 +877,15 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     {
         int j = paramIndex(f, placeRootName(e));
         if (j >= 0) {
-            /* ⚠️ 标量不带引用 ⇒ 不构成寿命约束（不然 varArray<i32>::push 会假报）*/
-            bool carrier = (c && e->type) ? typeContainsRef(c->tt, e->type) : true;
+            /* ⚠️ 标量不带引用 ⇒ 不构成寿命约束（不然 varArray<i32>::push 会假报）
+             * ⭐ 定案 67：**提到类型参数就算"带引用"** ✓ —— 摘要是在**模板**上算的，
+             * 那时 `T` 不透明 ✗ ⇒ 不这么记的话 `varArray<T>::push` 的 `Cont(v)` 一格
+             * **一位都不记** ⇒ 调用点等于没查 ⇒ 真悬垂漏放 ✗✗（判据当场抓出来的 ✓）
+             * 代价为零：调用点看的是**具体实参**的类型 ✓（`push(ref v, 5)` 里 `5` 是 i32
+             * ⇒ 那一步直接被跳过 ✓）*/
+            bool carrier = (c && e->type)
+                         ? (typeContainsRef(c->tt, e->type) || mentionsParam(e->type))
+                         : true;
             bool isPtr = (e->kind == EX_IDENT) && e->type &&
                          (e->type->kind == TY_REF || ttIsViewType(e->type));
             if (carrier) {
@@ -1256,7 +1325,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                         " dies first (depth %d, but this can only hold up to %d)",
                         inst->name, rc->target ? "this assignment" : rc->what,
                         rc->depth, rc->at);
-            } else if (rc->target && rc->at == 0 && rc->borrowed) {
+            } else if (rc->target && rc->at == 0 && rc->borrowed
+                       && !valTracesToParam(&c, rc->func, rc->val)) {   /* ⭐ 定案 67 ✓ */
                 ckError(&c, rc->line,
                         "A generic body is checked once on the template, where `T` is"
                         " opaque -- so the reference rules are re-checked for every"

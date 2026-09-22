@@ -6,6 +6,69 @@
 > 倒序，最新的在最上面。
 
 ---
+## 2026-09-22 · **#43 落地：把借用规则从被调者挪到调用点** —— 字符串表/嵌套容器/通用 `stash` 全都通了
+
+主人的话：「来吧大活儿修了」。设计早写好了（`ARENA-FORMAL` §9 + 定案 67），这次是**实现 + 双向对拍** ✓
+
+### 病根（一句话）
+
+那条"借来的值不可外存"的 blanket 规则**必然误拒**：被调者**一次编译**，不知道调用者传进来的是
+长寿（全局/本帧）还是短命（更深的块）✗ ⇒ 它只能一律拒 ✗ ⇒ 挡了整整一族正常写法：
+
+```extc
+varArray<slice<u8>>       // 字符串表
+varArray<varArray<i32>>   // 动态邻接表
+fn stash(dest: mut ref T, v: T) { *dest = v }   // 通用"存起来"
+```
+
+### 修法（两侧各一刀，缺一不可）
+
+| 侧 | 干什么 |
+|---|---|
+| **被调者**（`checkStoreEscape`）| 只有"**来路追得到参数**"的值才放行：`destIsParam && valTracesToParam(…)` ✓ 其余照旧拒 ✗ |
+| **调用点**（`checkCallRefArgs`）| 代入求解：`Addr(j) ⇒ placeDepth(arg_j) ≤ h`（规则 ④，早就有）· ⭐ `Cont(j) ⇒ exprRefDepth(arg_j) ≤ h`（新）· 摘要不完整/有 `otherMask` ⇒ **对每个含引用的实参**按最坏情况查 ✓ |
+
+⚠️ **纪律**：第二条（保守拒）是**不可分割的一半** —— 只放第一条就等于把"必然误拒"换成"可能的洞" ✗
+（PLAN #31 那次收窄规则 ④ 的教训 ✓）
+
+### 路上撞出四件事（都进了代码注释）
+
+1. **别共用一个 early return**：`push` 有 `Cont` 位都会把**地址流**那条带起来，而 `E` 分析那条路
+   `homeDepth = -1 ⇒ h = 0` 对**本地 `mut ref` 实参**过严 ⇒ `examples/list-return.extc` 被误拒 ✗
+   ⇒ 拆成 `addrMaybe` / `contMaybe` ✓
+2. **方法调用从来没跑过规则 ④** ✗✗ —— `EX_METHOD` 的 `params` 里有 `self`、`args` 里没有 ⇒
+   `params->len != args->len` 直接早退 ⇒ 一整类形状**静默没查**。修法：接收者**前置**成 arg 0 ✓
+3. **自由/关联函数的检查跑在实参查类型之前** ✗✗ —— 那时 `a->type` 还是 NULL ⇒ `typeContainsRef` 恒假
+   ⇒ **静默跳过**。修法：三处调用点全部挪到实参检查**之后** ✓
+   ⇒ 这两条是本次最危险的：**看起来在查，其实没查** ✓ 记进纪律：*"静默跳过"比"误拒"危险得多*
+4. **模板里 `T` 是 opaque** ⇒ `typeContainsRef` 判不出"值里有没有引用" ⇒ `carrier` 判据补
+   `mentionsParam(e->type)` ✓ 代价：摘要**每次模板一份而非每个实例一份** ⇒ 记成 **PLAN #44** ✓
+
+### 双向对拍（在 `git worktree` 里建 HEAD 副本当"老编译器"）
+
+| 形状 | 老 | 新 |
+|---|---|---|
+| `examples/container-of-view.extc` | ✗ 误拒 | ✓ `第 1 个 = xy` |
+| `examples/container-nested.extc` | ✗ 误拒 | ✓ `第 0 行第 0 个 = 7` |
+| `tests/asan/borrowed-stash-sameframe.extc` | ✗ 误拒 | ✓ ASan 干净 |
+| `tests/errors/stash_view_from_deeper.extc` | ✓ 挡 | ✓ 挡 |
+| `ref_arg_too_deep` · `borrowed_into_param_place` · `ref_launder_field` / `_deref` · `generic_borrowed_store` | ✓ 挡 | ✓ **一条不少** |
+
+### ⚠️ 判据 1 的**诚实偏离**（要记着）
+
+原定判据是"攻击库 `BASELINE` **一字不动**"，可实做时发现 **`h8_launder` 本来就是安全的**：
+`stash(ref outer, local[..])` 里 `local` 与 `outer` **同一个块** ⇒ 老编译器的拒绝是**假阳性**，
+而攻击库一直把它当"挡住了"**记功** ✗（**假阳性被记成战功** 是最坏的一种账）
+⇒ 这次把账改准：`h8_launder` 进基线（8 条**已知安全**），另立**危险变体**
+`tests/errors/stash_view_from_deeper.extc`（值来自更深的块）顶住安全边界 ✓
+⇒ 纪律升级：**"挡住"必须同时是"这条程序真的不安全"** ✓
+
+### 结果
+
+`./check.sh` = **8 通过 0 失败** ✓ 测试 241 → **244** ✓ 攻击库 8 条已知安全 + 其余全挡 ✓
+golden 差异 = **只多两个新例子**（其余 86 个**逐字节不变** ⇒ 纯检查器改动，生成的 C 一字节没动 ✓）
+
+---
 ## 2026-09-22 · **#42(c)：实例化只复查"真被调到的"方法** —— `fn ==` 税没了，生成 C 还小了 28%
 
 主人的话：「我觉得所有的借用规则都得放到调用点吧，否则这也太难受了，现在好像好多地方都在这儿卡了一次」

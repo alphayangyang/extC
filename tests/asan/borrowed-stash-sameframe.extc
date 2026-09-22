@@ -1,0 +1,21 @@
+// expect: 第 0 个 = 65 第 3 个 = 68 g = 7
+/* 定案 67：**同层**的"存引用"现在**合法**了 ✓（`h8_launder` 的安全版本，ASan 回归）
+ * `local[..]`（本帧）和 `ref g`（全局）都比这次调用长寿 ⇒ 存进 `outer` 安全 ✓
+ * （以前被一条 blanket 规则连带拒掉 ✗ —— 主人说的"好多地方卡了一次"就是它 ✓）
+ * 危险变体（值来自**更深**的块）仍然必须挡 ✗ ⇒ tests/errors/stash_view_from_deeper.extc ✓ */
+struct box { s: slice<u8>  r: ?ref i32 }
+
+var g: i32 = 7
+
+fn stash(b: mut ref box, s: slice<u8>, r: ?ref i32) {
+    b.s = s
+    b.r = r
+}
+
+fn main() {
+    var outer: box = { s: "keep", r: null }
+    var local: [4]u8 = [65, 66, 67, 68]
+    stash(ref outer, local[..], ref g)
+    var rr: ?ref i32 = outer.r
+    if rr != null { println("第 0 个 = ", outer.s[0], " 第 3 个 = ", outer.s[3], " g = ", *rr) }
+}

@@ -268,6 +268,19 @@ static bool exprBorrowed(Checker *c, Expr *e) {
     }
 }
 
+/* ⭐ 定案 67：这个值的**来路能追到某个形参**吗？（⇒ 寿命约束交给调用点判 ✓）
+ * `placeRootName` 追的是**根**（`v` / `*p`→`p` / `l.head`→`l` ✓）——
+ * 追得到形参 ⇒ 调用点能用 `Cont(j)` 那条规则算 ✓；追不到（调用结果 / 本帧局部 /
+ * 不明来路）⇒ 两边都**不放** ✗（与摘要 `otherMask` 的口径一致 ✓）*/
+bool valTracesToParam(Checker *c, FuncDef *f, Expr *val) {
+    if (!val || !f) return false;
+    const char *root = placeRootName(val);
+    if (!root) return false;
+    for (size_t i = 0; i < f->params.len; i++)
+        if (strcmp((*(Param **)vecAt(&f->params, i))->name, root) == 0) return true;
+    return false;
+}
+
 /* 把一个值**存进**某个地方之前的全部检查（深度 + 借来的东西）。 */
 static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
                            int line, const char *what);   /* 定义在后面 */
@@ -406,7 +419,32 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* ⭐ 定案 63：先试着**提升**（提不动的话下面那句照旧报错 —— 这里是安全网，幂等）✓ */
     promoteInto(c, val, at);
     bool bad = checkEscape(c, val, at, line, "this assignment");
-    if (storeLayer(c, target) == 0 && exprBorrowed(c, val)) {
+    /* ⭐ 定案 67（`ARENA-FORMAL` §9.3）：**来路能追到参数** ⇒ 放行，交给**调用点**判寿命 ✓
+     * 为什么能放：被调者一次编译、不知道调用者的区域 ⇒ 它只能**发布约束**；
+     *   "实参 j 的数据活得 ≥ 被调者会存进去的那只容器"这条，**调用点**算得出来
+     *   （`checkCallRefArgs` 里 `Cont(j)` 那一支 ✓）✓
+     * ⚠️ 追不到的（调用结果 / 本帧局部 / 不明来路）⇒ **照旧拒** ✗
+     *   —— 与摘要里 `otherMask` 的口径保持一致（两边都不放 ✓）*/
+    /* ⭐ 定案 67：**放宽要同时满足两个前提**（缺一不可 ✗）
+     *   ① 值的**来路追得到形参** ✓ ⇒ 调用点能算它的寿命
+     *   ② 目的地**是形参可达的容器** ✓ ⇒ 那块存储的区域 = 调用点那只实参的区域 = h ✓
+     * ⚠️ ② 不能省：目的地是**全局**时（`g = s`）约束是"数据得活到永久（深度 0）"✗
+     *    而调用点的 `h` 说的是"被调者会存进哪只容器"—— 表达不了"永久" ⇒ 照旧拒 ✗
+     *    （`tests/errors/escape_stash_borrowed.extc` 当场抓到这个洞 ✓）
+     * ⚠️ 反过来，"同层"的那种调用现在**合法**了 ✓（它本来就安全：两个一起死 ✓
+     *    —— 以前被 blanket 规则连带拒掉 ✗ 这就是主人说的"好多地方卡了一次" ✓）*/
+    bool destIsParam = false;
+    if (target) {
+        const char *droot = placeRootName(target);
+        if (droot && c->curFunc)
+            for (size_t pi = 0; pi < c->curFunc->params.len; pi++)
+                if (strcmp((*(Param **)vecAt(&c->curFunc->params, pi))->name, droot) == 0) {
+                    destIsParam = true;
+                    break;
+                }
+    }
+    if (storeLayer(c, target) == 0 && exprBorrowed(c, val)
+        && !(destIsParam && valTracesToParam(c, c->curFunc, val))) {
         /* ⭐ A3 第三半：**有家函数里放行** —— 调用点已经保证了"每个 `ref`/`mut ref`
          * 实参都活得 ≥ 这一刀的家 arena"（规则 ④ ✓），而被调函数分配的东西**就进那只
          * 家 arena** ⇒ 写进去的东西跟它一样长寿 ✓

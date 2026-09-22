@@ -206,6 +206,7 @@ typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } 
  int exprRefDepth (Checker *c, Expr *e);
  int placeDepth (Checker *c, Expr *e);
  int storeLayer (Checker *c, Expr *e);   /* ⭐ 「这块存储住在哪一层」（≠ placeDepth）✓ */
+ _Bool valTracesToParam (Checker *c, FuncDef *f, Expr *val);   /* ⭐ 定案 67 ✓ */
  _Bool promoteInto (Checker *c, Expr *val, int at);   /* ⭐ 定案 63：块级逃逸提升 ✓ */
  void noteOrigin (Checker *c, Sym *sy, Expr *val);   /* ⭐ 记「这个绑定的来路」（压平）✓ */
  void adoptContextType (Expr *e, Type *want);

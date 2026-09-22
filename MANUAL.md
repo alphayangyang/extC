@@ -1518,6 +1518,29 @@ error: argument 2 of `stash` points into a deeper scope (depth 2)
        than the arena this call may store it in (depth 1)
 ```
 
+⭐ **2026-09-22 起：这条规矩改成「在调用点判」**（定案 67）—— 因为**被调者一次编译**，
+它根本不知道调用者传来的是长寿还是短命 ⇒ 以前它只能**一律拒** ✗ ⇒ 一整族正常写法被误拒：
+
+```extc
+var t: varArray<slice<u8>> = varArray<slice<u8>>::withCap(4)   // ✓ 字符串表
+t.push("abc")                                                  //   （以前：编译错误 ✗）
+var g: varArray<varArray<i32>> = varArray<varArray<i32>>::withCap(4)   // ✓ 动态邻接表
+fn stash(dest: mut ref T, v: T) { *dest = v }                  // ✓ 通用"存起来"
+```
+
+现在：**被调者只发布"我会把什么存到哪里"，调用点拿实际实参代入求解** ✓
+⇒ 判据变成**调用点上这个实参活得够不够久**：
+
+| 写法 | 结果 |
+|---|---|
+| `stash(ref outer, local[..])` —— `local` 与 `outer` **同一个块** | ✓ 合法（同层 ⇒ 安全 ✓ `tests/asan/borrowed-stash-sameframe.extc`）|
+| `stash(ref outer, local[..])` —— `local` 在**更深的块**里 | ✗ 编译错误（`tests/errors/stash_view_from_deeper.extc`）|
+| `stash(ref slot, i)` —— 值不是引用 | ✓ 合法（没有引用可悬垂 ✓）|
+
+⚠️ 拿不准的时候（**递归 / 互相调用 / 有解析不出来的东西** ⇒ 效果摘要算不完整）⇒ 调用点**保守拒**，
+消息会说清是"分析不出来"而不是"一定错" ✗ —— 这是**故意的**：宁可误拒，不可漏 UB ✓
+处方：把那个助手函数的体**写简单些**（让摘要算得出来），或让值活到调用点那一层 ✓
+
 ⚠️ （旧限制，已解）`new` 出来的东西以前交不出去 —— 现在上面三种都行 ✓：`fn make() -> mut ref node { return new node }`
 是**编译错误**（它活不过当前块）。跨函数接线要等 **A3 逃逸提升** ✓
 （今天要在函数间传递，就让**调用者**提供 buffer/`mut ref` —— 这也是 `IO.md` 的设计 ✓）
@@ -1675,6 +1698,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | ~~**逃逸检查**~~ ✅ | 词法深度 `depth(r) ≥ depth(v)` —— **这是 extC 的命**，**已实现**（返回 / 局部 / 赋值 / **借来的值不进深度 0**，见 §0.5） | ~~下一步~~ **2026-09-18 完成** |
 | ~~**arena 按块细化**~~ ✅ | 分配绑**词法作用域**（每个 `{}` 一只）：`extc_arena __extc_a[DEPTH] = {0}` + 进块 reset / 出块 release，`break`/`continue`/`return`/`?` 各释放该退的层。`alloc<T>(n)` 的引用深度 = **当前块深度** ✓ | **2026-09-20 完成**（`tests/arena/` 验收：150MB 上限下循环里分配 300×1MB 跑得完）|
 | ~~**块级逃逸提升**~~ ✅ | `new` 的东西被**存进更外层**的地方 ⇒ 把那只 arena **提升**到那一层（**不拒绝**）：`arenaLevel = min(当前块, 各目的地)`。代价 = 这些分配活到那一层结束（最坏 = 函数级、自动清理的堆）；**没存出去的东西照样按块回收** ✓ | **2026-09-22 完成**（定案 63；`tests/asan/` 常设验收 + `examples/store-promotion.extc`）|
+| ~~**借用规则挪到调用点**~~ ✅ | 被调者**只发布约束**（效果摘要 `Addr`/`Cont`），**调用点代入求解** ⇒ `varArray<slice<u8>>`（字符串表）· `varArray<varArray<T>>`（邻接表）· 通用 `stash(dest,v)` 全通 ✓ 摘要不完整/带环 ⇒ 调用点**保守拒**（fail loudly）✓ | **2026-09-22 完成**（定案 67 / PLAN #43；`ARENA-FORMAL` §9 + §9.5 落地实录；正例 `examples/container-of-view.extc` · `container-nested.extc`，反例 `tests/errors/stash_view_from_deeper.extc`）✓ |
 | ~~**`new` 的写法**~~ ✅ | `new node` / `new i32[1000]` / `new [4]i32`（清零），分配进**当前块**的 arena，存进更外层的地方会**提升**（定案 63）| **2026-09-20 完成**（A1）+ 提升 2026-09-22 ✓ |
 | 🟡 **`region` 显式命名**（**逃逸提升 A3 已完成** ✓）| 跨函数接线（`fn build() -> mut ref node` / 出参 `mut ref`）**已经在跑** ✓；**只剩"显式给一个分配命名区域"**（A4，主人说"不急"）| A4 待定 |
 | ~~**动态数组 `varArray<T>`**~~ ✅ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
@@ -1766,4 +1790,11 @@ fn mkSlice() -> slice<i32> {        // ✅ 合法：扩容过的容器，把视�
 - **会**（`s.r = target` 这种把调用者的指针存进容器/家内存的）⇒ 仍然要求实参活得够家 arena ⇒
   想让它逃出去就**报错** ✓（`tests/errors/ref_arg_too_deep` 就是这个形状）
 
-⚠️ 推导见 [`ARENA-FORMAL.md`](ARENA-FORMAL.md) §2/§3/§8，执行计划见 [`PLAN-REGION.md`](PLAN-REGION.md) ✓
+⭐ **2026-09-22 加的第二半（定案 67 / PLAN #43）**：上面这条只说了"**地址**流"（把 `&实参` 存进容器）✓
+还有一条**内容**流——**「从实参里读出来的、含引用的那份值」被存进容器**（`self.buf[self.len] = v`，
+`v` 是带引用的 `T`）✓ 它同样**在调用点判**：那个实参（以及它携带的引用）必须活得 ≥ 目的地那一层 ✓
+- 摘要说得清"第几个参数会被存" ⇒ 只查那几个 ✓
+- 摘要说不清（递归 / 环 / 有解析不出来的调用）⇒ **每个含引用的实参都按最坏情况查** ✓ 消息会说清原因 ✓
+
+⚠️ 推导见 [`ARENA-FORMAL.md`](ARENA-FORMAL.md) §2/§3/§9（§9.5 = 落地实录 + 双向证据），
+执行计划见 [`PLAN-REGION.md`](PLAN-REGION.md) ✓

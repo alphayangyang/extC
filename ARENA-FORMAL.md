@@ -621,3 +621,42 @@ fn stash(dest: mut ref T, v: T) { *dest = v }                            // 通�
 2. 上面那三种形状（字符串表 / 嵌套容器 / 通用 `stash`）**能编**且 **ASan 干净** ✓
 3. `./check.sh` 全绿 · golden **逐字节不变**（纯检查器改动 ✓）
 4. 环/递归函数（摘要不完整）⇒ 调用点**保守拒**且消息说清原因 ✓
+
+### 9.5 落地实录（2026-09-22 已实现 ✓，含**判据 1 的诚实偏离**）
+
+**判据 1 偏离了，而且偏离得对** ✓：`tests/attacks/BASELINE` **多了一条 `h8_launder`** ✗⇒✓
+它不是"被挡住的攻击"，而是一个**本来就安全**的同层程序（`stash(ref outer, local[..])`：`local` 与
+`outer` **同一个块**）—— 老编译器把它**误拒**了，攻击库却一直把它当"挡住了"记账 ✓（**假阳性被记成战功** ✗）。
+这次不是"放宽"，是**把规则修准**：同一个形状**同层合法**（`h8_launder` + `tests/asan/borrowed-stash-sameframe.extc`，
+ASan 干净 ✓），**更深块仍然拒** ⇒ 新反例 `tests/errors/stash_view_from_deeper.extc`（= h8 的危险变体，值来自更深的块）✓
+⇒ 纪律升级：**攻击库的"挡住"必须同时是"这条程序真的不安全"**，否则那行账是假的 ✓
+
+**实做时撞到的四件事**（都进了代码注释）：
+
+1. **两个检查各自决定跳不跳，别共用一个 early return** ✗ —— 共用时 `push` 有 `Cont` 位就把
+   **地址流**那条也带起来了，而 `E` 分析那条路 `homeDepth = -1 ⇒ h = 0` 对**本地 `mut ref` 实参**过严 ⇒
+   `examples/list-return.extc` 被一条**本来被早退挡住的**过严组合误拒 ✗（⇒ 拆成 `addrMaybe` / `contMaybe`）✓
+2. **方法调用从来没跑过规则 ④** ✗ —— `EX_METHOD` 的 `params` 里有 `self`、`args` 里没有 ⇒
+   `params->len != args->len` 直接早退 ⇒ 一整类形状（`list.push(…)` 的 `self` 那条）**静默没查** ✓
+   修法：接收者**前置**进实参表（arg 0）✓
+3. **自由函数 / 关联函数的检查跑在实参类型检查之前** ✗ —— 那时 `a->type` 还是 NULL ⇒
+   `typeContainsRef` 恒假 ⇒ 静默跳过 ✓ 修法：三处调用点的 `checkCallRefArgs` 全部**挪到实参检查之后** ✓
+   （这类"静默跳过"是这次最危险的一类：**看起来在查，其实没查** ✗）
+4. **泛型实参的 `Cont` 位只能保守** —— 模板体里 `T` 是 opaque，`typeContainsRef(T)` 判不出来 ⇒
+   `carrier` 判据补上 `mentionsParam(e->type)`（含类型参数就当"带引用"）✓
+   代价：**模板的效果摘要是"每次模板一份"**，不是"每个实例一份" ⇒ `varArray<slice<u8>>` 与
+   `varArray<i32>` 共享一份保守摘要 ✗（**原则**上是没问题的：保守 ✓ 只是**误拒面**更大 ✗）
+   ⇒ 另立 PLAN 行（**按实例（单态化时）算摘要**，跟 `RefCheck`/`EqCheck` 同一套机制）✓
+
+**双向证据**（新老编译器逐条对拍，`git worktree` 里建的 HEAD 副本当"老"）：
+
+| 形状 | 老编译器（HEAD）| 新编译器 |
+|---|---|---|
+| `examples/container-of-view.extc`（`varArray<slice<u8>>`）| ✗ 误拒（`in instance varArray_slice_u8`）| ✓ 输出 `第 1 个 = xy` |
+| `examples/container-nested.extc`（`varArray<varArray<i32>>`）| ✗ 误拒（`in instance varArray_varArray_i32`）| ✓ 输出 `第 0 行第 0 个 = 7` |
+| `tests/asan/borrowed-stash-sameframe.extc`（同层存引用）| ✗ 误拒 | ✓ ASan 干净 |
+| `tests/errors/stash_view_from_deeper.extc`（更深块存引用）| ✓ 挡住 | ✓ 挡住（**位置更好**：`stash(ref outer, local[..])` 那一行）|
+| `tests/errors/ref_arg_too_deep` · `borrowed_into_param_place` · `ref_launder_field` · `ref_launder_deref` · `generic_borrowed_store` | ✓ 挡住 | ✓ **一条不少** |
+
+`./check.sh` = **8 通过 0 失败**（244 测试全绿 ✓ 攻击库基线 8 条已知安全 + 其余全挡 ✓
+golden 差异 = **只多那两个新例子**，其余 86 个**逐字节不变** ⇒ 纯检查器改动 ✓ 生成的 C 一个字节没动）✓

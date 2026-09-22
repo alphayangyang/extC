@@ -1,0 +1,14 @@
+// 把**更深块**里的视图存进外层容器 ⇒ 调用点必须挡 ✓（定案 67；h8_launder 的危险变体）
+// （h8_launder 那种"两块同层"的写法现在**合法**了 ✓ —— 它本来就安全 ✓）
+struct box { s: slice<u8> }
+
+fn stash(b: mut ref box, s: slice<u8>) { b.s = s }
+
+fn main() {
+    var outer: box = { s: "keep" }
+    {
+        var local: [4]u8 = [65, 66, 67, 68]
+        stash(ref outer, local[..])      /* local 出块就死 ⇒ outer.s 悬垂 ✗ */
+    }
+    println("outer.s = ", outer.s)
+}

@@ -20,7 +20,9 @@ e4e6c19af1385881e72b7a0a9e0edd27  examples_canary-struct-nullref-param
 f926289c8272837f62d4f037d1e90bee  examples_canary-zero-option-view
 29e41ad4c64128a71b90d4efa37ad204  examples_coalesce-order
 6ad299d4c51efc437a49e706f1ef02e4  examples_coalesce
+038905800817ce87003a7850f9bf654b  examples_container-nested
 4471ee7ad38ac276a905716aedb975a3  examples_container-of-struct
+99fc78b350f413ec0483065ae4b6e4cb  examples_container-of-view
 813cbea18cc14474b98117404c5f35a4  examples_debug
 65def8b525373e588e020c69b853449f  examples_deref
 07b929890b4e4dba1d89851ff3c878b7  examples_enums

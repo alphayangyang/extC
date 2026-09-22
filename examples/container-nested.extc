@@ -1,0 +1,22 @@
+// expect: 第 0 行第 0 个 = 7
+/* **动态二维表**（定案 67，2026-09-22 修）
+
+ * `varArray<varArray<i32>>` 以前**写不出来** ✗ —— 因为"借来的值不可外存"那条规则
+ * 在**被调者**里一律拒（被调者一次编译，不知道调用者传来的是长寿还是短命 ✗）
+
+ * 现在：被调者只**发布**约束（"我要求：你给我的那份数据活得 ≥ 你给我的容器"），
+ * **调用点**拿具体深度求解 ✓ ⇒ 这个形状自然能写了 ✓
+
+ * ⚠️ 与它成对的反例：`tests/errors/stash_view_from_deeper.extc`（把更深块里的视图
+ *    塞进外层容器 ⇒ **仍然被挡** ✓ —— 那条是真悬垂）
+ */
+fn main() {
+    var adj: varArray<varArray<i32>> = varArray<varArray<i32>>::withCap(2)
+    var row: varArray<i32> = varArray<i32>::withCap(2)
+    row.push(7)
+    adj.push(row)
+    match adj.get(0) {
+        none => println("空")
+        some(r) => println("第 0 行第 0 个 = ", r.get(0) ?? -1)
+    }
+}

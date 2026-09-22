@@ -1,0 +1,25 @@
+// expect: size = 2
+/* **字符串表**：`varArray<slice<u8>>`（定案 67 的第二个形状）
+
+ * 以前被 blanket 规则挡住 ✗（`push` 把 T 存进容器 = 存进活得更久的地方，
+ * 而 T = `slice<u8>` 里带着指针 ⇒ 被调者不知道那份数据活多久 ⇒ 一律拒 ✗）
+ * 现在调用点按深度判 ✓：字面量的数据在只读段（深度 0 ✓）；
+ * 本地数组的视图跟容器**同层** ✓ ⇒ 都放行 ✓
+
+ * ⚠️ 成对的反例：`tests/errors/stash_view_from_deeper.extc` ✓
+ */
+fn main() {
+    var names: varArray<slice<u8>> = varArray<slice<u8>>::withCap(4)
+    names.push("abc")                     /* 字面量：数据在只读段 ✓ */
+    var buf: [8]u8
+    buf[0] = u8(120)
+    buf[1] = u8(121)
+    names.push(buf[0..2])                 /* 本地数组的视图：跟容器同层 ✓ */
+    println("size = ", names.size())
+    match names.get(1) {
+        none => println("空")
+        some(s) => println("第 1 个 = ", s)
+    }
+}
+
+// expect: 第 1 个 = xy

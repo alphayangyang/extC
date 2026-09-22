@@ -640,9 +640,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
              * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
             e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params);
-            if (f->needsHome)
-                checkCallRefArgs(c, f, &e->u.assoc.args, &f->params, e->homeDepth,
-                                 e->line, e->u.assoc.name);
+            /* ⚠️ 检查挪到实参查完之后 ✓ 见本分支末尾 */
 
             if (e->u.assoc.args.len != f->params.len) {
                 ckError(c, e->line, NULL, "`%s::%s` expects %zu argument(s), got %zu",
@@ -664,6 +662,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 checkAssignable(c, pt, at, a, "argument");
             }
+            /* ⭐ 定案 67：关联函数也一样（实参查完之后 ✓）*/
+            checkCallRefArgs(c, f, &e->u.assoc.args, &f->params, e->homeDepth,
+                             e->line, e->u.assoc.name);
             return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
         }
 
@@ -1030,8 +1031,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
-            if (f->needsHome)
-                checkCallRefArgs(c, f, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
+            /* ⚠️ 定案 67 的检查必须在**实参查完之后** ✗（不然 `a->type` 还没填 ⇒
+             * `typeContainsRef` 一律答"否" ⇒ **静默漏放** ✗✗ —— 方法那条踩过同一个坑 ✓）
+             * ⇒ 见本分支末尾 ✓ */
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
@@ -1051,6 +1053,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 checkAssignable(c, p->type, at, a, "argument");
             }
+            /* ⭐ 定案 67：**每个**调用点都过（不只是"有家"的那些 —— 内容流跟家 arena
+             * 无关，是被调者"存进参数所指容器"产生的 ✓）
+             * ⚠️ 位置：**实参查完之后**（`exprRefDepth` 要靠实参的类型 ✓）*/
+            checkCallRefArgs(c, f, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
             return f->ret ? f->ret : ttVoid(tt);
         }
 
@@ -1137,9 +1143,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* 甲′(#31)：不管实参是本地的还是参数，都要记"往容器里塞的东西住哪" ✓
                  * ⚠️ 第一版只加在 else 分支里 ⇒ `self: mut ref` 那条（`v.push(…)` 正是它）
                  * 走的是 if 分支 ⇒ **一次都没执行** ✗ 调试才看出来 ✓ */
-                if (f->needsHome)
-                    checkCallRefArgs(c, f, &e->u.method.args, &f->params, e->homeDepth,
-                                     e->line, e->u.method.name);
+                /* ⭐ 定案 67：方法也一样 —— **每个**调用点都过（内容流跟家 arena 无关 ✓）
+                 * ⚠️⚠️ **接收者要当成第 0 个实参** ✗ —— 被调者的 `params[0]` 是 `self`，
+                 * 而 `e->u.method.args` **不含**接收者 ⇒ 两边长度不等 ⇒
+                 * `checkCallRefArgs` 开头那句 `params->len != args->len` **静默早退** ✗✗
+                 * ⇒ **规则 ④ 对方法调用从来就没生效过**（2026-09-22 抓到的潜缺陷 ✓）
+                 * ⇒ 把接收者拼到最前面 ✓*/
+                (void)0;   /* ⚠️ 检查挪到下面"实参查完之后" ✓ 见那段注释 */
             }
 
             /* 接收者是泛型实例时，方法签名里的 T 要换成实参 */
@@ -1174,6 +1184,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     continue;
                 }
                 checkAssignable(c, pt, at, a, "argument");
+            }
+            /* ⚠️⚠️ 规则的检查必须在**实参查完之后** ✗ —— 不然 `a->type` 还没填，
+             * `typeContainsRef` 一律答"否" ⇒ 静默漏放 ✗✗（踩过：反例没被拒 ✓）
+             * ⭐ 定案 67：接收者拼成第 0 个实参（被调者的 `params[0]` 是 `self` ✓）*/
+            {
+                Vec margs; vecInit(&margs, c->arena, sizeof(Expr *));
+                *(Expr **)vecPush(&margs) = e->u.method.recv;
+                for (size_t ai = 0; ai < e->u.method.args.len; ai++)
+                    *(Expr **)vecPush(&margs) = *(Expr **)vecAt(&e->u.method.args, ai);
+                checkCallRefArgs(c, f, &margs, &f->params, e->homeDepth,
+                                 e->line, e->u.method.name);
             }
             return rt;
         }
