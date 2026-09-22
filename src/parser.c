@@ -567,6 +567,31 @@ static Stmt *parseMatch(Parser *p) {
 static Stmt *parseStmt(Parser *p) {
     Token *t = cur(p);
 
+    /* ⭐ 定案 65：注解 `@xxx` 只允许出现在局部声明前（目前只有 `@overwrite`）✓
+     * （`@main` 那族要等函数注解 —— 报错说清楚，别让人猜 ✗）*/
+    if (at(p, "@")) {
+        Token *a = take(p);
+        Token *nm = expectIdent(p, "an annotation name (only `overwrite` for now)");
+        if (!nm) return NULL;
+        if (strcmp(nm->text, "overwrite") != 0) {
+            ctxError(p->ctx, a->line, a->col,
+                     "Annotations are compile-time instructions written in the source, so a"
+                     " typo must not be silently ignored. Right now the only one is"
+                     " `@overwrite` (reuse one piece of storage).",
+                     "unknown annotation `@%s` -- only `@overwrite` exists today", nm->text);
+            return NULL;
+        }
+        if (!(at(p, "let") || at(p, "var"))) {
+            ctxError(p->ctx, a->line, a->col,
+                     "`@overwrite` says \"this allocation is reused\", so it must sit on a"
+                     " local declaration: `@overwrite var n = new node`.",
+                     "`@overwrite` must be followed by a `var` declaration");
+            return NULL;
+        }
+        Stmt *v = parseVarDecl(p);
+        if (v) v->u.var.overwrite = true;
+        return v;
+    }
     if (at(p, "let") || at(p, "var"))  return parseVarDecl(p);
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);

@@ -1,0 +1,80 @@
+// expect: ① 纯复用循环最后 = 9999
+/* **`@overwrite` —— 复用一块存储**（DECISIONS 定案 65）
+
+ * 这个修饰符说的是一句**承诺**：
+ *     「这块存储我复用；**上一轮里面的东西我不要了**」
+ * 编译器照办：存储只分配**一块**，每次执行到这句就**清零复用** ✓
+
+ * 为什么需要它（实测）：从 GC 语言搬过来的写法
+ *     while … { var n = new node  slot.v = n }
+ * 在 extC 里**本质是内存泄漏** —— 槽位活到函数结束 ⇒ 每轮的节点都留着 ✗
+ * （1e7 轮实测 **159.7MB**，而复用是 **1.7MB** ✓）
+ * 根因不是"分析不够聪明"：**"引用"的含义**就是"我活多久它就得活多久" ✗
+ * ⇒ 唯一的路是把意图写出来 ✓ 而写法**只多一个修饰符** ✓
+
+ * 三条规矩：
+ *   · 右边**必须是 `new`**（它修饰的是分配 ✗ 值/局部/调用结果都报错 ✓）
+ *   · 存储住在本**帧**（递归各激活一块 ✓；`return`/出参按老规则处理 ✓）
+ *   · **懒分配**（循环一次都不跑 ⇒ 一块都不分配 ✓）；清零契约跟 `new` 完全一样 ✓
+ */
+struct node {
+    value: i64
+    next: ?ref node
+}
+struct slot_t {
+    v: ?ref node
+}
+
+/* ⭐ 形状①：`new` 在**被循环调用的函数**里（最容易踩的形状）——
+ * 格子由**调用点的帧**持有（跟 `__extc_home` 一个套路）⇒ 跨调用复用得上 ✓ */
+fn stash(dest: mut ref slot_t, v: i64) {
+    @overwrite var n = new node
+    n.value = v
+    dest.v = n
+}
+
+/* 形状②：`new` 就在循环所在的那个函数里 ✓ */
+fn inLoop() -> i64 {
+    var slot: slot_t = { v: null }
+    var i: i64 = 0
+    while i < 10000 {
+        @overwrite var n = new node
+        n.value = i
+        slot.v = n
+        i = i + 1
+    }
+    var c: ?ref node = slot.v
+    if c == null { return -1 }
+    return (*c).value
+}
+
+/* 形状③：**定长缓冲**（读块那类最常见的 scratch）——同样只分配一块 ✓ */
+fn bufLoop() -> i64 {
+    var i: i64 = 0
+    var total: i64 = 0
+    while i < 3 {
+        @overwrite var buf = new [8]u8
+        buf[0] = u8(i + 1)
+        total = total + i64(buf[0])
+        i = i + 1
+    }
+    return total
+}
+
+fn main() {
+    /* ①：`new` 在 callee 里，循环在 caller ⇒ 格子由调用点持有 ✓ */
+    var slot: slot_t = { v: null }
+    var i: i64 = 0
+    while i < 10000 {
+        stash(ref slot, i)
+        i = i + 1
+    }
+    var c: ?ref node = slot.v
+    if c != null { println("① 纯复用循环最后 = ", (*c).value) }
+
+    println("② new 就在循环里 = ", inLoop())
+    println("③ 定长缓冲复用 = ", bufLoop())
+}
+
+// expect: ② new 就在循环里 = 9999
+// expect: ③ 定长缓冲复用 = 6

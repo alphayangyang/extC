@@ -108,6 +108,43 @@ void checkStmt(Checker *c, Stmt *s) {
                 }
             }
 
+            /* ⭐ 定案 65（`@overwrite`）：它修饰的是**分配** —— 三条检查 + 一个标记 ✓
+             *   · 必须 `var`（每次执行都要重新绑定那块存储，而且通常还要往里写）✓
+             *   · 右边**必须是 `new`**（值 / 局部 / 函数结果都没有"复用一块存储"这个意思 ✗）
+             *   · 标记在**查它之前**打：层数要按"函数体"算，不是按语句所在块 ✓ */
+            if (s->u.var.overwrite) {
+                if (!s->u.var.mut) {
+                    ckError(c, s->line,
+                            "Reusing one piece of storage means the binding is re-pointed at it"
+                            " on every execution, so it must be writable. Write `var`.",
+                            "`@overwrite` needs `var`: it re-binds the name to the same storage"
+                            " on every execution, and you will usually write into it too");
+                    return;
+                }
+                if (!s->u.var.init || s->u.var.init->kind != EX_NEW) {
+                    ckError(c, s->line,
+                            "`@overwrite` is about an **allocation**: it says \"this piece of"
+                            " storage is reused; the previous round's contents are gone\". A value,"
+                            " a local, or a call result has no such piece of storage to reuse."
+                            " Write `@overwrite var n = new T` (or drop the annotation).",
+                            "`@overwrite` only applies to `new`: the initializer must be an"
+                            " allocation");
+                    return;
+                }
+                /* ⚠️ 临时缺口（步骤③ 之前）：运行时长度的复用还没实现 ——
+                 * **报错，别静默退化成"每轮分配"** ✗（P′：答应了就得做到）✓ */
+                if (s->u.var.init->u.new_.count) {
+                    ckError(c, s->line,
+                            "For a length known only at run time there is nothing to size the"
+                            " reused storage with yet. Use a fixed maximum --"
+                            " `@overwrite var b = new [4096]u8` -- and slice it as needed.",
+                            "`@overwrite` with a run-time length (`new T[k]`) is not implemented"
+                            " yet; use a fixed-size buffer (`new [N]T`)");
+                    return;
+                }
+                s->u.var.init->reuse = true;
+            }
+
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
             /* `let x = e?` —— `?` 的合法位置之一。

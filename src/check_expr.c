@@ -728,7 +728,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）✓
              * ⚠️ 同一个节点**可能被查两遍** ⇒ 只第一次定层、只往"更长寿"的方向调 ✓ */
             if (e->arenaLevel == 0)
-                e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? 0 : (int)c->scopes.len;
+                e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? 0
+                              /* ⭐ 定案 65：`@overwrite` 的存储**只有一块**，要跨过循环的每一轮
+                               * ⇒ 它住在本**帧**那层（= 函数体，深度 1），而不是语句所在的块 ✗ */
+                              : (e->reuse ? 1 : (int)c->scopes.len);
             if (e->refDepth == 0 || e->refDepth > e->arenaLevel)
                 e->refDepth = e->arenaLevel;
 

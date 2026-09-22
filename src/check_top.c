@@ -316,6 +316,44 @@ static bool exprCallsNeedsHome(Expr *e) {
 }
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body); }
 
+/* ⭐ 定案 65：数一数这个体里有几个 `@overwrite` 站点（顺序要跟 codegen 的
+ * `collectOwSites` **一致** —— 两边都是"按源码顺序的同一棵树" ✓）*/
+static int countOwSites(Stmt *s) {
+    if (!s) return 0;
+    switch (s->kind) {
+    case ST_VAR:  return s->u.var.overwrite ? 1 : 0;
+    case ST_BLOCK: {
+        int n = 0;
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            n += countOwSites(*(Stmt **)vecAt(&s->u.block.stmts, i));
+        return n;
+    }
+    case ST_IF:    return countOwSites(s->u.ifs.thenBody) + countOwSites(s->u.ifs.elseBody);
+    case ST_WHILE: return countOwSites(s->u.whiles.body);
+    case ST_MATCH: {
+        int n = 0;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            n += countOwSites((*(MatchArm **)vecAt(&s->u.match.arms, i))->body);
+        return n;
+    }
+    default: return 0;
+    }
+}
+
+/* 本函数能不能（传递地）调到自己？能 ⇒ 它的 `@overwrite` 格子必须**每激活一块** ✓
+ * （否则子调用会踩父激活那块存储 —— 父激活回来后看到的是子调用的数据 ✗✗）
+ * ⚠️ 保守方向：拿不准（callees 里有个 NULL）就当"能" ✓ */
+static bool funcReachesItself(Checker *c, FuncDef *f, int depth) {
+    if (depth > 64) return true;                      /* 环保护 ⇒ 保守 */
+    for (size_t i = 0; i < f->callees.len; i++) {
+        FuncDef *g = *(FuncDef **)vecAt(&f->callees, i);
+        if (!g) return true;
+        if (g == f) return true;
+        if (funcReachesItself(c, g, depth + 1)) return true;
+    }
+    return false;
+}
+
 /* 体里有没有"往 `*p` 里写"？（出参形状：`fn push(head: mut ref ?ref node) { *head = cell }`）
  * 有 ⇒ 这个函数要一只家 arena（分配得进"实参那边"的 arena）✓ */
 /* 目标是"参数那边"的地方吗？`*head = cell` / `l.head = cell` / `l.buf[i] = cell` 都算 ✓
@@ -1243,6 +1281,32 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
             }
         }
+    }
+
+    /* ---- ⭐ 定案 65：`@overwrite` 的站点数 + 格子该放哪 ----
+     * 必须在**所有函数体都查完**之后（"能不能调到自己"要看调用图 ✓）*/
+    {
+        Vec all; vecInit(&all, arena, sizeof(FuncDef *));
+        for (size_t i = 0; i < m->funcs.len; i++) *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&m->funcs, i);
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++)
+                *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&sd->methods, j);
+        }
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            f->owSites = countOwSites(f->body);
+            /* ⚠️ 没有站点也要把 `owLocal` 定成 true ✗ —— 否则"无参数无家"的函数签名会
+             * 少掉那个 `void`（golden 当场抓出来的 ✓）*/
+            bool isMain = (!f->owner && strcmp(f->name, "main") == 0);
+            f->owLocal = (f->owSites == 0) || isMain || funcReachesItself(&c, f, 0);
+        }
+        if (getenv("EXTC_DUMP_OW"))
+            for (size_t i = 0; i < all.len; i++) {
+                FuncDef *f = *(FuncDef **)vecAt(&all, i);
+                if (f->owSites) fprintf(stderr, "[ow] %-18s sites=%d local=%d\n",
+                                        f->name, f->owSites, (int)f->owLocal);
+            }
     }
 
     /* ---- ⭐ 编译时长优化：算"会不会往**自己的块 arena** 里放东西"（`mayUseArena`）

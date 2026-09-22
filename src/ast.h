@@ -127,6 +127,9 @@ struct Expr {
      * 只有 `EX_NEW` 用（`alloc<T>(n)` 还走老规矩：当前块）。
      * 见 `DECISIONS.md` 定案 63、`check_escape.c` 的 `promoteInto` ✓ */
     int       arenaLevel;
+    /* ⭐ 定案 65：这个 `new` 是 `@overwrite` 的站点 —— **存储只有一块**
+     * （函数帧那层、懒分配、每次执行清零复用）⇒ 层数按"函数体"算，不是按语句所在块 ✓ */
+    bool      reuse;
     /* 这个值里的引用是不是「**从外面借来的**」（参数来的、或函数调用回来的）？
      * 借来的东西不能存进比这次调用活得更长的地方 —— 编译器不知道它的真实寿命。
      * 这是 BOOTSTRAP §8 里那条 ④（参数洗白）。 */
@@ -211,7 +214,11 @@ struct Stmt {
         struct { const char *name; Type *ann; Expr *init; bool mut;
                  /* 生成 C 时用的名字（同一层 `let` 遮蔽 ⇒ `a` → `a__2`）。
                   * 由类型检查阶段填，见 DECISIONS 定案 47。 */
-                 const char *cname; } var;
+                 const char *cname;
+                 /* ⭐ 定案 65：`@overwrite var n = new T` —— **复用一块存储**：
+                  * 在函数帧那层分配一次、每次执行到这句就清零复用 ✓（懒分配 ✓）
+                  * 只对 `new` 合法（检查器保证）⇒ 见 DECISIONS 定案 65 ✓ */
+                 bool overwrite; } var;
         struct { Expr *target; Expr *value; } assign;
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
         struct { Expr *cond; Stmt *body; } whiles;
@@ -287,6 +294,15 @@ struct FuncDef {
      * 判据：体里有 `new`，或者调用了"有家"的函数（那种调用会写进我的块 arena）✓
      * ⚠️ 必须在 `needsHome` 的**传递闭包跑完之后**算（不然会漏掉"我调的人有家"）✓ */
     bool        mayUseArena;
+    /* ⭐ 定案 65（`@overwrite`）：本函数体里有几个复用站点，以及**格子放哪**。
+     * 格子的寿命必须 ≥ "该站点被复用的整段过程"：
+     *   · 站点在 `main` 里、或本函数**能（传递地）调到自己**（递归）
+     *     ⇒ 格子放**自己的帧**（递归各激活一块 ✓ 否则子调用会踩父激活的存储 ✗）
+     *   · 否则 ⇒ 格子由**调用点的帧**持有、当隐藏参数传进来（`void **` 不透明 ✓）
+     *     —— 只有这样"在 callee 里 `new`、循环在 caller"才真的复用得上 ✓
+     *     （那正是主人提的那个泄漏形状 ✗）*/
+    int         owSites;
+    bool        owLocal;
     /* ⭐ 甲′（PLAN #31/#33）：**这个函数（传递地）会不会分配？**
      *
      * 为什么要单独一个字段：`needsHome` 的传递闭包是**所有函数查完之后**才跑的，

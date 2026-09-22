@@ -1,0 +1,25 @@
+// expect: 最后 = 99999
+/* **`@overwrite` 的 ASan 验收**：主人提的那个泄漏形状
+ *     fn stash(dest: mut ref slot_t, v: i64) { var n = new node … dest.v = n }
+ *     while i < N { stash(ref slot, i) }
+ * 加一个修饰符 ⇒ 存储只有一块（格子由调用点的帧持有 ✓）⇒ 内存平坦 ✓
+ * ASan 同时确认"没有悬垂"（复用块活着，指针没飞 ✓）*/
+struct node { value: i64  next: ?ref node }
+struct slot_t { v: ?ref node }
+
+fn stash(dest: mut ref slot_t, v: i64) {
+    @overwrite var n = new node
+    n.value = v
+    dest.v = n
+}
+
+fn main() {
+    var slot: slot_t = { v: null }
+    var i: i64 = 0
+    while i < 100000 {
+        stash(ref slot, i)
+        i = i + 1
+    }
+    var c: ?ref node = slot.v
+    if c != null { println("最后 = ", (*c).value) }
+}

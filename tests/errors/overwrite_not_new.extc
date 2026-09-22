@@ -1,0 +1,11 @@
+// `@overwrite` 修饰的是**分配**（它说"这块存储我复用"）⇒ 右边必须是 `new` ✗
+// 值没有"存储"这个东西可以复用 ⇒ 必须报错（别静默忽略这个修饰符 ✓）
+struct node { value: i64 }
+fn main() {
+    var i: i64 = 0
+    while i < 3 {
+        @overwrite var n = 5
+        println(n)
+        i = i + 1
+    }
+}

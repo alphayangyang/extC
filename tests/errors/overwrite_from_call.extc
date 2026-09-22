@@ -1,0 +1,10 @@
+// 同一条规矩的另一个形状：函数调用结果也没有"一块复用的存储" ✗
+fn f() -> i64 { return 7 }
+fn main() {
+    var i: i64 = 0
+    while i < 3 {
+        @overwrite var x = f()
+        println(x)
+        i = i + 1
+    }
+}

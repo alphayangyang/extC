@@ -1,0 +1,4 @@
+// `@overwrite` 每次执行都要把名字**重新绑到同一块存储**上（而且通常还要往里写）
+// ⇒ 必须是 `var` ✓（`let` 是指"这个名字只读"，跟复用这件事冲突 ✗）
+struct node { value: i64 }
+fn main() { @overwrite let n = new node  println("ok") }

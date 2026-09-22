@@ -1,0 +1,12 @@
+/* 定案 65 的**内存验收**：`@overwrite` ⇒ 循环里**不涨内存**（真·零分配循环）✓
+ * 每轮要 1MB 的缓冲，但存储只有一块 ⇒ 在 `ulimit -v 150000` 下必须跑完 ✓
+ * （不加 `@overwrite` 就是每轮一块 ⇒ 300MB ⇒ out of arena memory ✗）*/
+fn main() {
+    var i: i32 = 0
+    while i < 300 {
+        @overwrite var buf = new [250000]u8
+        buf[0] = u8(1)
+        i = i + 1
+    }
+    println("跑完了（300 轮 × 1MB 的复用缓冲）")
+}

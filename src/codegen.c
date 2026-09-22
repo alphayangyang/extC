@@ -86,6 +86,15 @@ typedef struct {
                             * （判据在检查器里算：`f->mayUseArena`，编译时长优化）*/
     int         loopLevel[64];
     int         loopLen;
+    /* ⭐ 定案 65：本函数的 `@overwrite` 站点（`Stmt*`，按出现顺序）。
+     * 函数序言要为每个站点吐一个**存储格子**（指针 + 懒分配标记）✓
+     * 用"站点表 + 查表"而不是把编号写进 AST —— 泛型实例化会**多次查同一个函数体**，
+     * 写进 AST 会被后一个实例覆盖 ✗（见代码生成里 `owIndex` 那段注释 ✓）*/
+    Vec         owSites;
+    /* ⭐ 定案 65：本函数里"被调者要格子"的调用点（Expr*，按发现顺序）。
+     * 每个调用点要替被调者准备 `被调者站点数` 个格子（`void *`）✓ */
+    Vec         owCalls;
+    bool        owLocal;   /* 当前函数的 @overwrite 格子放自己帧？（见 FuncDef.owLocal）*/
     Vec         insts;          /* Type* —— **按 C 名字去重**后的泛型实例（见下）*/
 
     /* ---- ⭐ 描述表**按需**生成（编译时长优化第三步）----
@@ -874,6 +883,8 @@ static bool isPlaceExpr(const Expr *e) {
 }
 
 static const char *homeArg(CG *g, int marked);   /* 定义在后面 */
+static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);   /* 定案 65 ✓ */
+static bool f_owLocal(CG *g, Stmt *s);
 
 static const char *genMethodCall(CG *g, Expr *e) {
     FuncDef *f = e->func;
@@ -914,6 +925,8 @@ static const char *genMethodCall(CG *g, Expr *e) {
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
     /* A3：方法也要把家 arena 传过去（接收者就是那个"最浅的 mut ref 实参"✓）*/
     if (f->needsHome) bufPrintf(&b, ", %s", homeArg(g, e->homeDepth));
+    /* ⭐ 定案 65：方法也要传格子（接收者算第 1 个实参 ⇒ 逗号判断跟着它 ✓）*/
+    owPassCells(g, &b, e, e->u.method.args.len + 1, f->needsHome);
     bufPutc(&b, ')');
     return bufCstr(&b);
 }
@@ -1022,6 +1035,8 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (e->u.call.args.len) bufPuts(&b, ", ");
                 bufPuts(&b, homeArg(g, e->homeDepth));
             }
+            /* ⭐ 定案 65：被调用者要 `@overwrite` 格子 ⇒ 传**我这一帧**里的 ✓ */
+            owPassCells(g, &b, e, e->u.call.args.len, e->func->needsHome);
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -1092,6 +1107,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (e->u.assoc.args.len) bufPuts(&b, ", ");
                 bufPuts(&b, homeArg(g, e->homeDepth));
             }
+            owPassCells(g, &b, e, e->u.assoc.args.len, e->func->needsHome);   /* ⭐ 定案 65 ✓ */
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -1475,6 +1491,141 @@ static void cgReleaseLevel(CG *g, int lvl) {
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
+/* ⭐ 定案 65：收集本函数里所有 `@overwrite` 站点（按源码顺序 ⇒ 编号稳定 ✓）*/
+static void collectOwSites(Stmt *s, Vec *out) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_VAR:
+        if (s->u.var.overwrite) *(Stmt **)vecPush(out) = s;
+        return;
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            collectOwSites(*(Stmt **)vecAt(&s->u.block.stmts, i), out);
+        return;
+    case ST_IF:
+        collectOwSites(s->u.ifs.thenBody, out);
+        collectOwSites(s->u.ifs.elseBody, out);
+        return;
+    case ST_WHILE: collectOwSites(s->u.whiles.body, out); return;
+    case ST_MATCH:
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            collectOwSites((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, out);
+        return;
+    default: return;
+    }
+}
+
+/* 这个站点是第几号？（序言按同一个顺序吐格子 ⇒ 两边对得上 ✓）*/
+static int owIndex(CG *g, Stmt *s) {
+    for (size_t i = 0; i < g->owSites.len; i++)
+        if (*(Stmt **)vecAt(&g->owSites, i) == s) return (int)i;
+    return -1;
+}
+
+/* ⭐ 定案 65：找"被调者需要 @overwrite 格子"的调用点 ✓
+ * ⚠️ 必须覆盖**所有** ExprKind（漏一个 ⇒ 那个调用点没格子 ⇒ 被调者拿 NULL ✗
+ *    被调者那边有保命分支，所以不会 UB，但会退化成"每次新分配" ✗）*/
+static void collectOwCallsExpr(Expr *e, Vec *out);
+static void collectOwCallsStmt(Stmt *s, Vec *out);
+
+static void collectOwCallsExpr(Expr *e, Vec *out) {
+    if (!e) return;
+    switch (e->kind) {
+    case EX_CALL:
+        if (e->func && e->func->owSites > 0 && !e->func->owLocal)
+            *(Expr **)vecPush(out) = e;
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            collectOwCallsExpr(*(Expr **)vecAt(&e->u.call.args, i), out);
+        return;
+    case EX_METHOD:
+        if (e->func && e->func->owSites > 0 && !e->func->owLocal)
+            *(Expr **)vecPush(out) = e;
+        collectOwCallsExpr(e->u.method.recv, out);
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            collectOwCallsExpr(*(Expr **)vecAt(&e->u.method.args, i), out);
+        return;
+    case EX_ASSOC:
+        if (e->func && e->func->owSites > 0 && !e->func->owLocal)
+            *(Expr **)vecPush(out) = e;
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            collectOwCallsExpr(*(Expr **)vecAt(&e->u.assoc.args, i), out);
+        return;
+    case EX_BIN:      collectOwCallsExpr(e->u.bin.left, out); collectOwCallsExpr(e->u.bin.right, out); return;
+    case EX_UN:       collectOwCallsExpr(e->u.un.operand, out); return;
+    case EX_FIELD:    collectOwCallsExpr(e->u.field.obj, out); return;
+    case EX_INDEX:    collectOwCallsExpr(e->u.index.obj, out); collectOwCallsExpr(e->u.index.index, out); return;
+    case EX_SLICE:    collectOwCallsExpr(e->u.slice.obj, out);
+                      collectOwCallsExpr(e->u.slice.lo, out); collectOwCallsExpr(e->u.slice.hi, out); return;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            collectOwCallsExpr((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, out);
+        return;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            collectOwCallsExpr(*(Expr **)vecAt(&e->u.arraylit.elems, i), out);
+        return;
+    case EX_REF:      collectOwCallsExpr(e->u.ref.operand, out); return;
+    case EX_DEREF:    collectOwCallsExpr(e->u.deref.operand, out); return;
+    case EX_SIGN:     collectOwCallsExpr(e->u.sign.operand, out); return;
+    case EX_CONV:     collectOwCallsExpr(e->u.conv.operand, out); return;
+    case EX_TRY:      collectOwCallsExpr(e->u.try_.operand, out); return;
+    case EX_NEW:      collectOwCallsExpr(e->u.new_.count, out); return;
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            collectOwCallsExpr(*(Expr **)vecAt(&e->u.gencall.args, i), out);
+        return;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            collectOwCallsExpr(*(Expr **)vecAt(&e->u.enumval.args, i), out);
+        return;
+    case EX_COALESCE: collectOwCallsExpr(e->u.coalesce.main, out);
+                      collectOwCallsExpr(e->u.coalesce.fallback, out); return;
+    default: return;      /* 字面量 / 绑定 / null ✓ */
+    }
+}
+
+static void collectOwCallsStmt(Stmt *s, Vec *out) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_VAR:    collectOwCallsExpr(s->u.var.init, out); return;
+    case ST_ASSIGN: collectOwCallsExpr(s->u.assign.target, out); collectOwCallsExpr(s->u.assign.value, out); return;
+    case ST_EXPR:   collectOwCallsExpr(s->u.expr.expr, out); return;
+    case ST_RETURN: collectOwCallsExpr(s->u.ret.value, out); return;
+    case ST_IF:     collectOwCallsExpr(s->u.ifs.cond, out);
+                    collectOwCallsStmt(s->u.ifs.thenBody, out); collectOwCallsStmt(s->u.ifs.elseBody, out); return;
+    case ST_WHILE:  collectOwCallsExpr(s->u.whiles.cond, out); collectOwCallsStmt(s->u.whiles.body, out); return;
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            collectOwCallsStmt(*(Stmt **)vecAt(&s->u.block.stmts, i), out);
+        return;
+    case ST_MATCH:
+        collectOwCallsExpr(s->u.match.scrutinee, out);
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            collectOwCallsStmt((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, out);
+        return;
+    default: return;      /* break / continue ✓ */
+    }
+}
+
+/* 这个调用点是第几号？（序言按同一顺序吐格子 ⇒ 两边对得上 ✓）*/
+static int owCallIndex(CG *g, Expr *e) {
+    for (size_t i = 0; i < g->owCalls.len; i++)
+        if (*(Expr **)vecAt(&g->owCalls, i) == e) return (int)i;
+    return -1;
+}
+
+/* 当前函数的 `@overwrite` 格子放自己帧吗？（`F->owLocal`；main 与递归函数是 true ✓）*/
+static bool f_owLocal(CG *g, Stmt *s) { (void)s; return g->owLocal; }
+
+/* ⭐ 定案 65：这个调用点要替被调者传**我这一帧**的格子（每个站点一个 `void *`）✓ */
+static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome) {
+    if (!e->func || e->func->owSites == 0 || e->func->owLocal) return;
+    int j = owCallIndex(g, e);
+    if (j < 0) return;                       /* 没登记（不该发生）⇒ 被调者有保命分支 ✓ */
+    for (int k = 0; k < e->func->owSites; k++)
+        bufPrintf(b, "%s&__extc_owc%d_%d", (nargs || hasHome || k) ? ", " : "", j, k);
+}
+
 /* **这个函数最多会用到几层块**（用来定 `__extc_a` 的大小 —— 栈上定长，零分配）*/
 static int blkMaxLevel(Stmt *s);
 static int blkMaxOfBlock(Stmt *block) {
@@ -1538,6 +1689,48 @@ static void genStmtInner(CG *g, Stmt *s) {
         case ST_VAR: {
             /* `cname` = 检查器定下的名字（同层遮蔽过的会带 `__2` 后缀）*/
             const char *nm = s->u.var.cname ? s->u.var.cname : s->u.var.name;
+            /* ⭐ 定案 65（`@overwrite`）：**存储只有一块** ——
+             * 第一次执行到这句才分配（懒分配 ✓），之后每次只**清零复用** ✓
+             * 生成的就是几行内联 C：`extc_arena_alloc` + `memset` ⇒ 零新运行时 ✓ */
+            if (s->u.var.overwrite) {
+                int k = owIndex(g, s);
+                Expr *nx = s->u.var.init;
+                Type *st_t = subst(g, nx->u.new_.type);
+                if (k >= 0 && !nx->u.new_.count) {
+                    /* 格子地址：自己的帧 ⇒ `&__extc_ow<k>`；调用者给的 ⇒ `void**` 参数 ✓ */
+                    const char *cell = arenaPrintf(g->arena, "__extc_ow%d", k);
+                    const char *caddr = f_owLocal(g, s)
+                        ? arenaPrintf(g->arena, "&%s", cell)
+                        : arenaPrintf(g->arena, "__extc_owarg%d", k);
+                    const char *ar = arenaRefAt(g, nx->arenaLevel);
+                    flushPrefix(g);
+                    if (f_owLocal(g, s)) {
+                        /* 自己的格子：永久有效，只有"分配过了吗"一种判断 ✓ */
+                        cgLine(g, "if (!%s) { %s = (%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)); }",
+                                cell, cell, cType(g, st_t), ar, cType(g, st_t));
+                        cgLine(g, "else { memset(%s, 0, (size_t)sizeof(%s)); }", cell, cType(g, st_t));
+                        cgLine(g, "%s %s = %s;", cType(g, s->type), nm, cell);
+                    } else {
+                        /* 调用者给的格子（`void **`）：它可能是 NULL（没走过那个调用点）
+                         * ⇒ **保命分支**：退化成一次普通分配 ✓（宁可多花内存，不可 UB ✓）*/
+                        cgLine(g, "void **__owl = %s;", caddr);
+                        cgLine(g, "%s *__owv;", cType(g, st_t));
+                        cgLine(g, "if (!__owl) { __owv = (%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s)); }",
+                                cType(g, st_t), ar, cType(g, st_t));
+                        cgLine(g, "else if (!*__owl) { *__owl = (%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s));"
+                                  "  __owv = (%s *)*__owl; }",
+                                cType(g, st_t), ar, cType(g, st_t), cType(g, st_t));
+                        cgLine(g, "else { memset(*__owl, 0, (size_t)sizeof(%s));  __owv = (%s *)*__owl; }",
+                                cType(g, st_t), cType(g, st_t));
+                        cgLine(g, "%s %s = __owv;", cType(g, s->type), nm);
+                    }
+                    return;
+                }
+                /* 只有"运行时长度"（`new T[k]`）会走到这里 ⇒ 还没实现 ⇒
+                 * 检查器已经挡在前面了（见 check_stmt.c 那条 @overwrite 检查）✓
+                 * 万一漏了，就按普通 `new` 走（**不静默假装复用**：那是 P′ 的反面 ✗）*/
+                (void)st_t;
+            }
             if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.var.init);
                 flushPrefix(g);
@@ -1719,7 +1912,9 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     /* ⚠️ `main` 的签名是 C 定死的（不能加隐藏参数）—— 它的"家"是自己函数体里
      * 那句 `extc_arena *__extc_home = &__extc_a[1];` ✓ */
     if (!f->owner && strcmp(f->name, "main") == 0) { bufPuts(&sig, "void"); return bufCstr(&sig); }
-    if (f->params.len == 0 && !f->needsHome) { bufPuts(&sig, "void"); return bufCstr(&sig); }
+    if (f->params.len == 0 && !f->needsHome && f->owLocal) {   /* ⚠️ 有 ow 隐藏参数时不能提前返回 ✗ */
+        bufPuts(&sig, "void"); return bufCstr(&sig);
+    }
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
         if (i) bufPuts(&sig, ", ");
@@ -1728,6 +1923,14 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     if (f->needsHome) {
         if (f->params.len) bufPuts(&sig, ", ");
         bufPuts(&sig, "extc_arena *__extc_home");
+    }
+    /* ⭐ 定案 65：`@overwrite` 的格子由**调用点的帧**持有 ⇒ 用不透明的 `void **`
+     * 传进来（不透明 = 调用者不需要知道被调者站点的类型 ⇒ 泛型实例也不用特判 ✓）*/
+    if (!f->owLocal) {
+        for (int i = 0; i < f->owSites; i++) {
+            if (f->params.len || f->needsHome || i) bufPuts(&sig, ", ");
+            bufPrintf(&sig, "void **__extc_owarg%d", i);
+        }
     }
     return bufCstr(&sig);
 }
@@ -1762,9 +1965,42 @@ static void genFunc(CG *g, FuncDef *f) {
      * 省掉的是"纯计算"函数的样板 —— 真实例子里约一半函数属于这种 ✓
      * （`cgReleaseLevel` 里也同步跳过，见那边 ✓）*/
     bool savedNoArena = g->noArena;
+    bool savedOwLocal = g->owLocal;
+    g->owLocal = f->owLocal;
     g->noArena = !f->mayUseArena;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    /* ⭐ 定案 65：`@overwrite` 的**存储格子**（每站点一个，函数序言里）
+     * 初值 NULL = "还没分配" ⇒ 语句处 `if (!cell)` 就是**懒分配** ✓
+     * ⚠️ 是普通局部（**不是 static**）⇒ 递归各激活各一份 ✓ */
+    Vec savedOw = g->owSites;              /* ⚠️ 按下标/指针保存会踩空（第一个函数时 arena 还是 NULL）✗ */
+    Vec owNow; vecInit(&owNow, g->arena, sizeof(Stmt *));
+    collectOwSites(f->body, &owNow);
+    g->owSites = owNow;
+    /* ⭐ 定案 65：格子放哪 —— 本函数自己的站点（`owLocal`）放自己的帧；
+     * 放别人的（被调者需要格子）⇒ 每个调用点替它准备 `owSites` 个 `void *` ✓ */
+    for (size_t i = 0; i < owNow.len; i++) {
+        if (!f->owLocal) continue;                     /* 我的站点由调用者给格子 ✓ */
+        Stmt *st = *(Stmt **)vecAt(&owNow, i);
+        Expr *nx = st->u.var.init;
+        Type *st_t = subst(g, nx->u.new_.type);        /* 存储的类型（不是绑定的类型）*/
+        if (!nx->u.new_.count)                          /* 单值 / 定长数组 [N]T ✓ */
+            cgLine(g, "%s *__extc_ow%zu = ((void *)0);", cType(g, st_t), i);
+        else                                            /* 运行时长度（步骤③）*/
+            cgLine(g, "%s *__extc_ow%zu = ((void *)0); int64_t __extc_owc%zu = 0;",
+                   cType(g, st_t), i, i);
+    }
+    Vec savedOwCalls = g->owCalls;
+    Vec owcNow; vecInit(&owcNow, g->arena, sizeof(Expr *));
+    collectOwCallsStmt(f->body, &owcNow);
+    g->owCalls = owcNow;
+    for (size_t j = 0; j < owcNow.len; j++) {
+        Expr *ce = *(Expr **)vecAt(&owcNow, j);
+        for (int k = 0; k < ce->func->owSites; k++)
+            cgLine(g, "void *__extc_owc%zu_%d = ((void *)0);", j, k);
+    }
+    /* ⚠️ 别在这里恢复 `owSites` ✗ —— 函数体还没生成呢（踩过：查表永远 -1 ⇒
+     * 静默退化成"每轮分配"）⇒ 恢复挪到 genFunc 收尾，跟 `noArena`/`hasHome` 一起 ✓ */
     /* ⭐ A：统一出口要用的**返回值落地变量**（只在本函数真的有出口释放时用）✓ */
     bool retVoid = !g->retType || g->retType->kind == TY_VOID;
     if (!g->noArena && !retVoid)
@@ -1795,6 +2031,9 @@ static void genFunc(CG *g, FuncDef *f) {
     g->tmpSeq = savedSeq;
     g->hasHome = savedHome;
     g->noArena = savedNoArena;
+    g->owSites = savedOw;          /* ⭐ 函数尾才恢复（见上面那句注释）✓ */
+    g->owCalls = savedOwCalls;
+    g->owLocal = savedOwLocal;
     g->indent--;
     cgLine(g, "}");
 }
