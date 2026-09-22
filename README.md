@@ -165,7 +165,7 @@ fn main() -> i32 {
 `==` 需要类型自己**显式定义 `fn ==`**（不引入 trait，也不用约定名）；
 数组的 `==` 和 `println` 由**编译器递归生成**。
 
-**还没有**：动态数组 `array<T>`（等 arena）· `for` · lambda · 格式串 ·
+**还没有**：`for` · lambda · 格式串 ·
 **输入的原语/库还没铺完**（`nextInt` 一族 · `reader` · `readAll` · `open`/帧拥有文件 · `main(args)`）·
 `region` · `@recursive` · 协议补全（`fn <` / hash）。
 

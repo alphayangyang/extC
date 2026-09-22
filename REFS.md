@@ -374,8 +374,13 @@ fn swap(a: mut ref i64, b: mut ref i64) { ... }    // 以前写不出来 ✓
 fn peek(self: ref counter) -> i64 { ... }          // 只读 ⇒ let 的也能调 ✓
 ```
 
-**还拦不住的**（都属于第 5 步，同一原因：视图只有一种）：
-`fn f(v: slice<i32>) { v[0] = 1 }` 和 `var s = "abc"; s[0] = 1`。
+**~~还拦不住的~~ —— 2026-09-23 实测：这两条现在都拦住了** ✓
+（原文说"都属于第 5 步，同一原因：视图只有一种"—— 第 5 步完成后**已经不是问题了** ✗）
+```
+fn f(v: slice<i32>) { v[0] = 1 }   => error: cannot write through `v`: it is a read-only view `slice<i32>`
+var s = "abc"; s[0] = 1            => error: cannot write through `s`: it is a read-only view `slice<u8>`
+```
+⇒ 机制：**只读视图写不穿**（`mut` 当**限定词**、可写性**从源头继承**）✓
 
 
 ---

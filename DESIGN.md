@@ -314,7 +314,7 @@ gdb 难用的原因可以点出来：要另开一个工具、另学一套心智�
 | 层 | 手段 | 状态 |
 |---|---|---|
 | ① 挡在编译期 | 好诊断（已有）；多错误报告（待做） | 部分 ✅ |
-| ② 挡不住的在运行时留最好的现场 | **trap 报告**：extC 位置 + 值 + 层层调用 | 待做 |
+| ② 挡不住的在运行时留最好的现场 | **trap 报告**：extC 位置 + 值 + 层层调用 | 🟡 **部分做完**（2026-09-23 实测）：**位置 ✓**（`f.extc:3: trap: …`）+ **值 ✓**（`index 10 out of range (length 4)` / `division by zero` / `shift count out of range` / `out of arena memory (this allocation wanted N bytes)`）· ⬜ **层层调用栈还没有**（PLAN #6 的已知小瑕疵：OOM 发生在 prelude 里时位置指向 prelude 的行 ✗）|
 | ③ 剩下的交给 gdb，但让它看到的像 extC | `#line`（已有）+ **调试友好的 C**（写成原则） | 部分 ✅ |
 
 #### 相对 C 最大的一条改进：**bug 从 UB 变成带位置的 trap**

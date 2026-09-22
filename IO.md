@@ -29,7 +29,10 @@
 > （见 `examples/option-ref-payload.extc` 里那个逐行读取循环）。
 > 以前这是本文的隐性障碍：`none` 的载荷没东西可填，而「ref 不可为空」是硬承诺 ✗
 >
-> ⬜ **剩下的门槛只有一个**：缓冲区的来源 —— `new i32[4096]`（PLAN §6 的 **A1**）。
+> ✅ **那个门槛早就跨过了**（2026-09-23 复核）：`new i32[4096]` / `new [N]T` / `new T[n]` 都在
+> （PLAN §6 的 **A1** = 定案 56「`new` 永远是零 · 分配进当前块」）✓
+> ⇒ 现在 IO 的缺口**不是"造不出 buffer"**，而是 `open`/帧拥有文件 + `nextInt` 一族 + `reader`
+> （见 §8 顺序表与 [`PLAN.md`](PLAN.md) §1 主线的现状）✓
 > 有了它本文的 `reader` / `readAll` / `nextInt` 族就能按下面写的原样落地 ✓
 
 ---
@@ -74,7 +77,7 @@
 
 ---
 
-## 2. 长度的类型：为什么是 `i64` 而不是 `u64` ⬜
+## 2. 长度的类型：为什么是 `i64` 而不是 `u64` ✅ **已拍板（定案 69）**
 
 **这是主人问的那个问题**（「返回长度为什么要用 i64 不用 u64 啊不懂，我想知道市面上怎么做的」）。
 
@@ -388,11 +391,11 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 ## 8. 顺序（三段，全是加法）
 
-| 段 | 内容 | 做完能干什么 | 大小 |
+| 段 | 内容 | 做完能干什么 | 进度（2026-09-23 实测） |
 |---|---|---|---|
-| **IO-0** | 原语 `rawRead`/`rawWrite` + `file`/`ioError` + **`readAll`** + **切片解析函数族**（`nextInt`/`nextToken`/`nextLine`/`skipSpace`）+ `eprintln` | **OI 式输入**能用了；gomoku 引擎能读协议（`reader` 也在这一段或下一段）| ~150 行 |
-| **IO-1** | `open` + 帧拥有的 `extc_files` + `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C）| ~120 行 |
-| **IO-2** | `exit(code)`、`close(f)!`、`writer`（可见缓冲）、termios raw mode | TUI + 刷量输出 | 中 |
+| **IO-0** | 原语 `rawRead`/`rawWrite` + `file`/`ioError` + **`readAll`** + **切片解析函数族** | **OI 式输入**能用了；gomoku 能读协议 | 🟡 **做到一半** —— 原语**已落地**（名字是 `read`/`write`，在 `stdlib/std/sys.extc`，带 `extern!` 签字）+ `std::io` 的 `readLine`/`writeBytes`/`flushOut` + 内建 `flush()` ✓（定案 73，`tests/io/` 常设验收）⬜ **还欠**：`readAll` · 切片解析函数族（`nextInt`/`nextToken`/`nextLine`/`skipSpace`）· `reader` · `ioError` |
+| **IO-1** | `open` + 帧拥有的 `extc_files` + `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**（跟 `extern!` 的 `owned` 是**同一个前置**：要"帧拥有资源"那套）|
+| **IO-2** | `exit(code)`、`close(f)!`、`writer`（可见缓冲）、termios raw mode | TUI + 刷量输出 | ⬜ **没有** |
 
 > BOOTSTRAP §4.3 已经定过 TUI 那条：**不包 ncurses**，只要「读一个字节 + 开关 raw mode」
 > 那么小的原语 ✓
