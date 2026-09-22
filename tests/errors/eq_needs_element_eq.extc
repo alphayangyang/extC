@@ -1,0 +1,9 @@
+// 比两个**容器** ⇒ 元素必须能比（`fn ==`）✗
+// （PLAN #42(c) 之后：**不写 `fn ==` 也能把 struct 放进容器** ✓
+//   但真去 `a == b` 时仍然要元素可比较 —— 这条没放松 ✓）
+struct span { start: i32  len: i32 }
+fn main() {
+    var a: varArray<span> = varArray<span>::withCap(1)
+    var b: varArray<span> = varArray<span>::withCap(1)
+    println("比一下 = ", a == b)
+}

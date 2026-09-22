@@ -2958,8 +2958,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         Type *inst = *(Type **)vecAt(&g.insts, i);
         if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
-        for (size_t j = 0; j < inst->sdef->methods.len; j++)
-            genFuncProto(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));
+        for (size_t j = 0; j < inst->sdef->methods.len; j++) {
+            FuncDef *m = *(FuncDef **)vecAt(&inst->sdef->methods, j);
+            /* ⭐ PLAN #42(c)：只吐**真被调到的**方法（没用到的不生成 ✓ 顺带让生成 C 变小 ✓）
+             * ⚠️ 为什么必须是**保守近似**：`used` 只在"模板体里被调用过"这一点上为真，
+             *    所以像 `push` 调 `grow` 这种**闭包自动带上** ✓（宁可多生成 ✓）*/
+            if (!m->used) continue;
+            genFuncProto(&g, m);
+        }
         substLeave(&g);
     }
     /* 普通 struct 的方法 + 自由函数：顺序无关，顺带支持互相调用 */
@@ -2997,7 +3003,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
-            genFunc(&g, *(FuncDef **)vecAt(&inst->sdef->methods, j));
+            FuncDef *m = *(FuncDef **)vecAt(&inst->sdef->methods, j);
+            if (!m->used) continue;      /* ⭐ PLAN #42(c)：没用到的不生成 ✓ */
+            genFunc(&g, m);
             cgLine(&g, "");
         }
         substLeave(&g);

@@ -1,0 +1,43 @@
+/* **struct 进容器**（PLAN #42(c)，2026-09-22 修）
+
+ * 以前这里**必须**给 `span` 手写一句 `fn ==` ✗ —— 因为泛型实例化会把类型的
+ * **所有**方法体都按实例复查一遍，而 `slice<T>::==` 从没被用到却要求 `T: ==` ✗✗
+ * ⇒ 于是"任何 struct 进容器"都要交一笔税 ✗
+
+ * 现在：**只复查/生成"真被调到的"方法** ✓ ⇒ 不写 `fn ==` 也能用 ✓
+ * （真去比两个容器时才需要它 —— 见 tests/errors/eq_needs_element_eq.extc ✓）
+
+ * 这份也是 **extC 里的"动态二维表"正解**：引用换索引（span = 两个整数 ✓）
+ * 而不是 `varArray<varArray<T>>`（那要借用规则挪到调用点，见 PLAN #42 ②）✓
+ */
+struct span {
+    start: i32
+    len: i32
+}
+
+fn main() {
+    var spans: varArray<span> = varArray<span>::withCap(2)
+    var flat: varArray<i32> = varArray<i32>::withCap(8)
+    flat.push(7)  flat.push(9)  flat.push(1)
+    spans.push(span { start: 0, len: 2 })
+    spans.push(span { start: 2, len: 1 })
+
+    var i: i64 = 0
+    while i < spans.size() {
+        match spans.get(i) {
+            none => println("空")
+            some(s) => {
+                var acc: i64 = 0
+                var j: i64 = 0
+                while j < i64(s.len) {
+                    acc = acc + i64(flat.get(i64(s.start) + j) ?? 0)
+                    j = j + 1
+                }
+                println("第 ", i, " 行：", s.len, " 个元素 → ", acc)
+            }
+        }
+        i = i + 1
+    }
+}
+
+// expect: 第 0 行：2 个元素 → 16

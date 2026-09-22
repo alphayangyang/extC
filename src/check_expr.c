@@ -204,6 +204,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             ec->node = e;
                             ec->owner = c->curFunc->owner;
                             ec->op = op;
+                            ec->func = c->curFunc;     /* ⭐ #42(c)：记下它属于谁 ✓ */
                             *(EqCheck **)vecPush(&c->eqChecks) = ec;
                         }
                         return c->tBool;
@@ -241,7 +242,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Vec *sp = NULL, *sa = NULL;
                     if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
                     (void)sp; (void)sa;
-                    e->func = m;        /* codegen 用它生成 `Type_eq(&a, &b)` */
+                    e->func = m;  m->used = true;   /* ⭐ #42(c)：这个方法被用到了 ✓ */
                     return c->tBool;
                 }
 
@@ -631,7 +632,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.assoc.name, e->u.assoc.typeName);
                 return ttError(tt);
             }
-            e->func = f;
+            e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
 
             Vec *sp = NULL, *sa = NULL;
             if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
@@ -1020,7 +1021,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "call to undefined function `%s`", name);
                 return ttError(tt);
             }
-            e->func = f;
+            e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
 
             if (e->u.call.args.len != f->params.len) {
                 ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
@@ -1107,7 +1108,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.method.name, typeStr(c, rb ? rb : recvT));
                 return ttError(tt);
             }
-            e->func = f;
+            e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
 
             /* 方法要**可写借用**（`self: mut ref T`）⇒ 接收者必须可写。
              * 这是「签名不说实话」的另一半：光看调用点 `x.bump()` 看不出它会不会改 x，

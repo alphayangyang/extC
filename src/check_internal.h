@@ -132,7 +132,8 @@ typedef struct {
 } RefCheck;
 
 /* 推迟到实例化复查的 `==` 的记账条目（expr 那边产生，top 那边消费）*/
-typedef struct { Expr *node; StructDef *owner; const char *op; } EqCheck;
+/* ⭐ PLAN #42(c)：`func` = 这条 `==` 属于哪个函数（用来问"它被调用过吗"✓）*/
+typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } EqCheck;
 
 /* ------------------------------ 跨文件原型
  * 自动生成：拿拆分**前**的 check.c 过一遍 `gcc -aux-info`，

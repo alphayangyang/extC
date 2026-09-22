@@ -1163,6 +1163,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * 这是「不引入 trait」的代价 —— 错误晚到这里，但信息要说清是哪个实例。 */
     for (size_t i = 0; i < c.eqChecks.len; i++) {
         EqCheck *ec = *(EqCheck **)vecAt(&c.eqChecks, i);
+        /* ⭐ PLAN #42(c)：这条 `==` 所在的函数**从没被调用过** ⇒ 它的实例不可能执行
+         * ⇒ 不用按实例复查 ✓（也就不用逼用户给无关键写 `fn ==` ✗）*/
+        if (ec->func && !ec->func->used) continue;
         for (size_t j = 0; j < tt->instances.len; j++) {
             Type *inst = *(Type **)vecAt(&tt->instances, j);
             if (inst->sdef != ec->owner) continue;
@@ -1237,6 +1240,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 continue;
             }
 
+            /* ⭐ PLAN #42(c)：同一条道理 —— 从没被调用过的函数不用按实例复查 ✓ */
+            if (rc->func && !rc->func->used) continue;
             Type *vt = tsub(&c, rc->val->type);
             c.substParams = NULL;
             c.substArgs   = NULL;
