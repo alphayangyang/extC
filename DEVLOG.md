@@ -60,7 +60,7 @@ EXTC_DUMP_EFFECTS=1 ./build/extc examples/generic-effects-per-instance.extc -o /
 ### 验收（都实测）
 
 - 新正例 `examples/generic-effects-per-instance.extc`（**自带 dump 命令**，下次谁都能复现那张表 ✓）
-- `make` 零告警 ✓ · `./check.sh` **14 节全绿** · 测试 **249 通过 0 失败** ✓
+- `make` 零告警 ✓ · `./check.sh` **14 节全绿** · 测试 **250 通过 0 失败** ✓
 - **golden 逐字节相同（92 文件）** ✓ —— 这条最要紧：它证明这处精化**行为零变化**
   （摘要会喂给 `needsHome` 的传递闭包 ⇒ 万一改错，生成 C 会变 ✗）
 - 攻击库基线**一致** ✓ · 红线仍被挡 ✓
