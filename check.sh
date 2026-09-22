@@ -64,6 +64,15 @@ if [ "${1:-}" != "quick" ]; then
         bad "OI 横评（有构建失败 / 语言之间对拍不一致 ✗）"
         echo "$oout" | sed 's/^/  /' | tail -20
     fi
+
+    echo "== 基准：**主席树四语言横评**（P3834；小规模 + 暴力对拍，缩小规模当回归）=="
+    if pout=$(N=200000 Q=200000 V=200000 RUNS=1 ./bench/oi/persist/run.sh 2>&1); then
+        echo "$pout" | sed -n '/^  小规模对拍/p;/^语言/,/^$/p' | sed 's/^/  /'
+        ok "主席树横评（四语言一致 + 暴力对拍 ✓）"
+    else
+        bad "主席树横评（构建失败 / 对拍不一致 ✗）"
+        echo "$pout" | sed 's/^/  /' | tail -20
+    fi
 fi
 
 echo

@@ -1,0 +1,102 @@
+/* 静态区间第 k 小（主席树 / 可持久化线段树，P3834）—— **extC 实现（用足 arena）**
+ *
+ * 跟 `p3834.c` / `p3834.cpp` / `p3834.rs` **同一套算法**（逐行对应）：
+ *   ① pcg32 造数据（种子 20260922、流 54 —— 四语言必须逐位一致）
+ *   ② 前缀版本：每个数只在一条路径上开新节点 ⇒ 节点池 = 索引式（i32 下标）
+ *   ③ 询问：在 `root[r] - root[l-1]` 的差分树上二分找第 k 小
+ *   ④ 校验和：输入 + 答案（u64 回绕）
+ *
+ * ⭐ **这一版刻意用足 extC 的分配设施**（主人要求」extC 就用足 arena 试试「）：
+ *   · 节点池是 `new [POOL]pnode` —— **一次 arena 分配** 252MB，
+ *     **不写 malloc、不写 free、没有 GC**，程序结束自动全没 ✓
+ *   · `new` 出来的存储**永远清零** ⇒ 0 号空节点不用手动初始化 ✓
+ *   · 池子的句柄（`mut ref [POOL]pnode`）是**值**，当参数传下去 ✓（没有全局可变状态）
+ *   · ⚠️ 代价也如实记着：**分配永远清零** ⇒ 252MB 的 memset 是要付的
+ *     （C 的 `malloc` 不清零、Rust 的 `Vec::with_capacity` 不清零 ⇒ 那两行不付这笔）
+ *   · ⚠️ 数组长度是**编译期常数** ⇒ `POOL` 写死在类型里（`new [N]pnode` 也一样要常数）
+ */
+struct pnode {
+    l: i32
+    r: i32
+    sum: i32
+}
+
+let N: i64 = 1000000
+let Q: i64 = 1000000
+let V: i64 = 1000000
+
+var A: [1000001]i32
+var ROOT: [1000001]i32
+var NP: i32 = 1                     /* 0 号是空节点（`new` 全清零 ⇒ 天然是空节点）*/
+
+/* ---------------- 可持久化线段树 ---------------- */
+fn update(pool: mut ref [21000002]pnode, prev: i32, lo: i32, hi: i32, pos: i32) -> i32 {
+    let rt: i32 = NP
+    NP = NP + 1
+    (*pool)[rt].l = (*pool)[prev].l
+    (*pool)[rt].r = (*pool)[prev].r
+    (*pool)[rt].sum = (*pool)[prev].sum + 1
+    if lo < hi {
+        let mid: i32 = lo + (hi - lo) / 2
+        if pos <= mid {
+            (*pool)[rt].l = update(ref *pool, (*pool)[prev].l, lo, mid, pos)
+        } else {
+            (*pool)[rt].r = update(ref *pool, (*pool)[prev].r, mid + 1, hi, pos)
+        }
+    }
+    return rt
+}
+
+fn query(pool: ref [21000002]pnode, u: i32, v: i32, lo: i32, hi: i32, k: i32) -> i32 {
+    if lo == hi { return lo }
+    let mid: i32 = lo + (hi - lo) / 2
+    let leftCount: i32 = (*pool)[(*pool)[v].l].sum - (*pool)[(*pool)[u].l].sum
+    if k <= leftCount {
+        return query(ref *pool, (*pool)[u].l, (*pool)[v].l, lo, mid, k)
+    }
+    return query(ref *pool, (*pool)[u].r, (*pool)[v].r, mid + 1, hi, k - leftCount)
+}
+
+fn main() -> i32 {
+    var rng: pcg32 = pcg32::seeded(u64(20260922))
+
+    var i: i64 = 1
+    while i <= N {
+        A[i] = i32(rng.nextBounded(u64(V))) + 1
+        i = i + 1
+    }
+
+    var inSum: u64 = 0
+    i = 1
+    while i <= N {
+        inSum = inSum * 1000003 + u64(A[i])
+        i = i + 1
+    }
+
+    /* ⭐ 全部的"分配"就这一行：252MB 从 arena 拿，清零、不 free ✓ */
+    var pool: mut ref [21000002]pnode = new [21000002]pnode
+
+    i = 1
+    while i <= N {
+        ROOT[i] = update(ref *pool, ROOT[i - 1], 1, i32(V), A[i])
+        i = i + 1
+    }
+
+    var ansSum: u64 = 0
+    var j: i64 = 0
+    while j < Q {
+        let l: i64 = 1 + i64(rng.nextBounded(u64(N)))
+        let r: i64 = l + i64(rng.nextBounded(u64(N - l + 1)))
+        let k: i64 = 1 + i64(rng.nextBounded(u64(r - l + 1)))
+        let ans: i32 = query(ref *pool, ROOT[l - 1], ROOT[r], 1, i32(V), i32(k))
+        ansSum = ansSum * 1000009 + u64(ans)
+        j = j + 1
+    }
+
+    println("in    = ", inSum)
+    println("n     = ", N)
+    println("q     = ", Q)
+    println("nodes = ", NP)
+    println("ans   = ", ansSum)
+    return 0
+}
