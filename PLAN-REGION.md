@@ -168,7 +168,7 @@
 
 **判据**：`examples/path-narrowing.extc`（局部根 ⇒ 编过，带 expect）✓ ·
 `tests/errors/path_narrow_param_root.extc`（参数根 ⇒ 仍报错）✓ ·
-`check.sh` 全量 **通过 4，失败 0**（220 测试）✓ · 攻击库基线**一字不动** ✓
+`check.sh` 全量 **通过 14，失败 0**（251 测试）✓ · 攻击库基线**一字不动** ✓
 
 ## 11. 🏁 三档总账（goal 完成度）
 

@@ -660,7 +660,7 @@ ASan 干净 ✓），**更深块仍然拒** ⇒ 新反例 `tests/errors/stash_vi
 | `tests/errors/stash_view_from_deeper.extc`（更深块存引用）| ✓ 挡住 | ✓ 挡住（**位置更好**：`stash(ref outer, local[..])` 那一行）|
 | `tests/errors/ref_arg_too_deep` · `borrowed_into_param_place` · `ref_launder_field` · `ref_launder_deref` · `generic_borrowed_store` | ✓ 挡住 | ✓ **一条不少** |
 
-`./check.sh` = **8 通过 0 失败**（244 测试全绿 ✓ 攻击库基线 8 条已知安全 + 其余全挡 ✓
+`./check.sh` = **14 通过 0 失败**（251 测试全绿 ✓ 攻击库基线 7 条已知安全 + 其余全挡 ✓
 golden 差异 = **只多那两个新例子**，其余 86 个**逐字节不变** ⇒ 纯检查器改动 ✓ 生成的 C 一个字节没动）✓
 
 ---
