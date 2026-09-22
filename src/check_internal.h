@@ -71,6 +71,9 @@ typedef struct {
     FuncDef   *curFunc;
     Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
     Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
+    /* ⭐ PLAN #47：**泛型自由函数的实例**（`fn f<T>` 每套实参一份）✓
+     * 它们在检查器里"出生"（调用点推导出来），在 codegen 里当普通函数吐出来 ✓ */
+    Vec        funcInsts;   /* FuncDef*（实例：tmpl/targs/instName 都填好）*/
     Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
     Vec        nameUses;    /* NameUse* —— 当前函数里每个名字用过几次（生成 C 的改名用）*/
     Vec        moduleNames;     /* const char*（已排序）—— 编译时长优化见 check.c */
@@ -229,7 +232,10 @@ typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } 
  void markCallHomeIfEscaping (Checker *, Expr *, int);
  void markCallHomeIfEscaping (Checker *c, Expr *v, int at);
  void setCallArenaArg (Checker *c, Expr *e);
- void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);   /* 定案 68：解析出"最终传哪只 arena" ✓ */
+ void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);
+ Vec *funcTParams (FuncDef *f);   /* PLAN #47：可见的类型参数在哪 ✓ */
+ FuncDef *funcInstance (Checker *c, FuncDef *tmpl, Vec *targs, int line);
+ _Bool unifyTParams (TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got);   /* 定案 68：解析出"最终传哪只 arena" ✓ */
  void narrowFactsOf (Checker *c, Expr *cond);
  void popScope (Checker *c);
  void pushNarrow (Checker *c, const char *cname);

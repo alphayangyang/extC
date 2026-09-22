@@ -392,7 +392,25 @@ static FuncDef *parseFunc(Parser *p) {
     fd->name = name->text;
     fd->line = kw->line;
     fd->ret = NULL;
+    fd->ctx  = p->ctx;                         /* 定案 70：诊断要走对文件 ✓ */
     vecInit(&fd->params, p->arena, sizeof(void *));
+    vecInit(&fd->typeParams, p->arena, sizeof(void *));
+    vecInit(&fd->targs, p->arena, sizeof(void *));
+    /* ⭐ PLAN #47：`fn f<T, U>(…)` —— 自由函数的类型参数（跟 struct 那一处同一个形状 ✓）*/
+    if (accept(p, "<")) {
+        skipNl(p);
+        for (;;) {
+            /* ⚠️ 类型参数是**大写开头**的（`T`）—— 所以这里要用 expectIdent，
+             * 而不是 expectTypeName（那个专门挡大写开头、留给类型参数 ✓）踩过 ✗ */
+            Token *tp = expectIdent(p, "a type parameter name (uppercase, e.g. `T`)");
+            if (!tp) return NULL;
+            *(const char **)vecPush(&fd->typeParams) = tp->text;
+            if (accept(p, ",")) { skipNl(p); continue; }
+            break;
+        }
+        skipNl(p);
+        if (!expect(p, ">", NULL)) return NULL;
+    }
 
     if (!expect(p, "(", NULL)) return NULL;
     skipNl(p);

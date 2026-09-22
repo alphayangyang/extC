@@ -7,6 +7,14 @@
 
 #include <stdlib.h>   /* getenv（EXTC_DUMP_EFFECTS 这个调试开关）*/
 
+/* ⭐ PLAN #47：一个函数**可见的类型参数**在哪？—— 方法在 `owner` 上，自由函数在自己身上 ✓ */
+Vec *funcTParams(FuncDef *f) {
+    if (!f) return NULL;
+    if (f->typeParams.len) return &f->typeParams;
+    if (f->owner) return &f->owner->typeParams;
+    return NULL;
+}
+
 /* 前向声明：下面这几件在"效果摘要"和"E 分析"里互相引用 ✓ */
 static int  paramIndex(FuncDef *f, const char *name);
 bool isEscapeeName(Checker *c, const char *n);
@@ -14,8 +22,8 @@ bool isEscapeeName(Checker *c, const char *n);
 /* ---------------------------------------------------------------- 顶层 */
 
 static void resolveSignature(Checker *c, FuncDef *f) {
-    /* 方法里，它所属 struct 的泛型参数是可见的 */
-    Vec *params = f->owner ? &f->owner->typeParams : NULL;
+    /* 方法里，它所属 struct 的泛型参数可见；**自由函数**用自己那份（PLAN #47 ✓）*/
+    Vec *params = funcTParams(f);
 
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
@@ -1058,7 +1066,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     c->curFunc = f;
     computeEscapes(c, f);   /* ⭐ 档1：**必须**在检查函数体**之前**算 E ——
                              * 选家 arena 时要靠它（放晚了就等于没算 ✗ 踩过）*/
-    c->curParams = f->owner ? &f->owner->typeParams : NULL;
+    c->curParams = funcTParams(f);
     /* ⭐ 定案 68：这一遍查体时顺手记下所有"等闭包之后再定"的节点 ✓ */
     vecInit(&c->curArenaSites, c->arena, sizeof(Expr *));
     pushScope(c);
@@ -1172,9 +1180,179 @@ static void checkGlobals(Checker *c) {
     }
 }
 
+/* ⭐ PLAN #47：**自由函数实例**（`fn f<T>` + 实参类型 ⇒ 一份具体函数）✓
+ *
+ * 为什么实例要"出生"在调用点：类型实例（`varArray<i32>`）是**类型**决定的，
+ * 而自由函数的实参只看调用点 ⇒ 只有那里知道 `T` 到底是什么 ✓
+ *
+ * 实例是**独立的 FuncDef**：`tmpl` 指回模板、`targs`/`instName` 填好、
+ * 参数与返回类型**代入过** ⇒ codegen 当普通函数吐（只是进实例时要开替换 ✓）*/
+#define FUNC_INST_PREFIX "__extc_fi_"
+
+FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
+    if (!tmpl) return NULL;
+    /* 已经造过？（同一个模板 + 同一套实参 ⇒ 一份 ✓）*/
+    for (size_t i = 0; i < c->funcInsts.len; i++) {
+        FuncDef *in = *(FuncDef **)vecAt(&c->funcInsts, i);
+        if (in->tmpl != tmpl || in->targs.len != targs->len) continue;
+        bool same = true;
+        for (size_t j = 0; j < targs->len; j++)
+            if (!ttEquals(*(Type **)vecAt(&in->targs, j), *(Type **)vecAt(targs, j))) { same = false; break; }
+        if (same) return in;
+    }
+    FuncDef *in = (FuncDef *)arenaAllocZero(c->arena, sizeof(FuncDef));
+    *in = *tmpl;                        /* 浅拷贝：**函数体共用** ✓（跟方法实例一个道理 ✓）*/
+    in->tmpl = tmpl;
+    in->used = false;
+    vecInit(&in->targs, c->arena, sizeof(void *));
+    for (size_t j = 0; j < targs->len; j++)
+        *(Type **)vecPush(&in->targs) = *(Type **)vecAt(targs, j);
+    /* 参数 / 返回类型代入 ✓
+     * ⚠️⚠️ 参数必须**复制一份**（`Param*` 原来跟模板共享 ⇒ 改类型会把模板也改掉 ✗✗
+     *   结果就是第二次推导时模板已经是具体类型了 —— 静默错乱，实测段错误 ✓）*/
+    {
+        Vec newParams;
+        vecInit(&newParams, c->arena, sizeof(void *));
+        for (size_t j = 0; j < tmpl->params.len; j++) {
+            Param *src = *(Param **)vecAt(&tmpl->params, j);
+            Param *copy = (Param *)arenaAllocZero(c->arena, sizeof(Param));
+            *copy = *src;
+            copy->type = ttSubstitute(c->tt, src->type, &tmpl->typeParams, targs);
+            *(Param **)vecPush(&newParams) = copy;
+        }
+        in->params = newParams;
+    }
+    if (in->ret) in->ret = ttSubstitute(c->tt, in->ret, &tmpl->typeParams, targs);
+    /* C 名字：`max_i32`（拿实参 mangle 拼 ✓）*/
+    Buf b;
+    bufInit(&b, c->arena);
+    bufPuts(&b, tmpl->name);
+    for (size_t j = 0; j < targs->len; j++) {
+        bufPutc(&b, '_');
+        bufPuts(&b, ttMangle(c->tt, *(Type **)vecAt(targs, j)));
+    }
+    in->instName = bufCstr(&b);
+    in->typeParams.len = 0;             /* 实例没有类型参数了 ✓ */
+    *(FuncDef **)vecPush(&c->funcInsts) = in;
+    *(FuncDef **)vecPush(&c->m->funcs) = in;   /* codegen 从这里吐定义 ✓ */
+    (void)line;
+    return in;
+}
+
+/* 类型合一：把形参类型里的类型参数**填**进 `targs`（`slice<T>` vs `slice<u8>` ✓）
+ * 返回 false = 推不出来（比如 `T` 只出现在返回类型 ⇒ 得写显式实参 `f<i32>(…)`）✓ */
+bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
+    if (!want || !got) return true;
+    if (want->kind == TY_PARAM) {
+        for (size_t i = 0; i < tp->len; i++) {
+            if (strcmp(*(const char **)vecAt(tp, i), want->param) != 0) continue;
+            Type *cur = *(Type **)vecAt(targs, i);
+            if (cur) return ttEquals(cur, got);
+            *(Type **)vecAt(targs, i) = got;
+            return true;
+        }
+        return true;
+    }
+    if (want->kind == TY_REF && got->kind == TY_REF)
+        return unifyTParams(tt, tp, targs, want->inner, got->inner);
+    if (want->kind == TY_GENERIC && got->kind == TY_GENERIC) {
+        if (want->sdef != got->sdef || want->targs.len != got->targs.len) return false;
+        for (size_t i = 0; i < want->targs.len; i++)
+            if (!unifyTParams(tt, tp, targs, *(Type **)vecAt(&want->targs, i),
+                              *(Type **)vecAt(&got->targs, i))) return false;
+        return true;
+    }
+    if (ttHasParam(want)) return false;   /* 形参里还有 T 但两边形状对不上 ⇒ 推不出来 ✓ */
+    return true;
+}
+
+/* ⭐ PLAN #47：这两批"推迟到实例化"的复查，现在**类型实例与自由函数实例共用** ✓
+ * 抽成函数就是为了让 `fn f<T>` 的实例也走同一条路，而不是复制一份 ✗
+ * 调用者负责先把 `c.substParams/substArgs` 设成这个实例的 ✓ */
+static void runEqCheck(Checker *c, EqCheck *ec, Vec *params, Vec *targs, const char *instName) {
+    TypeTable *tt = c->tt;
+    Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type, params, targs);
+    Type *rt2 = ttSubstitute(tt, ec->node->u.bin.right->type, params, targs);
+    if (!ttEquals(lt, rt2)) return;
+    if (!typeSupportsEq(lt, ec->op))
+        ckError(c, ec->node->line,
+                "`==` inside a generic is checked at instantiation, not on the template --"
+                " the price of having no traits. Add a `fn ==` to that type.",
+                "`%s` needs `%s` to define `==`", instName, typeStr(c, lt));
+}
+
+/* 这条 RefCheck 属于**这个自由函数实例**吗？（方法走类型实例那条 ✓）*/
+static bool refCheckApplies(RefCheck *rc, FuncDef *fi) {
+    if (!fi || !fi->tmpl) return false;
+    if (rc->func != fi->tmpl) return false;
+    return fi->tmpl->typeParams.len > 0;
+}
+
+static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
+    TypeTable *tt = c->tt;
+        /* 这个实例里那个 `T` 到底含不含引用？不含 ⇒ 这条规矩本来就不适用 ✓
+         * （所以 `box<i64>::set` 照样合法，而 `boxT<slice<u8>>::stash` 会被挡住 ——
+         *   这正是"不能简单地把 `T` 一律当成含引用"的原因）*/
+        if (rc->isNewSize) {
+            /* 实例化之后还带类型参数（或 void）⇒ 大小仍然不知道 ⇒ 报错点名实例 ✓ */
+            Type *nt = tsub(c, rc->declType);
+            c->substParams = NULL;
+            c->substArgs   = NULL;
+            if (nt->kind == TY_PARAM || ttHasParam(nt) || ttIs(nt, "void"))
+                ckError(c, rc->line,
+                        "`new` needs a concrete type: its size is decided at compile time,"
+                        " and this one is still not concrete after instantiation.",
+                        "in instance `%s`: cannot `new` `%s` -- its size is not known"
+                        " even here", instName, typeStr(c, nt));
+            return;
+        }
+
+        if (rc->isZero) {
+            /* 零值这一类：这个实例的 `T` 到底有没有零值？*/
+            Type *zt = tsub(c, rc->declType);
+            c->substParams = NULL;
+            c->substArgs   = NULL;
+            if (typeLacksZeroValue(tt, zt))
+                ckError(c, rc->line,
+                        "A generic body is checked once on the template, where `T` is"
+                        " opaque -- so this is re-checked for every concrete instance."
+                        " Give the local an initializer.",
+                        "in instance `%s`: `%s` has no zero value (it contains a"
+                        " reference)", instName, rc->what);
+            return;
+        }
+
+        /* ⭐ PLAN #42(c)：同一条道理 —— 从没被调用过的函数不用按实例复查 ✓ */
+        if (rc->func && !rc->func->used) return;
+        Type *vt = tsub(c, rc->val->type);
+        c->substParams = NULL;
+        c->substArgs   = NULL;
+        if (!typeContainsRef(tt, vt)) return;
+
+        if (rc->depth > rc->at) {
+            ckError(c, rc->line,
+                    "A generic body is checked once on the template, where `T` is"
+                    " opaque -- so the reference rules are re-checked for every"
+                    " concrete instance.",
+                    "in instance `%s`: %s would hold a reference to something that"
+                    " dies first (depth %d, but this can only hold up to %d)",
+                    instName, rc->target ? "this assignment" : rc->what,
+                    rc->depth, rc->at);
+        } else if (rc->target && rc->at == 0 && rc->borrowed
+                   && !valTracesToParam(c, rc->func, rc->val)) {   /* ⭐ 定案 67 ✓ */
+            ckError(c, rc->line,
+                    "A generic body is checked once on the template, where `T` is"
+                    " opaque -- so the reference rules are re-checked for every"
+                    " concrete instance.",
+                    "in instance `%s`: cannot store a borrowed value into something"
+                    " that outlives this call", instName);
+        }
+}
+
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     Checker c;
     memset(&c, 0, sizeof c);
+    vecInit(&c.funcInsts, arena, sizeof(void *));   /* PLAN #47 ✓ */
     c.ctx = ctx;
     c.arena = arena;
     c.tt = tt;
@@ -1247,8 +1425,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < sd->methods.len; j++)
             checkMethodShape(&c, *(FuncDef **)vecAt(&sd->methods, j));
     }
-    for (size_t i = 0; i < m->funcs.len; i++)
-        checkMethodShape(&c, *(FuncDef **)vecAt(&m->funcs, i));
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
+        if (fx->tmpl) continue;              /* 实例不单独查 ✓ */
+        checkMethodShape(&c, fx);
+    }
 
     /* 第二遍：检查函数体 */
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -1256,8 +1437,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < sd->methods.len; j++)
             checkFunc(&c, *(FuncDef **)vecAt(&sd->methods, j));
     }
-    for (size_t i = 0; i < m->funcs.len; i++)
-        checkFunc(&c, *(FuncDef **)vecAt(&m->funcs, i));
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
+        if (fx->tmpl) continue;              /* ⭐ PLAN #47：实例不单独查（模板 + 实例复查 ✓）*/
+        checkFunc(&c, fx);
+    }
 
     /* 推迟的 `==` 检查：对每个具体实例复查一遍。
      * 这是「不引入 trait」的代价 —— 错误晚到这里，但信息要说清是哪个实例。 */
@@ -1266,24 +1450,20 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* ⭐ PLAN #42(c)：这条 `==` 所在的函数**从没被调用过** ⇒ 它的实例不可能执行
          * ⇒ 不用按实例复查 ✓（也就不用逼用户给无关键写 `fn ==` ✗）*/
         if (ec->func && !ec->func->used) continue;
+        /* ① 类型实例（方法上的 `T: ==`）—— 自由函数没有 owner ⇒ 跳过 ✓ */
+        if (!ec->owner) goto eq_done;
         for (size_t j = 0; j < tt->instances.len; j++) {
             Type *inst = *(Type **)vecAt(&tt->instances, j);
             if (inst->sdef != ec->owner) continue;
-
-            Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type,
-                                    &ec->owner->typeParams, &inst->targs);
-            if (!ttEquals(lt, ttSubstitute(tt, ec->node->u.bin.right->type,
-                                          &ec->owner->typeParams, &inst->targs)))
-                continue;
-
-            if (!typeSupportsEq(lt, ec->op)) {
-                ckError(&c, ec->node->line,
-                        "`==` inside a generic is checked at instantiation, not on the template -- the price of having no traits. "
-                        "Add a `fn ==` to that type.",
-                        "`%s` needs `%s` to define `==`",
-                        inst->name, typeStr(&c, lt));
-            }
+            runEqCheck(&c, ec, &ec->owner->typeParams, &inst->targs, inst->name);
         }
+        /* ② ⭐ PLAN #47：**自由函数实例**（`fn f<T>` 里的 `T: ==`）*/
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            if (ec->func != fi->tmpl) continue;
+            runEqCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+        }
+    eq_done: ;
     }
 
     /* ---------------------------------------------------------------- 泛型体的推迟复查
@@ -1301,70 +1481,23 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < c.refChecks.len; i++) {
         RefCheck *rc = *(RefCheck **)vecAt(&c.refChecks, i);
         StructDef *owner = rc->func->owner;
+        /* ⭐ PLAN #47：自由函数实例也要复查（同样的规矩，只是 `T` 来自函数自己的形参表 ✓）*/
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            if (!refCheckApplies(rc, fi)) continue;
+            c.substParams = &fi->tmpl->typeParams;
+            c.substArgs   = &fi->targs;
+            runRefCheck(&c, rc, fi->instName);
+        }
+        /* ② 类型实例（**原有那条路** ✓）：方法上的 `T` 由所属 struct 的实参决定 ✓ */
+        if (!owner) continue;                    /* 自由函数模板没有 owner ⇒ 上面那条管 ✓ */
         for (size_t j = 0; j < tt->instances.len; j++) {
             Type *inst = *(Type **)vecAt(&tt->instances, j);
             if (inst->sdef != owner) continue;
 
             c.substParams = &owner->typeParams;
             c.substArgs   = &inst->targs;
-
-            /* 这个实例里那个 `T` 到底含不含引用？不含 ⇒ 这条规矩本来就不适用 ✓
-             * （所以 `box<i64>::set` 照样合法，而 `boxT<slice<u8>>::stash` 会被挡住 ——
-             *   这正是"不能简单地把 `T` 一律当成含引用"的原因）*/
-            if (rc->isNewSize) {
-                /* 实例化之后还带类型参数（或 void）⇒ 大小仍然不知道 ⇒ 报错点名实例 ✓ */
-                Type *nt = tsub(&c, rc->declType);
-                c.substParams = NULL;
-                c.substArgs   = NULL;
-                if (nt->kind == TY_PARAM || ttHasParam(nt) || ttIs(nt, "void"))
-                    ckError(&c, rc->line,
-                            "`new` needs a concrete type: its size is decided at compile time,"
-                            " and this one is still not concrete after instantiation.",
-                            "in instance `%s`: cannot `new` `%s` -- its size is not known"
-                            " even here", inst->name, typeStr(&c, nt));
-                continue;
-            }
-
-            if (rc->isZero) {
-                /* 零值这一类：这个实例的 `T` 到底有没有零值？*/
-                Type *zt = tsub(&c, rc->declType);
-                c.substParams = NULL;
-                c.substArgs   = NULL;
-                if (typeLacksZeroValue(tt, zt))
-                    ckError(&c, rc->line,
-                            "A generic body is checked once on the template, where `T` is"
-                            " opaque -- so this is re-checked for every concrete instance."
-                            " Give the local an initializer.",
-                            "in instance `%s`: `%s` has no zero value (it contains a"
-                            " reference)", inst->name, rc->what);
-                continue;
-            }
-
-            /* ⭐ PLAN #42(c)：同一条道理 —— 从没被调用过的函数不用按实例复查 ✓ */
-            if (rc->func && !rc->func->used) continue;
-            Type *vt = tsub(&c, rc->val->type);
-            c.substParams = NULL;
-            c.substArgs   = NULL;
-            if (!typeContainsRef(tt, vt)) continue;
-
-            if (rc->depth > rc->at) {
-                ckError(&c, rc->line,
-                        "A generic body is checked once on the template, where `T` is"
-                        " opaque -- so the reference rules are re-checked for every"
-                        " concrete instance.",
-                        "in instance `%s`: %s would hold a reference to something that"
-                        " dies first (depth %d, but this can only hold up to %d)",
-                        inst->name, rc->target ? "this assignment" : rc->what,
-                        rc->depth, rc->at);
-            } else if (rc->target && rc->at == 0 && rc->borrowed
-                       && !valTracesToParam(&c, rc->func, rc->val)) {   /* ⭐ 定案 67 ✓ */
-                ckError(&c, rc->line,
-                        "A generic body is checked once on the template, where `T` is"
-                        " opaque -- so the reference rules are re-checked for every"
-                        " concrete instance.",
-                        "in instance `%s`: cannot store a borrowed value into something"
-                        " that outlives this call", inst->name);
-            }
+            runRefCheck(&c, rc, inst->name);
         }
     }
 

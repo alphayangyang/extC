@@ -473,7 +473,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
 /* 记一条"`new T[n]` 的大小"的推迟检查（第三类，见 RefCheck 的注释）*/
 void recordNewSizeCheck(Checker *c, Type *t, int line) {
     if (!c->curFunc || !c->curFunc->owner) return;
-    if (c->curFunc->owner->typeParams.len == 0) return;
+    if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
     rc->isNewSize = true;
     rc->declType  = t;
@@ -484,7 +484,7 @@ void recordNewSizeCheck(Checker *c, Type *t, int line) {
 
 void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
     if (!c->curFunc || !c->curFunc->owner) return;
-    if (c->curFunc->owner->typeParams.len == 0) return;
+    if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
     rc->isZero   = true;
     rc->declType = t;
@@ -497,7 +497,7 @@ void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
 static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
                            int line, const char *what) {
     if (!c->curFunc || !c->curFunc->owner) return;
-    if (c->curFunc->owner->typeParams.len == 0) return;
+    if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
     rc->val    = val;
     rc->target = target;

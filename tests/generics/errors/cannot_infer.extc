@@ -1,0 +1,3 @@
+/* 反例：`T` 只出现在返回类型 ⇒ 推不出来（要写显式实参 ✗）*/
+fn makeDefault<T>() -> i32 { return 7 }
+fn main() { println(makeDefault<i32>()) }

@@ -1,0 +1,4 @@
+/* 反例：`T` 没有 `==` 时的实例化报错（推迟检查 ✓）*/
+struct pt { x: i32  y: i32 }
+fn indexOf<T>(a: slice<T>, x: T) -> i64 { var i: i64 = 0  while i < a.len { if a[i] == x { return i }  i = i + 1 }  return 0 - 1 }
+fn main() { var ps: [2]pt = [ { x: 1, y: 1 }, { x: 2, y: 2 } ]  var q: pt = { x: 2, y: 2 }  println(indexOf(ps[..], q)) }

@@ -318,6 +318,13 @@ struct StructDef {
 
 struct FuncDef {
     const char *name;
+    /* ⭐ PLAN #47：**泛型自由函数**（`fn f<T, U>(…)`）—— 模板自己的类型参数 ✓
+     * （方法的类型参数在 `owner->typeParams` 里；这个字段只在自由函数上用 ✓）
+     * 实例：`tmpl` 指回模板、`targs` 是这个实例的实参、`instName` 是它的 C 名字 ✓ */
+    Vec         typeParams;      /* const char* */
+    Vec         targs;           /* Type* —— 只有**实例**有 */
+    FuncDef    *tmpl;            /* 非 NULL = 这是个实例（不是模板）✓ */
+    const char *instName;        /* 实例的 C 名字（`max_i32`）✓ */
     Vec         params;          /* Param* */
     Type       *ret;             /* NULL 表示无返回值 */
     Stmt       *body;            /* ST_BLOCK */

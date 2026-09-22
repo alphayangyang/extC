@@ -201,10 +201,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     /* 泛型参数 → 推迟到实例化再检查（规则 2） */
                     if (lt->kind == TY_PARAM) {
                         e->needEq = true;
-                        if (c->curFunc && c->curFunc->owner) {
+                        /* ⚠️ 以前这里有个 `&& c->curFunc->owner` 的门 —— 那是"只有方法"的写法 ✗
+                         *   泛型**自由函数**（PLAN #47）没有 owner ⇒ 那条 `T: ==` 就没人查了 ✗
+                         * ⇒ 记下来：实例化时按实例问一遍"这个 T 有没有 `==`" ✓ */
+                        if (c->curFunc) {
                             EqCheck *ec = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
                             ec->node = e;
-                            ec->owner = c->curFunc->owner;
+                            ec->owner = c->curFunc->owner;   /* 自由函数 = NULL ✓ */
                             ec->op = op;
                             ec->func = c->curFunc;     /* ⭐ #42(c)：记下它属于谁 ✓ */
                             *(EqCheck **)vecPush(&c->eqChecks) = ec;
@@ -778,9 +781,50 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *
              * 为什么它是原语而不是库函数：**arena 本身必须由编译器生成**
              * （库要用它来分配自己 ⇒ 不能由库提供）。见 BOOTSTRAP 规则二。 */
+            /* ⭐ PLAN #47：`maxOf<i32>(4, 3)` —— **显式类型实参**的自由函数调用 ✓
+             * （`T` 只出现在返回类型时只能这么写 ✓）
+             * 剩下的就是老规矩：只有内建原语能走泛型调用这条路（`alloc<T>(n)` ✓）*/
             if (strcmp(e->u.gencall.name, "alloc") != 0) {
+                FuncDef *tf = findFunc(c, e->u.gencall.name);
+                if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
+                    Vec targs;
+                    vecInit(&targs, c->arena, sizeof(void *));
+                    for (size_t i = 0; i < e->u.gencall.targs.len; i++) {
+                        Type *t = ttResolve(tt, c->ctx, *(Type **)vecAt(&e->u.gencall.targs, i),
+                                            e->line, c->curParams);
+                        if (ttIsError(t)) return ttError(tt);
+                        *(Type **)vecPush(&targs) = t;
+                    }
+                    for (size_t i = 0; i < targs.len; i++) {
+                        Type *a = *(Type **)vecAt(&targs, i);
+                        if (a && ttHasParam(a)) {
+                            ckError(c, e->line,
+                                    "A generic function called from inside another generic body"
+                                    " would need a different instance per instantiation, and call"
+                                    " sites are resolved once today. Use a concrete type here.",
+                                    "`%s` cannot be instantiated with `%s` -- it still contains a"
+                                    " type parameter", e->u.gencall.name, typeStr(c, a));
+                            return ttError(tt);
+                        }
+                    }
+                    FuncDef *inst = funcInstance(c, tf, &targs, e->line);
+                    inst->used = true;
+                    tf->used = true;
+                    /* 把节点改写成普通调用（`alloc` 那条路之外的形状 ✓）*/
+                    Vec args = e->u.gencall.args;
+                    Expr *id = exprNew(c->arena, EX_IDENT, e->line);
+                    id->u.ident.name = tf->name;
+                    e->kind = EX_CALL;
+                    e->u.call.callee = id;
+                    e->u.call.args   = args;
+                    e->qualified     = true;      /* 别触发"要写限定名"那条 ✓ */
+                    e->func = inst;
+                    /* ⚠️ 改写成 EX_CALL 之后**重新走一遍**：实参检查、返回值类型、
+                     * 家 arena 那些都在 EX_CALL 那条路上 ⇒ 千万别自己返回 void ✗（踩过）*/
+                    return checkExpr(c, e);
+                }
                 ckError(c, e->line, "only the built-in primitives may be called this way",
-                        "`%s` is not a built-in primitive (only `alloc<T>(n)` is)",
+                        "`%s` is not a built-in primitive or generic function",
                         e->u.gencall.name);
                 return ttError(tt);
             }
@@ -1043,6 +1087,69 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
+
+            /* ⭐ PLAN #47：**泛型自由函数** —— `T` 只能从实参推出来（类型实例是类型决定的，
+             * 而自由函数的实参只看调用点 ✓）⇒ 先查实参、再推导、再拿实例 ✓
+             * 推不出来（`T` 只出现在返回类型）⇒ 教他写显式实参 `f<i32>(…)` ✓ */
+            if (f->typeParams.len > 0) {
+                if (e->u.call.args.len != f->params.len) {
+                    ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
+                            name, f->params.len, e->u.call.args.len);
+                    return f->ret ? f->ret : ttVoid(tt);
+                }
+                Vec targs;
+                vecInit(&targs, c->arena, sizeof(void *));
+                for (size_t i = 0; i < f->typeParams.len; i++)
+                    *(Type **)vecPush(&targs) = NULL;
+                for (size_t i = 0; i < f->params.len; i++) {
+                    Param *p = *(Param **)vecAt(&f->params, i);
+                    Expr  *a = *(Expr **)vecAt(&e->u.call.args, i);
+                    adoptContextType(a, p->type);
+                    Type *at = checkExpr(c, a);
+                    if (ttIsError(at)) return ttError(tt);
+                    /* `ref T` 形参：实参写 `ref x` 时 `at` 是引用 ⇒ 拿被指类型去合一 ✓ */
+                    Type *want = p->type;
+                    if (want->kind == TY_REF && at->kind == TY_REF) { want = want->inner; at = at->inner; }
+                    if (!unifyTParams(c->tt, &f->typeParams, &targs, want, at)) {
+                        ckError(c, e->line,
+                                "Type inference for a generic function's type parameters must see"
+                                " them in an argument. If one only appears in the return type,"
+                                " write it explicitly: `f<i32>(…)`.",
+                                "cannot infer type parameter(s) of `%s` from the arguments", name);
+                        return f->ret ? f->ret : ttVoid(tt);
+                    }
+                }
+                for (size_t i = 0; i < f->typeParams.len; i++) {
+                    if (*(Type **)vecAt(&targs, i)) continue;
+                    ckError(c, e->line,
+                            "Type inference for a generic function's type parameters must see"
+                            " them in an argument. If one only appears in the return type,"
+                            " write it explicitly: `f<i32>(…)`.",
+                            "cannot infer type parameter `%s` of `%s`",
+                            *(const char **)vecAt(&f->typeParams, i), name);
+                    return f->ret ? f->ret : ttVoid(tt);
+                }
+                /* ⚠️ v1 限制（诚实报错，别默默生成错的 C ✗）：泛型体里调用泛型函数时，
+                 * 类型参数**这个时刻还推不出来** ⇒ 那个"实例"里 `T` 还是参数 ✗
+                 * 真正的修法跟 #44（摘要按实例算）同族：**调用点也要按实例解析** ✓ */
+                for (size_t i = 0; i < targs.len; i++) {
+                    Type *a = *(Type **)vecAt(&targs, i);
+                    if (a && ttHasParam(a)) {
+                        ckError(c, e->line,
+                                "A generic function called from inside another generic body would"
+                                " need a different instance per instantiation, and call sites are"
+                                " resolved once today (same family as per-instance effect"
+                                " summaries). Call it from non-generic code for now.",
+                                "cannot call generic function `%s` from a generic body: `T` is not"
+                                " concrete here yet", name);
+                        return f->ret ? f->ret : ttVoid(tt);
+                    }
+                }
+                FuncDef *inst = funcInstance(c, f, &targs, e->line);
+                inst->used = true;
+                e->func = inst;
+                f = inst;                     /* 后面的检查都按实例来 ✓ */
+            }
 
             if (e->u.call.args.len != f->params.len) {
                 ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",

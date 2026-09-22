@@ -22,6 +22,11 @@ if out=$(./tests/warnings/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（含正例语料零误报 ✓）"
 else bad "tests/warnings/run.sh"; echo "$out"; fi
 
+echo "== 泛型自由函数（PLAN #47：推导 / 显式实参 / 推迟的 T: ==）=="
+if out=$(./tests/generics/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
+else bad "tests/generics/run.sh"; echo "$out"; fi
+
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(./tests/modules/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（2 正例 + 6 反例）"
