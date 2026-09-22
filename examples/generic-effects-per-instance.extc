@@ -1,0 +1,37 @@
+// ⭐ PLAN #44（2026-09-23）：**效果摘要按实例算**。
+//
+// 摘要（`FuncDef` 上那几张 `Addr`/`Cont` 位图）原来只在**模板**上算一份，那时 `T` 不透明
+// ⇒ `carrier` 判据只能补一句「提到 `T` 就当它带引用」✗
+// ⇒ `boxT<i32>` 这种**完全不带引用**的实例也背着 `Cont` 位（精度损失，不是错）。
+//
+// 现在每个实例都在**自己的代入上下文里**重算一遍 ⇒ 同一份模板、不同实例拿到**不同的摘要**：
+//     boxT<slice<u8>>  ⇒ `stash` 的 `Cont` **置位**（T 里有引用 ⇒ 调用点要查寿命 ✓）
+//     boxT<i32>        ⇒ `stash` 的 `Cont` **不置位**（纯值，没有寿命约束 ✓）
+//
+// 怎么自己看这件事（掩码是内部状态，这里用 dump 让它可见）：
+//     EXTC_DUMP_EFFECTS=1 ./build/extc examples/generic-effects-per-instance.extc -o /dev/null 2>&1 | grep stash
+//   应看到两行：`Cont=0x2` 与 `Cont=0x0` —— 同一模板、两个实例、两张不同的表 ✓
+//   （把 `check_top.c` 里 `carrier` 那行的 `tsub(...)` 撤掉，两行会都变成 `0x2` ✓ 反向判据）
+//
+// ⚠️ 安全性**不靠**"少置位"那半边：`T` 确实带引用时照旧置位，所以
+// `tests/errors/generic_borrowed_store.extc`（真悬垂）**仍然被挡** ✓
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, x: T) { self.v = x }
+    fn peek(self: ref boxT<T>) -> T { return self.v }
+}
+
+fn main() -> i32 {
+    // 纯值实例：摘要里没有引用位 ⇒ 调用点不必对它做寿命检查 ✓
+    var n: boxT<i32> = { v: 0 }
+    n.stash(7)
+    println(n.peek())
+
+    // 含引用的实例：同一模板，但这一份**必须**带引用位 ✓
+    var s: boxT<slice<u8>> = { v: "hi" }
+    s.stash("yo")
+    println(s.peek())
+    return 0
+}
+// expect: 7
+// expect: yo

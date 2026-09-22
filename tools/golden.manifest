@@ -33,6 +33,8 @@ f926289c8272837f62d4f037d1e90bee  examples_canary-zero-option-view
 4dafc0f36004587a6146289355fefe6a  examples_fenwick
 6c2fb5e1f6fa6741e491b99d490470b7  examples_field-strong-update
 74f1e40da8995f9d4e696a5e49e95586  examples_fizzbuzz
+887f751c81f6b416acdb0839c8e024ff  examples_generic-calls-generic
+1c9b8cf12a12814476b05888be6435ea  examples_generic-effects-per-instance
 7cf7a515b8ba35e6a8d2c58e6cd2c3e9  examples_generic-enum
 b10204b20b7ad37e3684fee82ac049ff  examples_generic-free-fn
 80875330fdc49e45e6173129f5ef7c0b  examples_generics
@@ -40,6 +42,7 @@ d75560d81b54fe63c94c0c01858790dc  examples_globals
 153c964be018b185fd1eb144cbb680a1  examples_gomoku-board
 c2faa8fb9e1b2c1b49bfc8ddd6ff51ac  examples_growth-factor
 41c64ea0e4e3b3f81d44a8591d10689e  examples_hello
+f8a9e82cbc35fce9b1cbfe991d5b96c2  examples_index-bounds
 47afa1d629fd7795c6f8fffc34973f7e  examples_instance-closure
 9ab718e71ce0b0afb3a6f946c8872ef9  examples_list-return
 87d479b411f5d24956115c016758a412  examples_match

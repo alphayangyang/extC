@@ -395,6 +395,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "index must be an integer, found `%s`", typeStr(c, it));
                 return ttError(tt);
             }
+
+            /* 固定数组的长度是**编译期常数** ⇒ 字面量下标越界当场报，
+             * 不留到运行时（P′：能证明的必须看得见）。
+             * 判据跟切片那三条一致，只是这里只有一个界、且是**半开**的：
+             * 合法下标是 [0, n)。`b[-1]` 和 `b[4]`（`[4]T`）都是编译错误。 */
+            if (ob->kind == TY_ARRAY) {
+                long long iv = 0;
+                if (asIntLit(e->u.index.index, &iv)) {
+                    long long n = (long long)ob->asize;
+                    if (iv < 0 || iv >= n) {
+                        ckError(c, e->line,
+                                "The compiler can prove this index is out of range.",
+                                "index %lld is not inside `%s` (length %lld)",
+                                iv, typeStr(c, ot), n);
+                        return ttError(tt);
+                    }
+                }
+            }
             return elem;
         }
 
@@ -795,18 +813,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         if (ttIsError(t)) return ttError(tt);
                         *(Type **)vecPush(&targs) = t;
                     }
-                    for (size_t i = 0; i < targs.len; i++) {
-                        Type *a = *(Type **)vecAt(&targs, i);
-                        if (a && ttHasParam(a)) {
-                            ckError(c, e->line,
-                                    "A generic function called from inside another generic body"
-                                    " would need a different instance per instantiation, and call"
-                                    " sites are resolved once today. Use a concrete type here.",
-                                    "`%s` cannot be instantiated with `%s` -- it still contains a"
-                                    " type parameter", e->u.gencall.name, typeStr(c, a));
-                            return ttError(tt);
-                        }
-                    }
+                    /* ⭐ PLAN #50：实参里还带 `T`（泛型体里 `idOf<T>(…)`）。
+                     * 这里**不用**记账：下面把节点改写成 `EX_CALL` 并**重新走一遍**，
+                     * 那一条路自己会看到"实参带 `T`"并记下推迟项 ✓（少写一份，少一处会漂 ✗）*/
                     FuncDef *inst = funcInstance(c, tf, &targs, e->line);
                     inst->used = true;
                     tf->used = true;
@@ -1141,26 +1150,31 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             *(const char **)vecAt(&f->typeParams, i), name);
                     return f->ret ? f->ret : ttVoid(tt);
                 }
-                /* ⚠️ v1 限制（诚实报错，别默默生成错的 C ✗）：泛型体里调用泛型函数时，
-                 * 类型参数**这个时刻还推不出来** ⇒ 那个"实例"里 `T` 还是参数 ✗
-                 * 真正的修法跟 #44（摘要按实例算）同族：**调用点也要按实例解析** ✓ */
-                for (size_t i = 0; i < targs.len; i++) {
-                    Type *a = *(Type **)vecAt(&targs, i);
-                    if (a && ttHasParam(a)) {
-                        ckError(c, e->line,
-                                "A generic function called from inside another generic body would"
-                                " need a different instance per instantiation, and call sites are"
-                                " resolved once today (same family as per-instance effect"
-                                " summaries). Call it from non-generic code for now.",
-                                "cannot call generic function `%s` from a generic body: `T` is not"
-                                " concrete here yet", name);
-                        return f->ret ? f->ret : ttVoid(tt);
-                    }
-                }
+                /* ⭐ PLAN #50（2026-09-23）：泛型体里调用泛型函数 —— 类型实参里还带 `T`
+                 * ⇒ **这个时刻造不出正确的实例**，但也不该报错（那是 v1 的限制，已解）✓
+                 * 解法和 `RefCheck`/`EqCheck` 同族：模板期先造一个"以 `T` 为实参"的实例
+                 * （`idOf_T`，签名自洽、`T` 当不透明类型用 ⇒ 模板体后面照样能查 ✓），
+                 * 同时**记一笔**，等实例化复查时把 `e->func` 改指到具体实例（`idOf_i32`）✓ */
                 FuncDef *inst = funcInstance(c, f, &targs, e->line);
                 inst->used = true;
                 e->func = inst;
                 f = inst;                     /* 后面的检查都按实例来 ✓ */
+
+                bool hasParamTarg = false;
+                for (size_t i = 0; i < targs.len; i++) {
+                    Type *a = *(Type **)vecAt(&targs, i);
+                    if (a && ttHasParam(a)) { hasParamTarg = true; break; }
+                }
+                if (hasParamTarg && c->curFunc) {
+                    CallCheck *cc = (CallCheck *)arenaAllocZero(c->arena, sizeof(CallCheck));
+                    cc->node = e;
+                    cc->tmpl = f->tmpl ? f->tmpl : f;   /* 记**模板**（`f` 已经是实例了 ✓）*/
+                    cc->func = c->curFunc;              /* 这条属于哪个模板体 ✓ */
+                    vecInit(&cc->targs, c->arena, sizeof(void *));
+                    for (size_t i = 0; i < targs.len; i++)
+                        *(Type **)vecPush(&cc->targs) = *(Type **)vecAt(&targs, i);
+                    *(CallCheck **)vecPush(&c->callChecks) = cc;
+                }
             }
 
             if (e->u.call.args.len != f->params.len) {

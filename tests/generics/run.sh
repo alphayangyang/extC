@@ -27,7 +27,12 @@ check_err() {
     echo "$out" | grep -qF -- "$want" || { echo "  FAIL $(basename "$f")  ->  消息里没有「$want」"; fail=1; return; }
     echo "  ok   $(basename "$f")  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
 }
-check_err tests/generics/errors/generic_calls_generic.extc "not concrete here yet"
+# ⚠️ 2026-09-23：这里原来有一条
+#     check_err tests/generics/errors/generic_calls_generic.extc "not concrete here yet"
+# —— 它**断言的是 v1 的限制**。PLAN #50 修好之后「泛型体里调泛型函数」**合法**了，
+# 所以那条反例删掉，同一个形状改成**正例**：`examples/generic-calls-generic.extc` ✓
+# 教训：反例断言的是"不该存在的行为"时，行为一旦变好就**必须删它** ——
+# 留着等于把旧限制焊死 ✗（这一条是 `./check.sh` 当场抓出来的 ✓）
 check_err tests/generics/errors/needs_eq.extc             "needs to define"
 check_err tests/generics/errors/cannot_infer.extc         "cannot infer"
 

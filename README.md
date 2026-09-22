@@ -42,11 +42,19 @@
 
 ## 状态
 
-**week-1 进行中**：T1（类型检查独立成 pass）、T2（真类型检查）、T3（`ref` 表达式）
-已完成，外加零初始化 / 方法进 struct / `type` 枚举。
+**week-1 的地基已经铺完，并在往"能跟人下棋"推**。**arena + 逃逸检查都在了** ——
+按块细化的 arena（每个 `{}` 一只）、四条逃逸检查、逃逸提升、块级提升都**已落地**，
+常设验收是 `tests/arena/`（150MB 上限下循环 300×1MB 不涨）和 `tests/asan/`（8 个形状干净）✓
 
-⚠️ 但 **arena / 逃逸检查还没接上** —— 现在它是一门「语法像 Go 的普通语言」，还不是 extC。
-逃逸检查才是 extC 的命。缺口表见 [`DECISIONS.md`](DECISIONS.md) 和 [`PLAN.md`](PLAN.md)。
+最近四块（都在 `DEVLOG.md` 里）：**模块系统 v1**（定案 70）· **泛型自由函数**（定案 71）·
+**`extern!` + 信任声明**（定案 72）· **IO 第一块：能从 stdin 读了**（定案 73：`std::sys` 原语 + `std::io` 库）✓
+
+`./check.sh` **14 节全绿**：**248** 测试 · ASan 8 · arena 5 · 攻击库基线 · 模块 8 ·
+泛型 4 · extern 4 · IO 3 · 漂移哨兵 92 语料零漂移 · golden 逐字节不变 ✓
+
+⚠️ **还没到"能跟人下五子棋"**：差 **IO-1**（`open` + 帧拥有文件 + `main(args)`）·
+`allocSlice<T>(n)` · `nextInt` 一族 + `reader`。缺口表见 [`PLAN.md`](PLAN.md) §0.4 / §1 ✓
+（这一节以前写着「arena / 逃逸检查还没接上」—— 那是 2026-09-18 的话，之后落后了两轮 ✗）
 
 ## 构建
 
@@ -142,22 +150,36 @@ fn main() -> i32 {
 `==` 需要类型自己**显式定义 `fn ==`**（不引入 trait，也不用约定名）；
 数组的 `==` 和 `println` 由**编译器递归生成**。
 
-**还没有**：动态数组 `array<T>`（等 arena）、`match`、`for`、格式串、输入/argv、
-模块系统、全局变量、`region`、`@recursive`、**逃逸检查**。
+**还没有**：动态数组 `array<T>`（等 arena）· `for` · lambda · 格式串 ·
+**输入的原语/库还没铺完**（`nextInt` 一族 · `reader` · `readAll` · `open`/帧拥有文件 · `main(args)`）·
+`region` · `@recursive` · 协议补全（`fn <` / hash）。
+
+> ⚠️ 这一行以前写作「…`match`、…输入/argv、模块系统、全局变量…**逃逸检查**」——
+> 那里面 **`match` / 模块系统 / 全局变量 / 逃逸检查** 四样**早就实现并已验收**了
+> （逃逸检查更是 `LANGUAGE.md` §4.3 明写的四条规则），只有输入那一族是真的还欠着 ✗
+> 老读者按旧口径会以为这门语言还没有 arena —— 那正是它最核心的东西 ✓
 
 ## 目录
 
 ```
-src/          C 实现的编译器（正史）
-  base.[ch]     arena / Buf / Vec / Ctx —— 写它的规矩就是 extC 要强制的规矩
-  lexer.[ch]    词法
-  ast.[ch]      AST
-  parser.[ch]   递归下降
-  codegen.[ch]  C 代码生成（带 #line 映射）
-  main.c        驱动
-examples/     样例（tour 是语言巡礼；其余按特性分类）
-stdlib/       prelude.extc —— 用 extC 写的预lude（T4b 会把 slice<T> 放这里）
-tools/        embed.c —— 把 stdlib/*.extc 嵌成 C 字节数组（C 写的，无解释器依赖）
-tests/        回归测试（正例 + 反例）
+src/          C 实现的编译器（正史）—— 已按 pass 拆分（2026-09-21 拆分，为 arena 的"丙"腾地方）
+  base.[ch]        arena / Buf / Vec / Ctx —— 写它的规矩就是 extC 要强制的规矩
+  lexer.[ch]       词法
+  ast.[ch]         AST
+  parser.[ch]      递归下降
+  types.[ch]       类型层（ttArray / ttViewMut / ttSubstitute / ttRender …）
+  check*.c         检查器，按职责分：check_top / check_stmt / check_expr / check_lookup
+                   / check_escape（逃逸与深度）/ check_internal.h
+  codegen.[ch]     C 代码生成（带 #line 映射）
+  modules.[ch]     模块系统（`use std::io`）
+  prelude.[ch]     prelude 注入
+  main.c           驱动
+stdlib/       prelude.extc（内嵌进二进制）+ std/sys.extc（特权层：唯一写 extern! 的地方）
+              + std/io.extc（普通库，用 extC 写）
+examples/     样例（按特性分类；每个特性都要有一个能跑的）
+tests/        回归：正例（含 // expect: 断言）/ 反例 / traps / arena / asan / warnings
+              / modules / generics / extern / io / attacks（攻击库 + BASELINE）
+tools/        embed.c（把 stdlib 嵌成 C 字节数组）· golden.sh（生成 C 的逐字节金标准）
+              · print-desc.c / print-formats.txt
 prototype-python/   作废的 Python 草稿，只作语法参考
 ```

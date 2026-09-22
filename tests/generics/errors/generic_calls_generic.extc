@@ -1,4 +1,0 @@
-/* 反例：泛型体里调用泛型函数（v1 不支持 —— 调用点只解析一次 ✗）*/
-fn indexOf<T>(a: slice<T>, x: T) -> i64 { var i: i64 = 0  while i < a.len { if a[i] == x { return i }  i = i + 1 }  return 0 - 1 }
-fn has<T>(a: slice<T>, x: T) -> bool { return indexOf(a, x) >= 0 }
-fn main() { var a: [2]i32 = [1, 2]  println(has(a[..], 2)) }

@@ -94,6 +94,7 @@ typedef struct {
      * ⚠️ 走过的弯路：第一版把"算深度"也推到实例化再做 —— 那时**函数作用域已经没了**，
      *    `lookup` 找不到参数 ⇒ 深度算成 0 ⇒ 检查静默失灵 ✗（真踩了）*/
     Vec        refChecks;   /* RefCheck* —— 推迟到实例化复查的引用规矩 */
+    Vec        callChecks;  /* CallCheck* —— 推迟到实例化再解析的调用点（PLAN #50）*/
     Vec       *substParams; /* 实例化复查时正在用的替换（NULL = 不在复查）*/
     Vec       *substArgs;
     int        noHoist;
@@ -144,6 +145,28 @@ typedef struct {
 /* 推迟到实例化复查的 `==` 的记账条目（expr 那边产生，top 那边消费）*/
 /* ⭐ PLAN #42(c)：`func` = 这条 `==` 属于哪个函数（用来问"它被调用过吗"✓）*/
 typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } EqCheck;
+
+/* ⭐ PLAN #50（2026-09-23）：**推迟到实例化再解析的调用点**。
+ *
+ * 为什么需要它：`fn twice<T>(x: T) -> T { return idOf(x) }` 里，模板期 `T` 不透明 ⇒
+ * `idOf` 那个类型实参是 `T`（`ttHasParam`）⇒ **这个时刻造不出正确的实例**（造出来会是
+ * `idOf_T`，一个 `T` 还是参数的实例 ✗）。而这跟 `RefCheck`/`EqCheck` 是**同一族**
+ * 问题、也用**同一个模式**解：模板期记一笔，实例化时按实例重解 ✓
+ *
+ * 为什么不能"就地跳过后面的检查"：模板体后面还要用 `e->func` 的类型判实参、
+ * 算返回类型 ⇒ 必须有**某个**签名可用。所以模板期仍然造一个"以 `T` 为实参"的实例
+ * （`idOf_T`，签名自洽、`T` 当不透明类型用 ✓），实例化时再把 `e->func`
+ * **改指**到那个具体实例（`idOf_i32`）✓
+ *
+ * ⚠️ 与 `RefCheck` 的关键差别：`RefCheck` 只在**签名**上复查（不碰函数体），
+ *    而这个要**改写 AST 上的 `e->func`** ⇒ 必须在"该实例正在复查"的上下文里做，
+ *    而这正是复查 pass 已经具备的（`c.substParams/substArgs` 已设好 ✓）*/
+typedef struct {
+    Expr    *node;      /* 那个 `EX_CALL` / `EX_METHOD` / `EX_ASSOC` 节点 ✓ */
+    FuncDef *tmpl;      /* 被调的**模板**（自由函数 / 泛型类型的方法）✓ */
+    Vec      targs;     /* 模板期推出来的实参（**可能含 T** ⇒ 要用 tsub 代入 ✓）*/
+    FuncDef *func;      /* 这条属于哪个（模板）函数 —— 决定它对哪些实例适用 ✓ */
+} CallCheck;
 
 /* ------------------------------ 跨文件原型
  * 自动生成：拿拆分**前**的 check.c 过一遍 `gcc -aux-info`，

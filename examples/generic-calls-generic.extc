@@ -1,0 +1,30 @@
+// ⭐ PLAN #50（2026-09-23）：**泛型体里可以调用泛型函数**了。
+//
+// 以前这里报「cannot call generic function `idOf` from a generic body: `T` is not
+// concrete here yet」✗ —— 因为调用点**只解析一次**，而模板体里 `T` 还不具体。
+//
+// 现在：模板期先造一个"以 `T` 为实参"的实例（签名自洽 ⇒ 模板体能照常查完），
+// 同时**记一笔推迟项**；实例化复查时按外层实例的类型代入，把调用点改指到
+// 真正的实例（`twice<i32>` 里的 `idOf(x)` → `idOf_i32`）✓
+// 这跟 `RefCheck`/`EqCheck` 是同一个模式（模板期记账、实例化复查）✓
+//
+// 两条路都验：① 自由函数实例里调泛型函数 ② **类型实例的方法体**里调泛型函数 ✓
+fn idOf<T>(x: T) -> T { return x }
+
+fn twice<T>(x: T) -> T { return idOf(x) }          // ① 泛型自由函数里调泛型函数
+
+struct holder<T> {
+    v: T
+    fn dup(self: ref holder<T>) -> T { return idOf<T>(self.v) }   // ② 类型实例的方法里
+}
+
+fn main() -> i32 {
+    println(twice(7))
+    var h: holder<i32> = { v: 42 }
+    println(h.dup())
+    println(twice(3) + idOf(4))
+    return 0
+}
+// expect: 7
+// expect: 42
+// expect: 7

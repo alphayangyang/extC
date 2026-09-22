@@ -949,7 +949,7 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
              * 代价为零：调用点看的是**具体实参**的类型 ✓（`push(ref v, 5)` 里 `5` 是 i32
              * ⇒ 那一步直接被跳过 ✓）*/
             bool carrier = (c && e->type)
-                         ? (typeContainsRef(c->tt, e->type) || mentionsParam(e->type))
+                         ? (typeContainsRef(c->tt, tsub(c, e->type)) || mentionsParam(tsub(c, e->type)))
                          : true;
             bool isPtr = (e->kind == EX_IDENT) && e->type &&
                          (e->type->kind == TY_REF || ttIsViewType(e->type));
@@ -1434,9 +1434,32 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         }
 }
 
+/* ⭐ PLAN #50：把一条推迟的调用点按**当前实例的代入**重解成具体实例 ✓
+ *
+ * `params`/`targs` = 外层实例的类型参数与实参 ✓
+ * 做三件事：代入类型实参 → 造/取那个具体实例 → 把 `e->func` 改指过去 ✓
+ * 实例是驻留的（`funcInstance` 自己查重）⇒ 同一个实参组合只会有一份 ✓ */
+static void resolveDeferredCall(Checker *c, CallCheck *cc, Vec *params, Vec *targs) {
+    if (!targs || !params) return;
+    Vec concrete;
+    vecInit(&concrete, c->arena, sizeof(void *));
+    for (size_t i = 0; i < cc->targs.len; i++) {
+        Type *a = *(Type **)vecAt(&cc->targs, i);
+        /* ⚠️ `a` 可能是 NULL（推导没填上的位）；`ttSubstitute` 对 NULL 不保证安全 ⇒
+         * 先挡掉：推不出来在模板期就该报过了，这里当"这个实例没准备好"跳过 ✓ */
+        if (!a) return;
+        Type *sub = ttSubstitute(c->tt, a, params, targs);
+        if (!sub || ttHasParam(sub)) return;  /* 还带 `T` ⇒ 外层自己也是模板体，等更外层 ✓ */
+        *(Type **)vecPush(&concrete) = sub;
+    }
+    FuncDef *inst = funcInstance(c, cc->tmpl, &concrete, cc->node->line);
+    if (!inst) return;
+    inst->used = true;
+    cc->node->func = inst;
+}
+
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
-    Checker c;
-    memset(&c, 0, sizeof c);
+    Checker c;    memset(&c, 0, sizeof c);
     vecInit(&c.funcInsts, arena, sizeof(void *));   /* PLAN #47 ✓ */
     c.ctx = ctx;
     c.arena = arena;
@@ -1448,7 +1471,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.nameUses, arena, sizeof(void *));
     vecInit(&c.narrow, arena, sizeof(void *));
     vecInit(&c.refChecks, arena, sizeof(void *));
-    vecInit(&c.refChecks, arena, sizeof(void *));
+    vecInit(&c.callChecks, arena, sizeof(void *));   /* ⭐ PLAN #50：推迟的调用点 ✓ */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
 
     c.tI32  = ttFromName(tt, "i32");
@@ -1585,6 +1608,81 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             runRefCheck(&c, rc, inst->name);
         }
     }
+
+    /* ⭐ PLAN #50：把一条推迟的调用点按**当前实例的代入**重解成具体实例 ✓
+     *
+     * `params`/`targs` = 外层实例的类型参数与实参（`c.substParams/substArgs` 也设成它们）✓
+     * 做三件事：代入类型实参 → 造/取那个具体实例 → 把 `e->func` 改指过去 ✓
+     * 静态实例是驻留的（`funcInstance` 自己查重）⇒ 同一个实参组合只会有一份 ✓ */
+    for (size_t i = 0; i < c.callChecks.len; i++) {
+        CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
+        if (!cc->node || !cc->tmpl) continue;
+        /* ① 外层是**自由函数**实例 */
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            if (fi->tmpl != cc->func) continue;       /* 不是这个模板体里的调用 ✗ */
+            resolveDeferredCall(&c, cc, &fi->tmpl->typeParams, &fi->targs);
+        }
+        /* ② 外层是**类型**实例（方法里的泛型调用）—— `owner` 是 struct/枚举定义 ✓ */
+        StructDef *owner = cc->func ? cc->func->owner : NULL;
+        if (!owner) continue;
+        for (size_t j = 0; j < tt->instances.len; j++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, j);
+            if (inst->sdef != owner) continue;
+            resolveDeferredCall(&c, cc, &owner->typeParams, &inst->targs);
+        }
+    }
+
+    /* ---- ⭐ PLAN #44：**效果摘要按实例重算** ----
+     *
+     * 摘要原来只在模板上算一份（`checkFunc` 里那次），那时 `T` 不透明 ⇒ `carrier` 判据
+     * 只能补一句 `mentionsParam`：「提到 `T` 就当它带引用」✗ ⇒ `varArray<i32>`
+     * 这种**完全不带引用**的实例也背着 `Cont` 位 ✓（精度损失，不是错）
+     *
+     * 这里在**每个实例的代入上下文里**（`c.substParams/substArgs` 设好）重算一遍 ——
+     * `carrier` 那行现在走 `tsub(c, e->type)`，所以 `T = i32` 时 `carrier` 为假
+     * ⇒ 那一位**不置位** ✓；`T = slice<u8>` 时照旧置位 ✓（**安全性靠后者**）
+     *
+     * ⚠️⚠️ **绝不能**用"把 `mentionsParam` 那一句删掉"来代替这里 ——
+     * `PLAN.md` 里实测过：删掉之后 `tests/errors/generic_borrowed_store.extc`
+     * **从"被挡"变成"通过"**（真悬垂）✗ 那句是**堵洞的**，不是多余的保守 ✓
+     *
+     * ⚠️ 重算前必须清空：`*in = *tmpl` 是浅拷贝 ⇒ 实例一开始**继承**了模板的摘要，
+     * 而且 `callees` 也是从模板带过来的（`collectEffects` 对非 NULL 的 `callees` 不重置 ✗）
+     * ⇒ 不清就会叶子翻倍、`effState` 还是"算完了" ⇒ 传递闭包拿到的是模板的旧账 ✗ */
+    for (size_t i = 0; i < c.funcInsts.len; i++) {
+        FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, i);
+        if (!fi || !fi->body || fi->isExtern) continue;
+        c.substParams = &fi->tmpl->typeParams;
+        c.substArgs   = &fi->targs;
+        fi->addrMask = fi->contMask = fi->otherMask = 0;
+        fi->homeAddrMask = fi->homeContMask = 0;
+        fi->addrFromLocal = false;
+        fi->freshCount = 0;
+        fi->effState = 0;  fi->effComplete = false;  fi->effUnknown = false;
+        vecInit(&fi->callees, c.arena, sizeof(FuncDef *));
+        collectEffects(&c, fi);
+    }
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        StructDef *sd = inst->sdef;
+        if (!sd || sd->typeParams.len == 0) continue;
+        for (size_t k = 0; k < sd->methods.len; k++) {
+            FuncDef *f = *(FuncDef **)vecAt(&sd->methods, k);
+            if (!f || !f->body || f->isExtern) continue;
+            c.substParams = &sd->typeParams;
+            c.substArgs   = &inst->targs;
+            f->addrMask = f->contMask = f->otherMask = 0;
+            f->homeAddrMask = f->homeContMask = 0;
+            f->addrFromLocal = false;
+            f->freshCount = 0;
+            f->effState = 0;  f->effComplete = false;  f->effUnknown = false;
+            vecInit(&f->callees, c.arena, sizeof(FuncDef *));
+            collectEffects(&c, f);
+        }
+    }
+    c.substParams = NULL;
+    c.substArgs   = NULL;
 
     /* ---- A3：`needsHome` 的**传递闭包** ----
      * 调用一个"有家"的函数时，调用者必须**有东西可传**（`__extc_home` 或
