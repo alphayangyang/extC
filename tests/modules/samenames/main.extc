@@ -1,0 +1,26 @@
+// expect: alpha = 5/6|beta = 7/14/21|which = 1|2|qual = 7/14/21
+/* ⭐ **两个模块各自有同名的类型和函数** —— 这是模块 mangle 存在的唯一理由 ✓
+ * 四条判据，缺一不可：
+ *   ① 编译得过（mangle 之前是 `duplicate struct \`pair\``）
+ *   ② 两个 `pair` 的**字段不同** ⇒ 串台必然报错或输出错，靠"能跑"糊弄不过去 ✓
+ *   ③ 两个 `make` 各返回**自己模块**的 `pair` ✓（这里最容易出"静默绑错"）
+ *   ④ 裸写自己模块的类型名（`beta::pair { … }`）也要解析到自己那个 ✓
+ */
+use alpha
+use beta
+
+/* 模块内部的裸类型名也要指向自己那个 —— 见 beta.extc 里的 `make` ✓ */
+
+fn main() -> i32 {
+    var p: alpha::pair = alpha::make(5)
+    var q: beta::pair  = beta::make(7)
+    println("alpha = ", p.a, "/", p.b)
+    println("beta = ", q.s, "/", q.t, "/", q.u)
+    println("which = ", alpha::which(), "|", beta::which())
+
+    /* ④ 限定名的**结构体字面量**：两个模块同名时，裸名有歧义写不出来，
+     *    只有这条路能明确指名要哪个类型 ✓ */
+    var r: beta::pair = beta::pair { s: 7, t: 14, u: 21 }
+    println("qual = ", r.s, "/", r.t, "/", r.u)
+    return 0
+}

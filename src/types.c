@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include "types.h"
 
 #include <string.h>
@@ -31,6 +33,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
     vecInit(&tt->builtins, a, sizeof(void *));
     vecInit(&tt->structs, a, sizeof(void *));
     vecInit(&tt->enums, a, sizeof(void *));
+    vecInit(&tt->aliases, a, sizeof(Alias));
     vecInit(&tt->instances, a, sizeof(void *));
     vecInit(&tt->enumInstances, a, sizeof(void *));
     vecInit(&tt->viewShadows, a, sizeof(void *));
@@ -141,7 +144,16 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                 }
             }
 
-            Type *base = ttFromName(tt, t->name);
+            /* ⭐ 模块 mangle：裸名先查别名表（`pair` → `liba$pair`）✓
+             * 只在**源码名**查不到时才走它 ⇒ 本文件/内建/prelude 优先级不变 ✓ */
+            const char *nm0 = t->name;
+            if (!ttFromName(tt, nm0)) {
+                for (size_t i = 0; i < tt->aliases.len; i++) {
+                    Alias *al = (Alias *)vecAt(&tt->aliases, i);
+                    if (strcmp(al->from, nm0) == 0) { nm0 = al->to; break; }
+                }
+            }
+            Type *base = ttFromName(tt, nm0);
             if (!base) {
                 ctxError(ctx, line, 1,
                          "built-in types: i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool str void",

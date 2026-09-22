@@ -313,6 +313,24 @@ int main(int argc, char **argv) {
     if (!ctx.hasError)
         modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
 
+    /* ⭐ 模块 mangle 的**裸名回程票**：装载器填在 `m.aliases`，这里接到类型表 ✓
+     * （装载器不认识 TypeTable，而 ttResolve 只认识它 ⇒ 必须在这一层对接 ✓）
+     * ⚠️ 踩过：漏了这一句 ⇒ `aliases=0` ⇒ 裸名 `pair` 照样解析不了 ✗
+     *    （而根本原因会更难查：错误信息只会说 unknown type pair ✓）*/
+    for (size_t i = 0; i < m.aliases.len; i++)
+        *(Alias *)vecPush(&tt->aliases) = *(Alias *)vecAt(&m.aliases, i);
+    /* ⭐ `EXTC_DBG_M=1` ⇒ 打印**模块 mangle 的裸名回程票**（调试模块系统用 ✓）
+     * 为什么要有它：mangle 之后**生成 C 里只剩 `liba$pair`**，裸名映射一旦错，
+     * 症状是"unknown type pair"，看不出是映射错还是查表错 ⇒ 需要一眼看到表 ✓ */
+    if (getenv("EXTC_DBG_M")) {
+        fprintf(stderr, "[mangle] 裸名回程票 %zu 条:", tt->aliases.len);
+        for (size_t i = 0; i < tt->aliases.len; i++) {
+            Alias *al = (Alias *)vecAt(&tt->aliases, i);
+            fprintf(stderr, " %s=>%s", al->from, al->to);
+        }
+        fprintf(stderr, "\n");
+    }
+
     /* ⚠️ 模块文件里的报错走**它自己的 Ctx** ⇒ 这里要把它们渲染出来（文件/源码行才对 ✓）*/
     bool modDiag = false;
     for (size_t i = 0; i < moduleCtxs.len; i++) {

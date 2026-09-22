@@ -87,6 +87,8 @@ static char *dirOf(Arena *a, const char *path) {
 
 /* ---------------------------------------------------------------- 装载状态 */
 
+typedef struct { const char *from; const char *to; } Ren;
+
 typedef struct {
     const char *file;       /* 解析到的路径（唯一键 ✓）*/
     const char *modName;    /* 短名 */
@@ -95,6 +97,8 @@ typedef struct {
                              * ⚠️ 根那个单元指向调用者给的 ctx（**不能是副本**，
                              *    副本会把诊断吞掉 ✗）*/
     int         state;      /* 0 = 没开始，1 = 正在装载（查环），2 = 好了 ✓ */
+    /* ⭐ 模块 mangle：`源码名 → mangle 名`（`pair` → `liba$pair`）✓ */
+    Vec         ren;        /* Ren* */
 } ModUnit;
 
 typedef struct {
@@ -108,6 +112,46 @@ typedef struct {
     const char *stdDir;     /* 标准库目录（`std/io.extc` 住那儿 ✓）*/
     int         errors;
 } Loader;
+
+/* ⭐ 模块 mangle：`name` 加模块前缀（`io$readLine`）。**根模块不加** ✓
+ * 为什么用 `$`：C 里合法、extC 标识符里不允许 ⇒ 天然不撞用户名字 ✓ */
+static const char *mangleName(Loader *L, ModUnit *u, const char *name) {
+    if (!u->modName || !*u->modName) return name;
+    return arenaPrintf(L->a, "%s$%s", u->modName, name);
+}
+
+/* ⚠️⚠️ **`extern!` 的名字是 ABI，绝不能加前缀** ✗
+ * `extern!("libc") fn read(…)` 里的 `read` 是**链接器要去找的符号名** ——
+ * 改成 `sys$read` 只会得到一个 `undefined reference to sys$read`，
+ * 而报错来自 ld，跟"模块改名"八竿子打不着，极难反查 ✗（真踩过：
+ * `tests/io` 整个跑不起来，`stdlib/std/sys.extc` 里每个原语都踩）
+ * ⇒ 这类声明**一律保留原名**（回程票登记成自己 ⇒ 模块内引用也不用改 ✓）*/
+static bool externKeepsName(Module *src, const char *name) {
+    for (size_t i = 0; i < src->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&src->funcs, i);
+        if (f->isExtern && strcmp(f->name, name) == 0) return true;
+    }
+    return false;
+}
+/* 按**目标单位**查它的 mangle 名。
+ * ⚠️ 不能按"调用者"查：根文件的 modName 是 NULL ⇒ 会早退 ⇒ 引用一条都改不到 ✗（踩过）*/
+static const char *renOfTarget(ModUnit *target, const char *name) {
+    if (!target || !target->modName || !*target->modName) return name;
+    for (size_t i = 0; i < target->ren.len; i++) {
+        Ren *r = (Ren *)vecAt(&target->ren, i);
+        if (strcmp(r->from, name) == 0) return r->to;
+    }
+    return name;
+}
+/* 调用者自己单元里的 mangle 名（四个 unit* 查表助手要用 ✓）*/
+static const char *renLookup(ModUnit *u, const char *name) {
+    if (!u || !u->modName || !*u->modName) return name;
+    for (size_t i = 0; i < u->ren.len; i++) {
+        Ren *r = (Ren *)vecAt(&u->ren, i);
+        if (strcmp(r->from, name) == 0) return r->to;
+    }
+    return NULL;
+}
 
 static ModUnit *findUnit(Loader *L, const char *file) {
     for (size_t i = 0; i < L->units.len; i++) {
@@ -177,30 +221,46 @@ static bool moduleExists(Loader *L, const char *modPath) {
 /* ---------------------------------------------------------------- 声明查找 */
 
 static FuncDef *unitFunc(ModUnit *u, const char *name) {
+    /* ⚠️ 调用者给**源码名**，而声明已被 mangle ⇒ 先查 ren 表 ✓ */
+    const char *want = renLookup(u, name);
+    if (!want) want = name;
     for (size_t i = 0; i < u->mod.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&u->mod.funcs, i);
-        if (strcmp(f->name, name) == 0) return f;
+        if (strcmp(f->name, want) == 0) return f;
     }
     return NULL;
 }
 static GlobalDef *unitGlobal(ModUnit *u, const char *name) {
+    /* ⚠️ 调用者给**源码名**，而声明已被 mangle ⇒ 先查 ren 表 ✓ */
+    const char *want = renLookup(u, name);
+    if (!want) want = name;
     for (size_t i = 0; i < u->mod.globals.len; i++) {
         GlobalDef *g = *(GlobalDef **)vecAt(&u->mod.globals, i);
-        if (strcmp(g->name, name) == 0) return g;
+        if (strcmp(g->name, want) == 0) return g;
     }
     return NULL;
 }
+/* ⚠️ **两个名字都要认**：`mergeUnit` 是**原地**改名（`d->name` 被直接改掉），而根文件的
+ * 限定名解析发生在合并**之后** ⇒ 这时 `u->mod.structs` 里已经是 `e1$color` 了，
+ * 只按源码名 `color` 找会**找不到** ⇒ `e1::color` 被误判成"模块里没这个东西"✗
+ * （踩过：报的是 `undefined name \`color\``，指向的跟真因差着十万八千里）*/
 static StructDef *unitStruct(ModUnit *u, const char *name) {
+    /* ⚠️ 调用者给**源码名**，而声明可能已被 mangle ⇒ 两种名字都试 ✓ */
+    const char *want = renLookup(u, name);
+    if (!want) want = name;
     for (size_t i = 0; i < u->mod.structs.len; i++) {
         StructDef *s = *(StructDef **)vecAt(&u->mod.structs, i);
-        if (strcmp(s->name, name) == 0) return s;
+        if (strcmp(s->name, want) == 0 || strcmp(s->name, name) == 0) return s;
     }
     return NULL;
 }
 static TypeDef *unitType(ModUnit *u, const char *name) {
+    /* ⚠️ 同上 ✓ */
+    const char *want = renLookup(u, name);
+    if (!want) want = name;
     for (size_t i = 0; i < u->mod.types.len; i++) {
         TypeDef *t = *(TypeDef **)vecAt(&u->mod.types, i);
-        if (strcmp(t->name, name) == 0) return t;
+        if (strcmp(t->name, want) == 0 || strcmp(t->name, name) == 0) return t;
     }
     return NULL;
 }
@@ -219,6 +279,7 @@ static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
 
 static void rwStmt(Loader *L, ModUnit *self, Stmt *s);
 static void rwExpr(Loader *L, ModUnit *self, Expr *e);
+static void rwExprName(ModUnit *self, Expr *e);
 
 /* 类型位置：`io::File` ⇒ `File`（顺便查可见性 ✓）*/
 static void rwType(Loader *L, ModUnit *self, Type *t) {
@@ -227,7 +288,18 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
     for (size_t i = 0; i < t->targs.len; i++) rwType(L, self, *(Type **)vecAt(&t->targs, i));
     if (t->kind != TY_UNRESOLVED || !t->name) return;
     const char *sep = strstr(t->name, "::");
-    if (!sep) return;
+    if (!sep) {
+        /* ⚠️⚠️ **裸名也要改名 —— 这是本模块自己声明的类型**。
+         * 不改的话它就以源码名 `pair` 留在 `FuncDef.ret` 上，等到检查器 `ttResolve`
+         * 时才发现平表里有**两个** `pair`（另一个模块的）⇒ 只能靠别名表挑一个 ⇒
+         * **静默绑成先注册的那个模块的类型**，而 `var q: beta::pair = beta::make(7)`
+         * 的标注是 `beta$pair` ⇒ 报的却是 `struct \`alpha$pair\` has no field \`s\``，
+         * 指的名字在源码里根本没出现过 ✗✗（这个洞最阴：**编得过、类型是错的**）
+         * 判据跟 `rwExprName` 一致：**只认本模块自己声明的名字** ✓ */
+        const char *m = renLookup(self, t->name);
+        if (m) t->name = m;
+        return;
+    }
     const char *shortName = arenaStrndup(L->a, t->name, (size_t)(sep - t->name));
     const char *rest = sep + 2;
     ModUnit *target = importedAs(L, self, shortName);
@@ -254,7 +326,43 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
                  "module `%s` has no type `%s`", shortName, rest);
         L->errors++;
     }
-    t->name = rest;              /* 平名字 ⇒ 检查器看到的世界跟以前一样 ✓ */
+    t->name = renOfTarget(target, rest);
+}
+
+/* ⭐ 表达式位置里的**类型名**：`mod::Type { … }` / `mod::Type.variant`。
+ * 判据只有一条 —— "`short::rest` 里的 `rest` 在这个模块里是个**类型**吗"。
+ * 为什么必须有这条：模块之间同名类型只靠裸名写不出来（裸名有歧义 ⇒
+ * 装载器不登记回程票）⇒ 不认这里，那个类型的字面量和枚举变体就**无字可写** ✗
+ * 踩过的两个症状：`expected \`{\``（parser 不认限定名字面量）、
+ * `module \`e1\` has nothing named \`color\``（把类型名当成了函数/常量在找）✗ */
+static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, const char **out) {
+    if (!qname || !out) return false;
+    const char *sep = strstr(qname, "::");
+    if (!sep) return false;
+    const char *shortName = arenaStrndup(L->a, qname, (size_t)(sep - qname));
+    const char *rest = sep + 2;
+    if (strstr(rest, "::")) return false;          /* `a::b::c` 不支持（够用就好 ✓）*/
+    ModUnit *target = importedAs(L, self, shortName);
+    if (!target) return false;
+    /* ⚠️ **指向自己的限定名一律不动** —— prelude 里就写着 `pcg32::withStream(…)`
+     * （`pcg32` 是同一文件里的 struct），而 prelude 自己是**一个模块** ⇒ 不拦的话
+     * 会把它改写成 `prelude$pcg32`，可 prelude 的舞台快照是**装载前**拿的 ⇒
+     * 类型表里根本没这个名字 ⇒ `call to undefined function` ✗（真踩过）
+     * 这跟 `rwQualified` 里那条"本文件名叫 `fenwick` 就放过"是同一个坑 ✓ */
+    if (target == self) return false;
+    StructDef *sd = unitStruct(target, rest);
+    TypeDef   *td = sd ? NULL : unitType(target, rest);
+    if (!sd && !td) return false;                  /* 不是类型 ⇒ 走原来那条路 ✓ */
+    if ((sd && sd->isPrivate) || (td && td->isPrivate)) {
+        ctxError(self->ctx, 0, 1,
+                 "`@private` means other modules must not name it. Drop the annotation if it is"
+                 " meant to be used from here.",
+                 "`%s::%s` is private to module `%s`", shortName, rest, shortName);
+        L->errors++;
+        return true;                               /* 报过了 ⇒ 别再报第二条 ✓ */
+    }
+    *out = renOfTarget(target, rest);              /* 裸名 ⇒ 检查器按源码名解析 ✓ */
+    return true;
 }
 
 /* 表达式位置：parser 把 `a::b(...)` 造成 EX_ASSOC 了 ⇒ 这里按"a 是不是模块"分流 ✓ */
@@ -263,6 +371,15 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     if (!tn || e->u.assoc.targs.len != 0) return;
     ModUnit *target = importedAs(L, self, tn);
     if (!target) {
+        /* ① `a::b` 里 `a` 不是模块，但 `b` 是某个模块 `a` 的**类型** ⇒ 认（见上）✓ */
+        const char *mangled = NULL;
+        if (rwQualifiedTypeName(L, self, tn, &mangled) && mangled) {
+            e->u.ident.name = mangled;             /* union 会被改写 ⇒ 先取名字 ✓ */
+            e->kind = EX_IDENT;
+            e->qualified = true;
+            return;
+        }
+        (void)0;
         /* 两种可能：① `tn` 是个类型名（`Type::assoc` ⇒ 原样留给检查器 ✓）
          *           ② `tn` 是**存在但没 use** 的模块 ⇒ 报清楚（不然用户看到的是
          *              "unknown type `greet`" 这种八竿子打不着的消息 ✗ 踩过）*/
@@ -297,7 +414,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
          * ⚠️ 而且 union 会被改写 ⇒ args 先挪出来 ✓ */
         Vec  args = e->u.assoc.args;
         Expr *id  = exprNew(L->a, EX_IDENT, e->line);
-        id->u.ident.name = f->name;            /* 平名字 ✓ */
+        id->u.ident.name = renOfTarget(target, nm);
         e->kind = EX_CALL;
         e->u.call.callee = id;
         e->u.call.args   = args;
@@ -319,6 +436,47 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
 
 static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     if (!e) return;
+    /* ⚠️⚠️ **表达式里也有名字，别只走子节点** —— 这里最阴的一个洞：
+     * `EX_STRUCTLIT` 的 `inits` 被走了、**它自己的类型名却没有** ⇒
+     * 两个模块各有 `pair` 时，`liba::pair { … }` 的名字**原样**留给检查器，
+     * 而检查器按裸名 `ttFromName` ⇒ 命中**先注册的那个模块**的结构体 ⇒
+     * **静默绑成另一个类型**（字段名凑巧一样就一声不吭地编过 ✗✗ 真踩过，
+     * 症状是 `struct \`alpha$pair\` has no field \`s\``，指向的还不是源码里的名字）
+     * ⇒ 类型名一律在这里改写 ✓  `EX_CONV` 同理（`mod::T(x)`）✓ */
+    switch (e->kind) {
+    case EX_STRUCTLIT: {
+        const char *m = NULL;
+        if (e->u.lit.name && rwQualifiedTypeName(L, self, e->u.lit.name, &m) && m)
+            e->u.lit.name = m;
+        break;
+    }
+    case EX_ENUMVAL: {
+        const char *m = NULL;
+        if (e->u.enumval.typeName && rwQualifiedTypeName(L, self, e->u.enumval.typeName, &m) && m)
+            e->u.enumval.typeName = m;
+        break;
+    }
+    case EX_CONV: {
+        const char *m = NULL;
+        if (e->u.conv.typeName && rwQualifiedTypeName(L, self, e->u.conv.typeName, &m) && m)
+            e->u.conv.typeName = m;
+        break;
+    }
+    /* ⭐ `mod::Type.variant` —— parser 把 `mod::Type` 造成**裸标识符**了
+     * （它只拼名字，不查符号表）⇒ 这里认出"它其实是个类型"并换成裸类型名，
+     * 剩下的交给检查器那条现成的枚举变体路 ✓ */
+    case EX_IDENT: {
+        const char *m = NULL;
+        if (e->u.ident.name && rwQualifiedTypeName(L, self, e->u.ident.name, &m) && m) {
+            e->u.ident.name = m;
+            e->qualified = true;     /* 写的就是限定名 ⇒ 别再提示"要写限定名" ✓ */
+        } else {
+            rwExprName(self, e);     /* `color.green` 里的 `color` ⇒ `e1$color` ✓ */
+        }
+        break;
+    }
+    default: break;
+    }
     if (e->kind == EX_ASSOC) rwQualified(L, self, e);   /* 可能把 kind 改掉 ⇒ 之后再走子节点 ✓ */
 
     switch (e->kind) {
@@ -336,6 +494,10 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     case EX_COALESCE:
         rwExpr(L, self, e->u.coalesce.main); rwExpr(L, self, e->u.coalesce.fallback); break;
     case EX_CALL:
+        /* ⚠️ **被调者也要走** —— 模块里 `fn a() { b() }` 调的是**自己这个模块**的 `b`，
+         * 而声明会被 mangle ⇒ 不走这一步，`b` 就永远找不到 ✗
+         * （踩过：`call to undefined function \`twice\``，可 `greet$twice` 明明在表里）*/
+        rwExpr(L, self, e->u.call.callee);
         for (size_t i = 0; i < e->u.call.args.len; i++)
             rwExpr(L, self, *(Expr **)vecAt(&e->u.call.args, i));
         break;
@@ -396,8 +558,89 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
 
 /* ---------------------------------------------------------------- 合并 */
 
+static void mangleUnitDecls(Loader *L, ModUnit *u) {
+    if (!u->modName || !*u->modName) return;              /* 根模块：一律不动 ✓ */
+    Module *src = &u->mod;
+    /* ⚠️⚠️ **这里有个 arena 陷阱，踩过**：`mangleName` 用 `arenaPrintf` ⇒ 返回值指向
+     * **arena 里的缓冲**，而 arena 会**原地增长/复用** ⇒ 如果"算一个名字就马上存进表、
+     * 接着再算下一个"，先前那个指针会被**后一次分配覆盖** ✗
+     * 实测症状极隐蔽：别名表打出来是 `pair=>make`（`pair` 的目标被 `make` 的名字覆盖）
+     * ⇒ 于是裸名 `pair` 查不到 ⇒ `unknown type pair`，而**根因在内存复用、不在查表逻辑** ✗
+     * ⇒ 修法：**先把所有名字算完**（4 个循环全是分配），**再**填表（只存指针，不再分配）✓ */
+    const char **names = (const char **)arenaAlloc(L->a, sizeof(char *) * 64);
+    size_t n = 0;
+    for (size_t i = 0; i < src->structs.len && n < 64; i++)
+        names[n++] = mangleName(L, u, (*(StructDef **)vecAt(&src->structs, i))->name);
+    for (size_t i = 0; i < src->types.len && n < 64; i++)
+        names[n++] = mangleName(L, u, (*(TypeDef **)vecAt(&src->types, i))->name);
+    for (size_t i = 0; i < src->globals.len && n < 64; i++)
+        names[n++] = mangleName(L, u, (*(GlobalDef **)vecAt(&src->globals, i))->name);
+    for (size_t i = 0; i < src->funcs.len && n < 64; i++) {
+        const char *fn = (*(FuncDef **)vecAt(&src->funcs, i))->name;
+        /* `extern!` ⇒ 原名进出（见 `externKeepsName` 的说明 ✓）*/
+        names[n++] = externKeepsName(src, fn) ? fn : mangleName(L, u, fn);
+    }
+    /* 名字都算完了 ⇒ 现在只填表（**不再有分配** ⇒ 指针稳定 ✓）*/
+    size_t k = 0;
+    for (size_t i = 0; i < src->structs.len; i++) {
+        StructDef *d = *(StructDef **)vecAt(&src->structs, i);
+        Ren *r = (Ren *)vecPush(&u->ren); r->from = d->name; r->to = names[k++]; }
+    for (size_t i = 0; i < src->types.len; i++) {
+        TypeDef *d = *(TypeDef **)vecAt(&src->types, i);
+        Ren *r = (Ren *)vecPush(&u->ren); r->from = d->name; r->to = names[k++]; }
+    for (size_t i = 0; i < src->globals.len; i++) {
+        GlobalDef *d = *(GlobalDef **)vecAt(&src->globals, i);
+        Ren *r = (Ren *)vecPush(&u->ren); r->from = d->name; r->to = names[k++]; }
+    for (size_t i = 0; i < src->funcs.len; i++) {
+        FuncDef *d = *(FuncDef **)vecAt(&src->funcs, i);
+        Ren *r = (Ren *)vecPush(&u->ren);
+        r->from = d->name; r->to = names[k++];
+        /* `to == from` ⇒ 不改名；但回程票**照样登记**（登记成自己）✓
+         * 这样 `renLookup` 依然返回值，模块内的裸写不会被跳过 ✓ */}
+    for (size_t i = 0; i < u->ren.len; i++) {
+        Ren *r = (Ren *)vecAt(&u->ren, i);
+        for (size_t j = 0; j < src->structs.len; j++)
+            if (strcmp((*(StructDef **)vecAt(&src->structs, j))->name, r->from) == 0)
+                (*(StructDef **)vecAt(&src->structs, j))->name = r->to;
+        for (size_t j = 0; j < src->types.len; j++)
+            if (strcmp((*(TypeDef **)vecAt(&src->types, j))->name, r->from) == 0)
+                (*(TypeDef **)vecAt(&src->types, j))->name = r->to;
+        for (size_t j = 0; j < src->globals.len; j++)
+            if (strcmp((*(GlobalDef **)vecAt(&src->globals, j))->name, r->from) == 0)
+                (*(GlobalDef **)vecAt(&src->globals, j))->name = r->to;
+        for (size_t j = 0; j < src->funcs.len; j++)
+            if (strcmp((*(FuncDef **)vecAt(&src->funcs, j))->name, r->from) == 0)
+                (*(FuncDef **)vecAt(&src->funcs, j))->name = r->to;
+    }
+    if (getenv("EXTC_DBG_M")) {
+        fprintf(stderr, "[mangle] %s: %zu 个声明改名:", u->modName, u->ren.len);
+        for (size_t i = 0; i < u->ren.len; i++) { Ren *r = (Ren *)vecAt(&u->ren, i); fprintf(stderr, " %s->%s", r->from, r->to); }
+        fprintf(stderr, "\n");
+    }
+}
+
+/* ⭐ **模块自己文件里写的裸名**（`color.green` 的 `color`、`shout` 里调的 `twice`）
+ * 也要跟着改名 —— 声明被 mangle 之后，模块**内部**这些裸名会全部失效 ✗
+ * （踩过：报的是 `call to undefined function \`twice\``，而 `greet$twice` 明明就在表里）
+ * 为什么**只认本模块自己声明的名字**（不认"任何模块导出过的名字"）：
+ * 认了的话，同一个名字在别的模块里也有时，本模块里那句裸写会被**悄悄改写过去**，
+ * 于是既编得过、又变成别人的东西 —— 比报错坏得多 ✗
+ * 自己声明的名字被裸写 = 就是自己那个（`@private` 也照样解析得到，
+ * 可见性由 `requireQualified` 在后面单独查 ✓）*/
+static void rwExprName(ModUnit *self, Expr *e) {
+    if (!e || e->kind != EX_IDENT) return;
+    const char *nm = e->u.ident.name;
+    /* ⚠️ 被调者处名字已被改成 `lib$open`（见 `rwQualified`）⇒ 这里必须能回退到
+     * **源码名** `open`，否则"要写限定名"那条诊断会变成
+     * `lib$open 属于模块 lib -- 请写 lib::lib$open`，纯属胡说 ✗（真踩过）*/
+    if (!nm) nm = e->u.ident.srcName;
+    const char *m = nm ? renLookup(self, nm) : NULL;
+    if (m) { e->u.ident.srcName = nm; e->u.ident.name = m; }
+}
+
 static void mergeUnit(Loader *L, ModUnit *u) {
     Module *src = &u->mod;
+    mangleUnitDecls(L, u);
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *s = *(StructDef **)vecAt(&src->structs, i);
         s->modName = u->modName;
@@ -471,6 +714,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     u = (ModUnit *)arenaAllocZero(L->a, sizeof(ModUnit));
     u->file    = file;
     u->modName = baseNameNoExt(L->a, file);
+    vecInit(&u->ren, L->a, sizeof(Ren));
     u->state   = 1;                                /* 正在装载 ✓ */
     moduleInit(&u->mod, L->a);
     u->ctx = (Ctx *)arenaAllocZero(L->a, sizeof(Ctx));
@@ -582,6 +826,21 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     /* 模块：**拓扑序**（依赖在前 ✓）*/
     for (size_t i = 0; i < L.order.len; i++)
         mergeUnit(&L, *(ModUnit **)vecAt(&L.order, i));
+
+    /* ⭐ 裸名回程票（必须在 mergeUnit **之后** —— ren 表是那里建的 ✓）*/
+    if (!out->aliases.arena) vecInit(&out->aliases, a, sizeof(Alias));
+    for (size_t i = 0; i < L.order.len; i++) {
+        ModUnit *dep = *(ModUnit **)vecAt(&L.order, i);
+        for (size_t j = 0; j < dep->ren.len; j++) {
+            Ren *r = (Ren *)vecAt(&dep->ren, j);
+            bool dup = false;
+            for (size_t k = 0; k < out->aliases.len && !dup; k++)
+                if (strcmp(((Alias *)vecAt(&out->aliases, k))->from, r->from) == 0) dup = true;
+            if (dup) continue;                 /* 歧义 ⇒ 不登记（要求写限定名 ✓）*/
+            Alias *al = (Alias *)vecPush(&out->aliases);
+            al->from = r->from;  al->to = r->to;
+        }
+    }
 
     /* 根文件：声明最后进（它用到的模块已经在了 ✓）；函数体也要解析限定名 ✓ */
     {

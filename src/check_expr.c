@@ -3,6 +3,7 @@
  * 从 check.c 拆出来的 —— **纯移动**：注释与逻辑一个字节没动 ✓
  */
 
+#include <stdlib.h>
 #include "check_internal.h"
 
 /* ---------------------------------------------------------------- 表达式 */
@@ -1133,9 +1134,28 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttVoid(tt);
             }
 
+            /* ⭐ 报错要回显**源码里写的那个名字**（`open`），不是 mangle 后的 `lib$open` ✗
+             * （不留 `srcName` 的话消息会变成"请写 `lib::lib$open`"，纯属胡说 ✓）*/
+            const char *shownName = e->u.call.callee->u.ident.srcName
+                                    ? e->u.call.callee->u.ident.srcName : name;
             FuncDef *f = findFunc(c, name);
+            /* ⭐ **裸写别的模块的函数名**（`lib.extc` 里有 `open`，这里写 `open()`）：
+             * 名字里没有 `$` ⇒ 它是**源码原名**，装载器只把限定名改写成平名字 ✓
+             * ⇒ 按"要写限定名"报，而不是"没有这个函数"（后者把人引向完全错误的方向 ✗）
+             * 判据只看**名字里有没有 `$`**：`$` 在 extC 标识符里不合法 ⇒
+             * 出现它就一定是装载器生成的 mangle 名，那种情况才是真"找不到" ✓ */
+            if (!f && name && !strchr(name, '$') && !e->qualified) {
+                for (size_t i = 0; i < c->m->funcs.len; i++) {
+                    FuncDef *cand = *(FuncDef **)vecAt(&c->m->funcs, i);
+                    const char *d = cand->name ? strchr(cand->name, '$') : NULL;
+                    if (d && cand->modName && !cand->isPrivate && strcmp(d + 1, shownName) == 0) {
+                        requireQualified(c, shownName, cand->modName, false, e->line);
+                        return ttError(tt);
+                    }
+                }
+            }
             if (f && !f->reserved && f->modName && !e->qualified)
-                requireQualified(c, name, f->modName, false, e->line);
+                requireQualified(c, shownName, f->modName, false, e->line);
             if (!f) {
                 /* ⭐ PLAN #10：**裸写枚举构造器** —— 报错要**指路**，别只说"没这个函数" ✗
                  *

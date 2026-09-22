@@ -1,0 +1,14 @@
+/* 跟 alpha **逐个声明同名**，但每个细节都不一样：
+ *   · `pair` 字段名与类型都不同（`i64`）
+ *   · `make` 的返回类型是这个 `pair`
+ *   · `which` 返回 2
+ * ⇒ 任何一处串台都会让输出对不上 ✓ */
+struct pair {
+    s: i64
+    t: i64
+    u: i64
+}
+
+fn make(x: i32) -> pair { return { s: x, t: x * 2, u: x * 3 } }
+
+fn which() -> i32 { return 2 }

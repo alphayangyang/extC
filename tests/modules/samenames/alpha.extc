@@ -1,0 +1,13 @@
+/* ⭐ **模块 mangle 的验收正例**：两个模块**逐声明重名** —— 都叫 `pair`、都叫 `make`、
+ * 都叫 `which`，谁都不许干扰谁 ✓
+ * （mangle 之前这文件根本编不过：`duplicate struct \`pair\`` ✗）
+ * 两个 `pair` **字段名相同、字段类型不同** ⇒ 一旦串台，`println` 的输出立刻不对，
+ * 不存在"看着能跑其实绑错了"的中间状态 ✓ */
+struct pair {
+    a: i32
+    b: i32
+}
+
+fn make(x: i32) -> pair { return { a: x, b: x + 1 } }
+
+fn which() -> i32 { return 1 }

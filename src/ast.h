@@ -190,6 +190,11 @@ struct Expr {
         bool      bval;
         struct { const char *text; } str;                 /* 不含引号，转义原样 */
         struct { const char *name;
+                 /* ⭐ 模块 mangle 前**源码里写的那个名字**（诊断要回显它 ✓）
+                  * 为什么必须单独存一个：`name` 会被装载器改成 mangle 名
+                  * （`open` → `lib$open`），而报错得指着用户写的那个词 ——
+                  * 不留它，消息就变成"请写 `lib::lib$open`"，纯属胡说 ✗（真踩过）*/
+                 const char *srcName;
                  /* 解析到的绑定的 C 名字（遮蔽时会跟 `name` 不同）。
                   * 由类型检查阶段填 —— 名字的**解析**是检查器的活，
                   * 代码生成只管照着印。见 DECISIONS 定案 47。 */
@@ -439,6 +444,8 @@ typedef struct {
  *     use std::io        ⇒ 装载器去找 std/io.extc、解析它，
  *                          并在**检查之前**把本文件里 `io::name` 解析成平名字 ✓
  *     短名 = 路径最后一段（v1 不做 `as` 别名）；环 = 编译期错误 ✓ */
+typedef struct { const char *from; const char *to; } Alias;
+
 typedef struct {
     const char *path;      /* "std::io"（原样，报错用）*/
     const char *shortName; /* "io" —— 引用时写 `io::name` ✓ */
@@ -452,6 +459,8 @@ typedef struct {
     Vec funcs;                   /* FuncDef*  */
     Vec globals;                 /* GlobalDef* —— 顶层 let / var */
     Vec uses;                    /* UseDecl* —— 定案 70 */
+    /* ⭐ 模块 mangle 的**裸名回程票**（`pair` → `liba$pair`）：由装载器填，`ttResolve` 查 ✓ */
+    Vec aliases;                 /* Alias* */
 } Module;
 
 void moduleInit(Module *m, Arena *a);

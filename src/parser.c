@@ -1398,6 +1398,52 @@ static Expr *parsePrimary(Parser *p) {
          * 这样类型名不必靠大小写来消歧义 —— 规则写在语法里，不藏在命名里。 */
         if (at(p, "{") && !p->inCond) return parseStructLit(p, t->text);
 
+        /* ⭐ **限定名类型** `mod::Type { … }` 和 `mod::Type.variant`（定案 70 的补漏）。
+         * 为什么必须支持：模块之间**同名类型**只靠裸名写不出来（裸名有歧义 ⇒
+         * 装载器故意不登记回程票 ⇒ 根本解析不到）⇒ 没有这条语法，
+         * 「两个模块各有 `pair`」时那个类型的字面量**无字可写** ✗（踩过）
+         * 这里只把路径拼成一个字符串，**照类型位置一样不查符号表** ⇒
+         * 是模块还是类型、能不能这样写，全部交给装载器判 ✓
+         * `mod::fn(…)` 那条路不受影响：`.`/`{` 不跟，就退回 `looksLikeAssoc` ✓ */
+        if (at(p, "::")) {
+            /* ⚠️ **只看不动**：`mod::fn(args)` 是绝大多数情况，绝不能把它的记号吃掉
+             * 再指望 `looksLikeAssoc` 兜住（`pos` 一移，那条路就残了 ⇒
+             * prelude 里 `pcg32::withStream(…)` 直接被拆成 `pcg32` + 乱码 ✗ 真踩过）
+             * 只有**后面确实跟着 `{` 或 `.`** 才接管 ✓ */
+            int k = 0;
+            bool takeIt = false;
+            for (;;) {
+                if (strcmp(pk(p, k)->text, "::") != 0) break;
+                Token *seg = pk(p, k + 1);
+                if (seg->kind != TK_IDENT && seg->kind != TK_TYPE) break;
+                k += 2;
+                if ((strcmp(pk(p, k)->text, "{") == 0 && !p->inCond) ||
+                    strcmp(pk(p, k)->text, ".") == 0) { takeIt = true; break; }
+            }
+            if (takeIt) {
+                Buf b;
+                bufInit(&b, p->arena);
+                bufPuts(&b, t->text);
+                for (int j = 0; j < k; j += 2) {
+                    take(p);                                   /* `::` */
+                    bufPuts(&b, "::");
+                    bufPuts(&b, take(p)->text);                /* 段名 */
+                }
+                if (at(p, "{")) return parseStructLit(p, bufCstr(&b));
+                /* `mod::Type.variant` —— 造成字段访问，改名交给装载器做 ⇒
+                 * 检查器那条“枚举变体”的路一个字都不用改 ✓ */
+                take(p);                                       /* `.` */
+                Token *vn = expectIdent(p, "a variant name");
+                if (!vn) return NULL;
+                Expr *id = exprNew(p->arena, EX_IDENT, t->line);
+                id->u.ident.name = bufCstr(&b);
+                Expr *fa = exprNew(p->arena, EX_FIELD, t->line);
+                fa->u.field.obj  = id;
+                fa->u.field.name = vn->text;
+                return fa;
+            }
+        }
+
         /* 关联函数调用 `option<i64>::some(x)` / `point::origin()`。
          *
          * `IDENT <` 跟小于号撞车，所以先**只看不动**地判断题实参到哪里结束、

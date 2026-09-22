@@ -20,6 +20,8 @@ typedef struct {
     Vec    builtins;    /* Type* —— 内建类型，驻留 */
     Vec    structs;     /* StructDef* */
     Vec    enums;       /* TypeDef*  */
+    /* ⭐ 模块 mangle 的裸名回程票（`pair` → `liba$pair`）✓ */
+    Vec    aliases;     /* Alias* */
     Vec    instances;   /* Type* —— 泛型实例，驻留 */
     /* 泛型**枚举**的实例（`option<i64>`）—— 单独一张表：
      * 它们的 owner 是 `edef`（TypeDef）而 `sdef` 是空的，混进 `instances`

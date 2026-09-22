@@ -3,6 +3,7 @@
 #
 # 两条判据，缺一不可：
 #   ① 正例：**一个模块 = 一个文件**，`use a::b` + `a::name` 跨模块引用必须跑得通
+#      · `samenames` 是**模块 mangle 的验收**：两个模块逐声明重名也必须互不干扰 ✓
 #   ② 反例：该挡的必须**编译期**挡住，而且消息要指对文件、说清怎么办 ✓
 #      （未 use · @private · 漏限定名 · 环 · 文件不存在 · 模块里写 main）
 set -u
@@ -12,7 +13,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/hello tests/modules/chain; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
