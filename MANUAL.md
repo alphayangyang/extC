@@ -1737,7 +1737,106 @@ println(ps[0] == point { x: 1, y: 2 })  // ✓ 写全名字
 
 ---
 
-## 12. 完整示例
+## 12. 库与模块（2026-09-22 新增 ✓）
+
+> 这一节是**已经能跑的**：模块（定案 70）· 泛型自由函数（定案 71）· `extern!`（定案 72）·
+> `std::io`（定案 73）✓ 没实现的一律不写在这里（见 `PLAN.md`）✓
+
+### 12.1 模块：一个文件就是一个模块
+
+```extc
+// lib/util.extc
+struct pair { a: i32  b: i32 }               // 类型名 camelCase（大写开头留给类型参数 T ✓）
+
+fn make(a: i32, b: i32) -> pair { var p: pair = { a: a, b: b }  return p }
+fn total(p: pair) -> i32 { return p.a + p.b }
+
+@private fn helper() -> i32 { return 1 }     // 藏起来：**别的模块引用不到** ✓
+```
+
+```extc
+// main.extc
+use lib::util                                // ⭐ **语义导入**（不是 C 的文本包含 ✗）
+
+fn main() -> i32 {
+    var p: util::pair = util::make(1, 2)     // 跨模块引用写**限定名** ✓
+    println("和 = ", util::total(p))
+    return 0
+}
+```
+
+| 规则 | 说明 |
+|---|---|
+| 模块路径 | `use lib::util` ⇒ `<项目根>/lib/util.extc`（项目根 = 入口文件所在目录；也可用 `-I <dir>`）|
+| 短名 | 路径最后一段（`use lib::util` ⇒ 引用时写 `util::name` ✓）|
+| 可见性 | **默认公开**；要藏写 `@private`（别的模块引用它 ⇒ 编译错误 ✓）|
+| 必须限定 | 别的模块的名字**必须**写 `mod::name`（漏了会报错并告诉你写什么 ✓）|
+| 环 | **禁止** import 环（报错会说清是哪两个模块 ✓）|
+| `main` | 只能写在**入口文件**里（模块是库 ✓）|
+| 编译 | 仍然**只吐一个 .c**（`extc --run main.extc` 一条命令，`use` 的文件自动跟着编 ✓）|
+
+⚠️ v1 限制：顶层名字要求**全局唯一**（两个模块各有一个私有 `helper` 会被重名挡下 ✗）；
+类型名"必须限定"那条还没挡严（函数/全局已经挡严 ✓）✓
+
+### 12.2 泛型自由函数 `fn f<T>(…)`
+
+```extc
+fn indexOf<T>(a: slice<T>, x: T) -> i64 {
+    var i: i64 = 0
+    while i < a.len { if a[i] == x { return i }  i = i + 1 }
+    return 0 - 1
+}
+
+indexOf(nums[..], 30)          // 从实参**推导** ✓
+indexOf<i32>(nums[..], 50)     // **显式实参**（`T` 只出现在返回类型时必须这么写 ✓）
+```
+
+- `T` 上的 `==` / `!=` ✓（**推迟到实例化**再查"这个 `T` 有没有 `fn ==`" ✓）
+- `T` 上的 `<` / `>` ✗（还没有比较协议 —— 要等函数值/协议那一步 ✓）
+- 泛型体里**不能**再调用泛型函数 ✗（报错会说清原因，见 `PLAN #50` ✓）
+
+### 12.3 跟 C 打交道：`extern!` + 信任声明
+
+```extc
+extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0        // 我签字：**我不存你的指针** ⇒ 实参不受寿命约束 ✓
+
+extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
+// fill(ref x, 3)  ⇒ **编译错误**：C 可能把 `&x` 存到帧外 ✗（默认最保守 ✓）
+```
+
+- 参数/返回只用**标量或单指针**（`ref T` / `?ref T`）—— `slice<T>` 在 C 那边是两个参数 ✗
+- 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len` ✓
+- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（它要等"帧拥有资源"那套 ✓）
+
+### 12.4 输入输出：`std::io`（第一块）
+
+```extc
+use std::io
+
+fn main() -> i32 {
+    var line: [64]u8
+    let n = io::readLine(line[..])       // 从 **stdin** 读一行（**buffer 调用者给** ✓）
+    io::writeBytes("你说的是：")
+    io::writeBytes(line[0..n])
+    io::writeBytes("\n")
+    return 0
+}
+```
+
+| 名字 | 干什么 |
+|---|---|
+| `io::readLine(buf)` | 读一行到你的 buffer，返回字节数（0 = EOF ✓）|
+| `io::readSome(fd, buf)` | 从 fd 读一次，返回读到的字节数 ✓ |
+| `io::writeBytes(buf)` | 把一整块字节写出去（fd 直写，**无缓冲** ✓）|
+| `io::flushOut()` / `flush()` | 把 `println` 那边的缓冲刷出去 ✓（跟 `writeBytes` 混用**必须**刷，不然顺序会乱 ✗）|
+
+分层：`std::sys`（**特权层**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
+还欠：`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `main(args)` ✓
+
+---
+
+## 13. 完整示例
 
 见 `examples/`：
 
@@ -1798,101 +1897,3 @@ fn mkSlice() -> slice<i32> {        // ✅ 合法：扩容过的容器，把视�
 
 ⚠️ 推导见 [`ARENA-FORMAL.md`](ARENA-FORMAL.md) §2/§3/§9（§9.5 = 落地实录 + 双向证据），
 执行计划见 [`PLAN-REGION.md`](PLAN-REGION.md) ✓
-
-## 11. 库与模块（2026-09-22 新增 ✓）
-
-> 这一节是**已经能跑的**：模块（定案 70）· 泛型自由函数（定案 71）· `extern!`（定案 72）·
-> `std::io`（定案 73）✓ 没实现的一律不写在这里（见 `PLAN.md`）✓
-
-### 11.1 模块：一个文件就是一个模块
-
-```extc
-// lib/util.extc
-struct pair { a: i32  b: i32 }               // 类型名 camelCase（大写开头留给类型参数 T ✓）
-
-fn make(a: i32, b: i32) -> pair { var p: pair = { a: a, b: b }  return p }
-fn total(p: pair) -> i32 { return p.a + p.b }
-
-@private fn helper() -> i32 { return 1 }     // 藏起来：**别的模块引用不到** ✓
-```
-
-```extc
-// main.extc
-use lib::util                                // ⭐ **语义导入**（不是 C 的文本包含 ✗）
-
-fn main() -> i32 {
-    var p: util::pair = util::make(1, 2)     // 跨模块引用写**限定名** ✓
-    println("和 = ", util::total(p))
-    return 0
-}
-```
-
-| 规则 | 说明 |
-|---|---|
-| 模块路径 | `use lib::util` ⇒ `<项目根>/lib/util.extc`（项目根 = 入口文件所在目录；也可用 `-I <dir>`）|
-| 短名 | 路径最后一段（`use lib::util` ⇒ 引用时写 `util::name` ✓）|
-| 可见性 | **默认公开**；要藏写 `@private`（别的模块引用它 ⇒ 编译错误 ✓）|
-| 必须限定 | 别的模块的名字**必须**写 `mod::name`（漏了会报错并告诉你写什么 ✓）|
-| 环 | **禁止** import 环（报错会说清是哪两个模块 ✓）|
-| `main` | 只能写在**入口文件**里（模块是库 ✓）|
-| 编译 | 仍然**只吐一个 .c**（`extc --run main.extc` 一条命令，`use` 的文件自动跟着编 ✓）|
-
-⚠️ v1 限制：顶层名字要求**全局唯一**（两个模块各有一个私有 `helper` 会被重名挡下 ✗）；
-类型名"必须限定"那条还没挡严（函数/全局已经挡严 ✓）✓
-
-### 11.2 泛型自由函数 `fn f<T>(…)`
-
-```extc
-fn indexOf<T>(a: slice<T>, x: T) -> i64 {
-    var i: i64 = 0
-    while i < a.len { if a[i] == x { return i }  i = i + 1 }
-    return 0 - 1
-}
-
-indexOf(nums[..], 30)          // 从实参**推导** ✓
-indexOf<i32>(nums[..], 50)     // **显式实参**（`T` 只出现在返回类型时必须这么写 ✓）
-```
-
-- `T` 上的 `==` / `!=` ✓（**推迟到实例化**再查"这个 `T` 有没有 `fn ==`" ✓）
-- `T` 上的 `<` / `>` ✗（还没有比较协议 —— 要等函数值/协议那一步 ✓）
-- 泛型体里**不能**再调用泛型函数 ✗（报错会说清原因，见 `PLAN #50` ✓）
-
-### 11.3 跟 C 打交道：`extern!` + 信任声明
-
-```extc
-extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
-    effects Addr=0 Cont=0        // 我签字：**我不存你的指针** ⇒ 实参不受寿命约束 ✓
-
-extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
-// fill(ref x, 3)  ⇒ **编译错误**：C 可能把 `&x` 存到帧外 ✗（默认最保守 ✓）
-```
-
-- 参数/返回只用**标量或单指针**（`ref T` / `?ref T`）—— `slice<T>` 在 C 那边是两个参数 ✗
-- 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len` ✓
-- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（它要等"帧拥有资源"那套 ✓）
-
-### 11.4 输入输出：`std::io`（第一块）
-
-```extc
-use std::io
-
-fn main() -> i32 {
-    var line: [64]u8
-    let n = io::readLine(line[..])       // 从 **stdin** 读一行（**buffer 调用者给** ✓）
-    io::writeBytes("你说的是：")
-    io::writeBytes(line[0..n])
-    io::writeBytes("\n")
-    return 0
-}
-```
-
-| 名字 | 干什么 |
-|---|---|
-| `io::readLine(buf)` | 读一行到你的 buffer，返回字节数（0 = EOF ✓）|
-| `io::readSome(fd, buf)` | 从 fd 读一次，返回读到的字节数 ✓ |
-| `io::writeBytes(buf)` | 把一整块字节写出去（fd 直写，**无缓冲** ✓）|
-| `io::flushOut()` / `flush()` | 把 `println` 那边的缓冲刷出去 ✓（跟 `writeBytes` 混用**必须**刷，不然顺序会乱 ✗）|
-
-分层：`std::sys`（**特权层**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
-还欠：`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `main(args)` ✓
-
