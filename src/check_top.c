@@ -2228,14 +2228,38 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
          *
          * This is the chain of assignments, and the level asked of the value is the
          * smaller of the binding's own level and the level being demanded here. */
-        Expr *held = sy->heldSrc ? sy->heldSrc : sy->origin;
-        if (!held) return fromSym;
         /* The walk descends at the tighter of the binding's level and the level demanded
-         * of it. Whatever the binding holds is held to the same level: if the binding has
-         * to outlive the frame, so does the storage inside the value it holds. */
+         * of it: if the binding has to outlive the frame, so does the storage inside the
+         * value it holds. */
         int inner = fromSym < target ? fromSym : target;
-        int fromVal = levelOfValue(c, ls, held, inner, hops + 1);
-        return fromSym < fromVal ? fromSym : fromVal;
+        int best = fromSym;
+        /* Every expression ever assigned to the binding, not just the last one.
+         *
+         * What a binding holds at a control-flow merge is one of the values written to it,
+         * and a single field cannot describe that: `Sym.heldSrc` remembers the assignment
+         * that came last in source order, so `h = g` followed by `h = zero` made every walk
+         * of `h` end at the empty box and never reach the allocation inside `g`. The
+         * publications recorded while the body was checked are the authority -- they hold
+         * each assigned expression, and walking all of them is the merge done properly
+         * rather than a race between statements. */
+        bool viaRecords = false;
+        for (size_t i = 0; i < c->stores.len; i++) {
+            StoreSite *alt = *(StoreSite **)vecAt(&c->stores, i);
+            if (!alt || !alt->target || alt->target->kind != EX_IDENT) continue;
+            if (identBindOf(alt->target) != sy) continue;
+            viaRecords = true;
+            int v = levelOfValue(c, ls, alt->value, inner, hops + 1);
+            if (v < best) best = v;
+        }
+        /* A binding with no publication of its own -- only ever initialized, or written
+         * through a projection -- is still described by the expression it was given. */
+        if (!viaRecords) {
+            Expr *held = sy->heldSrc ? sy->heldSrc : sy->origin;
+            if (!held) return fromSym;
+            int v = levelOfValue(c, ls, held, inner, hops + 1);
+            if (v < best) best = v;
+        }
+        return best;
     }
     /* The join node of an `if`: one value with two operands, either of which can be what
      * the destination ends up holding. Both are walked at the same level, and the answer is
