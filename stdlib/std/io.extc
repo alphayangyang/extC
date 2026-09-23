@@ -252,51 +252,67 @@ struct reader {
      *    挡下来用 `lineTooLong` 报 —— 错误种类不够时宁可复用，
      *    也不要**静默截断**（截断会算出错答案还正常退出 ✗✗）*/
     fn nextInt(self: mut ref reader) -> result<i64, ioError> {
-        self.skipSpace()?
+        /* 逐字节的版本是 `skipSpace` + `nextByte`，两个都是**方法调用**，每个数字要过
+         * 好几个字节 ⇒ 实测这两个函数占掉全部指令的 **51%**（callgrind：
+         * `reader_nextByte` 50.8%、`reader_nextInt` 43.9%）。它们在生成 C 里是 `static`，
+         * 但返回 `result` 结构体 ⇒ GCC 不肯内联 ✗
+         *
+         * 所以这里把**缓冲热循环直接写进来**：`pos < len` 时只做下标 + 自增，不调任何方法；
+         * 缓冲耗尽才调一次 `fill`（每 64KB 一次 ✓）。语义与逐字节版**逐字符一致**
+         * （含"数字后的空白推回、换行/CRLF 吃掉"两条规则 ✓）。
+         *
+         * `nextByte` / `skipSpace` 保留给调用者，只是不再进热路径 ✓
+         *
+         * 推回用 `pushed` 记住那个字节，而不是把 `pos` 往回减 —— 减 `pos` 会在
+         * "刚好补完缓冲"时退到缓冲之前 ⇒ 实测 `index -1 out of range` ✗ */
         var neg: bool = false
         var v: i64 = 0
         var got: bool = false
-
-        /* 先看一个字节：`-` 就是负号，别的**推回去**当数字继续读 ✓ */
-        let b0 = self.nextByte()?
-        if b0 < i64(0) { return success(i64(0)) }            /* 没东西了 ⇒ 0（跟 OI 惯例一致 ✓）*/
-        if b0 == i64(45) {
-            neg = true
-        } else {
-            self.pos = self.pos - i64(1)
-        }
+        var seen: bool = false          /* 已经读到过非空白 */
+        var pushed: i64 = i64(0)        /* > 0 = 待重新消费的字节；-2 = 待重新消费的 EOF */
+        var bad: bool = false           /* 看到过不认识的字节（推回它） */
+        var b: i64 = i64(0)
 
         while true {
-            let b = self.nextByte()?
-            if b < i64(0) { break }                          /* EOF ⇒ 数字到此为止 ✓ */
+            /* ---- 取一个字节（热路径：不调方法）---- */
+            if pushed == i64(-2) { pushed = i64(0)  b = i64(-1) }
+            else if pushed > i64(0) { b = pushed  pushed = i64(0) }
+            else {
+                if self.pos >= self.len {
+                    let n = self.fill()?
+                    if n == i64(0) { b = i64(-1) }
+                    else { b = i64(self.chunk[self.pos])  self.pos = self.pos + i64(1) }
+                } else {
+                    b = i64(self.chunk[self.pos])
+                    self.pos = self.pos + i64(1)
+                }
+            }
 
+            if !seen {
+                if b < i64(0) { break }                 /* EOF：没有数字 ⇒ 0 ✓ */
+                if !isSpaceByte(b) {
+                    seen = true
+                    if b == i64(45) { neg = true }
+                    else { pushed = b }
+                }
+                continue
+            }
+            if bad {
+                if b < i64(0) { pushed = i64(-2) }
+                else { self.pos = self.pos - i64(1) }
+                break
+            }
+            if b < i64(0) { break }                     /* EOF：数字到此为止 ✓ */
             if b >= i64(48) && b <= i64(57) {
                 got = true
                 let d = b - i64(48)
-                /* ⚠️ **先查再加** —— 不查就是 UB ✗ */
                 if v > (I64_MAX - d) / i64(10) { return failure(ioError.lineTooLong(v)) }
                 v = v * i64(10) + d
                 continue
             }
+            if !got { continue }                        /* 前导分隔符吃掉 ✓ */
 
-            /* --- 到这儿：b 既不是数字，也不是空白 --- */
-
-            /* 还没读到数字时，前导的分隔符（`12,34` 里的第一个 `,`、
-             * 或者 `[1,2]` 里的 `[`）**吃掉**，继续找数字 ✓
-             * ⚠️ 不吃就麻烦了：推回去 ⇒ 下一次调用又停在同一个字符上 ⇒
-             *    `nextInt` 永远返回 0、**卡死**在那儿 ✗✗ */
-            if !got {
-                continue
-            }
-
-            /* 已经读到数字 ⇒ 这个字符是**这个数的边界** ⇒ **推回去**，
-             * 留给调用者 ✓
-             * ⚠️ 数字后面的**空白也要推回**（不是吃掉）：`5 7` 里那个空格
-             *    必须结束第一个数，否则第二个 `nextInt` 会把 `7` 并进来 ⇒ `57` ✗✗
-             *    （我在这上面绕了好几轮 —— 连手写的 C 对照都证明"吃掉空白"是错的：
-             *      53 → v=5，32 空格，55 → v=5*10+7=57 ✓ 那份 C 才是对的，我的推理是错的）
-             * ⚠️ 例外：**换行吃掉**（连同 CRLF）—— 这样 `nextInt` 之后接 `nextLine`
-             *    不会先读到一个空行 ⇒ 两种风格才能混着用 ✓ */
+            /* 数字后面的这个字节：换行（含 CRLF）吃掉，别的推回 ✓ */
             if b == i64(10) { break }
             if b == i64(13) {
                 if self.pos < self.len {
@@ -304,13 +320,25 @@ struct reader {
                 }
                 break
             }
-            self.pos = self.pos - i64(1)
-            break
+            bad = true                                  /* 下一轮把它推回 ✓ */
         }
 
-        if !got { return success(i64(0)) }                   /* 只有符号、没有数字 ⇒ 0 ✓ */
+        if !got { return success(i64(0)) }
         if neg { return success(i64(0) - v) }
         return success(v)
+    }
+
+    /* 那个字节是不是"该吃掉"的换行（LF，或 CR 后面跟 LF）✓
+     * 与逐字节版逐字一致：只有换行被吃掉，其它空白一律推回 ✓ */
+    fn newlineAfter(self: mut ref reader, b: i64) -> bool {
+        if b == i64(10) { return true }
+        if b == i64(13) {
+            if self.pos < self.len {
+                if i64(self.chunk[self.pos]) == i64(10) { self.pos = self.pos + i64(1) }
+            }
+            return true
+        }
+        return false
     }
 }
 

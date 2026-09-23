@@ -1,0 +1,16 @@
+// IO 形状：读 n 个整数求和（纯解析 + 读）
+use std::io
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    let n = r.nextInt()?
+    var i: i64 = 0
+    var s: i64 = 0
+    while i < n {
+        let v = r.nextInt()?
+        s = s + v
+        i = i + 1
+    }
+    println("sum = ", s)
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }
