@@ -43,6 +43,13 @@ typedef struct {
      * 最多 4 格；满了 / 归不到某一格的（元素写、对象字段）走 `otherDepth` 保守兜底 ✓
      * 根的有效深度 = max(otherDepth, 各格) ✓ */
     struct { const char *name; int depth; } fields[4];
+    /* ⭐ 层 1（数据流）第一步：**这张字段表完整吗？**
+     * 完整 = "这个绑定的**每一格**都在表里（或已知为 0）" ⇒ 允许"抹掉一格之后
+     *        把根重算成剩下几格的最大值"（强更新）✓
+     * 不完整 = 表是**拷贝/别处来的**，缺的格可能有值 ⇒ **不许下降**（否则那几格的
+     *          深度会凭空消失 —— 我上次就是这样造出一条 `stack-use-after-scope` 的 ✗）
+     * 默认 false（保守：不完整）✓ */
+    bool        fieldsComplete;
     int         nfields;
     int         otherDepth;
     int         depth;   /* 词法深度：参数 = 0，函数体里的局部 = 1，每进一层块 +1。

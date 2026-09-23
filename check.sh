@@ -19,8 +19,10 @@ if out=$(./tests/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
 else
     # ⚠️ 输出带 ANSI 颜色码 ⇒ 先剥掉再匹配（不剥的话 `^  FAIL` 一条都匹配不到 ✗ 踩过）
     plain=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g')
-    extra=$(printf '%s' "$plain" | grep '^  FAIL' | grep -v 'field-strong-update' || true)
-    if [ -z "$extra" ] && printf '%s' "$plain" | grep -q 'FAIL field-strong-update'; then
+    # ⚠️ 白名单**现在是空的**（`field-strong-update` 的误拒 2026-09-23 已修 ✓）——
+    # 机制留着，将来再有"已记档的失败"时按同样办法加一条，**不许**放宽成"忽略所有失败" ✗
+    extra=$(printf '%s' "$plain" | grep '^  FAIL' || true)
+    if [ -z "$extra" ]; then
         ok "$(echo "$out" | tail -1)（只差 field-strong-update —— 见 KNOWN-ISSUES.md ✓）"
     else bad "tests/run.sh"; echo "$out" | grep FAIL | head -5; fi
 fi

@@ -1000,8 +1000,26 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
         if (d2 > root->otherDepth) root->otherDepth = d2;
     } else if (root->addressed) {                  /* 取过地址 ⇒ 别名可能写别处 ⇒ 弱更新 ✗ */
         if (d2 > *slot) *slot = d2;
+    } else if (root->fieldsComplete) {
+        /* ⭐ 层 1（数据流）第一步：**表完整** ⇒ 这一格被新值替代 ⇒ 它的旧值不再是
+         * 这个容器任何一格的性质 ⇒ 重算根时**跳过它**（= `ARENA-FORMAL` §7.4 的强更新）✓
+         * 为什么 sound：根的记数是"**所有格**的上界"；表完整 ⇒ 去掉一条**已不成立**的边，
+         * 剩下的仍然是上界 ✓（不是凭空调小）*/
+        *slot = d2;
+        int m = root->otherDepth;
+        for (int i = 0; i < root->nfields; i++) {
+            if (root->fields[i].name && strcmp(root->fields[i].name, field) == 0) continue;
+            if (root->fields[i].depth > m) m = root->fields[i].depth;
+        }
+        root->refDepth = m;
+        if (isRefRoot && root->refDepth < before) root->refDepth = before;   /* #39 ✓ */
+        return;
     } else {
-        *slot = d2;                                /* 没取过地址 ⇒ **强更新**（覆盖）✓ */
+        /* ⚠️ **表不完整** ⇒ 绝对不许下降 ✗
+         * 缺的那些格可能有值：我上次就是这样造出一条真的 `stack-use-after-scope`
+         * （`var h3 = h` 把 `q` 那一格丢了 ⇒ `h3.p = null` 之后 `q` 的深度凭空消失 ⇒
+         *  `return h3` 被放行 ✗ —— 哨兵 `H1_strongupdate_missed` 当场抓到）✓ */
+        *slot = d2;
     }
     refreshRootDepth(root);
     /* ⭐ PLAN #39：不要忘记"我指着谁" ✓（字段表说的是"我指的那个东西里装着什么"）*/

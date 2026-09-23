@@ -231,6 +231,11 @@ void checkStmt(Checker *c, Stmt *s) {
                     FieldInit *fip = *(FieldInit **)vecAt(&s->u.var.init->u.lit.inits, fi);
                     noteFieldDepthWrite(c, sym, fip->name, exprRefDepth(c, fip->value));
                 }
+                /* ⭐ 层 1：**结构体字面量的表是完整的** ✓
+                 * 理由：写出来的字段都在表里；**省略的**要么是可空引用（零值 = null ⇒ 深度 0），
+                 * 要么是"没有零值"的引用 ⇒ 检查器**当场报错**（`ref` 没有默认值，见
+                 * `check_expr.c` 的"省略的字段靠零值补齐"）⇒ 不存在"藏着值的没记的格" ✓ */
+                sym->fieldsComplete = true;
             }
             return;
         }
