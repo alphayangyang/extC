@@ -78,6 +78,27 @@ typedef struct {
     const char *modName;
 } Sym;
 
+/* ⭐⭐ 层 2（数据流）：**把"这个名字解析到了哪个绑定"钉在 AST 节点上** ✓
+ *
+ * 为什么需要它：收尾的解算 pass 跑在**所有函数体都查完之后**，那时作用域已经弹了 ⇒
+ * `lookup(c, name)` 找不到局部绑定（`noteOrigin` 为同一个坑警告过一次 ✗）。
+ * 实测症状（`varArray_i32` 的 `return v`）：`[at] … kind=4 dca=0 svd=0` ⇒ 复算被跳过 ⇒
+ * 用了解算**之前**冻的旧深度 ⇒ 误拒 ✗
+ *
+ * 为什么存"绑定指针"而不是"名字"：同一个名字在不同作用域是**不同**的绑定 ⇒
+ * 解析**那一刻**的答案才是权威（收尾时按名字再查可能撞上另一个同名的东西 ✗）。
+ * 绑定的寿命不是问题：`Sym` 由 arena 分配（`scopeAdd` 走 `c->arena`）⇒
+ * 弹作用域只是从可见性里摘掉，内存还活着 ✓
+ *
+ * ⚠️ 包装成一个小结构只是为了**类型安全**：`ast.h` 那边只能放不透明指针
+ * （它不认识 `Sym`，跟 `Expr.cname` 同一个理由）⇒ 两边各转一次，中间不留 `void*` 裸奔 ✓ */
+typedef struct { Sym *sym; } IdentBinding;
+
+/* ⭐ 把 `e`（`EX_IDENT`）解析到的绑定取回来 —— 没解析过返回 NULL ✓ */
+static inline Sym *identBindOf(Expr *e) {
+    return (e && e->kind == EX_IDENT && e->u.ident.sym) ? ((IdentBinding *)e->u.ident.sym)->sym : NULL;
+}
+
 typedef struct { const char *name; int count; } NameUse;
 
 typedef struct { Vec syms; } Scope;

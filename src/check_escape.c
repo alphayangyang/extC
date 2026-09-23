@@ -499,9 +499,18 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * ⚠️ **但"调用结果"是例外** —— 有家被调者分配进的那只 arena 是**调用点**
          * 选的，不一定是槽位这一层 ⇒ 那份深度在**绑定时**就记进 `Sym.refDepth` 了
          * （见 `check_stmt.c` 里那段"初始化式是调用"的处理）⇒ 那才是这家事的权威 ✗ */
-        if (sy->depth <= at) return true;
+        /* ⚠️⚠️ **层 2：这一档不许再"提前返回"了** ✗✗
+         * 老判据说"槽位活得够久 ⇒ 不用提升"—— 对**提升**是对的，可 `promoteInto`
+         * 同时还是**层号事实的唯一入口** ⇒ 提前返回 = 这个站点**一条约束都拿不到**
+         * ⇒ 收尾按"没人碰过"把它放回**词法层** ✗
+         * 实测（`examples/escape-promotion` 的 `fn build`）：`var head = new node` 的站点
+         * `minAt=-1` ⇒ 被放回第 1 层 ⇒ `build` 一返回就 release ⇒ 调用者手里是
+         * 已释放的链表（生成的 C 从 `&(*__extc_home)` 变成 `&__extc_a[1]` ✗）
+         * ⇒ 现在**照样往下走一趟**（只为记事实），返回值仍按老判据答"不用改" ✓ */
+        bool slotDeepEnough = (sy->depth <= at);
         /* ⚠️ 来路是**压平的根**（见 `noteOrigin`）⇒ 这里链长最多一层，不会再查绑定 ✓ */
         if (!promoteInto2(c, sy->origin, at, hops + 1)) return false;
+        if (slotDeepEnough) return true;
         if (sy->type && typeContainsRef(c->tt, tsub(c, sy->type)) && sy->refDepth > at)
             sy->refDepth = at;
         if (val->refDepth > at || val->refDepth == 0) val->refDepth = at;
@@ -598,8 +607,15 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* ⚠️ 这里问的是「**往哪一层**存」⇒ 用 `storeLayer`（不是 `placeDepth`）：
      * 引用型绑定那个坑见 `storeLayer` 的注释 ✓ */
     int at = storeLayer(c, target);
+    /* ⭐⭐ 层 2：**"存进去"这个动作需要的层号，由容器的寿命封顶** ✗✗
+     * `storeLayer` 对 `h.q` / `a[i]` 这种**投影**会答"投影那条路的深度"，
+     * 比容器**自己**的块层还深（`h.q` 答 2，而 `h` 在 1）✗ ——
+     * 而容器活不过它自己那一层作用域 ⇒ 往它里面存的东西也只需要活到那一层 ✓
+     * ⚠️ 只把**记账用的这个数**降下来；下面 `checkEscape` 的 `at` 一个字不动 ✓ */
+    int atStore = at;
+    if ((int)c->scopes.len < atStore) atStore = (int)c->scopes.len;
     /* ⭐ 定案 63：先试着**提升**（提不动的话下面那句照旧报错 —— 这里是安全网，幂等）✓ */
-    promoteInto(c, val, at);
+    promoteInto(c, val, atStore);
     bool bad = checkEscape(c, val, at, line, "this assignment");
     /* ⭐ 定案 67（`ARENA-FORMAL` §9.3）：**来路能追到参数** ⇒ 放行，交给**调用点**判寿命 ✓
      * 为什么能放：被调者一次编译、不知道调用者的区域 ⇒ 它只能**发布约束**；
@@ -694,9 +710,28 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     /* ⚠️ 值里提到 `T` ⇒ 现在下不了结论（`T` 可能是 `i64` 也可能是 `slice<u8>`）
      * ⇒ **记下来，等实例化再算** ✓ （这就是 #17 那个洞的封口）*/
     if (mentionsParam(val->type)) {
+        /* ⭐⭐ 层 2：**先提一次，再推迟** ✗✗
+         * `promoteInto` 是**层号事实的唯一入口**，而这一支**提前返回** ⇒
+         * 「返回值/实参里装着 `T`」的每一处**都拿不到约束** ✗
+         * 实测（`varArray<T>::withCap`）：`return v` 走这一支 ⇒ 里面那个 `new T[cap]`
+         * 一条事实都没有（`minAt=-1`）⇒ 收尾按"没人碰过"放回**块层** ⇒ 而返回值
+         * 要求它活在**帧外** ⇒ 实例复查报 "depth 1, but this can only hold up to 0" ✗
+         * （一整族误拒，13 条）
+         * 为什么可以现在就提：**层号跟 `T` 是什么无关**（`T = i64` 与 `T = slice<u8>`
+         * 的"这块存储要活到第 k 层"是同一句话 ✓）
+         * ⚠️ 返回值**忽略**：提不动不是错误 —— 该不该拒由下面那条推迟的规矩判 ✓ */
+        promoteInto(c, val, at);
         recordRefCheck(c, val, NULL, at, line, what);
         return false;
     }
+    /* ⭐⭐ 层 2：**这里必须先提一次**（`checkStoreEscape` 早就是这么排的：
+     * 先 `promoteInto` 再判深度）—— 因为 `promoteInto` 同时是**层号事实的唯一入口**，
+     * 而下面那句 `d <= at` 会**提前返回** ⇒ 一旦深度看着"够浅"，站点就一条约束都没有 ✗
+     * 实测（`examples/escape-promotion`）：`return head` 时 `exprRefDepth(head)` 先答 0
+     * （那个 `EX_IDENT` 节点上的 `refDepth` 还没填）⇒ 早退 ⇒ `new node` 的站点
+     * `minAt=-1` ⇒ 收尾把它放回**词法层** ⇒ 调用者拿的是已释放的链表 ✗✗
+     * ⇒ 顺序改成"先记事实、再判深度"，判据一个字没变 ✓ */
+    promoteInto(c, val, at);
     int d = exprRefDepth(c, val);
     if (d <= at) return false;
     ckError(c, line,

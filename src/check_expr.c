@@ -128,6 +128,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* 名字的**解析**在这里定格 ⇒ 代码生成直接印 `cname`。
              * 遮蔽过的名字（`a` vs `a__2`）就靠这一行分开 ✓ */
             e->u.ident.cname = s->cname;
+            /* ⭐⭐ 层 2：**把解析到的绑定本身钉在节点上** ✓
+             * 收尾的解算 pass 跑在所有函数体查完之后，那时作用域已经弹了 ⇒
+             * 按名字再 `lookup` 会找不到（或撞上另一个同名的东西）✗
+             * 见 `IdentBinding` 的注释 ✓ */
+            {
+                IdentBinding *ib = (IdentBinding *)arenaAllocZero(c->arena, sizeof(IdentBinding));
+                ib->sym = s;
+                e->u.ident.sym = ib;
+            }
             /* 已经被 `if p != null` 证明过 ⇒ 交出**非空**引用。
              * 于是 `p.field`、`p.method()`、传给 `ref T` 参数全部自动成立，
              * 而且**一行运行时检查都不用加** ✓ */

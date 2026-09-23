@@ -1311,15 +1311,17 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
      * 而它的深度正是由它来路里那个 `new` 决定的 ✗
      * （实测：`[at] … return value kind=4 dca=0 svd=0` 而 `depth=1` ⇒ 误拒 ✗）*/
     case EX_IDENT: {
-        if (!c) return false;
-        Sym *sy = lookup(c, e->u.ident.name);
-        if (!sy || !sy->origin) return false;
-        return depthComesFromAlloc2(c, sy->origin, hops + 1);
+        /* ⚠️ **不能用 `lookup`**：收尾 pass 里作用域已经弹了 ⇒ 找不到（真踩到：
+         * 改完还是 `dca=0`）⇒ 用**解析那一刻钉在节点上的绑定**（`IdentBinding`）✓ */
+        Sym *sy = identBindOf(e);
+        Expr *org = sy ? sy->origin : NULL;
+        if (!org) return false;
+        return depthComesFromAlloc2(c, org, hops + 1);
     }
     case EX_DEREF:
-        return c ? depthComesFromAlloc2(c, e->u.deref.operand, hops + 1) : false;
+        return depthComesFromAlloc2(c, e->u.deref.operand, hops + 1);
     case EX_FIELD:
-        return c ? depthComesFromAlloc2(c, e->u.field.obj, hops + 1) : false;
+        return depthComesFromAlloc2(c, e->u.field.obj, hops + 1);
     case EX_SIGN:     return depthComesFromAlloc2(c, e->u.sign.operand, hops+1);
     case EX_SLICE:    return depthComesFromAlloc2(c, e->u.slice.obj, hops+1);
     case EX_COALESCE: return depthComesFromAlloc2(c, e->u.coalesce.main, hops+1)

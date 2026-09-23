@@ -211,7 +211,21 @@ struct Expr {
                  /* 解析到的绑定的 C 名字（遮蔽时会跟 `name` 不同）。
                   * 由类型检查阶段填 —— 名字的**解析**是检查器的活，
                   * 代码生成只管照着印。见 DECISIONS 定案 47。 */
-                 const char *cname; } ident;
+                 const char *cname;
+                 /* ⭐⭐ 层 2：**解析到的那个绑定本身**（`Sym *`，定义在 `check_internal.h`；
+                  * 这里用不透明指针，理由跟 `Expr.cname` 一模一样 ✓）。
+                  *
+                  * 为什么要钉在节点上、而不是收尾时再 `lookup` 一遍：
+                  * 收尾 pass 跑在**所有函数体都查完之后**，那时作用域早就弹了 ⇒
+                  * `lookup` 找不到局部绑定（`noteOrigin` 的注释里为同一个坑警告过一次 ✗）。
+                  * 实测症状：`varArray_i32` 的 `return v` 报 `kind=4 dca=0 svd=0`
+                  * ⇒ 复算被跳过 ⇒ 用了解算**之前**冻的旧深度 ⇒ 误拒 ✗
+                  * ⚠️ 同一个名字在不同作用域可以是**不同**的绑定 ⇒ 只有"解析那一刻的答案"
+                  * 是权威（`lookup` 按名字找，收尾时可能撞上另一个同名的东西 ✗）✓ */
+                 void       *sym; } ident;   /* ↑ `sym` = `Sym *`：不透明指针，
+                                             *   取用时经 `IdentBinding`（check_internal.h）
+                                             *   转回来 —— 跟 `cname` 同一个理由：
+                                             *   AST 不认识类型检查层的结构 ✓ */
         struct { const char *op; Expr *left, *right; } bin;
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
