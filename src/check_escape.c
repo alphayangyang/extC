@@ -20,13 +20,13 @@
  *
  * Three obligations are checked here; a fourth is deliberately left out:
  *   1. A returned reference or view must point at a parameter or at static data
- *      (depth 0).
+ *     (depth 0).
  *   2. A local variable may not be initialized with a reference to something deeper
- *      than the variable itself.
+ *     than the variable itself.
  *   3. A field or element store (`o.f = v`) may not store a reference to something
- *      deeper than the target.
+ *     deeper than the target.
  *   4. Passing a reference into a function that stores it needs interprocedural
- *      analysis and is checked at the call site instead (see `checkCallRefArgs`).
+ *     analysis and is checked at the call site instead (see `checkCallRefArgs`).
  */
 
 static int maxInt(int a, int b) { return a > b ? a : b; }
@@ -42,13 +42,13 @@ int exprRefDepth(Checker *c, Expr *e);         /* defined below; used by placeDe
  * stored there points; `storeLayer` answers the other question.
  *
  * Params:
- *   c - checker (scope stack and type table)
- *   e - the place expression
+ *    c - checker (scope stack and type table)
+ *    e - the place expression
  *
  * Returns:
- *   Lexical depth of the storage: 0 for a parameter, global, or anything outside
- *   this frame; the block depth for a local; for a reference-typed binding, the
- *   depth of the storage it points at (the slot itself does not hold the value).
+ *    Lexical depth of the storage: 0 for a parameter, global, or anything outside
+ *    this frame; the block depth for a local; for a reference-typed binding, the
+ *    depth of the storage it points at (the slot itself does not hold the value).
  */
 int placeDepth(Checker *c, Expr *e) {
     if (!e) return 0;
@@ -83,15 +83,15 @@ int placeDepth(Checker *c, Expr *e) {
  * of building a list whose head outlives the loop body.
  *
  * Params:
- *   c - checker
- *   e - the target place of a store
+ *    c - checker
+ *    e - the target place of a store
  *
  * Returns:
- *   Arena level of the storage. A local binding reports its block depth; a parameter
- *   reports 1, because the argument is a copy and the slot is in this frame; a global
- *   reports 0, because static storage outlives every frame. A place projected through
- *   a reference or parameter falls back to `placeDepth`, which reports the caller's
- *   depth (0), so storing into a caller's object is still treated conservatively.
+ *    Arena level of the storage. A local binding reports its block depth; a parameter
+ *    reports 1, because the argument is a copy and the slot is in this frame; a global
+ *    reports 0, because static storage outlives every frame. A place projected through
+ *    a reference or parameter falls back to `placeDepth`, which reports the caller's
+ *    depth (0), so storing into a caller's object is still treated conservatively.
  */
 int storeLayer(Checker *c, Expr *e) {
     if (e && e->kind == EX_IDENT) {
@@ -120,11 +120,11 @@ int storeLayer(Checker *c, Expr *e) {
  * reject a program that is in fact safe, but it cannot accept one that is not.
  *
  * Params:
- *   c - checker
- *   e - expression to inspect
+ *    c - checker
+ *    e - expression to inspect
  *
  * Returns:
- *   An upper bound on the depth of the deepest reference the value can carry.
+ *    An upper bound on the depth of the deepest reference the value can carry.
  */
 int valDepthStructural(Checker *c, Expr *e) {
     if (!e) return 0;
@@ -188,11 +188,11 @@ int valDepthStructural(Checker *c, Expr *e) {
  * constraint of the store, and promoting it would only cause a false rejection.
  *
  * Params:
- *   c - checker (type table)
- *   e - the value being stored
+ *    c - checker (type table)
+ *    e - the value being stored
  *
  * Returns:
- *   True when the type provably carries no reference, so no requirement is needed.
+ *    True when the type provably carries no reference, so no requirement is needed.
  *
  * Notes:
  *   - Do not reduce this to inspecting the type node the user wrote: for an aggregate
@@ -203,7 +203,7 @@ int valDepthStructural(Checker *c, Expr *e) {
  */
 static bool typeCannotCarryRef(Checker *c, Expr *e) {
     if (!e) return true;
-    if (mentionsParam(e->type)) return false;    /* `T` 可能带引用 ⇒ 推迟 ✓ */
+    if (mentionsParam(e->type)) return false;    /* `T` may carry a reference -> defer */
     return !typeContainsRef(c->tt, tsub(c, e->type));
 }
 
@@ -229,19 +229,41 @@ static bool typeCannotCarryRef(Checker *c, Expr *e) {
  * where `it` points and how long it lives are irrelevant.
  *
  * Params:
- *   c - checker
- *   e - the value being stored
+ *    c - checker
+ *    e - the value being stored
  *
  * Returns:
- *   An upper bound on the depth of the references the stored bytes can carry.
+ *    An upper bound on the depth of the references the stored bytes can carry.
  */
 int valDepthForStore(Checker *c, Expr *e) {
     int a = exprRefDepth(c, e);
-    if (typeCannotCarryRef(c, e)) return a;      /* 纯值拷贝 ⇒ 源对象的寿命不是约束 ✓ */
+    /* A plain value copy: where the source object lives and how long it lives
+     * are not constraints on the store, because the bytes are copied.
+     */
+    if (typeCannotCarryRef(c, e)) return a;
     int b = valDepthStructural(c, e);
     return a > b ? a : b;
 }
 
+/* Depth of the references a value carries, as the checker computes it.
+ *
+ * This is the number the reference rule compares against the depth of the storage the
+ * value is placed in, so the direction of every approximation in here matters: a larger
+ * answer can only cause a false rejection, while a smaller one would accept a program
+ * that lets a reference outlive its target.
+ *
+ * Params:
+ *   c - checker
+ *   e - expression to inspect
+ *
+ * Returns:
+ *   Depth of the references in the value: 0 when it can hold none, and otherwise the
+ *   depth of the storage they point at (0 = a parameter or global, so outside this frame).
+ *
+ * Notes:
+ *   - The result is cached on the node, never for a node whose type mentions a type
+ *     parameter: that answer is computed under the assumption that the parameter may
+ *     carry a reference, and it holds only for the generic body, not for an instance. */
 int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
     /* The only reason to answer without looking: this type cannot carry a reference.
@@ -293,9 +315,12 @@ int exprRefDepth(Checker *c, Expr *e) {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = sy->refDepth;
         else d = placeDepth(c, e);
-        /* ⭐ A2：**别只看 `typeContainsRef`** —— 它对"字段类型本身是 `ref`"的聚合答 false
-         * ⇒ `struct holder { p: ?ref i32 }` 的绑定会被判成 0，连字段表都不看 ✗
-         * ⇒ 无论如何再取一次"各字段的上界" ✓ */
+        /* Do not stop at the `typeContainsRef` answer above: it says false for an aggregate
+         * whose field types are themselves references. A binding of
+         * `struct holder { p: ?ref i32 }` would then be reported as depth 0 without the field
+         * table being consulted at all, so take the per-field upper bound as well, whatever
+         * the type said.
+         */
         if (sy) {
             for (int fi = 0; fi < sy->nfields; fi++)
                 if (sy->fields[fi].depth > d) d = sy->fields[fi].depth;
@@ -304,9 +329,12 @@ int exprRefDepth(Checker *c, Expr *e) {
         break;
     }
     case EX_FIELD: case EX_INDEX:
-        /* ⭐ 档2.3（ARENA-FORMAL §7.4）：**字段级深度** —— `h.p` 读的是"p 那一格记的数"，
-         * 而不是"h 这个槽位在本帧"（后者会误拒；而且 `h.p = null` 之后也救不回来 ✗）✓
-         * 没有那一格（比如刚声明 / 字段名对不上）⇒ 退回旧的保守算法 ✓ */
+        /* Read the depth recorded for the field itself. Reporting the depth of the enclosing
+         * slot instead (where `h` lives) would falsely reject `h.p`, and a later `h.p = null`
+         * cannot repair that, because the two answers are about different things. When there
+         * is no entry for this field -- just declared, or the name does not match -- fall back
+         * to the conservative place-depth answer.
+         */
         if (e->kind == EX_FIELD) {
             Sym *rf = placeRoot(c, e);
             int *slot = rf ? fieldDepthEntry(c, rf, e->u.field.name, false) : NULL;
@@ -323,28 +351,31 @@ int exprRefDepth(Checker *c, Expr *e) {
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
         break;
     case EX_CALL:
-        /* **调用结果的深度 = 所有实参深度的最大值。**
+        /* The depth of a call result is the maximum depth of its arguments.
          *
-         * 为什么这是成立的上界：被调函数能返回的引用只有两种来源 ——
-         * 全局/静态（深度 0），或者**实参**（深度 ≤ max(实参)）。
-         * 它返回不了**自己的局部**（那条已被它自己的返回检查挡住 ✓）⇒ 没有第三种来源 ✓
+         * Why that is a sound upper bound: the only references a callee can return come from
+         * static storage (depth 0) or from its arguments (depth <= max(argument)). It cannot
+         * return a reference to one of its own locals -- its own return check rejects that --
+         * so there is no third source.
          *
-         * 以前的写法是「调用结果深度 = 0」，那是**错的**：
+         * Answering 0 here used to be wrong:
          *     fn identity(r: ref i32) -> ref i32 { return r }
          *     fn bad() -> ref i32 { var x: i32 = 5  return identity(ref x) }
-         * 实测能编过、打印 0（悬垂）。现在：max(实参) = 1 > 0 ⇒ 编译错误 ✓
+         * which compiled and printed 0, a dangling reference. Now max(argument) = 1 > 0, so it
+         * is a compile error.
          */
         for (size_t i = 0; i < e->u.call.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
         break;
     case EX_METHOD:
-        d = maxInt(d, exprRefDepth(c, e->u.method.recv));   /* 接收者也是实参 */
+        d = maxInt(d, exprRefDepth(c, e->u.method.recv));   /* the receiver is an argument too */
         for (size_t i = 0; i < e->u.method.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
         break;
     case EX_ENUMVAL:
-        /* 带载荷构造 `shape.holding(a[..])` —— 载荷装进这个值里，
-         * 所以它的深度就是载荷的深度（跟数组字面量同一个道理）✓ */
+        /* A payload construction such as `shape.holding(a[..])` puts the payload inside this
+         * value, so the value's depth is the payload's depth, exactly as for an array literal.
+         */
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.enumval.args, i)));
         break;
@@ -356,19 +387,28 @@ int exprRefDepth(Checker *c, Expr *e) {
         d = 0;
         break;
     }
-    /* 提到 `T` 的节点**不缓存**（那份深度是"假设 T 带引用"算出来的）✓ */
+    /* Never cache a node whose type mentions a type parameter: that number was computed
+     * under the assumption that the parameter carries a reference, and it holds only for
+     * the generic body, not for an instance.
+     */
     if (!c->substParams && !mentionsParam(e->type)) e->refDepth = d;
     return d;
 }
 
-/* 把一个值放进「深度 at」的地方：它里面的引用活得够不够久？ */
-/* 这个值里的引用是不是「**从外面借来的**」？—— 参数来的，或者函数调用回来的。
- *
- * 借来的东西**不能存进比这次调用活得更长的地方**（全局、或者别的参数指向的对象）：
- * 编译器**不知道它的真实寿命** —— 它可能指向调用者帧里比本函数更内层的局部。
- * 这就是 BOOTSTRAP §8 的 ④（参数洗白），跟「调用结果深度 = max(实参)」是同一件事的两半。 */
+/* Defined below; every call goes through it. */
 bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what);
 
+/* Whether a symbol is one of the module-level globals.
+ *
+ * A global and a parameter both have depth 0, but only the parameter is borrowed, so the
+ * escape rules have to tell them apart.
+ *
+ * Params:
+ *   c - checker; the global list is searched
+ *   s - the symbol to look up
+ *
+ * Returns:
+ *   True when `s` was declared at module level. */
 static bool isGlobalSym(Checker *c, Sym *s) {
     for (size_t i = 0; i < c->globals.len; i++)
         if (*(Sym **)vecAt(&c->globals, i) == s) return true;
@@ -383,12 +423,12 @@ static bool isGlobalSym(Checker *c, Sym *s) {
  * still points into the caller's frame.
  *
  * Params:
- *   c - checker
- *   e - a place expression
+ *    c - checker
+ *    e - a place expression
  *
  * Returns:
- *   True when the storage is reached through a dereference or belongs to a parameter
- *   rather than to this frame. */
+ *    True when the storage is reached through a dereference or belongs to a parameter
+ *    rather than to this frame. */
 static bool placeIsBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
     if (e->kind == EX_DEREF) return placeIsBorrowed(c, e->u.deref.operand);
@@ -399,30 +439,57 @@ static bool placeIsBorrowed(Checker *c, Expr *e) {
     return false;
 }
 
+/* Whether a value holds a reference borrowed from outside this frame.
+ *
+ * A reference traced back to a parameter or to a call result is borrowed: its real
+ * lifetime is decided by the caller, so the callee may pass it on but must not store it
+ * where it would outlive the call. A reference into a global is not borrowed, because
+ * static storage outlives every frame.
+ *
+ * Params:
+ *   c - checker
+ *   e - expression to inspect
+ *
+ * Returns:
+ *   True when the value is, or may be, borrowed.
+ *
+ * Notes:
+ *   - The type-level exit below is the only early return allowed here. A node whose type
+ *     mentions a type parameter must be walked, because the deferred check recorded for
+ *     a generic body consumes this answer at instantiation. */
 static bool exprBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
-    /* 早退的唯一理由：这个类型里不可能有引用。
-     * ⚠️ 提到 `T` 的**不许早退** —— 泛型体的推迟检查要用这个答案 ✓ */
+    /* The only reason to answer without looking: this type cannot carry a reference.
+     * A type that mentions a type parameter must not take this exit -- the deferred check
+     * recorded for a generic body needs this answer.
+     */
     if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return false;
     switch (e->kind) {
     case EX_IDENT: case EX_FIELD: case EX_INDEX: {
         Sym *root = placeRoot(c, e);
-        /* 参数：深度 0 且不是全局 ⇒ 借来的 ✓
-         * 全局 / 静态：也深度 0，但**谁都存得下它** ✓ */
+        /* A parameter is depth 0 and is not a global, so the value is borrowed. A global or
+         * static is depth 0 as well, but anyone may store it.
+         */
         return root && root->depth == 0 && !isGlobalSym(c, root);
     }
     case EX_SIGN:
-        /* 签字只是换个说法，来源没变 ⇒ "借来的"这条照样跟着走 ✓ */
+        /* The nullability suffix changes what the type promises, not where the value came
+         * from, so the borrowed answer is carried through.
+         */
         return exprBorrowed(c, e->u.sign.operand);
     case EX_COALESCE:
-        /* 两边都可能是结果 ⇒ 任一边借来的就算借来的 ✓ */
+        /* Either side can become the result, so a borrowed value on either side makes the
+         * whole expression borrowed.
+         */
         return exprBorrowed(c, e->u.coalesce.main) ||
                exprBorrowed(c, e->u.coalesce.fallback);
     case EX_REF:
-        /* ⚠️ **`ref *p` 是洗白路径**（2026-09-20 攻击测试打出来）：
-         * `b.r = ref *p` —— 重新取一次引用，就看不出它来自参数了 ✗
-         * `*p` 是"p 指的那个地方" ⇒ 要看**那个地方**借没借来 ✓
-         * （注意不能走 exprBorrowed：`*p` 的**值**可能是 `i32`，会被早退挡掉 ✗）*/
+        /* `ref *p` re-creates a reference and would otherwise hide that it came from a
+         * parameter: `b.r = ref *p` laundered the borrow in an attack test. `*p` denotes the
+         * storage `p` points at, so ask whether that storage is borrowed. Note that this must
+         * not recurse through `exprBorrowed`: the value of `*p` may be `i32`, and the early
+         * exit above would drop the case.
+         */
         if (e->u.ref.operand->kind == EX_DEREF)
             return placeIsBorrowed(c, e->u.ref.operand->u.deref.operand);
         return exprBorrowed(c, e->u.ref.operand);
@@ -441,11 +508,13 @@ static bool exprBorrowed(Checker *c, Expr *e) {
             if (exprBorrowed(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
         return false;
     case EX_ENUMVAL:
-        /* 带载荷构造：载荷是借来的 ⇒ 这个值也是借来的（跟数组字面量同理）*/
+        /* A payload construction: if the payload is borrowed, so is the value built from it,
+         * the same as for an array literal.
+         */
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
             if (exprBorrowed(c, *(Expr **)vecAt(&e->u.enumval.args, i))) return true;
         return false;
-    default: return false;      /* 字面量 / 全局 / alloc 出来的是本帧的 ✓ */
+    default: return false;      /* literals, globals, and fresh allocations belong to this frame */
     }
 }
 
@@ -460,15 +529,16 @@ static bool exprBorrowed(Checker *c, Expr *e) {
  * `l.head` becomes `l`.
  *
  * Params:
- *   c   - checker (currently unused, kept for symmetry with the other predicates)
- *   f   - function whose parameters are the tracing targets
- *   val - value to trace
+ *    c   - checker (currently unused, kept for symmetry with the other predicates)
+ *    f   - function whose parameters are the tracing targets
+ *    val - value to trace
  *
  * Returns:
- *   True when the root of the value is one of the parameters of `f`. */
+ *    True when the root of the value is one of the parameters of `f`. */
 bool valTracesToParam(Checker *c, FuncDef *f, Expr *val) {
-    (void)c;                                  /* 现在只用得到"函数 + 值"（留着参数是为了
-                                               * 跟别的谓词一个形状 ✓）*/
+    /* Only "function plus value" is needed, but the parameter is kept so that
+     * this predicate has the same shape as the others. */
+    (void)c;
     if (!val || !f) return false;
     const char *root = placeRootName(val);
     if (!root) return false;
@@ -477,105 +547,183 @@ bool valTracesToParam(Checker *c, FuncDef *f, Expr *val) {
     return false;
 }
 
-/* 把一个值**存进**某个地方之前的全部检查（深度 + 借来的东西）。 */
+/* Every check performed before a value is stored into a place (depth and borrows).
+ */
 static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
-                           int line, const char *what);   /* 定义在后面 */
+                           int line, const char *what);   /* defined below */
 
-/* ⭐ 定案 63（PLAN #38）：**块级逃逸提升** —— "`new` 出来的东西被存进活得
- * 更久的地方 ⇒ 把那只 arena 提升到那一层，**不拒绝**"（主人 2026-09-22 拍板）✓
+/* Walk the carriers of a value and promote every allocation site inside it to the level
+ * the value has to reach, instead of rejecting the store.
  *
- * 起点：`new` 默认分配进**当前块**的 arena（A2 按块细化：出块就回收）。
- * 可"在循环里建链表"这种**最正常**的写法，节点是在**循环体那一层**分配的，
- * 而 `head` 活在循环外 ⇒ 下一轮出块就把它释放了 ⇒ 悬垂（PLAN #38，ASan 实锤）✗
+ * `new` allocates into the arena of the current block, which is released when the block
+ * ends. The most ordinary code -- building a list inside a loop -- allocates its nodes
+ * in the loop body while `head` lives outside the loop, so the next iteration's block
+ * exit frees them and leaves a dangling pointer (confirmed with ASan). The rule is:
  *
- * 规则（一句话）：`arenaLevel = min(当前块深度, 所有目的地的深度)`
- *   · 深度越小 = 活得越久 ⇒ 取 min = 跟着**最长寿的那个目的地**走 ✓
- *   · 只往更深处存（min 没变）⇒ 行为**一个字都不变**（零假阳性）✓
- *   · 往更外层存 ⇒ 提升到那一层。最坏情况 = 一个**函数级、自动清理的堆**
- *     （主人原话：「最多就一直退化成一个会自动清理的类似堆的东西，没必要拒绝」）✓
+ *     arenaLevel = min(depth of the current block, depth of every destination)
  *
- * 为什么提升是**安全方向**（ARENA-FORMAL §7 那只旋钮：**把 region 拉长**，
- * 而不是"把事实变细"）：拉长寿命不会让任何还活着的引用悬垂；反过来"变细"
- * 要别名分析、会带来误拒 ✗ 见 `DECISIONS.md` 定案 63 ✓
+ *   - A smaller depth means a longer lifetime, so the minimum follows the destination
+ *     that lives longest.
+ *   - A store only into deeper places leaves the minimum unchanged, so the behaviour
+ *     is bit for bit the same and no false positives are introduced.
+ *   - A store into an outer place promotes the arena to that level. The worst case is
+ *     a function-level heap that is cleaned up automatically, which is preferable to
+ *     rejecting a correct program.
  *
- * ⚠️ 只沿**值的载体**往回找（绑定 / `!` / `??` / 结构体字面量 / 枚举载荷 /
- *    数组字面量），**不追别名、不做跨函数推理** —— 提不动的照旧走原来的深度检查
- *    ⇒ 这个函数**永远不会**把"本来该报错的东西"放过去 ✓
+ * Promotion is the safe direction: it lengthens a region rather than making the
+ * recorded facts more precise. A longer lifetime cannot leave a live reference
+ * dangling, whereas making the facts finer would need alias analysis and would produce
+ * false rejections.
  *
- * 返回 true = 这个值里所有 `new` 都确实活得到 `at`（可以放行 ✓）
- *      false = 里面有提不动的东西（调用方照旧报错）✓
- * ⚠️ 两个方向都要对：**父节点缓存的深度只有在全部子节点都成功时才能改** ——
- *    否则会记下一个"比实际更长寿"的数 ⇒ 那是**洞**（不是误拒）✗ */
+ * Params:
+ *   c    - checker
+ *   val  - the value being stored or returned
+ *   at   - depth the value must reach; 0 = must outlive this frame (the caller's arena)
+ *   hops - carrier steps already taken; the walk gives up past 32 steps
+ *
+ * Returns:
+ *   True when every `new` inside the value does reach `at`, so the caller may accept
+ *   the store. False when some carrier could not be promoted, and the caller must fall
+ *   back to the depth check and report an error.
+ *
+ * Notes:
+ *   - Only the carriers of the value are walked (bindings, `!`, `??`, struct
+ *     literals, enum payloads, array literals). Aliases are not followed and no
+ *     interprocedural reasoning is done, so a carrier this walk cannot promote keeps
+ *     the previous depth check, and this function can never let through something
+ *     that ought to be rejected.
+ *   - Both directions of the cached depths have to be right: the depth cached on a
+ *     parent may only be tightened when every child succeeded, otherwise it records a
+ *     longer lifetime than the value really has, which is a hole rather than a false
+ *     rejection.
+ */
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
 static bool promoteFields(Checker *c, Sym *sy, int at, int hops);
+/* Promote every allocation site inside a value to the level that value has to reach.
+ *
+ * This is the entry point used by the store and return checks, and it starts the carrier
+ * walk with no steps taken. See `promoteInto2` for the rule and for what a false return
+ * obliges the caller to do.
+ *
+ * Params:
+ *   c   - checker
+ *   val - the value being stored or returned
+ *   at  - depth the value must reach; 0 = must outlive this frame
+ *
+ * Returns:
+ *   True when every `new` inside the value does reach `at`, so the store may be accepted. */
 bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at, 0); }
 
-/* ⭐⭐ 层 2（附录 D.2）：**顺着字段表的"来源"找到容器里那些站点** ✓
+/* Promote the allocation sites reachable through a binding's field table.
  *
- * 为什么需要：`Sym.origin` 只记"声明时那个初始化式" —— 而
- *   `var h: box = { p: null, q: null }` 的来路就是两个 null，**`x` 是后来 `h.q = x` 写的** ✗
- * ⇒ 顺着"h 里装着什么"想给 `x` 降层号时永远碰不到它 ⇒ 站点停在浅层 ⇒ 容器一死就悬垂 ✓
+ * `Sym.origin` records only the initializer written at the declaration, so for
+ * `var h: box = { p: null, q: null }` the origin is two nulls while `x` arrives later
+ * through `h.q = x`. A walk that follows only the origin therefore never reaches that
+ * site, the site stays at the shallow level, and the value dangles as soon as the
+ * container dies.
  *
- * 纪律（这次只做"提升"这一半 —— 降记账试过，会把别的绿用例弄红，见附录 D.3）：
- *   · 只提 `src` 存在的那一格；
- *   · **要提到哪一层** = 目的地 `at`（这一次把整个容器存到第 `at` 层 ⇒
- *     里面的引用活到那一层就够）✓ 不用字段表那个数（它是"现在装着什么"）；
- *   · **提成功才允许把那一格的记账跟着降到 `at`**（提不动 = 说不清 ⇒ 保留旧账 ⇒
- *     宁可误拒 ✓）；没有 `src` 的格（比如从没被写过的）**一个字不动** ✓ */
+ * Discipline -- only the promotion half is done here; lowering the accounting as well
+ * was tried and turned other passing cases red:
+ *   - Only an entry that has a `src` is promoted.
+ *   - The level to reach is the destination's `at`: storing the whole container at
+ *     level `at` means the references inside it only have to live that long, so the
+ *     field table's own number (which says what the field holds right now) is not used.
+ *   - That entry's accounting may only drop to `at` after the promotion succeeded. A
+ *     site that cannot be promoted cannot be described, so its old accounting is kept
+ *     and the outcome is a false rejection rather than a hole. An entry with no `src`
+ *     at all, such as one that was never written, is left completely untouched.
+ *
+ * Params:
+ *   c    - checker
+ *   sy   - binding whose field table is walked
+ *   at   - depth the container is being stored at; 0 = must outlive this frame
+ *   hops - carrier steps already taken, forwarded to `promoteInto2`
+ *
+ * Returns:
+ *   True when every field that has a `src` was promoted. False leaves the caller to
+ *   report the depth error.
+ */
 static bool promoteFields(Checker *c, Sym *sy, int at, int hops) {
     if (!sy || hops > 32) return true;
-    if (sy->addressed) return true;                 /* 别名可能改它 ⇒ 表上的数说不清 ✓ */
+    /* An alias may write it, so the table cannot be trusted. */
+    if (sy->addressed) return true;
     bool ok = true;
     for (int i = 0; i < sy->nfields; i++) {
         Expr *src = sy->fields[i].src;
         if (!src) continue;
-        /* ⚠️ 要提到哪一层 = **min(它记的深度, 它被要求过的最浅层)** ✗
-         * 只看"这一次的目的地"不够：`out = h` 是第 1 层，可 `return out` 要的是
-         * **帧外**（0）⇒ 站点最终得进家 arena；只看 1 ⇒ 提到 1 就"够"了 ⇒ 而函数
-         * 一返回第 1 层就 release ⇒ 悬垂（实测：ASan 仍报 heap-use-after-free）✗ */
+        /* The level to reach is min(the depth recorded for this entry, the shallowest level it
+         * has ever been required to reach); the destination of this one store is not enough.
+         * `out = h` is level 1, but a later `return out` needs the value to outlive the frame
+         * (0), so the site eventually has to go into the home arena. Promoting only to 1 looks
+         * sufficient, but level 1 is released as soon as the function returns, and ASan still
+         * reported a heap-use-after-free.
+         */
         if (at < sy->fields[i].minReq) sy->fields[i].minReq = at;
         int want = sy->fields[i].depth;
         if (sy->fields[i].minReq < want) want = sy->fields[i].minReq;
         if (!promoteInto2(c, src, want, hops + 1)) { ok = false; continue; }
-        if (sy->fields[i].depth > want) sy->fields[i].depth = want;   /* 提成功 ⇒ 跟着降 ✓ */
+        if (sy->fields[i].depth > want) sy->fields[i].depth = want;   /* promoted -> lower it too */
     }
     return ok;
 }
 
-/* ⭐⭐ 长运行内存：把 **"这个值得装得下第 `at` 层"** 记成一条事实 ✓
+/* Record the fact that the value has to fit into level `at`.
  *
- * 为什么记在 `promoteInto2` 的**入口**：**每一处"往外存"** 都要过这里
- * （`checkStoreEscape` / `checkEscape` 都先调它），而它自己就是那个"沿**值的载体链**
- * 往里走"的函数 ⇒ **不另写一个遍历去找存储点** ⇒ 就没有"漏掉某个存储点"
- * 的余地（因为根本没有第二个遍历可以漏 ✓）
+ * It is recorded at the entry of `promoteInto2` because every store outwards goes
+ * through there -- both `checkStoreEscape` and `checkEscape` call it first -- and that
+ * call is itself the walk along the carriers of a value. Reusing it means there is no
+ * second traversal that could miss a store site, because there is no second traversal
+ * at all.
  *
- * ⚠️ 只记 **有限层**（`at >= 1`）：`at == 0` = "要活到帧外"，那一档由 `ARENA_HOME`
- * 表示，不能再塞回"层号"里去 ✗（两者关系 = `解出来的 L == 0 ⇔ home`）*/
+ * Params:
+ *   c   - checker; the record is appended to `c->lvlFacts`
+ *   val - the value being stored or returned
+ *   at  - level the value must fit into; only finite levels (at >= 1) are recorded
+ *
+ * Notes:
+ *   - `at == 0` means "must outlive this frame" and is represented by `ARENA_HOME`,
+ *     which is not a level number and must not be pushed back into one. The two agree
+ *     exactly when the solved level is the home arena.
+ */
 static void recordLvlFact(Checker *c, Expr *val, int at);
 static void applyLvlFact(Checker *c, Expr *val, int at);
 
-/* **这个值的"根来路"是哪个表达式？**（定义在下面 —— 记来路时用它**压平**链条）*/
+/* The root origin of a value: the expression the carrier chain ends at (defined below).
+ */
 Expr *originOf(Checker *c, Expr *val, int hops);
 
-/* 记下"这个绑定的来路"（`var n = new node` 的初始化式 / `mid = n` 的右式）——
- * ⚠️ **压平成根来路**再记：链条里的中间变量可能**已经出了作用域**，
- * 那时 `lookup` 找不到 ⇒ 链就断了 ✗（真踩过：双层循环里的 `head = mid`）
- * ⇒ 记的时候（作用域还在）就一路走到根 ✓ */
+/* Record the origin of a binding: the initializer of `var n = new node`, or the
+ * right-hand side of `mid = n`.
+ *
+ * The origin must be flattened to its root before it is recorded. An intermediate
+ * binding in the chain may already have left scope by the time the origin is followed,
+ * `lookup` then finds nothing and the chain is broken -- seen for real with `head = mid`
+ * inside a doubly nested loop. Walking to the root while the scope is still alive
+ * avoids that.
+ *
+ * Params:
+ *   c   - checker
+ *   sy  - the binding being assigned or initialized
+ *   val - the expression whose origin is recorded
+ */
 void noteOrigin(Checker *c, Sym *sy, Expr *val) {
     if (!sy || sy->addressed) return;
-    /* ⚠️⚠️ **字面量不许盖掉"已经追得到的来路"** ✗✗
+    /* A literal must not overwrite an origin that can already be followed.
      *
-     * 为什么（gdb 实测，`tests/arena-promoted/C2_if_join_refbinding`）：
+     * The checks run in source order, so for
      *     var p: ?ref i32 = null
      *     if c == 1 { p = x } else { p = null }
-     * 检查是**顺序**做的 ⇒ `p = x` 先把来路记成那个 `alloc` 站点 ✓，
-     * 紧接着 `p = null` 又把它盖成 `EX_NULL` ⇒ 后面顺 `out = p` 追站点时
-     * 只看到 `null`（`org=24`）⇒ 追不到 ⇒ 站点留在块层 ⇒ **悬垂**（ASan 实锤）✗
+     * the `p = x` arm records the allocation site first. Letting the later `p = null`
+     * overwrite that origin leaves only `null` behind, so a later `out = p` cannot follow
+     * the chain to the site, the site stays at the block level, and the value dangles --
+     * seen for real, with ASan.
      *
-     * 判据：`null` / 字面量**指不出任何站点** ⇒ 只有在"现在还没有可追的来路"时
-     * 才让它记（否则保持已有那条）✓
-     * ⚠️ 反过来也要对：一开始就是 `= null` 的绑定必须让 `null` 记进来 ——
-     *    否则 `origin` 停在 NULL 上，`promoteInto2` 会**早退**（"没有来路"）✗ */
+     * The predicate is therefore: a literal points at no site, so it may only be recorded
+     * while there is no followable origin yet. The other direction matters as well: a
+     * binding initialized as `= null` must record that null, because otherwise `origin`
+     * stays NULL and `promoteInto2` exits early on "no origin" instead of walking the
+     * branches.
+     */
     bool literal = val && (val->kind == EX_NULL || val->kind == EX_INT || val->kind == EX_FLOAT ||
                            val->kind == EX_BOOL || val->kind == EX_STR);
     bool haveReal = sy->origin && sy->origin->kind != EX_NULL && sy->origin->kind != EX_INT &&
@@ -585,15 +733,50 @@ void noteOrigin(Checker *c, Sym *sy, Expr *val) {
     sy->origin = originOf(c, val, 0);
 }
 
+/* Walk the carriers of a value and promote the allocation sites inside it.
+ *
+ * `new` allocates into the arena of the current block, which is released when the block
+ * ends, so a value stored somewhere that outlives its block has to be moved to an arena
+ * that lives at least as long. The rule is
+ *
+ *     arenaLevel = min(depth of the current block, depth of every destination)
+ *
+ * since a smaller depth means a longer lifetime. A store only into deeper places leaves
+ * the minimum unchanged, so nothing about such a store changes and no false positives are
+ * introduced. Promoting is always the safe direction: it lengthens a region, and a longer
+ * lifetime cannot leave a live reference dangling.
+ *
+ * Params:
+ *   c    - checker
+ *   val  - the value being stored or returned
+ *   at   - depth the value must reach; 0 = must outlive this frame (the caller's arena)
+ *   hops - carrier steps already taken; the walk stops past 32 steps to break cycles
+ *         between bindings, which would otherwise loop forever
+ *
+ * Returns:
+ *   True when every `new` inside the value does reach `at`. False when some carrier could
+ *   not be promoted, which leaves the caller to report the depth error.
+ *
+ * Notes:
+ *   - The cached depth on a parent node may only be tightened when every child
+ *     succeeded; tightening it otherwise records a longer lifetime than the value really
+ *     has, which is a hole rather than a false rejection.
+ *   - This function is also the only entry point for level facts, so a case that returns
+ *     early must still have walked far enough to record them. */
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     if (!val) return true;
-    if (at < 0) return false;                      /* 说不清的层 ⇒ 别动 ✓ */
-    /* ⚠️ **步数上限**：绑定之间可能成环（`a = b  b = a` —— 赋值会更新"来路"）⇒
-     * 不设限就是死循环 ✗ 撞上限 = 提不动 = 退回老行为报错（安全方向）✓ */
+    /* A level that cannot be described: touch nothing. */
+    if (at < 0) return false;
+    /* A step limit is required: bindings can form a cycle (`a = b  b = a`, because an
+     * assignment updates the origin), which would loop forever without a cap. Hitting the
+     * cap means the value cannot be promoted, so the caller falls back to reporting the
+     * error -- the safe direction. */
     if (hops > 32) return false;
-    /* ⭐ 长运行内存：顺手记一条事实（**不改变任何行为** ✓）
-     * ⚠️ 只在**最外层**记（`hops == 0`）：重放时重跑的就是这一层，
-     *   内层那些是它自己走出去的 ⇒ 记下来只会重复劳动 ✓ */
+    /* Record one fact in passing. This does not change any behaviour.
+     *
+     * Only at the outermost level (`hops == 0`): a replay re-runs exactly this level, and the
+     * inner ones are reached by this call itself, so recording them too would only repeat
+     * the work. */
     if (hops == 0) {
         if (getenv("EXTC_DBG_FACT"))
             fprintf(stderr, "[fact] %-8s at=%d kind=%d minAt=%d lexi=%d line=%d\n",
@@ -603,57 +786,83 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     }
     switch (val->kind) {
 
-    /* ⭐ `EX_GENCALL` = `alloc<T>(n)` / `allocSlice<T>(n)` —— **B2 之后它和 `new` 完全对称**
-     * （同一套层号规则、同样登记进 `arenaSites`）⇒ 提升规则也必须对称 ✗
-     * 以前它落到 `default: return false`（"提不动"）⇒
-     * 「返回一块 `alloc` 出来的内存」整族提不动 ⇒ 照旧误拒 ✗ */
+    /* `EX_GENCALL` is `alloc<T>(n)` / `allocSlice<T>(n)`. It is exactly symmetric with `new`:
+     * the same level rules apply and it is registered in the same site table, so the
+     * promotion rules have to be symmetric as well. It used to fall into the default case as
+     * "cannot be promoted", which left the whole family of "return a block of `alloc`ed
+     * memory" unpromotable and therefore falsely rejected. */
     case EX_NEW:
     case EX_GENCALL: {
-        /* 目的地深度 0 = "调用者那一级"（"家"arena）—— **只有"有家"的函数有** ✓
-         * 没有家 ⇒ 提不到那一层 ⇒ 原样返回 false（照旧报错，安全方向）✓
-         * ⚠️ 定案 68：那一档现在用 `ARENA_HOME` 表示（以前是拿 0 **兼职**的 ✗ ——
-         *    0 在新编码里是"还没定"）⇒ 写回去之前必须翻译一下 ✓ */
+        /* A destination depth of 0 means "the caller's level", the home arena. Only a function
+         * that has a home can reach that level; without one the value cannot be promoted, so
+         * answer false and let the caller report the error, which is the safe direction.
+         *
+         * That tier is represented by `ARENA_HOME` rather than by 0, because in the current
+         * encoding 0 means "not yet decided", so the value has to be translated before it is
+         * written back. */
         if (at == 0 && !(c->curFunc && c->curFunc->needsHome)) return false;
-        /* ⭐⭐ 走到这里 = **逃逸分析已经沿载体链碰到了这个站点**（不是"因为所在函数
-         * 有家"那种兜底）⇒ 打上"它要活到帧外"的标记 ✓
-         * ⚠️ 必须在**早退之前**：预负已经把有家函数里每个 `new` 都置成了 `ARENA_HOME`
-         * （所以下面那句早退会命中），可那是兜底、不是证据 ✗✗ */
-        /* ⭐ 记下"逃逸分析对它提出的最强要求"（层号越小越强）✓
-         * ⚠️ 不能只记一个布尔："碰过它"≠"要求它活到帧外" ✗
-         *   （`nb = new item[cap*2]` 只需活到当前帧；当成"进家" ⇒ `main` 没有家却吐 `__extc_home` ✗）
-         * ⚠️ 取**最小**：层号越小活得越久，所以"最强的要求"就是最小的那个 ✓ */
+        /* Reaching this point means the escape analysis has met this site by walking the
+         * carriers of a value, rather than the fallback of "the enclosing function has a home". A
+         * site met this way really has been required to outlive the frame, so mark it.
+         *
+         * This has to happen before the early exit below. The preparse has already set every
+         * `new` in a function with a home to `ARENA_HOME`, which is why that exit would trigger,
+         * but that is the fallback and not evidence. */
+        /* Record the strongest requirement the escape analysis has made on this value; a smaller
+         * level is a stronger requirement, so keep the minimum.
+         *
+         * A single boolean is not enough here: having been seen is not the same as being required
+         * to outlive the frame. `nb = new item[cap*2]` only has to live until the end of the
+         * current frame, so treating it as "goes home" would make `main`, which has no home, emit
+         * `__extc_home`. */
         if (val->minAt < 0 || at < val->minAt) val->minAt = at;
-        if (val->arenaLevel == ARENA_HOME) return true;   /* 已经在家：家最长寿，不用再提 ✓ */
+        /* Already in the home arena: the home lives longest, so there is
+         * nothing to promote. */
+        if (val->arenaLevel == ARENA_HOME) return true;
         int target = (at == 0) ? ARENA_HOME : at;
         if (val->arenaLevel > target) val->arenaLevel = target;
-        int depth = arenaDepthOf(val->arenaLevel);          /* ⭐ 唯一换算处 ✓ */
+        /* The one place where a level is converted back into a depth is
+         * here. */
+        int depth = arenaDepthOf(val->arenaLevel);
         if (val->refDepth > depth || val->refDepth == 0)
             val->refDepth = depth;
         return true;
     }
 
     case EX_IDENT: {
-        /* 顺着绑定的**来路**往回走：`var n = new node` / `mid = n` ⇒ 找到那个 `new` ✓ */
+        /* Walk back along the binding's origin: `var n = new node` or `mid = n`
+         * leads to that `new`. */
         Sym *sy = lookup(c, val->u.ident.name);
         if (!sy || !sy->origin) return false;
-                /* 槽位本来就活到 `at` 之外（更浅）⇒ 里面的东西本来就住在那一层 ✓
-         * （初始化式是在**同一条语句**里求值的 ⇒ 它的层 = 槽位的深度 ✓）
-         * ⚠️ **但"调用结果"是例外** —— 有家被调者分配进的那只 arena 是**调用点**
-         * 选的，不一定是槽位这一层 ⇒ 那份深度在**绑定时**就记进 `Sym.refDepth` 了
-         * （见 `check_stmt.c` 里那段"初始化式是调用"的处理）⇒ 那才是这家事的权威 ✗ */
-        /* ⚠️⚠️ **层 2：这一档不许再"提前返回"了** ✗✗
-         * 老判据说"槽位活得够久 ⇒ 不用提升"—— 对**提升**是对的，可 `promoteInto`
-         * 同时还是**层号事实的唯一入口** ⇒ 提前返回 = 这个站点**一条约束都拿不到**
-         * ⇒ 收尾按"没人碰过"把它放回**词法层** ✗
-         * 实测（`examples/escape-promotion` 的 `fn build`）：`var head = new node` 的站点
-         * `minAt=-1` ⇒ 被放回第 1 层 ⇒ `build` 一返回就 release ⇒ 调用者手里是
-         * 已释放的链表（生成的 C 从 `&(*__extc_home)` 变成 `&__extc_a[1]` ✗）
-         * ⇒ 现在**照样往下走一趟**（只为记事实），返回值仍按老判据答"不用改" ✓ */
+        /* The slot already outlives `at`, which means it sits at a shallower level, so
+         * whatever is inside it already lives at that level. The initializer is
+         * evaluated in the same statement, so its level is the slot's depth.
+         *
+         * A call result is the exception. The arena a callee with a home allocates
+         * into is chosen at the call site and need not be the slot's level, so that
+         * depth is recorded into `Sym.refDepth` when the binding is initialized (see
+         * the handling of a call as an initializer in `check_stmt.c`), and that
+         * record is the authority here. */
+        /* This case must no longer return early.
+         *
+         * The old predicate said "the slot lives long enough, so no promotion is needed". That is
+         * true for promotion, but `promoteInto` is also the only entry point for level facts, so
+         * an early return leaves the site with no constraint at all, and the final pass puts it
+         * back at its lexical level as if nothing had ever touched it.
+         *
+         * Measured on `fn build` in `examples/escape-promotion`: the site of
+         * `var head = new node` kept `minAt = -1`, was put back at level 1, and was released as
+         * soon as `build` returned, so the caller held a freed list (the generated C changed from
+         * `&(*__extc_home)` to `&__extc_a[1]`). Now the walk always descends, purely to record the
+         * facts, while the return value still answers "nothing to change" under the old
+         * predicate. */
         bool slotDeepEnough = (sy->depth <= at);
-        /* ⚠️ 来路是**压平的根**（见 `noteOrigin`）⇒ 这里链长最多一层，不会再查绑定 ✓ */
+        /* The origin is already the flattened root (see `noteOrigin`), so the chain
+         * here is at most one step long and no binding is looked up twice. */
         bool ok = promoteInto2(c, sy->origin, at, hops + 1);
-        /* ⭐⭐ 层 2：来路里只有"声明时写的那些字段" ⇒ 再读一遍**字段表的来源** ✓
-         * （`h.q = x` 这种后来的写只在字段表里 —— 见 `promoteFields` 的注释 ✓）*/
+        /* The origin only covers the fields written at the declaration, so read the field table's
+         * sources as well. A later write such as `h.q = x` exists only in the field table; see the
+         * comment on `promoteFields`. */
         if (!promoteFields(c, sy, at, hops + 1)) ok = false;
         if (!ok) return false;
         if (slotDeepEnough) return true;
@@ -666,12 +875,17 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     case EX_SIGN:
         return promoteInto2(c, val->u.sign.operand, at, hops + 1);
 
-    /* ⭐ 层 1：**新增这三种形状** —— `promoteInto` 要能沿**值的载体**走到
-     * 里面的分配，否则"这一处逃出去了"这个事实根本没机会被发现 ✗
-     *   `var v: varArray<T> = { buf: new T[cap], … }  return v`、`o.f = cell`、`a[i] = cell`
-     * —— 这三种都是最常见的形状 ✓
-     * 纪律跟 `EX_STRUCTLIT` / `EX_ARRAYLIT` 一样：**只沿值的载体往里走**，
-     * 不追别名、不做跨函数推理 ⇒ 提不动照旧 false（调用方照旧报错）✓ */
+    /* Three more shapes are walked here. `promoteInto` has to be able to follow the carriers
+     * of a value down to the allocations inside it, otherwise the fact that this value
+     * escapes is never discovered:
+     *     var v: varArray<T> = { buf: new T[cap], ... }  return v
+     *     o.f = cell
+     *     a[i] = cell
+     * which are the three most common shapes.
+     *
+     * The discipline is the same as for `EX_STRUCTLIT` and `EX_ARRAYLIT`: only the carriers of
+     * the value are followed, aliases are not chased and no interprocedural reasoning is done,
+     * so a carrier that cannot be promoted answers false and the caller reports the error. */
     case EX_SLICE:
         return promoteInto2(c, val->u.slice.obj, at, hops + 1);
     case EX_FIELD:
@@ -680,7 +894,8 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         return promoteInto2(c, val->u.index.obj, at, hops + 1);
 
     case EX_COALESCE: {
-        /* ⚠️ 两边都要试（不能短路）—— 只提一边就会漏掉另一边那个 `new` ✗ */
+        /* Both sides have to be tried, with no short circuit: promoting only one side
+         * would miss the `new` on the other. */
         bool a = promoteInto2(c, val->u.coalesce.main, at, hops + 1);
         bool b = promoteInto2(c, val->u.coalesce.fallback, at, hops + 1);
         return a && b;
@@ -691,7 +906,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         for (size_t i = 0; i < val->u.lit.inits.len; i++)
             if (!promoteInto2(c, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value, at, hops + 1))
                 ok = false;
-        if (ok && val->refDepth > at) val->refDepth = at;     /* 缓存跟着收紧 ✓ */
+        if (ok && val->refDepth > at) val->refDepth = at;     /* tighten the cached depth too */
         return ok;
     }
 
@@ -703,7 +918,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         return ok;
     }
 
-    case EX_ENUMVAL: {                       /* 带载荷构造：载荷要一起提 ✓ */
+    case EX_ENUMVAL: {                       /* a payload construction: promote the payload too */
         bool ok = true;
         for (size_t i = 0; i < val->u.enumval.args.len; i++)
             if (!promoteInto2(c, *(Expr **)vecAt(&val->u.enumval.args, i), at, hops + 1)) ok = false;
@@ -712,71 +927,147 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     }
 
     default:
-        /* 别的形状一概提不动（`ref 局部` / 函数调用的结果 / 切片…）——
-         * **不猜**：照旧走原来的深度检查报错 ✓ */
+        /* Nothing else can be promoted (a `ref` to a local, the result of a call, a slice, and so
+         * on). Do not guess: fall through to the original depth check and report the error. */
         return false;
     }
 }
 
+/* Record the fact that a value has to fit into a level.
+ *
+ * It is recorded here, at the entry of `promoteInto2`, because every store outwards
+ * passes through this function. Reusing that walk means there is no second traversal
+ * that could miss a site.
+ *
+ * Params:
+ *   c   - checker; the record is appended to `c->lvlFacts`
+ *   val - the value being stored or returned
+ *   at  - level the value must fit into; only finite levels (at >= 1) are recorded, since
+ *         "must outlive this frame" is represented by `ARENA_HOME` rather than by a level
+ *         number and must not be pushed back into one */
 static void recordLvlFact(Checker *c, Expr *val, int at) {
     if (!c || !val || at < 1) return;
-    if (c->lvlSolving) return;    /* ⭐ 解算期不记账 ✗（否则无限长 —— 真踩到）*/
+    /* Never record during the level solve: the solve re-enters this function, so
+     * recording there would make the fact list grow without bound. */
+    if (c->lvlSolving) return;
     LvlFact *f = (LvlFact *)arenaAllocZero(c->arena, sizeof(LvlFact));
     f->val = val;
     f->at  = at;
     *(LvlFact **)vecPush(&c->lvlFacts) = f;
 }
 
-/* ⭐ 把一条事实应用到站点上 —— **取最强的要求**（层号最小）✓
- * 它跟 `promoteInto` 是两件事（一个是"记事实"，一个是"改层号"），
- * 但**跑在同一次遍历里**（都在 `promoteInto2` 的入口）⇒ 不可能漏一处 ✓ */
+/* Apply one level fact to a site, keeping the strongest requirement (the smallest
+ * level).
+ *
+ * Recording a fact and changing a level are two different jobs, but they run in the
+ * same traversal -- both at the entry of `promoteInto2` -- so no site can be missed.
+ *
+ * Params:
+ *   c   - checker (unused; the requirement is stored on the expression)
+ *   val - the value the constraint applies to
+ *   at  - level the value must reach; negative values are ignored */
 static void applyLvlFact(Checker *c, Expr *val, int at) {
     (void)c;
     if (!val || at < 0) return;
     if (val->minAt < 0 || at < val->minAt) val->minAt = at;
 }
 
+/* Find the root origin of a value.
+ *
+ * The carrier chain is followed until it reaches an expression that is not a binding with
+ * a known origin, which is the site the value really came from. Flattening the chain here
+ * is what keeps the origin usable later: an intermediate binding may have left scope by
+ * then, and `lookup` would find nothing.
+ *
+ * Params:
+ *   c    - checker
+ *   val  - the expression whose origin is wanted
+ *   hops - binding steps already taken; the walk stops past 32 steps
+ *
+ * Returns:
+ *   The root expression, which is `val` itself when there is no followable origin. */
 Expr *originOf(Checker *c, Expr *val, int hops) {
     if (!val || hops > 32) return val;
-    if (val->kind != EX_IDENT) return val;          /* 结构体字面量 / `new` / 别的形状 ⇒ 就是它自己 ✓ */
+    /* A struct literal, `new`, or any other shape is its own origin. */
+    if (val->kind != EX_IDENT) return val;
     Sym *sy = lookup(c, val->u.ident.name);
-    if (!sy || !sy->origin) return val;             /* 没有来路 ⇒ 它自己（提不动就照旧报错）✓ */
+    /* No origin, so the answer is the value itself, which cannot be promoted. */
+    if (!sy || !sy->origin) return val;
     return originOf(c, sy->origin, hops + 1);
 }
 
+/* Check that a value may be stored into a place.
+ *
+ * The store is refused when it would leave a dangling reference, and refused as well by
+ * the borrowed-value rule below, which cannot be decided from depths alone.
+ *
+ * Params:
+ *   c      - checker
+ *   val    - the value being stored
+ *   target - the place it is stored into
+ *   line   - source line, for the diagnostic
+ *
+ * Returns:
+ *   True when the store is an error.
+ *
+ * Notes:
+ *   - Two different numbers are in play: the level the store is accounted at, which the
+ *     container's own scope caps, and the depth the store is checked against, which is
+ *     the depth of the storage the place denotes. Only the first is capped, because a
+ *     projection such as `h.q` reports deeper than the container itself outlives, while
+ *     the second is the question the reference rule actually asks. */
 bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
-    /* 同上：提到 `T` 就整条推迟 ✓（这里**直接返回**，别让里面的 checkEscape 再记一遍）*/
+    /* The same rule as above: a value whose type mentions a type parameter defers the
+     * whole check. Return here without letting the `checkEscape` below record the
+     * deferred check a second time. */
     if (mentionsParam(val->type)) {
         recordRefCheck(c, val, target, placeDepth(c, target), line, "this assignment");
         return false;
     }
-    /* ⚠️ 这里问的是「**往哪一层**存」⇒ 用 `storeLayer`（不是 `placeDepth`）：
-     * 引用型绑定那个坑见 `storeLayer` 的注释 ✓ */
+    /* The question here is which level the value is stored into, so this uses
+     * `storeLayer` rather than `placeDepth`. For the trap with reference-typed bindings,
+     * see the comment on `storeLayer`. */
     int at = storeLayer(c, target);
-    /* ⭐⭐ 层 2：**"存进去"这个动作需要的层号，由容器的寿命封顶** ✗✗
-     * `storeLayer` 对 `h.q` / `a[i]` 这种**投影**会答"投影那条路的深度"，
-     * 比容器**自己**的块层还深（`h.q` 答 2，而 `h` 在 1）✗ ——
-     * 而容器活不过它自己那一层作用域 ⇒ 往它里面存的东西也只需要活到那一层 ✓
-     * ⚠️ 只把**记账用的这个数**降下来；下面 `checkEscape` 的 `at` 一个字不动 ✓ */
+    /* The level this store needs is capped by the lifetime of the container.
+     *
+     * For a projection such as `h.q` or `a[i]`, `storeLayer` answers with the depth of the
+     * path it projected, which is deeper than the container's own block level (`h.q`
+     * answers 2 while `h` sits at 1). The container cannot outlive its own scope, so
+     * anything stored inside it only has to live that long.
+     *
+     * Only this accounting number is lowered. The `at` passed to `checkEscape` below is
+     * left exactly as it is. */
     int atStore = at;
     if ((int)c->scopes.len < atStore) atStore = (int)c->scopes.len;
-    /* ⭐ 定案 63：先试着**提升**（提不动的话下面那句照旧报错 —— 这里是安全网，幂等）✓ */
+    /* Try the promotion first. When it cannot promote anything, the call below still
+     * reports the error, so this is a safety net and is idempotent. */
     promoteInto(c, val, atStore);
     bool bad = checkEscape(c, val, at, line, "this assignment");
-    /* ⭐ 定案 67（`ARENA-FORMAL` §9.3）：**来路能追到参数** ⇒ 放行，交给**调用点**判寿命 ✓
-     * 为什么能放：被调者一次编译、不知道调用者的区域 ⇒ 它只能**发布约束**；
-     *   "实参 j 的数据活得 ≥ 被调者会存进去的那只容器"这条，**调用点**算得出来
-     *   （`checkCallRefArgs` 里 `Cont(j)` 那一支 ✓）✓
-     * ⚠️ 追不到的（调用结果 / 本帧局部 / 不明来路）⇒ **照旧拒** ✗
-     *   —— 与摘要里 `otherMask` 的口径保持一致（两边都不放 ✓）*/
-    /* ⭐ 定案 67：**放宽要同时满足两个前提**（缺一不可 ✗）
-     *   ① 值的**来路追得到形参** ✓ ⇒ 调用点能算它的寿命
-     *   ② 目的地**是形参可达的容器** ✓ ⇒ 那块存储的区域 = 调用点那只实参的区域 = h ✓
-     * ⚠️ ② 不能省：目的地是**全局**时（`g = s`）约束是"数据得活到永久（深度 0）"✗
-     *    而调用点的 `h` 说的是"被调者会存进哪只容器"—— 表达不了"永久" ⇒ 照旧拒 ✗
-     *    （`tests/errors/escape_stash_borrowed.extc` 当场抓到这个洞 ✓）
-     * ⚠️ 反过来，"同层"的那种调用现在**合法**了 ✓（它本来就安全：两个一起死 ✓
-     *    —— 以前被 blanket 规则连带拒掉 ✗ 这就是主人说的"好多地方卡了一次" ✓）*/
+    /* When the origin of the value can be traced to a parameter, accept the store and let
+     * the call site judge the lifetime.
+     *
+     * The callee is compiled once and does not know the caller's region, so all it can do
+     * is publish the constraint "the data behind argument j lives at least as long as the
+     * container the callee stores it into". The call site is able to evaluate that
+     * constraint (the `Cont(j)` case in `checkCallRefArgs`).
+     *
+     * A value whose origin cannot be traced (a call result, a local of this frame, an
+     * unknown origin) is still rejected, which matches the `otherMask` accounting in the
+     * effect summary: neither place lets it through. */
+    /* Loosening the rule requires both preconditions; either one alone is not enough.
+     *
+     *   1. The origin of the value can be traced to a formal parameter, so the call site
+     *     can compute its lifetime.
+     *   2. The destination is a container reachable through a parameter, so the region of
+     *     that storage is the region of the corresponding argument at the call site.
+     *
+     * Precondition 2 cannot be dropped: when the destination is a global (`g = s`), the
+     * constraint is "the data must live forever (depth 0)", which the call site's knowledge
+     * of "which container the callee will store into" cannot express, so the store stays
+     * rejected. `tests/errors/escape_stash_borrowed.extc` caught exactly this hole.
+     *
+     * Conversely, a call at the same level is now legal. It was always safe -- the two die
+     * together -- but a blanket rule used to reject it along with everything else. */
     bool destIsParam = false;
     if (target) {
         const char *droot = placeRootName(target);
@@ -789,10 +1080,13 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     }
     if (storeLayer(c, target) == 0 && exprBorrowed(c, val)
         && !(destIsParam && valTracesToParam(c, c->curFunc, val))) {
-        /* ⭐ A3 第三半：**有家函数里放行** —— 调用点已经保证了"每个 `ref`/`mut ref`
-         * 实参都活得 ≥ 这一刀的家 arena"（规则 ④ ✓），而被调函数分配的东西**就进那只
-         * 家 arena** ⇒ 写进去的东西跟它一样长寿 ✓
-         * ⚠️ 没有 ④ 直接放行就是洞（`ref_launder_field` 当场抓过 ✗）*/
+        /* Accept the store inside a function that has a home arena. The call site has already
+         * guaranteed that every `ref` / `mut ref` argument lives at least as long as this
+         * call's home arena, and whatever the callee allocates goes into that same home arena,
+         * so the stored value lives exactly as long as the destination.
+         *
+         * Without that guarantee, accepting the store outright would be a hole;
+         * `ref_launder_field` caught one. */
         if (c->curFunc && c->curFunc->needsHome) return bad;
         ckError(c, line,
                 "A borrowed value may not be stored where it outlives the call: its real "
@@ -804,10 +1098,22 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
 }
 
 
-/* 记一条推迟的规矩。**只在泛型体里、且值提到了类型参数时**才记 ✓
- * （具体类型的值现在就查得清楚，不用推迟 —— 推迟只会让报错变晚）*/
-/* 记一条"零值"的推迟检查（跟引用规矩同一族，见 RefCheck 的注释）*/
-/* 记一条"`new T[n]` 的大小"的推迟检查（第三类，见 RefCheck 的注释）*/
+/* Record a deferred rule. It is recorded only inside a generic body and only for a
+ * value whose type mentions a type parameter; for a concrete type the check can be
+ * decided now, and deferring would only report the error later. */
+/* Record a deferred zero-value check, part of the same family as the reference rule
+ * recorded by `recordRefCheck`. Like that one it applies only inside a generic body,
+ * and the value is checked when the generic is instantiated. */
+/* Record a deferred check on the size in `new T[n]`, a third kind alongside the
+ * reference rule and the zero-value check.
+ *
+ * Like the others it is recorded only inside a generic body, and the size is checked
+ * when the generic is instantiated.
+ *
+ * Params:
+ *   c    - checker; the record is appended to `c->refChecks`
+ *   t    - the declared element type
+ *   line - source line, for the diagnostic */
 void recordNewSizeCheck(Checker *c, Type *t, int line) {
     if (!c->curFunc || !c->curFunc->owner) return;
     if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
@@ -819,6 +1125,17 @@ void recordNewSizeCheck(Checker *c, Type *t, int line) {
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
+/* Record a deferred check on a zero-valued default.
+ *
+ * A generic body may not default a type parameter to its zero value, because whether that
+ * is allowed depends on the type argument. The check is therefore recorded here and run
+ * when the generic is instantiated, exactly like the reference rule.
+ *
+ * Params:
+ *   c    - checker; the record is appended to `c->refChecks`
+ *   t    - the declared type
+ *   line - source line, for the diagnostic
+ *   name - the name of the binding, for the diagnostic */
 void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
     if (!c->curFunc || !c->curFunc->owner) return;
     if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
@@ -831,6 +1148,25 @@ void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
+/* Record a deferred reference check for later instantiation.
+ *
+ * The check is recorded only inside a generic body whose value mentions a type
+ * parameter, because a concrete value can be judged immediately and deferring it
+ * would only report the error later.
+ *
+ * Params:
+ *   c      - checker; the record is appended to `c->refChecks`
+ *   val    - the value whose depth has to be checked
+ *   target - the place it is stored into, or NULL for a return
+ *   at     - depth the value must reach; 0 = must outlive this frame
+ *   line   - source line, for the diagnostic
+ *   what   - the operation being checked, named in the diagnostic
+ *
+ * Notes:
+ *   - The depth and the borrowed flag are computed here rather than at instantiation
+ *     time, because the scope is still open and `lookup` still finds the parameters. A
+ *     deferred computation had no function scope left, answered 0, and silently stopped
+ *     checking anything. */
 static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
                            int line, const char *what) {
     if (!c->curFunc || !c->curFunc->owner) return;
@@ -842,41 +1178,75 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
     rc->line   = line;
     rc->what   = what;
     rc->func   = c->curFunc;
-    /* ⚠️ **数字现在就算好**（那时作用域还在、`lookup` 找得到参数）：
-     * 走路函数对"提到 `T`"的节点不会早退，所以这份深度是按"`T` 可能带引用"算的 ——
-     * 正是实例化时要用的那一个 ✓
-     * （踩过的弯路：推到实例化再算 ⇒ 那时函数作用域已经没了，深度算成 0，检查静默失灵 ✗）*/
+    /* Compute the numbers now, while the scope is still open and `lookup` can still find
+     * the parameters. The walk does not exit early for a node that mentions a type
+     * parameter, so this depth is the one computed under the assumption that the parameter
+     * may carry a reference, which is exactly the number the instance check needs.
+     *
+     * Computing it later instead was a dead end: by instantiation time the function scope
+     * is gone, the depth comes out as 0, and the check silently stops firing. */
     rc->depth    = exprRefDepth(c, val);
     rc->borrowed = exprBorrowed(c, val);
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
+/* Whether a value is initialized with a reference borrowed from elsewhere.
+ *
+ * A reference obtained from a parameter, or returned by a call, cannot be stored where
+ * it outlives this call -- a global, or an object reached through another parameter.
+ * The compiler does not know its real lifetime, and it may point at a local of the
+ * caller's frame that is nested more deeply than this function. This is one half of the
+ * same rule as "the depth of a call result is the maximum depth of its arguments".
+ *
+ * Params:
+ *   c    - checker
+ *   val  - the value being initialized
+ *   at   - depth of the storage it is placed in; 0 = must outlive this frame
+ *   line - source line, for the diagnostic
+ *   what - the operation being checked, named in the diagnostic ("this assignment")
+ *
+ * Returns:
+ *   True when the value is (or may be) borrowed, so the caller must refuse the store
+ *   unless the destination is reached through a parameter.
+ */
 bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     if (!val) return false;
-    /* ⚠️ 值里提到 `T` ⇒ 现在下不了结论（`T` 可能是 `i64` 也可能是 `slice<u8>`）
-     * ⇒ **记下来，等实例化再算** ✓ （这就是 #17 那个洞的封口）*/
+    /* A value whose type mentions a type parameter cannot be decided now, because `T`
+     * may be `i64` or `slice<u8>`. Record it and decide at instantiation, which is what
+     * closes this hole. */
     if (mentionsParam(val->type)) {
-        /* ⭐⭐ 层 2：**先提一次，再推迟** ✗✗
-         * `promoteInto` 是**层号事实的唯一入口**，而这一支**提前返回** ⇒
-         * 「返回值/实参里装着 `T`」的每一处**都拿不到约束** ✗
-         * 实测（`varArray<T>::withCap`）：`return v` 走这一支 ⇒ 里面那个 `new T[cap]`
-         * 一条事实都没有（`minAt=-1`）⇒ 收尾按"没人碰过"放回**块层** ⇒ 而返回值
-         * 要求它活在**帧外** ⇒ 实例复查报 "depth 1, but this can only hold up to 0" ✗
-         * （一整族误拒，13 条）
-         * 为什么可以现在就提：**层号跟 `T` 是什么无关**（`T = i64` 与 `T = slice<u8>`
-         * 的"这块存储要活到第 k 层"是同一句话 ✓）
-         * ⚠️ 返回值**忽略**：提不动不是错误 —— 该不该拒由下面那条推迟的规矩判 ✓ */
+        /* Promote once first, then defer.
+         *
+         * `promoteInto` is the only entry point for level facts, and this branch returns early,
+         * so every place that returns or passes a value whose type mentions `T` would get no
+         * constraint at all. Measured on `varArray<T>::withCap`: `return v` takes this branch,
+         * so the `new T[cap]` inside it gets no fact (`minAt = -1`), the final pass puts it back
+         * at the block level as if nothing had touched it, and the return value requires it to
+         * live beyond the frame. The instance check then reports "depth 1, but this can only
+         * hold up to 0", a whole family of false rejections.
+         *
+         * Promoting now is sound because the level does not depend on what `T` is: "this
+         * storage has to live until level k" is the same statement for `T = i64` and for
+         * `T = slice<u8>`.
+         *
+         * The return value is ignored: failing to promote is not an error, and whether to
+         * reject is decided by the deferred rule recorded here. */
         promoteInto(c, val, at);
         recordRefCheck(c, val, NULL, at, line, what);
         return false;
     }
-    /* ⭐⭐ 层 2：**这里必须先提一次**（`checkStoreEscape` 早就是这么排的：
-     * 先 `promoteInto` 再判深度）—— 因为 `promoteInto` 同时是**层号事实的唯一入口**，
-     * 而下面那句 `d <= at` 会**提前返回** ⇒ 一旦深度看着"够浅"，站点就一条约束都没有 ✗
-     * 实测（`examples/escape-promotion`）：`return head` 时 `exprRefDepth(head)` 先答 0
-     * （那个 `EX_IDENT` 节点上的 `refDepth` 还没填）⇒ 早退 ⇒ `new node` 的站点
-     * `minAt=-1` ⇒ 收尾把它放回**词法层** ⇒ 调用者拿的是已释放的链表 ✗✗
-     * ⇒ 顺序改成"先记事实、再判深度"，判据一个字没变 ✓ */
+    /* The promotion has to run first here, the way `checkStoreEscape` has always ordered
+     * it: promote, then compare depths. `promoteInto` is also the only entry point for
+     * level facts, and the `d <= at` test below returns early, so as soon as the depth looks
+     * shallow enough the site ends up with no constraint at all.
+     *
+     * Measured on `examples/escape-promotion`: on `return head`, `exprRefDepth(head)`
+     * answers 0 first because the `refDepth` on that `EX_IDENT` node has not been filled
+     * in yet, so the check returns early, the `new node` site keeps `minAt = -1`, the final
+     * pass puts it back at its lexical level, and the caller receives a freed list.
+     *
+     * The order is therefore record the facts first and compare depths second; the
+     * predicate itself is unchanged. */
     promoteInto(c, val, at);
     int d = exprRefDepth(c, val);
     if (d <= at) return false;
@@ -893,39 +1263,58 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     return true;
 }
 
-/* 沿一个「地方」往内走，路上有没有**只读引用**？
+/* Whether walking into a place crosses a read-only reference.
  *
- * 「绑定是不是 `let`」和「路上有没有只读引用」是**两件事**：
- * `var` 的东西里也可能装着一个只读引用（比如 `fn f(v: ref slice<i32>)` 里的 v）。
- * 写进去要**两样都满足**。 */
-/* ⭐ PLAN #40 / #41：**写这个「地方」要穿过哪些引用？每一只都必须是 `mut ref`** ✓
+ * "The binding is a `let`" and "the path crosses a read-only reference" are two
+ * different questions: a `var` can still hold a read-only reference, as in
+ * `fn f(v: ref slice<i32>)`. A write has to satisfy both. */
+/* Which references does writing this place cross? Every one of them must be a
+ * `mut ref`.
  *
- * "穿过"只有两种：
- *   · **显式**：`*p` ✓
- *   · **隐式**：`p.f` / `v[i]` 里 `p` 是引用 ⇒ 那块存储住在 **`*p`** 里（自动解引用）✓
- * ⚠️⚠️ **目标自己的类型不算**：`cur = v`（换指向）写的是**槽位**，
- *    "cur 是不是只读引用"跟这件事**无关** ✗
- *    （老实现把这两件事混在 `pathHasReadonlyRef` 里 ⇒ 一边误拒 `(*cell).next = v`
- *      （字段类型是只读引用 `?ref node`）、一边漏掉真正的写穿 ✗ 见 PLAN #40/#41）✓
+ * There are only two ways to cross one:
+ *   - Explicitly, through `*p`.
+ *   - Implicitly, when `p` in `p.f` or `v[i]` is a reference, so the storage lives
+ *     behind `*p` (the automatic dereference).
  *
- * `*crossed` 回填"存储到底在不在本帧"：穿过引用 ⇒ 存储在被指对象里（`placeRoot` 会是 NULL）✓ */
+ * The type of the target itself is not part of this. `cur = v`, which repoints the
+ * binding, writes the slot, and whether `cur` is a read-only reference has nothing to
+ * do with it. An older implementation mixed the two questions together inside
+ * `pathHasReadonlyRef`, which both falsely rejected `(*cell).next = v` (the field type
+ * is the read-only reference `?ref node`) and missed real writes through a reference.
+ *
+ * Params:
+ *   e       - the place expression
+ *   crossed - out-parameter: set true when the storage is behind a crossed reference,
+ *            in which case `placeRoot` answers NULL because the storage is inside the
+ *            pointed-at object rather than in this frame
+ *
+ * Returns:
+ *   True when every crossed reference is a `mut ref`.
+ *
+ * Notes:
+ *   - A write through a read-only reference is not merely unsound here: the field type
+ *     is checked separately by `pathHasReadonlyRef`, and the two answers are used for
+ *     different diagnostics. */
 bool pathRefsAllMut(Expr *e, bool *crossed) {
     if (crossed) *crossed = false;
     for (Expr *x = e; x; ) {
-        if (x->kind == EX_DEREF) {                       /* 显式穿过 ✓ */
+        if (x->kind == EX_DEREF) {                       /* an explicit crossing */
             Type *ot = x->u.deref.operand->type;
             if (!(ot && ot->kind == TY_REF && ot->mut)) return false;
             if (crossed) *crossed = true;
             x = x->u.deref.operand;
-            if (x->type && x->type->kind == TY_REF) return true;   /* 落地 = p 指的地方 ✓ */
+            /* Landed, so this is the storage `p` points at. */
+            if (x->type && x->type->kind == TY_REF) return true;
             continue;
         }
         Expr *o = NULL;
         if (x->kind == EX_FIELD)      o = x->u.field.obj;
         else if (x->kind == EX_INDEX) o = x->u.index.obj;
         else if (x->kind == EX_SLICE) o = x->u.slice.obj;
-        if (!o) break;                                   /* 落到绑定/别的形状 ⇒ 到此为止 ✓ */
-        if (o->type && o->type->kind == TY_REF) {        /* 字段住在 o **指的对象**里 ✓ */
+        /* Reached a binding or another shape, so stop here. */
+        if (!o) break;
+        /* The field lives inside the object `o` points at. */
+        if (o->type && o->type->kind == TY_REF) {
             if (!o->type->mut) return false;
             if (crossed) *crossed = true;
             return true;
@@ -935,18 +1324,33 @@ bool pathRefsAllMut(Expr *e, bool *crossed) {
     return true;
 }
 
+/* Whether a path crosses or lands on a read-only reference.
+ *
+ * This answers a different question from `pathRefsAllMut`: that one asks whether every
+ * reference crossed is mutable, while this one also reports a read-only reference in the
+ * type of the place itself, as in `c.bump()` where `c` is a `ref counter`. Both answers
+ * are needed because the diagnostics differ.
+ *
+ * Params:
+ *   e - the place expression
+ *
+ * Returns:
+ *   True when the place, or any reference crossed on the way to it, is read-only. */
 bool pathHasReadonlyRef(Expr *e) {
     for (Expr *x = e; x; ) {
         if (x->type && x->type->kind == TY_REF && !x->type->mut) return true;
-        /* ⭐ PLAN #41：**显式穿过**（`(*p).f` / `(*p).f.g`）——
-         * 老实现走到 `EX_DEREF` 就 `break`，而 DEREF 自己的类型是**被指对象**
-         * （不是引用）⇒ 那只引用的 mut 从来没查过 ⇒ 写穿只读引用整条放行 ✗
-         * （实测：`fn g(p: ref node) { (*p).val = 7 }` 编译通过 ✗）✓ */
+        /* An explicit crossing, as in `(*p).f` or `(*p).f.g`.
+         *
+         * The older implementation stopped at `EX_DEREF`, but a dereference has the type of the
+         * pointed-at object rather than a reference type, so the mutability of that reference
+         * was never tested and a write through a read-only reference was let through entirely.
+         * Measured: `fn g(p: ref node) { (*p).val = 7 }` compiled. */
         if (x->kind == EX_DEREF) {
             Type *ot = x->u.deref.operand->type;
             if (ot && ot->kind == TY_REF && !ot->mut) return true;
             x = x->u.deref.operand;
-            if (x->type && x->type->kind == TY_REF) return false;   /* 落地 = p 指的地方 ✓ */
+            /* Landed on a binding, so nothing is crossed here. */
+            if (x->type && x->type->kind == TY_REF) return false;
             continue;
         }
         if (x->kind == EX_FIELD) { x = x->u.field.obj; continue; }
@@ -957,9 +1361,25 @@ bool pathHasReadonlyRef(Expr *e) {
     return false;
 }
 
+/* Check that a place may be written at all.
+ *
+ * Three separate reasons can make a write illegal, and each gets its own diagnostic: a
+ * write through `*p` needs `mut ref`, a write through a read-only reference or view needs
+ * the type to carry `mut`, and reassigning a `let` binding is forbidden outright.
+ *
+ * Params:
+ *   c    - checker
+ *   e    - the place being written
+ *   line - source line, for the diagnostic
+ *   what - the operation being checked, named in the diagnostic
+ *
+ * Returns:
+ *   True when the write was refused and an error was reported. */
 bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
-    /* ⚠️ `*p` 要走**自己那条**：`placeRoot` 认不出它（会返回 NULL ⇒ 被当成可写）✗
-     * 可写性由**引用的类型**给：只有 `mut ref` 才能 `*p = v` ✓ */
+    /* `*p` needs its own branch, because `placeRoot` does not recognise it and returns
+     * NULL, which would then be treated as writable.
+     *
+     * Writability comes from the type of the reference: only `mut ref` permits `*p = v`. */
     if (e && e->kind == EX_DEREF) {
         Type *ot = e->u.deref.operand->type;
         if (ot && ot->kind == TY_REF && ot->mut) return false;
@@ -968,10 +1388,14 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
                 "cannot %s through a read-only reference", what);
         return true;
     }
-    /* ⚠️ 这里问的是「**能不能写穿**」—— 看的是**每个路口那只引用的 mut**：
-     *   · 这个"地方"自己的类型是只读引用（`c.bump()` 里 c 是 `ref counter`）✗
-     *   · 路上**显式穿过**了只读引用（`(*p).f`，PLAN #41 的洞）✗
-     * 两件都由 `pathHasReadonlyRef` 答（#41 就是给它补上 DEREF 那一支 ✓）*/
+    /* The question here is whether a write can cross, so what matters is the mutability of
+     * the reference at every step:
+     *   - The type of this place itself is a read-only reference (`c` in `c.bump()` is a
+     *     `ref counter`).
+     *   - The path crosses a read-only reference explicitly (`(*p).f`).
+     *
+     * `pathHasReadonlyRef` answers both, and the `EX_DEREF` case above is exactly what it
+     * was missing. */
     if (pathHasReadonlyRef(e)) {
         ckError(c, line,
                 "`ref T` is a **read-only** borrow; writing through it needs `mut ref T` "
@@ -981,13 +1405,15 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
         return true;
     }
     Sym *root = placeRoot(c, e);
-    /* **视图的元素可不可写，看视图的类型带不带 `mut`。**
-     * 这条关掉的是「按值传进来的视图」那个洞：
-     *     fn f(v: slice<i32>) { v[0] = 1 }   // ✗ 参数是副本，但元素是调用者的！
-     * 要写就得在签名上写 `mut slice<i32>`（或者 `mut ref slice<i32>`）。 */
+    /* Whether a view's elements can be written depends on whether the view's type carries
+     * `mut`. This closes the hole of a view passed by value:
+     *     fn f(v: slice<i32>) { v[0] = 1 }   // the parameter is a copy, but the
+     *                                         // elements belong to the caller!
+     * Writing requires `mut slice<i32>` (or `mut ref slice<i32>`) in the signature. */
     if (root && root->type && root->type->kind == TY_GENERIC &&
         ttIsViewType(root->type) && !root->type->mut &&
-        /* 写**元素**才受视图可写性管；给视图**整体赋值**（换绑）不受它管 */
+        /* The view's writability governs writes to its elements; assigning the
+         * whole view (rebinding it) is not governed by it. */
         !(e->type && ttIsViewType(e->type))) {
         ckError(c, line,
                 "a view is read-only unless its type carries `mut`. Writing through a "
@@ -1010,9 +1436,15 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
     return true;
 }
 
-/* 一个类型是不是「视图」？视图的协议是 `data` + `len`（编译器认这条协议，
- * 但它的结构和方法都在 stdlib/prelude.extc 里）。返回元素类型，不是视图就返回 NULL。
- * 见 ARRAYS.md：语言认识「协议」，库提供「方法」。 */
+/* Whether a type is a view, and if so its element type.
+ *
+ * The view protocol is a `data` member plus a `len` member. The compiler recognises
+ * that protocol, while the structure itself and its methods live in
+ * `stdlib/prelude.extc`: the language knows the protocol, and the library provides the
+ * methods.
+ *
+ * Returns:
+ *   The element type when `t` is a view, NULL otherwise. */
 Type *viewElemOf(Type *t) {
     if (!t || t->kind != TY_GENERIC || !t->sdef) return NULL;
     if (strcmp(t->sdef->name, "slice") != 0) return NULL;
@@ -1020,47 +1452,73 @@ Type *viewElemOf(Type *t) {
     return *(Type **)vecAt(&t->targs, 0);
 }
 
-/* C 原生就能比的类型：数值 / bool / 枚举。
- * `str` **不在**这里 —— 它的 `==` 会退化成指针比较（陷阱），必须有 eq 才行。 */
+/* Whether C itself can compare this type: numbers, `bool`, and enums.
+ *
+ * `str` is deliberately not in this set, because its `==` would degrade into a pointer
+ * comparison, and an `eq` method is required instead.
+ *
+ * Returns:
+ *   True when a C `==` on this type compares values rather than addresses. */
 bool cmpIsNative(Type *t) {
     if (!t) return false;
     if (ttIsError(t)) return true;
     if (ttIsInteger(t) || ttIsFloat(t) || ttIs(t, "bool")) return true;
-    /* 无载荷枚举在 C 里就是整数 ⇒ 直接比 ✓
-     * **带载荷**的不行：C 里它是 `struct { tag; union }`，而 C 的 struct 不能用 `==`。
-     * 用 `match` 比（以后可以派生出 `_eq` —— 那要递归比载荷，先不做）。 */
+    /* An enum with no payload is an integer in C, so it can be compared directly.
+     *
+     * One with a payload cannot: in C it is a `struct { tag; union }`, and C structs do not
+     * support `==`. Use `match` instead. A derived `_eq` would have to compare the payloads
+     * recursively and is not done for now. */
     if (ttBase(t)->kind == TY_ENUM) return !enumHasPayload(ttBase(t)->edef);
     return false;
 }
 
-/* 找类型上定义的运算符方法。
- * `!=` 是特例：没定义 `!=` 就退回用 `==` 取反（codegen 那边会自动取反）。*/
+/* Find an operator method defined on a type.
+ *
+ * `!=` is the special case: when there is no `!=` method, the lookup falls back to `==`
+ * and negates it, which codegen does.
+ *
+ * Params:
+ *   b        - the type, with any wrapper already stripped
+ *   sym      - the method name to look for (`==` or `!=`)
+ *   fallback - method name to try when `sym` is absent, or NULL for none
+ *
+ * Returns:
+ *   The method definition, or NULL when the type defines neither name. */
 FuncDef *findOp(Type *b, const char *sym, const char *fallback) {
     FuncDef *m = findMethod(b, sym);
     if (!m && fallback) m = findMethod(b, fallback);
     return m;
 }
 
-/* 运算符方法的签名，在**定义处**就检查。
+/* Check the signature of an operator method at its definition site.
  *
- * ⚠️ 这里踩过一个坑：最初只在**使用处**检查签名，于是
- *   ① 定义了签名错误的 `fn !=` 但没直接用到 → 一直没人查
- *   ② 泛型里 `a != b` 推迟到实例化，codegen 找到了那个 void 的 `!=`
- *      → 直接把 C 的 "invalid use of void expression" 漏给用户
- * 挪到定义处之后，无论从哪条路径使用它都是安全的。
- */
+ * The signature used to be checked only at the use site, and that caused two problems:
+ * a `fn !=` with a wrong signature that happened to be unused was never checked at all,
+ * and a generic `a != b` deferred to instantiation let codegen find a `void`-returning
+ * `!=` and hand the user C's own "invalid use of void expression". Checking at the
+ * definition makes every path of use safe.
+ *
+ * Params:
+ *   c - checker
+ *   f - the function definition being declared
+ *
+ * Notes:
+ *   - Only `==` and `!=` are checked; any other name is left alone, so a method such as
+ *     `compare` may return whatever it likes. */
 void checkOperatorSig(Checker *c, FuncDef *f) {
     bool isOp = (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0);
     if (!isOp || !f->owner) return;
 
     const char *want = "signature must be `fn ==(self: ref T, other: T) -> bool`";
 
-    /* 为什么必须是 bool —— 三个前提推出来的，不是拍的：
-     *   ① `a == b` 天然会被用在 `if` / `while` / `&&` / `||` 里
-     *   ② extC 没有隐式真值转换（`if 1` 是错的）
-     *   ③ `!=` 是靠 `==` 取反实现的
-     * 所以 `==` 只能是 `bool`，否则它就没法用在条件里。
-     * 想要别的结果？换个方法名（`compare` / `diff` 之类），那些没有任何限制。 */
+    /* Why the result must be `bool`, which follows from three premises rather than from
+     * taste:
+     *   1. `a == b` is naturally used inside `if`, `while`, `&&` and `||`.
+     *   2. extC has no implicit truthiness; `if 1` is an error.
+     *   3. `!=` is implemented by negating `==`.
+     * So `==` can only return `bool`; anything else could not be used in a condition. To
+     * return something else, use a different method name such as `compare` or `diff`, which
+     * carry no restriction. */
     const char *why =
         "`a == b` gets used in `if` / `&&` / `||`, and extC has no implicit truthiness; "
         "`!=` is also derived by negating `==`. "
@@ -1089,13 +1547,22 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
     }
 }
 
-/* 这个类型能不能用 `op` 比较？
- * 签名合法性已经在**定义处**查过了，所以这里只要「找得到」就行。 */
+/* Whether this type can be compared with `op`.
+ *
+ * The signature was already validated at the definition site, so finding the method is
+ * enough here.
+ *
+ * Params:
+ *   t  - the type being compared
+ *   op - the operator name, `==` or `!=`
+ *
+ * Returns:
+ *   True when a comparison is available for this type. */
 bool typeSupportsEq(Type *t, const char *op) {
     if (!t) return false;
     if (ttIsError(t)) return true;
     if (cmpIsNative(t)) return true;
-    /* 数组的 `==` 由编译器派生 —— 条件是元素能比 */
+    /* the compiler derives `==` for arrays, provided the elements can be compared */
     if (t->kind == TY_ARRAY) return typeSupportsEq(t->inner, op);
 
     Type *b = ttBase(t);
@@ -1103,29 +1570,51 @@ bool typeSupportsEq(Type *t, const char *op) {
     return findOp(b, op, strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
 }
 
-/* `?` 只在这三处合法，所以这三处走这个入口；别处遇到 EX_TRY 一律报错 */
+/* `?` is legal in only three places, so those three go through this entry point;
+ * anywhere else an EX_TRY node is an error. */
 Type *checkExpr(Checker *c, Expr *e);
 Type *checkTryInner(Checker *c, Expr *e);
 
-/* **值位置**：把 `ref T` 当 `T` 用（形状 3「值位置自动解引用」）。
+/* Check an expression in value position, where `ref T` is used as `T`.
  *
- * 跟 `checkExpr` 的分工：
- *   `checkValue` = 这里要的是**值** ⇒ `p` 就是 p 指向的东西，打 `deref` 标记
- *   `checkExpr`  = 这里要的是**地方/引用本身** ⇒ 赋值目标、`ref x` 的操作数、
- *                  字段/下标/切片的底、方法接收者（要取地址）
+ * The division of labour with `checkExpr`:
+ *   `checkValue` - the value is what is wanted here, so `p` means the object `p`
+ *                  points at, and the node is marked as dereferenced
+ *   `checkExpr`  - the place, or the reference itself, is what is wanted here: an
+ *                  assignment target, the operand of `ref x`, the base of a field,
+ *                  index or slice, and a method receiver, all of which take an address
  *
- * 权限（能不能写）不在这里管 —— 那是 `ref` / `mut ref` 的事。 */
+ * Permissions are not part of this; whether a write is allowed is decided by `ref`
+ * versus `mut ref`.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression in value position
+ *
+ * Returns:
+ *   The type of the value, with a reference type replaced by its target. */
 Type *checkValue(Checker *c, Expr *e) {
     Type *t = checkExpr(c, e);
-    /* `ref x` 是**显式**要一个引用 ⇒ 不再自动解引用 ——
-     * 否则就等于「解掉自己刚取的那个引用」，纯属自相矛盾。
-     * 所以 `let r = ref n` 得到的是引用；而 `let y = r` 得到的是 r 指向的**值**。 */
-    /* `ref x` 和 `alloc<T>(n)` 都是**显式**要一个引用 ⇒ 不再自动解引用 ——
-     * 否则就是「解掉自己刚取/刚要来那个引用」，纯属自相矛盾。 */
-    /* ⚠️ **不再有隐式解引用**（2026-09-20 主人拍板：`(ref i32) + 1` 必须非法）：
-     * 值位置给了引用 ⇒ **报错**，教他写 `*p` ✓
-     * 例外：`ref x` / `alloc`（本来就是"要一个引用"）、
-     *       以及**成员选择**（`p.field` / `p.method()` —— 那是"导航"不是"取值"，仍然自动穿透 ✓）*/
+    /* `ref x` asks for a reference explicitly, so it is not automatically dereferenced:
+     * doing so would cancel the reference that was just taken, which is self-contradictory.
+     * `let r = ref n` therefore yields a reference, while `let y = r` yields the value `r`
+     * points at. */
+    /* `ref x` and `alloc<T>(n)` both ask for a reference explicitly, so neither is
+     * automatically dereferenced: doing so would cancel the reference that was just
+     * requested, which is self-contradictory. */
+    /* There is no implicit dereference any more: giving a reference in value position is
+     * an error, and the diagnostic tells the user to write `*p`.
+     *
+     * The exceptions are `ref x` and `alloc`, which ask for a reference in the first place,
+     * and member selection (`p.field` / `p.method()`), which navigates rather than reading
+     * a value and therefore still sees through the reference.
+     *
+     * Params:
+     *   c - checker
+     *   e - the expression in value position
+     *
+     * Returns:
+     *   The value type, with a reference type replaced by its target. */
     if (t && t->kind == TY_REF && e->kind != EX_REF && e->kind != EX_GENCALL) {
         ckError(c, e->line,
                 t->nullable
@@ -1139,17 +1628,22 @@ Type *checkValue(Checker *c, Expr *e) {
     return t;
 }
 
-/* 实参 / 字段初值：**期望类型是引用时不自动解引用** ——
- * 那里是「放一个引用进去」（`{ data: ref n, ... }`、`f(ref c)`），不是取它的值。
- * 其余情况按值位置处理（形状 3）。 */
-void desugarBareCtor(Checker *c, Expr *e, Type *want);   /* 定义在后面 */
+/* Whether an argument or field initializer may be automatically dereferenced.
+ *
+ * Where a reference is expected, an expression is not dereferenced automatically,
+ * because the reference itself is what gets placed there (`{ data: ref n, ... }`,
+ * `f(ref c)`) rather than the value it points at. Everywhere else the expression is
+ * treated as a value position. */
+void desugarBareCtor(Checker *c, Expr *e, Type *want);   /* defined below */
 
 Type *checkInto(Checker *c, Type *want, Expr *e) {
-    /* 期望类型是 `option<...>` / `result<...>` ⇒ 裸写构造器也认 ✓
-     * （`f(some(3))`、`var x: ?i32 = some(3)` —— 类型从上下文来，不用写全名）*/
+    /* An expected type of `option<...>` or `result<...>` also accepts a bare constructor,
+     * so `f(some(3))` and `var x: ?i32 = some(3)` work: the type comes from the context and
+     * the full name need not be written out. */
     if (want) desugarBareCtor(c, e, want);
     Type *got = checkExpr(c, e);
-    /* 同样：**显式解引用** —— 期望的不是引用却给了引用 ⇒ 报错 ✓ */
+    /* As in `checkValue`: a reference supplied where no reference is expected is an
+     * error. */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
         ckError(c, e->line,
                 got->nullable ? "it is a nullable reference (`?ref T`) -- check it first:"
@@ -1162,10 +1656,19 @@ Type *checkInto(Checker *c, Type *want, Expr *e) {
     return got;
 }
 
-/* **输出位置**：`println(r)` / `print(r)` 自动解引用 ✓
- * 理由（主人 2026-09-20）：「但你总不能真暴露地址了」——
- * 打印一个引用**只可能**是想看它指的值，而地址本身对用户毫无意义也不该暴露 ✓
- * ⇒ 这是唯一保留"自动解引用"的**值位置** ✓ */
+/* Check an argument of `println` / `print`, where a reference is dereferenced
+ * automatically.
+ *
+ * Printing a reference can only mean printing the value it points at, and exposing the
+ * address itself would be both meaningless and undesirable. This is the only remaining
+ * value position that keeps automatic dereferencing.
+ *
+ * Params:
+ *   c - checker
+ *   e - the argument expression
+ *
+ * Returns:
+ *   The type of the printed value, with a reference type replaced by its target. */
 Type *checkPrintArg(Checker *c, Expr *e) {
     Type *t = checkExpr(c, e);
     if (t && t->kind == TY_REF) {
@@ -1175,36 +1678,72 @@ Type *checkPrintArg(Checker *c, Expr *e) {
     return t;
 }
 
+/* Check an expression that may be a `?` operator.
+ *
+ * `?` is only legal in three statement positions, so those three go through here and
+ * everything else is checked as an ordinary value position.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression, possibly an `EX_TRY` node
+ *
+ * Returns:
+ *   The type of the unwrapped payload for `?`, otherwise the value type. */
 Type *checkMaybeTry(Checker *c, Expr *e) {
     if (e && e->kind == EX_TRY) return checkTryInner(c, e);
     return checkValue(c, e);
 }
 
-/* 泛型里的 `==` 推迟到实例化才检查 —— 这里记一笔 */
+/* `==` inside a generic body is checked when the generic is instantiated rather than
+ * here. */
 
-/* prelude 里两个「有真实语义」的容器，按名字 + 实参个数认（它们是**保留定义**，
- * 用户不能重定义，所以按名字认是安全的）。`?` 要用到它们的标签字段名 ——
- * 跟视图协议 `data` + `len` 是同一种分工：**语言认识协议，库提供结构**。 */
+/* Whether a type is one of the two prelude containers that carry real semantics,
+ * recognised by name and argument count.
+ *
+ * They are reserved definitions that a user may not redefine, so recognising them by
+ * name is safe. `?` needs their tag field names, which is the same division of labour
+ * as the view protocol of `data` plus `len`: the language knows the protocol, and the
+ * library provides the structure.
+ *
+ * Params:
+ *   t     - the type to test
+ *   name  - the reserved container name (`option` or `result`)
+ *   nargs - the number of type arguments it must carry
+ *
+ * Returns:
+ *   True when `t` is that container with exactly that many type arguments. */
 bool isProtoType(Type *t, const char *name, size_t nargs) {
     if (!t || t->targs.len != nargs) return false;
-    /* 泛型 struct：`slice<T>`、`varArray<T>` */
+    /* a generic struct: `slice<T>`, `varArray<T>` */
     if (t->kind == TY_GENERIC && t->sdef) return strcmp(t->sdef->name, name) == 0;
-    /* 泛型**枚举**：`option<T>` / `result<T,E>`（第三刀之后它们就是枚举，
-     * 实例的类型是 TY_ENUM + 具体 targs ✓）*/
+    /* A generic enum: `option<T>` and `result<T,E>` are enums, and an instance has the
+     * type `TY_ENUM` carrying concrete type arguments. */
     if (t->kind == TY_ENUM && t->edef)    return strcmp(t->edef->name, name) == 0;
     return false;
 }
 
-/* `e?` —— 失败就顺着往上抛。
- * 只在三处语句位置上合法（C 没有语句表达式，得展开成语句），
- * 所以这个函数**只**从 checkStmt 的那三处调用；checkExprInner 遇到 EX_TRY 会报错。 */
+/* Check `e?`, which forwards a failure to the caller.
+ *
+ * It is legal in only three statement positions, because C has no statement expressions
+ * and the operator has to be expanded into statements. Those three are therefore the
+ * only callers of this function; `checkExprInner` reports an error for an `EX_TRY` node
+ * anywhere else.
+ *
+ * Params:
+ *   c - checker
+ *   e - the `?` expression
+ *
+ * Returns:
+ *   The payload type of the `option` or `result` being unwrapped, or the error type when
+ *   the operand or the enclosing return type is unsuitable. */
 Type *checkTryInner(Checker *c, Expr *e) {
     Type *ot = checkExpr(c, e->u.try_.operand);
     if (ttIsError(ot)) return ttError(c->tt);
     Type *ob = ttBase(ot);
 
     Type *rt = (c->curFunc && c->curFunc->ret) ? ttBase(c->curFunc->ret) : NULL;
-    const char *fw = NULL;   /* 外层返回类型的写法，用来拼错误信息 */
+    /* The spelling of the enclosing return type, used in the diagnostic. */
+    const char *fw = NULL;
 
     if (isProtoType(ob, "option", 1)) {
         if (!isProtoType(rt, "option", 1)) {
@@ -1216,7 +1755,8 @@ Type *checkTryInner(Checker *c, Expr *e) {
             fw = "result<..., E>";
             goto mismatch;
         }
-        /* 错误类型必须一模一样 —— 否则「搬过去」就是在编一个不存在的转换 */
+        /* The error types have to be identical; otherwise forwarding the failure would
+         * encode a conversion that does not exist. */
         Type *oe = *(Type **)vecAt(&ob->targs, 1);
         Type *re = *(Type **)vecAt(&rt->targs, 1);
         if (!ttEquals(oe, re)) {
