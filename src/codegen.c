@@ -4042,14 +4042,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
-            FuncDef *m = *(FuncDef **)vecAt(&inst->sdef->methods, j);
+            FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             /* Only a method that is really called is emitted, which keeps the
              * generated C smaller. The flag is a conservative approximation: it
              * is set whenever the template body mentions a call, so a closure
              * such as `push` calling `grow` is included automatically, and
              * emitting too much is the safe direction. */
-            if (!m->used) continue;
-            genFuncProto(&g, m);
+            if (!md->used) continue;
+            genFuncProto(&g, md);
         }
         substLeave(&g);
     }
@@ -4100,9 +4100,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (inst->kind != TY_GENERIC) continue;
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
-            FuncDef *m = *(FuncDef **)vecAt(&inst->sdef->methods, j);
-            if (!m->used) continue;      /* called methods only */
-            genFunc(&g, m);
+            FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
+            if (!md->used) continue;      /* called methods only */
+            genFunc(&g, md);
             cgLine(&g, "");
         }
         substLeave(&g);

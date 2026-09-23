@@ -1395,8 +1395,8 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
              * wrong type. */
             bool same = false;
             for (size_t k = 0; k < out->aliases.len && !same; k++) {
-                Alias *a = (Alias *)vecAt(&out->aliases, k);
-                if (strcmp(a->from, r->from) == 0 && strcmp(a->to, r->to) == 0) same = true;
+                Alias *seen = (Alias *)vecAt(&out->aliases, k);
+                if (strcmp(seen->from, r->from) == 0 && strcmp(seen->to, r->to) == 0) same = true;
             }
             if (same) continue;                /* the same entry, from importing one module twice */
             Alias *al = (Alias *)vecPush(&out->aliases);
