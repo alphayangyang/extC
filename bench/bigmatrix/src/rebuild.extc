@@ -1,0 +1,40 @@
+// Shape 5: rebuild -- extC (arena: every round is a block, so it is handed back).
+use std::io
+
+struct node {
+    v: i64
+    next: ?ref node
+}
+
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    let rounds = r.nextInt()?
+    let k = r.nextInt()?
+    var acc: i64 = 0
+    var rr: i64 = 0
+    while rr < rounds {
+        {
+            var h: ?ref node = null
+            var i: i64 = 0
+            while i < k {
+                var c = new node
+                c.v = i
+                c.next = h
+                h = c
+                i = i + 1
+            }
+            var p = h
+            while p != null { acc = acc + p.v  p = p.next }
+        }
+        rr = rr + 1
+    }
+    print("acc=", acc, "\n")
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { return 1 }
+    }
+}

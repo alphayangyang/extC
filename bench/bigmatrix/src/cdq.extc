@@ -1,0 +1,137 @@
+// Shape 2: cdq -- extC (3D dominance: sort, dedup, CDQ + weight BIT).
+use std::io
+
+let V: i64 = 1000000
+
+struct pt {
+    a: i32
+    b: i32
+    c: i32
+    cnt: i32
+    ans: i32
+}
+
+fn less(x: pt, y: pt) -> bool {
+    if x.a != y.a { return x.a < y.a }
+    if x.b != y.b { return x.b < y.b }
+    return x.c < y.c
+}
+
+fn msort(src: mut slice<pt>, buf: mut slice<pt>, lo: i64, hi: i64) {
+    if hi - lo < 2 { return }
+    let mid = lo + (hi - lo) / 2
+    msort(src, buf, lo, mid)
+    msort(src, buf, mid, hi)
+    var i = lo
+    var j = mid
+    var k = lo
+    while i < mid && j < hi {
+        if less(src[i], src[j]) { buf[k] = src[i]  i = i + 1 } else { buf[k] = src[j]  j = j + 1 }
+        k = k + 1
+    }
+    while i < mid { buf[k] = src[i]  i = i + 1  k = k + 1 }
+    while j < hi { buf[k] = src[j]  j = j + 1  k = k + 1 }
+    i = lo
+    while i < hi { src[i] = buf[i]  i = i + 1 }
+}
+
+fn bitAdd(bit: mut slice<i32>, i: i64, v: i32) {
+    var k = i
+    while k <= V { bit[k] = bit[k] + v  k = k + (k & (i64(0) - k)) }
+}
+
+fn bitSum(bit: mut slice<i32>, i: i64) -> i32 {
+    var s: i32 = 0
+    var k = i
+    while k > 0 { s = s + bit[k]  k = k - (k & (i64(0) - k)) }
+    return s
+}
+
+fn cdq(p: mut slice<pt>, tmp: mut slice<pt>, bit: mut slice<i32>, l: i64, r: i64) {
+    if l >= r { return }
+    let mid = l + (r - l) / 2
+    cdq(p, tmp, bit, l, mid)
+    cdq(p, tmp, bit, mid + 1, r)
+
+    var i = l
+    var j = mid + 1
+    while j <= r {
+        while i <= mid && p[i].b <= p[j].b {
+            bitAdd(bit, i64(p[i].c), p[i].cnt)
+            i = i + 1
+        }
+        p[j].ans = p[j].ans + bitSum(bit, i64(p[j].c))
+        j = j + 1
+    }
+    var t = l
+    while t < i { bitAdd(bit, i64(p[t].c), i32(0) - p[t].cnt)  t = t + 1 }
+
+    i = l
+    j = mid + 1
+    var k = l
+    while i <= mid && j <= r {
+        if p[i].b <= p[j].b { tmp[k] = p[i]  i = i + 1 } else { tmp[k] = p[j]  j = j + 1 }
+        k = k + 1
+    }
+    while i <= mid { tmp[k] = p[i]  i = i + 1  k = k + 1 }
+    while j <= r { tmp[k] = p[j]  j = j + 1  k = k + 1 }
+    i = l
+    while i <= r { p[i] = tmp[i]  i = i + 1 }
+}
+
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    let n = r.nextInt()?
+    var raw: mut slice<pt> = new pt[n]
+    var buf: mut slice<pt> = new pt[n]
+    var i: i64 = 0
+    while i < n {
+        let a = r.nextInt()?
+        let b = r.nextInt()?
+        let c = r.nextInt()?
+        raw[i].a = i32(a)
+        raw[i].b = i32(b)
+        raw[i].c = i32(c)
+        raw[i].cnt = i32(1)
+        raw[i].ans = i32(0)
+        i = i + 1
+    }
+    msort(raw, buf, 0, n)
+
+    var p: mut slice<pt> = new pt[n]
+    var m: i64 = 0
+    i = 0
+    while i < n {
+        var j = i + 1
+        while j < n && raw[j].a == raw[i].a && raw[j].b == raw[i].b && raw[j].c == raw[i].c { j = j + 1 }
+        p[m] = raw[i]
+        p[m].cnt = i32(j - i)
+        p[m].ans = i32(0)
+        m = m + 1
+        i = j
+    }
+
+    var bit: mut slice<i32> = new i32[V + 1]
+    var k: i64 = 0
+    while k <= V { bit[k] = i32(0)  k = k + 1 }
+    cdq(p, buf, bit, 0, m - 1)          // buf doubles as the CDQ merge buffer
+
+    var sum: u64 = u64(0)
+    var mx: i64 = 0
+    i = 0
+    while i < m {
+        let ans = i64(p[i].ans) + i64(p[i].cnt) - i64(1)
+        sum = sum + u64(i64(p[i].cnt) * ans)
+        if ans > mx { mx = ans }
+        i = i + 1
+    }
+    print("sum=", sum, " max=", mx, "\n")
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { return 1 }
+    }
+}

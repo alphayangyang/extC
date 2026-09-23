@@ -1,0 +1,42 @@
+// Shape 4: mandel -- extC (Mandelbrot, f64, escape at |z| > 2).
+use std::io
+
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    let w = r.nextInt()?
+    let h = r.nextInt()?
+    let maxiter = r.nextInt()?
+    var img: mut slice<u8> = new u8[w * h]
+    var acc: i64 = 0
+    var y: i64 = 0
+    while y < h {
+        var x: i64 = 0
+        while x < w {
+            let cr = f64(x) / f64(w) * 3.5 - 2.5
+            let ci = f64(y) / f64(h) * 2.0 - 1.0
+            var zr: f64 = 0.0
+            var zi: f64 = 0.0
+            var it: i64 = 0
+            while it < maxiter {
+                let t = zr * zr - zi * zi + cr
+                zi = 2.0 * zr * zi + ci
+                zr = t
+                if zr * zr + zi * zi > 4.0 { break }
+                it = it + 1
+            }
+            img[y * w + x] = u8(it & 255)
+            acc = acc + it
+            x = x + 1
+        }
+        y = y + 1
+    }
+    print("mandel=", acc, " img0=", img[0], "\n")
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { return 1 }
+    }
+}

@@ -1,0 +1,51 @@
+// Shape 3: bt -- extC (perfect binary trees, bottom-up, count nodes).
+use std::io
+
+struct tree {
+    left: ?ref tree
+    right: ?ref tree
+}
+
+fn bottomUp(depth: i64) -> ?ref tree {
+    var t = new tree
+    if depth > 0 {
+        t.left = bottomUp(depth - 1)
+        t.right = bottomUp(depth - 1)
+    }
+    return t
+}
+
+fn check(t: ?ref tree) -> i64 {
+    var p = t
+    if p == null { return i64(0) }
+    if p.left == null { return i64(1) }
+    return i64(1) + check(p.left) + check(p.right)
+}
+
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    let maxdepth = r.nextInt()?
+    let bigdepth = r.nextInt()?
+    let iters = r.nextInt()?
+    var total: i64 = 0
+    var d: i64 = 4
+    while d <= maxdepth {
+        {
+            let t = bottomUp(d)
+            total = total + check(t)
+        }
+        d = d + 1
+    }
+    let big = bottomUp(bigdepth)
+    var i: i64 = 0
+    while i < iters { total = total + check(big)  i = i + 1 }
+    print("trees=", total, "\n")
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { return 1 }
+    }
+}
