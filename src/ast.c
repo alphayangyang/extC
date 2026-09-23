@@ -98,6 +98,8 @@ Expr *exprNew(Arena *a, ExprKind kind, int line) {
     Expr *e = (Expr *)arenaAllocZero(a, sizeof(Expr));
     e->kind = kind;
     e->line = line;
+    e->storedAt = -1;      /* "has this value been seen being published?" is not answered
+                            * yet, and 0 is a real answer (it must outlive the frame) */
     return e;
 }
 

@@ -498,6 +498,23 @@ void checkStmt(Checker *c, Stmt *s) {
              * one step later would record the old number and cause false rejections
              * afterwards. */
             int atDst = storeLayer(c, s->u.assign.target);
+            /* Record the new value only when the target *is* the binding.
+             *
+             * `*q = n * 2` writes through the reference into the box `q` points at; `q`
+             * still holds the same box, so "what does `q` hold now" is unchanged. Taking
+             * `placeRoot` here would answer with `q` anyway and overwrite the binding's
+             * value with `n * 2`, and the allocation published at line 17 would then be
+             * read back through `*q` as if it had been stored at the level of `*q`, which
+             * is this frame: measured on `examples/alloc-in-block`, the `alloc` inside the
+             * nested block came out with the level "must outlive this frame" while the
+             * function has no home arena, so the generated C said `__extc_home` and did not
+             * compile. Assignments through a projection (`s.f`, `v[i]`) are the same
+             * question and take the same answer: they do not rebind the root binding. */
+            if (s->u.assign.target->kind == EX_IDENT) {
+                Sym *dst = identBindOf(s->u.assign.target);
+                if (dst) dst->lastStore = s->u.assign.value;
+            }
+            recordStore(c, s->u.assign.value, atDst, s->line);
             promoteInto(c, s->u.assign.value, atDst);
             markCallHomeIfEscaping(c, s->u.assign.value, atDst);
             /* A value binding that can hold references is written, either wholesale or
@@ -625,6 +642,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * instantiation reported "depth 1, but this can only hold up to 0". The
                  * payload is a value whose references end up with the caller, so it is
                  * promoted to level 0. */
+                recordStore(c, s->u.ret.value, 0, s->line);
                 promoteInto(c, s->u.ret.value, 0);
                 if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
@@ -643,6 +661,9 @@ void checkStmt(Checker *c, Stmt *s) {
                         c->curFunc?c->curFunc->name:"?", s->line,
                         (int)s->u.ret.value->kind, exprRefDepth(c, s->u.ret.value),
                         mentionsParam(s->u.ret.value->type)?1:0);
+            /* A returned value is handed to the caller, so it is published at level 0:
+             * the whole point of returning it is that it outlives this frame. */
+            recordStore(c, s->u.ret.value, 0, s->line);
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }

@@ -2057,6 +2057,111 @@ static int solvedValDepth(Expr *e) {
  *     the names would not match, and a struct has no frozen layout. The stdlib wrappers
  *     pass `s.data` and `s.len` explicitly instead.
  */
+/* Level pass: settle every allocation site's requirement from the recorded publications.
+ *
+ * A publication `(value, at)` says "this value ends up somewhere that lives `at` levels
+ * deep". Following the value to the allocation sites it can reach, each of those sites
+ * is then required to live to `at` as well. Following a value means:
+ *
+ *   binding      through `Sym.origin`, the expression its storage came from
+ *   reference,   through the carrier: `ref x`/`*p`/`p!` name the same storage, a slice
+ *   deref, sign  names part of its object, and a field or element lives inside its
+ *   slice, field, object
+ *   index
+ *   aggregate    every element of a struct literal, array literal, or enum payload
+ *   call         nothing: what a callee publishes is the callee's own business, and a
+ *                call's result reaches a site only through a parameter it was handed
+ *
+ * This is a fold over data, so it is order-independent and can be run again: every step
+ * only ever lowers `minAt`, that is, only strengthens a requirement, which is the
+ * direction the solver needs. It replaces the previous scheme, where the same traversal
+ * mutated site levels while the checker was still running, so a decision could depend on
+ * which branch had been visited first.
+ *
+ * Params:
+ *   c      - checker
+ *   val    - the value being published
+ *   target - arena level the destination lives at; 0 = beyond this frame
+ *   hops   - recursion guard, since bindings may form cycles (`a = b  b = a`)
+ */
+static void levelOfValue(Checker *c, Expr *val, int target, int hops) {
+    if (!val || hops > 32) return;
+    if (getenv("EXTC_DBG_LV"))
+        fprintf(stderr, "      [lv] kind=%-3d line=%-4d target=%-2d hops=%d\n",
+                (int)val->kind, val->line, target, hops);
+    switch (val->kind) {
+    case EX_NEW:
+    case EX_GENCALL:
+        /* The site this whole walk was looking for. */
+        if (val->minAt < 0 || target < val->minAt) val->minAt = target;
+        return;
+    case EX_IDENT: {
+        Sym *sy = identBindOf(val);
+        /* Reaching an allocation through a *value* answers "where did this number come
+         * from", and only the three forms above, this one, and the containers below
+         * preserve that. The three forms deliberately absent from this switch -- `*e`,
+         * `&e` and `e[a:b]` -- do not: `*e` is the thing `e` points at, and `&e` is the
+         * address of `e`, so neither is the value the sub-expression holds.
+         *
+         * Following one anyway was measured to be a false rejection, not a missed
+         * promotion: in `examples/alloc-in-block`, `return total` was followed through
+         * `total = *q` into `q`, and from there into the allocation, so the `alloc` inside
+         * the block was told "must outlive this frame" although nothing outlives the
+         * block; the function has no home arena to give it, and the generated C referenced
+         * `__extc_home`, which does not exist there. */
+
+        /* "What does this binding hold now?" first: the last plain assignment, if there
+         * was one. `origin` answers "what was it declared with", which is the wrong
+         * question once the binding has been reassigned. */
+        if (sy && sy->lastStore) { levelOfValue(c, sy->lastStore, target, hops + 1); return; }
+        if (getenv("EXTC_DBG_LV"))
+            fprintf(stderr, "      [lv] ident=%-5s sym=%s origin=%s target=%d\n",
+                    val->u.ident.name, sy ? "有" : "NULL",
+                    (sy && sy->origin) ? "有" : "NULL", target);
+        if (getenv("EXTC_DBG_LV") && sy && sy->origin)
+            fprintf(stderr, "      [lv]   -> origin kind=%d line=%d\n",
+                    (int)sy->origin->kind, sy->origin->line);
+        if (sy && sy->origin) levelOfValue(c, sy->origin, target, hops + 1);
+        return;
+    }
+    case EX_SIGN:  levelOfValue(c, val->u.sign.operand, target, hops + 1); return;
+    case EX_FIELD: levelOfValue(c, val->u.field.obj, target, hops + 1); return;
+    case EX_INDEX: levelOfValue(c, val->u.index.obj, target, hops + 1); return;
+    case EX_COALESCE:
+        /* Both sides can become the result, so both are published. */
+        levelOfValue(c, val->u.coalesce.main, target, hops + 1);
+        levelOfValue(c, val->u.coalesce.fallback, target, hops + 1);
+        return;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < val->u.lit.inits.len; i++)
+            levelOfValue(c, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value,
+                         target, hops + 1);
+        return;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < val->u.arraylit.elems.len; i++)
+            levelOfValue(c, *(Expr **)vecAt(&val->u.arraylit.elems, i), target, hops + 1);
+        return;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < val->u.enumval.args.len; i++)
+            levelOfValue(c, *(Expr **)vecAt(&val->u.enumval.args, i), target, hops + 1);
+        return;
+    default:
+        /* A scalar, a literal, a call result: nothing that reaches an allocation site
+         * through this value. A callee's own sites are settled by the callee's
+         * publications, and what it stores into a parameter is settled at the call site
+         * from the arguments. */
+        return;
+    }
+}
+
+/* Run the level pass over the publications recorded while the body was checked. */
+static void levelPass(Checker *c) {
+    for (size_t i = 0; i < c->stores.len; i++) {
+        StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
+        if (st) levelOfValue(c, st->value, st->at, 0);
+    }
+}
+
 /* Depth of a value once the level solver has run, following bindings backwards.
  *
  * `solvedValDepth` reads the depth cached on a node, and for a binding that number may
@@ -2193,6 +2298,21 @@ static void checkFunc(Checker *c, FuncDef *f) {
     {
         DfResult dfr;
         dfAnalyze(c, f, &dfr);
+        /* Publications recorded during this body settle the sites they reach. Running
+         * here, after the depth fixed point, is the point of the whole split: the
+         * decision sees the final depths instead of the numbers that happened to be
+         * true while the body was being walked. */
+        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c);
+        if (getenv("EXTC_DBG_STORES")) {
+            int n0 = 0;
+            for (size_t i = 0; i < c->stores.len; i++) {
+                StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
+                fprintf(stderr, "[store] %s: line=%d at=%d kind=%d\n",
+                        f->name ? f->name : "?", st->line, st->at, (int)st->value->kind);
+                n0++;
+            }
+            (void)n0;
+        }
         if (getenv("EXTC_DBG_DFA")) {
             fprintf(stderr, "[dfa] %s: %d vars%s\n", f->name ? f->name : "?",
                     dfr.nvars, dfr.overflow ? " (OVERFLOW: result unused)" : "");
@@ -2718,7 +2838,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.callChecks, arena, sizeof(void *));   /* deferred call sites */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* arena decisions that depend on escapes */
-    vecInit(&c.lvlFacts, arena, sizeof(LvlFact *));    /* long-running: "stored at level k" facts */
+    vecInit(&c.lvlFacts, arena, sizeof(LvlFact *));
+    vecInit(&c.stores, arena, sizeof(StoreSite *));    /* long-running: "stored at level k" facts */
     /* Must be initialized here, before any pass.
      *
      * `curArenaSites` used to be `vecInit`ed inside `checkFunc` only, while
@@ -3149,6 +3270,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                      * temporaries that never escaped were pinned there until the frame ended.
                      * Measured on the 50/25/25 shape over 2e6 iterations: 98 MB, while the
                      * same shape with an inlined container needed only 50 MB. */
+                    if (getenv("EXTC_DBG_MINAT"))
+                        fprintf(stderr, "[minAt] %-8s line=%-4d minAt=%-3d arena=%d\n",
+                                f->name ? f->name : "?", site->line, site->minAt, site->arenaLevel);
                     if (getenv("EXTC_DBG_SITE2"))
                         fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", site->minAt, site->lexicalLevel,

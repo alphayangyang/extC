@@ -113,6 +113,20 @@ typedef struct {
      * Only the initializer is followed, and only through explicit assignments; aliases
      * are not chased, so a site that cannot be reached keeps its depth error. */
     Expr       *origin;
+    /* The right-hand side of the last plain assignment to this binding, or NULL when it
+     * has only ever been initialized.
+     *
+     * This is a second, narrower question than `origin`. `origin` is the flattened root
+     * of the initializer and is used by the promotion walk that runs *during* checking,
+     * so it must keep its current meaning. Following "what does this binding hold now"
+     * is a different question, asked after checking by the level pass: `out = h` makes
+     * the binding hold `h`, while `origin` still names the literal it was declared with,
+     * and the publication would then never reach the allocation inside `h`.
+     *
+     * Keeping the two apart also keeps the fix local: updating `origin` on assignment
+     * perturbs the walk that is still running and was measured to send the generated
+     * code into an infinite loop on `examples/escape-promotion`. */
+    Expr       *lastStore;
     int         line;      /* source line of the declaration, for diagnostics */
     /* The module this binding belongs to; set for globals, NULL for locals. Name
      * resolution uses it to reject an unqualified reference to another module's name. */
@@ -299,6 +313,7 @@ typedef struct Checker {
      * This has the same shape as the call-site arena decision and as the transitive
      * closure of `needsHome`. */
     Vec        lvlFacts;    /* LvlFact* */
+    Vec        stores;      /* StoreSite* -- publications, folded over by the level pass */
     /* True while requirements are being replayed. Recording a new requirement during a
      * replay would make the table grow without bound, which once ended with the compiler
      * killed by the memory limit. */
@@ -356,6 +371,22 @@ typedef struct {
  * level as soon as a `new` is seen allows movement in one direction only and makes it
  * impossible to tell afterwards whether a level was decided or computed. */
 typedef struct { Expr *val; int at; } LvlFact;
+
+/* One publication: a value observed being handed to a place that may outlive it.
+ *
+ * Every store, return, and "may keep it" argument call is one of these. Recording is
+ * the checking pass's entire involvement with arena levels; deciding which arena each
+ * allocation site ends up in is a separate pass that folds over this table. Keeping the
+ * two apart is what makes the decision independent of the order the checker walks the
+ * tree in, which is the property the previous destructive update could not have.
+ *
+ * Params are captured rather than derived later, because `at` needs the scope stack and
+ * because the binding's origin may legitimately be retargeted later in the body. */
+typedef struct {
+    Expr       *value;   /* the value being published */
+    int         at;      /* arena level of the destination; 0 = beyond this frame */
+    int         line;    /* for diagnostics */
+} StoreSite;
 
 /* An `==` deferred to instantiation: recorded while an expression is checked and
  * consumed by the pass that runs afterwards.
@@ -461,6 +492,10 @@ typedef struct {
 /* Run every check a store needs: the depth rule plus "a borrowed value may not be stored where
  * it outlives the call". */
  _Bool checkStoreEscape (Checker *c, Expr *val, Expr *target, int line);
+
+/* Record that `val` is being published at level `at`; decides nothing. The checking
+ * pass only records; one pass folds over the records and settles the levels. */
+ void recordStore (Checker *c, Expr *val, int at, int line);
 /* True when C can compare values of this type directly; `str` is excluded because its `==` would
  * compare pointers. */
  _Bool cmpIsNative (Type *t);

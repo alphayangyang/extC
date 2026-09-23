@@ -197,6 +197,13 @@ struct Expr {
      * but treating "touched" as "goes into the home arena" made `main` emit a
      * `__extc_home` it does not have, and the generated C did not compile. */
     int       minAt;
+    /* The shallowest level at which this value has been observed being published (stored
+     * into a place, returned, or handed to a call that may keep it). `-1` means the
+     * question has not been asked yet. Recording is the only thing the checking pass
+     * does about levels: deciding which arena a site goes to is a separate pass over
+     * these records, so that no decision depends on the order the checker happens to
+     * walk the tree in. */
+    int       storedAt;
     /* This `new` belongs to an `@overwrite` site, so there is only one block of
      * storage: it is allocated lazily in the function frame and cleared before every
      * reuse. The level therefore follows the function body rather than the block the

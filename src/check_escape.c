@@ -712,6 +712,31 @@ static bool promoteFields(Checker *c, Sym *sy, int at, int hops) {
  *     which is not a level number and must not be pushed back into one. The two agree
  *     exactly when the solved level is the home arena.
  */
+/* Record one publication and change nothing else.
+ *
+ * This is the checking pass's whole involvement with arena levels. Deciding where an
+ * allocation site goes is a separate pass that folds over these records together with
+ * the depth fixed point, so no decision depends on the order the checker walked the
+ * tree in. The same value may be recorded more than once at different levels; the fold
+ * takes the minimum, which is the strongest requirement.
+ *
+ * Params:
+ *   c    - checker
+ *   val  - the value being published
+ *   at   - arena level of the destination; 0 = beyond this frame
+ *   line - for diagnostics
+ */
+void recordStore(Checker *c, Expr *val, int at, int line) {
+    if (!c || !val || at < 0) return;
+    if (val->storedAt >= 0 && val->storedAt <= at) return;   /* nothing new to say */
+    val->storedAt = at;
+    StoreSite *st = (StoreSite *)arenaAllocZero(c->arena, sizeof(StoreSite));
+    st->value = val;
+    st->at    = at;
+    st->line  = line;
+    *(StoreSite **)vecPush(&c->stores) = st;
+}
+
 static void recordLvlFact(Checker *c, Expr *val, int at);
 static void applyLvlFact(Checker *c, Expr *val, int at);
 
@@ -1068,6 +1093,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     if ((int)c->scopes.len < atStore) atStore = (int)c->scopes.len;
     /* Try the promotion first. When it cannot promote anything, the call below still
      * reports the error, so this is a safety net and is idempotent. */
+    recordStore(c, val, atStore, line);
     promoteInto(c, val, atStore);
     bool bad = checkEscape(c, val, at, line, "this assignment");
     /* When the origin of the value can be traced to a parameter, accept the store and let
@@ -1258,6 +1284,7 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
          *
          * The return value is ignored: failing to promote is not an error, and whether to
          * reject is decided by the deferred rule recorded here. */
+        recordStore(c, val, at, line);
         promoteInto(c, val, at);
         recordRefCheck(c, val, NULL, at, line, what);
         return false;
