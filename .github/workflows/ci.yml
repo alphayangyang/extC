@@ -1,0 +1,31 @@
+# CI: build the compiler and run the quick acceptance suite.
+#
+# Only `cc` and `python3` are needed for this job -- that is exactly what
+# `./check.sh quick` was made to require.  The full mode adds benchmarks and needs
+# `g++` + `rustc`; the six-language matrix in bench/bigmatrix also needs `go` + `java`.
+# Keep it that way: a contributor with a C compiler and Python must be able to run
+# the whole acceptance suite.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the compiler
+        run: make -j"$(nproc)"
+
+      - name: compiler warnings must stay at zero
+        run: |
+          make clean
+          make -j"$(nproc)" 2>&1 | tee /tmp/build.log
+          ! grep -q warning /tmp/build.log
+
+      - name: quick acceptance suite
+        run: ./check.sh quick

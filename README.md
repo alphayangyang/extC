@@ -4,7 +4,80 @@
 
 > **一句话**：凡是编译期能证明的，运行时不留痕迹。
 
-## 文档
+<!-- 发布后把 USER/extC 换成你的仓库路径，CI 徽章就会亮 -->
+[![ci](https://github.com/USER/extC/actions/workflows/ci.yml/badge.svg)](https://github.com/USER/extC/actions)
+
+## 这是什么
+
+- **一门编译到 C11 的语言**：没有 VM、没有运行时库、没有 GC。生成的 C **是给人读的**
+  （`#line` 指回源码行，`--no-line-map` 可关）。
+- **内存靠 arena，不靠 GC**：每个词法块一只 arena，**出块即还**。没有 `free`，也没有垃圾回收。
+- **承诺长在类型里**：逃逸、借用、越界、除零、移位溢出、整数收窄 —— 能编译期证明的**报编译错**，
+  证明不了的留**带源码位置的 trap**，**绝不静默**。这就是上面那句话的意思。
+- **`!` 是唯一的逃生舱**（`a[i]!` / `extern!`）：含义只有一个 ——「我签字，接受运行时的后果」，
+  所以 `grep -c '!'` 一次就能把全部逃生舱数清楚。
+
+## 先看一眼
+
+```extc
+use std::io
+
+struct point { x: i32  y: i32 }        // 打印由编译器递归生成
+
+fn run() -> result<unit, io::ioError> {
+    var p = point { x: 1, y: 2 }
+    println("p = ", p)                 // p = point { x: 1, y: 2 }
+
+    var buf: [64]u8
+    var r = io::readerOf(io::STDIN_FD) // 隐式 64KB 缓冲，住在当前块里
+    let n = r.nextLine(buf[..])?       // 行比 buf 长 ⇒ 看得见的 failure，不是静默截断
+    io::writeBytes(buf[0..n])
+    io::flushOut()
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match run() {
+        success(u) => { return 0 }
+        failure(e) => { return 1 }
+    }
+}
+```
+
+语言手册 [`docs/MANUAL.md`](docs/MANUAL.md) · 语言巡礼 [`examples/tour.extc`](examples/tour.extc)
+
+### 跑分：六个语言 × 五个重负载形状
+
+数据**全部从 stdin 读**（一个生成器产一份，六个语言读同一份），每家用满自己的优化。
+harness 与结果：[`bench/bigmatrix/`](bench/bigmatrix/) · [`RESULTS.md`](bench/bigmatrix/RESULTS.md)
+
+| | extC | C | C++ | Rust | Go | Java |
+|---|---|---|---|---|---|---|
+| 五形状几何平均（1.00 = 该形状最快）| **1.16×** | 1.63× | 1.67× | 1.75× | 1.74× | 2.29× |
+| 峰值 RSS | **五个形状全部 <= C** | — | 略高 | 略高 | 略高 | 1.6~100× |
+| 交付文件 | 20 KB | 16 KB | 16~37 KB | 11.5 MB | 2.4 MB | 3~5 KB |
+
+`bt`（二叉树：**231ms** vs C 298）与 `rebuild`（分配/回收：**26ms** vs C 199）extC 最快；
+`mandel`/`cdq` 与 C 同档；`radix` 慢 1.64× —— 那是**切片边界检查 + `new` 零初始化**两笔明账，不藏 ✓
+
+## 30 秒上手
+
+```sh
+make -j"$(nproc)"                          # 只需 C11 + libc，产出 build/extc
+./build/extc --run examples/hello.extc     # 生成 C -> 编译 -> 直接跑
+./tests/run.sh                             # 255 通过 / 0 失败
+./check.sh quick                           # 15 节验收（默认只要 cc + python3）
+```
+
+| 想跑什么 | 要装什么 |
+|---|---|
+| `make` · `tests/run.sh` · `check.sh quick` | `cc`（gcc / clang）+ `python3` |
+| `./check.sh`（完整模式，含基准）| 再加 `g++` + `rustc` |
+| `bench/bigmatrix/run.sh`（六语言横评）| 再加 `go` + `java` |
+
+---
+
+## 文档地图（要读代码 / 参与开发时从这里进）
 
 > **根目录只有这一份 `README.md`** —— 其余全部在 `docs/` 下（2026-09-23 重组：
 > 原来 27 份散在根目录，谁也说不清哪份是权威 ✗）✓
@@ -123,9 +196,10 @@
 **`std::sys::io` 分层 + `writer`**（定案 75）✓
 ⚠️ **最新一条是"没做成"的记账**：**全限定名的第五次失败**（见下面那条 ⭐ 与 `PLAN.md` #53）✓
 
-`./check.sh quick` **14 节全绿**：**255** 测试 · arena 5 · 警告零误报 · 泛型 3 · extern 4 ·
-模块 12 · IO 10 · ASan 8 · 层号哨兵 98 语料零漂移 · **全限定名 8** · **fs 规范 5** · 攻击库与基线一致 ✓
-（完整模式 **20 节** —— 多出的 **6** 节是基准 ✓ `tools/golden.sh check` 是**另一个脚本**：
+`./check.sh quick` **15 节全绿**（2026-09-24 实测）：**255** 测试 · arena 5 · 警告零误报（95 语料）·
+泛型 3 · extern 4 · 模块 12 · IO 10 · ASan 8 · 层号哨兵 **97** 语料零漂移 · **全限定名 8** ·
+**fs 规范 5** · **注解 8** · 攻击库与基线一致 ✓
+（完整模式 **21 节** —— 多出的 **6** 节是基准 ✓ `tools/golden.sh check` 是**另一个脚本**：
 95 个文件的生成 C 逐字节相同 ✓ —— 它**不在** `check.sh` 里，别算进节数）
 
 ⚠️ **还没到"能跟人下五子棋"**：差 **IO-1**（`open` + 帧拥有文件 + `main(args)`）·

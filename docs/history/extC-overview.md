@@ -5,7 +5,7 @@
 
 
 > 写这份的时间：2026-09-21（WSL 侧，`127.0.0.1:3090` 这台）
-> 仓库：`/home/alphayang/extC_Compiler`（Windows 侧对应 WSL 里的 `~/extC_Compiler`）
+> 仓库：本仓库根目录（`extC_Compiler/`）
 > 想要"一句话"：**extC = Rust 的安全 + 不写生命周期 + Go 那么少的语法量**，编译到 C。
 
 ---

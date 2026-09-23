@@ -7,6 +7,12 @@
 set -u
 cd "$(dirname "$0")"
 ROOT=../..
+
+# 输入**不再入库**（两个文件 36MB，占全新克隆的九成）⇒ 缺了就现场生成 ✓
+# in_lines.txt 是逐字节复现；in_ints.txt 同规模同分布（生成器里写清了差异）
+if [ ! -f in_ints.txt ] || [ ! -f in_lines.txt ]; then
+    cc -O2 -o /tmp/extc_io_gen gen.c && /tmp/extc_io_gen . || { echo "生成输入失败"; exit 1; }
+fi
 B=$ROOT/build/gc-io
 mkdir -p "$B"
 

@@ -31,3 +31,7 @@ bench/**/*_c_o2
 bench/**/*_chk
 bench/**/*_rs
 bench/**/*_cpp
+
+# 读者基准的输入（36MB，由 gen.c 现场生成）
+bench/gc/io/in_ints.txt
+bench/gc/io/in_lines.txt
