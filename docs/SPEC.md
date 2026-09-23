@@ -1,4 +1,4 @@
-# LANGUAGE.md —— extC 语言设计（正式版）
+# SPEC.md —— extC 语言设计（正式版）
 
 > **这份文档是「extC 是什么」的唯一权威版本。**
 >
@@ -323,7 +323,7 @@ fn main() -> i32 {
 | **arena** | **`new` 的**（运行时大小 / 要跨作用域）| **它那只 arena 出作用域** ✓ | 编译器（**隐式**、用户无感 ✓）|
 | **静态** | 全局 / 常量（深度 0）| 程序结束 ✓ | 链接器 / OS ✓ |
 
-> ⭐ **arena = 词法作用域**（每个 `{}` 一只，见 [`ARENA.md`](ARENA.md)）✓
+> ⭐ **arena = 词法作用域**（每个 `{}` 一只，见 [`ARENA.md`](../docs/topics/ARENA.md)）✓
 > 而**没有堆**：既没有 `malloc`/`free`，也没有 GC ✓
 >
 > ✅ **2026-09-20 落地**（PLAN A2）：arena 真的按**块**细化了 ——
@@ -713,15 +713,15 @@ match e {
 
 | 文档 | 回答什么 |
 |---|---|
-| **`LANGUAGE.md`（本文）** | **extC 是什么、为什么** |
-| [`MANUAL.md`](MANUAL.md) | 怎么写 extC 程序（**只写已实现的**）|
-| [`DESIGN.md`](DESIGN.md) | 原则的完整推论（P / P′ / P″ 的展开）|
-| [`DECISIONS.md`](DECISIONS.md) | 哪条定了（编号定案）、哪条还欠着 |
-| [`BOOTSTRAP.md`](BOOTSTRAP.md) | 自举路线、六步计划、ISO C 边界、沙箱 |
-| [`IO.md`](IO.md) | 输入输出的设计（未实现）|
-| [`MODULES.md`](MODULES.md) | **模块系统的调研 + 候选方案**（IO 的前置条件 —— 12 门语言怎么做、六个待拍板问题）|
-| [`LIBS.md`](LIBS.md) | **库的形态**（源码分发 / 给 C 用 / `extern!` 信任声明 / 所有权映射）|
-| [`REFS.md`](REFS.md) / [`ARRAYS.md`](ARRAYS.md) | 引用 / 数组的专题设计 |
-| [`SYNTAX.md`](SYNTAX.md) | 命名规范与样板 |
-| [`DEVLOG.md`](DEVLOG.md) | 发生过什么（决策与发现的来龙去脉）|
-| [`VISION.md`](VISION.md) | 早期的一份合并版（**已被本文取代**）|
+| **`SPEC.md`（本文）** | **extC 是什么、为什么** |
+| [`MANUAL.md`](../docs/MANUAL.md) | 怎么写 extC 程序（**只写已实现的**）|
+| [`DESIGN.md`](../docs/DESIGN.md) | 原则的完整推论（P / P′ / P″ 的展开）|
+| [`DECISIONS.md`](../docs/DECISIONS.md) | 哪条定了（编号定案）、哪条还欠着 |
+| [`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md) | 自举路线、六步计划、ISO C 边界、沙箱 |
+| [`IO.md`](../docs/topics/IO.md) | 输入输出的设计（未实现）|
+| [`MODULES.md`](../docs/topics/MODULES.md) | **模块系统的调研 + 候选方案**（IO 的前置条件 —— 12 门语言怎么做、六个待拍板问题）|
+| [`LIBS.md`](../docs/topics/LIBS.md) | **库的形态**（源码分发 / 给 C 用 / `extern!` 信任声明 / 所有权映射）|
+| [`REFS.md`](../docs/topics/REFS.md) / [`ARRAYS.md`](../docs/topics/ARRAYS.md) | 引用 / 数组的专题设计 |
+| [`SYNTAX.md`](../docs/SYNTAX.md) | 命名规范与样板 |
+| [`DEVLOG.md`](../docs/DEVLOG.md) | 发生过什么（决策与发现的来龙去脉）|
+| [`VISION.md`](../docs/history/VISION.md) | 早期的一份合并版（**已被本文取代**）|

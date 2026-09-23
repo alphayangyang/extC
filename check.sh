@@ -84,6 +84,16 @@ if out=$(./tests/fs-shape/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 2 反例 + 常量不外露 + 规范入档）"
 else bad "tests/fs-shape/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 头文件 include guard（内容不许落在 #endif 之后）=="
+# 判据：每个 src/*.h 的**最后一个非空行**必须是 #endif。
+# 为什么要有这一节：曾经有一段声明（连同它的文档注释）被追加到 types.h 的 #endif **之后**
+# ⇒ 每被包含一次就重复声明一次。那次是靠 grep 撞出来的，这个脚本让它再也跑不掉 ✓
+if out=$(python3 tools/check_guards.py 2>&1); then
+    ok "$(echo "$out" | tail -1)"
+else
+    bad "tools/check_guards.py"; echo "$out" | head -8
+fi
+
 echo "== 攻击库（通过的必须是 BASELINE 里那几条 ⇒ 没放松）=="
 now=$(mktemp)
 for f in tests/attacks/*.extc; do

@@ -1,24 +1,39 @@
-/* 类型检查 pass。
+/* Type checking: infer the type of every expression and write it back into the AST.
  *
- * 唯一做类型推理的地方。它把结果写回 AST，之后 codegen 只负责翻译。
+ * Three conversion rules drive every assignment, argument, and return check:
+ *   - Widening (lossless) is implicit.
+ *   - Narrowing (lossy) is always rejected; a lossy conversion has to be written out.
+ *   - A literal takes the type its context expects, by value (`let x: f32 = 3.14`,
+ *     `let x: u8 = 200`).
  *
- * 检查原则（对应 DESIGN §3）：
- *   · 拓宽（无损失）自动允许
- *   · 收窄（有损失）一律禁止 —— 有损转换必须写出方法名
- *   · 字面量的类型可以按**值**适配（`let x: f32 = 3.14`、`let x: u8 = 200`）
+ * After this pass codegen only translates; it never reasons about types again.
  */
 
 #include "check.h"
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>   /* qsort（模块级名字排序表）*/
+#include <stdlib.h>   /* qsort: sorting the table of module-level names */
 #include <string.h>
 
 
 #include "check_internal.h"
-/* ---------------------------------------------------------------- 报错 */
+/* ---------------------------------------------------------------- errors */
 
+/* Report a fatal error at a source position.
+ *
+ * Params:
+ *   c    - checker whose Ctx collects the diagnostic
+ *   line - source line the diagnostic points at; 0 when no position is known
+ *   note - an extra explanatory sentence printed under the message, or NULL
+ *   fmt  - printf format for the message, followed by its arguments
+ *
+ * Notes:
+ *   - The message is rendered into a fixed-size buffer first, so a long message is
+ *     truncated rather than overflowing.
+ *   - Reporting is first-error-wins: once `Ctx.hasError` is set, later errors are
+ *     dropped, so a cascade of follow-on diagnostics never reaches the user.
+ */
 void ckError(Checker *c, int line, const char *note, const char *fmt, ...) {
     char tmp[EXTC_MAXERR];
     va_list ap;
@@ -28,8 +43,19 @@ void ckError(Checker *c, int line, const char *note, const char *fmt, ...) {
     ctxError(c->ctx, line, 1, note, "%s", tmp);
 }
 
-/* ⭐ 警告（2026-09-22）：**该说但不该拦**的那些事走这条路 ✓
- * 跟 `ckError` 的唯一区别：不设 `hasError` ⇒ 编译继续、退出码不变 ✓ */
+/* Report a warning: something worth telling the user about, but not worth stopping
+ * the build for.
+ *
+ * Params:
+ *   c    - checker whose Ctx carries the warning channel
+ *   line - source line the warning points at
+ *   note - an extra explanatory sentence printed under the message, or NULL
+ *   fmt  - printf format for the message, followed by its arguments
+ *
+ * Notes:
+ *   - The only difference from `ckError` is that a warning does not set `hasError`, so
+ *     compilation continues and the exit status is unchanged.
+ */
 void ckWarn(Checker *c, int line, const char *note, const char *fmt, ...) {
     char tmp[EXTC_MAXERR];
     va_list ap;
@@ -39,6 +65,15 @@ void ckWarn(Checker *c, int line, const char *note, const char *fmt, ...) {
     ctxWarn(c->ctx, line, 1, note, "%s", tmp);
 }
 
+/* Render a type the way the user writes it, for use inside diagnostics.
+ *
+ * Params:
+ *   c - checker owning the arena the text is allocated in
+ *   t - the type to render; NULL renders as "void"
+ *
+ * Returns:
+ *   A NUL-terminated string owned by the checker's arena, valid for the rest of the run.
+ */
 const char *typeStr(Checker *c, Type *t) {
     Buf b;
     bufInit(&b, c->arena);
@@ -46,28 +81,30 @@ const char *typeStr(Checker *c, Type *t) {
     return bufCstr(&b);
 }
 
-/* ------------------------------------------------- 生成 C 的名字（改名） */
+/* ---------------------------------------------------------------- generated C names (renaming) */
 
-/* **`let` 是命名，不是存储。** 所以同一层里 `let a = 1` / `let a = a + 1` 是合法的 ——
- * 第二个 `a` 只是**重新给这个名字一个含义**，不是写进原来那个地方（老的那个 `a`
- * 连同它的存储一起留在原地，谁指着它谁还指着它）。
- *
- * 但 C 不允许同一个块里重名 ⇒ 第二个以后的名字在**生成的 C** 里改叫 `a__2`。
- * extC 源码里的名字**不变** —— 改名是编译器内部的事，不许漏给用户看。
- *
- * 两条约束：
- *   ① 同一个函数内**单调不重复**（不复用 `a__2`）—— 生成的 C 读起来才确定，
- *      也不用去推敲 C 自己的块作用域规则；
- *   ② 还要避开**模块级**的名字（函数 / 结构体 / 全局）—— 否则局部变量会在生成的 C 里
- *      盖住函数名，`foo()` 就调不到了。 */
+/* Compare two `const char *` names, for qsort over the module-name table. */
 static int cmpNamePtr(const void *a, const void *b) {
     return strcmp(*(const char **)a, *(const char **)b);
 }
-/* ⭐ 编译时长优化（2026-09-21 压测量出来的）：原来**每次起 C 名字都要线性扫整个 module**
- * ⇒ 对 "N 个函数 + N 个结构体" 的程序是 O(N²)（实测前端 500→4000 是 35ms→1029ms，
- *   指数 ~1.7~2 ✓）。改成**一次建排序表 + 二分** ✓
- * 模块级名字在检查期间稳定（泛型实例走 tt->enumInstances / codegen 的 g.insts，
- * 不往 m->* 里加）⇒ 只建一次；用三个长度做"过期校验"兜底 ✓ */
+/* Report whether a module-level name is already taken.
+ *
+ * Params:
+ *   c    - checker holding the cached table
+ *   name - candidate name to look up
+ *
+ * Returns:
+ *   True when a function, struct, type, or global of the module already uses this name.
+ *
+ * Notes:
+ *   - This is a compile-time optimisation. Asking the module-level vectors in turn made
+ *     naming quadratic in their total length: a front end with N functions and N structs
+ *     measured 35 ms at N = 500 and 1029 ms at N = 4000. One sorted table searched by
+ *     binary search replaces it.
+ *   - Module-level names are stable while checking (generic instances live in
+ *     tt->enumInstances and in codegen's g.insts, never in m->*), so the table is rebuilt
+ *     only when the combined length of those vectors changes.
+ */
 static bool moduleNameTaken(Checker *c, const char *name) {
     Module *m = c->m;
     size_t want = m->funcs.len + m->structs.len + m->types.len + m->globals.len;
@@ -95,6 +132,30 @@ static bool moduleNameTaken(Checker *c, const char *name) {
     return false;
 }
 
+/* Give a source-level name the name it will carry in the generated C.
+ *
+ * `let` names a value; it does not store one. So `let a = 1` followed by
+ * `let a = a + 1` in the same scope is legal: the second `a` gives the name a new
+ * meaning and leaves the first binding, with its storage, where it was. C forbids two
+ * declarations of one name in the same block, so from the second use on the generated C
+ * calls it `a__2`. The extC source name never changes -- renaming is internal to the
+ * compiler and must not leak into the user's view.
+ *
+ * Two constraints follow:
+ *   - Within one function the suffixes are monotonic and never reused, so the generated C
+ *     reads deterministically and does not depend on C's own block-scope rules.
+ *   - Module-level names (functions, structs, globals) have to be avoided as well,
+ *     otherwise a local would shadow a function name in the generated C and `foo()`
+ *     would no longer be callable.
+ *
+ * Params:
+ *   c    - checker holding the per-function name-use counters
+ *   name - the name as written in the source
+ *
+ * Returns:
+ *   The name to emit; the first use of a name returns it unchanged. The string lives in
+ *   the checker's arena.
+ */
 const char *cNameFor(Checker *c, const char *name) {
     NameUse *u = NULL;
     for (size_t i = 0; i < c->nameUses.len; i++) {
@@ -107,7 +168,8 @@ const char *cNameFor(Checker *c, const char *name) {
     do {
         n++;
         cand = (n == 1) ? name : arenaPrintf(c->arena, "%s__%d", name, n);
-        /* 也要避开 C 关键字（`let double = 3` 合法，但生成的 C 里不能叫 double）*/
+        /* C keywords have to be avoided too: `let double = 3` is legal extC, but the
+         * generated C cannot declare a variable named `double`. */
     } while (moduleNameTaken(c, cand) || cIdentIsKeyword(cand));
 
     if (u) u->count = n;
@@ -120,16 +182,24 @@ const char *cNameFor(Checker *c, const char *name) {
     return cand;
 }
 
-/* ---------------------------------------------------------------- 作用域 */
+/* ---------------------------------------------------------------- scopes */
 
+/* Enter a lexical scope.
+ *
+ * Also records the current length of the narrowing list, because the facts proved about
+ * nullable references inside the block are dropped when the block ends: narrowing is
+ * lexically scoped like every other binding.
+ */
 void pushScope(Checker *c) {
     Scope *s = (Scope *)arenaAllocZero(c->arena, sizeof(Scope));
     vecInit(&s->syms, c->arena, sizeof(void *));
     *(Scope **)vecPush(&c->scopes) = s;
-    /* 收窄也是词法作用域的：进块时记下水位，出块时退回去 ✓ */
+    /* Narrowing is lexically scoped too: remember the watermark on entry and restore
+     * it when the block ends. */
     *(size_t *)vecPush(&c->narrowMarks) = c->narrow.len;
 }
 
+/* Leave the innermost lexical scope and drop the narrowing facts it introduced. */
 void popScope(Checker *c) {
     if (c->scopes.len) c->scopes.len--;
     if (c->narrowMarks.len) {
@@ -138,44 +208,99 @@ void popScope(Checker *c) {
     }
 }
 
-/* 实例化时把类型里的 TY_PARAM 换成实参 ✓（不在实例化里就是原样返回）*/
+/* Replace the type parameters in a type with the type arguments of the instance being
+ * checked.
+ *
+ * Params:
+ *   c - checker; the current substitution is c->substParams / c->substArgs
+ *   t - the type to substitute into
+ *
+ * Returns:
+ *   The substituted type, or `t` itself when no instantiation is in progress.
+ */
 Type *tsub(Checker *c, Type *t) {
     if (!c->substParams || !c->substArgs || !t) return t;
     return ttSubstitute(c->tt, t, c->substParams, c->substArgs);
 }
 
-/* 这个类型里"提到了类型参数"吗？提到了就不能现在下结论 ⇒ 推迟到实例化 ✓ */
+/* Report whether a type mentions a type parameter, directly or inside a field.
+ *
+ * Params:
+ *   t - the type to inspect
+ *
+ * Returns:
+ *   True when the type cannot be judged yet, so the check has to be deferred until the
+ *   instance is known.
+ */
 bool mentionsParam(Type *t) {
     return t && (t->kind == TY_PARAM || ttHasParam(t));
 }
 
-/* ---------------------------------------------------------------- 小工具 */
+/* ---------------------------------------------------------------- helpers */
 
+/* Report whether `op` is one of the six comparison operators. */
 bool isCmpOp(const char *op) {
     return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
            strcmp(op, "<")  == 0 || strcmp(op, "<=") == 0 ||
            strcmp(op, ">")  == 0 || strcmp(op, ">=") == 0;
 }
 
+/* Report whether `op` is `&&` or `||`. */
 bool isLogicOp(const char *op) {
     return strcmp(op, "&&") == 0 || strcmp(op, "||") == 0;
 }
 
+/* Report whether an expression is an integer or floating-point literal.
+ *
+ * Params:
+ *   e - the expression to test; must not be NULL
+ *
+ * Returns:
+ *   True for EX_INT and EX_FLOAT, the two shapes whose type is chosen by the context
+ *   rather than by the literal itself.
+ */
 bool isNumericLit(Expr *e) {
     return e->kind == EX_INT || e->kind == EX_FLOAT;
 }
 
+/* Report whether a value of this type can be handed to `print` / `println`.
+ *
+ * Params:
+ *   t - type of the argument
+ *
+ * Returns:
+ *   True when a printer exists for the type.
+ */
 bool isPrintable(Type *t) {
     Type *b = ttBase(t);
     if (!b) return false;
     if (b->kind == TY_BUILTIN) return true;
-    /* 定案 11：无载荷枚举自动有名字文本 */
+    /* An enum without a payload always has a name to print. */
     if (b->kind == TY_ENUM) return true;
-    /* struct / 泛型实例 / 数组都由编译器生成 <Type>_debug 递归打印 */
+    /* Structs, generic instances, and arrays are printed by the `<Type>_debug` function
+     * the compiler generates; it recurses into the members. */
     return b->kind == TY_STRUCT || b->kind == TY_GENERIC || b->kind == TY_ARRAY;
 }
 
-/* 字面量的类型按**值**适配目标类型（DESIGN §5 的「字面量类型推导」）。 */
+/* Report whether a literal fits the target type by value.
+ *
+ * A literal has no type of its own until the context gives it one: `3.14` becomes an
+ * `f32` in `let x: f32 = 3.14`, and `200` becomes a `u8` in `let x: u8 = 200`.
+ *
+ * Params:
+ *   e    - the literal: EX_INT, EX_FLOAT, or EX_BOOL
+ *   want - the type the surrounding context expects
+ *
+ * Returns:
+ *   True when the literal's value is representable in `want`. An error type accepts
+ *   anything, so that one diagnostic does not cascade into more.
+ *
+ * Notes:
+ *   - An unsigned target rejects a negative integer literal instead of keeping its bit
+ *     pattern.
+ *   - The 64-bit case is decided without shifts: every value a 64-bit literal can hold
+ *     fits a signed 64-bit target, and an unsigned one takes the non-negative values.
+ */
 bool literalFits(Expr *e, Type *want) {
     Type *w = ttBase(want);
     if (!w) return false;
@@ -194,7 +319,7 @@ bool literalFits(Expr *e, Type *want) {
             if (v < 0) return false;
             return (unsigned long long)v <= ((1ULL << bits) - 1);
         }
-        return ttIsFloat(w);                    /* 整数字面量给浮点变量 */
+        return ttIsFloat(w);                    /* an integer literal for a float target */
     }
 
     if (e->kind == EX_FLOAT) return ttIsFloat(w);
@@ -202,32 +327,68 @@ bool literalFits(Expr *e, Type *want) {
     return false;
 }
 
-/* 裸 `{}` 从上下文拿类型。只在上下文能唯一确定类型的地方成立。 */
+/* Give an expression that cannot spell its own type the type its context expects.
+ *
+ * Three shapes have no type of their own and are handled here: a bare `null`, an array
+ * literal, and a bare `{}` struct literal. It only applies where the context pins the
+ * type down uniquely.
+ *
+ * Params:
+ *   e    - the expression to give a type to
+ *   want - the type the context expects
+ *
+ * Notes:
+ *   - `null` is the zero value of a nullable reference, so only a `?ref T` context is
+ *     adopted: the literal cannot know what `T` is.
+ */
 void adoptContextType(Expr *e, Type *want) {
     if (!e || !want) return;
-    /* `null` —— 它的类型**只能**从上下文来（`?ref T` 里的 T 是什么，字面量自己是不知道的）*/
     if (e->kind == EX_NULL) {
         if (want->kind == TY_REF && want->nullable) e->type = want;
         return;
     }
     Type *w = ttBase(want);
     if (!w) return;
-    /* 把上下文类型**寄放**在 e->type 上（checkExpr 之后会被覆盖成同一个类型）。
-     * 泛型实例没有名字可查、数组字面量也不知道长度，所以必须走这条路。 */
+    /* Park the context type on `e->type`; `checkExpr` later overwrites it with the very
+     * same type. A generic instance has no name to look up and an array literal does not
+     * know its length, so this is the only way they can get a type at all. */
     if (e->kind == EX_ARRAYLIT) { e->type = w; return; }
     if (w->kind != TY_STRUCT && w->kind != TY_GENERIC) return;
     if (e->kind == EX_STRUCTLIT && !e->u.lit.name) e->type = w;
 }
 
+/* Check that a value of type `got` may be assigned where `want` is expected.
+ *
+ * Only lossless conversions are implicit; everything else has to be written out by the
+ * user. This is the single gate for assignments, arguments, field initializers, and
+ * payload values.
+ *
+ * Params:
+ *   c    - checker, for `typeStr` and error reporting
+ *   want - the expected type
+ *   got  - the type of the expression being assigned
+ *   node - the expression, used for its source position and for literal fitting
+ *   what - description of the target ("argument", "field `x`"), used in the message
+ *
+ * Returns:
+ *   True when the assignment is legal. A false result means a diagnostic was already
+ *   reported here.
+ *
+ * Notes:
+ *   - Only the lossless direction of `mut` is implicit: a writable reference may be used
+ *     read-only, the reverse has to be written as `mut`.
+ *   - `?ref T` to `ref T` is rejected: it claims the reference is not null, and that has
+ *     to be proved first.
+ */
 bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *what) {
     if (ttIsError(want) || ttIsError(got)) return true;
 
-    /* ⚠️ `ref T` 两边都必须真是引用。
+    /* `ref T` has to be a reference on both sides.
      *
-     * 这个坑很隐蔽：字面量适配那条路会 `ttBase(want)` 把 ref 抹掉，
-     * 于是 `p = 5`（p 是 `ref i64`）被判成「5 能放进 i64」而放过去 ——
-     * 生成的 C 是 `int64_t * p; p = 5;`，只有 gcc 会抱怨一句
-     * `makes pointer from integer without a cast`。**extC 必须在类型层挡住它。** */
+     * The trap is subtle: the literal-fitting path calls `ttBase(want)`, which strips the
+     * `ref`, so `p = 5` for `p: ref i64` looks like "5 fits in i64" and is let through.
+     * The generated C would be `int64_t * p; p = 5;`, and only gcc would complain
+     * (`makes pointer from integer without a cast`). The type checker has to stop it. */
     if (want->kind == TY_REF && got->kind != TY_REF) {
         ckError(c, node ? node->line : 0,
                 "a `ref` can only be assigned another reference; "
@@ -244,8 +405,8 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         return false;
     }
 
-    /* `?ref T` → `ref T`：**这是"我保证它非空"，必须证明过** ✗
-     * 反过来（非空 → 可空）永远安全，自动允许 ✓ */
+    /* `?ref T` to `ref T` claims the reference is not null, and that claim has to be
+     * proved. The other direction (non-null to nullable) is always safe and implicit. */
     if (want->kind == TY_REF && got->kind == TY_REF && got->nullable && !want->nullable &&
         ttEquals(want->inner, got->inner)) {
         ckError(c, node ? node->line : 0,
@@ -259,27 +420,29 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
 
     if (ttEquals(want, got)) return true;
 
-    /* 非空 → 可空：往安全的方向走，自动允许（跟 `mut ref` → `ref` 同一种降级）✓ */
+    /* Non-null to nullable moves in the safe direction, so it is implicit, like
+     * dropping `mut`. */
     if (want->kind == TY_REF && got->kind == TY_REF && want->nullable && !got->nullable &&
         want->mut == got->mut && ttEquals(want->inner, got->inner)) return true;
 
-    /* **降级**：可写的可以当只读的用（能写当然能读）—— 单向、永远安全，自动允许。
-     * 反过来不行：那是在要写权限，必须显式写 `mut`。
-     * 「安全是默认」的直接体现：往安全的方向收窄不用打招呼。
-     * 两种东西都适用：引用（`mut ref T` → `ref T`）和视图（`mut slice<T>` → `slice<T>`）。 */
+    /* Dropping `mut` is implicit: what may be written may of course be read. It is
+     * one-way and always safe. The reverse direction asks for write permission and has to
+     * be written as `mut`. Both references (`mut ref T` to `ref T`) and views
+     * (`mut slice<T>` to `slice<T>`) behave this way. */
     if (want->kind == got->kind) {
         if (want->kind == TY_REF && got->mut && !want->mut &&
             ttEquals(want->inner, got->inner)) return true;
-        /* 视图：**递归**只许去掉 `mut`（`mut slice<mut slice<T>>` 能当
-         * `slice<slice<T>>` 用；反过来不行）—— 见 ttViewDowngradable 的注释 */
+        /* Views: `mut` may be dropped recursively (`mut slice<mut slice<T>>` is usable
+         * as `slice<slice<T>>`, never the other way round); see `ttViewDowngradable`. */
         if (want->kind == TY_GENERIC && ttViewDowngradable(want, got) &&
             !ttEquals(want, got)) return true;
     }
     if (ttCanWiden(got, want)) return true;
     if (node && literalFits(node, want)) return true;
 
-    /* 整数字面量放不下，跟「类型不匹配」是两回事，报错要分开。
-     * （浮点字面量给整数变量属于有损转换，走下面的通用消息。） */
+    /* An integer literal that does not fit is a different mistake from a type mismatch,
+     * so it gets its own message. (A float literal assigned to an integer variable is a
+     * lossy conversion and falls through to the generic message below.) */
     if (node && node->kind == EX_INT && ttIsInteger(want)) {
         ckError(c, node->line, NULL,
                 "%s: literal `%lld` does not fit in `%s`",
@@ -293,6 +456,17 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
     return false;
 }
 
+/* Require a condition to be `bool`.
+ *
+ * Params:
+ *   c    - checker
+ *   t    - type of the condition
+ *   node - the condition expression, for its source position
+ *
+ * Notes:
+ *   - extC has no implicit truthiness: an integer or a reference used as a condition is
+ *     reported, not converted.
+ */
 void expectBool(Checker *c, Type *t, Expr *node) {
     if (ttIsError(t)) return;
     if (!ttIs(t, "bool")) {

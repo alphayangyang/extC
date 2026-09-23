@@ -6,7 +6,7 @@
 >
 > 基准版本：`d86a35a`（`git status` 另有 13 个文档/测试文件的未提交改动，`src/` 干净 ✓）
 >
-> 📁 **反例库**：[`tests/arena-soundness/`](tests/arena-soundness/)（`./run.sh` 一条命令跑完
+> 📁 **反例库**：[`tests/arena-soundness/`](../../tests/arena-soundness/)（`./run.sh` 一条命令跑完
 > **21 条**：15 条 `ACCEPT+UAF`、2 条编译器 SIGSEGV、3 条生成的 C 编不过、1 条对照；
 > 按**五族机制**分组，见那里的 `README.md`）✓
 

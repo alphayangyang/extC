@@ -1,23 +1,31 @@
 #ifndef EXTC_CHECK_INTERNAL_H
 #define EXTC_CHECK_INTERNAL_H
 
-/* check.c 拆分的**内部头**：跨文件共享的状态 + 跨文件函数原型。
- * 公开接口只有 `check.h` 里的 `checkModule` 一个 ✓
+/* Internal header of the checker: the state shared between the check_*.c files and the
+ * prototypes that cross between them.
  *
- * ⚠️ 只允许放**类型和原型**，不许放逻辑 ✓ */
+ * The only public entry point is `checkModule` from `check.h`. This header holds types
+ * and prototypes only, never logic.
+ */
 
 #include "check.h"
 
-/* ⭐ **诊断里显示声明名用 `DN(x)`** —— `StructDef*` / `TypeDef*` 都行 ✓
- * 为什么要有这一层：模块 mangle 之后 `name` 是内部的 `io$reader`，而 `srcName`
- * 才是用户写的 `io::reader` ✗ 直接印 `->name` 就是把编译器内部编码漏给用户
- * （真踩过：`struct \`alpha$pair\` has no field \`zzz\``）✓ */
+/* Display name of a declaration for diagnostics: `DN(x)` takes a `StructDef *` or a
+ * `TypeDef *`.
+ *
+ * After module mangling `name` is the internal `io$reader`, while `srcName` is the
+ * `io::reader` the user wrote. Printing `->name` leaks the internal encoding into the
+ * message, as in "struct `alpha$pair` has no field `zzz`".
+ */
 #define DN(d) ttDispName((d) ? (d)->srcName : NULL, (d) ? (d)->name : NULL)
 
-/* ⭐ **诊断/调试输出里显示函数名用 `FN(f)`** —— mangle 之后 `f->name` 是
- * `pair$make`，而用户写的是 `pair::make` ✗（`EXTC_DUMP_EFFECTS` 那几行踩过 ✓）
- * 根模块/单文件程序 `modName` 为空 ⇒ 直接 `name`（就是源码名 ✓）
- * 实现：把 mangle 前缀 `mod$` 换成 `mod::`（前缀一定等于 `modName` ✓）*/
+/* Display name of a function, for diagnostics and debug output: `FN(f)`.
+ *
+ * After mangling `f->name` is `pair$make` while the user wrote `pair::make`, which the
+ * effect dump used to print verbatim. In the root module, or in a single-file program,
+ * `modName` is empty and `name` already is the source name. The implementation replaces
+ * the `mod$` prefix with `mod::`, and that prefix is always `modName`.
+ */
 const char *checkFnDisplay(const char *name, const char *modName);
 #define FN(f) checkFnDisplay((f) ? (f)->name : NULL, (f) ? (f)->modName : NULL)
 
@@ -25,287 +33,639 @@ const char *checkFnDisplay(const char *name, const char *modName);
 #include <stdio.h>
 #include <string.h>
 
-/* ------------------------------ 共享状态（原 check.c 的「状态」一节）
- * 以及被多个文件用到的类型 —— 谁用到谁就得能看见 ⇒ 放这里 ✓ */
+/* ------------------------------------------ shared state and shared types
+ * Whatever more than one file needs, so that whoever uses it can see it. */
 
 typedef struct {
-    const char *name;
-    const char *cname;   /* 生成 C 的名字 —— 同层遮蔽时 `a` → `a__2`，见 §名字 */
-    Type       *type;
-    bool        mut;
-    /* ⭐ 档2（ARENA-FORMAL §7.4）：这个绑定的**地址被人拿走过**吗？
-     * （`ref x` / `x[..]` / 当 `mut ref` 实参传出去……）
-     *   取过 ⇒ 别人可能通过**别名**改它的内容 ⇒ 只能**弱更新**（保守）✗
-     *   没取过 ⇒ 可以直接**强更新**（覆盖深度）⇒ 消掉"置空/换值救不回来"的误拒 ✓ */
+    const char *name;    /* name as written in the source */
+    const char *cname;   /* name used in generated C; a shadowed `a` becomes `a__2` */
+    Type       *type;    /* declared type, or the inferred one for an unannotated `let` */
+    bool        mut;     /* true for `var`; false for `let` and for payload bindings */
+    /* True once the address of this binding has been handed out: `ref x`, `x[..]`, or
+     * passing it as a `mut ref` argument.
+     *
+     * With a taken address an alias can change the contents behind our back, so the
+     * depth bookkeeping may only be updated weakly. Without one an entry is overwritten
+     * outright, which removes the false rejections where writing null or a shallower
+     * value could not lower the recorded depth. */
     bool        addressed;
-    /* ⭐ 档2.3（ARENA-FORMAL §7.4）：**字段级深度** ——
-     * `h.p` 有自己的深度，不再跟 `h` 共用一个数 ⇒ `h.p = null` 能真正**覆盖**那一格 ✓
-     * 最多 4 格；满了 / 归不到某一格的（元素写、对象字段）走 `otherDepth` 保守兜底 ✓
-     * 根的有效深度 = max(otherDepth, 各格) ✓ */
-    struct { const char *name; int depth; } fields[4];
-    /* ⭐ 层 1（数据流）第一步：**这张字段表完整吗？**
-     * 完整 = "这个绑定的**每一格**都在表里（或已知为 0）" ⇒ 允许"抹掉一格之后
-     *        把根重算成剩下几格的最大值"（强更新）✓
-     * 不完整 = 表是**拷贝/别处来的**，缺的格可能有值 ⇒ **不许下降**（否则那几格的
-     *          深度会凭空消失 —— 我上次就是这样造出一条 `stack-use-after-scope` 的 ✗）
-     * 默认 false（保守：不完整）✓ */
+    /* Per-field depths, at most four entries. To be read as one field block, not as
+     * four independent ones.
+     *
+     * A field such as `h.p` gets a depth of its own instead of sharing one number with
+     * `h`, so `h.p = null` can really overwrite that entry. Writes that cannot be
+     * attributed to a single field, such as an element write, go to `otherDepth`. The
+     * effective depth of the root is the maximum of `otherDepth` and the field entries. */
+    struct { const char *name; int depth;  /* field name; recorded depth of the value in it */
+             /* Which value was last written into this field, or NULL when that is
+              * unknown. It is used only to find the allocation site inside a container,
+              * never to change any bookkeeping.
+              *
+              * It is needed because `var h: box = { p: null, q: null }` has an origin
+              * made of nulls which never mentions the `x` that a later `h.q = x` stored,
+              * so walking origins would never reach that site. */
+             Expr *src;
+             /* Depth of the write that produced `src`. Compare against this number, not
+              * against `depth`: `depth` is merged with the maximum on a weak update, so
+              * after `h.q = x  h.q = null` it is still deep, and comparing with it would
+              * call the null write the deeper one, clear the source and break the chain. */
+             int   srcDepth;
+             /* The shallowest level this field has been required to reach; 0 means it
+              * must outlive the frame. `out = h` stores at level 1, but `return out`
+              * needs the frame-outliving level, so the site has to end up in the home
+              * arena. Looking only at the current destination computes a level that is
+              * too shallow and leaves the site there, which dangles. */
+             int   minReq; } fields[4];
+    /* Whether the field table is complete.
+     *
+     * Complete means every field of the binding has an entry, or is known to be 0; only
+     * then may an entry be cleared and the root recomputed as the maximum of the
+     * remaining ones. An incomplete table, such as one copied from elsewhere, can have
+     * fields with values that are missing here, and lowering a depth would make those
+     * values vanish; that is how a stack-use-after-scope was introduced. The default is
+     * false, the conservative answer. */
     bool        fieldsComplete;
-    int         nfields;
-    int         otherDepth;
-    int         depth;   /* 词法深度：参数 = 0，函数体里的局部 = 1，每进一层块 +1。
-                          * 逃逸检查就比这个数 —— 见 REFS.md §4 */
-    /* **引用型绑定**：这个引用**指向的东西**有多深？
+    int         nfields;    /* number of valid entries in `fields` */
+    int         otherDepth; /* depth for writes that belong to no single field */
+    int         depth;      /* lexical depth: a parameter is 0, a local in the function
+                             * body is 1, and every nested block adds 1. The escape
+                             * checks compare this number. */
+    /* For a binding that holds a reference: how deep is the thing it points at?
      *
-     * 为什么它跟 `depth` 是两回事：`var cur: ?ref node = head` 里，装引用的那个
-     * **槽位**在本帧（深度 1），但它指的节点在外面（深度 0）。
-     * 「引用不能活得比被指对象长」这条规则问的是**被指对象** ⇒ 必须用这个数 ✓
-     * （以前一律拿槽位深度 ⇒ `while cur != null { ... return cur }` 这种
-     *   最正常的链表搜索被误报成"指向会死的局部" ✗ 见 PLAN.md §0.4 #8）
+     * This differs from `depth`. In `var cur: ?ref node = head` the slot holding the
+     * reference is in this frame, at depth 1, while the node it points at is outside,
+     * at depth 0. The rule "a reference may not outlive what it points at" asks about
+     * the pointee, so it needs this number. Using the slot depth everywhere falsely
+     * rejected the most ordinary list search, `while cur != null { ... return cur }`,
+     * as pointing at a local that dies.
      *
-     * 只在**类型是引用**时有意义；默认值 = 槽位深度（保守：跟老行为一样），
-     * 声明和换指向时按初始值的真实深度**收紧** ✓ */
+     * It is meaningful for a reference-typed binding, and it doubles as an upper bound
+     * on where the references inside a reference-carrying value point. The default is
+     * the slot depth, the conservative answer; a declaration or a retarget narrows it
+     * to the real depth of the value. */
     int         refDepth;
-    /* ⭐ 定案 63（PLAN #38）：这个绑定的**初始值表达式**（没有初始化式 ⇒ NULL）✓
+    /* The value this binding was initialized with, or NULL when it had no initializer.
      *
-     * 为什么要有它：提升是**顺着值的来路往回走**的 ——
-     *     var n = new node        // n 的"来路"就是这个 `new`
-     *     head = n                // 存进更外层的地方 ⇒ 顺着 n 找回那个 `new` 提升它 ✓
-     * ⚠️ 只跟**初始值**（不追后续赋值、不追别名）：提不动的照旧报错 ⇒ 安全方向 ✓ */
+     * Promotion walks origins backwards:
+     *     var n = new node        // the origin of `n` is this `new`
+     *     head = n                // stored into an outer place, so follow `n` back and
+     *                             // raise that `new` to the level of `head`
+     * Only the initializer is followed, and only through explicit assignments; aliases
+     * are not chased, so a site that cannot be reached keeps its depth error. */
     Expr       *origin;
-    int         line;
-    /* ⭐ 定案 70：这个绑定属于哪个模块（全局才有；局部 = NULL）——
-     * 用它在解析处挡"不带限定地引用别的模块的名字" ✓ */
+    /* The expression that last gave this binding its value, kept unflattened.
+     *
+     * `origin` answers "where does the storage inside this binding come from" and flattens
+     * a chain of bindings to the expression at its root, which is what the arena-level walk
+     * needs. The level pass asks a narrower question -- which expression is this binding
+     * holding -- and there the root of a chain is the wrong answer, because it belongs to
+     * whichever binding the chain happened to end at.
+     *
+     * It still describes only the last assignment, so it cannot stand for a binding written
+     * in both arms of an `if`; the publication records are the authority for that, and this
+     * field is a shortcut for the chain-of-assignments case. */
+    Expr       *heldSrc;
+
+    int         line;      /* source line of the declaration, for diagnostics */
+    /* The module this binding belongs to; set for globals, NULL for locals. Name
+     * resolution uses it to reject an unqualified reference to another module's name. */
     const char *modName;
 } Sym;
 
+/* Pins the binding a name resolved to onto the AST node that used it.
+ *
+ * The pass that runs after all bodies have been checked cannot look a local up by name,
+ * because its scope is gone by then; the same trap is described in `noteOrigin`. What
+ * the pinning avoids is a re-check that silently uses the depth frozen before the
+ * solver ran and rejects a correct program.
+ *
+ * A binding pointer is stored rather than a name, because one name in different scopes
+ * is a different binding: the answer at the moment of resolution is the authoritative
+ * one, while looking the name up again later can find another binding that happens to
+ * have the same name. The lifetime is not a problem, because bindings are
+ * arena-allocated, so leaving a scope only removes them from visibility.
+ *
+ * The wrapper is there for type safety: `ast.h` cannot name `Sym` and therefore holds
+ * an opaque pointer, the same arrangement a `cname` uses, so each side casts once
+ * instead of passing a bare `void *` around. */
+typedef struct { Sym *sym; } IdentBinding;
+
+/* The binding an `EX_IDENT` node resolved to, or NULL when it has not been resolved. */
+static inline Sym *identBindOf(Expr *e) {
+    return (e && e->kind == EX_IDENT && e->u.ident.sym) ? ((IdentBinding *)e->u.ident.sym)->sym : NULL;
+}
+
+/* The one place that converts between "which level an allocation site lives at" and
+ * "how deep the references inside it are".
+ *
+ * The same conversion used to be written five times across four files and the variants
+ * did not agree: two of them computed `(arenaLevel == HOME) ? 0 : arenaLevel`, while
+ * another preferred a non-zero `refDepth` and could return a depth that contradicted
+ * the level of the site. The bug surfaced on a site whose `refDepth` was 0 while its
+ * level said the depth should be 1.
+ *
+ * `refDepth` and `arenaLevel` have to be two spellings of the same number, and that
+ * holds only while the conversion lives in one place. Deriving the answer from the
+ * level is also strictly more accurate, since `refDepth` is not authoritative while a
+ * level is still undecided.
+ *
+ * Params:
+ *   arenaLevel - arena level of a site: `ARENA_HOME` for storage that outlives this
+ *                frame, k >= 1 for the k-th nested block, 0 or negative while the
+ *                level is not decided yet
+ *
+ * Returns:
+ *   The equivalent depth: 0 for the home arena and for an undecided level, k for block
+ *   level k. A caller that has to tell "undecided" from "depth 0" must look at
+ *   `arenaLevel` itself.
+ */
+static inline int arenaDepthOf(int arenaLevel) {
+    if (arenaLevel == ARENA_HOME) return 0;
+    return arenaLevel > 0 ? arenaLevel : 0;
+}
+
+/* How often a name is used in the current function; the C name generator uses the count
+ * to decide whether a rename is needed. */
 typedef struct { const char *name; int count; } NameUse;
 
+/* One lexical scope: the bindings declared in it. The innermost scope is last. */
 typedef struct { Vec syms; } Scope;
 
-/* ⭐ B4′：一个"E 敏感"的调用点 —— 记下足够的信息，收尾时**不依赖作用域**也能重算 ✓ */
+/* A call site whose choice of home arena depends on which locals escape.
+ *
+ * Everything needed to recompute that choice is recorded here, so the pass that runs
+ * after all bodies have been checked does not have to look anything up in a scope that
+ * is gone by then. */
 typedef struct {
-    Expr  *call;         /* EX_CALL / EX_METHOD / EX_ASSOC 节点（收尾时改它的 arenaArg）*/
-    char  *argRoot[8];   /* 每个 `mut ref` 实参的根名（NULL = 那个位置不是 mut ref 实参）*/
-    int    argDepth[8];  /* 那个实参求值时的深度（0 = 参数/全局 ⇒ 已经"活在帧外"）*/
-    int    n;            /* 用到的槽数（上限 8）*/
-    bool   overflow;     /* 超过上限 ⇒ **说不全** ⇒ 收尾按"传家 arena"处理（保守但 sound）✗ */
+    Expr  *call;         /* the EX_CALL / EX_METHOD / EX_ASSOC node; its arenaArg is
+                          * rewritten by the later pass */
+    char  *argRoot[8];   /* root name of each `mut ref` argument, NULL when that position
+                          * is not a `mut ref` argument */
+    int    argDepth[8];  /* depth of that argument at the call site; 0 = a parameter or a
+                          * global, which already outlives this frame */
+    int    n;            /* number of slots in use, at most 8 */
+    bool   overflow;     /* more arguments than slots, so the picture is incomplete and
+                          * the call is treated as receiving the home arena: conservative
+                          * but sound */
 } EArenaSite;
 
-typedef struct {
-    Ctx       *ctx;
-    Arena     *arena;
-    TypeTable *tt;
-    Module    *m;
-    Vec        scopes;      /* Scope* */
-    FuncDef   *curFunc;
-    Vec       *curParams;   /* 当前可见的泛型参数名（NULL = 不在泛型上下文）*/
-    Vec        eqChecks;    /* EqCheck* —— 推迟到实例化复查的 `==` */
-    /* ⭐ PLAN #47：**泛型自由函数的实例**（`fn f<T>` 每套实参一份）✓
-     * 它们在检查器里"出生"（调用点推导出来），在 codegen 里当普通函数吐出来 ✓ */
-    Vec        funcInsts;   /* FuncDef*（实例：tmpl/targs/instName 都填好）*/
-    Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
-    Vec        nameUses;    /* NameUse* —— 当前函数里每个名字用过几次（生成 C 的改名用）*/
-    Vec        moduleNames;     /* const char*（已排序）—— 编译时长优化见 check.c */
+typedef struct Checker {
+    Ctx       *ctx;         /* parser and module context, for diagnostics and lookup */
+    Arena     *arena;       /* arena the checker allocates its own bookkeeping from */
+    TypeTable *tt;          /* type table of the module being checked */
+    Module    *m;           /* the module being checked */
+    Vec        scopes;      /* Scope*, innermost last */
+    FuncDef   *curFunc;     /* body being checked, or NULL outside a function body */
+    Vec       *curParams;   /* names of the type parameters in scope, NULL outside a
+                             * generic context */
+    Vec        eqChecks;    /* EqCheck*: `==` checks deferred to instantiation */
+    /* Instances of generic free functions: `fn f<T>` gets one instance per set of type
+     * arguments. They are created here, at the call site that infers the arguments, and
+     * the code generator emits them as ordinary functions. */
+    Vec        funcInsts;   /* FuncDef*, with tmpl/targs/instName filled in */
+    Vec        globals;     /* Sym* for module-level bindings (depth 0). They are not in
+                             * `scopes`; see the comment in `lookup` */
+    /* Every binding the checker has declared, appended by `declare`.
+     *
+     * The self-check mode walks this list to verify that the `refDepth` of a binding
+     * agrees with the allocation site it came from. */
+    Vec        allSyms;
+    /* The value currently being stored somewhere.
+     *
+     * `noteFieldDepthWrite` records which value wrote a field, and its callers already
+     * hold that value; passing it through a field keeps the signature of that function
+     * unchanged, which would otherwise ripple through every call site. */
+    Expr      *curStoreVal;
+    Vec        nameUses;    /* NameUse*: how often each name is used in the current
+                             * function, for the C name generator */
+    Vec        moduleNames;     /* const char*, sorted; see check.c for the compile-time
+                                 * optimization it enables */
     size_t     moduleNamesSize;
-    /* ---- `?ref T` 的**非空收窄**（narrowing）----
-     * 可空引用不能直接解 —— 必须先**证明**它非空，唯一的证明方式是在 `if` 里跟
-     * `null` 比过。这里记的就是"当前这个位置上，哪些绑定已经被证明非空"。
-     * 收窄是**词法作用域的**（跟着 pushScope/popScope 自动回退），
-     * 而且证明完之后**不生成任何运行时检查** —— 编译期能证明的，运行时不留痕迹（P）✓ */
-    /* 这个位置上**吐不出"语句前缀"** ⇒ 需要提前求值的 `??` 一律报错。
-     * 两个地方：`while` 的条件（吐出来就变成"进循环前算一次"，不是每轮算 ✗）
-     * 和全局初始化式（没有语句可挂）✓ */
-    /* ---- 泛型体的**推迟检查**（PLAN #17/#18）----
-     * 泛型体是照**模板**查一次的，那时 `T` 不透明 ⇒ "含引用才查"的规矩全早退 ⇒
-     * `T = slice<u8>` 的实例化**根本没人查** ✗
-     * 修法：**记录时就把深度按"`T` 可能带引用"算好**（那时作用域还在、`lookup` 找得到），
-     * 实例化时只回答一个问题："这个实例的 `T` 到底带不带引用" ✓
-     * ⚠️ 走过的弯路：第一版把"算深度"也推到实例化再做 —— 那时**函数作用域已经没了**，
-     *    `lookup` 找不到参数 ⇒ 深度算成 0 ⇒ 检查静默失灵 ✗（真踩了）*/
-    Vec        refChecks;   /* RefCheck* —— 推迟到实例化复查的引用规矩 */
-    Vec        callChecks;  /* CallCheck* —— 推迟到实例化再解析的调用点（PLAN #50）*/
-    Vec       *substParams; /* 实例化复查时正在用的替换（NULL = 不在复查）*/
+    /* Non-null narrowing for `?ref T`: which bindings are known not to be null at the
+     * current position.
+     *
+     * A nullable reference may not be dereferenced before it has been shown to be
+     * non-null, and the only way to show that is a comparison with null inside an `if`.
+     * Narrowing is lexical, so it unwinds together with pushScope and popScope, and it
+     * generates no runtime check at all: what the compiler can prove leaves no trace in
+     * the generated code. */
+    /* Non-zero while the current position cannot emit a statement prefix, which makes
+     * every `??` that needs one an error. Two positions behave that way: the condition
+     * of a `while`, where a hoisted prefix would be evaluated once before the loop
+     * instead of once per round, and a global initializer, which has no statement to
+     * hang a prefix on. */
+    /* Checks deferred out of a generic body.
+     *
+     * A generic body is checked once, as a template, with `T` opaque, so every rule of
+     * the form "only check this when the type carries a reference" returns early and an
+     * instantiation with `T = slice<u8>` is never checked at all. The fix is to compute
+     * the depth when the rule is recorded, assuming that `T` may carry a reference,
+     * while the scope is still open and `lookup` still works; instantiation then only
+     * has to answer whether `T` really carries one.
+     *
+     * Deferring the depth computation itself does not work: the function scope is gone
+     * by then, `lookup` cannot find the parameters, the depth comes out as 0 and the
+     * check silently stops working. */
+    Vec        refChecks;   /* RefCheck*: reference rules re-run at instantiation */
+    /* Level-dependent rejections, recorded so the same question can be asked again once
+     * the data flow and the level pass have settled the numbers. Reporting stays where it
+     * was; the record is what makes the two answers comparable. */
+    Vec        lvlRejects;  /* LvlRejection* */
+    Vec        callChecks;  /* CallCheck*: call sites resolved at instantiation */
+    Vec       *substParams; /* type arguments substituted while an instance is being
+                             * re-checked, NULL when not re-checking */
     Vec       *substArgs;
-    int        noHoist;
-    /* ⭐ PLAN #22（2026-09-22）：**本语句里已经出现过"带副作用的子表达式"了吗？**
-     * `??` 的主体不是纯的时候要先算进临时变量，而那个前缀**吐在整条语句之前** ⇒
-     * 它会**跳到**同语句里更靠前的副作用前面去 ✗
-     * ⇒ 一旦发现"前面已经有副作用"且这个 `??` 要临时变量 ⇒ **报错让他拆行** ✓
-     * 判据用**调用**（EX_CALL/EX_METHOD/EX_ASSOC）—— 分配/字面量/转换的顺序不可观测 ✓ */
+    int        noHoist;     /* non-zero while a statement prefix cannot be emitted */
+    /* How many subexpressions with a side effect have already been checked in the
+     * current statement.
+     *
+     * A `??` whose subject is not pure has to be evaluated into a temporary, and that
+     * prefix is emitted before the whole statement, which would move it ahead of earlier
+     * side effects in the same statement. Once a side effect has been seen and this `??`
+     * still needs a temporary, the program is rejected and the user is asked to split
+     * the line. Only calls count, because the relative order of allocations, literals
+     * and conversions is not observable. */
     int        stmtFx;
-    /* ⭐ 定案 68：**当前函数体里"等闭包之后再定一次"的节点**（`Expr*`，`new` 站点 +
-     * 那些 arena 归属待定的调用点）—— 查完体之后交给 `FuncDef.arenaSites`，
-     * 等 `needsHome` 闭包跑完再统一定案 ✓ */
+    /* Nodes in the current function body whose arena assignment has to be decided again
+     * once every effect summary is closed: `new` sites, and the call sites whose
+     * allocation arena is still open. After the body has been checked they move to
+     * `FuncDef.arenaSites`, and their levels are fixed once the pass that computes
+     * `needsHome` has run. */
     Vec        curArenaSites;
-    /* ⭐ B4′（架构：**分析最后写、检查只读**）：E 敏感的"家 arena"决策要**推迟**
-     * 到所有函数体的效果摘要封闭之后再定。
-     * 为什么：`callHomeDepth` 里那条"实参会不会被搬出本函数 ⇒ 传我的家"依赖 **E**，
-     * 而 E（`computeEscapes`）要用**被调者的效果摘要**（"它会不会把实参存起来"）
-     * —— 那个摘要在**查体当中还没封闭**（闭包在所有体查完之后才跑）✗
-     * ⇒ 那时 `pub == 0`（摘要还是空的）⇒ 判不出"实参会被发布"⇒ 家 arena 选成
-     *    **调用者自己的帧** ⇒ 被调者往那个容器里塞的东西，本次调用返回即 release ✗
-     * （反例 B2/B3：`fill` 里 `pushOne(l, 7)` 之后 `sink(out, l)` 把 l 发布出去 ✓）
-     * ⇒ 查体时把这些调用点**记下来**，收尾 pass 按封闭后的摘要重算 ✓ */
+    /* Call sites whose choice of home arena depends on which locals escape.
+     *
+     * That choice has to wait until the effect summaries of all functions are closed,
+     * because the rule "pass my home arena when the callee may move the argument out of
+     * this function" depends on the set of escaping locals, and computing that set needs
+     * the summary of the callee. The summary is not closed while bodies are still being
+     * checked, so with an empty summary the call would look like one that never
+     * publishes its argument, the home arena would be taken to be the caller's own
+     * frame, and everything the callee stored in that container would be released as
+     * soon as the call returned. The call sites are recorded here and recomputed by the
+     * final pass. */
     Vec        eSites;      /* EArenaSite* */
-    Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
-    /* ⭐ 档1（ARENA-FORMAL §9）：**E 分析** —— 本函数里会被"搬出本函数"的局部名 ✓
-     * 只影响"家 arena 选哪只"（保守方向 = 多算只会费内存）✓ */
+    /* The table of "this value was stored at level k" requirements.
+     *
+     * Every entry is handed over by an escape check that was going to run anyway, so no
+     * extra traversal is written to find the store sites. The final pass replays them to
+     * a fixed point, and the level of an allocation site ends up as the smallest of all
+     * the requirements that reached it, since a smaller level lives longer.
+     *
+     * The fixed point is needed because one requirement only moves the sites it reaches,
+     * and once those live longer, further requirements start to reach further sites.
+     * This has the same shape as the call-site arena decision and as the transitive
+     * closure of `needsHome`. */
+    Vec        lvlFacts;    /* LvlFact* */
+    Vec        stores;      /* StoreSite* -- publications, folded over by the level pass */
+    /* True while requirements are being replayed. Recording a new requirement during a
+     * replay would make the table grow without bound, which once ended with the compiler
+     * killed by the memory limit. */
+    bool       lvlSolving;
+    Vec        narrow;      /* const char*: cnames proved to be non-null */
+    /* Names of the locals of the current function that can be moved out of it.
+     *
+     * This only affects which arena is chosen as the home arena, and the conservative
+     * direction is to include too many names: that costs memory, while missing one would
+     * let a live pointer dangle. */
     Vec        escapees;    /* const char* */
-    int        escapeesFor; /* 已经为哪个函数算过 E（-1 = 还没算）*/
+    int        escapeesFor; /* function the set was computed for, -1 when not yet */
 
-    Vec        narrowMarks; /* size_t —— 每个作用域进来时的 narrow.len（出作用域回退用）*/
+    Vec        narrowMarks; /* size_t: length of `narrow` when each scope was entered,
+                             * used to unwind it on scope exit */
 
-    Type *tI32, *tF64, *tBool;
-    StructDef *sliceDef;/* prelude 里的 `slice<T>` 声明（视图协议）*/
-    Type *tSliceU8;     /* 字符串字面量的类型：`slice<u8>` */
+    Type *tI32, *tF64, *tBool;  /* cached primitive types */
+    StructDef *sliceDef;/* declaration of `slice<T>` from the prelude, which is the view
+                         * protocol */
+    Type *tSliceU8;     /* type of a string literal: `slice<u8>` */
 } Checker;
 
-/* 一条"推迟到实例化再算"的引用规矩（PLAN #17/#18）*/
+/* One reference rule deferred to instantiation. */
 typedef struct {
-    Expr       *val;     /* 被检查的值 */
-    Expr       *target;  /* 非 NULL = "把它存进这个目标"（原来是 checkStoreEscape）*/
-    int         at;      /* 目标深度（记录时算好：那时作用域还在 ✓）*/
-    int         depth;   /* 值里引用的深度（同上，**按"T 可能带引用"算**）*/
-    bool        borrowed;/* 值是不是借来的（同上）*/
-    /* ---- 第二类：**零值**（同一族的另一半）----
-     * `var local: T`（没有初始化式）在模板期看不出问题（`T` 不透明），
-     * 但 `T = slice<u8>` 的实例化会得到 `(slice_u8){0}` = **一个 null 引用** ✗
-     * （extC 承诺"`ref` 永不为空"）⇒ 也推迟到实例化再查 ✓ */
+    Expr       *val;     /* the value being checked */
+    Expr       *target;  /* non-NULL when the value is being stored into this target */
+    int         at;      /* destination depth, computed at record time while the scope
+                          * still existed */
+    int         depth;   /* depth of the references in the value, computed the same way
+                          * and assuming `T` may carry a reference */
+    bool        borrowed;/* whether the value is borrowed, computed the same way */
+    /* A second kind of deferred rule: the zero value.
+     *
+     * `var local: T` with no initializer looks harmless while `T` is opaque, but the
+     * instantiation `T = slice<u8>` produces a null reference, and the language promises
+     * that a `ref` is never null. */
     bool        isZero;
-    /* ---- 第三类：**`new T[n]` 的大小**（2026-09-20，为了让 `varArray<T>` 写得出来）----
-     * 模板期 `T` 没有大小 ⇒ 不能报错、也不能放行 ⇒ 记录一笔，实例化时对每个具体实例查 ✓ */
+    /* A third kind: the size in `new T[n]`.
+     *
+     * While a body is a template, `T` has no size, so the check can neither pass nor
+     * fail; it is recorded and then run for every concrete instantiation. */
     bool        isNewSize;
-    Type       *declType;
-    int         line;
-    const char *what;
-    FuncDef    *func;    /* 这条规矩属于哪个泛型函数 */
+    Type       *declType;/* declared type the deferred rule applies to */
+    int         line;    /* source line to report */
+    const char *what;    /* short noun phrase naming the operation, for the diagnostic */
+    FuncDef    *func;    /* the generic function this rule belongs to */
 } RefCheck;
 
-/* 推迟到实例化复查的 `==` 的记账条目（expr 那边产生，top 那边消费）*/
-/* ⭐ PLAN #42(c)：`func` = 这条 `==` 属于哪个函数（用来问"它被调用过吗"✓）*/
+/* The requirement "this value has to fit into level `at`".
+ *
+ * It is kept as a fact rather than as a decision because a smaller level means a longer
+ * life, so the final level of an allocation site is the smallest of all the
+ * requirements that reached it, while which requirements reach it depends on the level
+ * the site currently has. Replaying to a fixed point is therefore necessary. Deciding a
+ * level as soon as a `new` is seen allows movement in one direction only and makes it
+ * impossible to tell afterwards whether a level was decided or computed. */
+typedef struct { Expr *val; int at; } LvlFact;
+
+/* One publication: a value observed being handed to a place that may outlive it.
+ *
+ * Every store, return, and "may keep it" argument call is one of these. Recording is
+ * the checking pass's entire involvement with arena levels; deciding which arena each
+ * allocation site ends up in is a separate pass that folds over this table. Keeping the
+ * two apart is what makes the decision independent of the order the checker walks the
+ * tree in, which is the property the previous destructive update could not have.
+ *
+ * Params are captured rather than derived later, because `at` needs the scope stack and
+ * because the binding's origin may legitimately be retargeted later in the body. */
+typedef struct {
+    Expr       *value;   /* the value being published */
+    Expr       *target;  /* the place it is published into; for a return, the returned value */
+    int         at;      /* arena level of the destination; 0 = beyond this frame */
+    int         line;    /* for diagnostics */
+} StoreSite;
+
+/* A rejection that depends on a level, recorded so it can be re-judged against the
+ * numbers that are final rather than the ones that happened to hold while the body was
+ * being walked. */
+typedef struct {
+    Expr       *val;    /* the value that was rejected */
+    int         at;     /* the depth it was judged against */
+    int         depth;  /* the depth the check saw */
+    int         line;   /* source line */
+    int         late;   /* depth the settled numbers gave */
+} LvlRejection;
+
+/* An `==` deferred to instantiation: recorded while an expression is checked and
+ * consumed by the pass that runs afterwards.
+ *
+ * `func` is the function the comparison belongs to, which is how the consumer asks
+ * whether that function was ever called. */
 typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } EqCheck;
 
-/* ⭐ PLAN #50（2026-09-23）：**推迟到实例化再解析的调用点**。
+/* A call site whose resolution is deferred to instantiation.
  *
- * 为什么需要它：`fn twice<T>(x: T) -> T { return idOf(x) }` 里，模板期 `T` 不透明 ⇒
- * `idOf` 那个类型实参是 `T`（`ttHasParam`）⇒ **这个时刻造不出正确的实例**（造出来会是
- * `idOf_T`，一个 `T` 还是参数的实例 ✗）。而这跟 `RefCheck`/`EqCheck` 是**同一族**
- * 问题、也用**同一个模式**解：模板期记一笔，实例化时按实例重解 ✓
+ * In `fn twice<T>(x: T) -> T { return idOf(x) }` the template is checked with `T`
+ * opaque, so the type argument of `idOf` is `T` itself and no correct instance can be
+ * built at that moment: the only one available would be `idOf_T`, an instance that
+ * still takes a type parameter. This is the same family of problem as `RefCheck` and
+ * `EqCheck` and is solved the same way: record it while the template is checked and
+ * resolve it again for each instantiation.
  *
- * 为什么不能"就地跳过后面的检查"：模板体后面还要用 `e->func` 的类型判实参、
- * 算返回类型 ⇒ 必须有**某个**签名可用。所以模板期仍然造一个"以 `T` 为实参"的实例
- * （`idOf_T`，签名自洽、`T` 当不透明类型用 ✓），实例化时再把 `e->func`
- * **改指**到那个具体实例（`idOf_i32`）✓
+ * Skipping the checks that follow is not an option, because the rest of the template
+ * body uses the type of `e->func` to check arguments and to compute the return type, so
+ * some signature has to be available. A provisional instance with `T` as its argument
+ * is therefore created, which is self-consistent because `T` is used as an opaque type,
+ * and instantiation later points `e->func` at the concrete instance.
  *
- * ⚠️ 与 `RefCheck` 的关键差别：`RefCheck` 只在**签名**上复查（不碰函数体），
- *    而这个要**改写 AST 上的 `e->func`** ⇒ 必须在"该实例正在复查"的上下文里做，
- *    而这正是复查 pass 已经具备的（`c.substParams/substArgs` 已设好 ✓）*/
+ * The difference from `RefCheck` is that this rewrites `e->func` in the AST, so it has
+ * to run in the context of the instance being re-checked. That context already exists,
+ * because the re-check pass sets `c.substParams` and `c.substArgs`. */
 typedef struct {
-    Expr    *node;      /* 那个 `EX_CALL` / `EX_METHOD` / `EX_ASSOC` 节点 ✓ */
-    FuncDef *tmpl;      /* 被调的**模板**（自由函数 / 泛型类型的方法）✓ */
-    Vec      targs;     /* 模板期推出来的实参（**可能含 T** ⇒ 要用 tsub 代入 ✓）*/
-    FuncDef *func;      /* 这条属于哪个（模板）函数 —— 决定它对哪些实例适用 ✓ */
+    Expr    *node;      /* the EX_CALL / EX_METHOD / EX_ASSOC node */
+    FuncDef *tmpl;      /* the template being called: a free function or a method of a
+                         * generic type */
+    Vec      targs;     /* arguments inferred while the template was checked; they may
+                         * contain `T` and have to be passed through `tsub` */
+    FuncDef *func;      /* the template function this entry belongs to, which decides
+                         * the instances it applies to */
 } CallCheck;
 
-/* ------------------------------ 跨文件原型
- * 自动生成：拿拆分**前**的 check.c 过一遍 `gcc -aux-info`，
- * 取每个函数的原文签名（去掉 static）—— 手写 60 多个签名只会引入笔误 ✓ */
+/* -------------------------------------------------- cross-file prototypes
+ *
+ * Generated by running `gcc -aux-info` over the single check.c that these files were
+ * split from and taking each signature verbatim, with `static` removed: writing sixty
+ * signatures by hand would only introduce typos. */
 
+/* Build an integer literal node; the compiler uses it to fill in a slice bound the user omitted. */
  Expr *intLit (Checker *c, long long int v, int line);
+/* Find a field by name in a struct definition, or NULL. */
  FieldDef *findField (StructDef *sd, const char *name);
+/* Find a module-level function by name; template instances do not match, templates do. */
  FuncDef *findFunc (Checker *c, const char *name);
+/* Find a method declared in the body of a struct or generic type. */
  FuncDef *findMethod (Type *st, const char *name);
+/* Find the operator method for `sym`, falling back to `fallback` (`!=` falls back to `==`). */
  FuncDef *findOp (Type *b, const char *sym, const char *fallback);
+/* The StructDef behind a TY_STRUCT or TY_GENERIC type, or NULL. */
  StructDef *structOf (Type *t);
+/* Declare a binding in the innermost scope and return it; the caller writes the generated C name
+ * back into the AST. Unless `shadow` is set, a name already declared in the same scope is an
+ * error, because two `var`s of the same name in one scope are almost always a typo. */
  Sym *declare (Checker *c, const char *name, Type *t, _Bool mut, _Bool shadow, int line, int depth);
- Sym *lookup (Checker *, const char *);
+/* Resolve a name to a binding, innermost scope first and module-level bindings last. */
  Sym *lookup (Checker *c, const char *name);
+/* The binding at the root of a place, found by walking through fields, indexes and slices; NULL
+ * when the place is not rooted in a binding. */
  Sym *placeRoot (Checker *c, Expr *e);
- Type *checkExpr (Checker *, Expr *);
+/* Check an expression in a place position and return its type; a reference is not dereferenced. */
  Type *checkExpr (Checker *c, Expr *e);
+/* Check an expression against an expected type; a reference is dereferenced unless the expected
+ * type is itself a reference. */
  Type *checkInto (Checker *c, Type *want, Expr *e);
+/* Check an expression that may be `e?`, which is legal in statement positions. */
  Type *checkMaybeTry (Checker *c, Expr *e);
+/* Check an argument of `print` or `println`, which dereferences a reference because printing an
+ * address is never what the user means. */
  Type *checkPrintArg (Checker *c, Expr *e);
- Type *checkTryInner (Checker *, Expr *);
+/* Check `e?`: the operand must be an `option` or a `result`, and the enclosing function must
+ * return the same kind with the same error type. */
  Type *checkTryInner (Checker *c, Expr *e);
+/* Check an expression in a value position; a reference here is an error whose message asks for
+ * an explicit `*p`. */
  Type *checkValue (Checker *c, Expr *e);
+/* The type of the k-th payload of a variant, substituted for the type arguments when the enum is
+ * an instance of a generic type. */
  Type *payloadType (TypeTable *tt, Type *et, Variant *v, size_t k);
+/* Build the type `slice<elem>` from the declaration in the prelude. */
  Type *sliceOf (Checker *c, Type *elem);
+/* Substitute the type arguments of the instance being re-checked into `t`; a type that mentions
+ * no parameter comes back unchanged. */
  Type *tsub (Checker *c, Type *t);
+/* The element type of a view, or NULL when the type is not a view. */
  Type *viewElemOf (Type *t);
+/* Find a variant of an enum by name, or NULL. */
  Variant *findVariant (TypeDef *td, const char *name);
+/* Read an expression as a literal integer, accepting a negated literal, so that a negative slice
+ * bound is rejected at compile time. */
  _Bool asIntLit (Expr *e, long long int *out);
+/* True when a statement always leaves its enclosing block (return, break or continue); it is how
+ * the `if p == null { return }` guard is recognised. */
  _Bool blockExits (Stmt *s);
+/* Report an error when a value of type `got` cannot be assigned where `want` is expected;
+ * returns true when the assignment is rejected. */
  _Bool checkAssignable (Checker *c, Type *want, Type *got, Expr *node, const char *what);
- _Bool checkEscape (Checker *, Expr *, int, int, const char *);
+/* Report an error when a value would outlive the place it is being stored into. */
  _Bool checkEscape (Checker *c, Expr *val, int at, int line, const char *what);
+/* Run every check a store needs: the depth rule plus "a borrowed value may not be stored where
+ * it outlives the call". */
  _Bool checkStoreEscape (Checker *c, Expr *val, Expr *target, int line);
- _Bool cmpIsNative (Type *t);
- _Bool enumHasPayload (TypeDef *td);
- _Bool isCmpOp (const char *op);
- _Bool isLogicOp (const char *op);
- _Bool isLvalue (Expr *e);
- _Bool isNarrowed (Checker *c, const char *cname);
- _Bool isNumericLit (Expr *e);
- _Bool isPlace (Expr *e);
- _Bool isPrintable (Type *t);
- _Bool isProtoType (Type *t, const char *name, size_t nargs);
- _Bool isWritablePlace (Checker *c, Expr *e);
- _Bool literalFits (Expr *e, Type *want);
- _Bool mentionsParam (Type *t);
- _Bool pathHasReadonlyRef (Expr *);
- _Bool pathRefsAllMut (Expr *e, _Bool *crossed);   /* ⭐ #40/#41：写要穿过的引用都得是 mut ✓ */
- _Bool pathHasReadonlyRef (Expr *e);
- _Bool rejectNullableDeref (Checker *c, Type *t, Expr *node, const char *what);
- _Bool repeatablePure (Expr *e);
- _Bool requireMutable (Checker *c, Expr *e, int line, const char *what);
- _Bool typeContainsRef (TypeTable *, Type *);
- _Bool typeContainsRef (TypeTable *tt, Type *t);
- _Bool typeLacksZeroValue (TypeTable *tt, Type *t);
- _Bool typeSupportsEq (Type *t, const char *op);
- const char *cNameFor (Checker *c, const char *name);
- const char *narrowTarget (Checker *c, Expr *cond, _Bool *whenTrue);
- const char *typeStr (Checker *c, Type *t);
- extern _Bool checkModule (Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
- bool isEscapeeName (Checker *, const char *);
- bool computeEffectsTransitive (Checker *, FuncDef *);
- int *fieldDepthEntry (Checker *, Sym *, const char *, bool);
- void noteFieldDepthWrite (Checker *, Sym *, const char *, int);
- const char *placeRootName (Expr *);
-  int callHomeDepth (Checker *c, Vec *args, Vec *params, Expr *callNode);
- int exprRefDepth (Checker *, Expr *);
-int valDepthForStore (Checker *, Expr *);
- int exprRefDepth (Checker *c, Expr *e);
- int placeDepth (Checker *c, Expr *e);
- int storeLayer (Checker *c, Expr *e);   /* ⭐ 「这块存储住在哪一层」（≠ placeDepth）✓ */
- _Bool valTracesToParam (Checker *c, FuncDef *f, Expr *val);   /* ⭐ 定案 67 ✓ */
- _Bool promoteInto (Checker *c, Expr *val, int at);   /* ⭐ 定案 63：块级逃逸提升 ✓ */
- void noteOrigin (Checker *c, Sym *sy, Expr *val);   /* ⭐ 记「这个绑定的来路」（压平）✓ */
- void adoptContextType (Expr *e, Type *want);
- void checkCallRefArgs (Checker *, FuncDef *, Vec *, Vec *, int, int, const char *);
- void checkOperatorSig (Checker *c, FuncDef *f);
- void checkStmt (Checker *, Stmt *);
- void checkStmt (Checker *c, Stmt *s);
- void ckError (Checker *c, int line, const char *note, const char *fmt, ...);
- void ckWarn  (Checker *c, int line, const char *note, const char *fmt, ...);   /* ⭐ 警告：不拦 ✓ */
- void desugarBareCtor (Checker *, Expr *, Type *);
- void desugarBareCtor (Checker *c, Expr *e, Type *want);
- void expectBool (Checker *c, Type *t, Expr *node);
- void markCallHomeIfEscaping (Checker *, Expr *, int);
 
+/* Record that `val` is being published at level `at`; decides nothing. The checking
+ * pass only records; one pass folds over the records and settles the levels. */
+ void recordStore (Checker *c, Expr *val, Expr *target, int at, int line);
+ void recordLvlRejection (Checker *c, Expr *val, int at, int depth, int line);
+ void recheckLevelRejections (Checker *c);
+ bool promoteFieldsAt (Checker *c, Sym *sy, int at, int hops);
+/* True when C can compare values of this type directly; `str` is excluded because its `==` would
+ * compare pointers. */
+ _Bool cmpIsNative (Type *t);
+/* True when at least one variant carries a payload; such an enum is a tagged struct in C and
+ * cannot be compared with `==`. */
+ _Bool enumHasPayload (TypeDef *td);
+/* True for `==`, `!=`, `<`, `<=`, `>` and `>=`. */
+ _Bool isCmpOp (const char *op);
+/* True for `&&` and `||`. */
+ _Bool isLogicOp (const char *op);
+/* True when an address can be taken of this expression: a binding, a field or a dereference. */
+ _Bool isLvalue (Expr *e);
+/* True when this generated name has been proved non-null at the current position. */
+ _Bool isNarrowed (Checker *c, const char *cname);
+/* True for an integer or a float literal. */
+ _Bool isNumericLit (Expr *e);
+/* True when the expression is a place, that is a chain of bindings, fields, indexes and slices.
+ * Slicing a fixed array requires one, because the address of an element is taken. */
+ _Bool isPlace (Expr *e);
+/* True when a value of this type can be printed; structs, enums, arrays and views are printed by
+ * a generated helper that recurses into them. */
+ _Bool isPrintable (Type *t);
+/* True when the type is the named container from the prelude with exactly `nargs` arguments,
+ * such as `option<T>` or `result<T, E>`. */
+ _Bool isProtoType (Type *t, const char *name, size_t nargs);
+/* True when this place can be written: its root is `var` and no read-only reference or read-only
+ * view is crossed on the way. */
+ _Bool isWritablePlace (Checker *c, Expr *e);
+/* True when a literal's type can adapt to `want`, because a literal takes its type from the
+ * target rather than the other way round. */
+ _Bool literalFits (Expr *e, Type *want);
+/* True when the type mentions a type parameter, directly or inside an aggregate; such a type
+ * cannot be decided before instantiation. */
+ _Bool mentionsParam (Type *t);
+/* Report whether every reference crossed on the way to this place is a `mut ref`, and set
+ * `*crossed` when the storage lives behind such a reference. */
+ _Bool pathRefsAllMut (Expr *e, _Bool *crossed);
+/* True when the path to this place crosses a read-only reference, including the type of the
+ * place itself. */
+ _Bool pathHasReadonlyRef (Expr *e);
+/* Report an error and return true when a nullable reference is dereferenced without a preceding
+ * proof that it is not null. */
+ _Bool rejectNullableDeref (Checker *c, Type *t, Expr *node, const char *what);
+/* True when evaluating this expression twice is observably the same; `??` needs that, because
+ * its subject appears twice in the generated C. */
+ _Bool repeatablePure (Expr *e);
+/* Report an error when writing to this place is not allowed; returns true when the write is
+ * rejected. */
+ _Bool requireMutable (Checker *c, Expr *e, int line, const char *what);
+/* True when the type can carry a reference, directly or inside an array, a struct, or a payload
+ * of any variant. */
+ _Bool typeContainsRef (TypeTable *tt, Type *t);
+/* True when the type has no zero value, which holds for a non-nullable reference and for any
+ * aggregate that contains one. A payload-carrying enum looks only at its first variant, because
+ * its zero value is tag 0 with the payload zeroed. */
+ _Bool typeLacksZeroValue (TypeTable *tt, Type *t);
+/* True when values of this type can be compared with `op`: the comparison is native, or the type
+ * is an array of a comparable element, or it defines the operator method. */
+ _Bool typeSupportsEq (Type *t, const char *op);
+/* The name used in generated C for a source name, renamed when it would collide with a binding
+ * of the same name in the same scope. */
+ const char *cNameFor (Checker *c, const char *name);
+/* The name a condition proves non-null, or NULL; `*whenTrue` says whether the proof holds on the
+ * taken branch. */
+ const char *narrowTarget (Checker *c, Expr *cond, _Bool *whenTrue);
+/* Render a type as source text, for a diagnostic. */
+ const char *typeStr (Checker *c, Type *t);
+/* Check a whole module: the declarations, the function bodies, the deferred rules, and the arena
+ * decisions that wait for closed effect summaries. */
+/* True when this local of the current function can be moved out of it. */
+ bool isEscapeeName (Checker *, const char *);
+/* Compute the effect summary of a function, following the callees, and report whether the
+ * summary is complete; only a complete summary may be used to skip a check. */
+ bool computeEffectsTransitive (Checker *, FuncDef *);
+/* The field-table entry for a field, created on demand when `create` is set, or NULL when there
+ * is none. */
+ int *fieldDepthEntry (Checker *, Sym *, const char *, bool);
+/* Record that a value of depth `d2` was stored into a field, updating the field entry and the
+ * effective depth of the root. */
+ void noteFieldDepthWrite (Checker *, Sym *, const char *, int);
+/* The name of the binding at the root of a place, or NULL when the place is not rooted in one. */
+ const char *placeRootName (Expr *);
+/* The depth of the home arena to pass at this call site, derived from the arguments and the
+ * parameters of the callee. */
+  int callHomeDepth (Checker *c, Vec *args, Vec *params, Expr *callNode);
+/* Depth to record for a value that is being stored, taking the references and the structure of
+ * the value into account. */
+int valDepthForStore (Checker *, Expr *);
+/* Depth of the references a value can carry, read off its type and its shape. */
+ int exprRefDepth (Checker *c, Expr *e);
+/* Depth of the storage a place expression denotes, as opposed to the depth of what a reference
+ * stored there points at. */
+ int placeDepth (Checker *c, Expr *e);
+/* Arena level at which the storage of a place lives, which is a different question from
+ * `placeDepth`. */
+ int storeLayer (Checker *c, Expr *e);
+/* True when the root of the value is one of the function's parameters, so that the call site can
+ * decide its lifetime. */
+ _Bool valTracesToParam (Checker *c, FuncDef *f, Expr *val);
+/* Raise every allocation inside a value to the level it is being stored at, instead of rejecting
+ * the store. */
+ _Bool promoteInto (Checker *c, Expr *val, int at);
+/* Remember where a binding's value came from, flattened to the root of the chain. */
+ void noteOrigin (Checker *c, Sym *sy, Expr *val);
+/* Give a bare `{}` or a bare constructor the type the surrounding context expects. */
+ void adoptContextType (Expr *e, Type *want);
+/* Check the `ref` and `mut ref` arguments of a call: each has to outlive the call, and the arena
+ * argument is decided here. */
+ void checkCallRefArgs (Checker *, FuncDef *, Vec *, Vec *, int, int, const char *);
+/* Check the signature of an operator method at the place where it is defined. */
+ void checkOperatorSig (Checker *c, FuncDef *f);
+/* Check one statement and apply the depth and narrowing consequences it has. */
+ void checkStmt (Checker *c, Stmt *s);
+/* Report a compile error at a line, with an optional note suggesting a fix. */
+ void ckError (Checker *c, int line, const char *note, const char *fmt, ...);
+/* Report a warning at a line. A warning is recorded but does not stop the compilation. */
+ void ckWarn  (Checker *c, int line, const char *note, const char *fmt, ...);
+/* Rewrite a bare constructor into the qualified variant construction. */
+ void desugarBareCtor (Checker *c, Expr *e, Type *want);
+/* Report an error unless the type is `bool`; the language has no implicit truthiness. */
+ void expectBool (Checker *c, Type *t, Expr *node);
+
+/* Mark the call as allocating into the caller's home arena when the value it produces escapes
+ * the current frame. */
  void markCallHomeIfEscaping (Checker *c, Expr *v, int at);
+/* Resolve the home depth of a call site into the arena argument the code generator emits. */
  void setCallArenaArg (Checker *c, Expr *e);
+/* Report an error when a name of another module is used without its module qualifier. */
  void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);
- Vec *funcTParams (FuncDef *f);   /* PLAN #47：可见的类型参数在哪 ✓ */
+/* The type parameters visible in this function: those of the function itself, or those of the
+ * generic type that owns it. */
+ Vec *funcTParams (FuncDef *f);
+/* The instance of a generic function for one set of type arguments, created on first use. */
  FuncDef *funcInstance (Checker *c, FuncDef *tmpl, Vec *targs, int line);
- _Bool unifyTParams (TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got);   /* 定案 68：解析出"最终传哪只 arena" ✓ */
+/* Fill in the type arguments of a generic call by unifying the parameter types with the argument
+ * types; false means they cannot be inferred and have to be written out. */
+ _Bool unifyTParams (TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got);
+/* Record every non-null fact a condition proves, including both sides of an `&&`. */
  void narrowFactsOf (Checker *c, Expr *cond);
+/* Leave the innermost scope: drop its bindings and unwind the narrowing facts it established. */
  void popScope (Checker *c);
+/* Record that a binding has been proved non-null at the current position. */
  void pushNarrow (Checker *c, const char *cname);
+/* Enter a new lexical scope; the bindings declared in it disappear at the matching `popScope`. */
  void pushScope (Checker *c);
- void recordNewSizeCheck (Checker *, Type *, int);
+/* Defer the size check of `new T[n]` to instantiation, for a body whose type parameter has no
+ * size yet. */
  void recordNewSizeCheck (Checker *c, Type *t, int line);
+/* Defer the zero-value check of a declaration to instantiation. */
  void recordZeroCheck (Checker *c, Type *t, int line, const char *name);
+/* Drop the non-null proof of a binding, and of the paths that begin with it, which an assignment
+ * invalidates. */
  void unNarrow (Checker *c, const char *cname);
 
 #endif /* EXTC_CHECK_INTERNAL_H */

@@ -55,11 +55,11 @@ else
     echo "  FAIL O_*  ->  平台常量漏到用户层代码里了 ✗"; fail=1
 fi
 
-echo "== 三个名字的规范（\`SYNTAX.md\` §3′ 的判据）=="
-if grep -q 'openRead' SYNTAX.md && grep -q 'openAppend' SYNTAX.md && grep -q 'inputFile' SYNTAX.md && grep -q '定案 77' SYNTAX.md; then
-    echo "  ok   规范  ->  SYNTAX.md §3′（定案 77）写着三个名字 + 两个类型 ✓"
+echo "== 三个名字的规范（\`docs/SYNTAX.md\` §3′ 的判据）=="
+if grep -q 'openRead' docs/SYNTAX.md && grep -q 'openAppend' docs/SYNTAX.md && grep -q 'inputFile' docs/SYNTAX.md && grep -q '定案 77' docs/SYNTAX.md; then
+    echo "  ok   规范  ->  docs/SYNTAX.md §3′（定案 77）写着三个名字 + 两个类型 ✓"
 else
-    echo "  FAIL 规范  ->  SYNTAX.md §3′ 没写（规范不落文档就没人遵守 ✗）"; fail=1
+    echo "  FAIL 规范  ->  docs/SYNTAX.md §3′ 没写（规范不落文档就没人遵守 ✗）"; fail=1
 fi
 
 rm -f build/fsproto-out.txt

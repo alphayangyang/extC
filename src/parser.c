@@ -1,7 +1,16 @@
+/* extC syntax, part two of the pipeline: the recursive-descent parser.
+ *
+ * Turns the token vector from lexAll into ast.h nodes (see parser.h for the
+ * accepted grammar).  It resolves no names: identifiers, module paths, and
+ * generic arguments are kept exactly as written, so the loader and the type
+ * checker can decide what they mean.  `{` after a name is a struct literal by
+ * position, not by capitalization, and p->inCond records where a `{` must be
+ * read as the start of a block instead.
+ */
 #include "parser.h"
 
-#include <stdio.h>      /* fprintf（EXTC_DBG_QN 的轨迹输出）*/
-#include <stdlib.h>     /* getenv（EXTC_DBG_QN：限定名的解析轨迹）*/
+#include <stdio.h>      /* fprintf: the EXTC_DBG_QN trace */
+#include <stdlib.h>     /* getenv: the EXTC_DBG_QN switch */
 #include <string.h>
 
 #include "lexer.h"
@@ -11,53 +20,104 @@ typedef struct {
     Arena *arena;
     Vec   *toks;
     size_t pos;
-    /* 是否正在解析 `if` / `while` 的条件。
-     * 在条件位置里，`{` 属于**块**而不是结构体字面量 —— 这就是「位置规则」，
-     * 它取代了以前那套「首字母大写才算结构体字面量」的隐藏魔法。 */
+    /* True while parsing the condition of `if` / `while` / `match`.  In a
+     * condition a `{` starts the body block, so a struct literal has to be
+     * parenthesized.  This positional rule replaced an earlier one that told
+     * literals apart by capitalizing the type name. */
     bool   inCond;
-    bool   noBody;      /* ⭐ 定案 72：`extern!` 的声明只解析签名（没有体 ✓）*/
+    bool   noBody;      /* true while parsing an `extern!` signature (no body) */
 } Parser;
 
-/* ---------------------------------------------------------------- 前瞻 */
+/* ---------------------------------------------------------------- lookahead */
 
+/* Return the token `k` positions ahead of the cursor without consuming it.
+ *
+ * Params:
+ *   k - lookahead distance in tokens; 0 is the current token
+ *
+ * Returns:
+ *   That token, or the trailing TK_EOF when the distance runs past the end.
+ *
+ * Notes:
+ *   - Clamping to TK_EOF instead of returning NULL is what lets every caller
+ *     read a fixed number of tokens ahead without a bounds check.
+ */
 static Token *pk(Parser *p, size_t k) {
     size_t i = p->pos + k;
-    if (i >= p->toks->len) i = p->toks->len - 1;    /* 停在 EOF */
+    if (i >= p->toks->len) i = p->toks->len - 1;    /* clamp at EOF */
     return (Token *)vecAt(p->toks, i);
 }
 
+/* Return the token at the cursor, without consuming it. */
 static Token *cur(Parser *p) { return pk(p, 0); }
 
-/* ⚠️⚠️ **不能只看文本** —— 字符串字面量 token 的 `text` 是**不含引号的内容** ⇒
- * 内容恰好是 `")"` 的字符串会让 `at(p, ")")` 成立 ✗✗
- * （实测：`println(")")` 报 "expected an expression, found `)`"，
- *   而 `println("x)")` 正常 —— 差别只在那一个字节 ✓ 真踩过）
- * ⇒ 只比对**标点**时才要求 token 真的是标点 ✓
- * 反过来说：关键字/标识符照旧纯文本比对（`match` / `true` 那些没有这个冲突 ✓）*/
+/* Report whether the token at the cursor spells `value`.
+ *
+ * Params:
+ *   value - the spelling to compare against, e.g. ")" or "match"
+ *
+ * Notes:
+ *   - A spelling that is punctuation additionally requires the token to BE
+ *     punctuation.  A string literal's text is stored without its quotes, so the
+ *     source `")"` yields a token whose text is exactly `)`; comparing text
+ *     alone made println(")") fail with "expected an expression, found `)`"
+ *     while println("x)") was fine.  For keywords and identifiers the plain
+ *     text comparison is right and stays.
+ */
 static bool at(Parser *p, const char *value) {
     Token *t = cur(p);
     if (t->kind == TK_STRING && lexIsPunct(value)) return false;
     return strcmp(t->text, value) == 0;
 }
 
+/* Report whether the token at the cursor has kind `k`, ignoring its text. */
 static bool atKind(Parser *p, TokenKind k) { return cur(p)->kind == k; }
 
+/* Consume the token at the cursor and return it.
+ *
+ * Notes:
+ *   - The cursor never moves past the trailing TK_EOF, so a caller that keeps
+ *     taking tokens on malformed input cannot walk off the vector.
+ */
 static Token *take(Parser *p) {
     Token *t = cur(p);
     if (p->pos + 1 < p->toks->len) p->pos++;
     return t;
 }
 
+/* Consume the token at the cursor when it spells `value`.
+ *
+ * Returns:
+ *   true when it matched and was consumed; false, with the cursor unchanged,
+ *   otherwise.
+ */
 static bool accept(Parser *p, const char *value) {
     if (!at(p, value)) return false;
     take(p);
     return true;
 }
 
+/* Return a printable spelling for `t` to drop into an error message.
+ *
+ * Notes:
+ *   - A token with empty text (TK_EOF, TK_NEWLINE) shows its kind name instead,
+ *     so a message never ends in "found ``".
+ */
 static const char *shown(const Token *t) {
     return t->text[0] ? t->text : tokenKindName(t->kind);
 }
 
+/* Consume the token at the cursor when it spells `value`, else report it.
+ *
+ * Params:
+ *   value - required spelling, e.g. "{"
+ *   note  - optional explanation stored with the error, usually the syntax rule
+ *           the caller was following; NULL when there is nothing to add
+ *
+ * Returns:
+ *   true when consumed; false after reporting through ctxError, in which case
+ *   the caller must return immediately.
+ */
 static bool expect(Parser *p, const char *value, const char *note) {
     if (at(p, value)) { take(p); return true; }
     Token *t = cur(p);
@@ -66,6 +126,15 @@ static bool expect(Parser *p, const char *value, const char *note) {
     return false;
 }
 
+/* Consume an identifier at the cursor, else report what was needed.
+ *
+ * Params:
+ *   what - description of the missing item, phrased to follow "expected",
+ *          e.g. "a field name"
+ *
+ * Returns:
+ *   The consumed token, or NULL after reporting through ctxError.
+ */
 static Token *expectIdent(Parser *p, const char *what) {
     if (atKind(p, TK_IDENT)) return take(p);
     Token *t = cur(p);
@@ -74,11 +143,12 @@ static Token *expectIdent(Parser *p, const char *what) {
     return NULL;
 }
 
+/* Consume any run of newline tokens, and nothing else. */
 static void skipNl(Parser *p) {
     while (atKind(p, TK_NEWLINE)) take(p);
 }
 
-/* 换行和可选的 `;` 都是语句分隔符 */
+/* Newlines and an optional `;` are both statement separators. */
 static void skipJunk(Parser *p) {
     for (;;) {
         if (atKind(p, TK_NEWLINE) || at(p, ";")) { take(p); continue; }
@@ -86,7 +156,7 @@ static void skipJunk(Parser *p) {
     }
 }
 
-/* ---------------------------------------------------------------- 前向声明 */
+/* ---------------------------------------------------------------- forward declarations */
 
 static Type    *parseType(Parser *p);
 static Stmt    *parseBlock(Parser *p);
@@ -117,7 +187,12 @@ static Expr *parseUnary(Parser *p);
 static Expr *parsePostfix(Parser *p);
 static Expr *parsePrimary(Parser *p);
 
-/* 十个标量内建类型名（显式转换用）—— `bool` 不算：extC 没有隐式真值转换 ✓ */
+/* Report whether `n` is one of the ten scalar builtin type names.
+ *
+ * Notes:
+ *   - `bool` and `void` are excluded: an explicit conversion needs a scalar
+ *     numeric type on both sides, and extC has no implicit truth conversion.
+ */
 static bool isScalarTypeName(const char *n) {
     static const char *N[] = { "i8","i16","i32","i64","u8","u16","u32","u64","f32","f64", NULL };
     for (size_t i = 0; N[i]; i++) if (strcmp(N[i], n) == 0) return true;
@@ -129,6 +204,16 @@ static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
                         const char **modPrefixOut);
 static bool  parseArgs(Parser *p, Vec *out);
 
+/* Build a binary-operator Expr node.
+ *
+ * Params:
+ *   op   - operator spelling, e.g. "||"; stored as written for the code generator
+ *   l, r - operand expressions, already parsed
+ *   line - source line to attach to the node, for diagnostics
+ *
+ * Returns:
+ *   The new EX_BIN node, allocated in the parser arena.
+ */
 static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
     Expr *e = exprNew(p->arena, EX_BIN, line);
     e->u.bin.op = op;
@@ -137,12 +222,17 @@ static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
     return e;
 }
 
-/* ================================================================ 顶层 */
+/* ================================================================ top level */
 
-/* 把 toks 里的声明**追加**到 out（不重置 —— out 由调用方初始化一次）。
- * prelude 和用户文件就是靠这个进同一个 Module 的，将来多文件编译也一样。 */
-/* ⭐ 定案 70：`use a::b::c` —— 短名 = 最后一段（v1 不做 `as` 别名 ✓）
- * 「文件即模块」：`use std::io` ⇒ 找 `std/io.extc`（装载器负责搜索路径 ✓）*/
+/* Parse a `use a::b::c` import declaration.
+ *
+ * Notes:
+ *   - A file is a module, so `use std::io` names the file std/io.extc; the
+ *     loader owns the search path and the cycle check.
+ *   - The short name is the last path segment and is what the file may call the
+ *     module by.
+ *   - A `use` declaration only records the path.  Nothing is resolved here.
+ */
 static UseDecl *parseUse(Parser *p) {
     Token *kw = take(p);                       /* use */
     Token *first = expectTypeName(p, "a module path (e.g. `use std::io`)");
@@ -157,15 +247,15 @@ static UseDecl *parseUse(Parser *p) {
         if (!seg) return NULL;
         bufPuts(&path, "::");
         bufPuts(&path, seg->text);
-        shortName = seg->text;                 /* 短名 = 最后一段 ✓ */
+        shortName = seg->text;                 /* short name = last segment */
     }
-    /* ⭐ `use std::sys::io as sysio`（PLAN #53 步骤②）——
-     * **别名是必要的**：`std::io` 与 `std::sys::io` 的短名都是 `io`，
-     * 而"从 stdin 读 + `open` 一个文件"恰好要同时用这两层 ⇒
-     * 没有别名时那两行**必然撞车** ✗
-     * 主人原话：「别名是必要的，否则就太长了，用 `as` 即可」✓
-     * ⚠️ `path` **保持用户写的全名**（深层限定名靠它做"全名对全名"匹配，
-     *    见 `importedAsPath`）—— 只有 `shortName` 换成别名 ✓ */
+    /* `use std::sys::io as sysio` -- an alias is not a convenience here but a
+     * necessity: std::io and std::sys::io have the same short name `io`, and
+     * reading stdin while opening a file needs both modules in reach at once.
+     *
+     * `path` keeps the full name as written, because the loader matches a deep
+     * qualified name full-name to full-name (see importedAsPath in modules.c);
+     * only `shortName` becomes the alias. */
     const char *alias = NULL;
     if (at(p, "as")) {
         take(p);
@@ -180,14 +270,24 @@ static UseDecl *parseUse(Parser *p) {
     return u;
 }
 
-/* ⭐ 定案 72：`extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64`
- *                          effects Addr=0 Cont=0        // ← 我签字：不存你的指针 ✓
+/* Parse an `extern!("libc") fn name(...)` declaration of a C function.
  *
- * **形状上的硬规矩**（v1，`LIBS.md` §5 的映射表）：参数/返回只用**标量或单个指针**
- * （`ref T` / `?ref T`）—— 因为 C 那边就是这些；`slice<T>`（ptr+len 两个参数）
- * 那种"语法糖展开"在跨边界时没人对得上 ⇒ **让 stdlib 的 wrapper 去写** ✓
+ * The shape is:
+ *   extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64
+ *                   effects Addr=0 Cont=0    // the call stores nothing
  *
- * 效果摘要：**写了就按写的算，没写就按最坏情况算**（每个参数都可能被存 ⇒ 安全但难用 ✓）*/
+ * Notes:
+ *   - A parameter or return type may only be a scalar or a single pointer
+ *     (`ref T`, `?ref T`), because that is what C has.  A `slice<T>` is two C
+ *     parameters (pointer plus length), and the mapping cannot be expressed
+ *     across the boundary, so a stdlib wrapper has to spell it out instead.
+ *   - The effect declaration is what the author asserts about the call.  Writing
+ *     none means the worst case is assumed -- every argument may be stored --
+ *     which is safe but costs the caller freedom at the call site.
+ *   - The returned C function is declared, not defined: p->noBody makes parseFunc
+ *     stop after the signature, so no body is parsed and the C library is the
+ *     implementation.
+ */
 static FuncDef *parseExtern(Parser *p) {
     Token *kw = take(p);                       /* extern */
     if (!expect(p, "!", NULL)) return NULL;
@@ -204,15 +304,17 @@ static FuncDef *parseExtern(Parser *p) {
         ctxError(p->ctx, kw->line, kw->col, NULL, "`extern!` must be followed by a `fn` declaration");
         return NULL;
     }
-    p->noBody = true;                          /* ⭐ 只解析签名，不要体 ✓ */
+    p->noBody = true;                          /* signature only, no body */
     FuncDef *f = parseFunc(p);
     p->noBody = false;
     if (!f) return NULL;
     f->isExtern  = true;
     f->externLib = lib->text;
-    f->body = NULL;                            /* 外部声明**没有体** ✓ */
+    f->body = NULL;                            /* an external declaration has no body */
 
-    /* 信任声明（可以写多行）—— ⚠️ 每轮先跳空行/换行，不然 `at()` 看到的是换行符 ✗ */
+    /* The caller's assertion about effects, spread over as many lines as it
+     * needs.  Each round skips newlines first, or at() would see a TK_NEWLINE
+     * and miss the `effects` keyword. */
     while (true) {
         skipJunk(p);
         if (at(p, "effects")) {
@@ -247,10 +349,10 @@ static FuncDef *parseExtern(Parser *p) {
         if (at(p, "owned")) {
             Token *ow = take(p);
             ctxError(p->ctx, ow->line, ow->col,
-                     "Memory returned by C has to be released, and extC has no `free` -- the plan"
-                     " is a frame-owned resource object (same shape as `IO.md` §5's files)."
-                     " Until that exists, only declare C functions that write into memory you"
-                     " already own.",
+                     "Memory returned by C has to be released, and extC has no `free`."
+                     " The planned answer is a resource value owned by the frame that created"
+                     " it, which is not implemented yet. Until then, declare only C functions"
+                     " that write into memory the caller already owns.",
                      "`owned` is not implemented yet");
             return NULL;
         }
@@ -259,12 +361,26 @@ static FuncDef *parseExtern(Parser *p) {
     return f;
 }
 
+/* Parse the whole token vector and append its declarations to `out`.
+ *
+ * Params:
+ *   ctx   - reports the first syntax error through ctxError
+ *   arena - owns every AST node and copied name
+ *   toks  - tokens from lexAll, ending in TK_EOF
+ *   out   - Module to append to; the caller initializes it once, which is how
+ *           the prelude and the user file land in the same module
+ *
+ * Returns:
+ *   true when parsing finished without an error; false when ctx->hasError is
+ *   set, in which case `out` holds what was parsed up to that point.
+ */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     Parser p = { ctx, arena, toks, 0, false, false };
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
-        /* ⭐ 定案 70：`use a::b` —— **语义导入**（装载器负责找文件/查环/解析限定名 ✓）*/
+        /* `use a::b` is a semantic import: the loader finds the file, checks for
+         * import cycles, and resolves the qualified names it introduces. */
         if (at(&p, "use")) {
             UseDecl *u = parseUse(&p);
             if (!u) return false;
@@ -272,7 +388,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             skipJunk(&p);
             continue;
         }
-        /* ⭐ 定案 70：顶层注解 `@private` —— 默认公开，**要藏才写** ✓ */
+        /* The top-level annotation `@private`.  Declarations are public by
+         * default, so hiding one has to be written out. */
         bool isPrivate = false;
         if (at(&p, "@")) {
             Token *a = take(&p);
@@ -325,6 +442,11 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     return !ctx->hasError;
 }
 
+/* Parse a `struct` declaration with its type parameters, fields, and methods.
+ *
+ * Returns:
+ *   The new StructDef, or NULL after reporting an error.
+ */
 static StructDef *parseStruct(Parser *p) {
     Token *kw = take(p);                    /* struct */
     Token *name = expectTypeName(p, "a struct name");
@@ -337,7 +459,7 @@ static StructDef *parseStruct(Parser *p) {
     vecInit(&sd->fields, p->arena, sizeof(void *));
     vecInit(&sd->methods, p->arena, sizeof(void *));
 
-    /* 泛型参数表：`struct Pair<A, B> { ... }` */
+    /* Type parameter list: `struct Pair<A, B> { ... }` */
     if (accept(p, "<")) {
         skipNl(p);
         for (;;) {
@@ -361,7 +483,7 @@ static StructDef *parseStruct(Parser *p) {
     if (!expect(p, "{", NULL)) return NULL;
     skipJunk(p);
     while (!at(p, "}")) {
-        /* 方法写在 struct 体内（定案 9）*/
+        /* A method is declared inside the struct body, like a field. */
         if (at(p, "fn")) {
             FuncDef *m = parseFunc(p);
             if (!m) return NULL;
@@ -388,8 +510,13 @@ static StructDef *parseStruct(Parser *p) {
     return sd;
 }
 
-/* type Status = | ok | warn | error
- * 前导 `|` 可写可不写。 */
+/* Parse a `type Name = | v1 | v2(T)` declaration of a variant type.
+ *
+ * The leading `|` before the first variant is optional.
+ *
+ * Returns:
+ *   The new TypeDef, or NULL after reporting an error.
+ */
 static TypeDef *parseTypeDecl(Parser *p) {
     Token *kw = take(p);                    /* type */
     Token *name = expectTypeName(p, "a type name");
@@ -401,7 +528,8 @@ static TypeDef *parseTypeDecl(Parser *p) {
     vecInit(&td->typeParams, p->arena, sizeof(void *));
     vecInit(&td->variants, p->arena, sizeof(void *));
 
-    /* 泛型参数表：`type option<T> = | none | some(T)` —— 跟 struct 同一套写法 ✓ */
+    /* Type parameter list: `type option<T> = | none | some(T)`, the same shape
+     * as on a struct. */
     if (accept(p, "<")) {
         skipNl(p);
         for (;;) {
@@ -436,8 +564,9 @@ static TypeDef *parseTypeDecl(Parser *p) {
         va->line = v->line;
         vecInit(&va->types, p->arena, sizeof(void *));
 
-        /* **载荷**：`| circle(f64) | rect(f64, f64)`
-         * 括号里是类型，位置式（不带字段名）—— match 绑定也是位置的 ✓ */
+        /* Payload: `| circle(f64) | rect(f64, f64)`.  The parentheses hold
+         * types, positionally and without field names, which is also how a match
+         * arm binds them. */
         skipNl(p);
         if (at(p, "(")) {
             take(p);
@@ -461,12 +590,18 @@ static TypeDef *parseTypeDecl(Parser *p) {
     return td;
 }
 
+/* Report whether `s` begins with an uppercase ASCII letter. */
 static bool startsUpper(const char *s) { return s[0] >= 'A' && s[0] <= 'Z'; }
 
-/* 类型名必须首字母小写、泛型参数必须首字母大写 —— **两者集合不相交**，
- * 所以「泛型参数和用户类型重名」在语法上不可能发生。
- * （之前只靠约定，而 `struct T` + `struct box<T>` 是能编译过的：里面的 T 会遮蔽外面的。
- *   能编译但读者看不懂，就是坏设计。）*/
+/* Consume a type name, which must start with a lowercase letter.
+ *
+ * Notes:
+ *   - Type names are camelCase and type parameters start uppercase, so the two
+ *     sets are disjoint and a type parameter can never collide with a type name.
+ *     That used to be a convention only, and `struct T` beside `struct box<T>`
+ *     compiled happily -- the inner T shadowed the outer one.  Code that
+ *     compiles but cannot be read is a design bug, so the rule is enforced here.
+ */
 static Token *expectTypeName(Parser *p, const char *what) {
     Token *t = expectIdent(p, what);
     if (!t) return NULL;
@@ -481,8 +616,14 @@ static Token *expectTypeName(Parser *p, const char *what) {
     return t;
 }
 
-/* 函数/方法的名字：普通标识符，或者可重载的运算符（`fn ==(...)`）。
- * 让「定义 ==」这件事在源码里**看得见** —— 不用去查一个隐式的约定名。 */
+/* Consume a function or method name: an identifier, or an overloadable
+ * operator such as `fn ==(self, other)`.
+ *
+ * Notes:
+ *   - Writing the operator itself keeps the definition visible at the
+ *     declaration.  The alternative, an implicitly agreed name, would have to be
+ *     looked up somewhere else.
+ */
 static Token *expectFuncName(Parser *p) {
     if (atKind(p, TK_IDENT)) return take(p);
     if (at(p, "==") || at(p, "!=")) return take(p);
@@ -493,6 +634,18 @@ static Token *expectFuncName(Parser *p) {
     return NULL;
 }
 
+/* Parse a `fn` declaration: name, type parameters, parameters, return type,
+ * and body.
+ *
+ * Returns:
+ *   The new FuncDef, or NULL after reporting an error.
+ *
+ * Notes:
+ *   - When p->noBody is set (an `extern!` declaration) parsing stops after the
+ *     return type and `fd->body` stays NULL.  Reusing this function rather than
+ *     copying it is deliberate: the parameters, return type, and generic list
+ *     would drift apart between the two copies.
+ */
 static FuncDef *parseFunc(Parser *p) {
     Token *kw = take(p);                    /* fn */
     Token *name = expectFuncName(p);
@@ -502,16 +655,18 @@ static FuncDef *parseFunc(Parser *p) {
     fd->name = name->text;
     fd->line = kw->line;
     fd->ret = NULL;
-    fd->ctx  = p->ctx;                         /* 定案 70：诊断要走对文件 ✓ */
+    fd->ctx  = p->ctx;                         /* so later passes report in this file */
     vecInit(&fd->params, p->arena, sizeof(void *));
     vecInit(&fd->typeParams, p->arena, sizeof(void *));
     vecInit(&fd->targs, p->arena, sizeof(void *));
-    /* ⭐ PLAN #47：`fn f<T, U>(…)` —— 自由函数的类型参数（跟 struct 那一处同一个形状 ✓）*/
+    /* `fn f<T, U>(...)`: type parameters on a free function, in the same shape
+     * as the list a struct carries. */
     if (accept(p, "<")) {
         skipNl(p);
         for (;;) {
-            /* ⚠️ 类型参数是**大写开头**的（`T`）—— 所以这里要用 expectIdent，
-             * 而不是 expectTypeName（那个专门挡大写开头、留给类型参数 ✓）踩过 ✗ */
+            /* A type parameter starts uppercase (`T`), so this has to be
+             * expectIdent.  expectTypeName rejects exactly that shape -- it is
+             * there to reserve uppercase for type parameters. */
             Token *tp = expectIdent(p, "a type parameter name (uppercase, e.g. `T`)");
             if (!tp) return NULL;
             *(const char **)vecPush(&fd->typeParams) = tp->text;
@@ -547,20 +702,34 @@ static FuncDef *parseFunc(Parser *p) {
         if (!fd->ret) return NULL;
     }
 
-    /* ⭐ 定案 72：`extern!` 的声明**没有体** —— 用 `p->noBody` 告诉 parseFunc ✓
-     * （比复制一份 parseFunc 好：参数/返回/泛型那几段都一样，抄一遍迟早会走样 ✗）*/
+    /* An `extern!` declaration has no body; p->noBody told parseFunc to stop
+     * after the return type. */
     if (p->noBody) return fd;
     fd->body = parseBlock(p);
     if (!fd->body) return NULL;
     return fd;
 }
 
+/* Parse a type expression: `mut`, `?`, `ref`, `[N]T`, a name, and generic
+ * arguments.
+ *
+ * Returns:
+ *   The new Type node, or NULL after reporting an error.
+ *
+ * Notes:
+ *   - A module-qualified name such as `io::File` is collected into one string.
+ *     This function does not consult a symbol table, so the loader is the only
+ *     place that decides whether the path names a module or a type.
+ */
 static Type *parseType(Parser *p) {
-    /* `mut` = 「透过这个值能写」，只对**含引用的东西**有意义：
-     *     `mut ref T`      可写的引用
-     *     `mut slice<T>`   元素可写的**视图**
-     * 裸值不需要（它在 `var` 里本来就写得到）。是不是视图 parser 不知道
-     * （名字还没解析），所以这里只标上，合法性由 check 判。 */
+    /* `mut` means "writing through this value is allowed".  It only means
+     * something for something that contains a reference:
+     *     `mut ref T`     a writable reference
+     *     `mut slice<T>`  a view whose elements may be written
+     * A plain value does not need it -- a `var` binding is already writable.
+     * Whether `slice<T>` really is a view cannot be decided here, because the
+     * name is not resolved yet, so this only records the modifier and the type
+     * checker rules on it. */
     if (at(p, "mut")) {
         Token *m = take(p);
         Type *ty = parseType(p);
@@ -575,10 +744,10 @@ static Type *parseType(Parser *p) {
         ty->mut = true;
         return ty;
     }
-    /* ⭐ `?T` = 「**可能没有**」（主人 2026-09-20 的写法，跟后缀 `?` 一个含义 ✓）
-     *   `?ref T` / `mut ?ref T`  ⇒ **可空引用**（`null` 就是它的零值 ✓）
-     *   `?T`（其它）              ⇒ `option<T>` 的**语法糖** ✓
-     * 位置不同（类型 vs 表达式）⇒ 跟后缀 `?` 不冲突 ✓ */
+    /* `?T` means "may be absent", the same idea as the postfix `?`:
+     *   `?ref T` / `mut ?ref T`  -> a nullable reference; null is its zero value
+     *   `?T` for anything else   -> sugar for `option<T>`
+     * One is a type and the other an expression suffix, so they never clash. */
     if (at(p, "?")) {
         Token *q = take(p);
         Type *inner = parseType(p);
@@ -587,7 +756,8 @@ static Type *parseType(Parser *p) {
             inner->nullable = true;
             return inner;
         }
-        /* 其它 ⇒ 造一个 `option<inner>`（名字解析交给 check ✓）*/
+        /* Everything else: build an `option<inner>` and let the checker
+         * resolve that name. */
         Type *o = typeNamed(p->arena, "option");
         (void)q;
         vecInit(&o->targs, p->arena, sizeof(void *));
@@ -600,7 +770,8 @@ static Type *parseType(Parser *p) {
         if (!inner) return NULL;
         return typeRef(p->arena, inner);
     }
-    /* 固定数组 `[N]T` —— 多维天然递归（`[15][15]i32` 就是 15 个 `[15]i32`）*/
+    /* A fixed array `[N]T`.  Dimensions nest by recursion: `[15][15]i32` is
+     * fifteen elements of type `[15]i32`. */
     if (at(p, "[")) {
         Token *br = take(p);
         if (!atKind(p, TK_INT)) {
@@ -626,8 +797,9 @@ static Type *parseType(Parser *p) {
     Token *t = cur(p);
     if (t->kind == TK_TYPE || t->kind == TK_IDENT) {
         take(p);
-        /* ⭐ 定案 70：类型名可以是模块限定的 `io::File` —— parser **不查符号表**，
-         * 所以这里只把路径原样收集成一个字符串，解析交给装载器 ✓ */
+        /* A type name may be module-qualified, as in `io::File`.  The parser
+         * keeps no symbol table, so the path is only collected into one string
+         * here; the loader resolves it. */
         const char *nm = t->text;
         if (at(p, "::")) {
             Buf b;
@@ -644,7 +816,7 @@ static Type *parseType(Parser *p) {
         }
         Type *ty = typeNamed(p->arena, nm);
 
-        /* 泛型实参：`Pair<i32, u8>` */
+        /* Generic arguments: `Pair<i32, u8>` */
         if (at(p, "<")) {
             take(p);
             skipNl(p);
@@ -665,8 +837,13 @@ static Type *parseType(Parser *p) {
     return NULL;
 }
 
-/* ================================================================ 语句 */
+/* ================================================================ statements */
 
+/* Parse a `{ ... }` block into one ST_BLOCK statement.
+ *
+ * Returns:
+ *   The block statement, or NULL after reporting an error.
+ */
 static Stmt *parseBlock(Parser *p) {
     Token *open = cur(p);
     if (!expect(p, "{", NULL)) return NULL;
@@ -685,18 +862,23 @@ static Stmt *parseBlock(Parser *p) {
     return b;
 }
 
-/* `match e { 变体 => 语句 ... }`
+/* Parse `match e { variant => statement ... }`.
  *
- * **是语句，不是表达式** —— 跟 `?` 同一个理由：C 没有语句表达式，
- * 所以"match 能返回一个值"这件事在 extC 里做不到（除非引入新机制，那是另一条路）。
- * 每条分支的 body 就是一个语句（通常是个块）。
- *
- * 分支名必须是**枚举的变体名**（编译器对着类型检查，见 check.c）。
- * 暂时不做 `_ =>` 兜底：**穷尽列出所有变体**才是 match 的价值所在 ✓ */
+ * Notes:
+ *   - This is a statement, not an expression, for the same reason `?` is: C has
+ *     no statement expressions, so "match yields a value" is not expressible
+ *     here without a new mechanism.  Each arm's body is a single statement,
+ *     usually a block.
+ *   - An arm names one of the enum's variants; that the variant exists and that
+ *     the payload binds match is checked against the type in check.c.
+ *   - There is no `_ =>` fallback on purpose.  Listing every variant is the
+ *     value match provides.
+ */
 static Stmt *parseMatch(Parser *p) {
     Token *kw = take(p);                    /* match */
-    /* ⚠️ 跟 `if` / `while` 的条件一样要**关掉结构体字面量** ——
-     * 否则 `match e { ... }` 里的 `{` 会被当成 `e { 字段: 值 }` ✓ */
+    /* Struct literals have to be off here, exactly as in an `if` / `while`
+     * condition: otherwise the `{` of `match e { ... }` would be read as the
+     * start of `e { field: value }`. */
     const bool saved = p->inCond;
     p->inCond = true;
     Expr *scrut = parseExpr(p);
@@ -725,8 +907,9 @@ static Stmt *parseMatch(Parser *p) {
         arm->line = name->line;
         vecInit(&arm->binds, p->arena, sizeof(void *));
 
-        /* **绑定载荷**：`circle(r) => ...` / `rect(w, h) => ...`
-         * ⚠️ 必须**在 `=>` 之前**解析 —— 名字后面紧跟的就是它 ✓ */
+        /* Payload binding: `circle(r) => ...` / `rect(w, h) => ...`.  It has
+         * to be parsed before the `=>`, because it directly follows the
+         * variant name. */
         skipNl(p);
         if (at(p, "(")) {
             take(p);
@@ -745,7 +928,8 @@ static Stmt *parseMatch(Parser *p) {
 
         if (!expect(p, "=>", NULL)) return NULL;
 
-        /* 分支体：一个块，或者单个语句（`occupied => return 1` 也要能写）*/
+        /* Arm body: a block, or a single statement -- `occupied => return 1`
+         * has to stay writable. */
         skipNl(p);
         if (at(p, "{")) {
             arm->body = parseBlock(p);
@@ -764,11 +948,19 @@ static Stmt *parseMatch(Parser *p) {
     return s;
 }
 
+/* Parse one statement: a declaration, a control statement, a block, an
+ * assignment, or an expression statement.
+ *
+ * Returns:
+ *   The new Stmt, or NULL after reporting an error.
+ */
 static Stmt *parseStmt(Parser *p) {
     Token *t = cur(p);
 
-    /* ⭐ 定案 65：注解 `@xxx` 只允许出现在局部声明前（目前只有 `@overwrite`）✓
-     * （`@main` 那族要等函数注解 —— 报错说清楚，别让人猜 ✗）*/
+    /* An annotation `@xxx` may only introduce a local declaration, and
+     * `@overwrite` is the only one that exists.  A function annotation like
+     * `@main` is not implemented, and the error says so rather than leaving the
+     * reader to guess. */
     if (at(p, "@")) {
         Token *a = take(p);
         Token *nm = expectIdent(p, "an annotation name (only `overwrite` for now)");
@@ -839,9 +1031,14 @@ static Stmt *parseStmt(Parser *p) {
     return s;
 }
 
-/* 顶层的 `let` / `var` —— 全局变量 / 常量。
- * 跟局部声明同一套语法（类型可省、省略初始化式即零初始化），
- * 但**初始化式必须是字面量**：C 的全局初始化器只能是常量表达式。 */
+/* Parse a top-level `let` / `var`, i.e. a global variable or constant.
+ *
+ * Notes:
+ *   - The syntax matches a local declaration: the type may be omitted and an
+ *     omitted initializer means zero initialization.
+ *   - The initializer must be a literal, because a C global initializer can only
+ *     be a constant expression.
+ */
 static GlobalDef *parseGlobalDecl(Parser *p) {
     Token *kw = take(p);
     Token *name = expectIdent(p, "a variable name");
@@ -874,6 +1071,15 @@ static GlobalDef *parseGlobalDecl(Parser *p) {
     g->line = kw->line;
     return g;
 }
+/* Parse a local `let` / `var` declaration.
+ *
+ * Returns:
+ *   The ST_VAR statement, or NULL after reporting an error.
+ *
+ * Notes:
+ *   - Without an initializer the type annotation becomes mandatory; with
+ *     neither, the error names the binding the reader forgot to type.
+ */
 static Stmt *parseVarDecl(Parser *p) {
     Token *kw = take(p);
     Token *name = expectIdent(p, "a variable name");
@@ -885,9 +1091,10 @@ static Stmt *parseVarDecl(Parser *p) {
         if (!ann) return NULL;
     }
 
-    /* 初始化式可省 —— 省略即**零初始化**（定案 8）。
-     * C 里最大的 UB 来源之一就是「读到未初始化内存」，它只能在运行时发现；
-     * 默认清零把它变成编译期就能保证的东西。 */
+    /* The initializer may be omitted, and omitting it means zero
+     * initialization.  Reading uninitialized memory is one of the largest
+     * sources of undefined behaviour in C, detectable only at run time;
+     * defaulting to zero turns it into something the compiler guarantees. */
     Expr *init = NULL;
     if (accept(p, "=")) {
         skipNl(p);
@@ -909,6 +1116,12 @@ static Stmt *parseVarDecl(Parser *p) {
     return s;
 }
 
+/* Parse `if <cond> <block>` with an optional `else` block or `else if`.
+ *
+ * Notes:
+ *   - p->inCond is set while the condition is parsed, so a `{` there starts the
+ *     body block rather than a struct literal.
+ */
 static Stmt *parseIf(Parser *p) {
     Token *kw = take(p);                    /* if */
     const bool saved = p->inCond;
@@ -936,6 +1149,12 @@ static Stmt *parseIf(Parser *p) {
     return s;
 }
 
+/* Parse `while <cond> <block>`.
+ *
+ * Notes:
+ *   - The condition is parsed with p->inCond set, as in parseIf, so a `{` there
+ *     starts the loop body.
+ */
 static Stmt *parseWhile(Parser *p) {
     Token *kw = take(p);                    /* while */
     const bool saved = p->inCond;
@@ -953,17 +1172,22 @@ static Stmt *parseWhile(Parser *p) {
     return s;
 }
 
-/* ================================================================ 表达式 */
+/* ================================================================ expressions */
 
-/* `a ?? b` —— 最低优先级的二元运算，**右结合**（`a ?? b ?? c` = `a ?? (b ?? c)`）
- * 位置规则在 check 里查（主体必须是 option / result / `?ref T`）✓ */
+/* Parse `a ?? b`, the lowest-precedence binary operator.
+ *
+ * Notes:
+ *   - It is right-associative: `a ?? b ?? c` means `a ?? (b ?? c)`.
+ *   - Where it may appear is a separate rule: the left side has to be an
+ *     option, a result, or a `?ref T`, and check.c enforces that.
+ */
 static Expr *parseCoalesce(Parser *p) {
     Expr *l = parseOr(p);
     if (!l) return NULL;
     while (at(p, "??")) {
         Token *op = take(p);
         skipNl(p);
-        Expr *r = parseCoalesce(p);        /* 右结合 */
+        Expr *r = parseCoalesce(p);        /* right-associative */
         if (!r) return NULL;
         Expr *e = exprNew(p->arena, EX_COALESCE, op->line);
         e->u.coalesce.main = l;
@@ -973,8 +1197,10 @@ static Expr *parseCoalesce(Parser *p) {
     return l;
 }
 
+/* Parse a full expression, the entry point for every caller that wants one. */
 static Expr *parseExpr(Parser *p) { return parseCoalesce(p); }
 
+/* Parse `||`, the logical-or level. */
 static Expr *parseOr(Parser *p) {
     Expr *e = parseAnd(p);
     if (!e) return NULL;
@@ -988,6 +1214,7 @@ static Expr *parseOr(Parser *p) {
     return e;
 }
 
+/* Parse `&&`, the logical-and level. */
 static Expr *parseAnd(Parser *p) {
     Expr *e = parseBitOr(p);
     if (!e) return NULL;
@@ -1001,10 +1228,10 @@ static Expr *parseAnd(Parser *p) {
     return e;
 }
 
-/* 位运算三层，优先级跟 C 一致（也跟 Go 一致）：
- *     `|`  <  `^`  <  `&`  <  `== !=`  <  `< <=` …  <  `<< >>`  <  `+ -`
- * 跟 C 一致是有意的 —— 写算法题的人手上有 C 的肌肉记忆，
- * 这里要是「设计得更好」反而天天出错。*/
+/* The three bitwise levels, with the precedence C and Go use:
+ *     `|`  <  `^`  <  `&`  <  `== !=`  <  `< <=` ...  <  `<< >>`  <  `+ -`
+ * Matching C is deliberate.  Anyone writing an algorithm here has C muscle
+ * memory, and "designing it better" would only produce daily mistakes. */
 static Expr *parseBitOr(Parser *p) {
     Expr *e = parseBitXor(p);
     if (!e) return NULL;
@@ -1018,6 +1245,7 @@ static Expr *parseBitOr(Parser *p) {
     return e;
 }
 
+/* Parse `^`. */
 static Expr *parseBitXor(Parser *p) {
     Expr *e = parseBitAnd(p);
     if (!e) return NULL;
@@ -1031,10 +1259,12 @@ static Expr *parseBitXor(Parser *p) {
     return e;
 }
 
+/* Parse `&` at the bitwise level. */
 static Expr *parseBitAnd(Parser *p) {
     Expr *e = parseEquality(p);
     if (!e) return NULL;
-    /* `&` 必须跟 `&&` 分开看：`at(p,"&")` 在 `&&` 上是假的（整词比较）*/
+    /* `&` stays distinct from `&&`: at(p, "&") is false on a `&&` token,
+     * because the comparison covers the whole token text. */
     while (at(p, "&")) {
         Token *op = take(p);
         skipNl(p);
@@ -1045,6 +1275,7 @@ static Expr *parseBitAnd(Parser *p) {
     return e;
 }
 
+/* Parse `==` and `!=`. */
 static Expr *parseEquality(Parser *p) {
     Expr *e = parseComparison(p);
     if (!e) return NULL;
@@ -1058,6 +1289,7 @@ static Expr *parseEquality(Parser *p) {
     return e;
 }
 
+/* Parse `<`, `<=`, `>`, and `>=`. */
 static Expr *parseComparison(Parser *p) {
     Expr *e = parseShift(p);
     if (!e) return NULL;
@@ -1071,12 +1303,24 @@ static Expr *parseComparison(Parser *p) {
     return e;
 }
 
-/* `<<` 和 `>>` —— **故意不放进词法表**。
+/* Recognize a shift operator at the cursor.
  *
- * 因为 `box<box<i32>>` 里的 `>>` 必须是两个独立的 `>`（类型实参靠它配对，
- * 见 parseType / looksLikeAssoc）。要是词法层就把 `>>` 合成一个 token，
- * 泛型嵌套类型当场解析不了 —— C++ 当年正是这么踩的坑。
- * 所以在**表达式**这一层用「两个相邻的 `<` / `>`」来认，类型那一层不受影响。 */
+ * Params:
+ *   ch  - the character to look for twice in a row, "<" or ">"
+ *   op  - receives the operator spelling, "<<" or ">>"
+ *
+ * Returns:
+ *   true when two adjacent tokens both spell `ch` (the second must be
+ *   punctuation, so a string literal's text cannot fake it).
+ *
+ * Notes:
+ *   - `<<` and `>>` are deliberately absent from the lexer's table.  The `>>`
+ *     in `box<box<i32>>` has to stay two separate `>` tokens, because that is
+ *     how generic arguments pair up (see parseType and looksLikeAssoc).  Fusing
+ *     them in the lexer would make a nested generic type unparsable, which is
+ *     the trap C++ fell into.  Only expressions see a shift operator; the type
+ *     grammar never does.
+ */
 static bool atShift(Parser *p, const char *ch, const char **op) {
     if (strcmp(pk(p, 0)->text, ch) != 0 || strcmp(pk(p, 1)->text, ch) != 0) return false;
     if (pk(p, 1)->kind != TK_PUNCT) return false;
@@ -1084,6 +1328,7 @@ static bool atShift(Parser *p, const char *ch, const char **op) {
     return true;
 }
 
+/* Parse `<<` and `>>`, which are recognized as two adjacent `<` / `>` tokens. */
 static Expr *parseShift(Parser *p) {
     Expr *e = parseTerm(p);
     if (!e) return NULL;
@@ -1101,6 +1346,7 @@ static Expr *parseShift(Parser *p) {
     return e;
 }
 
+/* Parse `+` and `-`, the additive level. */
 static Expr *parseTerm(Parser *p) {
     Expr *e = parseFactor(p);
     if (!e) return NULL;
@@ -1114,6 +1360,7 @@ static Expr *parseTerm(Parser *p) {
     return e;
 }
 
+/* Parse `*`, `/`, and `%`, the multiplicative level. */
 static Expr *parseFactor(Parser *p) {
     Expr *e = parseUnary(p);
     if (!e) return NULL;
@@ -1127,6 +1374,16 @@ static Expr *parseFactor(Parser *p) {
     return e;
 }
 
+/* Parse a prefix expression: `!`, `-`, `~`, the dereference `*p`, and the
+ * reference `ref x`.
+ *
+ * Returns:
+ *   The operand expression, or NULL after reporting an error.
+ *
+ * Notes:
+ *   - `*` is unambiguous in prefix position, because multiplication always has
+ *     a left operand.
+ */
 static Expr *parseUnary(Parser *p) {
     if (at(p, "!") || at(p, "-") || at(p, "~")) {
         Token *op = take(p);
@@ -1137,9 +1394,9 @@ static Expr *parseUnary(Parser *p) {
         e->u.un.operand = operand;
         return e;
     }
-    /* `*p` —— **显式解引用**（`ref x` 的对偶）。
-     * 读 = "p 指的那个值"；写 = "p 指的那个地方"（`*p = v`）✓
-     * `*` 的前缀位置本来是空的（乘法是二元的）✓ */
+    /* `*p` is the explicit dereference, the dual of `ref x`.  Read it as "the
+     * value p points at", write it as "the place p points at" (`*p = v`).  The
+     * prefix position of `*` was free, since multiplication is binary. */
     if (at(p, "*")) {
         Token *op = take(p);
         Expr *operand = parseUnary(p);
@@ -1148,7 +1405,8 @@ static Expr *parseUnary(Parser *p) {
         e->u.deref.operand = operand;
         return e;
     }
-    /* T3：`ref` 在表达式位置是「取引用」(`f(ref x)`)，在类型位置是「引用类型」 */
+    /* In expression position `ref` takes a reference (`f(ref x)`); in type
+     * position it is a reference type. */
     if (at(p, "ref")) {
         Token *kw = take(p);
         Expr *operand = parseUnary(p);
@@ -1160,13 +1418,23 @@ static Expr *parseUnary(Parser *p) {
     return parsePostfix(p);
 }
 
+/* Parse the postfix chain: `e!`, `e?`, `.field`, `.method(...)`, `[i]`,
+ * `[lo..hi]`, and `(...)` calls.
+ *
+ * Returns:
+ *   The outermost expression built so far, or NULL after reporting an error.
+ */
 static Expr *parsePostfix(Parser *p) {
     Expr *e = parsePrimary(p);
     if (!e) return NULL;
 
     for (;;) {
-        /* `e!` —— **我签字**（定案 1.3）。后缀位置，跟前缀的"非"不冲突
-         * （`!x` 是取反，`x!` 是签字）；`!=` 词法上是另一个记号，也不会撞 ✓ */
+        /* `e!` is the programmer's assertion that the value is present: it
+         * unwraps an option or a result, or drops the nullability of a `?ref T`,
+         * and the checker emits no test for it.  Being wrong is undefined
+         * behaviour rather than a checked error.  Position alone separates it
+         * from the prefix `!` (`!x` negates, `x!` asserts), and `!=` is a single
+         * token, so neither collides with it. */
         if (at(p, "!")) {
             Token *b = take(p);
             Expr *sg = exprNew(p->arena, EX_SIGN, b->line);
@@ -1174,7 +1442,8 @@ static Expr *parsePostfix(Parser *p) {
             e = sg;
             continue;
         }
-        /* `e?` —— 失败就顺着往上抛。位置限制在 check 里查（只在三处语句位置上合法） */
+        /* `e?` propagates a failure to the caller.  Where it may appear is a
+         * separate rule checked in check.c, not a syntactic one. */
         if (at(p, "?")) {
             Token *q = take(p);
             Expr *t = exprNew(p->arena, EX_TRY, q->line);
@@ -1202,7 +1471,8 @@ static Expr *parsePostfix(Parser *p) {
                 e = f;
             }
         } else if (at(p, "[")) {
-            /* `a[i]` 索引、`a[lo..hi]` 切片。括号里是普通表达式。 */
+            /* `a[i]` indexes and `a[lo..hi]` slices.  The brackets hold an
+             * ordinary expression, so struct literals are allowed inside. */
             Token *br = take(p);
             skipNl(p);
             const bool savedC = p->inCond;
@@ -1253,6 +1523,20 @@ static Expr *parsePostfix(Parser *p) {
     }
 }
 
+/* Parse a parenthesized, comma-separated argument list into `out`.
+ *
+ * Params:
+ *   out - receives the Expr pointers; initialized here, so the caller passes it
+ *         uninitialized
+ *
+ * Returns:
+ *   true when the closing `)` was consumed; false after reporting an error.
+ *
+ * Notes:
+ *   - The cursor must be on the opening `(`, which this consumes.
+ *   - p->inCond is cleared inside the parentheses, because there a `{` is
+ *     unambiguously a struct literal again.
+ */
 static bool parseArgs(Parser *p, Vec *out) {
     vecInit(out, p->arena, sizeof(void *));
     if (!expect(p, "(", NULL)) return false;
@@ -1271,6 +1555,12 @@ static bool parseArgs(Parser *p, Vec *out) {
     return expect(p, ")", NULL);
 }
 
+/* Parse a primary expression: a literal, `null`, `new`, a parenthesized
+ * expression, an array or struct literal, a conversion, or a name.
+ *
+ * Returns:
+ *   The new Expr, or NULL after reporting an error.
+ */
 static Expr *parsePrimary(Parser *p) {
     Token *t = cur(p);
 
@@ -1292,9 +1582,10 @@ static Expr *parsePrimary(Parser *p) {
         e->u.str.text = t->text;
         return e;
     }
-    /* `null` —— **上下文关键字**（跟 `ref` / `mut` 一样：只在表达式位置上认）。
-     * 它的类型完全由上下文给：`var p: ?ref node = null`、
-     * `if p != null`、`return null`（返回类型是 `?ref T` 时）✓ */
+    /* `null` is a contextual keyword, recognized in expression position only,
+     * like `ref` and `mut`.  Its type comes entirely from the context:
+     * `var p: ?ref node = null`, `if p != null`, or `return null` when the
+     * return type is `?ref T`. */
     if (at(p, "null")) {
         take(p);
         return exprNew(p->arena, EX_NULL, t->line);
@@ -1305,8 +1596,9 @@ static Expr *parsePrimary(Parser *p) {
         e->u.bval = (t->text[0] == 't');
         return e;
     }
-    /* `new T` / `new T[n]` / `new [N]T` —— 从当前块的 arena 拿一块**清零**的地方 ✓
-     * （上下文关键字，跟 `ref` 一样只在表达式位置上认）*/
+    /* `new T` / `new T[n]` / `new [N]T` takes a zeroed block from the arena of
+     * the current block.  `new` is a contextual keyword, recognized in
+     * expression position only. */
     if (at(p, "new")) {
         Token *kw = take(p);
         skipNl(p);
@@ -1314,10 +1606,11 @@ static Expr *parsePrimary(Parser *p) {
         Type *ty = parseType(p);
         if (!ty) return NULL;
         e->u.new_.type = ty;
-        /* ⚠️ **这里不许 `skipNl`**：extC 靠换行断语句，吃掉它就等于把下一行
-         * 并进同一个表达式（真踩过：`new [3]i32` 的下一行整条被吞掉，
-         * 报 "expected an expression, found `=`"）✗
-         * `new T[n]` 要写成同一行 —— 这跟 `a[..]` 那些一致 ✓ */
+        /* No skipNl here.  Statements end at a newline, so consuming one would
+         * swallow the next line into this expression: with `new [3]i32` on its
+         * own line, the following line disappeared and the error was "expected
+         * an expression, found `=`".  `new T[n]` therefore has to be written on
+         * one line, as `a[..]` already is. */
         if (at(p, "[")) {
             take(p);
             skipNl(p);
@@ -1336,7 +1629,7 @@ static Expr *parsePrimary(Parser *p) {
         take(p);
         skipNl(p);
         const bool saved = p->inCond;
-        p->inCond = false;          /* 括号里是普通表达式，字面量不再受限 */
+        p->inCond = false;          /* inside parentheses a `{` is a literal again */
         Expr *e = parseExpr(p);
         p->inCond = saved;
         if (!e) return NULL;
@@ -1346,7 +1639,8 @@ static Expr *parsePrimary(Parser *p) {
     }
     if (at(p, "{")) return parseStructLit(p, NULL);
 
-    /* 数组字面量 `[1, 2, 3]`；末尾的 `...` 表示「剩下的是零值」 */
+    /* Array literal `[1, 2, 3]`.  A trailing `...` means the remaining
+     * elements are zero. */
     if (at(p, "[")) {
         Token *br = take(p);
         Expr *e = exprNew(p->arena, EX_ARRAYLIT, br->line);
@@ -1377,8 +1671,8 @@ static Expr *parsePrimary(Parser *p) {
         return e;
     }
 
-    /* ⚠️ 十个标量类型名在词法上是 **TK_TYPE**（不是 IDENT、也不是 KEYWORD）
-     * ⇒ 这条必须放在最前面 ✓ */
+    /* The ten scalar type names lex as TK_TYPE, not as TK_IDENT or TK_KEYWORD,
+     * so this case has to be tested before the identifier branch below. */
     if (t->kind == TK_TYPE && isScalarTypeName(t->text)) {
         take(p);
         if (!at(p, "(")) {
@@ -1401,20 +1695,28 @@ static Expr *parsePrimary(Parser *p) {
     }
     if (t->kind == TK_IDENT) {
         take(p);
-        /* 调试开关 `EXTC_DBG_QN=1`：打印**表达式位置**上每次 IDENT 解析的
-         * 起点与后面四个记号 ⇒ 限定名"走到哪一段、停在哪"一眼可见 ✓
-         * ⚠️ 为什么必须带 pos + 记号原文：这个函数上我栽过五轮，其中**两次**
-         * 是被自己的探针骗了（只打一个字符串 ⇒ prelude 的调用混进来，
-         * 我拿别人的输出当自己的 ✗）—— 每一行都要能**唯一对应一次调用** ✓
-         * 不改变任何输出（静态哨兵 `--dump-tokens` 那类也照跑 ✓）*/
+        /* Debug switch `EXTC_DBG_QN=1`: print where each identifier in
+         * expression position starts and which four tokens follow it, so a
+         * qualified name can be watched segment by segment.
+         *
+         * The cursor position and the token texts are both printed on purpose.
+         * An earlier probe printed a bare string, calls from the prelude got
+         * mixed into the trace, and the output was misread as belonging to the
+         * call under investigation.  Every line has to identify exactly one
+         * call.
+         *
+         * This writes to stderr only; token output such as --dump-tokens is
+         * unaffected. */
         if (getenv("EXTC_DBG_QN")) {
             fprintf(stderr, "[qn ENT] pos=%d cur=`%s` n1=`%s` n2=`%s` n3=`%s` n4=`%s`\n",
                     (int)p->pos, t->text, pk(p,0)->text, pk(p,1)->text,
                     pk(p,2)->text, pk(p,3)->text);
         }
-        /* `i32(x)` / `f64(y)` —— **显式转换**（收窄 / 换符号 / 整数↔浮点）✓
-         * C 写成 `(T)x`，但那在 extC 里跟括号表达式二义（parser 不查符号表）⇒
-         * 换个括号位置：`T(x)` ✓ 语义完全一样 */
+        /* `i32(x)` / `f64(y)`: an explicit conversion, narrowing, changing
+         * signedness, or crossing between integer and float.  C spells it
+         * `(T)x`, but that is ambiguous with a parenthesized expression here,
+         * because the parser keeps no symbol table.  Moving the parentheses to
+         * `T(x)` says the same thing unambiguously. */
         if (isScalarTypeName(t->text) && at(p, "(")) {
             take(p);                                  /* ( */
             skipNl(p);
@@ -1427,25 +1729,33 @@ static Expr *parsePrimary(Parser *p) {
             cv->u.conv.operand  = in;
             return cv;
         }
-        /* `name { ... }` 是结构体字面量。
+        /* `name { ... }` is a struct literal.
          *
-         * 位置规则（跟 Go 一样）：在 `if` / `while` 的**条件位置**里 `{` 属于块，
-         * 所以那里不加括号就写不出字面量：`if x == (point { a: 1 }) { }`。
-         * 这样类型名不必靠大小写来消歧义 —— 规则写在语法里，不藏在命名里。 */
+         * The rule is positional, as in Go: in the condition of an `if` or a
+         * `while` a `{` starts the body block, so a literal there needs
+         * parentheses, `if x == (point { a: 1 }) { }`.  The type name therefore
+         * does not have to be told apart by capitalization -- the rule lives in
+         * the grammar instead of hiding in the spelling. */
         if (at(p, "{") && !p->inCond) return parseStructLit(p, t->text);
 
-        /* ⭐ **限定名类型** `mod::Type { … }` 和 `mod::Type.variant`（定案 70 的补漏）。
-         * 为什么必须支持：模块之间**同名类型**只靠裸名写不出来（裸名有歧义 ⇒
-         * 装载器故意不登记回程票 ⇒ 根本解析不到）⇒ 没有这条语法，
-         * 「两个模块各有 `pair`」时那个类型的字面量**无字可写** ✗（踩过）
-         * 这里只把路径拼成一个字符串，**照类型位置一样不查符号表** ⇒
-         * 是模块还是类型、能不能这样写，全部交给装载器判 ✓
-         * `mod::fn(…)` 那条路不受影响：`.`/`{` 不跟，就退回 `looksLikeAssoc` ✓ */
+        /* A qualified type name: `mod::Type { ... }` and `mod::Type.variant`.
+         *
+         * This has to exist because two modules may each define a type of the
+         * same name, and a bare name cannot say which one is meant: the loader
+         * deliberately registers no return path for an ambiguous bare name, so
+         * it never resolves.  Without this syntax the literal of such a type
+         * could not be written at all.
+         *
+         * The path is only concatenated into one string and no symbol table is
+         * consulted, exactly as in type position; the loader decides whether it
+         * names a module or a type.  `mod::fn(...)` is untouched: when neither
+         * `.` nor `{` follows, the code falls through to looksLikeAssoc. */
         if (at(p, "::")) {
-            /* ⚠️ **只看不动**：`mod::fn(args)` 是绝大多数情况，绝不能把它的记号吃掉
-             * 再指望 `looksLikeAssoc` 兜住（`pos` 一移，那条路就残了 ⇒
-             * prelude 里 `pcg32::withStream(…)` 直接被拆成 `pcg32` + 乱码 ✗ 真踩过）
-             * 只有**后面确实跟着 `{` 或 `.`** 才接管 ✓ */
+            /* Look, do not consume.  `mod::fn(args)` is by far the common
+             * case, and taking its tokens would break the looksLikeAssoc path
+             * that would otherwise handle it: once `pos` moves, the prelude's
+             * `pcg32::withStream(...)` came apart into `pcg32` plus garbage.
+             * Take over only when a `{` or a `.` really does follow. */
             int k = 0;
             bool takeIt = false;
             for (;;) {
@@ -1463,11 +1773,12 @@ static Expr *parsePrimary(Parser *p) {
                 for (int j = 0; j < k; j += 2) {
                     take(p);                                   /* `::` */
                     bufPuts(&b, "::");
-                    bufPuts(&b, take(p)->text);                /* 段名 */
+                    bufPuts(&b, take(p)->text);                /* segment name */
                 }
                 if (at(p, "{")) return parseStructLit(p, bufCstr(&b));
-                /* `mod::Type.variant` —— 造成字段访问，改名交给装载器做 ⇒
-                 * 检查器那条“枚举变体”的路一个字都不用改 ✓ */
+                /* `mod::Type.variant` becomes a field access, and the loader
+                 * rewrites the name; the checker's existing enum-variant path
+                 * then handles it unchanged. */
                 take(p);                                       /* `.` */
                 Token *vn = expectIdent(p, "a variant name");
                 if (!vn) return NULL;
@@ -1480,15 +1791,18 @@ static Expr *parsePrimary(Parser *p) {
             }
         }
 
-        /* 关联函数调用 `option<i64>::some(x)` / `point::origin()`，
-         * 以及**任意层**的限定名 `std::sys::io::write(…)` / `std::sys::io::STDOUT`
-         * （PLAN #53）✓
+        /* An associated call `option<i64>::some(x)` / `point::origin()`, or a
+         * qualified name at any depth `std::sys::io::write(...)` /
+         * `std::sys::io::STDOUT`.
          *
-         * `IDENT <` 跟小于号撞车，所以先**只看不动**地判断题实参到哪里结束、
-         * 后面跟的是不是 `::`；是才真的解析（这样错误信息不会在试探里乱喷）。
-         * 判据 `::` 本身不是合法运算符，所以两种解释互斥，不会误判。 */
+         * `IDENT <` is ambiguous with the less-than operator, so the code first
+         * looks without consuming to see where the type arguments would end and
+         * whether a `::` follows, and only then parses.  Deciding first keeps
+         * speculative attempts from spraying bogus errors.  The test is `::`
+         * itself: it is not a valid binary operator, so the two readings are
+         * mutually exclusive and the guess cannot be wrong. */
         {
-            const size_t assocPos = p->pos;      /* 停在第一个 `::`（或 `<`）上 ✓ */
+            const size_t assocPos = p->pos;      /* cursor is on the first `::` */
             if (looksLikeAssoc(p)) {
                 const char *modPrefix = NULL;
                 Expr *ae = parseAssoc(p, t->text, t->line, assocPos, &modPrefix);
@@ -1497,8 +1811,9 @@ static Expr *parsePrimary(Parser *p) {
             }
         }
 
-        /* 条件位置里的 `{` 属于块 —— 但如果括号里明显是字面量（`{ ident :`），
-         * 那就是忘了加括号，给一条能直接照抄的提示 */
+        /* In a condition a `{` starts the block -- but `{ ident :` is plainly a
+         * literal missing its parentheses, so the error hands the reader the
+         * line to write instead. */
         if (at(p, "{") && p->inCond &&
             pk(p, 1)->kind == TK_IDENT && strcmp(pk(p, 2)->text, ":") == 0) {
             Token *bt = cur(p);
@@ -1520,19 +1835,27 @@ static Expr *parsePrimary(Parser *p) {
     return NULL;
 }
 
-/* `Name` 后面是不是接 `类型实参? :: 名字 (`？
+/* Decide whether a name is followed by an optional type argument list and
+ * then `::name`, without moving the cursor.
  *
- * **只看，不动 pos** —— 因为 `IDENT <` 跟小于号撞车，必须在真的解析之前拿定主意，
- * 否则试探会喷出一堆假错误。判据是 `::`：它不是合法的二元运算符，
- * 所以「关联调用」和「a < b」这两种解释互斥，不会误判。
+ * Returns:
+ *   The number of segments after the first `::`, or 0 when this is not a
+ *   qualified name.
  *
- * ⭐ 返回值是 **`::` 后面的段数**（0 = 不是限定名）—— 不再是 bool ✗
- * 为什么必须带这个数（PLAN #53 的真根因，前五轮就栽在这）：
- *   `std::sys::io::STDOUT` 里 pos 停在**第一个** `::` 上，
- *   而这个函数只回答"是不是限定名"⇒ 老 `parseAssoc` 自信地只读
- *   `::` + **一个**标识符（`sys`）就返回 ⇒ 游标丢在 `::io::STDOUT` 上 ✗
- *   ⇒ 段数是**调用者必须知道的信息**，不能靠 `parseAssoc` 自己猜 ✓
- *   两段（`mod::fn` / `Type::assoc`）照旧 —— 那条路是好的，别动 ✓ */
+ * Notes:
+ *   - This only looks; the cursor is left where it was.  `IDENT <` is ambiguous
+ *     with the less-than operator, so the decision has to be made before
+ *     parsing starts, or speculative attempts emit bogus errors.  The test is
+ *     `::`, which is not a valid binary operator: an associated call and an
+ *     `a < b` comparison cannot both fit, so the guess is never wrong.
+ *   - The count is why this returns an int rather than a bool, and the caller
+ *     needs it.  In `std::sys::io::STDOUT` the cursor sits on the FIRST `::`,
+ *     so a caller that only asked "is this qualified?" would consume `::` plus
+ *     one identifier (`sys`) and leave the cursor stranded on `::io::STDOUT`.
+ *     How many segments follow is information only this scan has.
+ *   - A two-segment name (`mod::fn`, `Type::assoc`) behaves exactly as before;
+ *     that path was always correct and is unchanged.
+ */
 static int looksLikeAssoc(Parser *p) {
     size_t i = 0;
 
@@ -1547,20 +1870,21 @@ static int looksLikeAssoc(Parser *p) {
                 if (--depth == 0) { i++; break; }
             } else if (t->kind == TK_IDENT || t->kind == TK_TYPE ||
                        t->kind == TK_INT) {
-                /* 类型名 / 内建类型 / 数组长度 */
+                /* a type name, a builtin type, or an array length */
             } else if (t->kind == TK_KEYWORD) {
-                /* `ref` / `mut` */
+                /* the contextual keywords `ref` and `mut` */
             } else if (strcmp(t->text, ",") == 0 || strcmp(t->text, "[") == 0 ||
                        strcmp(t->text, "]") == 0) {
             } else {
-                return 0;           /* 出现不可能属于类型的东西 ⇒ 不是类型实参 */
+                return 0;           /* something a type cannot contain: not type args */
             }
         }
     }
-    /* `Name<targs>::fn(...)` = **关联调用**
-     * `name<T>(...)`     = **泛型调用**（目前只有内置原语用它，比如 `alloc<i32>(n)`）
-     * 两者共用同一套「先看不动」的类型实参扫描，判据分别是 `::` 和 `(`。
-     * 只有**见过类型实参**才可能是泛型调用 —— 否则 `f(x)` 会被误认。 */
+    /* `Name<targs>::fn(...)` is an associated call; `name<T>(...)` is a generic
+     * call (only the builtin primitives use it today, e.g. `alloc<i32>(n)`).
+     * Both share the scanning above and are told apart by `::` versus `(`.
+     * A generic call is only possible once type arguments have actually been
+     * seen; otherwise an ordinary `f(x)` would be misread as one. */
     int segs = 0;
     while (strcmp(pk(p, i)->text, "::") == 0) {
         Token *seg = pk(p, i + 1);
@@ -1572,10 +1896,16 @@ static int looksLikeAssoc(Parser *p) {
     return (strcmp(pk(p, i)->text, "(") == 0 && i > 0) ? 1 : 0;
 }
 
-/* `::` 后面还有几段**完整的** `::名字`（到下一个不是名字的记号为止）。
- * 用 `looksLikeAssoc`/`countTrailingPath` 都做不到这件事：它们停在
- * "后面跟不跟 `(` / `{` / `.`" 上 ✗ —— 而解析路径要的是"路径有多长" ✓
- * 前提：pos 停在 `::` 上 ✓ */
+/* Count how many complete `::name` segments follow the cursor.
+ *
+ * Returns:
+ *   The number of segments; 0 when the cursor is not on a `::`.
+ *
+ * Notes:
+ *   - looksLikeAssoc cannot answer this: it stops at the question "is a `(`,
+ *     `{`, or `.` next?", while parsing a path needs "how long is the path".
+ *   - The cursor must be on a `::`.
+ */
 static int countFollowingSegs(Parser *p) {
     int k = 0;
     while (strcmp(pk(p, k)->text, "::") == 0) {
@@ -1586,18 +1916,32 @@ static int countFollowingSegs(Parser *p) {
     return k / 2;
 }
 
-/* 真的解析：`Name<targs>::name(args)` / `Type::assoc(args)`（两段）
- *       或 `mod::sub::name(args)` / `mod::sub::CONST`（**任意层**，PLAN #53）✓
+/* Parse a qualified name: `Name<targs>::name(args)`, `Type::assoc(args)`, or
+ * the arbitrarily deep `mod::sub::name(args)` / `mod::sub::CONST`.
  *
- * 两段和深层共用这一条路，判据只有两条：
- *   · `(` 跟着最后一段 ⇒ 是**调用** ⇒ 造 `EX_ASSOC`（`isCall = true`）
- *   · 否则              ⇒ 是**值**（常量 / 无载荷变体的写法）⇒ 造 `EX_ASSOC` 且 `isCall = false`
- * ⚠️ 为什么值是 `EX_ASSOC` 而不是 `EX_IDENT`：装载器**只走已知节点**找限定名
- *   （`rwExpr` 的 switch）—— 造一个名字里带 `::` 的 `EX_IDENT`，装载器看不见它，
- *   检查器就会按裸名 `std::sys::io::STDOUT` 去查表 ⇒ `undefined name` ✗（这个形状试过）
- * ⚠️ `modPrefixOut` 是给装载器的**拆分结果**：`std::sys::io` + `STDOUT`。
- *   拆在哪里由装载器**最终**决定（它才知道谁被 `use` 过 —— 见 `rwDeepQName`）；
- *   这里给的只是"按 `::` 切一刀"的形态 ✓ */
+ * Params:
+ *   name         - the leading name, already consumed by the caller
+ *   line         - line of that name, attached to the node
+ *   startPos     - cursor position where the scan began; currently unused
+ *   modPrefixOut - receives the module prefix, or NULL when the caller does not
+ *                  need it
+ *
+ * Returns:
+ *   An EX_ASSOC node, an EX_GENCALL node for `name<T>(...)`, or NULL after
+ *   reporting an error.
+ *
+ * Notes:
+ *   - Two segments and deep paths share this one path, decided by what follows
+ *     the last segment: a `(` makes it a call (isCall = true); anything else is
+ *     a value, such as a constant or a payload-free variant (isCall = false).
+ *   - A value is also an EX_ASSOC and not an EX_IDENT.  The loader walks a known
+ *     set of node kinds when resolving qualified names, so an EX_IDENT whose
+ *     name contains `::` would be invisible to it and the checker would look up
+ *     the bare name and report an undefined name.
+ *   - `modPrefixOut` gets a provisional split, `std::sys::io` plus `STDOUT`.  The
+ *     loader makes the final split, because only it knows which modules were
+ *     imported; the value handed over is just the path cut at the last `::`.
+ */
 static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
                         const char **modPrefixOut) {
     Vec targs;
@@ -1614,7 +1958,8 @@ static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
         skipNl(p);
         if (!expect(p, ">", NULL)) return NULL;
     }
-    /* 没有 `::` ⇒ 是**泛型调用** `name<T>(args)`（`alloc<i32>(n)`）*/
+    /* No `::`, so this is a generic call `name<T>(args)`, as in
+     * `alloc<i32>(n)`. */
     if (!at(p, "::")) {
         Vec gargs;
         if (!parseArgs(p, &gargs)) return NULL;
@@ -1625,28 +1970,35 @@ static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
         return g;
     }
 
-    /* ===== 路径：吃掉 `::名字` 段，**最后一段留给"符号名"** ==============
-     * 为什么最后一段不吃：它后面跟的东西决定语义（`(` = 调用 / `{` = 字面量 /
-     * `.` = 变体 / 什么都不是 = 值）⇒ 那个记号必须留在游标处给调用者看 ✓
-     * 两段时这个循环**一次都不进**（`mod::fn` 的 `fn` 后面不跟 `::`）✓
-     * ⇒ 两段那条老路的行为一个字节都不变 ✓ */
-    /* `> 1` 而不是 `>= 2`：**最后一段必须留下**（它就是符号名）✓
-     * `std::sys::io::STDOUT` 的正确切法是前缀 `std::sys::io` + 符号 `STDOUT`：
-     * 消费 `::sys`、`::io`，留下 `::STDOUT` ✓
-     * ⚠️ 写成 `>= 2` 会多消费一段 ⇒ 前缀变 `std::sys`、符号变 `io`，
-     * 于是装载器报的是 "`sys` is not imported"（**离现场两步远** ✗ 我自己刚踩）
-     * ⚠️⚠️ 前缀必须在这里**边消费边拼**，不许事后"从 token 区间抠文本"✗ ——
-     * 那个区间的起点是 `::` 之后，**名字本身（`std`）不在里面** ⇒
-     * 抠出来是 `sys::io` 而不是 `std::sys::io`（真踩过：报 "`sys` is not imported"）✓ */
+    /* Path: consume `::name` segments but leave the last one, which is the
+     * symbol name.
+     *
+     * The last segment stays because what follows it decides the meaning: `(`
+     * is a call, `{` a literal, `.` a variant, anything else a value.  That
+     * token has to remain under the cursor for the caller to see.  With two
+     * segments the loop below never runs at all (`fn` in `mod::fn` is not
+     * followed by `::`), so the two-segment path is untouched.
+     *
+     * The test is `> 1`, not `>= 2`, because the last segment must survive.
+     * `std::sys::io::STDOUT` splits into the prefix `std::sys::io` and the
+     * symbol `STDOUT`: `::sys` and `::io` are consumed, `::STDOUT` is left.
+     * With `>= 2` one segment too many is consumed, so the prefix becomes
+     * `std::sys` and the symbol `io`, and the loader then reports
+     * "`sys` is not imported" -- two steps away from the real mistake.
+     *
+     * The prefix has to be built while those tokens are consumed; pulling text
+     * out of the token range afterwards cannot work, because the range starts
+     * after the first `::` and the leading name (`std`) is not in it.  Doing it
+     * that way yielded `sys::io` instead of `std::sys::io`. */
     const char *prefix = NULL;
     if (countFollowingSegs(p) > 1) {
         Buf pb;
         bufInit(&pb, p->arena);
-        bufPuts(&pb, name);                          /* 第一段（调用者已吃掉）✓ */
+        bufPuts(&pb, name);                          /* first segment, taken by caller */
         while (countFollowingSegs(p) > 1) {
             take(p);                                 /* `::` */
             bufPuts(&pb, "::");
-            bufPuts(&pb, take(p)->text);             /* 中间段名 */
+            bufPuts(&pb, take(p)->text);             /* a middle segment */
         }
         prefix = bufCstr(&pb);
     }
@@ -1654,16 +2006,18 @@ static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
     Token *sym = expectIdent(p, "a function, constant or variant name");
     if (!sym) return NULL;
 
-    /* 判据只有一条：`(` 跟着**最后一段** ⇒ 调用 ✓
-     * 不跟 ⇒ 值（模块里的常量）—— C 没有函数指针、extC 也没有函数值，
-     * 所以"不带括号的限定名"只可能是常量 ✓ 拆分结果交给装载器 ✓ */
+    /* One test decides it: a `(` after the LAST segment makes this a call.
+     * Without one it is a value, such as a module constant -- C has no function
+     * pointers and extC has no function values, so a qualified name without
+     * parentheses can only be a constant.  The split goes to the loader. */
     const bool isCall = !targs.len && at(p, "(");
     if (modPrefixOut) *modPrefixOut = prefix;
 
     Vec args;
     vecInit(&args, p->arena, sizeof(void *));
-    /* 参数表可以**省掉**：`maybe<i64>::nothing` —— 无载荷变体就是这么写的 ✓
-     * （有载荷的必须写括号：`option<i64>::some(3)`）*/
+    /* The argument list may be omitted: `maybe<i64>::nothing` is how a variant
+     * without a payload is written.  One with a payload needs its parentheses:
+     * `option<i64>::some(3)`. */
     if (at(p, "(") && !parseArgs(p, &args)) return NULL;
 
     Expr *e = exprNew(p->arena, EX_ASSOC, line);
@@ -1676,6 +2030,14 @@ static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
     return e;
 }
 
+/* Parse a struct literal `{ field: value, ... }`.
+ *
+ * Params:
+ *   name - the struct's name, or NULL for an anonymous `{ ... }` literal
+ *
+ * Returns:
+ *   The new EX_STRUCTLIT node, or NULL after reporting an error.
+ */
 static Expr *parseStructLit(Parser *p, const char *name) {    Token *open = cur(p);
     if (!expect(p, "{", NULL)) return NULL;
 

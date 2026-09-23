@@ -1,9 +1,9 @@
-/* extC 编译器驱动（week-0）。
+/* The extC compiler driver: command line, pipeline, and the `--run` shortcut.
  *
- *   extc --dump-tokens foo.extc        只做词法分析
- *   extc foo.extc                      把生成的 C 打到 stdout
- *   extc -o foo.c foo.extc             写文件
- *   extc --run foo.extc                生成 C -> gcc -> 直接跑
+ *   extc --dump-tokens foo.extc        lex only
+ *   extc foo.extc                      print the generated C to stdout
+ *   extc -o foo.c foo.extc             write it to a file
+ *   extc --run foo.extc                generate C, compile it, run it
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -16,6 +16,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Each header is listed once, through the layer that actually needs it: `check.h`,
+ * `codegen.h`, `modules.h` and `parser.h` all pull in the lower layers themselves. Asking
+ * for a lower header again here costs nothing at runtime but does make the preprocessor
+ * walk that file a second time, and gcc then reports its prototypes as redundant. */
 #include "base.h"
 #include "check.h"
 #include "codegen.h"
@@ -23,10 +27,24 @@
 #include "parser.h"
 #include "modules.h"
 #include "prelude.h"
-#include "types.h"
 
-/* ---------------------------------------------------------------- 工具 */
+/* ------------------------------------------------------------- utilities */
 
+/* Read a whole file into arena memory.
+ *
+ * Params:
+ *   a      - arena that owns the buffer
+ *   path   - file to read
+ *   outLen - receives the number of bytes read, excluding the terminator
+ *
+ * Returns:
+ *   A NUL-terminated buffer, or NULL when the file cannot be opened or measured, or
+ *   is not seekable.
+ *
+ * Notes:
+ *   - The file is not re-read: if it grows between the size measurement and the read
+ *     of `n` bytes, the extra bytes are simply not part of the result.
+ */
 static char *readFile(Arena *a, const char *path, size_t *outLen) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -45,6 +63,17 @@ static char *readFile(Arena *a, const char *path, size_t *outLen) {
     return buf;
 }
 
+/* Write a byte range to a file, replacing whatever was there.
+ *
+ * Params:
+ *   path - file to write
+ *   data - bytes to write
+ *   len  - number of bytes
+ *
+ * Returns:
+ *   True when every byte was written; false when the file cannot be opened or a
+ *   short write happened.
+ */
 static bool writeFile(const char *path, const char *data, size_t len) {
     FILE *f = fopen(path, "wb");
     if (!f) return false;
@@ -53,7 +82,16 @@ static bool writeFile(const char *path, const char *data, size_t len) {
     return n == len;
 }
 
-/* 取文件名去掉目录和扩展名：examples/hello.extc -> hello */
+/* The file name without its directory and extension: `examples/hello.extc` becomes
+ * `hello`.
+ *
+ * Returns:
+ *   An arena-owned copy; the input string is not modified.
+ *
+ * Notes:
+ *   - Only `/` counts as a separator, and the extension is everything after the last
+ *     dot of the remaining name, so a dot in a directory name is harmless.
+ */
 static const char *baseName(Arena *a, const char *path) {
     const char *slash = strrchr(path, '/');
     const char *base = slash ? slash + 1 : path;
@@ -62,6 +100,22 @@ static const char *baseName(Arena *a, const char *path) {
     return arenaStrndup(a, base, n);
 }
 
+/* Run a program and wait for it to finish.
+ *
+ * Params:
+ *   argv - NULL-terminated argument vector; argv[0] is the program name, looked up
+ *          on PATH
+ *
+ * Returns:
+ *   The exit status of the program, or -1 when it could not be started or was
+ *   killed by a signal.
+ *
+ * Notes:
+ *   - The child inherits the three standard streams, so its output appears in place
+ *     and a compiled program can still read from stdin.
+ *   - A failed exec is reported by the child itself and turned into exit status 127,
+ *     which the parent sees as an ordinary exit.
+ */
 static int runCmd(char *const argv[]) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -79,6 +133,17 @@ static int runCmd(char *const argv[]) {
     return -1;
 }
 
+/* Print the command line summary to stderr.
+ *
+ * Params:
+ *   argv0 - the name the compiler was invoked under; echoed as the program name
+ *
+ * Notes:
+ *   - The text lists every accepted switch as well as the debug environment
+ *     variables, because it is the only documentation the driver ships.
+ *   - Writing to stderr keeps stdout free for the generated C, which is what
+ *     `extc foo.extc` prints.
+ */
 static void usage(const char *argv0) {
     fprintf(stderr,
         "extC compiler\n"
@@ -107,19 +172,23 @@ static void usage(const char *argv0) {
         argv0);
 }
 
-/* ---------------------------------------------------------------- prelude
+/* ---------------------------------------------------------------- prelude */
 
- * 把编译器自带的 prelude 解析 + 检查一遍，然后合并进主 Module。
+/* Does this module declare `slice` in the shape the compiler expects?
  *
- * 它用**自己的 Ctx**（路径显示成 <extc prelude>），这样它出错时错误位置是对的。
- * 而 prelude 是编译器自带的 —— 它出错就说明**编译器坏了**，不是用户的问题，
- * 所以这里报 internal error。
+ * A view is recognised by a protocol rather than by a type: the struct is named
+ * `slice`, it has exactly one type parameter, and its first two fields are
+ * `data: ref T` and `len`. The language knows the protocol and the library provides
+ * the methods.
  *
- * 注：prelude 会被检查两遍（这里一遍、合并后一遍）。它很小，代价可忽略；
- * 换来的是「prelude 的错误位置永远正确」。
+ * Returns:
+ *   True when a conforming `slice` exists, false when it is missing or malformed.
+ *
+ * Notes:
+ *   - Checking the shape here turns an implicit contract into an explicit one.
+ *     Without it, renaming a field in the prelude would surface much later, as
+ *     generated C that does not compile.
  */
-/* 编译器认 `slice` 的协议：第一个字段是 `data: ref T`，第二个是 `len`。
- * 见 ARRAYS.md「语言认识协议，库提供方法」。 */
 static bool viewContractOk(Module *m) {
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -134,6 +203,27 @@ static bool viewContractOk(Module *m) {
     return false;
 }
 
+/* Parse and check the bundled prelude, then merge it into the main module.
+ *
+ * The prelude gets a Ctx of its own, whose path renders as <extc prelude>, so an
+ * error inside it points at the right position. The prelude ships with the
+ * compiler, so a failure here means the compiler is broken rather than the user's
+ * program, and the driver reports an internal error.
+ *
+ * Params:
+ *   arena - arena for the prelude's tokens, tree, and diagnostics
+ *   tt    - the type table shared with the user file
+ *   m     - module the prelude declarations are merged into, ahead of the user's
+ *
+ * Returns:
+ *   False when the prelude failed to compile or does not satisfy the view contract,
+ *   in which case the driver stops.
+ *
+ * Notes:
+ *   - The prelude is checked twice, once here and once after being merged. It is
+ *     small enough for the cost to be irrelevant, and keeping a separate Ctx is what
+ *     makes its error positions always correct.
+ */
 static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     size_t len = 0;
     const char *src = preludeSource(&len);
@@ -150,7 +240,7 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     lexAll(&ctx, &toks);
     if (!ctx.hasError) parseModule(&ctx, arena, &toks, &pm);
     if (!ctx.hasError) {
-        ttRegister(tt, &pm);        /* 跟用户文件共用同一张表 */
+        ttRegister(tt, &pm);        /* the same table the user file will use */
         checkModule(&ctx, arena, tt, &pm);
     }
 
@@ -163,7 +253,8 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
         return false;
     }
 
-    /* 标记成「保留定义」—— 用户不能重定义它们（重名即报错，而且错误信息会说清原因）*/
+    /* Mark them as reserved, so the user cannot redefine them. A clash is an error
+     * whose message explains why. */
     for (size_t i = 0; i < pm.structs.len; i++)
         (*(StructDef **)vecAt(&pm.structs, i))->reserved = true;
     for (size_t i = 0; i < pm.types.len; i++)
@@ -171,16 +262,16 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < pm.funcs.len; i++)
         (*(FuncDef **)vecAt(&pm.funcs, i))->reserved = true;
 
-    /* 契约检查：编译器认 `slice` 的协议（`data` + `len`，因为 `s[i]` 是一条语法）。
-     * prelude 必须真的这么写 —— 否则「改个字段名」会变成「生成的 C 编译不过」
-     * 这种莫名其妙的错误。**把隐式契约变成显式检查。** */
+    /* The prelude has to keep the shape the compiler relies on, because `s[i]` is a
+     * piece of syntax that works on it. A renamed field would otherwise show up as
+     * generated C that does not compile, which says nothing about the real cause. */
     if (!viewContractOk(&pm)) {
         fputs("extc: internal error -- the prelude's `slice` does not have the shape "
               "the compiler expects (`data: ref T` then `len`)\n", stderr);
         return false;
     }
 
-    /* 合并进主 Module：prelude 的声明排在用户的前面 */
+    /* Merge into the main module: the prelude declarations come before the user's. */
     for (size_t i = 0; i < pm.structs.len; i++)
         *(StructDef **)vecPush(&m->structs) = *(StructDef **)vecAt(&pm.structs, i);
     for (size_t i = 0; i < pm.types.len; i++)
@@ -192,43 +283,58 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
 
 /* ---------------------------------------------------------------- main */
 
+/* Run the compiler: parse the command line, load, check, generate, and on request
+ * compile and run the result.
+ *
+ * Returns:
+ *   0 on success, 1 when the program could not be compiled, 2 when the command line
+ *   itself is wrong. Under `--run` the exit status is that of the compiled program.
+ */
 int main(int argc, char **argv) {
     const char *path = NULL;
     const char *outPath = NULL;
-    const char *optLevel = NULL;     /* `-O0..-O3`（默认 -O2）*/
-    bool        noWarn = false;      /* `-w`：一条警告都不吐（Ctx 下面才建 ⇒ 先记在局部 ✓）*/
-    bool marchNative = false;        /* `-march=native`（默认关：牺牲可移植性）*/
+    const char *optLevel = NULL;     /* `-O0` .. `-O3`; the default is `-O2` */
+    bool        noWarn = false;      /* `-w`: recorded here because the Ctx does not
+                                      * exist yet */
+    bool marchNative = false;        /* `-march=native`, off by default: it trades
+                                      * portability for speed */
     bool dumpTokens = false;
     bool doRun = false;
-    /* ⭐ `--check-c`（2026-09-20）：生成 C 之后**先过一遍 `cc -fsyntax-only`** ——
-     * "生成的 C 编不过"是 extC 最该防的一类 bug（承诺是"编过就一定编得过"），
-     * 而这一条**不依赖运行、也不依赖用户去跑 gcc** ✓ 代价一次 gcc 调用（~50ms）*/
+    /* `--check-c`: syntax-check the generated C before handing it over. Generated C
+     * that does not compile is the worst class of bug this compiler can have, because
+     * its promise is that a program which type-checks will build. The check needs
+     * neither a run nor the user reaching for a C compiler, and costs one `cc` call. */
     bool doCheckC = false;
     bool lineMap = true;
-    /* ⭐ 定案 70：`-I <dir>` —— ⚠️ 参数解析发生在 `arenaInit` **之前**，
-     * 所以这里先用一块**定长数组**收着（往没初始化的 Vec 里 push 会段错误 ✗ 踩过）*/
+    /* `-I <dir>` module search directories. The command line is parsed before
+     * `arenaInit` runs, so the names are collected in a fixed-size array here and
+     * copied into a Vec afterwards; pushing into a Vec that has never been
+     * initialised would dereference a garbage pointer. */
     const char *stdDirArgs[16];
     int         nStdDirArgs = 0;
 
     for (int i = 1; i < argc; i++) {
-        /* ⭐ 优化开关（PLAN #11，2026-09-20）：默认还是 `-O2`，
-         * 但 `-march=native` 那种白送的 2~4× 得能拿到 ✓
-         * （实测：矩阵乘 `-O2` → `-O2 -march=native` 能再翻倍；
-         *   代价是**牺牲可移植性** —— 所以默认不开，要性能自己开 ✓）*/
+        /* Optimisation switches. The default stays `-O2`, but the 2x to 4x that
+         * `-march=native` gives away for free has to stay reachable: on a matrix
+         * multiply it doubles the speed again over `-O2` alone. The price is
+         * portability, so it is off unless the user asks for it. */
         if (strncmp(argv[i], "-O", 2) == 0 && argv[i][2] >= '0' && argv[i][2] <= '3'
             && argv[i][3] == 0) {
             optLevel = argv[i];
-            continue;          /* ⚠️ 别 `i++`：for 自己会加 ⇒ 会**多吞一个参数** ✗（2026-09-22 修）*/
+            continue;          /* do not advance i here: the for loop already does,
+                                * and a second increment swallows the next argument */
         }
         if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; continue; }
-        if (strcmp(argv[i], "-w") == 0) { noWarn = true; continue; }   /* 关警告 ✓ */
+        if (strcmp(argv[i], "-w") == 0) { noWarn = true; continue; }   /* suppress warnings */
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
         } else if (strcmp(argv[i], "--dump-effects") == 0) {
-            /* 档1 调试开关：打印每个函数的 Addr/Cont 效果摘要（ARENA-FORMAL §3.4）*/
+            /* Debug switch: print every function's Addr/Cont effect summary. Setting
+             * the environment variable here keeps the rest of the driver unaware of the
+             * flag. */
             setenv("EXTC_DUMP_EFFECTS", "1", 1);
         } else if (strcmp(argv[i], "--check-c") == 0) {
-            doCheckC = true;          /* 生成 C 之后先过 `cc -fsyntax-only` ✓ */
+            doCheckC = true;          /* syntax-check the generated C afterwards */
         } else if (strcmp(argv[i], "--run") == 0) {
             doRun = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
@@ -269,7 +375,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    Vec searchDirs;                                       /* ⭐ 定案 70：`-I` 目录 ✓ */
+    Vec searchDirs;                                       /* the `-I` directories */
     vecInit(&searchDirs, &arena, sizeof(const char *));
     for (int k = 0; k < nStdDirArgs; k++)
         *(const char **)vecPush(&searchDirs) = stdDirArgs[k];
@@ -293,43 +399,47 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Module 只初始化一次；prelude 和用户文件都**追加**进同一个它 */
+    /* One module, initialised once: the prelude and the user file both append to it. */
     Module m;
     memset(&m, 0, sizeof m);
     moduleInit(&m, &arena);
 
-    /* **全程一张类型表** —— 类型是驻留的、相等是指针比较，
-     * 分成两张表会让同一个 bool 变成两个指针。 */
+    /* One type table for the whole run. Types are interned and compared by pointer,
+     * so a second table would turn the same `bool` into two different pointers. */
     TypeTable *tt = ttNew(&arena, NULL);
 
-    /* ① prelude */
+    /* 1. the prelude */
     if (!ctx.hasError && !loadPrelude(&arena, tt, &m)) return 1;
 
-    /* ② 根文件先解析到**它自己**的 Module 里（模块要等它的 `use` 才知道装谁 ✓）*/
+    /* 2. the root file is parsed into a module of its own first, because which
+     *    modules to load is known only from its `use` declarations */
     Module rootm;
     memset(&rootm, 0, sizeof rootm);
     moduleInit(&rootm, &arena);
     if (!ctx.hasError) parseModule(&ctx, &arena, &toks, &rootm);
 
-    /* ③ 定案 70：按 `use` 递归装载模块，**拓扑序**合进 m ⇒ 之后检查器看到的
-     * 还是一张平表（限定名已经在装载器里解析掉了 ✓）*/
+    /* 3. load the imported modules recursively, in topological order, merging them
+     *    into the main module, so that the checker still sees one flat table: the
+     *    loader has already resolved every qualified name */
     Vec moduleCtxs;
     vecInit(&moduleCtxs, &arena, sizeof(Ctx *));
     bool modsOk = true;
     if (!ctx.hasError)
         modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
 
-    /* ⭐ 模块 mangle 的**裸名回程票**：装载器填在 `m.aliases`，这里接到类型表 ✓
-     * （装载器不认识 TypeTable，而 ttResolve 只认识它 ⇒ 必须在这一层对接 ✓）
-     * ⚠️ 踩过：漏了这一句 ⇒ `aliases=0` ⇒ 裸名 `pair` 照样解析不了 ✗
-     *    （而根本原因会更难查：错误信息只会说 unknown type pair ✓）*/
+    /* Hand the bare-name mappings the loader collected to the type table. The loader
+     * does not know TypeTable and ttResolve knows nothing else, so the two are joined
+     * here. Dropping this loop leaves `aliases` empty, and a bare name such as `pair`
+     * then fails to resolve -- with a message that only says "unknown type pair",
+     * which hides the real cause. */
     for (size_t i = 0; i < m.aliases.len; i++)
         *(Alias *)vecPush(&tt->aliases) = *(Alias *)vecAt(&m.aliases, i);
-    /* ⭐ `EXTC_DBG_M=1` ⇒ 打印**模块 mangle 的裸名回程票**（调试模块系统用 ✓）
-     * 为什么要有它：mangle 之后**生成 C 里只剩 `liba$pair`**，裸名映射一旦错，
-     * 症状是"unknown type pair"，看不出是映射错还是查表错 ⇒ 需要一眼看到表 ✓ */
+    /* `EXTC_DBG_M=1` prints those bare-name mappings. After mangling, the generated C
+     * only mentions `liba$pair`, so a wrong mapping shows up as "unknown type pair",
+     * which does not say whether the mapping or the lookup is at fault. Seeing the
+     * table settles it. */
     if (getenv("EXTC_DBG_M")) {
-        fprintf(stderr, "[mangle] 裸名回程票 %zu 条:", tt->aliases.len);
+        fprintf(stderr, "[mangle] bare-name return tickets: %zu", tt->aliases.len);
         for (size_t i = 0; i < tt->aliases.len; i++) {
             Alias *al = (Alias *)vecAt(&tt->aliases, i);
             fprintf(stderr, " %s=>%s", al->from, al->to);
@@ -337,7 +447,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "\n");
     }
 
-    /* ⚠️ 模块文件里的报错走**它自己的 Ctx** ⇒ 这里要把它们渲染出来（文件/源码行才对 ✓）*/
+    /* An error inside a module file was recorded in that file's own Ctx, so it has to be
+     * rendered from there to name the right file and quote the right source line. */
     bool modDiag = false;
     for (size_t i = 0; i < moduleCtxs.len; i++) {
         Ctx *mc = *(Ctx **)vecAt(&moduleCtxs, i);
@@ -350,13 +461,15 @@ int main(int argc, char **argv) {
         }
     }
     if (modDiag || (!modsOk && !ctx.hasError)) {
-        /* 模块这一层出错了 ⇒ 到此为止（别拿半成品往下走 ✗）*/
-        if (!modDiag && ctx.hasError) { /* 根文件的错由下面统一渲染 ✓ */ }
+        /* A failure at this stage ends the run: there is no point checking a
+         * half-loaded program. An error in the root file is rendered by the common path
+         * below, so it falls through instead of returning here. */
+        if (!modDiag && ctx.hasError) { /* the root file's error is rendered below */ }
         else return 1;
     }
 
-    /* 类型检查：一遍**独立**的 pass，把结果写回 AST。
-     * 之后的代码生成不再做任何类型推理（T1）。 */
+    /* Type checking is a pass of its own that writes its results back into the tree.
+     * Code generation then performs no type inference at all. */
     if (!ctx.hasError) {
         ttRegister(tt, &m);
         checkModule(&ctx, &arena, tt, &m);
@@ -374,10 +487,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* ⭐ `--check-c`：生成 C 之后**先过一遍 `cc -fsyntax-only`** ——
-     * "生成的 C 编不过"是 extC 最该防的一类 bug（承诺是"编过就一定编得过"），
-     * 这一条**不依赖运行、也不依赖用户去跑 gcc** ✓ 代价一次 gcc 调用（~50ms）
-     * ⚠️ 必须放在 `if (!doRun)` 的**输出/提前返回之前**，否则只有 `--run` 才走到 ✗ */
+    /* `--check-c`: syntax-check the generated C. This has to run before the
+     * `if (!doRun)` block below, which prints the C and returns, or the check would
+     * only ever happen under `--run`. */
     if (doCheckC && !doRun) {
         const char *ccx = getenv("CC") ? getenv("CC") : "cc";
         const char *tmp = "/tmp/extc-syntaxcheck.c";
@@ -400,13 +512,14 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "extc: cannot write `%s`\n", outPath);
                 return 1;
             }
-        } else if (!doCheckC) {      /* `--check-c` 且没给 `-o` 时不用把 C 倒到 stdout ✓ */
+        } else if (!doCheckC) {      /* under `--check-c` with no `-o`, dumping the C to
+                                      * stdout again would only add noise */
             fputs(bufCstr(&c), stdout);
         }
         return 0;
     }
 
-    /* --run：写 build/<base>.c -> gcc -> 跑 */
+    /* `--run`: write build/<base>.c, compile it, then run the result */
     const char *base = baseName(&arena, path);
     if (mkdir("build", 0755) != 0 && errno != EEXIST) {
         fprintf(stderr, "extc: cannot create `build/`: %s\n", strerror(errno));
@@ -424,26 +537,28 @@ int main(int argc, char **argv) {
     const char *cc = getenv("CC") ? getenv("CC") : "cc";
 
 
-    /* `-fwrapv`：让**有符号溢出绕回**成为确定的语义。
+    /* `-fwrapv` makes signed overflow wrap around, and makes that wrap defined.
      *
-     * 不加的话，`x + 1`（x 是 i32 的最大值）在生成的 C 里是**有符号溢出 = UB**：
-     * `-O1` 下碰巧绕回，但 C 标准不保证，而且 `-O2` 的 strict-overflow 假设
-     * 会让 `if (x + 1 > x)` 这类判断被优化掉。
+     * Without it, `x + 1` where x is the largest i32 is signed overflow, which is
+     * undefined behaviour: at `-O1` it happens to wrap, but the C standard does not
+     * promise that, and the strict-overflow assumptions of `-O2` can delete a test such
+     * as `if (x + 1 > x)` altogether.
      *
-     * extC 的承诺是「不给 UB」，所以生成的代码里一个 UB 都不该留 ——
-     * 这一行把它从 UB 变成**确定的绕回**。
+     * extC promises not to hand the programmer undefined behaviour, so the generated
+     * code must not contain any. This flag turns that one case into a defined wrap.
      *
-     * ⚠️ 但「溢出绕回」这个**语言语义本身还没定案**（也可以选 trap）。
-     *    在主人拍板前取的是最小干预：跟 gcc 的实际行为一致，
-     *    只把「碰巧」变成「保证」。见 DECISIONS 的待定项。
+     * What wrap-around means as a language rule is still open -- trapping would be just
+     * as defensible -- so the driver takes the smallest step available and agrees with
+     * what gcc does in practice, turning "happens to" into "is guaranteed to".
      *
-     * `-O2`（2026-09-20 从 `-O1` 提上来）：实测**白赚**，而且不动语义 ——
-     *   矩阵乘 106 → 34 ms（**3.1×**）· 取模 273 → 253 ms · 筛素数不变（29 ms）
-     *   （`bench/` 里有全套数据：extC 和 C 在**每个优化级别**上都持平，
-     *     `-O3` 相比 `-O2` 几乎没有额外收益，`-march=native` 能让矩阵乘再翻倍到 15 ms
-     *     —— 但那会牺牲可移植性，先不开。）
+     * The default was raised from `-O1` to `-O2` after measuring it, which costs nothing
+     * in semantics: a matrix multiply went from 106 ms to 34 ms (3.1x), a modulo loop
+     * from 273 ms to 253 ms, and a prime sieve was unchanged at 29 ms. The numbers are
+     * in `bench/`: extC matches C at every optimisation level, `-O3` adds almost
+     * nothing over `-O2`, and `-march=native` doubles the matrix multiply again to
+     * 15 ms -- at the cost of portability, so it stays off by default.
      *
-     * ⇒ 性能跟 C 同级的最后一公里其实是**旗子**，不是语言 ✓ */
+     * The last mile to C-level performance is therefore flags, not language design. */
     char *ccArgv[16];
     int n = 0;
     ccArgv[n++] = (char *)cc;
@@ -451,10 +566,12 @@ int main(int argc, char **argv) {
     ccArgv[n++] = (char *)(optLevel ? optLevel : "-O2");
     ccArgv[n++] = "-fwrapv";
     if (marchNative) ccArgv[n++] = "-march=native";
-                       /* 编译器会给用到的每种类型**自动派生** `_debug` / `_eq` /
-                        * `_find` …… 程序里没用到的那部分本来会留在二进制里
-                        * （实测：hello 的 text 3215 → 1446 字节，euler-sieve 6852 → 3475）。
-                        * 让链接器把没人引用的段丢掉 —— 零语义变化，白赚 ✓ */
+                       /* The compiler derives `_debug`, `_eq`, `_find` and further
+                        * helpers for every type the program uses, and the ones nothing
+                        * calls would otherwise stay in the binary: the text segment of
+                        * hello fell from 3215 to 1446 bytes and that of euler-sieve from
+                        * 6852 to 3475. Letting the linker drop the sections nobody
+                        * references changes no semantics. */
     ccArgv[n++] = "-ffunction-sections";
     ccArgv[n++] = "-fdata-sections";
     ccArgv[n++] = "-Wl,--gc-sections";

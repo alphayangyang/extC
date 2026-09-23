@@ -1,21 +1,38 @@
-/* 语句检查
+/* Statement checking: declarations, assignments, control flow and `match`.
  *
- * 从 check.c 拆出来的 —— **纯移动**：注释与逻辑一个字节没动 ✓
+ * Each statement is checked here for what it does to the depth bookkeeping and to the
+ * set of narrowing facts; the expressions inside it are handed to the expression
+ * checker. This file sits between `check_top.c`, which walks the declarations, and
+ * `check_expr.c`, which types the expressions.
  */
 
 #include "check_internal.h"
+#include <stdlib.h>
+#include <stdio.h>
 
-/* ---------------------------------------------------------------- 语句 */
+/* ------------------------------------------------------------- statements */
 
-/* **裸写构造器**：`return success(v)` / `failure(e)` / `some(v)` / `none()`。
+/* Rewrite a bare constructor into the qualified variant construction.
  *
- * 类型从**函数签名里已经写好的返回类型**来 —— 这不是"推导"，是**没让你重复一遍**：
- * 编译器没有猜任何东西，它读的是你自己写的那一行 `-> result<i64, gameError>`。
+ * The short forms are `success(v)`, `failure(e)`, `some(v)` and `none()`. The type
+ * comes from the return type already written in the function signature, so nothing is
+ * guessed: the compiler reads the `-> result<i64, gameError>` the user wrote. That
+ * saves a repetition, and the repetition is long enough to bury the point, which is
+ * the failure itself. `?` collects a failure and `failure` raises one, and neither end
+ * should be verbose.
  *
- * 为什么值得：`result<i64, gameError>::failure(...)` 那串类型长到把重点盖住了，
- * 而重点从来是「失败」本身。`?` 负责收，`failure` 负责发，两头都不该啰嗦 ✓
+ * Params:
+ *   c    - checker
+ *   e    - the expression to rewrite; a name that is not one of the four above is left
+ *          exactly as it is
+ *   want - the expected type, which decides whether the name is a known constructor
  *
- * 落点是**原地改写成 EX_ASSOC** —— 后面检查/生成的路一条都不变（零新机制）。 */
+ * Notes:
+ *   - The node is rewritten in place into a variant construction, so every later check
+ *     and the code generator take the ordinary path.
+ *   - A user-defined function with the same name wins; the short form only applies
+ *     where it cannot be ambiguous.
+ */
 void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     if (!e) return;
 
@@ -27,7 +44,8 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     if (e->kind == EX_CALL && e->u.call.callee->kind == EX_IDENT) {
         nm = e->u.call.callee->u.ident.name;
     } else if (e->kind == EX_IDENT) {
-        /* 没载荷的构造器连括号都能省 —— `return none`（跟枚举变体一个待遇）*/
+        /* A constructor with no payload may drop its parentheses: `return none`,
+         * the same treatment an enum variant gets. */
         nm = e->u.ident.name;
         noParens = true;
     } else return;
@@ -35,19 +53,23 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     if      (strcmp(nm, "success") == 0 || strcmp(nm, "failure") == 0) { proto = "result"; nargs = 2; }
     else if (strcmp(nm, "some")    == 0 || strcmp(nm, "none")    == 0) { proto = "option"; nargs = 1; }
     else return;
-    if (noParens && strcmp(nm, "none") != 0) return;   /* 只有 `none` 是零参数的 */
+    if (noParens && strcmp(nm, "none") != 0) return;   /* `none` is the only nullary one */
 
-    /* 用户自己写的同名函数优先 —— 裸写只是**在没歧义时**的省事 */
+    /* A user-defined function of the same name wins: the short form is only a
+     * convenience for the unambiguous case. */
     if (findFunc(c, nm)) return;
-    /* 返回类型不是对应容器 ⇒ 不认，照原样走（报「未定义的名字」，那是实话）*/
+    /* The return type is not the matching container, so the name is left alone and
+     * reported as undefined, which is the truth. */
     if (!isProtoType(want, proto, nargs)) return;
 
-    /* ⚠️ union：先把 args 拿**出来**再改 kind，否则会被自己的新字段覆盖 */
+    /* A union: copy `args` out before changing the kind, or the new field overwrites
+     * it. */
     Vec args;
     if (noParens) vecInit(&args, c->arena, sizeof(void *));
     else          args = e->u.call.args;
-    /* `option` / `result` 现在是**普通枚举** ⇒ 裸构造器就是一个变体构造 ✓
-     * （`typeName` 要写**实例名**：codegen 拿它拼 C 的 tag 常量 `option_i64_some`）*/
+    /* `option` and `result` are ordinary enums, so a bare constructor is a variant
+     * construction. `typeName` takes the instance name, which the code generator uses
+     * to build the C tag constant `option_i64_some`. */
     e->kind = EX_ENUMVAL;
     e->u.enumval.typeName = want->name;
     e->u.enumval.variant  = nm;
@@ -55,8 +77,9 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     e->assocOwner = want;
 }
 
-void checkStmt(Checker *c, Stmt *s);
 
+/* Check a block body in a fresh scope, so bindings declared in it go out of scope
+ * when the block ends. */
 static void checkBlockBody(Checker *c, Stmt *block) {
     pushScope(c);
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
@@ -64,18 +87,32 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     popScope(c);
 }
 
+/* Check one statement and apply the depth and narrowing consequences it has.
+ *
+ * Params:
+ *   c - checker
+ *   s - the statement to check
+ *
+ * Notes:
+ *   - The side-effect counter is reset per statement. A `??` may hoist its subject
+ *     into a temporary only while nothing before it in the same statement has a side
+ *     effect, because that temporary is evaluated at the top of the statement.
+ */
 void checkStmt(Checker *c, Stmt *s) {
-    c->stmtFx = 0;      /* ⭐ PLAN #22：每语句重新数"前面有没有副作用" ✓ */
+    c->stmtFx = 0;      /* count side effects from the start of each statement */
     switch (s->kind) {
         case ST_VAR: {
-            /* 局部变量声明的类型标注也要解析（parser 只造「类型名」） */
+            /* The annotation of a local declaration is resolved here; the parser
+             * only builds an unresolved type name. */
             if (s->u.var.ann)
                 s->u.var.ann = ttResolve(c->tt, c->ctx, s->u.var.ann, s->line, c->curParams);
             if (ttIsError(s->u.var.ann)) s->u.var.ann = NULL;
 
-            /* 没有初始化式 ⇒ 零初始化（定案 8）。parser 保证此时必有类型标注。 */
+            /* No initializer means zero initialization, and the parser guarantees an
+             * annotation is present in that case. */
             if (!s->u.var.init) {
-                /* 标注里提到 `T` ⇒ 现在看不出有没有零值，推到实例化再查 ✓ */
+                /* The annotation mentions `T`, so whether a zero value exists cannot
+                 * be decided yet; record the check for the instantiation. */
                 if (s->u.var.ann && mentionsParam(s->u.var.ann))
                     recordZeroCheck(c, s->u.var.ann, s->line, s->u.var.name);
                 else if (s->u.var.ann && typeLacksZeroValue(c->tt, s->u.var.ann)) {
@@ -88,16 +125,19 @@ void checkStmt(Checker *c, Stmt *s) {
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
                 Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                    !s->u.var.mut, s->line, c->scopes.len);
-                /* 零初始化的含引用值：**里面只可能是 `null`**（非空引用没零值 ⇒ 早被拒了）
-                 * ⇒ "里面的引用指哪" = 深度 0 ✓（不是槽位深度！否则
-                 *   `var a: [2]?ref node  a[0] = ref *p  return a` 会被误报 ✗）*/
+                /* A zero-initialized value that can hold references can only hold
+                 * nulls: a non-nullable reference has no zero value and was rejected
+                 * just above. Its references therefore point at depth 0, which is not
+                 * the depth of the slot -- using the slot depth would falsely reject
+                 *   var a: [2]?ref node  a[0] = ref *p  return a */
                 if (s->type && typeContainsRef(c->tt, s->type)) sym->refDepth = 0;
                 s->u.var.cname = sym->cname;
                 return;
             }
 
-            /* ⚠️ **`let`（将来叫 `const`）是只读绑定** ⇒ 类型里不许出现 `mut` ✗
-             * （"又 let 又 mut"很诡异 —— 主人 2026-09-20 拍板）*/
+            /* A `let` is a read-only binding, so its type may not carry `mut`:
+             * asking for both read-only and writable in one declaration contradicts
+             * itself. */
             if (!s->u.var.mut && s->u.var.ann) {
                 Type *at = s->u.var.ann;
                 if (at && ((at->kind == TY_REF && at->mut) ||
@@ -109,10 +149,13 @@ void checkStmt(Checker *c, Stmt *s) {
                 }
             }
 
-            /* ⭐ 定案 65（`@overwrite`）：它修饰的是**分配** —— 三条检查 + 一个标记 ✓
-             *   · 必须 `var`（每次执行都要重新绑定那块存储，而且通常还要往里写）✓
-             *   · 右边**必须是 `new`**（值 / 局部 / 函数结果都没有"复用一块存储"这个意思 ✗）
-             *   · 标记在**查它之前**打：层数要按"函数体"算，不是按语句所在块 ✓ */
+            /* `@overwrite` is about an allocation: two checks and one mark.
+             *   - the binding must be `var`, because every execution re-points the name
+             *     at the same piece of storage and usually writes through it as well
+             *   - the initializer must be `new`: a value, a local or a call result has
+             *     no piece of storage to reuse
+             *   - the mark is set before the initializer is checked, so the level is
+             *     computed for the function body rather than for the enclosing block */
             if (s->u.var.overwrite) {
                 if (!s->u.var.mut) {
                     ckError(c, s->line,
@@ -135,16 +178,22 @@ void checkStmt(Checker *c, Stmt *s) {
                 s->u.var.init->reuse = true;
             }
 
-            /* ⭐ 2026-09-22（主人：「let new 真是难绷完了」）：
-             * `let x = new T` ⇒ **这块存储永远是零** ✗ —— 可判定、零误报：
-             *   · 分配出来只有一条引用（就是这个名字），而 `let` 给的是**只读**引用
-             *   · 只读引用**既写不了、也提权不回来**（链式只读 ✓：`ref *n` / 传进 `mut ref`
-             *     参数 / `.f = v` 全部被挡 ✓ 实测过）
-             * ⇒ 没有任何路径能写它 ⇒ 全零 ✓
-             * ⚠️ 只**警告**不拦：有一个合法小角落 —— 拿一块全零块喂给只读消费者
-             *    （`let buf = new [64]u8  hash(buf[..])`）✓
-             * ⚠️ 校准：`var w = new T  let r = w` **不警告**（对象有可写的源头 ✓
-             *    —— `let` 的主场就是"把已有别名降级成只读视图"）✓ */
+            /* `let x = new T` leaves that storage zero forever. The claim is
+             * decidable and has no false positives:
+             *   - the allocation has exactly one reference, this name, and `let` hands
+             *     out a read-only one
+             *   - a read-only reference can neither be written nor turned back into a
+             *     writable one: `ref *n`, a `mut ref` parameter and `x.f = v` are all
+             *     rejected, so read-only-ness propagates along the chain
+             *   - no path can write the storage, so every byte stays zero
+             *
+             * This is a warning rather than an error because one legitimate corner
+             * exists: feeding an all-zero buffer to a read-only consumer, as in
+             * `let buf = new [64]u8  hash(buf[..])`.
+             *
+             * `var w = new T  let r = w` is deliberately not warned about: the object
+             * has a writable source, and turning an existing writable alias into a
+             * read-only view is what `let` is for. */
             if (!s->u.var.mut && s->u.var.init &&
                 (s->u.var.init->kind == EX_NEW || s->u.var.init->kind == EX_GENCALL)) {
                 ckWarn(c, s->line,
@@ -159,26 +208,28 @@ void checkStmt(Checker *c, Stmt *s) {
 
             if (s->u.var.ann) adoptContextType(s->u.var.init, s->u.var.ann);
 
-            /* `let x = e?` —— `?` 的合法位置之一。
-             * 有类型标注时按**标注**决定要不要解引用（标的是引用 ⇒ 别解）；
-             * 没标注时按值位置（形状 3）。 */
+            /* `let x = e?` is one of the places where `?` is allowed. With an
+             * annotation present the annotation decides whether a reference is
+             * dereferenced; without one the initializer is a value position. */
             Type *it;
             if (s->u.var.init->kind == EX_TRY) it = checkTryInner(c, s->u.var.init);
             else if (s->u.var.ann)             it = checkInto(c, s->u.var.ann, s->u.var.init);
-            /* **无标注 ⇒ 自然类型**（引用就还是引用）✓
-             * 想要值的拷贝就写 `let v = *p` —— 显式 ✓
-             * （否则 `let r = pickFirst(ref a, ref b)` 这种"绑定一个引用"写不出来 ✗）*/
+            /* Without an annotation the natural type is kept, so a reference stays a
+             * reference; a copy of the value is written `let v = *p`. Dereferencing
+             * here instead would make it impossible to bind a reference returned by a
+             * call, as in `let r = pickFirst(ref a, ref b)`. */
             else                               it = checkExpr(c, s->u.var.init);
 
-            /* #24：**查完之后**再定（`checkExpr` 里会把 homeDepth 设成"按实参选"）
-             * ⇒ 这一句按"我把它存到多深"覆盖掉 ✓ */
+            /* Decide after the initializer has been checked: `checkExpr` sets the
+             * home depth from the arguments, and this call overrides it with the depth
+             * the value is really being stored at. */
             markCallHomeIfEscaping(c, s->u.var.init, (int)c->scopes.len);
 
-            /* ⭐ **`let` 推断出来的东西自动降级成只读**（主人 2026-09-20）：
-             * `let p = ref x` ⇒ `p: ref T`（不是 `mut ref T`）✓
-             * `let s = a[..]` ⇒ `s: slice<T>` ✓（跟视图那边原本的行为**统一**了 ✓）
-             * ⇒ 于是"看见 let ⇒ 整条链只读"成立 ✓
-             * ⇒ 权限**写在类型里** ⇒ 拷到哪儿都跟着（`var q = p` 也洗不掉 ✓✓）*/
+            /* A type inferred for a `let` is downgraded to read-only: `let p = ref x`
+             * gives `p: ref T` rather than `mut ref T`, and `let s = a[..]` gives
+             * `s: slice<T>`. Seeing `let` therefore means the chain stays read-only,
+             * because the permission lives in the type and travels with every copy:
+             * `var q = p` cannot launder it back into a writable reference. */
             if (!s->u.var.mut && !s->u.var.ann) {
                 if (it && it->kind == TY_REF && it->mut) {
                     Type *ro = ttRef(c->tt, it->inner);
@@ -192,49 +243,61 @@ void checkStmt(Checker *c, Stmt *s) {
             if (s->u.var.ann)
                 checkAssignable(c, s->u.var.ann, it, s->u.var.init, "initializer");
 
-            /* 逃逸②：初始化的引用不能指向比自己更深的局部 */
+            /* The initializer may not point at a local that dies before this binding. */
             checkEscape(c, s->u.var.init, c->scopes.len, s->line, "this initializer");
             s->type = ttIsError(declT) ? ttError(c->tt) : declT;
             Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                !s->u.var.mut, s->line, c->scopes.len);
             s->u.var.cname = sym->cname;
-            /* ⭐ 定案 63（PLAN #38）：记下这个绑定的**来路**（初始值表达式）——
-             * 提升要顺着它往回走：`var n = new node` 之后别处 `head = n`
-             * ⇒ 顺着 n 找回那个 `new`，把它提到 head 那一层 ✓（没初始化式 ⇒ NULL）*/
+            /* Record where this binding's value came from, which is its initializer.
+             * Promotion walks that chain backwards: after `var n = new node`, a later
+             * `head = n` follows `n` to the `new` site and raises it to the level of
+             * `head`. A declaration without an initializer records NULL. */
             noteOrigin(c, sym, s->u.var.init);
-            /* 引用型绑定：它指的东西有多深，**从初始值数出来** ✓
-             * （`var cur: ?ref node = head` ⇒ head 是参数 ⇒ 0 ⇒ 这个游标可以返回 ✓）*/
-            /* ⚠️⚠️ **`let t = make()` 这种"初始化式是调用"的情形必须单独记** ✗
-             * 为什么：调用结果里那些引用住哪，唯一知道的人是**调用点**（它选了
-             * arenaArg）；而下面那张**字段表**只在初始化式是 `EX_STRUCTLIT` 时才填 ✗
-             * ⇒ 于是 `t.p` 没有任何格子 ⇒ `exprRefDepth(t)` 从 `sym->refDepth`
-             * 兜底得到 **0**（"里面没有指向深处的引用"）⇒ 之后 `b = t`（b 更浅）
-             * 被判成安全 ⇒ 块一退就悬垂 ✗✗
-             * （真踩过：ASan `heap-use-after-free`，而单跑一次还不崩 ——
-             *   只有"在块里造、往块外存"才现形 ✓）
-             * 判据：被调者**有家** ⇒ 它分配进"我传的那只 arena"，而那只就是
-             * `markCallHomeIfEscaping` 上面刚按 `at` 定下来的 ⇒ 结果的深度 = `at` ✓
-             * （`at` 取的是 `c->scopes.len` = 绑定所在那一层 ✓）*/
+            if (sym && !sym->addressed) sym->heldSrc = s->u.var.init;
+            /* For a binding that holds a reference, the depth of what it points at is
+             * computed from the initializer: in `var cur: ?ref node = head` the head is
+             * a parameter, so the cursor has depth 0 and may be returned. */
+            /* An initializer that is a call needs its own bookkeeping, as in
+             * `let t = make()`.
+             *
+             * Only the call site knows where the references in the result live, since
+             * the call site picks `arenaArg`, and the field table filled in below only
+             * covers a struct literal. Without this, the field `t.p` has no entry,
+             * `exprRefDepth(t)` falls back to `sym->refDepth` and gets 0, and a later
+             * `b = t` with a shallower `b` looks safe while the block exit frees the
+             * node. The sanitizer reports a heap use after free, and running it once
+             * does not even crash: only building inside a block and storing outside it
+             * exposes the bug.
+             *
+             * The rule: when the callee has a home arena it allocates into the arena
+             * this call passes, which is the level `markCallHomeIfEscaping` decided from
+             * `at` just above, so the result has depth `at`. Here `at` is
+             * `c->scopes.len`, the level the binding lives at. */
             if (s->type && typeContainsRef(c->tt, s->type)) {
                 int d = exprRefDepth(c, s->u.var.init);
                 Expr *ini = s->u.var.init;
                 if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
                     && ini->func && ini->func->needsHome && (int)c->scopes.len > d)
-                    d = (int)c->scopes.len;      /* 有家被调者 ⇒ 住在我传的那只 arena ✓ */
+                    d = (int)c->scopes.len;      /* a callee with a home arena uses mine */
                 sym->refDepth = d;
             }
-            /* ⭐ 档2.3：结构体字面量 ⇒ 把**每个字段**的深度记进字段表 ✓
-             * （没写出来的字段 = 零初始化 ⇒ 里面只可能是 null ⇒ 深度 0；
-             *   我们不给它建格，读它时退回保守算法 —— 代价是可能误拒，不是洞 ✓）*/
+            /* A struct literal records a depth for each field it writes. A field that
+             * is omitted is zero-initialized, so it can only hold nulls and has depth
+             * 0; no entry is created for it and reads fall back to the conservative
+             * answer. That costs a possible false rejection, never a hole. */
             if (s->u.var.init && s->u.var.init->kind == EX_STRUCTLIT && sym) {
                 for (size_t fi = 0; fi < s->u.var.init->u.lit.inits.len; fi++) {
                     FieldInit *fip = *(FieldInit **)vecAt(&s->u.var.init->u.lit.inits, fi);
+                    c->curStoreVal = fip->value;          /* which value wrote this field */
                     noteFieldDepthWrite(c, sym, fip->name, exprRefDepth(c, fip->value));
                 }
-                /* ⭐ 层 1：**结构体字面量的表是完整的** ✓
-                 * 理由：写出来的字段都在表里；**省略的**要么是可空引用（零值 = null ⇒ 深度 0），
-                 * 要么是"没有零值"的引用 ⇒ 检查器**当场报错**（`ref` 没有默认值，见
-                 * `check_expr.c` 的"省略的字段靠零值补齐"）⇒ 不存在"藏着值的没记的格" ✓ */
+                c->curStoreVal = NULL;
+                /* The field table of a struct literal is complete. Every written field
+                 * has an entry, and an omitted one is either a nullable reference whose
+                 * zero value is null, hence depth 0, or a reference with no zero value,
+                 * which the checker rejects on the spot when it fills the omissions
+                 * with zero values. No field can therefore hold an unrecorded value. */
                 sym->fieldsComplete = true;
             }
             return;
@@ -243,37 +306,45 @@ void checkStmt(Checker *c, Stmt *s) {
         case ST_ASSIGN: {
             Type *tt_ = checkExpr(c, s->u.assign.target);
 
-            /* 目标是**已经收窄过**的绑定 ⇒ 这里比的是槽位的**声明类型**。
-             * 收窄只影响"读出来的是什么"，不影响"这个槽位能装什么" ✓
-             * （所以 `while cur != null { cur = cur.next }` 合法 —— 循环体里
-             *   收窄被这次赋值作废，下一轮循环条件重新证明 ✓）*/
+            /* The target is a binding that was narrowed, so the comparison uses the
+             * declared type of the slot: narrowing changes what a read produces, not
+             * what the slot can hold. That is what makes
+             * `while cur != null { cur = cur.next }` legal -- the assignment retires the
+             * proof inside the loop body, and the loop condition proves it again for the
+             * next round. */
             if (s->u.assign.target->kind == EX_IDENT) {
                 Sym *slot = lookup(c, s->u.assign.target->u.ident.name);
                 if (slot && slot->type && slot->type->kind == TY_REF && slot->type->nullable &&
                     tt_->kind == TY_REF && !tt_->nullable) tt_ = slot->type;
             }
 
-            /* **目标是引用 ⇒ 写进去**（形状 3：`p = v` 写 p 指向的那个地方）。
-             *
-             * 「换指向」已经取消（见 DECISIONS 引用语义定案），所以给引用赋值
-             * 必须对得上**被指的类型**；想改指向哪儿，只能重新声明一个绑定。 */
+            /* The target has reference type, so this assignment either writes the
+             * object it points at or retargets the reference; the type of the
+             * right-hand side decides which, below. Assigning a value to a reference
+             * has to match the pointee type. */
             if (tt_->kind == TY_REF) {
-                /* ⚠️ 这里**不能**用 `requireMutable` —— 它看的是"引用类型是不是 mut" ✗
-                 * 而"换指向"写的是**那个槽位**（变量/字段本身）⇒
-                 * 只要求**绑定/字段可写**（`var`）✓
-                 * ⇒ 于是 `var p: ref T = ref x;  p = ref y` 合法 ✓（主人 2026-09-20）*/
-                /* 换指向写的是**槽位本身** ⇒ 只要求"这个槽位可写"：
-                 *   · 变量 / 字段 / 元素 ⇒ 根是 `var` ✓
-                 *   · **`*p`（`mut ref`）⇒ 可写性由 p 的类型给** ✓
-                 *     ⚠️ 这里以前只走 `placeRoot`，而它对 `*p` 返回 NULL ⇒
-                 *        `fn push(head: mut ref ?ref node) { *head = cell }` 被误报成
-                 *        "the binding is read-only" ✗（真 bug，2026-09-20 修）*/
-                /* ⭐ PLAN #40：**先把路走通，再看落地那个槽位**
-                 *   · 路上穿过的引用都得是 `mut ref`（`*p` / `cur.f` / `(*p).f`）✓
-                 *   · 穿过了引用 ⇒ 存储在被指对象里（没有本帧的根）⇒ 到此为止 ✓
-                 *   · 没穿过 ⇒ 存储是本帧某个绑定的槽位 ⇒ 那只绑定得可写（`var`/参数）✓
-                 * ⚠️ 老写法只认"目标自己是 `*p`" + `placeRoot` ⇒ `(*cell).next = v`
-                 *    既被误拒（`placeRoot` 返回 NULL）又漏掉写穿只读引用 ✗ 见 #40/#41 ✓ */
+                /* `requireMutable` does not apply here: it asks whether the reference
+                 * type carries `mut`, while retargeting writes the slot itself, that is
+                 * the variable or the field. Only the binding has to be writable, which
+                 * is why `var p: ref T = ref x  p = ref y` is legal. */
+                /* Retargeting writes the slot itself, so only the slot has to be
+                 * writable:
+                 *   - a variable, field or element needs a writable root, that is `var`
+                 *   - for `*p` the writability comes from the type of `p`, namely
+                 *     `mut ref T`
+                 * Routing this through `placeRoot` alone returned NULL for `*p` and made
+                 * `fn push(head: mut ref ?ref node) { *head = cell }` report "the binding
+                 * is read-only", which was a real bug. */
+                /* Walk the path first, then look at the slot it lands on.
+                 *   - every reference crossed on the way has to be a `mut ref`
+                 *     (`*p`, `cur.f`, `(*p).f`)
+                 *   - crossing a reference means the storage lives inside the pointee,
+                 *     so there is no root in this frame and the walk stops there
+                 *   - without a crossing, the storage is the slot of a binding in this
+                 *     frame, and that binding has to be writable
+                 * Recognising only a target that is itself `*p`, plus `placeRoot`, both
+                 * falsely rejected `(*cell).next = v` and missed a write through a
+                 * read-only reference. */
                 bool crossed  = false;
                 bool refsOk   = pathRefsAllMut(s->u.assign.target, &crossed);
                 bool slotOk   = refsOk;
@@ -282,7 +353,8 @@ void checkStmt(Checker *c, Stmt *s) {
                     slotOk = slotRoot && slotRoot->mut;
                 }
                 if (!slotOk) {
-                    /* 两种原因**报两种话**（不然用户会以为是自己的绑定写错了 ✗）✓ */
+                    /* The two causes get two different messages, or the user looks for
+                     * a mistake in a binding that is fine. */
                     if (!refsOk)
                         ckError(c, s->line,
                                 "`ref T` is a **read-only** borrow; writing the object it "
@@ -302,77 +374,113 @@ void checkStmt(Checker *c, Stmt *s) {
 
                 Expr *v = s->u.assign.value;
 
-                /* **看右边是什么，就知道是哪件事 —— 歧义靠类型消掉，不靠禁用。**
-                 *   右边是**值** `T`      ⇒ 写进它指向的地方   `*p = v`
-                 *   右边是**引用** `ref T` ⇒ 换指向             `p = q`
-                 *
-                 * 这两件事类型不同、而且右边就在源码里看得见（P′）——
-                 * 所以不需要像之前那样把换指向整个禁掉。 */
-                /* `null` 要的上下文是**引用本身**（`?ref T`），不是它指的东西 ✓
-                 * （`p.next = null` 会走到这条"换指向"的路上 —— 右边是引用）*/
+                /* What the right-hand side is decides which operation this is; the
+                 * ambiguity is resolved by the types rather than by forbidding one of
+                 * the two:
+                 *   right side is a value `T`         => write into the pointee
+                 *   right side is a reference `ref T` => retarget the reference
+                 * The two have different types and the right-hand side is visible in the
+                 * source, so retargeting does not have to be forbidden. */
+                /* `null` needs the reference itself (`?ref T`) as its context, not the
+                 * pointee: `p.next = null` arrives on this retargeting path, because the
+                 * right-hand side is a reference. */
                 adoptContextType(v, v->kind == EX_NULL ? tt_ : tt_->inner);
-                Type *vt0 = checkExpr(c, v);          /* 自然类型：引用保留 */
+                Type *vt0 = checkExpr(c, v);          /* natural type: references survive */
 
-                /* ⚠️ 作废非空证明要**等右边查完**：`cur = cur.next` 里右边的 `cur`
-                 * 用的还是循环条件证明过的那份非空信息 ✓（踩过：放在前面会误报）*/
+                /* Dropping the non-null proof has to wait until the right-hand side has
+                 * been checked: in `cur = cur.next` the `cur` on the right still relies
+                 * on the proof from the loop condition. Doing this earlier produced a
+                 * false rejection. */
                 if (s->u.assign.target->kind == EX_IDENT)
                     unNarrow(c, s->u.assign.target->u.ident.cname);
 
                 if (vt0->kind == TY_REF) {
-                    /* 换指向：类型要对得上（`mut ref` → `ref` 降级照旧允许），
-                     * 而且新指向的东西不能活得比这个引用短。
-                     * ⚠️ 深度比较用的是**旧的** refDepth（这个槽位原来指多深）——
-                     * 所以更新被指深度必须等这些都查完，否则等于拿新值跟新值比，
-                     * `p = ref <更深的局部>` 会整条漏过去 ✗（真踩过，攻击测试 h1 打出来）*/
-                    /* ⚠️ `storeLayer`：这里问的是「往哪一层存」——
-                     * 引用型绑定的坑见 `storeLayer` 的注释（PLAN #38 的根因）✓ */
+                    /* Retargeting: the types have to line up, downgrading `mut ref` to
+                     * `ref` stays allowed, and the new target may not die before the
+                     * reference does.
+                     *
+                     * The depth comparison uses the old `refDepth`, the depth of what
+                     * the slot pointed at before. Updating it has to wait until these
+                     * checks are done, or the new value is compared against itself and
+                     * `p = ref <deeper local>` slips through entirely, which an
+                     * adversarial test did produce. */
+                    /* `storeLayer` answers "which level is this stored at"; the trap
+                     * with a reference-typed binding is described in its own comment. */
                     int at0 = storeLayer(c, s->u.assign.target);
-                    /* ⭐ 定案 63（PLAN #38）：先试着**提升** —— 这个值里的 `new`
-                     * 能不能住到 at0 这一层？（提不动 ⇒ 下面那句照旧报错）✓
-                     * ⚠️ 必须在 `checkEscape` **之前**：它读的是值里那份深度 ✓ */
+                    /* The lifetime this reference has to reach is capped by the life
+                     * of the container.
+                     *
+                     * `storeLayer(h.q)` goes through `placeDepth` and answers with the
+                     * depth of the projection, namely 2, while `h` itself lives at
+                     * level 1, since a local binding cannot outlive its scope. Resolving
+                     * the site at 2 frees it when the block ends, even though the pointer
+                     * inside `h.q` escaped the frame with `out = h`.
+                     *
+                     * The cap is `c->scopes.len`: nothing in this frame outlives the
+                     * current scope, so that is the shallowest level this store can
+                     * require. Only the number used for bookkeeping is capped; the `at0`
+                     * handed to `checkEscape` below is left alone. */
+                    /* Try to promote first: can every `new` inside this value live at
+                     * level `at0`? If not, the depth check below reports as before.
+                     * This has to run before `checkEscape`, which reads the depth of the
+                     * value. */
                     promoteInto(c, v, at0);
                     checkAssignable(c, tt_, vt0, v, "assignment");
                     checkEscape(c, v, at0, s->line, "this reference");
-                    /* 换指向 ⇒ 被指对象的深度跟着换 ✓（`cur = cur.next`）*/
+                    /* Retargeting moves the pointee depth along with it
+                     * (`cur = cur.next`). */
                     if (s->u.assign.target->kind == EX_IDENT) {
                         Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);
                         if (slot0 && slot0->type && slot0->type->kind == TY_REF)
                             slot0->refDepth = exprRefDepth(c, v);
-                        /* ⭐ 定案 63：**来路也跟着换**（`mid = n` ⇒ mid 的来路就是 n）——
-                         * 提升要顺着来路往回走，中间经手的变量也得追得到 ✓
-                         * ⚠️ 只在这一支（引用型目标的强更新）里记；槽位取过地址
-                         *    ⇒ 别名可能改它 ⇒ 不记（保守：退回老行为报错）✓
-                         * ⚠️ 环（`a = b  b = a`）由 `promoteInto` 的步数上限兜住 ✓ */
+                        /* The origin moves with it: after `mid = n` the origin of `mid`
+                         * is `n`, so the intermediate bindings on a promotion walk stay
+                         * reachable.
+                         *
+                         * This is recorded only in this branch, where a reference-typed
+                         * target receives a reference. A slot whose address was taken is
+                         * skipped, because an alias could change it, and the conservative
+                         * fallback then reports the depth error as before. Cycles such as
+                         * `a = b  b = a` are caught by the hop limit in `promoteInto`. */
                         if (slot0) noteOrigin(c, slot0, v);
                     }
-                    /* ⚠️ **元素/字段**是引用型时的换指向（`a[0] = ref local`）也要记！
-                     * 不记的话：`var a: [2]?ref node`（零初始化 ⇒ 里面全 null ⇒ 深度 0）
-                     * 之后 `a[0] = ref local`（深度 1）⇒ 上界还是 0 ⇒ `return a` 被放行 ✗✗
-                     * （canary 当场抓出来：`canary_array_nullref_local` 从"挡住"变成"编过"）
-                     * 取 max：refDepth 是"里面那些引用指哪"的**上界** ✓ */
+                    /* Retargeting an element or a field that holds a reference
+                     * (`a[0] = ref local`) has to be recorded too. Otherwise
+                     * `var a: [2]?ref node`, zero-initialized so that every slot holds
+                     * null and the depth is 0, keeps its upper bound of 0 after
+                     * `a[0] = ref local` at depth 1, and `return a` is accepted while the
+                     * array points at a dead local. The maximum is taken because
+                     * `refDepth` is an upper bound on where the references inside point. */
                     {
                         Sym *rootA = placeRoot(c, s->u.assign.target);
                         if (rootA && rootA->type && typeContainsRef(c->tt, rootA->type)) {
                             int dA = exprRefDepth(c, v);
-                            /* ⭐ 档2.3：按**字段**记；没取过地址就强更新（覆盖）⇒ `h.p = null`
-                             * 之后根的有效深度真的会降下来 ✓（以前一律取 max ⇒ 误拒 ✗）*/
+                            /* Record per field. Without a taken address the entry is
+                             * overwritten rather than merged, so after `h.p = null` the
+                             * effective depth of the root really does go down; always
+                             * taking the maximum caused false rejections. */
                             const char *fn_ = (s->u.assign.target->kind == EX_FIELD)
                                               ? s->u.assign.target->u.field.name : NULL;
+                            c->curStoreVal = v;
                             noteFieldDepthWrite(c, rootA, fn_, dA);
+                            c->curStoreVal = NULL;
                         }
                     }
-                    /* ⚠️ **换指向也要查"借来的值"**（2026-09-20 攻击测试打出来）：
+                    /* Retargeting runs the borrowed-value check as well. In
                      *     struct slot { r: mut ref i32 }
                      *     fn stash(b: mut ref slot, p: mut ref i32) { b.r = ref *p }
-                     * 权限够、深度也够（p 是参数 = 0），只有"它其实是调用者的东西"这条能拦 ✗
-                     * ⇒ 少了这一句就是一个**真悬垂**（实测打印出过期数据）✓ */
+                     * the permission is sufficient and the depth is sufficient (`p` is
+                     * a parameter, so depth 0), which leaves "this value is really the
+                     * caller's" as the only rule that can stop it. Without this call the
+                     * program printed stale data, a real dangling reference. */
                     checkStoreEscape(c, v, s->u.assign.target, s->line);
                     return;
                 }
 
-                /* ⚠️ **引用上不再有隐式写穿**（2026-09-20 加了 `*p` 之后）：
-                 * `p = v` 只有"换指向"一个含义；想写穿就写 `*p = v` ✓
-                 * ⇒ **每个写法只有一个含义，不用看右边分辨**（显式优于推导）✓ */
+                /* There is no implicit write-through on a reference: `p = v` only
+                 * retargets, and writing through is spelled `*p = v`. Each form then has
+                 * exactly one meaning, and the reader does not have to look at the
+                 * right-hand side to tell them apart. */
                 ckError(c, s->line,
                         "write through the reference instead: `*p = v` -- `=` on a reference"
                         " only ever retargets it",
@@ -385,30 +493,71 @@ void checkStmt(Checker *c, Stmt *s) {
             adoptContextType(s->u.assign.value, tt_);
             Type *vt = checkMaybeTry(c, s->u.assign.value);
 
-            /* ⭐ 定案 63（PLAN #38）：**先把目的地的深度回填给值里的 `new`**。
-             * 顺序要紧：下面紧跟着那两处会拿 `exprRefDepth(值)` 记进目标的深度表，
-             * 晚提一步就会把**老那个数**记下来 ⇒ 之后全是误拒 ✗（真踩过）✓ */
+            /* Feed the destination depth back into the `new` sites inside the value
+             * first. The order matters: the two blocks just below record
+             * `exprRefDepth(value)` into the depth table of the target, and promoting
+             * one step later would record the old number and cause false rejections
+             * afterwards. */
             int atDst = storeLayer(c, s->u.assign.target);
+            /* The binding holds this value now, so its origin follows the value.
+             *
+             * `originOf` flattens a chain of bindings to the expression at its root, so
+             * `h = g` makes the origin of `h` the root of `g` -- which is the struct
+             * literal that put the allocation into `g`, and that is the expression a walk
+             * has to reach in order to find it. Without this the origin kept naming the
+             * initializer from the declaration, and a value binding declared empty and
+             * filled in later was unreachable: measured on
+             * `tests/arena-promoted/C3_if_join_wholevalue`, where `h` is declared as an
+             * empty box and then assigned a box holding the allocation, so every walk
+             * stopped at the empty declaration and the allocation stayed in the block arena
+             * that was released before the struct carrying it was returned.
+             *
+             * Only a plain assignment to the binding itself updates it. `*q = v` and
+             * `s.f = v` write into something the binding already refers to, so they leave
+             * the binding holding what it held, and a binding whose address was taken is
+             * skipped because an alias could change it. */
+            {
+                Sym *dst = (s->u.assign.target->kind == EX_IDENT)
+                           ? identBindOf(s->u.assign.target) : NULL;
+                if (dst && !dst->addressed) {
+                    noteOrigin(c, dst, s->u.assign.value);
+                    /* And the value itself, without being flattened to the root of its
+                     * chain: the walk reads this one to reach the storage the binding now
+                     * holds. Attributing the root's expression to every binding on a chain
+                     * is what made `out = h` follow `h = zero` back to the literal that
+                     * initializes `zero`, an unrelated binding's empty box. */
+                    dst->heldSrc = s->u.assign.value;
+                }
+            }
+            recordStore(c, s->u.assign.value, s->u.assign.target, atDst, s->line);
             promoteInto(c, s->u.assign.value, atDst);
             markCallHomeIfEscaping(c, s->u.assign.value, atDst);
-            /* 含引用的值绑定被写（整块赋值 或 写它的字段/元素）⇒
-             * "里面那些引用指哪"要跟着**放宽**（取 max：refDepth 是上界 ✓）*/
+            /* A value binding that can hold references is written, either wholesale or
+             * through one of its fields or elements, so the recorded "where do the
+             * references inside point" is widened with the maximum, since `refDepth` is
+             * an upper bound. */
             {
-                /* ⭐ A2（反例 B_field_table_stale 的真正断点）：**普通赋值那一支
-                 * 以前只写根的 `refDepth`，从来不写字段表** ✗
-                 * ⇒ `b.c = inner{v: ref local}` 之后 `b.c` 那一格还是老值 ⇒ `return b.c` 放行 ✗
-                 * ⇒ 统一走 `noteFieldDepthWrite`（同时管"那一格"与"整根 = max(各格)"）✓ */
+                /* The plain assignment path used to write only the `refDepth` of the
+                 * root and never the field table, so after
+                 * `b.c = inner{v: ref local}` the entry for `b.c` kept its old value and
+                 * `return b.c` was accepted. Both kinds of assignment now go through
+                 * `noteFieldDepthWrite`, which updates the field entry and the root as
+                 * the maximum over the fields. */
                 Sym *vs = placeRoot(c, s->u.assign.target);
                 if (vs) {
                     int d2 = valDepthForStore(c, s->u.assign.value);
                     const char *fn2 = (s->u.assign.target->kind == EX_FIELD)
                                         ? s->u.assign.target->u.field.name : NULL;
-                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))
+                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type))) {
+                        c->curStoreVal = s->u.assign.value;
                         noteFieldDepthWrite(c, vs, fn2, d2);
+                        c->curStoreVal = NULL;
+                    }
                 }
             }
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
-            /* 逃逸③：给字段/元素赋值时，被指对象不能比目标更深 */
+            /* A value stored into a field or an element may not be deeper than the
+             * target. */
             checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
             if (0) checkEscape(c, s->u.assign.value, placeDepth(c, s->u.assign.target),
                         s->line, "this assignment");
@@ -420,16 +569,16 @@ void checkStmt(Checker *c, Stmt *s) {
         case ST_IF: {
             expectBool(c, checkValue(c, s->u.ifs.cond), s->u.ifs.cond);
 
-            /* **`?ref T` 的收窄**：`if p != null` / `if p == null ... else` /
-             * 护栏形态 `if p == null { return }` —— 三种写法都能让编译器知道
-             * "这里是那个分支，p 一定不是 null"，于是里面**一行运行时检查都不用加** ✓ */
+            /* Narrowing a `?ref T`: `if p != null`, `if p == null ... else` and the
+             * guard `if p == null { return }` all tell the compiler that `p` is not null
+             * on the branch, so no runtime check has to be generated inside it. */
             bool whenTrue = false;
             const char *tg = narrowTarget(c, s->u.ifs.cond, &whenTrue);
             const size_t mark = c->narrow.len;
 
             if (tg && whenTrue) narrowFactsOf(c, s->u.ifs.cond);
             checkBlockBody(c, s->u.ifs.thenBody);
-            c->narrow.len = mark;              /* 出了 then 分支，证明就不算数了 ✓ */
+            c->narrow.len = mark;              /* the proof ends with the then branch */
 
             if (s->u.ifs.elseBody) {
                 if (tg && !whenTrue) pushNarrow(c, tg);
@@ -437,23 +586,26 @@ void checkStmt(Checker *c, Stmt *s) {
                 else                                      checkStmt(c, s->u.ifs.elseBody);
                 c->narrow.len = mark;
             } else if (tg && !whenTrue && blockExits(s->u.ifs.thenBody)) {
-                /* 护栏：条件成立就离开函数/循环 ⇒ 走到后面 ⟺ p 非空。
-                 * 证明**留在当前作用域**（到本层块结束为止）✓ */
+                /* The guard form: the condition leaves the function or the loop, so
+                 * reaching the statements after it means `p` is not null. The proof stays
+                 * in the current scope, until the end of this block. */
                 pushNarrow(c, tg);
             }
             return;
         }
 
         case ST_WHILE: {
-            /* ⚠️ `while` 的条件**不许**提前求值（吐出来只算一次，不是每轮）*/
+            /* The condition of a `while` may not be hoisted: a hoisted prefix is
+             * evaluated once before the loop, not once per round. */
             c->noHoist++;
             expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
             c->noHoist--;
 
-            /* `while cur != null { cur = cur.next }` —— 链表**整个语言的存在理由**，
-             * 所以循环条件也是收窄点：循环体里那个绑定一定非空 ✓
-             * （循环体里给它赋了新值 ⇒ unNarrow 会作废，所以下一轮要重新比 —— 
-             *   这跟 C 里 `while (p) { p = p->next; }` 的写法完全一致 ✓）*/
+            /* `while cur != null { cur = cur.next }` is the shape the whole language
+             * exists for, so the loop condition narrows as well: inside the body the
+             * binding is known not to be null. Assigning to it drops the proof, so the
+             * next round compares again, exactly as in the C idiom
+             * `while (p) { p = p->next; }`. */
             bool whenTrue = false;
             const char *tg = narrowTarget(c, s->u.whiles.cond, &whenTrue);
             const size_t mark = c->narrow.len;
@@ -464,8 +616,9 @@ void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_EXPR:
-            /* `f()?` 单独成句 —— `?` 的第四个合法位置（最有用的那个：
-             * 「这一步必须成功，否则整串失败」）*/
+            /* `f()?` as a statement on its own: the most useful of the four places
+             * where `?` is allowed, meaning "this step has to succeed, or the whole
+             * chain fails". */
             checkMaybeTry(c, s->u.expr.expr);
             return;
 
@@ -484,22 +637,27 @@ void checkStmt(Checker *c, Stmt *s) {
                         c->curFunc ? c->curFunc->name : "this function");
                 return;
             }
-            /* 裸写构造器（`return failure(e)`）—— 类型从上面这个 `want` 来 ✓ */
+            /* A bare constructor such as `return failure(e)`; the type comes from the
+             * `want` above. */
             desugarBareCtor(c, s->u.ret.value, want);
 
-            /* `return e?` —— 表达式本身的值是**载荷**，而函数要交出的是外层类型，
-             * 所以这里比的是「载荷能不能放进外层的载荷」（装回去由 codegen 做）。
-             * 不能走下面那条 adoptContextType + checkAssignable：那会拿
-             * option<i64> 去要求一个 i64。 */
+            /* `return e?`: the value of the expression is the payload, while the
+             * function hands back the outer type, so what is compared is whether the
+             * payload fits the payload of the outer type; the code generator wraps it
+             * back up. The `adoptContextType` plus `checkAssignable` path below cannot
+             * be used here, because it would ask an `i64` to be an `option<i64>`. */
             if (s->u.ret.value->kind == EX_TRY) {
                 Type *vt = checkTryInner(c, s->u.ret.value);
                 Type *wb = ttBase(want);
-                /* ⭐ 层 1：这条分支**绕过了下面那句 `checkEscape`** ⇒
-                 * `promoteInto` 也就没机会跑 ⇒ 被 `e?` 交出去的分配**永远拿不到
-                 * "逃出本帧了"这个标记** ⇒ 收尾 pass 会把它错误地放回块层 ✗
-                 * （`varArray<T>::withCap` 的 `return v` 正是这一支 ——
-                 *   然后实例复查报 "depth 1, but this can only hold up to 0" ✗✗）
-                 * 载荷是**值**，它带着的那些引用最终要交给调用者 ⇒ 提到 0 层 ✓ */
+                /* This branch skips the `checkEscape` below, so `promoteInto` would
+                 * never run and an allocation handed out by `e?` would never be marked
+                 * as escaping the frame; the pass that runs after the bodies would then
+                 * put the site back at block level. `return v` in
+                 * `varArray<T>::withCap` takes exactly this branch, and re-checking the
+                 * instantiation reported "depth 1, but this can only hold up to 0". The
+                 * payload is a value whose references end up with the caller, so it is
+                 * promoted to level 0. */
+                recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
                 promoteInto(c, s->u.ret.value, 0);
                 if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
@@ -508,10 +666,19 @@ void checkStmt(Checker *c, Stmt *s) {
             }
 
             adoptContextType(s->u.ret.value, want);
-            Type *vt = checkInto(c, want, s->u.ret.value);   /* 期望是引用就别解 */
-            markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* 要交出去 ⇒ 用家 ✓ */
+            Type *vt = checkInto(c, want, s->u.ret.value);   /* no deref when a ref is wanted */
+            markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* handed out, so use the home arena */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
-            /* 逃逸①：返回的引用，被指对象必须在参数或静态数据里（深度 0）*/
+            /* A returned reference must point at a parameter or at static data, which
+             * is depth 0. */
+            if (getenv("EXTC_DBG_RET3"))
+                fprintf(stderr, "[ret3] %-8s line=%d kind=%d d=%d mentionsParam=%d\n",
+                        c->curFunc?c->curFunc->name:"?", s->line,
+                        (int)s->u.ret.value->kind, exprRefDepth(c, s->u.ret.value),
+                        mentionsParam(s->u.ret.value->type)?1:0);
+            /* A returned value is handed to the caller, so it is published at level 0:
+             * the whole point of returning it is that it outlives this frame. */
+            recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }
@@ -521,11 +688,12 @@ void checkStmt(Checker *c, Stmt *s) {
             return;
 
         case ST_MATCH: {
-            /* `match e { 变体 => ... }`
+            /* `match e { variant => ... }`
              *
-             * **这个特性的全部价值就在穷尽检查这一件事上** ——
-             * 今天写 `if e == gameError.outOfRange { } else { }` 得手写 else，
-             * 而且**以后加了新变体，编译器不会提醒你漏了**。match 会 ✓ */
+             * The whole value of this feature is the exhaustiveness check. Written as
+             * `if e == gameError.outOfRange { } else { }` the else branch has to be
+             * filled in by hand, and a variant added later would silently fall into it;
+             * `match` reports the missing arm. */
             Type *st = checkValue(c, s->u.match.scrutinee);
             Type *sb = ttBase(st);
             if (ttIsError(st)) return;
@@ -539,7 +707,8 @@ void checkStmt(Checker *c, Stmt *s) {
             }
             TypeDef *td = sb->edef;
 
-            /* 每条分支：名字要是这个枚举的变体，而且不能重复 */
+            /* Each arm: the name has to be a variant of this enum, and no variant may
+             * be matched twice. */
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
                 if (!findVariant(td, arm->variant)) {
@@ -564,7 +733,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 }
             }
 
-            /* **穷尽**：一个都不能漏 */
+            /* Exhaustiveness: no variant may be left out. */
             for (size_t j = 0; j < td->variants.len; j++) {
                 const char *vn = (*(Variant **)vecAt(&td->variants, j))->name;
                 bool covered = false;
@@ -583,8 +752,9 @@ void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
 
-            /* 分支体各自开一层作用域；**绑定的载荷**（`circle(r) => ...`）
-             * 就住在这里 —— 第 i 个名字拿第 i 个载荷字段 ✓ */
+            /* Each arm body gets its own scope, and the payload bindings of an arm, as
+             * in `circle(r) => ...`, live there: the i-th name takes the i-th payload
+             * field. */
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
                 Variant  *v   = findVariant(td, arm->variant);
@@ -599,13 +769,15 @@ void checkStmt(Checker *c, Stmt *s) {
                 for (size_t k = 0; k < arm->binds.len; k++) {
                     const char *bn = *(const char **)vecAt(&arm->binds, k);
                     Type *bt = payloadType(c->tt, sb, v, k);
-                    /* 绑定的载荷是**这个值的副本**（值语义），名字只读 ——
-                     * 想改就自己 `var` 一份 */
+                    /* A payload binding is a copy of the value, following value
+                     * semantics, and the name is read-only; copy it into a `var` to
+                     * modify it. */
                     Sym *bs = declare(c, bn, bt, false, false, arm->line, c->scopes.len);
-                    /* ⚠️ 把**解析后的 C 名字**写回绑定表（跟 `Param.cname` / `Stmt.u.var.cname`
-                     * 同一个套路）。不写回的话，同一层里两个 `match` 绑同名时，
-                     * 声明用原名、而分支体里查到的却是 `s__2` ⇒ 生成的 C 编不过
-                     * （`'s__2' undeclared`）✗ —— 这就是 PLAN §0.4 #2 ✓ */
+                    /* Write the resolved C name back into the arm, the same treatment
+                     * `Param.cname` and a declaration's `cname` get. Without it, two
+                     * `match` statements in one scope binding the same name would declare
+                     * the original name while the body looks up `s__2`, and the generated
+                     * C would not compile: `'s__2' undeclared`. */
                     *(const char **)vecAt(&arm->binds, k) = bs->cname;
                 }
                 for (size_t k = 0; k < arm->body->u.block.stmts.len; k++)

@@ -1,5 +1,9 @@
 # extC —— 设计与亮点总览
 
+> **状态：对外总览的一次快照**（2026-09-21 写）。计数已于 2026-09-23 重核，但性能表与状态句仍是当时口径 ⚠️
+> 现行口径看 [`README.md`](../../README.md) 与 [`SPEC.md`](../SPEC.md) ✓
+
+
 > 写这份的时间：2026-09-21（WSL 侧，`127.0.0.1:3090` 这台）
 > 仓库：`/home/alphayang/extC_Compiler`（Windows 侧对应 WSL 里的 `~/extC_Compiler`）
 > 想要"一句话"：**extC = Rust 的安全 + 不写生命周期 + Go 那么少的语法量**，编译到 C。
@@ -194,7 +198,7 @@ fn sum(head: ?ref node) -> i64 {             // 引用类型写在签名里，�
 
 ⚠️ 主席树这份**每个语言用自己的分配设施**（主人要求）：extC 用 arena（`new`）、
 C 用 `malloc/free`、C++ 用 `std::vector`、Rust 用 `Vec` ⇒ 算法苹果对苹果，
-内存策略各写各的地道写法 ✓ 结论与"反面教材"见 [`bench/oi/persist/REPORT.md`](bench/oi/persist/REPORT.md) ✓
+内存策略各写各的地道写法 ✓ 结论与"反面教材"见 [`bench/oi/persist/REPORT.md`](../../bench/oi/persist/REPORT.md) ✓
 （**C 每节点 `malloc`** 那一行是全场最贵的：时间 2.3×、RSS 3.2× ⇒ 这正是 arena 的卖点）
 
 ---

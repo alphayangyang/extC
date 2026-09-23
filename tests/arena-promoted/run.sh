@@ -2,7 +2,7 @@
 # 「**转正**」库（2026-09-23）：这些形状以前被**误拒**或**放行成 UB**，现在编译器
 # 应该**接受**它们，而且 ASan 必须干净 ✓
 #
-# 来源：`ARENA-SOUNDNESS.md` §9 档 1（B2：`alloc<T>` 与 `new` 对称）
+# 来源：`docs/topics/ARENA-SOUNDNESS.md` §9 档 1（B2：`alloc<T>` 与 `new` 对称）
 #   · `alloc_return_local` / `allocSlice_escape_return` —— 以前被误拒
 #     （`alloc` 的层号无条件按块层算，而不看"有家 ⇒ 进家"）
 #   · `A_field_root_lowered` / `C1/C2/C3_if_join_*` / `G_stale_origin` —— 以前放行成 UB，

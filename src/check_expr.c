@@ -1,17 +1,38 @@
-/* 表达式检查
+/* Expression checking: the type of every expression, and the checks that only the
+ * shape of an expression can decide.
  *
- * 从 check.c 拆出来的 —— **纯移动**：注释与逻辑一个字节没动 ✓
+ * This is the recursive core of the checker. It resolves names to bindings, rewrites a
+ * few nodes in place (a variant access becomes an enum value, a generic call becomes a
+ * plain call), and decides the arena level of every allocation site. The lifetime and
+ * borrow rules themselves live in check_escape.c.
  */
 
 #include <stdlib.h>
 #include "check_internal.h"
 
-/* ---------------------------------------------------------------- 表达式 */
+/* ---------------------------------------------------------------- expressions */
 
-Type *checkExpr(Checker *c, Expr *e);
 
-static bool exprHasCall(Checker *c, Expr *e);   /* ⭐ PLAN #22（定义在文件末尾 ✓）*/
+static bool exprHasCall(Checker *c, Expr *e);   /* defined at the end of this file */
 
+/* Compute the result type of a binary arithmetic operator.
+ *
+ * Params:
+ *   c  - checker
+ *   e  - the EX_BIN node being checked, for its operator and source position
+ *   lt - type of the left operand
+ *   rt - type of the right operand
+ *
+ * Returns:
+ *   The common type of the two operands, or the error type after a diagnostic.
+ *
+ * Notes:
+ *   - A literal operand adapts to the other side, so `u32 + 1` has type `u32`.
+ *   - `%` is restricted to integers here.
+ *   - The result rule lives only in this function on purpose: the bitwise operators use
+ *     it too, and a second copy would be free to drift away from it.
+ *   - Reference-typed operands never reach this function; the caller reports them first.
+ */
 static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
     Type *err = ttError(c->tt);
     if (ttIsError(lt) || ttIsError(rt)) return err;
@@ -28,7 +49,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
         return err;
     }
 
-    /* 字面量按值适配另一边的类型：`u32 + 1` 里 `1` 就是 u32 */
+    /* A literal adapts to the other operand by value: in `u32 + 1` the `1` is a u32. */
     if (isNumericLit(e->u.bin.left) && ttIsNumeric(rt)) {
         if (!literalFits(e->u.bin.left, rt)) {
             ckError(c, e->line, NULL, "literal does not fit in `%s`", typeStr(c, rt));
@@ -54,18 +75,34 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
     return err;
 }
 
-/* 位运算：只许整数（`&` `|` `^` `<<` `>>`）。
- * 结果类型跟算术走同一套（不拓宽就报错）——
- * 特意**不**在这里抄一份类型规则，免得两处规则漂开。 */
+/* Report whether `op` is one of the bitwise operators `&`, `|`, `^`, `<<`, `>>`.
+ *
+ * The result type of these operators comes from `checkArith`, so the rule is not copied
+ * here and the two cannot drift apart.
+ */
 static bool isBitOp(const char *op) {
     return strcmp(op, "&") == 0 || strcmp(op, "|") == 0 || strcmp(op, "^") == 0 ||
            strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0;
 }
 
+/* Report whether a type is a reference, nullable or not. */
 static bool isRef(Type *t) { return t && t->kind == TY_REF; }
 
-/* `ref T` 上的算术/比较是**没有意义**的：C 里那是指针算术，语义完全不是用户想的。
- * extC 宁可报错，也不给一个「看起来对、其实在挪指针」的答案。 */
+/* Report an arithmetic or comparison operator applied to a reference.
+ *
+ * In C this would silently become pointer arithmetic, which is not what the user wrote.
+ * Reporting an error is preferred over an answer that looks right and moves a pointer.
+ *
+ * Params:
+ *   c  - checker
+ *   e  - the EX_BIN node being checked, for its source position
+ *   lt - type of the left operand
+ *   rt - type of the right operand
+ *   op - the operator spelling, for the message
+ *
+ * Returns:
+ *   The error type, so the caller can return it directly.
+ */
 static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *op) {
     Type *bad = isRef(lt) ? lt : rt;
     ckError(c, e->line,
@@ -75,6 +112,21 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
     return ttError(c->tt);
 }
 
+/* Check one expression and return its type.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression node
+ *
+ * Returns:
+ *   The type of the expression, or the error type once a diagnostic was reported.
+ *
+ * Notes:
+ *   - This is the recursive core; `checkExpr` wraps it with the per-statement
+ *     bookkeeping that every subexpression needs.
+ *   - Some nodes are rewritten in place while they are checked, so the caller must not
+ *     rely on `e->kind` staying what it was on entry.
+ */
 static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
@@ -85,8 +137,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_STR:   return c->tSliceU8;
 
         case EX_NULL: {
-            /* 类型是上下文寄放在 e->type 上的（adoptContextType）。
-             * 上下文没说清楚 ⇒ 报错，**绝不猜**（显式优于推导）✓ */
+            /* The type was parked on `e->type` by `adoptContextType`. If the context did
+             * not say which `?ref T` this stands for, report it rather than guess: extC is
+             * explicit instead of inferring. */
             Type *nt = e->type;
             if (nt && nt->kind == TY_REF && nt->nullable) return nt;
             ckError(c, e->line,
@@ -102,10 +155,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (s && s->modName && !e->qualified)
                 requireQualified(c, e->u.ident.name, s->modName, false, e->line);
             if (!s) {
-                /* ⭐ PLAN #10（同一族的另一半）：**裸写枚举变体（无载荷）** ——
-                 * `type st = | ok | bad` 之后写 `let s: st = ok` 报的是
-                 * `undefined name `ok`` ⇒ 同样看不出"要写 `st.ok`" ✗
-                 * ⇒ 跟"裸写构造器"那条**用同一套指路**（都是"变体要带类型名"）✓ */
+                /* A bare variant name, with no payload. After `type st = | ok | bad`,
+                 * writing `let s: st = ok` would otherwise report `undefined name `ok``,
+                 * which does not show that the qualified form `st.ok` is wanted. A variant
+                 * is named by its type, so this gets the same guidance as a bare payload
+                 * constructor does. */
                 TypeDef *owner = NULL;
                 for (size_t i = 0; i < c->tt->enums.len && !owner; i++) {
                     TypeDef *td = *(TypeDef **)vecAt(&c->tt->enums, i);
@@ -125,12 +179,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "undefined name `%s`", e->u.ident.name);
                 return ttError(tt);
             }
-            /* 名字的**解析**在这里定格 ⇒ 代码生成直接印 `cname`。
-             * 遮蔽过的名字（`a` vs `a__2`）就靠这一行分开 ✓ */
+            /* Name resolution is frozen here: codegen prints `cname` directly. This is
+             * what tells shadowed names apart (`a` from `a__2`). */
             e->u.ident.cname = s->cname;
-            /* 已经被 `if p != null` 证明过 ⇒ 交出**非空**引用。
-             * 于是 `p.field`、`p.method()`、传给 `ref T` 参数全部自动成立，
-             * 而且**一行运行时检查都不用加** ✓ */
+            /* Pin the resolved binding itself onto the node. The solving pass at the end
+             * of the run happens after every function body has been checked, when the
+             * scopes are already popped, so looking the name up again would either fail or
+             * find a different binding that happens to share the name. See `IdentBinding`. */
+            {
+                IdentBinding *ib = (IdentBinding *)arenaAllocZero(c->arena, sizeof(IdentBinding));
+                ib->sym = s;
+                e->u.ident.sym = ib;
+            }
+            /* An `if p != null` test already proved this, so hand out the non-null
+             * reference. Then `p.field`, `p.method()`, and passing it to a `ref T`
+             * parameter all follow, and not one runtime check has to be generated. */
             Type *sty = s->type;
             if (sty && sty->kind == TY_REF && sty->nullable && isNarrowed(c, s->cname)) {
                 Type *nn = ttRef(tt, sty->inner);
@@ -143,8 +206,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_BIN: {
             const char *op0 = e->u.bin.op;
 
-            /* `&&` / `||` 的**短路**也是收窄点：`p != null && p.value > 3`
-             * 右边能直接解 —— 因为走到右边就说明左边成立过 ✓ */
+            /* The short circuit of `&&` / `||` is a narrowing point too:
+             * `p != null && p.value > 3` may dereference on the right, because reaching
+             * the right side means the left side held. */
             if (isLogicOp(op0)) {
                 Type *lt = checkValue(c, e->u.bin.left);
                 expectBool(c, lt, e->u.bin.left);
@@ -153,11 +217,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 const char *tg = narrowTarget(c, e->u.bin.left, &whenTrue);
                 const size_t mark = c->narrow.len;
                 if (strcmp(op0, "&&") == 0) {
-                    /* 走到右边 ⟺ 左边**为真** ⇒ 左边的全部事实都成立 ✓ */
+                    /* Reaching the right side means the left side was true, so every
+                     * fact the left side proves holds here. */
                     narrowFactsOf(c, e->u.bin.left);
                 } else if (tg && !whenTrue) {
-                    /* `a || b`：走到右边 ⟺ 左边为假。只有最简单的 `p == null` 形态
-                     * 能反推出 `p` 非空（`||` 的完整反推要先会否定一个合取，先不做）*/
+                    /* `a || b`: reaching the right side means the left side was false.
+                     * Only the simplest shape, `p == null`, yields "p is not null" when
+                     * negated; the full negation of `||` would have to negate a
+                     * conjunction, which is not implemented. */
                     pushNarrow(c, tg);
                 }
 
@@ -167,8 +234,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tBool;
             }
 
-            /* `p == null` / `p != null` —— 可空引用**唯一**的用法就是跟 null 比。
-             * 必须抢在下面 `checkValue` 之前：`null` 自己是不知道类型的 ✓ */
+            /* `p == null` / `p != null`: comparing against null is the only thing a
+             * nullable reference is for. This has to run before the `checkValue` calls
+             * below, because `null` does not know its own type. */
             if ((strcmp(op0, "==") == 0 || strcmp(op0, "!=") == 0) &&
                 (e->u.bin.left->kind == EX_NULL || e->u.bin.right->kind == EX_NULL)) {
                 Expr *nv = (e->u.bin.left->kind == EX_NULL) ? e->u.bin.left : e->u.bin.right;
@@ -203,11 +271,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
                 bool isEqOp = (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0);
 
-                /* ---- `==` / `!=`：内建原生比；struct 走 eq 方法 ---- */
+                /* `==` / `!=`: builtins compare natively; a struct goes through its
+                 * `==` method. */
                 if (isEqOp && ttEquals(lt, rt)) {
                     if (cmpIsNative(lt)) return c->tBool;
 
-                    /* 数组：`==` 由**编译器派生**（数组类型用户写不出来，没法用 fn == 实现）*/
+                    /* Arrays: `==` is derived by the compiler. The user cannot write an
+                     * array type down, so it cannot be given an `==` method. */
                     if (lt->kind == TY_ARRAY) {
                         if (!typeSupportsEq(lt->inner, op))
                             ckError(c, e->line,
@@ -218,18 +288,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
 
-                    /* 泛型参数 → 推迟到实例化再检查（规则 2） */
+                    /* A type parameter: defer the check until the instance is known. */
                     if (lt->kind == TY_PARAM) {
                         e->needEq = true;
-                        /* ⚠️ 以前这里有个 `&& c->curFunc->owner` 的门 —— 那是"只有方法"的写法 ✗
-                         *   泛型**自由函数**（PLAN #47）没有 owner ⇒ 那条 `T: ==` 就没人查了 ✗
-                         * ⇒ 记下来：实例化时按实例问一遍"这个 T 有没有 `==`" ✓ */
+                        /* Do not gate this on `c->curFunc->owner`: that would cover
+                         * methods only. A generic free function has no owner, so the
+                         * `T: ==` requirement would never be checked. Record the use and
+                         * ask once per instance whether this `T` has `==`. */
                         if (c->curFunc) {
                             EqCheck *ec = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
                             ec->node = e;
-                            ec->owner = c->curFunc->owner;   /* 自由函数 = NULL ✓ */
+                            ec->owner = c->curFunc->owner;   /* NULL for a free function */
                             ec->op = op;
-                            ec->func = c->curFunc;     /* ⭐ #42(c)：记下它属于谁 ✓ */
+                            ec->func = c->curFunc;     /* which function it belongs to */
                             *(EqCheck **)vecPush(&c->eqChecks) = ec;
                         }
                         return c->tBool;
@@ -238,8 +309,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Type *b = ttBase(lt);
                     StructDef *sd = structOf(b);
                     if (!sd) {
-                        /* 带载荷枚举是最容易撞上这个的类型：C 里它是 struct，
-                         * 而 C 的 struct 不能用 `==` ⇒ 告诉用户改用 match ✓ */
+                        /* An enum with a payload is the type most likely to hit this: in
+                         * C it is a struct, and C structs cannot be compared with `==`, so
+                         * the message points the user at `match`. */
                         bool ep = b && b->kind == TY_ENUM && enumHasPayload(b->edef);
                         ckError(c, e->line,
                                 ep ? "an enum with a payload is a tagged union -- "
@@ -267,11 +339,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Vec *sp = NULL, *sa = NULL;
                     if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
                     (void)sp; (void)sa;
-                    e->func = m;  m->used = true;   /* ⭐ #42(c)：这个方法被用到了 ✓ */
+                    e->func = m;  m->used = true;   /* record that this method is used */
                     return c->tBool;
                 }
 
-                /* ---- 其余比较：只对数值有意义 ---- */
+                /* Every other comparison is meaningful for numbers only. */
                 if (ttIsNumeric(lt) && ttIsNumeric(rt) &&
                     (ttCanWiden(lt, rt) || ttCanWiden(rt, lt))) return c->tBool;
                 if (isNumericLit(e->u.bin.left)  && literalFits(e->u.bin.left, rt))  return c->tBool;
@@ -291,11 +363,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
             }
-            /* 同样的坑：`ttIsNumeric` 会把 `ref T` 抹成 `T`，
-             * 于是 `p + 1`（p 是 `ref i64`）被当成数字运算放过去，
-             * 生成的 C 却是**指针算术** `p + 1` —— 静默地做完全不是那个意思的事。 */
+            /* The same trap as in the bitwise case: `ttIsNumeric` strips `ref T` down to
+             * `T`, so `p + 1` for `p: ref i64` would pass as arithmetic while the generated
+             * C performs pointer arithmetic -- silently doing something else entirely. */
             if (isRef(lt) || isRef(rt)) return refNotANumber(c, e, lt, rt, op);
-            /* 结果类型交给算术那一套统一处理（含字面量适配）——不在这里抄第二份规则 */
+            /* The result type comes from the arithmetic rule, literal fitting included;
+             * no second copy of that rule here. */
             return checkArith(c, e, lt, rt);
         }
 
@@ -306,7 +379,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tBool;
             }
             if (ttIsError(ot)) return ot;
-            /* `~` 按位取反只对整数有意义 */
+            /* `~` is meaningful for integers only. */
             if (strcmp(e->u.un.op, "~") == 0) {
                 if (!ttIsInteger(ot)) {
                     ckError(c, e->line, "bitwise operators only accept integers",
@@ -323,8 +396,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_FIELD: {
-            /* 先看是不是枚举变体：`Status.warn`
-             * （`Status` 不是变量，而是一个 type 名字）*/
+            /* First decide whether this names an enum variant, as in `Status.warn`, where
+             * `Status` is a type name rather than a variable. */
             if (e->u.field.obj->kind == EX_IDENT) {
                 const char *tn   = e->u.field.obj->u.ident.name;
                 const char *vn   = e->u.field.name;
@@ -343,11 +416,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                     "`%s` has no variant `%s`", et->name, vn);
                             return ttError(tt);
                         }
-                        /* 改写成枚举值节点，codegen 直接用 */
+                        /* Rewrite into an enum value node; codegen consumes it directly. */
                         e->kind = EX_ENUMVAL;
                         e->u.enumval.typeName = et->name;
                         e->u.enumval.variant  = v->name;
-                        e->assocOwner = et;      /* 解析好的类型（泛型实例要用）*/
+                        e->assocOwner = et;      /* the resolved type; instances need it */
                         return et;
                     }
                 }
@@ -374,13 +447,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             e->field = fd;
-            /* 字段的类型里可能有泛型参数 —— 用接收者的实参替换掉 */
+            /* A field type may mention type parameters; substitute the receiver's type
+             * arguments for them. */
             Type *ftype = (bt->kind == TY_GENERIC)
                           ? ttSubstitute(tt, fd->type, &sd->typeParams, &bt->targs)
                           : fd->type;
-            /* ⭐ 档3：路径收窄 —— `if h.p != null { … }` 里读 `h.p` 直接给**非空**版本 ✓
-             * （`narrowTarget` 只在"根是没取过地址的局部"时才发这个事实 ⇒ 这里照用 ✓）
-             * 这跟 `EX_IDENT` 那条规则（见本文件上方 `isNarrowed(c, s->cname)`）完全对称 ✓ */
+            /* Path narrowing: inside `if h.p != null { ... }` a read of `h.p` yields the
+             * non-null version. `narrowTarget` records the fact only when the root is a
+             * local whose address was never taken, which is exactly the condition relied on
+             * here. This mirrors the `EX_IDENT` rule (`isNarrowed(c, s->cname)`) above. */
             if (ftype && ftype->kind == TY_REF && ftype->nullable &&
                 e->u.field.obj->kind == EX_IDENT && e->u.field.obj->u.ident.cname) {
                 const char *rc = e->u.field.obj->u.ident.cname;
@@ -416,10 +491,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* 固定数组的长度是**编译期常数** ⇒ 字面量下标越界当场报，
-             * 不留到运行时（P′：能证明的必须看得见）。
-             * 判据跟切片那三条一致，只是这里只有一个界、且是**半开**的：
-             * 合法下标是 [0, n)。`b[-1]` 和 `b[4]`（`[4]T`）都是编译错误。 */
+            /* A fixed array has a compile-time length, so a literal index that is out of
+             * range is reported here instead of at runtime: what the compiler can prove, it
+             * has to say. The rule matches the three slice bounds checked below, except that
+             * a single half-open bound applies -- legal indices are [0, n). Both `b[-1]` and
+             * `b[4]` for a `[4]T` are compile errors. */
             if (ob->kind == TY_ARRAY) {
                 long long iv = 0;
                 if (asIntLit(e->u.index.index, &iv)) {
@@ -437,7 +513,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_SLICE: {
-            /* `a[lo..hi]` —— 只读视图。lo / hi 可以为空（前端 / 后端省略）*/
+            /* `a[lo..hi]` is a view. Either bound may be absent: `lo` when the front is
+             * omitted, `hi` when the back is. */
             Type *ot = checkExpr(c, e->u.slice.obj);
             if (ttIsError(ot)) return ttError(tt);
 
@@ -451,8 +528,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* 切固定数组要取元素的地址 ⇒ 底必须是个「地方」。
-             * 切 slice 只是对值做指针算术，不需要（所以字符串字面量可以切）。 */
+            /* Slicing a fixed array takes the address of an element, so the base has to be
+             * a place. Slicing a view is only pointer arithmetic on a value, which needs no
+             * storage -- that is why a string literal can be sliced. */
             if (ob->kind == TY_ARRAY && !isPlace(e->u.slice.obj)) {
                 ckError(c, e->line, "Slicing takes the address of an element, so the base must be a place.",
                         "cannot slice a temporary value; `%s` needs a variable, a field or an index",
@@ -460,9 +538,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* 底是固定数组 ⇒ 长度是**编译期常数**，省略的界直接补成字面量：
-             *     a[2..] → a[2..15]      a[..] → a[0..15]
-             * 于是 codegen 看到的是「两个界都是字面量」，能生成**没有检查**的代码（P）。 */
+            /* With a fixed-array base the length is a compile-time constant, so an omitted
+             * bound is filled in as a literal:
+             *     a[2..] -> a[2..15]      a[..] -> a[0..15]
+             * Codegen then sees two literal bounds and can emit code with no checks. */
             if (ob->kind == TY_ARRAY) {
                 if (!e->u.slice.lo) e->u.slice.lo = intLit(c, 0, e->line);
                 if (!e->u.slice.hi) e->u.slice.hi = intLit(c, ob->asize, e->line);
@@ -477,8 +556,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             "slice bound must be an integer, found `%s`", typeStr(c, bt));
             }
 
-            /* 编译期能证明的错误**当场报**，一个都不留到运行时。
-             * 每个界单独看：越界的字面量永远错，跟另一个界是什么无关。 */
+            /* An error the compiler can prove is reported here; none of it is left to
+             * runtime. Each bound is examined on its own: an out-of-range literal is wrong
+             * whatever the other bound says. */
             if (ob->kind == TY_ARRAY) {
                 long long n = (long long)ob->asize;
                 Expr *lp = e->u.slice.lo, *hp = e->u.slice.hi;
@@ -486,7 +566,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 bool lOk = asIntLit(lp, &lv);
                 bool hOk = asIntLit(hp, &hv);
 
-                /* 每个界单独看：越界的字面量永远错，跟另一个界是什么无关。 */
+                /* Each bound is examined on its own: an out-of-range literal is wrong
+                 * whatever the other bound says. */
                 if (hOk && (hv > n || hv < 0)) {
                     ckError(c, e->line, "The compiler can prove this slice is out of range.",
                             "slice end %lld is not inside `%s` (length %lld)",
@@ -505,17 +586,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
             }
-            /* 视图的**可写性从切出来的源头继承**：
-             *   `var a` / `mut ref` 参数 ⇒ `mut slice<T>`
-             *   `let a` / 字符串字面量 / 只读视图 ⇒ `slice<T>`
-             * 这就是「一个视图类型」能同时表达两种权限的办法 ——
-             * 不用像 Rust 那样给切片造两个类型。 */
+            /* A view inherits writability from what it was sliced out of:
+             *   `var a` / a `mut ref` parameter          ->  `mut slice<T>`
+             *   `let a` / a string literal / a read-only view  ->  `slice<T>`
+             * That is how one view type expresses both permissions, without the two slice
+             * types Rust needs. */
             return ttViewMut(tt, sliceOf(c, elem),
                              isWritablePlace(c, e->u.slice.obj));
         }
 
         case EX_ARRAYLIT: {
-            /* 类型从上下文来（`var a: [3]i32 = [...]`）或者从元素推 */
+            /* The type comes from the context (`var a: [3]i32 = [...]`) or is taken from
+             * the elements. */
             Type *want = (e->type && e->type->kind == TY_ARRAY) ? e->type : NULL;
             Type *elemT = NULL;
 
@@ -575,8 +657,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_REF: {
             Expr *op = e->u.ref.operand;
             Type *ot = checkExpr(c, op);
-            /* ⭐ 档2：取地址 ⇒ 记下"这个绑定的地址出去过"（别名可能出现 ⇒ 禁止强更新）✓
-             * ⭐ 档3：同时**作废它的路径收窄事实**（`h.p` 非空这件事不再可靠）✓ */
+            /* Taking an address records that this binding's address has gone out. An alias
+             * may exist now, so a write through the binding can no longer be treated as the
+             * only write to that storage.
+             * The narrowing facts recorded for paths through it are dropped at the same
+             * time: `h.p` being non-null is no longer reliable. */
             { Sym *rs = placeRoot(c, op); if (rs) { unNarrow(c, rs->cname); rs->addressed = true; } }
             if (ttIsError(ot)) return ttError(tt);
 
@@ -590,40 +675,46 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot take a reference to this expression");
                 return ttError(tt);
             }
-            /* **取哪种引用，看这个「地方」可不可写**：
-             *   `var` 变量 / `mut ref` 参数 ⇒ `mut ref T`
-             *   `let` 变量 / `ref` 参数     ⇒ `ref T`（只读）
+            /* Which reference comes out depends on whether the place is writable:
+             *   a `var` variable / a `mut ref` parameter  ->  `mut ref T`
+             *   a `let` variable / a `ref` parameter      ->  `ref T` (read-only)
              *
-             * 只读借用**随时可以取** —— 那正是借用存在的理由。
-             * （以前 `ref` 只有可变一种，所以对 `let` 取引用被一律拒绝，
-             *   连「只是想读一下」都写不出来。） */
+             * A read-only borrow may always be taken: that is the whole reason borrows
+             * exist. While `ref` meant mutable only, taking a reference to a `let` was
+             * rejected outright, so even a plain read could not be written. */
             Type *r = ttRef(tt, ot);
             r->mut = isWritablePlace(c, op);
             return r;
         }
 
         case EX_TRY:
-            /* `?` 是**语句级**的转发：要展开成「求值一次 + 判断 + return」。
-             * C 没有语句表达式，所以它只在这三处合法：
+            /* `?` forwards an error at statement level: it expands into "evaluate once,
+             * test, return". C has no statement expressions, so it is legal in exactly three
+             * positions:
              *     let x = e?   /   x = e?   /   return e?
-             * 别的地方（比如 `f(e? + 1)`）要报清楚，而不是生成编不过的 C。 */
+             * Anywhere else, say `f(e? + 1)`, it is reported clearly instead of producing C
+             * that does not compile. */
             ckError(c, e->line,
                     "`?` has to expand into statements (evaluate once, test, return), "
                     "so it only fits where a whole statement can be rewritten.",
                     "`?` may only be used as `f()?`, `let x = e?`, `x = e?` or `return e?`");
             return ttError(tt);
 
-        case EX_ASSOC: {            /* `option<i64>::some(x)` —— 关联函数（struct 体内不带 `self` 的函数）。
-             * 类型实参**写全**，不从参数或上下文倒推（定案 27：显式优于推导）。 */
+        case EX_ASSOC: {            /* `option<i64>::some(x)`. An associated function is a
+                                     * function written inside a `struct` without `self`.
+                                     * The type arguments are written out in full rather than
+                                     * inferred from the arguments or the context: extC is
+                                     * explicit instead of inferring. */
             Type *raw = typeNamed(c->arena, e->u.assoc.typeName);
             raw->targs = e->u.assoc.targs;
             Type *t = ttResolve(tt, c->ctx, raw, e->line, c->curParams);
             if (ttIsError(t)) return ttError(tt);
             e->assocOwner = t;
 
-            /* **枚举变体的构造**也走这条路：`option<i64>::some(3)` / `maybe<i64>::nothing`。
-             * 也就是说 `::` 对枚举可以有两种读法，但**含义只有一种**（造一个值）——
-             * 而且这样 prelude 和现有代码里的写法一个字都不用改 ✓ */
+            /* Constructing an enum variant goes through this path as well:
+             * `option<i64>::some(3)` and `maybe<i64>::nothing`. So `::` has two readings for
+             * an enum but one meaning only -- build a value -- and the prelude and existing
+             * code keep writing it exactly as they do today. */
             StructDef *esd = structOf(t);
             if (!esd && t->kind == TY_ENUM && t->edef) {
                 Variant *v = findVariant(t->edef, e->u.assoc.name);
@@ -637,9 +728,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             "`%s` has no variant `%s`", t->name, e->u.assoc.name);
                     return ttError(tt);
                 }
-                Vec evargs = e->u.assoc.args;      /* union：先拿出来 */
+                Vec evargs = e->u.assoc.args;      /* union: copy it out first */
                 e->kind = EX_ENUMVAL;
-                e->u.enumval.typeName = t->name;   /* 实例名，如 `maybe_i64` */
+                e->u.enumval.typeName = t->name;   /* instance name, e.g. `maybe_i64` */
                 e->u.enumval.variant  = v->name;
                 e->u.enumval.args     = evargs;
                 return checkExprInner(c, e);
@@ -675,16 +766,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.assoc.name, e->u.assoc.typeName);
                 return ttError(tt);
             }
-            e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
+            e->func = f;  f->used = true;   /* record the resolved function and its use */
 
             Vec *sp = NULL, *sa = NULL;
             if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
 
-            /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
-             * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
+            /* An associated function needs its arena argument computed too: it may
+             * allocate, or it may return a reference. Omitting this generated a call with one
+             * argument too few, so `Type::make()` did not compile. */
             e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params, e);
-            setCallArenaArg(c, e);      /* 定案 68：解析成最终要传的那只 arena ✓ */
-            /* ⚠️ 检查挪到实参查完之后 ✓ 见本分支末尾 */
+            setCallArenaArg(c, e);      /* resolve which arena the call finally passes */
+            /* The reference checking is moved to the end of this case, after the arguments
+             * have been checked. */
 
             if (e->u.assoc.args.len != f->params.len) {
                 ckError(c, e->line, NULL, "`%s::%s` expects %zu argument(s), got %zu",
@@ -706,18 +799,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 checkAssignable(c, pt, at, a, "argument");
             }
-            /* ⭐ 定案 67：关联函数也一样（实参查完之后 ✓）*/
+            /* The reference check applies to an associated function as well, once its
+             * arguments have been checked. */
             checkCallRefArgs(c, f, &e->u.assoc.args, &f->params, e->homeDepth,
                              e->line, e->u.assoc.name);
             return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
         }
 
         case EX_CONV: {
-            /* `i32(x)` —— 显式转换（PLAN #23）：
-             *   · 拓宽（已经自动）⇒ 写出来也行，**不生成任何检查** ✓
-             *   · **收窄 / 换符号** ⇒ 装不下就 **trap（带源码位置）** ✓
-             *   · 整数 ↔ 浮点 ⇒ C 的规则（截断 / 就近舍入），浮点转整数要查范围 ✓
-             * 能**证明**装得下的（比如 `i32(u8 值)`）⇒ 零检查 ✓（P）*/
+            /* `i32(x)`: an explicit conversion.
+             *   - Widening, which is already implicit, may still be written out and generates
+             *     no check at all.
+             *   - Narrowing and sign changes trap when the value does not fit, with the
+             *     source position in the message.
+             *   - Integer to float and back follows C (truncation, round to nearest), with a
+             *     range check on the float-to-integer direction.
+             * A conversion the compiler can prove fits, such as `i32(u8 value)`, generates no
+             * check either. */
             Type *t = ttFromName(tt, e->u.conv.typeName);
             if (!t || t->kind != TY_BUILTIN) {
                 ckError(c, e->line, NULL, "`%s` is not a scalar type", e->u.conv.typeName);
@@ -734,28 +832,32 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot convert `%s` to `%s`", typeStr(c, src), typeStr(c, t));
                 return ttError(tt);
             }
-            /* 浮点之间的转换按 C 走（就近舍入；超出范围变 ±inf）⇒ 不查 ✓
-             * 整数之间能**拓宽**的（无损失、同符号方向）也不查 ✓
-             * 其余（收窄 / 换符号 / 浮点转整数）查 ✓ */
+            /* Float to float follows C (round to nearest; out of range becomes an infinity),
+             * so it is not checked. An integer widening is lossless and keeps the signedness,
+             * so it is not checked either. Everything else -- narrowing, a sign change, float
+             * to integer -- is checked. */
             bool lossless = (si && ti && ttCanWiden(src, t)) || (sf && tf);
             e->convCheck = !lossless;
             return t;
         }
 
         case EX_NEW: {
-            /* `new T` / `new [N]T` / `new T[n]`（PLAN A1）
-             *   单个 T        ⇒ `mut ref T`
-             *   固定数组 [N]T ⇒ `mut ref [N]T`
-             *   `T[n]`        ⇒ `mut slice<T>`（**造 buffer 靠这个** ✓）
-             * 分配进**当前块**的 arena、**清零**（extC 里分配出来的一定是零 ✓）*/
+            /* `new T`, `new [N]T`, and `new T[n]`:
+             *   a single T      ->  `mut ref T`
+             *   a fixed `[N]T`  ->  `mut ref [N]T`
+             *   `T[n]`          ->  `mut slice<T>`, which is how a buffer is built
+             * The memory comes from the arena of the current block and is zeroed: in extC a
+             * fresh allocation always reads as zero. */
             Type *w = ttResolve(tt, c->ctx, e->u.new_.type, e->line, c->curParams);
             if (ttIsError(w)) return ttError(tt);
             e->u.new_.type = w;
 
             if (w->kind == TY_PARAM || ttHasParam(w)) {
-                /* ⭐ 模板期 `T` 没有大小 ⇒ **推迟到实例化再查**（记录一笔）✓
-                 * 这样 `varArray<T>` 里的 `new T[cap]` 才写得出来 ✓
-                 * ⚠️ 实例化后还是不确定的（比如嵌套泛型没传到底）要在那里报错 ✓ */
+                /* `T` has no size while a template is being checked, so the size check is
+                 * deferred to instantiation and recorded. That is what makes `new T[cap]`
+                 * inside `varArray<T>` writable at all. If the size is still unknown at
+                 * instantiation -- a nested generic that never received its argument, say --
+                 * the error is reported there. */
                 recordNewSizeCheck(c, w, e->line);
             } else if (ttIs(w, "void") || ttIsError(w)) {
                 ckError(c, e->line,
@@ -764,42 +866,61 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* ⭐ 深度 = **当前块深度** —— 跟生成的 C 选 `__extc_a[k]` 用同一个数 ✓
-             * ⚠️ 例外：这个函数有"家"arena（A3：它会把自己的分配交给调用者）⇒
-             *    分配出来的东西活到**调用者选的那个作用域** ⇒ 记成 `ARENA_HOME`
-             *    （对 `refDepth` 来说是 0 = "外面/参数那一级"，正是逃逸检查里
-             *     "可以带出去"那一档 ✓）这样 `fn build() -> mut ref node` 里那句
-             *    `return h` 才成立 ✓
+            /* Depth is the depth of the current block: the same number the generated C uses
+             * to pick `__extc_a[k]`.
              *
-             * ⭐ 定案 63（PLAN #38）：**这一层是"起点"，不是"终点"** ——
-             * 逃逸检查发现"这个新东西被存进了活得更久的地方" ⇒ 把 `arenaLevel`
-             * **提升**到那一层（`check_escape.c` 的 `promoteInto`）✓
-             * `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）✓
-             * ⚠️ 同一个节点**可能被查两遍** ⇒ 只第一次定层、只往"更长寿"的方向调 ✓ */
-            /* ⭐ 定案 68：**层号由检查器算定，codegen 只翻译** ——
-             * 有家 ⇒ `ARENA_HOME`（家 arena）；否则按块（`@overwrite` 的存储要跨循环每轮
-             * ⇒ 住本帧那层 = 1）✓
-             * ⚠️ 这里用的是**当时的** `needsHome`（只有直接判据）；"因为调用而有家"的那种
-             * 函数由 `checkModule` 在闭包之后用 `FuncDef.newSites` 再定一次 ✓ */
+             * The exception is a function with a home arena, one that hands its own
+             * allocations to the caller. What it allocates then lives as long as the scope the
+             * caller chose, so the site is recorded as `ARENA_HOME`. In `refDepth` terms that
+             * reads as 0, the level outside this frame, which is the level the escape check
+             * lets through; this is what makes `return h` in
+             * `fn build() -> mut ref node` legal.
+             *
+             * This level is the starting point, not the final one. When the escape check finds
+             * the new object stored somewhere longer-lived, it promotes `arenaLevel` to that
+             * level (`promoteInto` in check_escape.c), and `refDepth` follows `arenaLevel`,
+             * because the two must always be the same number.
+             *
+             * The same node may be checked twice, so the level is only assigned on the first
+             * visit and only ever moved towards a longer life. */
+            /* The checker decides the level and codegen only translates it. A function with
+             * a home arena gives `ARENA_HOME`; everything else goes by block, except that
+             * storage marked `@overwrite` has to survive every round of the loop, so it lives
+             * in this frame, at level 1.
+             *
+             * `needsHome` is read as it stands at this moment, which covers the direct
+             * evidence only. A function that gains a home arena because of a call it makes is
+             * decided again by `checkModule`, using `FuncDef.arenaSites`, once the closure is
+             * complete. */
             if (e->arenaLevel == 0)
                 e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len);
+            /* Keep the lexical level in its own field: the branch above may have replaced
+             * `arenaLevel` with the `ARENA_HOME` sentinel, while the solver still needs to
+             * know which block the site started in. */
+            if (e->lexicalLevel == 0)
+                e->lexicalLevel = e->reuse ? 1 : (int)c->scopes.len;
+            /* Initial value: no constraint has touched this site yet. Relying on the 0 from
+             * `arenaAllocZero` would be wrong, because 0 means "must outlive the frame". */
+            e->minAt = -1;
         *(Expr **)vecPush(&c->curArenaSites) = e;
-            /* `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）——
-             * ⚠️ 只有 `ARENA_HOME` 例外：那个哨兵是 -1，而 `refDepth` 的语言是
-             * "0 = 外面那一级"，所以**映射回 0**（家 = 调用者选的作用域 = 深度 0 ✓）*/
+            /* `refDepth` follows `arenaLevel`: the two must always be the same number. The
+             * only exception is `ARENA_HOME`, whose sentinel is -1 while `refDepth` speaks of
+             * 0 as "the level outside this frame", so it maps back to 0 -- the home arena is
+             * the scope the caller chose, which is depth 0. */
             {
-                int depth = (e->arenaLevel == ARENA_HOME) ? 0 : e->arenaLevel;
+                int depth = arenaDepthOf(e->arenaLevel);    /* the one conversion point */
                 if (e->refDepth == 0 || e->refDepth > depth) e->refDepth = depth;
             }
 
             if (!e->u.new_.count) {
                 Type *r = ttRef(tt, w);
-                r->mut = true;                  /* 刚分配的地方当然可写 ✓ */
+                r->mut = true;                  /* freshly allocated storage is writable */
                 return r;
             }
 
-            /* `T[n]` —— 个数必须是整数；个数不纯的话要引临时变量（别求值两次）*/
+            /* `T[n]`: the count must be an integer. An impure count needs a temporary so
+             * that it is not evaluated twice. */
             Type *nt = checkValue(c, e->u.new_.count);
             if (!ttIsError(nt) && !ttIsInteger(nt)) {
                 ckError(c, e->u.new_.count->line, NULL,
@@ -807,26 +928,30 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (!repeatablePure(e->u.new_.count)) e->needTemp = true;
-            /* 刚分配出来的内存当然**可写** ⇒ 给 `mut slice<T>` ✓
-             * （跟 `a[..]` 在可写的地方切片得到 `mut slice<T>` 是同一条规则）*/
+            /* Freshly allocated memory is writable, so the view is a `mut slice<T>`: the
+             * same rule that gives `a[..]` a `mut slice<T>` when `a` is writable. */
             return ttViewMut(tt, sliceOf(c, w), true);
         }
 
         case EX_GENCALL: {
-            /* 泛型调用 —— 目前**只有内置原语**用它：`alloc<i32>(n)`。
-             * 它向当前函数帧的 arena 要 `n` 个 T 的地方，返回可写引用。
+            /* A generic call. Only the built-in primitives use this shape today:
+             * `alloc<i32>(n)` asks the arena of the current frame for room for n values of T
+             * and returns a writable reference.
              *
-             * 为什么它是原语而不是库函数：**arena 本身必须由编译器生成**
-             * （库要用它来分配自己 ⇒ 不能由库提供）。见 BOOTSTRAP 规则二。 */
-            /* ⭐ PLAN #47：`maxOf<i32>(4, 3)` —— **显式类型实参**的自由函数调用 ✓
-             * （`T` 只出现在返回类型时只能这么写 ✓）
-             * 剩下的就是老规矩：只有内建原语能走泛型调用这条路（`alloc<T>(n)` ✓）*/
-            /* ⭐ PLAN #9：两个**分配原语**走同一条路，只有返回类型不同：
-             *   `alloc<T>(n)      -> mut ref T`     （指向 1 块地方）
-             *   `allocSlice<T>(n) -> mut slice<T>`  （`{data,len}` 视图，**清零**）
-             * 为什么要有第二个：**长度运行时才知道**的 buffer（读未知大小的文件、
-             * `reader` 自动要 4KB）用 `alloc` 造不出来 —— 它是 `mut ref T`，
-             * 不能索引也不能切片 ✗ 见 PLAN §0.4 #9 与 LANGUAGE.md §0.6（清零的承诺）✓ */
+             * It is a primitive rather than a library function because the arena itself has to
+             * be generated by the compiler: the library needs it to allocate for itself, so the
+             * library cannot provide it. */
+            /* `maxOf<i32>(4, 3)`: a free function called with explicit type arguments, which
+             * is the only spelling available when `T` appears in the return type alone.
+             * Otherwise the old rule stands: only the built-in primitives arrive through this
+             * path (`alloc<T>(n)`). */
+            /* Two allocation primitives share this path and differ only in the return type:
+             *   `alloc<T>(n)      -> mut ref T`     (points at one place)
+             *   `allocSlice<T>(n) -> mut slice<T>`  (a `{data,len}` view, zeroed)
+             * The second one exists because a buffer whose length is known only at runtime --
+             * reading a file of unknown size, or the 4 KB the `reader` asks for -- cannot be
+             * built with `alloc`: that returns a `mut ref T`, which can be neither indexed nor
+             * sliced. Both allocate zeroed memory. */
             bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
             bool isAllocS = strcmp(e->u.gencall.name, "allocSlice") == 0;
             if (!isAlloc && !isAllocS) {
@@ -840,23 +965,27 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         if (ttIsError(t)) return ttError(tt);
                         *(Type **)vecPush(&targs) = t;
                     }
-                    /* ⭐ PLAN #50：实参里还带 `T`（泛型体里 `idOf<T>(…)`）。
-                     * 这里**不用**记账：下面把节点改写成 `EX_CALL` 并**重新走一遍**，
-                     * 那一条路自己会看到"实参带 `T`"并记下推迟项 ✓（少写一份，少一处会漂 ✗）*/
+                    /* The type arguments still mention `T` here: a call to `idOf<T>(...)`
+                     * inside a generic body. Nothing is recorded at this point, because the node
+                     * is rewritten to EX_CALL and walked again below, and that path notices the
+                     * `T` argument and records the deferred check itself. One place instead of
+                     * two, so the two cannot drift apart. */
                     FuncDef *inst = funcInstance(c, tf, &targs, e->line);
                     inst->used = true;
                     tf->used = true;
-                    /* 把节点改写成普通调用（`alloc` 那条路之外的形状 ✓）*/
+                    /* Rewrite the node into an ordinary call: the shape every path except
+                     * `alloc` uses. */
                     Vec args = e->u.gencall.args;
                     Expr *id = exprNew(c->arena, EX_IDENT, e->line);
                     id->u.ident.name = tf->name;
                     e->kind = EX_CALL;
                     e->u.call.callee = id;
                     e->u.call.args   = args;
-                    e->qualified     = true;      /* 别触发"要写限定名"那条 ✓ */
+                    e->qualified     = true;      /* do not trigger the qualification check */
                     e->func = inst;
-                    /* ⚠️ 改写成 EX_CALL 之后**重新走一遍**：实参检查、返回值类型、
-                     * 家 arena 那些都在 EX_CALL 那条路上 ⇒ 千万别自己返回 void ✗（踩过）*/
+                    /* After the rewrite, walk the node again: the argument checks, the
+                     * return type, and the home arena all live on the EX_CALL path, so
+                     * returning void here instead is wrong. That mistake was made once. */
                     return checkExpr(c, e);
                 }
                 ckError(c, e->line, "only the built-in primitives may be called this way",
@@ -872,7 +1001,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *elem = ttResolve(tt, c->ctx, *(Type **)vecAt(&e->u.gencall.targs, 0),
                                    e->line, c->curParams);
             if (ttIsError(elem)) return ttError(tt);
-            /* 把**解析后的**类型写回去 —— codegen 看的是 targs，不是局部变量 */
+            /* Write the resolved type back: codegen reads the type arguments of the node, not
+             * this local variable. */
             *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
             if (e->u.gencall.args.len != 1) {
                 ckError(c, e->line, NULL, "`%s` takes one argument (how many elements)",
@@ -887,22 +1017,28 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* ⭐ 这块内存活到**当前块结束**（arena 按块细化，PLAN A2）⇒
-             * 它的深度就是**当前块的深度** `c->scopes.len` ✓
+            /* This memory lives until the end of the current block, because arenas are
+             * released per block, so its depth is the depth of that block: `c->scopes.len`.
              *
-             * ⚠️ 这一行是"深度模型"和"arena 粒度"的**接缝** —— 两边必须是同一个数：
-             *   检查器用块深度判断"引用能不能存进这里"，
-             *   生成的 C 用块深度选 `__extc_a[k]`、出块就 release。
-             *   写死 1（老行为）的话，`while { p = alloc<i32>(1) }` 里 p 会在
-             *   下一次迭代时指向**已经释放**的内存 ⇒ 悬垂 ✗（A2 之后实测过）✓
-             * 于是「返回一块刚 alloc 的内存」「把循环里分配的东西存到循环外」
-             * 都会被逃逸检查拦住 ✓ 想把它交出去，就得让调用者提供 buffer/arena ✓ */
-            /* ⭐ 定案 68：`alloc` 的层号由检查器算定 —— **但必须与 `new` 用同一套规则** ✗
-             * `EX_NEW` 那一支（见上）是：有家 ⇒ `ARENA_HOME`（对象进"调用者选的那只"，活得比本帧久）；
-             * 否则按块层。这里以前**无条件按块层** ⇒ 有家函数里的 `alloc` 被算成"活到本帧"
-             * ⇒ 「返回 alloc 出来的东西」当场判 `1 > 0` 拒绝，而同一形状写 `new` 就过 ✗
-             * （这正是 ARENA-SOUNDNESS §9 档 1 / B2 说的那一族误拒：报错文案还叫人写 `new` ✓）
-             * ⇒ 与 `new` 对称：有家 ⇒ `ARENA_HOME`，深度记 0（"外面那一级"）✓ */
+             * This line is the seam between the depth model and the arena granularity, and both
+             * sides have to use the same number: the checker compares block depths to decide
+             * whether a reference may be stored here, and the generated C uses the block depth
+             * to pick `__extc_a[k]`, which is released when the block ends.
+             * Hard-coding 1, as an earlier version did, makes `p` in
+             * `while { p = alloc<i32>(1) }` point at freed memory on the next iteration --
+             * measured, and exactly the dangling case this has to prevent.
+             * As a result, returning freshly allocated memory and storing loop-local allocations
+             * outside the loop are both stopped by the escape check. To hand the memory out, the
+             * caller has to supply the buffer or the arena. */
+            /* The checker decides the level of an `alloc` site, and it has to use exactly the
+             * rule `new` uses. The EX_NEW case above reads: a function with a home arena gives
+             * `ARENA_HOME`, so the object goes into the arena the caller chose and outlives this
+             * frame; otherwise the level is the block level. An earlier version always used the
+             * block level, so an `alloc` in a function with a home arena counted as frame-local
+             * and returning it was rejected as `1 > 0`, while the same program written with `new`
+             * passed -- and the error text told the user to write `new`.
+             * Being symmetric with `new` removes that whole family of false rejections: a home
+             * arena gives `ARENA_HOME` and depth 0, "the level outside this frame". */
             if (c->curFunc && c->curFunc->needsHome) {
                 e->arenaLevel = ARENA_HOME;
                 e->refDepth   = 0;
@@ -910,29 +1046,41 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->refDepth   = c->scopes.len;
                 e->arenaLevel = (int)c->scopes.len;
             }
-            /* ⭐ B2（ARENA-SOUNDNESS §9 档 1）：`alloc` 也要**登记成分配站点** ——
-             * `new` 在 `EX_NEW` 那一支里登记（见上面那句 `vecPush(&c->curArenaSites)`），
-             * 而这里以前**没登记** ⇒ 闭包之后那个"统一改写"pass 看不见它
-             * ⇒ 有家函数里的 `alloc` 永远留在块层（`__extc_a[k]`），而出块就 release ✗
-             * ⇒ 一整族**误拒**：`fn f() -> mut ref i32 { return alloc<i32>(1) }` 被拒，
-             *   而同一形状写 `new` 就过 ⇒ 报错文案还叫人写 `new`（自相矛盾 ✗）
-             * ⇒ 登记之后：有家 ⇒ 改写成 `ARENA_HOME` ⇒ 与 `new` 完全对称 ✓ */
+            if (e->lexicalLevel == 0) e->lexicalLevel = (int)c->scopes.len;   /* lexical level */
+            /* Initial value: no constraint has touched this site yet. Relying on the 0 from
+             * `arenaAllocZero` would be wrong, because 0 means "must outlive the frame".
+             * `alloc` is an allocation site too, so it needs this initialisation as much as
+             * `new` does. Without the line, the `inner` of `examples/alloc-in-block` was taken
+             * to outlive the frame and was emitted as `__extc_home` although it has no home
+             * arena, so the generated C did not compile. */
+            e->minAt = -1;
+            /* `alloc` has to be registered as an allocation site, the same way `new` is
+             * registered in the EX_NEW case above with `vecPush(&c->curArenaSites)`. Without
+             * the registration, the rewrite pass that runs after the closure cannot see it, so
+             * an `alloc` in a function with a home arena stayed at the block level and was
+             * released when the block ended. That produced a family of false rejections:
+             * `fn f() -> mut ref i32 { return alloc<i32>(1) }` was rejected while the same
+             * program written with `new` passed, and the error text told the user to write
+             * `new`. Once registered, a home arena rewrites the site to `ARENA_HOME`, fully
+             * symmetric with `new`. */
             *(Expr **)vecPush(&c->curArenaSites) = e;
             if (isAllocS) {
-                /* `allocSlice<T>(n) -> mut slice<T>` —— 视图本身就是可写的
-                 * （`mut` 落在**视图**上，不是落在指向它的引用上）✓ */
+                /* `allocSlice<T>(n) -> mut slice<T>`: the view itself is writable. The `mut`
+                 * sits on the view, not on a reference that points at it. */
                 return ttViewMut(tt, sliceOf(c, elem), true);
             }
             Type *r = ttRef(tt, elem);
-            r->mut = true;                       /* 刚分配的地方当然可写 */
+            r->mut = true;                       /* freshly allocated storage is writable */
             return r;
         }
 
         case EX_COALESCE: {
-            /* `a ?? b` —— **可能没有就兜底**。语义 = `match a { 有(v) => v  _ => b }`，
-             * 但**只算一边**：有值时 b 不求值 ✓（跟 `&&` / `||` 的短路同一件事）*/
-            /* ⚠️ 旗子必须在**主体还没查之前**取 ✗（主体自己是个调用 ⇒ 查完就把旗子举起来了，
-             * 踩过：`var a = h() ?? 0` 这条**第一句**被误报 ✓）*/
+            /* `a ?? b`: fall back when there is nothing. The meaning is
+             * `match a { some(v) => v  _ => b }`, but only one side is evaluated: when a has a
+             * value, b is never computed. That is the short circuit of `&&` / `||` again. */
+            /* The flag has to be read before the subject is checked, because a subject that is
+             * itself a call raises it while it is checked. Reading it afterwards wrongly
+             * reported `var a = h() ?? 0` when that is the first statement. */
             bool priorFx = c->stmtFx != 0;
             Type *mt = checkExpr(c, e->u.coalesce.main);
             if (ttIsError(mt)) { checkExpr(c, e->u.coalesce.fallback); return ttError(tt); }
@@ -941,11 +1089,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             bool isRes = isProtoType(mt, "result", 2);
             Type *want = NULL;
             if (isOpt || isRes) {
-                want = *(Type **)vecAt(&mt->targs, 0);          /* 载荷类型 T */
+                want = *(Type **)vecAt(&mt->targs, 0);          /* the payload type T */
             } else if (mt->kind == TY_REF && mt->nullable) {
-                want = mt;                                       /* `?ref T` ⇒ 兜底也是引用 */
+                want = mt;   /* `?ref T`: the fallback is a reference as well */
             } else {
-                /* ⚠️ 位置规则：`??` 只对"可能没有"的东西有意义 —— 说得清楚、报得响 ✓ */
+                /* Position rule: `??` is meaningful only for something that may have no
+                 * value. Saying so beats inventing a meaning for it. */
                 checkExpr(c, e->u.coalesce.fallback);
                 ckError(c, e->line,
                         "`??` means \"if there is nothing, use this instead\", so the left"
@@ -954,14 +1103,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
 
-            /* 主体**不是**"没有副作用的东西"（比如 `f() ?? -1`）⇒ 不能直接生成三元
-             * （主体在 C 里出现两次 ⇒ `f()` 会跑两遍 ✗）⇒ 必须**提前求值到一个临时变量**。
-             * 那需要"往所在语句前面吐前缀"的能力：大多数位置有，**两个位置没有** ✓ */
-            /* ⭐ PLAN #22（2026-09-22）：主体不纯 ⇒ 要**先算进临时变量**，而那个前缀是吐在
-             * **整条语句之前**的 ⇒ 它会跳到同语句里更靠前的副作用前头去 ✗
-             *     `g() + (h() ?? 0)`   源码是 g 先、h 后，实际是 **h 先**跑 ✗（实测过）
-             * ⇒ 与其偷偷换顺序，不如**报错让他拆两行** ✓（主人：「显式是对的」）✓
-             * ⚠️ 判据只看**调用**：`new` / 字面量 / 转换的顺序不可观测 ⇒ 不报 ✓ */
+            /* When the subject is not free of side effects, as in `f() ?? -1`, a plain
+             * conditional expression will not do: the subject would appear twice in the C and
+             * `f()` would run twice. It has to be evaluated into a temporary first, which needs
+             * the ability to emit a prefix in front of the enclosing statement. Most positions
+             * have it; two do not. */
+            /* An impure subject is computed into a temporary, and that prefix is emitted in
+             * front of the whole statement, so it would jump ahead of an earlier side effect in
+             * the same statement:
+             *     `g() + (h() ?? 0)`   reads g first and h second, but h would run first
+             * Reordering silently is worse than reporting it and asking for two lines: the order
+             * the user reads has to be the order that runs.
+             * Only calls count as evidence here: the order of `new`, of literals, and of
+             * conversions is unobservable, so those are not reported. */
             if (!repeatablePure(e->u.coalesce.main)) {
                 checkExpr(c, e->u.coalesce.fallback);
                 if (priorFx && !c->noHoist) {
@@ -984,11 +1138,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             " would run once instead of every round");
                     return ttError(tt);
                 }
-                e->needTemp = true;        /* codegen 照做：先算一次，再对临时变量做三元 */
-                /* ⚠️ 主体的**全部**副作用都是被"提前算"的（而且跟别的临时变量按源码顺序排 ✓）
-                 * ⇒ 它**不算**"留在原地的调用" ✗（踩过：同一个 `println` 里两个 `f() ?? -1`
-                 * 被误报 ✓ —— 语料当场抓出来 ✓）
-                 * 兜底那边**留在三元里**（只有主体没值才跑）⇒ 它算 ✓ */
+                e->needTemp = true;        /* codegen evaluates it once, then tests the temp */
+                /* Every side effect of the subject is hoisted into the prefix, in source order
+                 * relative to the other temporaries, so the subject does not count as a call
+                 * left in place. Counting it reported two `f() ?? -1` in one `println` that are
+                 * in fact fine, which the corpus caught immediately.
+                 * The fallback stays inside the conditional expression and runs only when the
+                 * subject has no value, so it does count. */
                 c->stmtFx = priorFx ? 1 : 0;
                 if (exprHasCall(c, e->u.coalesce.fallback)) c->stmtFx = 1;
                 return want;
@@ -1002,17 +1158,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_SIGN: {
-            /* `e!` —— **我签字**（定案 1.3）。
-             * 编译器证不出来的事，用户签字负责 ⇒ **一行检查都不生成** ✓
-             * 三个用途：
-             *   `opt!`（`option<T>`）⇒ 直接给载荷 T
-             *   `r!`（`result<T,E>`）⇒ 直接给载荷 T（失败时的行为 = 签字，UB 算他的）
-             *   `p!`（`?ref T`）⇒ 我知道非空，给我 `ref T` ✓（定案 ㊻ 留的逃生舱）
-             * 不是这三样 ⇒ 报错：签字也要签在对的地方 ✓ */
+            /* `e!` is the user's signature: what the compiler cannot prove, the user takes
+             * responsibility for, and not one check is generated. It has three uses:
+             *   `opt!` (`option<T>`)  -> the payload T
+             *   `r!` (`result<T,E>`)  -> the payload T; on failure the behaviour is whatever the
+             *                            user signed for, and the undefined behaviour is theirs
+             *   `p!` (`?ref T`)       -> `ref T`, the escape hatch for "I know it is not null"
+             * Anything else is an error: a signature has to be written where it means something. */
             Type *ot = checkExpr(c, e->u.sign.operand);
             if (ttIsError(ot)) return ttError(tt);
             if (isProtoType(ot, "option", 1) || isProtoType(ot, "result", 2)) {
-                return *(Type **)vecAt(&ot->targs, 0);      /* 载荷类型 */
+                return *(Type **)vecAt(&ot->targs, 0);      /* the payload type */
             }
             if (ot->kind == TY_REF) {
                 if (!ot->nullable) {
@@ -1021,7 +1177,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, ot));
                     return ttError(tt);
                 }
-                Type *nn = ttRef(tt, ot->inner);            /* 非空版本 ✓ */
+                Type *nn = ttRef(tt, ot->inner);            /* the non-null version */
                 nn->mut = ot->mut;
                 e->type = nn;
                 return nn;
@@ -1035,7 +1191,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_DEREF: {
-            /* `*p` = "p 指的那个值/那个地方"。可写性由 **p 的类型** 给（`mut ref`）✓ */
+            /* `*p` is the value, or the place, that `p` points at. Writability comes from the
+             * type of `p` (`mut ref`). */
             Type *ot = checkExpr(c, e->u.deref.operand);
             if (ttIsError(ot)) return ttError(tt);
             if (ot->kind != TY_REF) {
@@ -1050,15 +1207,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_ENUMVAL: {
-            /* 泛型枚举的**实例**（`maybe<i64>`）不在类型表的按名字表里 ——
-             * 它是实例化出来的。所以走 EX_ASSOC 那条路构造时会把解析好的类型
-             * 记在 `assocOwner` 上，这里优先用它 ✓ */
+            /* An instance of a generic enum (`maybe<i64>`) is not in the type table's by-name
+             * map: it is produced by instantiation. Constructing it through the EX_ASSOC path
+             * therefore records the resolved type on `assocOwner`, which is preferred here. */
             Type *et = e->assocOwner ? e->assocOwner : ttFromName(tt, e->u.enumval.typeName);
             if (!et || et->kind != TY_ENUM || !et->edef) return ttError(tt);
             Variant *v = findVariant(et->edef, e->u.enumval.variant);
             if (!v) return ttError(tt);
 
-            /* 无载荷变体：`status.ok` —— 不能带参数 */
+            /* A variant without a payload, `status.ok`: it takes no arguments. */
             if (v->types.len == 0) {
                 if (e->u.enumval.args.len > 0) {
                     ckError(c, e->line, NULL,
@@ -1069,7 +1226,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return et;
             }
 
-            /* **带载荷变体的构造**：`shape.circle(2.0)` —— 载荷按位置对 */
+            /* Constructing a variant with a payload, `shape.circle(2.0)`: payload values are
+             * matched by position. */
             if (e->u.enumval.args.len != v->types.len) {
                 ckError(c, e->line, NULL,
                         "`%s.%s` carries %zu value(s), got %zu",
@@ -1081,15 +1239,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr *arg = *(Expr **)vecAt(&e->u.enumval.args, i);
                 Type *at  = checkInto(c, pt, arg);
                 checkAssignable(c, pt, at, arg, "payload value");
-                /* 载荷装进这个值里 ⇒ 它的引用不能活得比这个值短 */
+                /* The payload is stored inside this value, so a reference it carries must not
+                 * live for less than the value does. */
                 checkEscape(c, arg, c->scopes.len, e->line, "this payload value");
             }
             return et;
         }
 
         case EX_CALL: {
-            /* **带载荷变体的构造**：`shape.circle(2.0)` —— 它长得像"字段访问 + 调用"，
-             * 但 `shape` 是个类型名不是变量 ⇒ 认出它是枚举构造，改写成 EX_ENUMVAL ✓ */
+            /* Constructing a variant with a payload, `shape.circle(2.0)`: it looks like a field
+             * access followed by a call, but `shape` is a type name and not a variable, so it is
+             * recognised as an enum construction and rewritten to EX_ENUMVAL. */
             if (e->u.call.callee->kind == EX_FIELD) {
                 Expr *fld = e->u.call.callee;
                 if (fld->u.field.obj->kind == EX_IDENT && !lookup(c, fld->u.field.obj->u.ident.name)) {
@@ -1107,13 +1267,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                     "`%s` has no variant `%s`", et->name, fld->u.field.name);
                             return ttError(tt);
                         }
-                        Vec args = e->u.call.args;      /* union：先拿出来再改 kind */
+                        Vec args = e->u.call.args;      /* union: copy it out first */
                         e->kind = EX_ENUMVAL;
                         e->u.enumval.typeName = et->name;
                         e->u.enumval.variant  = v->name;
                         e->u.enumval.args     = args;
                         e->assocOwner = et;
-                        return checkExprInner(c, e);    /* 剩下的交给 EX_ENUMVAL 那条 */
+                        return checkExprInner(c, e);    /* the rest is EX_ENUMVAL's job */
                     }
                 }
             }
@@ -1125,10 +1285,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             const char *name = e->u.call.callee->u.ident.name;
 
-            /* ⭐ 定案 73：`flush()` —— 把 `println` 那边的缓冲刷出去 ✓
-             * 为什么需要它：`std::io` 的 `writeBytes` 走 **fd 直写**（无缓冲，`write(2)`），
-             * 而 `println` 走 printf（**有缓冲**）⇒ 混用时**顺序会乱** ✗
-             * （交互式程序最难忍：提示语还没出来，程序已经在等你输入了 ✗）*/
+            /* `flush()` pushes out the buffer that `println` writes through.
+             *
+             * It is needed because `std::io`'s `writeBytes` writes straight to the file
+             * descriptor with `write(2)` and no buffering, while `println` goes through printf,
+             * which buffers. Mixing the two loses the order: the prompt has not been printed yet
+             * and the program is already waiting for input. */
             if (strcmp(name, "flush") == 0) {
                 if (e->u.call.args.len != 0) {
                     ckError(c, e->line, "`flush()` takes no arguments.",
@@ -1140,7 +1302,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
-                    Type *at = checkPrintArg(c, a);   /* 打印的是**值** ⇒ 自动解引用 ✓ */
+                    Type *at = checkPrintArg(c, a); /* takes a value, so it dereferences */
                     if (!isPrintable(at) || ttIs(at, "void")) {
                         ckError(c, a->line, NULL,
                                 "cannot print a value of type `%s`", typeStr(c, at));
@@ -1149,16 +1311,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttVoid(tt);
             }
 
-            /* ⭐ 报错要回显**源码里写的那个名字**（`open`），不是 mangle 后的 `lib$open` ✗
-             * （不留 `srcName` 的话消息会变成"请写 `lib::lib$open`"，纯属胡说 ✓）*/
+            /* A diagnostic has to echo the name as written in the source (`open`), not the
+             * mangled `lib$open`. Without `srcName` the message would read "write
+             * `lib::lib$open`", which is nonsense. */
             const char *shownName = e->u.call.callee->u.ident.srcName
                                     ? e->u.call.callee->u.ident.srcName : name;
             FuncDef *f = findFunc(c, name);
-            /* ⭐ **裸写别的模块的函数名**（`lib.extc` 里有 `open`，这里写 `open()`）：
-             * 名字里没有 `$` ⇒ 它是**源码原名**，装载器只把限定名改写成平名字 ✓
-             * ⇒ 按"要写限定名"报，而不是"没有这个函数"（后者把人引向完全错误的方向 ✗）
-             * 判据只看**名字里有没有 `$`**：`$` 在 extC 标识符里不合法 ⇒
-             * 出现它就一定是装载器生成的 mangle 名，那种情况才是真"找不到" ✓ */
+            /* A function of another module written without qualification: `lib.extc` holds
+             * `open`, and the source here says `open()`.
+             *
+             * A name without `$` is a source-level name, because the loader only rewrites
+             * qualified names into flat ones. For such a name the message to give is "this needs
+             * a qualified name", not "no such function", which would point the user the wrong
+             * way. The test is simply whether the name contains `$`: the character is not legal
+             * in an extC identifier, so when it appears the name must be one the loader mangled,
+             * and only then is the function really missing. */
             if (!f && name && !strchr(name, '$') && !e->qualified) {
                 for (size_t i = 0; i < c->m->funcs.len; i++) {
                     FuncDef *cand = *(FuncDef **)vecAt(&c->m->funcs, i);
@@ -1172,24 +1339,28 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (f && !f->reserved && f->modName && !e->qualified)
                 requireQualified(c, shownName, f->modName, false, e->line);
             if (!f) {
-                /* ⭐ PLAN #10：**裸写枚举构造器** —— 报错要**指路**，别只说"没这个函数" ✗
+                /* A bare enum constructor. The error has to point the way instead of saying
+                 * only "no such function".
                  *
-                 * `type shape = | circle(f64) | ...` 之后写 `circle(2.0)` 报的原来是
-                 * `call to undefined function `circle`` + 「built-ins available: print/println」
-                 * ⇒ 用户完全看不出"这其实是个变体、要写全路径" ✗
+                 * After `type shape = | circle(f64) | ...`, writing `circle(2.0)` used to report
+                 * `call to undefined function `circle`` plus "built-ins available:
+                 * print/println", from which nobody could tell that this is a variant and has to
+                 * be written with its type name.
                  *
-                 * ⚠️ **不做类型推断**：定案 27 明确「关联调用写全类型**是故意的** —— 不靠上下文猜」
-                 * （符合"显式优于推导"）⇒ 这里只**把正确写法说出来**，不替他补 ✓
-                 * ⚠️ 只对**带载荷**的变体提示（无载荷的 `status.ok` 本来就当值用，
-                 * 报的是另一条路）✓ */
+                 * No type inference happens here: writing the type out in full for an associated
+                 * call is deliberate, because extC does not guess a type from context. The
+                 * message states the correct spelling; it does not fill it in.
+                 * Only a variant with a payload is pointed at. A payload-free `status.ok` is a
+                 * value in its own right and takes the other path. */
                 TypeDef *owner = NULL;
                 for (size_t i = 0; i < c->tt->enums.len && !owner; i++) {
                     TypeDef *td = *(TypeDef **)vecAt(&c->tt->enums, i);
                     if (findVariant(td, name)) owner = td;
                 }
                 if (owner) {
-                    /* ⚠️ `ckError` 的 `note` 是**原样**传下去的（不像 fmt 那样吃可变参数）
-                     * ⇒ 要带值就得先自己 `arenaPrintf` 好 ✓（踩过：直接写 `%s` 会印出字面量）*/
+                    /* The `note` argument of `ckError` is passed through verbatim: unlike the
+                     * format it takes no varargs, so a value has to be rendered with
+                     * `arenaPrintf` first. Passing a raw `%s` printed the literal text. */
                     const char *note = arenaPrintf(c->arena,
                             "A payload variant is named by its type -- write `%s.%s(...)`. "
                             "(extC never guesses a type from context: DECISIONS ruling 27.)",
@@ -1203,11 +1374,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "call to undefined function `%s`", name);
                 return ttError(tt);
             }
-            e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
+            e->func = f;  f->used = true;   /* record the resolved function and its use */
 
-            /* ⭐ PLAN #47：**泛型自由函数** —— `T` 只能从实参推出来（类型实例是类型决定的，
-             * 而自由函数的实参只看调用点 ✓）⇒ 先查实参、再推导、再拿实例 ✓
-             * 推不出来（`T` 只出现在返回类型）⇒ 教他写显式实参 `f<i32>(…)` ✓ */
+            /* A generic free function: `T` can be inferred from an argument only, because an
+             * instance of a type is decided by the type while a call to a free function has
+             * nothing but its arguments. So the arguments are checked first, then `T` is
+             * inferred, then the instance is created. When inference fails because `T` appears
+             * only in the return type, the message tells the user to write the arguments
+             * explicitly: `f<i32>(...)`. */
             if (f->typeParams.len > 0) {
                 if (e->u.call.args.len != f->params.len) {
                     ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
@@ -1224,14 +1398,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     adoptContextType(a, p->type);
                     Type *at = checkExpr(c, a);
                     if (ttIsError(at)) return ttError(tt);
-                    /* `ref T` 形参：实参写 `ref x` 时 `at` 是引用 ⇒ 拿被指类型去合一 ✓ */
+                    /* A `ref T` parameter: when the argument is written `ref x`, `at` is a
+                     * reference, so the pointee types are unified. */
                     Type *want = p->type;
                     if (want->kind == TY_REF && at->kind == TY_REF) { want = want->inner; at = at->inner; }
                     if (!unifyTParams(c->tt, &f->typeParams, &targs, want, at)) {
                         ckError(c, e->line,
                                 "Type inference for a generic function's type parameters must see"
                                 " them in an argument. If one only appears in the return type,"
-                                " write it explicitly: `f<i32>(…)`.",
+                                " write it explicitly: `f<i32>(...)`.",
                                 "cannot infer type parameter(s) of `%s` from the arguments", name);
                         return f->ret ? f->ret : ttVoid(tt);
                     }
@@ -1241,20 +1416,25 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     ckError(c, e->line,
                             "Type inference for a generic function's type parameters must see"
                             " them in an argument. If one only appears in the return type,"
-                            " write it explicitly: `f<i32>(…)`.",
+                            " write it explicitly: `f<i32>(...)`.",
                             "cannot infer type parameter `%s` of `%s`",
                             *(const char **)vecAt(&f->typeParams, i), name);
                     return f->ret ? f->ret : ttVoid(tt);
                 }
-                /* ⭐ PLAN #50（2026-09-23）：泛型体里调用泛型函数 —— 类型实参里还带 `T`
-                 * ⇒ **这个时刻造不出正确的实例**，但也不该报错（那是 v1 的限制，已解）✓
-                 * 解法和 `RefCheck`/`EqCheck` 同族：模板期先造一个"以 `T` 为实参"的实例
-                 * （`idOf_T`，签名自洽、`T` 当不透明类型用 ⇒ 模板体后面照样能查 ✓），
-                 * 同时**记一笔**，等实例化复查时把 `e->func` 改指到具体实例（`idOf_i32`）✓ */
+                /* Calling a generic function from inside a generic body: the type arguments
+                 * still mention `T`, so no correct instance can be built at this moment. That is
+                 * not an error either.
+                 *
+                 * The technique matches `RefCheck` and `EqCheck`: while the template is checked,
+                 * an instance whose arguments are the parameters themselves is created
+                 * (`idOf_T`), which is self-consistent and treats `T` as opaque, so the rest of
+                 * the template body still type-checks. The call is recorded, and when the
+                 * instance is checked again, `e->func` is redirected to the concrete instance
+                 * (`idOf_i32`). */
                 FuncDef *inst = funcInstance(c, f, &targs, e->line);
                 inst->used = true;
                 e->func = inst;
-                f = inst;                     /* 后面的检查都按实例来 ✓ */
+                f = inst;                     /* every check below uses the instance */
 
                 bool hasParamTarg = false;
                 for (size_t i = 0; i < targs.len; i++) {
@@ -1264,8 +1444,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (hasParamTarg && c->curFunc) {
                     CallCheck *cc = (CallCheck *)arenaAllocZero(c->arena, sizeof(CallCheck));
                     cc->node = e;
-                    cc->tmpl = f->tmpl ? f->tmpl : f;   /* 记**模板**（`f` 已经是实例了 ✓）*/
-                    cc->func = c->curFunc;              /* 这条属于哪个模板体 ✓ */
+                    cc->tmpl = f->tmpl ? f->tmpl : f;   /* the template, not the instance */
+                    cc->func = c->curFunc;   /* which template body this belongs to */
                     vecInit(&cc->targs, c->arena, sizeof(void *));
                     for (size_t i = 0; i < targs.len; i++)
                         *(Type **)vecPush(&cc->targs) = *(Type **)vecAt(&targs, i);
@@ -1278,21 +1458,22 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         name, f->params.len, e->u.call.args.len);
                 return f->ret ? f->ret : ttVoid(tt);
             }
-            /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
+            /* The arena for this call comes from the shallowest `mut ref` argument. */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params, e);
-            setCallArenaArg(c, e);      /* 定案 68 ✓ */
-            /* ⚠️ 定案 67 的检查必须在**实参查完之后** ✗（不然 `a->type` 还没填 ⇒
-             * `typeContainsRef` 一律答"否" ⇒ **静默漏放** ✗✗ —— 方法那条踩过同一个坑 ✓）
-             * ⇒ 见本分支末尾 ✓ */
+            setCallArenaArg(c, e);      /* decide which arena the call finally passes */
+            /* The reference check has to run after the arguments are checked: until then
+             * `a->type` is not filled in, `typeContainsRef` answers "no" for everything, and a
+             * violation is silently accepted. The method path hit the same trap. The check itself
+             * is at the end of this case. */
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
                 adoptContextType(a, p->type);
                 Type *at = checkInto(c, p->type, a);
 
-                /* T3：形参是 `ref T` 时，值必须在调用点显式写 `ref` ——
-                 * 「这里传的是引用不是拷贝」要让读代码的人一眼看见（P′）。
-                 * 实参本身就是引用的话，直接传即可。*/
+                /* When the parameter is a `ref T`, the call site has to spell `ref` out, so
+                 * that a reader sees at a glance that a reference is passed and not a copy. An
+                 * argument that already is a reference can be passed as it stands. */
                 if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
@@ -1303,18 +1484,20 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 checkAssignable(c, p->type, at, a, "argument");
             }
-            /* ⭐ 定案 67：**每个**调用点都过（不只是"有家"的那些 —— 内容流跟家 arena
-             * 无关，是被调者"存进参数所指容器"产生的 ✓）
-             * ⚠️ 位置：**实参查完之后**（`exprRefDepth` 要靠实参的类型 ✓）*/
+            /* Every call site is checked, not only the ones with a home arena: what matters is
+             * that the callee may store into a container the argument points at, which has
+             * nothing to do with the home arena.
+             * The position matters as well: after the arguments are checked, because
+             * `exprRefDepth` reads their types. */
             checkCallRefArgs(c, f, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
             return f->ret ? f->ret : ttVoid(tt);
         }
 
         case EX_METHOD: {
-            /* **带载荷变体的构造**也可能长这样：`shape.circle(2.0)` 的语法形状
-             * 跟"方法调用"一模一样（`接收者.名字(参数)`）—— 区别在于 `shape`
-             * 是个**类型名**而不是变量。所以先在这里认一次 ✓ （跟 `status.ok`
-             * 在 EX_FIELD 那条路上被认出来是同一件事。）*/
+            /* Constructing a variant with a payload can look like this as well: the syntax of
+             * `shape.circle(2.0)` is that of a method call, `receiver.name(args)`, and the only
+             * difference is that `shape` is a type name rather than a variable. So it is
+             * recognised here first, exactly as `status.ok` is recognised on the EX_FIELD path. */
             if (e->u.method.recv->kind == EX_IDENT && !lookup(c, e->u.method.recv->u.ident.name)) {
                 Type *et = ttFromName(tt, e->u.method.recv->u.ident.name);
                 if (et && et->kind == TY_ENUM && et->edef) {
@@ -1340,7 +1523,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
             }
 
-            /* 方法只住在 struct 体内 —— 按接收者的类型去找 */
+            /* Methods live inside a `struct` body only, so they are found by the type of the
+             * receiver. */
             Type *recvT = checkExpr(c, e->u.method.recv);
             if (rejectNullableDeref(c, recvT, e->u.method.recv, "a method call")) return ttError(tt);
             Type *rb = ttBase(recvT);
@@ -1364,11 +1548,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.method.name, typeStr(c, rb ? rb : recvT));
                 return ttError(tt);
             }
-            e->func = f;  f->used = true;   /* ⭐ #42(c) ✓ */
+            e->func = f;  f->used = true;   /* record the resolved function and its use */
 
-            /* 方法要**可写借用**（`self: mut ref T`）⇒ 接收者必须可写。
-             * 这是「签名不说实话」的另一半：光看调用点 `x.bump()` 看不出它会不会改 x，
-             * 而 `self: mut ref` 让**签名说了**，这里就把它落实。 */
+            /* A method that takes `self: mut ref T` needs a writable receiver. This is the other
+             * half of making signatures tell the truth: `x.bump()` alone does not show whether
+             * `x` will be modified, `self: mut ref` in the signature does, and this is where that
+             * promise is enforced. */
             {
                 Param *selfP = *(Param **)vecAt(&f->params, 0);
                 if (selfP->type->kind == TY_REF && selfP->type->mut &&
@@ -1376,25 +1561,30 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
             }
 
-            /* A3 第二半：**接收者就是那个"最浅的 `mut ref` 实参"**（`self` 排第一）
-             * ⇒ 新东西跟着接收者所在的 arena 走 ✓ */
+            /* The receiver is the shallowest `mut ref` argument, since `self` comes first, so
+             * what the callee allocates follows the arena the receiver lives in. */
             {
                 Param *selfP = *(Param **)vecAt(&f->params, 0);
                 if (selfP->type && selfP->type->kind == TY_REF && selfP->type->mut) {
                     int d = placeDepth(c, e->u.method.recv);
-                    /* ⭐ 1.2b：`self: mut ref` 这条分支**不经过** callHomeDepth ⇒ 这里也要看 E ✓
-                     * （第一版漏了它 ⇒ ASan 抓到 use-after-free ✗）*/
+                    /* The `self: mut ref` branch does not go through `callHomeDepth`, so the
+                     * escape decision has to be applied here as well. The first version missed it,
+                     * and ASan caught the resulting use-after-free. */
                     const char *rrn = placeRootName(e->u.method.recv);
                     if (d != 0 && rrn && isEscapeeName(c, rrn)) d = -1;
                     e->homeDepth = (d == 0) ? -1 : d;
-                    /* ⭐ B4′：接收者这一支同样**取决于 E**，而 E 在查体时还不准
-                     * （要等摘封闭合）⇒ 记下来收尾重算 ✓
-                     * 反例 B3：`fn fill(out) { var l: list  l.pushOne(7)  out.take(l) }`
-                     * —— `l` 随后被方法调用发布出去 ⇒ 接收者必须算"会逃逸" ✓ */
+                    /* This receiver branch depends on the escape information as well, and that
+                     * information is not final while the body is being checked: it is complete
+                     * only once the closure of the call graph is closed. So the site is recorded
+                     * and recomputed at the end.
+                     * The shape that needs it:
+                     *     fn fill(out) { var l: list  l.pushOne(7)  out.take(l) }
+                     * Here `l` is published by a method call afterwards, so the receiver has to be
+                     * treated as escaping. */
                     if (d != 0 && rrn && c->eSites.arena) {
                         EArenaSite *rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
                         rec->call = e;
-                        rec->argRoot[0]  = (char *)rrn;      /* 接收者当成第 0 个"实参" ✓ */
+                        rec->argRoot[0]  = (char *)rrn;      /* the receiver is argument 0 */
                         rec->argDepth[0] = d;
                         rec->n = 1;
                         *(EArenaSite **)vecPush(&c->eSites) = rec;
@@ -1402,21 +1592,26 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 } else {
                     e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params, e);
                 }
-                /* ⭐ 定案 68：解析成"最终传哪只 arena"（两个数都在检查器里定完）✓ */
+                /* Resolve which arena the call finally passes; both numbers are decided here. */
                 setCallArenaArg(c, e);
-                /* 甲′(#31)：不管实参是本地的还是参数，都要记"往容器里塞的东西住哪" ✓
-                 * ⚠️ 第一版只加在 else 分支里 ⇒ `self: mut ref` 那条（`v.push(…)` 正是它）
-                 * 走的是 if 分支 ⇒ **一次都没执行** ✗ 调试才看出来 ✓ */
-                /* ⭐ 定案 67：方法也一样 —— **每个**调用点都过（内容流跟家 arena 无关 ✓）
-                 * ⚠️⚠️ **接收者要当成第 0 个实参** ✗ —— 被调者的 `params[0]` 是 `self`，
-                 * 而 `e->u.method.args` **不含**接收者 ⇒ 两边长度不等 ⇒
-                 * `checkCallRefArgs` 开头那句 `params->len != args->len` **静默早退** ✗✗
-                 * ⇒ **规则 ④ 对方法调用从来就没生效过**（2026-09-22 抓到的潜缺陷 ✓）
-                 * ⇒ 把接收者拼到最前面 ✓*/
-                (void)0;   /* ⚠️ 检查挪到下面"实参查完之后" ✓ 见那段注释 */
+                /* Whether the argument is a local or a parameter, the depth of what is pushed
+                 * into a container has to be recorded. The first version did this in the `else`
+                 * branch only, so the `self: mut ref` path -- which is the one `v.push(...)`
+                 * takes -- never ran it at all. Only debugging showed why. */
+                /* A method call is checked like any other call site: content flow does not
+                 * depend on the home arena.
+                 *
+                 * The receiver has to count as argument 0. The callee's `params[0]` is `self`,
+                 * while `e->u.method.args` does not contain the receiver, so the two lengths
+                 * differ and the `params->len != args->len` guard at the top of
+                 * `checkCallRefArgs` returns early without a word. The reference rule therefore
+                 * never applied to a method call at all -- a latent defect found by inspection.
+                 * Prepending the receiver below fixes that. */
+                (void)0;   /* the check is moved below, after the arguments; see there */
             }
 
-            /* 接收者是泛型实例时，方法签名里的 T 要换成实参 */
+            /* When the receiver is a generic instance, the `T` in the method signature has to
+             * be replaced with the type arguments. */
             StructDef *msd = structOf(rb);
             Vec *sp = NULL, *sa = NULL;
             if (rb && rb->kind == TY_GENERIC && msd) {
@@ -1449,9 +1644,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 checkAssignable(c, pt, at, a, "argument");
             }
-            /* ⚠️⚠️ 规则的检查必须在**实参查完之后** ✗ —— 不然 `a->type` 还没填，
-             * `typeContainsRef` 一律答"否" ⇒ 静默漏放 ✗✗（踩过：反例没被拒 ✓）
-             * ⭐ 定案 67：接收者拼成第 0 个实参（被调者的 `params[0]` 是 `self` ✓）*/
+            /* The rule has to be checked after the arguments are checked: until then `a->type`
+             * is not filled in, `typeContainsRef` answers "no" for everything, and a violation
+             * passes silently -- a counterexample that should have been rejected was not.
+             * The receiver is prepended as argument 0, because the callee's `params[0]` is
+             * `self`. */
             {
                 Vec margs; vecInit(&margs, c->arena, sizeof(Expr *));
                 *(Expr **)vecPush(&margs) = e->u.method.recv;
@@ -1464,7 +1661,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_STRUCTLIT: {
-            /* 类型要么来自字面量里的名字，要么来自上下文（泛型实例只能靠上下文） */
+            /* The type comes from the name written in the literal or from the context; a generic
+             * instance can only come from the context. */
             Type *st = e->u.lit.name ? ttFromName(tt, e->u.lit.name) : e->type;
 
             if (e->u.lit.name && (!st || ttIsError(st))) {
@@ -1510,9 +1708,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 checkAssignable(c, want, vt, fi->value, bufCstr(&what));
             }
 
-            /* 省略的字段靠「零值」补齐 —— 但 `ref` 没有零值。
-             * 不管的话会生成 `.field = 0`，也就是一个**空引用**，
-             * 而语言层明明说 `ref` 不可为空。（跟 str 那次是同一类洞。）*/
+            /* An omitted field is filled in with its zero value, but `ref` has no zero value.
+             * Left alone this generates `.field = 0`, which is a null reference, while the
+             * language says `ref` can never be null. The same kind of hole appeared for `str`
+             * before. */
             for (size_t i = 0; i < sd->fields.len; i++) {
                 FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
                 bool given = false;
@@ -1534,19 +1733,26 @@ static Type *checkExprInner(Checker *c, Expr *e) {
     return ttError(tt);
 }
 
-/* ⭐ PLAN #22：这个函数（传递地）**会不会打印**？（走 AST，环保护 ✓）
- * ⚠️ **运行时**的坑：`FuncDef.callees` 是"查完体"之后才填的 ⇒ 查体期间不能靠它 ✗
- * ⇒ 直接走被调者的 AST，自带环保护 ✓ */
+/* Declared here because the two walks below recurse through it. */
 static bool funcMayPrint(Checker *c, FuncDef *f);
 
 static bool stmtMayPrint(Checker *c, Stmt *s);
 
+/* Report whether evaluating an expression may print, directly or through a call.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression to inspect; NULL counts as "does not print"
+ *
+ * Returns:
+ *   True when a `print` / `println` call is reachable from here.
+ */
 static bool exprMayPrint(Checker *c, Expr *e) {
     if (!e) return false;
     if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
         const char *n = e->u.call.callee->u.ident.name;
         if (strcmp(n, "print") == 0 || strcmp(n, "println") == 0) return true;
-        if (strcmp(n, "flush") == 0) return false;      /* 不是"可观测副作用"里的打印 ✗ */
+        if (strcmp(n, "flush") == 0) return false;      /* flushing is not printing */
     }
     switch (e->kind) {
     case EX_CALL:
@@ -1599,6 +1805,15 @@ static bool exprMayPrint(Checker *c, Expr *e) {
     }
 }
 
+/* Report whether executing a statement may print, directly or through a call.
+ *
+ * Params:
+ *   c - checker
+ *   s - the statement to inspect; NULL counts as "does not print"
+ *
+ * Returns:
+ *   True when a `print` / `println` call is reachable from here.
+ */
 static bool stmtMayPrint(Checker *c, Stmt *s) {
     if (!s) return false;
     switch (s->kind) {
@@ -1622,45 +1837,83 @@ static bool stmtMayPrint(Checker *c, Stmt *s) {
     }
 }
 
+/* Report whether a function may print, directly or through the calls it makes.
+ *
+ * Params:
+ *   c - checker
+ *   f - the function to inspect; NULL means the callee could not be resolved
+ *
+ * Returns:
+ *   True when a `print` / `println` call is reachable from here.
+ *
+ * Notes:
+ *   - `FuncDef.callees` is filled in only after a body has been checked, so it cannot be used
+ *     while bodies are still being checked. This walks the AST of the callee instead, which
+ *     needs a cycle guard of its own.
+ *   - Both an unresolved callee and a recursive one count as printing, which is the safe
+ *     direction for an answer that gates reordering.
+ */
 static bool funcMayPrint(Checker *c, FuncDef *f) {
-    if (!f) return true;                       /* 拿不准 ⇒ 当"会"（保守 ✓）*/
+    if (!f) return true;                       /* unresolved: assume it prints */
     if (f->mayPrintState == 1) return true;
     if (f->mayPrintState == 2) return false;
-    if (f->mayPrintState == 3) return true;    /* 环 ⇒ 当"会" ✓ */
+    if (f->mayPrintState == 3) return true;    /* a cycle: assume it prints */
     f->mayPrintState = 3;
     bool r = stmtMayPrint(c, f->body);
     f->mayPrintState = r ? 1 : 2;
     return r;
 }
 
-/* ⭐ PLAN #22：这个表达式里有没有**可观测的副作用**？
- * ⇒ 只认：① `print`/`println` ② **带 `mut ref`/`mut` 视图形参的函数**（它可能写实参）
- *         ③ （传递地）会打印的函数 ④ 拿不准的（解析不出来）✓
- * ⚠️ **纯 getter 不算** —— 顺序换了也看不出来 ✓
- *    （踩过：这一条一开始按"含调用"判 ⇒ 把编译时长基准的合成程序
- *      `t.get() + (v.get(0) ?? 0)` 也拒了 ✗ —— 那是个纯访问器 ✓）*/
+/* Report whether calling this function has an observable side effect.
+ *
+ * A call counts when it prints, when it takes a `mut ref` or a `mut` view parameter and may
+ * therefore write the argument, when it reaches such a call itself, or when it cannot be
+ * resolved at all.
+ *
+ * Params:
+ *   c - checker
+ *   f - the callee; NULL means it could not be resolved
+ *
+ * Returns:
+ *   True when reordering this call would change what the program does.
+ *
+ * Notes:
+ *   - A pure getter does not count: swapping two of them cannot be observed. Judging by
+ *     "contains a call" instead rejected a benchmark program built from plain accessors, whose
+ *     expression `t.get() + (v.get(0) ?? 0)` is entirely side-effect free.
+ */
 static bool callIsEffectful(Checker *c, FuncDef *f) {
     if (!f) return true;
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
         if (!p->type) continue;
-        if (p->type->kind == TY_REF && p->type->mut) return true;      /* 可能写实参 ✓ */
-        if (p->type->kind == TY_GENERIC && p->type->mut) return true;  /* mut 视图 ✓ */
+        if (p->type->kind == TY_REF && p->type->mut) return true;      /* may write the argument */
+        if (p->type->kind == TY_GENERIC && p->type->mut) return true;  /* a `mut` view */
     }
     return funcMayPrint(c, f);
 }
 
+/* Report whether an expression contains a call whose reordering would be observable.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression to inspect; NULL counts as "no call"
+ *
+ * Returns:
+ *   True when an effectful call appears anywhere inside, at any depth.
+ *
+ * Notes:
+ *   - This used to `break` out of the switch instead of returning, which dropped control to the
+ *     end of the function and returned an indeterminate value: undefined behaviour in the
+ *     compiler itself, and `-Wreturn-type` had been reporting it. The consequence was that a
+ *     call known to be free of side effects, `pure(x)`, made the answer garbage, so the "an
+ *     earlier call is still in place" test fired only sometimes.
+ */
 static bool exprHasCall(Checker *c, Expr *e) {
     if (!e) return false;
     switch (e->kind) {
     case EX_CALL: case EX_METHOD: case EX_ASSOC:
         if (callIsEffectful(c, e->func)) return true;
-        /* ⚠️⚠️ **这里以前写的是 `break`**（2026-09-22 修）—— 那会掉出 switch、
-         * **落到函数末尾返回一个不确定的值** ✗（编译器自己的 UB！
-         *  `-Wreturn-type` 早就报了，只是没人看那份 warning）
-         * 后果：`pure(x)` 这种**无副作用**的调用会让本函数返回垃圾 ⇒
-         * PLAN #22 那条"前面有没有留在原位的调用"的判据**时灵时不灵** ✗
-         * ⇒ 老老实实 `return false` ✓ */
         return false;
     case EX_BIN:      return exprHasCall(c, e->u.bin.left) || exprHasCall(c, e->u.bin.right);
     case EX_UN:       return exprHasCall(c, e->u.un.operand);
@@ -1691,18 +1944,34 @@ static bool exprHasCall(Checker *c, Expr *e) {
             if (exprHasCall(c, *(Expr **)vecAt(&e->u.enumval.args, i))) return true;
         return false;
     case EX_COALESCE: return exprHasCall(c, e->u.coalesce.main) || exprHasCall(c, e->u.coalesce.fallback);
-    default:          return false;      /* 字面量 / 绑定 / null ✓ */
+    default:          return false;      /* literals, bindings, and `null` */
     }
 }
 
+/* Check an expression, do the per-statement bookkeeping, and store the resulting type.
+ *
+ * This is the entry point the rest of the checker uses, so the bookkeeping below sees every
+ * subexpression of a statement.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression; NULL yields the error type
+ *
+ * Returns:
+ *   The type of the expression, which is also left on `e->type`. A missing type is turned into
+ *   the error type, so no caller can observe one.
+ *
+ * Notes:
+ *   - The effect flag records that a call left in place has already been seen in this statement.
+ *     A later `??` that needs a temporary would hoist that temporary in front of the call and
+ *     reorder the two, so it is reported instead.
+ *   - The subject of `??` does not set the flag: its temporary is hoisted together with the
+ *     other temporaries in source order, so their relative order is unchanged. Counting it
+ *     wrongly reported `println(a, v.get(3) ?? -1, b, v.get(99) ?? -1)`.
+ */
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
-    /* ⭐ PLAN #22：记下"本语句里已经有**留在原位**的调用了" ⇒ 后面再遇到"要临时变量的 `??`"
-     * 就报错（那个临时变量会跳到它前面去 ✗）✓
-     * ⚠️ **`??` 自己的主体不算**：它的临时变量跟别的临时变量是**按源码顺序一起**提前算的
-     *    ⇒ 它们之间的顺序**没变** ✓（踩过：`println(a, v.get(3) ?? -1, b, v.get(99) ?? -1)`
-     *    被误报了 ✗ —— 语料里 5 个例子当场抓出来 ✓）*/
     if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && e->needTemp)) c->stmtFx = 1;
     if (!t) t = ttError(c->tt);
     e->type = t;
