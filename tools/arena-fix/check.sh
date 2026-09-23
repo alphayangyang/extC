@@ -28,7 +28,7 @@ echo "$out" | grep -E '^  (REJECT|ACCEPT\+UAF|CRASH|GCC-ERR)' | sed 's/（.*//'
 still=$(echo "$out" | grep -cE '^  ACCEPT\+UAF$|^  ACCEPT\+UAF ' || true)
 echo "  → 仍放行的 UAF：$still 条"
 
-say "② 全套测试（**已知误拒**：field-strong-update —— 第 3 步要还的精度账）"
+say "② 全套测试（不再有已知误拒 —— field-strong-update 的误拒 2026-09-23 已修 ✓）"
 out=$(./tests/run.sh 2>&1); last=$(echo "$out" | tail -1); echo "  $last"
 bad=$(echo "$out" | grep '^  FAIL' | grep -v 'field-strong-update' || true)
 if [ -n "$bad" ]; then echo "  ✗ 出现**新的**失败（不许有）："; echo "$bad" | sed 's/^/  /'; fail=1
