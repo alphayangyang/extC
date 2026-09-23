@@ -124,6 +124,36 @@ for s in $SHAPES; do
     done
 done
 
+# ---------------------------------------------------------------- 交付文件 / 源码 大小
+# 口径跟 bench/oi 那份报告一致：二进制 KB、源码**行数**、extC 另给**生成 C** 的大小 ✓
+echo
+echo "== 交付文件 / 源码大小 =="
+: > "$B/sizes.tsv"
+for s in $SHAPES; do
+    cls=${JAVA_CLASS[$s]}
+    # 交付文件（Java 是 .class，可能不止一个：内部类另出一份 ⇒ 一起加 ✓）
+    num() { stat -c%s "$1" 2>/dev/null || echo 0; }
+    b_extc=$(num "$B/${s}_extc");   b_c=$(num "$B/${s}_c");   b_cpp=$(num "$B/${s}_cpp")
+    b_rs=$(num "$B/${s}_rs");       b_go=$(num "$B/${s}_go")
+    b_java=$(cat "$B/java/$cls"*.class 2>/dev/null | wc -c)
+    # extC 生成的 C
+    cbytes=$(num "$B/${s}_extc.c"); clines=$(wc -l < "$B/${s}_extc.c" 2>/dev/null || echo 0)
+    # 源码（每个形状自己的那个文件；C 家族另有共享的 fastio.h，单独注明）
+    s_extc=$(num "src/$s.extc");   l_extc=$(wc -l < "src/$s.extc")
+    s_c=$(num "src/$s.c");         l_c=$(wc -l < "src/$s.c")
+    s_cpp=$(num "src/$s.cpp");     l_cpp=$(wc -l < "src/$s.cpp")
+    s_rs=$(num "src/$s.rs");       l_rs=$(wc -l < "src/$s.rs")
+    s_go=$(num "src/$s.go");       l_go=$(wc -l < "src/$s.go")
+    s_java=$(num "src/$cls.java"); l_java=$(wc -l < "src/$cls.java")
+    printf '%s\t%s %s %s %s %s %s\t%s %s %s %s %s %s\t%s %s\t%s %s %s %s %s %s\n' \
+        "$s" \
+        "$b_extc" "$b_c" "$b_cpp" "$b_rs" "$b_go" "$b_java" \
+        "$s_extc" "$s_c" "$s_cpp" "$s_rs" "$s_go" "$s_java" \
+        "$cbytes" "$clines" \
+        "$l_extc" "$l_c" "$l_cpp" "$l_rs" "$l_go" "$l_java" >> "$B/sizes.tsv"
+done
+column -t -s $'\t' "$B/sizes.tsv" | sed 's/^/  /'
+
 # ---------------------------------------------------------------- 出结果文件
 python3 mkreport.py "$RUNS" "$verify_fail" > RESULTS.md
 echo

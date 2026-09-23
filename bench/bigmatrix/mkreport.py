@@ -51,6 +51,46 @@ def read_build(name):
     return None if v in ("", "ERR") else int(v)
 
 
+def read_sizes():
+    """Measure the sizes straight off the filesystem.
+
+    Deliberately not read from a tsv written by run.sh: measuring here means the
+    report can be regenerated with `python3 mkreport.py 5 0 > RESULTS.md` after
+    any build, without re-running the (slow) timing pass."""
+    SRCDIR = os.path.join(HERE, "src")
+    out = {}
+    for s in SHAPES:
+        cls = s.capitalize()
+        d = {}
+        for key, path in (("b_extc", f"{s}_extc"), ("b_c", f"{s}_c"), ("b_cpp", f"{s}_cpp"),
+                          ("b_rs", f"{s}_rs"), ("b_go", f"{s}_go")):
+            d[key] = os.path.getsize(os.path.join(B, path)) if os.path.exists(os.path.join(B, path)) else 0
+        jbytes = 0
+        if os.path.isdir(os.path.join(B, "java")):
+            for f in os.listdir(os.path.join(B, "java")):
+                if f.startswith(cls) and f.endswith(".class"):
+                    jbytes += os.path.getsize(os.path.join(B, "java", f))
+        d["b_java"] = jbytes
+        gen = os.path.join(B, f"{s}_extc.c")
+        if os.path.exists(gen):
+            d["c_bytes"] = os.path.getsize(gen)
+            with open(gen, errors="replace") as fh:
+                d["c_lines"] = sum(1 for _ in fh)
+        else:
+            d["c_bytes"] = d["c_lines"] = 0
+        for key, fname in (("s_extc", f"{s}.extc"), ("s_c", f"{s}.c"), ("s_cpp", f"{s}.cpp"),
+                           ("s_rs", f"{s}.rs"), ("s_go", f"{s}.go"), ("s_java", f"{cls}.java")):
+            path = os.path.join(SRCDIR, fname)
+            if os.path.exists(path):
+                d[key] = os.path.getsize(path)
+                with open(path, errors="replace") as fh:
+                    d["l_" + key[2:]] = sum(1 for _ in fh)
+            else:
+                d[key] = d["l_" + key[2:]] = 0
+        out[s] = d
+    return out
+
+
 def read_raw():
     rows = {}
     with open(os.path.join(B, "raw.tsv")) as fh:
@@ -92,6 +132,9 @@ def main():
     w("> 每个形状的六份输出**逐字节一致**才算数：%s" % ("**全部一致 ✓**" if verify_fail == "0" else "**有对拍失败 ✗ 见下面**"))
     w("")
     w("机器：" + machine())
+    w("")
+    w("⚠️ **同一格两次完整跑之间大约有 3~5% 的波动**（WSL2 + 笔记本 CPU 的调度）⇒")
+    w("   看**量级和排序**，不要读到最后一位小数 ✓（表里已经是 5 次取最快，已经压掉一部分抖动）")
     w("")
     w("## 怎么读这四张表")
     w("")
@@ -189,6 +232,57 @@ def main():
     w("> extC 那两段：**前端**（`.extc` → C）几毫秒，剩下全是 gcc 编它吐出来的那份 C ——")
     w("> 用户感受到的是两段之和 ✓")
     w("")
+
+    # ---- 交付文件大小 ----
+    sizes = read_sizes()
+    if sizes:
+        w("## 交付文件大小（KB，越小越好）")
+        w("")
+        w("| 形状 | " + " | ".join(n for _, n in LANGS) + " |")
+        w("|---|" + "---|" * len(LANGS))
+        for s in SHAPES:
+            d = sizes.get(s)
+            if not d:
+                continue
+            w(f"| {s} | " + " | ".join(
+                f"{d['b_' + k] / 1024:.1f}" for k, _ in LANGS) + " |")
+        w("")
+        w("> Java 那列是 **`.class` 之和**（内部类另出一份）—— 它小是因为**运行时在 JVM 里**：")
+        w("> 跑它要拖一个 JVM，那笔账记在 RSS 那列（46~191MB）✓")
+        w("> ⚠️ **不能只跟 C 比这列**：Rust 默认静态链接 std（11.5MB）、Go 自带运行时（2.4MB）都是「打包策略」，")
+        w("> 不是代码膨胀；**extC / C / C++ 才是同一种交付形态**（一个 20KB 上下的静态可执行文件）✓")
+        w("> `-march=native` 四家都开（Go 不吃这个旗子）⇒ 大小都含本机指令选择 ✓")
+        w("")
+        w("## extC 特有的那一列：它吐出来的 C")
+        w("")
+        w("| 形状 | 生成的 C（KB）| 生成 C 行数 | 交付二进制（KB）| 源码（字节·行）|")
+        w("|---|---|---|---|---|")
+        for s in SHAPES:
+            d = sizes.get(s)
+            if not d:
+                continue
+            w(f"| {s} | {d['c_bytes'] / 1024:.1f} | {d['c_lines']} | "
+              f"{d['b_extc'] / 1024:.1f} | {d['s_extc']}·{d['l_extc']} |")
+        w("")
+        w("> 这张表是 extC 的「中间产物」：`.extc` 源码 → **它吐的 C** → 可执行文件，三段都能看见 ✓")
+        w("> 用户可以读那份 C（`#line` 指回源码行），这也是「生成 C 可调试」那条原则的兑现 ✓")
+        w("")
+        w("## 源码大小（字节 · 行）")
+        w("")
+        w("| 形状 | " + " | ".join(n for _, n in LANGS) + " |")
+        w("|---|" + "---|" * len(LANGS))
+        for s in SHAPES:
+            d = sizes.get(s)
+            if not d:
+                continue
+            w(f"| {s} | " + " | ".join(
+                f"{d['s_' + k]}·{d['l_' + k]}" for k, _ in LANGS) + " |")
+        w("")
+        w("> 只算**这个形状自己的文件**。C 参考（以及部分 C++）另有共享的 `src/fastio.h`（快读解析器，五个形状一份）；")
+        w("> C++ / Java 各文件自带解析器（Java 每个文件都内嵌同一份 `FastIn`，所以那列偏大）✓")
+        w("> ⚠️ 源码行数**不等于**工作量：extC 没有 `+=` / `++` / `for` / 标准排序，")
+        w("> 同样算法要多写几行；反过来它也不用手写 `free`（arena 管）✓")
+        w("")
 
     # ---- flags ----
     w("## 每语言用的命令")
