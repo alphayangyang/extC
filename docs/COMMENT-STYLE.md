@@ -10,9 +10,15 @@
 **English only, ASCII only.** No Chinese, no full-width punctuation, no emoji-like
 symbols (`⭐`, `⚠️`, `✅`, `✗`, `✓`, `⇒`, `·`). Use plain ASCII: `*`, `!`, `->`, `=>`.
 
-The compiler's *output* was always English (error messages, `--help`, generated C).
-This file extends the same rule to the source comments, so that code and diagnostics
-read as one artifact.
+The rule covers **everything that belongs to the code**: source comments, user-visible
+diagnostics, the generated C (its comments and its runtime preamble), and debug traces
+behind the `EXTC_DBG_*` switches. Code and diagnostics should read as one artifact.
+
+> Correction (2026-09-23): an earlier version of this file claimed the compiler's output
+> "was always English". That was wrong -- a number of emitted-C banners, the emitted
+> runtime preamble, and several `EXTC_DBG_*` traces were still Chinese. Converting those
+> string literals is tracked as its own change, because it moves the generated C and the
+> golden manifest; see `PLAN.md` section 0.4.1.
 
 ## 2. No project-private vocabulary
 

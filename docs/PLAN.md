@@ -205,7 +205,15 @@ IO-0 主体**已落地**（2026-09-23 定案 74：`reader` + `nextInt` 一族 + 
 "would hold a reference to something that dies first" ⇒ 用户分不出该改代码还是该报 bug ✓
 （`topics/ARENA-SOUNDNESS.md` §A1 有分析）✓
 
-**⑤ 铁律自检当前报出的违反处**：`EXTC_SELFCHECK=1 ./build/extc <file>` 会核
+**⑤ 编译器的输出里还有中文（2026-09-23 记账）**：生成 C 的注释与运行时序言、
+以及 `EXTC_DBG_*` 调试开关后面的若干诊断，都是**字符串字面量**里的中文 ✗
+（共 53 处；`src/codegen.c` · `src/modules.c` · `src/main.c` · `src/check_expr.c` 等）
+规则见 `COMMENT-STYLE.md` §1：**凡属于代码的东西一律英文** —— 这些属于"代码的输出"，
+所以是**待修**，不是"设计选择"✓
+⚠️ 改它们会**改变生成的 C** ⇒ 必须同时重新生成 `tools/golden.manifest`
+（那个清单本来就陈旧：还报 7 行差异，全是"容器 buffer 移进 `__extc_home`"的有意改动）✓
+
+**⑥ 铁律自检当前报出的违反处**：`EXTC_SELFCHECK=1 ./build/extc <file>` 会核
 "`refDepth` 与 `arenaLevel` 是否描述同一个事实"，扫全语料**目前报 9 处**（见 `docs/DEVLOG.md`
 2026-09-23 那条）。这些是**下一轮的修复候选**，不是待办清单 —— 修掉一处就少一处，
 **所以这里不抄具体名字**（抄了就一定会过时 ✗）✓
