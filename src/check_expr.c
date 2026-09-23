@@ -784,6 +784,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (e->arenaLevel == 0)
                 e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len);
+            /* ⭐ 长运行内存：**词法层号**单独留一份 —— `arenaLevel` 上面那个分支
+             * 会把它改成哨兵 `ARENA_HOME`，而解算完之后需要"它本来该在哪层" ✓ */
+            if (e->lexicalLevel == 0)
+                e->lexicalLevel = e->reuse ? 1 : (int)c->scopes.len;
+            /* ⭐ 长运行内存：初值 = "还没被任何约束碰过" ✓
+             * （不能靠 `arenaAllocZero` 的 0 —— 0 的意思是"要活到帧外" ✗）*/
+            e->minAt = -1;
         *(Expr **)vecPush(&c->curArenaSites) = e;
             /* `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）——
              * ⚠️ 只有 `ARENA_HOME` 例外：那个哨兵是 -1，而 `refDepth` 的语言是
@@ -910,6 +917,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->refDepth   = c->scopes.len;
                 e->arenaLevel = (int)c->scopes.len;
             }
+            if (e->lexicalLevel == 0) e->lexicalLevel = (int)c->scopes.len;   /* ⭐ 词法层号 ✓ */
+            /* ⭐ 长运行内存：初值 = "还没被任何约束碰过" ✓
+             * （不能靠 `arenaAllocZero` 的 0 —— 0 的意思是"要活到帧外" ✗）
+             * ⚠️ 漏了这一行：`alloc` 也是分配站点 ⇒ 它也必须有这个初值 ✗
+             *   （实测：`examples/alloc-in-block` 的 `inner` 被当成"要活到帧外" ⇒
+             *     吐出 `__extc_home` 而它没有家 ⇒ 生成的 C 编不过 ✗）*/
+            e->minAt = -1;
             /* ⭐ B2（ARENA-SOUNDNESS §9 档 1）：`alloc` 也要**登记成分配站点** ——
              * `new` 在 `EX_NEW` 那一支里登记（见上面那句 `vecPush(&c->curArenaSites)`），
              * 而这里以前**没登记** ⇒ 闭包之后那个"统一改写"pass 看不见它

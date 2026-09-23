@@ -4,6 +4,8 @@
  */
 
 #include "check_internal.h"
+#include <stdlib.h>
+#include <stdio.h>
 
 /* ---------------------------------------------------------------- 语句 */
 
@@ -512,6 +514,11 @@ void checkStmt(Checker *c, Stmt *s) {
             markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* 要交出去 ⇒ 用家 ✓ */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
             /* 逃逸①：返回的引用，被指对象必须在参数或静态数据里（深度 0）*/
+            if (getenv("EXTC_DBG_RET3"))
+                fprintf(stderr, "[ret3] %-8s line=%d kind=%d d=%d mentionsParam=%d\n",
+                        c->curFunc?c->curFunc->name:"?", s->line,
+                        (int)s->u.ret.value->kind, exprRefDepth(c, s->u.ret.value),
+                        mentionsParam(s->u.ret.value->type)?1:0);
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }

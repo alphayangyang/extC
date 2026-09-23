@@ -4,6 +4,8 @@
  */
 
 #include "check_internal.h"
+#include <stdlib.h>
+#include <stdio.h>
 
 /* ---------------------------------------------------------------- 逃逸检查
  *
@@ -418,6 +420,18 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
 bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at, 0); }
 
+/* ⭐⭐ 长运行内存：把 **"这个值得装得下第 `at` 层"** 记成一条事实 ✓
+ *
+ * 为什么记在 `promoteInto2` 的**入口**：**每一处"往外存"** 都要过这里
+ * （`checkStoreEscape` / `checkEscape` 都先调它），而它自己就是那个"沿**值的载体链**
+ * 往里走"的函数 ⇒ **不另写一个遍历去找存储点** ⇒ 就没有"漏掉某个存储点"
+ * 的余地（因为根本没有第二个遍历可以漏 ✓）
+ *
+ * ⚠️ 只记 **有限层**（`at >= 1`）：`at == 0` = "要活到帧外"，那一档由 `ARENA_HOME`
+ * 表示，不能再塞回"层号"里去 ✗（两者关系 = `解出来的 L == 0 ⇔ home`）*/
+static void recordLvlFact(Checker *c, Expr *val, int at);
+static void applyLvlFact(Checker *c, Expr *val, int at);
+
 /* **这个值的"根来路"是哪个表达式？**（定义在下面 —— 记来路时用它**压平**链条）*/
 Expr *originOf(Checker *c, Expr *val, int hops);
 
@@ -435,6 +449,16 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     /* ⚠️ **步数上限**：绑定之间可能成环（`a = b  b = a` —— 赋值会更新"来路"）⇒
      * 不设限就是死循环 ✗ 撞上限 = 提不动 = 退回老行为报错（安全方向）✓ */
     if (hops > 32) return false;
+    /* ⭐ 长运行内存：顺手记一条事实（**不改变任何行为** ✓）
+     * ⚠️ 只在**最外层**记（`hops == 0`）：重放时重跑的就是这一层，
+     *   内层那些是它自己走出去的 ⇒ 记下来只会重复劳动 ✓ */
+    if (hops == 0) {
+        if (getenv("EXTC_DBG_FACT"))
+            fprintf(stderr, "[fact] %-8s at=%d kind=%d minAt=%d lexi=%d line=%d\n",
+                    c->curFunc?c->curFunc->name:"?", at, (int)val->kind,
+                    val->minAt, val->lexicalLevel, val->line);
+        recordLvlFact(c, val, at); applyLvlFact(c, val, at);
+    }
     switch (val->kind) {
 
     /* ⭐ `EX_GENCALL` = `alloc<T>(n)` / `allocSlice<T>(n)` —— **B2 之后它和 `new` 完全对称**
@@ -448,6 +472,15 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * ⚠️ 定案 68：那一档现在用 `ARENA_HOME` 表示（以前是拿 0 **兼职**的 ✗ ——
          *    0 在新编码里是"还没定"）⇒ 写回去之前必须翻译一下 ✓ */
         if (at == 0 && !(c->curFunc && c->curFunc->needsHome)) return false;
+        /* ⭐⭐ 走到这里 = **逃逸分析已经沿载体链碰到了这个站点**（不是"因为所在函数
+         * 有家"那种兜底）⇒ 打上"它要活到帧外"的标记 ✓
+         * ⚠️ 必须在**早退之前**：预负已经把有家函数里每个 `new` 都置成了 `ARENA_HOME`
+         * （所以下面那句早退会命中），可那是兜底、不是证据 ✗✗ */
+        /* ⭐ 记下"逃逸分析对它提出的最强要求"（层号越小越强）✓
+         * ⚠️ 不能只记一个布尔："碰过它"≠"要求它活到帧外" ✗
+         *   （`nb = new item[cap*2]` 只需活到当前帧；当成"进家" ⇒ `main` 没有家却吐 `__extc_home` ✗）
+         * ⚠️ 取**最小**：层号越小活得越久，所以"最强的要求"就是最小的那个 ✓ */
+        if (val->minAt < 0 || at < val->minAt) val->minAt = at;
         if (val->arenaLevel == ARENA_HOME) return true;   /* 已经在家：家最长寿，不用再提 ✓ */
         int target = (at == 0) ? ARENA_HOME : at;
         if (val->arenaLevel > target) val->arenaLevel = target;
@@ -528,6 +561,24 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * **不猜**：照旧走原来的深度检查报错 ✓ */
         return false;
     }
+}
+
+static void recordLvlFact(Checker *c, Expr *val, int at) {
+    if (!c || !val || at < 1) return;
+    if (c->lvlSolving) return;    /* ⭐ 解算期不记账 ✗（否则无限长 —— 真踩到）*/
+    LvlFact *f = (LvlFact *)arenaAllocZero(c->arena, sizeof(LvlFact));
+    f->val = val;
+    f->at  = at;
+    *(LvlFact **)vecPush(&c->lvlFacts) = f;
+}
+
+/* ⭐ 把一条事实应用到站点上 —— **取最强的要求**（层号最小）✓
+ * 它跟 `promoteInto` 是两件事（一个是"记事实"，一个是"改层号"），
+ * 但**跑在同一次遍历里**（都在 `promoteInto2` 的入口）⇒ 不可能漏一处 ✓ */
+static void applyLvlFact(Checker *c, Expr *val, int at) {
+    (void)c;
+    if (!val || at < 0) return;
+    if (val->minAt < 0 || at < val->minAt) val->minAt = at;
 }
 
 Expr *originOf(Checker *c, Expr *val, int hops) {

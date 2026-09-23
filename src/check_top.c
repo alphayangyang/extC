@@ -5,6 +5,8 @@
 
 #include "check_internal.h"
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdlib.h>
 
 #include <stdlib.h>   /* getenv（EXTC_DUMP_EFFECTS 这个调试开关）*/
@@ -1276,6 +1278,105 @@ static void collectEffects(Checker *c, FuncDef *f) {
                 (int)f->addrFromLocal, f->freshCount, f->callees.len);
 }
 
+/* ⭐ 长运行内存：**用"解算完之后"的层号回答《这个值里的引用指多深》** ✓
+ *
+ * 为什么需要它：`recordRefCheck` 冻的是"查模板体那一刻"的深度，而**解算会把一些
+ * 站点从家 arena 放回块层** ⇒ 冻下的那份是**旧世界的数** ✗
+ * （实测：`varArray<T>::withCap` 的 `return v` 在模板那轮冻下 `depth=1`，
+ *   而它里面那个 `new T[cap]` 已被解算正确地放在家 arena（深度 0）
+ *   ⇒ 实例复查报 "depth 1, but this can only hold up to 0"，而真相是 0 ✗✗）
+ *
+ * 为什么不能直接用 `exprRefDepth`：它对绑定（`EX_IDENT`）要 `lookup()`，而
+ * `runRefCheck` 跑在**别的模块的作用域**里 ⇒ 查到的绑定不是当初那个 ✗（试过，数据漂了）
+ * 而这里读的是**节点上那些已经定死的层号** ⇒ 跟作用域无关 ✓
+ * 取上界：只可能**更松** ⇒ 只可能把误拒变成通过 ✓ */
+/* ⭐ 重算只允许用在**"深度由解算器决定"的形状**上 ✗✗
+ *
+ * 为什么：重算能把 `rc->depth` 调小（只能变宽松），而**绑定**（`EX_IDENT`）的深度
+ * 是 `check_stmt` 在当时的作用域里算好的，跟解算无关 ✗
+ * 真踩到：`tests/errors/generic_return_local.extc`（泛型体 `return local`，`T = slice<u8>`）
+ *   模板期冻下 `depth=1`（对的），而重算对那个绑定答了 **0**
+ *   （它的站点当时还是"未定"的哨兵态 —— 而那个哨兵态的 `refDepth` 就是 0 ✗）
+ *   ⇒ 实例复查把它放过了 ⇒ **真的悬垂** ✗✗
+ *
+ * 正确判据：只有当这个值的深度**真的由某个分配站点决定**时，
+ * 重算才是权威（那正是当初需要它的理由：解算会把站点从家放回块层 ✓）。
+ * 其余形状（绑定 / 调用结果 / 参数派生）一律**不下调** —— 保守方向 = 宁可误拒 ✓ */
+static bool depthComesFromAlloc(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_NEW: case EX_GENCALL: return true;
+    case EX_SIGN:     return depthComesFromAlloc(e->u.sign.operand);
+    case EX_SLICE:    return depthComesFromAlloc(e->u.slice.obj);
+    case EX_COALESCE: return depthComesFromAlloc(e->u.coalesce.main)
+                          || depthComesFromAlloc(e->u.coalesce.fallback);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (depthComesFromAlloc((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (depthComesFromAlloc(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (depthComesFromAlloc(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+        return false;
+    default: return false;   /* 绑定 / 字段 / 调用结果 / 解引用 ⇒ **不算** ✓ */
+    }
+}
+
+static int solvedValDepth(Expr *e) {
+    if (!e) return 0;
+    switch (e->kind) {
+    case EX_NEW: case EX_GENCALL:
+        return (e->arenaLevel == ARENA_HOME) ? 0 : (e->refDepth > 0 ? e->refDepth : 0);
+    case EX_IDENT: case EX_FIELD: case EX_INDEX:
+        return e->refDepth > 0 ? e->refDepth : 0;
+    case EX_SIGN:     return solvedValDepth(e->u.sign.operand);
+    case EX_DEREF:    return solvedValDepth(e->u.deref.operand);
+    case EX_SLICE:    return solvedValDepth(e->u.slice.obj);
+    case EX_COALESCE: {
+        int a = solvedValDepth(e->u.coalesce.main);
+        int b = solvedValDepth(e->u.coalesce.fallback);
+        return a > b ? a : b;
+    }
+    case EX_STRUCTLIT: {
+        int d = 0;
+        for (size_t i = 0; i < e->u.lit.inits.len; i++) {
+            int x = solvedValDepth((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value);
+            if (x > d) d = x;
+        }
+        return d;
+    }
+    case EX_ARRAYLIT: {
+        int d = 0;
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++) {
+            int x = solvedValDepth(*(Expr **)vecAt(&e->u.arraylit.elems, i));
+            if (x > d) d = x;
+        }
+        return d;
+    }
+    case EX_ENUMVAL: {
+        int d = 0;
+        for (size_t i = 0; i < e->u.enumval.args.len; i++) {
+            int x = solvedValDepth(*(Expr **)vecAt(&e->u.enumval.args, i));
+            if (x > d) d = x;
+        }
+        return d;
+    }
+    case EX_CALL: {
+        int d = 0;
+        for (size_t i = 0; i < e->u.call.args.len; i++) {
+            int x = solvedValDepth(*(Expr **)vecAt(&e->u.call.args, i));
+            if (x > d) d = x;
+        }
+        return d;
+    }
+    default: return 0;
+    }
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     /* ⭐ 定案 72：外部声明**没有体** ⇒ 只查签名（参数类型在别处已经解析过 ✓）*/
     if (f->isExtern) {
@@ -1589,6 +1690,11 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         c->substArgs   = NULL;
         if (!typeContainsRef(tt, vt)) return;
 
+        /* ⭐ 用"解算完之后"的层号重算一次（取 ≤：只可能更紧 ✓）*/
+        if (depthComesFromAlloc(rc->val)) {
+            int now = solvedValDepth(rc->val);
+            if (now < rc->depth) rc->depth = now;
+        }
         if (rc->depth > rc->at) {
             ckError(c, rc->line,
                     "A generic body is checked once on the template, where `T` is"
@@ -1649,6 +1755,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.callChecks, arena, sizeof(void *));   /* ⭐ PLAN #50：推迟的调用点 ✓ */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* ⭐ B4′：E 敏感的 arena 决策记录 ✓ */
+    vecInit(&c.lvlFacts, arena, sizeof(LvlFact *));    /* ⭐ 长运行内存："被存到第 k 层"的事实表 ✓ */
     /* ⚠️ R1（反例库 R1a/R1b）：`curArenaSites` 以前**只在 `checkFunc` 里** `vecInit`，
      * 而 `checkGlobals` 跑在第一个 `checkFunc` **之前** ⇒ 顶层初始化式里只要有
      * `new`（`var G = new i32`）或有家调用（`let G = helper()`），
@@ -1984,26 +2091,102 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             rec->call->arenaArgPending = false;
         }
 
-        int fixed = 0;
+        /* ⭐⭐ 长运行内存：**把"被存到第 k 层"的事实表重放到不动点** ✓
+         *
+         * 为什么要反复：一条事实只能推动**它碰到的那些站点**，而那些站点
+         * 变长寿之后又会让**别的**事实推得动 ⇒ 得轮到没变化为止 ✓
+         * （跟 `EArenaSite` 那个"跑四轮"、`needsHome` 的传递闭包是**同一件事** ✓）
+         *
+         * 为什么这样就对：层号 = **越小活得越久**，而一个站点的最终层号
+         * = **它碰到的所有约束里最小的那个**。`promoteInto` 只会往小改
+         * （只会拉长寿命）⇒ 重放是**单调**的 ⇒ 一定收敛，而且收敛到的就是
+         * 那个最小值 ✓（上限 32 轮 = 与它自己的环保护同一个数 ✓）*/
+        int solveRounds = 0;
+        c.lvlSolving = true;                     /* ⭐ 重放期不许再记账 ✗（真踩到过）*/
+        size_t nFacts = c.lvlFacts.len;          /* 快照：事实表在解算期**不变** ✓ */
+        for (int round = 0; round < 32; round++) {
+            bool changed = false;
+            for (size_t i = 0; i < nFacts; i++) {
+                LvlFact *f = *(LvlFact **)vecAt(&c.lvlFacts, i);
+                if (!f || !f->val) continue;
+                if (promoteInto(&c, f->val, f->at)) changed = true;
+            }
+            solveRounds++;
+            if (!changed) break;
+        }
+        c.lvlSolving = false;
+        if (getenv("EXTC_DUMP_LVL"))
+            fprintf(stderr, "[lvl] 事实 %zu 条，重放 %d 轮收敛\n",
+                    c.lvlFacts.len, solveRounds);
+
+        int fixed = 0, keptBlock = 0;
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
-            if (!f->needsHome) continue;
             for (size_t j = 0; j < f->arenaSites.len; j++) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
                 if (site->kind == EX_NEW || site->kind == EX_GENCALL) {
-                    /* 分配：有家 ⇒ 每处 `new` / `alloc` 都进家 ✓
-                     * ⭐ B2：`EX_GENCALL` 是 `alloc<T>` / `allocSlice<T>` —— 它以前**不在
-                     * `arenaSites` 里**（`check_expr.c` 的 EX_NEW 支才登记）⇒ 这里看不见它
-                     * ⇒ 有家函数里的 `alloc` 留在块层 ⇒「返回 alloc 出来的东西」整族被误拒 ✗
-                     * ⇒ 现在两种分配一视同仁 ✓ */
-                    if (site->arenaLevel != ARENA_HOME) { site->arenaLevel = ARENA_HOME; fixed++; }
+                    /* ⭐ 解算完了 ⇒ 现在**唯一权威**地定它的去处 ✓
+                     *   · `escaped`（= 无论哪条路径碰到过它，那条路径都说"要活到帧外"）
+                     *     ⇒ 进家 arena（家 = 调用者选的那只）✓
+                     *   · 否则 ⇒ **留在解出来的那层块口袋	extbf{（循环里 = 每轮回收 ✓）}
+                     * ⚠️ 以前这里是**无条件**兜底："有家函数里每个 `new` 都进家"
+                     *   ⇒ 那些**根本没逃出去**的每轮临时对象也被钉在家，到帧结束才回收 ✗✗
+                     *   实测：主人的 50/25/25 形状 2e6 轮 **98 MB**；同形状容器内联写只要 50 MB ✗ */
+                    if (getenv("EXTC_DBG_SITE2"))
+                        fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
+                                f->name?f->name:"?", site->minAt, site->lexicalLevel,
+                                site->arenaLevel, f->needsHome?1:0, (int)site->kind);
+                    if (getenv("EXTC_DBG_S3"))
+                        fprintf(stderr, "[s3] %-8s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
+                                f->name?f->name:"?", site->minAt, site->lexicalLevel,
+                                site->arenaLevel, f->needsHome?1:0, (int)site->kind);
+                    int want;                            /* ⭐ 它最终该住哪只口袋 ✓ */
+                    if (site->minAt == 0) {
+                        want = ARENA_HOME;               /* "要活到帧外" ⇒ 家 arena ✓ */
+                    } else if (site->minAt >= 1) {
+                        want = site->minAt;              /* "活到第 k 层" ⇒ 第 k 层块口袋 ✓ */
+                    } else {
+                        /* 没被任何约束碰过 ⇒ 用它自己那层 ✓
+                         * ⚠️ 不能看 `arenaLevel`：预负已经把有家函数里的都改成了哨兵 ✗ */
+                        want = site->lexicalLevel >= 1 ? site->lexicalLevel : 1;
+                    }
+                    if (site->arenaLevel != want) {
+                        site->arenaLevel = want;
+                        site->refDepth   = (want == ARENA_HOME) ? 0 : want;
+                        if (want == ARENA_HOME) fixed++; else keptBlock++;
+                    }
                 } else if (site->arenaArgPending) {
-                    /* 调用点：pending 的那一档 ⇒ "有家传家" ✓ */
-                    site->arenaArg = ARENA_HOME;
-                    site->arenaArgPending = false;
-                    fixed++;
+                    /* 调用点：pending 的那一档 ⇒ "有家传家" ✓
+                     * ⚠️ 这一档**不能**跟着上面改窄 —— `arenaArg` 是"给被调者的 arena"，
+                     *   被调者可能把东西存进**调用者的容器**（那容器活得比本帧久）
+                     *   ⇒ "本帧没逃出去"完全不能作为依据 ✗ */
+                    if (f->needsHome) {
+                        site->arenaArg = ARENA_HOME;
+                        site->arenaArgPending = false;
+                        fixed++;
+                    }
                 }
             }
+        }
+        if (getenv("EXTC_DUMP_LVL"))
+            fprintf(stderr, "[lvl] 定案：%d 处进家 / %d 处留块层\n", fixed, keptBlock);
+
+        /* ⭐ 解算完了 ⇒ **把"推迟到实例化再查"的那些深度重算一遍** ✓
+         * （它们冻的是**解算之前**的数 —— 而定案可能把站点从家放回了块层 ✗）
+         * 实测：`varArray<T>::withCap` 的 `return v` 在模板那一轮冻下 `depth=1`，
+         *   而它里面那个 `new T[cap]` 已经被正确地放在家 arena（深度 0）
+         *   ⇒ 实例复查报 "depth 1, but this can only hold up to 0"，而真相是 0 ✗✗
+         * ⚠️ 只对 `depthComesFromAlloc` 的形状重算，而且**只下调** ✓
+         *   （对绑定重算会把 `generic_return_local` 那种该拒的放过 ✗ —— 真踩到过）*/
+        for (size_t i = 0; i < c.refChecks.len; i++) {
+            RefCheck *rc = *(RefCheck **)vecAt(&c.refChecks, i);
+            if (!rc || !rc->val) continue;
+            if (!depthComesFromAlloc(rc->val)) continue;
+            /* ⭐ **无条件重算**（不是只下调）—— 因为"解算前冻的那个数"可能**偏低**：
+             * 模板那一轮 `new T[cap]` 的 `refDepth` 还是哨兵态的 0，而解算后它可能是 1 ✗
+             * （实测：`container-of-view` 的 `[post] … frozen=0 … now=1`）
+             * 只对 `depthComesFromAlloc` 的形状做，所以绑定（参数派生/调用结果）不会被放松 ✓ */
+            rc->depth = solvedValDepth(rc->val);
         }
         if (getenv("EXTC_DUMP_OW"))
             fprintf(stderr, "[arena] 唯一权威：%d 处（`new` / 调用点）落到了家 arena ✓\n", fixed);
