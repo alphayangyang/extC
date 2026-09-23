@@ -1,28 +1,40 @@
-/* 模块装载（定案 70）—— **语义导入 + 单 TU**
+/* Module loading: semantic imports into a single translation unit.
  *
- * 主人拍板的形状（`MODULES.md` §4 方案 A）：**一个文件就是一个模块**，
- * `use std::io` 是**语义导入**（不是 C 的文本包含 ✗），路径用 `::`，
- * **默认公开**、要藏就写 `@private`，**禁止 import 环**，
- * 而且**仍然只吐一个 .c**（保住 PLAN #37 的全 static 向量化收益 ✓）
+ * One file is one module. `use std::io` is a semantic import, not a textual include:
+ * the file is parsed on its own, its declarations are merged into the program, and
+ * the compiler still emits a single C file, so everything internal can stay `static`.
+ * Paths use `::`, declarations are public unless marked `@private`, and an import
+ * cycle is refused.
  *
- * 做法上刻意把**全部模块机制塞在装载器里**，检查器与 codegen 几乎不动：
+ * All of the module machinery lives in this loader, so the checker and codegen stay
+ * almost untouched:
  *
- *   ① 根文件的 `use` ⇒ 解析路径 ⇒ 找文件（引用者目录 / `-I` / `$EXTC_STD`）
- *   ② 递归装载，**状态机查环**（正在装载的又被 use ⇒ 报错 ✓）
- *   ③ **后序**（依赖先）把每个模块的声明合进主 Module —— 跟 prelude 同一条路 ✓
- *   ④ **在检查之前**把限定名解析掉：
- *        `io::readLine(...)`   ⇒ 平名字 + 改写成 EX_CALL ✓
- *        `io::STDIN`           ⇒ 平名字 + 改写成 EX_IDENT ✓
- *        `io::File`（类型位置）⇒ 平名字 ✓
- *      ⇒ 检查器看到的还是它熟悉的那张平表 ✓（它一行都不用改 ✓）
+ *   1. A `use` in the root file resolves to a path and then to a file: next to the
+ *      importing file, in a `-I` directory, or in the standard library directory.
+ *   2. Modules load recursively. A state flag on each unit detects cycles: a module
+ *      that is asked for while it is still loading is a cycle, and that is an error.
+ *   3. Each module's declarations are merged into the main Module in post-order, so
+ *      a dependency is merged before the declarations that need it - the very path
+ *      the prelude takes.
+ *   4. Qualified names are resolved before the checker runs:
+ *        `io::readLine(...)`    -> flat name, rewritten into EX_CALL
+ *        `io::STDIN`            -> flat name, rewritten into EX_IDENT
+ *        `io::File` (in a type) -> flat name
+ *      The checker therefore still sees the flat table it was written against and
+ *      needs no change at all.
  *
- * ⚠️ **v1 的诚实限制**（写在这里，别让文档说谎 ✗）：
- *   · 顶层名字要求**全局唯一**：两个模块各有一个私有 `helper` 现在会被"重名"挡下
- *     （错误信息会说清是模块之间的重名）。真正的 per-module 命名空间（mangle）是下一步 ✓
- *   · **不带限定地引用别的模块的名字（函数/全局）暂时合法**（检查器那张平表就是那样）
- *     ⇒ `@private` 现在挡的是**限定引用**这一路 ✓ 下一步在解析处统一挡 ✓
- *   · 两个 `use` 的**短名撞车**（`a::util` 与 `b::util`）⇒ 报错要求改名 ✓
+ * Limits of the current implementation, stated plainly:
+ *   - Top-level names must be globally unique. Two modules that each declare a
+ *     private `helper` are rejected as a duplicate name today, and the message says
+ *     that the clash is between modules. A real per-module namespace is future work.
+ *   - Referring to another module's function or global *without* a qualifier still
+ *     works, because the checker sees one flat table. So `@private` currently blocks
+ *     only the qualified form, and blocking the unqualified form belongs in name
+ *     resolution.
+ *   - Two imports whose last path segment is the same (`a::util`, `b::util`) cannot
+ *     be told apart in the source, so that is an error asking the user to rename one.
  */
+
 #define _POSIX_C_SOURCE 200809L
 
 #include "modules.h"
@@ -31,11 +43,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>   /* readlink：找 <extc>/../stdlib ✓ */
+#include <unistd.h>   /* readlink: locate `<extc>/../stdlib` */
 
-/* ---------------------------------------------------------------- 小工具 */
+/* -------------------------------------------------------------- small helpers */
 
-/* ⚠️ 长度必须**带出来**（第一版忘了 ⇒ 模块被当成空文件，而且症状很隐蔽 ✗）*/
+/* Read a whole file into the arena, NUL-terminated.
+ *
+ * Params:
+ *   a      - arena that owns the buffer
+ *   path   - file to read
+ *   outLen - receives the number of bytes actually read
+ *
+ * Returns:
+ *   The file contents, or NULL when it cannot be opened, seeked, or sized.
+ *
+ * Notes:
+ *   - The length must be reported back. An early version dropped it, and callers
+ *     that lex from a length then treated the module as an empty file - a failure
+ *     that shows up far away from its cause.
+ *   - The length is the byte count `fread` returned, not the size reported by the
+ *     file system, so a file that shrinks mid-read is still terminated correctly.
+ */
+
 static char *readWhole(Arena *a, const char *path, size_t *outLen) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -51,6 +80,7 @@ static char *readWhole(Arena *a, const char *path, size_t *outLen) {
     return buf;
 }
 
+/* Report whether `path` can be opened for reading. */
 static bool fileExists(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -58,7 +88,7 @@ static bool fileExists(const char *path) {
     return true;
 }
 
-/* `dir/io.extc` ⇒ `io`（模块短名 ✓）*/
+/* Take the module short name out of a path: `dir/io.extc` -> `io`. */
 static const char *baseNameNoExt(Arena *a, const char *path) {
     const char *slash = strrchr(path, '/');
     const char *base = slash ? slash + 1 : path;
@@ -67,7 +97,7 @@ static const char *baseNameNoExt(Arena *a, const char *path) {
     return arenaStrndup(a, base, n);
 }
 
-/* `std::io` ⇒ `std/io`（模块路径 ⇒ 相对路径 ✓）*/
+/* Turn a module path into a relative file path: `std::io` -> `std/io`. */
 static char *pathToRel(Arena *a, const char *modPath) {
     Buf b;
     bufInit(&b, a);
@@ -78,54 +108,94 @@ static char *pathToRel(Arena *a, const char *modPath) {
     return bufCstr(&b);
 }
 
-/* `dir/io.extc` ⇒ `dir`；没有斜杠 ⇒ `.` ✓ */
+/* Directory part of a path: `dir/io.extc` -> `dir`; no slash means `.`. */
 static char *dirOf(Arena *a, const char *path) {
     const char *slash = strrchr(path, '/');
     if (!slash) return arenaStrndup(a, ".", 1);
     return arenaStrndup(a, path, (size_t)(slash - path));
 }
 
-/* ---------------------------------------------------------------- 装载状态 */
+/* ------------------------------------------------------------- loader state */
 
+/* One rename entry: a declaration's source name and the name it was given. */
 typedef struct { const char *from; const char *to; } Ren;
 
+/* One loaded module together with the state of its loading. */
 typedef struct {
-    const char *file;       /* 解析到的路径（唯一键 ✓）*/
-    const char *modName;    /* 短名 */
-    Module      mod;
-    Ctx        *ctx;        /* **它自己的 Ctx** ⇒ 报错走它，文件与源码行才是对的 ✓
-                             * ⚠️ 根那个单元指向调用者给的 ctx（**不能是副本**，
-                             *    副本会把诊断吞掉 ✗）*/
-    int         state;      /* 0 = 没开始，1 = 正在装载（查环），2 = 好了 ✓ */
-    /* ⭐ 模块 mangle：`源码名 → mangle 名`（`pair` → `liba$pair`）✓ */
+    const char *file;       /* resolved path; the unique key for this module */
+    const char *modName;    /* short name (the file name without `.extc`); NULL for the root */
+    Module      mod;        /* its own parsed declarations, before merging */
+    Ctx        *ctx;        /* its own source context, so a diagnostic names the right
+                             * file and line. The root unit points at the context the
+                             * caller passed in, by pointer: a copy would swallow the
+                             * diagnostics reported through it. */
+    int         state;      /* 0 = not started, 1 = loading (this detects a cycle),
+                             * 2 = done */
+    /* Source name -> generated name for every declaration of this module, so that a
+     * reference written in this module can be mapped to the name that was emitted
+     * (`pair` -> `liba$pair`). */
     Vec         ren;        /* Ren* */
 } ModUnit;
 
+/* Everything one call to `loadModules` needs while it runs. */
 typedef struct {
-    Arena     *a;
-    Module    *out;         /* 主 Module（prelude 已经在里面 ✓）*/
-    Vec        units;       /* ModUnit* —— 装载过的（查重用）*/
-    Vec        order;       /* ModUnit* —— **后序**（= 拓扑序 ✓）*/
-    Vec       *ctxs;        /* Ctx* —— 交给上层渲染报错 ✓（**指针**：len 要传出去 ✗ 别按值拷）*/
-    Vec        searchDirs;  /* const char*（`-I` ✓）*/
-    const char *rootDir;    /* 项目根 = 入口文件所在目录（`use a::b` 一律相对它 ✓）*/
-    const char *stdDir;     /* 标准库目录（`std/io.extc` 住那儿 ✓）*/
-    int         errors;
+    Arena     *a;           /* arena that owns every unit and every generated name */
+    Module    *out;         /* the merged module; the prelude is already in it */
+    Vec        units;       /* ModUnit* - every unit loaded so far, for the duplicate check */
+    Vec        order;       /* ModUnit* - post-order, which is a topological order */
+    Vec       *ctxs;        /* Ctx* - the source context of each loaded unit, so the
+                             * caller can render their diagnostics. Kept as a pointer:
+                             * the length has to reach the caller, so it must not be
+                             * copied by value. */
+    Vec        searchDirs;  /* const char* - directories from `-I` */
+    const char *rootDir;    /* project root, the directory of the entry file; every
+                             * `use a::b` is resolved relative to it */
+    const char *stdDir;     /* standard library directory holding `std/io.extc` */
+    int         errors;     /* number of errors reported; non-zero means the load failed */
 } Loader;
 
-/* ⭐ 模块 mangle：`name` 加模块前缀（`io$readLine`）。**根模块不加** ✓
- * 为什么用 `$`：C 里合法、extC 标识符里不允许 ⇒ 天然不撞用户名字 ✓ */
+/* Prefix a declaration name with its module name: `readLine` -> `io$readLine`.
+ *
+ * Params:
+ *   L    - loader whose arena owns the built string
+ *   u    - the declaration's unit; a NULL or empty module name leaves `name` alone,
+ *          which is how the root file keeps its names and stays the entry point
+ *   name - the source name
+ *
+ * Returns:
+ *   The prefixed name, or `name` unchanged for the root module.
+ *
+ * Notes:
+ *   - `$` is legal in a C identifier and illegal in an extC identifier, so a
+ *     generated name can never collide with a name the user wrote.
+ *   - The result lives in the arena, and another `arenaPrintf` may reuse that buffer.
+ *     Compute every name first and only then store the pointers (see
+ *     `mangleUnitDecls`).
+ */
+
 static const char *mangleName(Loader *L, ModUnit *u, const char *name) {
     if (!u->modName || !*u->modName) return name;
     return arenaPrintf(L->a, "%s$%s", u->modName, name);
 }
 
-/* ⚠️⚠️ **`extern!` 的名字是 ABI，绝不能加前缀** ✗
- * `extern!("libc") fn read(…)` 里的 `read` 是**链接器要去找的符号名** ——
- * 改成 `sys$read` 只会得到一个 `undefined reference to sys$read`，
- * 而报错来自 ld，跟"模块改名"八竿子打不着，极难反查 ✗（真踩过：
- * `tests/io` 整个跑不起来，`stdlib/std/sys.extc` 里每个原语都踩）
- * ⇒ 这类声明**一律保留原名**（回程票登记成自己 ⇒ 模块内引用也不用改 ✓）*/
+/* Report whether `name` is declared by an `extern!` in this module.
+ *
+ * An `extern!` name is the symbol the linker has to find, so it must never be
+ * prefixed: `extern!("libc") fn read(...)` declared as `sys$read` only produces
+ * `undefined reference to sys$read`, reported by the linker and hard to trace back to
+ * module renaming. Every libc primitive in the standard library's system module hit
+ * this, which made the whole io test suite fail to link.
+ *
+ * Params:
+ *   src  - the module to search
+ *   name - the function name to look for
+ *
+ * Returns:
+ *   True when the module declares `name` as an external function, in which case the
+ *   name is kept and its return ticket maps it to itself, so references inside the
+ *   module need no rewrite either.
+ */
+
 static bool externKeepsName(Module *src, const char *name) {
     for (size_t i = 0; i < src->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&src->funcs, i);
@@ -133,8 +203,21 @@ static bool externKeepsName(Module *src, const char *name) {
     }
     return false;
 }
-/* 按**目标单位**查它的 mangle 名。
- * ⚠️ 不能按"调用者"查：根文件的 modName 是 NULL ⇒ 会早退 ⇒ 引用一条都改不到 ✗（踩过）*/
+/* Look up the name a declaration received, in the unit that declares it.
+ *
+ * Params:
+ *   target - the unit whose rename table is consulted
+ *   name   - the source name
+ *
+ * Returns:
+ *   The generated name, or `name` when the unit has no rename for it.
+ *
+ * Notes:
+ *   - The lookup must use the *target* unit and not the caller. The root file has a
+ *     NULL module name, so a lookup keyed on the caller would return early and leave
+ *     every reference from the root file unrenamed.
+ */
+
 static const char *renOfTarget(ModUnit *target, const char *name) {
     if (!target || !target->modName || !*target->modName) return name;
     for (size_t i = 0; i < target->ren.len; i++) {
@@ -143,7 +226,21 @@ static const char *renOfTarget(ModUnit *target, const char *name) {
     }
     return name;
 }
-/* 调用者自己单元里的 mangle 名（四个 unit* 查表助手要用 ✓）*/
+/* Look up `name` in a unit's own rename table.
+ *
+ * Params:
+ *   u    - the unit whose own declarations are searched
+ *   name - the source name written in that unit
+ *
+ * Returns:
+ *   The generated name, or NULL when this unit declares nothing of that name.
+ *
+ * Notes:
+ *   - Only names this unit itself declares are mapped. Mapping "any name any module
+ *     exports" would silently rewrite a local reference to another module's
+ *     declaration, which compiles and quietly means something else.
+ */
+
 static const char *renLookup(ModUnit *u, const char *name) {
     if (!u || !u->modName || !*u->modName) return name;
     for (size_t i = 0; i < u->ren.len; i++) {
@@ -153,6 +250,16 @@ static const char *renLookup(ModUnit *u, const char *name) {
     return NULL;
 }
 
+/* Find the unit already loaded from `file`.
+ *
+ * Params:
+ *   L    - loader
+ *   file - the resolved path, which is the unique key of a unit
+ *
+ * Returns:
+ *   The unit, or NULL when this file has not been loaded.
+ */
+
 static ModUnit *findUnit(Loader *L, const char *file) {
     for (size_t i = 0; i < L->units.len; i++) {
         ModUnit *u = *(ModUnit **)vecAt(&L->units, i);
@@ -161,8 +268,23 @@ static ModUnit *findUnit(Loader *L, const char *file) {
     return NULL;
 }
 
-/* 找 `use` 指向的文件：**离引用它的文件最近的先找** ✓
- * 找不到就把找过的地方都印出来（不然用户只能猜 ✗）*/
+/* Find the file a `use` names, searching the closest directory first.
+ *
+ * The search order is the project root, then the `-I` directories in the order they
+ * were given, then the standard library directory. The first hit wins, so a project
+ * library shadows a standard one of the same name.
+ *
+ * Params:
+ *   L            - loader (supplies the root and search directories)
+ *   modPath      - the module path as written, e.g. `std::io`
+ *   importerFile - the file containing the `use`, named in the diagnostic
+ *
+ * Returns:
+ *   The resolved path, or NULL after reporting an error. The diagnostic lists every
+ *   path that was tried, because otherwise the user can only guess where the loader
+ *   looked.
+ */
+
 static char *resolveModFile(Loader *L, const char *modPath, const char *importerFile) {
     char *rel  = pathToRel(L->a, modPath);
     char *cand = arenaPrintf(L->a, "%s.extc", rel);
@@ -195,7 +317,17 @@ static char *resolveModFile(Loader *L, const char *modPath, const char *importer
     return NULL;
 }
 
-/* `a::b` 里的 `a` 是**本模块自己声明的类型**吗？（那它就是 `Type::assoc`，不是模块 ✓）*/
+/* Report whether `name` is a type this module declares itself.
+ *
+ * Params:
+ *   self - the unit being rewritten
+ *   name - the left-hand side of a `a::b` form
+ *
+ * Returns:
+ *   True when the module declares a struct or enum of that name, in which case `a::b`
+ *   is an associated item of that type and not a module reference at all.
+ */
+
 static bool isOwnType(ModUnit *self, const char *name) {
     for (size_t i = 0; i < self->mod.structs.len; i++)
         if (strcmp((*(StructDef **)vecAt(&self->mod.structs, i))->name, name) == 0) return true;
@@ -204,7 +336,22 @@ static bool isOwnType(ModUnit *self, const char *name) {
     return false;
 }
 
-/* 静默探测：`a::b` 那个模块**存不存在**？（决定报"没 use"还是"不是模块" ✓）*/
+/* Report whether a file for `modPath` exists anywhere on the search path.
+ *
+ * Params:
+ *   L       - loader (supplies the search directories)
+ *   modPath - the module path as written
+ *
+ * Returns:
+ *   True when some search directory holds the file.
+ *
+ * Notes:
+ *   - Silent on purpose, and the two cases it separates need different messages: a
+ *     module that exists but was not imported is a missing `use`, while a name that
+ *     matches no file at all is not a module. Reporting "not imported" for the second
+ *     case sends the user looking in the wrong place.
+ */
+
 static bool moduleExists(Loader *L, const char *modPath) {
     char *cand = arenaPrintf(L->a, "%s.extc", pathToRel(L->a, modPath));
     char *p = arenaPrintf(L->a, "%s/%s", L->rootDir, cand);
@@ -218,10 +365,24 @@ static bool moduleExists(Loader *L, const char *modPath) {
     return false;
 }
 
-/* ---------------------------------------------------------------- 声明查找 */
+/* ------------------------------------------------------- declaration lookup */
+
+/* Find a function declared by this unit.
+ *
+ * Params:
+ *   u    - the unit to search
+ *   name - the source name the caller wrote
+ *
+ * Returns:
+ *   The declaration, or NULL when the unit declares nothing of that name.
+ *
+ * Notes:
+ *   - The caller always passes a source name, while a declaration may already carry
+ *     its generated name, so the rename table is consulted first.
+ */
 
 static FuncDef *unitFunc(ModUnit *u, const char *name) {
-    /* ⚠️ 调用者给**源码名**，而声明已被 mangle ⇒ 先查 ren 表 ✓ */
+    /* The caller passes a source name, the declaration may be renamed: try the table. */
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.funcs.len; i++) {
@@ -230,8 +391,19 @@ static FuncDef *unitFunc(ModUnit *u, const char *name) {
     }
     return NULL;
 }
+
+/* Find a global declared by this unit.
+ *
+ * Params:
+ *   u    - the unit to search
+ *   name - the source name the caller wrote
+ *
+ * Returns:
+ *   The declaration, or NULL when the unit declares nothing of that name.
+ */
+
 static GlobalDef *unitGlobal(ModUnit *u, const char *name) {
-    /* ⚠️ 调用者给**源码名**，而声明已被 mangle ⇒ 先查 ren 表 ✓ */
+    /* Same as `unitFunc`: a source name in, a possibly renamed declaration out. */
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.globals.len; i++) {
@@ -240,12 +412,25 @@ static GlobalDef *unitGlobal(ModUnit *u, const char *name) {
     }
     return NULL;
 }
-/* ⚠️ **两个名字都要认**：`mergeUnit` 是**原地**改名（`d->name` 被直接改掉），而根文件的
- * 限定名解析发生在合并**之后** ⇒ 这时 `u->mod.structs` 里已经是 `e1$color` 了，
- * 只按源码名 `color` 找会**找不到** ⇒ `e1::color` 被误判成"模块里没这个东西"✗
- * （踩过：报的是 `undefined name \`color\``，指向的跟真因差着十万八千里）*/
+
+/* Find a struct declared by this unit, accepting either of its names.
+ *
+ * `mergeUnit` renames declarations in place, and the root file's qualified names are
+ * resolved after that merge, so by the time this runs the table already holds
+ * `e1$color` and a search keyed on the source name `color` alone finds nothing:
+ * `e1::color` is then rejected as "the module has nothing named color", which blames
+ * a name that is nowhere near the real cause.
+ *
+ * Params:
+ *   u    - the unit to search
+ *   name - the source name the caller wrote
+ *
+ * Returns:
+ *   The declaration, or NULL when the unit has no struct of either name.
+ */
+
 static StructDef *unitStruct(ModUnit *u, const char *name) {
-    /* ⚠️ 调用者给**源码名**，而声明可能已被 mangle ⇒ 两种名字都试 ✓ */
+    /* The caller passes a source name, the declaration may be renamed: try both. */
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.structs.len; i++) {
@@ -254,8 +439,22 @@ static StructDef *unitStruct(ModUnit *u, const char *name) {
     }
     return NULL;
 }
+
+/* Find a type declaration of this unit, accepting either of its names.
+ *
+ * Params:
+ *   u    - the unit to search
+ *   name - the source name the caller wrote
+ *
+ * Returns:
+ *   The declaration, or NULL when the unit has no enum of either name.
+ *
+ * Notes:
+ *   - Renaming behaves exactly as in `unitStruct`.
+ */
+
 static TypeDef *unitType(ModUnit *u, const char *name) {
-    /* ⚠️ 同上 ✓ */
+    /* Same as `unitStruct`. */
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.types.len; i++) {
@@ -265,14 +464,27 @@ static TypeDef *unitType(ModUnit *u, const char *name) {
     return NULL;
 }
 
-/* ⭐ 这个模块 `use` 了**全名**叫 `qname` 的吗？（PLAN #53）
+/* Find the module this unit imports under the full path `qname`.
  *
- * ⚠️ 为什么必须有这一条：`UseDecl` 有**两个**字段 ——
- *   `path = "std::sys::io"`（用户写的全名）· `shortName = "io"`（最后一段）✓
- *   而 `importedAs` 只按**短名**匹配 ⇒ `std::sys::io::STDOUT` 这种写法
- *   拿着全名去问，永远问不到（我实测过：`use std::sys::io` 明明在表里，
- *   报的却是"`std` is not imported" ✗）✓
- * ⇒ 判据两条：**写短名对短名、写全名对全名** —— 两者都指向同一个模块 ✓ */
+ * Params:
+ *   L     - loader
+ *   self  - the unit whose `use` list is searched
+ *   qname - a full module path as written, e.g. `std::sys::io`
+ *
+ * Returns:
+ *   The imported unit, or NULL when no import names that path.
+ *
+ * Notes:
+ *   - This has to exist next to the short-name lookup because a `UseDecl` carries two
+ *     names: `path`, the full path the user wrote (`std::sys::io`), and `shortName`,
+ *     its last segment (`io`). Matching on the short name alone means a reference
+ *     written as `std::sys::io::STDOUT` asks with a full path that never matches, and
+ *     the user is told `std` is not imported even though `use std::sys::io` is right
+ *     there in the file.
+ *   - So one rule: a short name matches a short name, a full path matches a full
+ *     path, and both forms must resolve to the same module.
+ */
+
 static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
     for (size_t i = 0; i < self->mod.uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
@@ -282,7 +494,18 @@ static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
     return NULL;
 }
 
-/* 这个模块 `use` 了短名叫 `shortName` 的吗？（**必须先 use** ✓）*/
+/* Find the module this unit imports under the short name `shortName`.
+ *
+ * Params:
+ *   L         - loader
+ *   self      - the unit whose `use` list is searched
+ *   shortName - the last segment of an imported path, e.g. `io`
+ *
+ * Returns:
+ *   The imported unit, or NULL when nothing is imported under that name, which is
+ *   what makes "modules must be imported explicitly" enforceable.
+ */
+
 static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
     for (size_t i = 0; i < self->mod.uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
@@ -292,13 +515,33 @@ static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
     return NULL;
 }
 
-/* ---------------------------------------------------------------- 限定名解析 */
+/* --------------------------------------------------- qualified name rewrite */
 
+/* Forward declarations: these three rewrite passes are mutually recursive. */
 static void rwStmt(Loader *L, ModUnit *self, Stmt *s);
 static void rwExpr(Loader *L, ModUnit *self, Expr *e);
 static void rwExprName(ModUnit *self, Expr *e);
 
-/* 类型位置：`io::File` ⇒ mangle 名（顺便查可见性 ✓）*/
+/* Rewrite a type written in a declaration: `io::File` becomes the name of the
+ * declaration in the merged module, and visibility is checked on the way.
+ *
+ * Params:
+ *   L    - loader
+ *   self - the unit the type was written in
+ *   t    - the type to rewrite in place
+ *
+ * Notes:
+ *   - A bare name that this module itself declares is renamed too. Left alone, it
+ *     would reach the checker as the source name `pair` while the flat table holds
+ *     two structs of that name, and the checker would have to pick one through the
+ *     alias table - silently binding whichever module registered first, which
+ *     compiles and has the wrong type.
+ *   - A `use` suggestion in a diagnostic may only name a module: the remainder of a
+ *     path can contain `::` itself (`alpha::pair` inside `lib::box<alpha::pair>`), so
+ *     the first segment after the module name is what gets printed. Suggesting
+ *     `use alpha::pair` tells the user to import a module that does not exist.
+ */
+
 static void rwType(Loader *L, ModUnit *self, Type *t) {
     if (!t) return;
     if (t->kind == TY_REF) { rwType(L, self, t->inner); return; }
@@ -306,23 +549,25 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
     if (t->kind != TY_UNRESOLVED || !t->name) return;
     const char *sep = strstr(t->name, "::");
     if (!sep) {
-        /* ⚠️⚠️ **裸名也要改名 —— 这是本模块自己声明的类型**。
-         * 不改的话它就以源码名 `pair` 留在 `FuncDef.ret` 上，等到检查器 `ttResolve`
-         * 时才发现平表里有**两个** `pair`（另一个模块的）⇒ 只能靠别名表挑一个 ⇒
-         * **静默绑成先注册的那个模块的类型**，而 `var q: beta::pair = beta::make(7)`
-         * 的标注是 `beta$pair` ⇒ 报的却是 `struct \`alpha$pair\` has no field \`s\``，
-         * 指的名字在源码里根本没出现过 ✗✗（这个洞最阴：**编得过、类型是错的**）
-         * 判据跟 `rwExprName` 一致：**只认本模块自己声明的名字** ✓ */
+        /* A bare name has to be renamed as well when this module declares it.
+         * Left as the source name `pair` on a return type, it reaches the checker
+         * while the flat table holds two structs named `pair`, and the alias table
+         * picks one: the reference is silently bound to whichever module registered
+         * first. Then `var q: beta::pair = beta::make(7)` reports
+         * `struct \`alpha$pair\` has no field \`s\``, naming a type that appears
+         * nowhere in the source. It compiles and has the wrong type, which is the
+         * worst kind of bug. The rule matches `rwExprName`: only a name this module
+         * declares itself is rewritten. */
         const char *m = renLookup(self, t->name);
         if (m) t->name = m;
         return;
     }
     const char *shortName = arenaStrndup(L->a, t->name, (size_t)(sep - t->name));
     const char *rest = sep + 2;
-    /* ⚠️ 诊断里 `use …` 只能写**模块名**：`rest` 里还可能带 `::`
-     * （`alpha::pair` 出现在 `lib::box<alpha::pair>` 的实参里 ⇒ `rest` = `pair`，
-     * 而 `beta::color` ⇒ `rest` = `color`；但 `a::b::c` 那种就会把 `b::c` 拼进去 ✗）
-     * 踩过：消息是"add `use alpha::pair`"，用户照着写会得到一个不存在的模块 ✗ */
+    /* A `use` suggestion may only name a module, and `rest` can still contain `::`:
+     * `alpha::pair` inside `lib::box<alpha::pair>` leaves `rest` as `pair`, but a
+     * three-segment path would fold `b::c` into the suggestion. A message reading
+     * "add `use alpha::pair`" tells the user to import a module that does not exist. */
     const char *restSep = strstr(rest, "::");
     const char *restTop = restSep ? arenaStrndup(L->a, rest, (size_t)(restSep - rest)) : rest;
     ModUnit *target = importedAs(L, self, shortName);
@@ -352,108 +597,150 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
     t->name = renOfTarget(target, rest);
 }
 
-/* ⭐ 表达式位置里的**类型名**：`mod::Type { … }` / `mod::Type.variant`。
- * 判据只有一条 —— "`short::rest` 里的 `rest` 在这个模块里是个**类型**吗"。
- * 为什么必须有这条：模块之间同名类型只靠裸名写不出来（裸名有歧义 ⇒
- * 装载器不登记回程票）⇒ 不认这里，那个类型的字面量和枚举变体就**无字可写** ✗
- * 踩过的两个症状：`expected \`{\``（parser 不认限定名字面量）、
- * `module \`e1\` has nothing named \`color\``（把类型名当成了函数/常量在找）✗ */
+/* Resolve a type name written in expression position: `mod::Type { ... }` and
+ * `mod::Type.variant`.
+ *
+ * The single test is whether `rest` names a *type* of the module `short`: those two
+ * forms are the only way to write a type that another module declares under a name
+ * that is also declared here, because the bare name is ambiguous and the loader
+ * therefore records no return ticket for it. Without this pass such a type has no
+ * writable spelling, and a struct literal or a variant of it cannot be named at all.
+ * Both symptoms have been seen: `expected \`{\`` because the parser does not accept a
+ * qualified name in a literal, and "module `e1` has nothing named `color`" because
+ * the type name was being looked up as a function or a constant.
+ *
+ * Params:
+ *   L     - loader
+ *   self  - the unit the expression was written in
+ *   qname - the qualified name to resolve
+ *   out   - receives the resolved declaration name
+ *
+ * Returns:
+ *   True when `qname` names a type of an imported module and `out` was filled. False
+ *   means "not a qualified type name", so the caller leaves the expression to the
+ *   ordinary path.
+ *
+ * Notes:
+ *   - A qualified name that points at the current module is left alone. The prelude
+ *     itself contains `pcg32::withStream(...)` where `pcg32` is a struct of that same
+ *     file, and the prelude is one module: rewriting it to `prelude$pcg32` produces a
+ *     name the type table never saw, because the type table snapshots the prelude
+ *     before module loading starts, and the call is then reported as undefined.
+ */
+
 static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, const char **out) {
     if (!qname || !out) return false;
     const char *sep = strstr(qname, "::");
     if (!sep) return false;
     const char *shortName = arenaStrndup(L->a, qname, (size_t)(sep - qname));
     const char *rest = sep + 2;
-    if (strstr(rest, "::")) return false;          /* `a::b::c` 不支持（够用就好 ✓）*/
+    if (strstr(rest, "::")) return false;          /* `a::b::c` is not supported here */
     ModUnit *target = importedAs(L, self, shortName);
     if (!target) return false;
-    /* ⚠️ **指向自己的限定名一律不动** —— prelude 里就写着 `pcg32::withStream(…)`
-     * （`pcg32` 是同一文件里的 struct），而 prelude 自己是**一个模块** ⇒ 不拦的话
-     * 会把它改写成 `prelude$pcg32`，可 prelude 的舞台快照是**装载前**拿的 ⇒
-     * 类型表里根本没这个名字 ⇒ `call to undefined function` ✗（真踩过）
-     * 这跟 `rwQualified` 里那条"本文件名叫 `fenwick` 就放过"是同一个坑 ✓ */
-    if (target == self) return false;
+    /* A qualified name that points at this very unit is never rewritten (see the
+     * block above): the prelude writes `pcg32::withStream(...)` for a struct of its
+     * own file, and `pcg32` is registered before module loading, so a rewritten
+     * `prelude$pcg32` names nothing. `rwQualified` guards the same case by letting a
+     * name that equals this file's own name through. */
+    if (target == self) return false;              /* pointing at itself: leave it alone */
     StructDef *sd = unitStruct(target, rest);
     TypeDef   *td = sd ? NULL : unitType(target, rest);
-    if (!sd && !td) return false;                  /* 不是类型 ⇒ 走原来那条路 ✓ */
+    if (!sd && !td) return false;                  /* not a type: leave the path alone */
     if ((sd && sd->isPrivate) || (td && td->isPrivate)) {
         ctxError(self->ctx, 0, 1,
                  "`@private` means other modules must not name it. Drop the annotation if it is"
                  " meant to be used from here.",
                  "`%s::%s` is private to module `%s`", shortName, rest, shortName);
         L->errors++;
-        return true;                               /* 报过了 ⇒ 别再报第二条 ✓ */
+        return true;                               /* already reported: no second error */
     }
-    *out = renOfTarget(target, rest);              /* 裸名 ⇒ 检查器按源码名解析 ✓ */
+    *out = renOfTarget(target, rest);              /* the checker resolves by source name */
     return true;
 }
 
-/* ⭐ **深层限定名的模块**（PLAN #53）：parser 把 `std::sys::io::STDOUT` 拆成
- * "前缀 `std::sys::io` + 符号 `STDOUT`"交过来，这里只回答"这个前缀被 `use` 过吗" ✓
+/* Resolve the module part of a deep qualified name such as `std::sys::io::STDOUT`.
  *
- * ⚠️⚠️ **这里我错了整整四版，值得记下来**：我一直以为"哪一段是模块、哪一段是符号"
- *   要由装载器**从长到短试前缀**才算得出来（因为 parser 不查符号表 ✗）。
- *   可 parser 根本不需要符号表就能切开这两半 —— 判据是**位置**：
- *   **所有中间段 = 模块，最后一段 = 符号** ✓
- *   ⇒ 装载器这半边因此只剩一件事：**全名对全名**匹配 `use` 表 ✓
- *   （我先前写的"从长到短试候选"版本反而引入了三个 bug：候选起点算错、
- *     边界算错、把符号名也切进候选 —— 全是不必要的复杂度 ✓）*/
+ * The parser splits that into the prefix `std::sys::io` and the symbol `STDOUT` and
+ * passes the prefix here, so the only question left is whether that prefix is
+ * imported.
+ *
+ * The parser can do the split on its own, and it does not need a symbol table to do
+ * it, because the split is positional: every segment but the last is a module and the
+ * last one is the symbol. So this side has exactly one job - match a full path against
+ * the full path recorded by a `use`.
+ *
+ * Params:
+ *   L     - loader
+ *   self  - the unit the name was written in
+ *   qname - the module prefix, e.g. `std::sys::io`
+ *
+ * Returns:
+ *   The imported unit, or NULL when the prefix is not imported.
+ */
+
 static ModUnit *rwDeepQName(Loader *L, ModUnit *self, const char *qname) {
-    /* 候选 = "每个 `::` **之前**的那一段" ⇒ `A::B::C::Sym` 得到 `A::B::C` / `A::B` / `A` ✓
-     * ⚠️ 这一段连着踩了两个坑（PLAN #53），都是把"前缀"算错了：
-     *   ① `lastSep` 记成**最后一个** `::` ⇒ 候选只剩最长的那个（`A::B::C`）✗
-     *   ② `qname[len]`/`qname[len-1]` 当边界 —— `len` 是前缀长度、不是下标 ✗
-     * ⚠️ 想清楚"最长的候选从哪来"（我卡在这儿很久）：
-     *   `std::sys::io::STDOUT` 有**三个** `::`，下标 3 / 8 / 11 ⇒
-     *   候选 `std::sys::io`(3) / `std::sys`(8) / `std`(11) —— **`std::sys::io` 在里面** ✓
-     *   所以不是"缺了整串" ✗ —— 我先前以为要补整串，那反而会多出一个
-     *   "模块名 + 符号名取错"的候选（`std::sys::io` 当模块、符号也取 `io`）✗
-     *   ⇒ 判据：候选**只能**从 `::` 处切（这样尾巴一定是段名、不是半截）✓ */
-    /* 全名对全名：`std::sys::io` 只认 `use std::sys::io`（同一个路径写法 ✓）
-     * 短名那一半由 `importedAs` 兜住（`io::read` 那种写法）✓
-     * 顺序有意义：**先全名、后短名** —— 短名会与别的模块撞，全名不会 ✓ */
+    /* The longest candidate comes from cutting at the separators, and the prefix the
+     * parser handed over is already a whole number of segments, so complete names
+     * need no repair. A candidate is always cut at a `::`, which keeps its tail a
+     * whole segment instead of half of one. */
+    /* Full path first: `std::sys::io` is matched against `use std::sys::io` written
+     * the same way. The short-name form (`io::read`) is covered by `importedAs`. The
+     * order matters, because a short name can collide with another module's while a
+     * full path cannot. */
     ModUnit *u = importedAsPath(L, self, qname);
     if (!u) u = importedAs(L, self, qname);
-    /* 调试开关 `EXTC_DBG_QN=1`：把"这条深层全名解成了哪个模块"打出来 ✓
-     * （跟 `EXTC_DBG_ARENA` / `EXTC_DUMP_EFFECTS` 一个待遇：不改变任何输出 ✓）
-     * ⚠️ 只在**没解开**时打 —— 解开了走的是正常路，不需要噪声 ✓ */
+    /* Debug switch `EXTC_DBG_QN=1` reports a deep qualified name that matched no
+     * imported module. Like the other debug switches, it changes no output on the
+     * normal path, and a name that resolved stays silent. */
     if (!u && getenv("EXTC_DBG_QN"))
         fprintf(stderr, "[qn] deep `%s` 没匹配到任何已导入的模块\n", qname);
     return u;
 }
 
-/* 表达式位置：parser 把 `a::b(...)` 造成 EX_ASSOC 了 ⇒ 这里按"a 是不是模块"分流 ✓ */
+/* Resolve `a::b` in expression position, where the parser has built an EX_ASSOC node.
+ *
+ * Params:
+ *   L    - loader
+ *   self - the unit the expression was written in
+ *   e    - the expression, rewritten in place, possibly into another kind
+ *
+ * Notes:
+ *   - The node is read in full before anything is written back: rewriting changes the
+ *     kind and therefore the union, so `args` and the flags are saved first.
+ */
+
 static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     const char *modPrefix = e->u.assoc.modPrefix;
     const char *symName   = e->u.assoc.name;
     const int   saveTargs = (int)e->u.assoc.targs.len;
     const bool  saveCall  = e->u.assoc.isCall;
 
-    /* ⭐ 深层路径（`std::sys::io::write` / `std::sys::io::STDOUT`）——
-     * 把"模块名 + 符号名"定下来，之后**完全复用**下面那些可见性 /
-     * `unitFunc` / `unitGlobal` / `@private` 的判据（一条都不重写 ✓）*/
+    /* A deep path (`std::sys::io::write`) only has to find its module here. Which
+     * symbol is meant has already been decided by the parser, and the visibility,
+     * lookup, and `@private` rules below are then reused unchanged. */
     ModUnit *target = NULL;
     if (modPrefix) {
-        /* ⚠️ `modPrefix` 就是**模块名**（parser 把中间段全吃了，只留最后一段当符号）✓
-         * 别在这里再"切一次符号" ✗ —— 我踩过：parser 给的是"最后一个 `::` 之前"，
-         * 拿它再切一次会把真正的模块名切掉（`std::sys::io` 变成 `std::sys`）✗
-         * ⇒ 这一格的活儿是"**全名对全名**匹配"，不是"再拆一次" ✓ */
+        /* `modPrefix` is already the module name: the parser consumed every middle
+         * segment and kept only the last one as the symbol. Cutting a symbol out of it
+         * again would eat the real module name (`std::sys::io` would become
+         * `std::sys`), so the job here is matching a full path, not splitting one. */
         target = rwDeepQName(L, self, modPrefix);
         if (target) {
-            /* ⚠️ **解析结果必须直接绑给 `target`** —— 下面那句 `importedAs(tn)`
-             * 只按**短名**查，而这里 `tn` 是全名（`std::sys::io`）⇒ 查不到 ✗
-             * 我踩过：模块明明命中了，却又被判成"没导入"，报的还是
-             * "unknown type `std::sys::io`"（**离现场一步远**）✓ */
+            /* The resolved unit must be bound to `target` directly. The
+             * `importedAs(tn)` below matches short names only, and `tn` here is the
+             * full path `std::sys::io`, so it would find nothing and report the module
+             * as not imported one line after it was found. */
             e->u.assoc.typeName = modPrefix;
         } else {
-            /* 没解析出来 ⇒ 报一条**指得出该怎么办**的，而且**必须报全名** ✓
-             * ⚠️ 我第一版写的是"取第一个 `::` 之前那段" ⇒ 消息变成
-             * "`std` is not imported -- add `use std`" ✗ —— 用户照着写会
-             * 导入一个不存在的模块（`std` 从来不是一个模块，它只是路径前缀）✗
-             * ⚠️ 别为了"分清不存在/没导入"去调 `resolveModFile` ——
-             * 它**找不到时自己会 fprintf 一条** ⇒ 这里会变成两条消息 ✗
-             * ⇒ 只说"没导入 + 加哪一条 use"：文件真没有的话，
-             *    用户加上 `use` 之后装载器会用**它**那条消息说清找过哪些路径 ✓ */
+            /* Report it with a full path and an instruction the user can follow. A
+             * first version printed the segment before the first `::`, producing
+             * "`std` is not imported -- add `use std`", which tells the user to import
+             * a module that does not exist (`std` is only a path prefix). Calling
+             * `resolveModFile` to separate "does not exist" from "not imported" is
+             * wrong here as well: it prints its own message when it fails, so the user
+             * would get two errors. Just say "not imported" and name the `use` to add;
+             * if the file really is missing, the loader says so once the `use` exists
+             * and lists every path it searched. */
             const char *note = arenaPrintf(L->a,
                     "Modules are imported explicitly (semantic import, not a textual include)."
                     " Add `use %s` at the top of the file.", modPrefix);
@@ -464,33 +751,40 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         }
     }
 
+    /* Type arguments mean this is a generic instance and not an associated item. */
     const char *tn = e->u.assoc.typeName;
     if (!tn || e->u.assoc.targs.len != 0) return;
     if (!target) target = importedAs(L, self, tn);
     if (!target) {
-        /* ① `a::b` 里 `a` 不是模块，但 `b` 是某个模块 `a` 的**类型** ⇒ 认（见上）✓
-         * ⚠️ **只对两段的形状试这一条**：三段以上（`a::b::c`）不可能是
-         * `mod::Type`，硬试会给出一条指错方向的 "unknown type `a`" ✗（试过）*/
+        /* `a` may be a type of module `b` instead of a module itself, which
+         * `rwQualifiedTypeName` recognizes.
+         * Only a two-segment shape is worth trying: three segments or more cannot be
+         * `mod::Type`, and trying anyway produces a misleading "unknown type `a`". */
         if (saveTargs != 0 || !saveCall || strstr(tn, "::")) return;
         const char *mangled = NULL;
         if (rwQualifiedTypeName(L, self, tn, &mangled) && mangled) {
-            e->u.ident.name = mangled;             /* union 会被改写 ⇒ 先取名字 ✓ */
+            e->u.ident.name = mangled;             /* the union changes: take the name out first */
             e->kind = EX_IDENT;
-            e->qualified = true;
+            e->qualified = true;                   /* the source wrote a qualified name */
             return;
         }
         (void)0;
-        /* 两种可能：① `tn` 是个类型名（`Type::assoc` ⇒ 原样留给检查器 ✓）
-         *           ② `tn` 是**存在但没 use** 的模块 ⇒ 报清楚（不然用户看到的是
-         *              "unknown type `greet`" 这种八竿子打不着的消息 ✗ 踩过）*/
-        /* ⚠️ 判据要小心：`fenwick::new(N)` 里 `fenwick` 是本文件里的一个 **struct**，
-         * 而本文件就叫 `fenwick.extc` ⇒ 光看"文件存在"会误报成"模块没导入" ✗（真踩过）
-         * ⇒ 自己声明的类型名一律放过；指向**本文件**的那个模块名也放过 ✓ */
+        /* Two cases remain: `tn` is a type name, in which case this is an associated
+         * item and the checker handles it; or `tn` is a module that exists on disk but
+         * was never imported, which deserves a message of its own. Left alone, the
+         * second case surfaces as "unknown type `greet`", which is nowhere near the
+         * cause. */
+        /* The test has to stay narrow. In `fenwick::new(N)`, `fenwick` is a struct
+         * declared by this very file and the file is named `fenwick.extc`, so "a file
+         * with that name exists" alone would report a missing import for a type the
+         * file declares itself. So a name this unit declares as a type passes, and so
+         * does the module name that points at this file. */
         bool isSelfFile = strcmp(baseNameNoExt(L->a, self->file), tn) == 0;
         if (!isOwnType(self, tn) && !isSelfFile && moduleExists(L, tn)) {
-            /* ⚠️ `note` 是**原样**传下去的（不像 fmt 那样吃可变参数）⇒ 要带值
-             * 就得先自己 `arenaPrintf` 好 ✗（踩过两次：直接写 `%s` 会印出字面量
-             * `Add \`use %s\` at the top of the file.`，用户完全照抄不了 ✓）*/
+            /* `note` is passed through verbatim and does not consume varargs the way
+             * the format string does, so every value has to be formatted with
+             * `arenaPrintf` first. Passing a `%s` here prints the literal
+             * "Add `use %s` at the top of the file.", which the user cannot act on. */
             const char *note = arenaPrintf(L->a,
                     "Modules are imported explicitly (semantic import, not a textual include)."
                     " Add `use %s` at the top of the file.", tn);
@@ -514,10 +808,11 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         L->errors++;
         return;
     }
-    /* ⭐ **形状要对得上**（PLAN #53）：一个名字只有一种解释，写错了要指出来 ✓
-     * 为什么这条判据必须有：`isCall` 只看"后面跟没跟 `(`"，
-     * 所以 `io::STDOUT()`（常量当函数调）和 `io::read`（函数当值用，
-     * 而 extC **没有函数值**）都能编到这里 ⇒ 不拦的话下面会静默挑一个 ✗ */
+    /* The shape has to match the declaration: one name has one meaning, and a
+     * mismatch is reported. This test is necessary because `isCall` only records
+     * whether a `(` followed, so both `io::STDOUT()` (calling a constant) and
+     * `io::read` (using a function as a value, which the language has no notion of)
+     * reach this point. Without the test, the code below would silently pick one. */
     if (g && isCall) {
         ctxError(self->ctx, e->line, 1,
                  "Only functions take an argument list.",
@@ -533,21 +828,22 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         return;
     }
     if (f) {
-        /* ⚠️ EX_CALL 装的是**被调用者表达式**（`callee`），不是名字 ⇒ 造一个 EX_IDENT ✓
-         * ⚠️ 而且 union 会被改写 ⇒ args 先挪出来 ✓ */
+        /* An EX_CALL holds the callee *expression*, not a name, so an EX_IDENT is
+         * built for it. The union is about to be overwritten, so the arguments are
+         * moved out first. */
         Vec  args = e->u.assoc.args;
         Expr *id  = exprNew(L->a, EX_IDENT, e->line);
         id->u.ident.name = renOfTarget(target, nm);
         e->kind = EX_CALL;
         e->u.call.callee = id;
         e->u.call.args   = args;
-        e->qualified     = true;               /* ⇒ 检查器别再说"要写限定名" ✓ */
+        e->qualified     = true;               /* already qualified: the checker stops asking */
         return;
     }
     if (g) {
         e->kind = EX_IDENT;
         e->u.ident.name = g->name;
-        e->qualified    = true;                /* 定案 70 ✓ */
+        e->qualified    = true;                /* the source wrote a qualified name */
         return;
     }
     ctxError(self->ctx, e->line, 1,
@@ -557,15 +853,28 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     L->errors++;
 }
 
+/* Rewrite the qualified names inside an expression.
+ *
+ * Params:
+ *   L    - loader
+ *   self - the unit the expression was written in
+ *   e    - the expression, rewritten in place
+ *
+ * Notes:
+ *   - An expression carries names of its own, not only children, and missing them was
+ *     the worst hole in this pass: the initializers of a struct literal were visited
+ *     while the literal's own type name was not. With two modules declaring `pair`,
+ *     the name `liba::pair { ... }` reached the checker unchanged, the checker looked
+ *     a bare name up and found whichever struct was registered first, and the value
+ *     was silently bound to the wrong type - it compiled without a word when the
+ *     field names happened to line up. The symptom was
+ *     `struct \`alpha$pair\` has no field \`s\``, naming a type that is not in the
+ *     source. Every type name is therefore rewritten here, including the one in
+ *     `EX_CONV` (`mod::T(x)`).
+ */
+
 static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     if (!e) return;
-    /* ⚠️⚠️ **表达式里也有名字，别只走子节点** —— 这里最阴的一个洞：
-     * `EX_STRUCTLIT` 的 `inits` 被走了、**它自己的类型名却没有** ⇒
-     * 两个模块各有 `pair` 时，`liba::pair { … }` 的名字**原样**留给检查器，
-     * 而检查器按裸名 `ttFromName` ⇒ 命中**先注册的那个模块**的结构体 ⇒
-     * **静默绑成另一个类型**（字段名凑巧一样就一声不吭地编过 ✗✗ 真踩过，
-     * 症状是 `struct \`alpha$pair\` has no field \`s\``，指向的还不是源码里的名字）
-     * ⇒ 类型名一律在这里改写 ✓  `EX_CONV` 同理（`mod::T(x)`）✓ */
     switch (e->kind) {
     case EX_STRUCTLIT: {
         const char *m = NULL;
@@ -585,22 +894,25 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
             e->u.conv.typeName = m;
         break;
     }
-    /* ⭐ `mod::Type.variant` —— parser 把 `mod::Type` 造成**裸标识符**了
-     * （它只拼名字，不查符号表）⇒ 这里认出"它其实是个类型"并换成裸类型名，
-     * 剩下的交给检查器那条现成的枚举变体路 ✓ */
+    /* `mod::Type.variant`: the parser built `mod::Type` as a plain identifier, since
+     * it joins names without consulting a symbol table. Recognize that it is a type,
+     * replace it with the bare type name, and leave the rest to the checker's existing
+     * enum-variant path. */
     case EX_IDENT: {
         const char *m = NULL;
         if (e->u.ident.name && rwQualifiedTypeName(L, self, e->u.ident.name, &m) && m) {
             e->u.ident.name = m;
-            e->qualified = true;     /* 写的就是限定名 ⇒ 别再提示"要写限定名" ✓ */
+            e->qualified = true;     /* written qualified: stop asking for a qualifier */
         } else {
-            rwExprName(self, e);     /* `color.green` 里的 `color` ⇒ `e1$color` ✓ */
+            rwExprName(self, e);     /* the `color` of `color.green` becomes `e1$color` */
         }
         break;
     }
     default: break;
     }
-    if (e->kind == EX_ASSOC) rwQualified(L, self, e);   /* 可能把 kind 改掉 ⇒ 之后再走子节点 ✓ */
+    /* An EX_ASSOC may be rewritten into another kind, so the children are visited
+     * afterwards, against the node that actually resulted. */
+    if (e->kind == EX_ASSOC) rwQualified(L, self, e);
 
     switch (e->kind) {
     case EX_BIN:    rwExpr(L, self, e->u.bin.left);  rwExpr(L, self, e->u.bin.right); break;
@@ -617,9 +929,10 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     case EX_COALESCE:
         rwExpr(L, self, e->u.coalesce.main); rwExpr(L, self, e->u.coalesce.fallback); break;
     case EX_CALL:
-        /* ⚠️ **被调者也要走** —— 模块里 `fn a() { b() }` 调的是**自己这个模块**的 `b`，
-         * 而声明会被 mangle ⇒ 不走这一步，`b` 就永远找不到 ✗
-         * （踩过：`call to undefined function \`twice\``，可 `greet$twice` 明明在表里）*/
+        /* The callee is visited as well. Inside a module, `fn a() { b() }` calls `b`
+         * of that same module, and the declaration is renamed, so skipping this step
+         * leaves `b` unfindable: the error is
+         * `call to undefined function \`twice\`` while `greet$twice` sits in the table. */
         rwExpr(L, self, e->u.call.callee);
         for (size_t i = 0; i < e->u.call.args.len; i++)
             rwExpr(L, self, *(Expr **)vecAt(&e->u.call.args, i));
@@ -649,9 +962,17 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             rwExpr(L, self, *(Expr **)vecAt(&e->u.arraylit.elems, i));
         break;
-    default: break;               /* 字面量 / 绑定 / null / EX_ENUMVAL 之类没有子节点 ✓ */
+    default: break;               /* literals, bindings, and null have no children */
     }
 }
+
+/* Rewrite the qualified names inside a statement and everything nested in it.
+ *
+ * Params:
+ *   L    - loader
+ *   self - the unit the statement was written in
+ *   s    - the statement, rewritten in place
+ */
 
 static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     if (!s) return;
@@ -679,22 +1000,40 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     }
 }
 
-/* ---------------------------------------------------------------- 合并 */
+/* ------------------------------------------------------------------ merging */
+
+/* Rename the declarations of a unit and record a return ticket for each of them.
+ *
+ * The root module is left completely alone. For every other unit, each declaration
+ * name is prefixed with the module name and entered in `u->ren`, so that a reference
+ * written inside the module can be mapped to the name that was actually emitted.
+ * `extern!` declarations keep their names, because their names are linker symbols.
+ *
+ * Params:
+ *   L - loader whose arena owns the generated names
+ *   u - the unit to rename in place
+ *
+ * Notes:
+ *   - Every name is computed before any of them is stored. `mangleName` returns a
+ *     pointer into an arena buffer that a later allocation may reuse, so computing
+ *     and storing one name at a time overwrites the previous one. The symptom was
+ *     ugly and silent: the alias table printed `pair=>make`, meaning the target of
+ *     `pair` had been overwritten by the name computed for `make`, so the bare name
+ *     `pair` stopped resolving and the error was `unknown type pair` with the real
+ *     cause in memory reuse, not in any lookup.
+ *   - `srcName` is filled here, while `d->name` is still the source name. Filling it
+ *     in `mergeUnit` would build `alpha::alpha$pair`, because by then the name has
+ *     already been renamed.
+ */
 
 static void mangleUnitDecls(Loader *L, ModUnit *u) {
-    if (!u->modName || !*u->modName) return;              /* 根模块：一律不动 ✓ */
+    if (!u->modName || !*u->modName) return;              /* the root module: never renamed */
     Module *src = &u->mod;
-    /* ⚠️⚠️ **这里有个 arena 陷阱，踩过**：`mangleName` 用 `arenaPrintf` ⇒ 返回值指向
-     * **arena 里的缓冲**，而 arena 会**原地增长/复用** ⇒ 如果"算一个名字就马上存进表、
-     * 接着再算下一个"，先前那个指针会被**后一次分配覆盖** ✗
-     * 实测症状极隐蔽：别名表打出来是 `pair=>make`（`pair` 的目标被 `make` 的名字覆盖）
-     * ⇒ 于是裸名 `pair` 查不到 ⇒ `unknown type pair`，而**根因在内存复用、不在查表逻辑** ✗
-     * ⇒ 修法：**先把所有名字算完**（4 个循环全是分配），**再**填表（只存指针，不再分配）✓ */
+    /* Allocate every name first and only then fill the table. */
     const char **names = (const char **)arenaAlloc(L->a, sizeof(char *) * 64);
     size_t n = 0;
-    /* ⚠️ **`srcName` 必须在这里、按"源码名"填**：等到 `mergeUnit` 里再填时
-     * `d->name` 已经变成 mangle 名了 ⇒ 会填成 `alpha::alpha$pair` ✗（真踩过）
-     * ⇒ 顺手在这一趟把给用户看的名字定下来（`alpha::pair`）✓ */
+    /* The user-facing name is built on this pass, while the source name is still
+     * available: `alpha::pair`. */
     for (size_t i = 0; i < src->structs.len && n < 64; i++) {
         StructDef *d = *(StructDef **)vecAt(&src->structs, i);
         d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
@@ -709,10 +1048,10 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
         names[n++] = mangleName(L, u, (*(GlobalDef **)vecAt(&src->globals, i))->name);
     for (size_t i = 0; i < src->funcs.len && n < 64; i++) {
         const char *fn = (*(FuncDef **)vecAt(&src->funcs, i))->name;
-        /* `extern!` ⇒ 原名进出（见 `externKeepsName` 的说明 ✓）*/
+        /* An `extern!` keeps its name: see the note on `externKeepsName`. */
         names[n++] = externKeepsName(src, fn) ? fn : mangleName(L, u, fn);
     }
-    /* 名字都算完了 ⇒ 现在只填表（**不再有分配** ⇒ 指针稳定 ✓）*/
+    /* Every name is computed, so this pass only stores pointers and allocates nothing. */
     size_t k = 0;
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *d = *(StructDef **)vecAt(&src->structs, i);
@@ -727,8 +1066,9 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
         FuncDef *d = *(FuncDef **)vecAt(&src->funcs, i);
         Ren *r = (Ren *)vecPush(&u->ren);
         r->from = d->name; r->to = names[k++];
-        /* `to == from` ⇒ 不改名；但回程票**照样登记**（登记成自己）✓
-         * 这样 `renLookup` 依然返回值，模块内的裸写不会被跳过 ✓ */}
+        /* When `to` equals `from` nothing is renamed, but the return ticket is still
+         * recorded - it maps the name to itself. That keeps `renLookup` returning a
+         * value, so a bare reference inside the module is not skipped. */}
     for (size_t i = 0; i < u->ren.len; i++) {
         Ren *r = (Ren *)vecAt(&u->ren, i);
         for (size_t j = 0; j < src->structs.len; j++)
@@ -751,24 +1091,56 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
     }
 }
 
-/* ⭐ **模块自己文件里写的裸名**（`color.green` 的 `color`、`shout` 里调的 `twice`）
- * 也要跟着改名 —— 声明被 mangle 之后，模块**内部**这些裸名会全部失效 ✗
- * （踩过：报的是 `call to undefined function \`twice\``，而 `greet$twice` 明明就在表里）
- * 为什么**只认本模块自己声明的名字**（不认"任何模块导出过的名字"）：
- * 认了的话，同一个名字在别的模块里也有时，本模块里那句裸写会被**悄悄改写过去**，
- * 于是既编得过、又变成别人的东西 —— 比报错坏得多 ✗
- * 自己声明的名字被裸写 = 就是自己那个（`@private` 也照样解析得到，
- * 可见性由 `requireQualified` 在后面单独查 ✓）*/
+/* Rewrite a bare name written inside a module to the name that module declares.
+ *
+ * A bare name is what a module writes for its own declarations: `color` in
+ * `color.green`, `twice` in a call from `shout`. Once the declarations are renamed,
+ * those bare names no longer name anything: the error is
+ * `call to undefined function \`twice\`` while `greet$twice` is right there in the
+ * table.
+ *
+ * Only names this unit declares itself are rewritten, never "any name some module
+ * exports". With the wider rule, a bare name that another module also declares would
+ * be quietly rewritten to that other declaration, so the program compiles and means
+ * something else - far worse than a rejection.
+ *
+ * A bare name that this unit declares means this unit's declaration, including a
+ * `@private` one: visibility is checked separately, at the point where a qualified
+ * reference is required.
+ *
+ * Params:
+ *   self - the unit whose rename table is consulted
+ *   e    - an identifier expression, updated in place
+ */
+
 static void rwExprName(ModUnit *self, Expr *e) {
     if (!e || e->kind != EX_IDENT) return;
     const char *nm = e->u.ident.name;
-    /* ⚠️ 被调者处名字已被改成 `lib$open`（见 `rwQualified`）⇒ 这里必须能回退到
-     * **源码名** `open`，否则"要写限定名"那条诊断会变成
-     * `lib$open 属于模块 lib -- 请写 lib::lib$open`，纯属胡说 ✗（真踩过）*/
+    /* In callee position the name may already have become `lib$open` (see
+     * `rwQualified`), so this has to be able to fall back to the source name `open`.
+     * Without the fallback, the diagnostic that asks for a qualified name turns into
+     * "`lib$open` belongs to module lib - write `lib::lib$open`", which is nonsense. */
     if (!nm) nm = e->u.ident.srcName;
     const char *m = nm ? renLookup(self, nm) : NULL;
     if (m) { e->u.ident.srcName = nm; e->u.ident.name = m; }
 }
+
+/* Merge one unit's declarations into the program module.
+ *
+ * Declarations are renamed first, then every type annotation, expression, and
+ * statement in them has its qualified names resolved, and finally the declarations are
+ * appended to the merged module. Units are merged in topological order, so a
+ * dependency is already present when the declarations that use it arrive.
+ *
+ * Params:
+ *   L - loader owning the merged module
+ *   u - the unit to merge
+ *
+ * Notes:
+ *   - The declarations are rewritten while they still live in `u->mod`, before they
+ *     are appended, so the rewrite passes see the unit's own name table.
+ *   - Merging mutates the declarations in place; they are the same objects afterwards.
+ */
 
 static void mergeUnit(Loader *L, ModUnit *u) {
     Module *src = &u->mod;
@@ -816,7 +1188,31 @@ static void mergeUnit(Loader *L, ModUnit *u) {
     }
 }
 
-/* ---------------------------------------------------------------- 递归装载 */
+/* --------------------------------------------------------- recursive loading */
+
+/* Load a module and everything it imports, or return the unit already loaded.
+ *
+ * Params:
+ *   L            - loader
+ *   modPath      - the module path as written in the `use`
+ *   importerFile - file containing that `use`, used to resolve and to blame
+ *   line         - line of the `use`, blamed by the cycle diagnostic
+ *
+ * Returns:
+ *   The unit for this module, or NULL when its file could not be resolved or read; all
+ *   diagnostics are already reported in that case.
+ *
+ * Notes:
+ *   - The unit is registered before its source is parsed, and its state says
+ *     "loading". A `use` that reaches a module in that state is a cycle, which is
+ *     refused because each module's types are needed to check the other. The message
+ *     suggests moving the shared part into a third module.
+ *   - A module that is already loaded is returned as it is, so a diamond of imports
+ *     loads each file once and the unit list stays a duplicate check.
+ *   - Dependencies are loaded after the module itself is parsed, and each is pushed
+ *     onto `order` on the way out, which makes `order` a post-order and therefore a
+ *     topological order.
+ */
 
 static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFile, int line) {
     char *file = resolveModFile(L, modPath, importerFile);
@@ -824,7 +1220,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
 
     ModUnit *u = findUnit(L, file);
     if (u) {
-        if (u->state == 1) {                       /* ⚠️ 正在装载 ⇒ **环** ✗ */
+        if (u->state == 1) {                       /* still loading: a cycle */
             fprintf(stderr,
                     "%s:%d: error: import cycle: `%s` is still being loaded\n"
                     "note:  two modules must not depend on each other (each one's type is\n"
@@ -832,7 +1228,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
                     importerFile, line, modPath);
             L->errors++;
         }
-        return u;                                  /* 已经装过 ⇒ 直接复用 ✓（去重 ✓）*/
+        return u;                                  /* already loaded: reuse it */
     }
 
     size_t len = 0;
@@ -847,7 +1243,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     u->file    = file;
     u->modName = baseNameNoExt(L->a, file);
     vecInit(&u->ren, L->a, sizeof(Ren));
-    u->state   = 1;                                /* 正在装载 ✓ */
+    u->state   = 1;                                /* loading */
     moduleInit(&u->mod, L->a);
     u->ctx = (Ctx *)arenaAllocZero(L->a, sizeof(Ctx));
     ctxInit(u->ctx, L->a, file, src, len);
@@ -863,7 +1259,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
                 file, toks.len, u->mod.funcs.len, u->mod.globals.len);
     if (u->ctx->hasError) { L->errors++; u->state = 2; return u; }
 
-    /* 模块不能定义 `main`（入口只有根文件 ✓）*/
+    /* Only the root file may define `main`: a module is a library. */
     for (size_t i = 0; i < u->mod.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&u->mod.funcs, i);
         if (strcmp(f->name, "main") == 0) {
@@ -874,7 +1270,8 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
             L->errors++;
         }
     }
-    /* 短名撞车：`use a::util` 与 `use b::util`（引用时写不出区别 ✗）*/
+    /* A short-name clash: `use a::util` next to `use b::util` cannot be told apart
+     * when the name is used. */
     for (size_t i = 0; i < u->mod.uses.len; i++) {
         UseDecl *a = *(UseDecl **)vecAt(&u->mod.uses, i);
         for (size_t j = i + 1; j < u->mod.uses.len; j++) {
@@ -889,18 +1286,42 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
         }
     }
 
-    /* 递归装载依赖（**后序入 order** ⇒ 合成时依赖在前 ✓）*/
+    /* Load the dependencies; each enters `order` after its own dependencies. */
     for (size_t i = 0; i < u->mod.uses.len; i++) {
         UseDecl *ud = *(UseDecl **)vecAt(&u->mod.uses, i);
         ModUnit *dep = loadUnit(L, ud->path, file, ud->line);
         ud->file = dep ? dep->file : NULL;
     }
     u->state = 2;
-    *(ModUnit **)vecPush(&L->order) = u;           /* ⭐ 后序：依赖已经先入表 ✓ */
+    *(ModUnit **)vecPush(&L->order) = u;           /* post-order: dependencies are in first */
     return u;
 }
 
-/* ---------------------------------------------------------------- 入口 */
+/* ------------------------------------------------------------------- entry */
+
+/* Load every module the root file imports and merge them into `out`.
+ *
+ * Params:
+ *   a          - arena that owns every loaded module
+ *   out        - the merged module; the prelude must already be in it
+ *   rootm      - the root file's own parsed module
+ *   rootCtx    - the root file's source context, which blames errors in that file
+ *   rootPath   - path of the root file; its directory becomes the project root
+ *   searchDirs - directories from `-I`, or NULL
+ *   outCtxs    - receives the Ctx of every loaded module so the caller can render
+ *                their diagnostics afterwards, or NULL when the caller does not need
+ *                them
+ *
+ * Returns:
+ *   False when any error was reported; the diagnostics are already printed and
+ *   compilation must stop.
+ *
+ * Notes:
+ *   - `rootCtx` is stored by pointer, never copied. A copy would swallow the
+ *     diagnostics reported through it.
+ *   - `outCtxs` is used by pointer as well, because its length has to reach the
+ *     caller.
+ */
 
 bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                  const char *rootPath, Vec *searchDirs, Vec *outCtxs) {
@@ -908,9 +1329,10 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     memset(&L, 0, sizeof L);
     L.a = a;
     L.out = out;
-    L.rootDir = dirOf(a, rootPath);          /* 项目根 ✓ */
-    /* 标准库目录：`$EXTC_STD` 优先，否则 `<extc 可执行文件所在目录>/../stdlib` ✓
-     * （prelude 是**内嵌**的，所以它不在这；`std::io` 那种**真模块**需要真文件 ✓）*/
+    L.rootDir = dirOf(a, rootPath);          /* project root */
+    /* The standard library directory: `$EXTC_STD` wins, otherwise it is
+     * `<directory of the extc binary>/../stdlib`. The prelude is embedded and is not
+     * here; a real module such as `std::io` needs a real file. */
     {
         const char *env = getenv("EXTC_STD");
         if (env && *env) L.stdDir = env;
@@ -931,13 +1353,13 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     if (searchDirs) L.searchDirs = *searchDirs;
     else vecInit(&L.searchDirs, a, sizeof(void *));
 
-    /* 根文件的 `use` */
+    /* The root file's own imports. */
     for (size_t i = 0; i < rootm->uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&rootm->uses, i);
         ModUnit *dep = loadUnit(&L, u->path, rootPath, u->line);
         u->file = dep ? dep->file : NULL;
     }
-    /* 根文件的短名撞车也查一遍 ✓ */
+    /* The root file's short-name clashes are checked the same way. */
     for (size_t i = 0; i < rootm->uses.len; i++) {
         UseDecl *x = *(UseDecl **)vecAt(&rootm->uses, i);
         for (size_t j = i + 1; j < rootm->uses.len; j++) {
@@ -955,37 +1377,41 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                                          L.errors, L.units.len, L.order.len);
     if (L.errors) return false;
 
-    /* 模块：**拓扑序**（依赖在前 ✓）*/
+    /* Merge the modules in topological order, dependencies first. */
     for (size_t i = 0; i < L.order.len; i++)
         mergeUnit(&L, *(ModUnit **)vecAt(&L.order, i));
 
-    /* ⭐ 裸名回程票（必须在 mergeUnit **之后** —— ren 表是那里建的 ✓）*/
+    /* Collect the return tickets for bare names. This has to run after `mergeUnit`,
+     * because that is where the rename tables are built. */
     if (!out->aliases.arena) vecInit(&out->aliases, a, sizeof(Alias));
     for (size_t i = 0; i < L.order.len; i++) {
         ModUnit *dep = *(ModUnit **)vecAt(&L.order, i);
         for (size_t j = 0; j < dep->ren.len; j++) {
             Ren *r = (Ren *)vecAt(&dep->ren, j);
-            /* ⚠️ **不去重**：两条同名别名**都要登记** ⇒ 类型表数得出"≥2 个匹配"
-             * 才能报"歧义，请写限定名" ✗（去重成一条的话，裸名会被**静默**
-             * 解析成先注册的那个模块的类型 —— 编得过、类型是错的 ✗✗ 真踩过）*/
+            /* Both entries are kept when two modules export the same name: the type
+             * table has to be able to count two matches and report "ambiguous, write a
+             * qualified name". Collapsing them into one would make a bare name resolve
+             * silently to whichever module registered first - it compiles and has the
+             * wrong type. */
             bool same = false;
             for (size_t k = 0; k < out->aliases.len && !same; k++) {
                 Alias *a = (Alias *)vecAt(&out->aliases, k);
                 if (strcmp(a->from, r->from) == 0 && strcmp(a->to, r->to) == 0) same = true;
             }
-            if (same) continue;                /* 同一条别名（同一个模块被 use 两次）✓ */
+            if (same) continue;                /* the same entry, from importing one module twice */
             Alias *al = (Alias *)vecPush(&out->aliases);
             al->from = r->from;  al->to = r->to;
         }
     }
 
-    /* 根文件：声明最后进（它用到的模块已经在了 ✓）；函数体也要解析限定名 ✓ */
+    /* The root file's declarations are merged last, since the modules it uses are
+     * already in place. Its function bodies need their qualified names resolved too. */
     {
         ModUnit root;
         memset(&root, 0, sizeof root);
         root.file    = rootPath;
         root.mod     = *rootm;
-        root.ctx     = rootCtx;   /* ⚠️ 真 ctx，不是副本（副本会吞掉诊断 ✗）*/
+        root.ctx     = rootCtx;   /* the real context, never a copy */
         root.state   = 2;
         root.modName = NULL;
         for (size_t i = 0; i < rootm->structs.len; i++) {
