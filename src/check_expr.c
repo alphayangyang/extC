@@ -891,7 +891,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *
              * `needsHome` is read as it stands at this moment, which covers the direct
              * evidence only. A function that gains a home arena because of a call it makes is
-             * decided again by `checkModule`, using `FuncDef.newSites`, once the closure is
+             * decided again by `checkModule`, using `FuncDef.arenaSites`, once the closure is
              * complete. */
             if (e->arenaLevel == 0)
                 e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
