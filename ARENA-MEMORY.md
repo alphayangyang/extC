@@ -146,3 +146,104 @@ if (site->kind == EX_NEW || site->kind == EX_GENCALL)
   启动后台任务后**立刻返回**，下一次调用再查日志 ✓
 - 一次编辑别用大段 heredoc + 脚本重写整文件：这次 `ast.h` 被削掉 337 行、
   `check_top.c` 的一处插入被崩掉吞掉，各浪费一轮 ✗
+
+---
+
+# 附录 B：第二次实施（约束解算）—— 机制通、健全性修好、剩一族误拒（2026-09-23 夜）
+
+> ⚠️ **先读这一条**：本附录里说的代码在**分支 `lvl-solver`** 上（`e4642d3` + `6d90954`），
+> **不在 `main`**。`main` 是绿的（`tests/run.sh` 255/0）。
+
+## B.1 ⚠️⚠️ 环境的坑：会话为什么会莫名重置（浪费了好几轮，务必先看）
+
+现象：会话突然 `[shell exited: code 1]`，工作目录被重置。我先后误判成
+"编译器 OOM"、"`sleep` 坏了"，**都不对**。真凶是宿主截图里的这条：
+
+```
+EISDIR: illegal operation on a directory,
+realpath '\\wsl.localhost\Ubuntu-26.04\home\alphayang\extC_Compiler\.git'
+```
+
+harness 在操作前后对一批路径做 realpath，而它**把 `.git` 这个目录当文件**去 realpath
+⇒ EISDIR ⇒ 会话重置。在 `/tmp` 下搭同样的 `.git` 目录结构**复现不出来** ⇒
+是 **WSL UNC 路径（`\\wsl.localhost\…`）+ 目录**这个组合的问题，跟被执行的命令无关。
+
+**后果（我踩的）**：崩溃时机随机 ⇒ 看起来像"某条命令有毒" ⇒ 我反复换写法，
+方向全错。**副作用还有两个更要命的**：
+1. **`/tmp` 是 tmpfs，会话一崩就清空** ⇒ 我放在那儿的测试程序反复消失，
+   好几次"编不过"其实是文件没了 ✗ ⇒ **测试程序一律放 `build/tmp/`（仓库内）** ✓
+2. **`git stash` 也丢过一条**（崩在 stash 过程中）⇒ 别依赖 stash 保存成果，
+   **要留的改动要么 commit，要么 `git stash create` 之后记住那个 commit 号** ✓
+   （这次是从 `git fsck --lost-found` 的悬空提交里捞回来的）
+
+**绕法**：在 WSL 侧用一个**不含 `.git`** 的镜像目录跑命令；或修 harness 让 realpath 能接受目录。
+
+## B.2 做成了什么（机制已验证）
+
+| 项 | 结果 |
+|---|---|
+| **约束解算机制** | ✅ 通。`r1`（主人的 50/25/25 形状，2e6 轮）**98 MB → 50.8 MB**，与"容器自己内联写"的**目标线一分不差** |
+| 生成 C | `it` 落在 `__extc_a[2]`（循环体那层 ⇒ **每轮回收** ✓）；`grow` 的缓冲区留在家（它确实要活到容器那一级 ✓） |
+| 收敛速度 | 43 条事实，**1 轮收敛**（`promoteInto` 单调 ⇒ 必然收敛 ✓） |
+
+实现（三块，都在 `lvl-solver` 分支）：
+1. **记账**：`promoteInto2` **入口**顺手记 `(值, 目标层号)`（`LvlFact`），取最小写进 `Expr.minAt`。
+   - 关键设计：**不另写遍历去找存储点** —— 每一处"往外存"本来就要过这个函数，
+     所以"存储点"和"约束点"是同一段代码的两个副作用，**物理上不可能分叉** ✓
+2. **解算**：收尾处把事实表**重放到不动点**（上限 32 轮，与 `promoteInto` 自己的环保护同数）。
+3. **定案**：`minAt == 0` ⇒ 家；`minAt >= 1` ⇒ 第 k 层块口袋；`minAt == -1`（没被碰过）⇒ 回 `lexicalLevel`。
+
+## B.3 修掉的坑（都实测过）
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | **编译器自己被 OOM kill** | `recordLvlFact` 没排除"解算期" ⇒ 重放一次又记一条 ⇒ 事实表无限长 × 32 轮 | `Checker.lvlSolving` 旗子 + 快照 `nFacts` ✓ |
+| 2 | `examples/alloc-in-block` 生成的 C 编不过（`__extc_home` 未声明） | 解算把站点定成"进家"，而 `needsHome` 是**解算之前**算的 ⇒ codegen 没吐隐藏参数 | 兜底：没家的函数不许把站点留在家 ✓ **正解仍是解算后重跑 `needsHome` 闭包** |
+| 3 | **`tests/errors/generic_return_local`（该拒）通过了 ⇒ 健全性问题** | 我的"重算"把**绑定**（`EX_IDENT`）的深度算成 0 —— 那个 0 是"站点还没定"的哨兵态，不是真值 ⇒ 实例复查把它放过了 | 重算**只允许**用在"深度真由分配决定"的形状上（`depthComesFromAlloc`），其余一律不下调 ✓ |
+| 4 | `alloc<T>` 站点被当成"要活到帧外" | `Expr.minAt = -1`（未定初值）只在 `new` 那一支写了，**`alloc` 那一支漏了** ⇒ `arenaAllocZero` 的 0 被当成"frame-external" | 两支都写 ✓ |
+
+## B.4 剩下的问题（一件事，位置已锁定）
+
+**症状**：`varArray` 那族**误拒**，共 12 条
+（`container-nested` / `container-of-struct` / `container-of-view` / `instance-closure` /
+`list-return` / `out-param` / `print-desc-nested` / `ref-field-write` / `varArray*` …）：
+
+```
+in instance `varArray_slice_u8`: this return value would hold a reference to something
+that dies first (depth 1, but this can only hold up to 0)
+```
+
+**已锁定的根因**（诊断输出）：
+
+```
+[at] varArray_slice_u8 what=this return value depth=1 at=0 kind=4 dca=0 svd=0
+```
+
+- `kind=4` = `EX_IDENT` ⇒ 报错那条记录的 `rc->val` 是个**绑定**（`var v = …` 里的 `v`）
+- 它的深度其实由**它的来路**（`var v: varArray<T> = { buf: new T[cap], … }` 里的 `new T[cap]`）决定
+- 而 `depthComesFromAlloc` 原来对绑定答 false ⇒ 重算被跳过 ⇒ 用了解算前的旧数 1 ⇒ 误拒
+
+**已经写好的修法（`6d90954`，未验证完）**：`depthComesFromAlloc` 改成带 `Checker*` 的
+`depthComesFromAlloc2`，对 `EX_IDENT` **跟着 `sym->origin` 走**（`EX_DEREF` / `EX_FIELD` 同理）。
+⚠️ **必须用带 checker 的版本**：wrapper 传 `NULL` ⇒ 绑定答 false
+（我第一版就用了 wrapper，`[at]` 里 `dca=0` 一直不变，白查一轮 ✗）。
+
+**下一步就一件事**：把这条走通（跟着绑定来路），重跑 B.5 判据。
+⚠️ 判据里 **`generic_return_local` 必须仍然被拒** —— 它是"什么都放宽"的哨兵。
+
+## B.5 判据（与 §6 / A.4 相同，一条都不能少）
+
+`tests/run.sh` 255/0 · 反例库洞还在=0 · 转正库 22/22 · asan 8 / arena 5 ·
+攻击库与 `BASELINE` 一字不差 · `tools/golden.sh check` 差异逐条说得清
+
+## B.6 教训（给下一次的自己）
+
+1. **先修环境，再修代码**。会话反复重置时，第一件事是看宿主报的**原文**，
+   不要猜"是不是我把它跑爆了"。这次猜错两轮。
+2. **测试程序放仓库里**（`build/tmp/`），别放 `/tmp`。
+3. **要留的改动马上 commit 或记下 commit 号**，别指望 stash 活着。
+4. **一次调用只做一件事**（改源 / 构建 / 跑测试分开）：
+   崩在"改完源又 make 又跑"的调用上时，我分不清是三者哪一个。
+5. **诊断打印要打"决定分支的那个数"**，不是"我觉得可疑的数"：
+   这次真正定位到的是 `dca=0`（决定"跳不跳重算"的那个布尔），
+   在此之前我打了一堆 `frozen/now/kind` 都没用。
