@@ -43,10 +43,24 @@ typedef struct {
 
 static Sym *dfRootOf(Checker *c, Expr *e);
 
+/* Do two bindings refer to the same C variable?
+ *
+ * Not every binding has a C name: a module-level constant imported from another
+ * module binds to a symbol whose name is not mangled yet, so `cname` is NULL there.
+ * Comparing such a binding against the fact table used to call strcmp on the NULL and
+ * crash the compiler -- measured on a program that prints a struct and then reads from
+ * stdin (the reader's `io::STDIN_FD` is exactly that kind of binding). A binding with no
+ * C name is not a local this analysis tracks, so it matches nothing.
+ */
+static bool cnameEq(const char *a, const char *b) {
+    if (!a || !b) return a == b;
+    return a == b || strcmp(a, b) == 0;
+}
+
 static VarFact *factOf(Facts *f, const char *cname) {
     if (!cname) return NULL;
     for (int i = 0; i < f->n; i++)
-        if (f->vars[i].cname == cname || strcmp(f->vars[i].cname, cname) == 0)
+        if (cnameEq(f->vars[i].cname, cname))
             return &f->vars[i];
     if (f->n >= DFA_MAX_VARS) { f->overflow = true; return NULL; }
     VarFact *v = &f->vars[f->n++];
@@ -122,7 +136,7 @@ static void copyFacts(Facts *to, const Facts *from) { *to = *from; }
 static int factDepthOf(const Facts *f, const char *cname) {
     if (!f || !cname) return 0;
     for (int i = 0; i < f->n; i++)
-        if (f->vars[i].cname == cname || strcmp(f->vars[i].cname, cname) == 0)
+        if (cnameEq(f->vars[i].cname, cname))
             return f->vars[i].depth;
     return 0;
 }
@@ -133,9 +147,10 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     case EX_IDENT: {
         Sym *sy = identBindOf(e);
         if (!sy) return 0;
+        if (!sy->cname) return 0;
         VarFact *v = NULL;
         for (int i = 0; i < f->n; i++)
-            if (f->vars[i].cname == sy->cname || strcmp(f->vars[i].cname, sy->cname) == 0) {
+            if (cnameEq(f->vars[i].cname, sy->cname)) {
                 v = (VarFact *)&f->vars[i];
                 break;
             }
@@ -161,7 +176,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
         Sym *root = dfRootOf(c, e);
         if (root) {
             for (int i = 0; i < f->n; i++)
-                if (f->vars[i].cname == root->cname || strcmp(f->vars[i].cname, root->cname) == 0) {
+                if (cnameEq(f->vars[i].cname, root->cname)) {
                     for (int k = 0; k < f->vars[i].nfields; k++)
                         if (strcmp(f->vars[i].fields[k].name, e->u.field.name) == 0)
                             return f->vars[i].fields[k].depth;
@@ -438,7 +453,7 @@ int dfValueDepth(Checker *c, const DfResult *r, Expr *e) {
 int dfLookup(const DfResult *r, const char *cname) {
     if (!r || !cname || r->overflow) return -1;
     for (int i = 0; i < r->nvars; i++)
-        if (r->vars[i].cname == cname || strcmp(r->vars[i].cname, cname) == 0)
+        if (cnameEq(r->vars[i].cname, cname))
             return r->vars[i].depth;
     return -1;
 }

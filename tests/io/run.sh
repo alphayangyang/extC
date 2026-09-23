@@ -29,6 +29,21 @@ else
     echo "  FAIL read-stdin  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
+echo "== 回归：struct 打印 + 跨模块全局常量 + reader（这三样一起曾经让编译器段错误 ✗）=="
+if out=$(printf 'hello extC\n' | "$EXTC" --run tests/io/struct-print.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "p = point { x: 1, y: 2 }" || ok=0
+    echo "$out" | grep -qF "读到：hello extC"             || ok=0
+    echo "$out" | grep -qF "常量 = 1"                     || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "  ok   struct-print ->  $(echo "$out" | tr '\n' '|')"
+    else
+        echo "  FAIL struct-print ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1
+    fi
+else
+    echo "  FAIL struct-print ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+
 echo "== 三条路（EOF / 行太长 / 读错误 —— 必须分得开）=="
 # ① EOF ⇒ success(0)（**不是错误** ✓）
 if out=$(printf '' | "$EXTC" --run tests/io/eof.extc 2>&1) && echo "$out" | grep -qF "EOF ✓"; then

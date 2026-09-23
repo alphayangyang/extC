@@ -1,0 +1,35 @@
+// expect: p = point { x: 1, y: 2 }|读到：hello extC|常量 = 1
+/* ⭐ 回归用例（2026-09-24）：**跨模块的全局常量 + struct 的递归打印 + reader** 同时出现时，
+ *    编译器**段错误** ✗ —— 根因：`std::io` 里的 `io::STDIN_FD` 是**别的模块的全局常量**，
+ *    绑定的符号 `cname == NULL`，而数据流分析拿它去 `strcmp` ⇒ 空指针崩溃。
+ *    修法：`cnameEq()` 把"没有 C 名的绑定"当成**不匹配任何事实**（见 src/dataflow.c）✓
+ *
+ * 这个形状本身很普通（打印一个 struct + 从 stdin 读一行），所以它必须是常设用例 ✓ */
+use std::io
+
+struct point {
+    x: i32
+    y: i32
+}
+
+fn run() -> result<unit, io::ioError> {
+    var p = point { x: 1, y: 2 }
+    println("p = ", p)                      /* struct 的打印由编译器递归生成 */
+
+    var buf: [64]u8
+    var r = io::readerOf(io::STDIN_FD)      /* ← 就是这一行：跨模块全局常量 */
+    let n = r.nextLine(buf[..])?
+    io::writeBytes("读到：")
+    io::writeBytes(buf[0..n])
+    io::writeBytes("\n")
+    io::flushOut()
+    println("常量 = ", io::STDOUT_FD)
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match run() {
+        success(u) => { return 0 }
+        failure(e) => { return 1 }
+    }
+}
