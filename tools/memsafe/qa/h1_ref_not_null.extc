@@ -1,0 +1,8 @@
+// expect: REJECT
+// ref 不能是 null（要 ?ref T）
+fn main() {
+    var x: i32 = 1
+    var r: ref i32 = ref x
+    var q: ref i32 = null
+    println(*r)
+}

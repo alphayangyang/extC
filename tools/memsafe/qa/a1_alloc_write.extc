@@ -1,0 +1,7 @@
+// expect: OK
+// alloc 返回可写引用，写穿要显式 *p = v
+fn main() {
+    var p = alloc<i32>(1)
+    *p = 7
+    println(*p)
+}

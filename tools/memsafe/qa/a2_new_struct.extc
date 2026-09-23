@@ -1,0 +1,4 @@
+// expect: OK
+// new 一个结构体、改字段、读回来
+struct n { v: i32 }
+fn main() { var p = new n  p.v = 3  println(p.v) }

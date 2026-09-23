@@ -1,0 +1,4 @@
+// expect: REJECT
+// 返回本帧栈局部的引用
+fn f() -> ref i32 { var x: i32 = 5  return ref x }
+fn main() { println(*f()) }

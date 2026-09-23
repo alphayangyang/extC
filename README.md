@@ -30,6 +30,7 @@
 
 | 文档 | 领域 |
 |---|---|
+| [`docs/topics/MEMORY-SAFETY.md`](docs/topics/MEMORY-SAFETY.md) | ⭐ **内存安全模型：怎么用 + 什么情况会怎样**（Q&A，33 条可机器复核的用例）|
 | [`docs/topics/ARENA.md`](docs/topics/ARENA.md) | 内存模型怎么落地（arena = 词法作用域）|
 | [`docs/topics/ARENA-FORMAL.md`](docs/topics/ARENA-FORMAL.md) | ⭐ 为什么这样是 sound（约束系统 / 定理 / 调用点求解）|
 | [`docs/topics/ARENA-SOUNDNESS.md`](docs/topics/ARENA-SOUNDNESS.md) | 证伪 + 边界清单 + 分档实施 + 路径敏感设计 |

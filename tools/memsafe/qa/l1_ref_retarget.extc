@@ -1,0 +1,12 @@
+// expect: OK
+// = 在引用上只改指向
+struct n { v: i32 }
+fn main() {
+    var a: n = { v: 1 }
+    var b: n = { v: 2 }
+    var r: mut ref n = ref a
+    r = ref b
+    r.v = 9
+    println(b.v)
+    println(a.v)
+}

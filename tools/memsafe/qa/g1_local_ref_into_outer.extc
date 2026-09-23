@@ -1,0 +1,11 @@
+// expect: REJECT
+// 把内层块局部的引用存到外层变量
+struct n { v: i32 }
+fn main() {
+    var out: ?ref n = null
+    {
+        var inner: n = { v: 7 }
+        out = ref inner
+    }
+    println(out!.v)
+}

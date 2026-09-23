@@ -1,0 +1,8 @@
+// expect: REJECT
+// 把本帧局部的引用装进结构体再返回
+var g: ?ref i32 = null
+fn f() {
+    var x: i32 = 5
+    g = ref x
+}
+fn main() { f() }

@@ -1,0 +1,10 @@
+// expect: REJECT
+// 同上（结构体字面量里含 ref）
+struct b { p: ?ref i32 }
+fn f() -> b {
+    var x: i32 = 5
+    var r: ?ref i32 = ref x
+    var t: b = { p: r }
+    return t
+}
+fn main() { println(*(f().p!)) }

@@ -1,0 +1,12 @@
+// expect: OK
+// 跨函数：返回 new 的引用
+fn mk() -> mut ref i32 {
+    var p = new i32
+    *p = 5
+    return p
+}
+fn main() {
+    var q = mk()
+    *q = 8
+    println(*q)
+}

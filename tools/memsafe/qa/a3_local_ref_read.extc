@@ -1,0 +1,7 @@
+// expect: OK
+// 取栈上变量的引用、当场读
+fn main() {
+    var x: i32 = 5
+    var r: ref i32 = ref x
+    println(*r)
+}

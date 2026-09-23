@@ -1,0 +1,9 @@
+// expect: OK
+// 返回 new 出来的引用（隐藏参数 __extc_home）
+struct n { v: i32 }
+fn f() -> mut ref n {
+    var p = new n
+    p.v = 9
+    return p
+}
+fn main() { println(f().v) }

@@ -1,0 +1,8 @@
+// expect: TRAP
+// 无限递归：运行时 trap，必须带源码位置
+fn self2(n: i32) -> i32 {
+    return self2(n + 1)
+}
+fn main() {
+    println(self2(0))
+}

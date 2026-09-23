@@ -1,0 +1,18 @@
+// expect: OK
+// 中间变量经手（mid = c  h = mid）
+struct n { v: i32  next: ?ref n }
+fn build(k: i32) -> ?ref n {
+    var h: ?ref n = null
+    var i: i32 = 0
+    while i < k {
+        var mid: ?ref n = null
+        var c = new n
+        c.v = i
+        c.next = h
+        mid = c
+        h = mid
+        i = i + 1
+    }
+    return h
+}
+fn main() { println(build(3)!.v) }

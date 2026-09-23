@@ -1,0 +1,15 @@
+// expect: REJECT
+// 把本帧数组的切片传进会存起来的函数
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, value: T) {
+        self.v = value
+    }
+}
+fn f() -> i32 {
+    var a: [3]i32 = [1,2,3]
+    var b: boxT<slice<i32>> = { v: a[..] }
+    b.stash(a[..])
+    return b.v[0]
+}
+fn main() { println(f()) }

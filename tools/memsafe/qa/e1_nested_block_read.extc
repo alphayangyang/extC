@@ -1,0 +1,11 @@
+// expect: OK
+// 嵌套块里 new、当场读
+fn main() {
+    var o: i32 = 0
+    {
+        var x = new i32
+        *x = 5
+        o = *x
+    }
+    println(o)
+}

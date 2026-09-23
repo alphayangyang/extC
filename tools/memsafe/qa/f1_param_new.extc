@@ -1,0 +1,13 @@
+// expect: OK
+// new 的东西写进 mut ref 实参指向的对象
+struct n { v: i32 }
+fn set(p: mut ref n) {
+    var q = new n
+    q.v = 42
+    p = q
+}
+fn main() {
+    var a: n = { v: 0 }
+    set(ref a)
+    println(a.v)
+}

@@ -1,0 +1,10 @@
+// expect: REJECT
+// 透过 ref 参数改字段
+struct n { v: i32 }
+fn f(p: ref n) {
+    p.v = 9
+}
+fn main() {
+    var a: n = { v: 1 }
+    f(ref a)
+}

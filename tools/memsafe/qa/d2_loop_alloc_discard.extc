@@ -1,0 +1,13 @@
+// expect: OK
+// 循环里 new 完就丢 ⇒ 出块回收，内存不涨
+fn main() {
+    var i: i32 = 0
+    var t: i64 = 0
+    while i < 200000 {
+        var p = new i32
+        *p = i
+        t = t + *p
+        i = i + 1
+    }
+    println(t)
+}

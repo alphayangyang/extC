@@ -1,0 +1,9 @@
+// expect: OK
+// 借用后写穿（当场读回）
+fn main() {
+    var x: i32 = 1
+    var p: mut ref i32 = ref x
+    var q: ref i32 = p
+    *p = 9
+    println(*q)
+}

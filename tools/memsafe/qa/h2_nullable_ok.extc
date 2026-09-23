@@ -1,0 +1,7 @@
+// expect: OK
+// ?ref T + ! 取值
+fn main() {
+    var x: i32 = 1
+    var r: mut ?ref i32 = ref x
+    println(*(r!))
+}

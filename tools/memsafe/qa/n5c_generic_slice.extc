@@ -1,0 +1,15 @@
+// expect: OK
+// T=slice 的实例，切片来自外层数组
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, value: T) {
+        self.v = value
+    }
+}
+fn main() {
+    var a: [3]i32 = [1,2,3]
+    var b: boxT<slice<i32>> = { v: a[..] }
+    b.stash(a[..])
+    a[0] = 9
+    println(b.v[0])
+}

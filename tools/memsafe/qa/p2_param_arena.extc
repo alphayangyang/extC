@@ -1,0 +1,12 @@
+// expect: OK
+// 跨函数：new 写进 mut ref 实参
+fn mk(p: mut ref i32) {
+    var q = new i32
+    *q = 5
+    p = q
+}
+fn main() {
+    var x: i32 = 0
+    mk(ref x)
+    println(x)
+}

@@ -1,0 +1,12 @@
+// expect: REJECT
+// 循环里把栈局部的地址存到循环外
+fn main() {
+    var keep: ?ref i32 = null
+    var i: i32 = 0
+    while i < 3 {
+        var x: i32 = 7
+        keep = ref x
+        i = i + 1
+    }
+    println(*(keep!))
+}

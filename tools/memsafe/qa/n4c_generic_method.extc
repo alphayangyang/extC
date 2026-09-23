@@ -1,0 +1,13 @@
+// expect: OK
+// 泛型方法写在 struct 体内
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, value: T) {
+        self.v = value
+    }
+}
+fn main() {
+    var b: boxT<i32> = { v: 0 }
+    b.stash(7)
+    println(b.v)
+}

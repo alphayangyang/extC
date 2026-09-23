@@ -1,0 +1,7 @@
+// expect: REJECT
+// 返回栈上地址
+fn f() -> mut ref i32 {
+    var x: i32 = 5
+    return ref x
+}
+fn main() { println(*(f())) }

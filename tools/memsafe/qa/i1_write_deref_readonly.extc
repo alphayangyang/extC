@@ -1,0 +1,7 @@
+// expect: REJECT
+// 透过只读引用写穿
+fn main() {
+    var x: i32 = 1
+    var r: ref i32 = ref x
+    *r = 9
+}

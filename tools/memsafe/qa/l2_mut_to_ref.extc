@@ -1,0 +1,9 @@
+// expect: OK
+// mut ref 当 ref 用（变窄）
+struct n { v: i32 }
+fn main() {
+    var a: n = { v: 1 }
+    var r: mut ref n = ref a
+    var s: ref n = r
+    println(s.v)
+}

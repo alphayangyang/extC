@@ -1,0 +1,8 @@
+// expect: OK
+// 返回 alloc 出来的引用
+fn f() -> mut ref i32 {
+    var p = alloc<i32>(1)
+    *p = 4
+    return p
+}
+fn main() { println(*f()) }

@@ -1,0 +1,12 @@
+// expect: OK
+// 嵌套块里 new、外层变量接住 ⇒ 提升
+struct n { v: i32 }
+fn main() {
+    var keep: ?ref n = null
+    {
+        var p = new n
+        p.v = 1
+        keep = p
+    }
+    println(keep!.v)
+}
