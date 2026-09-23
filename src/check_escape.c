@@ -726,14 +726,30 @@ static bool promoteFields(Checker *c, Sym *sy, int at, int hops) {
  *   at   - arena level of the destination; 0 = beyond this frame
  *   line - for diagnostics
  */
-void recordStore(Checker *c, Expr *val, int at, int line) {
+void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
     if (!c || !val || at < 0) return;
-    if (val->storedAt >= 0 && val->storedAt <= at) return;   /* nothing new to say */
+    if (val->storedAt >= 0 && val->storedAt <= at) {
+        /* The value was already published at a level at least this shallow, so a record of
+         * its own would add no lifetime requirement -- but only for the same destination.
+         *
+         * The destination is a separate fact, and it is the one that carries a requirement
+         * back to the bindings the value was built from: `h = g` in one arm of an `if` and
+         * `h = zero` in the other are two destinations for two different values, and it is
+         * the destination, not the value, that decides which of them the binding's level
+         * has to cover. Skipping the second record lost that arm, and with it the demand
+         * that made the allocation inside the first arm outlive the block. */
+        for (size_t i = c->stores.len; i > 0; i--) {
+            StoreSite *prev = *(StoreSite **)vecAt(&c->stores, i - 1);
+            if (prev && prev->value == val && prev->target == target) return;
+        }
+        if (!target) return;
+    }
     val->storedAt = at;
     StoreSite *st = (StoreSite *)arenaAllocZero(c->arena, sizeof(StoreSite));
-    st->value = val;
-    st->at    = at;
-    st->line  = line;
+    st->value  = val;
+    st->target = target;
+    st->at     = at;
+    st->line   = line;
     *(StoreSite **)vecPush(&c->stores) = st;
 }
 
@@ -1093,7 +1109,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     if ((int)c->scopes.len < atStore) atStore = (int)c->scopes.len;
     /* Try the promotion first. When it cannot promote anything, the call below still
      * reports the error, so this is a safety net and is idempotent. */
-    recordStore(c, val, atStore, line);
+    recordStore(c, val, target, atStore, line);
     promoteInto(c, val, atStore);
     bool bad = checkEscape(c, val, at, line, "this assignment");
     /* When the origin of the value can be traced to a parameter, accept the store and let
@@ -1284,7 +1300,7 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
          *
          * The return value is ignored: failing to promote is not an error, and whether to
          * reject is decided by the deferred rule recorded here. */
-        recordStore(c, val, at, line);
+        recordStore(c, val, NULL, at, line);
         promoteInto(c, val, at);
         recordRefCheck(c, val, NULL, at, line, what);
         return false;

@@ -498,7 +498,7 @@ void checkStmt(Checker *c, Stmt *s) {
              * one step later would record the old number and cause false rejections
              * afterwards. */
             int atDst = storeLayer(c, s->u.assign.target);
-            recordStore(c, s->u.assign.value, atDst, s->line);
+            recordStore(c, s->u.assign.value, s->u.assign.target, atDst, s->line);
             promoteInto(c, s->u.assign.value, atDst);
             markCallHomeIfEscaping(c, s->u.assign.value, atDst);
             /* A value binding that can hold references is written, either wholesale or
@@ -626,7 +626,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * instantiation reported "depth 1, but this can only hold up to 0". The
                  * payload is a value whose references end up with the caller, so it is
                  * promoted to level 0. */
-                recordStore(c, s->u.ret.value, 0, s->line);
+                recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
                 promoteInto(c, s->u.ret.value, 0);
                 if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
@@ -647,7 +647,7 @@ void checkStmt(Checker *c, Stmt *s) {
                         mentionsParam(s->u.ret.value->type)?1:0);
             /* A returned value is handed to the caller, so it is published at level 0:
              * the whole point of returning it is that it outlives this frame. */
-            recordStore(c, s->u.ret.value, 0, s->line);
+            recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }

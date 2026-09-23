@@ -2084,8 +2084,64 @@ static int solvedValDepth(Expr *e) {
  *   target - arena level the destination lives at; 0 = beyond this frame
  *   hops   - recursion guard, since bindings may form cycles (`a = b  b = a`)
  */
-static void levelOfValue(Checker *c, Expr *val, int target, int hops) {
-    if (!val || hops > 32) return;
+/* The level a requirement carries when there is none: a literal, a call result, or the
+ * value of a binding this analysis has no level for. It must be a number rather than a
+ * sentinel, because requirements are combined with `min`, and it must be large enough
+ * that it can never win that comparison, because "no requirement" is not a requirement --
+ * reading it as 0 would make every such value look as if it had to outlive the frame. */
+#define LEVEL_INF 1000000
+
+/* The level of every binding of the function being decided, and the only state the level
+ * pass keeps between rounds.
+ *
+ * It is a table rather than a field of `Sym` because a level and the depth a `Sym` already
+ * carries are different questions with opposite monotonicity -- a depth only grows, a
+ * level only shrinks -- and the repository's iron rule is that one fact has one place.
+ * `LEVEL_INF` means nothing has demanded anything of the binding yet. */
+typedef struct {
+    Sym *sym;
+    int  lv;
+} SymLevel;
+
+typedef struct {
+    Vec tbl;          /* SymLevel */
+} LvlState;
+
+static int  symLevel(LvlState *ls, Sym *sy);
+static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
+
+/* Walk a value's carrier chain and return the level the value itself has to live at.
+ *
+ * A level is a lower bound on lifetime: the smaller the number, the longer the storage
+ * has to live, with 0 meaning "beyond this frame". The walk visits every allocation site
+ * reachable through the value and lowers it to that level, and returns the smallest level
+ * any part of the value carries.
+ *
+ * Params:
+ *   c      - checker
+ *   ls     - the levels of this function's bindings, as the pass currently knows them
+ *   val    - the value to walk; may be NULL
+ *   target - the level the value is being published at
+ *   hops   - recursion guard (bindings may form cycles, as in `a = b  b = a`)
+ *
+ * Returns:
+ *   The level the value has to live at, or `LEVEL_INF` when nothing about it demands a
+ *   lifetime -- a literal, a call result, a binding with no level yet.
+ *
+ * Notes:
+ *   - Only the forms that carry a value are followed. `*e` (the thing `e` points at),
+ *     `&e` (the address of `e`) and `e[a:b]` (a view) are deliberately absent: following
+ *     one was measured to be a false rejection rather than a missed promotion, because it
+ *     pulls in the level of a value that has nothing to do with this one.
+ *   - A binding is followed in both directions. Outwards, along what it holds, which is
+ *     what reaches the allocation sites inside the value; inwards, to the binding's own
+ *     level, which is where a demand that arrived from another publication enters. The
+ *     descent uses the tighter of the two, because a binding that must outlive this frame
+ *     cannot be holding storage that dies with it.
+ *   - The answer is what travels along the edges between publications, which is why the
+ *     pass that calls this runs to a fixed point over them. */
+static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
+    if (!val || hops > 32) return LEVEL_INF;
     if (getenv("EXTC_DBG_LV"))
         fprintf(stderr, "      [lv] kind=%-3d line=%-4d target=%-2d hops=%d\n",
                 (int)val->kind, val->line, target, hops);
@@ -2093,8 +2149,8 @@ static void levelOfValue(Checker *c, Expr *val, int target, int hops) {
     case EX_NEW:
     case EX_GENCALL:
         /* The site this whole walk was looking for. */
-        if (val->minAt < 0 || target < val->minAt) val->minAt = target;
-        return;
+        if (target < LEVEL_INF && (val->minAt < 0 || target < val->minAt)) val->minAt = target;
+        return target;
     case EX_IDENT: {
         Sym *sy = identBindOf(val);
         /* Reaching an allocation through a *value* answers "where did this number come
@@ -2112,52 +2168,220 @@ static void levelOfValue(Checker *c, Expr *val, int target, int hops) {
 
         if (getenv("EXTC_DBG_LV"))
             fprintf(stderr, "      [lv] ident=%-5s sym=%s origin=%s target=%d\n",
-                    val->u.ident.name, sy ? "有" : "NULL",
-                    (sy && sy->origin) ? "有" : "NULL", target);
+                    val->u.ident.name, sy ? "yes" : "NULL",
+                    (sy && sy->origin) ? "yes" : "NULL", target);
         if (getenv("EXTC_DBG_LV") && sy && sy->origin)
             fprintf(stderr, "      [lv]   -> origin kind=%d line=%d\n",
                     (int)sy->origin->kind, sy->origin->line);
-        if (sy && sy->origin) levelOfValue(c, sy->origin, target, hops + 1);
-        return;
+        /* A binding's level is its own: what it holds now may have arrived from several
+         * statements, and `origin` remembers only one of them. It is computed by
+         * `levelPass` and read here, which is how the requirement crosses from one
+         * publication record to another. */
+        /* Two edges leave a binding, and both are followed: outwards along what the
+         * binding holds, which is what reaches the allocation sites inside the value, and
+         * inwards to the binding's own level, which is where a requirement that arrived
+         * from another publication enters. A binding's level is its own because what it
+         * holds may have arrived from several statements, and `origin` remembers only one
+         * of them. */
+        int fromSym = sy ? symLevel(ls, sy) : LEVEL_INF;
+        if (!sy || !sy->origin) return fromSym;
+        /* The requirement that reaches a binding also reaches what the binding holds: if
+         * the binding has to live to level `fromSym`, then everything inside the value it
+         * holds has to live at least that long. So the walk descends at the tighter of the
+         * two levels. Measured on `tests/arena-promoted/C3_if_join_wholevalue`: `out` is
+         * returned, which makes its level 0, and only descending at 0 reaches the `alloc`
+         * behind `h` -- descending at the level of the store alone stopped at the level of
+         * the block the store happened to sit in. */
+        int inner = fromSym < target ? fromSym : target;
+        int fromVal = levelOfValue(c, ls, sy->origin, inner, hops + 1);
+        return fromSym < fromVal ? fromSym : fromVal;
     }
-    case EX_SIGN:  levelOfValue(c, val->u.sign.operand, target, hops + 1); return;
-    case EX_FIELD: levelOfValue(c, val->u.field.obj, target, hops + 1); return;
-    case EX_INDEX: levelOfValue(c, val->u.index.obj, target, hops + 1); return;
-    case EX_COALESCE:
-        /* Both sides can become the result, so both are published. */
-        levelOfValue(c, val->u.coalesce.main, target, hops + 1);
-        levelOfValue(c, val->u.coalesce.fallback, target, hops + 1);
-        return;
-    case EX_STRUCTLIT:
-        for (size_t i = 0; i < val->u.lit.inits.len; i++)
-            levelOfValue(c, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value,
-                         target, hops + 1);
-        return;
-    case EX_ARRAYLIT:
-        for (size_t i = 0; i < val->u.arraylit.elems.len; i++)
-            levelOfValue(c, *(Expr **)vecAt(&val->u.arraylit.elems, i), target, hops + 1);
-        return;
-    case EX_ENUMVAL:
-        for (size_t i = 0; i < val->u.enumval.args.len; i++)
-            levelOfValue(c, *(Expr **)vecAt(&val->u.enumval.args, i), target, hops + 1);
-        return;
+    case EX_SIGN:  return levelOfValue(c, ls, val->u.sign.operand, target, hops + 1);
+    case EX_FIELD: return levelOfValue(c, ls, val->u.field.obj, target, hops + 1);
+    case EX_INDEX: return levelOfValue(c, ls, val->u.index.obj, target, hops + 1);
+    case EX_COALESCE: {
+        /* Both sides can become the result, so both are published, and either may be the
+         * one that carries the requirement. */
+        int a = levelOfValue(c, ls, val->u.coalesce.main, target, hops + 1);
+        int b = levelOfValue(c, ls, val->u.coalesce.fallback, target, hops + 1);
+        return a < b ? a : b;
+    }
+    case EX_STRUCTLIT: {
+        int r = LEVEL_INF;
+        for (size_t i = 0; i < val->u.lit.inits.len; i++) {
+            int x = levelOfValue(c, ls, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value,
+                                 target, hops + 1);
+            if (x < r) r = x;
+        }
+        return r;
+    }
+    case EX_ARRAYLIT: {
+        int r = LEVEL_INF;
+        for (size_t i = 0; i < val->u.arraylit.elems.len; i++) {
+            int x = levelOfValue(c, ls, *(Expr **)vecAt(&val->u.arraylit.elems, i), target, hops + 1);
+            if (x < r) r = x;
+        }
+        return r;
+    }
+    case EX_ENUMVAL: {
+        int r = LEVEL_INF;
+        for (size_t i = 0; i < val->u.enumval.args.len; i++) {
+            int x = levelOfValue(c, ls, *(Expr **)vecAt(&val->u.enumval.args, i), target, hops + 1);
+            if (x < r) r = x;
+        }
+        return r;
+    }
     default:
         /* A scalar, a literal, a call result: nothing that reaches an allocation site
          * through this value. A callee's own sites are settled by the callee's
          * publications, and what it stores into a parameter is settled at the call site
          * from the arguments. */
-        return;
+        return LEVEL_INF;
     }
 }
 
-/* Run the level pass over the publications recorded while the body was checked. */
+/* The level a binding has to live at, as the pass currently knows it.
+ *
+ * A binding's level is not something a single statement decides: what it holds now may
+ * have arrived from several statements, and where it is published may demand more
+ * lifetime than the value alone would. Both are edges between publication records, and
+ * this table is where they meet. */
+static int symLevel(LvlState *ls, Sym *sy) {
+    if (!ls || !sy) return LEVEL_INF;
+    for (size_t i = 0; i < ls->tbl.len; i++) {
+        SymLevel *e = (SymLevel *)vecAt(&ls->tbl, i);
+        if (e->sym == sy) return e->lv;
+    }
+    return LEVEL_INF;
+}
+
+/* Lower a binding's level, and report whether that moved it. Only the lowering direction
+ * exists: a level is a requirement, and requirements accumulate. */
+static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
+    if (!ls || !sy || lv >= LEVEL_INF) return false;
+    for (size_t i = 0; i < ls->tbl.len; i++) {
+        SymLevel *e = (SymLevel *)vecAt(&ls->tbl, i);
+        if (e->sym != sy) continue;
+        if (lv < e->lv) {
+            e->lv = lv; return true;
+        }
+        return false;
+    }
+    SymLevel *e = (SymLevel *)vecPush(&ls->tbl);
+    e->sym = sy;
+    e->lv  = lv;
+    return true;
+}
+
+/* The level a stored value carries, read from the bindings it names.
+ *
+ * This is the other half of `levelOfValue`: that one walks a value down to the allocation
+ * sites inside it, this one walks it up to the bindings it is made of. The two are run
+ * together until the numbers stop moving. */
+static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
+    if (!val || hops > 32) return LEVEL_INF;
+    switch (val->kind) {
+    case EX_IDENT:  return symLevel(ls, identBindOf(val));
+    case EX_SIGN:   return valueLevel(c, ls, val->u.sign.operand, hops + 1);
+    case EX_FIELD:  return valueLevel(c, ls, val->u.field.obj, hops + 1);
+    case EX_INDEX:  return valueLevel(c, ls, val->u.index.obj, hops + 1);
+    case EX_COALESCE: {
+        int a = valueLevel(c, ls, val->u.coalesce.main, hops + 1);
+        int b = valueLevel(c, ls, val->u.coalesce.fallback, hops + 1);
+        return a < b ? a : b;
+    }
+    case EX_STRUCTLIT: {
+        int r = LEVEL_INF;
+        for (size_t i = 0; i < val->u.lit.inits.len; i++) {
+            int x = valueLevel(c, ls, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value,
+                               hops + 1);
+            if (x < r) r = x;
+        }
+        return r;
+    }
+    case EX_ARRAYLIT: {
+        int r = LEVEL_INF;
+        for (size_t i = 0; i < val->u.arraylit.elems.len; i++) {
+            int x = valueLevel(c, ls, *(Expr **)vecAt(&val->u.arraylit.elems, i), hops + 1);
+            if (x < r) r = x;
+        }
+        return r;
+    }
+    case EX_ENUMVAL: {
+        int r = LEVEL_INF;
+        for (size_t i = 0; i < val->u.enumval.args.len; i++) {
+            int x = valueLevel(c, ls, *(Expr **)vecAt(&val->u.enumval.args, i), hops + 1);
+            if (x < r) r = x;
+        }
+        return r;
+    }
+    case EX_NEW:
+    case EX_GENCALL:
+        return val->minAt >= 0 ? val->minAt : val->lexicalLevel;
+    default:
+        return LEVEL_INF;
+    }
+}
+
+/* Run the level pass: fold the publications recorded while the body was checked.
+ *
+ * Params:
+ *   c   - checker
+ *   dfr - the data-flow fixed point for the same body; its depths are final by now, so a
+ *         reader of them sees a number that does not depend on traversal order
+ *
+ * Returns:
+ *   Nothing. The result is written to each allocation site's `minAt`.
+ *
+ * The pass answers one question -- how long must each allocation site live -- and it
+ * answers it by replaying two kinds of edge until nothing moves:
+ *
+ *   - a value's carrier chain, from a publication down to the sites inside it, so the
+ *     sites are lowered to the level the publication demands;
+ *   - the bindings, whose level is the smallest level among the values stored into them
+ *     and the stores that publish them onwards.
+ *
+ * The second kind is what a walk along one carrier chain cannot express. Where two arms
+ * of an `if` write the same binding, the binding can hold either value, and only the join
+ * over both records sees the one that demands the longer lifetime. Measured on
+ * `tests/arena-promoted/C3_if_join_wholevalue`: the walk followed the arm holding the
+ * empty box, the `alloc` in the other arm was never told it had to outlive the frame, and
+ * the struct carrying it was returned after the block arena had been released.
+ *
+ * Every step only lowers a number, so the iteration is monotone and the answer does not
+ * depend on the order the records are visited in. The round cap is the same shape as the
+ * other fixed points in this file. */
 static void levelPass(Checker *c, const DfResult *dfr) {
     (void)dfr;
-    for (size_t i = 0; i < c->stores.len; i++) {
-        StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
-        if (!st) continue;
-        levelOfValue(c, st->value, st->at, 0);
+    LvlState ls;
+    vecInit(&ls.tbl, c->arena, sizeof(SymLevel));
+    int rounds = 0;
+    for (int round = 0; round < 64; round++) {
+        rounds++;
+        bool moved = false;
+        for (size_t i = 0; i < c->stores.len; i++) {
+            StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
+            if (!st) continue;
+            int at = st->at;
+            int v  = valueLevel(c, &ls, st->value, 0);
+            if (v < at) at = v;
+            levelOfValue(c, &ls, st->value, at, 0);
+            /* A published binding has to live at the level of the publication.
+             *
+             * `at` is the level the value is handed to. If the binding ends up named in a
+             * store of its own -- and a `return` names it directly -- then the binding
+             * holds the value that was published, so its own lifetime is now known to be
+             * at least as long. This is the edge that carries "beyond this frame"
+             * backwards from `return out` to `out`, and from there to everything `out`
+             * was ever assigned. */
+            Sym *dst = (st->target && st->target->kind == EX_IDENT)
+                       ? identBindOf(st->target) : NULL;
+                    if (dst && setSymLevel(&ls, dst, at)) moved = true;
+        }
+        if (!moved) break;
     }
+    if (getenv("EXTC_DUMP_LVL"))
+        fprintf(stderr, "[lvl] level pass converged after %d round(s)\n", rounds);
 }
 
 /* Depth of a value once the level solver has run, following bindings backwards.
@@ -2305,8 +2529,10 @@ static void checkFunc(Checker *c, FuncDef *f) {
             int n0 = 0;
             for (size_t i = 0; i < c->stores.len; i++) {
                 StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
-                fprintf(stderr, "[store] %s: line=%d at=%d kind=%d\n",
-                        f->name ? f->name : "?", st->line, st->at, (int)st->value->kind);
+                fprintf(stderr, "[store] %s: line=%d at=%d kind=%d dst=%s\n",
+                        f->name ? f->name : "?", st->line, st->at, (int)st->value->kind,
+                        (st->target && st->target->kind == EX_IDENT) ? st->target->u.ident.name
+                                                                     : (st->target ? "?" : "none"));
                 n0++;
             }
             (void)n0;

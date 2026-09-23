@@ -371,6 +371,7 @@ typedef struct { Expr *val; int at; } LvlFact;
  * because the binding's origin may legitimately be retargeted later in the body. */
 typedef struct {
     Expr       *value;   /* the value being published */
+    Expr       *target;  /* the place it is published into; for a return, the returned value */
     int         at;      /* arena level of the destination; 0 = beyond this frame */
     int         line;    /* for diagnostics */
 } StoreSite;
@@ -482,7 +483,7 @@ typedef struct {
 
 /* Record that `val` is being published at level `at`; decides nothing. The checking
  * pass only records; one pass folds over the records and settles the levels. */
- void recordStore (Checker *c, Expr *val, int at, int line);
+ void recordStore (Checker *c, Expr *val, Expr *target, int at, int line);
 /* True when C can compare values of this type directly; `str` is excluded because its `==` would
  * compare pointers. */
  _Bool cmpIsNative (Type *t);
