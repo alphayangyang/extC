@@ -1983,6 +1983,8 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
  * Returns:
  *   Depth of the references the value carries, according to the solved arena levels.
  */
+static int solvedValDepthFollow(Expr *e, int hops, Expr **seen);
+
 static int solvedValDepth(Expr *e) {
     if (!e) return 0;
     switch (e->kind) {
@@ -2054,6 +2056,43 @@ static int solvedValDepth(Expr *e) {
  *     the names would not match, and a struct has no frozen layout. The stdlib wrappers
  *     pass `s.data` and `s.len` explicitly instead.
  */
+/* Depth of a value once the level solver has run, following bindings backwards.
+ *
+ * `solvedValDepth` reads the depth cached on a node, and for a binding that number may
+ * be stale or simply zero: the binding was written when its allocation site still had
+ * the provisional `ARENA_HOME` marker, so the recorded depth says "outside this frame"
+ * while the site ends up at block level 2. Following the origin reaches the site, whose
+ * level is now final.
+ *
+ * Params:
+ *   e    - value to measure
+ *   hops - recursion guard (bindings may form cycles, as in `a = b  b = a`)
+ *   seen - nodes already visited on this chain
+ *
+ * Returns:
+ *   The depth of the deepest allocation site reachable from the value. Never larger
+ *   than the cached answer, and larger than it only when the cache was stale.
+ */
+static int solvedValDepthFollow(Expr *e, int hops, Expr **seen) {
+    if (!e) return 0;
+    int base = solvedValDepth(e);
+    if (e->kind != EX_IDENT || hops >= 32) return base;
+    for (int i = 0; i < hops; i++) if (seen[i] == e) return base;
+    seen[hops] = e;
+    Sym *sy = identBindOf(e);
+    if (!sy || !sy->origin) return base;
+    int o = solvedValDepthFollow(sy->origin, hops + 1, seen);
+    /* Take the larger answer: the origin is the authority, and the cache may have
+     * under-reported it. Asking `exprRefDepth` for a binding is what caused the
+     * dangling allocation in the whole-value join case. */
+    return (o > base) ? o : base;
+}
+
+static int solvedDepthFollowTop(Expr *e) {
+    Expr *seen[40];
+    return solvedValDepthFollow(e, 0, seen);
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     /* An extern declaration has no body, so only its signature is checked: the parameter
      * types were already resolved elsewhere, and no arena is involved, since the function
@@ -3207,6 +3246,28 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * real breaches, which is why the mode exists.
      *
      * Reports go to stderr, and a breach fails the compilation so scripts catch it. */
+    /* Bindings whose depth was recorded before the solver ran must be repaired.
+     *
+     * `var x = alloc<i32>(1)` is bound while its site still holds the provisional
+     * `ARENA_HOME`, so `x.refDepth` is recorded as 0 even though the site ends up at
+     * block level 2. Every later question about `x` - the field table of a struct it is
+     * stored into, the depth of a whole value it is part of - then answers 0, which is
+     * shallower than reality, and the escape check skips the store instead of promoting
+     * the site. That is how the whole-value join case ended up with an allocation in a
+     * block arena that the returned struct still pointed at.
+     *
+     * The repair only ever raises a recorded depth, because a binding may legally point
+     * at something that outlives its own site. Raising is the conservative direction: it
+     * can cause a false rejection, never a dangling pointer.
+     */
+    for (size_t i = 0; i < c.allSyms.len; i++) {
+        Sym *sy = *(Sym **)vecAt(&c.allSyms, i);
+        if (!sy || !sy->origin || sy->addressed) continue;
+        if (!sy->type || !typeContainsRef(c.tt, tsub(&c, sy->type))) continue;
+        int d = solvedDepthFollowTop(sy->origin);
+        if (d > sy->refDepth) sy->refDepth = d;
+    }
+
     if (getenv("EXTC_SELFCHECK")) {
         int bad = 0;
         for (size_t i = 0; i < c.allSyms.len; i++) {
