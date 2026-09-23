@@ -221,7 +221,8 @@ let STDOUT: i32 = 1
 
 ```extc
 // std/io.extc —— 一个文件就是一个模块 ✓
-use std::sys                                   // 只 import 我需要的那一个 ✓
+use std::sys::io                               // 只 import 我需要的那一个 ✓
+// ⚠️ `sys` 是**边界**不是**模块** ⇒ 按族分：`std::sys::{io,thread,time,net,proc}` ✓
 
 type IoError = | notFound | denied | other(i32)
 
@@ -231,7 +232,7 @@ struct File {
 }
 
 fn open(path: slice<u8>) -> result<mut ref File, IoError> {
-    let fd = sys::open(path, 0)
+    let fd = io::open(path, 0)
     if fd < 0 { return failure(denied) }
     var f: mut ref File = new File             // 帧拥有：函数一返回，文件自动关 ✓（IO.md §5）
     f.fd = fd
@@ -242,7 +243,7 @@ fn open(path: slice<u8>) -> result<mut ref File, IoError> {
 fn readLine(f: mut ref File, buf: mut slice<u8>) -> result<i64, IoError> {
     var n: i64 = 0
     while n < buf.len {
-        let got = sys::read(f.fd, buf[n..])?   // `?` = 失败就顺着往上抛 ✓
+        let got = io::read(f.fd, buf[n..])?    // `?` = 失败就顺着往上抛 ✓
         if got == 0 { break }                  // EOF ✓
         if buf[n] == u8(10) { break }          // '\n' ✓
         n = n + got

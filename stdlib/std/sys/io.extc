@@ -1,0 +1,27 @@
+/* std/sys/io.extc —— **特权层 · io 族**（`IO.md` 的"档 1 原语"，`LIBS.md` §5）✓
+ *
+ * 这里只放"必须有编译器/系统特权"的那一点点：**C 函数的声明 + 签字** ✓
+ * 别的模块拿它当垫脚石，用户不该直接用（v1 还没强制"只有 std::sys::* 能声明原语" ✗）
+ *
+ * ⚠️ **为什么是 `std::sys::io` 而不是一个扁的 `std::sys`**（主人 2026-09-23）：
+ *   `sys` 不是**一个**模块，是**一条边界**在文件路径上的写法 ✓
+ *   后面要加的东西各有各的族 —— `std::sys::thread` / `std::sys::time` /
+ *     `std::sys::net` / `std::sys::proc` —— 全塞进一个 `sys.extc` 会变成一个垃圾场 ✗
+ *   ⇒ **按族分文件，`sys::` 只标记"这是 extern! 那一层"** ✓
+ *   ⇒ 短名正好是 `io`（取路径最后一段）⇒ 引用写 `io::read` —— 跟 `std::io` 同名不是巧合：
+ *      一个是**用户那层的 io**，一个是**它底下的特权原语**，同一族的两层 ✓
+ *      （代价：同一个文件里不能同时 `use std::io` 和 `use std::sys::io` —— 短名撞车。
+ *        而这**恰好是对的**：写库的人和用库的人本来就该在不同的文件里 ✓）
+ *
+ * ⚠️ 为什么签字是必须的：`extern!` 是黑盒，没签字编译器只能按最坏情况算
+ *    （"可能把你的指针存到帧外"）⇒ 传本帧的地址会编译错误 ✓ 见 `DECISIONS.md` 定案 72
+ */
+
+extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+
+let STDIN: i32  = 0
+let STDOUT: i32 = 1
+let STDERR: i32 = 2

@@ -42,7 +42,7 @@
  *    读错误看起来就是"文件结束了"，而超长行会被**静默切成两"行"** ✗✗
  *    这种"看不出来的数据损坏"正是 P′ 要挡的东西 ✓
  */
-use std::sys
+use std::sys::io
 
 /* 读失败了、**为什么**失败 —— 枚举而不是魔法值 ✓
  * ⚠️ 为什么带上 `i64`：报错时要能说清"读了多少" / "是哪个 fd" ——
@@ -61,7 +61,8 @@ let BLK: i64 = 65536
  *    `9223372036854775807` = 2^63 - 1 ✓ */
 let I64_MAX: i64 = 9223372036854775807
 
-/* 标准输入 / 输出的 fd ✓（`sys` 里也有，这里再导出一次是为了**用户只 `use std::io` 就够** ✓）*/
+/* 标准输入 / 输出的 fd ✓（`std::sys::io` 里也有，这里再导出一次是为了
+ * **用户只 `use std::io` 就够** ✓）*/
 let STDIN_FD: i32  = 0
 let STDOUT_FD: i32 = 1
 
@@ -71,13 +72,13 @@ fn flushOut() { flush() }
 
 /* 把一整块字节写出去（`println` 管"打印值"，这里管"写字节" ✓）*/
 fn writeBytes(buf: slice<u8>) -> i64 {
-    return sys::write(sys::STDOUT, buf.data, buf.len)
+    return io::write(io::STDOUT, buf.data, buf.len)
 }
 
 /* 从 fd 读一次，返回**读到的字节数**（0 = EOF ✓；负数 = 出错）
  * ⚠️ 这是**裸原语那一层**，调用者自己看返回值；要好用的形状就用 `reader` ✓ */
 fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
-    return sys::read(fd, buf.data, buf.len)
+    return io::read(fd, buf.data, buf.len)
 }
 
 /* ================================================================ reader */
@@ -97,7 +98,7 @@ struct reader {
     /* 补货：一次 `read(2)` 读满一块 ✓ 返回读到的字节数，**0 = EOF** ✓
      * ⚠️ 这条是"一次进内核拿一整块"，不是"读一个字节" —— 快慢全在这儿 ✗ */
     fn fill(self: mut ref reader) -> result<i64, ioError> {
-        let n = sys::read(self.fd, self.chunk.data, self.chunk.len)
+        let n = io::read(self.fd, self.chunk.data, self.chunk.len)
         if n < i64(0) { return failure(ioError.readFailed(self.fd)) }
         self.len = n
         self.pos = 0

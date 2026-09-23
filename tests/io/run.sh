@@ -5,7 +5,9 @@
 #   ① `use std::io` 能从 **stdin** 读（这一条是里程碑的门槛 ✓）
 #   ② 两种风格**混着用**都对：`nextInt`（OI 式）+ `nextLine`（协议式）✓
 #   ③ **三条路分得开**：EOF / 行太长 / 读错误（老 `readLine` 把后两条都当成 EOF ✗）
-#   ④ `std::sys` 只管原语、`std::io` 是普通库（模块分层真的成立 ✓）
+#   ④ `std::sys::io` 只管原语、`std::io` 是普通库（模块分层真的成立 ✓）
+#      ⚠️ `sys` 不是"一个模块"，是**一条边界**的路径写法 ⇒ **按族分文件**
+#         （后面还有 std::sys::{thread,time,net,proc}，全塞一个文件会变垃圾场 ✗）
 #   ⑤ **不是逐字节读**：一次 64KB（老实现 50 万行要 2.3s，是"能跑但慢 190 倍"那种坏 ✓）
 set -u
 cd "$(dirname "$0")/../.."
@@ -48,15 +50,15 @@ else
     echo "  FAIL read-failed  ->  $(echo "$out" | tr '\n' '|')"; fail=1
 fi
 
-echo "== 分层（std::sys = 特权层，std::io = 普通库）=="
+echo "== 分层（std::sys::io = 特权层 · io 族，std::io = 普通库）=="
 # ⚠️ 这是**结构检查**，不是编译器强制的（"只有特权模块能声明原语"那条还没做 ✗ 见定案 72）
-if grep -q '^extern!' stdlib/std/sys.extc && ! grep -q '^fn main' stdlib/std/sys.extc; then
-    echo "  ok   std::sys  ->  只有它声明 C 原语（+ 签字），没有 main ✓"
+if grep -q '^extern!' stdlib/std/sys/io.extc && ! grep -q '^fn main' stdlib/std/sys/io.extc; then
+    echo "  ok   std::sys::io  ->  只有它声明 C 原语（+ 签字），没有 main ✓"
 else
-    echo "  FAIL std::sys  ->  形状不对 ✗"; fail=1
+    echo "  FAIL std::sys::io  ->  形状不对 ✗"; fail=1
 fi
-if grep -q '^use std::sys' stdlib/std/io.extc && ! grep -q '^extern!' stdlib/std/io.extc; then
-    echo "  ok   std::io   ->  普通库（自己不碰 extern，只用 std::sys ✓）"
+if grep -q '^use std::sys::io' stdlib/std/io.extc && ! grep -q '^extern!' stdlib/std/io.extc; then
+    echo "  ok   std::io   ->  普通库（自己不碰 extern，只用 std::sys::io ✓）"
 else
     echo "  FAIL std::io   ->  形状不对 ✗"; fail=1
 fi

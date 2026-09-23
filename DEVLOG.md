@@ -867,7 +867,7 @@ let n = io::readLine(line[..])      // ← 从 stdin 读一行 ✓
 io::writeBytes("回显：")
 ```
 
-**分层真的落地了**（不再只是文档）：`stdlib/std/sys.extc`（**特权层**：只有它写 `extern!` +
+**分层真的落地了**（不再只是文档）：`stdlib/std/sys/io.extc`（**特权层**：只有它写 `extern!` +
 签字）· `stdlib/std/io.extc`（**普通库**：用 extC 写，自己不碰 extern）✓
 
 **`use std::io` 怎么找文件**：项目根 → `-I` → `$EXTC_STD` →

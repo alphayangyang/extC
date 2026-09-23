@@ -2510,13 +2510,13 @@ fn readerOf(fd: i32) -> reader        // 隐式 64KB ✓
 **分层落地**（`IO.md` 拍过的三档，现在前两档真的在跑 ✓）：
 
 ```extc
-// stdlib/std/sys.extc —— 特权层：只有它声明 C 原语（+ **签字** ✓）
+// stdlib/std/sys/io.extc —— 特权层 · io 族：只有它声明 C 原语（+ **签字** ✓）
 extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
 let STDIN: i32 = 0
 
 // stdlib/std/io.extc —— 普通库（用 extC 写，自己不碰 extern ✓）
-use std::sys
+use std::sys::io
 fn readLine(buf: mut slice<u8>) -> i64 { … }     // 调用者给 buffer（IO.md 拍过板 ✓）
 fn writeBytes(buf: slice<u8>) -> i64 { … }
 fn flushOut() { flush() }

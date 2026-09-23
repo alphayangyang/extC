@@ -408,7 +408,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 | 段 | 内容 | 做完能干什么 | 进度（2026-09-23 实测） |
 |---|---|---|---|
-| **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
+| **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys/io.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
 | **IO-1** | `open` + 帧拥有的 `extc_files` + `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**（跟 `extern!` 的 `owned` 是**同一个前置**：要"帧拥有资源"那套）|
 | **IO-2** | `exit(code)`、`close(f)!`、`writer`（可见缓冲）、termios raw mode | TUI + 刷量输出 | ⬜ **没有** |
 
@@ -441,7 +441,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 | `scan(mut a, mut b, ...)` | **要，但走「真变参」，而且现在不写**（主人：细节多、工程量大，`nextInt` 那一族现在够用）✓ |
 | 长度 `i64` vs `u64` | ✅ **定了 `i64`**（2026-09-22，定案 69）—— 第 2 节的市面对照仍然值得读 ✓ |
 
-> ⭐ **2026-09-22：第一块落地了**（定案 73）—— `stdlib/std/sys.extc`（原语 + 签字）+
+> ⭐ **2026-09-22：第一块落地了**（定案 73）—— `stdlib/std/sys/io.extc`（原语 + 签字）+
 > `stdlib/std/io.extc`（普通库：`readLine` / `writeBytes` / `flushOut`）+ 内建 `flush()` ✓
 > 用户程序 `use std::io` 就能从 **stdin** 读了（`tests/io/` 是常设验收 ✓）
 > ⏸ **剩下的**（`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `reader` · `main(args)` ·

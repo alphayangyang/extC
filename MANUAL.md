@@ -1831,7 +1831,9 @@ fn main() -> i32 {
 | `io::writeBytes(buf)` | 把一整块字节写出去（fd 直写，**无缓冲** ✓）|
 | `io::flushOut()` / `flush()` | 把 `println` 那边的缓冲刷出去 ✓（跟 `writeBytes` 混用**必须**刷，不然顺序会乱 ✗）|
 
-分层：`std::sys`（**特权层**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
+分层：`std::sys::io`（**特权层 · io 族**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
+> ⚠️ `sys` 不是"一个模块"，是**一条边界**在路径上的写法 ⇒ **按族分文件** ——
+> 后面还有 `std::sys::thread` / `std::sys::time` / `std::sys::net` / `std::sys::proc` ✓
 还欠：`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `main(args)` ✓
 
 ---

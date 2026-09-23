@@ -24,7 +24,7 @@
 | 层 | 谁写 | 内容 |
 |---|---|---|
 | **1 · 编译器** | 状态机变换 + 一个类型 | `coroutine<Req, Resp>` · `yield` · `spawn` / `resume` |
-| **2 · `std::sys`** | 4 个原语（`extern!` 签字） | `epoll_*` · `thread_*` · `mutex_*` · `channel_*` |
+| **2 · `std::sys::*`** | 4 个原语（`extern!` 签字） | `sys::io` 的 `epoll_*` · **`sys::thread`** 的 `thread_*`/`mutex_*`/`channel_*` |
 | **3 · stdlib** | **extC 写** | 调度器（`while` + `epoll_wait`）· `parallel` |
 | **4 · 用户** | 主人 | 协议循环、服务器、GUI、Actor |
 
@@ -272,7 +272,7 @@ typedef struct extc_arena { extc_ablock *top; int64_t blkSize; } extc_arena;
 主线程：按顺序 flush，回收 chunk arena
 ```
 
-只加三个 `std::sys` 原语：**`thread_spawn` · `mutex` · `channel`（有界）**，
+只加三个 `std::sys::thread` 原语：**`thread_spawn` · `mutex` · `channel`（有界）**，
 然后 stdlib 提供一个函数：
 
 ```extc

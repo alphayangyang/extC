@@ -11,8 +11,8 @@
 //   （反例见 `tests/errors/escape_call_result_to_outer.extc` ✓）
 // ⚠️ 本例子**不读 stdin** —— 例子是不喂输入跑的，一读就挂住整个套件 ✗
 //
-// 判据：`var r = readerOf(sys::STDIN)` 里 r 与它内部那 64KB **同层** ⇒ 安全 ✓
-use std::sys
+// 判据：`var r = readerOf(io::STDIN)` 里 r 与它内部那 64KB **同层** ⇒ 安全 ✓
+use std::sys::io
 
 struct reader {
     fd:    i32
@@ -28,7 +28,7 @@ fn readerOf(fd: i32) -> reader {
 }
 
 fn fill(r: mut ref reader) -> i64 {
-    let n = sys::read(r.fd, r.chunk.data, r.chunk.len)
+    let n = io::read(r.fd, r.chunk.data, r.chunk.len)
     r.len = n
     r.pos = 0
     return n
@@ -36,7 +36,7 @@ fn fill(r: mut ref reader) -> i64 {
 
 fn main() -> i32 {
     // expect: cap = 65536
-    var r = readerOf(sys::STDIN)
+    var r = readerOf(io::STDIN)
     println("cap = ", r.chunk.len)
     println("pos = ", r.pos)
 
