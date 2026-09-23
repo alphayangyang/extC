@@ -13,67 +13,22 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 echo "== 构建 =="
 if make -s 2>/tmp/extc-build.log; then ok "make"; else bad "make"; cat /tmp/extc-build.log; exit 1; fi
 
-echo "== 正例：extC -> C -> gcc -> 运行 =="
-# ⭐ 输出断言：例子文件里写 `// expect: <片段>` 的行 ⇒ 输出**必须包含**它 ✓
-# （以前只查退出码 ⇒ "算出来是错的数据但正常退出"这种**抓不到** ✗ ——
-#   PLAN #31 那个 UB 就是这种形状：打印 [1002, 0] 而不是 [42, 43]，退出码还是 0）
-for f in examples/*.extc; do
-    name=$(basename "$f" .extc)
-    if out=$($EXTC --run "$f" 2>&1); then
-        if ! grep -q '// expect:' "$f"; then
-            ok "$name  ->  $(echo "$out" | tr '\n' '|')"
-        elif want=$(grep -o '// expect:.*' "$f" | sed 's|// expect: *||' | head -1) \
-             && echo "$out" | grep -qF -- "$want"; then
-            ok "$name  ->  含「$want」（$(echo "$out" | wc -l) 行输出）"
-        else
-            bad "$name （输出里没有「$want」）"
-            echo "$out" | sed 's/^/        /'
-        fi
-    else
-        bad "$name"; echo "$out" | sed 's/^/        /'
-    fi
-done
-
-echo "== 反例：必须被编译期挡掉 =="
-if [ -d tests/errors ]; then
-    for f in tests/errors/*.extc; do
-        name=$(basename "$f" .extc)
-        if out=$($EXTC "$f" 2>&1); then
-            bad "$name （应该报错但通过了）"
-        else
-            msg=$(echo "$out" | head -1 | sed 's/^[^ ]*: //')
-            ok "$name  ->  $msg"
-        fi
-    done
-fi
-
-echo "== 反例·运行时：必须 trap（带源码位置）=="
-if [ -d tests/traps ]; then
-    for f in tests/traps/*.extc; do
-        name=$(basename "$f" .extc)
-        out=$($EXTC --run "$f" 2>&1)
-        status=$?
-        if [ $status -eq 0 ]; then
-            bad "$name （应该 trap，却正常退出了）"
-        elif echo "$out" | grep -q "trap:"; then
-            # ⭐ 顺便咬住"**带源码位置**"这条（PLAN #6 那种退化就再也回不来了 ✓）
-            if echo "$out" | grep -qE "extc|\.extc:[0-9]+: trap:"; then
-                ok "$name  ->  $(echo "$out" | grep -o 'trap:.*' | head -1)"
-            else
-                bad "$name （trap 消息没有源码位置）"
-                echo "$out" | sed 's/^/        /'
-            fi
-        else
-            bad "$name （退出了，但没有 trap 消息）"
-            echo "$out" | sed 's/^/        /'
-        fi
-    done
+# 三个用例套件（正例 / 反例 / trap）交给 Python 并行跑。
+# 每个用例都要起 extc + gcc，串行时几十核的机器只用 1 个 ✗
+# 并发有界、结果**按提交顺序**回放 ⇒ 输出与串行时逐行一致（实测 diff = 0）✓
+# 并发数：PAR_JOBS 覆盖；默认见 tools/parrun.py（不是 cpu_count —— 编译器和 gcc 各自还会派子进程）
+if out=$(python3 tools/parrun.py ${PAR_JOBS:+--jobs "$PAR_JOBS"} 2>&1); then
+    echo "$out"
+    pass=$((pass + $(echo "$out" | tail -1 | grep -oE '通过 [0-9]+' | grep -oE '[0-9]+')))
+else
+    echo "$out"
+    fail=$((fail + $(echo "$out" | tail -1 | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+')))
 fi
 
 echo "== arena：按块细化（150MB 上限下不许涨）=="
 if [ -x tests/arena/run.sh ]; then
     if out=$(tests/arena/run.sh 2>&1); then
-        echo "$out" | grep -E "ok |FAIL" | while read -r line; do echo "$line"; done
+        printf '%s\n' "$out" | grep -E "ok |FAIL"
         pass=$((pass + 1))
     else
         echo "$out"
@@ -84,7 +39,7 @@ fi
 echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
 if [ -x tests/warnings/run.sh ]; then
     if out=$(tests/warnings/run.sh 2>&1); then
-        echo "$out" | grep -E "ok |FAIL" | while read -r line; do echo "$line"; done
+        printf '%s\n' "$out" | grep -E "ok |FAIL"
         pass=$((pass + 1))
     else
         echo "$out"

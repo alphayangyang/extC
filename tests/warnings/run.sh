@@ -44,18 +44,13 @@ for f in tests/warnings/*.extc; do
 done
 
 # ② 正例语料上**零警告**（误报判据）
-noisy=""
-for f in examples/*.extc bench/*/*.extc; do
-    out=$("$EXTC" "$f" -o /dev/null 2>&1)
-    if echo "$out" | grep -q "warning:"; then
-        noisy="$noisy $f"
-    fi
-done
-if [ -n "$noisy" ]; then
-    echo "  FAIL 正例语料上有误报：$noisy"
-    fail=1
+# 这一段要把 examples/ + bench/ 全量编译一遍 —— 串行时是整个套件最贵的一段（实测 ~30s）✗
+# 它没有断言、用例之间无依赖 ⇒ 交给 parrun.py 并行（保序、并发有界）✓
+if out=$(python3 tools/parrun.py --mode warn-scan 2>&1); then
+    echo "  ok   $out"
 else
-    echo "  ok   正例语料（examples/ + bench/）**零警告** ⇒ 不是噪音 ✓"
+    echo "  FAIL $out"
+    fail=1
 fi
 
 exit $fail

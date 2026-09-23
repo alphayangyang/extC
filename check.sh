@@ -63,16 +63,12 @@ else bad "tests/asan/run.sh"; echo "$out"; fi
 echo "== arena 层号（定案 68：检查器是唯一权威，codegen 只翻译 —— 不许漂）=="
 # 哨兵 `EXTC_DBG_ARENA=1` 在**生成时**比对"检查器算的层号"与"codegen 当前块"✓
 # 它不改变输出（golden 照旧逐字节相同 ✓），只是把"两个权威漂了"变成看得见的一行 ✗
-drift=0; dsn=0
-for f in examples/*.extc bench/*/*.extc bench/oi/*.extc bench/oi/persist/*.extc; do
-    [ -f "$f" ] || continue
-    dsn=$((dsn+1))
-    if EXTC_DBG_ARENA=1 ./build/extc "$f" -o /dev/null 2>&1 | grep -q "arena!"; then
-        drift=$((drift+1)); echo "        ✗ $f"
-    fi
-done
-if [ "$drift" -eq 0 ]; then ok "$dsn 个语料：层号零漂移 ✓"
-else bad "arena 层号漂移 $drift 处 ✗"; fi
+# 全量编译一遍（串行 ~32s，是整个 quick 里最贵的单步）⇒ 交给 parrun 并行 ✓
+if out=$(python3 tools/parrun.py --mode arena-scan 2>&1); then
+    ok "$out"
+else
+    bad "arena 层号漂移"; echo "$out"
+fi
 
 echo "== 全限定名（PLAN #53：**全名是权利** · \`as\` 别名是方便）=="
 if out=$(./tests/qname/run.sh 2>&1); then
@@ -96,10 +92,8 @@ fi
 
 echo "== 攻击库（通过的必须是 BASELINE 里那几条 ⇒ 没放松）=="
 now=$(mktemp)
-for f in tests/attacks/*.extc; do
-    n=$(basename "$f" .extc)
-    timeout 20 ./build/extc "$f" -o /dev/null >/dev/null 2>&1 && echo "$n"
-done | sort > "$now"
+# 27 个文件，串行编译时这一节要 ~20 秒 ⇒ 并行（结果集与串行逐字节一致 ✓）
+python3 tools/parrun.py --mode compiles > "$now"
 if diff -q tests/attacks/BASELINE "$now" >/dev/null; then
     ok "通过集合与基线一致（$(wc -l < tests/attacks/BASELINE) 条已知安全 + 其余全部被挡）"
 else
