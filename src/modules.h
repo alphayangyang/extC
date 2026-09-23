@@ -1,15 +1,39 @@
-/* 模块装载（定案 70）—— 见 modules.c 顶上的长注释 ✓ */
+/* The module loader: resolve `use`, load files, merge them into one unit.
+ *
+ * `use a::b` is a semantic import - a module is compiled once and its declarations
+ * are merged in topological order - not a textual include. The rules and the limits
+ * of the current implementation are described at the top of modules.c.
+ */
+
 #ifndef EXTC_MODULES_H
 #define EXTC_MODULES_H
 
 #include "ast.h"
 
-/* 按根文件的 `use` 递归装载模块，**拓扑序**合进 `out`（prelude 已经在里面了 ✓）。
- *   rootm      —— 根文件先解析到自己的 Module 里（模块要等它的 `use` 才知道装谁 ✓）
- *   rootCtx    —— 根文件的 Ctx（根文件里的错误走它 ✓）
- *   searchDirs —— `-I` 给的目录（const char*）
- *   outCtxs    —— 装好的模块各自的 Ctx（**上层要拿它们渲染报错** ✓）
- * 返回 false = 有错（诊断已经打出去了 ✓）*/
+/* Load every module the root file imports and merge them into `out`.
+ *
+ * Params:
+ *   a          - arena that owns every loaded module
+ *   out        - the merged module; the prelude must already be in it
+ *   rootm      - the root file's own parsed module
+ *   rootCtx    - the root file's source context, which blames errors in that file
+ *   rootPath   - path of the root file; its directory becomes the project root
+ *   searchDirs - directories from `-I`, or NULL
+ *   outCtxs    - receives the Ctx of every loaded module so the caller can render
+ *                their diagnostics afterwards, or NULL when the caller does not need
+ *                them
+ *
+ * Returns:
+ *   False when any error was reported; the diagnostics are already printed and
+ *   compilation must stop.
+ *
+ * Notes:
+ *   - `rootCtx` is stored by pointer, never copied. A copy would swallow the
+ *     diagnostics reported through it.
+ *   - `outCtxs` is used by pointer as well, because its length has to reach the
+ *     caller.
+ */
+
 bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                  const char *rootPath, Vec *searchDirs, Vec *outCtxs);
 
