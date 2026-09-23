@@ -537,7 +537,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         if (val->arenaLevel == ARENA_HOME) return true;   /* 已经在家：家最长寿，不用再提 ✓ */
         int target = (at == 0) ? ARENA_HOME : at;
         if (val->arenaLevel > target) val->arenaLevel = target;
-        int depth = (val->arenaLevel == ARENA_HOME) ? 0 : val->arenaLevel;
+        int depth = arenaDepthOf(val->arenaLevel);          /* ⭐ 唯一换算处 ✓ */
         if (val->refDepth > depth || val->refDepth == 0)
             val->refDepth = depth;
         return true;

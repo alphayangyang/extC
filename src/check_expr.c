@@ -805,7 +805,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * ⚠️ 只有 `ARENA_HOME` 例外：那个哨兵是 -1，而 `refDepth` 的语言是
              * "0 = 外面那一级"，所以**映射回 0**（家 = 调用者选的作用域 = 深度 0 ✓）*/
             {
-                int depth = (e->arenaLevel == ARENA_HOME) ? 0 : e->arenaLevel;
+                int depth = arenaDepthOf(e->arenaLevel);    /* ⭐ 唯一换算处 ✓ */
                 if (e->refDepth == 0 || e->refDepth > depth) e->refDepth = depth;
             }
 

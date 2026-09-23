@@ -112,6 +112,28 @@ static inline Sym *identBindOf(Expr *e) {
     return (e && e->kind == EX_IDENT && e->u.ident.sym) ? ((IdentBinding *)e->u.ident.sym)->sym : NULL;
 }
 
+/* ⭐⭐ **"这个分配站点住在第几层" ⇄ "它里面的引用有多深" —— 唯一的换算处** ✓✓
+ *
+ * 为什么不许各处自己写（设计 review 的结论，见 ARENA-MEMORY 附录 G）：
+ * 同一件事原来在 **4 个文件里写了 5 遍**，而且口径还不一样 ——
+ *   · `check_expr.c` / `check_escape.c`：`(arenaLevel == HOME) ? 0 : arenaLevel`
+ *   · `check_top.c` 的 `solvedValDepth`：`(arenaLevel == HOME) ? 0 : (refDepth > 0 ? refDepth : 0)`
+ *     ← **截断式启发**：读到被污染的 `refDepth` 就给出**跟层号矛盾**的答案 ✗
+ *     （§F.2 #2 那个真 bug 就是这么现形的：站点 `refDepth=0` 而按层号算应为 1）
+ * 而 `refDepth` 与 `arenaLevel` **必须是同一个数的两种说法** —— 这条铁律只有
+ * **收在一处**才守得住 ⇒ 所有换算都走这里 ✓
+ *
+ * ⚠️ 原来那个"取 `refDepth`"的分支只在 `arenaLevel ∈ {0, -1}` 时才有区别，
+ * 而那两档都是哨兵（`0` = 还没定、`-1` = 家）⇒ `refDepth` 不是权威
+ * ⇒ 一律按层号算：语义更准，也少一条要同步的路径 ✓
+ *
+ * 语义：`ARENA_HOME`（活得比本帧还久）⇒ 深度 **0**（"外面那一级"）；
+ * 块层 k ≥ 1 ⇒ 深度 **k**；`0`（"还没定"）/负数 ⇒ **0**（调用者自己判"没定"）✓ */
+static inline int arenaDepthOf(int arenaLevel) {
+    if (arenaLevel == ARENA_HOME) return 0;
+    return arenaLevel > 0 ? arenaLevel : 0;
+}
+
 typedef struct { const char *name; int count; } NameUse;
 
 typedef struct { Vec syms; } Scope;

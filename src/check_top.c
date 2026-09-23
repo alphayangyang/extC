@@ -1370,7 +1370,8 @@ static int solvedValDepth(Expr *e) {
     if (!e) return 0;
     switch (e->kind) {
     case EX_NEW: case EX_GENCALL:
-        return (e->arenaLevel == ARENA_HOME) ? 0 : (e->refDepth > 0 ? e->refDepth : 0);
+        /* ⚠️ 不许再“取 refDepth”当启发 —— 那个数可能被污染，会跟层号矛盾 ✗（§F.2 #2）*/
+        return arenaDepthOf(e->arenaLevel);
     case EX_IDENT: case EX_FIELD: case EX_INDEX:
         return e->refDepth > 0 ? e->refDepth : 0;
     case EX_SIGN:     return solvedValDepth(e->u.sign.operand);
@@ -2196,7 +2197,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                     }
                     if (site->arenaLevel != want) {
                         site->arenaLevel = want;
-                        site->refDepth   = (want == ARENA_HOME) ? 0 : want;
+                        site->refDepth   = arenaDepthOf(want);   /* ⭐ 同上，唯一换算处 ✓ */
                         if (want == ARENA_HOME) fixed++; else keptBlock++;
                     }
                 } else if (site->arenaArgPending) {
@@ -2232,8 +2233,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < f->arenaSites.len; j++) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
-                site->refDepth = (site->arenaLevel == ARENA_HOME)
-                                 ? 0 : (site->arenaLevel > 0 ? site->arenaLevel : 0);
+                site->refDepth = arenaDepthOf(site->arenaLevel);   /* ⭐ 同上 ✓ */
             }
         }
 
