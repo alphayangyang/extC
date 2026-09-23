@@ -113,6 +113,18 @@ typedef struct {
      * Only the initializer is followed, and only through explicit assignments; aliases
      * are not chased, so a site that cannot be reached keeps its depth error. */
     Expr       *origin;
+    /* The expression that last gave this binding its value, kept unflattened.
+     *
+     * `origin` answers "where does the storage inside this binding come from" and flattens
+     * a chain of bindings to the expression at its root, which is what the arena-level walk
+     * needs. The level pass asks a narrower question -- which expression is this binding
+     * holding -- and there the root of a chain is the wrong answer, because it belongs to
+     * whichever binding the chain happened to end at.
+     *
+     * It still describes only the last assignment, so it cannot stand for a binding written
+     * in both arms of an `if`; the publication records are the authority for that, and this
+     * field is a shortcut for the chain-of-assignments case. */
+    Expr       *heldSrc;
 
     int         line;      /* source line of the declaration, for diagnostics */
     /* The module this binding belongs to; set for globals, NULL for locals. Name
@@ -484,6 +496,7 @@ typedef struct {
 /* Record that `val` is being published at level `at`; decides nothing. The checking
  * pass only records; one pass folds over the records and settles the levels. */
  void recordStore (Checker *c, Expr *val, Expr *target, int at, int line);
+ bool promoteFieldsAt (Checker *c, Sym *sy, int at, int hops);
 /* True when C can compare values of this type directly; `str` is excluded because its `==` would
  * compare pointers. */
  _Bool cmpIsNative (Type *t);

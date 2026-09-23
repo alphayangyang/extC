@@ -254,6 +254,7 @@ void checkStmt(Checker *c, Stmt *s) {
              * `head = n` follows `n` to the `new` site and raises it to the level of
              * `head`. A declaration without an initializer records NULL. */
             noteOrigin(c, sym, s->u.var.init);
+            if (sym && !sym->addressed) sym->heldSrc = s->u.var.init;
             /* For a binding that holds a reference, the depth of what it points at is
              * computed from the initializer: in `var cur: ?ref node = head` the head is
              * a parameter, so the cursor has depth 0 and may be returned. */
@@ -498,6 +499,36 @@ void checkStmt(Checker *c, Stmt *s) {
              * one step later would record the old number and cause false rejections
              * afterwards. */
             int atDst = storeLayer(c, s->u.assign.target);
+            /* The binding holds this value now, so its origin follows the value.
+             *
+             * `originOf` flattens a chain of bindings to the expression at its root, so
+             * `h = g` makes the origin of `h` the root of `g` -- which is the struct
+             * literal that put the allocation into `g`, and that is the expression a walk
+             * has to reach in order to find it. Without this the origin kept naming the
+             * initializer from the declaration, and a value binding declared empty and
+             * filled in later was unreachable: measured on
+             * `tests/arena-promoted/C3_if_join_wholevalue`, where `h` is declared as an
+             * empty box and then assigned a box holding the allocation, so every walk
+             * stopped at the empty declaration and the allocation stayed in the block arena
+             * that was released before the struct carrying it was returned.
+             *
+             * Only a plain assignment to the binding itself updates it. `*q = v` and
+             * `s.f = v` write into something the binding already refers to, so they leave
+             * the binding holding what it held, and a binding whose address was taken is
+             * skipped because an alias could change it. */
+            {
+                Sym *dst = (s->u.assign.target->kind == EX_IDENT)
+                           ? identBindOf(s->u.assign.target) : NULL;
+                if (dst && !dst->addressed) {
+                    noteOrigin(c, dst, s->u.assign.value);
+                    /* And the value itself, without being flattened to the root of its
+                     * chain: the walk reads this one to reach the storage the binding now
+                     * holds. Attributing the root's expression to every binding on a chain
+                     * is what made `out = h` follow `h = zero` back to the literal that
+                     * initializes `zero`, an unrelated binding's empty box. */
+                    dst->heldSrc = s->u.assign.value;
+                }
+            }
             recordStore(c, s->u.assign.value, s->u.assign.target, atDst, s->line);
             promoteInto(c, s->u.assign.value, atDst);
             markCallHomeIfEscaping(c, s->u.assign.value, atDst);

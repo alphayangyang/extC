@@ -2108,6 +2108,7 @@ typedef struct {
 } LvlState;
 
 static int  symLevel(LvlState *ls, Sym *sy);
+static bool setSymLevel(LvlState *ls, Sym *sy, int lv);
 static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
 
 /* Walk a value's carrier chain and return the level the value itself has to live at.
@@ -2148,8 +2149,9 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
     switch (val->kind) {
     case EX_NEW:
     case EX_GENCALL:
-        /* The site this whole walk was looking for. */
-        if (target < LEVEL_INF && (val->minAt < 0 || target < val->minAt)) val->minAt = target;
+        /* The site this whole walk was looking for. */        if (target < LEVEL_INF && (val->minAt < 0 || target < val->minAt)) {
+            val->minAt = target;
+        }
         return target;
     case EX_IDENT: {
         Sym *sy = identBindOf(val);
@@ -2171,8 +2173,8 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
                     val->u.ident.name, sy ? "yes" : "NULL",
                     (sy && sy->origin) ? "yes" : "NULL", target);
         if (getenv("EXTC_DBG_LV") && sy && sy->origin)
-            fprintf(stderr, "      [lv]   -> origin kind=%d line=%d\n",
-                    (int)sy->origin->kind, sy->origin->line);
+            fprintf(stderr, "      [lv]   -> origin kind=%d line=%d (sym %s)\n",
+                    (int)sy->origin->kind, sy->origin->line, sy->name ? sy->name : "?");
         /* A binding's level is its own: what it holds now may have arrived from several
          * statements, and `origin` remembers only one of them. It is computed by
          * `levelPass` and read here, which is how the requirement crosses from one
@@ -2184,17 +2186,87 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
          * holds may have arrived from several statements, and `origin` remembers only one
          * of them. */
         int fromSym = sy ? symLevel(ls, sy) : LEVEL_INF;
-        if (!sy || !sy->origin) return fromSym;
-        /* The requirement that reaches a binding also reaches what the binding holds: if
-         * the binding has to live to level `fromSym`, then everything inside the value it
-         * holds has to live at least that long. So the walk descends at the tighter of the
-         * two levels. Measured on `tests/arena-promoted/C3_if_join_wholevalue`: `out` is
-         * returned, which makes its level 0, and only descending at 0 reaches the `alloc`
-         * behind `h` -- descending at the level of the store alone stopped at the level of
-         * the block the store happened to sit in. */
+        /* The level the value is being handed to also reaches the binding on the way, and
+         * this is the edge that carries a demand *through* a binding.
+         *
+         * `out = h` hands `h` to `out`, which is level 0, so whatever `h` holds has to
+         * reach level 0 as well -- otherwise the demand stops at the store and never
+         * arrives at the allocation behind `h`. Lowering a binding's own level is the safe
+         * direction: a binding that lives longer than it had to costs memory and cannot
+         * leave a reference dangling. */
+        if (sy && target < LEVEL_INF) setSymLevel(ls, sy, target);
+        /* And the other direction of the same edge: a binding that is already known to
+         * live longer than this walk demands tightens the walk.
+         *
+         * Without it the walk keeps carrying the level of the store it started from. `out`
+         * is at level 0 because it is returned, while the store `out = h` was recorded at
+         * level 1, and entering `out` at 1 left everything `out` holds one level too deep:
+         * measured on `C3_if_join_wholevalue`, the `alloc` behind `h` stayed at the block
+         * level while the struct carrying it was returned to the caller. */
+        if (sy) {
+            int cur = symLevel(ls, sy);
+            if (cur < target) target = cur;
+        }
+        /* A binding is *not* descended into here.
+         *
+         * What a binding holds may have arrived from several assignments, and one
+         * expression field cannot describe a join over them: whatever it remembers is the
+         * last one written, which is one arm of an `if` chosen by source order. Measured on
+         * `tests/arena-promoted/C3_if_join_wholevalue`, where `h = g` is followed by
+         * `h = zero` and every walk of `h` therefore ended at the empty box in the other
+         * arm, never reaching the allocation inside `g`.
+         *
+         * The records already hold every assigned expression, so the walk descends into
+         * those instead -- `levelPass` walks the values recorded for a binding, which is
+         * the join done properly rather than a race between statements. All that is read
+         * here is the binding's own level.
+         */
+        /* Descend into the expression the binding was actually given, never into the
+         * flattened root of its origin chain: the root belongs to whichever binding the
+         * chain ended at, and `out = h` following `h = zero` therefore pointed at the
+         * literal that initializes `zero`.
+         *
+         * This is the chain of assignments, and the level asked of the value is the
+         * smaller of the binding's own level and the level being demanded here. */
+        Expr *held = sy->heldSrc ? sy->heldSrc : sy->origin;
+        if (!held) return fromSym;
+        /* The walk descends at the tighter of the binding's level and the level demanded
+         * of it. Whatever the binding holds is held to the same level: if the binding has
+         * to outlive the frame, so does the storage inside the value it holds. */
         int inner = fromSym < target ? fromSym : target;
-        int fromVal = levelOfValue(c, ls, sy->origin, inner, hops + 1);
+        int fromVal = levelOfValue(c, ls, held, inner, hops + 1);
         return fromSym < fromVal ? fromSym : fromVal;
+    }
+    /* The join node of an `if`: one value with two operands, either of which can be what
+     * the destination ends up holding. Both are walked at the same level, and the answer is
+     * the smaller of the two.
+     *
+     * Leaving this form out was the last thing keeping the whole-value if-join unsound.
+     * `out = h` stores a join node, so a walk without this case returned "no requirement"
+     * at the store itself and never reached the allocation behind either arm -- measured on
+     * `tests/arena-promoted/C3_if_join_wholevalue`, where the site stayed at the block
+     * level and the struct holding it was returned. */
+    case EX_BIN: {
+        int a = levelOfValue(c, ls, val->u.bin.left, target, hops + 1);
+        int b = levelOfValue(c, ls, val->u.bin.right, target, hops + 1);
+        /* The join takes the smaller of its arms, and that number belongs to the operands
+         * as well as to the join.
+         *
+         * Each arm is a value the destination can end up holding, so an arm's bindings are
+         * held to what the *other* arm needs: `h = g` in one arm and `h = zero` in the other
+         * means either one is what `h` holds. When both arms are reached through the join
+         * and neither is walked on its own, the binding inside the arm carrying the
+         * allocation never learns what the join learned, and the demand stops at the arm
+         * carrying nothing. Measured on `tests/arena-promoted/C3_if_join_wholevalue`. */
+        int r = a < b ? a : b;
+        /* Both arms are always revisited at the joined level. The first pass through them
+         * is what produced `a` and `b`, but a walk can stop at a binding before reaching the
+         * sites inside the value it holds, and then the level the join just settled on has
+         * not reached those sites yet. The revisit is a no-op once they agree, so the
+         * iteration still terminates. */
+        levelOfValue(c, ls, val->u.bin.left, r, hops + 1);
+        levelOfValue(c, ls, val->u.bin.right, r, hops + 1);
+        return r;
     }
     case EX_SIGN:  return levelOfValue(c, ls, val->u.sign.operand, target, hops + 1);
     case EX_FIELD: return levelOfValue(c, ls, val->u.field.obj, target, hops + 1);
@@ -2212,6 +2284,15 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
             int x = levelOfValue(c, ls, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value,
                                  target, hops + 1);
             if (x < r) r = x;
+        }
+        /* The literal is how a binding gets its fields, and the field table stores the
+         * expression that wrote each one. Reading it here covers the same fact from the
+         * other side: `{ p: null, q: x }` names `x` in the literal, while a later read of
+         * `g.q` is answered from the table, and the walk has to reach the allocation either
+         * way. */
+        for (size_t i = 0; i < c->allSyms.len; i++) {
+            Sym *sy = *(Sym **)vecAt(&c->allSyms, i);
+            if (sy && sy->origin == val) promoteFieldsAt(c, sy, target, hops + 1);
         }
         return r;
     }
@@ -2246,6 +2327,7 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
  * have arrived from several statements, and where it is published may demand more
  * lifetime than the value alone would. Both are edges between publication records, and
  * this table is where they meet. */
+
 static int symLevel(LvlState *ls, Sym *sy) {
     if (!ls || !sy) return LEVEL_INF;
     for (size_t i = 0; i < ls->tbl.len; i++) {
@@ -2280,8 +2362,26 @@ static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
  * together until the numbers stop moving. */
 static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
+    /* `dest` is the level of the place this value is being handed to, and it takes part in
+     * every minimum below.
+     *
+     * Where two arms of an `if` write the same binding, the binding holds one value or the
+     * other and must live long enough for both. That value is a join node, and one arm of
+     * it can be a literal -- `h = g` in one arm and `h = zero` in the other leaves one arm
+     * with no level of its own at all. The destination is the number that covers the case
+     * the arm has nothing to say about, so leaving it out makes the join look like it
+     * demands nothing, and the site behind the other arm is never told it has to outlive
+     * the block. */
     switch (val->kind) {
     case EX_IDENT:  return symLevel(ls, identBindOf(val));
+    /* The join node of an `if`: `h = g` in one arm and `h = zero` in the other is one
+     * value with two operands. Since either operand can be what the binding ends up
+     * holding, the requirement is the smaller of the two, compared with `dest` as well. */
+    case EX_BIN: {
+        int a = valueLevel(c, ls, val->u.bin.left, hops + 1);
+        int b = valueLevel(c, ls, val->u.bin.right, hops + 1);
+        return a < b ? a : b;
+    }
     case EX_SIGN:   return valueLevel(c, ls, val->u.sign.operand, hops + 1);
     case EX_FIELD:  return valueLevel(c, ls, val->u.field.obj, hops + 1);
     case EX_INDEX:  return valueLevel(c, ls, val->u.index.obj, hops + 1);
@@ -2355,33 +2455,95 @@ static void levelPass(Checker *c, const DfResult *dfr) {
     (void)dfr;
     LvlState ls;
     vecInit(&ls.tbl, c->arena, sizeof(SymLevel));
-    int rounds = 0;
+
+    /* Step one: how long does each binding have to live?
+     *
+     * A binding's level is the smallest level among the values stored into it and the
+     * stores that publish it onwards, and a value read from a binding depends on that level
+     * in turn, so this is a fixed point of its own. It converges before anything is
+     * decided, which is what keeps the decision independent of the order the records are
+     * visited in.
+     *
+     * Only the lowering direction exists, and a store only lowers the binding it names: a
+     * value that arrives from somewhere shallower makes the binding live longer, never
+     * shorter. */
     for (int round = 0; round < 64; round++) {
-        rounds++;
+        bool moved = false;
+        for (size_t i = 0; i < c->stores.len; i++) {
+            StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
+            if (!st || !st->target || st->target->kind != EX_IDENT) continue;
+            Sym *d = identBindOf(st->target);
+            if (!d) continue;
+            int at = st->at;
+            int v  = valueLevel(c, &ls, st->value, 0);
+            if (v < at) at = v;
+            if (setSymLevel(&ls, d, at)) moved = true;
+        }
+        if (!moved) break;
+    }
+
+    /* Step two: how long does each allocation site have to live?
+     *
+     * For every publication, the level to reach is the tighter of the level the store was
+     * accounted at and the level of the destination -- the destination may be a binding
+     * found in step one to live longer than the block the store happened to sit in, and
+     * `out = h` recorded at level 1 with `out` returned at level 0 is exactly that case.
+     *
+     * When the destination is tighter, the requirement reaches everything the value was
+     * built from, which is what the walk below does. That extra step is deliberately
+     * narrow: a store into a place that lives no longer than the store itself says nothing
+     * new about the value, and walking it anyway was measured to move the `new` inside a
+     * loop from the loop arena to the frame arena, where it is no longer reclaimed each
+     * round -- the per-block refinement the arena tests exist to protect. */
+    for (int round = 0; round < 64; round++) {
         bool moved = false;
         for (size_t i = 0; i < c->stores.len; i++) {
             StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
             if (!st) continue;
             int at = st->at;
-            int v  = valueLevel(c, &ls, st->value, 0);
-            if (v < at) at = v;
-            levelOfValue(c, &ls, st->value, at, 0);
-            /* A published binding has to live at the level of the publication.
-             *
-             * `at` is the level the value is handed to. If the binding ends up named in a
-             * store of its own -- and a `return` names it directly -- then the binding
-             * holds the value that was published, so its own lifetime is now known to be
-             * at least as long. This is the edge that carries "beyond this frame"
-             * backwards from `return out` to `out`, and from there to everything `out`
-             * was ever assigned. */
             Sym *dst = (st->target && st->target->kind == EX_IDENT)
                        ? identBindOf(st->target) : NULL;
-                    if (dst && setSymLevel(&ls, dst, at)) moved = true;
+            int dl = dst ? symLevel(&ls, dst) : LEVEL_INF;
+            if (dl < at) at = dl;
+            int v = valueLevel(c, &ls, st->value, 0);
+            if (v < at) at = v;
+            bool carrying = typeContainsRef(c->tt, tsub(c, st->value->type))
+                            || mentionsParam(st->value->type);
+            /* Numbers inside a value still name a place (`cell.value = n` reaches `cell`),
+             * so a walk of a value that carries no reference would drag bindings along with
+             * it for no reason. */            if (!carrying) continue;
+            levelOfValue(c, &ls, st->value, at, 0);
+            /* A binding can be assigned more than once, and it then holds one of those
+             * values. `Sy`->origin` remembers only the last assignment, so a walk that
+             * followed it would stop at whichever arm happened to be written last --
+             * measured on `C3_if_join_wholevalue`, where `h = g` is followed by
+             * `h = zero` and the origin ended up naming the empty box, leaving the
+             * allocation behind `g` unreachable from every later store of `h`.
+             *
+             * Every assigned value is in the record table, so walking them all is what
+             * covers "one of these". Each is walked at the destination's level, which is
+             * the level anything `h` holds has to reach. */            if (dst && dl < LEVEL_INF) {
+                for (size_t k = 0; k < c->stores.len; k++) {
+                    StoreSite *alt = *(StoreSite **)vecAt(&c->stores, k);
+                    if (!alt || alt == st || !alt->target) continue;
+                    if (alt->target->kind != EX_IDENT) continue;
+                    if (identBindOf(alt->target) != dst) continue;
+                    if (!typeContainsRef(c->tt, tsub(c, alt->value->type))
+                        && !mentionsParam(alt->value->type)) continue;
+                    /* The recorded value, not its origin. `originOf` flattens a chain of
+                     * bindings down to the expression at the root of the chain, and that
+                     * expression belongs to whichever binding the chain happened to end
+                     * at: `out = h` following `h = zero` flattened to the literal that
+                     * initializes `zero`, so descending through origins landed in an
+                     * unrelated binding's empty box. The record holds the expression that
+                     * was actually assigned, which is the arm itself. */
+                    levelOfValue(c, &ls, alt->value, dl, 0);
+                }
+            }
+            if (dst && dl < st->at && setSymLevel(&ls, dst, at)) moved = true;
         }
         if (!moved) break;
     }
-    if (getenv("EXTC_DUMP_LVL"))
-        fprintf(stderr, "[lvl] level pass converged after %d round(s)\n", rounds);
 }
 
 /* Depth of a value once the level solver has run, following bindings backwards.

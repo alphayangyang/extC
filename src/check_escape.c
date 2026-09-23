@@ -625,7 +625,7 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
  *     rejection.
  */
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
-static bool promoteFields(Checker *c, Sym *sy, int at, int hops);
+bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops);
 /* Promote every allocation site inside a value to the level that value has to reach.
  *
  * This is the entry point used by the store and return checks, and it starts the carrier
@@ -670,7 +670,7 @@ bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at
  *   True when every field that has a `src` was promoted. False leaves the caller to
  *   report the depth error.
  */
-static bool promoteFields(Checker *c, Sym *sy, int at, int hops) {
+bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
     if (!sy || hops > 32) return true;
     /* An alias may write it, so the table cannot be trusted. */
     if (sy->addressed) return true;
@@ -931,7 +931,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         /* The origin only covers the fields written at the declaration, so read the field table's
          * sources as well. A later write such as `h.q = x` exists only in the field table; see the
          * comment on `promoteFields`. */
-        if (!promoteFields(c, sy, at, hops + 1)) ok = false;
+        if (!promoteFieldsAt(c, sy, at, hops + 1)) ok = false;
         if (!ok) return false;
         if (slotDeepEnough) return true;
         if (sy->type && typeContainsRef(c->tt, tsub(c, sy->type)) && sy->refDepth > at)
