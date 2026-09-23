@@ -8,6 +8,7 @@
  */
 
 #include "check_internal.h"
+#include "dataflow.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2176,6 +2177,72 @@ static void checkFunc(Checker *c, FuncDef *f) {
 
     collectEffects(c, f);      /* compute the effect summary; it is only recorded here */
     f->arenaSites = c->curArenaSites;   /* handed to the pass that runs after the analysis closes */
+
+    /* Reference depths, recomputed as a monotone data-flow fixed point over the body.
+     *
+     * The checking walk above maintains a binding's depth by destructive assignment and
+     * has no join at control-flow merges, so at an `if` the arm visited last simply wins.
+     * That cannot produce the upper bound the escape check needs, and it is the reason a
+     * struct holding an allocation could come back pointing into a block arena. The walk
+     * below derives the same numbers from the whole control-flow structure instead:
+     * stores raise a depth, merges take the maximum, and loops are iterated to a fixed
+     * point. It reads the tree and writes only the depths, so every later reader sees a
+     * value that no longer depends on the order branches were visited.
+     *
+     * See `docs/topics/ARENA-SOUNDNESS.md` section 9.3, item 3-a, and `src/dataflow.c`. */
+    {
+        DfResult dfr;
+        dfAnalyze(c, f, &dfr);
+        if (getenv("EXTC_DBG_DFA")) {
+            fprintf(stderr, "[dfa] %s: %d vars%s\n", f->name ? f->name : "?",
+                    dfr.nvars, dfr.overflow ? " (OVERFLOW: result unused)" : "");
+            for (int i = 0; i < dfr.nvars; i++) {
+                fprintf(stderr, "       %-6s depth=%d", dfr.vars[i].cname, dfr.vars[i].depth);
+                for (int k = 0; k < dfr.vars[i].nfields; k++)
+                    fprintf(stderr, "  .%s=%d", dfr.vars[i].fields[k].name,
+                            dfr.vars[i].fields[k].depth);
+                fprintf(stderr, "\n");
+            }
+        }
+        if (!dfr.overflow) {
+            for (size_t i = 0; i < c->allSyms.len; i++) {
+                Sym *sy = *(Sym **)vecAt(&c->allSyms, i);
+                if (!sy || sy->line < 0) continue;
+                int d = dfLookup(&dfr, sy->cname);
+                if (d > sy->refDepth) sy->refDepth = d;
+                /* Repair the field table with the fixed point as well. The table is
+                 * filled while the body is checked, so a field whose source is an
+                 * allocation carries the pre-fixed-point answer: `var g: box = { q: x }`
+                 * records 0 for `q` because `x`'s binding had not been settled yet, and
+                 * a later walk that wants to know how deep `g.q` is then sees nothing
+                 * live and skips the promotion. Each entry remembers the expression that
+                 * wrote it, so its depth can be recomputed now. Only raising, as always:
+                 * an upper bound may grow but not shrink. */
+                for (int k = 0; k < sy->nfields; k++) {
+                    Expr *srcv = sy->fields[k].src;
+                    if (!srcv) continue;
+                    int fd = dfValueDepth(c, &dfr, srcv);
+                    if (sy->fields[k].depth < fd) sy->fields[k].depth = fd;
+                }
+                {
+                    int m = sy->otherDepth;
+                    for (int k = 0; k < sy->nfields; k++)
+                        if (sy->fields[k].depth > m) m = sy->fields[k].depth;
+                    if (m > sy->refDepth) sy->refDepth = m;
+                }
+                for (int k = 0; k < sy->nfields; k++) {
+                    for (int j = 0; j < dfr.nvars; j++) {
+                        if (strcmp(dfr.vars[j].cname, sy->cname) != 0) continue;
+                        for (int m = 0; m < dfr.vars[j].nfields; m++)
+                            if (sy->fields[k].name &&
+                                strcmp(dfr.vars[j].fields[m].name, sy->fields[k].name) == 0 &&
+                                dfr.vars[j].fields[m].depth > sy->fields[k].depth)
+                                sy->fields[k].depth = dfr.vars[j].fields[m].depth;
+                    }
+                }
+            }
+        }
+    }
     popScope(c);
     c->curFunc = savedFunc;
     c->curParams = savedParams;

@@ -196,7 +196,7 @@ typedef struct {
                           * but sound */
 } EArenaSite;
 
-typedef struct {
+typedef struct Checker {
     Ctx       *ctx;         /* parser and module context, for diagnostics and lookup */
     Arena     *arena;       /* arena the checker allocates its own bookkeeping from */
     TypeTable *tt;          /* type table of the module being checked */

@@ -275,7 +275,18 @@ int exprRefDepth(Checker *c, Expr *e) {
      * body the depth is computed under the assumption that the parameter may carry a
      * reference, and the instance check decides whether the rule applies. */
     if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return 0;
-    if (!c->substParams && !mentionsParam(e->type) && e->refDepth) return e->refDepth;
+    /* A binding's depth is authoritative on the binding, not on the expression node: the
+     * node's copy is written when the expression is first checked, and the data-flow
+     * analysis settles binding depths only afterwards, from the whole control-flow
+     * structure. Consulting the node here would return the pre-fixed-point answer, which
+     * is exactly how a struct holding an allocation was reported as holding nothing live
+     * and the allocation stayed in a block arena. */
+    if (!c->substParams && !mentionsParam(e->type) && e->refDepth) {
+        if (e->kind != EX_IDENT) return e->refDepth;
+        Sym *syc = identBindOf(e);
+        if (!syc || !syc->type || tsub(c, syc->type)->kind != TY_REF ||
+            syc->refDepth >= e->refDepth) return e->refDepth;
+    }
 
     int d = 0;
     switch (e->kind) {
