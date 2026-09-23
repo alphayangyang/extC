@@ -3583,7 +3583,23 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
         "    return (int64_t)v;   /* truncation toward zero, as in C */\n"
         "}\n"
-        "void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
+        /* Getting this function inlined is worth a lot: it has one call site per program
+         * and that site is usually inside a loop, so an out-of-line call costs a call and a
+         * return per object. Measured on `bench/gc/src/rebuild.extc`: 100.0ms out of line
+         * against 25.8ms inlined, a factor of 3.9, and the binary came out 80 bytes smaller
+         * inlined. The error path below is what makes the compiler refuse on its own.
+         *
+         * Asking for it needs a compiler extension: ISO C has `inline`, but nothing that
+         * *requires* inlining, so `always_inline` is a GNU/Clang attribute. The generated C
+         * was otherwise strict ISO C99 (`cc -std=c99 -pedantic-errors` accepted it), so the
+         * attribute is guarded and the code stays ISO C everywhere else. The guard names
+         * `__GNUC__` rather than using `__has_attribute`, which is itself an extension. */
+        "#if defined(__GNUC__) || defined(__clang__)\n"
+        "#define EXTC_INLINE static inline __attribute__((always_inline))\n"
+        "#else\n"
+        "#define EXTC_INLINE static inline\n"
+        "#endif\n"
+        "EXTC_INLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
         "    if (n <= 0) n = 1;\n"
         "    n = (n + 7) & ~(int64_t)7;\n"
         "    /* Adopt the spare only when the arena is empty.\n"

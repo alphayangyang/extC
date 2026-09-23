@@ -155,3 +155,30 @@ extC 版最初把两个槽声明在**循环外** ⇒ 那个 `new` 真的逃逸�
 或者干脆只报事实、不下结论（当前形态）。
 
 **已经能用的部分**：四形状能分开，所以它足以回答"哪个站点在帧层"这类问题 ✓
+
+---
+
+## 附 3：`extc_arena_alloc` 内联 = 3.9×（2026-09-24）
+
+**发现方式**：rebuild 比"手写一块到底"慢 2.8×，用 callgrind 看到**指令数恰好 2×**，
+再 `objdump` 发现内层循环里**每次分配都有一次 `call extc_arena_alloc`** —— GCC 不肯内联它
+（函数体不小 + 里面有 OOM 错误分支）。
+
+**实测（同一份生成代码，只加 `__attribute__((always_inline))`）**：
+
+| | 修前 | 修后 |
+|---|---|---|
+| `rebuild`（2 万轮 × 1000 节点）| 100.7 ms | **25.7 ms** |
+| `churn`（3200 万次分配）| 140.9 ms | **38.2 ms** |
+| 二进制体积 | — | **小 80 字节**（内联反而更小）|
+
+**ISO C 的问题（重要）**：生成代码此前是**严格 ISO C99**（`cc -std=c99 -pedantic-errors` 接受），
+而 `always_inline` 是 **GNU/Clang 扩展**（ISO C 只有 `inline`，没有"强制内联"）。
+⇒ 已加守卫：`#if defined(__GNUC__) || defined(__clang__)` 才用属性，否则退回普通 `static inline`。
+⇒ 带守卫后 `-std=c99 -pedantic-errors` **仍然通过**，性能不变 ✓
+⚠️ 没用 `__has_attribute`：那本身就是扩展。
+
+**另外试过、无效的（别重走）**：
+- 跳过"从未分配过的层"的 `release`：指令数降了，**时间没变**（101.6 → 102.7ms）⇒ 已回退 ✗
+- 同时内联 `extc_arena_release`：无额外增益（26.0 → 26.1ms）✗
+- `__attribute__((hot))`：与 `always_inline` 同效（25.8ms），但没有"保证"语义
