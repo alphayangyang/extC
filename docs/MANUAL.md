@@ -1829,7 +1829,40 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
 - 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len` ✓
 - `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（它要等"帧拥有资源"那套 ✓）
 
-### 12.4 输入输出：`std::io`（第一块）
+### 12.4 让编译器内联：`@inline`（2026-09-24 新增）
+
+写在**函数声明前**，要求这个调用点必须被内联：
+
+```extc
+@inline fn sq(x: i64) -> i64 { return x * x }        // 普通函数
+struct pt {
+    x: i64
+    @inline fn get(self: ref pt) -> i64 { return self.x }   // 方法（写在 struct 体内）
+}
+@private @inline fn twice(x: i64) -> i64 { return x + x }    // 与 @private 连用，顺序随意
+```
+
+**它是要求，不是建议。** ISO C 的 `inline` 只是提示，编译器可以不听（而且**不会告诉你**）；
+`@inline` 生成的 C 用 `always_inline`，它**必须**被满足 ✓
+
+**为什么需要它**：库的热循环里，每字节一次方法调用的代价很大 ——
+实测 `nextInt` 那条路，`nextByte` + `skipSpace` 两个方法占掉**全部指令的 51%** ✓
+（同一处改写循环结构又拿掉 48%，所以**两者是互补的**，见下面的"什么时候不该用"✓）
+
+**三条会被编译期拒绝的写法**（都带位置，不是"生成的文件第几行"）：
+
+| 写法 | 为什么拒 |
+|---|---|
+| `@inline` 标在**递归**函数上（含**互递归**）| `always_inline` 是要求，递归函数满足不了 ⇒ C 编译器会报 `inlining failed in call to 'always_inline'`，而那是生成文件里的位置 ⇒ 挪到源码这一行报 ✓ |
+| `@inline` 标在 `extern` 声明上 | 没有函数体，没什么可内联的 ✓ |
+| 写错的注解名（`@fast` / `@recursive` / `@main`）| 注解是**给编译器的指令**，写错必须报错；`@recursive` / `@main` **设计过但没实现**，所以明说"还没实现"而不是静默接受 ✓ |
+
+> ⚠️ **什么时候不该用**（实测教训）：给 `std::io` 的逐字节方法标 `@inline`，
+> `nextLine` 读 100 万行**从 9.2ms 变成 11.4ms**（慢 24%）✗
+> —— 强制内联把 C 编译器的手脚绑住了。**先量再用**：
+> `nextInt` 那处的真正收益来自**改写循环**（33.7 → 17.6ms），内联只拿到 22.9ms ✓
+
+### 12.5 输入输出：`std::io`（第一块）
 
 ```extc
 use std::io
