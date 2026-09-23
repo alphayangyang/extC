@@ -349,10 +349,10 @@ static FuncDef *parseExtern(Parser *p) {
         if (at(p, "owned")) {
             Token *ow = take(p);
             ctxError(p->ctx, ow->line, ow->col,
-                     "Memory returned by C has to be released, and extC has no `free` -- the plan"
-                     " is a frame-owned resource object (same shape as `IO.md` §5's files)."
-                     " Until that exists, only declare C functions that write into memory you"
-                     " already own.",
+                     "Memory returned by C has to be released, and extC has no `free`."
+                     " The planned answer is a resource value owned by the frame that created"
+                     " it, which is not implemented yet. Until then, declare only C functions"
+                     " that write into memory the caller already owns.",
                      "`owned` is not implemented yet");
             return NULL;
         }
