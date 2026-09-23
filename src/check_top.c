@@ -3024,7 +3024,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
         c.lvlSolving = false;
         if (getenv("EXTC_DUMP_LVL"))
-            fprintf(stderr, "[lvl] 事实 %zu 条，重放 %d 轮收敛\n",
+            fprintf(stderr, "[lvl] %zu level facts, converged after %d round(s)\n",
                     c.lvlFacts.len, solveRounds);
 
         int fixed = 0, keptBlock = 0;
@@ -3086,7 +3086,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             }
         }
         if (getenv("EXTC_DUMP_LVL"))
-            fprintf(stderr, "[lvl] 定案：%d 处进家 / %d 处留块层\n", fixed, keptBlock);
+            fprintf(stderr, "[lvl] decided: %d sites in the home arena, %d kept at block level\n", fixed, keptBlock);
 
         /* Recompute every site's `refDepth` from its final level, whether or not the level
          * changed.
@@ -3137,7 +3137,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             rc->depth = solvedValDepth(rc->val);
         }
         if (getenv("EXTC_DUMP_OW"))
-            fprintf(stderr, "[arena] 唯一权威：%d 处（`new` / 调用点）落到了家 arena ✓\n", fixed);
+            fprintf(stderr, "[arena] single source of truth: %d site(s) (`new` and call sites) placed in a home arena\n", fixed);
     }
 
     /* ---- Which storage an `@overwrite` cell gets, and how many sites it has ----
