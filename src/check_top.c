@@ -2664,6 +2664,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * decision sees the final depths instead of the numbers that happened to be
          * true while the body was being walked. */
         if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, &dfr);
+        /* Ask the same question again with the numbers the passes settled on. Reporting
+         * stays with the check; this is what makes the two answers comparable. */
+        if (getenv("EXTC_DBG_DEFER")) recheckLevelRejections(c);
         if (getenv("EXTC_DBG_STORES")) {
             int n0 = 0;
             for (size_t i = 0; i < c->stores.len; i++) {
@@ -3168,6 +3171,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.nameUses, arena, sizeof(void *));
     vecInit(&c.narrow, arena, sizeof(void *));
     vecInit(&c.refChecks, arena, sizeof(void *));
+    vecInit(&c.lvlRejects, arena, sizeof(void *));
     vecInit(&c.callChecks, arena, sizeof(void *));   /* deferred call sites */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* arena decisions that depend on escapes */

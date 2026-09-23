@@ -267,6 +267,10 @@ typedef struct Checker {
      * by then, `lookup` cannot find the parameters, the depth comes out as 0 and the
      * check silently stops working. */
     Vec        refChecks;   /* RefCheck*: reference rules re-run at instantiation */
+    /* Level-dependent rejections, recorded so the same question can be asked again once
+     * the data flow and the level pass have settled the numbers. Reporting stays where it
+     * was; the record is what makes the two answers comparable. */
+    Vec        lvlRejects;  /* LvlRejection* */
     Vec        callChecks;  /* CallCheck*: call sites resolved at instantiation */
     Vec       *substParams; /* type arguments substituted while an instance is being
                              * re-checked, NULL when not re-checking */
@@ -388,6 +392,17 @@ typedef struct {
     int         line;    /* for diagnostics */
 } StoreSite;
 
+/* A rejection that depends on a level, recorded so it can be re-judged against the
+ * numbers that are final rather than the ones that happened to hold while the body was
+ * being walked. */
+typedef struct {
+    Expr       *val;    /* the value that was rejected */
+    int         at;     /* the depth it was judged against */
+    int         depth;  /* the depth the check saw */
+    int         line;   /* source line */
+    int         late;   /* depth the settled numbers gave */
+} LvlRejection;
+
 /* An `==` deferred to instantiation: recorded while an expression is checked and
  * consumed by the pass that runs afterwards.
  *
@@ -496,6 +511,8 @@ typedef struct {
 /* Record that `val` is being published at level `at`; decides nothing. The checking
  * pass only records; one pass folds over the records and settles the levels. */
  void recordStore (Checker *c, Expr *val, Expr *target, int at, int line);
+ void recordLvlRejection (Checker *c, Expr *val, int at, int depth, int line);
+ void recheckLevelRejections (Checker *c);
  bool promoteFieldsAt (Checker *c, Sym *sy, int at, int hops);
 /* True when C can compare values of this type directly; `str` is excluded because its `==` would
  * compare pointers. */

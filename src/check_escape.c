@@ -753,6 +753,53 @@ void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
     *(StoreSite **)vecPush(&c->stores) = st;
 }
 
+/* Record a level-dependent rejection so it can be re-judged later. Reports nothing.
+ *
+ * Params:
+ *   c     - checker; the record is appended to `c->lvlRejects`
+ *   val   - the value that was rejected
+ *   at    - the depth it was judged against
+ *   depth - the depth the check saw
+ *   line  - source line
+ */
+void recordLvlRejection(Checker *c, Expr *val, int at, int depth, int line) {
+    if (!c || !val) return;
+    LvlRejection *lr = (LvlRejection *)arenaAllocZero(c->arena, sizeof(LvlRejection));
+    lr->val   = val;
+    lr->at    = at;
+    lr->depth = depth;
+    lr->line  = line;
+    *(LvlRejection **)vecPush(&c->lvlRejects) = lr;
+}
+
+/* Re-judge the recorded rejections with the numbers the passes settled on.
+ *
+ * The report stays where the check put it -- this only measures whether the settled
+ * numbers agree. Keeping the two apart is what makes the question answerable: reporting
+ * from here alone was measured to lose rejections, because the check's reader and this
+ * one do not always see the same number.
+ *
+ * Params:
+ *   c - checker
+ *
+ * Notes:
+ *   - `EXTC_DBG_DEFER=1` prints one line per record. A record that the settled numbers no
+ *     longer support is what a deferral would gain; one they still support is what a
+ *     deferral must not lose, and is the reason the report has not been moved yet.
+ */
+void recheckLevelRejections(Checker *c) {
+    for (size_t i = 0; i < c->lvlRejects.len; i++) {
+        LvlRejection *lr = *(LvlRejection **)vecAt(&c->lvlRejects, i);
+        if (!lr) continue;
+        int d = exprRefDepth(c, lr->val);
+        lr->late = d;
+        if (getenv("EXTC_DBG_DEFER"))
+            fprintf(stderr, "[defer] line=%-4d at=%-2d check=%d settled=%d %s\n",
+                    lr->line, lr->at, lr->depth, d,
+                    d <= lr->at ? "DISAGREE" : "agree");
+    }
+}
+
 static void recordLvlFact(Checker *c, Expr *val, int at);
 static void applyLvlFact(Checker *c, Expr *val, int at);
 
@@ -1320,6 +1367,9 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     promoteInto(c, val, at);
     int d = exprRefDepth(c, val);
     if (d <= at) return false;
+    /* The report below stays; this only keeps the question for the pass that runs after
+     * the numbers are settled. */
+    recordLvlRejection(c, val, at, d, line);
     ckError(c, line,
             "A reference may not outlive what it points to. Borrow from a parameter "
             "(depth 0) or copy the data instead. "
