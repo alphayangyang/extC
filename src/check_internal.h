@@ -113,20 +113,7 @@ typedef struct {
      * Only the initializer is followed, and only through explicit assignments; aliases
      * are not chased, so a site that cannot be reached keeps its depth error. */
     Expr       *origin;
-    /* The right-hand side of the last plain assignment to this binding, or NULL when it
-     * has only ever been initialized.
-     *
-     * This is a second, narrower question than `origin`. `origin` is the flattened root
-     * of the initializer and is used by the promotion walk that runs *during* checking,
-     * so it must keep its current meaning. Following "what does this binding hold now"
-     * is a different question, asked after checking by the level pass: `out = h` makes
-     * the binding hold `h`, while `origin` still names the literal it was declared with,
-     * and the publication would then never reach the allocation inside `h`.
-     *
-     * Keeping the two apart also keeps the fix local: updating `origin` on assignment
-     * perturbs the walk that is still running and was measured to send the generated
-     * code into an infinite loop on `examples/escape-promotion`. */
-    Expr       *lastStore;
+
     int         line;      /* source line of the declaration, for diagnostics */
     /* The module this binding belongs to; set for globals, NULL for locals. Name
      * resolution uses it to reject an unqualified reference to another module's name. */

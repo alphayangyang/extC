@@ -2110,10 +2110,6 @@ static void levelOfValue(Checker *c, Expr *val, int target, int hops) {
          * block; the function has no home arena to give it, and the generated C referenced
          * `__extc_home`, which does not exist there. */
 
-        /* "What does this binding hold now?" first: the last plain assignment, if there
-         * was one. `origin` answers "what was it declared with", which is the wrong
-         * question once the binding has been reassigned. */
-        if (sy && sy->lastStore) { levelOfValue(c, sy->lastStore, target, hops + 1); return; }
         if (getenv("EXTC_DBG_LV"))
             fprintf(stderr, "      [lv] ident=%-5s sym=%s origin=%s target=%d\n",
                     val->u.ident.name, sy ? "有" : "NULL",
@@ -2155,10 +2151,12 @@ static void levelOfValue(Checker *c, Expr *val, int target, int hops) {
 }
 
 /* Run the level pass over the publications recorded while the body was checked. */
-static void levelPass(Checker *c) {
+static void levelPass(Checker *c, const DfResult *dfr) {
+    (void)dfr;
     for (size_t i = 0; i < c->stores.len; i++) {
         StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
-        if (st) levelOfValue(c, st->value, st->at, 0);
+        if (!st) continue;
+        levelOfValue(c, st->value, st->at, 0);
     }
 }
 
@@ -2302,7 +2300,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * here, after the depth fixed point, is the point of the whole split: the
          * decision sees the final depths instead of the numbers that happened to be
          * true while the body was being walked. */
-        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c);
+        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, &dfr);
         if (getenv("EXTC_DBG_STORES")) {
             int n0 = 0;
             for (size_t i = 0; i < c->stores.len; i++) {

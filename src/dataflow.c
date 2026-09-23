@@ -115,6 +115,18 @@ static void copyFacts(Facts *to, const Facts *from) { *to = *from; }
  * reads binding depths from the facts computed by this analysis instead of from a
  * field the walk happens to have written.
  */
+/* The fixed point's depth for one variable, or 0 when the analysis has no fact for it.
+ *
+ * A variable's own depth is the maximum over its fields, so this answers for an aggregate
+ * as well as for a single reference. */
+static int factDepthOf(const Facts *f, const char *cname) {
+    if (!f || !cname) return 0;
+    for (int i = 0; i < f->n; i++)
+        if (f->vars[i].cname == cname || strcmp(f->vars[i].cname, cname) == 0)
+            return f->vars[i].depth;
+    return 0;
+}
+
 static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     if (!e || hops > 32) return 0;
     switch (e->kind) {
@@ -146,6 +158,17 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
                             return f->vars[i].fields[k].depth;
                     break;
                 }
+        }
+        /* The field is not in the table (never written, or written under a name this
+         * analysis did not see). The variable's own depth is the maximum over its fields,
+         * so it is the conservative answer, and it is the fixed point's number rather than
+         * the one the checker recorded while the body was still being walked. Falling back
+         * to `refDepth` here read as 0 for a binding whose fields were still in doubt, and
+         * a destination read as 0 makes the level pass believe the store needs no
+         * lifetime at all. */
+        if (root) {
+            int vd = factDepthOf(f, root->cname);
+            if (vd > 0) return vd;
         }
         return root && root->refDepth > 0 ? root->refDepth : 0;
     }

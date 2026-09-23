@@ -498,22 +498,6 @@ void checkStmt(Checker *c, Stmt *s) {
              * one step later would record the old number and cause false rejections
              * afterwards. */
             int atDst = storeLayer(c, s->u.assign.target);
-            /* Record the new value only when the target *is* the binding.
-             *
-             * `*q = n * 2` writes through the reference into the box `q` points at; `q`
-             * still holds the same box, so "what does `q` hold now" is unchanged. Taking
-             * `placeRoot` here would answer with `q` anyway and overwrite the binding's
-             * value with `n * 2`, and the allocation published at line 17 would then be
-             * read back through `*q` as if it had been stored at the level of `*q`, which
-             * is this frame: measured on `examples/alloc-in-block`, the `alloc` inside the
-             * nested block came out with the level "must outlive this frame" while the
-             * function has no home arena, so the generated C said `__extc_home` and did not
-             * compile. Assignments through a projection (`s.f`, `v[i]`) are the same
-             * question and take the same answer: they do not rebind the root binding. */
-            if (s->u.assign.target->kind == EX_IDENT) {
-                Sym *dst = identBindOf(s->u.assign.target);
-                if (dst) dst->lastStore = s->u.assign.value;
-            }
             recordStore(c, s->u.assign.value, atDst, s->line);
             promoteInto(c, s->u.assign.value, atDst);
             markCallHomeIfEscaping(c, s->u.assign.value, atDst);
