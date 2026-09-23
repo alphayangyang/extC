@@ -418,7 +418,40 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
  * ⚠️ 两个方向都要对：**父节点缓存的深度只有在全部子节点都成功时才能改** ——
  *    否则会记下一个"比实际更长寿"的数 ⇒ 那是**洞**（不是误拒）✗ */
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
+static bool promoteFields(Checker *c, Sym *sy, int at, int hops);
 bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at, 0); }
+
+/* ⭐⭐ 层 2（附录 D.2）：**顺着字段表的"来源"找到容器里那些站点** ✓
+ *
+ * 为什么需要：`Sym.origin` 只记"声明时那个初始化式" —— 而
+ *   `var h: box = { p: null, q: null }` 的来路就是两个 null，**`x` 是后来 `h.q = x` 写的** ✗
+ * ⇒ 顺着"h 里装着什么"想给 `x` 降层号时永远碰不到它 ⇒ 站点停在浅层 ⇒ 容器一死就悬垂 ✓
+ *
+ * 纪律（这次只做"提升"这一半 —— 降记账试过，会把别的绿用例弄红，见附录 D.3）：
+ *   · 只提 `src` 存在的那一格；
+ *   · **要提到哪一层** = 目的地 `at`（这一次把整个容器存到第 `at` 层 ⇒
+ *     里面的引用活到那一层就够）✓ 不用字段表那个数（它是"现在装着什么"）；
+ *   · **提成功才允许把那一格的记账跟着降到 `at`**（提不动 = 说不清 ⇒ 保留旧账 ⇒
+ *     宁可误拒 ✓）；没有 `src` 的格（比如从没被写过的）**一个字不动** ✓ */
+static bool promoteFields(Checker *c, Sym *sy, int at, int hops) {
+    if (!sy || hops > 32) return true;
+    if (sy->addressed) return true;                 /* 别名可能改它 ⇒ 表上的数说不清 ✓ */
+    bool ok = true;
+    for (int i = 0; i < sy->nfields; i++) {
+        Expr *src = sy->fields[i].src;
+        if (!src) continue;
+        /* ⚠️ 要提到哪一层 = **min(它记的深度, 它被要求过的最浅层)** ✗
+         * 只看"这一次的目的地"不够：`out = h` 是第 1 层，可 `return out` 要的是
+         * **帧外**（0）⇒ 站点最终得进家 arena；只看 1 ⇒ 提到 1 就"够"了 ⇒ 而函数
+         * 一返回第 1 层就 release ⇒ 悬垂（实测：ASan 仍报 heap-use-after-free）✗ */
+        if (at < sy->fields[i].minReq) sy->fields[i].minReq = at;
+        int want = sy->fields[i].depth;
+        if (sy->fields[i].minReq < want) want = sy->fields[i].minReq;
+        if (!promoteInto2(c, src, want, hops + 1)) { ok = false; continue; }
+        if (sy->fields[i].depth > want) sy->fields[i].depth = want;   /* 提成功 ⇒ 跟着降 ✓ */
+    }
+    return ok;
+}
 
 /* ⭐⭐ 长运行内存：把 **"这个值得装得下第 `at` 层"** 记成一条事实 ✓
  *
@@ -509,7 +542,11 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * ⇒ 现在**照样往下走一趟**（只为记事实），返回值仍按老判据答"不用改" ✓ */
         bool slotDeepEnough = (sy->depth <= at);
         /* ⚠️ 来路是**压平的根**（见 `noteOrigin`）⇒ 这里链长最多一层，不会再查绑定 ✓ */
-        if (!promoteInto2(c, sy->origin, at, hops + 1)) return false;
+        bool ok = promoteInto2(c, sy->origin, at, hops + 1);
+        /* ⭐⭐ 层 2：来路里只有"声明时写的那些字段" ⇒ 再读一遍**字段表的来源** ✓
+         * （`h.q = x` 这种后来的写只在字段表里 —— 见 `promoteFields` 的注释 ✓）*/
+        if (!promoteFields(c, sy, at, hops + 1)) ok = false;
+        if (!ok) return false;
         if (slotDeepEnough) return true;
         if (sy->type && typeContainsRef(c->tt, tsub(c, sy->type)) && sy->refDepth > at)
             sy->refDepth = at;

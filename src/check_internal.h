@@ -42,7 +42,20 @@ typedef struct {
      * `h.p` 有自己的深度，不再跟 `h` 共用一个数 ⇒ `h.p = null` 能真正**覆盖**那一格 ✓
      * 最多 4 格；满了 / 归不到某一格的（元素写、对象字段）走 `otherDepth` 保守兜底 ✓
      * 根的有效深度 = max(otherDepth, 各格) ✓ */
-    struct { const char *name; int depth; } fields[4];
+    struct { const char *name; int depth;
+             /* ⭐⭐ 层 2（附录 D.2）：**这一格是被哪个值写进去的**（NULL = 说不清）——
+              * 只用来"顺着容器找到里面那个分配站点"，**不用来改任何记账** ✓
+              * 为什么需要：`var h: box = { p: null, q: null }` 的**来路**里没有 `x`，
+              * 而 `h.q = x` 是后来写的 ⇒ 沿来路走永远追不到那个站点 ✗ */
+             Expr *src;
+             /* ⚠️ **来源自己那次写入的深度** —— 比新旧必须用它，不能用 `depth` ✗
+              * (`depth` 是弱更新取 max 的：`h.q = x; h.q = null` 之后它还是深的，
+              *  拿它比会把 null 那次误判成"更深" ⇒ 来源被清掉 ⇒ 链断 ✓ 实测踩过) */
+             int   srcDepth;
+             /* ⭐ 这一格里的引用**被要求过活到的最浅那一层**（0 = 要活到帧外）——
+              * `out = h` 是第 1 层，可 `return out` 要的是**帧外** ⇒ 站点得进家 arena ✓
+              * （只看"这一次的目的地"会算得太浅 ⇒ 站点提不动 ⇒ 悬垂 ✗ 实测踩到）*/
+             int   minReq; } fields[4];
     /* ⭐ 层 1（数据流）第一步：**这张字段表完整吗？**
      * 完整 = "这个绑定的**每一格**都在表里（或已知为 0）" ⇒ 允许"抹掉一格之后
      *        把根重算成剩下几格的最大值"（强更新）✓
@@ -125,6 +138,10 @@ typedef struct {
      * 它们在检查器里"出生"（调用点推导出来），在 codegen 里当普通函数吐出来 ✓ */
     Vec        funcInsts;   /* FuncDef*（实例：tmpl/targs/instName 都填好）*/
     Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
+    /* ⭐ 层 2（附录 D.2）：**"正在往某个地方存的那个值"** ——
+     * `noteFieldDepthWrite` 要顺手记"这一格是谁写的"，而它的调用点已经有这个值了 ⇒
+     * 用一个字段传过去，**不改它的签名**（那会牵动所有调用点）✓ */
+    Expr      *curStoreVal;
     Vec        nameUses;    /* NameUse* —— 当前函数里每个名字用过几次（生成 C 的改名用）*/
     Vec        moduleNames;     /* const char*（已排序）—— 编译时长优化见 check.c */
     size_t     moduleNamesSize;

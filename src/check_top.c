@@ -1041,8 +1041,32 @@ static void refreshRootDepth(Sym *s) {
 }
 
 /* 记一次"往引用型地方写"的深度（`field == NULL` 表示**整块赋值**或归不到字段）*/
+/* ⭐⭐ 层 2（附录 D.2）：**把"这一格是谁写的"记下来** —— 只用于"顺着容器找站点" ✓
+ * 两条纪律（都是实测踩出来的）：
+ *   ① **只记能指认站点的形状**：`null`/字面量指不出任何分配 ⇒ 记了会把前面那次
+ *      真来源顶掉 ✗（`if c==1 { h.q = x } else { h.q = null }` 就是这么断的）；
+ *   ② 跟**它自己那次写入的深度**（`srcDepth`）比，不能跟 `depth` 比 ✗
+ *      （`depth` 是弱更新取 max ⇒ null 那次会被误判成"更深" ⇒ 来源被清）✓ */
+static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
+    if (!root || !field || !src) return;
+    if (src->kind != EX_IDENT && src->kind != EX_FIELD && src->kind != EX_INDEX &&
+        src->kind != EX_NEW   && src->kind != EX_GENCALL) return;
+    for (int i = 0; i < root->nfields; i++) {
+        if (!root->fields[i].name || strcmp(root->fields[i].name, field) != 0) continue;
+        if (getenv("EXTC_DBG_FS"))
+            fprintf(stderr, "[fs] %s.%s d2=%d oldSrcDepth=%d srckind=%d\n", root->name,
+                    field, d2, root->fields[i].srcDepth, (int)src->kind);
+        if (d2 >= root->fields[i].srcDepth) {
+            root->fields[i].src = src;
+            root->fields[i].srcDepth = d2;
+        }
+        return;
+    }
+}
+
 void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     if (!root) return;
+    noteFieldSrc(root, field, d2, c->curStoreVal);   /* ⭐ 记账**一个字不动** ✓ */
     /* ⭐ PLAN #39：**引用型绑定**（`n: mut ref node`）上的字段写，写的是
      * **被指对象**的字段 —— 而 `refreshRootDepth` 把根的有效深度重算成
      * "max(各字段)"，等于把"我指着谁"（深度 2）覆盖成了"我指的那个东西里

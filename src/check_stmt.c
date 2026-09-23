@@ -231,8 +231,10 @@ void checkStmt(Checker *c, Stmt *s) {
             if (s->u.var.init && s->u.var.init->kind == EX_STRUCTLIT && sym) {
                 for (size_t fi = 0; fi < s->u.var.init->u.lit.inits.len; fi++) {
                     FieldInit *fip = *(FieldInit **)vecAt(&s->u.var.init->u.lit.inits, fi);
+                    c->curStoreVal = fip->value;          /* ⭐ 这一格是谁写的 ✓ */
                     noteFieldDepthWrite(c, sym, fip->name, exprRefDepth(c, fip->value));
                 }
+                c->curStoreVal = NULL;
                 /* ⭐ 层 1：**结构体字面量的表是完整的** ✓
                  * 理由：写出来的字段都在表里；**省略的**要么是可空引用（零值 = null ⇒ 深度 0），
                  * 要么是"没有零值"的引用 ⇒ 检查器**当场报错**（`ref` 没有默认值，见
@@ -368,7 +370,9 @@ void checkStmt(Checker *c, Stmt *s) {
                              * 之后根的有效深度真的会降下来 ✓（以前一律取 max ⇒ 误拒 ✗）*/
                             const char *fn_ = (s->u.assign.target->kind == EX_FIELD)
                                               ? s->u.assign.target->u.field.name : NULL;
+                            c->curStoreVal = v;
                             noteFieldDepthWrite(c, rootA, fn_, dA);
+                            c->curStoreVal = NULL;
                         }
                     }
                     /* ⚠️ **换指向也要查"借来的值"**（2026-09-20 攻击测试打出来）：
@@ -413,8 +417,11 @@ void checkStmt(Checker *c, Stmt *s) {
                     int d2 = valDepthForStore(c, s->u.assign.value);
                     const char *fn2 = (s->u.assign.target->kind == EX_FIELD)
                                         ? s->u.assign.target->u.field.name : NULL;
-                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))
+                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type))) {
+                        c->curStoreVal = s->u.assign.value;
                         noteFieldDepthWrite(c, vs, fn2, d2);
+                        c->curStoreVal = NULL;
+                    }
                 }
             }
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
