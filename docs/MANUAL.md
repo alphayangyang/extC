@@ -1704,7 +1704,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | ~~**动态数组 `varArray<T>`**~~ ✅ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | ~~**算术 UB 三处**~~ ✅ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap ✓）|
 | ~~**全局常量 / 全局变量**~~ ✅ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
-| **输入（`readLine` / `argv`）** | 由调用者给 buffer，零分配零隐藏状态 | 中 —— 五子棋能真的跟人下的门槛 |
+| 🟡 **输入（`reader` / `argv`）** | ✅ 读已经通了：**整块读（64KB）+ 内存里切**，两种风格（`nextInt` / `nextLine` / `nextToken`）在同一个 `reader` 上，缓冲**不用调用者给** ✓ **还欠 `open`/`close` + 帧拥有文件 · `main(args)`**（IO-1）| 中 —— 五子棋能真的跟人下的门槛 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
 | **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | 中 |
 | ~~**`match`**~~ ✅ | 穷尽检查 + 无载荷枚举（语句，不是表达式）—— **带载荷也做完了**（见下一行）|
@@ -1862,32 +1862,69 @@ struct pt {
 > —— 强制内联把 C 编译器的手脚绑住了。**先量再用**：
 > `nextInt` 那处的真正收益来自**改写循环**（33.7 → 17.6ms），内联只拿到 22.9ms ✓
 
-### 12.5 输入输出：`std::io`（第一块）
+### 12.5 输入输出：`std::io`（2026-09-24 更新）
+
+**两种输入风格并存**（都在同一个 `reader` 上，可以混着用 ✓）：
 
 ```extc
 use std::io
 
-fn main() -> i32 {
+fn run() -> result<unit, io::ioError> {
     var line: [64]u8
-    let n = io::readLine(line[..])       // 从 **stdin** 读一行（**buffer 调用者给** ✓）
+    var r = io::readerOf(io::STDIN_FD)   // 缓冲**不用你给**：64KB 是 new 出来的 ✓
+
+    let a = r.nextInt()?                 // OI 式：跳过空白，不用先读成行 ✓
+    let b = r.nextInt()?
+    println("求和 = ", a + b)
+
+    let n = r.nextLine(line[..])?        // 协议式：行是单位，读到换行为止（不含换行 ✓）
+    io::flushOut()                       // ⚠️ 跟 writeBytes 混用**必须**刷，不然顺序会乱 ✗
     io::writeBytes("你说的是：")
     io::writeBytes(line[0..n])
     io::writeBytes("\n")
-    return 0
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match run() {
+        success(u) => { return 0 }
+        failure(er) => {
+            match er {
+                readFailed(fd)  => println("io: 读失败 (fd = ", fd, ")")
+                lineTooLong(n)  => println("io: 一行太长了（", n, " 字节）")
+                writeFailed(fd) => println("io: 写失败 (fd = ", fd, ")")
+            }
+            return 1
+        }
+    }
 }
 ```
 
+**为什么读一行要包成一个 `reader`**：逐字节读是个坑 —— 老实现读 19MB / 50 万行要
+**2.30s**，而整块读 **0.012s**（**190×**）。原因不是"读得慢"，是**每读一个字节都进一次内核** ✗
+⇒ 读 = **整块读（64KB）+ 内存里切** ✓
+
 | 名字 | 干什么 |
 |---|---|
-| `io::readLine(buf)` | 读一行到你的 buffer，返回字节数（0 = EOF ✓）|
+| `io::readerOf(fd)` | 建一个 `reader`（**隐式 64KB 缓冲**，住在创建点的块里 ⇒ 跟创建它的块同寿 ✓）|
+| `r.nextInt()` | 读一个整数，**自己跳空白**（OI 式：不用先读成行再切 ✓）|
+| `r.nextToken(buf)` | 读一个词（连续非空白）到你的 buffer ✓ |
+| `r.nextLine(buf)` | 读一行到你的 buffer，**不含换行**（`\n` 被吃掉 ⇒ 后面接着读位置是对的 ✓）|
+| `r.nextByte()` / `r.skipSpace()` / `r.eof()` | 逐字节 / 跳空白 / 结束了吗 —— **接口**，热路径不这么写 ✓ |
 | `io::readSome(fd, buf)` | 从 fd 读一次，返回读到的字节数 ✓ |
 | `io::writeBytes(buf)` | 把一整块字节写出去（fd 直写，**无缓冲** ✓）|
-| `io::flushOut()` / `flush()` | 把 `println` 那边的缓冲刷出去 ✓（跟 `writeBytes` 混用**必须**刷，不然顺序会乱 ✗）|
+| `io::flushOut()` / `flush()` | 把 `println` 那边的缓冲刷出去 ✓ |
+
+**三条失败路径分得开**（P′：不能证明的，语法上必须看得见 ✓）：读到 EOF = `success(0)`
+（**这不是错误** ✓）· 行比 `out` 长 = `failure(lineTooLong)`（数据**没读全** ✗）·
+`read(2)` 出错 = `failure(readFailed)`（上次读的结果可能已经坏了 ✗）
+> ⚠️ 老 `readLine` 把后两条**都当成 EOF** ⇒ 读错误看起来就是"文件结束了"，
+> 而超长行会被**静默切成两"行"** ✗✗ 所以它被删掉了，不是改名 ✓
 
 分层：`std::sys::io`（**特权层 · io 族**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
 > ⚠️ `sys` 不是"一个模块"，是**一条边界**在路径上的写法 ⇒ **按族分文件** ——
 > 后面还有 `std::sys::thread` / `std::sys::time` / `std::sys::net` / `std::sys::proc` ✓
-还欠：`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `main(args)` ✓
+还欠：`open`/`close` + 帧拥有文件 · `main(args)` ✓
 
 ---
 
