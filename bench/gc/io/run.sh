@@ -5,8 +5,8 @@
 # 旗子也同一套（`-O2 -fwrapv`，见 src/main.c）✓
 # 输出必须逐字节一致，不然量出来的不是同一件事 ✗
 set -u
-cd "$(dirname "$0")"
-ROOT=../..
+cd "$(dirname "$0")"          # bench/gc/io
+ROOT=../../..                 # 仓库根（少一级就会去找 bench/build/extc —— 实测踩过 ✗）
 
 # 输入**不再入库**（两个文件 36MB，占全新克隆的九成）⇒ 缺了就现场生成 ✓
 # in_lines.txt 是逐字节复现；in_ints.txt 同规模同分布（生成器里写清了差异）
