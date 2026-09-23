@@ -1,16 +1,34 @@
-/* 查找 + `?ref T` 收窄
+/* Name lookup and non-null narrowing for `?ref T`.
  *
- * 从 check.c 拆出来的 —— **纯移动**：注释与逻辑一个字节没动 ✓
+ * Resolving a name to a binding lives here, together with the facts a comparison against
+ * null establishes and the small predicates the rest of the checker is built from.
  */
 
 #include <string.h>
 #include "check_internal.h"
 
-/* --------------------------------------------------- `?ref T` 的非空收窄 */
-Sym *lookup(Checker *c, const char *name);   /* 定义在后面 */
-void recordNewSizeCheck(Checker *c, Type *t, int line);   /* 同上 */
-bool typeContainsRef(TypeTable *tt, Type *t);   /* 同上 */
-int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode);   /* 定义在后面 */
+/* ----------------------------------------------- non-null narrowing for `?ref T` */
+/* Resolve a name to a binding, innermost scope first and module-level bindings last. */
+Sym *lookup(Checker *c, const char *name);
+/* Defer the size check of `new T[n]` to instantiation, for a body whose type parameter
+ * has no size yet. */
+void recordNewSizeCheck(Checker *c, Type *t, int line);
+/* True when the type can carry a reference, directly or inside an aggregate. */
+bool typeContainsRef(TypeTable *tt, Type *t);
+/* The depth of the home arena to pass at this call site, derived from the arguments and
+ * the parameters of the callee. */
+int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode);
+/* True when a binding has been proved non-null at the current position.
+ *
+ * Params:
+ *   c     - checker
+ *   cname - the generated C name of the binding, because narrowing follows the binding
+ *           rather than the name written in the source
+ *
+ * Returns:
+ *   True while the proof is still in effect; false for NULL and for a name that was never
+ *   proved.
+ */
 bool isNarrowed(Checker *c, const char *cname) {
     if (!cname) return false;
     for (size_t i = 0; i < c->narrow.len; i++)
@@ -18,28 +36,53 @@ bool isNarrowed(Checker *c, const char *cname) {
     return false;
 }
 
+/* Record that a binding has been proved non-null at the current position; recording the
+ * same name twice changes nothing. */
 void pushNarrow(Checker *c, const char *cname) {
     if (!cname || isNarrowed(c, cname)) return;
     *(const char **)vecPush(&c->narrow) = cname;
 }
 
-/* 这个绑定又被赋成 null / 换了指向 ⇒ 之前的证明**作废**（收窄是栈式的，砍到它为止）*/
+/* Drop the non-null proof of a binding, which an assignment or a retarget invalidates.
+ *
+ * The proofs are kept as a stack, so everything from the entry for this binding onwards
+ * is cut. A fact about a path that begins with the binding, such as `h.p`, goes with it:
+ * any write to the root `h`, or taking its address, can make "h.p is not null" stop
+ * holding.
+ *
+ * Params:
+ *   c     - checker
+ *   cname - the generated C name of the binding; NULL is ignored
+ */
 void unNarrow(Checker *c, const char *cname) {
     if (!cname) return;
     for (size_t i = 0; i < c->narrow.len; i++) {
         const char *k = *(const char **)vecAt(&c->narrow, i);
         if (strcmp(k, cname) == 0) { c->narrow.len = i; return; }
-        /* ⭐ 档3：路径事实（`h.p`）也要跟着作废 —— 前缀相同就砍掉 ✓
-         * 对根 `h` 的任何写、或"取它的地址"都可能让 `h.p` 非空不再成立 ✓ */
+        /* A fact about a path, such as `h.p`, is dropped as soon as the prefix matches:
+         * any write to the root, or taking its address, can make it stop holding. */
         size_t l = strlen(cname);
         if (strncmp(k, cname, l) == 0 && k[l] == '.') { c->narrow.len = i; return; }
     }
 }
 
-/* 这个条件式证明了**谁**非空？认不出来返回 NULL，`*whenTrue` 说证明在哪个分支里。
- *    `p != null` ⇒ then 分支里 p 非空
- *    `p == null` ⇒ **else** 分支里 p 非空（也就是 `if p == null { return }` 那个护栏形态）
- * 只有**可空引用**才算 —— 非空引用跟 null 比本身就是错（下面 checkBin 会报）。*/
+/* The name a condition proves non-null, or NULL when it proves nothing.
+ *
+ * `p != null` proves it on the taken branch, and `p == null` proves it on the else
+ * branch, which is what turns `if p == null { return }` into a guard. Only a nullable
+ * reference qualifies, since comparing a non-nullable one against null is an error
+ * reported by the binary-operator check.
+ *
+ * Params:
+ *   c        - checker
+ *   cond     - the condition to inspect
+ *   whenTrue - set to true when the proof holds on the taken branch, false when it holds
+ *              on the else branch
+ *
+ * Returns:
+ *   The generated C name of the binding, or the path key `root.field` for a field of a
+ *   local root, or NULL.
+ */
 const char *narrowTarget(Checker *c, Expr *cond, bool *whenTrue) {
     if (!cond || cond->kind != EX_BIN) return NULL;
     const char *op = cond->u.bin.op;
@@ -48,11 +91,13 @@ const char *narrowTarget(Checker *c, Expr *cond, bool *whenTrue) {
     if (cond->u.bin.right->kind == EX_NULL)      var = cond->u.bin.left;
     else if (cond->u.bin.left->kind == EX_NULL)  var = cond->u.bin.right;
     else return NULL;
-    /* ⭐ 档3（PLAN #14 的 **sound 子集**）：路径收窄 `if h.p != null { … }` ✓
-     * 只认**没取过地址的局部**（depth ≥ 1 且 `!addressed`）当根 —— 那时
-     * **没人能通过别名改它的字段** ⇒ "h.p 非空"这个事实稳定 ✓
-     * ⚠️ 参数当根**不行**（调用者可能持有别名，或另有 `mut ref` 指向同一对象）✗
-     *    取过地址也不行 ✗ —— 这正是 ARENA-FORMAL §7.4 那条"别名硬门槛"在路径上的样子 ✓ */
+    /* Path narrowing, `if h.p != null { ... }`, restricted to the sound case: the root
+     * has to be a local whose address was never taken, because then no alias can change
+     * its fields and the fact "h.p is not null" stays true.
+     *
+     * A parameter cannot be the root, since the caller may hold an alias or another
+     * `mut ref` to the same object, and neither can a binding whose address was taken.
+     * This is the same alias restriction that the depth bookkeeping relies on. */
     if (var && var->kind == EX_FIELD && var->u.field.obj->kind == EX_IDENT) {
         Sym *rs = lookup(c, var->u.field.obj->u.ident.name);
         if (!rs || !rs->type || rs->depth < 1 || rs->addressed) return NULL;
@@ -70,9 +115,16 @@ const char *narrowTarget(Checker *c, Expr *cond, bool *whenTrue) {
     return sy->cname;
 }
 
-/* 一个条件式能证明的**全部**非空事实。
- * `&&` 两边都要走 —— 能走到这个条件成立的分支，说明两边都成立过 ✓
- * （`if p != null && p.next != null { ... }` 就是这个形状；链越深越需要）*/
+/* Record every non-null fact a condition proves.
+ *
+ * Both sides of an `&&` are walked, because reaching the branch where the condition holds
+ * means both sides held: `if p != null && p.next != null { ... }` is the shape this
+ * exists for, and longer chains need it even more.
+ *
+ * Params:
+ *   c    - checker
+ *   cond - the condition whose facts are recorded; NULL is ignored
+ */
 void narrowFactsOf(Checker *c, Expr *cond) {
     if (!cond) return;
     if (cond->kind == EX_BIN && strcmp(cond->u.bin.op, "&&") == 0) {
@@ -85,8 +137,18 @@ void narrowFactsOf(Checker *c, Expr *cond) {
     if (tg && whenTrue) pushNarrow(c, tg);
 }
 
-/* 这个块**一定会离开**（return / break / continue）？
- * 用来认护栏形态：`if p == null { return }` ⇒ 走到后面就说明 p 非空 ✓ */
+/* True when a block always leaves its enclosing function or loop.
+ *
+ * This is what recognises the guard form `if p == null { return }`: reaching the code
+ * after the `if` then means `p` is not null.
+ *
+ * Params:
+ *   s - a statement, normally the then-branch of an `if`
+ *
+ * Returns:
+ *   True when the last statement of the block is a return, break or continue. An empty
+ *   block does not exit.
+ */
 bool blockExits(Stmt *s) {
     if (!s) return false;
     if (s->kind == ST_BLOCK) {
@@ -96,7 +158,20 @@ bool blockExits(Stmt *s) {
     return s->kind == ST_RETURN || s->kind == ST_BREAK || s->kind == ST_CONTINUE;
 }
 
-/* 可空引用**不能**直接解 —— 先查 null（P′：不能证明的，语法上必须看得见）*/
+/* Report an error when a nullable reference is dereferenced without a non-null proof.
+ *
+ * A nullable reference cannot be dereferenced directly; it has to be compared against
+ * null first, so that the proof is visible in the syntax rather than implied.
+ *
+ * Params:
+ *   c    - checker
+ *   t    - the type being dereferenced
+ *   node - the expression, used for its line
+ *   what - short noun phrase naming the operation, for the message
+ *
+ * Returns:
+ *   True when the dereference is rejected; false when `t` is not a nullable reference.
+ */
 bool rejectNullableDeref(Checker *c, Type *t, Expr *node, const char *what) {
     if (!t || t->kind != TY_REF || !t->nullable) return false;
     ckError(c, node->line,
@@ -107,14 +182,26 @@ bool rejectNullableDeref(Checker *c, Type *t, Expr *node, const char *what) {
     return true;
 }
 
-/* 声明一个绑定。
+/* Declare a binding in the innermost scope.
  *
- * **`shadow`**：能不能遮蔽同层已有的同名绑定？
- *   `let` ⇒ 可以（命名，不是存储 —— 见 §名字）
- *   `var` ⇒ 不可以（声明**存储**；同一层写两个同名的 `var`，几乎肯定是想写 `a = ...`）
- * 参数按 `var` 算（它本来就是可写的局部副本）。
+ * Params:
+ *   c      - checker
+ *   name   - source name; the generated C name is derived from it
+ *   t      - declared type
+ *   mut    - true for `var`, false for `let`
+ *   shadow - whether a binding of the same name in the same scope may be shadowed. It is
+ *            set for `let`, which only introduces a name, and clear for `var`, which
+ *            declares storage; two `var`s of the same name in one scope are almost always
+ *            meant to be `a = ...`. Parameters count as `var`, because the argument is a
+ *            writable copy.
+ *   line   - source line, for diagnostics
+ *   depth  - lexical depth of the new binding, which is `c->scopes.len` at the
+ *            declaration
  *
- * 返回新建的 Sym（`cname` 由调用者写回 AST —— 参数写回 Param，局部写回 Stmt）。 */
+ * Returns:
+ *   The new binding, or the existing one when a shadow was refused. The caller writes
+ *   `cname` back into the AST: into a `Param`, or into a declaration statement.
+ */
 Sym *declare(Checker *c, const char *name, Type *t, bool mut,
                     bool shadow, int line, int depth) {
     Scope *top = *(Scope **)vecAt(&c->scopes, c->scopes.len - 1);
@@ -139,29 +226,47 @@ Sym *declare(Checker *c, const char *name, Type *t, bool mut,
     s->type = t;
     s->mut = mut;
     s->depth = depth;
-    /* 引用型绑定的**默认**指向深度 = 槽位深度（保守 = 老行为）。
-     * 声明/换指向的地方知道初始值是什么，会把这里**收紧**到真实深度 ✓
-     * （比如 `var cur: ?ref node = head` ⇒ 0 —— 它指的是参数那边的东西）*/
+    /* A reference-typed binding starts with the depth of its slot as the pointee depth,
+     * the conservative answer. Whoever knows the initializer narrows this to the real
+     * depth afterwards, so `var cur: ?ref node = head` ends up at 0, since the cursor
+     * points at something on the caller's side. */
     s->refDepth = (t && typeContainsRef(c->tt, t)) ? depth : 0;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
-    *(Sym **)vecPush(&c->allSyms) = s;      /* ⭐ 铁律自检（EXTC_SELFCHECK）要用 ✓ */
+    *(Sym **)vecPush(&c->allSyms) = s;      /* also recorded for the self-check mode */
     return s;
 }
 
+/* Resolve a name to a binding, innermost scope first and module-level bindings last, so
+ * that a local shadows a global.
+ *
+ * Params:
+ *   c    - checker
+ *   name - the source name to resolve
+ *
+ * Returns:
+ *   The innermost binding with that name, or NULL.
+ *
+ * Notes:
+ *   - Within one scope the newest `let` wins, so the list is scanned backwards. In the
+ *     other order the second `a` in `let a = 1  let a = a + 1` would resolve to the first.
+ *   - Module-level bindings are kept in a list of their own rather than in a scope: the
+ *     depth of a function body is the number of open scopes, so giving globals a scope
+ *     would push every local one level deeper.
+ */
 Sym *lookup(Checker *c, const char *name) {
-    /* 局部作用域（从内往外）优先 —— 所以局部可以遮蔽全局 */
     for (size_t i = c->scopes.len; i-- > 0; ) {
         Scope *s = *(Scope **)vecAt(&c->scopes, i);
-        /* **从后往前**扫：同一层里最新的 `let` 赢（遮蔽）。顺序反了的话
-         * `let a = 1  let a = a + 1` 里的第二个 `a` 会解析回第一个 ✓ */
+        /* Scanned backwards, so the newest `let` of the scope wins. The other order
+         * would resolve the second `a` of `let a = 1  let a = a + 1` back to the first. */
         for (size_t j = s->syms.len; j-- > 0; ) {
             Sym *sym = *(Sym **)vecAt(&s->syms, j);
             if (strcmp(sym->name, name) == 0) return sym;
         }
     }
-    /* 全局（深度 0）。**不放 in scopes**：函数体要知道自己的深度是 1，
-     * 而深度是按作用域层数算的 —— 给全局单开一层会把所有局部都推深一层。 */
+    /* Module-level bindings have depth 0 and are deliberately not kept in a scope: a
+     * function body computes its depth from the number of open scopes, so a scope for
+     * the globals would push every local one level deeper. */
     for (size_t i = 0; i < c->globals.len; i++) {
         Sym *sym = *(Sym **)vecAt(&c->globals, i);
         if (strcmp(sym->name, name) == 0) return sym;
@@ -169,16 +274,27 @@ Sym *lookup(Checker *c, const char *name) {
     return NULL;
 }
 
-/* ---------------------------------------------------------------- 查找 */
+/* ------------------------------------------------------------------- lookups */
 
-/* ⭐ 调试/诊断里显示函数名：`pair$make` ⇒ `pair::make`（根模块原样 ✓）
- * 为什么要这一层：`EXTC_DUMP_EFFECTS` 那几行原来直接把 `f->name` 印出来，
- * 于是调试输出里全是内部编码 `pair$make` ✗（跟"诊断不许露 mangle 名"是同一条规矩）*/
+/* Turn a mangled function name into the name the user wrote: `pair$make` becomes
+ * `pair::make`, while a name from the root module is returned unchanged.
+ *
+ * The effect dump used to print `f->name` directly, so debug output was full of internal
+ * encodings. Keeping mangled names out of diagnostics is the same rule.
+ *
+ * Params:
+ *   name    - the mangled name, or NULL
+ *   modName - the module prefix, empty or NULL in the root module
+ *
+ * Returns:
+ *   A name suitable for display. The result may point at a static buffer, which the next
+ *   call that needs it overwrites.
+ */
 const char *checkFnDisplay(const char *name, const char *modName) {
     if (!name) return "?";
-    if (!modName || !*modName) return name;    /* 根模块/单文件 ⇒ 原名 ✓ */
+    if (!modName || !*modName) return name;    /* root module: already the source name */
     const char *d = strchr(name, '$');
-    if (!d) return name;                       /* 没加前缀（`extern!`）⇒ 原样 ✓ */
+    if (!d) return name;                       /* no mangling prefix, as for `extern!` */
     static char buf[512];
     size_t nl = (size_t)(d - name);
     if (nl + 2 + strlen(d + 1) + 1 > sizeof buf) return name;
@@ -188,38 +304,61 @@ const char *checkFnDisplay(const char *name, const char *modName) {
     return buf;
 }
 
+/* Find a module-level function by name.
+ *
+ * Params:
+ *   c    - checker
+ *   name - the resolved, flat name
+ *
+ * Returns:
+ *   The matching template or plain function, or NULL. An instance of a generic function is
+ *   not a name a program can write, so it never matches.
+ */
 FuncDef *findFunc(Checker *c, const char *name) {
     for (size_t i = 0; i < c->m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&c->m->funcs, i);
-        if (f->tmpl) continue;               /* ⭐ PLAN #47：实例不是"名字"（模板才是 ✓）*/
+        if (f->tmpl) continue;               /* an instance is not a name; the template is */
         if (strcmp(f->name, name) == 0) return f;
     }
     return NULL;
 }
 
-/* ⭐ 定案 70：**别的模块的名字必须写限定名**（`mod::name`）——
- * 不加这一条，`use greet` 就只是装饰（平表里什么都够得着 ✗），
- * `@private` 也就挡不住（私有名同样够得着 ✗）。
- * 判据：被调者属于别的模块、且**这个引用不是限定名改写来的** ⇒ 报错 ✓
- * （限定名在**装载器**里就改写成平名字了，所以靠 `Expr.qualified` 那个位区分 ✓）
- * 豁免：prelude（`reserved` = 自动导入 ✓）与同一个文件里的名字 ✓ */
+/* Report an error when a name of another module is used without its module qualifier.
+ *
+ * Without this rule `use greet` would be decoration, since the flat name table already
+ * reaches everything, and `@private` would not protect anything either.
+ *
+ * Params:
+ *   c         - checker
+ *   what      - the name being referenced
+ *   whatMod   - the module that owns it
+ *   qualified - whether the reference came from a qualified name. A qualifier is
+ *               rewritten into a flat name while the module is loaded, so this flag is
+ *               the only trace left of how the name was written
+ *   line      - source line to report
+ *
+ * Notes:
+ *   - Names from the prelude, which is imported automatically, and names from the same
+ *     file are exempt.
+ */
 void requireQualified(Checker *c, const char *what, const char *whatMod, bool qualified, int line) {
     if (qualified) return;
     if (!whatMod) return;
     if (!c->curFunc || !c->curFunc->modName) {
-        if (c->curFunc) {                        /* 根文件：别的模块的名字一律要限定 ✓ */
+        if (c->curFunc) {                        /* root file: always qualified */
             ckError(c, line++, "Write `mod::name` (and `use mod` at the top of the file)."
                                " A module's `@private` names are not reachable here at all.",
                     "`%s` belongs to module `%s` -- write `%s::%s`", what, whatMod, whatMod, what);
         }
         return;
     }
-    if (strcmp(c->curFunc->modName, whatMod) == 0) return;   /* 自己模块的 ✓ */
+    if (strcmp(c->curFunc->modName, whatMod) == 0) return;   /* the own module */
     ckError(c, line, "Write `mod::name` (and `use mod` at the top of the file)."
                      " A module's `@private` names are not reachable here at all.",
             "`%s` belongs to module `%s` -- write `%s::%s`", what, whatMod, whatMod, what);
 }
 
+/* Find a field of a struct by name, or NULL. */
 FieldDef *findField(StructDef *sd, const char *name) {
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
@@ -228,14 +367,16 @@ FieldDef *findField(StructDef *sd, const char *name) {
     return NULL;
 }
 
-/* TY_STRUCT 和 TY_GENERIC 都指向一个 StructDef */
+/* The StructDef behind a type: both TY_STRUCT and TY_GENERIC point at one, and anything
+ * else has none. */
 StructDef *structOf(Type *t) {
     if (!t) return NULL;
     if (t->kind == TY_STRUCT || t->kind == TY_GENERIC) return t->sdef;
     return NULL;
 }
 
-/* 方法只住在 struct 体内（定案 9）*/
+/* Find a method by name on a struct or generic type. Methods live in the body of the type
+ * they belong to, so no free function is considered. */
 FuncDef *findMethod(Type *st, const char *name) {
     StructDef *sd = structOf(st);
     if (!sd) return NULL;
@@ -246,6 +387,7 @@ FuncDef *findMethod(Type *st, const char *name) {
     return NULL;
 }
 
+/* Find a variant of an enum by name, or NULL. */
 Variant *findVariant(TypeDef *td, const char *name) {
     if (!td) return NULL;
     for (size_t i = 0; i < td->variants.len; i++) {
@@ -255,8 +397,11 @@ Variant *findVariant(TypeDef *td, const char *name) {
     return NULL;
 }
 
-/* 枚举实例的载荷类型：泛型实例要**按实参替换**
- * （`type maybe<T> = | nothing | just(T)` 的实例 `maybe<i64>` 里，`just` 的载荷是 `i64`）✓ */
+/* The type of the k-th payload of a variant.
+ *
+ * For an instance of a generic enum the payload type is substituted with the type
+ * arguments: the payload of `just` in `maybe<i64>` is `i64`, not `T`.
+ */
 Type *payloadType(TypeTable *tt, Type *et, Variant *v, size_t k) {
     Type *pt = *(Type **)vecAt(&v->types, k);
     if (et && et->kind == TY_ENUM && et->edef &&
@@ -265,9 +410,11 @@ Type *payloadType(TypeTable *tt, Type *et, Variant *v, size_t k) {
     return pt;
 }
 
-/* 这个枚举有**带载荷**的变体吗？（`| circle(f64)`）
- * 有的话：C 里它不再是 `enum` 而是 `struct { tag; union }` ⇒
- * ① 不能用 `==`（C 的 struct 不能比）② 打印只打变体名 */
+/* True when the enum has at least one variant carrying a payload, as in `| circle(f64)`.
+ *
+ * Such a type is not a C `enum` but a tagged struct, so it cannot be compared with `==`,
+ * and printing it prints only the variant name.
+ */
 bool enumHasPayload(TypeDef *td) {
     if (!td) return false;
     for (size_t i = 0; i < td->variants.len; i++)
@@ -275,29 +422,37 @@ bool enumHasPayload(TypeDef *td) {
     return false;
 }
 
-/* 这个类型里（递归地）有没有 `ref`？
- * 有的话就不能零初始化 —— `ref` 不可为空，它没有「零值」。 */
-/* 这个类型里有没有「进不去零值」的东西？`ref T` 没有零值，**含 ref 的聚合也没有**。
+/* True when the type can carry a reference, directly or inside an aggregate.
  *
- * ⚠️ 泛型实例必须**代入实参**再往下走：`option<i64>` 的 value 是 i64（有零值），
- * 但 `option<slice<u8>>` 的 value 是 slice（里面有 ref）⇒ 没有零值。
- * 不代入的话 `T` 是个类型参数、看着人畜无害，检查整条漏过去，
- * 最后在生成的 C 里露出 `__extc_reference_has_no_zero_value__`（真踩过）。 */
-/* ⚠️ **两个不同的问题**（2026-09-20 修洞时拆开 —— 以前是同一个函数，于是漏了一个）：
-
- *   ① 「这个类型**能不能携带引用**」⇒ 看**所有**变体 / 所有字段  ⇒ `typeContainsRef`
- *   ② 「这个类型**有没有零值**」  ⇒ 带载荷枚举**只看 tag 0**（零值 = tag 0 + 载荷清零）
- *                                   ⇒ `typeLacksZeroValue`
+ * This is a different question from "does the type have a zero value", and the two were
+ * once answered by one function, which is how a hole appeared:
  *
- * 混在一起的后果（真出过的洞）：`type box = | empty | holding(slice<u8>)` 问"有没有引用"时
- * 只看 tag 0 的 `empty` ⇒ 回答"没有" ⇒ `exprRefDepth` 早退返回 0 ⇒
- * **载荷的深度从来没算过** ⇒ `return box.holding(local[..])` 编过 ⇒ **悬垂 / UB** ✗
+ *   1. can this type carry a reference? Every variant and every field has to be looked
+ *      at.
+ *   2. does this type have a zero value? For a payload-carrying enum only tag 0 matters,
+ *      because a zero value is tag 0 with the payload zeroed.
+ *
+ * Merged into one question, `type box = | empty | holding(slice<u8>)` answered "no
+ * reference" from its first variant alone, so `exprRefDepth` returned early with 0, the
+ * depth of the payload was never computed, and `return box.holding(local[..])` compiled
+ * into a dangling reference.
+ *
+ * Params:
+ *   tt - type table, used to substitute the arguments of a generic instance
+ *   t  - the type to inspect; NULL carries no reference
+ *
+ * Returns:
+ *   True when any part of the type can hold a reference.
+ *
+ * Notes:
+ *   - A generic instance has to be substituted before it is walked, or `T` looks harmless
+ *     and the check passes on a type that carries a reference.
  */
 bool typeContainsRef(TypeTable *tt, Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
     if (t->kind == TY_ARRAY) return typeContainsRef(tt, t->inner);
-    /* 带载荷枚举：**任何一个**变体的载荷可能带 ref 就算 ⇒ 看全部 ✓ */
+    /* Any variant payload can carry a reference, so all of them are inspected. */
     if (t->kind == TY_ENUM && t->edef) {
         for (size_t v = 0; v < t->edef->variants.len; v++) {
             Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
@@ -320,13 +475,31 @@ bool typeContainsRef(TypeTable *tt, Type *t) {
     return false;
 }
 
-/* 「有没有零值」——`ref` 没有零值；含 ref 的聚合也没有。
- * 带载荷枚举：**零值 = tag 0 + 载荷清零** ⇒ **只看第一个变体** ✓
- * （所以 `| nothing | holding(slice<u8>)` 的 `var b: box` 合法，
- *   而 `| holding(slice<u8>) | nothing` 的不合法 —— **变体顺序有意义** ✓）*/
+/* True when the type has no zero value.
+ *
+ * A `ref` has none, and neither does any aggregate that contains one. For a
+ * payload-carrying enum the zero value is tag 0 with the payload zeroed, so only the
+ * first variant matters and the order of the variants is significant:
+ * `| nothing | holding(slice<u8>)` can be zero-initialized while
+ * `| holding(slice<u8>) | nothing` cannot.
+ *
+ * Params:
+ *   tt - type table, used to substitute the arguments of a generic instance
+ *   t  - the type to inspect
+ *
+ * Returns:
+ *   True when zero-initializing a value of this type would produce a null reference.
+ *
+ * Notes:
+ *   - A generic instance has to be substituted before it is walked: the payload of
+ *     `option<i64>` is fine, while the payload of `option<slice<u8>>` contains a
+ *     reference. Without the substitution `T` looks harmless, the check passes, and the
+ *     generated C names a reference that has no zero value.
+ */
 bool typeLacksZeroValue(TypeTable *tt, Type *t) {
     if (!t) return false;
-    /* `?ref T` 的零值就是 `null` —— 这正是它存在的理由：链表/树的 `next` 终于有零值了 ✓ */
+    /* The zero value of `?ref T` is null, which is the reason it exists: the `next` of a
+     * list or a tree node finally has one. */
     if (t->kind == TY_REF) return !t->nullable;
     if (t->kind == TY_ARRAY) return typeLacksZeroValue(tt, t->inner);
     if (t->kind == TY_ENUM && t->edef) {
@@ -350,10 +523,14 @@ bool typeLacksZeroValue(TypeTable *tt, Type *t) {
     return false;
 }
 
-/* `??` 生成的是 C 的三元运算符，**主体在 C 里出现两次** ⇒ 主体必须**没有副作用**，
- * 否则 `f() ?? -1` 会让 f() 跑两遍 ✗
- * 判据是保守的**语法**检查：树里只要出现调用（或 `?` / `??`）就不许 —— 不猜纯不纯 ✓
- * （宁可让他先 `let r = f()` 一行，也不偷偷改变调用次数。）*/
+/* True when evaluating this expression twice is observably the same.
+ *
+ * `??` becomes a C conditional expression in which the subject appears twice, so a
+ * subject with a side effect would run twice: `f() ?? -1` would call `f` twice. The test
+ * is a conservative syntactic one and refuses anything containing a call, `?` or `??`
+ * rather than trying to decide purity, since asking the user for a `let r = f()` line is
+ * better than quietly changing how often a function runs.
+ */
 bool repeatablePure(Expr *e) {
     if (!e) return false;
     switch (e->kind) {
@@ -369,17 +546,17 @@ bool repeatablePure(Expr *e) {
     case EX_UN:    return repeatablePure(e->u.un.operand);
     case EX_BIN:   return repeatablePure(e->u.bin.left) &&
                           repeatablePure(e->u.bin.right);
-    default:       return false;   /* 调用 / 方法 / `?` / `??` / 字面量构造 … 一律不行 */
+    default:       return false;   /* calls, methods, `?`, `??`, constructions: all refused */
     }
 }
 
-/* 能取引用的东西：变量和字段 */
+/* True when an address can be taken of this expression: a variable, a field, or `*p`,
+ * which is the place `p` points at. */
 bool isLvalue(Expr *e) {
-    /* `*p` 也是**地方**（p 指的那个地方）✓ */
     return e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_DEREF;
 }
 
-/* 拼一个 `slice<elem>`（视图协议来自 prelude）*/
+/* Build the type `slice<elem>`; the view protocol itself is declared in the prelude. */
 Type *sliceOf(Checker *c, Type *elem) {
     if (!c->sliceDef) return ttError(c->tt);
     Vec args;
@@ -388,9 +565,12 @@ Type *sliceOf(Checker *c, Type *elem) {
     return ttGeneric(c->tt, c->sliceDef, &args);
 }
 
-/* 造一个整数字面量节点。
- * 用途：`a[2..]` 省略的界由**编译器**补成字面量（见 EX_SLICE），
- * 这样 codegen 只要看到「两个界都是字面量」就知道范围能证明、无需运行时检查。 */
+/* Build an integer literal node.
+ *
+ * The compiler uses it to fill in a bound the user omitted, as in `a[2..]`, so that the
+ * code generator sees two literal bounds and can tell that the range needs no runtime
+ * check.
+ */
 Expr *intLit(Checker *c, long long v, int line) {
     Expr *e = exprNew(c->arena, EX_INT, line);
     e->u.ival = v;
@@ -398,8 +578,19 @@ Expr *intLit(Checker *c, long long v, int line) {
     return e;
 }
 
-/* 这个表达式是不是一个字面整数？`-1` 也算 —— 它是 `EX_UN` 套 `EX_INT`，
- * 而负数界正是最容易写错的地方（`a[-1..n]` 必须当场报错，不能等到运行时）。 */
+/* Read an expression as a literal integer.
+ *
+ * `-1` counts as one, since it is a unary minus around an integer literal, and a negative
+ * bound is the mistake this exists to catch: `a[-1..n]` has to be rejected at compile
+ * time rather than at run time.
+ *
+ * Params:
+ *   e   - the expression to read
+ *   out - receives the value when `e` is a literal
+ *
+ * Returns:
+ *   True when `e` is an integer literal, possibly negated.
+ */
 bool asIntLit(Expr *e, long long *out) {
     if (!e) return false;
     if (e->kind == EX_INT) { *out = e->u.ival; return true; }
@@ -411,10 +602,14 @@ bool asIntLit(Expr *e, long long *out) {
     return false;
 }
 
-/* 这个表达式是不是一个「地方」（place）—— 变量 / 字段 / 索引组成的链？ * 只有切**固定数组**时才要求（因为要取元素的地址）。
- * 理由很实在：`f()[1..2]` 会切到函数返回值的临时存储上，那是**指向已死对象**的视图。
- * `"abcdef"[1..3]` 不受这条限制 —— 它切的是 slice 值（指针+长度），字节有静态生命期。
- * 完整的逃逸检查在 week-4，这条先挡住最脏的一种。 */
+/* True when the expression is a place, that is a chain of bindings, fields, indexes and
+ * slices.
+ *
+ * Slicing a fixed array requires one, because the address of an element is taken. The
+ * reason is concrete: `f()[1..2]` would slice the temporary storage of a return value and
+ * produce a view of an object that is already dead. Slicing a string literal is exempt,
+ * because what is sliced there is a slice value whose bytes have static lifetime.
+ */
 bool isPlace(Expr *e) {
     if (!e) return false;
     switch (e->kind) {
@@ -426,15 +621,26 @@ bool isPlace(Expr *e) {
     }
 }
 
-/* 一个「地方」的**根** —— 穿过字段和下标，找到最里面那个变量。
+/* The binding at the root of a place, found by walking through fields, indexes and
+ * slices.
  *
- * `let` 管的是**根**：`p.x = 1` / `a[i] = 1` / `v[0] = 1` 的根都是那个变量。
- * 只查裸标识符（`v = ...`）是不够的 —— `let p: point; p.x = 1` 会整条漏过去，
- * 而那正是「忘了写 var」最常犯的形态。
+ * `let` governs the root: in `p.x = 1`, `a[i] = 1` and `v[0] = 1` the root is the binding
+ * itself. Checking only a bare identifier would miss `let p: point  p.x = 1`, which is the
+ * most common way of forgetting `var`.
  *
- * ⚠️ 这条规则是**浅的**：它管名字，不管数据。把 `let` 视图拷给一个 `var`
- * （或者传进函数）之后，那边照样能写同一块内存。要管到数据层得让可变性进类型
- * （Rust 的 `&` / `&mut`），那是 week-4 引用规则的范围。见 DECISIONS 定案 28。 */
+ * Params:
+ *   c - checker
+ *   e - the place expression
+ *
+ * Returns:
+ *   The root binding, or NULL when the walk ends at something that is not a binding.
+ *
+ * Notes:
+ *   - The rule is shallow: it governs the name, not the data. Copying a `let` view into a
+ *     `var`, or passing it into a function, still lets the other side write the same
+ *     memory. Governing the data would mean putting mutability into the type system, as in
+ *     `&` and `&mut`.
+ */
 Sym *placeRoot(Checker *c, Expr *e) {
     while (e) {
         if (e->kind == EX_IDENT)  return lookup(c, e->u.ident.name);
@@ -446,34 +652,45 @@ Sym *placeRoot(Checker *c, Expr *e) {
     return NULL;
 }
 
-/* 这个「地方」可不可写？（取引用时决定 `mut ref T` 还是 `ref T`）
- *
- * 三条来源，正好对应「一个值是从哪拿到的」：
- *   ① 绑定：`var` 可写 / `let` 只读
- *   ② 参数：`mut ref T` 可写 / `ref T` 只读（类型里写着）
- *   ③ 字段/元素：看它的根（跟赋值查的是同一个东西）
- * 见 DECISIONS「引用语义定案」。 */
+/* True when the path to this place crosses a read-only reference, including the type of
+ * the place itself. */
 bool pathHasReadonlyRef(Expr *e);
 
+/* True when a place can be written, which also decides whether taking a reference to it
+ * gives `mut ref T` or `ref T`.
+ *
+ * There are three sources of writability, matching where the value came from:
+ *   1. a binding: `var` is writable and `let` is read-only
+ *   2. a parameter: `mut ref T` is writable and `ref T` is not, as the type says
+ *   3. a field or an element: the root decides, exactly as it does for an assignment
+ *
+ * Params:
+ *   c - checker
+ *   e - the place expression; NULL is not writable
+ *
+ * Returns:
+ *   True when writing through this place is allowed.
+ */
 bool isWritablePlace(Checker *c, Expr *e) {
     if (!e) return false;
-    /* `*p` 可写 ⇔ **引用本身**是 `mut ref`（可写性来自引用的类型）✓ */
+    /* `*p` is writable exactly when the reference itself is a `mut ref`: the permission
+     * comes from the type of the reference. */
     if (e->kind == EX_DEREF) {
         Type *ot = e->u.deref.operand->type;
         return ot && ot->kind == TY_REF && ot->mut;
     }
-    /* 路上有只读引用 ⇒ 写不进去 */
+    /* A read-only reference on the way blocks the write. */
     if (pathHasReadonlyRef(e)) return false;
-    /* 表达式本身就是引用：`mut ref` 才可写 */
+    /* The expression is itself a reference, so only `mut ref` is writable. */
     if (e->type && e->type->kind == TY_REF) return e->type->mut;
-    /* 表达式是视图：**视图自己的类型**必须可写（`mut slice<T>`）。
-     * 字符串字面量也走这条 —— 它的类型是只读视图 ⇒ 不可写 ✓ */
+    /* A view needs a writable type of its own, `mut slice<T>`. A string literal takes
+     * this path too: its type is a read-only view, so it is not writable. */
     if (e->type && e->type->kind == TY_GENERIC && ttIsViewType(e->type) && !e->type->mut)
         return false;
-    /* 绑定 + 字段/元素：走到根，根必须是 `var` */
+    /* A binding, a field or an element: the root has to be `var`. */
     Sym *root = placeRoot(c, e);
     return root && root->mut;
 }
 
-/* 往一个「地方」里写之前，先看它的根是不是 `var`。
- * 返回 true = 已经报过错（调用点直接放弃）。 */
+/* Before a write into a place, its root has to be `var`; `requireMutable` performs that
+ * check and returns true once it has reported the error, so the caller gives up. */
