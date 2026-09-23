@@ -103,6 +103,86 @@ fn (self: ref board) place(x: i32, y: i32, color: i32) -> result<(), moveError>
 
 ---
 
+## 3′. I/O 与文件的命名规范（**定案 77**，2026-09-23 主人拍板）
+
+> 起因（主人原话）：
+>
+> > 「**但是 open 不够清晰的，因为我不知道打开的是读还是写。总之需要定一个命名规范**」
+
+**为什么老形状不行**（`std::sys::io` 的裸原语，用户不该看见它）：
+
+```extc
+io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗ 三个毛病
+```
+
+1. `64` / `420` 这种数是 **POSIX 的数**（flags / mode）⇒ 用户得背常量 ✗
+2. 还得自己 `|` 标志位 —— **位的组合是平台细节**，不是用户的事 ✗
+3. 就算写全了常量，"**打开的是读还是写**"仍然要读到**第三个实参**才知道 ✗
+
+### ⭐ 规范（名字里必须有"读还是写、原内容还在不在"）
+
+| 做什么 | 名字 | 返回 | 已有内容 |
+|---|---|---|---|
+| 读 | `fs::openRead(p)` | `inputFile` | 不动 ✓ |
+| 写（**截断**） | `fs::openWrite(p)` | `outputFile` | **清掉** ⚠️ |
+| 写（**追加**） | `fs::openAppend(p)` | `outputFile` | **保留**，写在后面 ✓ |
+| 读全部 | `readAll(f, dest)` | `result<i64, ioError>` | 调用者给地方 ✓ |
+| 逐行/逐数 | `f.reader()` ⇒ `reader` | | 复用 `std::io` 的 `nextLine`/`nextInt` ✓ |
+
+```extc
+// 用户层：看见的只有"读还是写"，看不见一个 `O_*` ✓
+var out = fs::openWrite("build/x.txt")?     // 类型是 outputFile ⇒ 只能写
+out.put("hello\n")
+var inp = fs::openRead("build/x.txt")?      // 类型是 inputFile ⇒ 只能读
+var buf: [64]u8
+let n = inp.readSome(buf[..])
+```
+
+### 三条硬规矩（**不是口味，是判据**）
+
+1. **读型 / 写型是两个 struct**：`inputFile` / `outputFile`，
+   读方法只挂前者、写方法只挂后者 ⇒ **把写型当读型用是编译期错误** ✓
+   实测两条（`tests/fs-shape/`）：
+   ```
+   argument expects `inputFile`, found `outputFile`      ← 写型传给只收读型的函数
+   no method `put` on `inputFile`                        ← 读型没有写方法
+   ```
+   ⇒ 这条规范的价值**不在好看**，在于"打开错了"**编不过**（而不是运行到一半才发现）✓
+2. **`O_*` 与 POSIX 的数只许出现在 `std::sys::io`**（特权层）——
+   上面每一层（`std::fs` 与用户代码）**一个都不许看见** ✓
+   （那个文件顶上那句"把平台相关的常量关在这一层里"就是为这个 ✓）
+3. **函数名里必须带上模式**：`openRead` / `openWrite` / `openAppend` ——
+   **不许**只叫 `open` 把模式塞进参数（除非是**枚举实参**，见下面的备选）✓
+   ⚠️ 也不要用 `creat` / `openForReading` 这类：既不是 camelCase 惯例，
+      也把"截断"这件事藏在名字外（Rust 的 `File::create` 正是被骂过的那个 ✗）
+
+### ❌ 明确不选的两条（记账，省得下次再讨论）
+
+| 方案 | 为什么不做 |
+|---|---|
+| `open(p, fileMode.write)`（一个函数 + 枚举实参） | ⚠️ 能编译（实测 `flagsOf(fileMode.read)` ✓），但 ① **模式还是藏在实参里**——正是主人嫌的那一点 ✗ ② 返回类型统一 ⇒ "拿写型当读型用"只能**运行时**才发现，把编译期判据丢掉了 ✗ |
+| `open(p, flags)` 把 `O_*` 直接暴露给用户 | 平台细节外泄；用户还得自己 `|` ⇒ 老问题原样保留 ✗ |
+
+（`close` 不在这张表里：**帧拥有文件** ⇒ 函数返回时自动关 ✓，
+逃生舱 `close(f)!` 是 IO-2 的事 ✓ 见 `IO.md` §5）
+
+### 与既有命名的关系
+
+| 前缀/后缀 | 什么时候用 | 例子 |
+|---|---|---|
+| `xxxOf` | **从已有的东西造**（已经有源材料） | `readerOf(fd)` · `writerOf(fd)` |
+| `openXxx` | **打开外部资源**（名字的后半段是**模式**） | `openRead` · `openWrite` · `openAppend` |
+| `withXxx` | **构造器带可选参数** | `varArray<T>::withCap(n)` · `pcg32::withStream(s)` |
+
+⇒ `openAppend` 看起来像 `openRead` 的兄弟、不像 `appendOf` 的兄弟 —— **这是故意的** ✓
+两个都是"打开"，差别只在模式，把家族名放在前面才读得出来 ✓
+
+**还没实现的**（形状先定死，IO-1 落地时照这个做）：
+`std::fs` 模块本身 · **帧拥有文件** · `readAll` · `f.reader()` ·
+`close(f)!`（IO-2）✓
+
+---
+
 ## 4. `static` 到底是什么（主人说不熟，奶昔讲一下）
 
 C 的 `static` 一个关键字有三层意思，被骂的只是中间那层：

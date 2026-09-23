@@ -1,0 +1,22 @@
+/* rawfd.extc —— **`std::fs` 将来那层的替身**（只是垫脚石，IO-1 落地就删 ✓）
+ *
+ * 为什么单独一个文件：这一层要用 `std::sys::io` 的裸原语，
+ * 而**用户层不能碰 `std::sys::io`**（短名 `io` 会跟 `std::io` 撞车，
+ * 而且"特权只给库作者"这条设计就是这样分的 ✓）*/
+use std::sys::io
+
+fn openRead(path: slice<u8>) -> i32 {
+    return io::open(path.data, io::O_RDONLY, i32(0))
+}
+fn openWrite(path: slice<u8>) -> i32 {
+    return io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))
+}
+fn openAppend(path: slice<u8>) -> i32 {
+    return io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_APPEND, i32(420))
+}
+fn readSome(fd: i32, out: mut slice<u8>) -> i64 {
+    return io::read(fd, out.data, out.len)
+}
+fn put(fd: i32, buf: slice<u8>) -> i64 {
+    return io::write(fd, buf.data, buf.len)
+}

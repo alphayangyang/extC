@@ -404,10 +404,14 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 ## 8. 顺序（三段，全是加法）
 
-> ⭐ **2026-09-23 主人定口径（还没动手）**：「**open 这种应该放在 `std::fs` 里面吧**」⇒ 对 ✓
-> 即：`std::sys::io` 只放 `extern!` **原语**（`open`/`close`/`read`/`write` + `O_*` 常量），
-> 而 `file` 类型 · 逐行读 · 写 · **帧拥有**这一整套放 **`std::fs`** ✓
-> ⇒ 本文 §1 那张分层表里 `file` 挂在 prelude 的写法**届时改掉**（IO-1 落地时一起做 ✓）
+> ⭐ **2026-09-23 规范已定（定案 77；实现还没动手）**：主人指出「**open 不够清晰，
+> 因为我不知道打开的是读还是写**」✗ ⇒ 定成
+> `fs::openRead(p) -> inputFile` · `fs::openWrite(p) -> outputFile`（**截断**）·
+> `fs::openAppend(p) -> outputFile`（**追加**）✓
+> ⭐ **读型 / 写型是两个 struct** ⇒ "把写型当读型用"是**编译期错误** ✓
+> ⚠️ `O_*` 与 POSIX 的数**只许出现在 `std::sys::io`**（本文 §1 那张分层表里）
+> ⇒ `file` 拆成 `inputFile` / `outputFile`，并且**挂在 `std::fs`**（不是 prelude ✓）
+> 规范全文 [`SYNTAX.md`](SYNTAX.md) §3′ · 常设验收 `tests/fs-shape/` ✓
 >
 > ⚠️ **状态口径（2026-09-23）**：本文里的"进度/状态"表**可能滞后** —— "还剩什么"的权威只看 [`PLAN.md`](PLAN.md) §0.4（缺陷清单）+ §1（主线），或直接跑 `examples/` 实测 ✓
 

@@ -1,0 +1,21 @@
+/* 反例①：把**写型**当读型用 ⇒ 必须**编译期**报错 ✓
+ * 这条就是"读型/写型分成两个 struct"的全部价值 —— 它不是命名口味问题，是编译期判据 ✓ */
+use std::io
+use rawfd
+
+struct inputFile {
+    fd: i32
+    fn readSome(self: mut ref inputFile, out: mut slice<u8>) -> i64 {
+        return rawfd::readSome(self.fd, out)
+    }
+}
+struct outputFile {
+    fd: i32
+}
+
+fn wantsInput(f: inputFile) -> i32 { return f.fd }
+
+fn main() {
+    var out: outputFile = { fd: 1 }
+    println(wantsInput(out))       // ✗ 写型传给只收读型的函数
+}

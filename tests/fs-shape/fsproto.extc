@@ -1,0 +1,111 @@
+/* fsproto.extc —— **`std::fs` 的代码形状原型**（IO-1 动手前先把形状跑通 ✓）
+ *
+ * ⚠️ 主人 2026-09-23：「**open 不够清晰，因为我不知道打开的是读还是写**」⇒ 完全对 ✗
+ * 老形状 `open(path, 64, 0)` 两个毛病：
+ *   ① `64` 是 **POSIX 的数**（`O_WRONLY|O_CREAT`）—— 用户得背常量、还得自己 `|` ✗
+ *   ② 就算写成 `open(path, io::O_WRONLY|io::O_CREAT|io::O_TRUNC, …)`，
+ *      "**打开的是读还是写**"仍然要读到第三个实参才知道 ✗
+ *
+ * ================================================================ 定的规范（主人拍板）
+ *
+ *   | 做什么 | 名字 | 返回 | 已有内容 |
+ *   |---|---|---|---|
+ *   | 读 | `fs::openRead(p)` | `inputFile` | 不动 ✓ |
+ *   | 写（截断） | `fs::openWrite(p)` | `outputFile` | **清掉** ⚠️ |
+ *   | 写（追加） | `fs::openAppend(p)` | `outputFile` | **保留**，写在后面 ✓ |
+ *
+ * ⭐ **读型 / 写型是两个 struct** ⇒ 误用是**编译期错误**（都实测过 ✓）：
+ *   `error: no method `readSome` on `outputFile``
+ *   `error: no method `put` on `inputFile``
+ *   ⇒ 这条规范不只是"好看"：它把"写型当读型用"变成编不过 ✓
+ *   （`run.sh` 里有一个**反例**用例专门钉这件事 ✓）
+ *
+ * ⚠️ 平台常量关在 `std::sys::io`：调用者**永远看不见** `O_*` ✓
+ *    （那个文件顶上那句"把平台相关的常量关在这一层里"就是为这个 ✓）
+ * ⚠️ 这份是**用户层**文件 ⇒ 只 `use std::io` + 本地垫脚石 `rawfd`；
+ *    将来是 `use std::fs`，其它一个字不用改 ✓
+ * ⚠️ 打开会失败 ⇒ 三个 `open*` 都返回 `result`，调用点用 `?` ⇒
+ *    **承载它们的函数必须也返回 `result`**（`main` 在 extC 里固定是 `int main(void)`，
+ *    不能返回 `result` ⇒ 按 `tests/io/writer-file.extc` 的既有形状拆出 `go()` ✓）
+ */
+use std::io
+use rawfd
+
+/* 文件句柄：读型 / 写型**两个 struct**（方法只挂各自那边 ⇒ 误用编不过 ✓）
+ * ⚠️ v1 用 `fd` 字段；IO-1 会加上"**帧拥有**"（函数返回时自动关，不用手写 close ✓）*/
+struct inputFile {
+    fd: i32
+
+    /* 读一次，返回读到的字节数（0 = EOF，负数 = 出错）*/
+    fn readSome(self: mut ref inputFile, out: mut slice<u8>) -> i64 {
+        return rawfd::readSome(self.fd, out)
+    }
+}
+struct outputFile {
+    fd: i32
+
+    fn put(self: mut ref outputFile, buf: slice<u8>) -> i64 {
+        return rawfd::put(self.fd, buf)
+    }
+}
+
+/* ⭐ 三个名字就是**整套读法**：看名字就知道"读还是写、原内容还在不在" ✓ */
+fn openRead(path: slice<u8>) -> result<inputFile, io::ioError> {
+    let fd = rawfd::openRead(path)
+    if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
+    return success(inputFile { fd: fd })
+}
+fn openWrite(path: slice<u8>) -> result<outputFile, io::ioError> {
+    let fd = rawfd::openWrite(path)
+    if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
+    return success(outputFile { fd: fd })
+}
+fn openAppend(path: slice<u8>) -> result<outputFile, io::ioError> {
+    let fd = rawfd::openAppend(path)
+    if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
+    return success(outputFile { fd: fd })
+}
+
+/* 只收**读型** —— `run.sh` 的反例会拿 `outputFile` 调它，看编译器报不报 ✓
+ * ⚠️ 它必须**真被用到**（否则触发"没人用"的警告 ✗）⇒ 下面正例里用了一次 ✓ */
+fn fdOf(f: inputFile) -> i32 { return f.fd }
+
+fn go() -> result<unit, io::ioError> {
+    // ---------- 写：openWrite ⇒ 类型是 outputFile（原内容被清掉）----------
+    var out = openWrite("build/fsproto-out.txt")?
+    out.put("hello\n")
+    out.put("世界\n")
+    flush()
+
+    // ---------- 读：openRead ⇒ 类型是 inputFile ----------
+    var inp = openRead("build/fsproto-out.txt")?
+    var buf: [64]u8
+    let n = inp.readSome(buf[..])
+    println("读到 ", n, " 字节 · fd = ", fdOf(inp))
+
+    // ---------- 追加：openAppend ⇒ 原内容**保留** ----------
+    var app = openAppend("build/fsproto-out.txt")?
+    app.put("again\n")
+    flush()
+
+    var inp2 = openRead("build/fsproto-out.txt")?
+    var buf2: [64]u8
+    let m = inp2.readSome(buf2[..])
+    println("追加之后 = ", m, " 字节（12 + 6 = 18 ⇒ 原内容没被清掉 ✓）")
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { println("fs 形状原型 ✓ 跑通了")  return 0 }
+        failure(e) => {
+            println("fs 形状原型 ✗ 失败了")
+            match e {
+                readFailed(code)  => { println("  readFailed(", code, ")") }
+                writeFailed(code) => { println("  writeFailed(", code, ")") }
+                lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
+            }
+            return 1
+        }
+    }
+}

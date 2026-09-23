@@ -2629,6 +2629,57 @@ var r = io::readerOf(sysio::STDIN)
 `./check.sh quick` **12 节全绿**（257 测试 0 失败）· golden **95 个文件逐字节相同** ·
 攻击库基线一致 · arena 层号零漂移 ✓
 
+## 定案 77 · **`std::fs` 的命名规范：读型/写型分开 · `openRead`/`openWrite`/`openAppend`**（2026-09-23，主人拍板）
+
+> 主人原话：「**但是 open 不够清晰的，因为我不知道打开的是读还是写。总之需要定一个命名规范**」
+
+### 问题（老形状确实读不出意图）
+
+```extc
+io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗
+```
+① `64`/`420` 是 **POSIX 的数** ⇒ 用户背常量 ② 还要自己 `|` ⇒ **平台细节外泄**
+③ 就算写全了常量，"读还是写"仍要读到**第三个实参**才知道 ✗
+
+### 定案
+
+| 做什么 | 名字 | 返回 | 已有内容 |
+|---|---|---|---|
+| 读 | `fs::openRead(p)` | `inputFile` | 不动 ✓ |
+| 写（截断） | `fs::openWrite(p)` | `outputFile` | **清掉** ⚠️ |
+| 写（追加） | `fs::openAppend(p)` | `outputFile` | **保留** ✓ |
+
+**⭐ 读型 / 写型是两个 struct**（这条是判据，不是口味）：
+读方法只挂 `inputFile`、写方法只挂 `outputFile` ⇒ **误用是编译期错误** ✓
+```
+argument expects `inputFile`, found `outputFile`
+no method `put` on `inputFile`
+```
+⇒ 价值在于"打开错了**编不过**"，而不是运行到一半才发现 ✓
+
+### 明确不选
+
+* `open(p, fileMode.write)`（一个函数 + 枚举实参）：**能编译**（实测过），但
+  ① 模式仍藏在实参里 —— 正是主人嫌的那一点 ② 返回类型统一 ⇒ 丢掉编译期判据 ✗
+* 把 `O_*` 暴露给用户：平台细节外泄 + 还得自己 `|` ⇒ 老问题原样保留 ✗
+
+### 与既有命名的关系
+
+`xxxOf` = **从已有材料造**（`readerOf`/`writerOf`）· `openXxx` = **打开外部资源**
+（后半段是**模式**，所以 `openAppend` 与 `openRead` 成兄弟 —— **故意的** ✓）·
+`withXxx` = 构造器带可选参数（`withCap`/`withStream`）✓ 完整规范见 `SYNTAX.md` §3′ ✓
+
+### 判据
+
+`tests/fs-shape/`（**1 正例 + 2 反例 + 2 结构判据**）接进 `check.sh`：
+正例是**能跑的原型**（`fsproto.extc`：写 13 字节 → 读回 13 → 追加后 19，
+数字自证"截断 vs 追加真的不一样" ✓）· 两个反例钉"误用编不过" ·
+结构判据钉"`O_*` 不外露"与"规范已入档" ✓
+`./check.sh quick` **13 节全绿** ✓
+
+⚠️ 还没实现（形状先定死）：`std::fs` 模块本身 · **帧拥有文件** · `readAll` ·
+`f.reader()` · `close(f)!`（IO-2）✓
+
 ## 定案 73 · **IO 的第一块：`std::sys`（原语）+ `std::io`（库）+ `flush()`**（2026-09-22）
 
 > 里程碑的第一步：**先能读东西**（`IO.md` §1 的"做完 = 五子棋能跟人下"）

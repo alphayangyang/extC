@@ -66,6 +66,11 @@ if out=$(./tests/qname/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（6 正例 + 1 反例 + 1 结构判据）"
 else bad "tests/qname/run.sh"; echo "$out" | tail -8; fi
 
+echo "== std::fs 命名规范（定案 77：读型/写型分开 ⇒ 误用**编不过**）=="
+if out=$(./tests/fs-shape/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 2 反例 + 常量不外露 + 规范入档）"
+else bad "tests/fs-shape/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 攻击库（通过的必须是 BASELINE 里那几条 ⇒ 没放松）=="
 now=$(mktemp)
 for f in tests/attacks/*.extc; do

@@ -1,0 +1,16 @@
+/* 反例②：把**读型**当写型用（调只存在于写型上的方法）⇒ 必须编译期报错 ✓ */
+use std::io
+use rawfd
+
+struct inputFile {
+    fd: i32
+}
+struct outputFile {
+    fd: i32
+    fn put(self: mut ref outputFile, buf: slice<u8>) -> i64 { return rawfd::put(self.fd, buf) }
+}
+
+fn main() {
+    var inp: inputFile = { fd: 0 }
+    inp.put("x")                   // ✗ 读型没有 put
+}
