@@ -419,7 +419,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 |---|---|---|---|
 | **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys/io.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
 | **IO-1** | `open` + 帧拥有的 `extc_files` + `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**（跟 `extern!` 的 `owned` 是**同一个前置**：要"帧拥有资源"那套）|
-| **IO-2** | `exit(code)`、`close(f)!`、`writer`（可见缓冲）、termios raw mode | TUI + 刷量输出 | ⬜ **没有** |
+| **IO-2** | `exit(code)`、`close(f)!`、termios raw mode | TUI + 刷量输出 | 🟡 **一半**：**`writer`（可见缓冲）已落地**（`stdlib/std/io.extc`，验收 `tests/io/` 的 writer-file ✓）—— ⚠️ 这一格原来写着"`writer` ⬜ 没有"，那是在它落地**之前**写的，没跟着改 ✗（2026-09-24 修正）；剩下的 `exit(code)` / `close(f)!` / termios ⬜ **没有** |
 
 > BOOTSTRAP §4.3 已经定过 TUI 那条：**不包 ncurses**，只要「读一个字节 + 开关 raw mode」
 > 那么小的原语 ✓

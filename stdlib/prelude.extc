@@ -1,83 +1,83 @@
-// extC 的 prelude —— 每次编译都**先于用户文件**被处理的一段 extC 源码。
+// The extC prelude: a piece of extC source processed before the user file on every compile.
 //
-// 它存在的理由：**能在 extC 里写的东西，就在 extC 里写。**
-// 没有它，slice<T> 只能在 codegen.c 里硬编码 —— 那就成了「把库塞进编译器」。
+// Why it exists: anything that can be written in extC should be written in extC.
+// Without it, slice<T> would be hard-coded in codegen.c: the library inside the compiler.
 //
-// 写在这里的类型，用户不用 import 就能用。
+// Types written here are available without an import.
 //
-// ⚠️ `slice` 是**保留定义**：用户不能重定义它（重名即报错），
-//    而且 extC 没有 impl 块、方法必须写在 struct 体内 ——
-//    所以**「给已有类型加方法」在语法上不可达**。这正好防住了混乱。
+// NOTE: `slice` is a reserved definition: a user cannot redefine it (a duplicate name is an
+//    error), and extC has no impl blocks: methods live inside the struct body, so there is no
+//    way to add a method to an existing type -- which is exactly what prevents confusion.
 //
-// ⚠️ 编译器只认这个类型的**协议**：`data` + `len`（因为 `s[i]` 是一条语法）。
-//    字段名不能改；方法随便加。分界线见 docs/topics/ARRAYS.md。
+// NOTE: the compiler only knows the protocol of this type -- `data` + `len` -- because `s[i]`
+//    is syntax. Field names cannot change; methods are free. See docs/topics/ARRAYS.md.
 
 // ---------------------------------------------------------------------------
-// 空载荷 —— `result<unit, E>` 的「成功了但没有值给你」
+// The empty payload: the "succeeded, but there is no value for you" case of `result<unit, E>`
 //
-// C 不允许空 struct，编译器会给它补一个占位字节（codegen 的 unitBody）。
-// 用真实的类型而不是给 `result<void, E>` 开特例 —— 语法一致，没有例外。
+// C has no empty struct: the compiler adds a placeholder byte for it (unitBody in codegen.c).
+// A real type instead of a special case for `result<void, E>`: uniform syntax, no exceptions.
 // ---------------------------------------------------------------------------
 
 struct unit {
 }
 
 // ---------------------------------------------------------------------------
-// option<T> —— 「可能有值，也可能没有」
+// option<T> -- "there may be a value, or there may not be"
 //
-// **它就是普通枚举**（第三刀，2026-09-20）：`| none | some(T)`
+// It is a plain enum (as of 2026-09-20): `| none | some(T)`
 //
-//   · 零值 = tag 0 = `none`（**不带载荷**）⇒ `var o: option<i64>` 就是「没有」✓
-//     这不是巧合，是定案 8（默认零初始化）的直接结果。**变体顺序有意义**：
-//     `| some(T) | none` 会让 `var o: option<i64>` 变成「有值但值是零」✗
-//   · `T` 里**可以有 ref / 视图**了 ⇒ `option<slice<u8>>` 合法 ✓
-//     （以前是 struct，`none` 那个 `value` 字段没东西可填，而「ref 不可为空」
-//      是 extC 的承诺 ⇒ 只能报 `__extc_reference_has_no_zero_value__` ✗
-//      现在是「tag 0 = none，载荷根本不存在」⇒ 洞封上了 ✓ 见 docs/topics/IO.md）
-//   · 拿值只有两条路：**`match`**（穷尽检查），或者 **`?` 顺着往上抛**。
-//     **故意没有 `unwrap()`** —— 那需要一条 trap 原语，而「会 trap 的库」不符合
-//      extC 的性格：要 trap 就让调用者自己写。也**故意没有** `valueOr` 之类的方法：
-//      枚举加方法还没做（PLAN #16），而且 `match` 更显式 ✓
+//   - the zero value is tag 0 = `none` (no payload) => `var o: option<i64>` means "nothing" -- OK.
+//     No coincidence: zero-initialization. Variant order matters, so `| some(T) | none` would
+//     make `var o: option<i64>` mean "present, but zero" -- WRONG.
+//   - `T` may now be a ref or a view, so `option<slice<u8>>` is legal -- OK. It used to be a
+//     struct: `none`'s `value` field had nothing to fill it with, and "a ref is never null" is
+//     a promise extC makes, so that shape could report only `__extc_reference_has_no_zero_value__`
+//     -- WRONG. Tag 0 = none means no payload, so the hole is closed -- OK. See docs/topics/IO.md.
+//   - there are only two ways to get the value out: `match` (exhaustive), or `?` to pass the
+//     failure up. There is deliberately no `unwrap()`: that needs a trap primitive, and a
+//     library that traps does not fit extC's character -- if you want a trap, write it at the
+//     call site. `valueOr` is absent too: enum methods do not exist yet, and `match` is clearer.
 // ---------------------------------------------------------------------------
 
 type option<T> = | none | some(T)
 
 // ---------------------------------------------------------------------------
-// result<T, E> —— 「要么成功给你值，要么失败给你一个错误」
+// result<T, E> -- "either it succeeds and gives you a value, or it fails with an error"
 //
-// 同样**就是普通枚举**：`| failure(E) | success(T)`
-// 零值 = tag 0 = `failure`（`E` 的零值）⇒ 跟以前「零值就是失败侧」一致 ✓
+// It is a plain enum too: `| failure(E) | success(T)`. The zero value is tag 0 = `failure`
+//    (the zero value of `E`) => the failure side is still the zero side, as before -- OK.
 //
-// 构造器名字是 success / failure（不叫 ok / err —— 那两个词要留给读的地方，
-// 现在读的地方是 `match` 的变体名 ✓）
+// The constructors are named success / failure, not ok / err: those two words are reserved for
+//    reading, and the place that reads is the variant name in `match` -- OK.
 // ---------------------------------------------------------------------------
 
 type result<T, E> = | failure(E) | success(T)
 
 // ---------------------------------------------------------------------------
-// pcg32 —— 随机数引擎（小而快，**显式持有状态，没有全局**）
+// pcg32 -- a random number engine (small, fast, state held explicitly, no globals)
 //
 //     var rng: pcg32 = pcg32::seeded(42)
 //     println(rng.nextBounded(100))
 //
-// 为什么不用 `rand()` / 全局引擎：那是**隐藏状态** —— 谁什么时候动了它看不见，
-// 跑一百遍为什么不一样也查不出来。extC 的形状是"你持有一个值"：
-//     · 全部在栈上（16 字节），**零分配** ✓
-//     · 同一个种子 ⇒ 同一个序列（跨平台、跨优化级别都一样）⇒ 失败可复现 ✓
-//     · 想要"另一条独立序列"就换 `stream`（比如 Zobrist 表一列一条流）✓
+// Why not `rand()` or a global engine: that is hidden state -- you cannot see who moved it or
+//    when, or why a hundred runs differ. extC's shape is "you hold a value":
+//     - all of it on the stack (16 bytes), zero allocation -- OK
+//     - the same seed => the same sequence (all platforms and builds) => a failure reproduces -- OK
+//     - a second, independent sequence is another `stream` (e.g. one per Zobrist column) -- OK
 //
-// 为什么是 pcg32 而不是 mt19937：状态 16 字节 vs **2.5KB**、代码 ~20 行 vs ~60 行，
-// 统计质量同样是第一梯队（TestU01 BigCrush 全过）✓
+// Why pcg32 and not mt19937: 16 bytes of state vs 2.5KB, about 20 lines vs about 60, and the
+//    statistical quality is top-tier either way (passes the whole TestU01 BigCrush suite) -- OK
 //
-// ⚠️ 值全部是 `u64`（都在 0 .. 2^32-1 里）：extC **只自动做无损失的拓宽**，
-//    收窄要显式转换 —— 而那个语法还没做（PLAN #23），所以这版先不给 i64/f64 接口 ✓
+// NOTE: every value is `u64` (in 0 .. 2^32-1). extC widens automatically, narrowing needs an
+//    explicit conversion that does not exist yet -- so no i64/f64 interface here -- OK.
 // ---------------------------------------------------------------------------
 
 struct pcg32 {
     state: u64
     inc: u64
 
-    // 官方 PCG32 的 XSH-RR 输出函数（把 32 位状态搅成一个 32 位输出）
+    // The official PCG32 XSH-RR output function: it mixes the state into a 32-bit output.
     fn next(self: mut ref pcg32) -> u64 {
         var old: u64 = self.state
         self.state = old * 6364136223846793005 + self.inc
@@ -86,7 +86,7 @@ struct pcg32 {
         return ((x >> rot) | (x << ((32 - rot) & 31))) & 4294967295
     }
 
-    // 带流的播种（官方 pcg32_srandom_r 那套：先走两步把状态搅开）
+    // Seeding with a stream (the official pcg32_srandom_r way): step twice to stir the state.
     fn withStream(seed: u64, stream: u64) -> pcg32 {
         var r: pcg32 = { state: 0, inc: (stream << 1) | 1 }
         var skip: u64 = r.next()
@@ -95,12 +95,12 @@ struct pcg32 {
         return r
     }
 
-    // 常用形状：固定流（54 是 PCG 例子里的默认流号，跟官方参考实现能逐位对上 ✓）
+    // The usual shape: stream 54, the PCG examples' default; matches the reference -- OK.
     fn seeded(seed: u64) -> pcg32 {
         return pcg32::withStream(seed, 54)
     }
 
-    // 0 .. bound-1，**没有取模偏置**（拒绝采样：先丢掉会让分布偏掉的那一小段）
+    // 0 .. bound-1, no modulo bias (rejection sampling drops the prefix that would skew it).
     fn nextBounded(self: mut ref pcg32, bound: u64) -> u64 {
         if bound == 0 { return 0 }
         var threshold: u64 = (0 - bound) % bound
@@ -112,15 +112,15 @@ struct pcg32 {
     }
 }
 
-// 0.0 .. 1.0（前 53 位，双精度够用）—— 现在有显式转换了 ✓
+// 0.0 .. 1.0 (the top 53 bits; enough for a double) -- an explicit conversion exists now -- OK
 fn nextFloat(r: mut ref pcg32) -> f64 {
     var hi: u64 = r.next()
     var lo: u64 = r.next()
-    var x: u64 = ((hi << 32) | lo) >> 11          // 53 位
+    var x: u64 = ((hi << 32) | lo) >> 11          // 53 bits
     return f64(x) * (1.0 / 9007199254740992.0)    // / 2^53
 }
 
-// Fisher-Yates：洗一个 i32 视图（五子棋洗候选点用得上 ✓）
+// Fisher-Yates: shuffle an i32 view (handy for shuffling gomoku candidate points) -- OK.
 fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
     var i: i64 = a.len - 1
     while i > 0 {
@@ -133,25 +133,25 @@ fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
 }
 
 // ---------------------------------------------------------------------------
-// varArray<T> —— **能增长的数组**（对标 `std::vector` 的基础部分 ✓）
+// varArray<T> -- a growable array (the basic part of what `std::vector` does -- OK)
 //
 //     var v: varArray<i32> = varArray<i32>::withCap(4)
-//     v.push(7)                       // 满了自己扩（倍增）
+//     v.push(7)                       // grows itself when full (by doubling)
 //     println(v.size(), " ", v.get(0) ?? -1)
 //
-// 三条设计决定（跟 extC 的内存模型缝在一起）：
-//   · **不带自己的 arena** —— 扩容时 `new T[cap*2]` 分配到**拥有 `self` 的那只 arena**
-//     （A3 第三半那条规则 ✓）⇒ 容器活得多久，存储就活多久 ✓ 不用像 C++ 那样塞个 Alloc ✓
-//   · **不能 free** ⇒ `clear()` 只把 `len` 归零（内存不动）、**没有 `shrink_to_fit`**
-//     （缩不回内存 ⇒ 有也比没有好：假装能缩是骗人 ✓）
-//   · 读值用 `?T`（「可能没有」✓），越界由**下标检查 trap（带源码位置）**承担 ✓
+// Three design decisions, stitched into extC's memory model:
+//   - no arena of its own: on growth, `new T[cap*2]` allocates in the arena that owns `self`
+//     -- so storage lives exactly as long as the container, with no `Alloc` as in C++ -- OK
+//   - no free -- `clear()` only sets `len` to zero and leaves the memory alone, and there is
+//     no `shrink_to_fit`: memory cannot be returned, so pretending it can would be a lie -- OK
+//   - reads give `?T` (may be absent); an out-of-range index traps with a source position -- OK
 //
-// ⚠️ 已知限制（跟 `std::vector` 一样，但这里**没有任何缓解**）：
-//   **扩容会让指向元素的引用失效** —— `var p: mut ref i32 = ref v[0]` 之后 `v.push(..)`
-//   换了新 buffer，`p` 还指着**旧 buffer**（arena 保证旧内存没被回收 ⇒ 不崩，
-//   但写进去就是**静默写丢** ✗）⇒ 别长期持有元素引用；要改就用 `set(i, v)` ✓
-// ⚠️ `set(i, v)` 只在 `i` 超出 **cap** 时 trap；`i` 落在 `[len, cap)` 之间会写进未使用区
-//   （跟 C++ 的 `operator[]` 同款）⇒ 想安全读就 `get(i)` ✓
+// NOTE: known limitations (as in `std::vector`, no mitigation here): growth invalidates element
+//   references -- after `var p: mut ref i32 = ref v[0]`, a `v.push(..)` swaps in a new buffer
+//   and `p` still points at the old one (the old memory survives, so no crash, but a write via `p`
+//   is silently lost -- WRONG) => do not hold element references; write via `set(i, v)` -- OK.
+// NOTE: `set(i, v)` traps only when `i` is past cap; an `i` in [len, cap) writes into the
+//   unused region (the same as C++'s `operator[]`) => read safely with `get(i)` -- OK.
 // ---------------------------------------------------------------------------
 
 struct varArray<T> {
@@ -168,7 +168,7 @@ struct varArray<T> {
     fn size(self: ref varArray<T>) -> i64 { return self.len }
     fn isEmpty(self: ref varArray<T>) -> bool { return self.len == 0 }
 
-    // 满了就**倍增**（0 ⇒ 先给 4）；新 buffer 进"拥有 self 的那只 arena" ✓
+    // Doubles on growth (0 => start at 4); the new buffer goes to the arena that owns `self` -- OK
     fn grow(self: mut ref varArray<T>) {
         var ncap: i64 = self.cap * 2
         if ncap < 4 { ncap = 4 }
@@ -188,7 +188,7 @@ struct varArray<T> {
         self.len = self.len + 1
     }
 
-    // 空 ⇒ none（**不 trap**：调用点用 `??` 或 match ✓）
+    // Empty => none (no trap: the caller uses `??` or `match` -- OK)
     fn pop(self: mut ref varArray<T>) -> ?T {
         if self.len == 0 { return none }
         self.len = self.len - 1
@@ -204,19 +204,19 @@ struct varArray<T> {
         self.buf[i] = v
     }
 
-    // 只归零（**内存不动** —— arena 不能 free ✓）
+    // Resets the length only; the memory is not touched, because an arena cannot free -- OK
     fn clear(self: mut ref varArray<T>) { self.len = 0 }
 
-    // ⭐ **连续性的兑现**：把存储当视图借出去 —— 排序 / 查找 / println / 传给 `extern!`
-    // 的 C 函数，全都只认 `slice<T>` ⇒ 没有这两个就没法用 ✓
-    // ⚠️ 借出去的视图**不能在扩容后再用**，也不能带出"存储活得不够久"的作用域
-    //   —— 后者由编译器挡（甲′：扩容过的容器一逃逸就报错 ✓ 见 PLAN #31）
+    // NOTE: this is what contiguity buys -- the storage is lent out as a view. Sorting,
+    // searching, println, and C functions behind `extern!` all take `slice<T>`; without these
+    // two methods the container would be unusable -- OK. A lent-out view must not be used
+    // after growth, nor escape a scope the storage cannot outlive -- the compiler rejects that.
     fn asSlice(self: ref varArray<T>) -> slice<T> { return self.buf[0..self.len] }
 
-    // 按内容比较（跟 slice 一个道理：**元素能不能比推迟到实例化**才检查 ✓）
-    // ⚠️ 为什么必须有它：`asSlice()` 的签名里有 `slice<T>` ⇒ 实例化 `varArray<X>` 会
-    // 顺带实例化 `slice<X>`，而 `slice<X>::==` 要求 `X: ==` ✗
-    // ⇒ 嵌套容器（`varArray<varArray<i32>>`）以前**写不出来**（2026-09-22 实测撞上 ✓）
+    // Compare by content (as `slice` does: whether elements can be compared is checked only
+    // at instantiation -- OK). This must exist because the signature of `asSlice()` mentions
+    // `slice<T>`: instantiating `varArray<X>` also instantiates `slice<X>`, and `slice<X>::==`
+    // requires `X: ==` -- WRONG. So `varArray<varArray<i32>>` was unwritable (found 2026-09-22).
     fn ==(self: ref varArray<T>, other: varArray<T>) -> bool {
         if self.len != other.len {
             return false
@@ -231,7 +231,7 @@ struct varArray<T> {
         return true
     }
 
-    // 可写视图：只给前 len 个（`cap` 那截是未使用区，不该露出去 ✓）
+    // A writable view: the first len elements only (`cap` is unused space, not to be exposed) -- OK
     fn asMutSlice(self: mut ref varArray<T>) -> mut slice<T> {
         return self.buf[0..self.len]
     }
@@ -249,15 +249,15 @@ struct slice<T> {
         return i >= 0 && i < self.len
     }
 
-    // 读第 i 个。越界会 **trap**（带位置）—— 想优雅处理就先查 hasAt。
-    // 注意库里**没有一行指针算术，也没有一行手工边界检查**：`self[i]` 那一条语法
-    // 会让编译器生成带检查的索引原语。
+    // Read element i. An out-of-range index traps, with a source position; to handle that
+    // gracefully, check hasAt first. The library has no pointer arithmetic and no hand-written
+    // bounds check: the `self[i]` syntax makes the compiler emit a checked indexing primitive.
     fn get(self: ref slice<T>, i: i64) -> T {
         return self[i]
     }
 
-    // 按内容比较。`!=` 是它的取反（语言自动派生）。
-    // 元素能不能比，**推迟到实例化**才检查 —— 这是「不引入 trait」的代价。
+    // Compare by content. `!=` is its negation (the language derives it).
+    // Whether elements can be compared is checked at instantiation -- the price of no traits.
     fn ==(self: ref slice<T>, other: slice<T>) -> bool {
         if self.len != other.len {
             return false
@@ -272,8 +272,8 @@ struct slice<T> {
         return true
     }
 
-    // 找子串。找不到返回 -1（等 `option` 到位会改成 `option<i64>`）。
-    // 词法分析器的核心就是它。
+    // Find a sub-slice. Returns -1 when there is no match (to be changed to `option<i64>`).
+    // The lexer's core is this function.
     fn find(self: ref slice<T>, needle: slice<T>) -> i64 {
         if needle.len > self.len {
             return -1

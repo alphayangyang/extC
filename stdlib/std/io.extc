@@ -1,85 +1,104 @@
-/* std/io.extc —— **普通库**（用 extC 写，没有任何特权 ✓）
+/* std/io.extc -- a plain library, written in extC, with no privileged access.
  *
- * ⭐ 这就是 `docs/topics/IO.md` 说的"档 2 wrapper"：把它底下那层裸原语包成好用的形状 ✓
- *    `slice<u8>` 在 C 那边是两个参数 ⇒ 这里把 `s.data` / `s.len` 分下去 ✓
+ * This is the thin wrapper over the bare primitives that `docs/topics/IO.md`
+ * describes, turning them into shapes that are pleasant to use: `slice<u8>` is
+ * two arguments on the C side, so `s.data` and `s.len` are passed down
+ * separately here.
  *
- * ================================================================ 两种输入风格
+ * ================================================================ two input styles
  *
- * 谁都需要"读一行"/"读一个整数"，但**两种场景的形状不一样**，所以这里并存：
+ * Everyone needs "read a line" and "read an integer", but the two use cases do
+ * not want the same shape, so both live here:
  *
- *   | 场景 | 用什么 | 为什么 |
+ *   | style | use | why |
  *   |---|---|---|
- *   | **OI / 竞赛**（空格分词、一坨数字） | `nextInt` / `nextToken` | 不用先读成行再切，省一次拷贝 ✓ |
- *   | **协议 / 交互**（一行一个命令） | `nextLine` | 行是协议的单位 ✓ |
+ *   | **contest**: space separated numbers | `nextInt` / `nextToken` | no line to split first |
+ *   | **protocol**: one command per line | `nextLine` | the line is the unit of the protocol |
  *
- * 两个都建在同一个 `reader` 上 ⇒ 可以混着用（`nextInt` 会跳过空白，正好吃掉行尾 ✓）
+ * Both are built on the same `reader`, so they can be mixed: `nextInt` skips
+ * leading whitespace, which consumes the end of the line as well.
  *
- * ================================================================ 为什么有 `reader`
+ * ================================================================ why `reader` exists
  *
- * ⚠️ **逐字节读是个坑**（原来那个 `readLine` 就是这么写的）：实测 19MB / 50 万行
- *    **2.30 s**，而按块读 **0.012 s** —— **190×** ✗
- *    原因不是"读得慢"，是**每读一个字节都进一次内核**。
+ * NOTE: **reading a byte at a time is a trap** (the old `readLine` did exactly
+ * that). Measured on 19MB / 500,000 lines it took **2.30 s**, against
+ * **0.012 s** for block reads, a factor of **190x**. The reason is not that
+ * reading is slow: it is that **every single byte enters the kernel**.
  *
- * 所以真正干活的是 `reader`：它一次 `read(2)` 拿回 64KB，然后在内存里切 ✓
- * 这就是 `docs/topics/IO.md` §0 那句话：**读 = 整块读 + 内存里切**。
+ * So `reader` is where the work happens. One `read(2)` brings back 64KB, and the
+ * splitting then happens in memory. That is the sentence from
+ * `docs/topics/IO.md` section 0: **reading = read whole blocks + split in memory**.
  *
- * ⚠️ 缓冲**不用调用者给**（`readerOf(fd)` 就够）：那 64KB 是 `new` 出来的，
- *    住在**调用点所在那个块的 arena** 里 ⇒ 跟 `reader` 自己同寿 ✓
- *    （代价：`reader` 不能比创建它的块活得久 —— 这条由逃逸检查管着，
- *      越界是**编译错误**，不是悬垂 ✓）
+ * The buffer is **not** supplied by the caller (`readerOf(fd)` is enough): that
+ * 64KB comes from `new`, so it lives in the arena of the block that contains the
+ * call site, and it has the same lifetime as the `reader` itself.
+ * (The cost: a `reader` may not outlive the block that created it. The escape
+ * checker enforces this, so going past that block is a **compile error**, not a
+ * dangling pointer.)
  *
- * ================================================================ 三条路必须分得开
+ * ================================================================ three failures, kept apart
  *
- * 失败的**原因**不一样，就不该挤成一个返回值（P′：不能证明的，语法上必须看得见）：
+ * Three failures with three different causes should not be squeezed into one
+ * return value: what the compiler cannot prove must stay visible in the syntax.
  *
- *   | 情况 | 返回 |
+ *   | case | return |
  *   |---|---|
- *   | **读到 EOF** | `success(0)` —— 这不是错误 ✓ |
- *   | **行比 `out` 长** | `failure(lineTooLong)` —— 数据**没读全** ✗ |
- *   | **read(2) 出错** | `failure(readFailed)` —— 上次读的结果可能已经坏了 ✗ |
+ *   | **hit EOF** | `success(0)` -- not an error |
+ *   | **line longer than `out`** | `failure(lineTooLong)` -- data not read in full |
+ *   | **`read(2)` failed** | `failure(readFailed)` -- the previous read may be bad |
  *
- * ⚠️ 原 `readLine` 把后两条**都当成 EOF**（`if got <= 0 { return n }`）⇒
- *    读错误看起来就是"文件结束了"，而超长行会被**静默切成两"行"** ✗✗
- *    这种"看不出来的数据损坏"正是 P′ 要挡的东西 ✓
+ * The old `readLine` treated the last two **both as EOF**
+ * (`if got <= 0 { return n }`), so a read error looked like "the file ended",
+ * and an over-long line was **silently split into two "lines"**. Data corruption
+ * that cannot be seen is exactly what these three results are there to prevent.
  */
 use std::sys::io
 
-/* 读失败了、**为什么**失败 —— 枚举而不是魔法值 ✓
- * ⚠️ 为什么带上 `i64`：报错时要能说清"读了多少" / "是哪个 fd" ——
- *    `failed(5)` 这种消息对用户毫无用处 ✗ */
+/* A read failed, and **why** it failed: an enum, not a magic value.
+ * NOTE: the payload is what lets an error message say how many bytes were read
+ * (`lineTooLong(i64)`) or which fd failed (`readFailed(i32)`); a message like
+ * `failed(5)` tells the user nothing. */
 type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32)
 
-/* 块大小：**64KB**（实测量出来的最优档之一）✓
- * 实测（291MB 文件）：64B 0.62s/469MB/s（470 万次 syscall）· 4KB 0.05s/5820MB/s ·
- *   **16KB 与 64KB 都是 0.04s/7275MB/s** · 1MB 0.05s
- * ⇒ 16KB 以上就平了；取 64KB（对"一次读几行"的协议场景更省 syscall）✓
- * ⇒ `docs/topics/IO.md` §9 原来写的 4KB 因此改成 64KB ✓ */
+/* Block size: **64KB**, one of the sizes that measured fastest.
+ * Measured on a 291MB file: 64B 0.62s/469MB/s (4.7 million syscalls) - 4KB
+ * 0.05s/5820MB/s - **16KB and 64KB both 0.04s/7275MB/s** - 1MB 0.05s.
+ * -> everything from 16KB up is flat, so 64KB it is, which also saves syscalls
+ *    in protocol code that reads a few lines at a time.
+ * -> this is why the 4KB in `docs/topics/IO.md` section 9 became 64KB. */
 let BLK: i64 = 65536
 
-/* `i64` 的最大值 —— `nextInt` 的溢出检测要用 ✓
- * ⚠️ 为什么手写这个数而不是用内建：**没有内建**（实测 `grep I64_MAX` 全仓为空）✗
- *    `9223372036854775807` = 2^63 - 1 ✓ */
+/* The largest `i64`, used by the overflow check in `nextInt`.
+ * NOTE: it is written out by hand because there is **no built-in** for it;
+ * `9223372036854775807` = 2^63 - 1. */
 let I64_MAX: i64 = 9223372036854775807
 
-/* 标准输入 / 输出的 fd ✓（`std::sys::io` 里也有，这里再导出一次是为了
- * **用户只 `use std::io` 就够** ✓）*/
+/* The fds for standard input and output. `std::sys::io` declares them too; they
+ * are exported again here so that **`use std::io` alone is enough** for a user. */
 let STDIN_FD: i32  = 0
 let STDOUT_FD: i32 = 1
 
-/* 把 `println` 那边的缓冲刷出去 ✓（跟下面的 fd 直写混用时**必须**刷，
- *  不然顺序会乱 —— 交互式程序最难忍那条 ✗）*/
+/* Flush the `println` side. This is **required** when mixing it with the direct
+ * fd writes below, or the output comes out in the wrong order -- the most
+ * annoying failure in an interactive program. */
 fn flushOut() { flush() }
 
-/* 把一整块字节写到 **stdout**（`println` 管"打印值"，这里管"写字节" ✓）
+/* Write a whole block of bytes to **stdout** (`println` prints values, this
+ * writes bytes).
  *
- * ⚠️⚠️ **必须先 `flush()`** —— 这是一个**真缺陷的修法**（定案 75）✗
- * `println` 走 C 的 `printf`（**有缓冲**），而这里是 `write(2)` **直写** ⇒
- * 两支队混着用**顺序会乱**：提示语还没从 printf 的缓冲里出来，直写的字节已经到了 ✗✗
- * （以前靠调用者自己记得写 `flushOut()` —— 交互式程序里最难忍的就是这个 ✓）
- * `flush()` 是编译器内建，正好刷的就是 stdio 那一支 ⇒ 一行就解决 ✓
+ * **`flush()` must come first.** This is the fix for a real defect: `println`
+ * goes through C `printf` (**buffered**), while this is a **direct** `write(2)`.
+ * Mixing the two streams puts the bytes in the wrong order, so a prompt is still
+ * sitting in the printf buffer while the bytes written here have already
+ * arrived.
+ * (The old contract was that the caller had to remember `flushOut()`, which is
+ * the most annoying thing to get wrong in an interactive program.)
+ * `flush()` is a compiler built-in and flushes exactly the stdio side, so one
+ * line covers it.
  *
- * ⚠️ 更彻底的做法是让 `println` 也写进同一支 `writer`（那要动 codegen ✗），
- *    本次没做 —— 现在这条是"看不见的错"变成"不可能错" ✓ */
+ * NOTE: the thorough fix would be to make `println` write into the same
+ * `writer`, but that means changing codegen and was not done here. What is here
+ * turns a mistake you cannot see into a mistake you cannot make. */
 fn writeBytes(buf: slice<u8>) -> i64 {
     flush()
     return io::write(io::STDOUT, buf.data, buf.len)
@@ -87,15 +106,18 @@ fn writeBytes(buf: slice<u8>) -> i64 {
 
 /* ================================================================ writer */
 
-/* ⭐ **有缓冲的写**（`docs/topics/IO.md` §4.5）—— 跟 `reader` 对称：
- *   一次 `write(2)` 吐一整块，而不是每段文本进一次内核 ✓
+/* A buffered writer, symmetric with `reader`:
+ * one `write(2)` emits a whole block instead of entering the kernel once per
+ * piece of text.
  *
- * ⚠️ **缓冲必须是可见的字段**（`buf` / `len` / `cap`）—— 这就是 `docs/topics/IO.md` 反复讲的
- *    "不要 `cin` 那个黑盒"：`FILE*` 把缓冲藏在里面，出问题时你看不见 ✗
- *    这里你能随时看 `w.len`、能自己 `flush`、能自己决定什么时候吐 ✓
+ * The buffer has to be a **visible field** (`buf` / `len` / `cap`), which is the
+ * point `docs/topics/IO.md` keeps making about the `cin` black box: `FILE*` hides
+ * its buffer inside, so you cannot see it when something goes wrong. Here you can
+ * read `w.len` whenever you like, flush on your own, and decide when bytes leave.
  *
- * ⚠️ 写 fd = STDOUT 时，**每次 flush 之前都要先刷 `println` 那一支** ——
- *    否则两支队又乱序了（跟上面 `writeBytes` 同一个坑 ✓）*/
+ * NOTE: when the fd is STDOUT, the `println` side must be flushed **before every
+ * flush**, or the two streams interleave out of order again (the same trap as
+ * `writeBytes` above). */
 struct writer {
     fd:  i32
     buf: mut slice<u8>
@@ -103,8 +125,8 @@ struct writer {
 
     fn cap(self: ref writer) -> i64 { return self.buf.len }
 
-    /* 把缓冲里的吐出去（**带上 `println` 那一支**，顺序才对 ✓）
-     * 返回写出去的字节数（0 = 本来就空）✓ */
+    /* Emit what is buffered, including the `println` side, which is what keeps
+     * the order right. Returns the number of bytes written (0 = it was empty). */
     fn flush(self: mut ref writer) -> result<i64, ioError> {
         if self.fd == io::STDOUT || self.fd == io::STDERR { flush() }
         if self.len == i64(0) { return success(i64(0)) }
@@ -114,12 +136,13 @@ struct writer {
         return success(n)
     }
 
-    /* 写一段字节。**装不下就先 flush**（不是丢弃、也不是扩容 ✓） */
+    /* Write a run of bytes. If it does not fit, flush first: bytes are never
+     * dropped and the buffer never grows. */
     fn write(self: mut ref writer, data: slice<u8>) -> result<i64, ioError> {
         var done: i64 = 0
         while done < data.len {
             if self.len >= self.buf.len { self.flush()? }
-            /* 能塞多少塞多少 ✓ */
+            /* Copy as much as fits. */
             var room: i64 = self.buf.len - self.len
             var left: i64 = data.len - done
             if left < room { room = left }
@@ -135,15 +158,18 @@ struct writer {
     }
 }
 
-/* 建一支 writer：`fd` + **隐式 64KB 缓冲**（跟 `readerOf` 对称 ✓）
- * 那 64KB 是 `new` 出来的 ⇒ 落进**调用点**的 arena ⇒ 跟 writer 自己同寿 ✓ */
+/* Build a writer: an `fd` plus an **implicit 64KB buffer**, symmetric with
+ * `readerOf`. The 64KB comes from `new`, so it lands in the arena of the **call
+ * site** and has the same lifetime as the writer itself. */
 fn writerOf(fd: i32) -> writer {
     var b: mut slice<u8> = new u8[BLK]
     return { fd: fd, buf: b, len: 0 }
 }
 
-/* 从 fd 读一次，返回**读到的字节数**（0 = EOF ✓；负数 = 出错）
- * ⚠️ 这是**裸原语那一层**，调用者自己看返回值；要好用的形状就用 `reader` ✓ */
+/* One read from an fd; returns the number of bytes read (0 = EOF, negative =
+ * error).
+ * NOTE: this is the bare primitive layer, so the caller inspects the return
+ * value; use `reader` for a shape that is easier to use. */
 fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
     return io::read(fd, buf.data, buf.len)
 }
@@ -153,17 +179,19 @@ fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
 struct reader {
     fd:    i32
     chunk: mut slice<u8>
-    len:   i64              /* chunk 里有多少有效字节 */
-    pos:   i64              /* 已经消费到哪儿 */
+    len:   i64              /* valid bytes in chunk */
+    pos:   i64              /* how far the reader has consumed */
 
-    /* 还剩几个没消费的字节 ✓ */
+    /* Bytes not consumed yet. */
     fn avail(self: ref reader) -> i64 { return self.len - self.pos }
 
-    /* 还缓冲着字节吗（**不碰 fd** ✓） */
+    /* Are bytes still buffered? (Does not touch the fd.) */
     fn buffered(self: ref reader) -> bool { return self.pos < self.len }
 
-    /* 补货：一次 `read(2)` 读满一块 ✓ 返回读到的字节数，**0 = EOF** ✓
-     * ⚠️ 这条是"一次进内核拿一整块"，不是"读一个字节" —— 快慢全在这儿 ✗ */
+    /* Refill: one `read(2)` fills a whole block. Returns the bytes read, **0 =
+     * EOF**.
+     * NOTE: this enters the kernel once to get a whole block rather than once
+     * per byte, which is where the speed comes from. */
     fn fill(self: mut ref reader) -> result<i64, ioError> {
         let n = io::read(self.fd, self.chunk.data, self.chunk.len)
         if n < i64(0) { return failure(ioError.readFailed(self.fd)) }
@@ -172,7 +200,8 @@ struct reader {
         return success(n)
     }
 
-    /* 下一个字节。返回值 **< 0 = EOF**（不是错误 ✓ 错误走 failure 那条路 ✓） */
+    /* The next byte. A return value **< 0 means EOF**, which is not an error:
+     * errors take the `failure` path. */
     fn nextByte(self: mut ref reader) -> result<i64, ioError> {
         if self.pos >= self.len {
             let n = self.fill()?
@@ -183,9 +212,12 @@ struct reader {
         return success(b)
     }
 
-    /* 结束了吗？（**会把缓冲耗完再看 fd**，所以答案一定准 ✓）
-     * ⚠️ 判据只能是"fd 上真没数据了"，不能只看 `avail() == 0` ——
-     *    缓冲空了不等于文件结束 ✗（那正是原来 `readLine` 把超长行切成两行的一半原因）*/
+    /* Is the input finished? The buffered bytes are drained before the fd is
+     * consulted, so the answer is always exact.
+     * NOTE: the only valid test is "the fd really has no more data"; looking at
+     * `avail() == 0` alone is not enough, because an empty buffer does not mean
+     * the file ended -- which is half of why the old `readLine` turned one
+     * over-long line into two. */
     fn eof(self: mut ref reader) -> result<bool, ioError> {
         if self.pos < self.len { return success(false) }
         if self.chunk.len == i64(0) { return success(true) }
@@ -193,29 +225,33 @@ struct reader {
         return success(n == i64(0))
     }
 
-    /* ---------------------------------------------------------------- 行 */
+    /* ---------------------------------------------------------------- lines */
 
-    /* 读一行到 `out`（**不含换行**）✓
-     * 返回值：读到的字节数；**0 = 一开始就 EOF** ✓
-     * ⚠️ 行比 `out` 长 ⇒ `failure(lineTooLong)` ——
-     *    绝不像以前那样**静默切一半**，那会让调用者把一行当成两行 ✗✗
+    /* Read one line into `out`; the newline is **not** included.
+     * Returns the number of bytes read; **0 = EOF at the very first byte**.
+     * NOTE: a line longer than `out` gives `failure(lineTooLong)` -- never the
+     * old **silent half line**, which made a caller treat one line as two.
      *
-     * ⚠️ **热循环手写**（理由与 `nextInt` 那里同一条）：`nextByte` 返回 `result` 结构体
-     *    ⇒ GCC 不肯内联 ⇒ **每读一个字节一次方法调用** ✗
-     *    这里 `pos < len` 时只做"下标 + 自增"，缓冲耗尽才调一次 `fill`（每 64KB 一次 ✓）
-     *    语义与逐字节版**逐字符一致**：EOF 收尾（末行没换行也算一行）· 换行**不吃进 `out`** ·
-     *    超长立刻 `failure`（绝不"读到一半当成功" ✗）✓ */
+     * NOTE: this loop is written out by hand for the same reason as `nextInt`:
+     * `nextByte` returns a `result` struct, so GCC refuses to inline it, and
+     * every byte read then costs a method call. Here a byte that is already in
+     * the buffer costs an index and an increment, and only an exhausted buffer
+     * calls `fill` (once per 64KB). The semantics match the byte-at-a-time
+     * version character for character: EOF ends the line (a final line with no
+     * newline still counts), the newline is **not** copied into `out`, and an
+     * over-long line fails immediately (a half-read line never counts as
+     * success). */
     fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
         var n: i64 = 0
         while true {
             if self.pos >= self.len {
                 let got = self.fill()?
-                if got == i64(0) { return success(n) }       /* EOF 收尾（最后一行没换行也算一行 ✓）*/
+                if got == i64(0) { return success(n) }       /* EOF: last line, newline or not */
             }
             while self.pos < self.len {
                 let b = i64(self.chunk[self.pos])
                 self.pos = self.pos + i64(1)
-                if b == i64(10) { return success(n) }        /* '\n' ⇒ 行结束 ✓ */
+                if b == i64(10) { return success(n) }        /* '\n' -> end of line */
                 if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
                 out[n] = u8(b)
                 n = n + 1
@@ -224,11 +260,14 @@ struct reader {
         return success(n)
     }
 
-    /* ---------------------------------------------------------------- 空白与词 */
+    /* ---------------------------------------------------------------- whitespace and words */
 
-    /* 跳过空白（空格/制表/CR/LF/VT/FF）✓ 返回跳掉了几字节
-     * ⚠️ **热循环手写**（同 `nextInt`）：遇到非空白**不消费**它 ——
-     *    老版本是"读进来再把 `pos` 减回去"，这里干脆不前进（同一件事，少一步 ✓）*/
+    /* Skip whitespace (space, tab, CR, LF, VT, FF); returns how many bytes were
+     * skipped.
+     * NOTE: hand-written loop, as in `nextInt`: a non-whitespace byte is **not**
+     * consumed. The old version read the byte and then decremented `pos` to put
+     * it back; here the position simply does not advance, which is the same
+     * thing in one step less. */
     fn skipSpace(self: mut ref reader) -> result<i64, ioError> {
         var n: i64 = 0
         while true {
@@ -245,10 +284,13 @@ struct reader {
         return success(n)
     }
 
-    /* 读一个词（**连续的非空白**）到 `out` ✓ 返回长度；0 = 先遇到 EOF ✓
-     * 前导空白会跳过 ⇒ 可以直接连着调 ✓
-     * ⚠️ **热循环手写**（同 `nextInt`）：前导空白在**这个循环里**就地吃掉（不再调 `skipSpace`），
-     *    词尾那个空白**不消费**（老版本靠 `pos - 1` 推回 ✓）*/
+    /* Read one word (**a run of non-whitespace**) into `out`; returns its
+     * length, 0 = EOF came first.
+     * Leading whitespace is skipped, so calls can be chained back to back.
+     * NOTE: hand-written loop, as in `nextInt`: the leading whitespace is eaten
+     * in this loop instead of by calling `skipSpace`, and the whitespace that
+     * ends the word is **not** consumed (the old version pushed it back with
+     * `pos - 1`). */
     fn nextToken(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
         var n: i64 = 0
         var started: bool = false
@@ -263,7 +305,7 @@ struct reader {
                     if isSpaceByte(b) { self.pos = self.pos + i64(1)  continue }
                     started = true
                 }
-                if isSpaceByte(b) { return success(n) }          /* 词结束：那个空白**留着** ✓ */
+                if isSpaceByte(b) { return success(n) }          /* word ends: space unconsumed */
                 if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
                 out[n] = u8(b)
                 n = n + 1
@@ -273,39 +315,52 @@ struct reader {
         return success(n)
     }
 
-    /* ---------------------------------------------------------------- 整数 */
+    /* ---------------------------------------------------------------- integers */
 
-    /* 读一个整数（`docs/topics/IO.md` §4.4 的 A 档）✓
-     *   · 前导空白跳过 ⇒ 连着调就是 OI 那种"一坨数字"的读法 ✓
-     *   · 支持 `-`；**不收 `+`**（OI 数据里没有，收了反而会掩盖坏数据 ✗）
-     *   · 数字后面**不是数字就停**，那个字节推回去 ⇒ `12,34` 连读两次得到 12 和 34 ✓
-     * ⚠️ **溢出检测**：`i64` 上溢是 UB ⇒ 这里显式挡（不然就是"能证明却没证明" ✗）
-     *    挡下来用 `lineTooLong` 报 —— 错误种类不够时宁可复用，
-     *    也不要**静默截断**（截断会算出错答案还正常退出 ✗✗）*/
+    /* Read one integer, the type-driven shape of `docs/topics/IO.md` section 4.4.
+     *   - leading whitespace is skipped, so back-to-back calls read the stream
+     *     of numbers that contest input consists of
+     *   - `-` is accepted; `+` is **not**, because contest data does not use it
+     *     and accepting it would only hide corrupt input
+     *   - a non-digit ends the number and is pushed back, so reading `12,34`
+     *     twice gives 12 and then 34
+     * NOTE: **overflow is checked explicitly** -- signed overflow on `i64` is
+     * undefined behaviour, so it is rejected here rather than left unguarded.
+     * The rejection is reported as `lineTooLong`: reusing an error kind is the
+     * lesser evil when there are too few kinds, but **silent truncation** is not
+     * an option, because a truncated number computes a wrong answer and still
+     * exits normally. */
     fn nextInt(self: mut ref reader) -> result<i64, ioError> {
-        /* 逐字节的版本是 `skipSpace` + `nextByte`，两个都是**方法调用**，每个数字要过
-         * 好几个字节 ⇒ 实测这两个函数占掉全部指令的 **51%**（callgrind：
-         * `reader_nextByte` 50.8%、`reader_nextInt` 43.9%）。它们在生成 C 里是 `static`，
-         * 但返回 `result` 结构体 ⇒ GCC 不肯内联 ✗
+        /* The byte-at-a-time version is `skipSpace` plus `nextByte`, both of them
+         * method calls, and one number goes through several bytes: together those
+         * two functions measured **51%** of all instructions (callgrind:
+         * `reader_nextByte` 50.8%, `reader_nextInt` 43.9%). They are `static` in
+         * the generated C, but they return a `result` struct, so GCC refuses to
+         * inline them.
          *
-         * 所以这里把**缓冲热循环直接写进来**：`pos < len` 时只做下标 + 自增，不调任何方法；
-         * 缓冲耗尽才调一次 `fill`（每 64KB 一次 ✓）。语义与逐字节版**逐字符一致**
-         * （含"数字后的空白推回、换行/CRLF 吃掉"两条规则 ✓）。
+         * So the buffered hot loop is written out here instead: while `pos < len`
+         * it is just an index and an increment, with no method call at all, and
+         * only an exhausted buffer calls `fill` (once per 64KB). The semantics
+         * match the byte-at-a-time version character for character, including the
+         * two rules for pushing back the byte after a number and for eating a
+         * newline or CRLF.
          *
-         * `nextByte` / `skipSpace` 保留给调用者，只是不再进热路径 ✓
+         * `nextByte` and `skipSpace` remain for callers; they are simply no
+         * longer on the hot path.
          *
-         * 推回用 `pushed` 记住那个字节，而不是把 `pos` 往回减 —— 减 `pos` 会在
-         * "刚好补完缓冲"时退到缓冲之前 ⇒ 实测 `index -1 out of range` ✗ */
+         * Pushing back remembers the byte in `pushed` instead of decrementing
+         * `pos`: decrementing `pos` would step behind the buffer when `fill` has
+         * just replaced it, which measured as `index -1 out of range`. */
         var neg: bool = false
         var v: i64 = 0
         var got: bool = false
-        var seen: bool = false          /* 已经读到过非空白 */
-        var pushed: i64 = i64(0)        /* > 0 = 待重新消费的字节；-2 = 待重新消费的 EOF */
-        var bad: bool = false           /* 看到过不认识的字节（推回它） */
+        var seen: bool = false          /* a non-whitespace byte was seen */
+        var pushed: i64 = i64(0)        /* > 0 = byte to read again; -2 = EOF to read again */
+        var bad: bool = false           /* an unknown byte was seen (push it back) */
         var b: i64 = i64(0)
 
         while true {
-            /* ---- 取一个字节（热路径：不调方法）---- */
+            /* ---- fetch one byte (hot path: no method call) ---- */
             if pushed == i64(-2) { pushed = i64(0)  b = i64(-1) }
             else if pushed > i64(0) { b = pushed  pushed = i64(0) }
             else {
@@ -320,7 +375,7 @@ struct reader {
             }
 
             if !seen {
-                if b < i64(0) { break }                 /* EOF：没有数字 ⇒ 0 ✓ */
+                if b < i64(0) { break }                 /* EOF: no digits -> 0 */
                 if !isSpaceByte(b) {
                     seen = true
                     if b == i64(45) { neg = true }
@@ -333,7 +388,7 @@ struct reader {
                 else { self.pos = self.pos - i64(1) }
                 break
             }
-            if b < i64(0) { break }                     /* EOF：数字到此为止 ✓ */
+            if b < i64(0) { break }                     /* EOF: the number ends here */
             if b >= i64(48) && b <= i64(57) {
                 got = true
                 let d = b - i64(48)
@@ -341,9 +396,10 @@ struct reader {
                 v = v * i64(10) + d
                 continue
             }
-            if !got { continue }                        /* 前导分隔符吃掉 ✓ */
+            if !got { continue }                        /* eat a leading separator */
 
-            /* 数字后面的这个字节：换行（含 CRLF）吃掉，别的推回 ✓ */
+            /* The byte after the number: a newline (CRLF included) is eaten,
+             * anything else is pushed back. */
             if b == i64(10) { break }
             if b == i64(13) {
                 if self.pos < self.len {
@@ -351,7 +407,7 @@ struct reader {
                 }
                 break
             }
-            bad = true                                  /* 下一轮把它推回 ✓ */
+            bad = true                                  /* push it back next round */
         }
 
         if !got { return success(i64(0)) }
@@ -359,8 +415,9 @@ struct reader {
         return success(v)
     }
 
-    /* 那个字节是不是"该吃掉"的换行（LF，或 CR 后面跟 LF）✓
-     * 与逐字节版逐字一致：只有换行被吃掉，其它空白一律推回 ✓ */
+    /* Is this byte a newline that should be eaten (LF, or CR followed by LF)?
+     * Character for character the same as the byte-at-a-time version: only a
+     * newline is eaten, every other whitespace byte is pushed back. */
     fn newlineAfter(self: mut ref reader, b: i64) -> bool {
         if b == i64(10) { return true }
         if b == i64(13) {
@@ -373,24 +430,28 @@ struct reader {
     }
 }
 
-/* ⭐ **建一个 reader**：`fd` + **隐式 64KB 缓冲** ✓
- * 那 64KB 是本函数的 `new` ⇒ 落到**调用点**那只 arena（"有家函数"那条路 ✓）⇒
- * 它跟 `reader` 自己**同寿**，调用者什么都不用管 ✓
- * ⚠️ 也就是说 `reader` 活在**哪个块**，缓冲就活到哪个块 —— 往块外传会被逃逸检查挡住 ✓ */
+/* Build a reader: an `fd` plus an **implicit 64KB buffer**.
+ * The 64KB comes from this function's `new`, so it lands in the arena of the
+ * **call site** (the allocation is owned by the caller's frame), which gives it
+ * the same lifetime as the `reader` itself: the caller manages nothing.
+ * NOTE: the buffer therefore lives exactly as long as the block the `reader`
+ * lives in, and passing the `reader` out of that block is caught by the escape
+ * checker. */
 fn readerOf(fd: i32) -> reader {
     var c: mut slice<u8> = new u8[BLK]
     return { fd: fd, chunk: c, len: 0, pos: 0 }
 }
 
-/* ================================================================ 小工具 */
+/* ================================================================ helpers */
 
-/* 是不是空白字节（**词法上的**，不是 `isspace` 那套 locale 相关的东西 ✓） */
+/* Is this a whitespace byte? The set is **lexical**, not the locale-dependent
+ * one `isspace` uses. */
 fn isSpaceByte(b: i64) -> bool {
-    if b == i64(32) { return true }      /* 空格 */
-    if b == i64(9)  { return true }      /* \t   */
-    if b == i64(10) { return true }      /* \n   */
-    if b == i64(13) { return true }      /* \r   */
-    if b == i64(11) { return true }      /* \v   */
-    if b == i64(12) { return true }      /* \f   */
+    if b == i64(32) { return true }      /* space */
+    if b == i64(9)  { return true }      /* \t    */
+    if b == i64(10) { return true }      /* \n    */
+    if b == i64(13) { return true }      /* \r    */
+    if b == i64(11) { return true }      /* \v    */
+    if b == i64(12) { return true }      /* \f    */
     return false
 }

@@ -2,8 +2,19 @@
 
 > Applies to every `.c` / `.h` file under `src/`. It is a **rule**, not a taste:
 > a comment that does not follow it will be rewritten in review.
-> Design documents (`*.md`) and the language corpus (`stdlib/`, `examples/`, `tests/`)
-> are out of scope and stay in Chinese.
+> Design documents (`*.md`) stay in Chinese: they exist so the author can read them.
+>
+> **`stdlib/` is in scope** (changed 2026-09-24). It was listed as "corpus, stays in
+> Chinese", but it is not corpus: it is the library users' programs link against, and
+> its comments ship with it. Chinese comments there were the one place where "code is
+> English" had been quietly carved out. `tools/scan_cjk.py stdlib/**/*.extc` now
+> reports 0, and `tools/comment_neutral.py` was used to prove every one of those
+> commits was comment-only.
+>
+> `examples/`, `tests/`, `bench/`, `tools/` and the root scripts are **still Chinese**
+> (~3700 lines). That is an open decision, not an oversight: those files double as
+> reference material the author reads. If they are converted, the reason to keep them
+> Chinese has to be answered first -- otherwise the same carve-out grows back.
 
 ## 1. Language
 
