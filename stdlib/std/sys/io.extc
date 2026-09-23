@@ -22,6 +22,25 @@ extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64
 extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
 
+/* 打开 / 关闭 —— `std::fs` 那层要用 ✓
+ * ⚠️ `open` 的第一个参数是 **NUL 结尾的路径**（C 的规矩）⇒
+ *    extC 的字符串字面量在 C 里本来就是那个形状（静态数组 + NUL）✓
+ *    所以传字面量直接可用；传一个**运行时拼出来的 slice** 则要自己保证结尾有 NUL ✗ */
+extern!("libc") fn open(path: ref u8, flags: i32, mode: i32) -> i32
+    effects Addr=0 Cont=0
+extern!("libc") fn close(fd: i32) -> i32
+    effects Addr=0 Cont=0
+
+/* `open` 的 flags —— **POSIX 的数**（Linux 上 O_CREAT=64 / O_TRUNC=512）✓
+ * ⚠️ 这是"特权层"该干的事：把平台相关的常量关在这一层里，
+ *    上面的 `std::fs` 只写 `io::O_CREAT` 这种名字 ✓ */
+let O_RDONLY: i32 = 0
+let O_WRONLY: i32 = 1
+let O_RDWR: i32   = 2
+let O_CREAT: i32  = 64
+let O_TRUNC: i32  = 512
+let O_APPEND: i32 = 1024
+
 let STDIN: i32  = 0
 let STDOUT: i32 = 1
 let STDERR: i32 = 2

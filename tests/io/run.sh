@@ -50,6 +50,30 @@ else
     echo "  FAIL read-failed  ->  $(echo "$out" | tr '\n' '|')"; fail=1
 fi
 
+echo "== 顺序（println 与 writeBytes 混用 —— 定案 75 修的真缺陷）=="
+if out=$(printf '' | "$EXTC" --run tests/io/order.extc 2>&1) \
+   && [ "$(printf '%s' "$out" | tr -d '\r')" = "A
+B
+C" ]; then
+    echo "  ok   order        ->  A / B / C 顺序正确 ✓"
+else
+    echo "  FAIL order        ->  顺序乱了：$(printf '%s' "$out" | tr '\n' '|')"; fail=1
+fi
+# 一个**静态**判据：`writeBytes` 里必须真的先 flush（删掉它上面那条也会红 ✓）
+if awk '/^fn writeBytes/,/^}/' stdlib/std/io.extc | grep -q 'flush()'; then
+    echo "  ok   writeBytes  ->  里面有 flush()（顺序不可能错 ✓）"
+else
+    echo "  FAIL writeBytes  ->  少了 flush() ⇒ 与 println 混用会乱序 ✗"; fail=1
+fi
+
+echo "== writer（写文件 → 用 reader 读回，两边对称 ✓）=="
+if out=$(printf '' | "$EXTC" --run tests/io/writer-file.extc 2>&1) && echo "$out" | grep -qF "回读 = 100/200 ✓"; then
+    echo "  ok   writer-file  ->  $(echo "$out" | tr '\n' '|')"
+else
+    echo "  FAIL writer-file  ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+rm -f tests/io/writer-tmp.txt
+
 echo "== 分层（std::sys::io = 特权层 · io 族，std::io = 普通库）=="
 # ⚠️ 这是**结构检查**，不是编译器强制的（"只有特权模块能声明原语"那条还没做 ✗ 见定案 72）
 if grep -q '^extern!' stdlib/std/sys/io.extc && ! grep -q '^fn main' stdlib/std/sys/io.extc; then

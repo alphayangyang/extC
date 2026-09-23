@@ -1,0 +1,16 @@
+/* ⭐ 判据⑥：**`println` 与 `writeBytes` 的顺序**（定案 75 修的真缺陷）✓
+ *
+ * 以前：`println` 走 C 的 `printf`（有缓冲），`writeBytes` 走 `write(2)`（直写）
+ * ⇒ 两支队**混着用就乱序**：提示语还没从 printf 的缓冲里出来，直写的字节已经到了 ✗✗
+ * 修法：`writeBytes` 里先 `flush()`（刷的就是 stdio 那一支）⇒ 不可能错 ✓
+ *
+ * ⚠️ 为什么这条要常设：把 `flush()` 那行删掉，输出**照样"能跑"** ——
+ *    只是顺序变成 B / A / C ✗ 而大多数测试只看"某段文字在不在" ⇒ **抓不到** ✓
+ *    所以这里断言的是**整段连续文本**，不是分段包含 ✓ */
+use std::io
+fn main() -> i32 {
+    println("A")
+    io::writeBytes("B\n")
+    println("C")
+    return 0
+}

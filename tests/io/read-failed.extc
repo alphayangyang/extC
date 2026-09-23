@@ -8,8 +8,9 @@ fn go() -> result<unit, io::ioError> {
     match r.nextLine(buf[..]) {
         success(n) => println("当成 EOF 了 ✗ n = ", n)
         failure(er) => match er {
-            readFailed(fd) => println("readFailed ✓ (fd = ", fd, ")")
-            lineTooLong(k) => println("错报成行太长 ✗")
+            readFailed(fd)  => println("readFailed ✓ (fd = ", fd, ")")
+            lineTooLong(k)  => println("错报成行太长 ✗")
+            writeFailed(fd) => println("不该是写失败 ✗")
         }
     }
     return success(unit {})

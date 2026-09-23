@@ -45,8 +45,9 @@ fn main() -> i32 {
         success(u) => { return 0 }
         failure(er) => {
             match er {
-                readFailed(fd) => println("io: 读失败 (fd = ", fd, ")")
-                lineTooLong(n) => println("io: 一行太长了（", n, " 字节）")
+                readFailed(fd)  => println("io: 读失败 (fd = ", fd, ")")
+                lineTooLong(n)  => println("io: 一行太长了（", n, " 字节）")
+                writeFailed(fd) => println("io: 写失败 (fd = ", fd, ")")
             }
             return 1
         }

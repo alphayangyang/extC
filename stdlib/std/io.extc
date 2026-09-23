@@ -47,7 +47,7 @@ use std::sys::io
 /* 读失败了、**为什么**失败 —— 枚举而不是魔法值 ✓
  * ⚠️ 为什么带上 `i64`：报错时要能说清"读了多少" / "是哪个 fd" ——
  *    `failed(5)` 这种消息对用户毫无用处 ✗ */
-type ioError = | readFailed(i32) | lineTooLong(i64)
+type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32)
 
 /* 块大小：**64KB**（实测量出来的最优档之一）✓
  * 实测（291MB 文件）：64B 0.62s/469MB/s（470 万次 syscall）· 4KB 0.05s/5820MB/s ·
@@ -70,9 +70,76 @@ let STDOUT_FD: i32 = 1
  *  不然顺序会乱 —— 交互式程序最难忍那条 ✗）*/
 fn flushOut() { flush() }
 
-/* 把一整块字节写出去（`println` 管"打印值"，这里管"写字节" ✓）*/
+/* 把一整块字节写到 **stdout**（`println` 管"打印值"，这里管"写字节" ✓）
+ *
+ * ⚠️⚠️ **必须先 `flush()`** —— 这是一个**真缺陷的修法**（定案 75）✗
+ * `println` 走 C 的 `printf`（**有缓冲**），而这里是 `write(2)` **直写** ⇒
+ * 两支队混着用**顺序会乱**：提示语还没从 printf 的缓冲里出来，直写的字节已经到了 ✗✗
+ * （以前靠调用者自己记得写 `flushOut()` —— 交互式程序里最难忍的就是这个 ✓）
+ * `flush()` 是编译器内建，正好刷的就是 stdio 那一支 ⇒ 一行就解决 ✓
+ *
+ * ⚠️ 更彻底的做法是让 `println` 也写进同一支 `writer`（那要动 codegen ✗），
+ *    本次没做 —— 现在这条是"看不见的错"变成"不可能错" ✓ */
 fn writeBytes(buf: slice<u8>) -> i64 {
+    flush()
     return io::write(io::STDOUT, buf.data, buf.len)
+}
+
+/* ================================================================ writer */
+
+/* ⭐ **有缓冲的写**（`IO.md` §4.5）—— 跟 `reader` 对称：
+ *   一次 `write(2)` 吐一整块，而不是每段文本进一次内核 ✓
+ *
+ * ⚠️ **缓冲必须是可见的字段**（`buf` / `len` / `cap`）—— 这就是 `IO.md` 反复讲的
+ *    "不要 `cin` 那个黑盒"：`FILE*` 把缓冲藏在里面，出问题时你看不见 ✗
+ *    这里你能随时看 `w.len`、能自己 `flush`、能自己决定什么时候吐 ✓
+ *
+ * ⚠️ 写 fd = STDOUT 时，**每次 flush 之前都要先刷 `println` 那一支** ——
+ *    否则两支队又乱序了（跟上面 `writeBytes` 同一个坑 ✓）*/
+struct writer {
+    fd:  i32
+    buf: mut slice<u8>
+    len: i64
+
+    fn cap(self: ref writer) -> i64 { return self.buf.len }
+
+    /* 把缓冲里的吐出去（**带上 `println` 那一支**，顺序才对 ✓）
+     * 返回写出去的字节数（0 = 本来就空）✓ */
+    fn flush(self: mut ref writer) -> result<i64, ioError> {
+        if self.fd == io::STDOUT || self.fd == io::STDERR { flush() }
+        if self.len == i64(0) { return success(i64(0)) }
+        let n = io::write(self.fd, self.buf.data, self.len)
+        if n < i64(0) { return failure(ioError.writeFailed(self.fd)) }
+        self.len = 0
+        return success(n)
+    }
+
+    /* 写一段字节。**装不下就先 flush**（不是丢弃、也不是扩容 ✓） */
+    fn write(self: mut ref writer, data: slice<u8>) -> result<i64, ioError> {
+        var done: i64 = 0
+        while done < data.len {
+            if self.len >= self.buf.len { self.flush()? }
+            /* 能塞多少塞多少 ✓ */
+            var room: i64 = self.buf.len - self.len
+            var left: i64 = data.len - done
+            if left < room { room = left }
+            var k: i64 = 0
+            while k < room {
+                self.buf[self.len + k] = data[done + k]
+                k = k + 1
+            }
+            self.len = self.len + room
+            done = done + room
+        }
+        return success(done)
+    }
+}
+
+/* 建一支 writer：`fd` + **隐式 64KB 缓冲**（跟 `readerOf` 对称 ✓）
+ * 那 64KB 是 `new` 出来的 ⇒ 落进**调用点**的 arena ⇒ 跟 writer 自己同寿 ✓ */
+fn writerOf(fd: i32) -> writer {
+    var b: mut slice<u8> = new u8[BLK]
+    return { fd: fd, buf: b, len: 0 }
 }
 
 /* 从 fd 读一次，返回**读到的字节数**（0 = EOF ✓；负数 = 出错）

@@ -1,0 +1,25 @@
+/* ⭐ 判据⑦：**writer 写文件 → reader 读回**（两边对称，而且都只认 fd ✓）
+ * 期望：write 的顺序对、flush 真的落了盘、Reader 从同一个文件读回来一模一样 ✓ */
+use std::io
+use iohelper
+
+fn go() -> result<unit, io::ioError> {
+    let path: slice<u8> = "tests/io/writer-tmp.txt"
+    let fd = iohelper::openNew(path)
+    if fd < i32(0) { println("open 失败 ✗")  return success(unit {}) }
+
+    var w = io::writerOf(fd)
+    w.write("100\n")?
+    w.write("200\n")?
+    w.flush()?
+    iohelper::closeIt(fd)
+
+    let rfd = iohelper::openRead(path)
+    var r = io::readerOf(rfd)
+    let a = r.nextInt()?
+    let b = r.nextInt()?
+    iohelper::closeIt(rfd)
+    if a == i64(100) && b == i64(200) { println("回读 = 100/200 ✓") } else { println("回读错了 ✗ ", a, "/", b) }
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

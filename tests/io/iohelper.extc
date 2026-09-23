@@ -1,0 +1,13 @@
+/* 库作者那层的小垫脚石：把 `std::sys::io` 的 `open`/`close` 包成人能看的样子 ✓
+ * ⚠️ 为什么另起一个文件：同一个文件里不能同时 `use std::io` 和 `use std::sys::io`
+ *    （短名都叫 `io` ⇒ 撞车）。而这恰好是对的 —— 这就是**库作者**该在的那一层 ✓
+ *    用户层（下面 main 那个文件）只 `use std::io` + `use iohelper` ✓ */
+use std::sys::io
+
+fn openNew(path: slice<u8>) -> i32 {
+    return io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))
+}
+fn openRead(path: slice<u8>) -> i32 {
+    return io::open(path.data, io::O_RDONLY, i32(0))
+}
+fn closeIt(fd: i32) -> i32 { return io::close(fd) }

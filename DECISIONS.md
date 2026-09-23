@@ -2423,6 +2423,86 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32      // 没签字
 ② 跟 runtime 已引用的头冲突的函数名（`memcpy`/`printf`…）会报 `conflicting types` ⇒
    声明前先看生成的 C 引了哪些头 ✓（`read`/`write` 这类没引 unistd.h ⇒ 不冲突 ✓）
 
+## 定案 75 · **`writer` + `writeBytes` 里那个 `flush()`**（2026-09-23）
+
+> 起因：主人点了"**统一 I/O 的形状**"这一步（`reader`/`writer` 只认 fd，
+> 文件/标准输入/网络**不该分开**）。做到一半发现一个**真缺陷**，先修它 ✓
+
+### 1. 真缺陷：`println` 与 `writeBytes` 混用**顺序会乱** ✗
+
+`println` 走 C 的 `printf`（**有缓冲**），`writeBytes` 走 `write(2)`（**直写**）⇒
+两支队各走各的，谁先到 stdout 不由调用顺序决定 ✗✗
+
+**实测**（去掉修法之后）：
+
+```
+B（writeBytes）      ← 本该在 A 后面
+文件写完了 ✓
+A（println）
+C（println）
+```
+
+⇒ 原来靠调用者自己记得 `flushOut()` —— "看不见的错"，P′ 正是不许这个 ✓
+**修法一行**：`writeBytes` 里先 `flush()`（刷的就是 stdio 那一支） ✓
+
+⚠️ **为什么这条要常设验收**：删掉那行，程序**照样"能跑"**，只是顺序变成 B/A/C ✗
+而大多数测试只查"某段文字在不在" ⇒ **抓不到**。
+⇒ `tests/io/order.extc` 断言的是**整段连续文本**（`A\nB\nC`），不是分段包含 ✓
+⇒ 另有一条**静态**判据：`awk '/^fn writeBytes/,/^}/' … | grep -q flush()` ✓
+（两条都验过：删掉 `flush()` 立刻红 ✓）
+
+### 2. `writer`：有缓冲的写，跟 `reader` 对称
+
+```extc
+struct writer {
+    fd:  i32
+    buf: mut slice<u8>      // ← **可见**（`IO.md` 反复讲的"不要 cin 那个黑盒"✓）
+    len: i64
+    fn cap(self: ref writer) -> i64
+    fn flush(self: mut ref writer) -> result<i64, ioError>
+    fn write(self: mut ref writer, data: slice<u8>) -> result<i64, ioError>
+}
+fn writerOf(fd: i32) -> writer      // 隐式 64KB，跟 readerOf 对称 ✓
+```
+
+* **只认 fd** ⇒ 同一个 writer 能写文件、stdout、**以后的 socket** ✓
+* 装不下就**先 flush**（不丢弃、不扩容）✓
+* 写 stdout/stderr 时，**每次 flush 之前先刷 `println` 那一支** ⇒ 顺序天然对 ✓
+* 缓冲是**字段**：`w.len` 随时能看、能自己决定什么时候吐 ✓
+
+### 3. 文件 I/O **不需要新机制**（顺带验证）
+
+`std::sys::io` 加了四个原语就够，**一行编译器代码都没动**：
+
+```extc
+extern!("libc") fn open(path: ref u8, flags: i32, mode: i32) -> i32
+extern!("libc") fn close(fd: i32) -> i32
+let O_RDONLY/O_WRONLY/O_CREAT/O_TRUNC/O_APPEND: i32 = …
+```
+
+实测能写文件、能用 `reader` 读回来（`tests/io/writer-file.extc` ✓）
+⇒ 这说明"**文件跟标准输入输出不该分开**"是对的：它们**只是 fd 的不同来源** ✓
+（⚠️ 还欠 `IO.md` §5 的"帧拥有文件"（`open` 返回 `mut ref file` 自动关）——
+那是 IO-1，需要 `extc_files` 那套 ✓）
+
+### 4. ⚠️ 发现一个**设计问题**：短名撞车（还没解）
+
+`std::io` 和 `std::sys::io` 的短名**都叫 `io`** ⇒ 同一个文件里不能同时 `use` ✗
+
+我上一轮写重构时说"这恰好是对的"（写库的人和用库的人在不同文件里）——
+**实现的时候它当场挡住了一个正当用法**：用户想同时要 `std::io` 的 `reader`
+和 `io::open`（开文件）✗
+
+绕过办法（`tests/io/writer-file.extc` 就是这么写的）：另起一个 `iohelper.extc`
+把 `open`/`close` 包一层 ✓ —— **能work，但那是"因为限制而多写一个文件"，不是设计** ✗
+
+⇒ **摆着的选项**（下一轮定）：
+| 选项 | 代价 |
+|---|---|
+| 原语层改名（`std::sys::fd` / `std::sys::os`） | 丢掉"同一个家族两层同名"的对称性 |
+| 加 `use std::sys::io as sysio` | **新语法**（模块别名），但顺手也解了别的撞车 |
+| 保持现状 | 用户得多写一个包装模块 ✗（实测就是这样）|
+
 ## 定案 74 · **`reader`：隐式 64KB 块缓冲 + 切片解析函数族 + 三条路分得开**（2026-09-23）
 
 > 主人：「**修IO然后把1-4都先做了，反正现在能读了之后会好办很多**」

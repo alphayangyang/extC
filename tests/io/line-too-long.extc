@@ -9,8 +9,9 @@ fn go() -> result<unit, io::ioError> {
     match r.nextLine(buf[..]) {            /* 19 字节 > 8 ⇒ 必须失败 ✓ */
         success(n) => println("静默切一半了 ✗ n = ", n)
         failure(er) => match er {
-            lineTooLong(k) => println("lineTooLong ✓ (", k, " 字节)")
-            readFailed(fd) => println("错报成读失败 ✗")
+            lineTooLong(k)  => println("lineTooLong ✓ (", k, " 字节)")
+            readFailed(fd)  => println("错报成读失败 ✗")
+            writeFailed(fd) => println("不该是写失败 ✗")
         }
     }
     return success(unit {})
