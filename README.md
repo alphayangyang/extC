@@ -4,8 +4,7 @@ extC 是一门编译到 C11 的语言，用编译期检查替代运行时机制�
 
 > 凡是编译期能够证明的，运行时不留痕迹。
 
-<!-- 发布后把 USER/extC 替换为实际仓库路径，CI 徽章即生效 -->
-[![ci](https://github.com/USER/extC/actions/workflows/ci.yml/badge.svg)](https://github.com/USER/extC/actions)
+[![ci](https://github.com/alphayangyang/extC/actions/workflows/ci.yml/badge.svg)](https://github.com/alphayangyang/extC/actions)
 
 ## 特点
 
