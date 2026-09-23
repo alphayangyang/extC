@@ -1,0 +1,15 @@
+/* D8：字段表过期 + **引用型结构体的值** ⇒ 让 arena 内存逃出函数 */
+struct inner { v: mut ref i32 }
+struct box   { c: inner }
+
+fn leak() -> inner {
+    var b: box = { c: { v: new i32 } }
+    var local: i32 = 5
+    b.c = inner { v: ref local }
+    return b.c
+}
+fn main() -> i32 {
+    let r = leak()
+    println("r.v = ", r.v)
+    return 0
+}

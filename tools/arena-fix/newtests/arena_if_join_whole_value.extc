@@ -1,0 +1,24 @@
+struct box {
+    p: ?ref i32
+    q: ?ref i32
+}
+
+fn f(c: i32) -> box {
+    var out: box = { p: null, q: null }
+    {
+        var x = alloc<i32>(1)
+        *x = 42
+        var zero: box = { p: null, q: null }
+        var g: box = { p: null, q: x }
+        var h: box = { p: null, q: null }
+        if c == 1 { h = g } else { h = zero }
+        out = h
+    }
+    return out
+}
+
+fn main() -> i32 {
+    var r = f(1)
+    println("r.q = ", *(r.q!))
+    return 0
+}

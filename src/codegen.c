@@ -1781,21 +1781,33 @@ static void genStmtInner(CG *g, Stmt *s) {
                 if (k >= 0) {
                     const char *cell = loc ? arenaPrintf(g->arena, "&__extc_ow%d", k)
                                            : arenaPrintf(g->arena, "__extc_owarg%d", k);
-                    const char *ar = arenaRefAt(g, nx->arenaLevel);
+                    /* ⭐ F 族修复：存储住哪 = **格子自带的 home**（有家 ⇒ __extc_home；
+                     * 否则 ⇒ 本帧第 1 层）✗ 不再用 `arenaRefAt(nx->arenaLevel)` ——
+                     * 那个数是**被调者自己的层**，而格子活在别处 ⇒ 两者寿命不同
+                     * ⇒ 第二次进来对着已 free 的块 memset（ASan UAF；不带 ASan 时 glibc
+                     *   把那块又还回来 ⇒ **伪装成正常工作** ✗✗）*/
+                    const char *owcv = arenaPrintf(g->arena, "__owc%d", k);
+                    const char *ar = arenaPrintf(g->arena, "(*%s->home)", owcv);
+                    (void)nx->arenaLevel;
                     const char *ct = cType(g, st_t);
                     flushPrefix(g);
-                    cgLine(g, "extc_owcell *__owc = %s;", cell);
+                    /* ⚠️ 站点序号必须进名字：一个函数两个 `@overwrite` 站点会 `redefinition` ✗ */
+                    cgLine(g, "extc_owcell *%s = %s;", owcv, cell);
                     if (!nx->u.new_.count) {
                         /* 单值 / 定长数组 `new T` / `new [N]T` ⇒ 恒定大小 ✓
                          * ⚠️ 绑定**必须先声明**（在 if/else 里的声明出了块就没了 ✗）*/
                         cgLine(g, "%s %s;", cType(g, s->type), nm);
-                        cgLine(g, "if (!__owc || !__owc->p) { void *p = extc_arena_alloc(&%s,"
-                                  " (int64_t)sizeof(%s), \"%s\", %d);  if (__owc) __owc->p = p;"
-                                  "  %s = (%s)p; }",     /* ⚠️ 绑定的 C 类型本身就是指针 ✗ 别再补一个 `*` */
-                                ar, ct, g->path, nx->line, nm, cType(g, s->type));
-                        cgLine(g, "else { memset(__owc->p, 0, (size_t)sizeof(%s));"
-                                  "  %s = (%s)__owc->p; }",
-                                ct, nm, cType(g, s->type));
+                        /* ⚠️ 临时名不能叫 `p`：`@overwrite var p = …` 会让 `void *p` 遮蔽外层
+                         * `array_T *p` ⇒ `p = (array_T *)p` 自赋值 ⇒ 绑定是空指针（ASan SEGV）✗ */
+                        const char *owtp = arenaPrintf(g->arena, "__owp%d", k);
+                        cgLine(g, "if (!%s || !%s->p) { void *%s = extc_arena_alloc(&%s,"
+                                  " (int64_t)sizeof(%s), \"%s\", %d);  if (%s) %s->p = %s;"
+                                  "  %s = (%s)%s; }",     /* ⚠️ 绑定的 C 类型本身就是指针 ✗ 别再补一个 `*` */
+                                owcv, owcv, owtp, ar, ct, g->path, nx->line,
+                                owcv, owcv, owtp, nm, cType(g, s->type), owtp);
+                        cgLine(g, "else { memset(%s->p, 0, (size_t)sizeof(%s));"
+                                  "  %s = (%s)%s->p; }",
+                                owcv, ct, nm, cType(g, s->type), owcv);
                     } else {
                         /* 运行时长度 ⇒ `{ptr, cap}` + **翻倍**（定案 59 同源 ✓）
                          * 内存上界 ≤ 2 × 见过的最大长度（与迭代数无关 ✓）*/
@@ -1809,15 +1821,16 @@ static void genStmtInner(CG *g, Stmt *s) {
                         cgLine(g, "if (__owk < 0) { extc_trapMsg(\"%s\", %d,"
                                   " \"negative length\"); }", g->path, nx->line);
                         cgLine(g, "%s %s;", cType(g, s->type), nm);
-                        cgLine(g, "if (!__owc) { %s = (%s){ .data = (%s *)extc_arena_alloc(&%s,"
+                        cgLine(g, "if (!%s) { %s = (%s){ .data = (%s *)extc_arena_alloc(&%s,"
                                   " __owk * (int64_t)sizeof(%s), \"%s\", %d), .len = __owk }; }",
-                                nm, cType(g, s->type), ct, ar, ct, g->path, nx->line);
-                        cgLine(g, "else { if (__owk > __owc->cap) { int64_t c = __owc->cap * 2;"
+                                owcv, nm, cType(g, s->type), ct, ar, ct, g->path, nx->line);
+                        cgLine(g, "else { if (__owk > %s->cap) { int64_t c = %s->cap * 2;"
                                   " if (c < __owk) c = __owk;"
-                                  "  __owc->p = extc_arena_alloc(&%s, c * (int64_t)sizeof(%s),"
-                                  " \"%s\", %d);  __owc->cap = c; }"
-                                  "  %s = (%s){ .data = (%s *)__owc->p, .len = __owk }; }",
-                                ar, ct, g->path, nx->line, nm, cType(g, s->type), ct);
+                                  "  %s->p = extc_arena_alloc(&%s, c * (int64_t)sizeof(%s),"
+                                  " \"%s\", %d);  %s->cap = c; }"
+                                  "  %s = (%s){ .data = (%s *)%s->p, .len = __owk }; }",
+                                owcv, owcv, owcv, ar, ct, g->path, nx->line, owcv,
+                                nm, cType(g, s->type), ct, owcv);
                         cgLine(g, "memset(%s.data, 0, (size_t)(__owk * (int64_t)sizeof(%s)));",
                                 nm, ct);
                     }
@@ -2113,30 +2126,29 @@ static void genFunc(CG *g, FuncDef *f) {
     bool savedNoArena = g->noArena;
     bool savedOwLocal = g->owLocal;
     g->owLocal = f->owLocal;
-    g->noArena = !f->mayUseArena;
-    if (!g->noArena)
-        cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
-    /* ⭐ 定案 65：`@overwrite` 的**存储格子**（每站点一个，函数序言里）
-     * 初值 NULL = "还没分配" ⇒ 语句处 `if (!cell)` 就是**懒分配** ✓
-     * ⚠️ 是普通局部（**不是 static**）⇒ 递归各激活各一份 ✓ */
+    /* ⭐ 定案 65 + F 族修复：`@overwrite` 的**存储格子**（每站点一个，函数序言里）
+     * ⚠️ 顺序要紧：格子的初值要写 `&__extc_a[1]`（见下面 `home`），所以
+     *    **先**收好格子清单，才能决定"arena 数组吐不吐"✗ */
     Vec savedOw = g->owSites;              /* ⚠️ 按下标/指针保存会踩空（第一个函数时 arena 还是 NULL）✗ */
     Vec owNow; vecInit(&owNow, g->arena, sizeof(Stmt *));
     collectOwSites(f->body, &owNow);
     g->owSites = owNow;
-    /* ⭐ 定案 65：格子放哪 —— 本函数自己的站点（`owLocal`）放自己的帧；
-     * 放别人的（被调者需要格子）⇒ 每个调用点替它准备 `owSites` 个 `void *` ✓ */
-    if (f->owLocal)
-        for (size_t i = 0; i < owNow.len; i++)
-            cgLine(g, "extc_owcell __extc_ow%zu = { 0, 0 };", i);   /* 自己的站点 ⇒ 本帧一个格子 ✓ */
     Vec savedOwCalls = g->owCalls;
     Vec owcNow; vecInit(&owcNow, g->arena, sizeof(Expr *));
     collectOwCallsStmt(f->body, &owcNow);
     g->owCalls = owcNow;
-    for (size_t j = 0; j < owcNow.len; j++) {
-        Expr *ce = *(Expr **)vecAt(&owcNow, j);
-        for (int k = 0; k < ce->func->owSites; k++)
-            cgLine(g, "extc_owcell __extc_owc%zu_%d = { 0, 0 };", j, k);   /* 替被调者备的 ✓ */
-    }
+    /* ⚠️ F 的连带：格子要写 `&__extc_a[1]` ⇒ **只要有格子，arena 数组就必须吐**
+     * （`main` 里放一个 @overwrite 变量正是这一档；漏了就是 `__extc_a` 未声明 ✗）*/
+    g->noArena = !f->mayUseArena && !(owNow.len > 0 || owcNow.len > 0);
+    if (!g->noArena)
+        cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    if (f->owLocal)
+        for (size_t i = 0; i < owNow.len; i++)
+            /* `home` = "这块存储住哪只 arena"：有家 ⇒ 家（活过本次调用 ⇒ 真复用 ✓）；
+             * 否则 ⇒ 本帧第 1 层（一定活到这条语句执行完）⇒ **永不 NULL** ✓ */
+            cgLine(g, "extc_owcell __extc_ow%zu = { 0, 0, %s };", i,
+                   f->needsHome ? "__extc_home" : "&__extc_a[1]");
+    (void)owcNow;   /* ⭐ F：不再替被调者备格子（格子住它自己的帧）✓ */
     /* ⚠️ 别在这里恢复 `owSites` ✗ —— 函数体还没生成呢（踩过：查表永远 -1 ⇒
      * 静默退化成"每轮分配"）⇒ 恢复挪到 genFunc 收尾，跟 `noArena` 一起 ✓ */
     /* ⭐ A：统一出口要用的**返回值落地变量**（只在本函数真的有出口释放时用）✓ */
@@ -2630,9 +2642,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    return lo;\n"
         "}\n\n");
     /* ⭐ 定案 65：`@overwrite` 的存储格子类型 —— **只在真用到时才吐** ✓
-     * （无条件吐的话，每个程序的生成 C 都会多一行 ⇒ golden 全是噪声 ✗）*/
+     * （无条件吐的话，每个程序的生成 C 都会多一行 ⇒ golden 全是噪声 ✗）
+     * ⚠️ F：它现在含 `extc_arena *home` ⇒ **必须排在 `extc_arena` 之后** ✗
+     * ⇒ 这里只算 `needOw`，真正的 typedef 挪到下面 arena 那段里吐 ✓ */
+    bool needOw = false;
     {
-        bool needOw = false;
         for (size_t i = 0; i < m->funcs.len && !needOw; i++)
             if ((*(FuncDef **)vecAt(&m->funcs, i))->owSites > 0) needOw = true;
         for (size_t i = 0; i < m->structs.len && !needOw; i++) {
@@ -2640,9 +2654,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             for (size_t j = 0; j < sd->methods.len; j++)
                 if ((*(FuncDef **)vecAt(&sd->methods, j))->owSites > 0) { needOw = true; break; }
         }
-        if (needOw)
-            bufPuts(out, "typedef struct extc_owcell { void *p; int64_t cap; }"
-                         " extc_owcell;   /* 定案 65：\\@overwrite 的复用格子 */\n");
+        (void)needOw;   /* ⭐ F：typedef 含 `extc_arena *` ⇒ 必须排在 `extc_arena` 之后 ✗ */
     }
     bufPuts(out,
         /* ------------------------------------------------------------------
@@ -2701,6 +2713,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        return p;\n"
         "    }\n"
         "}\n\n");
+
+    /* ⭐ 定案 65 + F：`@overwrite` 的格子类型。**按需吐**（无条件吐会让所有 golden 变 ✗），
+     * 且**必须排在 `extc_arena` 之后**：`home` = "这块存储住哪只 arena" ✓ */
+    if (needOw)
+        bufPuts(out, "typedef struct extc_owcell { void *p; int64_t cap; extc_arena *home; } extc_owcell;\n");
 
     /* ==================================================================
      * 类型描述表（descriptor table）+ **一份**通用打印器

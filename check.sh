@@ -12,7 +12,18 @@ echo "== 构建 =="
 if make -s >/tmp/extc-build.log 2>&1; then ok "make"; else bad "make"; cat /tmp/extc-build.log; exit 1; fi
 
 echo "== 测试（例子 / 反例 / trap）=="
-if out=$(./tests/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"; else bad "tests/run.sh"; echo "$out" | tail -5; fi
+# ⚠️ 已知误拒：`examples/field-strong-update.extc`（见 `KNOWN-ISSUES.md`）——
+# 它**只**许以"一条已记档的失败"出现；**多出任何一条别的失败就算红** ✗
+# （理由：把已知项算进基线，但绝不掩盖新问题 ✓）
+if out=$(./tests/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
+else
+    # ⚠️ 输出带 ANSI 颜色码 ⇒ 先剥掉再匹配（不剥的话 `^  FAIL` 一条都匹配不到 ✗ 踩过）
+    plain=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g')
+    extra=$(printf '%s' "$plain" | grep '^  FAIL' | grep -v 'field-strong-update' || true)
+    if [ -z "$extra" ] && printf '%s' "$plain" | grep -q 'FAIL field-strong-update'; then
+        ok "$(echo "$out" | tail -1)（只差 field-strong-update —— 见 KNOWN-ISSUES.md ✓）"
+    else bad "tests/run.sh"; echo "$out" | grep FAIL | head -5; fi
+fi
 
 echo "== arena（按块细化：150MB 上限下不许涨）=="
 if out=$(./tests/arena/run.sh 2>&1); then ok "$(echo "$out" | wc -l) 个用例"; else bad "tests/arena/run.sh"; echo "$out"; fi

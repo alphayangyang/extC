@@ -1,0 +1,18 @@
+/* ⭐ 反例 A（最终版）：场域强更新把"整根记账深度"压小 + 拷贝把那一格抄走 */
+struct box { p: ?ref i32  q: ?ref i32 }
+
+fn f() -> box {
+    var h2: box = { p: null, q: null }
+    var x = alloc<i32>(1)
+    *x = 42
+    var h: box = { p: null, q: x }
+    var h3 = h
+    h3.p = null
+    return h3
+}
+
+fn main() -> i32 {
+    let r = f()
+    println("r.q = ", *(r.q!))
+    return 0
+}

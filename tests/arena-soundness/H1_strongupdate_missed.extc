@@ -1,0 +1,35 @@
+/* ⚠️ **强更新做一半就会漏的那种形状**（2026-09-23 实测抓到的）
+ *
+ * 背景：`examples/field-strong-update.extc` 是个**误拒**（`h.p = null` 之后那个容器
+ * 本该可以逃出去）。修它的正路是 `ARENA-FORMAL` §7.4 的**强更新**。
+ * 但强更新有**两条**通到同一个语义的码路：
+ *   · ① 普通赋值那一支（`noteFieldDepthWrite` 收尾处 `refreshRootDepth`）
+ *   · ② **引用型目标**那一支（目标类型是 `?ref T` ⇒ 走"换指向"分支）
+ * 只修 ① 的话，`h.p = null` 仍然把根的记数留在旧值（**另一格 `q` 的**），
+ * 于是 `return h` 看起来"干净" —— 而 `q` 里那个**指向栈局部的引用**就逃出去了 ✗✗
+ *
+ * 实测（当时）：生成的 C 编过、跑出 `q = 5`，**ASan 报 stack-use-after-scope** ✓
+ * ⇒ 所以这条**必须继续被拒绝**。它是"强更新不完整"的**回归哨兵**：
+ *   将来谁去做强更新，如果只接一条路，这条立刻会变成 ACCEPT+UAF ✓
+ *
+ * 判据：`REJECT` = 好（强更新要么完整、要么不做）· `ACCEPT+UAF` = **出现了新洞** ✗
+ */
+struct box { p: ?ref i32  q: ?ref i32 }
+
+fn f() -> box {
+    var h2: box = { p: null, q: null }
+    var x: i32 = 5
+    var r: ref i32 = ref x
+    var h: box = { p: null, q: r }
+    var h3 = h
+    h3.p = null                 /* ← 只抹掉 p 那一格；q 里那个"指向栈局部的引用"还活着 */
+    if h3.p != null { println("读 p") }
+    if h2.p != null { println("读 h2.p") }
+    return h3                   /* ⇒ 必须**被拒**（q 会悬垂）✗ */
+}
+
+fn main() -> i32 {
+    var b: box = f()
+    println("q = ", *(b.q!))
+    return 0
+}

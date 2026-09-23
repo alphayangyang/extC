@@ -1,0 +1,3 @@
+fn mk() -> slice<u8> { var b = allocSlice<u8>(4)  return b }
+fn main() -> i32 { return 0 }
+

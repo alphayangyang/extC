@@ -1,0 +1,4 @@
+/* F4：泛型实例先于模板被创建 ⇒ needsHome 不一致 ⇒ 生成的 C 编不过 */
+fn caller() -> i32 { var s = f(7)  return i32(s.len) }
+fn f<T>(x: T) -> slice<T> { var n = new T[4]  return n }
+fn main() -> i32 { return caller() }

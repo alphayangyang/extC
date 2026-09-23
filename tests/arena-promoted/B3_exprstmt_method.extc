@@ -1,0 +1,39 @@
+// p14c: method flavour of the same root cause (receiver arena + E blind spot on ST_EXPR)
+struct node { value: i64  next: ?ref node }
+struct list {
+    head: ?ref node
+    n: i64
+    fn pushOne(self: mut ref list, v: i64) {
+        var c: mut ref node = new node
+        c.value = v
+        c.next = self.head
+        self.head = c
+        self.n = self.n + 1
+    }
+}
+struct sinker {
+    slot: list
+    fn take(self: mut ref sinker, src: list) { self.slot = src }
+}
+
+fn churn() {
+    var i: i64 = 0
+    while i < 40 {
+        var w: varArray<i64> = varArray<i64>::withCap(200)
+        w.push(i * 13)
+        i = i + 1
+    }
+}
+
+fn fill(out: mut ref sinker) {
+    var l: list = { head: null, n: 0 }
+    l.pushOne(7)             // receiver l is not an escapee => arena = &__extc_a[1] (fill's frame)
+    out.take(l)              // method call in an expression statement
+}
+
+fn main() {
+    var s: sinker = { slot: { head: null, n: 0 } }
+    fill(ref s)
+    churn()
+    println("head = ", s.slot.head!.value)
+}

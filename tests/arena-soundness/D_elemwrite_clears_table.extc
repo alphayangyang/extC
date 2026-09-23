@@ -1,0 +1,13 @@
+struct box { a: mut ref i32  arr: [2]mut ref i32 }
+fn leak(p: mut ref i32) -> box {
+    var local: i32 = 5
+    var b: box = { a: p, arr: [ref local, ref local] }
+    b.arr[0] = p
+    return b
+}
+fn main() -> i32 {
+    var x: i32 = 1
+    let r = leak(ref x)
+    println("r.arr[1] = ", r.arr[1])
+    return 0
+}

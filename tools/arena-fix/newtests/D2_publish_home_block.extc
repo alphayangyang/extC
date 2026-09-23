@@ -1,0 +1,40 @@
+// p16: hidden literal call in a function that DOES have a home; the home is the caller's BLOCK
+//      arena, but the value is modeled as depth 0 and gets published to the caller's outer object
+struct node { value: i64  next: ?ref node }
+struct box { r: ?ref node }
+struct sinker { slot: box }
+
+fn mknode() -> mut ref node {
+    var n: mut ref node = new node
+    n.value = 5150
+    return n
+}
+
+fn publish(dst: mut ref sinker, src: box) { dst.slot = src }
+
+fn churn() {
+    var i: i64 = 0
+    while i < 30 {
+        var w: varArray<i64> = varArray<i64>::withCap(200)
+        w.push(i * 7)
+        i = i + 1
+    }
+}
+
+fn F(out: mut ref sinker) -> box {          // visible new + returns box => needsHome known at the call
+    var v: mut ref node = new node
+    v.value = 1
+    var keep: box = { r: mknode() }         // hidden call => pending => rewritten to ARENA_HOME
+    publish(out, keep)                      // model: keep.refDepth == 0 => accepted
+    return keep
+}
+
+fn main() {
+    var s: sinker = { slot: { r: null } }
+    {
+        var tmp: box = F(ref s)             // stored in this block => F's home = &__extc_a[2]
+        println("tmp = ", tmp.r!.value)
+    }                                       // block exit: __extc_a[2] released
+    churn()
+    println("s.slot.r = ", s.slot.r!.value) // UAF
+}

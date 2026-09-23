@@ -1,0 +1,11 @@
+/* F3：`@overwrite` 的复用格活过了它赖以分配的那只 arena */
+fn work(n: i32) -> i32 {
+    @overwrite var tmp = new [8]i32
+    tmp[0] = n
+    return tmp[0]
+}
+fn main() -> i32 {
+    var i: i32 = 0
+    while i < 3 { println("work = ", work(i))  i = i + 1 }
+    return 0
+}

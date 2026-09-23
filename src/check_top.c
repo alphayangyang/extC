@@ -4,6 +4,8 @@
  */
 
 #include "check_internal.h"
+#include <stdlib.h>
+#include <stdlib.h>
 
 #include <stdlib.h>   /* getenv（EXTC_DUMP_EFFECTS 这个调试开关）*/
 
@@ -319,6 +321,30 @@ static bool exprCallsNeedsHome(Expr *e) {
         return false;
     }
     case EX_NEW: return exprCallsNeedsHome(e->u.new_.count);
+    /* ⭐ B1（ARENA-SOUNDNESS §9 档 1）：**藏在字面量里的调用**以前一概看不见 ——
+     * 这个谓词只认 `EX_CALL/EX_METHOD/EX_ASSOC` 的**直接**位置，
+     * 而 `var b: box = { r: mknode() }` 里的调用被 `EX_STRUCTLIT` 挡住了
+     * ⇒ 传递闭包判"这个函数没有有家被调者" ⇒ 它拿不到家 arena
+     * ⇒ 被调者分配到**调用者的块** arena（出块就 release），而记账说"深度 0" ⇒ 悬垂 ✗
+     * （反例 A2/A3/A4：枚举载荷 / 数组字面量 / 外层局部字段，加了调用 ⇒ 都是 UAF ✓）
+     * ⇒ 补上四种漏掉的容器形状（`EX_GENCALL` 的**实参**里也可能藏调用）✓ */
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprCallsNeedsHome((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        /* 带载荷构造：`holder.holding(mknode())` —— 载荷里藏调用 ✓ */
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+        return false;
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.gencall.args, i))) return true;
+        return false;
     default: return false;
     }
 }
@@ -645,8 +671,10 @@ void setCallArenaArg(Checker *c, Expr *e) {
     }
 }
 
-int callHomeDepth(Checker *c, Vec *args, Vec *params) {
+int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
     int best = 0;                       /* 0 = 没找到 */
+    /* ⭐ B4′：E 敏感的那些实参要**记下来**，等摘封闭合之后重算（见 EArenaSite 的注释）✓ */
+    EArenaSite *rec = NULL;
     for (size_t i = 0; i < params->len && i < args->len; i++) {
         Param *p = *(Param **)vecAt(params, i);
         if (!p->type || p->type->kind != TY_REF || !p->type->mut) continue;
@@ -660,6 +688,21 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params) {
              * 不会 ⇒ 保持实参所在的那只 arena（PLAN #24 的紧致性不丢 ✓）*/
             const char *rn = placeRootName(place);
             if (rn && isEscapeeName(c, rn)) d = -1;
+            /* 这一格的结果**取决于 E**（现在 E 可能还不准）⇒ 记下来收尾重算 ✓ */
+            if (callNode && c->eSites.arena) {
+                if (!rec) {
+                    rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
+                    rec->call = callNode;
+                    *(EArenaSite **)vecPush(&c->eSites) = rec;
+                }
+                if (rec->n < 8) {
+                    rec->argRoot[rec->n]  = (char *)rn;
+                    rec->argDepth[rec->n] = d;
+                    rec->n++;
+                } else {
+                    rec->overflow = true;   /* ⚠️ 记不全 ⇒ 收尾必须**保守**，不许静默截断 ✗ */
+                }
+            }
         }
         if (best == 0 || d < best) best = d;
     }
@@ -774,7 +817,43 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
         /* 同上：循环条件不算逃逸 ✓ */
         grew |= markNamesInStmt(c, f, s->u.whiles.body);
         return grew;
-    case ST_EXPR: return false;   /* 表达式语句里的名字**不算**逃逸 ✓（第一版漏改 ⇒ E 过大 ✗）*/
+    case ST_EXPR:
+        /* ⭐ B4（ARENA-SOUNDNESS §9 档 1，**精准版**）：以前这里**无条件 false** ✗
+         * 代价（反例 B2/B3，两条真 UAF）：经**调用**发布出去的局部不进 E
+         * ⇒ `callHomeDepth` 把接收者当成"深度 1 = 调用者的帧"
+         * ⇒ `arenaArg = &本帧arena`（**被调者自己的帧**！）而不是家 arena
+         * ⇒ 被调者往那个容器里塞的新东西，在**本次调用返回**时就被 release ✗
+         *
+         * ⚠️ **不能无条件标**（试过：`println(x)` 这种读也被标 ⇒ 6 条误拒：
+         *   `borrowing` / `container-of-view` / `ref-field-write` / `borrowed-stash-sameframe` /
+         *   `G_stale_origin` … ✗）⇒ 只标**真的可能发布实参**的那些被调者的实参 ✓
+         * 判据用**现成的效果摘要**：摘要里只要有一丁点"往哪儿存"的位
+         * （`Addr/Cont/Other` 或其 home 版），这个被调者的实参就可能被发布出去 ⇒ 标 ✓
+         * 摘要干净（如 `println`）⇒ 不标 ⇒ 精度保住 ✓
+         * ⚠️ 摘要是"会不会存"的**上界近似**，所以判"可能" ⇒ 方向安全 ✓ */
+        switch (s->u.expr.expr->kind) {
+        case EX_CALL: case EX_METHOD: case EX_ASSOC: {
+            FuncDef *cf = s->u.expr.expr->func;
+            if (!cf) return false;
+            unsigned pub = cf->addrMask | cf->contMask | cf->otherMask
+                         | cf->homeAddrMask | cf->homeContMask;
+            if (cf->addrFromLocal) pub |= 1u;
+            /* ⚠️ **摘要不完整**时不许下"它不会存东西"的结论 ✗
+             * （`effUnknown`：体里有解析不出来的调用 ⇒ 摘要永远不完整）
+             * ⇒ 只要这个被调者**有 `mut ref` 形参**（那就是"能存进去"的入口），
+             *    就按"可能存"处理 ✓ 方向安全（多标只多费内存）*/
+            if (!cf->effComplete) {
+                for (size_t pi = 0; pi < cf->params.len; pi++) {
+                    Param *pp = *(Param **)vecAt(&cf->params, pi);
+                    if (pp->type && pp->type->kind == TY_REF && pp->type->mut) { pub |= 1u; break; }
+                }
+            }
+            if (pub == 0) return false;        /* 这个被调者不存任何东西（如 println）⇒ 不标 ✓ */
+            return markNamesInExpr(c, s->u.expr.expr);
+        }
+        default:
+            return false;                      /* 别的表达式语句（纯读/纯写）⇒ 不算逃逸 ✓ */
+        }
     case ST_BLOCK:
         for (size_t k = 0; k < s->u.block.stmts.len; k++)
             grew |= markNamesInStmt(c, f, *(Stmt **)vecAt(&s->u.block.stmts, k));
@@ -837,11 +916,19 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
 }
 
 /* 不动点：谁被搬出去，谁的内容也就跟着搬出去 ✓ */
-static void computeEscapes(Checker *c, FuncDef *f) {
+static void computeEscapes(Checker *c, FuncDef *f);
+static void computeEscapesMode(Checker *c, FuncDef *f, bool unionMode) {
     if (!c->escapees.arena) vecInit(&c->escapees, c->arena, sizeof(const char *));
-    c->escapees.len = 0;
-    for (int round = 0; round < 32; round++)
-        if (!markNamesInStmt(c, f, f->body)) break;   /* 不长大了就停 ✓ */
+    if (!unionMode) c->escapees.len = 0;     /* 并集模式：**保留**已有的名字 ✓ */
+    if (unionMode) {
+        /* 并集模式：跑到不再长大（`isEscapeeName` 会把已有的名字当成"已经在了"，
+         * 所以这里必须多跑几轮直到完全不动 ✓）*/
+        for (int round = 0; round < 64; round++)
+            if (!markNamesInStmt(c, f, f->body)) break;
+    } else {
+        for (int round = 0; round < 32; round++)
+            if (!markNamesInStmt(c, f, f->body)) break;   /* 不长大了就停 ✓ */
+    }
     if (getenv("EXTC_DUMP_EFFECTS")) {
         fprintf(stderr, "[escapes] %-22s { ", FN(f));
         for (size_t i = 0; i < c->escapees.len; i++)
@@ -849,6 +936,8 @@ static void computeEscapes(Checker *c, FuncDef *f) {
         fprintf(stderr, "}\n");
     }
 }
+
+static void computeEscapes(Checker *c, FuncDef *f) { computeEscapesMode(c, f, false); }
 
 /* ⭐ 档2.3（`ARENA-FORMAL` §7.4 / `PLAN-REGION` §7）：**字段级深度**
  *
@@ -879,6 +968,11 @@ static void refreshRootDepth(Sym *s) {
     if (!s) return;
     int m = s->otherDepth;
     for (int i = 0; i < s->nfields; i++) if (s->fields[i].depth > m) m = s->fields[i].depth;
+    /* ⭐ A1（ARENA-SOUNDNESS §9 档 0）：**根的记账深度只许长大**（上界性）。
+     * 允许它下降 ⇒ "先把深的存进 A 格、再往 B 格写个浅的"就把整根压小，
+     * 而浅的那一格**没有**抹掉 A 格里还活着的指针 ⇒ 之后整值拷贝/返回被放行 ✗
+     * （反例 A/B/C：ASan heap-use-after-free ✓）*/
+    if (s->refDepth > m) m = s->refDepth;
     s->refDepth = m;
 }
 
@@ -893,9 +987,10 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
      * （非引用型的结构体绑定照旧可以降 —— 那正是档2.3 强更新的用处 ✓）*/
     bool isRefRoot = root->type && tsub(c, root->type)->kind == TY_REF;
     int  before    = root->refDepth;
-    if (!field) {                                  /* 整块赋值 / 元素写 ⇒ 保守 */
-        if (!root->addressed) { root->nfields = 0; root->otherDepth = d2; }
-        else if (d2 > root->otherDepth) root->otherDepth = d2;
+    if (!field) {                                  /* 整块赋值 / 元素写 */
+        /* ⭐ A1：**不许清表**、不许覆盖 otherDepth —— 元素写不会让别的元素/字段失效 ✗
+         * （旧行为：`a[1] = x; a[0] = null` ⇒ 清表 + otherDepth 覆盖成 0 ⇒ 整块逃逸被放行 ✗）*/
+        if (d2 > root->otherDepth) root->otherDepth = d2;
         refreshRootDepth(root);
         if (isRefRoot && root->refDepth < before) root->refDepth = before;   /* #39 ✓ */
         return;
@@ -1473,6 +1568,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.refChecks, arena, sizeof(void *));
     vecInit(&c.callChecks, arena, sizeof(void *));   /* ⭐ PLAN #50：推迟的调用点 ✓ */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
+    vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* ⭐ B4′：E 敏感的 arena 决策记录 ✓ */
+    /* ⚠️ R1（反例库 R1a/R1b）：`curArenaSites` 以前**只在 `checkFunc` 里** `vecInit`，
+     * 而 `checkGlobals` 跑在第一个 `checkFunc` **之前** ⇒ 顶层初始化式里只要有
+     * `new`（`var G = new i32`）或有家调用（`let G = helper()`），
+     * `vecPush(&c->curArenaSites, …)` 就落到一个**没初始化**的 Vec 上
+     * ⇒ `vecGrow` → `arenaAlloc(NULL)` ⇒ **SIGSEGV**（要的是"全局只能用常量初始化"那句报错）✗
+     * ⇒ 在这里（任何 pass 之前）就初始化好 ✓ */
+    vecInit(&c.curArenaSites, arena, sizeof(Expr *));
 
     c.tI32  = ttFromName(tt, "i32");
     c.tF64  = ttFromName(tt, "f64");
@@ -1724,14 +1827,95 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < sd->methods.len; j++)
                 *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&sd->methods, j);
         }
+        /* ⭐ B5（ARENA-SOUNDNESS §9 档 1）：**统一重算 `needsHome` 的"直接判据"** ——
+         * `checkFunc` 里那条判据（体里有分配 + 返回含引用的类型）只在**查那个函数体时**算，
+         * 而**泛型实例的体是不单独查的**（`checkFunc` 对 `fx->tmpl` 直接 `continue`）✗
+         * ⇒ 实例的 `needsHome` 只是创建时的浅拷贝（`*in = *tmpl`，见 `funcInstance`）
+         * ⇒ **谁先被创建就继承谁的值** ⇒ 同一个程序换个声明顺序，结果不一样：
+         *     · 调用者先出现 ⇒ 实例先创建（那时模板还没查）⇒ `needsHome=false`
+         *       ⇒ codegen 不吐 `__extc_home` 参数，而模板的 `new` 已被改成
+         *         `(*__extc_home)` ⇒ **生成的 C 编不过**（gcc: `__extc_home` undeclared）✗
+         *     · 模板先出现 ⇒ 正常 ✓
+         * ⇒ 在闭包**之后**（那时所有体都查完了、`arenaSites` 也定了）对**每个**函数
+         *   （含实例、方法）用**代入后的返回类型**重算一次 ⇒ 顺序不再影响结果 ✓
+         * ⚠️ 只重算"直接判据"；"因为调用了有家函数"那一半由上面的闭包负责 ✓
+         * ⚠️ 幂等：`|=` 语义（只置真、不置假）⇒ 不会把闭包算出来的结果抹掉 ✓ */
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (f->isExtern || !f->body) continue;
+            Type *rt = f->ret;
+            if (rt && f->typeParams.len > 0 && f->targs.len == f->typeParams.len)
+                rt = ttSubstitute(c.tt, rt, &f->typeParams, &f->targs);
+            if (stmtHasNew(f->body) &&
+                ((rt && typeContainsRef(c.tt, rt)) || stmtStoresThroughDeref(f->body, f)))
+                f->needsHome = true;
+        }
+
+        /* ⭐ B4′（架构：**分析最后写、检查只读**）：E 敏感的"家 arena"决策**重算一遍** ——
+         * 查体时 `computeEscapes` 看不到被调者的效果摘要（那时还没封闭）
+         * ⇒ `pushOne(l, 7)` 里的 `l` 没被标成逃逸（尽管后面 `sink(out, l)` 会把它发布出去）
+         * ⇒ 家 arena = 调用者自己的帧 ⇒ 被调者塞进容器的东西，本次调用返回即 release ✗
+         * ⇒ 现在摘封闭合了，重新算 E（`computeEscapes` 会读 `callsNeedsHome`/摘要），
+         *    再把那些站点的 `arenaArg` 按新 E 更新一次 ✓ */
+        /* ⚠️ 跑**三轮**：`computeEscapes` 自己的不动点是"以**当时**的 `isEscapeeName`
+         * 为真值"判的，而它标记出来的新名字又要靠**别的**调用点才能传播
+         * ⇒ 一轮不够（实测：第一轮的 E 还是空的 ✗）。跑几轮把它推到不动点 ✓
+         * （函数不多，成本可忽略；`computeEscapes` 内部也有 32 轮的上限 ✓）*/
+        for (int round = 0; round < 4; round++) {
+            bool changed = false;
+            for (size_t i = 0; i < all.len; i++) {
+                FuncDef *f = *(FuncDef **)vecAt(&all, i);
+                if (f->isExtern || !f->body) continue;
+                size_t before = c.escapees.len;
+                computeEscapes(&c, f);
+                if (c.escapees.len != before) changed = true;
+            }
+            if (!changed) break;
+        }
+        /* ⚠️ 用**所有函数 E 的并集**判 —— `c.escapees` 是"当前函数"的 E（每函数重建），
+         * 而收尾时我们要问的是"这个名字在**它所属的那个函数**里会不会被搬出去" ✗
+         * ⇒ 保守地取并集：任何函数里被判为逃逸的名字，都当成可能逃逸 ✓
+         * （方向安全：多算只会让家 arena 选得更长寿 ⇒ 多费内存，不放过 ✓）*/
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (f->isExtern || !f->body) continue;
+            computeEscapesMode(&c, f, true);   /* ⭐ 并集模式（不清空）✓ */
+        }
+        int eFixed = 0;
+        for (size_t i = 0; i < c.eSites.len; i++) {
+            EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
+            if (!rec || !rec->call) continue;
+            if (rec->overflow) {                       /* 记不全 ⇒ 传家 arena（永远 sound）✓ */
+                rec->call->arenaArg = ARENA_HOME;
+                rec->call->arenaArgPending = false;
+                continue;
+            }
+            int nd = 0;
+            for (int k = 0; k < rec->n; k++) {
+                int d = rec->argDepth[k];          /* 0 = 参数/全局（本来就活在帧外）✓ */
+                /* 只对"实参是本帧局部"的那几档看 E（0 那一档已经是 -1 了）✓ */
+                if (d != 0 && rec->argRoot[k] && isEscapeeName(&c, rec->argRoot[k])) d = -1;
+                if (nd == 0 || d < nd) nd = d;
+            }
+            if (nd == 0 && rec->n > 0) nd = rec->n ? rec->argDepth[0] : 0;
+            /* 把新的 homeDepth 落到 arenaArg 上（与 `setCallArenaArg` 同一套规则 ✓）*/
+            int want = (nd <= 0) ? ARENA_HOME : nd;
+            if (rec->call->arenaArg != want) { rec->call->arenaArg = want; eFixed++; }
+            rec->call->arenaArgPending = false;
+        }
+
         int fixed = 0;
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
             if (!f->needsHome) continue;
             for (size_t j = 0; j < f->arenaSites.len; j++) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
-                if (site->kind == EX_NEW) {
-                    /* 分配：有家 ⇒ 每处 `new` 都进家 ✓ */
+                if (site->kind == EX_NEW || site->kind == EX_GENCALL) {
+                    /* 分配：有家 ⇒ 每处 `new` / `alloc` 都进家 ✓
+                     * ⭐ B2：`EX_GENCALL` 是 `alloc<T>` / `allocSlice<T>` —— 它以前**不在
+                     * `arenaSites` 里**（`check_expr.c` 的 EX_NEW 支才登记）⇒ 这里看不见它
+                     * ⇒ 有家函数里的 `alloc` 留在块层 ⇒ 「返回 alloc 出来的东西」整族被误拒 ✗
+                     * ⇒ 现在两种分配一视同仁 ✓ */
                     if (site->arenaLevel != ARENA_HOME) { site->arenaLevel = ARENA_HOME; fixed++; }
                 } else if (site->arenaArgPending) {
                     /* 调用点：pending 的那一档 ⇒ "有家传家" ✓ */
@@ -1760,8 +1944,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             f->owSites = countOwSites(f->body);
             /* ⚠️ 没有站点也要把 `owLocal` 定成 true ✗ —— 否则"无参数无家"的函数签名会
              * 少掉那个 `void`（golden 当场抓出来的 ✓）*/
-            bool isMain = (!f->owner && strcmp(f->name, "main") == 0);
-            f->owLocal = (f->owSites == 0) || isMain || funcReachesItself(&c, f, 0);
+            /* ⭐ F 族（ARENA-SOUNDNESS §10）：格子**永远住本帧** ✓ */
+            f->owLocal = true;
+            (void)funcReachesItself;
         }
         if (getenv("EXTC_DUMP_OW"))
             for (size_t i = 0; i < all.len; i++) {

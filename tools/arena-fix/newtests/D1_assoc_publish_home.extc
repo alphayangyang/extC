@@ -1,0 +1,43 @@
+// p17: an ASSOCIATED function call in var-init -- `check_stmt.c:216` fix-up and
+//      `markCallHomeIfEscaping` both only look at EX_CALL / EX_METHOD, not EX_ASSOC
+struct node { value: i64  next: ?ref node }
+struct box {
+    r: ?ref node
+    fn make() -> box {                    // associated function (no self); allocates
+        var b: mut ref box = new box
+        var n: mut ref node = new node
+        n.value = 606
+        b.r = n
+        return *b
+    }
+}
+struct sinker { slot: box }
+
+fn publish(dst: mut ref sinker, src: box) { dst.slot = src }
+
+fn churn() {
+    var i: i64 = 0
+    while i < 30 {
+        var w: varArray<i64> = varArray<i64>::withCap(200)
+        w.push(i * 7)
+        i = i + 1
+    }
+}
+
+fn F(out: mut ref sinker) -> box {        // visible `new` + ref-containing ret => needsHome known at the call
+    var v: mut ref node = new node
+    v.value = 1
+    var keep: box = box::make()           // EX_ASSOC in var-init: arena = HOME, but the depth model says 0
+    publish(out, keep)
+    return keep
+}
+
+fn main() {
+    var s: sinker = { slot: { r: null } }
+    {
+        var tmp: box = F(ref s)           // result stored in this block => F's home = &__extc_a[2]
+        println("tmp = ", tmp.r!.value)
+    }
+    churn()
+    println("s.slot.r = ", s.slot.r!.value)   // UAF
+}

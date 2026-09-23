@@ -1,0 +1,20 @@
+// p05b: p06 WITHOUT the visible `new` => mayUseArena = false => generated C does not compile
+struct node { value: i64  next: ?ref node }
+struct box { r: ?ref node }
+
+fn mknode() -> mut ref node {
+    var n: mut ref node = new node
+    n.value = 12345
+    return n
+}
+
+fn F() {
+    var keep: box = { r: null }
+    {
+        var b: box = { r: mknode() }
+        keep = b
+    }
+    println("keep.r = ", keep.r!.value)
+}
+
+fn main() { F() }

@@ -1,0 +1,3 @@
+// ⑯ 把 arena 要到的东西返回出去
+fn bad() -> ref i32 { let p = alloc<i32>(1)  return p }
+fn main() -> i32 { println(bad())  return 0 }

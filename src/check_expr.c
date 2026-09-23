@@ -682,7 +682,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             /* A3：关联函数也要算"传哪只 arena"（它自己可能分配、也可能返回引用）✓
              * ⚠️ 以前这里漏了 ⇒ 会生成"少一个实参"的 C（真 bug：`Type::make()` 编不过）✗ */
-            e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params);
+            e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params, e);
             setCallArenaArg(c, e);      /* 定案 68：解析成最终要传的那只 arena ✓ */
             /* ⚠️ 检查挪到实参查完之后 ✓ 见本分支末尾 */
 
@@ -898,11 +898,27 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *   下一次迭代时指向**已经释放**的内存 ⇒ 悬垂 ✗（A2 之后实测过）✓
              * 于是「返回一块刚 alloc 的内存」「把循环里分配的东西存到循环外」
              * 都会被逃逸检查拦住 ✓ 想把它交出去，就得让调用者提供 buffer/arena ✓ */
-            e->refDepth = c->scopes.len;
-            /* ⭐ 定案 68：`alloc` 也一样，**层号由检查器算定**（= 当前块）⇒ codegen 不再
-             * 自己数块层（以前它走 `arenaRef(g)` = `g->blkLevel`，那是"第二个权威"里
-             * 最隐蔽的一个：两个数必须永远相等，一旦不等就是内存问题）✓ */
-            e->arenaLevel = (int)c->scopes.len;
+            /* ⭐ 定案 68：`alloc` 的层号由检查器算定 —— **但必须与 `new` 用同一套规则** ✗
+             * `EX_NEW` 那一支（见上）是：有家 ⇒ `ARENA_HOME`（对象进"调用者选的那只"，活得比本帧久）；
+             * 否则按块层。这里以前**无条件按块层** ⇒ 有家函数里的 `alloc` 被算成"活到本帧"
+             * ⇒ 「返回 alloc 出来的东西」当场判 `1 > 0` 拒绝，而同一形状写 `new` 就过 ✗
+             * （这正是 ARENA-SOUNDNESS §9 档 1 / B2 说的那一族误拒：报错文案还叫人写 `new` ✓）
+             * ⇒ 与 `new` 对称：有家 ⇒ `ARENA_HOME`，深度记 0（"外面那一级"）✓ */
+            if (c->curFunc && c->curFunc->needsHome) {
+                e->arenaLevel = ARENA_HOME;
+                e->refDepth   = 0;
+            } else {
+                e->refDepth   = c->scopes.len;
+                e->arenaLevel = (int)c->scopes.len;
+            }
+            /* ⭐ B2（ARENA-SOUNDNESS §9 档 1）：`alloc` 也要**登记成分配站点** ——
+             * `new` 在 `EX_NEW` 那一支里登记（见上面那句 `vecPush(&c->curArenaSites)`），
+             * 而这里以前**没登记** ⇒ 闭包之后那个"统一改写"pass 看不见它
+             * ⇒ 有家函数里的 `alloc` 永远留在块层（`__extc_a[k]`），而出块就 release ✗
+             * ⇒ 一整族**误拒**：`fn f() -> mut ref i32 { return alloc<i32>(1) }` 被拒，
+             *   而同一形状写 `new` 就过 ⇒ 报错文案还叫人写 `new`（自相矛盾 ✗）
+             * ⇒ 登记之后：有家 ⇒ 改写成 `ARENA_HOME` ⇒ 与 `new` 完全对称 ✓ */
+            *(Expr **)vecPush(&c->curArenaSites) = e;
             if (isAllocS) {
                 /* `allocSlice<T>(n) -> mut slice<T>` —— 视图本身就是可写的
                  * （`mut` 落在**视图**上，不是落在指向它的引用上）✓ */
@@ -1264,7 +1280,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return f->ret ? f->ret : ttVoid(tt);
             }
             /* A3 第二半：这只 arena 该取"最浅的那个 `mut ref` 实参"那边 ✓ */
-            e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params);
+            e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params, e);
             setCallArenaArg(c, e);      /* 定案 68 ✓ */
             /* ⚠️ 定案 67 的检查必须在**实参查完之后** ✗（不然 `a->type` 还没填 ⇒
              * `typeContainsRef` 一律答"否" ⇒ **静默漏放** ✗✗ —— 方法那条踩过同一个坑 ✓）
@@ -1372,8 +1388,20 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     const char *rrn = placeRootName(e->u.method.recv);
                     if (d != 0 && rrn && isEscapeeName(c, rrn)) d = -1;
                     e->homeDepth = (d == 0) ? -1 : d;
+                    /* ⭐ B4′：接收者这一支同样**取决于 E**，而 E 在查体时还不准
+                     * （要等摘封闭合）⇒ 记下来收尾重算 ✓
+                     * 反例 B3：`fn fill(out) { var l: list  l.pushOne(7)  out.take(l) }`
+                     * —— `l` 随后被方法调用发布出去 ⇒ 接收者必须算"会逃逸" ✓ */
+                    if (d != 0 && rrn && c->eSites.arena) {
+                        EArenaSite *rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
+                        rec->call = e;
+                        rec->argRoot[0]  = (char *)rrn;      /* 接收者当成第 0 个"实参" ✓ */
+                        rec->argDepth[0] = d;
+                        rec->n = 1;
+                        *(EArenaSite **)vecPush(&c->eSites) = rec;
+                    }
                 } else {
-                    e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params);
+                    e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params, e);
                 }
                 /* ⭐ 定案 68：解析成"最终传哪只 arena"（两个数都在检查器里定完）✓ */
                 setCallArenaArg(c, e);

@@ -389,14 +389,17 @@ void checkStmt(Checker *c, Stmt *s) {
             /* 含引用的值绑定被写（整块赋值 或 写它的字段/元素）⇒
              * "里面那些引用指哪"要跟着**放宽**（取 max：refDepth 是上界 ✓）*/
             {
+                /* ⭐ A2（反例 B_field_table_stale 的真正断点）：**普通赋值那一支
+                 * 以前只写根的 `refDepth`，从来不写字段表** ✗
+                 * ⇒ `b.c = inner{v: ref local}` 之后 `b.c` 那一格还是老值 ⇒ `return b.c` 放行 ✗
+                 * ⇒ 统一走 `noteFieldDepthWrite`（同时管"那一格"与"整根 = max(各格)"）✓ */
                 Sym *vs = placeRoot(c, s->u.assign.target);
-                if (vs && vs->type && typeContainsRef(c->tt, vs->type)) {
-                    int d2 = exprRefDepth(c, s->u.assign.value);
-                    /* ⭐ 档2（ARENA-FORMAL §7.4）：路径目标（`h.p = …`）——
-                     * **没取过地址就强更新**（直接覆盖）✓
-                     * 取过地址 ⇒ 只能弱更新（别名可能指别处，覆盖会漏掉旧深度 ✗）✓ */
-                    if (s->u.assign.target->kind == EX_IDENT) vs->refDepth = d2;
-                    else if (d2 > vs->refDepth) vs->refDepth = d2;
+                if (vs) {
+                    int d2 = valDepthForStore(c, s->u.assign.value);
+                    const char *fn2 = (s->u.assign.target->kind == EX_FIELD)
+                                        ? s->u.assign.target->u.field.name : NULL;
+                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))
+                        noteFieldDepthWrite(c, vs, fn2, d2);
                 }
             }
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;

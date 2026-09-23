@@ -86,6 +86,65 @@ int storeLayer(Checker *c, Expr *e) {
 /* 表达式里的引用**指向的活物**有多深？
  * **类型里没有引用就直接 0** —— 纯值拷贝永远不会悬垂，
  * 不然后面 `let x: i32 = <深层局部>` 会被误报。 */
+/* ⭐ A2（ARENA-SOUNDNESS §9 档 0）：**按值的结构**算上界 —— 不看类型。
+ *
+ * 为什么必须有：`exprRefDepth` 的早退条件是 `typeContainsRef(类型)`，
+ * 而**字段类型本身是 `ref`** 时它答 false ⇒ `inner { v: ref local }` 这种
+ * 值里装着活指针的表达式会被算成 0 ✗（反例 B_field_table_stale）。
+ * 这条只看语法结构，只可能把上界**抬高** ⇒ 方向安全 ✓ */
+int valDepthStructural(Checker *c, Expr *e) {
+    if (!e) return 0;
+    int d = 0;
+    switch (e->kind) {
+    case EX_IDENT: {
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy->refDepth;
+        return 0;
+    }
+    case EX_REF:    return placeDepth(c, e->u.ref.operand);
+    case EX_DEREF:  return valDepthStructural(c, e->u.deref.operand);
+    case EX_SIGN:   return valDepthStructural(c, e->u.sign.operand);
+    case EX_COALESCE:
+        return maxInt(valDepthStructural(c, e->u.coalesce.main),
+                      valDepthStructural(c, e->u.coalesce.fallback));
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            d = maxInt(d, valDepthStructural(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value));
+        return d;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
+        return d;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.enumval.args, i)));
+        return d;
+    case EX_INDEX: case EX_FIELD: return placeDepth(c, e);
+    case EX_CALL:
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.call.args, i)));
+        return d;
+    case EX_METHOD:
+        d = valDepthStructural(c, e->u.method.recv);
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.method.args, i)));
+        return d;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
+        return d;
+    case EX_NEW: case EX_GENCALL:
+        return e->arenaLevel == ARENA_HOME ? 0 : (e->arenaLevel > 0 ? e->arenaLevel : 0);
+    default: return 0;
+    }
+}
+
+/* ⭐ A2：记进任何地方的深度一律走这个 —— `exprRefDepth` 与结构上界**取 max** ✓ */
+int valDepthForStore(Checker *c, Expr *e) {
+    int a = exprRefDepth(c, e), b = valDepthStructural(c, e);
+    return a > b ? a : b;
+}
+
 int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
     /* 早退的唯一理由：**这个类型里不可能有引用**。
@@ -131,6 +190,14 @@ int exprRefDepth(Checker *c, Expr *e) {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = sy->refDepth;
         else d = placeDepth(c, e);
+        /* ⭐ A2：**别只看 `typeContainsRef`** —— 它对"字段类型本身是 `ref`"的聚合答 false
+         * ⇒ `struct holder { p: ?ref i32 }` 的绑定会被判成 0，连字段表都不看 ✗
+         * ⇒ 无论如何再取一次"各字段的上界" ✓ */
+        if (sy) {
+            for (int fi = 0; fi < sy->nfields; fi++)
+                if (sy->fields[fi].depth > d) d = sy->fields[fi].depth;
+            if (sy->otherDepth > d) d = sy->otherDepth;
+        }
         break;
     }
     case EX_FIELD: case EX_INDEX:

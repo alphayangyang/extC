@@ -75,6 +75,15 @@ typedef struct { const char *name; int count; } NameUse;
 
 typedef struct { Vec syms; } Scope;
 
+/* ⭐ B4′：一个"E 敏感"的调用点 —— 记下足够的信息，收尾时**不依赖作用域**也能重算 ✓ */
+typedef struct {
+    Expr  *call;         /* EX_CALL / EX_METHOD / EX_ASSOC 节点（收尾时改它的 arenaArg）*/
+    char  *argRoot[8];   /* 每个 `mut ref` 实参的根名（NULL = 那个位置不是 mut ref 实参）*/
+    int    argDepth[8];  /* 那个实参求值时的深度（0 = 参数/全局 ⇒ 已经"活在帧外"）*/
+    int    n;            /* 用到的槽数（上限 8）*/
+    bool   overflow;     /* 超过上限 ⇒ **说不全** ⇒ 收尾按"传家 arena"处理（保守但 sound）✗ */
+} EArenaSite;
+
 typedef struct {
     Ctx       *ctx;
     Arena     *arena;
@@ -121,6 +130,16 @@ typedef struct {
      * 那些 arena 归属待定的调用点）—— 查完体之后交给 `FuncDef.arenaSites`，
      * 等 `needsHome` 闭包跑完再统一定案 ✓ */
     Vec        curArenaSites;
+    /* ⭐ B4′（架构：**分析最后写、检查只读**）：E 敏感的"家 arena"决策要**推迟**
+     * 到所有函数体的效果摘要封闭之后再定。
+     * 为什么：`callHomeDepth` 里那条"实参会不会被搬出本函数 ⇒ 传我的家"依赖 **E**，
+     * 而 E（`computeEscapes`）要用**被调者的效果摘要**（"它会不会把实参存起来"）
+     * —— 那个摘要在**查体当中还没封闭**（闭包在所有体查完之后才跑）✗
+     * ⇒ 那时 `pub == 0`（摘要还是空的）⇒ 判不出"实参会被发布"⇒ 家 arena 选成
+     *    **调用者自己的帧** ⇒ 被调者往那个容器里塞的东西，本次调用返回即 release ✗
+     * （反例 B2/B3：`fill` 里 `pushOne(l, 7)` 之后 `sink(out, l)` 把 l 发布出去 ✓）
+     * ⇒ 查体时把这些调用点**记下来**，收尾 pass 按封闭后的摘要重算 ✓ */
+    Vec        eSites;      /* EArenaSite* */
     Vec        narrow;      /* const char* —— 已被证明非空的绑定的 cname */
     /* ⭐ 档1（ARENA-FORMAL §9）：**E 分析** —— 本函数里会被"搬出本函数"的局部名 ✓
      * 只影响"家 arena 选哪只"（保守方向 = 多算只会费内存）✓ */
@@ -246,9 +265,9 @@ typedef struct {
  int *fieldDepthEntry (Checker *, Sym *, const char *, bool);
  void noteFieldDepthWrite (Checker *, Sym *, const char *, int);
  const char *placeRootName (Expr *);
- int  callHomeDepth (Checker *, Vec *, Vec *);
- int callHomeDepth (Checker *c, Vec *args, Vec *params);
+  int callHomeDepth (Checker *c, Vec *args, Vec *params, Expr *callNode);
  int exprRefDepth (Checker *, Expr *);
+int valDepthForStore (Checker *, Expr *);
  int exprRefDepth (Checker *c, Expr *e);
  int placeDepth (Checker *c, Expr *e);
  int storeLayer (Checker *c, Expr *e);   /* ⭐ 「这块存储住在哪一层」（≠ placeDepth）✓ */

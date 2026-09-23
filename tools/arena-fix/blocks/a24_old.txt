@@ -1,0 +1,9 @@
+                Sym *vs = placeRoot(c, s->u.assign.target);
+                if (vs && vs->type && typeContainsRef(c->tt, vs->type)) {
+                    int d2 = exprRefDepth(c, s->u.assign.value);
+                    /* ⭐ 档2（ARENA-FORMAL §7.4）：路径目标（`h.p = …`）——
+                     * **没取过地址就强更新**（直接覆盖）✓
+                     * 取过地址 ⇒ 只能弱更新（别名可能指别处，覆盖会漏掉旧深度 ✗）✓ */
+                    if (s->u.assign.target->kind == EX_IDENT) vs->refDepth = d2;
+                    else if (d2 > vs->refDepth) vs->refDepth = d2;
+                }

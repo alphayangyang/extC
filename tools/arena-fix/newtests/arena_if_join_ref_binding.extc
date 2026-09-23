@@ -1,0 +1,17 @@
+fn f(c: i32) -> ?ref i32 {
+    var out: ?ref i32 = null
+    {
+        var x = alloc<i32>(1)
+        *x = 42
+        var p: ?ref i32 = null
+        if c == 1 { p = x } else { p = null }
+        out = p
+    }
+    return out
+}
+
+fn main() -> i32 {
+    var r = f(1)
+    println("r = ", *(r!))
+    return 0
+}

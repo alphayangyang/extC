@@ -1,0 +1,34 @@
+// p14: value escapes through a CALL in an expression statement (E analysis: ST_EXPR => false)
+struct node { value: i64  next: ?ref node }
+struct list { head: ?ref node  n: i64 }
+
+fn pushOne(l: mut ref list, v: i64) {     // needsHome: new + stores through param
+    var c: mut ref node = new node
+    c.value = v
+    c.next = l.head
+    l.head = c
+}
+
+fn sink(dst: mut ref list, src: list) { *dst = src }
+
+fn churn() {
+    var i: i64 = 0
+    while i < 40 {
+        var w: varArray<i64> = varArray<i64>::withCap(200)
+        w.push(i * 11)
+        i = i + 1
+    }
+}
+
+fn fill(out: mut ref list) {
+    var l: list = { head: null, n: 0 }
+    pushOne(ref l, 7)          // l is not in E => arenaArg = 1 = fill's OWN frame arena
+    sink(out, l)               // publishes l (head points into fill's frame arena)
+}
+
+fn main() {
+    var outer: list = { head: null, n: 0 }
+    fill(ref outer)
+    churn()
+    println("head = ", outer.head!.value)
+}

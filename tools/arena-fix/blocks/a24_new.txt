@@ -1,0 +1,12 @@
+                /* ⭐ A2（反例 B_field_table_stale 的真正断点）：**普通赋值那一支
+                 * 以前只写根的 `refDepth`，从来不写字段表** ✗
+                 * ⇒ `b.c = inner{v: ref local}` 之后 `b.c` 那一格还是老值 ⇒ `return b.c` 放行 ✗
+                 * ⇒ 统一走 `noteFieldDepthWrite`（同时管"那一格"与"整根 = max(各格)"）✓ */
+                Sym *vs = placeRoot(c, s->u.assign.target);
+                if (vs) {
+                    int d2 = valDepthForStore(c, s->u.assign.value);
+                    const char *fn2 = (s->u.assign.target->kind == EX_FIELD)
+                                        ? s->u.assign.target->u.field.name : NULL;
+                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))
+                        noteFieldDepthWrite(c, vs, fn2, d2);
+                }

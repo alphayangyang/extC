@@ -1,0 +1,21 @@
+struct box {
+    p: ?ref i32
+    q: ?ref i32
+}
+
+fn g(h: mut ref box) {
+    var n = new i32
+    *n = 1
+    var x = alloc<i32>(1)
+    *x = 42
+    var s: box = { p: n, q: n }
+    s.q = x
+    *h = s
+}
+
+fn main() -> i32 {
+    var out: box = { p: null, q: null }
+    g(ref out)
+    println("out.q = ", *(out.q!))
+    return 0
+}
