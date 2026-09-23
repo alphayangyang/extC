@@ -1407,7 +1407,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         ckError(c, e->line,
                                 "Type inference for a generic function's type parameters must see"
                                 " them in an argument. If one only appears in the return type,"
-                                " write it explicitly: `f<i32>(…)`.",
+                                " write it explicitly: `f<i32>(...)`.",
                                 "cannot infer type parameter(s) of `%s` from the arguments", name);
                         return f->ret ? f->ret : ttVoid(tt);
                     }
@@ -1417,7 +1417,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     ckError(c, e->line,
                             "Type inference for a generic function's type parameters must see"
                             " them in an argument. If one only appears in the return type,"
-                            " write it explicitly: `f<i32>(…)`.",
+                            " write it explicitly: `f<i32>(...)`.",
                             "cannot infer type parameter `%s` of `%s`",
                             *(const char **)vecAt(&f->typeParams, i), name);
                     return f->ret ? f->ret : ttVoid(tt);

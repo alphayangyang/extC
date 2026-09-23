@@ -698,7 +698,7 @@ static void emitDescRegion(CG *g) {
     }
     if (g->eqNeed.len) cgLine(g, "");
 
-    cgLine(g, "/* ---- 类型描述表（**按需**：只出真会被用到的那些）---- */");
+    cgLine(g, "/* ---- Type descriptor table, emitted on demand: only types that are used. ---- */");
     for (size_t i = 0; i < g->descs.len; i++)   /* all forward-declared: order does not matter */
         cgLine(g, "static const ExtcDesc %s_desc;", (*(Type **)vecAt(&g->descs, i))->name);
     cgLine(g, "");
@@ -2069,12 +2069,12 @@ static const char *arenaRefAt(CG *g, int level) {
  */
 static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
     if (getenv("EXTC_DBG_ARENA_VERBOSE"))
-        fprintf(stderr, "[arena-ok?] %s: 层号=%d 当前块=%d %s:%d\n",
+        fprintf(stderr, "[arena-ok?] %s: level=%d block=%d %s:%d\n",
                 what, e->arenaLevel, g->blkLevel, g->path, e->line);
     if (e->arenaLevel == 0)
-        fprintf(stderr, "[arena!] %s 的层号是 0（没定）✗  %s:%d\n", what, g->path, e->line);
+        fprintf(stderr, "[arena!] %s has level 0 (undecided)  %s:%d\n", what, g->path, e->line);
     else if (e->arenaLevel != ARENA_HOME && e->arenaLevel > g->blkLevel)
-        fprintf(stderr, "[arena!] %s 的层号 %d 比当前块 %d 还深 ⇒ 两个权威漂了 ✗  %s:%d\n",
+        fprintf(stderr, "[arena!] %s has level %d, deeper than block %d: the two answers disagree  %s:%d\n",
                 what, e->arenaLevel, g->blkLevel, g->path, e->line);
 }
 
@@ -2389,7 +2389,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * by the call site. */
                 int k = owIndex(g, s);
                 Expr *nx = s->u.var.init;
-                if (getenv("EXTC_DBG_ARENA")) arenaDriftCheck(g, nx, "@overwrite 的 new");
+                if (getenv("EXTC_DBG_ARENA")) arenaDriftCheck(g, nx, "@overwrite new");
                 Type *st_t = subst(g, nx->u.new_.type);
                 bool loc = f_owLocal(g, s);
                 if (k >= 0) {
@@ -2854,7 +2854,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->blkLevel = 0;
     g->loopLen  = 0;
     if (isMain && f->needsHome)
-        cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main 的家 = 自己函数体 */");
+        cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
     /* Only a self-recursive function needs the depth guard; see
      * funcCallsItself. Entering increments, every exit decrements, and
      * `extc_rec_enter` traps with a position once the limit is passed.
@@ -3396,19 +3396,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "#include <stdio.h>\n"
         "#include <string.h>\n"
         "#include <stdlib.h>\n\n"
-        "/* ⚠️ 下面这些原语全部 `static inline` —— **这不是风格问题**：\n"
-        " * 不内联的话，gcc 在 -O1 下**看不见检查体**，于是既不能消掉检查、\n"
-        " * 也不能把 `i % 7` 变成乘法+移位。实测（2026-09-20）：取模慢 4.6 倍、\n"
-        " * 矩阵乘慢 1.5 倍；加了 inline 之后**全部追平 C** ✓ */\n"
-        "/* 越界 trap：带 extC 的位置（由 `#line` 与调用点传进来的 file/line 保证）*/\n"
+        "/* Every primitive below is `static inline`, and that is not a style choice:\n"
+        " * without inlining, gcc at -O1 cannot see the body of a check, so it can neither\n"
+        " * eliminate the check nor turn `i % 7` into a multiply and shift. Measured: the\n"
+        " * remainder operator was 4.6x slower and a matrix multiply 1.5x slower; with\n"
+        " * inlining both match C. */\n"
+        "/* Out-of-range trap; the position comes from the call site via `#line`. */\n"
         "static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n"
         "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
         "            file, line, (long long)i, (long long)n);\n"
         "    exit(1);\n"
         "}\n"
-        "/* ---- 算术的失败必须**响亮**（LANGUAGE.md 0.5）：\n"
-        " * 除零、除法的溢出、移位超宽，在 C 里都是 UB —— 我们让它 trap 带源码位置。\n"
-        " * 不静默算错，也不留 UB ✓ */\n"
+        "/* Arithmetic failures must be loud: division by zero, the overflowing division, and\n"
+        " * an over-wide shift are all undefined behaviour in C. Each one traps with a\n"
+        " * source position instead of computing a wrong answer or leaving UB behind. */\n"
         "static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n"
         "    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n"
         "    exit(1);\n"
@@ -3449,17 +3450,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
         "    return a % b;\n"
         "}\n"
-        "/* 移位：C 里移 >= 位宽 或 负数 都是 UB ⇒ 检查移位数，返回它（求值一次）*/\n"
+        "/* Shifts: shifting by the width or more, or by a negative amount, is undefined\n"
+        " * behaviour in C, so the count is checked and returned (evaluated once). */\n"
         "static inline int64_t extc_shiftCount(int64_t b, int64_t w, const char *f, int l) {\n"
         "    if (b < 0 || b >= w) extc_trapMsg(f, l, \"shift count out of range\");\n"
         "    return b;\n"
         "}\n"
-        "/* 带越界检查的下标：**返回下标**，所以调用点只求值一次。*/\n"
+        "/* Checked index: the index is returned, so the caller evaluates it only once. */\n"
         "static inline int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {\n"
         "    if (i < 0 || i >= n) extc_trap(file, line, i, n);\n"
         "    return i;\n"
         "}\n"
-        "/* 带范围检查的切片：要求 0 <= lo <= hi <= n，返回 lo。*/\n"
+        "/* Checked slice: requires 0 <= lo <= hi <= n, and returns `lo`. */\n"
         "static inline int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,\n"
         "                          const char *file, int line) {\n"
         "    if (lo < 0 || hi < lo || hi > n) {\n"
@@ -3510,7 +3512,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "static inline void extc_arena_release(extc_arena *a) {\n"
         "    while (a->top) { extc_ablock *p = a->top->prev; free(a->top); a->top = p; }\n"
         "}\n"
-        "/* 显式转换用（PLAN #23）：整数收窄 / 换符号 / 浮点转整数 ⇒ 装不下就 trap（带位置）*/\n"
+        "/* Explicit conversions: narrowing, sign change, or float-to-integer. A value that\n"
+        " * does not fit traps, reporting the source position. */\n"
         "static inline int64_t extc_narrowI(int64_t v, int64_t lo, int64_t hi, const char *f, int l) {\n"
         "    if (v < lo || v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n"
         "    return v;\n"
@@ -3523,7 +3526,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " const char *f, int l) {\n"
         "    if (!(v >= (double)lo && v <= (double)hi))"
         " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
-        "    return (int64_t)v;   /* 向零截断 = C 的规则 ✓ */\n"
+        "    return (int64_t)v;   /* truncation toward zero, as in C */\n"
         "}\n"
         "void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
         "    if (n <= 0) n = 1;\n"
@@ -3543,7 +3546,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    {\n"
         "        void *p = a->top->data + a->top->used;\n"
         "        a->top->used += n;\n"
-        "        memset(p, 0, (size_t)n);   /* ⭐ 分配**永远清零** */\n"
+        "        memset(p, 0, (size_t)n);   /* fresh allocations are always zeroed */\n"
         "        return p;\n"
         "    }\n"
         "}\n\n");
@@ -3572,21 +3575,22 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * The same table can later feed structural `==`, serialization or hashing.
      * ================================================================== */
     bufPuts(&g.rt,
-        "/* ---- 类型描述表 ----\n"
-        " * 每类型一份静态数据；`extc_print` 全程序只有一份。\n"
-        " * size 的含义：标量/结构体 = sizeof(T)；数组/切片 = **元素步长**。\n"
-        " * 视图的 C 布局固定是 `{ T *data; int64_t len; }`（见 genViewUnit）。\n"
+        "/* ---- Type descriptor table ----\n"
+        " * One static entry per type; `extc_print` exists once per program.\n"
+        " * Meaning of `size`: for a scalar or struct it is sizeof(T); for an array or\n"
+        " * view it is the element stride. A view always has the C layout\n"
+        " * `{ T *data; int64_t len; }`.\n"
         " */\n"
         "enum {\n"
         "    EXTC_D_I8, EXTC_D_I16, EXTC_D_I32, EXTC_D_I64,\n"
         "    EXTC_D_U8, EXTC_D_U16, EXTC_D_U32, EXTC_D_U64,\n"
         "    EXTC_D_F32, EXTC_D_F64, EXTC_D_BOOL,\n"
-        "    EXTC_D_ENUM,      /* table = const char *const[]，tag 在偏移 0 */\n"
+        "    EXTC_D_ENUM,      /* table = const char *const[]; the tag sits at offset 0 */\n"
         "    EXTC_D_STRUCT,    /* table = ExtcField[] */\n"
-        "    EXTC_D_ARRAY,     /* 定长数组：count 个 elem */\n"
-        "    EXTC_D_SLICE,     /* 视图：{ T *data; int64_t len; } */\n"
-        "    EXTC_D_TEXT,      /* slice<u8>：按**文本**印（跟别的切片不一样）*/\n"
-        "    EXTC_D_REF        /* ref / ?ref：一律印 <ref> */\n"
+        "    EXTC_D_ARRAY,     /* fixed-size array: `count` elements of `elem` */\n"
+        "    EXTC_D_SLICE,     /* view: { T *data; int64_t len; } */\n"
+        "    EXTC_D_TEXT,      /* slice<u8>: printed as text, unlike any other slice */\n"
+        "    EXTC_D_REF        /* ref / ?ref: always printed as <ref> */\n"
         "};\n"
         "\n"
         "typedef struct ExtcDesc ExtcDesc;\n"
@@ -3594,19 +3598,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "\n"
         "struct ExtcDesc {\n"
         "    int             kind;\n"
-        "    const char     *name;    /* 结构体/枚举的显示名（打印用）*/\n"
-        "    size_t          size;    /* 标量/结构体 = sizeof(T)；数组/切片 = 元素步长 */\n"
-        "    size_t          count;   /* 字段数 / 变体数 / 数组长度 */\n"
-        "    const void     *table;   /* ExtcField[] 或 const char *const[] */\n"
-        "    const ExtcDesc *elem;    /* 数组/切片的元素 */\n"
-        "    /* ⭐ 结构化 `==` 用：**只有 struct 才填** —— 那是用户（或库）写的 `fn ==`，\n"
-        "     * 是**任意代码**，只能委托不能重造 ✓ codegen 为它生成一行适配器。\n"
-        "     * 其余 kind 由 `extc_eq` 自己递归 ⇒ 这一格留空（位置在最后 ⇒ 老初始化式\n"
-        "     * 少写一个也自动补 0 ✓）*/\n"
+        "    const char     *name;    /* display name of a struct or enum, for printing */\n"
+        "    size_t          size;    /* scalar/struct = sizeof(T); array/view = element stride */\n"
+        "    size_t          count;   /* number of fields, variants, or array elements */\n"
+        "    const void     *table;   /* ExtcField[] or const char *const[] */\n"
+        "    const ExtcDesc *elem;    /* element descriptor of an array or view */\n"
+        "    /* Used by structural `==`; filled in for structs only, because a struct's `==`\n"
+        "     * is user code (or library code) and can only be delegated to, never\n"
+        "     * re-derived. codegen emits a one-line adapter for it. Every other kind is\n"
+        "     * compared recursively by `extc_eq`, so this slot stays NULL. It sits last on\n"
+        "     * purpose: an initializer that omits it still zero-fills it. */\n"
         "    bool          (*eq)(const void *a, const void *b);\n"
         "};\n"
         "\n"
-        "/* 不依赖具体类型的四只：引用 / 字节视图 / 标量 —— 全程序共享 ✓ */\n"
+        "/* Type-independent descriptors (reference, byte view, scalars), shared per program. */\n"
         "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL };\n"
@@ -3625,8 +3630,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * 4095 characters, and one large literal would trigger -Woverlength-strings.
      * That is not an error, but there is no reason to keep the noise. */
     bufPuts(&g.rtPrint,
-        "/* 通用递归打印器 —— 输出格式必须跟以前派生的 `_debug` **逐字节一致** ✓\n"
-        " * （真值表见 tools/print-formats.txt：浮点 %g、[N]u8 按数字、slice<u8> 按文本 ……）*/\n"
+        "/* Generic recursive printer. The output format must stay byte-for-byte identical to\n"
+        " * the `_debug` helpers it replaces; the truth table lives in\n"
+        " * tools/print-formats.txt (floats use %g, [N]u8 prints numerically, and\n"
+        " * slice<u8> prints as text). */\n"
         "static void extc_print(const void *p, const ExtcDesc *d) {\n"
         "    switch (d->kind) {\n"
         "    case EXTC_D_I8:   printf(\"%d\", (int)*(const int8_t *)p); return;\n"
@@ -3722,11 +3729,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        const int64_t la = *(const int64_t *)((const char *)a + sizeof(void *));\n"
         "        const int64_t lb = *(const int64_t *)((const char *)b + sizeof(void *));\n"
         "        if (la != lb) return false;\n"
-        "        if (la <= 0) return true;      /* 空视图：data 可能是 null ⇒ 不比 ✓ */\n"
+        "        if (la <= 0) return true;      /* empty view: `data` may be null, so nothing to compare */\n"
         "        return memcmp(*(const void *const *)a, *(const void *const *)b, (size_t)la) == 0;\n"
         "    }\n"
         "    case EXTC_D_STRUCT:\n"
-        "        /* 用户写的 `fn ==`（适配器）；没有就说明根本不该被比 ✓ */\n"
+        "        /* The user-written `fn ==` through its adapter; a NULL slot means the\n"
+        "         * two values should never have been compared. */\n"
         "        return d->eq ? d->eq(a, b) : false;\n"
         "    case EXTC_D_ARRAY:\n"
         "    case EXTC_D_SLICE: {\n"

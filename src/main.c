@@ -436,7 +436,7 @@ int main(int argc, char **argv) {
      * which does not say whether the mapping or the lookup is at fault. Seeing the
      * table settles it. */
     if (getenv("EXTC_DBG_M")) {
-        fprintf(stderr, "[mangle] 裸名回程票 %zu 条:", tt->aliases.len);
+        fprintf(stderr, "[mangle] bare-name return tickets: %zu", tt->aliases.len);
         for (size_t i = 0; i < tt->aliases.len; i++) {
             Alias *al = (Alias *)vecAt(&tt->aliases, i);
             fprintf(stderr, " %s=>%s", al->from, al->to);
