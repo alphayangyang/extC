@@ -1150,6 +1150,166 @@ static bool exprIsFresh(Expr *e) {
  *     is the conservative direction: a missing name only keeps a requirement that could
  *     have been dropped.
  */
+/* The innermost loop each allocation line sits in, and the block level of that loop body.
+ *
+ * `--explain-memory` needs both, and the level has to be the level of the **loop body**,
+ * not of the block the `new` happens to be written in. An allocation is released once per
+ * round exactly when it lands in the loop body's arena or deeper; anything shallower is
+ * still live when the next round starts, so its memory grows with the iteration count.
+ *
+ * Measuring against the worst level read as growing although its peak stays at 13 MB,
+ * because its `new` sits in a nested block one level below the loop body and that block
+ * still ends within the round. The loop body's level is taken as the smallest
+ * `lexicalLevel` among the sites in that loop, since a nested block only ever reports a
+ * deeper one.
+ *
+ * Records are (line, loopId) per site and (loopId, level) per loop. */
+static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_WHILE: {
+        Stmt *b = s->u.whiles.body;
+        if (!b) return;
+        int id = (*nextLoop)++;
+        collectLoopSites(b, id, nextLoop, sites);
+        return;
+    }
+    case ST_VAR:
+        if (loopId && exprHasNew(s->u.var.init)) {
+            *(int *)vecPush(sites) = s->u.var.init->line;
+            *(int *)vecPush(sites) = loopId;
+            *(int *)vecPush(sites) = s->u.var.init->lexicalLevel;
+        }
+        return;
+    case ST_ASSIGN:
+        if (loopId && exprHasNew(s->u.assign.value)) {
+            *(int *)vecPush(sites) = s->u.assign.value->line;
+            *(int *)vecPush(sites) = loopId;
+            *(int *)vecPush(sites) = s->u.assign.value->lexicalLevel;
+        }
+        return;
+    case ST_EXPR:
+        if (loopId && exprHasNew(s->u.expr.expr)) {
+            *(int *)vecPush(sites) = s->u.expr.expr->line;
+            *(int *)vecPush(sites) = loopId;
+            *(int *)vecPush(sites) = s->u.expr.expr->lexicalLevel;
+        }
+        return;
+    case ST_RETURN:
+        if (loopId && exprHasNew(s->u.ret.value)) {
+            *(int *)vecPush(sites) = s->u.ret.value->line;
+            *(int *)vecPush(sites) = loopId;
+            *(int *)vecPush(sites) = s->u.ret.value->lexicalLevel;
+        }
+        return;
+    case ST_IF:
+        collectLoopSites(s->u.ifs.thenBody, loopId, nextLoop, sites);
+        collectLoopSites(s->u.ifs.elseBody, loopId, nextLoop, sites);
+        return;
+    case ST_BLOCK:
+        for (size_t k = 0; k < s->u.block.stmts.len; k++)
+            collectLoopSites(*(Stmt **)vecAt(&s->u.block.stmts, k), loopId, nextLoop, sites);
+        return;
+    case ST_MATCH:
+        for (size_t k = 0; k < s->u.match.arms.len; k++)
+            collectLoopSites((*(MatchArm **)vecAt(&s->u.match.arms, k))->body, loopId, nextLoop, sites);
+        return;
+    default: return;
+    }
+}
+
+/* Where an allocation site ends up, in words a reader can use.
+ *
+ * The levels are the same numbers the checker decided with; naming them is the point of
+ * the report, because "level 0" alone does not tell a reader whether that is good news. */
+
+/* `--explain-memory`: one line per allocation site, with the numbers behind the decision.
+ *
+ * The report exists because the checker knows all of this and none of it is visible: a
+ * program that holds memory does so because of a specific allocation site, and nothing in
+ * the source says which. Every site the checker decided on is listed with the level it
+ * landed at, the shallowest level it was ever published to, and whether it sits in a loop.
+ *
+ * `minAt == 0` means the site was stored into something that outlives the frame. That is
+ * the one verdict the numbers support on their own, and it is what `@overwrite` is for, so
+ * those lines are called out; the rest are printed as data. An earlier version of the
+ * report also claimed "memory grows with the iteration count" for any site in a loop whose
+ * level was shallower than the loop body, which was wrong: `bench/gc/src/rebuild.extc` was
+ * reported as growing while measuring it at 2000, 20000 and 200000 rounds gives 1.7 MB
+ * every time. The level a site lands at and the point where its block is released are
+ * decided by different rules, so the report no longer guesses at the second one. */
+/* The loop that holds this line, or 0 when no loop does.
+ *
+ * The site table is (line, loopId, lexicalLevel) triples. */
+static int loopIdOf(const Vec *sites, int line) {
+    for (size_t i = 0; i + 2 < sites->len; i += 3)
+        if (*(int *)vecAt((Vec *)sites, i) == line) return *(int *)vecAt((Vec *)sites, i + 1);
+    return 0;
+}
+
+static void reportMemory(Checker *c, Vec *all) {
+    int nSite = 0, nLoop = 0, nPromoted = 0;
+    fprintf(stderr, "extC memory report\n");
+    fprintf(stderr, "------------------\n");
+    fprintf(stderr, "  One line per allocation site. `level` is the arena it was placed in\n");
+    fprintf(stderr, "  (0 = this frame, -1 = the caller's). A site **shallower than the block it\n");
+    fprintf(stderr, "  is written in** is not released by that block; inside a loop that is how\n");
+    fprintf(stderr, "  memory comes to grow with the iteration count.\n");
+    for (size_t i = 0; i < all->len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(all, i);
+        if (!f->arenaSites.len) continue;
+        Vec sites;
+        vecInit(&sites, c->arena, sizeof(int));
+        int nextLoop = 1;
+        collectLoopSites(f->body, 0, &nextLoop, &sites);
+        fprintf(stderr, "\n  %s\n", f->name ? f->name : "?");
+        for (size_t j = 0; j < f->arenaSites.len; j++) {
+            Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+            if (!site) continue;
+            nSite++;
+            bool inLoop = loopIdOf(&sites, site->line) != 0;
+            if (inLoop) nLoop++;
+            /* Promoted out of the block it is written in: the site landed shallower than
+             * its own lexical block, so the block it sits in is not what releases it. In a
+             * loop that means the round's allocation is still live when the next round
+             * starts. Measured on the four shapes in /tmp/mem_*.extc: the site is the only
+             * one of the four that grows (159 MB against 1.7 MB) and the only one where
+             * this holds. */
+            /* The level of the innermost loop body holding this line, or 0 when it is not
+             * in a loop. Taken as the smallest `lexicalLevel` among the allocation lines in
+             * that loop: a nested block only ever reports a deeper one, so the smallest is
+             * the loop body itself. Comparing against the level of the block the `new` is
+             * written in was wrong -- `bench/gc/src/rebuild.extc` writes its `new` one block
+             * below the loop body, and that block still ends inside the round, so its peak
+             * stays at 1.7 MB while the comparison called it growing. */
+            int loopLv = 0x7fffffff;
+            for (size_t k = 0; k + 1 < sites.len; k += 2) {
+                if (*(int *)vecAt(&sites, k + 1) != loopIdOf(&sites, site->line)) continue;
+                int l = *(int *)vecAt(&sites, k);
+                if (l > 0 && l < loopLv) loopLv = l;
+            }
+            bool promoted = inLoop && site->arenaLevel >= 0 && site->arenaLevel < loopLv;
+            if (promoted) nPromoted++;
+            fprintf(stderr, "    line %-5d level %-3d lexical %-3d  %s\n",
+                    site->line, site->arenaLevel, site->lexicalLevel,
+                    inLoop ? "allocated once per round of a loop" : "allocated outside any loop");
+            if (promoted) {
+                fprintf(stderr, "               placed **shallower than the block it is written in**\n");
+                if (inLoop)
+                    fprintf(stderr, "               => the round's allocation is still live when the next\n"
+                                    "                  round starts; if the previous one is not needed,\n"
+                                    "                  write `@overwrite` on it\n");
+            }
+        }
+    }
+    if (!nSite) {
+        fprintf(stderr, "\n  no allocation site in this module\n");
+        return;
+    }
+    fprintf(stderr, "\n  %d allocation site(s), %d inside a loop, %d promoted out of their block\n",
+            nSite, nLoop, nPromoted);
+}
+
 static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
     if (!s) return;
     switch (s->kind) {
@@ -3810,6 +3970,24 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         else if (getenv("EXTC_SELFCHECK_VERBOSE"))
             fprintf(stderr, "[selfcheck] all invariants hold\n");
         if (bad) ctx->hasError = true;      /* so scripts see the failure */
+    }
+
+    /* The full report, on request.
+     *
+     * Every level is final by now, so this is the one place that can print what the
+     * checker knows about memory. The flag is read from the environment so that the driver
+     * stays unaware of the report, the same arrangement `--dump-effects` uses. */
+    if (getenv("EXTC_EXPLAIN_MEMORY") && getenv("EXTC_EXPLAIN_ROOT")
+        && strcmp(getenv("EXTC_EXPLAIN_ROOT"), "1") == 0) {
+        Vec allF; vecInit(&allF, arena, sizeof(FuncDef *));
+        for (size_t i = 0; i < m->funcs.len; i++)
+            *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&m->funcs, i);
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++)
+                *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&sd->methods, j);
+        }
+        reportMemory(&c, &allF);
     }
 
     return !ctx->hasError;

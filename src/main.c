@@ -74,6 +74,13 @@ static char *readFile(Arena *a, const char *path, size_t *outLen) {
  *   True when every byte was written; false when the file cannot be opened or a
  *   short write happened.
  */
+/* Whether the memory report should be printed this time.
+ *
+ * `checkModule` runs once for the prelude and once for the file the user named, and only
+ * the second is about the user's program: a report about the prelude would be noise, and
+ * printing it twice would look like the program had been analysed twice. */
+static bool g_explainRoot = false;
+
 static bool writeFile(const char *path, const char *data, size_t len) {
     FILE *f = fopen(path, "wb");
     if (!f) return false;
@@ -241,6 +248,8 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     if (!ctx.hasError) parseModule(&ctx, arena, &toks, &pm);
     if (!ctx.hasError) {
         ttRegister(tt, &pm);        /* the same table the user file will use */
+        g_explainRoot = false;      /* a report about the prelude is noise */
+        setenv("EXTC_EXPLAIN_ROOT", "0", 1);
         checkModule(&ctx, arena, tt, &pm);
     }
 
@@ -333,6 +342,11 @@ int main(int argc, char **argv) {
              * the environment variable here keeps the rest of the driver unaware of the
              * flag. */
             setenv("EXTC_DUMP_EFFECTS", "1", 1);
+        } else if (strcmp(argv[i], "--explain-memory") == 0) {
+            /* One line per allocation site: where it lands and whether it is released each
+             * round of the loop it sits in. Printed after checking, when every level is
+             * final. See `reportMemory`. */
+            setenv("EXTC_EXPLAIN_MEMORY", "1", 1);
         } else if (strcmp(argv[i], "--check-c") == 0) {
             doCheckC = true;          /* syntax-check the generated C afterwards */
         } else if (strcmp(argv[i], "--run") == 0) {
@@ -472,6 +486,8 @@ int main(int argc, char **argv) {
      * Code generation then performs no type inference at all. */
     if (!ctx.hasError) {
         ttRegister(tt, &m);
+        g_explainRoot = true;       /* this is the file the user named */
+        setenv("EXTC_EXPLAIN_ROOT", "1", 1);
         checkModule(&ctx, &arena, tt, &m);
     }
 
