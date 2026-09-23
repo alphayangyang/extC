@@ -10,6 +10,7 @@
 
 #include "codegen.h"
 
+#include <assert.h>     /* the entry-point contracts below */
 #include <stdarg.h>
 #include <stdlib.h>   /* exit: exceeding the closure limit must fail loudly */
 #include <stdio.h>
@@ -1809,6 +1810,11 @@ static const char *genExprInner(CG *g, Expr *e) {
  * path can forget the dereference.
  */
 static const char *genExpr(CG *g, Expr *e) {
+    /* The contract is that every caller passes an expression node. Every path that
+     * generates a value goes through here, and no field of the AST is optional in
+     * that position, so a NULL would be a caller bug; stating it makes the
+     * invariant visible to readers and to static analysers alike. */
+    assert(e != NULL);
     const char *s = genExprInner(g, e);
     if (e->deref) return arenaPrintf(g->arena, "*(%s)", s);
     return s;
@@ -2342,6 +2348,10 @@ static int blkMaxLevel(Stmt *s) {
  *     by the number of iterations.
  */
 static void genBlockBody(CG *g, Stmt *block) {
+    /* Only functions with a body reach here (`genFunc` returns early for an
+     * external declaration, which has none), and every other caller passes a
+     * block statement it just inspected. */
+    assert(block != NULL && block->kind == ST_BLOCK);
     g->blkLevel++;
     if (!g->noArena) cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
