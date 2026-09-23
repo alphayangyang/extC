@@ -1,0 +1,17 @@
+// IO 形状：按**词**读（每字节判定 + 遇空白推回）—— 测 nextToken 的吞吐
+use std::io
+fn go() -> result<unit, io::ioError> {
+    var r = io::readerOf(io::STDIN_FD)
+    var buf: [64]u8
+    var toks: i64 = 0
+    var total: i64 = 0
+    while true {
+        let n = r.nextToken(buf[..])?
+        if n == i64(0) { break }
+        toks = toks + 1
+        total = total + n
+    }
+    println("tokens = ", toks, " bytes = ", total)
+    return success(unit {})
+}
+fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

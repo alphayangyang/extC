@@ -198,46 +198,77 @@ struct reader {
     /* 读一行到 `out`（**不含换行**）✓
      * 返回值：读到的字节数；**0 = 一开始就 EOF** ✓
      * ⚠️ 行比 `out` 长 ⇒ `failure(lineTooLong)` ——
-     *    绝不像以前那样**静默切一半**，那会让调用者把一行当成两行 ✗✗ */
+     *    绝不像以前那样**静默切一半**，那会让调用者把一行当成两行 ✗✗
+     *
+     * ⚠️ **热循环手写**（理由与 `nextInt` 那里同一条）：`nextByte` 返回 `result` 结构体
+     *    ⇒ GCC 不肯内联 ⇒ **每读一个字节一次方法调用** ✗
+     *    这里 `pos < len` 时只做"下标 + 自增"，缓冲耗尽才调一次 `fill`（每 64KB 一次 ✓）
+     *    语义与逐字节版**逐字符一致**：EOF 收尾（末行没换行也算一行）· 换行**不吃进 `out`** ·
+     *    超长立刻 `failure`（绝不"读到一半当成功" ✗）✓ */
     fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
         var n: i64 = 0
         while true {
-            let b = self.nextByte()?
-            if b < i64(0) { return success(n) }              /* EOF 收尾（最后一行没换行也算一行 ✓）*/
-            if b == i64(10) { return success(n) }            /* '\n' ⇒ 行结束 ✓ */
-            if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
-            out[n] = u8(b)
-            n = n + 1
+            if self.pos >= self.len {
+                let got = self.fill()?
+                if got == i64(0) { return success(n) }       /* EOF 收尾（最后一行没换行也算一行 ✓）*/
+            }
+            while self.pos < self.len {
+                let b = i64(self.chunk[self.pos])
+                self.pos = self.pos + i64(1)
+                if b == i64(10) { return success(n) }        /* '\n' ⇒ 行结束 ✓ */
+                if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
+                out[n] = u8(b)
+                n = n + 1
+            }
         }
         return success(n)
     }
 
     /* ---------------------------------------------------------------- 空白与词 */
 
-    /* 跳过空白（空格/制表/CR/LF/VT/FF）✓ 返回跳掉了几字节 */
+    /* 跳过空白（空格/制表/CR/LF/VT/FF）✓ 返回跳掉了几字节
+     * ⚠️ **热循环手写**（同 `nextInt`）：遇到非空白**不消费**它 ——
+     *    老版本是"读进来再把 `pos` 减回去"，这里干脆不前进（同一件事，少一步 ✓）*/
     fn skipSpace(self: mut ref reader) -> result<i64, ioError> {
         var n: i64 = 0
         while true {
-            let b = self.nextByte()?
-            if b < i64(0) { return success(n) }
-            if !isSpaceByte(b) { self.pos = self.pos - i64(1)  return success(n) }
-            n = n + 1
+            if self.pos >= self.len {
+                let got = self.fill()?
+                if got == i64(0) { return success(n) }
+            }
+            while self.pos < self.len {
+                if !isSpaceByte(i64(self.chunk[self.pos])) { return success(n) }
+                self.pos = self.pos + i64(1)
+                n = n + 1
+            }
         }
         return success(n)
     }
 
     /* 读一个词（**连续的非空白**）到 `out` ✓ 返回长度；0 = 先遇到 EOF ✓
-     * 前导空白会跳过 ⇒ 可以直接连着调 ✓ */
+     * 前导空白会跳过 ⇒ 可以直接连着调 ✓
+     * ⚠️ **热循环手写**（同 `nextInt`）：前导空白在**这个循环里**就地吃掉（不再调 `skipSpace`），
+     *    词尾那个空白**不消费**（老版本靠 `pos - 1` 推回 ✓）*/
     fn nextToken(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
-        self.skipSpace()?
         var n: i64 = 0
+        var started: bool = false
         while true {
-            let b = self.nextByte()?
-            if b < i64(0) { return success(n) }
-            if isSpaceByte(b) { self.pos = self.pos - i64(1)  return success(n) }
-            if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
-            out[n] = u8(b)
-            n = n + 1
+            if self.pos >= self.len {
+                let got = self.fill()?
+                if got == i64(0) { return success(n) }
+            }
+            while self.pos < self.len {
+                let b = i64(self.chunk[self.pos])
+                if !started {
+                    if isSpaceByte(b) { self.pos = self.pos + i64(1)  continue }
+                    started = true
+                }
+                if isSpaceByte(b) { return success(n) }          /* 词结束：那个空白**留着** ✓ */
+                if n >= out.len { return failure(ioError.lineTooLong(n + i64(1))) }
+                out[n] = u8(b)
+                n = n + 1
+                self.pos = self.pos + i64(1)
+            }
         }
         return success(n)
     }
