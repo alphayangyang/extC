@@ -346,6 +346,15 @@ examples/     样例（按特性分类；每个特性都要有一个能跑的）
 tests/        回归：正例（含 // expect: 断言）/ 反例 / traps / arena / asan / warnings
               / modules / generics / extern / io / attacks（攻击库 + BASELINE）
 tools/        embed.c（把 stdlib 嵌成 C 字节数组）· golden.sh（生成 C 的逐字节金标准）
-              · print-desc.c / print-formats.txt
+              · parrun.py（用例并行跑，输出按提交顺序回放）· scan_cjk.py（注释语言哨兵）
+              · comment_neutral.py（证明一次改动只动了注释）· memsafe/（内存安全用例）
+bench/        横评与基准：extC vs C · 重负载 · 压测 · 编译时长 · OI 四语言 · bigmatrix 六语言
+              —— 每个 bench 自带 runner，数字落在各自的 REPORT/RESULTS 里
+docs/         文档：PLAN（唯一路线图）· MANUAL（语言手册）· SPEC / DESIGN · DECISIONS · DEVLOG
+              + topics/（专题）· history/（历史，别当现状读）
+check.sh      一条命令跑完全部验收（`quick` = 15 节，只要 cc + python3）
+.github/      CI：build + `check.sh quick`
+.claude/skills/   给 AI 助手用的**调试手册**（gdb / 优化构建调试 / arena 调试 / 前端）
+              —— 这个仓库的调试手法写成技能，人和助手共用同一套 ✓
 prototype-python/   作废的 Python 草稿，只作语法参考
 ```
