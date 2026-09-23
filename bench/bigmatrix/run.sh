@@ -128,6 +128,9 @@ done
 # 口径跟 bench/oi 那份报告一致：二进制 KB、源码**行数**、extC 另给**生成 C** 的大小 ✓
 echo
 echo "== 交付文件 / 源码大小 =="
+# 空程序的生成 C = **固定运行时开销**（拆"生成 C 有多大"时必须减掉它，否则全是 preamble ✓）
+printf 'fn main() -> i32 { return 0 }\n' > "$B/empty.extc"
+"$EXTC" "$B/empty.extc" -o "$B/empty_extc.c" 2>/dev/null && wc -l < "$B/empty_extc.c" > "$B/empty_extc.lines"
 : > "$B/sizes.tsv"
 for s in $SHAPES; do
     cls=${JAVA_CLASS[$s]}

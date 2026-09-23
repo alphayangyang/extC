@@ -264,6 +264,30 @@ def main():
             w(f"| {s} | {d['c_bytes'] / 1024:.1f} | {d['c_lines']} | "
               f"{d['b_extc'] / 1024:.1f} | {d['s_extc']}·{d['l_extc']} |")
         w("")
+        base = 0
+        try:
+            base = int(open(os.path.join(B, "empty_extc.lines")).read().strip())
+        except (OSError, ValueError):
+            pass
+        if base:
+            w(f"**拆两层看**：空程序的生成 C 就是 **{base} 行**（运行时 preamble —— 每个程序都要）⇒")
+            w("减掉它才是**算法那部分**：")
+            w("")
+            w("| 形状 | 算法部分行数 | ÷ 手写 C 行数 | ÷ extC 源码行数 |")
+            w("|---|---|---|---|")
+            for s_ in SHAPES:
+                d = sizes.get(s_)
+                if not d or not d["c_lines"]:
+                    continue
+                algo = d["c_lines"] - base
+                c_ref = d["l_c"] or 1
+                own = d["l_extc"] or 1
+                w(f"| {s_} | {algo} | {algo / c_ref:.1f}× | {algo / own:.1f}× |")
+            w("")
+            w("> ⚠️ 这就是 `PLAN.md` **#49** 记的那件事：**生成的 C 偏胖**（同形手写 C 的 10~30 倍）——")
+            w("> 它**不吃运行时间**（二进制还是 20KB、跑分见上表），吃的是**编译时间**；")
+            w("> extC 的构建仍然跟 C 同档，是因为 gcc 编这几十 KB 很快 ✓")
+            w("")
         w("> 这张表是 extC 的「中间产物」：`.extc` 源码 → **它吐的 C** → 可执行文件，三段都能看见 ✓")
         w("> 用户可以读那份 C（`#line` 指回源码行），这也是「生成 C 可调试」那条原则的兑现 ✓")
         w("")
