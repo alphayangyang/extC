@@ -244,10 +244,10 @@ int valDepthForStore(Checker *c, Expr *e) {
 
 int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
-    /* 早退的唯一理由：**这个类型里不可能有引用**。
-     * ⚠️ 提到 `T` 的类型**不许早退** —— 泛型体的推迟检查要靠这份深度
-     * （按"`T` 可能带引用"算，实例化时再决定这条规矩适不适用）✓
-     * ⚠️ 也不许缓存（见函数末尾）*/
+    /* The only reason to answer without looking: this type cannot carry a reference.
+     * A type that mentions a type parameter must not take this exit. Inside a generic
+     * body the depth is computed under the assumption that the parameter may carry a
+     * reference, and the instance check decides whether the rule applies. */
     if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return 0;
     if (!c->substParams && !mentionsParam(e->type) && e->refDepth) return e->refDepth;
 
@@ -257,20 +257,22 @@ int exprRefDepth(Checker *c, Expr *e) {
         d = placeDepth(c, e->u.ref.operand);
         break;
     case EX_DEREF:
-        /* `*p` 的值住在 **p 指的地方** ⇒ 深度跟 p 一样 ✓ */
+        /* The value of `*p` lives where `p` points, so it has the depth of `p`. */
         d = exprRefDepth(c, e->u.deref.operand);
         break;
     case EX_SIGN:
-        /* `p!` 只是"把可空的说法去掉"，指的还是同一块地方 ⇒ 深度跟着主体 ✓ */
+        /* `p!` only drops nullability; it still refers to the same storage. */
         d = exprRefDepth(c, e->u.sign.operand);
         break;
     case EX_NEW:
     case EX_GENCALL:
-        /* 分配出来的东西：活到**当前块**结束 ⇒ 深度就是检查器记账时那个数 ✓ */
+        /* A freshly allocated object lives until the end of the enclosing block, so
+         * its depth is the number the checker recorded for the site. */
         d = e->refDepth;
         break;
     case EX_COALESCE:
-        /* 两边都可能成为结果 ⇒ 取**最深**的那个（保守 = 安全方向）✓ */
+        /* Either side can become the result, so take the deeper one. The deeper
+         * answer is the conservative one. */
         d = maxInt(exprRefDepth(c, e->u.coalesce.main),
                    exprRefDepth(c, e->u.coalesce.fallback));
         break;
@@ -278,12 +280,16 @@ int exprRefDepth(Checker *c, Expr *e) {
         d = placeDepth(c, e->u.slice.obj);
         break;
     case EX_IDENT: {
-        /* ⭐ PLAN #8 的另一半（2026-09-20 canary 抓出来的 4 个假阳性）：
-         * **含引用的值绑定**（struct/数组/泛型实例里装着 ref/slice）——
-         * 问"它里面的引用指哪"该用 `refDepth`，而不是"这个槽位在本帧" ✗
-         *     var h: holder = { n: ref *p }        // p 是参数 ⇒ 里面指向深度 0
-         *     return h                             // 以前按槽位深度 1 算 ⇒ 误报 ✗
-         *（槽位深度仍然用于"往这里存东西" —— 那条走 placeDepth ✓ 两件事分开）*/
+        /* A binding that holds an aggregate carrying references (a struct, array, or
+         * generic instance holding a reference or a view) must be asked where those
+         * references point, not how deep its own slot is:
+         *
+         *     var h: holder = { n: ref *p }   // p is a parameter, so depth 0
+         *     return h                        // answering with the slot depth 1 used
+         *                                     // to reject this valid program
+         *
+         * The slot depth is still the right answer for storing into the binding, which
+         * is what `placeDepth` computes. The two questions are kept separate. */
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = sy->refDepth;
         else d = placeDepth(c, e);
@@ -369,9 +375,20 @@ static bool isGlobalSym(Checker *c, Sym *s) {
     return false;
 }
 
-/* 「这个**地方**是借来的吗」—— 跟 `exprBorrowed` 的区别：
- * 它**不看值类型**（`*p` 的值可能完全没有引用），只问"这块存储是谁的" ✓
- * 用在 `ref *p` 这种"重新取一次引用"的洗白路径上 ✓ */
+/* Whether a place refers to storage owned by someone else.
+ *
+ * Unlike `exprBorrowed` this ignores the type of the value (the value of `*p` may
+ * contain no reference at all) and asks only who owns the storage. It is used when a
+ * reference is re-created, as in `ref *p`, where the question is whether the result
+ * still points into the caller's frame.
+ *
+ * Params:
+ *   c - checker
+ *   e - a place expression
+ *
+ * Returns:
+ *   True when the storage is reached through a dereference or belongs to a parameter
+ *   rather than to this frame. */
 static bool placeIsBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
     if (e->kind == EX_DEREF) return placeIsBorrowed(c, e->u.deref.operand);
@@ -432,10 +449,23 @@ static bool exprBorrowed(Checker *c, Expr *e) {
     }
 }
 
-/* ⭐ 定案 67：这个值的**来路能追到某个形参**吗？（⇒ 寿命约束交给调用点判 ✓）
- * `placeRootName` 追的是**根**（`v` / `*p`→`p` / `l.head`→`l` ✓）——
- * 追得到形参 ⇒ 调用点能用 `Cont(j)` 那条规则算 ✓；追不到（调用结果 / 本帧局部 /
- * 不明来路）⇒ 两边都**不放** ✗（与摘要 `otherMask` 的口径一致 ✓）*/
+/* Whether the origin of a value can be traced back to one of `f`'s parameters.
+ *
+ * If it can, the lifetime obligation is handed to the call site, which knows how long
+ * the corresponding argument lives. If it cannot (the value is a call result, a local
+ * of this frame, or of unknown origin) the store is refused here, matching the
+ * conservative treatment used for effect summaries.
+ *
+ * `placeRootName` resolves the root of a place: `v` stays `v`, `*p` becomes `p`, and
+ * `l.head` becomes `l`.
+ *
+ * Params:
+ *   c   - checker (currently unused, kept for symmetry with the other predicates)
+ *   f   - function whose parameters are the tracing targets
+ *   val - value to trace
+ *
+ * Returns:
+ *   True when the root of the value is one of the parameters of `f`. */
 bool valTracesToParam(Checker *c, FuncDef *f, Expr *val) {
     (void)c;                                  /* 现在只用得到"函数 + 值"（留着参数是为了
                                                * 跟别的谓词一个形状 ✓）*/
