@@ -468,3 +468,77 @@ error: this assignment would hold a reference to a local variable that dies firs
 > **一句总结**：C.5 的方向（"字段表要参与约束传播"）**是对的**，缺的是
 > **"这一格的记账什么时候该降"这条规则** —— 现在知道它必须
 > "**提成功 ⇒ 整个容器一起降**"，而不是"降走过的那一格" ✓
+
+---
+
+# 附录 E：第五次尝试 —— **C1 拿到了（转正库 14→18）**，剩 4 条"引用型绑定/整值 join"（2026-09-23 更晚）
+
+> **净成果**：转正库 **14/22 → 18/22**，`tests/run.sh` **255/0** 不变 ✓
+> 提交：`411b6a5`（**只有代码**，形态见 §E.1）
+> **仍然没合 main**：剩 4 条真 UB（`C2_if_join_refbinding` · `C3_if_join_wholevalue` ·
+> `arena_if_join_ref_binding` · `arena_if_join_whole_value`）⇒ B.5 的"转正库 22/22"未达 ✓
+
+## E.1 这一轮做进去的（都在 `check_top.c` / `check_escape.c` / `check_internal.h`）
+
+| # | 改动 | 为什么 |
+|---|---|---|
+| 1 | `Sym.fields[]` 加 **`src`**（这一格是谁写的）+ **`srcDepth`**（它自己那次写入的深度）+ **`minReq`**（被要求过的最浅层）| 沿**来路**追不到"后来写进字段"的站点 ✗ |
+| 2 | `noteFieldSrc`：**只记能指认站点的形状**（`IDENT`/`FIELD`/`INDEX`/`NEW`/`GENCALL`）；比新旧用 **`srcDepth`** | ① `null`/字面量会顶掉真来源 ② `depth` 是弱更新取 max，会把 null 那次误判成"更深" |
+| 3 | `promoteFields`：顺着 `src` 提，`want = min(depth, minReq)`；**提成功才把那一格降到 `want`** | 只降"提成功"的格 —— 见附录 D.3（无条件降会把别的绿用例弄红）|
+| 4 | 记来源用 `Checker.curStoreVal`（调用点顺手设一下，**不改 `noteFieldDepthWrite` 的签名**）| 那会牵动所有调用点 |
+| 5 | 预负已把有家函数里的站点**无条件置成 `ARENA_HOME`**；这里靠 `minAt` 重新定案 | 这是层 2 的原设计，本轮只是把"追得到站点"这件事补齐 ✓ |
+
+**C1 的效果**（可复现的判据）：
+
+```
+改前： int32_t * x = extc_arena_alloc(&__extc_a[2], …)     ← 出块即 release ⇒ ASan heap-use-after-free ✗
+改后： int32_t * x = extc_arena_alloc(&(*__extc_home), …)  ← ASan 干净、输出 r.q = 42 ✓
+```
+
+## E.2 剩 4 条的共同形状（**已定位到"循环依赖"，这是下一步的关键**）
+
+四条都是**引用型绑定**或**整值 join**，实测（C2）的链条是：
+
+```extc
+var out: ?ref i32 = null
+{
+    var x = alloc<i32>(1)
+    var p: ?ref i32 = null
+    if c == 1 { p = x } else { p = null }
+    out = p                       // ← 想让站点进家（0 层）
+}
+return out                        // ← 这里报 "borrowed from depth 1, but … up to depth 0" ✗
+```
+
+**卡点（一句话）**：`p->refDepth` 记的是 **0（哨兵态）**，而 `p->origin` 确实是那个 `alloc` 站点 ✓
+—— 可 `promoteInto` 里给"引用型绑定"算的 `want` 被夹到 **1**（"至少活得跟槽位一样"）⇒
+站点只从"块层 2"提到"块层 1"⇒ **而 `return out` 要的是 0（帧外）** ⇒
+**`checkEscape` 在 check 期就报错** ⇒ 后面的 `promoteInto` 根本没机会把它提到 0 ✗
+
+```
+     checkEscape 要"深度已经够了"才不报错
+        ↑                                    ↓
+   站点被提到 0 ←── promoteInto 得先被调用（而它在 checkEscape 之后/之内）✗
+```
+
+**⇒ 循环依赖**：`exprRefDepth` 读的是**冻结的记账**，而"真正该是多少"取决于**解算之后**的站点层号 ✓
+
+## E.3 下一次的起手式（建议，**先写判据再动代码**）
+
+1. **判据先落地**：把 C2 那 8 行做成 `EXTC_DBG` 可打印的小探针（`[ref] sym=p depth=? refDepth=? at=? orgkind=?`），
+   盯住"`promoteInto` 到底有没有被 `out = p` 这一句触发"——本轮就是靠它才分清
+   "没触发"vs"触发了但没提到位" ✓；
+2. **打破循环的两条路**（挑一条先试，别两条一起上）：
+   - **A**：让 `exprRefDepth`/`valDepthForStore` 对"引用型绑定 + 有来路站点"的
+     **effective 深度**跟着**站点当前层号**走（= 把附录 D 里那个
+     `symOriginDepth` 帮助函数**只用在引用型绑定这一支**上，不动聚合）✓
+     ⚠️ 但要注意：附录 D 那次"全域加它"把 `tests/run.sh` 弄成 243/12 ✗ ——
+     **只加在 `sy->type->kind == TY_REF` 这一支**，跑完 `tests/run.sh` 再往下 ✓
+   - **B**：把"引用型绑定"的存储也记一条 `LvlFact`（像 `promoteFields` 那样按**目的地**提），
+     让解算期就能把站点放到家 ✓
+3. **两把尺子一起看**（附录 D.3 的教训）：每改一次都跑
+   `tests/run.sh`（期望 **255/0**）**和** `tests/arena-promoted/run.sh`（期望 **22/22**）✓
+
+> **本轮教训（给自己）**：C1 拿下靠的是"**先写探针、再看数据**"；
+> 而 C2 那几轮我又退回了"猜一个改一个"⇒ 三轮没进展 ✗
+> ⇒ **规矩**：下一轮动手之前，**先让探针把"哪一步没发生"打出来** ✓
