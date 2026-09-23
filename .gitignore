@@ -35,3 +35,7 @@ bench/**/*_cpp
 # 读者基准的输入（36MB，由 gen.c 现场生成）
 bench/gc/io/in_ints.txt
 bench/gc/io/in_lines.txt
+
+# 本地助手工具与废弃草稿（不入库）
+.claude/
+prototype-python/
