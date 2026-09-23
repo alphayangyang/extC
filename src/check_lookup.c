@@ -145,6 +145,7 @@ Sym *declare(Checker *c, const char *name, Type *t, bool mut,
     s->refDepth = (t && typeContainsRef(c->tt, t)) ? depth : 0;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
+    *(Sym **)vecPush(&c->allSyms) = s;      /* ⭐ 铁律自检（EXTC_SELFCHECK）要用 ✓ */
     return s;
 }
 

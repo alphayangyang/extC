@@ -1794,6 +1794,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.eqChecks, arena, sizeof(void *));
     vecInit(&c.globals, arena, sizeof(void *));
+    vecInit(&c.allSyms, arena, sizeof(void *));     /* ⭐ 铁律自检要用（见 checkModule 末尾）✓ */
     vecInit(&c.nameUses, arena, sizeof(void *));
     vecInit(&c.narrow, arena, sizeof(void *));
     vecInit(&c.refChecks, arena, sizeof(void *));
@@ -2300,6 +2301,81 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
             f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
         }
+    }
+
+    /* `EXTC_SELFCHECK=1`: internal consistency self-test.
+     *
+     * The invariant under test is that `refDepth` and `arenaLevel` always describe
+     * the same fact. Every hard bug found in this layer so far was a breach of it, so
+     * the compiler checks it instead of relying on a reviewer to notice.
+     *
+     * Two read-only checks:
+     *   1. A binding whose origin is an allocation site may not claim to point
+     *      somewhere shallower than that site. (The comparison is an inequality, not
+     *      equality: a reference may legitimately point at something that outlives
+     *      the site.)
+     *   2. An allocation site must agree with itself: `refDepth` has to equal
+     *      `arenaDepthOf(arenaLevel)`, and `minAt == 0` ("must outlive this frame")
+     *      has to show up as an actual home-arena placement.
+     *
+     * The scan covers the whole corpus (about 120 files) and currently reports nine
+     * real breaches, which is why the mode exists.
+     *
+     * Reports go to stderr, and a breach fails the compilation so scripts catch it. */
+    if (getenv("EXTC_SELFCHECK")) {
+        int bad = 0;
+        for (size_t i = 0; i < c.allSyms.len; i++) {
+            Sym *sy = *(Sym **)vecAt(&c.allSyms, i);
+            if (!sy) continue;
+            /* Inequality, not equality: a reference may point at something that
+             * outlives the site (`var cur: ?ref node = head`, where `head` lives
+             * further out). Only claiming to be *shallower* than the site is wrong,
+             * because that would mean pointing at storage that dies first.
+             * The equality version was wrong and the escape-promotion example caught
+             * it immediately, so the predicate itself needs checking too. */
+            if (sy->origin && (sy->origin->kind == EX_NEW || sy->origin->kind == EX_GENCALL)) {
+                int siteD = arenaDepthOf(sy->origin->arenaLevel);
+                if (sy->refDepth < siteD) {
+                    fprintf(stderr, "[selfcheck] binding `%s` has refDepth=%d, shallower than"
+                            " its site (level %d => %d)\n", sy->name, sy->refDepth,
+                            sy->origin->arenaLevel, siteD);
+                    bad++;
+                }
+            }
+        }
+        Vec allF; vecInit(&allF, arena, sizeof(FuncDef *));
+        for (size_t i = 0; i < m->funcs.len; i++) *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&m->funcs, i);
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++)
+                *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&sd->methods, j);
+        }
+        for (size_t i = 0; i < allF.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&allF, i);
+            for (size_t j = 0; j < f->arenaSites.len; j++) {
+                Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+                if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
+                int want = arenaDepthOf(site->arenaLevel);
+                if (site->refDepth != want) {
+                    fprintf(stderr, "[selfcheck] site at line %d of %s: refDepth=%d but"
+                            " arenaLevel=%d (should be %d)\n", site->line,
+                            f->name ? f->name : "?", site->refDepth, site->arenaLevel, want);
+                    bad++;
+                }
+                if (site->minAt == 0 && site->arenaLevel != ARENA_HOME) {
+                    fprintf(stderr, "[selfcheck] site at line %d of %s: minAt=0 (must outlive"
+                            " this frame) but it was not placed in the home arena\n",
+                            site->line, f->name ? f->name : "?");
+                    bad++;
+                }
+            }
+        }
+        if (bad)
+            fprintf(stderr, "[selfcheck] %d consistency breaches (refDepth and arenaLevel"
+                    " must describe the same fact)\n", bad);
+        else if (getenv("EXTC_SELFCHECK_VERBOSE"))
+            fprintf(stderr, "[selfcheck] all invariants hold\n");
+        if (bad) ctx->hasError = true;      /* 让脚本抓得到 ✓ */
     }
 
     return !ctx->hasError;

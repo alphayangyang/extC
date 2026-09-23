@@ -160,6 +160,9 @@ typedef struct {
      * 它们在检查器里"出生"（调用点推导出来），在 codegen 里当普通函数吐出来 ✓ */
     Vec        funcInsts;   /* FuncDef*（实例：tmpl/targs/instName 都填好）*/
     Vec        globals;     /* Sym* —— 全局变量（深度 0），不进 scopes 见 lookup 的注释 */
+    /* ⭐ **所有「绑定」的名单** —— `declare` 时记一笔 ✓
+     * 用途：`EXTC_SELFCHECK` 要逐个核"绑定的 refDepth 跟它的站点同数吗"（铁律自检）✓ */
+    Vec        allSyms;
     /* ⭐ 层 2（附录 D.2）：**"正在往某个地方存的那个值"** ——
      * `noteFieldDepthWrite` 要顺手记"这一格是谁写的"，而它的调用点已经有这个值了 ⇒
      * 用一个字段传过去，**不改它的签名**（那会牵动所有调用点）✓ */
