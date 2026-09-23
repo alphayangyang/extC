@@ -2215,6 +2215,28 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (getenv("EXTC_DUMP_LVL"))
             fprintf(stderr, "[lvl] 定案：%d 处进家 / %d 处留块层\n", fixed, keptBlock);
 
+        /* ⭐⭐ 层 2：**每个站点的 `refDepth` 都要按最终层号重算一遍**（不管层号有没有变）✗✗
+         *
+         * 为什么（gdb 实测，`tests/arena-promoted/C2_if_join_refbinding`）：
+         * 上面那个定案循环里那句 `site->refDepth = …` 是**包在 `if (site->arenaLevel != want)`
+         * 里面**的 —— 而"预负已经把它置成 `ARENA_HOME`、解算又定成 `ARENA_HOME`"的站点
+         * **层号根本没变** ⇒ 那句话**一次都不执行** ⇒ `refDepth` 停在**中途被改坏的值**上 ✗
+         *   实测：`alloc<i32>(1)` 的站点 `refDepth` 是 **0**（= "要活到帧外"），
+         *   而同一个站点按层号算出来是 **1** ⇒ 两件事**自己跟自己矛盾** ⇒
+         *   用户拿到的报错是 "borrowed from depth 0"（说不通：明明在块层）✗
+         *
+         * 铁律（本来就是设计口径）：**`refDepth` 与 `arenaLevel` 必须是同一个数的两种说法** ✓
+         * ⇒ 定案之后无条件同步一次 ✓ */
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            for (size_t j = 0; j < f->arenaSites.len; j++) {
+                Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+                if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
+                site->refDepth = (site->arenaLevel == ARENA_HOME)
+                                 ? 0 : (site->arenaLevel > 0 ? site->arenaLevel : 0);
+            }
+        }
+
         /* ⭐ 解算完了 ⇒ **把"推迟到实例化再查"的那些深度重算一遍** ✓
          * （它们冻的是**解算之前**的数 —— 而定案可能把站点从家放回了块层 ✗）
          * 实测：`varArray<T>::withCap` 的 `return v` 在模板那一轮冻下 `depth=1`，

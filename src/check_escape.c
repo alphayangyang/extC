@@ -473,7 +473,27 @@ Expr *originOf(Checker *c, Expr *val, int hops);
  * 那时 `lookup` 找不到 ⇒ 链就断了 ✗（真踩过：双层循环里的 `head = mid`）
  * ⇒ 记的时候（作用域还在）就一路走到根 ✓ */
 void noteOrigin(Checker *c, Sym *sy, Expr *val) {
-    if (sy && !sy->addressed) sy->origin = originOf(c, val, 0);
+    if (!sy || sy->addressed) return;
+    /* ⚠️⚠️ **字面量不许盖掉"已经追得到的来路"** ✗✗
+     *
+     * 为什么（gdb 实测，`tests/arena-promoted/C2_if_join_refbinding`）：
+     *     var p: ?ref i32 = null
+     *     if c == 1 { p = x } else { p = null }
+     * 检查是**顺序**做的 ⇒ `p = x` 先把来路记成那个 `alloc` 站点 ✓，
+     * 紧接着 `p = null` 又把它盖成 `EX_NULL` ⇒ 后面顺 `out = p` 追站点时
+     * 只看到 `null`（`org=24`）⇒ 追不到 ⇒ 站点留在块层 ⇒ **悬垂**（ASan 实锤）✗
+     *
+     * 判据：`null` / 字面量**指不出任何站点** ⇒ 只有在"现在还没有可追的来路"时
+     * 才让它记（否则保持已有那条）✓
+     * ⚠️ 反过来也要对：一开始就是 `= null` 的绑定必须让 `null` 记进来 ——
+     *    否则 `origin` 停在 NULL 上，`promoteInto2` 会**早退**（"没有来路"）✗ */
+    bool literal = val && (val->kind == EX_NULL || val->kind == EX_INT || val->kind == EX_FLOAT ||
+                           val->kind == EX_BOOL || val->kind == EX_STR);
+    bool haveReal = sy->origin && sy->origin->kind != EX_NULL && sy->origin->kind != EX_INT &&
+                    sy->origin->kind != EX_FLOAT && sy->origin->kind != EX_BOOL &&
+                    sy->origin->kind != EX_STR;
+    if (literal && haveReal) return;
+    sy->origin = originOf(c, val, 0);
 }
 
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
