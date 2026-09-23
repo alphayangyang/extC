@@ -1248,13 +1248,15 @@ static int loopIdOf(const Vec *sites, int line) {
 }
 
 static void reportMemory(Checker *c, Vec *all) {
-    int nSite = 0, nLoop = 0, nPromoted = 0;
+    int nSite = 0, nLoop = 0;
     fprintf(stderr, "extC memory report\n");
     fprintf(stderr, "------------------\n");
-    fprintf(stderr, "  One line per allocation site. `level` is the arena it was placed in\n");
-    fprintf(stderr, "  (0 = this frame, -1 = the caller's). A site **shallower than the block it\n");
-    fprintf(stderr, "  is written in** is not released by that block; inside a loop that is how\n");
-    fprintf(stderr, "  memory comes to grow with the iteration count.\n");
+    fprintf(stderr, "  One line per allocation site, with the numbers the checker decided on.\n");
+    fprintf(stderr, "  `level` is the arena the site was placed in (0 = this frame, -1 = the\n");
+    fprintf(stderr, "  caller's); `lexical` is the block it is written in. A site whose level\n");
+    fprintf(stderr, "  is shallower than its own block is not released by that block.\n");
+    fprintf(stderr, "  (Lines under `prelude:` are in stdlib/prelude.extc, not in %s.)\n",
+            (c->ctx && c->ctx->path) ? c->ctx->path : "?");
     for (size_t i = 0; i < all->len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(all, i);
         if (!f->arenaSites.len) continue;
@@ -1269,45 +1271,27 @@ static void reportMemory(Checker *c, Vec *all) {
             nSite++;
             bool inLoop = loopIdOf(&sites, site->line) != 0;
             if (inLoop) nLoop++;
-            /* Promoted out of the block it is written in: the site landed shallower than
-             * its own lexical block, so the block it sits in is not what releases it. In a
-             * loop that means the round's allocation is still live when the next round
-             * starts. Measured on the four shapes in /tmp/mem_*.extc: the site is the only
-             * one of the four that grows (159 MB against 1.7 MB) and the only one where
-             * this holds. */
-            /* The level of the innermost loop body holding this line, or 0 when it is not
-             * in a loop. Taken as the smallest `lexicalLevel` among the allocation lines in
-             * that loop: a nested block only ever reports a deeper one, so the smallest is
-             * the loop body itself. Comparing against the level of the block the `new` is
-             * written in was wrong -- `bench/gc/src/rebuild.extc` writes its `new` one block
-             * below the loop body, and that block still ends inside the round, so its peak
-             * stays at 1.7 MB while the comparison called it growing. */
-            int loopLv = 0x7fffffff;
-            for (size_t k = 0; k + 1 < sites.len; k += 2) {
-                if (*(int *)vecAt(&sites, k + 1) != loopIdOf(&sites, site->line)) continue;
-                int l = *(int *)vecAt(&sites, k);
-                if (l > 0 && l < loopLv) loopLv = l;
-            }
-            bool promoted = inLoop && site->arenaLevel >= 0 && site->arenaLevel < loopLv;
-            if (promoted) nPromoted++;
             fprintf(stderr, "    line %-5d level %-3d lexical %-3d  %s\n",
                     site->line, site->arenaLevel, site->lexicalLevel,
                     inLoop ? "allocated once per round of a loop" : "allocated outside any loop");
-            if (promoted) {
-                fprintf(stderr, "               placed **shallower than the block it is written in**\n");
-                if (inLoop)
-                    fprintf(stderr, "               => the round's allocation is still live when the next\n"
-                                    "                  round starts; if the previous one is not needed,\n"
-                                    "                  write `@overwrite` on it\n");
-            }
         }
     }
     if (!nSite) {
         fprintf(stderr, "\n  no allocation site in this module\n");
         return;
     }
-    fprintf(stderr, "\n  %d allocation site(s), %d inside a loop, %d promoted out of their block\n",
-            nSite, nLoop, nPromoted);
+    fprintf(stderr, "\n  %d allocation site(s), %d of them inside a loop\n", nSite, nLoop);
+    /* What this report does not do, yet.
+     *
+     * Whether a site's memory actually grows with the iteration count needs the level of
+     * the block that releases the site's arena, and that is not derivable from the numbers
+     * printed here by a predicate over them: three attempts were measured against programs
+     * whose peak is known (four /tmp/mem_*.extc shapes, and bench/gc/rebuild measured at
+     * 2000 through 2000000 rounds) and every one of them either missed the shape that grows
+     * to 159 MB or flagged one that stays at 1.7 MB. The reliable form is to record, at code
+     * generation time, which loop releases which arena; until then this report prints the
+     * facts and claims nothing. */
+    fprintf(stderr, "  (this report prints facts only: it does not yet say which sites grow)\n");
 }
 
 static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
