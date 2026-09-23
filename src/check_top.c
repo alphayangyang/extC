@@ -1973,18 +1973,6 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
     }
 }
 
-/* Depth of a value, read from the arena levels fixed by the level solver.
- *
- * This is the "after the solver" counterpart of `exprRefDepth`, and it is used only where
- * `depthComesFromAlloc2` says the solver owns the answer.
- *
- * Params:
- *   e - expression to measure; may be NULL
- *
- * Returns:
- *   Depth of the references the value carries, according to the solved arena levels.
- */
-static int solvedValDepthFollow(Expr *e, int hops, Expr **seen);
 
 static int solvedValDepth(Expr *e) {
     if (!e) return 0;
@@ -2570,42 +2558,7 @@ static void levelPass(Checker *c, const DfResult *dfr) {
     }
 }
 
-/* Depth of a value once the level solver has run, following bindings backwards.
- *
- * `solvedValDepth` reads the depth cached on a node, and for a binding that number may
- * be stale or simply zero: the binding was written when its allocation site still had
- * the provisional `ARENA_HOME` marker, so the recorded depth says "outside this frame"
- * while the site ends up at block level 2. Following the origin reaches the site, whose
- * level is now final.
- *
- * Params:
- *   e    - value to measure
- *   hops - recursion guard (bindings may form cycles, as in `a = b  b = a`)
- *   seen - nodes already visited on this chain
- *
- * Returns:
- *   The depth of the deepest allocation site reachable from the value. Never larger
- *   than the cached answer, and larger than it only when the cache was stale.
- */
-static int solvedValDepthFollow(Expr *e, int hops, Expr **seen) {
-    if (!e) return 0;
-    int base = solvedValDepth(e);
-    if (e->kind != EX_IDENT || hops >= 32) return base;
-    for (int i = 0; i < hops; i++) if (seen[i] == e) return base;
-    seen[hops] = e;
-    Sym *sy = identBindOf(e);
-    if (!sy || !sy->origin) return base;
-    int o = solvedValDepthFollow(sy->origin, hops + 1, seen);
-    /* Take the larger answer: the origin is the authority, and the cache may have
-     * under-reported it. Asking `exprRefDepth` for a binding is what caused the
-     * dangling allocation in the whole-value join case. */
-    return (o > base) ? o : base;
-}
 
-static int solvedDepthFollowTop(Expr *e) {
-    Expr *seen[40];
-    return solvedValDepthFollow(e, 0, seen);
-}
 
 static void checkFunc(Checker *c, FuncDef *f) {
     /* An extern declaration has no body, so only its signature is checked: the parameter
@@ -2740,36 +2693,6 @@ static void checkFunc(Checker *c, FuncDef *f) {
                 if (!sy || sy->line < 0) continue;
                 int d = dfLookup(&dfr, sy->cname);
                 if (d > sy->refDepth) sy->refDepth = d;
-                /* Repair the field table with the fixed point as well. The table is
-                 * filled while the body is checked, so a field whose source is an
-                 * allocation carries the pre-fixed-point answer: `var g: box = { q: x }`
-                 * records 0 for `q` because `x`'s binding had not been settled yet, and
-                 * a later walk that wants to know how deep `g.q` is then sees nothing
-                 * live and skips the promotion. Each entry remembers the expression that
-                 * wrote it, so its depth can be recomputed now. Only raising, as always:
-                 * an upper bound may grow but not shrink. */
-                for (int k = 0; k < sy->nfields; k++) {
-                    Expr *srcv = sy->fields[k].src;
-                    if (!srcv) continue;
-                    int fd = dfValueDepth(c, &dfr, srcv);
-                    if (sy->fields[k].depth < fd) sy->fields[k].depth = fd;
-                }
-                {
-                    int m = sy->otherDepth;
-                    for (int k = 0; k < sy->nfields; k++)
-                        if (sy->fields[k].depth > m) m = sy->fields[k].depth;
-                    if (m > sy->refDepth) sy->refDepth = m;
-                }
-                for (int k = 0; k < sy->nfields; k++) {
-                    for (int j = 0; j < dfr.nvars; j++) {
-                        if (strcmp(dfr.vars[j].cname, sy->cname) != 0) continue;
-                        for (int m = 0; m < dfr.vars[j].nfields; m++)
-                            if (sy->fields[k].name &&
-                                strcmp(dfr.vars[j].fields[m].name, sy->fields[k].name) == 0 &&
-                                dfr.vars[j].fields[m].depth > sy->fields[k].depth)
-                                sy->fields[k].depth = dfr.vars[j].fields[m].depth;
-                    }
-                }
             }
         }
     }
@@ -3828,46 +3751,6 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
-    /* `EXTC_SELFCHECK=1`: internal consistency self-test.
-     *
-     * The invariant under test is that `refDepth` and `arenaLevel` always describe
-     * the same fact. Every hard bug found in this layer so far was a breach of it, so
-     * the compiler checks it instead of relying on a reviewer to notice.
-     *
-     * Two read-only checks:
-     *   1. A binding whose origin is an allocation site may not claim to point
-     *      somewhere shallower than that site. (The comparison is an inequality, not
-     *      equality: a reference may legitimately point at something that outlives
-     *      the site.)
-     *   2. An allocation site must agree with itself: `refDepth` has to equal
-     *      `arenaDepthOf(arenaLevel)`, and `minAt == 0` ("must outlive this frame")
-     *      has to show up as an actual home-arena placement.
-     *
-     * The scan covers the whole corpus (about 120 files) and currently reports nine
-     * real breaches, which is why the mode exists.
-     *
-     * Reports go to stderr, and a breach fails the compilation so scripts catch it. */
-    /* Bindings whose depth was recorded before the solver ran must be repaired.
-     *
-     * `var x = alloc<i32>(1)` is bound while its site still holds the provisional
-     * `ARENA_HOME`, so `x.refDepth` is recorded as 0 even though the site ends up at
-     * block level 2. Every later question about `x` - the field table of a struct it is
-     * stored into, the depth of a whole value it is part of - then answers 0, which is
-     * shallower than reality, and the escape check skips the store instead of promoting
-     * the site. That is how the whole-value join case ended up with an allocation in a
-     * block arena that the returned struct still pointed at.
-     *
-     * The repair only ever raises a recorded depth, because a binding may legally point
-     * at something that outlives its own site. Raising is the conservative direction: it
-     * can cause a false rejection, never a dangling pointer.
-     */
-    for (size_t i = 0; i < c.allSyms.len; i++) {
-        Sym *sy = *(Sym **)vecAt(&c.allSyms, i);
-        if (!sy || !sy->origin || sy->addressed) continue;
-        if (!sy->type || !typeContainsRef(c.tt, tsub(&c, sy->type))) continue;
-        int d = solvedDepthFollowTop(sy->origin);
-        if (d > sy->refDepth) sy->refDepth = d;
-    }
 
     if (getenv("EXTC_SELFCHECK")) {
         int bad = 0;
