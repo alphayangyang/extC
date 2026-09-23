@@ -146,7 +146,16 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     }
     case EX_NEW:
     case EX_GENCALL:
-        /* The block the site was born in, which does not move. */
+        /* Where the site ends up, which the promotion has already decided when it ran
+         * while the body was being checked; the block it was born in is the answer only
+         * while nothing has moved it.
+         *
+         * Reading `lexicalLevel` alone was a second answer to a question the level pass had
+         * already answered: measured on `examples/store-promotion`, `head = mid` promoted
+         * the `new node` behind `mid` to level 1, while this reported depth 2 for `head`,
+         * `mid` and `cell` alike -- and the data flow may only raise a depth, so the wrong
+         * answer survived the write-back. */
+        if (e->minAt >= 0) return e->minAt;
         return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
     case EX_FIELD: {
         Sym *root = dfRootOf(c, e);
