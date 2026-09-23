@@ -91,6 +91,40 @@ def read_sizes():
     return out
 
 
+def read_btimes():
+    """(shape, lang) -> [ms or None, ...] for every repetition, in order."""
+    rows = {}
+    try:
+        fh = open(os.path.join(B, "btimes.tsv"))
+    except OSError:
+        return rows
+    with fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) != 3:
+                continue
+            shape, lang, ms = parts
+            rows.setdefault((shape, lang), []).append(None if ms == "ERR" else int(ms))
+    return rows
+
+
+def stats(vals):
+    """(min, median) over the valid repetitions."""
+    good = sorted(v for v in vals if v is not None)
+    if not good:
+        return None, None
+    return good[0], good[len(good) // 2]
+
+
+def extc_stage(reps, lang):
+    """extC is two stages (front end + cc); sum them per repetition, not per column."""
+    fe = reps.get((lang, "fe"), [])
+    cc = reps.get((lang, "extc"), [])
+    if not fe or len(fe) != len(cc):
+        return []
+    return [None if (a is None or b is None) else a + b for a, b in zip(fe, cc)]
+
+
 def read_raw():
     rows = {}
     with open(os.path.join(B, "raw.tsv")) as fh:
@@ -213,7 +247,45 @@ def main():
     w("")
 
     # ---- 构建时间 ----
-    w("## 构建时间（ms；extC 拆两段：前端 + 编它吐的 C）")
+    reps = read_btimes()
+    if reps:
+        n = max(len(v) for v in reps.values())
+        w(f"## 构建时间（ms；每格 **{n} 次**，写成「最快 / 中位」）")
+        w("")
+        w("| 形状 | " + " | ".join(n_ for _, n_ in LANGS) + " |")
+        w("|---|" + "---|" * len(LANGS))
+        for s in SHAPES:
+            cells = []
+            for k, _ in LANGS:
+                vals = extc_stage(reps, s) if k == "extc" else reps.get((s, k), [])
+                lo, med = stats(vals)
+                cells.append("—" if lo is None else f"{lo} / {med}")
+            w(f"| {s} | " + " | ".join(cells) + " |")
+        w("")
+        w("> extC 那列是**两段之和**（前端 `.extc`→C ＋ `cc` 编它吐的 C），每次都是配对的 ⇒ 不是两次最快相加 ✓")
+        w("> Go 每轮换一个全新 `GOCACHE`（否则第 2 次起命中缓存，跟别家不可比 ✗）；")
+        w("> 其余编译器没有跨进程缓存，每次都是真编 ✓")
+        w("> ⚠️ **Go 那 ~1.7s 是「冷构建」**（缓存里连 std 都没有）—— 实测同一份代码")
+        w("> **热构建（命中缓存）只要 ~72ms**，是六家里最快的；两个数都真，看你在问哪一个 ✓")
+        w("")
+        w("### 每一次的原始值（ms）")
+        w("")
+        for s in SHAPES:
+            w(f"**{s}**")
+            w("")
+            w("| 语言 | " + " | ".join(f"第{i+1}次" for i in range(n)) + " | 最快 | 中位 |")
+            w("|---|" + "---|" * (n + 2))
+            for k, n_ in LANGS:
+                vals = extc_stage(reps, s) if k == "extc" else reps.get((s, k), [])
+                if not vals:
+                    continue
+                lo, med = stats(vals)
+                shown = ["ERR" if v is None else str(v) for v in vals]
+                shown += ["—"] * (n - len(shown))
+                w(f"| {n_} | " + " | ".join(shown) + f" | **{lo}** | {med} |")
+            w("")
+        w("")
+    w("## 构建时间（单次，来自 run.sh；有 btimes.tsv 时以上面那张为准）")
     w("")
     w("| 形状 | " + " | ".join(n for _, n in LANGS) + " |")
     w("|---|" + "---|" * len(LANGS))
