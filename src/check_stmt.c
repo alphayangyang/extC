@@ -494,6 +494,13 @@ void checkStmt(Checker *c, Stmt *s) {
             if (s->u.ret.value->kind == EX_TRY) {
                 Type *vt = checkTryInner(c, s->u.ret.value);
                 Type *wb = ttBase(want);
+                /* ⭐ 层 1：这条分支**绕过了下面那句 `checkEscape`** ⇒
+                 * `promoteInto` 也就没机会跑 ⇒ 被 `e?` 交出去的分配**永远拿不到
+                 * "逃出本帧了"这个标记** ⇒ 收尾 pass 会把它错误地放回块层 ✗
+                 * （`varArray<T>::withCap` 的 `return v` 正是这一支 ——
+                 *   然后实例复查报 "depth 1, but this can only hold up to 0" ✗✗）
+                 * 载荷是**值**，它带着的那些引用最终要交给调用者 ⇒ 提到 0 层 ✓ */
+                promoteInto(c, s->u.ret.value, 0);
                 if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
                                     s->u.ret.value, "return value");

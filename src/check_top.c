@@ -409,23 +409,85 @@ static bool isParamName(FuncDef *f, const char *n) {
     return false;
 }
 
-static bool stmtStoresThroughDeref(Stmt *s, FuncDef *f) {
+/* ⭐ 层 1 第三步（**值拷贝不延长寿命**，跟 `valDepthForStore` 同一条原理）：
+ *
+ * "把值写进参数指的地方"**并不总是**"有东西要活到帧外" ✗ —— 要分两种：
+ *   · 写进去的是**引用/视图**（`dst.p = ref x`、`dst.p = q`）⇒ 那份存储必须活得够久 ⇒ 是 ✓
+ *   · 写进去的是**纯值**（`dst.v = *p`）⇒ 存的是**字节的副本** ⇒ 源对象活多久无关，
+ *     副本里的东西也一个都活不下来 ⇒ **不是** ✓
+ * 判据同 `check_escape.c` 的 `typeCannotCarryRef`（连 `mentionsParam` 那半也一样：
+ * `T` 可能带引用 ⇒ 推迟到实例化）✓
+ *
+ * 为什么这条直接决定长运行程序的内存（主人给的 50/25/25 形状，实测 **98 MB ⇒ 1 MB**）：
+ *   `varArray<T>::push` 的体是 `self.buf[self.len] = v` ⇒ 旧判据一律答"是" ⇒
+ *   **每一处**调 `push` 的函数都被传染成"有家" ⇒ `main` 有家 ⇒ `main` 里
+ *   **每一个** `new` 都落进家 arena（一只活到进程结束的 arena）⇒ 全都不回收 ✗✗
+ *   而值拷贝那条路一个字节都不需要留下来 ✓ */
+/* ⚠️ **别写成两个互相兜底的函数** —— 第一版就是
+ *    `valueMayCarryRef` 兜底 `exprMayCarryRef`、`exprMayCarryRef` 又兜底回来
+ * ⇒ 当场 **段错误**（栈溢出，gdb 里 26 万层 `valueMayCarryRef` ✗）。
+ * 结构：**一个递归函数 + 两个问题**（"这个类型能不能装引用" / "这个表达式的结果能不能"），
+ * 每种表达式**只在自己那一支里递归**，谁都不兜底谁 ✓ */
+static bool valueMayCarryRef(Expr *v) {
+    if (!v) return false;
+    switch (v->kind) {
+    /* ① 它本身就是一份引用/视图 ✓ */
+    case EX_REF: case EX_SLICE:
+    case EX_DEREF:      /* `*p` 指向的地方里可能装着引用 ✓（保守）*/
+    case EX_INDEX: case EX_FIELD:   /* `a[i]` / `o.f` 读出来的可能是引用 ✓ */
+        return true;
+    /* ② 这些形状看它们**装着什么** ✓ */
+    case EX_IDENT:      return true;      /* 绑定：不知道它是什么（且字节码里看不出）⇒ 保守 ✓ */
+    case EX_SIGN:       return valueMayCarryRef(v->u.sign.operand);
+    case EX_COALESCE:   return valueMayCarryRef(v->u.coalesce.main)
+                            || valueMayCarryRef(v->u.coalesce.fallback);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < v->u.lit.inits.len; i++)
+            if (valueMayCarryRef((*(FieldInit **)vecAt(&v->u.lit.inits, i))->value)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < v->u.arraylit.elems.len; i++)
+            if (valueMayCarryRef(*(Expr **)vecAt(&v->u.arraylit.elems, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < v->u.enumval.args.len; i++)
+            if (valueMayCarryRef(*(Expr **)vecAt(&v->u.enumval.args, i))) return true;
+        return false;
+    case EX_ASSOC:
+        for (size_t i = 0; i < v->u.assoc.args.len; i++)
+            if (valueMayCarryRef(*(Expr **)vecAt(&v->u.assoc.args, i))) return true;
+        return false;
+    case EX_CALL:
+        for (size_t i = 0; i < v->u.call.args.len; i++)
+            if (valueMayCarryRef(*(Expr **)vecAt(&v->u.call.args, i))) return true;
+        return false;
+    case EX_METHOD:
+        if (valueMayCarryRef(v->u.method.recv)) return true;
+        for (size_t i = 0; i < v->u.method.args.len; i++)
+            if (valueMayCarryRef(*(Expr **)vecAt(&v->u.method.args, i))) return true;
+        return false;
+    default: return false;   /* 标量字面量 / `new`（下面自己算它）✓ */
+    }
+}
+
+static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
     if (!s) return false;
     switch (s->kind) {
     case ST_ASSIGN: {
         const char *rn = placeRootName(s->u.assign.target);
-        return rn && isParamName(f, rn);      /* 写进参数指的地方/字段 ⇒ 出参形状 ✓ */
+        /* 写进参数指的地方 ⇒ **只有"值里可能装着引用"时才需要活到帧外** ✓ */
+        return rn && isParamName(f, rn) && valueMayCarryRef(s->u.assign.value);
     }
-    case ST_IF:     return stmtStoresThroughDeref(s->u.ifs.thenBody, f) ||
-                           stmtStoresThroughDeref(s->u.ifs.elseBody, f);
-    case ST_WHILE:  return stmtStoresThroughDeref(s->u.whiles.body, f);
+    case ST_IF:     return stmtStoresThroughDeref(c, s->u.ifs.thenBody, f) ||
+                           stmtStoresThroughDeref(c, s->u.ifs.elseBody, f);
+    case ST_WHILE:  return stmtStoresThroughDeref(c, s->u.whiles.body, f);
     case ST_BLOCK:
         for (size_t i = 0; i < s->u.block.stmts.len; i++)
-            if (stmtStoresThroughDeref(*(Stmt **)vecAt(&s->u.block.stmts, i), f)) return true;
+            if (stmtStoresThroughDeref(c, *(Stmt **)vecAt(&s->u.block.stmts, i), f)) return true;
         return false;
     case ST_MATCH:
         for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtStoresThroughDeref((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, f))
+            if (stmtStoresThroughDeref(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body, f))
                 return true;
         return false;
     default: return false;
@@ -1256,7 +1318,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     /* A3：**有分配 + 返回有用的东西（含引用/视图）** ⇒ 这个函数要一只"家"arena ✓
      * （返回 `i32` 的函数不要 —— 它的分配留在自己块里，A2 的紧致性不丢 ✓）*/
     if (!f->isExtern && stmtHasNew(f->body) &&
-        ((f->ret && typeContainsRef(c->tt, f->ret)) || stmtStoresThroughDeref(f->body, f)))
+        ((f->ret && typeContainsRef(c->tt, f->ret)) || stmtStoresThroughDeref(c, f->body, f)))
         f->needsHome = true;
 
     Vec     *savedParams = c->curParams;
@@ -1865,7 +1927,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (rt && f->typeParams.len > 0 && f->targs.len == f->typeParams.len)
                 rt = ttSubstitute(c.tt, rt, &f->typeParams, &f->targs);
             if (stmtHasNew(f->body) &&
-                ((rt && typeContainsRef(c.tt, rt)) || stmtStoresThroughDeref(f->body, f)))
+                ((rt && typeContainsRef(c.tt, rt)) || stmtStoresThroughDeref(&c, f->body, f)))
                 f->needsHome = true;
         }
 
@@ -1932,7 +1994,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                     /* 分配：有家 ⇒ 每处 `new` / `alloc` 都进家 ✓
                      * ⭐ B2：`EX_GENCALL` 是 `alloc<T>` / `allocSlice<T>` —— 它以前**不在
                      * `arenaSites` 里**（`check_expr.c` 的 EX_NEW 支才登记）⇒ 这里看不见它
-                     * ⇒ 有家函数里的 `alloc` 留在块层 ⇒ 「返回 alloc 出来的东西」整族被误拒 ✗
+                     * ⇒ 有家函数里的 `alloc` 留在块层 ⇒「返回 alloc 出来的东西」整族被误拒 ✗
                      * ⇒ 现在两种分配一视同仁 ✓ */
                     if (site->arenaLevel != ARENA_HOME) { site->arenaLevel = ARENA_HOME; fixed++; }
                 } else if (site->arenaArgPending) {

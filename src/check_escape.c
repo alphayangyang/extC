@@ -139,9 +139,45 @@ int valDepthStructural(Checker *c, Expr *e) {
     }
 }
 
-/* ⭐ A2：记进任何地方的深度一律走这个 —— `exprRefDepth` 与结构上界**取 max** ✓ */
+/* ⭐ **「值的字节里一定装不下活引用」** —— 这是个**语法制导的守卫**，
+ * 跟 `exprRefDepth` 开头那个早退**一模一样**（连 `mentionsParam` 那半也一样：
+ * `T` 可能带引用 ⇒ 泛型体里不许早退，实例化时才定）✓
+ *
+ * 为什么它决定"要不要给源对象提寿命要求"：
+ *   往 `dst` 里存 `v` 只有两种可能 ——
+ *     · `v` 是**引用**（`ref T`）⇒ 存进去的是一个指针 ⇒ `ρ(v) ⊒ storeLayer(dst)`；
+ *     · `v` 是**值**  ⇒ 存进去的是**那一串字节的拷贝** ⇒
+ *       目标格子里留下的是**副本**，源对象*本身*在哪、活多久**一个字节都不影响** ✗
+ *       真正有影响的只有"副本里装着的那些引用指哪" ⇒ 那正是 `exprRefDepth` 的内容 ✓
+ *   ⇒ 所以"值里没有引用"时，源对象的深度**不是**存储的约束（提它 = 误拒，不是安全）✓
+ *
+ * ⚠️ 别退回成"看 `T` 的类型节点"：`typeContainsRef` 对**字段类型本身是 ref** 的
+ *   聚合答 false（那是 A2 修的洞）⇒ 这里必须看**整个类型**（它会递归字段/载荷）✓
+ * ⚠️ 只可能"少提要求" ⇒ 只可能**误拒变通过**，绝不可能"该拦的没拦" ——
+ *   被它放过去的那串字节里没有任何东西能把源对象钉住 ✓ */
+static bool typeCannotCarryRef(Checker *c, Expr *e) {
+    if (!e) return true;
+    if (mentionsParam(e->type)) return false;    /* `T` 可能带引用 ⇒ 推迟 ✓ */
+    return !typeContainsRef(c->tt, tsub(c, e->type));
+}
+
+/* ⭐ A2：记进任何地方的深度一律走这个 —— `exprRefDepth` 与结构上界**取 max** ✓
+ *
+ * ⭐ 层 1 第二步（值拷贝不该背源对象的寿命）：结构上界只在**这个值可能装着引用**时才算。
+ * 反例（主人给的 50/25/25 长运行形状，实测 **98 MB ⇒ 1 MB**）：
+ *     while round < N {
+ *         var it = new item            // item = 3 个 i64，**没有任何引用**
+ *         outer.push(*it)              // 值拷贝；`contMask` 说"第 1 个实参的内容进去了"
+ *         …
+ *     }
+ * `*it` 的类型是 `item` ⇒ 上一版把 `valDepthStructural(*it) = ρ(it)` 取进来 ⇒
+ * 这个 `new` 站点的要求被抬成"活到调用者的帧" ⇒ 分配进 `__extc_home` ⇒
+ * **每轮一个、全都不回收**（长运行服务最怕的形状）✗
+ * 而 `outer.push` 存的是 `item` 的**字节**：`it` 指向哪、活多久，跟容器里那份副本无关 ✓ */
 int valDepthForStore(Checker *c, Expr *e) {
-    int a = exprRefDepth(c, e), b = valDepthStructural(c, e);
+    int a = exprRefDepth(c, e);
+    if (typeCannotCarryRef(c, e)) return a;      /* 纯值拷贝 ⇒ 源对象的寿命不是约束 ✓ */
+    int b = valDepthStructural(c, e);
     return a > b ? a : b;
 }
 
@@ -401,7 +437,12 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     if (hops > 32) return false;
     switch (val->kind) {
 
-    case EX_NEW: {
+    /* ⭐ `EX_GENCALL` = `alloc<T>(n)` / `allocSlice<T>(n)` —— **B2 之后它和 `new` 完全对称**
+     * （同一套层号规则、同样登记进 `arenaSites`）⇒ 提升规则也必须对称 ✗
+     * 以前它落到 `default: return false`（"提不动"）⇒
+     * 「返回一块 `alloc` 出来的内存」整族提不动 ⇒ 照旧误拒 ✗ */
+    case EX_NEW:
+    case EX_GENCALL: {
         /* 目的地深度 0 = "调用者那一级"（"家"arena）—— **只有"有家"的函数有** ✓
          * 没有家 ⇒ 提不到那一层 ⇒ 原样返回 false（照旧报错，安全方向）✓
          * ⚠️ 定案 68：那一档现在用 `ARENA_HOME` 表示（以前是拿 0 **兼职**的 ✗ ——
@@ -436,6 +477,19 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
 
     case EX_SIGN:
         return promoteInto2(c, val->u.sign.operand, at, hops + 1);
+
+    /* ⭐ 层 1：**新增这三种形状** —— `promoteInto` 要能沿**值的载体**走到
+     * 里面的分配，否则"这一处逃出去了"这个事实根本没机会被发现 ✗
+     *   `var v: varArray<T> = { buf: new T[cap], … }  return v`、`o.f = cell`、`a[i] = cell`
+     * —— 这三种都是最常见的形状 ✓
+     * 纪律跟 `EX_STRUCTLIT` / `EX_ARRAYLIT` 一样：**只沿值的载体往里走**，
+     * 不追别名、不做跨函数推理 ⇒ 提不动照旧 false（调用方照旧报错）✓ */
+    case EX_SLICE:
+        return promoteInto2(c, val->u.slice.obj, at, hops + 1);
+    case EX_FIELD:
+        return promoteInto2(c, val->u.field.obj, at, hops + 1);
+    case EX_INDEX:
+        return promoteInto2(c, val->u.index.obj, at, hops + 1);
 
     case EX_COALESCE: {
         /* ⚠️ 两边都要试（不能短路）—— 只提一边就会漏掉另一边那个 `new` ✗ */

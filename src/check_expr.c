@@ -784,8 +784,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (e->arenaLevel == 0)
                 e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len);
-            /* 顺手记下站点（见 `FuncDef.arenaSites` 的注释：闭包之后要回头定它们）✓ */
-            *(Expr **)vecPush(&c->curArenaSites) = e;
+        *(Expr **)vecPush(&c->curArenaSites) = e;
             /* `refDepth` 跟着 `arenaLevel` 走（两件事必须永远是同一个数）——
              * ⚠️ 只有 `ARENA_HOME` 例外：那个哨兵是 -1，而 `refDepth` 的语言是
              * "0 = 外面那一级"，所以**映射回 0**（家 = 调用者选的作用域 = 深度 0 ✓）*/
