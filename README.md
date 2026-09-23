@@ -6,36 +6,52 @@
 
 ## 文档
 
-> ⚠️ **2026-09-23 补齐**：这张表原来只列 11 份，而仓库里有 **21 份** ⇒ 9 份专题文档
-> **一份都没进索引**（`ARENA*` · `ARRAYS` · `REFS` · `BOOTSTRAP` · `IO` · `PLAN-REGION` ·
-> `VISION` · `extC-overview`）✗ —— 读的人只能靠 `ls` 猜哪份是权威 ✓
-> ⇒ 现在**全部列出**，并标明每份的**性质**（现行 / 历史 / 已取代）✓
+> **根目录只有这一份 `README.md`** —— 其余全部在 `docs/` 下（2026-09-23 重组：
+> 原来 27 份散在根目录，谁也说不清哪份是权威 ✗）✓
+>
+> **读哪一份**：想知道"现在什么坏了 / 下一步做什么" → 只看 `PLAN.md`；
+> 想写程序 → 只看 `MANUAL.md`；想知道"为什么这么设计" → `SPEC.md` + `DESIGN.md`。
+> 其余都是**专题**或**历史**，按需查 ✓
+
+### 现行（这些是权威）
 
 | 文档 | 给谁看 | 内容 |
 |---|---|---|
-| [`LANGUAGE.md`](LANGUAGE.md) | **想知道「extC 是什么」** | ⭐ **正式设计文档**：定位、原则、语言表面、内存模型、代价与损失（⚠️ 它的**状态标记**以 `PLAN.md` §0.4 + 实测为准）|
-| [`MANUAL.md`](MANUAL.md) | **要写 extC 程序的人** | 语言手册。**只描述已实现的东西** |
-| [`DESIGN.md`](DESIGN.md) | 想知道「为什么这么设计」 | 一条原则 + 全部推论 + 判出局清单 |
-| [`DECISIONS.md`](DECISIONS.md) | 想知道「哪条定了、哪条还欠着」 | 语法决策的「已定案 / 还欠着」两栏（**最全的历史决策库**）|
-| [`PLAN.md`](PLAN.md) | **想知道「现在什么坏了 / 接下来做什么」** | ⭐ **进度与缺陷的唯一权威**（§0.4 缺陷清单 + §0.6 修法记录）|
-| [`DEVLOG.md`](DEVLOG.md) | 想知道「发生过什么」 | 开发记录：决策与发现的来龙去脉（**倒序，最全**）|
-| [`ARENA.md`](ARENA.md) | 想知道「内存模型怎么落地」 | arena = 词法作用域（主人的模型）+ 逐条落地 |
-| [`ARENA-FORMAL.md`](ARENA-FORMAL.md) | 想知道「为什么这样是 sound」 | ⭐ arena 规则的**严格推导**（约束系统 / 定理 / 误拒分析 / 调用点求解）|
-| [`PLAN-REGION.md`](PLAN-REGION.md) | 想知道「形式化怎么落进编译器」 | `ARENA-FORMAL` 的执行计划（**条目已全部 ✅**，留作记录）|
-| [`REFS.md`](REFS.md) | 想知道 `ref` 的语义 | 引用现在在哪、该往哪走 |
-| [`ARRAYS.md`](ARRAYS.md) | 想知道数组/切片 | 旧稿 × 当前标准的合并版 |
-| [`IO.md`](IO.md) | 想知道输入输出 | 设计 + **三段顺序（IO-0/1/2）**；**IO-0 主体已落地**（`reader` + `nextInt` 一族，定案 74）|
-| [`LIBS.md`](LIBS.md) | 想知道「库怎么做」| **编译到 C 意味着什么**（C 当 ABI / 两种消费者 / 跨边界签字）+ 四种分发模型 |
-| [`MODULES.md`](MODULES.md) | 想知道「模块系统怎么做」| 调研 + 候选方案（12 门语言怎么做）；**模块 v1 已落地**（定案 70）|
-| [`CONCURRENCY.md`](CONCURRENCY.md) | 想知道**协程 / 线程**该怎么做 | ⚠️ **设想 + 风险清单**（**一个字都没实现**）：为什么必须无栈 · 帧与 arena 怎么结合 · 已知代价 · 落地顺序 |
-| [`BOOTSTRAP.md`](BOOTSTRAP.md) | 想知道依赖顺序与「鸡生蛋」| 四条破环规则 + ISO C 边界 + 沙箱 + 六步计划 |
-| [`SYNTAX.md`](SYNTAX.md) | 想知道「名字该怎么起」 | 命名规范 + 样板 |
-| [`COMMENT-STYLE.md`](COMMENT-STYLE.md) | **改 `src/` 之前先看这份** | ⭐ 注释标准：**只许英文 + ASCII** · 函数块格式（`Params`/`Returns`/`Notes`）· **禁项目黑话** · 判据 `tools/comment_neutral.py`（范围只 `src/`；文档与语料仍中文）|
-| [`REVIEW-gomoku-sample.md`](REVIEW-gomoku-sample.md) | 想知道「真实程序需要什么」 | 五子棋示例代码审读 |
-| [`MIGRATION.md`](MIGRATION.md) | 想知道「编译器自己哪些代码该用 extC 写」 | 搬迁审计 + 两阶段构建机制 |
-| [`extC-overview.md`](extC-overview.md) | **想一次看完「这语言是什么」** | 259 行总览（2026-09-21 写，给外人看的；**计数已于 2026-09-23 重核** ✓，性能表与状态句仍是 09-21 口径 ⚠️）|
-| [`VISION.md`](VISION.md) | — | ⚠️ **历史快照，已被 `LANGUAGE.md` 取代**（冲突时以 `LANGUAGE.md` 为准）|
-| `bench/oi/*/REPORT.md` · `FINDINGS.md` | 想看性能实测 | 四语言横评（OI 三维偏序 / 主席树 P3834）的报告与发现 |
+| [`docs/PLAN.md`](docs/PLAN.md) | **想知道「现在什么坏了 / 接下来做什么」** | ⭐ **唯一路线图**：§0.4 缺陷清单（唯一编号）· §0.4.1 精度/边界账 · §1 主线 |
+| [`docs/MANUAL.md`](docs/MANUAL.md) | **要写 extC 程序的人** | 语言手册。**只描述已实现的东西** |
+| [`docs/SPEC.md`](docs/SPEC.md) | **想知道「extC 是什么」** | ⭐ 正式设计文档：定位、原则、语言表面、内存模型、代价与损失（⚠️ 状态标记以 §0.4 + 实测为准）|
+| [`docs/DESIGN.md`](docs/DESIGN.md) | 想知道「为什么这么设计」 | 一条原则 + 全部推论 + 判出局清单 |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 想知道「哪条定了、哪条还欠着」 | 决策库：已定案 / 还欠着 两栏（**最全**）|
+| [`docs/SYNTAX.md`](docs/SYNTAX.md) | 想知道「名字该怎么起」 | 命名规范 + 样板 |
+| [`docs/COMMENT-STYLE.md`](docs/COMMENT-STYLE.md) | **改 `src/` 之前先看这份** | ⭐ 注释标准：只许英文 + ASCII · 函数块格式 · 禁项目黑话 · 判据 `tools/comment_neutral.py` |
+| [`docs/DEVLOG.md`](docs/DEVLOG.md) | 想知道「发生过什么」 | 开发记录（倒序，最全）。⚠️ 里面的旧计数是**当时的台阶，故意不改** ✓ |
+
+### 专题（一个领域一份，按需查）
+
+| 文档 | 领域 |
+|---|---|
+| [`docs/topics/ARENA.md`](docs/topics/ARENA.md) | 内存模型怎么落地（arena = 词法作用域）|
+| [`docs/topics/ARENA-FORMAL.md`](docs/topics/ARENA-FORMAL.md) | ⭐ 为什么这样是 sound（约束系统 / 定理 / 调用点求解）|
+| [`docs/topics/ARENA-SOUNDNESS.md`](docs/topics/ARENA-SOUNDNESS.md) | 证伪 + 边界清单 + 分档实施 + 路径敏感设计 |
+| [`docs/topics/ARENA-NOTES.md`](docs/topics/ARENA-NOTES.md) | ⭐ **还没解决的坑 + 为什么**（没做成的机制 · 仍然有效的判据 · 环境坑）|
+| [`docs/topics/REFS.md`](docs/topics/REFS.md) | `ref` 的语义 |
+| [`docs/topics/ARRAYS.md`](docs/topics/ARRAYS.md) | 数组 / 切片 |
+| [`docs/topics/IO.md`](docs/topics/IO.md) | 输入输出（三段顺序 IO-0/1/2；IO-0 已落地）|
+| [`docs/topics/LIBS.md`](docs/topics/LIBS.md) | 库怎么做（C 当 ABI · 跨边界签字）|
+| [`docs/topics/MODULES.md`](docs/topics/MODULES.md) | 模块系统（v1 已落地）|
+| [`docs/topics/BOOTSTRAP.md`](docs/topics/BOOTSTRAP.md) | 依赖顺序与「鸡生蛋」 |
+| [`docs/topics/MIGRATION.md`](docs/topics/MIGRATION.md) | 编译器自己哪些代码该用 extC 写 |
+| [`docs/topics/CONCURRENCY.md`](docs/topics/CONCURRENCY.md) | ⚠️ 协程 / 线程的**设想 + 风险**（一个字都没实现）|
+
+### 历史（留作判例，别当现状读）
+
+| 文档 | 状态 |
+|---|---|
+| [`docs/history/PLAN-REGION.md`](docs/history/PLAN-REGION.md) | 形式化的执行计划，**条目已全部完成** |
+| [`docs/history/REVIEW-gomoku-sample.md`](docs/history/REVIEW-gomoku-sample.md) | 早期代码审读（真实程序需要什么）|
+| [`docs/history/extC-overview.md`](docs/history/extC-overview.md) | 对外总览的一次快照（09-21 口径）|
+| [`docs/history/VISION.md`](docs/history/VISION.md) | ⚠️ **已被 `SPEC.md` 取代** |
+| `bench/oi/*/REPORT.md` · `FINDINGS.md` | 四语言横评的实测报告 |
 
 ### 口径：谁的"状态"说了算（**冲突时按这个顺序**）
 
@@ -46,12 +62,12 @@
 
 | 想知道的 | **只看这一份** | 别的文档里的同一件事 |
 |---|---|---|
-| **现在什么坏了 / 还剩什么** | ⭐ [`PLAN.md`](PLAN.md) §0.4 | 一律作废，包括本 README 的「状态」节 |
-| **某特性到底实现了没** | ⭐ 实测（`examples/` 里跑一遍）或 `MANUAL.md` | `LANGUAGE.md` 的 ✅/🔸/⬜ 标记**只是设计口径**，不是实现状态 |
-| **名字怎么起 / 这语法怎么写** | [`MANUAL.md`](MANUAL.md) | — |
-| **为什么这么设计** | [`LANGUAGE.md`](LANGUAGE.md)（设计口径）· [`DESIGN.md`](DESIGN.md) | — |
-| **哪条拍板了** | [`DECISIONS.md`](DECISIONS.md)（编号最全） | 各文档里的"定案 NN"都指它 |
-| **发生过什么** | [`DEVLOG.md`](DEVLOG.md) | 它里面的**旧计数是历史台阶，故意不改** ✓ |
+| **现在什么坏了 / 还剩什么** | ⭐ [`PLAN.md`](docs/PLAN.md) §0.4 | 一律作废，包括本 README 的「状态」节 |
+| **某特性到底实现了没** | ⭐ 实测（`examples/` 里跑一遍）或 `MANUAL.md` | `SPEC.md` 的 ✅/🔸/⬜ 标记**只是设计口径**，不是实现状态 |
+| **名字怎么起 / 这语法怎么写** | [`MANUAL.md`](docs/MANUAL.md) | — |
+| **为什么这么设计** | [`SPEC.md`](docs/SPEC.md)（设计口径）· [`DESIGN.md`](docs/DESIGN.md) | — |
+| **哪条拍板了** | [`DECISIONS.md`](docs/DECISIONS.md)（编号最全） | 各文档里的"定案 NN"都指它 |
+| **发生过什么** | [`DEVLOG.md`](docs/DEVLOG.md) | 它里面的**旧计数是历史台阶，故意不改** ✓ |
 | **某专题的设计全貌** | 该专题文档（`ARENA*`/`REFS`/`ARRAYS`/`IO`/`MODULES`/`LIBS`）| 专题文档的"实施状态"表**可能滞后** ⇒ 以 §0.4 为准 |
 
 **两条与"文档可信度"有关的硬规矩**：
@@ -82,7 +98,7 @@
    一个程序两种语言很怪。
 8. ⭐ **`src/` 里的注释一律英文 + 每个函数配标准注释块**（2026-09-23 主人拍板，
    **替换了旧第 7 条的后半句**「代码注释可以是中文」）。
-   全文见 [`COMMENT-STYLE.md`](COMMENT-STYLE.md)，四条要点：
+   全文见 [`COMMENT-STYLE.md`](docs/COMMENT-STYLE.md)，四条要点：
    - **只许英文 + ASCII**（禁中文、全角标点、`⭐⚠️✅✗✓⇒` 这类符号）；
    - **函数块格式**：一行摘要 + 为什么存在 + `Params:` / `Returns:` / `Notes:`（空的可省）；
    - **禁项目黑话**：不写「定案 63」「PLAN #38」「附录 F」「A2/甲′」这类内部代号 ——
@@ -114,7 +130,7 @@
 ⚠️ **还没到"能跟人下五子棋"**：差 **IO-1**（`open` + 帧拥有文件 + `main(args)`）·
 `readAll` · `for` 循环 —— **IO-0 主体已经落地了**（`reader` 隐式 64KB + `nextInt` 一族：
 `nextInt`/`nextToken`/`nextLine`/`skipSpace` + 三条路分得开 ✓ `allocSlice<T>(n)` 也做了 ✓）。
-缺口表见 [`PLAN.md`](PLAN.md) §0.4 / §1 ✓
+缺口表见 [`PLAN.md`](docs/PLAN.md) §0.4 / §1 ✓
 
 ✅ **全限定名（`PLAN.md` §0.4 #53）2026-09-23 已修完** —— 表达式位置现在能写**任意层**全名
 （`std::sys::io::write(1, buf[..].data, 3)` ✓），`use std::sys::io as sysio` 别名也有了 ✓
@@ -225,7 +241,7 @@ fn main() -> i32 {
 
 > ⚠️ 这一行以前写作「…`match`、…输入/argv、模块系统、全局变量…**逃逸检查**」——
 > 那里面 **`match` / 模块系统 / 全局变量 / 逃逸检查** 四样**早就实现并已验收**了
-> （逃逸检查更是 `LANGUAGE.md` §4.3 明写的四条规则），只有输入那一族是真的还欠着 ✗
+> （逃逸检查更是 `SPEC.md` §4.3 明写的四条规则），只有输入那一族是真的还欠着 ✗
 > 老读者按旧口径会以为这门语言还没有 arena —— 那正是它最核心的东西 ✓
 
 ## 目录

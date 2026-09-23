@@ -6,7 +6,7 @@
 >
 > 当前版本：**week-0**（2026-09-18）
 >
-> 设计理由看 [`DESIGN.md`](DESIGN.md)；为什么这么定看 [`DECISIONS.md`](DECISIONS.md)；接下来做什么看 [`PLAN.md`](PLAN.md)。
+> 设计理由看 [`DESIGN.md`](../docs/DESIGN.md)；为什么这么定看 [`DECISIONS.md`](../docs/DECISIONS.md)；接下来做什么看 [`PLAN.md`](../docs/PLAN.md)。
 
 ---
 
@@ -146,7 +146,7 @@ fn stash(s: slice<u8>) { G = s }   // ✗ cannot store a borrowed value into som
 | **移位 ≥ 位宽** | ⚠️ **静默算错**（只有 gcc warning 漏出来） |
 
 这两条是**从 C 继承来的**（编译到 C 就意味着要负责把 C 的 UB 一处一处堵上），
-堵法都不贵，见 [`BOOTSTRAP.md`](BOOTSTRAP.md) §6。
+堵法都不贵，见 [`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md) §6。
 
 ---
 
@@ -241,7 +241,7 @@ let b = 2
 | （字符串） | 没有内建字符串类型 —— 见下面的 **`slice<u8>`** | — |
 | 空 | `void` | `void` |
 
-**没有 `int` / `long` / `char` / `double`** —— 类型名一律带位宽（见 [`SYNTAX.md`](SYNTAX.md) 的命名规范）。
+**没有 `int` / `long` / `char` / `double`** —— 类型名一律带位宽（见 [`SYNTAX.md`](../docs/SYNTAX.md) 的命名规范）。
 
 字面量的默认类型：整数 `i32`，浮点 `f64`。
 
@@ -631,7 +631,7 @@ println(a[0])      // 1
 println(a[7])      // trap: index 7 out of range (length 5) —— 带文件名和行号
 ```
 
-**切片视图 `a[lo..hi]`** —— 四种写法，**不拷贝数据**（见 [`ARRAYS.md`](ARRAYS.md) §4）：
+**切片视图 `a[lo..hi]`** —— 四种写法，**不拷贝数据**（见 [`ARRAYS.md`](../docs/topics/ARRAYS.md) §4）：
 
 ```extc
 var a: [8]i32 = [10, 20, 30, 40, 50, 60, 70, 80]
@@ -799,7 +799,7 @@ println(p!.value)                 // ?ref：我知道非空 ✓
 `?` 就是「**不成功我就不干了**」。它在**四个位置**合法（见下节）。
 
 用**关联函数**构造：写在 `struct` 体内但**不带 `self`** 的函数，
-调用时类型写全（不靠上下文猜，见 [`DECISIONS.md`](DECISIONS.md) 定案 27/29）：
+调用时类型写全（不靠上下文猜，见 [`DECISIONS.md`](../docs/DECISIONS.md) 定案 27/29）：
 
 ```extc
 struct box<T> {
@@ -902,7 +902,7 @@ let r = ref n      // error: cannot take a reference through `n`, which is a `le
 > 把 `let` 视图拷给一个 `var`、或者传进函数，那边照样能写同一块内存；
 > 调用一个 `self: ref T` 的方法也算（`let p; p.moveBy(1)` 现在是允许的）。
 > 要管到数据层，可变性就得进**类型**（Rust 的 `&` / `&mut`）——
-> 那是 week-4 引用规则的范围，见 [`DECISIONS.md`](DECISIONS.md) 定案 28。
+> 那是 week-4 引用规则的范围，见 [`DECISIONS.md`](../docs/DECISIONS.md) 定案 28。
 
 ```extc
 var b: board       // 所有字段清零
@@ -1015,7 +1015,7 @@ fn clear(self: ref board) {
 
 ⚠️ **但「透过 `ref` 写一个标量」现在写不出来**（`p = p + 1` 会被拒）。
 绕法：把值包进一个 struct 再透过 `self.field` 写。
-要不要加解引用写法（比如 `p.*`）还是个待定项，见 [`DECISIONS.md`](DECISIONS.md)。
+要不要加解引用写法（比如 `p.*`）还是个待定项，见 [`DECISIONS.md`](../docs/DECISIONS.md)。
 
 ### 没有 `&` 取地址运算符
 
@@ -1714,8 +1714,8 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | **`@recursive`** | 编译器展开成「显式栈 + 循环」，深度上限是编译期常数 | 低 |
 | **线程** | 保守的 fork-join + 归约；「引用不过线程」 | 低 |
 
-完整清单和理由见 [`DECISIONS.md`](DECISIONS.md)、[`PLAN.md`](PLAN.md)、
-[`BOOTSTRAP.md`](BOOTSTRAP.md)（依赖顺序与优先级）。
+完整清单和理由见 [`DECISIONS.md`](../docs/DECISIONS.md)、[`PLAN.md`](../docs/PLAN.md)、
+[`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md)（依赖顺序与优先级）。
 
 ---
 
@@ -1723,7 +1723,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 `result<void,E>` 还是 `result<(),E>`、`@main` 和 `module main` 的优先关系、`+=` 复合赋值、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
 
-**`==` 右边的裸 `{}` 不推**（✅ 已定，见 [`DECISIONS.md`](DECISIONS.md) 定案 27）：
+**`==` 右边的裸 `{}` 不推**（✅ 已定，见 [`DECISIONS.md`](../docs/DECISIONS.md) 定案 27）：
 
 ```extc
 println(ps[0] == { x: 1, y: 2 })        // ✗ cannot infer the type of a bare `{}` here
@@ -1917,5 +1917,5 @@ fn mkSlice() -> slice<i32> {        // ✅ 合法：扩容过的容器，把视�
 - 摘要说得清"第几个参数会被存" ⇒ 只查那几个 ✓
 - 摘要说不清（递归 / 环 / 有解析不出来的调用）⇒ **每个含引用的实参都按最坏情况查** ✓ 消息会说清原因 ✓
 
-⚠️ 推导见 [`ARENA-FORMAL.md`](ARENA-FORMAL.md) §2/§3/§9（§9.5 = 落地实录 + 双向证据），
-执行计划见 [`PLAN-REGION.md`](PLAN-REGION.md) ✓
+⚠️ 推导见 [`ARENA-FORMAL.md`](../docs/topics/ARENA-FORMAL.md) §2/§3/§9（§9.5 = 落地实录 + 双向证据），
+执行计划见 [`PLAN-REGION.md`](../docs/history/PLAN-REGION.md) ✓

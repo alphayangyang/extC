@@ -58,7 +58,9 @@ def scan(src):
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob('src/*.c') + glob.glob('src/*.h'))
+    args = [a for a in sys.argv[1:] if a != '-v']
+    verbose = '-v' in sys.argv[1:]
+    files = args or sorted(glob.glob('src/*.c') + glob.glob('src/*.h'))
     total_c = total_o = 0
     for f in files:
         with open(f, encoding='utf-8', errors='replace') as fh:
@@ -69,7 +71,7 @@ def main():
             print(f'{f}: {len(comments)} comment(s) with non-ASCII  <- must be fixed')
             for ln, txt in comments[:3]:
                 print(f'    line {ln}: {txt}')
-        elif output and '-v' in sys.argv:
+        elif output and verbose:
             print(f'{f}: comments clean; {len(output)} output string(s) non-ASCII')
     print(f'comments with non-ASCII: {total_c}   output strings with non-ASCII: {total_o}')
     return 1 if total_c else 0

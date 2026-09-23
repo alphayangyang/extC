@@ -1,6 +1,11 @@
 # VISION.md —— extC 的设想（一份合并版）
 
-> ⚠️ **已被 [`LANGUAGE.md`](LANGUAGE.md) 取代**（2026-09-18）。
+> **状态：历史快照，已被 [`SPEC.md`](../SPEC.md) 取代**（2026-09-18）。
+> 留在这里只为了保留「当时那次合并整理的口径」；两份冲突时**以 `SPEC.md` 为准** ✓
+> （2026-09-23 文档重组：根目录只留 `README.md`，其余全部收进 `docs/`）
+
+
+> ⚠️ **已被 [`LANGUAGE.md`](../SPEC.md) 取代**（2026-09-18）。
 > 那份是正式的、完整的设计文档；本文留作**历史快照** —— 它记的是当时那次合并整理的口径。
 > 两份冲突时以 `LANGUAGE.md` 为准。
 
@@ -202,4 +207,4 @@
 | **逃逸检查（词法深度）** | `arena` 内建类型 + `varArray<T>` |
 | arena 运行时（每帧一只 + `alloc` 原语） | lambda、输入、`for`、算术 UB 两处 |
 
-**六步计划见 [`BOOTSTRAP.md`](BOOTSTRAP.md) §8。**
+**六步计划见 [`BOOTSTRAP.md`](../topics/BOOTSTRAP.md) §8。**

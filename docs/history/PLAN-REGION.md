@@ -1,6 +1,11 @@
 # `PLAN-REGION.md` —— 把形式化推导落进编译器（执行计划）
 
-> 参考 = [`ARENA-FORMAL.md`](ARENA-FORMAL.md) 全部内容（§3 约束系统、§6 证明与记账不变式、
+> **状态：执行计划，条目已全部完成**（2026-09-23）。
+> 留作记录 —— 它记的是「形式化怎么一步步落进编译器」的过程，不是待办。
+> **现行状态与下一步看 [`PLAN.md`](../PLAN.md)**；形式化推导看 [`topics/ARENA-FORMAL.md`](../topics/ARENA-FORMAL.md) ✓
+
+
+> 参考 = [`ARENA-FORMAL.md`](../topics/ARENA-FORMAL.md) 全部内容（§3 约束系统、§6 证明与记账不变式、
 > §7 误拒分析、§8 让 checker 用定理 + §8.5 工程降法）✓
 > 目标 = goal「把 ARENA-FORMAL 的推导落进编译器」✓
 

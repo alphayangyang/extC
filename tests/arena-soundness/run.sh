@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# arena 健全性**反例库**（2026-09-23）—— 配套 `ARENA-SOUNDNESS.md`
+# arena 健全性**反例库**（2026-09-23）—— 配套 `docs/topics/ARENA-SOUNDNESS.md`
 #
 # 每一条都是**当前编译器会接受、运行时真的悬垂**的程序 ⇒ 这是 soundness 的证伪证据，
 # 所以**不接进 `tests/run.sh`**（那里是"必须被拒/必须跑对"的回归）。

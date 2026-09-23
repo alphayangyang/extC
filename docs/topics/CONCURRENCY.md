@@ -397,12 +397,12 @@ fn parallel<A, B>(input: slice<A>, f: fn(A) -> B) -> varArray<B>
 
 | 关系 | 文档 |
 |---|---|
-| 并发排在主线的**哪里** | [`PLAN.md`](PLAN.md) §1（`for` → lambda → 协议 → 模块/`@main`；**协程在这之后**）|
-| arena 的语义与规则 | [`ARENA.md`](ARENA.md) · [`ARENA-FORMAL.md`](ARENA-FORMAL.md) |
-| `#52`（有家被调者 ⇒ 结果住在我传的 arena） | [`PLAN.md`](PLAN.md) §0.4 `#52` · [`DEVLOG.md`](DEVLOG.md) 2026-09-23 |
-| 模块系统（协议要跨模块） | [`MODULES.md`](MODULES.md) · `DECISIONS.md` 定案 70 |
-| 资源所有权（文件句柄那笔债） | [`IO.md`](IO.md) §8：`open` + 帧拥有 `extc_files` |
-| 为什么这么设计（一条原则） | [`DESIGN.md`](DESIGN.md) · [`LANGUAGE.md`](LANGUAGE.md) |
+| 并发排在主线的**哪里** | [`PLAN.md`](../../docs/PLAN.md) §1（`for` → lambda → 协议 → 模块/`@main`；**协程在这之后**）|
+| arena 的语义与规则 | [`ARENA.md`](../../docs/topics/ARENA.md) · [`ARENA-FORMAL.md`](../../docs/topics/ARENA-FORMAL.md) |
+| `#52`（有家被调者 ⇒ 结果住在我传的 arena） | [`PLAN.md`](../../docs/PLAN.md) §0.4 `#52` · [`DEVLOG.md`](../../docs/DEVLOG.md) 2026-09-23 |
+| 模块系统（协议要跨模块） | [`MODULES.md`](../../docs/topics/MODULES.md) · `DECISIONS.md` 定案 70 |
+| 资源所有权（文件句柄那笔债） | [`IO.md`](../../docs/topics/IO.md) §8：`open` + 帧拥有 `extc_files` |
+| 为什么这么设计（一条原则） | [`DESIGN.md`](../../docs/DESIGN.md) · [`SPEC.md`](../../docs/SPEC.md) |
 
 > ⭐ **一处重要的重叠**：`IO.md` 里那笔"**帧拥有的资源**"（`open` 出来的文件句柄）
 > 跟本文 §2.2 的"协程帧归谁 release"是**同一件事的两个面** ——
