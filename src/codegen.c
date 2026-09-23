@@ -16,7 +16,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "types.h"
+/* Everything from types.h arrives through codegen.h. Including it a second time here
+ * would redeclare each of its prototypes: a repeated textual include is processed
+ * before the header's own guard can take effect. */
 
 /* ---------------------------------------------------------------- type mapping */
 

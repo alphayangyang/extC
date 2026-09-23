@@ -37,7 +37,6 @@ Vec *funcTParams(FuncDef *f) {
 /* Forward declarations: the effect-summary walk and the escape analysis call each
  * other, so one of them has to be declared ahead of its definition. */
 static int  paramIndex(FuncDef *f, const char *name);
-bool isEscapeeName(Checker *c, const char *n);
 
 /* ------------------------------------------------------------------- top level */
 

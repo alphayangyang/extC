@@ -413,8 +413,6 @@ void  ttRender(Type *t, Buf *out);
 
 bool  ttCanWiden(Type *from, Type *to);
 
-#endif /* EXTC_TYPES_H */
-
 /* Report whether `t` is a view type.
  *
  * A view is recognized by shape - a type named `slice` with exactly one type
@@ -423,3 +421,5 @@ bool  ttCanWiden(Type *from, Type *to);
  */
 
 bool ttIsViewType(Type *t);
+
+#endif /* EXTC_TYPES_H */

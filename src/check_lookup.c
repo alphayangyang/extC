@@ -9,15 +9,11 @@
 
 /* ----------------------------------------------- non-null narrowing for `?ref T` */
 /* Resolve a name to a binding, innermost scope first and module-level bindings last. */
-Sym *lookup(Checker *c, const char *name);
 /* Defer the size check of `new T[n]` to instantiation, for a body whose type parameter
  * has no size yet. */
-void recordNewSizeCheck(Checker *c, Type *t, int line);
 /* True when the type can carry a reference, directly or inside an aggregate. */
-bool typeContainsRef(TypeTable *tt, Type *t);
 /* The depth of the home arena to pass at this call site, derived from the arguments and
  * the parameters of the callee. */
-int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode);
 /* True when a binding has been proved non-null at the current position.
  *
  * Params:
@@ -654,7 +650,6 @@ Sym *placeRoot(Checker *c, Expr *e) {
 
 /* True when the path to this place crosses a read-only reference, including the type of
  * the place itself. */
-bool pathHasReadonlyRef(Expr *e);
 
 /* True when a place can be written, which also decides whether taking a reference to it
  * gives `mut ref T` or `ref T`.

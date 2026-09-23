@@ -16,6 +16,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Each header is listed once, through the layer that actually needs it: `check.h`,
+ * `codegen.h`, `modules.h` and `parser.h` all pull in the lower layers themselves. Asking
+ * for a lower header again here costs nothing at runtime but does make the preprocessor
+ * walk that file a second time, and gcc then reports its prototypes as redundant. */
 #include "base.h"
 #include "check.h"
 #include "codegen.h"
@@ -23,7 +27,6 @@
 #include "parser.h"
 #include "modules.h"
 #include "prelude.h"
-#include "types.h"
 
 /* ------------------------------------------------------------- utilities */
 

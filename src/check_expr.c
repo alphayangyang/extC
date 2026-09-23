@@ -12,7 +12,6 @@
 
 /* ---------------------------------------------------------------- expressions */
 
-Type *checkExpr(Checker *c, Expr *e);
 
 static bool exprHasCall(Checker *c, Expr *e);   /* defined at the end of this file */
 

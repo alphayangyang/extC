@@ -77,7 +77,6 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     e->assocOwner = want;
 }
 
-void checkStmt(Checker *c, Stmt *s);   /* defined below */
 
 /* Check a block body in a fresh scope, so bindings declared in it go out of scope
  * when the block ends. */

@@ -415,14 +415,10 @@ typedef struct {
  * error, because two `var`s of the same name in one scope are almost always a typo. */
  Sym *declare (Checker *c, const char *name, Type *t, _Bool mut, _Bool shadow, int line, int depth);
 /* Resolve a name to a binding, innermost scope first and module-level bindings last. */
- Sym *lookup (Checker *, const char *);
-/* Resolve a name to a binding, innermost scope first and module-level bindings last. */
  Sym *lookup (Checker *c, const char *name);
 /* The binding at the root of a place, found by walking through fields, indexes and slices; NULL
  * when the place is not rooted in a binding. */
  Sym *placeRoot (Checker *c, Expr *e);
-/* Check an expression in a place position and return its type; a reference is not dereferenced. */
- Type *checkExpr (Checker *, Expr *);
 /* Check an expression in a place position and return its type; a reference is not dereferenced. */
  Type *checkExpr (Checker *c, Expr *e);
 /* Check an expression against an expected type; a reference is dereferenced unless the expected
@@ -433,9 +429,6 @@ typedef struct {
 /* Check an argument of `print` or `println`, which dereferences a reference because printing an
  * address is never what the user means. */
  Type *checkPrintArg (Checker *c, Expr *e);
-/* Check `e?`: the operand must be an `option` or a `result`, and the enclosing function must
- * return the same kind with the same error type. */
- Type *checkTryInner (Checker *, Expr *);
 /* Check `e?`: the operand must be an `option` or a `result`, and the enclosing function must
  * return the same kind with the same error type. */
  Type *checkTryInner (Checker *c, Expr *e);
@@ -463,8 +456,6 @@ typedef struct {
 /* Report an error when a value of type `got` cannot be assigned where `want` is expected;
  * returns true when the assignment is rejected. */
  _Bool checkAssignable (Checker *c, Type *want, Type *got, Expr *node, const char *what);
-/* Report an error when a value would outlive the place it is being stored into. */
- _Bool checkEscape (Checker *, Expr *, int, int, const char *);
 /* Report an error when a value would outlive the place it is being stored into. */
  _Bool checkEscape (Checker *c, Expr *val, int at, int line, const char *what);
 /* Run every check a store needs: the depth rule plus "a borrowed value may not be stored where
@@ -504,9 +495,6 @@ typedef struct {
 /* True when the type mentions a type parameter, directly or inside an aggregate; such a type
  * cannot be decided before instantiation. */
  _Bool mentionsParam (Type *t);
-/* True when the path to this place crosses a read-only reference, including the type of the
- * place itself. */
- _Bool pathHasReadonlyRef (Expr *);
 /* Report whether every reference crossed on the way to this place is a `mut ref`, and set
  * `*crossed` when the storage lives behind such a reference. */
  _Bool pathRefsAllMut (Expr *e, _Bool *crossed);
@@ -522,9 +510,6 @@ typedef struct {
 /* Report an error when writing to this place is not allowed; returns true when the write is
  * rejected. */
  _Bool requireMutable (Checker *c, Expr *e, int line, const char *what);
-/* True when the type can carry a reference, directly or inside an array, a struct, or a payload
- * of any variant. */
- _Bool typeContainsRef (TypeTable *, Type *);
 /* True when the type can carry a reference, directly or inside an array, a struct, or a payload
  * of any variant. */
  _Bool typeContainsRef (TypeTable *tt, Type *t);
@@ -545,7 +530,6 @@ typedef struct {
  const char *typeStr (Checker *c, Type *t);
 /* Check a whole module: the declarations, the function bodies, the deferred rules, and the arena
  * decisions that wait for closed effect summaries. */
- extern _Bool checkModule (Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
 /* True when this local of the current function can be moved out of it. */
  bool isEscapeeName (Checker *, const char *);
 /* Compute the effect summary of a function, following the callees, and report whether the
@@ -562,8 +546,6 @@ typedef struct {
 /* The depth of the home arena to pass at this call site, derived from the arguments and the
  * parameters of the callee. */
   int callHomeDepth (Checker *c, Vec *args, Vec *params, Expr *callNode);
-/* Depth of the references a value can carry, read off its type and its shape. */
- int exprRefDepth (Checker *, Expr *);
 /* Depth to record for a value that is being stored, taking the references and the structure of
  * the value into account. */
 int valDepthForStore (Checker *, Expr *);
@@ -591,22 +573,15 @@ int valDepthForStore (Checker *, Expr *);
 /* Check the signature of an operator method at the place where it is defined. */
  void checkOperatorSig (Checker *c, FuncDef *f);
 /* Check one statement and apply the depth and narrowing consequences it has. */
- void checkStmt (Checker *, Stmt *);
-/* Check one statement and apply the depth and narrowing consequences it has. */
  void checkStmt (Checker *c, Stmt *s);
 /* Report a compile error at a line, with an optional note suggesting a fix. */
  void ckError (Checker *c, int line, const char *note, const char *fmt, ...);
 /* Report a warning at a line. A warning is recorded but does not stop the compilation. */
  void ckWarn  (Checker *c, int line, const char *note, const char *fmt, ...);
 /* Rewrite a bare constructor into the qualified variant construction. */
- void desugarBareCtor (Checker *, Expr *, Type *);
-/* Rewrite a bare constructor into the qualified variant construction. */
  void desugarBareCtor (Checker *c, Expr *e, Type *want);
 /* Report an error unless the type is `bool`; the language has no implicit truthiness. */
  void expectBool (Checker *c, Type *t, Expr *node);
-/* Mark the call as allocating into the caller's home arena when the value it produces escapes
- * the current frame. */
- void markCallHomeIfEscaping (Checker *, Expr *, int);
 
 /* Mark the call as allocating into the caller's home arena when the value it produces escapes
  * the current frame. */
@@ -631,9 +606,6 @@ int valDepthForStore (Checker *, Expr *);
  void pushNarrow (Checker *c, const char *cname);
 /* Enter a new lexical scope; the bindings declared in it disappear at the matching `popScope`. */
  void pushScope (Checker *c);
-/* Defer the size check of `new T[n]` to instantiation, for a body whose type parameter has no
- * size yet. */
- void recordNewSizeCheck (Checker *, Type *, int);
 /* Defer the size check of `new T[n]` to instantiation, for a body whose type parameter has no
  * size yet. */
  void recordNewSizeCheck (Checker *c, Type *t, int line);

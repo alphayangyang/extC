@@ -33,7 +33,6 @@ static int maxInt(int a, int b) { return a > b ? a : b; }
 
 static bool isGlobalSym(Checker *c, Sym *s);   /* defined below; used by storeLayer */
 
-int exprRefDepth(Checker *c, Expr *e);         /* defined below; used by placeDepth */
 
 /* Depth of the storage a place expression denotes.
  *
@@ -396,7 +395,6 @@ int exprRefDepth(Checker *c, Expr *e) {
 }
 
 /* Defined below; every call goes through it. */
-bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what);
 
 /* Whether a symbol is one of the module-level globals.
  *
@@ -1572,8 +1570,6 @@ bool typeSupportsEq(Type *t, const char *op) {
 
 /* `?` is legal in only three places, so those three go through this entry point;
  * anywhere else an EX_TRY node is an error. */
-Type *checkExpr(Checker *c, Expr *e);
-Type *checkTryInner(Checker *c, Expr *e);
 
 /* Check an expression in value position, where `ref T` is used as `T`.
  *
@@ -1634,7 +1630,6 @@ Type *checkValue(Checker *c, Expr *e) {
  * because the reference itself is what gets placed there (`{ data: ref n, ... }`,
  * `f(ref c)`) rather than the value it points at. Everywhere else the expression is
  * treated as a value position. */
-void desugarBareCtor(Checker *c, Expr *e, Type *want);   /* defined below */
 
 Type *checkInto(Checker *c, Type *want, Expr *e) {
     /* An expected type of `option<...>` or `result<...>` also accepts a bare constructor,
