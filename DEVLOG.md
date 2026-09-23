@@ -222,6 +222,62 @@ t12.extc:3:36: error: expected an expression, found `::`
 ⇒ 下次可以直接先做②（它解掉当前实测的撞车：`std::io` 与 `std::sys::io` 都叫 `io`）
    —— 但如果要按主人的"先1后2"，那就先把①按上面的"换个层次"重做 ✓
 
+
+### ⚠️ 2026-09-23 第五次尝试：**抽函数这个方向对了，但变体那条打坏了 crossmod**
+
+主人下令：「**优化一下编译器架构，不要太屎山了（当然效率还是要）**」
+⇒ 我挑了**最痛的那处**（`parsePrimary` 的限定名处理 —— 前四次翻车全在那儿），
+做法是**抽出一个只做一件事的函数**，而不是继续打补丁 ✓
+
+**先量了基线**（架构改进要有判据）：全量重编 **1.8s**；6405 行压测程序**前端 0.03s / 30MB**
+（跟已发布的"前端 29ms"一致）⇒ **前端不是瓶颈**（gcc 才是 96%）✓
+所以这一轮**只动结构、不动算法** ✓
+
+#### 这一轮的产出（方向是对的 ✓）
+
+* `parser.c`：**`parseQualifiedName()`** —— 吃完整条 `A::B::…::C`，返回"后面跟着什么"
+  （`QN_CALL`/`QN_LIT`/`QN_VARIANT`/`QN_IDENT`/`QN_NONE`）✓
+  ⇒ 它替掉了**两块互相猜**的机制（"限定名类型"块 + `looksLikeAssoc` 之后那块）✓
+  ⇒ **`samenames` 那次的两段+`{` bug 当场消失** ✓
+* `modules.c`：**`rwDeepQName()`** —— 找"最长且已导入的模块前缀"，
+  把 `std::sys::io::STDOUT` 拆成"模块 + 符号名" ✓
+* `parseAssoc` 改成**显式收 [模块路径, 符号名]**（不再自己找 `::`）——
+  两条来路的光标位置不同，必须让调用者说清 ✓
+* `unitFunc`/`unitGlobal` 加"**查主表**"的退路（`mergeUnit` 之后
+  `u->mod.funcs`/`globals` 是**空的** —— 它们被 push 进主表了 ✗）
+
+#### 结果：功能做通了 ✓，但**打坏了 crossmod** ✗
+
+* ✅ `std::sys::io::STDOUT` → `1`；`std::io::readerOf(std::sys::io::STDIN)` → `cap 65536`
+* ✅ 257 测试 + golden 逐字节：**全程保持** ✓
+* ❌ **`crossmod` 段错误** —— `color::color.green`（**限定名的枚举变体**）那条：
+  我在变体分支里造 `EX_FIELD` 时把 `obj` 置 NULL、另加了 `fieldTypeName` 字段，
+  而**检查器的 `EX_FIELD` 分支不认这个形状** ⇒ 解引用 NULL ⇒ segfault ✗✗
+
+⇒ **判据**：crossmod 是**我自己写的回归测试**，它坏了就是坏了（而且我**最后才发现**，
+    因为它不在我新写的那个测试里 ✗）⇒ 全部 `git checkout` 回退，工作树干净 ✓
+
+#### 下一轮的正确做法（已经想清，不用再试）
+
+1. ⚠️ **变体那条不能半途换形状**：`a::Type.variant` 的接收者是**类型名、不是值**，
+   而检查器的 `EX_FIELD` 假定 `obj` 是表达式 ✗
+   ⇒ 正确做法是**复用两段那条老路**：它现在是work的（`rwQualified` 把 `mod::Type`
+     改写成**裸类型名标识符**、EX_FIELD 照旧走）✓
+   ⇒ 三段/五段应当**复用同一条**（把 `color::color` 改写成裸名 `color`），
+     而不是发明"没有 `obj` 的 `EX_FIELD`" ✗
+2. ⚠️ **测试要先写**：这一轮我是"改完才写测试"，而 crossmod 的回归最后才发现 ✗
+   ⇒ 下一轮**第一步**：把 5 个断言测试（`pcg32::withStream` / `mod::fn` /
+     `std::sys::io::STDOUT` / `std::sys::io::read()` / `mod::Type.variant`）写出来、
+     **跑红**，再动手 ✓
+
+#### 已确认的事实（省得重查）
+
+* `parseType`（类型位置）本来就支持任意层 ✓ 只有**表达式位置**不行
+* `looksLikeAssoc` 被调用时**光标停在 `::` 上**（不是第一段）
+* 两段 + `(` 归 `looksLikeAssoc`；`{`/`.` **不论几段**都该归"限定名"那一块
+* `k` 是 **token 数**（`::` 与名字各一个）⇒ 段数是 `k/2` ✗（这个 bug 踩过两次）
+* `mergeUnit` 之后 `u->mod.funcs`/`globals` 是**空的** ✗
+
 ### 本轮**成功了**的部分（都已提交）
 
 * `std::sys` → `std::sys::io`（`sys` 是**边界**不是模块 ⇒ 按族分文件）✓
