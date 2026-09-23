@@ -1,0 +1,33 @@
+// GC 敏感形状 2：每轮重建（extC，arena）。
+// ⚠️ 每轮**必须包在一个块里** —— 否则全部节点堆在同一个 arena 里、
+//    到函数结束才回收（那是"arena 用错"的写法，不是这个形状要测的）。
+struct node {
+    v: i64
+    next: ?ref node
+}
+
+fn main() {
+    var rounds: i64 = 20000
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < rounds {
+        {
+            var h: ?ref node = null
+            var i: i64 = 0
+            while i < 1000 {
+                var c = new node
+                c.v = i
+                c.next = h
+                h = c
+                i = i + 1
+            }
+            var p = h
+            while p != null {
+                acc = acc + p.v
+                p = p.next
+            }
+        }
+        r = r + 1
+    }
+    println(acc)
+}

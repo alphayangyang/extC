@@ -1,0 +1,43 @@
+// 形状 1：churn —— 3200 万次分配；两个槽位交替覆盖（被覆盖的旧节点即"垃圾"）。
+// 精确语义（5 个语言逐字一致）：
+//   acc = Σ(每当 i ≥ 2 时，被覆盖那个槽里旧节点的值)
+//   输出 = acc + A.v + (B 若存在)
+// 形状坑（都实测过，见 SHAPES.md）：临时变量必须在**本轮作用域**内，否则那个 new 真的会
+// 逃逸出块、被（正确地）提到帧层 ⇒ 常驻内存 13MB → 495MB ✗
+struct node {
+    v: i64
+    next: ?ref node
+}
+
+fn main() {
+    var rounds: i64 = 32000000
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < rounds {
+        {
+            var a: ?ref node = null
+            var b: ?ref node = null
+            var p = new node
+            p.v = i
+            if i % 2 == 0 {
+                if a != null {
+                    acc = acc + a.v
+                }
+                a = p
+            } else {
+                if b != null {
+                    acc = acc + b.v
+                }
+                b = p
+            }
+            if a != null {
+                acc = acc + a.v
+            }
+            if b != null {
+                acc = acc + b.v
+            }
+        }
+        i = i + 1
+    }
+    println(acc)
+}
