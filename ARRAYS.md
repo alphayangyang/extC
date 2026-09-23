@@ -20,7 +20,9 @@
 | §5 动态数组 | ✅ **已落地，但名字是 `varArray<T>`** | 在 `stdlib/prelude.extc` 里**用 extC 写**（不是编译器内建）—— `push`/`pop`/`get`/`set`/`size`/`asSlice`… ✓ ⚠️ 原文等的"arena"早就有了，而且**没有走"编译器内建动态数组"这条路**（能写在 prelude 里就写在 prelude 里 ✓）|
 
 **验证**：`examples/arrays.extc`、`examples/slices.extc`、`examples/gomoku-board.extc`（G2 里程碑）；
-`tests/run.sh` **251 通过**（2026-09-23 实测；原文写 60，那是很早期的数 ✗）。
+`tests/run.sh` **257 通过**（2026-09-23 实测；原文写 60，那是很早期的数 ✗；
+⚠️ 那句"251"是**同一天早些时候**的数，当天又加了 6 个用例 ⇒ 已改成 257 ✓
+—— **这正是"实测"两个字也要带日期**的理由：同一天里它会变 ✓）。
 
 ---
 

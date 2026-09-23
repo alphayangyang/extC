@@ -2423,86 +2423,6 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32      // 没签字
 ② 跟 runtime 已引用的头冲突的函数名（`memcpy`/`printf`…）会报 `conflicting types` ⇒
    声明前先看生成的 C 引了哪些头 ✓（`read`/`write` 这类没引 unistd.h ⇒ 不冲突 ✓）
 
-## 定案 75 · **`writer` + `writeBytes` 里那个 `flush()`**（2026-09-23）
-
-> 起因：主人点了"**统一 I/O 的形状**"这一步（`reader`/`writer` 只认 fd，
-> 文件/标准输入/网络**不该分开**）。做到一半发现一个**真缺陷**，先修它 ✓
-
-### 1. 真缺陷：`println` 与 `writeBytes` 混用**顺序会乱** ✗
-
-`println` 走 C 的 `printf`（**有缓冲**），`writeBytes` 走 `write(2)`（**直写**）⇒
-两支队各走各的，谁先到 stdout 不由调用顺序决定 ✗✗
-
-**实测**（去掉修法之后）：
-
-```
-B（writeBytes）      ← 本该在 A 后面
-文件写完了 ✓
-A（println）
-C（println）
-```
-
-⇒ 原来靠调用者自己记得 `flushOut()` —— "看不见的错"，P′ 正是不许这个 ✓
-**修法一行**：`writeBytes` 里先 `flush()`（刷的就是 stdio 那一支） ✓
-
-⚠️ **为什么这条要常设验收**：删掉那行，程序**照样"能跑"**，只是顺序变成 B/A/C ✗
-而大多数测试只查"某段文字在不在" ⇒ **抓不到**。
-⇒ `tests/io/order.extc` 断言的是**整段连续文本**（`A\nB\nC`），不是分段包含 ✓
-⇒ 另有一条**静态**判据：`awk '/^fn writeBytes/,/^}/' … | grep -q flush()` ✓
-（两条都验过：删掉 `flush()` 立刻红 ✓）
-
-### 2. `writer`：有缓冲的写，跟 `reader` 对称
-
-```extc
-struct writer {
-    fd:  i32
-    buf: mut slice<u8>      // ← **可见**（`IO.md` 反复讲的"不要 cin 那个黑盒"✓）
-    len: i64
-    fn cap(self: ref writer) -> i64
-    fn flush(self: mut ref writer) -> result<i64, ioError>
-    fn write(self: mut ref writer, data: slice<u8>) -> result<i64, ioError>
-}
-fn writerOf(fd: i32) -> writer      // 隐式 64KB，跟 readerOf 对称 ✓
-```
-
-* **只认 fd** ⇒ 同一个 writer 能写文件、stdout、**以后的 socket** ✓
-* 装不下就**先 flush**（不丢弃、不扩容）✓
-* 写 stdout/stderr 时，**每次 flush 之前先刷 `println` 那一支** ⇒ 顺序天然对 ✓
-* 缓冲是**字段**：`w.len` 随时能看、能自己决定什么时候吐 ✓
-
-### 3. 文件 I/O **不需要新机制**（顺带验证）
-
-`std::sys::io` 加了四个原语就够，**一行编译器代码都没动**：
-
-```extc
-extern!("libc") fn open(path: ref u8, flags: i32, mode: i32) -> i32
-extern!("libc") fn close(fd: i32) -> i32
-let O_RDONLY/O_WRONLY/O_CREAT/O_TRUNC/O_APPEND: i32 = …
-```
-
-实测能写文件、能用 `reader` 读回来（`tests/io/writer-file.extc` ✓）
-⇒ 这说明"**文件跟标准输入输出不该分开**"是对的：它们**只是 fd 的不同来源** ✓
-（⚠️ 还欠 `IO.md` §5 的"帧拥有文件"（`open` 返回 `mut ref file` 自动关）——
-那是 IO-1，需要 `extc_files` 那套 ✓）
-
-### 4. ⚠️ 发现一个**设计问题**：短名撞车（还没解）
-
-`std::io` 和 `std::sys::io` 的短名**都叫 `io`** ⇒ 同一个文件里不能同时 `use` ✗
-
-我上一轮写重构时说"这恰好是对的"（写库的人和用库的人在不同文件里）——
-**实现的时候它当场挡住了一个正当用法**：用户想同时要 `std::io` 的 `reader`
-和 `io::open`（开文件）✗
-
-绕过办法（`tests/io/writer-file.extc` 就是这么写的）：另起一个 `iohelper.extc`
-把 `open`/`close` 包一层 ✓ —— **能work，但那是"因为限制而多写一个文件"，不是设计** ✗
-
-⇒ **摆着的选项**（下一轮定）：
-| 选项 | 代价 |
-|---|---|
-| 原语层改名（`std::sys::fd` / `std::sys::os`） | 丢掉"同一个家族两层同名"的对称性 |
-| 加 `use std::sys::io as sysio` | **新语法**（模块别名），但顺手也解了别的撞车 |
-| 保持现状 | 用户得多写一个包装模块 ✗（实测就是这样）|
-
 ## 定案 74 · **`reader`：隐式 64KB 块缓冲 + 切片解析函数族 + 三条路分得开**（2026-09-23）
 
 > 主人：「**修IO然后把1-4都先做了，反正现在能读了之后会好办很多**」
@@ -2583,6 +2503,86 @@ fn readerOf(fd: i32) -> reader        // 隐式 64KB ✓
 正例（两种风格混用）· **EOF** · **行太长** · **读错误** · 分层（sys/io）· **分块读性能**
 （10 万行 < 400ms；实测 158ms ⇒ 退回逐字节会当场红 ✓）
 
+## 定案 75 · **`writer` + `writeBytes` 里那个 `flush()`**（2026-09-23）
+
+> 起因：主人点了"**统一 I/O 的形状**"这一步（`reader`/`writer` 只认 fd，
+> 文件/标准输入/网络**不该分开**）。做到一半发现一个**真缺陷**，先修它 ✓
+
+### 1. 真缺陷：`println` 与 `writeBytes` 混用**顺序会乱** ✗
+
+`println` 走 C 的 `printf`（**有缓冲**），`writeBytes` 走 `write(2)`（**直写**）⇒
+两支队各走各的，谁先到 stdout 不由调用顺序决定 ✗✗
+
+**实测**（去掉修法之后）：
+
+```
+B（writeBytes）      ← 本该在 A 后面
+文件写完了 ✓
+A（println）
+C（println）
+```
+
+⇒ 原来靠调用者自己记得 `flushOut()` —— "看不见的错"，P′ 正是不许这个 ✓
+**修法一行**：`writeBytes` 里先 `flush()`（刷的就是 stdio 那一支） ✓
+
+⚠️ **为什么这条要常设验收**：删掉那行，程序**照样"能跑"**，只是顺序变成 B/A/C ✗
+而大多数测试只查"某段文字在不在" ⇒ **抓不到**。
+⇒ `tests/io/order.extc` 断言的是**整段连续文本**（`A\nB\nC`），不是分段包含 ✓
+⇒ 另有一条**静态**判据：`awk '/^fn writeBytes/,/^}/' … | grep -q flush()` ✓
+（两条都验过：删掉 `flush()` 立刻红 ✓）
+
+### 2. `writer`：有缓冲的写，跟 `reader` 对称
+
+```extc
+struct writer {
+    fd:  i32
+    buf: mut slice<u8>      // ← **可见**（`IO.md` 反复讲的"不要 cin 那个黑盒"✓）
+    len: i64
+    fn cap(self: ref writer) -> i64
+    fn flush(self: mut ref writer) -> result<i64, ioError>
+    fn write(self: mut ref writer, data: slice<u8>) -> result<i64, ioError>
+}
+fn writerOf(fd: i32) -> writer      // 隐式 64KB，跟 readerOf 对称 ✓
+```
+
+* **只认 fd** ⇒ 同一个 writer 能写文件、stdout、**以后的 socket** ✓
+* 装不下就**先 flush**（不丢弃、不扩容）✓
+* 写 stdout/stderr 时，**每次 flush 之前先刷 `println` 那一支** ⇒ 顺序天然对 ✓
+* 缓冲是**字段**：`w.len` 随时能看、能自己决定什么时候吐 ✓
+
+### 3. 文件 I/O **不需要新机制**（顺带验证）
+
+`std::sys::io` 加了四个原语就够，**一行编译器代码都没动**：
+
+```extc
+extern!("libc") fn open(path: ref u8, flags: i32, mode: i32) -> i32
+extern!("libc") fn close(fd: i32) -> i32
+let O_RDONLY/O_WRONLY/O_CREAT/O_TRUNC/O_APPEND: i32 = …
+```
+
+实测能写文件、能用 `reader` 读回来（`tests/io/writer-file.extc` ✓）
+⇒ 这说明"**文件跟标准输入输出不该分开**"是对的：它们**只是 fd 的不同来源** ✓
+（⚠️ 还欠 `IO.md` §5 的"帧拥有文件"（`open` 返回 `mut ref file` 自动关）——
+那是 IO-1，需要 `extc_files` 那套 ✓）
+
+### 4. ⚠️ 发现一个**设计问题**：短名撞车（还没解）
+
+`std::io` 和 `std::sys::io` 的短名**都叫 `io`** ⇒ 同一个文件里不能同时 `use` ✗
+
+我上一轮写重构时说"这恰好是对的"（写库的人和用库的人在不同文件里）——
+**实现的时候它当场挡住了一个正当用法**：用户想同时要 `std::io` 的 `reader`
+和 `io::open`（开文件）✗
+
+绕过办法（`tests/io/writer-file.extc` 就是这么写的）：另起一个 `iohelper.extc`
+把 `open`/`close` 包一层 ✓ —— **能work，但那是"因为限制而多写一个文件"，不是设计** ✗
+
+⇒ **摆着的选项**（下一轮定）：
+| 选项 | 代价 |
+|---|---|
+| 原语层改名（`std::sys::fd` / `std::sys::os`） | 丢掉"同一个家族两层同名"的对称性 |
+| 加 `use std::sys::io as sysio` | **新语法**（模块别名），但顺手也解了别的撞车 |
+| 保持现状 | 用户得多写一个包装模块 ✗（实测就是这样）|
+
 ## 定案 73 · **IO 的第一块：`std::sys`（原语）+ `std::io`（库）+ `flush()`**（2026-09-22）
 
 > 里程碑的第一步：**先能读东西**（`IO.md` §1 的"做完 = 五子棋能跟人下"）
@@ -2619,11 +2619,23 @@ let n = io::readLine(line[..])
 （**故意不自动刷** —— 代价要看得见 ✓，`tests/io/main.extc` 里就是这个写法 ✓）
 
 **验收**：`tests/io/run.sh`（stdin 两行：解析求和 + 回显；+ 分层结构检查）接进 `check.sh` ✓
-⇒ 现在 **`./check.sh` 14 节全绿**（245 测试 · ASan 8 · arena 5 · 攻击库基线不动 ·
+⇒ 定案当时 **`./check.sh` 14 节全绿**（245 测试 · ASan 8 · arena 5 · 攻击库基线不动 ·
 模块 8 · 泛型 4 · extern 4 · IO 3 · golden 逐字节不变 ✓）
+⚠️ **2026-09-23 补注（只改"现在"这半句，当时的数保留 ✓）**：本条落地后同一天又落了
+**定案 74（`reader` + `nextInt` 一族）** 与 **定案 75（`writer` + `flush`）**，且 `std::sys` →
+**`std::sys::io`** ⇒ 现在的实测是 **`./check.sh quick` 11 节**（**257** 测试 · 模块 12 ·
+泛型 3 · extern 4 · **IO 10** · arena 5 · ASan 8 · 层号哨兵 98 语料 ✓）
 
 ### ⬜ 还欠的（IO 的其余部分，按 `IO.md`）
 
 `open`/`close` + **帧拥有文件**（要"帧拥有资源"那套，跟 `owned` 同一个前置 ✗）·
 `nextInt` 一族 + `reader`（`IO.md` 档 2 的其余部分）· `main(args)` · `allocSlice<T>(n)` ·
 `scan(...)` 真变参 ✓ —— 都不挡"能读能写"这个里程碑本身 ✓
+
+> ⚠️ **2026-09-23 复核这一节（原文已过时 ✗）**：上面那行列的六项里
+> **`open`/`close` 原语 · `nextInt` 一族 · `reader` · `allocSlice<T>(n)` 都落地了** ✓
+> （`reader` 见**定案 74**；`allocSlice` 见 **PLAN #9**；`open`/`close` 现在是
+> `stdlib/std/sys/io.extc` 里的两条 `extern!` ✓）
+> ⇒ **真正还欠的只有**：**帧拥有文件**（`extc_files` 那套 —— 因为"有了 `open` 没有 `close`"
+> 就得靠帧拥有来兜底 ✗）· `main(args)` · `readAll` · `scan(...)` 变参
+> ⇒ 权威口径一律看 [`PLAN.md`](PLAN.md) §0.4 / §1 ✓（这一节只留历史 ✓）
