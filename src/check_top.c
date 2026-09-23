@@ -1302,25 +1302,39 @@ static void collectEffects(Checker *c, FuncDef *f) {
  * 正确判据：只有当这个值的深度**真的由某个分配站点决定**时，
  * 重算才是权威（那正是当初需要它的理由：解算会把站点从家放回块层 ✓）。
  * 其余形状（绑定 / 调用结果 / 参数派生）一律**不下调** —— 保守方向 = 宁可误拒 ✓ */
-static bool depthComesFromAlloc(Expr *e) {
-    if (!e) return false;
+static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
+    if (!e || hops > 32) return false;
     switch (e->kind) {
     case EX_NEW: case EX_GENCALL: return true;
-    case EX_SIGN:     return depthComesFromAlloc(e->u.sign.operand);
-    case EX_SLICE:    return depthComesFromAlloc(e->u.slice.obj);
-    case EX_COALESCE: return depthComesFromAlloc(e->u.coalesce.main)
-                          || depthComesFromAlloc(e->u.coalesce.fallback);
+    /* ⭐ **跟着来路走** —— `var v = { buf: new T[cap], … }  return v`：
+     * 报错那一刻 `rc->val` 是 `v`（一个**绑定**，`kind=4`），
+     * 而它的深度正是由它来路里那个 `new` 决定的 ✗
+     * （实测：`[at] … return value kind=4 dca=0 svd=0` 而 `depth=1` ⇒ 误拒 ✗）*/
+    case EX_IDENT: {
+        if (!c) return false;
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (!sy || !sy->origin) return false;
+        return depthComesFromAlloc2(c, sy->origin, hops + 1);
+    }
+    case EX_DEREF:
+        return c ? depthComesFromAlloc2(c, e->u.deref.operand, hops + 1) : false;
+    case EX_FIELD:
+        return c ? depthComesFromAlloc2(c, e->u.field.obj, hops + 1) : false;
+    case EX_SIGN:     return depthComesFromAlloc2(c, e->u.sign.operand, hops+1);
+    case EX_SLICE:    return depthComesFromAlloc2(c, e->u.slice.obj, hops+1);
+    case EX_COALESCE: return depthComesFromAlloc2(c, e->u.coalesce.main, hops+1)
+                          || depthComesFromAlloc2(c, e->u.coalesce.fallback, hops+1);
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            if (depthComesFromAlloc((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+            if (depthComesFromAlloc2(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, hops+1)) return true;
         return false;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            if (depthComesFromAlloc(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+            if (depthComesFromAlloc2(c, *(Expr **)vecAt(&e->u.arraylit.elems, i), hops+1)) return true;
         return false;
     case EX_ENUMVAL:
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            if (depthComesFromAlloc(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+            if (depthComesFromAlloc2(c, *(Expr **)vecAt(&e->u.enumval.args, i), hops+1)) return true;
         return false;
     default: return false;   /* 绑定 / 字段 / 调用结果 / 解引用 ⇒ **不算** ✓ */
     }
@@ -1691,10 +1705,14 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         if (!typeContainsRef(tt, vt)) return;
 
         /* ⭐ 用"解算完之后"的层号重算一次（取 ≤：只可能更紧 ✓）*/
-        if (depthComesFromAlloc(rc->val)) {
+        if (depthComesFromAlloc2(c, rc->val, 0)) {
             int now = solvedValDepth(rc->val);
             if (now < rc->depth) rc->depth = now;
         }
+        if (getenv("EXTC_DBG_AT"))
+            fprintf(stderr, "[at] %s what=%s depth=%d at=%d kind=%d dca=%d svd=%d\n",
+                    instName, rc->what, rc->depth, rc->at, (int)rc->val->kind,
+                    depthComesFromAlloc2(c, rc->val, 0)?1:0, solvedValDepth(rc->val));
         if (rc->depth > rc->at) {
             ckError(c, rc->line,
                     "A generic body is checked once on the template, where `T` is"
@@ -2181,7 +2199,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t i = 0; i < c.refChecks.len; i++) {
             RefCheck *rc = *(RefCheck **)vecAt(&c.refChecks, i);
             if (!rc || !rc->val) continue;
-            if (!depthComesFromAlloc(rc->val)) continue;
+            if (!depthComesFromAlloc2(&c, rc->val, 0)) continue;
             /* ⭐ **无条件重算**（不是只下调）—— 因为"解算前冻的那个数"可能**偏低**：
              * 模板那一轮 `new T[cap]` 的 `refDepth` 还是哨兵态的 0，而解算后它可能是 1 ✗
              * （实测：`container-of-view` 的 `[post] … frozen=0 … now=1`）
