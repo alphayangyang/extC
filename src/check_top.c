@@ -3560,6 +3560,41 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.substParams = NULL;
     c.substArgs   = NULL;
 
+    /* `@inline` is a requirement, not a hint, so a request that cannot be honoured has to
+     * be refused here -- before code generation, and at the line the request was written on.
+     *
+     * The generated C asks for inlining with `always_inline`; a function that reaches
+     * itself cannot be inlined, and the C compiler then fails with "inlining failed in call
+     * to 'always_inline'" pointing into the generated file, which is no place to explain
+     * anything. The call graph is complete by now: `collectEffects` has just filled in
+     * `callees` for every function and instance.
+     *
+     * `funcReachesItself` already exists for the `@overwrite` cells and answers
+     * conservatively -- a NULL callee, or a walk deeper than 64, answers yes -- which is the
+     * direction wanted: refusing a request that might have worked costs a rewrite, while
+     * accepting one that does not costs a compile error the user cannot act on. */
+    {
+        Vec inl; vecInit(&inl, arena, sizeof(FuncDef *));
+        for (size_t i = 0; i < m->funcs.len; i++)
+            *(FuncDef **)vecPush(&inl) = *(FuncDef **)vecAt(&m->funcs, i);
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++)
+                *(FuncDef **)vecPush(&inl) = *(FuncDef **)vecAt(&sd->methods, j);
+        }
+        for (size_t i = 0; i < inl.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&inl, i);
+            if (!f || !f->isInline || !f->body) continue;
+            if (!funcReachesItself(&c, f, 0)) continue;
+            ckError(&c, f->line,
+                    "Inlining is a requirement here, not a hint: the generated C asks the C"
+                    " compiler for it, and a function that calls itself cannot be inlined."
+                    " Make it a loop, or drop `@inline`.",
+                    "`@inline` cannot be honoured: `%s` reaches itself, and a recursive"
+                    " function cannot be inlined", f->name ? f->name : "?");
+        }
+    }
+
     /* ---------------------------------------- transitive closure of `needsHome`
      * Calling a function that needs a home arena (the arena the caller passes) means the
      * caller must have something to pass (`__extc_home`, or `&__extc_a[current block]`),

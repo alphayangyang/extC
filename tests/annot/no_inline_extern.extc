@@ -1,0 +1,4 @@
+// expect-error: needs a body
+// extern 声明没有函数体，没什么可内联的
+@inline extern!("libc") fn getpid() -> i32
+fn main() { println(getpid()) }

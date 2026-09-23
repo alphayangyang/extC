@@ -80,6 +80,12 @@ if out=$(./tests/fs-shape/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 2 反例 + 常量不外露 + 规范入档）"
 else bad "tests/fs-shape/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 注解（@inline 要真的生效 · 写错的注解必须编译期报错）=="
+if [ -x tests/annot/run.sh ]; then
+    if out=$(tests/annot/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
+    else bad "tests/annot/run.sh"; echo "$out"; fi
+fi
+
 echo "== 头文件 include guard（内容不许落在 #endif 之后）=="
 # 判据：每个 src/*.h 的**最后一个非空行**必须是 #endif。
 # 为什么要有这一节：曾经有一段声明（连同它的文档注释）被追加到 types.h 的 #endif **之后**

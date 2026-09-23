@@ -1,0 +1,5 @@
+// expect-error: cannot be honoured
+// 互递归同样抓得到（判据走调用图）
+@inline fn isEven(n: i64) -> bool { if n == 0 { return true }  return isOdd(n - 1) }
+fn isOdd(n: i64) -> bool { if n == 0 { return false }  return isEven(n - 1) }
+fn main() { println(isEven(4)) }

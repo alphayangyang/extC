@@ -2798,8 +2798,8 @@ static void genFunc(CG *g, FuncDef *f) {
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
-        bufPrintf(&sig, "static %s %s(%s) {", cType(g, f->ret), cFuncName(g, f),
-                  cgParamList(g, f));
+        bufPrintf(&sig, "%s%s %s(%s) {", f->isInline ? "EXTC_INLINE " : "static ",
+                  cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
         cgLine(g, "%s", bufCstr(&sig));
     }
 
@@ -2971,8 +2971,10 @@ static bool cgIsMain(const FuncDef *f) {
 static void genFuncProto(CG *g, FuncDef *f) {
     Buf sig;
     bufInit(&sig, g->arena);
-    bufPrintf(&sig, "%s%s %s(%s);", cgIsMain(f) ? "" : "static ", cType(g, f->ret),
-              cFuncName(g, f), cgParamList(g, f));
+    /* `@inline` has to appear on the prototype as well as on the definition. */
+    bufPrintf(&sig, "%s%s %s(%s);",
+              cgIsMain(f) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
+              cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
 
@@ -4139,8 +4141,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * hit for real. */
         /* An external declaration is not `static`, so that the linker can see
          * it, and only its prototype is emitted. */
+        /* `@inline` has to be on the prototype too, or the attribute on the definition
+         * alone does not bind: C takes the first declaration as the function's type. */
         bufPrintf(&sig, "%s%s %s(%s);",
-                  (cgIsMain(f) || f->isExtern) ? "" : "static ",
+                  (cgIsMain(f) || f->isExtern) ? ""
+                                               : (f->isInline ? "EXTC_INLINE " : "static "),
                   ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
         substLeaveFunc(&g, svP, svA);

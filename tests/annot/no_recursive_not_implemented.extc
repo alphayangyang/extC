@@ -1,0 +1,4 @@
+// expect-error: not implemented yet
+// 设计过但没实现 ⇒ 明说，不能静默接受
+@recursive fn f(n: i64) -> i64 { return n }
+fn main() { println(f(1)) }

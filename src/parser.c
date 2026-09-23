@@ -167,6 +167,7 @@ static Stmt    *parseIf(Parser *p);
 static Stmt    *parseWhile(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
+static bool       parseFuncAnnotations(Parser *p, bool *outInline);
 static TypeDef   *parseTypeDecl(Parser *p);
 
 static bool   startsUpper(const char *s);
@@ -305,6 +306,17 @@ static FuncDef *parseExtern(Parser *p) {
         return NULL;
     }
     p->noBody = true;                          /* signature only, no body */
+    bool extInl = false;
+    if (at(p, "@")) {
+        if (!parseFuncAnnotations(p, &extInl)) return NULL;
+        if (extInl) {
+            ctxError(p->ctx, kw->line, kw->col,
+                     "There is no body to inline: this declaration only names a function that"
+                     " lives in another library. Mark the extC function that wraps it.",
+                     "`@inline` needs a body, and an `extern!` declaration has none");
+            return NULL;
+        }
+    }
     FuncDef *f = parseFunc(p);
     p->noBody = false;
     if (!f) return NULL;
@@ -391,19 +403,43 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         /* The top-level annotation `@private`.  Declarations are public by
          * default, so hiding one has to be written out. */
         bool isPrivate = false;
-        if (at(&p, "@")) {
+        bool fnInline  = false;
+        /* `@private` hides a declaration; `@inline` asks for a function to be inlined.
+         * They are read together because both may precede the same declaration, and the
+         * order between them carries no meaning. Any other annotation is an error: these
+         * are instructions to the compiler, and one that is ignored would leave the reader
+         * believing something was asked for that never happened. */
+        while (at(&p, "@")) {
             Token *a = take(&p);
             Token *nm = expectIdent(&p, "an annotation name (only `private` at the top level)");
             if (!nm) return false;
-            if (strcmp(nm->text, "private") != 0) {
+            if (strcmp(nm->text, "private") == 0) {
+                if (isPrivate) {
+                    ctxError(ctx, a->line, a->col, NULL, "`@private` appears twice");
+                    return false;
+                }
+                isPrivate = true;
+                skipJunk(&p);
+                continue;
+            }
+            if (strcmp(nm->text, "inline") == 0) {
+                fnInline = true;
+                skipJunk(&p);
+                continue;
+            }
+            if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
                 ctxError(ctx, a->line, a->col,
-                         "The only top-level annotation today is `@private` (hide a"
-                         " declaration from other modules). `@overwrite` is for locals.",
-                         "unknown top-level annotation `@%s`", nm->text);
+                         "The annotation is designed but not implemented yet, and accepting"
+                         " it without doing anything would say otherwise.",
+                         "`@%s` is not implemented yet", nm->text);
                 return false;
             }
-            isPrivate = true;
-            skipJunk(&p);
+            ctxError(ctx, a->line, a->col,
+                     "The top-level annotations today are `@private` (hide a declaration from"
+                     " other modules) and `@inline` (on a function). `@overwrite` is for"
+                     " locals.",
+                     "unknown top-level annotation `@%s`", nm->text);
+            return false;
         }
         if (at(&p, "struct")) {
             StructDef *s = parseStruct(&p);
@@ -421,13 +457,35 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
         } else if (at(&p, "extern")) {
+            /* `@inline` on an external declaration is refused rather than ignored: there is
+             * no body to inline, so accepting it would leave the reader believing something
+             * was asked for that never happened. */
+            if (fnInline) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "There is no body to inline: this declaration only names a function"
+                         " that lives in another library. Mark the extC function that wraps"
+                         " it.",
+                         "`@inline` needs a body, and an `extern` declaration has none");
+                return false;
+            }
             FuncDef *f = parseExtern(&p);
             if (!f) return false;
             f->isPrivate = isPrivate;
             *(FuncDef **)vecPush(&out->funcs) = f;
-        } else if (at(&p, "fn")) {
+        } else if (at(&p, "fn") || at(&p, "@")) {
+            bool inl = fnInline;
+            if (!parseFuncAnnotations(&p, &inl)) return false;
+            if (!at(&p, "fn")) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col, NULL,
+                         "an annotation on a function must be followed by `fn`, found `%s`",
+                         shown(t));
+                return false;
+            }
             FuncDef *f = parseFunc(&p);
             if (!f) return false;
+            f->isInline  = inl;
             f->isPrivate = isPrivate;
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else {
@@ -484,9 +542,19 @@ static StructDef *parseStruct(Parser *p) {
     skipJunk(p);
     while (!at(p, "}")) {
         /* A method is declared inside the struct body, like a field. */
-        if (at(p, "fn")) {
+        if (at(p, "fn") || at(p, "@")) {
+            bool inl = false;
+            if (!parseFuncAnnotations(p, &inl)) return NULL;
+            if (!at(p, "fn")) {
+                Token *t = cur(p);
+                ctxError(p->ctx, t->line, t->col, NULL,
+                         "an annotation on a function must be followed by `fn`, found `%s`",
+                         shown(t));
+                return NULL;
+            }
             FuncDef *m = parseFunc(p);
             if (!m) return NULL;
+            m->isInline = inl;
             m->owner = sd;
             *(FuncDef **)vecPush(&sd->methods) = m;
             skipJunk(p);
@@ -646,6 +714,56 @@ static Token *expectFuncName(Parser *p) {
  *     copying it is deliberate: the parameters, return type, and generic list
  *     would drift apart between the two copies.
  */
+/* Annotations that may precede a function declaration: `@inline`.
+ *
+ * `@` already exists for `@overwrite` on a local declaration. A function annotation needs
+ * its own place in the grammar because a declaration is not a statement, so this is called
+ * from the three sites that parse one: the module body, a struct body, and `extern!`.
+ *
+ * An unknown annotation is an error rather than a warning. Annotations are instructions to
+ * the compiler written in the source, so a typo that is ignored would leave the reader
+ * believing something was asked for that never happened. `@recursive` and `@main` are
+ * designed but not implemented, and they get told so rather than being accepted silently.
+ *
+ * Returns:
+ *   False after reporting an error. `*outInline` is set when `@inline` was seen. */
+static bool parseFuncAnnotations(Parser *p, bool *outInline) {
+    /* Not reset here: a caller may already have seen `@inline` in the top-level annotation
+     * loop, which reads `@private` and `@inline` together before the declaration is known to
+     * be a function. Clearing the flag made `@inline fn f()` parse as if nothing had been
+     * written. */
+    while (at(p, "@")) {
+        Token *a = take(p);
+        Token *nm = expectIdent(p, "an annotation name");
+        if (!nm) return false;
+        if (strcmp(nm->text, "inline") == 0) {
+            if (*outInline) {
+                ctxError(p->ctx, a->line, a->col, NULL,
+                         "`@inline` appears twice on the same function");
+                return false;
+            }
+            *outInline = true;
+            skipNl(p);
+            continue;
+        }
+        if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
+            ctxError(p->ctx, a->line, a->col,
+                     "The annotation is designed but not implemented yet, and accepting it"
+                     " without doing anything would say otherwise.",
+                     "`@%s` is not implemented yet", nm->text);
+            return false;
+        }
+        ctxError(p->ctx, a->line, a->col,
+                 "Annotations are compile-time instructions written in the source, so a"
+                 " typo must not be silently ignored. On a function the only one is"
+                 " `@inline`.",
+                 "unknown annotation `@%s` on a function -- only `@inline` exists today",
+                 nm->text);
+        return false;
+    }
+    return true;
+}
+
 static FuncDef *parseFunc(Parser *p) {
     Token *kw = take(p);                    /* fn */
     Token *name = expectFuncName(p);

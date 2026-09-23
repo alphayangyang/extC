@@ -1,0 +1,7 @@
+// expect-error: cannot be honoured
+// 递归函数不能内联：always_inline 是要求而不是建议
+@inline fn f(n: i64) -> i64 {
+    if n <= 0 { return 0 }
+    return n + f(n - 1)
+}
+fn main() { println(f(3)) }

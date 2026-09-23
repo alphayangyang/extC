@@ -1,0 +1,6 @@
+// 正例：`@inline` 落在方法上（struct 体内）
+struct pt {
+    x: i64
+    @inline fn get(self: ref pt) -> i64 { return self.x }
+}
+fn main() { var p: pt = { x: 5 }  println(p.get()) }

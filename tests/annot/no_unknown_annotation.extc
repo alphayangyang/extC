@@ -1,0 +1,4 @@
+// expect-error: unknown top-level annotation
+// 注解是给编译器的指令，写错必须报错而不是忽略
+@fast fn f() -> i64 { return 1 }
+fn main() { println(f()) }
