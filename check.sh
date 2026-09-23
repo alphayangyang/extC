@@ -61,6 +61,11 @@ done
 if [ "$drift" -eq 0 ]; then ok "$dsn 个语料：层号零漂移 ✓"
 else bad "arena 层号漂移 $drift 处 ✗"; fi
 
+echo "== 全限定名（PLAN #53：**全名是权利** · \`as\` 别名是方便）=="
+if out=$(./tests/qname/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（6 正例 + 1 反例 + 1 结构判据）"
+else bad "tests/qname/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 攻击库（通过的必须是 BASELINE 里那几条 ⇒ 没放松）=="
 now=$(mktemp)
 for f in tests/attacks/*.extc; do

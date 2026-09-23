@@ -97,6 +97,12 @@ static void usage(const char *argv0) {
         "  --dump-tokens    lex only; print the token table\n"
         "  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)\n"
         "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
+        "\n"
+        "debug switches (they never change the output):\n"
+        "  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen\n"
+        "  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved\n"
+        "  EXTC_DUMP_EFFECTS=1  print each function's effect summary\n"
+        "\n"
         "  -h, --help       show this help\n",
         argv0);
 }

@@ -1,5 +1,7 @@
 #include "parser.h"
 
+#include <stdio.h>      /* fprintf（EXTC_DBG_QN 的轨迹输出）*/
+#include <stdlib.h>     /* getenv（EXTC_DBG_QN：限定名的解析轨迹）*/
 #include <string.h>
 
 #include "lexer.h"
@@ -122,8 +124,9 @@ static bool isScalarTypeName(const char *n) {
     return false;
 }
 static Expr *parseStructLit(Parser *p, const char *name);
-static bool  looksLikeAssoc(Parser *p);
-static Expr *parseAssoc(Parser *p, const char *name, int line);
+static int   looksLikeAssoc(Parser *p);
+static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
+                        const char **modPrefixOut);
 static bool  parseArgs(Parser *p, Vec *out);
 
 static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
@@ -156,9 +159,23 @@ static UseDecl *parseUse(Parser *p) {
         bufPuts(&path, seg->text);
         shortName = seg->text;                 /* 短名 = 最后一段 ✓ */
     }
+    /* ⭐ `use std::sys::io as sysio`（PLAN #53 步骤②）——
+     * **别名是必要的**：`std::io` 与 `std::sys::io` 的短名都是 `io`，
+     * 而"从 stdin 读 + `open` 一个文件"恰好要同时用这两层 ⇒
+     * 没有别名时那两行**必然撞车** ✗
+     * 主人原话：「别名是必要的，否则就太长了，用 `as` 即可」✓
+     * ⚠️ `path` **保持用户写的全名**（深层限定名靠它做"全名对全名"匹配，
+     *    见 `importedAsPath`）—— 只有 `shortName` 换成别名 ✓ */
+    const char *alias = NULL;
+    if (at(p, "as")) {
+        take(p);
+        Token *a = expectIdent(p, "an alias name (e.g. `use std::sys::io as sysio`)");
+        if (!a) return NULL;
+        alias = a->text;
+    }
     UseDecl *u = (UseDecl *)arenaAllocZero(p->arena, sizeof(UseDecl));
     u->path      = bufCstr(&path);
-    u->shortName = shortName;
+    u->shortName = alias ? alias : shortName;
     u->line      = kw->line;
     return u;
 }
@@ -1384,6 +1401,17 @@ static Expr *parsePrimary(Parser *p) {
     }
     if (t->kind == TK_IDENT) {
         take(p);
+        /* 调试开关 `EXTC_DBG_QN=1`：打印**表达式位置**上每次 IDENT 解析的
+         * 起点与后面四个记号 ⇒ 限定名"走到哪一段、停在哪"一眼可见 ✓
+         * ⚠️ 为什么必须带 pos + 记号原文：这个函数上我栽过五轮，其中**两次**
+         * 是被自己的探针骗了（只打一个字符串 ⇒ prelude 的调用混进来，
+         * 我拿别人的输出当自己的 ✗）—— 每一行都要能**唯一对应一次调用** ✓
+         * 不改变任何输出（静态哨兵 `--dump-tokens` 那类也照跑 ✓）*/
+        if (getenv("EXTC_DBG_QN")) {
+            fprintf(stderr, "[qn ENT] pos=%d cur=`%s` n1=`%s` n2=`%s` n3=`%s` n4=`%s`\n",
+                    (int)p->pos, t->text, pk(p,0)->text, pk(p,1)->text,
+                    pk(p,2)->text, pk(p,3)->text);
+        }
         /* `i32(x)` / `f64(y)` —— **显式转换**（收窄 / 换符号 / 整数↔浮点）✓
          * C 写成 `(T)x`，但那在 extC 里跟括号表达式二义（parser 不查符号表）⇒
          * 换个括号位置：`T(x)` ✓ 语义完全一样 */
@@ -1452,12 +1480,22 @@ static Expr *parsePrimary(Parser *p) {
             }
         }
 
-        /* 关联函数调用 `option<i64>::some(x)` / `point::origin()`。
+        /* 关联函数调用 `option<i64>::some(x)` / `point::origin()`，
+         * 以及**任意层**的限定名 `std::sys::io::write(…)` / `std::sys::io::STDOUT`
+         * （PLAN #53）✓
          *
          * `IDENT <` 跟小于号撞车，所以先**只看不动**地判断题实参到哪里结束、
          * 后面跟的是不是 `::`；是才真的解析（这样错误信息不会在试探里乱喷）。
          * 判据 `::` 本身不是合法运算符，所以两种解释互斥，不会误判。 */
-        if (looksLikeAssoc(p)) return parseAssoc(p, t->text, t->line);
+        {
+            const size_t assocPos = p->pos;      /* 停在第一个 `::`（或 `<`）上 ✓ */
+            if (looksLikeAssoc(p)) {
+                const char *modPrefix = NULL;
+                Expr *ae = parseAssoc(p, t->text, t->line, assocPos, &modPrefix);
+                if (ae) ae->u.assoc.modPrefix = modPrefix;
+                return ae;
+            }
+        }
 
         /* 条件位置里的 `{` 属于块 —— 但如果括号里明显是字面量（`{ ident :`），
          * 那就是忘了加括号，给一条能直接照抄的提示 */
@@ -1486,17 +1524,23 @@ static Expr *parsePrimary(Parser *p) {
  *
  * **只看，不动 pos** —— 因为 `IDENT <` 跟小于号撞车，必须在真的解析之前拿定主意，
  * 否则试探会喷出一堆假错误。判据是 `::`：它不是合法的二元运算符，
- * 所以「关联调用」和「a < b」这两种解释互斥，不会误判。 */
-static bool looksLikeAssoc(Parser *p) {
+ * 所以「关联调用」和「a < b」这两种解释互斥，不会误判。
+ *
+ * ⭐ 返回值是 **`::` 后面的段数**（0 = 不是限定名）—— 不再是 bool ✗
+ * 为什么必须带这个数（PLAN #53 的真根因，前五轮就栽在这）：
+ *   `std::sys::io::STDOUT` 里 pos 停在**第一个** `::` 上，
+ *   而这个函数只回答"是不是限定名"⇒ 老 `parseAssoc` 自信地只读
+ *   `::` + **一个**标识符（`sys`）就返回 ⇒ 游标丢在 `::io::STDOUT` 上 ✗
+ *   ⇒ 段数是**调用者必须知道的信息**，不能靠 `parseAssoc` 自己猜 ✓
+ *   两段（`mod::fn` / `Type::assoc`）照旧 —— 那条路是好的，别动 ✓ */
+static int looksLikeAssoc(Parser *p) {
     size_t i = 0;
 
-    bool sawTargs = false;
     if (strcmp(pk(p, i)->text, "<") == 0) {
-        sawTargs = true;
         int depth = 0;
         for (;; i++) {
             Token *t = pk(p, i);
-            if (t->kind == TK_EOF) return false;
+            if (t->kind == TK_EOF) return 0;
             if (strcmp(t->text, "<") == 0) {
                 depth++;
             } else if (strcmp(t->text, ">") == 0) {
@@ -1509,20 +1553,53 @@ static bool looksLikeAssoc(Parser *p) {
             } else if (strcmp(t->text, ",") == 0 || strcmp(t->text, "[") == 0 ||
                        strcmp(t->text, "]") == 0) {
             } else {
-                return false;       /* 出现不可能属于类型的东西 ⇒ 不是类型实参 */
+                return 0;           /* 出现不可能属于类型的东西 ⇒ 不是类型实参 */
             }
         }
     }
-    /* `Name<T>::fn(...)` = **关联调用**
+    /* `Name<targs>::fn(...)` = **关联调用**
      * `name<T>(...)`     = **泛型调用**（目前只有内置原语用它，比如 `alloc<i32>(n)`）
-     * 两者共用同一套「先看不动」的类型实参扫描，判据分别是 `::` 和 `(`。 */
-    /* 只有**见过类型实参**才可能是泛型调用 —— 否则 `f(x)` 会被误认。 */
-    return strcmp(pk(p, i)->text, "::") == 0 ||
-           (sawTargs && strcmp(pk(p, i)->text, "(") == 0);
+     * 两者共用同一套「先看不动」的类型实参扫描，判据分别是 `::` 和 `(`。
+     * 只有**见过类型实参**才可能是泛型调用 —— 否则 `f(x)` 会被误认。 */
+    int segs = 0;
+    while (strcmp(pk(p, i)->text, "::") == 0) {
+        Token *seg = pk(p, i + 1);
+        if (seg->kind != TK_IDENT && seg->kind != TK_TYPE) break;
+        i += 2;
+        segs++;
+    }
+    if (segs > 0) return segs;
+    return (strcmp(pk(p, i)->text, "(") == 0 && i > 0) ? 1 : 0;
 }
 
-/* 真的解析：`Name<targs>::name(args)` 或 `Name::name(args)`（类型名已吃掉） */
-static Expr *parseAssoc(Parser *p, const char *name, int line) {
+/* `::` 后面还有几段**完整的** `::名字`（到下一个不是名字的记号为止）。
+ * 用 `looksLikeAssoc`/`countTrailingPath` 都做不到这件事：它们停在
+ * "后面跟不跟 `(` / `{` / `.`" 上 ✗ —— 而解析路径要的是"路径有多长" ✓
+ * 前提：pos 停在 `::` 上 ✓ */
+static int countFollowingSegs(Parser *p) {
+    int k = 0;
+    while (strcmp(pk(p, k)->text, "::") == 0) {
+        Token *seg = pk(p, k + 1);
+        if (seg->kind != TK_IDENT && seg->kind != TK_TYPE) break;
+        k += 2;
+    }
+    return k / 2;
+}
+
+/* 真的解析：`Name<targs>::name(args)` / `Type::assoc(args)`（两段）
+ *       或 `mod::sub::name(args)` / `mod::sub::CONST`（**任意层**，PLAN #53）✓
+ *
+ * 两段和深层共用这一条路，判据只有两条：
+ *   · `(` 跟着最后一段 ⇒ 是**调用** ⇒ 造 `EX_ASSOC`（`isCall = true`）
+ *   · 否则              ⇒ 是**值**（常量 / 无载荷变体的写法）⇒ 造 `EX_ASSOC` 且 `isCall = false`
+ * ⚠️ 为什么值是 `EX_ASSOC` 而不是 `EX_IDENT`：装载器**只走已知节点**找限定名
+ *   （`rwExpr` 的 switch）—— 造一个名字里带 `::` 的 `EX_IDENT`，装载器看不见它，
+ *   检查器就会按裸名 `std::sys::io::STDOUT` 去查表 ⇒ `undefined name` ✗（这个形状试过）
+ * ⚠️ `modPrefixOut` 是给装载器的**拆分结果**：`std::sys::io` + `STDOUT`。
+ *   拆在哪里由装载器**最终**决定（它才知道谁被 `use` 过 —— 见 `rwDeepQName`）；
+ *   这里给的只是"按 `::` 切一刀"的形态 ✓ */
+static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
+                        const char **modPrefixOut) {
     Vec targs;
     vecInit(&targs, p->arena, sizeof(void *));
     if (accept(p, "<")) {
@@ -1547,10 +1624,42 @@ static Expr *parseAssoc(Parser *p, const char *name, int line) {
         g->u.gencall.args  = gargs;
         return g;
     }
-    take(p);   /* `::` */
 
-    Token *fn = expectIdent(p, "an associated function name");
-    if (!fn) return NULL;
+    /* ===== 路径：吃掉 `::名字` 段，**最后一段留给"符号名"** ==============
+     * 为什么最后一段不吃：它后面跟的东西决定语义（`(` = 调用 / `{` = 字面量 /
+     * `.` = 变体 / 什么都不是 = 值）⇒ 那个记号必须留在游标处给调用者看 ✓
+     * 两段时这个循环**一次都不进**（`mod::fn` 的 `fn` 后面不跟 `::`）✓
+     * ⇒ 两段那条老路的行为一个字节都不变 ✓ */
+    /* `> 1` 而不是 `>= 2`：**最后一段必须留下**（它就是符号名）✓
+     * `std::sys::io::STDOUT` 的正确切法是前缀 `std::sys::io` + 符号 `STDOUT`：
+     * 消费 `::sys`、`::io`，留下 `::STDOUT` ✓
+     * ⚠️ 写成 `>= 2` 会多消费一段 ⇒ 前缀变 `std::sys`、符号变 `io`，
+     * 于是装载器报的是 "`sys` is not imported"（**离现场两步远** ✗ 我自己刚踩）
+     * ⚠️⚠️ 前缀必须在这里**边消费边拼**，不许事后"从 token 区间抠文本"✗ ——
+     * 那个区间的起点是 `::` 之后，**名字本身（`std`）不在里面** ⇒
+     * 抠出来是 `sys::io` 而不是 `std::sys::io`（真踩过：报 "`sys` is not imported"）✓ */
+    const char *prefix = NULL;
+    if (countFollowingSegs(p) > 1) {
+        Buf pb;
+        bufInit(&pb, p->arena);
+        bufPuts(&pb, name);                          /* 第一段（调用者已吃掉）✓ */
+        while (countFollowingSegs(p) > 1) {
+            take(p);                                 /* `::` */
+            bufPuts(&pb, "::");
+            bufPuts(&pb, take(p)->text);             /* 中间段名 */
+        }
+        prefix = bufCstr(&pb);
+    }
+    take(p);                                         /* `::` */
+    Token *sym = expectIdent(p, "a function, constant or variant name");
+    if (!sym) return NULL;
+
+    /* 判据只有一条：`(` 跟着**最后一段** ⇒ 调用 ✓
+     * 不跟 ⇒ 值（模块里的常量）—— C 没有函数指针、extC 也没有函数值，
+     * 所以"不带括号的限定名"只可能是常量 ✓ 拆分结果交给装载器 ✓ */
+    const bool isCall = !targs.len && at(p, "(");
+    if (modPrefixOut) *modPrefixOut = prefix;
+
     Vec args;
     vecInit(&args, p->arena, sizeof(void *));
     /* 参数表可以**省掉**：`maybe<i64>::nothing` —— 无载荷变体就是这么写的 ✓
@@ -1560,8 +1669,10 @@ static Expr *parseAssoc(Parser *p, const char *name, int line) {
     Expr *e = exprNew(p->arena, EX_ASSOC, line);
     e->u.assoc.typeName = name;
     e->u.assoc.targs = targs;
-    e->u.assoc.name = fn->text;
+    e->u.assoc.name = sym->text;
     e->u.assoc.args = args;
+    e->u.assoc.isCall = isCall;
+    (void)startPos;
     return e;
 }
 

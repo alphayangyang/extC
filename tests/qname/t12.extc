@@ -1,0 +1,9 @@
+// 三段全限定名的**函数调用**（值要真的流出来：写 3 个字节到 stdout）
+// expect: hi!3
+use std::sys::io
+fn main() {
+    var buf: [8]u8 = [104, 105, 33, 0, 0, 0, 0, 0]
+    let n = std::sys::io::write(1, buf[..].data, 3)
+    println(n)
+    flush()
+}

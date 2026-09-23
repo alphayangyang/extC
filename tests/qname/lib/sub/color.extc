@@ -1,0 +1,2 @@
+// 深层模块里的类型 + 枚举变体（PLAN #53 的"变体位置"那一格）
+type color = | red | green | blue

@@ -1,0 +1,6 @@
+// `as` 别名 + 用它调用
+// expect: 1
+use std::sys::io as sysio
+fn main() {
+    println(sysio::STDOUT)
+}

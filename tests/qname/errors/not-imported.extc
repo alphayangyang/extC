@@ -1,0 +1,5 @@
+// 反例：写了深层全名，但**没有** use 它 ⇒ 必须编译期报错
+// 而且消息要说清"加哪一条 use"（不是"unknown type `std`"那种误导 ✗）
+fn main() {
+    println(std::sys::io::STDOUT)
+}

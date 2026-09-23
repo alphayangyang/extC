@@ -1769,14 +1769,34 @@ fn main() -> i32 {
 |---|---|
 | 模块路径 | `use lib::util` ⇒ `<项目根>/lib/util.extc`（项目根 = 入口文件所在目录；也可用 `-I <dir>`）|
 | 短名 | 路径最后一段（`use lib::util` ⇒ 引用时写 `util::name` ✓）|
+| **全名** | ⭐ **任意层都能写全名**（2026-09-23 起）：`std::sys::io::STDOUT` · `std::sys::io::write(…)` · `lib::sub::color.color.green` ✓ 不需要先 `use` 到"正好那一段" ✓ |
+| **别名** | ⭐ `use std::sys::io as sysio` ⇒ 之后写 `sysio::STDOUT` ✓ 别名只换**短名**，全名照样能用 ✓ |
 | 可见性 | **默认公开**；要藏写 `@private`（别的模块引用它 ⇒ 编译错误 ✓）|
 | 必须限定 | 别的模块的名字**必须**写 `mod::name`（漏了会报错并告诉你写什么 ✓）|
 | 环 | **禁止** import 环（报错会说清是哪两个模块 ✓）|
 | `main` | 只能写在**入口文件**里（模块是库 ✓）|
 | 编译 | 仍然**只吐一个 .c**（`extc --run main.extc` 一条命令，`use` 的文件自动跟着编 ✓）|
 
-⚠️ v1 限制：顶层名字要求**全局唯一**（两个模块各有一个私有 `helper` 会被重名挡下 ✗）；
-类型名"必须限定"那条还没挡严（函数/全局已经挡严 ✓）✓
+**两层同名怎么办**（`std::io` 与 `std::sys::io` 的短名都是 `io`）—— 给其中一个起别名 ✓
+这也是别名真正必要的场合（"从 stdin 读 + `open` 一个文件"恰好要这两层）：
+
+```extc
+use std::io                     // 短名 io（普通库那层）
+use std::sys::io as sysio       // 短名 sysio（特权原语那层）
+var r = io::readerOf(sysio::STDIN)          // 各用各的短名 ✓
+let f = std::sys::io::STDOUT                // 全名也照样能写 ✓
+```
+
+没起别名时两条 `io` **必然撞车**，报的是 `both \`std::io\` and \`std::sys::io\` are used as \`io\`` ✓
+（常设验收 `tests/qname/`，6 正例 + 1 反例 ✓）
+
+```extc
+use lib::sub::color             // 深层模块（lib/sub/color.extc）✓
+let c: color::color = color::color.green     // 变体位置：限定名 + `.变体` ✓
+```
+
+⚠️ v1 限制：**类型名**"必须限定"那条还没挡严（函数/全局已经挡严 ✓）；
+`use` 不重新导出（没有 per-module 的可见性传递 ✓）
 
 ### 12.2 泛型自由函数 `fn f<T>(…)`
 

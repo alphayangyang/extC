@@ -1,0 +1,6 @@
+// ⭐ 深层模块的**函数调用**（值位置 + 多段前缀）
+// expect: 42
+use lib::sub::util
+fn main() {
+    println(lib::sub::util::answer())
+}

@@ -1,0 +1,8 @@
+// 三层同名模块共存（别名把两个 `io` 分开）
+// expect: 0
+use std::io
+use std::sys::io as sysio
+fn main() {
+    var r = io::readerOf(sysio::STDIN)
+    println(r.avail())
+}

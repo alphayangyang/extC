@@ -265,6 +265,23 @@ static TypeDef *unitType(ModUnit *u, const char *name) {
     return NULL;
 }
 
+/* ⭐ 这个模块 `use` 了**全名**叫 `qname` 的吗？（PLAN #53）
+ *
+ * ⚠️ 为什么必须有这一条：`UseDecl` 有**两个**字段 ——
+ *   `path = "std::sys::io"`（用户写的全名）· `shortName = "io"`（最后一段）✓
+ *   而 `importedAs` 只按**短名**匹配 ⇒ `std::sys::io::STDOUT` 这种写法
+ *   拿着全名去问，永远问不到（我实测过：`use std::sys::io` 明明在表里，
+ *   报的却是"`std` is not imported" ✗）✓
+ * ⇒ 判据两条：**写短名对短名、写全名对全名** —— 两者都指向同一个模块 ✓ */
+static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
+    for (size_t i = 0; i < self->mod.uses.len; i++) {
+        UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
+        if (strcmp(u->path, qname) == 0)
+            return u->file ? findUnit(L, u->file) : NULL;
+    }
+    return NULL;
+}
+
 /* 这个模块 `use` 了短名叫 `shortName` 的吗？（**必须先 use** ✓）*/
 static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
     for (size_t i = 0; i < self->mod.uses.len; i++) {
@@ -371,13 +388,90 @@ static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, con
     return true;
 }
 
+/* ⭐ **深层限定名的模块**（PLAN #53）：parser 把 `std::sys::io::STDOUT` 拆成
+ * "前缀 `std::sys::io` + 符号 `STDOUT`"交过来，这里只回答"这个前缀被 `use` 过吗" ✓
+ *
+ * ⚠️⚠️ **这里我错了整整四版，值得记下来**：我一直以为"哪一段是模块、哪一段是符号"
+ *   要由装载器**从长到短试前缀**才算得出来（因为 parser 不查符号表 ✗）。
+ *   可 parser 根本不需要符号表就能切开这两半 —— 判据是**位置**：
+ *   **所有中间段 = 模块，最后一段 = 符号** ✓
+ *   ⇒ 装载器这半边因此只剩一件事：**全名对全名**匹配 `use` 表 ✓
+ *   （我先前写的"从长到短试候选"版本反而引入了三个 bug：候选起点算错、
+ *     边界算错、把符号名也切进候选 —— 全是不必要的复杂度 ✓）*/
+static ModUnit *rwDeepQName(Loader *L, ModUnit *self, const char *qname) {
+    /* 候选 = "每个 `::` **之前**的那一段" ⇒ `A::B::C::Sym` 得到 `A::B::C` / `A::B` / `A` ✓
+     * ⚠️ 这一段连着踩了两个坑（PLAN #53），都是把"前缀"算错了：
+     *   ① `lastSep` 记成**最后一个** `::` ⇒ 候选只剩最长的那个（`A::B::C`）✗
+     *   ② `qname[len]`/`qname[len-1]` 当边界 —— `len` 是前缀长度、不是下标 ✗
+     * ⚠️ 想清楚"最长的候选从哪来"（我卡在这儿很久）：
+     *   `std::sys::io::STDOUT` 有**三个** `::`，下标 3 / 8 / 11 ⇒
+     *   候选 `std::sys::io`(3) / `std::sys`(8) / `std`(11) —— **`std::sys::io` 在里面** ✓
+     *   所以不是"缺了整串" ✗ —— 我先前以为要补整串，那反而会多出一个
+     *   "模块名 + 符号名取错"的候选（`std::sys::io` 当模块、符号也取 `io`）✗
+     *   ⇒ 判据：候选**只能**从 `::` 处切（这样尾巴一定是段名、不是半截）✓ */
+    /* 全名对全名：`std::sys::io` 只认 `use std::sys::io`（同一个路径写法 ✓）
+     * 短名那一半由 `importedAs` 兜住（`io::read` 那种写法）✓
+     * 顺序有意义：**先全名、后短名** —— 短名会与别的模块撞，全名不会 ✓ */
+    ModUnit *u = importedAsPath(L, self, qname);
+    if (!u) u = importedAs(L, self, qname);
+    /* 调试开关 `EXTC_DBG_QN=1`：把"这条深层全名解成了哪个模块"打出来 ✓
+     * （跟 `EXTC_DBG_ARENA` / `EXTC_DUMP_EFFECTS` 一个待遇：不改变任何输出 ✓）
+     * ⚠️ 只在**没解开**时打 —— 解开了走的是正常路，不需要噪声 ✓ */
+    if (!u && getenv("EXTC_DBG_QN"))
+        fprintf(stderr, "[qn] deep `%s` 没匹配到任何已导入的模块\n", qname);
+    return u;
+}
+
 /* 表达式位置：parser 把 `a::b(...)` 造成 EX_ASSOC 了 ⇒ 这里按"a 是不是模块"分流 ✓ */
 static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
+    const char *modPrefix = e->u.assoc.modPrefix;
+    const char *symName   = e->u.assoc.name;
+    const int   saveTargs = (int)e->u.assoc.targs.len;
+    const bool  saveCall  = e->u.assoc.isCall;
+
+    /* ⭐ 深层路径（`std::sys::io::write` / `std::sys::io::STDOUT`）——
+     * 把"模块名 + 符号名"定下来，之后**完全复用**下面那些可见性 /
+     * `unitFunc` / `unitGlobal` / `@private` 的判据（一条都不重写 ✓）*/
+    ModUnit *target = NULL;
+    if (modPrefix) {
+        /* ⚠️ `modPrefix` 就是**模块名**（parser 把中间段全吃了，只留最后一段当符号）✓
+         * 别在这里再"切一次符号" ✗ —— 我踩过：parser 给的是"最后一个 `::` 之前"，
+         * 拿它再切一次会把真正的模块名切掉（`std::sys::io` 变成 `std::sys`）✗
+         * ⇒ 这一格的活儿是"**全名对全名**匹配"，不是"再拆一次" ✓ */
+        target = rwDeepQName(L, self, modPrefix);
+        if (target) {
+            /* ⚠️ **解析结果必须直接绑给 `target`** —— 下面那句 `importedAs(tn)`
+             * 只按**短名**查，而这里 `tn` 是全名（`std::sys::io`）⇒ 查不到 ✗
+             * 我踩过：模块明明命中了，却又被判成"没导入"，报的还是
+             * "unknown type `std::sys::io`"（**离现场一步远**）✓ */
+            e->u.assoc.typeName = modPrefix;
+        } else {
+            /* 没解析出来 ⇒ 报一条**指得出该怎么办**的，而且**必须报全名** ✓
+             * ⚠️ 我第一版写的是"取第一个 `::` 之前那段" ⇒ 消息变成
+             * "`std` is not imported -- add `use std`" ✗ —— 用户照着写会
+             * 导入一个不存在的模块（`std` 从来不是一个模块，它只是路径前缀）✗
+             * ⚠️ 别为了"分清不存在/没导入"去调 `resolveModFile` ——
+             * 它**找不到时自己会 fprintf 一条** ⇒ 这里会变成两条消息 ✗
+             * ⇒ 只说"没导入 + 加哪一条 use"：文件真没有的话，
+             *    用户加上 `use` 之后装载器会用**它**那条消息说清找过哪些路径 ✓ */
+            const char *note = arenaPrintf(L->a,
+                    "Modules are imported explicitly (semantic import, not a textual include)."
+                    " Add `use %s` at the top of the file.", modPrefix);
+            ctxError(self->ctx, e->line, 1, note,
+                     "`%s` is not imported here -- add `use %s`", modPrefix, modPrefix);
+            L->errors++;
+            return;
+        }
+    }
+
     const char *tn = e->u.assoc.typeName;
     if (!tn || e->u.assoc.targs.len != 0) return;
-    ModUnit *target = importedAs(L, self, tn);
+    if (!target) target = importedAs(L, self, tn);
     if (!target) {
-        /* ① `a::b` 里 `a` 不是模块，但 `b` 是某个模块 `a` 的**类型** ⇒ 认（见上）✓ */
+        /* ① `a::b` 里 `a` 不是模块，但 `b` 是某个模块 `a` 的**类型** ⇒ 认（见上）✓
+         * ⚠️ **只对两段的形状试这一条**：三段以上（`a::b::c`）不可能是
+         * `mod::Type`，硬试会给出一条指错方向的 "unknown type `a`" ✗（试过）*/
+        if (saveTargs != 0 || !saveCall || strstr(tn, "::")) return;
         const char *mangled = NULL;
         if (rwQualifiedTypeName(L, self, tn, &mangled) && mangled) {
             e->u.ident.name = mangled;             /* union 会被改写 ⇒ 先取名字 ✓ */
@@ -407,7 +501,8 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         return;
     }
 
-    const char *nm = e->u.assoc.name;
+    const bool isCall = saveCall;
+    const char *nm = symName;
     FuncDef   *f = unitFunc(target, nm);
     GlobalDef *g = f ? NULL : unitGlobal(target, nm);
 
@@ -416,6 +511,24 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
                  "`@private` hides it from other modules. Drop the annotation if it is meant to be"
                  " used from here.",
                  "`%s::%s` is private to module `%s`", tn, nm, tn);
+        L->errors++;
+        return;
+    }
+    /* ⭐ **形状要对得上**（PLAN #53）：一个名字只有一种解释，写错了要指出来 ✓
+     * 为什么这条判据必须有：`isCall` 只看"后面跟没跟 `(`"，
+     * 所以 `io::STDOUT()`（常量当函数调）和 `io::read`（函数当值用，
+     * 而 extC **没有函数值**）都能编到这里 ⇒ 不拦的话下面会静默挑一个 ✗ */
+    if (g && isCall) {
+        ctxError(self->ctx, e->line, 1,
+                 "Only functions take an argument list.",
+                 "`%s` is a `let`/`var` constant, not a function -- drop the `()`", nm);
+        L->errors++;
+        return;
+    }
+    if (f && !isCall) {
+        ctxError(self->ctx, e->line, 1,
+                 "extC has no function values -- a function name is only usable as a call.",
+                 "`%s` is a function -- write `%s(...)`", nm, nm);
         L->errors++;
         return;
     }

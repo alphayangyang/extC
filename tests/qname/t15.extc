@@ -1,0 +1,10 @@
+// ⭐ 限定名到**深层模块**（`lib::sub::color`）—— 两件事一起验：
+//   ① 变体位置（`Type.variant` 那条老路）
+//   ② 前缀是**多段模块名**（不是"第一个 `::` 之前"）
+// expect: true|false
+use lib::sub::color
+fn main() {
+    let c: color::color = color::color.green
+    println(c == color::color.green)
+    println(c == color::color.red)
+}

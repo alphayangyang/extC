@@ -215,7 +215,11 @@ struct Expr {
         struct { const char *typeName; Type *type; Expr *count; } new_;  /* `new T[n]` */
         struct { const char *typeName; Type *type; Expr *operand; } conv; /* `i32(x)` */        /* 关联函数调用：`typeName<targs>::name(args)`
          * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
-        struct { const char *typeName; Vec targs; const char *name; Vec args; } assoc;
+        struct { const char *typeName; Vec targs; const char *name; Vec args; bool isCall;
+                 const char *modPrefix; } assoc;
+        /*   ⭐ `isCall`（PLAN #53）：`(` 跟着最后一段 ⇒ 调用；不跟 ⇒ **值**
+         *   （`std::sys::io::STDOUT` 这种常量）。loader 用它分辨
+         *   「模块里的函数」与「模块里的常量」—— 光看形状分不出来 ✓ */
         struct { Expr *operand; } try_;   /* `e?` */
         struct { const char *name; Vec targs; Vec args; } gencall;
         struct { const char *typeName; const char *variant; Vec args; } enumval;
