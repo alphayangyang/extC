@@ -1,83 +1,106 @@
-/* 逃逸检查：深度模型 / 借用 / arena 家
+/* Escape checking: the depth model, borrows, and the home arena.
  *
- * 从 check.c 拆出来的 —— **纯移动**：注释与逻辑一个字节没动 ✓
+ * This is the pass that decides whether a borrow may outlive the storage it points
+ * at, and which arena an allocation has to live in. It is driven by a single rule
+ * (see the block below) and by the per-expression depth recorded for every value.
  */
 
 #include "check_internal.h"
 #include <stdlib.h>
 #include <stdio.h>
 
-/* ---------------------------------------------------------------- 逃逸检查
+/* --------------------------------------------------------------- escape checks
  *
- * DESIGN §2 的「唯一引用规则」：
- *     若引用 `r` 指向值 `v`，则 depth(r) ≥ depth(v)。
- * 人话：**引用不能活得比被指对象长。**
+ * The one reference rule: if a reference `r` points at a value `v`, then
+ * depth(r) >= depth(v). In words: a reference may not outlive what it points at.
  *
- * 深度是**纯词法属性**（参数 = 0，函数体 = 1，每进一层块 +1），比两个整数就行 ——
- * 不需要生命周期标注。**这正是「Rust 的安全 + 不写生命周期」的落点。**
+ * Depth is purely lexical: a parameter is depth 0, a function body is depth 1, and
+ * every nested block adds 1. Comparing two integers is therefore enough, and no
+ * lifetime annotations are needed from the user.
  *
- * 今天查三条，第四条故意不查（要跨函数分析）：
- *   ① 返回的引用/视图：被指对象必须在**参数或静态数据**里（深度 0）
- *   ② 局部变量初始化：被指对象不能比它深
- *   ③ 给字段/元素赋值（`o.f = v`）：被指对象不能比它深
- *   ④ ⬜ 把引用传给函数、函数把它存起来 —— 需要「传染性」分析，见 REFS.md §6
+ * Three obligations are checked here; a fourth is deliberately left out:
+ *   1. A returned reference or view must point at a parameter or at static data
+ *      (depth 0).
+ *   2. A local variable may not be initialized with a reference to something deeper
+ *      than the variable itself.
+ *   3. A field or element store (`o.f = v`) may not store a reference to something
+ *      deeper than the target.
+ *   4. Passing a reference into a function that stores it needs interprocedural
+ *      analysis and is checked at the call site instead (see `checkCallRefArgs`).
  */
 
 static int maxInt(int a, int b) { return a > b ? a : b; }
 
-static bool isGlobalSym(Checker *c, Sym *s);   /* 定义在后面（storeLayer 要用）*/
+static bool isGlobalSym(Checker *c, Sym *s);   /* defined below; used by storeLayer */
 
-/* 这个「地方」根上的绑定有多深？（参数、非绑定 = 0） */
-int exprRefDepth(Checker *c, Expr *e);
+int exprRefDepth(Checker *c, Expr *e);         /* defined below; used by placeDepth */
 
+/* Depth of the storage a place expression denotes.
+ *
+ * A "place" is something that can be written: a binding, a field, an element, or a
+ * dereference. The answer is how deep the *storage* is, not how deep a reference
+ * stored there points; `storeLayer` answers the other question.
+ *
+ * Params:
+ *   c - checker (scope stack and type table)
+ *   e - the place expression
+ *
+ * Returns:
+ *   Lexical depth of the storage: 0 for a parameter, global, or anything outside
+ *   this frame; the block depth for a local; for a reference-typed binding, the
+ *   depth of the storage it points at (the slot itself does not hold the value).
+ */
 int placeDepth(Checker *c, Expr *e) {
     if (!e) return 0;
-    /* `*p` 的"地方"不在本帧的哪个绑定里，而是 p 指的地方 ⇒
-     * 它的寿命就是**那个引用的寿命** ✓（解引用不创造存储，只换了个入口）*/
+    /* Dereference does not create storage; it only names storage through a pointer,
+     * so the lifetime in question is that of the reference. */
     if (e->kind == EX_DEREF) return exprRefDepth(c, e->u.deref.operand);
-    /* **引用型绑定**：这个"地方"在它指的那边 ⇒ 问的是被指对象的深度 ✓
-     * （`var cur: ?ref node = head` 的槽位在本帧，但节点在外面）*/
+    /* A reference-typed binding denotes the storage it points at, not its own slot
+     * (`var cur: ?ref node = head`: the slot is in this frame, the node is outside). */
     if (e->kind == EX_IDENT) {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy->refDepth;
         return sy ? sy->depth : 0;
     }
-    /* 字段/元素住在**它所在的那个对象**里 ⇒ 跟着对象走 ✓ */
+    /* A field or element lives inside the object that contains it. */
     if (e->kind == EX_FIELD) return placeDepth(c, e->u.field.obj);
     if (e->kind == EX_INDEX) return placeDepth(c, e->u.index.obj);
     Sym *root = placeRoot(c, e);
     return root ? root->depth : 0;
 }
 
-/* ⭐ **这个"地方"的存储住在哪一层？**（"往里存一个值"要问的就是这个）
+/* Arena level at which the storage of a place lives.
  *
- * 它跟 `placeDepth` 是**两个问题**（`DECISIONS.md` 定案 ㊲ 那张表）：
- *   | 问什么 | 谁来答 |
- *   |---|---|
- *   | **被它指着的对象**活多久 | `placeDepth`（引用型绑定 ⇒ 答被指对象的深度）✓ |
- *   | **这块存储本身**住在哪 | 这个函数 ✓ |
+ * This answers a different question from `placeDepth`, and the distinction matters:
  *
- * 为什么必须分开：`head = n` 是**往 head 这个槽里存**一个指针 ——
- * 槽位在本帧（深度 1），所以"n 指的东西至少得活到 head 的槽位死" ⇒ 上界是 1 ✓
- * 可 `placeDepth(head)`（引用型）答的是"head **指着**的地方在哪"（`= null` ⇒ **0**）✗
- * ⇒ 于是"链表头结点活到函数结束"这种最正常的写法被判成"只能活到 0" ⇒ 悬垂/误报 ✓
- * （PLAN #38 的直接根因：深度数被当成两个意思用了四次，这是第四次 ✓）
+ *   - how deep is the object a reference *points at*?  -> `placeDepth`
+ *   - how deep is the storage *itself*?                -> this function
  *
- * 分工（跟定案 ㊲ 的表一致）：
- *   · **绑定的槽位**（`x` / `head`）⇒ 槽位在**本帧** ⇒ 绑定的 `depth`：
- *       局部 = 它的块深度 · **参数 = 1**（实参只是个副本，槽位在本帧 · 见下面代码）·
- *       全局 = 0（静态，活得比谁都长）✓
- *   · **透过引用/参数投影出来的地方**（`s.r` / `a[i]`）⇒ 存储**在调用者的对象里**
- *     ⇒ 仍然走 `placeDepth`（⇒ 深度 0）✓ —— `b.r = ref *p` 那条攻击照旧被挡 ✓
- *   · **`*p`** ⇒ 存储就是 p 指的地方 ⇒ `placeDepth` ✓
+ * `head = n` stores a pointer into the slot `head`. The slot lives in this frame,
+ * so the value that `n` points at must live at least as long as that slot. Asking
+ * `placeDepth(head)` on a reference-typed binding would instead report where the
+ * *pointee* lives (for `= null`, depth 0), which would reject the ordinary pattern
+ * of building a list whose head outlives the loop body.
+ *
+ * Params:
+ *   c - checker
+ *   e - the target place of a store
+ *
+ * Returns:
+ *   Arena level of the storage. A local binding reports its block depth; a parameter
+ *   reports 1, because the argument is a copy and the slot is in this frame; a global
+ *   reports 0, because static storage outlives every frame. A place projected through
+ *   a reference or parameter falls back to `placeDepth`, which reports the caller's
+ *   depth (0), so storing into a caller's object is still treated conservatively.
  */
 int storeLayer(Checker *c, Expr *e) {
     if (e && e->kind == EX_IDENT) {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy) {
-            /* ⭐ **参数的槽位在本帧**（实参只是个**副本** —— 写它调用者的指针一个字不动）
-             * ⇒ 深度 1 ✓（定案 ㊲ 的表：`a = b` 两个都是参数 ⇒ 该放行 ✓）
-             * ⚠️ 全局 = 静态 ⇒ 0（它活得比谁都长）✓ */
+            /* A parameter's slot is in this frame: the argument is a copy, so writing
+             * it cannot touch the caller's binding. Depth 1 is therefore correct, and
+             * assigning between two parameters is allowed. A global is static storage
+             * and reports 0, because it outlives every frame. */
             if (sy->depth == 0 && !isGlobalSym(c, sy)) return 1;
             return sy->depth;
         }
@@ -85,15 +108,24 @@ int storeLayer(Checker *c, Expr *e) {
     return placeDepth(c, e);
 }
 
-/* 表达式里的引用**指向的活物**有多深？
- * **类型里没有引用就直接 0** —— 纯值拷贝永远不会悬垂，
- * 不然后面 `let x: i32 = <深层局部>` 会被误报。 */
-/* ⭐ A2（ARENA-SOUNDNESS §9 档 0）：**按值的结构**算上界 —— 不看类型。
+/* Depth of the references inside a value, computed from syntax rather than types.
  *
- * 为什么必须有：`exprRefDepth` 的早退条件是 `typeContainsRef(类型)`，
- * 而**字段类型本身是 `ref`** 时它答 false ⇒ `inner { v: ref local }` 这种
- * 值里装着活指针的表达式会被算成 0 ✗（反例 B_field_table_stale）。
- * 这条只看语法结构，只可能把上界**抬高** ⇒ 方向安全 ✓ */
+ * `exprRefDepth` returns early when `typeContainsRef` says the type carries no
+ * reference, but a struct whose *field* type is `ref` reports false there. A value
+ * such as `inner { v: ref local }` would then be treated as holding no pointer and
+ * be given depth 0, which lets a live pointer escape unnoticed.
+ *
+ * This walk ignores types and looks only at the shape of the expression, so it can
+ * only raise the depth estimate. Raising the estimate is the safe direction: it may
+ * reject a program that is in fact safe, but it cannot accept one that is not.
+ *
+ * Params:
+ *   c - checker
+ *   e - expression to inspect
+ *
+ * Returns:
+ *   An upper bound on the depth of the deepest reference the value can carry.
+ */
 int valDepthStructural(Checker *c, Expr *e) {
     if (!e) return 0;
     int d = 0;
@@ -141,41 +173,68 @@ int valDepthStructural(Checker *c, Expr *e) {
     }
 }
 
-/* ⭐ **「值的字节里一定装不下活引用」** —— 这是个**语法制导的守卫**，
- * 跟 `exprRefDepth` 开头那个早退**一模一样**（连 `mentionsParam` 那半也一样：
- * `T` 可能带引用 ⇒ 泛型体里不许早退，实例化时才定）✓
+/* True when a value of this type provably cannot contain a live reference.
  *
- * 为什么它决定"要不要给源对象提寿命要求"：
- *   往 `dst` 里存 `v` 只有两种可能 ——
- *     · `v` 是**引用**（`ref T`）⇒ 存进去的是一个指针 ⇒ `ρ(v) ⊒ storeLayer(dst)`；
- *     · `v` 是**值**  ⇒ 存进去的是**那一串字节的拷贝** ⇒
- *       目标格子里留下的是**副本**，源对象*本身*在哪、活多久**一个字节都不影响** ✗
- *       真正有影响的只有"副本里装着的那些引用指哪" ⇒ 那正是 `exprRefDepth` 的内容 ✓
- *   ⇒ 所以"值里没有引用"时，源对象的深度**不是**存储的约束（提它 = 误拒，不是安全）✓
+ * This decides whether storing a value imposes a lifetime requirement on the source
+ * object. Storing `v` into `dst` has two cases:
  *
- * ⚠️ 别退回成"看 `T` 的类型节点"：`typeContainsRef` 对**字段类型本身是 ref** 的
- *   聚合答 false（那是 A2 修的洞）⇒ 这里必须看**整个类型**（它会递归字段/载荷）✓
- * ⚠️ 只可能"少提要求" ⇒ 只可能**误拒变通过**，绝不可能"该拦的没拦" ——
- *   被它放过去的那串字节里没有任何东西能把源对象钉住 ✓ */
+ *   - `v` is a reference: a pointer is copied in, so the pointee must live at least
+ *     as long as the storage it is placed in.
+ *   - `v` is a plain value: the bytes are copied, so where the source object lives
+ *     and how long it lives have no effect on the stored copy. Only the references
+ *     *inside* the copy matter, and those are covered by `exprRefDepth`.
+ *
+ * When no reference can be inside the value, the source object's depth is not a
+ * constraint of the store, and promoting it would only cause a false rejection.
+ *
+ * Params:
+ *   c - checker (type table)
+ *   e - the value being stored
+ *
+ * Returns:
+ *   True when the type provably carries no reference, so no requirement is needed.
+ *
+ * Notes:
+ *   - Do not reduce this to inspecting the type node the user wrote: for an aggregate
+ *     whose field type is itself a reference, the shallow check answers false, so the
+ *     whole type must be examined (it recurses into fields and payloads).
+ *   - The answer is only ever used to *drop* a requirement, so it can turn a false
+ *     rejection into an acceptance, never the other way round.
+ */
 static bool typeCannotCarryRef(Checker *c, Expr *e) {
     if (!e) return true;
     if (mentionsParam(e->type)) return false;    /* `T` 可能带引用 ⇒ 推迟 ✓ */
     return !typeContainsRef(c->tt, tsub(c, e->type));
 }
 
-/* ⭐ A2：记进任何地方的深度一律走这个 —— `exprRefDepth` 与结构上界**取 max** ✓
+/* Depth to record whenever a value is stored anywhere.
  *
- * ⭐ 层 1 第二步（值拷贝不该背源对象的寿命）：结构上界只在**这个值可能装着引用**时才算。
- * 反例（主人给的 50/25/25 长运行形状，实测 **98 MB ⇒ 1 MB**）：
+ * This is the single entry point for store-depth accounting: it takes the maximum of
+ * the reference depth and the structural upper bound, so nothing that carries a live
+ * pointer is under-reported.
+ *
+ * The structural bound is only consulted when the value can carry a reference at
+ * all. Without that guard, a plain value copy inherits the lifetime of the source
+ * object, which is wrong and expensive:
+ *
  *     while round < N {
- *         var it = new item            // item = 3 个 i64，**没有任何引用**
- *         outer.push(*it)              // 值拷贝；`contMask` 说"第 1 个实参的内容进去了"
- *         …
+ *         var it = new item      // item holds three integers and no reference
+ *         outer.push(*it)        // the container stores the bytes, not the pointer
  *     }
- * `*it` 的类型是 `item` ⇒ 上一版把 `valDepthStructural(*it) = ρ(it)` 取进来 ⇒
- * 这个 `new` 站点的要求被抬成"活到调用者的帧" ⇒ 分配进 `__extc_home` ⇒
- * **每轮一个、全都不回收**（长运行服务最怕的形状）✗
- * 而 `outer.push` 存的是 `item` 的**字节**：`it` 指向哪、活多久，跟容器里那份副本无关 ✓ */
+ *
+ * Taking the structural bound here would require the `new` site to live as long as
+ * the caller's frame, so every iteration would allocate into the caller's home arena
+ * and nothing would be reclaimed until the frame ended (measured: a 200k-iteration
+ * loop grows to 98 MB instead of 1 MB). The container holds a copy of the bytes, so
+ * where `it` points and how long it lives are irrelevant.
+ *
+ * Params:
+ *   c - checker
+ *   e - the value being stored
+ *
+ * Returns:
+ *   An upper bound on the depth of the references the stored bytes can carry.
+ */
 int valDepthForStore(Checker *c, Expr *e) {
     int a = exprRefDepth(c, e);
     if (typeCannotCarryRef(c, e)) return a;      /* 纯值拷贝 ⇒ 源对象的寿命不是约束 ✓ */
