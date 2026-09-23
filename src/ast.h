@@ -1,18 +1,21 @@
-/* extC 的 AST。
+/* The extC abstract syntax tree: the data shapes the parser produces and the type
+ * checker annotates in place.
  *
- * 设计要点：**AST 是「带解析结果」的** —— 类型检查 pass 会把结果写回节点：
- *   Expr.type   表达式的类型
- *   Expr.func   调用解析到的函数
- *   Expr.field  字段访问解析到的字段
- *   Stmt.type   变量声明的最终类型
- * 这样代码生成就不需要任何类型推导逻辑了（T1 的目的）。
+ * The tree carries the results of name and type resolution. The checker writes
+ * them back onto the nodes:
+ *   Expr.type   the type of the expression
+ *   Expr.func   the function a call resolved to
+ *   Expr.field  the field a field access resolved to
+ *   Stmt.type   the final type of a variable declaration
+ * Code generation can therefore perform no type inference at all: it translates
+ * decisions that have already been made.
  */
 #ifndef EXTC_AST_H
 #define EXTC_AST_H
 
 #include "base.h"
 
-/* ---------------------------------------------------------------- 类型 */
+/* ---------------------------------------------------------------- types */
 
 typedef struct Type Type;
 typedef struct TypeDef TypeDef;
@@ -23,209 +26,267 @@ typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 
 typedef enum {
-    TY_UNRESOLVED,  /* parser 刚造出来的「类型名」，由 check 解析 */
+    TY_UNRESOLVED,  /* a bare type name as the parser writes it; the checker resolves it */
     TY_VOID,
-    TY_BUILTIN,     /* i32、bool、str… */
+    TY_BUILTIN,     /* i32, bool, str, ... */
     TY_STRUCT,
-    TY_ENUM,        /* type Status = | ok | warn */
+    TY_ENUM,        /* `type Status = | ok | warn` */
     TY_REF,         /* ref T */
-    TY_PARAM,       /* 泛型参数本身：模板里出现的 `T` */
-    TY_GENERIC,     /* 泛型实例：`Pair<i32, u8>` */
-    TY_ARRAY,       /* 固定数组：`[15]i32` —— 长度是类型的一部分 */
-    TY_ERROR        /* 类型检查失败时的哑类型：抑制级联报错 */
+    TY_PARAM,       /* the type parameter itself: the `T` written inside a template */
+    TY_GENERIC,     /* an instance, such as `Pair<i32, u8>` */
+    TY_ARRAY,       /* a fixed array `[15]i32`: the length is part of the type */
+    TY_ERROR        /* dummy type for a failed check, so errors do not cascade */
 } TypeKind;
 
 struct Type {
     TypeKind    kind;
-    const char *name;    /* TY_UNRESOLVED / TY_BUILTIN / TY_STRUCT / TY_ENUM；
-                          * TY_GENERIC 时是**修饰过的名字**（见 ttMangle） */
-    Type       *inner;   /* TY_REF */
-    bool        nullable;/* TY_REF：`?ref T` —— **可能为空**（`null` 是它的零值，见 DECISIONS 定案 ㊻）。
-                          * 非空时零值不存在；可空时零值 = null。
-                          * `?T`（非 ref）在 parser 里就变成 `option<T>`，不走这个标记。 */
-    bool        mut;     /* TY_REF：可写？
-                          * **只读是默认**（安全是默认）；`mut ref T` 才是可写。
-                          * 见 DECISIONS「引用语义定案」与 REFS.md §3。 */
+    const char *name;    /* TY_UNRESOLVED / TY_BUILTIN / TY_STRUCT / TY_ENUM;
+                          * for TY_GENERIC it is the mangled name (see ttMangle) */
+    Type       *inner;   /* TY_REF: the referenced type */
+    bool        nullable;/* TY_REF: `?ref T`, a reference that may be absent. Its zero
+                          * value is `null`; a non-nullable reference has no zero value.
+                          * A `?T` that is not a reference becomes `option<T>` in the
+                          * parser and never reaches this flag. */
+    bool        mut;     /* TY_REF: may the target be written through it? Read-only is
+                          * the default, and `mut ref T` is the writable form, so
+                          * writability has to be asked for explicitly. */
     StructDef  *sdef;    /* TY_STRUCT / TY_GENERIC */
     TypeDef    *edef;    /* TY_ENUM */
-    Vec         targs;   /* TY_GENERIC：类型实参（Type*） */
-    const char *param;   /* TY_PARAM：参数名，如 "T" */
-    int         tpIndex; /* TY_PARAM：第几个参数 */
-    int64_t     asize;   /* TY_ARRAY：长度（编译期常量） */
+    Vec         targs;   /* TY_GENERIC: the type arguments (Type*) */
+    const char *param;   /* TY_PARAM: the parameter name, such as "T" */
+    int         tpIndex; /* TY_PARAM: which parameter it is, by position */
+    int64_t     asize;   /* TY_ARRAY: the length, a compile-time constant */
 };
 
-Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED（可能带 targs）*/
+Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED; targs may be filled in after */
 Type *typeRef(Arena *a, Type *inner);
 Type *typeParam(Arena *a, const char *name, int idx);
 Type *typeArray(Arena *a, int64_t n, Type *elem);   /* TY_ARRAY */
 
-/* ---------------------------------------------------------------- 表达式 */
+/* ------------------------------------------------------------ expressions */
 
-/* ⭐ 定案 68：**"分配到本函数的家 arena"这个决定，用一个哨兵表示** ——
- * 它跟 `homeDepth` 里那个 `-1` 是同一个意思，但这两个字段现在**都由检查器填**、
- * codegen 只翻译 ⇒ 别再靠"函数有没有家"去反推 ✗（那就是"两个权威"）✓ */
+/* Sentinel for "allocate into this function's home arena" -- the arena the caller
+ * chose and passed down. It means the same thing as the -1 that `homeDepth` and
+ * `arenaArg` carry. Those fields are all filled in by the checker and code
+ * generation only translates them: it must never re-derive the answer from "does
+ * this function have a home arena", because that would be a second source of truth
+ * for a decision that is already made. */
 #define ARENA_HOME (-1)
 
 typedef enum {
     EX_INT, EX_FLOAT, EX_BOOL, EX_STR, EX_IDENT,
     EX_BIN, EX_UN, EX_CALL, EX_METHOD, EX_FIELD, EX_STRUCTLIT,
-    EX_INDEX,     /* a[i] —— 索引 */
-    EX_SLICE,     /* a[i..j] —— 切一个视图出来 */
-    EX_ARRAYLIT,  /* [1, 2, 3] —— 数组字面量 */
-    EX_REF,       /* ref x —— 取引用（T3：ref 从类型修饰升级成表达式） */
-    EX_ASSOC,     /* option<i64>::some(x) —— 关联函数（不带 self 的函数） */
-    EX_GENCALL,   /* alloc<i32>(n) —— 泛型调用（目前只有内置原语用） */
-    EX_TRY,       /* e? —— 失败就顺着往上抛（只在三处语句位置上合法） */
-    EX_DEREF,     /* `*p` —— 显式解引用：读=p指的值，写=p指的地方 */
-    EX_ENUMVAL,   /* Status.warn —— 由 check 把 EX_FIELD 改写成这个 */
-    EX_CONV,      /* `i32(x)` / `f64(y)` —— **显式转换**（PLAN #23）：
-                   * extC 只自动做无损失拓宽，收窄/换符号/整数↔浮点都必须写出来 ✓
-                   * 语法写成 `T(x)` 而不是 C 的 `(T)x`：extC 的 parser **不查符号表**，
-                   * `(T)x` 会跟"括号表达式"二义 ✗（C 靠符号表才分得开）*/
-    EX_NEW,       /* `new T` / `new T[n]` / `new [N]T` —— 从**当前块的 arena** 拿一块
-                   * **清零**的地方（PLAN A1）。内容：
-                   *   `new T`     ⇒ `mut ref T`（一个 T 的地方）
-                   *   `new [N]T`  ⇒ `mut ref [N]T`
-                   *   `new T[n]`  ⇒ `mut slice<T>`（n 个元素 —— 这就是"造 buffer"）✓ */
-    EX_COALESCE,  /* `a ?? b` —— **可能没有就兜底**（`?` 那一族的第三个记号）：
-                   *   `opt ?? 兜底`   ⇒ 有就给值，没有就给兜底
-                   *   `r ?? 兜底`     ⇒ 成功给值，失败给兜底
-                   *   `p ?? q`（?ref）⇒ null 就给另一个引用
-                   * 语义 = `match a { 有(v) => v  _ => b }`，但**只算一边** ✓ */
-    EX_SIGN,      /* `e!` —— **我签字**（定案 1.3 的 `!`）："
-                   *   `opt!` / `r!`  ⇒ 直接给我载荷（编译期**不检查**有没有）；
-                   *   `p!`（`?ref T`）⇒ 我知道非空，给我 `ref T` ✓
-                   * 没有任何运行时痕迹 —— 签字的定义就是"错了算我的"（P′ 的对偶）*/
-    EX_NULL       /* `null` —— **可空引用的零值**（`?ref T`）。
-                   * 只能出现在「上下文已经说清楚是哪个 `?ref T`」的地方，
-                   * 类型由 adoptContextType 寄放（跟 `[]` 数组字面量一个套路）✓ */
+    EX_INDEX,     /* `a[i]`: an index */
+    EX_SLICE,     /* `a[i..j]`: a view over part of an array */
+    EX_ARRAYLIT,  /* `[1, 2, 3]`: an array literal */
+    EX_REF,       /* `ref x`: taking a reference, so `ref` is an expression and not
+                   * only a type modifier */
+    EX_ASSOC,     /* `option<i64>::some(x)`: an associated function, meaning a function
+                   * declared without `self` */
+    EX_GENCALL,   /* `alloc<i32>(n)`: a call to a generic primitive; only the built-in
+                   * primitives use this form so far */
+    EX_TRY,       /* `e?`: propagate a failure to the caller; legal in three statement
+                   * positions only */
+    EX_DEREF,     /* `*p`: explicit dereference. Reading gives the value p points at,
+                   * writing updates the place p points at. */
+    EX_ENUMVAL,   /* `Status.warn`: the checker rewrites the EX_FIELD it parsed into this */
+    EX_CONV,      /* `i32(x)` / `f64(y)`: an explicit conversion. extC widens
+                   * implicitly only when nothing is lost, so narrowing, a sign change,
+                   * or an integer/float conversion has to be written out.
+                   * The syntax is `T(x)` rather than C's `(T)x` because the extC parser
+                   * does not consult the symbol table, and `(T)x` would be ambiguous
+                   * with a parenthesised expression -- C can tell them apart only
+                   * because it knows the types. */
+    EX_NEW,       /* `new T` / `new T[n]` / `new [N]T`: take a zeroed place from the
+                   * arena of the current block. What is produced:
+                   *   `new T`     => `mut ref T`, a place holding one T
+                   *   `new [N]T`  => `mut ref [N]T`
+                   *   `new T[n]`  => `mut slice<T>`, n elements, which is how a buffer
+                   *                   is built */
+    EX_COALESCE,  /* `a ?? b`: use the fallback when there may be nothing.
+                   *   `opt ?? other`   => the payload if there is one, else other
+                   *   `r ?? other`     => the value on success, else other
+                   *   `p ?? q` on ?ref => q when p is null
+                   * The semantics are `match a { some(v) => v  _ => b }` except that
+                   * only one side is ever evaluated. */
+    EX_SIGN,      /* `e!`: the author's signature on the value, saying "I vouch for
+                   * this". `opt!` and `r!` yield the payload without any compile-time
+                   * check that it is there; `p!` on a `?ref T` yields a `ref T`, on the
+                   * author's word that it is not null. Nothing happens at runtime --
+                   * the whole meaning of the signature is that being wrong is the
+                   * author's problem, not the compiler's. */
+    EX_NULL       /* `null`: the zero value of a nullable reference (`?ref T`). It may
+                   * appear only where the context already says which `?ref T` is meant;
+                   * the type is supplied by adoptContextType, the same way an empty
+                   * array literal picks up its element type. */
 } ExprKind;
 
 struct Expr {
     ExprKind kind;
     int      line;
 
-    /* ---- 由类型检查 pass 填写 ---- */
+    /* ---- filled in by the type checker ---- */
     Type     *type;
-    FuncDef  *func;     /* EX_CALL / EX_METHOD 解析到的函数；`==` 时是 eq 方法 */
-    FieldDef *field;    /* EX_FIELD 解析到的字段 */
-    Type     *assocOwner; /* EX_ASSOC：解析到的**实例**类型（用来修饰 C 名字） */
-    bool      needEq;   /* `==` 的操作数含类型参数 → 推迟到实例化再检查 */
-    bool      deref;    /* 这个表达式在**值位置**被用到，而它的类型是 `ref T`
-                         * ⇒ 生成 `*(...)`。
-                         * 这是形状 3「值位置自动解引用」的落点：类型检查阶段
-                         * 把 `ref T` 当 `T` 用（权限由 `ref` / `mut ref` 承担），
-                         * 代码生成阶段就补一次解引用。见 DECISIONS 引用语义定案。 */
-    /* 逃逸检查用：这个表达式里的引用**指向的活物**有多深？
-     *   0 = 参数 / 静态数据 / 未知（函数返回的引用由被调用者自己的检查担保）
-     *   >0 = 某个局部变量的块深度
-     * 只有类型里**含引用**的表达式才有意义。见 REFS.md §4。 */
+    FuncDef  *func;     /* the function an EX_CALL or EX_METHOD resolved to; for `==`
+                         * it is the eq method */
+    FieldDef *field;    /* the field an EX_FIELD resolved to */
+    Type     *assocOwner; /* EX_ASSOC: the instance type it resolved to, kept so the
+                           * C name can be mangled */
+    bool      needEq;   /* an operand of `==` mentions a type parameter, so the check
+                         * waits until the generic is instantiated */
+    bool      deref;    /* The expression sits in value position while its type is
+                         * `ref T`, so code generation emits `*(...)`.
+                         * The checker treats a `ref T` as the `T` itself -- what may
+                         * be done to it is decided by `ref` versus `mut ref` -- and the
+                         * dereference is added back here, once, where the value is
+                         * actually needed. */
+    /* For the escape check: how deep does the storage live that the references in
+     * this expression point at?
+     *   0  = a parameter, static data, or unknown; a reference returned by a callee is
+     *        covered by that callee's own return check
+     *   >0 = the block depth of some local
+     * Only meaningful when the type contains a reference. */
     int       refDepth;
-    /* ⭐ 定案 63（PLAN #38）+ **定案 68**：**这个 `new` 分配进哪一只 arena？**
+    /* Which arena does this `new` allocate into?
      *
-     * ⭐ **层号的唯一权威**（2026-09-22 主人拍板：「checker 操作完之后应该把全部生成信息
-     * 给 codegen，codegen 就不用再做校验」）⇒ 这个数由**检查器算定**，
-     * codegen 只负责翻译成 C 文本（`arenaRefAt`），**不再自己判断 `hasHome`** ✗
+     * This number is the single authority for the level. The checker settles it and
+     * code generation only translates it (through `arenaRefAt`); codegen never
+     * decides for itself whether the function has a home arena.
      *
-     * 默认 = 语句所在的块深度（A2 按块细化：出块就回收 ✓）；
-     * 逃逸检查发现"这个东西被存进了活得更久的地方" ⇒ **提升**到那一层 ✓
+     * The default is the block depth of the statement, so the memory is reclaimed
+     * when that block ends. When the escape check finds that the value is stored
+     * somewhere that lives longer, the level is promoted to that place.
      *
-     *     ARENA_HOME（= -1）= 本函数的**家** arena（`*__extc_home`，调用者选的那只）✓
-     *     >0 = 本函数第 k 层块 —— 出那块时 release ✓
-     *     0  = "还没定"（只在检查过程中出现；codegen 永远看不到它）✓
+     *     ARENA_HOME (-1) = this function's home arena, `*__extc_home`, the arena the
+     *                       caller picked
+     *     > 0             = block k of this function, released when that block ends
+     *     0               = not decided yet; it exists only while the checker runs and
+     *                       code generation never sees it
      *
-     * ⚠️ **闭包之后要再定一次**：`needsHome` 的传递闭包是**所有函数体查完之后**才算的，
-     * 而查体时 `c->curFunc->needsHome` 只有"直接判据"（体里有 `new` + 返回含引用）✗
-     * ⇒ 那些"因为调用了有家函数才有家"的函数里，检查器当时算出的是**块层**，
-     *   而生成的 C 按"有家"分配（家更长命 ⇒ 只会更安全 ⇒ 以前**没有洞**，但**有两个权威**）✗
-     * ⇒ 现在 `checkModule` 在闭包跑完之后把这些函数里每个 `new` 站点改写成 `ARENA_HOME`
-     *   （站点记在 `FuncDef.newSites` 里，见 `check_top.c`）✓✓
+     * A function may turn out to need a home arena only after the bodies of the
+     * functions it calls have been checked, because the property is transitive. While
+     * a body is being checked, `c->curFunc->needsHome` reflects the direct test only,
+     * so a `new` inside a function that needs a home arena only through its callees
+     * was given the block level, while the generated C allocated it in the home
+     * arena. That was still safe -- the home arena lives longer -- but the tree and
+     * the generated code held two different answers. `checkModule` therefore rewrites
+     * every such `new` site to ARENA_HOME once the closure is known; the sites are
+     * collected in `FuncDef.arenaSites`, filled in by `check_top.c`.
      *
-     * 只有 `EX_NEW` 走这条路（`alloc<T>(n)` = 当前块，见它自己的那一支 ——
-     * 它也是检查器算的，只是不参与"提升"/"家"）✓
-     * 见 `DECISIONS.md` 定案 63 / 定案 68、`check_escape.c` 的 `promoteInto` ✓ */
+     * Only EX_NEW goes through this path. `alloc<T>(n)` allocates in the current
+     * block; the checker decides that too, but it takes no part in promotion or in
+     * the home arena. */
     int       arenaLevel;
-    /* ⭐ 长运行内存：**词法层号** —— `arenaLevel` 会被预负改写成 `ARENA_HOME`
-     * （"有家函数里每个分配都进家"）而把"它其实只活到第几层"抹掉 ✗
-     * 解算完之后，没被拉到帧外的站点就回到这一层块口袋 ✓ */
+    /* The lexical block level of this site, for long-running programs.
+     * The final pass overwrites `arenaLevel` with ARENA_HOME for every allocation in
+     * a function that has a home arena, which erases the level the site really needs.
+     * Once the constraints have been solved, a site that nothing pulled out of the
+     * frame goes back to its own block, which is the level recorded here. */
     int       lexicalLevel;
-    /* ⭐⭐ **逃逸分析对这一处提出的最强要求**（最小的那个层号）
-     *     -1 = 没被任何约束碰过 ⇒ 用它自己那层（`lexicalLevel`）
-     *      0 = "要活到帧外" ⇒ 进家 arena（只有有家函数能满足，检查已经验过了）
-     *     k>=1 = "得活到第 k 层" ⇒ 第 k 层块口袋 ✓
+    /* The strongest requirement escape analysis placed on this site: the smallest
+     * level that satisfies every constraint it takes part in.
+     *     -1  = no constraint touched it, so it keeps its own level (`lexicalLevel`)
+     *      0  = it must outlive the frame, so it belongs in the home arena; only a
+     *           function with a home arena can satisfy that, which the checker has
+     *           already verified
+     *     k>=1 = it must live until block k, so it belongs in that block
      *
-     * ⚠️ 为什么不能用一个布尔"escaped"：逃逸分析"碰过"它 ≠ "要求它活到帧外" ✗
-     *   （`nb = new item[cap*2]` 只需要活到**当前帧**；把"碰过"当成"进家" ⇒
-     *     `main` 没有家却吐了 `__extc_home` ⇒ **生成的 C 编不过** ✗，真踩到）*/
+     * A boolean "escaped" would not do, because being touched by escape analysis is
+     * not the same as being required to outlive the frame. In a loop,
+     * `nb = new item[cap * 2]` only has to live until the end of the current frame,
+     * but treating "touched" as "goes into the home arena" made `main` emit a
+     * `__extc_home` it does not have, and the generated C did not compile. */
     int       minAt;
-    /* ⭐ 定案 65：这个 `new` 是 `@overwrite` 的站点 —— **存储只有一块**
-     * （函数帧那层、懒分配、每次执行清零复用）⇒ 层数按"函数体"算，不是按语句所在块 ✓ */
+    /* This `new` belongs to an `@overwrite` site, so there is only one block of
+     * storage: it is allocated lazily in the function frame and cleared before every
+     * reuse. The level therefore follows the function body rather than the block the
+     * statement sits in. */
     bool      reuse;
-    /* 这个值里的引用是不是「**从外面借来的**」（参数来的、或函数调用回来的）？
-     * 借来的东西不能存进比这次调用活得更长的地方 —— 编译器不知道它的真实寿命。
-     * 这是 BOOTSTRAP §8 里那条 ④（参数洗白）。 */
+    /* Are the references inside this value borrowed from outside this call, that is,
+     * do they come from a parameter or from a call that returned them? A borrowed
+     * value may not be stored anywhere that outlives this call, because the compiler
+     * does not know how long it really lives: it may point into a local of the
+     * caller's frame that dies before the destination does. */
     bool      borrowed;
-    /* `??` 的主体**不是**"没有副作用的东西" ⇒ codegen 必须在所在语句之前
-     * 吐一个临时变量（先求值一次），再对临时变量做三元。
-     * 由**检查器**判定并标记（它已经算过 repeatablePure），codegen 只管照做 ✓
-     * 标记的含义："两边都不能重复求值，主体只能算一次" */
+    /* The main side of `??` is not free of side effects, so code generation has to
+     * emit a temporary before the statement and apply the conditional to that
+     * temporary: the main side must be evaluated exactly once.
+     * The checker decides this -- it has already computed `repeatablePure` -- and code
+     * generation only obeys the flag. */
     bool      needTemp;
-    /* ---- A3 第二半（出参）：这个调用点该传哪只 arena 给"有家"的被调用者？----
-     * 取值依据：**最浅的那个 `mut ref` 实参**所指对象住在哪只 arena 里
-     * （"新东西的寿命跟着你给我的那条链走" —— ARENA.md §1.2 那条规则 ✓）
+    /* Which arena should this call pass to a callee that has a home arena? The answer
+     * follows the shallowest `mut ref` argument: newly allocated objects live as long
+     * as the storage that argument points into.
      *
-     * ⚠️ 这个字段是给**检查器自己**用的（算规则 ④ 的 `h`，故意保守：
-     *    `0` 那一档按深度 0 查 ⇒ 宁可误拒 ✓）。
-     *    **codegen 不看它** —— codegen 看 `arenaArg`（已解析好的那一个）✓ */
+     * This field is for the checker itself and is deliberately conservative -- a site
+     * at level 0 is looked up as depth 0, so it may reject a program that is in fact
+     * safe. Code generation does not read it: it reads `arenaArg`, which is already
+     * resolved. */
     int       homeDepth;
-    /* ⭐ 定案 68：**调用点最终传哪只 arena** —— 由检查器算定，codegen 只翻译 ✓
-     *     ARENA_HOME（= -1）⇒ `__extc_home`（我的家，祖先那只）✓
-     *     >=1              ⇒ `&__extc_a[这个块层]` ✓
-     * 跟 `homeDepth` 的关系：`homeDepth` 是"保守判据"（0 那一档按 0 查，防漏 UB），
-     * 这里是"实际执行的选择" ⇒ 两个数**故意可以不同**，而且都在检查器里定完 ⇒
-     * codegen 一句判断都不用做（以前它会看 `g->hasHome` 兜底 ✗）✓ */
+    /* Which arena the call site actually passes, settled by the checker; code
+     * generation only translates it.
+     *     ARENA_HOME (-1) => `__extc_home`, this function's own home arena
+     *     >= 1            => `&__extc_a[that block level]`
+     *
+     * It may differ from `homeDepth` on purpose: `homeDepth` is the conservative test
+     * that keeps undefined behaviour out (a site at level 0 is looked up as depth 0),
+     * while this is the choice that is actually executed. Both are decided by the
+     * checker, so code generation makes no decision of its own. */
     int       arenaArg;
-    /* ⭐ 定案 68：这一处**还没定**（检查时只算出"按当前块"）——
-     * "我有家就传家"这一条要看 `needsHome` 的**传递闭包**（查完所有函数体才有）
-     * ⇒ 只能等 `checkModule` 的收尾 pass 再把它改成 `ARENA_HOME` ✓
-     * （`arenaArg` 此刻记着"当前块层号"，万一那个 pass 判出"没家"就照它用 ✓）*/
+    /* This call site is not settled yet. While the body is being checked the answer
+     * can only be "the current block", because "pass my home arena if I have one"
+     * depends on the transitive `needsHome` closure, which is known only after every
+     * function body has been checked; `checkModule` resolves it in its final pass.
+     * Until then `arenaArg` holds the current block level, which is what the site
+     * falls back to when the closure says there is no home arena. */
     bool      arenaArgPending;
-    /* ⭐ 定案 70：这个引用是**限定名改写来的**吗？（`io::readLine` ⇒ 平名字）
-     * 装载器只在这一路上置位 ⇒ 检查器拿它区分"用户写了限定名"与"用户漏了限定名" ✓ */
+    /* Did this identifier come from rewriting a qualified name, `io::readLine` into
+     * its flat form? The loader sets this flag on that path only, which is how the
+     * checker tells "the user wrote a qualified name" apart from "the user forgot the
+     * module prefix". */
     bool      qualified;
-    /* 显式转换：要不要**运行时检查**（整数收窄 / 换符号 / 浮点转整数）？
-     * 能证明装得下就不查（P：编译期能证明的运行时不留痕迹）✓ */
+    /* Explicit conversion: is a runtime check needed? Integer narrowing, a sign
+     * change, and float to integer may all lose the value, while a conversion whose
+     * result provably fits is not checked. What the compiler can prove at compile
+     * time leaves no trace at runtime. */
     bool      convCheck;
 
     union {
         long long ival;
         double    fval;
         bool      bval;
-        struct { const char *text; } str;                 /* 不含引号，转义原样 */
+        struct { const char *text; } str;                 /* without the quotes; escapes
+                                                           * are kept as written */
         struct { const char *name;
-                 /* ⭐ 模块 mangle 前**源码里写的那个名字**（诊断要回显它 ✓）
-                  * 为什么必须单独存一个：`name` 会被装载器改成 mangle 名
-                  * （`open` → `lib$open`），而报错得指着用户写的那个词 ——
-                  * 不留它，消息就变成"请写 `lib::lib$open`"，纯属胡说 ✗（真踩过）*/
+                 /* The name exactly as written in the source, before module mangling;
+                  * diagnostics have to echo it. It must be stored separately because
+                  * `name` is rewritten by the loader into the mangled form (`open`
+                  * becomes `lib$open`), while an error has to point at the word the user
+                  * typed. Without it, the message degenerates into "please write
+                  * `lib::lib$open`", which is nonsense. */
                  const char *srcName;
-                 /* 解析到的绑定的 C 名字（遮蔽时会跟 `name` 不同）。
-                  * 由类型检查阶段填 —— 名字的**解析**是检查器的活，
-                  * 代码生成只管照着印。见 DECISIONS 定案 47。 */
+                 /* The C name of the binding this resolved to; it differs from `name`
+                  * when one declaration shadows another. Filled in by the checker,
+                  * because resolving names is the checker's job and code generation only
+                  * prints the answer. */
                  const char *cname;
-                 /* ⭐⭐ 层 2：**解析到的那个绑定本身**（`Sym *`，定义在 `check_internal.h`；
-                  * 这里用不透明指针，理由跟 `Expr.cname` 一模一样 ✓）。
+                 /* The binding itself, as resolved: a `Sym *` declared in
+                  * check_internal.h, opaque here for the same reason as `Expr.cname`.
                   *
-                  * 为什么要钉在节点上、而不是收尾时再 `lookup` 一遍：
-                  * 收尾 pass 跑在**所有函数体都查完之后**，那时作用域早就弹了 ⇒
-                  * `lookup` 找不到局部绑定（`noteOrigin` 的注释里为同一个坑警告过一次 ✗）。
-                  * 实测症状：`varArray_i32` 的 `return v` 报 `kind=4 dca=0 svd=0`
-                  * ⇒ 复算被跳过 ⇒ 用了解算**之前**冻的旧深度 ⇒ 误拒 ✗
-                  * ⚠️ 同一个名字在不同作用域可以是**不同**的绑定 ⇒ 只有"解析那一刻的答案"
-                  * 是权威（`lookup` 按名字找，收尾时可能撞上另一个同名的东西 ✗）✓ */
-                 void       *sym; } ident;   /* ↑ `sym` = `Sym *`：不透明指针，
-                                             *   取用时经 `IdentBinding`（check_internal.h）
-                                             *   转回来 —— 跟 `cname` 同一个理由：
-                                             *   AST 不认识类型检查层的结构 ✓ */
+                  * Why it is pinned onto the node instead of being looked up again in
+                  * the final pass: that pass runs after every function body has been
+                  * checked, by which time the scopes are long gone, so `lookup` cannot
+                  * find a local binding any more. The symptom was a false rejection in
+                  * the `varArray_i32` case: `return v` reported `kind=4 dca=0 svd=0`, the
+                  * recomputation was skipped, and a depth frozen before the solver ran
+                  * was used instead.
+                  * The same name can denote a different binding in a different scope, so
+                  * only the answer from the moment of resolution is authoritative:
+                  * `lookup` matches on the name and may find a namesake later. */
+                 void       *sym; } ident;   /* `sym` is a `Sym *` kept opaque and cast back
+                                             * through `IdentBinding` (check_internal.h)
+                                             * for the same reason as `cname`: the AST does
+                                             * not know the checker's types. */
         struct { const char *op; Expr *left, *right; } bin;
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
@@ -233,24 +294,28 @@ struct Expr {
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */
         struct { Expr *obj; Expr *index; } index;
-        struct { Expr *obj; Expr *lo; Expr *hi; } slice;   /* lo / hi 可为 NULL */
-        struct { Vec elems; bool rest; } arraylit;         /* elems: Expr*；rest = 末尾有 ... */
+        struct { Expr *obj; Expr *lo; Expr *hi; } slice;   /* lo / hi may be NULL */
+        struct { Vec elems; bool rest; } arraylit;         /* elems: Expr*; rest = a trailing
+                                                            * `...` is present */
         struct { Expr *operand; } ref;
         struct { Expr *operand; } deref;
-        struct { Expr *operand; } sign;   /* `e!` —— 我签字 */
+        struct { Expr *operand; } sign;   /* `e!`: the author's signature */
         struct { Expr *main, *fallback; } coalesce;   /* `a ?? b` */
         struct { const char *typeName; Type *type; Expr *count; } new_;  /* `new T[n]` */
-        struct { const char *typeName; Type *type; Expr *operand; } conv; /* `i32(x)` */        /* 关联函数调用：`typeName<targs>::name(args)`
-         * 写全类型是**故意**的 —— 不靠上下文猜（见 DECISIONS 定案 27）。 */
+        struct { const char *typeName; Type *type; Expr *operand; } conv; /* `i32(x)` */
+        /* An associated function call: `typeName<targs>::name(args)`.
+         * Writing the whole type is deliberate: nothing is guessed from context. */
         struct { const char *typeName; Vec targs; const char *name; Vec args; bool isCall;
                  const char *modPrefix; } assoc;
-        /*   ⭐ `isCall`（PLAN #53）：`(` 跟着最后一段 ⇒ 调用；不跟 ⇒ **值**
-         *   （`std::sys::io::STDOUT` 这种常量）。loader 用它分辨
-         *   「模块里的函数」与「模块里的常量」—— 光看形状分不出来 ✓ */
+        /*   `isCall`: a `(` after the last segment means a call, its absence means a
+         *   value, such as the constant `std::sys::io::STDOUT`. The loader uses it to
+         *   tell a function in a module from a constant in a module, which cannot be
+         *   decided from the shape alone. */
         struct { Expr *operand; } try_;   /* `e?` */
         struct { const char *name; Vec targs; Vec args; } gencall;
         struct { const char *typeName; const char *variant; Vec args; } enumval;
-        /*   ↑ args 空 = 无载荷变体（`status.ok`）；非空 = 带载荷构造（`shape.circle(2.0)`）*/
+        /*   Empty args = a variant without payload (`status.ok`); non-empty = a
+         *   payload construction (`shape.circle(2.0)`). */
     } u;
 };
 
@@ -258,18 +323,21 @@ typedef struct { const char *name; Expr *value; } FieldInit;
 
 Expr *exprNew(Arena *a, ExprKind kind, int line);
 
-/* ---------------------------------------------------------------- 语句 */
+/* ------------------------------------------------------------ statements */
 
 typedef enum {
     ST_VAR, ST_ASSIGN, ST_IF, ST_WHILE, ST_RETURN,
     ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK, ST_MATCH
 } StmtKind;
 
-/* `match` 的一条分支：`circle => { ... }`
- * （带载荷之后会多一个「绑定载荷的名字」列表，见 IO.md / BOOTSTRAP §8 第 3 步。）*/
+/* One arm of a `match`: `circle => { ... }`.
+ *
+ * A variant that carries a payload also carries a list of names to bind it to. */
 typedef struct {
-    const char *variant;   /* 变体名；`_` 表示兜底（暂时不支持，先留着位置）*/
-    Vec         binds;     /* const char* —— 绑定载荷的名字：`circle(r) => ...` 里的 `r` */
+    const char *variant;   /* the variant name; `_` is the catch-all arm, which is not
+                            * supported yet -- the slot is reserved for it */
+    Vec         binds;     /* const char*: the names bound to the payload, that is, the
+                            * `r` of `circle(r) => ...` */
     Stmt       *body;
     int         line;
 } MatchArm;
@@ -278,16 +346,18 @@ struct Stmt {
     StmtKind kind;
     int      line;
 
-    Type    *type;      /* ST_VAR：变量声明的最终类型（由 check 填写） */
+    Type    *type;      /* ST_VAR: the final type of the declaration, filled in by
+                         * the checker */
 
     union {
         struct { const char *name; Type *ann; Expr *init; bool mut;
-                 /* 生成 C 时用的名字（同一层 `let` 遮蔽 ⇒ `a` → `a__2`）。
-                  * 由类型检查阶段填，见 DECISIONS 定案 47。 */
+                 /* The name used in the generated C; a `let` that shadows another one
+                  * in the same block becomes `a__2`. Filled in by the checker. */
                  const char *cname;
-                 /* ⭐ 定案 65：`@overwrite var n = new T` —— **复用一块存储**：
-                  * 在函数帧那层分配一次、每次执行到这句就清零复用 ✓（懒分配 ✓）
-                  * 只对 `new` 合法（检查器保证）⇒ 见 DECISIONS 定案 65 ✓ */
+                 /* `@overwrite var n = new T` reuses a single block of storage: it is
+                  * allocated once in the function frame, lazily on first use, and
+                  * cleared before every later execution of this statement. Legal only
+                  * for `new`, which the checker enforces. */
                  bool overwrite; } var;
         struct { Expr *target; Expr *value; } assign;
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
@@ -301,11 +371,11 @@ struct Stmt {
 
 Stmt *stmtNew(Arena *a, StmtKind kind, int line);
 
-/* ---------------------------------------------------------------- 顶层 */
+/* -------------------------------------------------------------- top level */
 
 typedef struct {
     const char *name;
-    const char *cname;   /* 生成 C 时用的名字（同上，见 DECISIONS 定案 47） */
+    const char *cname;   /* the name used in the generated C, as for Expr.cname */
     Type       *type;
     int         line;
 } Param;
@@ -319,194 +389,256 @@ struct FieldDef {
 typedef struct {
     const char *name;
     int         line;
-    /* **载荷**：`| circle(f64) | rect(f64, f64)` 里括号中的类型（types: Type*）。
-     * 空 = 无载荷变体（`| outOfRange`）。位置式，不带字段名 ——
-     * `match` 绑定也是位置的：`circle(r) => ...` ✓ */
+    /* The payload: the types inside the parentheses of
+     * `| circle(f64) | rect(f64, f64)` (types: Type*). Empty means a variant without
+     * payload, such as `| outOfRange`. The types are positional and carry no field
+     * names, and a `match` binds them positionally too: `circle(r) => ...`. */
     Vec         types;
 } Variant;
 
 struct TypeDef {                 /* type status = | ok | warn | error */
     const char  *name;
-    Vec          typeParams;     /* const char* —— 泛型参数名（`type option<T>`）*/
+    Vec          typeParams;     /* const char*: the generic parameter names of
+                                  * `type option<T>` */
     Vec          variants;       /* Variant* */
-    Type        *type;           /* 驻留后的类型，由 check 填写 */
-    bool         reserved;       /* 来自 prelude —— 不许用户重定义 */
-    /* ⭐ 定案 70（模块）：来自哪个文件 / 哪个模块 / 是不是 `@private` ✓ */
+    Type        *type;           /* the interned type, filled in by the checker */
+    bool         reserved;       /* came from the prelude, so the user may not redefine it */
+    /* Which file it came from, which module, and whether it is `@private`. */
     Ctx        *ctx;
     const char *modName;
     bool        isPrivate;
     int          line;
-    /* ⭐ 模块 mangle：**给用户看**的名字（`io::reader`），`name` 是内部 mangle 名
-     * （`io$reader`）✗ 二者必须分开：诊断里露出 `io$reader` 等于把编译器的内部
-     * 编码漏给用户，而用户从没写过那个词 ✗（真踩过：`struct \`alpha$pair\` has no
-     * field \`zzz\``）—— 根模块/单文件程序两者相同 ✓ */
+    /* The name shown to the user (`io::reader`), while `name` is the internal mangled
+     * form (`io$reader`). The two must stay apart: printing `io$reader` in a diagnostic
+     * leaks the compiler's internal encoding for a word the user never wrote. It was
+     * observed once as `struct \`alpha$pair\` has no field \`zzz\``. For a single-file
+     * program the two are the same string. */
     const char *srcName;
 };
 
 struct StructDef {
     const char *name;
-    Vec         typeParams;      /* const char* —— 泛型参数名，如 "T"；空 = 非泛型 */
+    Vec         typeParams;      /* const char*: the generic parameter names, such as
+                                  * "T"; empty for a non-generic struct */
     Vec         fields;          /* FieldDef* */
-    Vec         methods;         /* FuncDef* —— 方法写在 struct 体内（定案 9） */
-    Type       *type;            /* 非泛型 struct 的驻留类型（泛型见 ttGeneric） */
-    bool        reserved;        /* 来自 prelude —— 不许用户重定义，也不许加方法 */
-    /* ⭐ 定案 70（模块）：来自哪个文件 / 哪个模块 / 是不是 `@private` ✓ */
+    Vec         methods;         /* FuncDef*: methods are declared inside the struct body */
+    Type       *type;            /* the interned type of a non-generic struct; a generic
+                                  * one is interned by ttGeneric instead */
+    bool        reserved;        /* came from the prelude: the user may neither redefine it
+                                  * nor add methods to it */
+    /* Which file it came from, which module, and whether it is `@private`. */
     Ctx        *ctx;
     const char *modName;
     bool        isPrivate;
     int         line;
-    /* ⭐ 模块 mangle：**给用户看**的名字（`io::reader`），`name` 是内部 mangle 名
-     * （`io$reader`）✗ 二者必须分开：诊断里露出 `io$reader` 等于把编译器的内部
-     * 编码漏给用户，而用户从没写过那个词 ✗（真踩过：`struct \`alpha$pair\` has no
-     * field \`zzz\``）—— 根模块/单文件程序两者相同 ✓ */
+    /* The name shown to the user (`io::reader`), while `name` is the internal mangled
+     * form (`io$reader`). The two must stay apart: printing `io$reader` in a diagnostic
+     * leaks the compiler's internal encoding for a word the user never wrote. It was
+     * observed once as `struct \`alpha$pair\` has no field \`zzz\``. For a single-file
+     * program the two are the same string. */
     const char *srcName;
 };
 
 struct FuncDef {
     const char *name;
-    /* ⭐ PLAN #47：**泛型自由函数**（`fn f<T, U>(…)`）—— 模板自己的类型参数 ✓
-     * （方法的类型参数在 `owner->typeParams` 里；这个字段只在自由函数上用 ✓）
-     * 实例：`tmpl` 指回模板、`targs` 是这个实例的实参、`instName` 是它的 C 名字 ✓ */
+    /* The type parameters of a generic free function, `fn f<T, U>(...)`. A method
+     * keeps its type parameters in `owner->typeParams`, so this field is used by free
+     * functions only. An instance points back at its template through `tmpl`, holds the
+     * instance's type arguments in `targs`, and takes its C name from `instName`. */
     Vec         typeParams;      /* const char* */
-    Vec         targs;           /* Type* —— 只有**实例**有 */
-    FuncDef    *tmpl;            /* 非 NULL = 这是个实例（不是模板）✓ */
-    const char *instName;        /* 实例的 C 名字（`max_i32`）✓ */
+    Vec         targs;           /* Type*: only an instance has these */
+    FuncDef    *tmpl;            /* non-NULL when this is an instance, not the template */
+    const char *instName;        /* the C name of an instance, such as `max_i32` */
     Vec         params;          /* Param* */
-    Type       *ret;             /* NULL 表示无返回值 */
+    Type       *ret;             /* NULL when the function returns nothing */
     Stmt       *body;            /* ST_BLOCK */
-    StructDef  *owner;           /* 方法所属的 struct；自由函数为 NULL */
-    bool        isAssoc;         /* 写在 struct 体内但**不带 `self`** —— 关联函数 */
-    /* ⭐ 定案 72（`LIBS.md` LQ3）：**外部声明**（`extern!("libc") fn …`）——
-     * C 那边是黑盒 ⇒ 谁碰了它谁就得**签字**：
-     *   hasEffects  —— 写了 `effects Addr=… Cont=…`（= 我保证它不干别的）
-     *   没写        —— **按最坏情况算**（每个参数都可能被存下来 ⇒ 几乎不可用但安全 ✓）
-     *   owned       —— 返回的内存归我 ⇒ **v1 直接报错**（要等"帧拥有资源"那套 ✓）*/
+    StructDef  *owner;           /* the struct a method belongs to; NULL for a free function */
+    bool        isAssoc;         /* declared inside a struct body but without `self` */
+    /* An external declaration, `extern!("libc") fn ...`. The C side is a black box, so
+     * whoever calls it has to vouch for it:
+     *   hasEffects - the declaration carries `effects Addr=... Cont=...`, which is the
+     *                author's promise that it does nothing else
+     *   not given  - the worst case is assumed: every argument may be stored somewhere,
+     *                which makes the function nearly unusable but never unsound
+     *   owned      - returning memory that the caller owns is rejected outright for now
+     *                and waits for the frame-owns-resources work */
     bool        isExtern;
-    const char *externLib;       /* `extern!("libc")` 里的那个名字（诊断用 ✓）*/
+    const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;
-    bool        reserved;        /* 来自 prelude */
-    /* ---- A3 逃逸提升：这个函数要不要一只"家"arena？----
-     * 规则：**函数体里有分配，且返回类型含引用/视图** ⇒ 它多收一个隐藏参数
-     * `extc_arena *__extc_home`，里面的 `new` 分配到**调用者选的那只** arena ✓
-     * （调用点为此传 `__extc_home` 或 `&__extc_a[当前块]`）
-     * 传递闭包也要（调用它的人得有东西可传）⇒ 见 check.c 里的不动点计算 ✓ */
+    bool        reserved;        /* came from the prelude */
+    /* Does this function need a home arena?
+     *
+     * The rule: the body allocates and the return type contains a reference or a view.
+     * Such a function takes one extra hidden parameter, `extc_arena *__extc_home`, and
+     * every `new` in it allocates in the arena the caller picked. A call site therefore
+     * passes its own `__extc_home`, or `&__extc_a[its block level]`.
+     *
+     * A caller needs something to pass, so the property is transitive: it is computed
+     * as a fixed point over the call graph. */
     bool        needsHome;
-    /* ⭐ 编译时长优化（2026-09-21）：**这个函数会不会往自己的块 arena 里放东西？**
-     * 不会 ⇒ 连 `extc_arena __extc_a[N]` 和那串 `extc_arena_release` 都**不用吐** ✓
-     * （真实例子里约一半函数属于这种"纯计算"函数，而 arena 样板占生成 C 的 ~22% 行 ✓）
-     * 判据：体里有 `new`，或者调用了"有家"的函数（那种调用会写进我的块 arena）✓
-     * ⚠️ 必须在 `needsHome` 的**传递闭包跑完之后**算（不然会漏掉"我调的人有家"）✓ */
+    /* Does this function ever put anything into its own block arenas?
+     *
+     * When it does not, the generated C omits both `extc_arena __extc_a[N]` and the
+     * string of `extc_arena_release` calls. About half of the functions in real programs
+     * are pure computation of this kind, while the arena boilerplate accounted for
+     * roughly 22% of the generated lines.
+     *
+     * Test: the body contains a `new`, or it calls a function that has a home arena,
+     * because such a call writes into this function's block arena.
+     *
+     * Must be computed after the transitive `needsHome` closure has run; computing it
+     * earlier misses a callee that turns out to have a home arena. */
     bool        mayUseArena;
-    /* ⭐ 定案 68：**本函数体里"等闭包之后再定一次"的节点**（按检查顺序，`Expr*`）：
-     *   · `EX_NEW`  ⇒ 有家 ⇒ `arenaLevel = ARENA_HOME`（每处分配都进家）✓
-     *   · 调用点     ⇒ `arenaArgPending` 的那些 ⇒ 有家 ⇒ `arenaArg = ARENA_HOME` ✓
-     * `needsHome` 的传递闭包跑完之后由 `checkModule` 的收尾 pass 处理 ✓
-     * 为什么要有这张表：闭包是**查完所有函数体之后**才算的，那时再回头遍历 AST
-     * 就要**再写一遍表达式遍历器**（这种"跟着 AST 形状走的 switch"每多一个都是一个
-     * 会忘的地方 ✗ —— 本项目已经有 5 个了）⇒ 改成"查体时顺手记下标"✓ */
+    /* Nodes in this body whose arena answer has to wait for the transitive `needsHome`
+     * closure, in the order they were checked (`Expr*`):
+     *   - an `EX_NEW` site: with a home arena, `arenaLevel` becomes ARENA_HOME, so every
+     *     allocation goes there
+     *   - a call site with `arenaArgPending`: with a home arena, `arenaArg` becomes
+     *     ARENA_HOME
+     * `checkModule` resolves them in its final pass, once the closure is known.
+     *
+     * The list exists because the closure is computed only after every function body has
+     * been checked, and walking the tree again at that point would mean writing another
+     * expression visitor: a switch over the shape of the AST is exactly the code that is
+     * forgotten when a node kind is added, and this compiler already has several.
+     * Recording the sites while the body is checked costs no extra traversal. */
     Vec         arenaSites;
-    /* ⭐ 定案 65（`@overwrite`）：本函数体里有几个复用站点，以及**格子放哪**。
-     * 格子的寿命必须 ≥ "该站点被复用的整段过程"：
-     *   · 站点在 `main` 里、或本函数**能（传递地）调到自己**（递归）
-     *     ⇒ 格子放**自己的帧**（递归各激活一块 ✓ 否则子调用会踩父激活的存储 ✗）
-     *   · 否则 ⇒ 格子由**调用点的帧**持有、当隐藏参数传进来（`void **` 不透明 ✓）
-     *     —— 只有这样"在 callee 里 `new`、循环在 caller"才真的复用得上 ✓
-     *     （那正是主人提的那个泄漏形状 ✗）*/
+    /* `@overwrite`: how many reuse sites this body has, and where their storage lives.
+     * The storage has to outlive the whole period over which a site is reused:
+     *   - the site is in `main`, or this function can reach itself, that is, it recurses:
+     *     the storage goes into this function's own frame, so every activation gets its
+     *     own block -- a single shared block would let a recursive call clobber storage
+     *     its caller is still using
+     *   - otherwise the storage is held by the frame of the call site and passed in as
+     *     an opaque hidden `void **` parameter. That is the only way a loop in the caller
+     *     can really reuse a `new` that happens inside the callee, which is the leak
+     *     shape this feature exists to remove */
     int         owSites;
     bool        owLocal;
-    /* ⭐ 甲′（PLAN #31/#33）：**这个函数（传递地）会不会分配？**
+    /* Does this function allocate, directly or through the functions it calls?
      *
-     * 为什么要单独一个字段：`needsHome` 的传递闭包是**所有函数查完之后**才跑的，
-     * 而调用者在查自己函数体的时候就得知道"这一刀会不会往我的容器里塞新存储" ✗
-     * ⇒ 按**名字/AST**惰性算一遍并缓存：0 = 还没算，1 = 会，2 = 不会，3 = **正在算**（环保护，
-     * 环上保守地当"会" ✓）见 check_top.c 的 `funcAllocates` ✓ */
+     * The answer is needed while a caller's own body is being checked, because the call
+     * may put fresh storage into the caller's container, and that is earlier than the
+     * `needsHome` closure can be computed.
+     *
+     * Computed lazily from the declaration and its body, then cached:
+     *   0 = not computed, 1 = allocates, 2 = does not, 3 = being computed.
+     * State 3 breaks cycles, and a function on a cycle is conservatively treated as
+     * allocating. See `funcAllocates` in check_top.c. */
     int         allocState;
-    /* ⭐ PLAN #22：这个函数（传递地）**会不会打印**？
-     * 用来判断"同一语句里更靠前的调用有没有可观测的副作用"——`??` 的临时变量会跳到它前面 ✗
-     * 0 = 没算，1 = 会，2 = 不会，3 = 正在算（环保护 ⇒ 当"会" ✓）*/
+    /* Does this function print, directly or through the functions it calls?
+     *
+     * Used to decide whether an earlier call in the same statement has an observable
+     * effect that the temporary variable for `??` would end up jumping ahead of.
+     *   0 = not computed, 1 = prints, 2 = does not, 3 = being computed (a cycle is
+     *   treated as "prints"). */
     int         mayPrintState;
-    /* ⭐ PLAN #42(c)（2026-09-22）：**这个方法/函数被调用过吗？**
-     * 泛型实例化现在**只复查/生成"真被调到的"方法** ✓
-     * 理由：实例化过去会把类型的**所有**方法体都按实例复查一遍 ✗ ⇒
-     *   `slice<T>::==` 从没被用到，却要求 `T: ==` ⇒ 于是**任何 struct 进容器都要写一句 `fn ==`** ✗✗
-     * ⚠️ 这是**保守近似**（"模板体里被调过"就算用过 ⇒ 宁可多查多生成 ✓ 不能少 ✓）： */
+    /* Has this method or function ever been called?
+     *
+     * Generic instantiation rechecks and emits only the methods that are actually
+     * called. Instantiation used to recheck every method body of the type, so an unused
+     * `slice<T>::==` demanded `T: ==`, and every struct used in a container had to
+     * declare `fn ==` whether or not anything ever compared two of them.
+     *
+     * This is a conservative approximation: a call inside a template body counts as a
+     * use, so a function may be checked and emitted more often than necessary, never
+     * less. */
     bool        used;
-    /* ⭐ 档1（ARENA-FORMAL §3.4）：**效果摘要** —— 这个函数往它的" mut ref "
-     * 参数里存了什么？位 i = 第 i 个参数 ✓
-     *   addrMask  : 存了「实参 j 的地址/字段地址」（地址流 ⇒ 要 `R_slot(arg_j) ⊒ H`）
-     *   contMask  : 存了「从实参 j 读出来的指针」（内容流 ⇒ 要 `ρ_j ⊒ H`）
-     *   otherMask : 装不了引用却能流出去的东西（拿不准 ⇒ 保守）
-     * 还有 addrFromLocal：存了「本帧局部的地址」（那类调用点本来就该被挡）✓ */
-    unsigned    addrMask, contMask, otherMask;      /* 目的地 = 形参所指的容器 */
-    unsigned    homeAddrMask, homeContMask;         /* 目的地 = 本函数**新分配**的对象（家内存）*/
-    unsigned    freshCount;                         /* 只是统计：这次收集看到几个 fresh 局部 */
-    /* ⭐ 1.2a（PLAN-REGION §6）：摘要的**传递闭包**状态
-     *   0 = 还没算，1 = 算完了（effComplete 说它可不可信），3 = **正在算**（环保护）
-     *   effUnknown：有没有"解析不出来"的调用（那摘要就永远不完整 ⇒ 保守）✓ */
+    /* Effect summary: what does this function store into its `mut ref` parameters?
+     * Bit i stands for parameter i.
+     *   addrMask  : the address of argument j, or the address of one of its fields, was
+     *               stored. Storage reachable as a slot from argument j must therefore
+     *               live at least as long as the destination.
+     *   contMask  : a pointer read out of argument j was stored, so what that pointer
+     *               points at must live at least as long as the destination.
+     *   otherMask : something that cannot hold a reference but can still flow out;
+     *               anything uncertain is counted here, which keeps the summary
+     *               conservative.
+     * addrFromLocal records that the address of a local of this frame was stored, which
+     * is a call a caller must never make. */
+    unsigned    addrMask, contMask, otherMask;      /* destination: a parameter's container */
+    unsigned    homeAddrMask, homeContMask;         /* destination: memory allocated here */
+    unsigned    freshCount;                         /* count only: fresh locals seen this round */
+    /* State of the transitive closure of the effect summary:
+     *   0 = not computed, 1 = computed (`effComplete` says whether it can be trusted),
+     *   3 = being computed, which breaks cycles.
+     * `effUnknown` records whether any call could not be resolved; such a summary is
+     * never complete, so it is treated conservatively. */
     int         effState;
     bool        effComplete;
     bool        effUnknown;
 
     bool        addrFromLocal;
-    Vec         callees;      /* FuncDef*：它调了谁（画调用图用，§8.5 的 SCC）*/
-    /* ⭐ 定案 70（模块）：这个声明**来自哪个文件**、属于哪个模块？
-     *   ctx       —— 它那个文件的 Ctx（报错要走它：才能指对文件、印对源码行 ✓）
-     *   modName   —— 模块短名（`use foo` 里的 `foo`）；根文件 = NULL；prelude = NULL
-     *   isPrivate —— `@private`：别的模块引用它 ⇒ **编译期报错** ✓（默认公开 ✓）*/
+    Vec         callees;      /* FuncDef*: the functions it calls, used to build the
+                               * call graph and find its strongly connected components */
+    /* Which file does this declaration come from, and which module?
+     *   ctx       - the Ctx of that file; a diagnostic has to go through it so that it
+     *               names the right file and quotes the right source line
+     *   modName   - the short module name, the `foo` of `use foo`; NULL for the root file
+     *               and for the prelude
+     *   isPrivate - `@private`: a reference from another module is a compile error.
+     *               Declarations are public by default. */
     Ctx        *ctx;
     const char *modName;
     bool        isPrivate;
     int         line;
 };
 
-/* 全局变量 / 常量（顶层 `let` / `var`）。
+/* A global variable or constant: a top-level `let` or `var`.
  *
- * **全局 = 深度 0** —— 它活得比谁都长。所以逃逸规则自动禁止把局部的东西存进全局
- * （`0 ≥ 1` 为假 ⇒ 编译错误），**不需要为全局写任何特殊规则**。
- * 定长的全局**不需要 arena**：它就是 C 的静态对象。 */
+ * A global has depth 0, because it outlives every frame. The escape rule therefore
+ * already forbids storing anything local into a global (0 >= 1 is false), so globals
+ * need no special case of their own. A global of fixed size needs no arena either:
+ * it becomes a static object in the C output. */
 typedef struct {
     const char *name;
-    Type       *ann;         /* 类型标注（可省，从初始化式推） */
-    Expr       *init;        /* 初始化式；NULL = 零初始化 */
-    bool        mut;         /* var = true */
+    Type       *ann;         /* the type annotation; optional, inferred from the initialiser */
+    Expr       *init;        /* the initialiser; NULL means zero-initialised */
+    bool        mut;         /* true for `var`, false for `let` */
     bool        reserved;
-    /* ⭐ 定案 70（模块）：这个声明**来自哪个文件**、属于哪个模块？
-     *   ctx       —— 它那个文件的 Ctx（报错要走它：才能指对文件、印对源码行 ✓）
-     *   modName   —— 模块短名（`use foo` 里的 `foo`）；根文件 = NULL；prelude = NULL
-     *   isPrivate —— `@private`：别的模块引用它 ⇒ **编译期报错** ✓（默认公开 ✓）*/
+    /* Which file does this declaration come from, and which module?
+     *   ctx       - the Ctx of that file; a diagnostic has to go through it so that it
+     *               names the right file and quotes the right source line
+     *   modName   - the short module name, the `foo` of `use foo`; NULL for the root file
+     *               and for the prelude
+     *   isPrivate - `@private`: a reference from another module is a compile error.
+     *               Declarations are public by default. */
     Ctx        *ctx;
     const char *modName;
     bool        isPrivate;
     int         line;
 } GlobalDef;
 
-/* ⭐ 定案 70（2026-09-22，主人拍板）：**语义导入**（不是 C 的文本包含 ✗）
- *     use std::io        ⇒ 装载器去找 std/io.extc、解析它，
- *                          并在**检查之前**把本文件里 `io::name` 解析成平名字 ✓
- *     短名 = 路径最后一段（v1 不做 `as` 别名）；环 = 编译期错误 ✓ */
+/* A semantic import, not a textual include the way C does it:
+ *     use std::io   =>  the loader finds std/io.extc, parses it, and rewrites every
+ *                       `io::name` in this file into the flat name, before the checker
+ *                       runs
+ * The short name is the last segment of the path; `as` aliases are not supported yet,
+ * and an import cycle is a compile error. */
 typedef struct { const char *from; const char *to; } Alias;
 
 typedef struct {
-    const char *path;      /* "std::io"（原样，报错用）*/
-    const char *shortName; /* "io" —— 引用时写 `io::name` ✓ */
-    const char *file;      /* 装载器填：解析到的文件 */
+    const char *path;      /* "std::io", exactly as written; used in error messages */
+    const char *shortName; /* "io": members are then referred to as `io::name` */
+    const char *file;      /* filled in by the loader: the file it resolved to */
     int         line;
 } UseDecl;
 
 typedef struct {
     Vec structs;                 /* StructDef* */
-    Vec types;                   /* TypeDef*（type 枚举） */
-    Vec funcs;                   /* FuncDef*  */
-    Vec globals;                 /* GlobalDef* —— 顶层 let / var */
-    Vec uses;                    /* UseDecl* —— 定案 70 */
-    /* ⭐ 模块 mangle 的**裸名回程票**（`pair` → `liba$pair`）：由装载器填，`ttResolve` 查 ✓ */
+    Vec types;                   /* TypeDef*: the `type` enums */
+    Vec funcs;                   /* FuncDef* */
+    Vec globals;                 /* GlobalDef*: top-level let / var */
+    Vec uses;                    /* UseDecl* */
+    /* Entries mapping a bare name back to its mangled module name (`pair` to
+     * `liba$pair`); the loader fills them in and `ttResolve` looks them up. */
     Vec aliases;                 /* Alias* */
 } Module;
 
 void moduleInit(Module *m, Arena *a);
 
-/* 首参数名为 `self` 的函数就是方法 */
+/* A function whose first parameter is named `self` is a method. */
 bool funcIsMethod(const FuncDef *f);
 
 #endif /* EXTC_AST_H */
