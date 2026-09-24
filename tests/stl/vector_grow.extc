@@ -1,0 +1,20 @@
+// grow 摊还可见：容量只按翻倍变，1000 次 push 只搬 9 次
+use std::io
+use stl::vector
+
+fn main() -> i32 {
+    var v = vector<i64>::withCap(i64(4))
+    var last: i64 = v.capacity()
+    io::cout << "caps=" << last
+    var i: i64 = 0
+    while i < i64(1000) {
+        v.push(i)
+        if v.capacity() != last {
+            last = v.capacity()
+            io::cout << "," << last
+        }
+        i = i + i64(1)
+    }
+    io::cout << " n=" << v.len() << "\n"
+    return 0
+}
