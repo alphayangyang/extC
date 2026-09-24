@@ -509,6 +509,18 @@ struct FuncDef {
      * A caller needs something to pass, so the property is transitive: it is computed
      * as a fixed point over the call graph. */
     bool        needsHome;
+    /* Does this function really place something in its home arena?
+     *
+     * `needsHome` is the conservative answer of an *escape* question ("could this function
+     * hand out storage that outlives the call?"), and it is deliberately wide: `new i32`
+     * whose value is copied into an out-parameter marks the function even though nothing
+     * escapes. The hidden parameter is only needed for the precise question, which the
+     * placement pass answers per allocation site: if no site of this body ends up at
+     * `ARENA_HOME`, and no call passes this function's home on, then the parameter is
+     * written by nobody and read by nobody - `examples/out-param.extc` had exactly that, and
+     * gcc reported the unused parameter. The signature and the call sites both use this
+     * flag, so they stay in step. */
+    bool        usesHome;
     /* Does this function ever put anything into its own block arenas?
      *
      * When it does not, the generated C omits both `extc_arena __extc_a[N]` and the

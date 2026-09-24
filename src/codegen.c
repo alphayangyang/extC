@@ -81,7 +81,8 @@ static const PrintFmt PRINT_FMT[] = {
 typedef struct {
     const char *name;    /* C name */
     const char *proto;   /* the declaration, exactly as emitted */
-    const char *body;    /* the definition, exactly as emitted; NULL until emitted */
+    const char *body;    /* the definition; filled in once the body buffer is complete */
+    size_t      off, len;   /* where it sits in `g.body`, until `body` is filled in */
 } DeadFunc;
 
 /* A local declaration that may never be read.
@@ -251,6 +252,7 @@ typedef struct {
      * locals still need a stage to be counted on, and that is its body text. */
     const char *mainFuncName;
     const char *mainBody;
+    size_t      mainOff, mainLen;
     /* The runtime primitive block, captured whole as it is emitted. clang reports an
      * unused `static inline` where gcc does not, so this is the one place where the two
      * compilers disagree about the same text. The block is scanned afterwards instead of
@@ -3284,11 +3286,9 @@ static void genFunc(CG *g, FuncDef *f) {
     size_t mb = g->out->len;
     genBlockBody(g, f->body);
     if (isMain) {
-        g->mainFuncName = g->curFuncName;
-        Buf mbt;
-        bufInit(&mbt, g->arena);
-        bufPutn(&mbt, g->out->data + mb, g->out->len - mb);
-        g->mainBody = bufCstr(&mbt);
+        g->mainFuncName = g->curFuncName;      /* the text is taken once the buffer is complete */
+        g->mainOff = mb;
+        g->mainLen = g->out->len - mb;
     }
     g->curFuncName = savedFuncName;
     /* Falling off the end of the body is an exit too, so the depth is
@@ -3833,15 +3833,18 @@ static size_t countMentions(const char *hay, const char *needle) {
  * name would not compile. A definition with no declaration to pair with is dropped
  * from consideration: keeping a function nobody calls costs a warning, never
  * correctness. */
-static void deadFuncBody(CG *g, FuncDef *f, const char *text, size_t len) {
+static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
     const char *name = cFuncName(g, f);
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
-        if (df->body || strcmp(df->name, name) != 0) continue;
-        Buf b;
-        bufInit(&b, g->arena);
-        bufPutn(&b, text, len);
-        df->body = bufCstr(&b);
+        if (df->body || df->len || strcmp(df->name, name) != 0) continue;
+        /* Only offsets are recorded here. The text is taken from `g.body` once that buffer is
+         * complete: a view-index helper emitted in the middle of a body points the generator at
+         * another buffer for a moment, so a slice cut now is not contiguous in the finished unit
+         * and `strstr` never finds it again. That is why the home-arena parameter of
+         * `examples/out-param.extc` kept its warning. */
+        df->off = off;
+        df->len = len;
         return;
     }
 }
@@ -4213,6 +4216,89 @@ static void dropUnreferenced(CG *g, Buf *out) {
         }
     }
     out->data[len] = '\0';
+}
+
+/* Mark the parameters a body never reads.
+ *
+ * A parameter cannot be dropped - it is part of the signature - so the attribute is the only way
+ * to say "this one is deliberately unused". `-Wunused-parameter` is in `-Wextra`, and taking an
+ * argument a function does not need is legitimate: `examples/borrowing.extc` and
+ * `examples/out-param.extc` both do it.
+ *
+ * The answer is only known once the body exists, so this runs on the finished text: the parameter
+ * list is delimited by the first `(` after the definition and its matching `)`, split on top-level
+ * commas, and each parameter's name is counted in the body that follows. Every insertion point is
+ * collected first and applied from the end backwards, so no offset is invalidated on the way; the
+ * result is assembled in a scratch buffer and handed back to the output.
+ */
+static void markUnusedParams(CG *g, Buf *out) {
+    char  *text = out->data;
+    size_t len  = out->len;
+    Vec    at;
+    vecInit(&at, g->arena, sizeof(size_t));
+    for (size_t i = 0; i < g->deadFuncs.len; i++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
+        if (!df->body) continue;
+        char  *fn = strstr(text, df->body);
+        if (!fn) continue;
+        size_t bl = strlen(df->body);
+        char  *op = memchr(fn, '(', bl);
+        if (!op) continue;
+        int    depth = 0;
+        char  *cl = NULL;
+        for (char *p = op; p < fn + bl; p++) {
+            if (*p == '(') depth++;
+            else if (*p == ')' && --depth == 0) { cl = p; break; }
+        }
+        if (!cl) continue;
+        char *ps = op + 1;
+        int   d2 = 0;
+        for (char *p = ps; p <= cl; p++) {
+            if (*p == '(' || *p == '[') d2++;
+            else if (*p == ')' || *p == ']') d2--;
+            if (!((p == cl) || (*p == ',' && d2 == 0))) continue;
+            char *ns = p;                                   /* the parameter is [ps, p) */
+            while (ns > ps && ns[-1] == ' ') ns--;
+            char *ne = ns;
+            while (ne > ps && identByte(ne[-1])) ne--;
+            if (ne < ns && (size_t)(ns - ne) < 64) {
+                char nm[64];
+                memcpy(nm, ne, (size_t)(ns - ne));
+                nm[ns - ne] = 0;
+                /* `f(void)` has no parameters, and `void` is not one: marking it makes clang say
+                 * the attribute cannot be applied to a `void` parameter. */
+                if (strcmp(nm, "void") == 0) { ps = p + 1; continue; }
+                /* Counted inside *this* function's body, not to the end of the file: another
+                 * function's own `__extc_home` parameter would otherwise count as a use here. */
+                if (countCodeMentions(cl + 1, (size_t)((fn + bl) - (cl + 1)), nm) == 0) {
+                    /* At the *start* of the parameter, not before the name: written as
+                     * `int32_t * __attribute__((unused)) b` the attribute lands on the pointer
+                     * type and gcc still reports the parameter. */
+                    char *pstart = ps;
+                    while (pstart < p && *pstart == ' ') pstart++;
+                    *(size_t *)vecPush(&at) = (size_t)(pstart - text);
+                }
+            }
+            ps = p + 1;
+        }
+    }
+    if (!at.len) return;
+    Buf nb;
+    bufInit(&nb, g->arena);
+    bufPutn(&nb, text, len);
+    for (size_t k = at.len; k-- > 0; ) {
+        size_t off = *(size_t *)vecAt(&at, k);
+        Buf tmp;
+        bufInit(&tmp, g->arena);
+        bufPutn(&tmp, nb.data, off);
+        bufPuts(&tmp, "EXTC_UNUSED ");
+        bufPutn(&tmp, nb.data + off, nb.len - off);
+        nb.len = 0;
+        bufPutn(&nb, tmp.data, tmp.len);
+    }
+    out->data = bufCstr(&nb);
+    out->len  = nb.len;
+    out->cap  = nb.len + 1;
 }
 
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
@@ -5232,7 +5318,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             if (!md->used) continue;      /* called methods only */
             size_t fb = g.out->len;
             genFunc(&g, md);
-            deadFuncBody(&g, md, g.out->data + fb, g.out->len - fb);
+            deadFuncBody(&g, md, fb, g.out->len - fb);
             cgLine(&g, "");
         }
         substLeave(&g);
@@ -5245,7 +5331,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         substEnterFunc(&g, f, &svP, &svA);      /* instances need substitution */
         size_t fb = g.out->len;
         genFunc(&g, f);
-        deadFuncBody(&g, f, g.out->data + fb, g.out->len - fb);
+        deadFuncBody(&g, f, fb, g.out->len - fb);
         substLeaveFunc(&g, svP, svA);
         cgLine(&g, "");
     }
@@ -5315,9 +5401,29 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
     g.bodyOff = out->len;                    /* where the bodies start in the finished unit */
     bufPuts(out, bufCstr(&g.body));
+    /* The body buffer is complete and contiguous now, so the texts the unreferenced-definition
+     * passes work on come from it: a slice cut during generation would not survive the view-index
+     * helpers, which write into a different buffer for a moment. */
+    for (size_t i = 0; i < g.deadFuncs.len; i++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g.deadFuncs, i);
+        if (!df->body && df->len) {
+            Buf b;
+            bufInit(&b, arena);
+            bufPutn(&b, g.body.data + df->off, df->len);
+            df->body = bufCstr(&b);
+        }
+    }
+    if (g.mainLen) {
+        Buf b;
+        bufInit(&b, arena);
+        bufPutn(&b, g.body.data + g.mainOff, g.mainLen);
+        g.mainBody = bufCstr(&b);
+    }
 
     /* The unit is complete: now the definitions that nobody names can go. */
     dropUnreferenced(&g, out);
+    /* And the parameters a body never reads get the attribute that says so. */
+    markUnusedParams(&g, out);
 
     return !ctx->hasError;
 }
