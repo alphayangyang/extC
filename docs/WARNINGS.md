@@ -1,0 +1,90 @@
+# 生成物的警告策略（gcc / clang）
+
+> 这份文档回答一个问题：**extC 生成的 C 要不要干净？** 要 —— 而且判据是两个编译器、三档开关。
+
+## 0. 判据
+
+```bash
+# ① gcc 的目标：0 条
+gcc -Wall -Wextra -c -o /dev/null prog.c
+# ② clang 的目标：0 条
+clang -Wall -Wextra -c -o /dev/null prog.c
+# ③ clang -Weverything 的目标：0 条，但**允许一份写在这份文档里的 -Wno- 清单**（见 §3）
+clang -Weverything $(cat docs/warnings-flags.txt) -c -o /dev/null prog.c
+```
+
+`-Weverything` 的清单是**官方承认的标准做法**：clang 自己写明 `-Weverything` 是用来发现**新**警告的，
+不是给产品代码用的 ✓ 所以"清单"不是偷懒，但**清单只能收 §3.1 那类"对生成物结构上无解"的类别**，
+不能拿它盖住 §3.2 那类"只是还没做"的 ✗ —— 两栏分开写，就是为了不让清单变成垃圾桶 ✓
+
+## 1. 原则：**不发**，而不是**闭嘴**
+
+生成物少一条警告有两条路：
+
+| | 做法 | 评价 |
+|---|---|---|
+| ✗ | `__attribute__((unused))` / `(void)x;` 把警告捂住 | 一行代码都没少 —— 治标 |
+| ✓ | **根本别生成那行** | 行数、体积、警告一起降 —— 治本 |
+
+主人的原话：「**有很多的代码完全没必要生成，这是 C 代码体积膨胀的主要原因**」✓
+所以本项目的顺序是：**先按内容判据把没用的整段不发**，`EXTC_UNUSED` 那类权宜属性是**待撤**的（见 §4）。
+
+## 2. 现在的实测（`-Wall -Wextra`）
+
+| 程序 | 生成物行数 | gcc | clang |
+|---|---|---|---|
+| `examples/globals.extc` | 410 | **0** | 13 |
+| `tests/io/stream.extc` | 799 | **1** | 9 |
+| `tests/io/stream-file.extc` | 1356 | **1** | 8 |
+
+（这是函数剪枝落地后的读数；开工时同一批是 452/990/1608 行、gcc 1/14/28、clang 25/21/47 ✓）
+
+## 3. `-Weverything` 的清单
+
+### 3.1 结构上无解（**允许**进清单）
+
+| 类别 | 为什么无解 |
+|---|---|
+| `-Wdollar-in-identifier-extension` | mangled 名 `io$cout` / `fs$ifstream_shr_...` 是**命名方案**本身 ✓ |
+| `-Wreserved-identifier` | `__extc_*` 前缀是生成物的保留命名空间，故意的 ✓ |
+| `-Wpadded` | 结构体布局要与描述符表（`ExtcDesc`/`ExtcField`）一致 ⇒ 填充不是自由项 ✗ |
+| `-Wdeclaration-after-statement` | C89 风格，而 extC 的目标是 **C11** ✓ 语句后声明是允许的 |
+| `-Wtentative-definition-compat` | 同上，C89 兼容性问题 ✗ |
+| `-Wunsafe-buffer-usage` | 生成物本来就在做指针算术（arena 分配、视图索引）✓ clang 自己说这条是给 C++ 加固用的 |
+| `-Wcast-align` | `extc_arena_alloc` 保证对齐，但**类型系统上看不出来** ✗ |
+| `-Wswitch-default` | 生成的 `switch` 对枚举**穷尽**，故意不写 `default`（写了反而盖住新增变体 ✓） |
+| `-Wcomma` | 需要顺序求值的地方用逗号表达式（C 没有语句表达式 ✓） |
+
+### 3.2 只是还没做（**不许**拿清单盖住，要真修）
+
+| 类别 | 现状与出路 |
+|---|---|
+| `-Wunused-function` | clang 对**没用到的 `static inline`** 也报（gcc 不报 ✓）⇒ 剩的就是运行期原语（`extc_rec_enter`/`extc_modI`/`extc_divU`/`extc_modU`/`extc_arena_init`/`extc_narrowI`/`extc_convFloat` ✓）⇒ 出路：**按需发射**（第一刀 ✓） |
+| `-Wunused-variable` / `-Wunused-but-set-variable` | 剩下的少数几个（`d` / `skip` / `__extc_ret_v`）要**读写判据**（"提没提到"不够 ✓） |
+| `-Wused-but-marked-unused` | clang 说"你标了 `EXTC_UNUSED`，可它其实被用了" —— 这正是 §1 那批权宜属性 ✗ **撤掉即消** ✓ |
+| `-Wunreachable-code` / `-Wunreachable-code-return` | trap 之后的死分支（`extc_trapMsg` 不返回，但没标 `_Noreturn`）⇒ 标上或别发 ✓ |
+| `-Wjump-misses-init` / `-Wmissing-noreturn` | 生成物的控制流/出口形状问题，逐处可修 ✓ |
+
+### 3.3 复现清单的办法
+
+清单是**量**出来的，不是抄的：逐轮跑 `clang -Weverything`，把当轮出现的类别加进 `-Wno-`，直到归零 ✓
+（2026-09-25 实测：三个代表程序各 **17 类 ⇒ 0 条**，一轮收敛 ✓）
+
+```bash
+clang -Weverything $(sed 's/^/-Wno-/;s/$//' docs/warnings-flags.txt | tr '\n' ' ') -c -o /dev/null prog.c
+```
+
+## 4. 待撤的权宜属性（㉑ 那批）
+
+`EXTC_UNUSED`（= `__attribute__((unused))`）当初是为了让 `-Wall -Wextra` 闭嘴加的，
+**一行代码都没少** ✗ 现在内容判据（`DeadDef`/`DeadFunc` + `dropUnreferenced`）能真正把没用的定义不发之后，
+这批属性应当**逐个撤掉并复核警告仍为 0** ✓ 撤的顺序：运行期原语（第一刀）→ 顶层全局/描述符（已落 ✓）
+→ 函数（已落 ✓）→ 剩下的属性 ✓
+
+| 属性位置 | 状态 |
+|---|---|
+| 顶层全局 / 描述符行 | ✅ 已由 `dropUnreferenced` 接管（属性不再是唯一屏障 ✓） |
+| 函数原型 `EXTC_UNUSED static` | ✅ **已撤**（2026-09-25 ✓）函数剪枝落地后原型不再需要它，撤掉 gcc/clang 都不动（1/8 ✓） |
+| 描述符行 / 切片助手 / 视图索引 `static` | ⬜ **还不能撤**：实测把这 13 处**全撤** ⇒ gcc 1 → **4**、clang 8 → **11** ✗ 说明"发出来就一定被引用"还没做到（那正是**第一刀：按需发射**没做完的证据 ✓） |
+| 运行期原语 `static inline` | ⬜ 等第一刀（按需发射）✓ 它们同时也是 clang `-Wunused-function` 那 7 条的来源 ✓ |
+| 运行期原语 `static inline` | ⬜ 等第一刀（按需发射）✓ |

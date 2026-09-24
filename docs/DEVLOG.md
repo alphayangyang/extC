@@ -6645,3 +6645,19 @@ tests/io/stream.extc         978 →  799 行   gcc  2 → 1   clang  9 →  9
 **剩下 clang 那 7 条 `unused-function` = 运行期辅助原语**（`extc_rec_enter`/`extc_modI`/`extc_divU`/`extc_modU`/
 `extc_arena_init`/`extc_narrowI`/`extc_convFloat` ✓）—— 它们靠 **㉑ 那批 `EXTC_UNUSED` 属性**压着 gcc，
 而 **clang 不吃这套** ✗ ⇒ 正是目标里的**第一刀：按需发射** ✓ 同一套内容判据能用 ✓（做完就能把 ㉑ 那批属性撤掉 ✓）
+
+### 2026-09-25 · **`-Weverything` 的清单量出来了 + 权宜属性撤了一处**
+
+**① `clang -Weverything` 归零的办法不是猜，是量**：逐轮跑、把当轮类别加进 `-Wno-`，一轮就收敛 ✓
+三个程序各 **17 类 ⇒ 0 条** ✓ 但清单**按性质切成两栏**（`docs/WARNINGS.md`）：
+- **§3.1「对生成物结构上无解」9 类**（`$` 名字 / `__extc_*` 保留前缀 / `-Wpadded` 布局 / C89 风格两条 /
+  `-Wunsafe-buffer-usage` / `-Wcast-align` / 穷尽 switch 不写 default / 逗号表达式）⇒ **允许**进清单 ✓
+  落在 `docs/warnings-flags.txt`（带注释说明规矩 ✓）
+- **§3.2「只是还没做」6 类**（`unused-function` / `unused-variable` / `unused-but-set-variable` /
+  `used-but-marked-unused` / `unreachable-code(+return)` / `jump-misses-init` / `missing-noreturn`）⇒ **不许**进清单 ✗
+  ⇒ 只允许 §3.1 时，三个代表程序分别还剩 **26 / 18 / 17** 条 —— 这就是下一轮的靶子清单 ✓
+
+**② 撤权宜属性：先撤"确实不需要"的那一处** ✓ 函数原型上的 `EXTC_UNUSED ` 撤掉（函数剪枝接管了它 ✓
+gcc/clang **1/8 不动** ✓ 零风险 ✓）；**但"13 处全撤"实测会让 gcc 1 → 4、clang 8 → 11** ✗
+⇒ 反证了**第一刀（按需发射）还没做完**：描述符行/切片助手/视图索引里有些"发出来但没人引用"的 ✓
+（这条读数本身就是第一刀的必要性证据 ✓ 已记进 `docs/WARNINGS.md` §4 表 ✓）

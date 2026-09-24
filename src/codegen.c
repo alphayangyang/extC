@@ -3290,7 +3290,7 @@ static void genFuncProto(CG *g, FuncDef *f) {
     bufInit(&sig, g->arena);
     /* `@inline` has to appear on the prototype as well as on the definition. */
     bufPrintf(&sig, "%s%s %s(%s);",
-              cgIsMain(f) ? "" : (f->isInline ? "EXTC_INLINE " : "EXTC_UNUSED static "),
+              cgIsMain(f) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
               cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
