@@ -63,6 +63,27 @@ static const PrintFmt PRINT_FMT[] = {
  * occurs exactly once - in that definition and nowhere else - is dropped. The
  * direction is conservative in the only way that matters: any other mention,
  * even from code that is itself dead, keeps the definition. */
+/* A function the program may never call.
+ *
+ * Every emitted function is declared once and defined once, so a name with exactly
+ * those two mentions has no caller anywhere - what gcc and clang report as
+ * `-Wunused-function`. The decision is made on the finished text, like DeadDef, so a
+ * mention from a descriptor row (the `eq` adapter of a struct, say) counts as a use
+ * and keeps the function. `main` is never a candidate: it is called from outside the
+ * unit.
+ *
+ * Both halves are kept as *text*, not as offsets, and they are removed together or
+ * not at all. Two earlier attempts failed for exactly those two reasons: removing the
+ * declaration and the definition independently left definitions whose calls became
+ * implicit declarations (28 new warnings), and an offset pair keyed by `FuncDef*`
+ * framed something that was not one whole function (a cut body produced
+ * `-Wreturn-type`). A name is unique per emitted function, so it is the key. */
+typedef struct {
+    const char *name;    /* C name */
+    const char *proto;   /* the declaration, exactly as emitted */
+    const char *body;    /* the definition, exactly as emitted; NULL until emitted */
+} DeadFunc;
+
 typedef struct {
     const char *name;   /* the C name, as written into the output */
     const char *text;   /* the definition, exactly as emitted, newline included */
@@ -202,6 +223,7 @@ typedef struct {
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
+    Vec         deadFuncs;      /* DeadFunc*: functions that may have no caller */
     /* Where the body buffer ended up in the finished output: a definition inside a
      * body is recorded as an offset into that buffer, and this turns it into a
      * position in the assembled unit. */
@@ -3691,6 +3713,25 @@ static size_t countMentions(const char *hay, const char *needle) {
     return n;
 }
 
+/* Pair a definition with the declaration already recorded for the same function. The
+ * key is the C name: a `FuncDef*` is not unique per emission (an instance method is
+ * emitted once per instance), while a name is - two emitted definitions sharing one
+ * name would not compile. A definition with no declaration to pair with is dropped
+ * from consideration: keeping a function nobody calls costs a warning, never
+ * correctness. */
+static void deadFuncBody(CG *g, FuncDef *f, const char *text, size_t len) {
+    const char *name = cFuncName(g, f);
+    for (size_t i = 0; i < g->deadFuncs.len; i++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
+        if (df->body || strcmp(df->name, name) != 0) continue;
+        Buf b;
+        bufInit(&b, g->arena);
+        bufPutn(&b, text, len);
+        df->body = bufCstr(&b);
+        return;
+    }
+}
+
 /* The same count, over one piece of the body buffer, which is not terminated. */
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
     Buf sc;
@@ -3730,6 +3771,26 @@ static void dropUnreferenced(CG *g, Buf *out) {
         memmove(text + at, text + at + tl, len - at - tl + 1);
         len -= tl;
         out->len = len;
+    }
+    /* Functions nobody calls. Both halves are located by their own text, so what is
+     * removed is exactly what was captured - never a piece of a function. The
+     * definition sits after the declaration, so it goes first and the declaration's
+     * position stays valid. */
+    for (size_t i = 0; i < g->deadFuncs.len; i++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
+        if (!df->body) continue;                                   /* no definition emitted */
+        if (countMentions(text, df->name) != 2) continue;           /* someone calls it */
+        char  *pt = strstr(text, df->proto);
+        char  *bd = strstr(text, df->body);
+        if (!pt || !bd || bd < pt) continue;                        /* not both, in order */
+        size_t bl = strlen(df->body), pl = strlen(df->proto);
+        memmove(bd, bd + bl, len - (size_t)(bd - text) - bl + 1);    /* definition first */
+        len -= bl;
+        memmove(pt, pt + pl, len - (size_t)(pt - text) - pl + 1);    /* then declaration */
+        len -= pl;
+        if (g->bodyOff > (size_t)(pt - text)) g->bodyOff -= pl;
+        out->len = len;
+        df->body = NULL;
     }
     /* Then the top-level definitions, to a fixed point: a definition can be the only
      * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
@@ -3798,6 +3859,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.descs, arena, sizeof(void *));
     vecInit(&g.eqNeed, arena, sizeof(void *));
     vecInit(&g.deadDefs, arena, sizeof(DeadDef *));
+    vecInit(&g.deadFuncs, arena, sizeof(DeadFunc *));
     bufInit(&g.desc, arena);
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
@@ -4704,6 +4766,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                                                : (f->isInline ? "EXTC_INLINE " : "EXTC_UNUSED static "),
                   ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
+        if (!cgIsMain(f) && !f->isExtern) {
+            DeadFunc *df = arenaAllocZero(g.arena, sizeof *df);
+            df->name  = cFuncName(&g, f);
+            df->proto = bufCstr(&sig);
+            *(DeadFunc **)vecPush(&g.deadFuncs) = df;
+        }
         substLeaveFunc(&g, svP, svA);
     }
     if (g.structs.len || g.insts.len || g.funcs.len) cgLine(&g, "");
@@ -4731,7 +4799,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             if (!md->used) continue;      /* called methods only */
+            size_t fb = g.out->len;
             genFunc(&g, md);
+            deadFuncBody(&g, md, g.out->data + fb, g.out->len - fb);
             cgLine(&g, "");
         }
         substLeave(&g);
@@ -4742,7 +4812,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (f->isExtern) continue;              /* an external declaration has no body */
         Vec *svP, *svA;
         substEnterFunc(&g, f, &svP, &svA);      /* instances need substitution */
+        size_t fb = g.out->len;
         genFunc(&g, f);
+        deadFuncBody(&g, f, g.out->data + fb, g.out->len - fb);
         substLeaveFunc(&g, svP, svA);
         cgLine(&g, "");
     }

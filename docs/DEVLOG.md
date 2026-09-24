@@ -6620,3 +6620,28 @@ tests/io/stream.extc         990→ 978 行   gcc 14 → 2   clang 21 →  9
 
 **两次都在失败后立刻回退**：树始终是绿的（回退后 `tests/io/stream-file.extc` 1571 行 / gcc **3** / clang **10** ✓）
 —— 这条不是"白干"：**失败模式**（隐式声明 / 半截函数体）与**根因**（键不唯一）都写在这里了 ✓
+
+### 2026-09-25 · **函数剪枝第三次成功**：键改成名字 + 按发射处配对 + 按原文删除
+
+上一轮两次失败的根因（`FuncDef*` 不是"每次发射"唯一 ⇒ 声明与定义配不上 ✗ / 偏移框住的不是一整个函数 ✗）
+这次换个做法，两处都改掉：
+- **键 = C 名**（每个被发射的函数名唯一；两个同名定义本来就编不过 ✓）
+- **两半都存原文**（`DeadFunc{name, proto, body}`），删除时按 `strstr` **按内容定位** ⇒ 删掉的永远是**捕获到的那一整段**，
+  不可能切在半截 ✓（这正是上一轮 `-Wreturn-type` 的来源 ✓）
+- **声明与定义一起删**（找到两段、且定义在声明之后，才动手 ✓）
+- 顺带得到**传递效果**：删掉没人调的死函数后，**只被它调用的**函数名字提及数掉到 2 ⇒ 同一个循环里接着被删 ✓
+  （链式死代码一起走 ✓ —— 实测行数掉得比"只删孤立函数"多得多 ✓）
+
+**实测**（before → after）：
+
+```
+tests/io/stream-file.extc   1571 → 1356 行   gcc  3 → 1   clang 10 → 8
+examples/globals.extc        440 →  410 行   gcc  1 → 0   clang 13 → 13
+tests/io/stream.extc         978 →  799 行   gcc  2 → 1   clang  9 →  9
+```
+**这次的关键读数**：`-Wimplicit-function-declaration` 与 `-Wreturn-type` **各 0 条** ✓
+（前两次失败就是这两类暴涨 ✓）程序照跑、输出不变 ✓ 语料 **256/0** + 九套件全绿 ✓
+
+**剩下 clang 那 7 条 `unused-function` = 运行期辅助原语**（`extc_rec_enter`/`extc_modI`/`extc_divU`/`extc_modU`/
+`extc_arena_init`/`extc_narrowI`/`extc_convFloat` ✓）—— 它们靠 **㉑ 那批 `EXTC_UNUSED` 属性**压着 gcc，
+而 **clang 不吃这套** ✗ ⇒ 正是目标里的**第一刀：按需发射** ✓ 同一套内容判据能用 ✓（做完就能把 ㉑ 那批属性撤掉 ✓）
