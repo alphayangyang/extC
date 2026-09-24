@@ -2704,15 +2704,21 @@ static void levelPass(Checker *c, const DfResult *dfr) {
 
 
 
-/* ---------------------------------------------------- opened and never closed
+/* ------------------------------------------------ opened and never closed (warn)
  *
  * A file descriptor is an operating-system resource, not memory: nothing closes it on
  * the program's behalf, and the process holds it until it ends. The compiler cannot see
  * the kernel's table, but there is one shape of leak it *can* prove -- a handle that
- * never leaves the function and is never closed -- and that shape is a compile-time
- * error here (decision 79). Everything else stays quiet on purpose: a handle handed to
- * another function, returned, or stored may well be closed there, and guessing would
- * reject correct programs.
+ * never leaves the function and is never closed -- and that shape is a **warning** here
+ * (decision 79). Everything else stays quiet on purpose: a handle handed to another
+ * function, returned, or stored may well be closed there, and guessing would reject
+ * correct programs.
+ *
+ * Why a warning and not an error: keeping a handle open until the process ends is a
+ * legal choice (a log file, a pipe the program writes to and lets the OS reap), and the
+ * compiler has no way to tell that intention from a mistake -- what it has is proof that
+ * *nobody* closes it. So the proof is reported, loudly and with a position, and the
+ * decision stays with the program. `-w` turns it off like any other warning.
  *
  * What makes a type a resource is the library's own protocol: **a struct that declares a
  * `close` method**. No library name appears in the compiler, the same way `slice` is a
@@ -2894,7 +2900,7 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     }
 }
 
-/* Report every descriptor this function opens and never closes.
+/* Warn about every descriptor this function opens and never closes.
  *
  * The walk is flow-insensitive on purpose: a `close` anywhere in the function counts.
  * Proving that a particular *path* closes it needs a path-sensitive analysis, and
@@ -2910,12 +2916,13 @@ static void checkOpenHandles(Checker *c, FuncDef *f) {
     for (size_t i = 0; i < obs.len; i++) {
         FdOblig *o = *(FdOblig **)vecAt(&obs, i);
         if (o->closed || o->escaped) continue;
-        ckError(c, o->line,
-                "A descriptor is an operating-system resource, not memory: nothing closes it"
-                " for you, and the process holds it until it ends. Close it where its life ends"
-                " -- `close()` on the handle -- or hand the handle to a function that takes"
-                " over.",
-                "`%s` is opened here and nothing in this function closes it", o->name);
+        ckWarn(c, o->line,
+               "A descriptor is an operating-system resource, not memory: nothing closes it"
+               " for you, and the process holds it until it ends. Close it where its life ends"
+               " -- `close()` on the handle -- or hand the handle to a function that takes"
+               " over. (`-w` turns this warning off; leaving a handle open until the process"
+               " ends is a legal choice, it just has to be a visible one.)",
+               "`%s` is opened here and nothing in this function closes it", o->name);
     }
 }
 

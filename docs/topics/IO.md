@@ -345,7 +345,7 @@ fn readSource(path: slice<u8>, dest: mut slice<u8>) -> result<i64, ioError> {
 - **关闭后使用** ⇒ **`failure(closed(fd))` 带位置，不是 trap、不是静默** ✓
   （`prelude.extc` 顶部那条：会 trap 的库不符合 extC 的性格 —— 用户在处理点决定怎么办）
 
-### 忘关不静默：**能被证明的泄漏是编译期错误**
+### 忘关不静默：**能被证明的泄漏是一条警告**
 
 「*opened and never closed*」—— 检查器认的协议是**库自己声明的**：一个 struct 只要声明了
 `close` 方法，它就是资源类型（跟 `slice` 靠 `data`+`len` 认出来是同一种做法，编译器里**不出现库名**）✓
@@ -353,7 +353,7 @@ fn readSource(path: slice<u8>, dest: mut slice<u8>) -> result<i64, ioError> {
 ```extc
 var f = fs::openWrite("out.txt")!     // ← 到函数末尾都没人关
 f.put("hi")!
-// error: `f` is opened here and nothing in this function closes it
+// warning: `f` is opened here and nothing in this function closes it
 // note : A descriptor is an operating-system resource, not memory: nothing closes it
 //        for you ... Close it where its life ends -- `close()` on the handle -- or
 //        hand the handle to a function that takes over.
@@ -363,13 +363,15 @@ f.put("hi")!
 
 | 形状 | 判据 |
 |---|---|
-| 局部句柄，全程没有 `close` | ✅ **编不过**（能证明泄漏）|
+| 局部句柄，全程没有 `close` | ✅ **响警告**（能证明泄漏；**不是错误** —— 留到进程结束是合法选择，`-w` 能关）|
 | 局部句柄，函数里有 `close`（哪条路径都算）| 静默 —— 路径敏感分析才谈得上"这条路径没关"，误报会否掉正确程序 ✗ |
 | 句柄交出去 / `return` / 存进字段或数组 | **静默**（别人可能关它，证明不了）⇒ 那一半归**运行时**：`tests/fs/leak-canary.extc` 实测 fd 会漂 ✓ |
 | `std::io` 的 `reader` / `writer` | 不是资源（它们没有 `close` 方法：`writer` 只有 `flush`）⇒ 零误伤 ✓ |
 
-> ⚠️ **豁免通道**：故意留到进程结束（比如一个日志文件）也要写一行 `close()` ——
-> 让它**看得见**；或者把句柄交给一个"接手"的函数（那正是判据里的"交出去"）✓
+> ⚠️ **故意留到进程结束**（一个日志文件、一个写到底就随进程没的管道）**是合法选择**：
+> 警告照着响（它说的是"没有任何地方关它"，这是**事实**），你可以就让它响、或者 `-w` 关掉、
+> 或者写一行 `close()` 让意图**看得见** ✓ 注意判据的边界：句柄交出去/返回/存起来 ⇒ **静默**
+> （证明不了），那一半归运行时的 fd 漂移判据 ✓
 
 ### 失败模式
 

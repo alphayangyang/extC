@@ -1688,11 +1688,11 @@ fn copy(src: slice<u8>, dst: slice<u8>) -> result<unit, io::ioError> {
 
 - 关就是 `f.close()`：幂等（句柄自己带 `open` 标志，**第二次不碰 `close(2)`**）✓
 - **关闭后使用** ⇒ `failure(closed(fd))` **带位置**，不 trap（库不 trap，用户在处理点决定）✓
-- **忘关不是静默**：能被证明的泄漏是**编译期错误** ——「*opened and never closed*」：
+- **忘关不是静默**：能被证明的泄漏是一条**警告** ——「*opened and never closed*」（**不是错误**：故意留到进程结束是合法选择，`-w` 能关）：
   ```extc
   var f = fs::openWrite("out.txt")!    // ← 到函数末尾都没人关
   f.put("hi")!
-  // error: `f` is opened here and nothing in this function closes it
+  // warning: `f` is opened here and nothing in this function closes it
   ```
   检查认的协议是**库自己声明的**：struct 里声明了 `close` 方法 ⇒ 它是资源类型
   （编译器里不出现库名，跟 `slice` 靠 `data`+`len` 认出来一样）✓

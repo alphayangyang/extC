@@ -5,7 +5,8 @@
 #   ① 正例：循环里就地 open/close ⇒ **fd 号恒定**（1000 轮拿到同一个号）✓
 #   ② 判据有牙（canary）：不 close 的同一段程序**必须失败**（fd 漂）✓
 #      它同时钉住检查的**边界**：句柄交出去之后，编译期证明不了 ⇒ 归运行时管
-#   ③ 编译期兜底：开出来全程没人关 ⇒ **编不过**（"nothing in this function closes it"）✓
+#   ③ 编译期兜底：开出来全程没人关 ⇒ **警告**（"nothing in this function closes it"）✓
+#      判据：编译成功 + 警告带位置 + `-w` 关得掉（不是错误 —— 留到进程结束是合法选择）✓
 #   ④ 双关安全：`close()` 幂等，第二次**不碰 `close(2)`** ⇒ 关不到别人的号 ✓
 #   ⑤ 关闭后使用 ⇒ `failure(closed)`，**不 trap、不静默** ✓
 #   ⑥ `readAll` 两条路：读到 EOF ✓ / 目标太小 ⇒ `destFull`（不是静默短读 ✗）✓
@@ -35,14 +36,19 @@ else
     echo "  FAIL leak-canary    ->  泄漏时判据没响（rc=$rc）：$(echo "$out" | tr '\n' '|')"; fail=1
 fi
 
-echo "== 编译期兜底：开出来全程没人关 ⇒ 编不过 =="
-want=$(grep -m1 '^// expect-error:' tests/fs/errors/never-closed.extc | sed 's|^// expect-error: *||')
-if out=$("$EXTC" tests/fs/errors/never-closed.extc -o /dev/null 2>&1); then
-    echo "  FAIL never-closed    ->  应该报错但通过了（泄漏没被看见 ✗）"; fail=1
-elif [ -n "${want:-}" ] && ! echo "$out" | grep -qF "$want"; then
-    echo "  FAIL never-closed    ->  报错了但不是期望的那条：想要「$want」"; fail=1
+echo "== 编译期兜底：开出来全程没人关 ⇒ **警告**（不是错误）=="
+# ⚠️ 定案 79 之后这条是**警告**：故意留到进程结束是合法选择，编译器只证明"没人关"，
+#    决定权留给程序 ✓ ⇒ 判据三条：① 编译**成功** ② 警告带位置地响 ③ `-w` 关得掉 ✓
+W=tests/warnings/never-closed.extc     # 用例住在警告套件里（那边另有它自己的断言）
+if out=$("$EXTC" "$W" -o /dev/null 2>&1) \
+   && echo "$out" | grep -qF "is opened here and nothing in this function closes it"; then
+    if "$EXTC" -w "$W" -o /dev/null 2>&1 | grep -q "warning:"; then
+        echo "  FAIL never-closed    ->  \`-w\` 没关掉警告"; fail=1
+    else
+        echo "  ok   never-closed    ->  $(echo "$out" | head -1 | sed 's/^[^ ]*: //' | cut -c1-56)"
+    fi
 else
-    echo "  ok   never-closed    ->  $(echo "$out" | head -1 | sed 's/^[^ ]*: //' | cut -c1-62)"
+    echo "  FAIL never-closed    ->  警告没响（或编译失败了）：$(echo "$out" | head -2 | tr '\n' '|')"; fail=1
 fi
 
 echo "== readAll 的两条路：读到 EOF / 目标太小 ⇒ destFull（不是静默短读）=="
