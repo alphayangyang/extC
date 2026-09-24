@@ -95,6 +95,11 @@ if out=$(./tests/pool/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（handle/dense/世代 · churn 平 · canary 会响 · ASan）"
 else bad "tests/pool/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 REGIONS.md §10.2）=="
+if out=$(./tests/map/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
+else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 注解（@inline 要真的生效 · 写错的注解必须编译期报错）=="
 if [ -x tests/annot/run.sh ]; then
     if out=$(tests/annot/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"

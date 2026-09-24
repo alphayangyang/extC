@@ -1,0 +1,156 @@
+/* std/map.extc -- an **open-addressing hash map** from `i64` keys to any `V`.
+ *
+ * Why this exists (and why it is not a slot map): the measurements in
+ * `docs/topics/REGIONS.md` section 10.2 say that a handle costs **three dependent random
+ * loads** (handle array -> metadata -> value) while a hash lookup costs **one** after the
+ * probe. Random access is the common case, so key -> value wants a hash table and stable
+ * identity wants `std::pool`; neither replaces the other.
+ *
+ * ⚠️ The key is `i64` and the **value** is the generic parameter. extC has no traits, so a
+ * generic `K` could not be hashed here: there is no way to call `k.hash()` on a type
+ * parameter, and a hash "witness" struct would hit the same wall (`H::hash` on a type
+ * parameter does not resolve either). Concrete keys are the honest answer today; an
+ * `i64` key packs two `i32`s, a `pool` handle, or an offset in a string table, which
+ * covers what a graph or an interpreter needs. A byte-view keyed map is the next family.
+ *
+ * Layout, and why:
+ *   - **linear probing** (one cache line per probe, no pointers at all);
+ *   - `cap` is a power of two, so the probe index is `hash & (cap-1)` -- no division;
+ *   - the hash mixes with shifts and xors only: `*` on `i64` can overflow, and overflow is
+ *     not something this language leaves undefined, so the mixing must not rely on it;
+ *   - a slot is empty / live / tombstone in a separate byte array. Tombstones keep probes
+ *     correct after a removal; they are cleared by a rebuild, which also happens when too
+ *     many of them pile up;
+ *   - the arrays are arena memory like everything else: rehashing leaves the old arrays
+ *     behind (bounded, O(log n) rebuilds over a map's life) and a region will reclaim them
+ *     in phase 1+ (`docs/topics/REGIONS.md` section 8).
+ */
+
+let EMPTY: u8 = 0
+let LIVE:  u8 = 1
+let TOMB:  u8 = 2
+
+/* Mix a key into a spread-out non-negative i64, using only shifts and xors. */
+fn hashI64(k: i64) -> i64 {
+    var x = k & i64(9223372036854775807)          /* drop the sign bit: `>>` on a negative is not ours to define */
+    x = x ^ (x >> i64(21))
+    x = x ^ (x >> i64(42))
+    return x
+}
+
+struct mapI64<V> {
+    keys: mut slice<i64>
+    vals: mut slice<V>
+    tag:  mut slice<u8>        /* EMPTY / LIVE / TOMB */
+    n:    i64                  /* live entries */
+    dead: i64                  /* tombstones */
+    cap:  i64                  /* always a power of two */
+
+    /* A map with room for `want` entries before the first rebuild. */
+    fn withCap(want: i64) -> mapI64<V> {
+        var c: i64 = i64(8)
+        while c < want * i64(2) { c = c * i64(2) }
+        var m: mapI64<V> = {
+            keys: new i64[c],
+            vals: new V[c],
+            tag:  new u8[c],
+            n:    i64(0),
+            dead: i64(0),
+            cap:  c,
+        }
+        return m
+    }
+
+    fn len(self: ref mapI64<V>) -> i64 { return self.n }
+
+    /* Find the slot holding `k`: live slot index, or -1 when absent. */
+    fn find(self: ref mapI64<V>, k: i64) -> i64 {
+        var i = hashI64(k) & (self.cap - i64(1))
+        var steps: i64 = 0
+        while steps < self.cap {
+            let t = self.tag[i]
+            if t == EMPTY { return i64(-1) }
+            if t == LIVE && self.keys[i] == k { return i }
+            i = (i + i64(1)) & (self.cap - i64(1))
+            steps = steps + i64(1)
+        }
+        return i64(-1)
+    }
+
+    fn contains(self: ref mapI64<V>, k: i64) -> bool { return self.find(k) >= i64(0) }
+
+    /* The value for `k`, or `none`. */
+    fn get(self: ref mapI64<V>, k: i64) -> ?V {
+        let i = self.find(k)
+        if i < i64(0) { return none }
+        return some(self.vals[i])
+    }
+
+    /* Insert or overwrite. Returns true when the key was already there. */
+    fn put(self: mut ref mapI64<V>, k: i64, v: V) -> bool {
+        let had = self.find(k)
+        if had >= i64(0) { self.vals[had] = v  return true }
+        /* Rebuild *before* inserting, while there is still a free slot to land in. */
+        if (self.n + self.dead + i64(1)) * i64(10) >= self.cap * i64(7) { self.rebuild(self.cap * i64(2)) }
+        var i = hashI64(k) & (self.cap - i64(1))
+        while self.tag[i] == LIVE {
+            i = (i + i64(1)) & (self.cap - i64(1))
+        }
+        if self.tag[i] == TOMB { self.dead = self.dead - i64(1) }
+        self.tag[i]  = LIVE
+        self.keys[i] = k
+        self.vals[i] = v
+        self.n = self.n + i64(1)
+        return false
+    }
+
+    /* Remove `k`. Returns true when it was there. The slot becomes a tombstone so other
+     * probes still find what is behind it. */
+    fn remove(self: mut ref mapI64<V>, k: i64) -> bool {
+        let i = self.find(k)
+        if i < i64(0) { return false }
+        self.tag[i] = TOMB
+        self.n    = self.n - i64(1)
+        self.dead = self.dead + i64(1)
+        return true
+    }
+
+    /* Rehash into a table of `ncap` slots (a power of two), dropping the tombstones. */
+    fn rebuild(self: mut ref mapI64<V>, ncap: i64) {
+        var nk: mut slice<i64> = new i64[ncap]
+        var nv: mut slice<V>   = new V[ncap]
+        var nt: mut slice<u8>  = new u8[ncap]
+        var i: i64 = 0
+        while i < self.cap {
+            if self.tag[i] == LIVE {
+                var j = hashI64(self.keys[i]) & (ncap - i64(1))
+                while nt[j] == LIVE { j = (j + i64(1)) & (ncap - i64(1)) }
+                nt[j]  = LIVE
+                nk[j]  = self.keys[i]
+                nv[j]  = self.vals[i]
+            }
+            i = i + i64(1)
+        }
+        self.keys = nk
+        self.vals = nv
+        self.tag  = nt
+        self.cap  = ncap
+        self.dead = i64(0)
+    }
+
+    /* Drop everything, keeping the capacity (memory comes back only with a region). */
+    fn clear(self: mut ref mapI64<V>) {
+        var i: i64 = 0
+        while i < self.cap { self.tag[i] = EMPTY  i = i + i64(1) }
+        self.n    = i64(0)
+        self.dead = i64(0)
+    }
+
+    /* The i-th live slot, by table position. Iteration is a scan of the table, so it is
+     * *not* contiguous -- for hot loops copy the keys out, or keep a dense list of the
+     * keys you care about (the `pool` shape). */
+    fn keyAt(self: ref mapI64<V>, i: i64) -> i64 { return self.keys[i] }
+    fn valAt(self: ref mapI64<V>, i: i64) -> V   { return self.vals[i] }
+    fn liveAt(self: ref mapI64<V>, i: i64) -> bool { return self.tag[i] == LIVE }
+    fn capOf(self: ref mapI64<V>) -> i64 { return self.cap }
+}

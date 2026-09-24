@@ -1,0 +1,37 @@
+// expect: canary
+/* ⭐ **墓碑 churn**：反复 put+remove **同一个键**（表位置几乎不动，全靠墓碑）
+ *   ⇒ 判据在 run.sh 里：1e6 轮与 1e5 轮的峰值 RSS 必须相当 ✓
+ *   （没有 `dead` 计数与 rebuild 的实现会在这里退化/死循环 ✗ —— 这是哈希表最容易烂的地方）
+ *   轮数从命令行拿 ✓ */
+use std::map
+
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = i64(100000)
+    if args.len > i64(1) { n = toInt(args[1], n) }
+    var m = mapI64<i32>::withCap(64)
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        let k = i                              /* canary：**不同键**且不删 ⇒ 必须涨 ✗ */
+        m.put(k, i32(k))
+        let g = m.get(k) ?? i32(-1)
+        sum = sum + i64(g)
+        /* 故意不 remove：canary（必须涨 ✗）*/
+        i = i + i64(1)
+    }
+    println("结束：", n, " 轮，len = ", m.len(), "，cap = ", m.capOf(), "，校验和 = ", sum)
+    return 0
+}
