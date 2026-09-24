@@ -28,7 +28,10 @@ region 就是本文的 arena（按作用域整块释放的分配区）；拿它�
 
 - 容器释放叫 **`release`**，不叫 `close`：作用域一结束这棵树本来就会被自动清空，
   `close` 会被读成「你负责关」
-- 面向用户的两个操作：**`clear`**（清空，但索引还在）· **`compact`**（压缩空间）
+- 面向用户的两个操作：**`clear`**（清空，但索引还在）· **`shrink`**（缩容，把不用的空间让出去；
+  比 compact 更贴切：真正有用的是把高水位降下来）
+- **扩容像 vector**：容量不够就翻倍搬一次（dense 数组保持连续，`denseView`/SIMD 因此一直成立）；
+  旧的块留给 arena，到地方退出时一起收
 
 ---
 
@@ -195,7 +198,8 @@ p.release()                 // 释放这一层（作用域结束本来也会自�
 | 0 | 库级 slot map：`stdlib/std/pool.extc`（稳定 handle + dense 前段 + free list + 世代），常设验收 `tests/pool/` | 已落地（2026-09-24，零编译器改动） |
 | 1 | 运行期池注册表（zone = 独立旁链、按标记回退、池不管内存）+ 地方边界两处钩子 + 容器接入（`pid` / `release`） | 2026-09-26 落地：`tests/pool/` 的 `rt_zone` / `rt_reuse` / `rt_container` / `rt_blockexit` 四项验收；阶段 0 的 churn 判据恢复平（1e5: 1728 KB · 1e6: 1664 KB） |
 | 2 | 类型化分配入口（由生成器发射；不走 `extern!`，它只能给字节指针，且 `mut` 受绑定形式影响） | 待做 |
-| 3 | `buf<T>` 原地扩展 · 池版 `varArray` / `string` / `graph` | 待做 |
+| 3 | **整个 STL 建在池上**（作者口径 2026-09-26）：`varArray` / `string` / `map` / `set` / `graph` 都用池的槽位与世代，
+增长按 vector 式翻倍、回收用 `shrink`；`string` 保持连续 · `map`/`set` 的三态（空/占/墓碑）留在自己的桶索引里，池保持两态 | 待做 |
 | 4 | 「池内存的引用不许出函数」由库纪律升成硬检查（可选；现有逃逸规则基本够用） | 待做 |
 
 ---
