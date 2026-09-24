@@ -533,7 +533,9 @@ fn make() -> box {
 | **3** | **IO-2**：✅ `f.reader()`（文件当输入源：`nextInt`/`nextLine`/`nextToken` 与 stdin 逐字相同）· ✅ `proc::exit(code)`（分层：`std::sys::process`，**不放 `std::io`** —— 结束进程不是 I/O）· ✅ termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；**不包 ncurses**，按 BOOTSTRAP §4.3）· ✅ **trap 路径还原终端**（临终钩子 `extc_die` + `extc_raw_enter`/`extc_raw_leave`，**定案 80**）| TUI / 刷量输出 / 五子棋能真的跟人下 | 中 | ✅ **2026-09-24 落地三件 + 顺手修 #56**：`tests/io` 13 → **15 项**（`file-reader` · `exit-code`（退出码 7）· `raw-mode` 的非 tty(`failure(notATerminal)`) + PTY(`script`：开得起来、还原**逐字节**相同) 两条路 · `raw-trap`（raw 下 trap ⇒ strace 里 `TCSETS` ×2、最后一条带 cooked 标志））✓ 共 **16 项** ✓ `ioError` 新增 `notATerminal(i32)`（"三条路分得开"的口径，定案 74）· `extern!` 补上 `void` 返回（`cfmakeraw` 需要）✓ **规范**：定案 77/79 · BOOTSTRAP §4.3 ✓ ⭐ **2026-09-24 补一条口径（定案 84）**：
 `nextLine` **剥**行尾 `\r`（`\r\n` 也算行尾）、`nextLineRaw` **原样**、孤立 `\r` 是内容、
 EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windows 编辑过的文件，每行多一个 `\r`，
-主人的第一个文本题当场输出错 ✗）；判据 `tests/io/crlf.extc`（**五条**口径）· 跨语言对照见 `IO.md` §4.3 ✓ |
+主人的第一个文本题当场输出错 ✗）；判据 `tests/io/crlf.extc`（**六条**：剥/留/孤立/空行/EOF
++ **显式 CRLF 的输出字节**）· **输出侧同一条口径**（只发 `\n` · `put` 不翻译 · 要 CRLF 显式写，
+`MANUAL` 转义表随之补 `\r`）· 跨语言对照见 `IO.md` §4.3 ✓ |
 | ~~**4**~~ ✅ | ~~**`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）~~ ⇒ **2026-09-24 删掉**（**定案 81**）：这个能力由 **`new T[n]`** 兑现（同样是零的 `mut slice<T>`、同一套层号/逃逸规则），而"清零"从来不是它做的 —— `extc_arena_alloc` **每一次分配都 memset** ✓ 它只是同一件事的第二个拼写，还多跑一遍 memset（`-O0` 下生成 C 里两次、`-O2` 被折叠）⇒ 删 ✓ | **长度运行时才知道**的 buffer（读未知大小的文件 · `reader` 要 64KB · `varArray` 增长）| 小 | ✅ **早已可用**：`new T[n]` + arena 清零；`examples/newSlice.extc`（原 `allocSlice.extc`）钉着「清零承诺」这条判据 ✓ |
 
 > ⚠️ **更正**（2026-09-18，主人追问"造不出 buffer 什么意思"时实测发现）：

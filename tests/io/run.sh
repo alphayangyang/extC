@@ -17,6 +17,7 @@
 #      而且 **raw 模式下 trap** 时终端也被还回去（临终钩子，用 strace 量 `TCSETS` ✓）
 #   ⑨ **CRLF**（定案 84）：`nextLine` 剥行尾 `\r`、`nextLineRaw` 原样、孤立 `\r` 是内容、
 #      `\r\n` 的空行长度是 0、EOF 前最后一个 `\r` 也剥 ✓
+#      外加**输出侧**：只发 `\n`，要 CRLF 得显式写（用 `od` 断言字节 `41 0d 0a 42 0a` ✓）
 #      （这一条挡的是"Windows 上编辑、WSL 里跑"那类真事故：以前每行都多一个 `\r`，
 #        长度也多 1 —— 用户的第一个文本程序就撞上了 ✗）
 set -u
@@ -63,8 +64,11 @@ if out=$(printf 'hello\r\nworld\r\na\rb\r\n\r\nzz\r' | "$EXTC" --run tests/io/cr
     echo "$out" | grep -qF "len 3"                 || ok=0   # ③ 孤立 \r 是内容（a\rb）
     echo "$out" | grep -qF "blank   = len 0"       || ok=0   #    \r\n 的空行 = 空 ✓
     echo "$out" | grep -qF "eofCR   = zz len 2"    || ok=0   #   EOF 前最后一个 \r 也剥 ✓
+    # ④ 输出侧：**只发 \n**，要 CRLF 只能显式写 —— 判据是**字节**，不是"看着像"
+    tail5=$(echo "$out" | tail -c 5 | od -An -tx1 | tr -s ' ' | sed 's/^ //;s/ $//')
+    [ "$tail5" = "41 0d 0a 42 0a" ] || { ok=0; echo "        (显式 CRLF 的字节是 [$tail5]，应为 [41 0d 0a 42 0a])"; }
     if [ "$ok" = 1 ]; then
-        echo "  ok   crlf         ->  5 条口径全对（剥/留/孤立/空行/EOF）✓"
+        echo "  ok   crlf         ->  6 条口径全对（剥/留/孤立/空行/EOF + 显式 CRLF 的字节）✓"
     else
         echo "  FAIL crlf         ->  口径不对（$(echo "$out" | tr '\n' '|' | cat -v)）"; fail=1
     fi

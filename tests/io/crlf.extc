@@ -4,6 +4,7 @@
  *   ② `nextLineRaw` ⇒ **原样**（`\r` 是内容）；两个名字两种语义，跟主流一致
  *      （Go `Scanner` vs `ReadString` · Rust `lines` vs `read_line` · Ruby `chomp` vs `gets`）✓
  *   ③ **孤立的 `\r` 不是行终止符**，也不做任何边界翻译（不是 Python 的 universal newlines）✓
+ *   ④ **输出只发 `\n`**（不翻译）⇒ 要 CRLF 得**显式写** `"\r\n"`（`od` 断言字节 ✓）
  *
  * 输入（由 run.sh 用 printf 造）：`hello\r\nworld\r\na\rb\r\n\r\nzz\r`
  *                                        ↑①        ↑②      ↑③     ↑空行  ↑EOF 前的 \r
@@ -27,5 +28,8 @@ fn main() -> i32 {
     println("loneCR  = ", c[..n3], " len ", n3)
     println("blank   = len ", n4)
     println("eofCR   = ", e[..n5], " len ", n5)
+    /* ④ 输出侧：**只发 \n**，要 CRLF 就显式写（转义原样交给 C ⇒ `\r` 能用 ✓）
+     * 这一句的输出字节必须是 41 0d 0a 42 0a —— run.sh 用 `od` **逐字节**断言 ✓ */
+    print("A\r\nB\n")
     return 0
 }

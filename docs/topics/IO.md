@@ -245,6 +245,29 @@ struct reader {
 | ② | **`nextLineRaw` 原样**（`\r` 是内容），**两个名字两种语义** | Go `ReadString` vs `Scanner` · Rust `read_line` vs `lines` · Ruby `gets` vs `chomp` —— 主流**从不**用一个名字承担两种语义 ✓ |
 | ③ | **孤立的 `\r` 不是终止符**，且**不做边界翻译**（不是 Python 的 universal newlines / Perl 的 `:crlf`）| 孤立 `\r` 这一条：Java/C#/Python 认、**Go/Rust 不认** ⇒ 跟 Go/Rust（`\r` 只在 `\n` 前特殊）✓ 不翻译这一条：extC 的性格是"不改数据"，而且 `nextLine` 是带回缓冲扫到 `\n` 的读法，**不需要** Node 那套 `crlfDelay`（`\r`/`\n` 跨 chunk 的场景在这里不存在 ✓）|
 
+#### 输出口径：**只发 `\n`，要 CRLF 就显式写**（2026-09-24，随定案 84 一起定）
+
+**输入剥、输出不翻译** —— 这个不对称正是 Go / Rust 站的位置：
+
+| 派 | 谁 | 做法 |
+|---|---|---|
+| **平台翻译** | Java `println` · C# `Console.WriteLine` · C 的 CRT 文本模式 · Python 文本模式写 | 按平台把 `\n` 变成 `\r\n` |
+| **只发 `\n`** | **Go** · **Rust** · **extC** | 一个字节都不多写；要 CRLF 自己写 ✓ |
+
+理由还是 extC 那两条铁律：**不改数据** + **不做隐式魔法**（平台相关的输出 = 同一份源码在不同机器上产出不同字节 ✗）
+
+- `print` / `println` 只发 `\n` ✓ · `fs::outputFile.put` **原样写**（不翻译）✓
+- 要 CRLF：**显式写** `print("...\r\n")` —— extC 的字符串转义**原样交给 C**，
+  所以 `\r`（以及 `\v` `\f` `\0`）**今天就能用** ✓
+  （`MANUAL` §2 的转义表原来只列了 `\n` `\t` `\"` `\\` ⇒ **已补 `\r`** ✓）
+- 判据：`tests/io/crlf.extc` 的"显式 CRLF"那一条用 **`od` 断言字节** `41 0d 0a 42 0a`
+  —— 不是"看着像"，是**真的一个字节一个字节**比对 ✓
+
+⚠️ **将来若原生编译到 Windows**：CRT 的**文本模式**会像 C 一样自己把 `\n` 翻成 `\r\n`、
+把读入的 `\r\n` 翻成 `\n`（`sysio::open` 没带 `O_BINARY`）⇒ 那时**输出会变平台相关**，
+跟"只发 `\n`"冲突；要严格 LF 得开 `O_BINARY` / `_setmode` ✓
+（读侧不受影响：翻译之后再被 `nextLine` 剥一次 ⇒ **双层保护** ✓）
+
 **不受影响的**：`nextToken` / `nextInt` / `skipSpace` **本来就免疫** —— 它们走 `isSpaceByte`，
 那个集合里**含 `\r`**（`isSpaceByte` 是词法空白集，不用受 locale 影响的 C `isspace`）✓
 
