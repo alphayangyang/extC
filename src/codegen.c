@@ -3777,8 +3777,13 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
         for (char *ln = rp; ln < rp + rl && !cut; ) {
             char  *eol = memchr(ln, '\n', (size_t)(rp + rl - ln));
             size_t ll  = eol ? (size_t)(eol - ln) : (size_t)(rp + rl - ln);
-            bool   isDef = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
-                            ln[0] != '*' && ln[ll - 1] == '{' && memchr(ln, '(', ll));
+            /* A definition opens a body, and a short one fits on a single line, which
+             * ends with `}` instead - `extc_arena_init` is written that way, and it was
+             * skipped until the debug switch showed it never reached the decision. */
+            bool   opensBody = (ll > 8 && ln[ll - 1] == '{' && memchr(ln, '(', ll));
+            bool   wholeBody = (ll > 8 && ln[ll - 1] == '}' && memchr(ln, '(', ll));
+            bool   isDef = (opensBody || wholeBody) &&
+                           ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' && ln[0] != '*';
             bool   isVar = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
                             ln[0] != '*' && ln[ll - 1] == ';' && !memchr(ln, '(', ll));
             if (isDef || isVar) {
@@ -3806,7 +3811,8 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                     memcpy(name, ns, nlen);
                     name[nlen] = 0;
                     size_t span = isDef ? 0 : ll + 1;
-                    if (isDef) {                            /* to the `}` at column zero */
+                    if (wholeBody) span = ll + 1;           /* one line: the whole definition */
+                    if (isDef && !wholeBody) {              /* to the `}` at column zero */
                         char *p = ln;
                         while (p < rp + rl) {
                             if (p[0] == '}' && p[-1] == '\n') { span = (size_t)(p - ln) + 1; break; }
@@ -3817,6 +3823,9 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                         /* every mention inside the candidate itself? */
                         size_t total  = countMentions(text, name);
                         size_t inside = countMentionsIn(g, ln, span, name);
+                        if (getenv("EXTC_DBG_PRIM"))
+                            fprintf(stderr, "[prim] %-22s total=%zu inside=%zu %s\n",
+                                    name, total, inside, total == inside ? "DROP" : "keep");
                         if (total == inside) {
                             memmove(ln, ln + span, len - (size_t)(ln - text) - span + 1);
                             len -= span;
@@ -3878,9 +3887,6 @@ static void dropUnreferenced(CG *g, Buf *out) {
         len -= tl;
         out->len = len;
     }
-    /* The runtime primitives: after the offset-based phase, before the rest. Every phase
-     * from here on locates its text by content, so shifting the text is safe. */
-    dropRuntimeDefs(g, out, &text, &len);
     /* Functions nobody calls. Both halves are located by their own text, so what is
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
@@ -3901,6 +3907,11 @@ static void dropUnreferenced(CG *g, Buf *out) {
         out->len = len;
         df->body = NULL;
     }
+    /* The runtime primitives come after the functions and before the globals: a
+     * primitive can be called only from code that the function phase has just removed
+     * (`extc_modU` is called by dead library functions), and its own calls disappear as
+     * it goes, so this is the point where the counts mean what they should. */
+    dropRuntimeDefs(g, out, &text, &len);
     /* Then the top-level definitions, to a fixed point: a definition can be the only
      * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
      * which no program refers to either), so one pass leaves a chain behind. Each
