@@ -1,0 +1,10 @@
+// tests/argv/args.extc -- the command line, as the language declares it (IO.md section 7).
+//
+// Checked by tests/argv/run.sh: `args.len` counts the program name, and the bytes
+// are not copied -- they point straight at the operating system's argument block.
+fn main(args: slice<slice<u8>>) -> i32 {
+    println(args.len)
+    if args.len > 1 { print(args[1])  print("\n") }
+    if args.len > 2 { print(args[2])  print("\n") }
+    return 0
+}

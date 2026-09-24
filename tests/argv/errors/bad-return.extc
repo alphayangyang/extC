@@ -1,0 +1,3 @@
+// expect-error: cannot return `i64`
+// C's entry point returns an `int`; a wider type would be truncated without a word.
+fn main(args: slice<slice<u8>>) -> i64 { return 0 }

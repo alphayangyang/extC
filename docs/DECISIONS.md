@@ -2702,7 +2702,7 @@ mmap ✓（若做）· **socket ✗**（半关 / FIN / 延迟错误是协议语�
 ⇒ 这两类**永远显式** ✓ ⇒ 写成判据的理由：清单会被人往后加，判据不会 ✓
 
 **还欠（跟着 IO-1 一起做）**：`extc_fd` 运行时 · `commit()?` · `close(f)!` ·
-"关闭后使用"的 trap · `std::fs` 模块 · `readAll` · `main(args)` ✓
+"关闭后使用"的 trap · `std::fs` 模块 · `readAll` ✓（`main(args)` 2026-09-24 已落地）
 详见 [`topics/IO.md`](topics/IO.md) §5 ✓
 
 ## 定案 73 · **IO 的第一块：`std::sys`（原语）+ `std::io`（库）+ `flush()`**（2026-09-22）

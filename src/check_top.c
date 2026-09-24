@@ -2746,6 +2746,47 @@ static void checkFunc(Checker *c, FuncDef *f) {
         collectEffects(c, f);            /* summary = the signed clause, or the worst case */
         return;
     }
+    /* `main(args)`: the entry point may take the command line, and the shape is fixed
+     * (docs/topics/IO.md section 7): one parameter, `slice<slice<u8>>`. C hands the entry
+     * point `argc` and `argv`, and codegen wraps those two into the view; any other
+     * parameter has no C-level meaning, because C's `main` takes integers and pointers and
+     * nothing else. Saying so here keeps the diagnostic in extC instead of letting the C
+     * compiler complain about the wrapper.
+     *
+     * The return type is C's `int`, so it may be absent or `i32`; `-> i64` would be
+     * truncated silently by the C compiler, which is exactly the kind of thing that must not
+     * be silent. */
+    if (!f->owner && strcmp(f->name, "main") == 0) {
+        Type *r = f->ret ? ttBase(f->ret) : NULL;
+        bool retOk = !r || r->kind == TY_VOID ||
+                     (r->kind == TY_BUILTIN && r->name && strcmp(r->name, "i32") == 0);
+        if (!retOk)
+            ckError(c, f->line,
+                    "C's entry point returns an `int`, so `main` may return `i32` (or nothing at"
+                    " all). Any other type would be converted by the C compiler without a word.",
+                    "`main` cannot return `%s`", typeStr(c, f->ret));
+        if (f->params.len > 1)
+            ckError(c, f->line,
+                    "The command line is one view of the arguments. Wrap several pieces of"
+                    " information in a struct if the entry point needs more.",
+                    "`main` takes at most one parameter, `slice<slice<u8>>`; %zu were declared",
+                    f->params.len);
+        else if (f->params.len == 1) {
+            Param *p = *(Param **)vecAt(&f->params, 0);
+            /* The shape is judged by shape and not through `ttBase`: resolving a view
+             * lands on the struct behind it, which no longer says `slice`. */
+            Type *eo = ttIsViewType(p->type) ? *(Type **)vecAt(&p->type->targs, 0) : NULL;
+            Type *ei = eo && ttIsViewType(eo) ? ttBase(*(Type **)vecAt(&eo->targs, 0)) : NULL;
+            bool ok = ei && ei->kind == TY_BUILTIN && ei->name && strcmp(ei->name, "u8") == 0;
+            if (!ok)
+                ckError(c, p->line,
+                        "The arguments arrive as bytes, the way the operating system hands them"
+                        " over, so the entry point takes `slice<slice<u8>>`: the outer view is"
+                        " `args`, and `args[0]` is the program name, again as C defines it.",
+                        "`main`'s parameter must be `slice<slice<u8>>`, found `%s`",
+                        typeStr(c, p->type));
+        }
+    }
     FuncDef *savedFunc = c->curFunc;
     /* A function that allocates and hands back something useful (a reference or a view,
     * or a store through an out-parameter) needs a home arena. One that returns `i32`

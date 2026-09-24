@@ -412,6 +412,13 @@ extc_arena_release(&__extc_a[3]);    /* 再放内存 */
 
 ## 7. argv：`fn main(args: slice<slice<u8>>) -> i32`
 
+> ✅ **2026-09-24 已落地**：`fn main(args: slice<slice<u8>>) -> i32` 编译即用 ——
+> `args.len` **含程序名**（与 C 一致），字节**不拷贝**（视图直接指向操作系统的实参块，
+> 它比任何 arena 都活得久），视图数组建在 **main 自己的帧 arena**（`&__extc_a[1]`）里 ✓
+> 形状写错是**编译期**的 extC 报错（三条：参数类型 / 参数个数 / 返回类型），
+> 常设验收 `tests/argv/`（`./check.sh quick` 的第 17 节）✓
+> 想不要就写 `fn main() -> i32`，序言不发射 ✓
+
 **不做 `args()` 内建** —— 它**返回不了**：数组得放进调用者的帧 arena ⇒ 深度 1 ⇒
 「不能返回」这条自己就挡住了 ✓ 而 argv 本来就是 main 的参数：
 
@@ -445,7 +452,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 | 段 | 内容 | 做完能干什么 | 进度（2026-09-23 实测） |
 |---|---|---|---|
 | **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys/io.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
-| **IO-1** | `open` + **块拥有**的 `extc_fd[DEPTH]`（+ `commit()?` / `close(f)!`）+ `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**
+| **IO-1** | `open` + **块拥有**的 `extc_fd[DEPTH]`（+ `commit()?` / `close(f)!`）+ `readAll(f, …)` + `reader` + ✅ `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**
 | **IO-2** | `exit(code)`、`close(f)!`、termios raw mode | TUI + 刷量输出 | 🟡 **一半**：**`writer`（可见缓冲）已落地**（`stdlib/std/io.extc`，验收 `tests/io/` 的 writer-file ✓）—— ⚠️ 这一格原来写着"`writer` ⬜ 没有"，那是在它落地**之前**写的，没跟着改 ✗（2026-09-24 修正）；剩下的 `exit(code)` / `close(f)!` / termios ⬜ **没有** |
 
 > BOOTSTRAP §4.3 已经定过 TUI 那条：**不包 ncurses**，只要「读一个字节 + 开关 raw mode」

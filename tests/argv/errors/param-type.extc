@@ -1,0 +1,3 @@
+// expect-error: main`'s parameter must be `slice<slice<u8>>`
+// A wrong parameter type has no C-level meaning: `argc`/`argv` are bytes.
+fn main(args: slice<slice<i32>>) -> i32 { return 0 }

@@ -2714,8 +2714,13 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     bufInit(&sig, g->arena);
     /* C fixes the signature of `main`, so it takes no hidden parameter; its
      * home arena is the local `extc_arena *__extc_home = &__extc_a[1]` in its
-     * own body. */
-    if (!f->owner && strcmp(f->name, "main") == 0) { bufPuts(&sig, "void"); return bufCstr(&sig); }
+     * own body. A parameter the language wrote is not a C parameter either:
+     * `main(args)` (docs/topics/IO.md section 7) is built from `argc`/`argv` in
+     * the prologue, so C still sees exactly the two arguments it insists on. */
+    if (!f->owner && strcmp(f->name, "main") == 0) {
+        bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
+        return bufCstr(&sig);
+    }
     if (f->params.len == 0 && !f->needsHome && f->owLocal) {   /* no hidden parameters follow */
         bufPuts(&sig, "void"); return bufCstr(&sig);
     }
@@ -2822,10 +2827,14 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  */
 static void genFunc(CG *g, FuncDef *f) {
     bool isMain = cgIsMain(f);
+    /* `main(args)`: the one parameter the language may declare is not a C
+     * parameter (C fixes the entry signature), so `argc`/`argv` come in and the
+     * view is built in the prologue. */
+    bool mainArgs = isMain && f->params.len > 0;
     if (isMain) {
         /* C fixes the signature of `main`, so it takes no hidden parameter; its
          * home arena is one of its own block arenas. */
-        cgLine(g, "int main(void) {");
+        cgLine(g, "int main(%s) {", mainArgs ? "int argc, char **argv" : "void");
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
@@ -2874,6 +2883,10 @@ static void genFunc(CG *g, FuncDef *f) {
      * nothing. An @overwrite variable in `main` is exactly that case, and
      * missing it left `__extc_a` undeclared. */
     g->noArena = !f->mayUseArena && !(owNow.len > 0 || owcNow.len > 0);
+    /* `main(args)` builds the view of `argv` in `&__extc_a[1]`, so the arena
+     * array is needed even when the body allocates nothing. A program that only
+     * prints its arguments is exactly that case. */
+    if (mainArgs) g->noArena = false;
     /* Owning a descriptor allocates its node in the block's arena, so a function
      * that owns one needs the arena array even if it allocates nothing else. */
     g->needFd = f->fdSites > 0;
@@ -2883,6 +2896,47 @@ static void genFunc(CG *g, FuncDef *f) {
     g->fdLevels = maxLv + 1;
     if (g->needFd)
         cgLine(g, "extc_fd __extc_fd[%d] = {0};", maxLv + 1);
+    /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
+     * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
+     * `argc`/`argv`, so this is where the two meet. Three properties matter:
+     *
+     *   - the bytes are **not copied**. An `argv` string lives in the argument
+     *     block of the process, which outlives every arena, so a view pointing
+     *     at it is sound for as long as the program runs -- the same reason a
+     *     string literal in read-only memory can be viewed.
+     *   - the array of views does live in main's own home arena
+     *     (`&__extc_a[1]`, the frame level), because it is main that owns it.
+     *   - `args[0]` is the program name, exactly as C defines it, and the
+     *     length is `argc`: no `+ 1` and no sentinel, so `args.len` is the
+     *     truth. */
+    if (mainArgs) {
+        Param *p  = *(Param **)vecAt(&f->params, 0);
+        Type  *pt = subst(g, p->type);                     /* slice<slice<u8>> */
+        Type  *et = pt && pt->targs.len ? subst(g, *(Type **)vecAt(&pt->targs, 0)) : NULL;
+        const char *at = cType(g, pt);
+        const char *en = cType(g, et);                     /* slice<u8> */
+        const char *nm = p->cname ? p->cname : p->name;
+        cgLine(g, "%s %s;   /* built from argc/argv below */", at, nm);
+        cgLine(g, "{");
+        g->indent++;
+        cgLine(g, "int64_t __extc_argn = (int64_t)argc;");
+        cgLine(g, "%s *__extc_argp = (%s *)extc_arena_alloc(&__extc_a[1],"
+                   " (int64_t)(__extc_argn > 0 ? __extc_argn : 1) * (int64_t)sizeof(%s),"
+                   " \"%s\", %d);", en, en, en, g->path, f->line);
+        cgLine(g, "for (int64_t __extc_i = 0; __extc_i < __extc_argn; __extc_i++) {");
+        g->indent++;
+        cgLine(g, "const char *__extc_s = argv[__extc_i];");
+        cgLine(g, "int64_t __extc_l = 0;");
+        cgLine(g, "while (__extc_s[__extc_l]) __extc_l++;");
+        cgLine(g, "__extc_argp[__extc_i].data = (uint8_t *)__extc_s;");
+        cgLine(g, "__extc_argp[__extc_i].len = __extc_l;");
+        g->indent--;
+        cgLine(g, "}");
+        cgLine(g, "%s.data = __extc_argp;", nm);
+        cgLine(g, "%s.len = __extc_argn;", nm);
+        g->indent--;
+        cgLine(g, "}");
+    }
     if (f->owLocal)
         for (size_t i = 0; i < owNow.len; i++)
             /* `home` says which arena the storage belongs to: with a home, the

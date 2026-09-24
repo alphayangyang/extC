@@ -1,0 +1,2 @@
+// expect-error: takes at most one parameter
+fn main(a: i32, b: i32) -> i32 { return 0 }

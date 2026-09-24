@@ -1,0 +1,8 @@
+// tests/argv/plain.extc -- an entry point that wants no arguments keeps working.
+//
+// The prologue is emitted only for `main(args)`; this file is the canary for the
+// other shape (`fn main() -> i32`) staying byte-for-byte as it was.
+fn main() -> i32 {
+    println("no args needed")
+    return 0
+}

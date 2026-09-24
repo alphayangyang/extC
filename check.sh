@@ -85,6 +85,11 @@ if out=$(./tests/fs/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（fd 恒定 + canary + 反例 + ASan）"
 else bad "tests/fs/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 命令行（IO.md §7：\`main(args)\` ⇒ args.len 含程序名 · 形状写错编译期挡住）=="
+if out=$(./tests/argv/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（正例 + 边界 + 无参哨兵 + 3 反例）"
+else bad "tests/argv/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 注解（@inline 要真的生效 · 写错的注解必须编译期报错）=="
 if [ -x tests/annot/run.sh ]; then
     if out=$(tests/annot/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
