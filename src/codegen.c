@@ -574,7 +574,7 @@ static bool isByteView(Type *t) {
 static void genViewIndexer(CG *g, Type *inst) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
     substEnter(g, inst);
-    cgLine(g, "EXTC_UNUSED static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
+    cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
     cgLine(g, "if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);");
@@ -691,11 +691,26 @@ static const char *descRef(CG *g, Type *t) {
  *           (`varArray { ... }`), as it always did
  *   eqFn  - C name of the equality adapter, or NULL when the type has none
  */
+/* Remember a top-level definition emitted into the current buffer; `before` is where it
+ * started. The finished text decides whether anything names it, exactly like a global. Used in
+ * the descriptor region - definitions that are asked for on demand but not always referenced -
+ * and a declaration and a definition are two separate pieces, registered under one name. */
+static void deadDefAdd(CG *g, const char *name, size_t before) {
+    Buf l;
+    bufInit(&l, g->arena);
+    bufPutn(&l, g->out->data + before, g->out->len - before);
+    DeadDef *d = arenaAllocZero(g->arena, sizeof *d);
+    d->name = name;
+    d->text = bufCstr(&l);
+    *(DeadDef **)vecPush(&g->deadDefs) = d;
+}
+
 static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef *sd,
                           const char *eqFn) {
     size_t n = sd->fields.len;
     if (n) {
-        cgLine(g, "EXTC_UNUSED static const ExtcField %s_fields[] = {", cname);
+        size_t ftb = g->out->len;              /* the whole table, up to its `};` */
+        cgLine(g, "static const ExtcField %s_fields[] = {", cname);
         g->indent++;
         for (size_t i = 0; i < n; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
@@ -704,10 +719,14 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
         }
         g->indent--;
         cgLine(g, "};");
+        /* Registered like a descriptor: the row that names it may itself be dropped. */
+        deadDefAdd(g, arenaPrintf(g->arena, "%s_fields", cname), ftb);
     }
-    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL, %s };",
+    size_t sdb = g->out->len;
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL, %s };",
            cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_fields", cname) : "NULL",
            eqFn ? eqFn : "NULL");
+    deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", cname), sdb);
 }
 
 /* Emit the descriptor of an array: an element count and an element descriptor.
@@ -715,9 +734,11 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
  * An array has no field names, so it prints as `[1, 2, 3]`.
  */
 static void genArrayDesc(CG *g, Type *arr) {
-    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_ARRAY, \"%s\", sizeof(%s), %lld, NULL, %s, NULL };",
+    size_t adb = g->out->len;
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ARRAY, \"%s\", sizeof(%s), %lld, NULL, %s, NULL };",
            arr->name, arr->name, cType(g, arr->inner), (long long)arr->asize,
            descRef(g, arr->inner));
+    deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", arr->name), adb);
 }
 
 /* Emit the descriptor of a non-byte view, which prints as `[a, b]`.
@@ -726,8 +747,10 @@ static void genArrayDesc(CG *g, Type *arr) {
  */
 static void genViewDesc(CG *g, Type *v) {
     Type *elem = subst(g, *(Type **)vecAt(&v->targs, 0));
-    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_SLICE, \"%s\", sizeof(%s), 0, NULL, %s, NULL };",
+    size_t vdb = g->out->len;
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_SLICE, \"%s\", sizeof(%s), 0, NULL, %s, NULL };",
            v->name, v->name, cType(g, elem), descRef(g, elem));
+    deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", v->name), vdb);
 }
 
 /* Emit the descriptor of an enum: its variant names, and `<type name>` for a
@@ -746,10 +769,14 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
             if (j) bufPuts(&b, ", ");
             bufPrintf(&b, "\"%s\"", v->name);
         }
-        cgLine(g, "EXTC_UNUSED static const char *const %s_variants[] = { %s };", cname, bufCstr(&b));
+        size_t vtb = g->out->len;
+        cgLine(g, "static const char *const %s_variants[] = { %s };", cname, bufCstr(&b));
+        deadDefAdd(g, arenaPrintf(g->arena, "%s_variants", cname), vtb);
     }
-    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_ENUM, \"%s\", sizeof(%s), %zu, %s, NULL, NULL };",
+    size_t edb = g->out->len;
+    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ENUM, \"%s\", sizeof(%s), %zu, %s, NULL, NULL };",
            cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_variants", cname) : "NULL");
+    deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", cname), edb);
 }
 
 /* ------------------------------------------------------- descriptors on demand
@@ -877,8 +904,12 @@ static void emitDescRegion(CG *g) {
     if (g->eqNeed.len) cgLine(g, "");
 
     cgLine(g, "/* ---- Type descriptor table, emitted on demand: only types that are used. ---- */");
-    for (size_t i = 0; i < g->descs.len; i++)   /* all forward-declared: order does not matter */
-        cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc;", (*(Type **)vecAt(&g->descs, i))->name);
+    for (size_t i = 0; i < g->descs.len; i++) {  /* all forward-declared: order does not matter */
+        const char *tn = (*(Type **)vecAt(&g->descs, i))->name;
+        size_t pb = g->out->len;
+        cgLine(g, "static const ExtcDesc %s_desc;", tn);
+        deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", tn), pb);
+    }
     cgLine(g, "");
     emitDescDefs(g);                       /* real pass: emit the definitions */
     cgLine(g, "");
@@ -4050,22 +4081,55 @@ static void dropUnreferenced(CG *g, Buf *out) {
      * which no program refers to either), so one pass leaves a chain behind. Each
      * round is safe for the same reason a single pass is: a name is dropped only when
      * the finished text mentions it exactly once. */
+    /* Top-level definitions, one name at a time.
+     *
+     * The test is done on a scratch copy of the unit: every piece registered under the name is
+     * cut out of the copy, and if the name is not mentioned anywhere else, the pieces are the
+     * only places it appears - so nothing uses it and they can go. Counting pieces against
+     * mentions (an earlier attempt) cannot tell a registration from a use: a descriptor with a
+     * declaration and a definition was dropped while its call site stayed, and the C compiler
+     * reported `undeclared`.
+     *
+     * A piece that is not found, or a name mentioned elsewhere, keeps everything: the answer is
+     * conservative in the one direction that matters. */
     bool dropped = true;
     while (dropped) {
         dropped = false;
         for (size_t i = 0; i < g->deadDefs.len; i++) {
             DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
-            if (d->scoped) continue;                                   /* inside a body: done */
-            if (countMentions(text, d->name) != 1) continue;   /* named somewhere else: keep */
-            size_t tl = strlen(d->text);
-            char  *at = strstr(text, d->text);
-            if (!at) continue;                                 /* already gone, or spliced away */
-            char  *nm = strstr(text, d->name);
-            if (!nm || nm < at || nm >= at + tl) continue;     /* the one mention is elsewhere */
-            memmove(at, at + tl, (len - (size_t)(at - text) - tl) + 1);
-            len -= tl;
-            out->len = len;
+            if (d->scoped || !d->text) continue;            /* inside a body, or already gone */
+            Buf scratch;
+            bufInit(&scratch, g->arena);
+            bufPutn(&scratch, text, len);
+            char  *sc = bufCstr(&scratch);
+            size_t pieces = 0;
+            bool   allThere = true;
+            for (size_t k = 0; k < g->deadDefs.len; k++) {
+                DeadDef *o = *(DeadDef **)vecAt(&g->deadDefs, k);
+                if (o->scoped || !o->text || strcmp(o->name, d->name) != 0) continue;
+                char  *p = strstr(sc, o->text);
+                if (!p) { allThere = false; break; }        /* a piece is not in the unit */
+                size_t pl = strlen(o->text);
+                memmove(p, p + pl, strlen(p + pl) + 1);
+                pieces++;
+            }
+            if (!allThere || pieces == 0) continue;
+            if (countMentions(sc, d->name) != 0) continue;  /* used somewhere else: keep */
+            for (size_t k = 0; k < g->deadDefs.len; k++) {  /* remove them for real */
+                DeadDef *o = *(DeadDef **)vecAt(&g->deadDefs, k);
+                if (o->scoped || !o->text || strcmp(o->name, d->name) != 0) continue;
+                size_t ol = strlen(o->text);
+                char  *at = strstr(text, o->text);
+                if (at) {
+                    memmove(at, at + ol, len - (size_t)(at - text) - ol + 1);
+                    len -= ol;
+                    out->len = len;
+                    text = bufCstr(out);
+                }
+                o->text = NULL;
+            }
             dropped = true;
+            break;                                          /* the text moved: start over */
         }
     }
     out->data[len] = '\0';
@@ -4447,8 +4511,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `__GNUC__` rather than using `__has_attribute`, which is itself an extension. */
         "#if defined(__GNUC__) || defined(__clang__)\n"
         "#define EXTC_INLINE static inline __attribute__((always_inline))\n"
-        /* 生成物里"定义了但没用"是**正常的**：库/预置按需发射 ✓ 用属性说明即可，
-         * 不必让用户一开 -Wall -Wextra 就看到一片黄 ✗ */
+        /* 生成物里"定义了但没人调"是正常的：库/预置按需发射，而按需比实际需要更宽 ✓
+         * 函数那一族由 DeadFunc 逐对剪枝（原型+定义一起删），但**剪不到的那些**（只被死代码提到）
+         * 仍然需要这个属性，否则 gcc 会为每个这样的定义报一条 unused-function ✗ */
         "#define EXTC_UNUSED __attribute__((unused))\n"
         "#else\n"
         "#define EXTC_INLINE static inline\n"
@@ -5155,7 +5220,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         genViewIndexer(&g, inst);
         substLeave(&g);
         g.out = save;
+        /* Registered like a descriptor: an index primitive is emitted on demand, and the
+         * demand is conservative - a view whose subscripts all sit in dead code still gets one.
+         * dropUnreferenced takes it back out when nothing names it. */
+        size_t bio = out->len;
         bufPuts(out, bufCstr(&tmp));
+        Buf it;
+        bufInit(&it, arena);
+        bufPutn(&it, out->data + bio, out->len - bio);
+        DeadDef *idd = arenaAllocZero(arena, sizeof *idd);
+        idd->name = arenaPrintf(arena, "%s_index", inst->name);
+        idd->text = bufCstr(&it);
+        *(DeadDef **)vecPush(&g.deadDefs) = idd;
     }
     g.bodyOff = out->len;                    /* where the bodies start in the finished unit */
     bufPuts(out, bufCstr(&g.body));
