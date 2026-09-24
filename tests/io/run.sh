@@ -248,6 +248,10 @@ else
 fi
 
 echo "== raw 模式下 trap ⇒ 终端必须被还回去（临终钩子）=="
+# 这一节自己要先把被测程序编出来：先前它依赖 build/ 里的一份**陈旧产物**，
+# 而 `make clean` 一清就量到 TCSETS x0（判据依赖没人负责的前置）。
+"$EXTC" tests/io/raw-trap.extc -o build/raw-trap.c >/dev/null 2>&1 \
+  && ${CC:-cc} -std=c11 -O1 build/raw-trap.c -o build/raw-trap >/dev/null 2>&1
 # 判据两条，都要：
 #   ① 这次运行里 `TCSETS` 出现**两次**：进入 raw 一次 + trap 还原一次 ✓
 #   ② **第二次**带的是原始（cooked）标志（ISIG/ICANON/ECHO）——

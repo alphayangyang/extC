@@ -1,0 +1,15 @@
+// 期 1 的管理面：建 / 世代 / 释放 / 存活计数 ✓
+// 判据（run.sh 里）：活着的时候 live=1 · 释放后 live=0 · **世代变了** ⇒ 旧 handle 能查出来 ✓
+use std::io
+use std::sys::pool
+
+fn main() -> i32 {
+    io::cout << "live=" << pool::extc_pool_live()
+    let r = pool::extc_pool_new(i64(-1), i64(0))
+    let g1 = pool::extc_pool_generation(r)
+    io::cout << " up=" << pool::extc_pool_live() << " gen=" << i64(g1)
+    pool::extc_pool_drop(r)
+    let g2 = pool::extc_pool_generation(r)      /* 槽位已死 ⇒ 0（世代对不上 ✓）*/
+    io::cout << " down=" << pool::extc_pool_live() << " stale=" << i64(g2) << "\n"
+    return 0
+}

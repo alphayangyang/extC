@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/pool/run.sh —— **期 0（slot map / ECS 底座）的常设验收**（docs/topics/REGIONS.md）
+# tests/pool/run.sh —— **期 0（slot map / ECS 底座）的常设验收**（docs/topics/POOLS.md；期 0 是库级 slot map，期 1 起是运行期池注册表）
 #
 # 判据：
 #   ① 正例：`insert`/`get`/`set`/`remove`/`len` + dense↔handle 双向 + `toSlice` ✓
@@ -76,6 +76,65 @@ else
     echo "  skip  gcc 不支持 -fsanitize=address（这一支跳过）"
 fi
 rm -rf "$TMP"
+
+# ---------------------------------------------------------------- 期 1：运行期池注册表
+# 机制本身（不是容器）的验收：建/世代/释放 · 块退出带走子树 · churn 容量停在高水位 ·
+# 旧 handle 带位置地失败 · 内存来自同一只 arena · 生成物 -Werror + ASan
+echo
+echo "== 期 1 · 池注册表：建 / 世代 / 释放 =="
+rt_run() {   # rt_run <名字> <文件> <期望的一整行>
+    local name=$1 f=$2 want=$3 out
+    if ! out=$("$EXTC" --run "$f" 2>&1); then
+        echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | head -4 | sed 's/^/        /'; fail=1; return
+    fi
+    if [ "$out" = "$want" ]; then echo "  ok   $name  ->  $out"
+    else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
+}
+rt_run rt_basic    tests/pool/rt_basic.extc    "live=0 up=1 gen=1 down=0 stale=0"
+
+echo "== 期 1 · 块退出带走子树 · 父释放带走子 =="
+rt_run rt_blockexit tests/pool/rt_blockexit.extc "before=0 in=1 rid=0 after=0 two=2 gone=0"
+
+echo "== 期 1 · churn：容量停在高水位（内存平）=="
+rt_run rt_churn    tests/pool/rt_churn.extc    "live=0 cap=64 gen=0 acc=20000100000"
+
+echo "== 期 1 · 旧 handle 带位置地失败（bug ⇒ trap、条件 ⇒ 值）=="
+if out=$("$EXTC" --run tests/pool/rt_stale.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-1}" = 1 ] && echo "$out" | grep -q "staleHandle" && echo "$out" | grep -q "tests/pool/rt_stale.extc:"; then
+    echo "  ok   rt_stale  ->  $(echo "$out" | head -1 | cut -c1-72)"
+else
+    echo "  FAIL rt_stale  ->  期望带 staleHandle 与 tests/pool/rt_stale.extc:行 的 trap + 退出码 1，得到 rc=${rc:-?}：$(echo "$out" | head -1)"
+    fail=1
+fi
+
+echo "== 期 1 · 池里的内存来自同一只 arena（分配 -> 写入 -> 读回；并逼到换块）=="
+rt_run rt_alloc    tests/pool/rt_alloc.extc    "ok=7 after=42 keep=7"
+
+echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
+TMP2=$(mktemp -d)
+if "$EXTC" tests/pool/rt_churn.extc -o "$TMP2/rt.c" >/dev/null 2>&1; then
+    if gcc -std=c11 -Wall -Wextra -Werror -o "$TMP2/rt" "$TMP2/rt.c" >/dev/null 2>&1; then
+        echo "  ok   gcc -Wall -Wextra -Werror 编得过"
+    else
+        echo "  FAIL 生成的 C 在 -Werror 下编不过"; fail=1
+    fi
+    if command -v clang >/dev/null 2>&1; then
+        if clang -std=c11 -Wall -Wextra -Werror -c -o /dev/null "$TMP2/rt.c" >/dev/null 2>&1; then
+            echo "  ok   clang -Wall -Wextra -Werror 也干净"
+        else
+            echo "  FAIL clang 报了"; fail=1
+        fi
+    fi
+    if gcc -std=c11 -g -fsanitize=address -o "$TMP2/rt_asan" "$TMP2/rt.c" >/dev/null 2>&1 \
+       && ! "$TMP2/rt_asan" 2>&1 | grep -q Sanitizer; then
+        echo "  ok   ASan（含泄漏检查）干净"
+    else
+        echo "  FAIL ASan 报了"; fail=1
+    fi
+else
+    echo "  FAIL 生成失败"; fail=1
+fi
+rm -rf "$TMP2"
 
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

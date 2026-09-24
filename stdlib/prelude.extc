@@ -151,7 +151,7 @@ fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
 //   and `p` still points at the old one (the old memory survives, so no crash, but a write via `p`
 //   is silently lost -- WRONG) => do not hold element references; write via `set(i, v)` -- OK.
 // NOTE: `set(i, v)` traps only when `i` is past cap; an `i` in [len, cap) writes into the
-//   unused region (the same as C++'s `operator[]`) => read safely with `get(i)` -- OK.
+//   unused slot (the same as C++'s `operator[]`) => read safely with `get(i)` -- OK.
 // ---------------------------------------------------------------------------
 
 struct varArray<T> {

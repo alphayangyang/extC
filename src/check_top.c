@@ -1032,7 +1032,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * the level h of the destination as well.
      *
      * This is the borrow rule moved to the call site: the callee is compiled once and
-     * does not know the caller's region, so it only publishes the constraint, and the
+     * does not know the caller's pool, so it only publishes the constraint, and the
      * substitution that solves it happens here.
      *
      *   - a complete summary => check only the j the summary names;

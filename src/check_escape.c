@@ -600,7 +600,7 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
  *     a function-level heap that is cleaned up automatically, which is preferable to
  *     rejecting a correct program.
  *
- * Promotion is the safe direction: it lengthens a region rather than making the
+ * Promotion is the safe direction: it lengthens a pool rather than making the
  * recorded facts more precise. A longer lifetime cannot leave a live reference
  * dangling, whereas making the facts finer would need alias analysis and would produce
  * false rejections.
@@ -861,7 +861,7 @@ void noteOrigin(Checker *c, Sym *sy, Expr *val) {
  *
  * since a smaller depth means a longer lifetime. A store only into deeper places leaves
  * the minimum unchanged, so nothing about such a store changes and no false positives are
- * introduced. Promoting is always the safe direction: it lengthens a region, and a longer
+ * introduced. Promoting is always the safe direction: it lengthens a pool, and a longer
  * lifetime cannot leave a live reference dangling.
  *
  * Params:
@@ -1165,7 +1165,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* When the origin of the value can be traced to a parameter, accept the store and let
      * the call site judge the lifetime.
      *
-     * The callee is compiled once and does not know the caller's region, so all it can do
+     * The callee is compiled once and does not know the caller's pool, so all it can do
      * is publish the constraint "the data behind argument j lives at least as long as the
      * container the callee stores it into". The call site is able to evaluate that
      * constraint (the `Cont(j)` case in `checkCallRefArgs`).
@@ -1177,8 +1177,8 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
      *
      *   1. The origin of the value can be traced to a formal parameter, so the call site
      *     can compute its lifetime.
-     *   2. The destination is a container reachable through a parameter, so the region of
-     *     that storage is the region of the corresponding argument at the call site.
+     *   2. The destination is a container reachable through a parameter, so the pool of
+     *     that storage is the pool of the corresponding argument at the call site.
      *
      * Precondition 2 cannot be dropped: when the destination is a global (`g = s`), the
      * constraint is "the data must live forever (depth 0)", which the call site's knowledge

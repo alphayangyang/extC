@@ -9,7 +9,7 @@
  */
 
 #include "codegen.h"
-#include "regions.h"      /* the region registry runtime (REGIONS.md phase 1) */
+#include "pools.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
@@ -206,10 +206,10 @@ typedef struct {
      * emits. This keeps compile time proportional to what the program uses.
      *
      * Which types are needed is known only after the bodies are generated, so
-     * the descriptor region is written after the prototypes and before the
+     * the descriptor pool is written after the prototypes and before the
      * bodies - the same layout trick the slice helpers use. */
     Vec         descs;          /* Type* - types needing a table, deduplicated by C name */
-    Buf         desc;           /* descriptor region, prepended to the bodies */
+    Buf         desc;           /* descriptor pool, prepended to the bodies */
     Buf         rt;             /* table types + shared scalars; needed by print or eq */
     Buf         rtPrint;        /* `extc_print` - only if a structured type is printed */
     /* Are we generating `main`? A `?` there traps instead of returning a failure
@@ -248,9 +248,9 @@ typedef struct {
      * declares as an `extern!` -- a program that never touches a terminal does not carry
      * it. */
     bool        needRawTerm;
-    /* Does the program declare a region extern? Then the registry runtime is emitted, and
-     * every function carries the two hooks that key regions to its frame and its blocks. */
-    bool        needRegion;
+    /* Does the program declare a pool extern? Then the registry runtime is emitted, and
+     * every function carries the two hooks that key pools to its frame and its blocks. */
+    bool        needPool;
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -640,7 +640,7 @@ static const char *viewIndexer(CG *g, Type *inst) {
  *
  * Notes:
  *   - Descriptors reference one another; `struct s { xs: slice<s> }` is a cycle.
- *     That is why the region opens with a `static const ExtcDesc X_desc;`
+ *     That is why the pool opens with a `static const ExtcDesc X_desc;`
  *     tentative definition for every descriptor, which makes the definition
  *     order irrelevant.
  */
@@ -704,7 +704,7 @@ static const char *descRef(CG *g, Type *t) {
  */
 /* Remember a top-level definition emitted into the current buffer; `before` is where it
  * started. The finished text decides whether anything names it, exactly like a global. Used in
- * the descriptor region - definitions that are asked for on demand but not always referenced -
+ * the descriptor pool - definitions that are asked for on demand but not always referenced -
  * and a declaration and a definition are two separate pieces, registered under one name. */
 static void deadDefAdd(CG *g, const char *name, size_t before) {
     Buf l;
@@ -793,7 +793,7 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
 /* ------------------------------------------------------- descriptors on demand
  *
  * Only a type that is really printed gets a descriptor. In the synthetic stress
- * program with N=1000 no struct was printed at all, and the descriptor region
+ * program with N=1000 no struct was printed at all, and the descriptor pool
  * came out completely empty.
  *
  * The roots are the argument types of the `extc_print(&x, &x_desc)` calls that
@@ -804,7 +804,7 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
  * Two things this has to get right:
  *   1. Order. Which descriptors are needed is known only after the function
  *      bodies are generated, because `genPrint` runs inside them, while C wants
- *      definitions before uses. The region is therefore written after the
+ *      definitions before uses. The pool is therefore written after the
  *      prototypes and before the bodies, and spliced back in at the end, the
  *      same way the slice helpers are.
  *   2. Cycles. `struct s { xs: slice<s> }` gives `s_desc -> slice_s_desc ->
@@ -877,14 +877,14 @@ static void closeEqNeeds(CG *g) {
     }
 }
 
-/* Write the descriptor region into `g->desc`.
+/* Write the descriptor pool into `g->desc`.
  *
- * The region holds the equality adapters and the descriptor definitions and is
+ * The pool holds the equality adapters and the descriptor definitions and is
  * spliced in between the prototypes and the function bodies.
  */
 static void emitDescRegion(CG *g) {
     /* Nothing structured was printed and no array was compared, so the whole
-     * region - descriptors, printing and comparison - is unnecessary. */
+     * pool - descriptors, printing and comparison - is unnecessary. */
     if (g->descs.len == 0 && g->eqNeed.len == 0) return;
     closeEqNeeds(g);
     Buf *saved = g->out;
@@ -2496,10 +2496,10 @@ static void cgReleaseLevel(CG *g, int lvl) {
     /* Memory only. A block used to close the descriptors it owned first, which is why
      * this is the one place a block release is emitted -- but files are the program's
      * business now (decision 79), so there is nothing to close here. */
-    /* Regions first, then the arena: a region's memory is its own malloc block, so the two are
-     * independent, but releasing the regions that belong to this block is what the block's
-     * release point is for (REGIONS.md section 3.4 - leaving a block takes its subtree). */
-    if (g->needRegion) cgLine(g, "extc_region_releaseLevel(__extc_zone, %d);", lvl);
+    /* Regions first, then the arena: a pool's memory is its own malloc block, so the two are
+     * independent, but releasing the pools that belong to this block is what the block's
+     * release point is for (POOLS.md section 3.4 - leaving a block takes its subtree). */
+    if (g->needPool) cgLine(g, "extc_pool_releaseLevel(__extc_zone, %d);", lvl);
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -3319,18 +3319,18 @@ static void genFunc(CG *g, FuncDef *f) {
      * `tests/arena-promoted/R2a_generic_instance_first.extc`. Every other function receives
      * `__extc_home` as a parameter and needs no array of its own. */
     if (isMain && f->usesHome) g->noArena = false;
-    /* Same reason, for regions: the frame mark and the per-block release hooks hang off the
-     * arena's lifetime, so a `main` that only *uses* a region (it allocates nothing itself)
-     * still needs the frame. Phase 1 keys regions to `main`'s frame; when `new (r) T[n]`
+    /* Same reason, for pools: the frame mark and the per-block release hooks hang off the
+     * arena's lifetime, so a `main` that only *uses* a pool (it allocates nothing itself)
+     * still needs the frame. Phase 1 keys pools to `main`'s frame; when `new (r) T[n]`
      * lands, every function that can create one gets the same treatment. */
-    if (isMain && g->needRegion) g->noArena = false;
+    if (isMain && g->needPool) g->noArena = false;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
-    /* The frame mark: regions created while this frame runs are linked to it, so leaving
-     * the frame drops them whatever their block did (REGIONS.md section 3.5). Emitted where
-     * the arena exists, because hanging regions off an arena level is what this frame does. */
-    if (g->needRegion && !g->noArena)
-        cgLine(g, "int64_t __extc_zone = extc_region_zoneEnter(__extc_a, %d);", maxLv + 1);
+    /* The frame mark: pools created while this frame runs are linked to it, so leaving
+     * the frame drops them whatever their block did (POOLS.md section 3.5). Emitted where
+     * the arena exists, because hanging pools off an arena level is what this frame does. */
+    if (g->needPool && !g->noArena)
+        cgLine(g, "int64_t __extc_zone = extc_pool_zoneEnter(__extc_a, %d);", maxLv + 1);
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
@@ -3496,7 +3496,7 @@ static void genFunc(CG *g, FuncDef *f) {
          * leak one block per arena at every return -- bounded, but a leak. */
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
-        if (g->needRegion) cgLine(g, "extc_region_zoneLeave(__extc_zone);");
+        if (g->needPool) cgLine(g, "extc_pool_zoneLeave(__extc_zone);");
         if (isMain) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the
@@ -4447,7 +4447,7 @@ static size_t countMentionsOutside(const char *hay, const char *name,
  *
  * The text is searched for the definition rather than for a byte offset: the
  * unit is assembled by splicing several buffers together (prototypes, then the
- * descriptor region, then the bodies), so an offset taken at emission time does
+ * descriptor pool, then the bodies), so an offset taken at emission time does
  * not survive. The definition text does.
  *
  * A name that occurs twice or more is kept, whoever mentions it - including
@@ -4809,9 +4809,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isExtern || !f->name) continue;
         if (strcmp(f->name, "extc_raw_enter") == 0) g.needRawTerm = true;
-        /* The region registry, on the same footing: the library declares these through
-         * `extern!`, so their presence is what says the program uses regions at all. */
-        if (f->name && strncmp(f->name, "extc_region_", 12) == 0) g.needRegion = true;
+        /* The pool registry, on the same footing: the library declares these through
+         * `extern!`, so their presence is what says the program uses pools at all. */
+        if (f->name && strncmp(f->name, "extc_pool_", strlen("extc_pool_")) == 0) g.needPool = true;
         if (strcmp(f->name, "extc_cout_put") == 0)  g.needCout    = true;
     }
     vecInit(&g.funcs, arena, sizeof(void *));
@@ -5118,7 +5118,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * lets a container remember which arena it was born in and ask that one
          * for room when it grows. Memory a method allocates therefore outlives
          * the method call, which is the rule that a container allocates into the
-         * region where the container itself lives.
+         * pool where the container itself lives.
          *
          * There is no shared state in the process, since every frame has its own
          * object, so threading will not have to change this structure.
@@ -5737,7 +5737,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
 
 
     /* ------------------------------------------------------------------
-     * The prototype region: every function is declared before any body.
+     * The prototype pool: every function is declared before any body.
      *
      * Only prototypes may appear here, never a definition. The reason is a trap
      * that was hit for real: the comparison of an array is generated by the
@@ -5818,7 +5818,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
     if (g.structs.len || g.insts.len || g.funcs.len) cgLine(&g, "");
 
-    /* ================= the body region: definitions from here on ========== */
+    /* ================= the body pool: definitions from here on ========== */
 
     /* Bodies are written into a temporary buffer first, because a slice helper is
      * discovered to be needed only while generating, and C wants definitions
@@ -5874,7 +5874,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
-    if (g.needRegion) regionsEmitRuntime(arena, out);
+    if (g.needPool) poolsEmitRuntime(arena, out);
     if (g.needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches

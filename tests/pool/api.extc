@@ -17,7 +17,7 @@ fn main() -> i32 {
     let h1 = p.handleAtDense(1)               /* dense 下标 -> handle ✓ */
     println("handleAtDense 读回 = ", p.get(h1) ?? i32(-1))
 
-    p.clear()                                 /* 容量留着复用（不还给 arena —— 那要 region ✓）*/
+    p.clear()                                 /* 容量留着复用（不还给 arena —— 那要 pool ✓）*/
     println("clear 之后 len = ", p.len(), " 且旧 handle 全失效 = ", !p.contains(a) && !p.contains(c))
 
     let d = p.insert(7)

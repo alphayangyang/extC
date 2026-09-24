@@ -23,7 +23,7 @@
  *     remaining entries is not preserved (the same trade `std::pool` makes, and the reason
  *     `atDense` is a valid name for the accessor);
  *   - growth doubles, and the old arrays are left to the arena (`std/linmap` cannot free;
- *     a region will reclaim them, see `docs/topics/REGIONS.md`);
+ *     a pool will reclaim them, see `docs/topics/POOLS.md`);
  *   - indices returned by `find` are **positions**, valid only until the next `put` or
  *     `remove`; `keyAt` / `valAt` are what they are for.
  */
@@ -106,7 +106,7 @@ struct linMap<K, V> {
     fn clear(self: mut ref linMap<K, V>) { self.n = i64(0) }
 
     /* Double the storage and copy both views. The old arrays stay where they are: the
-     * arena cannot free, and a region reclaims them once it exists. */
+     * arena cannot free, and a pool reclaims them once it exists. */
     fn grow(self: mut ref linMap<K, V>) {
         let c = self.cap * i64(2)
         var nk: mut slice<K> = new K[c]

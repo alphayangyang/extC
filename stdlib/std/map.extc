@@ -22,7 +22,7 @@
  *     correct after a removal; they are cleared by a rebuild, which also happens when too
  *     many of them pile up;
  *   - the arrays are arena memory like everything else: rehashing leaves the old arrays
- *     behind (bounded, O(log n) rebuilds over a map's life) and a region will reclaim them
+ *     behind (bounded, O(log n) rebuilds over a map's life) and a pool will reclaim them
  *     in phase 1+ (`docs/topics/REGIONS.md` section 8).
  */
 
@@ -138,7 +138,7 @@ struct mapI64<V> {
         self.dead = i64(0)
     }
 
-    /* Drop everything, keeping the capacity (memory comes back only with a region). */
+    /* Drop everything, keeping the capacity (memory comes back only with a pool). */
     fn clear(self: mut ref mapI64<V>) {
         var i: i64 = 0
         while i < self.cap { self.tag[i] = EMPTY  i = i + i64(1) }

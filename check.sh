@@ -94,20 +94,15 @@ if out=$(timeout 600 ./tests/argv/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（正例 + 边界 + 无参哨兵 + 3 反例）"
 else bad "tests/argv/run.sh"; echo "$out" | tail -8; fi
 
-echo "== 期 0 · slot map（ECS 底座：稳定 handle · dense · churn 不涨 —— 见 REGIONS.md）=="
+echo "== 池（期 0 库级 slot map + 期 1 运行期池注册表：handle · dense · churn 不涨 · 块退出带走子树 —— 见 POOLS.md）=="
 if out=$(timeout 600 ./tests/pool/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（handle/dense/世代 · churn 平 · canary 会响 · ASan）"
 else bad "tests/pool/run.sh"; echo "$out" | tail -8; fi
 
-echo "== 期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 REGIONS.md §10.2）=="
+echo "== 期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 POOLS.md §10.2）=="
 if out=$(timeout 600 ./tests/map/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
 else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
-
-echo "== 期 1 · 区域注册表（表 + 世代 + 父链 + 释放遍历 —— 见 REGIONS.md §8/§9）=="
-if out=$(timeout 600 ./tests/region/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（建/世代/释放 · 块退出带走子树 · churn 容量停在高水位 · -Werror + ASan）"
-else bad "tests/region/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 线性关联容器（std::linmap / std::linset：只用 ==，不依赖 #57 的 hash）=="
 if out=$(timeout 600 bash tests/linmap/run.sh 2>&1); then

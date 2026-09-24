@@ -5,22 +5,22 @@
 // 返回 `failure(staleHandle)` ✓；而在 `main` 里 `?` 掉它 ⇒ 变成带**文件:行**的 trap ✓
 // （定案 89：`main` 里的 `?` 直接 trap ✓）—— 判据（run.sh）同时要这两样：
 // 消息里有 staleHandle，也有本文件的行号 ✓
-use std::sys::region
+use std::sys::pool
 
-type regionError = | staleHandle
+type poolError = | staleHandle
 
 struct handle { rid: i64  gen: u64 }
 
-fn check(h: handle) -> result<unit, regionError> {
-    if region::extc_region_generation(h.rid) != h.gen { return failure(regionError.staleHandle) }
+fn check(h: handle) -> result<unit, poolError> {
+    if pool::extc_pool_generation(h.rid) != h.gen { return failure(poolError.staleHandle) }
     return success(unit {})
 }
 
 fn main() -> i32 {
-    let rid = region::extc_region_new(i64(-1), i64(0))
-    let h = handle { rid: rid, gen: region::extc_region_generation(rid) }
+    let rid = pool::extc_pool_new(i64(-1), i64(0))
+    let h = handle { rid: rid, gen: pool::extc_pool_generation(rid) }
     check(h)?                      /* 此刻是好的：不 trap、继续走 ✓ */
-    region::extc_region_drop(rid)
+    pool::extc_pool_drop(rid)
     check(h)?                      /* 旧 handle ⇒ failure(staleHandle) ⇒ 带位置的 trap ✓ */
     return 0
 }

@@ -7,6 +7,27 @@
 
 ---
 
+## 2026-09-26（第六段）· 机制改名：region -> pool（arena / pool / zone 三分）
+
+> 主人：「你觉得 region 这个名字会不会带来混乱啊，我感觉还是 pool 好些呢」→「那就先把名字换成 pool 吧」
+
+**为什么改**：内存管理领域里 region-based 的 region *就是*本文说的 arena（按作用域整块释放），
+拿它命名「等大元素 + 槽位复用 + 世代 handle + 手动 reset」的东西，读者会先入为主地理解反。
+而作者本人描述它时用的就是「池」。三层名字定死：arena（栈式，块边界整块释放）·
+pool（等大元素、槽位复用、手动 reset/close）· zone（一个地方里的一组 pool，本身也是栈式）。
+
+**动了什么**：`src/regions.c/h` -> `src/pools.c/h`；运行期 `extc_region_*` -> `extc_pool_*`、
+`ExtcRegion` -> `ExtcPool`、`needRegion` -> `needPool`；库模块 `std/sys/region.extc` ->
+`std/sys/pool.extc`；用例并入既有的 `tests/pool/`（`rt_basic` · `rt_blockexit` · `rt_churn` ·
+`rt_stale` · `rt_alloc`），`check.sh` 不再单开一节（池那一节同时覆盖期 0 与期 1）；
+文档 `docs/topics/REGIONS.md` -> `POOLS.md`（正文改口径，作者引文保留原话）。
+节数随之重数：quick **23** / 完整 **29**（README 与 PLAN 同步）。
+
+**改名踩到的坑（记一笔）**：`strncmp(f->name, "extc_region_", 12)` 里的 **12** 是手写长度，
+改名后字符串短了两个字符，前缀比较永远不匹配，运行期文本根本没发射，链接时才报
+undefined reference。已改成 `strlen("extc_pool_")`——手写长度这种东西，改名时最容易被落下。
+---
+
 ## 2026-09-26（第五段）· region 的口径由作者补齐：arena 不是栈，region 是 arena 里的一棵指针树
 
 > 主人的话：「region 是一种基于 ECS/Handle 的内存管理模式……是为了弥补 arena 在管理删增
@@ -45,7 +66,7 @@ region 取 `arenas[level]`、子 region 继承父的 arena，`extc_region_alloc`
 > 主人的话：「唉唉我还没有构思协程和多线程啊」+「我真的有 handle 转移吗，我的多线程想法是
 > redis 数据库同款并发读 + 分块并发写，完全避免数据共享」
 
-**结论**：`REGIONS.md` §9 第 6 条**撤掉** —— 线程之间不共享 region，就没有「谁能拿着 handle
+**结论**：`POOLS.md` §9 第 6 条**撤掉** —— 线程之间不共享 region，就没有「谁能拿着 handle
 过界」的问题要立规矩。这条本来是我按「共享内存 + 所有权」的惯性问出来的，而主人的模型是**零共享**。
 
 **白拿的三条简化**（都写进 §9.6 了）：region 不需要锁/原子/跨线程所有权规则；「一个 region 同时
@@ -54,10 +75,10 @@ region 取 `arenas[level]`、子 region 继承父的 arena，`extc_region_alloc`
 
 **同时老实标出依赖**：**协程**是 region 帧栈的唯一外部假设（帧进/帧退成对 = 调用栈形状），
 协程（有栈/无栈）落地时要重新审「帧」的定义 —— 这不是 region 能替它决定的，已记在 `PLAN.md` 与
-`REGIONS.md` §9.6。
+`POOLS.md` §9.6。
 ---
 
-## 2026-09-26（第三段）· 期 1：区域注册表落地（REGIONS.md §8 的期 1）
+## 2026-09-26（第三段）· 期 1：区域注册表落地（POOLS.md §8 的期 1）
 
 > 主人的话：「先启动1期吧，长任务」+（对"用户无感"那条的确认）「这都是对的，但是理论上STL
 > 不是应该是用户无感的吗」⇒ 定下一条纪律：**region 是容器的实现细节**，用户只在"手动回收"

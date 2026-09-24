@@ -1,6 +1,6 @@
 /* std/pool.extc -- a slot map: stable handles, dense storage, slots get reused.
  *
- * This is phase 0 of the region/ECS plan (`docs/topics/REGIONS.md`): the piece that
+ * This is phase 0 of the pool/ECS plan (`docs/topics/POOLS.md`): the piece that
  * makes churn cheap **without any compiler change**. It answers the first two of the
  * three problems the plan starts from:
  *
@@ -15,7 +15,7 @@
  *      `while i < p.len() { p.atDense(i) }` over contiguous memory.
  *
  * What it does not do (yet, and on purpose):
- *   - it does not own a region, so it cannot give memory back to the arena. `clear()`
+ *   - it does not own a pool, so it cannot give memory back to the arena. `clear()`
  *     reuses the capacity; really returning memory needs `r.reset()` (phase 1+).
  *   - it does not trap on a stale handle: phase 0 has no way to trap with the
  *     **caller's** position (a trap inside this file would point here, not at your
@@ -159,7 +159,7 @@ struct pool<T> {
     }
 
     /* Drop every value but **keep the capacity and the slots** (memory is reused, not
-     * returned -- returning memory needs a region: phase 1). */
+     * returned -- returning memory needs a pool: phase 1). */
     fn clear(self: mut ref pool<T>) {
         var i: i64 = 0
         while i < self.cap {
@@ -238,7 +238,7 @@ struct pool<T> {
         return out
     }
 
-    /* Double the capacity. The old arrays stay in the arena (that is what a region will
+    /* Double the capacity. The old arrays stay in the arena (that is what a pool will
      * fix in phase 1+); because the same pool object is reused, this happens O(log n)
      * times over its life, so the waste is bounded, not linear. */
     fn grow(self: mut ref pool<T>) {
