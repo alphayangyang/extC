@@ -7489,3 +7489,25 @@ examples/globals.extc        332 行 →  300 行（-32，-10%）
 
 **实测**（`-Wall -Wextra` 两编译器均 0、零错误 ✓）：`tour` 606 行 `-Weverything` 1 → **0** ·
 `types` 264 行 1 → **0** · `globals` 298 行 **0** ✓
+
+### 2026-09-26 · 新增一道体检：clang-tidy（主人问"performance-* 现在如何"）
+
+主人问的，量了一下 —— 这是个**新维度**（编译器警告之外，静态分析器怎么看生成物 ✓）：
+
+```
+clang-tidy -checks='-*,performance-*' <生成物> -- -std=c11
+89 个 examples 生成物：performance-* 合计 **0 条**
+（clang-tidy 21.1.8 ✓ 确认在分析：-checks='*' 下会报出一堆类别 ✓）
+```
+
+**为什么是 0**：`performance-*` 里绝大多数是 **C++ 专用**（`performance-unnecessary-value-param` ·
+`performance-inefficient-string-concatenation` · `performance-move-const-arg` ✓），
+对 C 适用且可能触发的只有几条（`performance-no-int-to-ptr` · `performance-faster-string-find` ✓），
+生成物恰好都不碰 ✓（`strstr` 只在预置的 `extc_eq` 里用过、且 needle 是多字符 ✓）。
+
+**顺带看到的（不属 performance，但值得记）** —— `-checks='*'` 下生成物的前几类：
+`cppcoreguidelines-avoid-non-const-global-variables`（11，C++ 指南 ✗ 流对象本来就要可变 ✓）·
+`altera-struct-pack-align`（9，与 `-Wpadded` 同一件事：布局要跟描述符表一致 ✗ 不能改）·
+`readability-identifier-length`（7，`e`/`n` 这类局部名 ✓ 语言允许 ✓）·
+`bugprone-implicit-widening-of-multiplication-result`（3 ✓ 看过了：`static int64_t BOARD_SIZE = (15 * 15);`
+—— 乘法在 `int` 里做、之后加宽 ✓ **这正是 extC 的语义**（`i32 * i32` 就是 32 位乘法 ✓）⇒ 不是 bug ✓）
