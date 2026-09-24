@@ -1332,6 +1332,28 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttFromName(tt, "i32");
             }
 
+            /* `closeFd(fd)` closes a descriptor early (before the block ends) and makes
+             * every table forget it, so the block exit will not close it twice. The
+             * library wraps it as `close()` on a file handle.
+             *
+             * Unlike `ownFd`, the argument is named once, so any integer expression is
+             * fine. */
+            if (strcmp(name, "closeFd") == 0) {
+                if (e->u.call.args.len != 1) {
+                    ckError(c, e->line, "`closeFd(fd)` takes exactly one argument.",
+                            "closeFd takes 1 argument");
+                    return ttFromName(tt, "i32");
+                }
+                Type *at = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 0));
+                if (!ttIsInteger(at)) {
+                    ckError(c, e->line, "`closeFd(fd)` takes a file descriptor, which is an integer.",
+                            "closeFd expects an integer");
+                    return ttFromName(tt, "i32");
+                }
+                if (c->curFunc) c->curFunc->fdSites++;
+                return ttFromName(tt, "i32");
+            }
+
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);

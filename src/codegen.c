@@ -151,6 +151,9 @@ typedef struct {
      * `extc_fd __extc_fd[N]`, and every block release also has to close what the
      * block owns -- before the memory it lives in goes back. */
     bool        needFd;
+    /* How many levels `__extc_fd` has, for the one runtime call that has to search
+     * every level (`closeFd`): a handle may have been acquired in an outer block. */
+    int         fdLevels;
 } CG;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
@@ -1444,6 +1447,15 @@ static const char *genExprInner(CG *g, Expr *e) {
              * level and yields the same value, so it reads as `let fd = ownFd(open(..))`.
              * The argument is named twice, which the checker has already restricted
              * to a repeatable expression. */
+            /* `closeFd(fd)` closes a descriptor and tells every table to forget it,
+             * so the block exit will not close it again. The library wraps this as
+             * the `close()` of a file handle. */
+            if (strcmp(name, "closeFd") == 0) {
+                if (e->u.call.args.len != 1) return "0";
+                const char *fd = genExpr(g, *(Expr **)vecAt(&e->u.call.args, 0));
+                return arenaPrintf(g->arena,
+                    "extc_fd_closeAll(__extc_fd, %d, (int)(%s))", g->fdLevels, fd);
+            }
             if (strcmp(name, "ownFd") == 0) {
                 if (e->u.call.args.len != 1) return "0";
                 const char *fd = genExpr(g, *(Expr **)vecAt(&e->u.call.args, 0));
@@ -2868,6 +2880,7 @@ static void genFunc(CG *g, FuncDef *f) {
     if (g->needFd) g->noArena = false;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    g->fdLevels = maxLv + 1;
     if (g->needFd)
         cgLine(g, "extc_fd __extc_fd[%d] = {0};", maxLv + 1);
     if (f->owLocal)
@@ -3695,6 +3708,17 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * costs nothing. A node whose fd is already -1 was closed explicitly and
          * is skipped -- closing it twice would shut a descriptor the kernel has
          * since handed to somebody else. */
+        /* Close one descriptor **now** and make every table forget it: the block
+         * exit must not close it a second time, because by then the number may
+         * belong to somebody else. Every level is searched, since the handle may
+         * have been acquired in an outer block. The value is what close(2)
+         * returned, so the library can report a deferred write error. */
+        "static inline int extc_fd_closeAll(extc_fd *tbl, int n, int fd) {\n"
+        "    for (int i = 0; i < n; i++)\n"
+        "        for (extc_fdnode *m = tbl[i].top; m; m = m->next)\n"
+        "            if (m->fd == fd) m->fd = -1;\n"
+        "    return close(fd);\n"
+        "}\n"
         "static inline void extc_fd_release(extc_fd *t) {\n"
         "    for (extc_fdnode *n = t->top; n; n = n->next)\n"
         "        if (n->fd >= 0) close(n->fd);\n"

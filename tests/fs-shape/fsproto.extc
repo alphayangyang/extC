@@ -104,6 +104,8 @@ fn main() -> i32 {
                 readFailed(code)  => { println("  readFailed(", code, ")") }
                 writeFailed(code) => { println("  writeFailed(", code, ")") }
                 lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
+                closed(code)      => { println("  closed(", code, ")") }
+                destFull(n)       => { println("  destFull(", n, ")") }
             }
             return 1
         }

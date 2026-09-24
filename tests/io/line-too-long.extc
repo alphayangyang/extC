@@ -12,6 +12,8 @@ fn go() -> result<unit, io::ioError> {
             lineTooLong(k)  => println("lineTooLong ✓ (", k, " 字节)")
             readFailed(fd)  => println("错报成读失败 ✗")
             writeFailed(fd) => println("不该是写失败 ✗")
+            closed(fd)      => println("不该是已关闭 ✗")
+            destFull(k)     => println("不该是缓冲太小 ✗")
         }
     }
     return success(unit {})

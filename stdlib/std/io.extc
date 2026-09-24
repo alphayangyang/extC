@@ -59,6 +59,8 @@ use std::sys::io
  * (`lineTooLong(i64)`) or which fd failed (`readFailed(i32)`); a message like
  * `failed(5)` tells the user nothing. */
 type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32)
+               | closed(i32)        /* 用了一个已经关掉的句柄 —— 那是程序 bug，但**看得见** ✓ */
+               | destFull(i64)      /* `readAll`：目标缓冲满了，而文件还有数据 ⇒ 不静默截断 ✗ */
 
 /* Block size: **64KB**, one of the sizes that measured fastest.
  * Measured on a 291MB file: 64B 0.62s/469MB/s (4.7 million syscalls) - 4KB

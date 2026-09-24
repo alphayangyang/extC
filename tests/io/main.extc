@@ -48,6 +48,8 @@ fn main() -> i32 {
                 readFailed(fd)  => println("io: 读失败 (fd = ", fd, ")")
                 lineTooLong(n)  => println("io: 一行太长了（", n, " 字节）")
                 writeFailed(fd) => println("io: 写失败 (fd = ", fd, ")")
+                closed(fd)      => println("io: 句柄已关闭 (fd = ", fd, ")")
+                destFull(n)     => println("io: 缓冲太小（读到 ", n, " 字节）")
             }
             return 1
         }
