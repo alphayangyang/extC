@@ -1,9 +1,9 @@
 /* std/proc.extc -- the process, as the user sees it.
  *
- * A thin layer over `std::sys::process` so user code never writes `std::sys::*` itself
+ * A thin layer over `std::sys::proc` so user code never writes `std::sys::*` itself
  * (`docs/topics/LIBS.md` section 5: the privileged layer is for the library author).
  */
-use std::sys::process as sysproc
+use std::sys::proc as sysproc
 
 /* End the program with this status now. `0` means success and anything else means
  * failure, exactly as C's `exit` and the shell see it.

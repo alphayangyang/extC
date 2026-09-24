@@ -1,0 +1,19 @@
+/* std/sys/proc.extc -- the privileged layer for the process family
+ * (`docs/topics/IO.md`, "tier 1 primitives"; `docs/topics/LIBS.md` section 5).
+ *
+ * One file per family: `std::sys::thread`, `std::sys::time`, `std::sys::net`,
+ * `std::sys::proc`. `sys::` marks only "this is the extern! layer"; the short name is
+ * the last path segment, so a reference reads `sysproc::exit`.
+ *
+ * ⚠️ This file is `proc` and the user-facing one is `std::proc`: the stdlib's layering
+ * pattern is `std::X` over `std::sys::X`, so the two share a last segment -- which is
+ * exactly the shape that used to resolve a qualified reference to **itself** (unbounded
+ * recursion, no diagnostic: PLAN.md section 0.4, `#56`). That defect is fixed, and this
+ * pair is now the standard library's own regression test for it: `std::proc::exit`
+ * wraps `std::sys::proc::exit` and declares the same name, so if the loader ever binds
+ * the qualified call back to this module, `proc::exit(7)` recurses instead of exiting
+ * and `tests/io/exit-code.extc` fails loudly ✓
+ * (It was briefly named `process` while the defect was open.)
+ */
+extern!("libc") fn exit(code: i32) -> void
+    effects Addr=0 Cont=0
