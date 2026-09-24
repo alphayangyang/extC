@@ -289,13 +289,27 @@ IO-0 主体**已落地**（2026-09-23 定案 74：`reader` + `nextInt` 一族 + 
 **复现配方**：把 `tools/loc.extc` 的 `countOne` 签名改回 `(tot: mut ref total, raw: slice<u8>)`，
 调用点写 `countOne(tot, line[..n])` ⇒ 稳定复现 ✓
 **合法替代（现在就是这么写的）**：不做出参，改成**返回值 + 调用点累加** ⇒ 那条规则根本不触发 ✓
-⚠️ **已排除的形状**（**14 个探针全编过**）：`mut ref` 累加器 + slice 实参 · 体里 `println(slice)` ·
-被调者碰 `extern`（`open/read/close`）· 局部视图传给纯函数 · 方法带 `mut ref` 参数 ·
-方法**存进**它的 `mut ref` 参数 · 直接写 `mut ref` 参数的字段 ·
-中间层拿的是**参数**（深度 0）而局部视图在更里层 ✓
-⇒ **触发点在 `countPath`（含 `scanline` 两个方法调用）与调用点的相互作用里，没最小化出来** ——
-把那两个方法调用删掉就编过，边界就在这儿 ✓ **不记编号缺陷**（不漏 UB、也不误拒常见写法，
-与 **#14** 同档：这是"算不出来就保守拒"的已知代价）✓
+✅ **根因已定位（2026-09-24 当晚，一行）**：`print` / `println` 是**按名字派发的内建、没有 `FuncDef`**
+（`check_expr.c:1405`）⇒ `collectEffectsExpr` 那句
+
+    if ((EX_CALL || EX_METHOD || EX_ASSOC) && !e->func) f->effUnknown = true;
+
+把**打印过的函数**标成"摘要永远不完整" ⇒ 它的**每一个调用点**都退到最坏情况那条规则
+（`contMaybe && !complete` ⇒ 逐个实参按最坏算）⇒ 再叠上"落点是 `mut ref` **参数**（h=0）
++ 实参是局部视图（d=1）"就拒 ✓
+**实测判据是 dump 里的 `complete` 位**（`EXTC_DUMP_EFFECTS=1`）：
+`fn f(a: mut ref acc, raw: slice<u8>) { a.add(i64(raw.len)) }` ⇒ **1**；
+加上 `println(raw)` ⇒ **0**；加上 **`println("hi")`（连 slice 实参都没有）也 ⇒ 0** ✓
+**反证（extern 是被信任的）**：整条 IO 链 `fs::openRead` · `readSome` · `close` · `io::nextLine`
+**全是 `complete=1`、掩码全 `0x0`** —— `computeEffectsTransitive` 里明写
+*"we choose to trust the declaration. Never let the absence of a body turn into an empty summary"* ✗
+⇒ 我先前记的"触发点没最小化出来"**是错的**，而"**extern 让边界变严**"这条更**说反了** ✓
+**修法（已议，暂不做）**：给这类内建一份**正确的**摘要（只读参数、什么都不存 ⇒ `complete=1`、
+掩码全 0），写成**显式表**，而不是把"解析不了的调用"一刀放宽 ✓
+⏸️ **主人 2026-09-24：「暂时可以不修；未来估计会做格式化输出（支持变参），虽然没想好怎么做」**
+⇒ ⚠️ **这张内建表要跟格式化输出一起设计**（"内建家族 = 已知摘要"，而不是"没有 `FuncDef` 的调用"），
+否则变参那一族会把同一个坑再挖一遍 ✓
+⚠️ **流程教训**：dump **两个命令**就出答案，我却先写了**二十来个探针**去猜 ✗ ⇒ **先看 dump，再写探针** ✓
 
 **⑥ 铁律自检当前报出的违反处**：`EXTC_SELFCHECK=1 ./build/extc <file>` 会核
 "`refDepth` 与 `arenaLevel` 是否描述同一个事实"，扫全语料**目前报 9 处**（见 `docs/DEVLOG.md`
