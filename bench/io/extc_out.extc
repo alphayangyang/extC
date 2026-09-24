@@ -1,0 +1,40 @@
+/* extC · 输出：`cout` / `fs::fout` 的 `<<` ✓
+ * 契约：`out <文件|-> <n>` ⇒ 写 n 行 "i i*i" ✓ */
+use std::fs
+use std::io::{cout, endl}
+
+fn writeStdout(n: i64) {
+    var i: i64 = 0
+    while i < n {
+        cout << i << " " << i * i << endl
+        i = i + 1
+    }
+}
+
+fn writeFile(n: i64) {
+    var o: fs::outStream = fs::fout
+    var i: i64 = 0
+    while i < n {
+        o << i << " " << i * i << endl
+        i = i + 1
+    }
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len < 3 { println("用法: out <文件|-> <n>"); return 2 }
+    var n: i64 = i64(0)
+    /* 参数文本 → 整数：用 fs 的流式读法读一个 `slice<u8>`？这里简单手写 ✓ */
+    var k: i64 = 0
+    while k < args[2].len {
+        n = n * i64(10) + i64(args[2][k] - u8(48))
+        k = k + 1
+    }
+    if args[1] == "-" {
+        writeStdout(n)
+    } else {
+        fs::openOut(args[1])?
+        writeFile(n)
+        fs::closeOut()?
+    }
+    return 0
+}

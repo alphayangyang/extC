@@ -319,6 +319,27 @@ stderr 是**诊断**通道 ✓ 所以补的是 `cerr`（诊断），不是把 pr
 判据 `tests/io/cerr.extc` + 重定向断言（stdout 只有正常输出 · stderr 只有诊断 · 顺序对 ·
 负数格式化对 ✓）⇒ io 节 **24 项** rc=0 ✓ 语料 **256/0** ✓ fs/ops/modules 全绿 ✓
 
+### ⑯ IO 速度大横评（`bench/io/` + `docs/topics/IO-BENCH.md`）
+
+主人要求 extC 流 vs C++（14/latest）· Rust · Go · Java · C，**输入/输出、文件/控制台分开** ✓
+10M 行 / 117.8MB 输入、224.3MB 输出，每格 3 次取最快 ✓ 结论（详见文档）：
+
+- ⭐ **extC 输入 303ms**（389MB/s，**7MB 内存**）：与 Rust 并列，比 Go（403）快、比 Java（603）快、
+  比**默认 C++ cin（1504）快 5×** ✓ 控制台与文件**同速**（程序级流没有额外代价 ✓）
+- ⭐ **extC 文件输出 404ms**：与 Rust 并排 ✓
+- ⚠️ **extC 的 `cout` 是唯一短板：3407ms**（C 的 11×、自家 `fout` 的 8.4× ✗）——
+  原因清楚：`cout` 走**内建 print**（每操作数一次 printf、缓冲不可控 ✗），`fout` 走库自己的
+  格式化 + 缓冲 ✓ ⇒ **cout 应该改成与 fout 同一条路**，这也是 print 退役那条线的实测理由 ✓（PLAN 记优化行）
+- **C++：版本无关，开关有关** —— 14 与 latest 一模一样；`sync_with_stdio(false)` 3.7×、`"\n"` 换 `endl` 3× ✓
+- Go 输出最快（`strconv.AppendInt` 避开 fmt 反射 ✓）· Java 启动 103ms + 大内存 ✗ ·
+  Rust `read_to_string` 用 114MB 换速度 ✓
+
+⚠️ **测量的坑（第一版整张表是假的）**：用 `date +%s%N` 计时，每次 **fork 两次**，而 WSL 进程创建
+~50ms ⇒ 所有格子都成了 107/207/407ms，**量的是测量开销** ✗ 真实值 C 读 11.7MB 只要 **9ms** ✓
+⇒ 改用 bash 内建 `$EPOCHREALTIME`（零 fork ✓）+ 数据放大到 10M 行 + RSS 单独一趟量 ✓
+另：第一次跑还**挂住**了 —— stdin 场景忘了把数据喂进去，每个程序在等一个永不到来的 EOF ✗
+⇒ 现在每一格都套 `timeout`（挂住=失败，不是无限等 ✓ 这条本仓库写过好几遍，我又踩了一次 ✗）✓
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·

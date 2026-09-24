@@ -1,0 +1,45 @@
+/* extC · 输入：`fs::fin` / `cin` 的流式 `>>`（本轮新做的那套 ✓）
+ * 契约：`in <文件|->` ⇒ 读所有整数，打印总和 ✓
+ * 注意：`fs::fin.bad()` 这种"限定名的全局上调方法"今天还不支持（PLAN #66）⇒
+ *       先把它拷进一个**薄句柄**局部（句柄只装状态指针的语义 ⇒ 拷贝无害 ✓）*/
+use std::fs
+use std::io::{cin, inBad}
+
+fn sumStdin() -> i64 {
+    var total: i64 = 0
+    var a: i64 = 0
+    var b: i64 = 0
+    while true {
+        cin >> a >> b
+        if inBad() { break }
+        total = total + a + b
+    }
+    return total
+}
+
+fn sumFile() -> i64 {
+    var f: fs::inStream = fs::fin
+    var total: i64 = 0
+    var a: i64 = 0
+    var b: i64 = 0
+    while true {
+        f >> a >> b
+        if f.bad() { break }
+        total = total + a + b
+    }
+    return total
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len < 2 { println("用法: in <文件|->"); return 2 }
+    var total: i64 = 0
+    if args[1] == "-" {
+        total = sumStdin()
+    } else {
+        fs::openIn(args[1])?
+        total = sumFile()
+        fs::closeIn()?
+    }
+    println(total)
+    return 0
+}

@@ -1,0 +1,56 @@
+== 构建 ==
+  全部构建完成 ✓
+== 校验（所有实现必须给出同一个答案）==
+  输入侧一致：sum = 999957868929 ✓
+  重定向 stdin 与文件路径给出同一个答案 ✓
+  输出侧一致（md5 5f016ff573efd9942e90c71df464d2fe ✓，10000000 行）
+
+== ① stdin 输入（数据 117776319 字节，读 10000000 行）==
+实现                       毫秒 峰值MB
+extc  cin >> (流)              303        7
+C     fread+手写解析        103        7
+C++14 cin 默认               1504        7
+C++14 cin sync(false)           403        7
+C++20 cin 默认               1505        7
+C++20 cin sync(false)           403        7
+Rust  读整块+split           303      114
+Go    Scanner+ScanWords         403        7
+Java  BufferedReader+ST         603      247
+
+== ② 文件输入（同一份数据，按路径打开）==
+实现                       毫秒 峰值MB
+extc  fin >> (流)              303        7
+C     fread+手写解析        103        7
+C++14 cin 默认(ifstream)      403        7
+C++14 cin sync(false)           403        7
+C++20 cin 默认(ifstream)      403        7
+C++20 cin sync(false)           404        7
+Rust  读整块+split           303      114
+Go    Scanner+ScanWords         403        7
+Java  BufferedReader+ST         603      246
+
+== ③ stdout 输出（写 10000000 行，重定向到 /dev/null）==
+实现                       毫秒 峰值MB
+extc  cout << (流)            3407        7
+C     手写缓冲+write        303        7
+C++20 cout 默认 (\n)          503        7
+C++20 cout sync(false)          403        7
+C++20 cout **endl**            1204        7
+C++20 cout fast+**endl**       1204        7
+Rust  BufWriter                 303        7
+Go    bufio+AppendInt           202        7
+Java  BufferedWriter+SB         303      159
+
+== ④ 文件输出（写 10000000 行，224264135 字节，同一块盘）==
+实现                       毫秒 峰值MB
+extc  fout << (流)             404        7
+C     手写缓冲+write        303        7
+C++20 cout sync(false)          503        7
+Rust  BufWriter                 403        7
+Go    bufio+AppendInt           303        7
+Java  BufferedWriter+SB         403      159
+
+== JVM 启动基线（Java 的数字要减掉它才公平）==
+实现                       毫秒 峰值MB
+Java  no-op                     103       40
+rc=0
