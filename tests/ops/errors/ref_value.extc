@@ -1,0 +1,11 @@
+/* 反例：流运算符的结果是**借来的引用**，不是值 ⇒ 不能存进变量（值位置仍要 `*p`）✗ */
+struct nums { v: i64
+    fn >>(self: mut ref nums, out: mut ref i64) -> mut ref nums { *out = self.v  return self }
+}
+fn main() -> i32 {
+    var st: nums = { v: 1 }
+    var a: i64 = 0
+    var r = st >> a          /* ✗ 引用不是值 */
+    println("不该编过")
+    return 0
+}

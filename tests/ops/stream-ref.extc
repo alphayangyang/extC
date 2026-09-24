@@ -1,0 +1,36 @@
+// expect: 逐个读 = 10 20 30|读了三项，位置 = 3|按值链式照旧 = 7
+/* **有状态的流**：`>>` 返回 `mut ref T`（定案 88，C++ 的 `istream&` 那条路）✓
+ *
+ * 为什么必须按引用：状态（读到哪了）在流**自己身上**，而 `a >> b` 站在 `a` 的位置上
+ * ⇒ 按值返回的话，第二跳拿到的是**副本**，位置写进副本、原件不动 ✗
+ * 按引用返回 ⇒ 三跳是**同一个对象**，位置连着走 ✓
+ *
+ * ⚠️ 代价与边界（同一张定案）：结果是**借来的引用**，不是值 ⇒
+ *   `var r = st >> a` 与 `f(st >> a)` 都**必须编不过**（值位置仍要 `*p`）✓
+ *   见 errors/ref_value.extc 与 errors/ref_arg.extc ✓
+ *
+ * 按值返回的 `<<`（控制台那种薄句柄）**照旧**成立 —— 两种形状并存 ✓ */
+struct nums { v: i64  n: i64
+    fn >>(self: mut ref nums, out: mut ref i64) -> mut ref nums {
+        self.n = self.n + 1
+        *out = self.v * self.n
+        return self
+    }
+}
+struct out2 { last: i64
+    fn <<(self: ref out2, v: i64) -> out2 { return { last: v } }   /* 按值：链式也成立 ✓ */
+}
+fn main() -> i32 {
+    var st: nums = { v: 10, n: 0 }
+    var a: i64 = 0
+    var b: i64 = 0
+    var c: i64 = 0
+    st >> a >> b >> c
+    println("逐个读 = ", a, " ", b, " ", c)
+    println("读了三项，位置 = ", st.n)
+
+    var o: out2 = { last: 0 }
+    var o2: out2 = o << i64(7)          /* 按值返回：新句柄要接住（薄句柄那种流才不需要 ✓）*/
+    println("按值链式照旧 = ", o2.last)
+    return 0
+}

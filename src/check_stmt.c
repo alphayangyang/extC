@@ -220,6 +220,11 @@ void checkStmt(Checker *c, Stmt *s) {
              * call, as in `let r = pickFirst(ref a, ref b)`. */
             else                               it = checkExpr(c, s->u.var.init);
 
+            /* A stream borrow is the one reference that may not be bound, even here: it
+             * is the operator's own borrow of the stream, not a reference the user asked
+             * for (docs/DECISIONS.md 88). */
+            rejectStreamBorrow(c, s->u.var.init);
+
             /* Decide after the initializer has been checked: `checkExpr` sets the
              * home depth from the arguments, and this call overrides it with the depth
              * the value is really being stored at. */
@@ -619,7 +624,15 @@ void checkStmt(Checker *c, Stmt *s) {
             /* `f()?` as a statement on its own: the most useful of the four places
              * where `?` is allowed, meaning "this step has to succeed, or the whole
              * chain fails". */
-            checkMaybeTry(c, s->u.expr.expr);
+            if (s->u.expr.expr && s->u.expr.expr->kind == EX_TRY) {
+                checkMaybeTry(c, s->u.expr.expr);
+                return;
+            }
+            /* A discarded expression is **not a value position**: nothing is read out of
+             * it, so a reference result is fine here -- and it has to be, because that is
+             * what `fin >> x >> line;` produces (docs/DECISIONS.md 88). `checkValue` stays
+             * the rule everywhere a value is actually needed. */
+            checkExpr(c, s->u.expr.expr);
             return;
 
         case ST_RETURN: {

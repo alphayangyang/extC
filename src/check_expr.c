@@ -327,7 +327,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tBool;
             }
 
-            Type *lt = checkValue(c, e->u.bin.left);
+            /* `<<` and `>>` take their left operand as a **receiver**, not as a value:
+             * the first `>>` of `fin >> x >> line` returns `mut ref fin`, and the second
+             * one continues from that very object, so the value-position rule ("a
+             * reference is not a value, write `*p`") must not fire on this operand
+             * (docs/DECISIONS.md 88). Every other operator keeps the rule. */
+            bool shiftRecv = op0[0] == '<' || op0[0] == '>';
+            Type *lt = shiftRecv ? checkExpr(c, e->u.bin.left) : checkValue(c, e->u.bin.left);
             Type *rt = checkValue(c, e->u.bin.right);
             const char *op = e->u.bin.op;
 
@@ -453,7 +459,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             if (isBitOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return ttError(tt);
-                if (isRef(lt) || isRef(rt)) return refNotANumber(c, e, lt, rt, op);
+                /* A **reference receiver** is allowed for the stream operators only, and
+                 * only when its base type is a struct that defines the operator: that is
+                 * what makes `fin >> x >> line` work, because the first `>>` returns
+                 * `mut ref ifstream` and the second one continues from that same object
+                 * (docs/DECISIONS.md 88). Everything else still reports "reference where a
+                 * number belongs", which is the sentence that helps. */
+                bool streamRecv = (op[0] == '<' || op[0] == '>') &&
+                                  isRef(lt) && structOf(ttBase(lt)) != NULL;
+                if (!streamRecv && (isRef(lt) || isRef(rt)))
+                    return refNotANumber(c, e, lt, rt, op);
                 /* `<<` and `>>` are shifts for integers and stream operators for a type
                  * that defines them. Which one applies is decided by the *static type of
                  * the left operand*, so this is a branch rather than overload resolution:

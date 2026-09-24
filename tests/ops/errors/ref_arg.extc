@@ -1,0 +1,11 @@
+/* 反例：引用结果也不能当实参传出去 ✗ */
+struct nums { v: i64
+    fn >>(self: mut ref nums, out: mut ref i64) -> mut ref nums { *out = self.v  return self }
+}
+fn take(x: nums) -> i64 { return x.v }
+fn main() -> i32 {
+    var st: nums = { v: 1 }
+    var a: i64 = 0
+    println("不该编过 = ", take(st >> a))     /* ✗ 值位置 */
+    return 0
+}

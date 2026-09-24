@@ -480,6 +480,8 @@ typedef struct {
  Type *checkInto (Checker *c, Type *want, Expr *e);
 /* Check an expression that may be `e?`, which is legal in statement positions. */
  Type *checkMaybeTry (Checker *c, Expr *e);
+ bool rejectStreamBorrow (Checker *c, Expr *e);
+ bool isStreamBorrow (Expr *e);
 /* Check an argument of `print` or `println`, which dereferences a reference because printing an
  * address is never what the user means. */
  Type *checkPrintArg (Checker *c, Expr *e);

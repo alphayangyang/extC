@@ -46,6 +46,9 @@ run_case builtin
 echo "== ① 流运算符 << 与 >>：它们是两个 < / > 记号，却在可重载集合里 =="
 run_case stream
 
+echo "== ①b 有状态的流：<< / >> 可返回 mut ref T（借来的同一个对象，链式靠它）=="
+run_case stream-ref
+
 echo "== ② 一个运算符名可以重名，靠**右操作数类型**区分 =="
 run_case hetero
 # 名字面：两份重载在生成的 C 里必须是**两个函数**（后缀编码右操作数类型），否则重名就白放了 ✗
@@ -99,6 +102,9 @@ check_err tests/ops/errors/sig_arith_wrong_ret.extc    'must return `bad`'
 # 下面两条钉着一条修掉的缺陷：泛型实例的判据曾经比具体类型**松**（枚举/bool 都能序）✗
 check_err tests/ops/errors/instance_enum_order.extc    'cannot apply `<` to `order`'
 check_err tests/ops/errors/instance_bool_order.extc    'cannot apply `<` to `bool`'
+# 流运算符的**引用结果**边界：它是借来的，不是值 ⇒ 存起来 / 传出去都必须挡住 ✓
+check_err tests/ops/errors/ref_value.extc               'can only be chained'
+check_err tests/ops/errors/ref_arg.extc                 'can only be chained'
 
 echo "== 那三条“实例化时才检查”的诊断不许来自 gcc（生成物里的报错用户看不见源码）=="
 out=$("$EXTC" tests/ops/errors/instance_missing.extc -o /dev/null 2>&1)

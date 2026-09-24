@@ -1703,12 +1703,27 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
             return;
         }
     } else {
-        /* The result has to be the owner type itself, and by value: the checker types
-         * `a + b` as the operand type, so a `ref` result would make the C signature and
-         * the recorded type disagree. */
-        Type *rb = (f->ret && f->ret->kind != TY_REF) ? ttBase(f->ret) : NULL;
-        if (!rb || rb->sdef != f->owner) {
-            ckError(c, f->line, whyArith,
+        /* The result has to be the owner type. By **value** is the rule for arithmetic:
+         * the checker types `a + b` as the operand type, and the result stands where `a`
+         * stood.
+         *
+         * The stream operators `<<` and `>>` may also return the owner **by reference**.
+         * That is what a stateful stream needs to chain (`fin >> x >> line`): the result
+         * is the same object rather than a copy of it, so the position that the first
+         * `>>` advanced is the one the second one continues from. A copy would carry its
+         * own position and the original would never move (docs/DECISIONS.md 88, the
+         * `istream&` shape that C++ settled on).
+         *
+         * Only these two names get the second form. `a + b` returning a reference would
+         * put a reference where the language says a value stands, and nothing about
+         * addition needs it. */
+        bool isStream = strcmp(f->name, "<<") == 0 || strcmp(f->name, ">>") == 0;
+        Type *rb = f->ret ? ttBase(f->ret) : NULL;
+        if (!rb || rb->sdef != f->owner || (!isStream && f->ret->kind == TY_REF)) {
+            ckError(c, f->line,
+                    isStream ? "a stream operator may return the stream by value or by"
+                               " reference (`-> T` or `-> mut ref T`)"
+                             : whyArith,
                     "operator `%s` must return `%s`", f->name, f->owner->name);
             return;
         }
@@ -1837,6 +1852,7 @@ Type *checkInto(Checker *c, Type *want, Expr *e) {
      * the full name need not be written out. */
     if (want) desugarBareCtor(c, e, want);
     Type *got = checkExpr(c, e);
+    rejectStreamBorrow(c, e);
     /* As in `checkValue`: a reference supplied where no reference is expected is an
      * error. */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
@@ -1884,6 +1900,48 @@ Type *checkPrintArg(Checker *c, Expr *e) {
  *
  * Returns:
  *   The type of the unwrapped payload for `?`, otherwise the value type. */
+/* Is this expression the **borrow** that a stream operator hands back?
+ *
+ * `fin >> x` returns `mut ref ifstream`: the same object, so that the next `>>`
+ * continues from the position this one advanced to. It is not a value, and unlike
+ * `pickFirst(ref a, ref b)` -- where the user wrote `ref` and asked for a reference --
+ * nothing was asked for here: the borrow is the operator's own doing. Storing it would
+ * give a second name to one reader whose position is visible in neither name, so it is
+ * refused with a message that says what to do instead.
+ *
+ * Params:
+ *   e - the expression
+ *
+ * Returns:
+ *   True when this is a `<<` / `>>` whose result is a reference. A shift's result is an
+ *   integer, so it can never answer true.
+ */
+bool isStreamBorrow(Expr *e) {
+    if (!e || e->kind != EX_BIN || !e->u.bin.op) return false;
+    const char *op = e->u.bin.op;
+    if (op[0] != '<' && op[0] != '>') return false;
+    return e->type && e->type->kind == TY_REF;
+}
+
+/* Report a stored stream borrow.
+ *
+ * Params:
+ *   c - checker
+ *   e - the initializer, argument or returned expression
+ *
+ * Returns:
+ *   True after reporting, so the caller can stop treating the value as usable.
+ */
+bool rejectStreamBorrow(Checker *c, Expr *e) {
+    if (!isStreamBorrow(e)) return false;
+    ckError(c, e->line,
+            "The stream is not copied: `fin >> x` hands back `fin` itself, so there is"
+            " nothing new to keep -- carry on with `fin`.",
+            "a stream operator's result is a borrow of the stream, not a value -- it can"
+            " only be chained (`fin >> x >> y`)");
+    return true;
+}
+
 Type *checkMaybeTry(Checker *c, Expr *e) {
     if (e && e->kind == EX_TRY) return checkTryInner(c, e);
     return checkValue(c, e);
