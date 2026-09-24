@@ -38,7 +38,17 @@ echo "== ③ churn：内存平（容量 = 高水位，与创建次数无关）==
 # acc = 1+2+…+200000（世代每次复用都自增 ✓ 这正是"旧 handle 查得出来"的机制 ✓）
 check churn tests/region/churn.extc "live=0 cap=64 gen=0 acc=20000100000"
 
-echo "== ④ 吞吐基线（期 1 没有类型化分配/遍历 ⇒ 先量注册表本身：建/放各 20 万次）=="
+echo "== ④ 旧 handle：带位置的 failure/trap（§3.3：bug ⇒ trap、条件 ⇒ 值）=="
+out=$("$EXTC" --run tests/region/stale.extc 2>&1); rc=$?
+if [ "$rc" = 1 ] && echo "$out" | grep -q "staleHandle" && echo "$out" | grep -q "tests/region/stale.extc:24"; then
+    echo "  ok   stale  ->  $(echo "$out" | head -1 | cut -c1-72)"
+    echo "       世代对不上 ⇒ failure(staleHandle)（**值**）· 在 main 里 ? 掉 ⇒ 带文件:行的 trap ✓ 退出码 1 ✓"
+else
+    echo "  FAIL stale  ->  期望「带 staleHandle 与 tests/region/stale.extc:24 的 trap + 退出码 1」，得到 rc=$rc：$(echo "$out" | head -1)"
+    fail=1
+fi
+
+echo "== ⑤ 吞吐基线（期 1 没有类型化分配/遍历 ⇒ 先量注册表本身：建/放各 20 万次）=="
 if "$EXTC" tests/region/churn.extc -o "$TMP/churn.c" 2>/dev/null \
    && $CC -std=c11 -O2 -o "$TMP/churn_fast" "$TMP/churn.c" 2>/dev/null; then
     # 三次取最好：这套机器上抖动很大，单次不可比
@@ -57,7 +67,7 @@ else
     echo "  FAIL 吞吐基线：生成或编译失败"; fail=1
 fi
 
-echo "== ⑤ 生成物：-Wall -Wextra -Werror + ASan =="
+echo "== ⑥ 生成物：-Wall -Wextra -Werror + ASan =="
 if "$EXTC" tests/region/churn.extc -o "$TMP/churn.c" 2>"$TMP/cerr"; then
     if $CC -std=c11 -Wall -Wextra -Werror -o "$TMP/churn" "$TMP/churn.c" 2>"$TMP/gerr"; then
         echo "  ok   生成的 C 在 -Wall -Wextra -Werror 下编得过 ✓"

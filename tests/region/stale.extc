@@ -1,0 +1,26 @@
+// 旧 handle 必须**带位置**地失败（§3.3 的界线：bug ⇒ trap、条件 ⇒ 值）
+//
+// 期 1 还没有容器 API（那是期 2/3），所以这里用**测试自己的最小 handle** 把判据钉住：
+// handle 就是 {槽位, 世代} 两个普通值；校验 = 拿运行期的世代比对 ⇒ 对不上就是条件，
+// 返回 `failure(staleHandle)` ✓；而在 `main` 里 `?` 掉它 ⇒ 变成带**文件:行**的 trap ✓
+// （定案 89：`main` 里的 `?` 直接 trap ✓）—— 判据（run.sh）同时要这两样：
+// 消息里有 staleHandle，也有本文件的行号 ✓
+use std::sys::region
+
+type regionError = | staleHandle
+
+struct handle { rid: i64  gen: u64 }
+
+fn check(h: handle) -> result<unit, regionError> {
+    if region::extc_region_generation(h.rid) != h.gen { return failure(regionError.staleHandle) }
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    let rid = region::extc_region_new(i64(-1), i64(0))
+    let h = handle { rid: rid, gen: region::extc_region_generation(rid) }
+    check(h)?                      /* 此刻是好的：不 trap、继续走 ✓ */
+    region::extc_region_drop(rid)
+    check(h)?                      /* 旧 handle ⇒ failure(staleHandle) ⇒ 带位置的 trap ✓ */
+    return 0
+}
