@@ -1,4 +1,4 @@
-/* std/linmap.extc -- a **linear** `K -> V` map: no hashing, only `==` on the key.
+/* stl/linmap.extc -- a **linear** `K -> V` map: no hashing, only `==` on the key.
  *
  * Why this exists, and how it differs from `std::map`: `mapI64<V>` hashes, so it needs a
  * key that is already an `i64` -- the compiler cannot call `hash()` on a type parameter
@@ -7,7 +7,7 @@
  * checked once per instance, so `linMap<i64, ...>` uses the builtin and
  * `linMap<point, ...>` needs `fn ==` on `point`, with the diagnostic naming the instance.
  *
- *     use std::linmap
+ *     use stl::linmap
  *     var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(4)
  *     m.put(i64(1), "one")
  *     println(m.get(i64(1)) ?? "missing")
@@ -22,7 +22,7 @@
  *   - `remove` is a **swap-remove**: the last entry fills the hole, so the order of the
  *     remaining entries is not preserved (the same trade `std::pool` makes, and the reason
  *     `atDense` is a valid name for the accessor);
- *   - growth doubles, and the old arrays are left to the arena (`std/linmap` cannot free;
+ *   - growth doubles, and the old arrays are left to the arena (`stl/linmap` cannot free;
  *     a pool will reclaim them, see `docs/topics/POOLS.md`);
  *   - indices returned by `find` are **positions**, valid only until the next `put` or
  *     `remove`; `keyAt` / `valAt` are what they are for.

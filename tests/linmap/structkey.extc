@@ -3,7 +3,7 @@
  * 值是 `slice<u8>` —— 就是 stdlib 里从没走过的那一格（`mapI64` 的测试全是 `i32`）✓
  * ⚠️ **键**是 `slice<u8>`（字符串键）今天**不行**：撞 `#64`（`slice_u8_eq` 没发射，
  *    见 `tests/canary-gaps/generic_view_eq.extc`）⇒ 这一格留着当反例，不写进来 ✓ */
-use std::linmap
+use stl::linmap
 
 struct pt { x: i64  y: i64
     fn ==(self: ref pt, o: ref pt) -> bool { return self.x == o.x && self.y == o.y }

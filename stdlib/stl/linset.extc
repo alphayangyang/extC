@@ -1,10 +1,10 @@
-/* std/linset.extc -- a **linear** set: membership by `==`, no hashing.
+/* stl/linset.extc -- a **linear** set: membership by `==`, no hashing.
  *
- * The same trade as `std/linmap`, and the same reason: a hashed `set<T>` needs `hash()` on
+ * The same trade as `stl/linmap`, and the same reason: a hashed `set<T>` needs `hash()` on
  * a type parameter, which the compiler cannot do yet (no traits). `==` on a parameter *is*
  * supported -- checked per instance, with the diagnostic naming the instance.
  *
- *     use std::linset
+ *     use stl::linset
  *     var s: linSet<i64> = linSet<i64>::withCap(4)
  *     s.add(i64(7))
  *     println(s.contains(i64(7)))
@@ -13,7 +13,7 @@
  * the set differ only in the value half, and one implementation means one place for the
  * growth, the swap-remove and the `==` requirement.
  */
-use std::linmap
+use stl::linmap
 
 struct linSet<T> {
     m: linMap<T, unit>
