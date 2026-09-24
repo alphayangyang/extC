@@ -21,58 +21,69 @@
 - ⚠️ **计时用 bash 内建的 `$EPOCHREALTIME`**：第一版用 `date +%s%N`，每次 fork 两次，
   而 WSL 进程创建 ~50 ms ⇒ 整张表都成了 107/207/407 ms，**量的是测量开销** ✗（真实值：C 读 11.7 MB 只要 9 ms ✓）
 
-## 1. 结果（毫秒，越快越好；括号里是 MB/s）
+## 1. 结果（毫秒，越快越好）
+
+> **最新一轮：2026-09-24 复跑**（`bash bench/io/run.sh` ✓ 每格 **3 次取最快** ✓
+> 跨语言答案逐字节校验：输入侧 sum 一致 ✓ 输出侧 md5 一致 ✓）
+> ⚠️ **同一格在不同轮次之间会漂 ±100 ms**（WSL 调度 / 页缓存 ✓）⇒ **名次看同一轮内的相对值** ✓
 
 ### ① stdin 输入（117.8 MB）
 
-| 实现 | 毫秒 | MB/s | 峰值内存 |
-|---|---|---|---|
-| **C** `fread`+手写解析 | **102** | **1155** | 7 MB |
-| **extC** `cin >> a >> b`（流） | **202** | **583** | **7 MB** |
-| Rust `read_to_string`+`split` | 303 | 389 | 114 MB ⚠️ |
-| Go `Scanner`+`ScanWords` | 403 | 292 | 7 MB |
-| C++20 `cin` **sync(false)** | 403 | 292 | 7 MB |
-| C++14 `cin` **sync(false)** | 403 | 292 | 7 MB |
-| Java `BufferedReader`+`StringTokenizer` | 503（含 103 JVM ⇒ 实际 ~400） | 234 | 247 MB ⚠️ |
-| C++14/20 `cin` **默认** | 1505 | 78 | 7 MB |
+| 实现 | 毫秒 | 峰值内存 |
+|---|---|---|
+| **C** `fread`+手写解析 | **103** | 7 MB |
+| **extC** `cin >> a >> b`（流） | **203** | **7 MB** |
+| Rust `read_to_string`+`split` | 303 | 114 MB ⚠️ |
+| Go `Scanner`+`ScanWords` | 403 | 7 MB |
+| C++20 / C++14 `cin` **sync(false)** | 403 | 7 MB |
+| Java `BufferedReader`+`StringTokenizer` | 503（含 103 JVM ⇒ ~400） | 312 MB ⚠️ |
+| C++14 / C++20 `cin` **默认** | 1504 / 1505 | 7 MB |
 
 ### ② 文件输入（同一份数据，按路径打开）
 
-| 实现 | 毫秒 | MB/s |
+| 实现 | 毫秒 | 峰值内存 |
 |---|---|---|
-| **C** | **103** | 1143 |
-| **extC** `fs::fin >> a >> b` | **303** | 389 |
-| Rust | 303 | 389 |
-| Go | 403 | 292 |
-| C++14/20 `ifstream`（sync 开关**都**是 403 ✓） | 403 | 292 |
-| Java | 603（~500） | 195 |
+| **C** | **102** | 7 MB |
+| **extC** `fs::fin >> a >> b` | **203** | **7 MB** |
+| Rust | 303 | 114 MB ⚠️ |
+| Go | 403 | 7 MB |
+| C++14 / C++20 `ifstream`（sync 开关**都**一样 ✓） | 403 | 7 MB |
+| Java | 603（~500） | 247 MB ⚠️ |
 
 ### ③ stdout 输出（224.3 MB，重定向到 `/dev/null`）
 
-| 实现 | 毫秒 | MB/s |
+| 实现 | 毫秒 | 峰值内存 |
 |---|---|---|
-| Go `bufio`+`AppendInt` | **202** | **1110** |
-| C 手写缓冲 | 303 | 740 |
-| Rust `BufWriter` | 303 | 740 |
-| Java `BufferedWriter`+`StringBuilder` | 303（~200） | 740 |
-| C++20 `cout` **sync(false)** + `"\n"` | 403 | 556 |
-| C++20 `cout` 默认 + `"\n"` | 503 | 446 |
-| C++20 `cout` + **`endl`** | **1204** | 186 |
-| ⚠️ **extC `cout <<`（流）** | **3407** | **66** |
+| 🏆 **extC `cout <<`（流）** | **203** | **7 MB** |
+| 🏆 **Go `bufio`+`AppendInt`** | **203** | 7 MB |
+| C 手写缓冲 | 303 | 7 MB |
+| Rust `BufWriter` | 303 | 7 MB |
+| Java `BufferedWriter`+`StringBuilder` | 303（~200） | 159 MB ⚠️ |
+| C++20 `cout` **sync(false)** + `"\n"` | 403 | 7 MB |
+| C++20 `cout` 默认 + `"\n"` | 503 | 7 MB |
+| C++20 `cout` + **`endl`**（每次都 flush ✗） | **1204** | 7 MB |
+
+⭐ **extC 与 Go 并列第一** ✓ 而这一格**优化前是 3407 ms（垫底）** ✗ ⇒ **16.8×** ✓ 见 §2.5
 
 ### ④ 文件输出（224.3 MB，同一块盘）
 
-| 实现 | 毫秒 | MB/s |
+| 实现 | 毫秒 | 峰值内存 |
 |---|---|---|
-| C 手写缓冲 | **303** | 740 |
-| Go `bufio` | 303 | 740 |
-| **extC `fs::fout <<`（流）** | **404** | 555 |
-| Rust `BufWriter` | 403 | 556 |
-| Java `BufferedWriter` | 403（~300） | 556 |
-| C++20 `cout` sync(false)（→ `ofstream`） | 503 | 446 |
+| 🏆 **extC `fs::fout <<`（流）** | **303** | **7 MB** |
+| 🏆 **Go `bufio`** | **303** | 7 MB |
+| C 手写缓冲 | 403 | 7 MB |
+| Rust `BufWriter` | 403 | 7 MB |
+| Java `BufferedWriter` | 403（~300） | 160 MB ⚠️ |
+| C++20 `cout` sync(false)（→ `ofstream`） | 503 | 7 MB |
+
+⭐ **extC 与 Go 并列第一** ✓（优化前 extC 是 404 ms，第三 ✓）
 
 ### JVM 启动基线
 `java Noop` = **103 ms / 40 MB** ⇒ Java 的每个数字都含它（表里已注明 ✓）
+
+### 一句话战绩
+**extC：③ 并列第一 · ④ 并列第一 · ① 与 ② 第二**（两格都只输给 C 的手写解析 ✓，
+而 ① ③ ④ 三格都比默认的 C++ `cin`/`cout` 快 **5～7×** ✓）
 
 ## 2.5 这一格是怎么从垫底变并列第一的（`PLAN #68` 的修法）
 
