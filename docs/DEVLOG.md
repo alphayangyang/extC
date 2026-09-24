@@ -6458,3 +6458,43 @@ extC（手写归并）          2960 ms   ← 比"C+检查"再慢 3.9%
 （文件当时还没提交 ⇒ git 里没有备份 ✗）只能整份 `write` 重写回来 ✓
 —— 项目自己的规矩是"**改 C 代码只用 `edit` 工具，不许按行号拼接**"，
 这条规矩就是被这种事故立起来的，我又犯了一次 ⇒ 记账 ✓
+
+## 2026-09-25 · **警告第二刀：先量，方向被量歪了** —— 剩下的不是"函数体死代码"，是"没人用的全局"
+
+**量的是**第一刀已落的 `tests/io/stream-file.extc` 生成物（旧记录里那句"117 → 43"的 43 ✓）：
+
+```
+gcc 15.2  -Wall -Wextra   43 条 = 26 unused-variable · 3 missing-field-initializers · 2 unused-but-set-variable (其余是不带 tag 的行)
+clang 21.1 -Wall -Wextra  72 条 = 26 unused-variable · 22 **parentheses-equality** · 12 unused-const-variable
+                                · 7 unused-function · 3 missing-field-initializers · 2 unused-but-set-variable
+```
+
+**那 26 条 `unused-variable` 到底是什么**（按名字归类 ✓ 不是猜 ✗）：
+
+```
+ 9  io 库全局   io$cout io$cin io$cerr io$endl io$STDIN io$STDIN_FD io$STDOUT_FD io$IN_BAD io$O_RDWR
+ 3  fs 库全局   fs$fin fs$fout fs$IN_FAILED
+12  extc_desc_i8/u8/i16/u16/i32/u32/i64/u64/ref/...  ← 描述符表整行整行地没人引用
+ 2  函数体局部（e / e__2 / u / n / k / d … 共 7 个，落在 26 里的是其中一部分 ✓）
+```
+
+⇒ **上一轮记下的"第二刀 = 未用的 match 载荷绑定/局部变量"这个方向是错的** ✗：
+函数体内的死代码只占个位数，**真正的大头是"顶层全局对象 + 描述符表整片发出来但没人用"** ✓
+—— 第一刀只剪了**函数**那一半，**全局那半个剪枝压根没做** ✗ 这就是「代码体积膨胀」的第二主因 ✓
+
+**两个具体的新靶子**：
+
+1. **没人引用的全局 / 描述符行**：`std::io` 被 `use …::*` 带进来 ⇒ `io$cout`/`io$endl`/`io$IN_BAD` 无条件生成 ✗
+   **为什么不能照抄 `used` 那一套**：函数之间有现成的图 —— `FuncDef.callees` 由 `check_top.c:1925`
+   `collectEffects` 填好（"函数调用了谁"，还带 SCC 用 ✓）；而**全局变量和描述符表在图上没有边** ✗
+   ⇒ 方案两段：① **函数级闭包**（从 `main` 沿 `callees` BFS；泛型要注意 `g.insts` 里"一个节点多个实例"✓）
+     ② **全局 / `extc_desc_*` 用内容判据**：在"只发可达函数"的那一遍生成物文本里找名字，
+     **名字不出现 ⇒ 没人引用 ⇒ 整行不发** ✓ 方向保守（死代码里提到它，只会让它**留下**，不会误删 ✓）
+2. **clang 独有 22 条 `-Wparentheses-equality`**：生成物写的是 `if ((bound == 0))` ✗
+   （表达式自带一层括号 + `if (` 再加一层 ⇒ 双重括号 ✓）例：生成物 590 行、609 行
+   `if (((self->fd == io$STDOUT) || (self->fd == io$STDERR)))` ✓
+   ⇒ 这是**多打两个字符**，一个"整串被一对小括号包住就剥掉"的 `cgCond()` 助手就能消掉 ✓
+   发射点在 `src/codegen.c` 的 `cgLine(g, "if (%s) {", cnd)`（2664 行附近）那一族 ✓
+
+**这轮一行代码都没改** ✓ —— 量出来的方向跟上一轮的假设不一样：按项目规矩「**先量再改**」✓
+（树绿 · 语料未跑是因为没有改动 ✓ 下一轮从上面两个靶子里挑，靶子 1 是大头、靶子 2 是最便宜的 ✓）
