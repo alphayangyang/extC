@@ -6762,3 +6762,29 @@ tests/io/stream.extc        740 →  734 行   gcc 1 → 1   clang 3 → 1
 1. 首行以 `{` 结尾 —— 常规多行定义
 2. 首行以 `}` 结尾 —— **单行定义**（`extc_arena_init` ✓）
 3. 首行以 `,` 结尾 —— **签名跨行**（`extc_checkedRange` ✓）
+
+### 2026-09-25 · **全量警告扫描**（89 个 examples 程序）—— 第一次看到全局，而不是三个样本
+
+三个样本之外的账终于量了（同一个脚本，**error 与 warning 一起量** ✓）：
+
+```
+89 个程序 · error 合计 0 ✓ · gcc 警告合计 39 · clang 警告合计 37
+有警告的程序 21 个，绝大多数是 1~2 条：
+  tour 6 · strings 5 · generics / payload-enum 3 · fenwick / generic-enum /
+  reader-home-arena / result-usage / stream-sum 各 2 · 其余 12 个各 1
+```
+
+**两个新家族**（都不是之前三个样本能看到的 ✓ —— 这就是"全量扫一遍"的价值 ✓）：
+1. **`-Wreturn-type` 6 条（`tour`）**：clang 说"非 void 函数不是所有控制路径都返回" ✗
+   生成器的 `alwaysReturns` 只认最简单的形状（`return`，或块的最后一条是它 ✓），不确定就补一条 ✓
+   ⇒ 说明还有形状没被它认出来 ✓（这条是**真问题**，不只是警告 ✓）
+2. **`unused-function`（`strings` 5 条）**：名字是 `slice_i32_isEmpty/get/eq/find/startsWith` ✗
+   —— 注意这**不是**我的 `extc_slice*` 助手（那两个名字族不一样 ✓ 我一度以为是自己那族 ✓）
+   而是**库里的 slice 方法**（实例方法 ✓）⇒ 说明实例方法那条路还有"发了没人用"的 ✗
+
+**顺手做的**：切片助手的 `EXTC_UNUSED` 属性撤掉（它们现在由内容判据接管 ✓）
+—— 但实测 `strings`/`tour` **行数与警告都不变**（那 5 条根本不是这族 ✓）⇒ 这次撤属性是**中性**的 ✓
+（要确认它没有在别的程序上变坏 ⇒ 全量重扫 ✓ 见下一条记录 ✓）
+
+**撤属性的复核**：全量重扫 **gcc 39 / clang 37 / error 0** —— 与撤之前**一模一样** ✓
+⇒ 切片助手那三处 `EXTC_UNUSED` 的撤离是**中性**的（不回归 ✓ 也不白赚 ✓ 但它让"权宜属性"少了一批 ✓）

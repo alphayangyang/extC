@@ -3474,7 +3474,7 @@ static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
     bufInit(&b, g->arena);
     if (ob->kind == TY_ARRAY) {
         /* A fixed-size array: the length is a compile-time constant. */
-        bufPrintf(&b, "EXTC_UNUSED static %s %s(%s *a, int64_t lo, int64_t hi,\n",
+        bufPrintf(&b, "static %s %s(%s *a, int64_t lo, int64_t hi,\n",
                   ret, name, ob->name);
         bufPrintf(&b, "                       const char *f, int ln) {\n");
         bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, %lld, f, ln);\n",
@@ -3483,12 +3483,12 @@ static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
     } else if (tail) {
         /* Slicing to the end: hi is v.len. It is taken as a parameter instead
          * of being expanded in place, so the view is evaluated once. */
-        bufPrintf(&b, "EXTC_UNUSED static %s %s(%s v, int64_t lo, const char *f, int ln) {\n",
+        bufPrintf(&b, "static %s %s(%s v, int64_t lo, const char *f, int ln) {\n",
                   ret, name, ob->name);
         bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, v.len, v.len, f, ln);\n");
         bufPrintf(&b, "    return (%s){ .data = v.data + s, .len = v.len - lo };\n}\n", ret);
     } else {
-        bufPrintf(&b, "EXTC_UNUSED static %s %s(%s v, int64_t lo, int64_t hi,\n",
+        bufPrintf(&b, "static %s %s(%s v, int64_t lo, int64_t hi,\n",
                   ret, name, ob->name);
         bufPrintf(&b, "                       const char *f, int ln) {\n");
         bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, v.len, f, ln);\n");
@@ -4970,8 +4970,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
     if (g.eqNeed.len)                  bufPuts(out, bufCstr(&g.rtEq));
     bufPuts(out, bufCstr(&g.desc));
-    for (size_t i = 0; i < g.helpers.len; i++)
-        bufPuts(out, ((SliceHelper *)vecAt(&g.helpers, i))->text);
+    for (size_t i = 0; i < g.helpers.len; i++) {
+        /* A slice helper is emitted on demand, and the demand is conservative: a helper
+         * whose only user is itself unused is still emitted. It is a definition like any
+         * other, so it is registered here and dropUnreferenced takes it back out when the
+         * finished unit does not name it (which is what gcc and clang report as an unused
+         * function). The attribute that used to silence that warning is gone: with this
+         * in place it was not only unnecessary, clang reports a warning *about* using it. */
+        SliceHelper *h = (SliceHelper *)vecAt(&g.helpers, i);
+        DeadDef *d = arenaAllocZero(arena, sizeof *d);
+        d->name = h->name;
+        d->text = h->text;
+        *(DeadDef **)vecPush(&g.deadDefs) = d;
+        bufPuts(out, h->text);
+    }
     /* The view index primitives, in the order they were first needed. They go here,
      * before the bodies, for the same reason the slice helpers do: a definition has to
      * precede its uses, and the need for one is discovered while the bodies are
