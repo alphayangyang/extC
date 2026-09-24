@@ -7056,3 +7056,23 @@ clang 报的是 **`main` 里那一条声明** ✓ ⇒ 判据本来就该是"**�
 —— 同时要把 `deadFuncBody` 也一并改成这个办法 ✓（它现在有同样的隐患 ✓）
 
 **回退后**：树干净 ✓ 全量仍是 **gcc 8 · clang 6 · error 0** ✓
+
+### 2026-09-25 · 族 B 第三次：延后截取（按偏移、body 缓冲发完之后）**仍不触发** ⇒ 回退
+
+按上一轮记下的改法做了六处改动 ✓：`DeadFunc.body` 与 `mainBody` 都改成**先记偏移**
+（`df->off/df->len` ✓ `g.mainOff/mainLen` ✓），**在 `bufPuts(out, bufCstr(&g.body))` 之后**统一从
+`g.body` 里截文本 ✓（那时缓冲连续完整 ✓ 不受 viewIdx 临时换缓冲的影响 ✓）
+并把族 B 的改动（`curFuncName` 提前 + `__extc_home` 登记成局部）一起装回去 ✓
+
+**实测**：编译干净 ✓ 零错误 ✓ 但 `escape-promotion` **仍是 357 行 / clang 1** ✗
+（`arrays` / `stream-sum` 保持 0 ✓ 没有回归 ✓）⇒ 说明**卡点不在这里** ✗
+
+**下一轮第一步（已收窄）**：把 `EXTC_DBG_LOCAL` 在这版上再跑一次 ✓ —— 上一轮它打出的是
+`body=no mainBody=yes` 且下一行没打印 ✓ 现在 `body` 与 `mainBody` 都改了来源 ⇒ 要看的是：
+① 兜底分支是否真的把 `body` 赋成了 `mainBody`（`strcmp(d->funcName, g->mainFuncName)` ✓）
+② `strstr(text, body)` 是否命中 ③ 计数是否真是 1
+—— **一次跑就能看到，不要再猜** ✓（这是本项目第五次要靠开关收尾 ✓）
+
+**回退后**：树干净 ✓ 全量仍是 **gcc 8 · clang 6 · error 0** ✓ 语料 256/0 ✓ 九套件全绿 ✓
+⚠️ 另记：这版改动本身**修掉了一个潜在坑**（`DeadFunc.body` 在带 viewIdx 助手的函数里可能不连续 ✓
+—— 不连续只会让 `strstr` 失败 ⇒ 保守跳过 ✓ 不会误删 ✓ 所以它不是安全问题，只是少赚 ✓）
