@@ -7527,3 +7527,20 @@ clang-tidy -checks='-*,performance-*' <生成物> -- -std=c11
 
 **实测**：`examples/eq.extc` 与 `examples/array-of-struct.extc` 两编译器 `-Wall -Wextra` **0** ·
 `-Weverything`（允许清单内）**0** ✓
+
+### 2026-09-26 · 未用参数：**既优化又报告**（主人的建议）
+
+主人定调：「两个都做，我又帮你优化又给你报告」⇒ 生成物那边继续打 `EXTC_UNUSED`（C 编译器保持安静 ✓）
+**并且**检查器报一条警告（作者知道自己在签名里留了死重量 ✓）。
+
+**实现**：`check_top.c` 里加一个轻量 walker（`exprUsesCname`/`stmtUsesCname` ✓），在函数体查完之后
+逐个参数问"这个绑定被读过吗" ✓ —— 判据比的是**生成的 C 名**（`u.ident.cname` ✓）而不是源名 ✓
+所以**遮蔽**（`let b = ...` 会拿到 `b__2` ✓）不会被误当成使用 ✓。
+walker 的形状表**照抄** `exprCallsNeedsHome`（它的注释写着"能藏表达式的形状必须列全" ✗ 漏一个就会误报 ✓）。
+
+**豁免**：`self` 不报（忽略接收者的方法很常见 ✓）· 编译器自加的隐藏参数不报 ✓
+（`out-param.extc` 那个 `__extc_home` 实测无警告 ✓ —— 而且它现在压根不生成 ✓）
+
+**实测**：89 个 examples 里**只有 3 个程序、4 条警告** ✓（`borrowing` 的 `b` · `gomoku-board` 的 `lo`/`hi` ·
+`growth-factor` 的 `r` ✓ 都确实是死参数 ✓）⇒ 不吵 ✓；退出码仍是 0 ✓（是警告不是错误 ✓）
+生成物那边 `EXTC_UNUSED` 仍在（`borrowing` 的 C 里 2 处 ✓）⇒ **两边都做到了** ✓

@@ -477,6 +477,97 @@ static bool exprCallsNeedsHome(Expr *e, bool precise) {
     default: return false;
     }
 }
+/* Does this expression, or this statement, mention the binding whose generated-C name is `cname`?
+ *
+ * Used for one question only: is a parameter ever read? The list of shapes mirrors
+ * `exprCallsNeedsHome`, and for the same reason its comment gives - an expression can hide
+ * anywhere, and a case left out here would report a parameter as unused while the body uses it.
+ *
+ * The comparison is on the *generated* name, so a local that shadows the parameter (which gets
+ * `__2` appended) cannot be mistaken for it.
+ */
+static bool stmtUsesCname(Stmt *s, const char *cname);
+static bool exprUsesCname(Expr *e, const char *cname) {
+    if (!e) return false;
+    if (e->kind == EX_IDENT)
+        return e->u.ident.cname && strcmp(e->u.ident.cname, cname) == 0;
+    switch (e->kind) {
+    case EX_BIN: return exprUsesCname(e->u.bin.left, cname) || exprUsesCname(e->u.bin.right, cname);
+    case EX_UN:  return exprUsesCname(e->u.un.operand, cname);
+    case EX_REF: return exprUsesCname(e->u.ref.operand, cname);
+    case EX_DEREF: return exprUsesCname(e->u.deref.operand, cname);
+    case EX_SIGN:  return exprUsesCname(e->u.sign.operand, cname);
+    case EX_TRY:   return exprUsesCname(e->u.try_.operand, cname);
+    case EX_INDEX:
+        return exprUsesCname(e->u.index.obj, cname) || exprUsesCname(e->u.index.index, cname);
+    case EX_SLICE: return exprUsesCname(e->u.slice.obj, cname);
+    case EX_FIELD: return exprUsesCname(e->u.field.obj, cname);
+    case EX_COALESCE:
+        return exprUsesCname(e->u.coalesce.main, cname) ||
+               exprUsesCname(e->u.coalesce.fallback, cname);
+    case EX_METHOD: {
+        if (exprUsesCname(e->u.method.recv, cname)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprUsesCname(*(Expr **)vecAt(&e->u.method.args, i), cname)) return true;
+        return false;
+    }
+    case EX_CALL: {
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprUsesCname(*(Expr **)vecAt(&e->u.call.args, i), cname)) return true;
+        return false;
+    }
+    case EX_ASSOC: {
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprUsesCname(*(Expr **)vecAt(&e->u.assoc.args, i), cname)) return true;
+        return false;
+    }
+    case EX_NEW: return exprUsesCname(e->u.new_.count, cname);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprUsesCname((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, cname)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprUsesCname(*(Expr **)vecAt(&e->u.arraylit.elems, i), cname)) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprUsesCname(*(Expr **)vecAt(&e->u.enumval.args, i), cname)) return true;
+        return false;
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            if (exprUsesCname(*(Expr **)vecAt(&e->u.gencall.args, i), cname)) return true;
+        return false;
+    default: return false;
+    }
+}
+
+static bool stmtUsesCname(Stmt *s, const char *cname) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR:    return exprUsesCname(s->u.var.init, cname);
+    case ST_ASSIGN: return exprUsesCname(s->u.assign.target, cname) ||
+                           exprUsesCname(s->u.assign.value, cname);
+    case ST_IF:     return exprUsesCname(s->u.ifs.cond, cname) ||
+                           stmtUsesCname(s->u.ifs.thenBody, cname) ||
+                           stmtUsesCname(s->u.ifs.elseBody, cname);
+    case ST_WHILE:  return exprUsesCname(s->u.whiles.cond, cname) ||
+                           stmtUsesCname(s->u.whiles.body, cname);
+    case ST_RETURN: return exprUsesCname(s->u.ret.value, cname);
+    case ST_EXPR:   return exprUsesCname(s->u.expr.expr, cname);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtUsesCname(*(Stmt **)vecAt(&s->u.block.stmts, i), cname)) return true;
+        return false;
+    case ST_MATCH:
+        if (exprUsesCname(s->u.match.scrutinee, cname)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtUsesCname((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, cname)) return true;
+        return false;
+    default: return false;
+    }
+}
+
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, false); }
 static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, true); }
 
@@ -3162,6 +3253,19 @@ static void checkFunc(Checker *c, FuncDef *f) {
     /* The types of the declarations are final by now, so this is the place to ask
      * whether every handle the function opened also gets closed. */
     checkOpenHandles(c, f);
+
+    /* A parameter the body never reads. extC lets the program keep it and the generated C marks it
+     * `unused` so the C compiler stays quiet, but the reader deserves to hear about dead weight in
+     * a signature they wrote. `self` is exempt: a method that ignores its receiver is ordinary. */
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (!p->name || !p->cname || strcmp(p->name, "self") == 0) continue;
+        if (stmtUsesCname(f->body, p->cname)) continue;
+        ckWarn(c, p->line,
+               "a parameter belongs to the signature, so it is kept and marked `unused` in the"
+               " generated C",
+               "parameter `%s` is never used", p->name);
+    }
 
     collectEffects(c, f);      /* compute the effect summary; it is only recorded here */
     f->arenaSites = c->curArenaSites;   /* handed to the pass that runs after the analysis closes */

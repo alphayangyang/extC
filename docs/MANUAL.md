@@ -1746,6 +1746,23 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 ---
 
+### 9.1 警告（不是错误，`-w` 可关）
+
+**没被用到的参数**。参数是签名的一部分 —— 编译器**不能**替你删掉它（调用点会对不上），
+所以它选择：**生成物里照常保留并标 `unused`**（C 编译器保持安静 ✓），**同时告诉你**：
+
+```extc
+fn pickFirst(a: ref i32, b: ref i32) -> ref i32 {
+    return a
+}
+// warning: parameter `b` is never used
+//   note: a parameter belongs to the signature, so it is kept and marked `unused` in the generated C
+```
+
+判据是**"这个绑定到底有没有被读过"**（比的是绑定本身，不是名字 —— 所以 `let b = ...` 这种遮蔽不会被当成使用 ✓）；
+`self` 不报（忽略接收者的方法很常见 ✓），编译器自己加的隐藏参数也不报 ✓
+（比如出参函数那只 home arena 参数 —— 它现在只有在函数**真的用**它时才会生成 ✓）。
+
 ## 10. 已定案、但还没实现
 
 > ✅ **已完成（截至 2026-09-18）**：默认零初始化、方法进 struct 体内、`type` 枚举、
