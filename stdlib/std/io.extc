@@ -212,6 +212,21 @@ fn fillState(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64) ->
     return success(n)
 }
 
+/* 收一位数字。返回 false = 溢出（调用方报 `lineTooLong` ✓）
+ * 溢出检查**只从第 19 位起**才做（前 18 位里 `v*10+d` 数学上不可能溢出 ✓ 10^18 < 2^63 ✓）
+ * —— 语义与"每一位都检查"完全相同 ✓ 但热路径上省掉一次除法 ✓ */
+@inline
+fn accDigit(v: mut ref i64, nd: mut ref i64, d: i64) -> bool {
+    if *nd < i64(18) {
+        *v = *v * i64(10) + d
+    } else {
+        if *v > (I64_MAX - d) / i64(10) { return false }
+        *v = *v * i64(10) + d
+    }
+    *nd = *nd + i64(1)
+    return true
+}
+
 @inline
 fn nextI64State(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64,
                 got: mut ref bool) -> result<i64, ioError> {
@@ -258,19 +273,18 @@ fn nextI64State(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64,
         if b < i64(0) { break }
         if b >= i64(48) && b <= i64(57) {
             saw = true
-            let d = b - i64(48)
-            /* ⚠️ 溢出检查**挪出热路径**：前 18 位里 `v*10+d` 数学上不可能溢出
-             * （10^18 < 2^63 ✓）⇒ 只有从第 19 位起才走精确检查 ✓
-             * **语义一字不改**（超了照样 `lineTooLong` ✓），但每数省掉一次除法 ——
-             * 这就是本解析器比 C 的手写版慢 2× 的**真正原因**：
-             * 差值不是马虎，是"**每次数字都检查溢出**"这个**故意的安全特性** ✓ */
-            if nd < i64(18) {
-                v = v * i64(10) + d
-            } else {
-                if v > (I64_MAX - d) / i64(10) { return failure(ioError.lineTooLong(v)) }
-                v = v * i64(10) + d
+            if !accDigit(ref v, ref nd, b - i64(48)) { return failure(ioError.lineTooLong(v)) }
+            /* ⚡ **紧内层：只认数字**（每字节 1 个分支 ✓ 而不是绕一圈状态机的 ~7 个 ✗）
+             * 为什么能这么改而不动语义：内层**只看不取**（`pos` 只在确认是数字时才前进 ✓）
+             * ⇒ 一旦不是数字就退回外层，**终止符仍走原来那套**（换行吃掉 / CRLF / 推回 ✓）
+             * 全部一字不改 ✓ 这就是 cachegrind 量出来的真因：分支 2.7× ✗（指令只 1.29× ✓
+             * 预测失败还一样 ✓ ⇒ 差值在**每字节的分支数**上 ✓）*/
+            while *pos < *len {
+                let nb = i64(buf[*pos])
+                if nb < i64(48) || nb > i64(57) { break }
+                *pos = *pos + i64(1)
+                if !accDigit(ref v, ref nd, nb - i64(48)) { return failure(ioError.lineTooLong(v)) }
             }
-            nd = nd + i64(1)
             continue
         }
         if !saw { continue }
@@ -698,7 +712,10 @@ struct istream { fd: i32
 
 /* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持（PLAN #66）⇒
  * `io::cin.bad()` 今天不行，这两个能 ✓ 它们是同一个标志 ✓ */
+/* 每读一行都会问一次 ⇒ 内联（不标就是每行一次函数调用 ✗）*/
+@inline
 fn inBad() -> bool { return IN_BAD }
+@inline
 fn inClear() { IN_BAD = false }
 
 let cin: istream = istream { fd: 0 }
