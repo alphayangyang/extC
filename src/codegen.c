@@ -2499,7 +2499,7 @@ static void cgReleaseLevel(CG *g, int lvl) {
     /* Regions first, then the arena: a region's memory is its own malloc block, so the two are
      * independent, but releasing the regions that belong to this block is what the block's
      * release point is for (REGIONS.md section 3.4 - leaving a block takes its subtree). */
-    if (g->needRegion) cgLine(g, "extc_region_releaseLevel(__extc_frame, %d);", lvl);
+    if (g->needRegion) cgLine(g, "extc_region_releaseLevel(__extc_zone, %d);", lvl);
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -3330,7 +3330,7 @@ static void genFunc(CG *g, FuncDef *f) {
      * the frame drops them whatever their block did (REGIONS.md section 3.5). Emitted where
      * the arena exists, because hanging regions off an arena level is what this frame does. */
     if (g->needRegion && !g->noArena)
-        cgLine(g, "int64_t __extc_frame = extc_region_frameEnter(__extc_a, %d);", maxLv + 1);
+        cgLine(g, "int64_t __extc_zone = extc_region_zoneEnter(__extc_a, %d);", maxLv + 1);
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
@@ -3496,7 +3496,7 @@ static void genFunc(CG *g, FuncDef *f) {
          * leak one block per arena at every return -- bounded, but a leak. */
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
-        if (g->needRegion) cgLine(g, "extc_region_frameLeave(__extc_frame);");
+        if (g->needRegion) cgLine(g, "extc_region_zoneLeave(__extc_zone);");
         if (isMain) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the

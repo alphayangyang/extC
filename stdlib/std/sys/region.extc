@@ -27,7 +27,7 @@ extern!("extc-runtime") fn extc_region_live() -> i64
  * churn 判据（`tests/region/churn.extc`）用它证明"反复建/放不涨内存" ✓ */
 extern!("extc-runtime") fn extc_region_capacity() -> i64
     effects Addr=0 Cont=0
-extern!("extc-runtime") fn extc_region_frameDepth() -> i64
+extern!("extc-runtime") fn extc_region_zoneDepth() -> i64
     effects Addr=0 Cont=0
 
 /* 容器数据用的内存：从 region 所在的那只 **arena** 里要（不是第二套分配器）✓
