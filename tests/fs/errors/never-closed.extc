@@ -1,0 +1,13 @@
+// expect-error: nothing in this function closes it
+/* 反例：**开出来，全程没人关** ⇒ 编译期错误（不是运行时泄漏 ✗）
+ *
+ * 这是"文件交给程序管"的兜底：管是要管的，忘了管编译器替你看住 ✓
+ * 检查认的是**协议**：一个 struct 声明了 `close` 方法 ⇒ 它是资源类型 ⇒
+ * 它的局部句柄必须有人关（或者交出去，那就不是这个函数的事了）✓ */
+use std::fs
+
+fn main() -> i32 {
+    var f = fs::openWrite("build/fs-never.out")!   /* ← 这一行会报错 */
+    f.put("写了，但没人关\n")!
+    return 0
+}

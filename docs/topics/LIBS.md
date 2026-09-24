@@ -188,7 +188,7 @@ extern!("zlib") fn gzalloc(n: i64) -> mut ref u8
 | struct（`export` 的）| `struct` | ⇒ 布局必须**冻结**（要一条"`@c` 布局"的规则，否则改字段顺序就崩 ✓）|
 | `print`/`println` | `printf` | 输出要**同一套格式**（现在 extC 的打印器是生成的 ✓）|
 | trap（越界/除零）| `abort()` | C 那边返回 `errno` 的，库要**翻译成 `result<T, ioError>`** ✓（`IO.md` 已定）|
-| **arena 内存** | `malloc` 块 | 方向 1：**extC 给 C 写** ⇒ 完全安全 ✓（C 只往你给的 buffer 里写）<br>方向 2：**C 给 extC 内存** ⇒ 谁释放？⇒ 用 `IO.md` §5 那个"**块拥有资源**"形状（`extc_fd[DEPTH]`，与 arena 兄弟；**定案 78**）✓ |
+| **arena 内存** | `malloc` 块 | 方向 1：**extC 给 C 写** ⇒ 完全安全 ✓（C 只往你给的 buffer 里写）<br>方向 2：**C 给 extC 内存** ⇒ 谁释放？⇒ 按 `IO.md` §5 / **定案 79**：**显式释放**，编译器只证明能证明的泄漏（`close` 协议那条判据）✓ |
 
 ---
 

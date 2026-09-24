@@ -535,10 +535,6 @@ struct FuncDef {
      *     can really reuse a `new` that happens inside the callee, which is the leak
      *     shape this feature exists to remove */
     int         owSites;
-    /* How many `ownFd(..)` calls this function body contains. A block closes the
-     * descriptors it owns, so a function that owns none needs neither the fd table
-     * nor the release lines -- the same gating `owSites` uses. */
-    int         fdSites;
     bool        owLocal;
     /* Does this function allocate, directly or through the functions it calls?
      *

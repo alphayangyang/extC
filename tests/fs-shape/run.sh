@@ -10,6 +10,9 @@
 #   ① 正例跑通：三个名字都能用，而且**行为对**（截断 vs 追加要真的不一样 ✓）
 #   ② 反例挡住：写型当读型用 / 读型当写型用 ⇒ **编译期**报错（不是运行时 ✗）
 #   ③ 平台常量不外露：`O_*` 只能出现在 `std::sys::io` 那层
+#   ④ 归属（定案 79）：三个 open 都返回 result；句柄由**程序**关，不开着不放 ✓
+#
+# ⚠️ 2026-09-24：垫脚石 `rawfd.extc` 删了 —— 这一套现在就是**真的 `std::fs`** ✓
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -17,7 +20,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（三个名字 · 行为要对：截断 vs 追加）=="
-if out=$("$EXTC" --run tests/fs-shape/fsproto.extc -I tests/fs-shape 2>&1); then
+if out=$("$EXTC" --run tests/fs-shape/fsproto.extc 2>&1); then
     ok=1
     echo "$out" | grep -qF "读到 13 字节"   || ok=0      # "hello\n"(6) + "世界\n"(7)
     echo "$out" | grep -qF "追加之后 = 19 字节" || ok=0   # 13 + "again\n"(6)
@@ -34,7 +37,7 @@ fi
 echo "== 反例（**误用必须编不过** —— 这条规范的全部价值就在这里）=="
 check_err() {   # check_err 文件 消息里必须出现的关键字
     local f=$1 want=$2 out
-    if out=$("$EXTC" "tests/fs-shape/errors/$f.extc" -I tests/fs-shape -o /dev/null 2>&1); then
+    if out=$("$EXTC" "tests/fs-shape/errors/$f.extc" -o /dev/null 2>&1); then
         echo "  FAIL $f  ->  **编过了**（应该报错 ✗）"; fail=1; return
     fi
     if ! echo "$out" | grep -qF -- "$want"; then
@@ -42,7 +45,7 @@ check_err() {   # check_err 文件 消息里必须出现的关键字
     fi
     echo "  ok   $f  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
 }
-check_err write-as-input  "argument expects \`inputFile\`, found \`outputFile\`"      # 写型当读型用
+check_err write-as-input  "argument expects \`fs::inputFile\`, found \`fs::outputFile\`"      # 写型当读型用
 check_err read-as-output  "no method \`put\`"           # 读型当写型用
 
 echo "== 平台常量不外露（\`O_*\` 只在特权层）=="

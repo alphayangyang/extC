@@ -1,0 +1,28 @@
+// expect: 双关安全|b 写成功
+/* ⭐ 判据（定案 79）：**关两次不许关到别人的号**。
+ *
+ * `close()` 幂等靠句柄自己的 `open` 标志（不是靠运行时的全局表）：
+ * 第二次调用直接返回，**不碰 `close(2)`** ✓
+ * 为什么这条最要紧：`close(2)` 返回之后，那个号**立刻**可以被内核发给别人 ⇒
+ * 第二次 `close(2)` 关掉的是**陌生人的描述符** ✗（静默、难查）
+ *
+ * 用例把这条钉成可观测的：a 关两次之后，b 拿到（很可能）同一个号，
+ * 而 b 必须还能正常写 ✓ */
+use std::fs
+
+fn main() -> i32 {
+    var a = fs::openWrite("build/fs-twice-a.out")!
+    let fa = a.fd
+    a.close()!
+    a.close()!                     /* 幂等：不该再碰 close(2) */
+    if a.fd != i32(-1) { println("关掉之后槽位该是 -1，得到 ", a.fd); return 1 }
+    println("双关安全")
+
+    var b = fs::openWrite("build/fs-twice-b.out")!
+    let fb = b.fd
+    b.put("b 还活着\n")!            /* 如果 a 的第二次 close 真调了 close(2)，
+                                    * 而内核把 fa 发给了 b，这里就会写进坏号 ✗ */
+    b.close()!
+    println("b 写成功 · fa = ", fa, " fb = ", fb)
+    return 0
+}

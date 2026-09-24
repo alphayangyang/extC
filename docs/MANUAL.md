@@ -1666,23 +1666,43 @@ println(status.warn)// warn   ← 枚举自动有名字文本（定案 11）
 
 > ⚠️ **格式串 `{}` 已定案要加**（编译期展开，不是运行时解析），但 week-0 还没实现。见第 10 节。
 
-### `ownFd(fd)` —— 把描述符交给**当前块**（库层原语）
+### `std::fs` —— 文件：**程序拥有**句柄（定案 79）
 
 ```extc
-let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))   // 裸描述符
-if fd < i32(0) { return failure(ioError.readFailed(fd)) }
-ownFd(fd)                                                  // 块退出时自动关 ✓
+use std::fs
+use std::io
+
+fn copy(src: slice<u8>, dst: slice<u8>) -> result<unit, io::ioError> {
+    var inp = fs::openRead(src)?          // 读型：看一眼名字就知道是读还是写（定案 77）
+    var out = fs::openWrite(dst)?         // 写型（截断）；openAppend 保留原内容
+    var buf: [65536]u8
+    let n = inp.readAll(buf[..])?
+    out.put(buf[0..n])?
+    inp.close()?                          // ⭐ 关：也是可检查的提交点
+    out.close()?                          //    延迟写错误在这里冒出来
+    return success(unit {})
+}
 ```
 
-规则是**归属**，不是"注册回调"：描述符归**当前块**，块退出时**先注销资源、再放内存**
-（定案 78）⇒ 循环里就地 open 也只同时持有 1 个描述符，不需要 helper ✓
+**没有隐式关闭**（块退出**不会**替你关文件，`ownFd` 那种库层原语已经删掉）：
 
-⚠️ 两条限制：
+- 关就是 `f.close()`：幂等（句柄自己带 `open` 标志，**第二次不碰 `close(2)`**）✓
+- **关闭后使用** ⇒ `failure(closed(fd))` **带位置**，不 trap（库不 trap，用户在处理点决定）✓
+- **忘关不是静默**：能被证明的泄漏是**编译期错误** ——「*opened and never closed*」：
+  ```extc
+  var f = fs::openWrite("out.txt")!    // ← 到函数末尾都没人关
+  f.put("hi")!
+  // error: `f` is opened here and nothing in this function closes it
+  ```
+  检查认的协议是**库自己声明的**：struct 里声明了 `close` 方法 ⇒ 它是资源类型
+  （编译器里不出现库名，跟 `slice` 靠 `data`+`len` 认出来一样）✓
+  **它只证明能证明的**：句柄交出去 / `return` / 存进字段 ⇒ 静默（别人可能关它）✓
+  那一半归运行时：泄漏到 fd 耗尽时，**open 那一行**给你 `failure` 带位置 ✓
+- 故意留到进程结束也要写一行 `close()` —— 让它看得见 ✓
 
-- 实参必须是**求值两次等于一次**的表达式（变量或字面量）：生成的 C 会把它**写两次**。
-  写成 `ownFd(openRead(p))` 会**编译期报错**，报错里直接教你拆两行 ✓
-- 它是**库层原语**，用户代码不走它，走 `std::fs` 的 `openRead`/`openWrite` 那一层 ✓
-  （`close(f)!` 的提前关、写型的 `commit()?` 都长在那层上 ✓）
+**为什么不隐式关**：块退时**没有失败通道**，写型的延迟写错误只能由 `close(2)` 报 ⇒
+隐式归属会变成**静默丢数据**；而且 fd 是稀缺的 OS 资源，释放时机应当是看得见的一行 ✓
+未来的自动释放若要做，仍要过**定案 78 留下的资格判据**（释放不会失败 / 无顺序语义 / 闭集获取）✓
 
 ---
 
@@ -1750,7 +1770,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | ~~**动态数组 `varArray<T>`**~~ ✅ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | ~~**算术 UB 三处**~~ ✅ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap ✓）|
 | ~~**全局常量 / 全局变量**~~ ✅ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
-| 🟡 **输入（`reader` / `argv`）** | ✅ 读已经通了：**整块读（64KB）+ 内存里切**，两种风格（`nextInt` / `nextLine` / `nextToken`）在同一个 `reader` 上，缓冲**不用调用者给** ✓ **还欠 `open`/`close` + 块拥有文件**（IO-1；归属见定案 78）—— ✅ `main(args)` 2026-09-24 已落地| 中 —— 五子棋能真的跟人下的门槛 |
+| 🟢 **输入（`reader` / `argv`）** | ✅ 全通了：**整块读（64KB）+ 内存里切**（`nextInt` / `nextLine` / `nextToken`）· ✅ `std::fs` 三个名字 · ✅ `close()` = 提交点 + **编译期查泄漏**（定案 79）· ✅ `main(args)` | 已完成 —— 五子棋能真的跟人下 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
 | **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | 中 |
 | ~~**`match`**~~ ✅ | 穷尽检查 + 无载荷枚举（语句，不是表达式）—— **带载荷也做完了**（见下一行）|
@@ -1873,7 +1893,7 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
 
 - 参数/返回只用**标量或单指针**（`ref T` / `?ref T`）—— `slice<T>` 在 C 那边是两个参数 ✗
 - 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len` ✓
-- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（它要等"**块拥有资源**"那套 ✓）
+- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是**显式释放**，编译器只证明能证明的泄漏 ✓）
 
 ### 12.4 让编译器内联：`@inline`（2026-09-24 新增）
 
@@ -1978,7 +1998,7 @@ fn main() -> i32 {
 分层：`std::sys::io`（**特权层 · io 族**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
 > ⚠️ `sys` 不是"一个模块"，是**一条边界**在路径上的写法 ⇒ **按族分文件** ——
 > 后面还有 `std::sys::thread` / `std::sys::time` / `std::sys::net` / `std::sys::proc` ✓
-还欠：`open`/`close` + 块拥有文件 ✓（`main(args)` 2026-09-24 已落地）
+✅ 已落地：`open`/`close`（`std::fs`，定案 77）+ 归属（定案 79）+ `main(args)` ✓
 
 ---
 

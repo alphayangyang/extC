@@ -1,0 +1,28 @@
+// expect: closed 带位置|不 trap
+/* ⭐ 判据（定案 79）：**关闭后使用**是 `failure(closed)`，不是 trap、不是静默。
+ *
+ * 这正是 `prelude.extc` 顶上那条：**会 trap 的库不符合 extC 的性格** ——
+ * 关掉的文件再用，是调用者能处理的情况，所以它是**值**，带位置往下传 ✓ */
+use std::fs
+use std::io
+
+fn main() -> i32 {
+    var f = fs::openWrite("build/fs-closed.out")!
+    f.put("第一段\n")!
+    f.close()!
+
+    match f.put("第二段\n") {
+        success(n)  => { println("不该成功：写了 ", n, " 字节"); return 1 }
+        failure(e)  => {
+            match e {
+                closed(code)      => { println("closed 带位置 · fd = ", code) }
+                readFailed(code)  => { println("意外：readFailed(", code, ")"); return 1 }
+                writeFailed(code) => { println("意外：writeFailed(", code, ")"); return 1 }
+                lineTooLong(n)    => { println("意外：lineTooLong(", n, ")"); return 1 }
+                destFull(n)       => { println("意外：destFull(", n, ")"); return 1 }
+            }
+        }
+    }
+    println("不 trap")
+    return 0
+}

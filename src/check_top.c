@@ -2704,6 +2704,221 @@ static void levelPass(Checker *c, const DfResult *dfr) {
 
 
 
+/* ---------------------------------------------------- opened and never closed
+ *
+ * A file descriptor is an operating-system resource, not memory: nothing closes it on
+ * the program's behalf, and the process holds it until it ends. The compiler cannot see
+ * the kernel's table, but there is one shape of leak it *can* prove -- a handle that
+ * never leaves the function and is never closed -- and that shape is a compile-time
+ * error here (decision 79). Everything else stays quiet on purpose: a handle handed to
+ * another function, returned, or stored may well be closed there, and guessing would
+ * reject correct programs.
+ *
+ * What makes a type a resource is the library's own protocol: **a struct that declares a
+ * `close` method**. No library name appears in the compiler, the same way `slice` is a
+ * protocol (`data` + `len`) and not a name codegen recognizes. `std::io`'s `writer` has
+ * only `flush` and its `reader` has no `close`, so neither is a resource -- opting in is
+ * a one-word decision the library makes.
+ */
+typedef struct {
+    const char *cname;     /* the generated-C name: unique inside one function */
+    const char *name;      /* the name the user wrote, for the diagnostic */
+    int         line;
+    bool        closed;    /* some `close` call can reach it */
+    bool        escaped;   /* handed on, returned or stored: not our business */
+    Vec         aliases;   /* const char*: `let g = f` shares one obligation */
+} FdOblig;
+
+/* True when the type declares a `close` method: the resource protocol. */
+static bool typeIsResource(Type *t) {
+    Type *b = t ? ttBase(t) : NULL;
+    if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return false;
+    for (size_t i = 0; i < b->sdef->methods.len; i++) {
+        FuncDef *m = *(FuncDef **)vecAt(&b->sdef->methods, i);
+        if (m && m->name && strcmp(m->name, "close") == 0) return true;
+    }
+    return false;
+}
+
+static FdOblig *obligFind(Vec *obs, const char *cname) {
+    if (!cname) return NULL;
+    for (size_t i = 0; i < obs->len; i++) {
+        FdOblig *o = *(FdOblig **)vecAt(obs, i);
+        if (o->cname && strcmp(o->cname, cname) == 0) return o;
+        for (size_t j = 0; j < o->aliases.len; j++)
+            if (strcmp(*(const char **)vecAt(&o->aliases, j), cname) == 0) return o;
+    }
+    return NULL;
+}
+
+/* Every obligation is out of our hands. Used for a shape this walk does not know: a
+ * missed leak is a missing diagnostic, a wrong one rejects a correct program, so the
+ * unknown direction is silence. */
+static void obligEscapeAll(Vec *obs) {
+    for (size_t i = 0; i < obs->len; i++) (*(FdOblig **)vecAt(obs, i))->escaped = true;
+}
+
+/* `escape` says whether the value in this position leaves the function's hands. */
+static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
+    if (!e) return;
+    switch (e->kind) {
+    case EX_IDENT: {
+        FdOblig *o = obligFind(obs, e->u.ident.cname);
+        if (o && escape) o->escaped = true;
+        return;
+    }
+    case EX_METHOD: {
+        /* `f.close()` is the discharge. The receiver is not an escape: `f.put(x)` writes
+         * through the handle and leaves the file exactly as open as it was. */
+        Expr *recv = e->u.method.recv;
+        if (recv && recv->kind == EX_IDENT && e->u.method.name &&
+            strcmp(e->u.method.name, "close") == 0) {
+            FdOblig *o = obligFind(obs, recv->u.ident.cname);
+            if (o) o->closed = true;
+        }
+        obligExpr(c, recv, obs, false);
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            obligExpr(c, *(Expr **)vecAt(&e->u.method.args, i), obs, true);
+        return;
+    }
+    case EX_FIELD:
+        /* `f.fd`: reading a field of the handle does not hand the handle on. */
+        obligExpr(c, e->u.field.obj, obs, false);
+        return;
+    case EX_CALL:
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            obligExpr(c, *(Expr **)vecAt(&e->u.call.args, i), obs, true);
+        if (e->u.call.callee) obligExpr(c, e->u.call.callee, obs, false);
+        return;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            obligExpr(c, *(Expr **)vecAt(&e->u.assoc.args, i), obs, true);
+        return;
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            obligExpr(c, *(Expr **)vecAt(&e->u.gencall.args, i), obs, true);
+        return;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            obligExpr(c, *(Expr **)vecAt(&e->u.enumval.args, i), obs, true);
+        return;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            obligExpr(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, obs, true);
+        return;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            obligExpr(c, *(Expr **)vecAt(&e->u.arraylit.elems, i), obs, true);
+        return;
+    case EX_INDEX:
+        obligExpr(c, e->u.index.obj, obs, true);
+        obligExpr(c, e->u.index.index, obs, true);
+        return;
+    case EX_SLICE:
+        obligExpr(c, e->u.slice.obj, obs, true);
+        obligExpr(c, e->u.slice.lo, obs, true);
+        obligExpr(c, e->u.slice.hi, obs, true);
+        return;
+    /* The value passes straight through these, keeping whatever the position means. */
+    case EX_BIN:      obligExpr(c, e->u.bin.left, obs, escape);
+                      obligExpr(c, e->u.bin.right, obs, escape); return;
+    case EX_UN:       obligExpr(c, e->u.un.operand, obs, escape); return;
+    case EX_REF:      obligExpr(c, e->u.ref.operand, obs, escape); return;
+    case EX_DEREF:    obligExpr(c, e->u.deref.operand, obs, escape); return;
+    case EX_SIGN:     obligExpr(c, e->u.sign.operand, obs, escape); return;
+    case EX_TRY:      obligExpr(c, e->u.try_.operand, obs, escape); return;
+    case EX_CONV:     obligExpr(c, e->u.conv.operand, obs, escape); return;
+    case EX_COALESCE: obligExpr(c, e->u.coalesce.main, obs, escape);
+                      obligExpr(c, e->u.coalesce.fallback, obs, escape); return;
+    case EX_NEW:      obligExpr(c, e->u.new_.count, obs, true); return;
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: case EX_NULL: return;
+    default:          obligEscapeAll(obs); return;   /* an unknown shape: stay quiet */
+    }
+}
+
+static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_VAR: {
+        /* A local of a resource type is where the obligation is born. An initializer that
+         * is another handle makes this one an alias: one `close` serves both, because
+         * both name the same descriptor. */
+        if (typeIsResource(s->type)) {
+            const char *cn = s->u.var.cname ? s->u.var.cname : s->u.var.name;
+            Expr *init = s->u.var.init;
+            FdOblig *same = (init && init->kind == EX_IDENT)
+                          ? obligFind(obs, init->u.ident.cname) : NULL;
+            if (same) {
+                *(const char **)vecPush(&same->aliases) = cn;
+            } else {
+                FdOblig *o = (FdOblig *)arenaAllocZero(c->arena, sizeof *o);
+                o->cname = cn;
+                o->name  = s->u.var.name;
+                o->line  = s->line;
+                vecInit(&o->aliases, c->arena, sizeof(const char *));
+                *(FdOblig **)vecPush(obs) = o;
+            }
+        }
+        obligExpr(c, s->u.var.init, obs, false);
+        return;
+    }
+    case ST_ASSIGN: {
+        /* Overwriting a handle loses the old descriptor, which is a leak as well -- but
+         * the old value may have been closed by whoever handed the new one over, so the
+         * safe direction here is silence. The value being stored is out of our hands. */
+        if (s->u.assign.target && s->u.assign.target->kind == EX_IDENT) {
+            FdOblig *o = obligFind(obs, s->u.assign.target->u.ident.cname);
+            if (o) o->escaped = true;
+        }
+        obligExpr(c, s->u.assign.value, obs, true);
+        return;
+    }
+    case ST_IF:    obligExpr(c, s->u.ifs.cond, obs, false);
+                   obligStmt(c, s->u.ifs.thenBody, obs);
+                   obligStmt(c, s->u.ifs.elseBody, obs); return;
+    case ST_WHILE: obligExpr(c, s->u.whiles.cond, obs, false);
+                   obligStmt(c, s->u.whiles.body, obs); return;
+    case ST_RETURN: obligExpr(c, s->u.ret.value, obs, true); return;   /* handed to the caller */
+    case ST_EXPR:  obligExpr(c, s->u.expr.expr, obs, false); return;
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            obligStmt(c, *(Stmt **)vecAt(&s->u.block.stmts, i), obs);
+        return;
+    case ST_MATCH:
+        obligExpr(c, s->u.match.scrutinee, obs, true);
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            obligStmt(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body, obs);
+        return;
+    case ST_BREAK: case ST_CONTINUE:
+    default: return;
+    }
+}
+
+/* Report every descriptor this function opens and never closes.
+ *
+ * The walk is flow-insensitive on purpose: a `close` anywhere in the function counts.
+ * Proving that a particular *path* closes it needs a path-sensitive analysis, and
+ * rejecting a program that closes its file on one of two paths would be a false alarm.
+ * The accepted shapes are still really closed at run time, because a second `close` is a
+ * no-op in the library (the handle's `open` flag is already false).
+ */
+static void checkOpenHandles(Checker *c, FuncDef *f) {
+    if (!f || !f->body || f->isExtern) return;
+    Vec obs; vecInit(&obs, c->arena, sizeof(FdOblig *));
+    for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
+        obligStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i), &obs);
+    for (size_t i = 0; i < obs.len; i++) {
+        FdOblig *o = *(FdOblig **)vecAt(&obs, i);
+        if (o->closed || o->escaped) continue;
+        ckError(c, o->line,
+                "A descriptor is an operating-system resource, not memory: nothing closes it"
+                " for you, and the process holds it until it ends. Close it where its life ends"
+                " -- `close()` on the handle -- or hand the handle to a function that takes"
+                " over.",
+                "`%s` is opened here and nothing in this function closes it", o->name);
+    }
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     /* An extern declaration has no body, so only its signature is checked: the parameter
      * types were already resolved elsewhere, and no arena is involved, since the function
@@ -2825,6 +3040,10 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * piece of storage and is rejected (see `declare`). */
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
+
+    /* The types of the declarations are final by now, so this is the place to ask
+     * whether every handle the function opened also gets closed. */
+    checkOpenHandles(c, f);
 
     collectEffects(c, f);      /* compute the effect summary; it is only recorded here */
     f->arenaSites = c->curArenaSites;   /* handed to the pass that runs after the analysis closes */

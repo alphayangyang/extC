@@ -234,7 +234,7 @@ struct File {
 fn open(path: slice<u8>) -> result<mut ref File, IoError> {
     let fd = io::open(path, 0)
     if fd < 0 { return failure(denied) }
-    var f: mut ref File = new File             // 块拥有：块退出自动关 ✓（IO.md §5 · 定案 78）
+    var f: mut ref File = new File             // 句柄由程序关：f.close()（IO.md §5 · 定案 79）
     f.fd = fd
     f.name = path
     return success(f)
@@ -371,7 +371,7 @@ double Polygon::area() const { /* … */ }    // ← 抄第二遍
 | `extern!("libc") … effects Addr=0 Cont=0` | ❌ 新 | `LIBS.md` LQ3（签字）|
 | `result` / `?` / `failure(…)` / enum + match | ✅ **今天就能跑** | —— |
 | `slice` 切片 `line[0..n]` · `[64]u8` · `ref`/`mut ref`/`?ref` | ✅ 今天就能跑 | —— |
-| `new File` + "块拥有 ⇒ 自动关" | ⚠️ 设计已定（`IO.md` §5），未实现 | 检查器**零新规则** ✓ |
+| `new File` + "程序关 + 编译期查泄漏" | ✅ 已落地（`std::fs` · 定案 79）| 检查器新增**一条**规则（按 `close` 协议认资源）✓ |
 | `fn sort<T>(…)` 泛型自由函数 | ❌ 今天没有 | 中（§9.3 那张表）|
 
 ---

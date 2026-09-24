@@ -147,13 +147,6 @@ typedef struct {
      * most ordinary line there is, `println("x = ", n)`, failed to compile.
      * genPrint raises this flag directly instead. */
     bool        needRuntime;
-    /* Set per function from `fdSites`: this body owns file descriptors, so it needs
-     * `extc_fd __extc_fd[N]`, and every block release also has to close what the
-     * block owns -- before the memory it lives in goes back. */
-    bool        needFd;
-    /* How many levels `__extc_fd` has, for the one runtime call that has to search
-     * every level (`closeFd`): a handle may have been acquired in an outer block. */
-    int         fdLevels;
 } CG;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
@@ -1443,26 +1436,10 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `flush()` becomes `fflush(NULL)`; <stdio.h> is already included
              * by the runtime. */
             if (strcmp(name, "flush") == 0) return "(fflush((void *)0), 0)";
-            /* `ownFd(fd)` registers the descriptor with the block at the *current*
-             * level and yields the same value, so it reads as `let fd = ownFd(open(..))`.
-             * The argument is named twice, which the checker has already restricted
-             * to a repeatable expression. */
-            /* `closeFd(fd)` closes a descriptor and tells every table to forget it,
-             * so the block exit will not close it again. The library wraps this as
-             * the `close()` of a file handle. */
-            if (strcmp(name, "closeFd") == 0) {
-                if (e->u.call.args.len != 1) return "0";
-                const char *fd = genExpr(g, *(Expr **)vecAt(&e->u.call.args, 0));
-                return arenaPrintf(g->arena,
-                    "extc_fd_closeAll(__extc_fd, %d, (int)(%s))", g->fdLevels, fd);
-            }
-            if (strcmp(name, "ownFd") == 0) {
-                if (e->u.call.args.len != 1) return "0";
-                const char *fd = genExpr(g, *(Expr **)vecAt(&e->u.call.args, 0));
-                return arenaPrintf(g->arena,
-                    "(extc_fd_own(&__extc_fd[%d], &__extc_a[%d], (int)(%s), \"%s\", %d), (%s))",
-                    g->blkLevel, g->blkLevel, fd, g->path, e->line, fd);
-            }
+            /* There is no `ownFd`/`closeFd` here any more: a file descriptor is not owned
+             * by the block, so nothing registers one and nothing closes one behind the
+             * program's back. `std::fs` closes with the `close(2)` it declares itself (see
+             * `docs/topics/IO.md` section 5, decision 79). */
             if (!e->func) return "0";
 
             /* Only `cSymName` is used, without the owner prefix: a call site
@@ -2125,10 +2102,9 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
     if (g->noArena) return;   /* never allocates, so nothing to release */
-    /* Descriptors first: the nodes live in the memory that is about to go back.
-     * This is the only place a block release is emitted, so the order lives here
-     * rather than in a rule somebody has to remember. */
-    if (g->needFd) cgLine(g, "extc_fd_release(&__extc_fd[%d]);", lvl);
+    /* Memory only. A block used to close the descriptors it owned first, which is why
+     * this is the one place a block release is emitted -- but files are the program's
+     * business now (decision 79), so there is nothing to close here. */
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -2887,15 +2863,8 @@ static void genFunc(CG *g, FuncDef *f) {
      * array is needed even when the body allocates nothing. A program that only
      * prints its arguments is exactly that case. */
     if (mainArgs) g->noArena = false;
-    /* Owning a descriptor allocates its node in the block's arena, so a function
-     * that owns one needs the arena array even if it allocates nothing else. */
-    g->needFd = f->fdSites > 0;
-    if (g->needFd) g->noArena = false;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
-    g->fdLevels = maxLv + 1;
-    if (g->needFd)
-        cgLine(g, "extc_fd __extc_fd[%d] = {0};", maxLv + 1);
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
@@ -3006,9 +2975,6 @@ static void genFunc(CG *g, FuncDef *f) {
         /* `destroy`, not `release`: this is the frame's last exit, so the block the
          * arena kept for the next round has to go too. Emitting `release` here would
          * leak one block per arena at every return -- bounded, but a leak. */
-        if (g->needFd)
-            for (int lv = 1; lv <= maxLv; lv++)
-                cgLine(g, "extc_fd_release(&__extc_fd[%d]);", lv);
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
         if (isMain)       cgLine(g, "return 0;");   /* main returns int in the generated C */
@@ -3731,53 +3697,6 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        return p;\n"
         "    }\n"
         "}\n\n");
-
-    /* ------------------------------------------------------------------
-     * File descriptors a block owns.
-         *
-         * A sibling of the arena, not part of it: the arena is about memory, and
-         * giving it a second job (closing things) is how a core abstraction starts
-         * growing every resource in the language. This table is small, it exists
-         * only for the kinds whose release cannot fail and carries no ordering
-         * meaning, and the block exit emits one line for it next to the arena's.
-         *
-         * The node is allocated in the block's own arena, so it goes back with the
-         * block for free -- which is why the release below closes and then forgets,
-         * without freeing anything itself. `close` is declared rather than included:
-         * the generated C stays ISO C, and the symbol is in libc either way.
-         * ------------------------------------------------------------------ */
-    bufPuts(out,
-        "extern int close(int);\n"
-        "typedef struct extc_fdnode { int fd; struct extc_fdnode *next; } extc_fdnode;\n"
-        "typedef struct extc_fd { extc_fdnode *top; } extc_fd;\n"
-        "static inline void extc_fd_own(extc_fd *t, extc_arena *a, int fd,\n"
-        "                               const char *file, int line) {\n"
-        "    extc_fdnode *n = (extc_fdnode *)extc_arena_alloc(a, (int64_t)sizeof *n, file, line);\n"
-        "    n->fd = fd;\n"
-        "    n->next = t->top;\n"
-        "    t->top = n;\n"
-        "}\n"
-        /* Close in reverse order of acquisition: the order is not required to
-         * matter, but it is the order a scope would run destructors in, and it
-         * costs nothing. A node whose fd is already -1 was closed explicitly and
-         * is skipped -- closing it twice would shut a descriptor the kernel has
-         * since handed to somebody else. */
-        /* Close one descriptor **now** and make every table forget it: the block
-         * exit must not close it a second time, because by then the number may
-         * belong to somebody else. Every level is searched, since the handle may
-         * have been acquired in an outer block. The value is what close(2)
-         * returned, so the library can report a deferred write error. */
-        "static inline int extc_fd_closeAll(extc_fd *tbl, int n, int fd) {\n"
-        "    for (int i = 0; i < n; i++)\n"
-        "        for (extc_fdnode *m = tbl[i].top; m; m = m->next)\n"
-        "            if (m->fd == fd) m->fd = -1;\n"
-        "    return close(fd);\n"
-        "}\n"
-        "static inline void extc_fd_release(extc_fd *t) {\n"
-        "    for (extc_fdnode *n = t->top; n; n = n->next)\n"
-        "        if (n->fd >= 0) close(n->fd);\n"
-        "    t->top = NULL;\n"
-        "}\n");
 
     /* The @overwrite cell type, emitted on demand: emitted unconditionally it
      * would change every golden file. It must come after `extc_arena`, because

@@ -1,0 +1,142 @@
+/* std/fs.extc -- files: the read type and the write type are two structs, and the
+ * handle belongs to the **program**.
+ *
+ * Three names are the whole reading of it: `openRead`, `openWrite` (truncates) and
+ * `openAppend`. The mode is in the name, so a call says what it does without the
+ * reader having to decode flags -- and because reading and writing are separate
+ * types, using one as the other is a **compile-time** error rather than a runtime
+ * surprise. `tests/fs-shape/` pins both directions of that.
+ *
+ * **Closing is the program's job** (decision 79). The block does *not* own the
+ * descriptor: the only place a deferred write error can be reported is `close()`,
+ * and a block exit has nowhere to report anything -- owning files there would have
+ * meant silently losing data.
+ *
+ *     let f = fs::openWrite("out.txt")?
+ *     f.put("hello")?
+ *     f.close()?                       // the checkable commit point
+ *
+ * Forgetting to close is not silent: a handle that never leaves the function and is
+ * never closed is a **compile-time error** ("opened and never closed", recognized by
+ * the `close` method this type declares). A handle handed to another function or
+ * returned is that function's business, and the check stays quiet about it.
+ *
+ * A handle used after `close()` returns `failure(closed(fd))` rather than trapping.
+ * That is the rule stated at the top of `prelude.extc`: a library that traps does not
+ * fit this language's character -- the caller decides what to do.
+ *
+ * NOTE: paths have to be NUL-terminated for the C call underneath. A string literal
+ * already is one; a slice assembled at run time has to guarantee the terminator.
+ */
+use std::io
+use std::sys::io as sysio
+
+/* ---------------------------------------------------------------- 读型 */
+
+struct inputFile {
+    fd:   i32
+    open: bool
+
+    /* Read once. Returns how many bytes arrived; 0 means end of file. */
+    fn readSome(self: mut ref inputFile, out: mut slice<u8>) -> result<i64, io::ioError> {
+        if !self.open { return failure(io::ioError.closed(self.fd)) }
+        if out.len == i64(0) { return success(i64(0)) }
+        let n = sysio::read(self.fd, out.data, out.len)
+        if n < i64(0) { return failure(io::ioError.readFailed(self.fd)) }
+        return success(n)
+    }
+
+    /* Read until `out` is full or the file ends, and report how much was read.
+     *
+     * A destination that fills up while the file still has data is
+     * `failure(destFull(n))`: handing back a short count would look like end of file
+     * and silently lose the rest. */
+    fn readAll(self: mut ref inputFile, out: mut slice<u8>) -> result<i64, io::ioError> {
+        var total: i64 = 0
+        while total < out.len {
+            let n = self.readSome(out[total..])?
+            if n == i64(0) { return success(total) }        /* end of file */
+            total = total + n
+        }
+        var probe: [1]u8
+        let more = self.readSome(probe[..])?
+        if more > i64(0) { return failure(io::ioError.destFull(total)) }
+        return success(total)
+    }
+
+    /* Close the descriptor. Idempotent: the handle remembers that it is closed, so a
+     * second call is a no-op and `close(2)` is never reached twice -- by then the
+     * number may belong to somebody else. */
+    fn close(self: mut ref inputFile) -> result<unit, io::ioError> {
+        if !self.open { return success(unit {}) }
+        let fd0 = self.fd
+        self.fd = i32(-1)
+        self.open = false
+        if sysio::close(fd0) < i32(0) { return failure(io::ioError.readFailed(fd0)) }
+        return success(unit {})
+    }
+}
+
+/* ---------------------------------------------------------------- 写型 */
+
+struct outputFile {
+    fd:   i32
+    open: bool
+
+    /* Write all of `buf`. A short write is not an error: it is looped over, and only
+     * a real failure from `write(2)` comes back as `failure`. */
+    fn put(self: mut ref outputFile, buf: slice<u8>) -> result<i64, io::ioError> {
+        if !self.open { return failure(io::ioError.closed(self.fd)) }
+        var done: i64 = 0
+        while done < buf.len {
+            let n = sysio::write(self.fd, buf[done..].data, buf.len - done)
+            if n < i64(0) { return failure(io::ioError.writeFailed(self.fd)) }
+            done = done + n
+        }
+        return success(done)
+    }
+
+    /* The commit point. Closing is what makes the data reach the file, so this is
+     * where a deferred error has to be reported -- a block exit cannot report
+     * anything. There is no separate `commit()` on a raw descriptor: the write path
+     * goes straight to `write(2)`, and `close(2)` is the one call that still has
+     * something to say. A buffered writer (`std::io`'s `writer`) is where a half-way
+     * `flush()` belongs. */
+    fn close(self: mut ref outputFile) -> result<unit, io::ioError> {
+        if !self.open { return success(unit {}) }
+        let fd0 = self.fd
+        self.fd = i32(-1)
+        self.open = false
+        if sysio::close(fd0) < i32(0) { return failure(io::ioError.writeFailed(fd0)) }
+        return success(unit {})
+    }
+}
+
+/* ---------------------------------------------------------------- 打开 */
+
+/* Opening produces a `failure` and not a trap: a missing file, a permission, or a
+ * full descriptor table (EMFILE) are normal runtime conditions. The number the call
+ * returned travels in the error, so the caller can tell them apart. */
+fn openRead(path: slice<u8>) -> result<inputFile, io::ioError> {
+    let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
+    if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
+    /* NOTE: built with an annotated variable, not `inputFile { .. }`: a named struct
+     * literal inside a module does not resolve today (`PLAN.md` #54), and this form is
+     * the documented workaround. It reads the same once #54 is fixed. */
+    var f: inputFile = { fd: fd, open: true }
+    return success(f)
+}
+
+fn openWrite(path: slice<u8>) -> result<outputFile, io::ioError> {
+    let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
+    var f: outputFile = { fd: fd, open: true }   /* workaround for PLAN #54, see openRead */
+    return success(f)
+}
+
+fn openAppend(path: slice<u8>) -> result<outputFile, io::ioError> {
+    let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_APPEND, i32(420))
+    if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
+    var f: outputFile = { fd: fd, open: true }   /* workaround for PLAN #54, see openRead */
+    return success(f)
+}
