@@ -1,0 +1,5 @@
+/* 算术运算符的返回值必须是**自己这个类型**（结果站在原来 `a` 站的地方） */
+struct bad { n: i32
+    fn +(self: ref bad, o: bad) -> i32 { return 1 }
+}
+fn main() -> i32 { return 0 }

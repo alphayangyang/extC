@@ -1,0 +1,19 @@
+// expect: a < b = false|a == b = false|plus = 999|self.n 还是 1
+/* 判据有牙：方法**故意返回错的答案** ⇒ 真调到了用户的方法，不是内建语义
+ * `weird` 的字段 n 是 1 和 2，内建 `<` 会说 true、内建 `==` 会说 false（同类型比字段）
+ * ⇒ 打印出 false / false / 999 才算对 ✓ */
+struct weird { n: i32
+    fn <(self: ref weird, o: ref weird) -> bool { return false }
+    fn ==(self: ref weird, o: ref weird) -> bool { return false }
+    fn +(self: ref weird, o: weird) -> weird { return weird { n: 999 } }
+}
+fn main() -> i32 {
+    var a: weird = { n: 1 }
+    var b: weird = { n: 2 }
+    println("a < b = ", a < b)
+    println("a == b = ", a == b)
+    var c: weird = a + b
+    println("plus = ", c.n)
+    println("self.n 还是 ", a.n)
+    return 0
+}

@@ -1,0 +1,9 @@
+/* 具体类型没有 `+` ⇒ 报错点名运算符并给出该写什么 */
+struct raw { z: i32 }
+fn main() -> i32 {
+    var a: raw = { z: 1 }
+    var b: raw = { z: 2 }
+    var c: raw = a + b
+    println(c.z)
+    return 0
+}

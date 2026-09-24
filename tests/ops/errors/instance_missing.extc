@@ -1,0 +1,11 @@
+/* 泛型体里用 `<`，实例化成**没有** `<` 的结构 ⇒ 必须**实例化时**报错、点名实例
+ * ⚠️ 这条也钉着一个缺陷（PLAN #58）：**自由函数**那一半的复查以前根本没跑过，
+ * 是 codegen 用另一条更粗的规则兜的（报「`raw` needs to define `<`」、不点名实例）✗ */
+struct raw { z: i32 }
+fn less<T>(a: T, b: T) -> bool { return a < b }
+fn main() -> i32 {
+    var p: raw = { z: 1 }
+    var q: raw = { z: 2 }
+    println("less = ", less(p, q))
+    return 0
+}

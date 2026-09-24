@@ -3381,9 +3381,9 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
     return true;
 }
 
-/* Re-check one deferred `==` for one concrete instance.
+/* Re-check one deferred operator use for one concrete instance.
  *
- * Both batches of checks that are deferred to instantiation -- this `==` batch and the
+ * Both batches of checks that are deferred to instantiation -- this operator batch and the
  * reference-rule batch below -- are driven the same way for type instances and for
  * free-function instances, so they share helpers instead of a second copy for `fn f<T>`.
  *
@@ -3397,17 +3397,45 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
  * Notes:
  *   - The caller must have set `c.substParams` / `c.substArgs` to this instance before
  *     the call: `runRefCheck` reads them through `tsub`.
+ *   - The diagnostic names the operator that was recorded, never a fixed `==`: this one
+ *     function serves `==`, the ordering operators and the arithmetic ones.
  */
-static void runEqCheck(Checker *c, EqCheck *ec, Vec *params, Vec *targs, const char *instName) {
+static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const char *instName) {
     TypeTable *tt = c->tt;
     Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type, params, targs);
     Type *rt2 = ttSubstitute(tt, ec->node->u.bin.right->type, params, targs);
     if (!ttEquals(lt, rt2)) return;
-    if (!typeSupportsEq(lt, ec->op))
-        ckError(c, ec->node->line,
-                "`==` inside a generic is checked at instantiation, not on the template --"
-                " the price of having no traits. Add a `fn ==` to that type.",
-                "`%s` needs `%s` to define `==`", instName, typeStr(c, lt));
+    if (!typeSupportsOp(lt, ec->op)) {
+        const char *op = ec->op;
+        Type *b = ttBase(lt);
+        /* An instance the concrete-type path rejects for a better reason than "define a
+         * method", so this does not tell the reader to go and write one:
+         *   - `%` on a float instance: `%` is for integers;
+         *   - an ordering operator on `bool` or a payload-free enum: ordering is for
+         *     numbers (the concrete path reports the same thing).
+         * Both messages mirror check_expr.c, which is where the concrete rules live. */
+        if ((strcmp(op, "%") == 0 && ttIsNumeric(lt)) || (!isEqualityOp(op) && cmpIsNative(lt))) {
+            ckError(c, ec->node->line, NULL,
+                    "cannot apply `%s` to `%s`", op, typeStr(c, lt));
+            return;
+        }
+        /* An enum with a payload has no `==` in C, and no method could fix that; the
+         * concrete path points at `match` and so does this. */
+        if (b && b->kind == TY_ENUM && enumHasPayload(b->edef) && isEqualityOp(op)) {
+            ckError(c, ec->node->line,
+                    "an enum with a payload is a tagged union -- compare it with `match`,"
+                    " or write a method that does",
+                    "`%s` is an enum with a payload, so it has no `%s`", typeStr(c, lt), op);
+            return;
+        }
+        Buf note;
+        bufInit(&note, c->arena);
+        bufPrintf(&note,
+                  "`%s` inside a generic is checked at instantiation, not on the template --"
+                  " the price of having no traits. Add a `fn %s` to that type.", op, op);
+        ckError(c, ec->node->line, bufCstr(&note),
+                "`%s` needs `%s` to define `%s`", instName, typeStr(c, lt), op);
+    }
 }
 
 /* Does this deferred reference check belong to this free-function instance?
@@ -3595,7 +3623,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.tt = tt;
     c.m = m;
     vecInit(&c.scopes, arena, sizeof(void *));
-    vecInit(&c.eqChecks, arena, sizeof(void *));
+    vecInit(&c.opChecks, arena, sizeof(void *));
     vecInit(&c.globals, arena, sizeof(void *));
     vecInit(&c.allSyms, arena, sizeof(void *));     /* kept for the EXTC_SELFCHECK invariant scan */
     vecInit(&c.nameUses, arena, sizeof(void *));
@@ -3694,29 +3722,36 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         checkFunc(&c, fx);
     }
 
-    /* Deferred `==` checks: re-check each one for every concrete instance.
+    /* Deferred operator checks: re-check each recorded use for every concrete instance.
      * This is the price of having no traits. The error surfaces late, here, so the
      * message has to name the instance it came from. */
-    for (size_t i = 0; i < c.eqChecks.len; i++) {
-        EqCheck *ec = *(EqCheck **)vecAt(&c.eqChecks, i);
-        /* The function holding this `==` is never called, so none of its instances can
+    for (size_t i = 0; i < c.opChecks.len; i++) {
+        OpCheck *ec = *(OpCheck **)vecAt(&c.opChecks, i);
+        /* The function holding the operator is never called, so none of its instances can
          * run and the per-instance recheck is unnecessary. This also spares the user from
-         * having to define `fn ==` for a type that is never compared. */
+         * having to define the operator for a type that is never used with it. */
         if (ec->func && !ec->func->used) continue;
-        /* (1) Type instances (a method's `T: ==`). A free function has no owner => skip. */
-        if (!ec->owner) goto eq_done;
-        for (size_t j = 0; j < tt->instances.len; j++) {
-            Type *inst = *(Type **)vecAt(&tt->instances, j);
-            if (inst->sdef != ec->owner) continue;
-            runEqCheck(&c, ec, &ec->owner->typeParams, &inst->targs, inst->name);
+        /* (1) Type instances (an operator used on a method's `T`). A free function has no
+         * owner, so it has no type instances; it is covered by (2).
+         *
+         * This used to be `if (!ec->owner) goto done;`, which skipped (2) as well: every
+         * `T: ==` inside a free generic function was left to code generation, whose
+         * message happens to be word for word the same, so the half never ran and nobody
+         * noticed. Code generation is the wrong place for it - it cannot see the `%`-on-
+         * float case at all - so the loop boundary is written out here. */
+        if (ec->owner) {
+            for (size_t j = 0; j < tt->instances.len; j++) {
+                Type *inst = *(Type **)vecAt(&tt->instances, j);
+                if (inst->sdef != ec->owner) continue;
+                runOpCheck(&c, ec, &ec->owner->typeParams, &inst->targs, inst->name);
+            }
         }
-        /* (2) Free-function instances: a `T: ==` inside `fn f<T>`. */
+        /* (2) Free-function instances: an operator used on `T` inside `fn f<T>`. */
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (ec->func != fi->tmpl) continue;
-            runEqCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+            runOpCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
-    eq_done: ;
     }
 
     /* ------------------------------------------------- deferred generic rechecks

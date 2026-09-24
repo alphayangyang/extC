@@ -106,6 +106,11 @@ if [ -x tests/annot/run.sh ]; then
     else bad "tests/annot/run.sh"; echo "$out"; fi
 fi
 
+echo "== 运算符重载（方法名**就是**运算符：比较六个 + 算术五个 · 泛型体里实例化时检查）=="
+if out=$(bash tests/ops/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · mangle · 9 反例 · 两条不许漏到 gcc）"
+else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
+
 echo "== 头文件 include guard（内容不许落在 #endif 之后）=="
 # 判据：每个 src/*.h 的**最后一个非空行**必须是 #endif。
 # 为什么要有这一节：曾经有一段声明（连同它的文档注释）被追加到 types.h 的 #endif **之后**

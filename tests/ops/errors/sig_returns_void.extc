@@ -1,0 +1,5 @@
+/* 签名形状固定：比较运算符必须返回 bool ⇒ **定义点**就挡住（不看有没有人用） */
+struct bad { n: i32
+    fn <(self: ref bad, o: ref bad) -> void { }
+}
+fn main() -> i32 { return 0 }

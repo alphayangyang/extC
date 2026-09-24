@@ -1,0 +1,12 @@
+/* 泛型体里序「无载荷枚举」⇒ 必须挡，而且理由要跟**具体类型**那条一致（序只对数字）
+ * ⚠️ 这条钉着 PLAN #58：老编译器**放行并跑到 true**（枚举在 C 里是整数 ⇒ codegen 直接吐 `<`），
+ * 而同一个类型的具体写法 `a < b` 是被挡的 ⇒「泛型接受的、它自己的实例不接受」✗
+ * 修法：实例化复查（检查器）改用与具体类型**同一个谓词** ✓ */
+type order = | low | mid | high
+fn less<T>(a: T, b: T) -> bool { return a < b }
+fn main() -> i32 {
+    var a: order = order.low
+    var b: order = order.high
+    println("less = ", less(a, b))
+    return 0
+}

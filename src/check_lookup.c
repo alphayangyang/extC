@@ -82,7 +82,7 @@ void unNarrow(Checker *c, const char *cname) {
 const char *narrowTarget(Checker *c, Expr *cond, bool *whenTrue) {
     if (!cond || cond->kind != EX_BIN) return NULL;
     const char *op = cond->u.bin.op;
-    if (strcmp(op, "!=") != 0 && strcmp(op, "==") != 0) return NULL;
+    if (!isEqualityOp(op)) return NULL;
     Expr *var = NULL;
     if (cond->u.bin.right->kind == EX_NULL)      var = cond->u.bin.left;
     else if (cond->u.bin.left->kind == EX_NULL)  var = cond->u.bin.right;

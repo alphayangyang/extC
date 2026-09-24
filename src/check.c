@@ -250,6 +250,24 @@ bool isLogicOp(const char *op) {
     return strcmp(op, "&&") == 0 || strcmp(op, "||") == 0;
 }
 
+/* Report whether `op` is `==` or `!=`.
+ *
+ * The pair shares everything that is special about it: one native rule, the `!=` -> `==`
+ * fallback, and the diagnostics that talk about comparability rather than ordering. The
+ * test used to be spelled out at each of those places. */
+bool isEqualityOp(const char *op) {
+    return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0;
+}
+
+/* Report whether `op` is one of the five arithmetic operators that can be overloaded.
+ *
+ * `-` is here as binary subtraction only: extC has no unary operator overloading, so a
+ * method named `-` is reached by `a - b` and never by `-a`. */
+bool isArithOp(const char *op) {
+    return strcmp(op, "+") == 0 || strcmp(op, "-") == 0 || strcmp(op, "*") == 0 ||
+           strcmp(op, "/") == 0 || strcmp(op, "%") == 0;
+}
+
 /* Report whether an expression is an integer or floating-point literal.
  *
  * Params:

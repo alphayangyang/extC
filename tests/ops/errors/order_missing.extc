@@ -1,0 +1,8 @@
+/* 具体类型没有 `<` ⇒ 编译期报错并且**指路**（不是一句 cannot compare 就完了） */
+struct raw { z: i32 }
+fn main() -> i32 {
+    var a: raw = { z: 1 }
+    var b: raw = { z: 2 }
+    println("a < b = ", a < b)
+    return 0
+}

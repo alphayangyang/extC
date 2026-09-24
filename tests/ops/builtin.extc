@@ -1,0 +1,15 @@
+// expect: 1 < 2 = true|1.5 + 2.25 = 3.75|7 % 3 = 1|!= 由 == 派生 = false
+/* 回归：内建类型上的运算符**一字不改**（用户改不了内建 —— 没有语法能挂方法到 i32）
+ * 附一条既有的派生规则：只写 `fn ==` 时 `!=` 取反即可 ✓ */
+struct onlyEq { n: i32
+    fn ==(self: ref onlyEq, o: ref onlyEq) -> bool { return self.n == o.n }
+}
+fn main() -> i32 {
+    println("1 < 2 = ", 1 < 2)
+    println("1.5 + 2.25 = ", 1.5 + 2.25)
+    println("7 % 3 = ", 7 % 3)
+    var a: onlyEq = { n: 5 }
+    var b: onlyEq = { n: 5 }
+    println("!= 由 == 派生 = ", a != b)
+    return 0
+}

@@ -1,0 +1,24 @@
+// expect: less = false|sum.x = 42|rem = 0|builtin = 42
+/* 泛型体里的运算符：`T` 不透明 ⇒ 要求记下来，**实例化时**才检查
+ *   ① 实例化成有 `<` / `+` / `%` 的结构 ⇒ 能用
+ *   ② 实例化成内建 i32 ⇒ 走内建，不受影响
+ * “实例化成没有该运算符的结构”必须报错 ⇒ tests/ops/errors/instance_missing.extc ✓ */
+struct pt { n: i32
+    fn <(self: ref pt, o: ref pt) -> bool { return self.n < o.n }
+    fn +(self: ref pt, o: pt) -> pt { return pt { n: self.n + o.n } }
+    fn %(self: ref pt, o: pt) -> pt { return pt { n: self.n % o.n } }
+}
+fn less<T>(a: T, b: T) -> bool { return a < b }
+fn add<T>(a: T, b: T) -> T { return a + b }
+fn mod2<T>(a: T, b: T) -> T { return a % b }
+fn main() -> i32 {
+    var p: pt = { n: 40 }
+    var q: pt = { n: 2 }
+    println("less = ", less(p, q))
+    var s: pt = add(p, q)
+    println("sum.x = ", s.n)
+    var r: pt = mod2(p, q)
+    println("rem = ", r.n)
+    println("builtin = ", add(20, 22))
+    return 0
+}

@@ -694,10 +694,10 @@ static Token *expectTypeName(Parser *p, const char *what) {
  */
 static Token *expectFuncName(Parser *p) {
     if (atKind(p, TK_IDENT)) return take(p);
-    /* ⭐ Operator overloading (decision 82): the name of an overriding method **is the
-     * operator**. `==` / `!=` came first; comparisons and arithmetic take the same road, so
-     * a container or a generic body can sort and add what it holds. The set stays small on
-     * purpose -- `[]` is syntax over the `slice` protocol, not a method name. */
+    /* Operator overloading: the name of an overriding method **is the operator**.
+     * `==` / `!=` came first; the ordering and arithmetic operators take the same road,
+     * so a container or a generic body can sort and add what it holds. The set stays
+     * small on purpose -- `[]` is syntax over the `slice` protocol, not a method name. */
     if (at(p, "==") || at(p, "!=") || at(p, "<") || at(p, "<=") ||
         at(p, ">")  || at(p, ">=") || at(p, "+") || at(p, "-") ||
         at(p, "*")  || at(p, "/")  || at(p, "%")) return take(p);

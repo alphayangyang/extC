@@ -1,4 +1,7 @@
-/* 反例：`T` 没有 `==` 时的实例化报错（推迟检查 ✓）*/
+/* 反例：`T` 没有 `==` 时的实例化报错（推迟检查 ✓）
+ * ⚠️ 2026-09-24：这条以前由 **codegen** 兜底报（「`pt` needs to define `==`」），
+ * 现在由**检查器的实例化复查**报，而且**点名实例**（「`indexOf_pt` needs `pt` to define `==`」）
+ * ⇒ 断言的子串跟着改成 "to define `==`"（两种形状都含它，稳定）✓ */
 struct pt { x: i32  y: i32 }
 fn indexOf<T>(a: slice<T>, x: T) -> i64 { var i: i64 = 0  while i < a.len { if a[i] == x { return i }  i = i + 1 }  return 0 - 1 }
 fn main() { var ps: [2]pt = [ { x: 1, y: 1 }, { x: 2, y: 2 } ]  var q: pt = { x: 2, y: 2 }  println(indexOf(ps[..], q)) }

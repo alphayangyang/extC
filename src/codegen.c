@@ -9,6 +9,12 @@
  */
 
 #include "codegen.h"
+/* The checker owns the rules this pass has to agree with, so it includes the checker's
+ * header rather than restating them: `typeSupportsOp` decides whether an operator applied
+ * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
+ * `isProtoType` and `enumHasPayload` were duplicated here as static copies of the
+ * checker's - the same hazard in a smaller form - and are gone. */
+#include "check_internal.h"
 
 #include <assert.h>     /* the entry-point contracts below */
 #include <stdarg.h>
@@ -288,7 +294,6 @@ static const char *cType(CG *g, Type *t) {
 
 /* ---------------------------------------------------------------- expressions */
 
-static bool isProtoType(Type *t, const char *name, size_t nargs);
 static const char *genExpr(CG *g, Expr *e);
 static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
@@ -298,23 +303,16 @@ static bool cgIsMain(const FuncDef *f);
 static bool isPlaceExpr(const Expr *e);
 
     
-/* Does this enum have a variant that carries a payload?
- *
- * Returns:
- *   true when some variant has fields, in which case the C form is a struct
- *   holding a tag and a union rather than a plain enum.
- */
-static bool enumHasPayload(TypeDef *td) {
-    if (!td) return false;
-    for (size_t i = 0; i < td->variants.len; i++)
-        if ((*(Variant **)vecAt(&td->variants, i))->types.len > 0) return true;
-    return false;
-}
 
 /* Map an extC symbol name to a fragment usable inside a C identifier.
  *
  * An operator is spelled `==` in extC but cannot be spelled that way in C, so
- * the two operators that end up in method names are renamed here.
+ * every operator that can be a method name is renamed here. The set below has
+ * to cover every operator the language lets a method be named after: a name
+ * that fell through would be pasted into the generated C as-is, and `ver_<`
+ * does not compile. The error would then point into the generated C, where the
+ * user cannot see their own source - the failure mode this function exists to
+ * prevent.
  *
  * A user name can also collide with a C keyword; writing tests hit this with
  * `fn double(...)`. In extC `double` is not a keyword (the float types are
@@ -334,7 +332,10 @@ static bool enumHasPayload(TypeDef *td) {
  */
 static const char *cSymName(CG *g, const char *name) {
     static const struct { const char *extc, *c; } MAP[] = {
-        { "==", "eq" }, { "!=", "ne" },
+        { "==", "eq"  }, { "!=", "ne"  },
+        { "<",  "lt"  }, { "<=", "le"  }, { ">",  "gt" }, { ">=", "ge" },
+        { "+",  "add" }, { "-",  "sub" }, { "*",  "mul" },
+        { "/",  "div" }, { "%",  "rem" },
         { NULL, NULL }
     };
     for (size_t i = 0; MAP[i].extc; i++)
@@ -724,17 +725,14 @@ static void emitDescRegion(CG *g) {
  * printing anything. What remains is descriptor data plus one `extc_print`.
  */
 
-/* Can C compare this type natively with `==`?
- *
- * Returns:
- *   true for builtin numeric and bool types and for enums; every other type
- *   needs `extc_eq`.
+/* `nativeCmp` used to live here: a second, coarser copy of "can C compare this type
+ * natively with `==`?" that answered by kind alone. It said yes for every builtin and
+ * every enum, so an instance of a generic that applied `%` to an `f64` - which the
+ * checker rejects, because `%` is for integers - was emitted as C `%` and failed inside
+ * gcc, in a file the user cannot read. The operator rule now comes from `typeSupportsOp`,
+ * the same predicate the checker applies to concrete types, so there is one rule instead
+ * of two that can disagree.
  */
-static bool nativeCmp(Type *t) {
-    if (!t) return false;
-    if (t->kind == TY_ENUM) return true;
-    return t->kind == TY_BUILTIN;
-}
 
 /* Find the user-defined operator method of a type.
  *
@@ -860,10 +858,12 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
 
 /* Emit a binary operation.
  *
- * `==` and `!=` were already resolved by the checker into a call of an equality
- * method, or reported there when the type has none. A comparison inside a
- * generic is deferred to this point, where the instance context makes it
- * resolvable.
+ * An overloadable operator that the checker already resolved carries the method
+ * to call in `e->func`: that covers `==` `!=` and the ordering and arithmetic
+ * operators. The same operators are emitted from here
+ * when the operand was a type parameter inside a generic: `e->needOp` says the
+ * decision was deferred, and the instance context is what makes `T` resolvable
+ * now.
  *
  * Returns:
  *   A C expression; the caller is responsible for the surrounding syntax.
@@ -880,7 +880,7 @@ static const char *genBin(CG *g, Expr *e) {
      * implementation. The semantics are unchanged: recurse element by element,
      * and call the user's `fn ==` for a struct element.
      *
-     * The condition must not also require `!e->needEq`: a comparison inside a
+     * The condition must not also require `!e->needOp`: a comparison inside a
      * generic is resolved at instantiation, and after substitution the element
      * type can well turn out to be an array - comparing two rows of a
      * `slice<[6]i32>` is that case. That guard used to be here, so such a
@@ -889,22 +889,26 @@ static const char *genBin(CG *g, Expr *e) {
     if (!e->func) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         if (lt && lt->kind == TY_ARRAY &&
-            (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)) {
+            isEqualityOp(op)) {
             needEq(g, lt);                 /* register: needs to be comparable via extc_eq */
             const char *call = genEqCall(g, e, lt);
             return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
         }
     }
 
-    if (e->func || e->needEq) {
+    if (e->func || e->needOp) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         FuncDef *m = e->func
                      ? e->func
                      : findOpMethod(lt, op, strcmp(op, "!=") == 0 ? "==" : NULL);
 
         if (!m) {
-            /* builtin numeric, bool and enum: C compares them natively */
-            if (nativeCmp(lt))
+            /* No method: either C compares the instance natively, or the instance cannot
+             * take this operator at all. `typeSupportsOp` is the checker's own predicate
+             * for both halves, so this file does not decide the operator rules again.
+             * `m` was NULL and the lookup above already tried the `!=` -> `==` fallback,
+             * so a true answer here means "native". */
+            if (typeSupportsOp(lt, op))
                 return arenaPrintf(g->arena, "(%s %s %s)",
                                    genExpr(g, e->u.bin.left), op,
                                    genExpr(g, e->u.bin.right));
@@ -1876,15 +1880,6 @@ typedef struct {
  *   true for a generic struct (`slice<T>`, `varArray<T>`) or a generic enum
  *   (`option<T>`, `result<T,E>`) with that name and arity.
  */
-static bool isProtoType(Type *t, const char *name, size_t nargs) {
-    if (!t || t->targs.len != nargs) return false;
-    /* generic struct: slice<T>, varArray<T> */
-    if (t->kind == TY_GENERIC && t->sdef) return strcmp(t->sdef->name, name) == 0;
-    /* generic enum: option<T>, result<T,E> */
-    if (t->kind == TY_ENUM && t->edef)    return strcmp(t->edef->name, name) == 0;
-    return false;
-}
-
 /* Return the C path of the payload on the success side: `x.u.some._0` or
  * `x.u.success._0`.
  */

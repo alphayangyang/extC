@@ -1,0 +1,33 @@
+// expect: 2>1 true|2<1 false|2<=2 true|3>=3 true|sum = 3,7|diff = 1,-1|prod = 2,12|half = 2,0|rem = 2
+/* 具体类型上的运算符重载：方法名**就是**运算符（比较六个 + 算术五个中的七个在这里）
+ *   ① 比较：`<` `<=` `>=`（`>` 见下）
+ *   ② 算术：`+` `-` `*` `/`（`%` 用 `pt` 单分量版）
+ *   ③ 每个都**真的调到了用户的方法**（数值对得上，不是内建语义） */
+struct vec2 { x: i32  y: i32
+    fn <(self: ref vec2, o: ref vec2) -> bool { return self.x < o.x }
+    fn >(self: ref vec2, o: ref vec2) -> bool { return self.x > o.x }
+    fn <=(self: ref vec2, o: ref vec2) -> bool { return self.x <= o.x }
+    fn >=(self: ref vec2, o: ref vec2) -> bool { return self.x >= o.x }
+    fn +(self: ref vec2, o: vec2) -> vec2 { return vec2 { x: self.x + o.x, y: self.y + o.y } }
+    fn -(self: ref vec2, o: vec2) -> vec2 { return vec2 { x: self.x - o.x, y: self.y - o.y } }
+    fn *(self: ref vec2, o: vec2) -> vec2 { return vec2 { x: self.x * o.x, y: self.y * o.y } }
+    fn /(self: ref vec2, o: vec2) -> vec2 { return vec2 { x: self.x / o.x, y: self.y / o.y } }
+}
+struct pt { n: i32
+    fn %(self: ref pt, o: pt) -> pt { return pt { n: self.n % o.n } }
+}
+fn main() -> i32 {
+    var a: vec2 = { x: 2, y: 3 }
+    var b: vec2 = { x: 1, y: 4 }
+    println("2>1 ", a > b, "|2<1 ", a < b, "|2<=2 ", a <= a, "|3>=3 ", a >= a)
+    var s: vec2 = a + b
+    var d: vec2 = a - b
+    var p: vec2 = a * b
+    var q: vec2 = a / b
+    println("sum = ", s.x, ",", s.y, "|diff = ", d.x, ",", d.y, "|prod = ", p.x, ",", p.y, "|half = ", q.x, ",", q.y)
+    var m: pt = { n: 17 }
+    var e: pt = { n: 5 }
+    var r: pt = m % e
+    println("rem = ", r.n)
+    return 0
+}

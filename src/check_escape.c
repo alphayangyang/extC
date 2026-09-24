@@ -1623,71 +1623,103 @@ FuncDef *findOp(Type *b, const char *sym, const char *fallback) {
  *   f - the function definition being declared
  *
  * Notes:
- *   - Only `==` and `!=` are checked; any other name is left alone, so a method such as
- *     `compare` may return whatever it likes. */
+ *   - The overloadable set is checked here and nothing else: any other name is left alone,
+ *     so a method such as `compare` may return whatever it likes.
+ *   - The result decides the answer for the whole family. A comparison feeds `if` / `&&`
+ *     / `||` and extC has no implicit truthiness, so it can only return `bool`; an
+ *     arithmetic operator returns its own type, and only its own type, because the result
+ *     of `a + b` is used wherever `a` was. */
 void checkOperatorSig(Checker *c, FuncDef *f) {
-    bool isOp = (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0);
-    if (!isOp || !f->owner) return;
+    bool cmp   = isCmpOp(f->name);
+    bool arith = isArithOp(f->name);
+    if ((!cmp && !arith) || !f->owner) return;
 
-    const char *want = "signature must be `fn ==(self: ref T, other: T) -> bool`";
+    const char *ret = cmp ? "bool" : f->owner->name;
+    Buf want;
+    bufInit(&want, c->arena);
+    bufPrintf(&want, "signature must be `fn %s(self: ref T, other: T) -> %s`",
+              f->name, ret);
+    const char *wantS = bufCstr(&want);
 
-    /* Why the result must be `bool`, which follows from three premises rather than from
-     * taste:
-     *   1. `a == b` is naturally used inside `if`, `while`, `&&` and `||`.
-     *   2. extC has no implicit truthiness; `if 1` is an error.
-     *   3. `!=` is implemented by negating `==`.
-     * So `==` can only return `bool`; anything else could not be used in a condition. To
-     * return something else, use a different method name such as `compare` or `diff`, which
-     * carry no restriction. */
     const char *why =
         "`a == b` gets used in `if` / `&&` / `||`, and extC has no implicit truthiness; "
         "`!=` is also derived by negating `==`. "
         "To return something else, use a different method name (`compare` / `diff` etc.) -- those are unrestricted.";
+    const char *whyArith =
+        "the result of `a + b` stands where `a` stood, so it has to have the same type; "
+        "for a mixed operand type (`vec * f64`) write a named method, since extC does not convert implicitly.";
 
     if (f->params.len != 2) {
-        ckError(c, f->line, want, "operator `%s` must take exactly 2 parameters", f->name);
+        ckError(c, f->line, wantS, "operator `%s` must take exactly 2 parameters", f->name);
         return;
     }
-    if (!f->ret || !ttIs(f->ret, "bool")) {
-        ckError(c, f->line, why, "operator `%s` must return `bool`", f->name);
-        return;
+    if (cmp) {
+        if (!f->ret || !ttIs(f->ret, "bool")) {
+            ckError(c, f->line, why, "operator `%s` must return `bool`", f->name);
+            return;
+        }
+    } else {
+        /* The result has to be the owner type itself, and by value: the checker types
+         * `a + b` as the operand type, so a `ref` result would make the C signature and
+         * the recorded type disagree. */
+        Type *rb = (f->ret && f->ret->kind != TY_REF) ? ttBase(f->ret) : NULL;
+        if (!rb || rb->sdef != f->owner) {
+            ckError(c, f->line, whyArith,
+                    "operator `%s` must return `%s`", f->name, f->owner->name);
+            return;
+        }
     }
     Param *p0 = *(Param **)vecAt(&f->params, 0);
     Param *p1 = *(Param **)vecAt(&f->params, 1);
 
     if (p0->type->kind != TY_REF) {
-        ckError(c, p0->line, want, "`self` of operator `%s` must be a reference", f->name);
+        ckError(c, p0->line, wantS, "`self` of operator `%s` must be a reference", f->name);
         return;
     }
     Type *b0 = ttBase(p0->type);
     Type *b1 = ttBase(p1->type);
     if (!b0 || b0->sdef != f->owner || !b1 || b1->sdef != f->owner) {
-        ckError(c, f->line, want,
+        ckError(c, f->line, wantS,
                 "both operands of operator `%s` must be `%s`", f->name, f->owner->name);
     }
 }
 
-/* Whether this type can be compared with `op`.
+/* Whether this type supports the overloadable operator `op`, natively or through a
+ * method whose name is the operator.
  *
- * The signature was already validated at the definition site, so finding the method is
- * enough here.
+ * This is the deferred per-instance rule, and it is deliberately the *same* predicate the
+ * concrete-type path in check_expr.c applies: two copies of one rule drift, and the drift
+ * would show up as a generic accepting what its own instance rejects. Each family answers
+ * "native" differently, exactly as the concrete path does:
+ *   - `==` / `!=` are native for numbers, `bool` and payload-free enums;
+ *   - the ordering operators are native for numbers only;
+ *   - the arithmetic operators are native for numbers, and `%` for integers.
+ * A user method is accepted for any of them, and an array's `==` is derived by the
+ * compiler as long as its elements have one.
+ *
+ * The signature of a user method was already validated at its definition site
+ * (checkOperatorSig), so finding it by name is enough here.
  *
  * Params:
- *   t  - the type being compared
- *   op - the operator name, `==` or `!=`
+ *   t  - the type the operator is applied to
+ *   op - the operator name, one of `==` `!=` `<` `<=` `>` `>=` `+` `-` `*` `/` `%`
  *
  * Returns:
- *   True when a comparison is available for this type. */
-bool typeSupportsEq(Type *t, const char *op) {
+ *   True when the operator is available for this type. */
+bool typeSupportsOp(Type *t, const char *op) {
     if (!t) return false;
     if (ttIsError(t)) return true;
-    if (cmpIsNative(t)) return true;
+    bool isEq = isEqualityOp(op);
+
+    if (isEq ? cmpIsNative(t) : ttIsNumeric(t)) {
+        if (strcmp(op, "%") != 0 || ttIsInteger(t)) return true;
+    }
     /* the compiler derives `==` for arrays, provided the elements can be compared */
-    if (t->kind == TY_ARRAY) return typeSupportsEq(t->inner, op);
+    if (isEq && t->kind == TY_ARRAY) return typeSupportsOp(t->inner, op);
 
     Type *b = ttBase(t);
     if (!structOf(b)) return false;
-    return findOp(b, op, strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
+    return findOp(b, op, isEq && strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
 }
 
 /* `?` is legal in only three places, so those three go through this entry point;

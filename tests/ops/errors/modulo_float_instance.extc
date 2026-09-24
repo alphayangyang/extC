@@ -1,0 +1,7 @@
+/* `%` 实例化成 f64 ⇒ 必须是**检查器**报「只对整数有意义」✗ 不许漏到 gcc
+ * （以前这里会生成 C 的 `%`，让 gcc 在生成物里报 invalid operands ⇒ 用户看不见自己的源码） */
+fn mod2<T>(a: T, b: T) -> T { return a % b }
+fn main() -> i32 {
+    println("mod = ", mod2(1.5, 2.0))
+    return 0
+}

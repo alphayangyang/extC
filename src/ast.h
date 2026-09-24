@@ -132,8 +132,12 @@ struct Expr {
     FieldDef *field;    /* the field an EX_FIELD resolved to */
     Type     *assocOwner; /* EX_ASSOC: the instance type it resolved to, kept so the
                            * C name can be mangled */
-    bool      needEq;   /* an operand of `==` mentions a type parameter, so the check
-                         * waits until the generic is instantiated */
+    bool      needOp;   /* a comparison whose operand mentions a type parameter, so the
+                         * check waits until the generic is instantiated. Set for every
+                         * overloadable operator (`==` `!=` `<` `<=` `>` `>=` and the
+                         * arithmetic ones), not only `==`: the deferral is one mechanism
+                         * and code generation re-resolves whichever operator this node
+                         * carries. */
     bool      deref;    /* The expression sits in value position while its type is
                          * `ref T`, so code generation emits `*(...)`.
                          * The checker treats a `ref T` as the `T` itself -- what may

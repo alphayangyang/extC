@@ -218,7 +218,7 @@ typedef struct Checker {
     FuncDef   *curFunc;     /* body being checked, or NULL outside a function body */
     Vec       *curParams;   /* names of the type parameters in scope, NULL outside a
                              * generic context */
-    Vec        eqChecks;    /* EqCheck*: `==` checks deferred to instantiation */
+    Vec        opChecks;    /* OpCheck*: overloadable operators deferred to instantiation */
     /* Instances of generic free functions: `fn f<T>` gets one instance per set of type
      * arguments. They are created here, at the call site that infers the arguments, and
      * the code generator emits them as ordinary functions. */
@@ -403,12 +403,17 @@ typedef struct {
     int         late;   /* depth the settled numbers gave */
 } LvlRejection;
 
-/* An `==` deferred to instantiation: recorded while an expression is checked and
- * consumed by the pass that runs afterwards.
+/* An operator use on a type parameter, deferred to instantiation: recorded while an
+ * expression is checked and consumed by the pass that runs afterwards.
  *
- * `func` is the function the comparison belongs to, which is how the consumer asks
+ * `==` / `!=` were the first family to need this; the ordering and arithmetic operators
+ * use the same record: on the template `T` is opaque, so whether it
+ * supports the operator is only answerable per instance. `op` carries which operator it
+ * was, and the consumer re-asks the same predicate the concrete-type path uses.
+ *
+ * `func` is the function the expression belongs to, which is how the consumer asks
  * whether that function was ever called. */
-typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } EqCheck;
+typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } OpCheck;
 
 /* A call site whose resolution is deferred to instantiation.
  *
@@ -416,7 +421,7 @@ typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } 
  * opaque, so the type argument of `idOf` is `T` itself and no correct instance can be
  * built at that moment: the only one available would be `idOf_T`, an instance that
  * still takes a type parameter. This is the same family of problem as `RefCheck` and
- * `EqCheck` and is solved the same way: record it while the template is checked and
+ * `OpCheck` and is solved the same way: record it while the template is checked and
  * resolve it again for each instantiation.
  *
  * Skipping the checks that follow is not an option, because the rest of the template
@@ -522,6 +527,10 @@ typedef struct {
  _Bool enumHasPayload (TypeDef *td);
 /* True for `==`, `!=`, `<`, `<=`, `>` and `>=`. */
  _Bool isCmpOp (const char *op);
+/* True for `==` and `!=`, the pair that shares a native rule and the `!=` -> `==` fallback. */
+ _Bool isEqualityOp (const char *op);
+/* True for `+`, `-`, `*`, `/` and `%`, the arithmetic operators that can be overloaded. */
+ _Bool isArithOp (const char *op);
 /* True for `&&` and `||`. */
  _Bool isLogicOp (const char *op);
 /* True when an address can be taken of this expression: a binding, a field or a dereference. */
@@ -572,7 +581,7 @@ typedef struct {
  _Bool typeLacksZeroValue (TypeTable *tt, Type *t);
 /* True when values of this type can be compared with `op`: the comparison is native, or the type
  * is an array of a comparable element, or it defines the operator method. */
- _Bool typeSupportsEq (Type *t, const char *op);
+ _Bool typeSupportsOp (Type *t, const char *op);
 /* The name used in generated C for a source name, renamed when it would collide with a binding
  * of the same name in the same scope. */
  const char *cNameFor (Checker *c, const char *name);

@@ -1,0 +1,11 @@
+/* 只写了 `fn <` ⇒ `>` **不会**被派生出来（`!=` 由 `==` 取反是唯一保留的派生）
+ * 这是有意决定：派生的答案要在每条诊断里解释，而且会悄悄接受"只定义了一半"的类型 */
+struct ver { n: i32
+    fn <(self: ref ver, o: ref ver) -> bool { return self.n < o.n }
+}
+fn main() -> i32 {
+    var a: ver = { n: 1 }
+    var b: ver = { n: 2 }
+    println("a > b = ", a > b)
+    return 0
+}

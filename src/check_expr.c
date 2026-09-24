@@ -15,6 +15,35 @@
 
 static bool exprHasCall(Checker *c, Expr *e);   /* defined at the end of this file */
 
+/* Record that an operator applied to a type parameter has to be re-checked per instance.
+ *
+ * On a template `T` is opaque, so whether `T` supports an operator is only answerable once
+ * the type argument is known. Every overloadable operator goes through this one record --
+ * `==` was the first family, and every other overloadable operator joined it -- and the
+ * consumer (runOpCheck) re-asks the predicate the concrete-type path uses. The
+ * record is deliberately not written in three places: the three would drift, and the drift
+ * would show up as one operator accepting what another rejects.
+ *
+ * Params:
+ *   c  - checker
+ *   e  - the EX_BIN node carrying the operator
+ *   op - the operator, which decides what the instance has to provide
+ *
+ * Notes:
+ *   - Outside a function body there is nothing to defer to: a global initializer is
+ *     required to be a constant, and the comparison there is reported on its own terms.
+ */
+static void deferOp(Checker *c, Expr *e, const char *op) {
+    e->needOp = true;
+    if (!c->curFunc) return;
+    OpCheck *oc = (OpCheck *)arenaAllocZero(c->arena, sizeof(OpCheck));
+    oc->node  = e;
+    oc->op    = op;
+    oc->func  = c->curFunc;
+    oc->owner = c->curFunc->owner;   /* NULL for a free function */
+    *(OpCheck **)vecPush(&c->opChecks) = oc;
+}
+
 /* Compute the result type of a binary arithmetic operator.
  *
  * Params:
@@ -38,6 +67,40 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
     if (ttIsError(lt) || ttIsError(rt)) return err;
 
     const char *op = e->u.bin.op;
+
+    /* A user-defined arithmetic operator, tried before the numeric rule so that a struct
+     * operand reaches its own method rather than "arithmetic operators only accept
+     * numeric types". Same protocol as `==`: a method whose name is the operator, its
+     * signature already validated where it was defined (checkOperatorSig).
+     *
+     * The two operand types have to match exactly. extC never converts implicitly at an
+     * overloaded operator, so `vec2 * f64` is not a candidate here -- that
+     * wants a named method of its own, and inventing the conversion would make the
+     * meaning of `*` depend on the overload set. */
+    if (isArithOp(op) && ttEquals(lt, rt)) {
+        StructDef *sd = structOf(ttBase(lt));
+        if (sd) {
+            FuncDef *m = findOp(ttBase(lt), op, NULL);
+            if (!m) {
+                Buf note;
+                bufInit(&note, c->arena);
+                bufPrintf(&note,
+                          "define it inside `%s`:\n"
+                          "      fn %s(self: ref %s, other: %s) -> %s { ... }",
+                          DN(sd), op, DN(sd), DN(sd), DN(sd));
+                ckError(c, e->line, bufCstr(&note), "`%s` does not define `%s`", DN(sd), op);
+                return err;
+            }
+            e->func = m;
+            m->used = true;      /* record that this method is used */
+            return lt;
+        }
+        if (lt->kind == TY_PARAM) {
+            deferOp(c, e, op);
+            return lt;           /* `T op T` has type `T` */
+        }
+    }
+
     if (!ttIsNumeric(lt) || !ttIsNumeric(rt)) {
         ckError(c, e->line, "arithmetic operators only accept numeric types",
                 "cannot apply `%s` to `%s` and `%s`", op, typeStr(c, lt), typeStr(c, rt));
@@ -269,7 +332,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (isCmpOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return c->tBool;
 
-                bool isEqOp = (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0);
+                bool isEqOp = isEqualityOp(op);
 
                 /* `==` / `!=`: builtins compare natively; a struct goes through its
                  * `==` method. */
@@ -279,7 +342,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     /* Arrays: `==` is derived by the compiler. The user cannot write an
                      * array type down, so it cannot be given an `==` method. */
                     if (lt->kind == TY_ARRAY) {
-                        if (!typeSupportsEq(lt->inner, op))
+                        if (!typeSupportsOp(lt->inner, op))
                             ckError(c, e->line,
                                     "An array's `==` is derived by the compiler, "
                                     "so its elements have to be comparable.",
@@ -288,21 +351,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
 
-                    /* A type parameter: defer the check until the instance is known. */
+                    /* A type parameter: defer the check until the instance is known.
+                     * Do not gate the record on `c->curFunc->owner`: that would cover
+                     * methods only. A generic free function has no owner, so the
+                     * `T: ==` requirement would never be checked. Record the use and
+                     * ask once per instance whether this `T` has `==`. */
                     if (lt->kind == TY_PARAM) {
-                        e->needEq = true;
-                        /* Do not gate this on `c->curFunc->owner`: that would cover
-                         * methods only. A generic free function has no owner, so the
-                         * `T: ==` requirement would never be checked. Record the use and
-                         * ask once per instance whether this `T` has `==`. */
-                        if (c->curFunc) {
-                            EqCheck *ec = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
-                            ec->node = e;
-                            ec->owner = c->curFunc->owner;   /* NULL for a free function */
-                            ec->op = op;
-                            ec->func = c->curFunc;     /* which function it belongs to */
-                            *(EqCheck **)vecPush(&c->eqChecks) = ec;
-                        }
+                        deferOp(c, e, op);
                         return c->tBool;
                     }
 
@@ -349,19 +404,40 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (isNumericLit(e->u.bin.left)  && literalFits(e->u.bin.left, rt))  return c->tBool;
                 if (isNumericLit(e->u.bin.right) && literalFits(e->u.bin.right, lt)) return c->tBool;
 
-                /* ⭐ **类型参数上的排序比较**：与上面 `==` 走**同一条路** —— 具体类型要到
-                 * 实例化才知道，所以把要求记下来，交给 `runEqCheck` 按实例验证 ✓
-                 * （定案 82：实例化时检查那套机器本来就通用，`op` 字段一直都在 ✓）*/
-                if (lt->kind == TY_PARAM || rt->kind == TY_PARAM) {
-                    e->needEq = true;
-                    if (c->curFunc) {
-                        EqCheck *oc = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
-                        oc->node  = e;
-                        oc->op    = op;
-                        oc->func  = c->curFunc;
-                        oc->owner = c->curFunc->owner;
-                        *(EqCheck **)vecPush(&c->eqChecks) = oc;
+                /* Ordering on a user type: the same protocol as `==` -- a method whose
+                 * name is the operator. Nothing is derived from anything else here:
+                 * `!=` is exactly the negation of `==` and so falls back, but `>` does
+                 * not come from `<`. A derived answer would have to be explained in
+                 * every diagnostic, and it would silently accept a type that defined
+                 * only one of the pair. */
+                if (ttEquals(lt, rt)) {
+                    StructDef *sd = structOf(ttBase(lt));
+                    if (sd) {
+                        FuncDef *m = findOp(ttBase(lt), op, NULL);
+                        if (!m) {
+                            Buf note;
+                            bufInit(&note, c->arena);
+                            bufPrintf(&note,
+                                      "define it inside `%s`:\n"
+                                      "      fn %s(self: ref %s, other: %s) -> bool { ... }",
+                                      DN(sd), op, DN(sd), DN(sd));
+                            ckError(c, e->line, bufCstr(&note),
+                                    "`%s` does not define `%s`, so it cannot be ordered",
+                                    DN(sd), op);
+                            return c->tBool;
+                        }
+                        e->func = m;
+                        m->used = true;      /* record that this method is used */
+                        return c->tBool;
                     }
+                }
+
+                /* A comparison whose operand is a type parameter: on the template `T` is
+                 * opaque, so the answer depends on the instance. Record it and let the
+                 * per-instance pass ask -- the same record and the same consumer that
+                 * `==` uses. */
+                if (lt->kind == TY_PARAM || rt->kind == TY_PARAM) {
+                    deferOp(c, e, op);
                     return c->tBool;
                 }
                 ckError(c, e->line, isEqOp ? "only numbers, `bool`, enums, and structs that define `==` can be compared" : NULL,
@@ -1452,7 +1528,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * still mention `T`, so no correct instance can be built at this moment. That is
                  * not an error either.
                  *
-                 * The technique matches `RefCheck` and `EqCheck`: while the template is checked,
+                 * The technique matches `RefCheck` and `OpCheck`: while the template is checked,
                  * an instance whose arguments are the parameters themselves is created
                  * (`idOf_T`), which is self-consistent and treats `T` as opaque, so the rest of
                  * the template body still type-checks. The call is recorded, and when the

@@ -1,0 +1,6 @@
+/* 同上，实例是 `bool`：具体类型 `true < false` 被挡 ⇒ 泛型体里也不许（老编译器放行 ✗）*/
+fn less<T>(a: T, b: T) -> bool { return a < b }
+fn main() -> i32 {
+    println("less = ", less(true, false))
+    return 0
+}
