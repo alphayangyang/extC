@@ -41,10 +41,6 @@ fn hashI64(k: i64) -> i64 {
 }
 
 struct hashMap<K, V> {
-    /* The value pool is declared FIRST on purpose: a generic type instance that is not the first
-     * field of a generic struct is not emitted as a function (PLAN #80), and a map without its
-     * pool cannot compile. The order of the rest is free. */
-    vals: pool<V>               /* the values themselves: dense, reusable, handle-addressed */
     keys: mut slice<K>          /* the bucket's key (live buckets only) */
     tag:  mut slice<u8>         /* EMPTY / LIVE / TOMB */
     slot: mut slice<i32>        /* bucket -> dense index inside `vals` (-1 when not live) */
@@ -53,6 +49,7 @@ struct hashMap<K, V> {
      * and this column is what says which bucket that is. Without it the table would keep pointing
      * at values that moved (POOLS.md section 8). */
     bucketOfDense: mut slice<i32>
+    vals: pool<V>               /* the values themselves: dense, reusable, handle-addressed */
     n:    i64                   /* live entries */
     dead: i64                   /* tombstones */
     cap:  i64                   /* always a power of two */
@@ -62,11 +59,11 @@ struct hashMap<K, V> {
         var c: i64 = i64(8)
         while c < want * i64(2) { c = c * i64(2) }
         var m: hashMap<K, V> = {
-            vals: pool<V>::withCap(c),
             keys: new K[c],
             tag:  new u8[c],
             slot: new i32[c],
             bucketOfDense: new i32[c],
+            vals: pool<V>::withCap(c),
             n:    i64(0),
             dead: i64(0),
             cap:  c,

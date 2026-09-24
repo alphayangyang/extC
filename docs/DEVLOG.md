@@ -8226,3 +8226,24 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
   以及为什么字段顺序会影响它 —— 现象是「字段类型里第一个泛型实例被注册/发射，后面的没有」。
 - 二分探针（可复现）：`struct h<K, V> { keys: mut slice<K>  vals: pool<V> ... }` 挂；
   `struct h<K, V> { vals: pool<V>  keys: mutable slice<K> ... }` 正常；与字段名、字面量顺序、参数个数无关。
+
+### 周期 19（第 19 轮）：修 #80 —— 检查期把具体实例的字段类型落地（"泛型装泛型"这条链修通）
+
+机制（读码定位）：codegen 在启动时把 `tt->instances` **快照**进 `g.insts`（`codegen.c:4830`），之后
+`g.insts` 就是实例结构体与实例方法的发射依据。而 `vals: pool<V>` 里的 `pool<V>` 在模板期不是具体实例
+（`ttGeneric` 只驻留全具体实例，这一层本来就是对的），具体的 `pool<i32>` 要等到**替换**发生时才诞生 ——
+替换发生在代码生成期，晚于快照 ⇒ **调用发了、被调函数没发**，C 层报
+`implicit declaration of function 'pool$pool_i32_withCap'`。字段顺序之所以"看起来"有关，是因为别的路径
+碰巧先替换了第一个字段的类型。
+
+修法（`check_top.c`，7 行）：检查期遍历 `tt->instances`，对每个实例用它的实参把 `sdef->fields` 的类型逐个
+`ttSubstitute` 一遍 —— 这一步就把嵌套实例驻留进去了。循环读的是**边遍历边增长**的表，所以嵌套实例自己的
+字段也会顺带落地。这不只是"让发射跟上"，也是**正确性必需**：`hashMap_i64Key_i32` 的 C 结构体里有
+`pool_i32` 字段，那个 typedef 无论如何都得发。
+
+验证：
+
+- 反序探针（`{ keys: mut slice<K>  vals: pool<V> }`，即原来必挂的形状）现在 `ok`；
+- `stdlib/stl/hashMap.extc` 撤掉「池字段必须排第一」的工作区，字段恢复自然序（`vals` 回到后面）后，
+  `tests/hashmap`（含 canary 与 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
+  `tests/genmatrix`（13 项）全绿，语料见同轮补记。

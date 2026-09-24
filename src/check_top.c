@@ -4109,6 +4109,29 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
+    /* Materialise every concrete instance's field types (`#80`).
+     *
+     * A generic struct that holds another generic instance (`vals: pool<V>`) declares that field
+     * with a parameter, so checking the template interns nothing: `pool<V>` is not concrete, and
+     * correctly so. The concrete `pool<i32>` only comes into being when the field type is
+     * substituted with the instance's arguments -- which used to happen during code generation,
+     * long after code generation had snapshotted the instance table. The mangled call was
+     * emitted, the callee's functions never were, and the C compiler reported
+     * `implicit declaration of function 'pool$pool_i32_withCap'`.
+     *
+     * Substituting here is what interns it in time. It is also required for plain correctness:
+     * the C struct emitted for `hashMap_i64Key_i32` has a `pool_i32` field, so that typedef has to
+     * exist whether or not some other path noticed. The loop walks the table as it grows, so a
+     * nested instance's own fields are materialised in turn. */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (!inst->sdef) continue;
+        for (size_t j = 0; j < inst->sdef->fields.len; j++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&inst->sdef->fields, j);
+            (void)ttSubstitute(tt, fd->type, &inst->sdef->typeParams, &inst->targs);
+        }
+    }
+
     /* ------------------------------------------------- deferred generic rechecks
      *
      * The `==` batch was handled above; this is the reference-rule batch. On the
