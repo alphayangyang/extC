@@ -3701,8 +3701,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (sd->typeParams.len > 0) continue;   /* generic: generated per instance */
         *(StructDef **)vecPush(&g.structs) = sd;
         /* Methods are functions too and share the prototype and definition table. */
-        for (size_t j = 0; j < sd->methods.len; j++)
-            *(FuncDef **)vecPush(&g.funcs) = *(FuncDef **)vecAt(&sd->methods, j);
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
+            /* ⚡ 可达性剪枝（PLAN #69）：**没人调用的方法不发射** ✓
+             * 检查器早就在每个调用点打 `used`（`e->func = f; f->used = true;` ✓
+             * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓
+             * 为什么重要：一个小程序会带出 prelude + 库的**整片**代码 ✗
+             * （实测 `tests/io/stream-file.extc` 曾生成 **2437 行 / 169 个静态函数** ✓）*/
+            if (!md->used) continue;
+            *(FuncDef **)vecPush(&g.funcs) = md;
+        }
     }
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
@@ -3726,6 +3734,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * degenerates to `int` (`static int idOf_T(int x)` compiled fine as dead code),
          * so only a signature with a *constructed* type around the parameter broke. */
         if (f->tmpl && funcSignatureMentionsParam(f)) continue;
+        /* 同上：自由函数/库函数/预置也按可达性剪枝 ✓
+         * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
+         * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
+        if (!f->used && !cgIsMain(f)) continue;
         *(FuncDef **)vecPush(&g.funcs) = f;
     }
 
