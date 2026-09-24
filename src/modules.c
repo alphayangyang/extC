@@ -930,6 +930,37 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         e->qualified    = true;                /* the source wrote a qualified name */
         return;
     }
+    /* The third thing a qualified name can be is a **type**, and `mod::Type` reaches this
+     * function whenever the type is not called but *used*: `io::ioError.closed(fd)` names
+     * the enum `ioError` of module `io` and leaves the variant to the checker, which sees a
+     * receiver that is a plain identifier and resolves the variant from it (`EX_FIELD` and
+     * `EX_METHOD` both have that path, written for the bare `status.ok`).
+     *
+     * The name is turned into exactly what `rwQualifiedTypeName` produces in type position -
+     * the bare, renamed type name - because that is the shape the checker's variant path is
+     * written against. Without this branch the value lookup above finds neither a function
+     * nor a `let`/`var` and reports the type as a missing export: `module `io` has nothing
+     * named `ioError``, read from the standard library, where the name is declared three
+     * lines above the use. */
+    if (!f && !g) {
+        TypeDef *td = unitType(target, nm);
+        if (td) {
+            if (td->isPrivate) {
+                ctxError(self->ctx, e->line, 1,
+                         "`@private` hides it from other modules. Drop the annotation if it is meant"
+                         " to be used from here.",
+                         "`%s::%s` is private to module `%s`", tn, nm, tn);
+                L->errors++;
+                return;
+            }
+            /* Read out before the union is written: `renOfTarget` does not touch `e`. */
+            const char *ren = renOfTarget(target, nm);
+            e->kind = EX_IDENT;
+            e->u.ident.name = ren;
+            e->qualified    = true;            /* the source wrote a qualified name */
+            return;
+        }
+    }
     ctxError(self->ctx, e->line, 1,
              "A module exports its top-level `fn` / `struct` / `type` / `let`/`var`;"
              " `@private` ones are hidden.",
@@ -1007,7 +1038,9 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     case EX_CONV:   rwExpr(L, self, e->u.conv.operand); break;
     case EX_TRY:    rwExpr(L, self, e->u.try_.operand); break;
     case EX_INDEX:  rwExpr(L, self, e->u.index.obj); rwExpr(L, self, e->u.index.index); break;
-    case EX_SLICE:  rwExpr(L, self, e->u.slice.obj); break;
+    case EX_SLICE:  rwExpr(L, self, e->u.slice.obj);
+                    rwExpr(L, self, e->u.slice.lo);
+                    rwExpr(L, self, e->u.slice.hi); break;
     case EX_FIELD:  rwExpr(L, self, e->u.field.obj); break;
     case EX_NEW:    rwExpr(L, self, e->u.new_.count); rwType(L, self, e->u.new_.type); break;
     case EX_COALESCE:

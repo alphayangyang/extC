@@ -1953,8 +1953,21 @@ static Expr *parsePrimary(Parser *p) {
                 Token *seg = pk(p, k + 1);
                 if (seg->kind != TK_IDENT && seg->kind != TK_TYPE) break;
                 k += 2;
-                if ((strcmp(pk(p, k)->text, "{") == 0 && !p->inCond) ||
-                    strcmp(pk(p, k)->text, ".") == 0) { takeIt = true; break; }
+                /* A `{` is a struct literal of a qualified type: that is this path's job.
+                 *
+                 * A `.` used to be taken over as well, and it built `EX_IDENT("mod::value")` by
+                 * hand - a node the checker cannot resolve, because a qualified name only becomes an
+                 * expression through the `EX_ASSOC` shape `looksLikeAssoc` builds. Every "qualified
+                 * value followed by a dot" broke: `io::cin.bad()` said "only direct function calls
+                 * are supported" and `io::cin.fd` said "undefined name", while `cin.fd`,
+                 * `io::cin >> x` and `io::cin` alone were all fine - two representations of one
+                 * thing, and only one of them knows about values.
+                 *
+                 * The dot now goes to the postfix loop, and whether it is a field, a method or a
+                 * variant of a qualified *type* is decided in the checker, where the symbol table
+                 * is. */
+                if (strcmp(pk(p, k)->text, "{") == 0 && !p->inCond) { takeIt = true; break; }
+                if (strcmp(pk(p, k)->text, ".") == 0) break;
             }
             if (takeIt) {
                 Buf b;

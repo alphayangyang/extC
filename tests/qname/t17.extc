@@ -1,0 +1,22 @@
+// ⭐ 限定名后面跟 `.`（#66 那一族）：**值位置**的字段/方法，和限定**类型**上的变体
+//
+// 两条解析路合并成一条之后，`mod::x.f(...)` 一律是"`EX_ASSOC` 接收者 + 方法调用"，
+// 到底是字段、方法还是**枚举变体**，由检查器按符号表决定 ⇒ 这一格必须有常设验收：
+//   ① 限定值 + 字段（`io::cin.fd`）—— 以前报 "undefined name"
+//   ② 限定值 + 方法调用（`io::cin.bad()`）—— 以前报 "only direct function calls"
+//   ③ 限定值当运算符接收者（`io::cout << ...`）
+//   ④ 限定**类型** + 带载荷的变体，且模块前缀是**多段**（`lib::sub::payload`）
+//   ⑤ 同一类型的另一个变体（证明不是"碰巧第一个变体对上"）
+// expect: 0 false|ok 7|err 9|qw
+use std::io
+use lib::sub::payload
+fn main() {
+    let fd  = io::cin.fd            // ①
+    let bad = io::cin.bad()         // ②
+    println(fd, " ", bad)
+    let a: payload::payload = payload::payload.ok(7)      // ④
+    let b: payload::payload = payload::payload.err(9)     // ⑤
+    match a { ok(v) => { println("ok ", v) }  err(v) => { println("err ", v) } }
+    match b { ok(v) => { println("ok ", v) }  err(v) => { println("err ", v) } }
+    io::cout << "qw\n"              // ③
+}
