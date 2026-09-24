@@ -3998,7 +3998,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " * program uses the raw-terminal primitives) and cleared before it runs, so it\n"
         " * cannot run twice. */\n"
         "static int32_t (*__extc_dying)(void);\n"
-        "static inline void extc_die(int code) {\n"
+        /* The three functions that end a program never come back, and saying so is not
+         * decoration: it is what lets the C compiler see that the path below a check
+         * cannot be reached, which removes both `-Wmissing-noreturn` and the
+         * `-Wunreachable-code` warnings that follow every trap. */
+        "#if defined(__GNUC__) || defined(__clang__)\n"
+        "#  define EXTC_NORETURN __attribute__((noreturn))\n"
+        "#else\n"
+        "#  define EXTC_NORETURN _Noreturn\n"
+        "#endif\n"
+        "EXTC_NORETURN static inline void extc_die(int code) {\n"
         "    if (__extc_dying) { int32_t (*f)(void) = __extc_dying; __extc_dying = 0; (void)f(); }\n"
         "    exit(code);\n"
         "}\n"
@@ -4126,7 +4135,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " * remainder operator was 4.6x slower and a matrix multiply 1.5x slower; with\n"
         " * inlining both match C. */\n"
         "/* Out-of-range trap; the position comes from the call site via `#line`. */\n"
-        "static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n"
+        "EXTC_NORETURN static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n"
         "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
         "            file, line, (long long)i, (long long)n);\n"
         "    extc_die(1);\n"
@@ -4134,7 +4143,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "/* Arithmetic failures must be loud: division by zero, the overflowing division, and\n"
         " * an over-wide shift are all undefined behaviour in C. Each one traps with a\n"
         " * source position instead of computing a wrong answer or leaving UB behind. */\n"
-        "static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n"
+        "EXTC_NORETURN static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n"
         "    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n"
         "    extc_die(1);\n"
         "}\n"

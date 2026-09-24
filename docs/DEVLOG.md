@@ -6814,3 +6814,23 @@ examples/payload-enum.extc 346 → 346 行  clang 3 → 3   ← 同上 ✓
 ```
 语料 **256/0** ✓ 九套件全绿 ✓ 剩下的两族：`-Wreturn-type`（`tour` 6 · `payload-enum` 3 …，**真问题** ✓）
 与 `__extc_ret_v`/`d` 那类局部（要读写判据 / 纳入体内候选 ✓）
+
+### 2026-09-25 · trap/die 标 `noreturn`（服务的是 `-Weverything` 那部分）
+
+`-Wall -Wextra` 剩下最大的一族是 **`-Wreturn-type`**（`tour` 6 条 ✓）：形状已看清 ——
+**`match` 的每个 arm 都 `return`** ⇒ 生成的是 `if / else if` 链，**链后面没有兜底 return** ✗
+（`stmtIsDefiniteReturn` 只认 `return` 与"块的最后一条是它" ✗ 不认 `ST_MATCH` ✓）
+而现有的兜底只在**递归**函数里发（`g->isRecursive` 那段 ✓）⇒ 非递归函数全靠"检查器已证明会返回" ✓
+可是 **C 编译器看不出这条链是穷尽的** ✗ ⇒ clang 报"不是所有控制路径都返回值" ✓（这其实是个真洞 ✓）
+
+这一轮先做基础件：**把 `extc_die`/`extc_trap`/`extc_trapMsg` 标成 `EXTC_NORETURN`** ✓
+（GNU/clang 走 `__attribute__((noreturn))`，否则退回 ISO C 的 `_Noreturn` ✓）
+它的价值不在 `-Wall -Wextra`（实测三程序**一条没变** ✓ 因为 `-Wunreachable-code`/`-Wmissing-noreturn`
+只在 `-Weverything` 里 ✓），而在两处：① `-Weverything` 的 `unreachable-code`（7 条）与
+`missing-noreturn`（1 条）✓ ② 它是"给非 void 函数补兜底"的前提 —— 兜底只要写成
+`extc_trapMsg(...)` 就够了，**不必构造返回类型的零值** ✓（因为编译器知道它不返回 ✓）
+
+**验证**：语料 **256/0** + 九套件全绿 ✓ `-Weverything` 实测：`missing-noreturn` **消失** ✓
+（`unreachable-code` 那 7 条没动 ⇒ 它们另有成因，多半是生成物里 `break`/`return` 之后的死语句 ✓ 下一轮查 ✓）
+⚠️ 新出现 `unused-macros`（1~3 条 ✓）—— 多半是 `EXTC_UNUSED` 这个宏如今**没人用了** ✓（属性撤了一批 ✓）
+⇒ 按 `docs/WARNINGS.md` §3.2 的规矩**不许盖**，应当把那个宏定义删掉 ✓ 记进下一轮 ✓
