@@ -1259,6 +1259,19 @@ static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
  * This is the recursive implementation; the declaration above records why a
  * `{0}` is not always good enough.
  */
+/* A null pointer with the type the context wants.
+ *
+ * `((void *)0)` is a perfectly good null in C, and clang's `-Weverything` reports every place one
+ * is assigned to a typed pointer: `implicit conversion when initializing 'node *' with an
+ * expression of type 'void *' ... is not permitted in C++`. Twenty-six of those across the corpus
+ * came from this one spelling. Emitting `(node *)0` says the same thing and says it in the type
+ * the reader expects.
+ */
+static const char *nullValue(CG *g, Type *t) {
+    if (t && t->kind == TY_REF && t->inner) return arenaPrintf(g->arena, "((%s *)0)", cType(g, t->inner));
+    return "((void *)0)";
+}
+
 static const char *zeroValue(CG *g, Type *t) {
     if (!t) return "0";
     /* The zero value of an enum with payloads is tag 0 with a cleared payload,
@@ -1337,7 +1350,7 @@ static const char *zeroValue(CG *g, Type *t) {
      * zero-initialization of a struct with a `?ref` field emit that
      * non-existent identifier; a real bug, found when `var l: list` failed to
      * compile. */
-    if (t->kind == TY_REF) return t->nullable ? "((void *)0)"
+    if (t->kind == TY_REF) return t->nullable ? nullValue(g, t)
                                               : "__extc_reference_has_no_zero_value__";
 
     return "0";
@@ -1856,7 +1869,22 @@ static const char *genExprInner(CG *g, Expr *e) {
                     "((%s)extc_narrowI((int64_t)(%s), %lldLL, %lldLL, \"%s\", %d))",
                     cType(g, t), x, (long long)lo, (long long)hi, g->path, e->line);
             }
+            /* When the target is a float, the checked call's result is used directly: the context
+             * already asks for a `double`, so the conversion happens implicitly and the explicit
+             * cast would be one applied straight to a function call - which clang reports as
+             * `-Wbad-function-cast` (a cast around a call does not do what a reader expects). */
+            bool toFloat = (strcmp(tn, "f32") == 0 || strcmp(tn, "f64") == 0);
             unsigned long long hi = 0;
+            if (toFloat) {
+                /* The conversion has to be spelled out (`-Wimplicit-int-float-conversion` is right
+                 * that a u64 does not become a double without losing something), but it must not be
+                 * applied straight to the call (`-Wbad-function-cast`). The intermediate cast names
+                 * the type the call already returns, which is exactly what it is for. */
+                const char *ct = cType(g, t);
+                return arenaPrintf(g->arena,
+                    "((%s)(uint64_t)extc_narrowU((uint64_t)(%s), UINT64_MAX, \"%s\", %d))",
+                    ct, x, g->path, e->line);
+            }
             if (strcmp(tn,"u8")==0)  hi = 255ULL;
             else if (strcmp(tn,"u16")==0) hi = 65535ULL;
             else if (strcmp(tn,"u32")==0) hi = 4294967295ULL;
@@ -2006,7 +2034,7 @@ static const char *genExprInner(CG *g, Expr *e) {
          * before any use, so no runtime check is generated: what the compiler
          * can prove leaves no trace at runtime. */
         case EX_NULL:
-            return "((void *)0)";
+            return nullValue(g, e->type);
 
         case EX_ENUMVAL: {
             const char *tn = e->u.enumval.typeName;
@@ -3850,6 +3878,7 @@ static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
 }
 
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle);
+static char  *funcDefStart(char *text, DeadFunc *df, size_t *lenOut);
 
 /* Remember a local declaration: `before` is where its line started in the current buffer. */
 static void localDef(CG *g, size_t before, const char *name, size_t own) {
@@ -3943,6 +3972,7 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                 }
                 size_t nlen = (size_t)(ne - ns);
                 long   totalOverride = -1;      /* macros: guard lines do not count as uses */
+                long   insideOverride = -1;     /* macros: every `#define` of the name is a piece */
                 char   name[128];
                 if (nlen > 5 && nlen < sizeof name &&
                     (strncmp(ns, "extc_", 5) == 0 || strncmp(ns, "__extc_", 7) == 0 ||
@@ -3961,16 +3991,26 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                          *
                          * The guard line mentions the name only to ask whether it is defined, which
                          * is not a use, so those lines are subtracted from the count. */
-                        size_t guards = 0;
+                        /* A macro can be defined more than once in the same conditional block -
+                         * `EXTC_INLINE` is defined once for GNU compilers and once for the rest,
+                         * in the `#if`/`#else` of one block - and every one of those lines is a
+                         * piece of the same macro, so they all count as "its own mentions" and all
+                         * of them go together. */
+                        size_t guards = 0, defs = 0;
                         for (char *p = rp; p < rp + rl; ) {
                             char *el = memchr(p, '\n', (size_t)(rp + rl - p));
                             size_t l2 = el ? (size_t)(el - p) : (size_t)(rp + rl - p);
                             if (l2 > 8 && (strncmp(p, "#ifndef ", 8) == 0 || strncmp(p, "#ifdef ", 7) == 0))
                                 guards += countMentionsIn(g, p, l2, name);
+                            if (l2 > 8 && strncmp(p, "#define ", 8) == 0 &&
+                                strncmp(p + 8, name, strlen(name)) == 0)
+                                defs += countMentionsIn(g, p, l2, name);
                             if (!el) break;
                             p = el + 1;
                         }
-                        if (guards) totalOverride = (long)countMentions(text, name) - (long)guards;
+                        totalOverride  = (long)countMentions(text, name) - (long)guards;
+                        insideOverride = (long)defs;
+                        if (!defs) continue;                 /* not this macro's own line */
                     }
                     if (isDef && !wholeBody) {              /* to the `}` at column zero */
                         char *p = ln;
@@ -3983,7 +4023,8 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                         /* every mention inside the candidate itself? */
                         size_t total  = countMentions(text, name);
                         if (totalOverride >= 0) total = (size_t)totalOverride;
-                        size_t inside = countMentionsIn(g, ln, span, name);
+                        size_t inside = (insideOverride >= 0) ? (size_t)insideOverride
+                                                             : countMentionsIn(g, ln, span, name);
                         if (getenv("EXTC_DBG_PRIM"))
                             fprintf(stderr, "[prim] %-22s total=%zu inside=%zu span=%zu %s\n",
                                     name, total, inside, span, total == inside ? "DROP" : "keep");
@@ -4273,9 +4314,14 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (!df->body) continue;                                   /* no definition emitted */
         if (countMentions(text, df->name) != 2) continue;           /* someone calls it */
         char  *pt = strstr(text, df->proto);
-        char  *bd = strstr(text, df->body);
-        if (!pt || !bd || bd < pt) continue;                        /* not both, in order */
-        size_t bl = strlen(df->body), pl = strlen(df->proto);
+        /* The definition is located by its signature line: the passes above rewrite the inside of
+         * bodies, so the copy taken at generation time often no longer matches - and every function
+         * that was touched that way survived this phase, which is where the remaining dead code
+         * (`fs$outPut`, `pcg32_withStream`, `io$reader_fill`) came from. */
+        size_t blen = 0;
+        char  *bd = funcDefStart(text, df, &blen);
+        if (!pt || !bd || bd < pt || !blen) continue;               /* not both, in order */
+        size_t bl = blen, pl = strlen(df->proto);
         memmove(bd, bd + bl, len - (size_t)(bd - text) - bl + 1);    /* definition first */
         len -= bl;
         memmove(pt, pt + pl, len - (size_t)(pt - text) - pl + 1);    /* then declaration */
@@ -4348,6 +4394,127 @@ static void dropUnreferenced(CG *g, Buf *out) {
     out->data[len] = '\0';
 }
 
+/* Make sure the attribute macro the insertions below rely on is defined.
+ *
+ * The macro pruning pass runs before them and sees no use of `EXTC_UNUSED` at all, so it drops the
+ * definition - and then the attribute inserted here names a macro that does not exist
+ * (`expected ';' before 'static'`, five errors in one program). The definition is put back inside
+ * the same `#if defined(__GNUC__)` block it came from; if that block is gone too, the insertion is
+ * abandoned by the caller rather than emitting an attribute no compiler understands. */
+static bool ensureUnusedMacro(CG *g, Buf *nb) {
+    if (strstr(nb->data, "#define EXTC_UNUSED")) return true;
+    const char *anchors[3];
+    anchors[0] = "#define EXTC_INLINE";          /* preferred: right next to its sibling */
+    anchors[1] = "#if defined(__GNUC__)";        /* the block it belongs to */
+    anchors[2] = NULL;
+    for (int i = 0; anchors[i]; i++) {
+        char *a = strstr(nb->data, anchors[i]);
+        if (!a) continue;
+        char *nl = strchr(a, '\n');
+        if (!nl) continue;
+        size_t ins = (size_t)(nl - nb->data) + 1;
+        Buf t;
+        bufInit(&t, g->arena);
+        bufPutn(&t, nb->data, ins);
+        bufPuts(&t, "#define EXTC_UNUSED __attribute__((unused))\n");
+        bufPutn(&t, nb->data + ins, nb->len - ins);
+        nb->len = 0;
+        bufPutn(nb, t.data, t.len);
+        return true;
+    }
+    return false;
+}
+
+/* Where does this function's definition start, and where does it end?
+ *
+ * Found by its *signature line*, not by the whole captured text: the passes that remove
+ * unreferenced definitions and rewrite dead assignments change the inside of bodies, so comparing
+ * against a copy taken before them fails exactly for the functions that were touched - which is
+ * why a first attempt at this silently skipped `pcg32_withStream`. The body ends at the `}` that
+ * sits in column zero, which is how every generated definition is closed. */
+static char *funcDefStart(char *text, DeadFunc *df, size_t *lenOut) {
+    if (!df->body) return NULL;
+    char *at = strstr(text, df->body);              /* untouched: the whole text is the key */
+    if (!at) {
+        /* Touched by the passes above, so only the signature line can be relied on. */
+        const char *nl = strchr(df->body, '\n');
+        size_t sigLen = nl ? (size_t)(nl - df->body) : strlen(df->body);
+        if (!sigLen) return NULL;
+        for (char *p = text; *p; p++) {
+            if (p != text && p[-1] != '\n') continue;
+            if (strncmp(p, df->body, sigLen) == 0) { at = p; break; }
+        }
+    }
+    if (!at) return NULL;
+    char *e = at;
+    for (char *p = at; *p; p++)
+        if (p[0] == '}' && p[-1] == '\n') { e = p + 1; break; }
+    *lenOut = (size_t)(e - at);
+    return at;
+}
+
+/* Mark the functions nothing calls.
+ *
+ * Every emitted function carries `EXTC_UNUSED` on its declaration today, and clang says what that
+ * means: the attribute is a statement about a function nobody calls, and putting it on one that
+ * *is* called is wrong (`-Wused-but-marked-unused` reports exactly those, one per call site).
+ *
+ * The honest answer is only known once everything that could be dropped has been: a function
+ * whose name appears nowhere but in its own declaration and definition is a survivor of the
+ * pruning that nothing calls - either because the only callers were dropped, or because it was
+ * kept for a reference the analysis could not resolve. Those, and only those, get the attribute
+ * inserted into their declaration.
+ */
+static void markUncalledFunctions(CG *g, Buf *out) {
+    char  *text = out->data;
+    size_t len  = out->len;
+    Vec    at;
+    vecInit(&at, g->arena, sizeof(size_t));
+    for (size_t i = 0; i < g->deadFuncs.len; i++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
+        if (!df->body) continue;
+        size_t blen = 0;
+        char *bd = funcDefStart(text, df, &blen);
+        if (!bd) continue;
+        char *pt = strstr(text, df->proto);
+        size_t own = 1;                                  /* the definition always mentions it */
+        if (pt && pt < bd) own++;
+        if (bd) (void)blen;
+        if (countMentions(text, df->name) != own) continue;   /* something calls it: leave it alone */
+        /* The attribute goes at the start of the declaration. It used to be looked up by the
+         * literal `static `, which missed every `@inline` function: those are declared through the
+         * `EXTC_INLINE` macro, so no `static` is spelled out (`io$pairsReady` in
+         * `tests/io/stream-file.extc` kept its warning that way). */
+        char *decl = pt ? pt : bd;
+        while (*decl == ' ') decl++;
+        if (decl >= text + len) continue;
+        *(size_t *)vecPush(&at) = (size_t)(decl - text);
+    }
+    if (!at.len) return;
+    /* Whether the macro can be put back is checked here, but acted on at the end: inserting it
+     * now would shift every offset collected below (that produced `EXEXTC_UNUSED TC_INLINE` - two
+     * insertions fighting over one offset). */
+    if (!strstr(text, "#define EXTC_UNUSED") && !strstr(text, "#define EXTC_INLINE") &&
+        !strstr(text, "#if defined(__GNUC__)")) return;
+    Buf nb;
+    bufInit(&nb, g->arena);
+    bufPutn(&nb, text, len);
+    for (size_t k = at.len; k-- > 0; ) {
+        size_t off = *(size_t *)vecAt(&at, k);
+        Buf tmp;
+        bufInit(&tmp, g->arena);
+        bufPutn(&tmp, nb.data, off);
+        bufPuts(&tmp, "EXTC_UNUSED ");
+        bufPutn(&tmp, nb.data + off, nb.len - off);
+        nb.len = 0;
+        bufPutn(&nb, tmp.data, tmp.len);
+    }
+    ensureUnusedMacro(g, &nb);
+    out->data = bufCstr(&nb);
+    out->len  = nb.len;
+    out->cap  = nb.len + 1;
+}
+
 /* Mark the parameters a body never reads.
  *
  * A parameter cannot be dropped - it is part of the signature - so the attribute is the only way
@@ -4369,9 +4536,9 @@ static void markUnusedParams(CG *g, Buf *out) {
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;
-        char  *fn = strstr(text, df->body);
+        size_t bl = 0;
+        char  *fn = funcDefStart(text, df, &bl);
         if (!fn) continue;
-        size_t bl = strlen(df->body);
         char  *op = memchr(fn, '(', bl);
         if (!op) continue;
         int    depth = 0;
@@ -4413,6 +4580,11 @@ static void markUnusedParams(CG *g, Buf *out) {
         }
     }
     if (!at.len) return;
+    /* Whether the macro can be put back is checked here, but acted on at the end: inserting it
+     * now would shift every offset collected below (that produced `EXEXTC_UNUSED TC_INLINE` - two
+     * insertions fighting over one offset). */
+    if (!strstr(text, "#define EXTC_UNUSED") && !strstr(text, "#define EXTC_INLINE") &&
+        !strstr(text, "#if defined(__GNUC__)")) return;
     Buf nb;
     bufInit(&nb, g->arena);
     bufPutn(&nb, text, len);
@@ -4426,6 +4598,7 @@ static void markUnusedParams(CG *g, Buf *out) {
         nb.len = 0;
         bufPutn(&nb, tmp.data, tmp.len);
     }
+    ensureUnusedMacro(g, &nb);
     out->data = bufCstr(&nb);
     out->len  = nb.len;
     out->cap  = nb.len + 1;
@@ -4510,6 +4683,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " * translation unit, small body). */\n"
         "static uint8_t extc_cout_buf[1 << 18];\n"
         "static int64_t extc_cout_len = 0;\n"
+        /* Prototypes ahead of the definitions: these two have external linkage on purpose (the
+         * library reaches them through `extern!`, so they cannot be `static`), and clang asks for a
+         * declaration in view before the definition (`-Wmissing-prototypes`). */
+        "void extc_cout_flush(void);\n"
+        "void extc_cout_put(uint8_t *p, int64_t n);\n"
         "void extc_cout_flush(void) {\n"
         "    if (extc_cout_len <= 0) return;\n"
         "    /* Through stdio: `unistd.h` cannot be included here (the library declares\n"
@@ -4616,8 +4794,32 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * has to be known, and the definition has to precede every use. It is its own block
      * because the prologue around it is already at the 4095-byte limit C99 guarantees for
      * a string literal. */
-    bufPuts(out, bufCstr(&g.rtDie));
+    /* The dying hook is part of the same block as far as the unreferenced-definition pass is
+     * concerned: when the traps that call it are dropped, it becomes dead itself, and a first
+     * version of that pass left it behind because it was captured from a later point
+     * (`unused function 'extc_die'`). */
     size_t primA = out->len;        /* the runtime primitive block, captured below */
+    bufPuts(out, bufCstr(&g.rtDie));
+    {
+        /* The dying hook's storage is a definition like any other: once the traps that call it are
+         * dropped, nothing mentions it. It is registered here, where its text is at hand, because
+         * the primitive pass does not recognize a function-pointer declaration as a variable (`static
+         * int32_t (*__extc_dying)(void);` has parentheses in it). */
+        for (char *p = out->data; p < out->data + out->len; p++) {
+            if (p != out->data && p[-1] != '\n') continue;
+            if (strncmp(p, "static ", 7) != 0 || !strstr(p, "__extc_dying")) continue;
+            char *le = memchr(p, '\n', (size_t)((out->data + out->len) - p));
+            if (!le) break;
+            Buf t;
+            bufInit(&t, arena);
+            bufPutn(&t, p, (size_t)(le - p) + 1);
+            DeadDef *d = arenaAllocZero(arena, sizeof *d);
+            d->name = "__extc_dying";
+            d->text = bufCstr(&t);
+            *(DeadDef **)vecPush(&g.deadDefs) = d;
+            break;
+        }
+    }
     bufPuts(out,
         "/* Every primitive below is `static inline`, and that is not a style choice:\n"
         " * without inlining, gcc at -O1 cannot see the body of a check, so it can neither\n"
@@ -5410,7 +5612,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * alone does not bind: C takes the first declaration as the function's type. */
         bufPrintf(&sig, "%s%s %s(%s);",
                   (cgIsMain(f) || f->isExtern) ? ""
-                                               : (f->isInline ? "EXTC_INLINE " : "EXTC_UNUSED static "),
+                                               : (f->isInline ? "EXTC_INLINE " : "static "),
                   ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
         if (!cgIsMain(f) && !f->isExtern) {
@@ -5550,9 +5752,17 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         g.mainBody = bufCstr(&b);
     }
 
-    /* The unit is complete: now the definitions that nobody names can go. */
-    dropUnreferenced(&g, out);
-    /* And the parameters a body never reads get the attribute that says so. */
+    /* The unit is complete: now the definitions that nobody names can go - repeatedly, until the
+     * text stops shrinking. One pass is not enough: dropping `pcg32_withStream` is what makes
+     * `pcg32_next` dead, and the pass that would have caught it has already gone by. The
+     * offset-based phase inside simply finds its spans changed and skips them, which is safe. */
+    for (int round = 0; round < 8; round++) {
+        size_t before = out->len;
+        dropUnreferenced(&g, out);
+        if (out->len == before) break;
+    }
+    /* A function nothing calls says so; then the parameters a body never reads. */
+    markUncalledFunctions(&g, out);
     markUnusedParams(&g, out);
 
     return !ctx->hasError;
