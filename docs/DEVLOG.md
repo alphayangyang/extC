@@ -6583,3 +6583,20 @@ tests/io/stream.extc         990→ 978 行   gcc 14 → 2   clang 21 →  9
 
 **实测** `tests/io/stream-file.extc`：clang **26 → 14**（12 条 `unused-const-variable` 全消 ✓ · gcc 本来不报这类 ⇒ 7 不变 ✓）
 行数 **1587 → 1575** ✓ 语料 **256/0** + 九套件全绿 ✓
+
+### 2026-09-25 · **嵌套 arm 的作用域被外层覆盖**（gcc 7→3 · clang 14→10）
+
+量出来的第三个真 bug：记录 arm 绑定时，我把作用域写给"本次 arm 到当前末尾"的**所有**候选 ✗
+⇒ **嵌套 match 的绑定**被外层 arm 体覆盖 ⇒ 只要**兄弟嵌套 arm**用了它自己的同名 `e`，
+外层的 `e` 就算"被提到过" ⇒ 该消的没消 ✗ ⇒ 改成只覆盖**本 arm 自己的那几个**（`firstBind + arm->binds.len` ✓）
+
+**实测** `tests/io/stream-file.extc`：gcc **7 → 3** · clang **14 → 10** · 行数 **1575 → 1571** ✓ 语料 **256/0** + 九套件全绿 ✓
+
+**当前战绩（`tests/io/stream-file.extc`，从最初那一版算起）**：
+
+```
+行数 1608 → 1571    gcc -Wall -Wextra 28 → 3    clang -Wall -Wextra 47 → 10
+剩下的 gcc 3 条：`skip` / `__extc_ret_v`（**写了但没读** —— 要"读写"判据，不是"提没提到"✓）
+                · `d`（普通局部声明 —— 要把它也纳入体内候选 ✓）
+剩下的 clang 7 条 unused-function：**传递可达性**（从 `main` 走 `FuncDef.callees` 到不动点 ✓）
+```

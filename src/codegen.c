@@ -2880,7 +2880,11 @@ static void genStmtInner(CG *g, Stmt *s) {
                 size_t bodyA = g->out->len;
                 genBlockBody(g, arm->body);
                 size_t bodyB = g->out->len;
-                for (size_t k = firstBind; k < g->deadDefs.len; k++) {
+                /* Only the bindings of *this* arm: the body may contain nested matches whose
+                 * bindings already know their own stage, and overwriting theirs with this
+                 * larger one made a nested `e` count as mentioned as soon as a sibling nested
+                 * arm used its own `e` - which kept lines that nothing reads. */
+                for (size_t k = firstBind; k < firstBind + arm->binds.len && k < g->deadDefs.len; k++) {
                     DeadDef *bd = *(DeadDef **)vecAt(&g->deadDefs, k);
                     bd->scopeA = bodyA;      /* what could read the binding: this arm body */
                     bd->scopeB = bodyB;
