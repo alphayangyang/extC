@@ -85,6 +85,6 @@ clang -Weverything $(sed 's/^/-Wno-/;s/$//' docs/warnings-flags.txt | tr '\n' ' 
 |---|---|
 | 顶层全局 / 描述符行 | ✅ 已由 `dropUnreferenced` 接管（属性不再是唯一屏障 ✓） |
 | 函数原型 `EXTC_UNUSED static` | ✅ **已撤**（2026-09-25 ✓）函数剪枝落地后原型不再需要它，撤掉 gcc/clang 都不动（1/8 ✓） |
-| 描述符行 / 切片助手 / 视图索引 `static` | ⬜ **还不能撤**：实测把这 13 处**全撤** ⇒ gcc 1 → **4**、clang 8 → **11** ✗ 说明"发出来就一定被引用"还没做到（那正是**第一刀：按需发射**没做完的证据 ✓） |
+| 描述符行 / 字段表 / 视图索引 `static` | ⬜ **还不能撤**（**两次实测都涨** ✓）：2026-09-25 全撤 ⇒ `stream-file` gcc 1 → 3、`stream-sum` 0 → 3、`globals` 0 → 1 ✗ 范围已钉死为这三族（`%s_desc` / `%s_fields[]` / `%s_index` ✓）—— 它们"按需发射"，但**按需 ≠ 一定被引用** ✗ ⇒ 撤属性的前提是**先给这三族接上内容判据**（照 `DeadDef` 那套；注意描述符还有一份**前置声明**（`static const ExtcDesc %s_desc;`）⇒ 和函数一样要**成对判**：名字出现次数 == 2 且两段都定位到 ⇒ 一起删 ✓） |
 | 运行期原语 `static inline` | ⬜ 等第一刀（按需发射）✓ 它们同时也是 clang `-Wunused-function` 那 7 条的来源 ✓ |
 | 运行期原语 `static inline` | ⬜ 等第一刀（按需发射）✓ |
