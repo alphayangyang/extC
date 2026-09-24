@@ -80,7 +80,7 @@
 ## 4. 怎么用
 
 ```sh
-bash tests/genmatrix/run.sh        # 13 项：13 个格（缺口清单已清空）
+bash tests/genmatrix/run.sh        # 14 项：13 个格 + 1 条已知缺口（#65，反向断言）
 ```
 
 套件是**两半**（见 `tests/genmatrix/run.sh`）：

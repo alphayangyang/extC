@@ -1,0 +1,21 @@
+/* #65：**全局常量不接受结构体字面量** ⇒ 库做不出 `let cout: out = out { fd: 1 }`
+ *
+ *     error: the global `cout` must be initialized with a constant
+ *     note: ... has to be a constant (a literal, an enum constant, or arithmetic on those)
+ *
+ * 常量清单里**没有**「字段都是常量的结构体字面量」—— 而它在 C 里就是静态初始化
+ * （`static pt ORIGIN = { 0, 0 };`），也是"库怎么给用户一个现成的流对象"的唯一门槛 ✓
+ * ⚠️ 这条不是设计取舍，是**漏了**：`pt { x: 0, y: 0 }` 里的每个字段都是常量，
+ * 没有任何东西需要"在函数里算" ⇒ 让它过，诊断那句"Anything computed belongs inside
+ * a function"仍然成立（结构体字面量不是 computed）✓
+ *
+ * 复现（检查器就拒 ⇒ 普通编译即返回非 0）：
+ *     timeout 20 ./build/extc --run tests/canary-gaps/global_struct_const.extc
+ */
+struct pt { x: i64  y: i64 }
+let ORIGIN: pt = pt { x: 0, y: 0 }
+
+fn main() -> i32 {
+    println("原点 = ", ORIGIN.x, ",", ORIGIN.y)
+    return 0
+}

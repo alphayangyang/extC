@@ -63,5 +63,7 @@ check_still_bad() {
     n_ok=$((n_ok + 1))
 }
 
+check_still_bad tests/canary-gaps/global_struct_const.extc  'must be initialized with a constant'  65
+
 echo "通过 $n_ok 项，失败 $fail 项（0 = 全过）"
 [ "$fail" = 0 ]
