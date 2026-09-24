@@ -2961,12 +2961,16 @@ static void checkFunc(Checker *c, FuncDef *f) {
         }
         {
             Type *r = f->ret ? ttBase(f->ret) : NULL;
-            bool ok = !r || r->kind == TY_BUILTIN ||
+            /* `void` is a C return type like any other -- `exit`, `free`, `srand` and
+             * `cfmakeraw` all have it, and refusing it left the privileged layer unable to
+             * declare them. What has no C-level representation is a struct, a slice (two
+             * arguments), or a view. */
+            bool ok = !r || r->kind == TY_VOID || r->kind == TY_BUILTIN ||
                       (r->kind == TY_REF && ttBase(r->inner) && ttBase(r->inner)->kind == TY_BUILTIN);
             if (!ok)
                 ckError(c, f->line,
-                        "A C function can return a scalar or a single pointer; anything else has"
-                        " no C-level representation here.",
+                        "A C function can return `void`, a scalar, or a single pointer; anything"
+                        " else has no C-level representation here.",
                         "`extern!` return type `%s` cannot cross the C boundary",
                         typeStr(c, f->ret));
         }

@@ -834,6 +834,14 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         Vec  args = e->u.assoc.args;
         Expr *id  = exprNew(L->a, EX_IDENT, e->line);
         id->u.ident.name = renOfTarget(target, nm);
+        /* The name is **finished**: it is the target module's declaration, and the
+         * local-name rewrite must not touch it again. Without this flag the callee was
+         * looked up in the *calling* module's rename table one pass later -- and when the
+         * calling module declares a function of the same name (`std::proc::exit` wrapping
+         * `std::sys::process::exit`), the call was rewritten to that local name, i.e. to
+         * **itself**: unbounded recursion at run time, with no diagnostic at all
+         * (PLAN.md section 0.4, `#56`). */
+        id->qualified   = true;
         e->kind = EX_CALL;
         e->u.call.callee = id;
         e->u.call.args   = args;
@@ -1121,6 +1129,10 @@ static void rwExprName(ModUnit *self, Expr *e) {
      * Without the fallback, the diagnostic that asks for a qualified name turns into
      * "`lib$open` belongs to module lib - write `lib::lib$open`", which is nonsense. */
     if (!nm) nm = e->u.ident.srcName;
+    /* A name that a qualified reference already resolved belongs to another module:
+     * renaming it by **this** module's table would bind it to a local declaration of the
+     * same spelling, which compiles and means something else. */
+    if (e->qualified) return;
     const char *m = nm ? renLookup(self, nm) : NULL;
     if (m) { e->u.ident.srcName = nm; e->u.ident.name = m; }
 }

@@ -1,0 +1,17 @@
+/* std/proc.extc -- the process, as the user sees it.
+ *
+ * A thin layer over `std::sys::process` so user code never writes `std::sys::*` itself
+ * (`docs/topics/LIBS.md` section 5: the privileged layer is for the library author).
+ */
+use std::sys::process as sysproc
+
+/* End the program with this status now. `0` means success and anything else means
+ * failure, exactly as C's `exit` and the shell see it.
+ *
+ * What it does **not** skip: nothing. extC has no destructors, and arena memory belongs
+ * to the process, so ending the process is not a leak in any sense the language defines
+ * -- a descriptor the program left open is closed by the kernel, and that is the one
+ * place where "let the process end" is a complete answer. Bytes already written have
+ * reached the kernel; anything still buffered in your own `writer` is not flushed for
+ * you, so flush it if you care (`io::flushOut()`). */
+fn exit(code: i32) { sysproc::exit(code) }

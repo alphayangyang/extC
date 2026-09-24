@@ -9,6 +9,9 @@
 #      ⚠️ `sys` 不是"一个模块"，是**一条边界**的路径写法 ⇒ **按族分文件**
 #         （后面还有 std::sys::{thread,time,net,proc}，全塞一个文件会变垃圾场 ✗）
 #   ⑤ **不是逐字节读**：一次 64KB（老实现 50 万行要 2.3s，是"能跑但慢 190 倍"那种坏 ✓）
+#   ⑥ **文件当输入源**（IO-2 ①）：`f.reader()` 之后 `nextInt`/`nextLine`/`nextToken`
+#      与 stdin **逐字相同** —— 「读存档」和「读玩家输入」是同一段代码 ✓
+#   ⑦ **退出码**（IO-2 ②）：`proc::exit(7)` ⇒ 输出在、退出码是 7、之后的语句不执行 ✓
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
@@ -63,6 +66,42 @@ if out=$("$EXTC" --run tests/io/read-failed.extc 2>&1) && echo "$out" | grep -qF
     echo "  ok   read-failed  ->  $(echo "$out" | tr '\n' '|')"
 else
     echo "  FAIL read-failed  ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+
+echo "== 文件当输入源（IO-2 ①：`f.reader()` —— 与 stdin 同一套 API）=="
+# 判据：`nextInt` / `nextLine` / `nextToken` 在**文件**上逐条实测，
+# 外加边界：关掉的句柄再要 reader ⇒ `failure(closed)` 带位置、不 trap ✓
+if out=$("$EXTC" --run tests/io/file-reader.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "求和 = 46"        || ok=0
+    echo "$out" | grep -qF "回显：hello file"  || ok=0
+    echo "$out" | grep -qF "token = world"     || ok=0
+    echo "$out" | grep -qF "下一个 = 99"       || ok=0
+    echo "$out" | grep -qF "closed 带位置"     || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "  ok   file-reader  ->  $(echo "$out" | tr '\n' '|')"
+    else
+        echo "  FAIL file-reader  ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1
+    fi
+else
+    echo "  FAIL file-reader  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+
+echo "== 退出码（IO-2 ②：`proc::exit(code)` —— 它之前的输出要出来、之后的语句不执行）=="
+# 判据三条：① 之前的 println 必须在（C 的 exit 会 flush 流 ✓）
+#           ② shell 看到的退出码 == 给的那个数 ✓
+#           ③ 它之后的 `return 0` 不许把退出码改回去 ✓
+"$EXTC" tests/io/exit-code.extc -o build/exit-code.c >/dev/null 2>&1 \
+  && ${CC:-cc} -std=c11 -O1 build/exit-code.c -o build/exit-code >/dev/null 2>&1
+if [ -x build/exit-code ]; then
+    out=$(./build/exit-code 2>&1); rc=$?
+    if [ "$rc" = 7 ] && echo "$out" | grep -qF "退出前这一行要出来"; then
+        echo "  ok   exit-code   ->  输出在「$out」· 退出码 = $rc ✓"
+    else
+        echo "  FAIL exit-code   ->  退出码 $rc（期望 7）· 输出「$out」"; fail=1
+    fi
+else
+    echo "  FAIL exit-code   ->  编不过"; fail=1
 fi
 
 echo "== 顺序（println 与 writeBytes 混用 —— 定案 75 修的真缺陷）=="

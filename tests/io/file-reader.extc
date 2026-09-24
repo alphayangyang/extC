@@ -1,0 +1,69 @@
+// expect: 求和 = 46|回显：hello file|token = world|下一个 = 99|closed 带位置
+/* ⭐ **IO-2 的常设验收 ①：文件当输入源**（`f.reader()`）——
+ * 与 stdin **同一套 API**：`nextInt` / `nextLine` / `nextToken` 一个字都不用改，
+ * 换的只是 reader 从哪来（`io::readerOf(io::STDIN_FD)` → `f.reader()?`）✓
+ *
+ * 这正是一个游戏要的东西：「从文件读存档」和「从终端读玩家输入」是同一段代码 ✓
+ *
+ * 判据还有两条边界：
+ *   · 已关的句柄再要 reader ⇒ `failure(closed)` 带位置，**不 trap** ✓
+ *   · `reader` 不是资源类型（它没有 `close` 方法）⇒ 不产生"忘关"义务 ✓ */
+use std::io
+use std::fs
+
+fn run() -> result<unit, io::ioError> {
+    var f = fs::openRead("tests/io/numbers.txt")?
+
+    /* 换这一行：其余读法与 `tests/io/main.extc`（stdin）逐字相同 ✓ */
+    var r = f.reader()?
+
+    let a = r.nextInt()?                 /* 12 */
+    let b = r.nextInt()?                 /* 34 */
+    println("求和 = ", a + b)
+
+    var line: [64]u8
+    let n = r.nextLine(line[..])?         /* "hello file"：行是单位 */
+    println("回显：", line[0..n])
+
+    let t = r.nextToken(line[..])?        /* "world"：token 是单位 */
+    println("token = ", line[0..t])
+
+    let c = r.nextInt()?                  /* 99：证明前两步把位置交接对了 */
+    println("下一个 = ", c)
+
+    f.close()?
+
+    /* 边界：关掉的句柄再要 reader ⇒ failure(closed)，带位置（不 trap）✓ */
+    var g = fs::openRead("tests/io/numbers.txt")?
+    g.close()?
+    match g.reader() {
+        success(rr)  => { println("不该成功：fd = ", rr.fd); return failure(io::ioError.closed(i32(0))) }
+        failure(e)   => {
+            match e {
+                closed(code)      => { println("closed 带位置 = ", code) }
+                readFailed(code)  => { println("意外：readFailed(", code, ")"); return failure(e) }
+                writeFailed(code) => { println("意外：writeFailed(", code, ")"); return failure(e) }
+                lineTooLong(k)    => { println("意外：lineTooLong(", k, ")"); return failure(e) }
+                destFull(k)       => { println("意外：destFull(", k, ")"); return failure(e) }
+            }
+        }
+    }
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match run() {
+        success(u) => { return 0 }
+        failure(e) => {
+            println("失败了")
+            match e {
+                readFailed(code)  => { println("  readFailed(", code, ")") }
+                writeFailed(code) => { println("  writeFailed(", code, ")") }
+                lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
+                closed(code)      => { println("  closed(", code, ")") }
+                destFull(n)       => { println("  destFull(", n, ")") }
+            }
+            return 1
+        }
+    }
+}

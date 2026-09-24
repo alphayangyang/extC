@@ -64,6 +64,27 @@ struct inputFile {
         return success(total)
     }
 
+    /* A `reader` over this file: the same buffered reading stdin gets (`nextInt` /
+     * `nextLine` / `nextToken`), so a program reads a file and a terminal the same way.
+     * This is what makes "read the numbers in a file" and "read the numbers a player
+     * types" one piece of code.
+     *
+     * The 64 KB buffer is ordinary arena memory and lives where the caller's frame does:
+     * `io::readerOf` documents that the escape checker refuses to hand a `reader` out of
+     * the block it was born in.
+     *
+     * ⚠️ Two rules:
+     *   - do not mix this with `readSome` on the same handle. The reader reads ahead into
+     *     its buffer, so bytes it has already taken would be skipped. Read through the
+     *     reader, or raw, but not both.
+     *   - the reader reads from the **descriptor**, not from the handle: closing the
+     *     handle while a `reader` is still in use leaves the reader reading a number the
+     *     kernel may already have given to somebody else. Close after the reading is done. */
+    fn reader(self: mut ref inputFile) -> result<io::reader, io::ioError> {
+        if !self.open { return failure(io::ioError.closed(self.fd)) }
+        return success(io::readerOf(self.fd))
+    }
+
     /* Close the descriptor. Idempotent: the handle remembers that it is closed, so a
      * second call is a no-op and `close(2)` is never reached twice -- by then the
      * number may belong to somebody else. */

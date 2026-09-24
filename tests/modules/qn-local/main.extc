@@ -1,0 +1,9 @@
+// expect: a = 1|b = 2|b 调 a = 1
+use a
+use b
+fn main() -> i32 {
+    println("a = ", a::who())
+    println("b = ", b::who())
+    println("b 调 a = ", b::callA())
+    return 0
+}

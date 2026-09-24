@@ -9,6 +9,8 @@
 #        **模块体内的诊断指对文件**）
 #   ③ 正例里有**模块内部的具名字面量**（`box { v: v }`）与**限定名的具名字面量**
 #      （`shape::box { .. }`）—— PLAN #54 的两条正面判据 ✓
+#   ④ 正例 `qn-local`：本模块声明了同名函数时，`a::who()` 仍必须调到 **a 的**那个
+#      —— PLAN #56（修复前它会变成调自己 ⇒ 静默无限递归 ✗）✓
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -16,7 +18,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -78,7 +80,7 @@ for d in tests/modules/errors/*/ tests/modules/samenames/; do
     fi
 done
 # 正例也不能漏（含跨模块的类型/枚举/泛型实例 —— 那几种最容易漏 ✓）
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local; do
     out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
     if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
         echo "  FAIL $(basename "$d")(正例)  ->  输出里出现了 mangle 名（\$）"

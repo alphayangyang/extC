@@ -1,0 +1,17 @@
+/* std/sys/process.extc -- the privileged layer for the process family
+ * (`docs/topics/IO.md`, "tier 1 primitives"; `docs/topics/LIBS.md` section 5).
+ *
+ * One file per family: `std::sys::thread`, `std::sys::time`, `std::sys::net`,
+ * `std::sys::proc`. `sys::` marks only "this is the extern! layer"; the short name is
+ * the last path segment, so a reference reads `sysproc::exit`.
+ *
+ * ⚠️ Why `process` and not `proc`, and why the user-facing wrapper is `std::proc`: a
+ * module whose **short name** equals another module's is a trap today -- a qualified
+ * reference from one to the other resolves to *itself*, which measured as unbounded
+ * recursion with no diagnostic at all (PLAN.md section 0.4, `#56`). The whole stdlib
+ * layering pattern (`std::X` over `std::sys::X`) has exactly that shape, so the two
+ * files must not share a last segment until the loader is fixed. Ending the process is
+ * not I/O anyway, which is why this lives in its own family.
+ */
+extern!("libc") fn exit(code: i32) -> void
+    effects Addr=0 Cont=0

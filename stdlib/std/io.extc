@@ -52,7 +52,13 @@
  * and an over-long line was **silently split into two "lines"**. Data corruption
  * that cannot be seen is exactly what these three results are there to prevent.
  */
-use std::sys::io
+/* ⚠️ The privileged layer is imported under a name that **cannot collide**: this file's
+ * own module is `std::io`, whose short name is `io` too. Spelling a call `sysio::exit(..)`
+ * inside `std::io` made the qualifier resolve to *this* file, and the generated C had
+ * `io$exit` calling `io$exit` -- unbounded recursion with no diagnostic (measured: a
+ * runtime trap, not a compile error). `sysio` is what `std::fs` uses for the same
+ * reason. */
+use std::sys::io as sysio
 
 /* A read failed, and **why** it failed: an enum, not a magic value.
  * NOTE: the payload is what lets an error message say how many bytes were read
@@ -85,6 +91,8 @@ let STDOUT_FD: i32 = 1
  * annoying failure in an interactive program. */
 fn flushOut() { flush() }
 
+
+
 /* Write a whole block of bytes to **stdout** (`println` prints values, this
  * writes bytes).
  *
@@ -103,7 +111,7 @@ fn flushOut() { flush() }
  * turns a mistake you cannot see into a mistake you cannot make. */
 fn writeBytes(buf: slice<u8>) -> i64 {
     flush()
-    return io::write(io::STDOUT, buf.data, buf.len)
+    return sysio::write(sysio::STDOUT, buf.data, buf.len)
 }
 
 /* ================================================================ writer */
@@ -130,9 +138,9 @@ struct writer {
     /* Emit what is buffered, including the `println` side, which is what keeps
      * the order right. Returns the number of bytes written (0 = it was empty). */
     fn flush(self: mut ref writer) -> result<i64, ioError> {
-        if self.fd == io::STDOUT || self.fd == io::STDERR { flush() }
+        if self.fd == sysio::STDOUT || self.fd == sysio::STDERR { flush() }
         if self.len == i64(0) { return success(i64(0)) }
-        let n = io::write(self.fd, self.buf.data, self.len)
+        let n = sysio::write(self.fd, self.buf.data, self.len)
         if n < i64(0) { return failure(ioError.writeFailed(self.fd)) }
         self.len = 0
         return success(n)
@@ -173,7 +181,7 @@ fn writerOf(fd: i32) -> writer {
  * NOTE: this is the bare primitive layer, so the caller inspects the return
  * value; use `reader` for a shape that is easier to use. */
 fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
-    return io::read(fd, buf.data, buf.len)
+    return sysio::read(fd, buf.data, buf.len)
 }
 
 /* ================================================================ reader */
@@ -195,7 +203,7 @@ struct reader {
      * NOTE: this enters the kernel once to get a whole block rather than once
      * per byte, which is where the speed comes from. */
     fn fill(self: mut ref reader) -> result<i64, ioError> {
-        let n = io::read(self.fd, self.chunk.data, self.chunk.len)
+        let n = sysio::read(self.fd, self.chunk.data, self.chunk.len)
         if n < i64(0) { return failure(ioError.readFailed(self.fd)) }
         self.len = n
         self.pos = 0
