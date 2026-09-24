@@ -1192,6 +1192,13 @@ static const char *zeroValue(CG *g, Type *t);
 static bool needsExplicitZero(Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
+    /* An enum's zero is one of its variants, not the integer 0, so a struct that starts with an
+     * enum has to be initialized field by field (`board b = (board){0};` is an `int`-to-enum
+     * conversion, which clang reports as `-Wimplicit-int-enum-cast`). */
+    if (t->kind == TY_ENUM) return !enumHasPayload(t->edef);
+    /* And it recurses the same way through an array: `board` in `examples/tour.extc` is a `[8][8]color`,
+     * so the enum that needs naming sits two levels down. */
+    if (t->kind == TY_ARRAY) return needsExplicitZero(t->inner);
     if (t->kind != TY_STRUCT || !t->sdef) return false;
     for (size_t i = 0; i < t->sdef->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
@@ -1279,8 +1286,18 @@ static const char *zeroValue(CG *g, Type *t) {
      * union, and the tag decides which member is the meaningful one. A `ref`
      * inside the payload of tag 0 is reported by the checker as a type that
      * cannot be zero-initialized. */
-    if (t->kind == TY_ENUM)
-        return enumHasPayload(t->edef) ? arenaPrintf(g->arena, "(%s){0}", t->name) : "0";
+    if (t->kind == TY_ENUM) {
+        if (enumHasPayload(t->edef)) return arenaPrintf(g->arena, "(%s){0}", t->name);
+        /* A plain C enum's zero is its first variant, not the integer 0: the integer is a
+         * conversion from `int` to an enumeration type, which clang reports
+         * (`-Wimplicit-int-enum-cast`, "invalid in C++") for something as ordinary as a struct whose
+         * first field is an enum - `board b = (board){0};` in `examples/tour.extc`. */
+        if (t->edef && t->edef->variants.len > 0) {
+            Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
+            return arenaPrintf(g->arena, "%s_%s", t->name, v0->name);
+        }
+        return "0";
+    }
     /* An array is a struct wrapping `data[N]`, so the braces have to follow the nesting or gcc
      * asks for them (`-Wmissing-braces`, gcc only - clang takes any of these):
      *   `[N]i64`  -> `{{0}}`   one brace for the struct, one for `data`, then the first element
@@ -1675,7 +1692,15 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
-        case EX_FLOAT: return arenaPrintf(g->arena, "%g", e->u.fval);
+        case EX_FLOAT:
+            /* An `f32` literal is written as the float it is: `%g` prints a `double`, and assigning
+             * that to a `float` is an implicit narrowing conversion clang reports
+             * (`-Wimplicit-float-conversion`; `float e = 3.14;` in `examples/types.extc`). The value
+             * is the same either way - the cast just says so. */
+            if (e->type && e->type->kind == TY_BUILTIN && e->type->name &&
+                strcmp(e->type->name, "f32") == 0)
+                return arenaPrintf(g->arena, "(float)%g", e->u.fval);
+            return arenaPrintf(g->arena, "%g", e->u.fval);
         case EX_BOOL:  return e->u.bval ? "true" : "false";
         case EX_STR:
             /* `"abc"` becomes a byte view of the literal in read-only memory.
@@ -2124,6 +2149,19 @@ static void genStmt(CG *g, Stmt *s);
 /* Declared here because statements register their local declarations as they are emitted
  * (see DeadLocal): the definition sits with the other unreferenced-definition helpers. */
 static void localDef(CG *g, size_t before, const char *name, size_t own);
+
+/* A value on its way into an `f32` slot, written as the float it is.
+ *
+ * `let e: f32 = 3.14` emits `float e = 3.14;`: the literal is a `double`, so the assignment narrows
+ * it, and clang says so (`-Wimplicit-float-conversion`, `examples/types.extc`). The value is the same
+ * with the cast - it only stops being implicit. */
+static const char *asF32(CG *g, Type *target, Expr *src, const char *val) {
+    if (!target || target->kind != TY_BUILTIN || !target->name || strcmp(target->name, "f32") != 0)
+        return val;
+    if (!src || !src->type || src->type->kind != TY_BUILTIN || !src->type->name) return val;
+    if (strcmp(src->type->name, "f64") != 0) return val;
+    return arenaPrintf(g->arena, "(float)%s", val);
+}
 
 /* -------------------------------------------------------------- conditions
  * A statement brings its own parentheses, and the expression printer adds a pair
@@ -2823,7 +2861,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                                              : zeroInit(g, s->type);
             flushPrefix(g);
             size_t lb = g->out->len;
-            cgLine(g, "%s %s = %s;", cType(g, s->type), nm, init);
+            cgLine(g, "%s %s = %s;", cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
             localDef(g, lb, nm, 1);
             return;
         }
@@ -2841,7 +2879,8 @@ static void genStmtInner(CG *g, Stmt *s) {
             const char *tgt = genExpr(g, s->u.assign.target);
             const char *val = genExpr(g, s->u.assign.value);
             flushPrefix(g);
-            cgLine(g, "%s = %s;", tgt, val);
+            cgLine(g, "%s = %s;", tgt, asF32(g, s->u.assign.target ? s->u.assign.target->type : NULL,
+                                              s->u.assign.value, val));
             return;
 
         case ST_IF: {
@@ -3893,6 +3932,23 @@ static void localDef(CG *g, size_t before, const char *name, size_t own) {
     *(DeadLocal **)vecPush(&g->deadLocals) = d;
 }
 
+/* Is this line a `#define`, and where does the macro name start?
+ *
+ * `#define X` and `#  define X` are the same directive - the prelude pads them for alignment - and
+ * recognizing only the unspaced form left `EXTC_NORETURN` behind in every program whose traps had
+ * all been dropped (`macro is not used`). */
+static const char *macroDefineName(const char *ln, size_t ll) {
+    size_t i = 0;
+    if (i >= ll || ln[i] != '#') return NULL;
+    i++;
+    while (i < ll && (ln[i] == ' ' || ln[i] == '\t')) i++;
+    if (i + 6 > ll || strncmp(ln + i, "define", 6) != 0) return NULL;
+    i += 6;
+    if (i >= ll || (ln[i] != ' ' && ln[i] != '\t')) return NULL;
+    while (i < ll && (ln[i] == ' ' || ln[i] == '\t')) i++;
+    return (i < ll) ? ln + i : NULL;
+}
+
 /* Drop the runtime definitions nothing uses.
  *
  * The block is captured as one piece of text and scanned in the style it was written:
@@ -3946,14 +4002,13 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
              * is dropped when nothing uses it - leaving `#define EXTC_REC_LIMIT 100000` behind
              * for clang to report as an unused macro. A macro is the same kind of candidate:
              * its name appears in its own line, and anywhere else means something uses it. */
-            bool   isMacro = (ll > 10 && strncmp(ln, "#define ", 8) == 0);
+            bool   isMacro = (ll > 10 && macroDefineName(ln, ll) != NULL);
             if (isDef || isVar || isMacro) {
                 /* The name: the identifier before the first `(`, or the last one before
                  * the `;` / `=` of a variable. */
                 char *ns, *ne;
                 if (isMacro) {
-                    ns = ln + 8;
-                    while (ns < ln + ll && *ns == ' ') ns++;
+                    ns = (char *)macroDefineName(ln, ll);
                     ne = ns;
                     while (ne < ln + ll && identByte(*ne)) ne++;
                 } else if (isDef) {
@@ -4002,8 +4057,9 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                             size_t l2 = el ? (size_t)(el - p) : (size_t)(rp + rl - p);
                             if (l2 > 8 && (strncmp(p, "#ifndef ", 8) == 0 || strncmp(p, "#ifdef ", 7) == 0))
                                 guards += countMentionsIn(g, p, l2, name);
-                            if (l2 > 8 && strncmp(p, "#define ", 8) == 0 &&
-                                strncmp(p + 8, name, strlen(name)) == 0)
+                            const char *mn = (l2 > 8) ? macroDefineName(p, l2) : NULL;
+                            if (mn && strncmp(mn, name, strlen(name)) == 0 &&
+                                !identByte(mn[strlen(name)]))
                                 defs += countMentionsIn(g, p, l2, name);
                             if (!el) break;
                             p = el + 1;
