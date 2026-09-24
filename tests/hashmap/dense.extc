@@ -1,0 +1,29 @@
+// 池底化（POOLS.md §8）：值住在池里 ⇒ 稠密面是连续区间；rebuild 只重排桶、值一个都不搬；
+// remove 是 swap-remove ⇒ 被搬走的元素仍按原键取到（靠 bucketOfDense 反查）
+use std::io
+// expect: order=1,2,3 dense=3 sum=60 afterRebuild=20800 first3=1,2,3 moved=640 gone=-1 len=63 dense=63
+use stl::hashMap
+
+fn main() -> i32 {
+    var m = hashMapI64<i32>::withCap(i64(4))
+    m.put(i64(1), i32(10))
+    m.put(i64(2), i32(20))
+    m.put(i64(3), i32(30))
+    io::cout << "order=" << m.keyAtDense(i64(0)) << "," << m.keyAtDense(i64(1)) << "," << m.keyAtDense(i64(2))
+    io::cout << " dense=" << m.denseLen()
+    var sum: i64 = i64(0)
+    var d: i64 = 0
+    while d < m.denseLen() { sum = sum + i64(m.valAtDense(d))  d = d + i64(1) }
+    io::cout << " sum=" << sum
+    var i: i64 = 4
+    while i <= i64(64) { m.put(i, i32(i * i64(10)))  i = i + i64(1) }
+    var sum2: i64 = i64(0)
+    d = 0
+    while d < m.denseLen() { sum2 = sum2 + i64(m.valAtDense(d))  d = d + i64(1) }
+    io::cout << " afterRebuild=" << sum2 << " first3=" << m.keyAtDense(i64(0)) << "," << m.keyAtDense(i64(1)) << "," << m.keyAtDense(i64(2))
+    m.remove(i64(1))
+    var moved: i32 = m.get(i64(64)) ?? i32(-1)
+    var gone: i32 = m.get(i64(1)) ?? i32(-1)
+    io::cout << " moved=" << i64(moved) << " gone=" << i64(gone) << " len=" << m.len() << " dense=" << m.denseLen() << "\n"
+    return 0
+}

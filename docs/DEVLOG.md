@@ -8184,3 +8184,31 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 `resolveDeferredCall` 会建具体实例、置 `used`、改写 `e->func`；**泛型类型实例上的方法/关联函数**
 （`vals.insert`、`pool<V>::withCap` 这类，模板期类型实参还带 `T`）没有对应记录，于是具体实例的方法没被标记发射，
 就是 `pool$pool_i32_remove` 那个 implicit declaration 的来源。下一步的入口在这里。
+
+### 周期 18（第 18 轮）：② 池底化落地 —— 值住进池、表只留桶索引（顺带挖出 #80）
+
+按 POOLS.md §8 把 `hashMap` 的值搬进池：表里只留 `keys` / `tag` / `slot`（桶 → 稠密下标），再加一列反查
+`bucketOfDense`（稠密 → 桶），值本身住 `vals: pool<V>`。于是：
+
+- **`rebuild` 只重排桶，值一个都不搬** —— 元素的稠密下标与句柄跨 rehash 稳定（这就是池底化要换来的东西）；
+- **`remove` 的交换靠反查修好**：池的 `remove` 是 swap-remove，先把被搬动元素的桶记下来，删完再把它那条记录
+  挪到洞的位置；
+- **稠密面**：`denseLen` / `keyAtDense` / `valAtDense`（遍历不再扫表、也没有空洞），适配层也接上了。
+
+途中踩到并修掉两个 bug：
+
+1. **`bucketOfDense` 不跟着 `rebuild` 放大** —— 它按初始容量分配，表一翻倍稠密下标就越界，canary 程序直接
+   触发 `trap: index 128 out of range (length 128)`。修法：`rebuild` 里把它一起重建（先拷活前缀，rehash 时写新数组）。
+2. **#80（编译器缺陷，已单独立行）**：泛型结构体里**只有第一个字段能是另一个泛型实例**。池字段排在后面时，
+   `pool<i32>` 这个实例的函数根本不被发射（生成的 C 里全是 `implicit declaration`）。二分结论：把
+   `vals: pool<V>` 声明成第一个字段就正常，与字段名、字面量初始化顺序、类型参数个数、适配层都无关，
+   单字段结构体（`holder<T> { p: pool<T> }`）怎么用都正常。**当前是工作区，不是修好** —— `hashMap` 里加了
+   注释说明为什么池字段必须排第一，`#80` 记下方向（查字段类型解析/实例创建里把「第一个字段」当代表的那处）。
+
+新用例 `tests/hashmap/dense.extc`（`// expect:` 一行）：
+`order=1,2,3 dense=3 sum=60 afterRebuild=20800 first3=1,2,3 moved=640 gone=-1 len=63 dense=63`
+—— 稠密面是插入顺序 · 插到 64 个键触发 rebuild 后**稠密顺序与求和都不变**（值没搬的探针）· 删掉中间的键之后
+被搬走的那个元素仍按原键取到（`bucketOfDense` 反查的探针）。
+
+验证：`tests/hashmap`（含 canary「有牙」与 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
+`tests/genmatrix`（13 项）· 语料 **通过 262 / 失败 0**，全绿。

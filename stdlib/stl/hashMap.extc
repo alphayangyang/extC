@@ -26,6 +26,8 @@
  *     in phase 1+ (`docs/topics/REGIONS.md` section 8).
  */
 
+use stl::pool
+
 let EMPTY: u8 = 0
 let LIVE:  u8 = 1
 let TOMB:  u8 = 2
@@ -39,21 +41,32 @@ fn hashI64(k: i64) -> i64 {
 }
 
 struct hashMap<K, V> {
-    keys: mut slice<K>
-    vals: mut slice<V>
-    tag:  mut slice<u8>        /* EMPTY / LIVE / TOMB */
-    n:    i64                  /* live entries */
-    dead: i64                  /* tombstones */
-    cap:  i64                  /* always a power of two */
+    /* The value pool is declared FIRST on purpose: a generic type instance that is not the first
+     * field of a generic struct is not emitted as a function (PLAN #80), and a map without its
+     * pool cannot compile. The order of the rest is free. */
+    vals: pool<V>               /* the values themselves: dense, reusable, handle-addressed */
+    keys: mut slice<K>          /* the bucket's key (live buckets only) */
+    tag:  mut slice<u8>         /* EMPTY / LIVE / TOMB */
+    slot: mut slice<i32>        /* bucket -> dense index inside `vals` (-1 when not live) */
+    /* The reverse of `slot`, one entry per dense index. The pool's `remove` is a swap-remove:
+     * the last live value moves into the hole, so the map has to fix the moved element's bucket,
+     * and this column is what says which bucket that is. Without it the table would keep pointing
+     * at values that moved (POOLS.md section 8). */
+    bucketOfDense: mut slice<i32>
+    n:    i64                   /* live entries */
+    dead: i64                   /* tombstones */
+    cap:  i64                   /* always a power of two */
 
     /* A map with room for `want` entries before the first rebuild. */
     fn withCap(want: i64) -> hashMap<K, V> {
         var c: i64 = i64(8)
         while c < want * i64(2) { c = c * i64(2) }
         var m: hashMap<K, V> = {
+            vals: pool<V>::withCap(c),
             keys: new K[c],
-            vals: new V[c],
             tag:  new u8[c],
+            slot: new i32[c],
+            bucketOfDense: new i32[c],
             n:    i64(0),
             dead: i64(0),
             cap:  c,
@@ -62,8 +75,9 @@ struct hashMap<K, V> {
     }
 
     fn len(self: ref hashMap<K, V>) -> i64 { return self.n }
+    fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
 
-    /* Find the slot holding `k`: live slot index, or -1 when absent. */
+    /* Find the bucket holding `k`: live bucket index, or -1 when absent. */
     fn find(self: ref hashMap<K, V>, k: K) -> i64 {
         var i = k.hash() & (self.cap - i64(1))
         var steps: i64 = 0
@@ -81,78 +95,114 @@ struct hashMap<K, V> {
 
     /* The value for `k`, or `none`. */
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
-        let i = self.find(k)
-        if i < i64(0) { return none }
-        return some(self.vals[i])
+        let b = self.find(k)
+        if b < i64(0) { return none }
+        return self.vals.get(self.vals.handleAtDense(i64(self.slot[b])))
     }
 
     /* Insert or overwrite. Returns true when the key was already there. */
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         let had = self.find(k)
-        if had >= i64(0) { self.vals[had] = v  return true }
-        /* Rebuild *before* inserting, while there is still a free slot to land in. */
+        if had >= i64(0) {
+            self.vals.set(self.vals.handleAtDense(i64(self.slot[had])), v)
+            return true
+        }
+        /* Rebuild *before* inserting, while there is still a free bucket to land in. */
         if (self.n + self.dead + i64(1)) * i64(10) >= self.cap * i64(7) { self.rebuild(self.cap * i64(2)) }
         var i = k.hash() & (self.cap - i64(1))
         while self.tag[i] == LIVE {
             i = (i + i64(1)) & (self.cap - i64(1))
         }
         if self.tag[i] == TOMB { self.dead = self.dead - i64(1) }
+        let h = self.vals.insert(v)
+        let d = self.vals.len() - i64(1)
         self.tag[i]  = LIVE
         self.keys[i] = k
-        self.vals[i] = v
+        self.slot[i] = i32(d)
+        self.bucketOfDense[d] = i32(i)
         self.n = self.n + i64(1)
         return false
     }
 
-    /* Remove `k`. Returns true when it was there. The slot becomes a tombstone so other
+    /* Remove `k`. Returns true when it was there. The bucket becomes a tombstone so other
      * probes still find what is behind it. */
     fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
-        let i = self.find(k)
-        if i < i64(0) { return false }
-        self.tag[i] = TOMB
+        let b = self.find(k)
+        if b < i64(0) { return false }
+        let d      = i64(self.slot[b])
+        let last   = self.vals.len() - i64(1)
+        let bMoved = i64(self.bucketOfDense[last])
+        let gone   = self.vals.remove(self.vals.handleAtDense(d))
+        /* The pool filled the hole with the last live value; point that element's bucket at its
+         * new dense index, or a later lookup would read somebody else's value. */
+        if d != last {
+            self.slot[bMoved] = i32(d)
+            self.bucketOfDense[d] = i32(bMoved)
+        }
+        self.tag[b] = TOMB
         self.n    = self.n - i64(1)
         self.dead = self.dead + i64(1)
-        return true
+        return gone
     }
 
-    /* Rehash into a table of `ncap` slots (a power of two), dropping the tombstones. */
+    /* Rehash into a table of `ncap` buckets (a power of two), dropping the tombstones. The values
+     * are not touched: they stay exactly where the pool put them, which is what keeps an element's
+     * dense index (and every live handle) valid across a rebuild. */
     fn rebuild(self: mut ref hashMap<K, V>, ncap: i64) {
-        var nk: mut slice<K> = new K[ncap]
-        var nv: mut slice<V>   = new V[ncap]
+        var nk: mut slice<K>   = new K[ncap]
         var nt: mut slice<u8>  = new u8[ncap]
+        var ns: mut slice<i32> = new i32[ncap]
+        /* `bucketOfDense` is indexed by DENSE index, so it has to hold as many entries as there
+         * are values -- and the pool's dense side grows past the old table capacity as soon as
+         * the table doubles. It used to keep its original length and the first rebuild after a
+         * growth wrote past its end (trapped: "index 128 out of range (length 128)"). Copy the
+         * live prefix into the larger array first; the rehash below fills the rest. */
+        var nb: mut slice<i32> = new i32[ncap]
+        var d0: i64 = 0
+        while d0 < self.vals.len() { nb[d0] = self.bucketOfDense[d0]  d0 = d0 + i64(1) }
         var i: i64 = 0
         while i < self.cap {
             if self.tag[i] == LIVE {
                 var j = self.keys[i].hash() & (ncap - i64(1))
                 while nt[j] == LIVE { j = (j + i64(1)) & (ncap - i64(1)) }
-                nt[j]  = LIVE
-                nk[j]  = self.keys[i]
-                nv[j]  = self.vals[i]
+                nt[j] = LIVE
+                nk[j] = self.keys[i]
+                ns[j] = self.slot[i]
+                nb[i64(self.slot[i])] = i32(j)
             }
             i = i + i64(1)
         }
         self.keys = nk
-        self.vals = nv
         self.tag  = nt
+        self.slot = ns
+        self.bucketOfDense = nb
         self.cap  = ncap
         self.dead = i64(0)
     }
 
-    /* Drop everything, keeping the capacity (memory comes back only with a pool). */
+    /* Drop every entry, keeping the capacity. `clear` on the pool is O(1) (it flips the pool
+     * epoch, see POOLS.md section 7), so the values cost nothing here. */
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap { self.tag[i] = EMPTY  i = i + i64(1) }
+        self.vals.clear()
         self.n    = i64(0)
         self.dead = i64(0)
     }
 
-    /* The i-th live slot, by table position. Iteration is a scan of the table, so it is
-     * *not* contiguous -- for hot loops copy the keys out, or keep a dense list of the
-     * keys you care about (the `pool` shape). */
+    /* Hand the value pool back: the container and its pool are born together. */
+    fn release(self: mut ref hashMap<K, V>) { self.vals.release() }
+
+    /* Scan by bucket position (the face the first version had). */
     fn keyAt(self: ref hashMap<K, V>, i: i64) -> K { return self.keys[i] }
-    fn valAt(self: ref hashMap<K, V>, i: i64) -> V   { return self.vals[i] }
+    fn valAt(self: ref hashMap<K, V>, i: i64) -> V { return self.vals.atDense(i64(self.slot[i])) }
     fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return self.tag[i] == LIVE }
-    fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
+
+    /* Scan the dense side: every live value once, in the pool's own order -- no probing and no
+     * holes. This is the face a hot loop wants. */
+    fn denseLen(self: ref hashMap<K, V>) -> i64 { return self.vals.len() }
+    fn keyAtDense(self: ref hashMap<K, V>, d: i64) -> K { return self.keys[i64(self.bucketOfDense[d])] }
+    fn valAtDense(self: ref hashMap<K, V>, d: i64) -> V { return self.vals.atDense(d) }
 }
 
 /* ---------------------------------------------------------------------------
@@ -204,6 +254,12 @@ struct hashMapI64<V> {
     fn remove(self: mut ref hashMapI64<V>, k: i64) -> bool { return self.m.remove(i64Key { v: k }) }
 
     fn clear(self: mut ref hashMapI64<V>) { self.m.clear() }
+
+    /* The dense face (`hashMap`'s own face): every live value once, in insertion order, no
+     * probing and no holes -- the reason the values live in a pool at all. */
+    fn denseLen(self: ref hashMapI64<V>) -> i64 { return self.m.denseLen() }
+    fn keyAtDense(self: ref hashMapI64<V>, d: i64) -> i64 { return self.m.keyAtDense(d).v }
+    fn valAtDense(self: ref hashMapI64<V>, d: i64) -> V { return self.m.valAtDense(d) }
 
     fn keyAt(self: ref hashMapI64<V>, i: i64) -> i64 { return self.m.keyAt(i).v }
     fn valAt(self: ref hashMapI64<V>, i: i64) -> V { return self.m.valAt(i) }
