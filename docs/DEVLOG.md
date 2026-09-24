@@ -7,6 +7,51 @@
 
 ---
 
+## 2026-09-24 · 修 `#61` + 顺手撞出并修掉 `#63`（泛型 × 实例化命名）
+
+> 矩阵立好之后第一刀：按表修 `#61`（泛型体里 `match` 裸变体模式）。修的过程中又撞出 `#63` ✓
+> 两条都是**「实例化后的名字」**这一族 —— 也正是 `§0.4` 里 22 格泛型缺陷的主题 ✓
+
+### `#61`：`ST_MATCH` 漏了 `subst`（一行）
+
+泛型体里 `match self.xs.get(i) { none => .. some(v) => .. }` ⇒ gcc 报
+`'option_V_none' undeclared; did you mean 'option_i64_none'?` ⇒ **生成的 C 编不过** ✗
+
+```c
+/* 改之前 */ Type *et = ttBase(s->u.match.scrutinee->type);
+/* 改之后 */ Type *et = ttBase(subst(g, s->u.match.scrutinee->type));
+```
+
+根因：模板体里 `scrutinee->type` 记的是**模板**类型（`option<V>`）⇒ `et->name` 拿去拼 C 常量名
+⇒ `option_V_none` ✓ 而**构造那一侧**（`EX_ENUMVAL`）在 #28 就 `subst` 了 ⇒ 只有**模式**这一侧漏了 ✓
+判据：那一格从 `canary-gaps/` **搬进** `tests/genmatrix/t_variant_match.extc` ✓
+
+### `#63`：泛型内部调用的「临时实例」被当真函数发射（顺手撞到的，也是**类**）
+
+新加一格「`?` 在泛型体里」（`firstTwice<T>` 调 `firstOr<T>`）⇒ 生成物里冒出：
+
+```c
+static option_T firstOr_T(slice_T xs);   /* 类型不存在 ⇒ 编不过 ✗ */
+```
+
+根因：泛型体里调泛型函数时，模板期要造一个**以 `T` 为实参**的临时实例（#50 ① 的机制），
+而 codegen 的发射循环只挡了**模板**（`typeParams.len > 0`）⇒ 临时实例被当函数发射 ✗
+
+⚠️ **它一直藏在一个侥幸里**：`T` **单独**出现时 `cType` 退化成 `int`
+（`static int idOf_T(int x)` 当**死代码**编得过 ⇒ `examples/generic-calls-generic` 一直是"过的"✗）
+⇒ 只有**构造类型包着参数**（`?T` / `slice<T>`）才炸 ✓ **「侥幸能过」≠「没有 bug」** 的又一例 ✓
+
+修法：`funcSignatureMentionsParam(f)` + 发射时 `if (f->tmpl && …) continue;` ✓
+**判据（证明修的是「类」）**：`examples/generic-calls-generic` 的生成物里 `idOf_T`
+**从 2 处变 0 处**，而它照旧跑出 `7 42 7` ✓
+
+### 教训（这一轮最值钱的一句）
+
+**「侥幸能过」和「真的支持」之间，差的就是一个构造类型。** `idOf_T` 编得过去，
+纯粹因为 `T` 落到 `int` 这个退化上；把返回值从 `T` 换成 `?T`，同一段代码立刻炸 ✗
+⇒ 矩阵里**每个位置都要用「包着参数的构造类型」再试一遍**（`?T` · `slice<T>` · `pair<T,U>`），
+只测裸 `T` 会系统性漏掉这一族 ✓ 这条已写进 `GENERICS.md` ✓
+
 ## 2026-09-24 · 泛型组合矩阵落地（`tests/genmatrix/` + `GENERICS.md`）—— 把"我没试过"变成"机器每次都试"
 
 > 主人：「泛型现在怎么这么多 bug」⇒ 我把这句话**量成数据**，然后立了一张表。

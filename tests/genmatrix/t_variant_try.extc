@@ -1,0 +1,17 @@
+// expect: a = 10 · b = -1
+/* 格：**`?` 在泛型体里**（`EX_TRY` —— 跟 #61 同一族：都要求"实例化后的名字"）
+ * 主体是**泛型调用返回的 `?T`**，也就是 #60 那格的"外面包一层 `?`"版本 ✓ */
+fn firstOr<T>(xs: slice<T>) -> ?T {
+    if xs.len == i64(0) { return none }
+    return some(xs[0])
+}
+fn firstTwice<T>(xs: slice<T>) -> ?T {
+    let a = firstOr(xs)?          /* 泛型体里对泛型调用的结果用 `?` */
+    return some(a)
+}
+fn main() -> i32 {
+    var a: [2]i64 = [10, 20]
+    var e: [1]i64 = [0]
+    println("a = ", firstTwice(a[..]) ?? i64(-1), " · b = ", firstTwice(e[0..0]) ?? i64(-1))
+    return 0
+}

@@ -1,0 +1,22 @@
+// expect: has(0) = true · has(5) = false
+/* 格（原来是 #61，2026-09-24 修）：**泛型体里 `match` 裸变体模式**
+ * 修之前：生成的 C 用模板名 ⇒ gcc 报 `'option_V_none' undeclared` ⇒ **编不过** ✗
+ * 原因：`ST_MATCH` 取 `scrutinee->type` 时**没走 `subst`**（构造那一侧 `EX_ENUMVAL` 早就走了 ✓）
+ * ⇒ 现在 `et->name` 是实例名（`option_i64`）✓
+ * 对照格：`t_variant_match_concrete.extc`（具体类型上一直是好的）*/
+struct w2<V> {
+    xs: varArray<V>
+    fn has(self: ref w2<V>, i: i64) -> bool {
+        match self.xs.get(i) {
+            none    => { return false }
+            some(v) => { return true }
+        }
+    }
+}
+
+fn main() -> i32 {
+    var x: w2<i64> = { xs: varArray<i64>::withCap(1) }
+    x.xs.push(i64(1))
+    println("has(0) = ", x.has(i64(0)), " · has(5) = ", x.has(i64(5)))
+    return 0
+}

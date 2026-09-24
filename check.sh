@@ -115,9 +115,9 @@ if out=$(timeout 600 bash tests/ops/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · mangle · 9 反例 · 两条不许漏到 gcc）"
 else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
 
-echo "== 泛型组合矩阵（T 的位置 × 特性 · 8 格 + 3 条已知缺口反向断言 —— 见 GENERICS.md）=="
+echo "== 泛型组合矩阵（T 的位置 × 特性 · 10 格 + 2 条已知缺口反向断言 —— 见 GENERICS.md）=="
 if out=$(timeout 600 bash tests/genmatrix/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（8 格 + #60/#61/#62 仍坏在记着的那句上 ✓）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（10 格 + #60/#62 仍坏在记着的那句上 ✓ · #61/#63 已修并搬进矩阵）"
 else bad "tests/genmatrix/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 头文件 include guard（内容不许落在 #endif 之后）=="

@@ -2606,7 +2606,13 @@ static void genStmtInner(CG *g, Stmt *s) {
              * the enum has a payload, because an arm reads `.u.<variant>` and
              * evaluating the expression a second time - as in
              * `match f() { ... }` - would be wrong. */
-            Type *et = ttBase(s->u.match.scrutinee->type);
+            /* `subst` matters here for the same reason it does on the construction side
+             * (`EX_ENUMVAL`): inside the body of a generic instance the scrutinee's
+             * recorded type is the *template's* type, so `et->name` was `option_V` and the
+             * arm compared against `option_V_none`, a constant that does not exist -- the
+             * generated C did not compile at all. Substituting first gives the instance's
+             * name (`option_i64`), and the payload types below are then already concrete. */
+            Type *et = ttBase(subst(g, s->u.match.scrutinee->type));
             bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
             const char *subj = genExpr(g, s->u.match.scrutinee);
             if (payload) {
@@ -3397,6 +3403,27 @@ static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) 
  *   consistency problem never stops generation, so that the caller sees the
  *   error count and not a damaged output buffer.
  */
+/* Does this instance's signature still mention a type parameter?
+ *
+ * Such a FuncDef is a checker artifact -- a generic call inside a generic body creates an
+ * instance with `T` itself as the argument, so the body can be checked -- and never a C
+ * function. The emission loop below skips these; see the comment there.
+ *
+ * Params:
+ *   f - the function instance to inspect
+ *
+ * Returns:
+ *   true when any parameter type or the return type still mentions a type parameter.
+ */
+static bool funcSignatureMentionsParam(FuncDef *f) {
+    if (f->ret && mentionsParam(f->ret)) return true;
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (p->type && mentionsParam(p->type)) return true;
+    }
+    return false;
+}
+
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     CG g;
     memset(&g, 0, sizeof g);
@@ -3504,6 +3531,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `continue`, both the template and its instances were emitted and the
          * unsubstituted `T` in the template produced a false error. */
         if (f->typeParams.len > 0) continue;
+        /* Nor is an instance whose *signature* still mentions a type parameter.
+         *
+         * A generic call inside a generic body creates one of those -- `firstTwice<T>`
+         * calling `firstOr<T>` builds `firstOr_T` with `T` itself as the argument -- so
+         * that the template body can be checked at all. It exists for the checker: at
+         * instantiation every real call site is repointed to a concrete instance
+         * (`firstOr_i64`), and nothing calls the provisional one.
+         *
+         * Emitting it produced a function whose parameter and return types have no C
+         * name: `static option_T firstOr_T(slice_T xs)` referred to types that do not
+         * exist, so the generated C did not compile. It stayed hidden because a lone `T`
+         * degenerates to `int` (`static int idOf_T(int x)` compiled fine as dead code),
+         * so only a signature with a *constructed* type around the parameter broke. */
+        if (f->tmpl && funcSignatureMentionsParam(f)) continue;
         *(FuncDef **)vecPush(&g.funcs) = f;
     }
 
