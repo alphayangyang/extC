@@ -8032,3 +8032,7 @@ tour          740 → 606    53 → 54 ms   102 → 105 ms   16416 → **16688**
 
 验证：`tests/pool` 失败 0 · `tests/stl` 失败 0 · `tests/map` 失败 0；gcc 与 clang `-Wall -Wextra -Werror`
 干净 · ASan 含泄漏检查干净；`check.sh quick </dev/null` 结论见同轮补记。
+
+同轮补记（第 6 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r12.log`）。
+至此第 ① 件（池级 epoch，`clear()` 变 O(1) 染色）四道闸门全过：`tests/pool` · `tests/stl` · `tests/map` ·
+`check.sh quick`。作者关于手柄宽度的口径也照办：整个仓库只有 `HANDLE_EPOCH_BITS` 一个旋钮。
