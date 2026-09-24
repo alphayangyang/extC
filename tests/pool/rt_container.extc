@@ -1,7 +1,7 @@
 // 容器接入：**池随容器一起创建**，release() 真的整批还；块退出时整区一起走
 // 判据：建容器 live=1 · release 后 live=0 · 再建 live=1（槽位复用）· 出块 live=0
 use std::io
-use std::pool
+use stl::pool
 use std::sys::pool as syspool
 
 fn main() -> i32 {

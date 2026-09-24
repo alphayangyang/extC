@@ -7,7 +7,7 @@
  * （不还槽位的实现会线性涨 ⇒ 同一判据会响 ✓ 见同目录的 churn-leak.extc ✓）
  *
  * 轮数从命令行拿（`main(args)` —— IO-1 的成果在这里正好用上 ✓ */
-use std::pool
+use stl::pool
 
 /* 把 `args[1]` 当十进制数读（没给就用默认值）*/
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {

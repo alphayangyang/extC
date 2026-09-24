@@ -1,7 +1,7 @@
 // 拷贝 + 槽位复用之后，陈旧的拷贝不许放掉别人的池（pidGen 校验）
 // 判据：a 释放后 c 建起来（复用同一槽位）· 再让陈旧拷贝 b 释放 ⇒ c 必须还活着（live 仍为 1）
 use std::io
-use std::pool
+use stl::pool
 use std::sys::pool as syspool
 
 fn main() -> i32 {

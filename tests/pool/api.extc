@@ -1,6 +1,6 @@
 // expect: set 之后 = 99|toSlice = 1 99 3|handleAtDense 读回 = 99|clear 之后 len = 0 且旧 handle 全失效|clear 之后复用容量：再插 3 个 len = 3
 /* ⭐ 期 0 的 API 面判据：写回 · 拷成 slice · dense↔handle 双向 · clear 复用容量 ✓ */
-use std::pool
+use stl::pool
 
 fn main() -> i32 {
     var p = pool<i32>::withCap(8)

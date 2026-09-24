@@ -2,7 +2,7 @@
 /* ⭐ `gather`：把一批句柄**一次性**解析成 dense 下标 ⇒ 之后的热循环就是按下标访问
  *   （实测：经句柄 9.1× vs 先 gather 再按下标 1.09× ✓）
  *   失效的句柄在下标数组里留 -1，返回值是有效个数 ⇒ 调用者可以跳过或压缩 ✓ */
-use std::pool
+use stl::pool
 
 fn main() -> i32 {
     var p = pool<i32>::withCap(8)

@@ -4,7 +4,7 @@
  *   ② `remove` 之后那个 handle **失效**（世代加一 ⇒ contains=false ✓）
  *   ③ dense 前段仍然连续（末尾元素 swap 进空洞 ⇒ 遍历永远是一段内存 ✓）
  *   ④ 再插入**复用刚 freed 的槽位**，而旧 handle 依然 stale ✓ */
-use std::pool
+use stl::pool
 
 fn main() -> i32 {
     var p = pool<i32>::withCap(4)
