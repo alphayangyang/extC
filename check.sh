@@ -82,7 +82,7 @@ else bad "tests/fs-shape/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 文件归属（定案 79：程序拥有 ⇒ 忘关编不过 · 双关安全 · ASan）=="
 if out=$(./tests/fs/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（fd 恒定 + canary + 编不过的泄漏 + 双关 + closed + ASan）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（fd 恒定 + canary + 编不过的泄漏 + readAll + 双关 + closed + ASan）"
 else bad "tests/fs/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 命令行（IO.md §7：\`main(args)\` ⇒ args.len 含程序名 · 形状写错编译期挡住）=="

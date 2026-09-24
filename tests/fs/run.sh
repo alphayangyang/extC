@@ -8,7 +8,8 @@
 #   ③ 编译期兜底：开出来全程没人关 ⇒ **编不过**（"nothing in this function closes it"）✓
 #   ④ 双关安全：`close()` 幂等，第二次**不碰 `close(2)`** ⇒ 关不到别人的号 ✓
 #   ⑤ 关闭后使用 ⇒ `failure(closed)`，**不 trap、不静默** ✓
-#   ⑥ ASan 干净：库那几条路径（open/put/readAll/close）没有内存错误 ✓
+#   ⑥ `readAll` 两条路：读到 EOF ✓ / 目标太小 ⇒ `destFull`（不是静默短读 ✗）✓
+#   ⑦ ASan 干净：库那几条路径（open/put/readAll/close）没有内存错误 ✓
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
@@ -44,6 +45,14 @@ else
     echo "  ok   never-closed    ->  $(echo "$out" | head -1 | sed 's/^[^ ]*: //' | cut -c1-62)"
 fi
 
+echo "== readAll 的两条路：读到 EOF / 目标太小 ⇒ destFull（不是静默短读）=="
+if out=$("$EXTC" --run tests/fs/read-all.extc 2>&1) \
+   && echo "$out" | grep -qF "readAll = 17" && echo "$out" | grep -qF "destFull 带位置"; then
+    echo "  ok   read-all       ->  $(echo "$out" | tr '\n' '|')"
+else
+    echo "  FAIL read-all       ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+
 echo "== 双关安全：close() 幂等，第二次不碰 close(2) =="
 if out=$("$EXTC" --run tests/fs/close-twice.extc 2>&1) \
    && echo "$out" | grep -qF "双关安全" && echo "$out" | grep -qF "b 写成功"; then
@@ -65,7 +74,7 @@ TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/probe.c"
 if gcc -fsanitize=address -o "$TMP/probe" "$TMP/probe.c" >/dev/null 2>&1; then
     ok=1
-    for t in fd-constant close-twice closed-use; do
+    for t in fd-constant close-twice closed-use read-all; do
         if "$EXTC" "tests/fs/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
            && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
            && "$TMP/$t" >/dev/null 2>&1; then
@@ -74,7 +83,7 @@ if gcc -fsanitize=address -o "$TMP/probe" "$TMP/probe.c" >/dev/null 2>&1; then
             echo "  FAIL $t  ->  ASan 报错或构建失败"; fail=1; ok=0
         fi
     done
-    [ "$ok" = 1 ] && echo "  ok   fd-constant · close-twice · closed-use  ->  ASan 干净"
+    [ "$ok" = 1 ] && echo "  ok   fd-constant · close-twice · closed-use · read-all  ->  ASan 干净"
 else
     echo "  skip  gcc 不支持 -fsanitize=address（这一支跳过）"
 fi

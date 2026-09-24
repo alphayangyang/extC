@@ -1,0 +1,35 @@
+// expect: readAll = 17|destFull 带位置
+/* ⭐ `readAll` 的两条路（IO-1 的 ② 里点名的那条）：
+ *
+ *   ① 目标够大 ⇒ 读到**文件结束**，返回真实字节数 ✓
+ *   ② 目标太小 ⇒ **不是**"短读数"（那会看起来像 EOF 而**静默丢掉剩下的** ✗）
+ *      而是 `failure(destFull(已读到))` 带位置 ✓
+ *
+ * 两条都走一遍，才算这条判据有牙 ✓ */
+use std::fs
+use std::io
+
+fn main() -> i32 {
+    var f = fs::openRead("tests/fs/data.txt")!
+    var buf: [64]u8
+    let n = f.readAll(buf[..])!
+    f.close()!
+    println("readAll = ", n)
+
+    var g = fs::openRead("tests/fs/data.txt")!
+    var small: [8]u8
+    match g.readAll(small[..]) {
+        success(n2) => { println("不该成功：读了 ", n2, " 字节"); return 1 }
+        failure(e) => {
+            match e {
+                destFull(k)       => { println("destFull 带位置 = ", k) }
+                closed(code)      => { println("意外：closed(", code, ")"); return 1 }
+                readFailed(code)  => { println("意外：readFailed(", code, ")"); return 1 }
+                writeFailed(code) => { println("意外：writeFailed(", code, ")"); return 1 }
+                lineTooLong(n3)   => { println("意外：lineTooLong(", n3, ")"); return 1 }
+            }
+        }
+    }
+    g.close()!
+    return 0
+}
