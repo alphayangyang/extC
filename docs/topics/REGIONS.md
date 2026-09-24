@@ -122,6 +122,37 @@ b.grow(n)?                 // 几乎总是**原地延长**（见下）
 - **dense 要保住**：删除用 **swap-remove**（把末尾搬进空位）⇒ 前段永远连续 ⇒ 遍历可向量化 ✓
   `graph` 用 **CSR**（每节点一段连续边）✓ 这正是兑现"消灭指针跳转"的那个封装 ✓
 
+## 5.5 用户会怎么用（默认路径应该是"零心智负担"的）
+
+```extc
+use std::set
+var s = set<i32>::new()          /* region 在容器内部 —— 用户看不见，也不用管 ✓ */
+s.insert(1)  s.insert(2)  s.insert(3)
+s.erase(2)
+if s.contains(2) { println("还有") }
+
+/* 遍历：今天最自然的形状（迭代器结构体；`for`/lambda 落地后再加语法糖）*/
+var it = s.iter()
+while it.next() { println(it.value()) }
+
+/* 想要 `slice`：一行拷出来，生命周期 = 当前块，用完随块回收 ✓ */
+let view = s.toSlice()
+println(view)
+
+s.reset()                        /* 想手动回收时才有这一句（长命容器用）✓ */
+```
+
+**默认路径与今天的 `varArray` 一样自然** ✓：region 是容器的实现细节，用户只在
+"想手动回收"（`reset`/`close`）或"写自己的 region 容器"（§6）时才见到它 ✓
+
+**三处手感与 C++ 不同（要提前说清，避免"用起来别扭"的落差）**：
+
+| # | 差异 | 对策 |
+|---|---|---|
+| 1 | **迭代**：今天没有 `for` / lambda（`forEach` 收不了函数值 ✗）| 容器提供 **`iter()`**（`while it.next()` ✓）与 **`atDense(i)`**（dense 下标循环 ✓）；`for`/lambda 落地后加糖 ✓ |
+| 2 | **不能长期持有元素引用**（`ref T` 会挡住 erase 的自由 ✗）| 用 `at(h)` **瞬时**读、`set(h, v)` 写 ✓ 换来的是"**erase 永远不会让你的引用悬垂**" ✓（C++ 那边正是 UB 之源 ✓）|
+| 3 | **拿不到 `slice`** | 容器直接给 **`toSlice()`**（内部拷到**当前块**的 arena ⇒ 生命周期 = 当前块、用完自动回收 ✓）· 或 `copyInto(dest)` 由调用者给 buffer ✓ |
+
 ## 6. 用户怎么写自己的 region 容器（骨架）
 
 ```extc
