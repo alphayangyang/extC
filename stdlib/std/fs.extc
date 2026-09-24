@@ -390,20 +390,19 @@ fn inSync() -> io::reader { return { fd: IN_FD, chunk: IN_BUF[..], len: IN_LEN, 
 fn inSave(r: ref io::reader) { IN_LEN = r.len  IN_POS = r.pos }
 
 struct inStream {
+    @inline
     fn >>(self: ref inStream, out: mut ref i64) -> inStream {
+        /* 同 `io::istream`：每个数只调一次 `nextInt`，只有结果为 0 时才回头问 `eof` ✓ */
         var r: io::reader = inSync()
-        match r.skipSpace() {
-            success(k) => { }
-            failure(e) => { IN_FAILED = true }
-        }
-        match r.eof() {
-            success(atEnd) => {
-                if atEnd { IN_FAILED = true }
-                else {
-                    match r.nextInt() {
-                        success(v) => { *out = v }
+        match r.nextInt() {
+            success(n) => {
+                if n == i64(0) {
+                    match r.eof() {
+                        success(atEnd) => { if atEnd { IN_FAILED = true } else { *out = i64(0) } }
                         failure(e) => { IN_FAILED = true }
                     }
+                } else {
+                    *out = n
                 }
             }
             failure(e) => { IN_FAILED = true }

@@ -618,25 +618,39 @@ fn inSync() -> reader { return { fd: 0, chunk: IN_BUF[..], len: IN_LEN, pos: IN_
 fn inSave(r: ref reader) { IN_LEN = r.len  IN_POS = r.pos }
 
 struct istream { fd: i32
+    /* 热路径：**每个数只调一次 `nextInt`** ✓（旧版还先 `skipSpace` 再 `eof` ⇒ 三次调用 ✗）
+     * `0` 与"啥也没读到"在 `nextInt` 的返回里**同形**（EOF 用 `success(0)` 说 ✓）⇒
+     * **只有结果为 0 时**才回头看 `eof()` 把歧义消掉 ✓ 常见数据里永远不走那一支 ✓ */
+    @inline
     fn >>(self: ref istream, v: mut ref i64) -> istream {
         var r: reader = inSync()
-        /* Ask whether the input is finished before reading, because `nextInt` answers
-         * `success(0)` both for "the number 0" and for "nothing was read": that is the
-         * convention of the byte-and-count primitives below it (end of input is not an
-         * error, `read(2)` says the same with 0), and it is why an end of input cannot be
-         * told apart from a zero without asking. `eof` is exact, and it costs nothing
-         * while bytes are buffered. */
+        match r.nextInt() {
+            success(n) => {
+                if n == i64(0) {
+                    match r.eof() {
+                        success(atEnd) => { if atEnd { IN_BAD = true } else { *v = i64(0) } }
+                        failure(e) => { IN_BAD = true }
+                    }
+                } else {
+                    *v = n
+                }
+            }
+            failure(e) => { IN_BAD = true }
+        }
+        inSave(ref r)
+        return { fd: self.fd }
+    }
+
+    /* 一行 / 一个字节不跳空白（空行与那个 `\n` 都是真内容 ✓）⇒ 仍要先问 `eof` ✓ */
+    @inline
+    fn >>(self: ref istream, v: mut slice<u8>) -> istream {
+        var r: reader = inSync()
         match r.eof() {
-            success(fin) => {
-                if fin { IN_BAD = true }
+            success(atEnd) => {
+                if atEnd { IN_BAD = true }
                 else {
-                    match r.nextInt() {
-                        success(n) => { *v = n }
-                        /* A read error, or a number too large for `i64`. The target keeps
-                         * the value it had and `bad()` says so: `>>` has to return a stream
-                         * (`a >> b` stands where `a` stood), so it cannot report anything
-                         * itself, and trapping would make "read until the input ends"
-                         * impossible to write. */
+                    match r.nextLine(v) {
+                        success(n) => { }
                         failure(e) => { IN_BAD = true }
                     }
                 }
@@ -647,19 +661,31 @@ struct istream { fd: i32
         return { fd: self.fd }
     }
 
-    /* Did a read fail (end of input, or a read error)? The target keeps its old value;
-     * check this before trusting it. */
-    fn bad(self: ref istream) -> bool { return IN_BAD }
+    @inline
+    fn >>(self: ref istream, v: mut ref u8) -> istream {
+        var r: reader = inSync()
+        match r.eof() {
+            success(atEnd) => {
+                if atEnd { IN_BAD = true }
+                else {
+                    match r.nextByte() {
+                        success(b) => { *v = u8(b) }
+                        failure(e) => { IN_BAD = true }
+                    }
+                }
+            }
+            failure(e) => { IN_BAD = true }
+        }
+        inSave(ref r)
+        return { fd: self.fd }
+    }
 
-    /* Clear the failure flag. Nothing buffered is thrown away: the bytes already read
-     * are still where the next `>>` looks. */
+    fn bad(self: ref istream) -> bool { return IN_BAD }
     fn clear(self: ref istream) { IN_BAD = false }
 }
 
-/* The failure flag, the way a caller can actually reach it today: a method called on a
- * **qualified** global (`io::cin.bad()`) is not supported yet, while `io::cin >> x` is,
- * so the methods above are usable only through a local copy. These two exist until that
- * gap closes; they read the same flag. */
+/* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持（PLAN #66）⇒
+ * `io::cin.bad()` 今天不行，这两个能 ✓ 它们是同一个标志 ✓ */
 fn inBad() -> bool { return IN_BAD }
 fn inClear() { IN_BAD = false }
 

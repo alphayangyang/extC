@@ -359,6 +359,21 @@ stderr 是**诊断**通道 ✓ 所以补的是 `cerr`（诊断），不是把 pr
 而**已弃置**的 `print`/`println` 走 stdio（另一支）⇒ **混用不保证顺序** ✗ ⇒
 `tests/io/order.extc` 与 `stream.extc` 跟着改成"控制台这一族的顺序" ✓（判据的价值保留：乱了必须响 ✓）
 
+### ⑱ 压输入：303 → 202 ms（以及一条负面结果：`@inline` 对 `nextInt` 没用）
+
+`>>` 的 i64 旧版每个数三次调用（`skipSpace` → `eof` → `nextInt` ✗），而 `eof` 那次只是为了
+消掉"`nextInt` 在 EOF 返回 `success(0)`"与"读到的就是 0"的同形歧义 ✓ ⇒ 改成**直接
+`nextInt`，只有结果为 0 时才回头看 `eof`** ✓ ⇒ **303 → 202 ms** ✓（583 MB/s，仍是第二，
+C 的手写解析 102 ms ✓）
+
+⚠️ **负面结果（主人提醒"当时测过 @inline 变慢"）**：给 `reader::nextInt` 标 `@inline`
+（它返回 `result` 结构体，GCC 本来不愿内联）—— A/B 各 7 次：**带 202 · 不带 202 · 复测 202**
+⇒ **没有差别** ⇒ **不标** ✓ 结论：剩下的 2× 差距**不在调用次数**上 ✗ 而在每数一次的"桥"
+（`inSync` 建 `reader` + `inSave` 写回 + `result` 搬运 ✓）—— ⚠️ 这是**假设，没验证** ✗
+真要继续压，得把解析重构成"显式状态"的自由函数（`reader` 与两个流共用一处实现 ✓）✓
+
+回归：语料 **256/0** · io rc=0 · fs/ops/modules/ctor/genmatrix/nocopy 全绿 ✓
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·
