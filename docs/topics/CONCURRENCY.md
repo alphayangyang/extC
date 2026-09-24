@@ -401,10 +401,10 @@ fn parallel<A, B>(input: slice<A>, f: fn(A) -> B) -> varArray<B>
 | arena 的语义与规则 | [`ARENA.md`](../../docs/topics/ARENA.md) · [`ARENA-FORMAL.md`](../../docs/topics/ARENA-FORMAL.md) |
 | `#52`（有家被调者 ⇒ 结果住在我传的 arena） | [`PLAN.md`](../../docs/PLAN.md) §0.4 `#52` · [`DEVLOG.md`](../../docs/DEVLOG.md) 2026-09-23 |
 | 模块系统（协议要跨模块） | [`MODULES.md`](../../docs/topics/MODULES.md) · `DECISIONS.md` 定案 70 |
-| 资源所有权（文件句柄那笔债） | [`IO.md`](../../docs/topics/IO.md) §8：`open` + 帧拥有 `extc_files` |
+| 资源所有权（文件句柄那笔债） | [`IO.md`](../../docs/topics/IO.md) §5：`open` + 块拥有 `extc_fd[DEPTH]` |
 | 为什么这么设计（一条原则） | [`DESIGN.md`](../../docs/DESIGN.md) · [`SPEC.md`](../../docs/SPEC.md) |
 
-> ⭐ **一处重要的重叠**：`IO.md` 里那笔"**帧拥有的资源**"（`open` 出来的文件句柄）
+> ⭐ **一处重要的重叠**：`IO.md` 里那笔"**块拥有的资源**"（`open` 出来的文件句柄）
 > 跟本文 §2.2 的"协程帧归谁 release"是**同一件事的两个面** ——
 > 都是"**一个值拥有一只 arena / 一个资源，寿命由它的位置决定**"。
 > ⇒ **解一次，两边都用** ✓ 本文不是"协程引入的新债"，而是把 `IO.md` 已经欠的那笔提前了 ✓
