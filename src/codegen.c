@@ -224,6 +224,13 @@ typedef struct {
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
     Vec         deadFuncs;      /* DeadFunc*: functions that may have no caller */
+    /* The runtime primitive block, captured whole as it is emitted. clang reports an
+     * unused `static inline` where gcc does not, so this is the one place where the two
+     * compilers disagree about the same text. The block is scanned afterwards instead of
+     * being recorded definition by definition: its primitives share three long string
+     * literals with the arena code between them, and splitting those is the text surgery
+     * that has failed here before. */
+    const char *primText;
     /* Where the body buffer ended up in the finished output: a definition inside a
      * body is recorded as an offset into that buffer, and this turns it into a
      * position in the assembled unit. */
@@ -3732,6 +3739,105 @@ static void deadFuncBody(CG *g, FuncDef *f, const char *text, size_t len) {
     }
 }
 
+static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle);
+
+/* Drop the runtime definitions nothing uses.
+ *
+ * The block is captured as one piece of text and scanned in the style it was written:
+ * a definition starts at column zero and ends with a `}` at column zero, a variable is
+ * one line ending in `;`. The test for every candidate is the same sound one: *every*
+ * mention of the name in the finished unit lies inside the candidate itself. A first
+ * attempt used "no mention outside this whole block", which is unsound - a call from
+ * another primitive inside the block counts as inside, yet that caller is still there
+ * (dropping `extc_trap` while `extc_checkedIndex` still called it turned a clean
+ * translation unit into one that did not compile, and a compile error stops clang from
+ * reporting warnings at all, so the damage first looked like a win).
+ *
+ * Dropping a definition removes the calls it makes, so the counts fall as the scan goes
+ * on and chains (`extc_arena_destroy` calls `extc_arena_release`) unravel by themselves.
+ *
+ * Only the `extc_`/`__extc_` namespace is touched: user code and the library are not this
+ * pass's business. */
+static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
+    char  *text = *textp;
+    size_t len  = *lenp;
+    if (!g->primText) return;
+    const char *nl = strchr(g->primText, '\n');
+    size_t al = nl ? (size_t)(nl - g->primText) : strlen(g->primText);
+    char anchor[256];
+    if (al == 0 || al >= sizeof anchor) return;
+    memcpy(anchor, g->primText, al);
+    anchor[al] = 0;
+    size_t rl0 = strlen(g->primText);
+    for (;;) {
+        char  *rp = strstr(text, anchor);
+        if (!rp) break;
+        size_t rl = rl0;
+        bool   cut = false;
+        for (char *ln = rp; ln < rp + rl && !cut; ) {
+            char  *eol = memchr(ln, '\n', (size_t)(rp + rl - ln));
+            size_t ll  = eol ? (size_t)(eol - ln) : (size_t)(rp + rl - ln);
+            bool   isDef = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
+                            ln[0] != '*' && ln[ll - 1] == '{' && memchr(ln, '(', ll));
+            bool   isVar = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
+                            ln[0] != '*' && ln[ll - 1] == ';' && !memchr(ln, '(', ll));
+            if (isDef || isVar) {
+                /* The name: the identifier before the first `(`, or the last one before
+                 * the `;` / `=` of a variable. */
+                char *ns, *ne;
+                if (isDef) {
+                    ne = memchr(ln, '(', ll);
+                    ns = ne;
+                    while (ns > ln && identByte(ns[-1])) ns--;
+                } else {
+                    /* The name of a variable: before the `=` of an initializer, else
+                     * before the `;`. Reading back from the `;` would pick up the
+                     * initializer (`static int64_t __extc_rec_depth = 0;` has `0` there). */
+                    char *eq = memchr(ln, '=', ll);
+                    ne = eq ? eq : ln + ll - 1;
+                    while (ne > ln && (ne[-1] == ' ' || ne[-1] == '=')) ne--;
+                    ns = ne;
+                    while (ns > ln && identByte(ns[-1])) ns--;
+                }
+                size_t nlen = (size_t)(ne - ns);
+                char   name[128];
+                if (nlen > 5 && nlen < sizeof name &&
+                    (strncmp(ns, "extc_", 5) == 0 || strncmp(ns, "__extc_", 7) == 0)) {
+                    memcpy(name, ns, nlen);
+                    name[nlen] = 0;
+                    size_t span = isDef ? 0 : ll + 1;
+                    if (isDef) {                            /* to the `}` at column zero */
+                        char *p = ln;
+                        while (p < rp + rl) {
+                            if (p[0] == '}' && p[-1] == '\n') { span = (size_t)(p - ln) + 1; break; }
+                            p++;
+                        }
+                    }
+                    if (span) {
+                        /* every mention inside the candidate itself? */
+                        size_t total  = countMentions(text, name);
+                        size_t inside = countMentionsIn(g, ln, span, name);
+                        if (total == inside) {
+                            memmove(ln, ln + span, len - (size_t)(ln - text) - span + 1);
+                            len -= span;
+                            rl  -= span;
+                            out->len = len;
+                            text = bufCstr(out);
+                            cut = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!eol) break;
+            ln = eol + 1;
+        }
+        if (!cut) break;      /* nothing left to drop: the block is settled */
+    }
+    *textp = text;
+    *lenp = len;
+}
+
 /* The same count, over one piece of the body buffer, which is not terminated. */
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
     Buf sc;
@@ -3772,6 +3878,9 @@ static void dropUnreferenced(CG *g, Buf *out) {
         len -= tl;
         out->len = len;
     }
+    /* The runtime primitives: after the offset-based phase, before the rest. Every phase
+     * from here on locates its text by content, so shifting the text is safe. */
+    dropRuntimeDefs(g, out, &text, &len);
     /* Functions nobody calls. Both halves are located by their own text, so what is
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
@@ -3994,6 +4103,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * because the prologue around it is already at the 4095-byte limit C99 guarantees for
      * a string literal. */
     bufPuts(out, bufCstr(&g.rtDie));
+    size_t primA = out->len;        /* the runtime primitive block, captured below */
     bufPuts(out,
         "/* Every primitive below is `static inline`, and that is not a style choice:\n"
         " * without inlining, gcc at -O1 cannot see the body of a check, so it can neither\n"
@@ -4221,6 +4331,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        return p;\n"
         "    }\n"
         "}\n\n");
+    {   /* Kept as text: dropRuntimeDefs scans it for definitions nothing names. */
+        Buf pb;
+        bufInit(&pb, arena);
+        bufPutn(&pb, out->data + primA, out->len - primA);
+        g.primText = bufCstr(&pb);
+    }
 
     /* The @overwrite cell type, emitted on demand: emitted unconditionally it
      * would change every golden file. It must come after `extc_arena`, because
