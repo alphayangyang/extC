@@ -306,6 +306,29 @@ cap 个槽位**一个字节都不用写**。之后的插入走两条路：稠密
 而不是静默用错。取 3 位的理由见 7.4 第 2 条。
 
 
+## 8. 下一步：`stl/map` 池底化（设计已定，待落）
+
+现状（`stdlib/stl/map.extc`，156 行）：`mapI64<V>` 是开放寻址表 —— `keys: mut slice<i64>` ·
+`vals: mut slice<V>` · `tag: mut slice<u8>`（EMPTY / LIVE / TOMB）· `n` · `dead` · `cap`（2 的幂）；
+面是 `withCap` / `len` / `find` / `contains` / `get` / `put` / `remove` / `rebuild` / `clear` /
+`keyAt` / `valAt` / `liveAt` / `capOf`。要做的三件事：
+
+1. **值搬进池**：`vals` 从表里挪进池，表里只留 `keys` / `tag` 和一列 `slot: mut slice<i32>`
+   （桶到池句柄，空桶 -1）。于是活着的元素在池里是**稠密**的，遍历从「扫整张表」变成「扫稠密区间」。
+2. **`rebuild` 只重排桶，不搬值**：今天它要把 `keys` / `vals` / `tag` 三块一起搬；值进池之后重排只搬
+   `keys` / `tag` / `slot` 三列（i64 / u8 / i32），元素的地址与句柄**跨 rehash 稳定** —— 这正是池底化
+   要换来的东西。
+3. **`remove` 的交换不必给池加新接口**：池的 `remove` 是 swap-remove（把最后一个稠密元素填进洞）。
+   map 侧要同步自己那列「稠密到桶」的反查，做法是在调用 `pool.remove(h)` **之前**读
+   `hMoved = pool.handleAtDense(pool.len() - 1)`，调用之后把 `hMoved` 那条稠密记录从末尾挪到被删位置。
+   这依赖 `handleAtDense` / `atDense` / `len`，现有接口已够用，不必动 `stl/pool`。
+
+**对现有调用点的影响**：公开面（`withCap` / `len` / `contains` / `get` / `put` / `remove` / `clear` / `capOf`）
+语义不变；`keyAt` / `valAt` / `liveAt` 是「按表位置扫」的旧面，池底化后**新增**稠密迭代面
+（`keyAtDense(i)` / `valAtDense(i)`），旧的先留着不动，避免又一次全语料改动。句柄由池发放、map 只是存下来，
+所以第 7 节的 epoch 改动（句柄多一个字段）不要求 map 跟着改。
+
+
 ## 变更史
 
 - 2026-09-24：整篇重写为 ECS 版。旧版把 region 当「能力值」（不可复制、affine、`@nocopy`），
