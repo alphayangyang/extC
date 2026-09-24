@@ -28,6 +28,24 @@ else
     echo "  FAIL fd-constant    ->  跑不起来"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
 fi
 
+echo "== 程序级输入/输出流（fs::fin / fs::fout：各一个 fd，任何函数里都能用）=="
+if out=$("$EXTC" --run tests/fs/global-io.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "两个整数 = 7 35"        || ok=0
+    echo "$out" | grep -qF "一行 = hello fin"       || ok=0
+    echo "$out" | grep -qF "别的函数里读到 line = 42" || ok=0
+    # 文件内容也要对（证明 fs::fout 那条路真的写进去了 ✓）
+    if ! grep -qF "一行 = hello fin" build/global-io-out.txt 2>/dev/null; then ok=0; fi
+    if ! grep -qF "别的函数里读到 line = 42" build/global-io-out.txt 2>/dev/null; then ok=0; fi
+    if [ "$ok" = 1 ]; then
+        echo "  ok   global-io  ->  $(echo "$out" | tr '\n' '|')（文件内容也对 ✓）"
+    else
+        echo "  FAIL global-io  ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1
+    fi
+else
+    echo "  FAIL global-io  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+
 echo "== 判据有牙（canary）：不 close 的同一段程序**必须**失败 =="
 out=$("$EXTC" --run tests/fs/leak-canary.extc 2>&1); rc=$?
 if [ "$rc" != 0 ] && echo "$out" | grep -qF "fd 漂了"; then

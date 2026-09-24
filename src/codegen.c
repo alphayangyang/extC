@@ -384,7 +384,16 @@ static const char *opOverloadSuffix(CG *g, FuncDef *f) {
         if (strcmp((*(FuncDef **)vecAt(&f->owner->methods, i))->name, f->name) == 0) same++;
     if (same <= 1) return "";
     Param *p1 = *(Param **)vecAt(&f->params, 1);
-    return arenaPrintf(g->arena, "_%s", ttMangle(g->tt, subst(g, p1->type)));
+    Type *rt = subst(g, p1->type);
+    /* A writable view and the read-only one are **different types** to the operator
+     * rule (`ttEquals` compares `mut`) but the **same C struct**, so `ttMangle` gives
+     * both the name `slice_u8` and two overloads of `<<` collided in C:
+     *     redefinition of `fs$outStream_shl_slice_u8`
+     * The suffix has to carry the mutability itself, or the exact-type dispatch that
+     * makes overloading decidable is not expressible in C. */
+    const char *mangled = ttMangle(g->tt, rt);
+    if (rt && rt->mut) mangled = arenaPrintf(g->arena, "mut_%s", mangled);
+    return arenaPrintf(g->arena, "_%s", mangled);
 }
 
 static const char *cFuncName(CG *g, FuncDef *f) {

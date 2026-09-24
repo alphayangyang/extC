@@ -546,6 +546,8 @@ struct ostream { fd: i32
     fn <<(self: ref ostream, v: f64) -> ostream { print(v)  return { fd: self.fd } }
     fn <<(self: ref ostream, v: bool) -> ostream { print(v)  return { fd: self.fd } }
     fn <<(self: ref ostream, v: slice<u8>) -> ostream { writeBytes(v)  return { fd: self.fd } }
+    /* 同 `fs::outStream`：可变视图与只读视图是两种类型 ⇒ 两份 ✓ */
+    fn <<(self: ref ostream, v: mut slice<u8>) -> ostream { writeBytes(v)  return { fd: self.fd } }
 }
 
 let cout: ostream = ostream { fd: 1 }

@@ -1,0 +1,38 @@
+// expect: 两个整数 = 7 35|一行 = hello fin|别的函数里读到 line = 42
+/* 程序级输入/输出流（`fs::fin` / `fs::fout`）：**各一个 fd**，任何函数里都能用 ✓
+ *
+ * 为什么有它：要在别的函数里写/读同一个文件，不该在那里再开一个 —— 那是第二个 fd，
+ * 谁盖谁说不清 ✗ 而把流当参数一路传下去，在日志/命令行这种到处都要的地方太重 ✗
+ *
+ * 形状与控制台流**同一招**（所以不需要任何语言规则）：缓冲放**模块全局的定长数组**
+ * （数组没有引用 ⇒ 能当全局 ✓），句柄薄 ⇒ `<<` / `>>` 按值返回、链式成立 ✓
+ * 输入侧多一层：位置要跨调用存活 ⇒ 每次 `>>` 借一个本地 `reader` 指向那个数组、
+ * 读完把 `len/pos` 写回去（`inSync`/`inSave`）⇒ 解析仍是 `reader` 的 ✓
+ *
+ * 判据：① 三个 `>>` 的右操作数类型各来一次（整数 / 一行 / —— 字节在别处覆盖）✓
+ *      ② **在别的函数里**写同一个文件 ✓ ③ 收尾 close 之后内容落盘 ✓ */
+use std::fs
+
+fn report(n: i64) {
+    fs::fout << "别的函数里读到 line = " << n << fs::nl
+}
+
+fn main() -> i32 {
+    fs::openIn("tests/fs/global-io-in.txt")?
+    fs::openOut("build/global-io-out.txt")?
+    var a: i64 = 0
+    var b: i64 = 0
+    var line: mut slice<u8> = new u8[64]
+    fs::fin >> a >> b
+    fs::fout << "两个整数 = " << a << " " << b << fs::nl
+    fs::fin >> line
+    fs::fout << "一行 = " << line << fs::nl
+    report(a + b)
+    /* 同时打到 stdout：判据既查**文件内容**（证明那条路真的落盘了）也查这里 ✓ */
+    println("两个整数 = ", a, " ", b)
+    println("一行 = ", line)
+    println("别的函数里读到 line = ", a + b)
+    fs::closeIn()?
+    fs::closeOut()?
+    return 0
+}

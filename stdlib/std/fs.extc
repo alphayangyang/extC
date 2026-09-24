@@ -122,8 +122,8 @@ struct ifstream {
             failure(e) => { self.failed = true }
         }
         match self.r.eof() {
-            success(fin) => {
-                if fin { self.failed = true }
+            success(atEnd) => {
+                if atEnd { self.failed = true }
                 else {
                     match self.r.nextInt() {
                         success(v) => { *out = v }
@@ -138,8 +138,8 @@ struct ifstream {
 
     fn >>(self: mut ref ifstream, out: mut slice<u8>) -> mut ref ifstream {
         match self.r.eof() {
-            success(fin) => {
-                if fin { self.failed = true }
+            success(atEnd) => {
+                if atEnd { self.failed = true }
                 else {
                     match self.r.nextLine(out) {
                         success(n) => { }
@@ -154,8 +154,8 @@ struct ifstream {
 
     fn >>(self: mut ref ifstream, out: mut ref u8) -> mut ref ifstream {
         match self.r.eof() {
-            success(fin) => {
-                if fin { self.failed = true }
+            success(atEnd) => {
+                if atEnd { self.failed = true }
                 else {
                     match self.r.nextByte() {
                         success(v) => { *out = u8(v) }
@@ -257,4 +257,230 @@ fn openAppend(path: slice<u8>) -> result<ofstream, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_APPEND, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
     return success(ofstream { fd: fd, open: true })
+}
+
+/* ================================================================ 程序级输出流
+ *
+ * 为什么有它：**要在别的函数里写同一个文件**，不该在那个函数里再 `ofstream` 一次 ——
+ * 那是第二个 fd 写同一个文件，谁盖谁说不清 ✗ 而把流当参数一路传下去，在"日志"这种
+ * 到处都要写的东西上又太重 ✗
+ *
+ * 形状与 `std::io` 的控制台流**同一招**（这也是为什么它不需要任何新规则）：
+ *   - 缓冲与位置放在**模块全局**（`OUT_BUF` 是**定长数组** —— 数组没有引用，所以能当
+ *     全局 ✓；`mut slice<u8>` 就不行 ✗）
+ *   - 句柄 `outStream` 是**薄的**（状态全在那些全局里）⇒ `<<` 按值返回句柄、
+ *     链式成立、拷贝无害 ✓
+ *   - 于是 `fs::fout << ...` 在**任何函数**里都能写，而 fd 只有**一个** ✓
+ *
+ * 打开一次（在 `main` 里，失败当场 trap —— 定案 89 ✓）：
+ *     fs::openOut("/tmp/app.log")?
+ * 之后到处：
+ *     fs::fout << "x = " << x << " · 对 = " << true << fs::nl
+ * 收尾：
+ *     fs::closeOut()?          // flush + close ✓
+ */
+var OUT_BUF: [65536]u8
+var OUT_LEN: i64 = 0
+var OUT_FD: i32 = -1
+var OUT_FAILED: bool = false
+
+struct outStream {
+    fn <<(self: ref outStream, v: slice<u8>) -> outStream { outPut(v)  return { } }
+    /* ⚠️ `mut slice<u8>` 与 `slice<u8>` 在"按右操作数**精确**类型分派"（定案 82）眼里
+     * 是**两种类型** ⇒ 两份都要写 ✗（读出来的东西通常正是 `mut slice<u8>` ✓ 所以这份是
+     * 常用那份）—— 将来若允许"可变视图用在只读视图的位置"（安全的子类型化），这两份能合一，
+     * 但那是语言决定，不是库能糊过去的 ✓ */
+    fn <<(self: ref outStream, v: mut slice<u8>) -> outStream { outPut(v)  return { } }
+    fn <<(self: ref outStream, v: i64) -> outStream {
+        /* 数字自己格式化（文件流不能用内建 `print` —— 那个写的是 stdout ✗）；
+         * `f64` 还没做：它要真正的浮点格式化，属于"格式化层搬进库"那一步 ✓ */
+        var tmp: [24]u8
+        var n: i64 = 0
+        var neg: bool = v < i64(0)
+        var u: i64 = v
+        if neg { u = i64(0) - u }
+        if u == i64(0) { tmp[0] = u8(48)  n = 1 }
+        while u > i64(0) {
+            tmp[n] = u8(48 + (u % i64(10)))
+            u = u / i64(10)
+            n = n + 1
+        }
+        if neg { tmp[n] = u8(45)  n = n + 1 }        /* '-' */
+        var rev: [24]u8
+        var k: i64 = 0
+        while k < n { rev[k] = tmp[n - i64(1) - k]  k = k + 1 }
+        outPut(rev[0..n])
+        return { }
+    }
+    fn <<(self: ref outStream, v: bool) -> outStream {
+        if v { outPut("true") } else { outPut("false") }
+        return { }
+    }
+    fn failed(self: ref outStream) -> bool { return OUT_FAILED }
+}
+
+/* 空结构体当句柄：常量初始化 ✓（定案 65 才让这条成立 —— `outStream { }` 每个字段都是常量 ✓）*/
+let fout: outStream = outStream { }
+let nl: slice<u8> = "\n"
+
+/* 打开（或重开）程序级输出流。旧的那个**必须先 close**（不然那个 fd 就漏了 ✓）*/
+fn openOut(path: slice<u8>) -> result<unit, io::ioError> {
+    if OUT_FD >= i32(0) { return failure(io::ioError.writeFailed(OUT_FD)) }   /* 已经开着 */
+    let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
+    OUT_FD = fd
+    OUT_LEN = 0
+    OUT_FAILED = false
+    return success(unit {})
+}
+
+/* 把缓冲里已有的字节写出去 ✓ */
+fn flushOut() -> result<unit, io::ioError> {
+    if OUT_LEN == i64(0) { return success(unit {}) }
+    let n = sysio::write(OUT_FD, OUT_BUF[..].data, OUT_LEN)
+    if n < i64(0) { OUT_FAILED = true  return failure(io::ioError.writeFailed(OUT_FD)) }
+    OUT_LEN = i64(0)
+    return success(unit {})
+}
+
+fn closeOut() -> result<unit, io::ioError> {
+    if OUT_FD < i32(0) { return success(unit {}) }        /* 没开过：关是幂等的 ✓ */
+    let r = flushOut()
+    let c = sysio::close(OUT_FD)
+    OUT_FD = i32(0) - i32(1)
+    if OUT_LEN != i64(0) { return r }
+    if c < i32(0) { return failure(io::ioError.closed(i32(0) - i32(1))) }
+    return success(unit {})
+}
+
+/* 写一段字节：满了先冲，缓冲**不增长**（与 `io::writer` 同一个取舍 ✓）*/
+fn outPut(s: slice<u8>) {
+    if OUT_FD < i32(0) { OUT_FAILED = true  return }
+    var done: i64 = 0
+    while done < s.len {
+        if OUT_LEN >= i64(65536) {
+            match flushOut() {
+                success(u) => { }
+                failure(e) => { OUT_FAILED = true  return }
+            }
+        }
+        var room: i64 = i64(65536) - OUT_LEN
+        var left: i64 = s.len - done
+        if left < room { room = left }
+        var k: i64 = 0
+        while k < room {
+            OUT_BUF[OUT_LEN + k] = s[done + k]
+            k = k + 1
+        }
+        OUT_LEN = OUT_LEN + room
+        done = done + room
+    }
+}
+
+/* ================================================================ 程序级输入流
+ *
+ * `fs::fin >> x >> line >> b` —— 与 `fs::fout` 对称：**一个 fd**，任何函数里都能读 ✓
+ *
+ * 读这一侧比写多一层：**位置必须跨调用存活**（读到哪了），而 `io::reader` 里带着
+ * `mut slice<u8>` ⇒ 那个**引用**不能当全局 ✗ ⇒ 照 `std::io` 控制台流的**同一招**：
+ *   - 缓冲是**全局定长数组**（数组没有引用 ⇒ 能当全局 ✓）
+ *   - 每次 `>>` 用 `inSync()` 借出一个**本地** `reader` 指向那个数组，读完 `inSave()`
+ *     把 `len/pos` 写回去 ✓ ⇒ 解析逻辑仍然是 `reader` 的，不是第二份 ✓
+ *
+ * 读不到（文件结束 / 读错误）⇒ **目标保持原值** + `fs::fin.bad()` 为真 ✓
+ * 与 `ifstream` 那三个 `>>` 同一条语义（`eof` 先问、整数先跳空白 ✓ 理由见那边的注释）
+ */
+var IN_BUF: [65536]u8
+var IN_LEN: i64 = 0
+var IN_POS: i64 = 0
+var IN_FD: i32 = -1
+var IN_FAILED: bool = false
+
+fn inSync() -> io::reader { return { fd: IN_FD, chunk: IN_BUF[..], len: IN_LEN, pos: IN_POS } }
+fn inSave(r: ref io::reader) { IN_LEN = r.len  IN_POS = r.pos }
+
+struct inStream {
+    fn >>(self: ref inStream, out: mut ref i64) -> inStream {
+        var r: io::reader = inSync()
+        match r.skipSpace() {
+            success(k) => { }
+            failure(e) => { IN_FAILED = true }
+        }
+        match r.eof() {
+            success(atEnd) => {
+                if atEnd { IN_FAILED = true }
+                else {
+                    match r.nextInt() {
+                        success(v) => { *out = v }
+                        failure(e) => { IN_FAILED = true }
+                    }
+                }
+            }
+            failure(e) => { IN_FAILED = true }
+        }
+        inSave(ref r)
+        return { }
+    }
+
+    fn >>(self: ref inStream, out: mut slice<u8>) -> inStream {
+        var r: io::reader = inSync()
+        match r.eof() {
+            success(atEnd) => {
+                if atEnd { IN_FAILED = true }
+                else {
+                    match r.nextLine(out) {
+                        success(n) => { }
+                        failure(e) => { IN_FAILED = true }
+                    }
+                }
+            }
+            failure(e) => { IN_FAILED = true }
+        }
+        inSave(ref r)
+        return { }
+    }
+
+    fn >>(self: ref inStream, out: mut ref u8) -> inStream {
+        var r: io::reader = inSync()
+        match r.eof() {
+            success(atEnd) => {
+                if atEnd { IN_FAILED = true }
+                else {
+                    match r.nextByte() {
+                        success(v) => { *out = u8(v) }
+                        failure(e) => { IN_FAILED = true }
+                    }
+                }
+            }
+            failure(e) => { IN_FAILED = true }
+        }
+        inSave(ref r)
+        return { }
+    }
+
+    fn bad(self: ref inStream) -> bool { return IN_FAILED }
+    fn clear(self: ref inStream) { IN_FAILED = false }
+}
+
+let fin: inStream = inStream { }
+
+fn openIn(path: slice<u8>) -> result<unit, io::ioError> {
+    if IN_FD >= i32(0) { return failure(io::ioError.readFailed(IN_FD)) }     /* 已经开着 */
+    let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
+    if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
+    IN_FD = fd
+    IN_LEN = 0
+    IN_POS = 0
+    IN_FAILED = false
+    return success(unit {})
+}
+
+fn closeIn() -> result<unit, io::ioError> {
+    if IN_FD < i32(0) { return success(unit {}) }                          /* 幂等 ✓ */
+    let c = sysio::close(IN_FD)
+    IN_FD = i32(0) - i32(1)
+    IN_LEN = 0
+    IN_POS = 0
+    if c < i32(0) { return failure(io::ioError.closed(i32(0) - i32(1))) }
+    return success(unit {})
 }
