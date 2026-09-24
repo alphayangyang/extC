@@ -1,6 +1,6 @@
 // expect: 新键吗 = false false false|len = 3 · get(2) = 22 · get(9) = -1|覆盖（本来就有）= true · 现在 get(2) = 99|删 2 = true · len = 2 · contains(2) = false · contains(3) = true
 /* ⭐ 哈希表的正面判据：新键/覆盖/查/删 ✓（表位置遍历也顺带验了）*/
-use std::map
+use stl::map
 
 fn main() -> i32 {
     var m = mapI64<i32>::withCap(4)
