@@ -3782,7 +3782,11 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
              * skipped until the debug switch showed it never reached the decision. */
             bool   opensBody = (ll > 8 && ln[ll - 1] == '{' && memchr(ln, '(', ll));
             bool   wholeBody = (ll > 8 && ln[ll - 1] == '}' && memchr(ln, '(', ll));
-            bool   isDef = (opensBody || wholeBody) &&
+            /* A long parameter list wraps, so the opening line can end with a comma:
+             * `extc_checkedRange` is written that way, and it never reached the decision
+             * either - the debug switch showed an empty log for it. */
+            bool   wrapsHead = (ll > 8 && ln[ll - 1] == ',' && memchr(ln, '(', ll));
+            bool   isDef = (opensBody || wholeBody || wrapsHead) &&
                            ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' && ln[0] != '*';
             bool   isVar = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
                             ln[0] != '*' && ln[ll - 1] == ';' && !memchr(ln, '(', ll));
