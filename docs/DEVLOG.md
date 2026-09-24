@@ -8128,3 +8128,25 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 - 回归：`tests/stl` · `tests/hashmap` · `tests/pool` · `tests/linmap` 各失败 0。
 
 下一步就是 #57 的用处：`hashMap<K, V>` 的 K 泛化 —— K 上要 `hash()` 与 `==`，两条今天都齐了。
+
+### 周期 16（第 16 轮）：#57 四道闸门全过；`hashMap<K, V>` 撞到 #79（推迟调用的错误类型污染），回退保绿
+
+先收 #57：`check.sh quick </dev/null` **通过 25 · 失败 0**（日志 `/tmp/prb/cq_r15.log`），加上 `tests/generics` 的
+一正例两反例与四个套件回归，四道闸门齐了。
+
+然后拿它做 `hashMap<K, V>`：表体泛型化、键类型改成参数 `K`、哈希改成问键要 `hash()`，整数快路径不另写一份表，
+而是给 `i64` 套 `i64Key { v: i64 }`（自带 `hash` 与 `==`），`hashMapI64<V>` 降成薄适配层 —— 设计是想让
+「哈希 / 探测 / 墓碑 / rebuild 阈值」仍然只有一份实现。**结果卡在一个新缺陷上（已立 PLAN #79）**：
+
+`hashMap<K, V>::find` 里 `var i = k.hash() & (self.cap - i64(1))`，`k.hash()` 就是 #57 那个推迟调用，模板期返回
+`TY_ERROR`；于是 `i` 是错误类型、`self.tag[i]` 也是错误类型，后面 `self.keys[i] == k` 撞进「操作数有错」的早退分支，
+**推迟记录没写下**（`needOp` 为假），codegen 按原生发 `==`，C 层报
+`invalid operands to binary == (have 'i64Key' and 'i64Key')`。探针实测
+`rawL=<error> rawR=K subL=<error> kind=9 needOp=0`。危险之处不是报错，而是**静默丢掉后续检查**。
+
+试过的最小改法（返回接收者类型 `K` 而不是错误类型）也不行：`return v.hash()` 会被「有损转换」挡住（实测）。
+正确解法是给推迟调用一个**通配/依赖类型**并在**实例期把包含它的整条语句重检**，这条记进 PLAN #79 与下一轮。
+
+处置：`stdlib/stl/hashMap.extc` 与 `src/codegen.c` 都已回退到提交状态，`tests/generics` · `tests/hashmap` ·
+`tests/stl` · `tests/pool` · `tests/linmap` 全绿。同族的另一条证据也写进 #79：② 池底化时 `pool<i32>` 的部分方法
+没被实例化（`pool$pool_i32_remove` implicit declaration）—— 「泛型体内部实例化另一个泛型」这条链同样没走全。
