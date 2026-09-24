@@ -1968,6 +1968,30 @@ static const char *genExpr(CG *g, Expr *e) {
 
 static void genStmt(CG *g, Stmt *s);
 
+/* -------------------------------------------------------------- conditions
+ * A statement brings its own parentheses, and the expression printer adds a pair
+ * around a comparison: `if x == y` therefore came out as `if ((x == y))`, which
+ * clang reports as `-Wparentheses-equality`. Strip a pair that wraps the whole
+ * condition, and only such a pair: a `)` that does not close at the very end
+ * (one inside a string literal, say) leaves the text alone, which costs one
+ * redundant pair and never changes what the condition means.
+ */
+static const char *cgCond(CG *g, const char *e) {
+    if (!e || e[0] != '(') return e;
+    int depth = 0;
+    for (size_t i = 0; e[i]; i++) {
+        if (e[i] == '(') depth++;
+        else if (e[i] == ')' && --depth == 0) {
+            if (e[i + 1]) return e;                  /* not the whole condition */
+            Buf b;
+            bufInit(&b, g->arena);
+            bufPutn(&b, e + 1, i - 1);
+            return bufCstr(&b);
+        }
+    }
+    return e;
+}
+
 /* ------------------------------------------------------------- `?` expansion
  *
  * `?` works at statement level, because C has no statement expressions, so it
@@ -2659,7 +2683,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             return;
 
         case ST_IF: {
-            const char *cnd = genExpr(g, s->u.ifs.cond);
+            const char *cnd = cgCond(g, genExpr(g, s->u.ifs.cond));
             flushPrefix(g);
             cgLine(g, "if (%s) {", cnd);
             g->indent++;
@@ -2679,7 +2703,7 @@ static void genStmtInner(CG *g, Stmt *s) {
         }
 
         case ST_WHILE: {
-            const char *cnd = genExpr(g, s->u.whiles.cond);
+            const char *cnd = cgCond(g, genExpr(g, s->u.whiles.cond));
             flushPrefix(g);
             cgLine(g, "while (%s) {", cnd);
             g->indent++;
@@ -4049,15 +4073,15 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i8  = { EXTC_D_I8,  \"i8\",  sizeof(int8_t),  0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i8  = { EXTC_D_I8,  \"i8\",  sizeof(int8_t),  0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_i16 = { EXTC_D_I16, \"i16\", sizeof(int16_t), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_i32 = { EXTC_D_I32, \"i32\", sizeof(int32_t), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_i64 = { EXTC_D_I64, \"i64\", sizeof(int64_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u8  = { EXTC_D_U8,  \"u8\",  sizeof(uint8_t),  0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u8  = { EXTC_D_U8,  \"u8\",  sizeof(uint8_t),  0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_u16 = { EXTC_D_U16, \"u16\", sizeof(uint16_t), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_u32 = { EXTC_D_U32, \"u32\", sizeof(uint32_t), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_u64 = { EXTC_D_U64, \"u64\", sizeof(uint64_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_f32 = { EXTC_D_F32, \"f32\", sizeof(float),  0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_f32 = { EXTC_D_F32, \"f32\", sizeof(float),  0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_f64 = { EXTC_D_F64, \"f64\", sizeof(double), 0, NULL, NULL, NULL };\n"
         "\n");
     /* Split into two calls: C99 only guarantees support for string literals of
