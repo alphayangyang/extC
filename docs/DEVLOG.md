@@ -8176,3 +8176,11 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 
 仍欠（#79 后半，已写进 PLAN）：返回类型与实参的**实例期**检查 —— 今天 `MethodCheck` 只查「方法存在 + 实参
 个数」，返回类型能否放进上下文仍是模板期用错误类型放行的。
+
+同轮补记（第 10 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r17.log`）。
+`hashMap<K, V>` 与下标错误恢复这一版四道闸门齐了。
+
+另把 ② 的卡点读码定位清楚（写进 PLAN #79）：驱动里**只有自由函数调用**有延迟重解析 ——
+`resolveDeferredCall` 会建具体实例、置 `used`、改写 `e->func`；**泛型类型实例上的方法/关联函数**
+（`vals.insert`、`pool<V>::withCap` 这类，模板期类型实参还带 `T`）没有对应记录，于是具体实例的方法没被标记发射，
+就是 `pool$pool_i32_remove` 那个 implicit declaration 的来源。下一步的入口在这里。
