@@ -31,7 +31,7 @@
 >
 > ✅ **那个门槛早就跨过了**（2026-09-23 复核）：`new i32[4096]` / `new [N]T` / `new T[n]` 都在
 > （PLAN §6 的 **A1** = 定案 56「`new` 永远是零 · 分配进当前块」）✓
-> ⇒ 现在 IO 的缺口**不是"造不出 buffer"**，而是 `open`/帧拥有文件 + `nextInt` 一族 + `reader`
+> ⇒ 现在 IO 的缺口**不是"造不出 buffer"**，而是 `open`/块拥有文件 + `nextInt` 一族 + `reader`
 > （见 §8 顺序表与 [`PLAN.md`](../../docs/PLAN.md) §1 主线的现状）✓
 > 有了它本文的 `reader` / `readAll` / `nextInt` 族就能按下面写的原样落地 ✓
 
@@ -309,61 +309,85 @@ let today = r.next(date, "{i32}-{i32}-{i32}")?
 
 ---
 
-## 5. 文件归属：**帧拥有它** ✅（主人 2026-09-18 拍了「1 的话感觉不赖」）
+## 5. 文件归属：**块拥有它**（2026-09-24 定稿；本节原来写的是"帧拥有"）
 
 ```extc
 fn readSource(path: slice<u8>, dest: mut slice<u8>) -> result<i64, ioError> {
-    let f = open(path)?          // f: mut ref file
-    return readAll(f, dest)      // 函数返回 ⇒ 自动关 ✓
+    let f = fs::openRead(path)?      // 句柄的槽位在**当前块**里
+    return readAll(f, dest)          // 块退出（含 return）⇒ 自动关 ✓
 }
 ```
 
-**`open()` 返回 `mut ref file`，那个 ref 指向帧 arena 里的一个槽位 ⇒ 深度 1**
-（跟 `alloc<T>(n)` 一模一样）。帧对象跟 arena 并排：
+**归属 = 词法块**（帧只是最外层块）—— 跟内存**同一套规则、同一个深度数**：句柄住在
+`__extc_fd[当前块深度]`，块退出时**先注销资源、再放内存**：
 
 ```c
-int main(void) {
-    extc_arena __extc_arena; extc_arena_init(&__extc_arena);
-    extc_files __extc_files; extc_files_init(&__extc_files);   // ← 新增
-    ...
-    extc_files_release(&__extc_files);    // 先关文件
-    extc_arena_release(&__extc_arena);    // 再放内存（顺序不能反）
-    return 0;
-}
+extc_arena __extc_a[DEPTH] = {0};    /* 内存：职责不变，一个字不改 */
+extc_fd    __extc_fd[DEPTH] = {0};   /* 内核句柄：与 arena **兄弟**，不归它管 */
+...
+extc_fd_release(&__extc_fd[3]);      /* 先注销资源 */
+extc_arena_release(&__extc_a[3]);    /* 再放内存 */
 ```
 
-### 为什么它**零新规则**
+⚠️ **为什么 fd 表挂在块上，而不是让 arena 顺带管资源**（2026-09-24 讨论定的）：
+让 arena 长出"资源管理"这个第二职责 ⇒ 下一个 socket、再下一个线程句柄都会顺手挂上去
+⇒ 核心抽象被稀释 ✗ ⇒ **arena 只放内存，fd 表是它的兄弟**：各自一行释放调用，
+顺序（先资源后内存）写死在生成代码里 ✓
 
-不动逃逸检查一行 —— 第 1 步刚修的规则正好接住所有洗白路径：
+### 三条释放路径（同一个句柄，各管一段，不重叠）
 
-| 想干什么 | 谁拦住 |
-|---|---|
-| `fn openHere() -> mut ref file { let f = open("x")?  return f }` | 老规则：深度 1 > 0 ❌ |
-| `fn fwd(f: mut ref file) -> mut ref file { return f }` | ✅ 合法（**转发是好的**）|
-| `fn launder() -> mut ref file { return fwd(open("x")?) }` | **第 1 步的 `max(实参)` 规则** ❌ |
-| `fn stash(f: mut ref file) { G = f }` | **第 1 步的「借来的值不能存进深度 0」** ❌ |
+| 路径 | 什么时候用 | 错误谁管 |
+|---|---|---|
+| **块退出（隐式兜底）** | 默认。忘了关也不会漏 fd ✓ | 忽略（所以**写型必须配 `commit()?`**）|
+| **`f.commit()?`**（写型专有）| 我要确认数据**安全落地** | **显式报错**：POSIX 的 `close(2)` 正是"延迟写错误"（EIO / 配额 / NFS）冒出来的地方 ✓ |
+| **`close(f)!`** | 我就要**现在**放掉（更细的粒度）| **签字**：我保证它现在开着、且之后不再用它 ✓ |
 
-> 这是 `alloc` 那个机制的**第二次使用**：「**帧拥有内存（arena）和资源（文件），
-> 两者都在返回时死，两者都是深度 1，同一个检查器管**」✓
+（`!` 跟 `a[i]!` / `extern!` 同构：**我签字，接受运行时的后果** ✓）
 
-### 代价
+### 两条必须钉死的细节
 
-| 代价 | 说明 |
-|---|---|
-| **fd 要等到函数返回才放**（上限 1024）| 写法上就是「**一个函数读一个文件**」—— 恰好是自举要的形状 |
-| 循环里开 500 个文件不写 helper ⇒ 攒 fd | 真需要时 `close(f)!` 是现成的口子 |
+1. **幂等**：被 `close(f)!` 关过的槽位**必须标记**，块退出时不再关第二次 ✗✗
+   否则 double close 关掉的是**别人刚开的 fd**（fd 号会被内核复用 ⇒ 这是真会伤人的一类 bug）。
+2. **关闭后使用**：`close(f)!` 之后再用 `f.put(..)`：
+   - **IO-1 先做运行时**：槽位带状态 ⇒ **trap，带源码位置**（不静默 ✓）
+   - **将来做编译期**：让 `close` **消费掉**句柄（affine）⇒ 用就编不过 ✓
+     （那就是"唯一所有权 / 转移"那套机制的第一个使用场景 ✓）
+
+### 失败模式
+
+`openRead` / `openWrite` / `openAppend` 一律返回 `result<..., ioError>`：
+`EMFILE`（fd 耗尽，上限 1024）· 权限 · 路径不存在 ⇒ **`failure` 带位置**，不许 trap、不许静默 ✓
+
+### 两条惯用法
+
+1. **一个函数读一个文件**（最常用）：`open` 放函数开头 ⇒ 返回自动关 ✓
+2. **批处理**（循环里逐个处理）：
+   - 就地包一个块：`{ let f = fs::openRead(p)? ... }` ⇒ **出块即关**，fd 恒为 O(1) ✓
+   - 逻辑稍大就写成 helper：每帧一个释放点，同样是 O(1) ✓
+
+### 判据：什么资源**才配**由块退出自动释放（是判据，不是清单）
+
+三条**同时**满足才行：**① 释放不会失败（没有信息可报）· ② 释放没有顺序 / 协议语义 ·
+③ 只由标准库少数原语获取**。
+
+| 资源 | ① | ② | ③ | 结论 |
+|---|---|---|---|---|
+| fd（读）| ✓ | ✓ | ✓ | **自动关** |
+| fd（写）| ⚠️ `close` 可报延迟写错误 | ✓ | ✓ | **自动关 + 必须配 `commit()?`** |
+| mmap（若将来做）| ✓ | ✓ | ✓ | 可以（它本来就算内存那一家）|
+| socket | ✗ 发送缓冲的延迟错误 | ✗ **半关 / FIN / lingering 是协议语义** | ✓ | **永远显式** |
+| 线程 / 进程句柄 | — | ✗ **join 是同步点** | ✓ | **永远显式** |
+
+⚠️ 写成**判据**而不是清单：清单会被人往后加，判据不会 ✓
 
 ### 备选（没选，但记下来）
 
 | 方案 | 好在哪 | 差在哪 |
 |---|---|---|
-| `with f = open(p) { ... }` 块 | 寿命精确到块，循环里开文件不攒 fd | 多一条语法 + 一个新作用域种类；它**就是** `defer` |
-| 显式 `close(f)` | 最快，像 C | 「没有手动分配就没有手动释放」破了；**忘关是很自然的** |
-| **`f.close()!` 只作逃生舱** | 两个好处都有一点 | `!` = 我签字：提前关 = 可能 use-after-close（fd 号会复用）⇒ 那确实是运行时后果 ✅ |
-
-> 建议 **IO-2 再加 `close(f)!`**，IO-0/IO-1 不加（P：不做没人用的特性）✓
-
----
+| `with f = open(p) { ... }` 块 | 寿命精确到块 | 多一条语法 + 一个新作用域种类（那就是 `defer`）；而"块拥有"已经免费拿到它 ✓ |
+| 原方案：**帧拥有**（一条 `extc_files` 链）| 概念最少（只有一条链）| **fd 要等到函数返回才放**；循环里就地 open/close 写不出来 ✗ |
+| 只有显式 `close(f)!`，没有隐式兜底 | 最快，像 C | 「没有手动分配就没有手动释放」破了；**忘关是很自然的** ✗ |
+| 让 arena 顺带管资源 | 少一条链 | 核心抽象长出第二职责 ⇒ socket / 线程会跟着挂上来 ✗ |
 
 ## 6. `print` / `println`：不缓冲，而且是**故意的**
 
@@ -418,7 +442,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 | 段 | 内容 | 做完能干什么 | 进度（2026-09-23 实测） |
 |---|---|---|---|
 | **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys/io.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
-| **IO-1** | `open` + 帧拥有的 `extc_files` + `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**（跟 `extern!` 的 `owned` 是**同一个前置**：要"帧拥有资源"那套）|
+| **IO-1** | `open` + **块拥有**的 `extc_fd[DEPTH]`（+ `commit()?` / `close(f)!`）+ `readAll(f, …)` + `reader` + `main(args)` | 自举的门槛（读源文件、写生成的 C） | ⬜ **没有**
 | **IO-2** | `exit(code)`、`close(f)!`、termios raw mode | TUI + 刷量输出 | 🟡 **一半**：**`writer`（可见缓冲）已落地**（`stdlib/std/io.extc`，验收 `tests/io/` 的 writer-file ✓）—— ⚠️ 这一格原来写着"`writer` ⬜ 没有"，那是在它落地**之前**写的，没跟着改 ✗（2026-09-24 修正）；剩下的 `exit(code)` / `close(f)!` / termios ⬜ **没有** |
 
 > BOOTSTRAP §4.3 已经定过 TUI 那条：**不包 ncurses**，只要「读一个字节 + 开关 raw mode」
@@ -444,7 +468,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 | 行缓冲谁给 | **调用者给**（「总比拷贝好」）✓ |
 | `reader` 是什么 | **一个普通 struct + 一大堆方法**，底下全部调同一套 `rawRead` ✓ |
 | 格式化输入 | **一定要有**（见 4.4：A 今天、B 以后）✓ |
-| 文件归属 | **帧拥有**（第 5 节）✓ |
+| 文件归属 | **块拥有**（第 5 节 · 定案 78）✓ |
 | `readAll` + 游标的定位 | **榨性能专用**，不是日常写法（日常是 `reader`）✓ |
 | `return failure(e)` / `success(...)` | **能裸写了**（定案 49）—— 因为主人说「result 很神秘，我不太会用」✓ |
 | `scan(mut a, mut b, ...)` | **要，但走「真变参」，而且现在不写**（主人：细节多、工程量大，`nextInt` 那一族现在够用）✓ |
@@ -453,6 +477,6 @@ fn main(args: slice<slice<u8>>) -> i32 {
 > ⭐ **2026-09-22：第一块落地了**（定案 73）—— `stdlib/std/sys/io.extc`（原语 + 签字）+
 > `stdlib/std/io.extc`（普通库：`readLine` / `writeBytes` / `flushOut`）+ 内建 `flush()` ✓
 > 用户程序 `use std::io` 就能从 **stdin** 读了（`tests/io/` 是常设验收 ✓）
-> ⏸ **剩下的**（`open`/`close` + 帧拥有文件 · `nextInt` 一族 · `reader` · `main(args)` ·
-> `allocSlice`）还没做 —— 其中"帧拥有文件"跟 `extern!` 的 `owned` 是**同一个前置** ✓
+> ⏸ **剩下的**（`open`/`close` + **块拥有文件** · `main(args)`）还没做 ——
+> 其中"块拥有文件"跟 `extern!` 的 `owned` 是**同一个前置** ✓
 > 主人 2026-09-18：「然后后面 IO 我想再讨论」。

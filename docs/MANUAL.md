@@ -1732,7 +1732,7 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 | ~~**动态数组 `varArray<T>`**~~ ✅ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | ~~**算术 UB 三处**~~ ✅ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap ✓）|
 | ~~**全局常量 / 全局变量**~~ ✅ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
-| 🟡 **输入（`reader` / `argv`）** | ✅ 读已经通了：**整块读（64KB）+ 内存里切**，两种风格（`nextInt` / `nextLine` / `nextToken`）在同一个 `reader` 上，缓冲**不用调用者给** ✓ **还欠 `open`/`close` + 帧拥有文件 · `main(args)`**（IO-1）| 中 —— 五子棋能真的跟人下的门槛 |
+| 🟡 **输入（`reader` / `argv`）** | ✅ 读已经通了：**整块读（64KB）+ 内存里切**，两种风格（`nextInt` / `nextLine` / `nextToken`）在同一个 `reader` 上，缓冲**不用调用者给** ✓ **还欠 `open`/`close` + 块拥有文件 · `main(args)`**（IO-1；归属见定案 78）| 中 —— 五子棋能真的跟人下的门槛 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
 | **`for` 四种形态** | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | 中 |
 | ~~**`match`**~~ ✅ | 穷尽检查 + 无载荷枚举（语句，不是表达式）—— **带载荷也做完了**（见下一行）|
@@ -1855,7 +1855,7 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
 
 - 参数/返回只用**标量或单指针**（`ref T` / `?ref T`）—— `slice<T>` 在 C 那边是两个参数 ✗
 - 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len` ✓
-- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（它要等"帧拥有资源"那套 ✓）
+- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（它要等"**块拥有资源**"那套 ✓）
 
 ### 12.4 让编译器内联：`@inline`（2026-09-24 新增）
 
@@ -1960,7 +1960,7 @@ fn main() -> i32 {
 分层：`std::sys::io`（**特权层 · io 族**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写 ✓）✓
 > ⚠️ `sys` 不是"一个模块"，是**一条边界**在路径上的写法 ⇒ **按族分文件** ——
 > 后面还有 `std::sys::thread` / `std::sys::time` / `std::sys::net` / `std::sys::proc` ✓
-还欠：`open`/`close` + 帧拥有文件 · `main(args)` ✓
+还欠：`open`/`close` + 块拥有文件 · `main(args)` ✓
 
 ---
 
