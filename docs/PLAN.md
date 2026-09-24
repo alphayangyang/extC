@@ -196,6 +196,7 @@
 > 以为它是安全问题 ✗ ⇒ 归到"已知边界"，跟 `SPEC.md` §4.5 那类**设计上接受的损失**同档 ✓
 
 > 📄 **设计稿（ECS 版，2026-09-24 整篇重写）**：[`docs/topics/REGIONS.md`](topics/REGIONS.md) —— **region = 注册表里的一个槽**（handle = 索引 + generation，是值、可复制）· 容器的可变簿记也住在 region 里 ⇒ 「拷贝 ⇒ 双主」与 free-list 成环**从根上消失** · 失效走 **generation 校验**（`failure(staleHandle)` 带位置）· **块与 region 是同一棵树**（逻辑嵌套、父释放子树一起走、独立块）· 注册表**每帧一个**（选 a）⇒ **寿命 = 创建它的那个块**，因此**不用碰逃逸 pass** ✓ 连续性由 `buf<T>`（region 内可增长连续块 + 原地扩展）保住 ⇒ `varArray`/`string` 永远连续 ✓ 动机是**量出来的**（长命层反复新建：12 轮 14,184 KB vs 块内 2,640 KB 平）✓ §9 六条待批 ✓
+> ✅ **期 0 已落地（2026-09-24，零编译器改动）**：`stdlib/std/pool.extc`（slot map：稳定 handle + dense 前段 + free list + 世代）· 常设验收 `tests/pool/`（挂成 `check.sh` 第 18 节 ⇒ quick 17 → **18 节**）· 实测 **churn 平**（1e5 1,660 KB → 1e6 1,724 KB ✓）而**不还槽位的 canary 明显涨**（9,916 → 67,324 KB ✓）⇒「容器垃圾无法回收 / 无法复用」两条在**零编译器改动**下已解决 ✓ 剩下「批量还给 arena」与 SIMD 那条（期 1+）✓
 
 **然后就是加法（`SPEC.md` 主线）**：**IO-1**（✅ `std::fs` 三个名字 + ✅ 句柄由程序关 + ✅ `main(args)` —— 2026-09-24 落地）——
 IO-0 主体**已落地**（2026-09-23 定案 74：`reader` + `nextInt` 一族 + 三条路 ✓）
