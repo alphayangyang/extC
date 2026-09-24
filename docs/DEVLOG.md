@@ -492,6 +492,34 @@ grep 只匹配到 `rtDie`(3631) / `rtCout`(3646) / `rtRaw`(3668) / `rt`(4011) / 
 ⇒ **先把"它们到底挂在哪个 Buf、由哪个条件发射"查清**（`grep -n "bufPuts(&g\." codegen.c` 看全量 ✓），
 再切 —— 别在没搞清归属前动字符串 ✗（这一节的教训已经够多了 ✓）
 
+### ㉕ 目标升级：clang 也要 0（含 `-Weverything`）+ 第一刀的最终设计
+
+主人：「**clang 警告也到 0 可能更 nb，Weverything 来咯**」✓ 一量，clang 严得多（同一份生成物）：
+
+| 判据 | gcc 15.2 | clang 21.1 |
+|---|---|---|
+| `-Wall -Wextra` | **16** | **30** |
+| `-Weverything` | （gcc 没这开关 ✓） | **89** |
+
+⇒ 目标改成：**gcc 与 clang 的 `-Wall -Wextra` 双双为 0** ✓ + **clang `-Weverything` 为 0 并附一份
+写在文档里的 `-Wno-` 清单** ✓（`-Wpadded` / `-Wdeclaration-after-statement` / `-Wunsafe-buffer-usage`
+这几类对生成物无解 —— clang 官方也说 `-Weverything` 是用来找**新**警告的 ✓ 清单是标准做法 ✓）
+
+**第一刀的最终设计**（下一轮直接落 ✓ 已把地形摸清）：
+那些辅助函数在一个**无条件** `bufPuts(out, ...)` 里（`codegen.c:3760` 起 ✓ 约 80 行 ✓）而 codegen
+本来就有"**先攒进 Buf、最后装配时拼接**"的机制（描述符/切片辅助都这么做 ✓）⇒
+
+1. 加 `Buf rtHelp;` + 一组标志（`needDivMod / needShift / needNarrow / needChkIdx / needChkRange / needArena / needRec` ✓）
+2. `bufPuts(out, ...)` ⇒ `bufPuts(&g.rtHelp, ...)` ✓ 并按**组**切开（切点=各组定义前的注释块 ✓）
+   —— 组边界已量清：共享陷阱原语（`extc_trap`/`trapMsg` + 递归计数 ✓）· `rec_enter` ·
+   `divI/modI/divU/modU` · `shiftCount` · `checkedIndex` · `checkedRange` · arena 三件套 ·
+   `narrowI/narrowU/convFloat` ✓
+3. 装配处（`bufPuts(out, bufCstr(&g.rtDie));` 之后 ✓）拼 `rtHelp` ✓ —— 那时**标志已经知道** ✓
+   （body 先攒、最后装配 ✓）
+4. 标志在各引用点置：`:1032`（div/mod）· `:1625`（checkedIndex）· `:1717/1728/1731/1740/1743`（narrow/conv）·
+   `:3371/3379/3385`（checkedRange）· `:2247/2504/3129`（arena）· `:3090`（rec_enter）· `shiftCount` 的发射点 ✓
+5. **`extc_arena_init` 可以直接删**（**零调用**：局部 arena 是 `extc_arena __extc_a[N] = {0};` ✓ 已量 ✓）
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·
