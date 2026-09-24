@@ -1,0 +1,42 @@
+// `for` 的四种形态（定案 12/93）—— 全都脱糖成 `var` + `while`，所以检查器与生成器
+// 见到的还是它们本来就认识的东西（不新增语句种类 = 不给每个走查留漏格的机会 ✓）
+//
+// 生成物就是本人描述的那个形状：`{ i = 0; while (i < n) { … i += 1; } }` ✓
+// expect: 10 0 60 12 26 2
+use std::io
+
+fn main() {
+    /* ① `0..n`：半开区间，和切片范围一个口径（下界的类型就是 i 的类型 ✓） */
+    var sum: i64 = 0
+    for i in i64(0)..i64(5) { sum += i }
+    io::cout << sum << " "
+
+    /* ② 下界可以是负数，类型照样从下界来 ✓ */
+    var neg: i64 = 0
+    for dy in i64(-2)..i64(3) { neg += dy }
+    io::cout << neg << " "
+
+    /* ③ 容器：`c[..]` 先变成视图 ⇒ **定长数组也能直接迭**（视图才有 `.len`）
+     *    元素是**拷贝** ⇒ 改 `d` 不会写回容器 ✓ */
+    var dirs: [3]i64 = [10, 20, 30]
+    var tot: i64 = 0
+    for d in dirs { tot += d }
+    io::cout << tot << " "
+
+    /* ④ C-style：三段都是普通语句/表达式（没有 `++`，步进写 `j += 1` ✓） */
+    var k: i64 = 0
+    for (var j: i64 = 0; j < 4; j += 1) { k += j * 2 }
+    io::cout << k << " "
+
+    /* 视图与字符串（`slice<u8>`）同样是"容器"：后者的元素是字节 ✓ */
+    var xs: [4]i64 = [5, 6, 7, 8]
+    var v: slice<i64> = xs[..]
+    var s: i64 = 0
+    for d in v { s += d }
+    io::cout << s << " "
+
+    var text = "hello"
+    var ls: i64 = 0
+    for c in text { if c == u8(108) { ls += 1 } } // 108 = 'l'
+    io::cout << ls << "\n"
+}

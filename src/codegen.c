@@ -2909,6 +2909,18 @@ static void genStmtInner(CG *g, Stmt *s) {
             const char *tgt = genExpr(g, s->u.assign.target);
             const char *val = genExpr(g, s->u.assign.value);
             flushPrefix(g);
+            /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
+             * exactly the meaning the statement has, and it is what a reader expects to
+             * find. A user-defined operator is a method, so that one case becomes the plain
+             * assignment of its call - the checker has already required a target with no
+             * call in it, because the call names the target a second time. */
+            if (s->u.assign.op) {
+                if (s->u.assign.opExpr && s->u.assign.opExpr->func)
+                    cgLine(g, "%s = %s;", tgt, genBin(g, s->u.assign.opExpr));
+                else
+                    cgLine(g, "%s %s %s;", tgt, s->u.assign.op, val);
+                return;
+            }
             cgLine(g, "%s = %s;", tgt, asF32(g, s->u.assign.target ? s->u.assign.target->type : NULL,
                                               s->u.assign.value, val));
             return;

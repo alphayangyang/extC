@@ -370,7 +370,11 @@ struct Stmt {
                   * cleared before every later execution of this statement. Legal only
                   * for `new`, which the checker enforces. */
                  bool overwrite; } var;
-        struct { Expr *target; Expr *value; } assign;
+        /* `op` is NULL for a plain `=` and the operator text (`"+="` ...) for a compound
+         * assignment; `opExpr` is the `EX_BIN` the checker resolved for it, which codegen
+         * needs when the operator is a user-defined method (`x += y` is then
+         * `x = add(x, y)`, because C's `+=` knows nothing about the method). */
+        struct { Expr *target; Expr *value; const char *op; Expr *opExpr; } assign;
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
         struct { Expr *cond; Stmt *body; } whiles;
         struct { Expr *value; } ret;

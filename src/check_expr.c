@@ -14,6 +14,7 @@
 
 
 static bool exprHasCall(Checker *c, Expr *e);   /* defined at the end of this file */
+static bool exprHasAnyCall(Expr *e);            /* the syntactic question; see its comment */
 
 /* Record that an operator applied to a type parameter has to be re-checked per instance.
  *
@@ -139,6 +140,55 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
             typeStr(c, lt), typeStr(c, rt), op);
     return err;
 }
+/* Resolve the operator of a compound assignment (`x += y`).
+ *
+ * The statement is kept as it was written and the operation is checked here, by the very
+ * function a written-out `x + y` goes through (`checkArith`): the arithmetic rule, literal
+ * fitting, reference rejection and a user-defined operator are all the same question, and
+ * asking it twice in two places is how the two answers drift apart. The result is the
+ * `EX_BIN` that answered it, which codegen needs when the operator turned out to be a
+ * method.
+ *
+ * Params:
+ *   c      - checker
+ *   op     - the compound operator as written (`"+="`); its first character is the binary
+ *            one, because all five are one character long
+ *   target - the left side, already checked
+ *   value  - the right side, already checked
+ *   tgt    - the type of the target
+ *   val    - the type of the value
+ *   out    - receives the resolved `EX_BIN`
+ *
+ * Returns:
+ *   The type of `target op value`, or an error type when the operator does not apply.
+ *
+ * Notes:
+ *   - A user-defined operator takes its receiver as a reference, so the generated call has
+ *     to name the target a second time (`x = add(&x, y)`). That is only harmless when the
+ *     target is a place that can be evaluated twice without doing anything, so a target
+ *     containing a call is refused with the instruction to split the line. Builtin
+ *     operators do not have this problem: C's `x += y` evaluates the target once.
+ */
+Type *checkCompoundOp(Checker *c, const char *op, Expr *target, Expr *value,
+                      Type *tgt, Type *val, Expr **out) {
+    Expr *bin = exprNew(c->arena, EX_BIN, target->line);
+    bin->u.bin.op    = arenaStrndup(c->arena, op, 1);   /* `+=` asks about `+` */
+    bin->u.bin.left  = target;
+    bin->u.bin.right = value;
+    Type *rt = checkArith(c, bin, tgt, val);
+    if (out) *out = bin;
+    if (ttIsError(rt)) return rt;
+    if (bin->func && exprHasAnyCall(target)) {
+        ckError(c, target->line,
+                "the statement is rewritten as `x = add(&x, y)`, so the target has to be a"
+                " place that can be named twice without side effects",
+                "the target has a call in it -- split it into two lines: `var t = ...`"
+                " then `t %s ...`", op);
+        return ttError(c->tt);
+    }
+    return rt;
+}
+
 
 /* Report whether `op` is one of the bitwise operators `&`, `|`, `^`, `<<`, `>>`.
  *
@@ -2186,6 +2236,52 @@ static bool callIsEffectful(Checker *c, FuncDef *f) {
  *     call known to be free of side effects, `pure(x)`, made the answer garbage, so the "an
  *     earlier call is still in place" test fired only sometimes.
  */
+/* Does this expression contain a **call**, whatever the effect summary says?
+ *
+ * `exprHasCall` answers the semantic question ("can evaluating this twice be observed?"),
+ * which is what the `??` ordering rule needs. This one answers the syntactic question, and
+ * it is deliberately the blunt one: it guards the single place where the compiler has to
+ * name an expression twice - the target of a compound assignment whose operator is a
+ * user-defined method (`x += y` becomes `x = add(&x, y)`). There, "the summary says it is
+ * pure" is not a good enough reason to duplicate a call: a body that reads a global it
+ * never writes is pure by that summary, and duplicating it would still be wrong the day
+ * the global moves. One rule, no exceptions: a call in the target is refused, and the
+ * message says to split the line.
+ */
+static bool exprHasAnyCall(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_CALL: case EX_METHOD: case EX_ASSOC: case EX_GENCALL: return true;
+    case EX_BIN:   return exprHasAnyCall(e->u.bin.left) || exprHasAnyCall(e->u.bin.right);
+    case EX_UN:    return exprHasAnyCall(e->u.un.operand);
+    case EX_REF:   return exprHasAnyCall(e->u.ref.operand);
+    case EX_DEREF: return exprHasAnyCall(e->u.deref.operand);
+    case EX_SIGN:  return exprHasAnyCall(e->u.sign.operand);
+    case EX_CONV:  return exprHasAnyCall(e->u.conv.operand);
+    case EX_TRY:   return exprHasAnyCall(e->u.try_.operand);
+    case EX_FIELD: return exprHasAnyCall(e->u.field.obj);
+    case EX_INDEX: return exprHasAnyCall(e->u.index.obj) || exprHasAnyCall(e->u.index.index);
+    case EX_SLICE: return exprHasAnyCall(e->u.slice.obj) || exprHasAnyCall(e->u.slice.lo) ||
+                          exprHasAnyCall(e->u.slice.hi);
+    case EX_NEW:   return exprHasAnyCall(e->u.new_.count);
+    case EX_COALESCE:
+        return exprHasAnyCall(e->u.coalesce.main) || exprHasAnyCall(e->u.coalesce.fallback);
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprHasAnyCall(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprHasAnyCall(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+        return false;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprHasAnyCall((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    default: return false;      /* literals, bindings, `null` */
+    }
+}
+
 static bool exprHasCall(Checker *c, Expr *e) {
     if (!e) return false;
     switch (e->kind) {

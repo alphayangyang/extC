@@ -309,6 +309,33 @@ void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_ASSIGN: {
+            /* `x += y` is `x = x + y` (定案 92). Which operator that is, and whether it
+             * applies to these two types at all, is decided by the same function a written
+             * `x + y` goes through, so the rules cannot drift; what stays here is the
+             * assignment half: the target has to be writable, and the result has to fit. */
+            if (s->u.assign.op) {
+                Type *lt = checkExpr(c, s->u.assign.target);
+                if (ttIsError(lt)) return;
+                if (lt->kind == TY_REF) {
+                    ckError(c, s->line,
+                            "a compound assignment writes the object, so write through the"
+                            " reference: `*p += x`. On the reference itself it would be pointer"
+                            " arithmetic, which extC does not have.",
+                            "`%s` is a reference, not a value -- write `*p %s ...`",
+                            typeStr(c, lt), s->u.assign.op);
+                    return;
+                }
+                Type *vt = checkValue(c, s->u.assign.value);
+                if (ttIsError(vt)) return;
+                Type *rt = checkCompoundOp(c, s->u.assign.op, s->u.assign.target,
+                                           s->u.assign.value, lt, vt, &s->u.assign.opExpr);
+                if (ttIsError(rt)) return;
+                if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
+                checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
+                checkAssignable(c, lt, rt, s->u.assign.value, "compound assignment");
+                return;
+            }
+
             Type *tt_ = checkExpr(c, s->u.assign.target);
 
             /* The target is a binding that was narrowed, so the comparison uses the

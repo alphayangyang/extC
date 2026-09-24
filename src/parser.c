@@ -165,6 +165,7 @@ static Stmt    *parseVarDecl(Parser *p);
 static GlobalDef *parseGlobalDecl(Parser *p);
 static Stmt    *parseIf(Parser *p);
 static Stmt    *parseWhile(Parser *p);
+static Stmt    *parseFor(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
 static bool       parseFuncAnnotations(Parser *p, bool *outInline);
@@ -1177,6 +1178,7 @@ static Stmt *parseStmt(Parser *p) {
     if (at(p, "let") || at(p, "var"))  return parseVarDecl(p);
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);
+    if (at(p, "for"))                  return parseFor(p);
     if (at(p, "match"))                return parseMatch(p);
 
     if (at(p, "return")) {
@@ -1205,14 +1207,21 @@ static Stmt *parseStmt(Parser *p) {
     Expr *e = parseExpr(p);
     if (!e) return NULL;
 
-    if (at(p, "=")) {
-        take(p);
+    /* `=` and the five compound forms. `+=` and friends mean `x = x + y` (定案 92), so
+     * they are the same statement with one extra field: the checker resolves the operator
+     * and codegen keeps the compound form in the C output, which evaluates the target
+     * **once** for free. `++` / `--` are deliberately absent: an expression that both
+     * reads and writes one place is the classic source of undefined behaviour. */
+    if (at(p, "=") || at(p, "+=") || at(p, "-=") || at(p, "*=") || at(p, "/=") || at(p, "%=")) {
+        const char *aop = take(p)->text;
         skipNl(p);
         Expr *v = parseExpr(p);
         if (!v) return NULL;
         Stmt *s = stmtNew(p->arena, ST_ASSIGN, t->line);
         s->u.assign.target = e;
         s->u.assign.value = v;
+        s->u.assign.op = (strcmp(aop, "=") == 0) ? NULL : aop;
+        s->u.assign.opExpr = NULL;
         return s;
     }
 
@@ -1345,6 +1354,225 @@ static Stmt *parseIf(Parser *p) {
  *   - The condition is parsed with p->inCond set, as in parseIf, so a `{` there
  *     starts the loop body.
  */
+/* ------------------------------------------------------------------- `for`
+ *
+ * Four forms, one implementation (定案 12 / 93): every one of them is turned into
+ * `var` + `while` right here, so the checker and codegen never see a loop they did not
+ * already know. That is the whole reason for desugaring instead of adding a node: a new
+ * statement kind has to be taught to every walker in the compiler (the effect summary, the
+ * escape analysis, the arena placement, `@overwrite`, the name marking ...), and this
+ * session's defect list is largely made of exactly that kind of omission.
+ *
+ *     for i in lo..hi { B }        ->  { var i = lo
+ *                                         while i < hi { { B }  i += 1 } }
+ *     for d in c { B }             ->  { var __extc_s = c[..]
+ *                                         var __extc_i = 0
+ *                                         while __extc_i < __extc_s.len {
+ *                                             var d = __extc_s[__extc_i]  { B }  __extc_i += 1 } }
+ *     for (init; cond; step) { B } ->  { init  while cond { { B }  step } }
+ *
+ * Notes:
+ *   - `i += 1` is the compound assignment that landed the same day, which is also how the
+ *     owner described the loop: "某种 `{i = 0; while(cond) { BLOCK; i += 1; }}`".
+ *   - The user's body is wrapped in a block of its own, so a declaration inside it cannot
+ *     shadow the loop variable that the step still has to reach.
+ *   - `c[..]` is what makes the container form cover a fixed array as well as a view: an
+ *     array has no `.len` of its own, a view over it does. Anything else (a call, a
+ *     `varArray`, a struct) is refused with the instruction to bind a name first, because
+ *     the desugared loop names `c` once per iteration.
+ *   - The bounds are `lo..hi`, half open, exactly like a slice range.
+ */
+
+/* A synthetic `name` of the loop's own making. */
+static Expr *forIdent(Parser *p, const char *name, int line) {
+    Expr *id = exprNew(p->arena, EX_IDENT, line);
+    id->u.ident.name = name;
+    id->u.ident.srcName = name;
+    return id;
+}
+
+/* A synthetic integer literal, for the loop's `+ 1` and its start at 0. */
+static Expr *forInt(Parser *p, long long v, int line) {
+    Expr *e = exprNew(p->arena, EX_INT, line);
+    e->u.ival = v;
+    return e;
+}
+
+/* `tgt op= value`, the shape the loop's own step is written in. */
+static Stmt *forStep(Parser *p, const char *tgt, const char *op, Expr *value, int line) {
+    Stmt *s = stmtNew(p->arena, ST_ASSIGN, line);
+    s->u.assign.target  = forIdent(p, tgt, line);
+    s->u.assign.value   = value;
+    s->u.assign.op      = op;
+    s->u.assign.opExpr  = NULL;
+    return s;
+}
+
+/* `{ a  b  c }` - a block holding the statements given. */
+static Stmt *forBlock(Parser *p, Stmt **stmts, size_t n, int line) {
+    Stmt *b = stmtNew(p->arena, ST_BLOCK, line);
+    vecInit(&b->u.block.stmts, p->arena, sizeof(Stmt *));
+    for (size_t i = 0; i < n; i++)
+        *(Stmt **)vecPush(&b->u.block.stmts) = stmts[i];
+    return b;
+}
+
+/* Is this expression one that can be named once per iteration without doing anything? */
+static bool forRepeatable(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_IDENT: return true;
+    case EX_FIELD: return forRepeatable(e->u.field.obj);
+    case EX_DEREF: return forRepeatable(e->u.deref.operand);
+    default:       return false;
+    }
+}
+
+static Stmt *parseFor(Parser *p) {
+    Token *kw = take(p);                          /* `for` */
+    const int line = kw->line;
+
+    /* ---- form four: `for (init; cond; step) { B }` ---- */
+    if (at(p, "(")) {
+        take(p);
+        Stmt *init = parseStmt(p);
+        if (!init) return NULL;
+        if (!expect(p, ";", "`for (init; cond; step)` needs `;` after the initializer")) return NULL;
+        skipNl(p);
+        Expr *cond = parseExpr(p);
+        if (!cond) return NULL;
+        if (!expect(p, ";", "`for (init; cond; step)` needs `;` after the condition")) return NULL;
+        skipNl(p);
+        Stmt *step = parseStmt(p);
+        if (!step) return NULL;
+        if (!expect(p, ")", "`for (init; cond; step)` needs the closing `)`")) return NULL;
+
+        Stmt *body = parseBlock(p);
+        if (!body) return NULL;
+
+        /* The step runs after the body: both go in a block inside the `while`. */
+        Stmt *inner[2] = { body, step };
+        Stmt *loopBody = forBlock(p, inner, 2, line);
+        Stmt *w = stmtNew(p->arena, ST_WHILE, line);
+        w->u.whiles.cond = cond;
+        w->u.whiles.body = loopBody;
+        Stmt *outer[2] = { init, w };
+        return forBlock(p, outer, 2, line);
+    }
+
+    /* ---- `for <name> in ...` ---- */
+    if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
+        ctxError(p->ctx, cur(p)->line, cur(p)->col, NULL,
+                 "`for` binds a name here: `for i in 0..n` or `for d in items`");
+        return NULL;
+    }
+    Token *vn = take(p);
+    if (!expect(p, "in", "`for` needs `in`: `for i in 0..n`")) return NULL;
+    const bool savedCond = p->inCond;
+    p->inCond = true;                    /* `{` starts the body, not a literal */
+    Expr *head = parseExpr(p);
+    p->inCond = savedCond;
+    if (!head) return NULL;
+
+    /* ---- forms two and three: `for i in lo..hi { B }` (`0..n`, `-2..3`, ...) ----
+     * The `..` is settled before the body: `{` after it starts the body, and asking for a
+     * block first is what made `0..5` complain about a missing `{` at the `..`. */
+    Expr *hi = NULL;
+    if (at(p, "..")) {
+        take(p);
+        p->inCond = true;
+        hi = parseExpr(p);
+        p->inCond = savedCond;
+        if (!hi) return NULL;
+    }
+
+    Stmt *body = parseBlock(p);
+    if (!body) return NULL;
+
+    if (hi) {
+        Stmt *decl = stmtNew(p->arena, ST_VAR, line);
+        decl->u.var.name = vn->text;
+        decl->u.var.ann  = NULL;
+        decl->u.var.init = head;
+        decl->u.var.mut  = true;                 /* the loop itself writes it */
+        decl->u.var.overwrite = false;
+
+        Expr *cond = exprNew(p->arena, EX_BIN, line);
+        cond->u.bin.op    = "<";                 /* half open, like a slice range */
+        cond->u.bin.left  = forIdent(p, vn->text, line);
+        cond->u.bin.right = hi;
+
+        Stmt *inner[2] = { body, forStep(p, vn->text, "+=", forInt(p, 1, line), line) };
+        Stmt *w = stmtNew(p->arena, ST_WHILE, line);
+        w->u.whiles.cond = cond;
+        w->u.whiles.body = forBlock(p, inner, 2, line);
+        Stmt *outer[2] = { decl, w };
+        return forBlock(p, outer, 2, line);
+    }
+
+    /* ---- form one: `for d in c { B }` ---- */
+    if (!forRepeatable(head)) {
+        ctxError(p->ctx, head->line, 1,
+                 "the loop reads the container once per iteration, so bind it first:"
+                 " `var xs = ...` and then `for d in xs`",
+                 "`for d in ...` needs a name, a field or `*p` on the right");
+        return NULL;
+    }
+
+    /* `var __extc_s = c[..]`: one view, which is what gives an array a `.len` too. */
+    Expr *whole = exprNew(p->arena, EX_SLICE, line);
+    whole->u.slice.obj = head;
+    whole->u.slice.lo  = NULL;
+    whole->u.slice.hi  = NULL;
+    Stmt *viewDecl = stmtNew(p->arena, ST_VAR, line);
+    viewDecl->u.var.name = "__extc_s";
+    viewDecl->u.var.ann  = NULL;
+    viewDecl->u.var.init = whole;
+    viewDecl->u.var.mut  = false;               /* the view itself is never rebound */
+    viewDecl->u.var.overwrite = false;
+
+    /* `i64(0)`, not `0`: this index is compared with `.len` and used to subscript, both of
+     * which are `i64`. A bare literal would default to `i32` and *work* - comparisons widen
+     * - but the generated C would then index an `i64` view with an `int32_t`, and the
+     * conversions would be there for no reason. The user's own range form keeps the type of
+     * its lower bound instead: `for i in 0..a.len` is legal (the comparison widens) and a
+     * `for i in i64(0)..a.len` indexes without any conversion at all. */
+    Expr *zero = exprNew(p->arena, EX_CONV, line);
+    zero->u.conv.typeName = "i64";
+    zero->u.conv.operand  = forInt(p, 0, line);
+    Stmt *idxDecl = stmtNew(p->arena, ST_VAR, line);
+    idxDecl->u.var.name = "__extc_i";
+    idxDecl->u.var.ann  = NULL;
+    idxDecl->u.var.init = zero;
+    idxDecl->u.var.mut  = true;
+    idxDecl->u.var.overwrite = false;
+
+    Expr *cond = exprNew(p->arena, EX_BIN, line);
+    cond->u.bin.op    = "<";
+    cond->u.bin.left  = forIdent(p, "__extc_i", line);
+    Expr *lenOf = exprNew(p->arena, EX_FIELD, line);
+    lenOf->u.field.obj  = forIdent(p, "__extc_s", line);
+    lenOf->u.field.name = "len";
+    cond->u.bin.right = lenOf;
+
+    Stmt *elemDecl = stmtNew(p->arena, ST_VAR, line);
+    elemDecl->u.var.name = vn->text;
+    elemDecl->u.var.ann  = NULL;
+    Expr *indexed = exprNew(p->arena, EX_INDEX, line);
+    indexed->u.index.obj   = forIdent(p, "__extc_s", line);
+    indexed->u.index.index = forIdent(p, "__extc_i", line);
+    elemDecl->u.var.init = indexed;
+    elemDecl->u.var.mut  = false;               /* a copy: writing it does not write back */
+    elemDecl->u.var.overwrite = false;
+
+    Stmt *inner[3] = { elemDecl, body, forStep(p, "__extc_i", "+=", forInt(p, 1, line), line) };
+    Stmt *w = stmtNew(p->arena, ST_WHILE, line);
+    w->u.whiles.cond = cond;
+    w->u.whiles.body = forBlock(p, inner, 3, line);
+    Stmt *outer[3] = { viewDecl, idxDecl, w };
+    return forBlock(p, outer, 3, line);
+}
+
 static Stmt *parseWhile(Parser *p) {
     Token *kw = take(p);                    /* while */
     const bool saved = p->inCond;

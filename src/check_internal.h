@@ -648,6 +648,9 @@ int valDepthForStore (Checker *, Expr *);
  void ckError (Checker *c, int line, const char *note, const char *fmt, ...);
 /* Report a warning at a line. A warning is recorded but does not stop the compilation. */
  void ckWarn  (Checker *c, int line, const char *note, const char *fmt, ...);
+/* Resolve the operator of a compound assignment; returns the type of `target op value`. */
+ Type *checkCompoundOp(Checker *c, const char *op, Expr *target, Expr *value,
+                       Type *tgt, Type *val, Expr **out);
 /* Rewrite a bare constructor into the qualified variant construction. */
  void desugarBareCtor (Checker *c, Expr *e, Type *want);
 /* Report an error unless the type is `bool`; the language has no implicit truthiness. */

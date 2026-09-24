@@ -14,7 +14,7 @@
 /* ================================================================ tables */
 
 static const char *KEYWORDS[] = {
-    "fn", "let", "var", "if", "else", "while", "return", "match",
+    "fn", "let", "var", "if", "else", "while", "for", "return", "match",
     "break", "continue", "struct", "type", "true", "false", "ref", "mut",
     "use",                            /* semantic import: `use std::io` */
     "extern",                         /* C interop: `extern!("libc")` + effect declaration */
@@ -34,7 +34,7 @@ static const char *BUILTIN_TYPES[] = {
  * `-`, or a function type would lex as a minus sign. */
 static const char *PUNCTS[] = {
     "->", "==", "!=", "<=", ">=", "&&", "||", "...", "..", "::", "=>", "??",
-    "+=", "-=", "*=", "/=",
+    "+=", "-=", "*=", "/=", "%=",
     "|", "&", "^", "~", "@",
     "+", "-", "*", "/", "%", "=", "<", ">", "!", "?",
     "(", ")", "{", "}", "[", "]", ",", ":", ";", ".",
