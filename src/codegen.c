@@ -84,6 +84,23 @@ typedef struct {
     const char *body;    /* the definition, exactly as emitted; NULL until emitted */
 } DeadFunc;
 
+/* A local declaration that may never be read.
+ *
+ * A local name that occurs exactly once in its own function body cannot be used: that one
+ * occurrence is the declaration. The stage is therefore the body text - the same capture
+ * the function pruning already keeps - so no byte offsets have to survive anything, and
+ * the answer is sound by construction.
+ *
+ * What is deliberately *not* done here: guessing declarations from indentation and a
+ * trailing `;`. That matches assignments too (`foo = f();` is a statement with a side
+ * effect) and deleting one would drop the call. Only lines the generator itself emitted as
+ * a declaration are registered. */
+typedef struct {
+    const char *name;      /* C name of the local */
+    const char *text;      /* the declaration line, exactly as emitted */
+    const char *funcName;  /* C name of the function it belongs to */
+} DeadLocal;
+
 typedef struct {
     const char *name;   /* the C name, as written into the output */
     const char *text;   /* the definition, exactly as emitted, newline included */
@@ -224,6 +241,12 @@ typedef struct {
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
     Vec         deadFuncs;      /* DeadFunc*: functions that may have no caller */
+    Vec         deadLocals;     /* DeadLocal*: local declarations that may be unread */
+    const char *curFuncName;    /* C name of the function being generated */
+    /* `main` is not a candidate for function pruning, so it has no DeadFunc entry - but its
+     * locals still need a stage to be counted on, and that is its body text. */
+    const char *mainFuncName;
+    const char *mainBody;
     /* The runtime primitive block, captured whole as it is emitted. clang reports an
      * unused `static inline` where gcc does not, so this is the one place where the two
      * compilers disagree about the same text. The block is scanned afterwards instead of
@@ -2026,6 +2049,10 @@ static const char *genExpr(CG *g, Expr *e) {
 
 static void genStmt(CG *g, Stmt *s);
 
+/* Declared here because statements register their local declarations as they are emitted
+ * (see DeadLocal): the definition sits with the other unreferenced-definition helpers. */
+static void localDef(CG *g, size_t before, const char *name);
+
 /* -------------------------------------------------------------- conditions
  * A statement brings its own parentheses, and the expression printer adds a pair
  * around a comparison: `if x == y` therefore came out as `if ((x == y))`, which
@@ -2715,13 +2742,17 @@ static void genStmtInner(CG *g, Stmt *s) {
             if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.var.init);
                 flushPrefix(g);
+                size_t lb = g->out->len;
                 cgLine(g, "%s %s = %s;", cType(g, s->type), nm, tryPayloadPath(g, &ti));
+                localDef(g, lb, nm);
                 return;
             }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
                                              : zeroInit(g, s->type);
             flushPrefix(g);
+            size_t lb = g->out->len;
             cgLine(g, "%s %s = %s;", cType(g, s->type), nm, init);
+            localDef(g, lb, nm);
             return;
         }
 
@@ -3203,7 +3234,18 @@ static void genFunc(CG *g, FuncDef *f) {
     g->isRecursive = funcCallsItself(g, f);
     if (g->isRecursive)
         cgLine(g, "extc_rec_enter(\"%s\", %d);", g->path, f->line);
+    const char *savedFuncName = g->curFuncName;
+    g->curFuncName = cFuncName(g, f);
+    size_t mb = g->out->len;
     genBlockBody(g, f->body);
+    if (isMain) {
+        g->mainFuncName = g->curFuncName;
+        Buf mbt;
+        bufInit(&mbt, g->arena);
+        bufPutn(&mbt, g->out->data + mb, g->out->len - mb);
+        g->mainBody = bufCstr(&mbt);
+    }
+    g->curFuncName = savedFuncName;
     /* Falling off the end of the body is an exit too, so the depth is
      * decremented here as well; otherwise the depth would only grow and a
      * legitimate program would be reported as a stack overflow. A function with
@@ -3756,6 +3798,18 @@ static void deadFuncBody(CG *g, FuncDef *f, const char *text, size_t len) {
 
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle);
 
+/* Remember a local declaration: `before` is where its line started in the current buffer. */
+static void localDef(CG *g, size_t before, const char *name) {
+    Buf l;
+    bufInit(&l, g->arena);
+    bufPutn(&l, g->out->data + before, g->out->len - before);
+    DeadLocal *d = arenaAllocZero(g->arena, sizeof *d);
+    d->name     = name;
+    d->text     = bufCstr(&l);
+    d->funcName = g->curFuncName;
+    *(DeadLocal **)vecPush(&g->deadLocals) = d;
+}
+
 /* Drop the runtime definitions nothing uses.
  *
  * The block is captured as one piece of text and scanned in the style it was written:
@@ -3866,6 +3920,44 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
     *lenp = len;
 }
 
+/* Drop local declarations that nothing reads. The stage is the whole function body: a name
+ * that occurs there exactly once is the declaration itself. */
+static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
+    char  *text = *textp;
+    size_t len  = *lenp;
+    for (;;) {
+        bool cut = false;
+        for (size_t i = 0; i < g->deadLocals.len && !cut; i++) {
+            DeadLocal *d = *(DeadLocal **)vecAt(&g->deadLocals, i);
+            if (!d->text || !d->funcName) continue;
+            const char *body = NULL;
+            for (size_t k = 0; k < g->deadFuncs.len; k++) {
+                DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+                if (df->body && strcmp(df->name, d->funcName) == 0) { body = df->body; break; }
+            }
+            if (!body && g->mainBody && strcmp(d->funcName, g->mainFuncName) == 0)
+                body = g->mainBody;                    /* main has no DeadFunc entry */
+            if (!body) continue;                       /* its function is gone already */
+            char  *bp = strstr(text, body);
+            if (!bp) continue;
+            size_t bl = strlen(body);
+            if (countMentionsIn(g, bp, bl, d->name) != 1) continue;    /* read somewhere */
+            char  *ln = strstr(bp, d->text);
+            if (!ln || ln >= bp + bl) continue;        /* not where it should be */
+            size_t tl = strlen(d->text);
+            memmove(ln, ln + tl, len - (size_t)(ln - text) - tl + 1);
+            len -= tl;
+            out->len = len;
+            text = bufCstr(out);
+            d->text = NULL;
+            cut = true;
+        }
+        if (!cut) break;
+    }
+    *textp = text;
+    *lenp = len;
+}
+
 /* The same count, over one piece of the body buffer, which is not terminated. */
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
     Buf sc;
@@ -3906,6 +3998,10 @@ static void dropUnreferenced(CG *g, Buf *out) {
         len -= tl;
         out->len = len;
     }
+    /* Local declarations that nothing reads: after the offset-based phase, before the
+     * phases that remove whole functions (a local of a function that is gone needs no
+     * decision). */
+    dropUnusedLocals(g, out, &text, &len);
     /* Functions nobody calls. Both halves are located by their own text, so what is
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
@@ -3999,6 +4095,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.eqNeed, arena, sizeof(void *));
     vecInit(&g.deadDefs, arena, sizeof(DeadDef *));
     vecInit(&g.deadFuncs, arena, sizeof(DeadFunc *));
+    vecInit(&g.deadLocals, arena, sizeof(DeadLocal *));
     bufInit(&g.desc, arena);
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
