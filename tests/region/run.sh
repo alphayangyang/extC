@@ -74,6 +74,13 @@ if "$EXTC" tests/region/churn.extc -o "$TMP/churn.c" 2>"$TMP/cerr"; then
     else
         echo "  FAIL 生成的 C 编不过："; head -4 "$TMP/gerr" | sed 's/^/        /'; fail=1
     fi
+    if command -v clang >/dev/null 2>&1; then
+        if clang -std=c11 -Wall -Wextra -Werror -c -o /dev/null "$TMP/churn.c" 2>"$TMP/cerr2"; then
+            echo "  ok   clang -Wall -Wextra -Werror 也干净"
+        else
+            echo "  FAIL clang 报了："; head -4 "$TMP/cerr2" | sed 's/^/        /'; fail=1
+        fi
+    fi
     if $CC -std=c11 -g -fsanitize=address -o "$TMP/churn_asan" "$TMP/churn.c" 2>/dev/null; then
         out=$("$TMP/churn_asan" 2>&1)
         if echo "$out" | grep -q "Sanitizer"; then
