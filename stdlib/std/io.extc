@@ -631,3 +631,67 @@ fn inBad() -> bool { return IN_BAD }
 fn inClear() { IN_BAD = false }
 
 let cin: istream = istream { fd: 0 }
+
+/* ================================================================ 格式化（一处实现）
+ *
+ * 把 `i64` 渲染成十进制写进 `out`，返回长度 ✓ 三个流共用这一份：
+ * 控制台的 `cout` 能借内建打印（它写 stdout ✓），但**文件流与 stderr 流不能**
+ * （内建打印写死 stdout ✗）⇒ 格式化必须在库里，而且只能有**一份** ✗
+ *
+ * `f64` 还没做：它要真正的浮点格式化（最短往返 / `%g` 那一套），属于"格式化层搬进库"
+ * 那一步 —— 也正是 `print`/`println` 退役的前提 ✓
+ */
+fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
+    var tmp: [24]u8
+    var n: i64 = 0
+    var neg: bool = v < i64(0)
+    var u: i64 = v
+    if neg { u = i64(0) - u }
+    if u == i64(0) { tmp[0] = u8(48)  n = 1 }
+    while u > i64(0) {
+        tmp[n] = u8(48 + (u % i64(10)))
+        u = u / i64(10)
+        n = n + 1
+    }
+    if neg { tmp[n] = u8(45)  n = n + 1 }
+    var k: i64 = 0
+    while k < n && k < out.len {
+        out[k] = tmp[n - i64(1) - k]
+        k = k + 1
+    }
+    return k
+}
+
+/* ================================================================ stderr 流
+ *
+ * `cerr << ...` —— 诊断走 stderr，而 `print`/`println` 走 **stdout** ✓
+ * （量过：`println` 的输出在 `>/dev/null` 时消失、在 `2>/dev/null` 时还在 ✓）
+ * 这个区分是必要的：`prog > out.txt` 要能拿到**程序的正常输出**，而错误/日志不该混进去 ✓
+ *
+ * 与 `cout` 同一形状（薄句柄、`<<` 按值返回）⇒ 拷贝无害、链式成立 ✓
+ * ⚠️ 每次写之前先 `flush()`：stdout 是带缓冲的，不冲就会**插队**（顺序错乱是这类程序
+ *    最难查的毛病 ✓ 与 `io::writer` 对 STDOUT/STDERR 的处理同一条规矩 ✓）
+ */
+struct errStream {
+    fn <<(self: ref errStream, v: slice<u8>) -> errStream { errWrite(v)  return { } }
+    fn <<(self: ref errStream, v: mut slice<u8>) -> errStream { errWrite(v)  return { } }
+    fn <<(self: ref errStream, v: i64) -> errStream {
+        var buf: [24]u8
+        let n = fmtI64(v, buf[..])
+        errWrite(buf[0..n])
+        return { }
+    }
+    fn <<(self: ref errStream, v: bool) -> errStream {
+        if v { errWrite("true") } else { errWrite("false") }
+        return { }
+    }
+}
+
+let cerr: errStream = errStream { }
+
+fn errWrite(s: slice<u8>) {
+    if s.len == i64(0) { return }
+    flush()                                    /* 先放 stdout，见上面的 ⚠️ */
+    /* 返回值丢弃：stderr 写失败也没有别的地方可报（这正是"诊断通道"的处境 ✓）*/
+    sysio::write(i32(2), s.data, s.len)
+}

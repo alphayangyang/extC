@@ -46,7 +46,7 @@ else bad "tests/generics/run.sh"; echo "$out"; fi
 
 echo "== IO 第一块（定案 73：std::sys 原语 + std::io 库 —— 能从 stdin 读了）=="
 if out=$(timeout 600 ./tests/io/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层 + 流式：控制台 `cin >> x` · 文件 `fin >> 整数 >> 一行 >> 一个字节`）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层 + 流式：控制台 `cin >> x` · 文件 `fin >> 整数 >> 一行 >> 一个字节` · `cerr` 与 stdout 分开）"
 else bad "tests/io/run.sh"; echo "$out"; fi
 
 echo "== extern! + 信任声明（定案 72：签字才放行 · 默认最保守）=="

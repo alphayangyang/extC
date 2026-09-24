@@ -1977,6 +1977,35 @@ fn main() -> i32 {
 `?` 的语义是"把失败交给外层"，而 `main` 的外层是**进程边界** ⇒ 交出去 = **说清楚然后死** ✓
 别的函数仍必须声明 `result` 才能用 `?` ✓（`main` 返回类型不许改：C 入口返回 `int` ✓）
 
+### 12.3.2 五个流：`cin` / `cout` / `cerr` / `fin` / `fout`（2026-09-24）
+
+```extc
+use std::io::{cin, cout, cerr, endl}
+use std::fs
+
+fn log(n: i64) { cerr << "log: " << n << endl }        // 任何函数里都能写诊断 ✓
+
+fn main() -> i32 {
+    fs::openIn("input.txt")?
+    fs::openOut("app.log")?
+    var a: i64 = 0
+    var b: i64 = 0
+    cin >> a >> b                                       // 控制台读
+    fs::fin >> a >> b                                   // 文件读（同一个形状 ✓）
+    cout << a + b << endl                               // 正常输出 → stdout
+    fs::fout << "结果 = " << a + b << endl              // 文件写（任何函数里都能写 ✓）
+    cerr << "仅诊断" << endl                            // 诊断 → stderr
+    fs::closeIn()?
+    fs::closeOut()?
+    return 0
+}
+```
+
+- **`print` / `println` 打 stdout**（量过 ✓），**`cerr` 才打 stderr** ✓ 两条通道分开，
+  所以 `prog > out.txt` 只收正常输出 ✓
+- 文件的 `fin`/`fout` 是**程序级的那一个**（各一个 fd）⇒ 不用把流当参数一路传 ✓
+  它们**不是**在静态段打开的（理由见 `docs/topics/IO.md`）：`main` 里一句话 + 定案 89 的 `?` ✓
+
 ### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
 
 ```extc

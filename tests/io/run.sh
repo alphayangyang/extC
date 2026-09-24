@@ -65,6 +65,28 @@ else
     echo "  FAIL file-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
 fi
 
+echo "== cerr：诊断走 stderr，print/println 走 stdout（两条通道分得开）=="
+if "$EXTC" --run tests/io/cerr.extc >build/cerr-out.txt 2>build/cerr-err.txt; then
+    ok=1
+    # ① stdout 只有正常输出
+    if grep -q "诊断" build/cerr-out.txt; then ok=0; fi
+    grep -qF "正常输出 1" build/cerr-out.txt || ok=0
+    grep -qF "正常输出 2" build/cerr-out.txt || ok=0
+    # ② stderr 只有诊断（且格式化对）
+    grep -qF "诊断 1：n = -42" build/cerr-err.txt || ok=0
+    grep -qF "诊断 2：对 = true" build/cerr-err.txt || ok=0
+    if grep -q "正常输出" build/cerr-err.txt; then ok=0; fi
+    # ③ 顺序：诊断 1 在 诊断 2 之前
+    if ! awk '/诊断 1/{a=NR} /诊断 2/{b=NR} END{exit !(a<b)}' build/cerr-err.txt; then ok=0; fi
+    if [ "$ok" = 1 ]; then
+        echo "  ok   cerr  ->  stdout「$(tr '\n' '|' < build/cerr-out.txt)」· stderr「$(tr '\n' '|' < build/cerr-err.txt)」"
+    else
+        echo "  FAIL cerr  ->  两条通道混了（out=$(tr '\n' '|' < build/cerr-out.txt) err=$(tr '\n' '|' < build/cerr-err.txt)）"; fail=1
+    fi
+else
+    echo "  FAIL cerr  ->  跑不起来"; fail=1
+fi
+
 echo "== 定案 89：**main 里的 `?` 直接 trap**（在 main 里开文件是最常见的写法）=="
 if out=$("$EXTC" --run tests/io/main-question.extc 2>&1); then
     rc=$?

@@ -12,9 +12,10 @@
  * 判据：① 三个 `>>` 的右操作数类型各来一次（整数 / 一行 / —— 字节在别处覆盖）✓
  *      ② **在别的函数里**写同一个文件 ✓ ③ 收尾 close 之后内容落盘 ✓ */
 use std::fs
+use std::io::{endl}
 
 fn report(n: i64) {
-    fs::fout << "别的函数里读到 line = " << n << fs::nl
+    fs::fout << "别的函数里读到 line = " << n << endl
 }
 
 fn main() -> i32 {
@@ -24,9 +25,9 @@ fn main() -> i32 {
     var b: i64 = 0
     var line: mut slice<u8> = new u8[64]
     fs::fin >> a >> b
-    fs::fout << "两个整数 = " << a << " " << b << fs::nl
+    fs::fout << "两个整数 = " << a << " " << b << endl
     fs::fin >> line
-    fs::fout << "一行 = " << line << fs::nl
+    fs::fout << "一行 = " << line << endl
     report(a + b)
     /* 同时打到 stdout：判据既查**文件内容**（证明那条路真的落盘了）也查这里 ✓ */
     println("两个整数 = ", a, " ", b)

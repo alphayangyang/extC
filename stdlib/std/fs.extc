@@ -292,24 +292,10 @@ struct outStream {
      * 但那是语言决定，不是库能糊过去的 ✓ */
     fn <<(self: ref outStream, v: mut slice<u8>) -> outStream { outPut(v)  return { } }
     fn <<(self: ref outStream, v: i64) -> outStream {
-        /* 数字自己格式化（文件流不能用内建 `print` —— 那个写的是 stdout ✗）；
-         * `f64` 还没做：它要真正的浮点格式化，属于"格式化层搬进库"那一步 ✓ */
-        var tmp: [24]u8
-        var n: i64 = 0
-        var neg: bool = v < i64(0)
-        var u: i64 = v
-        if neg { u = i64(0) - u }
-        if u == i64(0) { tmp[0] = u8(48)  n = 1 }
-        while u > i64(0) {
-            tmp[n] = u8(48 + (u % i64(10)))
-            u = u / i64(10)
-            n = n + 1
-        }
-        if neg { tmp[n] = u8(45)  n = n + 1 }        /* '-' */
-        var rev: [24]u8
-        var k: i64 = 0
-        while k < n { rev[k] = tmp[n - i64(1) - k]  k = k + 1 }
-        outPut(rev[0..n])
+        /* 格式化用 `io::fmtI64` —— 一处实现，别在这里再写一份 ✗ */
+        var buf: [24]u8
+        let n = io::fmtI64(v, buf[..])
+        outPut(buf[0..n])
         return { }
     }
     fn <<(self: ref outStream, v: bool) -> outStream {
@@ -321,7 +307,7 @@ struct outStream {
 
 /* 空结构体当句柄：常量初始化 ✓（定案 65 才让这条成立 —— `outStream { }` 每个字段都是常量 ✓）*/
 let fout: outStream = outStream { }
-let nl: slice<u8> = "\n"
+/* 换行符用 `std::io` 的 `endl` —— **不在这里再定义一个**（一种东西一个写法 ✓）*/
 
 /* 打开（或重开）程序级输出流。旧的那个**必须先 close**（不然那个 fd 就漏了 ✓）*/
 fn openOut(path: slice<u8>) -> result<unit, io::ioError> {

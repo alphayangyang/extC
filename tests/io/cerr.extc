@@ -1,0 +1,16 @@
+/* `cerr`：诊断走 **stderr**，而 `print`/`println` 走 **stdout** ✓
+ *
+ * 判据（tests/io/run.sh 里做重定向）：
+ *   ① stdout 里**只有**正常输出（`cerr` 那几行不许混进去 ✓ —— 这正是 `prog > out.txt` 的前提）
+ *   ② stderr 里只有 `cerr` 那几行（顺序与代码里一致 ✓）
+ *   ③ `cerr << 整数` 的格式化对（负数 ✓）—— 走的是库里共享的 `io::fmtI64`（一处实现 ✓）
+ */
+use std::io::{cerr, cout, endl}
+
+fn main() -> i32 {
+    cout << "正常输出 1" << endl
+    cerr << "诊断 1：n = " << i64(0) - i64(42) << endl
+    cout << "正常输出 2" << endl
+    cerr << "诊断 2：对 = " << true << endl
+    return 0
+}

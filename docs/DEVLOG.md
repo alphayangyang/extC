@@ -301,6 +301,24 @@ io 21 · modules 23 · genmatrix 13 · fs · fs-shape · nocopy ✓
 判据 `tests/fs/global-io.extc`（三个 `>>` · 在别的函数里写 · **stdout 与文件内容都查**）⇒ fs 节 7 → 8 项 ✓
 语料 **256/0** ✓（mangle 改过 ⇒ 全量重跑 ✓）
 
+### ⑮ `cerr`：五个流齐活儿（`cin` / `cout` / `cerr` / `fin` / `fout`）
+
+主人「print/println 那个也是打印到 stderr 吧」⇒ **量了一下：不是** ✓
+`print` / `println` 打的是 **stdout**（`prog > out.txt` 抓到它们 · `2>/dev/null` 杀不掉 ✓），
+而 `trap:` 那类走 stderr ✓ ⇒ 这个区分本来是对的、也不该改：stdout 是**程序的正常输出**，
+stderr 是**诊断**通道 ✓ 所以补的是 `cerr`（诊断），不是把 print 家族搬去 stderr ✓
+
+`cerr` 与 `cout` 同一形状（薄句柄、`<<` 按值返回 ✓），每次写之前先 `flush()`
+（stdout 带缓冲，不冲会**插队** —— 这类顺序错乱最难查 ✓ 与 `io::writer` 对 STDOUT/STDERR 同一条规矩 ✓）
+
+⚠️ 顺手收掉一处**我自己造的重复**：`fs::outStream` 的整数格式化与控制台那份是两份 ✗
+⇒ 抽成 `io::fmtI64`，三个流共用一份（内建打印写死 stdout ⇒ 文件流/stderr 流用不了它 ✗
+所以格式化必须在库里，而且只能一份 ✓）· 同时删掉 `fs::nl`（与 `io::endl` 同义 ⇒
+一种东西一个写法 ✓ 定案 81 的规矩）
+
+判据 `tests/io/cerr.extc` + 重定向断言（stdout 只有正常输出 · stderr 只有诊断 · 顺序对 ·
+负数格式化对 ✓）⇒ io 节 **24 项** rc=0 ✓ 语料 **256/0** ✓ fs/ops/modules 全绿 ✓
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·

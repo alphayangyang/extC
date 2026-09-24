@@ -567,6 +567,33 @@ fn main() -> i32 {
 **只对 `main` 生效**：别的函数仍必须声明 `result` 才能用 `?` ✓
 （判据：`tests/io/main-question.extc` + `tests/traps/main_question.extc` ✓）
 
+### 五个流：`cin` / `cout` / `cerr` / `fin` / `fout`（2026-09-24 齐活儿）
+
+| 流 | 去哪 | 怎么来的 |
+|---|---|---|
+| `cin` | stdin（读） | `use std::io::{cin}` ✓ |
+| `cout` | stdout（写） | 同上 ✓ |
+| **`cerr`** | **stderr（诊断）** | 同上 ✓ |
+| `fin` | 一个文件（读） | `fs::openIn("…")?` 之后到处能用 ✓ |
+| `fout` | 一个文件（写） | `fs::openOut("…")?` 同上 ✓ |
+
+**`cerr` 与 `print`/`println` 的区别（量过，别记反）**：
+`print` / `println` 打的是 **stdout** ✗ 不是 stderr（`prog > out.txt` 能抓到它们 ✓，
+`2>/dev/null` 杀不掉 ✓）；`cerr << ...` 打的才是 **stderr** ✓ 这个区分是必要的：
+`prog > out.txt` 要拿到**程序的正常输出**，而错误/日志不该混进去 ✓
+（`trap:` 那类消息也走 stderr ✓）
+
+```extc
+use std::io::{cerr, cout, endl}
+
+cout << "正常输出" << endl                  // stdout ✓
+cerr << "诊断：n = " << n << endl           // stderr ✓（写之前先 flush stdout ⇒ 顺序不插队）
+```
+`cerr` 与 `cout` 同一形状（薄句柄、`<<` 按值返回、链式成立 ✓）；整数格式化三个流
+**共用 `io::fmtI64` 一份**（内建打印写死 stdout ⇒ 文件流/stderr 流用不了它 ✗）✓
+⚠️ `f64` 还没做：要真正的浮点格式化（最短往返 / `%g` 那一套），属于"格式化层搬进库"那一步 ——
+也正是 `print`/`println` 退役的前提 ✓
+
 ### 程序级输入/输出流：`fs::fin` / `fs::fout`（2026-09-24）
 
 > 起因：主人「**如果我想在别的函数里 `fout` 就很神秘了，我总不能再创建一个然后注册同一个文件吧**」✓
