@@ -7,13 +7,12 @@
  * 期 1 只有"管理面"：建 / 释放 / 重置 / 世代 / 存活数 ✓ 而**带类型的内存分配**（`new (r) T[n]`）
  * 要到期 2 —— 因为 `extern!` 不许返回 `slice<T>`（会变成两个 C 参数 ✗），extC 也没有指针转换 ✗
  *
- * `level` 是"创建它的那个块"，编号就是生成物里 `__extc_a` 的**下标**：函数体是 1，
  * 第一个嵌套块是 2，再往里递增 ✓ 块退出时生成器发 `extc_pool_releaseLevel(frame, level)`，
  * 挂在那一层的 pool 子树跟着走 ✓ 传 0 = "只挂在帧上"（帧退时释放 ✓）
  *
  * ⚠️ 期 1 里这个层号得由**调用方**传对（判据 `tests/pool/blockexit.extc` 把它钉住 ✓）；
  * 期 2 的 `new (r) T[n]` 由**生成器**发这个数 ⇒ 用户与库都不用管它了 ✓ */
-extern!("extc-runtime") fn extc_pool_new(parent: i64, level: i64) -> i64
+extern!("extc-runtime") fn extc_pool_new(parent: i64) -> i64
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_drop(rid: i64) -> void
     effects Addr=0 Cont=0

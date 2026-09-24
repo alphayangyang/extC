@@ -251,6 +251,8 @@ typedef struct {
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every function carries the two hooks that key pools to its frame and its blocks. */
     bool        needPool;
+    /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
+    bool        zoneHere;
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -2499,7 +2501,9 @@ static void cgReleaseLevel(CG *g, int lvl) {
     /* Regions first, then the arena: a pool's memory is its own malloc block, so the two are
      * independent, but releasing the pools that belong to this block is what the block's
      * release point is for (POOLS.md section 3.4 - leaving a block takes its subtree). */
-    if (g->needPool) cgLine(g, "extc_pool_releaseLevel(__extc_zone, %d);", lvl);
+    /* 离开一个地方：弹回它开始时的深度（mark），而不是盲目弹一个 —— 早退路径
+     * （return/break/continue）因此不会把 zone 栈弄歪。 */
+    if (g->zoneHere) cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -2759,7 +2763,12 @@ static void genBlockBody(CG *g, Stmt *block) {
      * block statement it just inspected. */
     assert(block != NULL && block->kind == ST_BLOCK);
     g->blkLevel++;
-    if (!g->noArena) cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
+    if (!g->noArena) {
+        cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
+        /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）*/
+        if (g->zoneHere && g->blkLevel > 1)
+            cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+    }
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         genStmt(g, *(Stmt **)vecAt(&block->u.block.stmts, i));
     cgReleaseLevel(g, g->blkLevel);
@@ -3329,8 +3338,16 @@ static void genFunc(CG *g, FuncDef *f) {
     /* The frame mark: pools created while this frame runs are linked to it, so leaving
      * the frame drops them whatever their block did (POOLS.md section 3.5). Emitted where
      * the arena exists, because hanging pools off an arena level is what this frame does. */
-    if (g->needPool && !g->noArena)
-        cgLine(g, "int64_t __extc_zone = extc_pool_zoneEnter(__extc_a, %d);", maxLv + 1);
+    /* 这个函数是不是「一个地方」：只有入口文件的函数是，库函数对地方透明
+     * （`pool<T>::withCap` 建的池属于它的调用者所在的地方）。判据是两个名字里都没有 `$` ——
+     * loader 把模块的函数改成 `mod$name`，泛型实例还把带 `$` 的名字放在 `instName` 里。 */
+    {
+        bool lib = (f->name && strchr(f->name, '$')) ||
+                   (f->instName && strchr(f->instName, '$'));
+        g->zoneHere = g->needPool && !lib;
+    }
+    if (g->zoneHere && !g->noArena)
+        cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* 函数体是一个地方 */");
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
@@ -3496,7 +3513,7 @@ static void genFunc(CG *g, FuncDef *f) {
          * leak one block per arena at every return -- bounded, but a leak. */
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
-        if (g->needPool) cgLine(g, "extc_pool_zoneLeave(__extc_zone);");
+        if (g->zoneHere) cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm1);");
         if (isMain) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the

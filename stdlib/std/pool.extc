@@ -31,6 +31,8 @@
 
 /* A stable reference to one slot. It is a **value**: copying it is fine (that is the
  * point of a handle -- the container owns the memory, the handle only names it). */
+use std::sys::pool as syspool    /* 运行期池：随容器创建，release 时整批还 */
+
 struct handle {
     slot: i32
     gen:  i32
@@ -56,6 +58,9 @@ struct pool<T> {
      *   A handle access used to be **three dependent random loads** (sparse, gens, value);
      *   it is two now, and the metadata per slot went 12 -> 8 bytes. */
     ent:    mut slice<i64>
+    /* 运行期池（POOLS.md）：数据住它所在的 arena，池是 arena 旁边的那条旁链；
+     * 随本容器一起创建，所在的地方退出时整条链一起走。release 之后为 -1。 */
+    pid:    i64
     free:   i32                /* head of the free list (-1 = none) */
     n:      i64                /* live values, always the dense prefix */
     cap:    i64
@@ -78,6 +83,7 @@ struct pool<T> {
             vals:   new T[c],
             slots:  new i32[c],
             ent:    new i64[c],
+            pid:    syspool::extc_pool_new(i64(-1)),
             free:   i32(-1),
             n:      i64(0),
             cap:    c,
@@ -160,6 +166,15 @@ struct pool<T> {
 
     /* Drop every value but **keep the capacity and the slots** (memory is reused, not
      * returned -- returning memory needs a pool: phase 1). */
+    /* 把整批还给这一层（POOLS.md）：容器自己的簿记重置 + 运行期池重置。
+     * 不叫 close —— 所在的地方退出时这棵树本来就会被自动清空，close 会被读成"你负责关"。 */
+    fn release(self: mut ref pool<T>) {
+        syspool::extc_pool_reset(self.pid)
+        self.clear()
+        syspool::extc_pool_drop(self.pid)
+        self.pid = i64(-1)
+    }
+
     fn clear(self: mut ref pool<T>) {
         var i: i64 = 0
         while i < self.cap {
