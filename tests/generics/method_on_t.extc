@@ -1,0 +1,28 @@
+// 泛型体里对**类型参数**调用方法（PLAN #57）：模板期推迟，实例化时解析
+//
+// 两条路径都要过：自由泛型函数 `fn hashOf<T>(v: T)`，以及泛型容器的方法
+// `box<T>::h` 对元素调 `hash()` —— 后者正是"泛型容器能对元素做点事"这句话本身。
+// expect: h=65 hb=129
+use std::io
+
+struct point {
+    x: i64
+    y: i64
+    fn hash(self: ref point) -> i64 { return self.x * i64(31) + self.y }
+}
+
+fn hashOf<T>(v: T) -> i64 { return v.hash() }
+
+struct box<T> {
+    v: T
+    fn h(self: ref box<T>) -> i64 { return self.v.hash() }
+}
+
+fn main() -> i32 {
+    var p: point = { x: i64(2), y: i64(3) }
+    io::cout << "h=" << hashOf(p)
+    var q: point = { x: i64(4), y: i64(5) }
+    var b: box<point> = { v: q }
+    io::cout << " hb=" << b.h() << "\n"
+    return 0
+}

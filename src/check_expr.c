@@ -1848,6 +1848,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             FuncDef *f = findMethod(rb, e->u.method.name);
             if (!f) {
+                /* A method call on a type parameter (`#57`): `T` is opaque on the template, so
+                 * which method this means is only known per instance. Record it and hand back
+                 * the error type -- that type exists so errors do not cascade, and
+                 * `checkAssignable` waves it through -- then the instance pass decides and
+                 * reports (`runMethodCheck` in check_top.c). Without this a generic container
+                 * could not do anything at all with a value of its element type, which is
+                 * exactly what blocked `hashMap<K, V>`: hashing a `K` means calling `hash()` on
+                 * a type parameter. */
+                if (c->curFunc && mentionsParam(recvT)) {
+                    MethodCheck *mc = (MethodCheck *)arenaAllocZero(c->arena, sizeof(MethodCheck));
+                    mc->node  = e;
+                    mc->owner = c->curFunc->owner;
+                    mc->name  = e->u.method.name;
+                    mc->nargs = e->u.method.args.len;
+                    mc->func  = c->curFunc;
+                    *(MethodCheck **)vecPush(&c->methodChecks) = mc;
+                    return ttError(tt);
+                }
                 StructDef *sd = structOf(rb);
                 Buf note;
                 bufInit(&note, c->arena);

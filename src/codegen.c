@@ -1593,10 +1593,17 @@ static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
 }
 
 static const char *genMethodCall(CG *g, Expr *e) {
+    /* The receiver's type as this instance sees it. Inside a generic body the written type may
+     * still mention `T`, and for a call the checker deferred (`#57`, a method on a type
+     * parameter) the node carries no `func` at all: the method is resolved here, on the
+     * substituted type, the same way the operators are resolved a few functions down. The
+     * checker deliberately leaves `e->func` alone -- one template body has many instances, so a
+     * `func` stored there would be the wrong method for all but the last one. */
+    Type *recvT = subst(g, e->u.method.recv->type);
     FuncDef *f = e->func;
+    if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
     if (!f) return "0";
 
-    Type *recvT = e->u.method.recv->type;
     Param *p0 = *(Param **)vecAt(&f->params, 0);
     const char *recvC = genExpr(g, e->u.method.recv);
 

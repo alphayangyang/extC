@@ -1,0 +1,14 @@
+// 反例：实例的类型没有那个方法 ⇒ 实例化时点名诊断（PLAN #57）
+// expect: `hashOf_nopoint` needs `nopoint` to define `hash`
+use std::io
+
+struct nopoint { x: i64 }
+
+fn hashOf<T>(v: T) -> i64 { return v.hash() }
+
+fn main() -> i32 {
+    var n: nopoint = { x: i64(1) }
+    let got: i64 = hashOf(n)
+    if got > i64(0) { return 0 }
+    return 1
+}

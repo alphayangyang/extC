@@ -18,6 +18,20 @@ else
     else echo "  FAIL generic-free-fn  ->  输出对不上"; fail=1; fi
 fi
 
+echo "== 正例：泛型体里对类型参数调用方法（PLAN #57：模板期推迟，实例化时解析）=="
+check_pos() {
+    local name=$1 f=$2 out want ok=1 p
+    if ! out=$("$EXTC" --run "$f" 2>&1); then
+        echo "  FAIL $name  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1; return
+    fi
+    want=$(grep -o '// expect:.*' "$f" | sed 's|// expect: *||' | head -1)
+    IFS='|' read -ra parts <<< "$want"
+    for p in "${parts[@]}"; do echo "$out" | grep -qF -- "$p" || ok=0; done
+    if [ "$ok" = 1 ]; then echo "  ok   $name  ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL $name  ->  输出对不上（期望「$want」）"; fail=1; fi
+}
+check_pos method_on_t tests/generics/method_on_t.extc
+
 echo "== 反例（都必须编译期挡住）=="
 check_err() {
     local f=$1 want=$2 out
@@ -35,5 +49,7 @@ check_err() {
 # 留着等于把旧限制焊死 ✗（这一条是 `./check.sh` 当场抓出来的 ✓）
 check_err tests/generics/errors/needs_eq.extc             'to define `==`'
 check_err tests/generics/errors/cannot_infer.extc         "cannot infer"
+check_err tests/generics/errors/needs_method.extc          'to define `hash`'
+check_err tests/generics/errors/method_arity.extc          'takes 0 arguments, but 1 was written'
 
 exit $fail

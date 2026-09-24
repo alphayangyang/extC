@@ -3717,6 +3717,53 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
     if (m) m->used = true;
 }
 
+/* Resolve one deferred method call for a concrete instance (`#57`).
+ *
+ * On the template the receiver's type was a type parameter, so no method could be found and the
+ * call was recorded instead (see `MethodCheck`). Here the receiver type is concrete: the method
+ * either exists -- and then it is marked used so code generation emits it -- or the instance
+ * cannot support the call, which is the error this whole deferral exists to report.
+ *
+ * Params:
+ *   c        - checker
+ *   mc       - the deferred call: the node, the method name, its arity
+ *   params   - type parameters of the instance
+ *   targs    - type arguments of the instance
+ *   instName - instance name, reported in the diagnostic
+ *
+ * Notes:
+ *   - The node is deliberately NOT given a `func`: one template body has many instances, and a
+ *     `func` stored here would be the wrong method for every other one. Code generation
+ *     re-resolves the method on the substituted receiver type, the way it resolves operators.
+ *   - Arity is checked here because nothing else can see it: the template had no signature to
+ *     compare against, and letting it through would surface as a C error in generated code. */
+static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
+                           const char *instName) {
+    TypeTable *tt = c->tt;
+    Type *rt = ttSubstitute(tt, mc->node->u.method.recv->type, params, targs);
+    Type *rb = ttBase(rt);
+    FuncDef *f = findMethod(rb, mc->name);
+    if (!f) {
+        Buf note;
+        bufInit(&note, c->arena);
+        bufPrintf(&note,
+                  "`%s` inside a generic is checked at instantiation, not on the template --"
+                  " the price of having no traits. Add a `fn %s` to that type.",
+                  mc->name, mc->name);
+        ckError(c, mc->node->line, bufCstr(&note),
+                "`%s` needs `%s` to define `%s`", instName, typeStr(c, rb), mc->name);
+        return;
+    }
+    size_t want = f->params.len > 0 ? f->params.len - 1 : 0;     /* minus the receiver */
+    if (mc->nargs != want) {
+        ckError(c, mc->node->line, NULL,
+                "`%s` takes %zu argument%s, but %zu %s written",
+                mc->name, want, want == 1 ? "" : "s", mc->nargs, mc->nargs == 1 ? "was" : "were");
+        return;
+    }
+    f->used = true;
+}
+
 /* Does this deferred reference check belong to this free-function instance?
  *
  * Params:
@@ -3903,6 +3950,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.m = m;
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.opChecks, arena, sizeof(void *));
+    vecInit(&c.methodChecks, arena, sizeof(void *));   /* #57: method calls on a type parameter */
     vecInit(&c.globals, arena, sizeof(void *));
     vecInit(&c.allSyms, arena, sizeof(void *));     /* kept for the EXTC_SELFCHECK invariant scan */
     vecInit(&c.nameUses, arena, sizeof(void *));
@@ -4030,6 +4078,34 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (ec->func != fi->tmpl) continue;
             runOpCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+        }
+    }
+
+    /* Deferred method calls on a type parameter (`#57`): the same shape as the operator batch
+     * above -- replayed once per concrete instance, with the instance named in the message.
+     *
+     * This is what makes a generic container able to do anything with its elements at all:
+     * `hashMap<K, V>` hashes a `K`, which means calling `hash()` on a value whose type is a type
+     * parameter. On the template there is no such method to find, so the call is recorded and
+     * the instance decides. */
+    for (size_t i = 0; i < c.methodChecks.len; i++) {
+        MethodCheck *mc = *(MethodCheck **)vecAt(&c.methodChecks, i);
+        /* A template that is never called has no instances, so nothing can be wrong yet. */
+        if (mc->func && !mc->func->used) continue;
+        /* (1) Type instances: a method call inside a generic type's method, where `T` comes
+         * from the type arguments of the struct that owns it. */
+        if (mc->owner) {
+            for (size_t j = 0; j < tt->instances.len; j++) {
+                Type *inst = *(Type **)vecAt(&tt->instances, j);
+                if (inst->sdef != mc->owner) continue;
+                runMethodCheck(&c, mc, &mc->owner->typeParams, &inst->targs, inst->name);
+            }
+        }
+        /* (2) Free-function instances: a method call on `T` inside `fn f<T>`. */
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            if (mc->func != fi->tmpl) continue;
+            runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
     }
 

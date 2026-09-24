@@ -8097,3 +8097,34 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 
 验证：`tests/stl` · `tests/hashmap` · `tests/pool` 各失败 0；`check.sh quick </dev/null` 通过 25 · 失败 0
 （日志 `/tmp/prb/cq_r14.log`）。
+
+### 周期 15（第 15 轮）：PLAN #57 修好 —— 泛型体里可以调用类型参数上的方法
+
+作者口径：「先把 57 修了」。这不是小修，它是「泛型容器能对元素做任何事」的总闸门：`hashMap<K, V>` 要对
+`K` 调 `hash()`、有序 `map<K, V>` 要对 `K` 做比较，全卡在这条。
+
+改法照抄仓库里**运算符**那一族的现成机械，四段：
+
+1. **模板期宽容**：`EX_METHOD` 找不到方法、且接收者类型提到类型参数时，记一条
+   `MethodCheck{node, owner, name, nargs, func}` 并返回**错误类型**（`ast.h` 里 `TY_ERROR` 的注释就是
+   "dummy type for a failed check, so errors do not cascade"，而 `checkAssignable` 对它静默放行）——
+   模板期不再误报，语句其余部分照常检查。
+2. **实例期解析**：驱动里按运算符那族的形状加一段（(1) 类型实例 · (2) 自由函数实例），`runMethodCheck`
+   在替换后的接收者类型上找方法：找不到 ⇒ `` `%s` needs `%s` to define `%s` ``（点名实例 · 类型 · 方法）
+   加一句说明为什么这条检查发生在实例化时；找到 ⇒ 查**实参个数**并标记 `f->used = true`（不标记，生成的 C
+   就会调用一个没人发出的函数 —— #64 就是这个坑）。
+3. **节点上不写 `func`**：一个模板体有多个实例，写进节点就成了「最后一个实例对、其余全错」。代码生成端在
+   替换后的类型上**重新解析**（`genMethodCall` 里 `e->func` 为空时取
+   `findMethod(ttBase(subst(g, recv->type)), name)`），与运算符在 codegen 里的做法一致。
+4. 诊断文案与运算符那族对齐：实例名 + 类型 + 方法名；note 写明「泛型里的方法是实例化时检查的 —— 没有 trait
+   的代价，给这个类型加一个 `fn hash`」。
+
+验收（`tests/generics/`，1 正例 2 反例）：
+
+- 正例 `method_on_t.extc` → `h=65 hb=129`：自由泛型函数 `hashOf<T>(v: T)` 与**泛型容器** `box<T>::h` 对元素
+  调 `hash()`，两条路径都通；
+- 反例 `needs_method.extc` → `` error: `hashOf_nopoint` needs `nopoint` to define `hash` ``；
+- 反例 `method_arity.extc` → `` error: `hash` takes 0 arguments, but 1 was written ``；
+- 回归：`tests/stl` · `tests/hashmap` · `tests/pool` · `tests/linmap` 各失败 0。
+
+下一步就是 #57 的用处：`hashMap<K, V>` 的 K 泛化 —— K 上要 `hash()` 与 `==`，两条今天都齐了。

@@ -219,6 +219,7 @@ typedef struct Checker {
     Vec       *curParams;   /* names of the type parameters in scope, NULL outside a
                              * generic context */
     Vec        opChecks;    /* OpCheck*: overloadable operators deferred to instantiation */
+    Vec        methodChecks; /* MethodCheck*: method calls on a type parameter (`#57`) */
     /* Instances of generic free functions: `fn f<T>` gets one instance per set of type
      * arguments. They are created here, at the call site that infers the arguments, and
      * the code generator emits them as ordinary functions. */
@@ -414,6 +415,29 @@ typedef struct {
  * `func` is the function the expression belongs to, which is how the consumer asks
  * whether that function was ever called. */
 typedef struct { Expr *node; StructDef *owner; const char *op; FuncDef *func; } OpCheck;
+
+/* A method call on a type parameter, deferred to instantiation (`#57`).
+ *
+ * While a template is checked `T` is opaque, so `k.hash()` has no method to resolve: which
+ * method it means is decided by whatever the instance substitutes for `K`. Recording it here
+ * and resolving per instance is also the only place a good diagnostic can come from -- only
+ * the instance knows whether its type defines the method at all.
+ *
+ * The template pass hands back the error type for such a call. That is what the error type is
+ * for (`ast.h`: "dummy type for a failed check, so errors do not cascade"): the statement keeps
+ * checking and `checkAssignable` waves an error type through, while the instance pass is the one
+ * that decides -- and it names the instance, exactly as `OpCheck` does.
+ *
+ * `nargs` is the number of arguments written at the call, so the instance pass can report an
+ * arity mismatch instead of letting it reach the C compiler. `func` is the template holding the
+ * call, which is how the driver picks the instances this record applies to. */
+typedef struct {
+    Expr       *node;     /* the EX_METHOD node */
+    StructDef  *owner;    /* enclosing generic struct/enum, or NULL inside a free function */
+    const char *name;     /* the method name being called */
+    size_t      nargs;    /* arguments written at the call site */
+    FuncDef    *func;     /* the template function the call sits in */
+} MethodCheck;
 
 /* A call site whose resolution is deferred to instantiation.
  *

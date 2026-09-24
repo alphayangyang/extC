@@ -1,0 +1,17 @@
+// 反例：实例有这个方法，但实参个数对不上 ⇒ 实例化时挡住（模板期没有签名可比）
+// expect: takes 0 arguments, but 1 was written
+use std::io
+
+struct point {
+    x: i64
+    fn hash(self: ref point) -> i64 { return self.x }
+}
+
+fn bad<T>(v: T) -> i64 { return v.hash(i64(1)) }
+
+fn main() -> i32 {
+    var p: point = { x: i64(1) }
+    let got: i64 = bad(p)
+    if got > i64(0) { return 0 }
+    return 1
+}
