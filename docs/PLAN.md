@@ -278,6 +278,25 @@ IO-0 主体**已落地**（2026-09-23 定案 74：`reader` + `nextInt` 一族 + 
 这条对将来加任何"另跑一次"的检查都成立 ✓
 （脚本与基线留着，只用于**同一刀内部的 A/B**；引用时必须写清是相对比较，不是绝对闸门 ✓）
 
+**⑨ 精度：`mut ref` 出参 + 局部视图 ⇒ 调用点被保守拒**（**2026-09-24** 写 `tools/loc.extc` 时撞到）：
+一个函数拿 `mut ref` 出参、体里把一个**局部数组的视图**和它一起往下传时，如果那个被调者的**摘要算不全**，
+调用点就报
+
+    argument 2 of `countOne` carries a reference into a deeper scope (depth 1) than the place
+    the callee may store it (depth 0); the callee's effects could not be fully analyzed
+
+✗ 而**被拒的代码是安全的**（那个 slice 只被读：拷进局部缓冲、打印）⇒ 这是**精度账**，不是 soundness 洞 ✓
+**复现配方**：把 `tools/loc.extc` 的 `countOne` 签名改回 `(tot: mut ref total, raw: slice<u8>)`，
+调用点写 `countOne(tot, line[..n])` ⇒ 稳定复现 ✓
+**合法替代（现在就是这么写的）**：不做出参，改成**返回值 + 调用点累加** ⇒ 那条规则根本不触发 ✓
+⚠️ **已排除的形状**（**14 个探针全编过**）：`mut ref` 累加器 + slice 实参 · 体里 `println(slice)` ·
+被调者碰 `extern`（`open/read/close`）· 局部视图传给纯函数 · 方法带 `mut ref` 参数 ·
+方法**存进**它的 `mut ref` 参数 · 直接写 `mut ref` 参数的字段 ·
+中间层拿的是**参数**（深度 0）而局部视图在更里层 ✓
+⇒ **触发点在 `countPath`（含 `scanline` 两个方法调用）与调用点的相互作用里，没最小化出来** ——
+把那两个方法调用删掉就编过，边界就在这儿 ✓ **不记编号缺陷**（不漏 UB、也不误拒常见写法，
+与 **#14** 同档：这是"算不出来就保守拒"的已知代价）✓
+
 **⑥ 铁律自检当前报出的违反处**：`EXTC_SELFCHECK=1 ./build/extc <file>` 会核
 "`refDepth` 与 `arenaLevel` 是否描述同一个事实"，扫全语料**目前报 9 处**（见 `docs/DEVLOG.md`
 2026-09-23 那条）。这些是**下一轮的修复候选**，不是待办清单 —— 修掉一处就少一处，

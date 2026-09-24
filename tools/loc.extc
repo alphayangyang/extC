@@ -1,0 +1,190 @@
+/* tools/loc.extc —— **用 extC 自己数这个仓库**（吃自己的狗粮）
+ *
+ *     git ls-files | ./build/extc --run tools/loc.extc        # 从 stdin 读路径表
+ *     ./build/extc --run tools/loc.extc src/check_top.c ...   # 或直接给文件
+ *
+ * 每个文件一行：`<路径> <字节> <字符> <行> <代码> <注释> <空行>`，最后一行 `TOTAL ...`
+ *
+ * 为什么值得留着：它是**一条独立的第二实现**。`tools/loc.py` 那份 Python 参考实现
+ * 与它**逐文件对拍**过（714 个文件逐字节一致）—— 两个独立实现互比，比一个实现自己
+ * 跑绿更能说明问题 ✓ 写这一版时它对拍出一个真 bug：判"末行要不要算"时我用了
+ * "块注释还开着"当判据，而那是**跨行状态**，文件在块注释中间结束时恒为真 ⇒ 多算一行 ✗
+ *
+ * 分类规则（与 `tools/loc.py` **逐字一致**，改一处就要改两处）：
+ * ⚠️ 注释里**不许**出现块注释的结束记号：extC 的块注释**不嵌套**，写了它这一行
+ *    就被当成注释外 ✗（写这个文件时我自己先踩了一次 —— 报错是「unexpected character」）
+ *   · 行首在块注释里 ⇒ 注释；离开块要看**本行**有没有 `*` 后跟 `/`
+ *   · 行首非空白是 `/*` ⇒ 注释（本行没有 `*` 后跟 `/` 就进块）；`//` ⇒ 注释
+ *   · 全空白 ⇒ 空行；否则 ⇒ 代码
+ *   · 字符数 = UTF-8 码点数（续字节 10xxxxxx 不计），所以中文文件"字符 < 字节" ✓
+ *
+ * 用的全是已落地的 IO：`std::fs`（openRead/readSome/close）+ `std::io`（readerOf/nextLine）
+ * + `main(args)`。分块 64KB 读，内存与文件大小无关 ✓
+ */
+use std::fs
+use std::io
+
+struct fileStat {
+    bytes: i64
+    chars: i64
+    lines: i64
+    code:  i64
+    comment: i64
+    blank: i64
+}
+
+struct total {
+    bytes: i64
+    chars: i64
+    lines: i64
+    code:  i64
+    comment: i64
+    blank: i64
+    files: i64
+    bad:   i64
+
+    fn add(self: mut ref total, f: fileStat) {
+        self.bytes = self.bytes + f.bytes
+        self.chars = self.chars + f.chars
+        self.lines = self.lines + f.lines
+        self.code = self.code + f.code
+        self.comment = self.comment + f.comment
+        self.blank = self.blank + f.blank
+        self.files = self.files + i64(1)
+    }
+}
+
+/* 一行的扫描状态。`pending` 是"本行已经有过字节"（含空白），`inblk` 是**跨行**状态 ——
+ * 两者绝不能混用：文件正好结束在块注释里时 `inblk` 恒为真，拿它当"还有一行没结算"
+ * 会多算一行 ✗（这一条是跟 Python 参考实现对拍时撞出来的）。 */
+struct scanline {
+    pending: i64
+    seen:  i64
+    first: i64
+    second: i64
+    sawEnd: bool
+    prev:  i64
+    inblk: bool
+
+    fn reset(self: mut ref scanline) {
+        self.pending = 0
+        self.seen = 0
+        self.first = -1
+        self.second = -1
+        self.sawEnd = false
+        self.prev = -1
+    }
+
+    /* 结算一行（行尾与文件末尾走同一条路）。 */
+    fn endLine(self: mut ref scanline, st: mut ref fileStat) {
+        if self.inblk {
+            st.comment = st.comment + 1
+            if self.sawEnd { self.inblk = false }
+        } else if self.first == i64(47) && self.second == i64(42) {
+            st.comment = st.comment + 1
+            if !self.sawEnd { self.inblk = true }
+        } else if self.first == i64(47) && self.second == i64(47) {
+            st.comment = st.comment + 1
+        } else if self.seen == 0 {
+            st.blank = st.blank + 1
+        } else {
+            st.code = st.code + 1
+        }
+        st.lines = st.lines + 1
+        self.reset()
+    }
+
+    /* 喂一个字节（0..255）；换行（10）触发结算。`prev` 让 `*` 后跟 `/` 这种**两字节**的
+     * 记号在流式扫描里也能认出来，而且跨分块边界照样有效 ✓ */
+    fn feed(self: mut ref scanline, b: i64, st: mut ref fileStat) {
+        if b == i64(10) { self.endLine(st)  return }
+        self.pending = self.pending + 1
+        if self.prev == i64(42) && b == i64(47) { self.sawEnd = true }
+        if b != i64(32) && b != i64(9) && b != i64(13) && b != i64(11) && b != i64(12) {
+            if self.seen == 0 { self.first = b }
+            else if self.seen == 1 { self.second = b }
+            self.seen = self.seen + 1
+        }
+        self.prev = b
+    }
+}
+
+/* 数一个文件。分块读，所以内存与文件大小无关；`?` 交给调用点决定怎么办。 */
+fn countPath(path: slice<u8>) -> result<fileStat, io::ioError> {
+    var f = fs::openRead(path)?
+    var st: fileStat = { bytes: 0, chars: 0, lines: 0, code: 0, comment: 0, blank: 0 }
+    var sc: scanline = { pending: 0, seen: 0, first: -1, second: -1, sawEnd: false, prev: -1, inblk: false }
+    var blk: [65536]u8
+    while true {
+        let n = f.readSome(blk[..])?
+        if n == i64(0) { break }
+        var i: i64 = 0
+        while i < n {
+            let b = i64(blk[i])
+            st.bytes = st.bytes + 1
+            if (b & i64(192)) != i64(128) { st.chars = st.chars + 1 }
+            sc.feed(b, ref st)
+            i = i + 1
+        }
+    }
+    f.close()?
+    if sc.pending > 0 { sc.endLine(ref st) }     /* 末行没有换行也要算 */
+    return success(st)
+}
+
+/* 数一个路径。**没有 `mut ref` 出参**是有原因的：带 `mut ref` 参数的函数一旦
+ * 又调"摘要算不全的被调者"（底下碰 extern 的那些），调用点就会保守拒
+ * 「这个 slice 可能被存进那个地方」✗ —— 实测撞到过（`PLAN` §0.4.1 第 ⑨ 条）。
+ * 返回值 + 调用点累加既不触发那条规则，也是更直的写法 ✓
+ * `failure(true)` = 这个路径打不开/读不动（路径表里有它不是错误）。 */
+fn countOne(raw: slice<u8>) -> result<fileStat, bool> {
+    var path: [4096]u8
+    var n: i64 = 0
+    while n < raw.len && n < i64(4096) - i64(1) { path[n] = raw[n]  n = n + 1 }
+    path[n] = u8(0)                     /* 底下是 C 的 open(2)：要 NUL 结尾 */
+    match countPath(path[..n + i64(1)]) {
+        success(st) => {
+            println(raw, " ", st.bytes, " ", st.chars, " ", st.lines,
+                    " ", st.code, " ", st.comment, " ", st.blank)
+            return success(st)
+        }
+        failure(e) => { return failure(true) }
+    }
+}
+
+/* 从 stdin 读路径表（一行一个）。 */
+fn runStdin(tot: mut ref total) -> result<unit, io::ioError> {
+    var r = io::readerOf(i32(0))
+    var line: [4096]u8
+    while true {
+        let n = r.nextLine(line[..])?
+        if n == i64(0) { break }        /* 0 = 头一个字节就是 EOF */
+        match countOne(line[..n]) {
+            success(st) => { tot.add(st) }
+            failure(bad) => { println("!! ", line[..n])  tot.bad = tot.bad + i64(1) }
+        }
+    }
+    return success(unit {})
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var tot: total = { bytes: 0, chars: 0, lines: 0, code: 0, comment: 0, blank: 0, files: 0, bad: 0 }
+    if args.len > i64(1) {
+        var i: i64 = 1                  /* args[0] 是程序名 */
+        while i < args.len {
+            match countOne(args[i]) {
+                success(st) => { tot.add(st) }
+                failure(bad) => { println("!! ", args[i])  tot.bad = tot.bad + i64(1) }
+            }
+            i = i + 1
+        }
+    } else {
+        match runStdin(ref tot) {
+            success(u) => { }
+            failure(e) => { println("读路径表失败"); return 1 }
+        }
+    }
+    println("TOTAL ", tot.bytes, " ", tot.chars, " ", tot.lines, " ", tot.code, " ",
+            tot.comment, " ", tot.blank, " files=", tot.files, " bad=", tot.bad)
+    return 0
+}
