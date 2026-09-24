@@ -6,7 +6,7 @@
  *      句柄按值返回、状态在模块全局里，正是为此 ✓）
  *   ③ 表达式当右操作数：`cout << x + y` ✓
  *   ④ 读不到（EOF）时**目标保持原值**、`inBad()` 为真 —— 不是静默写 0 也不是 trap ✓
- *   ⑤ **与 `println` 的顺序一致**（两边都走 C 的 stdio ⇒ 不需要手工 flush ✓）
+ *   ⑤ **控制台这一族的顺序**（`cout`/`writeBytes`/`cerr` 共用一个缓冲 ⇒ 结构上不会乱 ✓）
  *   ⑥ 写成主人原话的样子：`use std::io::*` ⇒ **不限定**的 `cout` / `cin` / `endl` ✓
  *      （限定名 `cout` 也照旧能用 —— 两条路并存，定案 70 没被削弱 ✓）
  */
@@ -21,7 +21,7 @@ fn main() -> i32 {
     cin >> x >> y
     cout << "读到 x = " << x << " y = " << y << " 和 = " << x + y << endl
 
-    println("println 紧跟着，顺序应当一致")
+    cout << "同一族紧跟：cout 与 cerr 的顺序" << endl
 
     if inBad() { cout << "读坏了（EOF / 错误）" << endl }
     else          { cout << "读好了" << endl }

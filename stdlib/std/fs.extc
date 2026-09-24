@@ -285,19 +285,23 @@ var OUT_FD: i32 = -1
 var OUT_FAILED: bool = false
 
 struct outStream {
+    @inline
     fn <<(self: ref outStream, v: slice<u8>) -> outStream { outPut(v)  return { } }
     /* ⚠️ `mut slice<u8>` 与 `slice<u8>` 在"按右操作数**精确**类型分派"（定案 82）眼里
      * 是**两种类型** ⇒ 两份都要写 ✗（读出来的东西通常正是 `mut slice<u8>` ✓ 所以这份是
      * 常用那份）—— 将来若允许"可变视图用在只读视图的位置"（安全的子类型化），这两份能合一，
      * 但那是语言决定，不是库能糊过去的 ✓ */
+    @inline
     fn <<(self: ref outStream, v: mut slice<u8>) -> outStream { outPut(v)  return { } }
+    @inline
     fn <<(self: ref outStream, v: i64) -> outStream {
-        /* 格式化用 `io::fmtI64` —— 一处实现，别在这里再写一份 ✗ */
-        var buf: [24]u8
-        let n = io::fmtI64(v, buf[..])
-        outPut(buf[0..n])
+        /* 热路径版：只碰定长数组（视图下标是函数调用 ✗ 见 `io::fmtI64Fast` 的注释）*/
+        io::pairsReady()
+        let st = io::fmtI64Fast(v)
+        outPut(io::FMT[st..i64(24)])
         return { }
     }
+    @inline
     fn <<(self: ref outStream, v: bool) -> outStream {
         if v { outPut("true") } else { outPut("false") }
         return { }

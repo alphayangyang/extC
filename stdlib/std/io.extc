@@ -110,6 +110,11 @@ fn flushOut() { flush() }
  * `writer`, but that means changing codegen and was not done here. What is here
  * turns a mistake you cannot see into a mistake you cannot make. */
 fn writeBytes(buf: slice<u8>) -> i64 {
+    /* 走同一个缓冲：控制台输出只有一个出口，顺序才不需要人操心 ✓ */
+    if buf.len > i64(0) { extc_cout_put(buf.data, buf.len) }
+    return buf.len
+}
+fn writeBytesRaw(buf: slice<u8>) -> i64 {
     flush()
     return sysio::write(sysio::STDOUT, buf.data, buf.len)
 }
@@ -542,12 +547,40 @@ fn isSpaceByte(b: i64) -> bool {
  * refused for the same reason). `1` is what `STDOUT_FD` holds.
  */
 struct ostream { fd: i32
-    fn <<(self: ref ostream, v: i64) -> ostream { print(v)  return { fd: self.fd } }
-    fn <<(self: ref ostream, v: f64) -> ostream { print(v)  return { fd: self.fd } }
-    fn <<(self: ref ostream, v: bool) -> ostream { print(v)  return { fd: self.fd } }
-    fn <<(self: ref ostream, v: slice<u8>) -> ostream { writeBytes(v)  return { fd: self.fd } }
+    /* 全都走**同一个缓冲**（`extc_cout_put` 是 `static inline` ⇒ 没有调用开销 ✓）
+     * 不再借内建 `print`：那是一条操作数一次 `printf`，实测比这条路慢 **11 倍** ✗ */
+    @inline
+    fn <<(self: ref ostream, v: i64) -> ostream {
+        pairsReady()
+        let st = fmtI64Fast(v)
+        let n = i64(24) - st
+        extc_cout_put(FMT[st..i64(24)].data, n)
+        return { fd: self.fd }
+    }
+    @inline
+    fn <<(self: ref ostream, v: f64) -> ostream {
+        /* f64 还没有库内格式化 ⇒ 借内建 `print`（它写 stdio ✗）⇒ **先冲我们的缓冲**，
+         * 不然两边顺序会打架（`x = 1 · pi = 3.5` 印成 `3.5x = 1 · pi = ` 这种 ✗ 真发生了）*/
+        flushCout()
+        print(v)
+        return { fd: self.fd }
+    }
+    @inline
+    fn <<(self: ref ostream, v: bool) -> ostream {
+        if v { extc_cout_put("true".data, i64(4)) } else { extc_cout_put("false".data, i64(5)) }
+        return { fd: self.fd }
+    }
+    @inline
+    fn <<(self: ref ostream, v: slice<u8>) -> ostream {
+        if v.len > i64(0) { extc_cout_put(v.data, v.len) }
+        return { fd: self.fd }
+    }
     /* 同 `fs::outStream`：可变视图与只读视图是两种类型 ⇒ 两份 ✓ */
-    fn <<(self: ref ostream, v: mut slice<u8>) -> ostream { writeBytes(v)  return { fd: self.fd } }
+    @inline
+    fn <<(self: ref ostream, v: mut slice<u8>) -> ostream {
+        if v.len > i64(0) { extc_cout_put(v.data, v.len) }
+        return { fd: self.fd }
+    }
 }
 
 let cout: ostream = ostream { fd: 1 }
@@ -634,23 +667,95 @@ let cin: istream = istream { fd: 0 }
 
 /* ================================================================ 格式化（一处实现）
  *
- * 把 `i64` 渲染成十进制写进 `out`，返回长度 ✓ 三个流共用这一份：
- * 控制台的 `cout` 能借内建打印（它写 stdout ✓），但**文件流与 stderr 流不能**
- * （内建打印写死 stdout ✗）⇒ 格式化必须在库里，而且只能有**一份** ✗
+ * `i64` → 十进制，写进 `out`，返回长度 ✓ 三个流共用这一份（内建 `print` 写死 stdout，
+ * 文件流/stderr 流用它不了它 ✗ 所以格式化必须在库里，而且只能一份 ✓）
  *
- * `f64` 还没做：它要真正的浮点格式化（最短往返 / `%g` 那一套），属于"格式化层搬进库"
- * 那一步 —— 也正是 `print`/`println` 退役的前提 ✓
+ * **两位一查表**（`DIGITS` 是 "00" "01" … "99" 拼起来的常量 ✓ 每次除 100 出两位 ✓）：
+ * 这是 `strconv.AppendInt` 那一招 —— 除法次数减半，而除法正是这条路上最贵的一步 ✓
  */
+let DIGITS: slice<u8> = "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
+
+/* ── 热路径版：**全程只碰定长数组** ──────────────────────────────────────────
+ *
+ * 为什么另立一份（而不是把上面那个改快）：上面那个的 `out` 是 `slice<u8>`，
+ * 而**视图下标在生成的 C 里是一次函数调用**（`slice_u8_index(..., 文件, 行号)` ✗）。
+ * 一行输出 4 个操作数、每个数字要十几次下标 ⇒ 上亿次调用，实测就是它把这条路拖到
+ * 224 ms（同为 1000 MB/s 量级但比 C 慢一档 ✗）。定长数组的下标是**内联的小检查** ✓
+ * ⇒ 热路径写进一个**全局定长数组**（单线程，够用 ✓ 可重入性写在下面 ⚠️）。
+ *
+ * ⚠️ 因此 `FMT` 是"刚刚格式化好的那个数"的暂存处 ⇒ **别在格式化与取用之间再格式化** ✓
+ *    （`<<` 里是连续的"格式化 + 立刻取出"，所以安全 ✓）
+ */
+var FMT: [24]u8
+var PAIRS: [200]u8
+var PAIRS_READY: bool = false
+
+@inline
+fn pairsReady() {
+    if PAIRS_READY { return }
+    var d: i64 = 0
+    var i: i64 = 0
+    while i < i64(200) {
+        PAIRS[i] = DIGITS[i]
+        i = i + 1
+    }
+    PAIRS_READY = true
+}
+
+/* 把 `v` 写进 `FMT` 的**尾部往前**，返回**起点**（长度 = 24 - 起点 ✓）
+ *
+ * ⚠️ 必须**从后往前**填：两位一组的表给的是"高位在前"的一对，若按低位在前追加、
+ * 最后整体反转，**对内的顺序也会被翻** ⇒ `40` 会印成 `04` ✗（这个 bug 真发生过）。
+ * 从后往前填出来就是正序，**不需要反转** ✓ 这也是 `strconv.AppendInt` 的做法 ✓ */
+@inline
+fn fmtI64Fast(v: i64) -> i64 {
+    var end: i64 = i64(24)
+    var u: i64 = v
+    var neg: bool = v < i64(0)
+    if neg { u = i64(0) - u }
+    while u >= i64(100) {
+        let r = u % i64(100)
+        u = u / i64(100)
+        end = end - i64(2)
+        FMT[end]     = PAIRS[r * i64(2)]
+        FMT[end + 1] = PAIRS[r * i64(2) + i64(1)]
+    }
+    if u >= i64(10) {
+        end = end - i64(2)
+        FMT[end]     = PAIRS[u * i64(2)]
+        FMT[end + 1] = PAIRS[u * i64(2) + i64(1)]
+    } else {
+        end = end - i64(1)
+        FMT[end] = u8(48 + u)
+    }
+    if neg {
+        end = end - i64(1)
+        FMT[end] = u8(45)
+    }
+    return end
+}
+
+@inline
 fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
+    if v == i64(0) { out[0] = u8(48)  return i64(1) }
+    var u: i64 = v
+    var neg: bool = v < i64(0)
+    if neg { u = i64(0) - u }
     var tmp: [24]u8
     var n: i64 = 0
-    var neg: bool = v < i64(0)
-    var u: i64 = v
-    if neg { u = i64(0) - u }
-    if u == i64(0) { tmp[0] = u8(48)  n = 1 }
-    while u > i64(0) {
-        tmp[n] = u8(48 + (u % i64(10)))
-        u = u / i64(10)
+    while u >= i64(100) {
+        let r = u % i64(100)
+        u = u / i64(100)
+        tmp[n]     = DIGITS[r * i64(2)]
+        tmp[n + 1] = DIGITS[r * i64(2) + i64(1)]
+        n = n + 2
+    }
+    if u >= i64(10) {
+        tmp[n]     = DIGITS[u * i64(2)]
+        tmp[n + 1] = DIGITS[u * i64(2) + i64(1)]
+        n = n + 2
+    } else if u > i64(0) {
+        tmp[n] = u8(48 + u)
         n = n + 1
     }
     if neg { tmp[n] = u8(45)  n = n + 1 }
@@ -661,6 +766,10 @@ fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
     }
     return k
 }
+
+/* 控制台输出：**先塞进运行期的缓冲**，满了它自己写出去；尾巴由 `main` 返回前冲刷 ✓
+ * （`println` 已弃置 ⇒ 不再有"与 stdio 抢顺序"的问题 ✓ 只剩"退出前别丢"一条 ✓）*/
+fn flushCout() { extc_cout_flush() }
 
 /* ================================================================ stderr 流
  *
@@ -676,9 +785,9 @@ struct errStream {
     fn <<(self: ref errStream, v: slice<u8>) -> errStream { errWrite(v)  return { } }
     fn <<(self: ref errStream, v: mut slice<u8>) -> errStream { errWrite(v)  return { } }
     fn <<(self: ref errStream, v: i64) -> errStream {
-        var buf: [24]u8
-        let n = fmtI64(v, buf[..])
-        errWrite(buf[0..n])
+        pairsReady()
+        let st = fmtI64Fast(v)
+        errWrite(FMT[st..i64(24)])
         return { }
     }
     fn <<(self: ref errStream, v: bool) -> errStream {
@@ -691,7 +800,8 @@ let cerr: errStream = errStream { }
 
 fn errWrite(s: slice<u8>) {
     if s.len == i64(0) { return }
-    flush()                                    /* 先放 stdout，见上面的 ⚠️ */
+    flushCout()                                /* 先放 stdout 缓冲，见上面的 ⚠️ */
+    flush()
     /* 返回值丢弃：stderr 写失败也没有别的地方可报（这正是"诊断通道"的处境 ✓）*/
     sysio::write(i32(2), s.data, s.len)
 }

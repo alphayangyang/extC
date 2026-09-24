@@ -152,6 +152,12 @@ typedef struct {
     bool        inMain;
     Buf         rtEq;           /* `extc_eq` - only if an array or slice is compared */
     Buf         rtRaw;          /* the raw-terminal block - only if the program uses it */
+    /* The buffered console output of the stream library (ruling 90): the buffer belongs
+     * to the runtime so that `extc_cout_put` can be `static inline` and the C compiler
+     * inlines it into the library's `<<` -- no call per operand at all. The one thing
+     * only the generator can do is flush the tail before `main` returns. */
+    Buf         rtCout;
+    bool        needCout;
     Buf         rtDie;          /* `extc_die`, the dying hook - ahead of the trap bodies */
     /* Structural `==` also goes through a descriptor table; this vector lists
      * the types for which `extc_eq` is needed. The closure propagates inwards:
@@ -2072,6 +2078,10 @@ static void cgRecLeave(CG *g) {
  *     more conservative than releasing first and evaluating afterwards.
  */
 static void cgReturn(CG *g, const char *val) {
+    /* The buffered console tail leaves here (ruling 90): every `return` of `main` is a
+     * place where the process is about to end and whatever is still buffered would be
+     * lost. It is a no-op when the buffer is empty. */
+    if (g->inMain && g->needCout) cgLine(g, "extc_cout_flush();");
     if (g->noArena) {
         if (g->isRecursive) {
             if (val) cgLine(g, "{ int64_t __r = (int64_t)(%s); --__extc_rec_depth; return __r; }", val);
@@ -3113,7 +3123,10 @@ static void genFunc(CG *g, FuncDef *f) {
          * leak one block per arena at every return -- bounded, but a leak. */
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
-        if (isMain)       cgLine(g, "return 0;");   /* main returns int in the generated C */
+        if (isMain) {
+            if (g->needCout) cgLine(g, "extc_cout_flush();");
+            cgLine(g, "return 0;");   /* main returns int in the generated C */
+        }
         else if (retVoid) cgLine(g, "return;");
         else              cgLine(g, "return __extc_ret_v;");
     }
@@ -3597,10 +3610,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * codegen can see from here. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        if (f && f->isExtern && f->name && strcmp(f->name, "extc_raw_enter") == 0) {
-            g.needRawTerm = true;
-            break;
-        }
+        if (!f || !f->isExtern || !f->name) continue;
+        if (strcmp(f->name, "extc_raw_enter") == 0) g.needRawTerm = true;
+        if (strcmp(f->name, "extc_cout_put") == 0)  g.needCout    = true;
     }
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
@@ -3626,6 +3638,28 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    exit(code);\n"
         "}\n"
 );
+    bufInit(&g.rtCout, arena);
+    bufPuts(&g.rtCout,
+        "/* Buffered console output (ruling 90). The buffer lives in the runtime rather than\n"
+        " * in the library so that the flush has a home the generator can call; the library\n"
+        " * formats and calls `extc_cout_put`, which the C compiler inlines into it (same\n"
+        " * translation unit, small body). */\n"
+        "static uint8_t extc_cout_buf[1 << 18];\n"
+        "static int64_t extc_cout_len = 0;\n"
+        "void extc_cout_flush(void) {\n"
+        "    if (extc_cout_len <= 0) return;\n"
+        "    /* Through stdio: `unistd.h` cannot be included here (the library declares\n"
+        "     * `read`/`write` with its own prototypes, and the two clash). stdio also keeps\n"
+        "     * the order with the deprecated print path and flushes at exit by itself. */\n"
+        "    fwrite(extc_cout_buf, 1, (size_t)extc_cout_len, stdout);\n"
+        "    extc_cout_len = 0;\n"
+        "}\n"
+        "void extc_cout_put(uint8_t *p, int64_t n) {\n"
+        "    if (n <= 0) return;\n"
+        "    if (extc_cout_len + n > (int64_t)sizeof extc_cout_buf) extc_cout_flush();\n"
+        "    memcpy(extc_cout_buf + extc_cout_len, p, (size_t)n);\n"
+        "    extc_cout_len += n;\n"
+        "}\n");
     bufInit(&g.rtRaw, arena);
     bufPuts(&g.rtRaw,
         "/* ---- raw terminal: give it back even when the program dies ----\n"
@@ -4500,6 +4534,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * comparison, whichever comes first. */
     if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
+    if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches
