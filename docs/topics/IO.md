@@ -349,7 +349,10 @@ extc_arena_release(&__extc_a[3]);    /* 再放内存 */
 1. **幂等**：被 `close(f)!` 关过的槽位**必须标记**，块退出时不再关第二次 ✗✗
    否则 double close 关掉的是**别人刚开的 fd**（fd 号会被内核复用 ⇒ 这是真会伤人的一类 bug）。
 2. **关闭后使用**：`close(f)!` 之后再用 `f.put(..)`：
-   - **IO-1 先做运行时**：槽位带状态 ⇒ **trap，带源码位置**（不静默 ✓）
+   - **IO-1 先做运行时**：槽位带状态 ⇒ 返回 **`failure(closed)`**（不是 trap）✓
+     ⚠️ **为什么不是 trap**：`prelude.extc` 顶部那条规矩 ——「**a library that traps does not
+     fit extC's character**」（要 trap 就在调用点写）。库返回 `failure`，用户在调用点决定
+     怎么办；而且 `fd` 已经置成 `-1` ⇒ 绝不会碰巧用到内核复用给别人的号 ✓
    - **将来做编译期**：让 `close` **消费掉**句柄（affine）⇒ 用就编不过 ✓
      （那就是"唯一所有权 / 转移"那套机制的第一个使用场景 ✓）
 

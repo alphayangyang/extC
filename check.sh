@@ -80,6 +80,11 @@ if out=$(./tests/fs-shape/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 2 反例 + 常量不外露 + 规范入档）"
 else bad "tests/fs-shape/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 文件归属（定案 78：块拥有 ⇒ 出块即关 · 判据有牙 · ASan）=="
+if out=$(./tests/fs/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（fd 恒定 + canary + 反例 + ASan）"
+else bad "tests/fs/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 注解（@inline 要真的生效 · 写错的注解必须编译期报错）=="
 if [ -x tests/annot/run.sh ]; then
     if out=$(tests/annot/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"

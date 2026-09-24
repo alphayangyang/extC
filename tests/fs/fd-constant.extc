@@ -1,0 +1,39 @@
+// expect: fd 恒定 = 3|出块即可复用
+/* ⭐ 判据（定案 78）：**块拥有文件描述符** —— 循环里就地 open、出块即关。
+ *
+ * 判据取的是"fd 号恒定"：如果上一轮的 fd 没关，内核会一直往后发新号 ⇒ 第一次之后就漂 ✗
+ * （而且到 1024 就 EMFILE）。所以"号不变"等价于"真的关了"，不需要去数 /proc/self/fd ✓
+ *
+ * ⚠️ 这个用例直接用了 `open` 原语和 `ownFd`，因为它验的是**机制**；
+ *    用户层将来走 `std::fs`（`openRead`/`openWrite` + 读型/写型两个 struct）✓ */
+extern!("libc") fn open(path: ref u8, flags: i32, mode: i32) -> i32
+    effects Addr=0 Cont=0
+
+fn openRead(p: slice<u8>) -> i32 { return open(p.data, i32(0), i32(0)) }
+
+fn main() -> i32 {
+    var first: i32 = i32(-1)
+    var i: i64 = 0
+    while i < 1000 {
+        {
+            let fd0 = openRead("tests/fs/data.txt")
+            if fd0 < i32(0) { println("open 失败"); return 1 }
+            ownFd(fd0)                       /* 交给当前块 ⇒ 出块自动关 ✓ */
+            if i == 0 { first = fd0 }
+            if fd0 != first { println("fd 漂了 = ", fd0, " 期望 ", first); return 1 }
+        }
+        i = i + 1
+    }
+    println("fd 恒定 = ", first)
+
+    /* 块退出之后，号立刻能被复用 ⇒ 进一步证明"真的关了" */
+    var again: i32 = i32(-1)
+    {
+        let fd1 = openRead("tests/fs/data.txt")
+        ownFd(fd1)
+        again = fd1
+    }
+    if again != first { println("复用失败 = ", again); return 1 }
+    println("出块即可复用")
+    return 0
+}

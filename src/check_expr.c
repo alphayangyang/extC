@@ -1299,6 +1299,39 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttVoid(tt);
             }
 
+            /* `ownFd(fd)` hands a file descriptor to the **current block**: the block
+             * closes it on the way out, so a loop that opens one file per round holds
+             * exactly one descriptor.
+             *
+             * Only `std::fs` is meant to call it; user code goes through that library.
+             * The argument has to be a plain variable or literal, because the generated
+             * C names it twice (once to build the node, once as the value). An impure
+             * argument would be evaluated twice, so it is rejected with the rewrite:
+             * assign it to a variable first. */
+            if (strcmp(name, "ownFd") == 0) {
+                if (e->u.call.args.len != 1) {
+                    ckError(c, e->line, "`ownFd(fd)` takes exactly one argument.",
+                            "ownFd takes 1 argument");
+                    return ttFromName(tt, "i32");
+                }
+                Expr *a0 = *(Expr **)vecAt(&e->u.call.args, 0);
+                if (!repeatablePure(a0)) {
+                    ckError(c, e->line,
+                            "`ownFd(..)` names its argument twice in the generated C, so a call "
+                            "or computation here would run twice -- assign it to a variable first.",
+                            "ownFd needs a plain value: assign it to a variable first");
+                    return ttFromName(tt, "i32");
+                }
+                Type *at = checkExpr(c, a0);
+                if (!ttIsInteger(at)) {
+                    ckError(c, e->line, "`ownFd(fd)` takes a file descriptor, which is an integer.",
+                            "ownFd expects an integer");
+                    return ttFromName(tt, "i32");
+                }
+                if (c->curFunc) c->curFunc->fdSites++;
+                return ttFromName(tt, "i32");
+            }
+
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
