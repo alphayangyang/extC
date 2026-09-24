@@ -90,6 +90,11 @@ if out=$(./tests/argv/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（正例 + 边界 + 无参哨兵 + 3 反例）"
 else bad "tests/argv/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 期 0 · slot map（ECS 底座：稳定 handle · dense · churn 不涨 —— 见 REGIONS.md）=="
+if out=$(./tests/pool/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（handle/dense/世代 · churn 平 · canary 会响 · ASan）"
+else bad "tests/pool/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 注解（@inline 要真的生效 · 写错的注解必须编译期报错）=="
 if [ -x tests/annot/run.sh ]; then
     if out=$(tests/annot/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"

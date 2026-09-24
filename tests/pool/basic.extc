@@ -1,0 +1,24 @@
+// expect: len = 3|a = 10 b = 20 c = 30|删掉 b 之后 len = 2 · b 失效|dense 前段仍然连续 = 10 30|复用槽位后 len = 3 · d = 40 · 旧 b 仍是 stale
+/* ⭐ 期 0 的正面判据（`docs/topics/REGIONS.md`）：稳定 handle + dense 存储 + 槽位复用
+ *   ① 插入/读取/长度
+ *   ② `remove` 之后那个 handle **失效**（世代加一 ⇒ contains=false ✓）
+ *   ③ dense 前段仍然连续（末尾元素 swap 进空洞 ⇒ 遍历永远是一段内存 ✓）
+ *   ④ 再插入**复用刚 freed 的槽位**，而旧 handle 依然 stale ✓ */
+use std::pool
+
+fn main() -> i32 {
+    var p = pool<i32>::withCap(4)
+    let a = p.insert(10)
+    let b = p.insert(20)
+    let c = p.insert(30)
+    println("len = ", p.len())
+    println("a = ", p.get(a) ?? i32(-1), " b = ", p.get(b) ?? i32(-1), " c = ", p.get(c) ?? i32(-1))
+
+    p.remove(b)
+    println("删掉 b 之后 len = ", p.len(), " · b 失效 = ", !p.contains(b))
+    println("dense 前段仍然连续 = ", p.atDense(0), " ", p.atDense(1))
+
+    let d = p.insert(40)
+    println("复用槽位后 len = ", p.len(), " · d = ", p.get(d) ?? i32(-1), " · 旧 b 仍是 stale = ", !p.contains(b))
+    return 0
+}

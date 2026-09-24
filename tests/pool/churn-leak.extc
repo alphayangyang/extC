@@ -1,0 +1,44 @@
+// expect: 不该用这个程序的数字下结论（它是 canary：必须涨 ✗）
+/* ⭐ **期 0 的核心判据：churn 不涨内存**。
+ *
+ * 形状：反复 insert + remove，**活跃数很小**（≤2）—— 这正是"用户无法回收容器垃圾"
+ * 那个场景（`docs/topics/REGIONS.md` §2 的量测 C：长命层里每轮新建 ⇒ 线性涨 ✗✗）。
+ * 判据在 run.sh 里量：**1e6 轮的峰值 RSS 必须与 1e5 轮几乎相同** ✓
+ * （不还槽位的实现会线性涨 ⇒ 同一判据会响 ✓ 见同目录的 churn-leak.extc ✓）
+ *
+ * 轮数从命令行拿（`main(args)` —— IO-1 的成果在这里正好用上 ✓ */
+use std::pool
+
+/* 把 `args[1]` 当十进制数读（没给就用默认值）*/
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = i64(100000)
+    if args.len > i64(1) { n = toInt(args[1], n) }
+    var p = pool<i32>::withCap(16)
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        let h = p.insert(i32(i % i64(1000)))
+        if p.contains(h) { sum = sum + i64(p.get(h) ?? i32(0)) }
+        /* 故意不 remove：泄漏（canary：判据必须在这里响 ✗）*/
+        /* 再来一个，让"活跃数"有点起伏（仍然 ≤2）*/
+        let h2 = p.insert(i32(i % i64(7)))
+        if p.contains(h2) { sum = sum + i64(p.get(h2) ?? i32(0)) }
+        /* 故意不 remove */
+        i = i + i64(1)
+    }
+    println("结束：", n, " 轮，活跃 = ", p.len(), "，校验和 = ", sum)
+    return 0
+}

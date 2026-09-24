@@ -206,7 +206,7 @@ p.reset()                                        /* 清空但复用块（churn �
 
 | 期 | 做什么 | 动编译器？ |
 |---|---|---|
-| **0** | **纯库**：handle + generation 校验 + dense/sparse `set`（**存储用今天的 `new T[n]`**）⇒ 吃掉「复用 + 数据导向」两半 ✓ | **零改动** ✓ |
+| **0** ✅ | **已落地 2026-09-24**：`stdlib/std/pool.extc`（slot map：稳定 handle + dense 前段 + free list + 世代）· 常设验收 `tests/pool/`（basic · api · churn · canary · ASan，挂成 `check.sh` 第 18 节）| **零改动** ✓ |
 | **1** | 运行时：**区域注册表**（表 + free list + 世代 + 父链 + 释放遍历，~200 行 C）· 按需发射（照 `extc_raw_enter` 那条现成的路）· 块释放点与帧退多一行 `extc_region_release(&__extc_a[lvl])`（照我为 fd 写过、后来删掉的那段，一模一样的模式）| **两处 codegen 钩子**（小，模式已有 ✓）|
 | **2** | **`new (r) T[n]`**：parser 一条语法 + 检查器给类型 + codegen 发射 `extc_region_alloc(rid, bytes)` 并转成 `T*` | parser/checker/codegen（**中**）|
 | **3** | `buf<T>` 的**原地扩展** · region 版 `varArray`/`string` · `graph`/CSR | 运行时 + 库 ✓ |
@@ -241,3 +241,25 @@ p.reset()                                        /* 清空但复用块（churn �
   handle 是普通值 ✓
 - 旧版写"拷贝 ⇒ double free"⇒ **撤回**（销毁由父节点的子链驱动，只销毁一次）✓
 - 旧版担心"动态层 / 改层编码 / 碰逃逸 pass"⇒ ECS 版**不需要**（寿命 = 创建它的那个块 ✓）
+
+---
+
+## 10. 期 0 的实测（2026-09-24）
+
+| 形状 | 1e5 轮 | 1e6 轮 | 结论 |
+|---|---|---|---|
+| `tests/pool/churn.extc`（insert+remove，活跃 ≤2）| **1,660 KB** | **1,724 KB** | **平** ✓（10 倍轮数，内存不变）|
+| `tests/pool/churn-leak.extc`（**不** remove，canary）| 9,916 KB | **67,324 KB** | 明显涨 ⇒ **判据有牙** ✓ |
+
+⇒ 「用户无法回收容器垃圾 / 无法复用」这两条**在零编译器改动的情况下已经解决** ✓
+（剩下的第 3 条「指针跳转妨碍 SIMD」与「批量还给 arena」要期 1+）
+
+**落地物**：`stdlib/std/pool.extc` · `tests/pool/{basic,api,churn,churn-leak}.extc` + `run.sh` ✓
+
+## 11. 代码组织（主人 2026-09-24 的建议）
+
+⭐ **期 1 起，动编译器的那部分单开文件**：`src/regions.c` + `src/regions.h` ——
+运行时的区域注册表 · 释放钩子 · 以后的 `new (r) T[n]` 发射，都放这里 ✓
+现有文件只留「一两行调用点」（`codegen.c` 里按需发射那一处 + 释放点那一行）✓
+理由：region 是一个**新子系统**，散进 `check_expr.c`/`check_top.c`/`codegen.c` 会变成
+"哪儿都有一点、哪儿都不完整" ✗（这个项目已经吃过一次：逃逸 pass 的几处 case）

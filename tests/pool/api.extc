@@ -1,0 +1,28 @@
+// expect: set 之后 = 99|toSlice = 1 99 3|handleAtDense 读回 = 99|clear 之后 len = 0 且旧 handle 全失效|clear 之后复用容量：再插 3 个 len = 3
+/* ⭐ 期 0 的 API 面判据：写回 · 拷成 slice · dense↔handle 双向 · clear 复用容量 ✓ */
+use std::pool
+
+fn main() -> i32 {
+    var p = pool<i32>::withCap(8)
+    let a = p.insert(1)
+    let b = p.insert(2)
+    let c = p.insert(3)
+
+    if !p.set(b, 99) { println("set 失败"); return 1 }
+    println("set 之后 = ", p.get(b) ?? i32(-1))
+
+    let s = p.toSlice()                       /* 拷到当前块，生命周期 = 当前块 ✓ */
+    println("toSlice = ", s[0], " ", s[1], " ", s[2])
+
+    let h1 = p.handleAtDense(1)               /* dense 下标 -> handle ✓ */
+    println("handleAtDense 读回 = ", p.get(h1) ?? i32(-1))
+
+    p.clear()                                 /* 容量留着复用（不还给 arena —— 那要 region ✓）*/
+    println("clear 之后 len = ", p.len(), " 且旧 handle 全失效 = ", !p.contains(a) && !p.contains(c))
+
+    let d = p.insert(7)
+    let e = p.insert(8)
+    let f = p.insert(9)
+    println("clear 之后复用容量：再插 3 个 len = ", p.len())
+    return 0
+}
