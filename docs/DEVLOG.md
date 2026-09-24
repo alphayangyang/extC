@@ -8212,3 +8212,17 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 
 验证：`tests/hashmap`（含 canary「有牙」与 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
 `tests/genmatrix`（13 项）· 语料 **通过 262 / 失败 0**，全绿。
+
+同轮补记（第 12 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r18.log`），
+② hashMap 池底化四道闸门齐（`tests/hashmap` 含 canary 与 ASan · `tests/stl` · `tests/pool` · `tests/linmap` ·
+`tests/generics` · `tests/genmatrix` · 语料 262/0 · quick 25/0）。
+
+#80 的排查指针（下一轮的入口，省得重走）：
+
+- `types.c:ttGeneric` 的实例驻留（interning）是**对的** —— 只有全具体实例才进 `tt->instances`，模板期
+  `pool<V>` 本来就不该进；问题不在这一层。
+- `codegen.c` **根本不遍历 `tt->instances`**（grep 无命中），所以实例的方法/结构体是另有一条发射路径
+  （多半是按 `FuncDef.used` 或发射期的工作表）。下一个要看的就是：谁决定「`pool<i32>` 的这套函数要发」，
+  以及为什么字段顺序会影响它 —— 现象是「字段类型里第一个泛型实例被注册/发射，后面的没有」。
+- 二分探针（可复现）：`struct h<K, V> { keys: mut slice<K>  vals: pool<V> ... }` 挂；
+  `struct h<K, V> { vals: pool<V>  keys: mutable slice<K> ... }` 正常；与字段名、字面量顺序、参数个数无关。
