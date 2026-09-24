@@ -1266,7 +1266,14 @@ static const char *zeroValue(CG *g, Type *t) {
      * cannot be zero-initialized. */
     if (t->kind == TY_ENUM)
         return enumHasPayload(t->edef) ? arenaPrintf(g->arena, "(%s){0}", t->name) : "0";
-    if (t->kind == TY_ARRAY) return arenaPrintf(g->arena, "(%s){0}", t->name);
+    /* An array is a struct wrapping `data[N]`, so the braces have to follow the nesting or gcc
+     * asks for them (`-Wmissing-braces`, gcc only - clang takes any of these):
+     *   `[N]i64`  -> `{{0}}`   one brace for the struct, one for `data`, then the first element
+     *   `[N][M]i32` -> the element is an array itself, so its own zero value goes inside:
+     *                  `{{{0}}}` and so on. The element's zero value is the ordinary one, which is
+     *   already braced for structs by the cases below. */
+    if (t->kind == TY_ARRAY)
+        return arenaPrintf(g->arena, "(%s){ { %s } }", t->name, zeroValue(g, t->inner));
 
     if (t->kind == TY_PARAM) {
         Type *a = subst(g, t);
@@ -4027,9 +4034,6 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                 fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
                         bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
             if (countMentionsIn(g, bp, bl, d->name) != d->own) continue;   /* it is read */
-            /* A declaration inside the body is found there; one in the prologue (the home
-             * arena) is not in the body at all, so it is looked up in the whole text - the
-             * stage only had to answer whether anything reads it. */
             char  *ln = (d->own == 0) ? strstr(text, d->text) : strstr(bp, d->text);
             if (!ln || (d->own != 0 && ln >= bp + bl)) continue;   /* not where it should be */
             size_t tl = strlen(d->text);
@@ -4046,12 +4050,49 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     *lenp = len;
 }
 
+/* Count mentions of `name` in generated *code*: string and character literals and comments are
+ * skipped. A one-letter local otherwise matches what is inside a string literal - `"v = "`
+ * counted as a use of `v`, which kept declarations that nothing reads, and the same held for
+ * `e`, `n` and `d` all over the corpus. */
+static size_t countCodeMentions(const char *hay, size_t n, const char *name) {
+    size_t len = strlen(name), count = 0;
+    for (size_t i = 0; i < n; ) {
+        char c = hay[i];
+        if (c == '"' || c == '\'') {                 /* skip the literal */
+            char q = c;
+            i++;
+            while (i < n) {
+                if (hay[i] == '\\' && i + 1 < n) { i += 2; continue; }
+                if (hay[i] == q) { i++; break; }
+                i++;
+            }
+            continue;
+        }
+        if (c == '/' && i + 1 < n && hay[i + 1] == '/') {
+            while (i < n && hay[i] != '\n') i++;
+            continue;
+        }
+        if (c == '/' && i + 1 < n && hay[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < n && !(hay[i] == '*' && hay[i + 1] == '/')) i++;
+            i = (i + 1 < n) ? i + 2 : n;
+            continue;
+        }
+        if (i + len <= n && strncmp(hay + i, name, len) == 0 &&
+            (i == 0 || !identByte(hay[i - 1])) && (i + len >= n || !identByte(hay[i + len]))) {
+            count++;
+            i += len;
+            continue;
+        }
+        i++;
+    }
+    return count;
+}
+
 /* The same count, over one piece of the body buffer, which is not terminated. */
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
-    Buf sc;
-    bufInit(&sc, g->arena);
-    bufPutn(&sc, hay, n);
-    return countMentions(bufCstr(&sc), needle);
+    (void)g;
+    return countCodeMentions(hay, n, needle);
 }
 
 /* Drop every recorded definition whose name occurs exactly once in the finished
