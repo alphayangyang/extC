@@ -7139,3 +7139,25 @@ examples/shadowing.extc   v     func=main  body=yes  bp=hit  cnt=3  own=1
   能否可靠地定位参数名（参数表就是函数体文本的头部 ✓ 用 `DeadFunc.body` 的前几行 ✓））
 
 **这一族都不许用"缩进 + `;`"之类的猜测** ✗（本项目已有一次教训 ✓ 只处理生成器自己发出的声明行 ✓）
+
+### 2026-09-25 · 撤回 `EXTC_UNUSED`：**第二次实测仍是承重的** ⇒ 再回退（这次把范围钉死了）
+
+`-Weverything` 现状（只允许 §3.1 清单时）：`globals` **7** 条 · `stream-file` **20** 条 ✓ 其中
+**`used-but-marked-unused` 4/6 条** —— 这正是 clang 在说"你这 `EXTC_UNUSED` 根本多余" ✓
+而函数剪枝 / 实例方法剪枝 / 原语剪枝现在**都已落地** ✓ 于是**再试一次全撤**（9 处属性 + 那个宏定义 ✓）：
+
+```
+globals      gcc 0 → 1    clang 0 → 1
+stream-file  gcc 1 → 3    clang 1 → 3
+stream-sum   gcc 0 → 3    clang 0 → 3
+arrays       gcc 0 → 1    clang 0 → 1
+shadowing    gcc 1 → 2    clang 1 → 2
+```
+⇒ **每处都涨** ✗ ⇒ 属性仍然承重 ✓ 范围也钉死了：**描述符行 / 字段表 / 视图索引**这三族
+（`%s_desc` / `%s_fields[]` / `%s_index` ✓）—— 它们是"按需发射"的 ✓ 但**按需 ≠ 一定被引用** ✗
+
+**结论**：撤属性的前提是**内容判据接管那三族** ✓（照 `DeadDef` 那套 ✓ 它们都是 `cgLine` 单行 ✓
+比原语那三个大字符串链容易得多 ✓）—— 在那之前，属性不能撤 ✓（这是第二次实测确认 ✓ 已写进
+`docs/WARNINGS.md` §4 的说法里要改的地方：不是"等第一刀"，而是"等这三族接上内容判据" ✓）
+
+**回退后**：树干净 ✓ 全量 **gcc 6 · clang 4 · error 0** ✓
