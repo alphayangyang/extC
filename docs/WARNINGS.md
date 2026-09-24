@@ -33,11 +33,12 @@ clang -Weverything $(cat docs/warnings-flags.txt) -c -o /dev/null prog.c
 
 | 程序 | 生成物行数 | gcc | clang |
 |---|---|---|---|
-| `examples/globals.extc` | 324 | **0** | **0** ✓ |
-| `tests/io/stream.extc` | 738 | **0** | **0** ✓ |
-| `tests/io/stream-file.extc` | 1361 | **0** | 1 |
+| `examples/globals.extc` | 298 | **0** | **0** |
+| `tests/io/stream.extc` | 719 | **0** | **0** |
+| `tests/io/stream-file.extc` | 1258 | **0** | **0** |
 
-（**2026-09-25 现场量**：上表三行 ✓ 全部 `error: 0` ✓ **89 个 examples 全量：gcc 合计 6 · clang 合计 4 · error 0** ✓
+（**2026-09-26 收官实测**：上表三行两个编译器**都是 0** ✓ 全部 `error: 0` ✓
+**89 个 examples 全量：`gcc -Wall -Wextra` 0 · `clang -Wall -Wextra` 0 · `clang -Weverything`（只允许 §3.1 清单）0 · error 0** ✓
 开工时同一批代表程序是 452/990/1608 行、gcc 1/14/28、clang 25/21/47，全量是 **gcc 39 · clang 37** ✓）
 
 ⇒ 三个代表程序里**两个（`globals`、`stream`）已经两编译器全清** ✓ 全量从 39/37 降到 6/4 ✓
