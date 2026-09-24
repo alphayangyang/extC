@@ -4216,21 +4216,39 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    bool          (*eq)(const void *a, const void *b);\n"
         "};\n"
         "\n"
-        "/* Type-independent descriptors (reference, byte view, scalars), shared per program. */\n"
-        "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i8  = { EXTC_D_I8,  \"i8\",  sizeof(int8_t),  0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i16 = { EXTC_D_I16, \"i16\", sizeof(int16_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i32 = { EXTC_D_I32, \"i32\", sizeof(int32_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i64 = { EXTC_D_I64, \"i64\", sizeof(int64_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u8  = { EXTC_D_U8,  \"u8\",  sizeof(uint8_t),  0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u16 = { EXTC_D_U16, \"u16\", sizeof(uint16_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u32 = { EXTC_D_U32, \"u32\", sizeof(uint32_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u64 = { EXTC_D_U64, \"u64\", sizeof(uint64_t), 0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_f32 = { EXTC_D_F32, \"f32\", sizeof(float),  0, NULL, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_f64 = { EXTC_D_F64, \"f64\", sizeof(double), 0, NULL, NULL, NULL };\n"
-        "\n");
+        "/* Type-independent descriptors (reference, byte view, scalars), shared per program. */\n");
+    /* Type-independent descriptors: one row per scalar kind, handed out by `descRef`
+     * on demand. A program that never prints a `u64`, or never compares a `ref`, has
+     * no use for that row - and a row nobody names is a warning in every unit that
+     * carries it. Each row is emitted here and remembered: dropUnreferenced takes it
+     * back out once the finished unit says nothing names it. */
+    static const struct { const char *name; const char *row; } SCALAR_DESC[] = {
+        { "extc_desc_ref", "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_text", "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_bool", "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_i8", "static const ExtcDesc extc_desc_i8  = { EXTC_D_I8,  \"i8\",  sizeof(int8_t),  0, NULL, NULL, NULL };\n" },
+        { "extc_desc_i16", "static const ExtcDesc extc_desc_i16 = { EXTC_D_I16, \"i16\", sizeof(int16_t), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_i32", "static const ExtcDesc extc_desc_i32 = { EXTC_D_I32, \"i32\", sizeof(int32_t), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_i64", "static const ExtcDesc extc_desc_i64 = { EXTC_D_I64, \"i64\", sizeof(int64_t), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_u8", "static const ExtcDesc extc_desc_u8  = { EXTC_D_U8,  \"u8\",  sizeof(uint8_t),  0, NULL, NULL, NULL };\n" },
+        { "extc_desc_u16", "static const ExtcDesc extc_desc_u16 = { EXTC_D_U16, \"u16\", sizeof(uint16_t), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_u32", "static const ExtcDesc extc_desc_u32 = { EXTC_D_U32, \"u32\", sizeof(uint32_t), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_u64", "static const ExtcDesc extc_desc_u64 = { EXTC_D_U64, \"u64\", sizeof(uint64_t), 0, NULL, NULL, NULL };\n" },
+        { "extc_desc_f32", "static const ExtcDesc extc_desc_f32 = { EXTC_D_F32, \"f32\", sizeof(float),  0, NULL, NULL, NULL };\n" },
+        { "extc_desc_f64", "static const ExtcDesc extc_desc_f64 = { EXTC_D_F64, \"f64\", sizeof(double), 0, NULL, NULL, NULL };\n" },
+    };
+    for (size_t i = 0; i < sizeof SCALAR_DESC / sizeof *SCALAR_DESC; i++) {
+        size_t rowOff = g.rt.len;
+        bufPuts(&g.rt, SCALAR_DESC[i].row);
+        Buf row;
+        bufInit(&row, g.arena);
+        bufPutn(&row, g.rt.data + rowOff, g.rt.len - rowOff);
+        DeadDef *dd = arenaAllocZero(g.arena, sizeof *dd);
+        dd->name = SCALAR_DESC[i].name;
+        dd->text = bufCstr(&row);
+        *(DeadDef **)vecPush(&g.deadDefs) = dd;
+    }
+    bufPuts(&g.rt, "\n");
     /* Split into two calls: C99 only guarantees support for string literals of
      * 4095 characters, and one large literal would trigger -Woverlength-strings.
      * That is not an error, but there is no reason to keep the noise. */
