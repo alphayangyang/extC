@@ -6943,3 +6943,34 @@ clang 说的不是"没人提到它"，而是"**没人读它**" ✗
 **回退后**：树干净 ✓ 全量仍是 **gcc 10 · clang 8 · error 0** ✓（另：本轮两次 `g.`/`g->` 笔误都是
 **编译错误** ⇒ 又一次证明"先看 error 再信 warning" ✓ 而且**旧二进制度出来的数是废数** ✓
 规矩再加一条：**量之前确认二进制是刚构建的** ✓）
+
+### 2026-09-25 · 剩余靶子的精确清单（全量 9 个程序 · gcc 10 · clang 8）
+
+```
+arrays            unused variable 'i'            ┐
+shadowing         unused variable 'v'            ├ 族 A：普通局部（3 个程序）
+stream-sum        unused variable 'd'            ┘
+escape-promotion  unused variable '__extc_home'  ┐
+reader-home-arena unused variable '__extc_home'  ├ 族 B：home arena（3 个程序）
+out-param         unused parameter '__extc_home' ┘（out-param 那个是**参数** ✓ 又不一样）
+borrowing         unused parameter 'b'           ┐ 族 C：未用参数（2 个程序）
+out-param         unused parameter '__extc_home' ┘
+rng               'skip' set but not used        ┐ 族 D：写而不读（1 个程序）
+fenwick           （gcc 那边 2 条，clang 干净）   ┘
+```
+
+**族 A（普通局部）的正确做法（已设计好，下一轮直接做）**：
+`ST_VAR` 发射处登记候选 `{name, 那一行原文, 所属 FuncDef*}` ✓ ⇒ 判定时用**已经捕获好的函数体文本**
+（`DeadFunc.body` ✓ 就是为函数剪枝捕获的那份 ✓ 边界天然正确 ✓）数这个名字在**该函数体内**出现几次 ✓
+**== 1（只有它自己那一声明）⇒ 删掉那一行** ✓ 声学（一个名字在函数体里只出现一次 = 绝无第二次使用 ✓），
+而且**不需要偏移**：定位时用 `strstr` 找那份函数体文本、再在它里面按偏移找那一行、**逐字节校验** ✓
+（⚠️ 绝对不能按"缩进 4 空格 + 以 `;` 结尾"去**猜**声明 ✗ —— 那样会把 `foo = bar;` 这种**赋值语句**
+当成声明删掉 ✗✗ 副作用就丢了 ✓ 这条写在这里防止下一轮图省事 ✓）
+
+**族 C（未用参数）**：参数**删不掉**（它是签名的一部分 ✓）⇒ 唯一的正解是**在参数上加属性** ✓
+（这不算"捂嘴"：语言允许不用参数 ✓ 生成物只能这么表达 ✓ 与"整段不发"的目标不冲突 ✓）
+判据同样是**函数体内一次都没提到** ✓（用族 A 那套作用域 ✓）
+
+**族 B（`__extc_home`）**：它**不是**"没人提到"而是"**没人读**" ✗ ⇒ 要么做读写区分（大件 ✗），
+要么回到**按需发射**：`needsHome` 是检查器的判断，比生成物实际需要更宽 ✓ ⇒ 在 `new` 的发射点
+**记下"这里真的用了 home"** ✓，`isMain && f->needsHome && 真的用过` 才发声明 ✓（这才是第一刀的正解 ✓）
