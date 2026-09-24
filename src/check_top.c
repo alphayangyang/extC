@@ -2240,8 +2240,43 @@ typedef struct {
     int  lv;
 } SymLevel;
 
+/* One entry of the cycle cut: a (value, level) pair that is on the walk right now.
+ *
+ * The walk follows a binding's publications, and a binding assigned from itself --
+ * `s = s + x` inside a loop, which is what every fold looks like -- makes that graph
+ * cyclic. The `hops` cap bounds the *depth* of the recursion but not the number of
+ * *paths*: with a cycle and two edges per level there are 2^32 of them, and the compiler
+ * simply did not return (no message, no position, flat memory). Measured on
+ *
+ *     fn acc<T>(a: T, b: T) -> T { var s: T = a  var i: i64 = 0
+ *         while i < 3 { s = s + b  i = i + 1 }  return s }
+ *
+ * which is the shape of every generic fold (`sum<T>`, `max<T>`, `reduce<T>`).
+ *
+ * Cutting at a repeated pair is sound for what this walk is for: a level only ever gets
+ * smaller, the pair carries the level being demanded, and the pass runs to a fixed point
+ * over the publications -- so a demand this cut drops is applied by the next round,
+ * starting from the state this one settled. */
 typedef struct {
-    Vec tbl;          /* SymLevel */
+    Expr *val;
+    int   target;
+} LvlVisit;
+
+/* Work budget for one level pass, in visited pairs.
+ *
+ * A backstop, not the fix: the cut above is what bounds the walk on a cycle, but a value
+ * graph of diamonds can still branch. Hitting the budget is reported loudly and once --
+ * a compiler that hangs has no message and no position, which is strictly worse than an
+ * error saying so. Measured cost of the whole corpus is far below this: the pass visits
+ * tens of pairs per ordinary function. */
+#define LVL_STEP_BUDGET 4000000L
+
+typedef struct {
+    Vec      tbl;     /* SymLevel */
+    Vec      path;    /* LvlVisit: the (value, level) pairs on the walk right now */
+    long     steps;   /* pairs visited in this pass, against LVL_STEP_BUDGET */
+    bool     loud;    /* the budget was already reported */
+    FuncDef *fn;      /* the function being decided, for the diagnostic */
 } LvlState;
 
 static int  symLevel(LvlState *ls, Sym *sy);
@@ -2278,7 +2313,40 @@ static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
  *     cannot be holding storage that dies with it.
  *   - The answer is what travels along the edges between publications, which is why the
  *     pass that calls this runs to a fixed point over them. */
+static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops);
+
+/* The walk, with the cycle cut and the work budget around it.
+ *
+ * Every recursive edge in the body goes through this wrapper, so the path it keeps is the
+ * chain being walked and the budget counts every pair the walk reaches -- including the
+ * ones reached twice, which is the case the cut exists for. */
 static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
+    if (!val || hops > 32) return LEVEL_INF;
+    for (size_t i = 0; i < ls->path.len; i++) {
+        LvlVisit *v = (LvlVisit *)vecAt(&ls->path, i);
+        /* Already on this path, at this level: everything reachable from here was reached
+         * when it was entered, and whatever this visit could add is picked up by the next
+         * round of the fixed point. */
+        if (v->val == val && v->target == target) return LEVEL_INF;
+    }
+    if (++ls->steps > LVL_STEP_BUDGET && !ls->loud) {
+        ls->loud = true;
+        Ctx *cx = (ls->fn && ls->fn->ctx) ? ls->fn->ctx : c->ctx;
+        ctxError(cx, val->line, 1,
+                 "This is a limit of the compiler, not something wrong with the program;"
+                 " please report it together with the program that triggered it.",
+                 "internal: the level solver walked more than %ld steps and was stopped",
+                 (long)LVL_STEP_BUDGET);
+    }
+    LvlVisit *slot = (LvlVisit *)vecPush(&ls->path);
+    slot->val = val;
+    slot->target = target;
+    int r = levelOfValue2(c, ls, val, target, hops);
+    ls->path.len--;                       /* pop: the path is the current chain, not a set */
+    return r;
+}
+
+static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
     if (getenv("EXTC_DBG_LV"))
         fprintf(stderr, "      [lv] kind=%-3d line=%-4d target=%-2d hops=%d\n",
@@ -2612,10 +2680,14 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
  * Every step only lowers a number, so the iteration is monotone and the answer does not
  * depend on the order the records are visited in. The round cap is the same shape as the
  * other fixed points in this file. */
-static void levelPass(Checker *c, const DfResult *dfr) {
+static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
     (void)dfr;
     LvlState ls;
     vecInit(&ls.tbl, c->arena, sizeof(SymLevel));
+    vecInit(&ls.path, c->arena, sizeof(LvlVisit));
+    ls.steps = 0;
+    ls.loud = false;
+    ls.fn = f;
 
     /* Step one: how long does each binding have to live?
      *
@@ -3092,7 +3164,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * here, after the depth fixed point, is the point of the whole split: the
          * decision sees the final depths instead of the numbers that happened to be
          * true while the body was being walked. */
-        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, &dfr);
+        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, f, &dfr);
         /* Ask the same question again with the numbers the passes settled on. Reporting
          * stays with the check; this is what makes the two answers comparable. */
         if (getenv("EXTC_DBG_DEFER")) recheckLevelRejections(c);

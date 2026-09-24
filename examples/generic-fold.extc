@@ -1,0 +1,36 @@
+// expect: sum = 42 · 点加起来 = 7,7
+/* 泛型 fold —— 这个形状**曾经让编译器挂死**（PLAN #59，2026-09-24 修）：
+ *
+ *     fn sum<T>(xs: slice<T>) -> T { var s: T = xs[0]  var i: i64 = 1
+ *         while i < xs.len { s = s + xs[i]  i = i + 1 }  return s }
+ *
+ * `s = s + xs[i]` 让"层号求解器"顺着 store 图**成环**，而那个 walk 只有深度上限、
+ * 没有剪环 ⇒ 按**路径**展开 = 2^32 条 ⇒ **不返回、零诊断、内存不涨**（gdb 栈里
+ * `levelOfValue` 反复重入 32 层）✗
+ * 修法：走当前链时记 `(值, 层号)` 对，重复即剪（层号只降不升 + 外层本来就跑到不动点
+ * ⇒ 被剪掉的更强要求下一轮会补上）+ 步数预算兜底（超了**响亮报错**，不许静默挂住）✓
+ *
+ * 它同时钉住两件事：
+ *   ① 泛型体里对 `T` 用 `+`（定义时放行、**实例化时**检查）
+ *   ② 元素是**用户结构体**时一样能用（`pt` 自带 `fn +`）✓
+ *
+ * ⚠️ 判据里"不挂"那一半由超时守着：`tools/parrun.py` 每个用例 120 秒，
+ * 超时 = 失败（不是静默等待）✓ */
+struct pt { x: i64  y: i64
+    fn +(self: ref pt, o: pt) -> pt { return pt { x: self.x + o.x, y: self.y + o.y } }
+}
+
+fn sum<T>(xs: slice<T>) -> T {
+    var s: T = xs[0]
+    var i: i64 = 1
+    while i < xs.len { s = s + xs[i]  i = i + 1 }
+    return s
+}
+
+fn main() -> i32 {
+    var a: [3]i64 = [10, 20, 12]
+    var ps: [2]pt = [ pt { x: 3, y: 4 }, pt { x: 4, y: 3 } ]
+    var r: pt = sum(ps[..])
+    println("sum = ", sum(a[..]), " · 点加起来 = ", r.x, ",", r.y)
+    return 0
+}
