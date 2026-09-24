@@ -2775,6 +2775,38 @@ no method `put` on `ifstream`
 （`argument expects \`ref fs::ifstream\`, found \`mut ref fs::ofstream\``），而不是被 `@noCopy` 先接住 ——
 **两条规则各钉各的，不要互相遮** ✓
 
+### 落地记录（2026-09-24，第 3 步：`ifstream` 自带缓冲 + 三种 `>>`）
+
+**形状**：`ifstream` 加两个字段 —— `r: io::reader`（缓冲与位置 = 链式的状态）· `failed: bool`
+（读不到时置起）✓ `openRead` 构造时建好内部 reader ✓
+三个 `>>` **靠右操作数的类型分**（定案 82 补记买到的那条能力）：`mut ref i64` 一个整数 ·
+`mut slice<u8>` 一行 · `mut ref u8` 一个字节 ✓ 都返回 `mut ref ifstream` ——
+**第 1 步那条引用规则正是它的地基**：状态在对象里，链式靠"返回的是同一个对象" ✓
+签名撞车的（按空白切词）留具名方法 ✓
+
+**错误用标志，不用返回类型**（与 C++/Go 同一档，也与 `std::io` 的控制台流同一形状）：
+`a >> b` 站在 `a` 的位置上 ⇒ `>>` 只能返回流 ✗ ⇒ 读不到时**目标保持原值** + `fin.bad()` 为真 ✓
+要 `result` 就用具名方法（`readSome` / `reader().nextInt()`）—— 两层分工写进 IO.md ✓
+
+⚠️ **一个当场量出来的坑（第一版真的把值写成 0 了）**：文件结尾常留着最后一个 `\n`，
+那时 `eof()` 说"还有字节"（没错，确实有），而 `nextInt` 在没有数字时返回 `success(0)`
+—— 与"读到的就是 0"**同形** ✗ ⇒ 读整数前先 `skipSpace()` **再**问 `eof()` ✓
+（一行/一个字节**不跳过**：空行与那个 `\n` 都是真内容 ✓）
+判据就钉这一条：`结束时保持原值 = 999 · bad = true` ✓
+
+**`reader()` 改成交出内部那个**（`-> mut ref io::reader`，不再返回 `result`）✓
+以前那句"别把 reader 与 readSome 混用"的警告是**注释求人**；现在结构上只有一个 reader ✓
+于是原来钉在 `reader()` 上的"关掉的句柄再用 ⇒ `failure(closed)`"那一格**搬到 `readSome`**
+（同一条规则、同一个错误类型 ✓）—— 判据跟着规则走，不跟着函数名走 ✓
+
+**`@noCopy` 的一处收紧**（第 2 步的规则在这一步才暴露）：`rejectNoCopy` **只在要值时响** ——
+`f(ref s)` 与 `-> mut ref T` 传的是对象本身，正是 `@noCopy` 想让人做的事 ⇒
+不然 `return ref self.r` 这种写法会被自己的注解挡住 ✗
+
+**判据**：`tests/io/stream-file.extc`（一链三类型 `整数 = 42 · 一行 = hello world · 字节 = 88` ·
+与具名方法混用共享缓冲 `接着 token = 剩下的` · 结束保持原值 + `bad` ✓）⇒ IO 节 **19 → 21 项** ✓
+语料 254/0 · ops 22 · ctor · modules 23 · genmatrix 13 · fs · fs-shape · nocopy 全绿 ✓
+
 ## 定案 87 · **文件类型叫 `ifstream` / `ofstream`**（2026-09-24，主人拍板：「分开即可，保持解耦」）
 
 > 起因：做文件那一块之前问主人 —— 要不要 C++ 那种**一个类型带模式**的 `fstream`

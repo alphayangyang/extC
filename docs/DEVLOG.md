@@ -212,6 +212,23 @@ C 名字后缀规则跟着定了：**只有一个**实现 ⇒ 不加后缀（`ve
 `tests/nocopy/` **5 项** = `check.sh` 第 **24** 节 ✓ 语料 254/0 · ops 22 · ctor · io 19 · modules 23 ·
 genmatrix 13 · fs · fs-shape 全绿 ✓
 
+### ⑪ 定案 88 第 3 步：`ifstream` 自带缓冲 + 三种 `>>`（三步全落地）
+
+`ifstream` 加 `r: io::reader` + `failed: bool`；三个 `>>` 靠右操作数类型分（`i64` / 一行 / 一个字节），
+都返回 `mut ref ifstream` —— **第 1 步那条引用规则正是它的地基** ✓ 错误用**标志**（`bad()`）而不是
+返回类型（`>>` 只能返回流 ✓），要 `result` 就用具名方法 ⇒ 两层分工 ✓
+
+⚠️ 当场量出来的坑：结尾那个 `\n` 让 `eof()` 说"还有字节"，而 `nextInt` 没数字时返回 `success(0)`
+（与"读到 0"同形 ✗）⇒ 第一版真的把目标**写成了 0** ✗ 修法是读整数前先 `skipSpace()` 再问 `eof()` ✓
+（一行/一个字节不跳过：空行与 `\n` 都是真内容 ✓）
+
+`reader()` 改成交出内部那个（`-> mut ref reader`）⇒ 以前"别与 readSome 混用"的警告变成结构保证 ✓
+原来钉在它上面的"关掉的句柄 ⇒ failure(closed)"那一格**搬到 `readSome`**（判据跟规则走，不跟函数名走 ✓）
+`@noCopy` 顺带收紧一处：只在**要值**时响（`f(ref s)` / `-> mut ref T` 是它想让人做的事 ✓）
+
+判据 `tests/io/stream-file.extc` ⇒ IO 节 **19 → 21 项** ✓ 三步全绿：语料 254/0 · ops 22 · ctor ·
+io 21 · modules 23 · genmatrix 13 · fs · fs-shape · nocopy ✓
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·

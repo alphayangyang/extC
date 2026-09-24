@@ -60,9 +60,30 @@ if out=$(printf '' | "$EXTC" --run tests/io/stream.extc 2>&1); then
     echo "$out" | grep -qF "读到 x = 0 y = 0 和 = 0" || ok=0
     echo "$out" | grep -qF "读坏了（EOF / 错误）"      || ok=0
     if [ "$ok" = 1 ]; then echo "  ok   stream-eof  ->  目标保持原值 + inBad 为真 ✓"
-    else echo "  FAIL stream-eof  ->  $(echo "$out" | tr '\n' '|')"; fail=1; fi
+    else echo "  FAIL file-eof  ->  $(echo "$out" | tr '\n' '|')"; fail=1; fi
 else
-    echo "  FAIL stream-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
+    echo "  FAIL file-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
+fi
+
+echo "== 文件流式读取（定案 88 第 3 步：fin >> 整数 >> 一行 >> 一个字节）=="
+if out=$("$EXTC" --run tests/io/stream-file.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "整数 = 42 · 一行 = hello world · 字节 = 88" || ok=0
+    echo "$out" | grep -qF "接着 token = 剩下的"                        || ok=0
+    if [ "$ok" = 1 ]; then echo "  ok   stream-file  ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL stream-file  ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
+else
+    echo "  FAIL stream-file  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+# 读到结束：目标**保持原值** + bad 置起（不 trap、不写 0 ✓）
+if out=$("$EXTC" --run tests/io/stream-file.extc 2>&1); then
+    if echo "$out" | grep -qF "结束时保持原值 = 999 · bad = true"; then
+        echo "  ok   file-eof  ->  EOF 时目标保持原值 + bad 为真 ✓"
+    else
+        echo "  FAIL file-eof  ->  $(echo "$out" | tr '\n' '|')"; fail=1
+    fi
+else
+    echo "  FAIL file-eof  ->  跑不起来"; fail=1
 fi
 
 echo "== 回归：struct 打印 + 跨模块全局常量 + reader（这三样一起曾经让编译器段错误 ✗）=="

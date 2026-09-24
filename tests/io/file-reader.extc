@@ -15,7 +15,9 @@ fn run() -> result<unit, io::ioError> {
     var f = fs::openRead("tests/io/numbers.txt")?
 
     /* 换这一行：其余读法与 `tests/io/main.extc`（stdin）逐字相同 ✓ */
-    var r = f.reader()?
+    /* `reader()` 现在交出**内部那个**（`-> mut ref reader`，定案 88 第 3 步）——
+     * 不再返回 `result`：结构上只有一个 reader，就没有"新造一个看不见已缓冲字节"那条路 ✓ */
+    var r = f.reader()
 
     let a = r.nextInt()?                 /* 12 */
     let b = r.nextInt()?                 /* 34 */
@@ -36,8 +38,12 @@ fn run() -> result<unit, io::ioError> {
     /* 边界：关掉的句柄再要 reader ⇒ failure(closed)，带位置（不 trap）✓ */
     var g = fs::openRead("tests/io/numbers.txt")?
     g.close()?
-    match g.reader() {
-        success(rr)  => { println("不该成功：fd = ", rr.fd); return failure(io::ioError.closed(i32(0))) }
+    /* 关掉的句柄**再用**必须给 `failure(closed)`（带位置、不 trap）——
+     * 这一格原来钉在 `reader()` 上；`reader()` 不再返回 `result`（见上），
+     * 所以改钉 `readSome`：同一条规则、同一个错误类型 ✓ */
+    var buf: mut slice<u8> = new u8[16]
+    match g.readSome(buf[..]) {
+        success(n)  => { println("不该成功：读了 ", n); return failure(io::ioError.closed(i32(0))) }
         failure(e)   => {
             match e {
                 closed(code)      => { println("closed 带位置 = ", code) }

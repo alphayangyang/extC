@@ -1,0 +1,38 @@
+/* 文件流式读取（定案 88 第 3 步）：`fin >> 整数 >> 一行 >> 一个字节` ✓
+ *
+ * 判据：
+ *   ① 三种 `>>` 靠**右操作数的类型**分：`mut ref i64` / `mut slice<u8>` / `mut ref u8` ✓
+ *   ② **一条链**读下来，位置一步步交接对（末尾那个字节 = 'X' = 88 ✓）
+ *   ③ 读到文件结束 ⇒ **目标保持原值** + `fin.bad()` 为真（不 trap、不写 0 ✓）
+ *   ④ `reader()` 交出的是**内部那个** reader（不是新造的）⇒ 与 `>>` 混用不跳字节 ✓
+ */
+use std::fs
+use std::io
+
+fn go() -> result<unit, io::ioError> {
+    var f = fs::ifstream("tests/io/stream-file.txt")?
+
+    var n: i64 = 0
+    var line: mut slice<u8> = new u8[128]
+    var b: u8 = u8(0)
+    f >> n >> line >> b
+    println("整数 = ", n, " · 一行 = ", line, " · 字节 = ", b)
+
+    /* ④ 混用：`>>` 之后接具名读法，位置必须接着走（内部是同一个 reader ✓）*/
+    let t = f.reader().nextToken(line[..])?
+    println("接着 token = ", line[0..t])
+
+    /* ③ 读到结束：目标保持原值 + bad 置起 ✓ */
+    var untouched: i64 = 999
+    f >> untouched >> untouched
+    println("结束时保持原值 = ", untouched, " · bad = ", f.bad())
+    f.close()?
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { println("失败"); return 1 }
+    }
+}

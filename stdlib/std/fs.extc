@@ -37,6 +37,12 @@ use std::sys::io as sysio
 struct ifstream {
     fd:   i32
     open: bool
+    /* 内部缓冲与位置（`>>` 的状态就在这儿 —— 句柄**自己**有身份，所以它 @noCopy ✓）*/
+    r:    io::reader
+    /* `>>` 读不到时置起（文件结束 / 读错误）。运算符必须返回流本身（`a >> b` 站在 `a` 的
+     * 位置上），所以错误不能放进返回类型 ⇒ 用**标志**，与 `std::io` 的控制台流同一形状 ✓
+     * 要 `result` 就用具名方法（`readSome` / `reader().nextInt()`）✓ 两层分工。 */
+    failed: bool
 
     /* **构造函数**：`ifstream("input.txt")` 与 `ifstream::new("input.txt")` 是同一件事
      * （`T(...)` 就是 `T::new(...)` 的写法，见定案 86）✓
@@ -91,10 +97,82 @@ struct ifstream {
      *   - the reader reads from the **descriptor**, not from the handle: closing the
      *     handle while a `reader` is still in use leaves the reader reading a number the
      *     kernel may already have given to somebody else. Close after the reading is done. */
-    fn reader(self: mut ref ifstream) -> result<io::reader, io::ioError> {
-        if !self.open { return failure(io::ioError.closed(self.fd)) }
-        return success(io::readerOf(self.fd))
+    fn reader(self: mut ref ifstream) -> mut ref io::reader {
+        /* ⚠️ 交出的是**内部那个** reader，不是新造一个：新造的那个看不见已经缓冲进来的
+         * 字节，两套位置会互相跳过 ✗（这条以前写在注释里求人别混用，现在结构上就一个 ✓）*/
+        return ref self.r
     }
+
+    /* ---------------------------------------------------------------- 流式读取
+     *
+     * `fin >> n >> line >> b` —— 链式读，与 `cin >> x` 同一个形状（定案 88）✓
+     * 三种靠**右操作数的类型**分：`mut ref i64` 读一个整数 · `mut slice<u8>` 读一行 ·
+     * `mut ref u8` 读一个字节 ✓ 签名撞车的（按空白切词）留具名方法 `nextToken` ✓
+     *
+     * 读不到（文件结束 / 读错误）⇒ **目标保持原值** + `fin.bad()` 为真 ✓
+     * 先问 `eof()` 再读：`nextInt` 在结束处返回 `success(0)`，与"读到的就是 0"同形 ✗
+     * （`nextLine` 同理：空行与结束都返回 0 ✓ 所以这个顺序是必须的）*/
+    fn >>(self: mut ref ifstream, out: mut ref i64) -> mut ref ifstream {
+        /* 先跳过空白，**再**问 `eof()`：文件结尾常留着最后一个 `\n`，那时 `eof()` 说
+         * "还有字节"（没错，确实有），而 `nextInt` 在没有数字时返回 `success(0)` ——
+         * 与"读到的就是 0"**同形** ✗ 跳过空白之后 `eof()` 才是精确的 ✓
+         * （一行/一个字节**不跳过**：空行与那个 `\n` 都是真内容 ✓）*/
+        match self.r.skipSpace() {
+            success(k) => { }
+            failure(e) => { self.failed = true }
+        }
+        match self.r.eof() {
+            success(fin) => {
+                if fin { self.failed = true }
+                else {
+                    match self.r.nextInt() {
+                        success(v) => { *out = v }
+                        failure(e) => { self.failed = true }
+                    }
+                }
+            }
+            failure(e) => { self.failed = true }
+        }
+        return self
+    }
+
+    fn >>(self: mut ref ifstream, out: mut slice<u8>) -> mut ref ifstream {
+        match self.r.eof() {
+            success(fin) => {
+                if fin { self.failed = true }
+                else {
+                    match self.r.nextLine(out) {
+                        success(n) => { }
+                        failure(e) => { self.failed = true }
+                    }
+                }
+            }
+            failure(e) => { self.failed = true }
+        }
+        return self
+    }
+
+    fn >>(self: mut ref ifstream, out: mut ref u8) -> mut ref ifstream {
+        match self.r.eof() {
+            success(fin) => {
+                if fin { self.failed = true }
+                else {
+                    match self.r.nextByte() {
+                        success(v) => { *out = u8(v) }
+                        failure(e) => { self.failed = true }
+                    }
+                }
+            }
+            failure(e) => { self.failed = true }
+        }
+        return self
+    }
+
+    /* 读失败过吗（文件结束算，读错误也算）？ */
+    fn bad(self: ref ifstream) -> bool { return self.failed }
+
+    /* 清掉失败标志（不动缓冲：已经读进来的字节还在那儿）✓ */
+    fn clear(self: mut ref ifstream) { self.failed = false }
 
     /* Close the descriptor. Idempotent: the handle remembers that it is closed, so a
      * second call is a no-op and `close(2)` is never reached twice -- by then the
@@ -166,7 +244,7 @@ fn openRead(path: slice<u8>) -> result<ifstream, io::ioError> {
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
     /* A named literal, resolved through the module context exactly the way a type
      * annotation is (PLAN #54 fixed this: it used to need `var f: ifstream = { .. }`). */
-    return success(ifstream { fd: fd, open: true })
+    return success(ifstream { fd: fd, open: true, r: io::readerOf(fd), failed: false })
 }
 
 fn openWrite(path: slice<u8>) -> result<ofstream, io::ioError> {

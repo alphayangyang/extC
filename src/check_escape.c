@@ -1857,7 +1857,10 @@ Type *checkInto(Checker *c, Type *want, Expr *e) {
     if (want) desugarBareCtor(c, e, want);
     Type *got = checkExpr(c, e);
     rejectStreamBorrow(c, e);
-    rejectNoCopy(c, e, got);
+    /* Only when a **value** is wanted: `f(ref s)` and `-> mut ref T` pass the object
+     * itself, which is exactly what a `@noCopy` type is for -- refusing those would make
+     * the annotation unusable. */
+    if (!want || want->kind != TY_REF) rejectNoCopy(c, e, got);
     /* As in `checkValue`: a reference supplied where no reference is expected is an
      * error. */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
