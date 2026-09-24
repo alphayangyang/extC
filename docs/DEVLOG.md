@@ -6511,3 +6511,16 @@ gcc **不变**（28 条 ✓ 括号多少不是 gcc 的警告）、生成物**行
 **② 3 条 `-Wmissing-field-initializers` ⇒ 0**：`extc_desc_i8`/`extc_desc_u8`/`extc_desc_f32` 三行
 少写了最后一个 `NULL`（`ExtcDesc.eq` 位；其余行都是 7 个初始化器，就这三行是 6 个 ✓）⇒ 补齐 ✓
 gcc/clang 双双归零 ✓ —— 这是**真按"生成物少写"改的**，跟 `EXTC_UNUSED` 那批权宜属性不是一回事 ✓
+
+**下一轮的准数（2026-09-25 收尾基线，`gcc/clang -Wall -Wextra` 数 tag 条数）**：
+
+```
+examples/globals.extc        452 行   gcc  1   clang 25   clang -Weverything  84
+tests/io/stream.extc         990 行   gcc 14   clang 21   clang -Weverything 410
+tests/io/stream-file.extc   1608 行   gcc 28   clang 47   clang -Weverything 793
+```
+
+⇒ gcc 那 28 条里 **26 条是"没人用的全局/描述符行"**（第二刀的大头，要走函数级可达性 + 内容判据 ✓），
+`globals.extc` 只剩 **1** 条说明**小程序已经接近干净** ✓ 差距全在"库整片发出来"这一类 ✓
+`-Weverything` 那 793 条里绝大部分是**对生成物无解**的类别（`-Wpadded` 结构体填充 / `-Wdeclaration-after-statement`
+C89 风格 / `-Wunsafe-buffer-usage` 指针运算必然触发 ✗）⇒ 按既定方案配一份**写在文档里的 `-Wno-` 清单** ✓
