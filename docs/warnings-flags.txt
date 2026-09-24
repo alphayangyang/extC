@@ -11,3 +11,10 @@ unsafe-buffer-usage
 cast-align
 switch-default
 comma
+# clang 自己的可达性分析：不在 -Wall 里，官方明说会有误报；实测它把预置文本里
+# `case EXTC_D_F32: printf(...); return;` 的 return 报成"永远不会执行"，而那个 return 明显可达
+unreachable-code
+unreachable-code-return
+# 警告原文是 "jump ... is incompatible with C++"：生成物是 C11，epilogue 用 goto __extc_ret
+# 统一出口（跳过的都是非 VLA 的初始化）；这条是给"C 代码也想交给 C++ 编译器"准备的
+jump-misses-init

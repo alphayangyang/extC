@@ -7301,3 +7301,34 @@ error: ‘color_desc’ undeclared
 -Weverything（仅 §3.1 清单）  globals 7 → 5 · stream-file 20 → 15
                       其中 used-but-marked-unused 4→2 / 6→1
 ```
+
+### 2026-09-25 · 预置宏也按需发射 + 兜底 goto 按需 + 清单补三条
+
+**一、`#define` 也进了原语那趟扫描**（`dropRuntimeDefs`）。判据要点与踩到的两个坑：
+
+1. **守卫行也是提及**：`#ifndef EXTC_REC_LIMIT` 里有宏名，所以"只在自有行里出现"永远不成立 ✗
+   ⇒ 把 `#ifndef/#ifdef` 这类**只测试存在性**的行从计数里减掉（那不是使用）
+2. **共享的 `#if` 块不能整块删**：`EXTC_INLINE` 与 `EXTC_UNUSED` 定义在**同一个** `#if defined(__GNUC__)` 里 ✗
+   我一度按"相邻指令行"扩展跨度 ⇒ 为没人用的 `EXTC_INLINE` 把整块删了，而 `EXTC_UNUSED` 还在被用
+   ⇒ 五个 C 错误（`expected ';' before 'static'`）✗ ⇒ **只删 `#define` 那一行**（留下空的
+   `#ifndef/#endif` 完全合法）✓
+3. **跨度起点的顺序**：先按 `#define` 行算 span、再改 `ln` 指向守卫行 ⇒ 窗口在名字中间截断 ✗
+   （`EXTC_REC_LIMIT` 只数到守卫那一处 ✓ 这是靠 `EXTC_DBG_PRIM` 打出 `span=37 / inside=1` 才看出来的）
+
+**二、兜底 `goto __extc_ret;` 按需**：函数体已经必然返回时，末尾那对
+`extc_arena_release(...); goto __extc_ret;` 是死代码（clang 报 `code will never be executed`）✗
+⇒ 复用上一轮算出的 `fallsOff` 门控 ✓（标签仍有使用者：不能跑出末尾的函数必然以 return 结尾，而 return 都跳到这个标签 ✓）
+
+**三、清单补三条并写明证据**（`docs/WARNINGS.md` §3.1 + `docs/warnings-flags.txt`）：
+`-Wunreachable-code` / `-Wunreachable-code-return`（clang 自己的可达性分析有误报：实测它把
+`case EXTC_D_F32: printf(...); return;` 的 `return` 报成不可达 ✗，而它明显可达）
+· `-Wjump-misses-init`（原文是 "jump … is **incompatible with C++**" —— 生成物是 C11 ✓）。
+
+**实测**（全部 error 0 ✓）：
+
+```
+                 行数             gcc/clang -Wall -Wextra    -Weverything（仅允许清单）
+globals      324 → 322                  0 / 0                       5 → 3
+stream       738 → 736                  0 / 0                       1 → 1
+stream-file 1361 → 1356                 0 / 1                      15 → 2
+```

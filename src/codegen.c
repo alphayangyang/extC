@@ -3322,7 +3322,12 @@ static void genFunc(CG *g, FuncDef *f) {
      * Every level is released, because a return may jump out of a deeper block;
      * releasing an already empty arena is a no-op. */
     if (!g->noArena) {
-        cgLine(g, "goto __extc_ret;");
+        /* The fall-through entry. A body that cannot run off its end reaches the label through
+         * its own returns, so this line would be dead code - clang says `code will never be
+         * executed` for it and for the release that follows. `fallsOff` is the same answer the
+         * epilogue trap uses, and the label keeps its users either way: a body that cannot fall
+         * off ends with a return, and a return jumps to this label. */
+        if (fallsOff) cgLine(g, "goto __extc_ret;");
         g->indent--;
         cgLine(g, "__extc_ret:");
         g->indent++;
@@ -3898,11 +3903,21 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                            ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' && ln[0] != '*';
             bool   isVar = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
                             ln[0] != '*' && ln[ll - 1] == ';' && !memchr(ln, '(', ll));
-            if (isDef || isVar) {
+            /* A prelude macro is emitted with the machinery that needs it, and that machinery
+             * is dropped when nothing uses it - leaving `#define EXTC_REC_LIMIT 100000` behind
+             * for clang to report as an unused macro. A macro is the same kind of candidate:
+             * its name appears in its own line, and anywhere else means something uses it. */
+            bool   isMacro = (ll > 10 && strncmp(ln, "#define ", 8) == 0);
+            if (isDef || isVar || isMacro) {
                 /* The name: the identifier before the first `(`, or the last one before
                  * the `;` / `=` of a variable. */
                 char *ns, *ne;
-                if (isDef) {
+                if (isMacro) {
+                    ns = ln + 8;
+                    while (ns < ln + ll && *ns == ' ') ns++;
+                    ne = ns;
+                    while (ne < ln + ll && identByte(*ne)) ne++;
+                } else if (isDef) {
                     ne = memchr(ln, '(', ll);
                     ns = ne;
                     while (ns > ln && identByte(ns[-1])) ns--;
@@ -3917,13 +3932,36 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                     while (ns > ln && identByte(ns[-1])) ns--;
                 }
                 size_t nlen = (size_t)(ne - ns);
+                long   totalOverride = -1;      /* macros: guard lines do not count as uses */
                 char   name[128];
                 if (nlen > 5 && nlen < sizeof name &&
-                    (strncmp(ns, "extc_", 5) == 0 || strncmp(ns, "__extc_", 7) == 0)) {
+                    (strncmp(ns, "extc_", 5) == 0 || strncmp(ns, "__extc_", 7) == 0 ||
+                     strncmp(ns, "EXTC_", 5) == 0)) {
                     memcpy(name, ns, nlen);
                     name[nlen] = 0;
-                    size_t span = isDef ? 0 : ll + 1;
+                    size_t span = (isDef && !wholeBody) ? 0 : ll + 1;   /* a variable, a macro, or a one-liner */
                     if (wholeBody) span = ll + 1;           /* one line: the whole definition */
+                    if (isMacro) {
+                        /* Only the `#define` line is the candidate. Taking the whole guard block
+                         * would be wrong twice over: a shared `#if defined(__GNUC__)` block holds
+                         * several macros at once (`EXTC_INLINE` and `EXTC_UNUSED` live in the same
+                         * one), so removing it for an unused macro deleted a macro that was still
+                         * in use - five C errors, `expected ';' before 'static'`. Leaving
+                         * `#ifndef X`/`#endif` behind is harmless: an empty conditional is valid.
+                         *
+                         * The guard line mentions the name only to ask whether it is defined, which
+                         * is not a use, so those lines are subtracted from the count. */
+                        size_t guards = 0;
+                        for (char *p = rp; p < rp + rl; ) {
+                            char *el = memchr(p, '\n', (size_t)(rp + rl - p));
+                            size_t l2 = el ? (size_t)(el - p) : (size_t)(rp + rl - p);
+                            if (l2 > 8 && (strncmp(p, "#ifndef ", 8) == 0 || strncmp(p, "#ifdef ", 7) == 0))
+                                guards += countMentionsIn(g, p, l2, name);
+                            if (!el) break;
+                            p = el + 1;
+                        }
+                        if (guards) totalOverride = (long)countMentions(text, name) - (long)guards;
+                    }
                     if (isDef && !wholeBody) {              /* to the `}` at column zero */
                         char *p = ln;
                         while (p < rp + rl) {
@@ -3934,10 +3972,11 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                     if (span) {
                         /* every mention inside the candidate itself? */
                         size_t total  = countMentions(text, name);
+                        if (totalOverride >= 0) total = (size_t)totalOverride;
                         size_t inside = countMentionsIn(g, ln, span, name);
                         if (getenv("EXTC_DBG_PRIM"))
-                            fprintf(stderr, "[prim] %-22s total=%zu inside=%zu %s\n",
-                                    name, total, inside, total == inside ? "DROP" : "keep");
+                            fprintf(stderr, "[prim] %-22s total=%zu inside=%zu span=%zu %s\n",
+                                    name, total, inside, span, total == inside ? "DROP" : "keep");
                         if (total == inside) {
                             memmove(ln, ln + span, len - (size_t)(ln - text) - span + 1);
                             len -= span;

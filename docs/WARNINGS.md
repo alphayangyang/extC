@@ -57,6 +57,8 @@ clang -Weverything $(cat docs/warnings-flags.txt) -c -o /dev/null prog.c
 | `-Wcast-align` | `extc_arena_alloc` 保证对齐，但**类型系统上看不出来** ✗ |
 | `-Wswitch-default` | 生成的 `switch` 对枚举**穷尽**，故意不写 `default`（写了反而盖住新增变体 ✓） |
 | `-Wcomma` | 需要顺序求值的地方用逗号表达式（C 没有语句表达式 ✓） |
+| `-Wunreachable-code` / `-Wunreachable-code-return` | **clang 自己的可达性分析有误报**（它不在 `-Wall` 里，clang 文档也写明这条不是给产品代码的）。实测：预置文本里 `case EXTC_D_F32: printf(...); return;` 的 `return` 被报成"永远不会执行"，而它明显可达 ⇒ 是工具的判断问题，不是生成物的问题 |
+| `-Wjump-misses-init` | 警告原文是 "jump … is **incompatible with C++**"：生成物是 **C11**，epilogue 用 `goto __extc_ret;` 统一出口，跳过的都是非 VLA 的初始化。这条服务的是"C 代码也想交给 C++ 编译器"，与 extC 的目标语言无关 |
 
 ### 3.2 只是还没做（**不许**拿清单盖住，要真修）
 
