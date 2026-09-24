@@ -13,10 +13,10 @@
  * 去重 + 记下实例），在 helpers 那一区**统一发射**（定义必须在使用之前）✓
  * ⚠️ 第一版我直接在调用点发射 ⇒ 定义写进了**原型区** ⇒ `invalid storage class for function` ✗
  *
- * 为什么 stdlib 没撞到：`tests/map/` 里 `V` **清一色 `i32`**（`grep mapI64<` 全是 `mapI64<i32>`）
+ * 为什么 stdlib 没撞到：`tests/hashmap/` 里 `V` **清一色 `i32`**（`grep hashMapI64<` 全是 `hashMapI64<i32>`）
  * ⇒「值是字符串的 map」这条路从没被走过 ✓ 这个格子就是补那一格 ✓
  *
- * 顺带一条能力边界：`varArray<T>` **不能下标** ⇒ 想学 `mapI64` 那样 `some(self.vals[i])`，
+ * 顺带一条能力边界：`varArray<T>` **不能下标** ⇒ 想学 `hashMapI64` 那样 `some(self.vals[i])`，
  * 得自己存 `mut slice<V>`（下面就是这么写的）✓ */
 struct mapKV<K, V> {
     keys: mut slice<K>

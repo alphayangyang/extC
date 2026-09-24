@@ -1,10 +1,10 @@
 // expect: cap = 8|全部找到 = true|删掉一半后仍全部找到 = true|重插 = true
 /* ⭐ 碰撞判据：cap=8 时 0/8/16/24/32 **必然撞在同一个初始槽**（`k & 7` 都是 0 ✓）
  *   ⇒ 线性探测必须能找到每一个、删掉中间一个之后剩下的仍找得到（墓碑 + 探测链）✓ */
-use stl::map
+use stl::hashMap
 
 fn main() -> i32 {
-    var m = mapI64<i32>::withCap(4)
+    var m = hashMapI64<i32>::withCap(4)
     println("cap = ", m.capOf())
     var i: i64 = 0
     while i < i64(5) {

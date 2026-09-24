@@ -8078,3 +8078,22 @@ tour          740 → 606    53 → 54 ms   102 → 105 ms   16416 → **16688**
 `/tmp/prb/cq_r13.log`）。至此 ③ 也过四道闸门：`tests/pool` · `tests/stl` · `tests/map` · `check.sh quick`。
 当前进度：① 完成 · ③ 完成 · ② 设计定稿且半成品存档（先解 `pool<V>` 的实例化缺口）· ④ 等作者裁决
 （`varArray` 是改 prelude 那个隐式可见的底座，还是保持 arena 底、池底留给显式 import 的 `stl::vector`）。
+
+### 周期 14（第 14 轮）：命名定案 —— `hashMap` 是哈希，`map` 留给有序平衡树
+
+作者口径：「map 不应该这样，map 应该是 hashMap<K, V>，然后是哈希；map<K, V> 是有序的平衡树实现」。
+
+改名（机械改动，已过闸门）：`stdlib/stl/map.extc` → `hashMap.extc`（类型 `mapI64<V>` → `hashMapI64<V>`）·
+`stdlib/stl/set.extc` → `hashSet.extc`（`setI64` → `hashSetI64`）· 套件目录 `tests/map/` → `tests/hashmap/` ·
+STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文档引用一并改（13 个文件）。
+从此名字与语义对齐：**`map` / `set` 属于有序实现**，不再是哈希的别名。
+
+改名踩到的坑（记档）：一次通配替换把 `tests/stl/set.extc` 这条**用例路径**也改成了 `hashSet.extc`，而文件
+当时还没改名 ⇒ `tests/stl` 报 `cannot read ...hashSet.extc`（红了一次）。顺势把文件也改名、标签改成
+`hashset` 即恢复。教训：替换「名字」时，`stl/set.extc` 这类**路径子串**会跟着中招 —— 路径要单独核对一遍。
+
+两道门槛记进 `POOLS.md` §10 与 PLAN #78：`hashMap<K, V>` 的 K 泛化卡在 #57（泛型体里调不了类型参数上的
+协议方法）；有序 `map<K, V>` 需要 K 的 `cmp` / `less` 协议，且树的选型与「节点住哪」都还没定。
+
+验证：`tests/stl` · `tests/hashmap` · `tests/pool` 各失败 0；`check.sh quick </dev/null` 通过 25 · 失败 0
+（日志 `/tmp/prb/cq_r14.log`）。

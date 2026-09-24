@@ -104,9 +104,9 @@ if out=$(timeout 600 ./tests/pool/run.sh 2>&1); then
 else bad "tests/pool/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 POOLS.md §10.2）=="
-if out=$(timeout 600 ./tests/map/run.sh 2>&1); then
+if out=$(timeout 600 ./tests/hashmap/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
-else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
+else bad "tests/hashmap/run.sh"; echo "$out" | tail -8; fi
 
 echo "== STL 库（一个库装所有动态容器；容器建在池上 —— 见 POOLS.md 期 3）=="
 if out=$(timeout 600 ./tests/stl/run.sh 2>&1); then

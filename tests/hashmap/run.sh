@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/map/run.sh —— **开放寻址哈希表的常设验收**（docs/topics/REGIONS.md §10.2 的选型表）
+# tests/hashmap/run.sh —— **开放寻址哈希表的常设验收**（docs/topics/REGIONS.md §10.2 的选型表）
 #
 # 判据：
 #   ① 正例：新键/覆盖/查/删/表位置遍历 ✓
@@ -18,10 +18,10 @@ mkdir -p build
 
 run_case() {
     local t=$1 out want ok=1 p
-    if ! out=$("$EXTC" --run "tests/map/$t.extc" 2>&1); then
+    if ! out=$("$EXTC" --run "tests/hashmap/$t.extc" 2>&1); then
         echo "  FAIL $t  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1; return
     fi
-    want=$(grep -o '// expect:.*' "tests/map/$t.extc" | sed 's|// expect: *||' | head -1)
+    want=$(grep -o '// expect:.*' "tests/hashmap/$t.extc" | sed 's|// expect: *||' | head -1)
     IFS='|' read -ra parts <<< "$want"
     for p in "${parts[@]}"; do echo "$out" | grep -qF -- "$p" || ok=0; done
     if [ "$ok" = 1 ]; then echo "  ok   $t  ->  $(echo "$out" | tr '\n' '|')"
@@ -34,7 +34,7 @@ echo "== 碰撞：线性探测 + 墓碑 + 复用墓碑槽 =="
 run_case collide
 
 echo "== 墓碑 churn：1e6 轮与 1e5 轮的峰值 RSS 必须相当 =="
-build_one() { "$EXTC" "tests/map/$2.extc" -o "build/$1.c" >/dev/null 2>&1 \
+build_one() { "$EXTC" "tests/hashmap/$2.extc" -o "build/$1.c" >/dev/null 2>&1 \
     && "$CC" -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1; }
 peak() { /usr/bin/time -f %M "./build/$1" "$2" 2>&1 >/dev/null | tail -1; }
 if build_one map-churn churn && build_one map-leak churn-leak; then
@@ -60,11 +60,11 @@ printf 'int main(void){return 0;}\n' > "$TMP/p.c"
 if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
     for t in basic collide; do
-        "$EXTC" "tests/map/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
+        "$EXTC" "tests/hashmap/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
     done
-    "$EXTC" tests/map/churn.extc -o "$TMP/c.c" >/dev/null 2>&1 \
+    "$EXTC" tests/hashmap/churn.extc -o "$TMP/c.c" >/dev/null 2>&1 \
       && gcc -O1 -g -fsanitize=address -o "$TMP/c" "$TMP/c.c" >/dev/null 2>&1 \
       && "$TMP/c" 20000 >/dev/null 2>&1 || { echo "  FAIL churn -> ASan 报错"; fail=1; ok=0; }
     [ "$ok" = 1 ] && echo "  ok   basic · collide · churn  ->  ASan 干净"

@@ -1,6 +1,6 @@
 /* stl/linmap.extc -- a **linear** `K -> V` map: no hashing, only `==` on the key.
  *
- * Why this exists, and how it differs from `std::map`: `mapI64<V>` hashes, so it needs a
+ * Why this exists, and how it differs from `std::map`: `hashMapI64<V>` hashes, so it needs a
  * key that is already an `i64` -- the compiler cannot call `hash()` on a type parameter
  * (there are no traits), so a hashed `map<K, V>` is not writable yet. A **linear** map
  * needs nothing but `==` on `K`, and `==` on a type parameter *is* supported: it is
@@ -13,8 +13,8 @@
  *     println(m.get(i64(1)) ?? "missing")
  *
  * Cost, stated plainly: a lookup is O(n) probes with `==` each, against O(1) for the
- * hashed `mapI64`. Use this while keys are not integers and the table is small; switch to
- * `mapI64` (packing the key into an `i64`) when it is not.
+ * hashed `hashMapI64`. Use this while keys are not integers and the table is small; switch to
+ * `hashMapI64` (packing the key into an `i64`) when it is not.
  *
  * Layout and the rules it follows:
  *   - **dense and in insertion order**: entries live in the front of two parallel views,

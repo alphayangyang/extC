@@ -3,7 +3,7 @@
  *   ⇒ 判据在 run.sh 里：1e6 轮与 1e5 轮的峰值 RSS 必须相当 ✓
  *   （没有 `dead` 计数与 rebuild 的实现会在这里退化/死循环 ✗ —— 这是哈希表最容易烂的地方）
  *   轮数从命令行拿 ✓ */
-use stl::map
+use stl::hashMap
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
     if s.len == i64(0) { return dflt }
@@ -21,7 +21,7 @@ fn toInt(s: slice<u8>, dflt: i64) -> i64 {
 fn main(args: slice<slice<u8>>) -> i32 {
     var n: i64 = i64(100000)
     if args.len > i64(1) { n = toInt(args[1], n) }
-    var m = mapI64<i32>::withCap(64)
+    var m = hashMapI64<i32>::withCap(64)
     var i: i64 = 0
     var sum: i64 = 0
     while i < n {

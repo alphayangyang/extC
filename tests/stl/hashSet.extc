@@ -1,12 +1,12 @@
-// setI64：无值 map（建在 mapI64<u8> 上，所以哈希/探测/墓碑只有一份实现）
+// hashSetI64：无值 map（建在 hashMapI64<u8> 上，所以哈希/探测/墓碑只有一份实现）
 //
 // 判据：新元素 put 为真、重复 put 为假（与 map::put 语义相反）· 删掉后查不到 ·
 //       墓碑 churn 十万轮后容量不涨（墓碑被复用）· 清空后 len=0
 use std::io
-use stl::set
+use stl::hashSet
 
 fn main() -> i32 {
-    var s: setI64 = setI64::withCap(i64(8))
+    var s: hashSetI64 = hashSetI64::withCap(i64(8))
     var newN: i64 = i64(0)
     if s.put(i64(1)) { newN = newN + i64(1) }
     if s.put(i64(2)) { newN = newN + i64(1) }
