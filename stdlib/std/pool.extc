@@ -184,6 +184,59 @@ struct pool<T> {
         self.pid = i64(-1)
     }
 
+    /* 当前容量（`shrink` 之后小下去；`grow` 是翻倍）*/
+    @inline
+    fn capacity(self: ref pool<T>) -> i64 { return self.cap }
+
+    /* 缩容：把容量降到"刚好装下活数据"（下限 8），把高水位让出去。
+     *
+     * 两点必须保住：
+     *   - **dense 前段照旧连续**（前 n 个搬进新数组，顺序不变）
+     *   - **存活槽的世代原样保留** ⇒ 已经发出去的 handle 全部继续有效
+     * 空槽的世代也保留（它们的 `next` 按新 cap 重排，世代字段不动），因此
+     * shrink 不引入任何 ABA：它只是把不用的槽从表里切掉。
+     * 让出去的是"池的工作集"，不是 RSS —— arena 只能整块还，旧数组到地方退出时才收。 */
+    fn shrink(self: mut ref pool<T>) {
+        var ncap: i64 = self.n
+        if ncap < i64(8) { ncap = i64(8) }
+        if ncap >= self.cap { return }                  /* 没有可缩的 */
+        var nv: mut slice<T>   = new T[ncap]
+        var ns: mut slice<i32> = new i32[ncap]
+        var ne: mut slice<i64> = new i64[ncap]
+        var i: i64 = 0
+        while i < self.n {
+            nv[i] = self.vals[i]
+            ns[i] = self.slots[i]
+            i = i + i64(1)
+        }
+        i = 0
+        while i < ncap { ne[i] = self.ent[i]  i = i + i64(1) }
+        /* 重排 free list：低半段 > 旧 cap 的才是空槽；世代字段照抄，只改 next。
+         * 链是环形的（最后一项指回头），与 grow 里的写法一致。 */
+        var head: i32 = i32(-1)
+        var prev: i64 = i64(-1)
+        i = ncap - i64(1)
+        while i >= i64(0) {
+            if pool<T>::pLow(ne[i]) > self.cap {
+                if prev < i64(0) {
+                    head = i32(i)
+                } else {
+                    ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i + ncap + i64(2))
+                }
+                prev = i
+            }
+            i = i - i64(1)
+        }
+        if prev >= i64(0) {
+            ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i64(head) + ncap + i64(2))
+        }
+        self.vals  = nv
+        self.slots = ns
+        self.ent   = ne
+        self.free  = head
+        self.cap   = ncap
+    }
+
     fn clear(self: mut ref pool<T>) {
         var i: i64 = 0
         while i < self.cap {

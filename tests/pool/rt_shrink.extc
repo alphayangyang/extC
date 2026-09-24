@@ -1,0 +1,18 @@
+// shrink：容量降到刚好装下活数据，而**数据与 handle 全部继续有效**（世代未动）
+// 判据：cap 1024 -> 8 · len 仍是 3 · 三个 handle 都还能读回原值 · 再插一个也正常
+use std::io
+use std::pool
+
+fn main() -> i32 {
+    var p = pool<i32>::withCap(i64(1024))
+    let a = p.insert(10)
+    let b = p.insert(20)
+    let c = p.insert(30)
+    io::cout << "cap=" << p.capacity()
+    p.shrink()
+    io::cout << "->" << p.capacity() << " len=" << p.len()
+    io::cout << " vals=" << i64(p.get(a) ?? i32(-1)) << "," << i64(p.get(b) ?? i32(-1)) << "," << i64(p.get(c) ?? i32(-1))
+    let d = p.insert(40)
+    io::cout << " again=" << i64(p.get(d) ?? i32(-1)) << " len=" << p.len() << "\n"
+    return 0
+}

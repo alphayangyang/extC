@@ -119,6 +119,9 @@ rt_run rt_container tests/pool/rt_container.extc "live=0 made=1 closed=0 again=1
 echo "== 期 1 · 拷贝 + 槽位复用：陈旧拷贝不许放掉别人的池（pidGen）=="
 rt_run rt_pidgen  tests/pool/rt_pidgen.extc  "live=1 c-len=0"
 
+echo "== 容量工具：shrink 降高水位，数据与 handle 全部继续有效 =="
+rt_run rt_shrink  tests/pool/rt_shrink.extc  "cap=1024->8 len=3 vals=10,20,30 again=40 len=4"
+
 echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/pool/rt_churn.extc -o "$TMP2/rt.c" >/dev/null 2>&1; then
