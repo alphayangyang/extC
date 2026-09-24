@@ -30,6 +30,7 @@ run_case() {
 
 echo "== 正例：新键 · 覆盖 · 查 · 删 =="
 run_case basic
+run_case structkey tests/hashmap/structkey.extc
 echo "== 碰撞：线性探测 + 墓碑 + 复用墓碑槽 =="
 run_case collide
 

@@ -8150,3 +8150,29 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 处置：`stdlib/stl/hashMap.extc` 与 `src/codegen.c` 都已回退到提交状态，`tests/generics` · `tests/hashmap` ·
 `tests/stl` · `tests/pool` · `tests/linmap` 全绿。同族的另一条证据也写进 #79：② 池底化时 `pool<i32>` 的部分方法
 没被实例化（`pool$pool_i32_remove` implicit declaration）—— 「泛型体内部实例化另一个泛型」这条链同样没走全。
+
+### 周期 17（第 17 轮）：#79 的下标错误恢复 ⇒ `hashMap<K, V>` 一次跑通（结构体键可用）
+
+根因精确到一行：`src/check_expr.c` 的 `EX_INDEX` 里
+`if (ttIsError(ot) || ttIsError(it)) return ttError(tt);` —— 索引类型失败时，把**元素类型**也一起吞成错误类型。
+修法是标准的错误恢复：对象类型仍然可索引时照样给出元素类型（索引自己的错已经在它自己的位置报过），只有
+对象类型是错误类型才不可恢复。
+
+效果（实测）：`hashMap<K, V>` 一次通过。`hash()` 那侧走 #57 的实例化解析；`==` 那侧因为元素类型恢复正常，
+`K == K` 又回到推迟路径（`needOp` 被置上），codegen 在替换后的类型上找到 `i64Key::==`。
+
+交付（`stdlib/stl/hashMap.extc`）：
+
+- 表体泛型化成 `hashMap<K, V>`：键类型是参数 `K`，哈希改成问键要 `hash()`，相等用 `==`；
+- 整数快路径**不另写一份表**：`i64Key { v: i64 }` 自带 `hash`（沿用原来的 `hashI64` 混合）与 `==`，
+  `hashMapI64<V>` 降成薄适配层 —— 「哈希 / 探测 / 墓碑 / rebuild 阈值」仍然只有一份实现，代价是每个键
+  多 0 字节（`i64Key` 就是一个 `i64`）。
+
+新用例 `tests/hashmap/structkey.extc`（结构体键，自带 `hash` 与 `==`）：
+`a=11 b=22 miss=-7 len=2 after=-1 len=1`。
+
+验证：`tests/hashmap`（含 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
+`tests/genmatrix`（13 项）· 语料 **通过 262 / 失败 0**，全绿。
+
+仍欠（#79 后半，已写进 PLAN）：返回类型与实参的**实例期**检查 —— 今天 `MethodCheck` 只查「方法存在 + 实参
+个数」，返回类型能否放进上下文仍是模板期用错误类型放行的。

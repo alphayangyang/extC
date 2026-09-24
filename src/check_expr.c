@@ -666,7 +666,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         case EX_INDEX: {
             Type *ot = checkExpr(c, e->u.index.obj);
             Type *it = checkValue(c, e->u.index.index);
-            if (ttIsError(ot) || ttIsError(it)) return ttError(tt);
+            if (ttIsError(ot)) return ttError(tt);
 
             Type *ob = ttBase(ot);
             Type *elem = NULL;
@@ -677,6 +677,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "cannot index a value of type `%s`", typeStr(c, ot));
                 return ttError(tt);
             }
+            /* Error recovery for the index: its own failure was reported where it came from, and
+             * `self.tag[i]` is still a `u8` whatever happened to `i`. Propagating the error here
+             * poisoned every later use of the element, and a poisoned operand makes the checks
+             * that follow return early -- so their deferral records were never written and code
+             * generation emitted the wrong operator. That is how a deferred method call (#57)
+             * cost the comparison below it its `==` method: `var i = k.hash() & mask` made `i`
+             * an error type, `self.keys[i] == k` was waved through as "native", and the C
+             * compiler was the first to notice, on two structs (PLAN #79). */
+            if (ttIsError(it)) return elem;
             if (!ttIsInteger(it)) {
                 ckError(c, e->line, "An index must be an integer.",
                         "index must be an integer, found `%s`", typeStr(c, it));

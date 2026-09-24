@@ -38,8 +38,8 @@ fn hashI64(k: i64) -> i64 {
     return x
 }
 
-struct hashMapI64<V> {
-    keys: mut slice<i64>
+struct hashMap<K, V> {
+    keys: mut slice<K>
     vals: mut slice<V>
     tag:  mut slice<u8>        /* EMPTY / LIVE / TOMB */
     n:    i64                  /* live entries */
@@ -47,11 +47,11 @@ struct hashMapI64<V> {
     cap:  i64                  /* always a power of two */
 
     /* A map with room for `want` entries before the first rebuild. */
-    fn withCap(want: i64) -> hashMapI64<V> {
+    fn withCap(want: i64) -> hashMap<K, V> {
         var c: i64 = i64(8)
         while c < want * i64(2) { c = c * i64(2) }
-        var m: hashMapI64<V> = {
-            keys: new i64[c],
+        var m: hashMap<K, V> = {
+            keys: new K[c],
             vals: new V[c],
             tag:  new u8[c],
             n:    i64(0),
@@ -61,11 +61,11 @@ struct hashMapI64<V> {
         return m
     }
 
-    fn len(self: ref hashMapI64<V>) -> i64 { return self.n }
+    fn len(self: ref hashMap<K, V>) -> i64 { return self.n }
 
     /* Find the slot holding `k`: live slot index, or -1 when absent. */
-    fn find(self: ref hashMapI64<V>, k: i64) -> i64 {
-        var i = hashI64(k) & (self.cap - i64(1))
+    fn find(self: ref hashMap<K, V>, k: K) -> i64 {
+        var i = k.hash() & (self.cap - i64(1))
         var steps: i64 = 0
         while steps < self.cap {
             let t = self.tag[i]
@@ -77,22 +77,22 @@ struct hashMapI64<V> {
         return i64(-1)
     }
 
-    fn contains(self: ref hashMapI64<V>, k: i64) -> bool { return self.find(k) >= i64(0) }
+    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= i64(0) }
 
     /* The value for `k`, or `none`. */
-    fn get(self: ref hashMapI64<V>, k: i64) -> ?V {
+    fn get(self: ref hashMap<K, V>, k: K) -> ?V {
         let i = self.find(k)
         if i < i64(0) { return none }
         return some(self.vals[i])
     }
 
     /* Insert or overwrite. Returns true when the key was already there. */
-    fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool {
+    fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         let had = self.find(k)
         if had >= i64(0) { self.vals[had] = v  return true }
         /* Rebuild *before* inserting, while there is still a free slot to land in. */
         if (self.n + self.dead + i64(1)) * i64(10) >= self.cap * i64(7) { self.rebuild(self.cap * i64(2)) }
-        var i = hashI64(k) & (self.cap - i64(1))
+        var i = k.hash() & (self.cap - i64(1))
         while self.tag[i] == LIVE {
             i = (i + i64(1)) & (self.cap - i64(1))
         }
@@ -106,7 +106,7 @@ struct hashMapI64<V> {
 
     /* Remove `k`. Returns true when it was there. The slot becomes a tombstone so other
      * probes still find what is behind it. */
-    fn remove(self: mut ref hashMapI64<V>, k: i64) -> bool {
+    fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
         let i = self.find(k)
         if i < i64(0) { return false }
         self.tag[i] = TOMB
@@ -116,14 +116,14 @@ struct hashMapI64<V> {
     }
 
     /* Rehash into a table of `ncap` slots (a power of two), dropping the tombstones. */
-    fn rebuild(self: mut ref hashMapI64<V>, ncap: i64) {
-        var nk: mut slice<i64> = new i64[ncap]
+    fn rebuild(self: mut ref hashMap<K, V>, ncap: i64) {
+        var nk: mut slice<K> = new K[ncap]
         var nv: mut slice<V>   = new V[ncap]
         var nt: mut slice<u8>  = new u8[ncap]
         var i: i64 = 0
         while i < self.cap {
             if self.tag[i] == LIVE {
-                var j = hashI64(self.keys[i]) & (ncap - i64(1))
+                var j = self.keys[i].hash() & (ncap - i64(1))
                 while nt[j] == LIVE { j = (j + i64(1)) & (ncap - i64(1)) }
                 nt[j]  = LIVE
                 nk[j]  = self.keys[i]
@@ -139,7 +139,7 @@ struct hashMapI64<V> {
     }
 
     /* Drop everything, keeping the capacity (memory comes back only with a pool). */
-    fn clear(self: mut ref hashMapI64<V>) {
+    fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap { self.tag[i] = EMPTY  i = i + i64(1) }
         self.n    = i64(0)
@@ -149,8 +149,63 @@ struct hashMapI64<V> {
     /* The i-th live slot, by table position. Iteration is a scan of the table, so it is
      * *not* contiguous -- for hot loops copy the keys out, or keep a dense list of the
      * keys you care about (the `pool` shape). */
-    fn keyAt(self: ref hashMapI64<V>, i: i64) -> i64 { return self.keys[i] }
-    fn valAt(self: ref hashMapI64<V>, i: i64) -> V   { return self.vals[i] }
-    fn liveAt(self: ref hashMapI64<V>, i: i64) -> bool { return self.tag[i] == LIVE }
-    fn capOf(self: ref hashMapI64<V>) -> i64 { return self.cap }
+    fn keyAt(self: ref hashMap<K, V>, i: i64) -> K { return self.keys[i] }
+    fn valAt(self: ref hashMap<K, V>, i: i64) -> V   { return self.vals[i] }
+    fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return self.tag[i] == LIVE }
+    fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
+}
+
+/* ---------------------------------------------------------------------------
+ * The integer fast path: a key wrapper, NOT a second table.
+ *
+ * `hashMap<K, V>` asks its key for `hash()` and `==`, so an `i64` key has to get those two
+ * methods from somewhere. Methods live inside a `struct` and `i64` is built in, so there is
+ * nowhere to write them -- hence the wrapper. `i64Key` carries the original `hashI64` mix and
+ * `==`; `hashMapI64<V>` is a thin adapter that keeps the `i64`-keyed face this container had
+ * before the key became a type parameter.
+ *
+ * Why not a second table for `i64` keys: hashing, linear probing, tombstones and the rebuild
+ * threshold are the parts that are easy to get wrong, and two copies of them drift -- one gets
+ * a fix, the other silently keeps the bug. One table, one place to fix. The wrapper costs
+ * nothing: an `i64Key` is one `i64`.
+ * --------------------------------------------------------------------------- */
+
+struct i64Key {
+    v: i64
+
+    /* The mix the table used before it took a key type parameter. */
+    fn hash(self: ref i64Key) -> i64 { return hashI64(self.v) }
+
+    fn ==(self: ref i64Key, other: i64Key) -> bool { return self.v == other.v }
+}
+
+/* The `i64`-keyed face: what `hashMapI64<V>` always was, now one conversion deep. */
+struct hashMapI64<V> {
+    m: hashMap<i64Key, V>
+
+    fn withCap(want: i64) -> hashMapI64<V> {
+        var h: hashMapI64<V> = { m: hashMap<i64Key, V>::withCap(want) }
+        return h
+    }
+
+    fn len(self: ref hashMapI64<V>) -> i64 { return self.m.len() }
+    fn capOf(self: ref hashMapI64<V>) -> i64 { return self.m.capOf() }
+
+    fn contains(self: ref hashMapI64<V>, k: i64) -> bool {
+        return self.m.contains(i64Key { v: k })
+    }
+
+    fn get(self: ref hashMapI64<V>, k: i64) -> ?V { return self.m.get(i64Key { v: k }) }
+
+    fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool {
+        return self.m.put(i64Key { v: k }, v)
+    }
+
+    fn remove(self: mut ref hashMapI64<V>, k: i64) -> bool { return self.m.remove(i64Key { v: k }) }
+
+    fn clear(self: mut ref hashMapI64<V>) { self.m.clear() }
+
+    fn keyAt(self: ref hashMapI64<V>, i: i64) -> i64 { return self.m.keyAt(i).v }
+    fn valAt(self: ref hashMapI64<V>, i: i64) -> V { return self.m.valAt(i) }
+    fn liveAt(self: ref hashMapI64<V>, i: i64) -> bool { return self.m.liveAt(i) }
 }
