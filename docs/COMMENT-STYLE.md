@@ -28,8 +28,13 @@ behind the `EXTC_DBG_*` switches. Code and diagnostics should read as one artifa
 > Correction (2026-09-23): an earlier version of this file claimed the compiler's output
 > "was always English". That was wrong -- a number of emitted-C banners, the emitted
 > runtime preamble, and several `EXTC_DBG_*` traces were still Chinese. Converting those
-> string literals is tracked as its own change, because it moves the generated C and the
-> golden manifest; see `PLAN.md` section 0.4.1.
+> string literals is tracked as its own change; see `PLAN.md` section 0.4.1.
+>
+> Update (2026-09-24): that entry used to end with "it moves the generated C and the golden
+> manifest, so the manifest has to be regenerated". The golden manifest is retired as a gate
+> (see the `PLAN.md` header), so nothing is regenerated for it any more. A pure comment
+> change still moves the generated C; what shows that it changed *only* there is a per-case
+> diff of the emitted C, not a blessed snapshot.
 
 ## 2. No project-private vocabulary
 
