@@ -1,24 +1,68 @@
-// expect: 不是终端 ✓|raw 开成功|已还原
-/* ⭐ **IO-2 ③：termios raw mode**（按 BOOTSTRAP §4.3：不包 ncurses，只要"读一个字节 + 开关 raw"）。
+// expect: 不是终端 ✓|raw 真的切过去了|还原后逐字节相同|raw 开成功
+/* ⭐ **IO-2 ③：termios raw mode**（BOOTSTRAP §4.3：不包 ncurses，只要"读一个字节 + 开关 raw"）。
  *
- * 判据两条，**两条都要**：
- *   ① 不是终端时（管道 / 文件 / CI）⇒ `failure(notATerminal)` **带位置**，不 trap ✓
- *      —— 这是"终端"最容易骗人的地方：`tcgetattr` 在非 tty 上返回 -1，不检查就会
- *         静默继续，之后读键盘读到的是空 ✗
- *   ② 是终端时（`run.sh` 用 `script` 起一个 PTY 跑）⇒ raw 开得起来，`close()` 能把终端
- *      **还原** ✓ —— 还原是这条资源最要紧的属性：不还原，用户回到的 shell 连输入都不回显 ✗✗
- *         （所以 `terminal` 声明了 `close` ⇒ 忘了关会被编译器点名，定案 79 那条协议 ✓）
+ * 判据四条（**在 PTY 上全部都要**）：
+ *   ① 不是终端时（管道 / 文件 / CI）⇒ `failure(notATerminal)` 带位置，不 trap ✓
+ *   ② `raw()` 之后设置**真的变了**（不然"切过去了"是空话）✓
+ *   ③ `close()` 之后设置与最初**逐字节相同** —— 这是这条资源最要紧的属性：
+ *      不还原，用户回到的 shell 连输入都不回显 ✗✗
+ *   ④ `close()` 幂等（第二次是 no-op）✓
  *
- * ⚠️ 形状照 `tests/io/main.extc`：错误处理写在 `run()` 里（`?` 只在返回 `result` 的函数里
- *    能用 ✓），`main` 只负责把失败说出来并把退出码定下来 ✓ */
+ * ⚠️ 这个用例**曾经是假绿**：它只检查 `close()` 返回 success，而当时的实现把
+ *    `cfmakeraw` 作用在**同一个缓冲**上 ⇒ 还原回去的其实是 raw 设置 ✗ 现在比字节了 ✓
+ * ⚠️ 判据③能这么比，是因为三个缓冲都是**零值起步**（语言保证），`tcgetattr` 只写它
+ *    真正管理的字段 ⇒ 填充字节不会随机化，逐字节比较才有意义 ✓
+ * ⚠️ 这里直接用 `std::sys::term`（特权层）读设置：**判据需要它**，用户代码不该这么做 ✓ */
 use std::io
 use std::term
+use std::sys::term as sys
+
+/* 两个不透明缓冲逐字节相同？（布局不归 extC 管，所以只比字节） */
+fn same(a: slice<u8>, b: slice<u8>) -> bool {
+    if a.len != b.len { return false }
+    var i: i64 = 0
+    while i < a.len {
+        if a[i] != b[i] { return false }
+        i = i + i64(1)
+    }
+    return true
+}
 
 fn run() -> result<unit, io::ioError> {
+    var before: [128]u8
+    if sys::tcgetattr(io::STDIN_FD, before[0..128].data) < i32(0) {
+        return failure(io::ioError.notATerminal(io::STDIN_FD))
+    }
+
     var t = term::rawTerminal(io::STDIN_FD)?
     println("raw 开成功")
+
+    /* ② 真的切过去了 */
+    var during: [128]u8
+    if sys::tcgetattr(io::STDIN_FD, during[0..128].data) < i32(0) {
+        return failure(io::ioError.notATerminal(io::STDIN_FD))
+    }
+    if same(before[0..128], during[0..128]) {
+        println("raw 没生效 ✗（设置没变）")
+        return failure(io::ioError.notATerminal(io::STDIN_FD))
+    }
+    println("raw 真的切过去了")
+
     t.close()?
-    println("已还原")
+
+    /* ③ 还原：逐字节与最初相同 */
+    var after: [128]u8
+    if sys::tcgetattr(io::STDIN_FD, after[0..128].data) < i32(0) {
+        return failure(io::ioError.notATerminal(io::STDIN_FD))
+    }
+    if !same(before[0..128], after[0..128]) {
+        println("还原不完全 ✗（与最初不同）")
+        return failure(io::ioError.notATerminal(io::STDIN_FD))
+    }
+    println("还原后逐字节相同")
+
+    /* ④ 幂等：再关一次仍是成功（且不再 tcsetattr） */
+    t.close()?
     return success(unit {})
 }
 

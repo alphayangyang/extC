@@ -1,0 +1,24 @@
+// expect: raw 开成功，接下来故意 trap|trap: index
+/* ⭐ **IO-2 ③ 的最后一件：raw 模式下 trap，终端必须被还回去**。
+ *
+ * 为什么这件最要紧：trap 之后程序就没了，**用户的 shell 回到 raw 模式** —— 敲字符不回显、
+ * 回车不换行，人只能另开一个终端敲 `stty sane` 自救 ✗✗
+ *
+ * 机制：`raw()` 把找到的设置同时交给**运行时**（`extc_raw_enter`），运行时的 trap 路径
+ * 在 `exit` 之前调用临终钩子把它 `tcsetattr` 回去 ✓ 所以库的 `restore()` 与 trap 路径
+ * 走的是**同一支**实现（两套实现就是两次"半 raw"的机会 ✗）
+ *
+ * 判据在 run.sh 里用 strace 量：这次运行里 `TCSETS` 必须出现 **两次**
+ * （进入 raw 一次 + trap 还原一次）—— 只有一次就说明钩子没接上 ✓
+ * ⚠️ 本用例故意不 `close()`：它要的就是"死在半路"那条路径 ✓ */
+use std::io
+use std::term
+
+fn main() -> i32 {
+    var t = term::rawTerminal(io::STDIN_FD)!
+    println("raw 开成功，接下来故意 trap")
+    var a: [4]i32
+    let i: i64 = 9
+    println(a[i])              /* 越界 ⇒ 运行时 trap 带位置 */
+    return 0
+}

@@ -135,6 +135,8 @@ typedef struct {
     Buf         rt;             /* table types + shared scalars; needed by print or eq */
     Buf         rtPrint;        /* `extc_print` - only if a structured type is printed */
     Buf         rtEq;           /* `extc_eq` - only if an array or slice is compared */
+    Buf         rtRaw;          /* the raw-terminal block - only if the program uses it */
+    Buf         rtDie;          /* `extc_die`, the dying hook - ahead of the trap bodies */
     /* Structural `==` also goes through a descriptor table; this vector lists
      * the types for which `extc_eq` is needed. The closure propagates inwards:
      * a container that needs equality needs it for its elements too, so a
@@ -147,6 +149,12 @@ typedef struct {
      * most ordinary line there is, `println("x = ", n)`, failed to compile.
      * genPrint raises this flag directly instead. */
     bool        needRuntime;
+    /* The program uses the raw-terminal primitives: the runtime then keeps a copy of the
+     * terminal settings and gives them back before the process dies. Emitted on demand
+     * because the block is only reachable through `extc_raw_enter`, which the library
+     * declares as an `extern!` -- a program that never touches a terminal does not carry
+     * it. */
+    bool        needRawTerm;
 } CG;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
@@ -3434,6 +3442,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             dup = strcmp((*(Type **)vecAt(&g.insts, k))->name, it->name) == 0;
         if (!dup) *(Type **)vecPush(&g.insts) = it;
     }
+    /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
+     * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
+     * codegen can see from here. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (f && f->isExtern && f->name && strcmp(f->name, "extc_raw_enter") == 0) {
+            g.needRawTerm = true;
+            break;
+        }
+    }
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
     vecInit(&g.descs, arena, sizeof(void *));
@@ -3442,6 +3460,51 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
     bufInit(&g.rtEq, arena);
+    bufInit(&g.rtDie, arena);
+    bufPuts(&g.rtDie,
+        "/* Every path that ends the process on purpose goes through here. A trap path is\n"
+        " * the only code that still runs when a program dies, so this is where anything the\n"
+        " * process has to give back is given back. Today that is the terminal: a program\n"
+        " * that traps in raw mode would otherwise leave the user's shell unable to echo\n"
+        " * what they type. The hook is installed by `extc_raw_enter` (emitted only when the\n"
+        " * program uses the raw-terminal primitives) and cleared before it runs, so it\n"
+        " * cannot run twice. */\n"
+        "static int32_t (*__extc_dying)(void);\n"
+        "static inline void extc_die(int code) {\n"
+        "    if (__extc_dying) { int32_t (*f)(void) = __extc_dying; __extc_dying = 0; (void)f(); }\n"
+        "    exit(code);\n"
+        "}\n"
+);
+    bufInit(&g.rtRaw, arena);
+    bufPuts(&g.rtRaw,
+        "/* ---- raw terminal: give it back even when the program dies ----\n"
+        " * The library turns raw mode on through `extc_raw_enter`, handing over a copy of\n"
+        " * the settings it found. The trap path then restores them through the dying hook\n"
+        " * above -- measured with `strace`: a program that traps in raw mode still issues\n"
+        " * the `TCSETS` that puts the terminal back before it exits.\n"
+        " * The buffer is opaque bytes; the layout of `struct termios` is never named, and\n"
+        " * `cfmakeraw` on the library side is what decides what raw means. */\n"
+        "static int32_t __extc_raw_fd = -1;\n"
+        "static uint8_t __extc_raw_saved[256];\n"
+        "static int32_t __extc_raw_on;\n"
+        "extern int32_t tcsetattr(int32_t fd, int32_t action, uint8_t *buf);\n"
+        "int32_t extc_raw_leave(void) {\n"
+        "    int32_t r;\n"
+        "    if (!__extc_raw_on) return 0;\n"
+        "    __extc_raw_on = 0;\n"
+        "    if (__extc_raw_fd < 0) return 0;\n"
+        "    r = tcsetattr(__extc_raw_fd, 0 /* TCSANOW */, __extc_raw_saved);\n"
+        "    __extc_raw_fd = -1;\n"
+        "    return r;\n"
+        "}\n"
+        "void extc_raw_enter(int32_t fd, uint8_t *buf, int64_t n) {\n"
+        "    int64_t i;\n"
+        "    if (n > (int64_t)sizeof __extc_raw_saved) n = (int64_t)sizeof __extc_raw_saved;\n"
+        "    for (i = 0; i < n; i++) __extc_raw_saved[i] = buf[i];\n"
+        "    __extc_raw_fd = fd;\n"
+        "    __extc_raw_on = 1;\n"
+        "    __extc_dying  = extc_raw_leave;   /* if we die before restore(), put it back */\n"
+        "}\n");
     bufInit(&g.body, arena);
     g.tmpSeq = 0;
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -3473,7 +3536,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "#include <stddef.h>\n"      /* offsetof, needed by the descriptor tables */
         "#include <stdio.h>\n"
         "#include <string.h>\n"
-        "#include <stdlib.h>\n\n"
+        "#include <stdlib.h>\n\n");
+    /* The dying hook goes between the includes and the trap paths that call it: `int32_t`
+     * has to be known, and the definition has to precede every use. It is its own block
+     * because the prologue around it is already at the 4095-byte limit C99 guarantees for
+     * a string literal. */
+    bufPuts(out, bufCstr(&g.rtDie));
+    bufPuts(out,
         "/* Every primitive below is `static inline`, and that is not a style choice:\n"
         " * without inlining, gcc at -O1 cannot see the body of a check, so it can neither\n"
         " * eliminate the check nor turn `i % 7` into a multiply and shift. Measured: the\n"
@@ -3483,14 +3552,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n"
         "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
         "            file, line, (long long)i, (long long)n);\n"
-        "    exit(1);\n"
+        "    extc_die(1);\n"
         "}\n"
         "/* Arithmetic failures must be loud: division by zero, the overflowing division, and\n"
         " * an over-wide shift are all undefined behaviour in C. Each one traps with a\n"
         " * source position instead of computing a wrong answer or leaving UB behind. */\n"
         "static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n"
         "    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n"
-        "    exit(1);\n"
+        "    extc_die(1);\n"
         "}\n"
         /* The recursion depth guard, used only by self-recursive functions.
          * Runaway recursion used to be hard to diagnose: gcc folded it into a
@@ -3545,7 +3614,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    if (lo < 0 || hi < lo || hi > n) {\n"
         "        fprintf(stderr, \"%s:%d: trap: slice %lld..%lld is out of range (length %lld)\\n\",\n"
         "                file, line, (long long)lo, (long long)hi, (long long)n);\n"
-        "        exit(1);\n"
+        "        extc_die(1);\n"
         "    }\n"
         "    return lo;\n"
         "}\n\n");
@@ -3686,7 +3755,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * that a failure the compiler can locate must say where it happened. */
         "        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n"
         "                        \" (this allocation wanted %lld bytes)\\n\",\n"
-        "                        f, l, (long long)n); exit(1); }\n"
+        "                        f, l, (long long)n); extc_die(1); }\n"
         "        b->prev = a->top; b->cap = cap; b->used = 0;\n"
         "        a->top = b;\n"
         "    }\n"
@@ -4269,6 +4338,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * comparison, whichever comes first. */
     if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
+    if (g.needRawTerm) {
+        /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
+         * library declares for it, so the two declarations agree and the call reaches
+         * libc; the layout of `struct termios` is never named. */
+        bufPuts(out, bufCstr(&g.rtRaw));
+    }
     if (g.eqNeed.len)                  bufPuts(out, bufCstr(&g.rtEq));
     bufPuts(out, bufCstr(&g.desc));
     for (size_t i = 0; i < g.helpers.len; i++)

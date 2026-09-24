@@ -18,17 +18,27 @@ use std::sys::term as sys
  * The hidden settings buffer is **opaque**: the C side owns the layout, and `close`
  * puts back exactly what was there before.
  *
- * ⚠️ One hole is still open: if the program **traps** while the terminal is raw (an
- * out-of-range index, runaway recursion), nothing restores it -- the shell the user
- * comes back to cannot even echo. The runtime's trap path has to do it (it is the only
- * code that runs then), and wiring that up is the one piece of IO-2 still owed
- * (`docs/PLAN.md` section 1, IO-2). Until then: `stty sane` from another terminal. */
+ * ⭐ **A trap in raw mode gives the terminal back** (decision 80): `raw()` hands the
+ * settings it found to the runtime as well (`extc_raw_enter`), and the runtime's trap
+ * path calls them back through a dying hook before `exit`. That is the only code still
+ * running at that point -- this type, this frame, are already gone. Measured with
+ * `strace`: a program that traps in raw mode issues a second `TCSETS` carrying the
+ * original (cooked) flags, and the program never called `close()`.
+ * `tests/io/raw-trap.extc` is that measurement. */
 struct terminal {
-    fd:    i32
-    saved: [128]u8          /* opaque: `struct termios`, untouched by extC */
-    on:    bool
+    fd:     i32
+    saved:  [128]u8         /* opaque: `struct termios` **as it was**, untouched by extC */
+    rawbuf: [128]u8         /* opaque: the raw settings, derived from `saved` */
+    on:     bool
 
-    /* Switch to raw mode, remembering the current settings in `saved`.
+    /* Switch to raw mode, keeping the old settings in `saved`.
+     *
+     * ⚠️ Two buffers, and that is not tidiness: `cfmakeraw` modifies the buffer **in
+     * place**, so deriving raw settings in `saved` would leave nothing to restore --
+     * `restore()` would put *raw* back, and the terminal would stay broken. Measured on a
+     * PTY: with one buffer the settings after `close()` were byte-for-byte the raw ones.
+     * (`tests/io/raw-mode.extc` compares the bytes now, instead of trusting the return
+     * value -- it used to pass while this was wrong.)
      *
      * A `failure` is the normal answer when the descriptor is not a terminal (a pipe, a
      * file, a CI runner with no tty): `tcgetattr` returns -1 there, and that is a
@@ -37,10 +47,20 @@ struct terminal {
         if sys::tcgetattr(self.fd, self.saved[0..128].data) < i32(0) {
             return failure(io::ioError.notATerminal(self.fd))
         }
-        sys::cfmakeraw(self.saved[0..128].data)
-        if sys::tcsetattr(self.fd, sys::TCSANOW, self.saved[0..128].data) < i32(0) {
+        /* Copy, then modify the copy: the original has to survive until `restore`. */
+        var i: i64 = 0
+        while i < i64(128) {
+            self.rawbuf[i] = self.saved[i]
+            i = i + i64(1)
+        }
+        sys::cfmakeraw(self.rawbuf[0..128].data)
+        if sys::tcsetattr(self.fd, sys::TCSANOW, self.rawbuf[0..128].data) < i32(0) {
             return failure(io::ioError.notATerminal(self.fd))
         }
+        /* Hand the settings we found to the **runtime** as well: it restores them on the
+         * trap path, where the program's own code (this type, this frame) is already
+         * gone. */
+        sys::extc_raw_enter(self.fd, self.saved[0..128].data, i64(128))
         self.on = true
         return success(unit {})
     }
@@ -50,7 +70,10 @@ struct terminal {
     fn restore(self: mut ref terminal) -> result<unit, io::ioError> {
         if !self.on { return success(unit {}) }
         self.on = false
-        if sys::tcsetattr(self.fd, sys::TCSANOW, self.saved[0..128].data) < i32(0) {
+        /* **One authority** for putting the terminal back: the runtime helper, which the
+         * trap path calls too. Two implementations of "restore" would be two chances for
+         * the terminal to end up half-raw. */
+        if sys::extc_raw_leave() < i32(0) {
             return failure(io::ioError.notATerminal(self.fd))
         }
         return success(unit {})
@@ -72,7 +95,7 @@ struct terminal {
  * The `terminal` value holds the saved settings, so it has to live at least as long as
  * the raw mode does -- which is exactly what the type says. */
 fn rawTerminal(fd: i32) -> result<terminal, io::ioError> {
-    var t: terminal = { fd: fd, on: false }   /* `saved` 留给零值：它是 C 那边的布局，extC 只借它一块字节 */
+    var t: terminal = { fd: fd, on: false }   /* 两个缓冲留零值：它们是 C 那边的布局，extC 只借字节 */
     let u = t.raw()?
     return success(t)
 }

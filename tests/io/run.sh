@@ -13,7 +13,8 @@
 #      与 stdin **逐字相同** —— 「读存档」和「读玩家输入」是同一段代码 ✓
 #   ⑦ **退出码**（IO-2 ②）：`proc::exit(7)` ⇒ 输出在、退出码是 7、之后的语句不执行 ✓
 #   ⑧ **终端 raw mode**（IO-2 ③）：非 tty ⇒ `failure(notATerminal)` 带位置；真 PTY
-#      （`script`）⇒ 开得起来、`close()` 还原得了 ✓
+#      （`script`）⇒ 开得起来、`close()` 还原得了（**逐字节**比 termios，不比返回值 ✓）；
+#      而且 **raw 模式下 trap** 时终端也被还回去（临终钩子，用 strace 量 `TCSETS` ✓）
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
@@ -121,7 +122,7 @@ if [ -x build/raw-mode ]; then
     # ② PTY：`script` 不在就跳过（这一支是加分项，不是门槛 ✓）
     if command -v script >/dev/null 2>&1; then
         out=$(script -qec ./build/raw-mode /dev/null 2>&1 | tr -d '\r')
-        if echo "$out" | grep -qF "raw 开成功" && echo "$out" | grep -qF "已还原"; then
+        if echo "$out" | grep -qF "raw 真的切过去了" && echo "$out" | grep -qF "还原后逐字节相同"; then
             echo "  ok   raw-mode(PTY)    ->  $(echo "$out" | tr '\n' '|')"
         else
             echo "  FAIL raw-mode(PTY)    ->  「$(echo "$out" | tr '\n' '|')」"; fail=1
@@ -131,6 +132,26 @@ if [ -x build/raw-mode ]; then
     fi
 else
     echo "  FAIL raw-mode  ->  编不过"; fail=1
+fi
+
+echo "== raw 模式下 trap ⇒ 终端必须被还回去（临终钩子）=="
+# 判据两条，都要：
+#   ① 这次运行里 `TCSETS` 出现**两次**：进入 raw 一次 + trap 还原一次 ✓
+#   ② **第二次**带的是原始（cooked）标志（ISIG/ICANON/ECHO）——
+#      本程序**从不调 `close()`**（它死在半路）⇒ 只可能是运行时的 trap 路径做的 ✓✓
+# 量具是 strace（跟 tests/fs 用 strace 验证 fd 归属同一个口径：不猜，量 ✓）
+if command -v strace >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
+    script -qec "strace -f -e trace=ioctl -o build/raw-trap.ioctl ./build/raw-trap" /dev/null >build/raw-trap.out 2>&1
+    n=$(grep -c "TCSETS" build/raw-trap.ioctl 2>/dev/null || echo 0)
+    last=$(grep "TCSETS" build/raw-trap.ioctl 2>/dev/null | tail -1)
+    if [ "$n" -ge 2 ] && echo "$last" | grep -qE "ISIG|ICANON"; then
+        echo "  ok   raw-trap    ->  TCSETS x$n，最后一条是 cooked ✓（$(grep -o 'trap: index [0-9]* out of range' build/raw-trap.out | head -1)）"
+    else
+        echo "  FAIL raw-trap    ->  TCSETS x$n（期望 ≥2）· 最后一条：$(echo "$last" | cut -c1-60)"
+        fail=1
+    fi
+else
+    echo "  skip raw-trap    ->  没有 \`strace\`/\`script\`（这一支跳过）"
 fi
 
 echo "== 顺序（println 与 writeBytes 混用 —— 定案 75 修的真缺陷）=="

@@ -23,6 +23,20 @@ extern!("libc") fn cfmakeraw(buf: ref u8) -> void
  * should change **now**, so `TCSANOW` is the one the library uses. */
 let TCSANOW: i32 = 0
 
+
+/* ⭐ Provided by the **runtime** (the generated C), not by libc: a trap path is the only
+ * code that still runs when a program dies, and it can only call something the generated
+ * code itself defines. So the runtime keeps a copy of the settings and gives the terminal
+ * back on the way out. Codegen emits that little block when it sees this declaration --
+ * a program that never touches a terminal does not carry it.
+ *
+ * The provider string is a **trust declaration** like `"libc"` (decision 72): the author
+ * signs for the interface. */
+extern!("extc-runtime") fn extc_raw_enter(fd: i32, buf: ref u8, n: i64) -> void
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_raw_leave() -> i32
+    effects Addr=0 Cont=0
+
 /* How many bytes a `struct termios` needs. Linux/glibc is 60; this is deliberately
  * generous because the number is a *platform* detail and a short buffer would be
  * memory corruption rather than a diagnostic. */

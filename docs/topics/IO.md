@@ -451,7 +451,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 |---|---|---|---|
 | **IO-0** | 原语 `read`/`write` + **`reader`** + **切片解析函数族** + `ioError` | **OI 式输入**能用了；gomoku 能读协议 | 🟢 **主体已落地（定案 74，2026-09-23）** —— 原语（`stdlib/std/sys/io.extc`，`extern!` 签字）+ **`reader`（隐式 64KB）** + **`nextLine`/`nextToken`/`nextInt`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/`flush()` ✓ 验收 `tests/io/`（7 条，含**三条路**与**分块读性能**）⬜ **还欠**：`readAll`（读满一个大 buffer）· 格式化输入 B |
 | **IO-1** | ✅ `open`（`std::fs` 三个名字）+ ✅ **程序拥有**的句柄（`close()` = 提交点 + 编译期查泄漏，定案 79）+ ✅ `readAll` + `reader` + ✅ `main(args)` | 自举的门槛（读源文件、写生成的 C） | ✅ **落地了**（`nextInt` 一族与 `f.reader()` 仍在 IO-2）|
-| **IO-2** | ✅ `f.reader()`（文件当输入源）· ✅ `proc::exit(code)`（**不在 `std::io`**：结束进程不是 I/O）· ✅ termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；不包 ncurses）· ⬜ **trap 路径还原终端** | TUI + 文件与 stdin 同一套读法 | ✅ **2026-09-24 三件都落地**（常设验收：`tests/io/file-reader.extc` · `tests/io/exit-code.extc`（退出码 7）· `tests/io/raw-mode.extc`（非 tty ⇒ `failure(notATerminal)` 带位置；`script` 起 PTY ⇒ raw 开得起来也还原得了））✓ ⚠️ 这一格先后写过「`writer` ⬜」「`close(f)!` ⬜」，两次都是落地**之前**写的、没跟着改 ✗（第三次修正）；⬜ 只剩 **trap 时的终端还原**（运行时那条路）|
+| **IO-2** | ✅ `f.reader()`（文件当输入源）· ✅ `proc::exit(code)`（**不在 `std::io`**：结束进程不是 I/O）· ✅ termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；不包 ncurses）· ✅ **trap 路径还原终端**（临终钩子，定案 80）| TUI + 文件与 stdin 同一套读法 | ✅ **2026-09-24 三件都落地**（常设验收：`tests/io/file-reader.extc` · `tests/io/exit-code.extc`（退出码 7）· `tests/io/raw-mode.extc`（非 tty ⇒ `failure(notATerminal)` 带位置；`script` 起 PTY ⇒ raw 开得起来、还原**逐字节**与最初相同）· `tests/io/raw-trap.extc`（raw 下 trap ⇒ strace 里 `TCSETS` 两次、最后一条是 cooked））✓ ⚠️ 这一格先后写过「`writer` ⬜」「`close(f)!` ⬜」「trap ⬜」，三次都是落地**之前**写的、没跟着改 ✗（第四次修正）|
 
 > BOOTSTRAP §4.3 已经定过 TUI 那条：**不包 ncurses**，只要「读一个字节 + 开关 raw mode」
 > 那么小的原语 ✓
