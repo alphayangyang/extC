@@ -99,6 +99,10 @@ typedef struct {
     const char *name;      /* C name of the local */
     const char *text;      /* the declaration line, exactly as emitted */
     const char *funcName;  /* C name of the function it belongs to */
+    size_t      own;       /* mentions the declaration itself contributes to that stage:
+                            * 1 when it sits inside the body, 0 when it is in the prologue
+                            * (`__extc_home` is declared before the body, and the body text
+                            * is the stage, so nothing there mentions it) */
 } DeadLocal;
 
 typedef struct {
@@ -2051,7 +2055,7 @@ static void genStmt(CG *g, Stmt *s);
 
 /* Declared here because statements register their local declarations as they are emitted
  * (see DeadLocal): the definition sits with the other unreferenced-definition helpers. */
-static void localDef(CG *g, size_t before, const char *name);
+static void localDef(CG *g, size_t before, const char *name, size_t own);
 
 /* -------------------------------------------------------------- conditions
  * A statement brings its own parentheses, and the expression printer adds a pair
@@ -2744,7 +2748,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 flushPrefix(g);
                 size_t lb = g->out->len;
                 cgLine(g, "%s %s = %s;", cType(g, s->type), nm, tryPayloadPath(g, &ti));
-                localDef(g, lb, nm);
+                localDef(g, lb, nm, 1);
                 return;
             }
             const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
@@ -2752,7 +2756,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             flushPrefix(g);
             size_t lb = g->out->len;
             cgLine(g, "%s %s = %s;", cType(g, s->type), nm, init);
-            localDef(g, lb, nm);
+            localDef(g, lb, nm, 1);
             return;
         }
 
@@ -3222,8 +3226,13 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "%s __extc_ret_v;", cType(g, g->retType));
     g->blkLevel = 0;
     g->loopLen  = 0;
-    if (isMain && f->needsHome)
+    const char *savedFuncName = g->curFuncName;
+    g->curFuncName = cFuncName(g, f);
+    if (isMain && f->needsHome) {
+        size_t hb = g->out->len;
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
+        localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */
+    }
     /* Only a self-recursive function needs the depth guard; see
      * funcCallsItself. Entering increments, every exit decrements, and
      * `extc_rec_enter` traps with a position once the limit is passed.
@@ -3234,8 +3243,6 @@ static void genFunc(CG *g, FuncDef *f) {
     g->isRecursive = funcCallsItself(g, f);
     if (g->isRecursive)
         cgLine(g, "extc_rec_enter(\"%s\", %d);", g->path, f->line);
-    const char *savedFuncName = g->curFuncName;
-    g->curFuncName = cFuncName(g, f);
     size_t mb = g->out->len;
     genBlockBody(g, f->body);
     if (isMain) {
@@ -3799,7 +3806,7 @@ static void deadFuncBody(CG *g, FuncDef *f, const char *text, size_t len) {
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle);
 
 /* Remember a local declaration: `before` is where its line started in the current buffer. */
-static void localDef(CG *g, size_t before, const char *name) {
+static void localDef(CG *g, size_t before, const char *name, size_t own) {
     Buf l;
     bufInit(&l, g->arena);
     bufPutn(&l, g->out->data + before, g->out->len - before);
@@ -3807,6 +3814,7 @@ static void localDef(CG *g, size_t before, const char *name) {
     d->name     = name;
     d->text     = bufCstr(&l);
     d->funcName = g->curFuncName;
+    d->own      = own;
     *(DeadLocal **)vecPush(&g->deadLocals) = d;
 }
 
@@ -3937,13 +3945,23 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             }
             if (!body && g->mainBody && strcmp(d->funcName, g->mainFuncName) == 0)
                 body = g->mainBody;                    /* main has no DeadFunc entry */
+            if (getenv("EXTC_DBG_LOCAL"))
+                fprintf(stderr, "[local] %-14s func=%-12s mainFunc=%-12s body=%s\n", d->name,
+                        d->funcName ? d->funcName : "(null)",
+                        g->mainFuncName ? g->mainFuncName : "(null)", body ? "yes" : "no");
             if (!body) continue;                       /* its function is gone already */
             char  *bp = strstr(text, body);
             if (!bp) continue;
             size_t bl = strlen(body);
-            if (countMentionsIn(g, bp, bl, d->name) != 1) continue;    /* read somewhere */
-            char  *ln = strstr(bp, d->text);
-            if (!ln || ln >= bp + bl) continue;        /* not where it should be */
+            if (getenv("EXTC_DBG_LOCAL"))
+                fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
+                        bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
+            if (countMentionsIn(g, bp, bl, d->name) != d->own) continue;   /* it is read */
+            /* A declaration inside the body is found there; one in the prologue (the home
+             * arena) is not in the body at all, so it is looked up in the whole text - the
+             * stage only had to answer whether anything reads it. */
+            char  *ln = (d->own == 0) ? strstr(text, d->text) : strstr(bp, d->text);
+            if (!ln || (d->own != 0 && ln >= bp + bl)) continue;   /* not where it should be */
             size_t tl = strlen(d->text);
             memmove(ln, ln + tl, len - (size_t)(ln - text) - tl + 1);
             len -= tl;
