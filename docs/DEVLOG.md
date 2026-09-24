@@ -7034,3 +7034,25 @@ clang 报的是 **`main` 里那一条声明** ✓ ⇒ 判据本来就该是"**�
 （本项目已经四次证明：**数字对不上就加开关量，别猜** ✓）
 
 **回退后**：树干净 ✓ 全量仍是 **gcc 8 · clang 6 · error 0** ✓
+
+### 2026-09-25 · 族 B 第二次：`EXTC_DBG_LOCAL` 把最后一跳量出来了 ⇒ 回退并记下真因
+
+装了调试开关之后一次就看清（这正是"加开关别猜"的第四次收益 ✓）：
+
+```
+[local] __extc_home  func=main  mainFunc=main  body=no  mainBody=yes
+（下一行本该打出 cnt=…，**没打出来** ⇒ 说明在那之前就 continue 了 ✓）
+```
+⇒ 收窄到两处：① 兜底分支（`!body && mainBody && funcName==mainFuncName` ⇒ 用 `mainBody`）**确实走到了**
+（`mainFunc=main` 与 `func=main` 对上 ✓）② 之后 `strstr(text, g->mainBody)` **没命中** ✗
+⇒ **最可能的原因**：`mainBody` 是从 `g->out` 截的 ✓ 而生成过程中 **viewIdx 助手会把 `g->out` 临时换到
+`tmp` 缓冲**（见 `g.out = &tmp; ... g.out = save;` ✓）⇒ 那一截在成品里**不连续** ✗ ⇒ `strstr` 必然失败 ✓
+（同族隐患：`deadFuncBody` 也是从 `g->out` 截的 ✗ ⇒ 带 viewIdx 助手的函数，其 `DeadFunc.body` 同样可能不连续 ✗
+—— 族 A 之所以能用，是因为受影响的函数恰好没有这种中途换缓冲 ✓）
+
+**正确做法（下一轮第一步）**：函数体文本要**在整份 body 缓冲发完之后**再截
+（即 `bufPuts(out, bufCstr(&g.body))` 之前 ✓ 那时 `g.body` 是连续完整的 ✓），
+按**函数在 `g.body` 里的起止偏移**截 ✓ 而不是在生成中途从 `g.out` 截 ✗
+—— 同时要把 `deadFuncBody` 也一并改成这个办法 ✓（它现在有同样的隐患 ✓）
+
+**回退后**：树干净 ✓ 全量仍是 **gcc 8 · clang 6 · error 0** ✓
