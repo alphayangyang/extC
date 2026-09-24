@@ -1,0 +1,13 @@
+// expect: 泛型糖 = 5|泛型显式 = 6
+/* 泛型类型的构造函数：类型实参**写全**（extC 不从上下文猜类型 ✓）
+ *   `gbox<i64>(5)`  与 `gbox<i64>::new(5)` 同一条路 ✓ */
+struct gbox<T> { v: T
+    fn new(v: T) -> gbox<T> { return { v: v } }
+}
+fn main() -> i32 {
+    var a: gbox<i64> = gbox<i64>(5)
+    println("泛型糖 = ", a.v)
+    var b: gbox<i64> = gbox<i64>::new(6)
+    println("泛型显式 = ", b.v)
+    return 0
+}

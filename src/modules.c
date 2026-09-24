@@ -749,6 +749,8 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     const int   saveTargs = (int)e->u.assoc.targs.len;
     const bool  saveCall  = e->u.assoc.isCall;
 
+    const char *mangledType = NULL;    /* set when the middle of the path is a type */
+
     /* A deep path (`std::sys::io::write`) only has to find its module here. Which
      * symbol is meant has already been decided by the parser, and the visibility,
      * lookup, and `@private` rules below are then reused unchanged. */
@@ -765,6 +767,14 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
              * full path `std::sys::io`, so it would find nothing and report the module
              * as not imported one line after it was found. */
             e->u.assoc.typeName = modPrefix;
+        } else if (rwQualifiedTypeName(L, self, modPrefix, &mangledType) && mangledType) {
+            /* `fs::outputFile::new(...)`: the middle of the path is a **type**, not a
+             * module, so the deep-path lookup above found nothing. The type name is what
+             * the checker needs; the symbol after it (`new`) is resolved from there.
+             * Without this the user got "`fs::outputFile` is not imported here -- add
+             * `use fs::outputFile`", which is about a module that does not exist. */
+            e->u.assoc.typeName = mangledType;
+            return;
         } else {
             /* Report it with a full path and an instruction the user can follow. A
              * first version printed the segment before the first `::`, producing
@@ -782,6 +792,38 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
                      "`%s` is not imported here -- add `use %s`", modPrefix, modPrefix);
             L->errors++;
             return;
+        }
+    }
+
+    /* `fs::outputFile("out.txt")`: `mod::name(args)` where `name` is a **type** of that
+     * module is that type's constructor -- `T(...)` is `T::new(...)` (定案 86), and from
+     * outside the module the type has to be named in full, so the sugar has to be
+     * recognized here as well.
+     *
+     * The order is function first, type second, and no ambiguity is possible: one module
+     * cannot declare a function and a type under the same name (that is a duplicate name
+     * in the module itself). */
+    if (saveCall) {
+        const char *tn0 = e->u.assoc.typeName;      /* read before anything is written */
+        ModUnit *mowner = target;
+        const char *msym = symName ? symName : e->u.assoc.name;
+        /* A deep path (`lib::sub::Type(...)`) arrives with the module already in
+         * `modPrefix` and the type as the symbol; a short one (`fs::Type(...)`) arrives as
+         * `typeName` = module, `name` = type. Both end up asking the same question. */
+        if (!mowner && tn0 && !strstr(tn0, "::")) mowner = importedAs(L, self, tn0);
+        if (mowner && mowner != self && msym && unitStruct(mowner, msym) &&
+            !unitStruct(mowner, msym)->isPrivate) {
+            StructDef *csd = unitStruct(mowner, msym);
+            /* Not a function of that name: a function would have been left for the
+             * checker (and would shadow nothing, since the two cannot share a name). */
+            bool isFn = false;
+            for (size_t i = 0; i < mowner->mod.funcs.len && !isFn; i++)
+                isFn = strcmp((*(FuncDef **)vecAt(&mowner->mod.funcs, i))->name, msym) == 0;
+            if (!isFn) {
+                e->u.assoc.typeName = csd->name;    /* the mangled type name */
+                e->u.assoc.name     = "new";
+                return;
+            }
         }
     }
 

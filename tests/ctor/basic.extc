@@ -1,0 +1,32 @@
+// expect: 字面量 = 1,2|构造函数 = 3,4|显式同一条路 = 5,6|无参 = 默认|单参 = 张三|全名 = 7,8
+/* 构造函数（定案 86）：`T(args)` 就是 `T::new(args)` ✓
+ *
+ * 判据：糖与显式形式**必须同一条路**（同一份 `new`、同一套实参检查、
+ * 同一段生成的 C）—— 所以这里两种写法都写一遍，值必须一样 ✓ */
+struct pt { x: i64  y: i64
+    fn new(x: i64, y: i64) -> pt { return { x: x, y: y } }
+}
+struct greeting { who: slice<u8>
+    fn new() -> greeting { return { who: "默认" } }
+}
+struct named { n: slice<u8>
+    fn new(v: slice<u8>) -> named { return { n: v } }
+}
+struct pair2 { a: i64  b: i64
+    fn make(a: i64, b: i64) -> pair2 { return { a: a, b: b } }   /* 不叫 new ⇒ 只是关联函数 ✓ */
+}
+fn main() -> i32 {
+    var a: pt = { x: 1, y: 2 }
+    println("字面量 = ", a.x, ",", a.y)
+    var b: pt = pt(3, 4)
+    println("构造函数 = ", b.x, ",", b.y)
+    var c: pt = pt::new(5, 6)
+    println("显式同一条路 = ", c.x, ",", c.y)
+    var d: greeting = greeting()
+    println("无参 = ", d.who)
+    var e: named = named("张三")
+    println("单参 = ", e.n)
+    var f: pair2 = pair2::make(7, 8)      /* 具名关联函数照旧：不经过构造函数的规则 ✓ */
+    println("全名 = ", f.a, ",", f.b)
+    return 0
+}

@@ -37,6 +37,16 @@ struct inputFile {
     fd:   i32
     open: bool
 
+    /* **构造函数**：`inputFile("input.txt")` 与 `inputFile::new("input.txt")` 是同一件事
+     * （`T(...)` 就是 `T::new(...)` 的写法，见定案 86）✓
+     *
+     * 打开**会失败**（文件不在、没权限、fd 用光），所以返回 `result`，调用点写 `?`：
+     *     var f = inputFile("input.txt")?
+     * 这正是 `openRead` 的形状，而它就在这里 —— 一份实现，两个名字 ✓ */
+    fn new(path: slice<u8>) -> result<inputFile, io::ioError> {
+        return openRead(path)
+    }
+
     /* Read once. Returns how many bytes arrived; 0 means end of file. */
     fn readSome(self: mut ref inputFile, out: mut slice<u8>) -> result<i64, io::ioError> {
         if !self.open { return failure(io::ioError.closed(self.fd)) }
@@ -103,6 +113,17 @@ struct inputFile {
 struct outputFile {
     fd:   i32
     open: bool
+
+    /* 构造函数 = **建/截断**（最常见的那件事）：`outputFile("out.txt")` ✓
+     * 追加是另一件事，用具名关联函数：`outputFile::append("out.txt")` ✓
+     * （一个类型只能有一个 `new`：构造函数不做重载，要不同行为就给个名字 ✓） */
+    fn new(path: slice<u8>) -> result<outputFile, io::ioError> {
+        return openWrite(path)
+    }
+
+    fn append(path: slice<u8>) -> result<outputFile, io::ioError> {
+        return openAppend(path)
+    }
 
     /* Write all of `buf`. A short write is not an error: it is looped over, and only
      * a real failure from `write(2)` comes back as `failure`. */

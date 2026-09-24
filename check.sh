@@ -120,6 +120,11 @@ if out=$(timeout 600 bash tests/ops/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · 流运算符 · 重名分派 · mangle · 9 反例 · 两条不许漏到 gcc）"
 else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
 
+echo "== 构造函数（`T(args)` 就是 `T::new(args)`：糖=显式 · 可失败 · 泛型 · 3 反例）=="
+if out=$(timeout 600 bash tests/ctor/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（正例 3 · 反例 3 —— 无 new 教你怎么写 · 返回类型必须对 · 实参个数）"
+else bad "tests/ctor/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 泛型组合矩阵（T 的位置 × 特性 · 13 格 · 缺口清单空 —— 见 GENERICS.md）=="
 if out=$(timeout 600 bash tests/genmatrix/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（13 格全过 ✓ · #60/#61/#62/#63/#64/#65 六条当天撞到当天修完、当天搬进矩阵或正例 ⇒ 缺口清单空，机制留着）"

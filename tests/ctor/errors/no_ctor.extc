@@ -1,0 +1,2 @@
+struct pt { x: i64  y: i64 }
+fn main() -> i32 { var p: pt = pt(1, 2)  println(p.x)  return 0 }

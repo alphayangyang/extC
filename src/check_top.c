@@ -238,6 +238,7 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
     }
 
     checkOperatorSig(c, f);
+    checkCtorSig(c, f);
 }
 
 /* Does the body allocate (`new`)?

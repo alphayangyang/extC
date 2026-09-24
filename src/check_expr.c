@@ -1126,6 +1126,51 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             "`allocSlice<T>(n)` was removed; write `new T[n]`");
                     return ttError(tt);
                 }
+                /* `varArray<i64>(200)`: the constructor of a **generic** type. The type
+                 * arguments are written out just as `varArray<i64>::withCap(200)` writes
+                 * them -- nothing is inferred -- and the node becomes the associated call
+                 * for the rest of the pipeline. */
+                if (!lookup(c, e->u.gencall.name)) {
+                    Type *base = ttFromName(tt, e->u.gencall.name);
+                    StructDef *gsd = structOf(base);
+                    if (gsd && gsd->typeParams.len == e->u.gencall.targs.len) {
+                        FuncDef *ctor = NULL;
+                        for (size_t i = 0; i < gsd->methods.len && !ctor; i++) {
+                            FuncDef *m = *(FuncDef **)vecAt(&gsd->methods, i);
+                            if (m->isAssoc && strcmp(m->name, "new") == 0) ctor = m;
+                        }
+                        if (ctor) {
+                            /* Every field is read out **before** the union is written: the
+                             * two shapes overlap, so writing `u.assoc.typeName` first would
+                             * have clobbered `u.gencall.targs` and `u.gencall.args` and the
+                             * node would carry a number where a list belongs. The crash was
+                             * `obligExpr` following 0x40000000f. */
+                            const char *gname = e->u.gencall.name;
+                            Vec gtargs = e->u.gencall.targs;
+                            Vec gargs  = e->u.gencall.args;
+                            e->kind = EX_ASSOC;
+                            e->u.assoc.typeName  = gname;
+                            e->u.assoc.targs     = gtargs;
+                            e->u.assoc.name      = "new";
+                            e->u.assoc.args      = gargs;
+                            e->u.assoc.isCall    = true;
+                            e->u.assoc.modPrefix = NULL;
+                            return checkExpr(c, e);
+                        }
+                        Buf note;
+                        bufInit(&note, c->arena);
+                        bufPrintf(&note, "declare one inside `%s`:"
+                                         "\n      fn new(...) -> %s { ... }",
+                                  DN(gsd), DN(gsd));
+                        bufPrintf(&note, "\nor build it field by field: `%s { ... }`"
+                                         " (with its type arguments written out)",
+                                  DN(gsd));
+                        ckError(c, e->line, bufCstr(&note),
+                                "`%s` has no constructor `new`, so `%s<...>(...)` has nothing to call",
+                                DN(gsd), e->u.gencall.name);
+                        return ttError(tt);
+                    }
+                }
                 ckError(c, e->line, "only the built-in primitives may be called this way",
                         "`%s` is not a built-in primitive or generic function",
                         e->u.gencall.name);
@@ -1491,6 +1536,57 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * message states the correct spelling; it does not fill it in.
                  * Only a variant with a payload is pointed at. A payload-free `status.ok` is a
                  * value in its own right and takes the other path. */
+                /* `inputFile("input.txt")`: a call whose name is a **type** is that
+                 * type's constructor -- the associated function `new`. It is rewritten
+                 * into the associated-call node, so the argument checking, the arena
+                 * argument and the generated C are the very same ones as for
+                 * `inputFile::new("input.txt")`; there is no second implementation to
+                 * drift away from this one.
+                 *
+                 * Only when no local binding of that name is in scope: a variable
+                 * shadowing a type name would otherwise be reported as a missing
+                 * constructor, which is the wrong sentence about the wrong thing. */
+                if (!lookup(c, name)) {
+                    Type *ct = ttFromName(tt, name);
+                    if (ct && !ttIsError(ct)) {
+                        StructDef *csd = structOf(ct);
+                        FuncDef *ctor = NULL;
+                        if (csd) {
+                            for (size_t i = 0; i < csd->methods.len && !ctor; i++) {
+                                FuncDef *m = *(FuncDef **)vecAt(&csd->methods, i);
+                                if (m->isAssoc && strcmp(m->name, "new") == 0) ctor = m;
+                            }
+                        }
+                        if (ctor) {
+                            Vec cargs = e->u.call.args;      /* union: copy it out first */
+                            e->kind = EX_ASSOC;
+                            e->u.assoc.typeName  = name;
+                            e->u.assoc.name      = "new";
+                            e->u.assoc.args      = cargs;
+                            e->u.assoc.isCall    = true;
+                            e->u.assoc.modPrefix = NULL;
+                            /* The fields the old kind used are still in the union, so
+                             * every one of them has to be written: leaving `targs` alone
+                             * made the node carry the call's leftovers, and the resolver
+                             * reported "`named` expects 0 type argument(s), got 1" about a
+                             * type nobody had written type arguments for. */
+                            vecInit(&e->u.assoc.targs, c->arena, sizeof(void *));
+                            return checkExprInner(c, e);
+                        }
+                        if (csd) {
+                            Buf note;
+                            bufInit(&note, c->arena);
+                            bufPrintf(&note, "declare one inside `%s`:", DN(csd));
+                            bufPrintf(&note, "\n      fn new(...) -> %s { ... }", DN(csd));
+                            bufPrintf(&note, "\nor build it field by field: `%s { ... }`",
+                                      DN(csd));
+                            ckError(c, e->line, bufCstr(&note),
+                                    "`%s` has no constructor `new`, so `%s(...)` has nothing to call",
+                                    DN(csd), name);
+                            return ttError(tt);
+                        }
+                    }
+                }
                 TypeDef *owner = NULL;
                 for (size_t i = 0; i < c->tt->enums.len && !owner; i++) {
                     TypeDef *td = *(TypeDef **)vecAt(&c->tt->enums, i);

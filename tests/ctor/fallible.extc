@@ -1,0 +1,25 @@
+// expect: 打开成功，值 = 7|负数被拒 = true
+/* 可失败的构造函数：`-> result<T, E>` ✓
+ *
+ * 为什么允许（而别的返回类型不允许）：打开文件、解析文本都会失败，而 `?` 正是 extC
+ * 说"这可能会失败"的方式 ⇒ 构造函数必须能返回 `result` ✓ 错误类型由它自己定 ✓ */
+type why = | negative(i64) | other
+struct box { v: i64
+    fn new(n: i64) -> result<box, why> {
+        if n < i64(0) { return failure(why.negative(n)) }
+        return success(box { v: n })
+    }
+}
+fn main() -> i32 {
+    match box(7) {
+        success(b) => { println("打开成功，值 = ", b.v) }
+        failure(e) => { println("不该到这") }
+    }
+    var rejected: bool = false
+    match box(i64(0) - i64(1)) {
+        success(b) => { }
+        failure(e) => { rejected = true }
+    }
+    println("负数被拒 = ", rejected)
+    return 0
+}

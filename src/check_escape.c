@@ -1632,6 +1632,47 @@ FuncDef *findOp(TypeTable *tt, Type *b, const char *sym, Type *rhs, const char *
  *     / `||` and extC has no implicit truthiness, so it can only return `bool`; an
  *     arithmetic operator returns its own type, and only its own type, because the result
  *     of `a + b` is used wherever `a` was. */
+/* Check the signature of a constructor at its definition site.
+ *
+ * A constructor is the associated function named `new` (a function written inside a
+ * `struct` without `self`), and `T(...)` is the spelling for calling it. That spelling
+ * promises a `T`, so the body has to produce one; letting `new` return anything would
+ * make `T(...)` mean whatever that function happens to return, and the reader of
+ * `var f: inputFile = inputFile(path)` would have to go and look.
+ *
+ * The one exception is a **fallible** constructor: `result<T, E>` is accepted, because
+ * opening a file, parsing text and allocating are all things that can fail, and the
+ * caller then has to write `?` -- which is how extC says "this can fail" everywhere
+ * else. The error type is the constructor's own choice.
+ *
+ * Params:
+ *   c - checker
+ *   f - the function definition being declared
+ *
+ * Notes:
+ *   - Checked at the definition, not at each call site, so a wrong constructor is
+ *     reported even when nothing calls it yet.
+ *   - Only the name `new` is treated this way: `fn make(...)` is an ordinary
+ *     associated function and may return whatever it likes.
+ */
+void checkCtorSig(Checker *c, FuncDef *f) {
+    if (!f->isAssoc || !f->owner || strcmp(f->name, "new") != 0) return;
+    Type *ret = f->ret;
+    if (ret && (ret->kind == TY_STRUCT || ret->kind == TY_GENERIC) && ret->sdef == f->owner) return;
+    /* `result<T, E>`: an enum whose first type argument is the owner. */
+    if (ret && ret->kind == TY_ENUM && ret->edef && ret->targs.len >= 1) {
+        Type *ok = *(Type **)vecAt(&ret->targs, 0);
+        ok = ttBase(ok);
+        if (ok && (ok->kind == TY_STRUCT || ok->kind == TY_GENERIC) && ok->sdef == f->owner) return;
+    }
+    Buf want;
+    bufInit(&want, c->arena);
+    bufPrintf(&want, "signature must be `fn new(...) -> %s` (or `-> result<%s, E>` for a"
+                     " constructor that can fail)", DN(f->owner), DN(f->owner));
+    ckError(c, f->line, bufCstr(&want),
+            "the constructor `%s::new` must return `%s`", DN(f->owner), DN(f->owner));
+}
+
 void checkOperatorSig(Checker *c, FuncDef *f) {
     bool cmp   = isCmpOp(f->name);
     bool arith = isArithOp(f->name) || strcmp(f->name, "<<") == 0 || strcmp(f->name, ">>") == 0;

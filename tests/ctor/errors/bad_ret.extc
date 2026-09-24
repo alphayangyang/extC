@@ -1,0 +1,4 @@
+struct bad { v: i64
+    fn new(n: i64) -> i64 { return n }
+}
+fn main() -> i32 { var b: bad = bad(1)  println(b.v)  return 0 }

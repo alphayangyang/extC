@@ -657,6 +657,7 @@ int valDepthForStore (Checker *, Expr *);
 /* Resolve the home depth of a call site into the arena argument the code generator emits. */
  void setCallArenaArg (Checker *c, Expr *e);
 /* Report an error when a name of another module is used without its module qualifier. */
+ void checkCtorSig (Checker *c, FuncDef *f);
  void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);
 /* Did an import bring this name into scope? `use mod::*` or `use mod::{name}` (check_lookup.c) */
  bool nameBrought (Module *m, const char *importer, const char *opened, const char *what);

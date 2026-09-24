@@ -135,6 +135,25 @@ C 名字后缀规则跟着定了：**只有一个**实现 ⇒ 不加后缀（`ve
 `tests/io/stream.extc` 改用 `use std::io::{cin, cout, endl, inBad}` ⇒ 主人原话的语法用**最精确那一档**跑 ✓
 语料 **254/0** ✓
 
+### ⑥ 构造函数（定案 86）：`T(args)` 就是 `T::new(args)`
+
+主人要先补这个再做文件：「每次我都要 `fstream fin; fin.open()` 这就很弱智了，直接 `fstream fin("input.txt")` 就很爽」✓
+一量：**关联函数早就有**（`struct` 里不带 `self` 的函数，写 `T::name(args)` ✓ 能跑）⇒ 缺的只是那层糖 ✓
+
+规则：固定名 `new`（与 `close`/运算符名同一招：按名字认）· 返回类型必须是 `T` 或 `result<T, E>`
+（**定义点**就检查；`result` 是必须的 —— 打开文件会失败，`?` 是 extC 说"会失败"的方式）·
+不叫 `new` 的关联函数不受约束 · 类型实参写全 · 跨模块写全名 ✓
+
+落地三处全是"改写成同一个节点"：检查器把 `T(...)` 改写成 `EX_ASSOC(name="new")` 再走一遍那条路
+（实参检查/arena/C 生成全复用）· 装载器认出 `fs::Type(...)` 与 `fs::Type::new(...)` · `std::fs` 加上
+`inputFile::new` / `outputFile::new` / `outputFile::append` ⇒ **文件那边现在能写
+`var f = fs::inputFile("input.txt")?`** ✓
+
+⚠️ 踩的坑：改写联合体时先写 `u.assoc.typeName`、又去读 `u.gencall.targs` —— 同一块内存 ⇒
+节点里装了整数当指针 ⇒ **段错误**（`obligExpr` 跟着 `0x40000000f` 走 ✗）⇒ 规矩：**先全部读出来再写** ✓
+
+判据：`tests/ctor/` **6 项**（`check.sh` 第 23 节）· 语料 254/0 · fs/io/modules/ops/genmatrix/qname 全绿 ✓
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·

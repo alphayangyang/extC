@@ -1,0 +1,4 @@
+struct pt { x: i64  y: i64
+    fn new(x: i64, y: i64) -> pt { return { x: x, y: y } }
+}
+fn main() -> i32 { var p: pt = pt(1)  println(p.x)  return 0 }
