@@ -41,6 +41,19 @@ build_one() {   # 名字 文件
 peak() {        # 程序 轮数 -> 峰值 RSS(KB)
     /usr/bin/time -f %M "./build/$1" "$2" 2>&1 >/dev/null | tail -1
 }
+echo "== 池级 epoch 的价值：clear() 的代价与容量无关（旧版逐槽重写 ⇒ 4096 槽要慢几百倍）=="
+if build_one pool-perf-s perf_clear_8 && build_one pool-perf-b perf_clear_4096; then
+    ts=$(/usr/bin/time -f %e ./build/pool-perf-s 2>&1 >/dev/null | tail -1)
+    tb=$(/usr/bin/time -f %e ./build/pool-perf-b 2>&1 >/dev/null | tail -1)
+    if awk -v a="$ts" -v b="$tb" 'BEGIN{exit !(b <= a*4 + 0.20)}'; then
+        echo "  ok   clear O(1) ->  cap=8: ${ts}s · cap=4096: ${tb}s ⇒ **同量级**（400 万轮）"
+    else
+        echo "  FAIL clear O(1) ->  cap=8: ${ts}s · cap=4096: ${tb}s ⇒ 随容量涨了（clear 还在逐槽重写？）"; fail=1
+    fi
+else
+    echo "  FAIL clear O(1) ->  编不过"; fail=1
+fi
+
 if build_one pool-churn churn && build_one pool-leak churn-leak; then
     s=$(peak pool-churn 100000);  b=$(peak pool-churn 1000000)
     if [ "$b" -le $(( s * 3 / 2 )) ]; then

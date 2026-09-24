@@ -1,0 +1,28 @@
+// clear() 的代价必须与容量无关（池级 epoch 染色，docs/topics/POOLS.md §7）
+//
+// 与 perf_clear_4096.extc 只差池容量：两边循环体一模一样（clear + 插 4 个 + 读稠密面）。
+// run.sh 比较两者的墙钟时间 —— 逐槽重写的旧版在 4096 槽上要慢几百倍，染色版应当同量级。
+// 这个程序只负责跑够久，判据在 run.sh 里（时间不能写进 // expect:）
+use std::io
+use stl::pool
+
+fn main() -> i32 {
+    var p: pool<i32> = pool<i32>::withCap(i64(4096))
+    var acc: i64 = i64(0)
+    var i: i64 = i64(0)
+    while i < i64(4000000) {
+        p.clear()
+        let a = p.insert(i32(1))
+        let b = p.insert(i32(2))
+        let c = p.insert(i32(3))
+        let d = p.insert(i32(4))
+        if p.contains(a) { acc = acc + i64(1) }
+        if p.contains(b) { acc = acc + i64(1) }
+        if p.contains(c) { acc = acc + i64(1) }
+        if p.contains(d) { acc = acc + i64(1) }
+        acc = acc + i64(p.atDense(i64(2)))
+        i = i + i64(1)
+    }
+    io::cout << "cap=" << p.capacity() << " acc=" << acc << "\n"
+    return 0
+}
