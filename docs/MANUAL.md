@@ -1786,7 +1786,7 @@ fn pickFirst(a: ref i32, b: ref i32) -> ref i32 {
 | ~~**块级逃逸提升**~~ ✅ | `new` 的东西被**存进更外层**的地方 ⇒ 把那只 arena **提升**到那一层（**不拒绝**）：`arenaLevel = min(当前块, 各目的地)`。代价 = 这些分配活到那一层结束（最坏 = 函数级、自动清理的堆）；**没存出去的东西照样按块回收** ✓ | **2026-09-22 完成**（定案 63；`tests/asan/` 常设验收 + `examples/store-promotion.extc`）|
 | ~~**借用规则挪到调用点**~~ ✅ | 被调者**只发布约束**（效果摘要 `Addr`/`Cont`），**调用点代入求解** ⇒ `varArray<slice<u8>>`（字符串表）· `varArray<varArray<T>>`（邻接表）· 通用 `stash(dest,v)` 全通 ✓ 摘要不完整/带环 ⇒ 调用点**保守拒**（fail loudly）✓ | **2026-09-22 完成**（定案 67 / PLAN #43；`ARENA-FORMAL` §9 + §9.5 落地实录；正例 `examples/container-of-view.extc` · `container-nested.extc`，反例 `tests/errors/stash_view_from_deeper.extc`）✓ |
 | ~~**`new` 的写法**~~ ✅ | `new node` / `new i32[1000]` / `new [4]i32`（清零），分配进**当前块**的 arena，存进更外层的地方会**提升**（定案 63）| **2026-09-20 完成**（A1）+ 提升 2026-09-22 ✓ |
-| 🟡 **`region` 显式命名**（**逃逸提升 A3 已完成** ✓）| 跨函数接线（`fn build() -> mut ref node` / 出参 `mut ref`）**已经在跑** ✓；**只剩"显式给一个分配命名区域"**（A4，主人说"不急"）| A4 待定 |
+| 🟡 **`region` 显式命名**（**逃逸提升 A3 已完成** ✓）| 跨函数接线（`fn build() -> mut ref node` / 出参 `mut ref`）**已经在跑** ✓；**只剩"显式给一个分配命名区域"**（A4，主人说"不急"）| A4 待定 |  🅿️ **2026-09-26 主人拍板：死了，不需要** ✗（逃逸提升 A3 已覆盖实际需要 ✓）
 | ~~**动态数组 `varArray<T>`**~~ ✅ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | ~~**算术 UB 三处**~~ ✅ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap ✓）|
 | ~~**全局常量 / 全局变量**~~ ✅ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
