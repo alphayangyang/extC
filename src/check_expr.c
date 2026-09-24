@@ -349,6 +349,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (isNumericLit(e->u.bin.left)  && literalFits(e->u.bin.left, rt))  return c->tBool;
                 if (isNumericLit(e->u.bin.right) && literalFits(e->u.bin.right, lt)) return c->tBool;
 
+                /* ⭐ **类型参数上的排序比较**：与上面 `==` 走**同一条路** —— 具体类型要到
+                 * 实例化才知道，所以把要求记下来，交给 `runEqCheck` 按实例验证 ✓
+                 * （定案 82：实例化时检查那套机器本来就通用，`op` 字段一直都在 ✓）*/
+                if (lt->kind == TY_PARAM || rt->kind == TY_PARAM) {
+                    e->needEq = true;
+                    if (c->curFunc) {
+                        EqCheck *oc = (EqCheck *)arenaAllocZero(c->arena, sizeof(EqCheck));
+                        oc->node  = e;
+                        oc->op    = op;
+                        oc->func  = c->curFunc;
+                        oc->owner = c->curFunc->owner;
+                        *(EqCheck **)vecPush(&c->eqChecks) = oc;
+                    }
+                    return c->tBool;
+                }
                 ckError(c, e->line, isEqOp ? "only numbers, `bool`, enums, and structs that define `==` can be compared" : NULL,
                         "cannot compare `%s` with `%s`", typeStr(c, lt), typeStr(c, rt));
                 return c->tBool;
