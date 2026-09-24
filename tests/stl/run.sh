@@ -45,6 +45,24 @@ rm -rf "$TMPC"
 echo "== string：连续字节串（append 触发翻倍 · asSlice 连续可直印 · shrink 降水位）=="
 run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=64 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
 
+echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
+TMP2=$(mktemp -d)
+if "$EXTC" tests/stl/string_churn_a.extc -o "$TMP2/a.c" >/dev/null 2>&1 \
+   && "$EXTC" tests/stl/string_churn_b.extc -o "$TMP2/b.c" >/dev/null 2>&1 \
+   && gcc -std=c11 -O2 -o "$TMP2/a" "$TMP2/a.c" >/dev/null 2>&1 \
+   && gcc -std=c11 -O2 -o "$TMP2/b" "$TMP2/b.c" >/dev/null 2>&1; then
+    ka=$(/usr/bin/time -f %M "$TMP2/a" 2>&1 >/dev/null | tail -1)
+    kb=$(/usr/bin/time -f %M "$TMP2/b" 2>&1 >/dev/null | tail -1)
+    if [ "$kb" -le $(( ka * 2 )) ]; then
+        echo "  ok   churn  ->  1e5: ${ka} KB · 1e6: ${kb} KB ⇒ 平"
+    else
+        echo "  FAIL churn  ->  1e5: ${ka} KB · 1e6: ${kb} KB ⇒ 涨了"; fail=1
+    fi
+else
+    echo "  FAIL churn  ->  生成或编译失败"; fail=1
+fi
+rm -rf "$TMP2"
+
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 if "$EXTC" tests/stl/vector.extc -o "$TMP/v.c" >/dev/null 2>&1 \
    && gcc -std=c11 -g -fsanitize=address -o "$TMP/v" "$TMP/v.c" >/dev/null 2>&1 \

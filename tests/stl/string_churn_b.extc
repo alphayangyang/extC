@@ -1,0 +1,16 @@
+// string churn（小）：循环 clear + 追加 200 字节，容量策略不变 ⇒ 内存应当平
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    var s = string::withCap(i64(1024))
+    var i: i64 = 0
+    while i < i64(1000000) {
+        s.clear()
+        var k: i64 = 0
+        while k < i64(200) { s.push(u8(97))  k = k + i64(1) }
+        i = i + i64(1)
+    }
+    io::cout << "len=" << s.len() << " cap=" << s.capacity() << "\n"
+    return 0
+}
