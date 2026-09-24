@@ -104,6 +104,11 @@ if out=$(timeout 600 ./tests/map/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
 else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 期 1 · 区域注册表（表 + 世代 + 父链 + 释放遍历 —— 见 REGIONS.md §8/§9）=="
+if out=$(timeout 600 ./tests/region/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（建/世代/释放 · 块退出带走子树 · churn 容量停在高水位 · -Werror + ASan）"
+else bad "tests/region/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 线性关联容器（std::linmap / std::linset：只用 ==，不依赖 #57 的 hash）=="
 if out=$(timeout 600 bash tests/linmap/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（覆盖/缺失/删除/扩容 · 结构体键 · 集合）"
@@ -125,7 +130,7 @@ if out=$(timeout 600 bash tests/nocopy/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新值/ref 传参/读字段/调方法照旧 · 绑定·实参·字段·赋值四个复制点全挡 ✓）"
 else bad "tests/nocopy/run.sh"; echo "$out" | tail -8; fi
 
-echo "== 构造函数（`T(args)` 就是 `T::new(args)`：糖=显式 · 可失败 · 泛型 · 3 反例）=="
+echo '== 构造函数（`T(args)` 就是 `T::new(args)`：糖=显式 · 可失败 · 泛型 · 3 反例）=='
 if out=$(timeout 600 bash tests/ctor/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（正例 3 · 反例 3 —— 无 new 教你怎么写 · 返回类型必须对 · 实参个数）"
 else bad "tests/ctor/run.sh"; echo "$out" | tail -8; fi

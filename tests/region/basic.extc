@@ -1,0 +1,15 @@
+// 期 1 的管理面：建 / 世代 / 释放 / 存活计数 ✓
+// 判据（run.sh 里）：活着的时候 live=1 · 释放后 live=0 · **世代变了** ⇒ 旧 handle 能查出来 ✓
+use std::io
+use std::sys::region
+
+fn main() -> i32 {
+    io::cout << "live=" << region::extc_region_live()
+    let r = region::extc_region_new(i64(-1), i64(0))
+    let g1 = region::extc_region_generation(r)
+    io::cout << " up=" << region::extc_region_live() << " gen=" << i64(g1)
+    region::extc_region_drop(r)
+    let g2 = region::extc_region_generation(r)      /* 槽位已死 ⇒ 0（世代对不上 ✓）*/
+    io::cout << " down=" << region::extc_region_live() << " stale=" << i64(g2) << "\n"
+    return 0
+}

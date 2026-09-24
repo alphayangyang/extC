@@ -9,6 +9,7 @@
  */
 
 #include "codegen.h"
+#include "regions.h"      /* the region registry runtime (REGIONS.md phase 1) */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
@@ -247,6 +248,9 @@ typedef struct {
      * declares as an `extern!` -- a program that never touches a terminal does not carry
      * it. */
     bool        needRawTerm;
+    /* Does the program declare a region extern? Then the registry runtime is emitted, and
+     * every function carries the two hooks that key regions to its frame and its blocks. */
+    bool        needRegion;
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -2492,6 +2496,10 @@ static void cgReleaseLevel(CG *g, int lvl) {
     /* Memory only. A block used to close the descriptors it owned first, which is why
      * this is the one place a block release is emitted -- but files are the program's
      * business now (decision 79), so there is nothing to close here. */
+    /* Regions first, then the arena: a region's memory is its own malloc block, so the two are
+     * independent, but releasing the regions that belong to this block is what the block's
+     * release point is for (REGIONS.md section 3.4 - leaving a block takes its subtree). */
+    if (g->needRegion) cgLine(g, "extc_region_releaseLevel(__extc_frame, %d);", lvl);
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -3311,8 +3319,17 @@ static void genFunc(CG *g, FuncDef *f) {
      * `tests/arena-promoted/R2a_generic_instance_first.extc`. Every other function receives
      * `__extc_home` as a parameter and needs no array of its own. */
     if (isMain && f->usesHome) g->noArena = false;
+    /* Same reason, for regions: the frame mark and the per-block release hooks hang off the
+     * arena's lifetime, so a `main` that only *uses* a region (it allocates nothing itself)
+     * still needs the frame. Phase 1 keys regions to `main`'s frame; when `new (r) T[n]`
+     * lands, every function that can create one gets the same treatment. */
+    if (isMain && g->needRegion) g->noArena = false;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
+    /* The frame mark: regions created while this frame runs are linked to it, so leaving
+     * the frame drops them whatever their block did (REGIONS.md section 3.5). Emitted where
+     * the arena exists, because hanging regions off an arena level is what this frame does. */
+    if (g->needRegion && !g->noArena) cgLine(g, "int64_t __extc_frame = extc_region_frameEnter();");
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
@@ -3478,6 +3495,7 @@ static void genFunc(CG *g, FuncDef *f) {
          * leak one block per arena at every return -- bounded, but a leak. */
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
+        if (g->needRegion) cgLine(g, "extc_region_frameLeave(__extc_frame);");
         if (isMain) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the
@@ -4790,6 +4808,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isExtern || !f->name) continue;
         if (strcmp(f->name, "extc_raw_enter") == 0) g.needRawTerm = true;
+        /* The region registry, on the same footing: the library declares these through
+         * `extern!`, so their presence is what says the program uses regions at all. */
+        if (f->name && strncmp(f->name, "extc_region_", 12) == 0) g.needRegion = true;
         if (strcmp(f->name, "extc_cout_put") == 0)  g.needCout    = true;
     }
     vecInit(&g.funcs, arena, sizeof(void *));
@@ -5852,6 +5873,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
+    if (g.needRegion) regionsEmitRuntime(arena, out);
     if (g.needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches

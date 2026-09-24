@@ -1,0 +1,20 @@
+// churn：反复建/放 20 万次 ⇒ 活着的回到 0，而**槽位表容量停在 64**（高水位 = 1 ✓）
+// 判据（run.sh）：live=0 且 capacity 是个小常数（不是 20 万）✓ 另配 ASan 跑一遍 ✓
+use std::io
+use std::sys::region
+
+fn main() -> i32 {
+    var i: i64 = 0
+    var acc: i64 = 0
+    while i < 200000 {
+        let r = region::extc_region_new(i64(-1), i64(0))
+        /* 读一次世代并把结果带出去：**没有这一步，-O2 会把整个循环消掉** ✗
+         * （实测：不读的时候 `time` 报 0 ms、40 万次操作像是不存在 ✓ 那就是假绿 ✓）
+         * 顺带它也是个判据：每轮都该拿到世代 1（同一个槽位被复用 ✓）*/
+        acc += i64(region::extc_region_generation(r))
+        region::extc_region_drop(r)
+        i += 1
+    }
+    io::cout << "live=" << region::extc_region_live() << " cap=" << region::extc_region_capacity() << " gen=" << i64(region::extc_region_generation(i64(0))) << " acc=" << acc << "\n"
+    return 0
+}

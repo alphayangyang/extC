@@ -1,0 +1,31 @@
+/* std/sys/region.extc —— 区域注册表的**特权层**（REGIONS.md 期 1）
+ *
+ * 这一层只做一件事：把生成器提供的运行期原语声明成 extC 能调的东西（与 `std::sys::io`
+ * 声明 `extc_cout_put` 同一形状 ✓）。**用户不写这个模块**：`std::pool` / `std::map` 那一类
+ * 容器用它，普通程序连 region 这个词都不该出现 ✓
+ *
+ * 期 1 只有"管理面"：建 / 释放 / 重置 / 世代 / 存活数 ✓ 而**带类型的内存分配**（`new (r) T[n]`）
+ * 要到期 2 —— 因为 `extern!` 不许返回 `slice<T>`（会变成两个 C 参数 ✗），extC 也没有指针转换 ✗
+ *
+ * `level` 是"创建它的那个块"，编号就是生成物里 `__extc_a` 的**下标**：函数体是 1，
+ * 第一个嵌套块是 2，再往里递增 ✓ 块退出时生成器发 `extc_region_releaseLevel(frame, level)`，
+ * 挂在那一层的 region 子树跟着走 ✓ 传 0 = "只挂在帧上"（帧退时释放 ✓）
+ *
+ * ⚠️ 期 1 里这个层号得由**调用方**传对（判据 `tests/region/blockexit.extc` 把它钉住 ✓）；
+ * 期 2 的 `new (r) T[n]` 由**生成器**发这个数 ⇒ 用户与库都不用管它了 ✓ */
+extern!("extc-runtime") fn extc_region_new(parent: i64, level: i64) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_region_drop(rid: i64) -> void
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_region_reset(rid: i64) -> void
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_region_generation(rid: i64) -> u64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_region_live() -> i64
+    effects Addr=0 Cont=0
+/* 槽位表的容量：**只涨到"同时活着的 region 数"的高水位**，与创建过多少次无关 ——
+ * churn 判据（`tests/region/churn.extc`）用它证明"反复建/放不涨内存" ✓ */
+extern!("extc-runtime") fn extc_region_capacity() -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_region_frameDepth() -> i64
+    effects Addr=0 Cont=0

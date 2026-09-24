@@ -207,7 +207,7 @@ p.reset()                                        /* 清空但复用块（churn �
 | 期 | 做什么 | 动编译器？ |
 |---|---|---|
 | **0** ✅ | **已落地 2026-09-24**：`stdlib/std/pool.extc`（slot map：稳定 handle + dense 前段 + free list + 世代）· 常设验收 `tests/pool/`（basic · api · churn · canary · ASan，挂成 `check.sh` 第 18 节）| **零改动** ✓ |
-| **1** | 运行时：**区域注册表**（表 + free list + 世代 + 父链 + 释放遍历，~200 行 C）· 按需发射（照 `extc_raw_enter` 那条现成的路）· 块释放点与帧退多一行 `extc_region_release(&__extc_a[lvl])`（照我为 fd 写过、后来删掉的那段，一模一样的模式）| **两处 codegen 钩子**（小，模式已有 ✓）|
+| **1** ✅ | **已落地 2026-09-26**：`src/regions.c` + `src/regions.h`（按 §11 单开子系统文件）· 按需发射照 `extc_raw_enter` 那条路 ✓ · **注册表每帧一个**（帧栈 + 帧内层号 —— 第一版只按层号 keyed，会让被调函数与调用者的同层号撞上/漏放，量出来后改掉 ✓）· 钩子三处：帧进 `extc_region_frameEnter` / 块释放 `extc_region_releaseLevel(frame, lvl)` / 帧退 `extc_region_frameLeave` ✓ 常设验收 `tests/region/`（挂成 `check.sh` 第 **23** 节，quick 22 → **25**、完整 28 → **31**）· 实测：建/世代/释放 · 块退出带走子树 · churn 20 万次 `live=0 cap=64`（容量停在高水位 = 内存平的机械判据）· **吞吐基线 40 万次建/放 = 3 ms ⇒ 133 Mops/s**（期 2/3 拿它当对照；遍历吞吐那一条要等有遍历 API 才谈得上）· 生成物 `-Wall -Wextra -Werror` + ASan 含泄漏检查干净| **两处 codegen 钩子 + 一次发射点**（小，模式已有 ✓）|
 | **2** | **`new (r) T[n]`**：parser 一条语法 + 检查器给类型 + codegen 发射 `extc_region_alloc(rid, bytes)` 并转成 `T*` | parser/checker/codegen（**中**）|
 | **3** | `buf<T>` 的**原地扩展** · region 版 `varArray`/`string` · `graph`/CSR | 运行时 + 库 ✓ |
 | **4** | 「**region 内存的引用不许出函数**」——把 §7.6 那条**库纪律**变成硬约束（**很小**；完整深度传播并不需要 ⚠️）| checker（**小**）|

@@ -1,0 +1,22 @@
+// **块退出把子树带走**（期 1 的钩子）：region 挂在创建它的那一层，块一结束就没了 ✓
+// 判据：块内 live=1，出块后 live=0 ✓（不需要手动 drop ✓）
+use std::io
+use std::sys::region
+
+fn main() -> i32 {
+    io::cout << "before=" << region::extc_region_live()
+    {
+        let r = region::extc_region_new(i64(-1), i64(2))   /* 层号 = __extc_a 的下标 ✓ */
+        io::cout << " in=" << region::extc_region_live() << " rid=" << r
+    }
+    io::cout << " after=" << region::extc_region_live()
+    {
+        let p = region::extc_region_new(i64(-1), i64(0))
+        let c = region::extc_region_new(p, i64(0))     /* 子 region ⇒ 父释放时一起走 ✓ */
+        io::cout << " two=" << region::extc_region_live()
+        region::extc_region_drop(p)
+        io::cout << " gone=" << region::extc_region_live()
+    }
+    io::cout << "\n"
+    return 0
+}
