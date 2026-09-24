@@ -2717,6 +2717,39 @@ no method `put` on `inputFile`
 `tests/io/stream.extc` 改用 `use std::io::*` + 裸 `cout`/`cin` ⇒ **主人原话的语法就是现在跑的语法** ✓
 语料 **254/0**（装载器改过，全量重跑 ✓）
 
+### 补记（同日）· **`use std::io::{cin, cout}`：按名字导入**
+
+> 主人接着问：「**那我可以 `use std::io::cin` 这样写吗**」—— 实测：不行，**每一段都被当模块路径**
+> 去找文件（`cannot find module \`std::io::cin\``，它去找 `std/io/cin.extc` ✗）✓
+> 于是三选一，主人挑「**花括号 = 名字，永不指模块**」✓
+
+**规则**：`use std::io::{cin, cout}` ⇒ **只**把这几个名字带进作用域，别的一律仍要限定写 ✓
+三种写法范围从小到大、**并存**：
+
+| 写法 | 作用域 | 什么时候用 |
+|---|---|---|
+| `io::cout` | 什么都没有，写全名 | 默认（定案 70）✓ 只用一个名字、或想让人一眼看出出处 |
+| `use std::io::{cin, cout, endl}` | **只有这几个** | 一段代码就用两三个名字（**推荐**：范围小到你自己写得出来 ✓） |
+| `use std::io::*` | 该模块全部公开名字 | 临时脚本、或确实要用一大半 |
+
+**为什么花括号是必要的（而不是让 `use std::io::cin` 也能跑）**：裸写的含义会**依赖"现在有没有那个文件"**
+—— 哪天有人建了 `stdlib/std/io/cin.extc`，这一行**静默变意思** ✗ 花括号把"名字列表"与"模块路径"
+分成两种语法，一种写法一个含义 ✓
+
+**裸写时的诊断**（照旧报错，但**教你这句**）—— 顺手把一个真坑修了：`strrchr(modPath, ':')` 命中的是
+最后一个 `::` 的**第二个**冒号，名字要取 `+1`；取成 `+2` 时消息里写的是「`in` is a name」✗（把人引向
+另一个名字）⇒ 现在准确：
+
+    note:  `cin` is a **name**, not a module -- `use` resolves module paths only.
+           To bring it into scope: `use std::io::{cin}` (or `use std::io::*` for every
+           public name of that module).
+
+**落地**：与 `::*` **共用同一条通路**（`Open` 条目多一个 `name` 字段，NULL = 整个模块）⇒ 隐私 · 歧义 ·
+不跨文件泄漏三条边界**一处实现、两处生效**，不可能漂 ✓ **判据**：`tests/modules/selective`（正例）·
+`errors/selective-unlisted`（**没列进来的仍然要限定** —— 这正是"按名字"与"全开"的区别 ✓）·
+`errors/selective-private` · `errors/selective-bare`（教你这句）⇒ 模块套件 **19 → 23 项** ✓
+`tests/io/stream.extc` 改用 `use std::io::{cin, cout, endl, inBad}` ⇒ 主人原话的语法用**最精确的那一档**跑 ✓
+
 ## 定案 84 · **CRLF：`nextLine` 剥 `\r`、`nextLineRaw` 留**（2026-09-24，主人拍板「可以就这样，1-3」）
 
 > 起因是**真事故**，不是洁癖：在 WSL 里读一个 **Windows 编辑过的**文本文件，

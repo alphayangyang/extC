@@ -18,7 +18,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -66,6 +66,10 @@ check_err body-position   "errors/body-position/mod.extc"
 check_err private-open    "is private to module"
 check_err open-leak       "belongs to module \`b\`"
 check_err open-ambiguous  "exported by both"
+# `use mod::{a, b}`（**按名字**带进作用域）的三条边界：没列进来的仍要限定 · 隐私 · 裸写要教你这句 ✓
+check_err selective-unlisted "belongs to module \`lib\`"
+check_err selective-private  "is private to module"
+check_err selective-bare     "is a **name**, not a module"
 
 # ⭐ **判据③：诊断里不许出现 mangle 名**（`$` 在 extC 标识符里不合法 ⇒
 #    消息里出现 `$` 就一定是把内部编码漏给了用户 ✗）
@@ -85,7 +89,7 @@ for d in tests/modules/errors/*/ tests/modules/samenames/; do
     fi
 done
 # 正例也不能漏（含跨模块的类型/枚举/泛型实例 —— 那几种最容易漏 ✓）
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective; do
     out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
     if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
         echo "  FAIL $(basename "$d")(正例)  ->  输出里出现了 mangle 名（\$）"

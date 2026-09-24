@@ -642,9 +642,10 @@ typedef struct {
  * and an import cycle is a compile error. */
 typedef struct { const char *from; const char *to; } Alias;
 
-/* One `use mod::*`: the module that wrote it (NULL for the root file) and the module
- * it opened. */
-typedef struct { const char *importer; const char *opened; } Open;
+/* One name that an import put in scope: the module that wrote it (NULL for the root
+ * file), the module it came from, and the name -- NULL meaning **every** public name of
+ * that module (`use mod::*`, as opposed to `use mod::{a, b}`). */
+typedef struct { const char *importer; const char *opened; const char *name; } Open;
 
 typedef struct {
     const char *path;      /* "std::io", exactly as written; used in error messages */
@@ -659,9 +660,14 @@ typedef struct {
      * `mod::name` -- and this is the opt-in that a user asks for by writing the star,
      * which is why the form is explicit rather than implied. */
     bool        wildcard;
+    /* `use std::io::{cin, cout}`: **these** names come into scope, and nothing else.
+     * The braces make the meaning unambiguous -- a name list is never a module path,
+     * so no file appearing later can change what the line means. Entries are
+     * `const char *`. */
+    Vec         names;
     void       *unit;      /* ModUnit* of the resolved module; filled in by the loader, so
-                            * that the `::*` rewrite can reach that unit's name table
-                            * without threading the loader through every pass */
+                            * that the `::*` / `::{...}` rewrite can reach that unit's name
+                            * table without threading the loader through every pass */
 } UseDecl;
 
 typedef struct {

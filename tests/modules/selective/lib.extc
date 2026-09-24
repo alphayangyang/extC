@@ -1,0 +1,12 @@
+/* 被 `use lib::{...}` **按名字**导入的模块：有公开的、没列进来的、还有 @private 的 ✓ */
+let GREETING: slice<u8> = "按名字导入 ✓"
+
+struct pair { a: i64  b: i64 }
+
+fn twice(n: i64) -> i64 { return n * 2 }
+
+/* 公开但**没**被列进名单 ⇒ 在入口文件里仍然必须写 `lib::unused` ✓ */
+fn unused() -> i64 { return 7 }
+
+@private
+fn secret() -> i64 { return 99 }

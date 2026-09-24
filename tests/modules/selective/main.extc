@@ -1,0 +1,19 @@
+// expect: 按名字导入 ✓|2,3|翻倍 = 42|限定名照旧 = 7
+/* `use lib::{GREETING, twice, pair}` —— **只**把这几个名字带进作用域 ✓
+ *
+ * 判据：
+ *   ① 列进来的：全局 · 函数 · 类型都能不限定用 ✓
+ *   ② 没列进来的（`unused`）**不能**不限定用 —— 见 errors/selective-unlisted ✓
+ *      （这正是"按名字"与"`::*` 全开"的区别：范围小到你自己写得出来 ✓）
+ *   ③ 限定名照旧 ✓   ④ `@private` 仍然够不着 —— 见 errors/selective-private ✓ */
+use lib::{GREETING, twice, pair}
+use lib
+
+fn main() -> i32 {
+    println(GREETING)
+    var p: pair = { a: 2, b: 3 }
+    println(p.a, ",", p.b)
+    println("翻倍 = ", twice(21))
+    println("限定名照旧 = ", lib::unused())
+    return 0
+}

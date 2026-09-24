@@ -1,0 +1,6 @@
+use lib::{listed}
+fn main() -> i32 {
+    println("列了的 ✓ ", listed())
+    println("没列的 ✗ ", unlisted())    /* 只导入了 listed ⇒ 这个仍要限定写 */
+    return 0
+}

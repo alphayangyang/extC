@@ -1,0 +1,2 @@
+use lib::{secret}
+fn main() -> i32 { println("偷看 ", secret())  return 0 }

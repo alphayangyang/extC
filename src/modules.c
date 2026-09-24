@@ -285,28 +285,62 @@ static ModUnit *findUnit(Loader *L, const char *file) {
  *   looked.
  */
 
-static char *resolveModFile(Loader *L, const char *modPath, const char *importerFile) {
+static char *findModFile(Loader *L, const char *modPath) {
     char *rel  = pathToRel(L->a, modPath);
     char *cand = arenaPrintf(L->a, "%s.extc", rel);
-    Buf   tried;
-    bufInit(&tried, L->a);
 
     char *p = arenaPrintf(L->a, "%s/%s", L->rootDir, cand);
     if (fileExists(p)) return p;
-    bufPrintf(&tried, "\n        %s", p);
-
     for (size_t i = 0; i < L->searchDirs.len; i++) {
         const char *sd = *(const char **)vecAt(&L->searchDirs, i);
         char *q = arenaPrintf(L->a, "%s/%s", sd, cand);
         if (fileExists(q)) return q;
-        bufPrintf(&tried, "\n        %s", q);
     }
     const char *stdDir = L->stdDir;
     if (stdDir && *stdDir) {
         char *r = arenaPrintf(L->a, "%s/%s", stdDir, cand);
         if (fileExists(r)) return r;
-        bufPrintf(&tried, "\n        %s", r);
     }
+    return NULL;
+}
+
+static char *resolveModFile(Loader *L, const char *modPath, const char *importerFile) {
+    char *found = findModFile(L, modPath);
+    if (found) return found;
+
+    /* Nothing there. Before giving up, say what the reader most likely meant: the last
+     * segment may be a **name** of the module named by the path before it, and `use`
+     * resolves module paths only. `use std::io::cin` is the shape this is about -- it
+     * reads like "bring `cin` in", which is what a brace list does, and the reader is
+     * owed that spelling rather than a list of directories that were tried. */
+    const char *lastSep = strrchr(modPath, ':');
+    if (lastSep && lastSep > modPath) {
+        /* `lastSep` is the **second** colon of the final `::`, so the name starts right
+         * after it and the parent path ends right before it. Taking one character too
+         * many reported ``in`` for `std::io::cin`, which reads like a different name
+         * altogether. */
+        size_t parentLen = (size_t)(lastSep - modPath - 1);   /* drop the trailing `::` */
+        char *parent = (char *)arenaAlloc(L->a, parentLen + 1);
+        memcpy(parent, modPath, parentLen);
+        parent[parentLen] = '\0';
+        if (findModFile(L, parent))
+            fprintf(stderr,
+                    "note:  `%s` is a **name**, not a module -- `use` resolves module paths only.\n"
+                    "       To bring it into scope: `use %s::{%s}` (or `use %s::*` for every\n"
+                    "       public name of that module).\n",
+                    lastSep + 1, parent, lastSep + 1, parent);
+    }
+
+    char *rel  = pathToRel(L->a, modPath);
+    char *cand = arenaPrintf(L->a, "%s.extc", rel);
+    Buf   tried;
+    bufInit(&tried, L->a);
+    bufPrintf(&tried, "\n        %s/%s", L->rootDir, cand);
+    for (size_t i = 0; i < L->searchDirs.len; i++)
+        bufPrintf(&tried, "\n        %s/%s", *(const char **)vecAt(&L->searchDirs, i), cand);
+    const char *stdDir = L->stdDir;
+    if (stdDir && *stdDir) bufPrintf(&tried, "\n        %s/%s", stdDir, cand);
+
     fprintf(stderr,
             "error: cannot find module `%s` (imported by %s)\n"
             "note:  `use a::b` looks for a file `a/b.extc`. Searched:%s\n"
@@ -1160,6 +1194,22 @@ static bool unitExports(ModUnit *u, const char *flat) {
     return false;
 }
 
+/* Does this `use` list this name (`use mod::{a, b}`)?
+ *
+ * Params:
+ *   u    - the use declaration
+ *   name - the bare name being resolved
+ *
+ * Returns:
+ *   True when the name is one of the listed ones. A wildcard `use mod::*` answers false
+ *   here: it is handled by its own flag, so that the two forms stay distinguishable.
+ */
+static bool useListHas(UseDecl *u, const char *name) {
+    for (size_t i = 0; i < u->names.len; i++)
+        if (strcmp(*(const char **)vecAt(&u->names, i), name) == 0) return true;
+    return false;
+}
+
 /* Does this unit declare this name at its top level?
  *
  * Params:
@@ -1208,7 +1258,11 @@ static const char *openLookup(ModUnit *self, const char *name, int line) {
     const char *foundMod = NULL;
     for (size_t i = 0; i < self->mod.uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
-        if (!u->wildcard || !u->unit) continue;
+        if (!u->unit) continue;
+        /* `use mod::*` offers every public name; `use mod::{a, b}` offers exactly the
+         * listed ones. Everything after this line -- privacy, ambiguity, the rewrite --
+         * is shared, so the two forms cannot drift apart. */
+        if (!u->wildcard && !useListHas(u, name)) continue;
         ModUnit *dep = (ModUnit *)u->unit;
         const char *flat = renLookup(dep, name);
         if (!flat) continue;
@@ -1561,22 +1615,42 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         ModUnit *dep = *(ModUnit **)vecAt(&L.order, i);
         for (size_t j = 0; j < dep->mod.uses.len; j++) {
             UseDecl *u = *(UseDecl **)vecAt(&dep->mod.uses, j);
-            if (!u->wildcard || !u->file) continue;
+            if (!u->file || (!u->wildcard && u->names.len == 0)) continue;
             ModUnit *opened = findUnit(&L, u->file);
             if (!opened) continue;
-            Open *o = (Open *)vecPush(&out->opens);
-            o->importer = dep->modName;
-            o->opened   = opened->modName;
+            if (u->wildcard) {
+                Open *o = (Open *)vecPush(&out->opens);
+                o->importer = dep->modName;
+                o->opened   = opened->modName;
+                o->name     = NULL;                /* every public name */
+            } else {
+                for (size_t k = 0; k < u->names.len; k++) {
+                    Open *o = (Open *)vecPush(&out->opens);
+                    o->importer = dep->modName;
+                    o->opened   = opened->modName;
+                    o->name     = *(const char **)vecAt(&u->names, k);
+                }
+            }
         }
     }
     for (size_t j = 0; j < rootm->uses.len; j++) {
         UseDecl *u = *(UseDecl **)vecAt(&rootm->uses, j);
-        if (!u->wildcard || !u->file) continue;
+        if (!u->file || (!u->wildcard && u->names.len == 0)) continue;
         ModUnit *opened = findUnit(&L, u->file);
         if (!opened) continue;
-        Open *o = (Open *)vecPush(&out->opens);
-        o->importer = NULL;                 /* the root file */
-        o->opened   = opened->modName;
+        if (u->wildcard) {
+            Open *o = (Open *)vecPush(&out->opens);
+            o->importer = NULL;                 /* the root file */
+            o->opened   = opened->modName;
+            o->name     = NULL;
+        } else {
+            for (size_t k = 0; k < u->names.len; k++) {
+                Open *o = (Open *)vecPush(&out->opens);
+                o->importer = NULL;
+                o->opened   = opened->modName;
+                o->name     = *(const char **)vecAt(&u->names, k);
+            }
+        }
     }
 
     /* The root file's declarations are merged last, since the modules it uses are

@@ -354,11 +354,15 @@ FuncDef *findFunc(Checker *c, const char *name) {
  *     which is what a name lookup in a program that opens no module pays for: the
  *     loop body never runs.
  */
-bool moduleOpens(Module *m, const char *importer, const char *opened) {
+bool nameBrought(Module *m, const char *importer, const char *opened, const char *what) {
     if (!m) return false;
     for (size_t i = 0; i < m->opens.len; i++) {
         Open *o = (Open *)vecAt(&m->opens, i);
         if (!o->opened || strcmp(o->opened, opened) != 0) continue;
+        /* A wildcard entry (no name) covers every public name; a list entry covers the
+         * one it names and nothing else. `use mod::{a}` must not make `b` legal, which
+         * is the whole reason to list names instead of opening the module. */
+        if (o->name && (!what || strcmp(o->name, what) != 0)) continue;
         if (o->importer == NULL && importer == NULL) return true;
         if (o->importer && importer && strcmp(o->importer, importer) == 0) return true;
     }
@@ -368,8 +372,8 @@ bool moduleOpens(Module *m, const char *importer, const char *opened) {
 void requireQualified(Checker *c, const char *what, const char *whatMod, bool qualified, int line) {
     if (qualified) return;
     if (!whatMod) return;
-    /* `use mod::*` in the module doing the referring puts that module's public names in
-     * scope unqualified -- and that has to be answered **before** the root-file rule
+    /* `use mod::*` (or `use mod::{a, b}`) in the module doing the referring puts those
+     * names in scope unqualified -- and that has to be answered **before** the root-file rule
      * below, which is otherwise unconditional: the root file has no module name, so it
      * cannot be asked "is this your own module's name?" and every bare reference from it
      * would be rejected.
@@ -377,7 +381,7 @@ void requireQualified(Checker *c, const char *what, const char *whatMod, bool qu
      * The pair carries the importer, so an `open` in one file never leaks into another.
      * `@private` is enforced where every other private reference is caught, on the
      * declaration itself, so opening a module is not a way around it. */
-    if (c->curFunc && moduleOpens(c->m, c->curFunc->modName, whatMod)) return;
+    if (c->curFunc && nameBrought(c->m, c->curFunc->modName, whatMod, what)) return;
     if (!c->curFunc || !c->curFunc->modName) {
         if (c->curFunc) {                        /* root file: qualified by default */
             ckError(c, line++, "Write `mod::name` (and `use mod` at the top of the file), or"

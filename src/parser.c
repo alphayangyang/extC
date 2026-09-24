@@ -243,6 +243,8 @@ static UseDecl *parseUse(Parser *p) {
     bufPuts(&path, first->text);
     const char *shortName = first->text;
     bool wildcard = false;
+    Vec  names;
+    vecInit(&names, p->arena, sizeof(const char *));
     while (at(p, "::")) {
         take(p);
         /* `use std::io::*` -- the star is a whole segment and has to be last, so the
@@ -251,6 +253,31 @@ static UseDecl *parseUse(Parser *p) {
         if (at(p, "*")) {
             take(p);
             wildcard = true;
+            break;
+        }
+        /* `use std::io::{cin, cout}`: a **name list**, which is never a module path --
+         * that is the whole point of the braces, and why this form has no ambiguity
+         * with a file that may appear later. */
+        if (at(p, "{")) {
+            take(p);
+            while (!at(p, "}")) {
+                Token *nm = expectIdent(p, "a name to bring into scope (e.g. `{cin, cout}`)");
+                if (!nm) return NULL;
+                *(const char **)vecPush(&names) = nm->text;
+                if (at(p, ",")) { take(p); continue; }
+                if (!at(p, "}")) {
+                    ctxError(p->ctx, cur(p)->line, cur(p)->col, NULL,
+                             "expected `,` or `}` in the import list");
+                    return NULL;
+                }
+            }
+            take(p);                        /* `}` */
+            if (at(p, "as")) {
+                ctxError(p->ctx, cur(p)->line, cur(p)->col,
+                         "An import list brings the names in under their own names.",
+                         "`as` goes on a whole module: `use std::io as io`");
+                return NULL;
+            }
             break;
         }
         Token *seg = expectTypeName(p, "a module path segment");
@@ -278,6 +305,7 @@ static UseDecl *parseUse(Parser *p) {
     u->shortName = alias ? alias : shortName;
     u->line      = kw->line;
     u->wildcard  = wildcard;
+    u->names     = names;
     return u;
 }
 

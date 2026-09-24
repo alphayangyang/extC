@@ -1,0 +1,2 @@
+use lib::twice            /* ✗ 读起来像"把 twice 拿进来"，但 `use` 只解析模块路径 ⇒ 报错并教你写 `use lib::{twice}` */
+fn main() -> i32 { println("翻倍 = ", twice(21))  return 0 }

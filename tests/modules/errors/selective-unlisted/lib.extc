@@ -1,0 +1,2 @@
+fn listed() -> i64 { return 1 }
+fn unlisted() -> i64 { return 2 }
