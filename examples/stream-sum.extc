@@ -1,0 +1,32 @@
+// expect: 读回来 7 + 35 = 42
+/* a + b —— 流式 IO 的三件事一起用上（定案 85 / 86 / 88 / 89）
+ *
+ *   ① `use std::io::{...}` 按名字导入 ⇒ 不限定名的 `cout` / `cin` / `endl`（定案 85）
+ *   ② `fs::ofstream("…")` / `fs::ifstream("…")` 是**构造函数**（定案 86：`T(...)` = `T::new(...)`）
+ *   ③ `fin >> 整数 >> 一个字节…` 靠**右操作数类型**分派，链式，状态在流自己身上（定案 88）
+ *   ④ **`main` 里的 `?` 直接 trap** ⇒ 不用再包一层 `fn go() -> result<…>`（定案 89）
+ *
+ * 自包含：自己写、自己读（不碰 stdin，所以能进常设语料 ✓ 控制台版见 `docs/topics/IO.md` §6b）
+ */
+use std::fs
+use std::io::{cout, endl}
+
+fn main() -> i32 {
+    var a: i64 = 7
+    var b: i64 = 35
+    cout << a << " + " << b << " = " << a + b << endl
+
+    /* 写出去 —— 一句话建文件，失败即 trap ✓ */
+    var w = fs::ofstream("/tmp/extc_stream_sum.txt")?
+    w.put("7 35")?
+    w.close()?
+
+    /* 读回来 —— `>>` 一链两个整数 ✓ */
+    var f = fs::ifstream("/tmp/extc_stream_sum.txt")?
+    var x: i64 = 0
+    var y: i64 = 0
+    f >> x >> y
+    cout << "读回来 " << x << " + " << y << " = " << x + y << endl
+    f.close()?
+    return 0
+}
