@@ -7400,3 +7400,31 @@ fn makeAndStore(b: mut ref boxes) {        ← extC 源码只有**一个**参数
 **过渡措施**（本轮先落地并验证）：参数表上打 `EXTC_UNUSED` ✓ —— 但我把它标成**过渡** ✓
 下一轮做 `usesHome` 精确化，做完就能把隐藏参数那条属性的使用去掉 ✓
 （用户自己写的未用参数 `b` 是另一回事：那是**用户的声明**，编译器无权删 ✓ —— 可选做法是让检查器报诊断 ✓ 待主人定夺 ✓）
+
+### 2026-09-26 · 隐藏参数 `__extc_home`：**不用就不传**（真修，不是捂嘴）
+
+主人问「为什么要用 unused 关键字」——问得对，于是把这件事做成了真修 ✓
+
+**根因**：`needsHome` 回答的是**转义**问题 ✓ 判据故意宽（"往出参里存过东西"就算 ✓ `stmtStoresThroughDeref` ✓），
+哪怕存进去的是**值** ✓ ⇒ `makeAndStore` 这种函数白拿一个 `extc_arena *__extc_home` 而函数体从不读它 ✗
+（它的 `new` 落点是自己那一层的 `&__extc_a[1]` ✓ 说明**分配根本不需要 home** ✓）
+
+**修法（两步，都是"精确化"而不是"加属性"）**：
+1. `ast.h` 加 `FuncDef.usesHome`：回答**精确**问题 —— "这个函数是否真有分配落在 home 那一层"
+   （`arenaSites` 里任一 site 的 `arenaLevel == ARENA_HOME` ✓）或"它把 home 传给下游" ✓，用一次不动点算 ✓
+2. **签名与调用点都用它**（生成器 11 处 `needsHome` → `usesHome` ✓）—— 两边同源，所以不会不一致 ✓
+   （一致性由 C 编译器兜底：一旦不一致就是编译错误 ✓ 实测 error 0 ✓）
+
+**效果**（`examples/out-param.extc`）：
+
+```
+之前：static void makeAndStore(boxes * b, extc_arena *__extc_home) {   ← 参数没人读 ✗
+      makeAndStore(&(bx), &__extc_a[1]);
+之后：static void makeAndStore(boxes * b) {                             ← 参数**不存在**了 ✓
+      makeAndStore(&(bx));
+```
+⇒ 那条 gcc 的未用参数警告**自然消失** ✓ **不需要属性** ✓
+⇒ 参数属性现在只剩**一种**用途：**用户自己写的**、他真的不用的参数（`borrowing` 的 `b` ✓）
+—— 那是用户的声明，编译器无权删 ✓（可选做法：让检查器给用户一条诊断 ✓ 待定 ✓）
+
+**全量**：**gcc 1 · clang 1 · error 0**（89 个程序），只剩 `rng` 的 `skip`（写而不读 + 调用副作用 ✗）

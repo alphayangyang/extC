@@ -1547,10 +1547,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
     /* A method passes the home arena too; the receiver counts as the
      * shallowest mutable reference argument. */
-    if (f->needsHome) bufPrintf(&b, ", %s", homeArg(g, e->arenaArg));
+    if (f->usesHome) bufPrintf(&b, ", %s", homeArg(g, e->arenaArg));
     /* A method passes the @overwrite cells as well; the receiver counts as the
      * first argument, and the comma handling follows that. */
-    owPassCells(g, &b, e, e->u.method.args.len + 1, f->needsHome);
+    owPassCells(g, &b, e, e->u.method.args.len + 1, f->usesHome);
     bufPutc(&b, ')');
     return bufCstr(&b);
 }
@@ -1720,13 +1720,13 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             /* The callee needs a home arena, so mine is passed down; the
              * current block's arena would be tighter. */
-            if (e->func->needsHome) {
+            if (e->func->usesHome) {
                 if (e->u.call.args.len) bufPuts(&b, ", ");
                 bufPuts(&b, homeArg(g, e->arenaArg));
             }
             /* The callee needs @overwrite cells, so cells of my own frame are
              * passed down. */
-            owPassCells(g, &b, e, e->u.call.args.len, e->func->needsHome);
+            owPassCells(g, &b, e, e->u.call.args.len, e->func->usesHome);
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -1806,11 +1806,11 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             /* An associated function such as `Type::make()` allocates, so the
              * home arena argument is appended. */
-            if (e->func->needsHome) {
+            if (e->func->usesHome) {
                 if (e->u.assoc.args.len) bufPuts(&b, ", ");
                 bufPuts(&b, homeArg(g, e->arenaArg));
             }
-            owPassCells(g, &b, e, e->u.assoc.args.len, e->func->needsHome);   /* @overwrite cells */
+            owPassCells(g, &b, e, e->u.assoc.args.len, e->func->usesHome);   /* @overwrite cells */
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -3027,7 +3027,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
         return bufCstr(&sig);
     }
-    if (f->params.len == 0 && !f->needsHome && f->owLocal) {   /* no hidden parameters follow */
+    if (f->params.len == 0 && !f->usesHome && f->owLocal) {   /* no hidden parameters follow */
         bufPuts(&sig, "void"); return bufCstr(&sig);
     }
     for (size_t i = 0; i < f->params.len; i++) {
@@ -3035,7 +3035,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         if (i) bufPuts(&sig, ", ");
         bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
     }
-    if (f->needsHome) {
+    if (f->usesHome) {
         if (f->params.len) bufPuts(&sig, ", ");
         bufPuts(&sig, "extc_arena *__extc_home");
     }
@@ -3045,7 +3045,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
      * case. */
     if (!f->owLocal) {
         for (int i = 0; i < f->owSites; i++) {
-            if (f->params.len || f->needsHome || i) bufPuts(&sig, ", ");
+            if (f->params.len || f->usesHome || i) bufPuts(&sig, ", ");
             bufPrintf(&sig, "extc_owcell *__extc_owarg%d", i);
         }
     }
@@ -3248,7 +3248,7 @@ static void genFunc(CG *g, FuncDef *f) {
              * reused; otherwise level 1 of this frame, which certainly outlives
              * the statement. It is never NULL. */
             cgLine(g, "extc_owcell __extc_ow%zu = { 0, 0, %s };", i,
-                   f->needsHome ? "__extc_home" : "&__extc_a[1]");
+                   f->usesHome ? "__extc_home" : "&__extc_a[1]");
     (void)owcNow;   /* no cells are prepared for a callee: they live in its frame */
     /* `owSites` must not be restored here: the body has not been generated yet,
      * and restoring it early made every lookup answer -1 and silently fall back
@@ -3268,7 +3268,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->loopLen  = 0;
     const char *savedFuncName = g->curFuncName;
     g->curFuncName = cFuncName(g, f);
-    if (isMain && f->needsHome) {
+    if (isMain && f->usesHome) {
         size_t hb = g->out->len;
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
         localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */

@@ -368,33 +368,33 @@ static bool stmtHasNew(Stmt *s) {
  *   - Only valid after the calls have been resolved: the walk reads `e->func`, which the
  *     checker fills in when it resolves a call.
  */
-static bool exprCallsNeedsHome(Expr *e);
-static bool stmtCallsNeedsHome(Stmt *s) {
+static bool exprCallsNeedsHome(Expr *e, bool precise);
+static bool stmtCallsNeedsHome(Stmt *s, bool precise) {
     if (!s) return false;
     switch (s->kind) {
-    case ST_VAR:    return exprCallsNeedsHome(s->u.var.init);
-    case ST_ASSIGN: return exprCallsNeedsHome(s->u.assign.value) ||
-                           exprCallsNeedsHome(s->u.assign.target);
-    case ST_IF:     return exprCallsNeedsHome(s->u.ifs.cond) ||
-                           stmtCallsNeedsHome(s->u.ifs.thenBody) ||
-                           stmtCallsNeedsHome(s->u.ifs.elseBody);
-    case ST_WHILE:  return exprCallsNeedsHome(s->u.whiles.cond) ||
-                           stmtCallsNeedsHome(s->u.whiles.body);
-    case ST_RETURN: return exprCallsNeedsHome(s->u.ret.value);
-    case ST_EXPR:   return exprCallsNeedsHome(s->u.expr.expr);
+    case ST_VAR:    return exprCallsNeedsHome(s->u.var.init, precise);
+    case ST_ASSIGN: return exprCallsNeedsHome(s->u.assign.value, precise) ||
+                           exprCallsNeedsHome(s->u.assign.target, precise);
+    case ST_IF:     return exprCallsNeedsHome(s->u.ifs.cond, precise) ||
+                           stmtCallsNeedsHome(s->u.ifs.thenBody, precise) ||
+                           stmtCallsNeedsHome(s->u.ifs.elseBody, precise);
+    case ST_WHILE:  return exprCallsNeedsHome(s->u.whiles.cond, precise) ||
+                           stmtCallsNeedsHome(s->u.whiles.body, precise);
+    case ST_RETURN: return exprCallsNeedsHome(s->u.ret.value, precise);
+    case ST_EXPR:   return exprCallsNeedsHome(s->u.expr.expr, precise);
     case ST_BLOCK:
         for (size_t i = 0; i < s->u.block.stmts.len; i++)
-            if (stmtCallsNeedsHome(*(Stmt **)vecAt(&s->u.block.stmts, i))) return true;
+            if (stmtCallsNeedsHome(*(Stmt **)vecAt(&s->u.block.stmts, i), precise)) return true;
         return false;
     case ST_MATCH:
-        if (exprCallsNeedsHome(s->u.match.scrutinee)) return true;
+        if (exprCallsNeedsHome(s->u.match.scrutinee, precise)) return true;
         for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtCallsNeedsHome((*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
+            if (stmtCallsNeedsHome((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, precise)) return true;
         return false;
     default: return false;
     }
 }
-static bool exprCallsNeedsHome(Expr *e) {
+static bool exprCallsNeedsHome(Expr *e, bool precise) {
     if (!e) return false;
     /* An associated call (`EX_ASSOC`) counts as well: an associated function such as
      * `varArray<i32>::withCap(1)` or `bufT<i32>::make(4)` also records its callee in
@@ -411,40 +411,42 @@ static bool exprCallsNeedsHome(Expr *e) {
      * whole arena prologue, so every `while` body emitted `extc_arena_release(...)`
      * and a matrix multiply ran 103 ms instead of 34 ms (3.0x slower). Once the root
      * cause is covered here, the fallback is gone. */
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) &&
-        e->func && e->func->needsHome)
+    /* `precise` asks the narrow question ("does the callee really take a home arena?"), which is
+     * what a signature needs; the wide one is the escape question `needsHome` answers. */
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func &&
+        (precise ? e->func->usesHome : e->func->needsHome))
         return true;
     switch (e->kind) {
-    case EX_BIN: return exprCallsNeedsHome(e->u.bin.left) || exprCallsNeedsHome(e->u.bin.right);
-    case EX_UN:  return exprCallsNeedsHome(e->u.un.operand);
-    case EX_REF: return exprCallsNeedsHome(e->u.ref.operand);
-    case EX_DEREF: return exprCallsNeedsHome(e->u.deref.operand);
-    case EX_SIGN:  return exprCallsNeedsHome(e->u.sign.operand);
-    case EX_TRY:   return exprCallsNeedsHome(e->u.try_.operand);
+    case EX_BIN: return exprCallsNeedsHome(e->u.bin.left, precise) || exprCallsNeedsHome(e->u.bin.right, precise);
+    case EX_UN:  return exprCallsNeedsHome(e->u.un.operand, precise);
+    case EX_REF: return exprCallsNeedsHome(e->u.ref.operand, precise);
+    case EX_DEREF: return exprCallsNeedsHome(e->u.deref.operand, precise);
+    case EX_SIGN:  return exprCallsNeedsHome(e->u.sign.operand, precise);
+    case EX_TRY:   return exprCallsNeedsHome(e->u.try_.operand, precise);
     case EX_INDEX:
-        return exprCallsNeedsHome(e->u.index.obj) || exprCallsNeedsHome(e->u.index.index);
-    case EX_SLICE: return exprCallsNeedsHome(e->u.slice.obj);
-    case EX_FIELD: return exprCallsNeedsHome(e->u.field.obj);
+        return exprCallsNeedsHome(e->u.index.obj, precise) || exprCallsNeedsHome(e->u.index.index, precise);
+    case EX_SLICE: return exprCallsNeedsHome(e->u.slice.obj, precise);
+    case EX_FIELD: return exprCallsNeedsHome(e->u.field.obj, precise);
     case EX_COALESCE:
-        return exprCallsNeedsHome(e->u.coalesce.main) ||
-               exprCallsNeedsHome(e->u.coalesce.fallback);
+        return exprCallsNeedsHome(e->u.coalesce.main, precise) ||
+               exprCallsNeedsHome(e->u.coalesce.fallback, precise);
     case EX_METHOD: {
-        if (exprCallsNeedsHome(e->u.method.recv)) return true;
+        if (exprCallsNeedsHome(e->u.method.recv, precise)) return true;
         for (size_t i = 0; i < e->u.method.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.method.args, i))) return true;
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.method.args, i), precise)) return true;
         return false;
     }
     case EX_CALL: {
         for (size_t i = 0; i < e->u.call.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.call.args, i))) return true;
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.call.args, i), precise)) return true;
         return false;
     }
     case EX_ASSOC: {
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.assoc.args, i))) return true;
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.assoc.args, i), precise)) return true;
         return false;
     }
-    case EX_NEW: return exprCallsNeedsHome(e->u.new_.count);
+    case EX_NEW: return exprCallsNeedsHome(e->u.new_.count, precise);
     /* A call hidden inside a literal used to be invisible here: this predicate looked
      * only at the direct positions (`EX_CALL`, `EX_METHOD`, `EX_ASSOC`), and the call
      * in `var b: box = { r: mknode() }` was swallowed by `EX_STRUCTLIT`. The
@@ -456,26 +458,27 @@ static bool exprCallsNeedsHome(Expr *e) {
      * payload, and the arguments of a builtin generic call. */
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            if (exprCallsNeedsHome((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+            if (exprCallsNeedsHome((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, precise)) return true;
         return false;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.arraylit.elems, i), precise)) return true;
         return false;
     case EX_ENUMVAL:
         /* Payload construction: the call hides in the payload, as in
          * `holder.holding(mknode())`. */
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.enumval.args, i), precise)) return true;
         return false;
     case EX_GENCALL:
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.gencall.args, i))) return true;
+            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.gencall.args, i), precise)) return true;
         return false;
     default: return false;
     }
 }
-static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body); }
+static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, false); }
+static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, true); }
 
 /* Count the `@overwrite` sites in a body.
  *
@@ -4279,6 +4282,37 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
         if (getenv("EXTC_DUMP_LVL"))
             fprintf(stderr, "[lvl] decided: %d sites in the home arena, %d kept at block level\n", fixed, keptBlock);
+
+    /* ---------------------------------------- the precise question a signature needs
+     * `needsHome` answers an *escape* question and is deliberately wide: a `new` whose value is
+     * copied into an out-parameter marks the function even though nothing escapes. The hidden
+     * parameter is only needed when the body really reads it, and the placement pass above has
+     * just decided that per site: a site at `ARENA_HOME`, or a call that hands this function's
+     * home on to a callee that takes one. Signatures and call sites both use this flag, so a
+     * function that only ever allocates inside its own blocks stops carrying a parameter nobody
+     * reads - `examples/out-param.extc` carried one, and gcc reported it as unused. */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            if (f->usesHome || f->isExtern || !f->body) continue;
+            bool u = callsUsesHome(f->body);
+            for (size_t j = 0; !u && j < f->arenaSites.len; j++)
+                if ((*(Expr **)vecAt(&f->arenaSites, j))->arenaLevel == ARENA_HOME) u = true;
+            if (u) { f->usesHome = true; changed = true; }
+        }
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (f->usesHome || !f->body) continue;
+                bool u = callsUsesHome(f->body);
+                for (size_t k = 0; !u && k < f->arenaSites.len; k++)
+                    if ((*(Expr **)vecAt(&f->arenaSites, k))->arenaLevel == ARENA_HOME) u = true;
+                if (u) { f->usesHome = true; changed = true; }
+            }
+        }
+    }
 
         /* Recompute every site's `refDepth` from its final level, whether or not the level
          * changed.
