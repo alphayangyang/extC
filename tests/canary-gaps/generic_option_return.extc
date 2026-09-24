@@ -1,0 +1,19 @@
+/* #60：泛型方法把「另一个泛型实例的 `?V`」直接返回 ⇒ 被误拒
+ *
+ *     return value expects `option`, found `option`
+ *     note: extC only widens implicitly (lossless); a lossy conversion must be written out
+ *
+ * 两边都渲染成 `option` ⇒ 这句话**没法用**（P′：报错要看得见）✗
+ * 同形但接收者是**具体**类型时正常（`tests/` 里到处都是）⇒ 只有"类型参数流进另一个泛型实参"这一格坏 ✓
+ * 合法替代（stdlib 的惯用法）：**就地构造** `if .. { return none }  return some(self.vals[i])` ✓ */
+struct wrap<V> {
+    xs: varArray<V>
+    fn getOr(self: ref wrap<V>, i: i64) -> ?V { return self.xs.get(i) }
+}
+
+fn main() -> i32 {
+    var w: wrap<i64> = { xs: varArray<i64>::withCap(2) }
+    w.xs.push(i64(5))
+    println("got = ", w.getOr(i64(0)) ?? i64(-1))
+    return 0
+}

@@ -1,0 +1,24 @@
+/* #61：泛型体里 `match` 用**裸变体模式** ⇒ 生成的 C 用了**模板名**
+ *
+ *     error: 'option_V_none' undeclared (first use in this function);
+ *            did you mean 'option_i64_none'?
+ *
+ * ⇒ 「生成的 C 编不过」那一档（跟 #35/#36/#51 同类）✗
+ * 表达式位置就地构造 `some(...)`/`none` 是没问题的（stdlib 全这么写）；
+ * 坏的是**模式**那一侧的实例化命名 ✓ */
+struct w2<V> {
+    xs: varArray<V>
+    fn has(self: ref w2<V>, i: i64) -> bool {
+        match self.xs.get(i) {
+            none    => { return false }
+            some(v) => { return true }
+        }
+    }
+}
+
+fn main() -> i32 {
+    var x: w2<i64> = { xs: varArray<i64>::withCap(1) }
+    x.xs.push(i64(1))
+    println("has = ", x.has(i64(0)))
+    return 0
+}
