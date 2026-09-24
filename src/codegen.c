@@ -4871,7 +4871,23 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * such as `push` calling `grow` is included automatically, and
              * emitting too much is the safe direction. */
             if (!md->used) continue;
+            /* Instance methods are candidates too. They used to be left out, and that is
+             * exactly where the remaining `unused function` warnings lived: a library
+             * method of a generic instance (`slice<i32>::isEmpty`) is marked used by the
+             * checker even when the only thing that mentions it is dead code, and without
+             * a candidate here nothing ever took it back out. The pairing is by name, so
+             * the trap of #64 - one node, many instances - does not apply. */
+            size_t pb = g.out->len;
             genFuncProto(&g, md);
+            {
+                Buf pt;
+                bufInit(&pt, g.arena);
+                bufPutn(&pt, g.out->data + pb, g.out->len - pb);
+                DeadFunc *df = arenaAllocZero(g.arena, sizeof *df);
+                df->name  = cFuncName(&g, md);
+                df->proto = bufCstr(&pt);
+                *(DeadFunc **)vecPush(&g.deadFuncs) = df;
+            }
         }
         substLeave(&g);
     }

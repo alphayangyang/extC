@@ -6788,3 +6788,29 @@ tests/io/stream.extc        740 →  734 行   gcc 1 → 1   clang 3 → 1
 
 **撤属性的复核**：全量重扫 **gcc 39 / clang 37 / error 0** —— 与撤之前**一模一样** ✓
 ⇒ 切片助手那三处 `EXTC_UNUSED` 的撤离是**中性**的（不回归 ✓ 也不白赚 ✓ 但它让"权宜属性"少了一批 ✓）
+
+### 2026-09-25 · **库实例方法也能剪了**：`strings` 463 → 371 行、clang 5 → 0
+
+上一轮全量扫描暴露的那族（`slice_i32_isEmpty/get/eq/find/startsWith` ✗）一眼就看出成因：
+**`DeadFunc` 的候选只在自由函数的原型循环里建** ✗ 实例方法那条路（`g.insts` → `inst->sdef->methods`）
+**压根没建候选** ⇒ 它们永远不参与剪枝 ✓ 而这正是 **#64** 那个坑（"一个节点多个实例"）
+让我当初绕着走的地方 ✓
+
+补上去之后（配对还是**按名字**，所以 #64 那个坑不适用 ✓ —— 名字在每个实例里唯一 ✓）：
+
+```
+examples/strings.extc     463 → 371 行   clang 5 → 0 ✓
+examples/generics.extc    362 → 347 行   clang 3 → 0 ✓
+examples/tour.extc        612 → 612 行   clang 6 → 6   ← 是 -Wreturn-type 那族，另一回事 ✓
+examples/payload-enum.extc 346 → 346 行  clang 3 → 3   ← 同上 ✓
+```
+
+**全量效果**（89 个程序）：
+
+```
+                gcc   clang   error
+上一轮           39     37      0
+这一轮           29     27      0     ← 各 -10 ✓
+```
+语料 **256/0** ✓ 九套件全绿 ✓ 剩下的两族：`-Wreturn-type`（`tour` 6 · `payload-enum` 3 …，**真问题** ✓）
+与 `__extc_ret_v`/`d` 那类局部（要读写判据 / 纳入体内候选 ✓）
