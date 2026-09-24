@@ -2034,6 +2034,21 @@ Type *checkTryInner(Checker *c, Expr *e) {
     if (ttIsError(ot)) return ttError(c->tt);
     Type *ob = ttBase(ot);
 
+    /* Inside `main` a failed step **traps**. There is nothing to hand a failure to --
+     * `main` returns `i32` because C's entry point does -- and a program whose main step
+     * failed is over anyway, so the honest thing is to say what went wrong and stop.
+     * Opening a file in `main` is the commonest thing a program does, and without this
+     * `?` was unusable exactly there (docs/DECISIONS.md 89).
+     *
+     * The rule is narrow on purpose: `main` only. Every other function still has to
+     * declare a `result` to use `?`, because there the failure has somewhere to go. */
+    if (c->curFunc && !c->curFunc->owner && c->curFunc->name &&
+        strcmp(c->curFunc->name, "main") == 0) {
+        Type *payloadM = *(Type **)vecAt(&ob->targs, 0);
+        e->type = payloadM;
+        return payloadM;
+    }
+
     Type *rt = (c->curFunc && c->curFunc->ret) ? ttBase(c->curFunc->ret) : NULL;
     /* The spelling of the enclosing return type, used in the diagnostic. */
     const char *fw = NULL;

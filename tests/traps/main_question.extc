@@ -1,0 +1,10 @@
+/* 定案 89 的失败路径：`main` 里的 `?` 失败 ⇒ **trap**（带位置、退出码非零）✓
+ * 判据在 tests/traps（自动收）：必须编过、然后死在一条 `trap:` 消息上 ✓ */
+use std::fs
+
+fn main() -> i32 {
+    var f = fs::ifstream("tests/traps/this-file-does-not-exist.txt")?   /* ✗ 打不开 */
+    println("不该到这")
+    f.close()?
+    return 0
+}

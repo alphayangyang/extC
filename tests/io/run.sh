@@ -65,6 +65,25 @@ else
     echo "  FAIL file-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
 fi
 
+echo "== 定案 89：**main 里的 `?` 直接 trap**（在 main 里开文件是最常见的写法）=="
+if out=$("$EXTC" --run tests/io/main-question.extc 2>&1); then
+    rc=$?
+    ok=1
+    echo "$out" | grep -qF "main 里读到 = 12" || ok=0
+    echo "$out" | grep -qF "和 = 46"          || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "  ok   main-question  ->  $(echo "$out" | tr '\n' '|')"
+    else
+        echo "  FAIL main-question  ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1
+    fi
+    # 成功路径的退出码必须是 0 ✓
+    "$EXTC" --run tests/io/main-question.extc >/dev/null 2>&1
+    if [ $? = 0 ]; then echo "  ok   main-question-exit  ->  退出码 0 ✓"
+    else echo "  FAIL main-question-exit  ->  退出码非 0 ✗"; fail=1; fi
+else
+    echo "  FAIL main-question  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+
 echo "== 文件流式读取（定案 88 第 3 步：fin >> 整数 >> 一行 >> 一个字节）=="
 if out=$("$EXTC" --run tests/io/stream-file.extc 2>&1); then
     ok=1

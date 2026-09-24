@@ -529,6 +529,44 @@ if f.bad() { ... }             // 读不到（结束 / 错误）⇒ 值不动 + 
 - ⚠️ 读整数前先 `skipSpace()` 再问 `eof()`：结尾那个 `\n` 会让 `eof()` 说"还有字节"，
   而 `nextInt` 没数字时返回 `success(0)`（与"读到 0"同形 ✗）⇒ 不这么做就会**静默写 0** ✓
 
+### `main` 里的 `?` 直接 trap（定案 89）
+
+```extc
+use std::fs
+
+fn main() -> i32 {
+    var f = fs::ifstream("input.txt")?     // 打开失败 ⇒ trap（带源码位置 + 退出码 1）
+    var n: i64 = 0
+    f >> n
+    println("读到 = ", n)
+    f.close()?
+    return 0
+}
+```
+**为什么**：`?` 的语义一直是"把失败交给外层"，而 `main` 的外层就是**进程边界** ⇒
+交出去的方式就是**说清楚然后死** ✓ 失败消息里的载荷走描述符打印（`ioError.readFailed(...)` 能说清
+是哪个 fd ✓）。**只对 `main` 生效**：别的函数仍必须声明 `result` 才能用 `?` ✓
+（判据：`tests/io/main-question.extc` + `tests/traps/main_question.extc` ✓）
+
+### `main` 里的 `?` 直接 trap（定案 89）
+
+```extc
+use std::fs
+
+fn main() -> i32 {
+    var f = fs::ifstream("input.txt")?     // 打开失败 ⇒ trap（带源码位置 + 退出码 1）
+    var n: i64 = 0
+    f >> n
+    println("读到 = ", n)
+    f.close()?
+    return 0
+}
+```
+**为什么**：`?` 的语义一直是"把失败交给外层"，而 `main` 的外层就是**进程边界** ⇒ 交出去的方式
+就是**说清楚然后死** ✓ 失败消息里的载荷走描述符打印（`ioError.readFailed(...)` 能说清是哪个 fd ✓）。
+**只对 `main` 生效**：别的函数仍必须声明 `result` 才能用 `?` ✓
+（判据：`tests/io/main-question.extc` + `tests/traps/main_question.extc` ✓）
+
 ### 已知边界（都记着，不是没想到）
 
 - ~~`io::cout` 今天必须带模块名~~ ✅ **已定（定案 85）**：`use std::io::{cin, cout, endl}` 按名字导入，

@@ -146,6 +146,10 @@ typedef struct {
     Buf         desc;           /* descriptor region, prepended to the bodies */
     Buf         rt;             /* table types + shared scalars; needed by print or eq */
     Buf         rtPrint;        /* `extc_print` - only if a structured type is printed */
+    /* Are we generating `main`? A `?` there traps instead of returning a failure
+     * (docs/DECISIONS.md 89), which is a decision code generation has to make per
+     * function. */
+    bool        inMain;
     Buf         rtEq;           /* `extc_eq` - only if an array or slice is compared */
     Buf         rtRaw;          /* the raw-terminal block - only if the program uses it */
     Buf         rtDie;          /* `extc_die`, the dying hook - ahead of the trap bodies */
@@ -2098,7 +2102,26 @@ static TryInfo genTryHead(CG *g, Expr *e) {
      * contains the return. */
     cgLine(g, "if (%s.tag != %s_%s) {", ti.tmp, ti.inst, ti.okVar);
     g->indent++;
-    cgReturn(g, genTryFail(g, &ti));
+    if (g->inMain) {
+        /* `?` in `main`: the failure is fatal, so it is reported and the program stops
+         * (docs/DECISIONS.md 89). The payload is printed through its descriptor, which is
+         * the same machinery `println(e)` uses -- so `ioError.readFailed(5)` still says
+         * which fd failed rather than "something failed" ✓ A `none` has no payload. */
+        if (!ti.isOpt) {
+            Type *et = subst(g, *(Type **)vecAt(&ot->targs, 1));
+            g->needRuntime = true;               /* extc_print lives in the print runtime */
+            cgLine(g, "fprintf(stderr, \"%%s:%%d: trap: a step in `main` failed: \","
+                      " \"%s\", %d);", g->path, e->line);
+            cgLine(g, "extc_print(&(%s.u.%s._0), %s);", ti.tmp, ti.failVar, descRef(g, et));
+            cgLine(g, "fprintf(stderr, \"\\n\");");
+        } else {
+            cgLine(g, "extc_trapMsg(\"%s\", %d, \"a step in `main` returned `none`\");",
+                   g->path, e->line);
+        }
+        cgLine(g, "extc_die(1);");
+    } else {
+        cgReturn(g, genTryFail(g, &ti));
+    }
     g->indent--;
     cgLine(g, "}");
     return ti;
@@ -2929,6 +2952,7 @@ static void genFunc(CG *g, FuncDef *f) {
     Type *savedRet = g->retType;
     int   savedSeq = g->tmpSeq;
     g->retType = subst(g, f->ret);
+    g->inMain  = isMain;
     g->tmpSeq = 0;
     /* ---- One arena per block level ----
      * The number of levels is known at compile time, being the maximum nesting
@@ -3085,6 +3109,7 @@ static void genFunc(CG *g, FuncDef *f) {
         else              cgLine(g, "return __extc_ret_v;");
     }
     g->retType = savedRet;
+    g->inMain  = false;
     g->tmpSeq = savedSeq;
     g->noArena = savedNoArena;
     g->owSites = savedOw;          /* restored last, see the note above */

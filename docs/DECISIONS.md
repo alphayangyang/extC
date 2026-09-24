@@ -2680,52 +2680,53 @@ no method `put` on `ifstream`
 ⚠️ 还没实现：`f.reader()` 那层 · `readAll` 的常设用例 · 句柄 affine —— ✅ `std::fs` 模块本身已落地（定案 77 三个名字 + 定案 79 归属）·
 `f.reader()` · `close(f)!`（IO-2）✓
 
-## 定案 89 · **`main` 可以返回 `result<i32, E>` / `result<unit, E>`**（2026-09-24，主人拍板「1 是对的」）
+## 定案 89 · **`main` 里的 `?` 直接 trap**（2026-09-24，主人拍板两次：先说「1 是对的」，随后改定为这条）
 
 > 起因：主人「**我在 main 里面好像没办法问，但是 main 里面开文件是最常见的其实，怎么办**」✓
-> 量出来的墙：`fn main() -> result<i32, io::Error>` 被**明文拒绝** ——
-> 「C's entry point returns an `int`, so `main` may return `i32` (or nothing at all)」
-> ⇒ 于是 `?` 在 `main` 里没法用，而"在 main 里开文件"是最常见的写法 ✗
-> （本轮每个测试都得先包一个 `fn go() -> result<...>` —— 那就是这条缺口的代价 ✓）
+> 先定的是"让 `main` 能返回 `result<i32, E>`"（编译器拆开），**随后主人改定**：
+> 「**main 可能会遇到各种 fail，而显然这些 fail 已经致命 ⇒ main 里面的问直接 trap**」✓
+> —— 这条更好：**不用给 `main` 开第二个返回类型**，C 入口那条规则一动不动 ✓
 
-**规则**：`main` 的返回类型允许 **`result<i32, E>`**（成功 ⇒ 退出码 = 载荷）与
-**`result<unit, E>`**（成功 ⇒ 0）；失败 ⇒ **stderr 上一条带位置的失败消息 + 非零退出码** ✓
-别的类型照旧拒绝，**理由不变**：那是让 C 编译器悄悄转换 ✗
-—— 而 `result` **不是"别的类型"**：它是编译器**认识并显式拆开**的一种形状 ✓
-（Rust 的 `fn main() -> Result<(), E>`、Go 的 `log.Fatal` 都是这个答案 ✓）
-
-于是 `?` 在 `main` 里自然成立 —— **不需要给 `?` 加特例**：它本来就是"把失败交回外层函数"，
-外层现在有地方交了 ✓
+**规则**：`main` 里的 `?` 合法；**失败即时 trap** —— stderr 上一条**带源码位置**的消息
+（含失败的载荷，走**描述符打印**那套机器 ⇒ `ioError.readFailed(...)` 仍能说清是哪个 fd ✗
+不是"something failed"）+ 退出码 **1** ✓
 
 ```extc
-fn main() -> result<unit, io::ioError> {
-    var f = fs::ifstream("input.txt")?      // ✓ 终于能这么写
+use std::fs
+
+fn main() -> i32 {
+    var f = fs::ifstream("input.txt")?     // ← 打开失败 ⇒ trap（带位置）
     var n: i64 = 0
     f >> n
     println("读到 = ", n)
     f.close()?
-    return success(unit {})
+    return 0
 }
 ```
+```
+$ ./build/extc --run x.extc          # input.txt 不存在
+x.extc:4: trap: a step in `main` failed: readFailed      退出码 1
+```
 
-**⚠️ 状态：已定案，未实现**（本轮把检查器那半试做了，但 codegen 那半没做完 ⇒
-**按"不许留红树"回退**，源码回到上一条绿提交 ✓）**落地点四处**（都在 codegen，已定位）：
+**为什么不需要给 `?` 加特例**：`?` 的语义一直是"**把失败交给外层**"；
+`main` 的外层就是**进程边界** ⇒ 交出去的方式就是**说清楚然后死** ✓
+规则**只对 `main` 生效**：别的函数必须声明 `result` 才能用 `?`（那里失败有地方可去 ✓）
 
-1. `cFuncName`：包了 result 的 `main` 要改名成 `__extc_main`（不然与 C 的 `main` 撞名 ✗）
-2. 原型发射：`ret` 从 `cgIsMain ? "int"` 改成"包了 result 就用 `cType(f->ret)`"，前缀用 `static` ✓
-3. 定义发射：同样两处（`genFunc` 里的 `isMain` 分支）✓
-4. 结尾发外层 wrapper：`int main(void) { R r = __extc_main(); if (r.tag != <T>_success) {
-   fprintf(stderr, ...); extc_print(&(r.u.failure._0), <descRef(E)>); return 1; }
-   return <载荷 或 0>; }` ✓
-   （`result` 的 C 布局已量过：`{ int tag; union { struct { E _0; } failure; struct { T _0; } success; } u; }`，
-   tag 常量是 `<mangled>_failure = 0 / _success = 1`，描述符用 `descRef(g, E)` ✓）
-5. 检查器那半（本轮做过、已回退，重做很快）：`main` 的返回类型规则多认两个形状
-   （`TY_ENUM` + `edef->name == "result"` + 两个 targs，载荷是 `i32` 或 prelude 的 `unit`），
-   外加一条：`main(args)` + result 这组合**明确报未支持**（wrapper 今天不收参数 ✓）
+**落地两处**：
+1. 检查器 `checkTryInner`：`main`（无 owner、名为 `main`）里 `?` 直接放行，类型取载荷 ✓
+2. codegen `genTryHead` 的失败分支：`g->inMain` 为真时**不发 `return failure(...)`**，
+   改发 `fprintf(stderr, "<file>:<line>: trap: a step in `main` failed: ")` +
+   `extc_print(&(tmp.u.failure._0), descRef(E))` + `extc_die(1)` ✓
+   （`option` 没有载荷 ⇒ 走现成的 `extc_trapMsg(..., "a step in `main` returned `none`")` ✓）
+   `CG` 新增 `bool inMain`（在 `genFunc` 里随 `retType` 一起存/还 ✓）
 
-**判据（待补）**：`tests/io/` 加一条**直接在 `main` 里开文件**的用例（成功路径 + 退出码 0）·
-一条失败路径（文件不存在 ⇒ **非零退出码 + stderr 上有信息的消息**）· 一条 `result<i32, E>` 成功时
-**退出码 = 载荷**（用 `$?` 量 ✓）· 空 `E`（无载荷枚举）也要能打印 ✓
+**判据**：`tests/io/main-question.extc`（**直接在 main 里开文件 + `?`** ⇒ `main 里读到 = 12` ·
+`和 = 46` · **退出码 0** ✓）+ `tests/traps/main_question.extc`（打不开 ⇒ trap 用例，自动收：
+编得过 + 死在那条 `trap:` 消息上 ✓）⇒ 语料 **254 → 255** ✓ io 节 **21 → 23 项** ✓
+
+⚠️ 前一条"`main` 返回 `result`"的方案**作废**（连同它那四处 codegen 落地点）——
+不是因为它错，而是因为这条**更小**且失败本来就致命：前者要在 C 入口外再包一层，
+后者只是把"交给外层"这件事**做到尽头** ✓
 
 ## 定案 88 · **`<<` / `>>` 可以返回 `mut ref T`：流是"有状态的值"，链式靠引用**（2026-09-24，主人拍板「1 是对的，2 用起来太难受了」）
 

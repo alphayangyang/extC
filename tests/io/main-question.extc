@@ -1,0 +1,20 @@
+// expect: main 里读到 = 12|和 = 46
+/* 定案 89：**`main` 里的 `?` 直接 trap**（不去改 main 的返回类型 ✓）
+ *
+ * 为什么这么定（主人原话）：「main 可能会遇到各种 fail，而显然这些 fail 已经致命
+ * ⇒ main 里面的问直接 trap」✓ —— 而"在 main 里开文件"是程序最常见的事，
+ * 没有这条 `?` 正好在最常见的地方不能用 ✗
+ *
+ * 判据：① 直接在 `main` 里开文件 + `?` ✓ ② 退出码 0 ✓（失败路径见 tests/traps/）*/
+use std::fs
+
+fn main() -> i32 {
+    var f = fs::ifstream("tests/io/numbers.txt")?     /* ← 就是这一行：main 里问 */
+    var a: i64 = 0
+    var b: i64 = 0
+    f >> a >> b
+    println("main 里读到 = ", a)
+    println("和 = ", a + b)
+    f.close()?
+    return 0
+}

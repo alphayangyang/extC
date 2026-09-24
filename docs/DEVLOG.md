@@ -238,7 +238,7 @@ io 21 · modules 23 · genmatrix 13 · fs · fs-shape · nocopy ✓
 
 （另：整套末尾印的"通过 258"是累加器（前面几节各 +1），语料数仍是 **254** ✓ 这一条之前已经记过 ✓）
 
-### ⑫ 定案 89（`main` 可返回 result）：定了，但**只做了一半就回退**（如实记）
+### ⑫ 定案 89 的两版：先"main 返回 result"（做了一半回退），后"main 里的 ? 直接 trap"（落地）
 
 主人问「main 里好像没办法问，而 main 里开文件最常见」⇒ 量到墙：`main` 的返回类型被明文拒绝
 （理由是"C 的入口返回 int"）⇒ 定案 89：允许 `result<i32, E>` / `result<unit, E>`，
@@ -250,6 +250,16 @@ io 21 · modules 23 · genmatrix 13 · fs · fs-shape · nocopy ✓
 四处落地点与 `result` 的 C 布局都写进了定案 89（下次照着做，很快）✓
 
 ⚠️ 记这一笔的原因：**半成品不进树**这条规矩这次是**主动执行**的（不是发现坏了才回退）✓
+
+**随后主人改定**：「main 可能会遇到各种 fail，而显然这些 fail 已经致命 ⇒ main 里面的问直接 trap」✓
+这条更好：**不用给 `main` 开第二个返回类型**，C 入口那条规则一动不动 ✓ 落地只两处 ——
+检查器 `checkTryInner` 里对 `main` 放行（类型取载荷）· codegen `genTryStep` 的失败分支在 `main` 里
+改发 `trap`（`fprintf` 带位置 + `extc_print` 打载荷 + `extc_die(1)` ✓ option 走现成的 `extc_trapMsg` ✓）✓
+实测：成功路径退出码 0；打不开 ⇒ `x.extc:4: trap: a step in main failed: readFailed`、退出码 1 ✓
+判据 `tests/io/main-question.extc`（直接开文件 + 退出码）+ `tests/traps/main_question.extc`（trap）⇒
+语料 **254 → 255** · io 节 21 → 23 ✓
+⚠️ 前一条方案作废并**写明理由**（不是它错，是这条更小、而且失败本来就致命 —— 前者要在 C 入口外
+再包一层，后者只是把"交给外层"做到尽头 ✓）
 
 ### 还欠的
 
