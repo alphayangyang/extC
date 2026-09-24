@@ -29,3 +29,9 @@ extern!("extc-runtime") fn extc_region_capacity() -> i64
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_region_frameDepth() -> i64
     effects Addr=0 Cont=0
+
+/* 容器数据用的内存：从 region 所在的那只 **arena** 里要（不是第二套分配器）✓
+ * 期 1 先把它暴露成 `mut ref u8`（extC 没有指针转换，所以库侧只能当字节用；
+ * 类型化的那扇门随容器一起做 ✓）。清零与失败行为跟别的分配完全一样 ✓ */
+extern!("extc-runtime") fn extc_region_alloc(rid: i64, bytes: i64) -> mut ref u8
+    effects Addr=0 Cont=0

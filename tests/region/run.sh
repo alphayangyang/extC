@@ -48,7 +48,19 @@ else
     fail=1
 fi
 
-echo "== ⑤ 吞吐基线（期 1 没有类型化分配/遍历 ⇒ 先量注册表本身：建/放各 20 万次）=="
+echo "== ⑤ region 里的内存来自同一只 arena（分配 -> 写入 -> 读回；并逼到换块）=="
+if out=$("$EXTC" --run tests/region/alloc.extc 2>&1); then
+    if [ "$out" = "ok=7 after=42 keep=7" ]; then
+        echo "  ok   alloc  ->  $out"
+        echo "       1.6MB 分配把 arena 逼到换块，旧数据仍在（说明走的是同一只 arena 的分配器）"
+    else
+        echo "  FAIL alloc  ->  期望「ok=7 after=42 keep=7」，得到「$out」"; fail=1
+    fi
+else
+    echo "  FAIL alloc  ->  编译/运行失败：$(echo "$out" | head -2 | tr '\n' '|')"; fail=1
+fi
+
+echo "== ⑥ 吞吐基线（期 1 没有类型化分配/遍历 ⇒ 先量注册表本身：建/放各 20 万次）=="
 if "$EXTC" tests/region/churn.extc -o "$TMP/churn.c" 2>/dev/null \
    && $CC -std=c11 -O2 -o "$TMP/churn_fast" "$TMP/churn.c" 2>/dev/null; then
     # 三次取最好：这套机器上抖动很大，单次不可比
@@ -67,7 +79,7 @@ else
     echo "  FAIL 吞吐基线：生成或编译失败"; fail=1
 fi
 
-echo "== ⑥ 生成物：-Wall -Wextra -Werror + ASan =="
+echo "== ⑦ 生成物：-Wall -Wextra -Werror + ASan =="
 if "$EXTC" tests/region/churn.extc -o "$TMP/churn.c" 2>"$TMP/cerr"; then
     if $CC -std=c11 -Wall -Wextra -Werror -o "$TMP/churn" "$TMP/churn.c" 2>"$TMP/gerr"; then
         echo "  ok   生成的 C 在 -Wall -Wextra -Werror 下编得过 ✓"

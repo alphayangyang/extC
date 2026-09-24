@@ -7,6 +7,39 @@
 
 ---
 
+## 2026-09-26（第五段）· region 的口径由作者补齐：arena 不是栈，region 是 arena 里的一棵指针树
+
+> 主人的话：「region 是一种基于 ECS/Handle 的内存管理模式……是为了弥补 arena 在管理删增
+> 动态度很大的数据结构时的劣势」「region 随着 STL 容器一起创建，你不能单独创建一个空的
+> 不知道放啥的 region」「嵌套的 region 应该仅构成逻辑父子关系，实际全部统一在同一个 arena 下」
+> 「arena 里的其他对象真的把数据段存进去了，而 region 在 arena 里面只会维持某种树状结构的
+> 指针存储，在清空时遍历树清空」
+
+**这一段推翻了我两处已提交的东西**：
+
+1. `a0d37bf` 让每个 region 自持一只 `extc_arena`，源头是设计稿 §3.1 那句「槽里放的是真正的
+   arena（块链）」。作者口径是反过来的：**数据直接在它所在的 arena 里**，region 只是
+   arena 里的**一棵指针树**（簿记），清空靠遍历树。§3.1 的措辞已按作者口径更正。
+2. 我做的「独立建 region」（`extc_region_new` 由库/用例直接调）与「region 随容器一起创建」
+   冲突，且层号由调用方手写会出事——`tests/region/alloc.extc` 第一版把 main 体里的 region
+   写成第 2 层，循环体（也是第 2 层）第一次退出就把它回收了，之后分配返回 NULL。
+   这实证了「层号该由生成器给」，期 2 的入口由生成器发射层号。
+
+**改后的结构**（`src/regions.c`）：`ExtcRegion` 里是 `extc_arena *arena`（借的，不拥有）+
+世代 + 父子链 + 帧内层号；帧钩子把 arena 数组交给注册表（`extc_region_frameEnter(__extc_a, N)`），
+region 取 `arenas[level]`、子 region 继承父的 arena，`extc_region_alloc` 就是那只 arena 的
+分配器（清零与失败行为与别处一致，只有释放点不同）。
+
+**新增判据**（`tests/region/` 第 5 节）：分配 -> 写入 -> 读回，并用 1.6MB 分配把 arena 逼到
+换块，旧值仍在 ⇒ `ok=7 after=42 keep=7`。另外两条实测记下来：extern 声明 `mut ref T` 的返回值
+只有 `var` 绑定时可写（`let` 绑定的引用只读）；运行期定义的类型要与 extC 侧声明的 C 类型对齐
+（`uint8_t *` 而不是 `void *`，否则 gcc 报 conflicting types）。
+
+**还欠的**：容器侧的接入（region 随容器建、`reset`/`close` 真的整批还）与类型化的分配入口
+（不能是 `extern!`：返回值只能是字节指针，且 `mut` 受绑定形式影响）——入口该由生成器提供，
+形状与命名由我在库侧定，不再占用作者的时间。
+---
+
 ## 2026-09-26（第四段）· 撤掉「跨线程 handle 转移」，并把并发/协程两条线标成未构思
 
 > 主人的话：「唉唉我还没有构思协程和多线程啊」+「我真的有 handle 转移吗，我的多线程想法是

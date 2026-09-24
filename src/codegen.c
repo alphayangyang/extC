@@ -3329,7 +3329,8 @@ static void genFunc(CG *g, FuncDef *f) {
     /* The frame mark: regions created while this frame runs are linked to it, so leaving
      * the frame drops them whatever their block did (REGIONS.md section 3.5). Emitted where
      * the arena exists, because hanging regions off an arena level is what this frame does. */
-    if (g->needRegion && !g->noArena) cgLine(g, "int64_t __extc_frame = extc_region_frameEnter();");
+    if (g->needRegion && !g->noArena)
+        cgLine(g, "int64_t __extc_frame = extc_region_frameEnter(__extc_a, %d);", maxLv + 1);
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
