@@ -4,6 +4,10 @@
 #          ./check.sh quick    （只跑测试 + 攻击库，跳过基准）
 set -u
 cd "$(dirname "$0")"
+# 非交互跑必须关掉 stdin：stdin 若指向已撤销的 pty，用例读终端会被 SIGTTIN **停住**
+# （进程状态 `T`），`timeout` 管不到已停的进程 ⇒ 整个自检无限等下去，比报错难查得多。
+# IO 节不需要真 tty（关掉 stdin 后 25 节全绿即证），所以这里一次关掉、每个子进程都继承。
+exec </dev/null
 pass=0; fail=0
 ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
@@ -46,7 +50,7 @@ else bad "tests/generics/run.sh"; echo "$out"; fi
 
 echo "== IO 第一块（定案 73：std::sys 原语 + std::io 库 —— 能从 stdin 读了）=="
 if out=$(timeout 600 ./tests/io/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层 + 流式：控制台 `cin >> x` · 文件 `fin >> 整数 >> 一行 >> 一个字节` · `cerr` 与 stdout 分开）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层 + 流式：控制台 cin >> x · 文件 fin >> 整数 >> 一行 >> 一个字节 · cerr 与 stdout 分开）"
 else bad "tests/io/run.sh"; echo "$out"; fi
 
 echo "== extern! + 信任声明（定案 72：签字才放行 · 默认最保守）=="
