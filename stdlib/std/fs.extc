@@ -393,21 +393,11 @@ struct inStream {
     @inline
     fn >>(self: ref inStream, out: mut ref i64) -> inStream {
         /* 同 `io::istream`：每个数只调一次 `nextInt`，只有结果为 0 时才回头问 `eof` ✓ */
-        var r: io::reader = inSync()
-        match r.nextInt() {
-            success(n) => {
-                if n == i64(0) {
-                    match r.eof() {
-                        success(atEnd) => { if atEnd { IN_FAILED = true } else { *out = i64(0) } }
-                        failure(e) => { IN_FAILED = true }
-                    }
-                } else {
-                    *out = n
-                }
-            }
+        var g: bool = false
+        match io::nextI64State(IN_FD, IN_BUF[..], ref IN_LEN, ref IN_POS, ref g) {
+            success(n) => { if g { *out = n } else { IN_FAILED = true } }
             failure(e) => { IN_FAILED = true }
         }
-        inSave(ref r)
         return { }
     }
 
