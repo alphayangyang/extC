@@ -7007,3 +7007,30 @@ examples/shadowing.extc   292 → 292 行   clang 1 → 1（它的 `v` 走另一
 这一轮         8      6
 ```
 语料 **256/0** ✓ 九套件全绿 ✓
+
+### 2026-09-25 · 族 B（`__extc_home`）：**把成因量清了，但机制的最后一跳没走通 ⇒ 回退**
+
+**成因彻底量清** ✓（`examples/escape-promotion.extc` 的 `--no-line-map` 成品）：
+
+```
+161: EXTC_UNUSED static node * build(int64_t n, extc_arena *__extc_home);   ← 参数（另一个函数）
+278: static node * build(int64_t n, extc_arena *__extc_home) {              ← 同上
+282/288: ...extc_arena_alloc(&(*__extc_home), ...)                          ← 同上（**被读** ✓）
+317: extc_arena *__extc_home = &__extc_a[1];   /* main's home arena ... */  ← **就是这条没用** ✗
+```
+⇒ 上一轮"5 次提及"的谜团解开：**同名不同物** —— 参数 `__extc_home` 是 `build` 的 ✓，
+clang 报的是 **`main` 里那一条声明** ✓ ⇒ 判据本来就该是"**在 main 的函数体里只出现一次**" ✓
+—— 正好是族 A 的机制 ✓（不是读写判据 ✓ 上一轮的"读写"结论对族 B 也是错的 ✓）
+
+**本轮做了什么**：把 `curFuncName` 的设置提前到 prologue 之前 ✓ 并在声明处 `localDef(g, hb, "__extc_home")` ✓
+—— 编译干净、零错误 ✓ **但行数与警告一条没变** ✗（`escape-promotion` 仍 1 ✓）
+
+**为什么没走通（下一轮第一步）**：候选登记了、判定阶段却没删它 ✓ 可能的三处要先量掉：
+① `d->funcName` 与 `g->mainFuncName` 是否真的相等（`cFuncName` 的调用时机 ✓）
+② `strstr(text, g->mainBody)` 是否真的命中（`mainBody` 是**从 `g.body` 里截的** ✓ 但最终文本里
+   中间可能被拼进别的东西 ✗）
+③ 计数是否真的是 1（main 体里有没有间接提及 ✓）
+⇒ **做法**：照 `EXTC_DBG_PRIM` 的先例，加一个 `EXTC_DBG_LOCAL` 开关把这三处的值打出来 ✓
+（本项目已经四次证明：**数字对不上就加开关量，别猜** ✓）
+
+**回退后**：树干净 ✓ 全量仍是 **gcc 8 · clang 6 · error 0** ✓
