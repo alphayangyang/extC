@@ -71,8 +71,11 @@ def case_must_reject(f):
     rc, out = sh([str(EXTC), str(f)])
     if rc == 0:
         return False, "应该报错但通过了", out
-    first = out.splitlines()[0] if out else ""
-    msg = first.split(": ", 1)[-1] if ": " in first else first
+    # 取**第一条 error**，不是第一行：警告（比如 `println` 弃置提醒）也写 stderr，而且
+    # 先于错误渲染 ⇒ 拿第一行会把"这条反例到底在说什么"记成一条无关的提醒 ✗
+    line = next((l for l in out.splitlines() if ": error:" in l),
+                out.splitlines()[0] if out else "")
+    msg = line.split(": ", 1)[-1] if ": " in line else line
     return True, msg, ""
 
 
@@ -103,6 +106,26 @@ SCAN_MODES = {
 }
 
 
+def strip_deprecated(out):
+    """拿走**弃置提醒**的整块（头一行 + 它带缩进的源码行/插入符/note），返回 (剩余, 条数)。
+
+    为什么要有这个：`print` / `println` 2026-09-26 起弃置（`io::cout` 是唯一的控制台出口），
+    语料里还有几百处要搬。它们**必须看得见**（所以编译器照吐、这里照数），但**不算误报** ——
+    这条扫描的判据是"警告通道不是噪音"，而弃置提醒是**故意的**、每处都指向同一句迁移说明 ✓
+    搬完之后这个函数和它的调用点一起删掉，判据就回到"零豁免" ✓ """
+    kept, n, skipping = [], 0, False
+    for line in out.splitlines():
+        if "is deprecated" in line:
+            n += 1
+            skipping = True
+            continue
+        if skipping and line.startswith("  "):   # 同一块的续行：源码、插入符、note
+            continue
+        skipping = False
+        kept.append(line)
+    return "\n".join(kept), n
+
+
 def case_scan(f, token, env):
     """编译一个文件，只问"输出里有没有这个标记"。
 
@@ -116,8 +139,9 @@ def case_scan(f, token, env):
                            capture_output=True, text=True, timeout=120, env=e)
         out = (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired:
-        return False, "", "(timed out)"
-    return (token not in out), "", out
+        return False, 0, "(timed out)"
+    out, nDep = strip_deprecated(out)
+    return (token not in out), nDep, out
 
 
 def scan_files(globs):
@@ -190,17 +214,21 @@ def main():
         files = [f for f in scan_files(globs)
                  if not args.filter or args.filter in str(f)]
         hits = []
+        nDep = 0
         with cf.ThreadPoolExecutor(max_workers=jobs) as pool:
             futs = {pool.submit(case_scan, f, token, env): f for f in files}
             for fut in cf.as_completed(futs):
-                good, _detail, _extra = fut.result()
+                good, dep, _extra = fut.result()
+                nDep += dep
                 if not good:
                     hits.append(futs[fut])
         if hits:
             rel = [str(f.relative_to(ROOT)) for f in sorted(hits)]
             print(f"{label}里有 {len(rel)} 处吐了 `{token}`：" + " ".join(rel))
             return 1
-        print(f"{len(files)} 个{label}：{verdict} ✓")
+        # 弃置提醒单列：它不是误报，但**要看得见**（每搬一处少一条，搬完这条附注就该消失）✓
+        tail = f"（另有 {nDep} 处 `print`/`println` 弃置提醒，迁移中 ⇒ PLAN #67）" if nDep else ""
+        print(f"{len(files)} 个{label}：{verdict} ✓{tail}")
         return 0
 
     groups = collect(args.filter)

@@ -20,18 +20,18 @@ make                                   # 产出 build/extc
 第一个程序：
 
 ```extc
+use std::io
 // 这是注释
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i64, b: i64) -> i64 {
     return a + b
 }
 
 fn main() -> i32 {
-    let x: i32 = 3
+    let x: i64 = 3
     var y = 4                  // 局部变量可以省类型标注，从初始化式推导
     y = y + 1
     if x < y {
-        print("sum = ")        // ⚠️ 格式串 {} 还没实现，先这样拼
-        println(add(x, y))
+        io::cout << "sum = " << add(x, y) << "\n"   // 控制台唯一出口，见第 8 节
     }
     return 0
 }
@@ -160,15 +160,19 @@ struct 名字 { ... }            // 结构体定义
 fn 名字(参数) -> 返回类型 { ... }   // 函数定义
 ```
 
-**还没有模块系统**（`module` / `export` / `import` 是 week-2 的事，见第 10 节）。
+**模块系统已经有了**：`use std::io`，别名写 `use std::sys::io as sysio`，
+全限定名到处都能写（`io::cout`、`lib::sub::util::answer()`，见第 12 节）。
 
-程序入口必须是：
+程序入口是 `main`，两种形状都行：
 
 ```extc
-fn main() -> i32 { ... }
+fn main() -> i32 { ... }                          // 不要命令行
+fn main(args: slice<slice<u8>>) -> i32 { ... }    // 要命令行
 ```
 
-`main` 不能带参数；返回值就是进程退出码。
+`args[0]` 是程序名，字节**直接指向**操作系统给的参数块（不拷贝 ✓ 验收 `tests/argv/`）。
+**返回值就是进程退出码** —— 即使函数带 arena、走共用尾声，这个值也照样带得出来
+（`fn main() -> i32 { var p = new i32  return i32(*p) }` ⇒ 退出码 `*p` ✓ 2026-09-26 修）。
 
 ---
 
@@ -1645,16 +1649,34 @@ println(v.size(), " ", v.get(0) ?? -1)
 
 ## 8. 内建函数
 
-### `print` / `println`
+### ~~`print` / `println`~~ ⇒ **已弃置**（2026-09-26）：改走 `io::cout`
 
 ```extc
-println(x)          // 打印后换行
-print(x)            // 不换行
-println()           // 只换行
-println(a, b, c)    // 按顺序连续打印，中间没有分隔
+use std::io
+io::cout << "sum = " << add(x, y) << "\n"
 ```
 
-**格式由编译器按静态类型选** —— 用户永远不写 `"%d"`。支持的类型：所有整数、浮点、`bool`、**枚举**、**struct**（递归）、**`slice<u8>`（按文本）**。
+`io::cout` 是**唯一的控制台出口**：`<<` 按右操作数的**精确类型**选重载（`i64` / `f64` /
+`bool` / `slice<u8>`，一个操作数一次），可以链着写 ✓ 它是**缓冲**的（运行期的
+`extc_cout_*`，`main` 返回前、以及 `atexit` 兜底时冲出去 ✓），格式化在**库里** ——
+f64 走运行期那两行 `snprintf("%g")`，与老 `print` 用的**同一个格式** ⇒ 搬家不改输出一个字节 ✓
+
+`print` / `println` **还能用，但每次调用都吐一条弃置警告**（`-w` 能关）：
+
+```
+x.extc:3:1: warning: `println` is deprecated
+  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x`
+        (`println(x)` is `io::cout << x << "\n"`)
+```
+
+**为什么弃置**：它是**按名字派发**的内建，写的是 C 的 stdio —— 那是**第二个缓冲**，
+跟 `io::cout` 的顺序没法保证。实测两条：程序最后一句是 `io::cout << "x"` 时，
+`x` 会排到 `println` 写过的东西**后面**；`main` 自然落空（没有 `return`）时，
+那个尾巴**整个丢掉**（2026-09-26 修：`atexit` 兜底 ✓）。
+搬家的账在 `PLAN.md` #67：实测 392 个文件 / 938 处，还缺 `<<` 的 `i32` 与结构化类型重载 ✓
+
+老写法（**仅供对照**）：格式由编译器按静态类型选，用户永远不写 `"%d"`，支持所有整数、
+浮点、`bool`、**枚举**、**struct**（递归）、**`slice<u8>`（按文本）**：
 
 ```extc
 println(42)         // 42
@@ -1752,8 +1774,8 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 所以它选择：**生成物里照常保留并标 `unused`**（C 编译器保持安静 ✓），**同时告诉你**：
 
 ```extc
-fn pickFirst(a: ref i32, b: ref i32) -> ref i32 {
-    return a
+fn pickBigger(a: ref i32, b: ref i32) -> ref i32 {
+    return a                        // ← b 一次都没读过
 }
 // warning: parameter `b` is never used
 //   note: a parameter belongs to the signature, so it is kept and marked `unused` in the generated C
@@ -1762,6 +1784,25 @@ fn pickFirst(a: ref i32, b: ref i32) -> ref i32 {
 判据是**"这个绑定到底有没有被读过"**（比的是绑定本身，不是名字 —— 所以 `let b = ...` 这种遮蔽不会被当成使用 ✓）；
 `self` 不报（忽略接收者的方法很常见 ✓），编译器自己加的隐藏参数也不报 ✓
 （比如出参函数那只 home arena 参数 —— 它现在只有在函数**真的用**它时才会生成 ✓）。
+
+> ⚠️ 这条判据 2026-09-26 修过一族**误报**：走查只看了表达式的一部分，于是
+> `a[lo..hi]` 的上下界、`T(x)` 的操作数、以及`T(x.m())` 里的方法接收者**都不算"用过"** ✗
+> —— `examples/gomoku-board.extc` 的 `lo`/`hi`、`examples/growth-factor.extc` 与
+> `bench/stress/stress.extc` 的 `r` 全被误报。修法是把"问表达式里出现了什么"的走查**全部**
+> 补上这些形状（切片三格 + 转换 + 聚合三形状），并把四格都钉进
+> `tests/warnings/silent/params-used-deeply.extc` ✓
+
+**弃置的 `print` / `println`**（见第 8 节）：每次调用一条，`-w` 能关 ✓
+
+```extc
+println("hi")
+// warning: `println` is deprecated
+//   note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x`
+//         (`println(x)` is `io::cout << x << "\n"`)
+```
+
+两个警告都**不改退出码**（编译照常成功 ✓），`-w` 一关**全部**消失 ✓；
+正例语料上**一条都不许响**（`tests/warnings/run.sh` 的 ②，弃置提醒单列计数、不算误报 ✓）。
 
 ## 10. 已定案、但还没实现
 

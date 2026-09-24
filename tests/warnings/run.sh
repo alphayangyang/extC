@@ -43,6 +43,24 @@ for f in tests/warnings/*.extc; do
     fi
 done
 
+# ④ **静默用例**：写死的形状一条警告都不许吐
+#
+# 为什么要有这一节：②拿语料当"误报判据"，可语料是**例子**，形状是碰巧覆盖到的 ——
+# 2026-09-26 那一族误报（切片上下界 / 转换操作数 / 转换里的方法接收者）就是靠
+# `examples/gomoku-board.extc` 之类**碰巧**才发现的 ✗。这里放的是**故意**写深的用法：
+# 谁再漏走一格，这个目录立刻响 ✓ （比"等下一个例子碰巧踩到"早一整轮）
+for f in tests/warnings/silent/*.extc; do
+    [ -e "$f" ] || continue
+    name=$(basename "$f" .extc)
+    out=$("$EXTC" "$f" -o /dev/null 2>&1)
+    if [ -z "$(echo "$out" | grep 'warning:')" ]; then
+        echo "  ok   silent/$name  ->  一条警告都没吐 ✓"
+    else
+        echo "  FAIL silent/$name  ->  不该有警告：$(echo "$out" | grep 'warning:' | head -2 | tr '\n' '|')"
+        fail=1
+    fi
+done
+
 # ② 正例语料上**零警告**（误报判据）
 # 这一段要把 examples/ + bench/ 全量编译一遍 —— 串行时是整个套件最贵的一段（实测 ~30s）✗
 # 它没有断言、用例之间无依赖 ⇒ 交给 parrun.py 并行（保序、并发有界）✓

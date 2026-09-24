@@ -595,10 +595,11 @@ struct ostream { fd: i32
     }
     @inline
     fn <<(self: ref ostream, v: f64) -> ostream {
-        /* f64 还没有库内格式化 ⇒ 借内建 `print`（它写 stdio ✗）⇒ **先冲我们的缓冲**，
-         * 不然两边顺序会打架（`x = 1 · pi = 3.5` 印成 `3.5x = 1 · pi = ` 这种 ✗ 真发生了）*/
-        flushCout()
-        print(v)
+        /* 走**同一个缓冲**，和 i64 那条路一样：格式化由运行期的 `extc_cout_f64` 做
+         * （两行 `snprintf("%g")`，与内建 `print` 同一个格式 ⇒ 输出逐字节不变 ✓）。
+         * 以前这里借内建 `print`（它写 stdio ✗），得先 `flushCout()` 才不会两边打架 ——
+         * 现在只有一个缓冲，那个顺序陷阱连同这次搬家一起没了 ✓ */
+        extc_cout_f64(v)
         return { fd: self.fd }
     }
     @inline

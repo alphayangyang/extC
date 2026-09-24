@@ -2,7 +2,11 @@
 //
 // The prologue is emitted only for `main(args)`; this file is the canary for the
 // other shape (`fn main() -> i32`) staying byte-for-byte as it was.
+//
+// 2026-09-26 同上：打印改走 `io::cout`（`println` 已弃置）✓
+use std::io
+
 fn main() -> i32 {
-    println("no args needed")
+    io::cout << "no args needed\n"
     return 0
 }

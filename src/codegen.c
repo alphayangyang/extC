@@ -222,6 +222,11 @@ typedef struct {
      * inlines it into the library's `<<` -- no call per operand at all. The one thing
      * only the generator can do is flush the tail before `main` returns. */
     Buf         rtCout;
+    /* `extc_cout_f64` - only appended when a call site actually reaches it. The library's
+     * `<<(f64)` is its one user, so a program that never prints a float does not carry the
+     * formatter (measured: 9 lines of every `io::cout` program's generated C). */
+    Buf         rtCoutF64;
+    bool        needCoutF64;
     bool        needCout;
     Buf         rtDie;          /* `extc_die`, the dying hook - ahead of the trap bodies */
     /* Structural `==` also goes through a descriptor table; this vector lists
@@ -1771,6 +1776,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * as its comment explains. This also renames a name that collides
              * with a C keyword (`fn double`). */
             name = (e->func && e->func->instName) ? e->func->instName : cSymName(g, name);
+            if (strcmp(name, "extc_cout_f64") == 0) g->needCoutF64 = true;
             Buf b;
             bufInit(&b, g->arena);
             bufPuts(&b, name);
@@ -2332,8 +2338,7 @@ static void cgReturn(CG *g, const char *val) {
         else            cgLine(g, "return;");
         return;
     }
-    if (val && !g->inMain) cgLine(g, "__extc_ret_v = %s;", val);
-    else if (val)          cgLine(g, "(void)(%s);   /* main's epilogue returns 0 */", val);
+    if (val) cgLine(g, "__extc_ret_v = %s;", val);
     cgRecLeave(g);
     cgLine(g, "goto __extc_ret;");
 }
@@ -2575,6 +2580,8 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
     case EX_FIELD:    collectOwCallsExpr(e->u.field.obj, out); return;
     case EX_INDEX:    collectOwCallsExpr(e->u.index.obj, out); collectOwCallsExpr(e->u.index.index, out); return;
     case EX_SLICE:    collectOwCallsExpr(e->u.slice.obj, out);
+                      collectOwCallsExpr(e->u.slice.lo, out);
+                      collectOwCallsExpr(e->u.slice.hi, out);
                       collectOwCallsExpr(e->u.slice.lo, out); collectOwCallsExpr(e->u.slice.hi, out); return;
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
@@ -3284,6 +3291,14 @@ static void genFunc(CG *g, FuncDef *f) {
      * array is needed even when the body allocates nothing. A program that only
      * prints its arguments is exactly that case. */
     if (mainArgs) g->noArena = false;
+    /* `main`'s home arena **is** `&__extc_a[1]` (emitted below): it has no caller to hand
+     * one in, so the storage is its own body. When `main` only passes that arena down -
+     * `fn main() -> i32 { return caller() }` over a generic that allocates - its body holds
+     * no `new` of its own, `mayUseArena` is false, and the prologue still pointed at an
+     * array that was never declared: gcc reported ``__extc_a' undeclared` on
+     * `tests/arena-promoted/R2a_generic_instance_first.extc`. Every other function receives
+     * `__extc_home` as a parameter and needs no array of its own. */
+    if (isMain && f->usesHome) g->noArena = false;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
@@ -3347,11 +3362,13 @@ static void genFunc(CG *g, FuncDef *f) {
     /* The slot the shared epilogue returns through; it is needed only when this
      * function really releases an arena on the way out. */
     bool retVoid = !g->retType || g->retType->kind == TY_VOID;
-    /* `main` never returns through the slot: its epilogue ends with a plain `return 0;`,
-     * because the C `main` returns an int whatever the language says. Declaring the slot
-     * there left a variable that was assigned and never read - the one warning of this
-     * shape that showed up in more than one example. */
-    bool retSlot = !g->noArena && !retVoid && !isMain;
+    /* `main` returns through it as well, and that is the point: its value is the process
+     * exit code, so it has to survive the release sequence like any other return. It used
+     * to be thrown away here - `fn main() -> i32 { var p = new i32  return i32(*p) }`
+     * emitted `(void)(*p)` and the process exited 0 - which CONTRADICTS the manual ("`main`
+     * 的返回值就是进程退出码"). The slot is skipped only for `noArena`, where `cgReturn`
+     * returns the value directly and the declaration would be unused. */
+    bool retSlot = !g->noArena && !retVoid;
     if (retSlot)
         cgLine(g, "%s __extc_ret_v;", cType(g, g->retType));
     g->blkLevel = 0;
@@ -3363,6 +3380,16 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
         localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */
     }
+    /* The buffered console tail has one guaranteed exit.
+     *
+     * `main` flushes on every explicit `return` and in the arena epilogue, but a body that
+     * simply runs off its end passes through neither: a program whose last statement is
+     * `io::cout << "qw\n"` printed nothing at all. A trap exits from wherever it stands,
+     * and so does `sys::proc::exit`. One `atexit` covers every way out, including those
+     * two, and the explicit flushes stay for the ordering they give inside the program.
+     * Registered only when the program uses that console at all (`needCout`), so a program
+     * without it does not pull the flush function in. */
+    if (isMain && g->needCout) cgLine(g, "atexit(extc_cout_flush);");
     /* Only a self-recursive function needs the depth guard; see
      * funcCallsItself. Entering increments, every exit decrements, and
      * `extc_rec_enter` traps with a position once the limit is passed.
@@ -3408,8 +3435,14 @@ static void genFunc(CG *g, FuncDef *f) {
      * one shape it cannot see through is a `match` whose arms all return: the arms
      * become an `if / else if` chain, which says nothing about being exhaustive.
      * The trap is the honest answer for the path that no arm matched, and because
-     * `extc_trapMsg` is `noreturn` the C compiler stops asking for a value there. */
-    if (fallsOff && g->noArena && !retVoid)
+     * `extc_trapMsg` is `noreturn` the C compiler stops asking for a value there.
+     *
+     * It applies to a function with an arena as much as to one without: the arena only
+     * changes where the value is parked on the way out, and without the trap that path
+     * returned the slot the return statements never wrote. Measured on
+     * `fn f(x: bool) -> i32 { var p = new i32  if x { return i32(*p) } }` called with
+     * `false`: the caller received whatever the stack held. */
+    if (fallsOff && !retVoid)
         cgLine(g, "extc_trapMsg(\"%s\", %d, \"a non-void function reached its end without returning\");",
                g->path, f->line);
     /* The shared epilogue: the release sequence appears once, and falling off
@@ -3435,7 +3468,10 @@ static void genFunc(CG *g, FuncDef *f) {
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
         if (isMain) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
-            cgLine(g, "return 0;");   /* main returns int in the generated C */
+            /* The C entry point returns an `int`, so the value is cast - and it **is** the
+             * value: `fn main() -> i32` sets the exit code. A `main` that returns nothing
+             * keeps the plain `return 0;`, which is also what a C programmer expects. */
+            cgLine(g, retVoid ? "return 0;" : "return (int)__extc_ret_v;");
         }
         else if (retVoid) cgLine(g, "return;");
         else              cgLine(g, "return __extc_ret_v;");
@@ -4793,6 +4829,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * declaration in view before the definition (`-Wmissing-prototypes`). */
         "void extc_cout_flush(void);\n"
         "void extc_cout_put(uint8_t *p, int64_t n);\n"
+        "void extc_cout_f64(double v);\n"
         "void extc_cout_flush(void) {\n"
         "    if (extc_cout_len <= 0) return;\n"
         "    /* Through stdio: `unistd.h` cannot be included here (the library declares\n"
@@ -4806,6 +4843,23 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    if (extc_cout_len + n > (int64_t)sizeof extc_cout_buf) extc_cout_flush();\n"
         "    memcpy(extc_cout_buf + extc_cout_len, p, (size_t)n);\n"
         "    extc_cout_len += n;\n"
+        "}\n");
+    /* The one formatter the library cannot write itself: `%g`. extC has no variadics,
+     * so `snprintf` is unreachable from extC, and this is the fixed-arity door to it.
+     * The format is **the same one the retired builtin uses** (`extc_print`'s `f64`
+     * case above), so migrating a program off `println` cannot change a byte of its
+     * output; `%g` also fits `char[32]` for every double, and `snprintf` truncates
+     * rather than overruns if it ever did not.
+     *
+     * It lives in a buffer of its own because it is appended only when a call site
+     * reaches it (see `needCoutF64`): the library's `<<(f64)` is its one user, and a
+     * program that never prints a float should not carry the formatter. */
+    bufInit(&g.rtCoutF64, arena);
+    bufPuts(&g.rtCoutF64,
+        "void extc_cout_f64(double v) {\n"
+        "    char b[32];\n"
+        "    int n = snprintf(b, sizeof b, \"%g\", v);\n"
+        "    if (n > 0) extc_cout_put((uint8_t *)b, (int64_t)n);\n"
         "}\n");
     bufInit(&g.rtRaw, arena);
     bufPuts(&g.rtRaw,
@@ -5785,6 +5839,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
+    if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
     if (g.needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches

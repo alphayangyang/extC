@@ -284,9 +284,11 @@ static bool exprHasNew(Expr *e) {
     case EX_REF: return exprHasNew(e->u.ref.operand);
     case EX_DEREF: return exprHasNew(e->u.deref.operand);
     case EX_SIGN:  return exprHasNew(e->u.sign.operand);
+    case EX_CONV:  return exprHasNew(e->u.conv.operand);
     case EX_TRY:   return exprHasNew(e->u.try_.operand);
     case EX_INDEX: return exprHasNew(e->u.index.obj) || exprHasNew(e->u.index.index);
-    case EX_SLICE: return exprHasNew(e->u.slice.obj);
+    case EX_SLICE: return exprHasNew(e->u.slice.obj) || exprHasNew(e->u.slice.lo) ||
+                          exprHasNew(e->u.slice.hi);
     case EX_FIELD: return exprHasNew(e->u.field.obj);
     case EX_METHOD:
         if (exprHasNew(e->u.method.recv)) return true;
@@ -422,10 +424,13 @@ static bool exprCallsNeedsHome(Expr *e, bool precise) {
     case EX_REF: return exprCallsNeedsHome(e->u.ref.operand, precise);
     case EX_DEREF: return exprCallsNeedsHome(e->u.deref.operand, precise);
     case EX_SIGN:  return exprCallsNeedsHome(e->u.sign.operand, precise);
+    case EX_CONV:  return exprCallsNeedsHome(e->u.conv.operand, precise);
     case EX_TRY:   return exprCallsNeedsHome(e->u.try_.operand, precise);
     case EX_INDEX:
         return exprCallsNeedsHome(e->u.index.obj, precise) || exprCallsNeedsHome(e->u.index.index, precise);
-    case EX_SLICE: return exprCallsNeedsHome(e->u.slice.obj, precise);
+    case EX_SLICE: return exprCallsNeedsHome(e->u.slice.obj, precise) ||
+                          exprCallsNeedsHome(e->u.slice.lo, precise) ||
+                          exprCallsNeedsHome(e->u.slice.hi, precise);
     case EX_FIELD: return exprCallsNeedsHome(e->u.field.obj, precise);
     case EX_COALESCE:
         return exprCallsNeedsHome(e->u.coalesce.main, precise) ||
@@ -497,10 +502,24 @@ static bool exprUsesCname(Expr *e, const char *cname) {
     case EX_REF: return exprUsesCname(e->u.ref.operand, cname);
     case EX_DEREF: return exprUsesCname(e->u.deref.operand, cname);
     case EX_SIGN:  return exprUsesCname(e->u.sign.operand, cname);
+    case EX_CONV:  return exprUsesCname(e->u.conv.operand, cname);
     case EX_TRY:   return exprUsesCname(e->u.try_.operand, cname);
     case EX_INDEX:
         return exprUsesCname(e->u.index.obj, cname) || exprUsesCname(e->u.index.index, cname);
-    case EX_SLICE: return exprUsesCname(e->u.slice.obj, cname);
+    /* `a[lo..hi]` has three expressions, not one, and the bounds were skipped by every
+     * walker that asks "what appears in this expression" - including this one, which is
+     * why `examples/gomoku-board.extc` reported `lo` and `hi` as never used while its body
+     * reads both (`self.cell[y][lo..hi]`). The same hole sat in the neighbours
+     * (`exprHasNew`, `exprCallsNeedsHome`, `markNamesInExpr`, `collectEffectsExpr`,
+     * `exprCallsAllocator`, codegen's `collectOwCallsExpr`, and the loader's `rwExpr`), and
+     * in each of them it is a real defect, not just a missing warning: a call in a bound
+     * belongs in the function's effect summary, and a qualified name in a bound was never
+     * rewritten. Walkers that ask what *place* or what *lifetime* an expression denotes
+     * still look at the object alone - bounds are values, and `obligExpr` was the one that
+     * had it right all along. */
+    case EX_SLICE: return exprUsesCname(e->u.slice.obj, cname) ||
+                          exprUsesCname(e->u.slice.lo, cname) ||
+                          exprUsesCname(e->u.slice.hi, cname);
     case EX_FIELD: return exprUsesCname(e->u.field.obj, cname);
     case EX_COALESCE:
         return exprUsesCname(e->u.coalesce.main, cname) ||
@@ -1589,8 +1608,11 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
     case EX_REF:   return markNamesInExpr(c, e->u.ref.operand);
     case EX_DEREF: return markNamesInExpr(c, e->u.deref.operand);
     case EX_SIGN:  return markNamesInExpr(c, e->u.sign.operand);
+    case EX_CONV:  return markNamesInExpr(c, e->u.conv.operand);
     case EX_TRY:   return markNamesInExpr(c, e->u.try_.operand);
-    case EX_SLICE: return markNamesInExpr(c, e->u.slice.obj);
+    case EX_SLICE: grew |= markNamesInExpr(c, e->u.slice.obj);
+                   grew |= markNamesInExpr(c, e->u.slice.lo);
+                   grew |= markNamesInExpr(c, e->u.slice.hi); return grew;
     case EX_FIELD: return markNamesInExpr(c, e->u.field.obj);
     case EX_INDEX: grew |= markNamesInExpr(c, e->u.index.obj);
                    grew |= markNamesInExpr(c, e->u.index.index); return grew;
@@ -2046,8 +2068,11 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     case EX_REF:   collectEffectsExpr(c, f, e->u.ref.operand); return;
     case EX_DEREF: collectEffectsExpr(c, f, e->u.deref.operand); return;
     case EX_SIGN:  collectEffectsExpr(c, f, e->u.sign.operand); return;
+    case EX_CONV:  collectEffectsExpr(c, f, e->u.conv.operand); return;
     case EX_TRY:   collectEffectsExpr(c, f, e->u.try_.operand); return;
-    case EX_SLICE: collectEffectsExpr(c, f, e->u.slice.obj); return;
+    case EX_SLICE: collectEffectsExpr(c, f, e->u.slice.obj);
+                   collectEffectsExpr(c, f, e->u.slice.lo);
+                   collectEffectsExpr(c, f, e->u.slice.hi); return;
     case EX_FIELD: collectEffectsExpr(c, f, e->u.field.obj); return;
     case EX_INDEX: collectEffectsExpr(c, f, e->u.index.obj);
                    collectEffectsExpr(c, f, e->u.index.index); return;
@@ -2067,6 +2092,27 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     case EX_ASSOC:
         for (size_t k = 0; k < e->u.assoc.args.len; k++)
             collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.assoc.args, k));
+        return;
+    /* The aggregate shapes hold expressions too, and a call inside one belongs in the
+     * summary exactly like a call anywhere else: `[f(), g()]`, `some(f())`,
+     * `point { x: f() }`. They used to fall to `default` and be dropped, which made the
+     * summary of the enclosing function incomplete - the one direction the doc above
+     * says must not happen (`effUnknown` exists so incompleteness is conservative). */
+    case EX_ARRAYLIT:
+        for (size_t k = 0; k < e->u.arraylit.elems.len; k++)
+            collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.arraylit.elems, k));
+        return;
+    case EX_ENUMVAL:
+        for (size_t k = 0; k < e->u.enumval.args.len; k++)
+            collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.enumval.args, k));
+        return;
+    case EX_STRUCTLIT:
+        for (size_t k = 0; k < e->u.lit.inits.len; k++)
+            collectEffectsExpr(c, f, (*(FieldInit **)vecAt(&e->u.lit.inits, k))->value);
+        return;
+    case EX_GENCALL:
+        for (size_t k = 0; k < e->u.gencall.args.len; k++)
+            collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.gencall.args, k));
         return;
     default: return;
     }
@@ -4195,6 +4241,27 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < sd->methods.len; j++)
                 *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&sd->methods, j);
         }
+        /* An instance's arena sites are the template's arena sites.
+         *
+         * `funcInstance` copies the template shallowly (`*in = *tmpl`), which copies the
+         * `arenaSites` *struct*: same backing array, but the length as it stood at that
+         * moment. An instance is created at a call site, and the calling function may be
+         * declared before the template, so the template's own body was often checked
+         * **after** the copy - and `vecPush` on the template then moved a length the
+         * instance never saw. The instance was left with an empty list, so the pass below
+         * never gave it a home arena, while its body (the template's, shared) had already
+         * been rewritten to read `(*__extc_home)`: `f_i32` in
+         * `tests/arena-promoted/R2a_generic_instance_first.extc` took no `__extc_home`
+         * parameter and gcc rejected the generated C. Re-point both at one list here, once
+         * every body has been checked, and the whole final phase agrees by construction.
+         *
+         * Placing the same `Expr*` twice is harmless: every pass below is idempotent for a
+         * site (the level it computes does not depend on how often it runs). */
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (f->tmpl) f->arenaSites = f->tmpl->arenaSites;
+        }
+
         /* Recompute the direct `needsHome` criterion for every function, uniformly.
          *
          * The criterion in `checkFunc` (the body allocates and the return type carries a
@@ -4369,18 +4436,16 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                         if (want == ARENA_HOME) fixed++; else keptBlock++;
                     }
                 } else if (site->arenaArgPending) {
-                    /* Call site with a pending `arenaArg`: the callee needs a home arena, so
-                     * it gets ours.
-                     *
-                     * This case must not be narrowed the way the sites above are: `arenaArg`
-                     * is the arena handed to the callee, and the callee may store into the
-                     * caller's container, which outlives this frame, so "nothing escaped this
-                     * frame" is no evidence at all here. */
-                    if (f->needsHome) {
-                        site->arenaArg = ARENA_HOME;
-                        site->arenaArgPending = false;
-                        fixed++;
-                    }
+                    /* A call site that hands an arena down is settled **after** the fixed
+                     * point below, from the callee's `usesHome`, and deliberately not here:
+                     * codegen appends the extra argument exactly when the callee's
+                     * `usesHome` is set, so the value has to come from that same flag. This
+                     * branch used to answer from the *owning* function's `needsHome`, which
+                     * is a different question (does this body have a home, not does the
+                     * callee take one) and left the sites it did not settle with a block
+                     * level - the caller then passed `&__extc_a[1]` while no such array was
+                     * declared, and `tests/arena-promoted/R2a` stopped compiling. */
+                    (void)0;
                 }
             }
         }
@@ -4418,6 +4483,27 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
+    /* Settle every call site that hands an arena down, now that `usesHome` is final.
+     *
+     * This is the one place the value is decided, and it is decided by the flag codegen
+     * reads to decide *whether* to pass anything at all: a callee that takes a home
+     * parameter gets the caller's own, `__extc_home`, which its caller handed to it. The
+     * fixed point above guarantees the caller has one - a body that calls a function with
+     * `usesHome` is marked itself - so no arena array has to be materialized here, and the
+     * `__extc_a` a function declares stays tied to the sites that really allocate.
+     *
+     * Anything left pending is a callee that takes no home parameter, so its site passes
+     * nothing and the field is not read. */
+    for (size_t i = 0; i < all.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&all, i);
+        for (size_t j = 0; j < f->arenaSites.len; j++) {
+            Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+            if (!site->arenaArgPending || !site->func || !site->func->usesHome) continue;
+            site->arenaArg = ARENA_HOME;
+            site->arenaArgPending = false;
+        }
+    }
+
         /* Recompute every site's `refDepth` from its final level, whether or not the level
          * changed.
          *
@@ -4441,6 +4527,23 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 site->refDepth = arenaDepthOf(site->arenaLevel);   /* keep the two in sync */
             }
         }
+        /* `EXTC_DBG_HOME=1` prints, for every function, the two home flags and the arena
+         * levels of its sites. Kept because the pair (`usesHome`, the levels of the very
+         * sites it was computed from) is what has to agree for the generated C to compile,
+         * and a mismatch is invisible in the source: the instance above took its parameter
+         * from one answer and its body from the other. */
+        if (dbgOn("EXTC_DBG_HOME"))
+            for (size_t i = 0; i < all.len; i++) {
+                FuncDef *f = *(FuncDef **)vecAt(&all, i);
+                if (!f->body && !f->isExtern) continue;
+                fprintf(stderr, "[home] %-24s uses=%d needs=%d tmpl=%-12s sites=%zu",
+                        f->instName ? f->instName : f->name, (int)f->usesHome, (int)f->needsHome,
+                        f->tmpl ? (f->tmpl->instName ? f->tmpl->instName : f->tmpl->name) : "-",
+                        f->arenaSites.len);
+                for (size_t j = 0; j < f->arenaSites.len; j++)
+                    fprintf(stderr, " L%d", (*(Expr **)vecAt(&f->arenaSites, j))->arenaLevel);
+                fprintf(stderr, "\n");
+            }
 
         /* Recompute the depths that were deferred until instantiation: they froze the value
          * from before the solver ran, and placement may have moved a site from the home arena
@@ -4680,10 +4783,29 @@ static bool exprCallsAllocator(Checker *c, Expr *e) {
     case EX_REF: return exprCallsAllocator(c, e->u.ref.operand);
     case EX_DEREF: return exprCallsAllocator(c, e->u.deref.operand);
     case EX_SIGN:  return exprCallsAllocator(c, e->u.sign.operand);
+    case EX_CONV:  return exprCallsAllocator(c, e->u.conv.operand);
     case EX_TRY:   return exprCallsAllocator(c, e->u.try_.operand);
     case EX_INDEX:
         return exprCallsAllocator(c, e->u.index.obj) || exprCallsAllocator(c, e->u.index.index);
-    case EX_SLICE: return exprCallsAllocator(c, e->u.slice.obj);
+    case EX_SLICE: return exprCallsAllocator(c, e->u.slice.obj) ||
+                          exprCallsAllocator(c, e->u.slice.lo) ||
+                          exprCallsAllocator(c, e->u.slice.hi);
+    /* `alloc<T>(n)` **is** an allocation, the same as `new` - the loop above only caught
+     * the call shapes, so a body whose only allocation was `alloc` answered "no". */
+    case EX_GENCALL:  return true;
+    case EX_ARRAYLIT:
+        for (size_t k = 0; k < e->u.arraylit.elems.len; k++)
+            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.arraylit.elems, k))) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t k = 0; k < e->u.enumval.args.len; k++)
+            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.enumval.args, k))) return true;
+        return false;
+    case EX_STRUCTLIT:
+        for (size_t k = 0; k < e->u.lit.inits.len; k++)
+            if (exprCallsAllocator(c, (*(FieldInit **)vecAt(&e->u.lit.inits, k))->value))
+                return true;
+        return false;
     case EX_FIELD: return exprCallsAllocator(c, e->u.field.obj);
     case EX_COALESCE:
         return exprCallsAllocator(c, e->u.coalesce.main) ||

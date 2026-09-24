@@ -2,9 +2,14 @@
 //
 // Checked by tests/argv/run.sh: `args.len` counts the program name, and the bytes
 // are not copied -- they point straight at the operating system's argument block.
+//
+// 2026-09-26 从 `println` / `print` 搬到 `io::cout`：内建已弃置，它的弃置警告会混进
+// 这个套件比对的输出里 ✗ 而本文件的判据是 **argv**，不是打印 ✓
+use std::io
+
 fn main(args: slice<slice<u8>>) -> i32 {
-    println(args.len)
-    if args.len > 1 { print(args[1])  print("\n") }
-    if args.len > 2 { print(args[2])  print("\n") }
+    io::cout << args.len << "\n"
+    if args.len > 1 { io::cout << args[1] << "\n" }
+    if args.len > 2 { io::cout << args[2] << "\n" }
     return 0
 }

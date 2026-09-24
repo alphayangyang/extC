@@ -49,6 +49,11 @@ extern!("extc-runtime") fn extc_cout_put(p: ref u8, n: i64) -> void
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_cout_flush() -> void
     effects Addr=0 Cont=0
+/* f64 的格式化。extC 没有变参 ⇒ `snprintf` 从 extC 够不着 ✗，这是**唯一的定长门**：
+ * 运行期里那两行 `snprintf(b, sizeof b, "%g", v)` 与退役中的内建 `print` 用的是**同一个
+ * 格式**（`extc_print` 的 f64 分支）⇒ 从 `println` 搬过来**不会改动输出的任何一个字节** ✓
+ * 有了它，库自己就不再借内建 ✓（`io.extc` 的 `<<(f64)` 曾是最后一处 ✗） */
+extern!("extc-runtime") fn extc_cout_f64(v: f64) -> void
     effects Addr=0 Cont=0
 
 

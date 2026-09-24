@@ -52,7 +52,8 @@ for f in param-type too-many bad-return; do
         echo "  FAIL $f  ->  不是期望的那条：想要「$want」"
         echo "$out" | head -2 | sed 's/^/        /'; fail=1
     else
-        echo "  ok   $f  ->  $(echo "$out" | head -1 | sed 's/^[^ ]*: //' | cut -c1-56)"
+        # 取第一条 **error**：警告（`println` 弃置、未用参数）也写 stderr 而且排在前面 ✗
+        echo "  ok   $f  ->  $(echo "$out" | grep -m1 ': error:' | sed 's/^[^ ]*: //' | cut -c1-56)"
     fi
 done
 

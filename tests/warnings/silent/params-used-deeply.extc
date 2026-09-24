@@ -1,0 +1,27 @@
+// tests/warnings/silent/params-used-deeply.extc —— 参数"用得深"的形状，**一条警告都不该吐**
+//
+// 2026-09-26 加：这一族一次误报了 4 处（`examples/` 里 3 处 + bench 1 处 ✗），
+// 根因都是**走查只看了表达式的一部分**：
+//   · 切片上下界 `a[lo..hi]`              ⇒ `gomoku-board.extc` 的 lo/hi 被误报 ✗
+//   · 转换的操作数 `T(x)`                 ⇒ `growth-factor.extc` 的 r 被误报 ✗
+//   · 外面套着转换的**方法接收者** `T(x.m())` ⇒ `bench/stress` 的 r 被误报 ✗
+//   · 聚合字面量内部 `[f(x)]` / `some(x)` / `S { f: x }`
+// 修法是把"问表达式里出现了什么"的走查**全部**补上这些形状（切片三格 + EX_CONV +
+// 聚合三形状），所以这里把四格都钉住 —— 任何一个走查再漏，这个文件就会响 ✓
+use std::io
+
+fn sliceBoundUse(lo: i32, hi: i32, a: [4]i32) -> slice<i32> { return a[lo..hi] }
+fn convUse(r: f64, v: i32) -> i32 { return i32(r * f64(v)) }
+fn recvUse(r: mut ref pcg32, n: u64) -> i64 { return i64(r.nextBounded(n)) }
+fn aggrUse(x: i32) -> [4]i32 { return [x, x, x, x] }
+
+fn main() {
+    var a: [4]i32 = [1, 2, 3, 4]
+    var g = pcg32::seeded(7)
+    /* 一条语句一行：extC 没有续行 ✓ */
+    io::cout << sliceBoundUse(i32(1), i32(3), a).len
+    io::cout << " " << i64(convUse(f64(2), i32(3)))
+    let arr = aggrUse(i32(9))
+    io::cout << " " << i64(arr[0] + arr[3])
+    io::cout << " " << recvUse(ref g, u64(10)) << "\n"
+}

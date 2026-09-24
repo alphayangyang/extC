@@ -1499,6 +1499,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * a no-op. What the compiler still does is *prove* a leak when it can: see the
              * "opened and never closed" check in `check_top.c`. */
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
+                /* `print` / `println` are **deprecated** (2026-09-26). They are builtins
+                 * dispatched by name, and they write through C's stdio - a second buffer
+                 * that `io::cout`'s cannot be ordered against. Measured: a program whose
+                 * last statement was `io::cout << "x"` printed nothing at all, and one that
+                 * mixed the two printed the `println` side first. `io::cout` is the one
+                 * console path, and it is a stream over an `fd`, so it can grow a file, a
+                 * pipe or a buffer later; a builtin name cannot.
+                 *
+                 * The library migrated first - its `<<(f64)` was the last user inside the
+                 * compiler's own sources - so this warning is always about the program's own
+                 * call sites. It is a warning and not an error because the corpus still has
+                 * hundreds of them; the note is the migration, and the migration is
+                 * mechanical: `println(a, b)` becomes `io::cout << a << b << "\n"`. */
+                ckWarn(c, e->line,
+                       "`io::cout` is the one console path -- `use std::io`, then"
+                       " `io::cout << x` (`println(x)` is `io::cout << x << \"\\n\"`)",
+                       "`%s` is deprecated", name);
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
                     Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
                     Type *at = checkPrintArg(c, a); /* takes a value, so it dereferences */

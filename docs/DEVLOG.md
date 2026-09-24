@@ -7,6 +7,100 @@
 
 ---
 
+## 2026-09-26 · `#66` 一次改到位（限定名两条解析路合一）—— 顺藤摸出**四处配对不一致**、两处**静默错值**、一族**走查漏格**，以及 `println` 弃置
+
+> 主人的话：「修啊」→「我有预感有一个更根本的bug」→（量出来之后）「println弃置了」
+> 「给println/print的调用变成一个特别的编译错误吧」→（量完 392 文件 / 938 处）「呃呃那就写成警告」
+> 「草，库文件不能够使用print/println了」「标明已经弃置」✓
+
+### ① `#66`：限定名后面跟 `.`（一次改到位）
+
+**形状**：`mod::name` 后面跟 `.` 时，解析器**自己拼**了一个 `EX_IDENT("mod::value")` ✗ ——
+而限定名要成为"值"只有一条路：`looksLikeAssoc` 建出的 `EX_ASSOC` ✓（`io::cin >> x` 走的就是它 ✓）
+⇒ 同一个东西两种表示，只有一种认识"值" ✗ ⇒ `io::cin.bad()` 报 *only direct function calls*、
+`io::cin.fd` 报 *undefined name* ✗，而 `cin.fd`、`io::cin`、`io::cin >> x` 全是好的 ✓
+
+**修法**（两处，一次到位）：解析器的 lookahead **只抢 `{`** ✓（结构体字面量那条不变），
+`.` 让给 postfix 循环 ✓；"这其实是**限定类型的变体**"的判断**挪进检查器** ✓
+（`EX_FIELD` / `EX_METHOD` 两侧都已有"接收者是类型名 ⇒ 枚举变体"的分支 ✓，缺的只是接收者形状 ✓）；
+而 `EX_ASSOC` 到了 loader 那里只认**函数 / 全局** ✗ ⇒ 补第三支：**限定名也可以是个类型**
+（`unitType` + `renOfTarget` ⇒ 产出与 `rwQualifiedTypeName` **同形**的 `EX_IDENT` ✓）
+
+**实测**：`io::cin.fd` ✓ `io::cin.bad()` ✓ `io::cout << …` ✓，库里的**带载荷变体**
+`io::ioError.closed(fd)` ✓（这条一开始把 `examples/stream-sum.extc` 打挂了 ✗，正是它指的路 ✓）。
+判据 `tests/qname/t17.extc` + `lib/sub/payload.extc`，`t1[1-7]` 全进 `run.sh` ✓
+
+### ② 顺藤摸出**四处"同一件事算两遍"** ⇒ 生成的 C 编不过（PLAN `#70`）
+
+`tests/arena-promoted/R2a` 一直红：`f_i32` 的签名没有 `__extc_home`，函数体却读它 ✗
+
+1. **泛型实例的 `arenaSites` 是模板的浅拷贝**：`*in = *tmpl` 拷的是**结构体** ⇒ 同一份数组、
+   **当时的长度** ✗ 而实例是在**调用点**建的，调用者可能声明在模板**前面** ⇒ 模板后来
+   `vecPush` 出来的站点，实例那边**看不到**（实测：模板 `sites=1 L-1`，实例 `sites=0` ✗）
+   ⇒ 修法：所有函数体查完之后，实例的列表**重新指向**模板那一份 ✓（放同一份数组、取当前长度 ✓）
+2. **调用点投递 home 的权威用错了**：原来判的是**属主**函数的 `needsHome` ✗
+   —— 该看**被调者**的 `usesHome` ✓，因为 codegen 决定"传不传"用的就是它 ✓
+   ⇒ 修法：定点跑完**按 `usesHome` 结清**每个待定站点 ✓（并删掉那条会误导的分支 ✓）
+3. **`main` 的 home 是 `&__extc_a[1]`，而数组只在 `mayUseArena` 时声明** ✗ ⇒ 与已有的两条
+   额外理由（@overwrite 格子 / `main(args)`）同型，补第三条：`isMain && usesHome` ⇒ 必须有数组 ✓
+4. **非 void 函数自然落空 ⇒ 返回未初始化的槽** ✗（实测 `f(false)` 拿到栈上垃圾 ✗）
+   原来只有 `noArena` 那条路有 trap ✗ ⇒ 去掉 `noArena` 条件，落空一律 `trap` 带位置 ✓
+
+⇒ `arena-promoted` 21 个用例全绿 ✓（追这条时先把"我的改动是不是元凶"用 `git stash` 量了一遍 ✓
+—— **它在我改之前就红** ✓ 这条纪律值得保留：报红先问"是不是我"，再问"为什么" ✓）
+
+### ③ 两处**静默错值**（PLAN `#71`）
+
+- **`main` 的退出码在有 arena 时被吞**：`cgReturn` 把它写成 `(void)(…)`、epilogue 一律 `return 0` ✗
+  ⇒ 与 MANUAL 那句「**返回值就是进程退出码**」直接冲突 ✓ 修法：`main` 也走 `__extc_ret_v` 槽
+  （`retSlot` 去掉 `!isMain`）⇒ 实测 `fn main() -> i32 { var p = new i32  return i32(*p) }`
+  **退出码 = `*p`**（之前恒 0 ✗）✓
+- **cout 尾巴丢**：`main` **自然落空**时，`cgReturn` 与 epilogue 里的 flush 一个都不经过 ✗
+  ⇒ 程序最后一句 `io::cout << "x"` 什么都不印 ✓ 修法：`main` 前言挂一次 `atexit(extc_cout_flush)` ✓
+  （显式 flush 保留 ✓ 一次覆盖落空 / `return` / trap / `proc::exit` ✓）
+
+### ④ 走查漏一族（PLAN `#72`）：四格 + 八处
+
+未用参数警告**误报 4 处** ✗ —— 逐个查下去发现根因不是警告本身，而是
+**"问表达式里出现了什么"的走查只看了一部分**：
+`a[lo..hi]` 只走 `obj`（上下界漏 ✗）· `T(x)` 的 `EX_CONV` 没有分支（直接掉 `default` ✗）·
+聚合字面量（数组 / 枚举 / 结构体）在若干走查里也是 `default` ✗
+
+用脚本把 AST 的 25 个 `EX_*` 与**每个**走查的 `case` 做差集，找出八处并一次补齐 ✓
+其中几处是**真缺陷**，不只是少一条警告：`collectEffectsExpr` 漏聚合里的调用 ⇒ **效果摘要不完整** ✗；
+loader 的 `rwExpr` 漏上下界 ⇒ `s[0..lib::N]` 里的限定名**解析不了** ✗；
+`exprCallsAllocator` 漏 `EX_GENCALL` ⇒ `alloc<T>(n)` **不算分配** ✗
+
+**判据**：新增 `tests/warnings/silent/params-used-deeply.extc` —— 把四格**故意写深**，
+外加 `tests/warnings/run.sh` 第 ④ 节（语料是"碰巧覆盖"，静默用例是"**故意**覆盖" ✓）
+剩下的真未用参数只有 `examples/borrowing.extc` 一处 ⇒ 顺手把例子改成"返回较大的那个"
+（`pickBigger`：结果**只能来自实参** —— 比原来那句注释更贴题 ✓）
+
+### ⑤ `println` / `print` 弃置（定案 91）
+
+**先量账再动手**：正例语料 **392 个文件 / 938 处** ✗，而且 `<<` 缺 **`i32`** 与
+**结构化类型**两个必需重载（搬到 `tests/argv/args.extc` 时当场撞上 `<<` 没有 `i32` ✗）
+⇒ 立刻报错 = 整棵语料全红 + 那些形状根本搬不过去 ✗ ⇒ 主人拍板「那就写成警告」✓
+
+- **库先搬干净**：`io.extc` 的 `<<(f64)` 是最后借内建的一处 ✗ ⇒ 新增运行期定长门
+  `extc_cout_f64`（两行 `snprintf(b, sizeof b, "%g", v)`）✓ extC 没有变参 ⇒ `snprintf`
+  从 extC 够不着，这个门是唯一入口 ✓ **格式与老内建同一个** ⇒ 实测 10 个 f64 值
+  **逐字节相同**（`0 · 1.5 · -3.25 · 0.1 · 1/3 · 1.23457e+08 · 1e+308 · 1e-308 · 2.5e-10 · -1e-06`）✓
+  且**只在被调用时才发射**（`needCoutF64`）⇒ 不打印浮点的程序不背那 9 行 ✓
+- **警告本体**：`ckWarn` 一条，note 就是搬家说明 ✓ `-w` 能关 ✓ 不改退出码 ✓
+- **扫描要看得见**：`tools/parrun.py` 的 `warn-scan` 把弃置提醒**单列计数**
+  （`strip_deprecated` ✓ 439 处）—— 其余警告**仍然一条不许响** ✓ 这是"清单一律要能自己消失"的做法 ✓
+- **代价实测**：cout 类程序生成 C **+5 行**（f64 门 9 行 − 不再借 stdio 的 `print` 约 4 行 ✓）；
+  `globals.extc` **0 行** ✓
+
+### 本轮全量实测
+
+`gcc -Wall -Wextra` **0** · `clang -Wall -Wextra` **0** · `clang -Weverything`（只允许清单类别）**0** ·
+error **0**（89 个 examples ✓）· 语料 **256/0** · **21 个套件全绿** ✓
+（含 `warnings` 的 ④ 静默用例、`argv`（两个用例已搬去 `io::cout` ✓）、`qname` 的 `t17` ✓）
+
+---
+
 ## 2026-09-24 · 流运算符 `<<` `>>` 进可重载集合 + 重载按右操作数精确类型（①②一起来）
 
 > 主人：「**来吧，1 2 一起来，我支持，运算符确实可以特殊一点毕竟这么用本来就是为了方便好写**」✓
