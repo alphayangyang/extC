@@ -8250,3 +8250,26 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 
 同轮补记（第 14 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r19.log`）。
 #80 的修法与语料 262/0、六个套件一起构成四道闸门全过。
+
+### 周期 20（第 20 轮）：交接说明 —— 目标剩余三件、各自入口与纪律
+
+仓库存量：本条目之前 HEAD 为 `10f3ad1`，四道闸门全绿（`check.sh quick` 25/0 · 语料 262/0 · hashmap 含
+canary 与 ASan · stl · pool · linmap · generics · genmatrix）。剩余三件，入口都写在这里，不必重新推导：
+
+1. **#79 后半：返回类型与实参的实例期检查。** 入口是 `check_top.c` 的 `runMethodCheck` —— 它今天只查
+   「方法存在 + 实参个数」，返回类型与实参类型仍是模板期用错误类型放行的。解法方向（#79 行里也记了）：
+   给推迟调用一个**通配/依赖类型**（**不能**继续用 `TY_ERROR`：它会把模板期后续类型一起污染，`var i =
+   k.hash() & mask` 就是这么让后面那条 `==` 丢掉推迟记录的），并把**包含该调用的整条语句**在实例期重检
+   （`c.substParams` / `c.substArgs` 现成，`RefCheck` 那族就是按节点重跑的）。验收：`return v.hash()` 这类
+   「结果流进需要真类型的上下文」的泛型体要能编过，且类型真的不匹配时在实例期报错。
+2. **③ 有序 `map<K, V>`：等作者裁决**树型（红黑 / AVL / 其他）与节点住哪（池 / arena）。K 要有 `cmp` /
+   `less` 协议 —— 机制与 #57 完全相同（按形状认协议 + 实例化时检查），今天已经能用。可复用的现成件：
+   池底表在 `stdlib/stl/hashMap.extc`（`slot` 桶到稠密 + `bucketOfDense` 反查 + `rebuild` 不搬值），
+   以及 #80 修好后的「泛型装泛型」。
+3. **④ `varArray` 是否迁池底：等作者裁决。** 清单在周期 10 那条：定义在 `stdlib/prelude.extc:157`，
+   使用面 35 文件 / 66 处，且它今天明确写着「没有 `shrink_to_fit`、内存还不了」。倾向：保持 arena 底不动，
+   池底留给显式 import 的 `stl::vector`。
+
+纪律备忘（下次接手照这个走）：每步四道闸门 —— `tests/hashmap` · `tests/stl` · `tests/pool` · `tests/linmap` ·
+`tests/genmatrix` ＋ 语料 ＋ `check.sh quick </dev/null`（**必须重定向 stdin**，否则 IO 节被 SIGTTIN 挂死）；
+文档不加 ✓ / ✗ / ⚠️ / emoji；随做随提交；绝不留红树；不并跑两个构建。
