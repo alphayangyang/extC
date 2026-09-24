@@ -7,6 +7,27 @@
 
 ---
 
+## 2026-09-26（第七段）· 期 1 收口：zone 按标记回退 + 容器接入 release
+
+**zone 压/弹不平衡（#75）的修法**：不再追求「压几次就弹几次」，而是**按标记回退** ——
+进入一个地方时记住当时的深度（`__extc_zm<层>`），离开时 `extc_pool_zoneLeaveTo(mark)`
+弹到那个深度为止。早退路径（`return` / `break` / `continue`）因此天然配平，多余的回退幂等。
+
+**地方判定**：`modName` 为空 = 入口文件的函数 = 一个地方；库函数（`modName` 是模块名）对地方
+透明，所以 `pool<T>::withCap` 里建的池属于它的调用者所在的地方。这个判据是实测出来的：
+先用「名字里有没有 `$`」，但方法名与 `instName` 都不带 `$`，于是库构造函数自己压了 zone，
+池随构造返回就被回收（症状是 `made=0`）。
+
+**容器接入**：`std/pool.extc` 加字段 `pid`（构造时 `syspool::extc_pool_new(i64(-1))`）与
+**`release()`**（作者命名，不叫 close：作用域结束这棵树本来就会自动清空），保留 `clear()`。
+
+**验收**（`tests/pool/` 失败 0，`check.sh quick` 24 节 0 失败）：
+rt_zone `depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0` ·
+rt_reuse `same=true gen=1->2` · rt_container `live=0 made=1 closed=0 again=1 out=0` ·
+rt_blockexit `before=0 in=1 rid=0 after=0 two=2 gone=0` · 阶段 0 churn 恢复平（1728 → 1664 KB）·
+canary 仍会响 · ASan 与 gcc/clang `-Werror` 干净。
+---
+
 ## 2026-09-26（第六段）· 机制改名：region -> pool（arena / pool / zone 三分）
 
 > 主人：「你觉得 region 这个名字会不会带来混乱啊，我感觉还是 pool 好些呢」→「那就先把名字换成 pool 吧」
