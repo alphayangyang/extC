@@ -196,6 +196,22 @@ C 名字后缀规则跟着定了：**只有一个**实现 ⇒ 不加后缀（`ve
 判据：`tests/ops/stream-ref.extc` 三跳 + `errors/ref_{value,arg}.extc` 两条教学口径 ⇒ ops 19 → 22 ✓
 语料 254/0 · io 19 · modules 23 · ctor · genmatrix 13 · fs · fs-shape 全绿 ✓
 
+### ⑩ 定案 88 第 2 步：`@noCopy`（状态有身份的类型不许按值拷）
+
+机制三处：`StructDef.noCopy` · parser 收 `@noCopy`（只许写在 struct 上）· `rejectNoCopy` ✓
+**只有两扇门**决定"这里需要一个值"：`checkValue` 与 `checkInto` ⇒ 谓词一个、门两扇 ✓
+**只挡 place**：`var s: ifstream = fs::ifstream(p)?` 必须能过（拷的是调用刚产出的临时值）⇒
+规则写成"noCopy **且** isPlace 才报" ✓ 于是造新值 / `ref` 传参 / 读字段 / 调方法照旧 ✓
+
+⚠️ 坑：**一个文件里只报第一条错误** ⇒ 四个复制点（绑定·实参·字段·赋值）必须写成**四个反例文件**，
+写在一起会误以为只挡了一个 —— 我先踩了一次，判据 `tests/nocopy/` 就按四个文件钉 ✓
+
+上到 `reader`/`writer`/`ifstream`/`ofstream`：**一个调用点都没改**（库里本来就全程按 ref 传 ✓）；
+两处**测试**跟着改成按 `ref` 收，其中反例 `write-as-input` 回到钉"类型不匹配"（两条规则别互相遮 ✓）
+
+`tests/nocopy/` **5 项** = `check.sh` 第 **24** 节 ✓ 语料 254/0 · ops 22 · ctor · io 19 · modules 23 ·
+genmatrix 13 · fs · fs-shape 全绿 ✓
+
 ### 还欠的
 
 `cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·

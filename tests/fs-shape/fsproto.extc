@@ -28,7 +28,8 @@ use std::io
 
 /* 只收**读型** —— `run.sh` 的反例会拿 `ofstream` 调它，看编译器报不报 ✓
  * ⚠️ 它必须**真被用到**（否则触发"没人用"的警告 ✗）⇒ 下面正例里用了一次 ✓ */
-fn fdOf(f: fs::ifstream) -> i32 { return f.fd }
+/* 按 `ref` 收：`ifstream` 是 `@noCopy`（状态有身份）⇒ 按值传会被挡住 ✓ */
+fn fdOf(f: ref fs::ifstream) -> i32 { return f.fd }
 
 fn go() -> result<unit, io::ioError> {
     // ---------- 写：openWrite ⇒ 类型是 ofstream（原内容被清掉）----------
@@ -41,7 +42,7 @@ fn go() -> result<unit, io::ioError> {
     var inp = fs::openRead("build/fsproto-out.txt")?
     var buf: [64]u8
     let n = inp.readSome(buf[..])?
-    println("读到 ", n, " 字节 · fd = ", fdOf(inp))
+    println("读到 ", n, " 字节 · fd = ", fdOf(ref inp))
     inp.close()?
 
     // ---------- 追加：openAppend ⇒ 原内容**保留** ----------

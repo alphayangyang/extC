@@ -1,0 +1,10 @@
+/* 反例：塞进另一个结构体的字段 = 拷贝 ⇒ 必须挡住 */
+@noCopy
+struct counter { pos: i64 }
+struct box { c: counter }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }
+    var b: box = { c: a }       /* ✗ 拷贝 */
+    println("不该编过", b.c.pos)
+    return 0
+}

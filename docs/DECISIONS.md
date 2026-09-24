@@ -2751,6 +2751,30 @@ no method `put` on `ifstream`
 —— 两条都必须是**教学口径**（`can only be chained`），不是泛泛的"引用不是值" ✓
 `tests/ops` **19 → 22 项** · 语料 254/0 · io 19 · modules 23 · ctor · genmatrix 13 · fs · fs-shape 全绿 ✓
 
+### 落地记录（2026-09-24，第 2 步：`@noCopy`）
+
+**机制三处**：`StructDef.noCopy`（注解位）· parser 收 `@noCopy`（**只许写在 `struct` 上** ——
+写在 `type` 上当场报"枚举是按值拷的，没有拷贝可禁" ✓）· 检查器的 `rejectNoCopy` ✓
+
+**放在哪两个门口**（这是这一条的关键设计）：语言里决定"这里需要一个值"的**只有两处** ——
+`checkValue`（条件 / 运算数 / 被丢弃的读）与 `checkInto`（实参 / 返回值 / 带注解的绑定）⇒
+谓词一个、门两扇 ✓（与第 1 步同一个纪律：**一处规则一处实现** ✓）
+
+**只挡 place，不挡新值**：`var s: ifstream = fs::ifstream(p)?` **必须能过** ——
+那里拷的是调用刚产出的临时值，不是任何已有名字的对象 ✓ 所以规则是
+"**noCopy 且 `isPlace(e)`** 才报" ✓ 于是这四件事照旧：造新值 · `ref` 传参 · 读字段 · 调方法（接收者不是值位置）✓
+
+**四个复制点全覆盖，判据逐个隔离**（⚠️ 一个文件里**只报第一条错误** ⇒ 四个反例必须写在四个文件里，
+写在一起会误以为只挡了一个 ✗ ——这个坑我自己先踩了一次）：绑定 · 实参 · 字段初始化 · 赋值 ✓
+`tests/nocopy/`（**5 项**，`check.sh` 第 **24** 节）✓
+
+**上到库里**：`std::io` 的 `reader`/`writer` · `std::fs` 的 `ifstream`/`ofstream` 加注解 ⇒
+**一个调用点都没改**（它们本来就全程按 `ref`/`mut ref` 传 ✓——这正好验证了定案 77 那个取舍是对的 ✓）
+⚠️ 两处**测试**要跟着改：`fsproto.extc` 的 `fdOf(f: ifstream)` 改成 `ref`（按值收本来就该挡 ✓）；
+`write-as-input.extc`（反例）也改成按 `ref` 传 ⇒ 它钉的重新变回**类型**不匹配
+（`argument expects \`ref fs::ifstream\`, found \`mut ref fs::ofstream\``），而不是被 `@noCopy` 先接住 ——
+**两条规则各钉各的，不要互相遮** ✓
+
 ## 定案 87 · **文件类型叫 `ifstream` / `ofstream`**（2026-09-24，主人拍板：「分开即可，保持解耦」）
 
 > 起因：做文件那一块之前问主人 —— 要不要 C++ 那种**一个类型带模式**的 `fstream`

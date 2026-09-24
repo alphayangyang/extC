@@ -2,10 +2,12 @@
  * 这条就是"读型/写型分成两个 struct"的全部价值 —— 它不是命名口味问题，是编译期判据 ✓ */
 use std::fs
 
-fn wantsInput(f: fs::ifstream) -> i32 { return f.fd }
+/* 形参按 `ref` 收 —— 这样这一格钉的就是**类型**不匹配（读型 vs 写型），
+ * 而不是"按值传"那条（那是 @noCopy 的活，两者都在，各钉各的 ✓） */
+fn wantsInput(f: ref fs::ifstream) -> i32 { return f.fd }
 
 fn main() {
     var out = fs::openWrite("build/nope.txt")!
-    println(wantsInput(out))       // ✗ 写型传给只收读型的函数
+    println(wantsInput(ref out))       // ✗ 写型传给只收读型的函数
     out.close()!
 }

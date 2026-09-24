@@ -46,7 +46,7 @@ check_err() {   # check_err 文件 消息里必须出现的关键字
     fi
     echo "  ok   $f  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
 }
-check_err write-as-input  "argument expects \`fs::ifstream\`, found \`fs::ofstream\`"      # 写型当读型用
+check_err write-as-input  "argument expects \`ref fs::ifstream\`, found"      # 写型当读型用
 check_err read-as-output  "no method \`put\`"           # 读型当写型用
 
 echo "== 平台常量不外露（\`O_*\` 只在特权层）=="

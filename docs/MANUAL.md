@@ -1965,6 +1965,35 @@ struct pt {
 > （分配快路径 + `malloc` 慢路径 + 调用点多 ⇒ 被 size 启发式挡掉）标上之后
 > rebuild **100.7 → 25.7ms**、churn **140.9 → 38.2ms**（3.9×）✓
 > ⇒ **先量再用**：`objdump` 里还有 `call` 才谈得上"内联能不能帮上忙" ✓
+### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
+
+```extc
+@noCopy
+struct reader {
+    fd:  i32
+    len: i64
+    pos: i64        // ← "读到哪了"就是它的**身份**
+}
+```
+
+标了 `@noCopy` 的类型**只能按 `ref` / `mut ref` 传**，按值拷贝**编译期报错**并教你怎么改：
+
+    error: `reader` is `@noCopy`: it may not be copied by value
+    note:  Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter `mut ref T`.
+           The state it carries has an identity, so a copy would give two names to one position.
+
+**四个复制点全挡**：绑定（`var b = a`）· 实参（`f(a)`）· 字段初始化（`{ c: a }`）· 赋值（`b = a`）✓
+**而这四件事照旧成立**：造新值（`reader { fd: 0, len: 0, pos: 0 }` / 构造函数）· `ref` 传参 ·
+读**字段**（`r.pos` 是 `i64`）· 在它上面**调方法**（接收者不是值位置）✓
+
+**为什么需要它**（四个语言一致的规矩）：拷贝一个 `reader` ⇒ 两份对象、同一个缓冲、**两个位置**，
+读起来互相穿插而两个名字都看不出来 ✗ —— C++ 删拷贝构造 · Rust 移动+借用 · Go 传指针 ·
+Python 无隐式对象拷贝，说的都是这一件事 ✓ 而它同时是**流式链式**（`fin >> x >> line`）的地基：
+链式靠"返回的是同一个对象"，那就必须保证没人能悄悄拷它 ✓
+
+**在库里已经用上**：`std::io` 的 `reader` / `writer` · `std::fs` 的 `ifstream` / `ofstream` ✓
+（它们本来就全程按 `ref` / `mut ref` 传 —— 加上注解后**一个调用点都没改**，这也验证了这个取舍 ✓）
+
 
 ### 12.5 输入输出：`std::io`（2026-09-24 更新）
 

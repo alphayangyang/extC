@@ -437,6 +437,14 @@ struct StructDef {
                                   * one is interned by ttGeneric instead */
     bool        reserved;        /* came from the prelude: the user may neither redefine it
                                   * nor add methods to it */
+    /* `@noCopy`: this type may not be copied by value -- it may only be passed as
+     * `ref` / `mut ref`. A type whose state has an **identity** is the reason: copying a
+     * `reader` (or an `ifstream`) gives two objects over one buffer with two independent
+     * positions, and reads then interleave in a way neither name shows. Every language
+     * that has such types says so one way or another -- C++ deletes the copy constructor,
+     * Rust moves and borrows, Go passes a pointer, Python has no implicit object copy;
+     * extC writes it down as an annotation. */
+    bool        noCopy;
     /* Which file it came from, which module, and whether it is `@private`. */
     Ctx        *ctx;
     const char *modName;

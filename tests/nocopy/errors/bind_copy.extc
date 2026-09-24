@@ -1,0 +1,9 @@
+/* 反例：绑定一个**已有的**值 = 拷贝 ⇒ 必须挡住（两个名字，一个位置 ✗） */
+@noCopy
+struct counter { pos: i64 }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }
+    var b: counter = a          /* ✗ 拷贝 */
+    println("不该编过", b.pos)
+    return 0
+}

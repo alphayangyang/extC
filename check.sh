@@ -120,6 +120,11 @@ if out=$(timeout 600 bash tests/ops/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · 流运算符 · 重名分派 · mangle · 9 反例 · 两条不许漏到 gcc）"
 else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
 
+echo "== @noCopy（状态有身份的类型不许按值拷：正例 4 件事 · 四个复制点全挡 —— 见定案 88）=="
+if out=$(timeout 600 bash tests/nocopy/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（新值/ref 传参/读字段/调方法照旧 · 绑定·实参·字段·赋值四个复制点全挡 ✓）"
+else bad "tests/nocopy/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 构造函数（`T(args)` 就是 `T::new(args)`：糖=显式 · 可失败 · 泛型 · 3 反例）=="
 if out=$(timeout 600 bash tests/ctor/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（正例 3 · 反例 3 —— 无 new 教你怎么写 · 返回类型必须对 · 实参个数）"

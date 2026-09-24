@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/* Defined further down, but the value-position rule that calls it comes first. */
+static bool rejectNoCopy(Checker *c, Expr *e, Type *t);
+
 /* --------------------------------------------------------------- escape checks
  *
  * The one reference rule: if a reference `r` points at a value `v`, then
@@ -1826,6 +1829,7 @@ Type *checkValue(Checker *c, Expr *e) {
      *
      * Returns:
      *   The value type, with a reference type replaced by its target. */
+    rejectNoCopy(c, e, t);
     if (t && t->kind == TY_REF && e->kind != EX_REF && e->kind != EX_GENCALL) {
         ckError(c, e->line,
                 t->nullable
@@ -1853,6 +1857,7 @@ Type *checkInto(Checker *c, Type *want, Expr *e) {
     if (want) desugarBareCtor(c, e, want);
     Type *got = checkExpr(c, e);
     rejectStreamBorrow(c, e);
+    rejectNoCopy(c, e, got);
     /* As in `checkValue`: a reference supplied where no reference is expected is an
      * error. */
     if (got && got->kind == TY_REF && (!want || want->kind != TY_REF)) {
@@ -1900,6 +1905,38 @@ Type *checkPrintArg(Checker *c, Expr *e) {
  *
  * Returns:
  *   The type of the unwrapped payload for `?`, otherwise the value type. */
+/* Refuse to copy a `@noCopy` value.
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression in a value position
+ *   t - its type
+ *
+ * Returns:
+ *   True after reporting.
+ *
+ * Notes:
+ *   - Only a **place** is refused: `var s: ifstream = f()` binds a value the call just
+ *     produced, which is not a copy of anything, while `var s2 = s` gives a second name
+ *     to one reader whose position then moves behind the other name's back -- the exact
+ *     failure the annotation exists to prevent.
+ *   - `ref s` is a reference, not a copy, and stays legal.
+ *   - The two callers are the two places the language decides "a value is needed here":
+ *     `checkValue` (conditions, operands, discarded reads) and `checkInto` (arguments,
+ *     returns, annotated bindings). One predicate, two doors.
+ */
+static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
+    if (!e || e->kind == EX_REF || !t) return false;
+    StructDef *sd = structOf(ttBase(t));
+    if (!sd || !sd->noCopy || !isPlace(e)) return false;
+    ckError(c, e->line,
+            "Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter"
+            " `mut ref T`. The state it carries has an identity, so a copy would give two"
+            " names to one position.",
+            "`%s` is `@noCopy`: it may not be copied by value", DN(sd));
+    return true;
+}
+
 /* Is this expression the **borrow** that a stream operator hands back?
  *
  * `fin >> x` returns `mut ref ifstream`: the same object, so that the next `>>`

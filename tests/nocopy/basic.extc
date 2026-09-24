@@ -1,0 +1,26 @@
+// expect: 读 = 1 位置 = 1|字段 = 5|按引用传 = 2
+/* `@noCopy`（定案 88 第 2 步）：状态**有身份**的类型不许按值拷贝 ✓
+ * 四个语言一致的规矩：C++ 删拷贝构造 · Rust 移动+借用 · Go 传指针 · Python 无隐式对象拷贝 ✓
+ *
+ * 判据（正例：这四件事**必须**照旧成立）：
+ *   ① 造一个新值 ✓（`{ pos: 0 }` 是新的，不是拷贝）
+ *   ② 按 `ref` / `mut ref` 传 ✓
+ *   ③ 读它的**字段** ✓（读出来的是字段那个类型，不是这个类型）
+ *   ④ 在它上面调方法 ✓（接收者不是值位置）
+ */
+@noCopy
+struct counter { pos: i64
+    fn next(self: mut ref counter) -> i64 { self.pos = self.pos + 1  return self.pos }
+}
+fn bump(c: mut ref counter) -> i64 { return c.next() }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }              /* ① 新值 ✓ */
+    println("读 = ", bump(ref a), " 位置 = ", a.pos)   /* ② 按引用 ✓ ④ 方法 ✓ */
+
+    var five: counter = { pos: 5 }
+    println("字段 = ", five.pos)             /* ③ 字段 ✓ */
+
+    var b: counter = { pos: 1 }
+    println("按引用传 = ", bump(ref b))
+    return 0
+}

@@ -1,0 +1,9 @@
+/* 反例：按值当实参 = 拷贝 ⇒ 必须挡住，并教"改成 ref" */
+@noCopy
+struct counter { pos: i64 }
+fn take(c: counter) -> i64 { return c.pos }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }
+    println("不该编过 = ", take(a))
+    return 0
+}

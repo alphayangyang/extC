@@ -442,6 +442,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
          * default, so hiding one has to be written out. */
         bool isPrivate = false;
         bool fnInline  = false;
+        bool noCopy    = false;
         /* `@private` hides a declaration; `@inline` asks for a function to be inlined.
          * They are read together because both may precede the same declaration, and the
          * order between them carries no meaning. Any other annotation is an error: these
@@ -465,6 +466,11 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
+            if (strcmp(nm->text, "noCopy") == 0) {
+                noCopy = true;
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
                 ctxError(ctx, a->line, a->col,
                          "The annotation is designed but not implemented yet, and accepting"
@@ -474,7 +480,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             ctxError(ctx, a->line, a->col,
                      "The top-level annotations today are `@private` (hide a declaration from"
-                     " other modules) and `@inline` (on a function). `@overwrite` is for"
+                     " other modules), `@inline` (on a function) and `@noCopy` (on a struct:"
+                     " it may only be passed as `ref` / `mut ref`). `@overwrite` is for"
                      " locals.",
                      "unknown top-level annotation `@%s`", nm->text);
             return false;
@@ -483,8 +490,15 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             StructDef *s = parseStruct(&p);
             if (!s) return false;
             s->isPrivate = isPrivate;
+            s->noCopy    = noCopy;
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "type")) {
+            if (noCopy) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "Only a `struct` has a copy to forbid; an enum is copied as a value.",
+                         "`@noCopy` goes on a `struct`");
+                return false;
+            }
             TypeDef *td = parseTypeDecl(&p);
             if (!td) return false;
             td->isPrivate = isPrivate;

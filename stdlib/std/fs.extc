@@ -33,6 +33,7 @@ use std::sys::io as sysio
 
 /* ---------------------------------------------------------------- 读型 */
 
+@noCopy
 struct ifstream {
     fd:   i32
     open: bool
@@ -110,6 +111,7 @@ struct ifstream {
 
 /* ---------------------------------------------------------------- 写型 */
 
+@noCopy
 struct ofstream {
     fd:   i32
     open: bool

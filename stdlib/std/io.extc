@@ -128,6 +128,7 @@ fn writeBytes(buf: slice<u8>) -> i64 {
  * NOTE: when the fd is STDOUT, the `println` side must be flushed **before every
  * flush**, or the two streams interleave out of order again (the same trap as
  * `writeBytes` above). */
+@noCopy
 struct writer {
     fd:  i32
     buf: mut slice<u8>
@@ -186,6 +187,7 @@ fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
 
 /* ================================================================ reader */
 
+@noCopy
 struct reader {
     fd:    i32
     chunk: mut slice<u8>

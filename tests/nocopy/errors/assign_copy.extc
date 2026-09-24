@@ -1,0 +1,10 @@
+/* 反例：赋值 = 拷贝 ⇒ 必须挡住 */
+@noCopy
+struct counter { pos: i64 }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }
+    var b: counter = { pos: 1 }
+    b = a                       /* ✗ 拷贝 */
+    println("不该编过", b.pos)
+    return 0
+}
