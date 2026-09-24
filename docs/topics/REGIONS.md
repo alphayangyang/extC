@@ -137,16 +137,29 @@ p.reset()                                        /* 清空但复用块（churn �
    ⇒ 一句话：**这套方案保证"不漏"，不保证"自动收缩长命数据"** ✓
 4. **`slice` 对 region 容器不再适用**（主人已确认）⇒ 用 §5 的 `copyInto`/`forEach` 兜 ✓
 5. **原地扩展只是优化**：它救不了服务级长命容器（那要靠 `reset`）✓
+6. ⚠️ **残留的一个小洞（记下来，别当没有）**：从 region 内存取到的引用（例如容器方法内部
+   "查表拿到 descriptor" 那一下），在类型上会被当成 **depth 0**（`extern!` 返回的指针没有深度
+   信息）⇒ 理论上它"哪儿都能存" ✗ ⇒ 今天靠**"库不把这种引用交给用户"**这条纪律挡 ✓
+   真要补上，就是第 4 期那件事（深度传播）✓ 所以第 4 期不是锦上添花，而是**这条纪律的替代品** ✓
 
 ## 8. 落地分期（每期都能独立验收）
 
 | 期 | 做什么 | 动编译器？ |
 |---|---|---|
-| **0** | **纯库**：注册表 + handle + generation 校验（用 `extern!("extc-runtime")` 声明运行时已有的 arena 函数 —— 跟 raw 终端那套同一个做法 ✓）| 只需一处**按需发射**钩子（照 `extc_raw_enter` 那条路 ✓）|
-| **1** | 库：`buf<T>`（先"拷贝式增长"，够用 ✓）· dense/sparse `set` · region 版 `varArray`/`string` · `count`/`copyInto`/`forEach` | 不碰 ✓ |
-| **2** | `bench/churn`：还槽位 vs 不还 · 列 + handle vs 指针跳转（**SIMD 那条必须有数字**）| 不碰 ✓ |
-| **3** | 运行时：arena **子链** + `extc_region_*` + `buf` 的**原地扩展** | 运行时 ✓ |
-| **4** | 语言侧最小化：`region` 值类型 + `new (r) T[n]` / `r.buf<T>` 的语法糖 | parser 小改 ✓（**不碰逃逸 pass** ✓）|
+| **0** | **纯库**：handle + generation 校验 + dense/sparse `set`（**存储用今天的 `new T[n]`**）⇒ 吃掉「复用 + 数据导向」两半 ✓ | **零改动** ✓ |
+| **1** | 运行时：**区域注册表**（表 + free list + 世代 + 父链 + 释放遍历，~200 行 C）· 按需发射（照 `extc_raw_enter` 那条现成的路）· 块释放点与帧退多一行 `extc_region_release(&__extc_a[lvl])`（照我为 fd 写过、后来删掉的那段，一模一样的模式）| **两处 codegen 钩子**（小，模式已有 ✓）|
+| **2** | **`new (r) T[n]`**：parser 一条语法 + 检查器给类型 + codegen 发射 `extc_region_alloc(rid, bytes)` 并转成 `T*` | parser/checker/codegen（**中**）|
+| **3** | `buf<T>` 的**原地扩展** · region 版 `varArray`/`string` · `graph`/CSR | 运行时 + 库 ✓ |
+| **4** | 「region 内存的引用带正确深度」——**只在需要时才做**，见下 ⚠️ | checker（**中-大**，邻着那个娇气的 pass）|
+
+⚠️ **为什么第 0 期不能分配"带类型的 region 内存"**：库拿不到这种能力 ✗ ——
+`extern!` 不许返回 `slice<T>`（会变成两个 C 参数 ✗）· extC 也没有指针转换 ✗ ⇒
+**要么加 `new (r) T[n]`（第 2 期），要么第 0 期先用今天的 `new T[n]`** ✓
+⇒ 第 0 期照样能拿到「槽位复用 + 数据导向」，只是拿不到「批量还」✓ 我认为这样分期更诚实 ✓
+
+⭐ **ECS 纪律消掉了最大的一块**：因为**引用不出 region**（对外只给 handle，是普通值 ✗ 不携带寿命）
+⇒ 检查器**不需要知道 region 的寿命** ⇒ 第 4 期（深度传播）从"必做"降为"**可选**" ✓✓
+这是"参考 ECS"换来的最大工程收益 ✓
 
 **每期判据**：`tests/run.sh` / `check.sh quick` / `memsafe` 不回归 ✓ · 新增：churn 内存**平** ·
 `drop` 之后用旧 handle ⇒ `failure(staleHandle)` **带位置** ✓ · 遍历吞吐有对照数字 ✓
