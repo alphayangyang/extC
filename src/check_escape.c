@@ -414,7 +414,7 @@ int exprRefDepth(Checker *c, Expr *e) {
      * change nor on a cache this function itself writes. A discrepancy where `pure` is
      * larger means the checker is under-reporting how deep the value lives, which is the
      * direction that produces dangling allocations. */
-    if (getenv("EXTC_DBG_RHO")) {
+    if (dbgOn("EXTC_DBG_RHO")) {
         Expr *seen[40];
         int pure = exprRefDepthPure(c, e, 0, seen);
         if (pure != d)
@@ -796,7 +796,7 @@ void recheckLevelRejections(Checker *c) {
         if (!lr) continue;
         int d = exprRefDepth(c, lr->val);
         lr->late = d;
-        if (getenv("EXTC_DBG_DEFER"))
+        if (dbgOn("EXTC_DBG_DEFER"))
             fprintf(stderr, "[defer] line=%-4d at=%-2d check=%d settled=%d %s\n",
                     lr->line, lr->at, lr->depth, d,
                     d <= lr->at ? "DISAGREE" : "agree");
@@ -896,7 +896,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
      * inner ones are reached by this call itself, so recording them too would only repeat
      * the work. */
     if (hops == 0) {
-        if (getenv("EXTC_DBG_FACT"))
+        if (dbgOn("EXTC_DBG_FACT"))
             fprintf(stderr, "[fact] %-8s at=%d kind=%d minAt=%d lexi=%d line=%d\n",
                     c->curFunc?c->curFunc->name:"?", at, (int)val->kind,
                     val->minAt, val->lexicalLevel, val->line);

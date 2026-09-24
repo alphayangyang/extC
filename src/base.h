@@ -24,6 +24,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Is this `EXTC_DBG_*` switch on? Cached, because the switches are read inside
+ * per-local and per-candidate loops (see base.c). */
+bool dbgOn(const char *name);
+
 /* ---------------------------------------------------------------- Arena
  * A bump allocator: it only moves forward and never reclaims.
  * For a compiler that runs once and exits that is optimal -- and it is the model

@@ -60,6 +60,7 @@ clang -Weverything $(cat docs/warnings-flags.txt) -c -o /dev/null prog.c
 | `-Wcomma` | 需要顺序求值的地方用逗号表达式（C 没有语句表达式 ✓） |
 | `-Wunreachable-code` / `-Wunreachable-code-return` | **clang 自己的可达性分析有误报**（它不在 `-Wall` 里，clang 文档也写明这条不是给产品代码的）。实测：预置文本里 `case EXTC_D_F32: printf(...); return;` 的 `return` 被报成"永远不会执行"，而它明显可达 ⇒ 是工具的判断问题，不是生成物的问题 |
 | `-Wfloat-equal` | 语言的 `==` 作用在 `f64`/`f32` 上**就是 IEEE 相等**；clang 建议的"用 epsilon 比较"会改变语义（NaN、`-0.0` 的行为都会变）⇒ 生成物只能这么写。出现处只有结构相等的运行时（`extc_eq` 的 F32/F64 两支） |
+| `-Wimplicit-int-enum-cast` | `{0}` 对"首成员是枚举"的聚合体就是 C 的惯用零初始化，clang 这条说的是它在 **C++** 里非法（生成物是 C11）。改写成"点名第一个变体"能消掉它，但**实测**会让 `examples/tour.extc` 的 `board b = (board){0}` 膨胀成 `(board){ .cell = (array_4_array_4_color){ { (array_4_color){ { color_red } } } }, .moves = 0 }` —— 多 **492 字节**代码且更难读 ⇒ 与"少生成、好读"相反，故进清单 |
 | `-Wcast-qual` | extC 的 `ref T` 在生成的 C 里就是 `T *`（语言里没有 `const`），而描述符把操作数作为 `const void *` 交出来 ⇒ 用户的 `==` 若按 `ref` 取参，适配器必须丢掉 const 才能调用它。（若改成"先把值拷进局部再取地址"，每个适配器多一行代码 —— 这个警告不值得那一行） |
 | `-Wjump-misses-init` | 警告原文是 "jump … is **incompatible with C++**"：生成物是 **C11**，epilogue 用 `goto __extc_ret;` 统一出口，跳过的都是非 VLA 的初始化。这条服务的是"C 代码也想交给 C++ 编译器"，与 extC 的目标语言无关 |
 

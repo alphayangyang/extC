@@ -9,6 +9,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* A debug switch, read once.
+ *
+ * These switches sit in exactly the loops that run per local, per candidate and per level - `getenv`
+ * there was three percent of the compile time (a callgrind profile of `examples/stream-sum.extc` said
+ * so). The environment cannot change while the compiler runs, so the answer is cached.
+ */
+bool dbgOn(const char *name) {
+    static struct { const char *name; int on; } cache[16];
+    static size_t n = 0;
+    for (size_t i = 0; i < n; i++)
+        if (strcmp(cache[i].name, name) == 0) return cache[i].on != 0;
+    bool on = getenv(name) != NULL;
+    if (n < 16) { cache[n].name = name; cache[n].on = on ? 1 : 0; n++; }
+    return on;
+}
+
 /* ================================================================ Arena
  *
  * A block is a small header followed by inline storage; blocks form a singly

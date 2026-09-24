@@ -684,7 +684,7 @@ void checkStmt(Checker *c, Stmt *s) {
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
             /* A returned reference must point at a parameter or at static data, which
              * is depth 0. */
-            if (getenv("EXTC_DBG_RET3"))
+            if (dbgOn("EXTC_DBG_RET3"))
                 fprintf(stderr, "[ret3] %-8s line=%d kind=%d d=%d mentionsParam=%d\n",
                         c->curFunc?c->curFunc->name:"?", s->line,
                         (int)s->u.ret.value->kind, exprRefDepth(c, s->u.ret.value),

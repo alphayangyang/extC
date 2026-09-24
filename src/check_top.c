@@ -1768,7 +1768,7 @@ static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
         src->kind != EX_NEW   && src->kind != EX_GENCALL) return;
     for (int i = 0; i < root->nfields; i++) {
         if (!root->fields[i].name || strcmp(root->fields[i].name, field) != 0) continue;
-        if (getenv("EXTC_DBG_FS"))
+        if (dbgOn("EXTC_DBG_FS"))
             fprintf(stderr, "[fs] %s.%s d2=%d oldSrcDepth=%d srckind=%d\n", root->name,
                     field, d2, root->fields[i].srcDepth, (int)src->kind);
         if (d2 >= root->fields[i].srcDepth) {
@@ -2460,7 +2460,7 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
 
 static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
-    if (getenv("EXTC_DBG_LV"))
+    if (dbgOn("EXTC_DBG_LV"))
         fprintf(stderr, "      [lv] kind=%-3d line=%-4d target=%-2d hops=%d\n",
                 (int)val->kind, val->line, target, hops);
     switch (val->kind) {
@@ -2485,11 +2485,11 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
          * block; the function has no home arena to give it, and the generated C referenced
          * `__extc_home`, which does not exist there. */
 
-        if (getenv("EXTC_DBG_LV"))
+        if (dbgOn("EXTC_DBG_LV"))
             fprintf(stderr, "      [lv] ident=%-5s sym=%s origin=%s target=%d\n",
                     val->u.ident.name, sy ? "yes" : "NULL",
                     (sy && sy->origin) ? "yes" : "NULL", target);
-        if (getenv("EXTC_DBG_LV") && sy && sy->origin)
+        if (dbgOn("EXTC_DBG_LV") && sy && sy->origin)
             fprintf(stderr, "      [lv]   -> origin kind=%d line=%d (sym %s)\n",
                     (int)sy->origin->kind, sy->origin->line, sy->name ? sy->name : "?");
         /* A binding's level is its own: what it holds now may have arrived from several
@@ -3292,8 +3292,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
         if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, f, &dfr);
         /* Ask the same question again with the numbers the passes settled on. Reporting
          * stays with the check; this is what makes the two answers comparable. */
-        if (getenv("EXTC_DBG_DEFER")) recheckLevelRejections(c);
-        if (getenv("EXTC_DBG_STORES")) {
+        if (dbgOn("EXTC_DBG_DEFER")) recheckLevelRejections(c);
+        if (dbgOn("EXTC_DBG_STORES")) {
             int n0 = 0;
             for (size_t i = 0; i < c->stores.len; i++) {
                 StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
@@ -3305,7 +3305,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
             }
             (void)n0;
         }
-        if (getenv("EXTC_DBG_DFA")) {
+        if (dbgOn("EXTC_DBG_DFA")) {
             fprintf(stderr, "[dfa] %s: %d vars%s\n", f->name ? f->name : "?",
                     dfr.nvars, dfr.overflow ? " (OVERFLOW: result unused)" : "");
             for (int i = 0; i < dfr.nvars; i++) {
@@ -3755,7 +3755,7 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
             int now = solvedValDepth(rc->val);
             if (now < rc->depth) rc->depth = now;
         }
-        if (getenv("EXTC_DBG_AT"))
+        if (dbgOn("EXTC_DBG_AT"))
             fprintf(stderr, "[at] %s what=%s depth=%d at=%d kind=%d dca=%d svd=%d\n",
                     instName, rc->what, rc->depth, rc->at, (int)rc->val->kind,
                     depthComesFromAlloc2(c, rc->val, 0)?1:0, solvedValDepth(rc->val));
@@ -4340,14 +4340,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                      * temporaries that never escaped were pinned there until the frame ended.
                      * Measured on the 50/25/25 shape over 2e6 iterations: 98 MB, while the
                      * same shape with an inlined container needed only 50 MB. */
-                    if (getenv("EXTC_DBG_MINAT"))
+                    if (dbgOn("EXTC_DBG_MINAT"))
                         fprintf(stderr, "[minAt] %-8s line=%-4d minAt=%-3d arena=%d\n",
                                 f->name ? f->name : "?", site->line, site->minAt, site->arenaLevel);
-                    if (getenv("EXTC_DBG_SITE2"))
+                    if (dbgOn("EXTC_DBG_SITE2"))
                         fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", site->minAt, site->lexicalLevel,
                                 site->arenaLevel, f->needsHome?1:0, (int)site->kind);
-                    if (getenv("EXTC_DBG_S3"))
+                    if (dbgOn("EXTC_DBG_S3"))
                         fprintf(stderr, "[s3] %-8s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", site->minAt, site->lexicalLevel,
                                 site->arenaLevel, f->needsHome?1:0, (int)site->kind);

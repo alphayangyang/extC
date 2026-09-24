@@ -1897,7 +1897,7 @@ static Expr *parsePrimary(Parser *p) {
          *
          * This writes to stderr only; token output such as --dump-tokens is
          * unaffected. */
-        if (getenv("EXTC_DBG_QN")) {
+        if (dbgOn("EXTC_DBG_QN")) {
             fprintf(stderr, "[qn ENT] pos=%d cur=`%s` n1=`%s` n2=`%s` n3=`%s` n4=`%s`\n",
                     (int)p->pos, t->text, pk(p,0)->text, pk(p,1)->text,
                     pk(p,2)->text, pk(p,3)->text);

@@ -726,7 +726,7 @@ static ModUnit *rwDeepQName(Loader *L, ModUnit *self, const char *qname) {
     /* Debug switch `EXTC_DBG_QN=1` reports a deep qualified name that matched no
      * imported module. Like the other debug switches, it changes no output on the
      * normal path, and a name that resolved stays silent. */
-    if (!u && getenv("EXTC_DBG_QN"))
+    if (!u && dbgOn("EXTC_DBG_QN"))
         fprintf(stderr, "[qn] deep `%s` matched no imported module\n", qname);
     return u;
 }
@@ -1168,7 +1168,7 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
             if (strcmp((*(FuncDef **)vecAt(&src->funcs, j))->name, r->from) == 0)
                 (*(FuncDef **)vecAt(&src->funcs, j))->name = r->to;
     }
-    if (getenv("EXTC_DBG_M")) {
+    if (dbgOn("EXTC_DBG_M")) {
         fprintf(stderr, "[mangle] %s: %zu declarations renamed:", u->modName, u->ren.len);
         for (size_t i = 0; i < u->ren.len; i++) { Ren *r = (Ren *)vecAt(&u->ren, i); fprintf(stderr, " %s->%s", r->from, r->to); }
         fprintf(stderr, "\n");
@@ -1497,7 +1497,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     vecInit(&toks, L->a, sizeof(Token));
     lexAll(u->ctx, &toks);
     if (!u->ctx->hasError) parseModule(u->ctx, L->a, &toks, &u->mod);
-    if (getenv("EXTC_DBG_MOD"))
+    if (dbgOn("EXTC_DBG_MOD"))
         fprintf(stderr, "[mod] loaded %s: %zu tokens, %zu funcs, %zu globals\n",
                 file, toks.len, u->mod.funcs.len, u->mod.globals.len);
     if (u->ctx->hasError) { L->errors++; u->state = 2; return u; }
@@ -1618,7 +1618,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
             }
         }
     }
-    if (getenv("EXTC_DBG_MOD")) fprintf(stderr, "[mod] load done: errors=%d units=%zu order=%zu\n",
+    if (dbgOn("EXTC_DBG_MOD")) fprintf(stderr, "[mod] load done: errors=%d units=%zu order=%zu\n",
                                          L.errors, L.units.len, L.order.len);
     if (L.errors) return false;
 
@@ -1735,7 +1735,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
             *(FuncDef **)vecPush(&out->funcs) = f;
         }
     }
-    if (getenv("EXTC_DBG_MOD")) fprintf(stderr, "[mod] merge done: errors=%d declarations funcs=%zu globals=%zu\n",
+    if (dbgOn("EXTC_DBG_MOD")) fprintf(stderr, "[mod] merge done: errors=%d declarations funcs=%zu globals=%zu\n",
                                          L.errors, out->funcs.len, out->globals.len);
     if (L.errors) return false;
 

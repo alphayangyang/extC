@@ -1195,10 +1195,13 @@ static bool needsExplicitZero(Type *t) {
     /* An enum's zero is one of its variants, not the integer 0, so a struct that starts with an
      * enum has to be initialized field by field (`board b = (board){0};` is an `int`-to-enum
      * conversion, which clang reports as `-Wimplicit-int-enum-cast`). */
-    if (t->kind == TY_ENUM) return !enumHasPayload(t->edef);
-    /* And it recurses the same way through an array: `board` in `examples/tour.extc` is a `[8][8]color`,
-     * so the enum that needs naming sits two levels down. */
-    if (t->kind == TY_ARRAY) return needsExplicitZero(t->inner);
+    /* Naming the enum's first variant instead of writing 0 removes clang's
+     * `-Wimplicit-int-enum-cast`, and it was measured: `examples/tour.extc` grew a nested initializer
+     * -
+     *     board b = (board){ .cell = (array_4_array_4_color){ { (array_4_color){ { color_red } } } }, ... };
+     * against `(board){0}` - which cost 492 bytes of generated code and is much harder to read. The
+     * warning is in the documented list instead (docs/WARNINGS.md section 3.1). */
+    if (t->kind == TY_ENUM || t->kind == TY_ARRAY) return false;
     if (t->kind != TY_STRUCT || !t->sdef) return false;
     for (size_t i = 0; i < t->sdef->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
@@ -1279,6 +1282,36 @@ static const char *nullValue(CG *g, Type *t) {
     return "((void *)0)";
 }
 
+/* The braces a zero value of type `t` needs when it sits *inside* another initializer.
+ *
+ * An array type is a struct wrapping `T data[N]`, so it brings two levels here (its own braces and
+ * the member array's); a struct brings one. The outermost level costs nothing: it is the compound
+ * literal's own brace, which is why `zeroValue` writes `(T){ { ... } }` for an array.
+ *
+ * The counts were measured against gcc's `-Wmissing-braces`, which is enabled by `-Wall` and asks
+ * for a brace per aggregate:
+ *     [1025]i64      -> (T){ { 0 } }
+ *     [4]?i64        -> (T){ { { 0 } } }
+ *     [3][8]i32      -> (T){ { { { 0 } } } }
+ *     [5]cell        -> (T){ { { 0 } } }
+ */
+static const char *elemBraces(CG *g, Type *t) {
+    if (!t) return "0";
+    if (t->kind == TY_ARRAY) return arenaPrintf(g->arena, "{ { %s } }", elemBraces(g, t->inner));
+    /* An enum with payload is a `struct { tag; union }` in the generated C, so it brings a brace
+     * like any other struct: `option<i64>` as an element needs `{ { { 0 } } }` around it. */
+    if (t->kind == TY_ENUM && enumHasPayload(t->edef)) return "{ 0 }";
+    if ((t->kind == TY_STRUCT || t->kind == TY_GENERIC) && t->sdef && t->sdef->fields.len > 0) {
+        FieldDef *f0 = *(FieldDef **)vecAt(&t->sdef->fields, 0);
+        if (f0->type && (f0->type->kind == TY_ARRAY ||
+                         ((f0->type->kind == TY_STRUCT || f0->type->kind == TY_GENERIC) &&
+                          f0->type->sdef && f0->type->sdef->fields.len > 0)))
+            return arenaPrintf(g->arena, "{ %s }", elemBraces(g, f0->type));
+        return "{ 0 }";        /* a struct that starts with a scalar: one brace, then the zero */
+    }
+    return "0";                /* scalar, enum, bool, a reference: the element itself */
+}
+
 static const char *zeroValue(CG *g, Type *t) {
     if (!t) return "0";
     /* The zero value of an enum with payloads is tag 0 with a cleared payload,
@@ -1286,18 +1319,8 @@ static const char *zeroValue(CG *g, Type *t) {
      * union, and the tag decides which member is the meaningful one. A `ref`
      * inside the payload of tag 0 is reported by the checker as a type that
      * cannot be zero-initialized. */
-    if (t->kind == TY_ENUM) {
-        if (enumHasPayload(t->edef)) return arenaPrintf(g->arena, "(%s){0}", t->name);
-        /* A plain C enum's zero is its first variant, not the integer 0: the integer is a
-         * conversion from `int` to an enumeration type, which clang reports
-         * (`-Wimplicit-int-enum-cast`, "invalid in C++") for something as ordinary as a struct whose
-         * first field is an enum - `board b = (board){0};` in `examples/tour.extc`. */
-        if (t->edef && t->edef->variants.len > 0) {
-            Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
-            return arenaPrintf(g->arena, "%s_%s", t->name, v0->name);
-        }
-        return "0";
-    }
+    if (t->kind == TY_ENUM)
+        return enumHasPayload(t->edef) ? arenaPrintf(g->arena, "(%s){0}", t->name) : "0";
     /* An array is a struct wrapping `data[N]`, so the braces have to follow the nesting or gcc
      * asks for them (`-Wmissing-braces`, gcc only - clang takes any of these):
      *   `[N]i64`  -> `{{0}}`   one brace for the struct, one for `data`, then the first element
@@ -1305,7 +1328,7 @@ static const char *zeroValue(CG *g, Type *t) {
      *                  `{{{0}}}` and so on. The element's zero value is the ordinary one, which is
      *   already braced for structs by the cases below. */
     if (t->kind == TY_ARRAY)
-        return arenaPrintf(g->arena, "(%s){ { %s } }", t->name, zeroValue(g, t->inner));
+        return arenaPrintf(g->arena, "(%s){ { %s } }", t->name, elemBraces(g, t->inner));
 
     if (t->kind == TY_PARAM) {
         Type *a = subst(g, t);
@@ -1931,7 +1954,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * promoted because the value is stored into a place that lives
              * further out. This is where memory with automatic cleanup is
              * actually taken. */
-            if (getenv("EXTC_DBG_ARENA")) arenaDriftCheck(g, e, "new");
+            if (dbgOn("EXTC_DBG_ARENA")) arenaDriftCheck(g, e, "new");
             const char *ar = arenaRefAt(g, e->arenaLevel);
             if (!e->u.new_.count) {
                 /* The place of one T (or one [N]T) is simply its address. */
@@ -2439,7 +2462,7 @@ static const char *arenaRefAt(CG *g, int level) {
  *     the current block is legal
  */
 static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
-    if (getenv("EXTC_DBG_ARENA_VERBOSE"))
+    if (dbgOn("EXTC_DBG_ARENA_VERBOSE"))
         fprintf(stderr, "[arena-ok?] %s: level=%d block=%d %s:%d\n",
                 what, e->arenaLevel, g->blkLevel, g->path, e->line);
     if (e->arenaLevel == 0)
@@ -2767,7 +2790,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * by the call site. */
                 int k = owIndex(g, s);
                 Expr *nx = s->u.var.init;
-                if (getenv("EXTC_DBG_ARENA")) arenaDriftCheck(g, nx, "@overwrite new");
+                if (dbgOn("EXTC_DBG_ARENA")) arenaDriftCheck(g, nx, "@overwrite new");
                 Type *st_t = subst(g, nx->u.new_.type);
                 bool loc = f_owLocal(g, s);
                 if (k >= 0) {
@@ -4081,7 +4104,7 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                         if (totalOverride >= 0) total = (size_t)totalOverride;
                         size_t inside = (insideOverride >= 0) ? (size_t)insideOverride
                                                              : countMentionsIn(g, ln, span, name);
-                        if (getenv("EXTC_DBG_PRIM"))
+                        if (dbgOn("EXTC_DBG_PRIM"))
                             fprintf(stderr, "[prim] %-22s total=%zu inside=%zu span=%zu %s\n",
                                     name, total, inside, span, total == inside ? "DROP" : "keep");
                         if (total == inside) {
@@ -4162,7 +4185,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             }
             if (!body && g->mainBody && strcmp(d->funcName, g->mainFuncName) == 0)
                 body = g->mainBody;                    /* main has no DeadFunc entry */
-            if (getenv("EXTC_DBG_LOCAL"))
+            if (dbgOn("EXTC_DBG_LOCAL"))
                 fprintf(stderr, "[local] %-14s func=%-12s mainFunc=%-12s body=%s\n", d->name,
                         d->funcName ? d->funcName : "(null)",
                         g->mainFuncName ? g->mainFuncName : "(null)", body ? "yes" : "no");
@@ -4170,7 +4193,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             char  *bp = strstr(text, body);
             if (!bp) continue;
             size_t bl = strlen(body);
-            if (getenv("EXTC_DBG_LOCAL"))
+            if (dbgOn("EXTC_DBG_LOCAL"))
                 fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
                         bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
             /* The declaration's own mention is not a read of the variable, so the body is
@@ -4325,6 +4348,33 @@ static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *need
     return countCodeMentions(hay, n, needle);
 }
 
+/* How many times does `name` appear in this text *outside* the given spans?
+ *
+ * This is the question the descriptor phase asks, and it used to be answered by copying the whole
+ * unit, cutting the pieces out of the copy and counting what was left: one full copy per candidate
+ * (a hundred candidates against a hundred kilobytes) showed up as a quarter of the compile time in
+ * a callgrind profile. Walking the text once and skipping the spans says the same thing.
+ *
+ * Literals and comments are skipped, as everywhere else: a name inside a string is not a use. */
+static size_t countMentionsOutside(const char *hay, const char *name,
+                                   const size_t *starts, const size_t *ends, size_t nspans) {
+    size_t len = strlen(name), count = 0;
+    /* `strstr` jumps from one occurrence to the next (it is vectorized); walking byte by byte and
+     * calling `strncmp` at every position was 4x the whole program's instructions, which a profile
+     * showed immediately. A mention inside a string literal or comment counts here - that only ever
+     * keeps a definition, which is the safe direction. */
+    for (const char *p = hay; (p = strstr(p, name)) != NULL; p += len) {
+        size_t i = (size_t)(p - hay);
+        if (i > 0 && identByte(hay[i - 1])) continue;
+        if (identByte(p[len])) continue;
+        bool inside = false;
+        for (size_t k = 0; k < nspans; k++)
+            if (i >= starts[k] && i < ends[k]) { inside = true; break; }
+        if (!inside) count++;
+    }
+    return count;
+}
+
 /* Drop every recorded definition whose name occurs exactly once in the finished
  * output - that one occurrence being the definition itself.
  *
@@ -4413,23 +4463,22 @@ static void dropUnreferenced(CG *g, Buf *out) {
         for (size_t i = 0; i < g->deadDefs.len; i++) {
             DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
             if (d->scoped || !d->text) continue;            /* inside a body, or already gone */
-            Buf scratch;
-            bufInit(&scratch, g->arena);
-            bufPutn(&scratch, text, len);
-            char  *sc = bufCstr(&scratch);
-            size_t pieces = 0;
+            size_t starts[8], ends[8], pieces = 0;
             bool   allThere = true;
             for (size_t k = 0; k < g->deadDefs.len; k++) {
                 DeadDef *o = *(DeadDef **)vecAt(&g->deadDefs, k);
                 if (o->scoped || !o->text || strcmp(o->name, d->name) != 0) continue;
-                char  *p = strstr(sc, o->text);
+                char  *p = strstr(text, o->text);
                 if (!p) { allThere = false; break; }        /* a piece is not in the unit */
-                size_t pl = strlen(o->text);
-                memmove(p, p + pl, strlen(p + pl) + 1);
+                if (pieces < 8) {                            /* more than eight: leave it alone */
+                    starts[pieces] = (size_t)(p - text);
+                    ends[pieces]   = starts[pieces] + strlen(o->text);
+                }
                 pieces++;
             }
-            if (!allThere || pieces == 0) continue;
-            if (countMentions(sc, d->name) != 0) continue;  /* used somewhere else: keep */
+            if (!allThere || pieces == 0 || pieces > 8) continue;
+            /* Everything the name appears in is its own pieces: nothing uses it. */
+            if (countMentionsOutside(text, d->name, starts, ends, pieces) != 0) continue;
             for (size_t k = 0; k < g->deadDefs.len; k++) {  /* remove them for real */
                 DeadDef *o = *(DeadDef **)vecAt(&g->deadDefs, k);
                 if (o->scoped || !o->text || strcmp(o->name, d->name) != 0) continue;

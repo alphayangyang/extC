@@ -452,7 +452,7 @@ int main(int argc, char **argv) {
      * only mentions `liba$pair`, so a wrong mapping shows up as "unknown type pair",
      * which does not say whether the mapping or the lookup is at fault. Seeing the
      * table settles it. */
-    if (getenv("EXTC_DBG_M")) {
+    if (dbgOn("EXTC_DBG_M")) {
         fprintf(stderr, "[mangle] bare-name return tickets: %zu", tt->aliases.len);
         for (size_t i = 0; i < tt->aliases.len; i++) {
             Alias *al = (Alias *)vecAt(&tt->aliases, i);
