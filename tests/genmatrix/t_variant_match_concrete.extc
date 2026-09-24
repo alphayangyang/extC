@@ -1,0 +1,26 @@
+// expect: has(0) = true · has(5) = false
+/* 格（**对照组**）：`match` 裸变体模式在**具体**类型上 —— 今天就是好的 ✓
+ * 同样的形状放进泛型体 ⇒ 生成 `option_V_none` ⇒ 编不过（#61）✗ */
+fn has(xs: slice<i64>, i: i64) -> bool {
+    if i < i64(0) || i >= xs.len { return false }
+    return true
+}
+fn optAt(xs: slice<i64>, i: i64) -> ?i64 {
+    if !has(xs, i) { return none }
+    return some(xs[i])
+}
+fn main() -> i32 {
+    var a: [2]i64 = [10, 20]
+    var r: bool = true
+    match optAt(a[..], i64(0)) {
+        none    => { r = false }
+        some(v) => { r = true }
+    }
+    var r2: bool = true
+    match optAt(a[..], i64(5)) {
+        none    => { r2 = false }
+        some(v) => { r2 = true }
+    }
+    println("has(0) = ", r, " · has(5) = ", r2)
+    return 0
+}

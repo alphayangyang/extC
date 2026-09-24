@@ -1,0 +1,21 @@
+// expect: 整数 42
+/* 格：**运行时类型不同的一堆值**装一起 —— 带载荷枚举（sum type）+ match ✓
+ * （这是"异构集合"的正解；`slice<T>` 只装同一种类型）*/
+type val = | i(i64) | s(slice<u8>) | p(f64)
+fn show(v: val) {
+    match v {
+        i(n) => { println("整数 ", n) }
+        s(t) => { println("文本 ", t) }
+        p(f) => { println("浮点 ", f) }
+    }
+}
+fn main() -> i32 {
+    var xs: varArray<val> = varArray<val>::withCap(4)
+    xs.push(val.i(i64(42)))
+    xs.push(val.s("hello"))
+    xs.push(val.p(1.5))
+    xs.push(val.i(i64(7)))
+    var k: i64 = 0
+    while k < xs.size() { show(xs.get(k) ?? val.i(i64(0)))  k = k + 1 }
+    return 0
+}

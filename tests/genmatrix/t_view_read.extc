@@ -1,0 +1,18 @@
+// expect: first = hi
+/* 格：**视图元素 `slice<T>` 的读**（T 带引用 / 用户结构体）*/
+struct holder<V> { xs: mut slice<V>
+    fn first(self: ref holder<V>) -> V { return self.xs[0] }
+}
+struct pt { x: i64 }
+fn main() -> i32 {
+    var h: holder<slice<u8>> = { xs: new slice<u8>[2] }
+    h.xs[0] = "hi"
+    println("first = ", h.first())
+    var n: holder<i64> = { xs: new i64[2] }
+    n.xs[0] = i64(3)
+    println("n = ", n.first())
+    var p: holder<pt> = { xs: new pt[2] }
+    p.xs[0] = pt { x: 5 }
+    println("pt = ", p.first().x)
+    return 0
+}

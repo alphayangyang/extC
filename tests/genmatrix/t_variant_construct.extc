@@ -1,0 +1,14 @@
+// expect: first = 10 · empty = -1 · text = hi
+/* 格：**变体载荷 `?T` 的构造**（表达式位置：`none` / `some(x)`）—— stdlib 的惯用法 ✓
+ * 对照：同一件事走 `match` **模式** 就坏（#61）· 直接返回"别的泛型实例的 `?T`"也坏（#60）*/
+fn firstOr<T>(xs: slice<T>) -> ?T {
+    if xs.len == i64(0) { return none }
+    return some(xs[0])
+}
+fn main() -> i32 {
+    var a: [2]i64 = [10, 20]
+    var e: [1]i64 = [0]
+    var s: [1]slice<u8> = ["hi"]
+    println("first = ", firstOr(a[..]) ?? i64(-1), " · empty = ", firstOr(e[0..0]) ?? i64(-1), " · text = ", firstOr(s[..]) ?? "?")
+    return 0
+}

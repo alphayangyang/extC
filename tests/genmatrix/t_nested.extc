@@ -1,0 +1,20 @@
+// expect: i64+text sameA = true
+/* 格：**嵌套泛型实参**（多个类型参数、实参各不相同；方法返回 `A`；`A` 上做 `==`）*/
+struct pair<A, B> { a: A  b: B
+    fn first(self: ref pair<A, B>) -> A { return self.a }
+    fn sameA(self: ref pair<A, B>, o: ref pair<A, B>) -> bool { return self.a == o.a }
+}
+struct pt { x: i64
+    fn ==(self: ref pt, o: ref pt) -> bool { return self.x == o.x }
+}
+fn main() -> i32 {
+    var p: pair<i64, slice<u8>> = { a: i64(7), b: "hi" }
+    var q: pair<i64, slice<u8>> = { a: i64(7), b: "yo" }
+    var m: pair<pt, i64> = { a: pt { x: 5 }, b: i64(9) }
+    var n: pair<pt, i64> = { a: pt { x: 5 }, b: i64(1) }
+    var w: pair<f64, bool> = { a: 1.5, b: true }
+    println("i64+text sameA = ", p.sameA(ref q))
+    println("pt+i64 sameA = ", m.sameA(ref n))
+    println("f64+bool first = ", w.first())
+    return 0
+}

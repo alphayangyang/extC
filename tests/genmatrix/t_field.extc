@@ -1,0 +1,15 @@
+// expect: i64 = 7 · text = hi · len = 2 · pt = 3,4
+/* 格：T 作**字段**（存/取/改写；T = 标量 / 带引用 / 用户结构体）*/
+struct holder<T> { v: T
+    fn get(self: ref holder<T>) -> T { return self.v }
+    fn put(self: mut ref holder<T>, x: T) { self.v = x }
+}
+struct pt { x: i64  y: i64 }
+fn main() -> i32 {
+    var a: holder<i64> = { v: i64(7) }
+    var b: holder<slice<u8>> = { v: "hi" }
+    var c: holder<pt> = { v: pt { x: 1, y: 2 } }
+    c.put(pt { x: 3, y: 4 })
+    println("i64 = ", a.get(), " · text = ", b.get(), " · len = ", b.get().len, " · pt = ", c.get().x, ",", c.get().y)
+    return 0
+}

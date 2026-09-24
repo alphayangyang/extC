@@ -115,6 +115,11 @@ if out=$(timeout 600 bash tests/ops/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · mangle · 9 反例 · 两条不许漏到 gcc）"
 else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
 
+echo "== 泛型组合矩阵（T 的位置 × 特性 · 8 格 + 3 条已知缺口反向断言 —— 见 GENERICS.md）=="
+if out=$(timeout 600 bash tests/genmatrix/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（8 格 + #60/#61/#62 仍坏在记着的那句上 ✓）"
+else bad "tests/genmatrix/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 头文件 include guard（内容不许落在 #endif 之后）=="
 # 判据：每个 src/*.h 的**最后一个非空行**必须是 #endif。
 # 为什么要有这一节：曾经有一段声明（连同它的文档注释）被追加到 types.h 的 #endif **之后**
