@@ -1,0 +1,35 @@
+// expect: got = 5 · text = hi
+/* 格（**原来是 `#60`，2026-09-24 修**）：**返回「另一个泛型实例的 `?V`」**
+ *
+ * 修之前：`return self.xs.get(i)`（声明是 `-> ?T`）⇒
+ *     error: return value expects `option<T>`, found `option<T>`
+ *     note: extC only widens implicitly (lossless); a lossy conversion must be written out
+ * —— **两边印出来一模一样**，还附了一句毫不相干的"隐式收窄"话术 ✗ 典型的"没法用"的报错 ✓
+ *
+ * 根因（一层套一层，两处都修了）：
+ *   ① **话术**：泛型**枚举**实例的 kind 是 `TY_ENUM`，而 `ttRender` 的 `default` 分支只印名字、
+ *      不印实参 ⇒ `option<T>` 与 `option<i64>` 都印成 `option` ✗（已补 `TY_ENUM` 分支）
+ *   ② **真根因**：`ttEquals` 只按 kind 处理了 `TY_REF`/`TY_ARRAY`/`TY_PARAM`/`TY_GENERIC`，
+ *      注释写着"其余都被 intern 过，指针不同即类型不同" —— 可**泛型枚举实例没被 intern**
+ *      （parser 造一个、`ttSubstitute` 造一个）⇒ 结构完全相同的两个 `option<T>` 判**不等** ✗
+ *      ⇒ 合法的 `return` 被拒 ✓（已补 `TY_ENUM` 分支：比 `edef` + 实参）
+ *
+ * ⚠️ 这正是 `#28` 那条教训里漏掉的一个：**"加一种类型构造时，`ttSubstitute`/`ttEquals`/
+ * `typeContainsRef`/`ttRender` 这一族按 kind 分派的函数全都要扫一遍"** —— 当初加了"泛型枚举"
+ * 这种构造，`ttSubstitute`/`typeContainsRef` 扫了，`ttEquals` 与 `ttRender` 漏了 ✓
+ *
+ * 顺带：这条修好之后，stdlib 里那个「就地构造 `some(self.vals[i])`」的写法
+ * （一直被注释当成"形状选择"，其实是绕开本缺陷的产物）**不再是必须的** ✓ */
+struct wrap<T> {
+    xs: varArray<T>
+    fn getOr(self: ref wrap<T>, i: i64) -> ?T { return self.xs.get(i) }
+}
+
+fn main() -> i32 {
+    var w: wrap<i64> = { xs: varArray<i64>::withCap(2) }
+    w.xs.push(i64(5))
+    var s: wrap<slice<u8>> = { xs: varArray<slice<u8>>::withCap(2) }
+    s.xs.push("hi")
+    println("got = ", w.getOr(i64(0)) ?? i64(-1), " · text = ", s.getOr(i64(0)) ?? "?")
+    return 0
+}

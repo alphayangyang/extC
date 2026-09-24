@@ -762,6 +762,24 @@ bool ttEquals(Type *a, Type *b) {
                 return false;
         return true;
     }
+
+    /* A generic enum instance (`option<i64>`, `result<T, E>`) is an enum kind carrying
+     * type arguments, and unlike the kinds above it is *not* interned: the parser builds
+     * one object and `ttSubstitute` builds another, so two structurally identical
+     * instances can be two different pointers.
+     *
+     * Falling through to the pointer comparison below made them unequal, and the visible
+     * effect was a rejected `return`: a method declared `-> ?T` returning the `?T` another
+     * generic instance hands back reported "expects `option<T>`, found `option<T>`" -- the
+     * same type on both sides, refused. Comparing the definition and the arguments is what
+     * "the same type" means here. */
+    if (a->kind == TY_ENUM) {
+        if (a->edef != b->edef || a->targs.len != b->targs.len) return false;
+        for (size_t i = 0; i < a->targs.len; i++)
+            if (!ttEquals(*(Type **)vecAt(&a->targs, i), *(Type **)vecAt(&b->targs, i)))
+                return false;
+        return true;
+    }
     return false;
 }
 
@@ -946,6 +964,24 @@ void ttRender(Type *t, Buf *out) {
         case TY_PARAM: bufPuts(out, t->param); return;
         case TY_VOID:  bufPuts(out, "void"); return;
         case TY_ERROR: bufPuts(out, "<error>"); return;
+        case TY_ENUM:
+            /* A generic enum instance is an ordinary enum type that carries type
+             * arguments (`option<i64>`), so the arguments have to be printed too.
+             * Without this, a mismatch between two *different* instances printed as
+             * "expects `option`, found `option`" -- a sentence that says nothing, and
+             * that hides which two types are meant from the person reading the
+             * diagnostic to find the bug. */
+            if (t->edef) bufPuts(out, ttDispName(t->edef->srcName, t->edef->name));
+            else         bufPuts(out, t->name ? t->name : "?");
+            if (t->targs.len > 0) {
+                bufPutc(out, '<');
+                for (size_t i = 0; i < t->targs.len; i++) {
+                    if (i) bufPuts(out, ", ");
+                    ttRender(*(Type **)vecAt(&t->targs, i), out);
+                }
+                bufPutc(out, '>');
+            }
+            return;
         default: {
             /* Show the source name first: a module declaration prints as
              * `io::reader`. Printing `io$reader` leaks the internal encoding and

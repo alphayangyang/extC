@@ -7,7 +7,55 @@
 
 ---
 
-## 2026-09-24 · 修 `#62`：泛型容器里「值是字符串」的那一格（下标原语没人发射）
+## 2026-09-24 · 修 `#60`：`ttEquals` 漏了 `TY_ENUM` —— 三条清空
+
+> 矩阵里最后一个 ❌。它有两层：**话术没法用**（两边印成同一个词）+ **真根因**（类型判等漏一种构造）✓
+
+### 现象
+
+```extC
+fn getOr(self: ref wrap<T>, i: i64) -> ?T { return self.xs.get(i) }
+```
+⇒ `error: return value expects `option<T>`, found `option<T>`` + 一句**毫不相干**的"隐式收窄"话术 ✗
+同一个类型、两边一模一样，却判不等 ✓
+
+### 两层根因（都修了）
+
+**① 话术**：泛型**枚举**实例的 kind 是 `TY_ENUM`，而 `ttRender` 的 `default` 分支只印名字、
+不印实参 ⇒ `option<T>` 与 `option<i64>` 都印成 `option` ✗（先补了 `TY_ENUM` 分支，
+于是报错变成 `option<T>` vs `option<T>` —— **这才看清两边是同名不同物**）✓
+
+**② 真根因**：`ttEquals` 只按 kind 处理了 `TY_REF`/`TY_ARRAY`/`TY_PARAM`/`TY_GENERIC`，
+注释里写着"其余都被 intern 过 ⇒ 指针不同即类型不同" —— 可**泛型枚举实例没被 intern**：
+parser 造一个、`ttSubstitute` 造一个 ⇒ 结构完全相同的两个 `option<T>` 判**不等** ✗
+⇒ 合法的 `return` 被拒 ✓ 修法：`TY_ENUM` 分支比 `edef` + 实参 ✓
+
+⚠️ 这正是 **`#28` 那条教训漏掉的一个**：
+> 加一种类型构造时，`ttSubstitute` / `ttEquals` / `typeContainsRef` / `ttRender`
+> 这一族"按 kind 分派"的函数**全都要扫一遍**
+
+当初加"泛型枚举"这种构造时，`ttSubstitute` 与 `typeContainsRef` 扫了，**`ttEquals` 与 `ttRender` 漏了** ✗
+⇒ 教训升级为：**扫一遍不算完，得有一张清单 + 一个判据**（矩阵就是那个判据）✓
+
+### 一个顺带的收获
+
+stdlib 里那句「**就地构造** `if .. { return none }` + `return some(self.vals[i])`」
+一直被我写在注释里当成"形状选择"—— 其实它是**绕开本缺陷的产物** ✓
+现在它**不再是必须的**了（`mapI64::get` 可以写成 `return self.vals.get(i)`）✓
+⇒ **绕开的写法会伪装成设计**，这是这一族缺陷藏得久的真正原因 ✓
+
+### 判据与验收
+
+- 那一格从 `canary-gaps/` **搬进** `tests/genmatrix/t_foreign_option_return.extc`
+  （`i64` 与 `slice<u8>` 两种实参）✓
+- 矩阵 **12 项全过**，而且**反向断言清单清空了**（`#60/#61/#62/#63` 全部修掉并搬进 ①）✓
+- `check.sh quick` **21 节全绿** · 测试 **257/0** —— `ttEquals` 是很深的改动（每次类型比较都走它），
+  语料全过是它安全的证据 ✓
+- `§0.4`：**表内 65 行 = 57 已修 + 0 未修 + 5 非缺陷 + 2 缺口行 + 1 附录行** ⇒ **真缺陷清零** ✓
+  ⚠️ 但**别读成"泛型没问题了"**：这只说明**矩阵里那 12 格**是好的；`GENERICS.md` §3 还列着
+  **没覆盖的格**（跨模块 · `result<T,E>` · `ref T` · 泛型枚举 · arena 提升 · `@overwrite` · extern 边界）✗
+
+
 
 > 矩阵里第二个 ❌。它是**「值为字符串的 map」**那一格 —— 而 stdlib 从没走过那条路
 > （`tests/map/` 里 `V` 清一色 `i32`）✓
