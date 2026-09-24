@@ -64,7 +64,7 @@ use std::sys::io as sysio
  * NOTE: the payload is what lets an error message say how many bytes were read
  * (`lineTooLong(i64)`) or which fd failed (`readFailed(i32)`); a message like
  * `failed(5)` tells the user nothing. */
-type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32)
+type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32) | notATerminal(i32)
                | closed(i32)        /* 用了一个已经关掉的句柄 —— 那是程序 bug，但**看得见** ✓ */
                | destFull(i64)      /* `readAll`：目标缓冲满了，而文件还有数据 ⇒ 不静默截断 ✗ */
 

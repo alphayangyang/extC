@@ -64,6 +64,7 @@ fn main() -> i32 {
             println("fs 形状原型 ✗ 失败了")
             match e {
                 readFailed(code)  => { println("  readFailed(", code, ")") }
+                notATerminal(code)  => { println("  notATerminal(", code, ")") }
                 writeFailed(code) => { println("  writeFailed(", code, ")") }
                 lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
                 closed(code)      => { println("  closed(", code, ")") }

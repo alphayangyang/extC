@@ -12,6 +12,8 @@
 #   ⑥ **文件当输入源**（IO-2 ①）：`f.reader()` 之后 `nextInt`/`nextLine`/`nextToken`
 #      与 stdin **逐字相同** —— 「读存档」和「读玩家输入」是同一段代码 ✓
 #   ⑦ **退出码**（IO-2 ②）：`proc::exit(7)` ⇒ 输出在、退出码是 7、之后的语句不执行 ✓
+#   ⑧ **终端 raw mode**（IO-2 ③）：非 tty ⇒ `failure(notATerminal)` 带位置；真 PTY
+#      （`script`）⇒ 开得起来、`close()` 还原得了 ✓
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
@@ -102,6 +104,33 @@ if [ -x build/exit-code ]; then
     fi
 else
     echo "  FAIL exit-code   ->  编不过"; fail=1
+fi
+
+echo "== 终端 raw mode（IO-2 ③：非 tty ⇒ failure 带位置 · PTY ⇒ 开得起来也还原得了）=="
+# 判据①：非 tty（CI 里就是）⇒ `failure(notATerminal)`，不 trap、不算失败 ✓
+# 判据②：真 tty（用 `script` 起 PTY）⇒ raw 开成功 + `close()` 还原 ✓
+"$EXTC" tests/io/raw-mode.extc -o build/raw-mode.c >/dev/null 2>&1 \
+  && ${CC:-cc} -std=c11 -O1 build/raw-mode.c -o build/raw-mode >/dev/null 2>&1
+if [ -x build/raw-mode ]; then
+    out=$(./build/raw-mode < /dev/null 2>&1); rc=$?
+    if [ "$rc" = 0 ] && echo "$out" | grep -qF "不是终端 ✓"; then
+        echo "  ok   raw-mode(非 tty) ->  $out"
+    else
+        echo "  FAIL raw-mode(非 tty) ->  rc=$rc · 「$out」"; fail=1
+    fi
+    # ② PTY：`script` 不在就跳过（这一支是加分项，不是门槛 ✓）
+    if command -v script >/dev/null 2>&1; then
+        out=$(script -qec ./build/raw-mode /dev/null 2>&1 | tr -d '\r')
+        if echo "$out" | grep -qF "raw 开成功" && echo "$out" | grep -qF "已还原"; then
+            echo "  ok   raw-mode(PTY)    ->  $(echo "$out" | tr '\n' '|')"
+        else
+            echo "  FAIL raw-mode(PTY)    ->  「$(echo "$out" | tr '\n' '|')」"; fail=1
+        fi
+    else
+        echo "  skip raw-mode(PTY)    ->  没有 \`script\`（这一支跳过）"
+    fi
+else
+    echo "  FAIL raw-mode  ->  编不过"; fail=1
 fi
 
 echo "== 顺序（println 与 writeBytes 混用 —— 定案 75 修的真缺陷）=="

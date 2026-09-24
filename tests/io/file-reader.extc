@@ -42,6 +42,7 @@ fn run() -> result<unit, io::ioError> {
             match e {
                 closed(code)      => { println("closed 带位置 = ", code) }
                 readFailed(code)  => { println("意外：readFailed(", code, ")"); return failure(e) }
+                notATerminal(code)  => { println("意外：notATerminal(", code, ")"); return failure(e) }
                 writeFailed(code) => { println("意外：writeFailed(", code, ")"); return failure(e) }
                 lineTooLong(k)    => { println("意外：lineTooLong(", k, ")"); return failure(e) }
                 destFull(k)       => { println("意外：destFull(", k, ")"); return failure(e) }
@@ -58,6 +59,7 @@ fn main() -> i32 {
             println("失败了")
             match e {
                 readFailed(code)  => { println("  readFailed(", code, ")") }
+                notATerminal(code)  => { println("  notATerminal(", code, ")") }
                 writeFailed(code) => { println("  writeFailed(", code, ")") }
                 lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
                 closed(code)      => { println("  closed(", code, ")") }

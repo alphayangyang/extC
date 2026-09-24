@@ -2922,11 +2922,12 @@ static void checkOpenHandles(Checker *c, FuncDef *f) {
         FdOblig *o = *(FdOblig **)vecAt(&obs, i);
         if (o->closed || o->escaped) continue;
         ckWarn(c, o->line,
-               "A descriptor is an operating-system resource, not memory: nothing closes it"
-               " for you, and the process holds it until it ends. Close it where its life ends"
-               " -- `close()` on the handle -- or hand the handle to a function that takes"
-               " over. (`-w` turns this warning off; leaving a handle open until the process"
-               " ends is a legal choice, it just has to be a visible one.)",
+               "This is a resource the operating system hands out, not memory: nothing gives it"
+               " back for you, and the process holds it until it ends -- a descriptor, a"
+               " terminal left in raw mode. Close it where its life ends (`close()` on the"
+               " value), or hand it to a function that takes over. (`-w` turns this warning"
+               " off; keeping it until the process ends is a legal choice, it just has to be a"
+               " visible one.)",
                "`%s` is opened here and nothing in this function closes it", o->name);
     }
 }

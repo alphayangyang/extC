@@ -25,6 +25,7 @@ fn main() -> i32 {
                 destFull(k)       => { println("destFull 带位置 = ", k) }
                 closed(code)      => { println("意外：closed(", code, ")"); return 1 }
                 readFailed(code)  => { println("意外：readFailed(", code, ")"); return 1 }
+                notATerminal(code)  => { println("意外：notATerminal(", code, ")"); return 1 }
                 writeFailed(code) => { println("意外：writeFailed(", code, ")"); return 1 }
                 lineTooLong(n3)   => { println("意外：lineTooLong(", n3, ")"); return 1 }
             }

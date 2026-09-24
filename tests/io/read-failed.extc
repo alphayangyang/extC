@@ -9,6 +9,7 @@ fn go() -> result<unit, io::ioError> {
         success(n) => println("当成 EOF 了 ✗ n = ", n)
         failure(er) => match er {
             readFailed(fd)  => println("readFailed ✓ (fd = ", fd, ")")
+notATerminal(fd)  => println("错报成 notATerminal ✗")
             lineTooLong(k)  => println("错报成行太长 ✗")
             writeFailed(fd) => println("不该是写失败 ✗")
             closed(fd)      => println("不该是已关闭 ✗")

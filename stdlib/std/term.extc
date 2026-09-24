@@ -1,0 +1,78 @@
+/* std/term.extc -- the terminal, as a program sees it.
+ *
+ * A thin layer over `std::sys::term`; user code never writes `std::sys::*` itself.
+ */
+use std::io
+use std::sys::term as sys
+
+/* A terminal that has been switched to **raw mode**: no line buffering (a key arrives
+ * the moment it is pressed), no echo, no signal keys -- which is what a game or a TUI
+ * needs to react to one keystroke.
+ *
+ * ⭐ It is a **resource** in the sense of decision 79: it declares `close`, so a
+ * `var t = rawTerminal(..)?` that never gets closed is reported by the compiler
+ * ("opened here and nothing in this function closes it"). Forgetting to restore the
+ * terminal is worse than forgetting to close a file -- the shell the user returns to
+ * cannot even echo what they type -- so being covered by that check is the point.
+ *
+ * The hidden settings buffer is **opaque**: the C side owns the layout, and `close`
+ * puts back exactly what was there before.
+ *
+ * ⚠️ One hole is still open: if the program **traps** while the terminal is raw (an
+ * out-of-range index, runaway recursion), nothing restores it -- the shell the user
+ * comes back to cannot even echo. The runtime's trap path has to do it (it is the only
+ * code that runs then), and wiring that up is the one piece of IO-2 still owed
+ * (`docs/PLAN.md` section 1, IO-2). Until then: `stty sane` from another terminal. */
+struct terminal {
+    fd:    i32
+    saved: [128]u8          /* opaque: `struct termios`, untouched by extC */
+    on:    bool
+
+    /* Switch to raw mode, remembering the current settings in `saved`.
+     *
+     * A `failure` is the normal answer when the descriptor is not a terminal (a pipe, a
+     * file, a CI runner with no tty): `tcgetattr` returns -1 there, and that is a
+     * condition to report, not a bug to trap. */
+    fn raw(self: mut ref terminal) -> result<unit, io::ioError> {
+        if sys::tcgetattr(self.fd, self.saved[0..128].data) < i32(0) {
+            return failure(io::ioError.notATerminal(self.fd))
+        }
+        sys::cfmakeraw(self.saved[0..128].data)
+        if sys::tcsetattr(self.fd, sys::TCSANOW, self.saved[0..128].data) < i32(0) {
+            return failure(io::ioError.notATerminal(self.fd))
+        }
+        self.on = true
+        return success(unit {})
+    }
+
+    /* Put the terminal back exactly as it was. Idempotent, like `close` everywhere else:
+     * a second call is a no-op, and `close` is this method. */
+    fn restore(self: mut ref terminal) -> result<unit, io::ioError> {
+        if !self.on { return success(unit {}) }
+        self.on = false
+        if sys::tcsetattr(self.fd, sys::TCSANOW, self.saved[0..128].data) < i32(0) {
+            return failure(io::ioError.notATerminal(self.fd))
+        }
+        return success(unit {})
+    }
+
+    /* `close` is `restore`: the resource that has to be given back is the terminal
+     * itself, not the descriptor (which the program owns anyway). */
+    fn close(self: mut ref terminal) -> result<unit, io::ioError> {
+        return self.restore()
+    }
+}
+
+/* Take the terminal `fd` and switch it to raw mode.
+ *
+ *     var t = term::rawTerminal(io::STDIN_FD)?
+ *     ... read one byte at a time, draw ...
+ *     t.close()?                       // back to a normal shell
+ *
+ * The `terminal` value holds the saved settings, so it has to live at least as long as
+ * the raw mode does -- which is exactly what the type says. */
+fn rawTerminal(fd: i32) -> result<terminal, io::ioError> {
+    var t: terminal = { fd: fd, on: false }   /* `saved` 留给零值：它是 C 那边的布局，extC 只借它一块字节 */
+    let u = t.raw()?
+    return success(t)
+}
