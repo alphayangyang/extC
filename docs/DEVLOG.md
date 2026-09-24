@@ -6548,3 +6548,28 @@ examples/globals.extc        452→ 452 行   gcc  1 →  1   clang 25 → 25   
 **"`use std::io::*` 顺手带进来的库全局"** ✓ 这是"库整片发出来"的第一块 ✓
 
 **判据**：语料 **256 / 0 失败** ✓ 九个套件全绿 ✓ 生成物照跑（`stream-file` 输出不变 ✓）
+
+### 2026-09-25 · **函数体内也按内容判据**：没人读的 match 载荷绑定不发（gcc 16→7 · clang 35→26）
+
+**同一套机制的第二个舞台**（`DeadDef` 加 `off/scopeA/scopeB/scoped`）：
+载荷绑定那一行（`io$ioError e = __extc_m0.u.failure._0;`）记下来，
+**判据收紧到"这个 arm 体"**：绑定名在 arm 体内**一次都没被当名字读过** ⇒ 整行不发 ✓
+（不能在全文里数：`e`/`n`/`k` 这种短名字满篇都是 ✗）
+
+**两个真 bug（都是量出来的，不是想出来的）**：
+1. **`strstr` 子串计数对短名字完全无效** ✗ —— 数 `e` 会把 `self`/`true`/`reader` 全算上 ⇒ 永远"有人用" ✓
+   ⇒ 计数改成**标识符边界**匹配（`identByte`：前后不许是字母/数字/`_`/`$` ✓）
+2. **空 arm 体**（`success => {}`）的跨度是零 ⇒ 被判成"非体内" ⇒ 退回全文计数 ⇒ 又永远"有人用" ✗
+   ⇒ 加显式 `scoped` 标志，不再用"跨度大于零"当判据 ✓（两个 bug 都只在**库**那种写法上才现形：
+   小样例里 arm 体非空、名字是 `r`/`n` ⇒ 一次就过 ✓ 这正是"拿库当判据"的价值 ✓）
+
+**实测**：
+
+```
+tests/io/stream-file.extc   1608→1587 行   gcc 28 → 7   clang 47 → 26
+tests/io/stream.extc         990→ 978 行   gcc 14 → 2   clang 21 →  9
+```
+**剩下的**（gcc 7 = 5 `unused-variable` + 2 `unused-but-set-variable`；clang 26 = 12 `unused-const-variable`
+（就是描述符行 ✓ 下一刀）+ 7 `unused-function`（要传递可达性）+ 上面那 7 ✓）
+
+**判据**：语料 **256 / 0** ✓ 九套件全绿 ✓

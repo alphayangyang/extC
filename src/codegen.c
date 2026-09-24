@@ -72,6 +72,7 @@ typedef struct {
      * mention it, inside the body buffer. `off` is where the definition sits in
      * that same buffer. */
     size_t      off, scopeA, scopeB;
+    bool        scoped;  /* true when the two offsets above are the stage to count on */
 } DeadDef;
 
 typedef struct {
@@ -201,6 +202,10 @@ typedef struct {
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
+    /* Where the body buffer ended up in the finished output: a definition inside a
+     * body is recorded as an offset into that buffer, and this turns it into a
+     * position in the assembled unit. */
+    size_t      bodyOff;
 } CG;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
@@ -2835,6 +2840,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 g->indent++;
                 /* Bind the payload: `circle(r) => ...` becomes
                  * `double r = tmp.u.circle._0;`. */
+                size_t firstBind = g->deadDefs.len;
                 for (size_t k = 0; k < arm->binds.len; k++) {
                     Variant *v = et && et->edef ? NULL : NULL;
                     (void)v;
@@ -2853,10 +2859,32 @@ static void genStmtInner(CG *g, Stmt *s) {
                             break;
                         }
                     }
+                    flushPrefix(g);              /* nothing pending may end up in the span */
+                    size_t beforeBind = g->out->len;
                     cgLine(g, "%s %s = %s.u.%s._%zu;", cType(g, bt), *(const char **)vecAt(&arm->binds, k),
                            subj, arm->variant, k);
+                    /* An arm that never reads its payload - `none => 0` written with a
+                     * binding it does not use, or an arm that only ignores the value it
+                     * matched - should not pay for the copy. The line is remembered, and
+                     * the arm body below says whether anything names it. */
+                    Buf bl;
+                    bufInit(&bl, g->arena);
+                    bufPutn(&bl, g->out->data + beforeBind, g->out->len - beforeBind);
+                    DeadDef *bd = arenaAllocZero(g->arena, sizeof *bd);
+                    bd->name = *(const char **)vecAt(&arm->binds, k);
+                    bd->text = bufCstr(&bl);
+                    bd->off  = beforeBind;
+                    bd->scoped = true;   /* counted in the arm body only */
+                    *(DeadDef **)vecPush(&g->deadDefs) = bd;
                 }
+                size_t bodyA = g->out->len;
                 genBlockBody(g, arm->body);
+                size_t bodyB = g->out->len;
+                for (size_t k = firstBind; k < g->deadDefs.len; k++) {
+                    DeadDef *bd = *(DeadDef **)vecAt(&g->deadDefs, k);
+                    bd->scopeA = bodyA;      /* what could read the binding: this arm body */
+                    bd->scopeB = bodyB;
+                }
                 g->indent--;
             }
             cgLine(g, "}");
@@ -3638,11 +3666,33 @@ static bool funcSignatureMentionsParam(FuncDef *f) {
  * the definition (a body, or the descriptor table).
  */
 
-/* How many times does `needle` occur in the finished output? */
+/* Does this byte continue a C name? Used to tell a mention of `e` from the `e`
+ * inside `self` or `true`: a one-letter local is counted by name, so a plain
+ * substring search would find it everywhere and never drop anything. */
+static bool identByte(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '$';
+}
+
+/* How many times does the name `needle` occur in the finished output, as a whole
+ * name? A mention inside a string literal still counts, which only ever keeps a
+ * definition alive. */
 static size_t countMentions(const char *hay, const char *needle) {
     size_t n = 0, len = strlen(needle);
-    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p += len) n++;
+    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p += len) {
+        if (p > hay && identByte(p[-1])) continue;
+        if (identByte(p[len])) continue;
+        n++;
+    }
     return n;
+}
+
+/* The same count, over one piece of the body buffer, which is not terminated. */
+static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
+    Buf sc;
+    bufInit(&sc, g->arena);
+    bufPutn(&sc, hay, n);
+    return countMentions(bufCstr(&sc), needle);
 }
 
 /* Drop every recorded definition whose name occurs exactly once in the finished
@@ -3660,16 +3710,34 @@ static size_t countMentions(const char *hay, const char *needle) {
 static void dropUnreferenced(CG *g, Buf *out) {
     char  *text = bufCstr(out);              /* terminate: the searches below are C strings */
     size_t len  = out->len;
-    /* Repeat until nothing changes: a definition can be the only thing that names
-     * another one (`io$STDIN` is the sole mention of `io$STDIN_FD`, which no program
-     * refers to either), so one pass leaves a chain behind. Each round is safe for
-     * the same reason a single pass is: a name is dropped only when the finished
-     * text mentions it exactly once. */
+    /* Definitions inside a body first, from the end backwards, so that removing one
+     * leaves the offsets of the ones still to come untouched. What can name such a
+     * definition is the enclosing piece of code and nothing else - a payload binding
+     * is read by its arm - so the count happens inside that scope: `e` and `n` are
+     * common names, and counting them across the whole unit would always find more
+     * than one. */
+    for (size_t i = g->deadDefs.len; i-- > 0; ) {
+        DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
+        if (!d->scoped) continue;                                      /* top-level: later */
+        if (countMentionsIn(g, g->body.data + d->scopeA, d->scopeB - d->scopeA, d->name)) continue;
+        size_t tl = strlen(d->text);
+        size_t at = g->bodyOff + d->off;
+        if (at + tl > len || memcmp(text + at, d->text, tl) != 0) continue;   /* be sure */
+        memmove(text + at, text + at + tl, len - at - tl + 1);
+        len -= tl;
+        out->len = len;
+    }
+    /* Then the top-level definitions, to a fixed point: a definition can be the only
+     * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
+     * which no program refers to either), so one pass leaves a chain behind. Each
+     * round is safe for the same reason a single pass is: a name is dropped only when
+     * the finished text mentions it exactly once. */
     bool dropped = true;
     while (dropped) {
         dropped = false;
         for (size_t i = 0; i < g->deadDefs.len; i++) {
             DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
+            if (d->scoped) continue;                                   /* inside a body: done */
             if (countMentions(text, d->name) != 1) continue;   /* named somewhere else: keep */
             size_t tl = strlen(d->text);
             char  *at = strstr(text, d->text);
@@ -4697,6 +4765,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         g.out = save;
         bufPuts(out, bufCstr(&tmp));
     }
+    g.bodyOff = out->len;                    /* where the bodies start in the finished unit */
     bufPuts(out, bufCstr(&g.body));
 
     /* The unit is complete: now the definitions that nobody names can go. */
