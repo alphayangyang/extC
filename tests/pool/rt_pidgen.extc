@@ -1,0 +1,15 @@
+// 拷贝 + 槽位复用之后，陈旧的拷贝不许放掉别人的池（pidGen 校验）
+// 判据：a 释放后 c 建起来（复用同一槽位）· 再让陈旧拷贝 b 释放 ⇒ c 必须还活着（live 仍为 1）
+use std::io
+use std::pool
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    var a = pool<i32>::withCap(i64(4))
+    var b = a                       /* 值拷贝：b.pid == a.pid，pidGen 也相同 */
+    a.release()                     /* 放掉：a.pid = -1 */
+    var c = pool<i32>::withCap(i64(4))   /* 运行期槽位被复用，c 拿到同一个 rid、世代 +1 */
+    b.release()                     /* 陈旧拷贝：世代对不上 ⇒ 必须什么都不做 */
+    io::cout << "live=" << syspool::extc_pool_live() << " c-len=" << c.len() << "\n"
+    return 0
+}

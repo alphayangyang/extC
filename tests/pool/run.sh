@@ -116,6 +116,9 @@ rt_run rt_reuse    tests/pool/rt_reuse.extc    "same=true gen=1->2"
 echo "== 期 1 · 容器接入：池随容器创建，release 整批还，出块整区走 =="
 rt_run rt_container tests/pool/rt_container.extc "live=0 made=1 closed=0 again=1 out=0"
 
+echo "== 期 1 · 拷贝 + 槽位复用：陈旧拷贝不许放掉别人的池（pidGen）=="
+rt_run rt_pidgen  tests/pool/rt_pidgen.extc  "live=1 c-len=0"
+
 echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/pool/rt_churn.extc -o "$TMP2/rt.c" >/dev/null 2>&1; then

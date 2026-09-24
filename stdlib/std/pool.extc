@@ -60,7 +60,8 @@ struct pool<T> {
     ent:    mut slice<i64>
     /* 运行期池（POOLS.md）：数据住它所在的 arena，池是 arena 旁边的那条旁链；
      * 随本容器一起创建，所在的地方退出时整条链一起走。release 之后为 -1。 */
-    pid:    i64
+    pid:    i64                /* 运行期池的下标 */
+    pidGen: u64                /* 建池时的世代：拷贝 + 槽位复用之后，防止误放别人的池 */
     free:   i32                /* head of the free list (-1 = none) */
     n:      i64                /* live values, always the dense prefix */
     cap:    i64
@@ -77,13 +78,16 @@ struct pool<T> {
 
     /* An empty pool that can hold `n` values before it has to grow. */
     fn withCap(n: i64) -> pool<T> {
+        let rp = syspool::extc_pool_new(i64(-1))     /* 池随容器创建 */
+        let rpg = syspool::extc_pool_generation(rp)
         var c: i64 = n
         if c < i64(8) { c = i64(8) }
         var p: pool<T> = {
             vals:   new T[c],
             slots:  new i32[c],
             ent:    new i64[c],
-            pid:    syspool::extc_pool_new(i64(-1)),
+            pid:    rp,
+            pidGen: rpg,
             free:   i32(-1),
             n:      i64(0),
             cap:    c,
@@ -169,6 +173,11 @@ struct pool<T> {
     /* 把整批还给这一层（POOLS.md）：容器自己的簿记重置 + 运行期池重置。
      * 不叫 close —— 所在的地方退出时这棵树本来就会被自动清空，close 会被读成"你负责关"。 */
     fn release(self: mut ref pool<T>) {
+        if self.pid < i64(0) { return }                        /* 已经放过 */
+        if syspool::extc_pool_generation(self.pid) != self.pidGen { 
+            self.pid = i64(-1)                                 /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
+            return
+        }
         syspool::extc_pool_reset(self.pid)
         self.clear()
         syspool::extc_pool_drop(self.pid)
