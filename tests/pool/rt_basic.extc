@@ -5,7 +5,7 @@ use std::sys::pool
 
 fn main() -> i32 {
     io::cout << "live=" << pool::extc_pool_live()
-    let r = pool::extc_pool_new(i64(-1), i64(0))
+    let r = pool::extc_pool_new(i64(-1))
     let g1 = pool::extc_pool_generation(r)
     io::cout << " up=" << pool::extc_pool_live() << " gen=" << i64(g1)
     pool::extc_pool_drop(r)

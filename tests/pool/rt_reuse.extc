@@ -1,0 +1,14 @@
+// 槽位复用：放掉一个池，再建一个 ⇒ **同一个槽位号**，而世代 +1
+// 判据：rid 相同、gen2 = gen1 + 1（这正是「旧 handle 查得出来」的机制）
+use std::io
+use std::sys::pool
+
+fn main() -> i32 {
+    let r1 = pool::extc_pool_new(i64(-1))
+    let g1 = pool::extc_pool_generation(r1)
+    pool::extc_pool_drop(r1)
+    let r2 = pool::extc_pool_new(i64(-1))
+    let g2 = pool::extc_pool_generation(r2)
+    io::cout << "same=" << (r1 == r2) << " gen=" << i64(g1) << "->" << i64(g2) << "\n"
+    return 0
+}

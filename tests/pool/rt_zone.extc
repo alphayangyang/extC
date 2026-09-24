@@ -1,0 +1,21 @@
+// 一个「地方」= 一个 zone：块里放了三个池（同一处的多个容器）+ 一棵嵌套树
+// 判据：块内 depth=2 且 live=4（三个根 + 一个子）· 出块后 live=0（整区一起走）
+use std::io
+use std::sys::pool
+
+fn main() -> i32 {
+    io::cout << "depth=" << pool::extc_pool_zoneDepth() << " live=" << pool::extc_pool_live()
+    {
+        let a = pool::extc_pool_new(i64(-1))       /* 同一个地方里的三个池 */
+        let b = pool::extc_pool_new(i64(-1))
+        let c = pool::extc_pool_new(i64(-1))
+        let child = pool::extc_pool_new(a)         /* 嵌套：a 的子树 */
+        io::cout << " in=" << pool::extc_pool_zoneDepth() << "/" << pool::extc_pool_live()
+        pool::extc_pool_drop(b)                    /* 单独放掉一个：live 3 */
+        io::cout << " after-drop=" << pool::extc_pool_live()
+        pool::extc_pool_reset(a)                   /* 重置：子树一起走，a 还在 ⇒ live 2 */
+        io::cout << " after-reset=" << pool::extc_pool_live()
+    }
+    io::cout << " out=" << pool::extc_pool_zoneDepth() << "/" << pool::extc_pool_live() << "\n"
+    return 0
+}

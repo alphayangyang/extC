@@ -107,8 +107,14 @@ else
     fail=1
 fi
 
-echo "== 期 1 · 池里的内存来自同一只 arena（分配 -> 写入 -> 读回；并逼到换块）=="
-rt_run rt_alloc    tests/pool/rt_alloc.extc    "ok=7 after=42 keep=7"
+echo "== 期 1 · 一个地方一个 zone：多个池 + 嵌套树，出块整区走 =="
+rt_run rt_zone     tests/pool/rt_zone.extc     "depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0"
+
+echo "== 期 1 · 槽位复用：同一个槽位号，世代 +1 =="
+rt_run rt_reuse    tests/pool/rt_reuse.extc    "same=true gen=1->2"
+
+echo "== 期 1 · 容器接入：池随容器创建，release 整批还，出块整区走 =="
+rt_run rt_container tests/pool/rt_container.extc "live=0 made=1 closed=0 again=1 out=0"
 
 echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
 TMP2=$(mktemp -d)

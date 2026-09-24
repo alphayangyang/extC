@@ -1,0 +1,20 @@
+// 容器接入：**池随容器一起创建**，release() 真的整批还；块退出时整区一起走
+// 判据：建容器 live=1 · release 后 live=0 · 再建 live=1（槽位复用）· 出块 live=0
+use std::io
+use std::pool
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    io::cout << "live=" << syspool::extc_pool_live()
+    {
+        var p = pool<i32>::withCap(i64(4))          /* 池在这里诞生（随容器）*/
+        io::cout << " made=" << syspool::extc_pool_live()
+        p.release()                                   /* 整批还：池没了 */
+        io::cout << " closed=" << syspool::extc_pool_live()
+        var q = pool<i32>::withCap(i64(4))          /* 槽位复用：又是 1 */
+        io::cout << " again=" << syspool::extc_pool_live()
+        q.release()                                   /* 有 close 就是资源类型：不写它会报"开了没关" */
+    }
+    io::cout << " out=" << syspool::extc_pool_live() << "\n"   /* 出块 ⇒ 整区走 */
+    return 0
+}

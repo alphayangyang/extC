@@ -17,7 +17,7 @@ fn check(h: handle) -> result<unit, poolError> {
 }
 
 fn main() -> i32 {
-    let rid = pool::extc_pool_new(i64(-1), i64(0))
+    let rid = pool::extc_pool_new(i64(-1))
     let h = handle { rid: rid, gen: pool::extc_pool_generation(rid) }
     check(h)?                      /* 此刻是好的：不 trap、继续走 ✓ */
     pool::extc_pool_drop(rid)

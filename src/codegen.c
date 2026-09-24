@@ -3344,7 +3344,15 @@ static void genFunc(CG *g, FuncDef *f) {
     {
         bool lib = (f->name && strchr(f->name, '$')) ||
                    (f->instName && strchr(f->instName, '$'));
-        g->zoneHere = g->needPool && !lib;
+        if (dbgOn("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[zone] name=%s mod=%s inst=%s owner=%s line=%d\n",
+                    f->name ? f->name : "-", f->modName ? f->modName : "-",
+                    f->instName ? f->instName : "-", f->owner ? "yes" : "-", f->line);
+        /* 「一个地方」= 入口文件里的函数。`modName` 是 loader 给的模块名：
+         * 库方法有它（实测 `withCap` 是 `mod=pool`），入口文件为空，所以库函数对地方透明 ——
+         * `pool<T>::withCap` 里建的池属于它的调用者所在的地方。 */
+        (void)lib;
+        g->zoneHere = g->needPool && (!f->modName || !*f->modName);
     }
     if (g->zoneHere && !g->noArena)
         cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* 函数体是一个地方 */");
