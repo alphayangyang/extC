@@ -8247,3 +8247,6 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 - `stdlib/stl/hashMap.extc` 撤掉「池字段必须排第一」的工作区，字段恢复自然序（`vals` 回到后面）后，
   `tests/hashmap`（含 canary 与 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
   `tests/genmatrix`（13 项）全绿，语料见同轮补记。
+
+同轮补记（第 14 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r19.log`）。
+#80 的修法与语料 262/0、六个套件一起构成四道闸门全过。
