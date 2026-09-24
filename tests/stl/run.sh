@@ -42,6 +42,9 @@ else
 fi
 rm -rf "$TMPC"
 
+echo "== string：连续字节串（append 触发翻倍 · asSlice 连续可直印 · shrink 降水位）=="
+run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=64 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
+
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 if "$EXTC" tests/stl/vector.extc -o "$TMP/v.c" >/dev/null 2>&1 \
    && gcc -std=c11 -g -fsanitize=address -o "$TMP/v" "$TMP/v.c" >/dev/null 2>&1 \

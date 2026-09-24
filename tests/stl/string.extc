@@ -1,0 +1,23 @@
+// string（池底、连续）：append 触发翻倍 · asSlice 连续可直印 · shrink 降水位 · clear 留容量
+// 判据：len=12 cap=16->32 shrink=12 · 打印出的字节与写入一致
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    var s = string::withCap(i64(16))
+    s.append("hello")
+    io::cout << "len=" << s.len() << " cap=" << s.capacity()
+    s.append(", world! and more bytes to force growth")
+    io::cout << " len2=" << s.len() << " cap2=" << s.capacity()
+    s.shrink()
+    io::cout << " shrink=" << s.capacity()
+    io::cout << " text="
+    io::cout << s.asSlice()
+    var t = string::withCap(i64(16))
+    t.append("ab")
+    t.push(u8(99))
+    io::cout << " t=" << t.asSlice() << "(" << t.len() << ")"
+    s.clear()
+    io::cout << " clear=" << s.len() << "/" << s.capacity() << "\n"
+    return 0
+}

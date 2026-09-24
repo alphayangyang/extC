@@ -1,0 +1,112 @@
+/* stl/string.extc —— 池底字节串（STL 第二个池底容器）
+ *
+ * 口径（POOLS.md §5）：**序列化面保持连续** —— 下游全吃 `slice<u8>`
+ * （print · IO · 哈希 · `extern!` 边界），所以这里绝不分块，`asSlice()` 永远给连续视图。
+ *
+ * 与 vector<T> 同一套骨架：随容器登记一条运行期池记录（寿命挂在"地方"上）·
+ * grow 翻倍 · shrink 降高水位 · clear 留容量 · release 校验世代。
+ */
+use std::sys::pool as syspool
+
+struct string {
+    buf:    mut slice<u8>
+    n:      i64
+    cap:    i64
+    pid:    i64
+    pidGen: u64
+
+    /* 构造器用 `T(args)` 糖的落点名字 `new`：非泛型类型上 `string::new(...)` 会被读成
+     * "模块 string 的函数 new"（模块名与类型名同名），而 `string(16)` 没有歧义。 */
+    fn new(c: i64) -> string {
+        let rp = syspool::extc_pool_new(i64(-1))
+        let rpg = syspool::extc_pool_generation(rp)
+        var cc: i64 = c
+        if cc < i64(16) { cc = i64(16) }
+        var s: string = {
+            buf:    new u8[cc],
+            n:      i64(0),
+            cap:    cc,
+            pid:    rp,
+            pidGen: rpg,
+        }
+        return s
+    }
+
+    @inline
+    fn len(self: ref string) -> i64 { return self.n }
+
+    @inline
+    fn capacity(self: ref string) -> i64 { return self.cap }
+
+    @inline
+    fn isEmpty(self: ref string) -> bool { return self.n == i64(0) }
+
+    /* 连续视图：字节就是 `buf[0..n]`，不拷贝（print / IO 直接用）*/
+    fn asSlice(self: ref string) -> slice<u8> { return self.buf[0..self.n] }
+
+    fn grow(self: mut ref string) {
+        let ncap = self.cap * i64(2)
+        var nb: mut slice<u8> = new u8[ncap]
+        var i: i64 = 0
+        while i < self.n {
+            nb[i] = self.buf[i]
+            i = i + i64(1)
+        }
+        self.buf = nb
+        self.cap = ncap
+    }
+
+    fn push(self: mut ref string, b: u8) {
+        if self.n >= self.cap { self.grow() }
+        self.buf[self.n] = b
+        self.n = self.n + i64(1)
+    }
+
+    /* 追加一段字节（"序列化面"最常见的一步）*/
+    fn append(self: mut ref string, s: slice<u8>) {
+        var i: i64 = 0
+        while i < s.len {
+            self.push(s[i])
+            i = i + i64(1)
+        }
+    }
+
+    fn appendByte(self: mut ref string, b: u8) { self.push(b) }
+
+    /* 缩容到刚好装下（下限 16）；连续性与字节不变 */
+    fn shrink(self: mut ref string) {
+        var ncap: i64 = self.n
+        if ncap < i64(16) { ncap = i64(16) }
+        if ncap >= self.cap { return }
+        var nb: mut slice<u8> = new u8[ncap]
+        var i: i64 = 0
+        while i < self.n {
+            nb[i] = self.buf[i]
+            i = i + i64(1)
+        }
+        self.buf = nb
+        self.cap = ncap
+    }
+
+    fn clear(self: mut ref string) { self.n = i64(0) }
+
+    fn release(self: mut ref string) {
+        if self.pid < i64(0) { return }
+        if syspool::extc_pool_generation(self.pid) != self.pidGen {
+            self.pid = i64(-1)
+            return
+        }
+        syspool::extc_pool_reset(self.pid)
+        syspool::extc_pool_drop(self.pid)
+        self.pid = i64(-1)
+    }
+}
+
+/* 模块级构造器。
+ *
+ * 为什么需要它：模块名与类型名同名（`stl/string.extc` 里的 `string`）时，
+ * `string::new(c)` 会被读成"模块 string 的函数 new"，`string(c)` 也解析不到类型
+ * （两条路都要消歧）。泛型容器没这个问题 —— `vector<i32>::new()` 的 `<>` 就消歧了。
+ * 这里用"模块级函数"这条路：`string::withCap(n)` 明确是模块导出的函数。
+ * 将来若要统一，可给非泛型类型也加一条消歧语法（记在 POOLS.md 的待办里）。 */
+fn withCap(c: i64) -> string { return string::new(c) }
