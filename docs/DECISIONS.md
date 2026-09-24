@@ -2680,6 +2680,53 @@ no method `put` on `ifstream`
 ⚠️ 还没实现：`f.reader()` 那层 · `readAll` 的常设用例 · 句柄 affine —— ✅ `std::fs` 模块本身已落地（定案 77 三个名字 + 定案 79 归属）·
 `f.reader()` · `close(f)!`（IO-2）✓
 
+## 定案 89 · **`main` 可以返回 `result<i32, E>` / `result<unit, E>`**（2026-09-24，主人拍板「1 是对的」）
+
+> 起因：主人「**我在 main 里面好像没办法问，但是 main 里面开文件是最常见的其实，怎么办**」✓
+> 量出来的墙：`fn main() -> result<i32, io::Error>` 被**明文拒绝** ——
+> 「C's entry point returns an `int`, so `main` may return `i32` (or nothing at all)」
+> ⇒ 于是 `?` 在 `main` 里没法用，而"在 main 里开文件"是最常见的写法 ✗
+> （本轮每个测试都得先包一个 `fn go() -> result<...>` —— 那就是这条缺口的代价 ✓）
+
+**规则**：`main` 的返回类型允许 **`result<i32, E>`**（成功 ⇒ 退出码 = 载荷）与
+**`result<unit, E>`**（成功 ⇒ 0）；失败 ⇒ **stderr 上一条带位置的失败消息 + 非零退出码** ✓
+别的类型照旧拒绝，**理由不变**：那是让 C 编译器悄悄转换 ✗
+—— 而 `result` **不是"别的类型"**：它是编译器**认识并显式拆开**的一种形状 ✓
+（Rust 的 `fn main() -> Result<(), E>`、Go 的 `log.Fatal` 都是这个答案 ✓）
+
+于是 `?` 在 `main` 里自然成立 —— **不需要给 `?` 加特例**：它本来就是"把失败交回外层函数"，
+外层现在有地方交了 ✓
+
+```extc
+fn main() -> result<unit, io::ioError> {
+    var f = fs::ifstream("input.txt")?      // ✓ 终于能这么写
+    var n: i64 = 0
+    f >> n
+    println("读到 = ", n)
+    f.close()?
+    return success(unit {})
+}
+```
+
+**⚠️ 状态：已定案，未实现**（本轮把检查器那半试做了，但 codegen 那半没做完 ⇒
+**按"不许留红树"回退**，源码回到上一条绿提交 ✓）**落地点四处**（都在 codegen，已定位）：
+
+1. `cFuncName`：包了 result 的 `main` 要改名成 `__extc_main`（不然与 C 的 `main` 撞名 ✗）
+2. 原型发射：`ret` 从 `cgIsMain ? "int"` 改成"包了 result 就用 `cType(f->ret)`"，前缀用 `static` ✓
+3. 定义发射：同样两处（`genFunc` 里的 `isMain` 分支）✓
+4. 结尾发外层 wrapper：`int main(void) { R r = __extc_main(); if (r.tag != <T>_success) {
+   fprintf(stderr, ...); extc_print(&(r.u.failure._0), <descRef(E)>); return 1; }
+   return <载荷 或 0>; }` ✓
+   （`result` 的 C 布局已量过：`{ int tag; union { struct { E _0; } failure; struct { T _0; } success; } u; }`，
+   tag 常量是 `<mangled>_failure = 0 / _success = 1`，描述符用 `descRef(g, E)` ✓）
+5. 检查器那半（本轮做过、已回退，重做很快）：`main` 的返回类型规则多认两个形状
+   （`TY_ENUM` + `edef->name == "result"` + 两个 targs，载荷是 `i32` 或 prelude 的 `unit`），
+   外加一条：`main(args)` + result 这组合**明确报未支持**（wrapper 今天不收参数 ✓）
+
+**判据（待补）**：`tests/io/` 加一条**直接在 `main` 里开文件**的用例（成功路径 + 退出码 0）·
+一条失败路径（文件不存在 ⇒ **非零退出码 + stderr 上有信息的消息**）· 一条 `result<i32, E>` 成功时
+**退出码 = 载荷**（用 `$?` 量 ✓）· 空 `E`（无载荷枚举）也要能打印 ✓
+
 ## 定案 88 · **`<<` / `>>` 可以返回 `mut ref T`：流是"有状态的值"，链式靠引用**（2026-09-24，主人拍板「1 是对的，2 用起来太难受了」）
 
 > 起因：主人问「**`ifstream` 怎么在 `>>` 语义下逐行/逐字读取**」✓
