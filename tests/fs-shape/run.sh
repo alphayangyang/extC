@@ -46,7 +46,7 @@ check_err() {   # check_err 文件 消息里必须出现的关键字
     fi
     echo "  ok   $f  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
 }
-check_err write-as-input  "argument expects \`fs::inputFile\`, found \`fs::outputFile\`"      # 写型当读型用
+check_err write-as-input  "argument expects \`fs::ifstream\`, found \`fs::ofstream\`"      # 写型当读型用
 check_err read-as-output  "no method \`put\`"           # 读型当写型用
 
 echo "== 平台常量不外露（\`O_*\` 只在特权层）=="
@@ -60,7 +60,7 @@ else
 fi
 
 echo "== 三个名字的规范（\`docs/SYNTAX.md\` §3′ 的判据）=="
-if grep -q 'openRead' docs/SYNTAX.md && grep -q 'openAppend' docs/SYNTAX.md && grep -q 'inputFile' docs/SYNTAX.md && grep -q '定案 77' docs/SYNTAX.md; then
+if grep -q 'openRead' docs/SYNTAX.md && grep -q 'openAppend' docs/SYNTAX.md && grep -q 'ifstream' docs/SYNTAX.md && grep -q '定案 77' docs/SYNTAX.md; then
     echo "  ok   规范  ->  docs/SYNTAX.md §3′（定案 77 + 86/87）写着三个打开名字 + 两个类型（ifstream/ofstream）+ 构造函数 ✓"
 else
     echo "  FAIL 规范  ->  docs/SYNTAX.md §3′ 没写（规范不落文档就没人遵守 ✗）"; fail=1
