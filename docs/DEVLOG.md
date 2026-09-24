@@ -6884,3 +6884,41 @@ tests/io/stream-file.extc 1335 → 1340 行  clang 1 → 1（那是 __extc_ret_v
 ⬜ **正确做法**（留给下一轮）：`__extc_home` 的判据应该和 `DeadFunc` 一样**在整份成品文本上判**（"全文只有它自己
 那一次提及" ✓ —— 名字是函数的局部，但要按**函数**限定作用域 ⇒ 用 `DeadFunc` 那套"按原文定位"的机制 ✓
 而不是靠 `homeDef` 这种**可变指针**跨阶段传递 ✗）
+
+### 2026-09-25 · **`main` 的返回槽去掉**：`__extc_ret_v` 一族（全量最大）消掉
+
+量出来的成因很干脆（`examples/newSlice.extc` 的 `--no-line-map` 成品 ✓）：
+
+```c
+    int32_t __extc_ret_v;          ← 声明了
+    ...
+    __extc_ret_v = 0;              ← 赋了值
+__extc_ret:
+    extc_arena_destroy(&__extc_a[1]);
+    return 0;                      ← 但 epilogue 写死 `return 0;`（C 的 main 必须返回 int ✓）
+```
+⇒ **`main` 的返回槽根本没人读** ✓ 而它照样被声明和赋值 ✓（`-Wunused-but-set-variable` ✓）
+
+修法：`main` 不声明这个槽（`retSlot = !noArena && !retVoid && !isMain` ✓），赋值处改成
+**只为副作用求值**（`(void)(...)` ✓ —— 这不是捂嘴：那个表达式里可能有 `extc_print`/`printf` 的副作用 ✓
+必须照样求值 ✓ 原来的赋值顺带做了这件事 ✓）
+
+**实测**（全部 `e0` 零错误 ✓）：
+
+```
+examples/newSlice.extc         clang 1 → 0 ✓
+examples/readonly-cursor.extc  clang 1 → 0 ✓
+examples/reader-home-arena.extc clang 2 → 1（剩下的是 __extc_home ✓ 另一族）
+
+**全量效果**（89 个程序，全部 error 0 ✓）：
+
+```
+             gcc   clang
+第一次全量    39     37
+第三轮        29     27
+第四轮        14     12
+这一轮        10      8     ← 各再 -4 ✓
+```
+语料 **256/0** ✓ 九套件全绿 ✓ 剩下的 8~10 条：`__extc_home`（2~3 个程序 ✓ 正确做法已记 ✓）
+与"未用参数/普通局部"几条 ✓
+```

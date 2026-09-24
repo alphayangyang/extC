@@ -2172,7 +2172,8 @@ static void cgReturn(CG *g, const char *val) {
         else            cgLine(g, "return;");
         return;
     }
-    if (val) cgLine(g, "__extc_ret_v = %s;", val);
+    if (val && !g->inMain) cgLine(g, "__extc_ret_v = %s;", val);
+    else if (val)          cgLine(g, "(void)(%s);   /* main's epilogue returns 0 */", val);
     cgRecLeave(g);
     cgLine(g, "goto __extc_ret;");
 }
@@ -3181,7 +3182,12 @@ static void genFunc(CG *g, FuncDef *f) {
     /* The slot the shared epilogue returns through; it is needed only when this
      * function really releases an arena on the way out. */
     bool retVoid = !g->retType || g->retType->kind == TY_VOID;
-    if (!g->noArena && !retVoid)
+    /* `main` never returns through the slot: its epilogue ends with a plain `return 0;`,
+     * because the C `main` returns an int whatever the language says. Declaring the slot
+     * there left a variable that was assigned and never read - the one warning of this
+     * shape that showed up in more than one example. */
+    bool retSlot = !g->noArena && !retVoid && !isMain;
+    if (retSlot)
         cgLine(g, "%s __extc_ret_v;", cType(g, g->retType));
     g->blkLevel = 0;
     g->loopLen  = 0;
