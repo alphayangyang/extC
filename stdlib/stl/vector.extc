@@ -1,0 +1,118 @@
+/* stl/vector.extc —— 池底动态数组（STL 的第一个池底容器原型）
+ *
+ * 与 `stl/pool<T>` 的分工：
+ *   - `pool<T>`：**手柄寻址**（稳定身份，erase 之后旧 handle 可判失效）
+ *   - `vector<T>`：**下标寻址**（就是 C++ 那个语义），因此不需要槽位表与世代，
+ *     但它照样是"池底"的：随容器建一条运行期池记录（寿命挂在"地方"上）、
+ *     容量按 vector 式翻倍、`shrink` 降高水位、`release` 时校验世代
+ *
+ * 内存：`vals` 由 `new T[c]` 从**当前地方**的 arena 拿；池不拥有内存，只负责
+ * 复用与寿命。dense 永远连续 ⇒ `denseView()` / SIMD 一直成立。
+ */
+use std::sys::pool as syspool
+
+struct vector<T> {
+    vals:   mut slice<T>
+    n:      i64
+    cap:    i64
+    pid:    i64                /* 运行期池的下标 */
+    pidGen: u64                /* 建池时的世代：陈旧拷贝不许误放别人的池 */
+
+    fn withCap(c: i64) -> vector<T> {
+        let rp = syspool::extc_pool_new(i64(-1))
+        let rpg = syspool::extc_pool_generation(rp)
+        var cc: i64 = c
+        if cc < i64(4) { cc = i64(4) }
+        var v: vector<T> = {
+            vals:   new T[cc],
+            n:      i64(0),
+            cap:    cc,
+            pid:    rp,
+            pidGen: rpg,
+        }
+        return v
+    }
+
+    fn new() -> vector<T> { return vector<T>::withCap(i64(4)) }
+
+    @inline
+    fn len(self: ref vector<T>) -> i64 { return self.n }
+
+    @inline
+    fn capacity(self: ref vector<T>) -> i64 { return self.cap }
+
+    @inline
+    fn isEmpty(self: ref vector<T>) -> bool { return self.n == i64(0) }
+
+    /* 下标读：越界给 none（条件用值，不 trap）*/
+    fn get(self: ref vector<T>, i: i64) -> option<T> {
+        if i < i64(0) || i >= self.n { return option<T>::none }
+        return option<T>::some(self.vals[i])
+    }
+
+    /* 下标写：越界就什么都不做（调用者用 `hasAt` 先问）*/
+    fn set(self: mut ref vector<T>, i: i64, v: T) -> bool {
+        if i < i64(0) || i >= self.n { return false }
+        self.vals[i] = v
+        return true
+    }
+
+    /* 容器们共用的整块视图：dense 前段，连续不拷贝 */
+    fn denseView(self: ref vector<T>) -> slice<T> { return self.vals[0..self.n] }
+
+    /* vector 式翻倍：搬进新数组，前 n 个按序 ⇒ 仍然连续 */
+    fn grow(self: mut ref vector<T>) {
+        let ncap = self.cap * i64(2)
+        var nv: mut slice<T> = new T[ncap]
+        var i: i64 = 0
+        while i < self.n {
+            nv[i] = self.vals[i]
+            i = i + i64(1)
+        }
+        self.vals = nv
+        self.cap  = ncap
+    }
+
+    fn push(self: mut ref vector<T>, v: T) {
+        if self.n >= self.cap { self.grow() }
+        self.vals[self.n] = v
+        self.n = self.n + i64(1)
+    }
+
+    fn pop(self: mut ref vector<T>) -> option<T> {
+        if self.n == i64(0) { return option<T>::none }
+        self.n = self.n - i64(1)
+        return option<T>::some(self.vals[self.n])
+    }
+
+    /* 缩容：降到刚好装下（下限 4）。dense 保持连续。
+     * 让出的是池的工作集，不是 RSS —— arena 只能整块还，旧数组到地方退出时才收。 */
+    fn shrink(self: mut ref vector<T>) {
+        var ncap: i64 = self.n
+        if ncap < i64(4) { ncap = i64(4) }
+        if ncap >= self.cap { return }
+        var nv: mut slice<T> = new T[ncap]
+        var i: i64 = 0
+        while i < self.n {
+            nv[i] = self.vals[i]
+            i = i + i64(1)
+        }
+        self.vals = nv
+        self.cap  = ncap
+    }
+
+    /* 清空但保留容量（下一次填回来不用重新分配）*/
+    fn clear(self: mut ref vector<T>) { self.n = i64(0) }
+
+    /* 释放这一层：世代对不上 = 陈旧拷贝，什么都不做 */
+    fn release(self: mut ref vector<T>) {
+        if self.pid < i64(0) { return }
+        if syspool::extc_pool_generation(self.pid) != self.pidGen {
+            self.pid = i64(-1)
+            return
+        }
+        syspool::extc_pool_reset(self.pid)
+        syspool::extc_pool_drop(self.pid)
+        self.pid = i64(-1)
+    }
+}

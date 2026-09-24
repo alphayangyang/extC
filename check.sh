@@ -104,6 +104,11 @@ if out=$(timeout 600 ./tests/map/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
 else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
 
+echo "== STL 库（一个库装所有动态容器；容器建在池上 —— 见 POOLS.md 期 3）=="
+if out=$(timeout 600 ./tests/stl/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（vector：翻倍/dense 连续/shrink/clear · ASan）"
+else bad "tests/stl/run.sh"; echo "$out" | tail -8; fi
+
 echo "== 线性关联容器（std::linmap / std::linset：只用 ==，不依赖 #57 的 hash）=="
 if out=$(timeout 600 bash tests/linmap/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（覆盖/缺失/删除/扩容 · 结构体键 · 集合）"

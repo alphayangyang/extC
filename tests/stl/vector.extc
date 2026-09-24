@@ -1,0 +1,28 @@
+// vector<T>（池底、下标寻址）：翻倍扩容 · dense 连续 · shrink 降水位 · clear 留容量
+// 判据：cap 4 -> 8 -> 16（插 9 个）· denseView 逐字节等于写入顺序 · shrink 到 16 -> 9
+use std::io
+use stl::vector
+
+fn main() -> i32 {
+    var v = vector<i32>::new()
+    io::cout << "cap0=" << v.capacity()
+    var i: i64 = 0
+    while i < i64(9) {
+        v.push(i32(i))
+        i = i + i64(1)
+    }
+    io::cout << " n=" << v.len() << " cap=" << v.capacity()
+    let dv = v.denseView()
+    var sum: i64 = 0
+    var k: i64 = 0
+    while k < dv.len { sum = sum + i64(dv[k])  k = k + i64(1) }
+    io::cout << " sum=" << sum
+    v.shrink()
+    io::cout << " shrink=" << v.capacity()
+    let top = v.pop() ?? i32(-1)
+    io::cout << " pop=" << i64(top) << " n=" << v.len()
+    v.clear()
+    io::cout << " clear=" << v.len() << "/" << v.capacity()
+    io::cout << " tail=" << i64(v.get(i64(8)) ?? i32(-9)) << "\n"
+    return 0
+}
