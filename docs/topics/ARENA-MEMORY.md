@@ -92,7 +92,7 @@ if (site->kind == EX_NEW || site->kind == EX_GENCALL)
 
 ## 6 验收判据（任何进一步改动都必须同时满足）
 
-1. `tests/run.sh`：通过 255 / 失败 0
+1. `tests/run.sh`：通过 256 / 失败 0（2026-09-24：255 → 256，加了一条被删原语的反例）
 2. `tests/arena-soundness/run.sh`：洞还在 = 0（3 条该拒的仍然拒）
 3. `tests/arena-promoted/run.sh`：22/22，且 ASan 干净
 4. `tests/asan/run.sh` = 8、`tests/arena/run.sh` = 5
@@ -144,7 +144,7 @@ if (site->kind == EX_NEW || site->kind == EX_GENCALL)
 
 ## A.4 判据（与 §6 相同，一条都不能少）
 
-`tests/run.sh` 255/0 · 反例库洞还在=0 · 转正库 22/22 · asan 8 / arena 5 · 攻击库与 BASELINE 一字不差
+`tests/run.sh` 256/0 · 反例库洞还在=0 · 转正库 22/22 · asan 8 / arena 5 · 攻击库与 BASELINE 一字不差
 
 ## A.5 环境教训（这次浪费了好几轮）
 
@@ -159,7 +159,7 @@ if (site->kind == EX_NEW || site->kind == EX_GENCALL)
 # 附录 B：第二次实施（约束解算）—— 机制通、健全性修好、剩一族误拒（2026-09-23 夜）
 
 > ⚠️ **先读这一条**：本附录里说的代码在**分支 `lvl-solver`** 上（`e4642d3` + `6d90954`），
-> **不在 `main`**。`main` 是绿的（`tests/run.sh` 255/0）。
+> **不在 `main`**。`main` 是绿的（`tests/run.sh` 256/0）。
 
 ## B.1 ⚠️⚠️ 环境的坑：会话为什么会莫名重置（浪费了好几轮，务必先看）
 
@@ -240,7 +240,7 @@ that dies first (depth 1, but this can only hold up to 0)
 
 ## B.5 判据（与 §6 / A.4 相同，一条都不能少）
 
-`tests/run.sh` 255/0 · 反例库洞还在=0 · 转正库 22/22 · asan 8 / arena 5 ·
+`tests/run.sh` 256/0 · 反例库洞还在=0 · 转正库 22/22 · asan 8 / arena 5 ·
 攻击库与 `BASELINE` 一字不差 · `tools/golden.sh check` 差异逐条说得清
 
 ## B.6 教训（给下一次的自己）
