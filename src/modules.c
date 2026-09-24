@@ -768,11 +768,11 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
              * as not imported one line after it was found. */
             e->u.assoc.typeName = modPrefix;
         } else if (rwQualifiedTypeName(L, self, modPrefix, &mangledType) && mangledType) {
-            /* `fs::outputFile::new(...)`: the middle of the path is a **type**, not a
+            /* `fs::ofstream::new(...)`: the middle of the path is a **type**, not a
              * module, so the deep-path lookup above found nothing. The type name is what
              * the checker needs; the symbol after it (`new`) is resolved from there.
-             * Without this the user got "`fs::outputFile` is not imported here -- add
-             * `use fs::outputFile`", which is about a module that does not exist. */
+             * Without this the user got "`fs::ofstream` is not imported here -- add
+             * `use fs::ofstream`", which is about a module that does not exist. */
             e->u.assoc.typeName = mangledType;
             return;
         } else {
@@ -795,7 +795,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         }
     }
 
-    /* `fs::outputFile("out.txt")`: `mod::name(args)` where `name` is a **type** of that
+    /* `fs::ofstream("out.txt")`: `mod::name(args)` where `name` is a **type** of that
      * module is that type's constructor -- `T(...)` is `T::new(...)` (定案 86), and from
      * outside the module the type has to be named in full, so the sugar has to be
      * recognized here as well.

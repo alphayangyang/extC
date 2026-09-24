@@ -2645,15 +2645,15 @@ io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗
 
 | 做什么 | 名字 | 返回 | 已有内容 |
 |---|---|---|---|
-| 读 | `fs::openRead(p)` | `inputFile` | 不动 ✓ |
-| 写（截断） | `fs::openWrite(p)` | `outputFile` | **清掉** ⚠️ |
-| 写（追加） | `fs::openAppend(p)` | `outputFile` | **保留** ✓ |
+| 读 | `fs::openRead(p)` | `ifstream` | 不动 ✓ |
+| 写（截断） | `fs::openWrite(p)` | `ofstream` | **清掉** ⚠️ |
+| 写（追加） | `fs::openAppend(p)` | `ofstream` | **保留** ✓ |
 
 **⭐ 读型 / 写型是两个 struct**（这条是判据，不是口味）：
-读方法只挂 `inputFile`、写方法只挂 `outputFile` ⇒ **误用是编译期错误** ✓
+读方法只挂 `ifstream`、写方法只挂 `ofstream` ⇒ **误用是编译期错误** ✓
 ```
-argument expects `inputFile`, found `outputFile`
-no method `put` on `inputFile`
+argument expects `ifstream`, found `ofstream`
+no method `put` on `ifstream`
 ```
 ⇒ 价值在于"打开错了**编不过**"，而不是运行到一半才发现 ✓
 
@@ -2680,6 +2680,30 @@ no method `put` on `inputFile`
 ⚠️ 还没实现：`f.reader()` 那层 · `readAll` 的常设用例 · 句柄 affine —— ✅ `std::fs` 模块本身已落地（定案 77 三个名字 + 定案 79 归属）·
 `f.reader()` · `close(f)!`（IO-2）✓
 
+## 定案 87 · **文件类型叫 `ifstream` / `ofstream`**（2026-09-24，主人拍板：「分开即可，保持解耦」）
+
+> 起因：做文件那一块之前问主人 —— 要不要 C++ 那种**一个类型带模式**的 `fstream`
+> （`fstream fin("x")` / `fstream fout("x", out)`）？主人答：
+> 「**我觉得分开即可，保持解耦，可以叫 ifstream/ofstream 这样，相信所有人都能看懂**」✓
+
+**规则**：
+
+1. **两个类型，不合成一个**：`fs::ifstream`（读型）· `fs::ofstream`（写型）✓
+   这是定案 77 的取舍的直接延续：**误用必须编不过** —— 读型上没有 `put`、写型上没有
+   `readSome`/`reader` ⇒ 写模式上用 `read` 这种错误**根本不进入编译器**（合成 `fstream` +
+   模式参数的话，它只能退化成**运行期**报错 ✗ —— 那正是定案 77 挡掉的那类误用 ✓）
+2. **名字取 C++ 的肌肉记忆**：`inputFile`/`outputFile` 太长，`ifstream`/`ofstream`
+   所有人一看就懂，而且照样解耦 ✓（原名直接**换掉**，不留别名 —— 与定案 81「删掉
+   `allocSlice`：一个同义且更弱的拼写」同一条规矩：**一种东西一个写法** ✓）
+3. **打开方式仍然是三个名字**（定案 77）：`openRead` / `openWrite`（截断）/ `openAppend`（追加），
+   现在各有构造函数写法：`fs::ifstream("x")` · `fs::ofstream("x")` · `fs::ofstream::append("x")` ✓
+   （追加是**具名**关联函数：一个类型只有一个 `new`，行为不同就给名字 —— 定案 86 ✓）
+
+**落地**：`stdlib/std/fs.extc` 改名 · 全仓引用（tests/examples/docs/SYNTAX §3′）一起改 ✓
+`tests/fs-shape/run.sh` 里那条"规范必须落在文档里"的判据**跟着改成新名字** ——
+判据钉的是**文档里的名字**，改名就得同时改它（不然它响得对、但说不到点上 ✓）
+`docs/SYNTAX.md` §3′ 加上两个类型与三个构造写法 ✓
+
 ## 定案 86 · **构造函数：`T(args)` 就是 `T::new(args)`**（2026-09-24，主人「直接 `fstream fin("input.txt")` 就很爽」）
 
 > 起因：主人要做**文件**那一块，但先把构造函数补上：「每次我都要 `fstream fin; fin.open()` 这就很弱智了」✓
@@ -2692,25 +2716,25 @@ no method `put` on `inputFile`
    （为什么固定名字：与"按形状认协议"同一招 —— `close` · `data`+`len` · 运算符名都这么认的 ✓
    不做构造函数重载：一个类型一个 `new`，要不同行为就给个**具名**关联函数 ✓）
 2. **`new` 的返回类型必须是 `T`，或 `result<T, E>`** ✓ 在**定义点**检查（没人调用也报 ✗）
-   —— `T(...)` 这个写法承诺了一个 `T`；允许它返回别的，`var f: inputFile = inputFile(p)` 就得去翻实现 ✗
+   —— `T(...)` 这个写法承诺了一个 `T`；允许它返回别的，`var f: ifstream = ifstream(p)` 就得去翻实现 ✗
    而 `result<T, E>` 必须有：打开文件、解析文本都会失败，`?` 正是 extC 说"会失败"的方式 ✓
    （错误类型 `E` 由构造函数自己定 ✓）
 3. **不叫 `new` 的关联函数不受约束**：`pair2::make(...)` 照旧、返回什么都可以 ✓
 4. **类型实参写全**：`gbox<i64>(5)` = `gbox<i64>::new(5)` ✓ 不从上下文猜类型（extC 一贯 ✓）
-5. **跨模块要写全名**：`fs::inputFile("x")` ✓（`use` 不传递，定案 85 同一条规矩 ✓）
-   三段写法 `fs::inputFile::new("x")` 也成立 ✓
+5. **跨模块要写全名**：`fs::ifstream("x")` ✓（`use` 不传递，定案 85 同一条规矩 ✓）
+   三段写法 `fs::ifstream::new("x")` 也成立 ✓
 
 **落地**（三处，全是**改写成同一个节点**，没有第二份实现）：
 
 - **检查器**：`EX_CALL` 的名字若是个**类型**（且没有同名局部绑定）⇒ 改写成 `EX_ASSOC`（`name = "new"`）
   并**重新走一遍**那条路 ⇒ 实参检查 · arena 参数 · 生成的 C 全部复用 ✓
   `EX_GENCALL`（`gbox<i64>(5)`）同一条路 ✓
-- **装载器**：`fs::inputFile("x")` 这种**限定名**要能认出"中间是类型、最后是构造函数" ✓
+- **装载器**：`fs::ifstream("x")` 这种**限定名**要能认出"中间是类型、最后是构造函数" ✓
   优先级是**函数优先、类型其次**，而同一模块里函数与类型**不可能重名** ⇒ 没有歧义 ✓
-  顺带修掉 `fs::inputFile::new(...)` 报的假错误（"`fs::inputFile` is not imported here -- add
-  `use fs::inputFile`" —— 在说一个不存在的模块 ✗）
-- **`std::fs`**：`inputFile::new(path)` · `outputFile::new(path)`（= 建/截断）· `outputFile::append(path)` ✓
-  ⇒ 文件那边现在能写 `var f = fs::inputFile("input.txt")?` ✓
+  顺带修掉 `fs::ifstream::new(...)` 报的假错误（"`fs::ifstream` is not imported here -- add
+  `use fs::ifstream`" —— 在说一个不存在的模块 ✗）
+- **`std::fs`**：`ifstream::new(path)` · `ofstream::new(path)`（= 建/截断）· `ofstream::append(path)` ✓
+  ⇒ 文件那边现在能写 `var f = fs::ifstream("input.txt")?` ✓
 
 ⚠️ **路上踩的坑（联合体别名，第二次）**：改写节点时先写 `e->u.assoc.typeName`，之后又去读
 `e->u.gencall.targs/args` —— 两者**共享同一块内存** ⇒ 节点里装进一个整数当指针 ⇒ **段错误**
@@ -2820,7 +2844,7 @@ no method `put` on `inputFile`
 后者跟"库不改数据"冲突 ✓
 
 **输出侧同一条定案里一起定了**（**只发 `\n`，要 CRLF 就显式写**）：
-`print`/`println` 只发 `\n` · `fs::outputFile.put` **原样写**（不翻译）⇒ 跟 Go/Rust 同一位置 ✓
+`print`/`println` 只发 `\n` · `fs::ofstream.put` **原样写**（不翻译）⇒ 跟 Go/Rust 同一位置 ✓
 理由同两条铁律：**不改数据** + **不做隐式魔法**（平台相关的输出 = 同一份源码在不同机器上产出不同字节 ✗）；
 要 CRLF 就 `print("...\r\n")` —— extC 的字符串转义**原样交给 C**，所以 `\r` 今天就能用 ✓
 ⚠️ 顺带补了 `MANUAL` §2 的转义表（原来只列 `\n` `\t` `\"` `\\`，**`\r` 能用却没写** ✗）·

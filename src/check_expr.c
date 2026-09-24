@@ -1536,11 +1536,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * message states the correct spelling; it does not fill it in.
                  * Only a variant with a payload is pointed at. A payload-free `status.ok` is a
                  * value in its own right and takes the other path. */
-                /* `inputFile("input.txt")`: a call whose name is a **type** is that
+                /* `ifstream("input.txt")`: a call whose name is a **type** is that
                  * type's constructor -- the associated function `new`. It is rewritten
                  * into the associated-call node, so the argument checking, the arena
                  * argument and the generated C are the very same ones as for
-                 * `inputFile::new("input.txt")`; there is no second implementation to
+                 * `ifstream::new("input.txt")`; there is no second implementation to
                  * drift away from this one.
                  *
                  * Only when no local binding of that name is in scope: a variable

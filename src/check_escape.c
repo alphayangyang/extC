@@ -1638,7 +1638,7 @@ FuncDef *findOp(TypeTable *tt, Type *b, const char *sym, Type *rhs, const char *
  * `struct` without `self`), and `T(...)` is the spelling for calling it. That spelling
  * promises a `T`, so the body has to produce one; letting `new` return anything would
  * make `T(...)` mean whatever that function happens to return, and the reader of
- * `var f: inputFile = inputFile(path)` would have to go and look.
+ * `var f: ifstream = ifstream(path)` would have to go and look.
  *
  * The one exception is a **fallible** constructor: `result<T, E>` is accepted, because
  * opening a file, parsing text and allocating are all things that can fail, and the

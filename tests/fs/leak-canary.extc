@@ -12,7 +12,7 @@
 use std::fs
 
 /* 只读一眼句柄，**不关** —— 泄漏就发生在这里 */
-fn touch(f: mut ref fs::outputFile) -> i32 { return f.fd }
+fn touch(f: mut ref fs::ofstream) -> i32 { return f.fd }
 
 fn main() -> i32 {
     var first: i32 = i32(-1)

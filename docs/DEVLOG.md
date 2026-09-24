@@ -146,13 +146,27 @@ C 名字后缀规则跟着定了：**只有一个**实现 ⇒ 不加后缀（`ve
 
 落地三处全是"改写成同一个节点"：检查器把 `T(...)` 改写成 `EX_ASSOC(name="new")` 再走一遍那条路
 （实参检查/arena/C 生成全复用）· 装载器认出 `fs::Type(...)` 与 `fs::Type::new(...)` · `std::fs` 加上
-`inputFile::new` / `outputFile::new` / `outputFile::append` ⇒ **文件那边现在能写
-`var f = fs::inputFile("input.txt")?`** ✓
+`ifstream::new` / `ofstream::new` / `ofstream::append` ⇒ **文件那边现在能写
+`var f = fs::ifstream("input.txt")?`** ✓
 
 ⚠️ 踩的坑：改写联合体时先写 `u.assoc.typeName`、又去读 `u.gencall.targs` —— 同一块内存 ⇒
 节点里装了整数当指针 ⇒ **段错误**（`obligExpr` 跟着 `0x40000000f` 走 ✗）⇒ 规矩：**先全部读出来再写** ✓
 
 判据：`tests/ctor/` **6 项**（`check.sh` 第 23 节）· 语料 254/0 · fs/io/modules/ops/genmatrix/qname 全绿 ✓
+
+### ⑦ 文件那边开工：类型改名 `ifstream` / `ofstream`（定案 87）
+
+先问了主人一个设计点：要不要 C++ 那种一个类型带模式的 `fstream`？主人答
+「**分开即可，保持解耦，可以叫 ifstream/ofstream 这样，相信所有人都能看懂**」✓
+
+理由记进定案 87：分开是定案 77 的延续 —— **误用必须编不过**（读型上没有 `put`、写型上没有
+`read`），合成一个类型 + 模式参数就只能退化成**运行期**报错 ✗；名字取 C++ 的肌肉记忆，
+原名**直接换掉、不留别名**（与定案 81「一种东西一个写法」同一条规矩）✓
+
+落地：`stdlib/std/fs.extc` 改名 + 全仓引用（tests/examples/docs/SYNTAX §3′）· `fs-shape`
+那条"规范必须落在文档里"的判据跟着改成新名字（判据钉的是**文档里的名字**）✓
+现在三种打开方式都有构造写法：`fs::ifstream("x")` · `fs::ofstream("x")`（截断）·
+`fs::ofstream::append("x")`（追加）✓
 
 ### 还欠的
 
@@ -454,7 +468,7 @@ makefile `missing separator` · `#!/bin/bash\r` bad interpreter —— **全是�
   以 `check.sh quick` 全绿为准 ✓
 * **补完的三处**（主人："那 fs 里面的呢，还有输出呢，要改吗"）：
   ① `fs` **不用改** —— 它是字节层（`readSome`/`readAll`/`put`），唯一的行入口
-     `fs::inputFile.reader()` 返回的就是 `io::reader` ⇒ 跟着一起修好了 ✓（这正是"读文件与读
+     `fs::ifstream.reader()` 返回的就是 `io::reader` ⇒ 跟着一起修好了 ✓（这正是"读文件与读
      stdin 同一套 API"的设计红利）；顺手核对全 `stdlib/` 再无第二个行入口 ✓
   ② **输出侧一起定了口径**：**只发 `\n`**、`put` 不翻译、要 CRLF **显式写** `"...\r\n"`
      —— 主流两派（平台翻译：Java/C#/C-CRT/Python 文本模式 · 只发 `\n`：Go/Rust）里站后者 ✓
@@ -834,7 +848,7 @@ io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗
 
 | | 方案 | 实测结论 |
 |---|---|---|
-| **A** ⭐ | 两个类型 + 两个名字（`openRead`/`openWrite`） | **误用是编译期错误**：`no method `readSome` on `outputFile`` ✓ |
+| **A** ⭐ | 两个类型 + 两个名字（`openRead`/`openWrite`） | **误用是编译期错误**：`no method `readSome` on `ofstream`` ✓ |
 | B | 一个 `open` + 枚举实参（`open(p, fileMode.write)`） | **能编译**（`flagsOf(fileMode.read)` 实测通过 ✓），但模式仍藏在实参里、且返回类型统一 ⇒ 丢掉编译期判据 ✗ |
 
 主人选了 **A**，并追加拍板：**写要分「截断」和「追加」**（`openWrite` 截断 · `openAppend` 追加）✓
@@ -845,8 +859,8 @@ io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗
 **"读型 / 写型是两个 struct"不只是口味 —— 它是判据** ✓ 实测两个方向都编不过：
 
 ```
-argument expects `inputFile`, found `outputFile`     ← 把写型传给只收读型的函数
-no method `put` on `inputFile`                       ← 读型没有写方法
+argument expects `ifstream`, found `ofstream`     ← 把写型传给只收读型的函数
+no method `put` on `ifstream`                       ← 读型没有写方法
 ```
 ⇒ 换成"一个 `open` + 枚举参数"的话，这两件事**只能运行时才发现** ✗
 ⇒ 所以这条规范兑现的是 extC 那句老话：**能证明的放到编译期** ✓

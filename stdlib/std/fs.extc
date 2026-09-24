@@ -33,22 +33,22 @@ use std::sys::io as sysio
 
 /* ---------------------------------------------------------------- 读型 */
 
-struct inputFile {
+struct ifstream {
     fd:   i32
     open: bool
 
-    /* **构造函数**：`inputFile("input.txt")` 与 `inputFile::new("input.txt")` 是同一件事
+    /* **构造函数**：`ifstream("input.txt")` 与 `ifstream::new("input.txt")` 是同一件事
      * （`T(...)` 就是 `T::new(...)` 的写法，见定案 86）✓
      *
      * 打开**会失败**（文件不在、没权限、fd 用光），所以返回 `result`，调用点写 `?`：
-     *     var f = inputFile("input.txt")?
+     *     var f = ifstream("input.txt")?
      * 这正是 `openRead` 的形状，而它就在这里 —— 一份实现，两个名字 ✓ */
-    fn new(path: slice<u8>) -> result<inputFile, io::ioError> {
+    fn new(path: slice<u8>) -> result<ifstream, io::ioError> {
         return openRead(path)
     }
 
     /* Read once. Returns how many bytes arrived; 0 means end of file. */
-    fn readSome(self: mut ref inputFile, out: mut slice<u8>) -> result<i64, io::ioError> {
+    fn readSome(self: mut ref ifstream, out: mut slice<u8>) -> result<i64, io::ioError> {
         if !self.open { return failure(io::ioError.closed(self.fd)) }
         if out.len == i64(0) { return success(i64(0)) }
         let n = sysio::read(self.fd, out.data, out.len)
@@ -61,7 +61,7 @@ struct inputFile {
      * A destination that fills up while the file still has data is
      * `failure(destFull(n))`: handing back a short count would look like end of file
      * and silently lose the rest. */
-    fn readAll(self: mut ref inputFile, out: mut slice<u8>) -> result<i64, io::ioError> {
+    fn readAll(self: mut ref ifstream, out: mut slice<u8>) -> result<i64, io::ioError> {
         var total: i64 = 0
         while total < out.len {
             let n = self.readSome(out[total..])?
@@ -90,7 +90,7 @@ struct inputFile {
      *   - the reader reads from the **descriptor**, not from the handle: closing the
      *     handle while a `reader` is still in use leaves the reader reading a number the
      *     kernel may already have given to somebody else. Close after the reading is done. */
-    fn reader(self: mut ref inputFile) -> result<io::reader, io::ioError> {
+    fn reader(self: mut ref ifstream) -> result<io::reader, io::ioError> {
         if !self.open { return failure(io::ioError.closed(self.fd)) }
         return success(io::readerOf(self.fd))
     }
@@ -98,7 +98,7 @@ struct inputFile {
     /* Close the descriptor. Idempotent: the handle remembers that it is closed, so a
      * second call is a no-op and `close(2)` is never reached twice -- by then the
      * number may belong to somebody else. */
-    fn close(self: mut ref inputFile) -> result<unit, io::ioError> {
+    fn close(self: mut ref ifstream) -> result<unit, io::ioError> {
         if !self.open { return success(unit {}) }
         let fd0 = self.fd
         self.fd = i32(-1)
@@ -110,24 +110,24 @@ struct inputFile {
 
 /* ---------------------------------------------------------------- 写型 */
 
-struct outputFile {
+struct ofstream {
     fd:   i32
     open: bool
 
-    /* 构造函数 = **建/截断**（最常见的那件事）：`outputFile("out.txt")` ✓
-     * 追加是另一件事，用具名关联函数：`outputFile::append("out.txt")` ✓
+    /* 构造函数 = **建/截断**（最常见的那件事）：`ofstream("out.txt")` ✓
+     * 追加是另一件事，用具名关联函数：`ofstream::append("out.txt")` ✓
      * （一个类型只能有一个 `new`：构造函数不做重载，要不同行为就给个名字 ✓） */
-    fn new(path: slice<u8>) -> result<outputFile, io::ioError> {
+    fn new(path: slice<u8>) -> result<ofstream, io::ioError> {
         return openWrite(path)
     }
 
-    fn append(path: slice<u8>) -> result<outputFile, io::ioError> {
+    fn append(path: slice<u8>) -> result<ofstream, io::ioError> {
         return openAppend(path)
     }
 
     /* Write all of `buf`. A short write is not an error: it is looped over, and only
      * a real failure from `write(2)` comes back as `failure`. */
-    fn put(self: mut ref outputFile, buf: slice<u8>) -> result<i64, io::ioError> {
+    fn put(self: mut ref ofstream, buf: slice<u8>) -> result<i64, io::ioError> {
         if !self.open { return failure(io::ioError.closed(self.fd)) }
         var done: i64 = 0
         while done < buf.len {
@@ -144,7 +144,7 @@ struct outputFile {
      * goes straight to `write(2)`, and `close(2)` is the one call that still has
      * something to say. A buffered writer (`std::io`'s `writer`) is where a half-way
      * `flush()` belongs. */
-    fn close(self: mut ref outputFile) -> result<unit, io::ioError> {
+    fn close(self: mut ref ofstream) -> result<unit, io::ioError> {
         if !self.open { return success(unit {}) }
         let fd0 = self.fd
         self.fd = i32(-1)
@@ -159,22 +159,22 @@ struct outputFile {
 /* Opening produces a `failure` and not a trap: a missing file, a permission, or a
  * full descriptor table (EMFILE) are normal runtime conditions. The number the call
  * returned travels in the error, so the caller can tell them apart. */
-fn openRead(path: slice<u8>) -> result<inputFile, io::ioError> {
+fn openRead(path: slice<u8>) -> result<ifstream, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
     /* A named literal, resolved through the module context exactly the way a type
-     * annotation is (PLAN #54 fixed this: it used to need `var f: inputFile = { .. }`). */
-    return success(inputFile { fd: fd, open: true })
+     * annotation is (PLAN #54 fixed this: it used to need `var f: ifstream = { .. }`). */
+    return success(ifstream { fd: fd, open: true })
 }
 
-fn openWrite(path: slice<u8>) -> result<outputFile, io::ioError> {
+fn openWrite(path: slice<u8>) -> result<ofstream, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
-    return success(outputFile { fd: fd, open: true })
+    return success(ofstream { fd: fd, open: true })
 }
 
-fn openAppend(path: slice<u8>) -> result<outputFile, io::ioError> {
+fn openAppend(path: slice<u8>) -> result<ofstream, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_APPEND, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
-    return success(outputFile { fd: fd, open: true })
+    return success(ofstream { fd: fd, open: true })
 }

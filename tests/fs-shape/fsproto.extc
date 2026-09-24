@@ -10,13 +10,13 @@
  *
  *   | 做什么 | 名字 | 返回 | 已有内容 |
  *   |---|---|---|---|
- *   | 读 | `fs::openRead(p)` | `inputFile` | 不动 ✓ |
- *   | 写（截断） | `fs::openWrite(p)` | `outputFile` | **清掉** ⚠️ |
- *   | 写（追加） | `fs::openAppend(p)` | `outputFile` | **保留**，写在后面 ✓ |
+ *   | 读 | `fs::openRead(p)` | `ifstream` | 不动 ✓ |
+ *   | 写（截断） | `fs::openWrite(p)` | `ofstream` | **清掉** ⚠️ |
+ *   | 写（追加） | `fs::openAppend(p)` | `ofstream` | **保留**，写在后面 ✓ |
  *
  * ⭐ **读型 / 写型是两个 struct** ⇒ 误用是**编译期错误**（`run.sh` 有两条反例钉着 ✓）：
- *   `error: no method `readSome` on `outputFile``
- *   `error: argument expects `inputFile`, found `outputFile``
+ *   `error: no method `readSome` on `ofstream``
+ *   `error: argument expects `ifstream`, found `ofstream``
  *
  * ⭐ **关不关是程序的事**（定案 79）：句柄不再由块代管，`close()` 就是**可检查的提交点**；
  *    开出来却全程没人关，是**编译期错误**（"opened and never closed"）✓
@@ -26,18 +26,18 @@
 use std::fs
 use std::io
 
-/* 只收**读型** —— `run.sh` 的反例会拿 `outputFile` 调它，看编译器报不报 ✓
+/* 只收**读型** —— `run.sh` 的反例会拿 `ofstream` 调它，看编译器报不报 ✓
  * ⚠️ 它必须**真被用到**（否则触发"没人用"的警告 ✗）⇒ 下面正例里用了一次 ✓ */
-fn fdOf(f: fs::inputFile) -> i32 { return f.fd }
+fn fdOf(f: fs::ifstream) -> i32 { return f.fd }
 
 fn go() -> result<unit, io::ioError> {
-    // ---------- 写：openWrite ⇒ 类型是 outputFile（原内容被清掉）----------
+    // ---------- 写：openWrite ⇒ 类型是 ofstream（原内容被清掉）----------
     var out = fs::openWrite("build/fsproto-out.txt")?
     out.put("hello\n")?
     out.put("世界\n")?
     out.close()?                       // ⭐ 提交点：这里能报延迟的写错误
 
-    // ---------- 读：openRead ⇒ 类型是 inputFile ----------
+    // ---------- 读：openRead ⇒ 类型是 ifstream ----------
     var inp = fs::openRead("build/fsproto-out.txt")?
     var buf: [64]u8
     let n = inp.readSome(buf[..])?

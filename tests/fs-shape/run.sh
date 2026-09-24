@@ -3,7 +3,8 @@
 #
 # ⚠️ 为什么要有一支验收：这条规范不是"口味"，是**编译期判据** ——
 #    主人 2026-09-23：「**open 不够清晰，因为我不知道打开的是读还是写**」✗
-#    定的规范：`openRead` / `openWrite`（截断）/ `openAppend`（追加），
+#    定的规范：`openRead` / `openWrite`（截断）/ `openAppend`（追加）+ 类型名
+#    `ifstream` / `ofstream`（2026-09-24 改名：分开保解耦，名字取 C++ 的肌肉记忆 ✓），
 #    而且**读型和写型是两个 struct** ⇒ 误用**编不过** ✓
 #
 # 判据三条：
@@ -60,7 +61,7 @@ fi
 
 echo "== 三个名字的规范（\`docs/SYNTAX.md\` §3′ 的判据）=="
 if grep -q 'openRead' docs/SYNTAX.md && grep -q 'openAppend' docs/SYNTAX.md && grep -q 'inputFile' docs/SYNTAX.md && grep -q '定案 77' docs/SYNTAX.md; then
-    echo "  ok   规范  ->  docs/SYNTAX.md §3′（定案 77）写着三个名字 + 两个类型 ✓"
+    echo "  ok   规范  ->  docs/SYNTAX.md §3′（定案 77 + 86/87）写着三个打开名字 + 两个类型（ifstream/ofstream）+ 构造函数 ✓"
 else
     echo "  FAIL 规范  ->  docs/SYNTAX.md §3′ 没写（规范不落文档就没人遵守 ✗）"; fail=1
 fi

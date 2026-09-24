@@ -256,7 +256,7 @@ struct reader {
 
 理由还是 extC 那两条铁律：**不改数据** + **不做隐式魔法**（平台相关的输出 = 同一份源码在不同机器上产出不同字节 ✗）
 
-- `print` / `println` 只发 `\n` ✓ · `fs::outputFile.put` **原样写**（不翻译）✓
+- `print` / `println` 只发 `\n` ✓ · `fs::ofstream.put` **原样写**（不翻译）✓
 - 要 CRLF：**显式写** `print("...\r\n")` —— extC 的字符串转义**原样交给 C**，
   所以 `\r`（以及 `\v` `\f` `\0`）**今天就能用** ✓
   （`MANUAL` §2 的转义表原来只列了 `\n` `\t` `\"` `\\` ⇒ **已补 `\r`** ✓）
@@ -549,11 +549,11 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 > ⭐ **2026-09-23 规范已定（定案 77；实现还没动手）**：主人指出「**open 不够清晰，
 > 因为我不知道打开的是读还是写**」✗ ⇒ 定成
-> `fs::openRead(p) -> inputFile` · `fs::openWrite(p) -> outputFile`（**截断**）·
-> `fs::openAppend(p) -> outputFile`（**追加**）✓
+> `fs::openRead(p) -> ifstream` · `fs::openWrite(p) -> ofstream`（**截断**）·
+> `fs::openAppend(p) -> ofstream`（**追加**）✓
 > ⭐ **读型 / 写型是两个 struct** ⇒ "把写型当读型用"是**编译期错误** ✓
 > ⚠️ `O_*` 与 POSIX 的数**只许出现在 `std::sys::io`**（本文 §1 那张分层表里）
-> ⇒ `file` 拆成 `inputFile` / `outputFile`，并且**挂在 `std::fs`**（不是 prelude ✓）
+> ⇒ `file` 拆成 `ifstream` / `ofstream`，并且**挂在 `std::fs`**（不是 prelude ✓）
 > 规范全文 [`SYNTAX.md`](../../docs/SYNTAX.md) §3′ · 常设验收 `tests/fs-shape/` ✓
 >
 > ⚠️ **状态口径（2026-09-23）**：本文里的"进度/状态"表**可能滞后** —— "还剩什么"的权威只看 [`PLAN.md`](../../docs/PLAN.md) §0.4（缺陷清单）+ §1（主线），或直接跑 `examples/` 实测 ✓

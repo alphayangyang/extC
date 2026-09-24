@@ -123,29 +123,45 @@ io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗
 
 | 做什么 | 名字 | 返回 | 已有内容 |
 |---|---|---|---|
-| 读 | `fs::openRead(p)` | `inputFile` | 不动 ✓ |
-| 写（**截断**） | `fs::openWrite(p)` | `outputFile` | **清掉** ⚠️ |
-| 写（**追加**） | `fs::openAppend(p)` | `outputFile` | **保留**，写在后面 ✓ |
+| 读 | `fs::openRead(p)` | `ifstream` | 不动 ✓ |
+| 写（**截断**） | `fs::openWrite(p)` | `ofstream` | **清掉** ⚠️ |
+| 写（**追加**） | `fs::openAppend(p)` | `ofstream` | **保留**，写在后面 ✓ |
 | 读全部 | `readAll(f, dest)` | `result<i64, ioError>` | 调用者给地方 ✓ |
 | 逐行/逐数 | `f.reader()` ⇒ `reader` | | 复用 `std::io` 的 `nextLine`/`nextInt` ✓ |
 
+**两个类型**：`fs::ifstream`（读型）· `fs::ofstream`（写型）—— **分开**是定案 77 的取舍：
+读型上没有 `put`、写型上没有 `readSome` ⇒ **误用编不过** ✓
+（2026-09-24 改名，定案 87：原名 `inputFile`/`outputFile` 太长，`ifstream`/`ofstream` 是 C++
+的肌肉记忆，**所有人都能看懂**，而且照样解耦 ✓）
+
+**构造函数**（定案 86：`T(args)` 就是 `T::new(args)`）—— 打开文件现在一句话：
+
+```extc
+var fin  = fs::ifstream("input.txt")?        // = fs::openRead ✓
+var fout = fs::ofstream("out.txt")?          // = fs::openWrite（**截断**）✓
+var fap  = fs::ofstream::append("log.txt")?  // = fs::openAppend（追加）✓
+```
+
+（`fs::ifstream::new(...)` 与糖 `fs::ifstream(...)` 同一条路 ✓ 追加是**具名**关联函数：
+一个类型只有一个 `new`，行为不同就给名字 ✓）
+
 ```extc
 // 用户层：看见的只有"读还是写"，看不见一个 `O_*` ✓
-var out = fs::openWrite("build/x.txt")?     // 类型是 outputFile ⇒ 只能写
+var out = fs::openWrite("build/x.txt")?     // 类型是 ofstream ⇒ 只能写
 out.put("hello\n")
-var inp = fs::openRead("build/x.txt")?      // 类型是 inputFile ⇒ 只能读
+var inp = fs::openRead("build/x.txt")?      // 类型是 ifstream ⇒ 只能读
 var buf: [64]u8
 let n = inp.readSome(buf[..])
 ```
 
 ### 三条硬规矩（**不是口味，是判据**）
 
-1. **读型 / 写型是两个 struct**：`inputFile` / `outputFile`，
+1. **读型 / 写型是两个 struct**：`ifstream` / `ofstream`，
    读方法只挂前者、写方法只挂后者 ⇒ **把写型当读型用是编译期错误** ✓
    实测两条（`tests/fs-shape/`）：
    ```
-   argument expects `inputFile`, found `outputFile`      ← 写型传给只收读型的函数
-   no method `put` on `inputFile`                        ← 读型没有写方法
+   argument expects `ifstream`, found `ofstream`      ← 写型传给只收读型的函数
+   no method `put` on `ifstream`                        ← 读型没有写方法
    ```
    ⇒ 这条规范的价值**不在好看**，在于"打开错了"**编不过**（而不是运行到一半才发现）✓
 2. **`O_*` 与 POSIX 的数只许出现在 `std::sys::io`**（特权层）——
