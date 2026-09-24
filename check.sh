@@ -104,6 +104,11 @@ if out=$(timeout 600 ./tests/map/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
 else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 线性关联容器（std::linmap / std::linset：只用 ==，不依赖 #57 的 hash）=="
+if out=$(timeout 600 bash tests/linmap/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（覆盖/缺失/删除/扩容 · 结构体键 · 集合）"
+else bad "tests/linmap/run.sh"; echo "$out" | tail -6; fi
+
 echo "== 注解（@inline 要真的生效 · 写错的注解必须编译期报错）=="
 if [ -x tests/annot/run.sh ]; then
     if out=$(tests/annot/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
@@ -115,9 +120,9 @@ if out=$(timeout 600 bash tests/ops/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · mangle · 9 反例 · 两条不许漏到 gcc）"
 else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
 
-echo "== 泛型组合矩阵（T 的位置 × 特性 · 12 格，缺口清单已清空 —— 见 GENERICS.md）=="
+echo "== 泛型组合矩阵（T 的位置 × 特性 · 12 格 + 1 条已知缺口 —— 见 GENERICS.md）=="
 if out=$(timeout 600 bash tests/genmatrix/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（12 格全过 ✓ · #60/#61/#62/#63 都已修并搬进矩阵，反向断言清单已清空）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（12 格全过 ✓ · #60/#61/#62/#63 已修搬进矩阵 · #64 仍坏在记着的那句上）"
 else bad "tests/genmatrix/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 头文件 include guard（内容不许落在 #endif 之后）=="

@@ -62,7 +62,7 @@ check_still_bad() {
     echo "  ok   $(basename "$f")  ->  仍然坏在「$want」（#$num 未修 ✓）"
     n_ok=$((n_ok + 1))
 }
-# （清单现在是**空的**：`#60`/`#61`/`#62` 三条都于 2026-09-24 修掉并搬进 ① ✓）
+check_still_bad tests/canary-gaps/generic_view_eq.extc  'slice_u8_eq'  64
 
 echo "通过 $n_ok 项，失败 $fail 项（0 = 全过）"
 [ "$fail" = 0 ]

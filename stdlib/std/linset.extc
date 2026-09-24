@@ -1,0 +1,43 @@
+/* std/linset.extc -- a **linear** set: membership by `==`, no hashing.
+ *
+ * The same trade as `std/linmap`, and the same reason: a hashed `set<T>` needs `hash()` on
+ * a type parameter, which the compiler cannot do yet (no traits). `==` on a parameter *is*
+ * supported -- checked per instance, with the diagnostic naming the instance.
+ *
+ *     use std::linset
+ *     var s: linSet<i64> = linSet<i64>::withCap(4)
+ *     s.add(i64(7))
+ *     println(s.contains(i64(7)))
+ *
+ * It is a thin wrapper over `linMap<T, unit>` rather than a second array: the table and
+ * the set differ only in the value half, and one implementation means one place for the
+ * growth, the swap-remove and the `==` requirement.
+ */
+use std::linmap
+
+struct linSet<T> {
+    m: linMap<T, unit>
+
+    fn withCap(want: i64) -> linSet<T> {
+        return { m: linMap<T, unit>::withCap(want) }
+    }
+
+    /* Add a member. Returns false when it was already there -- a set, not a bag. */
+    fn add(self: mut ref linSet<T>, v: T) -> bool {
+        if self.m.contains(v) { return false }
+        let ok = self.m.put(v, unit {})
+        return ok
+    }
+
+    fn contains(self: ref linSet<T>, v: T) -> bool { return self.m.contains(v) }
+
+    fn remove(self: mut ref linSet<T>, v: T) -> bool { return self.m.remove(v) }
+
+    fn len(self: ref linSet<T>) -> i64 { return self.m.len() }
+
+    fn clear(self: mut ref linSet<T>) { self.m.clear() }
+
+    /* Member `i` in insertion order -- until a `remove`, which moves the last member
+     * there (swap-remove, as in `linMap`). This is what a caller walks with `len`. */
+    fn at(self: ref linSet<T>, i: i64) -> T { return self.m.keyAt(i) }
+}

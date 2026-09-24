@@ -1,0 +1,22 @@
+// expect: 覆盖/缺失/删除/扩容 全对：len=40 cap=64 get(39)=v contains(1)=true
+/* `linMap<K,V>`：只用 `==` 的线性表（不依赖 #57 的 hash）
+ * 这一条同时压着今天修好的三件事：`?V`（#60）· 泛型体里 `slice<V>` 的变量下标（#62）·
+ * 泛型方法里 `return some(...)`（构造那侧的 `subst`）✓ */
+use std::linmap
+
+fn main() -> i32 {
+    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(i64(2))
+    m.put(i64(1), "one")
+    m.put(i64(2), "two")
+    m.put(i64(1), "ONE")                                     /* 覆盖 */
+    let overwrite = m.get(i64(1)) ?? "?"
+    let missing   = m.get(i64(9)) ?? "missing"               /* 缺失 ⇒ none */
+    m.remove(i64(1))                                         /* swap-remove */
+    let gone = !m.contains(i64(1))
+    var k: i64 = 0
+    while k < i64(40) { m.put(k, "v")  k = k + i64(1) }       /* 三次扩容 */
+    println("覆盖/缺失/删除/扩容 全对：len=", m.len(), " cap=", m.capOf(),
+            " get(39)=", m.get(i64(39)) ?? "?", " contains(1)=", m.contains(i64(1)),
+            " （overwrite=", overwrite, " missing=", missing, " gone=", gone, "）")
+    return 0
+}

@@ -1,0 +1,124 @@
+/* std/linmap.extc -- a **linear** `K -> V` map: no hashing, only `==` on the key.
+ *
+ * Why this exists, and how it differs from `std::map`: `mapI64<V>` hashes, so it needs a
+ * key that is already an `i64` -- the compiler cannot call `hash()` on a type parameter
+ * (there are no traits), so a hashed `map<K, V>` is not writable yet. A **linear** map
+ * needs nothing but `==` on `K`, and `==` on a type parameter *is* supported: it is
+ * checked once per instance, so `linMap<i64, ...>` uses the builtin and
+ * `linMap<point, ...>` needs `fn ==` on `point`, with the diagnostic naming the instance.
+ *
+ *     use std::linmap
+ *     var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(4)
+ *     m.put(i64(1), "one")
+ *     println(m.get(i64(1)) ?? "missing")
+ *
+ * Cost, stated plainly: a lookup is O(n) probes with `==` each, against O(1) for the
+ * hashed `mapI64`. Use this while keys are not integers and the table is small; switch to
+ * `mapI64` (packing the key into an `i64`) when it is not.
+ *
+ * Layout and the rules it follows:
+ *   - **dense and in insertion order**: entries live in the front of two parallel views,
+ *     so walking the table is a linear scan over memory, not a walk over a probe table;
+ *   - `remove` is a **swap-remove**: the last entry fills the hole, so the order of the
+ *     remaining entries is not preserved (the same trade `std::pool` makes, and the reason
+ *     `atDense` is a valid name for the accessor);
+ *   - growth doubles, and the old arrays are left to the arena (`std/linmap` cannot free;
+ *     a region will reclaim them, see `docs/topics/REGIONS.md`);
+ *   - indices returned by `find` are **positions**, valid only until the next `put` or
+ *     `remove`; `keyAt` / `valAt` are what they are for.
+ */
+use std::io
+
+/* A `K -> V` table searched linearly. */
+struct linMap<K, V> {
+    keys: mut slice<K>
+    vals: mut slice<V>
+    n:    i64              /* live entries, always the front `n` of both views */
+    cap:  i64
+
+    /* A table with room for `want` entries before the first growth. */
+    fn withCap(want: i64) -> linMap<K, V> {
+        var c: i64 = i64(4)
+        while c < want { c = c * i64(2) }
+        return { keys: new K[c], vals: new V[c], n: i64(0), cap: c }
+    }
+
+    fn len(self: ref linMap<K, V>) -> i64 { return self.n }
+    fn capOf(self: ref linMap<K, V>) -> i64 { return self.cap }
+
+    /* Where the key sits, or -1. Linear, and that is the whole point of this container:
+     * `==` on a type parameter is the only thing a key has to provide. */
+    fn find(self: ref linMap<K, V>, k: K) -> i64 {
+        var i: i64 = 0
+        while i < self.n {
+            if self.keys[i] == k { return i }
+            i = i + 1
+        }
+        return 0 - i64(1)
+    }
+
+    fn contains(self: ref linMap<K, V>, k: K) -> bool { return self.find(k) >= i64(0) }
+
+    /* Write the pair, overwriting a key that is already there.
+     *
+     * Returns false only when the table could not grow, which needs the arena to be out of
+     * memory -- `new` traps before that can happen, so a `false` here is unreachable today
+     * and the signature keeps the door open for a grow that can fail. */
+    fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
+        let at = self.find(k)
+        if at >= i64(0) {
+            self.vals[at] = v
+            return true
+        }
+        if self.n >= self.cap { self.grow() }
+        if self.n >= self.cap { return false }
+        self.keys[self.n] = k
+        self.vals[self.n] = v
+        self.n = self.n + i64(1)
+        return true
+    }
+
+    /* The value for a key, or `none`. Reading through the option is what the type
+     * parameter makes possible: `?V` where `V` is itself a parameter is an ordinary
+     * generic enum instance. */
+    fn get(self: ref linMap<K, V>, k: K) -> ?V {
+        let at = self.find(k)
+        if at < i64(0) { return none }
+        return some(self.vals[at])
+    }
+
+    /* Drop the entry for a key. The last entry takes its place (swap-remove). */
+    fn remove(self: mut ref linMap<K, V>, k: K) -> bool {
+        let at = self.find(k)
+        if at < i64(0) { return false }
+        let last = self.n - i64(1)
+        self.keys[at] = self.keys[last]
+        self.vals[at] = self.vals[last]
+        self.n = last
+        return true
+    }
+
+    /* Entry `i` in insertion order -- until a `remove`, which moves the last entry
+     * there. These are the accessors to use with `len`. */
+    fn keyAt(self: ref linMap<K, V>, i: i64) -> K { return self.keys[i] }
+    fn valAt(self: ref linMap<K, V>, i: i64) -> V { return self.vals[i] }
+
+    fn clear(self: mut ref linMap<K, V>) { self.n = i64(0) }
+
+    /* Double the storage and copy both views. The old arrays stay where they are: the
+     * arena cannot free, and a region reclaims them once it exists. */
+    fn grow(self: mut ref linMap<K, V>) {
+        let c = self.cap * i64(2)
+        var nk: mut slice<K> = new K[c]
+        var nv: mut slice<V> = new V[c]
+        var i: i64 = 0
+        while i < self.n {
+            nk[i] = self.keys[i]
+            nv[i] = self.vals[i]
+            i = i + 1
+        }
+        self.keys = nk
+        self.vals = nv
+        self.cap = c
+    }
+}

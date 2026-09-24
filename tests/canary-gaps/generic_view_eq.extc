@@ -1,0 +1,24 @@
+/* #64：泛型体里对 `T` 用 `==`，实例化成**视图**（`slice<u8>`）⇒ 实例的方法没发射
+ *
+ *     error: implicit declaration of function 'slice_u8_eq'
+ *
+ * 具体类型上 `a == b`（两个 `slice<u8>`）是**好的** ✓；坏的是"延到实例化"那条路：
+ * 模板期记下 `needEq`，实例化时 codegen 在代入后的类型上找方法 ⇒ 找到 prelude 的
+ * `slice<u8>::==` 并发出调用，而**那个方法实例没人发射** ✗
+ * ⇒ 跟 `#62` 是同一族（**调用点按实例名发射、定义靠一张列表**），只是缺的是**方法实例**
+ * 而不是 index 原语 ✓
+ *
+ * ⚠️ 这一格就是 `GENERICS.md` §3 里诚实标着"没覆盖"的那一格（`==` × 视图元素），
+ * 是写 `linMap<slice<u8>, V>`（**字符串键的表**）时撞出来的 ✓
+ *
+ * 复现（必须 `--run`，缺陷在生成的 C 里）：
+ *     timeout 20 ./build/extc --run tests/canary-gaps/generic_view_eq.extc
+ */
+fn same<T>(a: T, b: T) -> bool { return a == b }
+
+fn main() -> i32 {
+    var a: slice<u8> = "x"
+    var b: slice<u8> = "x"
+    println("eq = ", same(a, b))
+    return 0
+}

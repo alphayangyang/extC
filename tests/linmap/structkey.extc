@@ -1,0 +1,20 @@
+// expect: 结构体键：命中=42 未命中=-1 再插一个=7
+/* 结构体当键 ⇒ `==` 走**实例化时检查**（`linMap<pt, i64>` 需要 `pt` 有 `fn ==`）✓
+ * 值是 `slice<u8>` —— 就是 stdlib 里从没走过的那一格（`mapI64` 的测试全是 `i32`）✓
+ * ⚠️ **键**是 `slice<u8>`（字符串键）今天**不行**：撞 `#64`（`slice_u8_eq` 没发射，
+ *    见 `tests/canary-gaps/generic_view_eq.extc`）⇒ 这一格留着当反例，不写进来 ✓ */
+use std::linmap
+
+struct pt { x: i64  y: i64
+    fn ==(self: ref pt, o: ref pt) -> bool { return self.x == o.x && self.y == o.y }
+}
+
+fn main() -> i32 {
+    var p: linMap<pt, i64> = linMap<pt, i64>::withCap(i64(2))
+    p.put(pt { x: 3, y: 4 }, i64(42))
+    p.put(pt { x: 5, y: 6 }, i64(7))
+    println("结构体键：命中=", p.get(pt { x: 3, y: 4 }) ?? i64(-1),
+            " 未命中=", p.get(pt { x: 9, y: 9 }) ?? i64(-1),
+            " 再插一个=", p.get(pt { x: 5, y: 6 }) ?? i64(-1))
+    return 0
+}

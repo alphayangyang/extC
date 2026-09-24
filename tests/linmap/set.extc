@@ -1,0 +1,28 @@
+// expect: 集合：加=1 重复=0 删后=0 扩容后=30 有29=true 结构体元素=2
+/* `linSet<T>`：包装在 `linMap<T, unit>` 上（泛型组合 + 泛型关联调用）✓ */
+use std::linset
+
+struct pt { x: i64  y: i64
+    fn ==(self: ref pt, o: ref pt) -> bool { return self.x == o.x && self.y == o.y }
+}
+
+fn main() -> i32 {
+    var s: linSet<i64> = linSet<i64>::withCap(i64(2))
+    var added: i64 = 0
+    if s.add(i64(7)) { added = i64(1) }
+    var dup: i64 = 0
+    if s.add(i64(7)) { dup = i64(1) }
+    s.remove(i64(7))
+    var after: i64 = 0
+    if s.contains(i64(7)) { after = i64(1) }
+    var k: i64 = 0
+    while k < i64(30) { s.add(k)  k = k + i64(1) }
+    var has29: bool = s.contains(i64(29))
+    var pset: linSet<pt> = linSet<pt>::withCap(i64(2))
+    var first = pset.add(pt { x: 1, y: 2 })
+    var again = pset.add(pt { x: 1, y: 2 })
+    var other = pset.add(pt { x: 3, y: 4 })
+    println("集合：加=", added, " 重复=", dup, " 删后=", after, " 扩容后=", s.len(),
+            " 有29=", has29, " 结构体元素=", pset.len())
+    return 0
+}
