@@ -53,6 +53,27 @@ static const PrintFmt PRINT_FMT[] = {
 
 /* ---------------------------------------------------------------- state */
 
+/* A definition that the program may never name: a top-level global, or a row of
+ * the scalar descriptor table.
+ *
+ * The decision cannot be made where the definition is emitted, because what
+ * refers to it may be generated much later (a body, or the descriptor table
+ * itself). It is made once the whole translation unit is assembled, on the text
+ * alone: the name is counted in the finished output, and a definition whose name
+ * occurs exactly once - in that definition and nowhere else - is dropped. The
+ * direction is conservative in the only way that matters: any other mention,
+ * even from code that is itself dead, keeps the definition. */
+typedef struct {
+    const char *name;   /* the C name, as written into the output */
+    const char *text;   /* the definition, exactly as emitted, newline included */
+    /* A definition inside a function body is decided on a smaller stage: what
+     * can name it is that piece of code and nothing else. `scopeB > scopeA`
+     * marks such a definition, and the two offsets bound the code that could
+     * mention it, inside the body buffer. `off` is where the definition sits in
+     * that same buffer. */
+    size_t      off, scopeA, scopeB;
+} DeadDef;
+
 typedef struct {
     Arena      *arena;
     Ctx        *ctx;
@@ -177,6 +198,9 @@ typedef struct {
      * declares as an `extern!` -- a program that never touches a terminal does not carry
      * it. */
     bool        needRawTerm;
+    /* Definitions whose name may never be used again (`DeadDef*`, in emission
+     * order); dropUnreferenced decides after the whole unit is assembled. */
+    Vec         deadDefs;
 } CG;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
@@ -3607,6 +3631,60 @@ static bool funcSignatureMentionsParam(FuncDef *f) {
     return false;
 }
 
+/* ------------------------------------------------- unreferenced definitions
+ * A definition nobody names is dead weight: the C compiler warns about it, and
+ * the reader of the generated C has to skip it. Which definitions those are is
+ * decided here, on the finished text, because a use may be generated long after
+ * the definition (a body, or the descriptor table).
+ */
+
+/* How many times does `needle` occur in the finished output? */
+static size_t countMentions(const char *hay, const char *needle) {
+    size_t n = 0, len = strlen(needle);
+    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p += len) n++;
+    return n;
+}
+
+/* Drop every recorded definition whose name occurs exactly once in the finished
+ * output - that one occurrence being the definition itself.
+ *
+ * The text is searched for the definition rather than for a byte offset: the
+ * unit is assembled by splicing several buffers together (prototypes, then the
+ * descriptor region, then the bodies), so an offset taken at emission time does
+ * not survive. The definition text does.
+ *
+ * A name that occurs twice or more is kept, whoever mentions it - including
+ * mentions that sit inside code that is itself unreachable. That keeps the
+ * decision on the safe side: the worst case is a definition that is still
+ * emitted, never a name that nothing defines. */
+static void dropUnreferenced(CG *g, Buf *out) {
+    char  *text = bufCstr(out);              /* terminate: the searches below are C strings */
+    size_t len  = out->len;
+    /* Repeat until nothing changes: a definition can be the only thing that names
+     * another one (`io$STDIN` is the sole mention of `io$STDIN_FD`, which no program
+     * refers to either), so one pass leaves a chain behind. Each round is safe for
+     * the same reason a single pass is: a name is dropped only when the finished
+     * text mentions it exactly once. */
+    bool dropped = true;
+    while (dropped) {
+        dropped = false;
+        for (size_t i = 0; i < g->deadDefs.len; i++) {
+            DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
+            if (countMentions(text, d->name) != 1) continue;   /* named somewhere else: keep */
+            size_t tl = strlen(d->text);
+            char  *at = strstr(text, d->text);
+            if (!at) continue;                                 /* already gone, or spliced away */
+            char  *nm = strstr(text, d->name);
+            if (!nm || nm < at || nm >= at + tl) continue;     /* the one mention is elsewhere */
+            memmove(at, at + tl, (len - (size_t)(at - text) - tl) + 1);
+            len -= tl;
+            out->len = len;
+            dropped = true;
+        }
+    }
+    out->data[len] = '\0';
+}
+
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     CG g;
     memset(&g, 0, sizeof g);
@@ -3647,6 +3725,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.viewIdx, arena, sizeof(Type *));
     vecInit(&g.descs, arena, sizeof(void *));
     vecInit(&g.eqNeed, arena, sizeof(void *));
+    vecInit(&g.deadDefs, arena, sizeof(DeadDef *));
     bufInit(&g.desc, arena);
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
@@ -4457,12 +4536,24 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
         if (ttIsError(gd->ann)) continue;
         const char *ct = cType(&g, gd->ann);
+        size_t before = g.out->len;                 /* recorded for dropUnreferenced */
         if (gd->init) {
             cgLine(&g, "static %s %s = %s;", ct, gd->name, genGlobalInit(&g, gd->init));
         } else {
             /* No initializer: C zeroes static storage by itself. */
             cgLine(&g, "static %s %s;", ct, gd->name);
         }
+        /* A global the program never names costs a warning in every translation
+         * unit that carries it - and a `use std::io::*` carries the library's
+         * streams and constants into every program. The line just written is
+         * remembered; dropUnreferenced takes it back out if nothing names it. */
+        Buf line;
+        bufInit(&line, g.arena);
+        bufPutn(&line, g.out->data + before, g.out->len - before);
+        DeadDef *d = arenaAllocZero(g.arena, sizeof *d);
+        d->name = gd->name;
+        d->text = bufCstr(&line);
+        *(DeadDef **)vecPush(&g.deadDefs) = d;
     }
     if (m->globals.len) cgLine(&g, "");
 
@@ -4607,6 +4698,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         bufPuts(out, bufCstr(&tmp));
     }
     bufPuts(out, bufCstr(&g.body));
+
+    /* The unit is complete: now the definitions that nobody names can go. */
+    dropUnreferenced(&g, out);
 
     return !ctx->hasError;
 }

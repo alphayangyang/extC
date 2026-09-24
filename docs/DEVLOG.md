@@ -6524,3 +6524,27 @@ tests/io/stream-file.extc   1608 行   gcc 28   clang 47   clang -Weverything 79
 `globals.extc` 只剩 **1** 条说明**小程序已经接近干净** ✓ 差距全在"库整片发出来"这一类 ✓
 `-Weverything` 那 793 条里绝大部分是**对生成物无解**的类别（`-Wpadded` 结构体填充 / `-Wdeclaration-after-statement`
 C89 风格 / `-Wunsafe-buffer-usage` 指针运算必然触发 ✗）⇒ 按既定方案配一份**写在文档里的 `-Wno-` 清单** ✓
+
+### 2026-09-25 · **第三刀落地：没人引用的定义按"全文内容判据"不发**（gcc 28→16 · stream 14→3）
+
+**机制**（`src/codegen.c`：`DeadDef` + `dropUnreferenced()`）：
+发射时把那一行的**原文**记下来（`DeadDef{name, text}`），**整份 TU 拼装完**再判：
+**名字在最终文本里只出现 1 次、且那一次就在这行里 ⇒ 整行删掉** ✓
+- **为什么不记字节偏移**：TU 是"原型 → 描述符 → 函数体"几块缓冲区**拼**出来的 ✗ 发射时的偏移到不了最终位置；
+  而**那一行的原文**能（`strstr` 找得到 ✓）
+- **为什么不在发射点判**：引用它的东西可能**晚得多**才生成（函数体、描述符表 ✓）
+- **方向保守**：名字出现 ≥2 次一律保留（哪怕那第二次出现在**死代码**里 ✓）⇒ 最坏是"多留一行"，绝不会"名字没人定义" ✓
+- **不动点迭代**：`io$STDIN` 是 `io$STDIN_FD` 的**唯一提及** ⇒ 单趟会把链条留下 ✗ ⇒ 反复跑到达稳定 ✓
+  （每一轮的安全性同上：只有"全文只提一次"的才删 ✓）
+
+**实测**（行数 / gcc `-Wall -Wextra` / clang `-Wall -Wextra`）：
+
+```
+tests/io/stream-file.extc   1608→1596 行   gcc 28 → 16   clang 47 → 35
+tests/io/stream.extc         990→ 979 行   gcc 14 →  3   clang 21 → 10
+examples/globals.extc        452→ 452 行   gcc  1 →  1   clang 25 → 25   （这个小程序本来就没带库全局 ✓）
+```
+⇒ 被删掉的正是 `io$cout`/`io$cin`/`io$cerr`/`io$endl`/`io$IN_BAD`/`io$O_RDWR`/`fs$fout`/`fs$fin` 这批
+**"`use std::io::*` 顺手带进来的库全局"** ✓ 这是"库整片发出来"的第一块 ✓
+
+**判据**：语料 **256 / 0 失败** ✓ 九个套件全绿 ✓ 生成物照跑（`stream-file` 输出不变 ✓）
