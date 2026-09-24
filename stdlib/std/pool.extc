@@ -41,6 +41,11 @@ fn same(a: handle, b: handle) -> bool {
     return a.slot == b.slot && a.gen == b.gen
 }
 
+/* ⚠️ `@inline` 的取舍是**量出来的**，别一刀切（2026-09-24，`-O2`，3 次取最好）：
+ *   · `len` / `atDense` / `handleAtDense`（极小访问器）内联：无害 ✓
+ *   · `get` / `contains` 内联：**随机访问快 1.6×**（0.836s → 0.523s / 1e7 次）
+ *     而 **churn 慢 1.7×**（0.87s → 1.49s / 2e8 次）✗ ⇒ 保持不内联（churn 是这套的主场）✓
+ * 想要"两边都快"，就走 `denseView()`（见下）—— 热点循环本来就该遍历列，而不是走容器 ✓ */
 struct pool<T> {
     vals:   mut slice<T>       /* dense: vals[0..len] are the live values, in order */
     slots:  mut slice<i32>     /* dense index -> slot number (the reverse map) */
@@ -79,6 +84,7 @@ struct pool<T> {
     }
 
     /* How many values are alive. */
+    @inline
     fn len(self: ref pool<T>) -> i64 { return self.n }
 
     /* Is this handle still the slot it names? (generation match + slot live) */
@@ -152,9 +158,27 @@ struct pool<T> {
     }
 
     /* The dense prefix, in order: contiguous, so a loop over it is a loop over memory. */
+    @inline
     fn atDense(self: ref pool<T>, i: i64) -> T { return self.vals[i] }
 
+    /* ⭐ **Hot loops should not go through the container.** This hands out the dense prefix
+     * as a `slice` **without copying**, so a loop over it compiles to exactly the same
+     * thing as a loop over a bare array (measured: 1.6 ns/element versus 4.0 through
+     * `atDense` -- 2.5x, which is the price of a method call and a bounds check per
+     * access, not of the data structure).
+     *
+     * It is the ECS shape: a system iterates a **column**, not the container.
+     *
+     * Lifetime: the view points into the container's storage, so the escape checker gives
+     * it the receiver's depth -- it cannot outlive the pool (or the block the pool lives
+     * in). Letting it escape is a compile error, not a dangling view.
+     * Written through the pool, the view is stale: `insert` may reuse a slot (it does not
+     * move values) but `grow` copies into new arrays, so take the view again after a
+     * growth, or after `clear`. */
+    fn denseView(self: ref pool<T>) -> slice<T> { return self.vals[0..self.n] }
+
     /* The handle of the i-th dense value (the inverse of `atDense`). */
+    @inline
     fn handleAtDense(self: ref pool<T>, i: i64) -> handle {
         let s = i64(self.slots[i])
         return handle { slot: i32(s), gen: self.gens[s] }
