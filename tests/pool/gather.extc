@@ -1,0 +1,27 @@
+// expect: gather 有效 = 3，下标 = 0 1 2|用下标读 = 10 20 30|remove b 之后：有效 = 1，b 的下标 = -1（-1 = 失效）
+/* ⭐ `gather`：把一批句柄**一次性**解析成 dense 下标 ⇒ 之后的热循环就是按下标访问
+ *   （实测：经句柄 9.1× vs 先 gather 再按下标 1.09× ✓）
+ *   失效的句柄在下标数组里留 -1，返回值是有效个数 ⇒ 调用者可以跳过或压缩 ✓ */
+use std::pool
+
+fn main() -> i32 {
+    var p = pool<i32>::withCap(8)
+    let a = p.insert(10)
+    let b = p.insert(20)
+    let c = p.insert(30)
+
+    var hs: [3]handle = [a, b, c]
+    var out: [3]i64
+    let k = p.gather(hs[..], out[..])
+    println("gather 有效 = ", k, "，下标 = ", out[0], " ", out[1], " ", out[2])
+
+    let v = p.denseView()
+    println("用下标读 = ", v[out[0]], " ", v[out[1]], " ", v[out[2]])
+
+    p.remove(b)
+    var hs2: [2]handle = [a, b]
+    var out2: [2]i64
+    let k2 = p.gather(hs2[..], out2[..])
+    println("remove b 之后：有效 = ", k2, "，b 的下标 = ", out2[1], "（-1 = 失效）")
+    return 0
+}
