@@ -4010,6 +4010,46 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
 
 /* Drop local declarations that nothing reads. The stage is the whole function body: a name
  * that occurs there exactly once is the declaration itself. */
+/* A statement to remove, or to shorten to its right-hand side. */
+typedef struct {
+    size_t      start, end;   /* the span in the output text */
+    const char *repl;         /* what takes its place, or NULL to drop it entirely */
+} LocalCut;
+
+/* Does this text call something? A statement whose right-hand side calls a function must not be
+ * dropped: the call is the point of it (`uint64_t skip = pcg32_next(&r)` in `examples/rng.extc`
+ * advances the generator, and the value it returns is what nobody reads). */
+static bool textHasCall(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++) if (s[i] == '(') return true;
+    return false;
+}
+
+/* How many times is `name` *read* here? Literals and comments are skipped, and a mention that is
+ * the target of an assignment (`name =`, a single `=`) is a write, not a read. */
+static size_t countReads(const char *hay, size_t n, const char *name) {
+    size_t len = strlen(name), reads = 0;
+    for (size_t i = 0; i < n; ) {
+        char c = hay[i];
+        if (c == '"' || c == '\'') { char q = c; i++;
+            while (i < n) { if (hay[i] == '\\' && i + 1 < n) { i += 2; continue; }
+                            if (hay[i] == q) { i++; break; } i++; } continue; }
+        if (c == '/' && i + 1 < n && hay[i + 1] == '/') { while (i < n && hay[i] != '\n') i++; continue; }
+        if (c == '/' && i + 1 < n && hay[i + 1] == '*') { i += 2;
+            while (i + 1 < n && !(hay[i] == '*' && hay[i + 1] == '/')) i++;
+            i = (i + 1 < n) ? i + 2 : n; continue; }
+        if (i + len <= n && strncmp(hay + i, name, len) == 0 &&
+            (i == 0 || !identByte(hay[i - 1])) && (i + len >= n || !identByte(hay[i + len]))) {
+            size_t j = i + len;
+            while (j < n && hay[j] == ' ') j++;
+            if (!(j < n && hay[j] == '=' && (j + 1 >= n || hay[j + 1] != '='))) reads++;
+            i = j;
+            continue;
+        }
+        i++;
+    }
+    return reads;
+}
+
 static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     char  *text = *textp;
     size_t len  = *lenp;
@@ -4036,14 +4076,104 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             if (getenv("EXTC_DBG_LOCAL"))
                 fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
                         bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
-            if (countMentionsIn(g, bp, bl, d->name) != d->own) continue;   /* it is read */
-            char  *ln = (d->own == 0) ? strstr(text, d->text) : strstr(bp, d->text);
-            if (!ln || (d->own != 0 && ln >= bp + bl)) continue;   /* not where it should be */
-            size_t tl = strlen(d->text);
-            memmove(ln, ln + tl, len - (size_t)(ln - text) - tl + 1);
-            len -= tl;
-            out->len = len;
-            text = bufCstr(out);
+            /* The declaration's own mention is not a read of the variable, so the body is
+             * examined without that line. Any other read keeps everything. */
+            Buf bm;
+            bufInit(&bm, g->arena);
+            size_t declAt = 0;
+            bool   declInside = false;
+            if (d->own == 1) {
+                char *dl = strstr(bp, d->text);
+                if (!dl) continue;
+                declAt = (size_t)(dl - bp);
+                declInside = true;
+                bufPutn(&bm, bp, declAt);
+                bufPutn(&bm, dl + strlen(d->text), bl - declAt - strlen(d->text));
+            } else {
+                bufPutn(&bm, bp, bl);
+            }
+            if (countReads(bufCstr(&bm), bm.len, d->name) != 0) continue;   /* it is read */
+            (void)declInside;
+            (void)declAt;
+            /* Collect what goes: the declaration, and every assignment to it. A right-hand side
+             * that calls something leaves the call behind; anything else disappears. */
+            Vec cuts;
+            vecInit(&cuts, g->arena, sizeof(LocalCut));
+            char *dl = (d->own == 0) ? strstr(text, d->text) : strstr(bp, d->text);
+            if (!dl || (d->own != 0 && dl >= bp + bl)) continue;
+            {
+                size_t ls = (size_t)(dl - text);
+                while (ls > 0 && text[ls - 1] != '\n') ls--;
+                size_t le = (size_t)(dl - text);
+                while (le < len && text[le] != '\n') le++;
+                if (le < len) le++;
+                char *assign = NULL;
+                for (size_t k = (size_t)(dl - text); k < le; k++)
+                    if (text[k] == '=' && (k + 1 >= le || text[k + 1] != '=')) { assign = text + k; break; }
+                LocalCut c;
+                c.start = ls; c.end = le; c.repl = NULL;
+                if (assign) {
+                    size_t ws = 0;
+                    while (ls + ws < (size_t)(assign - text) &&
+                           (text[ls + ws] == ' ' || text[ls + ws] == '\t')) ws++;
+                    size_t rhs = (size_t)(assign - text) + 1;
+                    while (rhs < le && (text[rhs] == ' ' || text[rhs] == '\t')) rhs++;
+                    if (textHasCall(text + rhs, le - rhs)) {
+                        Buf r;
+                        bufInit(&r, g->arena);
+                        bufPutn(&r, text + ls, ws);
+                        bufPutn(&r, text + rhs, le - rhs);
+                        c.repl = bufCstr(&r);
+                    }
+                }
+                *(LocalCut *)vecPush(&cuts) = c;
+            }
+            for (char *p = bp; p < bp + bl; ) {
+                char  *nl2 = memchr(p, '\n', (size_t)(bp + bl - p));
+                size_t ll2 = nl2 ? (size_t)(nl2 - p) : (size_t)(bp + bl - p);
+                size_t k = 0;
+                while (k < ll2 && (p[k] == ' ' || p[k] == '\t')) k++;
+                size_t nlen2 = strlen(d->name);
+                if (ll2 > k + nlen2 && strncmp(p + k, d->name, nlen2) == 0) {
+                    char *q = p + k + nlen2;
+                    while (q < p + ll2 && *q == ' ') q++;
+                    if (q < p + ll2 && *q == '=' && (q + 1 >= p + ll2 || q[1] != '=')) {
+                        size_t ls = (size_t)(p - text), le = ls + ll2 + (nl2 ? 1 : 0);
+                        size_t rhs = (size_t)(q - text) + 1;
+                        while (rhs < ls + ll2 && (text[rhs] == ' ' || text[rhs] == '\t')) rhs++;
+                        LocalCut c;
+                        c.start = ls; c.end = le; c.repl = NULL;
+                        if (textHasCall(text + rhs, le - rhs)) {
+                            Buf r;
+                            bufInit(&r, g->arena);
+                            bufPutn(&r, text + ls, k);          /* the indentation */
+                            bufPutn(&r, text + rhs, le - rhs);  /* the call, its `;` and the newline */
+                            c.repl = bufCstr(&r);
+                        }
+                        *(LocalCut *)vecPush(&cuts) = c;
+                    }
+                }
+                if (!nl2) break;
+                p = nl2 + 1;
+            }
+            /* One assembly, in order: the spans are disjoint and ascending, and the result is
+             * never longer than what it replaces, so it fits in the same buffer. */
+            Buf nb;
+            bufInit(&nb, g->arena);
+            size_t prev = 0;
+            for (size_t ci = 0; ci < cuts.len; ci++) {
+                LocalCut *c = (LocalCut *)vecAt(&cuts, ci);
+                if (c->start < prev) continue;                 /* overlapping: skip, stay safe */
+                bufPutn(&nb, text + prev, c->start - prev);
+                if (c->repl) bufPuts(&nb, c->repl);
+                prev = c->end;
+            }
+            bufPutn(&nb, text + prev, len - prev);
+            memcpy(out->data, bufCstr(&nb), nb.len);
+            out->data[nb.len] = 0;
+            out->len = nb.len;
+            len = nb.len;
+            text = out->data;
             d->text = NULL;
             cut = true;
         }
