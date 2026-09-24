@@ -11,7 +11,8 @@
 # 两半：
 #   ① `tests/genmatrix/*.extc`      必须编过 + 跑对（`// expect:` 子串匹配）
 #   ② `tests/canary-gaps/*.extc`    必须**仍然坏**，而且坏在**记着的那句话**上
-#      （#61 已于 2026-09-24 修掉 ⇒ 它从这一半搬到 ① 变成 t_variant_match.extc ✓）
+#      （#61 / #62 已于 2026-09-24 修掉 ⇒ 它们从这一半搬到 ① 变成
+#       t_variant_match.extc / t_two_param_slice.extc ✓）
 #      ⇒ 哪天某一条**编过了**，这一节**当场 FAIL**，逼着去把它挪进 genmatrix/
 #        并把账本（§0.4 的 ✅ 与计数）一起改 ✓
 #        （规矩出自 tests/generics/run.sh：断言"不该存在的行为"时，行为一改好就必须删断言 ✓）
@@ -62,7 +63,6 @@ check_still_bad() {
     n_ok=$((n_ok + 1))
 }
 check_still_bad tests/canary-gaps/generic_option_return.extc  'expects `option`'   60
-check_still_bad tests/canary-gaps/generic_two_param_map.extc  'slice_slice_u8_index' 62
 
 echo "通过 $n_ok 项，失败 $fail 项（0 = 全过）"
 [ "$fail" = 0 ]

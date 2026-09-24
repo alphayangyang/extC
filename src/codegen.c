@@ -75,6 +75,12 @@ typedef struct {
      * only while generating, so bodies go into `body` first and the output is
      * assembled at the end as prototypes -> helpers -> bodies. */
     Vec         helpers;        /* SliceHelper */
+    /* Names of the view index primitives already emitted (`<view>_index`). They
+     * are emitted on demand, at the first subscript that needs one, for the same
+     * reason slice helpers are: the need is discovered while generating, and a
+     * call site inside a generic body names an instance the list of instances
+     * may not hold. */
+    Vec         viewIdx;        /* Type *: view instances whose index primitive is needed */
     Buf         body;
 
     /* Used by `?` expansion: the return type of the current function (a
@@ -444,6 +450,33 @@ static void genViewIndexer(CG *g, Type *inst) {
     cgLine(g, "}");
     cgLine(g, "");
     substLeave(g);
+}
+
+/* Emit the index primitive of a view type on demand and return its name.
+ *
+ * The primitive used to be emitted from the list of type instances alone, and a call site
+ * simply assumed it was there. That holds only while the instance is in the list: an index
+ * inside a generic body is lowered with the *instance's* name (`slice_slice_u8_index`),
+ * while the list is what decided whether the definition existed -- and a view whose element
+ * type came from a type parameter was not in the list, so the generated C called a function
+ * nobody had emitted and did not compile at all.
+ *
+ * Emitting on demand is what this file already does for slice helpers (`sliceHelper`), and it
+ * keeps the dependency in one place: whoever needs the primitive emits it, and the name is
+ * deduplicated so one view type yields one function.
+ *
+ * Params:
+ *   g    - generator
+ *   inst - the view instance, already substituted by the caller
+ *
+ * Returns:
+ *   The name of the primitive, `<view name>_index`. */
+static const char *viewIndexer(CG *g, Type *inst) {
+    const char *name = arenaPrintf(g->arena, "%s_index", inst->name);
+    for (size_t i = 0; i < g->viewIdx.len; i++)
+        if (strcmp((*(Type **)vecAt(&g->viewIdx, i))->name, inst->name) == 0) return name;
+    *(Type **)vecPush(&g->viewIdx) = inst;
+    return name;
 }
 
 /* ---------------------------------------------------------------- type descriptors
@@ -1508,9 +1541,12 @@ static const char *genExprInner(CG *g, Expr *e) {
 
             /* The primitive returns a pointer and the dereference is an
              * lvalue: it can be read, addressed for a `ref` parameter, and
-             * assigned to. */
-            return arenaPrintf(g->arena, "(*%s_index(%s, (int64_t)(%s), \"%s\", %d))",
-                               ob->name, obj, idx, g->path, e->line);
+             * assigned to. Asking for it here is what guarantees the definition
+             * exists: an index inside a generic body names the instance, while
+             * the list of instances is not necessarily complete. */
+            const char *ix = viewIndexer(g, ob);
+            return arenaPrintf(g->arena, "(*%s(%s, (int64_t)(%s), \"%s\", %d))",
+                               ix, obj, idx, g->path, e->line);
         }
 
         case EX_ARRAYLIT: {
@@ -3462,6 +3498,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
+    vecInit(&g.viewIdx, arena, sizeof(Type *));
     vecInit(&g.descs, arena, sizeof(void *));
     vecInit(&g.eqNeed, arena, sizeof(void *));
     bufInit(&g.desc, arena);
@@ -4315,15 +4352,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * helpers, then bodies. */
     g.out = &g.body;
 
-    /* The index primitives of the views; printing and comparison derive no
-     * function at all any more, see the descriptor table. */
-    for (size_t i = 0; i < g.insts.len; i++) {
-        Type *inst = *(Type **)vecAt(&g.insts, i);
-        if (inst->kind != TY_GENERIC) continue;
-        substEnter(&g, inst);
-        if (isView(inst)) genViewIndexer(&g, inst);
-        substLeave(&g);
-    }
+    /* The index primitives of the views are not emitted here any more: they are
+     * emitted on demand, at the first subscript that needs one (`viewIndexer`).
+     * That is also what fixes a missing definition when an index inside a generic
+     * body names an instance this list never held -- the generated C called a
+     * function nobody emitted. Printing and comparison derive no function at all,
+     * see the descriptor table. */
 
     /* method definitions of the instances */
     for (size_t i = 0; i < g.insts.len; i++) {
@@ -4370,6 +4404,24 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     bufPuts(out, bufCstr(&g.desc));
     for (size_t i = 0; i < g.helpers.len; i++)
         bufPuts(out, ((SliceHelper *)vecAt(&g.helpers, i))->text);
+    /* The view index primitives, in the order they were first needed. They go here,
+     * before the bodies, for the same reason the slice helpers do: a definition has to
+     * precede its uses, and the need for one is discovered while the bodies are
+     * generated. Emitting them at the call site instead wrote a function definition into
+     * whichever buffer was current -- the prototypes -- and produced C that did not
+     * compile. */
+    for (size_t i = 0; i < g.viewIdx.len; i++) {
+        Type *inst = *(Type **)vecAt(&g.viewIdx, i);
+        Buf tmp;
+        bufInit(&tmp, arena);
+        Buf *save = g.out;
+        g.out = &tmp;
+        substEnter(&g, inst);
+        genViewIndexer(&g, inst);
+        substLeave(&g);
+        g.out = save;
+        bufPuts(out, bufCstr(&tmp));
+    }
     bufPuts(out, bufCstr(&g.body));
 
     return !ctx->hasError;

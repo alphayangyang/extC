@@ -1,0 +1,59 @@
+// expect: len = 1 val = one
+/* 格（**原来是 `#62`，2026-09-24 修**）：泛型 K→V 表（线性版），**值是字符串**
+ *
+ * 修之前：`valAt` 那种「泛型方法按值返回 `V`，从 `slice<V>` 用**变量**下标取」⇒ gcc 报
+ *     implicit declaration of function 'slice_slice_u8_index'
+ * ⇒ **生成的 C 编不过** ✗
+ *
+ * 根因（跟 #61 是同一族，但方向相反）：**调用点**已经 `subst`（名字是对的：
+ * `slice_slice_u8_index`），可**定义**是照着 `tt->instances` 列表统一发射的 ——
+ * 而「元素类型来自类型参数」的那个视图实例**不在那张列表里** ⇒ 调了个没人发射的函数 ✗
+ *
+ * 修法：照本文件里 `sliceHelper` 的既有设计，把 index 原语改成**按需登记**（`viewIndexer`：
+ * 去重 + 记下实例），在 helpers 那一区**统一发射**（定义必须在使用之前）✓
+ * ⚠️ 第一版我直接在调用点发射 ⇒ 定义写进了**原型区** ⇒ `invalid storage class for function` ✗
+ *
+ * 为什么 stdlib 没撞到：`tests/map/` 里 `V` **清一色 `i32`**（`grep mapI64<` 全是 `mapI64<i32>`）
+ * ⇒「值是字符串的 map」这条路从没被走过 ✓ 这个格子就是补那一格 ✓
+ *
+ * 顺带一条能力边界：`varArray<T>` **不能下标** ⇒ 想学 `mapI64` 那样 `some(self.vals[i])`，
+ * 得自己存 `mut slice<V>`（下面就是这么写的）✓ */
+struct mapKV<K, V> {
+    keys: mut slice<K>
+    vals: mut slice<V>
+    n:    i64
+    cap:  i64
+
+    fn withCap(want: i64) -> mapKV<K, V> {
+        var c: i64 = i64(8)
+        while c < want { c = c * i64(2) }
+        return { keys: new K[c], vals: new V[c], n: i64(0), cap: c }
+    }
+    fn find(self: ref mapKV<K, V>, k: K) -> i64 {
+        var i: i64 = 0
+        while i < self.n {
+            if self.keys[i] == k { return i }
+            i = i + 1
+        }
+        return 0 - i64(1)
+    }
+    fn put(self: mut ref mapKV<K, V>, k: K, v: V) -> bool {
+        let at = self.find(k)
+        if at >= i64(0) { self.vals[at] = v  return true }
+        if self.n >= self.cap { return false }
+        self.keys[self.n] = k
+        self.vals[self.n] = v
+        self.n = self.n + i64(1)
+        return true
+    }
+    fn keyAt(self: ref mapKV<K, V>, k: K) -> i64 { return self.find(k) }
+    fn valAt(self: ref mapKV<K, V>, i: i64) -> V { return self.vals[i] }
+    fn len(self: ref mapKV<K, V>) -> i64 { return self.n }
+}
+
+fn main() -> i32 {
+    var m: mapKV<i64, slice<u8>> = mapKV<i64, slice<u8>>::withCap(i64(4))
+    m.put(i64(1), "one")
+    println("len = ", m.len(), " val = ", m.valAt(m.keyAt(i64(1))))
+    return 0
+}
