@@ -56,7 +56,7 @@ else bad "tests/extern/run.sh"; echo "$out"; fi
 
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(timeout 600 ./tests/modules/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（5 正例 + 8 反例 + mangle 判据）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（7 正例 + 11 反例 + mangle 判据 · 含 `use mod::*` 的 1 正例 + 3 条边界）"
 else bad "tests/modules/run.sh"; echo "$out"; fi
 
 echo "== ASan（内存安全的形状必须真的跑得干净）=="

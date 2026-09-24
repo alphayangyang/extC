@@ -1121,6 +1121,121 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
  *   e    - an identifier expression, updated in place
  */
 
+/* Does this unit export this name, publicly?
+ *
+ * Params:
+ *   u    - the unit
+ *   name - the name as written in the source
+ *
+ * Returns:
+ *   True when a top-level declaration of that name exists and is not `@private`.
+ *
+ * Notes:
+ *   - `@private` is checked here rather than left to the checker, because the rewrite
+ *     happens before any visibility rule runs: opening a module must not become a way
+ *     to reach a private name.
+ */
+static bool unitExports(ModUnit *u, const char *flat) {
+    if (!u || !flat) return false;
+    Module *m = &u->mod;
+    /* By the flat name: the declarations of a loaded unit have already been renamed
+     * (`cout` is `io$cout` here), and the rename table is what maps the source name the
+     * user wrote onto it. Searching for the source name would find nothing at all. */
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *d = *(StructDef **)vecAt(&m->structs, i);
+        if (strcmp(d->name, flat) == 0) return !d->isPrivate;
+    }
+    for (size_t i = 0; i < m->types.len; i++) {
+        TypeDef *d = *(TypeDef **)vecAt(&m->types, i);
+        if (strcmp(d->name, flat) == 0) return !d->isPrivate;
+    }
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *d = *(GlobalDef **)vecAt(&m->globals, i);
+        if (strcmp(d->name, flat) == 0) return !d->isPrivate;
+    }
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *d = *(FuncDef **)vecAt(&m->funcs, i);
+        if (strcmp(d->name, flat) == 0) return !d->isPrivate;
+    }
+    return false;
+}
+
+/* Does this unit declare this name at its top level?
+ *
+ * Params:
+ *   u    - the unit
+ *   name - the name as written
+ *
+ * Returns:
+ *   True when a declaration of that name exists in the unit.
+ *
+ * Notes:
+ *   - For the **root file and the prelude** only, whose declarations are never renamed.
+ *     A loaded module is asked through its rename table instead.
+ */
+static bool unitOwns(ModUnit *u, const char *name) {
+    Module *m = &u->mod;
+    for (size_t i = 0; i < m->structs.len; i++)
+        if (strcmp((*(StructDef **)vecAt(&m->structs, i))->name, name) == 0) return true;
+    for (size_t i = 0; i < m->types.len; i++)
+        if (strcmp((*(TypeDef **)vecAt(&m->types, i))->name, name) == 0) return true;
+    for (size_t i = 0; i < m->globals.len; i++)
+        if (strcmp((*(GlobalDef **)vecAt(&m->globals, i))->name, name) == 0) return true;
+    for (size_t i = 0; i < m->funcs.len; i++)
+        if (strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0) return true;
+    return false;
+}
+
+/* Resolve a bare name through this unit's `use mod::*` imports.
+ *
+ * Params:
+ *   self - the unit the name was written in
+ *   name - the bare name
+ *
+ * Returns:
+ *   The flat name of the exported declaration, or NULL when no opened module has it.
+ *   An error is reported (and NULL returned) when two opened modules both have it:
+ *   picking one silently would compile and mean the other.
+ *
+ * Notes:
+ *   - Only `use mod::*` is consulted. A plain `use mod` deliberately does not put
+ *     anything in scope (定案 70), and that rule is not weakened here.
+ *   - The first match wins among the opened modules only when the flat names are
+ *     equal, which cannot happen for two different modules.
+ */
+static const char *openLookup(ModUnit *self, const char *name, int line) {
+    const char *found = NULL;
+    const char *foundMod = NULL;
+    for (size_t i = 0; i < self->mod.uses.len; i++) {
+        UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
+        if (!u->wildcard || !u->unit) continue;
+        ModUnit *dep = (ModUnit *)u->unit;
+        const char *flat = renLookup(dep, name);
+        if (!flat) continue;
+        if (!unitExports(dep, flat)) {
+            /* The name is there, but `@private`. Saying "undefined" here would send the
+             * reader looking for a typo: opening a module is not a way to reach a private
+             * name, and the message has to say so -- the same words the qualified
+             * reference gets. */
+            ctxError(self->ctx, line, 1,
+                     "`@private` means other modules must not name it. Drop the annotation if it is"
+                     " meant to be used from here.",
+                     "`%s::%s` is private to module `%s`", u->path, name, u->path);
+            return NULL;
+        }
+        if (found && strcmp(found, flat) != 0) {
+            ctxError(self->ctx, line, 1,
+                     "Write one of them qualified to say which is meant.",
+                     "`%s` is exported by both `%s` and `%s`, which are opened here",
+                     name, foundMod, u->path);
+            return NULL;
+        }
+        found = flat;
+        foundMod = u->path;
+    }
+    return found;
+}
+
 static void rwExprName(ModUnit *self, Expr *e) {
     if (!e || e->kind != EX_IDENT) return;
     const char *nm = e->u.ident.name;
@@ -1133,8 +1248,23 @@ static void rwExprName(ModUnit *self, Expr *e) {
      * renaming it by **this** module's table would bind it to a local declaration of the
      * same spelling, which compiles and means something else. */
     if (e->qualified) return;
-    const char *m = nm ? renLookup(self, nm) : NULL;
-    if (m) { e->u.ident.srcName = nm; e->u.ident.name = m; }
+    /* Does this unit declare the name itself? A unit's own declaration wins over
+     * anything an opened module offers, so this is asked first.
+     *
+     * The two cases cannot share one lookup: a loaded module's declarations are already
+     * renamed, so its own names are found in the rename table (`cout` -> `io$cout`),
+     * while the root file and the prelude are never renamed and their names are searched
+     * as written. Reading `renLookup` alone was wrong for the root: it answers the name
+     * itself when the unit has no module name, which looks exactly like a match. */
+    const char *own = NULL;
+    if (self && self->modName && *self->modName) own = nm ? renLookup(self, nm) : NULL;
+    else if (self && nm) own = unitOwns(self, nm) ? nm : NULL;
+    if (own) { e->u.ident.srcName = nm; e->u.ident.name = own; return; }
+    /* Nothing of this module's own: `use mod::*` may have put it in scope. The name is
+     * rewritten to the flat one and marked qualified, which is exactly what writing
+     * `mod::name` produces -- so the rest of the pipeline needs no second rule. */
+    const char *open = (self && nm) ? openLookup(self, nm, e->line) : NULL;
+    if (open) { e->u.ident.srcName = nm; e->u.ident.name = open; e->qualified = true; }
 }
 
 /* Merge one unit's declarations into the program module.
@@ -1308,6 +1438,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
         UseDecl *ud = *(UseDecl **)vecAt(&u->mod.uses, i);
         ModUnit *dep = loadUnit(L, ud->path, file, ud->line);
         ud->file = dep ? dep->file : NULL;
+        ud->unit = dep;
     }
     u->state = 2;
     *(ModUnit **)vecPush(&L->order) = u;           /* post-order: dependencies are in first */
@@ -1375,6 +1506,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         UseDecl *u = *(UseDecl **)vecAt(&rootm->uses, i);
         ModUnit *dep = loadUnit(&L, u->path, rootPath, u->line);
         u->file = dep ? dep->file : NULL;
+        u->unit = dep;
     }
     /* The root file's short-name clashes are checked the same way. */
     for (size_t i = 0; i < rootm->uses.len; i++) {
@@ -1419,6 +1551,32 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
             Alias *al = (Alias *)vecPush(&out->aliases);
             al->from = r->from;  al->to = r->to;
         }
+    }
+
+    /* Collect every `use mod::*` as an (importer, opened) pair. It has to happen here,
+     * where both the importing unit and the module it resolved to are known; the
+     * checker only has the second one, in `FuncDef.modName`. */
+    vecInit(&out->opens, a, sizeof(Open));
+    for (size_t i = 0; i < L.order.len; i++) {
+        ModUnit *dep = *(ModUnit **)vecAt(&L.order, i);
+        for (size_t j = 0; j < dep->mod.uses.len; j++) {
+            UseDecl *u = *(UseDecl **)vecAt(&dep->mod.uses, j);
+            if (!u->wildcard || !u->file) continue;
+            ModUnit *opened = findUnit(&L, u->file);
+            if (!opened) continue;
+            Open *o = (Open *)vecPush(&out->opens);
+            o->importer = dep->modName;
+            o->opened   = opened->modName;
+        }
+    }
+    for (size_t j = 0; j < rootm->uses.len; j++) {
+        UseDecl *u = *(UseDecl **)vecAt(&rootm->uses, j);
+        if (!u->wildcard || !u->file) continue;
+        ModUnit *opened = findUnit(&L, u->file);
+        if (!opened) continue;
+        Open *o = (Open *)vecPush(&out->opens);
+        o->importer = NULL;                 /* the root file */
+        o->opened   = opened->modName;
     }
 
     /* The root file's declarations are merged last, since the modules it uses are

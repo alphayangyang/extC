@@ -137,6 +137,7 @@ void moduleInit(Module *m, Arena *a) {
     vecInit(&m->funcs, a, sizeof(void *));
     vecInit(&m->globals, a, sizeof(void *));
     vecInit(&m->uses, a, sizeof(void *));
+    vecInit(&m->opens, a, sizeof(Open));
 }
 
 /* Is this function a method?

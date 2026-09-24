@@ -18,7 +18,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -61,6 +61,11 @@ check_err ambiguous-type  "ambiguous type \`pair\`"
 #    关键字就是**模块的路径**：位置错了这一条一定会响 ✓
 #    （为什么单独抓：指错文件比没有位置更坏，读的人会被带到完全无关的一行 ✗）
 check_err body-position   "errors/body-position/mod.extc"
+# `use mod::*`（带进作用域）的**三条边界**：隐私 · 不跨文件泄漏 · 两个模块重名歧义 ✓
+# 前两条钉的是"这个新写法没有削弱已有的规则"，第三条钉的是"重名不许静默挑一个" ✓
+check_err private-open    "is private to module"
+check_err open-leak       "belongs to module \`b\`"
+check_err open-ambiguous  "exported by both"
 
 # ⭐ **判据③：诊断里不许出现 mangle 名**（`$` 在 extC 标识符里不合法 ⇒
 #    消息里出现 `$` 就一定是把内部编码漏给了用户 ✗）
@@ -80,7 +85,7 @@ for d in tests/modules/errors/*/ tests/modules/samenames/; do
     fi
 done
 # 正例也不能漏（含跨模块的类型/枚举/泛型实例 —— 那几种最容易漏 ✓）
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local; do
+for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open; do
     out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
     if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
         echo "  FAIL $(basename "$d")(正例)  ->  输出里出现了 mangle 名（\$）"

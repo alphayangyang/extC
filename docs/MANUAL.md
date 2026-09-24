@@ -1861,8 +1861,29 @@ use lib::sub::color             // 深层模块（lib/sub/color.extc）✓
 let c: color::color = color::color.green     // 变体位置：限定名 + `.变体` ✓
 ```
 
+### 12.1.1 `use mod::*`：把名字**带进作用域**（2026-09-24 定案 85）
+
+默认写法是限定名（`io::cout`），想让一个模块的**公开名字不限定可用**，就在 `use` 末尾写 `*`：
+
+```extc
+use std::io::*                 // io 的公开名字进入本文件的作用域
+cout << "x = " << x + y << endl      // 不限定 ✓（这才是流式 IO 想写成的那句话）
+cin >> a >> b
+```
+
+三条边界（都有常设验收，`tests/modules/`）：
+
+- **`@private` 仍然够不着** —— 打开模块**不是**绕过隐私的路子
+  （`error: \`lib::secret\` is private to module \`lib\``）✓
+- **打开是每个文件各自的**：`a.extc` 里 `use b::*` **不会**让入口文件也能写裸 `bSecret` ✓
+- **两个被打开的模块重名 ⇒ 报错，不许静默挑一个**
+  （`error: \`who\` is exported by both \`x1\` and \`x2\`, which are opened here`）✓
+
+限定名**照旧**能用（两条路并存）✓ —— 定案 70 的"全名是权利"没有被削弱，
+`*` 是**用户显式写出来**的选择 ✓
+
 ⚠️ v1 限制：**类型名**"必须限定"那条还没挡严（函数/全局已经挡严 ✓）；
-`use` 不重新导出（没有 per-module 的可见性传递 ✓）
+`use` 不重新导出（没有 per-module 的可见性传递 ✓ —— 所以 `*` 也**不传递** ✓）
 
 ### 12.2 泛型自由函数 `fn f<T>(…)`
 

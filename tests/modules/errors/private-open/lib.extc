@@ -1,0 +1,6 @@
+/* `@private` 的名字**不能**靠 `use lib::*` 拿到 —— 打开模块不是绕过隐私的路子 ✓ */
+@private
+fn secret() -> i64 { return 42 }
+
+@private
+let HIDDEN: i64 = 7

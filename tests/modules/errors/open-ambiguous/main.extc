@@ -1,0 +1,6 @@
+use x1::*
+use x2::*
+fn main() -> i32 {
+    println("谁？ ", who())      /* ✗ 两个被打开的模块都有 who ⇒ 必须写清哪一个 */
+    return 0
+}

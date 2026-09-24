@@ -642,11 +642,26 @@ typedef struct {
  * and an import cycle is a compile error. */
 typedef struct { const char *from; const char *to; } Alias;
 
+/* One `use mod::*`: the module that wrote it (NULL for the root file) and the module
+ * it opened. */
+typedef struct { const char *importer; const char *opened; } Open;
+
 typedef struct {
     const char *path;      /* "std::io", exactly as written; used in error messages */
     const char *shortName; /* "io": members are then referred to as `io::name` */
     const char *file;      /* filled in by the loader: the file it resolved to */
     int         line;
+    /* `use std::io::*`: the module's **public names are in scope unqualified** as
+     * well. Qualified names keep working (they always do), and a `@private` name is
+     * still out of reach: opening a module is not a way around privacy.
+     *
+     * The default is what 定案 70 settled on -- a name from another module is written
+     * `mod::name` -- and this is the opt-in that a user asks for by writing the star,
+     * which is why the form is explicit rather than implied. */
+    bool        wildcard;
+    void       *unit;      /* ModUnit* of the resolved module; filled in by the loader, so
+                            * that the `::*` rewrite can reach that unit's name table
+                            * without threading the loader through every pass */
 } UseDecl;
 
 typedef struct {
@@ -658,6 +673,16 @@ typedef struct {
     /* Entries mapping a bare name back to its mangled module name (`pair` to
      * `liba$pair`); the loader fills them in and `ttResolve` looks them up. */
     Vec aliases;                 /* Alias* */
+    /* `use mod::*` seen anywhere in the program, as (importer, opened) module name
+     * pairs; the importer is NULL for the root file. The loader fills this in, and
+     * `requireQualified` reads it: a name from an **opened** module may be written
+     * bare, from anywhere in the module that opened it and nowhere else.
+     *
+     * A list, not a single module: two modules may be open at once, and the rule is
+     * per importer. Keeping the importer in the entry is what stops an `open` in one
+     * file from leaking into another -- a leak would be invisible until two files
+     * happened to use the same name. */
+    Vec opens;                   /* Open* */
 } Module;
 
 void moduleInit(Module *m, Arena *a);

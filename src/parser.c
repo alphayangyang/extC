@@ -242,8 +242,17 @@ static UseDecl *parseUse(Parser *p) {
     bufInit(&path, p->arena);
     bufPuts(&path, first->text);
     const char *shortName = first->text;
+    bool wildcard = false;
     while (at(p, "::")) {
         take(p);
+        /* `use std::io::*` -- the star is a whole segment and has to be last, so the
+         * path stops here. `shortName` keeps the module's own name (`io`), which is
+         * what diagnostics call it. */
+        if (at(p, "*")) {
+            take(p);
+            wildcard = true;
+            break;
+        }
         Token *seg = expectTypeName(p, "a module path segment");
         if (!seg) return NULL;
         bufPuts(&path, "::");
@@ -268,6 +277,7 @@ static UseDecl *parseUse(Parser *p) {
     u->path      = bufCstr(&path);
     u->shortName = alias ? alias : shortName;
     u->line      = kw->line;
+    u->wildcard  = wildcard;
     return u;
 }
 

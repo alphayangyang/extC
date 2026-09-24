@@ -1,0 +1,6 @@
+use a
+fn main() -> i32 {
+    println("a = ", a::aValue())
+    println("不该能这么写：", bSecret())     /* ✗ b 没在**这个**文件被打开 */
+    return 0
+}

@@ -7,21 +7,23 @@
  *   ③ 表达式当右操作数：`cout << x + y` ✓
  *   ④ 读不到（EOF）时**目标保持原值**、`inBad()` 为真 —— 不是静默写 0 也不是 trap ✓
  *   ⑤ **与 `println` 的顺序一致**（两边都走 C 的 stdio ⇒ 不需要手工 flush ✓）
+ *   ⑥ 写成主人原话的样子：`use std::io::*` ⇒ **不限定**的 `cout` / `cin` / `endl` ✓
+ *      （限定名 `cout` 也照旧能用 —— 两条路并存，定案 70 没被削弱 ✓）
  */
-use std::io
+use std::io::*
 
 fn main() -> i32 {
     var x: i64 = 0
     var y: i64 = 0
 
-    io::cout << "控制台：x = " << i64(1) << " · pi = " << 3.5 << " · 对 = " << true << io::endl
+    cout << "控制台：x = " << i64(1) << " · pi = " << 3.5 << " · 对 = " << true << endl
 
-    io::cin >> x >> y
-    io::cout << "读到 x = " << x << " y = " << y << " 和 = " << x + y << io::endl
+    cin >> x >> y
+    cout << "读到 x = " << x << " y = " << y << " 和 = " << x + y << endl
 
     println("println 紧跟着，顺序应当一致")
 
-    if io::inBad() { io::cout << "读坏了（EOF / 错误）" << io::endl }
-    else          { io::cout << "读好了" << io::endl }
+    if inBad() { cout << "读坏了（EOF / 错误）" << endl }
+    else          { cout << "读好了" << endl }
     return 0
 }

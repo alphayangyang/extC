@@ -1,0 +1,12 @@
+/* 被 `use lib::*` 打开的模块：一个全局 + 一个函数 + 一个结构体，都是**公开**的 ✓ */
+let GREETING: slice<u8> = "你好，extC"
+
+struct pair { a: i64  b: i64 }
+
+@private
+let HIDDEN: i64 = 99
+
+@private
+fn secret() -> i64 { return HIDDEN }
+
+fn twice(n: i64) -> i64 { return n * 2 }

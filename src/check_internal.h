@@ -658,6 +658,8 @@ int valDepthForStore (Checker *, Expr *);
  void setCallArenaArg (Checker *c, Expr *e);
 /* Report an error when a name of another module is used without its module qualifier. */
  void requireQualified (Checker *c, const char *what, const char *whatMod, bool qualified, int line);
+/* Did this module open that one with `use mod::*`? (check_lookup.c) */
+ bool moduleOpens (Module *m, const char *importer, const char *opened);
 /* The type parameters visible in this function: those of the function itself, or those of the
  * generic type that owns it. */
  Vec *funcTParams (FuncDef *f);
