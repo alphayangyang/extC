@@ -247,10 +247,17 @@ p.release()                 // 释放这一层（作用域结束本来也会自�
 
 ### 7.2 色从哪来（不需要数据流分析）
 
-`extc_pool_new` 里已经有 `r->zone = extc_zoneTop` —— 池创建时就把 zone 下标记在自己身上，而 zone 数组是
-**固定栈、按下标重用、不移动也不扩容**，所以读色是 `zones[pool.zone].color`，一次固定地址读。
+`extc_pool_new` 里已经有 `r->zone = extc_zoneTop` —— 池创建时就把 zone 下标记在自己身上，所以池随时能回到
+自己那一格 zone。这里要纠正作者说法里的一处**实现细节**：zone 数组**不是**固定数组，而是按需翻倍扩容的
+堆数组（`static ExtcZone *extc_zones`、`extc_zoneCap`、`realloc`），所以「不会移动、也不需要扩容」这句在今天的
+实现上不成立。但结论不变，因为**下标是稳定的**：zone 按下标寻址、按栈式重用，`realloc` 换基址不影响下标，
+池记的也是下标，读色就是 `extc_zones[pool.zone].color` 一次下标读。附带一条纪律：**不许缓存指向 zone 的
+指针**，只能缓下标 —— 否则 `realloc` 之后就成悬垂指针。
 「这个对象属于哪个 zone」在运行时是已知的，染色这一层用不到数据流分析；DFA 的用途在别处（把「该放哪个
 arena」从运行时决定变成编译期决定），与本方案无关。
+zone 槽的下标就是**栈深度**（`extc_pool_zoneEnter` 里 `id = extc_zoneTop + 1`），所以循环体每轮复用同一个
+下标 —— 这正是色能起作用的前提。`zoneEnter` 今天的动作是 `firstPool = -1`，染色后改成翻色（加一取模）即可；
+`zoneLeaveTo` 今天逐个 `extc_pool_drop` 走 `zoneNext` 链，染色后那一段可以整个省掉。
 
 ### 7.3 零成本刷新与「全是 freeslot」
 
