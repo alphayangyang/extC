@@ -8073,3 +8073,8 @@ tour          740 → 606    53 → 54 ms   102 → 105 ms   16416 → **16688**
 `A<V>` 内部持有库里的泛型 `B<V>`」这条链上，`B` 的实例化没有全部跟出来；而 `vector<T> → pool<T>` 是
 同样的链却常绿（`tests/stl` 一直过）。所以继续 ② 之前，先把这两条链的差异找出来 —— 这属于「库作者撞墙」
 那一族，值得进 PLAN。
+
+同轮补记（第 8 轮收尾）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志
+`/tmp/prb/cq_r13.log`）。至此 ③ 也过四道闸门：`tests/pool` · `tests/stl` · `tests/map` · `check.sh quick`。
+当前进度：① 完成 · ③ 完成 · ② 设计定稿且半成品存档（先解 `pool<V>` 的实例化缺口）· ④ 等作者裁决
+（`varArray` 是改 prelude 那个隐式可见的底座，还是保持 arena 底、池底留给显式 import 的 `stl::vector`）。
