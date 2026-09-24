@@ -3245,6 +3245,23 @@ static bool isConstInit(Expr *e) {
         return isConstInit(e->u.bin.left) && isConstInit(e->u.bin.right);
     case EX_UN:                                          /* `-1` */
         return e->u.un.operand && isConstInit(e->u.un.operand);
+    /* A struct literal whose every field is a constant is one too: nothing in it has
+     * to run, and C has always spelled exactly this as a static initializer
+     * (`static pt ORIGIN = { .x = 0, .y = 0 };`). An omitted field is the zero value,
+     * which is a constant as well.
+     *
+     * Leaving it out made the one thing a library cannot do otherwise impossible:
+     * `let cout: out = out { fd: 1 }` -- the stream object at the top of `std::io`.
+     * The rule it was caught by exists for a real reason (a global is a C static
+     * object, so its initializer has to be one C can fold), and a literal of
+     * constants satisfies that reason; a call does not, and is still rejected. */
+    case EX_STRUCTLIT: {
+        for (size_t i = 0; i < e->u.lit.inits.len; i++) {
+            FieldInit *fi = *(FieldInit **)vecAt(&e->u.lit.inits, i);
+            if (fi && fi->value && !isConstInit(fi->value)) return false;
+        }
+        return true;
+    }
     default: return false;
     }
 }

@@ -40,6 +40,31 @@ else
     echo "  FAIL read-stdin  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
+echo "== 流式 IO（cout << x / cin >> x：<< 与 >> 的重载 + 链式 + 共同缓冲）=="
+if out=$(printf '40 2\n' | "$EXTC" --run tests/io/stream.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "控制台：x = 1 · pi = 3.5 · 对 = true" || ok=0
+    echo "$out" | grep -qF "读到 x = 40 y = 2 和 = 42"        || ok=0
+    echo "$out" | grep -qF "读好了"                          || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "  ok   stream  ->  $(echo "$out" | tr '\n' '|')"
+    else
+        echo "  FAIL stream  ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1
+    fi
+else
+    echo "  FAIL stream  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+# 读不到：目标保持原值 + inBad() 为真（EOF 是正常结局，不是崩溃 ✓）
+if out=$(printf '' | "$EXTC" --run tests/io/stream.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "读到 x = 0 y = 0 和 = 0" || ok=0
+    echo "$out" | grep -qF "读坏了（EOF / 错误）"      || ok=0
+    if [ "$ok" = 1 ]; then echo "  ok   stream-eof  ->  目标保持原值 + inBad 为真 ✓"
+    else echo "  FAIL stream-eof  ->  $(echo "$out" | tr '\n' '|')"; fail=1; fi
+else
+    echo "  FAIL stream-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
+fi
+
 echo "== 回归：struct 打印 + 跨模块全局常量 + reader（这三样一起曾经让编译器段错误 ✗）=="
 if out=$(printf 'hello extC\n' | "$EXTC" --run tests/io/struct-print.extc 2>&1); then
     ok=1

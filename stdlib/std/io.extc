@@ -507,3 +507,123 @@ fn isSpaceByte(b: i64) -> bool {
     if b == i64(12) { return true }      /* \f    */
     return false
 }
+
+/* ================================================================ console streams
+ *
+ * `cout << x` / `cin >> x`: what `print` and `nextInt` do, in a shape that **chains**,
+ * which is the whole reason the operators are there.
+ *
+ * Why not variadic: `print(a, b, c)` takes an unbounded argument list, and extC has
+ * neither variadics nor an overload set wide enough to express one. `<<` looks at **one**
+ * operand at a time, so it needs neither -- one overload per type is all it takes, which
+ * is what overloading by the right operand's exact type buys (docs/DECISIONS.md 82).
+ *
+ * The shape of a stream handle:
+ *   - It carries an `fd` and nothing else, so an `<<` can return a **new** handle
+ *     (`{ fd: self.fd }`) instead of `self`: in `-> out` the `self` is a reference, and a
+ *     reference is not a value, so it cannot be returned by value. A handle this thin
+ *     makes the copy harmless, and `cout << a << b` chains because every step hands the
+ *     next one an equivalent handle.
+ *   - Buffering is C's stdio (`flush()` is `fflush(NULL)`), so what is buffered leaves at
+ *     exit by itself and keeps its order with `println`. A buffer of our own would need
+ *     "flush before the program ends" to be remembered -- the classic way output goes
+ *     missing.
+ *
+ * NOTE: what `<<` writes today is the console, formatted by the same builtin printing
+ * `println` uses, so the two agree character for character. A formatting layer of our own
+ * is the next step, and it is also what the builtins' retirement waits for; the `fd` is
+ * already in the handle so that a stream over any fd can be spelled then.
+ *
+ * NOTE: the `fd` is written as a bare `1` rather than as `STDOUT_FD`, because a global's
+ * initializer cannot name **another global**: C does not treat `const int` as a constant
+ * expression, so a static initializer may not refer to it (`pt { x: BOARD_SIZE }` is
+ * refused for the same reason). `1` is what `STDOUT_FD` holds.
+ */
+struct ostream { fd: i32
+    fn <<(self: ref ostream, v: i64) -> ostream { print(v)  return { fd: self.fd } }
+    fn <<(self: ref ostream, v: f64) -> ostream { print(v)  return { fd: self.fd } }
+    fn <<(self: ref ostream, v: bool) -> ostream { print(v)  return { fd: self.fd } }
+    fn <<(self: ref ostream, v: slice<u8>) -> ostream { writeBytes(v)  return { fd: self.fd } }
+}
+
+let cout: ostream = ostream { fd: 1 }
+
+/* A newline as a value: `cout << x << endl`. A string literal does the same
+ * (`cout << x << "\n"`); this name reads better at the end of a chain and cannot be
+ * mistyped as an escape. */
+let endl: slice<u8> = "\n"
+
+/* ================================================================ console input
+ *
+ * The input side cannot be a thin handle: a token may end in the middle of a block that
+ * was read, so the reader's position has to outlive one `>>`. It lives in the globals
+ * below, and `in` itself stays as thin as `out` so that chaining works -- `cin >> x >> y`
+ * hands an equivalent handle to the second `>>`, and both steps touch the same buffer.
+ *
+ * NOTE: the buffer is a **fixed-size global array**, not `new u8[BLK]`. A global is
+ * initialized at compile time, and a `mut slice<u8>` contains a reference, so no global
+ * of that type can exist at all ("nothing to borrow from"). An array has no reference in
+ * it, and `IN_BUF[..]` produces the view when the reader is built.
+ *
+ * NOTE: the length is written out as `65536` rather than as `BLK`, because a fixed
+ * array's length must be an **integer literal** (a compile-time constant declaration
+ * would be needed to name it, and there is no `const` yet). `BLK` is 65536.
+ */
+var IN_BUF: [65536]u8
+var IN_LEN: i64 = 0
+var IN_POS: i64 = 0
+var IN_BAD: bool = false
+
+/* The reader over the console buffer, carrying the state in and back out. Saving it
+ * after every operation is what lets a local `reader` be enough -- the parsing itself is
+ * `reader`'s, not a second copy of it. */
+fn inSync() -> reader { return { fd: 0, chunk: IN_BUF[..], len: IN_LEN, pos: IN_POS } }
+fn inSave(r: ref reader) { IN_LEN = r.len  IN_POS = r.pos }
+
+struct istream { fd: i32
+    fn >>(self: ref istream, v: mut ref i64) -> istream {
+        var r: reader = inSync()
+        /* Ask whether the input is finished before reading, because `nextInt` answers
+         * `success(0)` both for "the number 0" and for "nothing was read": that is the
+         * convention of the byte-and-count primitives below it (end of input is not an
+         * error, `read(2)` says the same with 0), and it is why an end of input cannot be
+         * told apart from a zero without asking. `eof` is exact, and it costs nothing
+         * while bytes are buffered. */
+        match r.eof() {
+            success(fin) => {
+                if fin { IN_BAD = true }
+                else {
+                    match r.nextInt() {
+                        success(n) => { *v = n }
+                        /* A read error, or a number too large for `i64`. The target keeps
+                         * the value it had and `bad()` says so: `>>` has to return a stream
+                         * (`a >> b` stands where `a` stood), so it cannot report anything
+                         * itself, and trapping would make "read until the input ends"
+                         * impossible to write. */
+                        failure(e) => { IN_BAD = true }
+                    }
+                }
+            }
+            failure(e) => { IN_BAD = true }
+        }
+        inSave(ref r)
+        return { fd: self.fd }
+    }
+
+    /* Did a read fail (end of input, or a read error)? The target keeps its old value;
+     * check this before trusting it. */
+    fn bad(self: ref istream) -> bool { return IN_BAD }
+
+    /* Clear the failure flag. Nothing buffered is thrown away: the bytes already read
+     * are still where the next `>>` looks. */
+    fn clear(self: ref istream) { IN_BAD = false }
+}
+
+/* The failure flag, the way a caller can actually reach it today: a method called on a
+ * **qualified** global (`io::cin.bad()`) is not supported yet, while `io::cin >> x` is,
+ * so the methods above are usable only through a local copy. These two exist until that
+ * gap closes; they read the same flag. */
+fn inBad() -> bool { return IN_BAD }
+fn inClear() { IN_BAD = false }
+
+let cin: istream = istream { fd: 0 }

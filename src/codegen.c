@@ -1434,7 +1434,22 @@ static Expr *litValueFor(Expr *lit, const char *fname) {
  *   The compound literal, allocated in the generator's arena; `(int){0}` when
  *   the type is not a struct at all.
  */
-static const char *genStructLit(CG *g, Expr *e) {
+/* The body of a struct literal, as either a compound literal or a brace
+ * initializer.
+ *
+ * Params:
+ *   g          - generator
+ *   e          - the EX_STRUCTLIT node
+ *   staticInit - true when this stands as the initializer of a C static object (a
+ *                global), where the `(T)` cast is not allowed: C wants a constant
+ *                initializer there, and a compound literal is not one. The brace
+ *                form is the same list, so the spelling differs by exactly that
+ *                prefix.
+ *
+ * Returns:
+ *   The C text, allocated in the generator's arena.
+ */
+static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
     /* Substitute over the whole type first: inside a generic instance the
      * literal still records the template type (`result<T,E>`), whose type
      * arguments are parameters. Taking that type as it is sends the zero-value
@@ -1445,7 +1460,8 @@ static const char *genStructLit(CG *g, Expr *e) {
     if (!sd) return "(int){0}";
 
     const char *cname = cType(g, t);       /* an instance gets its decorated name */
-    if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", cname);
+    if (sd->fields.len == 0)
+        return staticInit ? "{0}" : arenaPrintf(g->arena, "(%s){0}", cname);
 
     /* A literal of a generic instance substitutes its own type arguments into
      * the field types as well. */
@@ -1460,7 +1476,8 @@ static const char *genStructLit(CG *g, Expr *e) {
      * zero-fill it would turn an omitted `str` field into NULL. */
     Buf b;
     bufInit(&b, g->arena);
-    bufPrintf(&b, "(%s){", cname);
+    if (staticInit) bufPuts(&b, "{");
+    else            bufPrintf(&b, "(%s){", cname);
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
         Type *ft = subst(g, fd->type);
@@ -1475,6 +1492,16 @@ static const char *genStructLit(CG *g, Expr *e) {
     g->substArgs   = sa;
     g->ownerPrefix = sn;
     return bufCstr(&b);
+}
+
+static const char *genStructLit(CG *g, Expr *e) { return genStructLitAs(g, e, false); }
+
+/* The initializer of a global, which is a C static object: its initializer has to be
+ * one C can fold at compile time. A struct literal is emitted as a brace initializer
+ * for that reason (see genStructLitAs); everything else that reaches here was already
+ * restricted to constants by the checker. */
+static const char *genGlobalInit(CG *g, Expr *e) {
+    return e->kind == EX_STRUCTLIT ? genStructLitAs(g, e, true) : genExpr(g, e);
 }
 
 static const char *arenaRefAt(CG *g, int level);
@@ -4320,7 +4347,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (ttIsError(gd->ann)) continue;
         const char *ct = cType(&g, gd->ann);
         if (gd->init) {
-            cgLine(&g, "static %s %s = %s;", ct, gd->name, genExpr(&g, gd->init));
+            cgLine(&g, "static %s %s = %s;", ct, gd->name, genGlobalInit(&g, gd->init));
         } else {
             /* No initializer: C zeroes static storage by itself. */
             cgLine(&g, "static %s %s;", ct, gd->name);
