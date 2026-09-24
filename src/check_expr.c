@@ -1668,19 +1668,29 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
         case EX_STRUCTLIT: {
             /* The type comes from the name written in the literal or from the context; a generic
-             * instance can only come from the context. */
-            Type *st = e->u.lit.name ? ttFromName(tt, e->u.lit.name) : e->type;
-
-            if (e->u.lit.name && (!st || ttIsError(st))) {
-                ckError(c, e->line, NULL, "unknown struct `%s`", e->u.lit.name);
-                return ttError(tt);
+             * instance can only come from the context.
+             *
+             * A written name goes through `ttResolve` with the current context, exactly the way a
+             * type annotation does, so a name the module system mangles (`box` -> `box$box`)
+             * resolves as written. The context-free `ttFromName` used to be called here, which
+             * sees only the entry file's structs: a **named** literal inside a module was
+             * `unknown struct` while the very same literal written as an annotated `var` worked
+             * (PLAN #54). The message for a name that really is unknown comes from `ttResolve`,
+             * which also reports the ambiguous case (`pair` exported by two modules). */
+            Type *st = e->type;
+            if (e->u.lit.name) {
+                st = ttResolve(tt, c->ctx, typeNamed(c->arena, e->u.lit.name), e->line, c->curParams);
+                if (!st || ttIsError(st)) return ttError(tt);
             }
             StructDef *sd = structOf(st);
             if (!sd) {
-                ckError(c, e->line,
-                        "a bare `{}` works only where the context pins the type down: "
-                        "`var x: T = {}` / `return {}` / `f({})`",
-                        "cannot infer the type of a bare `{}` here");
+                if (e->u.lit.name)
+                    ckError(c, e->line, NULL, "`%s` is not a struct", e->u.lit.name);
+                else
+                    ckError(c, e->line,
+                            "a bare `{}` works only where the context pins the type down: "
+                            "`var x: T = {}` / `return {}` / `f({})`",
+                            "cannot infer the type of a bare `{}` here");
                 return ttError(tt);
             }
             if (st->kind == TY_STRUCT && sd->typeParams.len > 0) {

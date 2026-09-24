@@ -1,0 +1,10 @@
+// expect: 5|7|0
+use shape
+fn main() -> i32 {
+    let b = shape::mk(5)
+    println(b.v)
+    var q: shape::box = shape::box { v: 7 }   /* 限定名的具名字面量 */
+    println(q.v)
+    println(shape::zero().v)
+    return 0
+}

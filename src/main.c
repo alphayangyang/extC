@@ -491,9 +491,25 @@ int main(int argc, char **argv) {
         checkModule(&ctx, &arena, tt, &m);
     }
 
+    /* A body that lives in a module is checked under **that file's** context, so a mistake
+     * found there is recorded in that file's Ctx, not the entry file's. Rendering only
+     * `ctx` would drop it: the compiler would carry on and generate C for a program it
+     * just rejected -- a wrong position is bad, silence is worse. Render every context
+     * that failed, and do not reach code generation when any of them did. */
+    bool bodyDiag = false;
+    for (size_t i = 0; i < moduleCtxs.len; i++) {
+        Ctx *mc = *(Ctx **)vecAt(&moduleCtxs, i);
+        if (!mc || !mc->hasError) continue;
+        Buf d;
+        bufInit(&d, &arena);
+        ctxRenderDiag(mc, &d);
+        fputs(bufCstr(&d), stderr);
+        bodyDiag = true;
+    }
+
     Buf c;
     bufInit(&c, &arena);
-    if (!ctx.hasError) generateC(&ctx, &arena, tt, &m, lineMap, &c);
+    if (!ctx.hasError && !bodyDiag) generateC(&ctx, &arena, tt, &m, lineMap, &c);
 
     if (ctx.hasError) {
         Buf diag;
@@ -502,6 +518,7 @@ int main(int argc, char **argv) {
         fputs(bufCstr(&diag), stderr);
         return 1;
     }
+    if (bodyDiag) return 1;      /* the module files' errors are already rendered above */
 
     /* `--check-c`: syntax-check the generated C. This has to run before the
      * `if (!doRun)` block below, which prints the C and returns, or the check would

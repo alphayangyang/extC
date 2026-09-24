@@ -1148,11 +1148,13 @@ static void mergeUnit(Loader *L, ModUnit *u) {
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *s = *(StructDef **)vecAt(&src->structs, i);
         s->modName = u->modName;
+        s->ctx     = u->ctx;      /* which file it came from: a diagnostic needs it */
         for (size_t j = 0; j < s->fields.len; j++)
             rwType(L, u, (*(FieldDef **)vecAt(&s->fields, j))->type);
         for (size_t j = 0; j < s->methods.len; j++) {
             FuncDef *m = *(FuncDef **)vecAt(&s->methods, j);
             m->modName = u->modName;
+            m->ctx     = u->ctx;
             if (m->ret) rwType(L, u, m->ret);
             for (size_t k = 0; k < m->params.len; k++)
                 rwType(L, u, (*(Param **)vecAt(&m->params, k))->type);
@@ -1163,6 +1165,7 @@ static void mergeUnit(Loader *L, ModUnit *u) {
     for (size_t i = 0; i < src->types.len; i++) {
         TypeDef *t = *(TypeDef **)vecAt(&src->types, i);
         t->modName = u->modName;
+        t->ctx     = u->ctx;
         for (size_t k = 0; k < t->variants.len; k++) {
             Variant *v = *(Variant **)vecAt(&t->variants, k);
             for (size_t j = 0; j < v->types.len; j++)
@@ -1173,6 +1176,7 @@ static void mergeUnit(Loader *L, ModUnit *u) {
     for (size_t i = 0; i < src->globals.len; i++) {
         GlobalDef *g = *(GlobalDef **)vecAt(&src->globals, i);
         g->modName = u->modName;
+        g->ctx     = u->ctx;
         if (g->ann) rwType(L, u, g->ann);
         rwExpr(L, u, g->init);
         *(GlobalDef **)vecPush(&L->out->globals) = g;
@@ -1180,6 +1184,7 @@ static void mergeUnit(Loader *L, ModUnit *u) {
     for (size_t i = 0; i < src->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&src->funcs, i);
         f->modName = u->modName;
+        f->ctx     = u->ctx;
         if (f->ret) rwType(L, u, f->ret);
         for (size_t j = 0; j < f->params.len; j++)
             rwType(L, u, (*(Param **)vecAt(&f->params, j))->type);

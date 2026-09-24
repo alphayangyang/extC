@@ -52,7 +52,7 @@ else bad "tests/extern/run.sh"; echo "$out"; fi
 
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(./tests/modules/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（2 正例 + 6 反例）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（5 正例 + 8 反例 + mangle 判据）"
 else bad "tests/modules/run.sh"; echo "$out"; fi
 
 echo "== ASan（内存安全的形状必须真的跑得干净）=="

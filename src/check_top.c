@@ -54,6 +54,10 @@ static void resolveSignature(Checker *c, FuncDef *f) {
     /* A method sees the type parameters of the struct it belongs to; a free function
      * sees its own (`funcTParams` returns whichever applies). */
     Vec *params = funcTParams(f);
+    /* The type names in a signature belong to the file that declares it, so they are
+     * resolved under that file's context (`FuncDef.ctx`), not the entry file's. */
+    Ctx *savedCtx = c->ctx;
+    if (f->ctx) c->ctx = f->ctx;
 
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
@@ -61,6 +65,7 @@ static void resolveSignature(Checker *c, FuncDef *f) {
     }
     if (f->ret) f->ret = ttResolve(c->tt, c->ctx, f->ret, f->line, params);
     if (f->ret && ttIs(f->ret, "void")) f->ret = NULL;
+    c->ctx = savedCtx;
 }
 
 /* Reject duplicate names among the module's declarations.
@@ -3009,6 +3014,14 @@ static void checkFunc(Checker *c, FuncDef *f) {
                         typeStr(c, p->type));
         }
     }
+    /* Every diagnostic inside this body has to name the file the body came from. The
+     * loader records that context on each declaration (`FuncDef.ctx`), and this pass runs
+     * every unit's functions in one go, so the context is switched here: without it, a
+     * mistake inside a module came back pointing at a line of the **entry** file -- the
+     * line was the module's, the file was not (PLAN #54). */
+    Ctx *savedCtx = c->ctx;
+    if (f->ctx) c->ctx = f->ctx;
+
     FuncDef *savedFunc = c->curFunc;
     /* A function that allocates and hands back something useful (a reference or a view,
     * or a store through an out-parameter) needs a home arena. One that returns `i32`
@@ -3113,6 +3126,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     popScope(c);
     c->curFunc = savedFunc;
     c->curParams = savedParams;
+    c->ctx = savedCtx;
 }
 
 /* Is this initializer a constant expression?

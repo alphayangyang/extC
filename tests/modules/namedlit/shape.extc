@@ -1,0 +1,10 @@
+/* 模块内部的**具名**结构体字面量必须解析得开（PLAN #54 的正面判据）*/
+struct box { v: i32 }
+
+fn mk(v: i32) -> box {
+    return box { v: v }          /* ← 曾经：error: unknown struct `box` */
+}
+
+fn zero() -> box {
+    return box { v: 0 }
+}

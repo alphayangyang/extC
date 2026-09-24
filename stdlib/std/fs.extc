@@ -120,23 +120,19 @@ struct outputFile {
 fn openRead(path: slice<u8>) -> result<inputFile, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
-    /* NOTE: built with an annotated variable, not `inputFile { .. }`: a named struct
-     * literal inside a module does not resolve today (`PLAN.md` #54), and this form is
-     * the documented workaround. It reads the same once #54 is fixed. */
-    var f: inputFile = { fd: fd, open: true }
-    return success(f)
+    /* A named literal, resolved through the module context exactly the way a type
+     * annotation is (PLAN #54 fixed this: it used to need `var f: inputFile = { .. }`). */
+    return success(inputFile { fd: fd, open: true })
 }
 
 fn openWrite(path: slice<u8>) -> result<outputFile, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
-    var f: outputFile = { fd: fd, open: true }   /* workaround for PLAN #54, see openRead */
-    return success(f)
+    return success(outputFile { fd: fd, open: true })
 }
 
 fn openAppend(path: slice<u8>) -> result<outputFile, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_APPEND, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
-    var f: outputFile = { fd: fd, open: true }   /* workaround for PLAN #54, see openRead */
-    return success(f)
+    return success(outputFile { fd: fd, open: true })
 }
