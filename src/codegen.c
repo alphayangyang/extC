@@ -489,7 +489,7 @@ static bool isByteView(Type *t) {
 static void genViewIndexer(CG *g, Type *inst) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
     substEnter(g, inst);
-    cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
+    cgLine(g, "EXTC_UNUSED static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
     cgLine(g, "if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);");
@@ -610,7 +610,7 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
                           const char *eqFn) {
     size_t n = sd->fields.len;
     if (n) {
-        cgLine(g, "static const ExtcField %s_fields[] = {", cname);
+        cgLine(g, "EXTC_UNUSED static const ExtcField %s_fields[] = {", cname);
         g->indent++;
         for (size_t i = 0; i < n; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
@@ -620,7 +620,7 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
         g->indent--;
         cgLine(g, "};");
     }
-    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL, %s };",
+    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_STRUCT, \"%s\", sizeof(%s), %zu, %s, NULL, %s };",
            cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_fields", cname) : "NULL",
            eqFn ? eqFn : "NULL");
 }
@@ -630,7 +630,7 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
  * An array has no field names, so it prints as `[1, 2, 3]`.
  */
 static void genArrayDesc(CG *g, Type *arr) {
-    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ARRAY, \"%s\", sizeof(%s), %lld, NULL, %s };",
+    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_ARRAY, \"%s\", sizeof(%s), %lld, NULL, %s, NULL };",
            arr->name, arr->name, cType(g, arr->inner), (long long)arr->asize,
            descRef(g, arr->inner));
 }
@@ -641,7 +641,7 @@ static void genArrayDesc(CG *g, Type *arr) {
  */
 static void genViewDesc(CG *g, Type *v) {
     Type *elem = subst(g, *(Type **)vecAt(&v->targs, 0));
-    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_SLICE, \"%s\", sizeof(%s), 0, NULL, %s };",
+    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_SLICE, \"%s\", sizeof(%s), 0, NULL, %s, NULL };",
            v->name, v->name, cType(g, elem), descRef(g, elem));
 }
 
@@ -661,9 +661,9 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
             if (j) bufPuts(&b, ", ");
             bufPrintf(&b, "\"%s\"", v->name);
         }
-        cgLine(g, "static const char *const %s_variants[] = { %s };", cname, bufCstr(&b));
+        cgLine(g, "EXTC_UNUSED static const char *const %s_variants[] = { %s };", cname, bufCstr(&b));
     }
-    cgLine(g, "static const ExtcDesc %s_desc = { EXTC_D_ENUM, \"%s\", sizeof(%s), %zu, %s, NULL };",
+    cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc = { EXTC_D_ENUM, \"%s\", sizeof(%s), %zu, %s, NULL, NULL };",
            cname, disp, cname, n, n ? arenaPrintf(g->arena, "%s_variants", cname) : "NULL");
 }
 
@@ -793,7 +793,7 @@ static void emitDescRegion(CG *g) {
 
     cgLine(g, "/* ---- Type descriptor table, emitted on demand: only types that are used. ---- */");
     for (size_t i = 0; i < g->descs.len; i++)   /* all forward-declared: order does not matter */
-        cgLine(g, "static const ExtcDesc %s_desc;", (*(Type **)vecAt(&g->descs, i))->name);
+        cgLine(g, "EXTC_UNUSED static const ExtcDesc %s_desc;", (*(Type **)vecAt(&g->descs, i))->name);
     cgLine(g, "");
     emitDescDefs(g);                       /* real pass: emit the definitions */
     cgLine(g, "");
@@ -1572,7 +1572,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             if (strcmp(name, "println") == 0) return genPrint(g, &e->u.call.args, true);
             /* `flush()` becomes `fflush(NULL)`; <stdio.h> is already included
              * by the runtime. */
-            if (strcmp(name, "flush") == 0) return "(fflush((void *)0), 0)";
+            if (strcmp(name, "flush") == 0) return "fflush((void *)0)";
             /* There is no `ownFd`/`closeFd` here any more: a file descriptor is not owned
              * by the block, so nothing registers one and nothing closes one behind the
              * program's back. `std::fs` closes with the `close(2)` it declares itself (see
@@ -3034,6 +3034,10 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "%s %s;   /* built from argc/argv below */", at, nm);
         cgLine(g, "{");
         g->indent++;
+        /* `self` 常常用不到（库里 16 处 ✓）⇒ 明确 `(void)` 掉：接收者是**签名**的一部分，
+         * 用不用是函数体的事 ✓ 生成物不该因此刷警告 ✗ */
+        if (f->params.len > 0 && strcmp((*(Param **)vecAt(&f->params, 0))->name, "self") == 0)
+            cgLine(g, "(void)self;");
         cgLine(g, "int64_t __extc_argn = (int64_t)argc;");
         cgLine(g, "%s *__extc_argp = (%s *)extc_arena_alloc(&__extc_a[1],"
                    " (int64_t)(__extc_argn > 0 ? __extc_argn : 1) * (int64_t)sizeof(%s),"
@@ -3184,7 +3188,7 @@ static void genFuncProto(CG *g, FuncDef *f) {
     bufInit(&sig, g->arena);
     /* `@inline` has to appear on the prototype as well as on the definition. */
     bufPrintf(&sig, "%s%s %s(%s);",
-              cgIsMain(f) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
+              cgIsMain(f) ? "" : (f->isInline ? "EXTC_INLINE " : "EXTC_UNUSED static "),
               cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
@@ -3361,7 +3365,7 @@ static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
     bufInit(&b, g->arena);
     if (ob->kind == TY_ARRAY) {
         /* A fixed-size array: the length is a compile-time constant. */
-        bufPrintf(&b, "static %s %s(%s *a, int64_t lo, int64_t hi,\n",
+        bufPrintf(&b, "EXTC_UNUSED static %s %s(%s *a, int64_t lo, int64_t hi,\n",
                   ret, name, ob->name);
         bufPrintf(&b, "                       const char *f, int ln) {\n");
         bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, %lld, f, ln);\n",
@@ -3370,12 +3374,12 @@ static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
     } else if (tail) {
         /* Slicing to the end: hi is v.len. It is taken as a parameter instead
          * of being expanded in place, so the view is evaluated once. */
-        bufPrintf(&b, "static %s %s(%s v, int64_t lo, const char *f, int ln) {\n",
+        bufPrintf(&b, "EXTC_UNUSED static %s %s(%s v, int64_t lo, const char *f, int ln) {\n",
                   ret, name, ob->name);
         bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, v.len, v.len, f, ln);\n");
         bufPrintf(&b, "    return (%s){ .data = v.data + s, .len = v.len - lo };\n}\n", ret);
     } else {
-        bufPrintf(&b, "static %s %s(%s v, int64_t lo, int64_t hi,\n",
+        bufPrintf(&b, "EXTC_UNUSED static %s %s(%s v, int64_t lo, int64_t hi,\n",
                   ret, name, ob->name);
         bufPrintf(&b, "                       const char *f, int ln) {\n");
         bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, v.len, f, ln);\n");
@@ -3930,6 +3934,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `__GNUC__` rather than using `__has_attribute`, which is itself an extension. */
         "#if defined(__GNUC__) || defined(__clang__)\n"
         "#define EXTC_INLINE static inline __attribute__((always_inline))\n"
+        /* 生成物里"定义了但没用"是**正常的**：库/预置按需发射 ✓ 用属性说明即可，
+         * 不必让用户一开 -Wall -Wextra 就看到一片黄 ✗ */
+        "#define EXTC_UNUSED __attribute__((unused))\n"
         "#else\n"
         "#define EXTC_INLINE static inline\n"
         "#endif\n"
@@ -4027,19 +4034,19 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "};\n"
         "\n"
         "/* Type-independent descriptors (reference, byte view, scalars), shared per program. */\n"
-        "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_ref  = { EXTC_D_REF,  \"ref\",  sizeof(void *), 0, NULL, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_text = { EXTC_D_TEXT, \"slice<u8>\", 1, 0, NULL, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_bool = { EXTC_D_BOOL, \"bool\", sizeof(bool), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_i8  = { EXTC_D_I8,  \"i8\",  sizeof(int8_t),  0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i16 = { EXTC_D_I16, \"i16\", sizeof(int16_t), 0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i32 = { EXTC_D_I32, \"i32\", sizeof(int32_t), 0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_i64 = { EXTC_D_I64, \"i64\", sizeof(int64_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i16 = { EXTC_D_I16, \"i16\", sizeof(int16_t), 0, NULL, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i32 = { EXTC_D_I32, \"i32\", sizeof(int32_t), 0, NULL, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_i64 = { EXTC_D_I64, \"i64\", sizeof(int64_t), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_u8  = { EXTC_D_U8,  \"u8\",  sizeof(uint8_t),  0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u16 = { EXTC_D_U16, \"u16\", sizeof(uint16_t), 0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u32 = { EXTC_D_U32, \"u32\", sizeof(uint32_t), 0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_u64 = { EXTC_D_U64, \"u64\", sizeof(uint64_t), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u16 = { EXTC_D_U16, \"u16\", sizeof(uint16_t), 0, NULL, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u32 = { EXTC_D_U32, \"u32\", sizeof(uint32_t), 0, NULL, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_u64 = { EXTC_D_U64, \"u64\", sizeof(uint64_t), 0, NULL, NULL, NULL };\n"
         "static const ExtcDesc extc_desc_f32 = { EXTC_D_F32, \"f32\", sizeof(float),  0, NULL, NULL };\n"
-        "static const ExtcDesc extc_desc_f64 = { EXTC_D_F64, \"f64\", sizeof(double), 0, NULL, NULL };\n"
+        "static const ExtcDesc extc_desc_f64 = { EXTC_D_F64, \"f64\", sizeof(double), 0, NULL, NULL, NULL };\n"
         "\n");
     /* Split into two calls: C99 only guarantees support for string literals of
      * 4095 characters, and one large literal would trigger -Woverlength-strings.
@@ -4477,7 +4484,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * alone does not bind: C takes the first declaration as the function's type. */
         bufPrintf(&sig, "%s%s %s(%s);",
                   (cgIsMain(f) || f->isExtern) ? ""
-                                               : (f->isInline ? "EXTC_INLINE " : "static "),
+                                               : (f->isInline ? "EXTC_INLINE " : "EXTC_UNUSED static "),
                   ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
         substLeaveFunc(&g, svP, svA);
