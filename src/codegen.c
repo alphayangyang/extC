@@ -1648,34 +1648,19 @@ static const char *genExprInner(CG *g, Expr *e) {
         }
 
         case EX_GENCALL: {
-            /* A generic call to one of the two builtin allocation primitives:
-             *   `alloc<T>(n)`      asks the current block's arena for the place
-             *                      of n values of T and returns a pointer
-             *   `allocSlice<T>(n)` allocates the same block but returns a
-             *                      `{data, len}` view, zeroed
+            /* `alloc<T>(n)`: ask the arena of the level the checker chose for the place of
+             * n values of T, and hand back a pointer to it.
              *
-             * `allocSlice` zeroes because the language promises that a byte
-             * read after its lifetime ends is always initialized. A bare bump
-             * allocation does not zero, so reading memory that was never
-             * written would yield an indeterminate value and the promise would
-             * not hold. The `new` path zeroes already; this is the other
-             * half. */
+             * Zeroing is not this path's job and never was: `extc_arena_alloc` memsets every
+             * allocation, and that is what makes the language's promise hold -- a byte read
+             * after its lifetime ends is always an initialized byte (SPEC section 0.6).
+             * `allocSlice<T>(n)` used to sit here and gave the zeroing as its reason for
+             * existing; it only spelled `new T[n]`, so it was removed (decision 81). */
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             /* The level comes from the checker as well, with `alloc` meaning
              * the current block, so `g->blkLevel` is not counted here. */
             const char *ar = arenaRefAt(g, e->arenaLevel);
-            if (strcmp(e->u.gencall.name, "allocSlice") == 0) {
-                const char *vt = cType(g, subst(g, e->type));
-                const char *tmp = arenaPrintf(g->arena, "__extc_s%d", g->tmpSeq++);
-                pfLine(g, "%s %s;", vt, tmp);
-                pfLine(g, "%s.data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d);",
-                       tmp, tn, ar, n, tn, g->path, e->line);
-                pfLine(g, "%s.len = (int64_t)(%s);", tmp, n);
-                pfLine(g, "memset(%s.data, 0, (size_t)(%s.len * (int64_t)sizeof(%s)));",
-                       tmp, tmp, tn);
-                return tmp;
-            }
             return arenaPrintf(g->arena,
                 "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
                 tn, ar, n, tn, g->path, e->line);

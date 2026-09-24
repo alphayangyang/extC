@@ -68,7 +68,7 @@
 >
 > ⭐ **2026-09-24 对账：257 → 255 是"覆盖没丢"，不是用例丢了**（查清了，别再猜）：
 > `2eb015d` 建立 `tests/arena-promoted/` 时，把 **2 条**从 `tests/errors/` 搬了过去 ——
-> `alloc_return_local.extc` · `allocSlice_escape_return.extc`。
+> `alloc_return_local.extc` · `newSlice_escape_return.extc`（原 `allocSlice_escape_return.extc`）。
 > 它们**本来该被拒**，arena 提升修好后**该被接受** ⇒ 必须换套件（放 `errors/` 会反过来判错）✓
 > 两条现在**都在跑、都通过**（`./tests/arena-promoted/run.sh` 里能看到名字）✓
 > ⚠️ **但由此暴露一个真记账问题**：转正库那 **22 条不计入** `tests/run.sh` 的 255
@@ -93,7 +93,7 @@
 | ~~**6**~~ ✅ | ⚠️ **arena 没内存时没位置**（**2026-09-22 修**）| 原来只有光秃秃一句 `extc: out of arena memory` + `exit(1)` ✗（违反 P′：能说清是哪一行却没说）。修法：分配原语收下调用点的位置 —— `extc_arena_alloc(a, n, file, line)`，六个调用点（`new T` / `new T[n]` / `alloc<T>(n)` / `@overwrite` 的格子）都传 `g->path` + 行号 ✓ 现在报 `文件:行: trap: out of arena memory (this allocation wanted N bytes)` ✓ 判据：新用例 `tests/traps/arena_oom.extc`（要 1PB ⇒ malloc 必失败，不依赖 ulimit/overcommit 的运气 ✓）+ **`tests/traps/run.sh` 收紧成"trap 消息必须带 `文件:行`"**（这种退化再也回不来 ✓）⚠️ 已知小瑕疵：OOM 发生在 prelude 里（`varArray::push` 扩容）时，位置指向 **prelude** 的行 ✗（诚实但不够友好；要更好得带调用栈，另记）| P′ | 小 |
 | ~~**7**~~ ✅ | **`option<slice<u8>>` 报错落在 prelude 里** | **2026-09-20 第三刀封掉**：`option` 成了枚举，tag 0 = `none` **不带载荷** ⇒ 里面有 ref 也有零值 ✓（那个"必须报错"的反例变成了正例 `examples/option-ref-payload.extc`）| — | 小 |
 | ~~**8**~~ ✅ | 🟡 **`let v = m; return v` 被误挡**（**2026-09-22 复核：两半都修完了**）| 第一半（2026-09-20）：**引用型绑定**单独跟踪「被指对象深度」（`Sym.refDepth`）⇒ `var cur: ?ref node = head … return cur` 合法 ✓。**第二半**原来记成"仍被误挡"✗ —— 实测**已经好了**：`var s = a[..]  return s` ✓ · 带标注 `var s: slice<u8> = a[..]  return s` ✓ · 装进 struct 字面量再返回 ✓ **三种都编过**（是 #26"含引用的值绑定也跟踪 refDepth"那一刀一起修掉的 ✓）| — | 已修 |
-| ~~**9**~~ ✅ | 📌 **`alloc<T>(n)` 当数组用不了**（**2026-09-23 修**） | 修法：补上原语 **`allocSlice<T>(n) -> mut slice<T>`**（跟 `alloc` 同一条路，只有返回类型不同）—— 帧 arena 里要 n 个 T、返回 `{data,len}` 视图、**而且清零**（兑现 `SPEC.md` §0.6「过期读到的字节永远是初始化过的」那条承诺）✓ 逃逸语义跟 `alloc` **完全一致**（返回它 / 循环里分配到循环外都被挡 ✓）判据：`examples/allocSlice.extc`（运行时长度 + 索引 + 再切片 + 清零）+ `tests/errors/allocSlice_escape_return.extc` ✓ | 缺口 | 小 |
+| ~~**9**~~ ✅ | 📌 **`alloc<T>(n)` 当数组用不了**（**2026-09-23 修**；**2026-09-24 定案 81 把补的那半删了** —— `new T[n]` 就是它，见 §1 第 4 行）| 修法：补上原语 **`allocSlice<T>(n) -> mut slice<T>`**（跟 `alloc` 同一条路，只有返回类型不同）—— 帧 arena 里要 n 个 T、返回 `{data,len}` 视图、**而且清零**（兑现 `SPEC.md` §0.6「过期读到的字节永远是初始化过的」那条承诺）✓ 逃逸语义跟 `alloc` **完全一致**（返回它 / 循环里分配到循环外都被挡 ✓）判据：`examples/allocSlice.extc`（运行时长度 + 索引 + 再切片 + 清零）+ `tests/errors/allocSlice_escape_return.extc` ✓ | 缺口 | 小 |
 | ~~**10**~~ ✅ | 🟡 **裸写构造器**（**2026-09-23 修**） | 修法：**只改报错话术，不加推断**（定案 27：关联调用写全类型是故意的）⇒ 现在两条路都指路：`circle(2.0)` ⇒「`circle` is a variant of `shape`, not a function -- **did you mean `shape.circle(...)`?**」；`let s: st = ok`（无载荷）⇒「did you mean **`st.ok`**?」（这条原来报 `undefined name` 同样没指路 ✗）✓ 判据：`tests/errors/bare_variant_hint.extc`；真的没这个名字时仍是老消息 ✓ | UX（报错话术）| 极小 |
 | ~~**11**~~ ✅ | **没有 `-O` / `-march` 开关**（**2026-09-20 加**：`-O0..-O3`、`-march=native`，默认仍是 `-O2`）| 见 MANUAL 驱动那一节 ✓ ⚠️ 实测：这两项**收益看负载**（矩阵乘曾经 2×；mandelbrot/binary-trees 在本机 ≈ 0）—— 别当成万能加速 ✓ ⚠️⚠️ **2026-09-22 追记：这两个开关其实一直用不了** ✗ —— 参数循环里多写了一次 `i++` ⇒ `extc -O2 f.extc` 把 `f.extc` 当被吞掉的参数 ⇒ **直接报 usage** ✗（**"没报错 ≠ 跑过了"**的又一个实例：加了开关却从没验过命令行）⇒ 已修 ✓ |
 | ~~**13**~~ ✅ | **显式解引用 `*p`** | **2026-09-20 完成** ✓ 隐式解引用已删除（只留"输出自动解引用"和"成员选择导航"两个例外）| — | — |
@@ -197,7 +197,7 @@
 
 **然后就是加法（`SPEC.md` 主线）**：**IO-1**（✅ `std::fs` 三个名字 + ✅ 句柄由程序关 + ✅ `main(args)` —— 2026-09-24 落地）——
 IO-0 主体**已落地**（2026-09-23 定案 74：`reader` + `nextInt` 一族 + 三条路 ✓）
-→ `allocSlice` → `for` → lambda → 协议补全 → 模块/`@main` —— 一路到**五子棋能跟人下**那个里程碑 ✓
+→ **`for`** → lambda → 协议补全 → 模块/`@main` —— 一路到**五子棋能跟人下**那个里程碑 ✓
 
 ⚠️ **这块地方踩过三次**（记账）：① 原来写着「31 → **27** → 1 → 2 → 3」，可 #27 早在 09-21 就修完了
 （`99cefa2`）⇒ 一句过时的"下一步"被原样抄了一遍 ⇒ 汇报错一轮 ✗ ② 复核时又发现 #3/#8 早就修好了、
@@ -456,7 +456,7 @@ fn make() -> box {
 | **1** | 🟢 **主体已落地（2026-09-23，定案 73 + 74）**：`std::sys::io` 原语（`read`/`write` + 签字）+ **`reader`（隐式 64KB）** + **`nextInt`/`nextToken`/`nextLine`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/内建 `flush()` ✓（`tests/io/` **7 条**常设验收 ✓，含三条路 + 分块读性能）⬜ **还欠**：`readAll` · 格式化输入 B · 写指定 fd。**实测**：12MB/100 万行，逐字节 1.444s vs 分块 0.032s = **45×** ✓ ⭐ **2026-09-24 第二半（手写缓冲热循环）**：`nextLine`/`nextToken`/`skipSpace` 原来**每字节一次方法调用**（`result` 结构体 ⇒ GCC 不内联）⇒ 把循环写进函数体之后：100 万行 **11.5 → 8.8ms**、300 万词 **25.8 → 9.0ms**（接口零改动 ✓；1100 个随机输入与旧实现**逐字节对拍一致** ✓）；⚠️ 同一处**实测 `@inline` 是零效果**（交错 A/B ±0.3%，`objdump` 里 GCC 本来就全内联、连函数体都没有 ✓）⇒ **`@inline` 只在 GCC 不肯内联时有价值**（例：运行时 `extc_arena_alloc`，3.9×）✓ | **OI 式输入能用了**；gomoku 能读协议 | 中（设计已定，见 [`IO.md`](../docs/topics/IO.md)）|
 | **2** | **IO-1**：✅ `open`（`std::fs`：`openRead`/`openWrite`/`openAppend` + 读型/写型两个 struct）· ✅ **句柄由程序关**（`close()` = 可检查的提交点；忘关是**警告**「opened and never closed」，按 `close` 方法认资源协议）· ✅ `readAll` · ✅ `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 | ✅ **2026-09-24 完成**：`stdlib/std/fs.extc`（三个名字 + 两个 struct，误用**编不过** · `tests/fs-shape/` 5 项）· `tests/fs/`（fd 恒定 · canary · 警告的泄漏 · `readAll` 两条路 · 双关安全 · closed 带位置 · ASan，7 项）· `tests/argv/`（6 项）· `#55` 随**定案 79** 一起消除（不再需要隐式归属：块退**没有失败通道** ⇒ 隐式关闭 = 静默丢数据）✓ ⬜ **还欠**（IO-2 那档）：`f.reader()` 那层 · 句柄 affine（`close` 消费掉句柄 ⇒ 编译期挡「关闭后使用」）✓ **规范**：定案 77（命名与形状）· **定案 79**（程序拥有 + 编译期证明的泄漏）· 定案 78（资格判据保留）✓ |
 | **3** | **IO-2**：✅ `f.reader()`（文件当输入源：`nextInt`/`nextLine`/`nextToken` 与 stdin 逐字相同）· ✅ `proc::exit(code)`（分层：`std::sys::process`，**不放 `std::io`** —— 结束进程不是 I/O）· ✅ termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；**不包 ncurses**，按 BOOTSTRAP §4.3）· ✅ **trap 路径还原终端**（临终钩子 `extc_die` + `extc_raw_enter`/`extc_raw_leave`，**定案 80**）| TUI / 刷量输出 / 五子棋能真的跟人下 | 中 | ✅ **2026-09-24 落地三件 + 顺手修 #56**：`tests/io` 13 → **15 项**（`file-reader` · `exit-code`（退出码 7）· `raw-mode` 的非 tty(`failure(notATerminal)`) + PTY(`script`：开得起来、还原**逐字节**相同) 两条路 · `raw-trap`（raw 下 trap ⇒ strace 里 `TCSETS` ×2、最后一条带 cooked 标志））✓ 共 **16 项** ✓ `ioError` 新增 `notATerminal(i32)`（"三条路分得开"的口径，定案 74）· `extern!` 补上 `void` 返回（`cfmakeraw` 需要）✓ **规范**：定案 77/79 · BOOTSTRAP §4.3 ✓ |
-| **4** | **`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）| **长度运行时才知道**的 buffer：读未知大小的文件、`reader` 自动要 4KB、`varArray` 增长。也兑现 `SPEC.md` §0.6 那条承诺（清零 ⇒ 过期读到的也是**确定的**字节）| 小 |
+| ~~**4**~~ ✅ | ~~**`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）~~ ⇒ **2026-09-24 删掉**（**定案 81**）：这个能力由 **`new T[n]`** 兑现（同样是零的 `mut slice<T>`、同一套层号/逃逸规则），而"清零"从来不是它做的 —— `extc_arena_alloc` **每一次分配都 memset** ✓ 它只是同一件事的第二个拼写，还多跑一遍 memset（`-O0` 下生成 C 里两次、`-O2` 被折叠）⇒ 删 ✓ | **长度运行时才知道**的 buffer（读未知大小的文件 · `reader` 要 64KB · `varArray` 增长）| 小 | ✅ **早已可用**：`new T[n]` + arena 清零；`examples/newSlice.extc`（原 `allocSlice.extc`）钉着「清零承诺」这条判据 ✓ |
 
 > ⚠️ **更正**（2026-09-18，主人追问"造不出 buffer 什么意思"时实测发现）：
 > 我原来写「今天造不出 buffer」**说过头了**。
@@ -575,7 +575,7 @@ fn make() -> box {
 ## 6旧. 原来的顺序（保留作参考）
 
 ```
-allocSlice ──▶ IO-0 ──▶ (五子棋能跟人下 ✓ 里程碑)
+（`allocSlice` 已删）──▶ IO-0 ──▶ (五子棋能跟人下 ✓ 里程碑)
                 │
                 ├──▶ IO-1（文件 + argv）
                 │

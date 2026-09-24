@@ -945,16 +945,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * is the only spelling available when `T` appears in the return type alone.
              * Otherwise the old rule stands: only the built-in primitives arrive through this
              * path (`alloc<T>(n)`). */
-            /* Two allocation primitives share this path and differ only in the return type:
-             *   `alloc<T>(n)      -> mut ref T`     (points at one place)
-             *   `allocSlice<T>(n) -> mut slice<T>`  (a `{data,len}` view, zeroed)
-             * The second one exists because a buffer whose length is known only at runtime --
-             * reading a file of unknown size, or the 4 KB the `reader` asks for -- cannot be
-             * built with `alloc`: that returns a `mut ref T`, which can be neither indexed nor
-             * sliced. Both allocate zeroed memory. */
+            /* `alloc<T>(n) -> mut ref T` is the one allocation primitive on this path: a
+             * place for n values, reached through a reference.
+             *
+             * A buffer whose length is known only at run time -- reading a file of unknown
+             * size, or the 64 KB the `reader` asks for -- is spelled `new T[n]`, which gives a
+             * `mut slice<T>`. There used to be a second primitive for exactly that,
+             * `allocSlice<T>(n)`, removed on 2026-09-24: it meant the same thing as `new T[n]`
+             * (same view, same level rules, same zeroed memory, plus a second `memset` the
+             * arena had already done), so it was a synonym with a weaker story (decision 81). */
             bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
-            bool isAllocS = strcmp(e->u.gencall.name, "allocSlice") == 0;
-            if (!isAlloc && !isAllocS) {
+            if (!isAlloc) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
                     Vec targs;
@@ -987,6 +988,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * return type, and the home arena all live on the EX_CALL path, so
                      * returning void here instead is wrong. That mistake was made once. */
                     return checkExpr(c, e);
+                }
+                /* A removed primitive deserves the migration, not "not a built-in": the
+                 * old spelling is in examples, in tests, and in code written last week. */
+                if (strcmp(e->u.gencall.name, "allocSlice") == 0) {
+                    ckError(c, e->line,
+                            "`new T[n]` says the same thing -- a zeroed `mut slice<T>` -- and is"
+                            " the only spelling now. The arena memsets every allocation, which is"
+                            " what the zeroing promise always rested on (SPEC section 0.6).",
+                            "`allocSlice<T>(n)` was removed; write `new T[n]`");
+                    return ttError(tt);
                 }
                 ckError(c, e->line, "only the built-in primitives may be called this way",
                         "`%s` is not a built-in primitive or generic function",
@@ -1064,11 +1075,6 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `new`. Once registered, a home arena rewrites the site to `ARENA_HOME`, fully
              * symmetric with `new`. */
             *(Expr **)vecPush(&c->curArenaSites) = e;
-            if (isAllocS) {
-                /* `allocSlice<T>(n) -> mut slice<T>`: the view itself is writable. The `mut`
-                 * sits on the view, not on a reference that points at it. */
-                return ttViewMut(tt, sliceOf(c, elem), true);
-            }
             Type *r = ttRef(tt, elem);
             r->mut = true;                       /* freshly allocated storage is writable */
             return r;

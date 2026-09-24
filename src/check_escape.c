@@ -901,7 +901,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     }
     switch (val->kind) {
 
-    /* `EX_GENCALL` is `alloc<T>(n)` / `allocSlice<T>(n)`. It is exactly symmetric with `new`:
+    /* `EX_GENCALL` is `alloc<T>(n)`. It is exactly symmetric with `new`:
      * the same level rules apply and it is registered in the same site table, so the
      * promotion rules have to be symmetric as well. It used to fall into the default case as
      * "cannot be promoted", which left the whole family of "return a block of `alloc`ed

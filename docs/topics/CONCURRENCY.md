@@ -83,7 +83,7 @@
 static int32_t fill(int64_t n) {
     extc_arena __extc_a[3] = {0};          // ← 入口建一次
     ...
-    extc_arena_alloc(&__extc_a[1], ...)    // ← 所有 new / allocSlice 都用它
+    extc_arena_alloc(&__extc_a[1], ...)    // ← 所有 new / alloc 都用它
     ...
     extc_arena_release(&__extc_a[2]);      // ← 块退出时释放那一格
 }

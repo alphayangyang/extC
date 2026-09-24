@@ -2680,6 +2680,34 @@ no method `put` on `inputFile`
 ⚠️ 还没实现：`f.reader()` 那层 · `readAll` 的常设用例 · 句柄 affine —— ✅ `std::fs` 模块本身已落地（定案 77 三个名字 + 定案 79 归属）·
 `f.reader()` · `close(f)!`（IO-2）✓
 
+## 定案 81 · **删掉 `allocSlice<T>(n)`：一个同义且更弱的拼写**（2026-09-24，主人拍板）
+
+> 起因：主人问「**allocslice 真还有吗**」—— 它确实还在（内建原语 · `examples/allocSlice.extc` ·
+> `tests/arena-promoted/` 一条），但查下去发现**它存在的理由已经没了** ✗
+
+**三个事实（都实测过）**：
+1. **清零不是它做的**：`extc_arena_alloc` 里每一次分配都 `memset(p, 0, n)` ⇒
+   `new T[n]` / `new [N]T` / `alloc<T>(n)` **拿到的永远是零** ⇒ `SPEC.md` §0.6 那条承诺
+   由**分配器**兑现 ✓（codegen 里那句"A bare bump allocation does not zero"是**错的**）
+2. **它与 `new T[n]` 完全同义**：返回类型（`mut slice<T>`）、层号与逃逸处理（同一个分配点逻辑）、
+   零值都一样 ✓
+3. **它更弱**：`@overwrite` 只认 `new`（配 `allocSlice` 是编译错误）⇒ "循环里复用帧内存储"
+   那条优化它享受不到；生成 C 里还**多跑一遍 memset**（同一段字节清两次 —— `-O0` 汇编可见，
+   `-O2` 被优化器折掉 ⇒ 运行时通常不亏，但生成代码在说谎 ✗）
+
+⇒ **删掉**（一种写法 = `new T[n]`），并给老代码一条**教人改**的诊断：
+```
+error: `allocSlice<T>(n)` was removed; write `new T[n]`
+note : `new T[n]` says the same thing -- a zeroed `mut slice<T>` -- and is the only spelling now.
+```
+**落地**：编译器两条路都删（`check_expr.c` 的 `isAllocS` · `codegen.c` 的分支 + 那段错注释）·
+`examples/allocSlice.extc` → `examples/newSlice.extc`（判据不变：`sum = 266` + 「零值 = 0 0 0」）·
+`tests/arena-promoted/allocSlice_escape_return.extc` → `newSlice_escape_return.extc` ·
+`tools/memsafe/qa/k3_allocslices.extc` → `k3_newslice.extc`（33 项不变）✓
+
+> **为什么不是"留着当别名"**：同一个操作两种拼写 = 两处文档、两条学习路径、两套记账，
+> 而其中一条还更弱 ⇒ 留着只会有人写错的那条 ✓（定案 27 的口径：能删的语法就别留）
+
 ## 定案 80 · **trap 路径的临终钩子**（2026-09-24，做 IO-2 的 raw mode 时定）
 
 > 起因：raw mode 下程序一 trap，**终端就废了** —— 回到 shell 敲字符不回显、回车不换行，
@@ -2793,11 +2821,11 @@ let n = io::readLine(line[..])
 ### ⬜ 还欠的（IO 的其余部分，按 `IO.md`）
 
 `open`/`close` ✅（**已落地**：`std::fs` + 程序拥有 + 编译期查泄漏 · **定案 79**）·
-`nextInt` 一族 + `reader`（`IO.md` 档 2 的其余部分）· `main(args)` · `allocSlice<T>(n)` ·
+`nextInt` 一族 + `reader`（`IO.md` 档 2 的其余部分）· `main(args)` · ~~`allocSlice<T>`（**2026-09-24 定案 81 删除**：与 `new T[n]` 同义）~~(n)` ·
 `scan(...)` 真变参 ✓ —— 都不挡"能读能写"这个里程碑本身 ✓
 
 > ⚠️ **2026-09-23 复核这一节（原文已过时 ✗）**：上面那行列的六项里
-> **`open`/`close` 原语 · `nextInt` 一族 · `reader` · `allocSlice<T>(n)` 都落地了** ✓
+> **`open`/`close` 原语 · `nextInt` 一族 · `reader` 都落地了**（`allocSlice<T>(n)` 落地过、又被**定案 81** 删掉 —— 与 `new T[n]` 同义）** ✓
 > （`reader` 见**定案 74**；`allocSlice` 见 **PLAN #9**；`open`/`close` 现在是
 > `stdlib/std/sys/io.extc` 里的两条 `extern!` ✓）
 > ⇒ **那一档已经补齐**：`std::fs` 与 `main(args)` 2026-09-24 落地，归属按**定案 79**（程序拥有 +
