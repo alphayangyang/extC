@@ -37,10 +37,10 @@
  *     so every handle born before it is rejected by one compare, in O(1). See `clear`.
  *
  * DISCIPLINE: the epoch may only ever VETO, never CONFIRM. "handle epoch == pool epoch"
- * does not mean alive -- liveness authority stays `n`, the free list and the slot `gen`.
- * So the epoch check comes first and returns false on mismatch; on a match the old slot
- * check still runs unchanged. Taking the epoch as proof of life would turn both garbage
- * slots and epoch wraparound into false positives (not sound).
+ * does not mean alive -- liveness authority stays `n`, the bump cursor / hole chain and
+ * the slot `gen`. So the epoch check comes first and returns false on mismatch; on a
+ * match the old slot check still runs unchanged. Taking the epoch as proof of life would
+ * turn both garbage slots and epoch wraparound into false positives (not sound).
  */
 
 /* Detection strength only, never correctness: how many low bits of the pool epoch a
@@ -87,7 +87,18 @@ struct pool<T> {
      * handle carries the value it was born with. Kept OUT of `ent` on purpose -- it is a
      * pool-wide fact, not a per-slot one, and only a veto (see `pLive`). */
     epoch:  i64
-    free:   i32                /* head of the free list (-1 = none) */
+    /* The slots of the CURRENT epoch are allocated by a bump cursor plus an explicit hole
+     * chain -- not by one free list threaded through `ent`. That is what lets `clear` walk
+     * away without touching a single slot (`docs/topics/POOLS.md` 7.3):
+     *   INVARIANT  live slots of this epoch = [0, cursor) minus the slots on the hole chain.
+     * So a slot >= cursor has never been handed out this epoch and reads as free.
+     *    - `cursor`  : one past the highest slot ever used this epoch (the bump frontier).
+     *    - `holeHead`: head of the chain of slots freed by `remove` (-1 = no hole). The chain
+     *      reuses the old free-list encoding in the low half of `ent`: `next + cap + 2`, so
+     *      `pLow(e) > cap` already means "free" and no new tag is needed. Holes come first
+     *      on `insert`, so a churning workload reuses them and `cursor` stops rising. */
+    cursor:   i32
+    holeHead: i32
     n:      i64                /* live values, always the dense prefix */
     cap:    i64
 
@@ -103,9 +114,9 @@ struct pool<T> {
 
     /* --- the pool epoch, in one place: width lives in HANDLE_EPOCH_BITS --- */
     @inline
-    fn pEpochMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - i64(1) }
+    fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - i64(1) }
     @inline
-    fn pEpoch(v: i64) -> i64 { return v & pool<T>::pEpochMask() }
+    fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
 
     /* An empty pool that can hold `n` values before it has to grow. */
     fn withCap(n: i64) -> pool<T> {
@@ -120,11 +131,14 @@ struct pool<T> {
             pid:    rp,
             pidGen: rpg,
             epoch:  i64(0),
-            free:   i32(-1),
+            cursor: i32(0),
+            holeHead: i32(-1),
             n:      i64(0),
             cap:    c,
         }
-        /* Every slot starts free, generation 0, chained 0 -> 1 -> ... -> -1. */
+        /* First pass only: an all-free `ent` at generation 0, low half > cap. After this
+         * the table is never re-initialized wholesale -- `clear` flips the epoch instead.
+         * The `next` encoding matches the hole chain, which is why nothing here changes. */
         var i: i64 = 0
         while i < c {
             let nxt = i + i64(1)
@@ -133,7 +147,6 @@ struct pool<T> {
             p.ent[i] = pool<T>::pPack(i64(0), low)
             i = i + i64(1)
         }
-        p.free = i32(0)
         return p
     }
 
@@ -151,7 +164,7 @@ struct pool<T> {
      * `remove`, `gather` and `handleAtDense` all read the same packed fields, so they must
      * go through here (or repeat both halves) rather than test the epoch alone. */
     fn pLive(self: ref pool<T>, h: handle) -> bool {
-        if pool<T>::pEpoch(h.ep) != pool<T>::pEpoch(self.epoch) { return false }
+        if pool<T>::pEp(h.ep) != pool<T>::pEp(self.epoch) { return false }
         let s = i64(h.slot)
         if s < i64(0) || s >= self.cap { return false }
         let e = self.ent[s]
@@ -161,7 +174,7 @@ struct pool<T> {
 
     /* Is this handle still the slot it names? (epoch + generation match + slot live) */
     fn contains(self: ref pool<T>, h: handle) -> bool {
-        return pool<T>::pLive(self, h)
+        return self.pLive(h)
     }
 
     /* The value, or `none` when the handle is stale (freed, or from a previous era). */
@@ -177,17 +190,29 @@ struct pool<T> {
         return true
     }
 
-    /* Add a value and hand back its handle. Reuses a freed slot when there is one. */
+    /* Add a value and hand back its handle. Slot choice, in order:
+     *   1. the hole chain (`remove` gave these back) -- popping it advances the head;
+     *   2. otherwise the bump cursor -- a slot never used this epoch.
+     * A never-used-this-epoch slot still holds LAST epoch's packed word: inherit the slot
+     * generation from it and ignore everything else (the low half describes an obsolete
+     * chain, and `clear` deliberately did not clean it up). Overwriting the whole word is
+     * what makes that safe. */
     fn insert(self: mut ref pool<T>, v: T) -> handle {
-        if self.free < i32(0) { self.grow() }
-        let s = i64(self.free)
-        let e = self.ent[s]
-        self.free = i32(pool<T>::pLow(e) - self.cap - i64(2))   /* pop the free list */
+        if self.holeHead < i32(0) && i64(self.cursor) >= self.cap { self.grow() }
+        var s: i64 = i64(0)
+        if self.holeHead >= i32(0) {
+            s = i64(self.holeHead)
+            self.holeHead = i32(pool<T>::pLow(self.ent[s]) - self.cap - i64(2))   /* pop the hole chain */
+        } else {
+            s = i64(self.cursor)
+            self.cursor = self.cursor + i32(1)
+        }
+        let e = self.ent[s]                                       /* may be last epoch's word */
         self.ent[s] = pool<T>::pPack(pool<T>::pGen(e), self.n + i64(1))   /* live at dense n */
         self.slots[self.n] = i32(s)
         self.vals[self.n] = v
         self.n = self.n + i64(1)
-        return handle { slot: i32(s), gen: i32(pool<T>::pGen(e)), ep: pool<T>::pEpoch(self.epoch) }
+        return handle { slot: i32(s), gen: i32(pool<T>::pGen(e)), ep: pool<T>::pEp(self.epoch) }
     }
 
     /* Free a slot **without moving any other value's dense place** by swapping the last
@@ -195,7 +220,7 @@ struct pool<T> {
      * iteration vectorizable. `remove` also invalidates every handle of that slot by
      * bumping its generation. Returns false when the handle was already stale. */
     fn remove(self: mut ref pool<T>, h: handle) -> bool {
-        if !pool<T>::pLive(self, h) { return false }
+        if !self.pLive(h) { return false }
         let s    = i64(h.slot)
         let e    = self.ent[s]
         let d    = pool<T>::pDense(e)            /* where it lives in the dense array */
@@ -208,21 +233,22 @@ struct pool<T> {
             self.ent[moved] = pool<T>::pPack(pool<T>::pGen(me), d + i64(1))
         }
         self.n = last
-        /* Generation +1 (old handles are stale) and onto the free list, in one store. */
-        self.ent[s] = pool<T>::pPack(pool<T>::pGen(e) + i64(1), i64(self.free) + self.cap + i64(2))
-        self.free = i32(s)
+        /* Generation +1 (old handles of this slot are stale, IN THIS EPOCH TOO) and onto the
+         * hole chain, in one store. The bumped gen is the whole reason the epoch check alone
+         * is not enough: this slot can be handed out again moments from now, same epoch. */
+        self.ent[s] = pool<T>::pPack(pool<T>::pGen(e) + i64(1), i64(self.holeHead) + self.cap + i64(2))
+        self.holeHead = i32(s)
         return true
     }
 
-    /* Drop every value but **keep the capacity and the slots**: O(1), and it no longer
-     * touches `ent` at all (POOLS.md 7.3/7.5). Three things and nothing else:
-     *   - `epoch + 1`: every handle born before this call is vetoed by one compare
-     *   - `n = 0` and the free cursor back to slot 0: the whole slot table now reads as
-     *     "free", chained 0 -> 1 -> ... -> cap-1, because nothing is live
-     *   - hole chain head reset: `free = 0` IS the head of that chain
-     * The per-slot generations are left exactly as they were (no cap writes, no `+1`):
-     * the epoch carries the invalidation, so cost is independent of `cap` (measured in
-     * `tests/pool/rt_epoch.extc`: the generation read back is the same before and after).
+    /* O(1) clear: flip the pool epoch, reset the cursors, write NO slot, NO value, NO
+     * reverse map -- cost is independent of `cap` (POOLS.md 7.3/7.5). Three stores:
+     *   - `epoch + 1`: every handle born before this call is vetoed by one compare;
+     *   - `n = 0`, `cursor = 0`, `holeHead = -1`: the allocation state of the new epoch is
+     *     exactly the state of a fresh pool, so the whole `ent` table reads as free --
+     *     live slots are `[0, cursor)` minus the hole chain, and that set is empty now.
+     * The per-slot words (`gen` and the stale chain links) are left EXACTLY as they were:
+     * the next `insert` into such a slot inherits only its `gen` and overwrites the rest.
      * Do NOT weaken this into "reuse the slot table as is without flipping the epoch" --
      * then old handles would read the new elements. */
     /* 把整批还给这一层（POOLS.md）：容器自己的簿记重置 + 运行期池重置。
@@ -266,11 +292,16 @@ struct pool<T> {
         }
         i = 0
         while i < ncap { ne[i] = self.ent[i]  i = i + i64(1) }
-        /* 重排 free list：低半段 > 旧 cap 的才是空槽；世代字段照抄，只改 next。
-         * 链是环形的（最后一项指回头），与 grow 里的写法一致。 */
+        /* Rebuild the hole chain over the slots this epoch had actually used. `head` doubles
+         * as the tail sentinel: the chain is a ring (the last link points back at the head),
+         * which is how the old free list was written and what `pop` expects. Slots at or
+         * above the new `cursor` are "never used this epoch" and need no chaining at all --
+         * `insert` reaches them through the bump cursor, not through this chain. */
         var head: i32 = i32(-1)
         var prev: i64 = i64(-1)
-        i = ncap - i64(1)
+        var used: i64 = i64(self.cursor)
+        if used > ncap { used = ncap }
+        i = used - i64(1)
         while i >= i64(0) {
             if pool<T>::pLow(ne[i]) > self.cap {
                 if prev < i64(0) {
@@ -285,18 +316,22 @@ struct pool<T> {
         if prev >= i64(0) {
             ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i64(head) + ncap + i64(2))
         }
+        /* Everything past `n` in the new table was either a hole (now on the chain) or never
+         * used at all, so the frontier is "the first never-used slot". */
         self.vals  = nv
         self.slots = ns
         self.ent   = ne
-        self.free  = head
+        self.holeHead = head
+        self.cursor   = i32(ncap)
         self.cap   = ncap
     }
 
     /* O(1) clear: flip the pool epoch, reset the cursors, write no slot at all. */
     fn clear(self: mut ref pool<T>) {
-        self.epoch = self.epoch + i64(1)
-        self.n     = i64(0)
-        self.free  = i32(0)
+        self.epoch    = self.epoch + i64(1)
+        self.n        = i64(0)
+        self.cursor   = i32(0)
+        self.holeHead = i32(-1)
     }
 
     /* The dense prefix, in order: contiguous, so a loop over it is a loop over memory. */
@@ -323,7 +358,7 @@ struct pool<T> {
     @inline
     fn handleAtDense(self: ref pool<T>, i: i64) -> handle {
         let s = i64(self.slots[i])
-        return handle { slot: i32(s), gen: i32(pool<T>::pGen(self.ent[s])) }
+        return handle { slot: i32(s), gen: i32(pool<T>::pGen(self.ent[s])), ep: pool<T>::pEp(self.epoch) }
     }
 
     /* ⭐ **gather**: resolve a batch of handles into dense indices once, so the hot loop
@@ -380,14 +415,13 @@ struct pool<T> {
         }
         i = 0
         while i < self.cap { ne[i] = self.ent[i]  i = i + i64(1) }
-        /* The new slots join the free list, in front of the old ones. */
+        /* The new slots are all "never used this epoch", so they need no chaining: they are
+         * reached by the bump cursor, which still points at `self.cap`. `cursor` and the hole
+         * chain are carried over untouched -- `grow` must not lose a hole. The `low` written
+         * here is never read (`insert` overwrites the whole word when it bumps onto one), it
+         * is only there so no slot of the new table is uninitialized. */
         i = self.cap
-        while i < ncap - i64(1) {
-            ne[i] = pool<T>::pPack(i64(0), i + i64(1) + ncap + i64(2))
-            i = i + i64(1)
-        }
-        ne[ncap - i64(1)] = pool<T>::pPack(i64(0), i64(self.free) + ncap + i64(2))
-        self.free  = i32(self.cap)
+        while i < ncap { ne[i] = pool<T>::pPack(i64(0), i + ncap + i64(2))  i = i + i64(1) }
         self.cap   = ncap
         self.vals  = nv
         self.slots = ns

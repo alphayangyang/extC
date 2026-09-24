@@ -7997,3 +7997,38 @@ tour          740 → 606    53 → 54 ms   102 → 105 ms   16416 → **16688**
 验证（同轮补记）：修好 `check.sh`（`exec </dev/null` + 两处未转义反引号）后用改好的脚本复跑 quick，
 **通过 25 · 失败 0 · RC=0 · `command not found` 噪音 0 条**（日志 `/tmp/prb/cq_r11c.log`）。关掉 stdin
 不影响 IO 节 —— 那 7 条用例不需要真 tty，所以这一修不欠任何东西。
+
+### 周期 12（第 12 轮）：池级 epoch —— `clear()` 变 O(1) 染色
+
+作者口径：「我在一个 while 里面创建了一堆 pool，然后我给 zone 一个 color……每次访问的时候如果 color
+和 zone 的不匹配，那么说明全部都死了，那你就全是 freeslots，很爽」。先把**池这一层**落地（zone 色那层
+见 `docs/topics/POOLS.md` §7）。
+
+改法（`stdlib/stl/pool.extc`）：
+
+- 句柄加 `ep`（出生 epoch），宽度收在**一处具名常量** `HANDLE_EPOCH_BITS`（默认 32）—— 这类宽度本质是
+  调参，所以整个仓库只留这一个旋钮。
+- 池记录加 `epoch`。`clear()` 只做四件事：`epoch + 1`、`n = 0`、`cursor = 0`、`holeHead = -1`，
+  **一字节 `ent` / `vals` / `slots` 都不写**（旧版是 O(cap) 逐槽重写 + gen 加一）。
+- 分配器从「单一 free 链」改成「**稠密游标 + 空洞链**」：`cursor` 是本 epoch 从未用过的槽的下界，
+  `holeHead` 是本 epoch 因 `remove` 产生的洞。取槽两条路：有洞先取洞（洞的低半确实存着链指针），
+  否则取 `cursor` 并前进。**陈旧 `ent` 只用来继承 `gen`，绝不能被当作链指针读** —— 半成品版本正是
+  踩了这条：`clear` 后 `free` 被算成负数（陈旧 live 标记 `dense+1` 减 `cap+2`），于是**每次插入都
+  `grow()` 翻倍**。新用例 rt_epoch 的第 ② 条判据（clear 后再插同样多、容量不许涨）就是它的探针。
+- 纪律写进代码注释与用例：**epoch 只用来否决，不用来确认** —— 活性权威仍是 `n`、游标/空洞链、槽级
+  `gen`；epoch 相等不等于活。这是 POOLS.md §7.6 的分水岭，代码里逐字照抄了这条。
+
+收尾时被新用例抓住并修掉的两个潜伏 bug：
+
+1. `handleAtDense` 发出的句柄没带 `ep`（默认 0）⇒ **第一次 `clear()` 之后**，凡是从稠密面取到的句柄
+   全是废的：`remove` 返回 false、`contains` 为假。稠密面是容器迭代的入口，不修就等于 clear 之后
+   容器只能读不能删。
+2. extC 里带 `self` 的是**方法**、不带 `self` 的才是**关联函数**，所以不能写 `pool<T>::pLive(self, h)`，
+   必须写 `self.pLive(h)`（编译器那句 `no associated function 'pLive' on 'pool'` 就是这个意思）。
+
+实测（新节 `rt_epoch`）：`cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1`
+—— ① 三个旧句柄的 contains / get / remove 全否决（`stale=0`）、② clear 后补插三个容量仍是 8、
+③ 同 epoch 内删掉再插，旧句柄失配（`reuse=0`）而新句柄可取到值（`fresh=1`）。
+
+验证：`tests/pool` 失败 0 · `tests/stl` 失败 0 · `tests/map` 失败 0；gcc 与 clang `-Wall -Wextra -Werror`
+干净 · ASan 含泄漏检查干净；`check.sh quick </dev/null` 结论见同轮补记。

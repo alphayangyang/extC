@@ -1,0 +1,56 @@
+// 池级 epoch：`clear()` 是 O(1) 染色（docs/topics/POOLS.md §7）
+//
+// 判据三条：
+//   ① clear() 之后旧句柄**整体**失配：三问全否决，且不崩、不读到值；
+//   ② clear() 之后再插同样多，容量**不变** —— 这是那个 bug 的探针：把上一个 epoch 的陈旧
+//      `ent` 当 free 链指针读的实现，会在这里 `grow()` 翻倍；靠逐槽重写的旧版则是 O(cap)。
+//   ③ 同一个 epoch 内 `remove` 之后 `insert` 复用同一个槽，旧句柄仍失配
+//      （槽级 `gen` 的老保护没退化 —— 只比 epoch 会静默读到新元素）。
+// expect: cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1
+use std::io
+use stl::pool
+
+fn main() -> i32 {
+    var p: pool<i32> = pool<i32>::withCap(i64(8))
+    let a = p.insert(i32(1))
+    let b = p.insert(i32(2))
+    let c = p.insert(i32(3))
+    io::cout << "cap=" << p.capacity()
+
+    p.clear()
+
+    /* ① 旧句柄三问：contains / get / remove 都必须否决 */
+    var stale: i64 = i64(0)
+    if p.contains(a) { stale = stale + i64(1) }
+    if p.contains(b) { stale = stale + i64(1) }
+    if p.contains(c) { stale = stale + i64(1) }
+    var got: i32 = p.get(a) ?? i32(-77)
+    if got != i32(-77) { stale = stale + i64(1) }
+    if p.remove(c) { stale = stale + i64(1) }
+    io::cout << " stale=" << stale << " len=" << p.len()
+
+    /* ② 再插同样多：容量不许涨（clear 没把分配器搞乱，也没靠重写槽位做到） */
+    let d0 = p.insert(i32(7))
+    let d1 = p.insert(i32(8))
+    let d2 = p.insert(i32(9))
+    io::cout << " refill=" << p.len() << " cap2=" << p.capacity()
+    var live: i64 = i64(0)
+    if p.contains(d0) { live = live + i64(1) }
+    if p.contains(d1) { live = live + i64(1) }
+    if p.contains(d2) { live = live + i64(1) }
+    io::cout << " live=" << live
+    io::cout << " d=" << i64(p.atDense(i64(0))) << "," << i64(p.atDense(i64(1))) << "," << i64(p.atDense(i64(2)))
+
+    /* ③ 同 epoch 内换掉一个：拿回句柄、删掉、再插 —— 新元素可能占同一个槽，旧句柄必须失配 */
+    let taken = p.handleAtDense(i64(0))
+    var removed: i64 = i64(0)
+    if p.remove(taken) { removed = i64(1) }
+    let fresh = p.insert(i32(99))
+    var reuse: i64 = i64(0)
+    if p.contains(taken) { reuse = i64(1) }
+    var fv: i32 = p.get(fresh) ?? i32(-1)
+    var freshOk: i64 = i64(0)
+    if fv == i32(99) { freshOk = i64(1) }
+    io::cout << " removed=" << removed << " reuse=" << reuse << " fresh=" << freshOk << "\n"
+    return 0
+}

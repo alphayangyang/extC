@@ -122,6 +122,9 @@ rt_run rt_pidgen  tests/pool/rt_pidgen.extc  "live=1 c-len=0"
 echo "== 容量工具：shrink 降高水位，数据与 handle 全部继续有效 =="
 rt_run rt_shrink  tests/pool/rt_shrink.extc  "cap=1024->8 len=3 vals=10,20,30 again=40 len=4"
 
+echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="
+rt_run rt_epoch     tests/pool/rt_epoch.extc     "cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1"
+
 echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/pool/rt_churn.extc -o "$TMP2/rt.c" >/dev/null 2>&1; then
