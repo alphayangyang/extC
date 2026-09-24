@@ -7511,3 +7511,19 @@ clang-tidy -checks='-*,performance-*' <生成物> -- -std=c11
 `readability-identifier-length`（7，`e`/`n` 这类局部名 ✓ 语言允许 ✓）·
 `bugprone-implicit-widening-of-multiplication-result`（3 ✓ 看过了：`static int64_t BOARD_SIZE = (15 * 15);`
 —— 乘法在 `int` 里做、之后加宽 ✓ **这正是 extC 的语义**（`i32 * i32` 就是 32 位乘法 ✓）⇒ 不是 bug ✓）
+
+### 2026-09-26 · `-Weverything` 剩余 12 条：一族进清单（附理由），一族试修后撤回
+
+全量只剩两族 ✓ 都量清了：
+
+1. **`-Wfloat-equal`（10 条）** ⇒ **进清单** ✓ 理由写进 `docs/WARNINGS.md` §3.1 与 `docs/warnings-flags.txt`：
+   语言的 `==` 作用在 `f64`/`f32` 上**就是 IEEE 相等**，而 clang 建议的"用 epsilon 比较"会**改变语义**
+   （NaN、`-0.0` 的行为都会变 ✗）—— 生成物只能这么写 ✓ 出现处只有 `extc_eq` 的 F32/F64 两支 ✓
+2. **`-Wcast-qual`（2 条）** ⇒ 试过真修（只读的 `ref` 参数转成 `const T *` ✓）**撤回** ✗：
+   extC 的 `ref T` 在生成的 C 里**就是 `T *`**（语言里没有 `const` ✓）而描述符交出的是 `const void *` ✓
+   ⇒ 转成 `const T *` 反而**类型不匹配** ×（`-Wincompatible-pointer-types-discards-qualifiers` ✗）
+   ⇒ 也进清单 ✓ 理由：适配器必须丢 const 才能调用用户按 `ref` 取参的 `==`；
+   改成"先拷进局部再取地址"能免掉，但每个适配器多一行 —— **这个警告不值得那一行** ✓
+
+**实测**：`examples/eq.extc` 与 `examples/array-of-struct.extc` 两编译器 `-Wall -Wextra` **0** ·
+`-Weverything`（允许清单内）**0** ✓
