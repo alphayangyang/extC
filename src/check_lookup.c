@@ -383,6 +383,45 @@ FuncDef *findMethod(Type *st, const char *name) {
     return NULL;
 }
 
+/* Find the operator method of a type that takes exactly `rhs` on the right.
+ *
+ * Operators are the one place where a name may appear more than once: their signature
+ * shape is fixed -- `self: ref T` plus one operand -- so the only thing left to key on is
+ * the operand's type, and keying on it exactly (no conversions, no candidate ranking) is
+ * what makes an overload set decidable without overload resolution.
+ *
+ * Params:
+ *   st   - the type whose methods are searched
+ *   name - the operator name, for example `<<`
+ *   rhs  - the type of the right operand; NULL accepts the first method with that name
+ *          (used where the operand type is not interesting, such as reporting)
+ *
+ * Returns:
+ *   The matching method, or NULL when this type has no such operator for that operand. */
+FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {
+    StructDef *sd = structOf(st);
+    if (!sd) return NULL;
+    /* A method of a generic type spells its parameters in terms of the *owner's* type
+     * parameters (`slice<T>::==` takes `other: ref slice<T>`), so the receiver's type
+     * arguments have to be substituted before the operand type can be compared -- without
+     * that, every operator of every generic type looked unmatched. */
+    Vec *sp = NULL, *sa = NULL;
+    Type *b = ttBase(st);
+    if (b && b->kind == TY_GENERIC && b->sdef == sd && sd->typeParams.len == b->targs.len) {
+        sp = &sd->typeParams;
+        sa = &b->targs;
+    }
+    for (size_t i = 0; i < sd->methods.len; i++) {
+        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
+        if (strcmp(m->name, name) != 0) continue;
+        if (!rhs || m->params.len < 2) return m;
+        Param *p1 = *(Param **)vecAt(&m->params, 1);
+        Type *pt = sp ? ttSubstitute(tt, p1->type, sp, sa) : p1->type;
+        if (ttEquals(ttBase(pt), ttBase(rhs))) return m;
+    }
+    return NULL;
+}
+
 /* Find a variant of an enum by name, or NULL. */
 Variant *findVariant(TypeDef *td, const char *name) {
     if (!td) return NULL;

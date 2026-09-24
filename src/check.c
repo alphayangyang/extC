@@ -259,6 +259,19 @@ bool isEqualityOp(const char *op) {
     return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0;
 }
 
+/* Report whether this name is an operator that a type may define more than once.
+ *
+ * The overloadable set is the language's operator set, which is exactly the set the parser
+ * allows as a method name. Kept in one function so the parser, the duplicate check and the
+ * lookup cannot disagree about which names are operators.
+ *
+ * Returns:
+ *   True for the comparison operators, the arithmetic ones and the stream operators. */
+bool isOverloadableOp(const char *name) {
+    return isCmpOp(name) || isArithOp(name) ||
+           strcmp(name, "<<") == 0 || strcmp(name, ">>") == 0;
+}
+
 /* Report whether `op` is one of the five arithmetic operators that can be overloaded.
  *
  * `-` is here as binary subtraction only: extC has no unary operator overloading, so a

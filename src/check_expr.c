@@ -77,10 +77,12 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
      * overloaded operator, so `vec2 * f64` is not a candidate here -- that
      * wants a named method of its own, and inventing the conversion would make the
      * meaning of `*` depend on the overload set. */
-    if (isArithOp(op) && ttEquals(lt, rt)) {
+    /* Heterogeneous operands are allowed here: an operator may be defined once per
+     * right-operand type (`vec2 * f64`), and it is matched on that type exactly. */
+    if (isArithOp(op)) {
         StructDef *sd = structOf(ttBase(lt));
         if (sd) {
-            FuncDef *m = findOp(ttBase(lt), op, NULL);
+            FuncDef *m = findOp(c->tt, ttBase(lt), op, rt, NULL);
             if (!m) {
                 Buf note;
                 bufInit(&note, c->arena);
@@ -335,14 +337,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 bool isEqOp = isEqualityOp(op);
 
                 /* `==` / `!=`: builtins compare natively; a struct goes through its
-                 * `==` method. */
-                if (isEqOp && ttEquals(lt, rt)) {
-                    if (cmpIsNative(lt)) return c->tBool;
+                 * `==` method. The right operand does not have to be the same type as
+                 * the left one: like every other overloadable operator, `==` is matched
+                 * on the right operand's type exactly, so `vec2 == i64` is a method of
+                 * its own and no conversion is invented for it. */
+                if (isEqOp) {
+                    bool same = ttEquals(lt, rt);
+                    Type *b = ttBase(lt);
+                    StructDef *sd = structOf(b);
+
+                    if (same && cmpIsNative(lt)) return c->tBool;
 
                     /* Arrays: `==` is derived by the compiler. The user cannot write an
                      * array type down, so it cannot be given an `==` method. */
-                    if (lt->kind == TY_ARRAY) {
-                        if (!typeSupportsOp(lt->inner, op))
+                    if (same && lt->kind == TY_ARRAY) {
+                        if (!typeSupportsOp(tt, lt->inner, op, lt->inner))
                             ckError(c, e->line,
                                     "An array's `==` is derived by the compiler, "
                                     "so its elements have to be comparable.",
@@ -356,14 +365,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * methods only. A generic free function has no owner, so the
                      * `T: ==` requirement would never be checked. Record the use and
                      * ask once per instance whether this `T` has `==`. */
-                    if (lt->kind == TY_PARAM) {
+                    if (same && lt->kind == TY_PARAM) {
                         deferOp(c, e, op);
                         return c->tBool;
                     }
 
-                    Type *b = ttBase(lt);
-                    StructDef *sd = structOf(b);
                     if (!sd) {
+                        /* Different types with nothing to compare them: the rules below
+                         * report it, and they are the ones that know how a numeric
+                         * literal adapts to the other side. */
+                        if (!same) goto notEq;
                         /* An enum with a payload is the type most likely to hit this: in
                          * C it is a struct, and C structs cannot be compared with `==`, so
                          * the message points the user at `match`. */
@@ -377,26 +388,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
 
-                    FuncDef *m = findOp(b, op, strcmp(op, "!=") == 0 ? "==" : NULL);
+                    FuncDef *m = findOp(tt, b, op, rt, strcmp(op, "!=") == 0 ? "==" : NULL);
                     if (!m) {
                         Buf note;
                         bufInit(&note, c->arena);
                         bufPrintf(&note,
                                   "define it inside `%s`:\n"
                                   "      fn ==(self: ref %s, other: %s) -> bool { ... }",
-                                  DN(sd), DN(sd), DN(sd));
+                                  DN(sd), DN(sd), typeStr(c, rt));
                         ckError(c, e->line, bufCstr(&note),
-                                "`%s` does not define `==`, so it cannot be compared",
-                                DN(sd));
+                                "`%s` does not define `==` for `%s`, so it cannot be compared",
+                                DN(sd), typeStr(c, rt));
                         return c->tBool;
                     }
 
-                    Vec *sp = NULL, *sa = NULL;
-                    if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
-                    (void)sp; (void)sa;
                     e->func = m;  m->used = true;   /* record that this method is used */
                     return c->tBool;
                 }
+            notEq:
 
                 /* Every other comparison is meaningful for numbers only. */
                 if (ttIsNumeric(lt) && ttIsNumeric(rt) &&
@@ -410,26 +419,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * not come from `<`. A derived answer would have to be explained in
                  * every diagnostic, and it would silently accept a type that defined
                  * only one of the pair. */
-                if (ttEquals(lt, rt)) {
-                    StructDef *sd = structOf(ttBase(lt));
-                    if (sd) {
-                        FuncDef *m = findOp(ttBase(lt), op, NULL);
-                        if (!m) {
-                            Buf note;
-                            bufInit(&note, c->arena);
-                            bufPrintf(&note,
-                                      "define it inside `%s`:\n"
-                                      "      fn %s(self: ref %s, other: %s) -> bool { ... }",
-                                      DN(sd), op, DN(sd), DN(sd));
-                            ckError(c, e->line, bufCstr(&note),
-                                    "`%s` does not define `%s`, so it cannot be ordered",
-                                    DN(sd), op);
-                            return c->tBool;
-                        }
-                        e->func = m;
-                        m->used = true;      /* record that this method is used */
+                StructDef *osd = structOf(ttBase(lt));
+                if (osd) {
+                    FuncDef *m = findOp(tt, ttBase(lt), op, rt, NULL);
+                    if (!m) {
+                        Buf note;
+                        bufInit(&note, c->arena);
+                        bufPrintf(&note,
+                                  "define it inside `%s`:\n"
+                                  "      fn %s(self: ref %s, other: %s) -> bool { ... }",
+                                  DN(osd), op, DN(osd), typeStr(c, rt));
+                        ckError(c, e->line, bufCstr(&note),
+                                "`%s` does not define `%s` for `%s`, so it cannot be ordered",
+                                DN(osd), op, typeStr(c, rt));
                         return c->tBool;
                     }
+                    e->func = m;
+                    m->used = true;      /* record that this method is used */
+                    return c->tBool;
                 }
 
                 /* A comparison whose operand is a type parameter: on the template `T` is
@@ -447,6 +454,35 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (isBitOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return ttError(tt);
                 if (isRef(lt) || isRef(rt)) return refNotANumber(c, e, lt, rt, op);
+                /* `<<` and `>>` are shifts for integers and stream operators for a type
+                 * that defines them. Which one applies is decided by the *static type of
+                 * the left operand*, so this is a branch rather than overload resolution:
+                 * a builtin integer shifts (rule three: builtins are never overridden),
+                 * a struct with such a method calls it. */
+                if (op[0] == '<' || op[0] == '>') {
+                    Type *b = ttBase(lt);
+                    StructDef *sd = structOf(b);
+                    if (sd) {
+                        FuncDef *m = findOp(c->tt, b, op, rt, NULL);
+                        if (!m) {
+                            Buf note;
+                            bufInit(&note, c->arena);
+                            bufPrintf(&note,
+                                      "define it inside `%s`:\n"
+                                      "      fn %s(self: ref %s, other: %s) -> %s { ... }",
+                                      DN(sd), op, DN(sd), typeStr(c, rt), DN(sd));
+                            ckError(c, e->line, bufCstr(&note),
+                                    "`%s` does not define `%s` for `%s`",
+                                    DN(sd), op, typeStr(c, rt));
+                            return ttError(tt);
+                        }
+                        Vec *sp = NULL, *sa = NULL;
+                        if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
+                        e->func = m;
+                        m->used = true;
+                        return m->ret ? ttSubstitute(tt, m->ret, sp, sa) : ttVoid(tt);
+                    }
+                }
                 if (!ttIsInteger(lt) || !ttIsInteger(rt)) {
                     ckError(c, e->line, "bitwise operators only accept integers",
                             "cannot apply `%s` to `%s` and `%s`",

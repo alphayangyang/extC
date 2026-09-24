@@ -130,9 +130,26 @@ static void checkDeclarations(Checker *c) {
                         DN(sd), ma->name);
             for (size_t k = j + 1; k < sd->methods.len; k++) {
                 FuncDef *mb = *(FuncDef **)vecAt(&sd->methods, k);
-                if (strcmp(ma->name, mb->name) == 0)
-                    ckError(c, mb->line, NULL, "struct `%s` has duplicate method `%s`",
-                            DN(sd), mb->name);
+                if (strcmp(ma->name, mb->name) != 0) continue;
+                /* An operator name may be defined once per right-operand type: its shape
+                 * is fixed (`self: ref T` plus one operand), so the operand type is the
+                 * only thing left to tell two definitions apart, and matching it exactly
+                 * is what makes the set decidable. The same operand type twice is still a
+                 * duplicate -- there would be no rule to pick between them. */
+                if (isOverloadableOp(ma->name) && ma->params.len == mb->params.len &&
+                    ma->params.len >= 2) {
+                    Param *qa = *(Param **)vecAt(&ma->params, 1);
+                    Param *qb = *(Param **)vecAt(&mb->params, 1);
+                    if (!ttEquals(ttBase(qa->type), ttBase(qb->type))) continue;
+                    ckError(c, mb->line,
+                            "Operators are matched on the type of the right operand, so two "
+                            "definitions that take the same one cannot be told apart.",
+                            "struct `%s` has two `%s` for `%s`", DN(sd), mb->name,
+                            typeStr(c, ttBase(qb->type)));
+                    continue;
+                }
+                ckError(c, mb->line, NULL, "struct `%s` has duplicate method `%s`",
+                        DN(sd), mb->name);
             }
         }
     }
@@ -3476,8 +3493,11 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
     TypeTable *tt = c->tt;
     Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type, params, targs);
     Type *rt2 = ttSubstitute(tt, ec->node->u.bin.right->type, params, targs);
-    if (!ttEquals(lt, rt2)) return;
-    if (!typeSupportsOp(lt, ec->op)) {
+    /* A `T op T` in the template is an instance's `A op B` here, and an operator method is
+     * matched on the right operand's type, so the two only have to be equal when the left
+     * operand is not a struct. */
+    if (!ttEquals(lt, rt2) && !structOf(ttBase(lt))) return;
+    if (!typeSupportsOp(tt, lt, ec->op, rt2)) {
         const char *op = ec->op;
         Type *b = ttBase(lt);
         /* An instance the concrete-type path rejects for a better reason than "define a
@@ -3507,7 +3527,23 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
                   " the price of having no traits. Add a `fn %s` to that type.", op, op);
         ckError(c, ec->node->line, bufCstr(&note),
                 "`%s` needs `%s` to define `%s`", instName, typeStr(c, lt), op);
+        return;
     }
+
+    /* The instance answers with a method, and a method of an instance is emitted by code
+     * generation only when it is marked used. This is the one place that knows it: the
+     * template could not, `T` was opaque there, and the call site cannot, because code
+     * generation resolves the operator again on the substituted type and finds the same
+     * method without recording anything.
+     *
+     * Not marking it is what `#64` was: `T == T` instantiated at a slice called the
+     * prelude's `slice<T>::==` and nobody emitted it, so the generated C held a call to a
+     * function that did not exist. The node itself is not touched on purpose: the template
+     * has one node and many instances, so a `func` stored here would be the wrong method
+     * for every other instance. */
+    FuncDef *m = findOp(tt, ttBase(lt), ec->op, rt2,
+                        strcmp(ec->op, "!=") == 0 ? "==" : NULL);
+    if (m) m->used = true;
 }
 
 /* Does this deferred reference check belong to this free-function instance?

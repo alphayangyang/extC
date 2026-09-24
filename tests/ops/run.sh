@@ -43,6 +43,33 @@ run_case teeth
 run_case generic
 run_case builtin
 
+echo "== ① 流运算符 << 与 >>：它们是两个 < / > 记号，却在可重载集合里 =="
+run_case stream
+
+echo "== ② 一个运算符名可以重名，靠**右操作数类型**区分 =="
+run_case hetero
+# 名字面：两份重载在生成的 C 里必须是**两个函数**（后缀编码右操作数类型），否则重名就白放了 ✗
+if "$EXTC" tests/ops/hetero.extc -o build/ops-hetero.c >/dev/null 2>&1 &&
+   "$EXTC" tests/ops/stream.extc -o build/ops-stream.c >/dev/null 2>&1; then
+    # 后缀规则（`opOverloadSuffix`）：运算符名在这个类型上**只有一个**实现 ⇒ 不加后缀
+    # （`vec2_lt`，老名字不动 ✓）；**两个以上**才加**右操作数类型**后缀把它们分开 ✓
+    # 所以这里两样都要钉：单一重载不带后缀 + 重名必须带后缀且两个名字不同 ✓
+    bad=0
+    for n in vec2_mul_f64 vec2_mul_i64 vec2_eq_vec2 vec2_eq_i64; do
+        grep -qE "\b$n\b" build/ops-hetero.c || { echo "  FAIL 生成的 C 里没有 $n ⇒ 同名重载没分开"; fail=1; bad=1; }
+    done
+    grep -qE '\bvec2_lt\b' build/ops-hetero.c || { echo "  FAIL 生成的 C 里没有 vec2_lt（单一重载不该带后缀）"; fail=1; bad=1; }
+    # 流运算符：同一个 `<<` 的两份重载 ⇒ `out_shl_i64` 与 `out_shl_slice_u8`（带右操作数类型后缀 ✓）
+    grep -qE '\bout_shl_i64\b'      build/ops-stream.c || { echo "  FAIL 生成的 C 里没有 out_shl_i64"; fail=1; bad=1; }
+    grep -qE '\bout_shl_slice_u8\b' build/ops-stream.c || { echo "  FAIL 生成的 C 里没有 out_shl_slice_u8 ⇒ 两份 `<<` 撞在同一个名字上了"; fail=1; bad=1; }
+    if grep -qE '[A-Za-z0-9_]+_[<>+*/%]' build/ops-hetero.c build/ops-stream.c; then
+        echo "  FAIL 生成的 C 里有没用 mangle 的运算符名（`<<`/`>>` 也得进 mangle 表）"; fail=1; bad=1
+    fi
+    [ "$bad" = 0 ] && echo "  ok   重名分派  ->  5 个运算符方法各自一个 C 函数 · 两份 << 是两个符号 ✓"
+else
+    echo "  FAIL 生成 C 失败（hetero / stream）"; fail=1
+fi
+
 echo "== 生成的 C：运算符名必须 mangle 成合法标识符 =="
 if "$EXTC" tests/ops/concrete.extc -o build/ops-concrete.c >/dev/null 2>&1; then
     bad=0

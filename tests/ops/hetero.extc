@@ -1,0 +1,39 @@
+// expect: 缩放 f64 = 3,6|缩放 i64 = 3,6|同型 = true|异型 = false|序 = true
+/* 运算符重载**按右操作数的精确类型**匹配（②）
+ *
+ * 一个运算符名可以在这个类型上出现**多次**，每次一个右操作数类型，分派看右操作数的
+ * **静态类型**，不做任何隐式转换：
+ *
+ *     fn * (self: ref vec2, k: f64) -> vec2        两份 `*` 共存 ✓
+ *     fn * (self: ref vec2, k: i64) -> vec2
+ *     fn ==(self: ref vec2, other: vec2) -> bool   两份 `==` 共存 ✓（同型也是异型的一种）
+ *     fn ==(self: ref vec2, k: i64) -> bool
+ *     fn < (self: ref vec2, k: f64) -> bool
+ *
+ * 所以「运算符名可以重复」这条是**唯一**的例外，它的边界就是这里：重名必须靠
+ * **右操作数类型**区分（同一个类型定义两次 ⇒ 定义期就报 two `==` for `vec2`）✗
+ */
+struct vec2 { x: f64  y: f64
+    fn *(self: ref vec2, k: f64) -> vec2 { return vec2 { x: self.x * k, y: self.y * k } }
+    fn *(self: ref vec2, k: i64) -> vec2 {
+        var kf: f64 = f64(k)
+        return vec2 { x: self.x * kf, y: self.y * kf }
+    }
+    fn ==(self: ref vec2, other: vec2) -> bool {
+        return self.x == other.x && self.y == other.y
+    }
+    fn ==(self: ref vec2, k: i64) -> bool { return self.x == f64(k) && self.y == f64(k) }
+    fn <(self: ref vec2, k: f64) -> bool { return self.x < k }
+}
+
+fn main() -> i32 {
+    var v: vec2 = { x: 1.5, y: 3.0 }
+    var s: vec2 = v * 2.0
+    var t: vec2 = v * i64(2)
+    println("缩放 f64 = ", s.x, ",", s.y)
+    println("缩放 i64 = ", t.x, ",", t.y)
+    println("同型 = ", v == v)
+    println("异型 = ", v == i64(2))
+    println("序 = ", v < 2.0)
+    return 0
+}

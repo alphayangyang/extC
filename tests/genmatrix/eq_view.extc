@@ -1,0 +1,26 @@
+/* 矩阵格：`==` / `!=` × **视图元素**（`T == T` 实例化成 `slice<u8>`）
+ *
+ * 这一格 2026-09-24 之前整个是坏的（账本 `#64`）：模板期记下 `T: ==`，实例化时检查器
+ * 找到了 prelude 的 `slice<T>::==`（**检查**通过 ✓），但**没有把那个方法标成 used**
+ * ⇒ codegen 的实例方法循环跳过它，而调用点自己又按实例名找到了同一个方法并发出调用
+ * ⇒ 生成的 C 里是一个**没人定义的函数**：
+ *
+ *     error: implicit declaration of function 'slice_u8_eq'
+ *
+ * 修法在 `runOpCheck`（实例化时**只标 used、不动节点**：模板一个节点多个实例，
+ * 把 `func` 存在那里会让别的实例调到错的方法）✓
+ *
+ * 这一格同时钉住**两个实例共存**：`slice<u8>` 和 `i64` 都实例化 `same<T>` ✓
+ */
+fn same<T>(a: T, b: T) -> bool { return a == b }
+fn differ<T>(a: T, b: T) -> bool { return a != b }
+
+fn main() -> i32 {
+    var a: slice<u8> = "x"
+    var b: slice<u8> = "y"
+    var c: slice<u8> = "x"
+    println("视图 eq = ", same(a, c), " ne = ", differ(a, b),
+            " · 数值 eq = ", same(i64(3), i64(3)), " ne = ", differ(i64(3), i64(4)))
+    return 0
+}
+// expect: 视图 eq = true ne = true · 数值 eq = true ne = true

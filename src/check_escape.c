@@ -1598,15 +1598,18 @@ bool cmpIsNative(Type *t) {
  * and negates it, which codegen does.
  *
  * Params:
+ *   tt       - the type table (a generic receiver's arguments are substituted)
  *   b        - the type, with any wrapper already stripped
- *   sym      - the method name to look for (`==` or `!=`)
- *   fallback - method name to try when `sym` is absent, or NULL for none
+ *   sym      - the operator name to look for (`==`, `<`, `<<`, ...)
+ *   rhs      - the type of the right operand; operators are matched on it exactly, and
+ *              this is what makes a name being defined more than once decidable
+ *   fallback - operator name to try when `sym` is absent, or NULL for none
  *
  * Returns:
- *   The method definition, or NULL when the type defines neither name. */
-FuncDef *findOp(Type *b, const char *sym, const char *fallback) {
-    FuncDef *m = findMethod(b, sym);
-    if (!m && fallback) m = findMethod(b, fallback);
+ *   The method definition, or NULL when the type defines neither name for that operand. */
+FuncDef *findOp(TypeTable *tt, Type *b, const char *sym, Type *rhs, const char *fallback) {
+    FuncDef *m = findOperator(tt, b, sym, rhs);
+    if (!m && fallback) m = findOperator(tt, b, fallback, rhs);
     return m;
 }
 
@@ -1631,14 +1634,14 @@ FuncDef *findOp(Type *b, const char *sym, const char *fallback) {
  *     of `a + b` is used wherever `a` was. */
 void checkOperatorSig(Checker *c, FuncDef *f) {
     bool cmp   = isCmpOp(f->name);
-    bool arith = isArithOp(f->name);
+    bool arith = isArithOp(f->name) || strcmp(f->name, "<<") == 0 || strcmp(f->name, ">>") == 0;
     if ((!cmp && !arith) || !f->owner) return;
 
     const char *ret = cmp ? "bool" : f->owner->name;
     Buf want;
     bufInit(&want, c->arena);
-    bufPrintf(&want, "signature must be `fn %s(self: ref T, other: T) -> %s`",
-              f->name, ret);
+    bufPrintf(&want, "signature must be `fn %s(self: ref T, other: A) -> %s`"
+              " (A is any type)", f->name, ret);
     const char *wantS = bufCstr(&want);
 
     const char *why =
@@ -1670,18 +1673,20 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
         }
     }
     Param *p0 = *(Param **)vecAt(&f->params, 0);
-    Param *p1 = *(Param **)vecAt(&f->params, 1);
 
     if (p0->type->kind != TY_REF) {
         ckError(c, p0->line, wantS, "`self` of operator `%s` must be a reference", f->name);
         return;
     }
     Type *b0 = ttBase(p0->type);
-    Type *b1 = ttBase(p1->type);
-    if (!b0 || b0->sdef != f->owner || !b1 || b1->sdef != f->owner) {
+    if (!b0 || b0->sdef != f->owner) {
         ckError(c, f->line, wantS,
-                "both operands of operator `%s` must be `%s`", f->name, f->owner->name);
+                "the left operand of operator `%s` must be `%s`", f->name, f->owner->name);
+        return;
     }
+    /* The right operand may be any type: that is what makes an operator definable more
+     * than once on one type (`out << i64` next to `out << f64`), and it is matched on the
+     * operand's exact type at every use. */
 }
 
 /* Whether this type supports the overloadable operator `op`, natively or through a
@@ -1706,7 +1711,7 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
  *
  * Returns:
  *   True when the operator is available for this type. */
-bool typeSupportsOp(Type *t, const char *op) {
+bool typeSupportsOp(TypeTable *tt, Type *t, const char *op, Type *rhs) {
     if (!t) return false;
     if (ttIsError(t)) return true;
     bool isEq = isEqualityOp(op);
@@ -1715,11 +1720,11 @@ bool typeSupportsOp(Type *t, const char *op) {
         if (strcmp(op, "%") != 0 || ttIsInteger(t)) return true;
     }
     /* the compiler derives `==` for arrays, provided the elements can be compared */
-    if (isEq && t->kind == TY_ARRAY) return typeSupportsOp(t->inner, op);
+    if (isEq && t->kind == TY_ARRAY) return typeSupportsOp(tt, t->inner, op, rhs);
 
     Type *b = ttBase(t);
     if (!structOf(b)) return false;
-    return findOp(b, op, isEq && strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
+    return findOp(tt, b, op, rhs, isEq && strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
 }
 
 /* `?` is legal in only three places, so those three go through this entry point;

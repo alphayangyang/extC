@@ -692,18 +692,32 @@ static Token *expectTypeName(Parser *p, const char *what) {
  *     declaration.  The alternative, an implicitly agreed name, would have to be
  *     looked up somewhere else.
  */
+static bool atShift(Parser *p, const char *ch, const char **op);
+
 static Token *expectFuncName(Parser *p) {
     if (atKind(p, TK_IDENT)) return take(p);
     /* Operator overloading: the name of an overriding method **is the operator**.
      * `==` / `!=` came first; the ordering and arithmetic operators take the same road,
-     * so a container or a generic body can sort and add what it holds. The set stays
-     * small on purpose -- `[]` is syntax over the `slice` protocol, not a method name. */
+     * so a container or a generic body can sort and add what it holds. `<<` and `>>` are
+     * here for streams: `cout << x` and `cin >> x` are the shape users of other languages
+     * expect, and a stream is an ordinary type with ordinary methods. The set stays small
+     * on purpose -- `[]` is syntax over the `slice` protocol, not a method name. */
+    /* `<<` and `>>` are two `<` / `>` tokens rather than one (see atShift: fusing them
+     * would make `box<box<i32>>` unparsable), so they are recognized as a pair here too. */
+    const char *shift = NULL;
+    if (atShift(p, "<", &shift) || atShift(p, ">", &shift)) {
+        Token *tok = cur(p);
+        take(p);
+        take(p);
+        tok->text = shift;              /* `<<` / `>>` are fixed strings */
+        return tok;
+    }
     if (at(p, "==") || at(p, "!=") || at(p, "<") || at(p, "<=") ||
         at(p, ">")  || at(p, ">=") || at(p, "+") || at(p, "-") ||
         at(p, "*")  || at(p, "/")  || at(p, "%")) return take(p);
     Token *t = cur(p);
     ctxError(p->ctx, t->line, t->col,
-             "only comparisons (`==` `!=` `<` `<=` `>` `>=`) and arithmetic (`+` `-` `*` `/` `%`) can be overloaded",
+             "only comparisons (`==` `!=` `<` `<=` `>` `>=`), arithmetic (`+` `-` `*` `/` `%`) and the stream operators (`<<` `>>`) can be overloaded",
              "expected a function name, found `%s`", shown(t));
     return NULL;
 }

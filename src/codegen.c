@@ -301,6 +301,8 @@ static const char *cType(CG *g, Type *t) {
 /* ---------------------------------------------------------------- expressions */
 
 static const char *genExpr(CG *g, Expr *e);
+static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
+                                      Param *p0, Type *want);
 static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
 static bool printArgIsPlace(const Expr *e);
@@ -342,6 +344,7 @@ static const char *cSymName(CG *g, const char *name) {
         { "<",  "lt"  }, { "<=", "le"  }, { ">",  "gt" }, { ">=", "ge" },
         { "+",  "add" }, { "-",  "sub" }, { "*",  "mul" },
         { "/",  "div" }, { "%",  "rem" },
+        { "<<", "shl" }, { ">>", "shr" },
         { NULL, NULL }
     };
     for (size_t i = 0; MAP[i].extc; i++)
@@ -358,13 +361,37 @@ static const char *cSymName(CG *g, const char *name) {
  * Returns:
  *   The C name, allocated in the generator's arena.
  */
+/* The suffix an operator's C name needs when a type defines it more than once.
+ *
+ * An operator may be defined once per right-operand type, so the operand type has to be
+ * part of the C name or the definitions collapse into one symbol. This lives in one
+ * function because both the definition side (`cFuncName`) and every call site
+ * (`cMethodName`) have to agree -- they did not, once: the definition was emitted as
+ * `out_shl_i64` while the call asked for `out_shl`, and the C compiler reported the
+ * missing function rather than anything about operators.
+ *
+ * Returns:
+ *   `_<mangled operand type>` when the owner defines this operator more than once, and an
+ *   empty string otherwise, so a single definition keeps the name it always had. */
+static const char *opOverloadSuffix(CG *g, FuncDef *f) {
+    if (!f->owner || f->params.len < 2 || !isOverloadableOp(f->name)) return "";
+    size_t same = 0;
+    for (size_t i = 0; i < f->owner->methods.len; i++)
+        if (strcmp((*(FuncDef **)vecAt(&f->owner->methods, i))->name, f->name) == 0) same++;
+    if (same <= 1) return "";
+    Param *p1 = *(Param **)vecAt(&f->params, 1);
+    return arenaPrintf(g->arena, "_%s", ttMangle(g->tt, subst(g, p1->type)));
+}
+
 static const char *cFuncName(CG *g, FuncDef *f) {
     /* An instance of a generic free function carries its own C name (eq2_i32). */
     if (f->instName) return f->instName;
+    const char *suffix = opOverloadSuffix(g, f);
     if (g->ownerPrefix)
-        return arenaPrintf(g->arena, "%s_%s", g->ownerPrefix, cSymName(g, f->name));
-    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(g, f->name));
-    return cSymName(g, f->name);
+        return arenaPrintf(g->arena, "%s_%s%s", g->ownerPrefix, cSymName(g, f->name), suffix);
+    if (f->owner)
+        return arenaPrintf(g->arena, "%s_%s%s", f->owner->name, cSymName(g, f->name), suffix);
+    return arenaPrintf(g->arena, "%s%s", cSymName(g, f->name), suffix);
 }
 
 /* Name of a method in the generated C, at a call site.
@@ -385,12 +412,14 @@ static const char *cFuncName(CG *g, FuncDef *f) {
  */
 static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     Type *rb = ttBase(subst(g, recvType));
+    const char *suffix = opOverloadSuffix(g, f);
     if (rb && rb->kind == TY_GENERIC)
-        return arenaPrintf(g->arena, "%s_%s", rb->name, cSymName(g, f->name));
+        return arenaPrintf(g->arena, "%s_%s%s", rb->name, cSymName(g, f->name), suffix);
     /* cFuncName cannot be used here: it prefixes the instance currently being
      * generated, but the callee may belong to another type (calling Point.==
      * from inside Wrapper<Point>). */
-    if (f->owner) return arenaPrintf(g->arena, "%s_%s", f->owner->name, cSymName(g, f->name));
+    if (f->owner)
+        return arenaPrintf(g->arena, "%s_%s%s", f->owner->name, cSymName(g, f->name), suffix);
     return cSymName(g, f->name);
 }
 
@@ -645,7 +674,7 @@ static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td)
  */
 static bool eqNeeded(CG *g, Type *t);
 static void closeEqNeeds(CG *g);
-static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback);
+static FuncDef *findOpMethod(TypeTable *tt, Type *t, const char *sym, Type *rhs, const char *fallback);
 static void genEqAdapter(CG *g, Type *t, FuncDef *m);
 
 /* Emit the definition of every registered descriptor.
@@ -730,7 +759,7 @@ static void emitDescRegion(CG *g) {
         Type *t = *(Type **)vecAt(&g->eqNeed, i);
         if (t->kind != TY_STRUCT && t->kind != TY_GENERIC) continue;
         if (t->kind == TY_GENERIC && isView(t)) continue;   /* extc_eq recurses into views */
-        FuncDef *m = findOpMethod(t, "==", NULL);
+        FuncDef *m = findOpMethod(g->tt, t, "==", t, NULL);
         if (!m) {
             /* Unreachable: the checker permits a comparison only when the
              * element type is comparable. If it is reached anyway, fail loudly
@@ -778,17 +807,17 @@ static void emitDescRegion(CG *g) {
  * Returns:
  *   The method, or NULL when neither symbol is defined for this type.
  */
-static FuncDef *findOpMethod(Type *t, const char *sym, const char *fallback) {
+static FuncDef *findOpMethod(TypeTable *tt, Type *t, const char *sym, Type *rhs, const char *fallback) {
     Type *b = ttBase(t);
     if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return NULL;
-    StructDef *sd = b->sdef;
-    FuncDef *hit = NULL;
-    for (size_t i = 0; i < sd->methods.len; i++) {
-        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
-        if (strcmp(m->name, sym) == 0) return m;
-        if (fallback && strcmp(m->name, fallback) == 0) hit = m;
-    }
-    return hit;
+    /* The checker's lookup, not a second copy of it. This file used to scan the method
+     * list itself and compare the operand type without substituting a generic receiver's
+     * arguments, while the checker did substitute them -- so for `slice<u8> == slice<u8>`
+     * the checker saw the method and code generation did not, took the "native" branch and
+     * emitted a bare C `==` on two structs. One lookup, one answer. */
+    FuncDef *m = findOperator(tt, b, sym, rhs);
+    if (!m && fallback) m = findOperator(tt, b, fallback, rhs);
+    return m;
 }
 
 /* `typeHasEq`, which recursively decided whether an element type could be
@@ -933,7 +962,8 @@ static const char *genBin(CG *g, Expr *e) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         FuncDef *m = e->func
                      ? e->func
-                     : findOpMethod(lt, op, strcmp(op, "!=") == 0 ? "==" : NULL);
+                     : findOpMethod(g->tt, lt, op, ttBase(subst(g, e->u.bin.right->type)),
+                                    strcmp(op, "!=") == 0 ? "==" : NULL);
 
         if (!m) {
             /* No method: either C compares the instance natively, or the instance cannot
@@ -941,7 +971,7 @@ static const char *genBin(CG *g, Expr *e) {
              * for both halves, so this file does not decide the operator rules again.
              * `m` was NULL and the lookup above already tried the `!=` -> `==` fallback,
              * so a true answer here means "native". */
-            if (typeSupportsOp(lt, op))
+            if (typeSupportsOp(g->tt, lt, op, ttBase(subst(g, e->u.bin.right->type))))
                 return arenaPrintf(g->arena, "(%s %s %s)",
                                    genExpr(g, e->u.bin.left), op,
                                    genExpr(g, e->u.bin.right));
@@ -958,7 +988,10 @@ static const char *genBin(CG *g, Expr *e) {
         Param *p1 = *(Param **)vecAt(&m->params, 1);
         const char *l = genExpr(g, e->u.bin.left);
         const char *r = genExpr(g, e->u.bin.right);
-        if (p0->type->kind == TY_REF) l = arenaPrintf(g->arena, "&(%s)", l);
+        /* The left operand is the object, exactly as a method receiver is, so it goes
+         * through the same rule -- a value it must materialize (a chained `<<` passes the
+         * result of the previous one is not a place) cannot be addressed directly. */
+        l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
         if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
 
         const char *call = arenaPrintf(g->arena, "%s(%s, %s)",
@@ -1311,6 +1344,46 @@ static bool f_owLocal(CG *g, Stmt *s);
  * Returns:
  *   The call expression, or "0" when the checker left no resolved method.
  */
+/* Turn the first operand of a call into what its `self` parameter demands.
+ *
+ * `a.f(x)` is `f(a, x)` and `a << b` is `(<<)(a, b)`, so both pass the object as the first
+ * argument, and both have to make it an address when the parameter is a reference.
+ *
+ * A temporary operand cannot be addressed -- `&(f())` is not legal C -- so it is
+ * materialized first as a compound literal of a one-element array: `(T[]){ f() }` has type
+ * `T *`, because the array decays to a pointer. This is what makes a chained call work
+ * (`cout << a << b`: the second `<<` receives the value the first one returned), the same
+ * trick Rust plays for `next().unwrap()`.
+ *
+ * Do not write `&((T){ f() })` instead: `(T){ x }` is not a copy in C, it initializes the
+ * first member from x, which produces nonsense errors such as `_Bool has = <option_i64>`.
+ * Array initialization does go element by element, so `{ f() }` really is "initialize
+ * element 0 with one T".
+ *
+ * A place operand keeps its address, and that matters: taking an address of a copy would
+ * turn a write through the parameter into a write into a temporary.
+ *
+ * Params:
+ *   g      - generator
+ *   operand- the expression being passed as the first argument
+ *   code   - its generated C text
+ *   p0     - the receiving parameter
+ *   want   - the operand's static type, used when a temporary has to be materialized
+ *
+ * Returns:
+ *   The C text to pass. */
+static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
+                                      Param *p0, Type *want) {
+    bool wantRef = p0->type && p0->type->kind == TY_REF;
+    bool haveRef = want && want->kind == TY_REF;
+    if (wantRef && !haveRef) {
+        if (isPlaceExpr(operand)) return arenaPrintf(g->arena, "&(%s)", code);
+        return arenaPrintf(g->arena, "(%s[]){ %s }", cType(g, subst(g, want)), code);
+    }
+    if (!wantRef && haveRef) return arenaPrintf(g->arena, "*(%s)", code);
+    return code;
+}
+
 static const char *genMethodCall(CG *g, Expr *e) {
     FuncDef *f = e->func;
     if (!f) return "0";
@@ -1319,35 +1392,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
     Param *p0 = *(Param **)vecAt(&f->params, 0);
     const char *recvC = genExpr(g, e->u.method.recv);
 
-    /* Address or dereference the receiver as the first parameter demands: that
-     * is the whole of `a.f(x)` == `f(a, x)`. */
-    bool wantRef = p0->type && p0->type->kind == TY_REF;
-    bool haveRef = recvT && recvT->kind == TY_REF;
-    if (wantRef && !haveRef) {
-        /* A temporary receiver cannot be addressed directly, since `&(f())`
-         * is not legal C. It is materialized first, as a compound literal of a
-         * one-element array: `(T[]){ f() }` has type `T *`, because the array
-         * decays to a pointer.
-         *
-         * Do not write `&((T){ f() })` instead: `(T){ x }` is not a copy in C,
-         * it initializes the first member from x, which produces nonsense
-         * errors such as `_Bool has = <option_i64>`. Array initialization does
-         * go element by element, so `{ f() }` really is "initialize element 0
-         * with one T". The temporary lives until the end of the statement,
-         * which is exactly long enough for this call - the same trick Rust
-         * plays for `next().unwrap()`.
-         *
-         * Only a receiver that is not a place takes this path; doing it for a
-         * place would turn a write into the element into a write into a copy. */
-        if (isPlaceExpr(e->u.method.recv)) {
-            recvC = arenaPrintf(g->arena, "&(%s)", recvC);
-        } else {
-            recvC = arenaPrintf(g->arena, "(%s[]){ %s }",
-                                cType(g, subst(g, recvT)), recvC);
-        }
-    } else if (!wantRef && haveRef) {
-        recvC = arenaPrintf(g->arena, "*(%s)", recvC);
-    }
+    recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
 
     const char *fname = cMethodName(g, recvT, f);
 

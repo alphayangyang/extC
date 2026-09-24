@@ -115,14 +115,14 @@ if [ -x tests/annot/run.sh ]; then
     else bad "tests/annot/run.sh"; echo "$out"; fi
 fi
 
-echo "== 运算符重载（方法名**就是**运算符：比较六个 + 算术五个 · 泛型体里实例化时检查）=="
+echo "== 运算符重载（方法名**就是**运算符：比较六个 + 算术五个 + 流 << >> · 按右操作数类型重名 · 泛型体里实例化时检查）=="
 if out=$(timeout 600 bash tests/ops/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · mangle · 9 反例 · 两条不许漏到 gcc）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（具体类型 · 有牙 · 泛型体 · 流运算符 · 重名分派 · mangle · 9 反例 · 两条不许漏到 gcc）"
 else bad "tests/ops/run.sh"; echo "$out" | tail -12; fi
 
-echo "== 泛型组合矩阵（T 的位置 × 特性 · 12 格 + 1 条已知缺口 —— 见 GENERICS.md）=="
+echo "== 泛型组合矩阵（T 的位置 × 特性 · 13 格 · 缺口清单已清空 —— 见 GENERICS.md）=="
 if out=$(timeout 600 bash tests/genmatrix/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（12 格全过 ✓ · #60/#61/#62/#63 已修搬进矩阵 · #64 仍坏在记着的那句上）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（13 格全过 ✓ · #60/#61/#62/#63/#64 五条修好都搬进了矩阵 ⇒ canary-gaps 空，机制留着）"
 else bad "tests/genmatrix/run.sh"; echo "$out" | tail -8; fi
 
 echo "== 头文件 include guard（内容不许落在 #endif 之后）=="

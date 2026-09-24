@@ -1,5 +1,9 @@
+/* ⚠️ 这一格原来断言的是「运算符的第二个操作数必须是自己这个类型」——
+ * 那条限制 **2026-09-24 解开了**（运算符按右操作数**精确类型**重载：`vec2 * f64`、
+ * `vec2 == i64` 都合法）⇒ 断言"不该存在的行为"的用例**必须跟着改** ✗
+ * 换成**仍然非法**的形状：运算符的参数个数（形状固定 = `self` + 一个操作数）✓ */
 struct a {
     n: i32
-    fn ==(self: ref a, other: i32) -> bool { return true }
+    fn ==(self: ref a, other: i32, third: i32) -> bool { return true }
 }
 fn main() -> i32 { return 0 }

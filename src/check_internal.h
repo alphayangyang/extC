@@ -458,7 +458,10 @@ typedef struct {
 /* Find a method declared in the body of a struct or generic type. */
  FuncDef *findMethod (Type *st, const char *name);
 /* Find the operator method for `sym`, falling back to `fallback` (`!=` falls back to `==`). */
- FuncDef *findOp (Type *b, const char *sym, const char *fallback);
+ FuncDef *findOp (TypeTable *tt, Type *b, const char *sym, Type *rhs, const char *fallback);
+/* The operator method of a type that takes exactly `rhs` on the right (see the
+ * definition for why operators are the one overloadable name). */
+ FuncDef *findOperator (TypeTable *tt, Type *st, const char *name, Type *rhs);
 /* The StructDef behind a TY_STRUCT or TY_GENERIC type, or NULL. */
  StructDef *structOf (Type *t);
 /* Declare a binding in the innermost scope and return it; the caller writes the generated C name
@@ -529,6 +532,9 @@ typedef struct {
  _Bool isCmpOp (const char *op);
 /* True for `==` and `!=`, the pair that shares a native rule and the `!=` -> `==` fallback. */
  _Bool isEqualityOp (const char *op);
+/* True for every name a type may define more than once: the comparison, arithmetic and
+ * stream operators. */
+ _Bool isOverloadableOp (const char *name);
 /* True for `+`, `-`, `*`, `/` and `%`, the arithmetic operators that can be overloaded. */
  _Bool isArithOp (const char *op);
 /* True for `&&` and `||`. */
@@ -581,7 +587,7 @@ typedef struct {
  _Bool typeLacksZeroValue (TypeTable *tt, Type *t);
 /* True when values of this type can be compared with `op`: the comparison is native, or the type
  * is an array of a comparable element, or it defines the operator method. */
- _Bool typeSupportsOp (Type *t, const char *op);
+ _Bool typeSupportsOp (TypeTable *tt, Type *t, const char *op, Type *rhs);
 /* The name used in generated C for a source name, renamed when it would collide with a binding
  * of the same name in the same scope. */
  const char *cNameFor (Checker *c, const char *name);
