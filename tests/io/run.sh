@@ -15,6 +15,10 @@
 #   ⑧ **终端 raw mode**（IO-2 ③）：非 tty ⇒ `failure(notATerminal)` 带位置；真 PTY
 #      （`script`）⇒ 开得起来、`close()` 还原得了（**逐字节**比 termios，不比返回值 ✓）；
 #      而且 **raw 模式下 trap** 时终端也被还回去（临终钩子，用 strace 量 `TCSETS` ✓）
+#   ⑨ **CRLF**（定案 84）：`nextLine` 剥行尾 `\r`、`nextLineRaw` 原样、孤立 `\r` 是内容、
+#      `\r\n` 的空行长度是 0、EOF 前最后一个 `\r` 也剥 ✓
+#      （这一条挡的是"Windows 上编辑、WSL 里跑"那类真事故：以前每行都多一个 `\r`，
+#        长度也多 1 —— 用户的第一个文本程序就撞上了 ✗）
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
@@ -48,6 +52,24 @@ if out=$(printf 'hello extC\n' | "$EXTC" --run tests/io/struct-print.extc 2>&1);
     fi
 else
     echo "  FAIL struct-print ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+
+echo "== CRLF（定案 84：nextLine 剥 \r · nextLineRaw 原样 · 孤立 \r 是内容）=="
+# 输入：hello CRLF | world CRLF | a<孤立CR>b CRLF | 空行(CRLF) | zz CR(EOF)
+if out=$(printf 'hello\r\nworld\r\na\rb\r\n\r\nzz\r' | "$EXTC" --run tests/io/crlf.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "trimmed = hello len 5" || ok=0   # ① 剥掉 \r
+    echo "$out" | grep -qF "len 6"                 || ok=0   # ② 原样（world + \r）
+    echo "$out" | grep -qF "len 3"                 || ok=0   # ③ 孤立 \r 是内容（a\rb）
+    echo "$out" | grep -qF "blank   = len 0"       || ok=0   #    \r\n 的空行 = 空 ✓
+    echo "$out" | grep -qF "eofCR   = zz len 2"    || ok=0   #   EOF 前最后一个 \r 也剥 ✓
+    if [ "$ok" = 1 ]; then
+        echo "  ok   crlf         ->  5 条口径全对（剥/留/孤立/空行/EOF）✓"
+    else
+        echo "  FAIL crlf         ->  口径不对（$(echo "$out" | tr '\n' '|' | cat -v)）"; fail=1
+    fi
+else
+    echo "  FAIL crlf         ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
 echo "== 三条路（EOF / 行太长 / 读错误 —— 必须分得开）=="

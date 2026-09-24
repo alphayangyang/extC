@@ -237,10 +237,52 @@ struct reader {
 
     /* ---------------------------------------------------------------- lines */
 
-    /* Read one line into `out`; the newline is **not** included.
-     * Returns the number of bytes read; **0 = EOF at the very first byte**.
-     * NOTE: a line longer than `out` gives `failure(lineTooLong)` -- never the
-     * old **silent half line**, which made a caller treat one line as two.
+    /* Read one line into `out` and return its length, **without** its line ending.
+     * **0 = EOF at the very first byte.**
+     *
+     * "Line ending" here means `\n` **or `\r\n`**: a trailing carriage return is
+     * dropped too. That is what every line-reading API in wide use does, and it is what
+     * a name like `nextLine` is read as:
+     *   - Go `bufio.Scanner` + `ScanLines`: "stripped of any trailing end-of-line
+     *     marker" (`dropCR` in its source; it also drops a `\r` at EOF);
+     *   - Rust `str::lines()` / `BufRead::lines()`: "split at line endings that are
+     *     either newlines (`\n`) or sequences of a carriage return followed by a line
+     *     feed (`\r\n`)";
+     *   - Java `BufferedReader.readLine` and C# `StreamReader.ReadLine`: a line ends at
+     *     `\n`, `\r`, or `\r\n`;
+     *   - Ruby `String#chomp`: removes all three.
+     * Python and Perl solve the same problem on the other side of the call, by
+     * translating `\r\n` to `\n` while reading (PEP 278 universal newlines, the
+     * `:crlf` PerlIO layer); nothing is translated here, the byte is simply dropped.
+     *
+     * This used to keep the `\r`, so every reader of a CRLF file -- a file edited on
+     * Windows, which is the normal case under WSL -- saw a stray byte at the end of
+     * every line and a length one too high. Use `nextLineRaw` for the exact bytes.
+     *
+     * NOTE: a **lone** `\r` is not a line ending; every `\r` here is followed by a
+     * `\n` or is the last byte of the file. A file whose lines end with `\r` alone
+     * (classic MacOS) is therefore one long line, which is the Go and Rust behaviour as
+     * well -- and it leaves `\r` available as content.
+     *
+     * NOTE: a line longer than `out` gives `failure(lineTooLong)` -- never the old
+     * **silent half line**, which made a caller treat one line as two. */
+    fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
+        var n = self.nextLineRaw(out)?
+        /* The `\r` of a CRLF is in `out` already: `nextLineRaw` copies everything up to
+         * the `\n`, so the byte before the end is where it would be. */
+        if n > i64(0) && out[n - i64(1)] == u8(13) { n = n - i64(1) }
+        return success(n)
+    }
+
+    /* Read one line into `out` **exactly as it is on disk**, carriage return included.
+     *
+     * This is the raw half of the pair; `nextLine` is the one to reach for normally, and
+     * the pair follows what the ecosystems converged on -- a name for each semantics
+     * rather than one name with two meanings (Go: `ReadString` vs `Scanner`; Rust:
+     * `read_line` vs `lines`; Ruby: `gets` vs `chomp`).
+     *
+     * It exists for the cases where a `\r` is content: a progress bar drawn with
+     * `\r`, a protocol that uses it, or a tool that must not change a single byte.
      *
      * NOTE: this loop is written out by hand for the same reason as `nextInt`:
      * `nextByte` returns a `result` struct, so GCC refuses to inline it, and
@@ -251,7 +293,7 @@ struct reader {
      * newline still counts), the newline is **not** copied into `out`, and an
      * over-long line fails immediately (a half-read line never counts as
      * success). */
-    fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
+    fn nextLineRaw(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError> {
         var n: i64 = 0
         while true {
             if self.pos >= self.len {

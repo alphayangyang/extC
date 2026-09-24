@@ -1,0 +1,31 @@
+/* CRLF 的三条口径（定案 84）—— 判据在 `tests/io/run.sh` 里断言：
+ *
+ *   ① `nextLine`  ⇒ **剥掉**行尾的 `\r`（"行"= `\n` 或 `\r\n`）✓
+ *   ② `nextLineRaw` ⇒ **原样**（`\r` 是内容）；两个名字两种语义，跟主流一致
+ *      （Go `Scanner` vs `ReadString` · Rust `lines` vs `read_line` · Ruby `chomp` vs `gets`）✓
+ *   ③ **孤立的 `\r` 不是行终止符**，也不做任何边界翻译（不是 Python 的 universal newlines）✓
+ *
+ * 输入（由 run.sh 用 printf 造）：`hello\r\nworld\r\na\rb\r\n\r\nzz\r`
+ *                                        ↑①        ↑②      ↑③     ↑空行  ↑EOF 前的 \r
+ */
+use std::io
+
+fn main() -> i32 {
+    var r = io::readerOf(i32(0))
+    var a: [64]u8
+    var b: [64]u8
+    var c: [64]u8
+    var d: [64]u8
+    var e: [64]u8
+    let n1 = r.nextLine(a[..])!        /* ① CRLF 行 ⇒ 剥 \r */
+    let n2 = r.nextLineRaw(b[..])!     /* ② 同一份输入里的下一行 ⇒ 原样 */
+    let n3 = r.nextLine(c[..])!        /* ③ 行内孤立 \r ⇒ 是内容，不切行 */
+    let n4 = r.nextLine(d[..])!        /* CRLF 的空行 ⇒ 长度 0（`\r\n` 也算空行 ✓）*/
+    let n5 = r.nextLine(e[..])!        /* EOF 前最后一个 \r ⇒ 也剥（跟 Go 的 dropCR 一致）*/
+    println("trimmed = ", a[..n1], " len ", n1)
+    println("raw     = ", b[..n2], " len ", n2)
+    println("loneCR  = ", c[..n3], " len ", n3)
+    println("blank   = len ", n4)
+    println("eofCR   = ", e[..n5], " len ", n5)
+    return 0
+}

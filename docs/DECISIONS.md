@@ -2680,6 +2680,41 @@ no method `put` on `inputFile`
 ⚠️ 还没实现：`f.reader()` 那层 · `readAll` 的常设用例 · 句柄 affine —— ✅ `std::fs` 模块本身已落地（定案 77 三个名字 + 定案 79 归属）·
 `f.reader()` · `close(f)!`（IO-2）✓
 
+## 定案 84 · **CRLF：`nextLine` 剥 `\r`、`nextLineRaw` 留**（2026-09-24，主人拍板「可以就这样，1-3」）
+
+> 起因是**真事故**，不是洁癖：在 WSL 里读一个 **Windows 编辑过的**文本文件，
+> 每行末尾多一个 `\r`（长度也多 1），连"结尾那个空行"都变成 `\r` ⇒
+> 主人给的第一个文本题（"打印最短的两行"）**当场输出错** ✗
+> ⇒ 主人："你可以查一下别的语言的 CRLF 怎么处理的吗，这应该有成熟方案了"
+
+**口径三条**（照抄主流，不是我们发明的）：
+
+1. **`nextLine` 剥掉行尾一个 `\r`**（"行" = `\n` 或 `\r\n`；**EOF 前最后一个 `\r` 也剥**）
+   —— Go `bufio.Scanner`/`ScanLines`（"stripped of any trailing end-of-line marker"，源码即 `dropCR`）·
+   Rust `str::lines()`（"split at `\n` or `\r\n`"）· Java `BufferedReader.readLine` 与
+   C# `StreamReader.ReadLine`（`\n`/`\r`/`\r\n` 都算终止符）· Ruby `String#chomp`（三种都删）✓
+2. **`nextLineRaw` 原样**（`\r` 是内容）⇒ **两个名字、两种语义**
+   —— Go `ReadString` vs `Scanner` · Rust `read_line` vs `lines` · Ruby `gets` vs `chomp` ✓
+   **主流从来不用一个名字承担两种语义** —— 而 `nextLine` 这个名字在各语言里**默认是 trimmed** 那个
+   （Java/C# 的 `readLine`、Rust 的 `lines()`）⇒ 我们原来的行为是"**名字像 trimmed、语义是 raw**" ✗
+3. **孤立的 `\r` 不是终止符**（跟 Go/Rust 一致；Java/C#/Python 认它，这里不跟）·
+   **不做边界翻译**（不是 Python 的 universal newlines / Perl 的 `:crlf`）⇒
+   不改数据是 extC 的性格；且 `nextLine` 是带回缓冲扫到 `\n` 的读法，
+   **不需要** Node `readline` 那套 `crlfDelay`（`\r`/`\n` 跨 chunk 在这里不存在 ✓）
+
+**另一条路线（记录备查）**：Python PEP 278 / Perl `:crlf` / Windows CRT 文本模式是"**读入时翻译**"
+（`\r\n` → `\n`）⇒ 上层完全无感，代价是"原始字节"不再可得（Python 为此刻意给了 `newline=''`）✓
+我们选"剥"而不选"翻译"：剥是**一个 API 的语义**，翻译是**一整层的行为**，
+后者跟"库不改数据"冲突 ✓
+
+**不受影响**：`nextToken` / `nextInt` / `skipSpace` 本来就免疫 —— 它们走 `isSpaceByte`，
+那个**词法**空白集里含 `\r`（不用受 locale 影响的 C `isspace`）✓
+
+**落地**：`stdlib/std/io.extc`（`nextLine` = `nextLineRaw` + 剥一个尾随 `\r`；原热循环留在 `nextLineRaw`）·
+`docs/topics/IO.md` §4.3 新增小节（含跨语言对照与参考链接）·
+判据 `tests/io/crlf.extc` + `tests/io/run.sh` 的 `crlf` 一节（**五条**：剥 / 留 / 孤立 / `\r\n` 空行长度 0 / EOF 前 `\r`）✓
+⚠️ 这是**行为变更**：实测 `stdlib/` 与全部语料都是 LF ⇒ 全量套件零变化（`check.sh quick` 全绿为准）✓
+
 ## 定案 83 · **`tools/golden.sh` 弃置：不再是验收闸门**（2026-09-24，主人拍板）
 
 > 主人：「golden 已经被弃置了，因为加了很多新特性，所以一般来说可以不跑好吧」✓

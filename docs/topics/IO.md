@@ -225,10 +225,40 @@ struct reader {
     pos:   i64              // 已经消费到哪儿
 
     fn nextLine(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError>
+    fn nextLineRaw(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError>
     fn nextToken(self: mut ref reader, out: mut slice<u8>) -> result<i64, ioError>
     fn nextInt(self: mut ref reader) -> result<i64, ioError>
     fn skipSpace(self: mut ref reader) -> result<i64, ioError>
 }
+
+#### CRLF：`nextLine` 剥、`nextLineRaw` 留 ✅ **已拍板（定案 84，2026-09-24）**
+
+**起因是真事故**：在 WSL 里读一个 Windows 编辑过的文本文件，每一行末尾都多一个 `\r`
+（长度也多 1），连"结尾那个空行"都变成了 `\r` ⇒ 用户的第一个文本程序（"打印最短的两行"）
+当场输出错 ✗
+
+**口径三条**（代号 = 主流做法，不是我们发明的）：
+
+| # | 口径 | 依据 |
+|---|---|---|
+| ① | **`nextLine` 剥掉行尾一个 `\r`**（"行"= `\n` 或 `\r\n`；EOF 前最后一个 `\r` 也剥）| Go `bufio.Scanner`+`ScanLines`（文档写 "stripped of any trailing end-of-line marker"，源码里就是 `dropCR`）· Rust `str::lines()`（"split at ... `\n` or ... `\r\n`"）· Java `BufferedReader.readLine` 与 C# `StreamReader.ReadLine`（`\n`/`\r`/`\r\n` 三种终止符）· Ruby `String#chomp`（三种都删）✓ |
+| ② | **`nextLineRaw` 原样**（`\r` 是内容），**两个名字两种语义** | Go `ReadString` vs `Scanner` · Rust `read_line` vs `lines` · Ruby `gets` vs `chomp` —— 主流**从不**用一个名字承担两种语义 ✓ |
+| ③ | **孤立的 `\r` 不是终止符**，且**不做边界翻译**（不是 Python 的 universal newlines / Perl 的 `:crlf`）| 孤立 `\r` 这一条：Java/C#/Python 认、**Go/Rust 不认** ⇒ 跟 Go/Rust（`\r` 只在 `\n` 前特殊）✓ 不翻译这一条：extC 的性格是"不改数据"，而且 `nextLine` 是带回缓冲扫到 `\n` 的读法，**不需要** Node 那套 `crlfDelay`（`\r`/`\n` 跨 chunk 的场景在这里不存在 ✓）|
+
+**不受影响的**：`nextToken` / `nextInt` / `skipSpace` **本来就免疫** —— 它们走 `isSpaceByte`，
+那个集合里**含 `\r`**（`isSpaceByte` 是词法空白集，不用受 locale 影响的 C `isspace`）✓
+
+**代价**：① 是**行为变更**（不是新增 API）。实测影响面：`stdlib/` 与全部语料都是 LF ⇒ 零变化；
+判据 `tests/io/crlf.extc` + `tests/io/run.sh` 的 `crlf` 一节（五条口径：剥/留/孤立/空行/EOF）✓
+
+**参考**：[PEP 278 通用换行](https://peps.python.org/pep-0278/) ·
+[Rust RFC 1212 `line_endings`](https://rust-lang.github.io/rfcs/1212-line-endings.html) ·
+[Go `bufio`](https://pkg.go.dev/bufio) · [Node `readline` 的 `crlfDelay`](https://nodejs.org/api/readline.html) ·
+[Java `BufferedReader.readLine`](https://docs.oracle.com/javase/8/docs/api/java/io/BufferedReader.html#readLine--) ·
+[C# `StreamReader.ReadLine`](https://learn.microsoft.com/en-us/dotnet/api/system.io.streamreader.readline) ·
+[Perl `chomp`](https://perldoc.perl5.cn/functions/chomp)
+（⚠️ 2026-09-24 记账：写这一节时本机 `web_fetch` 被挡，**没能逐页核对原文** —— 上面这些是文档记忆 +
+检索到的权威链接，口径如果哪条要引用到别处，建议先点开核一遍 ✓）
 
 fn readerOf(fd: i32) -> reader
 ```

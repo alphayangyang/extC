@@ -7,6 +7,57 @@
 
 ---
 
+## 2026-09-24 · 定案 84：CRLF —— `nextLine` 剥 `\r`、`nextLineRaw` 留
+
+> 起点是主人给的一道文本题（"读一组行，打印最短的两行"）。我在 WSL 里用 **CRLF 输入**试了一下，
+> **输出错了**：每行末尾多一个 `\r`，长度也多 1，连"结尾那个空行"都变成了 `\r` ✗
+> ⇒ 主人："你可以查一下别的语言的 CRLF 怎么处理的吗，这应该有成熟方案了" ⇒ 查完照抄 ✓
+
+### 先说清 `isSpaceByte` 为什么没救到这题
+
+`std::io` 里有一个自己的**词法**空白集（`isSpaceByte`：空格 `\t` `\n` **`\r`** `\v` `\f`，
+有意不用受 locale 影响的 C `isspace`）⇒ `nextToken`/`nextInt`/`skipSpace` **对 CRLF 完全免疫**，
+而 `nextLine` 是"读到 `\n`、**原样**返回"⇒ 不剥 ✓ 实测同一份 CRLF 输入：
+
+    token: nextInt = 42 · nextToken = [hello] 长度 5      ← 干净 ✓
+    line : nextLine = [42 hello^M] 长度 9                 ← 多一个 \r ✗
+
+### 为什么主人"平时没踩到"
+
+三种机制在替他挡，**不是我们自己处理对了**：
+
+| 机制 | 谁在这么做 |
+|---|---|
+| ① **换行翻译**（text mode）| Windows 上 C 的 `fopen("r")` / C++ `ifstream` 默认把 `\r\n` 翻成 `\n` ⇒ 代码看不到 `\r` ✓（Linux 没这层，但 Linux 文件一般 LF）|
+| ② **把 `\r` 当行尾丢掉** | Python 文本模式（[PEP 278 通用换行](https://peps.python.org/pep-0278/)）· Java `readLine()` · C# `StreamReader.ReadLine()` · Go `bufio.Scanner`（`dropCR`）· Rust `lines()` ✓ |
+| ③ **按空白分词** | C 的 `scanf("%d")`/`%s` —— 跟我们的 `nextToken` 一模一样 ✓ |
+
+**会踩的**是"给你原始字节"的那些：C `fgets`/`read(2)` · shell 的 `while read l`（经典 WSL 坑）·
+makefile `missing separator` · `#!/bin/bash\r` bad interpreter —— **全是同一个 `\r`** ✓
+（"Windows 编辑 + Linux 工具"才是高发组合 ✓）
+
+### 照抄下来的三条（[Rust RFC 1212](https://rust-lang.github.io/rfcs/1212-line-endings.html) 也讨论过这条约定）
+
+1. **`nextLine` 剥一个尾随 `\r`**（`\n` 或 `\r\n` 都算行尾；**EOF 前最后一个 `\r` 也剥**，跟 Go 的 `dropCR` 一致）
+2. **`nextLineRaw` 原样** ⇒ **两个名字两种语义** —— Go `ReadString` vs `Scanner` · Rust `read_line` vs `lines` ·
+   Ruby `gets` vs `chomp` ✓ 主流**从来不用一个名字承担两种语义**；
+   而我们原来的问题是"**名字像 trimmed**（Java/C# 的 `readLine`、Rust 的 `lines()` 都是剥的）、
+   **语义是 raw**" ✗
+3. **孤立 `\r` 不是终止符**（跟 Go/Rust 一致；Java/C#/Python 认它）· **不做边界翻译**
+   （不是 universal newlines；也**不需要** Node 那套 `crlfDelay` —— 我们扫到 `\n` 才返回，`\r` 早就在缓冲里 ✓）
+
+### 落地与代价
+
+* `stdlib/std/io.extc`：原热循环**留在** `nextLineRaw`（注释里那些"为什么手写"的理由原样保留），
+  `nextLine` = `nextLineRaw` + 剥一个尾随 `\r`（在 `out` 里，因为它已经被拷进去了）✓
+* `docs/topics/IO.md` §4.3 新增小节（跨语言对照 + 参考链接）· `DECISIONS` **定案 84** ✓
+* 判据 `tests/io/crlf.extc` + `tests/io/run.sh` 的 `crlf` 一节 —— **五条**：剥 / 留 / 孤立 `\r` /
+  `\r\n` 空行长度 **0** / EOF 前 `\r` ✓（第 4 条正是那道文本题需要的"结尾空行"判断 ✓）
+* 这是**行为变更**（不是新增 API）：实测 `stdlib/` 与全部语料都是 LF ⇒ 预期零影响，
+  以 `check.sh quick` 全绿为准 ✓
+* ⚠️ **记账诚实**：写这一节时本机 `web_fetch` **被挡**（所有外站 fetch failed）⇒ 跨语言行为是
+  **文档记忆 + 检索到的权威链接**，没有逐页核对原文 —— 已把这句话写进 `IO.md` 那一节 ✓
+
 ## 2026-09-24 · `#59`：泛型 fold 让编译器**挂死** —— 探变参时顺手撞出来的
 
 > 起因不是找 bug：主人在讨论"变参能不能做成临时 struct 的糖"，我写了几个探针去量

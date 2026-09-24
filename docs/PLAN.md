@@ -9,7 +9,11 @@
 >
 > **现状（2026-09-24 实测重核 ✓；同日加注解套件、再加文件归属套件后各核一次；同日再加运算符重载套件后核第三次）**：`./check.sh quick` **20 节全绿**（完整模式 **26 节**，
 > 多出的 **6** 节是基准）—— 测试 **257 通过 / 0 失败**（2026-09-24 加了 `tests/errors/allocslice_removed.extc` 与 `examples/generic-fold.extc` ✓） · arena 5 · 警告零误报 · 泛型 3 ·
-> IO 10 · extern 4 · 模块 12 · ASan 8 · 层号零漂移（98 语料）· **注解 8（3 正 + 5 反）** · **运算符重载 16 项（4 正 + 1 mangle + 9 反 + 2 条“不许漏到 gcc”）** · 攻击库与基线一致 ✓
+> **逐节实测（2026-09-24 第五次核，对着 `check.sh` 的输出数）**：arena 5 · 警告 3 · 泛型 3 · **IO 17** ·
+> extern 4 · **模块 15** · ASan 8 · **层号 98 语料零漂移** · 全限定名 8 · fs 命名 5 · 文件归属 7 ·
+> 命令行 6 · pool 6 · map 5 · 注解 8 · **运算符重载 16** · 攻击库与基线一致 ✓
+> ⚠️ 这一行的**逐节数字**以前写的是 `IO 10 · 模块 12`（09-24 早些时候的数 ✗）—— 加套件/加用例时
+>   每节的**项数**也会变，所以这条也只能**照着 `check.sh` 的输出重数**，不许照抄 ✓
 > ⚠️ **14/20 → 15/21 的原因**：`@inline` 那次加的 `tests/annot/`（8 例）**是新的一节** ⇒
 > 老数（14/20）当场作废 ✗ 老毛病又犯了一次：**加了套件、记账不动** ✓
 > ⛔ **`tools/golden.sh` 已弃置**（**2026-09-24 主人拍板，见 `DECISIONS` 定案 83**）：
@@ -526,7 +530,10 @@ fn make() -> box {
 |---|---|---|---|
 | **1** | 🟢 **主体已落地（2026-09-23，定案 73 + 74）**：`std::sys::io` 原语（`read`/`write` + 签字）+ **`reader`（隐式 64KB）** + **`nextInt`/`nextToken`/`nextLine`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/内建 `flush()` ✓（`tests/io/` **7 条**常设验收 ✓，含三条路 + 分块读性能）⬜ **还欠**：`readAll` · 格式化输入 B · 写指定 fd。**实测**：12MB/100 万行，逐字节 1.444s vs 分块 0.032s = **45×** ✓ ⭐ **2026-09-24 第二半（手写缓冲热循环）**：`nextLine`/`nextToken`/`skipSpace` 原来**每字节一次方法调用**（`result` 结构体 ⇒ GCC 不内联）⇒ 把循环写进函数体之后：100 万行 **11.5 → 8.8ms**、300 万词 **25.8 → 9.0ms**（接口零改动 ✓；1100 个随机输入与旧实现**逐字节对拍一致** ✓）；⚠️ 同一处**实测 `@inline` 是零效果**（交错 A/B ±0.3%，`objdump` 里 GCC 本来就全内联、连函数体都没有 ✓）⇒ **`@inline` 只在 GCC 不肯内联时有价值**（例：运行时 `extc_arena_alloc`，3.9×）✓ | **OI 式输入能用了**；gomoku 能读协议 | 中（设计已定，见 [`IO.md`](../docs/topics/IO.md)）|
 | **2** | **IO-1**：✅ `open`（`std::fs`：`openRead`/`openWrite`/`openAppend` + 读型/写型两个 struct）· ✅ **句柄由程序关**（`close()` = 可检查的提交点；忘关是**警告**「opened and never closed」，按 `close` 方法认资源协议）· ✅ `readAll` · ✅ `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 | ✅ **2026-09-24 完成**：`stdlib/std/fs.extc`（三个名字 + 两个 struct，误用**编不过** · `tests/fs-shape/` 5 项）· `tests/fs/`（fd 恒定 · canary · 警告的泄漏 · `readAll` 两条路 · 双关安全 · closed 带位置 · ASan，7 项）· `tests/argv/`（6 项）· `#55` 随**定案 79** 一起消除（不再需要隐式归属：块退**没有失败通道** ⇒ 隐式关闭 = 静默丢数据）✓ ⬜ **还欠**（IO-2 那档）：`f.reader()` 那层 · 句柄 affine（`close` 消费掉句柄 ⇒ 编译期挡「关闭后使用」）✓ **规范**：定案 77（命名与形状）· **定案 79**（程序拥有 + 编译期证明的泄漏）· 定案 78（资格判据保留）✓ |
-| **3** | **IO-2**：✅ `f.reader()`（文件当输入源：`nextInt`/`nextLine`/`nextToken` 与 stdin 逐字相同）· ✅ `proc::exit(code)`（分层：`std::sys::process`，**不放 `std::io`** —— 结束进程不是 I/O）· ✅ termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；**不包 ncurses**，按 BOOTSTRAP §4.3）· ✅ **trap 路径还原终端**（临终钩子 `extc_die` + `extc_raw_enter`/`extc_raw_leave`，**定案 80**）| TUI / 刷量输出 / 五子棋能真的跟人下 | 中 | ✅ **2026-09-24 落地三件 + 顺手修 #56**：`tests/io` 13 → **15 项**（`file-reader` · `exit-code`（退出码 7）· `raw-mode` 的非 tty(`failure(notATerminal)`) + PTY(`script`：开得起来、还原**逐字节**相同) 两条路 · `raw-trap`（raw 下 trap ⇒ strace 里 `TCSETS` ×2、最后一条带 cooked 标志））✓ 共 **16 项** ✓ `ioError` 新增 `notATerminal(i32)`（"三条路分得开"的口径，定案 74）· `extern!` 补上 `void` 返回（`cfmakeraw` 需要）✓ **规范**：定案 77/79 · BOOTSTRAP §4.3 ✓ |
+| **3** | **IO-2**：✅ `f.reader()`（文件当输入源：`nextInt`/`nextLine`/`nextToken` 与 stdin 逐字相同）· ✅ `proc::exit(code)`（分层：`std::sys::process`，**不放 `std::io`** —— 结束进程不是 I/O）· ✅ termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；**不包 ncurses**，按 BOOTSTRAP §4.3）· ✅ **trap 路径还原终端**（临终钩子 `extc_die` + `extc_raw_enter`/`extc_raw_leave`，**定案 80**）| TUI / 刷量输出 / 五子棋能真的跟人下 | 中 | ✅ **2026-09-24 落地三件 + 顺手修 #56**：`tests/io` 13 → **15 项**（`file-reader` · `exit-code`（退出码 7）· `raw-mode` 的非 tty(`failure(notATerminal)`) + PTY(`script`：开得起来、还原**逐字节**相同) 两条路 · `raw-trap`（raw 下 trap ⇒ strace 里 `TCSETS` ×2、最后一条带 cooked 标志））✓ 共 **16 项** ✓ `ioError` 新增 `notATerminal(i32)`（"三条路分得开"的口径，定案 74）· `extern!` 补上 `void` 返回（`cfmakeraw` 需要）✓ **规范**：定案 77/79 · BOOTSTRAP §4.3 ✓ ⭐ **2026-09-24 补一条口径（定案 84）**：
+`nextLine` **剥**行尾 `\r`（`\r\n` 也算行尾）、`nextLineRaw` **原样**、孤立 `\r` 是内容、
+EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windows 编辑过的文件，每行多一个 `\r`，
+主人的第一个文本题当场输出错 ✗）；判据 `tests/io/crlf.extc`（**五条**口径）· 跨语言对照见 `IO.md` §4.3 ✓ |
 | ~~**4**~~ ✅ | ~~**`allocSlice<T>(n) -> mut slice<T>`**（帧 arena 里要 n 个 T，**清零**）~~ ⇒ **2026-09-24 删掉**（**定案 81**）：这个能力由 **`new T[n]`** 兑现（同样是零的 `mut slice<T>`、同一套层号/逃逸规则），而"清零"从来不是它做的 —— `extc_arena_alloc` **每一次分配都 memset** ✓ 它只是同一件事的第二个拼写，还多跑一遍 memset（`-O0` 下生成 C 里两次、`-O2` 被折叠）⇒ 删 ✓ | **长度运行时才知道**的 buffer（读未知大小的文件 · `reader` 要 64KB · `varArray` 增长）| 小 | ✅ **早已可用**：`new T[n]` + arena 清零；`examples/newSlice.extc`（原 `allocSlice.extc`）钉着「清零承诺」这条判据 ✓ |
 
 > ⚠️ **更正**（2026-09-18，主人追问"造不出 buffer 什么意思"时实测发现）：
