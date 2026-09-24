@@ -1,7 +1,7 @@
 # 五子棋示例代码审读
 
 > **状态：一次代码审读的记录**（2026-09-18，五子棋示例）。
-> 它回答的是「真实程序需要什么」；结论多数已经落地，留作判例 ✓
+> 它回答的是「真实程序需要什么」；结论多数已经落地，留作判例
 
 
 > 主人给的这份 `board / errors / sandbox / ai / main` 五模块代码，是目前**最有价值的一份需求文档**。
@@ -24,19 +24,19 @@
 
 ## 1. 这份代码用到的全部语法（奶昔逐行数的）
 
-✅ = week-0 已实现 ｜ ⬜ = 没实现 ｜ ⚠️ = 跟已定案冲突
+= week-0 已实现 ｜ = 没实现 ｜ = 跟已定案冲突
 
 ### 模块层（**整块都是新的，且是刚需**）
 
 | 语法 | 状态 |
 |---|---|
-| `module board` 模块声明 | ⬜ |
-| `export const BOARD_N = 15` 导出常量（**无类型标注**） | ⬜ |
-| `export type Player = \| Black \| White \| Empty` 简单枚举 | ⬜ ⚠️ |
-| `export struct` / `export fn` | ⬜ |
-| `import board` / `import std.io` 点分路径 | ⬜ |
-| `Board::new()` / `VarArray<Point>::new()` 关联函数 | ⬜ |
-| `const INF = 1000000` 模块内常量 | ⬜ |
+| `module board` 模块声明 | |
+| `export const BOARD_N = 15` 导出常量（**无类型标注**） | |
+| `export type Player = \| Black \| White \| Empty` 简单枚举 | |
+| `export struct` / `export fn` | |
+| `import board` / `import std.io` 点分路径 | |
+| `Board::new()` / `VarArray<Point>::new()` 关联函数 | |
+| `const INF = 1000000` 模块内常量 | |
 
 > **结论：模块系统不是「往后放」，它是写任何真实程序的第一块砖。** `::` 更是关联函数的唯一写法。
 
@@ -44,81 +44,81 @@
 
 | 语法 | 状态 |
 |---|---|
-| `[BOARD_N][BOARD_N]int` 多维数组 | ⬜ |
-| `[BOARD_N * BOARD_N]UndoRec` —— **数组尺寸是 const 表达式** | ⬜ |
-| `[4][2]int` 数组类型 | ⬜ |
-| `Result<void, GameError>` / `Result<Point, GameError>` | ⬜ |
-| `ref T` 参数 | ✅ |
+| `[BOARD_N][BOARD_N]int` 多维数组 | |
+| `[BOARD_N * BOARD_N]UndoRec` —— **数组尺寸是 const 表达式** | |
+| `[4][2]int` 数组类型 | |
+| `Result<void, GameError>` / `Result<Point, GameError>` | |
+| `ref T` 参数 | |
 
 ### struct
 
 | 语法 | 状态 |
 |---|---|
-| **方法写在 struct 体内** | ⬜ ⚠️ |
-| 无 `self` 的关联函数 `fn new() -> Board` | ⬜ |
-| 值语义 + 整体拷贝（`self.board = real`、`return b`） | ⬜ |
-| 字段访问 `self.x` / `b.move_count` | ✅ |
+| **方法写在 struct 体内** | |
+| 无 `self` 的关联函数 `fn new() -> Board` | |
+| 值语义 + 整体拷贝（`self.board = real`、`return b`） | |
+| 字段访问 `self.x` / `b.move_count` | |
 
 ### 语句
 
 | 语法 | 状态 |
 |---|---|
-| `var b: Board` —— **无初始化式** | ⚠️ |
-| `var count = 1` 推导 | ✅ |
-| `let dirs: [4][2]int = [[1,0], [0,1], [1,1], [1,-1]]` 数组字面量 | ⬜ |
-| `count += ...` 复合赋值 | ⬜ |
-| `return Ok(())` / `return b` | ⬜ / ✅ |
-| `break` / `continue` / `while true` | ✅ |
-| `region search { ... }` 命名 region 块 | ⬜ |
-| `match` 做**语句**也做**表达式** | ⬜ |
+| `var b: Board` —— **无初始化式** | |
+| `var count = 1` 推导 | |
+| `let dirs: [4][2]int = [[1,0], [0,1], [1,1], [1,-1]]` 数组字面量 | |
+| `count += ...` 复合赋值 | |
+| `return Ok(())` / `return b` | / |
+| `break` / `continue` / `while true` | |
+| `region search { ... }` 命名 region 块 | |
+| `match` 做**语句**也做**表达式** | |
 
 ### for（主人明确说：**C-style 也要**）
 
 | 形态 | 例子 | 状态 |
 |---|---|---|
-| 遍历数组 | `for d in dirs { }` | ⬜ |
-| 范围（右开） | `for y in 0..BOARD_N { }` | ⬜ |
-| **负范围** | `for dy in -2..3 { }` | ⬜ |
-| C-style | `for var i: i32 = 0; i < n; i += 1 { }` | ⬜ |
+| 遍历数组 | `for d in dirs { }` | |
+| 范围（右开） | `for y in 0..BOARD_N { }` | |
+| **负范围** | `for dy in -2..3 { }` | |
+| C-style | `for var i: i32 = 0; i < n; i += 1 { }` | |
 
 ### match
 
 | 语法 | 状态 |
 |---|---|
-| 匹配变体 `Black => ...` | ⬜ |
-| **匹配常量** `BLACK => ...`（对一个 `int` 变量匹配 const！） | ⬜ |
-| 通配 `_ => ...` | ⬜ |
-| `Ok(_)` / `Err(e)` 模式 | ⬜ |
-| 臂分隔：逗号 or 换行都行 | ⬜ |
-| 臂体：表达式 or `{ }` 块 | ⬜ |
-| **match 是表达式**（`let c = match b.get(p) { ... }`） | ⬜ |
-| 臂里 `continue` / `return`（**发散臂**） | ⬜ |
+| 匹配变体 `Black => ...` | |
+| **匹配常量** `BLACK => ...`（对一个 `int` 变量匹配 const！） | |
+| 通配 `_ => ...` | |
+| `Ok(_)` / `Err(e)` 模式 | |
+| 臂分隔：逗号 or 换行都行 | |
+| 臂体：表达式 or `{ }` 块 | |
+| **match 是表达式**（`let c = match b.get(p) { ... }`） | |
+| 臂里 `continue` / `return`（**发散臂**） | |
 
 ### 表达式
 
 | 语法 | 状态 |
 |---|---|
-| `?` 传播（`parts.get(0)?.parse_int()?`） | ⬜ |
-| **`ref` 在调用点显式**（`evaluate(ref s.board, player)`） | ⬜ ⚠️ |
-| 方法调用 `b.get(p)` / `cands.len()` / `line.eq("q")` | ✅ |
-| 泛型容器 `VarArray<Point>` + `::new()` + `.push()` + `.len()` + `.get(i)?` | ⬜ |
-| `b','` **字节字面量** | ⬜ |
-| 结构体字面量 `Point { x: x, y: y }`（带空格） | ✅ |
-| `()` 单元值 | ⬜ |
-| `-alphabeta(...)` 一元负号 | ✅ |
+| `?` 传播（`parts.get(0)?.parse_int()?`） | |
+| **`ref` 在调用点显式**（`evaluate(ref s.board, player)`） | |
+| 方法调用 `b.get(p)` / `cands.len()` / `line.eq("q")` | |
+| 泛型容器 `VarArray<Point>` + `::new()` + `.push()` + `.len()` + `.get(i)?` | |
+| `b','` **字节字面量** | |
+| 结构体字面量 `Point { x: x, y: y }`（带空格） | |
+| `()` 单元值 | |
+| `-alphabeta(...)` 一元负号 | |
 
 ### 内建 / 标准库
 
 | 语法 | 状态 |
 |---|---|
-| `println(x)` / `print(c)` | ✅ |
-| `println("无效落子：{}", e)` **格式串** | ⚠️ |
-| `std.io.read_line()?` | ⬜ |
-| `String` 的 `split` / `parse_int` / `eq` | ⬜ |
+| `println(x)` / `print(c)` | |
+| `println("无效落子：{}", e)` **格式串** | |
+| `std.io.read_line()?` | |
+| `String` 的 `split` / `parse_int` / `eq` | |
 
 ---
 
-## 2. ⚠️ 八处冲突 / 待定
+## 2. 八处冲突 / 待定
 
 | # | 冲突 | 说明 |
 |---|---|---|
@@ -170,11 +170,11 @@
 | 如果 arena 是… | 后果 |
 |---|---|
 | **动态的**（`region search` 覆盖整棵调用子树） | 每次递归的候选表都活着 → **O(节点数) 内存，直接爆** |
-| **词法的**（每个函数帧一个 arena） | 子节点返回就释放 → **O(深度 × 分支)** ✓ |
+| **词法的**（每个函数帧一个 arena） | 子节点返回就释放 → **O(深度 × 分支)** |
 
 **我们的 §2 已经投票给词法了，这份代码正好说明为什么必须如此。**
 
-> ⚠️ 这条要在 DESIGN.md 里写死，并且要写清：**`region` 不是「整棵子树的 arena」，它只是「给一个词法作用域起名字」**。这段代码里 `region search` 其实是可以省的（函数帧本来就是 arena），它的唯一作用是把名字给出来。
+> 这条要在 DESIGN.md 里写死，并且要写清：**`region` 不是「整棵子树的 arena」，它只是「给一个词法作用域起名字」**。这段代码里 `region search` 其实是可以省的（函数帧本来就是 arena），它的唯一作用是把名字给出来。
 
 ### 4.3 发散臂
 

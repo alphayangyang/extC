@@ -19,7 +19,7 @@
 ## 1. Language
 
 **English only, ASCII only.** No Chinese, no full-width punctuation, no emoji-like
-symbols (`⭐`, `⚠️`, `✅`, `✗`, `✓`, `⇒`, `·`). Use plain ASCII: `*`, `!`, `->`, `=>`.
+symbols (``, ``, ``, ``, ``, `⇒`, `·`). Use plain ASCII: `*`, `!`, `->`, `=>`.
 
 The rule covers **everything that belongs to the code**: source comments, user-visible
 diagnostics, the generated C (its comments and its runtime preamble), and debug traces

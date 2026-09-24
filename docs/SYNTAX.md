@@ -2,7 +2,7 @@
 
 > **v2（纠正版）**
 >
-> ⚠️ 奶昔上一步猜错了轴。主人说「不喜欢 AI 给我的语法范式」时，指的是**命名规范**，不是语法风格 —— 主人喜欢 Go，Rust/Go 味的骨架没问题。上一版 `SYNTAX.md`（三个 C 味候选）是奶昔过度解读，已作废。
+> 奶昔上一步猜错了轴。主人说「不喜欢 AI 给我的语法范式」时，指的是**命名规范**，不是语法风格 —— 主人喜欢 Go，Rust/Go 味的骨架没问题。上一版 `SYNTAX.md`（三个 C 味候选）是奶昔过度解读，已作废。
 
 ---
 
@@ -21,10 +21,10 @@
 **类型名和泛型参数的大小写规则是强制检查的，因为它解决一个真问题**：
 
 ```extc
-struct T { x: i32 }        // ✗ error: type name `T` must start with a lowercase letter
-struct box<T> { ... }      // T 是参数 ✓
+struct T { x: i32 }        // error: type name `T` must start with a lowercase letter
+struct box<T> { ... }      // T 是参数
 
-struct box<t> { value: t } // ✗ error: type parameter `t` must start with an uppercase letter
+struct box<t> { value: t } // error: type parameter `t` must start with an uppercase letter
 ```
 
 只靠约定的话，`struct T` + `struct box<T>` 是**能编译过**的 —— 里面的 `T` 会遮蔽外面的。
@@ -112,41 +112,41 @@ fn (self: ref board) place(x: i32, y: i32, color: i32) -> result<(), moveError>
 **为什么老形状不行**（`std::sys::io` 的裸原语，用户不该看见它）：
 
 ```extc
-io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // ✗ 三个毛病
+io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // 三个毛病
 ```
 
-1. `64` / `420` 这种数是 **POSIX 的数**（flags / mode）⇒ 用户得背常量 ✗
-2. 还得自己 `|` 标志位 —— **位的组合是平台细节**，不是用户的事 ✗
-3. 就算写全了常量，"**打开的是读还是写**"仍然要读到**第三个实参**才知道 ✗
+1. `64` / `420` 这种数是 **POSIX 的数**（flags / mode）⇒ 用户得背常量
+2. 还得自己 `|` 标志位 —— **位的组合是平台细节**，不是用户的事
+3. 就算写全了常量，"**打开的是读还是写**"仍然要读到**第三个实参**才知道
 
-### ⭐ 规范（名字里必须有"读还是写、原内容还在不在"）
+### 规范（名字里必须有"读还是写、原内容还在不在"）
 
 | 做什么 | 名字 | 返回 | 已有内容 |
 |---|---|---|---|
-| 读 | `fs::openRead(p)` | `ifstream` | 不动 ✓ |
-| 写（**截断**） | `fs::openWrite(p)` | `ofstream` | **清掉** ⚠️ |
-| 写（**追加**） | `fs::openAppend(p)` | `ofstream` | **保留**，写在后面 ✓ |
-| 读全部 | `readAll(f, dest)` | `result<i64, ioError>` | 调用者给地方 ✓ |
-| 逐行/逐数 | `f.reader()` ⇒ `reader` | | 复用 `std::io` 的 `nextLine`/`nextInt` ✓ |
+| 读 | `fs::openRead(p)` | `ifstream` | 不动 |
+| 写（**截断**） | `fs::openWrite(p)` | `ofstream` | **清掉** |
+| 写（**追加**） | `fs::openAppend(p)` | `ofstream` | **保留**，写在后面 |
+| 读全部 | `readAll(f, dest)` | `result<i64, ioError>` | 调用者给地方 |
+| 逐行/逐数 | `f.reader()` ⇒ `reader` | | 复用 `std::io` 的 `nextLine`/`nextInt` |
 
 **两个类型**：`fs::ifstream`（读型）· `fs::ofstream`（写型）—— **分开**是定案 77 的取舍：
-读型上没有 `put`、写型上没有 `readSome` ⇒ **误用编不过** ✓
+读型上没有 `put`、写型上没有 `readSome` ⇒ **误用编不过**
 （2026-09-24 改名，定案 87：原名 `inputFile`/`outputFile` 太长，`ifstream`/`ofstream` 是 C++
-的肌肉记忆，**所有人都能看懂**，而且照样解耦 ✓）
+的肌肉记忆，**所有人都能看懂**，而且照样解耦）
 
 **构造函数**（定案 86：`T(args)` 就是 `T::new(args)`）—— 打开文件现在一句话：
 
 ```extc
-var fin  = fs::ifstream("input.txt")?        // = fs::openRead ✓
-var fout = fs::ofstream("out.txt")?          // = fs::openWrite（**截断**）✓
-var fap  = fs::ofstream::append("log.txt")?  // = fs::openAppend（追加）✓
+var fin  = fs::ifstream("input.txt")?        // = fs::openRead
+var fout = fs::ofstream("out.txt")?          // = fs::openWrite（**截断**）
+var fap  = fs::ofstream::append("log.txt")?  // = fs::openAppend（追加）
 ```
 
-（`fs::ifstream::new(...)` 与糖 `fs::ifstream(...)` 同一条路 ✓ 追加是**具名**关联函数：
-一个类型只有一个 `new`，行为不同就给名字 ✓）
+（`fs::ifstream::new(...)` 与糖 `fs::ifstream(...)` 同一条路 追加是**具名**关联函数：
+一个类型只有一个 `new`，行为不同就给名字）
 
 ```extc
-// 用户层：看见的只有"读还是写"，看不见一个 `O_*` ✓
+// 用户层：看见的只有"读还是写"，看不见一个 `O_*`
 var out = fs::openWrite("build/x.txt")?     // 类型是 ofstream ⇒ 只能写
 out.put("hello\n")
 var inp = fs::openRead("build/x.txt")?      // 类型是 ifstream ⇒ 只能读
@@ -157,29 +157,29 @@ let n = inp.readSome(buf[..])
 ### 三条硬规矩（**不是口味，是判据**）
 
 1. **读型 / 写型是两个 struct**：`ifstream` / `ofstream`，
-   读方法只挂前者、写方法只挂后者 ⇒ **把写型当读型用是编译期错误** ✓
+   读方法只挂前者、写方法只挂后者 ⇒ **把写型当读型用是编译期错误**
    实测两条（`tests/fs-shape/`）：
    ```
    argument expects `ifstream`, found `ofstream`      ← 写型传给只收读型的函数
    no method `put` on `ifstream`                        ← 读型没有写方法
    ```
-   ⇒ 这条规范的价值**不在好看**，在于"打开错了"**编不过**（而不是运行到一半才发现）✓
+   ⇒ 这条规范的价值**不在好看**，在于"打开错了"**编不过**（而不是运行到一半才发现）
 2. **`O_*` 与 POSIX 的数只许出现在 `std::sys::io`**（特权层）——
-   上面每一层（`std::fs` 与用户代码）**一个都不许看见** ✓
-   （那个文件顶上那句"把平台相关的常量关在这一层里"就是为这个 ✓）
+   上面每一层（`std::fs` 与用户代码）**一个都不许看见**
+   （那个文件顶上那句"把平台相关的常量关在这一层里"就是为这个）
 3. **函数名里必须带上模式**：`openRead` / `openWrite` / `openAppend` ——
-   **不许**只叫 `open` 把模式塞进参数（除非是**枚举实参**，见下面的备选）✓
-   ⚠️ 也不要用 `creat` / `openForReading` 这类：既不是 camelCase 惯例，
-      也把"截断"这件事藏在名字外（Rust 的 `File::create` 正是被骂过的那个 ✗）
+   **不许**只叫 `open` 把模式塞进参数（除非是**枚举实参**，见下面的备选）
+   也不要用 `creat` / `openForReading` 这类：既不是 camelCase 惯例，
+      也把"截断"这件事藏在名字外（Rust 的 `File::create` 正是被骂过的那个）
 
-### ❌ 明确不选的两条（记账，省得下次再讨论）
+### 明确不选的两条（记账，省得下次再讨论）
 
 | 方案 | 为什么不做 |
 |---|---|
-| `open(p, fileMode.write)`（一个函数 + 枚举实参） | ⚠️ 能编译（实测 `flagsOf(fileMode.read)` ✓），但 ① **模式还是藏在实参里**——正是主人嫌的那一点 ✗ ② 返回类型统一 ⇒ "拿写型当读型用"只能**运行时**才发现，把编译期判据丢掉了 ✗ |
-| `open(p, flags)` 把 `O_*` 直接暴露给用户 | 平台细节外泄；用户还得自己 `|` ⇒ 老问题原样保留 ✗ |
+| `open(p, fileMode.write)`（一个函数 + 枚举实参） | 能编译（实测 `flagsOf(fileMode.read)`），但 ① **模式还是藏在实参里**——正是主人嫌的那一点 ② 返回类型统一 ⇒ "拿写型当读型用"只能**运行时**才发现，把编译期判据丢掉了 |
+| `open(p, flags)` 把 `O_*` 直接暴露给用户 | 平台细节外泄；用户还得自己 `|` ⇒ 老问题原样保留 |
 
-（⭐ **`close` 不在这张表里，因为关闭是程序的事**：句柄由程序拥有，`f.close()` 就是
+（**`close` 不在这张表里，因为关闭是程序的事**：句柄由程序拥有，`f.close()` 就是
 **可检查的提交点**；忘关是**警告**（"opened and never closed" —— 留到进程结束是合法选择）—— 见 `IO.md` §5 / **定案 79**）
 
 ### 与既有命名的关系
@@ -190,12 +190,12 @@ let n = inp.readSome(buf[..])
 | `openXxx` | **打开外部资源**（名字的后半段是**模式**） | `openRead` · `openWrite` · `openAppend` |
 | `withXxx` | **构造器带可选参数** | `varArray<T>::withCap(n)` · `pcg32::withStream(s)` |
 
-⇒ `openAppend` 看起来像 `openRead` 的兄弟、不像 `appendOf` 的兄弟 —— **这是故意的** ✓
-两个都是"打开"，差别只在模式，把家族名放在前面才读得出来 ✓
+⇒ `openAppend` 看起来像 `openRead` 的兄弟、不像 `appendOf` 的兄弟 —— **这是故意的**
+两个都是"打开"，差别只在模式，把家族名放在前面才读得出来
 
 **还没实现的**（形状先定死，IO-1 落地时照这个做）：
-✅ `std::fs` 模块本身（定案 77 三个名字）· ✅ 归属（定案 79）· `readAll` 的常设用例 · `f.reader()` ·
-`close(f)!`（并入 IO-1）· 写型的 `commit()?` ✓
+`std::fs` 模块本身（定案 77 三个名字）· 归属（定案 79）· `readAll` 的常设用例 · `f.reader()` ·
+`close(f)!`（并入 IO-1）· 写型的 `commit()?`
 
 ---
 

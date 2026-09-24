@@ -1,7 +1,7 @@
 # clang -Weverything 允许关闭的类别 —— 理由逐条写在 docs/WARNINGS.md §3.1
-# 规矩：只有「对生成物结构上无解」的类别能进这里 ✓
+# 规矩：只有「对生成物结构上无解」的类别能进这里
 #      「只是还没做」的（unused-function / unused-variable / used-but-marked-unused /
-#       unreachable-code / jump-misses-init / missing-noreturn）**不许**加进来 ✗
+#       unreachable-code / jump-misses-init / missing-noreturn）**不许**加进来
 dollar-in-identifier-extension
 reserved-identifier
 padded
