@@ -6834,3 +6834,34 @@ examples/payload-enum.extc 346 → 346 行  clang 3 → 3   ← 同上 ✓
 （`unreachable-code` 那 7 条没动 ⇒ 它们另有成因，多半是生成物里 `break`/`return` 之后的死语句 ✓ 下一轮查 ✓）
 ⚠️ 新出现 `unused-macros`（1~3 条 ✓）—— 多半是 `EXTC_UNUSED` 这个宏如今**没人用了** ✓（属性撤了一批 ✓）
 ⇒ 按 `docs/WARNINGS.md` §3.2 的规矩**不许盖**，应当把那个宏定义删掉 ✓ 记进下一轮 ✓
+
+### 2026-09-25 · **非 void 函数的兜底**：`-Wreturn-type` 那族清零（`tour` 6 → 0 · `payload-enum` 3 → 0）
+
+上一轮诊断出的形状（`match` 全 arm 都 return ⇒ C 编译器看不出 `if / else if` 链穷尽 ✓）这一轮补上了 ✓
+**关键细节**：受影响的都是 **`noArena`** 函数 —— 没有 arena 就没有 epilogue ⇒ **没有任何东西接住"跑出末尾"** ✗
+（有 epilogue 的函数末了有一条 `return __extc_ret_v;` ✓ 所以它们本来就不报 ✓）
+而原来那套兜底写在 `if (g->isRecursive)` 里面 ✗ ⇒ **只管递归函数** ✓
+
+修法：把"会跑出末尾"提出来算一次（`fallsOff` ✓），然后
+`if (fallsOff && g->noArena && !retVoid) extc_trapMsg(path, line, "...")` ✓
+——**用 trap 而不是 `return __extc_ret_v;`**：后者在 `noArena` 函数里根本没声明（注释里记着当年 gcc 报过错 ✓），
+而上一轮标的 `EXTC_NORETURN` 让编译器知道 trap 不返回 ⇒ **不需要构造返回类型的零值** ✓（基础件这一轮正好用上 ✓）
+
+**实测**（全部 `e0` 零错误 ✓）：
+
+```
+examples/tour.extc         612 → 623 行   clang 6 → 0 ✓
+examples/payload-enum.extc 346 → 354 行   clang 3 → 0 ✓
+tests/io/stream-file.extc 1335 → 1340 行  clang 1 → 1（那是 __extc_ret_v，另一族 ✓）
+```
+行数略涨（每条兜底一行 ✓）—— 这是**用一行换掉一族警告**，而且那行是**真的兜底**（不是捂嘴 ✓）
+
+**全量效果**（89 个程序，全部 error 0 ✓）：
+
+```
+             gcc   clang
+第一次全量    39     37
+上一轮        29     27
+这一轮        14     12     ← 各再 -15 ✓（-Wreturn-type 一族清掉 ✓）
+```
+语料 **256/0** ✓ 九套件全绿 ✓ 剩下的基本就是 `__extc_ret_v`（set-but-unused）与 `d`（普通局部）那两族 ✓

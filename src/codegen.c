@@ -3204,6 +3204,9 @@ static void genFunc(CG *g, FuncDef *f) {
      * `noArena` has no epilogue below, so it must return on its own here, or the
      * trailing return would never be reached and the counter would never come
      * down. */
+    bool fallsOff = !(f->body && f->body->kind == ST_BLOCK && f->body->u.block.stmts.len > 0
+                      && stmtIsDefiniteReturn(*(Stmt **)vecAt(&f->body->u.block.stmts,
+                                                              f->body->u.block.stmts.len - 1)));
     if (g->isRecursive) {
         cgRecLeave(g);
         /* This return is emitted only when the body can fall off its end. When
@@ -3211,15 +3214,21 @@ static void genFunc(CG *g, FuncDef *f) {
          * function with `noArena` it would name `__extc_ret_v`, which is not
          * declared there, so gcc reported an error; in every other case it is
          * dead code and is left out. */
-        if (!(f->body && f->body->kind == ST_BLOCK && f->body->u.block.stmts.len > 0
-              && stmtIsDefiniteReturn(*(Stmt **)vecAt(&f->body->u.block.stmts,
-                                                       f->body->u.block.stmts.len - 1)))) {
-            if (g->noArena) {
-                if (retVoid) cgLine(g, "return;");
-                else         cgLine(g, "return __extc_ret_v;");
-            }
+        if (fallsOff && g->noArena) {
+            if (retVoid) cgLine(g, "return;");
+            else         cgLine(g, "return __extc_ret_v;");
         }
     }
+    /* A function without an arena has no epilogue below, so nothing catches a body
+     * that runs off its end - and a non-void one would then return whatever the
+     * register happened to hold. clang reports exactly that as `-Wreturn-type`, and
+     * one shape it cannot see through is a `match` whose arms all return: the arms
+     * become an `if / else if` chain, which says nothing about being exhaustive.
+     * The trap is the honest answer for the path that no arm matched, and because
+     * `extc_trapMsg` is `noreturn` the C compiler stops asking for a value there. */
+    if (fallsOff && g->noArena && !retVoid)
+        cgLine(g, "extc_trapMsg(\"%s\", %d, \"a non-void function reached its end without returning\");",
+               g->path, f->line);
     /* The shared epilogue: the release sequence appears once, and falling off
      * the end of the body goes through it as well. The `goto` guarantees that
      * the label has a user, so there is no -Wunused-label warning.
