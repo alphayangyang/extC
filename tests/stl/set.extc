@@ -1,0 +1,35 @@
+// setI64：无值 map（建在 mapI64<u8> 上，所以哈希/探测/墓碑只有一份实现）
+//
+// 判据：新元素 put 为真、重复 put 为假（与 map::put 语义相反）· 删掉后查不到 ·
+//       墓碑 churn 十万轮后容量不涨（墓碑被复用）· 清空后 len=0
+use std::io
+use stl::set
+
+fn main() -> i32 {
+    var s: setI64 = setI64::withCap(i64(8))
+    var newN: i64 = i64(0)
+    if s.put(i64(1)) { newN = newN + i64(1) }
+    if s.put(i64(2)) { newN = newN + i64(1) }
+    io::cout << "new=" << newN << " len=" << s.len()
+    var again: i64 = i64(0)
+    if s.put(i64(1)) { again = again + i64(1) }
+    io::cout << " again=" << again << " len=" << s.len()
+    var has2: i64 = i64(0)
+    if s.contains(i64(2)) { has2 = i64(1) }
+    var rm: i64 = i64(0)
+    if s.remove(i64(2)) { rm = i64(1) }
+    var gone: i64 = i64(0)
+    if s.contains(i64(2)) { gone = i64(1) }
+    io::cout << " has2=" << has2 << " rm=" << rm << " gone=" << gone << " len=" << s.len()
+    var hits: i64 = i64(0)
+    var i: i64 = i64(0)
+    while i < i64(100000) {
+        if s.put(i64(7)) { hits = hits + i64(1) }
+        if s.remove(i64(7)) { hits = hits + i64(1) }
+        i = i + i64(1)
+    }
+    io::cout << " hits=" << hits << " cap=" << s.capOf()
+    s.clear()
+    io::cout << " cleared=" << s.len() << "\n"
+    return 0
+}

@@ -1,0 +1,43 @@
+/* stl/set.extc -- `setI64`: a value-less map, built on top of `stl/map` (POOLS.md section 9).
+ *
+ * WHY NOT ITS OWN TABLE: hashing, linear probing, tombstones and the rebuild threshold are the
+ * parts of a hash container that are easy to get wrong, and a second copy of them means `map`
+ * and `set` drift apart -- one of them gets a fix, the other silently keeps the bug. So a set
+ * IS a map whose value is a placeholder byte: one implementation, one place to fix.
+ *
+ * The cost is stated honestly: one `u8` per element. Paying a byte to delete a whole class of
+ * divergence is the trade this file makes.
+ *
+ * The face mirrors `map` exactly (`withCap` / `len` / `contains` / `put` / `remove` / `clear`
+ * plus the table-position scan `keyAt` / `liveAt` / `capOf`), with ONE difference: `put` returns
+ * true when the element is NEW, while `map::put` returns true when it was already there. */
+use stl::map
+
+struct setI64 {
+    m: mapI64<u8>
+
+    fn withCap(want: i64) -> setI64 {
+        var s: setI64 = { m: mapI64<u8>::withCap(want) }
+        return s
+    }
+
+    fn len(self: ref setI64) -> i64 { return self.m.len() }
+
+    fn contains(self: ref setI64, k: i64) -> bool { return self.m.contains(k) }
+
+    /* Insert one element. True when it was new (the map says the opposite, so flip it). */
+    fn put(self: mut ref setI64, k: i64) -> bool {
+        if self.m.put(k, u8(0)) { return false }
+        return true
+    }
+
+    /* Remove one element. True when it was there. */
+    fn remove(self: mut ref setI64, k: i64) -> bool { return self.m.remove(k) }
+
+    fn clear(self: mut ref setI64) { self.m.clear() }
+
+    /* Scan by table position (the dense face arrives with the pool-backed map). */
+    fn keyAt(self: ref setI64, i: i64) -> i64 { return self.m.keyAt(i) }
+    fn liveAt(self: ref setI64, i: i64) -> bool { return self.m.liveAt(i) }
+    fn capOf(self: ref setI64) -> i64 { return self.m.capOf() }
+}

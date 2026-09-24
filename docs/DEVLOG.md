@@ -8049,3 +8049,27 @@ tour          740 → 606    53 → 54 ms   102 → 105 ms   16416 → **16688**
 「`clear()` 的代价与容量无关」= 染色版 O(1) 成立。这一节与既有的 churn（峰值 RSS 平）、canary（判据有牙）
 并列，成为池这一层第三条常设判据。顺带一个数字：400 万轮 × 4 次插入 = 1600 万次插入，连同插入的簿记
 一共 0.09s。
+
+### 周期 13（第 13 轮）：③ `stl/set` 落地（无值 map）；② map 池底化的半成品已存档
+
+**③ 落地**：新增 `stdlib/stl/set.extc` —— `struct setI64 { m: mapI64<u8> }`，元素即键，`u8` 当占位值。
+理由是哈希、线性探测、墓碑、`rebuild` 阈值这些最容易写错的东西**只有一份实现**，set 与 map 不可能各漂
+各的；代价照实写：每元素一个字节。面与 map 对齐（`withCap` / `len` / `contains` / `put` / `remove` /
+`clear` / `keyAt` / `liveAt` / `capOf`），只差一处语义：**`put` 在新元素时为真**（map 是「已存在为真」，
+所以显式翻过来）。
+
+实测（新节加在 `tests/stl/run.sh`）：
+`new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=16 cleared=0`
+—— 重复插入不算新 · 删掉后查不到 · 十万轮 put+remove 墓碑 churn 后容量稳在 16 · 清空后 len=0。
+`tests/stl` / `tests/map` / `tests/pool` 各失败 0。
+
+**② 存档**：map 池底化改到一半（287 行 diff）时仓库是红的，红树不能留 —— 半成品存到
+`/tmp/map_wip_pool.patch`（另有整份 `/tmp/map_wip_pool.extc`），`stdlib/stl/map.extc` 已 `git checkout`
+回到绿树，三道闸门复跑全绿。
+
+症状记档（下一步的入口）：生成的 C 里 `map$mapI64_i32_remove` 调用 `pool$pool_i32_remove`，但那是个
+**implicit declaration** —— 也就是 `pool<i32>` 的**部分方法没有被实例化出来**；换 `mapI64<u8>` 时缺得更全
+（`withCap` / `handleAtDense` / `set` / `insert` / `len` / `remove` / `clear` 全缺）。也就是说「库里的泛型
+`A<V>` 内部持有库里的泛型 `B<V>`」这条链上，`B` 的实例化没有全部跟出来；而 `vector<T> → pool<T>` 是
+同样的链却常绿（`tests/stl` 一直过）。所以继续 ② 之前，先把这两条链的差异找出来 —— 这属于「库作者撞墙」
+那一族，值得进 PLAN。

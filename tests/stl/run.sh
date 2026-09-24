@@ -45,6 +45,9 @@ rm -rf "$TMPC"
 echo "== string：连续字节串（append 触发翻倍 · asSlice 连续可直印 · shrink 降水位）=="
 run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=64 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
 
+echo "== setI64：无值 map（哈希 / 探测 / 墓碑只有一份实现 —— 建在 mapI64<u8> 上）=="
+run_case set     tests/stl/set.extc     "new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=16 cleared=0"
+
 echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/stl/string_churn_a.extc -o "$TMP2/a.c" >/dev/null 2>&1 \
