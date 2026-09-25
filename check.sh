@@ -48,6 +48,11 @@ if out=$(timeout 600 ./tests/generics/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
 else bad "tests/generics/run.sh"; echo "$out"; fi
 
+echo "== impl 块（方法挂载点：内建标量也能挂 => hashMap<i64, V> 直接可用）=="
+if out=$(timeout 600 ./tests/impl/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 7 反例：含 coherence 重名与内建标量）"
+else bad "tests/impl/run.sh"; echo "$out"; fi
+
 echo "== IO 第一块（定案 73：std::sys 原语 + std::io 库 —— 能从 stdin 读了）=="
 if out=$(timeout 600 ./tests/io/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层 + 流式：控制台 cin >> x · 文件 fin >> 整数 >> 一行 >> 一个字节 · cerr 与 stdout 分开）"

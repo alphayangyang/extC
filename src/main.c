@@ -264,8 +264,15 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
 
     /* Mark them as reserved, so the user cannot redefine them. A clash is an error
      * whose message explains why. */
-    for (size_t i = 0; i < pm.structs.len; i++)
-        (*(StructDef **)vecAt(&pm.structs, i))->reserved = true;
+    for (size_t i = 0; i < pm.structs.len; i++) {
+        StructDef *psd = *(StructDef **)vecAt(&pm.structs, i);
+        /* A builtin method holder (`impl i64 { ... }` in the prelude) is not a prelude type:
+         * it has no fields and no name of its own in the type table, and the program is allowed
+         * to add more methods to the same builtin. `reserved` means "the user may not redefine
+         * this nor add methods to it", which would be the wrong thing to say here. */
+        if (psd->builtinHolder) continue;
+        psd->reserved = true;
+    }
     for (size_t i = 0; i < pm.types.len; i++)
         (*(TypeDef **)vecAt(&pm.types, i))->reserved = true;
     for (size_t i = 0; i < pm.funcs.len; i++)

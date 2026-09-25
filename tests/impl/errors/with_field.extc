@@ -1,0 +1,5 @@
+// 反例：impl 只加行为，不加存储 —— 布局由类型自己的声明决定。
+// expect: expected `fn` in the `impl` block
+struct pt { x: i64 }
+impl pt { y: i64 }
+fn main() -> i32 { return 0 }

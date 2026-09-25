@@ -1,0 +1,5 @@
+// 反例：impl 的目标必须是**存在**的类型（struct 或内建标量）。
+// expect: `impl` on unknown type `nope`
+struct pt { x: i64 }
+impl nope { fn f(self: ref nope) -> i64 { return i64(0) } }
+fn main() -> i32 { return 0 }

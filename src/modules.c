@@ -1413,6 +1413,22 @@ static void rwExprName(ModUnit *self, Expr *e) {
  *   - Merging mutates the declarations in place; they are the same objects afterwards.
  */
 
+/* Rewrite one method of a unit into the flat module's naming.
+ *
+ * Factored out because methods arrive two ways: inside a type's body, and in an `impl` block,
+ * which is a declaration of its own until the checker attaches it (so it is not reachable from
+ * any struct yet when a unit is merged). Both need the same three rewrites, and a second copy
+ * would drift.
+ */
+static void rwUnitMethod(Loader *L, ModUnit *u, FuncDef *m) {
+    m->modName = u->modName;
+    m->ctx     = u->ctx;
+    if (m->ret) rwType(L, u, m->ret);
+    for (size_t k = 0; k < m->params.len; k++)
+        rwType(L, u, (*(Param **)vecAt(&m->params, k))->type);
+    rwStmt(L, u, m->body);
+}
+
 static void mergeUnit(Loader *L, ModUnit *u) {
     Module *src = &u->mod;
     mangleUnitDecls(L, u);
@@ -1422,16 +1438,23 @@ static void mergeUnit(Loader *L, ModUnit *u) {
         s->ctx     = u->ctx;      /* which file it came from: a diagnostic needs it */
         for (size_t j = 0; j < s->fields.len; j++)
             rwType(L, u, (*(FieldDef **)vecAt(&s->fields, j))->type);
-        for (size_t j = 0; j < s->methods.len; j++) {
-            FuncDef *m = *(FuncDef **)vecAt(&s->methods, j);
-            m->modName = u->modName;
-            m->ctx     = u->ctx;
-            if (m->ret) rwType(L, u, m->ret);
-            for (size_t k = 0; k < m->params.len; k++)
-                rwType(L, u, (*(Param **)vecAt(&m->params, k))->type);
-            rwStmt(L, u, m->body);
-        }
+        for (size_t j = 0; j < s->methods.len; j++)
+            rwUnitMethod(L, u, *(FuncDef **)vecAt(&s->methods, j));
         *(StructDef **)vecPush(&L->out->structs) = s;
+    }
+    /* `impl` blocks travel as their own declaration, because the type they extend may well be
+     * declared in another module (or be a builtin). What has to happen here is only the naming:
+     * the target is a name written in this unit, and this unit's declarations have just been
+     * renamed (`pair` -> `liba$pair`), so it goes through the same rename table as every other
+     * name. A builtin is never renamed -- `renLookup` only answers for names this unit declares
+     * itself. The attachment itself happens in the checker, where the type table exists. */
+    for (size_t i = 0; i < src->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&src->impls, i);
+        const char *mangled = renLookup(u, im->typeName);
+        if (mangled) im->typeName = mangled;
+        for (size_t j = 0; j < im->methods.len; j++)
+            rwUnitMethod(L, u, *(FuncDef **)vecAt(&im->methods, j));
+        *(ImplDef **)vecPush(&L->out->impls) = im;
     }
     for (size_t i = 0; i < src->types.len; i++) {
         TypeDef *t = *(TypeDef **)vecAt(&src->types, i);
@@ -1742,14 +1765,18 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
             StructDef *sd = *(StructDef **)vecAt(&rootm->structs, i);
             for (size_t j = 0; j < sd->fields.len; j++)
                 rwType(&L, &root, (*(FieldDef **)vecAt(&sd->fields, j))->type);
-            for (size_t j = 0; j < sd->methods.len; j++) {
-                FuncDef *m = *(FuncDef **)vecAt(&sd->methods, j);
-                if (m->ret) rwType(&L, &root, m->ret);
-                for (size_t k = 0; k < m->params.len; k++)
-                    rwType(&L, &root, (*(Param **)vecAt(&m->params, k))->type);
-                rwStmt(&L, &root, m->body);
-            }
+            for (size_t j = 0; j < sd->methods.len; j++)
+                rwUnitMethod(&L, &root, *(FuncDef **)vecAt(&sd->methods, j));
             *(StructDef **)vecPush(&out->structs) = sd;
+        }
+        /* `impl` blocks of the root file. The root's declarations are never renamed, so unlike
+         * the per-unit path there is no name to look up here -- only the bodies need their
+         * qualified names resolved. */
+        for (size_t i = 0; i < rootm->impls.len; i++) {
+            ImplDef *im = *(ImplDef **)vecAt(&rootm->impls, i);
+            for (size_t j = 0; j < im->methods.len; j++)
+                rwUnitMethod(&L, &root, *(FuncDef **)vecAt(&im->methods, j));
+            *(ImplDef **)vecPush(&out->impls) = im;
         }
         for (size_t i = 0; i < rootm->types.len; i++)
             *(TypeDef **)vecPush(&out->types) = *(TypeDef **)vecAt(&rootm->types, i);

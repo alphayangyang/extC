@@ -419,6 +419,10 @@ StructDef *structOf(Type *t) {
  * they belong to, so no free function is considered. */
 FuncDef *findMethod(Type *st, const char *name) {
     StructDef *sd = structOf(st);
+    /* A builtin scalar has no declaration body, so the methods an `impl i64 { ... }` block
+     * attached live in a synthetic holder that `Type.mholder` points at. Every other kind is
+     * covered by `structOf`: a declared type's body holds its own methods. */
+    if (!sd && st && st->kind == TY_BUILTIN) sd = st->mholder;
     if (!sd) return NULL;
     for (size_t i = 0; i < sd->methods.len; i++) {
         FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);

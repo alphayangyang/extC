@@ -1,0 +1,7 @@
+// 反例：顶层注解描述的是**声明**（可见性 / 拷贝 / 存储），impl 既不声明存储也不声明可见性。
+// expect: no annotation applies to an `impl` block
+use std::io
+struct pt { x: i64 }
+@private
+impl pt { fn f(self: ref pt) -> i64 { return self.x } }
+fn main() -> i32 { return 0 }

@@ -1,0 +1,5 @@
+// 反例：泛型类型的 impl 需要块自己的类型参数（暂不支持），必须**在语法处**就说清楚。
+// expect: `impl` on a generic type is not supported yet
+struct box<T> { v: T }
+impl box<T> { fn get(self: ref box<T>) -> T { return self.v } }
+fn main() -> i32 { return 0 }

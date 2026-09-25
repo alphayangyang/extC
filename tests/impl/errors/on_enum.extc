@@ -1,0 +1,5 @@
+// 反例：枚举没有方法（它用 `match` 读），不能当 impl 的目标。
+// expect: cannot own methods
+type st = | on | off
+impl st { fn f(self: ref st) -> i64 { return i64(0) } }
+fn main() -> i32 { return 0 }

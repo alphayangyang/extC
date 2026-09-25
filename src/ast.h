@@ -56,6 +56,11 @@ struct Type {
     const char *param;   /* TY_PARAM: the parameter name, such as "T" */
     int         tpIndex; /* TY_PARAM: which parameter it is, by position */
     int64_t     asize;   /* TY_ARRAY: the length, a compile-time constant */
+    /* TY_BUILTIN: where an `impl i64 { ... }` block put the methods it attached. A builtin
+     * scalar has no declaration body, so methods written for it from outside need a holder of
+     * their own; `NULL` when no impl ever targeted this builtin. Every other kind is covered by
+     * `sdef` / `edef`: a declared type already has a body to hold its methods. */
+    StructDef  *mholder;
 };
 
 Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED; targs may be filled in after */
@@ -450,6 +455,13 @@ struct StructDef {
                                   * one is interned by ttGeneric instead */
     bool        reserved;        /* came from the prelude: the user may neither redefine it
                                   * nor add methods to it */
+    /* Synthetic holder for a **builtin scalar** that an `impl` block attached methods to.
+     * It is pushed into the module's struct list so that every "struct x method" pass
+     * (signature resolution, body checks, escape/borrow rules, operator collection, code
+     * generation) reaches those methods with no pass changed at all, but it is NOT interned
+     * under its name (so `i64` still resolves to the builtin, never to a struct) and code
+     * generation never emits a C struct for it. */
+    bool        builtinHolder;
     /* `@noCopy`: this type may not be copied by value -- it may only be passed as
      * `ref` / `mut ref`. A type whose state has an **identity** is the reason: copying a
      * `reader` (or an `ifstream`) gives two objects over one buffer with two independent
@@ -746,11 +758,30 @@ typedef struct {
                             * table without threading the loader through every pass */
 } UseDecl;
 
+/* An `impl Type { fn ... }` block: methods attached to a type that is declared elsewhere
+ * (or is a compiler builtin, which has no body to write them in).
+ *
+ * Kept as a declaration of its own until the checker has interned every type name, so that an
+ * impl block may appear before the type it extends, and so that the attachment happens in one
+ * place (the effect on the type is what every later pass sees -- see `checkModule`).
+ *
+ * What this is NOT: a trait. There is no requirement set and no separate implementation to
+ * match against; methods attached here join the type's one method set, exactly as if they had
+ * been written inside its body. */
+typedef struct {
+    const char *typeName;   /* the name written after `impl`, e.g. `i64` or `point` */
+    int         line;
+    Vec         methods;    /* FuncDef*: `owner` is filled in when the block is attached */
+} ImplDef;
+
 typedef struct {
     Vec structs;                 /* StructDef* */
     Vec types;                   /* TypeDef*: the `type` enums */
     Vec funcs;                   /* FuncDef* */
     Vec globals;                 /* GlobalDef*: top-level let / var */
+    Vec impls;                   /* ImplDef*: `impl Type { ... }` blocks, attached by the
+                                  * checker (each module attaches its own; the *effect* on a
+                                  * type is global, which is what enforces coherence) */
     Vec uses;                    /* UseDecl* */
     /* Entries mapping a bare name back to its mangled module name (`pair` to
      * `liba$pair`); the loader fills them in and `ttResolve` looks them up. */

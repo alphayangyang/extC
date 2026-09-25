@@ -1,0 +1,31 @@
+// `impl` 块：方法写在**类型体之外**的挂载点。不引入 trait、不做 dyn、不改派发 ——
+// 方法进的是同一个方法集，走同一套逐实例检查。
+// 关键收益：**编译器内建标量**也能挂方法 ⇒ `hashMap<i64, V>` 不再需要 `i64Key` 包装
+// （那个包装就是因为"方法只能写在 struct 体内、而 i64 没有体"才存在的）。
+// expect: sum=7 twice=42|g=70 miss=-7 len=1
+use std::io
+use stl::hashMap
+
+struct pt {
+    x: i64
+}
+
+impl pt {
+    fn sum(self: ref pt, o: pt) -> i64 { return self.x + o.x }
+}
+
+impl i64 {
+    fn twice(self: ref i64) -> i64 { return *self * i64(2) }
+}
+
+fn main() -> i32 {
+    var a: pt = { x: i64(3) }
+    var b: pt = { x: i64(4) }
+    io::cout << "sum=" << a.sum(b) << " twice=" << i64(21).twice()
+    var m: hashMap<i64, i32> = hashMap<i64, i32>::withCap(i64(8))
+    m.put(i64(7), i32(70))
+    let g: i32 = m.get(i64(7)) ?? i32(-1)
+    let miss: i32 = m.get(i64(8)) ?? i32(-7)
+    io::cout << "|g=" << i64(g) << " miss=" << i64(miss) << " len=" << m.len() << "\n"
+    return 0
+}

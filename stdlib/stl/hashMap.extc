@@ -63,6 +63,20 @@ fn hashI64(k: i64) -> i64 {
     return i64(u)
 }
 
+/* The `hash` of an `i64` key: the step that makes `hashMap<i64, V>` work directly.
+ *
+ * This used to need an `i64Key` wrapper (`struct i64Key { v: i64  fn hash  fn == }`) plus the
+ * `hashMapI64<V>` adapter, because methods may only be declared inside a `struct` body and `i64`
+ * is a compiler builtin with no body to write one in. An `impl` block supplies that attachment
+ * point: its methods are indistinguishable from methods written in the body (same one method
+ * set, same per-instance checks), so `hashMap<i64, V>` needs no wrapper at all.
+ *
+ * `==` is not attached: equality on a builtin is native to the language (the compiler emits it
+ * directly). Only named methods need an impl. */
+impl i64 {
+    fn hash(self: ref i64) -> i64 { return hashI64(*self) }
+}
+
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct hashMap<K, V> {

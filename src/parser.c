@@ -170,6 +170,7 @@ static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
 static bool       parseFuncAnnotations(Parser *p, bool *outInline);
 static TypeDef   *parseTypeDecl(Parser *p);
+static ImplDef   *parseImpl(Parser *p);
 
 static bool   startsUpper(const char *s);
 static Token *expectTypeName(Parser *p, const char *what);
@@ -515,6 +516,22 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (sharesStorage) s->sharesStorage = true;
             if (poolObject) s->poolObject = true;
             *(StructDef **)vecPush(&out->structs) = s;
+        } else if (at(&p, "impl")) {
+            /* An `impl` block attaches methods to a type declared elsewhere. None of the
+             * top-level annotations apply to it: `@private` and `@noCopy` describe a
+             * declaration, `@poolObject`/`@sharesStorage` describe storage, and the block
+             * declares neither. Saying so beats silently ignoring them. */
+            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "An `impl` block adds methods to a type that is declared elsewhere, so it "
+                         "declares no storage and no visibility of its own.",
+                         "no annotation applies to an `impl` block");
+                return false;
+            }
+            ImplDef *im = parseImpl(&p);
+            if (!im) return false;
+            *(ImplDef **)vecPush(&out->impls) = im;
         } else if (at(&p, "type")) {
             if (noCopy) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
@@ -664,6 +681,83 @@ static StructDef *parseStruct(Parser *p) {
     }
     if (!expect(p, "}", NULL)) return NULL;
     return sd;
+}
+
+/* Parse an `impl Type { fn ... }` block.
+ *
+ * Methods written here join the type's **one method set**, exactly as if they had been written
+ * inside the type's body: the difference is only where they may be written (and that a builtin
+ * scalar, which has no body at all, can be given methods this way).
+ *
+ * Params:
+ *   p - parser, positioned at `impl`
+ *
+ * Returns:
+ *   The new ImplDef, or NULL after reporting an error.
+ */
+static ImplDef *parseImpl(Parser *p) {
+    Token *kw = take(p);                    /* impl */
+    /* Any name, not `expectTypeName`: the target may be a builtin scalar, and the ten scalar
+     * names lex as `TK_TYPE` rather than `TK_IDENT` (`i64`, `u8`, `f64`, ...). Whether the name
+     * denotes a type at all is a question for the checker, which owns the type table. */
+    if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col, NULL,
+                 "expected a type name after `impl`, found `%s`", shown(t));
+        return NULL;
+    }
+    Token *name = take(p);
+
+    ImplDef *im = (ImplDef *)arenaAllocZero(p->arena, sizeof(ImplDef));
+    im->typeName = name->text;
+    im->line = kw->line;
+    vecInit(&im->methods, p->arena, sizeof(void *));
+
+    /* `impl Pair<T> { ... }`: a generic type's method set is per instance, so the block would
+     * need its own type parameters. Not supported yet, and rejected here so the error arrives
+     * where the syntax is rather than as a confusing lookup failure later. */
+    if (at(p, "<")) {
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col,
+                 "A generic type's methods are declared inside its own body. Extending it from "
+                 "outside would need the block's own type parameters, which is not supported yet.",
+                 "`impl` on a generic type is not supported yet");
+        return NULL;
+    }
+
+    if (!expect(p, "{", NULL)) return NULL;
+    skipJunk(p);
+    while (!at(p, "}")) {
+        if (at(p, "fn") || at(p, "@")) {
+            bool inl = false;
+            if (!parseFuncAnnotations(p, &inl)) return NULL;
+            if (!at(p, "fn")) {
+                Token *t = cur(p);
+                ctxError(p->ctx, t->line, t->col, NULL,
+                         "an annotation on a function must be followed by `fn`, found `%s`",
+                         shown(t));
+                return NULL;
+            }
+            FuncDef *m = parseFunc(p);
+            if (!m) return NULL;
+            m->isInline = inl;
+            /* `owner` is filled in when the block is attached: the target type's name is not
+             * resolved yet (an impl may even appear before the type it extends). */
+            *(FuncDef **)vecPush(&im->methods) = m;
+            skipJunk(p);
+            continue;
+        }
+        /* Storage stays in the declaration: one place decides a type's layout, and this is not
+         * that place. Saying so keeps a stray field from being silently dropped. */
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col,
+                 "An `impl` block adds behaviour, never storage: the type's fields are declared "
+                 "in its own body.",
+                 "expected `fn` in the `impl` block, found `%s`", shown(t));
+        return NULL;
+    }
+    if (!expect(p, "}", NULL)) return NULL;
+    return im;
 }
 
 /* Parse a `type Name = | v1 | v2(T)` declaration of a variant type.

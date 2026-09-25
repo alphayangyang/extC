@@ -5251,7 +5251,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         if (sd->typeParams.len > 0) continue;   /* generic: generated per instance */
-        *(StructDef **)vecPush(&g.structs) = sd;
+        /* A synthetic holder for `impl i64 { ... }` is not a C struct: it has no fields and no
+         * layout, so there is nothing to declare. Its methods are emitted like any other
+         * function -- the loop below still walks them -- which is the whole point of attaching
+         * them to a holder instead of teaching five passes about builtins. */
+        if (!sd->builtinHolder) *(StructDef **)vecPush(&g.structs) = sd;
         /* Methods are functions too and share the prototype and definition table. */
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);

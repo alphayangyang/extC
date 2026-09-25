@@ -7,6 +7,53 @@
 
 ---
 
+## 2026-09-26（第十一段续十二）· **`impl` 块**：方法挂载点落地（`hashMap<i64, V>` 从此不需要包装）
+
+作者：「先把 impl 搞了吧，这玩意儿看起来很安全」——判断是对的：`impl` **不动派发、不做类型擦除、
+不改值语义**，风险只在名字解析与 coherence 上。而它单独就解掉了"内建类型没有方法挂载点"那件事。
+
+### 病灶回顾
+
+方法只能写在 `struct` 体内 ⇒ **编译器内建标量没有地方能写方法**（顶层 `fn hash(self: ref i64)`
+报 `` `self` is only allowed in a method declared inside a `struct` ``；`struct i64 { }` 报
+`` expected a struct name, found `i64` ``）。标准库因此包了一层：`i64Key` + `hashMapI64`。
+（`string` / `slice<T>` / `varArray<T>` 有方法，是因为它们是 stdlib/prelude 里**声明的 struct**。）
+
+### 实现（五处，都为了让 impl 方法与体内方法**完全同形**）
+
+| 位置 | 做了什么 |
+|---|---|
+| `ast.h` / `ast.c` | `ImplDef`（目标名 + 方法表）与 `Module.impls`；`Type.mholder`（内建标量的方法挂载点）；`StructDef.builtinHolder` |
+| `parser.c` | 顶层 `impl <Type> { fn ... }`；目标是 `TK_IDENT` **或** `TK_TYPE`（十个标量名按 `TK_TYPE` 词法化）；注解/字段/泛型目标各自报清楚 |
+| `check_top.c` | **挂载趟**，放在签名解析之前：把方法推进目标类型的**唯一方法集**，同名即报错。目标是内建标量时建一个**合成 holder**：进本模块的 `m->structs`（于是签名解析 / 体检查 / 逃逸 / 借用 / 运算符 / codegen **一趟都不用改**），但**不进** `tt->structs` 名字表（`i64` 仍解析成内建），也不发 C struct 定义 |
+| `check_lookup.c` | `findMethod`：内建标量回退到 `Type.mholder` |
+| `modules.c` / `main.c` | 模块合并时带上 `impls`（根文件是内联合并，漏过一次，debug 打印 `m->impls.len == 0` 当场抓到）；目标名走同名改写表；方法体走与结构体方法**同一个** `rwUnitMethod`（顺手把重复的那段提取出来）；prelude 的 holder 不标 `reserved` |
+| `codegen.c` | holder 不是 C struct：只跳过"发 struct 定义"那一句，方法照旧进发射表 |
+
+### 收益与判据
+
+- **`hashMap<i64, V>` 直接可用**：`stdlib/stl/hashMap.extc` 里一行
+  `impl i64 { fn hash(self: ref i64) -> i64 { return hashI64(*self) } }`（`==` 不用挂 ——
+  内建类型的相等是**语言原生**的，只有命名方法才需要 impl）。实测
+  `g=70 miss=-7 after=-1 len=1` ✓（挂之前报的是正确诊断：`` `hashMap$hashMap_i64_i32` needs `i64`
+  to define `hash` ``，note 还告诉你"Add a `fn hash` to that type"）。
+- `tests/impl/`（新，接进 `check.sh` 第 27 节）：**1 正例 + 7 反例** —— 正例含 struct 的 impl、
+  内建标量的 impl、`hashMap<i64, V>`；反例覆盖 **coherence 重名**（体内 vs impl、impl vs impl）、
+  未知类型、枚举、impl 里写字段、泛型目标、顶层注解不适用。
+- 验收：`tests/run.sh` **260 + 264** · `check.sh quick` **27/27** · 构建零告警。
+
+### 纪律纠正（重要）
+
+这一轮撞到两次 `docs/COMMENT-STYLE.md` 的硬规则：**`src/` 与 `stdlib/` 的注释必须英文、纯 ASCII**。
+第一次是上一轮我给 `check_top.c` 写的中文注释（已改英文）；第二次是这轮给 `hashMap.extc` 写的中文注释
+（当场改英文）。规则原文写着"a comment that does not follow it will be rewritten in review"；
+`tools/scan_cjk.py` 可以随时自查（`check_top.c` 仍有 16 处**既存**违规，与本轮无关）。
+
+### 下一步（不动本轮）
+
+`i64Key` + `hashMapI64` 现在可以退化成"`hashMap<i64, V>` 的薄别名"（包装已经不需要了）；
+这属于标准库清理，判据现成（`tests/hashmap`），下一次动。
+
 ## 2026-09-26（第十一段续十一）· **要求上抛**：泛型体里调泛型（含自递归）终于能用了
 
 作者：「先把这个上抛优化了，现在卡了好几次了」。这一条做完，`sort<T>` 那种「泛型算法拆成两个泛型函数」

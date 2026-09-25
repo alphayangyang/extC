@@ -227,7 +227,14 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
          * is not the same pointer as the owner's type. */
 
         Type *sb = ttBase(p0->type);
-        if (p0->type->kind != TY_REF || !sb || sb->sdef != f->owner)
+        /* A builtin scalar has no `sdef` to compare against, so its holder is matched by the
+         * type it stands for (`impl i64` -> `self: ref i64`). Every other owner is a real
+         * declaration and is matched by definition, which is also what lets a generic method
+         * write `ref Pair<A, B>` and still belong to `Pair`. */
+        bool selfOk = f->owner->builtinHolder
+                        ? (p0->type->kind == TY_REF && p0->type->inner == f->owner->type)
+                        : (p0->type->kind == TY_REF && sb && sb->sdef == f->owner);
+        if (!selfOk)
             ckError(c, p0->line, NULL, "`self` of `%s.%s` must be `ref %s`",
                     DN(f->owner), f->name, DN(f->owner));
     }
@@ -4292,6 +4299,85 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < m->types.len; i++)
         ttFromName(tt, (*(TypeDef **)vecAt(&m->types, i))->name);
 
+    /* Attach every `impl` block to its target type.
+     *
+     * This has to happen before signatures are resolved, because the attachment makes the
+     * methods **indistinguishable** from methods written inside the type's body: from here on
+     * every pass that walks "struct x method" (signature resolution, body checks, the escape and
+     * borrow rules, operator collection, code generation) reaches them with no pass changed at
+     * all. That is what makes an attachment point this cheap.
+     *
+     * A builtin scalar has no declaration body to attach to, so a synthetic holder is created
+     * for it: the holder goes into this module's struct list (so those passes see the methods)
+     * but is NOT interned under its name in the type table (so `i64` keeps resolving to the
+     * builtin, never to a struct) and code generation emits no C struct for it. `Type.mholder`
+     * points back at it, which is where method lookup ends up.
+     *
+     * The holder is keyed off the **type**, not off this module: attaching the same method twice
+     * -- from two impl blocks, from two modules, or from the prelude and the program -- hits the
+     * duplicate check below. A type has one method set, and coherence is enforced by that check
+     * rather than by "the last one silently wins". */
+    if (dbgOn("EXTC_DBG_IMPL"))
+        fprintf(stderr, "[impl] %zu block(s), %zu struct(s), %zu type(s)\n",
+                m->impls.len, m->structs.len, m->types.len);
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+        if (dbgOn("EXTC_DBG_IMPL"))
+            fprintf(stderr, "[impl]   target `%s` with %zu method(s)\n", im->typeName, im->methods.len);
+        Type *t = ttFromName(tt, im->typeName);
+        StructDef *sd = NULL;
+        if (!t) {
+            ctxError(ctx, im->line, 1,
+                     "An `impl` block extends a type that exists: a struct declaration, or a "
+                     "builtin scalar such as `i64`.",
+                     "`impl` on unknown type `%s`", im->typeName);
+            continue;
+        }
+        if (t->kind == TY_BUILTIN) {
+            sd = t->mholder;
+            if (!sd) {
+                sd = (StructDef *)arenaAllocZero(arena, sizeof(StructDef));
+                sd->name = im->typeName;
+                sd->line = im->line;
+                sd->builtinHolder = true;
+                sd->type = t;
+                vecInit(&sd->typeParams, arena, sizeof(void *));
+                vecInit(&sd->fields, arena, sizeof(void *));
+                vecInit(&sd->methods, arena, sizeof(void *));
+                t->mholder = sd;
+                *(StructDef **)vecPush(&m->structs) = sd;
+            }
+        } else {
+            sd = structOf(t);
+            if (!sd) {
+                ctxError(ctx, im->line, 1,
+                         "A type that can own methods is a `struct` or a builtin scalar. An enum is "
+                         "read with `match`, and a view or a reference is not a declaration.",
+                         "`impl` on `%s`, which cannot own methods", im->typeName);
+                continue;
+            }
+            if (sd->typeParams.len > 0) {
+                ctxError(ctx, im->line, 1,
+                         "A generic type's methods are declared inside its own body; extending it "
+                         "from outside needs the block's own type parameters.",
+                         "`impl` on generic type `%s` is not supported yet", im->typeName);
+                continue;
+            }
+        }
+        for (size_t j = 0; j < im->methods.len; j++) {
+            FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
+            for (size_t k = 0; k < sd->methods.len; k++) {
+                FuncDef *have = *(FuncDef **)vecAt(&sd->methods, k);
+                if (strcmp(have->name, mth->name) != 0) continue;
+                ckError(&c, im->line, NULL,
+                        "`%s` already has a method named `%s`", sd->name, mth->name);
+                break;
+            }
+            mth->owner = sd;
+            *(FuncDef **)vecPush(&sd->methods) = mth;
+        }
+    }
+
     /* First pass: resolve the type names in every signature and field. */
     /* Enum payload types are resolved here as well (`| circle(f64) | rect(f64, f64)`). */
     for (size_t i = 0; i < m->types.len; i++) {
@@ -4341,13 +4427,18 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         checkFunc(&c, fx);
     }
 
-    /* **这一批必须先跑**：它把「占位实例」的调用点重定向到具体实例（`less_T` → `less_i64`），
-     * 而下面几批要求检查（运算符 / 协议方法 / 结果类型 / 引用规矩）**只认具体实例**。
-     * 反过来放（从前就是）会让这一批刚造出来的具体实例赶不上复查 —— 实例建出来了，
-     * 却没人问它 `T` 到底有没有 `hash()`，于是漏报一路漏到 codegen，那里只能吐个 `0`。
+    /* This batch has to run **before** the requirement batches below.
      *
-     * 三件事：代入类型实参、查/建那个具体实例、把调用点的 `func` 指过去。实例是去重的
-     * （`funcInstance`），所以一组实参只有一个实例。 */
+     * It repoints the call sites of a provisional instance at a concrete one (`less_T` ->
+     * `less_i64`), while the batches below (operators / protocol methods / result types /
+     * reference rules) only ever look at concrete instances. The other order let the concrete
+     * instance this batch had just created miss its own re-check: it was built, but nobody
+     * asked whether `T` really has `hash()`, so the missing check travelled all the way to code
+     * generation, which can only emit a `0` for a call it cannot resolve.
+     *
+     * Three steps per site: substitute the type arguments, intern (or create) that instance,
+     * and point the call expression's `func` at it. Instances are interned (`funcInstance`), so
+     * one argument combination has exactly one instance. */
     /* Re-resolve each deferred call site into a concrete instance under the
      * substitution of the enclosing instance.
      *
