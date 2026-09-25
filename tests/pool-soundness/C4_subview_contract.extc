@@ -1,0 +1,17 @@
+// `subView`：**明确认账**的零拷贝 —— 只在字符串不再变化时有效。
+// 这里演示**安全用法**（取视图后不再改字符串）⇒ 内容正确、不许 UAF。
+// 判据的反面（取视图后 push）写在 README 里：那是签字认账的范围，检查器看不见
+// （它不是生命周期问题，是"块被替换了"）：POOLS.md §5.4 / docs/topics/POOL-SOUNDNESS.md §4.3
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    var s: string = string::withCap(i64(8))
+    s.append("hello world")
+    var v: slice<u8> = s.subView(i64(0), i64(5))     // 零拷贝
+    var i: i64 = 0
+    var sum: i64 = i64(0)
+    while i < v.len { sum = sum + i64(v[i])  i = i + i64(1) }   // 只读：不碰 s
+    io::cout << "view=" << v.len << " sum=" << sum << "\n"
+    return 0
+}

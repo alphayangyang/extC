@@ -33,10 +33,12 @@ run_case() {
     esac
 }
 
-echo "== 池档：反例（洞开着就该报 HOLE）=="
-run_case E1_string_sub_growth tests/pool-soundness/E1_string_sub_growth.extc hole
+echo "== 池档：反例（今天没有开着的了 —— E1 已修）=="
+run_case C3_string_sub_now_copies tests/pool-soundness/C3_string_sub_now_copies.extc control
 echo "== 池档：对照（同形状、拷贝语义 ⇒ 不该炸）=="
 run_case C1_vector_toslice_copy tests/pool-soundness/C1_vector_toslice_copy.extc control
 # C2：陈旧拷贝 release —— **守卫在这里是承重的**（拿掉它 = 同一份程序 ASan UAF）
 run_case C2_stale_copy_release tests/pool-soundness/C2_stale_copy_release.extc control
+# C4：`subView` 的**安全用法**（取视图后不再改串）—— 零拷贝仍在，只是要签字
+run_case C4_subview_contract tests/pool-soundness/C4_subview_contract.extc control
 exit $fail

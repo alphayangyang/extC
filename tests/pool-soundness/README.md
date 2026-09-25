@@ -8,7 +8,8 @@
 
 | 文件 | 形状 | 现在 |
 |---|---|---|
-| `E1_string_sub_growth.extc` | `string.sub` 零拷贝视图 + 增长 ⇒ 旧池块被 `give`（`free`） | **接受 + ASan UAF**（洞开着） |
+| `C3_string_sub_now_copies.extc` | **原来的 E1**：`string.sub` + 增长 | **已修（2026-09-25）**：`sub` 改成**拷贝**（同文件 `toSlice` 一直是拷贝）⇒ 现在是对照组（值正确、无 UAF） |
+| `C4_subview_contract.extc` | `subView` 的**安全用法**（取视图后不再改串） | 对照：零拷贝仍在，但要签字 |
 | `C1_vector_toslice_copy.extc` | 同一形状走 `vector.toSlice()`（**拷贝**）+ 20 万次 `push` | 对照：值仍然正确（拷贝 + `resize` 恰好原地） |
 | `C2_stale_copy_release.extc` | `var b = a`（`@sharesStorage` 共享板块）→ `a.release()` → 槽位被别人拿走 → **`b.release()`** | 对照：**守卫承重** —— 有 `pStale()` 时 `b.release()` 是空操作（`c[0]=9 len=1`）；把守卫拿掉是 **ASan UAF**（`b` 把 `c` 的池 drop 了），而且**不开 ASan 时打印一模一样** |
 

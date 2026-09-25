@@ -164,7 +164,39 @@ struct string {
 
     /* A zero-copy view of [lo, hi). Bounds are clamped, so a bad range gives an empty view rather
      * than reading past the buffer. */
+    /* A substring: **a copy**.
+     *
+     * This used to return `self.buf[a..b]` -- a zero-copy view into the pool plate. That cannot
+     * be defended: `push` / `append` grow the string by replacing the block (the old one goes
+     * back to the pool), so the view dangles the moment the string changes, and the checker
+     * cannot see it. It is the same shape `toSlice` above already documents, and POOLS.md 5.4
+     * states the rule: a view into a pool plate has nothing to lean on. Measured (that is what
+     * turned this from a suspicion into a bug): take `sub(0, 5)`, push 400 bytes, and the view
+     * reads freed memory -- printing looks fine without ASan, and it is `heap-use-after-free`
+     * with it (`tests/pool-soundness` case E1 was exactly this).
+     *
+     * The copy lands where the **caller** chose (`new` plus the escape analysis's home arena),
+     * so the result may be stored and returned like any other value.
+     *
+     * Need zero copy? `subView` below, and sign for it. */
     fn sub(self: ref string, lo: i64, hi: i64) -> slice<u8> {
+        var a: i64 = lo
+        var b: i64 = hi
+        if a < i64(0) { a = i64(0) }
+        if b > self.n { b = self.n }
+        if b < a { b = a }
+        var out: mut slice<u8> = new u8[b - a]
+        copyInto<u8>(out, self.buf[a..b], b - a)
+        return out
+    }
+
+    /* A zero-copy view -- valid **only while the string is not changed**.
+     *
+     * Growing the string (`push` / `append`) replaces its block, and the view dangles at once;
+     * the checker cannot see that, because it is not a lifetime question but a "the block was
+     * replaced" one. This is the same category as `!` and `extern!`: you sign, you own it.
+     * Use `sub` unless a profile says otherwise. */
+    fn subView(self: ref string, lo: i64, hi: i64) -> slice<u8> {
         var a: i64 = lo
         var b: i64 = hi
         if a < i64(0) { a = i64(0) }

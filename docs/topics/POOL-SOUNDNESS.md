@@ -8,7 +8,11 @@
 > 基准版本：`ee5b0e4`（`src/` 干净；池运行期在 `src/pools.c` 里是**一段 C 字符串**，
 > 所以本文引 `extc_pool_*` 的函数名而不引行号）
 >
-> **补记（2026-09-25，同日修）**：§7 的第 ① 条**已落地** —— `extc_pool_reset` 现在换代，
+> **补记（2026-09-25，同日修）**：**E1 也已修** —— `string.sub` 改为**拷贝**（同文件 `toSlice` 一直是拷贝），
+> 零拷贝另立 `subView` 并要求签字（与 `!` / `extern!` 同类）。`tests/pool-soundness/` 现在
+> **4 条全是对照组**（没有开着的洞）。
+>
+> 同日更早的补记：§7 的第 ① 条**已落地** —— `extc_pool_reset` 现在换代，
 > 并且池有了**模式**（`kind`：容器池 / 对象表池），对象表模式下 `give`/`resize` 直接 trap。
 > 全文 `generation++` 现在是 **2 处**（`new_at` 与 `reset`）。**E1 仍未修**（`string::sub` 依旧零拷贝）。
 >
@@ -26,7 +30,7 @@
 | **T1** | 池运行期的**存储机制**（块 = `malloc`、`give` = `free`、`resize` = `realloc` + 补零、`live` 标志、plate 只属于自己） | **成立**。没有越界、没有重复释放、`new T[n]` 的"新分配读作 0"在 plate 里也守住了 |
 | **T2** | **池粒度**的陈旧检查（`drop` ⇒ `live = 0` ⇒ `extc_pool_generation()` 返回 0；槽复用 ⇒ `new_at` 里 `generation++`） | **成立**。旧句柄携带的 `gen` 一定不再匹配（容器级 `pStale`/`pidGen` 就建立在这上面） |
 | **T3** | **元素/块粒度**的陈旧检查（"这个槽/这块在这次失效之后还是原来那个吗"） | **部分修复**：`reset` 现在换代（池粒度⇒元素失效可被抓住）；**块粒度仍缺** —— `give`/`resize` 依旧不动 `gen`，只是**对象表模式下被直接禁掉**（trap）⇒ 剩下的路是"只追加 + 墓碑"或每槽代际 |
-| **T4** | 因此「`build/extc` 接受的程序，在池档不会**静默 UB**」 | **证伪**：§5 的 E1 **实测** `heap-use-after-free`（检查器接受）；E2 由代码结构直接推出；E3 是 dyn 落地时必然出现的类型混淆 |
+| **T4** | 因此「`build/extc` 接受的程序，在池档不会**静默 UB**」 | **已修（同日）**：E1（`string.sub` 零拷贝 + 增长）**实测过 UAF，现已改拷贝**，判据从 `HOLE` 翻成对照组；E2 的结构条件仍在，但对象表模式已把 `give`/`resize` 焊住（容器池按设计允许）；E3 仍是 dyn 落地前的设计期反例 |
 | **T5** | 边界：把 §7 的三条不变量补回去之后 | **可修**（三条都是局部改动：`reset` 一行、dyn 池只追加、视图不许进池；判据可双向写） |
 
 **一句话的可操作结论**：
@@ -140,7 +144,7 @@ void   *extc_pool_resize(int64_t rid, void *p, int64_t bytes) {
 | API | 行为 | 评价 |
 |---|---|---|
 | `vector::toSlice`（`stdlib/stl/vector.extc:70`） | **拷贝** | 注释（66–69）明说：*"没有'零拷贝视图'是有意的：那等于把池里的东西交出去（POOLS.md §5.4），而且守不住"* ✓ |
-| `string::sub`（`stdlib/stl/string.extc:167`） | `return self.buf[a..b]` —— **零拷贝** | **违反同一条教义** ✗ |
+| `string::sub`（`stdlib/stl/string.extc`） | **已改：拷贝**（`new u8[n]` + `copyInto`，落点在调用者选的地方） | 现在与 `toSlice` 一致 ✓；零拷贝另立 `subView`，注释里写明"只在字符串不再变化时有效"——**要签字** |
 
 而 `docs/topics/POOLS.md:792` 早就写下了结论：*"视图本身也守不住 —— `push` 一次（可能搬家）、
 `clear`（翻纪元）、`shrink`…"*。**文档是对的，实现漏了一处** —— 与 arena 档"定理对、记账漏"同形。
@@ -149,7 +153,11 @@ void   *extc_pool_resize(int64_t rid, void *p, int64_t bytes) {
 
 ## 5. 反例
 
-### E1（**实测**）`string.sub` 零拷贝视图 + 增长 ⇒ `heap-use-after-free`
+### E1（**实测**，已于同日修复）`string.sub` 零拷贝视图 + 增长 ⇒ `heap-use-after-free`
+
+> **修法**：`sub` 改成拷贝（`new u8[b-a]` + `copyInto<u8>`，逃逸分析把这次分配提到调用者选的地方）；
+> 零拷贝保留为 `subView`，注释明确"只在字符串不再变化时有效"，与 `!`/`extern!` 同类（签字认账）。
+> 判据翻面：`tests/pool-soundness/C3_string_sub_now_copies.extc`（原 E1 文件）现在是对照组。
 
 ```extc
 use std::io
@@ -222,8 +230,8 @@ dyn 的句柄是 `{pool, idx, gen}`。若 `idx` 落在被 `reset` 标记可复�
    语义变成"重置 = 该池所有引用作废"，粗但 sound；若将来要"单槽失效"，再加**每槽代际**。
 2. **INV-A（dyn 的池只追加）**：dyn 用的池**永不 `give`、永不 `resize`**（**2026-09-25 起由池的模式在运行期挡住**：对象表模式下两者直接 trap）；删除 = **墓碑**
    （对象仍在、标记已删 ⇒ 取用时 trap）。这一条同时买到：`self` 借用安全、迭代中插入安全、同池句柄稳定。
-3. **INV-V（视图不进池）**：`ref dyn` 只借**栈 / arena**；`string::sub` 改成拷贝
-   （或保留零拷贝但**改名**并给出明确契约：`subView` + "容器再增长/清理即失效"）。
+3. ~~**INV-V（视图不进池）**~~ **已落地（2026-09-25）**：`string::sub` 改**拷贝**；零拷贝改成
+   `subView` 并写明契约（"只在字符串不再变化时有效"，与 `!`/`extern!` 同类）。
 
 ### 7.2 验收判据（沿用本项目的老规矩，双向）
 
