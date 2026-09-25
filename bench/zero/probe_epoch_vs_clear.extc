@@ -1,0 +1,107 @@
+use std::io
+use std::sys::pool as syspool
+
+/* `args[i]` 当十进制数读 */
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+/* ⭐ epoch 染色 / 保留 / O(1) 清空 的**并排对照**。
+ *
+ * 同一个形状（循环体 = 一个地方，每轮塞 per 条、然后清掉），四种做法：
+ *
+ *   A 每轮**重建**：`extc_pool_drop(rid) + extc_pool_new()` —— 每轮都走一遍
+ *     "摘链 + 释放板块 + 重新挂链"（等价于"清空 = 逐个遍历释放"的那一档）。
+ *   B **O(1) 清空**（染色那一层）：`extc_pool_reset(rid)` —— 只重置内部状态
+ *     （epoch+1、游标归零、槽表不写），池记录与板块都留着。
+ *   C **A + 保留池**：重建路径不变，但板块归还时进保留池、下一轮复用
+ *     （即阶段 b 落地后的实际行为）。
+ *   D **物理清空对照**：不调 reset，而是把**整张槽表**写成空闲（O(cap)）——
+ *     这就是没有 epoch 时"清空一个池"必须付的代价，与容量成正比。
+ *
+ * 参数：rounds（默认 200000）、per（默认 8）、做法（A/B/C/D，默认 A）。
+ * 账：每次输出都带 live/keep，确认四种做法都不漏。 */
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = i64(200000)
+    if args.len > i64(1) { rounds = toInt(args[1], rounds) }
+    var per: i64 = i64(8)
+    if args.len > i64(2) { per = toInt(args[2], per) }
+    var mode: i64 = i64(0)                 /* 0=A 1=B 2=C 3=D */
+    if args.len > i64(3) {
+        let m = args[3]
+        if m.len > i64(0) {
+            let c = i64(m[i64(0)])
+            if c == i64(66) { mode = i64(1) }        /* 'B' */
+            if c == i64(67) { mode = i64(2) }        /* 'C' */
+            if c == i64(68) { mode = i64(3) }        /* 'D' */
+        }
+    }
+
+    var rid: i64 = syspool::extc_pool_new(i64(-1))
+    var vals: mut slice<i32> = poolSlice<i32>(rid, i64(4096))
+    var ents: mut slice<i64> = poolSlice<i64>(rid, i64(4096))
+    var sink: i64 = 0
+
+    var r: i64 = 0
+    while r < rounds {
+        var i: i64 = 0
+        while i < per {
+            vals[i] = i32(i)
+            ents[i] = poolPack(i64(0), i + i64(1))
+            i = i + i64(1)
+        }
+        /* 读一遍（模拟真实使用） */
+        var k: i64 = 0
+        while k < per {
+            if ents[k] != i64(0) { sink = sink + i64(vals[k]) }
+            k = k + i64(1)
+        }
+        if mode == i64(0) {
+            /* A 每轮重建 */
+            syspool::extc_pool_drop(rid)
+            rid = syspool::extc_pool_new(i64(-1))
+            vals = poolSlice<i32>(rid, i64(4096))
+            ents = poolSlice<i64>(rid, i64(4096))
+        } else {
+            if mode == i64(1) {
+                /* B O(1) 清空 */
+                syspool::extc_pool_reset(rid)
+            } else {
+                if mode == i64(2) {
+                    /* C 重建 + 保留池（板块走保留池，不再进 malloc） */
+                    syspool::extc_pool_drop(rid)
+                    rid = syspool::extc_pool_new(i64(-1))
+                    vals = poolSliceRaw<i32>(rid, i64(4096))
+                    ents = poolSliceRaw<i64>(rid, i64(4096))
+                } else {
+                    /* D **物理清空整张槽表**（O(cap)：每个槽都写成空闲）。
+                     * 这就是没有 epoch 时"清空一个池"必须付的代价 —— 与容量成正比。 */
+                    var j: i64 = 0
+                    while j < i64(4096) {
+                        ents[j] = poolPack(i64(0), i64(0))
+                        j = j + i64(1)
+                    }
+                }
+            }
+        }
+        r = r + i64(1)
+    }
+    var live = syspool::extc_pool_bytesLive()
+    var keep = syspool::extc_pool_keep_bytes()
+    io::cout << "mode=" << mode << " rounds=" << rounds << " per=" << per << " sink=" << sink << " live=" << live << " keep=" << keep << "\n"
+    return 0
+}
+
+/* 把两个 i32 拼成一个 i64（只为让 ents 看起来像一张真的槽表） */
+fn poolPack(hi: i64, lo: i64) -> i64 {
+    return (hi << i64(32)) | lo
+}

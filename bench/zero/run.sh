@@ -23,6 +23,15 @@ best3() {   # 程序 -> best of 3 秒
     done
     printf '%s' "$b"
 }
+best3_argv() {   # 程序 参数... -> best of 3 秒（参数里带做法字母）
+    local name=$1; shift
+    local b=99 t
+    for _ in 1 2 3; do
+        t=$( { TIMEFORMAT=%R; time "./build/bz-$name" "$@" >/dev/null; } 2>&1 | tail -1 )
+        b=$(awk -v a="$t" -v b="$b" 'BEGIN{print (a<b)?a:b}')
+    done
+    printf '%s' "$b"
+}
 
 echo "== 清零 vs 不清零（同一形状：拿一块 32 MB、只写首尾）=="
 if build_one probe_raw_16m && build_one probe_zero_16m; then
@@ -37,6 +46,44 @@ echo "== 清零的价格随容量怎么走（同一形状，只换块大小）==
 for p in probe_raw probe_zero probe_vector_cap probe_pool_cap; do
     if build_one "$p"; then echo "  $(printf '%-20s' "$p") $(best3 "$p")s"; else echo "  $p 编不过"; fi
 done
+
+echo
+ROUNDS=${ROUNDS:-20000000}      # 数据给大：O(1) 那版快到测不出，小了全是噪声
+PER=${PER:-8}
+echo "== epoch 染色 / 保留 / O(1) 清空：**并排对照**（${ROUNDS} 轮 × 每轮 ${PER} 条）=="
+# A 每轮重建（drop+new，板块进 malloc）  B O(1) 清空（reset：翻代 + 游标归零）
+# C 重建 + 保留池                      D 物理清空整张槽表（O(cap)）
+if build_one probe_epoch_vs_clear; then
+    for m in A B C D; do
+        b=$(best3_argv probe_epoch_vs_clear "$ROUNDS" "$PER" "$m")
+        out=$(./build/bz-probe_epoch_vs_clear "$ROUNDS" "$PER" "$m")
+        ns=$(awk -v t="$b" -v n="$ROUNDS" 'BEGIN{printf "%.2f", t*1e9/n}')
+        printf '  %s  %-9ss  %7s ns/轮   %s\n' "$m" "$b" "$ns" "$out"
+    done
+    echo "  （A/C 的 live=0：每轮都真的 drop 了；B/D 的 live=49152：池留着，这正是 O(1) 的前提）"
+else
+    echo "  probe_epoch_vs_clear 编不过"
+fi
+
+echo
+echo "== 同一形状的 C++ 基线（vector<pair<int,int>>）=="
+if [ -f bench/zero/cpp/epoch_vs_clear.cpp ] && command -v g++ >/dev/null 2>&1; then
+    if g++ -O1 -std=c++17 -o build/bz-cpp-evc bench/zero/cpp/epoch_vs_clear.cpp 2>/dev/null; then
+        for m in A B C; do
+            b=99
+            for _ in 1 2 3; do
+                t=$( { TIMEFORMAT=%R; time ./build/bz-cpp-evc "$ROUNDS" "$PER" "$m" >/dev/null; } 2>&1 | tail -1 )
+                b=$(awk -v a="$t" -v b="$b" 'BEGIN{print (a<b)?a:b}')
+            done
+            ns=$(awk -v t="$b" -v n="$ROUNDS" 'BEGIN{printf "%.2f", t*1e9/n}')
+            printf '  C++ %s  %-9ss  %7s ns/轮\n' "$m" "$b" "$ns"
+        done
+    else
+        echo "  g++ 编不过（这一支跳过）"
+    fi
+else
+    echo "  跳过（没有 g++）"
+fi
 
 echo
 echo "== 反例：判据有牙吗？让「每池成本 ∝ 池数」⇒ 曲线必须翘起来 =="

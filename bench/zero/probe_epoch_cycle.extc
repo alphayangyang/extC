@@ -1,0 +1,55 @@
+use std::io
+use std::sys::pool as syspool
+use stl::pool
+
+/* `args[i]` 当十进制数读 */
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+/* ⭐ **epoch 染色 + 保留 + O(1) 清空的端到端形状**。
+ *
+ * 这是一个最常见、也最能体现这套机制的形状：循环体 = 一个地方（epoch），每轮在里面
+ * 拿一个池、塞满数据、清空（O(1) 翻 epoch）、出块。
+ *
+ * 与 `zt_exit_cost.extc` 的区别：那一条量的是「建池 + 拿板块再丢掉」（每轮都真的分配），
+ * 这一条量的是「建池 → 用 → **O(1) 清空** → 再用」（同一只池跨轮复用）。
+ *
+ * 参数：rounds（默认 200000）、每轮插入条数（默认 8）。
+ * 输出带上账：live / bytesLive / keepBytes，供 run.sh 的判据用。 */
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = i64(200000)
+    if args.len > i64(1) { rounds = toInt(args[1], rounds) }
+    var per: i64 = i64(8)
+    if args.len > i64(2) { per = toInt(args[2], per) }
+
+    /* 池建在**循环外**：它是跨轮存活的那个对象（epoch 说它该不该被清） */
+    var p: pool<i32> = pool<i32>::withCap(i64(1024))
+    var r: i64 = 0
+    var sink: i64 = 0
+    while r < rounds {
+        var i: i64 = 0
+        while i < per {
+            let h = p.insert(i32(i))
+            if p.contains(h) { sink = sink + i64(1) }
+            i = i + i64(1)
+        }
+        /* O(1) 清空：翻 epoch、游标归零，一个槽都不写（POOLS.md §7.3） */
+        p.clear()
+        r = r + i64(1)
+    }
+    var live = syspool::extc_pool_bytesLive()
+    var keep = syspool::extc_pool_keep_bytes()
+    var cap = p.capacity()
+    io::cout << "rounds=" << rounds << " per=" << per << " sink=" << sink << " len=" << p.len() << " cap=" << cap << " live=" << live << " keep=" << keep << "\n"
+    return 0
+}
