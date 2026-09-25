@@ -8625,3 +8625,89 @@ extc_pool_zoneLeaveTo(__extc_zm2);
 
 这一项已按上面的规格派出去实现（含收益对照、`tests/pool` 的 live 计数探针、以及一条"不建池的循环体里
 没有钩子 / 在循环体里建池必须有钩子"的双向常设判据）。上面这些数字待实现落地后由它补前后对照。
+
+### 2026-09-25 · zone 钩子改成**按需发射**（上一条的落地）：`vector` 0.11s → 0.03s，profile 里两个钩子归零
+
+上面那条定位出了真因，这一条是修法与实测。
+
+**改法**：加一个传递摘要 `FuncDef.makesPool`（"这个函数能不能直接/间接建池"），只在这个摘要为真的
+地方压/弹 zone。
+
+- `src/ast.h`：`FuncDef.makesPool` 一个 bool，注释写清它为什么是**最小**不动点。
+- `src/check_top.c`：`exprMakesPool` / `stmtMakesPool` 两个遍历器（照 `exprCallsNeedsHome` /
+  `stmtCallsNeedsHome` 那套写，表达式形态一个不落），加 `checkModule` 末尾的 worklist 迭代。
+- `src/codegen.c`：`blockMakesPool(block)` 只看这个块**自己的直接语句**；块入口按它决定压不压 zone；
+  `CG.zoneMark[64]` 记"这一层到底压没压"，`cgReleaseLevel` 与尾声弹出都查这张表。
+- `src/check_internal.h`：`stmtMakesPool` 的跨文件原型（codegen 要用）。
+- 运行期 `extc_pool_zoneEnter/LeaveTo` **一个字没改**，池注册表也没动。
+
+**最小不动点的规则**：`makesPool(f)` = f 的语句里直接调用 `extc_pool_new`，**或**调用了某个
+`makesPool` 为真的函数。规则单调（false → true 单向）、格有限 ⇒ 迭代到某一轮不再变化就是**最小**不动点，
+递归与互递归不需要特例：环里没有成员真的调到 `extc_pool_new` 时它们全都停在 false，而"全都停在 false"
+正是想要的答案（更大的不动点会把不会建池的函数也点上，把这一轮省下来的钩子又还回去）。
+
+**收益（`bench/stl/run.sh`，RUNS=7，改前 / 改后同一台机器同一天）**：
+
+| 用例 | 改前 | 改后 | 省 | RSS 改前 → 改后 |
+|---|---|---|---|---|
+| `vector` | 0.11s | **0.03s** | **73%** | 40620 → 40620 KB |
+| `string` | 0.06s | **0.03s** | **50%** | 27564 → 27564 KB |
+| `set` | 0.12s | **0.10s** | 17% | 62892 → 62956 KB |
+| `hashmap` | 0.13s | **0.12s** | 8% | 69036 → 69036 KB |
+| `map` | 0.85s | 0.86s | 0（噪声内） | 90792 → 90732 KB |
+
+校验和五项全部仍然一致（`run.sh` 自己判）。`map` 这一格没有收益是对的：B+ 树的循环体里真的在建池，
+钩子必须留着。
+
+**callgrind 复核**（同一份 `bench/stl/vector.extc`）：
+
+- 改前：`extc_pool_zoneLeaveTo` 45.01% + `extc_pool_zoneEnter` 35.23% + `main` 16.96%；
+- 改后：`main` **98.85%**，`extc_pool_zoneEnter` / `extc_pool_zoneLeaveTo` / `extc_pool_new`
+  各只剩 **1 次调用**（`main` 的帧 + `withCap` 那一次），循环体里一次都没有。
+
+生成物从 5 压 6 弹变成 1 压 1 弹（`tests/pool/rt_zone_ondemand.extc` 那类形状是 5 压 6 弹 → 2 压 2 弹）。
+
+**各套件结论**（都是本轮真跑的）：
+
+- `tests/pool`：失败 0（含 `extc_pool_live()` 计数探针、`-Werror` gcc+clang、ASan 含泄漏检查）。
+- `tests/stl` · `tests/hashmap` · `tests/map` · `tests/linmap` · `tests/generics` ·
+  `tests/arena-promoted` · `tests/arena` · `tests/ops`：各失败 0。
+- `bash tests/run.sh`：通过 262，失败 0。
+- `bash check.sh quick </dev/null`：通过 26，失败 0。
+- 另跑了一次独立探针（不属于任何套件）：330 个语料里用到池的 **54 个**程序，每个
+  `__extc_zm<lvl>` 声明都有同名的 `zoneLeaveTo`，也没有弹出未声明的层 ⇒ 0 个问题。
+
+**新判据**（`tests/pool/run.sh`，双向，把这件事钉住）：
+
+- 正例 `tests/pool/rt_zone_ondemand.extc`：`needPool` 为真（程序里确实建池，门是开着的），
+  `main` 体里两条只读元素的 `while` 循环体**不许**有钩子，建池的那个块**必须**有。
+  期望值写死成 `zoneEnter = 2` · `zoneLeaveTo = 2`，理由在脚本注释里数出来：
+  帧一次 + 建池块一次 = 2 压；建池块出块弹一次 + `main` 尾声弹回帧深度一次 = 2 弹。
+  修之前这个形状是 5 压 6 弹（11 个钩子），多出来的正是三条只读循环体与不建池的库调用。
+- 反例 `tests/pool/rt_zone_inloop.extc`：**在循环体里建池**（每轮建一个池 + 一个子池），
+  判据是运行结果 `total=6 live=0 depth=1`（每轮块内 live 涨到 2、出块整区走 ⇒ 三轮累加 6）
+  **且**生成物里 `zoneEnter` 仍然是 2 次（帧 + 循环体）—— 少发一次就会让池落在外层 zone 上，
+  或者根本没有 zone（`extc_pool_new` 返回 -1）。
+
+**踩到的坑**（都是这轮真撞的）：
+
+1. **弹出不能只看 `zoneHere`**。第一版 `cgReleaseLevel` 仍然按 `zoneHere` 弹，块不压也弹，
+   而 `zoneLeaveTo(mark)` 是"弹到 mark 为止"⇒ 把**外层**的 zone 一起弹掉了。改成发射时写
+   `CG.zoneMark[层号]`、弹出时查同一张表；`malloc` 那条路也一并想清楚：表是"这一层压没压"的
+   唯一事实来源，两处不可能走散。
+2. **`g->blkLevel` 是 0 起算的，块层号是 1 起算的**。块里写的 `zoneMark[g->blkLevel]`（进去后已经 +1）
+   与序言写的 `zoneMark[1]`（帧那层）本来是同一格 ⇒ 函数体这个块一进去就把序言的记录抹成 false，
+   收尾不弹 `__extc_zm1` ⇒ 帧的 zone 永远留在栈上（生成物里能直接看到：只有 enter 没有 leave）。
+   修法：进块时把这一格存起来，出块时放回（`savedZoneMark`）。一个字节换掉一整类疑问。
+3. **`flush()` / `print()` / `println()` 是内建，`e->func` 是 NULL**。第一版"未解析的调用一律算建池"
+   让 `io::flushOut` / `io::writeBytesRaw` / `io::errWrite` 全变成 `makesPool=1`（它们只是调了
+   `flush()`）⇒ 摘要顺着库往下漫。修法：把这三个内建按名字放行，其余未解析仍保守算真。
+   教训是"保守"要保守在对的地方：这里该保守的是"不认识的函数可能建池"，不是"编译器自己的内建可能建池"。
+4. **尾声要按层补弹，不能只弹 `__extc_zm1`**。`return` 走的是 `goto __extc_ret`，可能从很深的块里
+   跳出来：那一层的 zone 还在栈上，只弹一次帧的 mark 是弹不干净的。改成从最深的层往下、每个压过的
+   层弹一次（`zoneLeaveTo` 弹到 mark 为止，多余的是幂等空操作）。
+5. **`tests/pool/run.sh` 在 git 里是 644**（`bench/bigmatrix/run.sh` 也一样），
+   而 `check.sh` 是 `./tests/pool/run.sh` 直接执行的 ⇒ 报
+   `timeout: failed to execute process: Permission denied`，池那一节永远算失败。
+   这是**修之前就存在**的（`git ls-tree HEAD` 就是 100644），跟本轮改动无关；顺手 `chmod +x`
+   把它修正，`check.sh quick` 才回到"通过 26，失败 0"。
