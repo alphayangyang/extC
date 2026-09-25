@@ -1,0 +1,17 @@
+// 池树的两条链（POOLS.md §7.7）：寿命挂 zone 根链、父子挂父池子链
+// 判据：父池在外层地方、子池在内层地方 ⇒ 内层地方退出时**子池必须已经死了**
+//       （修之前子池不在 zone 根链上，zoneLeaveTo 看不见它，要等外层退出才回收）
+// expect: live0=1 in=2 depth=2 after=1 depth=1
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    let outer = syspool::extc_pool_new(i64(-1))
+    io::cout << "live0=" << syspool::extc_pool_live()
+    {
+        let inner = syspool::extc_pool_new(outer)      /* 子池：挂父链 */
+        io::cout << " in=" << syspool::extc_pool_live() << " depth=" << syspool::extc_pool_zoneDepth()
+    }
+    io::cout << " after=" << syspool::extc_pool_live() << " depth=" << syspool::extc_pool_zoneDepth() << "\n"
+    return 0
+}

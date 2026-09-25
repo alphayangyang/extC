@@ -121,6 +121,7 @@ else
 fi
 
 echo "== 期 1 · 一个地方一个 zone：多个池 + 嵌套树，出块整区走 =="
+rt_run rt_tree     tests/pool/rt_tree.extc     "live0=1 in=2 depth=2 after=1 depth=1"
 rt_run rt_zone     tests/pool/rt_zone.extc     "depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0"
 
 # ---------------------------------------------------------------- zone 按需发射
