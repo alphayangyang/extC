@@ -1,0 +1,26 @@
+// lowerBound 的四个边界：空表 · 比最小还小 · 比最大还大 · 命中；以及 contains/get 的缺失路径
+// expect: empty0=0 emptyHas=0 emptyGet=-1 low=0 hit=1 high=3 rm=1 afterRm=0 gone=0
+use std::io
+use stl::map
+
+fn main() -> i32 {
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(4))
+    io::cout << "empty0=" << m.lowerBound(i64(5))
+    var has: i64 = i64(0)
+    if m.contains(i64(5)) { has = i64(1) }
+    var g: i32 = m.get(i64(5)) ?? i32(-1)
+    io::cout << " emptyHas=" << has << " emptyGet=" << i64(g)
+    m.put(i64(10), i32(100))
+    m.put(i64(20), i32(200))
+    m.put(i64(30), i32(300))
+    io::cout << " low=" << m.lowerBound(i64(1))          /* 比最小还小 ⇒ 0 */
+    io::cout << " hit=" << m.lowerBound(i64(20))         /* 命中 ⇒ 1 */
+    io::cout << " high=" << m.lowerBound(i64(99))        /* 比最大还大 ⇒ n */
+    var rm: i64 = i64(0)
+    if m.remove(i64(10)) { rm = i64(1) }
+    io::cout << " rm=" << rm << " afterRm=" << m.lowerBound(i64(15))  /* 10 被删 ⇒ 第一个 >= 15 的是 20，在下标 0 */
+    var gone: i64 = i64(0)
+    if m.contains(i64(10)) { gone = i64(1) }
+    io::cout << " gone=" << gone << "\n"
+    return 0
+}

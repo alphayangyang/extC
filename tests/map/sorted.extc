@@ -1,0 +1,39 @@
+// map<K, V>（有序表，第一步）：乱序插入后按序遍历 · 覆盖返回真 · lowerBound · 删中间键后仍有序
+// expect: order=1,2,3,4,5 len=5 lb3=2 lb6=5 ow=1 v3=33 miss=-1 rm=1 order2=1,2,4,5 lb5=3
+use std::io
+use stl::map
+
+fn main() -> i32 {
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(4))
+    m.put(i64(5), i32(50))
+    m.put(i64(1), i32(10))
+    m.put(i64(4), i32(40))
+    m.put(i64(2), i32(20))
+    m.put(i64(3), i32(30))
+    io::cout << "order="
+    var i: i64 = i64(0)
+    while i < m.len() {
+        if i > i64(0) { io::cout << "," }
+        io::cout << m.keyAt(i)
+        i = i + i64(1)
+    }
+    io::cout << " len=" << m.len()
+    io::cout << " lb3=" << m.lowerBound(i64(3)) << " lb6=" << m.lowerBound(i64(6))
+    var ow: i64 = i64(0)
+    if m.put(i64(3), i32(33)) { ow = i64(1) }
+    var v3: i32 = m.get(i64(3)) ?? i32(-1)
+    io::cout << " ow=" << ow << " v3=" << i64(v3)
+    var miss: i32 = m.get(i64(9)) ?? i32(-1)
+    io::cout << " miss=" << i64(miss)
+    var rm: i64 = i64(0)
+    if m.remove(i64(3)) { rm = i64(1) }
+    io::cout << " rm=" << rm << " order2="
+    i = i64(0)
+    while i < m.len() {
+        if i > i64(0) { io::cout << "," }
+        io::cout << m.keyAt(i)
+        i = i + i64(1)
+    }
+    io::cout << " lb5=" << m.lowerBound(i64(5)) << "\n"
+    return 0
+}

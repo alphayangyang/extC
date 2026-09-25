@@ -1,0 +1,114 @@
+/* stl/map.extc -- `map<K, V>`: an ORDERED map. Keys are kept in ascending order, so they can be
+ * walked in order and `lowerBound` answers "the first key not less than k" (a range query).
+ * Compare with `stl/hashMap.extc`: same shape of container, no order, O(1) average lookup.
+ *
+ * Stage 1, which is what this file holds today: the whole map is ONE sorted array. Binary search
+ * for the position, shift the tail to insert, shift the head back to remove, double on growth.
+ * That is the fastest possible shape for small and medium maps -- one contiguous run, no pointer
+ * chasing, no per-node allocation -- and it is also the only honest place to start an ordered
+ * container: a B-tree's root node IS a sorted array, so stage 2 splits this array into nodes
+ * (fanout 16, nodes and values living in pools) without changing a single line of the surface.
+ *
+ * Ordering comes from the KEY TYPE: `a < b` has to be defined (a method `fn <` for a struct key,
+ * built in for the numeric types). Equality is DERIVED -- `a == b` iff `!(a < b) && !(b < a)` --
+ * so a key type supplies one operator and the ordered map works for any type that has it. */
+struct map<K, V> {
+    keys: mut slice<K>
+    vals: mut slice<V>
+    n:    i64                  /* live entries; keys[0..n] are ascending */
+    cap:  i64
+
+    fn withCap(want: i64) -> map<K, V> {
+        var c: i64 = i64(4)
+        while c < want { c = c * i64(2) }
+        var m: map<K, V> = { keys: new K[c], vals: new V[c], n: i64(0), cap: c }
+        return m
+    }
+
+    fn new() -> map<K, V> { return map<K, V>::withCap(i64(4)) }
+
+    fn len(self: ref map<K, V>) -> i64 { return self.n }
+    fn capOf(self: ref map<K, V>) -> i64 { return self.cap }
+
+    /* The count of keys strictly less than `k` -- also the index `k` would be inserted at.
+     * Every lookup goes through here; `get` and `contains` only add the equality test. */
+    fn lowerBound(self: ref map<K, V>, k: K) -> i64 {
+        var lo: i64 = i64(0)
+        var hi: i64 = self.n
+        while lo < hi {
+            let mid = lo + (hi - lo) / i64(2)
+            if self.keys[mid] < k { lo = mid + i64(1) } else { hi = mid }
+        }
+        return lo
+    }
+
+    /* Equal means "neither is less", which is why a key type needs only `<`. */
+    fn contains(self: ref map<K, V>, k: K) -> bool {
+        let i = self.lowerBound(k)
+        if i >= self.n { return false }
+        return !(k < self.keys[i])
+    }
+
+    fn get(self: ref map<K, V>, k: K) -> ?V {
+        let i = self.lowerBound(k)
+        if i >= self.n { return none }
+        if k < self.keys[i] { return none }
+        return some(self.vals[i])
+    }
+
+    /* Insert or overwrite. True when the key was ALREADY there -- the same answer `hashMap::put`
+     * gives. (`set::put` is the one that flips it, so that "true" reads as "this was new".) */
+    fn put(self: mut ref map<K, V>, k: K, v: V) -> bool {
+        let i = self.lowerBound(k)
+        if i < self.n && !(k < self.keys[i]) { self.vals[i] = v  return true }
+        if self.n >= self.cap { self.grow() }
+        var j: i64 = self.n
+        while j > i {
+            self.keys[j] = self.keys[j - i64(1)]
+            self.vals[j] = self.vals[j - i64(1)]
+            j = j - i64(1)
+        }
+        self.keys[i] = k
+        self.vals[i] = v
+        self.n = self.n + i64(1)
+        return false
+    }
+
+    /* Remove `k`. True when it was there. */
+    fn remove(self: mut ref map<K, V>, k: K) -> bool {
+        let i = self.lowerBound(k)
+        if i >= self.n { return false }
+        if k < self.keys[i] { return false }
+        var j: i64 = i
+        while j + i64(1) < self.n {
+            self.keys[j] = self.keys[j + i64(1)]
+            self.vals[j] = self.vals[j + i64(1)]
+            j = j + i64(1)
+        }
+        self.n = self.n - i64(1)
+        return true
+    }
+
+    /* Drop every entry, keeping the capacity (stage 2 adds `release` with the pool). */
+    fn clear(self: mut ref map<K, V>) { self.n = i64(0) }
+
+    fn grow(self: mut ref map<K, V>) {
+        var ncap: i64 = self.cap * i64(2)
+        if ncap < i64(4) { ncap = i64(4) }
+        var nk: mut slice<K> = new K[ncap]
+        var nv: mut slice<V> = new V[ncap]
+        var i: i64 = i64(0)
+        while i < self.n {
+            nk[i] = self.keys[i]
+            nv[i] = self.vals[i]
+            i = i + i64(1)
+        }
+        self.keys = nk
+        self.vals = nv
+        self.cap  = ncap
+    }
+
+    /* By rank: the i-th smallest key, i in [0, n). Walking `i` from 0 to n-1 is the ordered walk. */
+    fn keyAt(self: ref map<K, V>, i: i64) -> K { return self.keys[i] }
+    fn valAt(self: ref map<K, V>, i: i64) -> V { return self.vals[i] }
+}
