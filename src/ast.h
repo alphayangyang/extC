@@ -458,6 +458,16 @@ struct StructDef {
      * Rust moves and borrows, Go passes a pointer, Python has no implicit object copy;
      * extC writes it down as an annotation. */
     bool        noCopy;
+    /* `@poolObject`：这个类型**拥有一个池**（存储住在池自己的板块上，寿命随它所在的地方）。
+     *
+     * 作者口径（2026-09-26）：声明比推断好 —— 编译器不必去猜（早先试过"看有没有 `pid` 字段"
+     * 和"看它的方法建不建池"，前者是魔数、后者要等闭包），一个修饰符就把这件事说清楚，
+     * 而且**用户自己写的容器用同一个修饰符**声明，走完全一样的路。
+     *
+     * 有了它，编译器能确定地做三件：① 该类型的构造调用是**池站点**（可提权）；
+     * ② 建池的函数收隐藏的「家 zone」参数；③ 将来若要按类型判"元素不许带引用"，
+     * 判据也是它，而不是任何命名约定。 */
+    bool        poolObject;
     /* 这个结构体的**某个方法**会建池（闭包里顺手算出来的，见 `FuncDef.makesPool`）。
      * 为什么需要它：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只标到模板那一份，
      * 而调用点上 `e->func` 可能是模板 ⇒ 读取处光看 `f->makesPool` 会看到假

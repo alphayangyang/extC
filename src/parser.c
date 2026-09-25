@@ -444,6 +444,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool isPrivate = false;
         bool fnInline  = false;
         bool noCopy    = false;
+        bool poolObject = false;   /* @poolObject：这个 struct 拥有一个池（作者口径） */
         /* `@private` hides a declaration; `@inline` asks for a function to be inlined.
          * They are read together because both may precede the same declaration, and the
          * order between them carries no meaning. Any other annotation is an error: these
@@ -472,6 +473,15 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
+            /* `@poolObject`：这个 struct **拥有一个池** —— 存储住在池自己的板块上、
+             * 寿命随它所在的地方。声明比推断好：编译器不必猜（试过"有没有 `pid` 字段"
+             * 与"方法建不建池"：前者是魔数、后者要等闭包），而且**用户自定义容器用同一个
+             * 修饰符**声明，走完全一样的路。 */
+            if (strcmp(nm->text, "poolObject") == 0) {
+                poolObject = true;
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
                 ctxError(ctx, a->line, a->col,
                          "The annotation is designed but not implemented yet, and accepting"
@@ -481,8 +491,9 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             ctxError(ctx, a->line, a->col,
                      "The top-level annotations today are `@private` (hide a declaration from"
-                     " other modules), `@inline` (on a function) and `@noCopy` (on a struct:"
-                     " it may only be passed as `ref` / `mut ref`). `@overwrite` is for"
+                     " other modules), `@inline` (on a function), `@noCopy` (on a struct:"
+                     " it may only be passed as `ref` / `mut ref`) and `@poolObject` (on a struct: it owns"
+                     " a pool). `@overwrite` is for"
                      " locals.",
                      "unknown top-level annotation `@%s`", nm->text);
             return false;
@@ -492,12 +503,19 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!s) return false;
             s->isPrivate = isPrivate;
             s->noCopy    = noCopy;
+            if (poolObject) s->poolObject = true;
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "type")) {
             if (noCopy) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "Only a `struct` has a copy to forbid; an enum is copied as a value.",
                          "`@noCopy` goes on a `struct`");
+                return false;
+            }
+            if (poolObject) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "Only a `struct` owns a pool; an enum has no storage of its own.",
+                         "`@poolObject` goes on a `struct`");
                 return false;
             }
             TypeDef *td = parseTypeDecl(&p);

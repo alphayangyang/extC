@@ -31,6 +31,7 @@ use std::io
 use std::sys::pool as syspool    /* 运行期池记录 + 板块原语：这张表的两个视图住在自己的板块上 */
 
 /* A `K -> V` table searched linearly. */
+@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct linMap<K, V> {
     pid:    i64            /* 这张表自己的池记录（一个非嵌套容器 = 一个池）*/
     pidGen: u64

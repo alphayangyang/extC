@@ -41,6 +41,7 @@ fn hashI64(k: i64) -> i64 {
     return x
 }
 
+@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct hashMap<K, V> {
     /* This container's OWN pool record. One non-nested container = one pool (POOLS.md 7.7);
      * `vals` is created with this as its parent, so the two records really form a tree and

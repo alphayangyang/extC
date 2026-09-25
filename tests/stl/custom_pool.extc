@@ -13,6 +13,7 @@ use std::io
 use std::sys::pool as syspool
 
 /* 自定义池底容器：照 stl::vector 那套骨架写（板块 + 池记录 + 世代 + release） */
+@poolObject            /* 用户自定义容器用**同一个修饰符**声明：这个类型拥有一个池 */
 struct mybuf<T> {
     pid:    i64
     pidGen: u64

@@ -43,6 +43,7 @@ struct bnode<K, V> {
     next: i32                 /* leaf chain, -1 at the end */
 }
 
+@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct map<K, V> {
     nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
     /* The three stores are flat and owned by the map: node `id` owns the 17 key slots at

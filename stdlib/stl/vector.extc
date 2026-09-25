@@ -12,6 +12,7 @@
  */
 use std::sys::pool as syspool
 
+@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct vector<T> {
     vals:   mut slice<T>
     n:      i64

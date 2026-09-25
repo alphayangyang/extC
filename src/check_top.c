@@ -1322,6 +1322,9 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  * 别的库方法（`get` / `asSlice` 之类）不进这一族，免得把"不可提权"的值误判成站点。 */
 bool calleeMakesPool(FuncDef *f) {
     if (!f) return false;
+    /* **声明优先**（作者口径 2026-09-26）：`@poolObject` 标在 struct 上，说"这个类型拥有一个池"。
+     * 它比推断可靠 —— 早先试过"看有没有 `pid` 字段"（魔数）与"看方法建不建池"（要等闭包）。 */
+    if (f->owner && f->owner->poolObject) return true;
     if (f->makesPool) return true;
     /* 运行期那一句**本身**就是池站点：`extc_pool_new`（extern，没有函数体 ⇒ 闭包标不到它，
      * 所以它按名字认，与 codegen 里把 `extc_pool_new` 改写成 `_at` 的那处同一个名字）。
