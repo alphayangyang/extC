@@ -1,0 +1,12 @@
+use std::io
+use stl::vector
+fn main() -> i32 {
+    var v: vector<i32> = vector<i32>::new()
+    v.push(i32(11))
+    v.push(i32(22))
+    var s: slice<i32> = v.toSlice()
+    var i: i64 = 0
+    while i < 200000 { v.push(i32(7))  i = i + 1 }
+    io::cout << "s[0]=" << i64(s[0]) << " s[1]=" << i64(s[1]) << "\n"
+    return 0
+}

@@ -1,0 +1,11 @@
+use std::io
+use stl::string
+fn main() -> i32 {
+    var s: string = string::withCap(i64(4))
+    s.append("hello world")
+    var v: slice<u8> = s.sub(i64(0), i64(5))
+    var i: i64 = 0
+    while i < 400 { s.push(u8(120))  i = i + 1 }
+    io::cout << "v[0]=" << i64(v[0]) << "\n"
+    return 0
+}
