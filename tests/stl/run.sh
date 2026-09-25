@@ -52,6 +52,12 @@ echo "== set<T>：**有序**集合（建在 map<T, u8> 上，B+ 树）—— 按
 run_case setOrdered tests/stl/setOrdered.extc "order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2"
 run_case setStructKey tests/stl/setStructKey.extc "order=1,2,3 len=3 has2=1 lb2=1 first=1 last=3"
 
+echo "== string：拼接（+ / +=）· 比较 · 查找 · 视图 · 当 hashMap 键 =="
+run_case stringOps  tests/stl/stringOps.extc  "c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20"
+
+echo "== string::find 的穷举对拍（{a,b} 上 1..4 的模式 × 0..10 的文本 vs 朴素查找）+ 大输入 =="
+run_case stringFind tests/stl/stringFind.extc "checked=61410|bad=0"
+
 echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/stl/string_churn_a.extc -o "$TMP2/a.c" >/dev/null 2>&1 \
@@ -76,8 +82,8 @@ asan_ok() {   # 文件 可执行名
       && gcc -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk; then
-    echo "  ok   ASan  ->  vector · setOrdered · setStructKey 干净"
+if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringFind.extc sfi; then
+    echo "  ok   ASan  ->  vector · setOrdered · setStructKey · stringOps · stringFind 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1
 fi

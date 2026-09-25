@@ -1,0 +1,92 @@
+// find 的**穷举对拍**：{a,b} 上长度 1..4 的所有模式 × 长度 0..10 的所有文本，逐个与朴素查找比
+// （Two-Way 是带周期位移的算法，位移写错就会漏配或多配；穷举小字母表是最能抓住这类错的判据）
+// expect: checked=61410|bad=0
+use std::io
+use stl::string
+
+/* 位模式造串：第 i 位为 1 取 'b'，否则 'a' */
+fn mk(s: mut ref string, bits: i64, len: i64) {
+    s.clear()
+    var i: i64 = 0
+    while i < len {
+        if ((bits >> i) & i64(1)) == i64(1) { s.push(u8(98)) } else { s.push(u8(97)) }
+        i = i + i64(1)
+    }
+}
+
+/* 朴素查找：-1 = 没找到（参考实现） */
+fn naive(h: slice<u8>, nd: slice<u8>) -> i64 {
+    let m = h.len
+    let n = nd.len
+    if n == i64(0) { return i64(0) }
+    if n > m { return i64(-1) }
+    var i: i64 = 0
+    while i + n <= m {
+        var j: i64 = 0
+        var ok: i64 = 1
+        while j < n {
+            if h[i + j] != nd[j] { ok = i64(0) }
+            j = j + i64(1)
+        }
+        if ok == i64(1) { return i }
+        i = i + i64(1)
+    }
+    return i64(-1)
+}
+
+fn main() -> i32 {
+    var hay: string = string::withCap(i64(64))
+    var nd:  string = string::withCap(i64(64))
+    var bad: i64 = i64(0)
+    var checked: i64 = i64(0)
+    var nl: i64 = 1
+    while nl <= i64(4) {
+        var nb: i64 = 0
+        while nb < (i64(1) << nl) {
+            mk(ref nd, nb, nl)
+            var hl: i64 = 0
+            while hl <= i64(10) {
+                var hb: i64 = 0
+                while hb < (i64(1) << hl) {
+                    mk(ref hay, hb, hl)
+                    let got  = hay.find(nd.asSlice()) ?? i64(-1)
+                    let want = naive(hay.asSlice(), nd.asSlice())
+                    if got != want { bad = bad + i64(1) }
+                    checked = checked + i64(1)
+                    hb = hb + i64(1)
+                }
+                hl = hl + i64(1)
+            }
+            nb = nb + i64(1)
+        }
+        nl = nl + i64(1)
+    }
+    /* 大输入与刁钻形状：最坏情况必须是线性的（周期型模式 + 全 a 长文本是最经典的那一档），
+     * 同时验几个已知答案（周期性文本、匹配落在末尾附近）。 */
+    var big: string = string::withCap(i64(1024))
+    var i: i64 = 0
+    while i < i64(100000) {
+        big.push(u8(97))
+        i = i + i64(1)
+    }
+    var p1: string = string::withCap(i64(16))
+    p1.append("aaaaab")
+    if (big.find(p1.asSlice()) ?? i64(-1)) != i64(-1) { bad = bad + i64(1) }
+    big.push(u8(98))                                   /* 现在末尾是 b：aaa...ab 从 99995 开始 */
+    if (big.find(p1.asSlice()) ?? i64(-1)) != i64(99995) { bad = bad + i64(1) }
+    var cyc: string = string::withCap(i64(1024))
+    var j: i64 = 0
+    while j < i64(4096) {
+        cyc.append("ab")
+        j = j + i64(1)
+    }
+    var p2: string = string::withCap(i64(16))
+    p2.append("abababab")
+    if (cyc.find(p2.asSlice()) ?? i64(-1)) != i64(0) { bad = bad + i64(1) }
+    var p3: string = string::withCap(i64(16))
+    p3.append("ba")
+    if (cyc.find(p3.asSlice()) ?? i64(-1)) != i64(1) { bad = bad + i64(1) }
+
+    io::cout << "checked=" << checked << "|bad=" << bad << "\n"
+    return 0
+}

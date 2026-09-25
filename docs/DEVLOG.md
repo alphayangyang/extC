@@ -8491,3 +8491,35 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 另：新增 `docs/topics/STL.md` —— STL 的**成员函数表**（按源码逐个 `fn` 抽出来的：概览矩阵 · 十个容器各自的
 公开面 · 内部 helper 折叠成一行 · 跨容器语义约定（`put` 返回值两套口径 · `[]`/`[]=` 独立 · clear/shrink/release
 三档）· 已知缺口 · 各容器验收落在哪个套件）。改面就要同步改它，这是仓库里的权威清单。
+
+### 周期 31：string 补成"真容器"（比较 / 哈希 / Two-Way 查找 / 拼接 / 取字节），并挖出记档 #83
+
+作者口径：「字符串拼接 `+=`/`+`（和 string/slice 类型）是要的吧，find 是要的吧（twoway 感觉不错），还有啥吗」。
+
+**落地的**（`stdlib/stl/string.extc`）：
+
+- `==` / `<` 各两种右操作数（`string` 与 `slice<u8>`）—— `s == "abc"` 因此可用，字面量就是字节切片；
+  `!=` 不必写（运算符查表会回退到 `==`）。
+- `hash()`：FNV-1a 折成非负 i64 ⇒ **`string` 现在能当 `hashMap` 的键**（`hashMap<string, i32>` 实测可用）。
+- `find(needle) -> ?i64`：**Two-Way（Crochemore–Perrin）**。选它的理由写进了代码注释：KMP 要一张失败函数表，
+  而在这套模型里那张表要么每次调用从 arena 分配（热循环里就是 churn），要么挂在容器上让**只读查询被迫吃
+  `mut ref`**；Two-Way 是 O(1) 额外空间、最坏线性，所以 `ref self` 就够。
+- `contains` / `startsWith` / `endsWith` / `at(i) -> ?u8` / `sub(lo,hi) -> slice<u8>`（零拷贝视图，界会夹住）。
+- `concat(other: string)` / `concatBytes(other: slice<u8>)`：返回新串，接收者不动。
+
+**验证**：
+
+- `tests/stl/stringFind.extc`：**穷举对拍** —— {a,b} 上长度 1..4 的所有模式 × 长度 0..10 的所有文本（61410 组）
+  逐个与朴素查找比对：`checked=61410|bad=0`；另加 10 万字节的最坏形状（周期型模式 + 全 a 文本，末尾才出现匹配）
+  与周期性文本的已知答案。
+- `tests/stl/stringOps.extc`：`c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20`
+  （最后两个数字是"string 当 hashMap 键"：len=2、取回 20）。
+- 两个用例都进了 ASan 节；`tests/stl` 全绿。
+
+**没落地的（`fn +` / `s += t`）与原因 —— PLAN #83**：写出来是「声明三个参数（self / other / home）、
+调用点只传两个」⇒ C 层报 too few arguments。根因是**检查器的运算符路径完全没有 arena 决策**：
+EX_CALL / EX_METHOD / EX_ASSOC 三处都有 `homeDepth` + `setCallArenaArg`（方法那边还有一条逃逸站点记录参与
+末轮结算），运算符那几处只有 `e->func = m`。我试了两轮最小修法——只补 `setCallArenaArg`：生成物能编过，
+但缓冲区**落进永不回收的 arena**（LeakSanitizer 抓到，对照实验里同样形状的普通方法 `concat` 是干净的）；
+再补 `callHomeDepth` 那句：仍泄漏，因为还缺逃逸站点那条记录。这套簿记是 arena 分析的核心，值得单独一轮，
+不能顺手塞。所以今天的拼接写法是 `append`（就地）与 `concat` / `concatBytes`（出新串）。

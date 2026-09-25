@@ -1,0 +1,32 @@
+// string 的拼接（append 就地 / concat·concatBytes 出新串）· 比较（== / <）· 子串查找 ·
+// 取字节 · 零拷贝视图 · 以及"能当 hashMap 的键"（hash + == 齐了）
+// expect: c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20
+use std::io
+use stl::string
+use stl::hashMap
+
+fn main() -> i32 {
+    var a: string = string::withCap(i64(8))
+    a.append("hello")
+    var b: string = string::withCap(i64(8))
+    b.append(" world")
+    let c = a.concat(b)               /* 新串：接收者不动 */
+    a.append(b.asSlice())             /* 就地追加（无隐式转换：slice 要写出来）*/
+    io::cout << "c=" << c.asSlice() << "|a=" << a.asSlice()
+    io::cout << "|eq=" << (a == c) << "|lt=" << (c < a)
+    io::cout << "|find=" << (c.find("world") ?? i64(-1)) << "|miss=" << (c.find("zzz") ?? i64(-1))
+    io::cout << "|sw=" << c.startsWith("hello") << "|ew=" << c.endsWith("world")
+    io::cout << "|at=" << i64(c.at(i64(1)) ?? u8(63)) << "|sub=" << c.sub(i64(6), i64(11))
+    let cb = a.concatBytes("!!!")     /* 右操作数也可以是裸 slice<u8> */
+    io::cout << "|cb=" << cb.asSlice()
+
+    var m: hashMap<string, i32> = hashMap<string, i32>::withCap(i64(8))
+    var k1: string = string::withCap(i64(4))
+    k1.append("k1")
+    m.put(k1, i32(10))
+    var k2: string = string::withCap(i64(4))
+    k2.append("k2")
+    m.put(k2, i32(20))
+    io::cout << "|hn=" << m.len() << "|hv=" << i64(m.get(k2) ?? i32(-1)) << "\n"
+    return 0
+}
