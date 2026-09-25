@@ -1,39 +1,79 @@
-// expect: cap = 8|全部找到 = true|删掉一半后仍全部找到 = true|重插 = true
-/* ⭐ 碰撞判据：cap=8 时 0/8/16/24/32 **必然撞在同一个初始槽**（`k & 7` 都是 0 ✓）
- *   ⇒ 线性探测必须能找到每一个、删掉中间一个之后剩下的仍找得到（墓碑 + 探测链）✓ */
+// expect: cap = 8|同槽 = true|全部找到 = true|删掉一半后仍全部找到 = true|重插 = true
+/* ⭐ 碰撞判据：哈希把 0/2/7/12/14 映到**同一个初始槽**（下面用"空表插一只键"当场量出来），
+ *   ⇒ 线性探测必须能找到每一个、删掉链条中间一个之后剩下的仍找得到（墓碑 + 探测链）✓
+ *
+ * 这 5 个键是**按当前哈希选的** —— 老版本用的是 0/8/16/24/32，因为老哈希（只做右移-xor）
+ * 对小于 2^21 的键是**恒等映射**，`k & 7` 全是 0。哈希在 2026-09-26 加了乘法混合之后，
+ * 那 5 个键各自散开了：这一格**照样会"通过"**（5 只键各占一格，插入/查找/删除都平凡地成功），
+ * 但它已经**不再考碰撞**了 —— 这正是"判据悄悄失去牙齿"的形状。
+ *
+ * 所以选完键之后不是"看着像"就算：`同槽` 那一行把每只键单独插进一张**空表**，直接量出它
+ * 的初始槽（空表里第一只键不会被探测挪位、也不会触发重建）—— 哈希哪天再改，这一行会
+ * **当场变 false**，而不是静默退化成 5 格平凡的插入。 */
 use stl::hashMap
 
+/* 这一只键此刻所在的桶（-1 = 不在表里）。 */
+fn bucketOf(m: ref hashMapI64<i32>, k: i64) -> i64 {
+    var i: i64 = 0
+    while i < m.capOf() {
+        if m.liveAt(i) && m.keyAt(i) == k { return i }
+        i = i + i64(1)
+    }
+    return i64(-1)
+}
+
+/* 空表里插一只键 ⇒ 它一定落在自己的**初始槽**上（没有探测、没有重建）。 */
+fn initialSlot(k: i64) -> i64 {
+    var t = hashMapI64<i32>::withCap(i64(4))
+    t.put(k, i32(1))
+    return bucketOf(ref t, k)
+}
+
 fn main() -> i32 {
-    var m = hashMapI64<i32>::withCap(4)
+    var m = hashMapI64<i32>::withCap(i64(4))
     println("cap = ", m.capOf())
+
+    let s0 = initialSlot(i64(0))
+    let s1 = initialSlot(i64(2))
+    let s2 = initialSlot(i64(7))
+    let s3 = initialSlot(i64(12))
+    let s4 = initialSlot(i64(14))
+    var same = s0 >= i64(0)
+    if s1 != s0 { same = false }
+    if s2 != s0 { same = false }
+    if s3 != s0 { same = false }
+    if s4 != s0 { same = false }
+    println("同槽 = ", same)
+
+    var keys: [5]i64 = [0, 2, 7, 12, 14]
     var i: i64 = 0
     while i < i64(5) {
-        m.put(i * i64(8), i32(i))
+        m.put(keys[i], i32(i))
         i = i + i64(1)
     }
     var ok: bool = true
     i = 0
     while i < i64(5) {
-        let g = m.get(i * i64(8)) ?? i32(-1)
+        let g = m.get(keys[i]) ?? i32(-1)
         if g != i32(i) { ok = false }
         i = i + i64(1)
     }
     println("全部找到 = ", ok)
 
-    m.remove(i64(16))                     /* 挖掉链条中间那个 */
+    m.remove(i64(7))                     /* 挖掉链条中间那个 */
     ok = true
     i = 0
     while i < i64(5) {
         if i != i64(2) {
-            let g = m.get(i * i64(8)) ?? i32(-1)
+            let g = m.get(keys[i]) ?? i32(-1)
             if g != i32(i) { ok = false }
         }
         i = i + i64(1)
     }
-    println("删掉一半后仍全部找到 = ", ok && !m.contains(i64(16)))
+    println("删掉一半后仍全部找到 = ", ok && !m.contains(i64(7)))
 
-    let again = m.put(i64(16), i32(2))     /* 再插回去（复用墓碑槽）*/
-    let g16 = m.get(i64(16)) ?? i32(-1)
-    println("重插 = ", !again && g16 == i32(2))
+    let again = m.put(i64(7), i32(2))     /* 再插回去（复用墓碑槽）*/
+    let g7 = m.get(i64(7)) ?? i32(-1)
+    println("重插 = ", !again && g7 == i32(2))
     return 0
 }

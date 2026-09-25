@@ -37,8 +37,11 @@ echo "== 碰撞：线性探测 + 墓碑 + 复用墓碑槽 =="
 run_case collide
 
 echo "== 墓碑 churn：1e6 轮与 1e5 轮的峰值 RSS 必须相当 =="
+# `-fwrapv`：生成的 C 的**既定编译契约**（有符号溢出在 extC 里是有定义的绕回，见 MANUAL §8；
+# 编译器驱动自己也是这么编的，见 src/main.c）。少这一条时，`-O2` 会按"乘法不会溢出"优化，
+# 哈希混合这类依赖绕回的代码会静默变形 —— 2026-09-26 就因此把 grow 用例挂死过一次。
 build_one() { "$EXTC" "tests/hashmap/$2.extc" -o "build/$1.c" >/dev/null 2>&1 \
-    && "$CC" -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1; }
+    && "$CC" -O1 -std=c11 -fwrapv "build/$1.c" -o "build/$1" >/dev/null 2>&1; }
 peak() { /usr/bin/time -f %M "./build/$1" "$2" 2>&1 >/dev/null | tail -1; }
 if build_one map-churn churn && build_one map-leak churn-leak; then
     s=$(peak map-churn 100000); b=$(peak map-churn 1000000)
@@ -88,11 +91,11 @@ if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
     for t in basic collide index; do
         "$EXTC" "tests/hashmap/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
-          && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
+          && gcc -O1 -g -fwrapv -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
     done
     "$EXTC" tests/hashmap/churn.extc -o "$TMP/c.c" >/dev/null 2>&1 \
-      && gcc -O1 -g -fsanitize=address -o "$TMP/c" "$TMP/c.c" >/dev/null 2>&1 \
+      && gcc -O1 -g -fwrapv -fsanitize=address -o "$TMP/c" "$TMP/c.c" >/dev/null 2>&1 \
       && "$TMP/c" 20000 >/dev/null 2>&1 || { echo "  FAIL churn -> ASan 报错"; fail=1; ok=0; }
     [ "$ok" = 1 ] && echo "  ok   basic · collide · index · churn  ->  ASan 干净"
 else

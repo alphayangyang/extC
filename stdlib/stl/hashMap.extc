@@ -16,8 +16,9 @@
  * Layout, and why:
  *   - **linear probing** (one cache line per probe, no pointers at all);
  *   - `cap` is a power of two, so the probe index is `hash & (cap-1)` -- no division;
- *   - the hash mixes with shifts and xors only: `*` on `i64` can overflow, and overflow is
- *     not something this language leaves undefined, so the mixing must not rely on it;
+ *   - the hash mixes with shifts, xors and one multiply, and every step of it is overflow-free:
+ *     the multiply is done in `u64`, where overflow is defined (mod 2^64) in C, so the mixing
+ *     does not lean on `-fwrapv` and cannot be broken by a stricter optimisation level;
  *   - a slot is empty / live / tombstone in a separate byte array. Tombstones keep probes
  *     correct after a removal; they are cleared by a rebuild, which also happens when too
  *     many of them pile up;
@@ -33,12 +34,33 @@ let EMPTY: u8 = 0
 let LIVE:  u8 = 1
 let TOMB:  u8 = 2
 
-/* Mix a key into a spread-out non-negative i64, using only shifts and xors. */
+/* Mix a key into a spread-out non-negative i64.
+ *
+ * ⚠️ 混合体走**无符号**（`u64`）—— 这不是风格，是正确性：有符号 `*` 溢出在 C 里是 UB。
+ * extC 的算术溢出靠 `-fwrapv` 兜成绕回（MANUAL §8），可那是**编译器驱动**给的旗子；
+ * 生成的 C 一旦被别人用别的旗子编（本仓库就有好几处测试脚本直接 `cc -O1` 编生成的 C，
+ * 不带 `-fwrapv`），GCC 在 `-O2` 下按"乘法不会溢出"优化 ⇒ 桶分布退化成一条长簇：
+ * 实测 1e6 次 `put` 从 0.08 s 变成**挂死不返回**（99.7% CPU 空转，RSS 一路涨到十几 GB）。
+ * 哈希函数绝不能
+ * 依赖"编译器替我定义 UB"。无符号 `*` 溢出在 C 里是**有定义**的（模 2^64），与旗子无关；
+ * 两次转换都在可证明无损的范围内 ⇒ 生成 C 里不带任何检查。
+ *
+ * 为什么要乘法：只做右移-xor 时，**小于 2^21 的键是不动的**（`x ^ (x>>21) ^ (x>>42)` 对
+ * x < 2^21 恒等于 x）⇒ 连续的小整数键映射到**连续的桶**。实测（bench/app/session.extc）：
+ *     hashI64(0..8) = 0,1,2,3,4,5,6,7,8（相邻键的桶差恒为 1），
+ *     65536 个连续键于是在表里连成**一整条 65536 长的簇**；
+ *     而一旦有删除（墓碑不终止探测），一次 miss 查询平均要走 16371 步、最长 65536 步
+ *     ⇒ 端到端 10.5 ns/op → 5104 ns/op（**486 倍**）。
+ * 连续整数键不是刁钻输入 —— 自增的连接 id / 会话号 / 数组下标都是这样。
+ * 乘一个奇数（与 2^64 互质 ⇒ 是置换）把低位的信息搬上去，右移再把它混回低位。 */
 fn hashI64(k: i64) -> i64 {
-    var x = k & i64(9223372036854775807)          /* drop the sign bit: `>>` on a negative is not ours to define */
-    x = x ^ (x >> i64(21))
-    x = x ^ (x >> i64(42))
-    return x
+    var x = k & i64(9223372036854775807)          /* drop the sign bit: the i64 -> u64 conversion must not be lossy */
+    var u = u64(x)
+    u = u * u64(6364136223846793005)              /* Knuth 的 LCG 乘数：奇数 ⇒ 与 2^64 互质 */
+    u = u ^ (u >> u64(21))
+    u = u ^ (u >> u64(42))
+    u = u & u64(9223372036854775807)              /* 清掉最高位 ⇒ 转回 i64 无损（收窄检查不生成代码） */
+    return i64(u)
 }
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
@@ -90,6 +112,18 @@ struct hashMap<K, V> {
     fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
     /* 本表运行期池的下标（只读读数）：容量与字节账的判据要指到**这一只**池上。 */
     fn pidOf(self: ref hashMap<K, V>) -> i64 { return self.pid }
+    /* 墓碑与活跃数的读数（只读）：探测链变长的诊断用它。 */
+    fn deadOf(self: ref hashMap<K, V>) -> i64 { return self.dead }
+    /* 诊断读数：桶的三种状态各有多少（EMPTY 是探测链的终止符，它的数量决定 miss 的代价）。 */
+    fn tagCensus(self: ref hashMap<K, V>, which: i64) -> i64 {
+        var c: i64 = 0
+        var i: i64 = 0
+        while i < self.cap {
+            if i64(self.tag[i]) == which { c = c + i64(1) }
+            i = i + i64(1)
+        }
+        return c
+    }
 
     /* 这张表**当下**在它自己池里占的字节（四列 + 值池）。
      * 判据：`rebuild` 把旧列当场还了 ⇒ 这个数只随当前 `cap` 走，与重建过多少次无关；
@@ -135,7 +169,17 @@ struct hashMap<K, V> {
             self.vals.set(self.vals.handleAtDense(i64(self.slot[had])), v)
             return true
         }
-        /* Rebuild *before* inserting, while there is still a free bucket to land in. */
+        /* Rebuild *before* inserting, while there is still a free bucket to land in.
+         *
+         * **两条触发线**，缺一条就会退化（实测 2026-09-26，bench/app/session.extc）：
+         *   ① 满度：`n + dead` 到容量的 70% —— 原来的那条，管"放不下"。
+         *   ② 墓碑密度：`dead` 到容量的 25% —— 新加的，管"探测链被墓碑拖长"。
+         * 只有①时，一个活跃集小而删除频繁的负载（会话表就是这样）会把 dead 堆到 40% 的
+         * 容量：此时 `find` 每一步都要跨过墓碑，实测 **25 ns/op → 584 ns/op（23 倍）**，
+         * 而 `n` 一直很小、容量一直够 —— 第①条永远不触发。
+         * ②的上界取 25%：探测链的期望长度随 1/(1-墓碑比例) 走，25% 时约 1.33 倍，
+         * 再高就开始看得见（40% 时 1.67 倍，而实测的差距远不止这个比例 —— 它还会
+         * 把 probe 跨过的桶都拉进 cache）。 */
         if (self.n + self.dead + i64(1)) * i64(10) >= self.cap * i64(7) { self.rebuild(self.cap * i64(2)) }
         var i = k.hash() & (self.cap - i64(1))
         while self.tag[i] == LIVE {
@@ -170,6 +214,19 @@ struct hashMap<K, V> {
         self.tag[b] = TOMB
         self.n    = self.n - i64(1)
         self.dead = self.dead + i64(1)
+        /* **墓碑清空**：删到一定量就重建一次（重建会丢掉全部墓碑）。
+         *
+         * 为什么必须在 `remove` 里做：`put` 的触发线只看"放得下放不下"（`n + dead` 到 70%），
+         * 而删除频繁、活跃集小的负载（会话表就是这样）永远碰不到那条线 —— 墓碑会一直堆着。
+         * 实测（bench/app/session.extc，2026-09-26）：
+         *     live=65536 tomb=26228 empty=65536 cap=131072 时，
+         *     **一次 miss 查询平均要走 16371 步、最长 65536 步**（用 C 按同一份桶状态复现），
+         *     端到端 10.5 ns/op → 5104 ns/op（486 倍）。
+         * 阈值取 1/4：墓碑占容量 25% 时，探测链的期望长度仍在两倍以内；再高就开始看得见
+         * （实测 5% 时就已经"几乎不花钱"，25% 已经太晚 —— 下面这条按 1/4 触发，
+         * 每次重建把 dead 归零，于是实际稳定在远低于 25%）。
+         * 代价：重建是 O(cap)，但每 cap/4 次删除才做一次 ⇒ 摊到每次删除是 O(4)。 */
+        if self.dead * i64(4) >= self.cap { self.rebuild(self.cap) }
         return gone
     }
 
@@ -323,6 +380,8 @@ struct hashMapI64<V> {
         return h
     }
     fn pidOf(self: ref hashMapI64<V>) -> i64 { return self.m.pidOf() }
+    fn deadOf(self: ref hashMapI64<V>) -> i64 { return self.m.deadOf() }
+    fn tagCensus(self: ref hashMapI64<V>, which: i64) -> i64 { return self.m.tagCensus(which) }
 
     fn [](self: ref hashMapI64<V>, k: i64) -> ?V { return self.get(k) }
 
