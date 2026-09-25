@@ -1,0 +1,25 @@
+// expect: OK
+// 池底容器的提权 · **返回**那一档：函数里建好的容器返回给调用方。
+//
+// 这条以前是静默 UAF：容器的池生在 `make` 的帧那个地方，`make` 一返回就回收
+//（不开 ASan 时打印看着完全正常；开 ASan 是 heap-use-after-free，栈顶是 vector$..._push）。
+// 现在容器构造是逃逸站点、返回要求它活到本帧之外（`at == 0` ⇒ `ZONE_HOME`）⇒
+// 池生到**调用者**选的那个地方。判据：编译通过 + 跑出 n=3 v0=5 v2=7 + ASan 干净。
+use std::io
+use stl::vector
+
+fn make() -> vector<i32> {
+    var v = vector<i32>::new()
+    v.push(i32(5))
+    v.push(i32(6))
+    return v
+}
+
+fn main() -> i32 {
+    var a = make()
+    a.push(i32(7))
+    let v0 = i64(a.get(i64(0)) ?? i32(-1))
+    let v2 = i64(a.get(i64(2)) ?? i32(-1))
+    io::cout << "n=" << a.len() << " v0=" << v0 << " v2=" << v2 << "\n"
+    return 0
+}

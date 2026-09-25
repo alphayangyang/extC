@@ -746,6 +746,10 @@ void checkStmt(Checker *c, Stmt *s) {
                  * promoted to level 0. */
                 recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
                 promoteInto(c, s->u.ret.value, 0);
+                /* 再记一条事实：这一次调用发生在 `makesPool` 闭包**之前**，闸门那时读到的
+                 * 标志还是假 ⇒ 池站点的提权落不下去。闭包之后的重放（`checkModule` 里那一段）
+                 * 会拿这条事实再提一次，那时标志已经为真。 */
+                recordLvlFact(c, s->u.ret.value, 0);
                 if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
                                     s->u.ret.value, "return value");

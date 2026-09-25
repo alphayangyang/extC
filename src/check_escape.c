@@ -1135,7 +1135,11 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
  *         "must outlive this frame" is represented by `ARENA_HOME` rather than by a level
  *         number and must not be pushed back into one */
 void recordLvlFact(Checker *c, Expr *val, int at) {
-    if (!c || !val || at < 1) return;
+    /* `at == 0` 也要记：对 arena 那是"活到本帧之外（家 arena）"，对池那是 `ZONE_HOME`
+     *（交给调用者选的地方）。**返回**那一档正是 `at == 0`（见 `check_stmt.c` 的 `return` 分支），
+     * 而它过去不记事实 ⇒ 闭包之后的重放没有这一条 ⇒ `fn make() -> vector<i32>` 里的容器
+     * 永远提不到调用者那一层（实测 ASan 仍在 `push` 上报 use-after-free）。 */
+    if (!c || !val || at < 0) return;
     /* 记在**站点**上，不记在绑定上：末轮重放跑在所有函数体检查完之后，那时
      * `lookup` 已经查不到当时的局部绑定了（符号表是按函数/作用域的），
      * 记绑定等于记一条谁也走不通的链 —— 实测就是这么静默失手的。

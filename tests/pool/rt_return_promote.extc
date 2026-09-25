@@ -1,0 +1,27 @@
+// 池的提权 · 返回那一档：函数里建好的容器**返回**给调用方
+//
+// 判据 `live=1 len=3 v0=5 v2=7`：
+//   - `live=1`：`make` 里建的那个池**提权到了调用者的地方**（main 的帧）⇒ `make` 返回之后它还在。
+//     没有提权时它随 `make` 的帧退出就被回收（那时这里是 0），
+//     这里会是 0/1，而下面读元素就是读已还给 malloc 的块（ASan：heap-use-after-free）。
+//   - 返回值的元素**读得出来**，而且 push 之后还在（`len=3`）。
+// expect: live=1 len=3 v0=5 v2=7
+use std::io
+use std::sys::pool as syspool
+use stl::vector
+
+fn make() -> vector<i32> {
+    var v = vector<i32>::new()
+    v.push(i32(5))
+    v.push(i32(6))
+    return v
+}
+
+fn main() -> i32 {
+    var a = make()
+    a.push(i32(7))
+    io::cout << "live=" << syspool::extc_pool_live()
+    io::cout << " len=" << a.len() << " v0=" << i64(a.get(i64(0)) ?? i32(-1))
+    io::cout << " v2=" << i64(a.get(i64(2)) ?? i32(-1)) << "\n"
+    return 0
+}
