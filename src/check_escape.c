@@ -1136,11 +1136,15 @@ void recordLvlFact(Checker *c, Expr *val, int at) {
      * `poolSite`，把它换出来。（`origin` 那一族本来就在记录时被展平，同一个理由。） */
     if (val->kind == EX_IDENT) {
         Sym *sy = lookup(c, val->u.ident.name);
+        /* 记**站点**，不记绑定：重放跑在所有函数体检查完之后，那时 `lookup` 对当时的局部
+         * 绑定一律返回 NULL（符号表是按函数/作用域的）⇒ 记绑定等于记一条谁也走不通的链。
+         * 绑定身上有 origin（`new`/`alloc` 那一族）或 poolSite（调用那一族）时，换成那个节点。 */
+        if (sy && sy->origin) val = sy->origin;
+        else if (sy && sy->poolSite) val = sy->poolSite;
         if (getenv("EXTC_DBG_ZONE"))
             fprintf(stderr, "[fact-sy] %s sy=%p origin=%p poolSite=%p\n",
                     val->u.ident.name ? val->u.ident.name : "-", (void *)sy,
                     sy ? (void *)sy->origin : NULL, sy ? (void *)sy->poolSite : NULL);
-        if (sy && !sy->origin && sy->poolSite) val = sy->poolSite;
     }
     /* Never record during the level solve: the solve re-enters this function, so
      * recording there would make the fact list grow without bound. */
