@@ -1,0 +1,12 @@
+// expect: k=one none=?
+use std::io
+use stl::linmap
+
+fn main() -> i32 {
+    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(i64(4))
+    m.put(i64(1), "one")
+    let a = m[i64(1)] ?? "?"
+    let b = m[i64(9)] ?? "?"
+    io::cout << "k=" << a << " none=" << b << "\n"
+    return 0
+}

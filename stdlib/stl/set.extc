@@ -39,6 +39,17 @@ struct set<T> {
     /* Rank of the first element not less than `k` (the count of elements smaller than `k`). */
     fn lowerBound(self: ref set<T>, k: T) -> i64 { return self.m.lowerBound(k) }
 
+    /* The smallest / largest element, `none` on an empty set. */
+    fn first(self: ref set<T>) -> ?T {
+        if self.m.len() == i64(0) { return none }
+        return some(self.m.keyAt(i64(0)))
+    }
+
+    fn last(self: ref set<T>) -> ?T {
+        if self.m.len() == i64(0) { return none }
+        return some(self.m.keyAt(self.m.len() - i64(1)))
+    }
+
     /* The i-th smallest element, i in [0, len). Walking `i` from 0 to len-1 is the ordered walk. */
     fn at(self: ref set<T>, i: i64) -> T { return self.m.keyAt(i) }
 }

@@ -8438,3 +8438,22 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 回归：`tests/generics`（正例 + 五个反例）· `tests/map` · `tests/hashmap` · `tests/stl` · `tests/pool` ·
 `tests/linmap` · `tests/genmatrix`（13 项）· 语料 **262/0** 全绿 —— 这条改动会碰每一次赋值/返回/传参，
 所以必须全套件过（没有误报）。
+
+### 周期 29：一致性补齐 —— `[]` 读侧给到哈希表/线性表，有序容器补最小最大键
+
+`[]` 的语法既然通了，就不该只有 `map` 能用：
+
+- `hashMap<K, V>` 与适配层 `hashMapI64<V>` 各加 `fn [] -> ?V`；`linMap<K, V>` 同样 —— 三者都只是把 `get`
+  换个写法（缺键仍是 `none`，没有默认插入）。
+- 有序容器补"两端"：`map` 的 `firstKey()` / `lastKey()`、`set` 的 `first()` / `last()`，空容器给 `none`。
+  两者都是 O(log n) 的排名查询（走 `cnt`），不是遍历。
+- 顺手修了一个撞名：`map` 里早先为重平衡写的**内部** helper 也叫 `firstKey(id)`（取子树最小键），与新的
+  公开 API 重名 ⇒ 改名为 `subMinKey(id)`，公开面保持 `firstKey()` / `lastKey()`。
+
+实测：
+
+- `tests/hashmap/index.extc` → `a=11 none=-1 len=2`
+- `tests/linmap/index.extc` → `k=one none=?`
+- `tests/map/ends.extc` → `f=1 l=5 emptyF=-1 emptyL=-1 sf=2 sl=4`（含空表两个 `none`）
+
+三个套件的 ASan 列表也一并覆盖到新用例；`tests/map` 九个用例 + RSS 两条 + ASan 全绿。

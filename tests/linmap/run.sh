@@ -14,7 +14,7 @@ cd "$(dirname "$0")/../.."
 EXTC=./build/extc
 fail=0
 
-for t in map structkey set; do
+for t in map structkey set index; do
     if ! out=$(timeout 60 "$EXTC" --run "tests/linmap/$t.extc" 2>&1); then
         echo "  FAIL $t  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1; continue
     fi

@@ -1,0 +1,14 @@
+// 下标语法（读侧）也给哈希表：hm[k] 有键给 some、缺键给 none
+// expect: a=11 none=-1 len=2
+use std::io
+use stl::hashMap
+
+fn main() -> i32 {
+    var m = hashMapI64<i32>::withCap(i64(8))
+    m.put(i64(1), i32(11))
+    m.put(i64(2), i32(22))
+    var a: i32 = m[i64(1)] ?? i32(-1)
+    var n: i32 = m[i64(9)] ?? i32(-1)
+    io::cout << "a=" << i64(a) << " none=" << i64(n) << " len=" << m.len() << "\n"
+    return 0
+}

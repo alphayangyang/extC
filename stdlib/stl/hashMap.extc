@@ -90,6 +90,10 @@ struct hashMap<K, V> {
 
     fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= i64(0) }
 
+    /* `hm[k]` -- the read side of the subscript syntax (`[]` and `[]=` are independent names, so
+     * a type may offer reading without writing). Same answer as `get`: `none` when absent. */
+    fn [](self: ref hashMap<K, V>, k: K) -> ?V { return self.get(k) }
+
     /* The value for `k`, or `none`. */
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
         let b = self.find(k)
@@ -237,6 +241,8 @@ struct hashMapI64<V> {
 
     fn len(self: ref hashMapI64<V>) -> i64 { return self.m.len() }
     fn capOf(self: ref hashMapI64<V>) -> i64 { return self.m.capOf() }
+
+    fn [](self: ref hashMapI64<V>, k: i64) -> ?V { return self.get(k) }
 
     fn contains(self: ref hashMapI64<V>, k: i64) -> bool {
         return self.m.contains(i64Key { v: k })

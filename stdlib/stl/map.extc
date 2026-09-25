@@ -193,8 +193,9 @@ struct map<K, V> {
         return s
     }
 
-    /* The smallest key of a subtree: kids[0] all the way down. */
-    fn firstKey(self: ref map<K, V>, id: i32) -> K {
+    /* The smallest key of a SUBTREE (a node id, not the map): kids[0] all the way down. Not to be
+     * confused with the public `firstKey()` below, which is the smallest key of the whole map. */
+    fn subMinKey(self: ref map<K, V>, id: i32) -> K {
         var cur: i32 = id
         while !self.leafOf(cur) { cur = self.kd(cur, i64(0)) }
         return self.kn(cur, i64(0))
@@ -261,6 +262,18 @@ struct map<K, V> {
             id = self.kd(id, c)
         }
         return rank + self.lowerIn(id, k)
+    }
+
+    /* The smallest / largest key, `none` on an empty map. Both are O(log n): a rank query on the
+     * order-statistic side (`cnt`), not a walk. */
+    fn firstKey(self: ref map<K, V>) -> ?K {
+        if self.n == i64(0) { return none }
+        return some(self.keyAt(i64(0)))
+    }
+
+    fn lastKey(self: ref map<K, V>) -> ?K {
+        if self.n == i64(0) { return none }
+        return some(self.keyAt(self.n - i64(1)))
     }
 
     /* The i-th smallest entry, encoded as `leafId * 16 + position` (16 = ORDER, and a leaf never
@@ -626,7 +639,7 @@ struct map<K, V> {
             if self.bn(cur) < HALF {
                 if ci > i64(0) && self.bn(self.kd(p, ci - i64(1))) > HALF {
                     self.borrowLeft(p, ci)
-                    if ci > i64(0) { self.setKey(p, ci - i64(1), self.firstKey(cur)) }
+                    if ci > i64(0) { self.setKey(p, ci - i64(1), self.subMinKey(cur)) }
                 } else if ci < self.bn(p) && self.bn(self.kd(p, ci + i64(1))) > HALF {
                     self.borrowRight(p, ci)
                 } else if ci > i64(0) {
@@ -637,7 +650,7 @@ struct map<K, V> {
                     self.mergeRight(p, ci)
                 }
             } else {
-                if ci > i64(0) { self.setKey(p, ci - i64(1), self.firstKey(cur)) }
+                if ci > i64(0) { self.setKey(p, ci - i64(1), self.subMinKey(cur)) }
             }
             cur = p
             level = level - i64(1)

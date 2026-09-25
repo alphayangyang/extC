@@ -1,0 +1,25 @@
+// 有序容器的最小/最大键（空表给 none）—— map 的 firstKey/lastKey 与 set 的 first/last
+// expect: f=1 l=5 emptyF=-1 emptyL=-1 sf=2 sl=4
+use std::io
+use stl::map
+use stl::set
+
+fn main() -> i32 {
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    m.put(i64(3), i32(30))
+    m.put(i64(1), i32(10))
+    m.put(i64(5), i32(50))
+    var f: i64 = m.firstKey() ?? i64(-1)
+    var l: i64 = m.lastKey() ?? i64(-1)
+    var e: map<i64, i32> = map<i64, i32>::withCap(i64(4))
+    var ef: i64 = e.firstKey() ?? i64(-1)
+    var el: i64 = e.lastKey() ?? i64(-1)
+    var s: set<i64> = set<i64>::withCap(i64(4))
+    s.put(i64(4))
+    s.put(i64(2))
+    var sf: i64 = s.first() ?? i64(-1)
+    var sl: i64 = s.last() ?? i64(-1)
+    io::cout << "f=" << f << " l=" << l << " emptyF=" << ef << " emptyL=" << el
+    io::cout << " sf=" << sf << " sl=" << sl << "\n"
+    return 0
+}

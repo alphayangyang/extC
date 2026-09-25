@@ -32,6 +32,7 @@ echo "== 正例：新键 · 覆盖 · 查 · 删 =="
 run_case basic
 run_case structkey tests/hashmap/structkey.extc
 run_case dense     tests/hashmap/dense.extc
+run_case index     tests/hashmap/index.extc
 echo "== 碰撞：线性探测 + 墓碑 + 复用墓碑槽 =="
 run_case collide
 
@@ -61,7 +62,7 @@ TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"
 if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
-    for t in basic collide; do
+    for t in basic collide index; do
         "$EXTC" "tests/hashmap/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
@@ -69,7 +70,7 @@ if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     "$EXTC" tests/hashmap/churn.extc -o "$TMP/c.c" >/dev/null 2>&1 \
       && gcc -O1 -g -fsanitize=address -o "$TMP/c" "$TMP/c.c" >/dev/null 2>&1 \
       && "$TMP/c" 20000 >/dev/null 2>&1 || { echo "  FAIL churn -> ASan 报错"; fail=1; ok=0; }
-    [ "$ok" = 1 ] && echo "  ok   basic · collide · churn  ->  ASan 干净"
+    [ "$ok" = 1 ] && echo "  ok   basic · collide · index · churn  ->  ASan 干净"
 else
     echo "  skip  gcc 不支持 -fsanitize=address"
 fi

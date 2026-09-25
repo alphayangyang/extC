@@ -81,6 +81,9 @@ struct linMap<K, V> {
     /* The value for a key, or `none`. Reading through the option is what the type
      * parameter makes possible: `?V` where `V` is itself a parameter is an ordinary
      * generic enum instance. */
+    /* `lm[k]` -- read side of the subscript syntax; `none` when the key is absent. */
+    fn [](self: ref linMap<K, V>, k: K) -> ?V { return self.get(k) }
+
     fn get(self: ref linMap<K, V>, k: K) -> ?V {
         let at = self.find(k)
         if at < i64(0) { return none }
