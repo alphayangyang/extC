@@ -123,6 +123,46 @@ fi
 echo "== 期 1 · 一个地方一个 zone：多个池 + 嵌套树，出块整区走 =="
 rt_run rt_zone     tests/pool/rt_zone.extc     "depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0"
 
+# ---------------------------------------------------------------- zone 按需发射
+# 钩子是**税**：每个嵌套块（含每个循环体）压/弹一次 zone，而绝大多数块根本不建池。
+# 修法是给函数算一个传递摘要 `makesPool`（能不能直接/间接调到 `extc_pool_new`，最小不动点），
+# 块只在这个摘要为真时压 zone。这两条判据把"该省的省了"和"该留的留着"同时钉住。
+echo "== zone 按需发射 · 正例：不建池的循环体里不许有钩子（次数写死，理由在下面）=="
+if "$EXTC" tests/pool/rt_zone_ondemand.extc -o build/rt_zone_ondemand.c >/dev/null 2>&1; then
+    # 期望值 4 的来历（从这个用例的形状数出来，不是量出来的）：
+    #   1) `main` 的帧压一次（`__extc_zm1`）—— 它自己调 `pool::extc_pool_new`，摘要为真；
+    #   2) 建池的那个块压一次 —— 块自己建池；
+    #   3) 那个块出块时弹一次 —— 配平（每个压过的层弹一次）；
+    #   4) `main` 尾声弹回帧深度一次 —— 早退路径也走这里，所以这一行必须留着。
+    # 修之前这里是 11 次（5 压 6 弹）：多出来的是三条只读元素的 while 循环体（各自压/弹）
+    # 与不建池的库调用。`want_enter = 2` 正是"不建池的循环体不许有钩子"这条判据的抓手。
+    want_enter=2
+    want_leave=2
+    got_enter=$(grep -c 'int64_t __extc_zm[0-9]* = extc_pool_zoneEnter()' build/rt_zone_ondemand.c)
+    got_leave=$(grep -c 'extc_pool_zoneLeaveTo(__extc_zm[0-9]*)' build/rt_zone_ondemand.c)
+    if [ "$got_enter" = "$want_enter" ] && [ "$got_leave" = "$want_leave" ]; then
+        echo "  ok   rt_zone_ondemand  ->  zoneEnter ${got_enter} 次（期望 ${want_enter}）· zoneLeaveTo ${got_leave} 次（期望 ${want_leave}）⇒ 不建池的循环体没有钩子"
+    else
+        echo "  FAIL rt_zone_ondemand  ->  zoneEnter ${got_enter}（期望 ${want_enter}）· zoneLeaveTo ${got_leave}（期望 ${want_leave}）⇒ 钩子发多了（税没省掉）或发少了（池会漏登记）"
+        fail=1
+    fi
+else
+    echo "  FAIL rt_zone_ondemand  ->  编不过"; fail=1
+fi
+
+echo "== zone 按需发射 · 反例：在循环体里建池 ⇒ 那一层的钩子必须还在 =="
+rt_run rt_zone_inloop tests/pool/rt_zone_inloop.extc "total=6 live=0 depth=1"
+if "$EXTC" tests/pool/rt_zone_inloop.extc -o build/rt_zone_inloop.c >/dev/null 2>&1; then
+    got_enter=$(grep -c 'int64_t __extc_zm[0-9]* = extc_pool_zoneEnter()' build/rt_zone_inloop.c)
+    if [ "$got_enter" = 2 ]; then
+        echo "  ok   rt_zone_inloop   ->  zoneEnter ${got_enter} 次 ⇒ 循环体那一层还在（帧 + 循环体）"
+    else
+        echo "  FAIL rt_zone_inloop   ->  zoneEnter ${got_enter} 次（期望 2）⇒ 循环体建池却没有自己的 zone，池会漏登记"; fail=1
+    fi
+else
+    echo "  FAIL rt_zone_inloop   ->  编不过"; fail=1
+fi
+
 echo "== 期 1 · 槽位复用：同一个槽位号，世代 +1 =="
 rt_run rt_reuse    tests/pool/rt_reuse.extc    "same=true gen=1->2"
 

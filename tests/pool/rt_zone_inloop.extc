@@ -1,0 +1,22 @@
+// 常设判据（zone 按需发射）的**反例**：在循环体里建池 ⇒ 循环体这一层的 zone 钩子必须还在
+//
+// 正例（`rt_zone_ondemand.extc`）证明"不建池的块可以不压 zone"，这一条证明那件事**没有过头**：
+// 每次迭代都建一个池，池登记在循环体的 zone 上，出块（出迭代）时整区一起走 ⇒ 块内 live=1、
+// 出块后 live=0。少发一次 enter 就会让池落在外层 zone 上，或者根本没有 zone
+// （`extc_pool_new` 返回 -1），两种都会让这里对不上。
+use std::io
+use std::sys::pool
+
+fn main() -> i32 {
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < i64(3) {
+        /* 循环体自己建池：整区在出块时一起走，所以每轮都从 0 开始涨到 1 */
+        let r = pool::extc_pool_new(i64(-1))
+        let c = pool::extc_pool_new(r)
+        total = total + pool::extc_pool_live()
+        i = i + i64(1)
+    }
+    io::cout << "total=" << total << " live=" << pool::extc_pool_live() << " depth=" << pool::extc_pool_zoneDepth() << "\n"
+    return 0
+}

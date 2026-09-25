@@ -733,5 +733,15 @@ int valDepthForStore (Checker *, Expr *);
 /* Drop the non-null proof of a binding, and of the paths that begin with it, which an assignment
  * invalidates. */
  void unNarrow (Checker *c, const char *cname);
+/* Can this statement, directly or through the functions it calls, create a pool (`extc_pool_new`)?
+ *
+ * The question belongs to the checker because it reads `e->func`, which checking resolves, and
+ * because the answer is transitive: `FuncDef.makesPool` is its least fixed point over the call
+ * graph. Codegen asks the same question one block at a time, with `descendBlocks` false, to
+ * decide whether a block needs a pool zone of its own.
+ *
+ * `descendBlocks` false stops at a nested block: a block is a `place` of its own, and that block
+ * emits (or declines) its own hook. */
+ bool stmtMakesPool (Stmt *s, bool descendBlocks);
 
 #endif /* EXTC_CHECK_INTERNAL_H */

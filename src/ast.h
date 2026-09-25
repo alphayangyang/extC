@@ -538,6 +538,23 @@ struct FuncDef {
      * Must be computed after the transitive `needsHome` closure has run; computing it
      * earlier misses a callee that turns out to have a home arena. */
     bool        mayUseArena;
+    /* Can this function create a pool, directly or through what it calls?
+     *
+     * A created pool is registered in the zone (the `place`) current at the call, and
+     * `extc_pool_new` returns -1 when no zone is current. So the zones are emitted where
+     * they can be needed - and only there: a block whose direct statements cannot reach
+     * `extc_pool_new` gets no `zoneEnter`/`zoneLeaveTo` pair. A loop body that only calls
+     * `v.push` used to pay one pair per iteration, and on `bench/stl/vector.extc` those
+     * hooks were 80% of the profile.
+     *
+     * Test: the body calls `extc_pool_new`, or it calls a function that does. The answer is
+     * the *least* fixed point of that rule over the call graph, taken by `checkModule` once
+     * every body has been checked - the walk reads `e->func`, which checking fills in.
+     *
+     * Conservative in the one direction that matters: an unresolved callee counts as
+     * creating a pool. An unneeded hook costs time; a missing one costs a pool with no zone,
+     * which makes `extc_pool_new` return -1 and the registry lose the record. */
+    bool        makesPool;
     /* Nodes in this body whose arena answer has to wait for the transitive `needsHome`
      * closure, in the order they were checked (`Expr*`):
      *   - an `EX_NEW` site: with a home arena, `arenaLevel` becomes ARENA_HOME, so every

@@ -249,10 +249,16 @@ typedef struct {
      * it. */
     bool        needRawTerm;
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
-     * every function carries the two hooks that key pools to its frame and its blocks. */
+     * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
     /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
     bool        zoneHere;
+    /* Which block levels really emitted `extc_pool_zoneEnter()` (index = block level,
+     * 1 = the function body). The pop has to consult this table instead of `zoneHere`
+     * alone: a block's zone is emitted on demand now, and a `zoneLeaveTo(__extc_zm<lvl>)`
+     * for a level that never pushed would pop the *enclosing* zone, leaving pools created
+     * afterwards with no zone at all (see `zoneAtLevel` / `cgReleaseLevel`). */
+    bool        zoneMark[64];
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -2491,6 +2497,40 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
                 what, e->arenaLevel, g->blkLevel, g->path, e->line);
 }
 
+/* Does this block need a zone of its own?
+ *
+ * A zone is the head of the side chain of pools created in one `place`. The only thing
+ * that needs one is `extc_pool_new`, which registers the new pool in the zone current at
+ * the call and returns -1 when there is none - and a pool that was never registered is
+ * never dropped, so its slot is never reused and `extc_pool_live()` counts a record that
+ * nothing can reach. The question is therefore "can this block's code reach
+ * `extc_pool_new`?".
+ *
+ * Params:
+ *   b - the block statement about to be emitted
+ *
+ * Returns:
+ *   True when a `zoneEnter` / `zoneLeaveTo` pair has to bracket the block.
+ *
+ * Notes:
+ *   - Only the block's *own* statements are asked about, and a nested block is not walked
+ *     into: a nested block is a place of its own with its own zone, and it answers for
+ *     itself. A loop body is such a block, which is where the win is - a body that only
+ *     calls `v.push` used to push and pop a zone per iteration.
+ *   - The summary is transitive through the callee (`FuncDef.makesPool`, computed by the
+ *     checker as a least fixed point), because a library function is transparent to
+ *     `place`: `vector<i32>::withCap` is what calls `extc_pool_new`, and it registers its
+ *     pool in the zone of the block that called *it*.
+ *   - Over-emitting is the safe direction, under-emitting is not; see `stmtMakesPool` in
+ *     check_top.c for how an unresolved callee is treated.
+ */
+static bool blockMakesPool(Stmt *b) {
+    if (!b || b->kind != ST_BLOCK) return false;
+    for (size_t i = 0; i < b->u.block.stmts.len; i++)
+        if (stmtMakesPool(*(Stmt **)vecAt(&b->u.block.stmts, i), false)) return true;
+    return false;
+}
+
 /* Release block arenas down to and including one level.
  *
  * Params:
@@ -2510,8 +2550,14 @@ static void cgReleaseLevel(CG *g, int lvl) {
      * independent, but releasing the pools that belong to this block is what the block's
      * release point is for (POOLS.md section 3.4 - leaving a block takes its subtree). */
     /* 离开一个地方：弹回它开始时的深度（mark），而不是盲目弹一个 —— 早退路径
-     * （return/break/continue）因此不会把 zone 栈弄歪。 */
-    if (g->zoneHere) cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
+     * （return/break/continue）因此不会把 zone 栈弄歪。
+     *
+     * 发射与弹出靠 `zoneMark` 配对，`zoneHere` 只说明"这个函数是个地方"：块的 zone 现在
+     * 是按需压的，所以某层没压却弹一次，弹掉的就是**外层**的 zone（外层建的池随后就没有
+     * zone ⇒ `extc_pool_new` 返回 -1 ⇒ 记录不再被回收）。表在进入块时写，这里读，两者
+     * 是同一份事实，不可能走散。 */
+    if (lvl < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lvl])
+        cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
     cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
@@ -2771,15 +2817,33 @@ static void genBlockBody(CG *g, Stmt *block) {
      * block statement it just inspected. */
     assert(block != NULL && block->kind == ST_BLOCK);
     g->blkLevel++;
+    /* `zoneMark` and `loopLevel` both have room for this depth: the prologue asked for
+     * `1 + blkMaxOfBlock(f->body)` levels. Say so rather than walk off the array if that
+     * ever stops being true. */
+    assert(g->blkLevel < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]));
+    /* Entering a block overwrites this level's mark, so the one that was there is saved
+     * and put back on the way out. Level 1 is the function body, whose mark the prologue
+     * set (it pushed `__extc_zm1`, and the epilogue reads the mark to decide whether to
+     * pop it): a plain `= false` here would erase that decision. Two sibling blocks at the
+     * same level both write it, and nothing looks at a level after its block has been
+     * left, but the save costs a byte and removes the question. */
+    bool savedZoneMark = g->zoneMark[g->blkLevel];
     if (!g->noArena) {
         cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
-        /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）*/
-        if (g->zoneHere && g->blkLevel > 1)
+        /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）。
+         * 只在这个块**可能建池**时才压（`blockMakesPool`）：只调用 `v.push` 这类不建池的
+         * 库函数的循环体不需要自己的 zone，而每个循环体压/弹一次正是这轮要消掉的开销。
+         * 弹出发射与否记进 `zoneMark`，`cgReleaseLevel` 查同一张表。 */
+        g->zoneMark[g->blkLevel] = false;
+        if (g->zoneHere && g->blkLevel > 1 && blockMakesPool(block)) {
             cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+            g->zoneMark[g->blkLevel] = true;
+        }
     }
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         genStmt(g, *(Stmt **)vecAt(&block->u.block.stmts, i));
     cgReleaseLevel(g, g->blkLevel);
+    g->zoneMark[g->blkLevel] = savedZoneMark;
     g->blkLevel--;
 }
 
@@ -3362,8 +3426,14 @@ static void genFunc(CG *g, FuncDef *f) {
         (void)lib;
         g->zoneHere = g->needPool && (!f->modName || !*f->modName);
     }
-    if (g->zoneHere && !g->noArena)
+    /* 函数体的 zone（`__extc_zm1`）同样按需发射：没有这个函数，就没有任何池会登记在它的帧上，
+     * 压了也是空压。`zoneMark[1]` 记下这次决定，收尾的 `zoneLeaveTo(__extc_zm1)` 查它 ——
+     * 没压却弹会弹掉**调用者**的 zone。 */
+    g->zoneMark[1] = false;
+    if (g->zoneHere && !g->noArena && f->makesPool) {
         cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* 函数体是一个地方 */");
+        g->zoneMark[1] = true;
+    }
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
      * `argc`/`argv`, so this is where the two meet. Three properties matter:
@@ -3529,7 +3599,13 @@ static void genFunc(CG *g, FuncDef *f) {
          * leak one block per arena at every return -- bounded, but a leak. */
         for (int lv = 1; lv <= maxLv; lv++)
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
-        if (g->zoneHere) cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm1);");
+        /* 弹回到最外层那个压过的 zone：早退（`goto __extc_ret`）和走到函数末尾都从这里出去，
+         * 而跳出去的路径可能把若干个块 zone 留在栈上，所以从最深的开始每层补一次。
+         * 多弹是幂等的（`zoneLeaveTo` 弹到某个 mark 为止），少弹会让池留在一个已经被压掉的
+         * 层级上。`zoneMark[1]`（帧自己的 zone）由序言决定：没压当然不弹。 */
+        for (int lv = maxLv; lv >= 1; lv--)
+            if (lv < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lv])
+                cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lv);
         if (isMain) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the

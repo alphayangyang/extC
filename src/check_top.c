@@ -590,6 +590,135 @@ static bool stmtUsesCname(Stmt *s, const char *cname) {
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, false); }
 static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, true); }
 
+/* ---- Does this code create a pool? (`FuncDef.makesPool`; see ast.h for why) ----
+ *
+ * The runtime primitive that creates one is `extc_pool_new`, and it is the *only* one:
+ * `drop`/`reset`/`generation`/`live`/`capacity`/`zoneDepth` neither create a record nor
+ * need a zone to exist. So the whole predicate rests on finding calls to that one name,
+ * directly or through a callee that reaches it.
+ *
+ * Two callers ask two different questions with it:
+ *   - the fixed-point closure below asks the transitive one ("can this function create a
+ *     pool at all?"), and walks nested blocks, which each have a zone of their own;
+ *   - codegen asks the block-local one ("can *this* block's direct statements create one
+ *     here?"), and stops at a nested block, because that block's own hook covers it.
+ * `descendBlocks` picks between them.
+ *
+ * Unknown callees count as creating a pool, so the answer errs towards emitting a hook.
+ */
+static bool exprMakesPool(Expr *e, bool descendBlocks);
+bool stmtMakesPool(Stmt *s, bool descendBlocks) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR:    return exprMakesPool(s->u.var.init, descendBlocks);
+    case ST_ASSIGN: return exprMakesPool(s->u.assign.value, descendBlocks) ||
+                           exprMakesPool(s->u.assign.target, descendBlocks);
+    case ST_IF:     return exprMakesPool(s->u.ifs.cond, descendBlocks) ||
+                           stmtMakesPool(s->u.ifs.thenBody, descendBlocks) ||
+                           stmtMakesPool(s->u.ifs.elseBody, descendBlocks);
+    case ST_WHILE:  return exprMakesPool(s->u.whiles.cond, descendBlocks) ||
+                           stmtMakesPool(s->u.whiles.body, descendBlocks);
+    case ST_RETURN: return exprMakesPool(s->u.ret.value, descendBlocks);
+    case ST_EXPR:   return exprMakesPool(s->u.expr.expr, descendBlocks);
+    case ST_BLOCK:
+        /* A block is a `place` of its own with its own zone, so the block-local question
+         * stops here: whatever happens inside is that block's business. The transitive
+         * question walks in. */
+        if (!descendBlocks) return false;
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtMakesPool(*(Stmt **)vecAt(&s->u.block.stmts, i), descendBlocks)) return true;
+        return false;
+    case ST_MATCH:
+        if (exprMakesPool(s->u.match.scrutinee, descendBlocks)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtMakesPool((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, descendBlocks)) return true;
+        return false;
+    default: return false;
+    }
+}
+static bool exprMakesPool(Expr *e, bool descendBlocks) {
+    if (!e) return false;
+    /* The three shapes a resolved call takes. `EX_ASSOC` belongs here for the reason its
+     * counterpart in `exprCallsNeedsHome` documents: an associated function records its
+     * callee in `e->func` too, and leaving it out is how a summary quietly becomes wrong. */
+    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+        /* `flush()` / `print(x)` / `println(x)` are builtins dispatched by name, and the
+         * checker leaves `e->func` null for them (it returns before resolving a callee).
+         * They cannot create a pool; naming them here keeps the conservative branch below
+         * from spreading `makesPool` over half the library. Measured before this case
+         * existed: `io::flushOut`, `io::writeBytesRaw` and `io::errWrite` were all marked,
+         * purely because each of them calls `flush()`. */
+        if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+            const char *bn = e->u.call.callee->u.ident.name;
+            if (bn && (strcmp(bn, "flush") == 0 || strcmp(bn, "print") == 0 ||
+                       strcmp(bn, "println") == 0))
+                return false;
+        }
+        /* Anything else unresolved is conservative: assume it creates a pool. */
+        if (!e->func) return true;
+        if (e->func->name && strcmp(e->func->name, "extc_pool_new") == 0) return true;
+        if (e->func->makesPool) return true;
+    }
+    switch (e->kind) {
+    case EX_BIN: return exprMakesPool(e->u.bin.left, descendBlocks) ||
+                       exprMakesPool(e->u.bin.right, descendBlocks);
+    case EX_UN:  return exprMakesPool(e->u.un.operand, descendBlocks);
+    case EX_REF: return exprMakesPool(e->u.ref.operand, descendBlocks);
+    case EX_DEREF: return exprMakesPool(e->u.deref.operand, descendBlocks);
+    case EX_SIGN:  return exprMakesPool(e->u.sign.operand, descendBlocks);
+    case EX_CONV:  return exprMakesPool(e->u.conv.operand, descendBlocks);
+    case EX_TRY:   return exprMakesPool(e->u.try_.operand, descendBlocks);
+    case EX_INDEX: return exprMakesPool(e->u.index.obj, descendBlocks) ||
+                          exprMakesPool(e->u.index.index, descendBlocks);
+    /* The bounds are expressions too, and every walker in this file that forgot them had a
+     * real defect (see the note on `exprUsesCname`); a call in a bound can create a pool. */
+    case EX_SLICE: return exprMakesPool(e->u.slice.obj, descendBlocks) ||
+                          exprMakesPool(e->u.slice.lo, descendBlocks) ||
+                          exprMakesPool(e->u.slice.hi, descendBlocks);
+    case EX_FIELD: return exprMakesPool(e->u.field.obj, descendBlocks);
+    case EX_COALESCE:
+        return exprMakesPool(e->u.coalesce.main, descendBlocks) ||
+               exprMakesPool(e->u.coalesce.fallback, descendBlocks);
+    case EX_METHOD: {
+        if (exprMakesPool(e->u.method.recv, descendBlocks)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.method.args, i), descendBlocks)) return true;
+        return false;
+    }
+    case EX_CALL: {
+        /* The callee as well: `f()()` is not legal today, but the walk costs nothing and a
+         * shape left out is exactly how a summary goes wrong. */
+        if (exprMakesPool(e->u.call.callee, descendBlocks)) return true;
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.call.args, i), descendBlocks)) return true;
+        return false;
+    }
+    case EX_ASSOC: {
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.assoc.args, i), descendBlocks)) return true;
+        return false;
+    }
+    case EX_NEW: return exprMakesPool(e->u.new_.count, descendBlocks);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, descendBlocks)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.arraylit.elems, i), descendBlocks)) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.enumval.args, i), descendBlocks)) return true;
+        return false;
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.gencall.args, i), descendBlocks)) return true;
+        return false;
+    default: return false;
+    }
+}
+
 /* Count the `@overwrite` sites in a body.
  *
  * Params:
@@ -4759,6 +4888,60 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
             f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
+        }
+    }
+
+    /* ---- Which functions can create a pool (`makesPool`)? ----
+     *
+     * Same shape as the `needsHome` closure above, and it has to be a closure for the same
+     * reason: `vector<i32>::withCap` contains `extc_pool_new` and `withCap` calls `new`,
+     * which calls `withCap`, so no single pass settles the answer. The rule
+     *
+     *     makesPool(f)  <=  f's body calls `extc_pool_new`
+     *                    or f's body calls some g with makesPool(g)
+     *
+     * is monotone (a flag only ever goes from false to true) and the lattice is finite, so
+     * iterating until a round changes nothing yields the *least* fixed point - which is the
+     * answer wanted, not merely a consistent one: a larger fixed point would mark functions
+     * that cannot create a pool and give back the hooks this pass exists to remove.
+     *
+     * Recursion and mutual recursion need no special case here, unlike the lazy
+     * `funcAllocates` walk: a cycle simply stays false until one of its members is reached
+     * from a body that really does call `extc_pool_new`, and if none of them ever is, then
+     * none of them can create a pool at all. */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            if (f->makesPool) continue;
+            /* An extern has no body to walk; `stmtMakesPool` finds the callee at the call
+             * site (`extc_pool_new` itself is declared extern and is exactly that case). */
+            if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
+        }
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (f->makesPool) continue;
+                if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
+            }
+        }
+    }
+    if (getenv("EXTC_DUMP_POOL")) {
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            fprintf(stderr, "[pool] %-28s makesPool=%d mod=%s\n",
+                    f->name ? f->name : "-", (int)f->makesPool,
+                    f->modName && *f->modName ? f->modName : "-");
+        }
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                fprintf(stderr, "[pool] %s::%-22s makesPool=%d mod=%s\n", sd->name,
+                        f->name ? f->name : "-", (int)f->makesPool,
+                        f->modName && *f->modName ? f->modName : "-");
+            }
         }
     }
 

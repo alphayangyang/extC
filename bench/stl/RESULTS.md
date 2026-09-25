@@ -2,7 +2,7 @@
 
 > **自动生成**（`bash bench/stl/run.sh`），别手改。
 > 口径：两边**同算法同参数**，跑同一个工作量，打印出来的校验和**逐位相同**才算数；
-> 时间与 RSS 都是 `best of 3`（外设 `/usr/bin/time`，时间精度 0.01s）。
+> 时间与 RSS 都是 `best of 7`（外设 `/usr/bin/time`，时间精度 0.01s）。
 
 机器：Intel(R) Core(TM) Ultra 9 275HX · kernel 6.18.33.2-microsoft-standard-WSL2
 
@@ -18,11 +18,11 @@
 
 | 容器 | extC（同算法同参数） | C++ STL | 比值 | extC RSS | C++ RSS | 校验和 |
 |---|---|---|---|---|---|---|
-| `vector` | TIME 0.12s | TIME 0.02s | 6.00x | 40684 KB | 42876 KB | `len=0 cap=10000000 sum=49999995000000 popped=49999995000000` |
-| `hashmap` | TIME 0.15s | TIME 0.16s | 0.94x | 69036 KB | 43204 KB | `len=500000 sum=1075342615883296 removed=500000` |
-| `map` | TIME 1.01s | TIME 1.67s | 0.60x | 90732 KB | 66688 KB | `len=500000 sum=1075343114875592 removed=500000` |
-| `set` | TIME 0.14s | TIME 0.18s | 0.78x | 62892 KB | 43076 KB | `len=500000 hits=1000000 removed=500000` |
-| `string` | TIME 0.06s | TIME 0.01s | 6.00x | 27564 KB | 21372 KB | `len=10000000 alen=8000000 found=0` |
+| `vector` | TIME 0.03s | TIME 0.02s | 1.50x | 40620 KB | 42812 KB | `len=0 cap=10000000 sum=49999995000000 popped=49999995000000` |
+| `hashmap` | TIME 0.12s | TIME 0.15s | 0.80x | 69036 KB | 43260 KB | `len=500000 sum=1075342615883296 removed=500000` |
+| `map` | TIME 0.86s | TIME 1.49s | 0.58x | 90732 KB | 66652 KB | `len=500000 sum=1075343114875592 removed=500000` |
+| `set` | TIME 0.10s | TIME 0.15s | 0.67x | 62956 KB | 43252 KB | `len=500000 hits=1000000 removed=500000` |
+| `string` | TIME 0.03s | TIME 0.01s | 3.00x | 27564 KB | 21308 KB | `len=10000000 alen=8000000 found=0` |
 
 对比物：`vector<i32>` 对 `std::vector` · `hashMapI64<i32>` 对 `std::unordered_map` ·
 `map<i64,i32>`（B+ 树）对 `std::map`（红黑树）· `hashSetI64` 对 `std::unordered_set` ·
