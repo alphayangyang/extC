@@ -716,6 +716,8 @@ int valDepthForStore (Checker *, Expr *);
  void setCallArenaArg (Checker *c, Expr *e);
  void setCallZoneArg (Checker *c, Expr *e);
  bool calleeMakesPool (FuncDef *f);
+ bool calleeCreatesPool (FuncDef *f);
+ void setPoolCalleeResolver (FuncDef *(*fn)(Expr *e));
  void recordLvlFact (Checker *c, Expr *val, int at);
 /* Report an error when a name of another module is used without its module qualifier. */
  void checkCtorSig (Checker *c, FuncDef *f);

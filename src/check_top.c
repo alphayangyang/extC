@@ -607,6 +607,29 @@ static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, true); 
  * Unknown callees count as creating a pool, so the answer errs towards emitting a hook.
  */
 static bool exprMakesPool(Expr *e, bool descendBlocks);
+
+/* 解析钩子：checker 这一侧问不到"某个实例的具体方法是谁"。
+ *
+ * `#57` 让泛型体里对**类型参数**的协议方法调用在模板上**故意不写 `e->func`**（一份模板体
+ * 有多个实例，写上去就是给别的实例写错方法）。不解析时 `exprMakesPool` 只能保守算真 ——
+ * 而 `hashMap::find` 里正好有 `k.hash()`，于是整条链（find/get/put/remove/contains）全被
+ * 标成"会建池"，循环体每轮压/弹一次 zone。
+ *
+ * codegen 生成某个实例时知道该解析成谁（`genMethodCall` 走的就是这一句）；闭包的实例那一轮
+ * 也知道（拿这个实例的实参代入，`runMethodCheck` 是同一套）。解析不出来 ⇒ 仍旧保守。 */
+static FuncDef *(*poolCalleeResolve)(Expr *e) = NULL;
+void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
+
+/* 闭包实例那一轮的代入上下文。 */
+static TypeTable *instResTT = NULL;
+static Vec *instResParams = NULL;
+static Vec *instResTargs = NULL;
+static FuncDef *resolveOnInstance(Expr *e) {
+    if (!instResTT || !instResParams || !instResTargs) return NULL;
+    if (!e || e->kind != EX_METHOD || !e->u.method.recv) return NULL;
+    Type *rt = ttSubstitute(instResTT, e->u.method.recv->type, instResParams, instResTargs);
+    return findMethod(ttBase(rt), e->u.method.name);
+}
 bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     if (!s) return false;
     switch (s->kind) {
@@ -654,10 +677,15 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
                        strcmp(bn, "println") == 0))
                 return false;
         }
-        /* Anything else unresolved is conservative: assume it creates a pool. */
-        if (!e->func) return true;
-        if (e->func->name && strcmp(e->func->name, "extc_pool_new") == 0) return true;
-        if (e->func->makesPool) return true;
+        /* 这里问的是"**这一次调用能不能走到 `extc_pool_new`**"（zone 的决定，以及
+         * `makesPool` 闭包本身），不是"结果会不会住在池上" —— 后者是 `calleeMakesPool`
+         * 的问题（逃逸与提权那两处用它）。两者的差别与实测代价见 `calleeCreatesPool`。
+         *
+         * `#57`：泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
+         * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
+        FuncDef *cf = e->func;
+        if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
+        if (calleeCreatesPool(cf)) return true;
     }
     switch (e->kind) {
     case EX_BIN: return exprMakesPool(e->u.bin.left, descendBlocks) ||
@@ -1333,6 +1361,31 @@ bool calleeMakesPool(FuncDef *f) {
      * `extc_pool_new` 提不了权 ⇒ 池生进构造器自己的帧 ⇒ 返回时被回收 ⇒ 段错误。
      * 库里的容器没这个毛病，只因为库函数"对地方透明"；用户的文件不是库，
      * 于是那条隐藏的差别就露出来了。 */
+    if (f->body == NULL && f->name &&
+        (strcmp(f->name, "extc_pool_new") == 0 || strcmp(f->name, "extc_pool_new_at") == 0))
+        return true;
+    return f->isAssoc && f->owner && f->owner->makesPoolAny;
+}
+
+/* 「**这一次调用能不能走到 `extc_pool_new`**」—— 与 `calleeMakesPool` 问的**不是同一个问题**。
+ *
+ * 两个问题一直挤在同一只谓词里：
+ *   ① 「这个类型**拥有**池」是**类型**的性质（`@poolObject` 声明）；
+ *   ② 「这一次调用**会不会建**池」是**被调者**的性质（`f->makesPool` + 构造器那一族）。
+ * `calleeMakesPool` 要回答①（"结果会不会住在池上" ⇒ 逃逸深度与提权站点），所以它对
+ * `@poolObject` 类型**一律**放宽 —— 在那里这是对的（保守方向）。
+ * 但**块级的 zone 钩子**只需要②：一个池只在建它的那个块的 zone 上登记。拿①回答②的代价
+ * 实测过（`bench/app/session.extc`，active=1M）：`hashMap::get` 被当成"会建池" ⇒ 循环体
+ * **每轮压/弹一次 zone**。只把生成物里那两行删掉的消融实验值是 **25.3%**（42.34 → 31.63
+ * ns/op）；**编译器这一刀端到端是 14.5%**（48.08 → 41.10 ns/op）—— 后者还顺带把那几个
+ * 方法的 zone 形参去掉了。修完 extC 在该场景**与 Go 持平**（0.99×，之前 1.15×）。
+ *
+ * 剩下三条覆盖"建池"的全部入口：闭包（`makesPool`）覆盖一切能走到 `extc_pool_new` 的函数体；
+ * `extc_pool_new*` 自己按名字认（extern 没有函数体）；构造器那一族按 `makesPoolAny` 认
+ * （模板/实例两份 FuncDef 的口子）。未解析的被调者仍然**保守为真**。 */
+bool calleeCreatesPool(FuncDef *f) {
+    if (!f) return true;                       /* 未解析 ⇒ 保守 */
+    if (f->makesPool) return true;
     if (f->body == NULL && f->name &&
         (strcmp(f->name, "extc_pool_new") == 0 || strcmp(f->name, "extc_pool_new_at") == 0))
         return true;
@@ -4989,8 +5042,16 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * site (`extc_pool_new` itself is declared extern and is exactly that case). */
             if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
         }
+        /* **泛型 struct 的模板轮要跳过**：模板与实例**共用同一批 FuncDef**
+         * （实测 `template find` 与 `hashMap$hashMap.find` 是同一个指针），而模板轮的
+         * `k.hash()` 解析不出来 ⇒ 只能保守标真，一旦标上，实例轮 `if (f->makesPool) continue`
+         * 就永远跳过它，精确解析**没机会生效**。泛型结构体的方法体本来就只在实例上跑，
+         * 所以交给下面那一轮按实例解析：解析不出来时那一轮仍旧保守（`resolveOnInstance`
+         * 返回 NULL ⇒ 视为会建池），多个实例之间是**取或**（任何一个实例要建池 ⇒ 整条链
+         * 保守标真），方向仍然是安全的。非泛型结构体没有这个问题，照旧。 */
         for (size_t i = 0; i < m->structs.len; i++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            if (sd->typeParams.len > 0) continue;
             for (size_t j = 0; j < sd->methods.len; j++) {
                 FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
                 if (f->makesPool) continue;
@@ -4998,7 +5059,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             }
         }
         /* 实例那一轮：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
-         * 而在类型表的 `tt->instances` 上。 */
+         * 而在类型表的 `tt->instances` 上。这一轮**按实例解析**协议方法（`#57`），
+         * 代入方式与 `runMethodCheck` 完全一致。 */
         for (size_t i = 0; i < tt->instances.len; i++) {
             Type *inst = *(Type **)vecAt(&tt->instances, i);
             StructDef *sd = inst ? inst->sdef : NULL;
@@ -5006,7 +5068,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < sd->methods.len; j++) {
                 FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
                 if (f->makesPool) continue;
-                if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
+                instResTT = tt; instResParams = &sd->typeParams; instResTargs = &inst->targs;
+                setPoolCalleeResolver(resolveOnInstance);
+                bool mp = stmtMakesPool(f->body, true);
+                setPoolCalleeResolver(NULL);
+                instResTT = NULL;
+                if (mp) { f->makesPool = true; changed = true; }
             }
         }
     }

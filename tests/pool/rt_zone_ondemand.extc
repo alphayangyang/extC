@@ -2,13 +2,19 @@
 //
 // 这个程序的形状是特意选的：
 //   - `needPool` 为真（程序里确实建池）⇒ 门开着，钩子少发了不可能是"整块跳过"造成的；
-//   - `main` 体里两条 while 循环各自是一个「地方」（块），体内只调用 `slice<i32>::get`
-//     （不建池）⇒ 这两层**不许**压/弹 zone；
-//   - 第三个块自己连着建两个池 ⇒ 这一层**必须**压/弹 zone，否则池登记不到 zone 上
+//   - `main` 体里三条 while 循环各自是一个「地方」（块），体内只调用不建池的东西 ⇒
+//     这三层**不许**压/弹 zone。第三条尤其重要：它调的是**泛型容器的方法**
+//     （`hashMapI64<i32>::put` / `get`），而那些方法体里有 `k.hash()` —— `#57` 让
+//     「对类型参数的协议方法」在节点上**不写 func**，模板期解析不出来。2026-09-26 之前
+//     这里保守算真 ⇒ 整个 `hashMap` 的 get/put/remove/find 全被当成"会建池" ⇒ 每轮压/弹
+//     一次 zone（实测占 `bench/app/session.extc` 全部时间的 14.5%）。修法是让闭包在
+//     **实例那一轮**按实例代入解析（`runMethodCheck` 同一套）；
+//   - 第四个块自己连着建两个池 ⇒ 这一层**必须**压/弹 zone，否则池登记不到 zone 上
 //     （`extc_pool_new` 返回 -1 ⇒ 记录不再被回收、`extc_pool_live()` 计数错乱）。
 // `tests/pool/run.sh` 把生成物里 `int64_t __extc_zm` 的出现次数钉成常量并说明来源。
 use std::io
 use std::sys::pool
+use stl::hashMap
 
 fn main() -> i32 {
     var n: i64 = 8
@@ -31,6 +37,17 @@ fn main() -> i32 {
         s2 = s2 + i64(a.get(i))
         i = i + i64(1)
     }
+    /* 第三条：**泛型容器的方法**（体内有 `k.hash()` 这类推迟解析的协议方法）。
+     * 这一条是 2026-09-26 加上的 —— 前两条盖不到它，所以"钩子发多了"曾经长期看不见。 */
+    var m: hashMapI64<i32> = hashMapI64<i32>::withCap(n)
+    i = i64(0)
+    var s3: i64 = 0
+    while i < n {
+        m.put(i, i32(i))
+        s3 = s3 + i64(m.get(i) ?? i32(0))
+        if m.remove(i) { s3 = s3 + i64(1) }
+        i = i + i64(1)
+    }
     var d: i64 = 0
     {
         /* 这个块自己建池 ⇒ 这一层必须有 zone 钩子 */
@@ -39,6 +56,6 @@ fn main() -> i32 {
         d = d + pool::extc_pool_live()
         pool::extc_pool_drop(r)
     }
-    io::cout << "s1=" << s1 << " s2=" << s2 << " d=" << d << " live=" << pool::extc_pool_live() << " depth=" << pool::extc_pool_zoneDepth() << "\n"
+    io::cout << "s1=" << s1 << " s2=" << s2 << " s3=" << s3 << " d=" << d << " live=" << pool::extc_pool_live() << " depth=" << pool::extc_pool_zoneDepth() << "\n"
     return 0
 }

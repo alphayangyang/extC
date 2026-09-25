@@ -17,10 +17,12 @@ MACHINE=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')
 KERNEL=$(uname -r)
 
 build() {   # 名字
+    # `-fwrapv`：生成的 C 的**既定编译契约**（有符号溢出在 extC 里是有定义的绕回，见 MANUAL §8；
+    # 编译器驱动自己也是这么编的，见 src/main.c）。C++ 那边同旗子，两边对称。
     "$PWD/build/extc" "bench/stl/$1.extc" -o "/tmp/stlbin/$1.extc.c" >/dev/null 2>&1 \
-      && $CC -O2 "/tmp/stlbin/$1.extc.c" -o "/tmp/stlbin/$1_extc" >/dev/null 2>&1 \
+      && $CC -O2 -fwrapv "/tmp/stlbin/$1.extc.c" -o "/tmp/stlbin/$1_extc" >/dev/null 2>&1 \
       || { echo "  $1：extC 侧编不过"; return 1; }
-    $CXX -O2 -std=c++17 "bench/stl/$1.cpp" -o "/tmp/stlbin/$1_cpp" >/dev/null 2>&1 \
+    $CXX -O2 -std=c++17 -fwrapv "bench/stl/$1.cpp" -o "/tmp/stlbin/$1_cpp" >/dev/null 2>&1 \
       || { echo "  $1：C++ 侧编不过"; return 1; }
     return 0
 }

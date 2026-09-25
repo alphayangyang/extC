@@ -143,6 +143,11 @@ if "$EXTC" tests/pool/rt_zone_ondemand.extc -o build/rt_zone_ondemand.c >/dev/nu
     #   4) `main` 尾声弹回帧深度一次 —— 早退路径也走这里，所以这一行必须留着。
     # 修之前这里是 11 次（5 压 6 弹）：多出来的是三条只读元素的 while 循环体（各自压/弹）
     # 与不建池的库调用。`want_enter = 2` 正是"不建池的循环体不许有钩子"这条判据的抓手。
+    # **2026-09-26 加强**：第三条循环体调的是 `hashMapI64<i32>::put`/`get`/`remove` ——
+    # 泛型方法体里有 `k.hash()`（`#57` 推迟解析的协议方法），而模板期解析不出来 ⇒ 整条链
+    # 被保守标成"会建池"，每轮都带钩子（实测占 `bench/app/session.extc` 全部时间的 14.5%）。
+    # **前两条判据盖不到它**（它们只调 `slice::get`），所以这件事长期没有抓手 ——
+    # 现在同样钉在 `want_enter = 2` 里。
     want_enter=2
     want_leave=2
     got_enter=$(grep -c 'int64_t __extc_zm[0-9]* = extc_pool_zoneEnter()' build/rt_zone_ondemand.c)

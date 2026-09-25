@@ -21,11 +21,11 @@
 
 | 容器 | extC（同算法同参数） | C++ STL | 比值 | extC RSS | C++ RSS | 校验和 |
 |---|---|---|---|---|---|---|
-| `vector` | TIME 0.03s | TIME 0.03s | 1.00x | 40620 KB | 42876 KB | `len=0 cap=10000000 sum=49999995000000 popped=49999995000000` |
-| `hashmap` | TIME 0.15s | TIME 0.22s | 0.68x | 69036 KB | 43276 KB | `len=500000 sum=1075342615883296 removed=500000` |
-| `map` | TIME 1.01s | TIME 1.78s | 0.57x | 41772 KB | 66716 KB | `len=500000 sum=1075343114875592 removed=500000` |
-| `set` | TIME 0.12s | TIME 0.20s | 0.60x | 62892 KB | 43240 KB | `len=500000 hits=1000000 removed=500000` |
-| `string` | TIME 0.02s | TIME 0.01s | 2.00x | 21484 KB | 21308 KB | `len=10000000 alen=8000000 found=0` |
+| `vector` | TIME 0.03s | TIME 0.03s | 1.00x | 40620 KB | 42892 KB | `len=0 cap=10000000 sum=49999995000000 popped=49999995000000` |
+| `hashmap` | TIME 0.14s | TIME 0.18s | 0.78x | 51948 KB | 43256 KB | `len=500000 sum=1075342615883296 removed=500000` |
+| `map` | TIME 0.97s | TIME 1.71s | 0.57x | 41772 KB | 66716 KB | `len=500000 sum=1075343114875592 removed=500000` |
+| `set` | TIME 0.11s | TIME 0.19s | 0.58x | 49132 KB | 43196 KB | `len=500000 hits=1000000 removed=500000` |
+| `string` | TIME 0.03s | TIME 0.01s | 3.00x | 21420 KB | 21372 KB | `len=10000000 alen=8000000 found=0` |
 
 对比物：`vector<i32>` 对 `std::vector` · `hashMapI64<i32>` 对 `std::unordered_map` ·
 `map<i64,i32>`（B+ 树）对 `std::map`（红黑树）· `hashSetI64` 对 `std::unordered_set` ·
