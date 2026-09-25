@@ -92,6 +92,9 @@ const char *modulesMethodHint(const char *method) {
                     if (line[0] == '#') continue;
                     char *tab1 = strchr(line, '\t'); if (!tab1) continue; *tab1++ = '\0';
                     char *tab2 = strchr(tab1, '\t'); if (!tab2) continue; *tab2++ = '\0';
+                    /* Columns past the module name (visibility, kind) belong to the manual's
+                     * coverage tooling, not to this diagnostic. */
+                    char *tab3 = strchr(tab2, '\t'); if (tab3) *tab3 = '\0';
                     char *nl = strchr(tab2, '\n');   if (nl) *nl = '\0';
                     snprintf(names[n], sizeof names[n], "%.95s", line);
                     snprintf(mods[n],  sizeof mods[n],  "%.95s", tab2);
