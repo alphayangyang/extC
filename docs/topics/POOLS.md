@@ -588,11 +588,154 @@ B 树的根本身就是一个排序数组，自动等于最快的 flat map，不
 顺带一条设计问题要在动手前定：`[]` 返回**值**还是 `ref` —— 返回 `ref` 才能写 `m[k] = v` / `m[k].f = ...`，但那
 与"`ref` 不许逃出生命周期"的规则纠缠；建议第一版只做**读**（`?V`），写入仍走 `put`，`[]=` 先不做。
 
+## 12. 自定义池底容器（用户面）—— 作者 2026-09-26 定
+
+**为什么要写这一节**：池是"基础容器"，STL 只是在它上面的一层逻辑。作者说过"一个非嵌套容器对应一个池"，
+所以库里那七个容器不是特权：**你自己写的结构体也应当能拥有一个池**，走完全一样的路。
+不写下来没人会自己建 —— 这一节就是那条路。
+
+### 12.1 先问一句：你要的是哪一层
+
+| 你要的东西 | 走哪条 | 代价 |
+|---|---|---|
+| 能存等大元素、要稳定身份、删了要能复用（链表 / 平衡树 / 图 / 对象表） | **用现成的 `pool<T>`**，逻辑写在**句柄**上（句柄当数组下标用） | 只写你的逻辑；存储/句柄/压缩/重建都是池的活 |
+| 一个**自己的**存储块（连续数组、自己的布局、成块簿记），要能长、能还 | 自己声明 `@poolObject`（12.2） | 一个结构体 + 四个方法 + 一对守卫 |
+
+第一条是常态（OI 那个写法：开一个大数组，用 `nxt[i]` 说这是链表）。`stl/pool.extc` 的公开面够用：
+`withCap` / `withParent` / `insert` / `get` / `set` / `contains` / `remove` / `len` / `capacity` /
+`shrink` / `clear` / `release` / `atDense` / `handleAtDense` / `gather` / `toSlice`，外加 `handle` 与 `same(a, b)`。
+
+### 12.2 自己拥有板块：`@poolObject` + 一份模板
+
+**声明。** 结构体前面写 `@poolObject`，它说的是一句事实：**这个类型拥有一个池**（存储住在池自己的
+板块上，寿命随它所在的地方）。修饰符由**你**写、编译器照办 —— 它不猜（早先试过"看有没有 `pid` 字段"
+与"看方法建不建池"：前者是魔数式约定，后者要等所有函数体检查完才算得出来）。
+
+**模板。** 下面这份是**跑通过的**（`tests/stl/custom_pool.extc`，判据
+`n=10 cap=13 v9=81 live=1 bytes=104`），照它改：
+
+```extc
+use std::sys::pool as syspool      /* 特权层：运行期池记录（库作者面，普通程序不 import）*/
+
+@poolObject                        /* 这个类型拥有一个池 */
+struct mybuf<T> {
+    pid:    i64                    /* 运行期池记录的下标 */
+    pidGen: u64                    /* 建池那一刻的世代（陈旧拷贝靠它认出来）*/
+    vals:   mut slice<T>           /* 存储 = **这个池自己的板块** */
+    n:      i64
+    cap:    i64
+
+    fn withCap(c: i64) -> mybuf<T> {
+        let rp  = syspool::extc_pool_new(i64(-1))          /* 随容器登记一条池记录（父 = -1）*/
+        let rpg = syspool::extc_pool_generation(rp)        /* 抄下出生世代 */
+        var cc: i64 = c
+        if cc < i64(4) { cc = i64(4) }
+        var b: mybuf<T> = {
+            pid: rp, pidGen: rpg,
+            vals: poolSlice<T>(rp, cc),                    /* 从自己的板块拿一块 */
+            n: i64(0), cap: cc,
+        }
+        return b
+    }
+
+    fn push(self: mut ref mybuf<T>, v: T) {
+        if self.n >= self.cap {
+            let ncap = self.cap + self.cap / i64(2)
+            self.vals = poolResize<T>(self.pid, self.vals, ncap)   /* 原块加长（内容保住）*/
+            self.cap  = ncap
+        }
+        self.vals[self.n] = v
+        self.n = self.n + i64(1)
+    }
+
+    fn release(self: mut ref mybuf<T>) {
+        if self.pid < i64(0) { return }
+        self.vals = poolResize<T>(self.pid, self.vals, i64(0))     /* 1) 视图先收成 0 长 */
+        self.cap  = i64(0)                                         /* 2) 容量归零 */
+        syspool::extc_pool_reset(self.pid)                         /* 3) 重置记录 */
+        syspool::extc_pool_drop(self.pid)                          /* 4) 回收记录 ⇒ 板块整块还 */
+        self.pid = i64(-1)
+    }
+}
+```
+
+三个原语是**生成器内建**（不是 `extern!`：它不许返回 `slice<T>`，extC 也没有指针转换）：
+
+| 内建 | 干什么 | 什么时候用 |
+|---|---|---|
+| `poolSlice<T>(rid, n)` | 拿一块新的 `n` 个 `T`（清零） | 构造、要换块时 |
+| `poolResize<T>(rid, s, n)` | 把**这一块**改成 `n` 个（内容保住，只清零新增那一段） | 增长/缩容（首选，一个字节都不搬） |
+| `poolGive<T>(rid, s)` | 把一块还回去 | 换块：新的先拿、旧的最后还（不留悬垂窗口） |
+
+### 12.3 编译器替你做的三件（所以你不必做）
+
+1. **提权**：`@poolObject` 类型的构造调用是**逃逸站点**，与 `new` 同一条规则 ⇒
+   `fn build() -> mybuf<i64>` 里建好、返回给调用方**合法**，池会生到**调用者选的那个地方**去。
+2. **隐藏的「家 zone」参数**：建池的函数（可传递）自动多收一个 `int64_t __extc_home_zone`，
+   调用点自动传对。你写 `syspool::extc_pool_new(i64(-1))`，生成的是
+   `extc_pool_new_at(parent, __extc_home_zone)`。
+3. **释放之后是响亮失败**：见 12.4 的守卫。
+
+**一处已经修掉的坑（记在这里，免得重踩）**：库函数"对地方透明"（构造器自己不压 zone），
+而**用户写在入口文件里的构造器原先被当成一个地方** —— 池会生进它自己的帧、返回时被回收、板块悬垂
+（实测是段错误）。修法：让运行期那一句 `extc_pool_new` 本身也算池站点，于是它跟着容器一起提权。
+`tests/stl/custom_pool.extc` 就是这条的常设判据。
+
+### 12.4 你必须自己写的两件
+
+**守卫（一对）。** 别名是结构体浅拷贝：两个名字共用一个板块，一份 `release` 之后另一份就悬垂，
+而且**它不会报错**（除非加这一对）。库里五个容器都有，形状照抄：
+
+```extc
+    fn pStale(self: ref mybuf<T>) -> bool {          /* 出生世代对不上现在这一格 ⇒ 陈旧 */
+        if self.pid < i64(0) { return false }
+        return syspool::extc_pool_generation(self.pid) != self.pidGen
+    }
+    fn pPoison(self: mut ref mybuf<T>) {             /* 陈旧 ⇒ 把这一份收成空容器（别碰板块）*/
+        self.vals = poolSlice<T>(i64(-1), i64(0))
+        self.n    = i64(0)
+        self.cap  = i64(0)
+        self.pid  = i64(-1)
+    }
+```
+
+然后在**写入路径入口**各查一次（`push` / `set` / `put` / `insert` 的第一句）：
+`if self.pStale() { self.pPoison() }`。代价实测在噪声内（1e7 次 push：0.048~0.050s 对 0.047~0.049s）。
+
+**`release` 的四步顺序**（模板里有）：**先收视图、容量归零，再放记录**。反过来写就是一个悬垂窗口：
+视图还在、板块已经还给 malloc。
+
+### 12.5 三条纪律（不是建议，是模型的结果）
+
+1. **池里的东西不许出容器**：要"拿出来"就拷贝（`toSlice()` 那一族，落在**目的地**所在的地方）。
+   作者原话：「`asSlice` 应该是某种拷贝……否则就变成引用 Pool 里的东西了，而 **Pool 里的东西永远
+   不能被外面引用**」。视图本身也守不住 —— `push` 一次（可能搬家）、`clear`（翻纪元）、`shrink`、
+   `release` 任何一个动作都能让它失效。
+2. **池元素不许带引用**：元素住在板块里，板块会压实/复用/翻纪元 ⇒ 元素里的引用活不到那为止。
+   交叉引用用**句柄**（`Vec<NodeId>`）：陈旧可检测、节点可复用、环也是普通数据环。
+   **例外**：`varArray<T>`（arena 底，元素地址永不移动/复用）**可以**装引用 —— 见 §13。
+3. **整个容器值可以借出去**：`ref mybuf<T>` / `mut ref mybuf<T>` 都允许。容器值是 arena 上的普通值，
+   按普通引用规则走（容器方法的 `self` 就是这个形状）。
+
+### 12.6 参考与判据
+
+| 想看什么 | 去哪 |
+|---|---|
+| 自定义池底容器的**可执行模板** + 常设判据 | `tests/stl/custom_pool.extc`（`tests/stl/run.sh` 里跑）|
+| 库里容器怎么写的（更完整的骨架） | `stdlib/stl/vector.extc`（连续 · 1.5 倍 · 守卫）· `stdlib/stl/pool.extc`（槽表 · 世代 · 纪元）· `stdlib/stl/hashMap.extc`（四列 + 值池）|
+| 运行期原语（建 / 放 / 重置 / 世代 / 字节账 / zone） | `stdlib/std/sys/pool.extc`（**库作者面**，普通程序不 import）|
+| 提权 · 守卫 · `toSlice` · `varArray` 那几条机器可复核判据 | `tools/memsafe/qa/r2` … `r11` |
+
+---
+
 ## 变更史
 
 - 2026-09-24：整篇重写为 ECS 版。旧版把 region 当「能力值」（不可复制、affine、`@nocopy`），
   那些结论已被取代：所有者是注册表/父节点，handle 是普通值；「拷贝即双主」不成立。
 - 2026-09-26 改名：`REGIONS.md` 改为 `POOLS.md`，机制名 region 改为 pool；`zone` 由原先的
   `frame` 改名而来（模型里没有帧）。
+- 2026-09-26 新增第 12 节：**自定义池底容器（用户面）** —— `@poolObject` 声明 + 可执行模板 +
+  编译器替你做的三件 + 你必须自己写的两件（守卫、`release` 顺序）+ 三条纪律（作者：「最好写成文档，
+  否则没人会自己建 pool 容器」）。
 - 2026-09-26 口径修订：作者补齐了本文第 1 至 3 节的全部说法，明确 zone 是虚概念、独立旁链、
   可枚举；接口词定为 `release` / `clear` / `compact`；按第 0 节的三层命名统一了全文用词。
