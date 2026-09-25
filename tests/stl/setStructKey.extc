@@ -1,0 +1,31 @@
+// 有序 set 的键同样只要求 `<`（结构体键）—— 证明薄包装没有偷偷要求 hash 或 ==
+// expect: order=1,2,3 len=3 has2=1 lb2=1 first=1 last=3
+use std::io
+use stl::set
+
+struct pt {
+    x: i64
+    fn <(self: ref pt, o: pt) -> bool { return self.x < o.x }
+}
+
+fn main() -> i32 {
+    var s: set<pt> = set<pt>::withCap(i64(8))
+    s.put(pt { x: i64(3) })
+    s.put(pt { x: i64(1) })
+    s.put(pt { x: i64(2) })
+    io::cout << "order="
+    var i: i64 = i64(0)
+    while i < s.len() {
+        if i > i64(0) { io::cout << "," }
+        io::cout << s.at(i).x
+        i = i + i64(1)
+    }
+    var has2: i64 = i64(0)
+    if s.contains(pt { x: i64(2) }) { has2 = i64(1) }
+    io::cout << " len=" << s.len() << " has2=" << has2
+    io::cout << " lb2=" << s.lowerBound(pt { x: i64(2) })
+    let f = s.first() ?? pt { x: i64(-1) }
+    let l = s.last() ?? pt { x: i64(-1) }
+    io::cout << " first=" << f.x << " last=" << l.x << "\n"
+    return 0
+}

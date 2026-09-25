@@ -102,6 +102,10 @@ struct hashMap<K, V> {
     }
 
     /* Insert or overwrite. Returns true when the key was already there. */
+    /* `hm[k] = v` -- the write side (`[]` and `[]=` are independent names). Same semantics as
+     * `put`: insert when absent, overwrite when present. */
+    fn []=(self: mut ref hashMap<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
+
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         let had = self.find(k)
         if had >= i64(0) {
@@ -249,6 +253,8 @@ struct hashMapI64<V> {
     }
 
     fn get(self: ref hashMapI64<V>, k: i64) -> ?V { return self.m.get(i64Key { v: k }) }
+
+    fn []=(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool { return self.put(k, v) }
 
     fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool {
         return self.m.put(i64Key { v: k }, v)

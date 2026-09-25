@@ -1,5 +1,5 @@
-// 下标语法 `m[k]`（③ 第一步：只做读）—— 有键给 some、缺键给 none、`??` 落到缺省值、长度不变
-// expect: a=10 none=-1 missing=-9 len=2
+// 下标语法：读 m[k]（缺给 none）与写 m[k] = v（**缺则新建、有则覆盖**）
+// expect: a=10 none=-1 newLen=3 upd=11 updLen=3 missing=-9
 use std::io
 use stl::map
 
@@ -9,7 +9,12 @@ fn main() -> i32 {
     m.put(i64(2), i32(20))
     var a: i32 = m[i64(1)] ?? i32(-1)
     var n: i32 = m[i64(9)] ?? i32(-1)
+    m[i64(3)] = i32(30)
+    var nl: i64 = m.len()
+    m[i64(1)] = i32(11)
+    var u: i32 = m[i64(1)] ?? i32(-1)
     var miss: i32 = m[i64(7)] ?? i32(-9)
-    io::cout << "a=" << i64(a) << " none=" << i64(n) << " missing=" << i64(miss) << " len=" << m.len() << "\n"
+    io::cout << "a=" << i64(a) << " none=" << i64(n) << " newLen=" << nl
+    io::cout << " upd=" << i64(u) << " updLen=" << m.len() << " missing=" << i64(miss) << "\n"
     return 0
 }

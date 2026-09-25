@@ -1,4 +1,4 @@
-// expect: k=one none=?
+// expect: k=one none=? newLen=2 upd=ONE
 use std::io
 use stl::linmap
 
@@ -7,6 +7,9 @@ fn main() -> i32 {
     m.put(i64(1), "one")
     let a = m[i64(1)] ?? "?"
     let b = m[i64(9)] ?? "?"
-    io::cout << "k=" << a << " none=" << b << "\n"
+    m[i64(2)] = "two"
+    var nl: i64 = m.len()
+    m[i64(1)] = "ONE"
+    io::cout << "k=" << a << " none=" << b << " newLen=" << nl << " upd=" << (m[i64(1)] ?? "?") << "\n"
     return 0
 }

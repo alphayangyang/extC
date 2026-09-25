@@ -303,6 +303,12 @@ struct map<K, V> {
         return self.vn(i32(e / i64(16)), e % i64(16))
     }
 
+    /* `m[k] = v` -- the write side, a SEPARATE method name from `[]`, so a type may offer reading
+     * without writing (and this one is only ever found on an assignment). Semantics are `put`'s: a
+     * key that is absent is inserted, one that is present is overwritten, and the answer says which
+     * of the two happened (true = it was already there). */
+    fn []=(self: mut ref map<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
+
     /* ---------------------------------------------------------------- insert */
     fn put(self: mut ref map<K, V>, k: K, v: V) -> bool {
         /* Descend to the leaf, recording the path: a split has to be pushed back up it. */

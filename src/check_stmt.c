@@ -336,15 +336,30 @@ void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
 
-            /* `x[i] = v` needs `[]=`, which is a SEPARATE method name from `[]` (reading). A type
-             * that offers only `[]` cannot be assigned through; without this check the plain path
-             * below reports it as "the call's result is not assignable" -- true, but it hides the
-             * reason. Both names are looked up here on the object's type, exactly as the read side
-             * does, so a type may define either one alone. */
+            /* `x[i] = v` on a type that defines `[]=` IS that method call: `x.[]=(i, v)`. The
+             * statement is rewritten in place, so the call goes through the ordinary path --
+             * argument checks, the `mut ref` receiver rule, the return type, and code generation all
+             * see an ordinary method call instead of a second implementation of one. `[]` and `[]=`
+             * are independent names, so a type may define either alone; with only `[]` present the
+             * diagnostic below says why the assignment is unavailable. */
             if (s->u.assign.target && s->u.assign.target->kind == EX_INDEX) {
-                Type *ot = checkExpr(c, s->u.assign.target->u.index.obj);
-                if (!ttIsError(ot) && findMethod(ttBase(ot), "[]") &&
-                    !findMethod(ttBase(ot), "[]=")) {
+                Expr *tgt = s->u.assign.target;
+                Type *ot = checkExpr(c, tgt->u.index.obj);
+                if (!ttIsError(ot) && findMethod(ttBase(ot), "[]=")) {
+                    Vec args;
+                    vecInit(&args, c->arena, sizeof(void *));
+                    *(Expr **)vecPush(&args) = tgt->u.index.index;
+                    *(Expr **)vecPush(&args) = s->u.assign.value;
+                    Expr *call = exprNew(c->arena, EX_METHOD, s->line);
+                    call->u.method.recv = tgt->u.index.obj;
+                    call->u.method.name = "[]=";
+                    call->u.method.args = args;
+                    s->kind = ST_EXPR;          /* the union is overwritten only after the reads */
+                    s->u.expr.expr = call;
+                    checkExpr(c, call);
+                    return;
+                }
+                if (!ttIsError(ot) && findMethod(ttBase(ot), "[]")) {
                     ckError(c, s->line,
                             "`[]` and `[]=` are independent: this type defines reading only. Keep"
                             " writing explicit (a container usually has `put`), or add `fn []=`.",

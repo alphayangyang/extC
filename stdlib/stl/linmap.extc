@@ -64,7 +64,10 @@ struct linMap<K, V> {
      * Returns false only when the table could not grow, which needs the arena to be out of
      * memory -- `new` traps before that can happen, so a `false` here is unreachable today
      * and the signature keeps the door open for a grow that can fail. */
-    fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
+    /* `lm[k] = v` -- the write side; same semantics as `put` (insert or overwrite). */
+    fn []=(self: mut ref linMap<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
+
+        fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
         let at = self.find(k)
         if at >= i64(0) {
             self.vals[at] = v

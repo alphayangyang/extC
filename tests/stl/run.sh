@@ -50,6 +50,7 @@ run_case hashset tests/stl/hashSet.extc     "new=2 len=2 again=0 len=2 has2=1 rm
 
 echo "== set<T>：**有序**集合（建在 map<T, u8> 上，B+ 树）—— 按序遍历 · put 新元素为真 · lowerBound 排名 =="
 run_case setOrdered tests/stl/setOrdered.extc "order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2"
+run_case setStructKey tests/stl/setStructKey.extc "order=1,2,3 len=3 has2=1 lb2=1 first=1 last=3"
 
 echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
 TMP2=$(mktemp -d)
@@ -75,8 +76,8 @@ asan_ok() {   # 文件 可执行名
       && gcc -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so; then
-    echo "  ok   ASan  ->  vector · setOrdered 干净"
+if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk; then
+    echo "  ok   ASan  ->  vector · setOrdered · setStructKey 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1
 fi

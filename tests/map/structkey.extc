@@ -1,0 +1,38 @@
+// 有序 map 的键可以是**任何定义了 `<` 的类型**（这里是结构体）—— 相等由 !(a<b) && !(b<a) 派生，
+// 所以键类型只需要一个运算符，不需要 hash、也不需要 ==
+// expect: order=1:10,2:20,3:30 len=3 find2=20 lb=1 miss=-1 first=1 last=3
+use std::io
+use stl::map
+
+struct pt {
+    x: i64
+    y: i64
+    fn <(self: ref pt, o: pt) -> bool {
+        if self.x != o.x { return self.x < o.x }
+        return self.y < o.y
+    }
+}
+
+fn main() -> i32 {
+    var m: map<pt, i32> = map<pt, i32>::withCap(i64(16))
+    m.put(pt { x: i64(3), y: i64(1) }, i32(30))
+    m.put(pt { x: i64(1), y: i64(9) }, i32(10))
+    m.put(pt { x: i64(2), y: i64(5) }, i32(20))
+    io::cout << "order="
+    var i: i64 = i64(0)
+    while i < m.len() {
+        if i > i64(0) { io::cout << "," }
+        let k = m.keyAt(i)
+        io::cout << k.x << ":" << i64(m.valAt(i))
+        i = i + i64(1)
+    }
+    var f: i32 = m.get(pt { x: i64(2), y: i64(5) }) ?? i32(-1)
+    io::cout << " len=" << m.len() << " find2=" << i64(f)
+    /* 第一个 >= (2,0) 的是 (2,5)，排名 1 */
+    io::cout << " lb=" << m.lowerBound(pt { x: i64(2), y: i64(0) })
+    var miss: i32 = m.get(pt { x: i64(9), y: i64(9) }) ?? i32(-1)
+    let fk = m.firstKey() ?? pt { x: i64(-1), y: i64(-1) }
+    let lk = m.lastKey() ?? pt { x: i64(-1), y: i64(-1) }
+    io::cout << " miss=" << i64(miss) << " first=" << fk.x << " last=" << lk.x << "\n"
+    return 0
+}

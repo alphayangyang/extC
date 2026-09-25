@@ -8457,3 +8457,30 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 - `tests/map/ends.extc` → `f=1 l=5 emptyF=-1 emptyL=-1 sf=2 sl=4`（含空表两个 `none`）
 
 三个套件的 ASan 列表也一并覆盖到新用例；`tests/map` 九个用例 + RSS 两条 + ASan 全绿。
+
+### 周期 30：③ 写侧落地 —— `m[k] = v`（缺则新建、有则覆盖）
+
+作者口径：「写侧得做啊，如果发现没有值就新建一条写进去，有值就覆盖/更新即可」。
+
+- **检查器**（`check_stmt.c` 的 `ST_ASSIGN`）：目标形如 `x[i]` 且对象类型定义了 `[]=` 时，把**整条赋值语句
+  就地改写**成 `x.[]=(i, v)` 的表达式语句（`ST_EXPR`）再检查一遍 —— 于是实参检查、`mut ref` 接收者规则、
+  返回类型、code generation 全部复用，没有第二份实现。改写前必须先把 `target.index` 与 `value` 读出来再写
+  union（`s->u.assign` 与 `s->u.expr` 是同一块内存，顺序写错就把自己踩了）。
+- **四个容器加写侧**：`map` / `hashMap` / `hashMapI64` / `linMap` 的 `fn []=` 一律委托 `put` —— 语义正好就是
+  「缺则新建、有则覆盖」，返回值与 `put` 相同（true = 键本来就在）。
+- 只定义 `[]`、没有 `[]=` 的类型仍然拿到可读诊断；反例 `tests/map/errors/index_assign.extc` 因此改成用**本地**
+  `readOnly` 类型（`map` 现在两件都有，拿它当反例已经不成立了）。
+
+实测：
+
+- `tests/map/index.extc` → `a=10 none=-1 newLen=3 upd=11 updLen=3 missing=-9`（缺则新建：len 2→3；有则覆盖：读回 11）
+- `tests/hashmap/index.extc` → `a=11 none=-1 newLen=3 upd=111 updLen=3`
+- `tests/linmap/index.extc` → `k=one none=? newLen=2 upd=ONE`
+- 反例 → `` error: `readOnly` defines `[]` but not `[]=`, so `x[i] = v` is not available ``
+
+回归：`tests/map` · `hashmap` · `stl` · `pool` · `linmap` · `generics` · `genmatrix` · 语料 **262/0** 全绿
+（解析器与检查器是全局改动，必须全套件过）。
+
+途中把自己的 `map.extc` 写坏过一次：替换时锚点里同时含注释行与函数头，结果留下一行残缺的重复 `fn put` 头，
+编译器报「`fn` cannot appear inside a function body」—— 精确定位后删掉那一行恢复。教训：**替换的锚点越小越安全**，
+跨行的锚点要复查结果。

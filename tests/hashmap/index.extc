@@ -1,5 +1,5 @@
-// 下标语法（读侧）也给哈希表：hm[k] 有键给 some、缺键给 none
-// expect: a=11 none=-1 len=2
+// 下标语法也给哈希表：读 hm[k]、写 hm[k] = v（缺则新建、有则覆盖）
+// expect: a=11 none=-1 newLen=3 upd=111 updLen=3
 use std::io
 use stl::hashMap
 
@@ -9,6 +9,10 @@ fn main() -> i32 {
     m.put(i64(2), i32(22))
     var a: i32 = m[i64(1)] ?? i32(-1)
     var n: i32 = m[i64(9)] ?? i32(-1)
-    io::cout << "a=" << i64(a) << " none=" << i64(n) << " len=" << m.len() << "\n"
+    m[i64(3)] = i32(33)
+    var nl: i64 = m.len()
+    m[i64(1)] = i32(111)
+    io::cout << "a=" << i64(a) << " none=" << i64(n) << " newLen=" << nl
+    io::cout << " upd=" << i64(m[i64(1)] ?? i32(-1)) << " updLen=" << m.len() << "\n"
     return 0
 }
