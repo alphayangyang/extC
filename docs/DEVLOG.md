@@ -8714,3 +8714,76 @@ extc_pool_zoneLeaveTo(__extc_zm2);
 
 同轮补记（第 29 轮）：`check.sh quick </dev/null` 跑完 —— **通过 26 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_tree.log`）。
 池树"两条链"（zone 根链管寿命 + 父池子链管逻辑）与 `rt_tree` 判据一起过了总闸门；`tests/pool` / `tests/stl` 失败 0。
+
+### 周期 35：池有了自己的板块（PLAN #85）—— 峰值 18,028 KB → 9,708 KB
+
+作者三条裁决（口径落在 `POOLS.md` §2.1）把这件事从"优化"变成"前提"：
+
+1. **`vector` / `string` 也走 pool**。原话：「你如果不在 pool 里就肯定在 arena 里面，那 arena 又没法
+   扩容之后删掉旧数据，那不就完蛋了」。这条推翻了本文档初稿里我自己写的「连续序列不需要 pool」——
+   判据不是"有没有句柄"，而是**扩容之后旧块能不能立刻还回去**。
+2. 类型名与同名模块的消歧要做，但排在 STL 与 pool 之后。
+3. `varArray` 底座替换先不动：「别急，现在前面都是错的」。
+
+**探针（两组分开跑，结论写进 §2.1）**：定长数组字段**可行** ——
+`struct node { n: i32, keys: [16]i32, kids: [17]i32 }` 写读 + `new node[n]` 全通
+（`n=3 k3=77 k15=9 kid16=5`），只是全仓此前没有先例。但**元素类型是泛型参数不行**：
+`struct gnode<K> { keys: [4]K }` 被直接拒（`cannot make a fixed array of the type parameter 'K'`）
+⇒ 泛型 `pool<bnode<K,V>>` 的节点不能内联键数组，两条出路（实例化期定尺寸 / 节点继续用视图）待裁决。
+
+**一、运行期：块链就是板块**（`src/pools.c`）
+
+`ExtcPool` 加 `blocks`（块链）与 `bytes`；块头 16 字节放在载荷前 ⇒ 载荷最大对齐。四个原语：
+
+| 原语 | 做什么 | 代价 |
+|---|---|---|
+| `extc_pool_take(rid, bytes)` | malloc 一块、链进这只池、记账、**清零** | O(1) |
+| `extc_pool_resize(rid, p, bytes)` | 在原块上 realloc，只清零新增的那一段 | 摊还 O(1) |
+| `extc_pool_give(rid, p)` | 按地址找到块、摘链、free、记账回落 | O(块数)（每池一两块） |
+| `extc_pool_bytes` / `_bytesLive` | 字节账（判据与下表都用它） | O(1) |
+
+`extc_pool_drop` → `freeSelf` 里整条链还掉 ⇒ **`release` 真的还内存**；`reset` 保留板块供复用。
+清零这件事不能省：语言对 `new` 的承诺是"新拿到的字节读作 0"，板块上照旧（`tests/pool/plate.extc` 的
+`zero=0`/`tail0=0` 两条就是钉它的）。
+
+**二、类型化入口：生成器发的内建**（`poolSlice` / `poolResize` / `poolGive`）
+
+`extern!` 这条路走不通——它不许返回 `slice<T>`（会变成两个 C 参数），extC 也没有指针转换，
+所以"一坨字节 → 带类型的视图"只能由生成器发。检查器把它和 `alloc` 放同一条路（`checkPoolPrim`：
+实参个数 · 整数校验 · 元素类型 · 离期尺寸检查 · 不纯计数走 `needTemp`），**不记 arena 层级**——
+这不是 arena 的内存，逃逸规则在这里没有话说（"引用不许出池"归容器自己的纪律，`POOLS.md` §5.4）。
+
+**三、三件容器搬上去，扩容因子一律换 1.5**
+
+| 容器 | 改法 |
+|---|---|
+| `pool<T>` | `vals` / `slots` / `ent` 三块从板块拿；`grow`/`shrink` 在原块上长/缩（内容由 resize 保住） |
+| `vector<T>` | 缓冲区从板块拿；`grow`/`shrink` 用 `poolResize` ⇒ 手写的拷贝循环整段删掉 |
+| `string` | `buf` 从板块拿；同上 |
+
+三个 `release` 都改成"**先把视图收成 0 长、`cap` 归零，再把板块还给池**"：释放之后越界是带位置的
+trap，而不是写一块已经还掉的内存。原来想写 `self.vals = self.vals[0..0]`，被借用检查拒了
+（"cannot store a borrowed value into something that outlives this call"）—— 这个拒绝是对的，
+子视图确实是从 `self` 借来的。
+
+**四、实测（1e6 个 i64，活跃 8 MB；`/usr/bin/time -f %M`）**
+
+| 形状 | 峰值 RSS |
+|---|---|
+| 缓冲区用 `new`（arena，翻倍） | 18,028 KB |
+| 板块 + 拿新块/拷/还旧块（1.5 倍） | 15,052 KB |
+| 板块 + `poolResize` 原块上长（1.5 倍） | **9,708 KB** |
+
+中间那一格是这一轮最值钱的一次测量：**拷贝期间新旧两块同时在手**，峰值 = 1.5×活跃 + 1×活跃。
+补上 `resize` 之后才降到 ~1.2×活跃。`tests/stl` 里新加的一对同形状用例
+（`vector_rss_plate` vs `vector_rss_arena`）把它变成常设判据：**池底 9,772 KB vs arena 17,964 KB（低 45%）**，
+判据是"自己跟自己比"，不依赖机器的绝对数字。
+
+**五、判据与总闸门**
+
+- `tests/pool/plate.extc`（常设）：`take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0
+  dual=1264 gave=1 aftergive=64 live=0`。
+- `tests/stl`：`vector` 扩容序列判据从翻倍改成 1.5 倍（`4,6,9,13,…,711,1066`）、`string` 的
+  `cap2=64` 改成 `cap2=54`；`plate rss` 一格如上表。
+- `bash check.sh quick </dev/null`：**通过 26 · 失败 0**；`tests/pool` / `stl` / `map` / `hashmap` /
+  `linmap` 全绿，ASan 干净。
