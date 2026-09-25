@@ -1,0 +1,36 @@
+// hashSetI64：100 万次插入 / 100 万次 contains / 50 万次删除
+use std::io
+use stl::hashSet
+
+let N: i64 = 1000000
+
+fn main() -> i32 {
+    var s: hashSetI64 = hashSetI64::withCap(i64(16))
+    var u: u64 = u64(12345)
+    var i: i64 = 0
+    var hits: i64 = 0
+    while i < N {
+        u = u * u64(6364136223846793005) + u64(1442695040888963407)
+        s.put(i64(u & u64(2147483647)))
+        i = i + i64(1)
+    }
+    u = u64(12345)
+    i = i64(0)
+    while i < N {
+        u = u * u64(6364136223846793005) + u64(1442695040888963407)
+        if s.contains(i64(u & u64(2147483647))) { hits = hits + i64(1) }
+        i = i + i64(1)
+    }
+    u = u64(12345)
+    i = i64(0)
+    var removed: i64 = 0
+    while i < N {
+        u = u * u64(6364136223846793005) + u64(1442695040888963407)
+        if i % i64(2) == i64(0) {
+            if s.remove(i64(u & u64(2147483647))) { removed = removed + i64(1) }
+        }
+        i = i + i64(1)
+    }
+    io::cout << "len=" << s.len() << " hits=" << hits << " removed=" << removed << "\n"
+    return 0
+}

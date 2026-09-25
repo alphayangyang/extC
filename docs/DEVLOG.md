@@ -8523,3 +8523,34 @@ EX_CALL / EX_METHOD / EX_ASSOC 三处都有 `homeDepth` + `setCallArenaArg`（�
 但缓冲区**落进永不回收的 arena**（LeakSanitizer 抓到，对照实验里同样形状的普通方法 `concat` 是干净的）；
 再补 `callHomeDepth` 那句：仍泄漏，因为还缺逃逸站点那条记录。这套簿记是 arena 分析的核心，值得单独一轮，
 不能顺手塞。所以今天的拼接写法是 `append`（就地）与 `concat` / `concatBytes`（出新串）。
+
+### 周期 32：性能横评台 —— extC 的容器 vs C++ STL（同算法同参数、校验和逐位相同）
+
+作者口径：「先测试一下性能，就各个容器跟 C++ STL 对比即可，radix 也得来试试（和旧的 extc 等其他已有数据）」。
+
+新增 `bench/stl/`，编排照 `bench/heavy` 的老规矩：**两边同算法同参数**、跑同一个工作量、打印出来的校验和
+**逐位相同**才算数（不一致就 FAIL —— 比时间不对严重得多），时间与 RSS 走 `/usr/bin/time -f "TIME %e RSS %M"`，
+并且**每个程序跑 3 次取最快**（外设计时精度只有 0.01s，单次很容易被噪音带偏）。`RESULTS.md` 由 `run.sh`
+自动生成，别手改 —— 与 `bench/bigmatrix` 同一规矩。
+
+实测（本机 Intel Ultra 9 275HX · WSL2 · kernel 6.18.33.2，100 万量级，best of 3）：
+
+| 容器 | extC | C++ STL | 比值 | extC RSS | C++ RSS |
+|---|---|---|---|---|---|
+| `vector<i32>` 对 `std::vector` | 0.16s | 0.05s | 3.20x | 132 MB | 69 MB |
+| `hashMapI64<i32>` 对 `std::unordered_map` | 0.17s | 0.16s | 1.06x | 104 MB | 43 MB |
+| `map<i64,i32>`（B+ 树）对 `std::map`（红黑树） | 1.00s | 1.78s | **0.56x** | 91 MB | 67 MB |
+| `hashSetI64` 对 `std::unordered_set` | 0.15s | 0.18s | 0.83x | 98 MB | 43 MB |
+| `string` 对 `std::string` | 0.08s | 0.02s | 4.00x | 51 MB | 36 MB |
+
+结论与三笔明账（都写进 `RESULTS.md`）：
+
+- **有序表那一格兑现了设计目的**：B+ 树在「100 万插入 + 100 万查找 + 100 万有序遍历 + 50 万删除」上比红黑树
+  快 1.78 倍 —— cache miss 少一个数量级，遍历是叶子链线性扫描；
+- **哈希与集合打平**（1.06x / 0.83x），说明"开放寻址 + 墓碑 + 值住池"这套没有输在算法上；
+- **连续容器慢**：`vector` 3.20x、`string` 4.00x —— 两笔明账：① 我们的取元素**有界检查**（越界带源位置
+  trap），C++ 那边是裸 `v[i]`；② arena 只增不减，翻倍扩容留下的旧数组不逐块回收 ⇒ **RSS 普遍更大**
+  （`vector` 132 MB vs 69 MB）。这是 `POOLS.md` 里写明的模型代价，不是泄漏；`shrink` 能降水印但不还 RSS。
+
+接进 `check.sh` 的非 quick 段（跑全套自检时会带上它）。**下一步**：radix 容器原型（整数键的 ART 风格），
+拿它和我们的 B+ 树 `map`、以及 `std::map` / `std::unordered_map` 摆在一起比 —— 这是作者点名要试的那一格。

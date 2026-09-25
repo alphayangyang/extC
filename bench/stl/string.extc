@@ -1,0 +1,29 @@
+// string：100 万字节逐字节 push / 10 万次 append（8 字节）/ 大串上 1000 次 16 字节 find
+use std::io
+use stl::string
+
+let N: i64 = 10000000
+
+fn main() -> i32 {
+    var s: string = string::withCap(i64(16))
+    var i: i64 = 0
+    while i < N {
+        s.push(u8(97 + i % i64(26)))
+        i = i + i64(1)
+    }
+    var acc: string = string::withCap(i64(16))
+    i = i64(0)
+    while i < i64(1000000) {
+        acc.append("abcdefgh")
+        i = i + i64(1)
+    }
+    var found: i64 = 0
+    i = i64(0)
+    while i < i64(10000) {
+        let at = s.find("abcdefghijklmnop") ?? i64(-1)
+        found = found + at
+        i = i + i64(1)
+    }
+    io::cout << "len=" << s.len() << " alen=" << acc.len() << " found=" << found << "\n"
+    return 0
+}

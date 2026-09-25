@@ -1,0 +1,29 @@
+// vector<i32>：100 万次 push（含翻倍扩容）/ 求和 / 100 万次 pop
+use std::io
+use stl::vector
+
+let N: i64 = 10000000
+
+fn main() -> i32 {
+    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < N {
+        v.push(i32(i))
+        i = i + i64(1)
+    }
+    i = i64(0)
+    while i < v.len() {
+        let x: i32 = v.get(i) ?? i32(-1)
+        sum = sum + i64(x)
+        i = i + i64(1)
+    }
+    var popped: i64 = 0
+    while v.len() > i64(0) {
+        let x: i32 = v.pop() ?? i32(-1)
+        popped = popped + i64(x)
+        i = i + i64(1)
+    }
+    io::cout << "len=" << v.len() << " cap=" << v.capacity() << " sum=" << sum << " popped=" << popped << "\n"
+    return 0
+}
