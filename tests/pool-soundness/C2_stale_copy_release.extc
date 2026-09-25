@@ -1,0 +1,15 @@
+// "陈旧拷贝 release"：a 释放后槽位被别人拿走，共享板块的 b 再 release 会 drop 掉**别人的池**
+use std::io
+use stl::vector
+fn main() -> i32 {
+    var a: vector<i32> = vector<i32>::withCap(i64(4))
+    a.push(i32(7))
+    var b = a                                  // @sharesStorage：共享板块 + 拷贝 pid/pidGen
+    a.release()                                // 释放 a 的池 ⇒ 槽位回到 free list
+    var c: vector<i32> = vector<i32>::withCap(i64(4))   // 大概率复用同一个槽位
+    c.push(i32(9))
+    b.release()                                // ← 有守卫：gen 不符 ⇒ 什么都不做
+    let v: i32 = c.get(i64(0)) ?? i32(-1)
+    io::cout << "c[0]=" << i64(v) << " len=" << c.len() << "\n"
+    return 0
+}

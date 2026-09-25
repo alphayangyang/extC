@@ -292,8 +292,11 @@ struct pool<T> {
 
     fn release(self: mut ref pool<T>) {
         if self.pid < i64(0) { return }                        /* 已经放过 */
-        if syspool::extc_pool_generation(self.pid) != self.pidGen { 
-            self.pid = i64(-1)                                 /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
+        /* One staleness question, one place to ask it (`pStaleSelf` -- this file's name for it,
+         * kept apart from the element type's own methods): the inline copy of this compare used
+         * to live here too, and two copies of a load-bearing check drift. */
+        if self.pStaleSelf() {
+            self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
             return
         }
         /* 三块视图先收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界

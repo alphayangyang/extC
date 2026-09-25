@@ -734,7 +734,9 @@ struct map<K, V> {
 
     fn release(self: mut ref map<K, V>) {
         if self.pid < i64(0) { return }
-        if syspool::extc_pool_generation(self.pid) != self.pidGen {
+        /* One staleness question, one place to ask it (`pStale`): the inline copy of this
+         * compare used to live here too, and two copies of a load-bearing check drift. */
+        if self.pStale() {
             self.pid = i64(-1)
             return
         }

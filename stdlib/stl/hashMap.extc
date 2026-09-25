@@ -319,8 +319,10 @@ struct hashMap<K, V> {
     fn release(self: mut ref hashMap<K, V>) {
         self.vals.release()
         if self.pid < i64(0) { return }
-        if syspool::extc_pool_generation(self.pid) != self.pidGen {
-            self.pid = i64(-1)                             /* 陈旧拷贝：槽位已被别的池复用 */
+        /* One staleness question, one place to ask it (`pStale`): the inline copy of this
+         * compare used to live here too, and two copies of a load-bearing check drift. */
+        if self.pStale() {
+            self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用 */
             return
         }
         syspool::extc_pool_reset(self.pid)
