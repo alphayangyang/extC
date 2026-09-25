@@ -1096,6 +1096,12 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          *
          * 别的调用结果照旧不可提：`slice` 的视图来自别人的存储（借用），
          * 提不动就是提不动，返回 false 让调用方报错 —— 那是这一格的纪律。 */
+        if (getenv("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[gate] call=%s ptr=%p owner=%p mP=%d cmp=%d lvl=%d at=%d\n",
+                    val->func && val->func->name ? val->func->name : "-",
+                    (void *)val->func, (void *)(val->func ? val->func->owner : NULL),
+                    val->func ? (int)val->func->makesPool : -1,
+                    (int)calleeMakesPool(val->func), val->zoneLevel, at);
         if (calleeMakesPool(val->func) && val->zoneLevel != 0) {
             int want = (at == 0) ? ZONE_HOME : at;
             if (val->zoneLevel > want) {

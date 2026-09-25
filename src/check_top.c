@@ -4984,6 +4984,18 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
             }
         }
+        /* 实例那一轮：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
+         * 而在类型表的 `tt->instances` 上。 */
+        for (size_t i = 0; i < tt->instances.len; i++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, i);
+            StructDef *sd = inst ? inst->sdef : NULL;
+            if (!sd) continue;
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (f->makesPool) continue;
+                if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
+            }
+        }
     }
     /* 顺手把"这个结构体的某个方法建池"记到结构体上（见 StructDef.makesPoolAny）。 */
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -4993,6 +5005,25 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (f && f->makesPool) { sd->makesPoolAny = true; break; }
         }
     }
+    /* ---- 电平求解要再跑一遍 ----
+     *
+     * 第一遍跑在 `makesPool` 闭包**之前**（见上面那段求解），那时 `calleeMakesPool` 对所有
+     * 调用点都还是假 ⇒ **池站点的提权一次都没落地**（实测 `[gate] call=new mP=0 cmp=0`，
+     * 而同一个指针在 `EXTC_DUMP_POOL` 里是 `makesPool=1`）。
+     * 闭包之后重放一次事实表，这次闸门读到的标志是真的；`promoteInto` 只把层级往小改，
+     * 重放是单调的，所以多跑一遍不会引入新东西，只是把该落的提权落下去。 */
+    c.lvlSolving = true;
+    for (int round = 0; round < 32; round++) {
+        bool changed2 = false;
+        for (size_t i = 0; i < c.lvlFacts.len; i++) {
+            LvlFact *f = *(LvlFact **)vecAt(&c.lvlFacts, i);
+            if (!f || !f->val) continue;
+            if (promoteInto(&c, f->val, f->at)) changed2 = true;
+        }
+        if (!changed2) break;
+    }
+    c.lvlSolving = false;
+
     if (getenv("EXTC_DUMP_POOL")) {
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
