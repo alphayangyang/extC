@@ -62,6 +62,9 @@ else
 fi
 rm -rf "$TMPC2"
 
+echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）=="
+run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
+
 echo "== string：连续字节串（append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位）=="
 run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=54 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
 

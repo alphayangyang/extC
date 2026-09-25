@@ -1,0 +1,20 @@
+// expect: OK
+// `varArray<ref T>` 是**唯一**能装引用的容器（作者口径，PLAN #91）：arena 底 ⇒ 元素地址永不
+// 移动/复用 ⇒ 引用有效、环也没问题。池底容器装引用被 #88 禁掉（clear/shrink/release 会动元素）。
+// 这条判据同时钉住两件事：① 这份能力**不许**被后来的禁令顺手收掉；
+// ② 危险档仍然被借用检查挡住（内层块局部变量的引用塞进外层会被拒，见 tests/errors）。
+use std::io
+
+struct node {
+    data: i32
+    refs: varArray<ref node>
+}
+
+fn main() -> i32 {
+    var a: node = { data: i32(1), refs: varArray<ref node>::withCap(i64(4)) }
+    var b: node = { data: i32(2), refs: varArray<ref node>::withCap(i64(4)) }
+    a.refs.push(ref b)
+    b.refs.push(ref a)
+    io::cout << "a=" << i64((*(a.refs.get(i64(0))!)).data) << "\n"
+    return 0
+}

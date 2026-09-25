@@ -1,0 +1,23 @@
+// varArray 的**不可替代性**：它是唯一能装引用的容器（作者口径，PLAN #91）。
+//
+// 为什么只有它能：arena 底 ⇒ 元素地址**永不移动、永不复用**（没有逐对象 free / 压实 /
+// 纪元翻色）⇒ "引用在它的地方活着期间一直有效"是真的；环（两个节点互指）也只是普通数据结构。
+// 池底容器不行：clear（翻纪元）/ shrink（压实）/ release 都会动元素或让整块失效（PLAN #88）。
+// expect: a_data=2 b_data=1 n=1
+use std::io
+
+struct node {
+    data: i32
+    refs: varArray<ref node>
+}
+
+fn main() -> i32 {
+    var a: node = { data: i32(1), refs: varArray<ref node>::withCap(i64(4)) }
+    var b: node = { data: i32(2), refs: varArray<ref node>::withCap(i64(4)) }
+    a.refs.push(ref b)
+    b.refs.push(ref a)
+    io::cout << "a_data=" << i64((*(a.refs.get(i64(0))!)).data)
+    io::cout << " b_data=" << i64((*(b.refs.get(i64(0))!)).data)
+    io::cout << " n=" << a.refs.size() << "\n"
+    return 0
+}
