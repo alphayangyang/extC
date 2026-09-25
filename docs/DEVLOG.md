@@ -8867,3 +8867,20 @@ trap，而不是写一块已经还掉的内存。原来想写 `self.vals = self.
 release 归零"钉住（`cap0=8 key83=83 cap=135 after=0 live=0`）。
 `tests/linmap/map.extc` 的扩容序列判据随因子改成 1.5（`cap=64` → `cap=42`），`tests/stl` 与
 `tests/hashmap` 不动。
+
+**周期 37 补记：把能"原地加长"的地方全找了一遍**（作者问"别的容器能不能也这样"）。
+
+| 增长处 | 能不能不搬 | 现状 |
+|---|---|---|
+| `vector` / `string` / `pool<T>` | 能（下标即位置） | 已是 `poolResize`（周期 35） |
+| `map::growStores` | 能（节点偏移只跟 id 有关） | 已是 `poolResize` + 视图重挂（本周期） |
+| `linMap::grow` | 能（下标即插入序，连视图都不用重挂） | 已是 `poolResize`（本周期） |
+| `hashMap::rebuild` 的 `keys` / `tag` / `slot` | **不能**：桶号 `h & (cap-1)` 随 cap 变，每个元素位置都变 | O(n) 重排是语义的一部分；出路是 PLAN #86（两块表 + 按簇增量） |
+| `hashMap::rebuild` 的 `bucketOfDense` | **能**：它是**稠密下标**索引的（与容量无关） | 本补记改成 `poolResize`，前缀拷贝整段删掉 |
+| `map::shrink` 的四处存储 | **不能**：压实 = 重新编号（不是加长） | 保留拷贝；`order` / `old2new` 是临时草稿，留在 arena |
+| `pool::toSlice` 的返回数组 | **不能**，而且正好相反：它交给调用方，必须活得比容器长 | 留在 arena（`new`），逃逸分析会把它提到调用者的地方 |
+
+实测（`bucketOfDense` 那一处的收益）：hashMap 增量到 1e6 的峰值 66,920 → **62,884 KB**
+（省掉的正是每次 rebuild 都复制一遍的那一列，1e6 × 4 B），预留版 69,036 KB 不变。
+`tests/hashmap` 全绿、ASan 干净。同轮清掉 `stl/pool.extc` 头部一段过期注释（它还写着"存储仍是
+arena 切片、等 `poolSlice` 落地"——那是周期 35 就做完的事）。
