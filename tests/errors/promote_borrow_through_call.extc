@@ -1,0 +1,13 @@
+// 反例：**借用**经同一个调用存进更长寿的地方 ⇒ 必须仍然被拒（提权移不动别人的存储）
+// 与 tests/arena-promoted/H_promote_through_call.extc 是同一形状，只有"新分配 vs 借用"之差。
+struct box { s: slice<i32> }
+fn stash(b: mut ref box, v: slice<i32>) { b.s = v }
+fn main() -> i32 {
+    var empty: mut slice<i32> = new i32[1]
+    var b: box = { s: empty[0..0] }
+    {
+        var buf: [4]i32 = [1, 2, 3, 4]
+        stash(ref b, buf[..])
+    }
+    return 0
+}

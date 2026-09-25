@@ -1,0 +1,25 @@
+/* 转正 H：**新分配的东西经调用存进更长寿的地方 ⇒ 提权，而不是误拒**（2026-09-26）
+ *
+ * 这条以前被拒：`argument 2 of `stash` carries a reference into a deeper scope (depth 2)
+ * than the place the callee may store it (depth 1)`。但 `p = new i32[4]` 是**新分配** ——
+ * 它没有别的所有者，所以分配站点可以移到目的地那一层（`promoteInto` 就是干这个的）。
+ * 借用则移不动（`names.push(buf[..])` 里 `buf` 是别人的存储），`promoteInto` 返回 false，
+ * 错误照旧 ⇒ 反例见 `tests/errors/promote_borrow_through_call.extc`。
+ *
+ * 判据：编译通过 + 跑出 b0=7 + ASan 干净（`run.sh` 查后两条），且生成的 C 里那次分配
+ * 落在目标那一层的 arena（`__extc_a[1]`）而不是分配点所在的那层（`__extc_a[2]`）。 */
+use std::io
+struct box { s: slice<i32> }
+fn stash(b: mut ref box, v: slice<i32>) { b.s = v }
+
+fn main() -> i32 {
+    var empty: mut slice<i32> = new i32[1]
+    var b: box = { s: empty[0..0] }
+    {
+        var p: mut slice<i32> = new i32[4]
+        p[0] = i32(7)
+        stash(ref b, p)
+    }
+    io::cout << "b0=" << i64(b.s[0]) << "\n"
+    return 0
+}

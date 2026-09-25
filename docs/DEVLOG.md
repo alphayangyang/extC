@@ -8915,3 +8915,43 @@ arena 切片、等 `poolSlice` 落地"——那是周期 35 就做完的事）�
 它是 prelude 里的旧底座（arena 底，`grow` 是 `new T[ncap]` + 拷贝），已被显式 import 的 `stl::vector`
 取代 ⇒ 那 35 文件 / 66 处**不做迁移**，底座不替换。这条推翻了 POOLS.md §6 期 3 里「待做（要先出方案
 + 数字）」那一格，也把 PLAN #29（`varArray` 分块化，留 v2 拍板）连带作废。
+
+### 周期 39：把「提权」这一半补齐到调用点 —— 新分配可以提，借用不能提
+
+**起因（作者）**：「肯定要提权啊，不提权不就过于保守了吗，那用户啥都写不了了，整个 extC 的核心机制就是
+arena 和提权」。上一轮先落了运行期那一半（`extc_pool_new_at(parent, zone)` + `tests/pool/rt_promote.extc`）。
+
+**开工前先量的一刀**：arena 侧"内层新建 → 经调用存进外层"今天行不行？
+
+```extc
+fn stash(b: mut ref box, v: slice<i32>) { b.s = v }
+{ var p: mut slice<i32> = new i32[4]   stash(ref b, p) }
+```
+
+实测：**被拒**（`argument 2 of `stash` carries a reference into a deeper scope (depth 2) than the
+place the callee may store it (depth 1)`）。也就是说连 arena 都还没提权这一档 —— 不是池独有的问题。
+
+**根因（读码定位）**：`check_top.c` 的调用点有两支判据 —— 摘要不完整那一支**先试提权再拒绝**
+（`if (d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);`），
+而摘要完整那一支**没有这一句**，直接报错。两支的差别从来没人补平。
+
+**改法**：把那一句补到第二支（一处，`src/check_top.c`）。语义正是 `promoteInto` 的契约：
+
+- **新分配**没有别的所有者 ⇒ 站点可以移到目的地那一层 ⇒ 提权成功 ⇒ 接受；
+- **借用**移不动（`names.push(buf[..])` 里 `buf` 是别人的存储）⇒ `promoteInto` 返回 false ⇒ 错误照旧。
+
+**实测**：
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| `new` 出来的切片经调用存进外层（`tests/arena-promoted/H_promote_through_call.extc`） | 误拒 | **接受 + ASan 干净**，分配落在目标那层的 `__extc_a[1]`（而不是分配点所在的 `__extc_a[2]`） |
+| 借用经同一个调用（`tests/errors/promote_borrow_through_call.extc`） | 拒 | **仍然拒**（这条是那一支存在的理由，不许松） |
+
+**判据**：`tests/arena-promoted` 加一条（23 条，含这条），`tests/errors` 加一条（全语料 262 → 263），
+`check.sh quick` 通过 26 / 失败 0。
+
+**对池的意义**：这是容器提权的**前置**（PLAN #87 的编译器那一半）。池与 arena 的差别还剩两件：
+① 容器的"池绑定"在检查器眼里还没有类型（`pid` 是裸 `i64`，`poolSlice` 的结果我当初故意记深度 0）
+⇒ 它在深度格里隐形，`outer.push(inner)` 连"深度不够"都看不出来；② 建池的函数要走 `needsHome`
+那一套（多收一个隐藏的「家 zone」参数，codegen 把 `extc_pool_new` 换成 `extc_pool_new_at(parent, __extc_homeZone)`）。
+这一轮把调用点那一半补平之后，① 一做就能直接复用今天这条提权路径。

@@ -1210,6 +1210,21 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (mentionsParam(a->type)) continue;
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
             int d = exprRefDepth(c, a);
+            /* PROMOTE BEFORE REJECTING -- the same half the incomplete-summary branch above
+             * has always had, and the reason a container can be handed to something that
+             * outlives it.
+             *
+             * A **fresh allocation** has no other owner, so its site can be moved to the
+             * level the destination needs: `stash(ref b, p)` with `p = new i32[4]` in a
+             * deeper block is safe once that `new` is promoted to `b`'s level. A **borrow**
+             * cannot be moved (`names.push(buf[..])` where `buf` is a deeper block's array),
+             * and `promoteInto` says so by returning false -- then the error below stands,
+             * which is exactly the case this branch was added for.
+             *
+             * Sharing this half matters for pools as much as for arenas: a container built
+             * inside a loop body and pushed into a container that outlives the loop needs its
+             * pool born at the destination's place (POOLS.md 3.1, PLAN #87). */
+            if (d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);
             if (d == 0 || d <= h) continue;
             ckError(c, line,
                     "The callee stores what this value points at into a container it was"
