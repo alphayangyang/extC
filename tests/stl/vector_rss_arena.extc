@@ -1,0 +1,23 @@
+// 同一个形状，但缓冲区用 `new` 从 arena 拿：旧块只能在地方退出时整块回收
+// ⇒ 历代旧副本全留着，峰值随「所有代之和」涨。这是池底化要消掉的那件事。
+use std::io
+
+fn main() -> i32 {
+    var buf: mut slice<i64> = new i64[16]
+    var cap: i64 = 16
+    var n: i64 = 0
+    while n < i64(1000000) {
+        if n >= cap {
+            let ncap = cap * i64(2)
+            var nb: mut slice<i64> = new i64[ncap]
+            var k: i64 = 0
+            while k < n { nb[k] = buf[k]  k = k + i64(1) }
+            buf = nb
+            cap = ncap
+        }
+        buf[n] = n
+        n = n + i64(1)
+    }
+    io::cout << "n=" << n << " cap=" << cap << "\n"
+    return 0
+}

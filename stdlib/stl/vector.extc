@@ -25,7 +25,7 @@ struct vector<T> {
         var cc: i64 = c
         if cc < i64(4) { cc = i64(4) }
         var v: vector<T> = {
-            vals:   new T[cc],
+            vals:   poolSlice<T>(rp, cc),
             n:      i64(0),
             cap:    cc,
             pid:    rp,
@@ -61,16 +61,13 @@ struct vector<T> {
     /* 容器们共用的整块视图：dense 前段，连续不拷贝 */
     fn denseView(self: ref vector<T>) -> slice<T> { return self.vals[0..self.n] }
 
-    /* vector 式翻倍：搬进新数组，前 n 个按序 ⇒ 仍然连续 */
+    /* 扩到 1.5 倍：**在原块上长**（装不下时才由分配器搬家），内容由 resize 保住。
+     * 有了真板块之后 1.5 才是对的因子（翻倍只在「旧块还不了」时才占优）；
+     * 峰值因此是 O(活跃量)，不是历代旧副本之和。 */
     fn grow(self: mut ref vector<T>) {
-        let ncap = self.cap * i64(2)
-        var nv: mut slice<T> = new T[ncap]
-        var i: i64 = 0
-        while i < self.n {
-            nv[i] = self.vals[i]
-            i = i + i64(1)
-        }
-        self.vals = nv
+        if self.pid < i64(0) { return }            /* 已 release：没有池可要，下面的下标会响亮越界 */
+        let ncap = self.cap + self.cap / i64(2)
+        self.vals = poolResize<T>(self.pid, self.vals, ncap)
         self.cap  = ncap
     }
 
@@ -87,18 +84,12 @@ struct vector<T> {
     }
 
     /* 缩容：降到刚好装下（下限 4）。dense 保持连续。
-     * 让出的是池的工作集，不是 RSS —— arena 只能整块还，旧数组到地方退出时才收。 */
+     * 同一块缩回去 ⇒ 让出的是真的内存，不只是池的工作集。 */
     fn shrink(self: mut ref vector<T>) {
         var ncap: i64 = self.n
         if ncap < i64(4) { ncap = i64(4) }
         if ncap >= self.cap { return }
-        var nv: mut slice<T> = new T[ncap]
-        var i: i64 = 0
-        while i < self.n {
-            nv[i] = self.vals[i]
-            i = i + i64(1)
-        }
-        self.vals = nv
+        self.vals = poolResize<T>(self.pid, self.vals, ncap)
         self.cap  = ncap
     }
 
@@ -112,6 +103,10 @@ struct vector<T> {
             self.pid = i64(-1)
             return
         }
+        /* 先把视图收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界
+         * （带位置的 trap），而不是写进一块已经还掉的内存。 */
+        self.vals = poolResize<T>(self.pid, self.vals, i64(0))
+        self.cap  = i64(0)
         syspool::extc_pool_reset(self.pid)
         syspool::extc_pool_drop(self.pid)
         self.pid = i64(-1)

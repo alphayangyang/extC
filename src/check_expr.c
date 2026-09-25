@@ -242,6 +242,90 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
  *   - Some nodes are rewritten in place while they are checked, so the caller must not
  *     rely on `e->kind` staying what it was on entry.
  */
+/* `poolSlice<T>(rid, n) -> mut slice<T>` . `poolResize<T>(rid, s, n) -> mut slice<T>` .
+ * `poolGive<T>(rid, s) -> bool`: the typed door into a **pool's own plate**
+ * (POOLS.md 2.1 "a pool has two faces", PLAN #85).
+ *
+ * Why this cannot be an `extern!` in the library: `extern!` may not return `slice<T>` (it
+ * would become two C parameters), and extC has no pointer casts, so the library cannot turn
+ * a block of bytes into a typed view. The generator can, so the generator does -- the same
+ * reason `alloc` is a primitive rather than a library function.
+ *
+ * `poolResize` is the one `grow` uses, and the reason is the peak: take + copy + give holds
+ * the old and the new block at the same time (measured 1.9x the live size), while resizing
+ * in place stays near it.
+ *
+ * No arena level is recorded on purpose. This memory is not the arena's: the pool owns it,
+ * and it goes back when the block is returned (`poolGive`) or when the pool is released. The
+ * escape rules therefore have nothing to say about it here -- "a reference may not outlive
+ * the place" is enforced for pool memory by the container's own discipline (POOLS.md 5.4:
+ * only handles leave). */
+static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
+    TypeTable *tt = c->tt;
+    const char *nm = e->u.gencall.name;
+    bool isTake    = strcmp(nm, "poolSlice") == 0;
+    bool isResize  = strcmp(nm, "poolResize") == 0;
+    size_t want    = isResize ? 3 : 2;
+    if (e->u.gencall.args.len != want) {
+        ckError(c, e->line, NULL, "`%s` takes %d arguments (the pool, %s)", nm, (int)want,
+                isTake   ? "and how many elements"
+              : isResize ? "the block, and how many elements it should hold"
+                         : "and the block to give back");
+        return ttError(tt);
+    }
+    Expr *ridE = *(Expr **)vecAt(&e->u.gencall.args, 0);
+    Type *ridT = checkValue(c, ridE);
+    if (!ttIsError(ridT) && !ttIsInteger(ridT)) {
+        ckError(c, ridE->line, NULL, "the pool is named by its integer id, found `%s`",
+                typeStr(c, ridT));
+        return ttError(tt);
+    }
+    Expr *argE = *(Expr **)vecAt(&e->u.gencall.args, 1);
+    Type *argT = checkValue(c, argE);
+    if (isTake) {
+        if (!ttIsError(argT) && !ttIsInteger(argT)) {
+            ckError(c, argE->line, NULL, "the element count must be an integer, found `%s`",
+                    typeStr(c, argT));
+            return ttError(tt);
+        }
+    } else if (isResize) {
+        if (!ttIsError(argT)) {
+            Type *se = viewElemOf(argT);
+            if (!se || !ttEquals(se, elem)) {
+                ckError(c, argE->line, NULL, "`%s` resizes an existing block: `%s`, not `%s`",
+                        nm, typeStr(c, ttViewMut(tt, sliceOf(c, elem), true)), typeStr(c, argT));
+                return ttError(tt);
+            }
+        }
+    }
+    if (isTake || isResize) {
+        Expr *nE = isResize ? *(Expr **)vecAt(&e->u.gencall.args, 2) : argE;
+        Type *nT = isResize ? checkValue(c, nE) : argT;
+        if (!ttIsError(nT) && !ttIsInteger(nT)) {
+            ckError(c, nE->line, NULL, "the element count must be an integer, found `%s`",
+                    typeStr(c, nT));
+            return ttError(tt);
+        }
+        /* `T` has no size while a template is checked, exactly as in `new T[n]`, so the size
+         * check is deferred to instantiation and recorded there. */
+        if (elem->kind == TY_PARAM || ttHasParam(elem)) recordNewSizeCheck(c, elem, e->line);
+        /* The count appears twice in the emitted C (once for the bytes, once for `.len`), so
+         * an impure count is computed into a temporary first -- the same rule as `new T[n]`. */
+        if (!repeatablePure(nE)) e->needTemp = true;
+        return ttViewMut(tt, sliceOf(c, elem), true);
+    }
+    if (!ttIsError(argT)) {
+        Type *se = viewElemOf(argT);
+        if (!se || !ttEquals(se, elem)) {
+            ckError(c, argE->line, NULL,
+                    "`poolGive` needs the block itself: `%s`, not `%s`",
+                    typeStr(c, ttViewMut(tt, sliceOf(c, elem), true)), typeStr(c, argT));
+            return ttError(tt);
+        }
+    }
+    return c->tBool;
+}
+
 static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
@@ -1178,7 +1262,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * (same view, same level rules, same zeroed memory, plus a second `memset` the
              * arena had already done), so it was a synonym with a weaker story (decision 81). */
             bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
-            if (!isAlloc) {
+            /* The pool primitives share this path for the same reason `alloc` does: the
+             * library needs memory the compiler has to name the type of. */
+            bool isPoolPrim = strcmp(e->u.gencall.name, "poolSlice") == 0
+                           || strcmp(e->u.gencall.name, "poolResize") == 0
+                           || strcmp(e->u.gencall.name, "poolGive") == 0;
+            if (!isAlloc && !isPoolPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
                     Vec targs;
@@ -1283,6 +1372,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* Write the resolved type back: codegen reads the type arguments of the node, not
              * this local variable. */
             *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
+            if (isPoolPrim) return checkPoolPrim(c, e, elem);
             if (e->u.gencall.args.len != 1) {
                 ckError(c, e->line, NULL, "`%s` takes one argument (how many elements)",
                         e->u.gencall.name);

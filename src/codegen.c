@@ -2015,6 +2015,45 @@ static const char *genExprInner(CG *g, Expr *e) {
              * after its lifetime ends is always an initialized byte (SPEC section 0.6).
              * `allocSlice<T>(n)` used to sit here and gave the zeroing as its reason for
              * existing; it only spelled `new T[n]`, so it was removed (decision 81). */
+            /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory
+             * belongs to the pool's own plate rather than to an arena (POOLS.md 2.1, PLAN
+             * #85). `poolGive` is how `grow` hands the replaced buffer back, so a doubling
+             * container stops leaving every old generation behind. */
+            const char *gcName = e->u.gencall.name;
+            if (strcmp(gcName, "poolSlice") == 0 || strcmp(gcName, "poolResize") == 0
+                || strcmp(gcName, "poolGive") == 0) {
+                const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
+                if (strcmp(gcName, "poolGive") == 0) {
+                    return arenaPrintf(g->arena,
+                        "extc_pool_give((int64_t)(%s), (void *)(%s).data)",
+                        rid, genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+                }
+                const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
+                Type *st = subst(g, e->type);      /* the `mut slice<T>` the checker produced */
+                /* The count appears twice below (bytes and `.len`), so an impure one was
+                 * computed into a temporary by the checker. */
+                size_t nIdx = strcmp(gcName, "poolResize") == 0 ? 2 : 1;
+                const char *n;
+                if (e->needTemp) {
+                    const char *tmp = arenaPrintf(g->arena, "__extc_pn%d", g->tmpSeq++);
+                    pfLine(g, "int64_t %s = (int64_t)(%s);", tmp,
+                           genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx)));
+                    n = tmp;
+                } else {
+                    n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx));
+                }
+                if (strcmp(gcName, "poolResize") == 0) {
+                    return arenaPrintf(g->arena,
+                        "(%s){ .data = (%s *)extc_pool_resize((int64_t)(%s), (void *)(%s).data,"
+                        " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",
+                        cType(g, st), tn, rid,
+                        genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)), n, tn, n);
+                }
+                return arenaPrintf(g->arena,
+                    "(%s){ .data = (%s *)extc_pool_take((int64_t)(%s),"
+                    " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",
+                    cType(g, st), tn, rid, n, tn, n);
+            }
             const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             /* The level comes from the checker as well, with `alloc` meaning

@@ -1,0 +1,15 @@
+// 池底扩容的**峰值 RSS**：1e6 个 i64（活跃 8 MB），旧块在扩容时当场还回去
+// 与 vector_rss_arena.extc 同一形状，差别只有存储来源（池板块 vs arena 切片）
+use std::io
+use stl::vector
+
+fn main() -> i32 {
+    var v = vector<i64>::new()
+    var i: i64 = 0
+    while i < i64(1000000) {
+        v.push(i)
+        i = i + i64(1)
+    }
+    io::cout << "n=" << v.len() << " cap=" << v.capacity() << "\n"
+    return 0
+}

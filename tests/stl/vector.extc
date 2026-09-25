@@ -1,5 +1,5 @@
-// vector<T>（池底、下标寻址）：翻倍扩容 · dense 连续 · shrink 降水位 · clear 留容量
-// 判据：cap 4 -> 8 -> 16（插 9 个）· denseView 逐字节等于写入顺序 · shrink 到 16 -> 9
+// vector<T>（池底、下标寻址）：1.5 倍扩容 · dense 连续 · shrink 降水位 · clear 留容量
+// 判据：cap 4 -> 6 -> 9（插 9 个）· denseView 逐字节等于写入顺序 · shrink 到 9 -> 9（已经刚好）
 use std::io
 use stl::vector
 

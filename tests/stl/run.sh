@@ -18,11 +18,11 @@ run_case() {   # run_case <名字> <文件> <期望的一整行>
     else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
 }
 
-echo "== vector<T>：翻倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
-run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=16 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
+echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
+run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=9 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
 
-echo "== vector<T>：grow 摊还（1000 次 push 只搬 9 次）=="
-run_case grow    tests/stl/vector_grow.extc    "caps=4,8,16,32,64,128,256,512,1024 n=1000"
+echo "== vector<T>：grow 摊还（1000 次 push 只搬 14 次 · 1.5 倍）=="
+run_case grow    tests/stl/vector_grow.extc    "caps=4,6,9,13,19,28,42,63,94,141,211,316,474,711,1066 n=1000"
 
 echo "== vector<T>：churn 内存平（1e5 与 1e6 两轮，容量策略相同 ⇒ 峰值 RSS 相当）=="
 TMPC=$(mktemp -d)
@@ -42,8 +42,28 @@ else
 fi
 rm -rf "$TMPC"
 
-echo "== string：连续字节串（append 触发翻倍 · asSlice 连续可直印 · shrink 降水位）=="
-run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=64 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
+TMPC2=$(mktemp -d)
+echo "== vector<T>：池底扩容的峰值 RSS（同一形状 vs arena 切片 —— 这是池底化的判据）=="
+# 判据：1e6 个 i64（活跃 8 MB）不许把历代旧副本留在 arena 里。
+# 两个用例**同一形状**，只有存储来源不同 ⇒ 自己跟自己比，不依赖机器的绝对数字。
+if "$EXTC" tests/stl/vector_rss_plate.extc -o "$TMPC2/p.c" >/dev/null 2>&1 \
+   && "$EXTC" tests/stl/vector_rss_arena.extc -o "$TMPC2/a.c" >/dev/null 2>&1 \
+   && gcc -std=c11 -O2 -o "$TMPC2/p" "$TMPC2/p.c" >/dev/null 2>&1 \
+   && gcc -std=c11 -O2 -o "$TMPC2/a" "$TMPC2/a.c" >/dev/null 2>&1; then
+    kp=$(/usr/bin/time -f %M "$TMPC2/p" 2>&1 >/dev/null | tail -1)
+    ka=$(/usr/bin/time -f %M "$TMPC2/a" 2>&1 >/dev/null | tail -1)
+    if [ "$kp" -lt $(( ka * 3 / 4 )) ]; then
+        echo "  ok   plate rss  ->  池底 ${kp} KB vs arena ${ka} KB（低 $(( (ka - kp) * 100 / ka ))%）"
+    else
+        echo "  FAIL plate rss  ->  池底 ${kp} KB 没有明显低于 arena ${ka} KB"; fail=1
+    fi
+else
+    echo "  FAIL plate rss  ->  生成或编译失败"; fail=1
+fi
+rm -rf "$TMPC2"
+
+echo "== string：连续字节串（append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位）=="
+run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=54 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
 
 echo "== hashSetI64：无值 map（哈希 / 探测 / 墓碑只有一份实现 —— 建在 hashMapI64<u8> 上）=="
 run_case hashset tests/stl/hashSet.extc     "new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=16 cleared=0"

@@ -24,7 +24,7 @@ struct string {
         var cc: i64 = c
         if cc < i64(16) { cc = i64(16) }
         var s: string = {
-            buf:    new u8[cc],
+            buf:    poolSlice<u8>(rp, cc),
             n:      i64(0),
             cap:    cc,
             pid:    rp,
@@ -244,15 +244,12 @@ struct string {
         return true
     }
 
+    /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。
+     * 连续性与「不留历代旧副本」同时成立。 */
     fn grow(self: mut ref string) {
-        let ncap = self.cap * i64(2)
-        var nb: mut slice<u8> = new u8[ncap]
-        var i: i64 = 0
-        while i < self.n {
-            nb[i] = self.buf[i]
-            i = i + i64(1)
-        }
-        self.buf = nb
+        if self.pid < i64(0) { return }
+        let ncap = self.cap + self.cap / i64(2)
+        self.buf = poolResize<u8>(self.pid, self.buf, ncap)
         self.cap = ncap
     }
 
@@ -278,13 +275,7 @@ struct string {
         var ncap: i64 = self.n
         if ncap < i64(16) { ncap = i64(16) }
         if ncap >= self.cap { return }
-        var nb: mut slice<u8> = new u8[ncap]
-        var i: i64 = 0
-        while i < self.n {
-            nb[i] = self.buf[i]
-            i = i + i64(1)
-        }
-        self.buf = nb
+        self.buf = poolResize<u8>(self.pid, self.buf, ncap)
         self.cap = ncap
     }
 
@@ -296,6 +287,10 @@ struct string {
             self.pid = i64(-1)
             return
         }
+        /* 先把视图收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界
+         * （带位置的 trap），而不是写进一块已经还掉的内存。 */
+        self.buf = poolResize<u8>(self.pid, self.buf, i64(0))
+        self.cap = i64(0)
         syspool::extc_pool_reset(self.pid)
         syspool::extc_pool_drop(self.pid)
         self.pid = i64(-1)

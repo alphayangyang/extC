@@ -1,4 +1,4 @@
-// string（池底、连续）：append 触发翻倍 · asSlice 连续可直印 · shrink 降水位 · clear 留容量
+// string（池底、连续）：append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位 · clear 留容量
 // 判据：len=12 cap=16->32 shrink=12 · 打印出的字节与写入一致
 use std::io
 use stl::string

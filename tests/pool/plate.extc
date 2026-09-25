@@ -1,0 +1,32 @@
+// 板块（池自己的内存）：拿一块 · 在原块上长 · 新鲜的字节读作 0 · 还一块 · 字节账 · drop 归零
+// 口径见 POOLS.md §2.1「池有两副面，一副记录」与 PLAN #85。
+//
+// 判据为什么是这几条：
+//   ① `take`/`dual`：字节账按池记（800 = 100×8，1264 = 800+64×... 见下）
+//   ② `zero`/`tail0`：**新拿到的字节读作 0** —— 这是语言对 `new` 的承诺，板块上照旧成立
+//   ③ `kept`：`resize` 保住内容（grow 就是靠它，所以旧块不用拷）
+//   ④ `gave`/`aftergive`：还回去的那一块**立刻**从账上消失（arena 做不到这件事）
+//   ⑤ `live`：池 drop 之后一个字节都不剩
+// expect: take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0 dual=1264 gave=1 aftergive=64 live=0
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    let rid = syspool::extc_pool_new(i64(-1))
+    var s: mut slice<i64> = poolSlice<i64>(rid, 100)
+    io::cout << "take=" << syspool::extc_pool_bytes(rid)
+    io::cout << " zero=" << s[0]
+    s[7] = i64(7)
+    io::cout << " wrote=" << s[7] << " bytes=" << syspool::extc_pool_bytes(rid)
+    s = poolResize<i64>(rid, s, 150)                      /* 150 × 8 = 1200 */
+    io::cout << " grew=" << syspool::extc_pool_bytes(rid) << " kept=" << s[7] << " tail0=" << s[149]
+    var t: mut slice<u8> = poolSlice<u8>(rid, 64)         /* 1200 + 64 = 1264 */
+    t[63] = u8(1)
+    io::cout << " dual=" << syspool::extc_pool_bytes(rid)
+    var g: i64 = 0
+    if poolGive<i64>(rid, s) { g = i64(1) }
+    io::cout << " gave=" << g << " aftergive=" << syspool::extc_pool_bytes(rid)
+    syspool::extc_pool_drop(rid)
+    io::cout << " live=" << syspool::extc_pool_bytesLive() << "\n"
+    return 0
+}

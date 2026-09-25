@@ -133,9 +133,9 @@ struct pool<T> {
         var c: i64 = n
         if c < i64(8) { c = i64(8) }
         var p: pool<T> = {
-            vals:   new T[c],
-            slots:  new i32[c],
-            ent:    new i64[c],
+            vals:   poolSlice<T>(rp, c),
+            slots:  poolSlice<i32>(rp, c),
+            ent:    poolSlice<i64>(rp, c),
             pid:    rp,
             pidGen: rpg,
             epoch:  i64(0),
@@ -267,6 +267,12 @@ struct pool<T> {
             self.pid = i64(-1)                                 /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
             return
         }
+        /* 三块视图先收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界
+         * （带位置的 trap），而不是读写一块已经还掉的内存。 */
+        self.vals  = poolResize<T>(self.pid, self.vals, i64(0))
+        self.slots = poolResize<i32>(self.pid, self.slots, i64(0))
+        self.ent   = poolResize<i64>(self.pid, self.ent, i64(0))
+        self.cap   = i64(0)
         syspool::extc_pool_reset(self.pid)
         self.clear()
         syspool::extc_pool_drop(self.pid)
@@ -284,22 +290,16 @@ struct pool<T> {
      *   - **存活槽的世代原样保留** ⇒ 已经发出去的 handle 全部继续有效
      * 空槽的世代也保留（它们的 `next` 按新 cap 重排，世代字段不动），因此
      * shrink 不引入任何 ABA：它只是把不用的槽从表里切掉。
-     * 让出去的是"池的工作集"，不是 RSS —— arena 只能整块还，旧数组到地方退出时才收。 */
+     * 三块都是**同一块缩回去**（内容由 resize 保住）⇒ 让出去的是真的内存。 */
     fn shrink(self: mut ref pool<T>) {
         var ncap: i64 = self.n
         if ncap < i64(8) { ncap = i64(8) }
         if ncap >= self.cap { return }                  /* 没有可缩的 */
-        var nv: mut slice<T>   = new T[ncap]
-        var ns: mut slice<i32> = new i32[ncap]
-        var ne: mut slice<i64> = new i64[ncap]
+        self.vals  = poolResize<T>(self.pid, self.vals, ncap)
+        self.slots = poolResize<i32>(self.pid, self.slots, ncap)
+        self.ent   = poolResize<i64>(self.pid, self.ent, ncap)
+        var ne: mut slice<i64> = self.ent
         var i: i64 = 0
-        while i < self.n {
-            nv[i] = self.vals[i]
-            ns[i] = self.slots[i]
-            i = i + i64(1)
-        }
-        i = 0
-        while i < ncap { ne[i] = self.ent[i]  i = i + i64(1) }
         /* Rebuild the hole chain over the slots this epoch had actually used. `head` doubles
          * as the tail sentinel: the chain is a ring (the last link points back at the head),
          * which is how the old free list was written and what `pop` expects. Slots at or
@@ -326,9 +326,6 @@ struct pool<T> {
         }
         /* Everything past `n` in the new table was either a hole (now on the chain) or never
          * used at all, so the frontier is "the first never-used slot". */
-        self.vals  = nv
-        self.slots = ns
-        self.ent   = ne
         self.holeHead = head
         self.cursor   = i32(ncap)
         self.cap   = ncap
@@ -407,22 +404,17 @@ struct pool<T> {
         return out
     }
 
-    /* Double the capacity. The old arrays stay in the arena (that is what a pool will
-     * fix in phase 1+); because the same pool object is reused, this happens O(log n)
-     * times over its life, so the waste is bounded, not linear. */
+    /* Grow by 1.5x, in place when the allocator can: the three blocks are OURS (the pool's
+     * plate), so the old ones do not linger -- that is what used to make this O(log n)
+     * bounded-waste instead of free. */
     fn grow(self: mut ref pool<T>) {
-        let ncap = self.cap * i64(2)
-        var nv: mut slice<T>   = new T[ncap]
-        var ns: mut slice<i32> = new i32[ncap]
-        var ne: mut slice<i64> = new i64[ncap]
-        var i: i64 = 0
-        while i < self.n {
-            nv[i] = self.vals[i]
-            ns[i] = self.slots[i]
-            i = i + i64(1)
-        }
-        i = 0
-        while i < self.cap { ne[i] = self.ent[i]  i = i + i64(1) }
+        if self.pid < i64(0) { return }
+        let ncap = self.cap + self.cap / i64(2)
+        self.vals  = poolResize<T>(self.pid, self.vals, ncap)
+        self.slots = poolResize<i32>(self.pid, self.slots, ncap)
+        self.ent   = poolResize<i64>(self.pid, self.ent, ncap)
+        var ne: mut slice<i64> = self.ent
+        var i: i64 = self.cap
         /* The new slots are all "never used this epoch", so they need no chaining: they are
          * reached by the bump cursor, which still points at `self.cap`. `cursor` and the hole
          * chain are carried over untouched -- `grow` must not lose a hole. The `low` written
@@ -430,9 +422,6 @@ struct pool<T> {
          * is only there so no slot of the new table is uninitialized. */
         i = self.cap
         while i < ncap { ne[i] = pool<T>::pPack(i64(0), i + ncap + i64(2))  i = i + i64(1) }
-        self.cap   = ncap
-        self.vals  = nv
-        self.slots = ns
-        self.ent   = ne
+        self.cap = ncap
     }
 }

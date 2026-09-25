@@ -1,4 +1,4 @@
-// grow 摊还可见：容量只按翻倍变，1000 次 push 只搬 9 次
+// grow 摊还可见：容量只按 1.5 倍变，1000 次 push 只搬 14 次（4→6→…→1066）
 use std::io
 use stl::vector
 
