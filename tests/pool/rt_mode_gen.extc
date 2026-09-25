@@ -1,0 +1,22 @@
+// 池的两条不变量（docs/topics/SOUNDNESS.md 的 O3/O4）：
+//  · **模式**：容器池 kind = 0；对象表池 kind = 1（只追加 —— 块不可替换/归还，
+//    否则元素句柄会在池仍然 live、gen 不变的情况下静默指向别的对象）
+//  · **reset 必须换代**：reset 保留池、把槽标记可复用 ⇒ 旧句柄必须再也校验不过，
+//    否则它指向的是**后来占用该槽的那个对象**（dyn 落地就是类型混淆）
+// 判据：一整行逐字相等
+use std::io
+use std::sys::pool
+
+fn main() -> i32 {
+    let a = pool::extc_pool_new(i64(-1))
+    let t = pool::extc_pool_new_table(i64(-1))
+    let g1 = pool::extc_pool_generation(a)
+    pool::extc_pool_reset(a)
+    let g2 = pool::extc_pool_generation(a)
+    var ch: i64 = i64(0)
+    if g1 != g2 { ch = i64(1) }
+    io::cout << "kind=" << pool::extc_pool_kind(a) << "/" << pool::extc_pool_kind(t) << " genchanged=" << ch << "\n"
+    pool::extc_pool_drop(a)
+    pool::extc_pool_drop(t)
+    return 0
+}

@@ -8,6 +8,10 @@
 > 基准版本：`ee5b0e4`（`src/` 干净；池运行期在 `src/pools.c` 里是**一段 C 字符串**，
 > 所以本文引 `extc_pool_*` 的函数名而不引行号）
 >
+> **补记（2026-09-25，同日修）**：§7 的第 ① 条**已落地** —— `extc_pool_reset` 现在换代，
+> 并且池有了**模式**（`kind`：容器池 / 对象表池），对象表模式下 `give`/`resize` 直接 trap。
+> 全文 `generation++` 现在是 **2 处**（`new_at` 与 `reset`）。**E1 仍未修**（`string::sub` 依旧零拷贝）。
+>
 > 姊妹篇：[`ARENA-SOUNDNESS.md`](ARENA-SOUNDNESS.md)（arena 档：定理对、静态记账漏）。
 > 两篇合起来才是完整的图：**arena 档漏在"深度记账"，池档漏在"失效粒度"。**
 >
@@ -21,7 +25,7 @@
 |---|---|---|
 | **T1** | 池运行期的**存储机制**（块 = `malloc`、`give` = `free`、`resize` = `realloc` + 补零、`live` 标志、plate 只属于自己） | **成立**。没有越界、没有重复释放、`new T[n]` 的"新分配读作 0"在 plate 里也守住了 |
 | **T2** | **池粒度**的陈旧检查（`drop` ⇒ `live = 0` ⇒ `extc_pool_generation()` 返回 0；槽复用 ⇒ `new_at` 里 `generation++`） | **成立**。旧句柄携带的 `gen` 一定不再匹配（容器级 `pStale`/`pidGen` 就建立在这上面） |
-| **T3** | **元素/块粒度**的陈旧检查（"这个槽/这块在这次失效之后还是原来那个吗"） | **证伪**：全文 `generation++` **只有 1 处**（在 `new_at`）；`extc_pool_freeSelf` 只置 `live = 0`、**不换代**；`extc_pool_reset` **既不换代也不置 `live = 0`** ⇒ 池仍然 live、`gen` 不变、而槽已被标记可复用 |
+| **T3** | **元素/块粒度**的陈旧检查（"这个槽/这块在这次失效之后还是原来那个吗"） | **部分修复**：`reset` 现在换代（池粒度⇒元素失效可被抓住）；**块粒度仍缺** —— `give`/`resize` 依旧不动 `gen`，只是**对象表模式下被直接禁掉**（trap）⇒ 剩下的路是"只追加 + 墓碑"或每槽代际 |
 | **T4** | 因此「`build/extc` 接受的程序，在池档不会**静默 UB**」 | **证伪**：§5 的 E1 **实测** `heap-use-after-free`（检查器接受）；E2 由代码结构直接推出；E3 是 dyn 落地时必然出现的类型混淆 |
 | **T5** | 边界：把 §7 的三条不变量补回去之后 | **可修**（三条都是局部改动：`reset` 一行、dyn 池只追加、视图不许进池；判据可双向写） |
 
@@ -92,7 +96,7 @@
 | 数 | 谁写 | 谁读 | 答的问题 |
 |---|---|---|---|
 | `pools[rid].live` | `new_at`（=1）、`freeSelf`（=0） | `generation()`、`take`、`give`、`resize`、`pStale` | 池还在吗 |
-| `pools[rid].generation` | **只有 `new_at`（槽被新池占用时 `++`）** | `extc_pool_generation(rid)`（非 live 返回 0） | 这个 rid 还是当年那只池吗 |
+| `pools[rid].generation` | `new_at`（槽被新池占用时 `++`）· **`reset`（重置后槽可复用，2026-09-25 起）** | `extc_pool_generation(rid)`（非 live 返回 0） | 这个 rid 还是当年那只池吗 |
 | `blocks` 链 | `take` 头插、`give` 摘除、`resize` 换节点 | `give`/`resize` 按地址查找 | 这块属于这个池吗 |
 | 容器的 `pid` / `pidGen` | 构造/`release` | `pStale()` | **这个容器**是不是陈旧了 |
 | —— | —— | —— | **槽/块的陈旧：没有数** ← 缺口 |
@@ -104,7 +108,7 @@
 
 ## 4. 证伪：三条不变量各自怎么被违反
 
-### 4.1 INV-G 在元素粒度上不成立（`reset` 不换代）
+### 4.1 INV-G 在元素粒度上不成立（`reset` 不换代）—— **已修（2026-09-25）**
 
 ```
 void extc_pool_reset(int64_t rid) {
@@ -214,9 +218,9 @@ dyn 的句柄是 `{pool, idx, gen}`。若 `idx` 落在被 `reset` 标记可复�
 
 ### 7.1 必须成立的三条（写进代码，别靠注释）
 
-1. **INV-G（元素粒度换代）**：`extc_pool_reset` 加 `generation++`（**一行**）。
+1. ~~**INV-G（元素粒度换代）**：`extc_pool_reset` 加 `generation++`（**一行**）。~~ **已落地（2026-09-25）**。
    语义变成"重置 = 该池所有引用作废"，粗但 sound；若将来要"单槽失效"，再加**每槽代际**。
-2. **INV-A（dyn 的池只追加）**：dyn 用的池**永不 `give`、永不 `resize`**；删除 = **墓碑**
+2. **INV-A（dyn 的池只追加）**：dyn 用的池**永不 `give`、永不 `resize`**（**2026-09-25 起由池的模式在运行期挡住**：对象表模式下两者直接 trap）；删除 = **墓碑**
    （对象仍在、标记已删 ⇒ 取用时 trap）。这一条同时买到：`self` 借用安全、迭代中插入安全、同池句柄稳定。
 3. **INV-V（视图不进池）**：`ref dyn` 只借**栈 / arena**；`string::sub` 改成拷贝
    （或保留零拷贝但**改名**并给出明确契约：`subView` + "容器再增长/清理即失效"）。
@@ -249,7 +253,7 @@ gcc -O1 -g -fsanitize=address -fwrapv /tmp/ps/v2.c -o /tmp/ps/v2 && /tmp/ps/v2
 # 对照 2：reset / freeSelf 都不换代（结构证据）
 python3 - <<'PY'
 s=open('src/pools.c',encoding='utf-8').read()
-print('generation++ 出现次数:', s.count('generation++'))     # => 1（只在 new_at）
+print('generation++ 出现次数:', s.count('generation++'))     # => 2（new_at 与 reset，2026-09-25 起）
 i=s.find('extc_pool_freeSelf(int64_t rid)'); print(s[i:i+120])
 PY
 ```

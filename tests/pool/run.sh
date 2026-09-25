@@ -110,6 +110,8 @@ rt_run() {   # rt_run <名字> <文件> <期望的一整行>
     else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
 }
 rt_run rt_basic    tests/pool/rt_basic.extc    "live=0 up=1 gen=1 down=0 stale=0"
+# 模式（容器池 / 对象表池）+ reset 换代：SOUNDNESS.md 的 O3/O4 两条不变量
+rt_run rt_mode_gen  tests/pool/rt_mode_gen.extc  "kind=0/1 genchanged=1"
 
 echo "== 期 1 · 块退出带走子树 · 父释放带走子 =="
 rt_run rt_blockexit tests/pool/rt_blockexit.extc "before=0 in=1 rid=0 after=0 two=2 gone=0"

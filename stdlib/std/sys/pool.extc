@@ -11,6 +11,9 @@
  * 池的寿命挂在"地方"上：zone 是一条独立旁链，地方退出时按标记回退、整批回收
  * （`extc_pool_zoneLeaveTo`）；池树的两条链（寿命链 / 父池子链）见 POOLS.md §7.7 */
 extern!("extc-runtime") fn extc_pool_new(parent: i64) -> i64
+/* 对象表模式（dyn 用的那种池）：同源、更严的契约 —— 只追加，块不可替换/归还。 */
+extern!("extc-runtime") fn extc_pool_new_table(parent: i64) -> i64
+extern!("extc-runtime") fn extc_pool_kind(rid: i64) -> i64
     effects Addr=0 Cont=0
 /* **提权的落点**（POOLS.md §3.1 / MEMORY-SAFETY §3.1）：`zone` 指定这个池**出生在哪个地方**，
  * 不放宽就传当前顶（`extc_pool_new` 就是 `extc_pool_new_at(parent, extc_zoneTop)`）。

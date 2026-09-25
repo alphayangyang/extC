@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dyn Trait 是什么 —— extC 图解</title>
+<style>
+  :root{
+    --paper:#f7f6f3; --ink:#23211d; --muted:#6f6a61; --line:#dcd7cd;
+    --warm:#b8562f; --green:#2f7d5a; --red:#b23b3b; --blue:#3a5f8a;
+    --arena:#eef3f8; --arenab:#b9cbe0; --pool:#fdf1ea; --poolb:#e3b79f;
+    --code:#2b2a26;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--paper);color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #deck{height:100vh;display:flex;align-items:center;justify-content:center;padding:26px}
+  .slide{display:none;width:min(1120px,100%);max-height:calc(100vh - 118px);overflow:auto;padding:6px 12px}
+  .slide.active{display:block;animation:fade .22s ease-out}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h1{font-size:clamp(28px,4.2vw,48px);line-height:1.2;margin:0 0 12px}
+  h2{font-size:clamp(21px,2.6vw,31px);margin:0 0 6px;letter-spacing:.2px}
+  h2 .num{color:var(--warm);font-weight:800;margin-right:10px}
+  .sub{color:var(--muted);font-size:clamp(15px,1.55vw,19px);margin:0 0 20px;line-height:1.65}
+  p{font-size:clamp(16px,1.6vw,20px);line-height:1.75;margin:10px 0}
+  .big{font-size:clamp(19px,2.1vw,26px);line-height:1.6}
+  .huge{font-size:clamp(22px,2.8vw,34px);line-height:1.45;font-weight:700}
+  ul,ol{margin:8px 0 0;padding-left:1.25em}
+  li{font-size:clamp(16px,1.6vw,20px);line-height:1.8;margin:4px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;background:#ece8e1;padding:1px 6px;border-radius:5px;font-size:.92em}
+  pre{background:var(--code);color:#f2efe9;padding:15px 17px;border-radius:12px;overflow:auto;
+      font-family:ui-monospace,Menlo,Consolas,monospace;font-size:clamp(13px,1.28vw,17px);line-height:1.7}
+  pre .c{color:#9c968b} pre .k{color:#e9a06b} pre .t{color:#8fc7e8}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:860px){.grid2,.grid3{grid-template-columns:1fr}}
+  .card{border:1.5px solid var(--line);border-radius:14px;padding:15px 17px;background:#fffdfa}
+  .card h3{margin:0 0 8px;font-size:clamp(17px,1.8vw,21px)}
+  .card p,.card li{font-size:clamp(15px,1.45vw,18px)}
+  pre .s{color:#a5cf8a}
+  .cworld{background:#f3f1ec;border-color:#cfc7ba}
+  .arena{background:var(--arena);border-color:var(--arenab)}
+  .pool{background:var(--pool);border-color:var(--poolb)}
+  .ok{border-color:#bfe0cd;background:#f2faf5}
+  .no{border-color:#e8c3c3;background:#fdf3f3}
+  .ok h3{color:var(--green)} .no h3{color:var(--red)}
+  /* 形状盒 */
+  .shapes{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:6px 0 2px}
+  .shape{border:2px solid var(--line);border-radius:12px;background:#fff;padding:10px 14px;text-align:center;min-width:118px}
+  .shape b{display:block;font-size:clamp(15px,1.5vw,18px)}
+  .shape em{font-style:normal;font-size:12px;color:var(--muted)}
+  .shape.c{border-color:var(--warm)}
+  .shape.r{border-color:var(--blue)}
+  .shape.t{border-color:var(--green)}
+  /* 句柄 */
+  .handle{display:inline-grid;grid-template-columns:repeat(3,auto);border:2px solid var(--warm);border-radius:10px;overflow:hidden;
+          font-family:ui-monospace,Menlo,Consolas,monospace;font-size:clamp(14px,1.5vw,19px)}
+  .handle div{padding:8px 15px;background:#fff}
+  .handle div:nth-child(2){border-left:2px solid var(--warm);border-right:2px solid var(--warm)}
+  .handle .lab{display:block;font-size:11px;color:var(--muted)}
+  /* 流程 */
+  .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0}
+  .flow .b{border:2px solid var(--line);border-radius:12px;padding:10px 14px;background:#fff;
+           font-size:clamp(14px,1.5vw,18px);line-height:1.35}
+  .flow .b em{display:block;font-style:normal;font-size:12px;color:var(--muted);margin-top:3px}
+  .arw{color:var(--warm);font-size:26px;font-weight:700}
+  .vt{display:inline-block;border:2px solid var(--blue);border-radius:10px;overflow:hidden;background:#fff;
+      font-family:ui-monospace,Menlo,Consolas,monospace;font-size:clamp(13px,1.35vw,16px);vertical-align:middle}
+  .vt div{padding:7px 13px}
+  .vt div+div{border-top:1.5px solid #cddbe8}
+  .vt .hd{background:#eef3f8;font-family:inherit}
+  #hud{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;gap:14px;
+       padding:10px 18px;background:#fffdfa;border-top:1.5px solid var(--line);font-size:14px;color:var(--muted)}
+  #hud .sp{flex:1}
+  #hud button{font:inherit;padding:6px 14px;border:1.5px solid var(--line);background:#fff;border-radius:9px;cursor:pointer;color:var(--ink)}
+  #hud button:hover{border-color:var(--warm);color:var(--warm)}
+  #dots{display:flex;gap:6px}
+  #dots i{width:9px;height:9px;border-radius:99px;background:#d9d3c8;cursor:pointer;display:block}
+  #dots i.on{background:var(--warm)}
+  #hint{position:fixed;top:14px;right:18px;font-size:13px;color:var(--muted)}
+  .kbd{font-family:ui-monospace,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:1px 7px;background:#fff;font-size:13px}
+  body.all #deck{display:block;height:auto;padding:24px}
+  body.all .slide{display:block;max-height:none;border-bottom:1.5px dashed var(--line);padding:26px 12px;margin:0 auto}
+  @media print{body{background:#fff}#hud,#hint{display:none}#deck{display:block;height:auto;padding:0}
+    .slide{display:block!important;page-break-after:always;max-height:none;width:100%;padding:18px 0}}
+</style>
+</head>
+<body>
+<div id="hint">← → 或空格翻页 · <span class="kbd">A</span> 全部展开便于通读</div>
+<div id="deck">
+
+<!-- 1 封面 -->
+<section class="slide active">
+  <h1>什么是 <span style="color:var(--warm)">dyn Trait</span>？</h1>
+  <p class="big" style="color:var(--muted)">以及 extC 为什么把它做成现在这样</p>
+  <div class="huge" style="margin-top:34px">
+    一句话：<span style="color:var(--warm)">让「用同一段代码处理不同种类的对象」这件事，<br>在编译期不知道具体类型的时候也能成立。</span>
+  </div>
+</section>
+
+<!-- 2 问题 -->
+<section class="slide">
+  <h2><span class="num">1</span>先看问题</h2>
+  <p class="sub">你有三种形状，都想算面积。<b>类型不一样，但你要用同一个名字。</b></p>
+  <div class="shapes">
+    <div class="shape c"><b>Circle</b><em>r: f64</em></div>
+    <div class="shape r"><b>Rect</b><em>w, h: f64</em></div>
+    <div class="shape t"><b>Tri</b><em>a, b, c: f64</em></div>
+  </div>
+  <pre style="margin-top:14px"><span class="c">// 一张"方法清单"：谁想被当成 Shape，就得交出 area</span>
+<span class="k">trait</span> Shape {
+    <span class="k">fn</span> area(self: <span class="t">ref</span> Self) -> <span class="t">f64</span>
+}
+
+<span class="c">// 各自"签字交作业"</span>
+<span class="k">impl</span> Shape <span class="k">for</span> Circle { <span class="k">fn</span> area(self: <span class="t">ref</span> Self) -> <span class="t">f64</span> { <span class="k">return</span> <span class="t">3.14</span> * self.r * self.r } }
+<span class="k">impl</span> Shape <span class="k">for</span> Rect   { <span class="k">fn</span> area(self: <span class="t">ref</span> Self) -> <span class="t">f64</span> { <span class="k">return</span> self.w * self.h } }
+
+<span class="c">// 现在：写一段"能把它们一起算掉"的代码</span>
+<span class="k">fn</span> total(shapes: <span class="t">slice</span>&lt;<span class="t">dyn</span> Shape&gt;) -> <span class="t">f64</span> {
+    <span class="k">var</span> sum: <span class="t">f64</span> = <span class="t">0.0</span>
+    <span class="k">for</span> s <span class="k">in</span> shapes { sum = sum + s.area() }   <span class="c">// ← 这里 s 到底是 Circle 还是 Rect？编译期不知道</span>
+    <span class="k">return</span> sum
+}</pre>
+  <p class="big" style="margin-top:14px"><b>那行 <code>s.area()</code> 调谁？</b> 这就是 dyn Trait 要解决的问题。</p>
+</section>
+
+<!-- 3 两种分发 -->
+<section class="slide">
+  <h2><span class="num">2</span>两条路：编译期定死 vs 运行期去查</h2>
+  <div class="grid2">
+    <div class="card ok">
+      <h3>静态分发（编译期就知道）</h3>
+<pre style="margin-top:8px"><span class="k">fn</span> total&lt;T: Shape&gt;(xs: <span class="t">slice</span>&lt;T&gt;) -> <span class="t">f64</span> {
+    <span class="c">// 编译期知道 T 是 Circle</span>
+    <span class="c">// ⇒ 直接调用 circle_area</span>
+}</pre>
+      <p><b>快：</b>零查表、能内联。<br><b>窄：</b>你必须写代码时就知道类型。</p>
+    </div>
+    <div class="card" style="border-color:var(--poolb);background:var(--pool)">
+      <h3>动态分发（<code>dyn</code>）</h3>
+<pre style="margin-top:8px"><span class="k">fn</span> total(xs: <span class="t">slice</span>&lt;<span class="t">dyn</span> Shape&gt;) -> <span class="t">f64</span> {
+    <span class="c">// 编译期只知道"是某种 Shape"</span>
+    <span class="c">// ⇒ 运行期查表找 circle_area</span>
+}</pre>
+      <p><b>宽：</b>能处理写代码时还不存在的类型（插件、动态注册）。<br><b>慢一点：</b>查一次表 + 一次间接调用。</p>
+    </div>
+  </div>
+  <p class="big" style="text-align:center;margin-top:20px">写 <code>dyn</code> 就是明说：<b>「我知道这是运行期的，我接受那点开销。」</b></p>
+</section>
+
+<!-- 4 dyn 值是什么 -->
+<section class="slide">
+  <h2><span class="num">3</span>所以一个 dyn 值里装了什么？</h2>
+  <p class="sub">两样东西：<b>东西在哪儿</b> + <b>它的方法表在哪儿</b>。</p>
+  <div class="flow" style="justify-content:center;margin:8px 0 18px">
+    <div class="b" style="border-color:var(--warm);border-width:2.5px">
+      dyn 值<br><em>「对象在哪儿」+「方法表在哪儿」</em>
+    </div>
+    <span class="arw">→</span>
+    <div class="b" style="border-color:var(--blue)">东西（Circle 的数据）</div>
+  </div>
+  <div style="text-align:center">
+    <span class="vt">
+      <div class="hd">Circle 的方法表</div>
+      <div>area → circle_area 的地址</div>
+    </span>
+    <span style="margin-left:14px;color:var(--muted)">← 这张表俗称 vtable</span>
+  </div>
+  <div class="grid2" style="margin-top:22px">
+    <div class="card"><h3>为什么不用"两个指针"？</h3>
+      <p>C 里就是 <code>{数据指针, vtable 指针}</code>。裸指针 ⇒ 悬垂了<b>没人知道</b>，是 UB。</p></div>
+    <div class="card pool"><h3>extC 用什么？</h3>
+      <p>extC 的世界里<b>没有裸指针</b>，只有「池 + 下标」。所以：<br>
+      dyn 值 = <b>3 个整数</b>：哪只池、第几个、第几代。</p></div>
+  </div>
+</section>
+
+<!-- 5 句柄 -->
+<section class="slide">
+  <h2><span class="num">4</span>extC 的 dyn 值 = 一个句柄</h2>
+  <div style="text-align:center;margin:22px 0 8px">
+    <span class="handle">
+      <div>pool<span class="lab">哪只池</span></div>
+      <div>idx<span class="lab">第几个</span></div>
+      <div>gen<span class="lab">第几代</span></div>
+    </span>
+  </div>
+  <p style="text-align:center;color:var(--muted)">三个整数，纯数据。<b>没有指针、没有别名。</b></p>
+  <div class="grid3" style="margin-top:16px">
+    <div class="card"><h3>复制它</h3><p>就是复制 3 个整数，随便传、随便存。</p></div>
+    <div class="card"><h3>方法表也在池里</h3><p>不放在静态数据段，而是和对象一样住在池里。</p></div>
+    <div class="card ok"><h3>用之前对一下 gen</h3><p>对不上 ⇒ <b>trap，带 .extc 行号</b>。<br>不是读到垃圾，不是 UB。</p></div>
+  </div>
+</section>
+
+<!-- 6 一次调用 -->
+<section class="slide">
+  <h2><span class="num">5</span>一次 <code>s.area()</code> 到底发生什么</h2>
+  <div class="flow">
+    <div class="b">dyn 值<em>{pool, idx, gen}</em></div>
+    <span class="arw">→</span>
+    <div class="b">去池里取方法表<em>顺手检查 gen</em></div>
+    <span class="arw">→</span>
+    <div class="b">跳到 circle_area<em>把对象地址交给它</em></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="card ok"><h3>gen 对得上</h3><p>正常调用。开销 = 取一次表 + 一次间接调用。</p></div>
+    <div class="card no"><h3>gen 对不上</h3><p>池没了、插件被卸载了……<br><b>当场 trap：</b><code>foo.extc:42: this vtable belonged to the unloaded library X</code></p></div>
+  </div>
+  <p class="big" style="margin-top:18px;text-align:center">这就是 extC 相对 C++/Rust 的<b>核心不同</b>：<span style="color:var(--green)">失败是稳定的、带位置的</span>，不是 UB。</p>
+</section>
+
+<!-- 7 两块地 -->
+<section class="slide">
+  <h2><span class="num">6</span>但句柄住在池里，就带来一条规则</h2>
+  <p class="sub">extC 每个值都住在两块地之一。<b>能不能被"借"（引用），只看一件事：它什么时候结束，编译期知不知道。</b></p>
+  <div class="grid2">
+    <div class="card arena">
+      <h3>地方 / arena</h3>
+      <ul><li>局部变量、<code>new</code> 出来的东西</li>
+      <li>整块释放：地方结束 → 全没了</li>
+      <li>何时结束？<b style="color:var(--green)">编译期知道 ✓</b></li></ul>
+      <p><b>⇒ 可以借出去</b>（<code>ref T</code> / <code>slice&lt;T&gt;</code>）</p>
+    </div>
+    <div class="card pool">
+      <h3>池 / pool</h3>
+      <ul><li>容器自己的存储（<code>vector</code>、<code>map</code>）</li>
+      <li>随容器释放；<b>容器一增长就换块</b></li>
+      <li>何时释放？<b style="color:var(--red)">运行期的事 ✗</b></li></ul>
+      <p><b>⇒ 不要借出去</b>，要用就传<b>句柄</b></p>
+    </div>
+  </div>
+  <p class="big" style="text-align:center;margin-top:20px">所以只有一句大白话：<b style="color:var(--warm)">借进来可以，借出去不行。</b></p>
+</section>
+
+<!-- 8 池里创建变量 -->
+<!-- 三块地 -->
+<section class="slide">
+  <h2><span class="num">7</span>其实还有第三块地</h2>
+  <p class="sub">每块内存的「寿命信息」在哪里，决定了用什么机制保证安全 —— 这就是 extC 内存模型的全部。</p>
+  <div class="grid3">
+    <div class="card arena">
+      <h3>编译期就知道</h3>
+      <p class="big" style="margin:0 0 6px"><b>地方 / arena</b></p>
+      <ul>
+        <li>栈、块、<code>new</code> 出来的东西</li>
+        <li>机制：<b>静态检查</b>（逃逸 / 深度）</li>
+        <li>视图 <code>ref T</code> / <code>slice&lt;T&gt;</code> 零成本</li>
+        <li>出错：<b style="color:var(--green)">编译错误</b></li>
+      </ul>
+    </div>
+    <div class="card pool">
+      <h3>运行期才知道</h3>
+      <p class="big" style="margin:0 0 6px"><b>池 / pool</b></p>
+      <ul>
+        <li>容器、<code>dyn</code> 里的对象</li>
+        <li>机制：<b>句柄 + 代际</b></li>
+        <li><code>{pool, idx, gen}</code>：取用前对一下编号</li>
+        <li>出错：<b style="color:var(--warm)">trap，带行号</b></li>
+      </ul>
+    </div>
+    <div class="card cworld">
+      <h3>谁都不知道</h3>
+      <p class="big" style="margin:0 0 6px"><b>外面的世界（C）</b></p>
+      <ul>
+        <li>别人给的缓冲区、fd、mmap</li>
+        <li>机制：<b>你签字</b>（<code>extern!</code>）</li>
+        <li><code>effects Addr=0 Cont=0</code></li>
+        <li>出错：<b style="color:var(--red)">签了字就认账</b></li>
+      </ul>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3>一个能记住的比喻</h3>
+    <div class="grid3">
+      <p style="margin:0"><b>地方 = 场次</b><br><span style="color:var(--muted)">到点整场清空，谁到期了编译器知道</span></p>
+      <p style="margin:0"><b>池 = 货架</b><br><span style="color:var(--muted)">位置 + 编号；货架什么时候拆，日历说了算</span></p>
+      <p style="margin:0"><b>C = 外面的世界</b><br><span style="color:var(--muted)">递地址 / 收地址，你签字</span></p>
+    </div>
+  </div>
+  <p class="big" style="margin-top:14px;text-align:center">不是"三选一"：<b>这是同一件事的三档答案。</b><br>
+  <span style="color:var(--muted);font-size:.8em">少了谁都不好：没有日历 → 货架什么时候拆没人知道；没有货架 → 换大货架要整场重来；没有外面 → 孤岛。</span></p>
+</section>
+
+<!-- C 在哪一层 -->
+<section class="slide">
+  <h2><span class="num">8</span>C 互操作丢了吗？没有</h2>
+  <p class="sub">互操作靠的是「<b>视图就是裸指针</b>」，跟 arena 还是 pool 无关。</p>
+<pre><span class="c">// tests/extern/libc.extc —— 真在跑的写法</span>
+<span class="k">extern!</span>(<span class="s">"libc"</span>) <span class="k">fn</span> write(fd: <span class="t">i32</span>, buf: <span class="t">ref u8</span>, n: <span class="t">i64</span>) -> <span class="t">i64</span>
+    effects Addr=<span class="t">0</span> Cont=<span class="t">0</span>          <span class="c">// "我不存你的指针" —— 这就是签字</span>
+
+<span class="k">var</span> s: <span class="t">slice</span>&lt;<span class="t">u8</span>&gt; = msg[..]
+<span class="k">let</span> n = libc::write(<span class="t">1</span>, s.data, <span class="t">5</span>)   <span class="c">// s.data 就是地址，直接递给 C</span></pre>
+  <div class="grid3" style="margin-top:12px">
+    <div class="card"><h3>内存是真的</h3><p>arena 的块、池的块都是 <code>malloc</code> 来的 ⇒ 随时能给出真实地址。</p></div>
+    <div class="card"><h3>视图零转换</h3><p><code>slice&lt;T&gt;</code> / <code>ref T</code> 在 C 层面就是 <code>T*</code>（+ 长度）。</p></div>
+    <div class="card"><h3>布局天然兼容</h3><p>extC 的 <code>struct</code> 生成的就是普通 C struct ⇒ 不用序列化、不用 marshal。</p></div>
+  </div>
+  <p class="big" style="margin-top:16px;text-align:center">arena / pool 管<b>「什么时候安全」</b>；C 那一层管<b>「外面信不信」</b>。<br>
+  <span style="color:var(--muted);font-size:.85em">你担心的"实际存储能力"从来没丢 —— 丢的只会是"保证"，而保证本来就不该由外面给。</span></p>
+</section>
+
+<section class="slide">
+  <h2><span class="num">9</span>那池里的方法里创建变量呢？</h2>
+  <p class="sub"><b>照常写，不用管。</b>编译器按「这东西会活多久」自动决定它落在哪一层。</p>
+<pre><span class="k">impl</span> Shape <span class="k">for</span> Circle {
+    <span class="k">fn</span> scaled(self: <span class="t">ref</span> Self, k: <span class="t">f64</span>) -> Circle {
+        <span class="k">var</span> tmp: Circle = { r: self.r * k }              <span class="c">// 局部变量 → 落在"当前这个地方"</span>
+        <span class="k">var</span> buf: vector&lt;<span class="t">f64</span>&gt; = vector&lt;<span class="t">f64</span>&gt;::new()    <span class="c">// 临时容器 → 拿自己的一只池</span>
+        <span class="k">return</span> tmp                                     <span class="c">// 按值返回 → 拷出去，没事</span>
+    }
+}</pre>
+  <div class="card" style="margin-top:14px">
+    <h3>如果它要活得比调用点更久？</h3>
+    <p>编译器<b>偷偷给这个函数多传一个「生在哪层」的参数</b>，由<b>调用者</b>决定：</p>
+    <div class="flow" style="margin:10px 0 0">
+      <div class="b arena">调用者<em>我知道它该活多久</em></div>
+      <span class="arw">→</span>
+      <div class="b" style="border-color:var(--poolb);background:var(--pool)">池里的方法<em>隐藏参数：生在哪层</em></div>
+    </div>
+    <p style="color:var(--muted);margin-top:10px">这套今天就在跑。<b>dyn 完全不用管它。</b></p>
+  </div>
+</section>
+
+<!-- 9 借进来/借出去 -->
+<section class="slide">
+  <h2><span class="num">10</span>池里的对象要访问 arena 的变量</h2>
+  <div class="grid2">
+    <div class="card ok">
+      <h3>借进来 ✓</h3>
+      <p>池里的对象可以<b>存</b>一个 arena 的引用（字段，或当参数传进来）：</p>
+<pre style="margin-top:8px"><span class="k">struct</span> Circle {
+    r:   <span class="t">f64</span>
+    ctx: <span class="t">ref</span> RenderCtx   <span class="c">// arena 的引用</span>
+}</pre>
+      <p>编译器检查：<b>arena 活得比这只池久吗？</b>（和 <code>vector&lt;slice&lt;u8&gt;&gt;</code> 同一条规则）</p>
+    </div>
+    <div class="card no">
+      <h3>借出去 ✗</h3>
+      <p>不要拿 <code>ref</code> 指着池里的对象：</p>
+      <div class="flow" style="margin:10px 0">
+        <div class="b">ref 指着池里</div><span class="arw">→</span>
+        <div class="b">池增长<b>换块</b></div><span class="arw">→</span>
+        <div class="b">悬垂</div>
+      </div>
+      <p>换块是运行期的事，编译器看不见 ⇒ 用<b>句柄</b>传。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10 擦除那条 -->
+<section class="slide">
+  <h2><span class="num">11</span>dyn 唯一多出来的麻烦</h2>
+  <p class="sub">类型一擦除，<b>对象里有没有借来的东西，编译器就看不见了。</b></p>
+  <div class="grid2">
+    <div class="card"><h3>普通 struct：看得见</h3>
+      <p>编译器知道 <code>Circle</code> 里有个 <code>ref</code>，能算它活多久 ⇒ 照常检查 ✓</p></div>
+    <div class="card no"><h3>dyn：看不见</h3>
+      <p>只知道「某种 Shape」，<b>payload 里装了什么不知道</b> ⇒ 没法保证安全。</p></div>
+  </div>
+  <div class="card ok" style="margin-top:16px">
+    <h3>v1 最省事的答案</h3>
+    <p class="big" style="margin:0"><b>dyn 里的数据不许含借来的东西</b>（<code>ref</code> / <code>slice</code>）。<br>
+    在<b>转成 dyn 的那一行</b>检查 —— 那里具体类型是知道的 ✓</p>
+    <p style="color:var(--muted);margin-top:8px">以后想放开：让 trait 声明 payload 的引用深度上界，每个 impl 注册时核对。</p>
+  </div>
+</section>
+
+<!-- 11 两个问题 -->
+<section class="slide">
+  <h2><span class="num">12</span>只剩两个问题要你拍板</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>问题 1</h3>
+      <p class="big"><b>dyn 里的数据能不能含借来的东西？</b>（<code>ref</code> / <code>slice</code>）</p>
+      <p style="margin-top:12px"><b style="color:var(--green)">建议 v1：不能。</b><br>数据要么放池里，要么当参数传。最省事、最好解释。</p>
+    </div>
+    <div class="card">
+      <h3>问题 2</h3>
+      <p class="big"><b>池对象的方法要不要环境参数？</b></p>
+<pre style="margin-top:10px"><span class="k">fn</span> draw(self: <span class="t">ref</span> Self,
+        ctx: <span class="t">mut ref</span> RenderCtx)</pre>
+      <p><b style="color:var(--green)">建议要。</b>显式传，编译器什么都能查，接口也自洽。</p>
+    </div>
+  </div>
+  <p class="sub" style="text-align:center;margin-top:20px">就这两个。其余都是实现者的事，你不用背。</p>
+</section>
+
+<!-- 12 收尾 -->
+<section class="slide">
+  <h2><span class="num">13</span>回头看那三句话</h2>
+  <div class="huge" style="line-height:1.7">
+    1. dyn 值 = <span style="color:var(--warm)">一个句柄</span>（3 个整数，复制无害）<br>
+    2. 方法表放在<span style="color:var(--warm)">池</span>里，用之前对代际 ⇒ 陈旧是 <b>trap</b>，不是 UB<br>
+    3. 它<span style="color:var(--warm)">不引入新的内存规则</span> —— 只有一条：<b>借进来可以，借出去不行</b>
+  </div>
+  <div class="card" style="margin-top:26px">
+    <h3>下一步（第 1 步不碰 runtime）</h3>
+    <ol>
+      <li><b>纯编译期</b>：<code>trait</code> 声明 + <code>impl Trait for T</code> + 静态方法表 + 直接调用<br>
+      <span style="color:var(--muted)">做完就能自己写个 trait / impl / dyn 跑起来看效果</span></li>
+      <li>方法表改放池里（还是编译期注册）</li>
+      <li>开放注册 + 模块初始化</li>
+      <li>卸载 → 墓碑 + trap 判据</li>
+    </ol>
+  </div>
+</section>
+
+</div>
+
+<div id="hud">
+  <button id="prev">← 上一页</button>
+  <button id="next">下一页 →</button>
+  <div id="dots"></div>
+  <div class="sp"></div>
+  <span id="count"></span>
+  <button id="allbtn">全部展开</button>
+</div>
+
+<script>
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var i=0,dots=document.getElementById('dots'),count=document.getElementById('count');
+  slides.forEach(function(_,k){var d=document.createElement('i');d.onclick=function(){show(k)};dots.appendChild(d)});
+  function show(k){
+    i=Math.max(0,Math.min(slides.length-1,k));
+    slides.forEach(function(s,n){s.classList.toggle('active',n===i)});
+    [].forEach.call(dots.children,function(d,n){d.classList.toggle('on',n===i)});
+    count.textContent=(i+1)+' / '+slides.length;
+    document.querySelector('.slide.active').scrollTop=0;
+  }
+  function toggleAll(){
+    document.body.classList.toggle('all');
+    document.getElementById('allbtn').textContent=document.body.classList.contains('all')?'单页模式':'全部展开';
+  }
+  document.getElementById('prev').onclick=function(){show(i-1)};
+  document.getElementById('next').onclick=function(){show(i+1)};
+  document.getElementById('allbtn').onclick=toggleAll;
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){e.preventDefault();show(i+1)}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();show(i-1)}
+    else if(e.key==='Home'){show(0)}else if(e.key==='End'){show(slides.length-1)}
+    else if(e.key==='a'||e.key==='A'){toggleAll()}
+  });
+  show(0);
+})();
+</script>
+</body>
+</html>
