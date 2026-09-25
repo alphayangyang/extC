@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>目录 · extC 手册</title>
+<title>驱动开关 · extC 手册</title>
 <style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
@@ -28,7 +28,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
 <input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
 <div class="g">上路</div><ul>
-<li class="cur"><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
 <li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
 </ul>
 <div class="g">语言</div><ul>
@@ -51,7 +51,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <li><a href="14-builtins.html">8. 内建函数</a></li>
 <li><a href="15-errors.html">9. 错误信息</a></li>
 <li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
-<li><a href="21-flags.html">驱动开关</a></li>
+<li class="cur"><a href="21-flags.html">驱动开关</a></li>
 </ul>
 <div class="g">状态与示例</div><ul>
 <li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
@@ -65,31 +65,36 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <div class="g">透明清单</div><ul>
 <li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
 </ul></nav>
-<main><div class="crumb">extC 手册</div>
-<h1 id="extc-语言手册">extC 语言手册</h1>
-<blockquote><strong>这份手册只描述「已经实现」的东西。</strong> 已定案但还没实现的在第 10 节，还没定的在第 11 节。 一份说谎的手册比没有手册更坏 —— 所以这里宁可写得少，也不写没实现的东西。  当前版本：<strong>week-0</strong>（2026-09-18）  设计理由看 <a href="../docs/DESIGN.html"><code>DESIGN.md</code></a>；为什么这么定看 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a>；接下来做什么看 <a href="../docs/PLAN.html"><code>PLAN.md</code></a>。</blockquote>
-<hr>
-<hr>
-<h2 id="目录">目录</h2>
-<h3 id="上路">上路</h3>
-<ul><li><a href="00-quickstart.html">0. 三分钟上手</a></li><li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li></ul>
-<h3 id="语言">语言</h3>
-<ul><li><a href="02-program.html">1. 程序结构</a></li><li><a href="03-lexical.html">2. 词法</a></li><li><a href="04-types.html">3. 类型</a></li><li><a href="05-vars.html">4. 变量与声明</a></li><li><a href="06-expr.html">5. 表达式与运算符</a></li><li><a href="07-stmt.html">6. 语句</a></li></ul>
-<h3 id="结构与内存">结构与内存</h3>
-<ul><li><a href="08-struct.html">7. 结构体与方法</a></li><li><a href="09-ref.html">7.5 引用：<code>ref</code> 是表达式</a></li><li><a href="10-nullref.html">7.6 可空引用 <code>?ref T</code>（定案 ㊻）</a></li><li>[7.7 分配：<code>new</code>（<code>new T</code> / <code>new [N]T</code> / <code>new T[n]</code>）](11-alloc.md)</li><li><a href="12-driver.html">7.8 驱动开关（<code>-O</code> / <code>-march</code>）</a></li><li><a href="13-vararray.html">7.9 动态数组 <code>varArray&lt;T&gt;</code>（对标 <code>std::vector</code> 的<strong>基础部分</strong>）</a></li></ul>
-<h3 id="标准库与工具">标准库与工具</h3>
-<ul><li><a href="14-builtins.html">8. 内建函数</a></li><li><a href="15-errors.html">9. 错误信息</a></li><li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li></ul>
-<h3 id="状态与示例">状态与示例</h3>
-<ul><li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li><li><a href="17-undecided.html">11. 还没定的</a></li><li><a href="19-examples.html">13. 完整示例</a></li></ul>
-<h2 id="三条阅读路径">三条阅读路径</h2>
-<ol><li><strong>想跑起来</strong> → <a href="00-quickstart.html">三分钟上手</a> → <a href="01-safety.html">内存安全：承诺 × 现状</a> → <a href="19-examples.html">完整示例</a></li><li><strong>想写代码</strong> → <a href="04-types.html">类型</a> → <a href="08-struct.html">结构体与方法</a> → <a href="09-ref.html">引用</a> → <a href="18-modules.html">库与模块</a></li><li><strong>想查细节</strong> → <a href="06-expr.html">表达式与运算符</a> · <a href="14-builtins.html">内建函数</a> · <a href="15-errors.html">错误信息</a></li></ol>
-<h2 id="单页版">单页版</h2>
-<p><code>docs/MANUAL.md</code> 现在只是一个<strong>指针</strong>（防止两份真源漂移）。要全文搜索或打印，直接搜 <code>docs/manual/</code> 这个目录。</p>
-<h2 id="这份手册怎么维护">这份手册怎么维护</h2>
-<ul><li><strong>改 Markdown，别改 HTML</strong>：<code>docs/manual/*.md</code> 是唯一真源，<code>docs/manual/html/</code> 是<strong>生成物</strong> （<code>python3 tools/build_manual.py</code> 重新生成；<code>check.sh</code> 里有 <code>--check</code> 闸门，漂了就红）。</li><li>HTML 站点是<strong>自包含</strong>的（内联 CSS/JS、零外部依赖、离线可读、可打印）：直接开 <code>html/index.html</code>。</li><li>侧栏搜索按 <code>/</code> 聚焦；代码块对 extC 做了轻量高亮。</li></ul>
-<h2 id="文体约定-正式书面语">文体约定（正式书面语）</h2>
-<ul><li><strong>不用第一人称「我 / 咱」</strong>，也不用第二人称「你 / 您」：省主语，或写「使用者」「读者」。</li><li><strong>不用口语与语气词</strong>（这玩意儿 / 说白了 / 其实 / 吧 / 呢 / 嘛）。</li><li><strong>陈述代替反问</strong>：把「为什么这么定？」写成「这样定的原因是……」。</li><li>术语与代码用行内代码体（`<code> </code>ref<code> </code><code> </code><code> </code>impl<code> </code>`）；否定结论直接陈述，不用感叹号。</li><li>检查：<code>python3 tools/check_tone.py</code>（报告）/ <code>--gate</code>（新增即失败，<code>check.sh</code> 调用）。 既有条目记在 <code>tools/tone-baseline.txt</code>，<strong>只许变短</strong>。</li></ul>
-<div class="pn"><span></span> <a href="00-quickstart.html">0. 三分钟上手 →</a></div></main>
+<main><div class="crumb">extC 手册 · §驱动开关</div>
+<h1 id="驱动开关">驱动开关</h1>
+<p>本页由编译器自身的 <code>--help</code> 生成（<code>tools/gen_flags.py</code>），因此与实现同步：<code>check.sh</code> 在本页与 <code>extc --help</code> 不一致时会失败。</p>
+<p>开关共 15 个：<code>--check-c</code> · <code>--dump-effects</code> · <code>--dump-tokens</code> · <code>--help</code> · <code>--no-line-map</code> · <code>--run</code> · <code>-I</code> · <code>-O0</code> · <code>-O2</code> · <code>-O3</code> · <code>-fsyntax-only</code> · <code>-h</code> · <code>-march</code> · <code>-o</code> · <code>-w</code></p>
+<pre class="lang-other"><code>extC compiler
+
+usage: build/extc [options] &lt;file.extc&gt;
+
+options:
+  -o &lt;file&gt;        write the generated C to this file (default: stdout)
+  --run            write generated C to build/&lt;name&gt;.c, compile it, run it
+                   (uses $CC, default `cc`; creates ./build/ in the CWD)
+  --check-c        syntax-check the generated C with `$CC -fsyntax-only`
+  -w               suppress warnings
+  -I &lt;dir&gt;         add a module search directory (for `use a::b`)
+  -O0 .. -O3       optimisation level for the generated C (default: -O2)
+  -march=native    allow host-specific instructions (faster, less portable)
+  --dump-tokens    lex only; print the token table
+  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)
+  --no-line-map    do not emit `#line` directives (default: emit them)
+
+debug switches (they never change the output):
+  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen
+  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved
+  EXTC_DUMP_EFFECTS=1  print each function's effect summary
+
+  -h, --help       show this help</code></pre>
+<h2 id="环境变量与调试开关">环境变量与调试开关</h2>
+<p>带 <code>EXTC_</code> 前缀的开关只用于诊断，不改变输出；它们的含义以编译器自身打印的说明为准（见上）。</p>
+<div class="pn"><a href="20-internals.html">← 内部成员一览（透明清单）</a> <a href="22-stl-string.html">标准库参考：`string` →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
 q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();

@@ -1,0 +1,13 @@
+# tools/check_manual.py 的基线：各模块**尚未被手册覆盖**的公开成员计数。
+# 只许变少：补齐一批就把数字改小；新加公开成员而不写手册会被闸门挡住。
+prelude	15
+std::fs	9
+std::io	51
+std::term	6
+stl::hashMap	52
+stl::hashSet	4
+stl::linmap	4
+stl::linset	1
+stl::map	72
+stl::pool	14
+stl::set	3

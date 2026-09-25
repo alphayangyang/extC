@@ -12,8 +12,12 @@ import re, sys, glob, os
 # 内部成员的**文档约定**（不是强制）：编译器不阻止任何访问，手册也不对它们承诺兼容性。
 # `p*` 是容器内部助手的既有命名约定；其余是逐一核对过的内部齿轮（簿记、链、槽位打包一类）。
 INTERNAL_PREFIX = re.compile(r'^p[A-Z]')
+# 容器的**存储字段**同样按约定属于内部：可达（编译器不阻止），但手册不把它们当 API 讲，
+# 而是列入透明清单。注意 `slice` / `varArray` 的 `len` / `data` 是使用者日常要读的，保持公开。
 INTERNAL_NAMES = {'bn', 'childSlot', 'atDense', 'borrowLeft', 'borrowRight', 'accDigit',
-                  'kd', 'leafOf', 'nth'}
+                  'kd', 'leafOf', 'nth', 'maxSuffix',   # maxSuffix：Two-Way 查找算法的内部助手
+                  'buf', 'pid', 'pidGen', 'vals', 'slots', 'ent', 'cursor', 'holeHead', 'epoch',
+                  'nnodes', 'root', 'kids', 'keys', 'tags', 'n', 'cap', 'freeHead'}
 
 def visibility(name):
     return 'internal' if (INTERNAL_PREFIX.match(name) or name in INTERNAL_NAMES) else 'public'

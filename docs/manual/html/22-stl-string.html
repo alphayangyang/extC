@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>标准库参考：`string` · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+<li><a href="21-flags.html">驱动开关</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul>
+<div class="g">标准库参考</div><ul>
+<li class="cur"><a href="22-stl-string.html">标准库参考：`string`</a></li>
+<li><a href="23-stl-stringio.html">标准库参考：`stringio`</a></li>
+</ul>
+<div class="g">透明清单</div><ul>
+<li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §标准库参考：`string`</div>
+<h1 id="标准库参考-string">标准库参考：<code>string</code></h1>
+<p><code>stl::string</code> 是<strong>池底</strong>的连续字节串：内容连续（可整体取出传给 C 函数）、容量按 1.5 倍增长、 <code>release()</code> 整批还给池。池底意味着<strong>存储不外借</strong>：凡交出内容的接口，要么拷贝（<code>toSlice</code> / <code>sub</code>）， 要么明确签字（<code>subView</code>）。</p>
+<p>用法：<code>use stl::string</code>。</p>
+<h2 id="构造">构造</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>string::new()</code></td><td>空串（首次增长时按 1.5 倍扩容）</td></tr><tr><td><code>string::withCap(n)</code></td><td>预分配 <code>n</code> 字节容量</td></tr><tr><td><code>clone()</code></td><td>深拷贝，得到独立的一份（板与池记录都是新的）</td></tr></tbody></table>
+<h2 id="长度与容量">长度与容量</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>len()</code></td><td>当前字节数</td></tr><tr><td><code>capacity()</code></td><td>当前容量（不小于 <code>len()</code>）</td></tr><tr><td><code>isEmpty()</code></td><td><code>len() == 0</code></td></tr><tr><td><code>clear()</code></td><td>长度归零，<strong>保留容量</strong></td></tr><tr><td><code>shrink()</code></td><td>容量收缩到不小于当前长度（下限 16 字节）</td></tr><tr><td><code>release()</code></td><td>把整块存储还给池；对<strong>陈旧拷贝</strong>是空操作（不会误放别人的池）</td></tr></tbody></table>
+<h2 id="写入">写入</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>push(b: u8)</code></td><td>追加一个字节</td></tr><tr><td><code>append(bytes: slice&lt;u8&gt;)</code></td><td>追加一段字节（整段 <code>memmove</code>，不是逐字节循环）</td></tr><tr><td><code>appendByte(b: u8)</code></td><td>与 <code>push</code> 同义，供链式书写</td></tr><tr><td><code>removeFront(n)</code></td><td>从头部删除 <code>n</code> 个字节（余下部分前移）</td></tr></tbody></table>
+<h2 id="读取">读取</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>at(i) -&gt; ?u8</code></td><td>第 <code>i</code> 个字节；越界返回 <code>none</code>（不是 trap）</td></tr><tr><td><code>toSlice() -&gt; slice&lt;u8&gt;</code></td><td><strong>拷贝</strong>整串内容；结果落在调用者选的地方，可以存、可以返回</td></tr><tr><td><code>sub(lo, hi) -&gt; slice&lt;u8&gt;</code></td><td><strong>拷贝</strong>子串（区间自动夹到合法范围）</td></tr><tr><td><code>subView(lo, hi) -&gt; slice&lt;u8&gt;</code></td><td><strong>零拷贝视图</strong>：只在字符串不再变化时有效，增长即失效；与 <code>!</code>、<code>extern!</code> 同类，<strong>由调用者签字</strong></td></tr></tbody></table>
+<h2 id="查找与比较">查找与比较</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>find(needle: slice&lt;u8&gt;) -&gt; i64</code></td><td>首次出现的位置；未找到返回 <code>-1</code>（线性时间，Two-Way 算法）</td></tr><tr><td><code>contains(needle)</code></td><td>是否包含</td></tr><tr><td><code>startsWith(prefix)</code> / <code>endsWith(suffix)</code></td><td>前缀 / 后缀判定</td></tr><tr><td><code>bytesEq(a, b) -&gt; bool</code></td><td>逐字节相等</td></tr><tr><td><code>bytesLt(a, b) -&gt; bool</code></td><td>字典序小于</td></tr><tr><td><code>hash() -&gt; i64</code></td><td>供 <code>hashMap&lt;string, V&gt;</code> 一类的键使用</td></tr></tbody></table>
+<h2 id="拼接">拼接</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>concat(other: string) -&gt; string</code></td><td>新串 = 自身 + <code>other</code></td></tr><tr><td><code>concatBytes(bytes: slice&lt;u8&gt;) -&gt; string</code></td><td>新串 = 自身 + 一段字节</td></tr></tbody></table>
+<h2 id="流式-i-o-在-stl-stringio-中挂载">流式 I/O（在 <code>stl::stringio</code> 中挂载）</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>readLineFrom(r: mut ref io::reader) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>读一行追加进串（去掉行尾换行；CRLF 亦处理）；<code>0</code> 表示读到结尾</td></tr><tr><td><code>readAllFrom(r) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>读到结尾，每次整块追加</td></tr><tr><td><code>writeTo(w: mut ref io::writer) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>整串写给 writer（零拷贝直取，由 writer 拷进自己的缓冲）</td></tr><tr><td><code>writeLineTo(w) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>整串 + 换行</td></tr></tbody></table>
+<h2 id="按约定属于内部的成员">按约定属于内部的成员</h2>
+<p><code>buf</code> <code>n</code> <code>cap</code> <code>pid</code> <code>pidGen</code> <code>grow</code> <code>maxSuffix</code> 等：可达（编译器不阻止），但不受兼容性承诺保护。 完整清单一律见 <a href="20-internals.html">内部成员一览</a>，不在此重复。</p>
+<div class="pn"><a href="21-flags.html">← 驱动开关</a> <a href="23-stl-stringio.html">标准库参考：`stringio` →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>
