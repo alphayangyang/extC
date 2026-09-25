@@ -4324,8 +4324,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
         if (dbgOn("EXTC_DBG_IMPL"))
             fprintf(stderr, "[impl]   target `%s` with %zu method(s)\n", im->typeName, im->methods.len);
-        Type *t = ttFromName(tt, im->typeName);
+        /* Resolve the target the way a type annotation is resolved: `ttResolve` consults the
+         * module's rename table and the bare-name aliases (`string` -> `stl$string`), counts
+         * matches, and refuses an ambiguous bare name with the message every other type
+         * position gets. `ttFromName` alone only knows the builtins and the declarations of
+         * this module -- which silently made `impl string { ... }` from an importing module an
+         * "unknown type" (found by writing `stl/stringio.extc`, the streaming pilot). */
+        Type *t = ttResolve(tt, ctx, typeNamed(arena, im->typeName), im->line, NULL);
         StructDef *sd = NULL;
+        if (ttIsError(t)) continue;
         if (!t) {
             ctxError(ctx, im->line, 1,
                      "An `impl` block extends a type that exists: a struct declaration, or a "

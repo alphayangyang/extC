@@ -25,6 +25,9 @@ check_pos() {
 echo "== 正例：struct 的 impl + **内建标量**的 impl + hashMap<i64, V> 直接可用 =="
 check_pos impl_basic tests/impl/basic.extc
 
+# 试水：跨模块 `impl`（impl 块在 stl/stringio.extc，类型 string 在 stl/string.extc）
+check_pos impl_stream_string tests/impl/stream_string.extc
+
 echo "== 反例（都必须编译期挡住）=="
 check_err() {
     local f=$1 want=$2 out
@@ -38,7 +41,7 @@ check_err tests/impl/errors/dup_body_and_impl.extc 'already has a method named `
 check_err tests/impl/errors/dup_two_impls.extc     'already has a method named `sum`'
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
-check_err tests/impl/errors/unknown_type.extc      '`impl` on unknown type `nope`'
+check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'
 check_err tests/impl/errors/on_enum.extc           'cannot own methods'
 check_err tests/impl/errors/with_field.extc        'expected `fn` in the `impl` block'
 check_err tests/impl/errors/generic_target.extc    '`impl` on a generic type is not supported yet'

@@ -7,6 +7,45 @@
 
 ---
 
+## 2026-09-26（第十一段续十三）· `impl` **试水**：给 `string` 挂流式 I/O（跨模块）
+
+作者：「试一下 impl 做一下流式输入输出 string 类型，试试水」。试水确实压出了东西 —— 一个真缺口。
+
+### 做了什么
+
+新模块 `stdlib/stl/stringio.extc`，用 **`impl string { ... }`**（**与 `string` 不在同一个模块**）挂了四个方法：
+
+| 方法 | 干什么 |
+|---|---|
+| `readLineFrom(r: mut ref io::reader) -> result<i64, io::ioError>` | 读一行（含 `\n`）追加进串；`0` = EOF |
+| `readAllFrom(r) -> result<i64, io::ioError>` | 一次 append **一整个缓冲块**（不是一字节一次） |
+| `writeTo(w: mut ref io::writer) -> result<i64, io::ioError>` | 整串交给 writer 缓冲 |
+| `writeLineTo(w)` | 整串 + 换行（换行用**字面量**，见下面的坑） |
+
+判据 `tests/impl/stream_string.extc`：**写**一行到 fd 1（writer 缓冲 + 一趟 flush），再
+**读**回 `tests/io/stream-file.txt` 的三行（长度 3 / 12 / 12，合计 27），第四行拿 EOF。
+实测 `streamed=9|lines=3 len=3,12,12 eof=0 total=27 head=42` ✓
+
+### 试水压出来的三件事
+
+1. **真缺口：跨模块 `impl` 挂不上。** 报 `` `impl` on unknown type `string` `` —— 因为挂载趟用的是
+   `ttFromName`，它只认**本模块自己的声明 + 内建**，**不走别名表**（`string -> stl$string` 那张），
+   而别名表正是加载器为"裸名跨模块"准备的东西。**修法**：挂载趟改用 `ttResolve`（与类型标注同一套：
+   别名表 + 歧义拒绝）。于是跨模块 impl 通了，而且未知类型的报错文案自动与类型标注一致
+   （`unknown type `nope``）——反例判据跟着翻面。
+2. **逃逸检查给了一个 API 设计教训**：写常量换行时我写的是 `var nl: [1]u8 = [10]` 再 `w.write(nl[..])`，
+   被拒：*"argument 2 of `write` carries a reference into a deeper scope (depth 1) than the place the
+   callee may store it (depth 0); the callee's effects could not be fully analyzed"*。改成字面量
+   `w.write("\n")` 就对（字面量的存储在静态区 = 深度 0）。**流式 API 想收"一块常量"，就得让调用点
+   写得出字面量**，否则每个用户都要撞一次这道墙。
+3. **coherence 仍然成立**：方法进的是 `string` **唯一**的方法集（跨模块也一样）⇒ 两个模块都给
+   `string` 挂 `readLineFrom` 会撞重名，不是互相覆盖。
+
+### 验收
+
+`tests/impl` **10 项**（2 正例 + 8 反例）· `tests/run.sh` 260 + 264 · `check.sh quick` 27/27 ·
+`bench/stl` 5/5 · 构建零告警。MANUAL 的 `impl` 一节补上"目标可以是别的模块里的类型"。
+
 ## 2026-09-26（第十一段续十二）· **`impl` 块**：方法挂载点落地（`hashMap<i64, V>` 从此不需要包装）
 
 作者：「先把 impl 搞了吧，这玩意儿看起来很安全」——判断是对的：`impl` **不动派发、不做类型擦除、

@@ -1,0 +1,66 @@
+/* stl/stringio.extc -- streaming I/O for `string`, attached with an `impl` block.
+ *
+ * Why a separate module: `string` is a container and knows nothing about file descriptors or
+ * buffered readers. Streaming belongs to the I/O layer, and an `impl` block is exactly the tool
+ * for adding behaviour to a type from outside its own body -- here, from outside its own file.
+ *
+ * What "streaming" means on both sides:
+ *   in  -- `readLineFrom` pulls one byte at a time through the reader's buffer (the reader fills
+ *          a whole block per read(2), so this is not a syscall per byte); `readAllFrom` moves a
+ *          whole buffered chunk per append instead of a byte at a time.
+ *   out -- `writeTo` / `writeLineTo` hand the string's bytes to a writer, which buffers and
+ *          flushes on its own schedule.
+ *
+ * The methods grow the string as needed, so the caller never sizes it up front. */
+use std::io
+use stl::string
+
+impl string {
+    /* Read one line and append it (the '\n' is kept, if there is one).
+     * Returns the number of bytes appended; 0 means EOF and nothing was read. */
+    fn readLineFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
+        var n: i64 = i64(0)
+        while true {
+            let b = r.nextByte()?
+            if b < i64(0) { break }
+            self.push(u8(b))
+            n = n + i64(1)
+            if b == i64(10) { break }
+        }
+        return success(n)
+    }
+
+    /* Read everything that is left, one buffered chunk per append. */
+    fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
+        var n: i64 = i64(0)
+        while true {
+            let have = r.avail()
+            if have > i64(0) {
+                self.append(r.chunk[r.pos..r.pos + have])
+                r.pos = r.len
+                n = n + have
+                continue
+            }
+            let got = r.fill()?
+            if got == i64(0) { break }
+        }
+        return success(n)
+    }
+
+    /* Write the whole string out. */
+    fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
+        let n = w.write(self.buf[i64(0)..self.n])?
+        return success(n)
+    }
+
+    /* Write the whole string, then a newline.
+     *
+     * The newline is a **string literal**, not a view of a local array: a literal's storage is
+     * static (depth 0), while `nl[..]` hands an unanalyzable callee a reference into the
+     * callee's own frame -- the escape checker refuses that, and rightly so. */
+    fn writeLineTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
+        let n = w.write(self.buf[i64(0)..self.n])?
+        let m = w.write("\n")?
+        return success(n + m)
+    }
+}

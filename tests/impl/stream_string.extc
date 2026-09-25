@@ -1,0 +1,42 @@
+// `impl` 试水：给 **library 类型**（`string`）挂**流式 I/O**。impl 块写在 `stl/stringio.extc`，
+// 与 `string` **不在同一个模块** ⇒ 一次压到三件事：跨模块挂载、跨模块类型做参数、coherence。
+// 判据：① 跨模块 impl 挂得上、方法解析得到 ② 流式写：交给 writer 的缓冲 + 最后一趟 flush
+//       ③ 流式读：一行一行读进 string（reader 一次 read(2) 一整块，不是一字节一次系统调用）
+//       ④ 到 EOF 返回 0，且**不追加**任何东西
+// expect: streamed=9|lines=3 len=3,12,12 eof=0 total=27 head=42
+use std::io
+use std::fs
+use stl::string
+use stl::stringio
+
+fn go() -> result<unit, io::ioError> {
+    /* 写：一行（含换行）进 writer 的缓冲，最后 flush 一趟 */
+    var w: io::writer = io::writerOf(i32(1))
+    var out: string = string::withCap(i64(16))
+    out.append("streamed")
+    let wn = out.writeLineTo(ref w)?
+    w.flush()?
+
+    /* 读：三行各进一个 string，第四行应当拿到 EOF */
+    var f = fs::ifstream("tests/io/stream-file.txt")?
+    var l1: string = string::withCap(i64(16))
+    var l2: string = string::withCap(i64(16))
+    var l3: string = string::withCap(i64(16))
+    let n1 = l1.readLineFrom(f.reader())?
+    let n2 = l2.readLineFrom(f.reader())?
+    let n3 = l3.readLineFrom(f.reader())?
+    let n4 = l3.readLineFrom(f.reader())?
+    f.close()?
+
+    io::cout << "streamed=" << wn << "|lines=3 len=" << n1 << "," << n2 << "," << n3
+    io::cout << " eof=" << n4 << " total=" << (n1 + n2 + n3)
+    io::cout << " head=" << l1.subView(i64(0), i64(2)) << "\n"
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { io::cout << "io failed\n"; return 1 }
+    }
+}
