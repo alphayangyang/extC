@@ -8,6 +8,9 @@
 #   ④ **判据有牙**：同一个形状**不 remove** ⇒ 必须明显涨（canary：9.9MB → 67MB ✓）
 #   ⑤ 复用容量：`clear()` 之后 len=0、再插不重新分配 ✓
 #   ⑥ ASan 干净 ✓
+#   ⑦ 染色这一关的两条实测结论，钉成**常设判据**（见文件末尾）：
+#        · 地方退出的代价随池数走得平（每池约 10 ns，其中板块 malloc/free 7 ns 是必需的）
+#        · 真收缩：800 KB × 2000 轮的峰值 RSS 必须平，且期末字节账归零
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
@@ -230,6 +233,53 @@ else
     echo "  FAIL 生成失败"; fail=1
 fi
 rm -rf "$TMP2"
+
+# ---------------------------------------------------------------- 染色这一关的两条实测结论
+# 染色（POOLS.md §7）三步的结论都在 bench/ 里量过，但那不够 —— **结论也要有常设判据**，
+# 否则将来有人改了 zone 生命周期或池板块的归属，这两条会静默失效。这里把它们钉住。
+echo
+echo "== 染色②的结论：地方退出的代价随池数走得**平**（每池约 10 ns，板块 malloc/free 占 7 ns）=="
+# 形状：每轮 = 一个地方；地方里建 N 个池各拿一块小板块后出块。**总操作数固定 3e7**，
+# 所以可以跨 N 直接比"每次建+退"的纳秒数。判据：最小与最大之比 ≤ 1.5。
+#   若有人按 §7.4-1 去改注册表（期望收益 2~3 ns/池），这条会告诉他收益上限；若改出回归
+#   （例如 zone 退出退化成 O(池数) 之外的额外结构开销），小 N 会先翘起来 ⇒ 判据响。
+build_one zt-exit zt_exit_cost && build_one zt-shrink zt_shrink_rss
+if [ -x build/zt-exit ]; then
+    ns_min=""; ns_max=""; line=""
+    for n in 500 5000 50000; do
+        b=999
+        for _ in 1 2 3; do
+            t=$( { /usr/bin/time -f "%e" ./build/zt-exit "$n" 30000000 >/dev/null; } 2>&1 | tail -1 )
+            b=$(awk -v a="$t" -v b="$b" 'BEGIN{print (a<b)?a:b}')
+        done
+        v=$(awk -v t="$b" 'BEGIN{printf "%.2f", t*1e9/3e7}')
+        line="$line N=$n:${v}ns"
+        if [ -z "$ns_min" ]; then ns_min=$v; ns_max=$v; else
+            ns_min=$(awk -v a="$v" -v b="$ns_min" 'BEGIN{print (a<b)?a:b}')
+            ns_max=$(awk -v a="$v" -v b="$ns_max" 'BEGIN{print (a>b)?a:b}')
+        fi
+    done
+    if awk -v a="$ns_min" -v b="$ns_max" 'BEGIN{exit !(b <= a*1.5 + 0.5)}'; then
+        echo "  ok   地方退出 -> ${line# } ⇒ 每次建+退约 ${ns_min}~${ns_max} ns，**平** ✓"
+    else
+        echo "  FAIL 地方退出 -> ${line# } ⇒ 随池数翘了（${ns_min} → ${ns_max} ns/次）✗"; fail=1
+    fi
+else
+    echo "  FAIL 地方退出 -> 编不过"; fail=1
+fi
+
+echo "== 染色③的结论：真收缩（800 KB × 2000 轮，累计 1.6 GB）峰值 RSS 必须平、字节账归零 =="
+if [ -x build/zt-shrink ]; then
+    out=$(./build/zt-shrink)
+    pk=$( { /usr/bin/time -f "%M" ./build/zt-shrink >/dev/null; } 2>&1 | tail -1 )
+    if [ "$pk" -le 8192 ] && echo "$out" | grep -q "live=0 bytes=0"; then
+        echo "  ok   真收缩   ->  峰值 ${pk} KB（累计分配 1.6 GB）· $out ⇒ 板块全还、字节账归零 ✓"
+    else
+        echo "  FAIL 真收缩   ->  峰值 ${pk} KB（期望 ≤ 8192）· $out（期望含 live=0 bytes=0）✗"; fail=1
+    fi
+else
+    echo "  FAIL 真收缩   -> 编不过"; fail=1
+fi
 
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

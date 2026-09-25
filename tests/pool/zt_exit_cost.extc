@@ -1,0 +1,49 @@
+// 地方退出的代价 · 曲线版（POOLS.md §7.4 第 1 条 / 目标②的常设判据）
+//
+// 形状：每轮 = 一个地方；地方里建 N 个池，每个池拿一小块板块（8 个 i32）。出块 ⇒
+// `zoneLeaveTo` 回收这一整个地方。总操作数固定（默认 1e6），所以**每次"建 + 退"的纳秒数
+// 可以直接在不同 N 之间比** —— 这就是判据：随 N 走得平。
+//
+//   若"地方退出"除了逐池摘链之外还多出可避免的结构开销，小 N 会因为每池固定成本占比更高
+//   而明显更贵 ⇒ 曲线翘起来，判据就响。
+//   实测（N=500 / 5000 / 50000，各 1e6 次）：每池约 10 ns，其中板块 malloc/free 7 ns 是必需的
+//   （真内存），记录簿记 2~3 ns ⇒ §7.4-1「注册表按 zone 分片」省下的上限就是那 2~3 ns，
+//   不值得为它改运行期最核心的那张表。
+use std::io
+use std::sys::pool as syspool
+
+/* `args[i]` 当十进制数读（没给就用默认值） */
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = i64(1000)
+    if args.len > i64(1) { n = toInt(args[1], n) }
+    var total: i64 = i64(1000000)
+    if args.len > i64(2) { total = toInt(args[2], total) }
+    var rounds: i64 = total / n
+    if rounds < i64(1) { rounds = i64(1) }
+    var r: i64 = 0
+    while r < rounds {
+        var i: i64 = 0
+        while i < n {
+            let rid = syspool::extc_pool_new(i64(-1))
+            var s: mut slice<i32> = poolSlice<i32>(rid, 8)
+            s[0] = i32(1)
+            i = i + i64(1)
+        }
+        r = r + i64(1)
+    }
+    io::cout << "n=" << n << " ops=" << (n * rounds) << " live=" << syspool::extc_pool_live() << "\n"
+    return 0
+}

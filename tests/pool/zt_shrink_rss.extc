@@ -1,0 +1,26 @@
+// 真收缩 · 常设判据（POOLS.md §7.4 第 2 条 / 目标③）
+//
+// 形状：循环体每轮建一个**带 800 KB 缓冲区**的容器（`vector<i64>::withCap(100000)`）再丢，
+// 2000 轮（累计分配 1.6 GB）。
+//
+// 判据（在 run.sh 里量两条）：
+//   ① **峰值 RSS 必须平**：板块在地方退出时真的还回去了
+//      （`zoneLeaveTo` → `extc_pool_drop` → `releaseBlocks`）。若"地方退出只翻色、不还板块"，
+//      峰值 RSS 会涨到 GB 量级 ⇒ 判据立刻响。实测约 2.3 MB。
+//   ② **期末字节账归零**：`extc_pool_bytesLive() == 0` ⇒ 一个板块都没留下（比 RSS 更硬）。
+use std::io
+use std::sys::pool as syspool
+use stl::vector
+
+fn main() -> i32 {
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < i64(2000) {
+        var v = vector<i64>::withCap(i64(100000))
+        v.push(i64(1))
+        acc = acc + v.len()
+        r = r + i64(1)
+    }
+    io::cout << "acc=" << acc << " live=" << syspool::extc_pool_live() << " bytes=" << syspool::extc_pool_bytesLive() << "\n"
+    return 0
+}

@@ -39,6 +39,23 @@ for p in probe_raw probe_zero probe_vector_cap probe_pool_cap; do
 done
 
 echo
+echo "== 反例：判据有牙吗？让「每池成本 ∝ 池数」⇒ 曲线必须翘起来 =="
+if build_one exit_cost_tooth; then
+    printf '  有牙版 exit_cost_tooth：'
+    for n in 200 2000 20000; do
+        b=99
+        for _ in 1 2; do
+            t=$( { /usr/bin/time -f %e ./build/bz-exit_cost_tooth "$n" 4000000 >/dev/null; } 2>&1 | tail -1 )
+            b=$(awk -v a="$t" -v b="$b" 'BEGIN{print (a<b)?a:b}')
+        done
+        printf 'N=%s:%sns ' "$n" "$(awk -v t="$b" 'BEGIN{printf "%.0f", t*1e9/4e6}')"
+    done
+    echo "⇒ 与「真的那版三个 N 都是 10.67ns」形成对照（tests/pool/run.sh 的判据上限 1.5）"
+else
+    echo "  exit_cost_tooth 编不过"
+fi
+
+echo
 echo "参考（C，同一台机器，malloc+memset+free 每轮）："
 cat <<'TXT'
     4 KB    28 ns/轮    (145 GB/s, 缓存内)

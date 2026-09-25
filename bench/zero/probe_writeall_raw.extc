@@ -1,0 +1,23 @@
+// 账单 · 不清零那半边：同一形状（10 万 i32 的板块、整片写满、2000 轮），但走 poolSliceRaw。
+// 与 probe_writeall_zero.extc 配对 ⇒ 差值 = "先清零再被覆写"那一遍的净浪费。
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < i64(2000) {
+        let rid = syspool::extc_pool_new(i64(-1))
+        var s: mut slice<i32> = poolSliceRaw<i32>(rid, i64(100000))
+        var i: i64 = 0
+        while i < i64(100000) {
+            s[i] = i32(i)
+            i = i + i64(1)
+        }
+        acc = acc + i64(s[i64(99999)])
+        syspool::extc_pool_drop(rid)
+        r = r + i64(1)
+    }
+    io::cout << "raw acc=" << acc << "\n"
+    return 0
+}

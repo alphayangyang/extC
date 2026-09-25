@@ -1,0 +1,52 @@
+// 有牙实验 · 「地方退出的代价随池数翘起」对照版（配 tests/pool/run.sh 里那条判据）
+//
+// 与 tests/pool/zt_exit_cost.extc 只差一件事：**每个池里多跑 n 次操作**，也就是让
+// "每池的成本 ∝ 池数"（这正是判据要抓的退化形状）。
+//
+// 实测（总操作数 4e6）：
+//     N=200    →   50 ns/次
+//     N=2000   →  407 ns/次
+//     N=20000  → 3960 ns/次
+// ⇒ 判据的比值上限 1.5 会被远远突破（3960/50 = 79）⇒ 判据有牙。
+//   真正那版（zt_exit_cost）三个 N 都是 10.67 ns/次，比值 1.0。
+use std::io
+use std::sys::pool as syspool
+
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = i64(1000)
+    if args.len > i64(1) { n = toInt(args[1], n) }
+    var total: i64 = i64(1000000)
+    if args.len > i64(2) { total = toInt(args[2], total) }
+    var rounds: i64 = total / n
+    if rounds < i64(1) { rounds = i64(1) }
+    var sink: i64 = 0
+    var r: i64 = 0
+    while r < rounds {
+        var i: i64 = 0
+        while i < n {
+            let rid = syspool::extc_pool_new(i64(-1))
+            var s: mut slice<i32> = poolSlice<i32>(rid, 8)
+            s[0] = i32(1)
+            var k: i64 = 0
+            while k < n { sink = sink + k   k = k + i64(1) }
+            i = i + i64(1)
+        }
+        r = r + i64(1)
+    }
+    if sink < i64(0) { return 1 }
+    io::cout << "n=" << n << " ops=" << (n * rounds) << " live=" << syspool::extc_pool_live() << "\n"
+    return 0
+}
