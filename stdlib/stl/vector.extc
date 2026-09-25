@@ -27,7 +27,7 @@ struct vector<T> {
         var cc: i64 = c
         if cc < i64(4) { cc = i64(4) }
         var v: vector<T> = {
-            vals:   poolSlice<T>(rp, cc),
+            vals:   poolSliceRaw<T>(rp, cc),
             n:      i64(0),
             cap:    cc,
             pid:    rp,
@@ -103,7 +103,7 @@ struct vector<T> {
     fn grow(self: mut ref vector<T>) {
         if self.pid < i64(0) { return }            /* 已 release：没有池可要，下面的下标会响亮越界 */
         let ncap = self.cap + self.cap / i64(2)
-        self.vals = poolResize<T>(self.pid, self.vals, ncap)
+        self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
         self.cap  = ncap
     }
 
@@ -146,7 +146,7 @@ struct vector<T> {
         var ncap: i64 = self.n
         if ncap < i64(4) { ncap = i64(4) }
         if ncap >= self.cap { return }
-        self.vals = poolResize<T>(self.pid, self.vals, ncap)
+        self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
         self.cap  = ncap
     }
 

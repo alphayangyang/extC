@@ -289,5 +289,76 @@ else
     echo "  FAIL 真收缩   -> 编不过"; fail=1
 fi
 
+echo "== raw 列的读未写金丝雀（两层：毒化快扫大形状 · memcheck 直接抓读未初始化）=="
+# 背景（2026-09-26「零初始化收窄」那一刀）：容器的列/缓冲里，**每个槽都先写后读**的那些
+# 改成了不清零（`poolSliceRaw` / `poolResizeRaw`），省掉纯多余的 memset 与"提交用不到的页"。
+# 代价是：哪一列真是"先读后写"，读到的就是垃圾。于是两层金丝雀：
+#
+#   ① **毒化**（`-DEXTC_POISON_RAW=1` 把 raw 块填 0xAA）：快，能跑大形状。
+#      判据是「输出与正常跑**逐字节相同**、且退出 0」——不是只看退出码：
+#      0xAA 是负数，`if kid >= 0` 这类判据会把它跳过，只看退出码会漏。
+#   ② **memcheck**：慢，但它报的是"**读了未初始化**"，与那个值有没有被用无关 ⇒ 最definitive。
+#      上限是钉住的基线，**降下来不算失败**（只判"不得超过"）：运行期自己有一处既有的未初始化读
+#      （`pool` 的簿记走 `poolSliceRaw`，`pFree` 靠"全新表天然全空闲"），与本刀无关。
+#
+# 这两层是**被逼出来的**，不是摆设：`map::shrink` 曾经给**叶子节点**也拷 kids 槽（叶子从不用 kids）
+# —— 清零时读到 0 恰好是个合法节点号、"看着没事"；毒化后读到 0xAA（负）被 `if kid >= 0` 跳过
+# ⇒ **既不崩也不改输出**，只有 memcheck 报得出来（它先报在 `old2new[垃圾]` 越界的 trap 上，
+# 修完再由这一层钉住）。
+TMPR=$(mktemp -d)
+
+echo "  -- ① 毒化（输出必须与正常跑一致）"
+poison_ok=1
+for t in map/stress map/shrink hashmap/basic hashmap/grow_rss stl/vector_grow stl/stringOps linmap/map; do
+    c=$(printf '%s' "$t" | tr '/' '_')
+    if ! "$EXTC" "tests/$t.extc" -o "$TMPR/$c.c" >/dev/null 2>&1; then
+        echo "  FAIL $t  ->  extC 编不过"; poison_ok=0; continue
+    fi
+    $CC -O2 -fwrapv "$TMPR/$c.c" -o "$TMPR/${c}_p" >/dev/null 2>&1
+    $CC -O2 -fwrapv -DEXTC_POISON_RAW=1 "$TMPR/$c.c" -o "$TMPR/${c}_z" >/dev/null 2>&1
+    if [ ! -x "$TMPR/${c}_p" ] || [ ! -x "$TMPR/${c}_z" ]; then
+        echo "  FAIL $t  ->  cc 编不过（毒化开关）"; poison_ok=0; continue
+    fi
+    op=$(timeout 300 "$TMPR/${c}_p" 2>&1); oz=$(timeout 300 "$TMPR/${c}_z" 2>&1)
+    if [ "$op" = "$oz" ]; then
+        :
+    else
+        echo "  FAIL $t  ->  毒化后输出变了 ⇒ 有 raw 列被先读后写 ✗"; poison_ok=0
+    fi
+done
+if [ "$poison_ok" = 1 ]; then
+    echo "  ok   毒化 ->  map · hashmap · vector · string · linmap 输出逐字节一致 ✓"
+else
+    fail=1
+fi
+
+echo "  -- ② memcheck（读未初始化的报告条数不得超过钉住的基线）"
+if command -v valgrind >/dev/null 2>&1; then
+    mc_ok=1
+    mc_one() {   # 名字 用例路径 上限
+        local nm=$1 src=$2 ceil=$3
+        if ! "$EXTC" "$src" -o "$TMPR/mc_$nm.c" >/dev/null 2>&1; then
+            echo "  FAIL memcheck $nm  ->  extC 编不过"; mc_ok=0; return
+        fi
+        $CC -O0 -g -fwrapv "$TMPR/mc_$nm.c" -o "$TMPR/mc_$nm" >/dev/null 2>&1
+        timeout 900 valgrind -q --track-origins=yes "$TMPR/mc_$nm" >/dev/null 2>"$TMPR/mc_$nm.err"
+        local n; n=$(grep -c "uninitialised" "$TMPR/mc_$nm.err")
+        if [ "$n" -le "$ceil" ]; then
+            echo "  ok   memcheck $nm  ->  未初始化读 $n 条（上限 $ceil）✓"
+        else
+            echo "  FAIL memcheck $nm  ->  未初始化读 $n 条 > 上限 $ceil ⇒ 有 raw 列被先读后写 ✗"; mc_ok=0
+        fi
+    }
+    mc_one map-stress    tests/map/stress.extc        2
+    mc_one map-shrink    tests/map/shrink.extc        2
+    mc_one linmap        tests/linmap/map.extc        2
+    mc_one vector-grow   tests/stl/vector_grow.extc   2
+    mc_one hashmap-basic tests/hashmap/basic.extc    20
+    [ "$mc_ok" = 1 ] || fail=1
+else
+    echo "  --  跳过：没有 valgrind"
+fi
+rm -rf "$TMPR"
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

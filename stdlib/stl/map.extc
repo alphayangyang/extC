@@ -79,10 +79,10 @@ struct map<K, V> {
             /* 四处长期存储都在**这张表自己的池板块**上（不是 arena 切片）：增长/压实时旧的
              * 那几块当场还回去。之前用 `new` 时，每一代旧存储都留给 arena —— 1e6 条目下
              * 峰值 179,820 KB 对 90,604 KB，那 49% 就是它们。 */
-            nodes: poolSlice<bnode<K, V>>(rp, c),
-            keys:  poolSlice<K>(rp, c * i64(17)),
-            vals:  poolSlice<V>(rp, c * i64(17)),
-            kids:  poolSlice<i32>(rp, c * i64(18)),
+            nodes: poolSliceRaw<bnode<K, V>>(rp, c),
+            keys:  poolSliceRaw<K>(rp, c * i64(17)),
+            vals:  poolSliceRaw<V>(rp, c * i64(17)),
+            kids:  poolSliceRaw<i32>(rp, c * i64(18)),
             nnodes: i64(0), ncap: c, root: i32(0), freeHead: i32(-1),
             pid: rp, pidGen: rpg, n: i64(0),
             path: poolSlice<i32>(rp, i64(16)), side: poolSlice<i32>(rp, i64(16)), depth: i64(0),
@@ -95,6 +95,11 @@ struct map<K, V> {
 
     fn len(self: ref map<K, V>) -> i64 { return self.n }
     fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
+    fn capOf(self: ref map<K, V>) -> i64 { return self.ncap }
+    /* 这张表**当下**在它自己池里占的字节（四处存储 + 两块草稿）。
+     * 判据：`growStores` 把旧块当场还了 ⇒ 这个数只随当前 `ncap` 走，与长过多少次无关；
+     * 旧块若还留着，它会**大一整代**（见 tests/map/run.sh 的精确字节账）。 */
+    fn bytesOf(self: ref map<K, V>) -> i64 { return syspool::extc_pool_bytes(self.pid) }
     fn height(self: ref map<K, V>) -> i64 {
         var h: i64 = i64(1)
         var id: i32 = self.root
@@ -131,10 +136,10 @@ struct map<K, V> {
          * 1.5 倍的另一个好处：末代容量从 2 的幂（262,144 节点，只用 140,623）降到 ~157,000。 */
         var want: i64 = self.ncap + self.ncap / i64(2)
         if want < i64(4) { want = i64(4) }
-        self.keys  = poolResize<K>(self.pid, self.keys, want * i64(17))
-        self.vals  = poolResize<V>(self.pid, self.vals, want * i64(17))
-        self.kids  = poolResize<i32>(self.pid, self.kids, want * i64(18))
-        self.nodes = poolResize<bnode<K, V>>(self.pid, self.nodes, want)
+        self.keys  = poolResizeRaw<K>(self.pid, self.keys, want * i64(17))
+        self.vals  = poolResizeRaw<V>(self.pid, self.vals, want * i64(17))
+        self.kids  = poolResizeRaw<i32>(self.pid, self.kids, want * i64(18))
+        self.nodes = poolResizeRaw<bnode<K, V>>(self.pid, self.nodes, want)
         /* 基址可能变了（realloc 搬家），所以视图必须重新算一遍 —— 这是 O(节点数) 次指针写，
          * 不是 O(节点数 × 17) 次拷贝。 */
         var i: i64 = i64(0)
@@ -752,10 +757,10 @@ struct map<K, V> {
         }
         /* `order` / `old2new` 是这次调用的临时草稿：随方法那个块一起回收，正是 arena 的活。
          * 四处长期存储则从池拿新块、旧的还回去。 */
-        var nk: mut slice<K>   = poolSlice<K>(self.pid, count * i64(17))
-        var nv: mut slice<V>   = poolSlice<V>(self.pid, count * i64(17))
-        var nc: mut slice<i32> = poolSlice<i32>(self.pid, count * i64(18))
-        var nn: mut slice<bnode<K, V>> = poolSlice<bnode<K, V>>(self.pid, count)
+        var nk: mut slice<K>   = poolSliceRaw<K>(self.pid, count * i64(17))
+        var nv: mut slice<V>   = poolSliceRaw<V>(self.pid, count * i64(17))
+        var nc: mut slice<i32> = poolSliceRaw<i32>(self.pid, count * i64(18))
+        var nn: mut slice<bnode<K, V>> = poolSliceRaw<bnode<K, V>>(self.pid, count)
         i = i64(0)
         while i < count {
             let src = i64(order[i])
@@ -763,18 +768,40 @@ struct map<K, V> {
             let cb  = i * i64(18)
             let skb = src * i64(17)
             let scb = src * i64(18)
+            /* ⚠️ 只拷**用到的前缀**：`keys`/`vals` 是 `bn` 个，`kids` 是 `bn + 1` 个。
+             * 曾经无条件拷满 17/17/18 —— 多出来的那些槽**从没被写过**，清零时读作 0 无害，
+             * 换成不清零的列之后读到的就是垃圾，而 `old2new[kid]` 会拿它去索引 ⇒ 越界 trap
+             * （实测 `tests/map/shrink.extc`：`index 3756 out of range (length 2810)`）。
+             * 这不是"改成 raw 引入的"，是**清零掩盖了很久的一处读未初始化**。 */
+            let sn: i64 = self.bn(i32(src))
             var j: i64 = i64(0)
-            while j < i64(17) {
-                nk[kb + j] = self.keys[skb + j]
-                nv[kb + j] = self.vals[skb + j]
-                j = j + i64(1)
+            /* `vals` 同理**只有叶子**有：内部节点那 `sn` 个 val 槽从没写过，拷它既是白干、
+             * 也是一处读未初始化。 */
+            if self.leafOf(i32(src)) {
+                while j < sn {
+                    nk[kb + j] = self.keys[skb + j]
+                    nv[kb + j] = self.vals[skb + j]
+                    j = j + i64(1)
+                }
+            } else {
+                while j < sn {
+                    nk[kb + j] = self.keys[skb + j]
+                    j = j + i64(1)
+                }
             }
-            j = i64(0)
-            while j < i64(18) {
-                var kid: i32 = self.kids[scb + j]
-                if kid >= i32(0) { kid = old2new[i64(kid)] }
-                nc[cb + j] = kid
-                j = j + i64(1)
+            /* ⚠️ `kids` **只有内部节点**才有：叶子的 18 个 kid 槽从来没写过。
+             * 曾经无条件拷满 18（后来改成 `sn+1`，一样错）—— 清零时读到 0 无害（0 恰好是个
+             * 合法节点号，于是"看着没事"），换成不清零的列之后读到垃圾，`old2new[kid]` 拿它
+             * 索引 ⇒ 越界 trap（`tests/map/shrink.extc`：`index 3756/8785 out of range`）。
+             * 这是**清零掩盖了很久的一处读未初始化**，不是"改 raw 引入的"。 */
+            if !self.leafOf(i32(src)) {
+                j = i64(0)
+                while j < sn + i64(1) {
+                    var kid: i32 = self.kids[scb + j]
+                    if kid >= i32(0) { kid = old2new[i64(kid)] }
+                    nc[cb + j] = kid
+                    j = j + i64(1)
+                }
             }
             var nd: bnode<K, V> = self.nodes[src]
             nd.keys = nk[kb..kb + i64(17)]

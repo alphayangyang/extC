@@ -2053,10 +2053,14 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory
              * belongs to the pool's own plate rather than to an arena (POOLS.md 2.1, PLAN
              * #85). `poolGive` is how `grow` hands the replaced buffer back, so a doubling
-             * container stops leaving every old generation behind. */
+             * container stops leaving every old generation behind.
+             * `poolSliceRaw` / `poolResizeRaw` are the same two calls with the zeroing left
+             * out, for a column whose every slot is written before it is read -- see the
+             * long note on `checkPoolPrim` in check_expr.c for what may and may not use
+             * them, and what the two canaries in tests/pool/run.sh pin down. */
             const char *gcName = e->u.gencall.name;
             if (strcmp(gcName, "poolSlice") == 0 || strcmp(gcName, "poolSliceRaw") == 0
-                || strcmp(gcName, "poolResize") == 0
+                || strcmp(gcName, "poolResize") == 0 || strcmp(gcName, "poolResizeRaw") == 0
                 || strcmp(gcName, "poolGive") == 0) {
                 const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
                 if (strcmp(gcName, "poolGive") == 0) {
@@ -2068,7 +2072,8 @@ static const char *genExprInner(CG *g, Expr *e) {
                 Type *st = subst(g, e->type);      /* the `mut slice<T>` the checker produced */
                 /* The count appears twice below (bytes and `.len`), so an impure one was
                  * computed into a temporary by the checker. */
-                size_t nIdx = strcmp(gcName, "poolResize") == 0 ? 2 : 1;
+                size_t nIdx = (strcmp(gcName, "poolResize") == 0
+                               || strcmp(gcName, "poolResizeRaw") == 0) ? 2 : 1;
                 const char *n;
                 if (e->needTemp) {
                     const char *tmp = arenaPrintf(g->arena, "__extc_pn%d", g->tmpSeq++);
@@ -2078,12 +2083,13 @@ static const char *genExprInner(CG *g, Expr *e) {
                 } else {
                     n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx));
                 }
-                if (strcmp(gcName, "poolResize") == 0) {
+                if (strcmp(gcName, "poolResize") == 0 || strcmp(gcName, "poolResizeRaw") == 0) {
                     return arenaPrintf(g->arena,
-                        "(%s){ .data = (%s *)extc_pool_resize((int64_t)(%s), (void *)(%s).data,"
+                        "(%s){ .data = (%s *)extc_pool_%s((int64_t)(%s), (void *)(%s).data,"
                         " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",
-                        cType(g, st), tn, rid,
-                        genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)), n, tn, n);
+                        cType(g, st), tn,
+                        strcmp(gcName, "poolResizeRaw") == 0 ? "resize_raw" : "resize",
+                        rid, genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)), n, tn, n);
                 }
                 return arenaPrintf(g->arena,
                     "(%s){ .data = (%s *)extc_pool_%s((int64_t)(%s),"

@@ -10,6 +10,6 @@ fn main() -> i32 {
         m.put(i, i32(i))
         i = i + i64(1)
     }
-    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << "\n"
+    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capOf() << " bytes=" << m.bytesOf() << "\n"
     return 0
 }

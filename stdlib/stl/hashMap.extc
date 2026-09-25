@@ -96,10 +96,10 @@ struct hashMap<K, V> {
             /* 四列都在**这张表自己的池板块**上（不是 arena 切片）：重建时旧的几块当场
              * 还回去，不留历代旧列。之前用 `new` 时，每一次 rebuild 都把上一代的四列
              * 留给 arena —— 同容量同条目数下峰值 90,412 KB vs 69,036 KB，那 30% 就是它们。 */
-            keys: poolSlice<K>(rp, c),
-            tag:  poolSlice<u8>(rp, c),
-            slot: poolSlice<i32>(rp, c),
-            bucketOfDense: poolSlice<i32>(rp, c),
+            keys: poolSliceRaw<K>(rp, c),
+            tag:  poolSlice<u8>(rp, c),          /* ⚠️ tag 必须清零：EMPTY == 0 是探测的终止符 */
+            slot: poolSliceRaw<i32>(rp, c),
+            bucketOfDense: poolSliceRaw<i32>(rp, c),
             vals: pool<V>::withParent(rp, c),      /* 值池以这个容器自己的池为父 */
             n:    i64(0),
             dead: i64(0),
@@ -237,9 +237,9 @@ struct hashMap<K, V> {
         /* 新表从池里拿四块，旧的填完当场还（`poolGive`）—— 于是重建只在**换的那一瞬间**
          * 有两代同时在手，稳态永远只有一代。容量仍然翻倍：这是**哈希**的要求（探测用
          * `hash & (cap-1)`，必须是 2 的幂），与"旧块还不了才翻倍"那条无关。 */
-        var nk: mut slice<K>   = poolSlice<K>(self.pid, ncap)
-        var nt: mut slice<u8>  = poolSlice<u8>(self.pid, ncap)
-        var ns: mut slice<i32> = poolSlice<i32>(self.pid, ncap)
+        var nk: mut slice<K>   = poolSliceRaw<K>(self.pid, ncap)
+        var nt: mut slice<u8>  = poolSlice<u8>(self.pid, ncap)   /* ⚠️ 同上：新 tag 必须全 EMPTY */
+        var ns: mut slice<i32> = poolSliceRaw<i32>(self.pid, ncap)
         /* `bucketOfDense` is indexed by DENSE index, so it has to hold as many entries as there
          * are values -- and the pool's dense side grows past the old table capacity as soon as
          * the table doubles. It used to keep its original length and the first rebuild after a
@@ -250,7 +250,7 @@ struct hashMap<K, V> {
          * 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分（出路见 PLAN #86：两块表 + 按簇增量）。
          * `bucketOfDense` 的长度仍要是 ncap：池的稠密侧会随表一起长过旧容量，
          * 早先留着旧长度的那版在第一次长表后写越界过（`index 128 out of range (length 128)`）。 */
-        self.bucketOfDense = poolResize<i32>(self.pid, self.bucketOfDense, ncap)
+        self.bucketOfDense = poolResizeRaw<i32>(self.pid, self.bucketOfDense, ncap)
         var i: i64 = 0
         while i < self.cap {
             if self.tag[i] == LIVE {

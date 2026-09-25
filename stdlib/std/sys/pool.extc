@@ -38,10 +38,13 @@ extern!("extc-runtime") fn extc_pool_zoneDepth() -> i64
 /* 容器数据用的内存：**池自己的板块**，不是 arena 里的切片（POOLS.md §2 作者口径
  * 「pool 的内存是独立的一个板块，只是生命周期给 arena 一起管理」）。容量不够时由池再要一块，
  * 旧块能当场还回去 —— 这正是 `vector` / `string` 扩容之后不留旧副本的依据（§2.1 裁决一）。
- * 库侧不直接调它：类型化的那扇门是生成器发的内建 `poolSlice<T>(rid, n)`（拿一块）与
- * `poolGive<T>(rid, s)`（还一块）。清零与失败行为跟别的分配一样。 */
-extern!("extc-runtime") fn extc_pool_alloc(rid: i64, bytes: i64) -> mut ref u8
-    effects Addr=0 Cont=0
+ * 库侧不直接调它：类型化的那扇门是生成器发的内建 `poolSlice<T>(rid, n)` / `poolSliceRaw<T>`
+ * （拿一块，后者不清零）、`poolResize<T>` / `poolResizeRaw<T>`（原地加长/缩短）与
+ * `poolGive<T>(rid, s)`（还一块）。清零与失败行为跟别的分配一样。
+ *
+ * 这里曾经有一句 `extc_pool_alloc(rid, bytes) -> mut ref u8` 的悬空声明（没有实现、也没有谁
+ * 调的动它 —— `extern!` 不许返回 `slice<T>`）—— 2026-09-26 删掉，正是 PLAN #85 里写着
+ * "删掉"的那一句。 */
 
 /* 板块的字节账：`extc_pool_bytes` 是这一只池当下持有的字节数，`extc_pool_bytesLive` 是所有池
  * 的合计。判据用它证明「扩容之后旧块真的还回去了」与「release 之后一个字节都不剩」。 */

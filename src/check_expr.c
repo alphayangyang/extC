@@ -246,6 +246,17 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
  * `poolGive<T>(rid, s) -> bool`: the typed door into a **pool's own plate**
  * (POOLS.md 2.1 "a pool has two faces", PLAN #85).
  *
+ * The `...Raw` spellings of the first two are the same call minus the zeroing of the bytes
+ * they hand out, for a column whose every slot is written before it is read (`map`'s four
+ * stores, `vector`/`string`'s buffer, `hashMap`'s `keys`/`slot`/`bucketOfDense`). Zeroing
+ * such a column is pure extra work: it writes bytes that are about to be overwritten and
+ * commits pages that may never be used -- measured on `bench/stl` as -17.5% RSS for `map`,
+ * -10.8% for `string`, -8.0% for `hashMap`, with byte-identical output. What must keep the
+ * zeroing: `hashMap`'s `tag` (an empty bucket IS zero), and `pool`'s own `ent` (its `pFree`
+ * reads `low == 0` as free). `tests/pool/run.sh` pins the whole question with two canaries
+ * (poisoned blocks must not change a program's output; memcheck must not report more
+ * uninitialized reads than the recorded baseline).
+ *
  * Why this cannot be an `extern!` in the library: `extern!` may not return `slice<T>` (it
  * would become two C parameters), and extC has no pointer casts, so the library cannot turn
  * a block of bytes into a typed view. The generator can, so the generator does -- the same
@@ -264,7 +275,7 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
     TypeTable *tt = c->tt;
     const char *nm = e->u.gencall.name;
     bool isTake    = strcmp(nm, "poolSlice") == 0 || strcmp(nm, "poolSliceRaw") == 0;
-    bool isResize  = strcmp(nm, "poolResize") == 0;
+    bool isResize  = strcmp(nm, "poolResize") == 0 || strcmp(nm, "poolResizeRaw") == 0;
     size_t want    = isResize ? 3 : 2;
     if (e->u.gencall.args.len != want) {
         ckError(c, e->line, NULL, "`%s` takes %d arguments (the pool, %s)", nm, (int)want,
@@ -1268,6 +1279,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             bool isPoolPrim = strcmp(e->u.gencall.name, "poolSlice") == 0
                            || strcmp(e->u.gencall.name, "poolSliceRaw") == 0
                            || strcmp(e->u.gencall.name, "poolResize") == 0
+                           || strcmp(e->u.gencall.name, "poolResizeRaw") == 0
                            || strcmp(e->u.gencall.name, "poolGive") == 0;
             if (!isAlloc && !isPoolPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);

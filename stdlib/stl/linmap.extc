@@ -50,7 +50,7 @@ struct linMap<K, V> {
         /* 两个视图在**这张表自己的板块**上：增长时同一块加长，旧的不会留给 arena。 */
         var lm: linMap<K, V> = {
             pid: rp, pidGen: rpg,
-            keys: poolSlice<K>(rp, c), vals: poolSlice<V>(rp, c),
+            keys: poolSliceRaw<K>(rp, c), vals: poolSliceRaw<V>(rp, c),
             n: i64(0), cap: c,
         }
         return lm
@@ -139,8 +139,8 @@ struct linMap<K, V> {
      * 这张表的下标就是插入序，加长不改变任何已有元素的位置。 */
     fn grow(self: mut ref linMap<K, V>) {
         let c = self.cap + self.cap / i64(2)
-        self.keys = poolResize<K>(self.pid, self.keys, c)
-        self.vals = poolResize<V>(self.pid, self.vals, c)
+        self.keys = poolResizeRaw<K>(self.pid, self.keys, c)
+        self.vals = poolResizeRaw<V>(self.pid, self.vals, c)
         self.cap = c
     }
 

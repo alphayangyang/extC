@@ -86,18 +86,28 @@ check_err() {
 check_err tests/map/errors/index_assign.extc 'defines `[]` but not `[]=`'
 
 echo "== 增长时旧存储**不许**留在 arena（四块在自己板块上、增长是原块加长）=="
-# 判据：同一 1e6 条目。存储用 `new`（arena）时，增量那一版把每一代旧存储留给 arena
-# ⇒ 179,820 KB 对 90,604 KB（多近一倍）。改后增量只有 61,932 KB —— 比预留那版**更低**，
-# 因为 1.5 倍增长的末代容量（~157k 节点）比 2 的幂（262,144）小得多。
+# **判据换过一次（2026-09-26「零初始化收窄」那一刀）**：原来只比 RSS 不等式（增量 ≤ 预留）。
+# 那条在"列还清零"时成立，但它成立的原因之一**是预留那版被清零撑大**（90,564 KB）——
+# 收窄清零之后预留掉到 49,284 KB，不等式翻转 ⇒ 判据红，而红的原因不是"代码变差"、是"基线变好"。
+# ⇒ 换成**精确字节账**（主判据）：两条路径的「每节点字节」必须相同。旧存储若留了一代，
+#   `bytes` 会多出 ~cap/1.5 × 每节点 ⇒ 这个商立刻变大。`bytes` 来自容器自己的池记账
+#   （`map.bytesOf()` = `extc_pool_bytes(pid)`），与 RSS 无关 ⇒ 不受清不清零影响。
+# 次要判据：增量那版末代容量（1.5 倍增长 ⇒ ~177k 节点）比预留（2 的幂 ⇒ 262,144）小 ⇒ bytes 更低。
+# RSS 仍然打出来当**参考**（收窄清零之后它明显低于 bytes，那正是"预留的页没被提交"）。
 if build_one map-inc grow_rss && build_one map-res grow_rss_reserved; then
+    oi=$(./build/map-inc 0); orv=$(./build/map-res 0)
+    bi=$(echo "$oi"  | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+    ci=$(echo "$oi"  | sed -n 's/.*cap=\([0-9]*\).*/\1/p')
+    br=$(echo "$orv" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+    cr=$(echo "$orv" | sed -n 's/.*cap=\([0-9]*\).*/\1/p')
     gi=$(peak map-inc 0); gr=$(peak map-res 0)
-    if [ "$gi" -le "$gr" ]; then
-        echo "  ok   grow rss ->  增量 ${gi} KB vs 预留 ${gr} KB ⇒ 旧存储没留下、末代也不浪费 ✓"
+    if [ -n "$bi" ] && [ -n "$br" ] && [ "$((bi / ci))" = "$((br / cr))" ] && [ "$bi" -le "$br" ]; then
+        echo "  ok   grow bytes ->  增量 cap=$ci bytes=$bi（每节点 $((bi / ci)) B）vs 预留 cap=$cr bytes=$br（每节点 $((br / cr)) B）⇒ 旧存储没留下 ✓ · 峰值 RSS ${gi} / ${gr} KB（参考）"
     else
-        echo "  FAIL grow rss ->  增量 ${gi} KB 高于预留 ${gr} KB ⇒ 旧存储又留在 arena 了 ✗"; fail=1
+        echo "  FAIL grow bytes ->  增量 cap=$ci bytes=$bi（每节点 $((bi / (ci ? ci : 1))) B）vs 预留 cap=$cr bytes=$br（每节点 $((br / (cr ? cr : 1))) B）⇒ 旧存储留了一代（每节点字节会变大）✗"; fail=1
     fi
 else
-    echo "  FAIL grow rss ->  编不过"; fail=1
+    echo "  FAIL grow bytes ->  编不过"; fail=1
 fi
 
 echo "== ASan =="

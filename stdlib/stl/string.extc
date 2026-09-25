@@ -27,7 +27,7 @@ struct string {
         var cc: i64 = c
         if cc < i64(16) { cc = i64(16) }
         var s: string = {
-            buf:    poolSlice<u8>(rp, cc),
+            buf:    poolSliceRaw<u8>(rp, cc),
             n:      i64(0),
             cap:    cc,
             pid:    rp,
@@ -286,7 +286,7 @@ struct string {
     fn grow(self: mut ref string) {
         if self.pid < i64(0) { return }
         let ncap = self.cap + self.cap / i64(2)
-        self.buf = poolResize<u8>(self.pid, self.buf, ncap)
+        self.buf = poolResizeRaw<u8>(self.pid, self.buf, ncap)
         self.cap = ncap
     }
 
@@ -313,7 +313,7 @@ struct string {
         var ncap: i64 = self.n
         if ncap < i64(16) { ncap = i64(16) }
         if ncap >= self.cap { return }
-        self.buf = poolResize<u8>(self.pid, self.buf, ncap)
+        self.buf = poolResizeRaw<u8>(self.pid, self.buf, ncap)
         self.cap = ncap
     }
 
