@@ -230,7 +230,15 @@ A：行 —— `alloc` 返回可写引用，写穿要写 `*p = 7`（`*` 不能�
 | 嵌套块里建、外层变量接住（`{ var w = vector<i32>::new()  v = w }`）| 同上 |
 | `let b = a`（容器拷贝）然后两边写 | 静默互踩：`a.len=3 b.len=2`，`b.push(99)` 把 a 的元素覆盖 —— **板块共享、标量（`n`/`cap`）各一份** |
 
-⇒ 第三条承诺（"不会静默踩内存"）对容器也还不成立。**机器复核的空白正好在这里**：
+**2026-09-26 进展：`return` 与"循环里建内层容器再推入外层容器"这两档已经接上提权** ——
+容器构造现在是**逃逸站点**（与 `new` 同规则），建池的函数走 `needsHome` 式的隐藏「家 zone」参数，
+codegen 发 `extc_pool_new_at(parent, __extc_home_zone)`。实测 `vector<vector<i32>>` 在循环里建内层、
+推入外层之后，出循环 `extc_pool_live()` 是 4（outer + 三个内层池），读元素正常，ASan 干净；
+常设判据：`tests/pool/rt_nest_promote.extc` 与 `tools/memsafe/qa/r2_container_nested_promote.extc`。
+**仍未接上的一档**：`fn make() -> vector<i32> { … return v }` 这条**返回**路径（`at == 0` ⇒ `ZONE_HOME`）
+还会 ASan 报错 —— 下一步就它。
+
+⇒ 第三条承诺（"不会静默踩内存"）对容器也还不成立（**返回那一档**）。**机器复核的空白正好在这里**：
 `grep -rln "stl::\|pool<" tools/memsafe/qa/` 的输出是**空**（33 条判据里一条池/容器都没有）。
 
 **要做的（按顺序）**：

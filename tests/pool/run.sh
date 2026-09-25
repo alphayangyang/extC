@@ -185,6 +185,9 @@ rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=2 len=2 v=22 after=0"
 echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退出带不走它 =="
 rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"
 
+echo "== 池的提权（容器那一档）：循环里建内层、推入外层 ⇒ 内层池生在外层那个地方 =="
+rt_run rt_nest     tests/pool/rt_nest_promote.extc "after=4 innerlen=2 v=20 bytes=240"
+
 echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="
 rt_run rt_epoch     tests/pool/rt_epoch.extc     "cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1"
 

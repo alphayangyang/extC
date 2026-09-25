@@ -8997,3 +8997,42 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 
 同轮还落了两件记账：`tools/memsafe` 33/0（§6.1 那三条探针仍未进 qa/，等点火后一起进），
 以及 `EXTC_DBG_ZONE=1` 这个诊断开关（与既有的 `EXTC_DBG_*` 同族）。
+
+### 周期 41：池底容器的提权点火成功 —— 根因是**顺序**，不是算法
+
+**症状**：`vector<vector<i32>>` 在循环里建内层、推入外层之后，出循环 `live=1`（三个内层池全被回收，
+外层板块里那三个值指着已还给 malloc 的块）；`nest2.extc`（出循环后 push）ASan 报 heap-use-after-free。
+
+**根因（探针抓的）**：`checkModule` 里的**电平求解（`lvlFacts` 重放）跑在 `makesPool` 闭包之前** ⇒
+求解期间 `calleeMakesPool` 对所有调用点都还是假：
+
+```
+[gate] call=new ptr=0x57ac827d4c98 owner=0x57ac827d2a78 mP=0 cmp=0 lvl=2 at=1
+[pool] vector$vector::new    makesPool=1 ptr=0x57ac827d4c98 owner=0x57ac827d2a78   ← 同一个指针
+```
+
+⇒ 池站点的提权**一次都没落地**。算法本身没错，是**标志就位得太晚**。
+
+**改法**（`src/check_top.c` 三处）：
+
+1. 闭包里补**实例那一轮**：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
+   而在类型表的 `tt->instances` 上 —— 只标模板等于没标；
+2. `setCallZoneArg` **只往下调、不往上抬**（同一个节点可能被检查不止一次，覆盖会把提权抹掉）；
+3. 闭包之后再**重放一遍事实表**：`promoteInto` 只把层级往小改（越长寿命），重放单调 ⇒ 安全。
+
+**实测**：
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| `nest.extc` 出循环 `live` | 1（内层池全没了） | **4**（outer + 三个内层池，板块 240 B） |
+| `nest2.extc`（出循环后 push） | ASan `heap-use-after-free` | **ASan 干净** |
+| `examples/varArray-asSlice-return.extc` | 一度被名字兜底误拒 | 恢复通过（兜底已撤回） |
+
+**常设判据**：`tests/pool/rt_nest_promote.extc`（`after=4 innerlen=2 v=20 bytes=240`）·
+`tools/memsafe/qa/r2_container_nested_promote.extc`（`expect: OK`，跑完查 ASan）。
+`check.sh quick` 通过 26 / 失败 0。
+
+**仍未接上的一档**：`fn make() -> vector<i32> { … return v }` 这条**返回**路径（`at == 0` ⇒ `ZONE_HOME`）
+还会报错 —— 下一步。另记作者口径两条（`PLAN #88` / `#89`）：池底容器**不许持有引用**（`vector<ref T>`
+一律禁止，图要走向句柄），以及 **`asSlice` 这一族必须是"拷出来"、不能是"池里的视图"**
+（"否则就变成引用 Pool 里的东西了，而 **Pool 里的东西永远不能被外面引用**"）。

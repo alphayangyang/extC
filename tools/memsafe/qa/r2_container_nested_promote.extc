@@ -1,0 +1,25 @@
+// expect: OK
+// 池底容器的提权：循环里建内层容器、推入外层容器，出循环之后仍然有效。
+//
+// 这条以前是**静默 UAF**：内层池生在循环体那个地方（每轮一个地方），出块即回收，
+// 而 outer 的板块里存着指向它们的值 —— 不开 ASan 时打印"看着完全正常"，
+// 开 ASan 是 heap-use-after-free（vector$..._push）。
+// 现在容器构造是逃逸站点，`outer.push(inner)` 把它提到 outer 那一层 ⇒ 池生在外层那个地方。
+// 判据：编译通过 + 跑出 v=20 + ASan 干净（`run.sh` 查后两条）。
+use std::io
+use stl::vector
+
+fn main() -> i32 {
+    var outer = vector<vector<i32>>::new()
+    var i: i64 = 0
+    while i < i64(3) {
+        var inner = vector<i32>::new()
+        inner.push(i32(i))
+        inner.push(i32(i * i64(10)))
+        outer.push(inner)
+        i = i + i64(1)
+    }
+    let a = outer.get(i64(2))!
+    io::cout << "v=" << i64(a.get(i64(1)) ?? i32(-1)) << "\n"
+    return 0
+}
