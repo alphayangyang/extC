@@ -179,6 +179,9 @@ rt_run rt_shrink  tests/pool/rt_shrink.extc  "cap=1024->8 len=3 vals=10,20,30 ag
 echo "== 板块：池自己的内存（拿一块 · 原块上长 · 还一块 · 字节账 · drop 归零）=="
 rt_run rt_plate    tests/pool/plate.extc       "take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0 dual=1264 gave=1 aftergive=64 live=0"
 
+echo "== 容器接线：一个容器 = 一棵池树（容器自己的池 + 值池以它为父）=="
+rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=2 len=2 v=22 after=0"
+
 echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="
 rt_run rt_epoch     tests/pool/rt_epoch.extc     "cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1"
 

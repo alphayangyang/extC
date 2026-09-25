@@ -127,8 +127,14 @@ struct pool<T> {
     fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
 
     /* An empty pool that can hold `n` values before it has to grow. */
-    fn withCap(n: i64) -> pool<T> {
-        let rp = syspool::extc_pool_new(i64(-1))     /* 池随容器创建 */
+    fn withCap(n: i64) -> pool<T> { return pool<T>::withParent(i64(-1), n) }
+
+    /* The same, nested: `parent` is the pool of the container that owns this one, so the two
+     * records form the LOGICAL pool tree (POOLS.md 7.7) -- dropping the outer pool takes this
+     * one with it. Lifetime is unaffected either way: both are on their zone's root chain, so
+     * the place they were created in releases them on its own. */
+    fn withParent(parent: i64, n: i64) -> pool<T> {
+        let rp = syspool::extc_pool_new(parent)      /* 池随容器创建，父池 = 外层容器 */
         let rpg = syspool::extc_pool_generation(rp)
         var c: i64 = n
         if c < i64(8) { c = i64(8) }

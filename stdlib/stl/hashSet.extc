@@ -36,6 +36,9 @@ struct hashSetI64 {
 
     fn clear(self: mut ref hashSetI64) { self.m.clear() }
 
+    /* 整棵池树还回去 */
+    fn release(self: mut ref hashSetI64) { self.m.release() }
+
     /* Scan by table position (the dense face arrives with the pool-backed map). */
     fn keyAt(self: ref hashSetI64, i: i64) -> i64 { return self.m.keyAt(i) }
     fn liveAt(self: ref hashSetI64, i: i64) -> bool { return self.m.liveAt(i) }

@@ -1,0 +1,20 @@
+// 容器接线：**一个容器 = 一棵池树**（POOLS.md §7.7 的「容器的义务」）
+//
+// 判据为什么是 `live=2`：`hashMap` 现在登记**自己的一只池**，值池以它为父 ⇒ 运行期有两个记录。
+// 接线之前四个容器全传 `-1`，只有值池那一个 ⇒ 这里是 1。`after=0` 是另一半：
+// `release` 把整棵树还回去（先放值池，再放容器自己的记录）。
+// expect: live=2 len=2 v=22 after=0
+use std::io
+use std::sys::pool as syspool
+use stl::hashMap
+
+fn main() -> i32 {
+    var hm = hashMapI64<i32>::withCap(i64(8))
+    io::cout << "live=" << syspool::extc_pool_live()
+    hm.put(i64(1), i32(11))
+    hm.put(i64(2), i32(22))
+    io::cout << " len=" << hm.len() << " v=" << i64(hm.get(i64(2)) ?? i32(-1))
+    hm.release()
+    io::cout << " after=" << syspool::extc_pool_live() << "\n"
+    return 0
+}
