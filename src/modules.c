@@ -65,20 +65,6 @@
  *     file system, so a file that shrinks mid-read is still terminated correctly.
  */
 
-static char *readWhole(Arena *a, const char *path, size_t *outLen) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long n = ftell(f);
-    if (n < 0) { fclose(f); return NULL; }
-    rewind(f);
-    char *buf = (char *)arenaAlloc(a, (size_t)n + 1);
-    size_t got = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    buf[got] = '\0';
-    if (outLen) *outLen = got;
-    return buf;
-}
 
 /* Report whether `path` can be opened for reading. */
 static bool fileExists(const char *path) {
@@ -1545,7 +1531,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     }
 
     size_t len = 0;
-    char *src = readWhole(L->a, file, &len);
+    char *src = readWholeFile(L->a, file, &len);
     if (!src) {
         fprintf(stderr, "error: cannot read `%s`\n", file);
         L->errors++;
@@ -1765,8 +1751,14 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         }
     }
 
-    /* The root file's declarations are merged last, since the modules it uses are
-     * already in place. Its function bodies need their qualified names resolved too. */
+    /* The root file's declarations are merged last, and through the **same path** every other
+     * unit takes. Its names are never renamed (`modName == NULL` makes `mangleUnitDecls` return
+     * immediately and `renLookup` answer NULL), so `mergeUnit` does exactly what the inline copy
+     * here used to do -- and it is the only way to keep the next declaration kind from being
+     * added in one place and forgotten in the other. That is not hypothetical: `impl` blocks
+     * were silently dropped from the root file (the field was merged only in `mergeUnit`), and
+     * a qualified `impl` target missed `rwTypeName` for the same reason. Both were found by
+     * running the thing, not by reading it. */
     {
         ModUnit root;
         memset(&root, 0, sizeof root);
@@ -1774,41 +1766,8 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         root.mod     = *rootm;
         root.ctx     = rootCtx;   /* the real context, never a copy */
         root.state   = 2;
-        root.modName = NULL;
-        for (size_t i = 0; i < rootm->structs.len; i++) {
-            StructDef *sd = *(StructDef **)vecAt(&rootm->structs, i);
-            for (size_t j = 0; j < sd->fields.len; j++)
-                rwType(&L, &root, (*(FieldDef **)vecAt(&sd->fields, j))->type);
-            for (size_t j = 0; j < sd->methods.len; j++)
-                rwUnitMethod(&L, &root, *(FuncDef **)vecAt(&sd->methods, j));
-            *(StructDef **)vecPush(&out->structs) = sd;
-        }
-        /* `impl` blocks of the root file. The root's declarations are never renamed, so unlike
-         * the per-unit path there is no name to look up here -- only the bodies need their
-         * qualified names resolved. */
-        for (size_t i = 0; i < rootm->impls.len; i++) {
-            ImplDef *im = *(ImplDef **)vecAt(&rootm->impls, i);
-            im->typeName = rwTypeName(&L, &root, im->typeName);
-            for (size_t j = 0; j < im->methods.len; j++)
-                rwUnitMethod(&L, &root, *(FuncDef **)vecAt(&im->methods, j));
-            *(ImplDef **)vecPush(&out->impls) = im;
-        }
-        for (size_t i = 0; i < rootm->types.len; i++)
-            *(TypeDef **)vecPush(&out->types) = *(TypeDef **)vecAt(&rootm->types, i);
-        for (size_t i = 0; i < rootm->globals.len; i++) {
-            GlobalDef *g = *(GlobalDef **)vecAt(&rootm->globals, i);
-            if (g->ann) rwType(&L, &root, g->ann);
-            rwExpr(&L, &root, g->init);
-            *(GlobalDef **)vecPush(&out->globals) = g;
-        }
-        for (size_t i = 0; i < rootm->funcs.len; i++) {
-            FuncDef *f = *(FuncDef **)vecAt(&rootm->funcs, i);
-            if (f->ret) rwType(&L, &root, f->ret);
-            for (size_t j = 0; j < f->params.len; j++)
-                rwType(&L, &root, (*(Param **)vecAt(&f->params, j))->type);
-            rwStmt(&L, &root, f->body);
-            *(FuncDef **)vecPush(&out->funcs) = f;
-        }
+        root.modName = NULL;      /* the root module: never renamed */
+        mergeUnit(&L, &root);
     }
     if (dbgOn("EXTC_DBG_MOD")) fprintf(stderr, "[mod] merge done: errors=%d declarations funcs=%zu globals=%zu\n",
                                          L.errors, out->funcs.len, out->globals.len);

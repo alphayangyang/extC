@@ -45,6 +45,21 @@ void  arenaInit(Arena *a, size_t blockSize);
 void *arenaAlloc(Arena *a, size_t n);
 void *arenaAllocZero(Arena *a, size_t n);
 char *arenaStrndup(Arena *a, const char *s, size_t n);
+/* Read a whole file into arena memory, NUL-terminated.
+ *
+ * Params:
+ *   a      - arena that owns the buffer
+ *   path   - file to read
+ *   outLen - receives the number of bytes read (excluding the terminator); may be NULL
+ *
+ * Returns:
+ *   The buffer, or NULL when the file cannot be opened, seeked, or measured.
+ *
+ * Notes:
+ *   - One copy, two callers: the root file (main.c) and every imported module (modules.c)
+ *     used to carry their own byte-for-byte copy of this, which is exactly the kind of
+ *     duplication that drifts when one of them learns something new. */
+char *readWholeFile(Arena *a, const char *path, size_t *outLen);
 char *arenaPrintf(Arena *a, const char *fmt, ...);
 
 /* ---------------------------------------------------------------- Buf

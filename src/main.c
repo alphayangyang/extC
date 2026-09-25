@@ -45,23 +45,6 @@
  *   - The file is not re-read: if it grows between the size measurement and the read
  *     of `n` bytes, the extra bytes are simply not part of the result.
  */
-static char *readFile(Arena *a, const char *path, size_t *outLen) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long n = ftell(f);
-    if (n < 0) { fclose(f); return NULL; }
-    rewind(f);
-
-    char *buf = (char *)arenaAlloc(a, (size_t)n + 1);
-    size_t rd = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-
-    buf[rd] = '\0';
-    *outLen = rd;
-    return buf;
-}
 
 /* Write a byte range to a file, replacing whatever was there.
  *
@@ -390,7 +373,7 @@ int main(int argc, char **argv) {
     arenaInit(&arena, 64 * 1024);
 
     size_t srcLen = 0;
-    char *src = readFile(&arena, path, &srcLen);
+    char *src = readWholeFile(&arena, path, &srcLen);
     if (!src) {
         fprintf(stderr, "extc: cannot read `%s`\n", path);
         return 1;
