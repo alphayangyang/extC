@@ -96,8 +96,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         r = r + i64(1)
     }
     var live = syspool::extc_pool_bytesLive()
-    var keep = syspool::extc_pool_keep_bytes()
-    io::cout << "mode=" << mode << " rounds=" << rounds << " per=" << per << " sink=" << sink << " live=" << live << " keep=" << keep << "\n"
+    io::cout << "mode=" << mode << " rounds=" << rounds << " per=" << per << " sink=" << sink << " live=" << live << "\n"
     return 0
 }
 
