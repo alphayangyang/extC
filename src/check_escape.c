@@ -285,7 +285,7 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
         fprintf(stderr, "[zone] call=%s makesPool=%d zoneLevel=%d d=%d\n",
                 e->func && e->func->name ? e->func->name : "-",
                 e->func ? (int)e->func->makesPool : -1, e->zoneLevel, d);
-    if (!e->func || !e->func->makesPool || e->zoneLevel == 0) return d;
+    if (!calleeMakesPool(e->func) || e->zoneLevel == 0) return d;
     int zd = (e->zoneLevel == ZONE_HOME) ? 0 : e->zoneLevel;
     return maxInt(d, zd);
 }
@@ -1096,13 +1096,14 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          *
          * 别的调用结果照旧不可提：`slice` 的视图来自别人的存储（借用），
          * 提不动就是提不动，返回 false 让调用方报错 —— 那是这一格的纪律。 */
-        if (getenv("EXTC_DBG_ZONE"))
-            fprintf(stderr, "[promote] call %s makesPool=%d zoneLevel=%d at=%d\n",
-                    val->func && val->func->name ? val->func->name : "-",
-                    val->func ? (int)val->func->makesPool : -1, val->zoneLevel, at);
-        if (val->func && val->func->makesPool && val->zoneLevel != 0) {
+        if (calleeMakesPool(val->func) && val->zoneLevel != 0) {
             int want = (at == 0) ? ZONE_HOME : at;
-            if (val->zoneLevel > want) val->zoneLevel = want;
+            if (val->zoneLevel > want) {
+                if (getenv("EXTC_DBG_ZONE"))
+                    fprintf(stderr, "[promoted] node=%p %d -> %d (at=%d)\n",
+                            (void *)val, val->zoneLevel, want, at);
+                val->zoneLevel = want;
+            }
             if (val->refDepth > at) val->refDepth = at;
             return true;
         }

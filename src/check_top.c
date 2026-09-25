@@ -1313,10 +1313,27 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  *   - 我在入口文件的函数里 ⇒ 默认是当前这个块（今天的语义：池生在建它的那个块里）；
  *     提权（`promoteInto`）之后这个数会被改小，池就生到更长寿的地方去。
  */
+/* 这个被调者会不会建池 —— 读取处统一走这里。
+ *
+ * 为什么不能只看 `f->makesPool`：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只走到
+ * 模板那一份，而调用点上 `e->func` 可能是模板（实测 `owner=vector$vector makesPool=0`，
+ * 同一处 codegen 读到的实例却是真）。结构体那一格 `makesPoolAny` 是闭包顺手算的，
+ * 只对**关联函数**（构造函数那一族：`new` / `withCap` / `withParent`）放宽 ——
+ * 别的库方法（`get` / `asSlice` 之类）不进这一族，免得把"不可提权"的值误判成站点。 */
+bool calleeMakesPool(FuncDef *f) {
+    if (!f) return false;
+    if (f->makesPool) return true;
+    return f->isAssoc && f->owner && f->owner->makesPoolAny;
+}
+
 void setCallZoneArg(Checker *c, Expr *e) {
     if (!e) return;
-    if (c->curFunc && c->curFunc->modName && *c->curFunc->modName) e->zoneLevel = ZONE_HOME;
-    else e->zoneLevel = (int)c->scopes.len;
+    int lvl = (c->curFunc && c->curFunc->modName && *c->curFunc->modName)
+                  ? ZONE_HOME : (int)c->scopes.len;
+    /* **只往下调，不往上抬**：同一个节点可能被检查不止一次（泛型实例、末轮那一类重走），
+     * 而提权已经把这一格改小了；再按"当前块"覆盖一遍就等于把提权抹掉。
+     * 越小越长寿，所以取更小的那个。 */
+    if (e->zoneLevel == 0 || lvl < e->zoneLevel) e->zoneLevel = lvl;
 }
 
 void setCallArenaArg(Checker *c, Expr *e) {
@@ -4966,6 +4983,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 if (f->makesPool) continue;
                 if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
             }
+        }
+    }
+    /* 顺手把"这个结构体的某个方法建池"记到结构体上（见 StructDef.makesPoolAny）。 */
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+            if (f && f->makesPool) { sd->makesPoolAny = true; break; }
         }
     }
     if (getenv("EXTC_DUMP_POOL")) {

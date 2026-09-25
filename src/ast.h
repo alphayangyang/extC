@@ -458,6 +458,12 @@ struct StructDef {
      * Rust moves and borrows, Go passes a pointer, Python has no implicit object copy;
      * extC writes it down as an annotation. */
     bool        noCopy;
+    /* 这个结构体的**某个方法**会建池（闭包里顺手算出来的，见 `FuncDef.makesPool`）。
+     * 为什么需要它：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只标到模板那一份，
+     * 而调用点上 `e->func` 可能是模板 ⇒ 读取处光看 `f->makesPool` 会看到假
+     *（实测：`[promote] call new owner=vector$vector makesPool=0`，而 codegen 那一侧为真）。
+     * 只给**关联函数**（构造函数那一族）放宽，免得波及其它方法。 */
+    bool        makesPoolAny;
     /* Which file it came from, which module, and whether it is `@private`. */
     Ctx        *ctx;
     const char *modName;

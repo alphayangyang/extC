@@ -713,6 +713,7 @@ int valDepthForStore (Checker *, Expr *);
 /* Resolve the home depth of a call site into the arena argument the code generator emits. */
  void setCallArenaArg (Checker *c, Expr *e);
  void setCallZoneArg (Checker *c, Expr *e);
+ bool calleeMakesPool (FuncDef *f);
  void recordLvlFact (Checker *c, Expr *val, int at);
 /* Report an error when a name of another module is used without its module qualifier. */
  void checkCtorSig (Checker *c, FuncDef *f);
