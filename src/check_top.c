@@ -4246,6 +4246,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.curArenaSites, arena, sizeof(Expr *));
 
     c.tI32  = ttFromName(tt, "i32");
+    c.tI64  = ttFromName(tt, "i64");
     c.tF64  = ttFromName(tt, "f64");
     c.tBool = ttFromName(tt, "bool");
     /* A string literal has type `slice<u8>`.

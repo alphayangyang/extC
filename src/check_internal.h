@@ -343,7 +343,7 @@ typedef struct Checker {
     Vec        narrowMarks; /* size_t: length of `narrow` when each scope was entered,
                              * used to unwind it on scope exit */
 
-    Type *tI32, *tF64, *tBool;  /* cached primitive types */
+    Type *tI32, *tI64, *tF64, *tBool;  /* cached primitive types */
     StructDef *sliceDef;/* declaration of `slice<T>` from the prelude, which is the view
                          * protocol */
     Type *tSliceU8;     /* type of a string literal: `slice<u8>` */

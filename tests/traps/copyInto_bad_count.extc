@@ -1,0 +1,12 @@
+// copyInto 的计数超出任一侧切片长度 ⇒ **带位置**的 trap（不是静默越界）
+// expect-trap: copyInto: the count is beyond a slice length
+use std::io
+
+fn main() -> i32 {
+    var a: [4]i32 = [1,2,3,4]
+    var b: [4]i32 = [0,0,0,0]
+    io::cout << "before\n"
+    let n = copyInto<i32>(b[..], a[..], i64(9))
+    io::cout << "after " << n << "\n"
+    return 0
+}

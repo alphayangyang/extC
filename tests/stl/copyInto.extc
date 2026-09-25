@@ -1,0 +1,30 @@
+// copyInto<T>(dst, src, n)：一次带检查的整块搬移（memmove 语义，区间可重叠）
+// 判据：普通拷贝 n=5 · 重叠搬移 a=3456（若是 memcpy 这条会错）· string::append 批量走它
+// expect: n=5 b=12345 m=4 a=3456 slen=6 ssum=396
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    var a: [8]i32 = [1,2,3,4,5,6,7,8]
+    var b: [8]i32 = [0,0,0,0,0,0,0,0]
+    let n = copyInto<i32>(b[..], a[..], i64(5))
+    /* 向右重叠搬移：dst 与 src 在同一块上 ⇒ 必须是 memmove */
+    let m = copyInto<i32>(a[0..4], a[2..6], i64(4))
+    var t: string = string::withCap(i64(4))
+    var s: string = string::withCap(i64(4))
+    var abc: [3]u8 = [u8(65), u8(66), u8(67)]
+    t.append(abc[..])
+    s.append(t.toSlice())
+    s.append(t.toSlice())
+    io::cout << "n=" << n << " b="
+    var i: i64 = 0
+    while i < n { io::cout << i64(b[i])  i = i + i64(1) }
+    io::cout << " m=" << m << " a="
+    i = i64(0)
+    while i < i64(4) { io::cout << i64(a[i])  i = i + i64(1) }
+    var sum: i64 = 0
+    i = i64(0)
+    while i < s.len() { sum = sum + i64(s.buf[i])  i = i + i64(1) }
+    io::cout << " slen=" << s.len() << " ssum=" << sum
+    return 0
+}

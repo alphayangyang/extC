@@ -21,6 +21,9 @@ run_case() {   # run_case <名字> <文件> <期望的一整行>
 echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
 run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=9 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
 
+echo "== copyInto<T>：一次带检查的整块搬移（memmove，区间可重叠）+ string::append 批量走它 =="
+run_case copyInto tests/stl/copyInto.extc "n=5 b=12345 m=4 a=3456 slen=6 ssum=396"
+
 echo "== vector<T>：grow 摊还（1000 次 push 只搬 14 次 · 1.5 倍）=="
 run_case grow    tests/stl/vector_grow.extc    "caps=4,6,9,13,19,28,42,63,94,141,211,316,474,711,1066 n=1000"
 

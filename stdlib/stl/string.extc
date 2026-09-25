@@ -297,13 +297,30 @@ struct string {
         self.n = self.n + i64(1)
     }
 
-    /* 追加一段字节（"序列化面"最常见的一步）*/
+    /* 追加一段字节（"序列化面"最常见的一步）。
+     *
+     * **一次 `copyInto`，不是逐字节 `push`**：`push` 每来一个字节都要做一次陈旧池守卫
+     * （`pStale()` = 池世代的加载+比较，实测约 1 cycle/字节）与一次容量检查。批量做就只付一次
+     * —— 这正是 `bench/app` 场景 C 里那 28% 的来源（DEVLOG 第十一段续八）。 */
     fn append(self: mut ref string, s: slice<u8>) {
-        var i: i64 = 0
-        while i < s.len {
-            self.push(s[i])
-            i = i + i64(1)
-        }
+        if self.pStale() { self.pPoison() }
+        if s.len <= i64(0) { return }
+        let need: i64 = self.n + s.len
+        while self.cap < need { self.grow() }
+        copyInto<u8>(self.buf[self.n..need], s, s.len)
+        self.n = need
+    }
+
+    /* 丢掉最前面的 `n` 个字节（有界缓冲「丢掉最老的一半」就是这个）。
+     * 一次 `memmove`（区间重叠，所以必须是 move 不是 copy）。 */
+    fn removeFront(self: mut ref string, n: i64) {
+        if self.pStale() { self.pPoison() }
+        if n <= i64(0) { return }
+        var k: i64 = n
+        if k > self.n { k = self.n }
+        let keep: i64 = self.n - k
+        copyInto<u8>(self.buf[0..keep], self.buf[k..self.n], keep)
+        self.n = keep
     }
 
     fn appendByte(self: mut ref string, b: u8) { self.push(b) }

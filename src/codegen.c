@@ -147,6 +147,7 @@ typedef struct {
      * call site inside a generic body names an instance the list of instances
      * may not hold. */
     Vec         viewIdx;        /* Type *: view instances whose index primitive is needed */
+    Vec         viewCpy;        /* Type *: view instances whose bulk-copy primitive is needed */
     Buf         body;
 
     /* Used by `?` expansion: the return type of the current function (a
@@ -613,6 +614,32 @@ static void genViewIndexer(CG *g, Type *inst) {
     substLeave(g);
 }
 
+/* Emit the bulk-copy primitive of a view type on demand (`copyInto`).
+ *
+ * One call checks the count ONCE and then moves the bytes with `memmove`, so the check is
+ * paid per **call** rather than per element -- which is the whole reason this primitive
+ * exists (a byte-at-a-time loop pays a bounds check, and in the containers also a stale-pool
+ * guard, for every byte). `memmove` rather than `memcpy`: the common caller shifts a buffer
+ * onto itself (`string::removeFront`), where the ranges overlap.
+ *
+ * The count check traps with a source position, like every other out-of-range access. */
+static void genViewCopier(CG *g, Type *inst) {
+    Type *elem = *(Type **)vecAt(&inst->targs, 0);
+    substEnter(g, inst);
+    cgLine(g, "static inline int64_t %s_copy(%s d, %s s, int64_t n, const char *file, int line) {",
+           inst->name, inst->name, inst->name);
+    g->indent++;
+    cgLine(g, "if (n < 0 || n > d.len || n > s.len)");
+    cgLine(g, "    extc_trapMsg(file, line, \"copyInto: the count is beyond a slice length\");");
+    cgLine(g, "if (n > 0) memmove((void *)d.data, (const void *)s.data, (size_t)n * sizeof(%s));",
+           cType(g, elem));
+    cgLine(g, "return n;");
+    g->indent--;
+    cgLine(g, "}");
+    cgLine(g, "");
+    substLeave(g);
+}
+
 /* Emit the index primitive of a view type on demand and return its name.
  *
  * The primitive used to be emitted from the list of type instances alone, and a call site
@@ -637,6 +664,15 @@ static const char *viewIndexer(CG *g, Type *inst) {
     for (size_t i = 0; i < g->viewIdx.len; i++)
         if (strcmp((*(Type **)vecAt(&g->viewIdx, i))->name, inst->name) == 0) return name;
     *(Type **)vecPush(&g->viewIdx) = inst;
+    return name;
+}
+
+/* Same on-demand story as `viewIndexer`, for the bulk-copy primitive. */
+static const char *viewCopier(CG *g, Type *inst) {
+    const char *name = arenaPrintf(g->arena, "%s_copy", inst->name);
+    for (size_t i = 0; i < g->viewCpy.len; i++)
+        if (strcmp((*(Type **)vecAt(&g->viewCpy, i))->name, inst->name) == 0) return name;
+    *(Type **)vecPush(&g->viewCpy) = inst;
     return name;
 }
 
@@ -2061,7 +2097,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *gcName = e->u.gencall.name;
             if (strcmp(gcName, "poolSlice") == 0 || strcmp(gcName, "poolSliceRaw") == 0
                 || strcmp(gcName, "poolResize") == 0 || strcmp(gcName, "poolResizeRaw") == 0
-                || strcmp(gcName, "poolGive") == 0) {
+                || strcmp(gcName, "poolGive") == 0 || strcmp(gcName, "copyInto") == 0) {
                 const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
                 if (strcmp(gcName, "poolGive") == 0) {
                     return arenaPrintf(g->arena,
@@ -2082,6 +2118,22 @@ static const char *genExprInner(CG *g, Expr *e) {
                     n = tmp;
                 } else {
                     n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx));
+                }
+                if (strcmp(gcName, "copyInto") == 0) {
+                    /* `copyInto<T>(dst, src, n)`: one checked `memmove`. The view type comes
+                     * from the DESTINATION argument, not from `e->type` -- this call's type is
+                     * `i64` (the count it returns), so the slice has to be read off the argument
+                     * the checker already typed. */
+                    Expr *dArg = *(Expr **)vecAt(&e->u.gencall.args, 0);
+                    Type *vt = subst(g, dArg->type);
+                    return arenaPrintf(g->arena,
+                        "%s((%s)(%s), (%s)(%s), (int64_t)(%s), \"%s\", %d)",
+                        viewCopier(g, vt), cType(g, vt),
+                        genExpr(g, dArg),
+                        cType(g, vt),
+                        genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)),
+                        genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 2)),
+                        g->path, e->line);
                 }
                 if (strcmp(gcName, "poolResize") == 0 || strcmp(gcName, "poolResizeRaw") == 0) {
                     return arenaPrintf(g->arena,
@@ -5085,6 +5137,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));
     vecInit(&g.viewIdx, arena, sizeof(Type *));
+    vecInit(&g.viewCpy, arena, sizeof(Type *));
     vecInit(&g.descs, arena, sizeof(void *));
     vecInit(&g.eqNeed, arena, sizeof(void *));
     vecInit(&g.deadDefs, arena, sizeof(DeadDef *));
@@ -6193,6 +6246,26 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         idd->name = arenaPrintf(arena, "%s_index", inst->name);
         idd->text = bufCstr(&it);
         *(DeadDef **)vecPush(&g.deadDefs) = idd;
+    }
+    for (size_t i = 0; i < g.viewCpy.len; i++) {
+        Type *inst = *(Type **)vecAt(&g.viewCpy, i);
+        Buf tmp;
+        bufInit(&tmp, arena);
+        Buf *save = g.out;
+        g.out = &tmp;
+        substEnter(&g, inst);
+        genViewCopier(&g, inst);
+        substLeave(&g);
+        g.out = save;
+        size_t bio = out->len;
+        bufPuts(out, bufCstr(&tmp));
+        Buf it;
+        bufInit(&it, arena);
+        bufPutn(&it, out->data + bio, out->len - bio);
+        DeadDef *cdd = arenaAllocZero(arena, sizeof *cdd);
+        cdd->name = arenaPrintf(arena, "%s_copy", inst->name);
+        cdd->text = bufCstr(&it);
+        *(DeadDef **)vecPush(&g.deadDefs) = cdd;
     }
     g.bodyOff = out->len;                    /* where the bodies start in the finished unit */
     bufPuts(out, bufCstr(&g.body));

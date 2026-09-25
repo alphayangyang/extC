@@ -69,11 +69,7 @@ struct vector<T> {
      * 选的地方，所以它可以存、可以返回。 */
     fn toSlice(self: ref vector<T>) -> slice<T> {
         var out: mut slice<T> = new T[self.n]
-        var i: i64 = 0
-        while i < self.n {
-            out[i] = self.vals[i]
-            i = i + i64(1)
-        }
+        copyInto<T>(out, self.vals, self.n)      /* 一次 memmove，不是逐元素循环 */
         return out
     }
 
@@ -88,12 +84,8 @@ struct vector<T> {
      * 它可以被存下来、被返回、活得比源容器长。 */
     fn clone(self: ref vector<T>) -> vector<T> {
         var out = vector<T>::withCap(self.n)
-        let src = self.vals
-        var i: i64 = 0
-        while i < self.n {
-            out.push(src[i])
-            i = i + i64(1)
-        }
+        copyInto<T>(out.vals, self.vals, self.n)   /* 一次 memmove（长度已由 withCap 保证） */
+        out.n = self.n
         return out
     }
     

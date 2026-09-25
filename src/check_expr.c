@@ -274,6 +274,48 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
 static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
     TypeTable *tt = c->tt;
     const char *nm = e->u.gencall.name;
+    /* `copyInto<T>(dst: mut slice<T>, src: slice<T>, n) -> i64`: one checked `memmove`.
+     * It shares this door because the generator has to name the element type, exactly like the
+     * pool primitives -- and there is no other way to write a bulk move in the language (a
+     * loop pays the bounds check per element; the containers would also pay their stale-pool
+     * guard per element, which measured 1 cycle per byte in bench/app scenario C). */
+    if (strcmp(nm, "copyInto") == 0) {
+        if (e->u.gencall.args.len != 3) {
+            ckError(c, e->line, NULL, "`copyInto` takes 3 arguments (the destination, the source,"
+                                      " and how many elements)");
+            return ttError(tt);
+        }
+        Expr *dE = *(Expr **)vecAt(&e->u.gencall.args, 0);
+        Expr *sE = *(Expr **)vecAt(&e->u.gencall.args, 1);
+        Expr *nE = *(Expr **)vecAt(&e->u.gencall.args, 2);
+        Type *dT = checkValue(c, dE);
+        Type *sT = checkValue(c, sE);
+        Type *nT = checkValue(c, nE);
+        if (!ttIsError(dT)) {
+            Type *de = viewElemOf(dT);
+            if (!de || !ttEquals(de, elem) || !dT->mut) {
+                ckError(c, dE->line, NULL,
+                        "`copyInto` writes into its destination, so that must be `%s`, not `%s`",
+                        typeStr(c, ttViewMut(tt, sliceOf(c, elem), true)), typeStr(c, dT));
+                return ttError(tt);
+            }
+        }
+        if (!ttIsError(sT)) {
+            Type *se = viewElemOf(sT);
+            if (!se || !ttEquals(se, elem)) {
+                ckError(c, sE->line, NULL, "`copyInto` copies from `%s`, not `%s`",
+                        typeStr(c, sliceOf(c, elem)), typeStr(c, sT));
+                return ttError(tt);
+            }
+        }
+        if (!ttIsError(nT) && !ttIsInteger(nT)) {
+            ckError(c, nE->line, NULL, "the element count must be an integer, found `%s`",
+                    typeStr(c, nT));
+            return ttError(tt);
+        }
+        if (elem->kind == TY_PARAM || ttHasParam(elem)) recordNewSizeCheck(c, elem, e->line);
+        return c->tI64;
+    }
     bool isTake    = strcmp(nm, "poolSlice") == 0 || strcmp(nm, "poolSliceRaw") == 0;
     bool isResize  = strcmp(nm, "poolResize") == 0 || strcmp(nm, "poolResizeRaw") == 0;
     size_t want    = isResize ? 3 : 2;
@@ -1280,7 +1322,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                            || strcmp(e->u.gencall.name, "poolSliceRaw") == 0
                            || strcmp(e->u.gencall.name, "poolResize") == 0
                            || strcmp(e->u.gencall.name, "poolResizeRaw") == 0
-                           || strcmp(e->u.gencall.name, "poolGive") == 0;
+                           || strcmp(e->u.gencall.name, "poolGive") == 0
+                           || strcmp(e->u.gencall.name, "copyInto") == 0;
             if (!isAlloc && !isPoolPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {

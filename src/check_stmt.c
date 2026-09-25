@@ -194,8 +194,23 @@ void checkStmt(Checker *c, Stmt *s) {
              * `var w = new T  let r = w` is deliberately not warned about: the object
              * has a writable source, and turning an existing writable alias into a
              * read-only view is what `let` is for. */
-            if (!s->u.var.mut && s->u.var.init &&
-                (s->u.var.init->kind == EX_NEW || s->u.var.init->kind == EX_GENCALL)) {
+            /* Only an **allocation primitive** can be "written through" the name. The
+             * initializer has not been type-checked yet at this point (that happens further
+             * down), so the test is syntactic: `new T` / `new T[n]`, plus the generator's
+             * allocation primitives by name. A generic call that returns a scalar allocates
+             * nothing -- `let n = copyInto<T>(...)` was flagged as a fresh allocation the day
+             * that primitive landed, which is the bug this predicate fixes. */
+            bool allocInit = false;
+            if (s->u.var.init) {
+                if (s->u.var.init->kind == EX_NEW) {
+                    allocInit = true;
+                } else if (s->u.var.init->kind == EX_GENCALL) {
+                    const char *gn = s->u.var.init->u.gencall.name;
+                    allocInit = strcmp(gn, "alloc") == 0 || strcmp(gn, "poolSlice") == 0
+                             || strcmp(gn, "poolSliceRaw") == 0;
+                }
+            }
+            if (!s->u.var.mut && allocInit) {
                 ckWarn(c, s->line,
                        "`let` is about the **name**, not the object: it promises you will not"
                        " write through this name. A fresh allocation has no other name, so"

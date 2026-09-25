@@ -34,17 +34,11 @@ fn toInt(s: slice<u8>, dflt: i64) -> i64 {
 /* 第 i 条记录的第 j 个字节：33..122，可打印、三种语言逐字节相同。 */
 fn recByte(i: i64, j: i64) -> u8 { return u8(33 + ((i + j * i64(3)) % i64(90))) }
 
-/* 原地丢掉前 n 个字节（memmove 语义）。`string` 没有 erase，这就是这门语言里那条路：
- * 缓冲区字段是公开的 `mut slice<u8>`，写一个字节循环即可（不新分配、不动容量）。 */
-fn dropFront(s: mut ref string, n: i64) {
-    var d: i64 = 0
-    while d + n < s.len() {
-        s.buf[d] = s.buf[d + n]
-        d = d + i64(1)
-    }
-    s.n = s.n - n
-}
-
+/* 丟掉最前面的字节走 `string::removeFront` —— 一次 `memmove`。
+ *
+ * 这里原来是一个**逐字节**循环（`s.buf[d] = s.buf[d+n]`）：清零/搬移本身没错，但它每字节
+ * 一次边界检查，而 Go 那边是 `copy(buf, buf[n:])`。补上 `copyInto` 原语之后 `string` 提供
+ * `removeFront`，这一处就与 Go 同构了（DEVLOG 第十一段续八/九）。 */
 fn main(args: slice<slice<u8>>) -> i32 {
     var ops: i64 = i64(2000000)
     if args.len > i64(1) { ops = toInt(args[1], ops) }
@@ -68,7 +62,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         }
         if s.len() >= CAP {
             acc = acc + i64(s.buf[i64(0)]) + i64(s.buf[s.len() - i64(1)])
-            dropFront(ref s, s.len() - KEEP)
+            s.removeFront(s.len() - KEEP)
             trunc = trunc + i64(1)
         }
         i = i + i64(1)
