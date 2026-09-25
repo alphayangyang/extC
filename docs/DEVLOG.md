@@ -8711,3 +8711,6 @@ extc_pool_zoneLeaveTo(__extc_zm2);
    `timeout: failed to execute process: Permission denied`，池那一节永远算失败。
    这是**修之前就存在**的（`git ls-tree HEAD` 就是 100644），跟本轮改动无关；顺手 `chmod +x`
    把它修正，`check.sh quick` 才回到"通过 26，失败 0"。
+
+同轮补记（第 29 轮）：`check.sh quick </dev/null` 跑完 —— **通过 26 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_tree.log`）。
+池树"两条链"（zone 根链管寿命 + 父池子链管逻辑）与 `rt_tree` 判据一起过了总闸门；`tests/pool` / `tests/stl` 失败 0。
