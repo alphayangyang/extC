@@ -83,6 +83,9 @@
 | 每实例调用目标 | 单态化阶段重写整棵调用图 | `Expr.func` 单指针 + body 共享 | 泛型体里调泛型要靠 `CallCheck` + 重定向（已解决）；方法靠 `resolveOnInstance` 钩子 |
 | 代码共享 | Rust/C++ 一实例一份；**Go GC-shape stenciling** | 一实例一份（无 shape 共享） | 语义最干净，体积可能大 |
 | 特化 | C++ 显式特化 / Rust specialization | 无 | 整数特化只能手写（`mapI64` 那条路） |
+| 跨模块 | C++ 模板要头文件可见；Rust 全程序单态化 | 名字靠**模块前缀**消歧（`pair` → `liba$pair`）+ `aliases` 表做查找（types.c）；实例进**本模块**的 `m->funcs` | 没有"模板定义必须在头里"的约束 ✓；同一泛型被两个模块实例化会各留一份实例（无跨模块去重） |
+| 递归 | C++ `-ftemplate-depth`；Rust `recursion_limit` | **实例化**：按需建 + `ttEquals` 去重，嵌套实例（`node<node<i64>>`）实测可用（`5 9`）✓ 没找到独立的实例闭包深度上限；**运行期**递归上限 `EXTC_REC_LIMIT = 100000`（超了 trap） | 泛型递归不会撞编译器深度限制，但运行期有 10 万层的 trap |
+| 特化 | C++ 显式特化 / Rust specialization | 无 | 整数特化只能手写（`mapI64` 那条路） |
 
 ## 2026-09-26（第十一段续十）· 第 ③ 条**量过、两次都没成、撤了**；但按作者口径补上了**复杂度判据**
 
