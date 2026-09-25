@@ -1,0 +1,78 @@
+// **用户自定义池底容器**（就写在入口文件里，不是库模块）—— 常设判据。
+//
+// 这条钉住的是一个真实的坑（本轮修掉）：库里的容器"对地方透明"（构造器自己不压 zone），
+// 而用户写在**入口文件**里的构造器会被当成一个地方 ⇒ 里面的 `extc_pool_new` 如果把池生进
+// 构造器自己的帧，返回时就随帧回收 ⇒ 板块悬垂（实测：段错误）。修法是让运行期那一句也
+// 算池站点（`calleeMakesPool` 按名字认 extern `extc_pool_new`）⇒ 它跟着容器一起提权，
+// 生成 `extc_pool_new_at(-1, __extc_home_zone)` —— 池生在**调用者选的那个地方**。
+//
+// 判据：`n=10 cap=13 v9=81 live=1 bytes=104`（1.5 倍扩容：4→6→9→13；104 = 13×8）
+// + 函数里建好返回给 main 仍然有效（提权）+ `release` 之后 `bytes=0`。
+// expect: n=10 cap=13 v9=81 live=1 bytes=104
+use std::io
+use std::sys::pool as syspool
+
+/* 自定义池底容器：照 stl::vector 那套骨架写（板块 + 池记录 + 世代 + release） */
+struct mybuf<T> {
+    pid:    i64
+    pidGen: u64
+    vals:   mut slice<T>
+    n:      i64
+    cap:    i64
+
+    fn withCap(c: i64) -> mybuf<T> {
+        let rp  = syspool::extc_pool_new(i64(-1))          /* 随容器登记一条池记录 */
+        let rpg = syspool::extc_pool_generation(rp)
+        var cc: i64 = c
+        if cc < i64(4) { cc = i64(4) }
+        var b: mybuf<T> = {
+            pid: rp, pidGen: rpg,
+            vals: poolSlice<T>(rp, cc),                    /* 存储从**自己的板块**拿 */
+            n: i64(0), cap: cc,
+        }
+        return b
+    }
+
+    fn push(self: mut ref mybuf<T>, v: T) {
+        if self.n >= self.cap {
+            let ncap = self.cap + self.cap / i64(2)
+            self.vals = poolResize<T>(self.pid, self.vals, ncap)   /* 原块加长 */
+            self.cap  = ncap
+        }
+        self.vals[self.n] = v
+        self.n = self.n + i64(1)
+    }
+
+    fn get(self: ref mybuf<T>, i: i64) -> ?T {
+        if i < i64(0) || i >= self.n { return none }
+        return some(self.vals[i])
+    }
+
+    fn release(self: mut ref mybuf<T>) {
+        if self.pid < i64(0) { return }
+        self.vals = poolResize<T>(self.pid, self.vals, i64(0))
+        self.cap  = i64(0)
+        syspool::extc_pool_reset(self.pid)
+        syspool::extc_pool_drop(self.pid)
+        self.pid = i64(-1)
+    }
+}
+
+/* 函数里建、返回给调用方 —— 提权应当自动生效（容器构造是逃逸站点）*/
+fn build() -> mybuf<i64> {
+    var b = mybuf<i64>::withCap(i64(4))
+    var i: i64 = 0
+    while i < i64(10) {
+        b.push(i * i)
+        i = i + i64(1)
+    }
+    return b
+}
+
+fn main() -> i32 {
+    var b = build()
+    io::cout << "n=" << b.n << " cap=" << b.cap << " v9=" << (b.get(i64(9)) ?? i64(-1))
+    io::cout << " live=" << syspool::extc_pool_live() << " bytes=" << syspool::extc_pool_bytesLive() << "\n"
+    b.release()
+    return 0
+}

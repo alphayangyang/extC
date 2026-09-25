@@ -62,6 +62,9 @@ else
 fi
 rm -rf "$TMPC2"
 
+echo "== 用户自定义池底容器（写在入口文件里，不是库模块）：板块 + 池记录 + 提权 =="
+run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"
+
 echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）=="
 run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
 
