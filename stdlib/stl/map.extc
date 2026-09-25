@@ -717,11 +717,11 @@ struct map<K, V> {
      * `vector` / `string` / `hashMap` do). The check is on the birth generation, so a stale copy of
      * a released map cannot drop somebody else's pool. */
     /* **守卫**：这一份有序表值还指着它的池吗？陈旧 ⇒ 四处存储收空，下一次访问带位置地 trap。 */
-    fn pStale(self: ref map<K, V>) -> bool {
+    @private fn pStale(self: ref map<K, V>) -> bool {
         if self.pid < i64(0) { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
-    fn pPoison(self: mut ref map<K, V>) {
+    @private fn pPoison(self: mut ref map<K, V>) {
         self.nodes = poolSlice<bnode<K, V>>(i64(-1), i64(0))
         self.keys  = poolSlice<K>(i64(-1), i64(0))
         self.vals  = poolSlice<V>(i64(-1), i64(0))

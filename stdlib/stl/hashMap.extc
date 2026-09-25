@@ -301,11 +301,11 @@ struct hashMap<K, V> {
     /* 整棵池树还回去：先放值池（它的三块视图会被收成 0 长），再放这个容器自己的记录。
      * 父池的递归本来也会带走子池，两处都做不冲突：谁先到谁放，后到的查不到活记录就跳过。 */
     /* **守卫**：这一份哈希表值还指着它的池吗？陈旧 ⇒ 四列收空，下一次访问带位置地 trap。 */
-    fn pStale(self: ref hashMap<K, V>) -> bool {
+    @private fn pStale(self: ref hashMap<K, V>) -> bool {
         if self.pid < i64(0) { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
-    fn pPoison(self: mut ref hashMap<K, V>) {
+    @private fn pPoison(self: mut ref hashMap<K, V>) {
         self.keys = poolSlice<K>(i64(-1), i64(0))
         self.tag  = poolSlice<u8>(i64(-1), i64(0))
         self.slot = poolSlice<i32>(i64(-1), i64(0))

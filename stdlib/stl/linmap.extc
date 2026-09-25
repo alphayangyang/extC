@@ -146,11 +146,11 @@ struct linMap<K, V> {
 
     /* 把这一层还回去：两个视图先收成 0 长，再把板块还给池（之后越界是响亮 trap）。 */
     /* **守卫**：这一份线性表值还指着它的池吗？陈旧 ⇒ 两个视图收空，下一次访问带位置地 trap。 */
-    fn pStale(self: ref linMap<K, V>) -> bool {
+    @private fn pStale(self: ref linMap<K, V>) -> bool {
         if self.pid < i64(0) { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
-    fn pPoison(self: mut ref linMap<K, V>) {
+    @private fn pPoison(self: mut ref linMap<K, V>) {
         self.keys = poolSlice<K>(i64(-1), i64(0))
         self.vals = poolSlice<V>(i64(-1), i64(0))
         self.n    = i64(0)
