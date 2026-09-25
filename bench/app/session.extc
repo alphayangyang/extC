@@ -1,15 +1,17 @@
-// bench/app/session.extc —— **场景 A：会话/连接表**（串行阻塞服务的核心数据结构）
+// bench/app/session.extc —— **场景 A：会话 / 连接表**（串行阻塞服务的核心数据结构）
 //
 // 模拟一个服务端：每个"连接"有 id、用户、状态、字节数、最后活动时间。
 // 负载是三件事的混合 —— 查找（60%）、建立/更新（20%）、断开（20%）——
-// 这正是 `hashMap` 要扛的形状：**高频写 + 高频删 + 少量读**，而且键是 i64（连接 id）。
+// 这正是 `hashMap` 要扛的形状：**高频写 + 高频删 + 少量读**，键是 i64（连接 id）。
 //
-// 与 `bench/stl` 的区别：那里量单个操作；这里量**混在一起之后**的真实代价
-// （miss 的键也要查、删掉的键要能立刻被别人复用、容量要跟着活跃数走）。
+// 用法：session <ops> <active>      （默认 2000000 / 65536）
+// 输出（三种语言必须逐字相同）：a.len=<活跃条目> a.hits=<命中查询数> a.acc=<校验和>
 //
-// 用法：session.extc <轮数>（默认 2000000）
+// ⚠️ 写负载时**下标与周期必须互质**：`k = i % active`、相位 `op = i % 977`（977 是素数，
+// 与 2 的幂互质）⇒ 同一个 key 的一生里查询/更新/删除会按不同相位交错。第一版拿 `i % 5`
+// 当相位，同一个 key 固定在同一个相位上（建了就删、查时全 miss）⇒ 命中率恒为 0，
+// 量出来的是"全 miss"的形状，与真实会话表完全不是一回事。
 use std::io
-use std::sys::pool as syspool
 use stl::hashMap
 
 struct session {
@@ -33,26 +35,19 @@ fn toInt(s: slice<u8>, dflt: i64) -> i64 {
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var n: i64 = i64(2000000)
-    if args.len > i64(1) { n = toInt(args[1], n) }
+    var ops: i64 = i64(2000000)
+    var active: i64 = i64(65536)
+    if args.len > i64(1) { ops = toInt(args[1], ops) }
+    if args.len > i64(2) { active = toInt(args[2], active) }
 
-    var live: hashMapI64<session> = hashMapI64<session>::withCap(i64(4096))
+    var live: hashMapI64<session> = hashMapI64<session>::withCap(active)
     var acc: i64 = 0
     var hits: i64 = 0
-    /* ⚠️ 下标与周期**必须互质**，否则负载会退化成一串"建了就删、查时全 miss"。
-     * 第一版：`k = i % 65536` 配 `op = i % 5` —— 同一个 key 固定在 `i%5` 的同一个相位上
-     * （建、删、再查时光看相位就知道已经被删了）⇒ 命中率恒为 0，量出来的是"全 miss"的
-     * 形状（实测：n=800000 要 6.1 s，每轮平均探测十万个桶）。
-     * 现在：key 走 65536 的循环、相位走 977 的循环（互质）⇒ 每个 key 的一生里
-     * 查询/更新/删除会按不同相位交错，命中率与真实会话表同量级。 */
     var i: i64 = 0
-    while i < n {
-        let k = i % i64(65536)                    /* 活跃集：65536 个连接 id */
-        let op = i % i64(977)                     /* 与 65536 互质 ⇒ 相位逐轮错开 */
-        let ph = op % i64(5)                      /* 0,1,2 = 查；3 = 建/更；4 = 删 */
-        /* ⚠️ 顺序有讲究：**先查后动**。第一版写成"先删后查"（同一个 key 在 i%5==3 建、
-         * i%5==4 删、等 i%5∈{0,1,2} 来查时早被删了）⇒ 命中率恒为 0，测出来的是
-         * "全部 miss"的负载，与设想的"会话表"完全不是一回事。 */
+    while i < ops {
+        let k = i % active                           /* 活跃集：active 个连接 id */
+        let op = i % i64(977)                        /* 与 2 的幂互质 ⇒ 相位逐轮错开 */
+        let ph = op % i64(5)                         /* 0,1,2 = 查；3 = 建/更；4 = 删 */
         if ph < i64(3) {
             /* `get` 给 `?session`；`??` 取不出来就给零值。命中与否用 bytes 是否为 0 判
              * （这个负载里 bytes = i + k 恒 > 0 ⇒ 零值只可能来自 miss）。 */
@@ -69,7 +64,6 @@ fn main(args: slice<slice<u8>>) -> i32 {
         }
         i = i + i64(1)
     }
-    io::cout << "n=" << n << " len=" << live.len() << " hits=" << hits << " acc=" << (acc % i64(1000000007))
-    io::cout << " live=" << syspool::extc_pool_bytesLive() << "\n"
+    io::cout << "a.len=" << live.len() << " a.hits=" << hits << " a.acc=" << (acc % i64(1000000007)) << "\n"
     return 0
 }

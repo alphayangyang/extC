@@ -677,6 +677,8 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
 | arena 帧内留垃圾 | 可加 `reserve()`；**不是不安全** |
 | 容器拷贝 = 共享存储 | 写文档说明即可；**不是不安全** |
 | `scan(mut a, mut b, ...)` 变参 | 主人要，但**明确推迟**（细节多）|
+| **`@poolObject` 让热循环多带一个 zone 钩子**（2026-09-26 **量了，暂不动**）| `calleeMakesPool` 的第一句是 `if (f->owner && f->owner->poolObject) return true;` ⇒ `@poolObject` 类型的**每一个**方法（含 `hashMap::get`）都被当成"会建池" ⇒ 那个块每轮压/弹一次 zone。实测（`bench/app/session.extc`，手工去掉循环体里那两行、其余逐字节相同）：**1.84~1.98 ns/op，端到端约 10%**（2e6: 0.0420→0.0383 s；5e7: 1.0312→0.9324 s）。**不动的原因**：这个谓词同时服务三处（zone 钩子 / 逃逸深度 / 提权站点），后两处要的是"结果会不会住在池上"，改错的后果是 use-after-free 而不是慢。真要动的形状已清楚（给 zone 一侧单独的"这次调用能不能走到 `extc_pool_new`"谓词 = `f->makesPool \|\| (isAssoc && owner->makesPoolAny) \|\| 名字是 extc_pool_new*`），但必须单独一轮，判据是 `tests/arena*` + `tests/pool` + `tests/asan` + "少发的钩子没让任何池漏登记"。详见 DEVLOG 2026-09-26（第十一段续二）|
+| **其余 bench 脚本没带 `-fwrapv`**（2026-09-26 审计出来的；待修）| `MANUAL.md` §8 把"算术无 UB"落在 `-fwrapv` 上（`src/main.c` 的驱动也一直这么编），但**自己调 C 编译器**的脚本各写各的旗子：`tests/*/run.sh` 已全部补齐（那一刀修完，`check.sh quick` 26/26），而 `bench/` 下还有 11 个 `run.sh` 没带（compile / heavy / io / multi / oi / poolgc / stl / stress / vararray / zero / zoneexit）。**为什么没顺手扫**：它们各自对应一张已发布的 `RESULTS.md`，改旗子后若生成物里真有依赖 UB 的算术，那些数字会变 ⇒ 修的时候要**同时重跑那几张表**，不能只改旗子（否则就是"数字与口径不一致"）。**先记着**：`bench/app` 与 `bench/bigmatrix`/`bench/gc`/`bench/run.sh` 本来就带了 |
 
 ---
 

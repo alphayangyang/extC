@@ -49,6 +49,10 @@ fn main() -> i32 {
 - `mandel`（浮点）与 `cdq`（随机访问）与 C 相差 5% 以内。
 - `radix`（10⁷ 个 u32 排序）比 C 慢 1.64 倍。原因可量化：切片索引的边界检查，以及 `new` 的零初始化保证。
 
+另有三种**应用形状**上的 STL 横评（extC STL vs C++ STL vs Go）：会话/连接表（高频读写删的
+哈希表）、路由表（有序表的前驱查找与区间扫描）、请求日志缓冲（动态字节缓冲）。测量脚本见
+[`bench/app/`](bench/app/)，完整结果与归因见 [`RESULTS.md`](bench/app/RESULTS.md)。
+
 ## 快速开始
 
 ```sh
@@ -95,7 +99,7 @@ make -j"$(nproc)"                        # 只依赖 C11 标准库，产出 buil
 src/       编译器（C11 实现，按 pass 拆分）
 stdlib/    prelude 与标准库（用 extC 写；std/sys 是唯一声明 C 原语的一层）
 examples/  示例          tests/  回归用例      tools/  辅助工具
-bench/     横向基准（含六语言矩阵）             docs/   文档
+bench/     横向基准（含六语言矩阵与 bench/app 的三场景 STL 横评）   docs/   文档
 ```
 
 ## 许可证

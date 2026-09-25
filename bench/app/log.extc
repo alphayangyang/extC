@@ -1,0 +1,78 @@
+// bench/app/log.extc —— **场景 C：请求日志 / 动态缓冲**
+//
+// 模拟一个"有界日志缓冲"：请求记录按字节追加进去，缓冲满了就**截断**（丢掉最老的一半，
+// 留下最新的 KEEP 字节），期间还会在缓冲里**找**一条刚写进去的记录（`find`）。
+// 三种语言用各自最自然的动态字节缓冲：extC `stl::string` · C++ `std::string` · Go `[]byte`。
+//
+// 用法：log <ops>            （默认 2000000）
+// 输出（三种语言必须逐字相同）：
+//   c.appended=<累计追加字节> c.trunc=<截断次数> c.find=<find 偏移之和> c.acc=<校验和> c.len=<最终长度>
+//
+// 记录是**定长 24 字节**、内容由 `i` 决定（不做十进制格式化 ⇒ 三种语言的工作量逐字节一致）。
+// 每 512 轮找一次"上一条记录的前 4 个字节"：它一定在缓冲**末尾**，所以 `find` 会扫过几乎
+// 整条缓冲 —— 这是这个场景里最贵的一步，也正是要量的东西。
+use std::io
+use stl::string
+
+let CAP:  i64 = 16384
+let KEEP: i64 = 8192
+let REC:  i64 = 24
+
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+/* 第 i 条记录的第 j 个字节：33..122，可打印、三种语言逐字节相同。 */
+fn recByte(i: i64, j: i64) -> u8 { return u8(33 + ((i + j * i64(3)) % i64(90))) }
+
+/* 原地丢掉前 n 个字节（memmove 语义）。`string` 没有 erase，这就是这门语言里那条路：
+ * 缓冲区字段是公开的 `mut slice<u8>`，写一个字节循环即可（不新分配、不动容量）。 */
+fn dropFront(s: mut ref string, n: i64) {
+    var d: i64 = 0
+    while d + n < s.len() {
+        s.buf[d] = s.buf[d + n]
+        d = d + i64(1)
+    }
+    s.n = s.n - n
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var ops: i64 = i64(2000000)
+    if args.len > i64(1) { ops = toInt(args[1], ops) }
+
+    var s: string = string::withCap(CAP)
+    var trunc: i64 = 0
+    var findSum: i64 = 0
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < ops {
+        var j: i64 = 0
+        while j < REC {
+            s.push(recByte(i, j))
+            j = j + i64(1)
+        }
+        /* 找"上一条记录的前 4 个字节"：它只可能出现在缓冲末尾附近 ⇒ find 扫满整条缓冲。 */
+        if i % i64(512) == i64(0) && i > i64(0) {
+            var needle: [4]u8 = [recByte(i - i64(1), i64(0)), recByte(i - i64(1), i64(1)), recByte(i - i64(1), i64(2)), recByte(i - i64(1), i64(3))]
+            let at = s.find(needle[..]) ?? i64(-1)
+            findSum = findSum + at
+        }
+        if s.len() >= CAP {
+            acc = acc + i64(s.buf[i64(0)]) + i64(s.buf[s.len() - i64(1)])
+            dropFront(ref s, s.len() - KEEP)
+            trunc = trunc + i64(1)
+        }
+        i = i + i64(1)
+    }
+    io::cout << "c.appended=" << (ops * REC) << " c.trunc=" << trunc << " c.find=" << (findSum % i64(1000000007)) << " c.acc=" << acc << " c.len=" << s.len() << "\n"
+    return 0
+}

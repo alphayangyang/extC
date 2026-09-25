@@ -177,6 +177,13 @@ if [ "${1:-}" != "quick" ]; then
     echo "== 基准：STL 容器横评（extC 的容器 vs C++ STL；同算法同参数，校验和必须一致）=="
     if ./bench/stl/run.sh >/tmp/extc-bench-stl.log 2>&1; then ok "$(grep -m1 '^通过' /tmp/extc-bench-stl.log)"
     else bad "bench/stl"; tail -12 /tmp/extc-bench-stl.log; fi
+    echo "== 基准：**综合应用场景横评**（会话表 / 路由表 / 日志缓冲；extC STL vs C++ STL vs Go）=="
+    # 缩小规模当回归（与 compile/oi 那两节同一规矩），`WRITE_RESULTS=0` ⇒ 不冲掉完整表。
+    if aout=$(SCALE=1 RUNS=1 WRITE_RESULTS=0 ./bench/app/run.sh 2>&1); then
+        ok "综合场景横评（三语言校验和一致 ✓ · 完整表见 bench/app/RESULTS.md）"
+    else
+        bad "综合场景横评（构建失败 / 语言之间对拍不一致 ✗）"; echo "$aout" | tail -20 | sed 's/^/  /'
+    fi
     echo "== 基准：随机负载压力（同种子对拍 C）=="
     ./bench/stress/run.sh 2>&1 | sed 's/^/  /'
     echo "== 基准：**编译时长**（合成大程序；顺带抓「生成的 C 编不过」那类问题）=="
