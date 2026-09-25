@@ -28,6 +28,8 @@
  * sibling that can spare one, otherwise it merges, and every node a merge retires goes back on a
  * free list for the next split to reuse. Stage 3 moves the stores and the node records into pools,
  * which adds `release` / `shrink` and turns the free list into pool slots. */
+use std::sys::pool as syspool    /* 运行期池：容器诞生时登记，release 时整批还 */
+
 let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
 let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
 
@@ -58,6 +60,8 @@ struct map<K, V> {
     ncap:   i64               /* nodes the stores have room for */
     root:   i32
     freeHead: i32             /* chain of recycled nodes (through `next`), -1 when empty */
+    pid:    i64               /* runtime pool of this container (`release` hands it back) */
+    pidGen: u64               /* its generation: a stale copy must not release somebody else's */
     n:      i64               /* live entries */
     path:   mut slice<i32>    /* scratch: the descent path of `put` / `remove` */
     side:   mut slice<i32>    /* scratch: which child slot was taken at each level */
@@ -67,12 +71,15 @@ struct map<K, V> {
     fn withCap(want: i64) -> map<K, V> {
         var c: i64 = i64(4)
         while c < want { c = c * i64(2) }
+        let rp  = syspool::extc_pool_new(i64(-1))
+        let rpg = syspool::extc_pool_generation(rp)
         var m: map<K, V> = {
             nodes: new bnode<K, V>[c],
             keys:  new K[c * i64(17)],
             vals:  new V[c * i64(17)],
             kids:  new i32[c * i64(18)],
-            nnodes: i64(0), ncap: c, root: i32(0), freeHead: i32(-1), n: i64(0),
+            nnodes: i64(0), ncap: c, root: i32(0), freeHead: i32(-1),
+            pid: rp, pidGen: rpg, n: i64(0),
             path: new i32[16], side: new i32[16], depth: i64(0),
         }
         m.root = m.newNode(true)
@@ -637,6 +644,107 @@ struct map<K, V> {
             self.freeNode(old)
         }
         return true
+    }
+
+    /* Hand the container's runtime pool back (the map and its pool are born together, exactly as
+     * `vector` / `string` / `hashMap` do). The check is on the birth generation, so a stale copy of
+     * a released map cannot drop somebody else's pool. */
+    fn release(self: mut ref map<K, V>) {
+        if self.pid < i64(0) { return }
+        if syspool::extc_pool_generation(self.pid) != self.pidGen {
+            self.pid = i64(-1)
+            return
+        }
+        syspool::extc_pool_reset(self.pid)
+        syspool::extc_pool_drop(self.pid)
+        self.pid = i64(-1)
+    }
+
+    /* Lower the water mark: repack the LIVE nodes into ids 0..k-1, drop the free list and reallocate
+     * the stores at exactly that size. Order, capacity and every entry stay where they were.
+     *
+     * This is what `shrink` means in this model (POOLS.md §7): the working set, not RSS -- the arena
+     * cannot return memory piecewise, so what shrinks is how much of it this container still asks
+     * for. Note the deviation from the plan's wording: the tree does NOT keep values behind pool
+     * handles. The stores already give what those handles were for (relocatable, contiguous,
+     * index-addressed storage), and a handle in every leaf would add an indirection per read for no
+     * gain -- the surface exposes entries, never element identities. */
+    fn shrink(self: mut ref map<K, V>) {
+        var order:   mut slice<i32> = new i32[self.nnodes]   /* live nodes in DFS order = new ids */
+        var old2new: mut slice<i32> = new i32[self.nnodes]
+        var i: i64 = i64(0)
+        while i < self.nnodes {
+            old2new[i] = i32(-1)
+            i = i + i64(1)
+        }
+        var count: i64 = i64(1)
+        order[i64(0)] = self.root
+        old2new[i64(self.root)] = i32(0)
+        var head: i64 = i64(0)
+        while head < count {
+            let id = order[head]
+            if !self.leafOf(id) {
+                var c: i64 = i64(0)
+                while c <= self.bn(id) {
+                    let ch = self.kd(id, c)
+                    order[count] = ch
+                    old2new[i64(ch)] = i32(count)
+                    count = count + i64(1)
+                    c = c + i64(1)
+                }
+            }
+            head = head + i64(1)
+        }
+        var nk: mut slice<K>   = new K[count * i64(17)]
+        var nv: mut slice<V>   = new V[count * i64(17)]
+        var nc: mut slice<i32> = new i32[count * i64(18)]
+        var nn: mut slice<bnode<K, V>> = new bnode<K, V>[count]
+        i = i64(0)
+        while i < count {
+            let src = i64(order[i])
+            let kb  = i * i64(17)
+            let cb  = i * i64(18)
+            let skb = src * i64(17)
+            let scb = src * i64(18)
+            var j: i64 = i64(0)
+            while j < i64(17) {
+                nk[kb + j] = self.keys[skb + j]
+                nv[kb + j] = self.vals[skb + j]
+                j = j + i64(1)
+            }
+            j = i64(0)
+            while j < i64(18) {
+                var kid: i32 = self.kids[scb + j]
+                if kid >= i32(0) { kid = old2new[i64(kid)] }
+                nc[cb + j] = kid
+                j = j + i64(1)
+            }
+            var nd: bnode<K, V> = self.nodes[src]
+            nd.keys = nk[kb..kb + i64(17)]
+            nd.vals = nv[kb..kb + i64(17)]
+            nd.kids = nc[cb..cb + i64(18)]
+            nn[i] = nd
+            i = i + i64(1)
+        }
+        /* The DFS visits leaves left to right, so the chain is rebuilt in the same pass. */
+        var prev: i32 = i32(-1)
+        i = i64(0)
+        while i < count {
+            if self.leafOf(order[i]) {
+                if prev >= i32(0) { nn[i64(prev)].next = i32(i) }
+                prev = i32(i)
+            }
+            i = i + i64(1)
+        }
+        if prev >= i32(0) { nn[i64(prev)].next = i32(-1) }
+        self.keys   = nk
+        self.vals   = nv
+        self.kids   = nc
+        self.nodes  = nn
+        self.nnodes = count
+        self.ncap   = count
+        self.freeHead = i32(-1)
+        self.root   = i32(0)
     }
 
     fn clear(self: mut ref map<K, V>) {

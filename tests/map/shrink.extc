@@ -1,0 +1,62 @@
+// shrink：插满 20000 个键（节点数冲到峰值）→ 删掉 19900 个 → shrink 把**活节点**压实到最小节点区间
+// 判据：压实后节点数远小于峰值（≤ 1/8）· 压实后 len=100 且这 100 个键全部可取回、按序遍历 = 19900..19999 ·
+//       排名正确 · 删过的键查不到 · 压实之后再插入仍然正常（存储与视图都被重建过）
+// expect: len=200|bad=0|small=1|grow=1
+use std::io
+use stl::map
+
+fn main() -> i32 {
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    var i: i64 = i64(0)
+    while i < i64(20000) {
+        m.put(i, i32(i * i64(3)))
+        i = i + i64(1)
+    }
+    var peak: i64 = m.nodeCount()
+    i = i64(0)
+    while i < i64(19900) {
+        m.remove(i)
+        i = i + i64(1)
+    }
+    var before: i64 = m.nodeCount()
+    m.shrink()
+    var after: i64 = m.nodeCount()
+
+    var bad: i64 = i64(0)
+    if m.len() != i64(100) { bad = bad + i64(1) }
+    i = i64(19900)
+    var r: i64 = i64(0)
+    while i < i64(20000) {
+        var v: i32 = m.get(i) ?? i32(-1)
+        if i64(v) != i * i64(3) { bad = bad + i64(1) }
+        if m.keyAt(r) != i { bad = bad + i64(1) }
+        if m.valAt(r) != i32(i * i64(3)) { bad = bad + i64(1) }
+        if m.lowerBound(i) != r { bad = bad + i64(1) }
+        i = i + i64(1)
+        r = r + i64(1)
+    }
+    if m.contains(i64(0)) { bad = bad + i64(1) }
+    if m.contains(i64(19899)) { bad = bad + i64(1) }
+
+    /* 压实之后继续插入：存储、视图与叶子链都被重建过，这一步才算真的验完 */
+    i = i64(20000)
+    while i < i64(20100) {
+        m.put(i, i32(i * i64(3)))
+        i = i + i64(1)
+    }
+    var grow: i64 = i64(1)
+    i = i64(19900)
+    while i < i64(20100) {
+        var v: i32 = m.get(i) ?? i32(-1)
+        if i64(v) != i * i64(3) { grow = i64(0) }
+        i = i + i64(1)
+    }
+    if m.len() != i64(200) { grow = i64(0) }
+    if grow == i64(0) { bad = bad + i64(1) }
+
+    var small: i64 = i64(0)
+    if after * i64(8) <= peak { small = i64(1) }
+    io::cout << "peak=" << peak << " before=" << before << " after=" << after
+    io::cout << " len=" << m.len() << " bad=" << bad << " small=" << small << " grow=" << grow << "\n"
+    return 0
+}

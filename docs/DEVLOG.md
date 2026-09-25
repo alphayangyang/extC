@@ -8358,3 +8358,20 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 —— 乱序插入后按序遍历正确 · 重复 `put` 给假 · `lowerBound` 排名正确（含越界端 lb6=5）· 删中间元素后
 剩下的仍有序且排名跟上。同轮把 STL 套件的 ASan 节改成 `asan_ok` 辅助函数，覆盖 `vector` 与
 `setOrdered` 两个用例（原来只跑 `vector`）。
+
+### 周期 25：① 第三步（上）—— map 的运行期池登记 · `release` · `shrink`
+
+- `map<K, V>` 现在和 `vector` / `string` / `hashMap` 一样，在构造时登记一个运行期池（`pid` / `pidGen`），
+  `release()` 校验出生世代之后整批还；陈旧拷贝不会误放别人的池。
+- `shrink()`：把**活节点**按 DFS 序压实到 id `0..k-1`（子节点下标过 remap 表、叶子链在同一趟里重连），
+  丢掉回收链，并把 keys / vals / kids 三块存储按 `k` 重新分配 ⇒ 水印真正下降，而不只是"删了但占着"。
+- **一处偏离计划措辞的地方，写进代码注释等作者确认**：树**没有**把值放在池句柄后面。三块扁平存储已经给了
+  那些句柄想要的东西（可搬迁、连续、下标寻址），而每个叶子再加一个句柄只会给每次读多一层间接；这个面
+  暴露的是条目，从来不是元素身份。
+- 实测（两个新用例）：
+  - `tests/map/shrink.extc` → `peak=2810 before=2810 after=12 len=200 bad=0 small=1 grow=1`：2 万键插满、
+    删到 100，压实把节点数从 2810 降到 **12**；压实后 `get` / 按序遍历 / 排名全对，而且**再插 100 个**
+    仍然正常（存储与视图都被重建过，这一步才算验完）。
+  - `tests/map/release.extc` → `live=0 made=1 closed=0 again=1 out=0`：建 map 池 +1、`release` 归零、
+    再建复用、出块归零。
+- `tests/map` 现有六个用例（`sorted` · `bounds` · `stress` · `churn` · `shrink` · `release`）全绿，含 ASan。

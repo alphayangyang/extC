@@ -38,17 +38,23 @@ run_case stress
 echo "== churn：5 轮「插满 2000 → 全删」⇒ 节点回收（nodeCount 不得随轮数线性增长）=="
 run_case churn
 
+echo "== shrink：2 万键插满后删到 100 ⇒ 活节点压实（水印下降），且压实后仍可插入 =="
+run_case shrink
+
+echo "== release：容器与运行期池一起活、一起还 =="
+run_case release
+
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"
 if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
-    for t in sorted bounds stress churn; do
+    for t in sorted bounds stress churn shrink release; do
         "$EXTC" "tests/map/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
     done
-    [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress · churn  ->  ASan 干净"
+    [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress · churn · shrink · release  ->  ASan 干净"
 else
     echo "  skip  gcc 不支持 -fsanitize=address"
 fi
