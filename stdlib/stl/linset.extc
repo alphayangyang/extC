@@ -37,6 +37,9 @@ struct linSet<T> {
 
     fn clear(self: mut ref linSet<T>) { self.m.clear() }
 
+    /* 整棵池树还回去（本集合自己的池）*/
+    fn release(self: mut ref linSet<T>) { self.m.release() }
+
     /* Member `i` in insertion order -- until a `remove`, which moves the last member
      * there (swap-remove, as in `linMap`). This is what a caller walks with `len`. */
     fn at(self: ref linSet<T>, i: i64) -> T { return self.m.keyAt(i) }

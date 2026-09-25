@@ -1,0 +1,14 @@
+// 同一形状，但一开始就预留到 1e6 条目 ⇒ 一次 growStores 都不发生（对照组的"下界"）
+use std::io
+use stl::map
+
+fn main() -> i32 {
+    var m = map<i64, i32>::withCap(i64(200000))
+    var i: i64 = 0
+    while i < i64(1000000) {
+        m.put(i, i32(i))
+        i = i + i64(1)
+    }
+    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << "\n"
+    return 0
+}

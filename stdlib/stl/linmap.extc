@@ -28,9 +28,12 @@
  *     `remove`; `keyAt` / `valAt` are what they are for.
  */
 use std::io
+use std::sys::pool as syspool    /* 运行期池记录 + 板块原语：这张表的两个视图住在自己的板块上 */
 
 /* A `K -> V` table searched linearly. */
 struct linMap<K, V> {
+    pid:    i64            /* 这张表自己的池记录（一个非嵌套容器 = 一个池）*/
+    pidGen: u64
     keys: mut slice<K>
     vals: mut slice<V>
     n:    i64              /* live entries, always the front `n` of both views */
@@ -40,7 +43,15 @@ struct linMap<K, V> {
     fn withCap(want: i64) -> linMap<K, V> {
         var c: i64 = i64(4)
         while c < want { c = c * i64(2) }
-        return { keys: new K[c], vals: new V[c], n: i64(0), cap: c }
+        let rp  = syspool::extc_pool_new(i64(-1))
+        let rpg = syspool::extc_pool_generation(rp)
+        /* 两个视图在**这张表自己的板块**上：增长时同一块加长，旧的不会留给 arena。 */
+        var lm: linMap<K, V> = {
+            pid: rp, pidGen: rpg,
+            keys: poolSlice<K>(rp, c), vals: poolSlice<V>(rp, c),
+            n: i64(0), cap: c,
+        }
+        return lm
     }
 
     fn len(self: ref linMap<K, V>) -> i64 { return self.n }
@@ -111,20 +122,27 @@ struct linMap<K, V> {
 
     fn clear(self: mut ref linMap<K, V>) { self.n = i64(0) }
 
-    /* Double the storage and copy both views. The old arrays stay where they are: the
-     * arena cannot free, and a pool reclaims them once it exists. */
+    /* 增到 1.5 倍：**在原块上加长**（`poolResize` 保住内容）。这里连拷贝循环都不需要 ——
+     * 这张表的下标就是插入序，加长不改变任何已有元素的位置。 */
     fn grow(self: mut ref linMap<K, V>) {
-        let c = self.cap * i64(2)
-        var nk: mut slice<K> = new K[c]
-        var nv: mut slice<V> = new V[c]
-        var i: i64 = 0
-        while i < self.n {
-            nk[i] = self.keys[i]
-            nv[i] = self.vals[i]
-            i = i + 1
-        }
-        self.keys = nk
-        self.vals = nv
+        let c = self.cap + self.cap / i64(2)
+        self.keys = poolResize<K>(self.pid, self.keys, c)
+        self.vals = poolResize<V>(self.pid, self.vals, c)
         self.cap = c
+    }
+
+    /* 把这一层还回去：两个视图先收成 0 长，再把板块还给池（之后越界是响亮 trap）。 */
+    fn release(self: mut ref linMap<K, V>) {
+        if self.pid < i64(0) { return }
+        if syspool::extc_pool_generation(self.pid) != self.pidGen {
+            self.pid = i64(-1)                     /* 陈旧拷贝：槽位已被别的池复用 */
+            return
+        }
+        self.keys = poolResize<K>(self.pid, self.keys, i64(0))
+        self.vals = poolResize<V>(self.pid, self.vals, i64(0))
+        self.cap  = i64(0)
+        syspool::extc_pool_reset(self.pid)
+        syspool::extc_pool_drop(self.pid)
+        self.pid = i64(-1)
     }
 }

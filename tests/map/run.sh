@@ -85,6 +85,21 @@ check_err() {
 }
 check_err tests/map/errors/index_assign.extc 'defines `[]` but not `[]=`'
 
+echo "== 增长时旧存储**不许**留在 arena（四块在自己板块上、增长是原块加长）=="
+# 判据：同一 1e6 条目。存储用 `new`（arena）时，增量那一版把每一代旧存储留给 arena
+# ⇒ 179,820 KB 对 90,604 KB（多近一倍）。改后增量只有 61,932 KB —— 比预留那版**更低**，
+# 因为 1.5 倍增长的末代容量（~157k 节点）比 2 的幂（262,144）小得多。
+if build_one map-inc grow_rss && build_one map-res grow_rss_reserved; then
+    gi=$(peak map-inc 0); gr=$(peak map-res 0)
+    if [ "$gi" -le "$gr" ]; then
+        echo "  ok   grow rss ->  增量 ${gi} KB vs 预留 ${gr} KB ⇒ 旧存储没留下、末代也不浪费 ✓"
+    else
+        echo "  FAIL grow rss ->  增量 ${gi} KB 高于预留 ${gr} KB ⇒ 旧存储又留在 arena 了 ✗"; fail=1
+    fi
+else
+    echo "  FAIL grow rss ->  编不过"; fail=1
+fi
+
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"

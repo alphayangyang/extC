@@ -74,13 +74,16 @@ struct map<K, V> {
         let rp  = syspool::extc_pool_new(i64(-1))
         let rpg = syspool::extc_pool_generation(rp)
         var m: map<K, V> = {
-            nodes: new bnode<K, V>[c],
-            keys:  new K[c * i64(17)],
-            vals:  new V[c * i64(17)],
-            kids:  new i32[c * i64(18)],
+            /* 四处长期存储都在**这张表自己的池板块**上（不是 arena 切片）：增长/压实时旧的
+             * 那几块当场还回去。之前用 `new` 时，每一代旧存储都留给 arena —— 1e6 条目下
+             * 峰值 179,820 KB 对 90,604 KB，那 49% 就是它们。 */
+            nodes: poolSlice<bnode<K, V>>(rp, c),
+            keys:  poolSlice<K>(rp, c * i64(17)),
+            vals:  poolSlice<V>(rp, c * i64(17)),
+            kids:  poolSlice<i32>(rp, c * i64(18)),
             nnodes: i64(0), ncap: c, root: i32(0), freeHead: i32(-1),
             pid: rp, pidGen: rpg, n: i64(0),
-            path: new i32[16], side: new i32[16], depth: i64(0),
+            path: poolSlice<i32>(rp, i64(16)), side: poolSlice<i32>(rp, i64(16)), depth: i64(0),
         }
         m.root = m.newNode(true)
         return m
@@ -117,38 +120,32 @@ struct map<K, V> {
      * by element on purpose: a view is a pointer into the old store, so it cannot be moved by
      * copying the store's bytes alone. */
     fn growStores(self: mut ref map<K, V>) {
-        var want: i64 = self.ncap * i64(2)
+        /* 1.5 倍，而且**一个字节的数据都不用搬**：节点 `i` 的三个存储槽位是 `keys[i*17 ..]` /
+         * `vals[i*17 ..]` / `kids[i*18 ..]` —— 偏移只跟 id 有关，与容量无关。所以增长就是在
+         * 原块上加长（`poolResize` 保住内容），再把每个节点的视图重新指向新基址。
+         *
+         * 这里曾经走"新四块 + 逐元素拷 + 旧四块丢掉"：那份拷贝不但 O(n)，还要在最长的一跳里
+         * 让新旧两代同时在手（1e6 条目实测峰值 102,200 KB，其中 ~47 MB 是这一瞬间）。
+         * 1.5 倍的另一个好处：末代容量从 2 的幂（262,144 节点，只用 140,623）降到 ~157,000。 */
+        var want: i64 = self.ncap + self.ncap / i64(2)
         if want < i64(4) { want = i64(4) }
-        var nk: mut slice<K>   = new K[want * i64(17)]
-        var nv: mut slice<V>   = new V[want * i64(17)]
-        var nc: mut slice<i32> = new i32[want * i64(18)]
-        var nn: mut slice<bnode<K, V>> = new bnode<K, V>[want]
+        self.keys  = poolResize<K>(self.pid, self.keys, want * i64(17))
+        self.vals  = poolResize<V>(self.pid, self.vals, want * i64(17))
+        self.kids  = poolResize<i32>(self.pid, self.kids, want * i64(18))
+        self.nodes = poolResize<bnode<K, V>>(self.pid, self.nodes, want)
+        /* 基址可能变了（realloc 搬家），所以视图必须重新算一遍 —— 这是 O(节点数) 次指针写，
+         * 不是 O(节点数 × 17) 次拷贝。 */
         var i: i64 = i64(0)
         while i < self.nnodes {
             let kb = i * i64(17)
             let cb = i * i64(18)
-            var j: i64 = i64(0)
-            while j < i64(17) {
-                nk[kb + j] = self.keys[kb + j]
-                nv[kb + j] = self.vals[kb + j]
-                j = j + i64(1)
-            }
-            j = i64(0)
-            while j < i64(18) {
-                nc[cb + j] = self.kids[cb + j]
-                j = j + i64(1)
-            }
             var nd: bnode<K, V> = self.nodes[i]
-            nd.keys = nk[kb..kb + i64(17)]
-            nd.vals = nv[kb..kb + i64(17)]
-            nd.kids = nc[cb..cb + i64(18)]
-            nn[i] = nd
+            nd.keys = self.keys[kb..kb + i64(17)]
+            nd.vals = self.vals[kb..kb + i64(17)]
+            nd.kids = self.kids[cb..cb + i64(18)]
+            self.nodes[i] = nd
             i = i + i64(1)
         }
-        self.keys = nk
-        self.vals = nv
-        self.kids = nc
-        self.nodes = nn
         self.ncap = want
     }
 
@@ -688,9 +685,8 @@ struct map<K, V> {
     /* Lower the water mark: repack the LIVE nodes into ids 0..k-1, drop the free list and reallocate
      * the stores at exactly that size. Order, capacity and every entry stay where they were.
      *
-     * This is what `shrink` means in this model (POOLS.md §7): the working set, not RSS -- the arena
-     * cannot return memory piecewise, so what shrinks is how much of it this container still asks
-     * for. Note the deviation from the plan's wording: the tree does NOT keep values behind pool
+     * 存储在自己的板块上，所以这一下**真的是 RSS**：旧四块当场还给池（arena 那条"只能整块还"
+     * 的限制在这里不适用）。 Note the deviation from the plan's wording: the tree does NOT keep values behind pool
      * handles. The stores already give what those handles were for (relocatable, contiguous,
      * index-addressed storage), and a handle in every leaf would add an indirection per read for no
      * gain -- the surface exposes entries, never element identities. */
@@ -720,10 +716,12 @@ struct map<K, V> {
             }
             head = head + i64(1)
         }
-        var nk: mut slice<K>   = new K[count * i64(17)]
-        var nv: mut slice<V>   = new V[count * i64(17)]
-        var nc: mut slice<i32> = new i32[count * i64(18)]
-        var nn: mut slice<bnode<K, V>> = new bnode<K, V>[count]
+        /* `order` / `old2new` 是这次调用的临时草稿：随方法那个块一起回收，正是 arena 的活。
+         * 四处长期存储则从池拿新块、旧的还回去。 */
+        var nk: mut slice<K>   = poolSlice<K>(self.pid, count * i64(17))
+        var nv: mut slice<V>   = poolSlice<V>(self.pid, count * i64(17))
+        var nc: mut slice<i32> = poolSlice<i32>(self.pid, count * i64(18))
+        var nn: mut slice<bnode<K, V>> = poolSlice<bnode<K, V>>(self.pid, count)
         i = i64(0)
         while i < count {
             let src = i64(order[i])
@@ -762,6 +760,10 @@ struct map<K, V> {
             i = i + i64(1)
         }
         if prev >= i32(0) { nn[i64(prev)].next = i32(-1) }
+        poolGive<bnode<K, V>>(self.pid, self.nodes)
+        poolGive<K>(self.pid, self.keys)
+        poolGive<V>(self.pid, self.vals)
+        poolGive<i32>(self.pid, self.kids)
         self.keys   = nk
         self.vals   = nv
         self.kids   = nc

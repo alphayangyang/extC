@@ -1,0 +1,15 @@
+// 增量长到 1e6 条目（多次 growStores）· 存储在自己的池板块上、增长是原块加长
+// 与 grow_rss_reserved.extc 同条目数；四块旧存储当场还回去 ⇒ 不留历代副本，也不拷数据
+use std::io
+use stl::map
+
+fn main() -> i32 {
+    var m = map<i64, i32>::withCap(i64(16))
+    var i: i64 = 0
+    while i < i64(1000000) {
+        m.put(i, i32(i))
+        i = i + i64(1)
+    }
+    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << "\n"
+    return 0
+}
