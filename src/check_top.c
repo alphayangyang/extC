@@ -1178,6 +1178,13 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;                  /* generic: defer */
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue; /* no reference: always true */
+            /* 先把"它得活到 h"这件事记成事实，**不管当下算出来的 d 是多少**：
+             * `d` 是现场算的，而"这个值是不是建池的调用"（`makesPool`）要到所有函数体检查完
+             * 才算得出来 —— 现场它还是 0，于是深度查询给出 0，提权那条路根本不会被走到。
+             * 末轮重放（`c->lvlFacts`）在闭包之后跑，那时 `makesPool` 已经为真，
+             * `promoteInto` 就能把建池的站点提到 h 那一层。重放忽略返回值，所以多记事实
+             * 不会引入新报错（"提不动"的那些照旧由下面的深度判据负责）。 */
+            recordLvlFact(c, a, h);
             int d = exprRefDepth(c, a);
             if (d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);
             if (d == 0 || d <= h) continue;
@@ -1209,6 +1216,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
+            recordLvlFact(c, a, h);         /* 同上：先记事实，末轮重放时再提（PLAN #87） */
             int d = exprRefDepth(c, a);
             /* PROMOTE BEFORE REJECTING -- the same half the incomplete-summary branch above
              * has always had, and the reason a container can be handed to something that

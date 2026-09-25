@@ -2520,6 +2520,10 @@ static void lineMark(CG *g, Stmt *s) {
 static const char *zoneArgRef(CG *g, Expr *e) {
     /* 站点自己记了层级（checker 的 `zoneLevel`）就按它发：`ZONE_HOME` = 用我这个函数收到的
      * 家 zone（一路往下传），k>=1 = 第 k 层那个地方的 `__extc_zm<k>`（提权之后这里会变小）。 */
+    if (getenv("EXTC_DBG_ZONE"))
+        fprintf(stderr, "[zonearg] %s lvl=%d mark1=%d mark2=%d blk=%d\n",
+                g->curFuncName ? g->curFuncName : "-", e ? e->zoneLevel : 0,
+                (int)g->zoneMark[1], (int)g->zoneMark[2], g->blkLevel);
     if (e && e->zoneLevel != 0) {
         if (e->zoneLevel == ZONE_HOME && g->funcHasZoneParam) return "__extc_home_zone";
         if (e->zoneLevel >= 1

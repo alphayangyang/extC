@@ -825,7 +825,7 @@ void recheckLevelRejections(Checker *c) {
     }
 }
 
-static void recordLvlFact(Checker *c, Expr *val, int at);
+void recordLvlFact(Checker *c, Expr *val, int at);
 static void applyLvlFact(Checker *c, Expr *val, int at);
 
 /* The root origin of a value: the expression the carrier chain ends at (defined below).
@@ -1106,7 +1106,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
  *   at  - level the value must fit into; only finite levels (at >= 1) are recorded, since
  *         "must outlive this frame" is represented by `ARENA_HOME` rather than by a level
  *         number and must not be pushed back into one */
-static void recordLvlFact(Checker *c, Expr *val, int at) {
+void recordLvlFact(Checker *c, Expr *val, int at) {
     if (!c || !val || at < 1) return;
     /* Never record during the level solve: the solve re-enters this function, so
      * recording there would make the fact list grow without bound. */
