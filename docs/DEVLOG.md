@@ -8955,3 +8955,45 @@ place the callee may store it (depth 1)`）。也就是说连 arena 都还没提
 ⇒ 它在深度格里隐形，`outer.push(inner)` 连"深度不够"都看不出来；② 建池的函数要走 `needsHome`
 那一套（多收一个隐藏的「家 zone」参数，codegen 把 `extc_pool_new` 换成 `extc_pool_new_at(parent, __extc_homeZone)`）。
 这一轮把调用点那一半补平之后，① 一做就能直接复用今天这条提权路径。
+
+### 周期 40：提权的编译器那一半 —— 管路通了，判定还差一步（阻塞点已定位）
+
+**第一片（已提交 `6f9c085`）**：建池的函数收隐藏的「家 zone」参数（`makesPool` 是可传递最小不动点，
+整条链都收得到；main 除外 —— C 签名固定），三个调用点把它递下去；库里那句 `extc_pool_new(parent)`
+在收参数时改发 `extc_pool_new_at(parent, __extc_home_zone)` ⇒ **库侧源码一个字都不用改**。
+生成的 C 现在长这样：
+
+```c
+static vector$vector_i32 vector$vector_i32_withCap(int64_t c, int64_t __extc_home_zone) {
+    int64_t rp = extc_pool_new_at(((int64_t)((-1))), __extc_home_zone);
+    ...
+```
+
+行为未变（只装管路）。全套绿：26/0 · 五个套件 · arena-promoted · memsafe 33/0。
+
+**第二片（已装好，未点火）**：`Expr.zoneLevel` + `setCallZoneArg` + `poolCallDepth`（把建池的调用
+当成分配站点，与 `new` 同规则）+ `promoteInto2` 新增"建池的调用可提权"一格 + codegen 按站点发 zone。
+
+**点火点卡住的地方**（探针抓的，不是猜的）：
+`poolCallDepth` 要问 `e->func->makesPool`，而那个闭包是**函数体全部检查完之后**才算的
+（`checkModule` 收尾的 worklist）⇒ 检查现场它还是 0：
+
+```
+$ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
+[zone] call=withCap makesPool=0 zoneLevel=-1 d=0
+```
+
+⇒ 深度查询对建池的调用仍然返回 0，「存进更长寿的容器」这件事根本没有进提权那条路
+（`promoteInto` 只在 `d > h` 时才被调用）。所以 `vector<vector<i32>>` 的轨迹与改前完全一致
+（出循环 `live=1`，三个内层池照样被回收）。
+
+**两条出口**（PLAN #87 已记）：
+
+1. **提前算 `makesPool`**：每个函数体检查完就 `f->makesPool |= stmtMakesPool(f->body, true)`，
+   并对已知函数做一遍小闭包。单调、早算只会更准；缺点是调用链顺序（`new` 里调 `withCap`）可能仍差一拍。
+2. **记事实、末轮重放再提**（倾向）：`checkCallRefArgs` 里对**每个带引用的实参**都记一条
+   `recordLvlFact(c, a, h)`，不管当时的 `d` 是多少；末轮重放 `promoteInto` 时 `makesPool` 已经为真
+   ⇒ 站点被提权。顺带把"确实提不动"的（借用）在末轮变成响亮报错 —— 今天那些静默的形状正是这一片要消掉的。
+
+同轮还落了两件记账：`tools/memsafe` 33/0（§6.1 那三条探针仍未进 qa/，等点火后一起进），
+以及 `EXTC_DBG_ZONE=1` 这个诊断开关（与既有的 `EXTC_DBG_*` 同族）。

@@ -271,6 +271,25 @@ int valDepthForStore(Checker *c, Expr *e) {
  *   - The result is cached on the node, never for a node whose type mentions a type
  *     parameter: that answer is computed under the assumption that the parameter may
  *     carry a reference, and it holds only for the generic body, not for an instance. */
+/* 「建池的调用」这个值活到多深（池的提权，PLAN #87）。
+ *
+ * 与 `new` 同一条规则：新分配的东西活到它的站点那一层。容器构造就是一个站点 ——
+ * 它建出来的池生在哪一层地方，容器就活到哪一层。
+ *   - `ZONE_HOME` ⇒ 0（"活得比本帧还久"）：库函数里的构造交给调用者选的地方；
+ *   - `k >= 1`    ⇒ k：生在第 k 层，就活到第 k 层。
+ * 不是建池的调用（`makesPool` 为假）⇒ 原样返回：调用结果的深度仍是"实参里最深的那个"。
+ */
+static int poolCallDepth(Checker *c, Expr *e, int d) {
+    (void)c;
+    if (getenv("EXTC_DBG_ZONE"))
+        fprintf(stderr, "[zone] call=%s makesPool=%d zoneLevel=%d d=%d\n",
+                e->func && e->func->name ? e->func->name : "-",
+                e->func ? (int)e->func->makesPool : -1, e->zoneLevel, d);
+    if (!e->func || !e->func->makesPool || e->zoneLevel == 0) return d;
+    int zd = (e->zoneLevel == ZONE_HOME) ? 0 : e->zoneLevel;
+    return maxInt(d, zd);
+}
+
 int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
     /* The only reason to answer without looking: this type cannot carry a reference.
@@ -384,11 +403,13 @@ int exprRefDepth(Checker *c, Expr *e) {
          */
         for (size_t i = 0; i < e->u.call.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
+        d = poolCallDepth(c, e, d);
         break;
     case EX_METHOD:
         d = maxInt(d, exprRefDepth(c, e->u.method.recv));   /* the receiver is an argument too */
         for (size_t i = 0; i < e->u.method.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
+        d = poolCallDepth(c, e, d);
         break;
     case EX_ENUMVAL:
         /* A payload construction such as `shape.holding(a[..])` puts the payload inside this
@@ -400,6 +421,7 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_ASSOC:
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
+        d = poolCallDepth(c, e, d);
         break;
     default:
         d = 0;
@@ -1044,8 +1066,29 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         return ok;
     }
 
+    case EX_CALL:
+    case EX_METHOD:
+    case EX_ASSOC:
+        /* 建池的调用是**分配站点**，与 `new` 一样可以提权：新分配的东西没有别的所有者，
+         * 所以"池生在哪一层地方"这个数可以改小（越小越长寿）。
+         *
+         * 这一格是容器能被放进更长寿的容器的前提：
+         *     while … { var inner = vector<i32>::new()  outer.push(inner) }
+         * `outer.push` 要求 `inner` 活到 `outer` 那一层 ⇒ 这里把 `inner` 的构造站点从
+         * 循环体（第 2 层）提到外层（第 1 层），池就生在外层那个地方，出循环依然有效。
+         *
+         * 别的调用结果照旧不可提：`slice` 的视图来自别人的存储（借用），
+         * 提不动就是提不动，返回 false 让调用方报错 —— 那是这一格的纪律。 */
+        if (val->func && val->func->makesPool && val->zoneLevel != 0) {
+            int want = (at == 0) ? ZONE_HOME : at;
+            if (val->zoneLevel > want) val->zoneLevel = want;
+            if (val->refDepth > at) val->refDepth = at;
+            return true;
+        }
+        return false;
+
     default:
-        /* Nothing else can be promoted (a `ref` to a local, the result of a call, a slice, and so
+        /* Nothing else can be promoted (a `ref` to a local, a slice, and so
          * on). Do not guess: fall through to the original depth check and report the error. */
         return false;
     }

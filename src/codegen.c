@@ -1553,7 +1553,7 @@ static bool isPlaceExpr(const Expr *e) {
 static const char *homeArg(CG *g, int marked);   /* defined below */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
 static bool f_owLocal(CG *g, Stmt *s);
-static const char *zoneArgRef(CG *g);
+static const char *zoneArgRef(CG *g, Expr *e);
 
 /* Emit a method call as a plain function call on its receiver.
  *
@@ -1630,7 +1630,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
     /* A method passes the home arena too; the receiver counts as the
      * shallowest mutable reference argument. */
     if (f->usesHome) bufPrintf(&b, ", %s", homeArg(g, e->arenaArg));
-    if (f->makesPool) bufPrintf(&b, ", %s", zoneArgRef(g));
+    if (f->makesPool) bufPrintf(&b, ", %s", zoneArgRef(g, e));
     /* A method passes the @overwrite cells as well; the receiver counts as the
      * first argument, and the comma handling follows that. */
     owPassCells(g, &b, e, e->u.method.args.len + 1, f->usesHome || f->makesPool);
@@ -1831,11 +1831,11 @@ static const char *genExprInner(CG *g, Expr *e) {
                  *（被标记的是调用它的那些函数），所以只能按名字认它。 */
                 if (g->funcHasZoneParam) {
                     bufPuts(&b, ", ");
-                    bufPuts(&b, zoneArgRef(g));
+                    bufPuts(&b, zoneArgRef(g, e));
                 }
             } else if (e->func->makesPool) {
                 if (e->u.call.args.len || e->func->usesHome) bufPuts(&b, ", ");
-                bufPuts(&b, zoneArgRef(g));
+                bufPuts(&b, zoneArgRef(g, e));
             }
             /* The callee needs @overwrite cells, so cells of my own frame are
              * passed down. */
@@ -1925,7 +1925,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             if (e->func->makesPool) {
                 if (e->u.assoc.args.len || e->func->usesHome) bufPuts(&b, ", ");
-                bufPuts(&b, zoneArgRef(g));
+                bufPuts(&b, zoneArgRef(g, e));
             }
             owPassCells(g, &b, e, e->u.assoc.args.len, e->func->usesHome || e->func->makesPool);   /* @overwrite cells */
             bufPutc(&b, ')');
@@ -2517,7 +2517,16 @@ static void lineMark(CG *g, Stmt *s) {
  *
  * 兜底用 `extc_pool_zoneDepth() - 1`（当前顶）：只有 `noArena` 的函数才会走到
  * （它没有压过任何 zone），那正是今天的行为。 */
-static const char *zoneArgRef(CG *g) {
+static const char *zoneArgRef(CG *g, Expr *e) {
+    /* 站点自己记了层级（checker 的 `zoneLevel`）就按它发：`ZONE_HOME` = 用我这个函数收到的
+     * 家 zone（一路往下传），k>=1 = 第 k 层那个地方的 `__extc_zm<k>`（提权之后这里会变小）。 */
+    if (e && e->zoneLevel != 0) {
+        if (e->zoneLevel == ZONE_HOME && g->funcHasZoneParam) return "__extc_home_zone";
+        if (e->zoneLevel >= 1
+            && e->zoneLevel < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0])
+            && g->zoneMark[e->zoneLevel])
+            return arenaPrintf(g->arena, "__extc_zm%d", e->zoneLevel);
+    }
     if (g->funcHasZoneParam) return "__extc_home_zone";
     for (int lvl = g->blkLevel; lvl >= 1; lvl--) {
         if (lvl < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lvl])

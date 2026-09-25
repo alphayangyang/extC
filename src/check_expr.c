@@ -1083,6 +1083,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * argument too few, so `Type::make()` did not compile. */
             e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params, e);
             setCallArenaArg(c, e);      /* resolve which arena the call finally passes */
+            setCallZoneArg(c, e);       /* 建池的调用：池生在哪一层地方 */
             /* The reference checking is moved to the end of this case, after the arguments
              * have been checked. */
 
@@ -1899,6 +1900,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The arena for this call comes from the shallowest `mut ref` argument. */
             e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params, e);
             setCallArenaArg(c, e);      /* decide which arena the call finally passes */
+            setCallZoneArg(c, e);       /* 建池的调用：池生在哪一层地方 */
             /* The reference check has to run after the arguments are checked: until then
              * `a->type` is not filled in, `typeContainsRef` answers "no" for everything, and a
              * violation is silently accepted. The method path hit the same trap. The check itself
@@ -2050,6 +2052,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 /* Resolve which arena the call finally passes; both numbers are decided here. */
                 setCallArenaArg(c, e);
+                setCallZoneArg(c, e);       /* 建池的调用：池生在哪一层地方 */
                 /* Whether the argument is a local or a parameter, the depth of what is pushed
                  * into a container has to be recorded. The first version did this in the `else`
                  * branch only, so the `self: mut ref` path -- which is the one `v.push(...)`

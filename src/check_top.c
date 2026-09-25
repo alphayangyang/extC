@@ -1295,6 +1295,22 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  *   - The 0 case has no `mut ref` argument to reason from, so the site is recorded with
  *     `arenaArgPending` set and resolved by the final pass.
  */
+/* 建池的调用点：池该生在**哪一层地方**（与 `setCallArenaArg` 平行的一格）。
+ *
+ * 规则两条：
+ *   - 我在**库函数**里（`modName` 非空）⇒ 库函数对"地方"是透明的（它自己不压 zone），
+ *     所以这里没有"我的地方"可言：把选择权交给调用者（`ZONE_HOME`，隐藏参数往下传）。
+ *     `vector<i32>::new` → `withCap` → 运行期那一句 `extc_pool_new_at` 因此拿到的是
+ *     **用户**选的那个地方。
+ *   - 我在入口文件的函数里 ⇒ 默认是当前这个块（今天的语义：池生在建它的那个块里）；
+ *     提权（`promoteInto`）之后这个数会被改小，池就生到更长寿的地方去。
+ */
+void setCallZoneArg(Checker *c, Expr *e) {
+    if (!e) return;
+    if (c->curFunc && c->curFunc->modName && *c->curFunc->modName) e->zoneLevel = ZONE_HOME;
+    else e->zoneLevel = (int)c->scopes.len;
+}
+
 void setCallArenaArg(Checker *c, Expr *e) {
     if (!e) return;
     if (e->homeDepth == -1) {                 /* destination at the home level: my home arena */

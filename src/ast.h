@@ -72,6 +72,11 @@ Type *typeArray(Arena *a, int64_t n, Type *elem);   /* TY_ARRAY */
  * this function have a home arena", because that would be a second source of truth
  * for a decision that is already made. */
 #define ARENA_HOME (-1)
+/* 「家 zone」的哨兵（池的提权，见 PLAN #87）。与 ARENA_HOME 平行：
+ *   0        = 这个调用点不建池（`zoneLevel` 的默认值）
+ *   ZONE_HOME= 把它交给**调用者**选的那个地方（隐藏参数 `__extc_home_zone` 往下传）
+ *   k >= 1   = 生在第 k 层那个地方 */
+#define ZONE_HOME (-1)
 
 typedef enum {
     EX_INT, EX_FLOAT, EX_BOOL, EX_STR, EX_IDENT,
@@ -187,6 +192,10 @@ struct Expr {
      * Once the constraints have been solved, a site that nothing pulled out of the
      * frame goes back to its own block, which is the level recorded here. */
     int       lexicalLevel;
+    /* 这个调用点建出来的池该生在哪一层地方（`ZONE_HOME` = 交给调用者）。
+     * 只有"建池的调用"（`e->func->makesPool`）才用得上；0 = 不是这种站点。
+     * 与 `arenaLevel` 平行，提权就是把这个数变小（越小越长寿）。 */
+    int       zoneLevel;
     /* The strongest requirement escape analysis placed on this site: the smallest
      * level that satisfies every constraint it takes part in.
      *     -1  = no constraint touched it, so it keeps its own level (`lexicalLevel`)
