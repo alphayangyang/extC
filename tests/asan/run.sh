@@ -19,7 +19,7 @@ trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/probe.c" <<'EOF'
 int main(void) { return 0; }
 EOF
-if ! gcc -fsanitize=address -o "$TMP/probe" "$TMP/probe.c" >/dev/null 2>&1; then
+if ! gcc -fwrapv -fsanitize=address -o "$TMP/probe" "$TMP/probe.c" >/dev/null 2>&1; then
     echo "  skip  gcc 不支持 -fsanitize=address（这一支跳过）"
     exit 0
 fi
@@ -33,7 +33,7 @@ for f in tests/asan/*.extc; do
         fail=1
         continue
     fi
-    if ! gcc -O1 -g -fsanitize=address -o "$TMP/$name" "$TMP/$name.c" >"$TMP/$name.gerr" 2>&1; then
+    if ! gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$name" "$TMP/$name.c" >"$TMP/$name.gerr" 2>&1; then
         echo "  FAIL $name  ->  生成的 C 编不过"
         head -3 "$TMP/$name.gerr" | sed 's/^/        /'
         fail=1

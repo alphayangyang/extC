@@ -55,7 +55,7 @@ run_case structkey
 
 echo "== churn（RSS）：1e6 轮与 1e5 轮的峰值 RSS 必须相当 =="
 build_one() { "$EXTC" "tests/map/$2.extc" -o "build/$1.c" >/dev/null 2>&1 \
-    && "$CC" -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1; }
+    && "$CC" -fwrapv -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1; }
 peak() { /usr/bin/time -f %M "./build/$1" "$2" 2>&1 >/dev/null | tail -1; }
 if build_one map-churn rss && build_one map-leak leak; then
     s=$(peak map-churn 100000); b=$(peak map-churn 1000000)
@@ -103,11 +103,11 @@ fi
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"
-if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
+if gcc -fwrapv -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
     for t in sorted bounds stress churn shrink release index ends structkey; do
         "$EXTC" "tests/map/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
-          && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
+          && gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
     done
     [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress · churn · shrink · release · index · ends · structkey  ->  ASan 干净"

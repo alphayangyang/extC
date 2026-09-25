@@ -30,7 +30,7 @@ for f in [A-Z]*.extc; do
         printf '  \033[32mREJECT\033[0m  %-34s （洞已修：%s）\n' "$n" "$(head -1 "$TMP/$n.cerr" | cut -c1-60)"
         pass=$((pass+1)); continue
     fi
-    if ! gcc -O1 -g -fsanitize=address -o "$TMP/$n" "$TMP/$n.c" >"$TMP/$n.gerr" 2>&1; then
+    if ! gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$n" "$TMP/$n.c" >"$TMP/$n.gerr" 2>&1; then
         printf '  \033[33mGCC-ERR\033[0m %-34s %s\n' "$n" "$(head -1 "$TMP/$n.gerr" | cut -c1-60)"
         fail=$((fail+1)); continue
     fi

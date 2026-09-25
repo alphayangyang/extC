@@ -103,11 +103,11 @@ if out=$(timeout 600 ./tests/pool/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（handle/dense/世代 · churn 平 · canary 会响 · ASan）"
 else bad "tests/pool/run.sh"; echo "$out" | tail -8; fi
 
-echo "== 期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 POOLS.md §10.2）=="
 echo "== 有序 map<K, V>（POOLS.md §11：B 树；第一步是单节点有序表）=="
 if out=$(timeout 600 ./tests/map/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
 else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 POOLS.md §10.2）=="
 if out=$(timeout 600 ./tests/hashmap/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
 else bad "tests/hashmap/run.sh"; echo "$out" | tail -8; fi

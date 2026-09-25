@@ -17,7 +17,7 @@ mkdir -p build
 
 echo "== 正例：args.len 含程序名，实参原样到手 =="
 if "$EXTC" tests/argv/args.extc -o build/argv_args.c 2>build/argv_args.err \
-   && "$CC" -std=c11 -O1 build/argv_args.c -o build/argv_args 2>>build/argv_args.err; then
+   && "$CC" -fwrapv -std=c11 -O1 build/argv_args.c -o build/argv_args 2>>build/argv_args.err; then
     out=$(./build/argv_args alpha beta)
     want=$(printf '3\nalpha\nbeta')
     if [ "$out" = "$want" ]; then

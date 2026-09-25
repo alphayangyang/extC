@@ -39,7 +39,7 @@ run_case gather
 echo "== churn：1e6 轮的峰值 RSS 必须与 1e5 轮相当（还槽位 ⇒ 平 ✓）=="
 build_one() {   # 名字 文件
     "$EXTC" "tests/pool/$2.extc" -o "build/$1.c" >/dev/null 2>&1 \
-      && "$CC" -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1
+      && "$CC" -fwrapv -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1
 }
 peak() {        # 程序 轮数 -> 峰值 RSS(KB)
     /usr/bin/time -f %M "./build/$1" "$2" 2>&1 >/dev/null | tail -1
@@ -77,15 +77,15 @@ fi
 echo "== ASan：这些路径必须干净 =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"
-if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
+if gcc -fwrapv -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
     for t in basic api; do
         if "$EXTC" "tests/pool/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
-           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
+           && gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
            && "$TMP/$t" >/dev/null 2>&1; then :; else echo "  FAIL $t  ->  ASan 报错"; fail=1; ok=0; fi
     done
     if "$EXTC" tests/pool/churn.extc -o "$TMP/churn.c" >/dev/null 2>&1 \
-       && gcc -O1 -g -fsanitize=address -o "$TMP/churn" "$TMP/churn.c" >/dev/null 2>&1 \
+       && gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/churn" "$TMP/churn.c" >/dev/null 2>&1 \
        && "$TMP/churn" 20000 >/dev/null 2>&1; then :; else echo "  FAIL churn  ->  ASan 报错"; fail=1; ok=0; fi
     [ "$ok" = 1 ] && echo "  ok   basic · api · churn  ->  ASan 干净"
 else
@@ -214,19 +214,19 @@ rt_run rt_epoch     tests/pool/rt_epoch.extc     "cap=8 stale=0 len=0 refill=3 c
 echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/pool/rt_churn.extc -o "$TMP2/rt.c" >/dev/null 2>&1; then
-    if gcc -std=c11 -Wall -Wextra -Werror -o "$TMP2/rt" "$TMP2/rt.c" >/dev/null 2>&1; then
+    if gcc -fwrapv -std=c11 -Wall -Wextra -Werror -o "$TMP2/rt" "$TMP2/rt.c" >/dev/null 2>&1; then
         echo "  ok   gcc -Wall -Wextra -Werror 编得过"
     else
         echo "  FAIL 生成的 C 在 -Werror 下编不过"; fail=1
     fi
     if command -v clang >/dev/null 2>&1; then
-        if clang -std=c11 -Wall -Wextra -Werror -c -o /dev/null "$TMP2/rt.c" >/dev/null 2>&1; then
+        if clang -fwrapv -std=c11 -Wall -Wextra -Werror -c -o /dev/null "$TMP2/rt.c" >/dev/null 2>&1; then
             echo "  ok   clang -Wall -Wextra -Werror 也干净"
         else
             echo "  FAIL clang 报了"; fail=1
         fi
     fi
-    if gcc -std=c11 -g -fsanitize=address -o "$TMP2/rt_asan" "$TMP2/rt.c" >/dev/null 2>&1 \
+    if gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP2/rt_asan" "$TMP2/rt.c" >/dev/null 2>&1 \
        && ! "$TMP2/rt_asan" 2>&1 | grep -q Sanitizer; then
         echo "  ok   ASan（含泄漏检查）干净"
     else

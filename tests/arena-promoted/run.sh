@@ -18,7 +18,7 @@ for f in tests/arena-promoted/*.extc; do
     if ! "$EXTC" "$f" -o "$TMP/$n.c" >"$TMP/$n.cerr" 2>&1; then
         echo "  FAIL $n  ->  被拒了（但它是安全程序）"; head -2 "$TMP/$n.cerr" | sed 's/^/        /'; fail=1; continue
     fi
-    if ! gcc -O1 -g -fsanitize=address -o "$TMP/$n" "$TMP/$n.c" >"$TMP/$n.gerr" 2>&1; then
+    if ! gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$n" "$TMP/$n.c" >"$TMP/$n.gerr" 2>&1; then
         echo "  FAIL $n  ->  生成的 C 编不过"; head -2 "$TMP/$n.gerr" | sed 's/^/        /'; fail=1; continue
     fi
     out=$("$TMP/$n" 2>&1)

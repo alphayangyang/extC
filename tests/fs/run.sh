@@ -96,11 +96,11 @@ fi
 echo "== ASan：库那几条路径必须干净 =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/probe.c"
-if gcc -fsanitize=address -o "$TMP/probe" "$TMP/probe.c" >/dev/null 2>&1; then
+if gcc -fwrapv -fsanitize=address -o "$TMP/probe" "$TMP/probe.c" >/dev/null 2>&1; then
     ok=1
     for t in fd-constant close-twice closed-use read-all; do
         if "$EXTC" "tests/fs/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
-           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
+           && gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
            && "$TMP/$t" >/dev/null 2>&1; then
             :
         else

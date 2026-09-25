@@ -28,8 +28,8 @@ echo "== vector<T>：churn 内存平（1e5 与 1e6 两轮，容量策略相同 �
 TMPC=$(mktemp -d)
 if "$EXTC" tests/stl/vector_churn_a.extc -o "$TMPC/a.c" >/dev/null 2>&1 \
    && "$EXTC" tests/stl/vector_churn_b.extc -o "$TMPC/b.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -O2 -o "$TMPC/a" "$TMPC/a.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -O2 -o "$TMPC/b" "$TMPC/b.c" >/dev/null 2>&1; then
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC/a" "$TMPC/a.c" >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC/b" "$TMPC/b.c" >/dev/null 2>&1; then
     ka=$(/usr/bin/time -f %M "$TMPC/a" 2>&1 >/dev/null | tail -1)
     kb=$(/usr/bin/time -f %M "$TMPC/b" 2>&1 >/dev/null | tail -1)
     if [ "$kb" -le $(( ka * 2 )) ]; then
@@ -48,8 +48,8 @@ echo "== vector<T>：池底扩容的峰值 RSS（同一形状 vs arena 切片 �
 # 两个用例**同一形状**，只有存储来源不同 ⇒ 自己跟自己比，不依赖机器的绝对数字。
 if "$EXTC" tests/stl/vector_rss_plate.extc -o "$TMPC2/p.c" >/dev/null 2>&1 \
    && "$EXTC" tests/stl/vector_rss_arena.extc -o "$TMPC2/a.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -O2 -o "$TMPC2/p" "$TMPC2/p.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -O2 -o "$TMPC2/a" "$TMPC2/a.c" >/dev/null 2>&1; then
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC2/p" "$TMPC2/p.c" >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC2/a" "$TMPC2/a.c" >/dev/null 2>&1; then
     kp=$(/usr/bin/time -f %M "$TMPC2/p" 2>&1 >/dev/null | tail -1)
     ka=$(/usr/bin/time -f %M "$TMPC2/a" 2>&1 >/dev/null | tail -1)
     if [ "$kp" -lt $(( ka * 3 / 4 )) ]; then
@@ -107,8 +107,8 @@ echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/stl/string_churn_a.extc -o "$TMP2/a.c" >/dev/null 2>&1 \
    && "$EXTC" tests/stl/string_churn_b.extc -o "$TMP2/b.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -O2 -o "$TMP2/a" "$TMP2/a.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -O2 -o "$TMP2/b" "$TMP2/b.c" >/dev/null 2>&1; then
+   && gcc -fwrapv -std=c11 -O2 -o "$TMP2/a" "$TMP2/a.c" >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMP2/b" "$TMP2/b.c" >/dev/null 2>&1; then
     ka=$(/usr/bin/time -f %M "$TMP2/a" 2>&1 >/dev/null | tail -1)
     kb=$(/usr/bin/time -f %M "$TMP2/b" 2>&1 >/dev/null | tail -1)
     if [ "$kb" -le $(( ka * 2 )) ]; then
@@ -124,7 +124,7 @@ rm -rf "$TMP2"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 asan_ok() {   # 文件 可执行名
     "$EXTC" "$1" -o "$TMP/$2.c" >/dev/null 2>&1 \
-      && gcc -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
+      && gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
 if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringFind.extc sfi; then
