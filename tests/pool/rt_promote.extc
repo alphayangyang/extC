@@ -1,0 +1,27 @@
+// 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退出时它**不**被回收
+//
+// 判据 `in=2 out=1 use=42 live=1`：
+//   - 块里建两个池（一个提权、一个不提权）⇒ in=2；
+//   - 出块只回收没提权那个 ⇒ out=1；
+//   - 提权那个的板块出了块**还能用**（`use=42`）—— 这正是 `vector<vector<i32>>` 里
+//     "内层容器被推入外层容器"需要的行为；
+//   - 最后 live=1（那个池还活着，等 main 的帧结束才回收）。
+// expect: in=2 out=1 use=42 live=1
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    let home = syspool::extc_pool_zoneDepth() - i64(1)   /* 外层地方的 zone 下标 */
+    var kept: i64 = i64(-1)
+    var temporary: i64 = i64(-1)
+    {
+        kept      = syspool::extc_pool_new_at(i64(-1), home)
+        temporary = syspool::extc_pool_new(i64(-1))
+        io::cout << "in=" << syspool::extc_pool_live()
+    }
+    io::cout << " out=" << syspool::extc_pool_live()
+    var s: mut slice<i32> = poolSlice<i32>(kept, 4)
+    s[0] = i32(42)
+    io::cout << " use=" << i64(s[0]) << " live=" << syspool::extc_pool_live() << "\n"
+    return 0
+}

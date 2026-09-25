@@ -12,6 +12,14 @@
  * （`extc_pool_zoneLeaveTo`）；池树的两条链（寿命链 / 父池子链）见 POOLS.md §7.7 */
 extern!("extc-runtime") fn extc_pool_new(parent: i64) -> i64
     effects Addr=0 Cont=0
+/* **提权的落点**（POOLS.md §3.1 / MEMORY-SAFETY §3.1）：`zone` 指定这个池**出生在哪个地方**，
+ * 不放宽就传当前顶（`extc_pool_new` 就是 `extc_pool_new_at(parent, extc_zoneTop)`）。
+ * arena 那边有同一扇门：会把手里的分配交给调用者选的地方的函数，多收一个隐藏的
+ * `__extc_home`；容器在循环体里建、之后存进活得更久的容器，需要的就是这一手 ——
+ * 否则它的板块随那一轮就没了（实测 `vector<vector<i32>>` 三轮推入之后 `live` 回到 1，
+ * 外层板块里那三个值全指着已经还给 malloc 的块）。zone 下标 = 深度 - 1，是个普通整数。 */
+extern!("extc-runtime") fn extc_pool_new_at(parent: i64, zone: i64) -> i64
+    effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_drop(rid: i64) -> void
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_reset(rid: i64) -> void
