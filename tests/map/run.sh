@@ -110,6 +110,34 @@ else
     echo "  FAIL grow bytes ->  编不过"; fail=1
 fi
 
+echo "== 复杂度：n 与 2n 的**指令数**比值必须仍是 O(n log n)（优化不许让某种输入退化）=="
+# 作者 2026-09-26 的口径：任何优化都不许带来时间复杂度退化（"这会很惨烈"）。
+# 判据用 callgrind 的**指令数**而不是墙钟 —— 指令数确定、可复现，2.09 = n log n、4 ≈ n²。
+# 四种形状各跑 n=20000 与 n=40000（阈值 2.6：给常数因子留余量，二次形状必红）：
+#   i 顺序插入 + 查一遍 · d 顺序插入 + 全删 · r 随机插入 + 全删 · c churn 四轮
+if command -v valgrind >/dev/null 2>&1 && build_one map-cx cx_app; then
+    TMPX=$(mktemp -d)
+    cx_ok=1
+    for mode in i d r c; do
+        a=$(valgrind --tool=callgrind --callgrind-out-file="$TMPX.cg" ./build/map-cx 20000 $mode >/dev/null 2>&1; sed -n 's/^summary: *\([0-9]*\).*/\1/p' "$TMPX.cg")
+        b=$(valgrind --tool=callgrind --callgrind-out-file="$TMPX.cg" ./build/map-cx 40000 $mode >/dev/null 2>&1; sed -n 's/^summary: *\([0-9]*\).*/\1/p' "$TMPX.cg")
+        if [ -z "$a" ] || [ -z "$b" ] || [ "$a" = "0" ]; then
+            echo "  FAIL 复杂度 $mode  ->  callgrind 没给出指令数"; cx_ok=0; continue
+        fi
+        # 比值放大 100 倍比较，避开 bash 没有浮点的麻烦
+        r=$(( b * 100 / a ))
+        if [ "$r" -le 260 ]; then
+            echo "  ok   复杂度 $mode  ->  n=20000: $a 条指令 · n=40000: $b 条 ⇒ 比值 $((r / 100)).$(printf "%02d" $((r % 100)))（O(n log n) ≈ 2.1）✓"
+        else
+            echo "  FAIL 复杂度 $mode  ->  比值 $((r / 100)).$(printf "%02d" $((r % 100))) > 2.60 ⇒ 某种输入退化了 ✗"; cx_ok=0
+        fi
+    done
+    rm -rf "$TMPX"
+    [ "$cx_ok" = 1 ] || fail=1
+else
+    echo "  --  跳过：没有 valgrind"
+fi
+
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"

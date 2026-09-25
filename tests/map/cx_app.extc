@@ -1,0 +1,59 @@
+// 复杂度探针：同一份代码在 n 与 2n 上跑，指令数比值必须仍是 O(n log n)（≈2.1），
+// 而不是 O(n²)（≈4）。判据由 tests/map/run.sh 用 callgrind 的指令数算 —— 不看墙钟。
+// 用法：cx_app <n> <mode>   mode: i=顺序插入+查 · d=顺序插入+全删 · r=随机插入+全删 · c=churn
+use std::io
+use stl::map
+
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = i64(20000)
+    if args.len > i64(1) { n = toInt(args[1], n) }
+    var mode: i64 = i64(0)
+    if args.len > i64(2) {
+        if args[2][0] == u8(100) { mode = i64(1) }        /* d：插完再全删 */
+        if args[2][0] == u8(114) { mode = i64(1) }        /* r：同 d（键序不同） */
+        if args[2][0] == u8(99) { mode = i64(2) }         /* c：churn 四轮 */
+    }
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    var acc: i64 = 0
+    var round: i64 = i64(0)
+    var rounds: i64 = i64(1)
+    if mode == i64(2) { rounds = i64(4) }
+    while round < rounds {
+        var i: i64 = i64(0)
+        while i < n {
+            var k: i64 = i
+            if args.len > i64(2) && args[2][0] == u8(114) { k = (i * i64(2654435761)) % n }
+            m.put(k, i32(i))
+            i = i + i64(1)
+        }
+        /* 查一遍（名次查询 = 场景 B 的形状） */
+        i = i64(0)
+        while i < n {
+            acc = acc + i64(m.get(i % n) ?? i32(0))
+            i = i + i64(1)
+        }
+        if mode == i64(0) {
+            i = i64(0)
+            while i < n { acc = acc + i64(m.keyAt(i))  i = i + i64(1) }   /* 名次：lowerBound 的形状 */
+        } else {
+            i = i64(0)
+            while i < n { m.remove(i)  i = i + i64(1) }
+        }
+        round = round + i64(1)
+    }
+    io::cout << "acc=" << (acc % i64(1000000007)) << "\n"
+    return 0
+}
