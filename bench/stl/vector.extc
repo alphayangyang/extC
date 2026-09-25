@@ -5,7 +5,7 @@ use stl::vector
 let N: i64 = 10000000
 
 fn main() -> i32 {
-    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var v: vector<i32> = vector<i32>::withCap(N)
     var i: i64 = 0
     var sum: i64 = 0
     while i < N {

@@ -5,7 +5,7 @@ use stl::map
 let N: i64 = 1000000
 
 fn main() -> i32 {
-    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))   // std::map 没有容量提示，两边都从零长
     var u: u64 = u64(12345)
     var i: i64 = 0
     var sum: i64 = 0

@@ -5,7 +5,7 @@ use stl::string
 let N: i64 = 10000000
 
 fn main() -> i32 {
-    var s: string = string::withCap(i64(16))
+    var s: string = string::withCap(N)
     var i: i64 = 0
     while i < N {
         s.push(u8(97 + i % i64(26)))

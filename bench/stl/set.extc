@@ -5,7 +5,7 @@ use stl::hashSet
 let N: i64 = 1000000
 
 fn main() -> i32 {
-    var s: hashSetI64 = hashSetI64::withCap(i64(16))
+    var s: hashSetI64 = hashSetI64::withCap(N)
     var u: u64 = u64(12345)
     var i: i64 = 0
     var hits: i64 = 0

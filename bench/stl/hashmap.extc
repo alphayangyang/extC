@@ -5,7 +5,7 @@ use stl::hashMap
 let N: i64 = 1000000
 
 fn main() -> i32 {
-    var m = hashMapI64<i32>::withCap(i64(16))
+    var m = hashMapI64<i32>::withCap(N)
     var u: u64 = u64(12345)
     var i: i64 = 0
     var sum: i64 = 0

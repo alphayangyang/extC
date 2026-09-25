@@ -8554,3 +8554,34 @@ EX_CALL / EX_METHOD / EX_ASSOC 三处都有 `homeDepth` + `setCallArenaArg`（�
 
 接进 `check.sh` 的非 quick 段（跑全套自检时会带上它）。**下一步**：radix 容器原型（整数键的 ART 风格），
 拿它和我们的 B+ 树 `map`、以及 `std::map` / `std::unordered_map` 摆在一起比 —— 这是作者点名要试的那一格。
+
+### 周期 33：把横评里"不公平的那一半"修掉 —— 容量提示对齐
+
+作者问「有一个确实很慢 / 有一个内存占用确实显著高」。我去翻旧数据并重跑，结论分三段：
+
+**① 作者记忆里的两条都找到了出处，而且今天都不再是 extC 的问题**（`bench/gc/FINDINGS.md`）：
+
+- 「内存 13MB → 495MB」那条：文档自己标着**基准陷阱 2** —— extC 版最初把两个槽声明在循环外，那个 `new`
+  真的逃逸出块，编译器（正确地）把它提升到帧层 ⇒ **是形状写错了，不是 arena 的内存问题**；
+- churn（3200 万次分配）当年 extC 362.7 ms ⇒ arena 块复用（`spare`）之后 140.9 ms ⇒ **今天实测 0.03 s / 1.6 MB**。
+  同一形状里真正的内存怪兽是 **C 的 malloc+free：0.41 s / 1.0 GB**（今天复现）。
+- `bench/heavy` 今天也复现：radix 0.27 s vs C 0.26 s、mandelbrot 0.14 两边同、RSS 同；
+  `bench/io` 里 extC 的 `cout <<` 是那一格最快（203 ms，C 303 / C++ 503 / Java 303）。
+  ⇒ 旧文档里"extC 在 radix 上比 C 慢"是 arena 块复用**之前**的数字，今天已经追平。
+
+**② 今天真正剩下的两处，是刚建的容器横评量出来的**，而且我发现自己那张表**不公平**：
+
+- C++ 侧写了 `reserve(N)` / `reserve(N)`，extC 侧却只 `withCap(16)` 让它一路翻倍 —— 而 arena
+  **只增不减**，翻倍历史全部留在常驻里 ⇒ RSS 差异被我自己放大了。对齐成 `withCap(N)` 之后：
+  `vector` 的 RSS 从 132 MB 掉到 **40.7 MB（比 C++ 的 42.9 MB 还小）**，`hashMap` 104 → 69 MB，
+  `set` 98 → 62.9 MB，`string` 51 → 27.6 MB。**时延没变**（0.16 → 0.12 s 的 vector 是缓存效应）。
+- 对齐之后仍然存在的真差距：**连续容器慢 6 倍**（`vector` 0.12 vs 0.02 s、`string` 0.06 vs 0.01 s）——
+  两笔明账：每次元素访问过**方法 + 有界检查**（C++ 那边是裸 `v[i]`），以及 `push` 的容量判断；
+  而**有序 `map` 仍然快 1.65 倍**（B+ 树 vs 红黑树）、`hashMap`/`set` 打平或略快。
+- 哈希/有序容器的 RSS 仍比 C++ 高 1.4~1.6 倍（`hashMap` 69 vs 43 MB）：这是**设计代价**，不是漏 ——
+  表里有 `keys`/`tag`/`slot`/`bucketOfDense` 四列，值还在池里（`vals`/`slots`/`ent` 三列），
+  C++ 的 `unordered_map` 只有节点 + 桶数组。要缩这一栏得改布局（例如三态与稠密下标合并），
+  属于下一步的取舍，不在这轮偷改。
+
+**③ 落地**：容量提示对齐写进五个 extC 用例与两个 C++ 用例（`vector`/`acc` 的 `reserve` 也补满），
+`RESULTS.md` 重新生成；`map` 保持小容量启动（`std::map` 没有容量提示，两边都从零长）。
