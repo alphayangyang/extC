@@ -1,0 +1,24 @@
+use std::io
+use stl::map
+/* 振荡形状：20 轮 ×（插 100k、删 99k）—— [每轮 shrink] 的开销 */
+fn main() -> i32 {
+    var m = map<i64, i32>::withCap(i64(1000))
+    var round: i64 = 0
+    var acc: i64 = 0
+    while round < i64(20) {
+        var i: i64 = 0
+        while i < i64(100000) {
+            m.put(i, i32(i))
+            i = i + i64(1)
+        }
+        var d: i64 = 0
+        while d < i64(99000) {
+            m.remove(d)
+            d = d + i64(1)
+        }
+        acc = acc + m.len()
+        round = round + i64(1)
+    }
+    io::cout << "len=" << m.len() << " acc=" << acc << "\n"
+    return 0
+}

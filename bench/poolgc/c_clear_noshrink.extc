@@ -1,0 +1,20 @@
+use std::io
+use stl::vector
+/* GC 探针：涨到 1e6（8 MB）→ 清空/留 10 个 → [shrink] → 空转让外面采样 */
+fn main() -> i32 {
+    var v = vector<i64>::new()
+    var i: i64 = 0
+    while i < i64(1000000) {
+        v.push(i)
+        i = i + i64(1)
+    }
+    v.clear()
+    var acc: i64 = 0
+    var k: i64 = 0
+    while k < i64(120000000) {
+        acc = acc + k % i64(7)
+        k = k + i64(1)
+    }
+    io::cout << "n=" << v.len() << " cap=" << v.capacity() << " acc=" << acc << "\n"
+    return 0
+}
