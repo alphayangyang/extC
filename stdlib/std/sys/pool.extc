@@ -45,6 +45,12 @@ extern!("extc-runtime") fn extc_pool_alloc(rid: i64, bytes: i64) -> mut ref u8
 
 /* 板块的字节账：`extc_pool_bytes` 是这一只池当下持有的字节数，`extc_pool_bytesLive` 是所有池
  * 的合计。判据用它证明「扩容之后旧块真的还回去了」与「release 之后一个字节都不剩」。 */
+/* 染色（POOLS.md §7）：`extc_pool_birthColor` 是这个池出生时它那个地方的色，
+ * `extc_pool_rowColor` 是那个地方**现在**的色。不等 ⇒ 一定死过（只做否决）。 */
+extern!("extc-runtime") fn extc_pool_birthColor(rid: i64) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_pool_rowColor(rid: i64) -> i64
+    effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_bytes(rid: i64) -> i64
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_bytesLive() -> i64

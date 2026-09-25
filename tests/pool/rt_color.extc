@@ -1,0 +1,33 @@
+// 染色 · 常设判据：**同一个下标（同一个地方）每一轮的颜色都不同**
+//
+// 循环体是一个地方，每轮进去都复用同一个 zone 下标 ⇒ 上一轮出生在那儿的池，颜色必然对不上
+// ⇒ 一次比较就作废整棵树，一个槽都不用走（POOLS.md §7.2/§7.3）。
+//
+// 判据 `c1,c2,c3,diff=1,1 birth_eq_row=1`：
+//   - 三轮各建一个池，把"出生色"打出来 ⇒ 三个数两两不同；
+//   - 每个池**活着的时候** birthColor == rowColor（色的用法是"不等 ⇒ 一定死"；
+//     相等不保证活，所以这只是一条 sanity 判据，不是活性判据）；
+//   - `live=0`：出循环之后三个池都被回收（今天仍然逐个 drop；分片是下一步）。
+// expect: c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    var cs: mut slice<i64> = poolSlice<i64>(i64(-1), i64(0))   /* 占位：下面用普通数组存色 */
+    var colors: [4]i64 = [0, 0, 0, 0]
+    var r: i64 = 0
+    while r < i64(3) {
+        let rid = syspool::extc_pool_new(i64(-1))
+        colors[r] = syspool::extc_pool_birthColor(rid)
+        if syspool::extc_pool_birthColor(rid) != syspool::extc_pool_rowColor(rid) { return 1 }
+        r = r + i64(1)
+    }
+    io::cout << "c1=" << colors[0] << " c2=" << colors[1] << " c3=" << colors[2]
+    var d1: i64 = 0
+    var d2: i64 = 0
+    if colors[0] != colors[1] { d1 = 1 }
+    if colors[1] != colors[2] { d2 = 1 }
+    io::cout << " diff=" << d1 << "," << d2 << " birth_eq_row=1"
+    io::cout << " live=" << syspool::extc_pool_live() << "\n"
+    return 0
+}

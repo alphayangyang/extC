@@ -191,6 +191,9 @@ rt_run rt_nest     tests/pool/rt_nest_promote.extc "after=4 innerlen=2 v=20 byte
 echo "== 池的提权（返回那一档）：函数里建好的容器返回给调用方 =="
 rt_run rt_rett     tests/pool/rt_return_promote.extc "live=1 len=3 v0=5 v2=7"
 
+echo "== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 =="
+rt_run rt_color    tests/pool/rt_color.extc    "c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0"
+
 echo "== 守卫（别名那一档）：一份 release 之后另一份不许静默写已释放的板块 =="
 if out=$("./build/extc" --run tests/pool/rt_stale_alias.extc 2>&1); rc=$?; then :; fi
 if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -q "trap: index" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
