@@ -111,19 +111,19 @@ struct pool<T> {
 
     /* --- the packed metadata, in one place --- */
     @inline
-    @private fn pLow(e: i64) -> i64 { return e & i64(4294967295) }
+    fn pLow(e: i64) -> i64 { return e & i64(4294967295) }
     @inline
-    @private fn pDense(e: i64) -> i64 { return (e & i64(4294967295)) - i64(1) }
+    fn pDense(e: i64) -> i64 { return (e & i64(4294967295)) - i64(1) }
     @inline
-    @private fn pGen(e: i64) -> i64 { return e >> i64(32) }
+    fn pGen(e: i64) -> i64 { return e >> i64(32) }
     @inline
-    @private fn pPack(gen: i64, low: i64) -> i64 { return (gen << i64(32)) | low }
+    fn pPack(gen: i64, low: i64) -> i64 { return (gen << i64(32)) | low }
 
     /* --- the pool epoch, in one place: width lives in HANDLE_EPOCH_BITS --- */
     @inline
-    @private fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - i64(1) }
+    fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - i64(1) }
     @inline
-    @private fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
+    fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
 
     /* 槽是不是**空闲**的：`low == 0`（刚清零、从未用过）或 `low > cap`（空洞链上的编码）。
      *
@@ -132,7 +132,7 @@ struct pool<T> {
      * 已经清零）也不必写。这就是 §7.3 那句"cap 个槽位一个字节都不用写"，用编码拿到。
      * 活槽的 `low = 稠密下标 + 1 ∈ [1, n]`、n ≤ cap ⇒ 既不会是 0，也不会 > cap。 */
     @inline
-    @private fn pFree(self: ref pool<T>, e: i64) -> bool {
+    fn pFree(self: ref pool<T>, e: i64) -> bool {
         let lo = pool<T>::pLow(e)
         return lo == i64(0) || lo > self.cap
     }
@@ -183,7 +183,7 @@ struct pool<T> {
      *      catches slot reuse (`remove` then `insert`) inside one epoch.
      * `remove`, `gather` and `handleAtDense` all read the same packed fields, so they must
      * go through here (or repeat both halves) rather than test the epoch alone. */
-    @private fn pLive(self: ref pool<T>, h: handle) -> bool {
+    fn pLive(self: ref pool<T>, h: handle) -> bool {
         if pool<T>::pEp(h.ep) != pool<T>::pEp(self.epoch) { return false }
         let s = i64(h.slot)
         if s < i64(0) || s >= self.cap { return false }
@@ -277,11 +277,11 @@ struct pool<T> {
      * 不叫 close —— 所在的地方退出时这棵树本来就会被自动清空，close 会被读成"你负责关"。 */
     /* **守卫**：这一份池值还指着它的运行期记录吗？陈旧 ⇒ 收成空池（三块视图归零），
      * 下一次访问带位置地 trap。 */
-    @private fn pStaleSelf(self: ref pool<T>) -> bool {
+    fn pStaleSelf(self: ref pool<T>) -> bool {
         if self.pid < i64(0) { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
-    @private fn pPoisonSelf(self: mut ref pool<T>) {
+    fn pPoisonSelf(self: mut ref pool<T>) {
         self.vals  = poolSlice<T>(i64(-1), i64(0))
         self.slots = poolSlice<i32>(i64(-1), i64(0))
         self.ent   = poolSlice<i64>(i64(-1), i64(0))

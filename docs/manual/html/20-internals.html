@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>6. 语句 · extC 手册</title>
+<title>内部成员一览（透明清单） · extC 手册</title>
 <style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
@@ -37,7 +37,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <li><a href="04-types.html">3. 类型</a></li>
 <li><a href="05-vars.html">4. 变量与声明</a></li>
 <li><a href="06-expr.html">5. 表达式与运算符</a></li>
-<li class="cur"><a href="07-stmt.html">6. 语句</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
 </ul>
 <div class="g">结构与内存</div><ul>
 <li><a href="08-struct.html">7. 结构体与方法</a></li>
@@ -58,44 +58,28 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <li><a href="19-examples.html">13. 完整示例</a></li>
 </ul>
 <div class="g">透明清单</div><ul>
-<li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
+<li class="cur"><a href="20-internals.html">内部成员一览（透明清单）</a></li>
 </ul></nav>
-<main><div class="crumb">extC 手册 · §6.</div>
-<p><strong><a href="README.html">索引</a></strong> · <a href="06-expr.html">← 5. 表达式与运算符</a> · <a href="08-struct.html">7. 结构体与方法 →</a></p>
-<hr>
-<h1 id="6-语句">6. 语句</h1>
-<h3 id="for-四种形态-定案-93"><code>for</code>：四种形态（定案 93）</h3>
-<pre class="lang-extc"><code><span class="k">for</span> i in <span class="t">i64</span>(<span class="n">0</span>)..n { ... }        <span class="c">// 半开区间：0, 1, ..., n-1</span>
-<span class="k">for</span> dy in <span class="t">i64</span>(-<span class="n">2</span>)..<span class="t">i64</span>(<span class="n">3</span>) { ... } <span class="c">// 下界可以是负数</span>
-<span class="k">for</span> d in items { ... }            <span class="c">// 容器：视图 / 定长数组 / 字符串（元素是字节）</span>
-<span class="k">for</span> (<span class="k">var</span> j: <span class="t">i64</span> = <span class="n">0</span>; j &lt; n; j += <span class="n">1</span>) { ... }   <span class="c">// C-style：三段都是普通语句</span></code></pre>
-<p><strong>生成出来就是 <code>var</code> + <code>while</code></strong>：<code>for i in 0..n { B }</code> ⇒ <code>{ var i = 0  while i &lt; n { B  i += 1 } }</code> 所以它不是新的语句种类，检查器与生成器见到的还是它们本来就认识的东西</p>
-<p>三条要记的：</p>
-<ul><li><strong>范围的类型来自下界</strong> —— <code>0..n</code> 里的 <code>i</code> 是 <code>i32</code>（字面量的默认类型）；要 <code>i64</code> 就写 <code>i64(0)..n</code> 比较允许数值加宽，所以 <code>for i in 0..a.len</code> 也是合法的（只是索引处多一次转换）</li><li><strong>容器的元素是拷贝</strong> —— <code>for d in v { d.x = 1 }</code> 不会写回 <code>v</code> 容器本身先过一遍 <code>c[..]</code> 变成视图，<strong>定长数组因此也能直接迭</strong>（数组自己没有 <code>.len</code>，视图才有）</li><li><strong>容器必须是"可重复求值的位置"</strong>（名字 / 字段 / <code>*p</code>）—— 脱糖后的循环每轮都要再读它一次， 写 <code>for d in f()</code> 会在编译期被挡住，并提示先 <code>var xs = f()</code></li></ul>
-<h3 id="复合赋值-定案-92">复合赋值 <code>+=</code> <code>-=</code> <code>*=</code> <code>/=</code> <code>%=</code>（定案 92）</h3>
-<pre class="lang-extc"><code>x += <span class="n">1</span>        <span class="c">// 就是 `x = x + 1`，右边那条规则与写开的 `x + 1` **同一个函数**判</span></code></pre>
-<p>生成的 C <strong>保持复合形式</strong>（<code>x += 1;</code> ⇒ 目标只求值一次）。用户自己定义了 <code>+</code> 的结构体也行： <code>v += w</code> 变成 <code>v = vec2_add(&amp;v, w)</code> 这种情形要求目标里<strong>没有调用</strong>（重写会把目标写两遍）， 有调用就报错让你拆成两行。<code>++</code> / <code>--</code> <strong>故意不做</strong>：一个表达式同时读又写同一个位置， 是未定义行为的老家</p>
-<pre class="lang-extc"><code><span class="k">let</span> / <span class="k">var</span> 声明
-
-x = 表达式                       <span class="c">// 赋值（目标是变量或字段）</span>
-
-<span class="k">if</span> 条件 { ... } <span class="k">else</span> <span class="k">if</span> 条件 { ... } <span class="k">else</span> { ... }
-
-<span class="k">while</span> 条件 { ... }
-
-<span class="k">return</span> 表达式
-<span class="k">return</span>                           <span class="c">// 无返回值函数</span>
-
-<span class="k">break</span>
-<span class="k">continue</span>
-
-{ ... }                          <span class="c">// 裸块，引入作用域</span>
-表达式                            <span class="c">// 表达式语句</span></code></pre>
-<p><code>else</code> 前面可以换行（不受「换行即语句结束」影响）。</p>
-<p><strong>还没有 <code>for</code></strong> —— 四种形态全部已定案，见第 10 节。</p>
-<hr>
-<p><strong><a href="README.html">索引</a></strong> · <a href="06-expr.html">← 5. 表达式与运算符</a> · <a href="08-struct.html">7. 结构体与方法 →</a></p>
-<div class="pn"><a href="06-expr.html">← 5. 表达式与运算符</a> <a href="08-struct.html">7. 结构体与方法 →</a></div></main>
+<main><div class="crumb">extC 手册 · §内部成员一览（透明清单）</div>
+<h1 id="内部成员一览-透明清单">内部成员一览（透明清单）</h1>
+<p>标准库成员<strong>缺省公开</strong>，编译器不阻止任何访问。本页列出<strong>按约定属于内部</strong>的成员：它们可达， 但不受兼容性承诺保护，重构时不预告。是否使用、如何承担风险，由使用者自行判断 —— 本手册的职责是把它们<strong>列清楚</strong>，而不是把它们锁起来。</p>
+<p>生成方式：<code>tools/manual_surface.py</code>；<code>check.sh</code> 保证本页与源码一致。</p>
+<p>公开面共 749 个成员，其中内部 47 个：</p>
+<h2 id="std-io">std::io</h2>
+<ul><li><code>writer.accDigit</code>（方法）</li></ul>
+<h2 id="stl-hashmap">stl::hashMap</h2>
+<ul><li><code>hashMap.pPoison</code>（方法）</li><li><code>hashMap.pStale</code>（方法）</li></ul>
+<h2 id="stl-linmap">stl::linmap</h2>
+<ul><li><code>linMap.pPoison</code>（方法）</li><li><code>linMap.pStale</code>（方法）</li></ul>
+<h2 id="stl-map">stl::map</h2>
+<ul><li><code>bnode.bn</code>（方法）</li><li><code>bnode.borrowLeft</code>（方法）</li><li><code>bnode.borrowRight</code>（方法）</li><li><code>bnode.childSlot</code>（方法）</li><li><code>bnode.kd</code>（方法）</li><li><code>bnode.leafOf</code>（方法）</li><li><code>bnode.pPoison</code>（方法）</li><li><code>bnode.pStale</code>（方法）</li><li><code>map.bn</code>（方法）</li><li><code>map.borrowLeft</code>（方法）</li><li><code>map.borrowRight</code>（方法）</li><li><code>map.childSlot</code>（方法）</li><li><code>map.kd</code>（方法）</li><li><code>map.leafOf</code>（方法）</li><li><code>map.pPoison</code>（方法）</li><li><code>map.pStale</code>（方法）</li></ul>
+<h2 id="stl-pool">stl::pool</h2>
+<ul><li><code>handle.atDense</code>（方法）</li><li><code>handle.pDense</code>（方法）</li><li><code>handle.pEp</code>（方法）</li><li><code>handle.pEpMask</code>（方法）</li><li><code>handle.pFree</code>（方法）</li><li><code>handle.pGen</code>（方法）</li><li><code>handle.pLive</code>（方法）</li><li><code>handle.pLow</code>（方法）</li><li><code>handle.pPack</code>（方法）</li><li><code>handle.pPoisonSelf</code>（方法）</li><li><code>handle.pStaleSelf</code>（方法）</li><li><code>pool.atDense</code>（方法）</li><li><code>pool.pDense</code>（方法）</li><li><code>pool.pEp</code>（方法）</li><li><code>pool.pEpMask</code>（方法）</li><li><code>pool.pFree</code>（方法）</li><li><code>pool.pGen</code>（方法）</li><li><code>pool.pLive</code>（方法）</li><li><code>pool.pLow</code>（方法）</li><li><code>pool.pPack</code>（方法）</li><li><code>pool.pPoisonSelf</code>（方法）</li><li><code>pool.pStaleSelf</code>（方法）</li></ul>
+<h2 id="stl-string">stl::string</h2>
+<ul><li><code>string.pPoison</code>（方法）</li><li><code>string.pStale</code>（方法）</li></ul>
+<h2 id="stl-vector">stl::vector</h2>
+<ul><li><code>vector.pPoison</code>（方法）</li><li><code>vector.pStale</code>（方法）</li></ul>
+<div class="pn"><a href="19-examples.html">← 13. 完整示例</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
 q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();

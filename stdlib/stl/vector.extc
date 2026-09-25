@@ -105,14 +105,14 @@ struct vector<T> {
      * 已经不在我们名下（可能已经还给 malloc，也可能已经归别人）。实测的静默形状：
      *     var a = vector<i32>::new()   var b = a   a.release()   b.push(i32(9))
      * 别名让两份共用一个板块，`a.release()` 之后 `b` 就成了悬垂 —— 不开 ASan 时打印完全正常。 */
-    @private fn pStale(self: ref vector<T>) -> bool {
+    fn pStale(self: ref vector<T>) -> bool {
         if self.pid < i64(0) { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
 
     /* 陈旧 ⇒ 把**这一份**收成空容器（板块不要碰，它可能已经归别人）：容量归零之后，
      * 任何一次下标访问都会带位置地 trap —— 把静默 UAF 变成响亮失败。 */
-    @private fn pPoison(self: mut ref vector<T>) {
+    fn pPoison(self: mut ref vector<T>) {
         self.vals = poolSlice<T>(i64(-1), i64(0))
         self.n    = i64(0)
         self.cap  = i64(0)
