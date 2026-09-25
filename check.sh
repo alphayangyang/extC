@@ -48,6 +48,18 @@ if out=$(timeout 600 ./tests/generics/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
 else bad "tests/generics/run.sh"; echo "$out"; fi
 
+echo "== 手册文体（正式书面语：无第一/第二人称、无口语、无反问）=="
+if out=$(python3 tools/check_tone.py --gate 2>&1); then ok "$out"; else bad "手册文体新增了非正式写法"; echo "$out" | head -5; fi
+
+echo "== 公开面清单与源码一致（tools/manual-surface.txt）=="
+if out=$(python3 tools/manual_surface.py --check 2>&1); then ok "$out"; else bad "公开面清单已过期"; echo "  跑 python3 tools/manual_surface.py"; fi
+
+echo "== 手册 HTML 与 Markdown 一致（docs/manual/html 是生成物）=="
+if out=$(python3 tools/build_manual.py --check 2>&1); then ok "$out"; else bad "docs/manual/html 已过期"; echo "  跑 python3 tools/build_manual.py"; fi
+
+echo "== stdlib/INDEX 与源码一致（impl 方法表不许漂）=="
+if out=$(python3 tools/gen_index.py --check 2>&1); then ok "$out"; else bad "stdlib/INDEX 已过期"; echo "  跑 tools/gen_index.py 重新生成"; fi
+
 echo "== 类型分支的穷尽性（新构造器不许静默走 default）=="
 if out=$(python3 tools/check_tykind.py 2>&1); then
     ok "$(echo "$out" | grep -c '^') 行报告（5 处 kind-switch：1 处枚举齐全 + 4 处 default 带理由）"
