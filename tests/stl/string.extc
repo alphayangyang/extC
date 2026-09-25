@@ -12,11 +12,11 @@ fn main() -> i32 {
     s.shrink()
     io::cout << " shrink=" << s.capacity()
     io::cout << " text="
-    io::cout << s.asSlice()
+    io::cout << s.toSlice()
     var t = string::withCap(i64(16))
     t.append("ab")
     t.push(u8(99))
-    io::cout << " t=" << t.asSlice() << "(" << t.len() << ")"
+    io::cout << " t=" << t.toSlice() << "(" << t.len() << ")"
     s.clear()
     io::cout << " clear=" << s.len() << "/" << s.capacity() << "\n"
     return 0

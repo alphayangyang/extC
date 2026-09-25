@@ -73,7 +73,7 @@ fn same(a: handle, b: handle) -> bool {
  *   · `len` / `atDense` / `handleAtDense`（极小访问器）内联：无害 ✓
  *   · `get` / `contains` 内联：**随机访问快 1.6×**（0.836s → 0.523s / 1e7 次）
  *     而 **churn 慢 1.7×**（0.87s → 1.49s / 2e8 次）✗ ⇒ 保持不内联（churn 是这套的主场）✓
- * 想要"两边都快"，就走 `denseView()`（见下）—— 热点循环本来就该遍历列，而不是走容器 ✓ */
+ * 想要"两边都快"，就走 `atDense(i)` 逐个取（见下）—— 热点循环本来就该遍历列，而不是走容器 ✓ */
 struct pool<T> {
     vals:   mut slice<T>       /* dense: vals[0..len] are the live values, in order */
     slots:  mut slice<i32>     /* dense index -> slot number (the reverse map) */
@@ -360,8 +360,14 @@ struct pool<T> {
      * Written through the pool, the view is stale: `insert` may reuse a slot (it does not
      * move values) but `grow` copies into new arrays, so take the view again after a
      * growth, or after `clear`. */
-    fn denseView(self: ref pool<T>) -> slice<T> { return self.vals[0..self.n] }
-
+    
+    /* ⭐ **gather**: resolve a batch of handles into dense indices once, so the hot loop
+     * after it is plain index access through `atDense(i)` (measured 1.09x of a bare slice,
+     * against 9.1x for using handles as indices).
+     *
+     * `out[i]` gets the dense index of `hs[i]`, or -1 when that handle is stale; the
+     * return value is how many were valid (so a caller can compact or skip).
+     * `out` must be at least as long as `hs`. */
     /* The handle of the i-th dense value (the inverse of `atDense`). */
     @inline
     fn handleAtDense(self: ref pool<T>, i: i64) -> handle {
@@ -370,7 +376,7 @@ struct pool<T> {
     }
 
     /* ⭐ **gather**: resolve a batch of handles into dense indices once, so the hot loop
-     * after it is plain index access into `denseView()` (measured 1.09x of a bare slice,
+     * after it is plain index access through `atDense(i)` (measured 1.09x of a bare slice,
      * against 9.1x for using handles as indices).
      *
      * `out[i]` gets the dense index of `hs[i]`, or -1 when that handle is stale; the

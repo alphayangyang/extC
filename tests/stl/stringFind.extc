@@ -49,8 +49,8 @@ fn main() -> i32 {
                 var hb: i64 = 0
                 while hb < (i64(1) << hl) {
                     mk(ref hay, hb, hl)
-                    let got  = hay.find(nd.asSlice()) ?? i64(-1)
-                    let want = naive(hay.asSlice(), nd.asSlice())
+                    let got  = hay.find(nd.toSlice()) ?? i64(-1)
+                    let want = naive(hay.toSlice(), nd.toSlice())
                     if got != want { bad = bad + i64(1) }
                     checked = checked + i64(1)
                     hb = hb + i64(1)
@@ -71,9 +71,9 @@ fn main() -> i32 {
     }
     var p1: string = string::withCap(i64(16))
     p1.append("aaaaab")
-    if (big.find(p1.asSlice()) ?? i64(-1)) != i64(-1) { bad = bad + i64(1) }
+    if (big.find(p1.toSlice()) ?? i64(-1)) != i64(-1) { bad = bad + i64(1) }
     big.push(u8(98))                                   /* 现在末尾是 b：aaa...ab 从 99995 开始 */
-    if (big.find(p1.asSlice()) ?? i64(-1)) != i64(99995) { bad = bad + i64(1) }
+    if (big.find(p1.toSlice()) ?? i64(-1)) != i64(99995) { bad = bad + i64(1) }
     var cyc: string = string::withCap(i64(1024))
     var j: i64 = 0
     while j < i64(4096) {
@@ -82,10 +82,10 @@ fn main() -> i32 {
     }
     var p2: string = string::withCap(i64(16))
     p2.append("abababab")
-    if (cyc.find(p2.asSlice()) ?? i64(-1)) != i64(0) { bad = bad + i64(1) }
+    if (cyc.find(p2.toSlice()) ?? i64(-1)) != i64(0) { bad = bad + i64(1) }
     var p3: string = string::withCap(i64(16))
     p3.append("ba")
-    if (cyc.find(p3.asSlice()) ?? i64(-1)) != i64(1) { bad = bad + i64(1) }
+    if (cyc.find(p3.toSlice()) ?? i64(-1)) != i64(1) { bad = bad + i64(1) }
 
     io::cout << "checked=" << checked << "|bad=" << bad << "\n"
     return 0

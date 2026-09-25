@@ -8,7 +8,7 @@
  *
  * 内存：`vals` 是**池的板块**（从这只容器自己的池里拿整块，见 POOLS.md §2.1 裁决一），
  * 不是 arena 切片 —— 扩容时旧块当场还给池，历代旧副本不会留在 arena 里；`shrink` 也据此真缩。
- * dense 永远连续 ⇒ `denseView()` / SIMD 一直成立。
+ * dense 永远连续 ⇒ `atDense` / SIMD 一直成立。
  */
 use std::sys::pool as syspool
 
@@ -58,9 +58,22 @@ struct vector<T> {
         return true
     }
 
-    /* 容器们共用的整块视图：dense 前段，连续不拷贝 */
-    fn denseView(self: ref vector<T>) -> slice<T> { return self.vals[0..self.n] }
-
+    /* **拿到内容只有这一条路：`toSlice()` —— 拷一份到调用者所在的地方。**
+     *
+     * 没有"零拷贝视图"是有意的：那等于把池里的东西交出去（POOLS.md §5.4），而且守不住 ——
+     * `push`（可能扩容搬家）/ `clear`（翻纪元）/ `shrink` / `release` 任何一个动作都能让它失效。
+     * 名字也不用 `as*`：那看起来就像"给了里面的一个视图"。拷贝的存储由逃逸分析提到调用者
+     * 选的地方，所以它可以存、可以返回。 */
+    fn toSlice(self: ref vector<T>) -> slice<T> {
+        var out: mut slice<T> = new T[self.n]
+        var i: i64 = 0
+        while i < self.n {
+            out[i] = self.vals[i]
+            i = i + i64(1)
+        }
+        return out
+    }
+    
     /* 扩到 1.5 倍：**在原块上长**（装不下时才由分配器搬家），内容由 resize 保住。
      * 有了真板块之后 1.5 才是对的因子（翻倍只在「旧块还不了」时才占优）；
      * 峰值因此是 O(活跃量)，不是历代旧副本之和。 */

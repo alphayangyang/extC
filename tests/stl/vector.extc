@@ -12,7 +12,7 @@ fn main() -> i32 {
         i = i + i64(1)
     }
     io::cout << " n=" << v.len() << " cap=" << v.capacity()
-    let dv = v.denseView()
+    let dv = v.toSlice()
     var sum: i64 = 0
     var k: i64 = 0
     while k < dv.len { sum = sum + i64(dv[k])  k = k + i64(1) }

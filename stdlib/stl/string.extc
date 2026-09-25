@@ -1,11 +1,12 @@
 /* stl/string.extc —— 池底字节串（STL 第二个池底容器）
  *
  * 口径（POOLS.md §5）：**序列化面保持连续** —— 下游全吃 `slice<u8>`
- * （print · IO · 哈希 · `extern!` 边界），所以这里绝不分块，`asSlice()` 永远给连续视图。
+ * （print · IO · 哈希 · `extern!` 边界），所以这里绝不分块；**拿到内容只有 `toSlice()` 一条路
+ * （拷一份），池里不放视图出去**（POOLS.md §5.4）。
  *
  * 与 vector<T> 同一套骨架：随容器登记一条运行期池记录（寿命挂在"地方"上）· grow 翻倍 ·
  * shrink 降高水位 · clear 留容量 · release 校验世代。**缓冲区是池的板块**（POOLS.md §2.1
- * 裁决一）：扩容时旧块当场还回去，不留历代旧副本；`asSlice()` 给的仍是连续视图。
+ * 裁决一）：扩容时旧块当场还回去，不留历代旧副本；`toSlice()` 给的仍是连续的一份。
  */
 use std::sys::pool as syspool
 
@@ -42,9 +43,27 @@ struct string {
     @inline
     fn isEmpty(self: ref string) -> bool { return self.n == i64(0) }
 
-    /* 连续视图：字节就是 `buf[0..n]`，不拷贝（print / IO 直接用）*/
-    fn asSlice(self: ref string) -> slice<u8> { return self.buf[0..self.n] }
-
+    /* **拿到内容只有这一条路：`toSlice()` —— 拷一份到调用者所在的地方。**
+     *
+     * 为什么没有"零拷贝视图"：那等于把**池里的东西**交出去（作者口径，POOLS.md §5.4：
+     * 「Pool 里的东西永远不能被外面引用」），而且它本来也守不住 —— `push` 一次（可能 `grow`
+     * 搬家）、`clear`（翻纪元）、`shrink`、`release` 任何一个动作都能让它失效。
+     * 作者的原话最直白：「你并没有办法安全地长期持有 C++ `std::string` 的一个视图，
+     * 因为我插入一下扩容一下你就完蛋了」。`toSlice` 这个名字也不容易读错（`as*` 那种
+     * 命名看起来就像"给了里面的一个视图"）。
+     *
+     * 实现上 `new u8[n]` 写在方法体里，但逃逸分析会把这次分配提到**调用者**选的地方
+     *（arena 的 home 机制）⇒ 它活得比这一次调用长，可以存、可以返回。 */
+    fn toSlice(self: ref string) -> slice<u8> {
+        var out: mut slice<u8> = new u8[self.n]
+        var i: i64 = 0
+        while i < self.n {
+            out[i] = self.buf[i]
+            i = i + i64(1)
+        }
+        return out
+    }
+    
     /* ---------------------------------------------------------------- 比较与哈希
      *
      * `==` / `<` are defined per RIGHT-OPERAND type (that is how every overloadable operator in

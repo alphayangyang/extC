@@ -11,14 +11,14 @@ fn main() -> i32 {
     var b: string = string::withCap(i64(8))
     b.append(" world")
     let c = a.concat(b)               /* 新串：接收者不动 */
-    a.append(b.asSlice())             /* 就地追加（无隐式转换：slice 要写出来）*/
-    io::cout << "c=" << c.asSlice() << "|a=" << a.asSlice()
+    a.append(b.toSlice())             /* 就地追加（无隐式转换：slice 要写出来）*/
+    io::cout << "c=" << c.toSlice() << "|a=" << a.toSlice()
     io::cout << "|eq=" << (a == c) << "|lt=" << (c < a)
     io::cout << "|find=" << (c.find("world") ?? i64(-1)) << "|miss=" << (c.find("zzz") ?? i64(-1))
     io::cout << "|sw=" << c.startsWith("hello") << "|ew=" << c.endsWith("world")
     io::cout << "|at=" << i64(c.at(i64(1)) ?? u8(63)) << "|sub=" << c.sub(i64(6), i64(11))
     let cb = a.concatBytes("!!!")     /* 右操作数也可以是裸 slice<u8> */
-    io::cout << "|cb=" << cb.asSlice()
+    io::cout << "|cb=" << cb.toSlice()
 
     var m: hashMap<string, i32> = hashMap<string, i32>::withCap(i64(8))
     var k1: string = string::withCap(i64(4))
