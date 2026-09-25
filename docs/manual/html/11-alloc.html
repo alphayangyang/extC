@@ -87,8 +87,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p>从"有 GC 的语言"搬过来的写法，在 extC 里<strong>本质是泄漏</strong>：</p>
 <pre class="lang-extc"><code><span class="k">while</span> i &lt; N { <span class="k">var</span> n = <span class="k">new</span> node   slot.v = n   i = i + <span class="n">1</span> }   <span class="c">// 每轮一块，攒到函数结束</span></code></pre>
 <p>（实测 1e7 轮 = <strong>159.7MB</strong>，而复用是 <strong>1.7MB</strong>）</p>
-<p>根因不是"分析不够聪明"：<strong>"引用"的含义</strong>就是"我活多久它就得活多久" —— 槽位活到函数结束 ⇒ 它的内容也必须活那么久 想更小就得知道"谁已经不可达" = GC（不做）</p>
-<p>⇒ 唯一的路是<strong>把意图写出来</strong>：<code>@overwrite</code> 说「<strong>这块存储我复用，上一轮里面的东西我不要了</strong>」 <strong>写法只多一个修饰符</strong>：</p>
+<p>根因不是"分析不够精细"：<strong>引用的含义</strong>即"持有者的生存期不短于该引用的生存期" —— 槽位活到函数结束 ⇒ 它的内容也必须活那么久 想更小就得知道"谁已经不可达" = GC（不做）</p>
+<p>⇒ 唯一可行的做法是<strong>把意图写出</strong>：<code>@overwrite</code> 声明「<strong>复用该存储，上一轮的内容不再需要</strong>」 <strong>写法只多一个修饰符</strong>：</p>
 <pre class="lang-extc"><code><span class="k">while</span> i &lt; N {
     @overwrite <span class="k">var</span> n = <span class="k">new</span> node      <span class="c">/* 存储只有一块：第一次分配、之后每次清零复用 */</span>
     n.value = i
@@ -113,7 +113,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 t.<span class="f">push</span>(<span class="c">"abc"</span>)                                                  <span class="c">//   （以前：编译错误）</span>
 <span class="k">var</span> g: <span class="t">varArray</span>&lt;<span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;&gt; = <span class="t">varArray</span>&lt;<span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;&gt;::<span class="f">withCap</span>(<span class="n">4</span>)   <span class="c">// 动态邻接表</span>
 <span class="k">fn</span> <span class="f">stash</span>(dest: <span class="k">mut</span> <span class="k">ref</span> T, v: T) { *dest = v }                  <span class="c">// 通用"存起来"</span></code></pre>
-<p>现在：<strong>被调者只发布"我会把什么存到哪里"，调用点拿实际实参代入求解</strong> ⇒ 判据变成<strong>调用点上这个实参活得够不够久</strong>：</p>
+<p>现在：<strong>被调者只声明"会把什么存到哪里"，由调用点代入实际实参求解</strong> ⇒ 判据变成<strong>调用点上这个实参活得够不够久</strong>：</p>
 <table><thead><tr><th>写法</th><th>结果</th></tr></thead><tbody><tr><td><code>stash(ref outer, local[..])</code> —— <code>local</code> 与 <code>outer</code> <strong>同一个块</strong></td><td>合法（同层 ⇒ 安全 <code>tests/asan/borrowed-stash-sameframe.extc</code>）</td></tr><tr><td><code>stash(ref outer, local[..])</code> —— <code>local</code> 在<strong>更深的块</strong>里</td><td>编译错误（<code>tests/errors/stash_view_from_deeper.extc</code>）</td></tr><tr><td><code>stash(ref slot, i)</code> —— 值不是引用</td><td>合法（没有引用可悬垂）</td></tr></tbody></table>
 <p>拿不准的时候（<strong>递归 / 互相调用 / 有解析不出来的东西</strong> ⇒ 效果摘要算不完整）⇒ 调用点<strong>保守拒</strong>， 消息会说清是"分析不出来"而不是"一定错" —— 这是<strong>故意的</strong>：宁可误拒，不可漏 UB 处方：把那个助手函数的体<strong>写简单些</strong>（让摘要算得出来），或让值活到调用点那一层</p>
 <p>（旧限制，已解）<code>new</code> 出来的东西以前交不出去 —— 现在上面三种都行：<code>fn make() -&gt; mut ref node { return new node }</code> 是<strong>编译错误</strong>（它活不过当前块）。跨函数接线要等 <strong>A3 逃逸提升</strong> （今天要在函数间传递，就让<strong>调用者</strong>提供 buffer/<code>mut ref</code> —— 这也是 <code>IO.md</code> 的设计）</p>

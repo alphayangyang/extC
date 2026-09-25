@@ -39,7 +39,7 @@ fn main() -> i32 {
 | **全名** | **任意层都能写全名**（2026-09-23 起）：`std::sys::io::STDOUT` · `std::sys::io::write(…)` · `lib::sub::color.color.green` 不需要先 `use` 到"正好那一段" |
 | **别名** | `use std::sys::io as sysio` ⇒ 之后写 `sysio::STDOUT` 别名只换**短名**，全名照样能用 |
 | 可见性 | **默认公开**；要藏写 `@private`（别的模块引用它 ⇒ 编译错误）|
-| 必须限定 | 别的模块的名字**必须**写 `mod::name`（漏了会报错并告诉你写什么）|
+| 必须限定 | 其他模块的名字**必须**写作 `mod::name`（遗漏时报错并指出应写的内容）|
 | 环 | **禁止** import 环（报错会说清是哪两个模块）|
 | `main` | 只能写在**入口文件**里（模块是库）|
 | 编译 | 仍然**只吐一个 .c**（`extc --run main.extc` 一条命令，`use` 的文件自动跟着编）|
@@ -87,10 +87,10 @@ use std::io::{cin, cout, endl}     // 只有这三个名字进来，别的仍要
 ```
 
 三种写法范围从小到大、都并存：`io::cout`（限定）· `use std::io::{cin, cout}`（**推荐**：
-范围小到你自己写得出来）· `use std::io::*`（整个模块）
+范围小到可自行写出）· `use std::io::*`（整个模块）
 
 **`use std::io::cin` 裸写不行**（`use` 的每一段都是**模块路径**，它去找 `std/io/cin.extc`）——
-报错会教你写成 `use std::io::{cin}`（为什么不让裸写也能跑：那它的含义会依赖"现在有没有那个文件"，
+报错会指出应写作 `use std::io::{cin}`（不允许裸写的原因：其含义将取决于"当前是否存在该文件"，
 哪天有人建了 `io/cin.extc` 就**静默变意思**）
 
 限定名**照旧**能用（两条路并存）—— 定案 70 的"全名是权利"没有被削弱，
@@ -128,7 +128,7 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
 
 - 参数/返回只用**标量或单指针**（`ref T` / `?ref T`）—— `slice<T>` 在 C 那边是两个参数
 - 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len`
-- `owned`（C 给的内存归我）**还没实现** ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是**显式释放**，编译器只证明能证明的泄漏）
+- `owned`（来自 C 的内存由本模块负责）**尚未实现** ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是**显式释放**，编译器只证明能证明的泄漏）
 
 ### 12.4 让编译器内联：`@inline`（2026-09-24 新增）
 
@@ -143,7 +143,7 @@ struct pt {
 @private @inline fn twice(x: i64) -> i64 { return x + x }    // 与 @private 连用，顺序随意
 ```
 
-**它是要求，不是建议。** ISO C 的 `inline` 只是提示，编译器可以不听（而且**不会告诉你**）；
+**这是要求，而非建议。** ISO C 的 `inline` 只是提示，编译器可以不予采纳（而且**不会告知**）；
 `@inline` 生成的 C 用 `always_inline`，它**必须**被满足
 
 **为什么需要它**：库的热循环里，每字节一次方法调用的代价很大 ——
@@ -218,7 +218,7 @@ struct reader {
 }
 ```
 
-标了 `@noCopy` 的类型**只能按 `ref` / `mut ref` 传**，按值拷贝**编译期报错**并教你怎么改：
+标了 `@noCopy` 的类型**只能按 `ref` / `mut ref` 传递**，按值拷贝**编译期报错**并给出修改方式：
 
     error: `reader` is `@noCopy`: it may not be copied by value
     note:  Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter `mut ref T`.
@@ -287,8 +287,8 @@ fn main() -> i32 {
 |---|---|
 | `io::readerOf(fd)` | 建一个 `reader`（**隐式 64KB 缓冲**，住在创建点的块里 ⇒ 跟创建它的块同寿）|
 | `r.nextInt()` | 读一个整数，**自己跳空白**（OI 式：不用先读成行再切）|
-| `r.nextToken(buf)` | 读一个词（连续非空白）到你的 buffer |
-| `r.nextLine(buf)` | 读一行到你的 buffer，**不含换行**（`\n` 被吃掉 ⇒ 后面接着读位置是对的）|
+| `r.nextToken(buf)` | 读一个词（连续非空白字符）到指定 buffer |
+| `r.nextLine(buf)` | 读一行到指定 buffer，**不含换行**（`\n` 被消费 ⇒ 续读位置正确）|
 | `r.nextByte()` / `r.skipSpace()` / `r.eof()` | 逐字节 / 跳空白 / 结束了吗 —— **接口**，热路径不这么写 |
 | `io::readSome(fd, buf)` | 从 fd 读一次，返回读到的字节数 |
 | `io::writeBytes(buf)` | 把一整块字节写出去（fd 直写，**无缓冲**）|

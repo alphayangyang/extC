@@ -81,7 +81,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p><strong>只报第一个错误</strong>，没有错误恢复。</p>
 <hr>
 <h3 id="9-1-警告-不是错误-w-可关">9.1 警告（不是错误，<code>-w</code> 可关）</h3>
-<p><strong>没被用到的参数</strong>。参数是签名的一部分 —— 编译器<strong>不能</strong>替你删掉它（调用点会对不上）， 所以它选择：<strong>生成物里照常保留并标 <code>unused</code></strong>（C 编译器保持安静），<strong>同时告诉你</strong>：</p>
+<p><strong>未被使用的参数</strong>。参数是签名的一部分 —— 编译器<strong>不能</strong>代为删除（会导致调用点不匹配）， 因此采取的做法是：<strong>在生成物中照常保留并标 <code>unused</code></strong>（C 编译器保持安静），<strong>同时给出提示</strong>：</p>
 <pre class="lang-extc"><code><span class="k">fn</span> <span class="f">pickBigger</span>(a: <span class="k">ref</span> <span class="t">i32</span>, b: <span class="k">ref</span> <span class="t">i32</span>) -&gt; <span class="k">ref</span> <span class="t">i32</span> {
     <span class="k">return</span> a                        <span class="c">// ← b 一次都没读过</span>
 }

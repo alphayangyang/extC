@@ -26,6 +26,8 @@ def findings():
         for i, line in enumerate(text.split('\n'), 1):
             if line.lstrip().startswith('<!--'): continue
             bare = re.sub(r'`[^`]*`', '', line)          # 行内代码不算
+            # 引号内的**引文**不算手册的语气（例如引用作者原话）：去掉 「」 “” " " 内的内容。
+            bare = re.sub(r'「[^」]*」|“[^”]*”|"[^"]*"', '', bare)
             for name, pat in RULES:
                 if re.search(pat, bare):
                     out.append((name, f, i, line.strip()[:70]))

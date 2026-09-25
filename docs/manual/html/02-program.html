@@ -89,7 +89,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <blockquote><strong>为什么 10 万层总是安全的</strong>：实测递归函数的栈帧 <strong>24 字节</strong>（<code>-O2</code> 下的 <code>fib</code>） ⇒ 10 万层 ≈ <strong>2.4MB</strong>，<strong>小于</strong>默认栈 8MB ⇒ <strong>护栏总是先响，栈溢出在这门语言里见不到</strong>  这也是 <code>@recursive</code>（把调用栈换成编译期定长的显式栈，设计见 <code>DESIGN.md</code> §3） <strong>无限期推后</strong>的实测理由：<strong>它要解决的问题已经不存在了</strong></blockquote>
 <hr>
 <h3 id="prelude-自带类型不用-import">prelude：自带类型不用 import</h3>
-<p>编译器自带一小段 extC 源码（<code>stdlib/prelude.extc</code>），<strong>每次编译都先于你的文件被处理</strong>。 里面定义的类型不用 import 就能用。现在有：</p>
+<p>编译器自带一小段 extC 源码（<code>stdlib/prelude.extc</code>），<strong>每次编译都先于使用者的文件被处理</strong>。 里面定义的类型不用 import 就能用。现在有：</p>
 <table><thead><tr><th>类型</th><th>方法</th></tr></thead><tbody><tr><td><code>slice&lt;T&gt;</code></td><td><code>isEmpty()</code> · <code>hasAt(i)</code> · <code>get(i)</code> · <code>==</code> · <code>find(needle)</code> · <code>startsWith(prefix)</code></td></tr></tbody></table>
 <p>而且 <strong><code>slice&lt;u8&gt;</code> 就是字符串的类型</strong> —— <code>println("hello")</code> 之所以能打文本，就是因为它是字节视图。</p>
 <pre class="lang-extc"><code><span class="k">var</span> n: <span class="t">i32</span> = <span class="n">42</span>
@@ -97,7 +97,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <span class="f">println</span>(s.<span class="f">isEmpty</span>())     <span class="c">// false</span>
 <span class="f">println</span>(s.<span class="f">hasAt</span>(<span class="n">0</span>))      <span class="c">// true</span>
 <span class="f">println</span>(s.<span class="f">hasAt</span>(<span class="n">1</span>))      <span class="c">// false</span></code></pre>
-<blockquote><strong>为什么要有 prelude？</strong> 因为「能在 extC 里写的东西，就在 extC 里写」。 没有它，<code>slice&lt;T&gt;</code> 只能在编译器的代码生成器里硬编码 —— 那就成了<strong>把库塞进编译器</strong>。 验收方式很机械：<code>grep -in slice src/<em>.c src/</em>.h</code> 应该<strong>一无所获</strong>。  现在 <code>slice</code> 的方法很少（没有数组索引和 <code>option</code> 就写不出 <code>get</code>）， 而且<strong>空 slice 造不出来</strong> —— <code>ref</code> 不可为空，长度 0 的切片没有合法的 <code>data</code>。</blockquote>
+<blockquote>prelude 的用途：凡能<strong>用 extC 写成</strong>的标准设施，就用 extC 写，而不是写进编译器。 没有它，<code>slice&lt;T&gt;</code> 只能在编译器的代码生成器里硬编码 —— 那就成了<strong>把库塞进编译器</strong>。 验收方式很机械：<code>grep -in slice src/<em>.c src/</em>.h</code> 应该<strong>一无所获</strong>。  现在 <code>slice</code> 的方法很少（没有数组索引和 <code>option</code> 就写不出 <code>get</code>）， 而且<strong>空 slice 造不出来</strong> —— <code>ref</code> 不可为空，长度 0 的切片没有合法的 <code>data</code>。</blockquote>
 <hr>
 <p><strong><a href="README.html">索引</a></strong> · <a href="01-safety.html">← 0.5 内存安全：承诺 × 现状</a> · <a href="03-lexical.html">2. 词法 →</a></p>
 <div class="pn"><a href="01-safety.html">← 0.5 内存安全：承诺 × 现状</a> <a href="03-lexical.html">2. 词法 →</a></div></main>

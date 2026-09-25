@@ -79,7 +79,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <ul><li><strong>范围的类型来自下界</strong> —— <code>0..n</code> 里的 <code>i</code> 是 <code>i32</code>（字面量的默认类型）；要 <code>i64</code> 就写 <code>i64(0)..n</code> 比较允许数值加宽，所以 <code>for i in 0..a.len</code> 也是合法的（只是索引处多一次转换）</li><li><strong>容器的元素是拷贝</strong> —— <code>for d in v { d.x = 1 }</code> 不会写回 <code>v</code> 容器本身先过一遍 <code>c[..]</code> 变成视图，<strong>定长数组因此也能直接迭</strong>（数组自己没有 <code>.len</code>，视图才有）</li><li><strong>容器必须是"可重复求值的位置"</strong>（名字 / 字段 / <code>*p</code>）—— 脱糖后的循环每轮都要再读它一次， 写 <code>for d in f()</code> 会在编译期被挡住，并提示先 <code>var xs = f()</code></li></ul>
 <h3 id="复合赋值-定案-92">复合赋值 <code>+=</code> <code>-=</code> <code>*=</code> <code>/=</code> <code>%=</code>（定案 92）</h3>
 <pre class="lang-extc"><code>x += <span class="n">1</span>        <span class="c">// 就是 `x = x + 1`，右边那条规则与写开的 `x + 1` **同一个函数**判</span></code></pre>
-<p>生成的 C <strong>保持复合形式</strong>（<code>x += 1;</code> ⇒ 目标只求值一次）。用户自己定义了 <code>+</code> 的结构体也行： <code>v += w</code> 变成 <code>v = vec2_add(&amp;v, w)</code> 这种情形要求目标里<strong>没有调用</strong>（重写会把目标写两遍）， 有调用就报错让你拆成两行。<code>++</code> / <code>--</code> <strong>故意不做</strong>：一个表达式同时读又写同一个位置， 是未定义行为的老家</p>
+<p>生成的 C <strong>保持复合形式</strong>（<code>x += 1;</code> ⇒ 目标只求值一次）。用户自己定义了 <code>+</code> 的结构体也行： <code>v += w</code> 变成 <code>v = vec2_add(&amp;v, w)</code> 这种情形要求目标里<strong>没有调用</strong>（重写会把目标写两遍）， 存在调用时报错并要求拆成两行。<code>++</code> / <code>--</code> <strong>有意不做</strong>：一个表达式同时读与写同一位置， 是未定义行为的老家</p>
 <pre class="lang-extc"><code><span class="k">let</span> / <span class="k">var</span> 声明
 
 x = 表达式                       <span class="c">// 赋值（目标是变量或字段）</span>

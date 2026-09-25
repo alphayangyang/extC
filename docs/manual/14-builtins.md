@@ -63,7 +63,7 @@ fn copy(src: slice<u8>, dst: slice<u8>) -> result<unit, io::ioError> {
 }
 ```
 
-**没有隐式关闭**（块退出**不会**替你关文件，`ownFd` 那种库层原语已经删掉）：
+**没有隐式关闭**（块退出**不会**代为关闭文件；`ownFd` 一类库层原语已删除）：
 
 - 关就是 `f.close()`：幂等（句柄自己带 `open` 标志，**第二次不碰 `close(2)`**）
 - **关闭后使用** ⇒ `failure(closed(fd))` **带位置**，不 trap（库不 trap，用户在处理点决定）
@@ -76,7 +76,7 @@ fn copy(src: slice<u8>, dst: slice<u8>) -> result<unit, io::ioError> {
   检查认的协议是**库自己声明的**：struct 里声明了 `close` 方法 ⇒ 它是资源类型
   （编译器里不出现库名，跟 `slice` 靠 `data`+`len` 认出来一样）
   **它只证明能证明的**：句柄交出去 / `return` / 存进字段 ⇒ 静默（别人可能关它）
-  那一半归运行时：泄漏到 fd 耗尽时，**open 那一行**给你 `failure` 带位置
+  另一半由运行时负责：泄漏至 fd 耗尽时，**open 所在行**返回带位置的 `failure`
 - 故意留到进程结束也要写一行 `close()` —— 让它看得见
 
 **为什么不隐式关**：块退时**没有失败通道**，写型的延迟写错误只能由 `close(2)` 报 ⇒

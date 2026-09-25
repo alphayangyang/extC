@@ -105,7 +105,7 @@ let o: point = {}                // 空字面量 = 零初始化（靠声明类�
 >
 > 规则写在**语法**里，不藏在**命名**里（以前是靠「首字母大写」当字面量，那是隐藏魔法）。
 >
-> 报错也会直接告诉你加括号：
+> 诊断信息同样会直接指出需要加括号：
 > ```
 > error: struct literal in a condition needs parentheses: `(point { ... })`
 >   note: Inside an `if` / `while` condition a `{` starts the body block. To write a struct literal there, wrap it in parentheses.
@@ -144,7 +144,7 @@ println(a == b)      // true —— 生成 point_eq(&a, b)
 
 **签名约定（在定义处强制检查）**：`fn ==(self: ref T, other: T 或 ref T) -> bool`
 
-> ### 为什么返回值必须是 `bool`？
+> ### 返回值规定为 `bool` 的原因
 >
 > 不是随便规定的，是三个前提推出来的：
 >
@@ -154,11 +154,11 @@ println(a == b)      // true —— 生成 point_eq(&a, b)
 >
 > ⇒ 所以 `==` 只能是 `bool`，否则它根本没法用在条件里。
 >
-> **想要别的结果？换个方法名就行** —— `fn compare(...) -> ordering`、`fn diff(...) -> diff`
+> **需要其他结果时，改用别的方法名即可** —— `fn compare(...) -> ordering`、`fn diff(...) -> diff`
 > 之类**没有任何限制**，随便返回什么。只有 `==` 这个名字被绑定了 `bool`，
 > 因为它在源码里的位置决定了它是「一个条件」。
 >
-> 编译器在**你写下定义的那一刻**就查这条，而不是等到某处用到它才查。
+> 编译器在**写下定义处**即检查该规则，而不是等到被使用处才检查。
 
 - `other` 取**值**时，`a == b` 生成 `point_eq(&a, b)`，最省事 —— 小类型建议这样。
 - `other` 取 **`ref`** 时，生成 `point_eq(&a, &b)`（编译器自动加 `&`）；

@@ -75,7 +75,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p>字面量的默认类型：整数 <code>i32</code>，浮点 <code>f64</code>。</p>
 <h3 id="类型转换规则-t2-起">类型转换规则（T2 起）</h3>
 <p>extC <strong>只自动做无损失的拓宽</strong>；收窄 / 换符号 / 整数↔浮点<strong>必须显式写出来</strong>（<code>T(x)</code>）</p>
-<table><thead><tr><th>转换</th><th>自动？</th></tr></thead><tbody><tr><td>同类型</td><td></td></tr><tr><td><code>i8</code>→<code>i16</code>→<code>i32</code>→<code>i64</code></td><td></td></tr><tr><td><code>u8</code>→<code>u16</code>→<code>u32</code>→<code>u64</code></td><td></td></tr><tr><td><code>u*</code> → 更宽的 <code>i*</code>（如 <code>u32</code>→<code>i64</code>）</td><td></td></tr><tr><td><code>i*</code> → <code>u*</code>（一律，包括同宽）</td><td>有损</td></tr><tr><td>能精确表示的整数 → 浮点（<code>i16</code>→<code>f32</code>、<code>i32</code>→<code>f64</code>）</td><td></td></tr><tr><td><code>i32</code> → <code>f32</code></td><td>f32 尾数只有 24 位</td></tr><tr><td><code>f32</code> → <code>f64</code></td><td></td></tr><tr><td><code>f64</code> → <code>f32</code></td><td></td></tr></tbody></table>
+<table><thead><tr><th>转换</th><th>是否自动</th></tr></thead><tbody><tr><td>同类型</td><td></td></tr><tr><td><code>i8</code>→<code>i16</code>→<code>i32</code>→<code>i64</code></td><td></td></tr><tr><td><code>u8</code>→<code>u16</code>→<code>u32</code>→<code>u64</code></td><td></td></tr><tr><td><code>u*</code> → 更宽的 <code>i*</code>（如 <code>u32</code>→<code>i64</code>）</td><td></td></tr><tr><td><code>i*</code> → <code>u*</code>（一律，包括同宽）</td><td>有损</td></tr><tr><td>能精确表示的整数 → 浮点（<code>i16</code>→<code>f32</code>、<code>i32</code>→<code>f64</code>）</td><td></td></tr><tr><td><code>i32</code> → <code>f32</code></td><td>f32 尾数只有 24 位</td></tr><tr><td><code>f32</code> → <code>f64</code></td><td></td></tr><tr><td><code>f64</code> → <code>f32</code></td><td></td></tr></tbody></table>
 <p><strong>字面量按值适配</strong>（<code>DESIGN.md</code> §5 的「字面量类型推导」）：</p>
 <pre class="lang-extc"><code><span class="k">let</span> a: <span class="t">u8</span>  = <span class="n">200</span>        <span class="c">// 200 放得进 u8 → 可以</span>
 <span class="k">let</span> b: <span class="t">u16</span> = <span class="n">60000</span>      <span class="c">// 可以</span>
@@ -92,7 +92,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <span class="k">var</span> t: <span class="t">i64</span> = <span class="t">i64</span>(<span class="n">3</span>.<span class="n">9</span>)        <span class="c">// 3（向零截断 = C 的规则）</span>
 <span class="k">var</span> g: <span class="t">f32</span> = <span class="t">f32</span>(<span class="n">1</span>.<span class="n">5</span>)        <span class="c">// 浮点之间：就近舍入，超范围变 ±inf（C 的规则）</span>
 <span class="k">var</span> u: <span class="t">i32</span> = <span class="t">i32</span>(<span class="t">u8</span>(<span class="n">200</span>))    <span class="c">// **能证明装得下就不生成检查**（P）</span></code></pre>
-<table><thead><tr><th>转换</th><th>检查</th></tr></thead><tbody><tr><td>拓宽（<code>i32</code>→<code>i64</code>、<code>u8</code>→<code>i32</code>、<code>i32</code>→<code>f64</code>）</td><td>无（编译期就知道装得下）</td></tr><tr><td>整数<strong>收窄</strong>（<code>i64</code>→<code>i32</code>、<code>i32</code>→<code>u8</code>）</td><td><strong>装不下 ⇒ trap（带位置）</strong></td></tr><tr><td><strong>换符号</strong>（<code>i32</code>→<code>u32</code>、<code>u64</code>→<code>i64</code>）</td><td>同上（负的转无符号 = trap）</td></tr><tr><td><strong>浮点 → 整数</strong></td><td>超范围 / NaN ⇒ trap；否则向零截断</td></tr><tr><td>浮点之间（<code>f64</code>→<code>f32</code>）</td><td>不查 —— 就近舍入，超范围变 ±inf（<strong>C 的规则</strong>，明确写出来就是你同意了）</td></tr></tbody></table>
+<table><thead><tr><th>转换</th><th>检查</th></tr></thead><tbody><tr><td>拓宽（<code>i32</code>→<code>i64</code>、<code>u8</code>→<code>i32</code>、<code>i32</code>→<code>f64</code>）</td><td>无（编译期就知道装得下）</td></tr><tr><td>整数<strong>收窄</strong>（<code>i64</code>→<code>i32</code>、<code>i32</code>→<code>u8</code>）</td><td><strong>装不下 ⇒ trap（带位置）</strong></td></tr><tr><td><strong>换符号</strong>（<code>i32</code>→<code>u32</code>、<code>u64</code>→<code>i64</code>）</td><td>同上（负的转无符号 = trap）</td></tr><tr><td><strong>浮点 → 整数</strong></td><td>超范围 / NaN ⇒ trap；否则向零截断</td></tr><tr><td>浮点之间（<code>f64</code>→<code>f32</code>）</td><td>不做检查 —— 就近舍入，超范围取 ±inf（<strong>C 的规则</strong>；写出该转换即视为接受此语义）</td></tr></tbody></table>
 <p><strong>为什么整数收窄要 trap 而不是像 C 那样悄悄截断</strong>：静默截断正是 extC 要干掉的那种 "看不出来的错"（P′）而能证明装得下时<strong>一个检查都不生成</strong>，所以不花钱</p>
 <p>变量之间<strong>没有</strong>字面量适配：</p>
 <pre class="lang-extc"><code><span class="k">var</span> x: <span class="t">f64</span> = <span class="n">1</span>.<span class="n">5</span>
@@ -121,7 +121,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
         gameOver   =&gt; { <span class="k">return</span> <span class="c">"棋局已经结束了"</span> }
     }
 }</code></pre>
-<ul><li><strong>漏一个变体就编不过</strong> —— 这就是它存在的理由。 用 <code>if e == gameError.outOfRange { ... } else { ... }</code> 时， 以后给枚举<strong>加了新变体，编译器不会提醒你漏了</strong>；<code>match</code> 会</li><li>分支名必须是<strong>被 match 的枚举的变体</strong>（写错会报出该枚举的所有变体）</li><li>分支体可以是<strong>一个块</strong>，也可以是<strong>一个语句</strong>（<code>outOfRange =&gt; n = 1</code>）</li><li>被 match 的表达式<strong>只求值一次</strong>（生成的 C 就是一个 <code>switch</code>）</li><li><strong>是语句，不是表达式</strong> —— 它不返回一个值（跟 <code>?</code> 同一个理由：C 没有语句表达式）。 想往外传就在分支里 <code>return</code> / 赋值</li><li>暂时<strong>没有 <code>_ =&gt;</code> 兜底</strong>：穷尽列出所有变体才是它的价值。</li></ul>
+<ul><li><strong>漏一个变体就编不过</strong> —— 这就是它存在的理由。 用 <code>if e == gameError.outOfRange { ... } else { ... }</code> 时， 以后给枚举<strong>新增变体时，编译器不会提示遗漏</strong>；<code>match</code> 会</li><li>分支名必须是<strong>被 match 的枚举的变体</strong>（写错会报出该枚举的所有变体）</li><li>分支体可以是<strong>一个块</strong>，也可以是<strong>一个语句</strong>（<code>outOfRange =&gt; n = 1</code>）</li><li>被 match 的表达式<strong>只求值一次</strong>（生成的 C 就是一个 <code>switch</code>）</li><li><strong>是语句，不是表达式</strong> —— 它不返回一个值（跟 <code>?</code> 同一个理由：C 没有语句表达式）。 想往外传就在分支里 <code>return</code> / 赋值</li><li>暂时<strong>没有 <code>_ =&gt;</code> 兜底</strong>：穷尽列出所有变体才是它的价值。</li></ul>
 <h3 id="带载荷枚举-tagged-union-变体自己带数据">带载荷枚举（tagged union）：变体自己带数据</h3>
 <p>无载荷回答「<strong>是哪一种</strong>」；带载荷回答「<strong>是哪一种 + 附带的东西是什么</strong>」。</p>
 <pre class="lang-extc"><code>type shape = | <span class="f">circle</span>(<span class="t">f64</span>) | <span class="f">rect</span>(<span class="t">f64</span>, <span class="t">f64</span>) | dot
@@ -138,7 +138,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p>C 里这个东西要<strong>手写</strong>，而且容易写错：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> shape { int tag; union { double r; <span class="k">struct</span> { double w, h; } rect; } u; };
 <span class="c">// 读 u.r 之前你得**自己记得**先看 tag 是不是 0 —— 忘了就是 bug</span></code></pre>
-<p>这里编译器替你记：<strong>想拿载荷，必须先 match 那个变体</strong></p>
+<p>此处由编译器记录：<strong>取载荷之前必须先 match 该变体</strong></p>
 <p><strong>几条要记住的</strong>：</p>
 <table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td><strong>零值 = tag 0</strong></td><td>所以<strong>变体顺序有意义</strong>。`type box = \</td><td>nothing \</td><td>holding(slice&lt;u8&gt;)<code> 的 </code>var b: box<code> 合法（零值是 </code>nothing<code>）；把 </code>holding<code> 排在第一位就不合法（含 </code>ref` 的类型没有零值）</td></tr><tr><td><strong>打印</strong></td><td>打印的是<strong>变体名</strong>（<code>circle</code>），载荷不打印 —— 想要具体格式自己写方法</td></tr><tr><td><strong>没有 <code>==</code></strong></td><td>C 里它是 struct，而 C 的 struct 不能用 <code>==</code> ⇒ 要比就 <code>match</code>，或者写一个方法</td></tr><tr><td><strong>载荷里可以有 <code>ref</code> / 视图</strong></td><td>这正是无载荷的 <code>option&lt;T&gt;</code> 做不到的事（见 <code>IO.md</code>：<code>none</code> 得给 <code>value</code> 字段填值，而 <code>ref</code> 没有零值）</td></tr></tbody></table>
 <h3 id="泛型">泛型</h3>
@@ -246,7 +246,7 @@ s.p = <span class="k">ref</span> b              <span class="c">// 引用 ⇒ �
 <pre class="lang-extc"><code><span class="k">var</span> x: [<span class="n">3</span>]<span class="t">i32</span> = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
 <span class="k">var</span> y = x          <span class="c">// y 是独立的一份</span>
 y[<span class="n">0</span>] = <span class="n">99</span>          <span class="c">// x[0] 仍是 1</span></code></pre>
-<blockquote><strong>为什么是值？</strong> 沿用 extC 的核心（默认值语义、没有别名）。 900 字节的拷贝确实贵 —— 要省就用 <code>ref</code> 显式表达，<strong>别让读者猜</strong>。 编译到 C 时套一层 struct（<code>typedef struct { int32_t data[5]; } array_5_i32;</code>）， 因为 C 的裸数组既不能赋值也不能返回。</blockquote>
+<blockquote>取值为值语义，与 extC 的核心一致（默认值语义、无别名）。 900 字节的拷贝确实贵 —— 要省就用 <code>ref</code> 显式表达，<strong>别让读者猜</strong>。 编译到 C 时套一层 struct（<code>typedef struct { int32_t data[5]; } array_5_i32;</code>）， 因为 C 的裸数组既不能赋值也不能返回。</blockquote>
 <p><strong>索引 <code>a[i]</code> 带边界检查</strong>，越界 trap 并报 extC 位置：</p>
 <pre class="lang-extc"><code><span class="f">println</span>(a[<span class="n">0</span>])      <span class="c">// 1</span>
 <span class="f">println</span>(a[<span class="n">7</span>])      <span class="c">// trap: index 7 out of range (length 5) —— 带文件名和行号</span></code></pre>
@@ -291,7 +291,7 @@ s1[<span class="n">0</span>] = <span class="n">999</span>           <span class=
 <p><strong>第三刀（2026-09-20）之后它们就是两个普通的泛型枚举</strong>（<code>stdlib/prelude.extc</code> 里只有两行）：</p>
 <pre class="lang-extc"><code>type <span class="t">option</span>&lt;T&gt;    = | none | <span class="f">some</span>(T)
 type <span class="t">result</span>&lt;T, E&gt; = | <span class="f">failure</span>(E) | <span class="f">success</span>(T)</code></pre>
-<table><thead><tr><th>类型</th><th>意思</th><th>零值</th></tr></thead><tbody><tr><td><code>option&lt;T&gt;</code></td><td>可能有值，也可能没有</td><td><strong>就是 <code>none</code></strong>（tag 0）</td></tr><tr><td><code>result&lt;T,E&gt;</code></td><td>要么成功给你值，要么失败给你错误</td><td><strong><code>failure(E 的零值)</code></strong>（tag 0）</td></tr></tbody></table>
+<table><thead><tr><th>类型</th><th>意思</th><th>零值</th></tr></thead><tbody><tr><td><code>option&lt;T&gt;</code></td><td>可能有值，也可能没有</td><td><strong>就是 <code>none</code></strong>（tag 0）</td></tr><tr><td><code>result&lt;T,E&gt;</code></td><td>成功时为值，失败时为错误</td><td><strong><code>failure(E 的零值)</code></strong>（tag 0）</td></tr></tbody></table>
 <p>「零值就是 <code>none</code> / <code>failure</code>」不是巧合 —— 它是定案 8（默认零初始化）的直接结果 （<strong>所以变体顺序有意义</strong>：写成 <code>| some(T) | none</code> 就是错的）。 因为它们是普通枚举，<code>option&lt;slice&lt;u8&gt;&gt;</code> <strong>合法</strong>（里面有 ref 也照样有零值）—— 这正是 IO 需要的东西（见 <code>examples/option-ref-payload.extc</code>）。</p>
 <p><strong><code>?T</code> 就是 <code>option&lt;T&gt;</code> 的语法糖</strong>（定案 ㊻）—— 类型位置写 <code>?i64</code> 跟写 <code>option&lt;i64&gt;</code> 完全一样：</p>
 <pre class="lang-extc"><code><span class="k">fn</span> <span class="f">half</span>(n: <span class="t">i64</span>) -&gt; ?<span class="t">i64</span> {            <span class="c">// ≡ -> option<i64></span>
@@ -333,13 +333,13 @@ c.retries = <span class="f">some</span>(<span class="n">3</span>)               
 <span class="k">let</span> v = <span class="f">find</span>()?          <span class="c">// 成功 → v 是里面的值；失败/没有 → 顺着往上抛</span>
                          <span class="c">//   （本函数的返回类型必须装得下那个失败）</span></code></pre>
 <h4 id="读值的三个记号-那一族-全是-编译器-提供的语法-不是库">读值的三个记号（<code>?</code> 那一族，全是<strong>编译器</strong>提供的语法，不是库）</h4>
-<table><thead><tr><th>记号</th><th>意思</th><th>代价</th></tr></thead><tbody><tr><td><code>match</code></td><td>分支，穷尽检查</td><td>零</td></tr><tr><td><code>e?</code></td><td>不成功就顺着往上抛</td><td>零</td></tr><tr><td><strong><code>e ?? 兜底</code></strong></td><td>可能没有就兜底（<code>?ref</code> 也能用：null 就换一个）</td><td>零（C 三元，<strong>只算一边</strong>）</td></tr><tr><td><strong><code>e!</code></strong></td><td><strong>我签字</strong>：直接给我（没有值/是 null 就算我说错了）</td><td>零（<strong>一行检查都不生成</strong>）</td></tr></tbody></table>
+<table><thead><tr><th>记号</th><th>意思</th><th>代价</th></tr></thead><tbody><tr><td><code>match</code></td><td>分支，穷尽检查</td><td>零</td></tr><tr><td><code>e?</code></td><td>不成功就顺着往上抛</td><td>零</td></tr><tr><td><strong><code>e ?? 兜底</code></strong></td><td>可能没有就兜底（<code>?ref</code> 也能用：null 就换一个）</td><td>零（C 三元，<strong>只算一边</strong>）</td></tr><tr><td><strong><code>e!</code></strong></td><td><strong>调用者签字</strong>：直接取值（无值或为 null 即视为断言失败）</td><td>零（<strong>不生成任何检查</strong>）</td></tr></tbody></table>
 <pre class="lang-extc"><code><span class="k">let</span> v = opt ?? -<span class="n">1</span>                 <span class="c">// valueOr 就是它 —— 而且对所有 T 通用</span>
 <span class="f">println</span>(opt! + <span class="n">1</span>)                 <span class="c">// 我保证有值（签字，无检查）</span>
 <span class="f">println</span>(p!.value)                 <span class="c">// ?ref：我知道非空</span></code></pre>
 <p>⇒ 所以 <strong>prelude 里不需要 <code>unwrap()</code> / <code>valueOr</code> / <code>has</code> / <code>ok</code></strong> —— 那些名字当年存在，只是因为当时 <code>match</code> 不了、也没有 <code>??</code> / <code>!</code> （也因此<strong>不用</strong>去给枚举加方法、也不用泛型自由函数：语法糖把这件事解决掉了）</p>
-<p><code>!</code> 是"<strong>错了算我的</strong>"，不是"宽松版检查"：真没有值就是 UB。 想要会报错的那种，就自己写 <code>match</code> + 你想要的失败处理</p>
-<p><code>?</code> 就是「<strong>不成功我就不干了</strong>」。它在<strong>四个位置</strong>合法（见下节）。</p>
+<p><code>!</code> 表示"<strong>断言由调用者负责</strong>"，不是"检查的宽松版本"：确实没有值即为 UB。 需要可报错的版本时，改写为 <code>match</code> 并给出所需的失败处理</p>
+<p><code>?</code> 的语义是「<strong>不成功即向上返回</strong>」。它在<strong>四个位置</strong>合法（见下节）。</p>
 <p>用<strong>关联函数</strong>构造：写在 <code>struct</code> 体内但<strong>不带 <code>self</code></strong> 的函数， 调用时类型写全（不靠上下文猜，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a> 定案 27/29）：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> box&lt;T&gt; {
     value: T
@@ -356,7 +356,7 @@ c.retries = <span class="f">some</span>(<span class="n">3</span>)               
     <span class="k">if</span> 那格有子 { <span class="k">return</span> <span class="f">failure</span>(gameError.occupied) }
     <span class="k">return</span> <span class="f">success</span>(<span class="t">unit</span> {})
 }</code></pre>
-<p><strong>类型从函数签名里写好的返回类型来</strong> —— 这不是"推导"： 编译器<strong>没有猜</strong>任何东西，它读的是你自己写的那一行 <code>-&gt; result&lt;unit, gameError&gt;</code>。 省掉的纯粹是重复劳动</p>
+<p><strong>类型从函数签名里写好的返回类型来</strong> —— 这不是"推导"： 编译器<strong>不做推断</strong>，依据的是源码中写出的那一行 <code>-&gt; result&lt;unit, gameError&gt;</code>。 省掉的纯粹是重复劳动</p>
 <p>只有<strong>这四个名字</strong>（<code>success</code> / <code>failure</code> / <code>some</code> / <code>none</code>），而且<strong>类型必须是已知的</strong> —— 能认的四个位置：<strong><code>return</code> / 带标注的 <code>var</code> / 赋值 / 实参</strong>。 类型不清楚（比如裸的 <code>var x = some(1)</code>）就照旧走普通查找，报"未定义的名字"。 名字被用户自己的函数占着时也照旧走普通查找</p>
 <h3 id="失败就顺着往上抛"><code>?</code>：失败就顺着往上抛</h3>
 <pre class="lang-extc"><code><span class="k">fn</span> <span class="f">placeLine</span>(b: <span class="k">ref</span> board, y: <span class="t">i32</span>, from: <span class="t">i32</span>, to: <span class="t">i32</span>) -&gt; <span class="t">result</span>&lt;<span class="t">unit</span>, gameError&gt; {

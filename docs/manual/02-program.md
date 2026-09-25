@@ -60,7 +60,7 @@ mut_bad.extc:1: trap: recursion too deep (unbounded recursion?)
 
 ### prelude：自带类型不用 import
 
-编译器自带一小段 extC 源码（`stdlib/prelude.extc`），**每次编译都先于你的文件被处理**。
+编译器自带一小段 extC 源码（`stdlib/prelude.extc`），**每次编译都先于使用者的文件被处理**。
 里面定义的类型不用 import 就能用。现在有：
 
 | 类型 | 方法 |
@@ -77,7 +77,7 @@ println(s.hasAt(0))      // true
 println(s.hasAt(1))      // false
 ```
 
-> **为什么要有 prelude？** 因为「能在 extC 里写的东西，就在 extC 里写」。
+> prelude 的用途：凡能**用 extC 写成**的标准设施，就用 extC 写，而不是写进编译器。
 > 没有它，`slice<T>` 只能在编译器的代码生成器里硬编码 —— 那就成了**把库塞进编译器**。
 > 验收方式很机械：`grep -in slice src/*.c src/*.h` 应该**一无所获**。
 >
