@@ -8343,3 +8343,18 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 ——**第 5 轮的节点数与第 1 轮完全持平**（判据用第 1 轮自身当基线，不用魔数：`nodes*2 <= first*3`）；
 每轮之后 `len` 归零；最后一轮重插并全量核对 `get` / `keyAt` / `valAt` 全对；ASan 干净。
 原有 `sorted` · `bounds` · `stress`（4001 键随机置换插入 + 删 1/3）全部照旧通过。
+
+### 周期 24：② 有序 `set<T>` 落地（建在 `map<T, u8>` 上，不另写一棵树）
+
+`stdlib/stl/set.extc`：`struct set<T> { m: map<T, u8> }` —— 排序、分裂、借位/合并只有一份实现，
+不可能与 `map` 各漂各的；代价是每个元素一个占位字节。面：`withCap` / `new` / `len` / `contains` /
+`put`（**新元素返回真**，与 `map::put` 相反，是这套面里唯一显式翻转的地方）/ `remove` / `clear` /
+`lowerBound`（第一个 ≥ k 的**排名**）/ `at(i)`（第 i 小的元素，按序遍历就是 i 从 0 到 len-1）。
+
+实测（新用例 `tests/stl/setOrdered.extc`，一次就对）：
+
+`order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2`
+
+—— 乱序插入后按序遍历正确 · 重复 `put` 给假 · `lowerBound` 排名正确（含越界端 lb6=5）· 删中间元素后
+剩下的仍有序且排名跟上。同轮把 STL 套件的 ASan 节改成 `asan_ok` 辅助函数，覆盖 `vector` 与
+`setOrdered` 两个用例（原来只跑 `vector`）。

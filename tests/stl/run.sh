@@ -48,6 +48,9 @@ run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=64 shrink=44 
 echo "== hashSetI64：无值 map（哈希 / 探测 / 墓碑只有一份实现 —— 建在 hashMapI64<u8> 上）=="
 run_case hashset tests/stl/hashSet.extc     "new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=16 cleared=0"
 
+echo "== set<T>：**有序**集合（建在 map<T, u8> 上，B+ 树）—— 按序遍历 · put 新元素为真 · lowerBound 排名 =="
+run_case setOrdered tests/stl/setOrdered.extc "order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2"
+
 echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/stl/string_churn_a.extc -o "$TMP2/a.c" >/dev/null 2>&1 \
@@ -67,10 +70,13 @@ fi
 rm -rf "$TMP2"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-if "$EXTC" tests/stl/vector.extc -o "$TMP/v.c" >/dev/null 2>&1 \
-   && gcc -std=c11 -g -fsanitize=address -o "$TMP/v" "$TMP/v.c" >/dev/null 2>&1 \
-   && ! "$TMP/v" 2>&1 | grep -q Sanitizer; then
-    echo "  ok   ASan  ->  干净"
+asan_ok() {   # 文件 可执行名
+    "$EXTC" "$1" -o "$TMP/$2.c" >/dev/null 2>&1 \
+      && gcc -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
+      && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
+}
+if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so; then
+    echo "  ok   ASan  ->  vector · setOrdered 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1
 fi

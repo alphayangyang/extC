@@ -1,0 +1,44 @@
+/* stl/set.extc -- `set<T>`: an ORDERED set. Membership, rank and the ordered walk come from the
+ * same B+tree `stl/map.extc` uses, with the values dropped -- so ordering, splitting and
+ * rebalancing live in ONE place and cannot drift: a set IS a map whose value is a placeholder
+ * byte.
+ *
+ * Compare `stl/hashSet.extc`: the same "no second implementation" trade, for hash-ordered
+ * membership. The naming rule (POOLS.md §10) is that the bare names belong to the ORDERED
+ * implementations: `map` / `set` are ordered, `hashMap` / `hashSet` are hashed.
+ *
+ * Ordered iteration is `at(i)` for i in [0, len) -- the i-th smallest element. `lowerBound(k)` is
+ * the rank of the first element not less than k, which is what a range query starts from. */
+use stl::map
+
+struct set<T> {
+    m: map<T, u8>
+
+    fn withCap(want: i64) -> set<T> {
+        var s: set<T> = { m: map<T, u8>::withCap(want) }
+        return s
+    }
+
+    fn new() -> set<T> { return set<T>::withCap(i64(16)) }
+
+    fn len(self: ref set<T>) -> i64 { return self.m.len() }
+
+    fn contains(self: ref set<T>, k: T) -> bool { return self.m.contains(k) }
+
+    /* True when the element is NEW -- the map answers the opposite question ("was it already
+     * there?"), so this is the one place the two surfaces differ, and it is flipped explicitly. */
+    fn put(self: mut ref set<T>, k: T) -> bool {
+        if self.m.put(k, u8(0)) { return false }
+        return true
+    }
+
+    fn remove(self: mut ref set<T>, k: T) -> bool { return self.m.remove(k) }
+
+    fn clear(self: mut ref set<T>) { self.m.clear() }
+
+    /* Rank of the first element not less than `k` (the count of elements smaller than `k`). */
+    fn lowerBound(self: ref set<T>, k: T) -> i64 { return self.m.lowerBound(k) }
+
+    /* The i-th smallest element, i in [0, len). Walking `i` from 0 to len-1 is the ordered walk. */
+    fn at(self: ref set<T>, i: i64) -> T { return self.m.keyAt(i) }
+}
