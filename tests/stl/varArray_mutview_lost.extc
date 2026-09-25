@@ -1,0 +1,31 @@
+// `varArray::asMutSlice()` 的**可写旧视图**：扩容之后往里写会**静默丢**（新块看不到）。
+//
+// 这条判据钉的是 `varArray` 作为"**唯一能装 `ref T`** 的动态容器"上最危险的那条契约。
+// 前情：arena 只在**地方退出**时整块回收 ⇒ 旧块不会悬垂（**ASan 干净** ✓ 本文件进 ASan 名单），
+// 但扩容已经**换了块** ⇒ 通过旧视图写进去的字节落在一块**已经不属于容器**的内存上：
+// 不崩、不报错、容器也看不见 —— 静默丢。
+//
+// ⚠️ 与 `varArray_snapshot.extc` 是一对：那条钉"读"（旧视图停在快照），这条钉"写"（写进旧块丢失）。
+//    两条都断言**当前设计的行为**（视图是"借"，扩容即作废）；若哪天真要改成"增长即失效并 trap"，
+//    **必须同时翻面这两条判据**（tests/generics 的教训）。
+// expect: landed=77 live0=77 live1=22 stale=77,88 alen=3
+use std::io
+
+fn main() -> i32 {
+    var a: varArray<i32> = varArray<i32>::withCap(i64(2))
+    a.push(i32(11))
+    a.push(i32(22))
+
+    var m: mut slice<i32> = a.asMutSlice()     /* 可写视图，指着当前那块 */
+    m[i64(0)] = i32(77)                        /* 未扩容：写的是**容器正在用的**那块 ⇒ 生效 */
+    let landed: i32 = a.asSlice()[i64(0)]
+
+    a.push(i32(33))                            /* 触发扩容：换块，旧块留在 arena 里但不再属于容器 */
+    m[i64(1)] = i32(88)                        /* 写进**已作废**的旧块 ⇒ 静默丢 */
+
+    io::cout << "landed=" << i64(landed)
+    io::cout << " live0=" << i64(a.asSlice()[i64(0)]) << " live1=" << i64(a.asSlice()[i64(1)])
+    io::cout << " stale=" << i64(m[i64(0)]) << "," << i64(m[i64(1)])
+    io::cout << " alen=" << a.size() << "\n"
+    return 0
+}
