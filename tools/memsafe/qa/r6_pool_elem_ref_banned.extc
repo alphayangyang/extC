@@ -1,0 +1,23 @@
+// expect: REJECT
+// 池底容器不许装引用：`vector<ref node>` 一律拒绝（POOLS.md §5.4 / PLAN #88）。
+//
+// 这一条与 r5 是同一口径的两面：**Pool 里的东西永远不能被外面引用**（r5 管"拿出来"），
+// 而元素住在池的板块里 ⇒ 也不许让元素拿着外面的引用（这一条）。
+// 注意：**危险的那一档本来就已被挡住** —— 把内层块里局部变量的引用塞进外层容器，
+// 借用检查会报 "argument 2 of `push` carries a reference into a deeper scope"；
+// 这里禁掉的是**能编过的那些**（两个节点同寿命、互相 push 的图），
+// 理由是策略而非漏洞：交叉引用该用句柄 `Vec<NodeId>`。
+use stl::vector
+
+struct node {
+    data: i32
+    refs: vector<ref node>
+}
+
+fn main() -> i32 {
+    var a: node = { data: i32(1), refs: vector<ref node>::new() }
+    var b: node = { data: i32(2), refs: vector<ref node>::new() }
+    a.refs.push(ref b)
+    b.refs.push(ref a)
+    return 0
+}

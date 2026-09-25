@@ -1,0 +1,16 @@
+// 池底容器的元素类型不许携带引用（POOLS.md §5.4 / PLAN #88，作者口径）。
+// 元素住在池的板块里，板块的寿命是"池出生的那个地方"，而元素里的引用指向的对象有自己的
+// 所有者 ⇒ "活到那为止"保证不了。用法上这条禁令把人推向正确的那条路：交叉引用用**句柄**
+//（`Vec<NodeId>`），环就是普通数据环、删节点只是句柄失配（可检测）。
+use stl::vector
+struct node {
+    data: i32
+    refs: vector<ref node>
+}
+fn main() -> i32 {
+    var a: node = { data: i32(1), refs: vector<ref node>::new() }
+    var b: node = { data: i32(2), refs: vector<ref node>::new() }
+    a.refs.push(ref b)
+    b.refs.push(ref a)
+    return 0
+}

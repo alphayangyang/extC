@@ -250,6 +250,29 @@ Type *ttFromName(TypeTable *tt, const char *name) {
  *     the wrong type, which is worse than a rejection.
  */
 
+/* 这个结构体是不是"池底容器"：约定是它有一个叫 `pid` 的字段
+ *（七个容器都符合；`varArray` 是 arena 底，没有这个字段 ⇒ 不受这条禁令约束）。 */
+static bool typeStructHasPoolField(StructDef *sd) {
+    if (!sd) return false;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        if (fd && fd->name && strcmp(fd->name, "pid") == 0) return true;
+    }
+    return false;
+}
+
+/* 类型里带不带引用（`ref` / `?ref`），嵌套与实例化都算。 */
+static bool typeCarriesRef(Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_REF) return true;
+    if (t->kind == TY_ARRAY) return typeCarriesRef(t->inner);
+    if (t->kind == TY_GENERIC) {
+        for (size_t i = 0; i < t->targs.len; i++)
+            if (typeCarriesRef(*(Type **)vecAt(&t->targs, i))) return true;
+    }
+    return false;
+}
+
 Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
     if (!t) return NULL;
 
@@ -333,6 +356,35 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                 for (size_t i = 0; i < t->targs.len; i++)
                     *(Type **)vecPush(&args) =
                         ttResolve(tt, ctx, *(Type **)vecAt(&t->targs, i), line, params);
+                /* 池底容器的元素类型不许携带引用（POOLS.md §5.4，PLAN #88，作者口径）。
+                 *
+                 * 判据：这个泛型结构体**是池底容器**（约定：它有一个叫 `pid` 的字段 ——
+                 * `vector` / `string` / `pool` / `map` / `hashMap` / `linMap` / `linSet`
+                 * 七个都符合），而某个类型实参里含 `ref`。
+                 *
+                 * 为什么：元素住在**池的板块**里，板块的寿命是"池出生的那个地方"，
+                 * 而元素里的引用指向的对象有自己的所有者 ⇒ "活到那为止"保证不了。
+                 * 用法上也把人推向正确的那条路：交叉引用用**句柄**（`Vec<NodeId>`），
+                 * 环就是普通数据环、删节点只是句柄失配（可检测）。
+                 *
+                 * 这里按字段名认而不按 `makesPoolAny`：那个标志要等 `checkModule` 收尾的
+                 * 闭包才算出来，而类型解析发生在每个使用点上（那时它还是假）。 */
+                if (base->sdef && typeStructHasPoolField(base->sdef)) {
+                    for (size_t i = 0; i < args.len; i++) {
+                        Type *a2 = *(Type **)vecAt(&args, i);
+                        if (typeCarriesRef(a2)) {
+                            ctxError(ctx, line, 1,
+                                     "A pool-backed container may not hold references: its elements live in "
+                                     "the pool's own plate, whose lifetime is the place the pool was born in, "
+                                     "and a reference inside it cannot be made to live that long. Use a "
+                                     "handle (e.g. `Vec<NodeId>`) for cross-references -- handles stay valid "
+                                     "until the place ends and a stale one is detectable.",
+                                     "type argument %zu of `%s`: a pool-backed container's element "
+                                     "type may not carry a reference", i + 1, t->name);
+                            return tt->tError;
+                        }
+                    }
+                }
                 Type *g = ttGeneric(tt, base->sdef, &args);
                 if (t->mut) {
                     /* `mut slice<T>`: only a view has a writable form. Elsewhere
