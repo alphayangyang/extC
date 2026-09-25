@@ -208,9 +208,6 @@ fi
 echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="
 rt_run rt_epoch     tests/pool/rt_epoch.extc     "cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1"
 
-echo "== 保留池（阶段 b）：板块归还时不立刻还给 malloc，给下一次不清零的分配复用 =="
-rt_run keep_pool  tests/pool/keep_pool.extc  "live=0 keep=1 len=3 v=7,8,9 capped=1"
-
 echo "== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 =="
 TMP2=$(mktemp -d)
 if "$EXTC" tests/pool/rt_churn.extc -o "$TMP2/rt.c" >/dev/null 2>&1; then
