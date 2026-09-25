@@ -9083,3 +9083,32 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 上一轮**没有进库** —— 提交时 `git add` 只带了 `stdlib tests examples`，漏了 `tools/`。
 `memsafe` 的条数当时报的是 37（本地有它、库里没有），这一轮补进库并复核（39 → 已含它）。
 规矩照旧：**按路径逐条 add，不要凭"我记得加了"**。
+
+### 周期 44：撤回编译器里的"池底容器不许装引用" —— 策略不该进编译器
+
+**撤回的是实现，不是判断的诚实性**：这条禁令我上一轮做进了 `src/types.c` 的类型解析处，
+判据是"结构体有没有 `pid` 字段"。作者口径：
+
+> 不是，认池底容器不是应该看它是否使用了 Pool 对象嘛……就是禁令不要随便改编译器啊，
+> 不要搞这种那么多神秘的保留字，很弱智。
+
+三条都成立：① 认池底容器的正确判据是**行为**（它建不建池：`FuncDef.makesPool` /
+`StructDef.makesPoolAny`），不是字段名；② 而且那个标志要闭包之后才有（`ttResolve` 在
+使用点上跑，那时它还是假）⇒ 真要判也只能在收尾里判；③ 更根本的是——探针早就说明
+**危险的那一档由借用检查负责**（`argument 2 of push carries a reference into a deeper scope`），
+这条禁令是**策略**而非漏洞，把策略塞进编译器是错的方向。
+
+**撤回动作**：删掉 `src/types.c` 里的检查与两个辅助函数（`typeStructHasPoolField` /
+`typeCarriesRef`）、删掉 `tests/errors/pool_elem_ref_ban.extc`，
+把 `qa/r6` 换成 `qa/r6b_pool_elem_ref_deeper_scope.extc`（`expect: REJECT` —— 钉住**真正**
+要挡的那一档：内层块局部变量的引用塞进外层容器）。
+
+**现在的边界（三条，都没有编译器特判）**：
+
+| | 存储 | 装引用 |
+|---|---|---|
+| `varArray<T>`（arena 底） | 元素地址永不移动/复用 | **可以**（唯一一条，`PLAN #91`，判据 `tests/stl/vararray_ref.extc` · `qa/r11`）|
+| 池底容器 | 板块会压实/复用/翻纪元 | 借用检查按寿命管：同地方**常常被保守拒绝**、跨块**必拒**（`qa/r6b`）；没有专门的禁令 |
+| 整个容器值 | —— | `ref` / `mut ref` 都允许（`qa/r4`）|
+
+验证：语料 263/0 · `check.sh quick` 26/0 · `tools/memsafe` 43/0。

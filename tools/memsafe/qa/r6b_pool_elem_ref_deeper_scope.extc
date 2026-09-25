@@ -1,0 +1,14 @@
+// expect: REJECT
+// 真正危险的那一档：**内层块**里局部变量的引用塞进**外层**容器 —— 借用检查负责挡它
+//（`argument 2 of push carries a reference into a deeper scope`）。
+// 这条才是"池里的引用"要防的东西；"同地方装引用"不防（见 r6）。
+use stl::vector
+
+fn main() -> i32 {
+    var v = vector<ref i32>::new()
+    {
+        var x: i32 = 7
+        v.push(ref x)
+    }
+    return 0
+}
