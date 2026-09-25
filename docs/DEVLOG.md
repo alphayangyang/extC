@@ -8273,3 +8273,25 @@ canary 与 ASan · stl · pool · linmap · generics · genmatrix）。剩余三
 纪律备忘（下次接手照这个走）：每步四道闸门 —— `tests/hashmap` · `tests/stl` · `tests/pool` · `tests/linmap` ·
 `tests/genmatrix` ＋ 语料 ＋ `check.sh quick </dev/null`（**必须重定向 stdin**，否则 IO 节被 SIGTTIN 挂死）；
 文档不加 ✓ / ✗ / ⚠️ / emoji；随做随提交；绝不留红树；不并跑两个构建。
+
+### 周期 21（第 19 轮）：有序 map 的派工失败与接手须知
+
+`map<K, V>`（B 树）这件派出去执行了三轮，**零落笔** —— 仓库里始终没有 `stdlib/stl/map.extc`、没有 `tests/map/`，
+工作区一直干净（`HEAD = cba30a6`）。期间两次收紧指令（第一次：第一步先用 arena 节点把分裂/borrow/merge 写对
+并提交；第二次：砍到最小 —— 只做**单节点有序表**：`keys`/`vals`/`n` 三条字段、二分找位置插入、`lowerBound`、
+四个边界用例，绿了立刻提交）都没有换来一次提交，于是停掉它。
+
+接手须知（下次直接照这个顺序做，不要一次到位）：
+
+1. **第一步：单节点有序表**。`struct map<K, V> { keys: mut slice<K>  vals: mut slice<V>  n: i64 }`，
+   容量 16；`withCap` / `len` / `contains` / `get -> ?V` / `put`（二分 + 后移一位）/ `remove`（前移一位）/
+   `lowerBound(k) -> i64` / `keyAt` / `valAt`；比较只用 `a < b`（相等判 `!(a<b) && !(b<a)`）。配
+   `tests/map/run.sh` + `sorted.extc`：按序遍历正确 · `lowerBound` 四边界（空 / 更小 / 更大 / 命中）·
+   删中间键后仍有序 · `get` 不存在的键给 none。**绿了立刻提交**。
+   这不是妥协：**B 树的根本来就是一个有序数组**，小表时它等价于最快的 flat map，先把它做成常设验收。
+2. **第二步：长出树**（分裂 / borrow / merge），节点用 arena 定长块、下标当指针。
+3. **第三步：搬进池**（节点住 `pool<node>`、值住 `pool<V>`、节点存「键 + 池句柄」），补 `clear` / `release` /
+   `shrink` 与 churn 判据（1e6 轮峰值 RSS 与 1e5 相当）。
+4. **第四步：`set<T>`** 同构无值版；再接进 `check.sh`（节数同步）。
+
+每一步单独提交、单独回滚；四道闸门见周期 20 那条交接说明。
