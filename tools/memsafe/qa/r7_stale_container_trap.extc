@@ -1,0 +1,17 @@
+// expect: TRAP
+// 守卫：容器活得比它的池久（别名 + 一份 release）⇒ **带位置地 trap**，不是静默 UAF。
+//
+// `var b = a` 是结构体浅拷贝：板块共享、标量（n/cap）各一份；`a.release()` 把板块整块还给
+// malloc ⇒ `b` 悬垂。守卫比一次"出生世代 vs 现在这一格"，对不上就把这一份收成空容器，
+// 于是 `b.push(...)` 的下标访问带位置 trap（`trap: index 0 out of range (length 0)`）。
+// 这条补的是静态分析看不见的那一半：借用检查管得住"借用比对象活得久"，
+// 但管不住"两份别名，其中一份被显式释放"。
+use stl::vector
+fn main() -> i32 {
+    var a = vector<i32>::new()
+    a.push(i32(5))
+    var b = a
+    a.release()
+    b.push(i32(9))
+    return 0
+}

@@ -191,6 +191,14 @@ rt_run rt_nest     tests/pool/rt_nest_promote.extc "after=4 innerlen=2 v=20 byte
 echo "== 池的提权（返回那一档）：函数里建好的容器返回给调用方 =="
 rt_run rt_rett     tests/pool/rt_return_promote.extc "live=1 len=3 v0=5 v2=7"
 
+echo "== 守卫（别名那一档）：一份 release 之后另一份不许静默写已释放的板块 =="
+if out=$("./build/extc" --run tests/pool/rt_stale_alias.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -q "trap: index" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
+    echo "  ok   rt_alias   ->  $(printf '%s' "$out" | head -1 | cut -c1-76)"
+else
+    echo "  FAIL rt_alias   ->  期望带位置的下标 trap + 退出码 1，得到 rc=${rc:-?}：$(printf '%s' "$out" | head -1)"; fail=1
+fi
+
 echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="
 rt_run rt_epoch     tests/pool/rt_epoch.extc     "cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1"
 

@@ -1,0 +1,15 @@
+// 守卫 · 别名那一档：两份容器值共用一个板块，一份 `release` 之后另一份就是悬垂。
+// 期望：**带位置地 trap**（不是静默写已还给 malloc 的内存）。
+//
+// 形状：`var b = a` 是结构体浅拷贝（板块共享、标量各一份），`a.release()` 把板块还给 malloc
+// ⇒ `b` 的 vals 指向别人的内存。守卫比一次世代：对不上就把**这一份**收成空容器，
+// 于是 `b.push(...)` 的下标访问带位置 trap。
+use stl::vector
+fn main() -> i32 {
+    var a = vector<i32>::new()
+    a.push(i32(5))
+    var b = a
+    a.release()
+    b.push(i32(9))
+    return 0
+}

@@ -53,6 +53,7 @@ struct vector<T> {
 
     /* 下标写：越界就什么都不做（调用者用 `hasAt` 先问）*/
     fn set(self: mut ref vector<T>, i: i64, v: T) -> bool {
+        if self.pStale() { self.pPoison() }
         if i < i64(0) || i >= self.n { return false }
         self.vals[i] = v
         return true
@@ -84,7 +85,28 @@ struct vector<T> {
         self.cap  = ncap
     }
 
+    /* **守卫**：这一份容器值还指着它的池吗？
+     *
+     * 池被 `release` 掉、或者那个槽位被别的池复用时，世代对不上 —— 这时 `vals` 指向的板块
+     * 已经不在我们名下（可能已经还给 malloc，也可能已经归别人）。实测的静默形状：
+     *     var a = vector<i32>::new()   var b = a   a.release()   b.push(i32(9))
+     * 别名让两份共用一个板块，`a.release()` 之后 `b` 就成了悬垂 —— 不开 ASan 时打印完全正常。 */
+    fn pStale(self: ref vector<T>) -> bool {
+        if self.pid < i64(0) { return false }
+        return syspool::extc_pool_generation(self.pid) != self.pidGen
+    }
+
+    /* 陈旧 ⇒ 把**这一份**收成空容器（板块不要碰，它可能已经归别人）：容量归零之后，
+     * 任何一次下标访问都会带位置地 trap —— 把静默 UAF 变成响亮失败。 */
+    fn pPoison(self: mut ref vector<T>) {
+        self.vals = poolSlice<T>(i64(-1), i64(0))
+        self.n    = i64(0)
+        self.cap  = i64(0)
+        self.pid  = i64(-1)
+    }
+
     fn push(self: mut ref vector<T>, v: T) {
+        if self.pStale() { self.pPoison() }
         if self.n >= self.cap { self.grow() }
         self.vals[self.n] = v
         self.n = self.n + i64(1)
