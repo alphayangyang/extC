@@ -253,6 +253,9 @@ typedef struct {
     bool        needPool;
     /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
     bool        zoneHere;
+    /* 这个函数收不收隐藏的「家 zone」参数（= `FuncDef.makesPool`）。
+     * 收了就把它往下传，不收（main、或者压根不建池的函数）就用当前那个地方的 zone。 */
+    bool        funcHasZoneParam;
     /* Which block levels really emitted `extc_pool_zoneEnter()` (index = block level,
      * 1 = the function body). The pop has to consult this table instead of `zoneHere`
      * alone: a block's zone is emitted on demand now, and a `zoneLeaveTo(__extc_zm<lvl>)`
@@ -1550,6 +1553,7 @@ static bool isPlaceExpr(const Expr *e) {
 static const char *homeArg(CG *g, int marked);   /* defined below */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
 static bool f_owLocal(CG *g, Stmt *s);
+static const char *zoneArgRef(CG *g);
 
 /* Emit a method call as a plain function call on its receiver.
  *
@@ -1626,9 +1630,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
     /* A method passes the home arena too; the receiver counts as the
      * shallowest mutable reference argument. */
     if (f->usesHome) bufPrintf(&b, ", %s", homeArg(g, e->arenaArg));
+    if (f->makesPool) bufPrintf(&b, ", %s", zoneArgRef(g));
     /* A method passes the @overwrite cells as well; the receiver counts as the
      * first argument, and the comma handling follows that. */
-    owPassCells(g, &b, e, e->u.method.args.len + 1, f->usesHome);
+    owPassCells(g, &b, e, e->u.method.args.len + 1, f->usesHome || f->makesPool);
     bufPutc(&b, ')');
     return bufCstr(&b);
 }
@@ -1796,6 +1801,12 @@ static const char *genExprInner(CG *g, Expr *e) {
              * as its comment explains. This also renames a name that collides
              * with a C keyword (`fn double`). */
             name = (e->func && e->func->instName) ? e->func->instName : cSymName(g, name);
+            /* 运行期那一层：库里的 `extc_pool_new(parent)` 在收「家 zone」的函数里换成
+             * `extc_pool_new_at(parent, __extc_home_zone)` —— 池因此生到**调用者选的
+             * 那个地方**去（POOLS.md §3.1 的提权落点，PLAN #87）。库侧一个字都不用改。 */
+            bool poolNewAt = (e->func && e->func->body == NULL
+                              && strcmp(name, "extc_pool_new") == 0);
+            if (poolNewAt && g->funcHasZoneParam) name = "extc_pool_new_at";
             if (strcmp(name, "extc_cout_f64") == 0) g->needCoutF64 = true;
             Buf b;
             bufInit(&b, g->arena);
@@ -1811,9 +1822,24 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (e->u.call.args.len) bufPuts(&b, ", ");
                 bufPuts(&b, homeArg(g, e->arenaArg));
             }
+            /* `extc_pool_new` 是运行期那一层：在收「家 zone」的函数里换成 `_at` 那一扇门
+             * （POOLS.md §3.1 的提权落点，PLAN #87）。库侧因此一个字都不用改。 */
+            if (poolNewAt) {
+                /* 名字已经换成 `_at` 那一扇门，这里只补第二个实参。
+                 * 注意别写成 `e->func->makesPool && ...`：`extc_pool_new` 是 extern，
+                 * 工作清单不遍历没有函数体的函数 ⇒ 它的 `makesPool` **是假**的
+                 *（被标记的是调用它的那些函数），所以只能按名字认它。 */
+                if (g->funcHasZoneParam) {
+                    bufPuts(&b, ", ");
+                    bufPuts(&b, zoneArgRef(g));
+                }
+            } else if (e->func->makesPool) {
+                if (e->u.call.args.len || e->func->usesHome) bufPuts(&b, ", ");
+                bufPuts(&b, zoneArgRef(g));
+            }
             /* The callee needs @overwrite cells, so cells of my own frame are
              * passed down. */
-            owPassCells(g, &b, e, e->u.call.args.len, e->func->usesHome);
+            owPassCells(g, &b, e, e->u.call.args.len, e->func->usesHome || e->func->makesPool);
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -1897,7 +1923,11 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (e->u.assoc.args.len) bufPuts(&b, ", ");
                 bufPuts(&b, homeArg(g, e->arenaArg));
             }
-            owPassCells(g, &b, e, e->u.assoc.args.len, e->func->usesHome);   /* @overwrite cells */
+            if (e->func->makesPool) {
+                if (e->u.assoc.args.len || e->func->usesHome) bufPuts(&b, ", ");
+                bufPuts(&b, zoneArgRef(g));
+            }
+            owPassCells(g, &b, e, e->u.assoc.args.len, e->func->usesHome || e->func->makesPool);   /* @overwrite cells */
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -2474,6 +2504,33 @@ static void lineMark(CG *g, Stmt *s) {
  * Returns:
  *   A C expression denoting the arena, usable as a function argument.
  */
+/* 这个调用点要把哪个 zone 递给被调者 —— 也就是"池该生在哪个地方"。
+ *
+ * 与 homeArg 平行的一条：arena 那边递的是"调用者选的那只 arena"，
+ * 这里递的是"调用者选的那个地方的 zone 下标"。
+ *
+ *   - 我自己就收了这个参数（`funcHasZoneParam`）⇒ 把它原样往下传：
+ *     `vector<i32>::new` → `withCap` → `pool<V>::withParent` → `extc_pool_new_at`
+ *     这条链上，用户在最外面选的那个地方一路传到运行期；
+ *   - 否则（入口文件里的 main / 普通函数）⇒ 递当前这个地方的 zone，
+ *     也就是最近一层压过的 `__extc_zm<lvl>` —— 这与"池生在建它的那个块里"完全一致。
+ *
+ * 兜底用 `extc_pool_zoneDepth() - 1`（当前顶）：只有 `noArena` 的函数才会走到
+ * （它没有压过任何 zone），那正是今天的行为。 */
+static const char *zoneArgRef(CG *g) {
+    if (g->funcHasZoneParam) return "__extc_home_zone";
+    for (int lvl = g->blkLevel; lvl >= 1; lvl--) {
+        if (lvl < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lvl])
+            return arenaPrintf(g->arena, "__extc_zm%d", lvl);
+    }
+    /* 兜底会引用 `extc_pool_zoneDepth`，所以这里要把池运行期标成"需要" ——
+     * 运行期文本在函数体之后才发（`if (g.needPool) poolsEmitRuntime(...)`），还来得及。
+     * 走到这一支的典型情形是 `stmtMakesPool` 对"未解析的被调者"保守算真：那个函数其实
+     * 不建池，于是既没有 zone 也没有运行期，而调用点仍然要凑出第二个实参。 */
+    g->needPool = true;
+    return "(extc_pool_zoneDepth() - 1)";
+}
+
 static const char *homeArg(CG *g, int arenaArg) {
     /* Passed as an argument, so this is the pointer itself. Do not confuse it
      * with arenaRefAt, whose result is wrapped in `&` and which therefore
@@ -3264,7 +3321,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
         return bufCstr(&sig);
     }
-    if (f->params.len == 0 && !f->usesHome && f->owLocal) {   /* no hidden parameters follow */
+    if (f->params.len == 0 && !f->usesHome && !f->makesPool && f->owLocal) {   /* no hidden parameters follow */
         bufPuts(&sig, "void"); return bufCstr(&sig);
     }
     for (size_t i = 0; i < f->params.len; i++) {
@@ -3276,13 +3333,20 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         if (f->params.len) bufPuts(&sig, ", ");
         bufPuts(&sig, "extc_arena *__extc_home");
     }
+    /* 建池的函数多收一个隐藏的「家 zone」——arena 那个隐藏参数的镜像
+     *（`makesPool` 是可传递的最小不动点，所以整条链上每个函数都收得到）。
+     * 容器"生在哪里"因此由**调用者**决定，而不是由库内部那一层词法块决定。 */
+    if (f->makesPool) {
+        if (f->params.len || f->usesHome) bufPuts(&sig, ", ");
+        bufPuts(&sig, "int64_t __extc_home_zone");
+    }
     /* @overwrite cells live in the frame of the call site and are passed in as
      * opaque `extc_owcell *`: opaque means a caller does not need to know the
      * types of the callee's sites, and a generic instance needs no special
      * case. */
     if (!f->owLocal) {
         for (int i = 0; i < f->owSites; i++) {
-            if (f->params.len || f->usesHome || i) bufPuts(&sig, ", ");
+            if (f->params.len || f->usesHome || f->makesPool || i) bufPuts(&sig, ", ");
             bufPrintf(&sig, "extc_owcell *__extc_owarg%d", i);
         }
     }
@@ -3464,6 +3528,8 @@ static void genFunc(CG *g, FuncDef *f) {
          * `pool<T>::withCap` 里建的池属于它的调用者所在的地方。 */
         (void)lib;
         g->zoneHere = g->needPool && (!f->modName || !*f->modName);
+        /* main 的 C 签名是固定的，收不了隐藏参数 ⇒ 它用当前那个地方的 zone（今天的行为）。 */
+        g->funcHasZoneParam = f->makesPool && !isMain;
     }
     /* 函数体的 zone（`__extc_zm1`）同样按需发射：没有这个函数，就没有任何池会登记在它的帧上，
      * 压了也是空压。`zoneMark[1]` 记下这次决定，收尾的 `zoneLeaveTo(__extc_zm1)` 查它 ——
