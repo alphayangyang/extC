@@ -1,0 +1,22 @@
+// expect: OK
+// 整个容器值可以被引用：`ref vector<i32>` 只读、`mut ref vector<i32>` 可写 —— 都允许。
+//
+// 为什么它天然成立：容器值是 arena 上的普通值（`{pid, pidGen, 视图…}`），按普通引用规则走
+//（深度格、逃逸分析、借用检查都适用）；容器方法的 `self: mut ref vector<T>` 就是这个形状。
+// 与两条禁令的分工（POOLS.md §5.4）：**出**不许把池里的东西借出去（`asSlice` 那族必须拷贝），
+// **入**不许让池里的元素拿着外面的引用（`vector<ref T>`）—— 而"把容器整个借出去"不在禁令里。
+// 前提是提权（PLAN #87）：容器的池生在容器值将来所在的那个地方，所以"借到容器"就等于"池还活着"。
+use std::io
+use stl::vector
+
+fn lenOf(v: ref vector<i32>) -> i64 { return v.len() }
+fn bump(v: mut ref vector<i32>) { v.push(i32(99)) }
+
+fn main() -> i32 {
+    var a = vector<i32>::new()
+    a.push(i32(1))
+    bump(ref a)
+    let n = lenOf(ref a)
+    io::cout << "len=" << n << " last=" << i64(a.get(i64(1)) ?? i32(-1)) << "\n"
+    return 0
+}

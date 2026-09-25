@@ -9036,3 +9036,28 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 还会报错 —— 下一步。另记作者口径两条（`PLAN #88` / `#89`）：池底容器**不许持有引用**（`vector<ref T>`
 一律禁止，图要走向句柄），以及 **`asSlice` 这一族必须是"拷出来"、不能是"池里的视图"**
 （"否则就变成引用 Pool 里的东西了，而 **Pool 里的东西永远不能被外面引用**"）。
+
+### 周期 42：返回那一档也通了 + 两条口径的落点（`ref` 整个容器允许）
+
+**返回那一档（`fn make() -> vector<i32>`）**：根因与上一轮同族，但位置不同 —— `check_stmt.c` 的
+`return` 分支调了 `promoteInto(val, 0)` 却**没有记事实**，而这次调用发生在 `makesPool` 闭包**之前**
+⇒ 闸门读到假、池站点的提权落不下去。
+
+改法两处：
+- `recordLvlFact` 允许 `at == 0`（对 arena 是"活到本帧之外（家 arena）"，对池是 `ZONE_HOME`）；
+- `return` 分支补记一条事实 ⇒ 闭包之后的重放把站点提到"调用者选的那个地方"。
+
+实测：`retvec` 的 ASan 从 `heap-use-after-free` → **干净**；`nest` 仍 `live=4`。
+常设判据：`tests/pool/rt_return_promote.extc`（`live=1 len=3 v0=5 v2=7`）·
+`tools/memsafe/qa/r3_container_return_promote.extc`（`expect: OK` + ASan）。
+
+**作者口径两条（`POOLS.md` §5.4 补全，`PLAN #90` / `#88` / `#89`）**：
+
+| 方向 | 判据 | 状态 |
+|---|---|---|
+| 借出**整个容器** | `ref vector<i32>` / `mut ref vector<i32>` **允许** | 今天已经可以（实测 `len=2 last=99`；判据 `qa/r4_container_by_ref.extc`）—— 容器值是 arena 上的普通值，按普通引用规则走 |
+| 借出**池里的东西** | `asSlice` / `denseView` 这一族**必须拷贝**（拷到目的地），不能是池里的视图 | 待做（`PLAN #89`）—— 今天这一族全是视图（违规） |
+| 让**池里的元素**拿着外面的引用 | `vector<ref T>` **一律禁止** | 待做（`PLAN #88`）—— 交叉引用走向句柄 `Vec<NodeId>` |
+
+一句话记法（已写进 `POOLS.md` §5.4）：**可以把容器整个借出去，不可以把池里的东西借出去，
+也不可以让池里的东西拿着外面的引用。**
