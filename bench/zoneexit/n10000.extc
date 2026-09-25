@@ -1,0 +1,19 @@
+use std::io
+use std::sys::pool as syspool
+/* 一个地方建 N 个池再退出（循环体 = 一个地方）⇒ 量"地方退出"的代价随 N 怎么走。
+ * 每池还拿一小块板块（所以里面含必要的 malloc/free）。 */
+fn main() -> i32 {
+    var r: i64 = 0
+    while r < i64(50) {
+        var i: i64 = 0
+        while i < i64(10000) {
+            let rid = syspool::extc_pool_new(i64(-1))
+            var s: mut slice<i32> = poolSlice<i32>(rid, 8)
+            s[0] = i32(1)
+            i = i + i64(1)
+        }
+        r = r + i64(1)
+    }
+    io::cout << "live=" << syspool::extc_pool_live() << " made=" << (i64(10000) * i64(50)) << "\n"
+    return 0
+}
