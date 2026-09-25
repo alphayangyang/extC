@@ -69,10 +69,13 @@ struct hashMap<K, V> {
         var m: hashMap<K, V> = {
             pid:    rp,
             pidGen: rpg,
-            keys: new K[c],
-            tag:  new u8[c],
-            slot: new i32[c],
-            bucketOfDense: new i32[c],
+            /* 四列都在**这张表自己的池板块**上（不是 arena 切片）：重建时旧的几块当场
+             * 还回去，不留历代旧列。之前用 `new` 时，每一次 rebuild 都把上一代的四列
+             * 留给 arena —— 同容量同条目数下峰值 90,412 KB vs 69,036 KB，那 30% 就是它们。 */
+            keys: poolSlice<K>(rp, c),
+            tag:  poolSlice<u8>(rp, c),
+            slot: poolSlice<i32>(rp, c),
+            bucketOfDense: poolSlice<i32>(rp, c),
             vals: pool<V>::withParent(rp, c),      /* 值池以这个容器自己的池为父 */
             n:    i64(0),
             dead: i64(0),
@@ -164,15 +167,18 @@ struct hashMap<K, V> {
      * are not touched: they stay exactly where the pool put them, which is what keeps an element's
      * dense index (and every live handle) valid across a rebuild. */
     fn rebuild(self: mut ref hashMap<K, V>, ncap: i64) {
-        var nk: mut slice<K>   = new K[ncap]
-        var nt: mut slice<u8>  = new u8[ncap]
-        var ns: mut slice<i32> = new i32[ncap]
+        /* 新表从池里拿四块，旧的填完当场还（`poolGive`）—— 于是重建只在**换的那一瞬间**
+         * 有两代同时在手，稳态永远只有一代。容量仍然翻倍：这是**哈希**的要求（探测用
+         * `hash & (cap-1)`，必须是 2 的幂），与"旧块还不了才翻倍"那条无关。 */
+        var nk: mut slice<K>   = poolSlice<K>(self.pid, ncap)
+        var nt: mut slice<u8>  = poolSlice<u8>(self.pid, ncap)
+        var ns: mut slice<i32> = poolSlice<i32>(self.pid, ncap)
         /* `bucketOfDense` is indexed by DENSE index, so it has to hold as many entries as there
          * are values -- and the pool's dense side grows past the old table capacity as soon as
          * the table doubles. It used to keep its original length and the first rebuild after a
          * growth wrote past its end (trapped: "index 128 out of range (length 128)"). Copy the
          * live prefix into the larger array first; the rehash below fills the rest. */
-        var nb: mut slice<i32> = new i32[ncap]
+        var nb: mut slice<i32> = poolSlice<i32>(self.pid, ncap)
         var d0: i64 = 0
         while d0 < self.vals.len() { nb[d0] = self.bucketOfDense[d0]  d0 = d0 + i64(1) }
         var i: i64 = 0
@@ -187,6 +193,10 @@ struct hashMap<K, V> {
             }
             i = i + i64(1)
         }
+        poolGive<K>(self.pid, self.keys)
+        poolGive<u8>(self.pid, self.tag)
+        poolGive<i32>(self.pid, self.slot)
+        poolGive<i32>(self.pid, self.bucketOfDense)
         self.keys = nk
         self.tag  = nt
         self.slot = ns

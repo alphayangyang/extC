@@ -57,6 +57,20 @@ else
     echo "  FAIL churn  ->  编不过"; fail=1
 fi
 
+echo "== rebuild 的旧列**不许**留在 arena（四列在自己的板块上）：增量 vs 一开始预留 =="
+# 判据：同一 1e6 条目、同一最终 cap（2,097,152）。四列用 `new`（arena）时，增量那一版
+# 会把每一代旧列留给 arena ⇒ 90,412 KB 对 69,036 KB（多 30%）。现在两者应当持平。
+if build_one grow-inc grow_rss && build_one grow-res grow_rss_reserved; then
+    gi=$(peak grow-inc 0); gr=$(peak grow-res 0)
+    if [ "$gi" -le $(( gr * 11 / 10 )) ]; then
+        echo "  ok   grow rss ->  增量 ${gi} KB vs 预留 ${gr} KB ⇒ 旧列没留下 ✓"
+    else
+        echo "  FAIL grow rss ->  增量 ${gi} KB 明显高于预留 ${gr} KB ⇒ 旧列又留在 arena 了 ✗"; fail=1
+    fi
+else
+    echo "  FAIL grow rss ->  编不过"; fail=1
+fi
+
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"

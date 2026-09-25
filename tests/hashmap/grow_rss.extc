@@ -1,0 +1,16 @@
+// 增量长到 1e6（多次 rebuild）· 四列都在表自己的池板块上 ⇒ 旧列当场还，不留历代副本
+// 与 grow_rss_reserved.extc 同一条目数、同一最终容量（cap=2,097,152），只有"长上去"与"一开始就预留"之别
+// expect: n=1000000 cap=2097152
+use std::io
+use stl::hashMap
+
+fn main() -> i32 {
+    var hm = hashMapI64<i32>::withCap(i64(16))
+    var i: i64 = 0
+    while i < i64(1000000) {
+        hm.put(i, i32(i))
+        i = i + i64(1)
+    }
+    io::cout << "n=" << hm.len() << " cap=" << hm.capOf() << "\n"
+    return 0
+}

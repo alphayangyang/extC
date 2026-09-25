@@ -1,0 +1,15 @@
+// 同一个形状，但一开始就预留到 1e6 ⇒ 一次 rebuild 都不发生（对照组的"下界"）
+// expect: n=1000000 cap=2097152
+use std::io
+use stl::hashMap
+
+fn main() -> i32 {
+    var hm = hashMapI64<i32>::withCap(i64(1000000))
+    var i: i64 = 0
+    while i < i64(1000000) {
+        hm.put(i, i32(i))
+        i = i + i64(1)
+    }
+    io::cout << "n=" << hm.len() << " cap=" << hm.capOf() << "\n"
+    return 0
+}
