@@ -48,6 +48,11 @@ if out=$(timeout 600 ./tests/generics/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
 else bad "tests/generics/run.sh"; echo "$out"; fi
 
+echo "== 类型分支的穷尽性（新构造器不许静默走 default）=="
+if out=$(python3 tools/check_tykind.py 2>&1); then
+    ok "$(echo "$out" | grep -c '^') 行报告（5 处 kind-switch：1 处枚举齐全 + 4 处 default 带理由）"
+else bad "tools/check_tykind.py"; echo "$out"; fi
+
 echo "== impl 块（方法挂载点：内建标量也能挂 => hashMap<i64, V> 直接可用）=="
 if out=$(timeout 600 ./tests/impl/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 8 反例项：含 coherence 重名与内建标量）"

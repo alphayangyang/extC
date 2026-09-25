@@ -379,7 +379,8 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
             }
             return ttArray(tt, t->asize, e);
         }
-        default:
+                /* kind-default: a kind not listed above carries no unresolved name: the parser only ever builds UNRESOLVED / REF / ARRAY, and every other kind is already interned. A new *syntactic* shape must get a case here, not a default. */
+default:
             return t;
     }
 }
@@ -439,7 +440,8 @@ const char *ttMangle(TypeTable *tt, Type *t) {
         case TY_PARAM: return t->param;
         case TY_VOID:  return "void";
         case TY_ERROR: return "Error";
-        default:       return t->name ? t->name : "?";
+                /* kind-default: a kind not listed above has no structure to mangle -- it is an interned name (builtin, struct, payload-free enum), so its own name is already unique. A constructed kind must never land here: `Pair<i32>` and `Pair<u8>` would mangle alike. */
+default:       return t->name ? t->name : "?";
     }
 }
 
@@ -713,7 +715,8 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
                     ttSubstitute(tt, *(Type **)vecAt(&t->targs, i), params, args);
             return ttEnumGeneric(tt, t->edef, &na);
         }
-        default:
+                /* kind-default: only a kind that **cannot contain a type parameter** may fall here. Parameters are reachable through the targs of REF / ARRAY / GENERIC and through an enum instance -- TY_ENUM is handled above because it fell here once and produced `option_T` where the instance was `varArray<i32>`. A new constructor with targs needs its own case, not this default. */
+default:
             return t;
     }
 }
@@ -982,7 +985,8 @@ void ttRender(Type *t, Buf *out) {
                 bufPutc(out, '>');
             }
             return;
-        default: {
+                /* kind-default: every kind not special-cased above prints by its own name, which is what the reader wrote or what mangling produced; a new kind is expected to be name-printable unless it is given a case here. */
+default: {
             /* Show the source name first: a module declaration prints as
              * `io::reader`. Printing `io$reader` leaks the internal encoding and
              * names a word the user never wrote. */
