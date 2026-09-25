@@ -1,0 +1,26 @@
+// expect: OK
+// `toSlice()` 是**拷出来**的一份，`asSlice()`/`denseView()` 是**借来的**视图。
+//
+// 这条判据用最强的方式区分两者：先 `toSlice()` 拿一份，再把容器 `release()` 掉
+//（池的板块整块还给 malloc），然后**照样读那份拷贝** —— 拷贝才是合法的；
+// 若 `toSlice` 实现成视图，这里就是 read-after-free（ASan 立刻报）。
+// 口径（POOLS.md §5.4，作者）：**Pool 里的东西永远不能被外面引用**。
+use std::io
+use stl::string
+use stl::vector
+
+fn main() -> i32 {
+    var s = string::withCap(i64(16))
+    s.append("pool")
+    let bytes = s.toSlice()
+    s.release()
+    io::cout << "s=" << bytes << " n=" << bytes.len
+
+    var v = vector<i32>::new()
+    v.push(i32(7))
+    v.push(i32(8))
+    let nums = v.toSlice()
+    v.release()
+    io::cout << " v0=" << i64(nums[0]) << " v1=" << i64(nums[1]) << "\n"
+    return 0
+}

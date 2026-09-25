@@ -9061,3 +9061,25 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 
 一句话记法（已写进 `POOLS.md` §5.4）：**可以把容器整个借出去，不可以把池里的东西借出去，
 也不可以让池里的东西拿着外面的引用。**
+
+### 周期 43：守卫推广到全部容器（代价量了：噪声内）+ 一处记账修正
+
+**守卫**（`pStale` / `pPoison`，形状见周期 43 前那一轮）：`string` · `pool<T>` · `map` · `hashMap` ·
+`linMap` 全部加上，写入路径入口查一次（`push` / `insert` / `set` / `put`；`append`、`linSet`、
+`set<T>`、`hashSetI64` 都转发到这些入口）。判据（`expect: TRAP`，形状都是"别名 + 一份 `release`
+⇒ 陈旧的那一份必须响亮失败"）：`r7` vector · `r8` string · `r9` hashMapI64 · `r10` map，
+外加 `tests/pool/rt_stale_alias.extc`（详细版：查退出码 1 + `trap: index` + `文件:行`）。
+
+**代价（实测，1e7 次 `push`，best of 3）**：
+
+| | 时间 |
+|---|---|
+| 带守卫 | 0.048 / 0.049 / 0.050 s |
+| 不带守卫（`git checkout b48c280~1 -- stdlib/stl/vector.extc` 量完再还原） | 0.047 / 0.049 / 0.049 s |
+
+⇒ **噪声内**：一次全局数组读 + 一次比较，被循环里别的工作盖住了。
+
+**记账修正**：`tools/memsafe/qa/r5_toSlice_is_a_copy.extc`（`toSlice` 是拷贝那条判据）
+上一轮**没有进库** —— 提交时 `git add` 只带了 `stdlib tests examples`，漏了 `tools/`。
+`memsafe` 的条数当时报的是 37（本地有它、库里没有），这一轮补进库并复核（39 → 已含它）。
+规矩照旧：**按路径逐条 add，不要凭"我记得加了"**。
