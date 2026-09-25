@@ -8413,3 +8413,28 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 顺带记两个观察：① 诊断里的类型名打成 `map::map<i64, i32>`（模块名与类型名同名时的双重修饰，与
 `string::new` 那个消歧问题是同族，暂未处理）；② 我又在 shell 的双引号里写了反引号（`echo "... `[]` ..."`），
 `[]` 和 `[]=` 当场被执行 —— 这条教训周期 11 记过一次，这次是自己犯的，改掉并写在这里。
+
+### 周期 28：#79 后半 —— 推迟调用的返回类型在实例期复核（修掉一处静默截断）
+
+先确认漏洞是真的：`fn bad<T>(x: T) -> i8 { return x.hash() }`（`pt::hash` 返回 `i64`）**编译通过并静默截断** ——
+`i64(300)` 变成 `i8(44)`；而把 `hash` 直接写在具体类型上的同样代码会被"有损转换"挡住。也就是说泛型体里凭空
+少了一道检查，这属于"静默错值"，不是"少报个错"。
+
+修法（三处）：
+
+1. `check_internal.h` 加 `DeferredUse{call, want, owner, func}` 与 `Checker.deferredUses`；
+2. `check.c` 的 `checkAssignable`：当**值类型是错误类型**、且来源是**推迟调用**（`EX_METHOD` 且 `!node->func`
+   且接收者提到类型参数）时，把"期望类型 `want`"记下来 —— 模板期照旧放行（不然会凭空报错），但不再就此了事；
+3. `check_top.c`：驱动里按与 `MethodCheck` 相同的两分支（类型实例 / 自由函数实例）跑 `runDeferredUse` —— 在
+   替换后的接收者类型上找到方法，取它的**真实返回类型**（必要时按接收者实例的实参再替换一层），拿记录下来的
+   `want` 过一遍 `checkAssignable`；诊断里的 `what` 就是实例名，所以消息读作
+   `` `bad_pt` expects `i8`, found `i64` ``。
+
+实测：探针从"静默截断（r=44）"变成
+`` tests/.../defer_ret.extc:6:1: error: `bad_pt` expects `i8`, found `i64` `` —— **点名实例**、指对行、指对函数。
+两个反例进 `tests/generics/errors/`：`deferred_return_type.extc`（`return x.hash()` 当 `i8`）与
+`deferred_let_type.extc`（带标注的 `let h: i8 = x.hash()`，另一条 checkAssignable 路径）。
+
+回归：`tests/generics`（正例 + 五个反例）· `tests/map` · `tests/hashmap` · `tests/stl` · `tests/pool` ·
+`tests/linmap` · `tests/genmatrix`（13 项）· 语料 **262/0** 全绿 —— 这条改动会碰每一次赋值/返回/传参，
+所以必须全套件过（没有误报）。

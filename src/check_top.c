@@ -3717,6 +3717,27 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
     if (m) m->used = true;
 }
 
+/* Re-check one recorded USE of a deferred call's result (`#79`).
+ *
+ * The template accepted it because the value's type was the error type; here the receiver's type is
+ * concrete, so the method's real return type is known and the expected type recorded at the use
+ * site can finally be enforced. `what` is the instance name, so the diagnostic reads
+ * "`f_i32` expects `i8`, found `i64`" -- naming the instance is the whole point of doing this at
+ * instantiation instead of on the template. */
+static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
+                           const char *instName) {
+    TypeTable *tt = c->tt;
+    Type *rt = ttSubstitute(tt, du->call->u.method.recv->type, params, targs);
+    FuncDef *f = findMethod(ttBase(rt), du->call->u.method.name);
+    /* A missing method is reported by runMethodCheck; nothing to add here. */
+    if (!f || !f->ret) return;
+    Type *ret = f->ret;
+    if (rt && rt->kind == TY_GENERIC && f->owner == rt->sdef)
+        ret = ttSubstitute(tt, f->ret, &f->owner->typeParams, &rt->targs);
+    if (ttIsError(ret)) return;
+    checkAssignable(c, du->want, ret, du->call, arenaPrintf(c->arena, "`%s`", instName));
+}
+
 /* Resolve one deferred method call for a concrete instance (`#57`).
  *
  * On the template the receiver's type was a type parameter, so no method could be found and the
@@ -3951,6 +3972,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.opChecks, arena, sizeof(void *));
     vecInit(&c.methodChecks, arena, sizeof(void *));   /* #57: method calls on a type parameter */
+    vecInit(&c.deferredUses, arena, sizeof(void *));   /* #79: uses of a deferred call's result */
     vecInit(&c.globals, arena, sizeof(void *));
     vecInit(&c.allSyms, arena, sizeof(void *));     /* kept for the EXTC_SELFCHECK invariant scan */
     vecInit(&c.nameUses, arena, sizeof(void *));
@@ -4106,6 +4128,25 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (mc->func != fi->tmpl) continue;
             runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+        }
+    }
+
+    /* Deferred uses of such a call's result (`#79`): same two branches, but the question is now
+     * whether the instance's real return type fits the type the use site expected. */
+    for (size_t i = 0; i < c.deferredUses.len; i++) {
+        DeferredUse *du = *(DeferredUse **)vecAt(&c.deferredUses, i);
+        if (du->func && !du->func->used) continue;
+        if (du->owner) {
+            for (size_t j = 0; j < tt->instances.len; j++) {
+                Type *inst = *(Type **)vecAt(&tt->instances, j);
+                if (inst->sdef != du->owner) continue;
+                runDeferredUse(&c, du, &du->owner->typeParams, &inst->targs, inst->name);
+            }
+        }
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            if (du->func != fi->tmpl) continue;
+            runDeferredUse(&c, du, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
     }
 

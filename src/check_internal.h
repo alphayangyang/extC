@@ -220,6 +220,7 @@ typedef struct Checker {
                              * generic context */
     Vec        opChecks;    /* OpCheck*: overloadable operators deferred to instantiation */
     Vec        methodChecks; /* MethodCheck*: method calls on a type parameter (`#57`) */
+    Vec        deferredUses; /* DeferredUse*: uses of such a call's result, re-checked (`#79`) */
     /* Instances of generic free functions: `fn f<T>` gets one instance per set of type
      * arguments. They are created here, at the call site that infers the arguments, and
      * the code generator emits them as ordinary functions. */
@@ -438,6 +439,24 @@ typedef struct {
     size_t      nargs;    /* arguments written at the call site */
     FuncDef    *func;     /* the template function the call sits in */
 } MethodCheck;
+
+/* A use of a deferred method call's RESULT, re-checked at instantiation (`#79`).
+ *
+ * On the template, `k.hash()` hands back the error type (`MethodCheck` explains why), and
+ * `checkAssignable` waves an error type through -- which is what keeps the template pass from
+ * inventing errors. But "no error here" must not be the last word: `fn f<T>(x: T) -> i8 { return
+ * x.hash() }` compiled and SILENTLY TRUNCATED when the instance's `hash` returned `i64`, where the
+ * same code written on a concrete type is rejected as a lossy conversion.
+ *
+ * The expected type IS known at the use site, so it is recorded here and checked again per
+ * instance, once the real signature is resolvable. `want` is that expected type; `call` is the
+ * deferred call the value came from. */
+typedef struct {
+    Expr      *call;      /* the deferred EX_METHOD the value came from */
+    Type      *want;      /* the type the context expects */
+    StructDef *owner;     /* enclosing generic struct/enum, or NULL in a free function */
+    FuncDef   *func;      /* the template holding the use, which picks the instances */
+} DeferredUse;
 
 /* A call site whose resolution is deferred to instantiation.
  *

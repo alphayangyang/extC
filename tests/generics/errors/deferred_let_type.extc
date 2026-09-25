@@ -1,0 +1,19 @@
+// 反例：同上，但期望类型来自带标注的 `let`（另一条 checkAssignable 路径）
+// expect: expects `i8`, found `i64`
+use std::io
+
+struct pt {
+    v: i64
+    fn hash(self: ref pt) -> i64 { return self.v }
+}
+
+fn bad<T>(x: T) -> i64 {
+    let h: i8 = x.hash()
+    return i64(h)
+}
+
+fn main() -> i32 {
+    var p: pt = { v: i64(300) }
+    io::cout << "h=" << bad(p) << "\n"
+    return 0
+}

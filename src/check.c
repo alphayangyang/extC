@@ -412,6 +412,20 @@ void adoptContextType(Expr *e, Type *want) {
  *     to be proved first.
  */
 bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *what) {
+    /* A value whose type is not knowable yet: the result of a method call deferred to
+     * instantiation (`#57`) is the error type on the template. Accepting it is right here -- but it
+     * must not be the last word, or `fn f<T>(x: T) -> i8 { return x.hash() }` silently truncates
+     * when the instance's `hash` returns `i64`. The expected type is known at this point, so the
+     * pair is recorded and re-checked per instance (PLAN #79). */
+    if (ttIsError(got) && node && node->kind == EX_METHOD && !node->func &&
+        mentionsParam(node->u.method.recv->type)) {
+        DeferredUse *du = (DeferredUse *)arenaAllocZero(c->arena, sizeof(DeferredUse));
+        du->call  = node;
+        du->want  = want;
+        du->func  = c->curFunc;
+        du->owner = c->curFunc ? c->curFunc->owner : NULL;
+        *(DeferredUse **)vecPush(&c->deferredUses) = du;
+    }
     if (ttIsError(want) || ttIsError(got)) return true;
 
     /* `ref T` has to be a reference on both sides.

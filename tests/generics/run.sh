@@ -50,6 +50,8 @@ check_err() {
 check_err tests/generics/errors/needs_eq.extc             'to define `==`'
 check_err tests/generics/errors/cannot_infer.extc         "cannot infer"
 check_err tests/generics/errors/needs_method.extc          'to define `hash`'
+check_err tests/generics/errors/deferred_return_type.extc   'expects `i8`, found `i64`'
+check_err tests/generics/errors/deferred_let_type.extc      'expects `i8`, found `i64`'
 check_err tests/generics/errors/method_arity.extc          'takes 0 arguments, but 1 was written'
 
 exit $fail

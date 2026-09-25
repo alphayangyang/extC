@@ -1,0 +1,18 @@
+// 反例：推迟调用的返回类型必须与上下文相符（#79）—— 具体类型的同样写法会被"有损转换"挡住，
+// 泛型体里也不能例外，否则就是静默截断（i64 300 → i8 44）
+// expect: expects `i8`, found `i64`
+use std::io
+
+struct pt {
+    v: i64
+    fn hash(self: ref pt) -> i64 { return self.v }
+}
+
+fn bad<T>(x: T) -> i8 { return x.hash() }
+
+fn main() -> i32 {
+    var p: pt = { v: i64(300) }
+    var r: i8 = bad(p)
+    io::cout << "r=" << i64(r) << "\n"
+    return 0
+}
