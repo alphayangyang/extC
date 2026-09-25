@@ -1,0 +1,31 @@
+// canary：只 put 不 remove（每次不同键）⇒ 内存**必须涨** —— 上面那条 churn 判据才有牙
+use std::io
+use stl::map
+
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = i64(100000)
+    if args.len > i64(1) { n = toInt(args[1], n) }
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    var i: i64 = i64(0)
+    var sum: i64 = i64(0)
+    while i < n {
+        m.put(i, i32(i))
+        sum = sum + m.len()
+        i = i + i64(1)
+    }
+    io::cout << "sum=" << sum << "\n"
+    return 0
+}

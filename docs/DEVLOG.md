@@ -8375,3 +8375,14 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
   - `tests/map/release.extc` → `live=0 made=1 closed=0 again=1 out=0`：建 map 池 +1、`release` 归零、
     再建复用、出块归零。
 - `tests/map` 现有六个用例（`sorted` · `bounds` · `stress` · `churn` · `shrink` · `release`）全绿，含 ASan。
+
+### 周期 26：① 第三步（下）—— RSS churn 判据（含"判据有牙"的 canary）
+
+`tests/map/rss.extc`（反复 put+remove 同一个键，轮数从命令行拿）与 `tests/map/leak.extc`（只 put 不 remove、
+每次不同键，canary）。`tests/map/run.sh` 里按 `tests/hashmap` 的写法比 `/usr/bin/time -f %M` 的峰值：
+
+- `ok churn -> 1e5: 1480 KB · 1e6: 1480 KB ⇒ 平` —— **十倍的轮数、峰值一模一样**，节点回收链在起作用；
+- `ok canary -> 只 put 不 remove：12612 KB → 179844 KB ⇒ 判据会响` —— 说明上面那条不是"永远为真"的空判据。
+
+至此 ①（有序 `map<K, V>`：单节点 → B+ 树 → 分裂 → 借位/合并 → 回收 → 池登记/release/shrink → RSS 判据）
+与 ②（有序 `set<T>`）全部落地。`tests/map` 现在是六个用例 + RSS 两条 + ASan。
