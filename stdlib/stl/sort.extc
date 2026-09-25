@@ -1,0 +1,155 @@
+/* stdlib/stl/sort.extc —— `sort<T>`：原地比较排序（introsort，显式栈版）
+ *
+ * **为什么是 introsort**：快排的平均常数最好，但纯快排遇到"每次都取到极端枢轴"会退化成
+ * O(n²)；这里用 median-of-three 把常见的有序/逆序输入压平，再用**递归深度上限**（2·log2 n）
+ * 兜底：一旦超限就把那一段交给 heapsort（原地、最坏 O(n log n)）。这条兜底是**承诺**而不是
+ * 优化 —— 没有它，排序就是一个能被人用输入打挂的接口。小区间（≤ 12）走插入排序：那个规模上
+ * 快排的递归与分支都不划算，而插入排序对"几乎有序"的尾段尤其快。
+ *
+ * **为什么整段写在一个函数里**（而不是拆成 partition / siftDown 几个泛型辅助函数）：
+ * 今天的 extC 里，**泛型函数不能调用另一个泛型函数** —— 调用点会拿"类型参数本身"去实例化
+ * 被调者，而 `<` 在类型参数上没有定义（连自递归也一样）：
+ *      error: `selfSort_T` needs `T` to define `<`
+ * 所以划分、下沉这些**含比较**的循环只能内联在本函数体内（只搬移、不比较的辅助函数可以拆）。
+ * 同理，这里用**显式栈**而不是递归。这条限制记在 PLAN §4：等"泛型间调用"打通，这一段就能
+ * 拆回几个小函数。
+ *
+ * **不承诺稳定**：稳定排序要么额外缓冲（归并），要么额外搬运（旋转）—— 与"原地、无分配"
+ * 冲突。要稳定就带上序号当第二键，或用保持插入顺序的容器。
+ *
+ * 比较用键上的 `<`（与 `map` 同一协议：类型参数上的运算符检查推迟到实例化）。
+ * 复杂度：时间 O(n log n) 最坏 / O(n log n) 平均；无堆分配（栈是 64 项定长数组，
+ * 由"大的一半入栈、小的一半继续"保证深度 ≤ log2 n + 1）。
+ */
+
+let SMALL: i64 = 12          /* 这个规模以下走插入排序 */
+
+/* 把整条 `a` 排成非降序。 */
+fn sort<T>(a: mut slice<T>) {
+    let n = a.len
+    if n < i64(2) { return }
+
+    /* 深度上限 ≈ 2·log2(n)：超限的那一段改用 heapsort 收尾。 */
+    var dmax: i64 = i64(2)
+    var m: i64 = n
+    while m > i64(1) { dmax = dmax + i64(2)  m = m / i64(2) }
+
+    var loS: [64]i64
+    var hiS: [64]i64
+    var dS: [64]i64
+    var sp: i64 = i64(1)
+    loS[i64(0)] = i64(0)
+    hiS[i64(0)] = n
+    dS[i64(0)] = dmax
+
+    while sp > i64(0) {
+        sp = sp - i64(1)
+        var lo: i64 = loS[sp]
+        var hi: i64 = hiS[sp]
+        var d: i64 = dS[sp]
+
+        /* 大区间：划分/下沉都在这个循环里内联（见文件头"为什么写在一个函数里"）。 */
+        while hi - lo > SMALL {
+            if d == i64(0) {
+                /* ---- heapsort [lo, hi)：O(n log n) 最坏，原地 ---- */
+                let cnt: i64 = hi - lo
+                var k: i64 = cnt / i64(2)
+                while k > i64(0) {
+                    k = k - i64(1)
+                    var r: i64 = k
+                    while r * i64(2) + i64(1) < cnt {
+                        var c: i64 = r * i64(2) + i64(1)
+                        if c + i64(1) < cnt && a[lo + c] < a[lo + c + i64(1)] { c = c + i64(1) }
+                        if a[lo + r] < a[lo + c] {
+                            let t = a[lo + r]  a[lo + r] = a[lo + c]  a[lo + c] = t
+                            r = c
+                        } else {
+                            r = cnt
+                        }
+                    }
+                }
+                var e: i64 = cnt - i64(1)
+                while e > i64(0) {
+                    let t = a[lo]  a[lo] = a[lo + e]  a[lo + e] = t
+                    var r: i64 = i64(0)
+                    while r * i64(2) + i64(1) < e {
+                        var c: i64 = r * i64(2) + i64(1)
+                        if c + i64(1) < e && a[lo + c] < a[lo + c + i64(1)] { c = c + i64(1) }
+                        if a[lo + r] < a[lo + c] {
+                            let u = a[lo + r]  a[lo + r] = a[lo + c]  a[lo + c] = u
+                            r = c
+                        } else {
+                            r = e
+                        }
+                    }
+                    e = e - i64(1)
+                }
+                lo = hi
+            } else {
+                d = d - i64(1)
+                /* ---- median-of-three：把中位数换到 `lo`，另外两个排好 ---- */
+                let mid: i64 = lo + (hi - lo) / i64(2)
+                if a[mid] < a[lo] { let t = a[mid]  a[mid] = a[lo]  a[lo] = t }
+                if a[hi - i64(1)] < a[mid] {
+                    let t = a[hi - i64(1)]  a[hi - i64(1)] = a[mid]  a[mid] = t
+                    if a[mid] < a[lo] { let u = a[mid]  a[mid] = a[lo]  a[lo] = u }
+                }
+                let t0 = a[lo]  a[lo] = a[mid]  a[mid] = t0
+                let pivot = a[lo]
+                /* ---- Hoare 划分（哨兵式）：**每轮先走一步再扫**。
+                 *
+                 * ⚠️ 这里踩过一次：原来的写法是"先扫再交换、条件不满足就原地不动"
+                 * （`while i <= j && …`），遇到**全相等**的输入会 `i == j` 且两侧扫描都不动 ⇒
+                 * 外层循环死转（`n=50` 就挂住，`--run` 超时）。经典 Hoare 必须保证每轮至少前进
+                 * 一步；而"至少前进一步"的扫描不会跑出边界，是因为 median-of-three 已经保证了
+                 * `a[lo] <= pivot <= a[hi-1]`（两侧天然有哨兵）。 */
+                var i: i64 = lo
+                var j: i64 = hi
+                var running: bool = true
+                while running {
+                    i = i + i64(1)
+                    while a[i] < pivot { i = i + i64(1) }
+                    j = j - i64(1)
+                    while pivot < a[j] { j = j - i64(1) }
+                    if i >= j {
+                        running = false
+                    } else {
+                        let t = a[i]  a[i] = a[j]  a[j] = t
+                    }
+                }
+                let t1 = a[lo]  a[lo] = a[j]  a[j] = t1
+                /* ---- 大的一半入栈、小的一半继续循环 ⇒ 栈深 O(log n) ---- */
+                if j - lo < hi - (j + i64(1)) {
+                    loS[sp] = j + i64(1)  hiS[sp] = hi  dS[sp] = d  sp = sp + i64(1)
+                    hi = j
+                } else {
+                    loS[sp] = lo  hiS[sp] = j  dS[sp] = d  sp = sp + i64(1)
+                    lo = j + i64(1)
+                }
+            }
+        }
+
+        /* 小区间：插入排序。元素**拷贝**出来（T 可能是结构体，拿引用会在搬移中失效）。 */
+        var i: i64 = lo + i64(1)
+        while i < hi {
+            let x = a[i]
+            var j: i64 = i
+            while j > lo && x < a[j - i64(1)] {
+                a[j] = a[j - i64(1)]
+                j = j - i64(1)
+            }
+            a[j] = x
+            i = i + i64(1)
+        }
+    }
+}
+
+/* 判据用的读数：整条已经非降序吗（一趟 O(n)）。 */
+fn isSorted<T>(a: slice<T>) -> bool {
+    var i: i64 = i64(1)
+    while i < a.len {
+        if a[i] < a[i - i64(1)] { return false }
+        i = i + i64(1)
+    }
+    return true
+}

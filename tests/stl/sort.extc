@@ -1,0 +1,102 @@
+// sort<T>：introsort（显式栈）· 随机 / 已升序 / 已降序 / 全相等 / 风琴管 / 极小规模
+// 判据：每种输入都「非降序」**且**元素多重集不变（和 + 异或都不变），结构体键也能排
+// expect: ok=11 sorted=1 sum=499500 xo=0 sm0=0 sm1=999 i64ok=1 ptok=1 pt0=1
+use std::io
+use stl::sort
+
+struct pt {
+    x: i64
+    y: i64
+    fn <(self: ref pt, o: pt) -> bool {
+        if self.x != o.x { return self.x < o.x }
+        return self.y < o.y
+    }
+}
+
+fn fill(a: mut slice<i64>, n: i64, mode: i64) {
+    var i: i64 = 0
+    while i < n {
+        if mode == i64(0) {                      /* 随机（LCG） */
+            a[i] = (i * i64(2654435761) + i64(12345)) % i64(1000)
+        } else if mode == i64(1) {               /* 已升序 */
+            a[i] = i
+        } else if mode == i64(2) {               /* 已降序 */
+            a[i] = n - i
+        } else if mode == i64(3) {               /* 全相等（划分会退化，砸栈深） */
+            a[i] = i64(7)
+        } else {                                 /* 风琴管 */
+            if i < n / i64(2) { a[i] = i } else { a[i] = n - i }
+        }
+        i = i + i64(1)
+    }
+}
+
+fn sumOf(a: slice<i64>) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < a.len { s = s + a[i]  i = i + i64(1) }
+    return s
+}
+
+fn xorOf(a: slice<i64>) -> i64 {
+    var x: i64 = 0
+    var i: i64 = 0
+    while i < a.len { x = x ^ a[i]  i = i + i64(1) }
+    return x
+}
+
+fn main() -> i32 {
+    var modes: [5]i64 = [i64(0), i64(1), i64(2), i64(3), i64(4)]
+    var ok: i64 = 0
+    var sumKeep: i64 = 0
+    var xorKeep: i64 = 0
+    var mi: i64 = 0
+    while mi < i64(5) {
+        var big: [1000]i64
+        fill(big[..1000], i64(1000), modes[mi])
+        let s0 = sumOf(big[..1000])
+        let x0 = xorOf(big[..1000])
+        sort::sort(big[..1000])
+        if sort::isSorted(big[..1000]) && sumOf(big[..1000]) == s0 && xorOf(big[..1000]) == x0 { ok = ok + i64(1) }
+        mi = mi + i64(1)
+    }
+    /* 极小规模：0 / 1 / 2 / 12 / 13 个（插入排序与划分的分界两侧） */
+    var sizes: [5]i64 = [i64(0), i64(1), i64(2), i64(12), i64(13)]
+    var si: i64 = 0
+    while si < i64(5) {
+        var small: [13]i64
+        fill(small[..13], sizes[si], i64(2))
+        let s1 = sumOf(small[..sizes[si]])
+        sort::sort(small[..sizes[si]])
+        if sort::isSorted(small[..sizes[si]]) && sumOf(small[..sizes[si]]) == s1 { ok = ok + i64(1) }
+        si = si + i64(1)
+    }
+    /* 大一点：3000 个随机（走多轮划分 + 显式栈） */
+    var huge: [3000]i64
+    fill(huge[..3000], i64(3000), i64(0))
+    let hs = sumOf(huge[..3000])
+    sort::sort(huge[..3000])
+    if sort::isSorted(huge[..3000]) && sumOf(huge[..3000]) == hs { ok = ok + i64(1) }
+
+    /* 结构体键：证明泛型真的按 `<` 协议走 */
+    var pts: [5]pt = [pt { x: i64(3), y: i64(1) }, pt { x: i64(1), y: i64(9) }, pt { x: i64(3), y: i64(0) }, pt { x: i64(2), y: i64(5) }, pt { x: i64(1), y: i64(2) }]
+    sort::sort(pts[..])
+    let ptok = sort::isSorted(pts[..])
+
+    /* 固定读数字面上放一个「元素多重集不变」的独立样本，好让这一行自证 */
+    var tail: [1000]i64
+    fill(tail[..1000], i64(1000), i64(1))
+    sort::sort(tail[..1000])
+    var isS: i64 = i64(0)
+    if sort::isSorted(tail[..1000]) { isS = i64(1) }
+    var okFlag: i64 = i64(0)
+    if ok >= i64(7) { okFlag = i64(1) }
+    var ptFlag: i64 = i64(0)
+    if ptok { ptFlag = i64(1) }
+    io::cout << "ok=" << ok << " sorted=" << isS
+    io::cout << " sum=" << sumOf(tail[..1000]) << " xo=" << xorOf(tail[..1000])
+    io::cout << " sm0=" << tail[0] << " sm1=" << tail[999]
+    io::cout << " i64ok=" << okFlag << " ptok=" << ptFlag
+    io::cout << " pt0=" << pts[0].x
+    return 0
+}
