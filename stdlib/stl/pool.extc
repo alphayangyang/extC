@@ -15,8 +15,16 @@
  *      `while i < p.len() { p.atDense(i) }` over contiguous memory.
  *
  * What it does not do (yet, and on purpose):
- *   - it does not own a pool, so it cannot give memory back to the arena. `clear()`
- *     reuses the capacity; really returning memory needs `r.reset()` (phase 1+).
+ *   - its storage is still an arena slice (`new T[cap]`) instead of the pool's OWN plate.
+ *     That is the one thing left to land (POOLS.md 2.1, "a pool has two faces"): once
+ *     `poolSlice<T>` exists, `vals` / `slots` / `ent` come from this pool's own block,
+ *     `grow` hands the old block back instead of abandoning it to the arena, and
+ *     `release` really returns memory. The design is not in question -- what is missing
+ *     is the generator-side typed allocation entry.
+ *   - the same holds for `vector` / `string`: they keep a pool record for lifetime today,
+ *     but their buffers still come from `new`, so a doubling array leaves every old
+ *     generation in the arena (the 9,900 KB reading in POOLS.md 1). They move onto the
+ *     plate with it.
  *   - it does not trap on a stale handle: phase 0 has no way to trap with the
  *     **caller's** position (a trap inside this file would point here, not at your
  *     line). So the query style is used instead -- `get`/`set`/`contains` answer

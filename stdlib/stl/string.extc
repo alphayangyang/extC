@@ -3,8 +3,9 @@
  * 口径（POOLS.md §5）：**序列化面保持连续** —— 下游全吃 `slice<u8>`
  * （print · IO · 哈希 · `extern!` 边界），所以这里绝不分块，`asSlice()` 永远给连续视图。
  *
- * 与 vector<T> 同一套骨架：随容器登记一条运行期池记录（寿命挂在"地方"上）·
- * grow 翻倍 · shrink 降高水位 · clear 留容量 · release 校验世代。
+ * 与 vector<T> 同一套骨架：随容器登记一条运行期池记录（寿命挂在"地方"上）· grow 翻倍 ·
+ * shrink 降高水位 · clear 留容量 · release 校验世代。**缓冲区是池的板块**（POOLS.md §2.1
+ * 裁决一）：扩容时旧块当场还回去，不留历代旧副本；`asSlice()` 给的仍是连续视图。
  */
 use std::sys::pool as syspool
 

@@ -6,8 +6,9 @@
  *     但它照样是"池底"的：随容器建一条运行期池记录（寿命挂在"地方"上）、
  *     容量按 vector 式翻倍、`shrink` 降高水位、`release` 时校验世代
  *
- * 内存：`vals` 由 `new T[c]` 从**当前地方**的 arena 拿；池不拥有内存，只负责
- * 复用与寿命。dense 永远连续 ⇒ `denseView()` / SIMD 一直成立。
+ * 内存：`vals` 是**池的板块**（从这只容器自己的池里拿整块，见 POOLS.md §2.1 裁决一），
+ * 不是 arena 切片 —— 扩容时旧块当场还给池，历代旧副本不会留在 arena 里；`shrink` 也据此真缩。
+ * dense 永远连续 ⇒ `denseView()` / SIMD 一直成立。
  */
 use std::sys::pool as syspool
 
