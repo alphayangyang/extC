@@ -28,7 +28,9 @@ def surface():
 miss_flag = [f for f in flags() if f not in man]
 by_mod = {}
 for mod, ty, name, kind, vis in surface():
-    if not re.search(r'(?<![\w])%s(?![\w])' % re.escape(name), man):
+    # 判定要求成员**出现在行内代码体里**（`` `name` `` / `` `name(` `` / `` `Type.name` ``），
+    # 而不是散文里偶然出现同名 —— 否则"覆盖"会变成巧合。
+    if not re.search(r'`[^`\n]*?(?<![\w])%s(?![\w])[^`\n]*?`' % re.escape(name), man):
         by_mod[mod] = by_mod.get(mod, 0) + 1
 
 base = {}

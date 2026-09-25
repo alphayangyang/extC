@@ -14,13 +14,27 @@ import re, sys, glob, os
 INTERNAL_PREFIX = re.compile(r'^p[A-Z]')
 # 容器的**存储字段**同样按约定属于内部：可达（编译器不阻止），但手册不把它们当 API 讲，
 # 而是列入透明清单。注意 `slice` / `varArray` 的 `len` / `data` 是使用者日常要读的，保持公开。
+# 判据：**簿记与机械**属内部（树的读写器 `setKey`/`setVal`/`setKid`/`setNext`、节点池 `newNode`/`freeNode`/
+# `nodeCount`、表/槽位寻址 `*AtDense`/`liveAt`/`deadOf`/`handleAtDense`、打包与计数 `ep`/`gen`/`kn`/`vn`/`nx`/
+# `nk`/`cnt`/`capOf`/`bytesOf`、控制台格式化 `fmtI64*`/`flushCout`/`errWrite`、终端状态字段 `rawbuf`/`saved` 等）；
+# **语义操作**属公开（增删查 `insert`/`remove`/`get`、读一行 `nextLine`/`nextLineRaw`、控制台状态
+# `inSync`/`inSave`/`inBad`、raw 模式开关 `on`/`raw`/`restore`、随机数 `seeded`/`nextBounded`/`shuffleI32` 等）。
+INTERNAL_MACHINERY = set("""
+kn vn nx nk cnt cntOf setCnt setKey setVal setKid setNext setN newNode freeNode dropChild
+nodeCount nodes growStores ncap firstKey lastKey leaf leafFor lowerIn mergeLeft mergeRight
+side subMinKey height kidsCnt keyAt valAt bucketOfDense keyAtDense valAtDense dead deadOf
+denseLen liveAt pidOf tagCensus ep gen gather handleAtDense chunk got fillState isSpaceByte
+newlineAfter nextI64State pairsReady errWrite flushCout fmtI64 fmtI64Fast rawbuf saved inc
+lowerBound rankAt""".split())
 INTERNAL_NAMES = {'bn', 'childSlot', 'atDense', 'borrowLeft', 'borrowRight', 'accDigit',
                   'kd', 'leafOf', 'nth', 'maxSuffix',   # maxSuffix：Two-Way 查找算法的内部助手
                   'buf', 'pid', 'pidGen', 'vals', 'slots', 'ent', 'cursor', 'holeHead', 'epoch',
                   'nnodes', 'root', 'kids', 'keys', 'tags', 'n', 'cap', 'freeHead'}
 
 def visibility(name):
-    return 'internal' if (INTERNAL_PREFIX.match(name) or name in INTERNAL_NAMES) else 'public'
+    if INTERNAL_PREFIX.match(name) or name in INTERNAL_NAMES or name in INTERNAL_MACHINERY:
+        return 'internal'
+    return 'public'
 
 def members(path, rel):
     src = open(path, encoding='utf-8').read()

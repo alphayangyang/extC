@@ -12,7 +12,7 @@ GROUPS = [('上路', ['00-quickstart', '01-safety']),
           ('结构与内存', ['08-struct', '09-ref', '10-nullref', '11-alloc', '12-driver', '13-vararray']),
           ('标准库与工具', ['14-builtins', '15-errors', '18-modules', '21-flags']),
           ('状态与示例', ['16-unimplemented', '17-undecided', '19-examples']),
-          ('标准库参考', ['22-stl-string', '23-stl-stringio']),
+          ('标准库参考', ['22-stl-string', '23-stl-stringio', '24-std-io', '25-std-fs-term', '26-stl-containers', '27-prelude']),
           ('透明清单', ['20-internals'])]
 KW = {'r': 'i64 u8 ref mut', 'keywords': 'fn let var struct enum impl trait match while'}
 KW_EXT = ('fn let var if else while for match return struct enum impl trait ref mut use new break '
@@ -48,7 +48,13 @@ def hl_plain(t):
 
 def md_to_html(md):
     lines, out, i = md.split('\n'), [], 0
+    guard = 0
     while i < len(lines):
+        # 守卫：任何分支都必须让 i 前进；不前进就是死循环（曾静默挂住十分钟），
+        # 这里直接报出卡在哪一行，而不是让调用者等到超时。
+        guard += 1
+        if guard > 100000:
+            raise RuntimeError('md_to_html 卡在第 %d 行：%r' % (i, lines[i][:70]))
         l = lines[i]
         if l.startswith('<!--'):                      # 作者注释不渲染
             while i < len(lines) and '-->' not in lines[i]: i += 1

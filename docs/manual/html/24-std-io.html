@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>标准库参考：`stringio` · extC 手册</title>
+<title>标准库参考：`std::io` · extC 手册</title>
 <style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
@@ -60,8 +60,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 </ul>
 <div class="g">标准库参考</div><ul>
 <li><a href="22-stl-string.html">标准库参考：`string`</a></li>
-<li class="cur"><a href="23-stl-stringio.html">标准库参考：`stringio`</a></li>
-<li><a href="24-std-io.html">标准库参考：`std::io`</a></li>
+<li><a href="23-stl-stringio.html">标准库参考：`stringio`</a></li>
+<li class="cur"><a href="24-std-io.html">标准库参考：`std::io`</a></li>
 <li><a href="25-std-fs-term.html">标准库参考：`std::fs` 与 `std::term`</a></li>
 <li><a href="26-stl-containers.html">标准库参考：容器的共同面</a></li>
 <li><a href="27-prelude.html">标准库参考：`prelude`</a></li>
@@ -69,15 +69,19 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <div class="g">透明清单</div><ul>
 <li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
 </ul></nav>
-<main><div class="crumb">extC 手册 · §标准库参考：`stringio`</div>
-<h1 id="标准库参考-stringio">标准库参考：<code>stringio</code></h1>
-<p><code>stl::stringio</code> 给 <code>string</code> 挂<strong>流式 I/O</strong>，方法本身定义在 <code>impl string { ... }</code> 块里 —— 这是 <code>impl</code> 的用途之一：类型不必知道文件描述符与缓冲读取器的存在，I/O 层在自己这一侧挂上行为。</p>
-<p>用法：<code>use std::io</code> + <code>use stl::string</code> + <code>use stl::stringio</code>（<strong>只有引入本模块，这些方法才存在</strong>）。</p>
-<h2 id="方法">方法</h2>
-<p>签名与语义见 <a href="22-stl-string.html"><code>string</code> 参考的「流式 I/O」一节</a>（同一批方法的完整说明只写一处）。</p>
-<p>要点：</p>
-<ul><li>行语义与 <code>&gt;&gt;</code> 一致：<strong>去掉行尾换行</strong>，CRLF 的 <code>\r</code> 一并处理，孤立 <code>\r</code> 与文件末尾的 <code>\r</code> 保留为内容；</li><li>读一行、读全部都会按需增长目标串，调用者不必预估容量；</li><li>写入不产生中间拷贝：<code>w.write</code> 本就把字节拷进 writer 的缓冲；</li><li>挂载在 <code>io::istream</code> 与 <code>fs::ifstream</code> 上的 <code>&gt;&gt;</code> 重载同样由本模块提供，因此 <code>io::cin &gt;&gt; s</code> 与 <code>f &gt;&gt; s</code>（<code>s</code> 为 <code>string</code>）也要求引入本模块。</li></ul>
-<div class="pn"><a href="22-stl-string.html">← 标准库参考：`string`</a> <a href="24-std-io.html">标准库参考：`std::io` →</a></div></main>
+<main><div class="crumb">extC 手册 · §标准库参考：`std::io`</div>
+<h1 id="标准库参考-std-io">标准库参考：<code>std::io</code></h1>
+<p>控制台与缓冲 I/O 的底层设施：<code>reader</code> 负责"从 fd 读、按块填充"，<code>writer</code> 负责"攒够再写"， 控制台输入的那份全局状态由 <code>in*</code> 一族读写。</p>
+<p>用法：<code>use std::io</code>。</p>
+<h2 id="reader-按块读"><code>reader</code>：按块读</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>avail() -&gt; i64</code></td><td>缓冲区里尚未消费的字节数（不触碰 fd）</td></tr><tr><td><code>buffered() -&gt; bool</code></td><td><code>pos &lt; len</code>，即缓冲区是否还有字节</td></tr><tr><td><code>nextByte() -&gt; result&lt;i64, ioError&gt;</code></td><td>下一个字节；返回值 <code>&lt; 0</code> 表示读到结尾（结尾不是错误）</td></tr><tr><td><code>fill() -&gt; result&lt;i64, ioError&gt;</code></td><td>重新填满一个块；<code>0</code> 表示读到结尾</td></tr><tr><td><code>nextLine(out: mut slice&lt;u8&gt;) -&gt; result&lt;i64, ioError&gt;</code></td><td>读一行，<strong>不含换行</strong>（CRLF 的 <code>\r</code> 一并去掉）</td></tr><tr><td><code>nextLineRaw(out: mut slice&lt;u8&gt;) -&gt; result&lt;i64, ioError&gt;</code></td><td>读一行并<strong>保留磁盘上的原始字节</strong>（含 <code>\r</code>）：进度条、按字节精确复制的场合用</td></tr><tr><td><code>nextToken(out: mut slice&lt;u8&gt;) -&gt; result&lt;i64, ioError&gt;</code></td><td>读一个词（连续非空白字符）</td></tr></tbody></table>
+<p><code>nextLine</code> 与 <code>nextLineRaw</code> 是<strong>两个名字各自对应一种语义</strong>，而不是一个名字两种含义。</p>
+<h2 id="writer-攒够再写"><code>writer</code>：攒够再写</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>writerOf(fd: i32) -&gt; writer</code></td><td>在指定 fd 上构造 writer</td></tr><tr><td><code>write(data: slice&lt;u8&gt;) -&gt; result&lt;i64, ioError&gt;</code></td><td>写入（缓冲区满时自动冲刷）</td></tr><tr><td><code>flush() -&gt; result&lt;i64, ioError&gt;</code></td><td>冲刷缓冲区</td></tr></tbody></table>
+<h2 id="控制台输入状态">控制台输入状态</h2>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>inSync() -&gt; reader</code></td><td>取控制台输入的那份全局状态（缓冲位置在多次读取之间保持）</td></tr><tr><td><code>inSave(r: ref reader)</code></td><td>读完之后把位置写回全局状态</td></tr><tr><td><code>inBad() -&gt; bool</code> / <code>inClear()</code></td><td>查询 / 清除"上一次读取失败或已到结尾"的标志</td></tr><tr><td><code>istream::bad() -&gt; bool</code></td><td>输入流级的失败标志（<code>&gt;&gt;</code> 失败时置起，不 trap）</td></tr></tbody></table>
+<p><code>&gt;&gt;</code> 重载（含 <code>string</code> 版本，见 <a href="23-stl-stringio.html"><code>stringio</code></a>）的实现都建立在这三条之上。</p>
+<div class="pn"><a href="23-stl-stringio.html">← 标准库参考：`stringio`</a> <a href="25-std-fs-term.html">标准库参考：`std::fs` 与 `std::term` →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
 q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();

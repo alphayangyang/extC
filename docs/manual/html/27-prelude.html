@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>标准库参考：`stringio` · extC 手册</title>
+<title>标准库参考：`prelude` · extC 手册</title>
 <style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
@@ -60,24 +60,27 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 </ul>
 <div class="g">标准库参考</div><ul>
 <li><a href="22-stl-string.html">标准库参考：`string`</a></li>
-<li class="cur"><a href="23-stl-stringio.html">标准库参考：`stringio`</a></li>
+<li><a href="23-stl-stringio.html">标准库参考：`stringio`</a></li>
 <li><a href="24-std-io.html">标准库参考：`std::io`</a></li>
 <li><a href="25-std-fs-term.html">标准库参考：`std::fs` 与 `std::term`</a></li>
 <li><a href="26-stl-containers.html">标准库参考：容器的共同面</a></li>
-<li><a href="27-prelude.html">标准库参考：`prelude`</a></li>
+<li class="cur"><a href="27-prelude.html">标准库参考：`prelude`</a></li>
 </ul>
 <div class="g">透明清单</div><ul>
 <li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
 </ul></nav>
-<main><div class="crumb">extC 手册 · §标准库参考：`stringio`</div>
-<h1 id="标准库参考-stringio">标准库参考：<code>stringio</code></h1>
-<p><code>stl::stringio</code> 给 <code>string</code> 挂<strong>流式 I/O</strong>，方法本身定义在 <code>impl string { ... }</code> 块里 —— 这是 <code>impl</code> 的用途之一：类型不必知道文件描述符与缓冲读取器的存在，I/O 层在自己这一侧挂上行为。</p>
-<p>用法：<code>use std::io</code> + <code>use stl::string</code> + <code>use stl::stringio</code>（<strong>只有引入本模块，这些方法才存在</strong>）。</p>
-<h2 id="方法">方法</h2>
-<p>签名与语义见 <a href="22-stl-string.html"><code>string</code> 参考的「流式 I/O」一节</a>（同一批方法的完整说明只写一处）。</p>
-<p>要点：</p>
-<ul><li>行语义与 <code>&gt;&gt;</code> 一致：<strong>去掉行尾换行</strong>，CRLF 的 <code>\r</code> 一并处理，孤立 <code>\r</code> 与文件末尾的 <code>\r</code> 保留为内容；</li><li>读一行、读全部都会按需增长目标串，调用者不必预估容量；</li><li>写入不产生中间拷贝：<code>w.write</code> 本就把字节拷进 writer 的缓冲；</li><li>挂载在 <code>io::istream</code> 与 <code>fs::ifstream</code> 上的 <code>&gt;&gt;</code> 重载同样由本模块提供，因此 <code>io::cin &gt;&gt; s</code> 与 <code>f &gt;&gt; s</code>（<code>s</code> 为 <code>string</code>）也要求引入本模块。</li></ul>
-<div class="pn"><a href="22-stl-string.html">← 标准库参考：`string`</a> <a href="24-std-io.html">标准库参考：`std::io` →</a></div></main>
+<main><div class="crumb">extC 手册 · §标准库参考：`prelude`</div>
+<h1 id="标准库参考-prelude">标准库参考：<code>prelude</code></h1>
+<p>prelude 是随每次编译自动前置的一小段 extC 源码（<code>stdlib/prelude.extc</code>），提供语言级设施： <code>slice</code> / <code>option</code> / <code>result</code> / <code>varArray</code> / <code>unit</code>，以及下表的随机数发生器。</p>
+<h2 id="pcg32-随机数"><code>pcg32</code>：随机数</h2>
+<table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>构造</td><td><code>pcg32::seeded(seed: u64) -&gt; pcg32</code></td><td>用种子构造</td></tr><tr><td>构造</td><td><code>pcg32::withStream(seed: u64, stream: u64) -&gt; pcg32</code></td><td>指定种子的同时指定流（同一序列可用于需要独立子序列的场合）</td></tr><tr><td>有界整数</td><td><code>pcg32::nextBounded(self: mut ref pcg32, bound: u64) -&gt; u64</code></td><td>返回 <code>[0, bound)</code> 内的均匀整数</td></tr><tr><td>浮点</td><td><code>pcg32::nextFloat(r: mut ref pcg32) -&gt; f64</code></td><td>返回 <code>[0, 1)</code> 内的浮点数</td></tr><tr><td>洗牌</td><td><code>pcg32::shuffleI32(r: mut ref pcg32, a: mut slice&lt;i32&gt;)</code></td><td>原地洗牌（Fisher–Yates）</td></tr></tbody></table>
+<h2 id="vararray-t-arena-底的动态数组"><code>varArray&lt;T&gt;</code>：arena 底的动态数组</h2>
+<table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>借出可写视图</td><td><code>varArray::asMutSlice(self: mut ref varArray&lt;T&gt;) -&gt; mut slice&lt;T&gt;</code></td><td><strong>零拷贝</strong>：视图指向该容器的存储</td></tr><tr><td>借出只读视图</td><td><code>varArray::asSlice(self: ref varArray&lt;T&gt;) -&gt; slice&lt;T&gt;</code></td><td>同上（只读）</td></tr></tbody></table>
+<p>两条规矩（实测行为，见「内部成员一览」之外的判据 <code>tests/stl/varArray_snapshot.extc</code> 与 <code>tests/stl/varArray_mutview_lost.extc</code>）：</p>
+<ol><li><strong>扩容即作废</strong>：<code>push</code> 触发扩容会换块，旧视图<strong>停在扩容前的快照</strong>上 —— 读到旧值、写进去会静默丢；</li><li><strong>视图可带出调用</strong>（缓冲由 home 机制放在调用者选的地方，比这次调用活得久），因此 <code>sort(v.asSlice())</code> 排的是<strong>真存储</strong>，这正是零拷贝存在的理由。</li></ol>
+<h2 id="pcg32-的状态"><code>pcg32</code> 的状态</h2>
+<table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>状态</td><td><code>pcg32.state: u64</code></td><td>发生器的内部状态；可取可写（存读档时直接存取），按约定属实现细节</td></tr></tbody></table>
+<div class="pn"><a href="26-stl-containers.html">← 标准库参考：容器的共同面</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
 q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
