@@ -1,0 +1,15 @@
+use std::io
+use stl::vector
+fn main() -> i32 {
+    var sum: i64 = 0
+    var r: i64 = 0
+    while r < i64(2000) {
+        var a = varArray<i64>::withCap(i64(4))
+        var i: i64 = 0
+        while i < i64(4096) { a.push(i)  i = i + i64(1) }
+        sum = sum + a.get(i64(4095))!
+        r = r + i64(1)
+    }
+    io::cout << "sum=" << sum << "\n"
+    return 0
+}

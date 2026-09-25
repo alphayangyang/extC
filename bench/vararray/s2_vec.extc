@@ -1,0 +1,13 @@
+use std::io
+use stl::vector
+fn main() -> i32 {
+    var sum: i64 = 0
+    var r: i64 = 0
+    while r < i64(2000000) {
+        var a = vector<i32>::withCap(i64(4))
+        sum = sum + a.len()
+        r = r + i64(1)
+    }
+    io::cout << "sum=" << sum << "\n"
+    return 0
+}
