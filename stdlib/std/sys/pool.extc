@@ -55,3 +55,10 @@ extern!("extc-runtime") fn extc_pool_bytes(rid: i64) -> i64
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_bytesLive() -> i64
     effects Addr=0 Cont=0
+
+/* 保留池：池的板块归还时先留一段（按尺寸分档，上限 8 MB），给下一次**不需要清零**的分配复用
+ * （只有池自己的簿记表走那条路）。它是"已经不在任何池名下、但也没还给 malloc"的字节。
+ * 判据用它证明复用真的发生了（`bytesLive` 归零而 `keepBytes` 不为零），
+ * 以及上限真的守着（超了就还给 malloc ⇒ keepBytes 不会无限涨）。 */
+extern!("extc-runtime") fn extc_pool_keep_bytes() -> i64
+    effects Addr=0 Cont=0

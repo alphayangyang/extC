@@ -1,0 +1,65 @@
+// 保留池（阶段 b）· 常设判据
+//
+// 池的板块归还时先留一段，给下一次**不需要清零**的分配复用。只有池自己的簿记表走那条路
+// （`poolSliceRaw`）—— 那里没有用户能读到未写过的槽，而 `take_raw` 拿到的块**立刻会被整片
+// 重写**，所以复用是安全的。
+//
+// 参数（都实测过，见 src/pools.c 里保留池那一段注释）：
+//   · 只收 4 KB .. 256 KB 的块：太小不值得留，太大留着会把高水位钉住
+//     （8 MB 预算 + 不留单块上限时，`zt_shrink_rss` 的峰值 RSS 从 2.4 MB 涨到 10.2 MB）；
+//   · 总预算 1 MB：超了就照旧还给 malloc。
+//
+// 判据四条：
+//   ① 复用真的发生：循环里反复建池 + 拿板块再丢，`bytesLive` 归零而 `keepBytes` 不为零；
+//   ③ 太大不留：要一块超过单块上限的板块，`keepBytes` 不被它撑大，且不超预算；
+//   ④ 不清零那条路照旧正确：复用来的簿记表让 `insert`/`contains`/`get` 全部正常。
+// expect: live=0 keep=1 len=3 v=7,8,9 capped=1
+use std::io
+use std::sys::pool as syspool
+use stl::pool
+
+fn main() -> i32 {
+    /* ① + ② 拿一块 128 KB（在保留区间内）反复建池、丢池 */
+    var r: i64 = 0
+    while r < i64(64) {
+        let rid = syspool::extc_pool_new(i64(-1))
+        var s: mut slice<i64> = poolSliceRaw<i64>(rid, i64(16384))
+        s[0] = i64(1)
+        syspool::extc_pool_drop(rid)
+        r = r + i64(1)
+    }
+    let liveNow = syspool::extc_pool_bytesLive()
+    let keepNow = syspool::extc_pool_keep_bytes()
+    var kept: i64 = i64(0)
+    if liveNow == i64(0) && keepNow > i64(0) { kept = i64(1) }
+    io::cout << "live=" << liveNow << " keep=" << kept
+
+    /* ④ 复用来的簿记表照旧好用：插三个、查三个，值都对 */
+    var p: pool<i32> = pool<i32>::withCap(i64(64))
+    let h0 = p.insert(i32(7))
+    let h1 = p.insert(i32(8))
+    let h2 = p.insert(i32(9))
+    var ok: i64 = i64(0)
+    if p.contains(h0) && p.contains(h1) && p.contains(h2) { ok = i64(1) }
+    io::cout << " len=" << p.len()
+    if ok == i64(1) {
+        var v0: i32 = p.get(h0) ?? i32(-1)
+        var v1: i32 = p.get(h1) ?? i32(-1)
+        var v2: i32 = p.get(h2) ?? i32(-1)
+        io::cout << " v=" << i64(v0) << "," << i64(v1) << "," << i64(v2)
+    } else {
+        io::cout << " v=BROKEN"
+    }
+
+    /* ③ 超过单块上限（256 KB）的块不该被留下 */
+    let before = syspool::extc_pool_keep_bytes()
+    let big = syspool::extc_pool_new(i64(-1))
+    var bs: mut slice<i64> = poolSliceRaw<i64>(big, i64(200000))
+    bs[0] = i64(1)
+    syspool::extc_pool_drop(big)
+    let after = syspool::extc_pool_keep_bytes()
+    var capped: i64 = i64(0)
+    if after == before && after <= (i64(1) << i64(20)) { capped = i64(1) }
+    io::cout << " capped=" << capped << "\n"
+    return 0
+}
