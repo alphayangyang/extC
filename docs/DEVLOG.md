@@ -8484,3 +8484,10 @@ arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free �
 途中把自己的 `map.extc` 写坏过一次：替换时锚点里同时含注释行与函数头，结果留下一行残缺的重复 `fn put` 头，
 编译器报「`fn` cannot appear inside a function body」—— 精确定位后删掉那一行恢复。教训：**替换的锚点越小越安全**，
 跨行的锚点要复查结果。
+
+同轮补记（第 27 轮）：`check.sh quick </dev/null` 跑完 —— **通过 26 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_map7.log`）。
+写侧（`[]=` / upsert）与它带的一致性用例一起过了总闸门。
+
+另：新增 `docs/topics/STL.md` —— STL 的**成员函数表**（按源码逐个 `fn` 抽出来的：概览矩阵 · 十个容器各自的
+公开面 · 内部 helper 折叠成一行 · 跨容器语义约定（`put` 返回值两套口径 · `[]`/`[]=` 独立 · clear/shrink/release
+三档）· 已知缺口 · 各容器验收落在哪个套件）。改面就要同步改它，这是仓库里的权威清单。
