@@ -57,16 +57,26 @@ else
     echo "  FAIL churn  ->  编不过"; fail=1
 fi
 
-echo "== rebuild 的旧列**不许**留在 arena（四列在自己的板块上）：增量 vs 一开始预留 =="
-# 判据：同一 1e6 条目、同一最终 cap（2,097,152）。四列用 `new`（arena）时，增量那一版
-# 会把每一代旧列留给 arena ⇒ 90,412 KB 对 69,036 KB（多 30%）。现在两者应当持平。
+echo "== rebuild 的旧列**不许**留着（四列在自己的板块上）：增量 vs 一开始预留 =="
+# 判据分两层。**第一层是精确字节账**（主判据）：两次跑完，这张表在自己池里占的字节必须在
+# 1 MB 以内相等 —— 同样的条目数、同样的最终 cap（2,097,152）、同样的列布局，差值只可能来自
+# "旧列没还"。一整代旧列的量级（1,048,576×17 = 17.8 MB）不可能藏在这 1 MB 里 ⇒ 有牙。
+#
+# 第二层是峰值 RSS（参考值，不再做判据）：它随"清不清零"漂移，同一份代码在
+# `poolSlice`（清零）下是 63,296 vs 69,056，在 `poolSliceRaw`（不清零）下是 63,296 vs 51,968 ——
+# 一个"增量 ≤ 预留×1.1"的判据在这两种情况下会给出相反的结论，所以它不能当判据用。
 if build_one grow-inc grow_rss && build_one grow-res grow_rss_reserved; then
+    bi=$(./build/grow-inc 0 | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+    br=$(./build/grow-res 0 | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
     gi=$(peak grow-inc 0); gr=$(peak grow-res 0)
-    if [ "$gi" -le $(( gr * 11 / 10 )) ]; then
-        echo "  ok   grow rss ->  增量 ${gi} KB vs 预留 ${gr} KB ⇒ 旧列没留下 ✓"
+    if [ -n "$bi" ] && [ -n "$br" ] && [ "$(( bi > br ? bi - br : br - bi ))" -le 1048576 ]; then
+        echo "  ok   grow      ->  增量 ${bi} B vs 预留 ${br} B ⇒ **逐字节相当**（旧列全还了）✓ · 峰值 RSS ${gi} / ${gr} KB（参考）"
     else
-        echo "  FAIL grow rss ->  增量 ${gi} KB 明显高于预留 ${gr} KB ⇒ 旧列又留在 arena 了 ✗"; fail=1
+        echo "  FAIL grow      ->  增量 ${bi} B vs 预留 ${br} B ⇒ 差了 $((${bi:-0} - ${br:-0})) B（一整代旧列还留在池里？）✗"; fail=1
     fi
+    # 绝对值那一层（"期末字节 = cap×17"）**不能用**：池里的字节是逐块累加的，不是 cap×17 ——
+    # 四列按需长、`bucketOfDense` 用 poolResize 换块、值池按已用涨 ⇒ cap×17 只是上界，
+    # 当等式用会误报。真正有牙的是上面那条"增量 ≡ 预留"：同一状态、两条路径，逐字节必须相等。
 else
     echo "  FAIL grow rss ->  编不过"; fail=1
 fi

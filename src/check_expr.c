@@ -263,7 +263,7 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
 static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
     TypeTable *tt = c->tt;
     const char *nm = e->u.gencall.name;
-    bool isTake    = strcmp(nm, "poolSlice") == 0;
+    bool isTake    = strcmp(nm, "poolSlice") == 0 || strcmp(nm, "poolSliceRaw") == 0;
     bool isResize  = strcmp(nm, "poolResize") == 0;
     size_t want    = isResize ? 3 : 2;
     if (e->u.gencall.args.len != want) {
@@ -1266,6 +1266,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The pool primitives share this path for the same reason `alloc` does: the
              * library needs memory the compiler has to name the type of. */
             bool isPoolPrim = strcmp(e->u.gencall.name, "poolSlice") == 0
+                           || strcmp(e->u.gencall.name, "poolSliceRaw") == 0
                            || strcmp(e->u.gencall.name, "poolResize") == 0
                            || strcmp(e->u.gencall.name, "poolGive") == 0;
             if (!isAlloc && !isPoolPrim) {

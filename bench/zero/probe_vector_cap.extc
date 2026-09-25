@@ -1,0 +1,17 @@
+// 量：用户可见的 vector 预分配（plate 上的一块，**必须清零**）每轮多少钱。
+// 2000 轮 × cap=100000 的 i32 缓冲 = 2000 × 400 KB = 800 MB 的 memset。
+use std::io
+use stl::vector
+
+fn main() -> i32 {
+    var r: i64 = 0
+    var acc: i64 = 0
+    while r < i64(2000) {
+        var v = vector<i32>::withCap(i64(100000))
+        v.push(i32(1))
+        acc = acc + i64(v.len())
+        r = r + i64(1)
+    }
+    io::cout << "acc=" << acc << "\n"
+    return 0
+}

@@ -124,6 +124,18 @@ struct pool<T> {
     @inline
     fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
 
+    /* 槽是不是**空闲**的：`low == 0`（刚清零、从未用过）或 `low > cap`（空洞链上的编码）。
+     *
+     * 把 0 也算空闲是这一条的关键：`poolSlice` 拿到的板块本来就清零 ⇒ **全新的表天然全空闲**，
+     * `withCap` 不必再逐槽写一遍（O(cap) → O(1)），`grow` 新长出来那一段（`poolResize`
+     * 已经清零）也不必写。这就是 §7.3 那句"cap 个槽位一个字节都不用写"，用编码拿到。
+     * 活槽的 `low = 稠密下标 + 1 ∈ [1, n]`、n ≤ cap ⇒ 既不会是 0，也不会 > cap。 */
+    @inline
+    fn pFree(self: ref pool<T>, e: i64) -> bool {
+        let lo = pool<T>::pLow(e)
+        return lo == i64(0) || lo > self.cap
+    }
+
     /* An empty pool that can hold `n` values before it has to grow. */
     fn withCap(n: i64) -> pool<T> { return pool<T>::withParent(i64(-1), n) }
 
@@ -137,9 +149,12 @@ struct pool<T> {
         var c: i64 = n
         if c < i64(8) { c = i64(8) }
         var p: pool<T> = {
-            vals:   poolSlice<T>(rp, c),
-            slots:  poolSlice<i32>(rp, c),
-            ent:    poolSlice<i64>(rp, c),
+            /* 这三块是**池自己的簿记**（`vals` 里未写过的槽在 `pFree` 判据下是空闲的，
+             * 没人能读到未写的值）⇒ 用不清零那条路：一张新表天然全空闲，
+             * 连页都不必碰。实测"每轮建一个 cap=10 万的池"2000 轮：1.08 s → 见 DEVLOG。 */
+            vals:   poolSliceRaw<T>(rp, c),
+            slots:  poolSliceRaw<i32>(rp, c),
+            ent:    poolSliceRaw<i64>(rp, c),
             pid:    rp,
             pidGen: rpg,
             epoch:  i64(0),
@@ -148,17 +163,9 @@ struct pool<T> {
             n:      i64(0),
             cap:    c,
         }
-        /* First pass only: an all-free `ent` at generation 0, low half > cap. After this
-         * the table is never re-initialized wholesale -- `clear` flips the epoch instead.
-         * The `next` encoding matches the hole chain, which is why nothing here changes. */
-        var i: i64 = 0
-        while i < c {
-            let nxt = i + i64(1)
-            var low: i64 = nxt + c + i64(2)
-            if nxt >= c { low = i64(-1) + c + i64(2) }
-            p.ent[i] = pool<T>::pPack(i64(0), low)
-            i = i + i64(1)
-        }
+        /* **不再逐槽初始化**：板块是清零的，而 `pFree` 把 `low == 0` 也认作空闲 ⇒ 全新的表
+         * 天然全空闲。（这里曾经写一整圈 `ent[i] = pPack(0, low)`：容量 10 万时每次构造写
+         * 10 万次；实测 2000 轮 1.09 s。） */
         return p
     }
 
@@ -180,7 +187,7 @@ struct pool<T> {
         let s = i64(h.slot)
         if s < i64(0) || s >= self.cap { return false }
         let e = self.ent[s]
-        if pool<T>::pLow(e) > self.cap { return false }        /* free slot */
+        if self.pFree(e) { return false }                     /* 空闲槽（含从未用过的 0）*/
         return pool<T>::pGen(e) == i64(h.gen)
     }
 
@@ -304,6 +311,14 @@ struct pool<T> {
     @inline
     fn capacity(self: ref pool<T>) -> i64 { return self.cap }
 
+    /* 这一只池**当下**持有的板块字节数（走运行期账本，不是这个值里的字段）。
+     * 判据用它把「旧的几代列到底还没还」量成**精确字节**（tests/hashmap/run.sh）：
+     * 还清了 ⇒ 只等于当下这几列；留了一代 ⇒ 立刻大一整代的量。 */
+    fn bytesOf(self: ref pool<T>) -> i64 {
+        if self.pid < i64(0) { return i64(0) }
+        return syspool::extc_pool_bytes(self.pid)
+    }
+
     /* 缩容：把容量降到"刚好装下活数据"（下限 8），把高水位让出去。
      *
      * 两点必须保住：
@@ -332,7 +347,7 @@ struct pool<T> {
         if used > ncap { used = ncap }
         i = used - i64(1)
         while i >= i64(0) {
-            if pool<T>::pLow(ne[i]) > self.cap {
+            if self.pFree(ne[i]) {
                 if prev < i64(0) {
                     head = i32(i)
                 } else {
@@ -440,15 +455,9 @@ struct pool<T> {
         self.vals  = poolResize<T>(self.pid, self.vals, ncap)
         self.slots = poolResize<i32>(self.pid, self.slots, ncap)
         self.ent   = poolResize<i64>(self.pid, self.ent, ncap)
-        var ne: mut slice<i64> = self.ent
-        var i: i64 = self.cap
-        /* The new slots are all "never used this epoch", so they need no chaining: they are
-         * reached by the bump cursor, which still points at `self.cap`. `cursor` and the hole
-         * chain are carried over untouched -- `grow` must not lose a hole. The `low` written
-         * here is never read (`insert` overwrites the whole word when it bumps onto one), it
-         * is only there so no slot of the new table is uninitialized. */
-        i = self.cap
-        while i < ncap { ne[i] = pool<T>::pPack(i64(0), i + ncap + i64(2))  i = i + i64(1) }
+        /* 新长出来的那一段由 `poolResize` 清零 ⇒ 已经是"全空闲"（`pFree` 认 0），
+         * 这里**不必再写**（原来是 O(新增槽位)）。`cursor` 与空洞链原样带过去，
+         * `grow` 不许丢洞。 */
         self.cap = ncap
     }
 }

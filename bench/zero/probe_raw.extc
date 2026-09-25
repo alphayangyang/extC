@@ -1,0 +1,18 @@
+// 量三条分配路径每轮的价格（同一形状：拿 400 KB、只写一个元素、丢掉）。20000 轮。
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < i64(20000) {
+        let rid = syspool::extc_pool_new(i64(-1))
+        var s: mut slice<i32> = poolSliceRaw<i32>(rid, i64(100000))
+        s[0] = i32(1)
+        acc = acc + i64(s[0])
+        syspool::extc_pool_drop(rid)
+        r = r + i64(1)
+    }
+    io::cout << "raw acc=" << acc << "\n"
+    return 0
+}

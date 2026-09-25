@@ -87,6 +87,13 @@ struct hashMap<K, V> {
 
     fn len(self: ref hashMap<K, V>) -> i64 { return self.n }
     fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
+    /* 本表运行期池的下标（只读读数）：容量与字节账的判据要指到**这一只**池上。 */
+    fn pidOf(self: ref hashMap<K, V>) -> i64 { return self.pid }
+
+    /* 这张表**当下**在它自己池里占的字节（四列 + 值池）。
+     * 判据：`rebuild` 把旧列当场还了 ⇒ 这个数只随当前 `cap` 走，与重建过多少次无关；
+     * 若旧列还留着，它会大一整代（见 tests/hashmap/run.sh）。 */
+    fn bytesOf(self: ref hashMap<K, V>) -> i64 { return syspool::extc_pool_bytes(self.pid) }
 
     /* Find the bucket holding `k`: live bucket index, or -1 when absent. */
     fn find(self: ref hashMap<K, V>, k: K) -> i64 {
@@ -296,6 +303,8 @@ struct hashMapI64<V> {
 
     fn len(self: ref hashMapI64<V>) -> i64 { return self.m.len() }
     fn capOf(self: ref hashMapI64<V>) -> i64 { return self.m.capOf() }
+    fn bytesOf(self: ref hashMapI64<V>) -> i64 { return self.m.bytesOf() }
+    fn pidOf(self: ref hashMapI64<V>) -> i64 { return self.m.pidOf() }
 
     fn [](self: ref hashMapI64<V>, k: i64) -> ?V { return self.get(k) }
 

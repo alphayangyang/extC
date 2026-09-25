@@ -2055,7 +2055,8 @@ static const char *genExprInner(CG *g, Expr *e) {
              * #85). `poolGive` is how `grow` hands the replaced buffer back, so a doubling
              * container stops leaving every old generation behind. */
             const char *gcName = e->u.gencall.name;
-            if (strcmp(gcName, "poolSlice") == 0 || strcmp(gcName, "poolResize") == 0
+            if (strcmp(gcName, "poolSlice") == 0 || strcmp(gcName, "poolSliceRaw") == 0
+                || strcmp(gcName, "poolResize") == 0
                 || strcmp(gcName, "poolGive") == 0) {
                 const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
                 if (strcmp(gcName, "poolGive") == 0) {
@@ -2084,6 +2085,12 @@ static const char *genExprInner(CG *g, Expr *e) {
                         cType(g, st), tn, rid,
                         genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)), n, tn, n);
                 }
+                return arenaPrintf(g->arena,
+                    "(%s){ .data = (%s *)extc_pool_%s((int64_t)(%s),"
+                    " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",
+                    cType(g, st), tn,
+                    strcmp(gcName, "poolSliceRaw") == 0 ? "take_raw" : "take",
+                    rid, n, tn, n);
                 return arenaPrintf(g->arena,
                     "(%s){ .data = (%s *)extc_pool_take((int64_t)(%s),"
                     " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",

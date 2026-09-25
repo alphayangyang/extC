@@ -1,0 +1,16 @@
+// 对照：同一形状，但用 stl::pool 的 withCap（簿记三块走不清零路径）。
+use std::io
+use stl::pool
+
+fn main() -> i32 {
+    var r: i64 = 0
+    var acc: i64 = 0
+    while r < i64(2000) {
+        var p: pool<i32> = pool<i32>::withCap(i64(100000))
+        let h = p.insert(i32(1))
+        if p.contains(h) { acc = acc + i64(1) }
+        r = r + i64(1)
+    }
+    io::cout << "acc=" << acc << "\n"
+    return 0
+}

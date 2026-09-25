@@ -1,0 +1,17 @@
+// 第三条：arena 上的 new（语言承诺「新分配读作 0」的那条路）。同样 400 KB × 20000 轮。
+// 注意 arena 只在整个地方退出时才回收 ⇒ 这里量的是**地址空间/内存增长**的代价，
+// 所以每轮把切片长度收成 0 再看峰值 RSS。
+use std::io
+
+fn main() -> i32 {
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < i64(2000) {
+        var a: mut ref [100000]i32 = new [100000]i32
+        a[0] = i32(1)
+        acc = acc + i64(a[0])
+        r = r + i64(1)
+    }
+    io::cout << "arena acc=" << acc << "\n"
+    return 0
+}

@@ -1,5 +1,7 @@
 // 同一个形状，但一开始就预留到 1e6 ⇒ 一次 rebuild 都不发生（对照组的"下界"）
-// expect: n=1000000 cap=2097152
+// expect: n=1000000 cap=2097152 bytes=35651584
+// `bytes` 与增量那一版必须**逐字节相等**：同样的条目数、同样的最终 cap、同样的列布局
+// ⇒ 增量版长上来的路上每一代旧列都还了（见 run.sh 的判据与 grow_rss.extc 的注释）。
 use std::io
 use stl::hashMap
 
@@ -10,6 +12,6 @@ fn main() -> i32 {
         hm.put(i, i32(i))
         i = i + i64(1)
     }
-    io::cout << "n=" << hm.len() << " cap=" << hm.capOf() << "\n"
+    io::cout << "n=" << hm.len() << " cap=" << hm.capOf() << " bytes=" << hm.bytesOf() << "\n"
     return 0
 }

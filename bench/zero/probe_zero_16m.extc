@@ -1,0 +1,18 @@
+// 对照：同一个形状走清零那扇门（poolSlice）⇒ 差就是"32 MB 的清零"。
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < i64(200) {
+        let rid = syspool::extc_pool_new(i64(-1))
+        var s: mut slice<i64> = poolSlice<i64>(rid, i64(4000000))
+        s[0] = i64(1)
+        acc = acc + s[i64(3999999)]
+        syspool::extc_pool_drop(rid)
+        r = r + i64(1)
+    }
+    io::cout << "acc=" << acc << "\n"
+    return 0
+}
