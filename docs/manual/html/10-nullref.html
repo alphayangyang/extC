@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7.6 可空引用 `?ref T`（定案 ㊻） · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li class="cur"><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §7.6</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="09-ref.html">← 7.5 引用：<code>ref</code> 是表达式</a> · [7.7 分配：<code>new</code>（<code>new T</code> / <code>new [N]T</code> / <code>new T[n]</code>） →](11-alloc.md)</p>
+<hr>
+<h1 id="7-6-可空引用-ref-t-定案-㊻">7.6 可空引用 <code>?ref T</code>（定案 ㊻）</h1>
+<p><code>ref T</code> <strong>永远非空</strong> —— 那正是它的意义。所以「可能没有」需要一个<strong>单独的类型</strong>：</p>
+<table><thead><tr><th>写法</th><th>含义</th></tr></thead><tbody><tr><td><code>?ref T</code></td><td>可空的<strong>只读</strong>引用</td></tr><tr><td><code>mut ?ref T</code></td><td>可空的<strong>可写</strong>引用</td></tr><tr><td><code>null</code></td><td><code>?ref T</code> 的<strong>零值</strong></td></tr><tr><td><code>?T</code>（T 不是 ref）</td><td><code>option&lt;T&gt;</code> 的语法糖：<code>?i64</code> 就是 <code>option&lt;i64&gt;</code></td></tr></tbody></table>
+<p><strong>为什么需要它</strong>：链表/树的 <code>next</code> 得能表示"没有"。</p>
+<pre class="lang-extc"><code><span class="k">struct</span> node {
+    value: <span class="t">i64</span>
+    next: ?<span class="k">ref</span> node          <span class="c">// ← 有零值（null）⇒ 下面这些都合法</span>
+}
+
+<span class="k">var</span> n: node                  <span class="c">// 不需要初始化式</span>
+<span class="k">var</span> slots: [<span class="n">16</span>]?<span class="k">ref</span> node     <span class="c">// 哈希表的空槽位</span>
+
+<span class="k">fn</span> <span class="f">find</span>(head: ?<span class="k">ref</span> node, want: <span class="t">i64</span>) -&gt; ?<span class="k">ref</span> node {
+    <span class="k">var</span> cur: ?<span class="k">ref</span> node = head
+    <span class="k">while</span> cur != null {
+        <span class="k">if</span> cur.value == want { <span class="k">return</span> cur }
+        cur = cur.next
+    }
+    <span class="k">return</span> null
+}</code></pre>
+<p><strong>规则</strong></p>
+<ul><li><strong>不能直接解</strong>：<code>p.value</code> / <code>*p</code> / <code>p.method()</code> 全是<strong>编译错误</strong>（P′：不能证明的，语法上必须看得见）。</li><li>必须先<strong>证明非空</strong> —— 能证明的写法就这五种：</li></ul>
+<table><thead><tr><th>写法</th><th>哪里被证明</th></tr></thead><tbody><tr><td><code>if p != null { ... }</code></td><td>then 分支</td></tr><tr><td><code>if p == null { ... } else { ... }</code></td><td>else 分支</td></tr><tr><td><code>if p == null { return }</code>（护栏形态）</td><td>后面<strong>整个作用域</strong></td></tr><tr><td><code>while cur != null { ... }</code></td><td>循环体</td></tr><tr><td><code>p != null &amp;&amp; p.value == 1</code></td><td><code>&amp;&amp;</code> <strong>右边</strong>（`\</td><td>\</td><td><code> 右边认的是 </code>p == null` 的反面）</td></tr></tbody></table>
+<ul><li>证明之后 <strong>一行运行时检查都不生成</strong>：上面 <code>find</code> 生成的 C 就是 <code>while (cur != ((void *)0)) { ... }</code>（P：编译期能证明的，运行时不留痕迹）</li><li><strong>收窄只认绑定名</strong>，不认 <code>p.next</code> 这种<strong>路径</strong>：链上往下走就绑一个名字 —— <code>var nxt: ?ref node = p.next</code> 然后 <code>if nxt != null { ... nxt.value ... }</code> （显式、零开销，而且不用去想别名问题。）</li><li>给可空引用赋 <code>null</code> 或换指向 ⇒ 之前的证明<strong>作废</strong>（循环里下一轮会重新证明）。</li><li><code>?ref T</code> 不能当 <code>ref T</code> 用（<strong>没有</strong>别的转换办法，除非你已经证明过）；反过来永远可以。</li><li><code>ref T</code> 跟 <code>null</code> 比是<strong>编译错误</strong>（它不可能为空，比了就是写错了）。</li><li><strong><code>p!</code></strong> = "我签字，我知道它非空" ⇒ 给我 <code>ref T</code>，<strong>零成本</strong>（C 里就是那个指针）</li><li><strong><code>p ?? q</code></strong> = "是 null 就换成 q" ⇒ 结果还是 <code>?ref T</code></li></ul>
+<p><strong><code>??</code> 的位置规则</strong>（就两条，都是"临时变量吐不出来"的地方）：</p>
+<table><thead><tr><th>位置</th><th>能写吗</th></tr></thead><tbody><tr><td><code>let</code> / 赋值 / <code>return</code> / 实参 / <strong><code>if</code> 条件</strong></td><td>主体是<strong>调用</strong>也行 —— 编译器引一个临时变量，<strong>只算一次</strong></td></tr><tr><td><strong><code>while</code> 条件</strong></td><td>报错 —— 临时变量会吐在循环<strong>外面</strong> ⇒ 变成"进循环前算一次"而不是每轮算，<strong>语义就错了</strong> ⇒ 写成 <code>while true { ... }</code> + <code>break</code></td></tr><tr><td>全局初始化式</td><td>报错 —— 但<strong>不是因为 <code>??</code></strong>：全局初始化式<strong>本来就必须是常量</strong>（C 的静态初始化），<code>get()</code> 这种调用在那里本来就不许写</td></tr></tbody></table>
+<p><strong>求值顺序</strong>：extC 跟 C 一样<strong>不承诺</strong>一条语句内各子表达式的求值顺序。 不过 <code>??</code> 需要临时变量时，那部分会<strong>先算</strong>（所以 <code>g() + (h() ?? 0)</code> 里 <code>h()</code> 先跑）。 要确定顺序就一行行写 —— 显式（这条记在 <code>PLAN.md</code> #22：将来可以收紧成"前面有副作用就报错"） - <code>null</code> 的类型<strong>只能从上下文来</strong>（<code>var p: ?ref node = null</code>、参数/返回类型、 <code>p.next = null</code>、<code>f(null)</code>）—— 上下文不清楚就报错，<strong>绝不猜</strong>。</p>
+<p>生成 C 里 <code>?ref T</code> 就是一个普通指针（空指针 = <code>null</code>）—— <strong>没有 tag、没有包装、零成本</strong>。</p>
+<p>完整可运行的例子见 <code>examples/nullable-ref.extc</code>。</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="09-ref.html">← 7.5 引用：<code>ref</code> 是表达式</a> · [7.7 分配：<code>new</code>（<code>new T</code> / <code>new [N]T</code> / <code>new T[n]</code>） →](11-alloc.md)</p>
+<div class="pn"><a href="09-ref.html">← 7.5 引用：`ref` 是表达式</a> <a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`） →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

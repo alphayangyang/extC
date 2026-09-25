@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>0.5 内存安全：承诺 × 现状 · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li class="cur"><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §0.5</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="00-quickstart.html">← 0. 三分钟上手</a> · <a href="02-program.html">1. 程序结构 →</a></p>
+<hr>
+<h1 id="0-5-内存安全-承诺-现状">0.5 内存安全：承诺 × 现状</h1>
+<blockquote><strong>这一章回答一个问题：extC 到底承诺了什么，今天实现了多少。</strong> 每条都标了「实测状态」，不是设计愿望。</blockquote>
+<h3 id="三条前提-一开始就定的">三条前提（一开始就定的）</h3>
+<table><thead><tr><th>#</th><th>前提</th><th>现在</th></tr></thead><tbody><tr><td><strong>G1</strong></td><td><strong>内存自动回收</strong> —— 用户永不写 <code>malloc</code> / <code>free</code> / <code>close</code></td><td>语言里<strong>连 <code>malloc</code> 都没有</strong>（生成的 C 里出现 0 次）</td></tr><tr><td><strong>G2</strong></td><td><strong>第一个真实用户是五子棋</strong>（不是自举）</td><td>棋盘/五连判定/<code>result</code> 都能写</td></tr><tr><td><strong>G3</strong></td><td>能自举</td><td>🔸 <strong>修正</strong>：主人 2026-09-18 说「不一定完全自举」⇒ 降级成<strong>可选的验证手段</strong></td></tr></tbody></table>
+<h3 id="一条原则">一条原则</h3>
+<blockquote><strong>P：凡是编译期能证明的，运行时不留痕迹。</strong></blockquote>
+<p>它禁的是<strong>隐藏的机制</strong>（GC / 异常 / 运行时元数据 / 隐藏分配 / 运行时类型标签）， <strong>不是数据拷贝</strong>（值语义的拷贝是写在类型上的、看得见的）。</p>
+<blockquote><strong>P′（同一句话的另一面）：不能证明的，语法上必须看得见。</strong></blockquote>
+<h3 id="内存安全的九条承诺">内存安全的九条承诺</h3>
+<table><thead><tr><th>#</th><th>承诺</th><th>状态</th><th>说明</th></tr></thead><tbody><tr><td>1</td><td><strong>无 GC、无引用计数</strong></td><td></td><td>从来就没有（运行时零分配）</td></tr><tr><td>2</td><td><strong>无异常、无栈展开</strong></td><td></td><td>失败归 <code>result</code>，<code>?</code> 展开成三句语句</td></tr><tr><td>3</td><td><strong>未初始化 UB 消失</strong></td><td></td><td>默认零初始化：<code>var b: board</code> 自动清零</td></tr><tr><td>4</td><td><strong><code>ref</code> 不可为空</strong></td><td></td><td>没有 <code>null</code>；<code>ref</code> 也没有零值</td></tr><tr><td>5</td><td><strong>越界 = trap 带 extC 位置</strong></td><td></td><td><code>a[i]</code> 越界 → <code>trap: index 7 out of range (length 3)</code> + 文件行号</td></tr><tr><td>6</td><td><strong>切片越界</strong></td><td></td><td>能证明的<strong>编译期报错</strong>，不能证明的运行时 trap 带位置</td></tr><tr><td>7</td><td><strong>只读 / 可写看得见</strong></td><td></td><td><code>ref T</code> / <code>mut ref T</code>、<code>slice&lt;T&gt;</code> / <code>mut slice&lt;T&gt;</code>（见 §3）</td></tr><tr><td>8</td><td><strong>算术无 UB</strong></td><td><strong>部分</strong></td><td>溢出用 <code>-fwrapv</code> 兜成确定行为；<strong>除零崩了没位置</strong>、<strong>移位超宽静默错</strong>（待补）</td></tr><tr><td>9</td><td><strong>引用不能活得比被指对象长</strong>（逃逸检查）</td><td></td><td>词法深度 <code>depth(r) ≥ depth(v)</code>；参数 = 0、函数体 = 1、每层块 +1。<strong>比两个整数，不写生命周期</strong></td></tr></tbody></table>
+<h3 id="逃逸检查-唯一引用规则">逃逸检查：唯一引用规则</h3>
+<blockquote><strong>若引用 <code>r</code> 指向值 <code>v</code>，则 <code>depth(r) ≥ depth(v)</code>。</strong> 人话：<strong>引用不能活得比被指对象长。</strong></blockquote>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">bad</span>() -&gt; <span class="t">slice</span>&lt;<span class="t">i32</span>&gt; {
+    <span class="k">var</span> a: [<span class="n">8</span>]<span class="t">i32</span> = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>, <span class="n">4</span>, <span class="n">5</span>, <span class="n">6</span>, <span class="n">7</span>, <span class="n">8</span>]
+    <span class="k">return</span> a[..]        <span class="c">// error: this return value would hold a reference to a</span>
+}                       <span class="c">//   local variable that dies first (depth 1 > depth 0)</span></code></pre>
+<p><strong>合法的三种写法</strong>（视图/引用照样好用）：</p>
+<table><thead><tr><th>写法</th><th>为什么可以</th></tr></thead><tbody><tr><td><code>fn rowView(b: ref board, y: i32) -&gt; slice&lt;i32&gt; { return b.cell[y][0..4] }</code></td><td>借的是<strong>参数</strong>（深度 0）⇒ 活得比函数长</td></tr><tr><td><code>fn copyRow(...) -&gt; [4]i32</code></td><td>按值返回 ⇒ 拷贝，不带引用</td></tr><tr><td>局部视图只在函数内用</td><td>同深度 ⇒ 一起生一起死</td></tr></tbody></table>
+<p><strong>深度会递归地看进 struct/数组</strong>：<code>return holder { s: a[..] }</code> 同样被拦住。</p>
+<p><strong>以前故意不查的那条，现在查了</strong>：<strong>把引用传进函数、函数把它存起来</strong>。 这条曾经是欠账（「需要引用的传染性分析，比深度模型贵得多」）—— <strong>现在做成了两条便宜规则，都不需要传染性分析</strong>：</p>
+<table><thead><tr><th>#</th><th>规则</th><th>拦住什么</th></tr></thead><tbody><tr><td><strong>A</strong></td><td><strong>函数调用的引用深度 = <code>max(所有实参的深度)</code></strong></td><td><code>return identity(ref x)</code> —— 转发把信息丢了 ⇒ 放行 ⇒ 实测打印 <code>0</code>（悬垂）</td></tr><tr><td><strong>B</strong></td><td><strong>借来的值不能存进 <code>placeDepth == 0</code> 的地方</strong></td><td><code>fn stash(s: slice&lt;u8&gt;) { G = s }</code> —— 参数把「借来的」洗成了「自己的」</td></tr></tbody></table>
+<p><strong>A 的一句话证明</strong>：被调函数<strong>能返回的引用只有两种来源</strong> —— 它自己的全局/静态（深度 0），或者<strong>它的实参</strong>（深度 ≤ <code>max(实参)</code>）。 它返回不了自己的局部（那条规则单独就挡着）⇒ <code>max(实参)</code> 是<strong>精确上界</strong></p>
+<p><strong>B 的判据</strong>：<code>exprBorrowed</code> —— <strong>参数派生</strong>和<strong>调用结果</strong>是「借来的」； <strong>全局</strong>和<strong>字面量</strong>不是（静态的，谁都存得下）</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">identity</span>(r: <span class="k">ref</span> <span class="t">i32</span>) -&gt; <span class="k">ref</span> <span class="t">i32</span> { <span class="k">return</span> r }        <span class="c">// 转发本身合法</span>
+<span class="k">fn</span> <span class="f">bad</span>() -&gt; <span class="k">ref</span> <span class="t">i32</span> {
+    <span class="k">var</span> x: <span class="t">i32</span> = <span class="n">5</span>
+    <span class="k">return</span> <span class="f">identity</span>(<span class="k">ref</span> x)   <span class="c">// borrowed from depth 1, but this can only hold up to depth 0</span>
+}
+<span class="k">var</span> G: <span class="t">slice</span>&lt;<span class="t">u8</span>&gt; = <span class="c">"x"</span>
+<span class="k">fn</span> <span class="f">stash</span>(s: <span class="t">slice</span>&lt;<span class="t">u8</span>&gt;) { G = s }   <span class="c">// cannot store a borrowed value into something that outlives this call</span></code></pre>
+<p><strong>还有一条</strong>：<code>s = a[1..3]</code>（<strong>整体赋值给视图</strong>）= 换绑那两个词，</p>
+<blockquote><strong><code>let</code> 是给"已有的别名"降级的，不是"造一个不可变对象"</strong> <code>let x = new T</code> 会拿到一条只读引用，而只读引用<strong>提权不回来</strong>（<code>ref *x</code> / 传进 <code>mut ref</code> 参数 / <code>x.f = v</code> 全被挡）⇒ 这块存储<strong>谁也写不进去、永远是零</strong> ⇒ 编译器给<strong>警告</strong>（不拦）： 想写就用 <code>var</code>；想要"只读视图"就 <code>var w = new T</code> + <code>let r = w</code></blockquote>
+<p><strong>不是</strong>「透过只读视图写元素」⇒ 合法。它和上面两条<strong>必须一起修</strong> —— 这条以前误报，而<strong>误报让上面两条的反例写不出来</strong>（谁来触发洞的代码自己都编不过）</p>
+<blockquote>深度模型<strong>不是为今天设计的，是为内存模型设计的</strong>： 加上 arena（深度 0 的存储）之后，<code>g.s = a[..]</code> 这类照样被同一条规则挡住</blockquote>
+<h3 id="还剩下的-算术-ub-三处">还剩下的：算术 UB 三处</h3>
+<table><thead><tr><th>情况</th><th>现状</th></tr></thead><tbody><tr><td>有符号溢出</td><td><code>-fwrapv</code> 兜成确定的绕回</td></tr><tr><td><strong>除零</strong></td><td>崩（SIGFPE）但<strong>没有 extC 位置</strong></td></tr><tr><td><strong>移位 ≥ 位宽</strong></td><td><strong>静默算错</strong>（只有 gcc warning 漏出来）</td></tr></tbody></table>
+<p>这两条是<strong>从 C 继承来的</strong>（编译到 C 就意味着要负责把 C 的 UB 一处一处堵上）， 堵法都不贵，见 <a href="../docs/topics/BOOTSTRAP.html"><code>BOOTSTRAP.md</code></a> §6。</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="00-quickstart.html">← 0. 三分钟上手</a> · <a href="02-program.html">1. 程序结构 →</a></p>
+<div class="pn"><a href="00-quickstart.html">← 0. 三分钟上手</a> <a href="02-program.html">1. 程序结构 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

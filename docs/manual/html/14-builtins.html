@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. 内建函数 · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li class="cur"><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §8.</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="13-vararray.html">← 7.9 动态数组 <code>varArray&lt;T&gt;</code>（对标 <code>std::vector</code> 的<strong>基础部分</strong>）</a> · <a href="15-errors.html">9. 错误信息 →</a></p>
+<hr>
+<h1 id="8-内建函数">8. 内建函数</h1>
+<h3 id="print-println-已弃置-2026-09-26-改走-io-cout">~~<code>print</code> / <code>println</code>~~ ⇒ <strong>已弃置</strong>（2026-09-26）：改走 <code>io::cout</code></h3>
+<pre class="lang-extc"><code><span class="k">use</span> std::io
+io::cout &lt;&lt; <span class="c">"sum = "</span> &lt;&lt; <span class="f">add</span>(x, y) &lt;&lt; <span class="c">"\n"</span></code></pre>
+<p><code>io::cout</code> 是<strong>唯一的控制台出口</strong>：<code>&lt;&lt;</code> 按右操作数的<strong>精确类型</strong>选重载（<code>i64</code> / <code>f64</code> / <code>bool</code> / <code>slice&lt;u8&gt;</code>，一个操作数一次），可以链着写 它是<strong>缓冲</strong>的（运行期的 <code>extc_cout_*</code>，<code>main</code> 返回前、以及 <code>atexit</code> 兜底时冲出去），格式化在<strong>库里</strong> —— f64 走运行期那两行 <code>snprintf("%g")</code>，与老 <code>print</code> 用的<strong>同一个格式</strong> ⇒ 搬家不改输出一个字节</p>
+<p><code>print</code> / <code>println</code> <strong>还能用，但每次调用都吐一条弃置警告</strong>（<code>-w</code> 能关）：</p>
+<pre class="lang-extc"><code>x.extc:<span class="n">3</span>:<span class="n">1</span>: warning: `println` is deprecated
+  note: `io::cout` is the one console path -- `<span class="k">use</span> std::io`, then `io::cout &lt;&lt; x`
+        (`<span class="f">println</span>(x)` is `io::cout &lt;&lt; x &lt;&lt; <span class="c">"\n"</span>`)</code></pre>
+<p><strong>为什么弃置</strong>：它是<strong>按名字派发</strong>的内建，写的是 C 的 stdio —— 那是<strong>第二个缓冲</strong>， 跟 <code>io::cout</code> 的顺序没法保证。实测两条：程序最后一句是 <code>io::cout &lt;&lt; "x"</code> 时， <code>x</code> 会排到 <code>println</code> 写过的东西<strong>后面</strong>；<code>main</code> 自然落空（没有 <code>return</code>）时， 那个尾巴<strong>整个丢掉</strong>（2026-09-26 修：<code>atexit</code> 兜底）。 搬家的账在 <code>PLAN.md</code> #67：实测 392 个文件 / 938 处，还缺 <code>&lt;&lt;</code> 的 <code>i32</code> 与结构化类型重载</p>
+<p>老写法（<strong>仅供对照</strong>）：格式由编译器按静态类型选，用户永远不写 <code>"%d"</code>，支持所有整数、 浮点、<code>bool</code>、<strong>枚举</strong>、<strong>struct</strong>（递归）、<strong><code>slice&lt;u8&gt;</code>（按文本）</strong>：</p>
+<pre class="lang-extc"><code><span class="f">println</span>(<span class="n">42</span>)         <span class="c">// 42</span>
+<span class="f">println</span>(<span class="n">3</span>.<span class="n">14</span>)       <span class="c">// 3.14</span>
+<span class="f">println</span>(<span class="k">true</span>)       <span class="c">// true</span>
+<span class="f">println</span>(<span class="c">"hi"</span>)       <span class="c">// hi</span>
+<span class="f">println</span>(status.warn)<span class="c">// warn   ← 枚举自动有名字文本（定案 11）</span></code></pre>
+<blockquote><strong>格式串 <code>{}</code> 已定案要加</strong>（编译期展开，不是运行时解析），但 week-0 还没实现。见第 10 节。</blockquote>
+<h3 id="std-fs-文件-程序拥有-句柄-定案-79"><code>std::fs</code> —— 文件：<strong>程序拥有</strong>句柄（定案 79）</h3>
+<pre class="lang-extc"><code><span class="k">use</span> std::fs
+<span class="k">use</span> std::io
+
+<span class="k">fn</span> <span class="f">copy</span>(src: <span class="t">slice</span>&lt;<span class="t">u8</span>&gt;, dst: <span class="t">slice</span>&lt;<span class="t">u8</span>&gt;) -&gt; <span class="t">result</span>&lt;<span class="t">unit</span>, io::ioError&gt; {
+    <span class="k">var</span> inp = fs::<span class="f">openRead</span>(src)?          <span class="c">// 读型：看一眼名字就知道是读还是写（定案 77）</span>
+    <span class="k">var</span> out = fs::<span class="f">openWrite</span>(dst)?         <span class="c">// 写型（截断）；openAppend 保留原内容</span>
+    <span class="k">var</span> buf: [<span class="n">65536</span>]<span class="t">u8</span>
+    <span class="k">let</span> n = inp.<span class="f">readAll</span>(buf[..])?
+    out.<span class="f">put</span>(buf[<span class="n">0</span>..n])?
+    inp.<span class="f">close</span>()?                          <span class="c">// 关：也是可检查的提交点</span>
+    out.<span class="f">close</span>()?                          <span class="c">//    延迟写错误在这里冒出来</span>
+    <span class="k">return</span> <span class="f">success</span>(<span class="t">unit</span> {})
+}</code></pre>
+<p><strong>没有隐式关闭</strong>（块退出<strong>不会</strong>替你关文件，<code>ownFd</code> 那种库层原语已经删掉）：</p>
+<ul><li>关就是 <code>f.close()</code>：幂等（句柄自己带 <code>open</code> 标志，<strong>第二次不碰 <code>close(2)</code></strong>）</li><li><strong>关闭后使用</strong> ⇒ <code>failure(closed(fd))</code> <strong>带位置</strong>，不 trap（库不 trap，用户在处理点决定）</li><li><strong>忘关不是静默</strong>：能被证明的泄漏是一条<strong>警告</strong> ——「<em>opened and never closed</em>」（<strong>不是错误</strong>：故意留到进程结束是合法选择，<code>-w</code> 能关）： ``<code>extc var f = fs::openWrite("out.txt")!    // ← 到函数末尾都没人关 f.put("hi")! // warning: </code>f<code> is opened here and nothing in this function closes it </code>`<code> 检查认的协议是<strong>库自己声明的</strong>：struct 里声明了 </code>close<code> 方法 ⇒ 它是资源类型 （编译器里不出现库名，跟 </code>slice<code> 靠 </code>data<code>+</code>len<code> 认出来一样） <strong>它只证明能证明的</strong>：句柄交出去 / </code>return<code> / 存进字段 ⇒ 静默（别人可能关它） 那一半归运行时：泄漏到 fd 耗尽时，<strong>open 那一行</strong>给你 </code>failure` 带位置</li><li>故意留到进程结束也要写一行 <code>close()</code> —— 让它看得见</li></ul>
+<p><strong>为什么不隐式关</strong>：块退时<strong>没有失败通道</strong>，写型的延迟写错误只能由 <code>close(2)</code> 报 ⇒ 隐式归属会变成<strong>静默丢数据</strong>；而且 fd 是稀缺的 OS 资源，释放时机应当是看得见的一行 未来的自动释放若要做，仍要过<strong>定案 78 留下的资格判据</strong>（释放不会失败 / 无顺序语义 / 闭集获取）</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="13-vararray.html">← 7.9 动态数组 <code>varArray&lt;T&gt;</code>（对标 <code>std::vector</code> 的<strong>基础部分</strong>）</a> · <a href="15-errors.html">9. 错误信息 →</a></p>
+<div class="pn"><a href="13-vararray.html">← 7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a> <a href="15-errors.html">9. 错误信息 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

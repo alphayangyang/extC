@@ -168,7 +168,7 @@ static Stmt    *parseWhile(Parser *p);
 static Stmt    *parseFor(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
-static bool       parseFuncAnnotations(Parser *p, bool *outInline);
+static bool       parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate);
 static TypeDef   *parseTypeDecl(Parser *p);
 static ImplDef   *parseImpl(Parser *p);
 
@@ -348,7 +348,7 @@ static FuncDef *parseExtern(Parser *p) {
     p->noBody = true;                          /* signature only, no body */
     bool extInl = false;
     if (at(p, "@")) {
-        if (!parseFuncAnnotations(p, &extInl)) return NULL;
+        if (!parseFuncAnnotations(p, &extInl, NULL)) return NULL;
         if (extInl) {
             ctxError(p->ctx, kw->line, kw->col,
                      "There is no body to inline: this declaration only names a function that"
@@ -580,7 +580,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else if (at(&p, "fn") || at(&p, "@")) {
             bool inl = fnInline;
-            if (!parseFuncAnnotations(&p, &inl)) return false;
+            if (!parseFuncAnnotations(&p, &inl, NULL)) return false;
             if (!at(&p, "fn")) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col, NULL,
@@ -646,24 +646,31 @@ static StructDef *parseStruct(Parser *p) {
     if (!expect(p, "{", NULL)) return NULL;
     skipJunk(p);
     while (!at(p, "}")) {
+        /* Annotations may precede a **method or a field**. `@private` on a field is what keeps
+         * a container's storage to itself, so both kinds share one annotation loop and the
+         * declaration that follows decides which one it was. */
+        bool inl = false;
+        bool priv = false;
+        if (at(p, "@") && !parseFuncAnnotations(p, &inl, &priv)) return NULL;
         /* A method is declared inside the struct body, like a field. */
-        if (at(p, "fn") || at(p, "@")) {
-            bool inl = false;
-            if (!parseFuncAnnotations(p, &inl)) return NULL;
-            if (!at(p, "fn")) {
-                Token *t = cur(p);
-                ctxError(p->ctx, t->line, t->col, NULL,
-                         "an annotation on a function must be followed by `fn`, found `%s`",
-                         shown(t));
-                return NULL;
-            }
+        if (at(p, "fn")) {
             FuncDef *m = parseFunc(p);
             if (!m) return NULL;
-            m->isInline = inl;
+            m->isInline  = inl;
+            m->isPrivate = priv;
             m->owner = sd;
             *(FuncDef **)vecPush(&sd->methods) = m;
             skipJunk(p);
             continue;
+        }
+
+        if (inl) {
+            Token *t = cur(p);
+            ctxError(p->ctx, t->line, t->col,
+                     "`@inline` asks for a call to be expanded at the call site, and a field is"
+                     " never called.",
+                     "`@inline` applies to a function, not to a field");
+            return NULL;
         }
 
         Token *fname = expectIdent(p, "a field name");
@@ -676,6 +683,7 @@ static StructDef *parseStruct(Parser *p) {
         fd->name = fname->text;
         fd->type = ft;
         fd->line = fname->line;
+        fd->isPrivate = priv;
         *(FieldDef **)vecPush(&sd->fields) = fd;
         skipJunk(p);
     }
@@ -750,7 +758,8 @@ static ImplDef *parseImpl(Parser *p) {
     while (!at(p, "}")) {
         if (at(p, "fn") || at(p, "@")) {
             bool inl = false;
-            if (!parseFuncAnnotations(p, &inl)) return NULL;
+            bool priv = false;
+            if (!parseFuncAnnotations(p, &inl, &priv)) return NULL;
             if (!at(p, "fn")) {
                 Token *t = cur(p);
                 ctxError(p->ctx, t->line, t->col, NULL,
@@ -760,7 +769,8 @@ static ImplDef *parseImpl(Parser *p) {
             }
             FuncDef *m = parseFunc(p);
             if (!m) return NULL;
-            m->isInline = inl;
+            m->isInline    = inl;
+            m->isPrivate   = priv;
             /* `owner` is filled in when the block is attached: the target type's name is not
              * resolved yet (an impl may even appear before the type it extends). */
             *(FuncDef **)vecPush(&im->methods) = m;
@@ -972,7 +982,7 @@ static Token *expectFuncName(Parser *p) {
  *
  * Returns:
  *   False after reporting an error. `*outInline` is set when `@inline` was seen. */
-static bool parseFuncAnnotations(Parser *p, bool *outInline) {
+static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate) {
     /* Not reset here: a caller may already have seen `@inline` in the top-level annotation
      * loop, which reads `@private` and `@inline` together before the declaration is known to
      * be a function. Clearing the flag made `@inline fn f()` parse as if nothing had been
@@ -988,6 +998,24 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline) {
                 return false;
             }
             *outInline = true;
+            skipNl(p);
+            continue;
+        }
+        if (strcmp(nm->text, "private") == 0) {
+            /* `@private` on a **member**: a method the type keeps to itself, or a field.
+             * Declarations are public by default, so hiding one has to be written out --
+             * the same rule as at the top level, one level down. */
+            if (!outPrivate) {
+                ctxError(p->ctx, a->line, a->col,
+                         "Use it on a struct field or method, where there is something to hide.",
+                         "`@private` does not apply to this declaration");
+                return false;
+            }
+            if (*outPrivate) {
+                ctxError(p->ctx, a->line, a->col, NULL, "`@private` appears twice");
+                return false;
+            }
+            *outPrivate = true;
             skipNl(p);
             continue;
         }

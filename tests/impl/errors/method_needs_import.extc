@@ -1,0 +1,7 @@
+// `impl` 方法**只有 import 了那个模块才存在**（语义导入）⇒ 报错必须告诉你"该 import 谁"。
+// 这里调 `i64.hash()`（`impl i64 { fn hash }` 在 `stl/hashMap.extc` 里），但**不 import 它**。
+// expect: declared by module `stl::hashMap` -- add `use stl::hashMap`
+fn main() -> i32 {
+    let h = i64(7).hash()
+    return i32(h)
+}

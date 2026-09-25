@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>13. 完整示例 · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li class="cur"><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §13.</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="18-modules.html">← 12. 库与模块（2026-09-22 新增）</a> · 下一页 →</p>
+<hr>
+<h1 id="13-完整示例">13. 完整示例</h1>
+<p>见 <code>examples/</code>：</p>
+<table><thead><tr><th>文件</th><th>演示</th></tr></thead><tbody><tr><td><code>tour.extc</code></td><td><strong>语言巡礼</strong> —— 一份能跑的完整示例，把现在能用的东西全用上了</td></tr><tr><td><code>hello.extc</code></td><td>变量、<code>if/else</code>、<code>while</code>、函数调用、打印</td></tr><tr><td><code>fizzbuzz.extc</code></td><td><code>else if</code> 链、<code>%</code>、<code>while</code></td></tr><tr><td><code>types.extc</code></td><td>拓宽自动、字面量按值适配（T2）</td></tr><tr><td><code>structs.extc</code></td><td>struct、<strong>方法写在 struct 体内</strong>、裸 <code>{}</code> 推导、<strong>零初始化</strong></td></tr><tr><td><code>enums.extc</code></td><td><code>type</code> 枚举、<code>status.ok</code>、枚举自动打印名字</td></tr><tr><td><code>refs.extc</code></td><td><strong><code>ref</code> 表达式</strong>、自由函数实参写 <code>ref</code>、方法接收者自动取地址</td></tr><tr><td><code>generics.extc</code></td><td><strong>泛型 <code>struct Name&lt;T&gt;</code></strong>：四份实例同时工作、嵌套 struct、实例的自动调试打印</td></tr><tr><td><code>eq.extc</code></td><td><strong>显式定义 <code>fn ==</code></strong>：普通 struct、<code>!=</code> 取反、泛型里推迟到实例化检查</td></tr><tr><td><code>debug.extc</code></td><td><strong>自动调试打印</strong>：递归打印 struct、枚举打名字、零初始化直接打</td></tr><tr><td><code>prelude.extc</code></td><td><strong>prelude 里的 <code>slice&lt;T&gt;</code></strong> 直接用，两份实例</td></tr><tr><td><code>strings.extc</code></td><td><strong>字符串 = <code>slice&lt;u8&gt;</code></strong>：字面量、<code>len</code>、prelude 的方法、空串、转义</td></tr><tr><td><code>arrays.extc</code></td><td><strong>固定数组 <code>[N]T</code></strong>：多维、字面量、<code>...</code> 补零、越界 trap、值语义</td></tr><tr><td><code>slices.extc</code></td><td><strong>切片视图</strong>：四种写法、编译期证明的零检查、透过视图写</td></tr><tr><td><code>mut-views.extc</code></td><td><strong><code>slice&lt;T&gt;</code> / <code>mut slice&lt;T&gt;</code></strong>：源头继承、就地 <code>reverse</code>/<code>fill</code>、签名说实话</td></tr><tr><td><code>refs.extc</code> · <code>mut-ref.extc</code></td><td><strong><code>ref T</code> / <code>mut ref T</code></strong>：只读借用 vs 可写借用、<code>let</code> 也能借</td></tr><tr><td><code>ref-scalar.extc</code></td><td><strong>标量引用</strong>：自动解引用、写穿、<strong><code>swap</code></strong>（以前写不出来）</td></tr><tr><td><code>array-of-struct.extc</code></td><td>数组元素是带 <code>fn ==</code> 的 struct（含一个<strong>回归 bug</strong> 的守卫）</td></tr><tr><td><code>option-result.extc</code></td><td><strong><code>option</code> / <code>result</code> / <code>?</code></strong>：五子棋的落子与寻位</td></tr><tr><td><code>fenwick.extc</code></td><td><strong>树状数组</strong>：对拍 2 万次零不一致 + 逆序对（第一道真算法题）</td></tr><tr><td><code>gomoku-board.extc</code></td><td><strong>五子棋棋盘</strong>：G2 里程碑</td></tr></tbody></table>
+<p>跑测试：</p>
+<pre class="lang-other"><code>./tests/run.sh     # 正例跑通 + 反例必须被编译期挡掉</code></pre>
+<h3 id="7-9-1-容器能不能-造完返回-由推导决定-不是一刀切-2026-09-21">7.9.1 容器能不能"造完返回"？—— <strong>由推导决定，不是一刀切</strong>（2026-09-21）</h3>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">mk</span>() -&gt; <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt; {          <span class="c">// 合法：内容落在**调用者的家** arena 里 ⇒ 活得比本帧久</span>
+    <span class="k">var</span> v: <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt; = <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;::<span class="f">withCap</span>(<span class="n">0</span>)
+    v.<span class="f">push</span>(<span class="n">42</span>)  v.<span class="f">push</span>(<span class="n">43</span>)
+    <span class="k">return</span> v
+}
+<span class="k">fn</span> <span class="f">mkSlice</span>() -&gt; <span class="t">slice</span>&lt;<span class="t">i32</span>&gt; {        <span class="c">// 合法：扩容过的容器，把视图返回也可以</span>
+    <span class="k">var</span> v: <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt; = <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;::<span class="f">withCap</span>(<span class="n">0</span>)
+    v.<span class="f">push</span>(<span class="n">7</span>)  v.<span class="f">push</span>(<span class="n">8</span>)
+    <span class="k">return</span> v.<span class="f">asSlice</span>()
+}</code></pre>
+<p>判据（编译器自动算，用户不写注解）：<strong>被调者会不会把"&amp;实参"存进它分配的东西里</strong>（地址流） - <strong>不会</strong>（<code>push</code> 这类"只往容器里塞新东西"的）⇒ 家 arena 按<strong>逃逸需求</strong>选 ⇒ 想返回就活得够久 - <strong>会</strong>（<code>s.r = target</code> 这种把调用者的指针存进容器/家内存的）⇒ 仍然要求实参活得够家 arena ⇒ 想让它逃出去就<strong>报错</strong>（<code>tests/errors/ref_arg_too_deep</code> 就是这个形状）</p>
+<p><strong>2026-09-22 加的第二半（定案 67 / PLAN #43）</strong>：上面这条只说了"<strong>地址</strong>流"（把 <code>&amp;实参</code> 存进容器） 还有一条<strong>内容</strong>流——<strong>「从实参里读出来的、含引用的那份值」被存进容器</strong>（<code>self.buf[self.len] = v</code>， <code>v</code> 是带引用的 <code>T</code>）它同样<strong>在调用点判</strong>：那个实参（以及它携带的引用）必须活得 ≥ 目的地那一层 - 摘要说得清"第几个参数会被存" ⇒ 只查那几个 - 摘要说不清（递归 / 环 / 有解析不出来的调用）⇒ <strong>每个含引用的实参都按最坏情况查</strong> 消息会说清原因</p>
+<p>推导见 <a href="../docs/topics/ARENA-FORMAL.html"><code>ARENA-FORMAL.md</code></a> §2/§3/§9（§9.5 = 落地实录 + 双向证据）， 执行计划见 <a href="../docs/history/PLAN-REGION.html"><code>PLAN-REGION.md</code></a></p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="18-modules.html">← 12. 库与模块（2026-09-22 新增）</a> · 下一页 →</p>
+<div class="pn"><a href="18-modules.html">← 12. 库与模块（2026-09-22 新增）</a> <span></span></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

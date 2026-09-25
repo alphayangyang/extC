@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>12. 库与模块（2026-09-22 新增） · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li class="cur"><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §12.</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="17-undecided.html">← 11. 还没定的</a> · <a href="19-examples.html">13. 完整示例 →</a></p>
+<hr>
+<h1 id="12-库与模块-2026-09-22-新增">12. 库与模块（2026-09-22 新增）</h1>
+<blockquote>这一节是<strong>已经能跑的</strong>：模块（定案 70）· 泛型自由函数（定案 71）· <code>extern!</code>（定案 72）· <code>std::io</code>（定案 73）没实现的一律不写在这里（见 <code>PLAN.md</code>）</blockquote>
+<h3 id="12-1-模块-一个文件就是一个模块">12.1 模块：一个文件就是一个模块</h3>
+<pre class="lang-extc"><code><span class="c">// lib/util.extc</span>
+<span class="k">struct</span> pair { a: <span class="t">i32</span>  b: <span class="t">i32</span> }               <span class="c">// 类型名 camelCase（大写开头留给类型参数 T）</span>
+
+<span class="k">fn</span> <span class="f">make</span>(a: <span class="t">i32</span>, b: <span class="t">i32</span>) -&gt; pair { <span class="k">var</span> p: pair = { a: a, b: b }  <span class="k">return</span> p }
+<span class="k">fn</span> <span class="f">total</span>(p: pair) -&gt; <span class="t">i32</span> { <span class="k">return</span> p.a + p.b }
+
+@private <span class="k">fn</span> <span class="f">helper</span>() -&gt; <span class="t">i32</span> { <span class="k">return</span> <span class="n">1</span> }     <span class="c">// 藏起来：**别的模块引用不到**</span></code></pre>
+<pre class="lang-extc"><code><span class="c">// main.extc</span>
+<span class="k">use</span> lib::util                                <span class="c">// **语义导入**（不是 C 的文本包含）</span>
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> p: util::pair = util::<span class="f">make</span>(<span class="n">1</span>, <span class="n">2</span>)     <span class="c">// 跨模块引用写**限定名**</span>
+    <span class="f">println</span>(<span class="c">"和 = "</span>, util::<span class="f">total</span>(p))
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<table><thead><tr><th>规则</th><th>说明</th></tr></thead><tbody><tr><td>模块路径</td><td><code>use lib::util</code> ⇒ <code>&lt;项目根&gt;/lib/util.extc</code>（项目根 = 入口文件所在目录；也可用 <code>-I &lt;dir&gt;</code>）</td></tr><tr><td>短名</td><td>路径最后一段（<code>use lib::util</code> ⇒ 引用时写 <code>util::name</code>）</td></tr><tr><td><strong>全名</strong></td><td><strong>任意层都能写全名</strong>（2026-09-23 起）：<code>std::sys::io::STDOUT</code> · <code>std::sys::io::write(…)</code> · <code>lib::sub::color.color.green</code> 不需要先 <code>use</code> 到"正好那一段"</td></tr><tr><td><strong>别名</strong></td><td><code>use std::sys::io as sysio</code> ⇒ 之后写 <code>sysio::STDOUT</code> 别名只换<strong>短名</strong>，全名照样能用</td></tr><tr><td>可见性</td><td><strong>默认公开</strong>；要藏写 <code>@private</code>（别的模块引用它 ⇒ 编译错误）</td></tr><tr><td>必须限定</td><td>别的模块的名字<strong>必须</strong>写 <code>mod::name</code>（漏了会报错并告诉你写什么）</td></tr><tr><td>环</td><td><strong>禁止</strong> import 环（报错会说清是哪两个模块）</td></tr><tr><td><code>main</code></td><td>只能写在<strong>入口文件</strong>里（模块是库）</td></tr><tr><td>编译</td><td>仍然<strong>只吐一个 .c</strong>（<code>extc --run main.extc</code> 一条命令，<code>use</code> 的文件自动跟着编）</td></tr></tbody></table>
+<p><strong>两层同名怎么办</strong>（<code>std::io</code> 与 <code>std::sys::io</code> 的短名都是 <code>io</code>）—— 给其中一个起别名 这也是别名真正必要的场合（"从 stdin 读 + <code>open</code> 一个文件"恰好要这两层）：</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::io                     <span class="c">// 短名 io（普通库那层）</span>
+<span class="k">use</span> std::sys::io <span class="k">as</span> sysio       <span class="c">// 短名 sysio（特权原语那层）</span>
+<span class="k">var</span> r = io::<span class="f">readerOf</span>(sysio::STDIN)          <span class="c">// 各用各的短名</span>
+<span class="k">let</span> f = std::sys::io::STDOUT                <span class="c">// 全名也照样能写</span></code></pre>
+<p>没起别名时两条 <code>io</code> <strong>必然撞车</strong>，报的是 <code>both \</code>std::io\<code> and \</code>std::sys::io\<code> are used as \</code>io\`<code> （常设验收 </code>tests/qname/`，6 正例 + 1 反例）</p>
+<pre class="lang-extc"><code><span class="k">use</span> lib::sub::color             <span class="c">// 深层模块（lib/sub/color.extc）</span>
+<span class="k">let</span> c: color::color = color::color.green     <span class="c">// 变体位置：限定名 + `.变体`</span></code></pre>
+<h3 id="12-1-1-use-mod-把名字-带进作用域-2026-09-24-定案-85">12.1.1 <code>use mod::*</code>：把名字<strong>带进作用域</strong>（2026-09-24 定案 85）</h3>
+<p>默认写法是限定名（<code>io::cout</code>），想让一个模块的<strong>公开名字不限定可用</strong>，就在 <code>use</code> 末尾写 <code>*</code>：</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::io::*                 <span class="c">// io 的公开名字进入本文件的作用域</span>
+cout &lt;&lt; <span class="c">"x = "</span> &lt;&lt; x + y &lt;&lt; endl      <span class="c">// 不限定（这才是流式 IO 想写成的那句话）</span>
+cin &gt;&gt; a &gt;&gt; b</code></pre>
+<p>三条边界（都有常设验收，<code>tests/modules/</code>）：</p>
+<ul><li><strong><code>@private</code> 仍然够不着</strong> —— 打开模块<strong>不是</strong>绕过隐私的路子 （<code>error: \</code>lib::secret\<code> is private to module \</code>lib\``）</li><li><strong>打开是每个文件各自的</strong>：<code>a.extc</code> 里 <code>use b::*</code> <strong>不会</strong>让入口文件也能写裸 <code>bSecret</code></li><li><strong>两个被打开的模块重名 ⇒ 报错，不许静默挑一个</strong> （<code>error: \</code>who\<code> is exported by both \</code>x1\<code> and \</code>x2\<code>, which are opened here</code>）</li></ul>
+<p><strong>只想要一两个名字</strong>时用花括号（2026-09-24 同日补，同一张定案）：</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::io::{cin, cout, endl}     <span class="c">// 只有这三个名字进来，别的仍要写 io::xxx</span></code></pre>
+<p>三种写法范围从小到大、都并存：<code>io::cout</code>（限定）· <code>use std::io::{cin, cout}</code>（<strong>推荐</strong>： 范围小到你自己写得出来）· <code>use std::io::*</code>（整个模块）</p>
+<p><strong><code>use std::io::cin</code> 裸写不行</strong>（<code>use</code> 的每一段都是<strong>模块路径</strong>，它去找 <code>std/io/cin.extc</code>）—— 报错会教你写成 <code>use std::io::{cin}</code>（为什么不让裸写也能跑：那它的含义会依赖"现在有没有那个文件"， 哪天有人建了 <code>io/cin.extc</code> 就<strong>静默变意思</strong>）</p>
+<p>限定名<strong>照旧</strong>能用（两条路并存）—— 定案 70 的"全名是权利"没有被削弱， <code>*</code> / <code>{...}</code> 都是<strong>用户显式写出来</strong>的选择</p>
+<p>v1 限制：<strong>类型名</strong>"必须限定"那条还没挡严（函数/全局已经挡严）； <code>use</code> 不重新导出（没有 per-module 的可见性传递 —— 所以 <code>*</code> 也<strong>不传递</strong>）</p>
+<h3 id="12-2-泛型自由函数-fn-f-t">12.2 泛型自由函数 <code>fn f&lt;T&gt;(…)</code></h3>
+<pre class="lang-extc"><code><span class="k">fn</span> indexOf&lt;T&gt;(a: <span class="t">slice</span>&lt;T&gt;, x: T) -&gt; <span class="t">i64</span> {
+    <span class="k">var</span> i: <span class="t">i64</span> = <span class="n">0</span>
+    <span class="k">while</span> i &lt; a.len { <span class="k">if</span> a[i] == x { <span class="k">return</span> i }  i = i + <span class="n">1</span> }
+    <span class="k">return</span> <span class="n">0</span> - <span class="n">1</span>
+}
+
+<span class="f">indexOf</span>(nums[..], <span class="n">30</span>)          <span class="c">// 从实参**推导**</span>
+indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)     <span class="c">// **显式实参**（`T` 只出现在返回类型时必须这么写）</span></code></pre>
+<ul><li><code>T</code> 上的 <code>==</code> / <code>!=</code>（<strong>推迟到实例化</strong>再查"这个 <code>T</code> 有没有 <code>fn ==</code>"）</li><li><code>T</code> 上的 <code>&lt;</code> / <code>&gt;</code>（还没有比较协议 —— 要等函数值/协议那一步）</li><li>泛型体里<strong>不能</strong>再调用泛型函数（报错会说清原因，见 <code>PLAN #50</code>）</li></ul>
+<h3 id="12-3-跟-c-打交道-extern-信任声明">12.3 跟 C 打交道：<code>extern!</code> + 信任声明</h3>
+<pre class="lang-extc"><code><span class="k">extern</span>!(<span class="c">"libc"</span>) <span class="k">fn</span> <span class="f">write</span>(fd: <span class="t">i32</span>, buf: <span class="k">ref</span> <span class="t">u8</span>, n: <span class="t">i64</span>) -&gt; <span class="t">i64</span>
+    effects Addr=<span class="n">0</span> Cont=<span class="n">0</span>        <span class="c">// 我签字：**我不存你的指针** ⇒ 实参不受寿命约束</span>
+
+<span class="k">extern</span>!(<span class="c">"libc"</span>) <span class="k">fn</span> <span class="f">fill</span>(p: <span class="k">ref</span> <span class="t">i32</span>, n: <span class="t">i32</span>) -&gt; <span class="t">i32</span>     <span class="c">// 没签字</span>
+<span class="c">// fill(ref x, 3)  ⇒ **编译错误**：C 可能把 `&x` 存到帧外（默认最保守）</span></code></pre>
+<ul><li>参数/返回只用<strong>标量或单指针</strong>（<code>ref T</code> / <code>?ref T</code>）—— <code>slice&lt;T&gt;</code> 在 C 那边是两个参数</li><li>想调"往 buffer 里写"的那种（<code>read</code>/<code>write</code>），传 <code>s.data</code> 和 <code>s.len</code></li><li><code>owned</code>（C 给的内存归我）<strong>还没实现</strong> ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是<strong>显式释放</strong>，编译器只证明能证明的泄漏）</li></ul>
+<h3 id="12-4-让编译器内联-inline-2026-09-24-新增">12.4 让编译器内联：<code>@inline</code>（2026-09-24 新增）</h3>
+<p>写在<strong>函数声明前</strong>，要求这个调用点必须被内联：</p>
+<pre class="lang-extc"><code>@inline <span class="k">fn</span> <span class="f">sq</span>(x: <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> x * x }        <span class="c">// 普通函数</span>
+<span class="k">struct</span> pt {
+    x: <span class="t">i64</span>
+    @inline <span class="k">fn</span> <span class="f">get</span>(self: <span class="k">ref</span> pt) -&gt; <span class="t">i64</span> { <span class="k">return</span> self.x }   <span class="c">// 方法（写在 struct 体内）</span>
+}
+@private @inline <span class="k">fn</span> <span class="f">twice</span>(x: <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> x + x }    <span class="c">// 与 @private 连用，顺序随意</span></code></pre>
+<p><strong>它是要求，不是建议。</strong> ISO C 的 <code>inline</code> 只是提示，编译器可以不听（而且<strong>不会告诉你</strong>）； <code>@inline</code> 生成的 C 用 <code>always_inline</code>，它<strong>必须</strong>被满足</p>
+<p><strong>为什么需要它</strong>：库的热循环里，每字节一次方法调用的代价很大 —— 实测 <code>nextInt</code> 那条路，<code>nextByte</code> + <code>skipSpace</code> 两个方法占掉<strong>全部指令的 51%</strong> （同一处改写循环结构又拿掉 48%，所以<strong>两者是互补的</strong>，见下面的"什么时候不该用"）</p>
+<p><strong>三条会被编译期拒绝的写法</strong>（都带位置，不是"生成的文件第几行"）：</p>
+<table><thead><tr><th>写法</th><th>为什么拒</th></tr></thead><tbody><tr><td><code>@inline</code> 标在<strong>递归</strong>函数上（含<strong>互递归</strong>）</td><td><code>always_inline</code> 是要求，递归函数满足不了 ⇒ C 编译器会报 <code>inlining failed in call to 'always_inline'</code>，而那是生成文件里的位置 ⇒ 挪到源码这一行报</td></tr><tr><td><code>@inline</code> 标在 <code>extern</code> 声明上</td><td>没有函数体，没什么可内联的</td></tr><tr><td>写错的注解名（<code>@fast</code> / <code>@recursive</code> / <code>@main</code>）</td><td>注解是<strong>给编译器的指令</strong>，写错必须报错；<code>@recursive</code> / <code>@main</code> <strong>设计过但没实现</strong>，所以明说"还没实现"而不是静默接受</td></tr></tbody></table>
+<blockquote><strong>什么时候不该用</strong>（实测教训，2026-09-24 交错 A/B 重测）： 给 <code>std::io</code> 的 4 个 reader 方法标 <code>@inline</code>，<strong>读 100 万行 8.88ms vs 8.85ms —— 差 ±0.3%，就是零</strong> 原因<strong>查到了</strong>（不是猜）：这些函数在生成 C 里是 <code>static</code>，<code>-O2</code> 下 GCC <strong>本来就全部内联掉了</strong> —— <code>objdump</code> 里<strong>既没有调用点、连函数体都不存在</strong> ⇒ <code>always_inline</code> 无事可做 <strong>那 @inline 什么时候有用</strong>：GCC <strong>不肯</strong>内联的时候 —— 运行时原语 <code>extc_arena_alloc</code> （分配快路径 + <code>malloc</code> 慢路径 + 调用点多 ⇒ 被 size 启发式挡掉）标上之后 rebuild <strong>100.7 → 25.7ms</strong>、churn <strong>140.9 → 38.2ms</strong>（3.9×） ⇒ <strong>先量再用</strong>：<code>objdump</code> 里还有 <code>call</code> 才谈得上"内联能不能帮上忙"</blockquote>
+<h3 id="12-3-1-main-里的-失败即-trap-2026-09-24-定案-89">12.3.1 <code>main</code> 里的 <code>?</code>：失败即 trap（2026-09-24，定案 89）</h3>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> f = fs::<span class="f">ifstream</span>(<span class="c">"input.txt"</span>)?     <span class="c">// 打不开 ⇒ trap（带位置 + 退出码 1）</span>
+    ...
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<p><code>?</code> 的语义是"把失败交给外层"，而 <code>main</code> 的外层是<strong>进程边界</strong> ⇒ 交出去 = <strong>说清楚然后死</strong> 别的函数仍必须声明 <code>result</code> 才能用 <code>?</code>（<code>main</code> 返回类型不许改：C 入口返回 <code>int</code>）</p>
+<h3 id="12-3-2-五个流-cin-cout-cerr-fin-fout-2026-09-24">12.3.2 五个流：<code>cin</code> / <code>cout</code> / <code>cerr</code> / <code>fin</code> / <code>fout</code>（2026-09-24）</h3>
+<pre class="lang-extc"><code><span class="k">use</span> std::io::{cin, cout, cerr, endl}
+<span class="k">use</span> std::fs
+
+<span class="k">fn</span> <span class="f">log</span>(n: <span class="t">i64</span>) { cerr &lt;&lt; <span class="c">"log: "</span> &lt;&lt; n &lt;&lt; endl }        <span class="c">// 任何函数里都能写诊断</span>
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    fs::<span class="f">openIn</span>(<span class="c">"input.txt"</span>)?
+    fs::<span class="f">openOut</span>(<span class="c">"app.log"</span>)?
+    <span class="k">var</span> a: <span class="t">i64</span> = <span class="n">0</span>
+    <span class="k">var</span> b: <span class="t">i64</span> = <span class="n">0</span>
+    cin &gt;&gt; a &gt;&gt; b                                       <span class="c">// 控制台读</span>
+    fs::fin &gt;&gt; a &gt;&gt; b                                   <span class="c">// 文件读（同一个形状）</span>
+    cout &lt;&lt; a + b &lt;&lt; endl                               <span class="c">// 正常输出 → stdout</span>
+    fs::fout &lt;&lt; <span class="c">"结果 = "</span> &lt;&lt; a + b &lt;&lt; endl              <span class="c">// 文件写（任何函数里都能写）</span>
+    cerr &lt;&lt; <span class="c">"仅诊断"</span> &lt;&lt; endl                            <span class="c">// 诊断 → stderr</span>
+    fs::<span class="f">closeIn</span>()?
+    fs::<span class="f">closeOut</span>()?
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<ul><li><strong><code>print</code> / <code>println</code> 打 stdout</strong>（量过），<strong><code>cerr</code> 才打 stderr</strong> 两条通道分开， 所以 <code>prog &gt; out.txt</code> 只收正常输出</li><li>文件的 <code>fin</code>/<code>fout</code> 是<strong>程序级的那一个</strong>（各一个 fd）⇒ 不用把流当参数一路传 它们<strong>不是</strong>在静态段打开的（理由见 <code>docs/topics/IO.md</code>）：<code>main</code> 里一句话 + 定案 89 的 <code>?</code></li></ul>
+<h3 id="12-4-1-nocopy-状态有-身份-的类型不许按值拷贝-2026-09-24-定案-88">12.4.1 <code>@noCopy</code>：状态有<strong>身份</strong>的类型不许按值拷贝（2026-09-24，定案 88）</h3>
+<pre class="lang-extc"><code>@noCopy
+<span class="k">struct</span> reader {
+    fd:  <span class="t">i32</span>
+    len: <span class="t">i64</span>
+    pos: <span class="t">i64</span>        <span class="c">// ← "读到哪了"就是它的**身份**</span>
+}</code></pre>
+<p>标了 <code>@noCopy</code> 的类型<strong>只能按 <code>ref</code> / <code>mut ref</code> 传</strong>，按值拷贝<strong>编译期报错</strong>并教你怎么改：</p>
+<p>error: <code>reader</code> is <code>@noCopy</code>: it may not be copied by value note:  Pass it as <code>ref</code> / <code>mut ref</code> instead: <code>f(ref s)</code>, or declare the parameter <code>mut ref T</code>. The state it carries has an identity, so a copy would give two names to one position.</p>
+<p><strong>四个复制点全挡</strong>：绑定（<code>var b = a</code>）· 实参（<code>f(a)</code>）· 字段初始化（<code>{ c: a }</code>）· 赋值（<code>b = a</code>） <strong>而这四件事照旧成立</strong>：造新值（<code>reader { fd: 0, len: 0, pos: 0 }</code> / 构造函数）· <code>ref</code> 传参 · 读<strong>字段</strong>（<code>r.pos</code> 是 <code>i64</code>）· 在它上面<strong>调方法</strong>（接收者不是值位置）</p>
+<p><strong>为什么需要它</strong>（四个语言一致的规矩）：拷贝一个 <code>reader</code> ⇒ 两份对象、同一个缓冲、<strong>两个位置</strong>， 读起来互相穿插而两个名字都看不出来 —— C++ 删拷贝构造 · Rust 移动+借用 · Go 传指针 · Python 无隐式对象拷贝，说的都是这一件事 而它同时是<strong>流式链式</strong>（<code>fin &gt;&gt; x &gt;&gt; line</code>）的地基： 链式靠"返回的是同一个对象"，那就必须保证没人能悄悄拷它</p>
+<p><strong>在库里已经用上</strong>：<code>std::io</code> 的 <code>reader</code> / <code>writer</code> · <code>std::fs</code> 的 <code>ifstream</code> / <code>ofstream</code> （它们本来就全程按 <code>ref</code> / <code>mut ref</code> 传 —— 加上注解后<strong>一个调用点都没改</strong>，这也验证了这个取舍）</p>
+<h3 id="12-5-输入输出-std-io-2026-09-24-更新">12.5 输入输出：<code>std::io</code>（2026-09-24 更新）</h3>
+<p><strong>两种输入风格并存</strong>（都在同一个 <code>reader</code> 上，可以混着用）：</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::io
+
+<span class="k">fn</span> <span class="f">run</span>() -&gt; <span class="t">result</span>&lt;<span class="t">unit</span>, io::ioError&gt; {
+    <span class="k">var</span> line: [<span class="n">64</span>]<span class="t">u8</span>
+    <span class="k">var</span> r = io::<span class="f">readerOf</span>(io::STDIN_FD)   <span class="c">// 缓冲**不用你给**：64KB 是 new 出来的</span>
+
+    <span class="k">let</span> a = r.<span class="f">nextInt</span>()?                 <span class="c">// OI 式：跳过空白，不用先读成行</span>
+    <span class="k">let</span> b = r.<span class="f">nextInt</span>()?
+    <span class="f">println</span>(<span class="c">"求和 = "</span>, a + b)
+
+    <span class="k">let</span> n = r.<span class="f">nextLine</span>(line[..])?        <span class="c">// 协议式：行是单位，读到换行为止（不含换行）</span>
+    io::<span class="f">flushOut</span>()                       <span class="c">// 跟 writeBytes 混用**必须**刷，不然顺序会乱</span>
+    io::<span class="f">writeBytes</span>(<span class="c">"你说的是："</span>)
+    io::<span class="f">writeBytes</span>(line[<span class="n">0</span>..n])
+    io::<span class="f">writeBytes</span>(<span class="c">"\n"</span>)
+    <span class="k">return</span> <span class="f">success</span>(<span class="t">unit</span> {})
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">match</span> <span class="f">run</span>() {
+        <span class="f">success</span>(u) =&gt; { <span class="k">return</span> <span class="n">0</span> }
+        <span class="f">failure</span>(er) =&gt; {
+            <span class="k">match</span> er {
+                <span class="f">readFailed</span>(fd)  =&gt; <span class="f">println</span>(<span class="c">"io: 读失败 (fd = "</span>, fd, <span class="c">")"</span>)
+                <span class="f">lineTooLong</span>(n)  =&gt; <span class="f">println</span>(<span class="c">"io: 一行太长了（"</span>, n, <span class="c">" 字节）"</span>)
+                <span class="f">writeFailed</span>(fd) =&gt; <span class="f">println</span>(<span class="c">"io: 写失败 (fd = "</span>, fd, <span class="c">")"</span>)
+            }
+            <span class="k">return</span> <span class="n">1</span>
+        }
+    }
+}</code></pre>
+<p><strong>为什么读一行要包成一个 <code>reader</code></strong>：逐字节读是个坑 —— 老实现读 19MB / 50 万行要 <strong>2.30s</strong>，而整块读 <strong>0.012s</strong>（<strong>190×</strong>）。原因不是"读得慢"，是<strong>每读一个字节都进一次内核</strong> ⇒ 读 = <strong>整块读（64KB）+ 内存里切</strong></p>
+<blockquote>还有第二半（2026-09-24）：<strong>切的那一段也得手写</strong> —— 逐字节调 <code>nextByte()</code> 是 <strong>一次方法调用一个字节</strong>（它返回 <code>result</code> 结构体 ⇒ GCC 不肯内联）⇒ <code>nextLine</code>/<code>nextToken</code>/<code>skipSpace</code> 的<strong>缓冲热循环直接写进函数体</strong>之后： 100 万行 <strong>11.5 → 8.8ms</strong> · 300 万词 <strong>25.8 → 9.0ms</strong>（同一个 <code>reader</code>，接口一个字没改）</blockquote>
+<table><thead><tr><th>名字</th><th>干什么</th></tr></thead><tbody><tr><td><code>io::readerOf(fd)</code></td><td>建一个 <code>reader</code>（<strong>隐式 64KB 缓冲</strong>，住在创建点的块里 ⇒ 跟创建它的块同寿）</td></tr><tr><td><code>r.nextInt()</code></td><td>读一个整数，<strong>自己跳空白</strong>（OI 式：不用先读成行再切）</td></tr><tr><td><code>r.nextToken(buf)</code></td><td>读一个词（连续非空白）到你的 buffer</td></tr><tr><td><code>r.nextLine(buf)</code></td><td>读一行到你的 buffer，<strong>不含换行</strong>（<code>\n</code> 被吃掉 ⇒ 后面接着读位置是对的）</td></tr><tr><td><code>r.nextByte()</code> / <code>r.skipSpace()</code> / <code>r.eof()</code></td><td>逐字节 / 跳空白 / 结束了吗 —— <strong>接口</strong>，热路径不这么写</td></tr><tr><td><code>io::readSome(fd, buf)</code></td><td>从 fd 读一次，返回读到的字节数</td></tr><tr><td><code>io::writeBytes(buf)</code></td><td>把一整块字节写出去（fd 直写，<strong>无缓冲</strong>）</td></tr><tr><td><code>io::flushOut()</code> / <code>flush()</code></td><td>把 <code>println</code> 那边的缓冲刷出去</td></tr></tbody></table>
+<p><strong>三条失败路径分得开</strong>（P′：不能证明的，语法上必须看得见）：读到 EOF = <code>success(0)</code> （<strong>这不是错误</strong>）· 行比 <code>out</code> 长 = <code>failure(lineTooLong)</code>（数据<strong>没读全</strong>）· <code>read(2)</code> 出错 = <code>failure(readFailed)</code>（上次读的结果可能已经坏了）</p>
+<blockquote>老 <code>readLine</code> 把后两条<strong>都当成 EOF</strong> ⇒ 读错误看起来就是"文件结束了"， 而超长行会被<strong>静默切成两"行"</strong>所以它被删掉了，不是改名</blockquote>
+<p>分层：<code>std::sys::io</code>（<strong>特权层 · io 族</strong>：只有它写 <code>extern!</code> + 签字）· <code>std::io</code>（<strong>普通库</strong>：用 extC 写）</p>
+<blockquote><code>sys</code> 不是"一个模块"，是<strong>一条边界</strong>在路径上的写法 ⇒ <strong>按族分文件</strong> —— 后面还有 <code>std::sys::thread</code> / <code>std::sys::time</code> / <code>std::sys::net</code> / <code>std::sys::proc</code></blockquote>
+<p>已落地：<code>open</code>/<code>close</code>（<code>std::fs</code>，定案 77）+ 归属（定案 79）+ <code>main(args)</code></p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="17-undecided.html">← 11. 还没定的</a> · <a href="19-examples.html">13. 完整示例 →</a></p>
+<div class="pn"><a href="17-undecided.html">← 11. 还没定的</a> <a href="19-examples.html">13. 完整示例 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

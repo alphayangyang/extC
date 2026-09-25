@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. 类型 · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li class="cur"><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §3.</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="03-lexical.html">← 2. 词法</a> · <a href="05-vars.html">4. 变量与声明 →</a></p>
+<hr>
+<h1 id="3-类型">3. 类型</h1>
+<h3 id="内建类型">内建类型</h3>
+<table><thead><tr><th>类别</th><th>名字</th><th>C 里的对应</th></tr></thead><tbody><tr><td>有符号整数</td><td><code>i8</code> <code>i16</code> <code>i32</code> <code>i64</code></td><td><code>int8_t</code> … <code>int64_t</code></td></tr><tr><td>无符号整数</td><td><code>u8</code> <code>u16</code> <code>u32</code> <code>u64</code></td><td><code>uint8_t</code> … <code>uint64_t</code></td></tr><tr><td>浮点</td><td><code>f32</code> <code>f64</code></td><td><code>float</code> / <code>double</code></td></tr><tr><td>布尔</td><td><code>bool</code></td><td><code>bool</code></td></tr><tr><td>（字符串）</td><td>没有内建字符串类型 —— 见下面的 <strong><code>slice&lt;u8&gt;</code></strong></td><td>—</td></tr><tr><td>空</td><td><code>void</code></td><td><code>void</code></td></tr></tbody></table>
+<p><strong>没有 <code>int</code> / <code>long</code> / <code>char</code> / <code>double</code></strong> —— 类型名一律带位宽（见 <a href="../docs/SYNTAX.html"><code>SYNTAX.md</code></a> 的命名规范）。</p>
+<p>字面量的默认类型：整数 <code>i32</code>，浮点 <code>f64</code>。</p>
+<h3 id="类型转换规则-t2-起">类型转换规则（T2 起）</h3>
+<p>extC <strong>只自动做无损失的拓宽</strong>；收窄 / 换符号 / 整数↔浮点<strong>必须显式写出来</strong>（<code>T(x)</code>）</p>
+<table><thead><tr><th>转换</th><th>自动？</th></tr></thead><tbody><tr><td>同类型</td><td></td></tr><tr><td><code>i8</code>→<code>i16</code>→<code>i32</code>→<code>i64</code></td><td></td></tr><tr><td><code>u8</code>→<code>u16</code>→<code>u32</code>→<code>u64</code></td><td></td></tr><tr><td><code>u*</code> → 更宽的 <code>i*</code>（如 <code>u32</code>→<code>i64</code>）</td><td></td></tr><tr><td><code>i*</code> → <code>u*</code>（一律，包括同宽）</td><td>有损</td></tr><tr><td>能精确表示的整数 → 浮点（<code>i16</code>→<code>f32</code>、<code>i32</code>→<code>f64</code>）</td><td></td></tr><tr><td><code>i32</code> → <code>f32</code></td><td>f32 尾数只有 24 位</td></tr><tr><td><code>f32</code> → <code>f64</code></td><td></td></tr><tr><td><code>f64</code> → <code>f32</code></td><td></td></tr></tbody></table>
+<p><strong>字面量按值适配</strong>（<code>DESIGN.md</code> §5 的「字面量类型推导」）：</p>
+<pre class="lang-extc"><code><span class="k">let</span> a: <span class="t">u8</span>  = <span class="n">200</span>        <span class="c">// 200 放得进 u8 → 可以</span>
+<span class="k">let</span> b: <span class="t">u16</span> = <span class="n">60000</span>      <span class="c">// 可以</span>
+<span class="k">let</span> c: <span class="t">u8</span>  = <span class="n">300</span>        <span class="c">// error: literal `300` does not fit in `u8`</span>
+<span class="k">let</span> d: <span class="t">f64</span> = <span class="n">7</span>          <span class="c">// 整数字面量给浮点变量 → 可以</span>
+<span class="k">let</span> e: <span class="t">f32</span> = <span class="n">3</span>.<span class="n">14</span>       <span class="c">// 浮点字面量给 f32 → 可以</span>
+<span class="k">let</span> f: <span class="t">i32</span> = <span class="n">3</span>.<span class="n">14</span>       <span class="c">// error: 有损</span></code></pre>
+<h3 id="显式转换-t-x-plan-23">显式转换 <code>T(x)</code>（PLAN #23）</h3>
+<p>C 的 <code>(T)x</code> 在 extC 里写成 <strong><code>T(x)</code></strong> —— 因为 extC 的 parser <strong>不查符号表</strong>， <code>(T)x</code> 会跟"括号表达式"二义（C 靠符号表才分得开）。语义跟 C 一样，只是括号换了个位置：</p>
+<pre class="lang-extc"><code><span class="k">var</span> big: <span class="t">i64</span> = <span class="n">300</span>
+<span class="k">var</span> a: <span class="t">u8</span> = <span class="t">u8</span>(big)          <span class="c">// 运行时 **trap**（装不下，带源码位置）</span>
+<span class="k">var</span> b: <span class="t">i32</span> = <span class="t">i32</span>(<span class="n">200</span>)        <span class="c">//</span>
+<span class="k">var</span> f: <span class="t">f64</span> = <span class="t">f64</span>(<span class="n">7</span>)          <span class="c">// 7 → 7.0</span>
+<span class="k">var</span> t: <span class="t">i64</span> = <span class="t">i64</span>(<span class="n">3</span>.<span class="n">9</span>)        <span class="c">// 3（向零截断 = C 的规则）</span>
+<span class="k">var</span> g: <span class="t">f32</span> = <span class="t">f32</span>(<span class="n">1</span>.<span class="n">5</span>)        <span class="c">// 浮点之间：就近舍入，超范围变 ±inf（C 的规则）</span>
+<span class="k">var</span> u: <span class="t">i32</span> = <span class="t">i32</span>(<span class="t">u8</span>(<span class="n">200</span>))    <span class="c">// **能证明装得下就不生成检查**（P）</span></code></pre>
+<table><thead><tr><th>转换</th><th>检查</th></tr></thead><tbody><tr><td>拓宽（<code>i32</code>→<code>i64</code>、<code>u8</code>→<code>i32</code>、<code>i32</code>→<code>f64</code>）</td><td>无（编译期就知道装得下）</td></tr><tr><td>整数<strong>收窄</strong>（<code>i64</code>→<code>i32</code>、<code>i32</code>→<code>u8</code>）</td><td><strong>装不下 ⇒ trap（带位置）</strong></td></tr><tr><td><strong>换符号</strong>（<code>i32</code>→<code>u32</code>、<code>u64</code>→<code>i64</code>）</td><td>同上（负的转无符号 = trap）</td></tr><tr><td><strong>浮点 → 整数</strong></td><td>超范围 / NaN ⇒ trap；否则向零截断</td></tr><tr><td>浮点之间（<code>f64</code>→<code>f32</code>）</td><td>不查 —— 就近舍入，超范围变 ±inf（<strong>C 的规则</strong>，明确写出来就是你同意了）</td></tr></tbody></table>
+<p><strong>为什么整数收窄要 trap 而不是像 C 那样悄悄截断</strong>：静默截断正是 extC 要干掉的那种 "看不出来的错"（P′）而能证明装得下时<strong>一个检查都不生成</strong>，所以不花钱</p>
+<p>变量之间<strong>没有</strong>字面量适配：</p>
+<pre class="lang-extc"><code><span class="k">var</span> x: <span class="t">f64</span> = <span class="n">1</span>.<span class="n">5</span>
+<span class="k">var</span> y: <span class="t">f32</span> = x          <span class="c">// error: expects `f32`, found `f64`</span></code></pre>
+<p><strong>没有隐式真值转换</strong>，条件必须是 <code>bool</code>：</p>
+<pre class="lang-extc"><code><span class="k">if</span> <span class="n">1</span> { }                <span class="c">// error: expected `bool`, found `i32`</span></code></pre>
+<p><strong>两种没有公共类型的运算会报错</strong>，要先显式转：</p>
+<pre class="lang-extc"><code><span class="k">var</span> a: <span class="t">u32</span> = <span class="n">1</span>
+<span class="k">var</span> b: <span class="t">i32</span> = <span class="n">2</span>
+<span class="k">let</span> c = a + b           <span class="c">// error: `u32` and `i32` have no common type for `+`</span></code></pre>
+<h3 id="枚举类型">枚举类型</h3>
+<pre class="lang-extc"><code>type status = | ok | warn | error      <span class="c">// 前导 `|` 可写可不写</span></code></pre>
+<ul><li>变体用 <strong><code>类型名.变体名</code></strong> 访问：<code>status.ok</code></li><li>变体名不必全局唯一 —— <code>status.ok</code> 和 <code>result.ok</code> 是两个不同的东西</li><li>只有<strong>同类型</strong>才能比较和赋值（不能拿 <code>i32</code> 跟枚举比）</li><li>枚举<strong>自动有名字文本</strong>（定案 11）：<code>println(s)</code> 直接打印 <code>warn</code></li></ul>
+<pre class="lang-extc"><code>type status = | ok | warn | error
+
+<span class="k">if</span> s == status.ok { ... }      <span class="c">// 可以</span>
+<span class="k">if</span> s == <span class="n">0</span> { ... }              <span class="c">// error: 类型不匹配</span>
+<span class="f">println</span>(s)                     <span class="c">// warn</span></code></pre>
+<h3 id="match-穷尽检查的分支"><code>match</code>：穷尽检查的分支</h3>
+<pre class="lang-extc"><code>type gameError = | outOfRange | occupied | gameOver
+
+<span class="k">fn</span> <span class="f">describe</span>(e: gameError) -&gt; <span class="t">slice</span>&lt;<span class="t">u8</span>&gt; {
+    <span class="k">match</span> e {
+        outOfRange =&gt; { <span class="k">return</span> <span class="c">"出界了"</span> }
+        occupied   =&gt; { <span class="k">return</span> <span class="c">"那格已经有子了"</span> }
+        gameOver   =&gt; { <span class="k">return</span> <span class="c">"棋局已经结束了"</span> }
+    }
+}</code></pre>
+<ul><li><strong>漏一个变体就编不过</strong> —— 这就是它存在的理由。 用 <code>if e == gameError.outOfRange { ... } else { ... }</code> 时， 以后给枚举<strong>加了新变体，编译器不会提醒你漏了</strong>；<code>match</code> 会</li><li>分支名必须是<strong>被 match 的枚举的变体</strong>（写错会报出该枚举的所有变体）</li><li>分支体可以是<strong>一个块</strong>，也可以是<strong>一个语句</strong>（<code>outOfRange =&gt; n = 1</code>）</li><li>被 match 的表达式<strong>只求值一次</strong>（生成的 C 就是一个 <code>switch</code>）</li><li><strong>是语句，不是表达式</strong> —— 它不返回一个值（跟 <code>?</code> 同一个理由：C 没有语句表达式）。 想往外传就在分支里 <code>return</code> / 赋值</li><li>暂时<strong>没有 <code>_ =&gt;</code> 兜底</strong>：穷尽列出所有变体才是它的价值。</li></ul>
+<h3 id="带载荷枚举-tagged-union-变体自己带数据">带载荷枚举（tagged union）：变体自己带数据</h3>
+<p>无载荷回答「<strong>是哪一种</strong>」；带载荷回答「<strong>是哪一种 + 附带的东西是什么</strong>」。</p>
+<pre class="lang-extc"><code>type shape = | <span class="f">circle</span>(<span class="t">f64</span>) | <span class="f">rect</span>(<span class="t">f64</span>, <span class="t">f64</span>) | dot
+
+<span class="k">let</span> a = shape.<span class="f">circle</span>(<span class="n">2</span>.<span class="n">0</span>)        <span class="c">// 构造：类型名.变体名(载荷...)</span>
+<span class="k">let</span> b = shape.<span class="f">rect</span>(<span class="n">3</span>.<span class="n">0</span>, <span class="n">4</span>.<span class="n">0</span>)
+<span class="k">let</span> c = shape.dot                <span class="c">// 无载荷变体照旧</span>
+
+<span class="k">match</span> a {
+    <span class="f">circle</span>(r)    =&gt; { <span class="f">println</span>(r) }          <span class="c">// 载荷**绑定**出来，位置对位置</span>
+    <span class="f">rect</span>(w, h)   =&gt; { <span class="f">println</span>(w * h) }
+    dot          =&gt; { <span class="f">println</span>(<span class="c">"点"</span>) }
+}</code></pre>
+<p>C 里这个东西要<strong>手写</strong>，而且容易写错：</p>
+<pre class="lang-extc"><code><span class="k">struct</span> shape { int tag; union { double r; <span class="k">struct</span> { double w, h; } rect; } u; };
+<span class="c">// 读 u.r 之前你得**自己记得**先看 tag 是不是 0 —— 忘了就是 bug</span></code></pre>
+<p>这里编译器替你记：<strong>想拿载荷，必须先 match 那个变体</strong></p>
+<p><strong>几条要记住的</strong>：</p>
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td><strong>零值 = tag 0</strong></td><td>所以<strong>变体顺序有意义</strong>。`type box = \</td><td>nothing \</td><td>holding(slice&lt;u8&gt;)<code> 的 </code>var b: box<code> 合法（零值是 </code>nothing<code>）；把 </code>holding<code> 排在第一位就不合法（含 </code>ref` 的类型没有零值）</td></tr><tr><td><strong>打印</strong></td><td>打印的是<strong>变体名</strong>（<code>circle</code>），载荷不打印 —— 想要具体格式自己写方法</td></tr><tr><td><strong>没有 <code>==</code></strong></td><td>C 里它是 struct，而 C 的 struct 不能用 <code>==</code> ⇒ 要比就 <code>match</code>，或者写一个方法</td></tr><tr><td><strong>载荷里可以有 <code>ref</code> / 视图</strong></td><td>这正是无载荷的 <code>option&lt;T&gt;</code> 做不到的事（见 <code>IO.md</code>：<code>none</code> 得给 <code>value</code> 字段填值，而 <code>ref</code> 没有零值）</td></tr></tbody></table>
+<h3 id="泛型">泛型</h3>
+<pre class="lang-extc"><code><span class="k">struct</span> pair&lt;A, B&gt; {
+    first: A
+    second: B
+
+    <span class="k">fn</span> <span class="f">getFirst</span>(self: <span class="k">ref</span> pair&lt;A, B&gt;) -&gt; A {
+        <span class="k">return</span> self.first
+    }
+}
+
+<span class="k">struct</span> box&lt;T&gt; {
+    value: T
+    <span class="k">fn</span> <span class="f">set</span>(self: <span class="k">ref</span> box&lt;T&gt;, v: T) { self.value = v }
+    <span class="k">fn</span> <span class="f">get</span>(self: <span class="k">ref</span> box&lt;T&gt;) -&gt; T { <span class="k">return</span> self.value }
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> p: pair&lt;<span class="t">i32</span>, <span class="t">u8</span>&gt; = { first: <span class="n">1</span>, second: <span class="n">2</span> }
+    <span class="f">println</span>(p.<span class="f">getFirst</span>())            <span class="c">// 1</span>
+
+    <span class="k">var</span> q: pair&lt;<span class="t">bool</span>, point&gt; = { first: <span class="k">true</span>, second: { x: <span class="n">7</span>, y: <span class="n">8</span> } }
+    <span class="f">println</span>(q)                       <span class="c">// 实例也能自动调试打印</span>
+
+    <span class="k">var</span> b: box&lt;<span class="t">i64</span>&gt;
+    b.<span class="f">set</span>(<span class="n">42</span>)
+    <span class="f">println</span>(b.<span class="f">get</span>())                 <span class="c">// 42</span>
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<ul><li>泛型参数写在 struct 名后：<code>struct Name&lt;T&gt; { ... }</code></li><li>使用时<strong>必须写出实参</strong>：<code>Name&lt;i32&gt;</code>（不写是编译错误）</li><li>编译器<strong>按实例生成 C</strong>（单态化）：<code>pair&lt;i32, u8&gt;</code> → C 里的 <code>pair_i32_u8</code>， 方法变成 <code>pair_i32_u8_getFirst</code></li><li>泛型 struct 的方法里，泛型参数可见（<code>fn get(self: ref box&lt;T&gt;) -&gt; T</code>）</li></ul>
+<blockquote><strong>引用安全规则按实例复查</strong>（2026-09-20 起）  模板期 <code>T</code> 不透明，"这个类型里有引用吗"答不了 —— 所以<strong>涉及 <code>T</code> 的引用规矩 （深度 / 借来的值 / 零值）会推迟到实例化，按实例再查一遍</strong>：  ``<code>extc struct boxT&lt;T&gt; { v: T fn stash(self: mut ref boxT&lt;T&gt;, value: T) { self.v = value } } var b: boxT&lt;i64&gt; = { v: 5 }          // 通过（i64 里没有引用） b.stash(7) var c: boxT&lt;slice&lt;u8&gt;&gt; = { v: "abc" } c.stash(someSlice)                    // 报错，而且要<strong>点名实例</strong>： // error: in instance </code>boxT_slice_u8<code>: cannot store a borrowed value into //        something that outlives this call </code>`<code>  同一条也管<strong>零值</strong>（</code>var local: T<code> ⇒ 实例化成 </code>slice&lt;u8&gt;<code> 就是一个 null 引用） 和<strong>返回值</strong>（返回本帧的 </code>T<code> ⇒ 悬垂） 实现见 </code>DECISIONS.md<code> 定案 54；<strong>没有</strong>为了安全把 </code>box&lt;i64&gt;::set` 这种正常写法拒掉</blockquote>
+<blockquote><strong>已知限制（「模板检查一遍」换来的代价）</strong>  类型检查是对<strong>模板</strong>做的，所以模板里 <code>A</code> 和 <code>B</code> 是不确定的。要求两边同类型的操作写不出来：  ``<code>extc fn swap(self: ref pair&lt;A, B&gt;) { let tmp: A = self.first self.first = self.second   // error: assignment expects </code>A<code>, found </code>B<code> } </code>`<code>  要写这种操作，就<strong>用一个参数</strong>：</code>struct pair&lt;T&gt; { first: T  second: T }`。  收益是：错误只报一次、错误信息指向模板而不是某个实例 —— 反面就是 C++ 那种「实例化时才炸出一屏模板错误」。</blockquote>
+<h3 id="结构体类型">结构体类型</h3>
+<p>顶层 <code>struct</code> 定义的类型就是类型名，camelCase（<strong>跟变量一样</strong>，不用 PascalCase）：</p>
+<pre class="lang-extc"><code><span class="k">struct</span> point {
+    x: <span class="t">i32</span>
+    y: <span class="t">i32</span>
+}</code></pre>
+<h3 id="引用类型-ref-t-mut-ref-t">引用类型 <code>ref T</code> / <code>mut ref T</code></h3>
+<ul><li><strong><code>ref T</code></strong> —— <strong>只读</strong>借用（默认）</li><li><strong><code>mut ref T</code></strong> —— <strong>可写</strong>借用</li></ul>
+<p>两者都「不可为空、不可做算术」，在 C 里都是 <code>T <em></code>（只读那档可以用 <code>const T </em></code> 表示）。</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">peek</span>(self: <span class="k">ref</span> counter) -&gt; <span class="t">i64</span> { <span class="k">return</span> self.n }        <span class="c">// 只读：let 的也能调</span>
+<span class="k">fn</span> <span class="f">bump</span>(self: <span class="k">mut</span> <span class="k">ref</span> counter) { self.n = self.n + <span class="n">1</span> }     <span class="c">// 可写：接收者必须可写</span></code></pre>
+<p><strong>可写性看「这个值是从哪拿到的」，只有三个地方</strong>：</p>
+<table><thead><tr><th>从哪拿到</th><th>可写性</th></tr></thead><tbody><tr><td><strong>绑定</strong></td><td><code>var</code> 可写 / <code>let</code> 只读</td></tr><tr><td><strong>参数</strong></td><td><code>mut ref T</code> 可写 / <code>ref T</code> 只读</td></tr><tr><td><strong>字段</strong></td><td>类型上写 <code>mut</code></td></tr></tbody></table>
+<p>而<strong>取引用时权限从源头继承</strong>，所以日常代码<strong>一个 <code>mut</code> 都不用写</strong>：</p>
+<pre class="lang-extc"><code><span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
+<span class="f">bump</span>(<span class="k">ref</span> n)          <span class="c">// var ⇒ 取出来就是 mut ref</span>
+<span class="k">let</span> m: <span class="t">i64</span> = <span class="n">7</span>
+<span class="c">// bump(ref m)       // 对 let 只能取到只读引用 ⇒ 交不给要写权限的参数</span></code></pre>
+<p><strong>降级是自动的、单向的</strong>：<code>mut ref T</code> 可以当 <code>ref T</code> 用（能写当然能读）； 反过来不行，必须显式写 <code>mut</code> —— 「安全是默认」的直接体现。</p>
+<h4 id="值位置自动解引用-ref-在表达式里的行为">值位置自动解引用（<code>ref</code> 在表达式里的行为）</h4>
+<p><code>ref T</code> 的值在<strong>当值用</strong>的时候自动解引用 —— 于是标量引用也能用了：</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">bump</span>(p: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>) { p = p + <span class="n">1</span> }        <span class="c">// 读 p 得值；写 p 写进所指的地方</span>
+<span class="k">fn</span> <span class="f">swap</span>(a: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>, b: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>) {
+    <span class="k">let</span> t = a
+    a = b
+    b = t
+}
+
+<span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
+<span class="f">bump</span>(<span class="k">ref</span> n)              <span class="c">// n = 11</span>
+<span class="f">println</span>(n)               <span class="c">// 11</span>
+<span class="k">let</span> m: <span class="t">i64</span> = <span class="k">ref</span> n       <span class="c">// 值位置 ⇒ 拷值</span>
+<span class="f">println</span>(m)               <span class="c">// 11</span></code></pre>
+<p>两条要记住的规则：</p>
+<ul><li><strong><code>ref x</code> 自己永远不解引用</strong> —— 否则就是「解掉自己刚取的那个引用」，自相矛盾。 所以 <code>let r = ref n</code> 拿到的是<strong>引用</strong>，而 <code>let y = r</code> 拿到的是<strong>值</strong>。</li><li><strong>「换指向」看右边</strong>：<code>=</code> 在引用上有两个意思，<strong>由右边是什么决定</strong> —— 右边是<strong>值</strong>就写进去，右边是<strong>引用</strong>就换指向 类型自己消歧义，而且右边就在源码里看得见。</li></ul>
+<pre class="lang-extc"><code><span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
+<span class="k">var</span> r: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span> = <span class="k">ref</span> n
+r = r + <span class="n">5</span>                <span class="c">// 右边是**值** ⇒ 写穿：n 变成 15（RHS 求值用的是 r 指向的值）</span>
+
+<span class="k">var</span> a: <span class="t">i64</span> = <span class="n">1</span>
+<span class="k">var</span> b: <span class="t">i64</span> = <span class="n">2</span>
+r = <span class="k">ref</span> a                <span class="c">// 右边是**引用** ⇒ 换指向：r 现在指 a</span>
+r = <span class="n">7</span>                    <span class="c">// 之后写的是 a</span>
+r = <span class="k">ref</span> b                <span class="c">// 再换指向 b</span></code></pre>
+<p><strong>字段也一样</strong>（<code>self.data = bigger</code> 就是「换 buffer」那个动作）：</p>
+<pre class="lang-extc"><code><span class="k">struct</span> slot { p: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span> }
+<span class="k">var</span> s: slot = { p: <span class="k">ref</span> a }
+s.p = <span class="n">5</span>                  <span class="c">// 值 ⇒ 写进 a</span>
+s.p = <span class="k">ref</span> b              <span class="c">// 引用 ⇒ 字段换指向 b</span></code></pre>
+<p>换指向也要过逃逸检查（新指向的东西不能活得比这个引用短）</p>
+<h4 id="透过只读引用写-编译错误">透过只读引用写 = 编译错误</h4>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">f</span>(b: <span class="k">ref</span> board) { b.cell[<span class="n">0</span>] = <span class="n">1</span> }
+<span class="c">// error: cannot write through a read-only reference</span>
+<span class="c">//   note: `ref T` is a **read-only** borrow; writing through it needs `mut ref T` …</span></code></pre>
+<p><strong>"穿过"有两种写法，两种都查</strong>（PLAN #40/#41，2026-09-22 修齐）：</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">h</span>(p: <span class="k">ref</span> node) { (*p).val  = <span class="n">7</span> }    <span class="c">// 显式穿过 `*p` ⇒ 要 mut ref 报错</span>
+<span class="k">fn</span> <span class="f">k</span>(p: <span class="k">ref</span> node) {  p.next   = null } <span class="c">// 隐式穿过（字段住在 `*p` 里）⇒ 也要 mut ref 报错</span>
+
+<span class="k">fn</span> <span class="f">ok</span>(cell: <span class="k">mut</span> <span class="k">ref</span> node) { (*cell).next = null }   <span class="c">// mut ref ⇒ 合法</span></code></pre>
+<p><strong>判据一句话</strong>：写一个「地方」要<strong>穿过</strong>哪些引用，每一只都得是 <code>mut ref</code> <strong>目标自己的类型不算</strong> —— <code>cur = v</code>（换指向）写的是<strong>槽位</strong>， 跟"<code>cur</code> 是不是只读引用"无关（<code>var cur: ?ref node</code> 照样可以换指向）</p>
+<p>这条会<strong>顺着调用图追</strong>：<code>rng::below</code> 因为里面调了 <code>next()</code>（要可写接收者）， 自己的签名也得改成 <code>mut ref</code> —— 光看函数体是看不出这种问题的。</p>
+<hr>
+<h3 id="数组类型-n-t">数组类型 <code>[N]T</code></h3>
+<p><strong>长度写在前面</strong>，因为「数组的长」是类型的一部分，跟 <code>[15][15]i32</code> 从左往右念一致。</p>
+<pre class="lang-extc"><code><span class="k">var</span> a: [<span class="n">5</span>]<span class="t">i32</span>                    <span class="c">// 5 个 i32，全零（零初始化是默认，不需要专门语法）</span>
+<span class="k">var</span> board: [<span class="n">15</span>][<span class="n">15</span>]<span class="t">i32</span>           <span class="c">// 15×15，递归 —— 等价于 [15]([15]i32)</span>
+<span class="k">let</span> grid: [<span class="n">3</span>][<span class="n">2</span>]<span class="t">f64</span> = [[<span class="n">1</span>.<span class="n">0</span>, <span class="n">2</span>.<span class="n">0</span>], [<span class="n">3</span>.<span class="n">0</span>, <span class="n">4</span>.<span class="n">0</span>], [<span class="n">5</span>.<span class="n">0</span>, <span class="n">6</span>.<span class="n">0</span>]]</code></pre>
+<p><strong>字面量必须给全</strong>（严格，防 off-by-one），末尾 <code>...</code> 表示「剩下的零」：</p>
+<pre class="lang-extc"><code><span class="k">var</span> b: [<span class="n">5</span>]<span class="t">i32</span> = [<span class="n">1</span>, <span class="n">2</span>, ...]      <span class="c">// → [1, 2, 0, 0, 0]</span>
+<span class="k">let</span> c = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]                <span class="c">// 长度 3 从字面量推出来</span></code></pre>
+<p><strong>数组是值类型</strong>：赋值、传参、返回都是<strong>整份拷贝</strong>。</p>
+<pre class="lang-extc"><code><span class="k">var</span> x: [<span class="n">3</span>]<span class="t">i32</span> = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+<span class="k">var</span> y = x          <span class="c">// y 是独立的一份</span>
+y[<span class="n">0</span>] = <span class="n">99</span>          <span class="c">// x[0] 仍是 1</span></code></pre>
+<blockquote><strong>为什么是值？</strong> 沿用 extC 的核心（默认值语义、没有别名）。 900 字节的拷贝确实贵 —— 要省就用 <code>ref</code> 显式表达，<strong>别让读者猜</strong>。 编译到 C 时套一层 struct（<code>typedef struct { int32_t data[5]; } array_5_i32;</code>）， 因为 C 的裸数组既不能赋值也不能返回。</blockquote>
+<p><strong>索引 <code>a[i]</code> 带边界检查</strong>，越界 trap 并报 extC 位置：</p>
+<pre class="lang-extc"><code><span class="f">println</span>(a[<span class="n">0</span>])      <span class="c">// 1</span>
+<span class="f">println</span>(a[<span class="n">7</span>])      <span class="c">// trap: index 7 out of range (length 5) —— 带文件名和行号</span></code></pre>
+<p><strong>切片视图 <code>a[lo..hi]</code></strong> —— 四种写法，<strong>不拷贝数据</strong>（见 <a href="../docs/topics/ARRAYS.html"><code>ARRAYS.md</code></a> §4）：</p>
+<pre class="lang-extc"><code><span class="k">var</span> a: [<span class="n">8</span>]<span class="t">i32</span> = [<span class="n">10</span>, <span class="n">20</span>, <span class="n">30</span>, <span class="n">40</span>, <span class="n">50</span>, <span class="n">60</span>, <span class="n">70</span>, <span class="n">80</span>]
+<span class="k">var</span> s1 = a[<span class="n">2</span>..<span class="n">5</span>]      <span class="c">// [30, 40, 50]   mut slice<i32>（从 var 切出来 ⇒ 可写）</span>
+<span class="k">let</span> s2 = a[<span class="n">6</span>..]       <span class="c">// [70, 80]       到尾</span>
+<span class="k">let</span> s3 = a[..<span class="n">3</span>]       <span class="c">// [10, 20, 30]   从头</span>
+<span class="k">let</span> s4 = a[..]        <span class="c">// 整个数组</span>
+s1[<span class="n">0</span>] = <span class="n">999</span>           <span class="c">// 视图是同一块内存 —— a[2] 也变成 999</span></code></pre>
+<h4 id="视图的可写性-slice-t-mut-slice-t">视图的可写性：<code>slice&lt;T&gt;</code> / <code>mut slice&lt;T&gt;</code></h4>
+<p><strong>只有一个视图类型、一套方法集</strong> —— <code>mut</code> 是<strong>限定词</strong>，不是第二个类型 （不像 Rust 要给切片造 <code>&amp;[T]</code> / <code>&amp;mut [T]</code> 两个）。</p>
+<p><strong>可写性从切出来的源头继承</strong>：</p>
+<table><thead><tr><th>从哪切出来</th><th>得到的类型</th><th>能写吗</th></tr></thead><tbody><tr><td><code>var a</code></td><td><code>mut slice&lt;T&gt;</code></td><td></td></tr><tr><td><code>let a</code></td><td><code>slice&lt;T&gt;</code></td><td></td></tr><tr><td><code>"字面量"</code></td><td><code>slice&lt;T&gt;</code></td><td>（在只读段）</td></tr><tr><td><code>mut ref</code> 参数</td><td><code>mut slice&lt;T&gt;</code></td><td></td></tr><tr><td>只读视图</td><td><code>slice&lt;T&gt;</code></td><td></td></tr></tbody></table>
+<pre class="lang-extc"><code><span class="k">var</span> a: [<span class="n">6</span>]<span class="t">i32</span> = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>, <span class="n">4</span>, <span class="n">5</span>, <span class="n">6</span>]
+<span class="k">var</span> mid = a[<span class="n">1</span>..<span class="n">4</span>]         <span class="c">// var ⇒ mut slice<i32> 能写</span>
+<span class="f">reverse</span>(mid)              <span class="c">// 就地反转</span>
+
+<span class="k">let</span> frozen: [<span class="n">3</span>]<span class="t">i32</span> = [<span class="n">7</span>, <span class="n">8</span>, <span class="n">9</span>]
+<span class="c">// frozen[0] = 1          // let ⇒ 不能写</span>
+<span class="c">// fill(frozen[..], 0)    // 从 let 切出来是只读视图</span>
+
+<span class="k">var</span> s = <span class="c">"abc"</span>
+<span class="c">// s[0] = 88              // 字面量是只读视图 ⇒ **编译错误（以前是段错误）**</span></code></pre>
+<h4 id="函数签名上的可写性">函数签名上的可写性</h4>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">sum</span>(v: <span class="t">slice</span>&lt;<span class="t">i32</span>&gt;) -&gt; <span class="t">i32</span>          <span class="c">// 只读：签名说了它不改；两种视图都能传</span>
+<span class="k">fn</span> <span class="f">fill</span>(v: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">i32</span>&gt;, x: <span class="t">i32</span>)    <span class="c">// 可写：调用者必须给得出手可写的东西</span>
+<span class="k">fn</span> <span class="f">reverse</span>(v: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">i32</span>&gt;)         <span class="c">// 就地算法</span></code></pre>
+<p><strong>这条关掉的是「按值参数偷写调用者的数据」</strong>：</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">fill</span>(v: <span class="t">slice</span>&lt;<span class="t">i32</span>&gt;) { v[<span class="n">0</span>] = <span class="n">1</span> }
+<span class="c">// error: cannot write through `v`: it is a read-only view `slice<i32>`</span>
+<span class="c">//   note: a view is read-only unless its type carries `mut`. Writing through a</span>
+<span class="c">//         by-value view would change the caller's data without the signature saying so.</span></code></pre>
+<p>降级是自动的、单向的：<code>mut slice&lt;T&gt;</code> 可以传给要 <code>slice&lt;T&gt;</code> 的地方；反过来不行。</p>
+<p><strong>编译期能证明的，运行时不留痕迹</strong>：</p>
+<table><thead><tr><th>情况</th><th>结果</th></tr></thead><tbody><tr><td>两个界都是字面量</td><td>生成的 C 里<strong>零检查</strong>，就是 <code>&amp;a.data[2]</code></td></tr><tr><td>界里有变量</td><td>运行时检查，越界 trap 带 extC 位置</td></tr><tr><td>字面量界越界（含负数）</td><td><strong>编译期报错</strong></td></tr></tbody></table>
+<pre class="lang-extc"><code><span class="k">let</span> v = a[<span class="n">2</span>..<span class="n">9</span>]       <span class="c">// error: slice end 9 is not inside `[5]i32` (length 5)</span></code></pre>
+<p><strong>底必须是「地方」</strong>：切固定数组要取元素地址，所以 <code>make()[1..3]</code> 被拒 （那会切到临时存储上）。切 <strong>slice</strong> 不受此限 —— <code>"abcdef"[1..3]</code> 合法。</p>
+<hr>
+<h3 id="option-t-result-t-e-把-可能没有-可能失败-写进类型"><code>option&lt;T&gt;</code> / <code>result&lt;T,E&gt;</code>：把「可能没有」「可能失败」写进类型</h3>
+<p>两个类型<strong>都写在 <code>stdlib/prelude.extc</code> 里</strong>（extC 源码），不用 import：</p>
+<p><strong>第三刀（2026-09-20）之后它们就是两个普通的泛型枚举</strong>（<code>stdlib/prelude.extc</code> 里只有两行）：</p>
+<pre class="lang-extc"><code>type <span class="t">option</span>&lt;T&gt;    = | none | <span class="f">some</span>(T)
+type <span class="t">result</span>&lt;T, E&gt; = | <span class="f">failure</span>(E) | <span class="f">success</span>(T)</code></pre>
+<table><thead><tr><th>类型</th><th>意思</th><th>零值</th></tr></thead><tbody><tr><td><code>option&lt;T&gt;</code></td><td>可能有值，也可能没有</td><td><strong>就是 <code>none</code></strong>（tag 0）</td></tr><tr><td><code>result&lt;T,E&gt;</code></td><td>要么成功给你值，要么失败给你错误</td><td><strong><code>failure(E 的零值)</code></strong>（tag 0）</td></tr></tbody></table>
+<p>「零值就是 <code>none</code> / <code>failure</code>」不是巧合 —— 它是定案 8（默认零初始化）的直接结果 （<strong>所以变体顺序有意义</strong>：写成 <code>| some(T) | none</code> 就是错的）。 因为它们是普通枚举，<code>option&lt;slice&lt;u8&gt;&gt;</code> <strong>合法</strong>（里面有 ref 也照样有零值）—— 这正是 IO 需要的东西（见 <code>examples/option-ref-payload.extc</code>）。</p>
+<p><strong><code>?T</code> 就是 <code>option&lt;T&gt;</code> 的语法糖</strong>（定案 ㊻）—— 类型位置写 <code>?i64</code> 跟写 <code>option&lt;i64&gt;</code> 完全一样：</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">half</span>(n: <span class="t">i64</span>) -&gt; ?<span class="t">i64</span> {            <span class="c">// ≡ -> option<i64></span>
+    <span class="k">if</span> n % <span class="n">2</span> != <span class="n">0</span> { <span class="k">return</span> none }    <span class="c">// 裸写 `none`（类型从返回类型来）</span>
+    <span class="k">return</span> <span class="f">some</span>(n / <span class="n">2</span>)               <span class="c">// 裸写 `some(x)`</span>
+}
+
+<span class="k">struct</span> config { retries: ?<span class="t">i32</span> }      <span class="c">// 字段也能用</span>
+<span class="k">var</span> c: config                        <span class="c">// option 有零值 ⇒ 不用初始化式</span>
+c.retries = <span class="f">some</span>(<span class="n">3</span>)                  <span class="c">// 赋值位置也认裸构造器</span>
+<span class="f">println</span>(<span class="f">pick</span>(none, <span class="f">some</span>(<span class="n">9</span>)))         <span class="c">// 实参位置也认</span>
+
+<span class="k">let</span> a = <span class="t">option</span>&lt;<span class="t">i64</span>&gt;::<span class="f">some</span>(<span class="n">42</span>)        <span class="c">// 想写全名当然也可以（不靠上下文猜）</span>
+<span class="k">let</span> b = <span class="t">option</span>&lt;<span class="t">i64</span>&gt;::<span class="f">none</span>()          <span class="c">// 也可以：var b: option<i64>  ← 零值就是 none</span>
+<span class="k">match</span> a {
+    <span class="f">some</span>(v) =&gt; { <span class="f">println</span>(v) }
+    none    =&gt; { <span class="f">println</span>(<span class="c">"没有"</span>) }
+}
+
+<span class="k">let</span> r = <span class="t">result</span>&lt;<span class="t">unit</span>, gameError&gt;::<span class="f">failure</span>(gameError.occupied)
+<span class="k">match</span> r {
+    <span class="f">success</span>(u) =&gt; { <span class="f">println</span>(<span class="c">"成功了"</span>) }
+    <span class="f">failure</span>(e) =&gt; { <span class="f">println</span>(<span class="c">"失败："</span>, e) }      <span class="c">// e 就是那个错误枚举</span>
+}</code></pre>
+<h4 id="一页速查-拿到一个-option-result-之后能干什么">一页速查：拿到一个 <code>option</code> / <code>result</code> 之后能干什么</h4>
+<pre class="lang-extc"><code><span class="c">// ① 造一个 —— 裸写的 `some` / `none` / `success` / `failure` 在**类型已知**的四个</span>
+<span class="c">//    位置都认：return、带标注的 var、赋值、实参（类型不清楚就要写全名）</span>
+<span class="k">fn</span> <span class="f">find</span>(...) -&gt; <span class="t">option</span>&lt;<span class="t">i32</span>&gt; { <span class="k">return</span> <span class="f">some</span>(<span class="n">3</span>) }        <span class="c">// 有</span>
+<span class="k">fn</span> <span class="f">find</span>(...) -&gt; <span class="t">option</span>&lt;<span class="t">i32</span>&gt; { <span class="k">return</span> none }           <span class="c">// 没有（括号也能省）</span>
+
+<span class="c">// ② 用的时候只有两招：</span>
+<span class="c">//    招数一：`match` —— **读值唯一的标准姿势**（穷尽检查：少写一个变体编不过）</span>
+<span class="k">match</span> <span class="f">find</span>(<span class="n">3</span>) {
+    <span class="f">some</span>(v) =&gt; { <span class="f">println</span>(<span class="c">"找到了 "</span>, v) }
+    none    =&gt; { <span class="f">println</span>(<span class="c">"没有"</span>) }
+}
+
+<span class="c">//    招数二：`?` —— 不成功我就不干了（顺着往上抛）</span>
+<span class="k">let</span> v = <span class="f">find</span>()?          <span class="c">// 成功 → v 是里面的值；失败/没有 → 顺着往上抛</span>
+                         <span class="c">//   （本函数的返回类型必须装得下那个失败）</span></code></pre>
+<h4 id="读值的三个记号-那一族-全是-编译器-提供的语法-不是库">读值的三个记号（<code>?</code> 那一族，全是<strong>编译器</strong>提供的语法，不是库）</h4>
+<table><thead><tr><th>记号</th><th>意思</th><th>代价</th></tr></thead><tbody><tr><td><code>match</code></td><td>分支，穷尽检查</td><td>零</td></tr><tr><td><code>e?</code></td><td>不成功就顺着往上抛</td><td>零</td></tr><tr><td><strong><code>e ?? 兜底</code></strong></td><td>可能没有就兜底（<code>?ref</code> 也能用：null 就换一个）</td><td>零（C 三元，<strong>只算一边</strong>）</td></tr><tr><td><strong><code>e!</code></strong></td><td><strong>我签字</strong>：直接给我（没有值/是 null 就算我说错了）</td><td>零（<strong>一行检查都不生成</strong>）</td></tr></tbody></table>
+<pre class="lang-extc"><code><span class="k">let</span> v = opt ?? -<span class="n">1</span>                 <span class="c">// valueOr 就是它 —— 而且对所有 T 通用</span>
+<span class="f">println</span>(opt! + <span class="n">1</span>)                 <span class="c">// 我保证有值（签字，无检查）</span>
+<span class="f">println</span>(p!.value)                 <span class="c">// ?ref：我知道非空</span></code></pre>
+<p>⇒ 所以 <strong>prelude 里不需要 <code>unwrap()</code> / <code>valueOr</code> / <code>has</code> / <code>ok</code></strong> —— 那些名字当年存在，只是因为当时 <code>match</code> 不了、也没有 <code>??</code> / <code>!</code> （也因此<strong>不用</strong>去给枚举加方法、也不用泛型自由函数：语法糖把这件事解决掉了）</p>
+<p><code>!</code> 是"<strong>错了算我的</strong>"，不是"宽松版检查"：真没有值就是 UB。 想要会报错的那种，就自己写 <code>match</code> + 你想要的失败处理</p>
+<p><code>?</code> 就是「<strong>不成功我就不干了</strong>」。它在<strong>四个位置</strong>合法（见下节）。</p>
+<p>用<strong>关联函数</strong>构造：写在 <code>struct</code> 体内但<strong>不带 <code>self</code></strong> 的函数， 调用时类型写全（不靠上下文猜，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a> 定案 27/29）：</p>
+<pre class="lang-extc"><code><span class="k">struct</span> box&lt;T&gt; {
+    value: T
+    <span class="k">fn</span> <span class="f">make</span>(v: T) -&gt; box&lt;T&gt; { <span class="k">return</span> { value: v } }   <span class="c">// 关联函数</span>
+}
+<span class="k">let</span> b = box&lt;<span class="t">i32</span>&gt;::<span class="f">make</span>(<span class="n">5</span>)</code></pre>
+<h4 id="在-return-位置上可以-裸写-构造器-定案-49">在 <code>return</code> 位置上可以<strong>裸写</strong>构造器（定案 49）</h4>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">at</span>(...) -&gt; <span class="t">option</span>&lt;<span class="t">i32</span>&gt; {
+    <span class="k">if</span> x &lt; <span class="n">0</span> { <span class="k">return</span> <span class="f">none</span>() }               <span class="c">// ← 不用写 option<i32>::none()</span>
+    <span class="k">return</span> <span class="f">some</span>(b.cell[y][x])
+}
+
+<span class="k">fn</span> <span class="f">place</span>(...) -&gt; <span class="t">result</span>&lt;<span class="t">unit</span>, gameError&gt; {
+    <span class="k">if</span> 那格有子 { <span class="k">return</span> <span class="f">failure</span>(gameError.occupied) }
+    <span class="k">return</span> <span class="f">success</span>(<span class="t">unit</span> {})
+}</code></pre>
+<p><strong>类型从函数签名里写好的返回类型来</strong> —— 这不是"推导"： 编译器<strong>没有猜</strong>任何东西，它读的是你自己写的那一行 <code>-&gt; result&lt;unit, gameError&gt;</code>。 省掉的纯粹是重复劳动</p>
+<p>只有<strong>这四个名字</strong>（<code>success</code> / <code>failure</code> / <code>some</code> / <code>none</code>），而且<strong>类型必须是已知的</strong> —— 能认的四个位置：<strong><code>return</code> / 带标注的 <code>var</code> / 赋值 / 实参</strong>。 类型不清楚（比如裸的 <code>var x = some(1)</code>）就照旧走普通查找，报"未定义的名字"。 名字被用户自己的函数占着时也照旧走普通查找</p>
+<h3 id="失败就顺着往上抛"><code>?</code>：失败就顺着往上抛</h3>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">placeLine</span>(b: <span class="k">ref</span> board, y: <span class="t">i32</span>, from: <span class="t">i32</span>, to: <span class="t">i32</span>) -&gt; <span class="t">result</span>&lt;<span class="t">unit</span>, gameError&gt; {
+    <span class="k">var</span> x: <span class="t">i32</span> = from
+    <span class="k">while</span> x &lt;= to {
+        <span class="f">place</span>(b, x, y, <span class="n">1</span>)?           <span class="c">// ← 任何一步失败，整行就失败（可见、无栈展开）</span>
+        x = x + <span class="n">1</span>
+    }
+    <span class="k">return</span> <span class="t">result</span>&lt;<span class="t">unit</span>, gameError&gt;::<span class="f">success</span>(<span class="t">unit</span> {})
+}</code></pre>
+<p><strong>四个合法位置</strong>（<code>?</code> 要在语句级展开成「求值一次 + 判断 + return」）：</p>
+<table><thead><tr><th>写法</th><th>意思</th></tr></thead><tbody><tr><td><code>f()?</code></td><td>这一步必须成功，否则整串失败</td></tr><tr><td><code>let x = e?</code></td><td>取出载荷</td></tr><tr><td><code>x = e?</code></td><td>同上，赋给已有的地方</td></tr><tr><td><code>return e?</code></td><td>把载荷装回外层类型</td></tr></tbody></table>
+<p><strong>载荷类型可以不同</strong>（里层 <code>result&lt;i64, E&gt;</code> 放进返回 <code>result&lt;point, E&gt;</code> 的函数）， <strong>错误类型必须相同</strong> —— <code>?</code> 是原样转发，不编造转换。</p>
+<p>别的写法（<code>f(e? + 1)</code>）会<strong>报错</strong>，不会生成编不过的 C。</p>
+<p><strong><code>?</code> 的载荷可以有 <code>ref</code> / 视图</strong>（<code>option&lt;slice&lt;u8&gt;&gt;</code>、<code>result&lt;slice&lt;u8&gt;, E&gt;</code> 都行）—— 第三刀把 <code>option</code>/<code>result</code> 改成普通枚举之后就自然成立了（tag 0 的载荷根本不存在）。</p>
+<p>已知限制：<code>?</code> 是<strong>原样转发</strong>，所以里层的错误类型必须跟外层<strong>一模一样</strong>； 而且 <code>?</code> 只在上面那四个位置合法（<code>f(e? + 1)</code> 要自己拆成两句）。</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="03-lexical.html">← 2. 词法</a> · <a href="05-vars.html">4. 变量与声明 →</a></p>
+<div class="pn"><a href="03-lexical.html">← 2. 词法</a> <a href="05-vars.html">4. 变量与声明 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

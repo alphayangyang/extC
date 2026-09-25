@@ -7,6 +7,7 @@
  * borrow rules themselves live in check_escape.c.
  */
 
+#include "modules.h"   /* modulesMethodHint: "no method" says which module to import */
 #include <stdlib.h>
 #include "check_internal.h"
 
@@ -774,6 +775,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 ckError(c, e->line, bufCstr(&note),
                         "struct `%s` has no field `%s`", DN(sd), e->u.field.name);
                 return ttError(tt);
+            }
+            /* `@private` storage belongs to the module that declares it. This is the rule that
+             * keeps a container's raw storage out of reach: `s.buf[0..n]` from another module
+             * would be a view into pool storage, and a view that can be stored is the hole the
+             * pool tier closes by never handing one out (T4 / ruling #89). */
+            {
+                const char *home = c->curFunc ? c->curFunc->modName : NULL;
+                if (fd->isPrivate && sd->modName != home) {
+                    ckError(c, e->line,
+                            "Storage is private to the module that declares it; use the type's"
+                            " own methods, which decide what may be lent out and for how long.",
+                            "field `%s` of `%s` is private to module `%s`",
+                            fd->name, DN(sd), sd->modName ? sd->modName : "this file");
+                    return ttError(tt);
+                }
             }
             e->field = fd;
             /* A field type may mention type parameters; substitute the receiver's type
@@ -2026,6 +2042,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *rb = ttBase(recvT);
 
             FuncDef *f = findMethod(rb, e->u.method.name);
+            if (f && f->isPrivate) {
+                const char *home = c->curFunc ? c->curFunc->modName : NULL;
+                if (f->modName != home) {
+                    ckError(c, e->line,
+                            "`@private` members are reachable only from the module that declares"
+                            " them; if this is meant to be public, drop the annotation.",
+                            "`%s` is private to module `%s`", e->u.method.name,
+                            f->modName ? f->modName : "this file");
+                    return ttError(tt);
+                }
+            }
             if (!f) {
                 /* A method call on a type parameter (`#57`): `T` is opaque on the template, so
                  * which method this means is only known per instance. Record it and hand back
@@ -2048,16 +2075,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 StructDef *sd = structOf(rb);
                 Buf note;
                 bufInit(&note, c->arena);
+                /* An `impl` block in a module that was not imported is the usual reason a
+                 * method is "missing": say which module declares it (stdlib/INDEX). */
+                const char *provider = modulesMethodHint(e->u.method.name);
                 if (sd) {
                     bufPrintf(&note, "methods of %s:", DN(sd));
                     if (sd->methods.len == 0) bufPuts(&note, " (none)");
                     for (size_t i = 0; i < sd->methods.len; i++)
                         bufPrintf(&note, " %s",
                                   (*(FuncDef **)vecAt(&sd->methods, i))->name);
-                    bufPuts(&note, "; methods must be declared inside their `struct`");
+                    bufPuts(&note, "; declare it inside its `struct`, or attach it with an"
+                                  " `impl` block");
                 } else {
-                    bufPuts(&note, "only struct values have methods");
+                    bufPuts(&note, "only struct values and builtin scalars have methods");
                 }
+                if (provider)
+                    bufPrintf(&note, "; method `%s` is declared by module `%s` -- add `use %s`",
+                              e->u.method.name, provider, provider);
                 ckError(c, e->line, bufCstr(&note), "no method `%s` on `%s`",
                         e->u.method.name, typeStr(c, rb ? rb : recvT));
                 return ttError(tt);
@@ -2220,6 +2254,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     ckError(c, fi->value->line, bufCstr(&note),
                             "struct `%s` has no field `%s`", DN(sd), fi->name);
                     continue;
+                }
+                /* Writing a private field is as much a breach as reading one: a literal that can
+                 * set a container's storage from outside lets anyone plant a fabricated pointer
+                 * there. Assignment goes through the field path, which is checked; a literal does
+                 * not, so it needs its own check. */
+                {
+                    const char *home = c->curFunc ? c->curFunc->modName : NULL;
+                    if (fd->isPrivate && sd->modName != home) {
+                        ckError(c, fi->value->line,
+                                "Construct the value through the type's own constructor: storage"
+                                " is the type's business.",
+                                "field `%s` of `%s` is private to module `%s`", fd->name, DN(sd),
+                                sd->modName ? sd->modName : "this file");
+                        continue;
+                    }
                 }
                 Type *want = fd->type;
                 if (st->kind == TY_GENERIC)

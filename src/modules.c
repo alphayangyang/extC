@@ -66,6 +66,46 @@
  */
 
 
+/* The module that declares `impl` method `method`, read from `stdlib/INDEX`; NULL when the
+ * index is missing or does not know the name.
+ *
+ * Why this exists: an `impl` block is only visible once its module is **imported** (semantic
+ * import), so "no method `parseJSON` on `string`" almost always means "you did not import the
+ * module that declares it" -- the single most useful thing a diagnostic can add. Loading
+ * candidate modules to find out would undo the isolation that makes imports semantic, so the
+ * answer is precomputed by `tools/gen_index.py`, committed as `stdlib/INDEX`, and read here
+ * **once, on the first miss, on an error path only**. `check.sh` fails when the file is stale. */
+static const char *stdDirSeen = NULL;
+const char *modulesMethodHint(const char *method) {
+    static char names[256][96];
+    static char mods[256][96];
+    static int  n = -1;
+    if (n < 0) {
+        n = 0;
+        if (stdDirSeen && method) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s/INDEX", stdDirSeen);
+            FILE *f = fopen(path, "rb");
+            if (f) {
+                char line[256];
+                while (n < 256 && fgets(line, sizeof line, f)) {
+                    if (line[0] == '#') continue;
+                    char *tab1 = strchr(line, '\t'); if (!tab1) continue; *tab1++ = '\0';
+                    char *tab2 = strchr(tab1, '\t'); if (!tab2) continue; *tab2++ = '\0';
+                    char *nl = strchr(tab2, '\n');   if (nl) *nl = '\0';
+                    snprintf(names[n], sizeof names[n], "%.95s", line);
+                    snprintf(mods[n],  sizeof mods[n],  "%.95s", tab2);
+                    n++;
+                }
+                fclose(f);
+            }
+        }
+    }
+    if (!method) return NULL;
+    for (int i = 0; i < n; i++) if (strcmp(names[i], method) == 0) return mods[i];
+    return NULL;
+}
+
 /* Report whether `path` can be opened for reading. */
 static bool fileExists(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -1643,6 +1683,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                 buf[n] = '\0';
                 char *slash = strrchr(buf, '/');
                 if (slash) { *slash = '\0'; L.stdDir = arenaPrintf(a, "%s/../stdlib", buf); }
+                    stdDirSeen = L.stdDir;   /* the hint lookup below reads INDEX from here */
             }
         }
     }

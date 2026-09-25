@@ -1,0 +1,19 @@
+/* 一个把存储与助手方法**留给自己**的模块（`@private`，方法级 + 字段级）。
+ *
+ * 这个模块是判据用的：它证明三件事 ——
+ *   ① 同模块内可以读私有字段、调私有方法（`make` / `total` 就是）；
+ *   ② 别的模块读私有字段、调私有方法、或在结构体字面量里写私有字段，都是编译错误；
+ *   ③ 公开入口（`probe`）不受影响。
+ * 字段私有正是"存储不外借"这条不变量的语言级落点：容器把 `buf`/`vals` 留给自己，
+ * 外面就只能走它愿意提供的方法（POOLS.md 5.4 / 裁决 #89）。 */
+struct counter {
+    @private seen: i64
+    label: i64
+
+    fn bump(self: mut ref counter) -> i64 { self.seen = self.seen + i64(1)  return self.seen }
+    @private fn zero(self: ref counter) -> i64 { return self.seen * i64(0) }
+    fn total(self: ref counter) -> i64 { return self.seen + self.zero() }
+}
+
+fn make(start: i64) -> counter { return counter { seen: start  label: i64(7) } }
+fn probe() -> i64 { var c: counter = make(i64(5))  c.bump()  return c.total() + c.label }

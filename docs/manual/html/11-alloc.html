@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`） · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li class="cur"><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §7.7</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="10-nullref.html">← 7.6 可空引用 <code>?ref T</code>（定案 ㊻）</a> · <a href="12-driver.html">7.8 驱动开关（<code>-O</code> / <code>-march</code>） →</a></p>
+<hr>
+<h1 id="7-7-分配-new-new-t-new-n-t-new-t-n">7.7 分配：<code>new</code>（<code>new T</code> / <code>new [N]T</code> / <code>new T[n]</code>）</h1>
+<pre class="lang-extc"><code><span class="k">var</span> n: <span class="k">mut</span> <span class="k">ref</span> node     = <span class="k">new</span> node        <span class="c">// 一个 T 的**地方**（清零）</span>
+<span class="k">var</span> a: <span class="k">mut</span> <span class="k">ref</span> [<span class="n">3</span>]<span class="t">i32</span>   = <span class="k">new</span> [<span class="n">3</span>]<span class="t">i32</span>      <span class="c">// 定长数组的地方</span>
+<span class="k">var</span> buf: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">i32</span>&gt; = <span class="k">new</span> <span class="t">i32</span>[<span class="n">1000</span>]   <span class="c">// **n 个元素** —— 造 buffer 就是它</span></code></pre>
+<p><strong>三条规矩</strong>（都是一句话）：</p>
+<table><thead><tr><th>规矩</th><th>为什么</th></tr></thead><tbody><tr><td><strong>分配出来的一定是零</strong></td><td>跟定案 8（默认零初始化）同源 ⇒ 没有 C 那种 <code>malloc</code>/<code>calloc</code> 两条路的陷阱（新 <code>node</code> 的 <code>next</code> 天生是 <code>null</code>、新 buffer 全是 0）</td></tr><tr><td>活到<strong>当前块结束</strong></td><td>arena 按块细化（每只 <code>{}</code> 一只）⇒ 循环里 <code>new</code> <strong>不会涨内存</strong></td></tr><tr><td>引用深度 = <strong>当前块深度</strong></td><td>跟"哪只 arena"是同一个数 ⇒ 引用逃不出它所在的块</td></tr></tbody></table>
+<p>第三条有个<strong>放宽</strong>（放松方向 = 安全方向）：存进<strong>更外层</strong>的地方就<strong>提升</strong>那一层 —— 见下</p>
+<p><strong>块级逃逸提升</strong>（定案 63）：把块里 <code>new</code> 出来的东西存到<strong>外面</strong>的变量里是 <strong>正常写法</strong>（循环里建链表就是它）⇒ 编译器不拒绝，而是<strong>把那只 arena 提升上去</strong>：</p>
+<pre class="lang-extc"><code><span class="k">var</span> head: ?<span class="k">ref</span> node = null
+<span class="k">while</span> cond {
+    <span class="k">var</span> n = <span class="k">new</span> node
+    n.next = head
+    head = n          <span class="c">// ← `head` 在函数体那层 ⇒ 这些节点活到**函数结束**</span>
+}</code></pre>
+<p>规则一句话：<code>new</code> 的层 = <strong>min(当前块深度, 所有目的地的层)</strong>（层越小 = 活得越久） - <strong>只往更深处存</strong>（同块内用一下就走）⇒ 一个数都不变 ⇒ 循环里照样不涨内存 - 往<strong>更外层</strong>存 ⇒ 提升；代价是这些节点活到那一层结束（最坏 = 一个自动清理的堆） - <strong>提不动的照样报错</strong>（比如把借来的引用存出去）⇒ 不会静默放行</p>
+<h3 id="复用一块存储-overwrite-定案-65">复用一块存储：<code>@overwrite</code>（定案 65）</h3>
+<p>从"有 GC 的语言"搬过来的写法，在 extC 里<strong>本质是泄漏</strong>：</p>
+<pre class="lang-extc"><code><span class="k">while</span> i &lt; N { <span class="k">var</span> n = <span class="k">new</span> node   slot.v = n   i = i + <span class="n">1</span> }   <span class="c">// 每轮一块，攒到函数结束</span></code></pre>
+<p>（实测 1e7 轮 = <strong>159.7MB</strong>，而复用是 <strong>1.7MB</strong>）</p>
+<p>根因不是"分析不够聪明"：<strong>"引用"的含义</strong>就是"我活多久它就得活多久" —— 槽位活到函数结束 ⇒ 它的内容也必须活那么久 想更小就得知道"谁已经不可达" = GC（不做）</p>
+<p>⇒ 唯一的路是<strong>把意图写出来</strong>：<code>@overwrite</code> 说「<strong>这块存储我复用，上一轮里面的东西我不要了</strong>」 <strong>写法只多一个修饰符</strong>：</p>
+<pre class="lang-extc"><code><span class="k">while</span> i &lt; N {
+    @overwrite <span class="k">var</span> n = <span class="k">new</span> node      <span class="c">/* 存储只有一块：第一次分配、之后每次清零复用 */</span>
+    n.value = i
+    slot.v = n
+    i = i + <span class="n">1</span>
+}</code></pre>
+<table><thead><tr><th>写法</th><th>存储</th><th>分配次数</th><th>内存上界</th></tr></thead><tbody><tr><td><code>@overwrite var n = new T</code></td><td>一块</td><td>1</td><td>常量</td></tr><tr><td><code>@overwrite var b = new [N]T</code>（定长缓冲）</td><td>一块</td><td>1</td><td>常量（<strong>不占栈</strong>）</td></tr><tr><td><code>@overwrite var b = new T[k]</code>（运行时长度）</td><td><code>{ptr, cap}</code></td><td>只在"比见过的都大"时<strong>翻倍</strong></td><td><strong>≤ 2 × 见过的最大长度</strong>（与迭代数无关）</td></tr></tbody></table>
+<p><strong>规矩</strong>： - 右边<strong>必须是 <code>new</code></strong>（它修饰的是<strong>分配</strong>；值/局部/调用结果都报错） - 必须 <code>var</code>（每次执行都要重新绑到那块存储上，而且通常还要往里写） - <strong>懒分配</strong>（循环一次都不跑 ⇒ 一块都不分配）；<strong>清零契约跟 <code>new</code> 一样</strong> - 存储住在本<strong>帧</strong>（递归<strong>各激活一块</strong>）；<code>return</code> / 出参照旧走逃生规则 - <strong>它是一句承诺</strong>：留着旧指针的人会发现"历史里每一项都指向同一块" ⇒ 想留历史就别用</p>
+<p><strong>"这段循环占多少内存"怎么估</strong>（三行，记住就够）：</p>
+<pre class="lang-extc"><code><span class="k">while</span> … { <span class="k">var</span> n = <span class="k">new</span> node }                  <span class="c">// ≈ 16B × 迭代数   （每轮一块，出块回收？不 —— 见下）</span>
+<span class="k">while</span> … { @overwrite <span class="k">var</span> n = <span class="k">new</span> node }       <span class="c">// ≈ 16B            （复用）</span>
+<span class="k">while</span> … { <span class="f">setIn</span>(n, …) }                       <span class="c">// 0                （一个都不分配，最快）</span></code></pre>
+<blockquote>第一行只有在"分配的东西<strong>没被存到更外层</strong>"时才是每轮回收 存进循环外的槽位（<code>slot.v = n</code>）⇒ 那层 arena 到循环结束才释放 ⇒ 就是上面的 159.7MB</blockquote>
+<p>这跟 A3「逃逸提升」是<strong>两件事</strong>：A3 管"分配的东西要<strong>返回给调用者</strong>"（跨函数，靠隐藏参数 <code>__extc_home</code>，见 <code>examples/escape-promotion.extc</code>）；这里管"存进<strong>本函数</strong>更外层的某个地方" （<code>examples/store-promotion.extc</code>）</p>
+<p><strong>跨函数怎么传</strong>（逃逸提升 / A3，2026-09-20 三半全齐）：</p>
+<table><thead><tr><th>想干的事</th><th>写法</th><th>谁决定它活多久</th></tr></thead><tbody><tr><td>函数里建好东西<strong>返回</strong></td><td><code>fn build() -&gt; mut ref node { … return head }</code></td><td>调用者：自己有家传家、没有传当前块</td></tr><tr><td>往<strong>调用者给的容器</strong>里塞（出参）</td><td><code>fn push(l: mut ref list, v: i64) { … l.head = cell }</code></td><td><strong>拥有 <code>l</code> 的那只 arena</strong>（= <code>ARENA.md</code> §1.2：最浅的 <code>mut ref</code> 实参）</td></tr><tr><td>纯草稿（不外传）</td><td>函数里 <code>new</code> 但不写进参数、也不返回</td><td><strong>本函数当前块</strong> ⇒ 循环里不涨</td></tr></tbody></table>
+<p><strong>规则 ④</strong>：传给 <code>ref</code>/<code>mut ref</code> 的实参，它指的东西必须<strong>活得 ≥ 这一刀的家 arena</strong> —— 因为被调函数可能把它存进那只 arena。传<strong>更深的局部</strong>会被当场拦下：</p>
+<pre class="lang-extc"><code>error: argument <span class="n">2</span> of `stash` points into a deeper scope (depth <span class="n">2</span>)
+       than the arena this call may store it in (depth <span class="n">1</span>)</code></pre>
+<p><strong>2026-09-22 起：这条规矩改成「在调用点判」</strong>（定案 67）—— 因为<strong>被调者一次编译</strong>， 它根本不知道调用者传来的是长寿还是短命 ⇒ 以前它只能<strong>一律拒</strong> ⇒ 一整族正常写法被误拒：</p>
+<pre class="lang-extc"><code><span class="k">var</span> t: <span class="t">varArray</span>&lt;<span class="t">slice</span>&lt;<span class="t">u8</span>&gt;&gt; = <span class="t">varArray</span>&lt;<span class="t">slice</span>&lt;<span class="t">u8</span>&gt;&gt;::<span class="f">withCap</span>(<span class="n">4</span>)   <span class="c">// 字符串表</span>
+t.<span class="f">push</span>(<span class="c">"abc"</span>)                                                  <span class="c">//   （以前：编译错误）</span>
+<span class="k">var</span> g: <span class="t">varArray</span>&lt;<span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;&gt; = <span class="t">varArray</span>&lt;<span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;&gt;::<span class="f">withCap</span>(<span class="n">4</span>)   <span class="c">// 动态邻接表</span>
+<span class="k">fn</span> <span class="f">stash</span>(dest: <span class="k">mut</span> <span class="k">ref</span> T, v: T) { *dest = v }                  <span class="c">// 通用"存起来"</span></code></pre>
+<p>现在：<strong>被调者只发布"我会把什么存到哪里"，调用点拿实际实参代入求解</strong> ⇒ 判据变成<strong>调用点上这个实参活得够不够久</strong>：</p>
+<table><thead><tr><th>写法</th><th>结果</th></tr></thead><tbody><tr><td><code>stash(ref outer, local[..])</code> —— <code>local</code> 与 <code>outer</code> <strong>同一个块</strong></td><td>合法（同层 ⇒ 安全 <code>tests/asan/borrowed-stash-sameframe.extc</code>）</td></tr><tr><td><code>stash(ref outer, local[..])</code> —— <code>local</code> 在<strong>更深的块</strong>里</td><td>编译错误（<code>tests/errors/stash_view_from_deeper.extc</code>）</td></tr><tr><td><code>stash(ref slot, i)</code> —— 值不是引用</td><td>合法（没有引用可悬垂）</td></tr></tbody></table>
+<p>拿不准的时候（<strong>递归 / 互相调用 / 有解析不出来的东西</strong> ⇒ 效果摘要算不完整）⇒ 调用点<strong>保守拒</strong>， 消息会说清是"分析不出来"而不是"一定错" —— 这是<strong>故意的</strong>：宁可误拒，不可漏 UB 处方：把那个助手函数的体<strong>写简单些</strong>（让摘要算得出来），或让值活到调用点那一层</p>
+<p>（旧限制，已解）<code>new</code> 出来的东西以前交不出去 —— 现在上面三种都行：<code>fn make() -&gt; mut ref node { return new node }</code> 是<strong>编译错误</strong>（它活不过当前块）。跨函数接线要等 <strong>A3 逃逸提升</strong> （今天要在函数间传递，就让<strong>调用者</strong>提供 buffer/<code>mut ref</code> —— 这也是 <code>IO.md</code> 的设计）</p>
+<p><code>new T</code> 的 <code>T</code> 必须是<strong>具体类型</strong>（模板里的 <code>T</code> 大小不知道 ⇒ 报错）</p>
+<p><code>new T[n]</code> 里的 <code>n</code> <strong>只求值一次</strong>（不纯时编译器自己引临时变量）。</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="10-nullref.html">← 7.6 可空引用 <code>?ref T</code>（定案 ㊻）</a> · <a href="12-driver.html">7.8 驱动开关（<code>-O</code> / <code>-march</code>） →</a></p>
+<div class="pn"><a href="10-nullref.html">← 7.6 可空引用 `?ref T`（定案 ㊻）</a> <a href="12-driver.html">7.8 驱动开关（`-O` / `-march`） →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

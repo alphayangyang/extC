@@ -37,4 +37,8 @@
 bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                  const char *rootPath, Vec *searchDirs, Vec *outCtxs);
 
+/* The module that declares `impl` method `method` (from stdlib/INDEX), or NULL.
+ * Used by the `no method` diagnostic to say which module to import. */
+const char *modulesMethodHint(const char *method);
+
 #endif

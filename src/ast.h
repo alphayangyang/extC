@@ -413,6 +413,10 @@ struct FieldDef {
     const char *name;
     Type       *type;
     int         line;
+    /* `@private`: reachable only from the module that declares it. Storage is the reason this
+     * exists as much as behaviour is -- a public `buf`/`vals` hands the reader a view into pool
+     * storage, which is exactly what the pool tier forbids (POOLS.md 5.4, ruling #89). */
+    bool        isPrivate;
 };
 
 typedef struct {

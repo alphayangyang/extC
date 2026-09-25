@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. 错误信息 · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li class="cur"><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §9.</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="14-builtins.html">← 8. 内建函数</a> · <a href="16-unimplemented.html">10. 已定案、但还没实现 →</a></p>
+<hr>
+<h1 id="9-错误信息">9. 错误信息</h1>
+<p>错误带<strong>文件、行、列、源码上下文和插入符</strong>：</p>
+<pre class="lang-extc"><code>examples/bad.extc:<span class="n">3</span>:<span class="n">17</span>: error: cannot assign to `x`, which is a `<span class="k">let</span>`
+      x = <span class="n">2</span>
+          ^
+  note: <span class="k">use</span> `<span class="k">var</span>` to allow reassignment (`<span class="k">let</span>` is an immutable binding)</code></pre>
+<p>现在检查这些，<strong>全部由 extC 自己报，不再漏给 gcc</strong>：</p>
+<p><strong>名字与结构</strong> - 未定义名字、未知函数、未知字段、未知类型 - 重名的 struct / 函数 / 字段 - 参数个数不符 - 给 <code>let</code> 赋值 - 裸 <code>{}</code> 推导不出类型</p>
+<p><strong>类型（T2）</strong> - 初始化式 / 赋值 / 实参 / 返回值 / 结构体字段的类型不符 - 有损转换（收窄） - 整数字面量超出目标类型范围 - 条件不是 <code>bool</code> - 两种类型没有公共类型的运算</p>
+<p><strong>结构 / 枚举 / 引用（T3）</strong> - 重名的 struct / type / 函数 / 字段 / 方法 / 变体 - 字段和方法同名 - 不存在的变体（<code>status.nope</code>） - <code>self</code> 不在 struct 体内、<code>self</code> 类型不对、<code>self</code> 不是首参数 - 对 <code>let</code> 取引用、对不是变量/字段的东西取引用 - 自由函数的 <code>ref</code> 实参没写 <code>ref</code> - 零初始化 <code>ref T</code></p>
+<p><strong>只报第一个错误</strong>，没有错误恢复。</p>
+<hr>
+<h3 id="9-1-警告-不是错误-w-可关">9.1 警告（不是错误，<code>-w</code> 可关）</h3>
+<p><strong>没被用到的参数</strong>。参数是签名的一部分 —— 编译器<strong>不能</strong>替你删掉它（调用点会对不上）， 所以它选择：<strong>生成物里照常保留并标 <code>unused</code></strong>（C 编译器保持安静），<strong>同时告诉你</strong>：</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">pickBigger</span>(a: <span class="k">ref</span> <span class="t">i32</span>, b: <span class="k">ref</span> <span class="t">i32</span>) -&gt; <span class="k">ref</span> <span class="t">i32</span> {
+    <span class="k">return</span> a                        <span class="c">// ← b 一次都没读过</span>
+}
+<span class="c">// warning: parameter `b` is never used</span>
+<span class="c">//   note: a parameter belongs to the signature, so it is kept and marked `unused` in the generated C</span></code></pre>
+<p>判据是<strong>"这个绑定到底有没有被读过"</strong>（比的是绑定本身，不是名字 —— 所以 <code>let b = ...</code> 这种遮蔽不会被当成使用）； <code>self</code> 不报（忽略接收者的方法很常见），编译器自己加的隐藏参数也不报 （比如出参函数那只 home arena 参数 —— 它现在只有在函数<strong>真的用</strong>它时才会生成）。</p>
+<blockquote>这条判据 2026-09-26 修过一族<strong>误报</strong>：走查只看了表达式的一部分，于是 <code>a[lo..hi]</code> 的上下界、<code>T(x)</code> 的操作数、以及<code>T(x.m())</code> 里的方法接收者<strong>都不算"用过"</strong> —— <code>examples/gomoku-board.extc</code> 的 <code>lo</code>/<code>hi</code>、<code>examples/growth-factor.extc</code> 与 <code>bench/stress/stress.extc</code> 的 <code>r</code> 全被误报。修法是把"问表达式里出现了什么"的走查<strong>全部</strong> 补上这些形状（切片三格 + 转换 + 聚合三形状），并把四格都钉进 <code>tests/warnings/silent/params-used-deeply.extc</code></blockquote>
+<p><strong>弃置的 <code>print</code> / <code>println</code></strong>（见第 8 节）：每次调用一条，<code>-w</code> 能关</p>
+<pre class="lang-extc"><code><span class="f">println</span>(<span class="c">"hi"</span>)
+<span class="c">// warning: `println` is deprecated</span>
+<span class="c">//   note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x`</span>
+<span class="c">//         (`println(x)` is `io::cout << x << "\n"`)</span></code></pre>
+<p>两个警告都<strong>不改退出码</strong>（编译照常成功），<code>-w</code> 一关<strong>全部</strong>消失； 正例语料上<strong>一条都不许响</strong>（<code>tests/warnings/run.sh</code> 的 ②，弃置提醒单列计数、不算误报）。</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="14-builtins.html">← 8. 内建函数</a> · <a href="16-unimplemented.html">10. 已定案、但还没实现 →</a></p>
+<div class="pn"><a href="14-builtins.html">← 8. 内建函数</a> <a href="16-unimplemented.html">10. 已定案、但还没实现 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

@@ -719,7 +719,7 @@ match e {
 | 文档 | 回答什么 |
 |---|---|
 | **`SPEC.md`（本文）** | **extC 是什么、为什么** |
-| [`MANUAL.md`](../docs/MANUAL.md) | 怎么写 extC 程序（**只写已实现的**）|
+| [`MANUAL.md`](../docs/manual/README.md) | 怎么写 extC 程序（**只写已实现的**）|
 | [`DESIGN.md`](../docs/DESIGN.md) | 原则的完整推论（P / P′ / P″ 的展开）|
 | [`DECISIONS.md`](../docs/DECISIONS.md) | 哪条定了（编号定案）、哪条还欠着 |
 | [`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md) | 自举路线、六步计划、ISO C 边界、沙箱 |

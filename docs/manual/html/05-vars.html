@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. 变量与声明 · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li class="cur"><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §4.</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="04-types.html">← 3. 类型</a> · <a href="06-expr.html">5. 表达式与运算符 →</a></p>
+<hr>
+<h1 id="4-变量与声明">4. 变量与声明</h1>
+<pre class="lang-extc"><code><span class="k">let</span> name: Type = 表达式      <span class="c">// 不可变绑定</span>
+<span class="k">var</span> name: Type = 表达式      <span class="c">// 可变变量</span>
+<span class="k">var</span> name: Type               <span class="c">// 零初始化（定案 8）</span></code></pre>
+<ul><li><strong>类型标注可以省</strong>（局部变量）：<code>var y = 4</code> 从初始化式推导。</li><li><strong>省略初始化式就必须写类型</strong>：<code>var b: board</code> 会<strong>自动清零</strong> —— C 里最大的 UB 来源之一就是「读到未初始化内存」，它只能在运行时发现； 默认清零把它变成编译期就能保证的东西。</li><li><code>ref T</code> <strong>不能零初始化</strong> —— 它是不可为空的引用，没有「零值」。</li><li><strong><code>let</code> 是只读的，而且管的是「根」</strong> —— 不只是不能重新绑定， <strong>也不能透过它写字段 / 数组元素 / 视图元素</strong>：</li></ul>
+<pre class="lang-extc"><code><span class="k">let</span> x = <span class="n">1</span>
+x = <span class="n">2</span>              <span class="c">// error: cannot assign to `x`, which is a `let`</span>
+
+<span class="k">let</span> p: point = { x: <span class="n">1</span>, y: <span class="n">2</span> }
+p.x = <span class="n">9</span>            <span class="c">// error: cannot write through `p`, which is a `let`</span>
+
+<span class="k">let</span> a: [<span class="n">3</span>]<span class="t">i32</span> = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+a[<span class="n">0</span>] = <span class="n">9</span>           <span class="c">// error: cannot write through `a`, which is a `let`</span>
+
+<span class="k">let</span> n = <span class="n">7</span>
+<span class="k">let</span> r = <span class="k">ref</span> n      <span class="c">// error: cannot take a reference through `n`, which is a `let`</span>
+                   <span class="c">//（`ref T` 是**可变**引用 —— 见 §7.5）</span></code></pre>
+<blockquote><strong>这条规则是「浅」的：它管名字，不管数据。</strong> 把 <code>let</code> 视图拷给一个 <code>var</code>、或者传进函数，那边照样能写同一块内存； 调用一个 <code>self: ref T</code> 的方法也算（<code>let p; p.moveBy(1)</code> 现在是允许的）。 要管到数据层，可变性就得进<strong>类型</strong>（Rust 的 <code>&amp;</code> / <code>&amp;mut</code>）—— 那是 week-4 引用规则的范围，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a> 定案 28。</blockquote>
+<pre class="lang-extc"><code><span class="k">var</span> b: board       <span class="c">// 所有字段清零</span>
+<span class="k">var</span> n: <span class="t">i32</span>         <span class="c">// 0</span>
+<span class="k">var</span> ok: <span class="t">bool</span>       <span class="c">// false</span></code></pre>
+<h3 id="作用域">作用域</h3>
+<p>块 <code>{ }</code> 引入新作用域，内层<strong>遮蔽</strong>外层。</p>
+<p><strong>同一层里 <code>let</code> 可以遮蔽 <code>let</code></strong> —— 因为 <strong><code>let</code> 是命名，不是存储</strong>：</p>
+<pre class="lang-extc"><code><span class="k">let</span> a: <span class="t">i32</span> = <span class="n">1</span>
+<span class="k">let</span> a: <span class="t">i32</span> = a + <span class="n">1</span>        <span class="c">// 新的名字指向新的值；右边那个 `a` 是上一个</span>
+<span class="k">let</span> a: <span class="t">i32</span> = a * <span class="n">10</span></code></pre>
+<ul><li>老的那个绑定<strong>还在</strong>，只是没名字了：谁指着它，谁还指着它 ``<code>extc var x: i32 = 7 var r = ref x let x: i32 = 99      // 新名字 println(r)           // 7   ← 老的那个 r = 100              // 写穿到老的那个 </code>``</li><li>遮蔽可以<strong>换类型</strong>（<code>let v: i32 = 1</code> 之后 <code>let v: slice&lt;u8&gt; = "hi"</code>）—— 赋值做不到这件事，正好说明它是新绑定</li><li>生成的 C 里第二个以后的名字改叫 <code>a__2</code>；<strong>extC 源码里的名字一个字都不改</strong>。</li></ul>
+<p><strong><code>var</code> 不行</strong>：<code>var</code> 声明的是<strong>存储</strong>，同一层两个同名 <code>var</code> 几乎肯定是想写 <code>a = ...</code> ⇒ 编译错误 （见 <code>tests/errors/redeclare_var.extc</code>）。参数按 <code>var</code> 算，所以 <code>let p = ...</code> 可以遮蔽参数， <code>var p = ...</code> 不行。</p>
+<p><strong>名字撞上 C 的关键字没关系</strong>：extC 里 <code>double</code> / <code>int</code> / <code>bool</code> 都只是普通名字 （extC 的类型叫 <code>f64</code> / <code>i32</code> / <code>bool</code>），生成的 C 里它们改叫 <code>double__c</code>，照样编得过、调得到</p>
+<h3 id="全局">全局</h3>
+<p>顶层 <code>let</code> / <code>var</code> 是全局（深度 0，活得比谁都长）。局部可以遮蔽全局。</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="04-types.html">← 3. 类型</a> · <a href="06-expr.html">5. 表达式与运算符 →</a></p>
+<div class="pn"><a href="04-types.html">← 3. 类型</a> <a href="06-expr.html">5. 表达式与运算符 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

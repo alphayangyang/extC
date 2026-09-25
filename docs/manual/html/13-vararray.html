@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**） · extC 手册</title>
+<style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+.side{position:fixed;top:0;left:0;width:280px;height:100vh;overflow:auto;padding:18px 14px;background:var(--side);border-right:1px solid var(--line)}
+.brand a{font-weight:700;font-size:19px;color:var(--fg);text-decoration:none}
+#q{width:100%;margin:12px 0;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.side .g{margin:14px 0 6px;font-size:12px;letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+.side ul{list-style:none;margin:0;padding:0}.side li a{display:block;padding:5px 9px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+.side li a:hover{background:var(--line)}.side li.cur a{background:var(--acc);color:#fff;font-weight:600}
+main{margin-left:280px;max-width:900px;padding:32px 40px 80px}
+.crumb{color:var(--mut);font-size:13px;margin-bottom:10px}
+h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}h2{font-size:23px;margin-top:1.6em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:18px;margin-top:1.4em}h4{font-size:16px}
+a{color:var(--acc)}code{background:var(--code);padding:.15em .35em;border-radius:4px;font:13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+pre code{background:none;padding:0;font-size:13px;line-height:1.55}
+.k{color:var(--k)}.t{color:var(--t)}.n{color:var(--n)}.f{color:var(--f)}.c{color:var(--c);font-style:italic}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+th{background:var(--side)}blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--acc);background:var(--side);color:var(--mut)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.pn{display:flex;justify-content:space-between;margin-top:3em;padding-top:1em;border-top:1px solid var(--line)}
+@media print{.side,#q{display:none}main{margin:0;max-width:none}}
+</style></head><body>
+<nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
+<input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
+<div class="g">上路</div><ul>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
+</ul>
+<div class="g">语言</div><ul>
+<li><a href="02-program.html">1. 程序结构</a></li>
+<li><a href="03-lexical.html">2. 词法</a></li>
+<li><a href="04-types.html">3. 类型</a></li>
+<li><a href="05-vars.html">4. 变量与声明</a></li>
+<li><a href="06-expr.html">5. 表达式与运算符</a></li>
+<li><a href="07-stmt.html">6. 语句</a></li>
+</ul>
+<div class="g">结构与内存</div><ul>
+<li><a href="08-struct.html">7. 结构体与方法</a></li>
+<li><a href="09-ref.html">7.5 引用：`ref` 是表达式</a></li>
+<li><a href="10-nullref.html">7.6 可空引用 `?ref T`（定案 ㊻）</a></li>
+<li><a href="11-alloc.html">7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a></li>
+<li><a href="12-driver.html">7.8 驱动开关（`-O` / `-march`）</a></li>
+<li class="cur"><a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a></li>
+</ul>
+<div class="g">标准库与工具</div><ul>
+<li><a href="14-builtins.html">8. 内建函数</a></li>
+<li><a href="15-errors.html">9. 错误信息</a></li>
+<li><a href="18-modules.html">12. 库与模块（2026-09-22 新增）</a></li>
+</ul>
+<div class="g">状态与示例</div><ul>
+<li><a href="16-unimplemented.html">10. 已定案、但还没实现</a></li>
+<li><a href="17-undecided.html">11. 还没定的</a></li>
+<li><a href="19-examples.html">13. 完整示例</a></li>
+</ul></nav>
+<main><div class="crumb">extC 手册 · §7.9</div>
+<p><strong><a href="README.html">索引</a></strong> · <a href="12-driver.html">← 7.8 驱动开关（<code>-O</code> / <code>-march</code>）</a> · <a href="14-builtins.html">8. 内建函数 →</a></p>
+<hr>
+<h1 id="7-9-动态数组-vararray-t-对标-std-vector-的-基础部分">7.9 动态数组 <code>varArray&lt;T&gt;</code>（对标 <code>std::vector</code> 的<strong>基础部分</strong>）</h1>
+<pre class="lang-extc"><code><span class="k">var</span> v: <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt; = <span class="t">varArray</span>&lt;<span class="t">i32</span>&gt;::<span class="f">withCap</span>(<span class="n">4</span>)
+v.<span class="f">push</span>(<span class="n">7</span>)                        <span class="c">// 满了自己扩（倍增）</span>
+<span class="f">println</span>(v.<span class="f">size</span>(), <span class="c">" "</span>, v.<span class="f">get</span>(<span class="n">0</span>) ?? -<span class="n">1</span>)</code></pre>
+<table><thead><tr><th>成员</th><th>说明</th></tr></thead><tbody><tr><td><code>varArray&lt;T&gt;::withCap(n)</code></td><td>造一个容量 n 的（关联函数，要写全类型）</td></tr><tr><td><code>size()</code> · <code>isEmpty()</code></td><td>长度</td></tr><tr><td><code>push(v)</code></td><td>尾部追加；满了<strong>倍增</strong>（0 ⇒ 先给 4）</td></tr><tr><td><code>pop() -&gt; ?T</code></td><td>空 ⇒ <code>none</code>（<strong>不 trap</strong> ⇒ 用 <code>??</code> 或 <code>match</code>）</td></tr><tr><td><code>get(i) -&gt; ?T</code></td><td>越界 ⇒ <code>none</code>（安全读）</td></tr><tr><td><code>set(i, v)</code></td><td>写；<code>i ≥ cap</code> ⇒ <strong>trap（带源码位置）</strong></td></tr><tr><td><code>clear()</code></td><td>只把长度归零（<strong>内存不动</strong>）</td></tr></tbody></table>
+<p><strong>三条设计决定</strong>（跟 extC 的内存模型缝在一起）：</p>
+<ol><li><strong>它不带自己的 arena</strong> —— 扩容时的 <code>new T[cap*2]</code> 分配到<strong>拥有这个容器的那只 arena</strong> （<code>ARENA.md</code> §1.2 那条规则）⇒ 容器活多久，存储就活多久 （所以<strong>没有</strong> C++ 那种 <code>Alloc</code> 分配器模板参数）</li><li><strong>不能 free</strong> ⇒ <code>clear()</code> 只归零，<strong>没有 <code>shrink_to_fit</code></strong> —— 缩不回内存， 有那个函数就是骗人</li><li>读值用 <code>?T</code>（「可能没有」），越界由<strong>下标检查</strong>承担</li></ol>
+<p><strong>为什么是倍增</strong>（不是拍脑袋、也不是抄 <code>std::vector</code>）：网上说"×2 最差"的论证 （Folly/FBVector：新块永远比之前所有块之和还大 <code>1+2+…+2ⁿ = 2ⁿ⁺¹−1</code> ⇒ 复用不了） <strong>前提是旧内存能被释放</strong>，而 arena <strong>不能 free</strong> ⇒ 我们这边的指标是「累计分配 / 当前长度」， 倍增的最坏值是 <strong>4</strong>，且是<strong>所有递增容量序列的渐近下确界</strong> （<code>examples/growth-factor.extc</code>：解析式 <code>r²/(r−1)</code> 在 r=2 取最小 + 精确 DP 验算； 文献与推导见 DECISIONS 定案 59）</p>
+<p><strong>已知限制（两条，跟 <code>std::vector</code> 同类，但这里没有缓解）</strong>：</p>
+<ul><li><strong>扩容会让指向元素的引用失效</strong>：<code>var p: mut ref i32 = ref v[0]</code> 之后 <code>v.push(..)</code> 换了新 buffer，<code>p</code> 还指着旧 buffer —— arena 保证旧内存不被回收 ⇒ <strong>不崩</strong>， 但写进去就是<strong>静默写丢</strong> ⇒ <strong>别长期持有元素引用</strong>，要改就用 <code>set(i, v)</code></li><li><code>set(i, v)</code> 只在 <code>i ≥ cap</code> 时 trap；<code>i</code> 落在 <code>[len, cap)</code> 之间会写进未使用区 （跟 C++ 的 <code>operator[]</code> 同款）⇒ <strong>想安全读就 <code>get(i)</code></strong></li></ul>
+<p><strong>明确不做</strong>（免得以后有人问）：迭代器 / 范围 for（要等 <code>for</code> 和函数值）、 <code>at()</code> 那种"双入口"（extC 的 <code>[]</code> 已经 trap 带位置，不需要两个）、 分配器模板参数、<code>shrink_to_fit</code>、<code>vector&lt;bool&gt;</code> 位压缩 <code>insertAt</code> / <code>eraseAt</code> 留到第二版 —— 而且<strong>先要定"引用失效"的策略</strong>（见上面第一条）</p>
+<hr>
+<p><strong><a href="README.html">索引</a></strong> · <a href="12-driver.html">← 7.8 驱动开关（<code>-O</code> / <code>-march</code>）</a> · <a href="14-builtins.html">8. 内建函数 →</a></p>
+<div class="pn"><a href="12-driver.html">← 7.8 驱动开关（`-O` / `-march`）</a> <a href="14-builtins.html">8. 内建函数 →</a></div></main>
+<script>(function(){var q=document.getElementById('q');if(!q)return;
+var items=[].slice.call(document.querySelectorAll('.side li'));
+q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();
+items.forEach(function(li){li.style.display=!v||li.textContent.toLowerCase().indexOf(v)>=0?'':'none'});});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});})();
+</script></body></html>

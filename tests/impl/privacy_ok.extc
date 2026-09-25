@@ -1,0 +1,9 @@
+// 私有成员只对**声明它的模块**开放；模块自己的公开入口照常可用。
+// expect: probe=13
+use std::io
+use privmod
+
+fn main() -> i32 {
+    io::cout << "probe=" << privmod::probe() << "\n"
+    return 0
+}

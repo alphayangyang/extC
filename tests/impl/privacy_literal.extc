@@ -1,0 +1,8 @@
+// 跨模块在**结构体字面量**里写私有字段：编译错误（赋值路径已被字段检查拦住，字面量单独一条）
+// expect: field `seen` of `privmod::counter` is private to module `privmod`
+use privmod
+
+fn main() -> i32 {
+    var c: privmod::counter = privmod::counter { seen: i64(1)  label: i64(2) }
+    return i32(c.label)
+}
