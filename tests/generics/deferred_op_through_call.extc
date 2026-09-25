@@ -1,0 +1,30 @@
+// 泛型间调用的**要求上抛**（PLAN #18 那一族的收尾，2026-09-26）：
+// 内层泛型体需要 `T` 的 `<` / `==` / 协议方法，模板期无法兑现，交给**外层实例**的具体类型。
+// 从前这里会报 `lt_T needs T to define <` —— 占位实例被当成具体实例去兑现要求（✗）。
+// expect: min=4|eq=1|hash=7
+use std::io
+
+struct key {
+    v: i64
+    fn hash(self: ref key) -> i64 { return self.v }
+    fn ==(self: ref key, o: key) -> bool { return self.v == o.v }
+}
+
+fn lt<T>(a: T, b: T) -> bool { return a < b }
+fn eq<T>(a: T, b: T) -> bool { return a == b }
+fn hh<T>(x: T) -> i64 { return x.hash() }
+
+fn minOf<T>(a: T, b: T) -> T { if lt(a, b) { return a }  return b }
+fn sameOf<T>(a: T, b: T) -> bool { return eq(a, b) }
+fn hashOf<T>(x: T) -> i64 { return hh(x) }
+
+fn main() -> i32 {
+    var k1: key = { v: i64(7) }
+    var k2: key = { v: i64(7) }
+    io::cout << "min=" << minOf(i64(9), i64(4))
+    var s: i64 = i64(0)
+    if sameOf(k1, k2) { s = i64(1) }
+    io::cout << "|eq=" << s
+    io::cout << "|hash=" << hashOf(k1) << "\n"
+    return 0
+}

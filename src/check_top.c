@@ -4144,6 +4144,24 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         }
 }
 
+/* Is this instance **provisional** (a placeholder) rather than real?
+ *
+ * A generic call inside a generic body has to build one -- `less<T>` calling `less` with `T`
+ * itself produces the instance `less_T` -- so that the enclosing template body can still be
+ * type-checked (`T` stays opaque there). At instantiation every real call site is repointed to
+ * a concrete instance (`less_i64`), so the placeholder is a thing the checker owns and code
+ * generation never emits (`funcSignatureMentionsParam` skips it for exactly this reason).
+ *
+ * The deferred re-checks must skip it too. Asking a placeholder "does this type have `<`?" is
+ * asking the one question that cannot be answered on a template -- it is the price of having
+ * no traits, and the concrete instance answers it instead.
+ */
+static bool provisionalInstance(Vec *targs) {
+    for (size_t i = 0; i < targs->len; i++)
+        if (ttHasParam(*(Type **)vecAt(targs, i))) return true;
+    return false;
+}
+
 /* Re-resolve one deferred call site into a concrete instance under the substitution
  * of the enclosing instance.
  *
@@ -4323,6 +4341,43 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         checkFunc(&c, fx);
     }
 
+    /* **这一批必须先跑**：它把「占位实例」的调用点重定向到具体实例（`less_T` → `less_i64`），
+     * 而下面几批要求检查（运算符 / 协议方法 / 结果类型 / 引用规矩）**只认具体实例**。
+     * 反过来放（从前就是）会让这一批刚造出来的具体实例赶不上复查 —— 实例建出来了，
+     * 却没人问它 `T` 到底有没有 `hash()`，于是漏报一路漏到 codegen，那里只能吐个 `0`。
+     *
+     * 三件事：代入类型实参、查/建那个具体实例、把调用点的 `func` 指过去。实例是去重的
+     * （`funcInstance`），所以一组实参只有一个实例。 */
+    /* Re-resolve each deferred call site into a concrete instance under the
+     * substitution of the enclosing instance.
+     *
+     * `params` / `targs` are the enclosing instance's type parameters and type arguments
+     * (and `c.substParams` / `c.substArgs` are set to that same pair). Three steps per
+     * site: substitute the type arguments, intern (or create) that concrete instance,
+     * then point the call expression's `func` at it. Static instances are interned
+     * (`funcInstance` de-duplicates), so one argument combination has exactly one
+     * instance. */
+    for (size_t i = 0; i < c.callChecks.len; i++) {
+        CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
+        if (!cc->node || !cc->tmpl) continue;
+        /* (1) The enclosing body is a free-function instance. */
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            if (fi->tmpl != cc->func) continue;       /* not a call in this template body */
+            resolveDeferredCall(&c, cc, &fi->tmpl->typeParams, &fi->targs);
+        }
+        /* (2) The enclosing body is a type instance (a generic call inside a method);
+         * `owner` is the struct or enum definition. */
+        StructDef *owner = cc->func ? cc->func->owner : NULL;
+        if (!owner) continue;
+        for (size_t j = 0; j < tt->instances.len; j++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, j);
+            if (inst->sdef != owner) continue;
+            resolveDeferredCall(&c, cc, &owner->typeParams, &inst->targs);
+        }
+    }
+
+
     /* Deferred operator checks: re-check each recorded use for every concrete instance.
      * This is the price of having no traits. The error surfaces late, here, so the
      * message has to name the instance it came from. */
@@ -4344,6 +4399,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != ec->owner) continue;
+                if (provisionalInstance(&inst->targs)) continue;
                 runOpCheck(&c, ec, &ec->owner->typeParams, &inst->targs, inst->name);
             }
         }
@@ -4351,6 +4407,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (ec->func != fi->tmpl) continue;
+            if (provisionalInstance(&fi->targs)) continue;
             runOpCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
     }
@@ -4372,6 +4429,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != mc->owner) continue;
+                if (provisionalInstance(&inst->targs)) continue;
                 runMethodCheck(&c, mc, &mc->owner->typeParams, &inst->targs, inst->name);
             }
         }
@@ -4379,6 +4437,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (mc->func != fi->tmpl) continue;
+            if (provisionalInstance(&fi->targs)) continue;
             runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
     }
@@ -4392,12 +4451,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != du->owner) continue;
+                if (provisionalInstance(&inst->targs)) continue;
                 runDeferredUse(&c, du, &du->owner->typeParams, &inst->targs, inst->name);
             }
         }
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (du->func != fi->tmpl) continue;
+            if (provisionalInstance(&fi->targs)) continue;
             runDeferredUse(&c, du, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
     }
@@ -4449,6 +4510,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (!refCheckApplies(rc, fi)) continue;
+            if (provisionalInstance(&fi->targs)) continue;
             c.substParams = &fi->tmpl->typeParams;
             c.substArgs   = &fi->targs;
             runRefCheck(&c, rc, fi->instName);
@@ -4459,39 +4521,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < tt->instances.len; j++) {
             Type *inst = *(Type **)vecAt(&tt->instances, j);
             if (inst->sdef != owner) continue;
+            if (provisionalInstance(&inst->targs)) continue;
 
             c.substParams = &owner->typeParams;
             c.substArgs   = &inst->targs;
             runRefCheck(&c, rc, inst->name);
-        }
-    }
-
-    /* Re-resolve each deferred call site into a concrete instance under the
-     * substitution of the enclosing instance.
-     *
-     * `params` / `targs` are the enclosing instance's type parameters and type arguments
-     * (and `c.substParams` / `c.substArgs` are set to that same pair). Three steps per
-     * site: substitute the type arguments, intern (or create) that concrete instance,
-     * then point the call expression's `func` at it. Static instances are interned
-     * (`funcInstance` de-duplicates), so one argument combination has exactly one
-     * instance. */
-    for (size_t i = 0; i < c.callChecks.len; i++) {
-        CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
-        if (!cc->node || !cc->tmpl) continue;
-        /* (1) The enclosing body is a free-function instance. */
-        for (size_t j = 0; j < c.funcInsts.len; j++) {
-            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-            if (fi->tmpl != cc->func) continue;       /* not a call in this template body */
-            resolveDeferredCall(&c, cc, &fi->tmpl->typeParams, &fi->targs);
-        }
-        /* (2) The enclosing body is a type instance (a generic call inside a method);
-         * `owner` is the struct or enum definition. */
-        StructDef *owner = cc->func ? cc->func->owner : NULL;
-        if (!owner) continue;
-        for (size_t j = 0; j < tt->instances.len; j++) {
-            Type *inst = *(Type **)vecAt(&tt->instances, j);
-            if (inst->sdef != owner) continue;
-            resolveDeferredCall(&c, cc, &owner->typeParams, &inst->targs);
         }
     }
 

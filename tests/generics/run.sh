@@ -32,6 +32,9 @@ check_pos() {
 }
 check_pos method_on_t tests/generics/method_on_t.extc
 
+echo "== 正例：泛型调泛型，内层的 `<` / `==` / 协议方法由外层实例兑现（要求上抛）=="
+check_pos deferred_op_through_call tests/generics/deferred_op_through_call.extc
+
 echo "== 反例（都必须编译期挡住）=="
 check_err() {
     local f=$1 want=$2 out
@@ -50,6 +53,7 @@ check_err() {
 check_err tests/generics/errors/needs_eq.extc             'to define `==`'
 check_err tests/generics/errors/cannot_infer.extc         "cannot infer"
 check_err tests/generics/errors/needs_method.extc          'to define `hash`'
+check_err tests/generics/errors/deferred_op_through_call_bad.extc 'to define `<`'
 check_err tests/generics/errors/deferred_return_type.extc   'expects `i8`, found `i64`'
 check_err tests/generics/errors/deferred_let_type.extc      'expects `i8`, found `i64`'
 check_err tests/generics/errors/method_arity.extc          'takes 0 arguments, but 1 was written'

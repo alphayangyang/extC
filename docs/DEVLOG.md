@@ -7,6 +7,83 @@
 
 ---
 
+## 2026-09-26（第十一段续十一）· **要求上抛**：泛型体里调泛型（含自递归）终于能用了
+
+作者：「先把这个上抛优化了，现在卡了好几次了」。这一条做完，`sort<T>` 那种「泛型算法拆成两个泛型函数」
+才成立（从前只能把划分/下沉全内联进一个函数、递归只能换显式栈）。
+
+### 病灶：不是"没有推迟"，是**占位实例被当成具体实例**
+
+`#18`/`#50` 那一族的机器其实**早就齐了**：泛型体里调泛型时，检查器会造一个**占位实例**
+（`less_T`，类型实参就是类型参数本身），好让模板体仍然类型正确；调用点记进 `CallCheck`，
+实例期由 `resolveDeferredCall` 把 `e->func` **重定向**到具体实例（`less_i64`）；codegen 那边
+`funcSignatureMentionsParam` 也会跳过占位实例。设计意图在 codegen 的注释里写得很清楚。
+
+坏在两处：
+
+1. **重放循环把占位实例当具体实例**：`runOpCheck`/`runMethodCheck`/`runDeferredUse`/`runRefCheck`
+   遍历实例表时，`less_T` 也在里面 —— 于是拿"类型参数 T"去兑现 `T: <`，报
+   `` `less_T` needs `T` to define `<` ``。可这个问题**在模板上无解**（没有 traits），该由具体实例回答。
+2. **批次顺序**：`CallCheck` 重定向那一批跑在要求检查批次**之后** ⇒ 它刚造出来的具体实例
+   （`h_i64`）**赶不上复查**。后果不是报错而是**漏报**：`h_i64` 的 `x.hash()` 没人问，
+   一路漏到 codegen，那里 `!e->func` 只能吐个 `0`（真值被静默吃掉）。
+   （第 2 条是第 1 条掩盖着的旧病：从前"占位实例"那道错恰好替代了本该由具体实例给出的错。）
+
+### 修法
+
+- 新增 `provisionalInstance(Vec *targs)`：实参里还含类型参数 ⇒ 这是**占位**，不是具体实例；
+- 八处重放循环（运算符/协议方法/结果类型/引用规矩 × 函数实例/类型实例）加上跳过；
+- 把 `CallCheck` 重定向批次**挪到要求检查批次之前**（并写清为什么）。
+
+### 判据（都进了 `tests/generics/`，常设）
+
+| 形状 | 从前 | 现在 |
+|---|---|---|
+| 泛型→泛型，内层要 `<` | ✗ `` `less_T` needs `T` to define `<` `` | ✓ |
+| 泛型→泛型，内层要 `==` | ✗ | ✓ |
+| 泛型→泛型，内层要 `hash()` | ✗（错怪 T） | ✓ 具体类型有就过 |
+| **负例**：外层实例的类型没有 `<` | 报错但怪 `T` | ✓ 报错并**归因具体实例**：`` `lt_plain` needs `pt` to define `<` `` |
+| 负例：`i64` 没有 `hash`，经泛型链 | 错怪 `T` | ✓ `` `h_i64` needs `i64` to define `hash` `` |
+
+正例 `tests/generics/deferred_op_through_call.extc`（`min=4|eq=1|hash=7`）·
+反例 `tests/generics/errors/deferred_op_through_call_bad.extc`（断言消息里出现 `to define `<``）。
+验收：`tests/run.sh` **260 + 264** · `check.sh quick` **26/26** · 构建零告警。
+
+### 顺带：作者问的三条类型表示问题，逐条对代码核了
+
+1. **"Type 里没有泛型变量、只能靠字符串名字区分"** —— **表示上不成立，身份上成立**。
+   `TY_PARAM` 是一等 kind，字段里既有 `param`（名字）**也有** `tpIndex`（位置）；
+   `slice<T>` 这种"混合类型"也是支持的（`TY_GENERIC` 的 targs 里放 `TY_PARAM`，`ttHasParam` 负责找）。
+   **但身份确实靠名字**：`ttSubstitute` 的 param 分支是 `strcmp(params[i], t->param) == 0`（`tpIndex` 没参与）；
+   `ttIsParam` 只比名字；`ttEquals` 的 param 分支比 `(tpIndex, name)` ⇒ **`fn f<T>` 的 T 与 `fn g<T>` 的 T 判等为真**。
+   今天没炸是因为代入永远由**所属模板自己的** params 驱动（同名同位置恰好对齐）；嵌套/遮蔽/跨模板比较会咬人。
+2. **"没有 Type 的所有权/生命周期管理，复制一份要手动管内存"** —— **不成立，但代价在别处**。
+   `TypeTable` 自带 `Arena *arena; /* arena that owns this table and every type in it */`；
+   `types.c` 里 7 处 arena 分配、**0 处 `free`**。真正的问题是**代入没有 memo**：intern 的只有
+   builtin/struct/`ttGeneric`/`ttArray`，而 `TY_PARAM`（`typeParam` 每次新造）、`ttViewMut` 的
+   writable-view shadow（故意不进 `instances`）、以及代入过程造的临时类型都不进表 ⇒
+   ① 这些类型**不能指针判等**，只能走 `ttEquals` 结构递归；② 每次实例化都要重造类型图。
+3. **"判等只比指针，不知道 T 和 i32 是不是同一个"** —— **不成立**。`ttEquals` 是"指针先行 + 结构回退"：
+   `kind` 不同立刻 false ⇒ `TY_PARAM` vs `TY_BUILTIN` 一眼就是不同；`TY_REF`/`TY_ARRAY`/`TY_PARAM`/`TY_GENERIC`
+   各有结构分支。合理内核是类型头注释那句：**intern 过的可以指针判等，没 intern 的必须结构比较**。
+   另外"`T` 与实参类型是否一致"根本不用 `ttEquals`，用的是 `unifyTParams`（模式匹配 + 逐槽赋值）。
+
+**结论：三条里现在就有、值得修的是两条（已记进 PLAN）** —— ① param 身份换成唯一 id（顺带让
+`ttSubstitute` 不再按名字匹配）；② 代入加 memo（省实例化常数，并让判等回到指针快路径）。
+所有权那条不用动。
+
+### 单态化 vs 经典做法（作者要求的那份对比）
+
+| 维度 | 经典（C++/Rust/Go） | extC 现在 | 差距的后果 |
+|---|---|---|---|
+| 实例键 | `(模板, 实参类型序列)` | 同左，`ttEquals` 逐个比、命名按 `ttMangle` | 无实质差距 |
+| 实例化时机 | C++ 使用点隐式；Rust 独立 MIR 单态化阶段 | **检查期按需，没有独立阶段** | 简单，但"按实例重写调用"缺自然落点（这次靠批次顺序补齐） |
+| 约束检查 | traits/concepts 在**定义处**；或 SFINAE 晚查 | **没有约束可写**，只能实例化处查 | 报错晚、且要求要靠"记录 + 重放"传递 |
+| 要求传递 | 约束在签名里随调用链携带 | 记录挂在"正在检查的实例"上 | **本次修的正是这条**（占位实例 + 批次顺序） |
+| 每实例调用目标 | 单态化阶段重写整棵调用图 | `Expr.func` 单指针 + body 共享 | 泛型体里调泛型要靠 `CallCheck` + 重定向（已解决）；方法靠 `resolveOnInstance` 钩子 |
+| 代码共享 | Rust/C++ 一实例一份；**Go GC-shape stenciling** | 一实例一份（无 shape 共享） | 语义最干净，体积可能大 |
+| 特化 | C++ 显式特化 / Rust specialization | 无 | 整数特化只能手写（`mapI64` 那条路） |
+
 ## 2026-09-26（第十一段续十）· 第 ③ 条**量过、两次都没成、撤了**；但按作者口径补上了**复杂度判据**
 
 作者提醒：「**注意你的优化不能导致在某种情况下发生时间复杂度退化，这会很惨烈**」。这条对极了，

@@ -1,0 +1,17 @@
+// 反例：要求**上抛**不等于放弃检查 —— 外层实例的具体类型没有 `<` 时必须照样挡住，
+// 而且归因到**具体实例**（`lt_plain`），不是占位实例（`lt_T`）。
+// expect: to define `<`
+use std::io
+
+struct plain { v: i64 }
+
+fn lt<T>(a: T, b: T) -> bool { return a < b }
+fn minOf<T>(a: T, b: T) -> T { if lt(a, b) { return a }  return b }
+
+fn main() -> i32 {
+    var a: plain = { v: i64(1) }
+    var b: plain = { v: i64(2) }
+    var m: plain = minOf(a, b)
+    if m.v > i64(0) { return 0 }
+    return 1
+}
