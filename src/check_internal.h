@@ -125,6 +125,14 @@ typedef struct {
      * in both arms of an `if`; the publication records are the authority for that, and this
      * field is a shortcut for the chain-of-assignments case. */
     Expr       *heldSrc;
+    /* 这一格是**池的提权**专用的：绑定由一次"建池的调用"初始化时，把那次调用的
+     * 表达式记在这里（PLAN #87）。
+     *
+     * 为什么不复用 `origin`：`originOf` 只认分配站点的形状（`new` / `alloc`），
+     * 对调用返回 NULL，因为 arena 的层级不由调用决定而在调用点决定（见 `origin` 的注释）；
+     * 而池的层级恰恰**就是**由调用点决定的（`extc_pool_new_at` 的第二个实参）。
+     * 单开一格，别的消费者（`origin` 那一族）一个都不受影响。 */
+    Expr       *poolSite;
 
     int         line;      /* source line of the declaration, for diagnostics */
     /* The module this binding belongs to; set for globals, NULL for locals. Name

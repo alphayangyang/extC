@@ -970,9 +970,26 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     }
 
     case EX_IDENT: {
+        if (getenv("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[promote] EX_IDENT %s src=%s typeRefs=%d at=%d\n",
+                    val->u.ident.name ? val->u.ident.name : "-",
+                    (lookup(c, val->u.ident.name) && lookup(c, val->u.ident.name)->origin) ? "yes" : "no",
+                    (int)typeContainsRef(c->tt, tsub(c, val->type)), at);
         /* Walk back along the binding's origin: `var n = new node` or `mid = n`
          * leads to that `new`. */
         Sym *sy = lookup(c, val->u.ident.name);
+        if (sy && !sy->origin && sy->poolSite) {
+            /* 这个绑定由一次调用初始化（`var inner = vector<i32>::new()`），而 `origin`
+             * 对调用是空的（它只认分配站点的形状）。池不一样：层级就是调用点决定的，
+             * 所以直接顺着那格池站点往下走 —— 下一跳是 `EX_CALL/EX_METHOD/EX_ASSOC` 那一格，
+             * 那里才知道"建池的调用可以提权"。 */
+            if (getenv("EXTC_DBG_ZONE"))
+                fprintf(stderr, "[promote] EX_IDENT %s -> poolSite %s\n",
+                        val->u.ident.name ? val->u.ident.name : "-",
+                        sy->poolSite->kind == EX_CALL ? "EX_CALL" :
+                        sy->poolSite->kind == EX_METHOD ? "EX_METHOD" : "EX_ASSOC");
+            return promoteInto2(c, sy->poolSite, at, hops + 1);
+        }
         if (!sy || !sy->origin) return false;
         /* The slot already outlives `at`, which means it sits at a shallower level, so
          * whatever is inside it already lives at that level. The initializer is
@@ -1079,6 +1096,10 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          *
          * 别的调用结果照旧不可提：`slice` 的视图来自别人的存储（借用），
          * 提不动就是提不动，返回 false 让调用方报错 —— 那是这一格的纪律。 */
+        if (getenv("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[promote] call %s makesPool=%d zoneLevel=%d at=%d\n",
+                    val->func && val->func->name ? val->func->name : "-",
+                    val->func ? (int)val->func->makesPool : -1, val->zoneLevel, at);
         if (val->func && val->func->makesPool && val->zoneLevel != 0) {
             int want = (at == 0) ? ZONE_HOME : at;
             if (val->zoneLevel > want) val->zoneLevel = want;
@@ -1108,6 +1129,19 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
  *         number and must not be pushed back into one */
 void recordLvlFact(Checker *c, Expr *val, int at) {
     if (!c || !val || at < 1) return;
+    /* 记在**站点**上，不记在绑定上：末轮重放跑在所有函数体检查完之后，那时
+     * `lookup` 已经查不到当时的局部绑定了（符号表是按函数/作用域的），
+     * 记绑定等于记一条谁也走不通的链 —— 实测就是这么静默失手的。
+     * 池的情形是"绑定由一次调用初始化"（`origin` 对调用为空），那种绑定身上带着
+     * `poolSite`，把它换出来。（`origin` 那一族本来就在记录时被展平，同一个理由。） */
+    if (val->kind == EX_IDENT) {
+        Sym *sy = lookup(c, val->u.ident.name);
+        if (getenv("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[fact-sy] %s sy=%p origin=%p poolSite=%p\n",
+                    val->u.ident.name ? val->u.ident.name : "-", (void *)sy,
+                    sy ? (void *)sy->origin : NULL, sy ? (void *)sy->poolSite : NULL);
+        if (sy && !sy->origin && sy->poolSite) val = sy->poolSite;
+    }
     /* Never record during the level solve: the solve re-enters this function, so
      * recording there would make the fact list grow without bound. */
     if (c->lvlSolving) return;
@@ -1115,6 +1149,10 @@ void recordLvlFact(Checker *c, Expr *val, int at) {
     f->val = val;
     f->at  = at;
     *(LvlFact **)vecPush(&c->lvlFacts) = f;
+    if (getenv("EXTC_DBG_ZONE"))
+        fprintf(stderr, "[fact] kind=%d name=%s -> kind=%d at=%d\n", (int)f->val->kind,
+                f->val->kind == EX_IDENT && f->val->u.ident.name ? f->val->u.ident.name : "-",
+                (int)val->kind, at);
 }
 
 /* Apply one level fact to a site, keeping the strongest requirement (the smallest

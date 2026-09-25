@@ -4688,6 +4688,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t i = 0; i < nFacts; i++) {
                 LvlFact *f = *(LvlFact **)vecAt(&c.lvlFacts, i);
                 if (!f || !f->val) continue;
+                if (getenv("EXTC_DBG_ZONE"))
+                    fprintf(stderr, "[replay] kind=%d at=%d\n", (int)f->val->kind, f->at);
                 if (promoteInto(&c, f->val, f->at)) changed = true;
             }
             solveRounds++;

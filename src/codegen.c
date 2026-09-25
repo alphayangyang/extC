@@ -256,6 +256,11 @@ typedef struct {
     /* 这个函数收不收隐藏的「家 zone」参数（= `FuncDef.makesPool`）。
      * 收了就把它往下传，不收（main、或者压根不建池的函数）就用当前那个地方的 zone。 */
     bool        funcHasZoneParam;
+    /* 这个函数的帧 zone（`__extc_zm1`）发了没有。
+     * 不能用 `zoneMark[1]` 问：**函数体自己**就是一个 blkLevel=1 的块，`genBlock` 会在
+     * 体外把 `zoneMark[1]` 存起来、清掉，出块才恢复 ⇒ 体**内**永远读到 0
+     * （而 `zoneMark[k]`（k>1）在那一层的块体内是读得到的，所以只有第 1 层有这个问题）。 */
+    bool        zoneFrameMarked;
     /* Which block levels really emitted `extc_pool_zoneEnter()` (index = block level,
      * 1 = the function body). The pop has to consult this table instead of `zoneHere`
      * alone: a block's zone is emitted on demand now, and a `zoneLeaveTo(__extc_zm<lvl>)`
@@ -2526,7 +2531,8 @@ static const char *zoneArgRef(CG *g, Expr *e) {
                 (int)g->zoneMark[1], (int)g->zoneMark[2], g->blkLevel);
     if (e && e->zoneLevel != 0) {
         if (e->zoneLevel == ZONE_HOME && g->funcHasZoneParam) return "__extc_home_zone";
-        if (e->zoneLevel >= 1
+        if (e->zoneLevel == 1 && g->zoneFrameMarked) return "__extc_zm1";
+        if (e->zoneLevel > 1
             && e->zoneLevel < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0])
             && g->zoneMark[e->zoneLevel])
             return arenaPrintf(g->arena, "__extc_zm%d", e->zoneLevel);
@@ -3548,9 +3554,15 @@ static void genFunc(CG *g, FuncDef *f) {
      * 压了也是空压。`zoneMark[1]` 记下这次决定，收尾的 `zoneLeaveTo(__extc_zm1)` 查它 ——
      * 没压却弹会弹掉**调用者**的 zone。 */
     g->zoneMark[1] = false;
+    g->zoneFrameMarked = false;
+    if (dbgOn("EXTC_DBG_ZONE"))
+        fprintf(stderr, "[zonehook] %s zoneHere=%d noArena=%d makesPool=%d needPool=%d isMain=%d\n",
+                f->name ? f->name : "-", (int)g->zoneHere, (int)g->noArena,
+                (int)f->makesPool, (int)g->needPool, (int)isMain);
     if (g->zoneHere && !g->noArena && f->makesPool) {
         cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* 函数体是一个地方 */");
         g->zoneMark[1] = true;
+        g->zoneFrameMarked = true;
     }
     /* ---- `main(args)`: wrap argc/argv into the view the language declared ----
      * The user wrote `fn main(args: slice<slice<u8>>) -> i32`; C hands in
@@ -5040,6 +5052,22 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `extern!`, so their presence is what says the program uses pools at all. */
         if (f->name && strncmp(f->name, "extc_pool_", strlen("extc_pool_")) == 0) g.needPool = true;
         if (strcmp(f->name, "extc_cout_put") == 0)  g.needCout    = true;
+    }
+    /* 池还多一条来源：**检查器早就算好的 `makesPool`**。只看"这个模块里声明了 `extc_pool_*`
+     * 的 extern"是不够的 —— 那些声明在**库模块**里，而 `m` 是入口模块，于是 main 的 prologue
+     * 那一刻 `needPool` 还是假 ⇒ 帧的 zone（`__extc_zm1`）不发 ⇒ 提权到第 1 层也没法表达
+     * （`zoneArgRef` 会静默退回动态兜底）。`makesPool` 是可传递最小不动点，任何函数（含方法）
+     * 为真都说明这个程序用池 —— 这正是这一格要问的问题。 */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (f && f->makesPool) g.needPool = true;
+    }
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+            if (f && f->makesPool) g.needPool = true;
+        }
     }
     vecInit(&g.funcs, arena, sizeof(void *));
     vecInit(&g.helpers, arena, sizeof(SliceHelper));

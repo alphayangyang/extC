@@ -260,6 +260,19 @@ void checkStmt(Checker *c, Stmt *s) {
              * `head`. A declaration without an initializer records NULL. */
             noteOrigin(c, sym, s->u.var.init);
             if (sym && !sym->addressed) sym->heldSrc = s->u.var.init;
+            /* 调用做初始化式 ⇒ 记一格"池站点"（`poolSite`），提权时走它。
+             * 这里不问 `makesPool`：那个闭包要等所有函数体检查完才算得出来，
+             * 而末轮重放时才需要它（那时已经为真）。 */
+            /* 不问形状：`vector<i32>::new()` 在解析期是 `EX_GENCALL`，检查器**就地**改写成
+             * `EX_ASSOC`/`EX_CALL`，所以按 kind 认会漏（实测漏了，`poolSite` 一直为空）。
+             * 记原表达式最省事，末轮重放时才需要它，那时形状已经定下来了。 */
+            if (sym && !sym->addressed && s->u.var.init && s->u.var.init->kind != EX_NULL)
+            {
+                sym->poolSite = s->u.var.init;
+                if (getenv("EXTC_DBG_ZONE"))
+                    fprintf(stderr, "[decl] %s kind=%d poolSite=%p\n", sym->name ? sym->name : "-",
+                            (int)s->u.var.init->kind, (void *)sym->poolSite);
+            }
             /* For a binding that holds a reference, the depth of what it points at is
              * computed from the initializer: in `var cur: ?ref node = head` the head is
              * a parameter, so the cursor has depth 0 and may be returned. */
@@ -508,6 +521,7 @@ void checkStmt(Checker *c, Stmt *s) {
                          * fallback then reports the depth error as before. Cycles such as
                          * `a = b  b = a` are caught by the hop limit in `promoteInto`. */
                         if (slot0) noteOrigin(c, slot0, v);
+                        if (slot0 && !slot0->addressed && v && v->kind != EX_NULL) slot0->poolSite = v;
                     }
                     /* Retargeting an element or a field that holds a reference
                      * (`a[0] = ref local`) has to be recorded too. Otherwise
