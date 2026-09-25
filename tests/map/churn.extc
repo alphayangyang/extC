@@ -1,0 +1,59 @@
+// churn：反复「插满 2000 个键 → 全删」5 轮（顺序插入是 B+ 树最难的形状：分裂永远在最右边）
+// 判据：每轮之后 len 归零 · 最后一轮重插后全量核对（get 值与按序下标全对）· nodeCount 必须有界
+//       （合并把节点退回回收链、下一次分裂再用掉 ⇒ 实测 5 轮后与第 1 轮**完全持平**：first=280 nodes=280）
+// expect: rounds=5|bad=0|bounded=1
+use std::io
+use stl::map
+
+let N: i64 = 2000
+
+fn main() -> i32 {
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    var bad: i64 = i64(0)
+    var first: i64 = i64(0)         /* 第 1 轮的节点数：判据的基线，不用魔数 */
+    var round: i64 = i64(0)
+    while round < i64(5) {
+        var i: i64 = i64(0)
+        while i < N {
+            m.put(i, i32(i))
+            i = i + i64(1)
+        }
+        var seen: i64 = i64(0)
+        i = i64(0)
+        while i < N {
+            var v: i32 = m.get(i) ?? i32(-1)
+            if i64(v) != i { bad = bad + i64(1) }
+            if m.keyAt(i) != i { bad = bad + i64(1) }
+            i = i + i64(1)
+            seen = seen + i64(1)
+        }
+        i = i64(0)
+        while i < N {
+            if m.remove(i) { seen = seen - i64(1) }
+            i = i + i64(1)
+        }
+        if m.len() != i64(0) { bad = bad + i64(1) }
+        if seen != i64(0) { bad = bad + i64(1) }
+        round = round + i64(1)
+        if round == i64(1) { first = m.nodeCount() }
+    }
+    /* 最后一轮：重插一遍并全量核对（顺便证明回收的节点确实能被再次使用） */
+    var i: i64 = i64(0)
+    while i < N {
+        m.put(i, i32(i * i64(2)))
+        i = i + i64(1)
+    }
+    i = i64(0)
+    while i < N {
+        var v: i32 = m.get(i) ?? i32(-1)
+        if i64(v) != i * i64(2) { bad = bad + i64(1) }
+        if m.keyAt(i) != i { bad = bad + i64(1) }
+        if m.valAt(i) != i32(i * i64(2)) { bad = bad + i64(1) }
+        i = i + i64(1)
+    }
+    /* 5 轮之后节点数不得比第 1 轮多出一半 —— 合并把节点退回回收链，回收的节点又被下一次分裂用掉 */
+    var bounded: i64 = i64(0)
+    if m.nodeCount() * i64(2) <= first * i64(3) { bounded = i64(1) }
+    io::cout << "rounds=5 first=" << first << " nodes=" << m.nodeCount() << " bad=" << bad << " bounded=" << bounded << "\n"
+    return 0
+}

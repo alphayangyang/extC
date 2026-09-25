@@ -35,17 +35,20 @@ run_case bounds
 echo "== 压力：4001 键乱序插入（多层分裂）⇒ 按序遍历 · get · lowerBound · 删除后复核 =="
 run_case stress
 
+echo "== churn：5 轮「插满 2000 → 全删」⇒ 节点回收（nodeCount 不得随轮数线性增长）=="
+run_case churn
+
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"
 if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
-    for t in sorted bounds stress; do
+    for t in sorted bounds stress churn; do
         "$EXTC" "tests/map/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
     done
-    [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress  ->  ASan 干净"
+    [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress · churn  ->  ASan 干净"
 else
     echo "  skip  gcc 不支持 -fsanitize=address"
 fi

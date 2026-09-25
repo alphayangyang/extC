@@ -23,11 +23,11 @@
  * numeric types). Equality is derived -- `a == b` iff `!(a < b) && !(b < a)` -- so a key type
  * supplies one operator and the ordered map works for any type that has it.
  *
- * STAGE 2a (this file today): insert (with node splits up to a new root), lookup, rank queries and
- * the ordered walk are complete. `remove` takes the entry out of its leaf and fixes the counts but
- * does NOT rebalance, so a leaf may end up under `HALF` entries; the tree stays sorted and every
- * query stays correct, it just gets sparse under heavy deletion. Borrow / merge (and the pool move
- * with `release` / `shrink`) is stage 2b. */
+ * STAGE 2b (this file today): insert (splits up to a new root), lookup, rank queries and the
+ * ordered walk are complete, and `remove` rebalances -- a node under `HALF` entries borrows from a
+ * sibling that can spare one, otherwise it merges, and every node a merge retires goes back on a
+ * free list for the next split to reuse. Stage 3 moves the stores and the node records into pools,
+ * which adds `release` / `shrink` and turns the free list into pool slots. */
 let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
 let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
 
@@ -57,6 +57,7 @@ struct map<K, V> {
     nnodes: i64
     ncap:   i64               /* nodes the stores have room for */
     root:   i32
+    freeHead: i32             /* chain of recycled nodes (through `next`), -1 when empty */
     n:      i64               /* live entries */
     path:   mut slice<i32>    /* scratch: the descent path of `put` / `remove` */
     side:   mut slice<i32>    /* scratch: which child slot was taken at each level */
@@ -71,7 +72,7 @@ struct map<K, V> {
             keys:  new K[c * i64(17)],
             vals:  new V[c * i64(17)],
             kids:  new i32[c * i64(18)],
-            nnodes: i64(0), ncap: c, root: i32(0), n: i64(0),
+            nnodes: i64(0), ncap: c, root: i32(0), freeHead: i32(-1), n: i64(0),
             path: new i32[16], side: new i32[16], depth: i64(0),
         }
         m.root = m.newNode(true)
@@ -148,6 +149,16 @@ struct map<K, V> {
      * node created inside `put`'s split loop alive (see the note on the stores above).
      * Stage 3 hands the slot back on delete instead of leaking it. */
     fn newNode(self: mut ref map<K, V>, leaf: bool) -> i32 {
+        /* A recycled node already has its views into the stores; only the scalars are reset. */
+        if self.freeHead >= i32(0) {
+            let id = self.freeHead
+            self.freeHead = self.nodes[i64(id)].next
+            self.nodes[i64(id)].n = i32(0)
+            self.nodes[i64(id)].cnt = i32(0)
+            self.nodes[i64(id)].leaf = leaf
+            self.nodes[i64(id)].next = i32(-1)
+            return id
+        }
         if self.nnodes >= self.ncap { self.growStores() }
         let id = i32(self.nnodes)
         let kb = self.nnodes * i64(17)
@@ -377,6 +388,188 @@ struct map<K, V> {
         return false
     }
 
+    /* ---------------------------------------------------------------- rebalancing */
+    /* Hand a node back for reuse. The store slot is never returned (the stores only grow), so a
+     * churn of insert/delete cycles reuses node ids instead of walking the store forward. */
+    fn freeNode(self: mut ref map<K, V>, id: i32) {
+        self.nodes[i64(id)].next = self.freeHead
+        self.freeHead = id
+    }
+
+    /* Drop keys[ci-1] and kids[ci] from internal node `p`: the separator and the child it bounded
+     * are removed together. */
+    fn dropChild(self: mut ref map<K, V>, p: i32, ci: i64) {
+        var j: i64 = ci - i64(1)
+        while j + i64(1) < self.bn(p) {
+            self.setKey(p, j, self.kn(p, j + i64(1)))
+            j = j + i64(1)
+        }
+        var jc: i64 = ci
+        while jc + i64(1) <= self.bn(p) {
+            self.setKid(p, jc, self.kd(p, jc + i64(1)))
+            jc = jc + i64(1)
+        }
+        self.setN(p, self.bn(p) - i64(1))
+    }
+
+    /* One entry moves from the left sibling into `cur` (children ci-1 and ci of `p`). */
+    fn borrowLeft(self: mut ref map<K, V>, p: i32, ci: i64) {
+        let cur: i32 = self.kd(p, ci)
+        let left: i32 = self.kd(p, ci - i64(1))
+        if self.leafOf(cur) {
+            var j: i64 = self.bn(cur)
+            while j > i64(0) {
+                self.setKey(cur, j, self.kn(cur, j - i64(1)))
+                self.setVal(cur, j, self.vn(cur, j - i64(1)))
+                j = j - i64(1)
+            }
+            self.setKey(cur, i64(0), self.kn(left, self.bn(left) - i64(1)))
+            self.setVal(cur, i64(0), self.vn(left, self.bn(left) - i64(1)))
+            self.setN(cur, self.bn(cur) + i64(1))
+            self.setN(left, self.bn(left) - i64(1))
+            self.setCnt(cur, self.cntOf(cur) + i64(1))
+            self.setCnt(left, self.cntOf(left) - i64(1))
+            return
+        }
+        var j: i64 = self.bn(cur)
+        while j > i64(0) {
+            self.setKey(cur, j, self.kn(cur, j - i64(1)))
+            j = j - i64(1)
+        }
+        var jc: i64 = self.bn(cur) + i64(1)
+        while jc > i64(0) {
+            self.setKid(cur, jc, self.kd(cur, jc - i64(1)))
+            jc = jc - i64(1)
+        }
+        self.setKey(cur, i64(0), self.kn(p, ci - i64(1)))
+        self.setKid(cur, i64(0), self.kd(left, self.bn(left)))
+        self.setKey(p, ci - i64(1), self.kn(left, self.bn(left) - i64(1)))
+        let moved: i64 = self.cntOf(self.kd(left, self.bn(left)))
+        self.setN(cur, self.bn(cur) + i64(1))
+        self.setN(left, self.bn(left) - i64(1))
+        self.setCnt(cur, self.cntOf(cur) + moved)
+        self.setCnt(left, self.cntOf(left) - moved)
+    }
+
+    /* One entry moves from the right sibling into `cur`. */
+    fn borrowRight(self: mut ref map<K, V>, p: i32, ci: i64) {
+        let cur: i32 = self.kd(p, ci)
+        let right: i32 = self.kd(p, ci + i64(1))
+        if self.leafOf(cur) {
+            self.setKey(cur, self.bn(cur), self.kn(right, i64(0)))
+            self.setVal(cur, self.bn(cur), self.vn(right, i64(0)))
+            var j: i64 = i64(0)
+            while j + i64(1) < self.bn(right) {
+                self.setKey(right, j, self.kn(right, j + i64(1)))
+                self.setVal(right, j, self.vn(right, j + i64(1)))
+                j = j + i64(1)
+            }
+            self.setN(cur, self.bn(cur) + i64(1))
+            self.setN(right, self.bn(right) - i64(1))
+            self.setCnt(cur, self.cntOf(cur) + i64(1))
+            self.setCnt(right, self.cntOf(right) - i64(1))
+            self.setKey(p, ci, self.kn(right, i64(0)))
+            return
+        }
+        self.setKey(cur, self.bn(cur), self.kn(p, ci))
+        self.setKid(cur, self.bn(cur) + i64(1), self.kd(right, i64(0)))
+        self.setKey(p, ci, self.kn(right, i64(0)))
+        let moved: i64 = self.cntOf(self.kd(right, i64(0)))
+        var j: i64 = i64(0)
+        while j + i64(1) < self.bn(right) {
+            self.setKey(right, j, self.kn(right, j + i64(1)))
+            j = j + i64(1)
+        }
+        j = i64(0)
+        while j + i64(1) <= self.bn(right) {
+            self.setKid(right, j, self.kd(right, j + i64(1)))
+            j = j + i64(1)
+        }
+        self.setN(cur, self.bn(cur) + i64(1))
+        self.setN(right, self.bn(right) - i64(1))
+        self.setCnt(cur, self.cntOf(cur) + moved)
+        self.setCnt(right, self.cntOf(right) - moved)
+    }
+
+    /* Merge `cur` into its left sibling and drop the separator. In this layout an internal node's
+     * key is a COPY of a subtree minimum, so nothing has to be "pulled down" twice: the separator
+     * becomes left's new last key and the child counts add up unchanged. */
+    fn mergeLeft(self: mut ref map<K, V>, p: i32, ci: i64) {
+        let cur: i32 = self.kd(p, ci)
+        let left: i32 = self.kd(p, ci - i64(1))
+        if self.leafOf(cur) {
+            var j: i64 = i64(0)
+            while j < self.bn(cur) {
+                self.setKey(left, self.bn(left) + j, self.kn(cur, j))
+                self.setVal(left, self.bn(left) + j, self.vn(cur, j))
+                j = j + i64(1)
+            }
+            self.setN(left, self.bn(left) + self.bn(cur))
+            self.setCnt(left, self.cntOf(left) + self.cntOf(cur))
+            self.setNext(left, self.nx(cur))
+        } else {
+            self.setKey(left, self.bn(left), self.kn(p, ci - i64(1)))
+            var j: i64 = i64(0)
+            while j < self.bn(cur) {
+                self.setKey(left, self.bn(left) + i64(1) + j, self.kn(cur, j))
+                j = j + i64(1)
+            }
+            var jc: i64 = i64(0)
+            while jc <= self.bn(cur) {
+                self.setKid(left, self.bn(left) + i64(1) + jc, self.kd(cur, jc))
+                jc = jc + i64(1)
+            }
+            self.setN(left, self.bn(left) + i64(1) + self.bn(cur))
+            self.setCnt(left, self.cntOf(left) + self.cntOf(cur))
+        }
+        self.dropChild(p, ci)
+        self.freeNode(cur)
+    }
+
+    /* Merge the right sibling into `cur` and drop the separator. `cur` keeps its identity, so the
+     * caller may still refresh the separator above it. */
+    fn mergeRight(self: mut ref map<K, V>, p: i32, ci: i64) {
+        let cur: i32 = self.kd(p, ci)
+        let right: i32 = self.kd(p, ci + i64(1))
+        if self.leafOf(cur) {
+            var j: i64 = i64(0)
+            while j < self.bn(right) {
+                self.setKey(cur, self.bn(cur) + j, self.kn(right, j))
+                self.setVal(cur, self.bn(cur) + j, self.vn(right, j))
+                j = j + i64(1)
+            }
+            self.setN(cur, self.bn(cur) + self.bn(right))
+            self.setCnt(cur, self.cntOf(cur) + self.cntOf(right))
+            self.setNext(cur, self.nx(right))
+        } else {
+            self.setKey(cur, self.bn(cur), self.kn(p, ci))
+            var j: i64 = i64(0)
+            while j < self.bn(right) {
+                self.setKey(cur, self.bn(cur) + i64(1) + j, self.kn(right, j))
+                j = j + i64(1)
+            }
+            var jc: i64 = i64(0)
+            while jc <= self.bn(right) {
+                self.setKid(cur, self.bn(cur) + i64(1) + jc, self.kd(right, jc))
+                jc = jc + i64(1)
+            }
+            self.setN(cur, self.bn(cur) + i64(1) + self.bn(right))
+            self.setCnt(cur, self.cntOf(cur) + self.cntOf(right))
+        }
+        var k: i64 = ci
+        while k + i64(1) < self.bn(p) {
+            self.setKey(p, k, self.kn(p, k + i64(1)))
+            k = k + i64(1)
+        }
+        var kc: i64 = ci + i64(1)
+        while kc + i64(1) <= self.bn(p) {
+            self.setKid(p, kc, self.kd(p, kc + i64(1)))
+            kc = kc + i64(1)
+        }
+        self.setN(p, self.bn(p) - i64(1))
+        self.freeNode(right)
+    }
+
     /* ---------------------------------------------------------------- remove */
     /* Stage 2a: take the entry out and fix the counts. No rebalancing yet, so a leaf can end up
      * under HALF entries -- every query stays correct, the tree only gets sparse. */
@@ -408,20 +601,40 @@ struct map<K, V> {
             self.setCnt(p, self.cntOf(p) - i64(1))
             d = d - i64(1)
         }
-        /* A subtree whose smallest key was removed has to republish it, or a later descent would
-         * take the wrong branch; walk up and refresh every separator that bounds this leaf. */
+        /* Walk up: refresh the separator that bounds this subtree (its smallest key may have
+         * gone), and rebalance a node that fell under HALF entries -- borrow from a sibling that
+         * can spare one, otherwise merge. A merge removes a key from the parent, so the parent is
+         * rebalanced on the next turn of this loop. */
         var cur: i32 = id
         var level: i64 = self.depth
         while level > i64(0) {
             let p = self.path[level - i64(1)]
             let ci = i64(self.side[level - i64(1)])
-            if ci > i64(0) { self.setKey(p, ci - i64(1), self.firstKey(cur)) }
+            if self.bn(cur) < HALF {
+                if ci > i64(0) && self.bn(self.kd(p, ci - i64(1))) > HALF {
+                    self.borrowLeft(p, ci)
+                    if ci > i64(0) { self.setKey(p, ci - i64(1), self.firstKey(cur)) }
+                } else if ci < self.bn(p) && self.bn(self.kd(p, ci + i64(1))) > HALF {
+                    self.borrowRight(p, ci)
+                } else if ci > i64(0) {
+                    /* `cur` is freed by this: nothing to refresh above it, the separator went
+                     * away with it. */
+                    self.mergeLeft(p, ci)
+                } else {
+                    self.mergeRight(p, ci)
+                }
+            } else {
+                if ci > i64(0) { self.setKey(p, ci - i64(1), self.firstKey(cur)) }
+            }
             cur = p
             level = level - i64(1)
         }
-        /* the root may have lost its last key: the tree gets shorter */
+        /* The root may have lost its last key, or become an empty leaf's parent: the tree gets
+         * shorter and the retired root goes back to the free list. */
         while !self.leafOf(self.root) && self.bn(self.root) == i64(0) {
-            self.root = self.kd(self.root, i64(0))
+            let old: i32 = self.root
+            self.root = self.kd(old, i64(0))
+            self.freeNode(old)
         }
         return true
     }
