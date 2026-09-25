@@ -22,10 +22,9 @@ INTERNAL_PREFIX = re.compile(r'^p[A-Z]')
 INTERNAL_MACHINERY = set("""
 kn vn nx nk cnt cntOf setCnt setKey setVal setKid setNext setN newNode freeNode dropChild
 nodeCount nodes growStores ncap firstKey lastKey leaf leafFor lowerIn mergeLeft mergeRight
-side subMinKey height kidsCnt keyAt valAt bucketOfDense keyAtDense valAtDense dead deadOf
+side subMinKey height kidsCnt bucketOfDense keyAtDense valAtDense dead deadOf
 denseLen liveAt pidOf tagCensus ep gen gather handleAtDense chunk got fillState isSpaceByte
-newlineAfter nextI64State pairsReady errWrite flushCout fmtI64 fmtI64Fast rawbuf saved inc
-lowerBound rankAt""".split())
+newlineAfter nextI64State pairsReady errWrite flushCout fmtI64 fmtI64Fast rawbuf saved inc""".split())
 INTERNAL_NAMES = {'bn', 'childSlot', 'atDense', 'borrowLeft', 'borrowRight', 'accDigit',
                   'kd', 'leafOf', 'nth', 'maxSuffix',   # maxSuffix：Two-Way 查找算法的内部助手
                   'buf', 'pid', 'pidGen', 'vals', 'slots', 'ent', 'cursor', 'holeHead', 'epoch',
@@ -66,6 +65,10 @@ def members(path, rel):
         for mm in re.finditer(r'^\s*(@private\s+)?fn\s+(\w+)\s*\(', body, re.M):
             if mm.group(1): continue
             out.append((ty, mm.group(2), 'method'))
+    # 顶层**自由函数**：同样是可供使用者调用的公开面（`sort<T>`、`copyInto<T>` 一类）。
+    # 约定：结构体体与 impl 块内的成员缩进书写，因此列首的 `fn` 即顶层声明。
+    for fm in re.finditer(r'(?m)^fn\s+(\w+)\s*\(', src):
+        out.append(('-', fm.group(1), 'fn'))
     return [(rel, t, n, k, visibility(n)) for t, n, k in out]
 
 rows = []

@@ -80,6 +80,9 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <ol><li><strong>扩容即作废</strong>：<code>push</code> 触发扩容会换块，旧视图<strong>停在扩容前的快照</strong>上 —— 读到旧值、写进去会静默丢；</li><li><strong>视图可带出调用</strong>（缓冲由 home 机制放在调用者选的地方，比这次调用活得久），因此 <code>sort(v.asSlice())</code> 排的是<strong>真存储</strong>，这正是零拷贝存在的理由。</li></ol>
 <h2 id="pcg32-的状态"><code>pcg32</code> 的状态</h2>
 <table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>状态</td><td><code>pcg32.state: u64</code></td><td>发生器的内部状态；可取可写（存读档时直接存取），按约定属实现细节</td></tr></tbody></table>
+<h2 id="通用算法">通用算法</h2>
+<table><thead><tr><th>函数</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>排序</td><td><code>sort&lt;T&gt;(s: mut slice&lt;T&gt;)</code></td><td><strong>原地</strong>排序；元素类型需要在实例化时提供 <code>less</code> 方法（模板期不查，实例期报错并指出具体实例）</td></tr><tr><td>批量拷贝</td><td><code>copyInto&lt;T&gt;(dst: mut slice&lt;T&gt;, src: slice&lt;T&gt;, n: i64)</code></td><td>把 <code>src</code> 的前 <code>n</code> 个元素拷进 <code>dst</code>（整段移动，不是逐元素循环）</td></tr></tbody></table>
+<p>两者都是与具体容器无关的<strong>切片级</strong>算法：容器先借出视图（<code>toSlice</code> 拷贝或 <code>asSlice</code> 零拷贝）， 再把视图交给算法。<code>copyInto</code> 也是 <code>append</code> 一族"整段追加"的实现基础。</p>
 <div class="pn"><a href="26-stl-containers.html">← 标准库参考：容器的共同面</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));

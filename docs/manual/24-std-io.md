@@ -38,3 +38,8 @@
 
 
 `>>` 重载（含 `string` 版本，见 [`stringio`](23-stl-stringio.md)）的实现都建立在这三条之上。
+
+| 成员 | 说明 |
+|---|---|
+| `writeBytesRaw(buf: slice<u8>) -> i64` | 直接向标准输出写一段字节（不经缓冲与格式化），返回写入长度 |
+| `writeBytes(buf: slice<u8>) -> i64` | 同上，但走常规路径（含必要的收尾） |

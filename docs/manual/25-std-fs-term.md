@@ -37,3 +37,9 @@
 | 关闭重定向 | `closeIn()` / `closeOut() -> result<unit, io::ioError>` | 结束重定向 |
 | 写入 | `ofstream::put(buf: slice<u8>) -> result<i64, io::ioError>` | 写一段字节，返回写入长度 |
 | 失败标志 | `ifstream::bad() -> bool` | 上一次读取是否失败或已到结尾（与 `io::istream` 的 `bad()` 同义） |
+
+## `std::proc`
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `exit(code: i32)` | 以给定退出码结束进程（不返回；`main` 的返回值是常规路径） |

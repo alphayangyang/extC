@@ -84,6 +84,23 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 }</code></pre>
 <p>规则与理由：</p>
 <ul><li>私有成员<strong>只能被声明它的模块使用</strong>：跨模块读取字段、调用方法、以及在结构体字面量里写入，三者都是编译错误；</li><li>字段级私有存在的理由是<strong>存储不外借</strong>：<code>buf</code> / <code>vals</code> 一类字段一旦公开，别的模块即可取出指向池存储的视图，而池存储不允许被外部引用（<code>POOLS.md</code> 5.4）。容器应当只通过自己愿意提供的方法外借，并由方法决定借出的范围与期限；</li><li>同模块内一切照常：构造函数与方法体可以自由读写自己的私有成员。</li></ul>
+<h3 id="7-1-impl-块-在类型体之外挂方法">7.1 <code>impl</code> 块：在类型体之外挂方法</h3>
+<p>方法可以写在类型体之外：</p>
+<pre class="lang-extc"><code><span class="k">impl</span> point {
+    <span class="k">fn</span> <span class="f">norm2</span>(self: <span class="k">ref</span> point) -&gt; <span class="t">i64</span> { <span class="k">return</span> self.x * self.x + self.y * self.y }
+}
+
+<span class="k">impl</span> <span class="t">i64</span> {                      <span class="c">// 内建标量没有类型体，只能这样挂</span>
+    <span class="k">fn</span> <span class="f">hash</span>(self: <span class="k">ref</span> <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> self * <span class="t">i64</span>(<span class="n">2654435761</span>) }
+}</code></pre>
+<p>规则与理由：</p>
+<ul><li><strong>一个类型只有一份方法集</strong>：<code>impl</code> 是<strong>追加</strong>，不是替换。同名方法（运算符除外）报重复错误， 并指出先前那一处的位置；</li><li>目标可以是<strong>其他模块的类型</strong>：<code>impl string { ... }</code> 写在 <code>use stl::string</code> 的模块里即可， 该模块因此成为这些方法的归属；</li><li>目标可以写成<strong>限定名</strong>：<code>impl io::istream { ... }</code>（限定名与类型标注走同一套解析：别名表 + 歧义拒绝）；</li><li><strong>可见性随模块</strong>：这些方法只在该 <code>impl</code> 所在模块<strong>被引入</strong>时存在。未引入时报 `<code> no method </code>x<code> </code><code>，并提示应 </code>use<code> 哪个模块（</code>stdlib/INDEX` 提供该映射）；</li><li><strong>内建标量</strong>可以挂方法（<code>i64</code>、<code>u8</code> 等）；<strong>枚举不能</strong>（枚举用 <code>match</code> 读取）；</li><li><strong>泛型类型的目标暂不支持</strong>（<code>impl map&lt;string, V&gt;</code> 在语法处即被拒绝：块自身需要类型参数列表）。</li></ul>
+<h4 id="运算符重载">运算符重载</h4>
+<p>运算符就是名字为运算符的方法：</p>
+<pre class="lang-extc"><code><span class="k">impl</span> point {
+    <span class="k">fn</span> +(self: <span class="k">ref</span> point, o: point) -&gt; point { <span class="k">return</span> point { x: self.x + o.x  y: self.y + o.y } }
+}</code></pre>
+<ul><li><strong>按右操作数的类型</strong>区分重载：<code>&gt;&gt;</code> 可以同时为 <code>i64</code>、<code>slice&lt;u8&gt;</code>、<code>string</code> 各写一个；</li><li>同一个<strong>右操作数类型</strong>写两次是错误（无法在两者间选择），诊断会指出冲突的两处；</li><li>运算符方法的形状固定（<code>self</code> 加一个操作数），因此操作数类型是两个定义之间唯一可区分的东西；</li><li>两侧类型都可比较时，<code>==</code> / <code>!=</code> 走原生比较，无需重载。</li></ul>
 <p><strong>方法写在 <code>struct</code> 体内</strong>（定案 9），首参数必须是 <code>self: ref 本类型</code>：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> point {
     x: <span class="t">i32</span>

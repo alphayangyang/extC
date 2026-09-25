@@ -23,3 +23,23 @@
 | 集合添加 | `linSet::add(self: mut ref linSet<T>, v: T) -> bool` | 线性集合的添加 |
 | 重建 | `hashMap::rebuild(self: mut ref hashMap<K, V>, ncap: i64)` | 以新容量重建哈希表（O(n)） |
 | 句柄比较 | `pool::same(a: handle, b: handle) -> bool` | 两个句柄是否指同一格同一代 |
+
+## 键的哈希
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `hashI64(k: i64) -> i64` | 整数键的哈希（供 `hashMapI64` 一类使用；`i64` 的 `hash` 方法即由 `impl i64` 提供，见语言页的 `impl` 一节） |
+
+## 遍历与名次（有序 / 线性 / 哈希容器同形）
+
+| 操作 | 签名 | 说明 |
+|---|---|---|
+| 取键 | `keyAt(self: ref C, i: i64) -> K` | 第 `i` 个**存活**键（`0 ≤ i < len()`），按容器的迭代次序 |
+| 取值 | `valAt(self: ref C, i: i64) -> V` | 与 `keyAt(i)` 配对的取值 |
+| 名次 | `map::lowerBound(self: ref map<K, V>, k: K) -> i64` | **首个不小于 `k` 的键的名次**，即严格小于 `k` 的键的个数；借助子树规模，O(log n) 而非遍历 |
+| 名次反查 | `map::rankAt(self: ref map<K, V>, i: i64) -> i64` | **第 `i` 小的条目**所属的叶子位置，编码为 `leafId * 16 + position`（`16` 即 `ORDER`，一个叶子不会超过它）。之所以编码成一个整数：语言里没有元组类型 |
+| 下界 | `set::lowerBound(self: ref set<T>, k: T) -> i64` | 集合上同义的名次查询 |
+| 集合取键 | `hashSet::keyAt(self: ref hashSetI64, i: i64) -> i64` | 哈希集合的第 `i` 个元素 |
+
+`map` 的迭代次序是**键的升序**；`hashMap` / `linmap` 是插入与重排之后的物理次序（`linmap` 保持插入次序，
+哈希表在 `rebuild` 之后次序会改变）。

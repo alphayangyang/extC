@@ -6,7 +6,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 749 个成员，其中内部 328 个：
+公开面共 786 个成员，其中内部 317 个：
 
 ## prelude
 
@@ -21,6 +21,15 @@
 
 ## std::io
 
+- `-.accDigit`（方法）
+- `-.errWrite`（方法）
+- `-.fillState`（方法）
+- `-.flushCout`（方法）
+- `-.fmtI64`（方法）
+- `-.fmtI64Fast`（方法）
+- `-.isSpaceByte`（方法）
+- `-.nextI64State`（方法）
+- `-.pairsReady`（方法）
 - `errStream.errWrite`（方法）
 - `istream.errWrite`（方法）
 - `istream.flushCout`（方法）
@@ -72,8 +81,6 @@
 - `hashMap.deadOf`（方法）
 - `hashMap.denseLen`（方法）
 - `hashMap.denseLen`（方法）
-- `hashMap.keyAt`（方法）
-- `hashMap.keyAt`（方法）
 - `hashMap.keyAtDense`（方法）
 - `hashMap.keyAtDense`（方法）
 - `hashMap.keys`（字段）
@@ -92,40 +99,32 @@
 - `hashMap.pidOf`（方法）
 - `hashMap.tagCensus`（方法）
 - `hashMap.tagCensus`（方法）
-- `hashMap.valAt`（方法）
-- `hashMap.valAt`（方法）
 - `hashMap.valAtDense`（方法）
 - `hashMap.valAtDense`（方法）
 - `hashMap.vals`（字段）
 - `hashMap.vals`（字段）
 - `hashMapI64.deadOf`（方法）
 - `hashMapI64.denseLen`（方法）
-- `hashMapI64.keyAt`（方法）
 - `hashMapI64.keyAtDense`（方法）
 - `hashMapI64.liveAt`（方法）
 - `hashMapI64.pidOf`（方法）
 - `hashMapI64.tagCensus`（方法）
-- `hashMapI64.valAt`（方法）
 - `hashMapI64.valAtDense`（方法）
 - `i64Key.deadOf`（方法）
 - `i64Key.denseLen`（方法）
-- `i64Key.keyAt`（方法）
 - `i64Key.keyAtDense`（方法）
 - `i64Key.liveAt`（方法）
 - `i64Key.pidOf`（方法）
 - `i64Key.tagCensus`（方法）
-- `i64Key.valAt`（方法）
 - `i64Key.valAtDense`（方法）
 
 ## stl::hashSet
 
-- `hashSetI64.keyAt`（方法）
 - `hashSetI64.liveAt`（方法）
 
 ## stl::linmap
 
 - `linMap.cap`（字段）
-- `linMap.keyAt`（方法）
 - `linMap.keys`（字段）
 - `linMap.keys`（字段）
 - `linMap.n`（字段）
@@ -135,7 +134,6 @@
 - `linMap.pid`（字段）
 - `linMap.pid`（字段）
 - `linMap.pidGen`（字段）
-- `linMap.valAt`（方法）
 - `linMap.vals`（字段）
 
 ## stl::map
@@ -153,7 +151,6 @@
 - `bnode.growStores`（方法）
 - `bnode.height`（方法）
 - `bnode.kd`（方法）
-- `bnode.keyAt`（方法）
 - `bnode.keys`（字段）
 - `bnode.keys`（字段）
 - `bnode.keys`（字段）
@@ -168,7 +165,6 @@
 - `bnode.leaf`（字段）
 - `bnode.leafFor`（方法）
 - `bnode.leafOf`（方法）
-- `bnode.lowerBound`（方法）
 - `bnode.lowerIn`（方法）
 - `bnode.mergeLeft`（方法）
 - `bnode.mergeRight`（方法）
@@ -188,7 +184,6 @@
 - `bnode.pid`（字段）
 - `bnode.pid`（字段）
 - `bnode.pidGen`（字段）
-- `bnode.rankAt`（方法）
 - `bnode.root`（字段）
 - `bnode.setCnt`（方法）
 - `bnode.setKey`（方法）
@@ -198,7 +193,6 @@
 - `bnode.setVal`（方法）
 - `bnode.side`（字段）
 - `bnode.subMinKey`（方法）
-- `bnode.valAt`（方法）
 - `bnode.vals`（字段）
 - `bnode.vals`（字段）
 - `bnode.vals`（字段）
@@ -216,7 +210,6 @@
 - `map.growStores`（方法）
 - `map.height`（方法）
 - `map.kd`（方法）
-- `map.keyAt`（方法）
 - `map.keys`（字段）
 - `map.keys`（字段）
 - `map.keys`（字段）
@@ -228,7 +221,6 @@
 - `map.lastKey`（方法）
 - `map.leafFor`（方法）
 - `map.leafOf`（方法）
-- `map.lowerBound`（方法）
 - `map.lowerIn`（方法）
 - `map.mergeLeft`（方法）
 - `map.mergeRight`（方法）
@@ -247,7 +239,6 @@
 - `map.pid`（字段）
 - `map.pid`（字段）
 - `map.pidGen`（字段）
-- `map.rankAt`（方法）
 - `map.root`（字段）
 - `map.setCnt`（方法）
 - `map.setKey`（方法）
@@ -257,7 +248,6 @@
 - `map.setVal`（方法）
 - `map.side`（字段）
 - `map.subMinKey`（方法）
-- `map.valAt`（方法）
 - `map.vals`（字段）
 - `map.vals`（字段）
 - `map.vals`（字段）
@@ -333,10 +323,6 @@
 - `pool.slots`（字段）
 - `pool.vals`（字段）
 - `pool.vals`（字段）
-
-## stl::set
-
-- `set.lowerBound`（方法）
 
 ## stl::string
 

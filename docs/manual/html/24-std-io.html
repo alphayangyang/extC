@@ -81,6 +81,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h2 id="控制台输入状态">控制台输入状态</h2>
 <table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>inSync() -&gt; reader</code></td><td>取控制台输入的那份全局状态（缓冲位置在多次读取之间保持）</td></tr><tr><td><code>inSave(r: ref reader)</code></td><td>读完之后把位置写回全局状态</td></tr><tr><td><code>inBad() -&gt; bool</code> / <code>inClear()</code></td><td>查询 / 清除"上一次读取失败或已到结尾"的标志</td></tr><tr><td><code>istream::bad() -&gt; bool</code></td><td>输入流级的失败标志（<code>&gt;&gt;</code> 失败时置起，不 trap）</td></tr></tbody></table>
 <p><code>&gt;&gt;</code> 重载（含 <code>string</code> 版本，见 <a href="23-stl-stringio.html"><code>stringio</code></a>）的实现都建立在这三条之上。</p>
+<table><thead><tr><th>成员</th><th>说明</th></tr></thead><tbody><tr><td><code>writeBytesRaw(buf: slice&lt;u8&gt;) -&gt; i64</code></td><td>直接向标准输出写一段字节（不经缓冲与格式化），返回写入长度</td></tr><tr><td><code>writeBytes(buf: slice&lt;u8&gt;) -&gt; i64</code></td><td>同上，但走常规路径（含必要的收尾）</td></tr></tbody></table>
 <div class="pn"><a href="23-stl-stringio.html">← 标准库参考：`stringio`</a> <a href="25-std-fs-term.html">标准库参考：`std::fs` 与 `std::term` →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
