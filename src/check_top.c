@@ -4369,7 +4369,16 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t k = 0; k < sd->methods.len; k++) {
                 FuncDef *have = *(FuncDef **)vecAt(&sd->methods, k);
                 if (strcmp(have->name, mth->name) != 0) continue;
-                ckError(&c, im->line, NULL,
+                /* Name the earlier declaration too: with one method set per type, "which of the
+                 * two is the duplicate" is the first question a reader asks, and hunting for it
+                 * by hand is exactly the kind of work the diagnostic should do. */
+                Buf note;
+                bufInit(&note, c.arena);
+                int prevLine = (have->body && have->body->line > 0) ? have->body->line : 0;
+                bufPrintf(&note, "a type has one method set and `impl` adds to it, it does not"
+                                 " replace it: the first declaration is at line %d%s",
+                          prevLine, have->modName ? " of the module that declared it" : "");
+                ckError(&c, im->line, bufCstr(&note),
                         "`%s` already has a method named `%s`", sd->name, mth->name);
                 break;
             }

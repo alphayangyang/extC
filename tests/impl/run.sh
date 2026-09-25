@@ -36,6 +36,8 @@ check_err() {
 }
 check_err tests/impl/errors/dup_body_and_impl.extc 'already has a method named `sum`'
 check_err tests/impl/errors/dup_two_impls.extc     'already has a method named `sum`'
+# 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
+check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
 check_err tests/impl/errors/unknown_type.extc      '`impl` on unknown type `nope`'
 check_err tests/impl/errors/on_enum.extc           'cannot own methods'
 check_err tests/impl/errors/with_field.extc        'expected `fn` in the `impl` block'
