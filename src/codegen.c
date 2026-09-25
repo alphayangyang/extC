@@ -453,6 +453,7 @@ static const char *cSymName(CG *g, const char *name) {
         { "+",  "add" }, { "-",  "sub" }, { "*",  "mul" },
         { "/",  "div" }, { "%",  "rem" },
         { "<<", "shl" }, { ">>", "shr" },
+        { "[]", "idx" }, { "[]=", "idxset" },
         { NULL, NULL }
     };
     for (size_t i = 0; MAP[i].extc; i++)

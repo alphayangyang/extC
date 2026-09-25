@@ -336,6 +336,24 @@ void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
 
+            /* `x[i] = v` needs `[]=`, which is a SEPARATE method name from `[]` (reading). A type
+             * that offers only `[]` cannot be assigned through; without this check the plain path
+             * below reports it as "the call's result is not assignable" -- true, but it hides the
+             * reason. Both names are looked up here on the object's type, exactly as the read side
+             * does, so a type may define either one alone. */
+            if (s->u.assign.target && s->u.assign.target->kind == EX_INDEX) {
+                Type *ot = checkExpr(c, s->u.assign.target->u.index.obj);
+                if (!ttIsError(ot) && findMethod(ttBase(ot), "[]") &&
+                    !findMethod(ttBase(ot), "[]=")) {
+                    ckError(c, s->line,
+                            "`[]` and `[]=` are independent: this type defines reading only. Keep"
+                            " writing explicit (a container usually has `put`), or add `fn []=`.",
+                            "`%s` defines `[]` but not `[]=`, so `x[i] = v` is not available",
+                            typeStr(c, ot));
+                    return;
+                }
+            }
+
             Type *tt_ = checkExpr(c, s->u.assign.target);
 
             /* The target is a binding that was narrowed, so the comparison uses the

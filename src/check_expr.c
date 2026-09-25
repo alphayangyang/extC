@@ -665,6 +665,28 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
         case EX_INDEX: {
             Type *ot = checkExpr(c, e->u.index.obj);
+
+            /* A type that defines `[]` gets the subscript syntax: `m[k]` becomes the method call it
+             * is, and the whole method machinery -- argument checks, return type, the deferred
+             * check for a generic instance (#57) -- applies without a second copy of it here. The
+             * built-in array / slice / view path below is what remains for every other type. `[]`
+             * and `[]=` are independent names: this is the read side only, an assignment through a
+             * `[]`-only type is reported by the assignment path (`[]=` is where writing goes). */
+            {
+                FuncDef *ix = ttIsError(ot) ? NULL : findMethod(ttBase(ot), "[]");
+                if (ix) {
+                    Vec args;
+                    vecInit(&args, c->arena, sizeof(void *));
+                    *(Expr **)vecPush(&args) = e->u.index.index;
+                    Expr *recv = e->u.index.obj;
+                    e->kind = EX_METHOD;
+                    e->u.method.recv = recv;
+                    e->u.method.name = "[]";
+                    e->u.method.args = args;
+                    return checkExpr(c, e);
+                }
+            }
+
             Type *it = checkValue(c, e->u.index.index);
             if (ttIsError(ot)) return ttError(tt);
 

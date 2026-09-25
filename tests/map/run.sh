@@ -44,6 +44,9 @@ run_case shrink
 echo "== release：容器与运行期池一起活、一起还 =="
 run_case release
 
+echo "== 下标语法 m[k]（③ 第一步：只做读）=="
+run_case index
+
 echo "== churn（RSS）：1e6 轮与 1e5 轮的峰值 RSS 必须相当 =="
 build_one() { "$EXTC" "tests/map/$2.extc" -o "build/$1.c" >/dev/null 2>&1 \
     && "$CC" -O1 -std=c11 "build/$1.c" -o "build/$1" >/dev/null 2>&1; }
@@ -65,17 +68,28 @@ else
     echo "  FAIL churn  ->  编不过"; fail=1
 fi
 
+echo "== 反例：只有读侧 [] 而没有写侧 []= ⇒ 写侧必须给可读的诊断 =="
+check_err() {
+    local f=$1 want=$2 out
+    if out=$("$EXTC" "$f" -o /dev/null 2>&1); then
+        echo "  FAIL $(basename "$f")  ->  **编过了**（应该报错）"; fail=1; return
+    fi
+    echo "$out" | grep -qF -- "$want" || { echo "  FAIL $(basename "$f")  ->  消息里没有「$want」"; fail=1; return; }
+    echo "  ok   $(basename "$f")  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
+}
+check_err tests/map/errors/index_assign.extc 'defines `[]` but not `[]=`'
+
 echo "== ASan =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/p.c"
 if gcc -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
     ok=1
-    for t in sorted bounds stress churn shrink release; do
+    for t in sorted bounds stress churn shrink release index; do
         "$EXTC" "tests/map/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
           && gcc -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
           && "$TMP/$t" >/dev/null 2>&1 || { echo "  FAIL $t -> ASan 报错"; fail=1; ok=0; }
     done
-    [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress · churn · shrink · release  ->  ASan 干净"
+    [ "$ok" = 1 ] && echo "  ok   sorted · bounds · stress · churn · shrink · release · index  ->  ASan 干净"
 else
     echo "  skip  gcc 不支持 -fsanitize=address"
 fi

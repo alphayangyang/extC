@@ -236,6 +236,12 @@ struct map<K, V> {
         return !(k < self.kn(id, i))
     }
 
+    /* `m[k]` -- the read side of the subscript syntax and nothing else. It returns `?V` exactly
+     * like `get`: a missing key is `none`, NOT an inserted default (`std::map::operator[]`'s
+     * surprise is not available here -- extC has no lvalue generation, and writing stays `put`).
+     * `[]` and `[]=` are independent method names, so a type may offer reading without writing. */
+    fn [](self: ref map<K, V>, k: K) -> ?V { return self.get(k) }
+
     fn get(self: ref map<K, V>, k: K) -> ?V {
         let id = self.leafFor(k)
         let i = self.lowerIn(id, k)

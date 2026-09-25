@@ -754,7 +754,10 @@ static Token *expectFuncName(Parser *p) {
      * so a container or a generic body can sort and add what it holds. `<<` and `>>` are
      * here for streams: `cout << x` and `cin >> x` are the shape users of other languages
      * expect, and a stream is an ordinary type with ordinary methods. The set stays small
-     * on purpose -- `[]` is syntax over the `slice` protocol, not a method name. */
+     * on purpose, but it grew by two: `[]` and `[]=` let a container be read and written with the
+     * syntax everyone already knows (`m[k]`), and they are **independent** names -- `[]` is looked
+     * up on a read, `[]=` on an assignment, so a type may define either one without the other. A
+     * type that defines `[]` but not `[]=` simply cannot be assigned through. */
     /* `<<` and `>>` are two `<` / `>` tokens rather than one (see atShift: fusing them
      * would make `box<box<i32>>` unparsable), so they are recognized as a pair here too. */
     const char *shift = NULL;
@@ -768,9 +771,29 @@ static Token *expectFuncName(Parser *p) {
     if (at(p, "==") || at(p, "!=") || at(p, "<") || at(p, "<=") ||
         at(p, ">")  || at(p, ">=") || at(p, "+") || at(p, "-") ||
         at(p, "*")  || at(p, "/")  || at(p, "%")) return take(p);
+    /* `[]` and `[]=` arrive as three or four ordinary tokens, so they are fused here the same way
+     * `<<` is: the operator spelling is what the lookup and the mangler key on. */
+    if (at(p, "[")) {
+        Token *tok = cur(p);
+        take(p);
+        if (!at(p, "]")) {
+            ctxError(p->ctx, cur(p)->line, cur(p)->col,
+                     "the subscript operator is spelled `[]` (and its writing form `[]=`)",
+                     "expected `]`, found `%s`", shown(cur(p)));
+            return NULL;
+        }
+        take(p);
+        if (at(p, "=")) {
+            take(p);
+            tok->text = "[]=";
+        } else {
+            tok->text = "[]";
+        }
+        return tok;
+    }
     Token *t = cur(p);
     ctxError(p->ctx, t->line, t->col,
-             "only comparisons (`==` `!=` `<` `<=` `>` `>=`), arithmetic (`+` `-` `*` `/` `%`) and the stream operators (`<<` `>>`) can be overloaded",
+             "only comparisons (`==` `!=` `<` `<=` `>` `>=`), arithmetic (`+` `-` `*` `/` `%`), the stream operators (`<<` `>>`) and the subscript operators (`[]` `[]=`) can be overloaded",
              "expected a function name, found `%s`", shown(t));
     return NULL;
 }

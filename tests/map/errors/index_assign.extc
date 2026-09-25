@@ -1,0 +1,9 @@
+// 反例：类型只定义了 `[]`（读）而没有 `[]=`（写）⇒ `x[i] = v` 必须给一句能读懂的话
+// expect: defines `[]` but not `[]=`
+use stl::map
+
+fn main() -> i32 {
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(4))
+    m[i64(1)] = i32(5)
+    return 0
+}
