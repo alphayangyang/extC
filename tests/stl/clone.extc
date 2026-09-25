@@ -1,0 +1,93 @@
+// 深拷贝 · 常设判据（`clone()`）
+//
+// 起因是一个真陷阱：`var b = a` 在 extC 里**不是深拷贝**，而是结构体逐成员拷贝 ——
+// 容器值里的切片指针被抄了一份，于是两份**共用同一块板块**：
+//   · `b.push(...)` 会改到 `a` 的内容（看起来像两个独立变量，实际是一份存储）；
+//   · `a.release()` 会让 `b` 悬垂（守卫能把它变成带位置的 trap，但那已经是事故了）。
+//
+// 所以要一份能自己改的副本，唯一的正路是显式 `a.clone()`：代价可见（O(n) 拷贝 + 一块新板块），
+// 新存储生在**调用者所在的地方**（与 `toSlice` 同一条逃逸规则）⇒ 可以存、可以返回、
+// 可以活得比源容器长。
+//
+// 判据四条（每个容器都要过）：
+//   ① 改副本不影响原件（长度各自独立）；
+//   ② 原件 release 之后副本照旧可用（真的独立，不是共享）；
+//   ③ 副本内容与原件相同（拷的是值，不是空壳）；
+//   ④ 覆盖 vector / string / map / hashMap / set / linMap / linSet / hashSet。
+// expect: vec=3/4 vecOk=1,2,3 str=2/3 map=2/3 hm=1/2 set=1/2 lin=1/2 lset=1/2 hset=1/2 vecAfterRelease=4
+use std::io
+use stl::vector
+use stl::string
+use stl::map
+use stl::hashMap
+use stl::set
+use stl::linmap
+use stl::linset
+use stl::hashSet
+
+fn main() -> i32 {
+    /* ① vector：改副本不影响原件 + 副本内容对 */
+    var a: vector<i32> = vector<i32>::withCap(i64(4))
+    a.push(i32(1))
+    a.push(i32(2))
+    a.push(i32(3))
+    var b = a.clone()
+    b.push(i32(4))
+    io::cout << "vec=" << a.len() << "/" << b.len()
+    var c0 = b.get(i64(0)) ?? i32(-1)
+    var c1 = b.get(i64(1)) ?? i32(-1)
+    var c2 = b.get(i64(2)) ?? i32(-1)
+    io::cout << " vecOk=" << i64(c0) << "," << i64(c1) << "," << i64(c2)
+
+    /* ② string */
+    var s: string = string::withCap(i64(8))
+    s.push(u8(104))
+    s.push(u8(105))
+    var t = s.clone()
+    t.push(u8(33))
+    io::cout << " str=" << s.len() << "/" << t.len()
+
+    /* ③ map / hashMap */
+    var m: map<i64, i32> = map<i64, i32>::withCap(i64(8))
+    m.put(i64(1), i32(10))
+    m.put(i64(2), i32(20))
+    var m2 = m.clone()
+    m2.put(i64(3), i32(30))
+    io::cout << " map=" << m.len() << "/" << m2.len()
+
+    var h: hashMapI64<i32> = hashMapI64<i32>::withCap(i64(8))
+    h.put(i64(7), i32(70))
+    var h2 = h.clone()
+    h2.put(i64(8), i32(80))
+    io::cout << " hm=" << h.len() << "/" << h2.len()
+
+    /* ④ set / linMap / linSet / hashSet */
+    var st: set<i64> = set<i64>::withCap(i64(8))
+    st.put(i64(1))
+    var st2 = st.clone()
+    st2.put(i64(2))
+    io::cout << " set=" << st.len() << "/" << st2.len()
+
+    var lm: linMap<i64, i32> = linMap<i64, i32>::withCap(i64(8))
+    lm.put(i64(1), i32(10))
+    var lm2 = lm.clone()
+    lm2.put(i64(2), i32(20))
+    io::cout << " lin=" << lm.len() << "/" << lm2.len()
+
+    var lst: linSet<i64> = linSet<i64>::withCap(i64(8))
+    lst.add(i64(1))
+    var lst2 = lst.clone()
+    lst2.add(i64(2))
+    io::cout << " lset=" << lst.len() << "/" << lst2.len()
+
+    var hs: hashSetI64 = hashSetI64::withCap(i64(8))
+    hs.put(i64(5))
+    var hs2 = hs.clone()
+    hs2.put(i64(6))
+    io::cout << " hset=" << hs.len() << "/" << hs2.len()
+
+    /* ⑤ 原件 release 之后副本照旧可用（这才是"独立"的硬判据：共享的话副本会一起失效） */
+    a.release()
+    io::cout << " vecAfterRelease=" << b.len() << "\n"
+    return 0
+}

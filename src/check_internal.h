@@ -515,6 +515,8 @@ typedef struct {
  FuncDef *findOperator (TypeTable *tt, Type *st, const char *name, Type *rhs);
 /* The StructDef behind a TY_STRUCT or TY_GENERIC type, or NULL. */
  StructDef *structOf (Type *t);
+void warnSharedCopy(Checker *c, Expr *e, Type *t);
+void warnSharedReturn(Checker *c, Expr *e, Type *t);
 /* Declare a binding in the innermost scope and return it; the caller writes the generated C name
  * back into the AST. Unless `shadow` is set, a name already declared in the same scope is an
  * error, because two `var`s of the same name in one scope are almost always a typo. */

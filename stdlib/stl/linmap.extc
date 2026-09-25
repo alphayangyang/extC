@@ -31,6 +31,7 @@ use std::io
 use std::sys::pool as syspool    /* 运行期池记录 + 板块原语：这张表的两个视图住在自己的板块上 */
 
 /* A `K -> V` table searched linearly. */
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct linMap<K, V> {
     pid:    i64            /* 这张表自己的池记录（一个非嵌套容器 = 一个池）*/
@@ -121,6 +122,16 @@ struct linMap<K, V> {
      * there. These are the accessors to use with `len`. */
     fn keyAt(self: ref linMap<K, V>, i: i64) -> K { return self.keys[i] }
     fn valAt(self: ref linMap<K, V>, i: i64) -> V { return self.vals[i] }
+    /* **深拷贝**（同 vector/map：`var b = a` 是结构体逐成员拷贝、两份共用板块）。 */
+    fn clone(self: ref linMap<K, V>) -> linMap<K, V> {
+        var out = linMap<K, V>::withCap(self.n + i64(1))
+        var i: i64 = 0
+        while i < self.n {
+            out.put(self.keyAt(i), self.valAt(i))
+            i = i + i64(1)
+        }
+        return out
+    }
 
     fn clear(self: mut ref linMap<K, V>) { self.n = i64(0) }
 

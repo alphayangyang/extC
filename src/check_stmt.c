@@ -218,7 +218,14 @@ void checkStmt(Checker *c, Stmt *s) {
              * reference; a copy of the value is written `let v = *p`. Dereferencing
              * here instead would make it impossible to bind a reference returned by a
              * call, as in `let r = pickFirst(ref a, ref b)`. */
-            else                               it = checkExpr(c, s->u.var.init);
+            else {
+                it = checkExpr(c, s->u.var.init);
+                /* **第三扇门**（`var b = a` 这种没有类型标注的绑定）：`checkInto` 只管
+                 * 带标注的那条路（`var b: T = a`），而无标注的绑定走的是 `checkExpr`，
+                 * 于是"按值拷贝一个共用存储的容器"在这里被漏掉过 —— 实测症状是
+                 * `var b = a` 編译**一条警告都不报**（`tests/stl/clone.extc` 的起因）。 */
+                warnSharedCopy(c, s->u.var.init, it);
+            }
 
             /* A stream borrow is the one reference that may not be bound, even here: it
              * is the operator's own borrow of the stream, not a reference the user asked
@@ -758,6 +765,7 @@ void checkStmt(Checker *c, Stmt *s) {
 
             adoptContextType(s->u.ret.value, want);
             Type *vt = checkInto(c, want, s->u.ret.value);   /* no deref when a ref is wanted */
+            warnSharedReturn(c, s->u.ret.value, vt);
             markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* handed out, so use the home arena */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
             /* A returned reference must point at a parameter or at static data, which

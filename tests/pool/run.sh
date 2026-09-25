@@ -99,8 +99,11 @@ rm -rf "$TMP"
 echo
 echo "== 期 1 · 池注册表：建 / 世代 / 释放 =="
 rt_run() {   # rt_run <名字> <文件> <期望的一整行>
+    # `-w`：这一节判的是**运行期行为**（输出的那一整行必须逐字相等）。`@sharesStorage` 的
+    # 编译期警告会混进 `2>&1` 里，把比较搅坏 —— 而那条警告本身有专门的判据
+    #（tests/stl/run.sh 的 clone_warn/clone_ok），这里静音不丢覆盖面。
     local name=$1 f=$2 want=$3 out
-    if ! out=$("$EXTC" --run "$f" 2>&1); then
+    if ! out=$("$EXTC" -w --run "$f" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | head -4 | sed 's/^/        /'; fail=1; return
     fi
     if [ "$out" = "$want" ]; then echo "  ok   $name  ->  $out"

@@ -41,6 +41,7 @@ fn hashI64(k: i64) -> i64 {
     return x
 }
 
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct hashMap<K, V> {
     /* This container's OWN pool record. One non-nested container = one pool (POOLS.md 7.7);
@@ -266,6 +267,18 @@ struct hashMap<K, V> {
     fn denseLen(self: ref hashMap<K, V>) -> i64 { return self.vals.len() }
     fn keyAtDense(self: ref hashMap<K, V>, d: i64) -> K { return self.keys[i64(self.bucketOfDense[d])] }
     fn valAtDense(self: ref hashMap<K, V>, d: i64) -> V { return self.vals.atDense(d) }
+
+    /* **深拷贝：要一份独立的表就用它。** `var b = a` 是结构体逐成员拷贝（共用板块）⇒
+     * 改 b 会改到 a、a.release() 会让 b 悬垂。这里显式拷一份（O(n) + 一块新板块）。 */
+    fn clone(self: ref hashMap<K, V>) -> hashMap<K, V> {
+        var out = hashMap<K, V>::withCap(self.n + i64(1))
+        var d: i64 = 0
+        while d < self.denseLen() {
+            out.put(self.keyAtDense(d), self.valAtDense(d))
+            d = d + i64(1)
+        }
+        return out
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -293,6 +306,7 @@ struct i64Key {
 }
 
 /* The `i64`-keyed face: what `hashMapI64<V>` always was, now one conversion deep. */
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct hashMapI64<V> {
     m: hashMap<i64Key, V>
 
@@ -304,6 +318,10 @@ struct hashMapI64<V> {
     fn len(self: ref hashMapI64<V>) -> i64 { return self.m.len() }
     fn capOf(self: ref hashMapI64<V>) -> i64 { return self.m.capOf() }
     fn bytesOf(self: ref hashMapI64<V>) -> i64 { return self.m.bytesOf() }
+    fn clone(self: ref hashMapI64<V>) -> hashMapI64<V> {
+        var h: hashMapI64<V> = { m: self.m.clone() }
+        return h
+    }
     fn pidOf(self: ref hashMapI64<V>) -> i64 { return self.m.pidOf() }
 
     fn [](self: ref hashMapI64<V>, k: i64) -> ?V { return self.get(k) }

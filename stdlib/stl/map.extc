@@ -43,6 +43,7 @@ struct bnode<K, V> {
     next: i32                 /* leaf chain, -1 at the end */
 }
 
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct map<K, V> {
     nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
@@ -299,6 +300,21 @@ struct map<K, V> {
     fn valAt(self: ref map<K, V>, i: i64) -> V {
         let e = self.rankAt(i)
         return self.vn(i32(e / i64(16)), e % i64(16))
+    }
+
+    /* **深拷贝：要一份独立的 map 就用它。**
+     *
+     * `var b = a` 不是深拷贝 —— 那是结构体逐成员拷贝，两份共用同一批节点所在的板块
+     * （`vals` 是指针被抄了一份）：`b.put(...)` 会改到 `a`，`a.release()` 会让 `b` 悬垂。
+     * 显式拷贝的代价可见（一次 O(n) 拷贝 + 一块新板块），新存储生在调用者所在的地方。 */
+    fn clone(self: ref map<K, V>) -> map<K, V> {
+        var out = map<K, V>::withCap(self.n + i64(1))
+        var i: i64 = 0
+        while i < self.n {
+            out.put(self.keyAt(i), self.valAt(i))
+            i = i + i64(1)
+        }
+        return out
     }
 
     /* `m[k] = v` -- the write side, a SEPARATE method name from `[]`, so a type may offer reading

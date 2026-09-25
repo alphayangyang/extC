@@ -458,6 +458,16 @@ struct StructDef {
      * Rust moves and borrows, Go passes a pointer, Python has no implicit object copy;
      * extC writes it down as an annotation. */
     bool        noCopy;
+    /* `@sharesStorage`：这个类型按值拷贝时**两份共用同一块存储**（容器就是这一族）。
+     *
+     * 作者口径（2026-09-26）：不禁止，**报警告**。理由是"万一用户就是神人"——
+     * 有些用途（把句柄交出去、短暂共享）是正当的，禁掉就把路堵死了；但用户必须
+     * **知道**这一行在做什么，因为它与"别的值复制都是各一份"这条直觉相反。
+     *   实测的坑（tests/stl/clone.extc 的起因）：`var b = a` 之后 `b.push(..)` 会改到 `a`，
+     *   而 `a.release()` 会让 `b` 悬垂（守卫能把它变成带位置的 trap，但那已经是事故了）。
+     * 与 `@noCopy` 的分工：`noCopy` 是"有身份的状态，复制一定错"（读者/流）；
+     * `sharesStorage` 是"复制的语义与直觉不同，但你可能是有意的"。 */
+    bool        sharesStorage;
     /* `@poolObject`：这个类型**拥有一个池**（存储住在池自己的板块上，寿命随它所在的地方）。
      *
      * 作者口径（2026-09-26）：声明比推断好 —— 编译器不必去猜（早先试过"看有没有 `pid` 字段"

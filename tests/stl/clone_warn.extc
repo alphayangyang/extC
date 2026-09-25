@@ -1,0 +1,17 @@
+// 共享存储的警告 · **应该报**的形状（与 clone_ok.extc 配对，判据在 run.sh 里）
+//
+// `var b = a` / `return a` 绑定的是"另一个名字指向同一块板块"，编译器必须点出来。
+use stl::vector
+
+fn passThrough(a: vector<i32>) -> vector<i32> {
+    return a
+}
+
+fn main() -> i32 {
+    var a: vector<i32> = vector<i32>::withCap(i64(4))
+    a.push(i32(1))
+    var b = a
+    b.push(i32(2))
+    let c = passThrough(a)
+    return i32(c.len())
+}

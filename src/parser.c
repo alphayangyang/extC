@@ -445,6 +445,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool fnInline  = false;
         bool noCopy    = false;
         bool poolObject = false;   /* @poolObject：这个 struct 拥有一个池（作者口径） */
+        bool sharesStorage = false; /* @sharesStorage：按值拷贝时两份共用存储（容器那一族） */
         /* `@private` hides a declaration; `@inline` asks for a function to be inlined.
          * They are read together because both may precede the same declaration, and the
          * order between them carries no meaning. Any other annotation is an error: these
@@ -482,6 +483,14 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
+
+            /* `@sharesStorage`：按值拷贝时**两份共用同一块存储**（容器就是这一族）。
+             * 不禁止、只警告（作者口径：万一用户就是神人，但必须让他知道这一行在做什么）。 */
+            if (strcmp(nm->text, "sharesStorage") == 0) {
+                sharesStorage = true;
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
                 ctxError(ctx, a->line, a->col,
                          "The annotation is designed but not implemented yet, and accepting"
@@ -492,8 +501,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             ctxError(ctx, a->line, a->col,
                      "The top-level annotations today are `@private` (hide a declaration from"
                      " other modules), `@inline` (on a function), `@noCopy` (on a struct:"
-                     " it may only be passed as `ref` / `mut ref`) and `@poolObject` (on a struct: it owns"
-                     " a pool). `@overwrite` is for"
+                     " it may only be passed as `ref` / `mut ref`), `@poolObject` (on a struct: it owns"
+                     " a pool) and `@sharesStorage` (on a struct: a by-value copy shares storage). `@overwrite` is for"
                      " locals.",
                      "unknown top-level annotation `@%s`", nm->text);
             return false;
@@ -503,6 +512,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!s) return false;
             s->isPrivate = isPrivate;
             s->noCopy    = noCopy;
+            if (sharesStorage) s->sharesStorage = true;
             if (poolObject) s->poolObject = true;
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "type")) {
@@ -510,6 +520,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "Only a `struct` has a copy to forbid; an enum is copied as a value.",
                          "`@noCopy` goes on a `struct`");
+                return false;
+            }
+
+            if (sharesStorage) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "Only a `struct` can share storage on copy; an enum has no storage.",
+                         "`@sharesStorage` goes on a `struct`");
                 return false;
             }
             if (poolObject) {

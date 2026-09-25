@@ -11,6 +11,7 @@
 
 /* Defined further down, but the value-position rule that calls it comes first. */
 static bool rejectNoCopy(Checker *c, Expr *e, Type *t);
+void warnSharedCopy(Checker *c, Expr *e, Type *t);
 
 /* --------------------------------------------------------------- escape checks
  *
@@ -2024,6 +2025,89 @@ Type *checkPrintArg(Checker *c, Expr *e) {
  *     `checkValue` (conditions, operands, discarded reads) and `checkInto` (arguments,
  *     returns, annotated bindings). One predicate, two doors.
  */
+/* 绑定一个新名字时，右边是个 `@sharesStorage` 类型的 place ⇒ **警告**（不是错误）。
+ *
+ * 作者口径（2026-09-26）：「万一用户就是神人」—— 有些用途是正当的（把句柄交出去、
+ * 短暂共享一份只读数据），禁掉就把路堵死了。但用户必须**知道**这一行在做什么，
+ * 因为它与「别的值复制都是各一份」这条直觉相反，而且后果是静默的：
+ *     var b = a            // 两份共用同一块板块
+ *     b.push(i32(9))       // ← 改到了 a 的内容
+ *     a.release()          // ← b 变成悬垂（守卫能 trap，但那已经是事故了）
+ *
+ * **只在这个形状上报**：`var b = a` / `let b = a` —— 无类型标注的绑定，右边是个名字。
+ * 试过把它挂在"需要值的那两扇门"（`checkValue` / `checkInto`）上，结果是噪音：
+ *   · `outer.push(inner)` —— 按值传参**本来就是**移交一份值，那正是用户要的；
+ *   · `return v`（库内部）—— 把刚构造好的值交出去，更不是拷贝；
+ *   · `let c = a.concat(b)` —— 右边是调用结果，新容器。
+ * 一扇门报一片，那条真警告就被埋了（实测：这三个形状都会误报）。
+ *
+ * Params:
+ *   c - checker
+ *   e - the expression in a value position
+ *   t - its type */
+void warnSharedCopy(Checker *c, Expr *e, Type *t) {
+    StructDef *sd;
+    if (!e || e->kind == EX_REF || !t) return;
+    sd = structOf(ttBase(t));
+    if (!sd || !sd->sharesStorage || !isPlace(e)) return;
+    /* 库自己写的代码不报 —— 判断依据是**拷贝发生的位置**（`c->ctx->path` 是当前正在检查的
+     * 那个文件），不是这个类型的来源：容器类型当然来自库（`sd->modName` 非空），
+     * 但会写错的是用户那份 `var b = a`。
+     * 不挡的话，用户每编译一次都会看到一串指向 stdlib 行号的警告，那条真警告就被埋了。 */
+    if (c->ctx && c->ctx->path && strstr(c->ctx->path, "stdlib")) return;
+    /* 新构造的值不是拷贝：`var a = vector<i32>::new()` / `f()` / `x.m()` / 结构体字面量 ——
+     * 它们产生一个**全新的**容器，与任何已有容器不共用存储。只有"读一个已经存在的东西"
+     * （`var b = a` / `s.f` / `v[i]`）才是那个需要被点出来的拷贝。 */
+    if (e->kind != EX_IDENT && e->kind != EX_FIELD && e->kind != EX_INDEX) return;
+    ckWarn(c, e->line,
+           "Use `a.clone()` for an independent copy (explicitly O(n): one copy plus one new"
+           " plate), or `ref a` / `mut ref a` to share it on purpose. Until then the two names"
+           " are one storage: writing through one is visible through the other, and"
+           " `release` on one leaves the other dangling.",
+           "`%s` copies by value but **shares storage**: `var b = a` gives two names to one"
+           " plate, not two containers", DN(sd));
+}
+
+/* `return e` 把一个 `@sharesStorage` 类型的**已有**值交出去 ⇒ 警告（作者口径 2026-09-26：
+ * 「我写 var a = foo()，foo 里面 return b，那也很危险」）。
+ *
+ * 难点在"已有"与"刚建好"的分界 —— 两者写法上只差右边那一个词：
+ *     return v                       // v 是参数或外层变量 ⇒ 交出去的是**拷贝**，两份共用存储
+ *     var v = vector<i32>::new()     // 新建的值 ⇒ 交出去就是移交，没有第二份，不报
+ * 判据用声明的行号：`Sym.line` 是声明所在行，而 `c->curFunc->line` 是函数**签名**那一行
+ * ⇒ `sym->line <= curFunc->line` 就是参数（在外层），否则是这个函数体里新绑的。
+ * 另外 `s.f` / `v[i]` 这类读已有东西的表达式一律算"已有"。
+ *
+ * 与"绑定那一处"的分工：那里管 `var b = a`（新名字指向同一块板块），这里管 `return b`
+ * （值被交出去时也复制一份结构体）。两处合起来就是用户能遇到的"看起来是赋值、实际是共享"
+ * 的全部形状。
+
+ * Params:
+ *   c - checker
+ *   e - the returned expression
+ *   t - its type */
+void warnSharedReturn(Checker *c, Expr *e, Type *t) {
+    StructDef *sd;
+    if (!e || e->kind == EX_REF || !t) return;
+    sd = structOf(ttBase(t));
+    if (!sd || !sd->sharesStorage || !isPlace(e)) return;
+    if (c->ctx && c->ctx->path && strstr(c->ctx->path, "stdlib")) return;
+    if (e->kind == EX_IDENT && c->curFunc) {
+        Sym *sym = lookup(c, e->u.ident.name);
+        /* 函数体里刚绑的 ⇒ 是新建的值，交出去没有第二份 */
+        if (sym && sym->line > c->curFunc->line) return;
+    } else if (e->kind != EX_FIELD && e->kind != EX_INDEX) {
+        /* 调用结果、字面量、`alloc` 之类：都不是"已有的一份" */
+        return;
+    }
+    ckWarn(c, e->line,
+           "Return it as `ref T` / `mut ref T` (a borrow, no copy), or `return v.clone()` when"
+           " the caller really needs its own container. Returning by value copies the value:"
+           " the caller and this frame then name one storage.",
+           "returning `%s` by value copies a `@sharesStorage` type: the caller gets the same"
+           " plate, not its own", DN(sd));
+}
+
 static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
     if (!e || e->kind == EX_REF || !t) return false;
     StructDef *sd = structOf(ttBase(t));

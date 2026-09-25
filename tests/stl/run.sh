@@ -69,6 +69,25 @@ echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永�
 run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
 
 echo "== string：连续字节串（append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位）=="
+echo "== 深拷贝：`var b = a` 不是深拷贝（共用板块）⇒ 要独立副本必须显式 a.clone() =="
+echo "== 共享存储的警告：该报的要报（var b = a / return a），不该报的**一条都不许有** =="
+check_copy_warn() {
+    local f=$1 want=$2 out
+    out=$("$EXTC" "$f" 2>&1 || true)
+    local got=0
+    echo "$out" | grep -q "shares storage" && got=$((got+1))
+    echo "$out" | grep -q "copies a \`@sharesStorage\`" && got=$((got+1))
+    if [ "$got" = "$want" ]; then
+        echo "  ok   $(basename $f)  ->  警告 $got 条（期望 $want）"
+    else
+        echo "  FAIL $(basename $f)  ->  警告 $got 条（期望 $want）"; fail=1
+    fi
+}
+check_copy_warn tests/stl/clone_warn.extc 2
+check_copy_warn tests/stl/clone_ok.extc   0
+
+run_case clone   tests/stl/clone.extc   "vec=3/4 vecOk=1,2,3 str=2/3 map=2/3 hm=1/2 set=1/2 lin=1/2 lset=1/2 hset=1/2 vecAfterRelease=4"
+
 run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=54 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
 
 echo "== hashSetI64：无值 map（哈希 / 探测 / 墓碑只有一份实现 —— 建在 hashMapI64<u8> 上）=="

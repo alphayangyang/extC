@@ -15,6 +15,7 @@
  */
 use stl::linmap
 
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct linSet<T> {
     m: linMap<T, unit>
 
@@ -34,6 +35,11 @@ struct linSet<T> {
     fn remove(self: mut ref linSet<T>, v: T) -> bool { return self.m.remove(v) }
 
     fn len(self: ref linSet<T>) -> i64 { return self.m.len() }
+    /* **深拷贝**（同 set：逐成员拷贝会共用底层容器的板块）。 */
+    fn clone(self: ref linSet<T>) -> linSet<T> {
+        var s: linSet<T> = { m: self.m.clone() }
+        return s
+    }
 
     fn clear(self: mut ref linSet<T>) { self.m.clear() }
 

@@ -12,6 +12,7 @@
  */
 use std::sys::pool as syspool
 
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct vector<T> {
     vals:   mut slice<T>
@@ -71,6 +72,26 @@ struct vector<T> {
         var i: i64 = 0
         while i < self.n {
             out[i] = self.vals[i]
+            i = i + i64(1)
+        }
+        return out
+    }
+
+    /* **深拷贝：要一份独立的新容器就用它。**
+     *
+     * `var b = a` 不是深拷贝 —— 那是**结构体逐成员拷贝**，两份共用同一块板块
+     * （`vals` 是指针被抄了一份）。于是 `b.push(...)` 会改到 `a` 的内容，而
+     * `a.release()` 会让 `b` 变成悬垂（守卫能把它变成带位置的 trap，但那已经是事故了）。
+     * 想"复制一份来自己改"，唯一的正路是这里：显式、代价可见（一次 O(n) 拷贝 + 一块新板块）。
+     *
+     * 新容器的存储**生在调用者所在的地方**（与 `toSlice` 同一条逃逸规则）⇒
+     * 它可以被存下来、被返回、活得比源容器长。 */
+    fn clone(self: ref vector<T>) -> vector<T> {
+        var out = vector<T>::withCap(self.n)
+        let src = self.vals
+        var i: i64 = 0
+        while i < self.n {
+            out.push(src[i])
             i = i + i64(1)
         }
         return out

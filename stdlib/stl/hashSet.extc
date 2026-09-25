@@ -13,6 +13,7 @@
  * true when the element is NEW, while `map::put` returns true when it was already there. */
 use stl::hashMap
 
+@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct hashSetI64 {
     m: hashMapI64<u8>
 
@@ -22,6 +23,11 @@ struct hashSetI64 {
     }
 
     fn len(self: ref hashSetI64) -> i64 { return self.m.len() }
+    /* **深拷贝**（同 set：逐成员拷贝会共用底层表的板块）。 */
+    fn clone(self: ref hashSetI64) -> hashSetI64 {
+        var s: hashSetI64 = { m: self.m.clone() }
+        return s
+    }
 
     fn contains(self: ref hashSetI64, k: i64) -> bool { return self.m.contains(k) }
 
