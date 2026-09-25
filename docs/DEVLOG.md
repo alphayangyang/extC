@@ -7,6 +7,56 @@
 
 ---
 
+## 2026-09-26（第十一段续十四）· `>>` 挂到 `io::istream`：**又删掉一份重复规则**
+
+作者问「我现在可以 `cin >> stl::string` 了吗」—— 当时还不行，现在是了。而且这一轮压出的最重要一件
+事，恰好回答了作者随后的担心：「你这堆修改会不会导致逻辑混乱，一个地方出现两行」。
+
+### 现在能写什么
+
+```extc
+use std::io, std::fs, stl::string, stl::stringio
+var a: string = string::withCap(i64(16))
+io::cin >> a >> b            // 一行、去换行、替换语义、可链式 —— 与既有的 `>> mut slice<u8>` 同口径
+f >> a                       // 文件流同形状；到 EOF 置 `bad`，不 trap
+```
+实测：`a=[hello world] len=11` · `b=[second line]` · 文件 `a=[42] la=2 b=[hello world] lb=11 bad=false`。
+
+### 压出来的三件事（第二件是本轮的核心）
+
+1. **限定名 `impl` 目标**：`impl io::istream { ... }` 原来在**语法处**就挂掉（parser 只收单个标识符）。
+   而限定名是在**加载器**里被改写成扁平名（`io::istream` → `io$istream`）的，impl 的目标是**裸字符串**，
+   `rwType` 看不见它。修法：把 `rwType` 里那段（裸名按本单元声明改写 + 限定名按导入解析 + 私有/不存在
+   诊断）抽成 **`rwTypeName`**，`rwType` 与两处 impl 合并点都走它。
+
+2. **我上一轮加的"重复方法检查"是一份多余且更严的规则 —— 已删。**
+   `checkDeclarations` 里**本来就有**唯一权威：普通重名报 `has duplicate method`；**运算符名允许按
+   右操作数类型重载**（`isOverloadableOp` + `ttEquals` 比右操作数）；字段与方法撞名也管。它跑在签名解析
+   **之后**（类型已解析，`ttEquals` 才有意义）。我在挂载趟里重写了一遍，而且是"按名字"的粗判 ⇒
+   **把合法的运算符重载挡死了**：`` `io$istream` already has a method named `>>` ``（它本来就有三个
+   `>>` 重载）。删掉之后，impl 方法才真正与体内方法**同规则**——这才是我当初声称的不变量。
+   顺带把我加的"指名先前那一处"**挪进**那唯一一份（体内方法也一起受益）。
+   反例判据同步翻面：文案从 `` `pt` already has a method named `sum` `` 换成
+   `` struct `pt` has duplicate method `sum` ``。
+
+3. **`readLineFrom` 的口径对齐**：`>>` 的既有语义是"一行、**去换行**"（`io::reader::nextLine` 定的，
+   连 CRLF 的 `\r` 也处理）。我第一版把 `\n` 留在了串里 ⇒ 判据从 3/12/12 翻成 **2/11/11**（总 24）。
+   CRLF 用"暂存 CR"的写法（CRLF 吃掉、孤立 CR 保留、EOF 前的 CR 也算内容）。
+
+### 作者那句担心的审计结果（逐处）
+
+| 地方 | 是不是"一件事两行" | 结论 |
+|---|---|---|
+| 挂载趟的重复检查 vs `checkDeclarations` | **是，而且更严 ⇒ 静默挡掉合法代码** | **已删**，规则只剩一处 |
+| `io::istream` / `fs::ifstream` 两个 `>>` 壳 | 看着像，实际只差两处：reader 从哪来（`inSync`/`inSave` vs `self.r`）、哪个 bad 标志（`io::IN_BAD` vs `self.failed`）—— 都是模块私有状态，没有 trait 就没法抽象 | **保留**，但**行语义只有一处**（`string::readLineFrom`）；`std::fs` 自己的三个 `>>` 也是这么写两遍的，跟随既有形状而不是另发明一套 |
+| impl 合并点：`mergeUnit` vs 根文件内联合并 | **是（既存问题，不是本轮引入）** | 本轮为它打了两次补丁（impls、`rwTypeName`）；**记进 PLAN**：根文件应走同一条合并路径（`mergeUnit` + `modName = NULL`），别再做第三处 |
+| 六个容器的 `pStale` | 上轮已统一（删掉内联那份） | 一处 ✓ |
+
+### 验收
+
+`tests/impl` **12 项**（4 正例 + 8 反例，新增 `cin_string` / `file_string`）· `tests/run.sh` 260 + 264 ·
+`check.sh quick` 27/27 · `tests/stl` 全过 · 构建零告警。
+
 ## 2026-09-26（第十一段续十三）· `impl` **试水**：给 `string` 挂流式 I/O（跨模块）
 
 作者：「试一下 impl 做一下流式输入输出 string 类型，试试水」。试水确实压出了东西 —— 一个真缺口。

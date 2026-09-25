@@ -27,6 +27,16 @@ check_pos impl_basic tests/impl/basic.extc
 
 # 试水：跨模块 `impl`（impl 块在 stl/stringio.extc，类型 string 在 stl/string.extc）
 check_pos impl_stream_string tests/impl/stream_string.extc
+check_pos impl_file_string tests/impl/file_string.extc
+
+# stdin 驱动的正例：`cin >> string`（链式、去换行、替换语义）
+echo "== 正例：跨模块挂的运算符 `cin >> string`（stdin 两行）=="
+if out=$(printf 'hello world\nsecond line\n' | "$EXTC" --run tests/impl/cin_string.extc 2>&1); then
+    ok=1
+    for p in "a=[hello world]" "la=11" "b=[second line]" "lb=11"; do echo "$out" | grep -qF -- "$p" || ok=0; done
+    if [ "$ok" = 1 ]; then echo "  ok   impl_cin_string  ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL impl_cin_string  ->  输出对不上"; fail=1; fi
+else echo "  FAIL impl_cin_string  ->  跑不起来"; fail=1; fi
 
 echo "== 反例（都必须编译期挡住）=="
 check_err() {
@@ -37,8 +47,8 @@ check_err() {
     echo "$out" | grep -qF -- "$want" || { echo "  FAIL $(basename "$f")  ->  消息里没有「$want」"; fail=1; return; }
     echo "  ok   $(basename "$f")  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
 }
-check_err tests/impl/errors/dup_body_and_impl.extc 'already has a method named `sum`'
-check_err tests/impl/errors/dup_two_impls.extc     'already has a method named `sum`'
+check_err tests/impl/errors/dup_body_and_impl.extc 'has duplicate method `sum`'
+check_err tests/impl/errors/dup_two_impls.extc     'has duplicate method `sum`'
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
 check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'

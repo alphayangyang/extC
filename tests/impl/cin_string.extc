@@ -1,0 +1,15 @@
+// `cin >> string`：跨模块挂的**运算符**重载（impl io::istream { fn >>(.., mut ref string) }）
+// 语义与既有的 `>> mut slice<u8>` 一致：**一行、去换行**、目标被**替换**；可链式。
+// expect: a=[hello world]|la=11|b=[second line]|lb=11
+use std::io
+use stl::string
+use stl::stringio
+
+fn main() -> i32 {
+    var a: string = string::withCap(i64(16))
+    var b: string = string::withCap(i64(16))
+    io::cin >> a >> b
+    io::cout << "a=[" << a.toSlice() << "]|la=" << a.len()
+    io::cout << "|b=[" << b.toSlice() << "]|lb=" << b.len() << "\n"
+    return 0
+}

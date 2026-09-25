@@ -13,19 +13,27 @@
  *
  * The methods grow the string as needed, so the caller never sizes it up front. */
 use std::io
+use std::fs
 use stl::string
 
 impl string {
-    /* Read one line and append it (the '\n' is kept, if there is one).
-     * Returns the number of bytes appended; 0 means EOF and nothing was read. */
+    /* Read one line and append it -- **the line as `>>` defines it**: the trailing '\n' is not
+     * part of it, and neither is the '\r' of a CRLF (`io::reader::nextLine` settled that
+     * convention, and this follows it rather than inventing a second meaning for the same
+     * word). Returns the number of bytes appended; 0 means EOF and nothing was read. */
     fn readLineFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
         var n: i64 = i64(0)
+        var heldCR: bool = false
         while true {
             let b = r.nextByte()?
-            if b < i64(0) { break }
-            self.push(u8(b))
-            n = n + i64(1)
-            if b == i64(10) { break }
+            if b < i64(0) {
+                /* EOF: a '\r' that never got its '\n' was content, not a line ending. */
+                if heldCR { self.push(u8(13))  n = n + i64(1) }
+                break
+            }
+            if b == i64(10) { break }              /* the '\n' is not part of the line */
+            if heldCR { self.push(u8(13))  n = n + i64(1) }
+            if b == i64(13) { heldCR = true } else { self.push(u8(b))  n = n + i64(1)  heldCR = false }
         }
         return success(n)
     }
@@ -62,5 +70,62 @@ impl string {
         let n = w.write(self.buf[i64(0)..self.n])?
         let m = w.write("\n")?
         return success(n + m)
+    }
+}
+
+/* `>>` into a `string`: the operator overloads the I/O layer already has (`mut ref i64`,
+ * `mut slice<u8>`, `mut ref u8`) live in `std::io` / `std::fs`, and a `string` overload has to
+ * live where **both** sides are importable -- `std` cannot import `stl` (that would be an import
+ * cycle), so this is the module for it. An `impl` block attaches it to a type from another
+ * module, which is exactly what `impl` was added for.
+ *
+ * Semantics match `>> slice<u8>`: one line, newline stripped, destination **replaced**. */
+impl io::istream {
+    fn >>(self: ref istream, v: mut ref string) -> istream {
+        v.clear()
+        var r: io::reader = io::inSync()
+        match r.eof() {
+            success(atEnd) => {
+                if atEnd { io::IN_BAD = true }
+                else {
+                    match v.readLineFrom(ref r) {
+                        success(n) => { }
+                        failure(e) => { io::IN_BAD = true }
+                    }
+                }
+            }
+            failure(e) => { io::IN_BAD = true }
+        }
+        io::inSave(ref r)
+        return { fd: self.fd }
+    }
+}
+
+/* The same for a file stream, so "read a save file" and "read player input" stay one shape.
+ *
+ * This shell looks like the one above because it has to: what differs is only where the reader
+ * comes from (`inSync`/`inSave` for the console, `self.r` for a file) and which "we hit the end"
+ * flag to raise (`io::IN_BAD` vs `self.failed`). Both of those are module-private state, and
+ * without traits there is nothing to abstract them with -- the part that is worth sharing (the
+ * line rule: strip '\n', handle CRLF, grow the string) has exactly one home:
+ * `string::readLineFrom`. `std::fs` already writes its three built-in `>>` overloads out twice
+ * for the same reason (`ifstream` and `inStream`), so this follows the established shape rather
+ * than inventing a second one. */
+impl fs::ifstream {
+    fn >>(self: mut ref ifstream, v: mut ref string) -> mut ref ifstream {
+        v.clear()
+        match self.r.eof() {
+            success(atEnd) => {
+                if atEnd { self.failed = true }
+                else {
+                    match v.readLineFrom(ref self.r) {
+                        success(n) => { }
+                        failure(e) => { self.failed = true }
+                    }
+                }
+            }
+            failure(e) => { self.failed = true }
+        }
+        return self
     }
 }

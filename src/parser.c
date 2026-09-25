@@ -697,19 +697,39 @@ static StructDef *parseStruct(Parser *p) {
  */
 static ImplDef *parseImpl(Parser *p) {
     Token *kw = take(p);                    /* impl */
-    /* Any name, not `expectTypeName`: the target may be a builtin scalar, and the ten scalar
-     * names lex as `TK_TYPE` rather than `TK_IDENT` (`i64`, `u8`, `f64`, ...). Whether the name
-     * denotes a type at all is a question for the checker, which owns the type table. */
+    /* Any name, and possibly a **qualified** one (`impl io::istream { ... }`), because an impl
+     * block usually lives in a different module than the type it extends. Two details:
+     *   - the ten scalar names lex as `TK_TYPE`, not `TK_IDENT` (`i64`, `u8`, ...), so the first
+     *     segment accepts either kind;
+     *   - later segments are module or type names, and a type name here may be lower case
+     *     (`stl::string`), so `expectTypeName` would be wrong for them.
+     * Whether the name denotes a type at all is a question for the checker, which owns the type
+     * table (and resolves the qualified form). */
     if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
         Token *t = cur(p);
         ctxError(p->ctx, t->line, t->col, NULL,
                  "expected a type name after `impl`, found `%s`", shown(t));
         return NULL;
     }
-    Token *name = take(p);
+    Buf target;
+    bufInit(&target, p->arena);
+    bufPuts(&target, take(p)->text);
+    while (at(p, "::")) {
+        take(p);
+        if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
+            Token *t = cur(p);
+            ctxError(p->ctx, t->line, t->col, NULL,
+                     "expected a name after `::`, found `%s`", shown(t));
+            return NULL;
+        }
+        bufPuts(&target, "::");
+        bufPuts(&target, take(p)->text);
+    }
+    Token *name = NULL;
+    (void)name;
 
     ImplDef *im = (ImplDef *)arenaAllocZero(p->arena, sizeof(ImplDef));
-    im->typeName = name->text;
+    im->typeName = bufCstr(&target);
     im->line = kw->line;
     vecInit(&im->methods, p->arena, sizeof(void *));
 

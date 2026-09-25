@@ -1,0 +1,24 @@
+// 同一个重载在文件流上：`f >> string`（fs::ifstream），语义一致；到 EOF 置 bad 而不是 trap。
+// expect: a=[42]|la=2|b=[hello world]|lb=11|bad=false
+use std::io
+use std::fs
+use stl::string
+use stl::stringio
+
+fn go() -> result<unit, io::ioError> {
+    var f = fs::ifstream("tests/io/stream-file.txt")?
+    var a: string = string::withCap(i64(16))
+    var b: string = string::withCap(i64(16))
+    f >> a >> b
+    io::cout << "a=[" << a.toSlice() << "]|la=" << a.len()
+    io::cout << "|b=[" << b.toSlice() << "]|lb=" << b.len() << "|bad=" << f.bad() << "\n"
+    f.close()?
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match go() {
+        success(u) => { return 0 }
+        failure(e) => { io::cout << "io failed\n"; return 1 }
+    }
+}

@@ -576,27 +576,32 @@ static void rwExprName(ModUnit *self, Expr *e);
  *     `use alpha::pair` tells the user to import a module that does not exist.
  */
 
-static void rwType(Loader *L, ModUnit *self, Type *t) {
-    if (!t) return;
-    if (t->kind == TY_REF) { rwType(L, self, t->inner); return; }
-    for (size_t i = 0; i < t->targs.len; i++) rwType(L, self, *(Type **)vecAt(&t->targs, i));
-    if (t->kind != TY_UNRESOLVED || !t->name) return;
-    const char *sep = strstr(t->name, "::");
+/* Rewrite one type **name** (a plain string, not a Type node) into the flat module's naming.
+ *
+ * `rwType` did this inline for `TY_UNRESOLVED` nodes; an `impl` block's target is a string, so
+ * it needs exactly the same treatment -- including the **qualified** form (`io::istream` ->
+ * `io$istream`), which the *loader* rewrites and which therefore never reaches the checker in
+ * its written shape. Found by attaching `>>` to `io::istream` from `stl/stringio.extc`:
+ * without this, the checker was asked to resolve `io::istream` and answered "unknown type".
+ *
+ * Two rules, and the reason the bare one exists at all:
+ *   - a bare name is renamed only when **this unit declares it** (`pair` -> `liba$pair`).
+ *     Left as the source name on a return type, it reaches the checker while the flat table
+ *     holds two structs named `pair`, and the alias table picks one -- the reference is then
+ *     silently bound to whichever module registered first, which compiles and has the wrong
+ *     type. That is the worst kind of bug, so the rule matches `rwExprName`: only a name this
+ *     module declares itself is rewritten;
+ *   - a qualified name resolves through this unit's imports, and both a `@private` target and
+ *     a missing one are errors here rather than later.
+ */
+static const char *rwTypeName(Loader *L, ModUnit *self, const char *name) {
+    if (!name) return name;
+    const char *sep = strstr(name, "::");
     if (!sep) {
-        /* A bare name has to be renamed as well when this module declares it.
-         * Left as the source name `pair` on a return type, it reaches the checker
-         * while the flat table holds two structs named `pair`, and the alias table
-         * picks one: the reference is silently bound to whichever module registered
-         * first. Then `var q: beta::pair = beta::make(7)` reports
-         * `struct \`alpha$pair\` has no field \`s\``, naming a type that appears
-         * nowhere in the source. It compiles and has the wrong type, which is the
-         * worst kind of bug. The rule matches `rwExprName`: only a name this module
-         * declares itself is rewritten. */
-        const char *m = renLookup(self, t->name);
-        if (m) t->name = m;
-        return;
+        const char *m = renLookup(self, name);
+        return m ? m : name;
     }
-    const char *shortName = arenaStrndup(L->a, t->name, (size_t)(sep - t->name));
+    const char *shortName = arenaStrndup(L->a, name, (size_t)(sep - name));
     const char *rest = sep + 2;
     /* A `use` suggestion may only name a module, and `rest` can still contain `::`:
      * `alpha::pair` inside `lib::box<alpha::pair>` leaves `rest` as `pair`, but a
@@ -611,8 +616,7 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
                  " Write `use a::b` at the top of the file, then use `b::Name`.",
                  "`%s` is not imported here -- add `use %s`", shortName, shortName);
         L->errors++;
-        t->name = rest;
-        return;
+        return rest;
     }
     StructDef *sd = unitStruct(target, rest);
     TypeDef   *td = unitType(target, rest);
@@ -628,8 +632,19 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
                  "module `%s` has no type `%s`", shortName, restTop);
         L->errors++;
     }
-    t->name = renOfTarget(target, rest);
+    return renOfTarget(target, rest);
 }
+
+static void rwType(Loader *L, ModUnit *self, Type *t) {
+    if (!t) return;
+    if (t->kind == TY_REF) { rwType(L, self, t->inner); return; }
+    for (size_t i = 0; i < t->targs.len; i++) rwType(L, self, *(Type **)vecAt(&t->targs, i));
+    if (t->kind != TY_UNRESOLVED || !t->name) return;
+    /* The name rules live in `rwTypeName`: this node is the one caller that carries a Type
+     * instead of a string. */
+    t->name = rwTypeName(L, self, t->name);
+}
+
 
 /* Resolve a type name written in expression position: `mod::Type { ... }` and
  * `mod::Type.variant`.
@@ -1450,8 +1465,7 @@ static void mergeUnit(Loader *L, ModUnit *u) {
      * itself. The attachment itself happens in the checker, where the type table exists. */
     for (size_t i = 0; i < src->impls.len; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&src->impls, i);
-        const char *mangled = renLookup(u, im->typeName);
-        if (mangled) im->typeName = mangled;
+        im->typeName = rwTypeName(L, u, im->typeName);
         for (size_t j = 0; j < im->methods.len; j++)
             rwUnitMethod(L, u, *(FuncDef **)vecAt(&im->methods, j));
         *(ImplDef **)vecPush(&L->out->impls) = im;
@@ -1774,6 +1788,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
          * qualified names resolved. */
         for (size_t i = 0; i < rootm->impls.len; i++) {
             ImplDef *im = *(ImplDef **)vecAt(&rootm->impls, i);
+            im->typeName = rwTypeName(&L, &root, im->typeName);
             for (size_t j = 0; j < im->methods.len; j++)
                 rwUnitMethod(&L, &root, *(FuncDef **)vecAt(&im->methods, j));
             *(ImplDef **)vecPush(&out->impls) = im;

@@ -148,7 +148,16 @@ static void checkDeclarations(Checker *c) {
                             typeStr(c, ttBase(qb->type)));
                     continue;
                 }
-                ckError(c, mb->line, NULL, "struct `%s` has duplicate method `%s`",
+                /* Name the earlier declaration too: with one method set per type, "which of the
+                 * two is the duplicate" is the first question a reader asks. This is the single
+                 * place that answers it, for body methods and `impl` methods alike. */
+                Buf note;
+                bufInit(&note, c->arena);
+                bufPrintf(&note, "a type has one method set and `impl` adds to it, it does not"
+                                 " replace it: the first declaration is at line %d%s",
+                          (ma->body && ma->body->line > 0) ? ma->body->line : 0,
+                          ma->modName ? " of the module that declared it" : "");
+                ckError(c, mb->line, bufCstr(&note), "struct `%s` has duplicate method `%s`",
                         DN(sd), mb->name);
             }
         }
@@ -4371,24 +4380,18 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 continue;
             }
         }
+        /* No duplicate check here **on purpose**. Attaching a method must make it
+         * indistinguishable from one written in the body, and the rules for a method set then
+         * apply to it exactly as they apply to the body -- including the one that matters here:
+         * an operator name may be defined once per **right-operand type** (`isOverloadableOp`),
+         * which is how `io::istream` carries `>>` for `i64`, `slice<u8>`, `u8` and now `string`.
+         * A second copy of those rules in this pass rejected the legitimate overload with
+         * "already has a method named `>>`" (found by attaching `>>` to `io::istream`) -- two
+         * copies of a rule drift, and the stricter copy wins silently. The single authority is
+         * `checkDeclarations` below, which runs after types are resolved (it needs `ttEquals` on
+         * the operand types, which is only meaningful then). */
         for (size_t j = 0; j < im->methods.len; j++) {
             FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
-            for (size_t k = 0; k < sd->methods.len; k++) {
-                FuncDef *have = *(FuncDef **)vecAt(&sd->methods, k);
-                if (strcmp(have->name, mth->name) != 0) continue;
-                /* Name the earlier declaration too: with one method set per type, "which of the
-                 * two is the duplicate" is the first question a reader asks, and hunting for it
-                 * by hand is exactly the kind of work the diagnostic should do. */
-                Buf note;
-                bufInit(&note, c.arena);
-                int prevLine = (have->body && have->body->line > 0) ? have->body->line : 0;
-                bufPrintf(&note, "a type has one method set and `impl` adds to it, it does not"
-                                 " replace it: the first declaration is at line %d%s",
-                          prevLine, have->modName ? " of the module that declared it" : "");
-                ckError(&c, im->line, bufCstr(&note),
-                        "`%s` already has a method named `%s`", sd->name, mth->name);
-                break;
-            }
             mth->owner = sd;
             *(FuncDef **)vecPush(&sd->methods) = mth;
         }

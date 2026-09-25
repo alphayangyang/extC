@@ -1,6 +1,6 @@
 // 反例：类型体内已经有一个同名方法，impl 再挂一个同名的 ⇒ 一个类型只有**一个方法集**，
 // 后者不许覆盖前者，必须报错。
-// expect: already has a method named `sum`
+// expect: struct `pt` has duplicate method `sum`
 use std::io
 struct pt {
     x: i64

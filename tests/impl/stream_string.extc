@@ -3,7 +3,8 @@
 // 判据：① 跨模块 impl 挂得上、方法解析得到 ② 流式写：交给 writer 的缓冲 + 最后一趟 flush
 //       ③ 流式读：一行一行读进 string（reader 一次 read(2) 一整块，不是一字节一次系统调用）
 //       ④ 到 EOF 返回 0，且**不追加**任何东西
-// expect: streamed=9|lines=3 len=3,12,12 eof=0 total=27 head=42
+//       ⑤ 行语义与 `>>` 一致：**去换行**（`nextLine` 定的口径）⇒ 长度 2/11/11
+// expect: streamed=9|lines=3 len=2,11,11 eof=0 total=24 head=42
 use std::io
 use std::fs
 use stl::string
