@@ -1,114 +1,434 @@
-/* stl/map.extc -- `map<K, V>`: an ORDERED map. Keys are kept in ascending order, so they can be
- * walked in order and `lowerBound` answers "the first key not less than k" (a range query).
- * Compare with `stl/hashMap.extc`: same shape of container, no order, O(1) average lookup.
+/* stl/map.extc -- `map<K, V>`: an ORDERED map, implemented as a B+tree.
  *
- * Stage 1, which is what this file holds today: the whole map is ONE sorted array. Binary search
- * for the position, shift the tail to insert, shift the head back to remove, double on growth.
- * That is the fastest possible shape for small and medium maps -- one contiguous run, no pointer
- * chasing, no per-node allocation -- and it is also the only honest place to start an ordered
- * container: a B-tree's root node IS a sorted array, so stage 2 splits this array into nodes
- * (fanout 16, nodes and values living in pools) without changing a single line of the surface.
+ * WHY THIS SHAPE (POOLS.md §11, the author's ruling): an in-memory ordered map is bound by cache
+ * misses, not by comparisons. A binary tree over 10^6 keys is ~20 pointer chases per lookup; a
+ * B+tree with 16 keys per node is ~5, and every step is a binary search inside ONE contiguous
+ * array. Ordered iteration is the leaf chain, so it is a linear scan of contiguous memory. Small
+ * maps fall out of the same shape for free: with 16 keys per node, any map up to 16 entries IS a
+ * single sorted array, which is the fastest representation at that size -- no separate fast path.
  *
- * Ordering comes from the KEY TYPE: `a < b` has to be defined (a method `fn <` for a struct key,
- * built in for the numeric types). Equality is DERIVED -- `a == b` iff `!(a < b) && !(b < a)` --
- * so a key type supplies one operator and the ordered map works for any type that has it. */
-struct map<K, V> {
-    keys: mut slice<K>
-    vals: mut slice<V>
-    n:    i64                  /* live entries; keys[0..n] are ascending */
-    cap:  i64
+ * Layout
+ *   - a node holds up to `ORDER` (16) settled keys in one slice (17 slots, so an insert can
+ *     land before the split), plus `ORDER + 2` child id slots when internal;
+ *     ids are indices into `nodes`, never pointers, so the array can double and the whole tree
+ *     stays relocatable (and, in stage 3, shrinkable);
+ *   - `keys[i]` of an internal node is the SMALLEST key of subtree `kids[i + 1]`, so a child owns
+ *     the half-open range [keys[i-1], keys[i]); a descent picks the first `i` with `k < keys[i]`;
+ *   - leaves hold the values and are chained left to right through `next` -- that chain is what
+ *     makes the ordered walk a scan;
+ *   - `cnt` is the number of keys in a subtree and is maintained through every split, which is what
+ *     makes `keyAt` / `valAt` / `lowerBound` rank queries O(log n) instead of a walk.
+ *
+ * Ordering comes from the KEY TYPE: `a < b` (a method `fn <` for a struct key, built in for the
+ * numeric types). Equality is derived -- `a == b` iff `!(a < b) && !(b < a)` -- so a key type
+ * supplies one operator and the ordered map works for any type that has it.
+ *
+ * STAGE 2a (this file today): insert (with node splits up to a new root), lookup, rank queries and
+ * the ordered walk are complete. `remove` takes the entry out of its leaf and fixes the counts but
+ * does NOT rebalance, so a leaf may end up under `HALF` entries; the tree stays sorted and every
+ * query stays correct, it just gets sparse under heavy deletion. Borrow / merge (and the pool move
+ * with `release` / `shrink`) is stage 2b. */
+let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
+let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
 
+struct bnode<K, V> {
+    n:    i32                 /* keys in this node */
+    cnt:  i32                 /* keys in this subtree (leaves: n; internal: sum of children) */
+    leaf: bool
+    keys: mut slice<K>        /* ORDER entries, ascending */
+    vals: mut slice<V>        /* leaves only */
+    kids: mut slice<i32>      /* internal only, ORDER + 1 entries */
+    next: i32                 /* leaf chain, -1 at the end */
+}
+
+struct map<K, V> {
+    nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
+    /* The three stores are flat and owned by the map: node `id` owns the 17 key slots at
+     * `id * 17`, the 17 value slots at the same offset, and the 18 child slots at `id * 18`.
+     * Nodes therefore never allocate -- a node is carved out of storage that already exists.
+     * That is not only faster (one allocation per doubling instead of one per node): an
+     * allocation inside `put`'s split loop lands in the ARENA OF THAT LOOP BODY and is freed the
+     * moment the iteration ends, so a freshly split node used to dangle (the stress case caught
+     * it as a heap-use-after-free under ASan). Storage that is allocated once, at the top level of
+     * `withCap` / `growStores`, has the map's own lifetime. */
+    keys:   mut slice<K>
+    vals:   mut slice<V>
+    kids:   mut slice<i32>
+    nnodes: i64
+    ncap:   i64               /* nodes the stores have room for */
+    root:   i32
+    n:      i64               /* live entries */
+    path:   mut slice<i32>    /* scratch: the descent path of `put` / `remove` */
+    side:   mut slice<i32>    /* scratch: which child slot was taken at each level */
+    depth:  i64
+
+    /* ---------------------------------------------------------------- construction */
     fn withCap(want: i64) -> map<K, V> {
         var c: i64 = i64(4)
         while c < want { c = c * i64(2) }
-        var m: map<K, V> = { keys: new K[c], vals: new V[c], n: i64(0), cap: c }
+        var m: map<K, V> = {
+            nodes: new bnode<K, V>[c],
+            keys:  new K[c * i64(17)],
+            vals:  new V[c * i64(17)],
+            kids:  new i32[c * i64(18)],
+            nnodes: i64(0), ncap: c, root: i32(0), n: i64(0),
+            path: new i32[16], side: new i32[16], depth: i64(0),
+        }
+        m.root = m.newNode(true)
         return m
     }
 
-    fn new() -> map<K, V> { return map<K, V>::withCap(i64(4)) }
+    fn new() -> map<K, V> { return map<K, V>::withCap(i64(16)) }
 
     fn len(self: ref map<K, V>) -> i64 { return self.n }
-    fn capOf(self: ref map<K, V>) -> i64 { return self.cap }
-
-    /* The count of keys strictly less than `k` -- also the index `k` would be inserted at.
-     * Every lookup goes through here; `get` and `contains` only add the equality test. */
-    fn lowerBound(self: ref map<K, V>, k: K) -> i64 {
-        var lo: i64 = i64(0)
-        var hi: i64 = self.n
-        while lo < hi {
-            let mid = lo + (hi - lo) / i64(2)
-            if self.keys[mid] < k { lo = mid + i64(1) } else { hi = mid }
-        }
-        return lo
+    fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
+    fn height(self: ref map<K, V>) -> i64 {
+        var h: i64 = i64(1)
+        var id: i32 = self.root
+        while !self.leafOf(id) { id = self.kd(id, i64(0))  h = h + i64(1) }
+        return h
     }
 
-    /* Equal means "neither is less", which is why a key type needs only `<`. */
-    fn contains(self: ref map<K, V>, k: K) -> bool {
-        let i = self.lowerBound(k)
-        if i >= self.n { return false }
-        return !(k < self.keys[i])
-    }
+    /* ---------------------------------------------------------------- node access, by id */
+    fn bn(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].n) }
+    fn cntOf(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].cnt) }
+    fn leafOf(self: ref map<K, V>, id: i32) -> bool { return self.nodes[i64(id)].leaf }
+    fn kn(self: ref map<K, V>, id: i32, i: i64) -> K { return self.nodes[i64(id)].keys[i] }
+    fn vn(self: ref map<K, V>, id: i32, i: i64) -> V { return self.nodes[i64(id)].vals[i] }
+    fn kd(self: ref map<K, V>, id: i32, i: i64) -> i32 { return self.nodes[i64(id)].kids[i] }
+    fn nx(self: ref map<K, V>, id: i32) -> i32 { return self.nodes[i64(id)].next }
 
-    fn get(self: ref map<K, V>, k: K) -> ?V {
-        let i = self.lowerBound(k)
-        if i >= self.n { return none }
-        if k < self.keys[i] { return none }
-        return some(self.vals[i])
-    }
+    fn setN(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].n = i32(v) }
+    fn setCnt(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].cnt = i32(v) }
+    fn setKey(self: mut ref map<K, V>, id: i32, i: i64, k: K) { self.nodes[i64(id)].keys[i] = k }
+    fn setVal(self: mut ref map<K, V>, id: i32, i: i64, v: V) { self.nodes[i64(id)].vals[i] = v }
+    fn setKid(self: mut ref map<K, V>, id: i32, i: i64, c: i32) { self.nodes[i64(id)].kids[i] = c }
+    fn setNext(self: mut ref map<K, V>, id: i32, c: i32) { self.nodes[i64(id)].next = c }
 
-    /* Insert or overwrite. True when the key was ALREADY there -- the same answer `hashMap::put`
-     * gives. (`set::put` is the one that flips it, so that "true" reads as "this was new".) */
-    fn put(self: mut ref map<K, V>, k: K, v: V) -> bool {
-        let i = self.lowerBound(k)
-        if i < self.n && !(k < self.keys[i]) { self.vals[i] = v  return true }
-        if self.n >= self.cap { self.grow() }
-        var j: i64 = self.n
-        while j > i {
-            self.keys[j] = self.keys[j - i64(1)]
-            self.vals[j] = self.vals[j - i64(1)]
-            j = j - i64(1)
-        }
-        self.keys[i] = k
-        self.vals[i] = v
-        self.n = self.n + i64(1)
-        return false
-    }
-
-    /* Remove `k`. True when it was there. */
-    fn remove(self: mut ref map<K, V>, k: K) -> bool {
-        let i = self.lowerBound(k)
-        if i >= self.n { return false }
-        if k < self.keys[i] { return false }
-        var j: i64 = i
-        while j + i64(1) < self.n {
-            self.keys[j] = self.keys[j + i64(1)]
-            self.vals[j] = self.vals[j + i64(1)]
-            j = j + i64(1)
-        }
-        self.n = self.n - i64(1)
-        return true
-    }
-
-    /* Drop every entry, keeping the capacity (stage 2 adds `release` with the pool). */
-    fn clear(self: mut ref map<K, V>) { self.n = i64(0) }
-
-    fn grow(self: mut ref map<K, V>) {
-        var ncap: i64 = self.cap * i64(2)
-        if ncap < i64(4) { ncap = i64(4) }
-        var nk: mut slice<K> = new K[ncap]
-        var nv: mut slice<V> = new V[ncap]
+    /* Double the stores and re-hang every node's views on the new arrays. The copies are element
+     * by element on purpose: a view is a pointer into the old store, so it cannot be moved by
+     * copying the store's bytes alone. */
+    fn growStores(self: mut ref map<K, V>) {
+        var want: i64 = self.ncap * i64(2)
+        if want < i64(4) { want = i64(4) }
+        var nk: mut slice<K>   = new K[want * i64(17)]
+        var nv: mut slice<V>   = new V[want * i64(17)]
+        var nc: mut slice<i32> = new i32[want * i64(18)]
+        var nn: mut slice<bnode<K, V>> = new bnode<K, V>[want]
         var i: i64 = i64(0)
-        while i < self.n {
-            nk[i] = self.keys[i]
-            nv[i] = self.vals[i]
+        while i < self.nnodes {
+            let kb = i * i64(17)
+            let cb = i * i64(18)
+            var j: i64 = i64(0)
+            while j < i64(17) {
+                nk[kb + j] = self.keys[kb + j]
+                nv[kb + j] = self.vals[kb + j]
+                j = j + i64(1)
+            }
+            j = i64(0)
+            while j < i64(18) {
+                nc[cb + j] = self.kids[cb + j]
+                j = j + i64(1)
+            }
+            var nd: bnode<K, V> = self.nodes[i]
+            nd.keys = nk[kb..kb + i64(17)]
+            nd.vals = nv[kb..kb + i64(17)]
+            nd.kids = nc[cb..cb + i64(18)]
+            nn[i] = nd
             i = i + i64(1)
         }
         self.keys = nk
         self.vals = nv
-        self.cap  = ncap
+        self.kids = nc
+        self.nodes = nn
+        self.ncap = want
     }
 
-    /* By rank: the i-th smallest key, i in [0, n). Walking `i` from 0 to n-1 is the ordered walk. */
-    fn keyAt(self: ref map<K, V>, i: i64) -> K { return self.keys[i] }
-    fn valAt(self: ref map<K, V>, i: i64) -> V { return self.vals[i] }
+    /* Carve a fresh node out of the stores. No allocation happens here, which is what keeps a
+     * node created inside `put`'s split loop alive (see the note on the stores above).
+     * Stage 3 hands the slot back on delete instead of leaking it. */
+    fn newNode(self: mut ref map<K, V>, leaf: bool) -> i32 {
+        if self.nnodes >= self.ncap { self.growStores() }
+        let id = i32(self.nnodes)
+        let kb = self.nnodes * i64(17)
+        let cb = self.nnodes * i64(18)
+        var nd: bnode<K, V> = {
+            n: i32(0), cnt: i32(0), leaf: leaf,
+            keys: self.keys[kb..kb + i64(17)],
+            vals: self.vals[kb..kb + i64(17)],
+            kids: self.kids[cb..cb + i64(18)],
+            next: i32(-1),
+        }
+        self.nodes[self.nnodes] = nd
+        self.nnodes = self.nnodes + i64(1)
+        return id
+    }
+
+    /* Sum of the key counts of children [0, upto) of an internal node. */
+    fn kidsCnt(self: ref map<K, V>, id: i32, upto: i64) -> i64 {
+        var s: i64 = i64(0)
+        var i: i64 = i64(0)
+        while i < upto {
+            s = s + self.cntOf(self.kd(id, i))
+            i = i + i64(1)
+        }
+        return s
+    }
+
+    /* The smallest key of a subtree: kids[0] all the way down. */
+    fn firstKey(self: ref map<K, V>, id: i32) -> K {
+        var cur: i32 = id
+        while !self.leafOf(cur) { cur = self.kd(cur, i64(0)) }
+        return self.kn(cur, i64(0))
+    }
+
+    /* ---------------------------------------------------------------- search */
+    /* First index in [0, n) whose key is not less than `k` (the lower bound inside one node). */
+    fn lowerIn(self: ref map<K, V>, id: i32, k: K) -> i64 {
+        var lo: i64 = i64(0)
+        var hi: i64 = self.bn(id)
+        while lo < hi {
+            let mid = lo + (hi - lo) / i64(2)
+            if self.kn(id, mid) < k { lo = mid + i64(1) } else { hi = mid }
+        }
+        return lo
+    }
+
+    /* Child slot to descend into: the first `i` with `k < keys[i]`, else n (the last child). */
+    fn childSlot(self: ref map<K, V>, id: i32, k: K) -> i64 {
+        var lo: i64 = i64(0)
+        var hi: i64 = self.bn(id)
+        while lo < hi {
+            let mid = lo + (hi - lo) / i64(2)
+            if k < self.kn(id, mid) { hi = mid } else { lo = mid + i64(1) }
+        }
+        return lo
+    }
+
+    fn leafFor(self: ref map<K, V>, k: K) -> i32 {
+        var id: i32 = self.root
+        while !self.leafOf(id) { id = self.kd(id, self.childSlot(id, k)) }
+        return id
+    }
+
+    fn contains(self: ref map<K, V>, k: K) -> bool {
+        let id = self.leafFor(k)
+        let i = self.lowerIn(id, k)
+        if i >= self.bn(id) { return false }
+        return !(k < self.kn(id, i))
+    }
+
+    fn get(self: ref map<K, V>, k: K) -> ?V {
+        let id = self.leafFor(k)
+        let i = self.lowerIn(id, k)
+        if i >= self.bn(id) { return none }
+        if k < self.kn(id, i) { return none }
+        return some(self.vn(id, i))
+    }
+
+    /* Rank of the first key not less than `k` -- the count of keys strictly less than `k`.
+     * Descending adds whole subtrees, so this is O(log n) rather than a walk. */
+    fn lowerBound(self: ref map<K, V>, k: K) -> i64 {
+        var rank: i64 = i64(0)
+        var id: i32 = self.root
+        while !self.leafOf(id) {
+            let c = self.childSlot(id, k)
+            rank = rank + self.kidsCnt(id, c)
+            id = self.kd(id, c)
+        }
+        return rank + self.lowerIn(id, k)
+    }
+
+    /* The i-th smallest entry, encoded as `leafId * 16 + position` (16 = ORDER, and a leaf never
+     * holds more). Passing two numbers would mean a tuple type the language does not have. */
+    fn rankAt(self: ref map<K, V>, i: i64) -> i64 {
+        var id: i32 = self.root
+        var want: i64 = i
+        while !self.leafOf(id) {
+            var c: i64 = i64(0)
+            var found: i64 = i64(0)
+            while found == i64(0) {
+                let s = self.cntOf(self.kd(id, c))
+                if want < s { found = i64(1) } else { want = want - s  c = c + i64(1) }
+            }
+            id = self.kd(id, c)
+        }
+        return i64(id) * i64(16) + want
+    }
+
+    fn keyAt(self: ref map<K, V>, i: i64) -> K {
+        let e = self.rankAt(i)
+        return self.kn(i32(e / i64(16)), e % i64(16))
+    }
+
+    fn valAt(self: ref map<K, V>, i: i64) -> V {
+        let e = self.rankAt(i)
+        return self.vn(i32(e / i64(16)), e % i64(16))
+    }
+
+    /* ---------------------------------------------------------------- insert */
+    fn put(self: mut ref map<K, V>, k: K, v: V) -> bool {
+        /* Descend to the leaf, recording the path: a split has to be pushed back up it. */
+        var id: i32 = self.root
+        self.depth = i64(0)
+        while !self.leafOf(id) {
+            let c = self.childSlot(id, k)
+            self.path[self.depth] = id
+            self.side[self.depth] = i32(c)
+            self.depth = self.depth + i64(1)
+            id = self.kd(id, c)
+        }
+        let at = self.lowerIn(id, k)
+        if at < self.bn(id) && !(k < self.kn(id, at)) { self.setVal(id, at, v)  return true }
+
+        var j: i64 = self.bn(id)
+        while j > at {
+            self.setKey(id, j, self.kn(id, j - i64(1)))
+            self.setVal(id, j, self.vn(id, j - i64(1)))
+            j = j - i64(1)
+        }
+        self.setKey(id, at, k)
+        self.setVal(id, at, v)
+        self.setN(id, self.bn(id) + i64(1))
+        self.setCnt(id, self.cntOf(id) + i64(1))
+        self.n = self.n + i64(1)
+
+        /* one more key in every subtree on the path */
+        var d: i64 = self.depth - i64(1)
+        while d >= i64(0) {
+            let p = self.path[d]
+            self.setCnt(p, self.cntOf(p) + i64(1))
+            d = d - i64(1)
+        }
+
+        /* Split upward while a node is overfull. A leaf split COPIES its first key up (the key
+         * stays in the right leaf); an internal split MOVES its middle key up. */
+        var child: i32 = id
+        var level: i64 = self.depth
+        var sep: K = k
+        while self.bn(child) > ORDER {
+            var right: i32 = self.newNode(self.leafOf(child))
+            if self.leafOf(child) {
+                var r: i64 = i64(0)
+                var s: i64 = HALF
+                while s < self.bn(child) {
+                    self.setKey(right, r, self.kn(child, s))
+                    self.setVal(right, r, self.vn(child, s))
+                    r = r + i64(1)
+                    s = s + i64(1)
+                }
+                self.setN(right, r)
+                self.setCnt(right, r)
+                self.setN(child, HALF)
+                self.setCnt(child, HALF)
+                self.setNext(right, self.nx(child))
+                self.setNext(child, right)
+                sep = self.kn(right, i64(0))
+            } else {
+                sep = self.kn(child, HALF)
+                var r: i64 = i64(0)
+                var s: i64 = HALF + i64(1)
+                while s < self.bn(child) {
+                    self.setKey(right, r, self.kn(child, s))
+                    r = r + i64(1)
+                    s = s + i64(1)
+                }
+                self.setN(right, r)
+                var k2: i64 = i64(0)
+                var cs: i64 = HALF + i64(1)
+                while cs <= self.bn(child) {
+                    self.setKid(right, k2, self.kd(child, cs))
+                    k2 = k2 + i64(1)
+                    cs = cs + i64(1)
+                }
+                self.setN(child, HALF)
+                self.setCnt(right, self.kidsCnt(right, r + i64(1)))
+                self.setCnt(child, self.kidsCnt(child, HALF + i64(1)))
+            }
+            if level == i64(0) {
+                /* the root itself split: a new root above both halves, and the tree grows */
+                var nr: i32 = self.newNode(false)
+                self.setKey(nr, i64(0), sep)
+                self.setKid(nr, i64(0), child)
+                self.setKid(nr, i64(1), right)
+                self.setN(nr, i64(1))
+                self.setCnt(nr, self.cntOf(child) + self.cntOf(right))
+                self.root = nr
+                return false
+            }
+            let p = self.path[level - i64(1)]
+            let ci = i64(self.side[level - i64(1)])
+            var q: i64 = self.bn(p)
+            while q > ci {
+                self.setKey(p, q, self.kn(p, q - i64(1)))
+                q = q - i64(1)
+            }
+            var qc: i64 = self.bn(p) + i64(1)
+            while qc > ci + i64(1) {
+                self.setKid(p, qc, self.kd(p, qc - i64(1)))
+                qc = qc - i64(1)
+            }
+            self.setKey(p, ci, sep)
+            self.setKid(p, ci + i64(1), right)
+            self.setN(p, self.bn(p) + i64(1))
+            child = p
+            level = level - i64(1)
+        }
+        return false
+    }
+
+    /* ---------------------------------------------------------------- remove */
+    /* Stage 2a: take the entry out and fix the counts. No rebalancing yet, so a leaf can end up
+     * under HALF entries -- every query stays correct, the tree only gets sparse. */
+    fn remove(self: mut ref map<K, V>, k: K) -> bool {
+        var id: i32 = self.root
+        self.depth = i64(0)
+        while !self.leafOf(id) {
+            let c = self.childSlot(id, k)
+            self.path[self.depth] = id
+            self.side[self.depth] = i32(c)
+            self.depth = self.depth + i64(1)
+            id = self.kd(id, c)
+        }
+        let at = self.lowerIn(id, k)
+        if at >= self.bn(id) { return false }
+        if k < self.kn(id, at) { return false }
+        var j: i64 = at
+        while j + i64(1) < self.bn(id) {
+            self.setKey(id, j, self.kn(id, j + i64(1)))
+            self.setVal(id, j, self.vn(id, j + i64(1)))
+            j = j + i64(1)
+        }
+        self.setN(id, self.bn(id) - i64(1))
+        self.setCnt(id, self.cntOf(id) - i64(1))
+        self.n = self.n - i64(1)
+        var d: i64 = self.depth - i64(1)
+        while d >= i64(0) {
+            let p = self.path[d]
+            self.setCnt(p, self.cntOf(p) - i64(1))
+            d = d - i64(1)
+        }
+        /* A subtree whose smallest key was removed has to republish it, or a later descent would
+         * take the wrong branch; walk up and refresh every separator that bounds this leaf. */
+        var cur: i32 = id
+        var level: i64 = self.depth
+        while level > i64(0) {
+            let p = self.path[level - i64(1)]
+            let ci = i64(self.side[level - i64(1)])
+            if ci > i64(0) { self.setKey(p, ci - i64(1), self.firstKey(cur)) }
+            cur = p
+            level = level - i64(1)
+        }
+        /* the root may have lost its last key: the tree gets shorter */
+        while !self.leafOf(self.root) && self.bn(self.root) == i64(0) {
+            self.root = self.kd(self.root, i64(0))
+        }
+        return true
+    }
+
+    fn clear(self: mut ref map<K, V>) {
+        self.nnodes = i64(0)
+        self.n = i64(0)
+        self.root = self.newNode(true)
+    }
 }
