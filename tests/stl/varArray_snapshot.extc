@@ -1,0 +1,39 @@
+// `varArray::asSlice` 的契约判据（2026-09-26 查证后立）：**它是"快照"，不是悬垂**。
+//
+// 三条事实，一次钉住（都是实测过的，不是推断）：
+//   ① 扩容**不释放**旧块（arena 只在地方退出时整块回收）⇒ 旧视图不悬垂，
+//      它**停在扩容前的那一份快照**上 —— 静默错值，不是内存不安全（ASan 干净 ✓ 本文件进 ASan 名单）
+//   ② 视图**带出调用是安全的**：缓冲由逃逸分析的 home 机制放在**调用者**选的地方，
+//      本来就比这次调用活得久 ⇒ `return a.asSlice()` 编得过，而且是对的做法
+//   ③ `asMutSlice()` 写的是**新块**；旧视图看不到（这正是"借了就别再 push"那条规矩的由来）
+//
+// ⚠️ 这条判据断言的是**当前设计的行为**（快照语义），不是"不该存在的行为"。
+//    若哪天真要改成"增长即失效并 trap"，**必须同时翻面这条判据**（tests/generics 的教训）。
+// expect: snap=11,22 len=2 live=55,33 alen=3 lend=7,9 tlen=3
+use std::io
+
+/* 视图带出调用（连扩容都带上）：编得过，而且安全 —— 见 ② */
+fn lend() -> slice<i32> {
+    var a: varArray<i32> = varArray<i32>::withCap(i64(2))
+    a.push(i32(7))
+    a.push(i32(8))
+    a.push(i32(9))                 /* 触发扩容：换块，旧块留在 arena 里 */
+    return a.asSlice()
+}
+
+fn main() -> i32 {
+    var a: varArray<i32> = varArray<i32>::withCap(i64(2))
+    a.push(i32(11))
+    a.push(i32(22))
+    var v: slice<i32> = a.asSlice()        /* 快照：指着扩容前那块 */
+    a.push(i32(33))                        /* 扩容 ⇒ 换块 */
+    a.asMutSlice()[i64(0)] = i32(55)       /* 写的是新块 */
+
+    var t: slice<i32> = lend()
+
+    var live: slice<i32> = a.asSlice()
+    io::cout << "snap=" << i64(v[i64(0)]) << "," << i64(v[i64(1)]) << " len=" << v.len
+    io::cout << " live=" << i64(live[i64(0)]) << "," << i64(live[i64(2)]) << " alen=" << a.size()
+    io::cout << " lend=" << i64(t[i64(0)]) << "," << i64(t[i64(2)]) << " tlen=" << t.len << "\n"
+    return 0
+}

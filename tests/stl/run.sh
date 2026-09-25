@@ -72,6 +72,8 @@ echo "== 用户自定义池底容器（写在入口文件里，不是库模块�
 run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"
 
 echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）=="
+# 视图是"快照"而不是悬垂：扩容不释放旧块 ⇒ 读到旧值；带出调用安全（三条事实一次钉住）
+run_case varArray_snapshot tests/stl/varArray_snapshot.extc "snap=11,22 len=2 live=55,33 alen=3 lend=7,9 tlen=3"
 run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
 
 echo "== string：连续字节串（append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位）=="
@@ -133,8 +135,8 @@ asan_ok() {   # 文件 可执行名
       && gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringFind.extc sfi; then
-    echo "  ok   ASan  ->  vector · setOrdered · setStructKey · stringOps · stringFind 干净"
+if asan_ok tests/stl/varArray_snapshot.extc vas && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringFind.extc sfi; then
+    echo "  ok   ASan  ->  varArray_snapshot · vector · setOrdered · setStructKey · stringOps · stringFind 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1
 fi
