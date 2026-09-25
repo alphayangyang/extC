@@ -46,6 +46,12 @@ snap=11,22 len=2   live=55,33 alen=3   lend=7,9 tlen=3
 | **arena 底**（`varArray`）| **视图是合法的，而且必需**：`asSlice`/`asMutSlice` | arena 只在**地方退出**整块回收，块不会被复用/提前释放 ⇒ 不悬垂，只有"扩容后停在旧快照"这条契约 |
 
 所以 `varArray` 的 `asSlice` **不该改成拷贝**（`sort(v.asSlice())` 排的必须是真存储）；要收口的是
+
+**补：同时给"写"的一面立了判据** —— `tests/stl/varArray_mutview_lost.extc`（同样进 ASan 名单）：
+`landed=77 live0=77 live1=22 stale=77,88 alen=3` ⇒ **未扩容时**通过可写视图写**生效**（`landed=77`），
+**扩容换块之后**再写就**静默丢**（容器看到 `live1=22`，旧视图里是 `stale=77,88`），而 ASan 干净
+（不悬垂）。两条判据凑成一对：`varArray_snapshot` 钉"读"、`varArray_mutview_lost` 钉"写"，
+覆盖这个"唯一能装 `ref T` 的动态容器"上最危险的那条契约。
 **`asMutSlice` 的可写旧视图**那条契约的说明强度（它写进旧块会静默丢），而不是把视图改成拷贝。
 
 验收：`tests/stl` 全过（含新判据与 ASan 行）· `tests/run.sh` 260 + 264 · `check.sh quick` 28/28 · 零告警。
