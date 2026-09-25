@@ -308,6 +308,7 @@ struct map<K, V> {
 
     /* ---------------------------------------------------------------- insert */
     fn put(self: mut ref map<K, V>, k: K, v: V) -> bool {
+        if self.pStale() { self.pPoison() }
         /* Descend to the leaf, recording the path: a split has to be pushed back up it. */
         var id: i32 = self.root
         self.depth = i64(0)
@@ -671,6 +672,22 @@ struct map<K, V> {
     /* Hand the container's runtime pool back (the map and its pool are born together, exactly as
      * `vector` / `string` / `hashMap` do). The check is on the birth generation, so a stale copy of
      * a released map cannot drop somebody else's pool. */
+    /* **守卫**：这一份有序表值还指着它的池吗？陈旧 ⇒ 四处存储收空，下一次访问带位置地 trap。 */
+    fn pStale(self: ref map<K, V>) -> bool {
+        if self.pid < i64(0) { return false }
+        return syspool::extc_pool_generation(self.pid) != self.pidGen
+    }
+    fn pPoison(self: mut ref map<K, V>) {
+        self.nodes = poolSlice<bnode<K, V>>(i64(-1), i64(0))
+        self.keys  = poolSlice<K>(i64(-1), i64(0))
+        self.vals  = poolSlice<V>(i64(-1), i64(0))
+        self.kids  = poolSlice<i32>(i64(-1), i64(0))
+        self.nnodes = i64(0)
+        self.ncap   = i64(0)
+        self.n      = i64(0)
+        self.pid    = i64(-1)
+    }
+
     fn release(self: mut ref map<K, V>) {
         if self.pid < i64(0) { return }
         if syspool::extc_pool_generation(self.pid) != self.pidGen {

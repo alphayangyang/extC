@@ -196,6 +196,7 @@ struct pool<T> {
 
     /* Write through a handle. Returns false when the handle is stale (nothing written). */
     fn set(self: mut ref pool<T>, h: handle, v: T) -> bool {
+        if self.pStaleSelf() { self.pPoisonSelf() }
         if !self.contains(h) { return false }
         self.vals[pool<T>::pDense(self.ent[i64(h.slot)])] = v
         return true
@@ -209,6 +210,7 @@ struct pool<T> {
      * chain, and `clear` deliberately did not clean it up). Overwriting the whole word is
      * what makes that safe. */
     fn insert(self: mut ref pool<T>, v: T) -> handle {
+        if self.pStaleSelf() { self.pPoisonSelf() }
         if self.holeHead < i32(0) && i64(self.cursor) >= self.cap { self.grow() }
         var s: i64 = i64(0)
         if self.holeHead >= i32(0) {
@@ -264,6 +266,21 @@ struct pool<T> {
      * then old handles would read the new elements. */
     /* 把整批还给这一层（POOLS.md）：容器自己的簿记重置 + 运行期池重置。
      * 不叫 close —— 所在的地方退出时这棵树本来就会被自动清空，close 会被读成"你负责关"。 */
+    /* **守卫**：这一份池值还指着它的运行期记录吗？陈旧 ⇒ 收成空池（三块视图归零），
+     * 下一次访问带位置地 trap。 */
+    fn pStaleSelf(self: ref pool<T>) -> bool {
+        if self.pid < i64(0) { return false }
+        return syspool::extc_pool_generation(self.pid) != self.pidGen
+    }
+    fn pPoisonSelf(self: mut ref pool<T>) {
+        self.vals  = poolSlice<T>(i64(-1), i64(0))
+        self.slots = poolSlice<i32>(i64(-1), i64(0))
+        self.ent   = poolSlice<i64>(i64(-1), i64(0))
+        self.n     = i64(0)
+        self.cap   = i64(0)
+        self.pid   = i64(-1)
+    }
+
     fn release(self: mut ref pool<T>) {
         if self.pid < i64(0) { return }                        /* 已经放过 */
         if syspool::extc_pool_generation(self.pid) != self.pidGen { 

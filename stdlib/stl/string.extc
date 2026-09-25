@@ -273,6 +273,7 @@ struct string {
     }
 
     fn push(self: mut ref string, b: u8) {
+        if self.pStale() { self.pPoison() }
         if self.n >= self.cap { self.grow() }
         self.buf[self.n] = b
         self.n = self.n + i64(1)
@@ -299,6 +300,19 @@ struct string {
     }
 
     fn clear(self: mut ref string) { self.n = i64(0) }
+
+    /* **守卫**：这一份容器值还指着它的池吗？（池被 release 掉 / 槽位被别的池复用时世代对不上）
+     * 陈旧 ⇒ 把这一份收成空容器，让下一次下标访问带位置地 trap，而不是写已还给 malloc 的内存。 */
+    fn pStale(self: ref string) -> bool {
+        if self.pid < i64(0) { return false }
+        return syspool::extc_pool_generation(self.pid) != self.pidGen
+    }
+    fn pPoison(self: mut ref string) {
+        self.buf = poolSlice<u8>(i64(-1), i64(0))
+        self.n   = i64(0)
+        self.cap = i64(0)
+        self.pid = i64(-1)
+    }
 
     fn release(self: mut ref string) {
         if self.pid < i64(0) { return }

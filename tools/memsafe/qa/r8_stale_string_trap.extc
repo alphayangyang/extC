@@ -1,0 +1,11 @@
+// expect: TRAP
+// 守卫（string）：别名 + 一份 release ⇒ 陈旧的那一份不许静默写已还给 malloc 的板块。
+use stl::string
+fn main() -> i32 {
+    var s = string::withCap(i64(8))
+    s.append("ab")
+    var b = s
+    s.release()
+    b.append("cd")
+    return 0
+}

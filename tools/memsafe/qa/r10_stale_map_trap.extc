@@ -1,0 +1,11 @@
+// expect: TRAP
+// 守卫（有序 map）：别名 + 一份 release ⇒ 陈旧的那一份 put 时带位置地 trap。
+use stl::map
+fn main() -> i32 {
+    var m = map<i64, i32>::withCap(i64(16))
+    m.put(i64(1), i32(11))
+    var b = m
+    m.release()
+    b.put(i64(2), i32(22))
+    return 0
+}
