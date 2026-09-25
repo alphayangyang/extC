@@ -107,20 +107,40 @@ struct map<K, V> {
         return h
     }
 
-    /* ---------------------------------------------------------------- node access, by id */
+    /* ---------------------------------------------------------------- node access, by id
+     *
+     * 这一族（连同下面两个二分 `childSlot` / `lowerIn`）都标了 `@inline`：它们只有一条访存，
+     * 却在下降/分裂/合并的每一步都被调到。**不标的话 GCC 不肯内联** —— 每个内联点都会带进一份
+     * 边界检查和一个带 `file:line` 常量的 `extc_trap` 调用，内联器按体积算不划算 ⇒ 这些访问器
+     * 全变成独立函数，`bench/stl` 的 map 因此慢 10.5%（实测，DEVLOG 第十一段续七）。
+     * 强制内联之后它们从 profile 里消失，GCC 也能跨过它们优化。
+     * 注意：不是所有小函数都值得 —— `hashMap` 那 6 个小访问器加了只值 ~1%（噪声），别加。 */
+@inline
     fn bn(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].n) }
+@inline
     fn cntOf(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].cnt) }
+@inline
     fn leafOf(self: ref map<K, V>, id: i32) -> bool { return self.nodes[i64(id)].leaf }
+@inline
     fn kn(self: ref map<K, V>, id: i32, i: i64) -> K { return self.nodes[i64(id)].keys[i] }
+@inline
     fn vn(self: ref map<K, V>, id: i32, i: i64) -> V { return self.nodes[i64(id)].vals[i] }
+@inline
     fn kd(self: ref map<K, V>, id: i32, i: i64) -> i32 { return self.nodes[i64(id)].kids[i] }
+@inline
     fn nx(self: ref map<K, V>, id: i32) -> i32 { return self.nodes[i64(id)].next }
 
+@inline
     fn setN(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].n = i32(v) }
+@inline
     fn setCnt(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].cnt = i32(v) }
+@inline
     fn setKey(self: mut ref map<K, V>, id: i32, i: i64, k: K) { self.nodes[i64(id)].keys[i] = k }
+@inline
     fn setVal(self: mut ref map<K, V>, id: i32, i: i64, v: V) { self.nodes[i64(id)].vals[i] = v }
+@inline
     fn setKid(self: mut ref map<K, V>, id: i32, i: i64, c: i32) { self.nodes[i64(id)].kids[i] = c }
+@inline
     fn setNext(self: mut ref map<K, V>, id: i32, c: i32) { self.nodes[i64(id)].next = c }
 
     /* Double the stores and re-hang every node's views on the new arrays. The copies are element
@@ -207,6 +227,7 @@ struct map<K, V> {
 
     /* ---------------------------------------------------------------- search */
     /* First index in [0, n) whose key is not less than `k` (the lower bound inside one node). */
+@inline
     fn lowerIn(self: ref map<K, V>, id: i32, k: K) -> i64 {
         var lo: i64 = i64(0)
         var hi: i64 = self.bn(id)
@@ -218,6 +239,7 @@ struct map<K, V> {
     }
 
     /* Child slot to descend into: the first `i` with `k < keys[i]`, else n (the last child). */
+@inline
     fn childSlot(self: ref map<K, V>, id: i32, k: K) -> i64 {
         var lo: i64 = i64(0)
         var hi: i64 = self.bn(id)
