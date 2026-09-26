@@ -48,8 +48,9 @@
 
 **[索引](README.md)** · [← 9. 错误信息](15-errors.md) · [11. 还没定的 →](17-undecided.md)
 
-- **`trait` / `dyn Trait`**：**第一期已落地**（`trait` 声明 · `impl Trait for T` · 四条检查 ·
-  静态分发；见 [结构体与方法 §7.2](08-struct.md)）。**仍缺**：`T: Trait` 上界 · `dyn Trait` 值
-  （第二期已开工：设计与四阶段计划见 [`docs/topics/DYN.md`](../topics/DYN.md)；
-  第一期七条决策见 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)）· 关联类型与关联常量 ·
+- **`trait` / `dyn Trait`**：**第一期已落地**（声明 · `impl Trait for T` · 六条检查 · 静态分发 ·
+  静态方法表）。**第二期的阶段 1、2 已落地**：`dyn Trait(x).method()` 构造即调用、载荷**进池**、
+  建池用**对象表模式**、派发前**校验世代**、陈旧值 **trap 而不是跳到另一个实现**（`tests/dyn` 9 条判据；
+  设计与四阶段计划见 [`docs/topics/DYN.md`](../topics/DYN.md)）。**仍缺**：保存 dyn 值
+  （`let d: dyn Tag = …`）与字段/容器元素 · 卸载墓碑 · `T: Trait` 上界 · 关联类型与关联常量 ·
   trait 默认方法 · 孤儿规则与跨 trait 撞名的专门诊断。

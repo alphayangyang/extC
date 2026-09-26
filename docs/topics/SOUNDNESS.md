@@ -32,14 +32,14 @@
 | **O1** | **每一种"产生引用"的操作，都得有一个活性理由** | `ref x`（`EX_REF`）· `a[i..j]`（`EX_SLICE`）· `new`（`EX_NEW`）· 库里的 `toSlice`/`sub` · `extern!` 的返回 | 表达式种类见 `src/ast.h:88-110`；分配见 `src/codegen.c:2059/2075/2163`（`extc_arena_alloc`） | ✅ 语言自带的三样有检查；库侧的"零拷贝"已收口：`string.sub` 改**拷贝**（E1 已修），零拷贝改名为 `subView` 并要求签字（与 `!`/`extern!` 同类） |
 | **O2** | **借用的静态记账必须是真实寿命的上界** | 深度记账 `d(v) ≤ at(p)`；存借规则 | `src/check_escape.c:365`（取上界）、`:967`（`arenaDepthOf`）、`:791`（拒绝记录）、`:605/:1239`（`recordRefCheck`）；重放见 `src/check_internal.h:279`、`RefCheck` 结构 `:376` | ✅ 规则在；**但记账不是上界的地方有 7 个反例**（`ARENA-SOUNDNESS.md`） |
 | **O3** | **每一种"让引用失效"的操作，都必须让检查看到的版本变化（同粒度）** | 换代：`generation++`（`new_at` 与 **`reset`**，2026-09-25 起两处）；`freeSelf` 只置 `live = 0`（池死了 ⇒ `generation()` 返回 0，已够） | `src/pools.c` 的 `extc_pool_new_at` / `extc_pool_freeSelf` / `extc_pool_reset` | ✅ **已修（池粒度）**：`reset` 换代；块粒度由对象表模式禁 `give`/`resize` 顶上 |
-| **O4** | **句柄寻址的存储只追加（或删除用墓碑）** | 池的**模式**：容器池（可换块）/ 对象表池（只追加） | `src/pools.c` 的 `extc_pool_new_table` / `extc_pool_kind`；`give`/`resize` 里的模式守卫；判据 `tests/pool/rt_mode_gen.extc` | ⚠️ **运行期已焊**（对象表模式下 `give`/`resize` trap）；dyn 落地时**必须用这个模式建池** |
-| **O5** | **派发键必须决定布局（类型身份）** | 容器身份 = `pid`/`pidGen`；类型身份 = 类型表的 intern | `src/types.c`（`ttGeneric`/`ttEquals`）；`stdlib/stl/{map,hashMap,vector}.extc` 的 `pStale` | ❌ **缺**（dyn 的派发键还没有；E3 类型混淆就在这里） |
+| **O4** | **句柄寻址的存储只追加（或删除用墓碑）** | 池的**模式**：容器池（可换块）/ 对象表池（只追加） | `src/pools.c` 的 `extc_pool_new_table` / `extc_pool_kind`；`give`/`resize` 里的模式守卫；判据 `tests/pool/rt_mode_gen.extc` | ✅ **只追加这一半已落地并被 dyn 使用**（对象表模式下 `give`/`resize`/`_raw` 三处守卫 trap；dyn 池由生成物判定必须是对象表，判据 `dyn_object_table`）；**墓碑那一半**（删除语义）随阶段 3 |
+| **O5** | **派发键必须决定布局（类型身份）** | 容器身份 = `pid`/`pidGen`；类型身份 = 类型表的 intern | `src/types.c`（`ttGeneric`/`ttEquals`）；`stdlib/stl/{map,hashMap,vector}.extc` 的 `pStale` | ⚠️ **dyn 侧已落地**：派发键 = **槽里的表指针**（不在值里）+ 派发前**世代校验**；槽被复用 ⇒ 校验先失败 ⇒ 读不到别的实现的表 ⇒ E3 类型混淆**结构性排除**。判据 `dyn_pool_dispatch`、`dyn_o5_stale_trap`。**仍缺**：字段/容器存储（阶段 3）与开放注册（第三期） |
 | **O6** | **动态失败全部检查，并映射到 trap** | 越界 · `copyInto` 计数 · 除零 · 溢出除法 · 浮点→整数 · 池 OOM · `step` 返回 `none` | `src/codegen.c:609`（越界）、`:633`（计数）、`:5379`（除零）、`:5514`（f2i）、`:5348/:5356/:5169`（`extc_trap`/`extc_trapMsg`/`extc_die`，共 17 处 `trapMsg`） | ✅ 成立（本会话实测过越界 trap、f2i trap） |
 | **O7** | **可信断言：谁用谁签字（不可证）** | `extern!` + `effects Addr=0 Cont=0`；`!`；**`string.subView`**（零拷贝视图，只在不再改动时有效） | `src/parser.c:318/382`（解析）；`src/check_top.c:1124/1140`（按 effects 决定保守程度）、`:1082`（effects-closed 分析）；`docs/MANUAL.md:828`（`!` = "错了算我的…真没有值就是 UB"） | ✅ 机制在；**按定义不可证**（C 说谎就没了） |
 | — | **编译器正确性**（另一条定理） | 检查器 + 代码生成 | 全体；反例库 `tests/arena-soundness/`、`tests/pool-soundness/` | ⚠️ 进行中（ARENA 7 个 + POOL 1 个实测） |
 
-**读法（2026-09-25 更新）**：**5 条 ✅**（O1/O2/O3/O6/O7）· **1 条 ⚠️**（O4：运行期已焊住，dyn 侧建池时必须用对象表模式）·
-**1 条 ❌**（O5 类型身份，dyn 落地时补）· 外加**编译器正确性**这条持续义务。
+> **读法（2026-09-26 更新）**：**6 条 ✅**（O1/O2/O3/O4/O6/O7 —— O4 的"只追加"已被 dyn 使用并有判据）·
+> **1 条 ⚠️**（O5：**dyn 侧已焊住**并有运行期判据；仍缺存储面与开放注册）· 外加**编译器正确性**这条持续义务。
 
 ---
 
