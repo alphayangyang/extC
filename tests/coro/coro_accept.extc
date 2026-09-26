@@ -66,6 +66,7 @@ fn main() -> i32 {
     while left > i64(0) && spins < i64(200000) {
         var fd: i64 = tasks.pump(ref s, i64(0))
         if fd >= i64(0) {
+            /* 这里不设 TCP_NODELAY：AF_UNIX 没有 Nagle，设它本来就会失败 */
             if !tasks.add(ref s, conn(fd, scratch)) { return i32(95) }   /* 表会长，这里不该失败 */
             accepted = accepted + 1
         }

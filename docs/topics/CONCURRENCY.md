@@ -691,7 +691,8 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
    就是"块里有 `new` 就是边界" ✗）；`placeBoundaryDepth` 在协程里恒为 0，`ST_YIELD` 那条检查在协程里
    不可能触发（保留着，因为它是"挂起点落在一块活不过它的存储里"这个不变式本身）。
 5. ~~**任务表是死的**~~ ⇒ **已解（欠账第 2 项）** ✓
-   容量 `[32]` + **空闲槽位复用**（跑完的槽位还回 `freelist`，下一次 `add` 复用它）✓ 事件层加了
+   任务表**是调用者自己的容器**（`tasks<T>` 包着 `vector<row>`）⇒ 会长、没有容量上限 ✓ 跑完的行
+    就地改写复用 ✓（原先那版是 `[32]` 固定数组 + `freelist` ✓ 已换掉 ✓）✓ 事件层加了
    `listen/connect/accept/nonblock`（AF_UNIX **抽象命名空间** ⇒ 不落盘、不用清理、不碰 `<unistd.h>`）✓
    调度器加了 `init(s, listener)` 与 `pump(s, timeout_ms)`（一轮事件循环；listener 可读时 accept 一个
    并把 fd **交回调用者** —— 库里因此不需要函数值 ✓）✓ `extc_epoll_wait` 改成"一次一个 fd + 运行期
@@ -736,6 +737,15 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     两条历史守卫 `tests/errors/ref_arg_too_deep`、`borrowed_into_param_place` **照旧报错** ✓；
     `tests/errors` **167 条一条没放宽** ✓。之前被误拒的三个探针（库函数 `stash(ref v, h)`、
     `vector<vector<i32>>` 从库函数 push、`relay` 转发）**全部通过** ✓。
+    **实现细节（最终版）**：界的量法必须与规则**完全同一个表达式**
+    （`placeRoot ? placeDepth : exprRefDepth` ✓）；`min` 只把**带引用**的目的地算进去 —— 标量结构体
+    （`loop`）报 0 是因为它根本没有可存的引用 ✓ 不该把界压成 0 ✗（曾因此把 `bench/stl/set.extc` 与四个
+    例子打回 ✗）；`homeDepth > 0` 是被调方的**显式声明** ⇒ 保持权威 ✓ 不再被 `min` 压低 ✓。
+    表的构造也因此定了形：库只给裸容器 `newRows() -> vector<row>`（容器类型的存储生在调用者所在的地方 ✓），
+    组装在调用点写一行字面量 ✓ —— **包装结构体不算容器** ✗ 从函数里返回它会被
+    "return value would hold a reference to a local variable that dies first" 拒 ✓（实测 ✓）。
+    任务表就此**没有容量上限** ✓（`tasks<T>` 包着 `vector<row>` ✓ 跑完的行就地复用 ✓）。
+
     **过程教训**：`placeDepth` 与 `exprRefDepth` 对同一个表达式会给出不同的深度（前者答"那个 40 字节的
     句柄住在哪" ✓ 后者答"它的存储在池里的板块活多久" ✓）⇒ 界必须用与规则**同一个**查询 ✓ 否则会出现
     "界=0 而待检值=1"这种自相矛盾的拒绝 ✓。
@@ -754,20 +764,21 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     实测对照（两条都已量 ✓）：安全形状（`outer` 与 `inner` 同作用域，深度都是 1）今天**被误拒** ✗；
     危险形状（`inner` 建在内层块 ⇒ 深度 2 > 目的地 1）今天**被拒** ✓ —— 但理由是错的 ✗。
     ⇒ 换成"源 ≤ 目的地"之后：安全 ✓ 收、危险 ✓ 拒，**且仍然 sound**（比的就是真实的生命周期要求 ✓）。
-    正判据 `tests/coro/coro_tasks.extc`（`table<T>` 泛型容器 + 方法里 push 句柄 ✓ 期望退出码 41）**先立着** ✓
-    现在还是红 ✗ ⇒ 修好之前**不入册** ✓ 免得留下红套件。 —— **三次探针的结论一致**：
-    普通容器 ✗ 泛型容器 ✗ 方法/函数都一样 ✗，只要**容器带视图**（vector 内部是 `mut slice`），往里存
-    句柄就会撞"argument … carries a reference into a deeper scope (depth 1)"。⇒ 这不是库写法问题，
-    是**检查器规则**要细化：现在它把"容器自己带视图"与"被存进去的值"混在一起看，于是 `loop` 一旦装
-    vector 就必被拒。要做真增长就得先动那条规则（有安全含义，要单独设计 + 判据）。
-    眼下容量 512 够压测用（N=512 已实测 ✓）。 —— 试过：`loop` 里放
-    `vector<coroutine<i64>>`（容器内部就是 `mut slice<T>`，`toMutSlice()` 能拿到可写视图 ⇒ 驱动没问题 ✓），
-    但一步 `add` 就撞：`argument 1 of `add` points into a deeper scope (depth 1) than the arena this call
-    may store it in` —— 被调方（无论做成普通函数还是方法）**往 `mut ref` 形参里存句柄**时，调用点所在域的
-    深度不够即拒。同一个形状在 STL 里（`v.push(worker(...))`）没事，因为那是**泛型方法、在调用者上下文里
-    实例化**。⇒ 眼下用**把容量调到 512** 顶上（`[512]coroutine<i64>` ✓ 压测够用 ✓），真增长留到这条规则
-    弄清楚之后再做（要么让 `add` 变成泛型，要么给"往容器里存句柄"一条明确的放宽）。
-16. **`pump` 的"一轮排空"有个 level-triggered 陷阱** ✗（已修 ✓ 但值得记）：listener 只要 backlog 里还有
+    判据：`tests/coro/coro_table.extc`（`table<T>` 泛型容器 + 方法里 push 句柄 ✓ 期望退出码 41 ✓ 已入册 ✓）
+    + 两条历史守卫（`ref_arg_too_deep`、`borrowed_into_param_place` 照旧报错 ✓）+ `tests/errors` **167 条
+    一条没放宽** ✓；三个曾被误拒的探针（库函数 `stash(ref v, h)`、`vector<vector<i32>>` 从库函数 push、
+    `relay` 转发）全部通过 ✓；`bench/stl/set.extc` 与 examples 里四个被误拒的例子（`borrowing`、
+    `container-of-view`、`stream-sum`、`tests/traps/main_question`）恢复 ✓。
+16. ~~**任务表容量上限**~~ ⇒ **已解** ✓（`tasks<T>` 是调用者自己的容器 ⇒ 会长 ✓ 跑完的行就地复用 ✓
+    实测 N=512/1024 都通 ✓ 数据校验全 ok ✓）。
+18. **压测第一轮就抓到 extC 侧没设 `TCP_NODELAY`** ✗（已修 ✓）—— 流水线形态 + 1024 字节回显那一格
+    extC 只有 **363 req/s**（p50 ≈ 44ms ✓ 正是 Nagle 与对端 delayed ACK 凑出来的经典停滞 ✓），而 Go 侧
+    一直设着（我自己列的公平性清单只落实了一半 ✗）。运行期补 `extc_sock_nodelay`（`setsockopt(IPPROTO_TCP,
+    TCP_NODELAY)` ✓ 需要 `<netinet/tcp.h>` ✓）并在 accept 之后设上 ✓ 实测 **363 → 73,736 req/s（N=1）**、
+    **23k → 453k（N=64）** ✓。AF_UNIX 上不设：它没有 Nagle ✓ 设了 `setsockopt` 本来就失败 ✓（判据
+    `coro_accept` 因此报 89 ✗ 才发现 ✓）。教训：**公平性清单要逐条落实并复核** ✓ 少一条就量出一个假结论 ✓。
+
+17. **`pump` 的"一轮排空"有个 level-triggered 陷阱** ✗（已修 ✓ 但值得记）：listener 只要 backlog 里还有
     人就一直是"可读"，而一轮只 accept 一个 ⇒ 用 0 超时排空会**一次次拿到同一个 listener fd ⇒ 死转**
     （实测：`coro_accept` 40 条连接那一轮卡住 ✓）。修法是"遇到 listener 事件即停止排空" + 排空上限 64。
 

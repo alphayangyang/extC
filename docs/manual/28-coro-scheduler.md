@@ -7,20 +7,41 @@
 ```extc
 use std::coro::scheduler as sched
 
-var s: sched::loop                          /* 零初始化：任务数 0 */
-sched::add(ref s, worker(i64(10)))
-sched::add(ref s, worker(i64(100)))
+var s: sched::loop                                           /* 零初始化：只装标量（epoll、listener、计数）*/
+if !sched::init(ref s, i64(-1)) { return i32(1) }            /* -1 = 不 accept，只驱动任务 */
+var tasks: sched::tasks<i64> = { rows: sched::newRows() }    /* 任务表：调用者自己的容器 => 会长 */
+
+tasks.add(ref s, worker(i64(10)))
+tasks.add(ref s, worker(i64(100)))
 
 var order: mut slice<i64> = new i64[12]
 var k: i64 = 0
-while k < i64(12) { order[k] = k % i64(2)  k = k + 1 }   /* 交替就绪 */
+while k < i64(12) { order[k] = k % i64(2)  k = k + 1 }       /* 交替就绪 */
 
-var left: i64 = sched::runScripted(ref s, order)
+var left: i64 = tasks.runScripted(ref s, order)
 ```
 
-类型 `loop` 里是一张**固定容量**的任务表 `tasks`（`[32]coroutine<i64>`）：句柄是 24 字节的普通值，
-数组元素就是**可变位置**，所以可以直接 `s.tasks[i].next()` / `.send()`。另有 `done`、`started`
-两个标记数组、空闲槽位栈 `freelist` 与 `nfree`、用过的槽位数 `used` 和还活着的任务数 `live`。
+三个类型各管一段：
+
+| 类型 | 装什么 |
+|---|---|
+| `row` | 一行任务：句柄 `h`、两个标记、它当前注册在 epoll 里的 fd |
+| `loop` | 只有标量：epoll 实例、listener、活任务数、本轮就绪 fd 的小数组 |
+| `tasks<T>` | **任务表**：包着 `vector<row>`，句柄是 24 字节的普通值，容器内部是 `mut slice` => 元素是可写位置 |
+
+各类型的成员一览：
+
+| 成员 | 归属 | 作用 |
+|---|---|---|
+| `rows` | `tasks<T>` | 表体：一个 `vector<row>` |
+| `live` | `loop` | 还没跑完的任务数 |
+| `ready` / `nready` | `loop` | 本轮收上来的就绪 fd 与其个数 |
+| `started` | `row` | 这一行是否已经启动过（第一次只 `next`，不 `send`） |
+| `finish` | `tasks<T>` | 收尾一行：标 `done`、清掉登记、`live` 减一 |
+
+任务表**会长、没有容量上限**，跑完的行由 `add` 就地改写复用（长跑服务器因此不会把表撑大）。表必须建在
+**驱动它**的那个作用域里：存储是池的板块，生命周期跟着那个 place 走。库另外给的是裸容器 `newRows()`：
+包装结构体不算容器 => 从函数里返回它会被"返回带引用的值"拒，因此组装在调用点写一行字面量。
 
 ## 挂起约定（最容易写错的一条）
 
@@ -35,18 +56,19 @@ var left: i64 = sched::runScripted(ref s, order)
 
 ## 两个驱动
 
-- `step(s, i)` —— 推进一步（上面那套协议），返回它是否还活着。
-- `runScripted(s, order)` —— **脚本化的就绪顺序**：按 `order` 里的下标依次推进，返回还剩几个活任务。
-  判据先用它，因为它是**逐字节确定**的：不靠时间、不靠 socket、不靠内核调度顺序。
-- `add(s, h)` —— 把一个句柄放进任务表（满了返回 `false`）。
-
-- `init(s, listener)` —— 建 epoll 实例并记下 listener（`i64(-1)` = 只驱动任务、不 accept）。
-- `pump(s, timeout_ms)` —— **一轮**事件循环：注册请求 ⇒ 等 ⇒ 推进就绪任务。listener 可读时它
-  **accept 一个连接并把新 fd 返回给调用者**（用哪种协程去接它由调用者决定），没有新连接返回 -1、
-  超时返回 -2。
-- **任务表是固定容量 + 空闲槽位复用**：32 个槽位，任务跑完把槽位还回去，下一次 `add` 复用它。
-  一个 listener 循环 accept 上千个连接，只要**同时活着**的任务不超过容量就够用。
-- `runEpoll(s, timeout_ms)` —— **真事件源**：`epoll_wait`（走 `std::sys::net` 的
+- `tasks.step(ref s, i)` —— 推进一步（上面那套协议），返回它是否还活着。
+- `tasks.runScripted(ref s, order)` —— **脚本化的就绪顺序**：按 `order` 里的下标依次推进，返回还剩几个
+  活任务。判据先用它，因为它是**逐字节确定**的：不靠时间、不靠 socket、不靠内核调度顺序。
+- `tasks.add(ref s, h)` —— 把一个句柄放进任务表（先复用跑完的行，没有再长一行）。
+- `tasks.count()` —— 表里有多少行（含已跑完、等待复用的那些）。
+- `sched::init(ref s, listener)` —— 建 epoll 实例并记下 listener（`i64(-1)` = 只驱动任务、不 accept）。
+- `tasks.pump(ref s, timeout_ms)` —— **一轮**事件循环：注册请求 ⇒ 等 ⇒ **把这一轮就绪的全部处理掉**。
+  listener 可读时它**accept 一个连接并把新 fd 返回给调用者**（用哪种协程去接它由调用者决定），
+  没有新连接返回 -1、超时返回 -2。两条实测来的性能约定：请求没变就不再 `epoll_add`（内核里那条登记
+  还在，重复注册只是白费一次系统调用）；就绪 fd 先收进小数组再一遍扫表（每个事件扫一遍全表是 O(N^2)）。
+  另外 listener 是 level-triggered：一轮只 accept 一个，**遇到 listener 事件即停止排空**，
+  否则排空循环会一次次拿到同一个 fd 而死转。
+- `tasks.runEpoll(ref s, timeout_ms)` —— **真事件源**：`epoll_wait`（走 `std::sys::net` 的
   `extern!("extc-runtime")`）。协议与 `runScripted` 同一条，只是"谁就绪"改由内核告诉我们：
 
   1. 每个任务 push 到"要么在等真实事件、要么结束"为止；
@@ -60,12 +82,12 @@ var left: i64 = sched::runScripted(ref s, order)
 
 ## 单线程循环里的铁律：**别阻塞在读上**
 
-`pump` 只处理**一个**事件，所以循环长这样：
+循环长这样：
 
 ```extc
 while 还有活干 {
-    var fd: i64 = sched::pump(ref s, i64(0))     /* 0 超时 = 立刻回来 ⇒ 判据里快而确定 */
-    if fd >= i64(0) { sched::add(ref s, conn(fd, buf)) }   /* 新连接 ⇒ 建一个任务 */
+    var fd: i64 = tasks.pump(ref s, i64(0))      /* 0 超时 = 立刻回来 => 判据里快而确定 */
+    if fd >= i64(0) { tasks.add(ref s, conn(fd, buf)) }    /* 新连接 => 建一个任务 */
     /* 收数据要用**非阻塞** fd：收到了就收，收不到就继续 pump，下一轮再试 */
 }
 ```
@@ -77,6 +99,11 @@ while 还有活干 {
 
 `tests/coro/coro_sched.extc` —— 两个任务（step 分别 10 和 100）按交替的就绪顺序推进，断言退出码
 **36**：`left * 100` 那一项就是"两个任务都跑完了"这条断言。
+
+`tests/coro/coro_table.extc` —— 逃逸规则精度的判据：**泛型容器包着 `vector`，方法里往表里 push 句柄**，
+退出码 **41**。它钉住的是"往自己的容器里存一个句柄"这件事不再被误拒。
+
+`tests/coro/coro_accept.extc` —— 一个 listener 接 40 条连接：任务跑完把行还回来复用，退出码 **52**。
 
 `tests/coro/coro_epoll.extc` —— **8 条 AF_UNIX 连接、单线程、一个 epoll 循环**：每条连接一个协程，
 先写请求再跑循环，最后收回声累加，退出码 **36**（= 1+2+…+8），并要求 **ASan 干净**。数据在
@@ -91,7 +118,12 @@ socketpair 的内核缓冲里 ⇒ 立刻可读 ⇒ 判据不靠 sleep、不靠�
     gcc -std=c11 -fwrapv -O2 -o /tmp/es /tmp/es.c && /tmp/es
     printf 'hello\n' | nc 127.0.0.1 7654
 
-固定端口 7654（`SO_REUSEADDR` 已开）。每条连接一个协程，流式回显，对端半关就地收尾并 `close`
+每连接的读缓冲是 16 KB（`new u8[16384]`）：压测要求两侧同一个缓冲大小，extC 侧最初是 1 KB 而参照
+实现是 64 KB，于是流水线形态读出一个 5 倍的假差距（统一之后那几格反超）。
+
+固定端口 7654（`SO_REUSEADDR` 已开），accept 出来的连接会设上 `TCP_NODELAY`（`extc_sock_nodelay`）：
+少了它，小批量、多轮写会撞上 Nagle 与 delayed ACK 凑出来的 ~40ms 停滞（实测：流水线形态、1024 字节回显，
+从 363 req/s 变成 73,736 req/s）。每条连接一个协程，流式回显，对端半关就地收尾并 `close`
 （用的是 `std::sys::io` 的 `close`，不需要额外原语）。判据 `tests/coro/coro_echo.extc` 用同一个形状：
 4 条 TCP 连接、每连接两批数据（3 + 2 字节）、半关写端、收齐回声、任务全部收尾，退出码 50，并要求
 ASan 干净与常驻有界。

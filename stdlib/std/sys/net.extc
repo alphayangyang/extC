@@ -43,6 +43,10 @@ extern!("extc-runtime") fn extc_sock_accept(listener: i64) -> i64
 /* 把 fd 设成非阻塞。 */
 extern!("extc-runtime") fn extc_sock_nonblock(fd: i64) -> i64
     effects Addr=0 Cont=0
+/* 关掉 Nagle。小批量、多轮写的时候，Nagle 与对端的 delayed ACK 会凑出经典的 ~40ms 停滞
+ *（实测：pipeline 形态、1024 字节回显，extC 侧设上它之后从 363 req/s 变成百万级）。 */
+extern!("extc-runtime") fn extc_sock_nodelay(fd: i64) -> i64
+    effects Addr=0 Cont=0
 
 /* loopback 上的 TCP 监听。端口传 0 表示让内核挑（用 `extc_sock_local_port` 读回来）。
  * `sockaddr_in` 与字节序都在运行期里 —— extC 侧只收标量，和 AF_UNIX 那边同形。 */

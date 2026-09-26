@@ -1,0 +1,141 @@
+================================================================
+echo server 压测：extC vs Go   2026-09-27 05:03:57
+机器：Linux 6.18.33.2-microsoft-standard-WSL2 · 24 核 · Intel(R) Core(TM) Ultra 9 275HX
+extC：
+gcc ：gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+go  ：go version go1.26.0 linux/amd64
+生成器参数：REPS=3 ITERS=20000 WARMUP=2000 载荷=[64 1024] 并发=[1 8 64 256 512] 形态=[pingpong pipeline]
+================================================================
+构建完成：extC server + Go server + sink + load（都在 /tmp/bench_echo.wqcPiM）
+
+── 生成器天花板（对 sink：它不做任何调度，打不动它就没资格比别的）────────────────
+  pingpong  conns=1     payload=64    iters=20000        28829 req/s      1.8 MB/s  p50=  33.4us p99=  71.3us  ok
+  pingpong  conns=8     payload=64    iters=20000        87959 req/s      5.6 MB/s  p50=  87.4us p99= 171.7us  ok
+  pingpong  conns=64    payload=64    iters=20000       312165 req/s     20.0 MB/s  p50= 174.2us p99= 754.5us  ok
+  pingpong  conns=256   payload=64    iters=20000       817738 req/s     52.3 MB/s  p50= 271.1us p99=1138.1us  ok
+  pingpong  conns=512   payload=64    iters=20000      1336191 req/s     85.5 MB/s  p50= 309.8us p99=1441.0us  ok
+
+── 矩阵（每格预热 2000 + 正式 20000 次/连接，跑 3 次取最好）────────────────────
+
+  [pingpong · payload=64 · conns=1]
+    extC      pingpong  conns=1     payload=64    iters=20000        21427 req/s      1.4 MB/s  p50=  39.6us p99= 133.3us  ok
+    Go(1核)  pingpong  conns=1     payload=64    iters=20000        26800 req/s      1.7 MB/s  p50=  34.9us p99=  85.8us  ok
+    Go(默认) pingpong  conns=1     payload=64    iters=20000        25875 req/s      1.7 MB/s  p50=  33.4us p99= 108.3us  ok
+    sink      pingpong  conns=1     payload=64    iters=20000        28081 req/s      1.8 MB/s  p50=  32.2us p99=  82.8us  ok
+
+  [pingpong · payload=64 · conns=8]
+    extC      pingpong  conns=8     payload=64    iters=20000       129898 req/s      8.3 MB/s  p50=  58.5us p99= 131.2us  ok
+    Go(1核)  pingpong  conns=8     payload=64    iters=20000       149688 req/s      9.6 MB/s  p50=  51.5us p99= 124.9us  ok
+    Go(默认) pingpong  conns=8     payload=64    iters=20000        88867 req/s      5.7 MB/s  p50=  86.4us p99= 169.5us  ok
+    sink      pingpong  conns=8     payload=64    iters=20000        90015 req/s      5.8 MB/s  p50=  86.1us p99= 159.9us  ok
+
+  [pingpong · payload=64 · conns=64]
+    extC      pingpong  conns=64    payload=64    iters=20000       419864 req/s     26.9 MB/s  p50= 117.9us p99= 418.0us  ok
+    Go(1核)  pingpong  conns=64    payload=64    iters=20000       370546 req/s     23.7 MB/s  p50= 158.6us p99= 471.7us  ok
+    Go(默认) pingpong  conns=64    payload=64    iters=20000       311296 req/s     19.9 MB/s  p50= 174.5us p99= 772.5us  ok
+    sink      pingpong  conns=64    payload=64    iters=20000       310316 req/s     19.9 MB/s  p50= 175.5us p99= 760.3us  ok
+
+  [pingpong · payload=64 · conns=256]
+    extC      pingpong  conns=256   payload=64    iters=20000       459327 req/s     29.4 MB/s  p50= 525.3us p99=1107.4us  ok
+    Go(1核)  pingpong  conns=256   payload=64    iters=20000       361184 req/s     23.1 MB/s  p50= 685.0us p99=1434.1us  ok
+    Go(默认) pingpong  conns=256   payload=64    iters=20000       820620 req/s     52.5 MB/s  p50= 268.1us p99=1110.2us  ok
+    sink      pingpong  conns=256   payload=64    iters=20000       823518 req/s     52.7 MB/s  p50= 268.2us p99=1092.6us  ok
+
+  [pingpong · payload=64 · conns=512]
+    extC      pingpong  conns=512   payload=64    iters=20000       411469 req/s     26.3 MB/s  p50=1167.9us p99=2526.1us  ok
+    Go(1核)  pingpong  conns=512   payload=64    iters=20000       329607 req/s     21.1 MB/s  p50=1479.2us p99=3009.9us  ok
+    Go(默认) pingpong  conns=512   payload=64    iters=20000      1340348 req/s     85.8 MB/s  p50= 308.6us p99=1397.2us  ok
+    sink      pingpong  conns=512   payload=64    iters=20000      1325528 req/s     84.8 MB/s  p50= 313.0us p99=1438.2us  ok
+
+  [pingpong · payload=1024 · conns=1]
+    extC      pingpong  conns=1     payload=1024  iters=20000        22354 req/s     22.9 MB/s  p50=  39.8us p99= 119.3us  ok
+    Go(1核)  pingpong  conns=1     payload=1024  iters=20000        27629 req/s     28.3 MB/s  p50=  32.2us p99=  96.2us  ok
+    Go(默认) pingpong  conns=1     payload=1024  iters=20000        27445 req/s     28.1 MB/s  p50=  32.0us p99= 102.9us  ok
+    sink      pingpong  conns=1     payload=1024  iters=20000        25799 req/s     26.4 MB/s  p50=  35.5us p99=  98.0us  ok
+
+  [pingpong · payload=1024 · conns=8]
+    extC      pingpong  conns=8     payload=1024  iters=20000       131279 req/s    134.4 MB/s  p50=  55.8us p99= 132.7us  ok
+    Go(1核)  pingpong  conns=8     payload=1024  iters=20000       146163 req/s    149.7 MB/s  p50=  52.6us p99= 128.7us  ok
+    Go(默认) pingpong  conns=8     payload=1024  iters=20000        88866 req/s     91.0 MB/s  p50=  86.6us p99= 169.6us  ok
+    sink      pingpong  conns=8     payload=1024  iters=20000        89980 req/s     92.1 MB/s  p50=  86.1us p99= 161.4us  ok
+
+  [pingpong · payload=1024 · conns=64]
+    extC      pingpong  conns=64    payload=1024  iters=20000       388245 req/s    397.6 MB/s  p50= 127.2us p99= 450.9us  ok
+    Go(1核)  pingpong  conns=64    payload=1024  iters=20000       344422 req/s    352.7 MB/s  p50= 172.4us p99= 492.9us  ok
+    Go(默认) pingpong  conns=64    payload=1024  iters=20000       307720 req/s    315.1 MB/s  p50= 176.7us p99= 772.0us  ok
+    sink      pingpong  conns=64    payload=1024  iters=20000       308533 req/s    315.9 MB/s  p50= 176.9us p99= 753.4us  ok
+
+  [pingpong · payload=1024 · conns=256]
+    extC      pingpong  conns=256   payload=1024  iters=20000       414712 req/s    424.7 MB/s  p50= 583.6us p99=1206.0us  ok
+    Go(1核)  pingpong  conns=256   payload=1024  iters=20000       328724 req/s    336.6 MB/s  p50= 754.6us p99=1563.3us  ok
+    Go(默认) pingpong  conns=256   payload=1024  iters=20000       809969 req/s    829.4 MB/s  p50= 273.0us p99=1118.1us  ok
+    sink      pingpong  conns=256   payload=1024  iters=20000       794731 req/s    813.8 MB/s  p50= 278.9us p99=1139.3us  ok
+
+  [pingpong · payload=1024 · conns=512]
+    extC      pingpong  conns=512   payload=1024  iters=20000       377840 req/s    386.9 MB/s  p50=1268.2us p99=2736.5us  ok
+    Go(1核)  pingpong  conns=512   payload=1024  iters=20000       298464 req/s    305.6 MB/s  p50=1648.2us p99=3267.9us  ok
+    Go(默认) pingpong  conns=512   payload=1024  iters=20000      1289094 req/s   1320.0 MB/s  p50= 320.4us p99=1522.7us  ok
+    sink      pingpong  conns=512   payload=1024  iters=20000      1271816 req/s   1302.3 MB/s  p50= 327.8us p99=1544.9us  ok
+
+  [pipeline · payload=64 · conns=1]
+    extC      pipeline  conns=1     payload=64    iters=20000       377879 req/s     24.2 MB/s  p50=  51.9us p99=  51.9us  ok
+    Go(1核)  pipeline  conns=1     payload=64    iters=20000       385396 req/s     24.7 MB/s  p50=  51.2us p99=  51.2us  ok
+    Go(默认) pipeline  conns=1     payload=64    iters=20000       385023 req/s     24.6 MB/s  p50=  39.8us p99=  39.8us  ok
+    sink      pipeline  conns=1     payload=64    iters=20000       396247 req/s     25.4 MB/s  p50=  41.2us p99=  41.2us  ok
+
+  [pipeline · payload=64 · conns=8]
+    extC      pipeline  conns=8     payload=64    iters=20000      1914676 req/s    122.5 MB/s  p50= 101.2us p99= 120.9us  ok
+    Go(1核)  pipeline  conns=8     payload=64    iters=20000      2169280 req/s    138.8 MB/s  p50=  74.5us p99=  84.4us  ok
+    Go(默认) pipeline  conns=8     payload=64    iters=20000      1426260 req/s     91.3 MB/s  p50=  64.2us p99=  71.6us  ok
+    sink      pipeline  conns=8     payload=64    iters=20000      1432592 req/s     91.7 MB/s  p50=  65.6us p99=  72.1us  ok
+
+  [pipeline · payload=64 · conns=64]
+    extC      pipeline  conns=64    payload=64    iters=20000      6136938 req/s    392.8 MB/s  p50= 252.2us p99= 602.8us  ok
+    Go(1核)  pipeline  conns=64    payload=64    iters=20000      5696263 req/s    364.6 MB/s  p50= 139.5us p99= 365.1us  ok
+    Go(默认) pipeline  conns=64    payload=64    iters=20000      4969166 req/s    318.0 MB/s  p50= 213.0us p99= 347.3us  ok
+    sink      pipeline  conns=64    payload=64    iters=20000      4971689 req/s    318.2 MB/s  p50= 345.1us p99= 529.9us  ok
+
+  [pipeline · payload=64 · conns=256]
+    extC      pipeline  conns=256   payload=64    iters=20000      6783229 req/s    434.1 MB/s  p50= 566.7us p99=1221.9us  ok
+    Go(1核)  pipeline  conns=256   payload=64    iters=20000      5357213 req/s    342.9 MB/s  p50= 493.5us p99=1153.1us  ok
+    Go(默认) pipeline  conns=256   payload=64    iters=20000     13297433 req/s    851.0 MB/s  p50= 317.9us p99= 556.2us  ok
+    sink      pipeline  conns=256   payload=64    iters=20000     13554466 req/s    867.5 MB/s  p50= 260.1us p99= 504.3us  ok
+
+  [pipeline · payload=64 · conns=512]
+    extC      pipeline  conns=512   payload=64    iters=20000      6081282 req/s    389.2 MB/s  p50=1108.1us p99=1797.1us  ok
+    Go(1核)  pipeline  conns=512   payload=64    iters=20000      4806544 req/s    307.6 MB/s  p50=1031.4us p99=2263.6us  ok
+    Go(默认) pipeline  conns=512   payload=64    iters=20000     20014295 req/s   1280.9 MB/s  p50= 508.1us p99=1073.0us  ok
+    sink      pipeline  conns=512   payload=64    iters=20000     20650794 req/s   1321.7 MB/s  p50= 259.7us p99=1206.7us  ok
+
+  [pipeline · payload=1024 · conns=1]
+    extC      pipeline  conns=1     payload=1024  iters=20000       269525 req/s    276.0 MB/s  p50=  55.7us p99=  55.7us  ok
+    Go(1核)  pipeline  conns=1     payload=1024  iters=20000       330311 req/s    338.2 MB/s  p50=  60.8us p99=  60.8us  ok
+    Go(默认) pipeline  conns=1     payload=1024  iters=20000       330403 req/s    338.3 MB/s  p50=  69.8us p99=  69.8us  ok
+    sink      pipeline  conns=1     payload=1024  iters=20000       342801 req/s    351.0 MB/s  p50=  58.9us p99=  58.9us  ok
+
+  [pipeline · payload=1024 · conns=8]
+    extC      pipeline  conns=8     payload=1024  iters=20000      1876016 req/s   1921.0 MB/s  p50=  46.2us p99=  72.4us  ok
+    Go(1核)  pipeline  conns=8     payload=1024  iters=20000      1937096 req/s   1983.6 MB/s  p50=  60.4us p99= 136.1us  ok
+    Go(默认) pipeline  conns=8     payload=1024  iters=20000      1394271 req/s   1427.7 MB/s  p50=  96.9us p99= 118.0us  ok
+    sink      pipeline  conns=8     payload=1024  iters=20000      1389749 req/s   1423.1 MB/s  p50=  63.6us p99=  76.3us  ok
+
+  [pipeline · payload=1024 · conns=64]
+    extC      pipeline  conns=64    payload=1024  iters=20000      3399012 req/s   3480.6 MB/s  p50= 241.3us p99= 375.6us  ok
+    Go(1核)  pipeline  conns=64    payload=1024  iters=20000      3267788 req/s   3346.2 MB/s  p50= 262.5us p99= 609.7us  ok
+    Go(默认) pipeline  conns=64    payload=1024  iters=20000      4821465 req/s   4937.2 MB/s  p50= 315.3us p99= 502.8us  ok
+    sink      pipeline  conns=64    payload=1024  iters=20000      4605477 req/s   4716.0 MB/s  p50= 135.6us p99= 248.3us  ok
+
+  [pipeline · payload=1024 · conns=256]
+    extC      pipeline  conns=256   payload=1024  iters=20000      3062844 req/s   3136.4 MB/s  p50= 861.2us p99=1720.1us  ok
+    Go(1核)  pipeline  conns=256   payload=1024  iters=20000      2749550 req/s   2815.5 MB/s  p50=1169.9us p99=2206.7us  ok
+    Go(默认) pipeline  conns=256   payload=1024  iters=20000     10210455 req/s  10455.5 MB/s  p50= 225.1us p99=1084.9us  ok
+    sink      pipeline  conns=256   payload=1024  iters=20000     10701396 req/s  10958.2 MB/s  p50= 274.1us p99=1614.1us  ok
+
+  [pipeline · payload=1024 · conns=512]
+    extC      pipeline  conns=512   payload=1024  iters=20000      2337061 req/s   2393.2 MB/s  p50=3551.2us p99=4796.9us  ok
+    Go(1核)  pipeline  conns=512   payload=1024  iters=20000      2020178 req/s   2068.7 MB/s  p50=2256.4us p99=5376.2us  ok
+    Go(默认) pipeline  conns=512   payload=1024  iters=20000     11808184 req/s  12091.6 MB/s  p50= 428.4us p99=2929.5us  ok
+    sink      pipeline  conns=512   payload=1024  iters=20000     11391393 req/s  11664.8 MB/s  p50= 499.3us p99=2248.8us  ok
+
+完成 05:23:22 · 原始记录：bench/echo/results.txt
+读法：同条件那两列是 extC vs Go(GOMAXPROCS=1)；Go(默认) 是多核自然形态，不能当同条件读。

@@ -75,38 +75,47 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h2 id="形状">形状</h2>
 <pre class="lang-extc"><code><span class="k">use</span> std::coro::scheduler <span class="k">as</span> sched
 
-<span class="k">var</span> s: sched::loop                          <span class="c">/* 零初始化：任务数 0 */</span>
-sched::<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">worker</span>(<span class="t">i64</span>(<span class="n">10</span>)))
-sched::<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">worker</span>(<span class="t">i64</span>(<span class="n">100</span>)))
+<span class="k">var</span> s: sched::loop                                           <span class="c">/* 零初始化：只装标量（epoll、listener、计数）*/</span>
+<span class="k">if</span> !sched::<span class="f">init</span>(<span class="k">ref</span> s, <span class="t">i64</span>(-<span class="n">1</span>)) { <span class="k">return</span> <span class="t">i32</span>(<span class="n">1</span>) }            <span class="c">/* -1 = 不 accept，只驱动任务 */</span>
+<span class="k">var</span> tasks: sched::tasks&lt;<span class="t">i64</span>&gt; = { rows: sched::<span class="f">newRows</span>() }    <span class="c">/* 任务表：调用者自己的容器 => 会长 */</span>
+
+tasks.<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">worker</span>(<span class="t">i64</span>(<span class="n">10</span>)))
+tasks.<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">worker</span>(<span class="t">i64</span>(<span class="n">100</span>)))
 
 <span class="k">var</span> order: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">i64</span>&gt; = <span class="k">new</span> <span class="t">i64</span>[<span class="n">12</span>]
 <span class="k">var</span> k: <span class="t">i64</span> = <span class="n">0</span>
-<span class="k">while</span> k &lt; <span class="t">i64</span>(<span class="n">12</span>) { order[k] = k % <span class="t">i64</span>(<span class="n">2</span>)  k = k + <span class="n">1</span> }   <span class="c">/* 交替就绪 */</span>
+<span class="k">while</span> k &lt; <span class="t">i64</span>(<span class="n">12</span>) { order[k] = k % <span class="t">i64</span>(<span class="n">2</span>)  k = k + <span class="n">1</span> }       <span class="c">/* 交替就绪 */</span>
 
-<span class="k">var</span> left: <span class="t">i64</span> = sched::<span class="f">runScripted</span>(<span class="k">ref</span> s, order)</code></pre>
-<p>类型 <code>loop</code> 里是一张<strong>固定容量</strong>的任务表 <code>tasks</code>（<code>[32]coroutine&lt;i64&gt;</code>）：句柄是 24 字节的普通值， 数组元素就是<strong>可变位置</strong>，所以可以直接 <code>s.tasks[i].next()</code> / <code>.send()</code>。另有 <code>done</code>、<code>started</code> 两个标记数组、空闲槽位栈 <code>freelist</code> 与 <code>nfree</code>、用过的槽位数 <code>used</code> 和还活着的任务数 <code>live</code>。</p>
+<span class="k">var</span> left: <span class="t">i64</span> = tasks.<span class="f">runScripted</span>(<span class="k">ref</span> s, order)</code></pre>
+<p>三个类型各管一段：</p>
+<table><thead><tr><th>类型</th><th>装什么</th></tr></thead><tbody><tr><td><code>row</code></td><td>一行任务：句柄 <code>h</code>、两个标记、它当前注册在 epoll 里的 fd</td></tr><tr><td><code>loop</code></td><td>只有标量：epoll 实例、listener、活任务数、本轮就绪 fd 的小数组</td></tr><tr><td><code>tasks&lt;T&gt;</code></td><td><strong>任务表</strong>：包着 <code>vector&lt;row&gt;</code>，句柄是 24 字节的普通值，容器内部是 <code>mut slice</code> =&gt; 元素是可写位置</td></tr></tbody></table>
+<p>各类型的成员一览：</p>
+<table><thead><tr><th>成员</th><th>归属</th><th>作用</th></tr></thead><tbody><tr><td><code>rows</code></td><td><code>tasks&lt;T&gt;</code></td><td>表体：一个 <code>vector&lt;row&gt;</code></td></tr><tr><td><code>live</code></td><td><code>loop</code></td><td>还没跑完的任务数</td></tr><tr><td><code>ready</code> / <code>nready</code></td><td><code>loop</code></td><td>本轮收上来的就绪 fd 与其个数</td></tr><tr><td><code>started</code></td><td><code>row</code></td><td>这一行是否已经启动过（第一次只 <code>next</code>，不 <code>send</code>）</td></tr><tr><td><code>finish</code></td><td><code>tasks&lt;T&gt;</code></td><td>收尾一行：标 <code>done</code>、清掉登记、<code>live</code> 减一</td></tr></tbody></table>
+<p>任务表<strong>会长、没有容量上限</strong>，跑完的行由 <code>add</code> 就地改写复用（长跑服务器因此不会把表撑大）。表必须建在 <strong>驱动它</strong>的那个作用域里：存储是池的板块，生命周期跟着那个 place 走。库另外给的是裸容器 <code>newRows()</code>： 包装结构体不算容器 =&gt; 从函数里返回它会被"返回带引用的值"拒，因此组装在调用点写一行字面量。</p>
 <h2 id="挂起约定-最容易写错的一条">挂起约定（最容易写错的一条）</h2>
 <ul><li>协程 <code>yield</code> 一个<strong>请求</strong>（这里是它想等的编号），恢复后<strong>重试</strong>自己的操作。</li><li>驱动器 <code>send(v)</code> <strong>本身就会恢复</strong>协程 ⇒ 请求必须在恢复<strong>之前</strong>读出来：先 <code>value()</code> 看它挂起时 留下的请求，再 <code>send(请求)</code> 把批准结果送进去 —— 本次恢复读到的正是它。写成"恢复 + 回显"一气呵成 会<strong>错开一格</strong>（实测踩出来的）。</li><li>任务跑完<strong>不要再驱动</strong>，也<strong>不要再读</strong>：句柄过期，<code>extc_task_alive</code> 会<strong>大声 trap</strong> （<code>exit(70)</code> + 带源码位置的消息）。<code>step</code> 用 <code>done</code> 记住它；<strong><code>value()</code> 只在 <code>next()</code>/<code>step()</code> 返回 true 之后有效</strong> —— 想要"最后一个值"就得在最后一次成功推进时把它记下来，跑完再读会 trap （帧已经随任务回收了）。</li></ul>
 <h2 id="两个驱动">两个驱动</h2>
-<ul><li><code>step(s, i)</code> —— 推进一步（上面那套协议），返回它是否还活着。</li><li><code>runScripted(s, order)</code> —— <strong>脚本化的就绪顺序</strong>：按 <code>order</code> 里的下标依次推进，返回还剩几个活任务。 判据先用它，因为它是<strong>逐字节确定</strong>的：不靠时间、不靠 socket、不靠内核调度顺序。</li><li><code>add(s, h)</code> —— 把一个句柄放进任务表（满了返回 <code>false</code>）。</li></ul>
-<ul><li><code>init(s, listener)</code> —— 建 epoll 实例并记下 listener（<code>i64(-1)</code> = 只驱动任务、不 accept）。</li><li><code>pump(s, timeout_ms)</code> —— <strong>一轮</strong>事件循环：注册请求 ⇒ 等 ⇒ 推进就绪任务。listener 可读时它 <strong>accept 一个连接并把新 fd 返回给调用者</strong>（用哪种协程去接它由调用者决定），没有新连接返回 -1、 超时返回 -2。</li><li><strong>任务表是固定容量 + 空闲槽位复用</strong>：32 个槽位，任务跑完把槽位还回去，下一次 <code>add</code> 复用它。 一个 listener 循环 accept 上千个连接，只要<strong>同时活着</strong>的任务不超过容量就够用。</li><li><code>runEpoll(s, timeout_ms)</code> —— <strong>真事件源</strong>：<code>epoll_wait</code>（走 <code>std::sys::net</code> 的 <code>extern!("extc-runtime")</code>）。协议与 <code>runScripted</code> 同一条，只是"谁就绪"改由内核告诉我们：</li></ul>
+<ul><li><code>tasks.step(ref s, i)</code> —— 推进一步（上面那套协议），返回它是否还活着。</li><li><code>tasks.runScripted(ref s, order)</code> —— <strong>脚本化的就绪顺序</strong>：按 <code>order</code> 里的下标依次推进，返回还剩几个 活任务。判据先用它，因为它是<strong>逐字节确定</strong>的：不靠时间、不靠 socket、不靠内核调度顺序。</li><li><code>tasks.add(ref s, h)</code> —— 把一个句柄放进任务表（先复用跑完的行，没有再长一行）。</li><li><code>tasks.count()</code> —— 表里有多少行（含已跑完、等待复用的那些）。</li><li><code>sched::init(ref s, listener)</code> —— 建 epoll 实例并记下 listener（<code>i64(-1)</code> = 只驱动任务、不 accept）。</li><li><code>tasks.pump(ref s, timeout_ms)</code> —— <strong>一轮</strong>事件循环：注册请求 ⇒ 等 ⇒ <strong>把这一轮就绪的全部处理掉</strong>。 listener 可读时它<strong>accept 一个连接并把新 fd 返回给调用者</strong>（用哪种协程去接它由调用者决定）， 没有新连接返回 -1、超时返回 -2。两条实测来的性能约定：请求没变就不再 <code>epoll_add</code>（内核里那条登记 还在，重复注册只是白费一次系统调用）；就绪 fd 先收进小数组再一遍扫表（每个事件扫一遍全表是 O(N^2)）。 另外 listener 是 level-triggered：一轮只 accept 一个，<strong>遇到 listener 事件即停止排空</strong>， 否则排空循环会一次次拿到同一个 fd 而死转。</li><li><code>tasks.runEpoll(ref s, timeout_ms)</code> —— <strong>真事件源</strong>：<code>epoll_wait</code>（走 <code>std::sys::net</code> 的 <code>extern!("extc-runtime")</code>）。协议与 <code>runScripted</code> 同一条，只是"谁就绪"改由内核告诉我们：</li></ul>
 <ol><li>每个任务 push 到"要么在等真实事件、要么结束"为止； 2. 它 <code>yield</code> 的请求就是它想等的 fd，<strong>在产生的同一轮</strong>就注册进 epoll（晚一轮会空等超时）； 3. <code>epoll_wait</code> 报了就绪 fd 之后，用 <code>send(fd)</code> 恢复在等它的那个任务； 4. <strong>请求为负 = "别等，立刻再推我"</strong> —— 协程收尾时用它交回最后一个值，否则它会去等一个已经被 自己读空的 fd，永远不醒（这是实测踩出来的）。</li></ol>
 <p>读写用运行期的 <code>recv</code>/<code>send</code>，<strong>不是</strong> <code>read</code>/<code>write</code>：后两个名字已经被 <code>std::sys::io</code> 用另一套 签名占了，而两者会落在同一个编译单元里（<code>&lt;unistd.h&gt;</code> 一 include 就冲突）。</p>
 <h2 id="单线程循环里的铁律-别阻塞在读上">单线程循环里的铁律：<strong>别阻塞在读上</strong></h2>
-<p><code>pump</code> 只处理<strong>一个</strong>事件，所以循环长这样：</p>
+<p>循环长这样：</p>
 <pre class="lang-extc"><code><span class="k">while</span> 还有活干 {
-    <span class="k">var</span> fd: <span class="t">i64</span> = sched::<span class="f">pump</span>(<span class="k">ref</span> s, <span class="t">i64</span>(<span class="n">0</span>))     <span class="c">/* 0 超时 = 立刻回来 ⇒ 判据里快而确定 */</span>
-    <span class="k">if</span> fd &gt;= <span class="t">i64</span>(<span class="n">0</span>) { sched::<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">conn</span>(fd, buf)) }   <span class="c">/* 新连接 ⇒ 建一个任务 */</span>
+    <span class="k">var</span> fd: <span class="t">i64</span> = tasks.<span class="f">pump</span>(<span class="k">ref</span> s, <span class="t">i64</span>(<span class="n">0</span>))      <span class="c">/* 0 超时 = 立刻回来 => 判据里快而确定 */</span>
+    <span class="k">if</span> fd &gt;= <span class="t">i64</span>(<span class="n">0</span>) { tasks.<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">conn</span>(fd, buf)) }    <span class="c">/* 新连接 => 建一个任务 */</span>
     <span class="c">/* 收数据要用**非阻塞** fd：收到了就收，收不到就继续 pump，下一轮再试 */</span>
 }</code></pre>
 <p>这条是实测踩出来的：判据第一版在循环<strong>之后</strong>用一个阻塞 <code>read</code> 收齐所有回声 —— 只要有任何一个 回声还没到，进程就<strong>永远停在那里</strong>（&gt;60 秒被杀 ✗）。单线程里"等"只能靠 <code>pump</code>，不能靠阻塞调用。</p>
 <h2 id="判据">判据</h2>
 <p><code>tests/coro/coro_sched.extc</code> —— 两个任务（step 分别 10 和 100）按交替的就绪顺序推进，断言退出码 <strong>36</strong>：<code>left * 100</code> 那一项就是"两个任务都跑完了"这条断言。</p>
+<p><code>tests/coro/coro_table.extc</code> —— 逃逸规则精度的判据：<strong>泛型容器包着 <code>vector</code>，方法里往表里 push 句柄</strong>， 退出码 <strong>41</strong>。它钉住的是"往自己的容器里存一个句柄"这件事不再被误拒。</p>
+<p><code>tests/coro/coro_accept.extc</code> —— 一个 listener 接 40 条连接：任务跑完把行还回来复用，退出码 <strong>52</strong>。</p>
 <p><code>tests/coro/coro_epoll.extc</code> —— <strong>8 条 AF_UNIX 连接、单线程、一个 epoll 循环</strong>：每条连接一个协程， 先写请求再跑循环，最后收回声累加，退出码 <strong>36</strong>（= 1+2+…+8），并要求 <strong>ASan 干净</strong>。数据在 socketpair 的内核缓冲里 ⇒ 立刻可读 ⇒ 判据不靠 sleep、不靠时间。</p>
 <h2 id="一个能连的-echo-server">一个能连的 echo server</h2>
 <p><code>tests/coro/echo_server.extc</code> 是一个<strong>手动连</strong>的 echo server（刻意不注册进任何套件：它会一直服务到 被中断）：</p>
 <p>build/extc -w --no-line-map -o /tmp/es.c tests/coro/echo_server.extc gcc -std=c11 -fwrapv -O2 -o /tmp/es /tmp/es.c &amp;&amp; /tmp/es printf 'hello\n' | nc 127.0.0.1 7654</p>
-<p>固定端口 7654（<code>SO_REUSEADDR</code> 已开）。每条连接一个协程，流式回显，对端半关就地收尾并 <code>close</code> （用的是 <code>std::sys::io</code> 的 <code>close</code>，不需要额外原语）。判据 <code>tests/coro/coro_echo.extc</code> 用同一个形状： 4 条 TCP 连接、每连接两批数据（3 + 2 字节）、半关写端、收齐回声、任务全部收尾，退出码 50，并要求 ASan 干净与常驻有界。</p>
+<p>每连接的读缓冲是 16 KB（<code>new u8[16384]</code>）：压测要求两侧同一个缓冲大小，extC 侧最初是 1 KB 而参照 实现是 64 KB，于是流水线形态读出一个 5 倍的假差距（统一之后那几格反超）。</p>
+<p>固定端口 7654（<code>SO_REUSEADDR</code> 已开），accept 出来的连接会设上 <code>TCP_NODELAY</code>（<code>extc_sock_nodelay</code>）： 少了它，小批量、多轮写会撞上 Nagle 与 delayed ACK 凑出来的 ~40ms 停滞（实测：流水线形态、1024 字节回显， 从 363 req/s 变成 73,736 req/s）。每条连接一个协程，流式回显，对端半关就地收尾并 <code>close</code> （用的是 <code>std::sys::io</code> 的 <code>close</code>，不需要额外原语）。判据 <code>tests/coro/coro_echo.extc</code> 用同一个形状： 4 条 TCP 连接、每连接两批数据（3 + 2 字节）、半关写端、收齐回声、任务全部收尾，退出码 50，并要求 ASan 干净与常驻有界。</p>
 <p><strong>一条仍未解决的协议限制</strong>：v1 的请求只能表达"等这个 fd <strong>可读</strong>"——正数表示等该 fd 可读，负数表示 立刻再推。需要"等可写"的场景（对端读得慢、发送缓冲满）目前没有表达方式，因此连接协程的写法是 <strong>读完就地写回</strong>（小批量下 <code>send</code> 立刻成功）。请求类型（以及 <code>coroutine&lt;A,B&gt;</code>）是这条的正式出路。</p>
 <div class="pn"><a href="27-prelude.html">← 标准库参考：`prelude`</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;

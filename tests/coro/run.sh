@@ -201,7 +201,7 @@ if "$EXTC" -w --no-line-map -o "$ac.c" tests/coro/coro_accept.extc >/dev/null 2>
         if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$ac.asan" "$ac.c" 2>/dev/null; then
             aout=$("$ac.asan" 2>&1); arc=$?
             if [ "$arc" = 52 ] && [ -z "$aout" ]; then
-                echo "  ok   coro_accept         ->  listener accept 40 条（容量 32 ⇒ 靠槽位复用），常驻 ${peak} KB，ASan 干净"
+                echo "  ok   coro_accept         ->  listener accept 40 条（跑完的行就地复用），常驻 ${peak} KB，ASan 干净"
                 pass=$((pass+1))
             else
                 echo "  FAIL coro_accept         ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
