@@ -405,6 +405,15 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 | `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） | ❌ 被解析器拒绝（"must be called immediately"） | `EX_DYN` 表达式 + 检查器定型 `TY_DYN` + codegen 发 `extc_dyn_put` |
 | 具体值传 `dyn` 形参 | ✅ 被拒，信息清楚：``argument expects `Tag`, found `box` `` | 可选：诊断里提示写 `dyn Tag(x)` |
 
+**两个实现细节（2026-09-26 勘察，动手前必读）**
+- **`ttEquals` 的语义**（`src/types.c:743`）：注释写明"除引用、类型参数、泛型实例外，**都靠 interning**"。
+  `dyn Trait` 类型没有声明点（解析器随写随造）⇒ 它属于"按结构比较"那一类 ⇒ 必须在 `ttEquals` 里加一条
+  **按名字比较**的分支（`TY_DYN`），否则同一个 trait 的两个 `dyn` 类型会因指针不同而不相等，
+  形参/字段赋值全会失败；
+- **表达式检查入口**是 `checkExprInner(Checker *c, Expr *e)`（`src/check_expr.c:383`）；
+  dyn 的新分支加在 `case EX_METHOD:` 之前，载荷用 `checkExprInner` 递归检查，
+  "载荷实现了该 trait"那段**抽成一个助手**，让 `EX_DYN` 与 `EX_METHOD`（dyn 派发）共用（避免写两份规则）。
+
 **下一轮要一起做的三处（它们互相耦合，拆开会让构建半坏）**：
 1. `EX_DYN`（`dyn Trait(x)` 作值）—— 解析器构造 + 检查器定型 `TY_DYN`（"载荷实现了该 trait"的检查已在
    `src/check_expr.c` 的 dyn 块里可复用）+ codegen 发 `extc_dyn_put` 表达式；
