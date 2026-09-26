@@ -503,6 +503,117 @@ static bool stmtUsesCname(Stmt *s, const char *cname) {
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, false); }
 static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, true); }
 
+/* ---- how a "reaches X through its calls" property is closed over the call graph ----
+ *
+ * The rule is monotone and the lattice is finite, so iterating until a round changes nothing
+ * yields the **least** fixed point -- which is the answer wanted, not merely a consistent one: a
+ * larger fixed point would mark functions that cannot have the property and give back the
+ * optimisations these passes exist for. Recursion and mutual recursion need no special case: a
+ * cycle stays false until one of its members is reached from a body that really does have it, and
+ * if none of them ever is, none of them can have it at all.
+ *
+ * This rule used to be written twice in this file (the `needsHome` closure, and "Same shape as the
+ * `needsHome` closure above" for `makesPool`), and a third time as the lazy walk behind
+ * `funcAllocates`. It lives here now, with the per-node criterion in `bodyReaches`, so changing
+ * either is a change in one place. What legitimately differs between callers is only **which**
+ * functions a round visits -- `makesPool` has an extra round over the generic instances -- and
+ * that stays at the call site, where its reason is visible.
+ *
+ * The lazy path (`funcAllocates`) keeps its own recursion and memo: it has to answer *before*
+ * these closures run, and it treats a function already on the stack as allocating, which is the
+ * conservative direction for a question that is asked mid-check. Same criterion, same field; the
+ * evaluation strategy is the only difference, and that difference is deliberate. */
+typedef enum {
+    REACH_HOME,     /* `FuncDef.needsHome`: the body reaches a callee that needs a home arena */
+    REACH_POOL,     /* `FuncDef.makesPool`: the body may create a pool                       */
+    REACH_ALLOC,    /* `FuncDef.allocState`: the body may allocate (also asked lazily)        */
+    REACH_USES_HOME /* `FuncDef.usesHome`: the body really reads the home arena it is given  */
+} ReachKind;
+
+/* What a round needs: the module being closed, and the type table (`makesPool` resolves protocol
+ * methods on generic instances through it). The closures never needed a `Checker *` -- their
+ * criterion is `e->func`, which the checker filled in while the bodies were checked. */
+typedef struct { Module *m; TypeTable *tt; } CloseCtx;
+
+static bool getReach(const FuncDef *f, ReachKind k) {
+    switch (k) {
+    case REACH_HOME:  return f->needsHome;
+    case REACH_POOL:  return f->makesPool;
+    case REACH_ALLOC: return f->allocState == 1;
+    case REACH_USES_HOME: return f->usesHome;
+    }
+    return false;
+}
+
+static void setReach(FuncDef *f, ReachKind k, bool v) {
+    switch (k) {
+    case REACH_HOME:  f->needsHome = v; break;
+    case REACH_POOL:  f->makesPool = v; break;
+    case REACH_ALLOC: f->allocState = v ? 1 : 2; break;
+    case REACH_USES_HOME: f->usesHome = v; break;
+    }
+}
+
+/* Does this body **directly** reach a callee of that kind? The transitive part is `closeReach`. */
+static bool bodyReaches(FuncDef *f, ReachKind k) {
+    switch (k) {
+    case REACH_HOME:  return callsNeedsHome(f->body);
+    case REACH_POOL:  return stmtMakesPool(f->body, true);
+    case REACH_ALLOC: return stmtHasNew(f->body);   /* `funcAllocates` adds the callee half */
+    case REACH_USES_HOME:
+        /* Narrower than `needsHome` on purpose: `needsHome` is the escape question and is
+         * deliberately wide (a `new` whose value is copied into an out-parameter marks the
+         * function even though nothing escapes), while the hidden parameter is only needed when
+         * the body really reads it. The placement pass decides that per site, so a site sitting
+         * in the home arena counts, as does handing this function's home on to a callee. Measured:
+         * `examples/out-param.extc` used to carry a parameter nobody read, and gcc said so. */
+        if (callsUsesHome(f->body)) return true;
+        for (size_t i = 0; i < f->arenaSites.len; i++)
+            if ((*(Expr **)vecAt(&f->arenaSites, i))->arenaLevel == ARENA_HOME) return true;
+        return false;
+    }
+    return false;
+}
+
+/* A round raises the flag on the functions its caller considers; the driver repeats rounds until
+ * one changes nothing. */
+static void closeReach(CloseCtx *cx, ReachKind k,
+                       void (*round)(CloseCtx *cx, ReachKind k, bool *changed)) {
+    for (bool changed = true; changed; ) {
+        changed = false;
+        round(cx, k, &changed);
+    }
+}
+
+/* The two rounds most closures share: the module's functions, then the methods of its structs.
+ * `skipExtern` is for the properties an extern cannot have -- it has no body to walk. */
+static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipExtern) {
+    Module *m = cx->m;
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (getReach(f, k) || !f->body || (skipExtern && f->isExtern)) continue;
+        if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
+    }
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+            if (getReach(f, k) || !f->body) continue;
+            if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
+        }
+    }
+}
+
+static void roundNeedsHome(CloseCtx *cx, ReachKind k, bool *changed) {
+    roundOverModule(cx, k, changed, true);      /* an extern has no body to walk */
+}
+
+static void roundUsesHome(CloseCtx *cx, ReachKind k, bool *changed) {
+    roundOverModule(cx, k, changed, true);
+}
+
+static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed);   /* defined below */
+
 /* ---- Does this code create a pool? (`FuncDef.makesPool`; see ast.h for why) ----
  *
  * The runtime primitive that creates one is `extc_pool_new`, and it is the *only* one:
@@ -4159,6 +4270,60 @@ static void resolveDeferredCall(Checker *c, CallCheck *cc, Vec *params, Vec *tar
  *     level does not change would otherwise keep the value the provisional pass left
  *     behind, and the two fields would contradict each other.
  */
+/* One round of the `makesPool` closure. A generic struct's *template* round is skipped on
+ * purpose: a template and its instances share the same `FuncDef`, and while the template is being
+ * checked `k.hash()` cannot be resolved, so marking it there would freeze a conservative `true`
+ * that the per-instance round could then never refine. Externs have no body to walk --
+ * `stmtMakesPool` finds the callee at the call site, and `extc_pool_new` is exactly that case. */
+static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
+    Module *m = cx->m;
+    TypeTable *tt = cx->tt;
+
+    {
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            if (getReach(f, k)) continue;
+            /* An extern has no body to walk; `stmtMakesPool` finds the callee at the call
+             * site (`extc_pool_new` itself is declared extern and is exactly that case). */
+            if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
+        }
+        /* **泛型 struct 的模板轮要跳过**：模板与实例**共用同一批 FuncDef**
+         * （实测 `template find` 与 `hashMap$hashMap.find` 是同一个指针），而模板轮的
+         * `k.hash()` 解析不出来 ⇒ 只能保守标真，一旦标上，实例轮 `if (getReach(f, k)) continue`
+         * 就永远跳过它，精确解析**没机会生效**。泛型结构体的方法体本来就只在实例上跑，
+         * 所以交给下面那一轮按实例解析：解析不出来时那一轮仍旧保守（`resolveOnInstance`
+         * 返回 NULL ⇒ 视为会建池），多个实例之间是**取或**（任何一个实例要建池 ⇒ 整条链
+         * 保守标真），方向仍然是安全的。非泛型结构体没有这个问题，照旧。 */
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            if (sd->typeParams.len > 0) continue;
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (getReach(f, k)) continue;
+                if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
+            }
+        }
+        /* 实例那一轮：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
+         * 而在类型表的 `tt->instances` 上。这一轮**按实例解析**协议方法（`#57`），
+         * 代入方式与 `runMethodCheck` 完全一致。 */
+        for (size_t i = 0; i < tt->instances.len; i++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, i);
+            StructDef *sd = inst ? inst->sdef : NULL;
+            if (!sd) continue;
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (getReach(f, k)) continue;
+                instResTT = tt; instResParams = &sd->typeParams; instResTargs = &inst->targs;
+                setPoolCalleeResolver(resolveOnInstance);
+                bool mp = bodyReaches(f, k);
+                setPoolCalleeResolver(NULL);
+                instResTT = NULL;
+                if (mp) { setReach(f, k, true); *changed = true; }
+            }
+        }
+    }
+}
+
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     Checker c;    memset(&c, 0, sizeof c);
     vecInit(&c.funcInsts, arena, sizeof(void *));   /* free function instances */
@@ -4714,27 +4879,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
-    /* ---------------------------------------- transitive closure of `needsHome`
-     * Calling a function that needs a home arena (the arena the caller passes) means the
-     * caller must have something to pass (`__extc_home`, or `&__extc_a[current block]`),
-     * so the caller needs a home arena of its own.
-     * Iterate to a fixed point; there are few functions, so extra rounds are cheap. */
-    for (bool changed = true; changed; ) {
-        changed = false;
-        for (size_t i = 0; i < m->funcs.len; i++) {
-            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-            if (f->needsHome || f->isExtern || !f->body) continue;   /* an extern has no body */
-            if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
-        }
-        for (size_t i = 0; i < m->structs.len; i++) {
-            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
-            for (size_t j = 0; j < sd->methods.len; j++) {
-                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-                if (f->needsHome) continue;
-                if (callsNeedsHome(f->body)) { f->needsHome = true; changed = true; }
-            }
-        }
-    }
+    /* ------------------------------- transitive closure of `needsHome`
+     * Calling a function that needs a home arena (the arena the caller passes) means the caller
+     * must have something to pass (`__extc_home`, or `&__extc_a[current block]`), so the caller
+     * needs a home arena of its own. The rule and the iteration are `closeReach`; what is spelled
+     * here is only which functions a round visits. */
+    CloseCtx closeCtx = { m, tt };
+    closeReach(&closeCtx, REACH_HOME, roundNeedsHome);
 
     /* Single authority for arena levels: the checker hands codegen every decision it
      * needs, and codegen validates nothing on its own.
@@ -4973,36 +5124,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (getenv("EXTC_DUMP_LVL"))
             fprintf(stderr, "[lvl] decided: %d sites in the home arena, %d kept at block level\n", fixed, keptBlock);
 
-    /* ---------------------------------------- the precise question a signature needs
-     * `needsHome` answers an *escape* question and is deliberately wide: a `new` whose value is
-     * copied into an out-parameter marks the function even though nothing escapes. The hidden
-     * parameter is only needed when the body really reads it, and the placement pass above has
-     * just decided that per site: a site at `ARENA_HOME`, or a call that hands this function's
-     * home on to a callee that takes one. Signatures and call sites both use this flag, so a
-     * function that only ever allocates inside its own blocks stops carrying a parameter nobody
-     * reads - `examples/out-param.extc` carried one, and gcc reported it as unused. */
-    for (bool changed = true; changed; ) {
-        changed = false;
-        for (size_t i = 0; i < m->funcs.len; i++) {
-            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-            if (f->usesHome || f->isExtern || !f->body) continue;
-            bool u = callsUsesHome(f->body);
-            for (size_t j = 0; !u && j < f->arenaSites.len; j++)
-                if ((*(Expr **)vecAt(&f->arenaSites, j))->arenaLevel == ARENA_HOME) u = true;
-            if (u) { f->usesHome = true; changed = true; }
-        }
-        for (size_t i = 0; i < m->structs.len; i++) {
-            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
-            for (size_t j = 0; j < sd->methods.len; j++) {
-                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-                if (f->usesHome || !f->body) continue;
-                bool u = callsUsesHome(f->body);
-                for (size_t k = 0; !u && k < f->arenaSites.len; k++)
-                    if ((*(Expr **)vecAt(&f->arenaSites, k))->arenaLevel == ARENA_HOME) u = true;
-                if (u) { f->usesHome = true; changed = true; }
-            }
-        }
-    }
+    /* ------------------------- the precise question a signature needs
+     * `usesHome` is the narrow counterpart of `needsHome`: the per-node rule (a site that really
+     * sits in the home arena, or handing this function's home on to a callee) is in `bodyReaches`
+     * under `REACH_USES_HOME`, and the closure is the same one every other property uses. */
+    closeReach(&closeCtx, REACH_USES_HOME, roundUsesHome);
+
 
     /* Settle every call site that hands an arena down, now that `usesHome` is final.
      *
@@ -5160,51 +5287,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * Recursion and mutual recursion need no special case here, unlike the lazy
      * `funcAllocates` walk: a cycle simply stays false until one of its members is reached
      * from a body that really does call `extc_pool_new`, and if none of them ever is, then
-     * none of them can create a pool at all. */
-    for (bool changed = true; changed; ) {
-        changed = false;
-        for (size_t i = 0; i < m->funcs.len; i++) {
-            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-            if (f->makesPool) continue;
-            /* An extern has no body to walk; `stmtMakesPool` finds the callee at the call
-             * site (`extc_pool_new` itself is declared extern and is exactly that case). */
-            if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
-        }
-        /* **泛型 struct 的模板轮要跳过**：模板与实例**共用同一批 FuncDef**
-         * （实测 `template find` 与 `hashMap$hashMap.find` 是同一个指针），而模板轮的
-         * `k.hash()` 解析不出来 ⇒ 只能保守标真，一旦标上，实例轮 `if (f->makesPool) continue`
-         * 就永远跳过它，精确解析**没机会生效**。泛型结构体的方法体本来就只在实例上跑，
-         * 所以交给下面那一轮按实例解析：解析不出来时那一轮仍旧保守（`resolveOnInstance`
-         * 返回 NULL ⇒ 视为会建池），多个实例之间是**取或**（任何一个实例要建池 ⇒ 整条链
-         * 保守标真），方向仍然是安全的。非泛型结构体没有这个问题，照旧。 */
-        for (size_t i = 0; i < m->structs.len; i++) {
-            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
-            if (sd->typeParams.len > 0) continue;
-            for (size_t j = 0; j < sd->methods.len; j++) {
-                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-                if (f->makesPool) continue;
-                if (stmtMakesPool(f->body, true)) { f->makesPool = true; changed = true; }
-            }
-        }
-        /* 实例那一轮：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
-         * 而在类型表的 `tt->instances` 上。这一轮**按实例解析**协议方法（`#57`），
-         * 代入方式与 `runMethodCheck` 完全一致。 */
-        for (size_t i = 0; i < tt->instances.len; i++) {
-            Type *inst = *(Type **)vecAt(&tt->instances, i);
-            StructDef *sd = inst ? inst->sdef : NULL;
-            if (!sd) continue;
-            for (size_t j = 0; j < sd->methods.len; j++) {
-                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-                if (f->makesPool) continue;
-                instResTT = tt; instResParams = &sd->typeParams; instResTargs = &inst->targs;
-                setPoolCalleeResolver(resolveOnInstance);
-                bool mp = stmtMakesPool(f->body, true);
-                setPoolCalleeResolver(NULL);
-                instResTT = NULL;
-                if (mp) { f->makesPool = true; changed = true; }
-            }
-        }
-    }
+     * none of them can create a pool at all.
+     *
+     * Three rounds: the plain functions, the methods of the non-generic structs, and -- because a
+     * generic method is checked once per instance, with the protocol resolved for that instance --
+     * the instances themselves. The rule and the iteration are `closeReach`; only the list of
+     * functions a round visits is spelled here. */
+    closeReach(&closeCtx, REACH_POOL, roundMakesPool);
     /* 顺手把"这个结构体的某个方法建池"记到结构体上（见 StructDef.makesPoolAny）。 */
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -5396,7 +5485,11 @@ static bool funcAllocates(Checker *c, FuncDef *f) {
     if (f->allocState == 2) return false;
     if (f->allocState == 3) return true;     /* on the cycle being computed => conservative */
     f->allocState = 3;
-    bool r = stmtHasNew(f->body) || stmtCallsAllocator(c, f->body);
+    /* The same per-node criterion the closures use (`bodyReaches`), plus the callee half that only
+     * this lazy path can afford to ask: it runs while a body is being checked, before the closures
+     * exist, and it counts a function already on the stack as allocating, which is the
+     * conservative direction for a question asked mid-check. */
+    bool r = bodyReaches(f, REACH_ALLOC) || stmtCallsAllocator(c, f->body);
     f->allocState = r ? 1 : 2;
     return r;
 }

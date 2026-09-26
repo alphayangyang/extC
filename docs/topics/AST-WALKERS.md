@@ -93,6 +93,26 @@ bool walkStmt(Checker *c, Stmt *s, ExprVisit fn, void *ctx);
    **零差异**；有差异就必须解释清楚。
 4. 第 4 步之后额外跑 `tests/arena-soundness/`（反例库）与 `tests/arena-promoted/`。
 
+## 5.4 闭包收口（2026-09-26 完成）：四处 → 一处权威
+
+目标点名的三处"同一个问题"（`needsHome` 闭包 / "Same shape as the closure above" 的 `makesPool` /
+"the same question" 的 `funcAllocates`）**外加第四处同形的 `usesHome` 闭包**，现在共用：
+
+| 权威 | 内容 |
+|---|---|
+| `closeReach` | **唯一的**"单调属性沿调用图取最小不动点"驱动（文件里此前有 4 个 `for (bool changed…)`，现在只剩这 1 个） |
+| `getReach` / `setReach` | 唯一的"属性 ↔ 字段"映射（`ReachKind` = `REACH_HOME` / `REACH_POOL` / `REACH_ALLOC` / `REACH_USES_HOME`） |
+| `bodyReaches` | **唯一的每节点判据**（"这个函数体直接够到该类被调者吗"）——每个属性各自的规则只写在这里 |
+| `roundOverModule` | 唯一"遍历模块里的函数与结构体方法"的轮骨架 |
+
+**故意保留的差异**（写进注释，不是遗漏）：`funcAllocates` 仍是**惰性 + 记忆化**的递归，且"正在计算中"
+的函数算作会分配（保守方向）——因为它必须在闭包跑之前回答，且被问在检查过程中 ✓
+
+**过程中我引入并当场修掉的一个 bug（如实记录）**：机械搬运 `makesPool` 循环体时漏掉了循环自己的
+`changed = false;`，而此刻 `changed` 已是 `bool *` ⇒ 那行把**指针赋成 NULL**，下一句 `*changed = true`
+就往地址 0 写 ⇒ **10 个文件段错误**。ASan 一键指到 `roundMakesPool … WRITE to 0x0` ⇒ 当轮修好，
+重扫 0 崩溃、A/B 两边都 0 崩溃 ✓（这正是"每步都实测"的价值）
+
 ## 5.5 已发现的具体缺陷：`EX_DYN` 没有被任何手写遍历器处理（2026-09-26 审计）
 
 **机制**（这是本文档最重要的发现）：这些遍历器是**手写 `switch` + `default:`** ⇒
