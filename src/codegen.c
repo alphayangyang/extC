@@ -2877,6 +2877,12 @@ static void collectOwCallsStmt(Stmt *s, Vec *out);
 static void collectOwCallsExpr(Expr *e, Vec *out) {
     if (!e) return;
     switch (e->kind) {
+/* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every
+     * walker has to look inside it -- the walkers end in `default:`, which is why `-Wswitch`
+     * never pointed at the omission. */
+    case EX_DYN:
+        collectOwCallsExpr(e->u.dynv.payload, out);
+        return;
     case EX_CALL:
         if (e->func && e->func->owSites > 0 && !e->func->owLocal)
             *(Expr **)vecPush(out) = e;

@@ -2481,6 +2481,10 @@ static bool exprMayPrint(Checker *c, Expr *e) {
         if (strcmp(n, "flush") == 0) return false;      /* flushing is not printing */
     }
     switch (e->kind) {
+/* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every
+     * walker has to look inside it -- the walkers end in `default:`, which is why `-Wswitch`
+     * never pointed at the omission. */
+    case EX_DYN: return exprMayPrint(c, e->u.dynv.payload);
     case EX_CALL:
         if (e->func && funcMayPrint(c, e->func)) return true;
         for (size_t i = 0; i < e->u.call.args.len; i++)
@@ -2650,6 +2654,10 @@ static bool callIsEffectful(Checker *c, FuncDef *f) {
 static bool exprHasAnyCall(Expr *e) {
     if (!e) return false;
     switch (e->kind) {
+    /* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every walker
+     * has to look inside it -- the walkers end in `default:`, which is why `-Wswitch` never
+     * pointed at the omission when the kind was added. */
+    case EX_DYN: return exprHasAnyCall(e->u.dynv.payload);
     case EX_CALL: case EX_METHOD: case EX_ASSOC: case EX_GENCALL: return true;
     case EX_BIN:   return exprHasAnyCall(e->u.bin.left) || exprHasAnyCall(e->u.bin.right);
     case EX_UN:    return exprHasAnyCall(e->u.un.operand);
@@ -2684,6 +2692,10 @@ static bool exprHasAnyCall(Expr *e) {
 static bool exprHasCall(Checker *c, Expr *e) {
     if (!e) return false;
     switch (e->kind) {
+    /* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every walker
+     * has to look inside it -- the walkers end in `default:`, which is why `-Wswitch` never
+     * pointed at the omission when the kind was added. */
+    case EX_DYN: return exprHasCall(c, e->u.dynv.payload);
     case EX_CALL: case EX_METHOD: case EX_ASSOC:
         if (callIsEffectful(c, e->func)) return true;
         return false;

@@ -177,6 +177,9 @@ int valDepthStructural(Checker *c, Expr *e) {
         return d;
     case EX_NEW: case EX_GENCALL:
         return e->arenaLevel == ARENA_HOME ? 0 : (e->arenaLevel > 0 ? e->arenaLevel : 0);
+    /* The payload is **copied** into the pool, so any reference it carries is carried by this
+     * value too -- take the payload's depth. */
+    case EX_DYN: return valDepthStructural(c, e->u.dynv.payload);
     default: return 0;
     }
 }
@@ -323,6 +326,11 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_SIGN:
         /* `p!` only drops nullability; it still refers to the same storage. */
         d = exprRefDepth(c, e->u.sign.operand);
+        break;
+    case EX_DYN:
+        /* Same reasoning as `valDepthStructural`: the payload is copied into the pool, so the
+         * references it carries are the references this value carries. */
+        d = exprRefDepth(c, e->u.dynv.payload);
         break;
     case EX_NEW:
     case EX_GENCALL:
@@ -2311,6 +2319,8 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     seen[hops] = e;
 
     switch (e->kind) {
+    case EX_DYN:
+        return exprRefDepthPure(c, e->u.dynv.payload, hops + 1, seen);   /* payload is copied into the pool */
     case EX_NEW:
     case EX_GENCALL:
         /* The block the site was born in. `lexicalLevel` is set the first time the node

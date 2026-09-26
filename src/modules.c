@@ -1111,6 +1111,10 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
             rwExpr(L, self, *(Expr **)vecAt(&e->u.gencall.args, i));
         break;
+    case EX_DYN:
+        /* A qualified name inside the payload has to be rewritten like any other. */
+        rwExpr(L, self, e->u.dynv.payload);
+        break;
     case EX_ENUMVAL:
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
             rwExpr(L, self, *(Expr **)vecAt(&e->u.enumval.args, i));

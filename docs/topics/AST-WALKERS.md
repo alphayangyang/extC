@@ -98,7 +98,20 @@ bool walkStmt(Checker *c, Stmt *s, ExprVisit fn, void *ctx);
 **已写的探针**：`tests/dyn/dyn_payload_param.extc`（钉住第一行：`p` 只在载荷里被用 ⇒
 修好后必须**零告警**且输出 `p=7`）。另外两条（限定名重写、effects 汇总）留作迁移时的判据。
 
-**修法**：正好是本文档 §2 的通用访问器 —— 它一次性把 8 个遍历器的 `EX_DYN`（以及未来任何新种类）
+**修法（2026-09-26 已落地一半）**
+- **止血**：**16 处** `case` 补齐（10 处由 `EX_GENCALL` 路标手查、另 6 处由下面那个机械判据查出，
+  含 `markNamesInExpr` 连 `EX_GENCALL` 都漏了）。每处都走 `u.dynv.payload`，并留了注释说明为什么；
+- **机械判据**：[`tools/check_walkers.py`](../../tools/check_walkers.py) —— 认出"会递归的 kind switch"
+  （结构识别：体内再次调用所在函数），要求它覆盖该枚举的**每一种**带子节点的取值；
+  **已接进 `check.sh`** ⇒ 下次再加 AST 种类，漏掉会**开机报错**而不是运行时悬垂；
+- **判据**：`tests/dyn/dyn_payload_param.extc`（只出现在载荷里的参数曾报"未使用"）已注册进
+  `tests/dyn/run.sh`（`dyn_payload_walks`：零告警 + `p=7`）；
+- **仍开着、已记账**（`check_walkers.py` 的 `ALLOW` 会打印出来，不是静默）：4 个"深度"遍历器
+  （`valDepthStructural` · `exprRefDepth` · `exprRefDepthPure` · `dfExprDepth`）在 `default:` 里返回 0，
+  而邻居都递归 ⇒ 对 `EX_SLICE`（视图确实带引用）/`EX_TRY`/`EX_CONV` **低估深度**——
+  **低估是不安全的方向** ⇒ 下一项要查清并修掉。
+
+**根治**（仍未做）：本文档 §2 的通用访问器 —— 它一次性把 8 个遍历器的 `EX_DYN`（以及未来任何新种类）
 补齐；§4.1 的机械判据则保证**下次**新增 AST 种类时立刻报错，而不是靠人去数 8 个 switch。
 
 ## 6. 与 H2 的关系

@@ -144,6 +144,10 @@ static int factDepthOf(const Facts *f, const char *cname) {
 static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     if (!e || hops > 32) return 0;
     switch (e->kind) {
+/* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every
+     * walker has to look inside it -- the walkers end in `default:`, which is why `-Wswitch`
+     * never pointed at the omission. */
+    case EX_DYN: return dfExprDepth(c, f, e->u.dynv.payload, hops + 1);
     case EX_IDENT: {
         Sym *sy = identBindOf(e);
         if (!sy) return 0;

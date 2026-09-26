@@ -367,6 +367,9 @@ static bool exprHasNew(Expr *e) {
      * shape while the acceptance script only greps for "out of arena memory", so the
      * case was a no-op until the script was tightened as well. */
     case EX_GENCALL: return true;
+    /* `dyn Trait(x)`: the handle lives in the pool, but the payload is built from an
+     * expression that may hold a `new`, so the walk has to look inside. */
+    case EX_DYN: return exprHasNew(e->u.dynv.payload);
     case EX_BIN: return exprHasNew(e->u.bin.left) || exprHasNew(e->u.bin.right);
     case EX_UN:  return exprHasNew(e->u.un.operand);
     case EX_REF: return exprHasNew(e->u.ref.operand);
@@ -567,6 +570,14 @@ static bool exprCallsNeedsHome(Expr *e, bool precise) {
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
             if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.gencall.args, i), precise)) return true;
         return false;
+    /* `EX_DYN` was missing from every hand-written walker when the kind was introduced: the
+     * payload is a child expression (`ast.h`: `dynv.payload`), so a call inside it was
+     * invisible here, in `exprUsesCname`, in `exprMakesPool`, in `exprCallsAllocator`, in
+     * `exprHasNew`, in `collectEffectsExpr`, in `obligExpr`, in `exprRefDepth`,
+     * `valDepthStructural` and the loader's `rwExpr`. These walkers end in `default:`, so
+     * `-Wswitch` cannot warn about the omission -- only reading them can. */
+    case EX_DYN:
+        return exprCallsNeedsHome(e->u.dynv.payload, precise);
     default: return false;
     }
 }
@@ -645,6 +656,8 @@ static bool exprUsesCname(Expr *e, const char *cname) {
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
             if (exprUsesCname(*(Expr **)vecAt(&e->u.gencall.args, i), cname)) return true;
         return false;
+    /* A parameter used only inside a `dyn` payload used to be reported as never used. */
+    case EX_DYN: return exprUsesCname(e->u.dynv.payload, cname);
     default: return false;
     }
 }
@@ -831,6 +844,8 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
             if (exprMakesPool(*(Expr **)vecAt(&e->u.gencall.args, i), descendBlocks)) return true;
         return false;
+    /* The payload may build a pool of its own, and then the enclosing call needs a zone. */
+    case EX_DYN: return exprMakesPool(e->u.dynv.payload, descendBlocks);
     default: return false;
     }
 }
@@ -1939,6 +1954,14 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
     if (!e) return false;
     bool grew = false;
     switch (e->kind) {
+/* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every
+     * walker has to look inside it -- the walkers end in `default:`, which is why `-Wswitch`
+     * never pointed at the omission. */
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.gencall.args, i));
+        return grew;
+    case EX_DYN: return markNamesInExpr(c, e->u.dynv.payload);
     case EX_IDENT: return addEscapee(c, e->u.ident.name);
     case EX_BIN:   grew |= markNamesInExpr(c, e->u.bin.left);
                    grew |= markNamesInExpr(c, e->u.bin.right); return grew;
@@ -2451,6 +2474,9 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     case EX_GENCALL:
         for (size_t k = 0; k < e->u.gencall.args.len; k++)
             collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.gencall.args, k));
+        return;
+    case EX_DYN:
+        collectEffectsExpr(c, f, e->u.dynv.payload);   /* a call in the payload is a call */
         return;
     default: return;
     }
@@ -3376,6 +3402,9 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
     case EX_GENCALL:
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
             obligExpr(c, *(Expr **)vecAt(&e->u.gencall.args, i), obs, true);
+        return;
+    case EX_DYN:
+        obligExpr(c, e->u.dynv.payload, obs, true);
         return;
     case EX_ENUMVAL:
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
@@ -5619,6 +5648,8 @@ static bool exprCallsAllocator(Checker *c, Expr *e) {
     /* `alloc<T>(n)` **is** an allocation, the same as `new` - the loop above only caught
      * the call shapes, so a body whose only allocation was `alloc` answered "no". */
     case EX_GENCALL:  return true;
+    /* The handle itself is pool-backed, but building the payload may reach an allocator. */
+    case EX_DYN:      return exprCallsAllocator(c, e->u.dynv.payload);
     case EX_ARRAYLIT:
         for (size_t k = 0; k < e->u.arraylit.elems.len; k++)
             if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.arraylit.elems, k))) return true;

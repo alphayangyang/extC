@@ -49,6 +49,15 @@ else
 fi
 rm -rf "$d"
 
+# `EX_DYN` 的子表达式：**每个手写遍历器都要看得见载荷**（曾漏掉 ⇒ 参数被误报未使用）
+warn=$("$EXTC" tests/dyn/dyn_payload_param.extc -o "$tmp/pw.c" 2>&1 | head -5)
+pout=$("$EXTC" -w --run tests/dyn/dyn_payload_param.extc 2>&1)
+if [ -z "$warn" ] && [ "$pout" = "p=7" ]; then
+    ok dyn_payload_walks "只出现在 dyn 载荷里的参数不再被误报（零告警，$pout）"
+else
+    bad dyn_payload_walks "期望零告警且 p=7；警告=[$warn] 输出=[$pout]"
+fi
+
 # 路线 C 的**边界**：方法改接收者时，立即形式改的是拷贝（与存储值一致），原变量不变
 out=$("$EXTC" -w --run tests/dyn/dyn_imm_mutate.extc 2>&1)
 want=$(printf 'imm: ret=11 b=1\nsto: ret=11 c=1')
