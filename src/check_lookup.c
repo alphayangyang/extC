@@ -531,6 +531,29 @@ bool enumHasPayload(TypeDef *td) {
  *   - A generic instance has to be substituted before it is walked, or `T` looks harmless
  *     and the check passes on a type that carries a reference.
  */
+/* True when any part of the type is the `coroutine<T>` marker, at any depth: `coroutine<i64>`,
+ * `vector<coroutine<i64>>`, a view of one, a field of one. The marker is spelled two ways depending
+ * on where resolution left it -- the generic itself, or the instance (whose `sdef` is still the
+ * prelude's `coroutine`) -- so both are accepted here. See `typeContainsRef` below for the shape of
+ * this walk. */
+bool typeContainsProto(TypeTable *tt, Type *t, const char *name) {
+    if (!t) return false;
+    if (isProtoType(t, name, 1)) return true;
+    /* Three spellings reach here: the generic itself (`TY_GENERIC` + sdef), a plain name that has not
+     * been resolved into a struct yet, and the instance (whose `sdef` is the prelude's `coroutine`). */
+    if (t->sdef && t->sdef->name && strcmp(t->sdef->name, name) == 0) return true;
+    if (t->name && strcmp(t->name, name) == 0) return true;
+    if (t->kind == TY_ARRAY || t->kind == TY_REF) return typeContainsProto(tt, t->inner, name);
+    for (size_t i = 0; i < t->targs.len; i++)
+        if (typeContainsProto(tt, *(Type **)vecAt(&t->targs, i), name)) return true;
+    /* Deliberately **not** walking struct fields: substituting a generic's own `T` hands back a type
+     * that mentions itself, and the walk never terminated (found the hard way: a stack overflow on
+     * every corpus program with a generic argument). The shapes that matter are covered above -- a
+     * concrete marker appears as the type itself, inside `targs`, or behind a view/array/reference.
+     * A field *declared* with the marker is caught where fields are resolved instead. */
+    return false;
+}
+
 bool typeContainsRef(TypeTable *tt, Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;

@@ -1208,7 +1208,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, pt));
                     continue;
                 }
-                checkAssignable(c, pt, at, a, "argument");
+                /* A coroutine value cannot cross a function boundary yet: the argument's type is
+                 * the `coroutine<T>` marker, while codegen materialises the coroutine's own frame.
+                 * Loud beats a C type mismatch. The uniform representation (a boxed handle) lands
+                 * with slice C, which is what a scheduler needs anyway. */
+                if (typeContainsProto(c->tt, at, "coroutine")) {
+                    ckError(c, a->line,
+                            "A coroutine value stays where it was spawned: today it cannot be passed"
+                            " to a function, stored in a container or returned. Keep driving it in"
+                            " the function that created it",
+                            "a coroutine cannot be passed as an argument");
+                } else {
+                    checkAssignable(c, pt, at, a, "argument");
+                }
             }
             /* The reference check applies to an associated function as well, once its
              * arguments have been checked. */
@@ -2028,7 +2040,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, p->type));
                     continue;
                 }
-                checkAssignable(c, p->type, at, a, "argument");
+                /* A coroutine value cannot cross a function boundary yet: the argument's type is
+                 * the `coroutine<T>` marker, while codegen materialises the coroutine's own frame.
+                 * Loud beats a C type mismatch. The uniform representation (a boxed handle) lands
+                 * with slice C, which is what a scheduler needs anyway. */
+                if (typeContainsProto(c->tt, at, "coroutine")) {
+                    ckError(c, a->line,
+                            "A coroutine value stays where it was spawned: today it cannot be passed"
+                            " to a function, stored in a container or returned. Keep driving it in"
+                            " the function that created it",
+                            "a coroutine cannot be passed as an argument");
+                } else {
+                    checkAssignable(c, p->type, at, a, "argument");
+                }
             }
             /* Every call site is checked, not only the ones with a home arena: what matters is
              * that the callee may store into a container the argument points at, which has
@@ -2359,7 +2383,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, pt));
                     continue;
                 }
-                checkAssignable(c, pt, at, a, "argument");
+                /* A coroutine value cannot cross a function boundary yet: the argument's type is
+                 * the `coroutine<T>` marker, while codegen materialises the coroutine's own frame.
+                 * Loud beats a C type mismatch. The uniform representation (a boxed handle) lands
+                 * with slice C, which is what a scheduler needs anyway. */
+                if (typeContainsProto(c->tt, at, "coroutine")) {
+                    ckError(c, a->line,
+                            "A coroutine value stays where it was spawned: today it cannot be passed"
+                            " to a function, stored in a container or returned. Keep driving it in"
+                            " the function that created it",
+                            "a coroutine cannot be passed as an argument");
+                } else {
+                    checkAssignable(c, pt, at, a, "argument");
+                }
             }
             /* The rule has to be checked after the arguments are checked: until then `a->type`
              * is not filled in, `typeContainsRef` answers "no" for everything, and a violation

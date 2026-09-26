@@ -3593,6 +3593,23 @@ static void checkFunc(Checker *c, FuncDef *f) {
     f->isCoro = f->ret && isProtoType(f->ret, "coroutine", 1);
     f->yieldType = f->isCoro ? *(Type **)vecAt(&f->ret->targs, 0) : NULL;
 
+    /* `coroutine<T>` is how a **return type** says "this body is a coroutine that yields T". It is not
+     * a value type: a call to a coroutine produces that coroutine's own frame, whose type the compiler
+     * synthesizes. A parameter typed `coroutine<T>` therefore compiled into a C type mismatch -- or
+     * worse, into a `vector<coroutine<T>>` of markers that nothing can drive. Saying so here keeps it
+     * loud. Passing a coroutine across a function boundary needs the uniform representation (a boxed
+     * handle), which slice C needs anyway. */
+    for (size_t pi = 0; pi < f->params.len; pi++) {
+        Param *pp = *(Param **)vecAt(&f->params, pi);
+        if (!pp || !typeContainsProto(c->tt, pp->type, "coroutine")) continue;
+        ckError(c, pp->line ? pp->line : f->line,
+                "`coroutine<T>` names a coroutine's return type, not a value type: what a call produces"
+                " is that coroutine's own frame. Keep the value where it was spawned, or take it as a"
+                " generic parameter (`fn f<C>(c: C)`)",
+                "parameter `%s` cannot be typed `coroutine<T>`", pp->name ? pp->name : "?");
+        pp->type = ttError(c->tt);
+    }
+
     c->curFunc = f;
     /* The arena of each call is chosen with the escape set, so it has to be computed
      * before the body is checked. */

@@ -222,6 +222,10 @@ typedef struct {
  * does bracket -- and rule 3 of CONCURRENCY.md 12 rests on it (`yield` may not sit inside). */
 bool stmtNeedsPlaceBoundary(Stmt *s);
 
+/* `typeContainsProto` (check_lookup.c): is the `coroutine<T>` marker anywhere inside this type?
+ * `coroutine<T>` is a return type, not storage (docs/topics/CONCURRENCY.md 4.4). */
+bool typeContainsProto(TypeTable *tt, Type *t, const char *name);
+
 typedef struct Checker {
     /* How many enclosing blocks will reclaim their own storage (codegen brackets them with
      * `zoneEnter`/`zoneLeaveTo` + `arena_release`). A `yield` inside one of them is rule 3 of

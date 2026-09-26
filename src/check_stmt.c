@@ -207,6 +207,15 @@ void checkStmt(Checker *c, Stmt *s) {
              * only builds an unresolved type name. */
             if (s->u.var.ann)
                 s->u.var.ann = ttResolve(c->tt, c->ctx, s->u.var.ann, s->line, c->curParams);
+            /* See the parameter case in check_top.c: `coroutine<T>` is a return type, not storage.
+             * `let c = counter(n)` is how a coroutine value gets a name (and its type, the frame). */
+            if (s->u.var.ann && typeContainsProto(c->tt, s->u.var.ann, "coroutine")) {
+                ckError(c, s->line,
+                        "`coroutine<T>` names a coroutine's return type, not a value type. `let c ="
+                        " counter(n)` gives the coroutine a name and the compiler its frame type",
+                        "cannot declare a `coroutine<T>` variable");
+                s->u.var.ann = ttError(c->tt);
+            }
             if (ttIsError(s->u.var.ann)) s->u.var.ann = NULL;
 
             /* No initializer means zero initialization, and the parser guarantees an
