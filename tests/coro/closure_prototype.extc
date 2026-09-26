@@ -1,0 +1,71 @@
+/* 闭包原型（CONCURRENCY.md §4 第 3 步）：**手工把捕获环境显式化成结构体**。
+ *
+ * 一行编译器代码都没加：这就是 λ 会被编译成的东西，也是"无引用聚合"模型要求写作者做的事 ✓
+ * 本文件要证明两件事：
+ *   ① 形状写得出来、跑得对（捕获环境 = 一个普通 struct，按值持有）；
+ *   ② **soundness 不需要新规则** —— 环境是显式的值，所以既有的逃逸/作用域规则直接管它
+ *      （对照反例在 `tests/errors/closure_env_view_escapes_block.extc`：把指向块内局部的视图
+ *      放进捕获环境、再把"闭包"带出那个块 ⇒ 编译器**拒绝** ✓）
+ *
+ * 判据（tests/coro/run.sh）：输出 `sum=50` · `fold=26` · `two=14`。 */
+use std::io
+
+/* ---------------------------------------------------------------- ① 一个"闭包" */
+/* `|x| base + x` 的显式形态：环境是一个按值持有的 struct，函数是自由函数。 */
+struct addEnv { base: i64 }
+
+fn addWith(e: ref addEnv, x: i64) -> i64 { return e.base + x }
+
+/* 高阶函数：把"闭包"（环境）当参数收下。`map/fold` 就是这个形状 ✓ */
+fn sumWith(e: ref addEnv, xs: slice<i64>) -> i64 {
+    var s: i64 = 0
+    for x in xs { s = s + addWith(e, x) }
+    return s
+}
+
+/* ------------------------------------------------------------------ ② fold */
+/* `|acc, x| acc * 2 + x` 的显式形态：环境是空的，但形状完全一样 ✓ */
+struct foldEnv { dummy: i64 }
+
+fn foldWith(e: ref foldEnv, acc: i64, x: i64) -> i64 { return acc * i64(2) + x + e.dummy }
+
+fn runFold(e: ref foldEnv, xs: slice<i64>) -> i64 {
+    var acc: i64 = 0
+    for x in xs { acc = foldWith(e, acc, x) }
+    return acc
+}
+
+/* ------------------------------------------- ③ "一等闭包"：环境 + 一个 tag */
+/* 把两个不同的 λ 存进同一个变量，要靠一个 tag 决定派发到哪个函数 ——
+ * 这正是 `dyn`/trait 表在做的事，也是编译器为 λ 生成"函数指针 + 环境"时的等价物 ✓ */
+struct accEnv { base: i64  factor: i64 }
+
+fn accAdd(e: ref accEnv, x: i64) -> i64 { return e.base + x }
+fn accMul(e: ref accEnv, x: i64) -> i64 { return e.base + x * e.factor }
+
+struct closure { env: accEnv  kind: i64 }      /* kind: 0 = add, 1 = mul */
+
+fn callClosure(c: ref closure, x: i64) -> i64 {
+    if c.kind == 0 { return accAdd(ref c.env, x) }
+    return accMul(ref c.env, x)
+}
+
+fn main() -> i32 {
+    var xs: [4]i64 = [1, 2, 3, 4]
+
+    /* ① 捕获 `base = 10`，对每个元素加 10 再求和：4*10 + (1+2+3+4) = 50 */
+    let e: addEnv = addEnv { base: i64(10) }
+    io::cout << "sum=" << sumWith(ref e, xs[..]) << "\n"
+
+    /* ② fold：acc = acc*2 + x，从 0 开始过 [1,2,3,4] ⇒ ((((0*2+1)*2+2)*2+3)*2+4) = 26 */
+    let f: foldEnv = foldEnv { dummy: i64(0) }
+    io::cout << "fold=" << runFold(ref f, xs[..]) << "\n"
+
+    /* ③ 同一个变量先后装两个不同的"闭包"：base=1 时 add 得 1+4=5、mul 得 1+4*2=9 ⇒ 14 */
+    var c: closure = closure { env: accEnv { base: i64(1), factor: i64(2) }, kind: i64(0) }
+    var total: i64 = callClosure(ref c, i64(4))
+    c.kind = i64(1)
+    total = total + callClosure(ref c, i64(4))
+    io::cout << "two=" << total << "\n"
+    return 0
+}

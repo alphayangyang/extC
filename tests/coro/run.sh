@@ -9,6 +9,17 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 闭包原型（CONCURRENCY.md §4 第 3 步）：捕获环境 = 显式结构体 ⇒ 既有逃逸规则直接管它
+out=$("$EXTC" -w --run tests/coro/closure_prototype.extc 2>&1)
+want_cl=$(printf 'sum=50\nfold=26\ntwo=14')
+if [ "$out" = "$want_cl" ]; then
+    echo "  ok   closure_prototype  ->  手工闭包（环境 struct + 自由函数 + tag 派发）：$(printf '%s' "$out" | tr '\n' ' ')"
+    pass=$((pass+1))
+else
+    echo "  FAIL closure_prototype  ->  期望 [$(printf '%s' "$want_cl" | tr '\n' ' ')]，得到 [$(printf '%s' "$out" | tr '\n' ' ')]"
+    fail=$((fail+1))
+fi
+
 # 迭代器协议原型（CONCURRENCY.md §4 第 2 步）：用户类型 + 三个方法（iter/next/value），
 # 用**显式 while** 驱动 —— 先证明这个形状在今天的语言里写得出来、跑得对，
 # 再谈让 `for x in c` 脱糖成它（今天 `for` 只走切片：`cannot slice a value of type ...`）。
