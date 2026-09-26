@@ -5873,6 +5873,11 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             fd = arenaAllocZero(c->arena, sizeof *fd);
             fd->name = "zone"; fd->type = i64t; fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
+            /* The task id: the table owns the place, and the step reads the zone beside it rather
+             * than re-deriving it (rule 1). See src/coroutine.c. */
+            fd = arenaAllocZero(c->arena, sizeof *fd);
+            fd->name = "task"; fd->type = i64t; fd->line = f->line;
+            *(FieldDef **)vecPush(&fsd->fields) = fd;
             for (size_t k = 0; k < f->coroFrame.len; k++) {
                 const Param *p = (const Param *)vecAt(&f->coroFrame, k);
                 fd = arenaAllocZero(c->arena, sizeof *fd);

@@ -550,7 +550,15 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 - 验收项本身成了常驻判据 `tests/coro/coro_pool.extc`：**接受 + 跑出 6 + ASan 干净**；
 - `tools/check_concurrency_guards.py` 两处更新：J1 允许**帧字段**作为 zone 实参，但**只许出现在协程单元**里（文件里有 `$step`）；并新增一条收紧 —— **`$step` 体内不许出现 `extc_zoneTop` / `__extc_home_zone`**（已用反证验证它会红）。
 
-**还差的两件（不阻塞验收）**：① **显式 drop**：今天回收发生在"任务跑完"，作者 B 方案里的另一半（由调度器/任务表在放弃时回收）要等任务表；② **`src/coroutine.c`**：任务表与驱动器现在是内联发射的文本，按作者的意思应该像 `pools.c` 一样有一个库运行时的归属地。
+**`src/coroutine.c`（任务表，运行时的归属地）**：与 `pools.c` 同构 —— 编译器管的部分（`yield` 脱糖、帧、step）留在编译器里，**运行期**的部分归这个文件。它是**按需发射**的：不 spawn 带任务 place 的协程的程序，一行都不带。
+
+    int64_t extc_task_begin(int64_t *idOut);   /* 懒进入任务的地方，登记，回 zone 与 id */
+    void    extc_task_end(int64_t id);         /* 跑完与显式 drop 是**同一次释放** */
+    int64_t extc_task_live(void);              /* 还活着的任务数：调度器（或判据）问的就是这个 */
+
+帧于是有两个字段：`zone`（step 用它做分配，规则 1：只读字段）与 `task`（表的所有权凭据）。驱动器的结尾从 `extc_pool_zoneLeaveTo(f->zone)` 改成 `extc_task_end(f->task)` —— 释放点从"协程自己"移到"表"，这正是作者 B 方案里"由任务表拥有"的那一半。
+
+：① **显式 drop**：今天回收发生在"任务跑完"，作者 B 方案里的另一半（由调度器/任务表在放弃时回收）要等任务表；② **`src/coroutine.c`**：任务表与驱动器现在是内联发射的文本，按作者的意思应该像 `pools.c` 一样有一个库运行时的归属地。
 
 **切片 C 的第一轮尝试（未落地，教训记在这里）**：任务 place 的设计已经写清（spawn 进入任务 zone、帧里存 zone、每步从帧恢复、跑完一次性 `zoneLeaveTo`、规则 ③ 的池半边放宽、规则 ② 改成"自己拥有存储才许跨挂起点"），但发射落地时连撞四堵墙，回退了。下一轮从这四条开始：
 

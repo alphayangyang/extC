@@ -9,7 +9,8 @@
  */
 
 #include "codegen.h"
-#include "pools.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
+#include "pools.h"
+#include "coroutine.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
@@ -3227,12 +3228,13 @@ static void genStmtInner(CG *g, Stmt *s) {
                 if (hasZone) {
                     flushPrefix(g);
                     cgLine(g, "int64_t __extc_czsv%d = extc_zoneTop;", sq);
-                    cgLine(g, "int64_t __extc_czm%d = extc_pool_zoneEnter();", sq);
+                    cgLine(g, "int64_t __extc_czid%d = -1;", sq);
+                    cgLine(g, "int64_t __extc_czm%d = extc_task_begin(&__extc_czid%d);", sq, sq);
                 }
                 Buf init;
                 bufInit(&init, g->arena);
                 bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, s->u.var.cname, fr);
-                if (hasZone) bufPrintf(&init, ", .zone = __extc_czm%d", sq);
+                if (hasZone) bufPrintf(&init, ", .zone = __extc_czm%d, .task = __extc_czid%d", sq, sq);
                 for (size_t i = 0; i < cf->params.len; i++) {
                     Param *p = *(Param **)vecAt(&cf->params, i);
                     Expr *a = i < s->u.var.init->u.call.args.len
@@ -3759,6 +3761,14 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * unit), and the step's definition comes from `genFunc` like any other function -- which is what
  * registers the generic instances its body calls (docs/topics/CONCURRENCY.md 4.4, slice C). */
 static void genCoroDecls(CG *g, Module *m) {
+    bool taskTable = false;
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *c0 = *(FuncDef **)vecAt(&m->funcs, i);
+        if (c0 && c0->isCoro && !c0->tmpl && c0->coroNeedsZone) { taskTable = true; break; }
+    }
+    /* The task table, defined before every body that may spawn or drive: the pool prototypes are
+     * already in the prototype region above, so this only needs to precede its users. */
+    if (taskTable) coroutineEmitRuntime(g->arena, g->out);
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */
@@ -3774,7 +3784,7 @@ static void genCoroDecls(CG *g, Module *m) {
             cgLine(g, "    extc_zoneTop = f->zone;");
             cgLine(g, "    bool __r = %s$step(f);", cFuncName(g, f));
             cgLine(g, "    extc_zoneTop = __sv;");
-            cgLine(g, "    if (!__r) extc_pool_zoneLeaveTo(f->zone);");
+            cgLine(g, "    if (!__r) extc_task_end(f->task);   /* ran to completion: same release as a drop */");
             cgLine(g, "    return __r;");
             cgLine(g, "}");
         }
