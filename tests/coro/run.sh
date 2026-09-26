@@ -24,6 +24,66 @@ else
     echo "  FAIL coro_mem            ->  $(head -2 "$tmp/mme" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 规则④：复制句柄内存安全（两个副本一个驱动一个读）。期望 (0+1+2)×2 = 6
+cp=$tmp/coro_copy
+if "$EXTC" -w --no-line-map -o "$cp.c" tests/coro/coro_copy.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$cp" "$cp.c" 2>"$tmp/cpe"; then
+    "$cp"; rc=$?
+    if [ "$rc" = 6 ]; then
+        echo "  ok   coro_copy           ->  复制句柄：一个驱动一个读，内存安全（退出码 6）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_copy           ->  退出码 $rc（期望 6）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_copy           ->  $(head -2 "$tmp/cpe" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 规则②：驱动**过期**句柄（副本）必须大声 trap —— 退出码 70 且 stderr 带源码位置
+ce=$tmp/coro_copy_expired
+if "$EXTC" -w --no-line-map -o "$ce.c" tests/coro/coro_copy_expired.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$ce" "$ce.c" 2>"$tmp/cee"; then
+    cerr=$("$ce" 2>&1 >/dev/null); rc=$?
+    if [ "$rc" = 70 ] && echo "$cerr" | grep -q "trap:.*task has already ended"; then
+        echo "  ok   coro_copy_expired   ->  过期副本驱动 ⇒ 大声 trap（70 + 位置）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_copy_expired   ->  退出码 $rc，stderr[$cerr]"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_copy_expired   ->  $(head -2 "$tmp/cee" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 规则②的另一半：`value()` 也必须验活（曾经直接读已回收的帧 = use-after-free）
+ve=$tmp/coro_value_expired
+if "$EXTC" -w --no-line-map -o "$ve.c" tests/coro/coro_value_expired.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$ve" "$ve.c" 2>"$tmp/vee"; then
+    verr=$("$ve" 2>&1 >/dev/null); rc=$?
+    if [ "$rc" = 70 ] && echo "$verr" | grep -q "trap:.*task has already ended"; then
+        echo "  ok   coro_value_expired  ->  过期句柄读 value() ⇒ 大声 trap（70 + 位置）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_value_expired  ->  退出码 $rc，stderr[$verr]"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_value_expired  ->  $(head -2 "$tmp/vee" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 装箱点：字段 / 元素 / 已存在句柄变量三处（欠账第 1 条的补验）。期望 4
+bx=$tmp/coro_boxing
+if "$EXTC" -w --no-line-map -o "$bx.c" tests/coro/coro_boxing.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$bx" "$bx.c" 2>"$tmp/bxe"; then
+    "$bx"; rc=$?
+    if [ "$rc" = 4 ]; then
+        echo "  ok   coro_boxing        ->  装进字段/元素/已有句柄变量都成立（退出码 4）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_boxing        ->  退出码 $rc（期望 4）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_boxing        ->  $(head -2 "$tmp/bxe" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 真事件源：N=8 条 AF_UNIX 连接、单线程、一个 epoll 循环。期望 36，并要求 ASan 干净
 ep=$tmp/coro_epoll
 if "$EXTC" -w --no-line-map -o "$ep.c" tests/coro/coro_epoll.extc >/dev/null 2>&1 \

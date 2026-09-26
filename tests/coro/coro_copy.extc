@@ -1,0 +1,19 @@
+/* 规则④：**复制句柄是内存安全的**（句柄是 24 字节的普通值）。单驱动者是**约定** —— 这里只通过其中
+ * 一个副本驱动，另一个副本同时**读**（`value()` 是只读的 ✓），然后跑完。
+ *
+ * 期望：worker(3) yields 0,1,2 ⇒ 每轮两个副本各读一遍 ⇒ (0+1+2)×2 = 3×2 = **6** */
+fn worker(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n { yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var h: coroutine<i64> = worker(i64(3))
+    var g: coroutine<i64> = h            /* 复制（24 字节值复制）*/
+    var s: i64 = 0
+    while h.next() {
+        s = s + h.value()                /* 驱动器读 */
+        s = s + g.value()                /* 副本读同一个状态机 ⇒ 内存安全 */
+    }
+    return i32(s)                        /* (0+1+2)×2 = 6 */
+}

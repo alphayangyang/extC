@@ -1,0 +1,18 @@
+/* 规则②的**另一条漏网**：`value()` 也必须验活。
+ *
+ * `next()` 的 helper 早就先 `extc_task_alive` 验活了 ✓，但 `value()` 的 helper 直接读
+ * `((struct <fn>$frame *)h->frame)->ret` ✗ —— 任务跑完、帧被回收之后读它 = **use-after-free** ✗。
+ * 而且它现在读到的是垃圾（不 trap、不报错）⇒ 这条用例就是要它**大声**。
+ *
+ * 判据（run.sh 里）：退出码 **70** + stderr 非空。 */
+fn worker(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n { yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var h: coroutine<i64> = worker(i64(2))
+    var g: coroutine<i64> = h
+    while h.next() { }                  /* 跑完 ⇒ 任务结束 ⇒ g 过期 */
+    return i32(g.value())               /* ← 读过期句柄：必须大声 trap */
+}

@@ -1,0 +1,18 @@
+/* 规则①的另一条路：拿一个**帧值**去当句柄。
+ *
+ * `var fr = worker(...)` 得到的是帧（住在调用者栈上），`var h: coroutine<i64> = fr` 要求把栈上的
+ * 帧"装箱"—— 那等于**复制**一个已经跑过的状态机，语义不明 ⇒ 必须是干净的编译错误
+ * （允许的装箱点只有：带标注的声明、实参、字段、元素 —— 见 tests/coro/coro_boxing.extc）。
+ *
+ * // expect: initializer expects */
+fn worker(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n { yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var fr = worker(i64(2))
+    var h: coroutine<i64> = fr
+    while h.next() { }
+    return 0
+}

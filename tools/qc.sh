@@ -11,8 +11,12 @@ LOG=${QC_LOG_DIR:-/tmp/qc}
 mkdir -p "$LOG"
 EXTC=$ROOT/build/extc
 
-find_fixture() {   # $1 = 名字子串；回显第一个匹配的 .extc
-    find "$ROOT/tests" "$ROOT/examples" "$ROOT/bench" -name "*$1*.extc" 2>/dev/null | head -1
+find_fixture() {   # $1 = 用例名；先认精确文件名，再退化到子串匹配（否则 coro_copy 会命中 coro_copy_expired）
+    local name=${1%.extc} p
+    for p in $(find "$ROOT/tests" "$ROOT/examples" "$ROOT/bench" -name "$name.extc" 2>/dev/null); do
+        echo "$p"; return
+    done
+    find "$ROOT/tests" "$ROOT/examples" "$ROOT/bench" -name "*$name*.extc" 2>/dev/null | sort | head -1
 }
 
 diagnose() {       # $1 = 用例名或 .extc 路径

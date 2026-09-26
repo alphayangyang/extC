@@ -1720,21 +1720,22 @@ static const char *genMethodCall(CG *g, Expr *e) {
         const bool viaRef = e->u.method.recv->type && e->u.method.recv->type->kind == TY_REF;
         g->needCoroHandle = true;
         if (strcmp(e->u.method.name, "next") == 0)
-            return arenaPrintf(g->arena, "extc_coro_next(%s%s)", viaRef ? "" : "&", rr);
+            return arenaPrintf(g->arena, "extc_coro_next(%s%s, \"%s\", %d)",
+                               viaRef ? "" : "&", rr, g->path, e->line);
         if (strcmp(e->u.method.name, "send") == 0) {
             Type *rb2 = ttBase(recvT);
             Type *yt2 = (rb2 && rb2->targs.len) ? subst(g, *(Type **)vecAt(&rb2->targs, 0)) : f->ret;
             const char *vv = e->u.method.args.len
                                  ? genExpr(g, *(Expr **)vecAt(&e->u.method.args, 0)) : "0";
-            return arenaPrintf(g->arena, "extc_coro_send_%s(%s%s, %s)",
-                               cType(g, yt2), viaRef ? "" : "&", rr, vv);
+            return arenaPrintf(g->arena, "extc_coro_send_%s(%s%s, %s, \"%s\", %d)",
+                               cType(g, yt2), viaRef ? "" : "&", rr, vv, g->path, e->line);
         }
         /* `T` comes from the receiver's own type: the resolved instance method's `ret` may still be
          * the error type, and the helper is named after the coroutine's yield type. */
         Type *rb = ttBase(recvT);
         Type *yt = (rb && rb->targs.len) ? subst(g, *(Type **)vecAt(&rb->targs, 0)) : f->ret;
-        return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s)",
-                           cType(g, yt), viaRef ? "" : "&", rr);
+        return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s, \"%s\", %d)",
+                           cType(g, yt), viaRef ? "" : "&", rr, g->path, e->line);
     }
     if (f && f->coroProto && f->owner && f->owner->coroOf) {
         /* Driving a coroutine. The two protocol methods are the state machine's calling convention,
@@ -2017,7 +2018,8 @@ static const char *genExprInner(CG *g, Expr *e) {
                     const bool viaRef = rf->type && rf->type->kind == TY_REF;
                     g->needCoroHandle = true;
                     if (hp == 3)
-                        return arenaPrintf(g->arena, "extc_coro_next(%s%s)", viaRef ? "" : "&", rc);
+                        return arenaPrintf(g->arena, "extc_coro_next(%s%s, \"%s\", %d)",
+                                           viaRef ? "" : "&", rc, g->path, e->line);
                     if (hp == 5) {
                         /* `self` implicit: the value sits in `args[0]`; explicit: after the receiver. */
                         size_t vi = (e->u.call.callee->kind == EX_FIELD) ? 0 : 1;
@@ -2026,12 +2028,13 @@ static const char *genExprInner(CG *g, Expr *e) {
                         Type *rb2 = ttBase(subst(g, rf->type));
                         Type *yt2 = (rb2 && rb2->targs.len)
                                         ? subst(g, *(Type **)vecAt(&rb2->targs, 0)) : NULL;
-                        return arenaPrintf(g->arena, "extc_coro_send_%s(%s%s, %s)",
+                        return arenaPrintf(g->arena, "extc_coro_send_%s(%s%s, %s, \"%s\", %d)",
                                            yt2 ? cType(g, yt2) : "int64_t",
-                                           viaRef ? "" : "&", rc, vv);
+                                           viaRef ? "" : "&", rc, vv, g->path, e->line);
                     }
-                    return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s)",
-                                       cType(g, subst(g, e->func->ret)), viaRef ? "" : "&", rc);
+                    return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s, \"%s\", %d)",
+                                       cType(g, subst(g, e->func->ret)), viaRef ? "" : "&", rc,
+                                       g->path, e->line);
                 }
             }
             if (e->func && e->func->isCoro && e->boxedCoro) {
@@ -3938,10 +3941,15 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         if (cf->coroNeedsZone)
             cgLine(g, "EXTC_UNUSED static bool %s$next(struct %s$frame *f);", cn, cn);
     }
-    cgLine(g, "EXTC_UNUSED static bool extc_coro_next(extc_coro *h) {");
-    cgLine(g, "    if (!extc_task_alive(h->task)) {");
-    cgLine(g, "        exit(70);   /* driving a coroutine whose task has already ended */");
-    cgLine(g, "    }");
+    /* One trap for all three helpers: every trap in this project carries a source position, and a
+     * handle outliving its task is the one thing a `coroutine<T>` can get wrong. */
+    cgLine(g, "EXTC_UNUSED static void extc_trap_dead_handle(const char *f, int l) {");
+    cgLine(g, "    fprintf(stderr, \"%%s:%%d: trap: driving a coroutine whose task has already\"");
+    cgLine(g, "                    \" ended (its frame was released with the task)\\n\", f, l);");
+    cgLine(g, "    exit(70);");
+    cgLine(g, "}");
+    cgLine(g, "EXTC_UNUSED static bool extc_coro_next(extc_coro *h, const char *f, int l) {");
+    cgLine(g, "    if (!extc_task_alive(h->task)) extc_trap_dead_handle(f, l);");
     cgLine(g, "    switch (h->kind) {");
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
@@ -3965,7 +3973,11 @@ static void genCoroHandleDecls(CG *g, Module *m) {
                 strcmp(cType(g, prev->yieldType), yt) == 0) done = true;
         }
         if (done) continue;
-        cgLine(g, "EXTC_UNUSED static %s extc_coro_value_%s(extc_coro *h) {", yt, yt);
+        cgLine(g, "EXTC_UNUSED static %s extc_coro_value_%s(extc_coro *h, const char *f, int l) {",
+               yt, yt);
+        /* `value()` reads the frame's `ret`, so it needs the same liveness check as `next`: reading a
+         * released frame is a use-after-free, not a stale number. */
+        cgLine(g, "    if (!extc_task_alive(h->task)) extc_trap_dead_handle(f, l);");
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck2 = *(FuncDef **)vecAt(&m->funcs, k);
@@ -3980,8 +3992,9 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         cgLine(g, "    return ((struct %s$frame *)h->frame)->ret;", cFuncName(g, cf));
         cgLine(g, "}");
         /* `send`: hand a value to the resume (the frame's `in` slot), then drive it like `next`. */
-        cgLine(g, "EXTC_UNUSED static bool extc_coro_send_%s(extc_coro *h, %s v) {", yt, yt);
-        cgLine(g, "    if (!extc_task_alive(h->task)) exit(70);");
+        cgLine(g, "EXTC_UNUSED static bool extc_coro_send_%s(extc_coro *h, %s v, const char *f, int l) {",
+               yt, yt);
+        cgLine(g, "    if (!extc_task_alive(h->task)) extc_trap_dead_handle(f, l);");
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck3 = *(FuncDef **)vecAt(&m->funcs, k);

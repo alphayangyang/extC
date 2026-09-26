@@ -1,0 +1,40 @@
+/* 判据：装箱点在**字段 / 元素 / 已存在的句柄变量**三处都成立（欠账第 1 条的补验）。
+ *
+ * 目标清单原本写的是「`checkAssignable`（赋值/实参/存字段/存元素/返回）」—— 之前的判据只盖到
+ * "带标注的声明"与"实参"两处，这里把剩下能表达的三处钉住：
+ *   ① 字段：`b.h = worker(...)`（结构体字段类型是 `coroutine<i64>`）
+ *   ② 元素：`a[0] = worker(...)`（固定数组元素）
+ *   ③ 赋值：`h = worker(...)`（变量已经有句柄类型 ⇒ 重新装箱一个新任务）
+ *   ④ 帧变量 → 句柄变量（`var fr = worker(...)` 再 `var h2: coroutine<i64> = fr`）**不是**装箱点，
+ *      是干净的编译错误 —— 帧住在栈上，要"装箱"就得**复制**它，语义不明 ⇒ 见欠账。
+ *   ⑤ `return` 那条**按设计不存在**：`-> coroutine<T>` 是"这个函数体是协程"，不是"返回句柄"。
+ *
+ * 期望：① 0+1=1 · ② 0 · ③ 0+1+2=3 · ④ 0 ⇒ 合计 **4** */
+struct holder {
+    h: coroutine<i64>
+}
+
+fn worker(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n { yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var b: holder
+    b.h = worker(i64(2))            /* ① 字段 */
+
+    var a: [2]coroutine<i64>
+    a[0] = worker(i64(1))           /* ② 元素 */
+    a[1] = b.h                      /* 句柄复制（规则④：内存安全）*/
+
+    var h: coroutine<i64> = worker(i64(2))
+    h = worker(i64(3))              /* ③ 变量已有句柄类型 ⇒ 重新装箱 */
+
+    var fr = worker(i64(1))         /* 帧类型（不外逃 ⇒ 生成物里不该有任务表）*/
+    var s: i64 = 0
+    while b.h.next() { s = s + b.h.value() }
+    while a[0].next() { s = s + a[0].value() }
+    while h.next() { s = s + h.value() }
+    while fr.next() { s = s + fr.value() }
+    return i32(s)
+}

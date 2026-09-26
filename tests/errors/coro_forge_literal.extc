@@ -1,0 +1,17 @@
+/* 规则①：不许**伪造句柄**。`coroutine<T>` 的 C 表示是 {frame, kind, task} 三个字，手搓出来就是
+ * 垃圾 kind + 垃圾 frame ⇒ 驱动它必然出事。所以要挡住"结构字面量"这条路。
+ *
+ * 注：这种写法现在**根本解析不了**（`coroutine<i64>{…}` 里那个 `<` 先被当比较/泛型参数处理），
+ * 于是天然挡住的 —— 但"天然"不算判据，这条用例就是钉住它：**必须编不过**。
+ *
+ * 欠账：报错本身是**误导性**的（"`i64` is a type, not a value" ✗ 说的是 `<` 后面那个类型参数，
+ * 不是"句柄不能伪造" ✓）⇒ 诊断该改，但安全性已经成立，所以先钉住现状。
+ *
+ * // expect: is a type, not a value */
+fn g() -> coroutine<i64> { yield i64(1) }
+
+fn main() -> i32 {
+    var h: coroutine<i64> = coroutine<i64>{ unit: true }
+    while h.next() { }
+    return 0
+}

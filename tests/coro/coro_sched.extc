@@ -4,7 +4,7 @@
  *   任务 0：yield 10 → 收回 10（total=10）· yield 11 → total=21 · yield 12 → total=33 · yield 33 ⇒ 结束
  *   任务 1：同理 total = 100+101+102 = 303 ⇒ 最后 yield 303
  *
- * 脚本化的就绪顺序**交替**推进两者 ⇒ 结束时 live 必须为 0（`left * 100` 那一项就是这条断言）。
+ * 脚本化的就绪顺序**交替**推进两者 ⇒ 结束时 live 必须为 0（`live * 100` 那一项就是这条断言）。
  * 退出码 = 0*100 + (33+303) % 100 = **36** */
 use std::coro::scheduler as sched
 use std::io
@@ -29,6 +29,18 @@ fn main() -> i32 {
     var k: i64 = 0
     while k < i64(12) { order[k] = k % i64(2)  k = k + 1 }   /* 0 1 0 1 … 交替 */
 
-    var left: i64 = sched::runScripted(ref s, order)
-    return i32(left * i64(100) + (s.tasks[0].value() + s.tasks[1].value()) % i64(100))
+    /* 一边推一边**在活着的时候**把值读出来：`value()` 只在 `next()`/`step()` 返回 true 之后有效，
+     * 任务跑完再读会大声 trap（帧已经随任务回收了 —— 规则②）。 */
+    var last0: i64 = 0
+    var last1: i64 = 0
+    var k2: i64 = 0
+    while k2 < i64(12) {
+        var i: i64 = order[k2]
+        if sched::step(ref s, i) {
+            if i == i64(0) { last0 = s.tasks[0].value() }
+            if i == i64(1) { last1 = s.tasks[1].value() }
+        }
+        k2 = k2 + 1
+    }
+    return i32(s.live * i64(100) + (last0 + last1) % i64(100))
 }

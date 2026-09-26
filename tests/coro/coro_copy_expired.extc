@@ -1,0 +1,17 @@
+/* 规则②从**副本**这边再验一次：驱动一个**已经过期**的句柄必须**大声** trap ——
+ * 不是 use-after-free，也不是静默返回 false。
+ *
+ * 判据（run.sh 里）：退出码 **70**，并且 stderr **非空**（trap 要说清"哪儿"—— 本项目所有 trap
+ * 都带源码位置）。 */
+fn worker(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n { yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var h: coroutine<i64> = worker(i64(2))
+    var g: coroutine<i64> = h
+    while h.next() { }                  /* 跑完 ⇒ 任务结束 ⇒ g 这个副本过期 */
+    if g.next() { return i32(1) }       /* ← 必须在这里大声 trap */
+    return i32(0)
+}
