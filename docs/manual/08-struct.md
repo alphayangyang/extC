@@ -191,3 +191,34 @@ b.tag()                 // 普通方法调用：静态分发，生成的 C 里�
 
 尚未实现：`T: Trait` 上界 · `dyn Trait` 值 · 关联类型与关联常量 · trait 默认方法 ·
 孤儿规则的显式诊断 · 跨 trait 撞名的专门诊断（目前由"一个类型一份方法集"的重复检查兜住）。
+
+### 7.3 `dyn`：运行期动态分发
+
+```extc
+trait Tag { fn tag(self: ref Self) -> i64 }
+
+struct box { v: i64 }
+struct pt  { x: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + i64(1) } }
+
+io::cout << dyn Tag(b).tag() << "\n"      // 构造与调用一步完成
+```
+
+规则与承诺：
+
+- **一步构造即调用**：`dyn Tag(x)` 把载荷**拷进池**，随后**经方法表**派发 —— 生成物里那是一次
+  受控的间接调用（`((const struct extc_vt$…_t *)<槽>->vt)->tag(<槽>->addr)`），而不是直接调用实现；
+- **载荷必须实现了该 trait**：表指向的就是那份实现；没有实现时在 `dyn` 那一行报错，
+  而不是去引用一张不存在的表；
+- **object safety**：经 `dyn` 派发的方法必须带 `self`、不能是泛型、不能返回 `Self`
+  （静态调用它们仍然完全合法）；
+- **池是对象表模式**（只追加）：块的替换或归还会让元素句柄指向别处，因此该模式下
+  `give`/`resize` 一律 trap；
+- **派发前校验世代**：值里带 `{池, 槽, 世代}`，表指针存在**槽**里。槽被复用 ⇒ 校验先失败 ⇒
+  陈旧的值 **trap**（带源位置），而不是派发到另一个实现上；
+- **现阶段只支持"构造即调用"**：`dyn Tag(x)` 未紧跟方法调用会被拒绝；保存 dyn 值
+  （`let d: dyn Tag = …`）与字段/容器元素属于后续阶段，尚未提供。
+
+实现与义务的完整记录见 [`docs/topics/DYN.md`](../topics/DYN.md)（第二期设计与四阶段）与
+[`docs/topics/TRAITS.md`](../topics/TRAITS.md)（第一期七条决策）。

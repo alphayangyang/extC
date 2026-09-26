@@ -161,6 +161,18 @@ b.<span class="f">tag</span>()                 <span class="c">// 普通方法�
 <p>第一期已实现的检查：</p>
 <table><thead><tr><th>检查</th><th>效果</th></tr></thead><tbody><tr><td>trait 必须存在</td><td><code>impl Nope for box</code> ⇒ `<code> </code>impl<code> on unknown trait </code>Nope<code> </code>`</td></tr><tr><td>一个 (trait, 类型) 一份实现</td><td>重复时报错并指出先前那一处</td></tr><tr><td>实现齐全</td><td>缺哪个方法就列出哪个</td></tr><tr><td>签名逐项相符</td><td>接收者形状、参数个数、参数类型、返回类型（<code>Self</code> 代入实现类型后比较）</td></tr></tbody></table>
 <p>尚未实现：<code>T: Trait</code> 上界 · <code>dyn Trait</code> 值 · 关联类型与关联常量 · trait 默认方法 · 孤儿规则的显式诊断 · 跨 trait 撞名的专门诊断（目前由"一个类型一份方法集"的重复检查兜住）。</p>
+<h3 id="7-3-dyn-运行期动态分发">7.3 <code>dyn</code>：运行期动态分发</h3>
+<pre class="lang-extc"><code><span class="k">trait</span> Tag { <span class="k">fn</span> <span class="f">tag</span>(self: <span class="k">ref</span> Self) -&gt; <span class="t">i64</span> }
+
+<span class="k">struct</span> box { v: <span class="t">i64</span> }
+<span class="k">struct</span> pt  { x: <span class="t">i64</span> }
+<span class="k">impl</span> Tag <span class="k">for</span> box { <span class="k">fn</span> <span class="f">tag</span>(self: <span class="k">ref</span> box) -&gt; <span class="t">i64</span> { <span class="k">return</span> self.v } }
+<span class="k">impl</span> Tag <span class="k">for</span> pt  { <span class="k">fn</span> <span class="f">tag</span>(self: <span class="k">ref</span> pt) -&gt; <span class="t">i64</span> { <span class="k">return</span> self.x + <span class="t">i64</span>(<span class="n">1</span>) } }
+
+io::cout &lt;&lt; dyn Tag(b).<span class="f">tag</span>() &lt;&lt; <span class="c">"\n"</span>      <span class="c">// 构造与调用一步完成</span></code></pre>
+<p>规则与承诺：</p>
+<ul><li><strong>一步构造即调用</strong>：<code>dyn Tag(x)</code> 把载荷<strong>拷进池</strong>，随后<strong>经方法表</strong>派发 —— 生成物里那是一次 受控的间接调用（<code>((const struct extc_vt$…_t *)&lt;槽&gt;-&gt;vt)-&gt;tag(&lt;槽&gt;-&gt;addr)</code>），而不是直接调用实现；</li><li><strong>载荷必须实现了该 trait</strong>：表指向的就是那份实现；没有实现时在 <code>dyn</code> 那一行报错， 而不是去引用一张不存在的表；</li><li><strong>object safety</strong>：经 <code>dyn</code> 派发的方法必须带 <code>self</code>、不能是泛型、不能返回 <code>Self</code> （静态调用它们仍然完全合法）；</li><li><strong>池是对象表模式</strong>（只追加）：块的替换或归还会让元素句柄指向别处，因此该模式下 <code>give</code>/<code>resize</code> 一律 trap；</li><li><strong>派发前校验世代</strong>：值里带 <code>{池, 槽, 世代}</code>，表指针存在<strong>槽</strong>里。槽被复用 ⇒ 校验先失败 ⇒ 陈旧的值 <strong>trap</strong>（带源位置），而不是派发到另一个实现上；</li><li><strong>现阶段只支持"构造即调用"</strong>：<code>dyn Tag(x)</code> 未紧跟方法调用会被拒绝；保存 dyn 值 （<code>let d: dyn Tag = …</code>）与字段/容器元素属于后续阶段，尚未提供。</li></ul>
+<p>实现与义务的完整记录见 <a href="../topics/DYN.html"><code>docs/topics/DYN.md</code></a>（第二期设计与四阶段）与 <a href="../topics/TRAITS.html"><code>docs/topics/TRAITS.md</code></a>（第一期七条决策）。</p>
 <div class="pn"><a href="07-stmt.html">← 6. 语句</a> <a href="09-ref.html">7.5 引用：`ref` 是表达式 →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
