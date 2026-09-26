@@ -576,6 +576,16 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 ② 逃逸判断可以**复用现成机制**：`ref` 逃逸 + `effects Addr` 签字（"调用一个没签 `Addr=0` 的函数 ⇒
 你的东西可能被存起来"）⇒ 协程值按同一套规则决定装箱 ✓
 
+**`send` + `yield` 收值已落地（判据 14/14）**：帧多一个 **`in` 槽**（yield 类型 ✓）；两种写法都能收：
+`var got: T = yield e`（声明即 yield ✓）与 `got = yield e`（赋值形式 ✓）—— 绑定就是帧字段 ✓
+恢复点发 `f-><bind> = f->in;` ✓。驱动器：帧侧 `send(self: mut ref F, v: T) -> bool`（coroProto 5 ✓）、
+句柄侧 `send`（6 ✓ 走 `extc_coro_send_<T>` helper ✓，先验活再 `in = v` 然后照 `next` 驱动 ✓）。
+判据 `tests/coro/coro_send.extc` 跑出 **17** —— 这个数只可能来自"送进去的 7 真的被收到" ✓
+
+两处踩出来的坑记下来：① `coroFrame` 存的是 **`Param` 值**（codegen 按 `const Param *` 读 ✓），
+压指针会把向量写坏；② 帧的 Vec 在**函数体检查时还没建**（它在 `coroFrameLay` 里才建）⇒ 绑定要
+**记录 + 之后消费**（照 `coroDeferred` 的套路 ✓）。单向用法一字未改 ✓ 其余判据全绿 ✓
+
 **统一句柄已落地（判据 13/13）**：`coroutine<T>` 是普通存储类型，标注处（或存进容器/实参处）装箱 ——
 帧从**任务自己的 arena** 分配（`extc_task_alloc` ✓），值是 24 字节的 `{frame, kind, task}` 句柄 ✓
 `next`/`value` 在句柄上按 **kind 编译期编号**分派（静态结构 ⇒ 跳转表 ✓ 不用函数指针 ✓）✓

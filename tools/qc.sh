@@ -44,7 +44,7 @@ run_suite() {      # $1 = 名字；其余 = 命令
     ( cd "$ROOT" && "$@" ) > "$log" 2>&1
     local rc=$?
     # 只留摘要与 FAIL，并截断 —— 套件会把整段输出塞进一行 ok 里
-    grep -aE "FAIL|^通过|失败" "$log" | cut -c1-160 | tail -5
+    grep -aE "FAIL|^通过" "$log" | cut -c1-160 | tail -5
     echo "   退出码 $rc"
     return $rc
 }

@@ -1712,13 +1712,22 @@ static const char *genMethodCall(CG *g, Expr *e) {
      * The frame protocol below is unaffected: a frame's type is not a coroutine marker. Placed here,
      * before this function's other early returns, so nothing else can claim the call. */
     if (e->u.method.name && f &&
-        (strcmp(e->u.method.name, "next") == 0 || strcmp(e->u.method.name, "value") == 0) &&
+        (strcmp(e->u.method.name, "next") == 0 || strcmp(e->u.method.name, "value") == 0 ||
+         strcmp(e->u.method.name, "send") == 0) &&
         isProtoType(ttBase(recvT), "coroutine", 1)) {
         const char *rr = genExpr(g, e->u.method.recv);
         const bool viaRef = e->u.method.recv->type && e->u.method.recv->type->kind == TY_REF;
         g->needCoroHandle = true;
         if (strcmp(e->u.method.name, "next") == 0)
             return arenaPrintf(g->arena, "extc_coro_next(%s%s)", viaRef ? "" : "&", rr);
+        if (strcmp(e->u.method.name, "send") == 0) {
+            Type *rb2 = ttBase(recvT);
+            Type *yt2 = (rb2 && rb2->targs.len) ? subst(g, *(Type **)vecAt(&rb2->targs, 0)) : f->ret;
+            const char *vv = e->u.method.args.len
+                                 ? genExpr(g, *(Expr **)vecAt(&e->u.method.args, 0)) : "0";
+            return arenaPrintf(g->arena, "extc_coro_send_%s(%s%s, %s)",
+                               cType(g, yt2), viaRef ? "" : "&", rr, vv);
+        }
         /* `T` comes from the receiver's own type: the resolved instance method's `ret` may still be
          * the error type, and the helper is named after the coroutine's yield type. */
         Type *rb = ttBase(recvT);
@@ -1735,7 +1744,13 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
-        if (f->coroProto == 1) {
+        if (f->coroProto == 5) {
+            /* `send(v)`: put the value in the frame's `in` slot, then resume exactly like `next`. */
+            const char *vv = e->u.method.args.len
+                                 ? genExpr(g, *(Expr **)vecAt(&e->u.method.args, 0)) : "0";
+            pfLine(g, "%s%s in = %s;", rc, viaRef ? "->" : ".", vv);
+        }
+        if (f->coroProto == 1 || f->coroProto == 5) {
             /* With a task place the step is driven through the driver (it owns the place); without
              * one there is nothing to set up, so the step itself is the driver. */
             FuncDef *cf = f->owner->coroOf;
@@ -1994,13 +2009,26 @@ static const char *genExprInner(CG *g, Expr *e) {
                                                                      : NULL);
                 int hp = 0;
                 if (rf && isProtoType(ttBase(subst(g, rf->type)), "coroutine", 1))
-                    hp = (e->func->name && strcmp(e->func->name, "value") == 0) ? 4 : 3;
+                    hp = (e->func->name && strcmp(e->func->name, "value") == 0) ? 4
+                       : (e->func->name && strcmp(e->func->name, "send") == 0)  ? 5 : 3;
                 if (hp) {
                     const char *rc = genExpr(g, rf);
                     const bool viaRef = rf->type && rf->type->kind == TY_REF;
                     g->needCoroHandle = true;
                     if (hp == 3)
                         return arenaPrintf(g->arena, "extc_coro_next(%s%s)", viaRef ? "" : "&", rc);
+                    if (hp == 5) {
+                        /* `self` implicit: the value sits in `args[0]`; explicit: after the receiver. */
+                        size_t vi = (e->u.call.callee->kind == EX_FIELD) ? 0 : 1;
+                        const char *vv = (vi < e->u.call.args.len)
+                                             ? genExpr(g, *(Expr **)vecAt(&e->u.call.args, vi)) : "0";
+                        Type *rb2 = ttBase(subst(g, rf->type));
+                        Type *yt2 = (rb2 && rb2->targs.len)
+                                        ? subst(g, *(Type **)vecAt(&rb2->targs, 0)) : NULL;
+                        return arenaPrintf(g->arena, "extc_coro_send_%s(%s%s, %s)",
+                                           yt2 ? cType(g, yt2) : "int64_t",
+                                           viaRef ? "" : "&", rc, vv);
+                    }
                     return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s)",
                                        cType(g, subst(g, e->func->ret)), viaRef ? "" : "&", rc);
                 }
@@ -3583,6 +3611,8 @@ static void genStmtInner(CG *g, Stmt *s) {
             cgLine(g, "%s->pc = %d;", g->coroFrame, k);
             cgLine(g, "return true;");
             cgLine(g, "case %d: ;", k);
+            if (s->u.yield_.bindCName)      /* `var x = yield e`: the resume's value lands here */
+                cgLine(g, "%s->%s = %s->in;", g->coroFrame, s->u.yield_.bindCName, g->coroFrame);
             return;
         }
         case ST_RETURN: {
@@ -3947,6 +3977,22 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         /* Unreachable in type-safe code (a handle's kind always matches its `T`); written as the
          * first case's expression so it needs no zero value of `T`. */
         cgLine(g, "    return ((struct %s$frame *)h->frame)->ret;", cFuncName(g, cf));
+        cgLine(g, "}");
+        /* `send`: hand a value to the resume (the frame's `in` slot), then drive it like `next`. */
+        cgLine(g, "EXTC_UNUSED static bool extc_coro_send_%s(extc_coro *h, %s v) {", yt, yt);
+        cgLine(g, "    if (!extc_task_alive(h->task)) exit(70);");
+        cgLine(g, "    switch (h->kind) {");
+        for (size_t k = 0; k < m->funcs.len; k++) {
+            FuncDef *ck3 = *(FuncDef **)vecAt(&m->funcs, k);
+            if (!ck3 || !ck3->isCoro || ck3->tmpl || !ck3->yieldType) continue;
+            if (strcmp(cType(g, ck3->yieldType), yt) != 0) continue;
+            const char *cn3 = cFuncName(g, ck3);
+            cgLine(g, "    case %d: ((struct %s$frame *)h->frame)->in = v; return %s%s("
+                      "(struct %s$frame *)h->frame);",
+                   ck3->coroKind, cn3, cn3, ck3->coroNeedsZone ? "$next" : "$step", cn3);
+        }
+        cgLine(g, "    }");
+        cgLine(g, "    return false;");
         cgLine(g, "}");
     }
 }

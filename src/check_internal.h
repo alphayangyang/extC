@@ -226,6 +226,15 @@ bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro);
  * `coroutine<T>` is a return type, not storage (docs/topics/CONCURRENCY.md 4.4). */
 bool typeContainsProto(TypeTable *tt, Type *t, const char *name);
 
+/* A `yield` binding: it becomes a frame field, but the frame's Vec only exists after the body is
+ * checked, so the name and type are recorded and consumed by the frame layout pass. */
+typedef struct {
+    struct FuncDef *fn;
+    const char    *name;
+    Type          *type;
+    int            line;
+} CoroBind;
+
 typedef struct Checker {
     /* How many enclosing blocks will reclaim their own storage (codegen brackets them with
      * `zoneEnter`/`zoneLeaveTo` + `arena_release`). A `yield` inside one of them is rule 3 of
@@ -233,6 +242,7 @@ typedef struct Checker {
     int      placeBoundaryDepth;
 
     Vec      coroDeferred;
+    Vec      coroBinds;        /* `var x = yield e` bindings (CoroBind), consumed by coroFrameLay */
 
     Ctx       *ctx;         /* parser and module context, for diagnostics and lookup */
     Arena     *arena;       /* arena the checker allocates its own bookkeeping from */

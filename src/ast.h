@@ -406,7 +406,11 @@ struct Stmt {
          * needs when the operator is a user-defined method (`x += y` is then
          * `x = add(x, y)`, because C's `+=` knows nothing about the method). */
         struct { Expr *target; Expr *value; const char *op; Expr *opExpr; } assign;
-        struct { Expr *value; } yield_;      /* ST_YIELD: the value handed to the resumer */
+        struct { Expr *value;                /* ST_YIELD: the value handed to the resumer */
+                 const char *bind;           /* `var x = yield e`: where the resume's value lands */
+                 const char *bindCName;      /* the frame field it becomes */
+                 Type       *bindAnn;        /* the written annotation, if any */
+                 int         bindLine; } yield_;
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
         struct { Expr *cond; Stmt *body; } whiles;
         struct { Expr *value; } ret;

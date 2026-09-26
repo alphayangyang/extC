@@ -1,0 +1,29 @@
+/* 判据：`yield` 能**收值** —— 驱动器 `send(v)` 送进去的东西，协程恢复后在绑定里读到。
+ *
+ *   fn adder(n) { while i < n { got = yield i  i = i + 1 }  yield got }
+ *
+ *   挂起 0 ⇒ 收到 7 ⇒ 挂起 1 ⇒ 收到 7 ⇒ 挂起 2 ⇒ 收到 7 ⇒ 挂起 got(=7) ⇒ 结束
+ *   驱动侧累加 value()：0+1+2+7 = 10，最后再读一次 value() = 7
+ *   ⇒ 10 + 7 = **17** —— 这个数只可能来自"送进去的 7 真的被收到" ✓
+ *
+ * 单向用法完全不变：不写绑定时 `yield e` 与以前一模一样（其余 13 条判据一字未改）。 */
+fn adder(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var got: i64 = 0
+    while i < n {
+        got = yield i          /* ← 恢复时，驱动器送进来的值落到 `got` */
+        i = i + 1
+    }
+    yield got
+}
+
+fn main() -> i32 {
+    var c = adder(i64(3))
+    var seen: i64 = 0
+    var r: bool = c.next()
+    while r {
+        seen = seen + c.value()
+        r = c.send(i64(7))
+    }
+    return i32(seen + c.value())
+}

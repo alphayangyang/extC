@@ -1555,6 +1555,16 @@ static Stmt *parseStmt(Parser *p) {
     if (at(p, "=") || at(p, "+=") || at(p, "-=") || at(p, "*=") || at(p, "/=") || at(p, "%=")) {
         const char *aop = take(p)->text;
         skipNl(p);
+        /* `got = yield e`: the same binding as `var got = yield e`, but the target already exists --
+         * the resume writes the value into it. The checker decides where that is. */
+        if (strcmp(aop, "=") == 0 && at(p, "yield") && e->kind == EX_IDENT) {
+            Token *yk = take(p);
+            Stmt *ys = stmtNew(p->arena, ST_YIELD, yk->line);
+            ys->u.yield_.bind     = e->u.ident.name;
+            ys->u.yield_.bindLine = t->line;
+            ys->u.yield_.value    = parseExpr(p);
+            return ys->u.yield_.value ? ys : NULL;
+        }
         Expr *v = parseExpr(p);
         if (!v) return NULL;
         Stmt *s = stmtNew(p->arena, ST_ASSIGN, t->line);
@@ -1637,6 +1647,24 @@ static Stmt *parseVarDecl(Parser *p) {
     Expr *init = NULL;
     if (accept(p, "=")) {
         skipNl(p);
+        /* `var got: T = yield e` -- the declaration **is** the yield statement, and `got` is a
+         * coroutine-frame local: the frame holds it, and a resume re-runs the assignment from the
+         * frame's `in` slot (stage 2 of docs/topics/CONCURRENCY.md 4.4). */
+        if (at(p, "yield")) {
+            Token *yk = take(p);
+            Stmt *ys = stmtNew(p->arena, ST_YIELD, yk->line);
+            ys->u.yield_.bind     = name->text;
+            ys->u.yield_.bindAnn  = ann;
+            ys->u.yield_.bindLine = kw->line;
+            if (atKind(p, TK_NEWLINE) || atKind(p, TK_EOF) || at(p, "}")) {
+                ctxError(p->ctx, yk->line, yk->col, NULL,
+                         "`yield` needs a value: `yield expr`",
+                         "`yield` hands a value to whoever resumes the coroutine");
+                return NULL;
+            }
+            ys->u.yield_.value = parseExpr(p);
+            return ys->u.yield_.value ? ys : NULL;
+        }
         init = parseExpr(p);
         if (!init) return NULL;
     } else if (ann == NULL) {

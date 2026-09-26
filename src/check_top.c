@@ -3621,14 +3621,16 @@ static void checkFunc(Checker *c, FuncDef *f) {
             hinst->sdef = hsd;
             vecInit(&hinst->targs, c->arena, sizeof(Type *));
             *(Type **)vecPush(&hinst->targs) = tp;
-            for (int which = 3; which <= 4; which++) {
+            const int hw[3] = { 3, 4, 6 };    /* next / value / send on the handle */
+            for (int hi = 0; hi < 3; hi++) {
+                const int which = hw[hi];
                 FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
-                pm->name      = which == 3 ? "next" : "value";
+                pm->name      = which == 3 ? "next" : which == 4 ? "value" : "send";
                 pm->owner     = hsd;
                 pm->modName   = f->modName;
                 pm->line      = f->line;
                 pm->coroProto = which;
-                pm->ret       = which == 3 ? ttFromName(c->tt, "bool") : tp;
+                pm->ret       = which == 4 ? tp : ttFromName(c->tt, "bool");
                 vecInit(&pm->params, c->arena, sizeof(Param *));
                 Param *self = arenaAllocZero(c->arena, sizeof *self);
                 self->name = self->cname = "self";
@@ -3639,6 +3641,13 @@ static void checkFunc(Checker *c, FuncDef *f) {
                 rt->mut = which == 3;      /* `next` advances the state, `value` only reads it */
                 self->type = rt;
                 *(Param **)vecPush(&pm->params) = self;
+                if (which == 6) {
+                    Param *vp = arenaAllocZero(c->arena, sizeof *vp);
+                    vp->name = vp->cname = "v";
+                    vp->type = tp;
+                    vp->line = f->line;
+                    *(Param **)vecPush(&pm->params) = vp;
+                }
                 *(FuncDef **)vecPush(&hsd->methods) = pm;
             }
         }
@@ -3663,14 +3672,14 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * `value(self: ref F) -> T`. Driving a coroutine is then ordinary method resolution -- no
          * special case in the checker -- and `fn drive<C>(c: mut ref C)` works at instantiation
          * through the existing deferred-method machinery (#57). Codegen emits the two inline. */
-        for (int which = 1; which <= 2; which++) {
+        for (int which = 1; which <= 3; which++) {
             FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
-            pm->name     = which == 1 ? "next" : "value";
+            pm->name     = which == 1 ? "next" : which == 2 ? "value" : "send";
             pm->owner    = cfd;
             pm->modName  = f->modName;
             pm->line     = f->line;
-            pm->coroProto = which;
-            pm->ret      = which == 1 ? ttFromName(c->tt, "bool") : f->yieldType;
+            pm->coroProto = which == 3 ? 5 : which;   /* 5 = `send` on the frame (the handle's is 6) */
+            pm->ret      = which == 2 ? f->yieldType : ttFromName(c->tt, "bool");
             vecInit(&pm->params, c->arena, sizeof(Param *));
             Param *self = arenaAllocZero(c->arena, sizeof *self);
             self->name = self->cname = "self";
@@ -3678,9 +3687,18 @@ static void checkFunc(Checker *c, FuncDef *f) {
             Type *rt = arenaAllocZero(c->arena, sizeof *rt);
             rt->kind = TY_REF;
             rt->inner = cft;
-            rt->mut = which == 1;              /* `next` advances the state, `value` only reads it */
+            rt->mut = which != 2;              /* `next`/`send` advance the state, `value` reads */
             self->type = rt;
             *(Param **)vecPush(&pm->params) = self;
+            if (which == 3) {
+                /* `send(self: mut ref F, v: T) -> bool`: hand a value to the next resume, which the
+                 * coroutine reads through a `var x = yield e` binding (the frame's `in` slot). */
+                Param *vp = arenaAllocZero(c->arena, sizeof *vp);
+                vp->name = vp->cname = "v";
+                vp->type = f->yieldType;
+                vp->line = f->line;
+                *(Param **)vecPush(&pm->params) = vp;
+            }
             *(FuncDef **)vecPush(&cfd->methods) = pm;
         }
         f->coroFrameType = cft;
@@ -5920,6 +5938,26 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             fd = arenaAllocZero(c->arena, sizeof *fd);
             fd->name = "task"; fd->type = i64t; fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
+            /* The **incoming slot**: what a resume hands the coroutine, read by a `yield` binding. */
+            fd = arenaAllocZero(c->arena, sizeof *fd);
+            fd->name = "in"; fd->type = f->yieldType; fd->line = f->line;
+            *(FieldDef **)vecPush(&fsd->fields) = fd;
+            /* `yield` bindings recorded while the body was checked: frame locals like any other. */
+            for (size_t i = 0; i < c->coroBinds.len; i++) {
+                CoroBind *cb = *(CoroBind **)vecAt(&c->coroBinds, i);
+                if (cb->fn != f) continue;
+                bool dup = false;
+                for (size_t k = 0; k < f->coroFrame.len && !dup; k++) {
+                    const Param *pp = (const Param *)vecAt(&f->coroFrame, k);
+                    dup = pp->name && strcmp(pp->name, cb->name) == 0;
+                }
+                if (dup) continue;
+                Param bp;
+                bp.name = bp.cname = cb->name;
+                bp.type = cb->type;
+                bp.line = cb->line;
+                *(Param *)vecPush(&f->coroFrame) = bp;
+            }
             for (size_t k = 0; k < f->coroFrame.len; k++) {
                 const Param *p = (const Param *)vecAt(&f->coroFrame, k);
                 fd = arenaAllocZero(c->arena, sizeof *fd);

@@ -9,6 +9,21 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# `send`：驱动器送进去的值，协程在 `var x = yield e` 的绑定里收到。期望 17
+sd=$tmp/coro_send
+if "$EXTC" -w --no-line-map -o "$sd.c" tests/coro/coro_send.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$sd" "$sd.c" 2>"$tmp/sde"; then
+    "$sd"; rc=$?
+    if [ "$rc" = 17 ]; then
+        echo "  ok   coro_send          ->  yield 收值：send(7) 真的被收到（退出码 17）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_send          ->  退出码 $rc（期望 17）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_send          ->  $(head -2 "$tmp/sde" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 统一句柄：coroutine<T> 是普通存储类型，标注处装箱（帧进任务 place），句柄穿过函数边界驱动。
 # 期望 99/9 = 11；并要求 ASan 干净。
 ch=$tmp/coro_handles

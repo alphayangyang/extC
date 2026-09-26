@@ -876,6 +876,32 @@ void checkStmt(Checker *c, Stmt *s) {
             return;
 
         case ST_YIELD: {
+            /* A `yield` with a binding: the name becomes a coroutine-frame local of the yielded type,
+             * filled at the resume from the frame's `in` slot. Registered before the rest of this
+             * case so the frame layout pass sees it. */
+            if (s->u.yield_.bind && c->curFunc && c->curFunc->isCoro && c->curFunc->yieldType) {
+                Type *bt = c->curFunc->yieldType;
+                if (s->u.yield_.bindAnn && !ttIsError(s->u.yield_.bindAnn)) {
+                    if (strcmp(typeStr(c, s->u.yield_.bindAnn), typeStr(c, bt)) != 0)
+                        ckError(c, s->u.yield_.bindLine,
+                                "the binding of a `yield` takes the coroutine's yielded type",
+                                "`%s` is `%s`, but this coroutine yields `%s`",
+                                s->u.yield_.bind, typeStr(c, s->u.yield_.bindAnn), typeStr(c, bt));
+                    else
+                        bt = s->u.yield_.bindAnn;
+                }
+                /* The frame's Vec is not built yet (that is `coroFrameLay`, after the body), so the
+                 * binding is *recorded* and consumed there -- the same shape as `coroDeferred`. */
+                if (!c->coroBinds.arena)
+                    vecInit(&c->coroBinds, c->arena, sizeof(CoroBind *));
+                CoroBind *cb = arenaAllocZero(c->arena, sizeof *cb);
+                cb->fn   = c->curFunc;
+                cb->name = s->u.yield_.bind;
+                cb->type = bt;
+                cb->line = s->u.yield_.bindLine;
+                *(CoroBind **)vecPush(&c->coroBinds) = cb;
+                s->u.yield_.bindCName = arenaPrintf(c->arena, "%s", s->u.yield_.bind);
+            }
             /* `yield e`: legal only inside a coroutine body, and `e` has to be that coroutine's
              * `T`. Both come from the declared return type `coroutine<T>` (see `check_top.c`). */
             FuncDef *cf = c->curFunc;
