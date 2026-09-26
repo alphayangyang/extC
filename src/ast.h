@@ -849,4 +849,27 @@ void moduleInit(Module *m, Arena *a);
 /* A function whose first parameter is named `self` is a method. */
 bool funcIsMethod(const FuncDef *f);
 
+/* ------------------------------------------------------- walking the tree
+ *
+ * The one place that lists an AST node's children.
+ *
+ * Every question of the form "what is inside this expression" walks the same tree, and a
+ * hand-written copy of that walk has to be kept in step with the AST. The copies end in
+ * `default:`, so `-Wswitch` says nothing when a new kind gains children -- which is how
+ * `EX_SLICE`'s two bounds were skipped by eight walkers at once, and `EX_DYN`'s payload by
+ * sixteen (docs/topics/AST-WALKERS.md). Questions call the functions below instead of
+ * writing their own switch; `tools/check_walkers.py` enforces that this switch covers every
+ * kind, and it is the only switch it has to.
+ *
+ * A callback visits one **child** (never the node it was called for) and returns false to
+ * stop the walk, which is how the callers keep their "exit on the first hit" behaviour. */
+typedef struct {
+    bool (*expr)(void *ctx, Expr *e);   /* visits a child expression; NULL to skip */
+    bool (*stmt)(void *ctx, Stmt *s);   /* visits a child statement;  NULL to skip */
+    void *ctx;
+} AstVisit;
+
+bool astWalkExprChildren(Expr *e, const AstVisit *v);
+bool astWalkStmtChildren(Stmt *s, const AstVisit *v);
+
 #endif /* EXTC_AST_H */

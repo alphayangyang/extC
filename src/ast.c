@@ -157,3 +157,82 @@ bool funcIsMethod(const FuncDef *f) {
     Param *p0 = *(Param **)vecAt((Vec *)&f->params, 0);
     return strcmp(p0->name, "self") == 0;
 }
+
+/* ---------------------------------------------------------------- walking */
+
+static bool visitExpr(const AstVisit *v, Expr *e) {
+    if (!e || !v->expr) return true;
+    return v->expr(v->ctx, e);          /* false = stop the whole walk */
+}
+static bool visitStmt(const AstVisit *v, Stmt *s) {
+    if (!s) return true;
+    if (v->stmt) return v->stmt(v->ctx, s);
+    return astWalkStmtChildren(s, v);   /* no statement callback: keep descending */
+}
+static bool visitExprList(const AstVisit *v, Vec *xs) {
+    for (size_t i = 0; i < xs->len; i++)
+        if (!visitExpr(v, *(Expr **)vecAt(xs, i))) return false;
+    return true;
+}
+
+/*@@all-kinds*/   bool astWalkExprChildren(Expr *e, const AstVisit *v) {
+    if (!e) return true;
+    switch (e->kind) {
+    /* two children */
+    case EX_BIN:      return visitExpr(v, e->u.bin.left) && visitExpr(v, e->u.bin.right);
+    case EX_INDEX:    return visitExpr(v, e->u.index.obj) && visitExpr(v, e->u.index.index);
+    case EX_COALESCE: return visitExpr(v, e->u.coalesce.main) &&
+                             visitExpr(v, e->u.coalesce.fallback);
+    /* one child */
+    case EX_UN:    return visitExpr(v, e->u.un.operand);
+    case EX_REF:   return visitExpr(v, e->u.ref.operand);
+    case EX_DEREF: return visitExpr(v, e->u.deref.operand);
+    case EX_SIGN:  return visitExpr(v, e->u.sign.operand);
+    case EX_CONV:  return visitExpr(v, e->u.conv.operand);
+    case EX_TRY:   return visitExpr(v, e->u.try_.operand);
+    case EX_FIELD: return visitExpr(v, e->u.field.obj);
+    case EX_NEW:   return visitExpr(v, e->u.new_.count);
+    case EX_DYN:   return visitExpr(v, e->u.dynv.payload);
+    /* a receiver, or a list */
+    case EX_METHOD:  return visitExpr(v, e->u.method.recv) && visitExprList(v, &e->u.method.args);
+    case EX_CALL:    return visitExprList(v, &e->u.call.args);
+    case EX_ASSOC:   return visitExprList(v, &e->u.assoc.args);
+    case EX_GENCALL: return visitExprList(v, &e->u.gencall.args);
+    case EX_ENUMVAL: return visitExprList(v, &e->u.enumval.args);
+    case EX_ARRAYLIT:return visitExprList(v, &e->u.arraylit.elems);
+    case EX_SLICE:   return visitExpr(v, e->u.slice.obj) && visitExpr(v, e->u.slice.lo) &&
+                            visitExpr(v, e->u.slice.hi);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (!visitExpr(v, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return false;
+        return true;
+    /* no children */
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: case EX_IDENT: case EX_NULL:
+        return true;
+    }
+    return true;
+}
+
+/*@@all-kinds*/   bool astWalkStmtChildren(Stmt *s, const AstVisit *v) {
+    if (!s) return true;
+    switch (s->kind) {
+    case ST_VAR:    return visitExpr(v, s->u.var.init);
+    case ST_ASSIGN: return visitExpr(v, s->u.assign.target) && visitExpr(v, s->u.assign.value);
+    case ST_RETURN: return visitExpr(v, s->u.ret.value);
+    case ST_EXPR:   return visitExpr(v, s->u.expr.expr);
+    case ST_IF:     return visitExpr(v, s->u.ifs.cond) &&
+                           visitStmt(v, s->u.ifs.thenBody) && visitStmt(v, s->u.ifs.elseBody);
+    case ST_WHILE:  return visitExpr(v, s->u.whiles.cond) && visitStmt(v, s->u.whiles.body);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (!visitStmt(v, *(Stmt **)vecAt(&s->u.block.stmts, i))) return false;
+        return true;
+    case ST_MATCH:
+        if (!visitExpr(v, s->u.match.scrutinee)) return false;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (!visitStmt(v, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return false;
+        return true;
+    case ST_BREAK: case ST_CONTINUE: return true;   /* no children */
+    }
+    return true;
+}

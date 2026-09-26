@@ -30,31 +30,52 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # descend into). Keep this list tight -- if a kind gains children, remove it here.
 LEAF = {
     "EX_INT", "EX_FLOAT", "EX_BOOL", "EX_STR", "EX_IDENT", "EX_NULL",
+    "ST_BREAK", "ST_CONTINUE",      # statements with nothing inside them
 }
 # Walkers that are known to be deliberately partial, with the reason. Adding an entry here is
 # a promise that the omission is intentional -- state why.
-ALLOW = {}   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
+ALLOW = {}
+# Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
+RATCHET = 29       # measured 2026-09-26 with the enum extraction fixed (the two earlier counts
+                   # were wrong: one spanned both enums, the other ignored statement walkers).
+                   # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
 
 
 def enum_kinds(header: str, name: str) -> list:
     """Kind names of `typedef enum { ... } <name>;` in the header."""
-    m = re.search(r"typedef enum\s*\{(.*?)\}\s*" + name + r"\s*;", header, re.S)
+    # `[^{}]*` matters: with `.*?` the match starts at the *first* `typedef enum {` in the file
+    # and spans everything up to `} StmtKind;`, so `StmtKind` came out as both enums (36 kinds)
+    # and every statement walker was reported as missing all 26 expression kinds.
+    # Strip comments **first**: an enum's comments may contain braces (one of `ExprKind`'s does),
+    # and they must not decide where the enum ends.
+    bare = re.sub(r"/\*.*?\*/", " ", header, flags=re.S)
+    bare = re.sub(r"//[^\n]*", " ", bare)
+    m = re.search(r"typedef enum\s*\{([^{}]*)\}\s*" + name + r"\s*;", bare, re.S)
     if not m:
         return []
-    body = re.sub(r"/\*.*?\*/", " ", m.group(1), flags=re.S)
-    body = re.sub(r"//[^\n]*", " ", body)
+    body = m.group(1)
     return re.findall(r"\b((?:EX|ST)_[A-Z0-9_]+)\b", body)
 
 
 def enclosing_function(text: str, pos: int):
-    """Name of the function whose body contains `pos`, or None."""
-    head = text[:pos]
-    for m in re.finditer(r"^[A-Za-z_][A-Za-z0-9_ \*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", head, re.M):
-        pass
-    m = None
-    for m in re.finditer(r"^([A-Za-z_][A-Za-z0-9_ \*]*?)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", head, re.M):
-        pass
-    return m.group(2) if m else None
+    """Name of the function definition whose body contains `pos`, or None.
+
+    A definition is a line starting in column 0 that carries a `(` and does not end in `;`
+    (a prototype); the name is the identifier just before that `(`. Scanning for "the last
+    identifier followed by (" instead picked up call lines and mis-attributed the switch.
+    """
+    name = None
+    for line in text[:pos].split("\n"):
+        if not line or line[0].isspace() or "(" not in line:
+            continue
+        stripped = line.rstrip()
+        if stripped.endswith(";") or stripped.endswith(")") and "{" not in stripped:
+            continue
+        before = line[:line.index("(")].strip()
+        m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)$", before)
+        if m:
+            name = m.group(1)
+    return name
 
 
 def strip_comments_and_strings(text: str) -> str:
@@ -121,17 +142,28 @@ def main() -> int:
         "ST": [k for k in enum_kinds(header, "StmtKind")],
     }
     bad = 0
+    hand_written = 0        # recursive *and* untagged: the copies still to be migrated
     for path in sorted((ROOT / "src").glob("*.c")):
-        text = strip_comments_and_strings(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        text = strip_comments_and_strings(raw)
         for pos, block in switch_blocks(text):
             labels = set(re.findall(r"case\s+((?:EX|ST)_[A-Z0-9_]+)", block))
             if len(labels) < 3:
                 continue                        # not a full walker
             first = re.search(r"case\s+((?:EX|ST)_[A-Z0-9_]+)", block).group(1)
             prefix = first[:2]                  # the enum this switch dispatches on
-            fn = enclosing_function(text, pos)
-            if not fn or not re.search(r"\b" + re.escape(fn) + r"\s*\(", block):
-                continue                        # not recursive: a classifier, not a walker
+            # Offsets are preserved by the stripper, so scan the raw text: the tagged
+            # definition starts with a comment, which is blanked out in `text`.
+            fn = enclosing_function(raw, pos)
+            recursive = bool(fn) and bool(re.search(r"\b" + re.escape(fn) + r"\s*\(", block))
+            # A walker is either recursive by text (the hand-written copies) or tagged
+            # `/*@@all-kinds*/` -- the authoritative child list in `ast.c` delegates to helpers,
+            # so text alone cannot recognise it, and that list must be guarded too.
+            # The tag lives in a comment, and `text` has comments blanked out, so look at the
+            # raw file for it.
+            tagged = "/*@@all-kinds*/" in raw[max(0, pos - 300):pos + 300]
+            if not recursive and not tagged:
+                continue                        # a classifier, not a walker
             missing = [k for k in kinds[prefix] if k not in labels and k not in LEAF]
             line = text[:pos].count("\n") + 1
             tag = f"{path.name}:{fn}"
@@ -139,11 +171,14 @@ def main() -> int:
             # Only a **wide** walker (one that already covers most kinds) is expected to be
             # complete. A narrow predicate -- `isPlaceExpr`, `exprMayPrint`, ... -- walks a few
             # shapes on purpose, and is reported as information, not as a defect.
-            wide = len(labels) >= 15
+            # "Wide" is relative to the enum: a statement walker legitimately has ten cases.
+            wide = len(labels) * 10 >= len(kinds[prefix]) * 6
             if missing and not wide:
                 if listing:
                     print(f"  narrow   {loc}  ({len(labels)} kinds, skips {len(missing)})")
                 continue
+            if recursive and not tagged:
+                hand_written += 1
             if missing:
                 if tag in ALLOW:
                     print(f"  allowed  {loc}  (missing {', '.join(missing)}) -- {ALLOW[tag]}")
@@ -153,6 +188,14 @@ def main() -> int:
             elif listing:
                 print(f"  ok       {loc}  ({len(labels)} kinds)")
     print()
+    # The ratchet: migrating a copy lowers this number, adding a new copy raises it. New copies are
+    # exactly what this refactor exists to prevent, so the gate refuses to let the count grow.
+    if hand_written > RATCHET:
+        print(f"  {hand_written} hand-written walkers, budget is {RATCHET} -- migrate one instead of"
+              f" adding another (docs/topics/AST-WALKERS.md)")
+        bad += 1
+    else:
+        print(f"  hand-written walkers: {hand_written} (ratchet {RATCHET})")
     if bad:
         print(f"  {bad} walker(s) miss at least one kind -- add the case, or record the omission in"
               f" ALLOW with a reason ({pathlib.Path(__file__).name})")

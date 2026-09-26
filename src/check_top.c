@@ -590,102 +590,42 @@ static bool exprCallsNeedsHome(Expr *e, bool precise) {
  * The comparison is on the *generated* name, so a local that shadows the parameter (which gets
  * `__2` appended) cannot be mistaken for it.
  */
-static bool stmtUsesCname(Stmt *s, const char *cname);
-static bool exprUsesCname(Expr *e, const char *cname) {
-    if (!e) return false;
+/* Does this expression, or this statement, mention the binding whose generated-C name is
+ * `cname`?
+ *
+ * Used for one question only: is a parameter ever read?
+ *
+ * The walk itself lives in `astWalkExprChildren` / `astWalkStmtChildren` (`ast.c`) since
+ * 2026-09-26: the AST kinds are listed **once** there, so a new kind cannot be forgotten here.
+ * That is not hypothetical -- this question and seven siblings each carried their own copy of
+ * the kind list, each ending in `default:`, so `-Wswitch` stayed silent while `EX_SLICE`'s two
+ * bounds and `EX_DYN`'s payload went missing from all of them (docs/topics/AST-WALKERS.md).
+ *
+ * The comparison is on the *generated* name, so a local that shadows the parameter (which gets
+ * `__2` appended) cannot be mistaken for it.
+ *
+ * A callback returns false to stop the walk; "found" is carried by that early exit. */
+typedef struct { const char *cname; } CnameCtx;
+
+static bool cnameInStmt(void *ctx, Stmt *s);
+
+static bool cnameInExpr(void *ctx, Expr *e) {
+    CnameCtx *c = (CnameCtx *)ctx;
     if (e->kind == EX_IDENT)
-        return e->u.ident.cname && strcmp(e->u.ident.cname, cname) == 0;
-    switch (e->kind) {
-    case EX_BIN: return exprUsesCname(e->u.bin.left, cname) || exprUsesCname(e->u.bin.right, cname);
-    case EX_UN:  return exprUsesCname(e->u.un.operand, cname);
-    case EX_REF: return exprUsesCname(e->u.ref.operand, cname);
-    case EX_DEREF: return exprUsesCname(e->u.deref.operand, cname);
-    case EX_SIGN:  return exprUsesCname(e->u.sign.operand, cname);
-    case EX_CONV:  return exprUsesCname(e->u.conv.operand, cname);
-    case EX_TRY:   return exprUsesCname(e->u.try_.operand, cname);
-    case EX_INDEX:
-        return exprUsesCname(e->u.index.obj, cname) || exprUsesCname(e->u.index.index, cname);
-    /* `a[lo..hi]` has three expressions, not one, and the bounds were skipped by every
-     * walker that asks "what appears in this expression" - including this one, which is
-     * why `examples/gomoku-board.extc` reported `lo` and `hi` as never used while its body
-     * reads both (`self.cell[y][lo..hi]`). The same hole sat in the neighbours
-     * (`exprHasNew`, `exprCallsNeedsHome`, `markNamesInExpr`, `collectEffectsExpr`,
-     * `exprCallsAllocator`, codegen's `collectOwCallsExpr`, and the loader's `rwExpr`), and
-     * in each of them it is a real defect, not just a missing warning: a call in a bound
-     * belongs in the function's effect summary, and a qualified name in a bound was never
-     * rewritten. Walkers that ask what *place* or what *lifetime* an expression denotes
-     * still look at the object alone - bounds are values, and `obligExpr` was the one that
-     * had it right all along. */
-    case EX_SLICE: return exprUsesCname(e->u.slice.obj, cname) ||
-                          exprUsesCname(e->u.slice.lo, cname) ||
-                          exprUsesCname(e->u.slice.hi, cname);
-    case EX_FIELD: return exprUsesCname(e->u.field.obj, cname);
-    case EX_COALESCE:
-        return exprUsesCname(e->u.coalesce.main, cname) ||
-               exprUsesCname(e->u.coalesce.fallback, cname);
-    case EX_METHOD: {
-        if (exprUsesCname(e->u.method.recv, cname)) return true;
-        for (size_t i = 0; i < e->u.method.args.len; i++)
-            if (exprUsesCname(*(Expr **)vecAt(&e->u.method.args, i), cname)) return true;
-        return false;
-    }
-    case EX_CALL: {
-        for (size_t i = 0; i < e->u.call.args.len; i++)
-            if (exprUsesCname(*(Expr **)vecAt(&e->u.call.args, i), cname)) return true;
-        return false;
-    }
-    case EX_ASSOC: {
-        for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            if (exprUsesCname(*(Expr **)vecAt(&e->u.assoc.args, i), cname)) return true;
-        return false;
-    }
-    case EX_NEW: return exprUsesCname(e->u.new_.count, cname);
-    case EX_STRUCTLIT:
-        for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            if (exprUsesCname((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, cname)) return true;
-        return false;
-    case EX_ARRAYLIT:
-        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            if (exprUsesCname(*(Expr **)vecAt(&e->u.arraylit.elems, i), cname)) return true;
-        return false;
-    case EX_ENUMVAL:
-        for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            if (exprUsesCname(*(Expr **)vecAt(&e->u.enumval.args, i), cname)) return true;
-        return false;
-    case EX_GENCALL:
-        for (size_t i = 0; i < e->u.gencall.args.len; i++)
-            if (exprUsesCname(*(Expr **)vecAt(&e->u.gencall.args, i), cname)) return true;
-        return false;
-    /* A parameter used only inside a `dyn` payload used to be reported as never used. */
-    case EX_DYN: return exprUsesCname(e->u.dynv.payload, cname);
-    default: return false;
-    }
+        return !(e->u.ident.cname && strcmp(e->u.ident.cname, c->cname) == 0);
+    AstVisit v = { cnameInExpr, cnameInStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+static bool cnameInStmt(void *ctx, Stmt *s) {
+    AstVisit v = { cnameInExpr, cnameInStmt, ctx };
+    return astWalkStmtChildren(s, &v);
 }
 
 static bool stmtUsesCname(Stmt *s, const char *cname) {
     if (!s) return false;
-    switch (s->kind) {
-    case ST_VAR:    return exprUsesCname(s->u.var.init, cname);
-    case ST_ASSIGN: return exprUsesCname(s->u.assign.target, cname) ||
-                           exprUsesCname(s->u.assign.value, cname);
-    case ST_IF:     return exprUsesCname(s->u.ifs.cond, cname) ||
-                           stmtUsesCname(s->u.ifs.thenBody, cname) ||
-                           stmtUsesCname(s->u.ifs.elseBody, cname);
-    case ST_WHILE:  return exprUsesCname(s->u.whiles.cond, cname) ||
-                           stmtUsesCname(s->u.whiles.body, cname);
-    case ST_RETURN: return exprUsesCname(s->u.ret.value, cname);
-    case ST_EXPR:   return exprUsesCname(s->u.expr.expr, cname);
-    case ST_BLOCK:
-        for (size_t i = 0; i < s->u.block.stmts.len; i++)
-            if (stmtUsesCname(*(Stmt **)vecAt(&s->u.block.stmts, i), cname)) return true;
-        return false;
-    case ST_MATCH:
-        if (exprUsesCname(s->u.match.scrutinee, cname)) return true;
-        for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtUsesCname((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, cname)) return true;
-        return false;
-    default: return false;
-    }
+    CnameCtx c = { cname };
+    return !cnameInStmt(&c, s);
 }
 
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, false); }

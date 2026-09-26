@@ -34,6 +34,12 @@
 ⇒ 结论：**每加一个 AST 种类，就有 8 个地方可能漏**；漏一个就是 soundness 洞（不是少个警告）。
 这正是"home zone 老是出 bug"的结构性原因之一。
 
+### 1.1 真实规模：**29 个**手写遍历器（2026-09-26 由判据量出）
+
+`tools/check_walkers.py` 现在把数量**写进判据**（`RATCHET = 29`）：迁移一个就减一，**新增一个直接红** ✓
+（前两次人工统计分别是 17 与 41，都是错的 —— 第一次的枚举抽取跨了两个 enum、第二次又漏了语句遍历器；
+教训：**这类清单必须由判据数，不能靠人数**。）
+
 ## 2. 目标：一处权威
 
 一个通用访问器 + 若干小回调：
@@ -55,13 +61,26 @@ bool walkStmt(Checker *c, Stmt *s, ExprVisit fn, void *ctx);
 
 | 步 | 迁移 | 为什么这个顺序 |
 |---|---|---|
-| 1 | `exprUsesCname`（纯查询、无副作用、有现成判据：参数"未使用"警告） | 形状最干净，先验证访问器本身 |
+| ~~1~~ | ~~`exprUsesCname`/`stmtUsesCname`~~ **✅ 2026-09-26 已完成** | 形状最干净。**生成物在 202 个程序上逐字节相同** ⇒ 迁移是行为保持的；`astWalkStmtChildren` 到位后，`exprUsesCname` 成了死代码，删掉 ✓ |
 | 2 | `exprHasNew` | 纯查询 |
 | 3 | `exprCallsAllocator`（+ 保留惰性记忆化外壳） | 纯查询，含循环防护 |
 | 4 | `exprCallsNeedsHome`（把 precise/wide 收成 `ReachKind` 的两个取值） | 纯查询，但**被 soundness 依赖** ⇒ 迁完立刻跑反例库 |
 | 5 | `markNamesInExpr` / `collectEffectsExpr` | **有副作用** ⇒ 必须保序遍历（先子后父/先父后子要一致） |
 | 6 | codegen 的 `collectOwCallsExpr` | 跨到 codegen，注意它跑在检查之后 |
 | 7 | loader 的 `rwExpr` | 跨到模块加载，最后做 |
+
+## 3.1 判据自己也被查出三个 bug（诚实记账）
+
+写通用访问器时顺手复核了 `check_walkers.py`，它自己有错 —— 而且**错的方式正是它要防的那一类**：
+
+1. **枚举抽取跨了两个 enum**（`typedef enum {`…`} StmtKind;` 从**第一个** enum 起步）⇒ `StmtKind`
+   被当成 36 种 ⇒ 每个语句遍历器都被报成"缺 26 个表达式种类" ✗（第一轮那批噪声就是它）；
+2. **`enclosing_function` 认错函数名**：它扫的是**剥掉注释后**的文本，而权威清单的标签在注释里 ⇒
+   那一行变成前导空格被跳过，于是名字取成了上一个辅助函数 ✗；
+3. **"宽遍历器"阈值是相对固定的 15**，实际上是在替上面第 1 条打补丁 ⇒ 改成**相对枚举**
+   （`len(labels)*10 >= len(kinds)*6`）✓。
+
+另外 **`ST_BREAK`/`ST_CONTINUE` 进了 `LEAF`**：它们是"里面什么都没有"的语句，和 `EX_INT` 一类同理 ✓
 
 ## 4. 判据（每步都要有）
 
