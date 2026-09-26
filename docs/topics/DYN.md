@@ -213,10 +213,13 @@ dyn 值的载荷是**一份拷贝**，它必须有个拥有者。选择**当前 
 ```c
 /* 运行期两个新助手（放进 src/pools.c 的池运行期文本里，与既有 extc_pool_* 同区） */
 ExtcDynHandle extc_dyn_put(const void *payload, int64_t size, const void *vt);
-const void   *extc_dyn_vt(ExtcDynHandle h, const char *file, int line);   /* 不合法就 trap */
+ExtcDynSlot  *extc_dyn_slot(ExtcDynHandle h, const char *file, int line);  /* 不合法就 trap */
+
+/* 返回**槽**而不是只返回表：调用点两样都要（`vt` 派发、`addr` 当接收者），而两样都必须来自
+ * **已校验过的槽** —— 从值本身读载荷地址就会在"校验之前"使用它。 */
 ```
 
-`extc_dyn_vt` 做三件事：① `pid` 必须是一只活着的**对象表**池；② 槽必须在界内且 `live`；
+`extc_dyn_slot` 做三件事：① `pid` 必须是一只活着的**对象表**池；② 槽必须在界内且 `live`；
 ③ **`slot` 的世代必须等于值里带的世代**。任一条不成立 ⇒ **trap**（带源位置）。
 只有全部通过，才把 `vt` 交给调用点。
 
