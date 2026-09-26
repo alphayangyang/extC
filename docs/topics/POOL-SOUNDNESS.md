@@ -53,7 +53,7 @@
   池**生在某个地方**（`zone` 字段 + `zoneNext` 链），随地方死（`extc_pool_zoneLeaveTo`）。
 - **地方（zone）**：编译期的一摞栈；运行期只是 `extc_zones[]` + 颜色。
 
-状态 `σ = (Z, P, B, A)`：地方栈、池表、块集合、arena 块集合。
+状态 `σ =(Z, P, B, A)`：地方栈、池表、块集合、arena 块集合。
 
 ### 1.2 实现真正用的三个判据
 
@@ -76,9 +76,9 @@
 
 | 不变量 | 内容 | 今天 |
 |---|---|---|
-| **INV-G（换代覆盖）** | 任何让旧引用可能失效的状态变化，都必须让旧引用携带的 `gen` 不再匹配 | 池粒度 ✓（drop / 槽复用）；**元素粒度 ✗**（`reset`） |
-| **INV-A（只追加）** | 以句柄寻址的存储，块在句柄可能活着期间不得 `free`/`realloc`（或必须换代） | **✗**（`give` = `free`、`resize` = `realloc`，都不换代） |
-| **INV-V（视图不进池）** | `ref`/`slice` 不得指向会被 `push`/`clear`/`shrink`/`release` 替换的块 | **✗**（`string::sub` 零拷贝；且无静态规则禁止） |
+| **INV-G（换代覆盖）** | 任何让旧引用可能失效的状态变化，都必须让旧引用携带的 `gen` 不再匹配 | 池粒度（drop / 槽复用）；**元素粒度 **（`reset`） |
+| **INV-A（只追加）** | 以句柄寻址的存储，块在句柄可能活着期间不得 `free`/`realloc`（或必须换代） | ** **（`give` = `free`、`resize` = `realloc`，都不换代） |
+| **INV-V（视图不进池）** | `ref`/`slice` 不得指向会被 `push`/`clear`/`shrink`/`release` 替换的块 | ** **（`string::sub` 零拷贝；且无静态规则禁止） |
 
 ---
 
@@ -89,7 +89,7 @@
 1. **分配**：`take`/`take_raw` 拿到的块**只属于这一只池**，只有 `give`/`resize`/池释放能取消它 ⇒ 块的活性是**单调**的（INV-A 保证不会在句柄活着时取消）。
 2. **校验**：`gen` 匹配 ∧ `live` ⇒ 由 **INV-G**，"自 `h` 发出以来没有发生过能让 `h` 失效的变化" ⇒ 目标仍是当年那个 ⇒ `L` 成立。
 3. **视图**：视图没有 `gen`，所以它**只能靠静态规则**：由 **INV-V**，块在视图生命周期内不被替换 ⇒ 地址一直有效（这与 arena 档的 `INV-H`（深度上界）是同一个形状：**静态记账必须是真实情况的上界**）。
-4. **地方退出**：`zoneLeaveTo` → `drop` 每只池 ⇒ `live = 0` ⇒ 池粒度的句柄全部失效（且 `generation()` 返回 0）；视图由 arena 档的逃逸规则管（视图不能活过地方）✓
+4. **地方退出**：`zoneLeaveTo` → `drop` 每只池 ⇒ `live = 0` ⇒ 池粒度的句柄全部失效（且 `generation()` 返回 0）；视图由 arena 档的逃逸规则管（视图不能活过地方）
 
 ⇒ **池档定理成立 ⟺ INV-G ∧ INV-A ∧ INV-V。** 三条都是"记账"层面的，不是存储层面的。
 
@@ -131,20 +131,20 @@ void extc_pool_reset(int64_t rid) {
 ```
 int64_t extc_pool_give(int64_t rid, void *p) { ... free(b); return 1; }
 void   *extc_pool_resize(int64_t rid, void *p, int64_t bytes) {
-    ExtcBlock *nb = (ExtcBlock *)realloc(b, sizeof(ExtcBlock) + bytes); ... return (void *)(nb + 1);
+    ExtcBlock *nb =(ExtcBlock *)realloc(b, sizeof(ExtcBlock) + bytes); ... return(void *)(nb + 1);
 }
 ```
 
 两者都可能让"某地址"从有效变成无效/搬家，而 `generation` **一个字节都没动**。
-`give` 是容器换缓冲时调的（codegen 里 `extc_pool_give((int64_t)(...), (void *)(...).data)`）；
+`give` 是容器换缓冲时调的（codegen 里 `extc_pool_give((int64_t)(...),(void *)(...).data)`）；
 `resize` 是"原地增长"的优化（注释：比 take+copy+give 少一个峰值）。
 
 ### 4.3 INV-V 不成立（视图可以指向池块，且族内不一致）
 
 | API | 行为 | 评价 |
 |---|---|---|
-| `vector::toSlice`（`stdlib/stl/vector.extc:70`） | **拷贝** | 注释（66–69）明说：*"没有'零拷贝视图'是有意的：那等于把池里的东西交出去（POOLS.md §5.4），而且守不住"* ✓ |
-| `string::sub`（`stdlib/stl/string.extc`） | **已改：拷贝**（`new u8[n]` + `copyInto`，落点在调用者选的地方） | 现在与 `toSlice` 一致 ✓；零拷贝另立 `subView`，注释里写明"只在字符串不再变化时有效"——**要签字** |
+| `vector::toSlice`（`stdlib/stl/vector.extc:70`） | **拷贝** | 注释（66–69）明说：*"没有'零拷贝视图'是有意的：那等于把池里的东西交出去（POOLS.md §5.4），而且守不住"* |
+| `string::sub`（`stdlib/stl/string.extc`） | **已改：拷贝**（`new u8[n]` + `copyInto`，落点在调用者选的地方） | 现在与 `toSlice` 一致；零拷贝另立 `subView`，注释里写明"只在字符串不再变化时有效"——**要签字** |
 
 而 `docs/topics/POOLS.md:792` 早就写下了结论：*"视图本身也守不住 —— `push` 一次（可能搬家）、
 `clear`（翻纪元）、`shrink`…"*。**文档是对的，实现漏了一处** —— 与 arena 档"定理对、记账漏"同形。
@@ -195,7 +195,7 @@ dyn 的句柄是 `{pool, idx, gen}`。若 `idx` 落在被 `reset` 标记可复�
 > **2026-09-26 更新：这条缝已经合上。** `dyn` 落地时按本文的要求做了两件事：
 > ① **dyn 用的池是对象表**（`extc_dyn_put` 里只走 `extc_pool_new_table`；生成物判据
 > `dyn_object_table` 断言它出现）；② **派发键存在槽里、不在值里**，且派发前校验世代
-> （`extc_dyn_slot`）—— 于是"槽被复用成另一个实现"这条路径上，**校验先失败**，
+>（`extc_dyn_slot`）—— 于是"槽被复用成另一个实现"这条路径上，**校验先失败**，
 > 旧值永远读不到新实现的表。**存储面也已落地**（`dyn_stored_call`：两种实现经同一张统一表；`dyn_in_field` / `dyn_in_array` /
 > `dyn_in_varArray`）。运行期判据 `dyn_o5_stale_trap` 要求四件事同时成立：
 > 退出码非 0 · 提示 stale · 校验前一切正常 · **校验之后那行标记没有出现** ——
@@ -239,7 +239,7 @@ dyn 的句柄是 `{pool, idx, gen}`。若 `idx` 落在被 `reset` 标记可复�
    语义变成"重置 = 该池所有引用作废"，粗但 sound；若将来要"单槽失效"，再加**每槽代际**。
 2. **INV-A（dyn 的池只追加）**：dyn 用的池**永不 `give`、永不 `resize`**（**2026-09-25 起由池的模式在运行期挡住**：对象表模式下两者直接 trap）；删除 = **墓碑**
    —— **2026-09-26：已按此实现**（`extc_dyn_put` 只经 `extc_pool_new_table` 建池，运行期 `give`/`resize`/`_raw` 三处守卫在对象表模式下 trap；判据 `dyn_object_table`、`tests/pool/rt_table_no_resize.extc`）。
-   （对象仍在、标记已删 ⇒ 取用时 trap）。这一条同时买到：`self` 借用安全、迭代中插入安全、同池句柄稳定。
+（对象仍在、标记已删 ⇒ 取用时 trap）。这一条同时买到：`self` 借用安全、迭代中插入安全、同池句柄稳定。
 3. ~~**INV-V（视图不进池）**~~ **已落地（2026-09-25）**：`string::sub` 改**拷贝**；零拷贝改成
    `subView` 并写明契约（"只在字符串不再变化时有效"，与 `!`/`extern!` 同类）。
 
@@ -283,7 +283,7 @@ PY
 池档定理（以及 arena 档定理）都是**相对**的，前提是这三样东西诚实：
 
 1. **FFI 声明**：`extern!("libc") fn write(...) effects Addr=0 Cont=0` 是**承诺**
-   （"我不存你的指针"）。C 侧说谎（存了指针、或之后写它），extC 看不见 ⇒ 静默 UB。
+（"我不存你的指针"）。C 侧说谎（存了指针、或之后写它），extC 看不见 ⇒ 静默 UB。
    这是第三档（外面来的内存）的**固有边界**：它只能靠"签字 + 信任"。
 2. **`!` 逃生门**：显式放弃检查的地方，定理不覆盖（用户签过字）。
 3. **`dlclose` 契约**：卸载一个还持有活池的库 ⇒ 必须"禁止卸载"或"卸载时把所有相关池置为墓碑"，

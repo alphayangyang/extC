@@ -31,7 +31,7 @@
 |---|---|---|
 | 1 | `src/ast.h` | `TraitDef { name, line, Vec methods }`；`Module.traits`；`ImplDef.traitName`（固有 impl 为 NULL）。**先打印 `ImplDef` 与 `Module` 的现有结构再改**（上一轮凭记忆改，锚点不匹配） |
 | 2 | `src/parser.c` | 顶层分发加 `trait` 分支；`parseTrait`：名字用 `expectIdent` + 要求首字母大写（trait 是**第三种名字**，与类型/类型参数都不冲突）；方法用现成开关 **`p->noBody = true`** 走 `parseFunc`（这就是 `extern!` 只发签名的同一开关，已核实）；`parseImpl` 在目标名之后接受 `for Type` |
-| 3 | `src/modules.c` | `mergeUnit` 增加 traits 循环（每个单元把自己的 trait 推给 `L->out`）。⚠️ 根文件现在也走 `mergeUnit`（本会话已合并），所以**只需改一处** —— 这正是当初合并那两处路径的收益 |
+| 3 | `src/modules.c` | `mergeUnit` 增加 traits 循环（每个单元把自己的 trait 推给 `L->out`）。 根文件现在也走 `mergeUnit`（本会话已合并），所以**只需改一处** —— 这正是当初合并那两处路径的收益 |
 | 4 | `src/check_top.c` | `impl` 挂载趟：若 `im->traitName` 非空 ⇒ 在 `m->traits` 里找同名 trait，找不到报"unknown trait"；找到则照旧把方法挂进类型的方法集（调用因此可用） |
 | 5 | `src/codegen.c` | 发静态方法表（声明顺序、稳定键）；本期**不生成任何引用它的代码** |
 | 6 | 判据 | 正例：trait + 两个 `impl … for` + 直接调用；反例六条（缺方法 / 签名不符 / 重复实现 / `Self` 越界 / 跨 trait 撞名 / 与固有方法撞名）+ 一条"生成物里没有函数指针调用" |
@@ -42,7 +42,7 @@
 > 第二期已开工，**设计与阶段划分以 [`DYN.md`](DYN.md) 为权威**（本文只保留范围摘要）。
 
 - **第二期**：`dyn` 值落池（**对象表模式**）+ 方法表进池 + 取用前校验 `gen` + 补齐 **O5 类型身份**
-  （陈旧 dyn 值 trap，而不是跳到另一个实现上）。前置已就绪：池模式（`extc_pool_new_table` / `extc_pool_kind`）、
+（陈旧 dyn 值 trap，而不是跳到另一个实现上）。前置已就绪：池模式（`extc_pool_new_table` / `extc_pool_kind`）、
   `reset` 换代、对象表模式禁 `give`/`resize`（含 `_raw`）。
 - **第三期**：开放注册 + 动态链接（前置：接口文件 + ABI 冻结 + 卸载墓碑）。
 
@@ -59,7 +59,7 @@ mangling 助手。方法表只是把这三样再用于"字段类型 + 函数名"
 
 ```c
 /* static method table: `Codec` for `circle` -- slot order = the trait's declaration order */
-static const struct { int64_t (*tag)(circle *); } __attribute__((unused))
+static const struct { int64_t(*tag)(circle *); } __attribute__((unused))
     extc_vt$Codec$circle = { circle$tag };
 ```
 
@@ -81,22 +81,22 @@ static const struct { int64_t (*tag)(circle *); } __attribute__((unused))
 **第三次尝试（2026-09-26）：顺序那一半成功，登记那一半还差一步**
 
 已按下面的 1+2 实现并实测：
-- ✅ **表发在全部 `dropUnreferenced` 轮次之后**（`markUnusedParams` 之后、`return` 之前，直接 `bufPuts(out, …)`）
+-  **表发在全部 `dropUnreferenced` 轮次之后**（`markUnusedParams` 之后、`return` 之前，直接 `bufPuts(out, …)`）
   ⇒ **头部注释完好**（前两次的"未闭合注释"消失），这是根因判断正确的直接证据；
-- ❌ 但表里引用的方法**根本没被发出**（`box_zeta` 在生成物里只出现于表本身）⇒ 生成物 `-std=c11` 编不过
-  （`'box_zeta' undeclared`）。
+-  但表里引用的方法**根本没被发出**（`box_zeta` 在生成物里只出现于表本身）⇒ 生成物 `-std=c11` 编不过
+（`'box_zeta' undeclared`）。
 
 **真因（第三种机制，逐层剥出来的）**：`g.funcs` 不是"模块的全部函数"，而是**可达性播种**的结果
 （`src/codegen.c:5291`/`5320` 两处入列）。第一期的表**没有任何调用者**，所以那些方法既不入列、也就不会
 被发出 —— 与死代码消除无关，是"从没被收录"。
 
 **第四次尝试（2026-09-26）**：按上一条把"表引用的方法"加进**自由函数**那处播种过滤
-（`if (!f->used && !cgIsMain(f) && !inTraitTable(m, f)) continue;`）—— 头部仍然完好，但方法**依旧**没被发出。
+（`if(!f->used && !cgIsMain(f) && !inTraitTable(m, f)) continue;`）—— 头部仍然完好，但方法**依旧**没被发出。
 ⇒ **播种过滤有两个点，我只改了一个**：`src/codegen.c` 里方法（`sd->methods`）与自由函数（`m->funcs`）
 各自有一处 `!f->used` 过滤（前者的入列语句是 `*(FuncDef **)vecPush(&g.funcs) = md;`，约在 5291 行）。
 **下一轮只需把同一条件加到方法那一处**（复用 `inTraitTable`，不要写第二份规则）。
 
-**原来记的那一步（保留）**：在播种处把"**被某个 (trait, 类型) 表引用的方法**"当作**根**
+**原来记的那一步（保留）**：在播种处把"**被某个(trait, 类型) 表引用的方法**"当作**根**
 无条件入列（与"排除死代码候补"用同一个谓词 `inTraitTable`，仍然是一处规则）；
 随后表自然指向已发出的函数，生成物即可编过。
 
@@ -124,7 +124,7 @@ home 参数、任何 extC 类型的 C 拼写有意见（那些问题由原型发
 1. `生成物里没有间接调用`：断言 vtable 符号在生成物里**只出现一次**（定义处），且生成物中不存在
    通过它调用的形式；再加一条"没有 `(*` 形式的调用语法"作为兜底；
 2. `槽位顺序 = 声明顺序`：把 `trait` 的声明顺序倒过来再编译，生成物的字段顺序必须跟着倒过来
-   （这条判据能挡住"按字母序发"这类实现）。
+（这条判据能挡住"按字母序发"这类实现）。
 
 ### B. 撞名的专门诊断
 
@@ -135,7 +135,7 @@ home 参数、任何 extC 类型的 C 拼写有意见（那些问题由原型发
 `m->impls` 里反查它是哪个 trait 声明的（或判定为固有方法），据此给出"两个 trait 都声明了 `tag`，
 请改名或（将来）用 `Codec::tag(c)`"这类消息。
 
-⚠️ **必须同时翻面**判据 `tests/impl/trait_collide_inherent.extc` 与 `trait_collide_cross.extc`
+ **必须同时翻面**判据 `tests/impl/trait_collide_inherent.extc` 与 `trait_collide_cross.extc`
 （它们现在断言的是通用消息）—— 这是本项目一贯的纪律：判据把行为焊死，改行为就要改判据。
 
 ## 五、两条相关但独立的记录

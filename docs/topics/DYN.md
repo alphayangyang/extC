@@ -48,7 +48,7 @@ dyn Tag(b).tag()        /* 阶段 1：构造 + 立即调用（不碰池） */
 |---|---|---|---|
 | 1 | dyn 用的池**只追加** | **O4** | `extc_pool_new_table` + `extc_pool_kind`；`give`/`resize`/`_raw` 三处守卫（已落地） |
 | 2 | 删除 = **墓碑**（对象在、标记已删） | O4 | 槽表里 `0` 表示空闲，即天然墓碑 |
-| 3 | 派发前**校验 `gen`** | **O5** | ❌ **今天就缺这一条**（`SOUNDNESS.md`），也是第二期的核心工作 |
+| 3 | 派发前**校验 `gen`** | **O5** |  **今天就缺这一条**（`SOUNDNESS.md`），也是第二期的核心工作 |
 | 4 | 整池作废只需一次比较（`reset` 换代） | INV-G | `extc_pool_reset` 里的 `generation++`（已落地） |
 | 5 | 深度上界与效应声明**只在被动态跨越的边界上**需要 | 深度/逃逸 | 静态部分照旧；动态边界单独处理，不给全语言加负担 |
 
@@ -78,8 +78,8 @@ dyn Tag(b).tag()        /* 阶段 1：构造 + 立即调用（不碰池） */
 
 **两条重要经验**：
 1. **`dyn` 不是保留字**：第一版把它当无条件关键字，立刻打破了 `examples/slices.extc:65`
-   （`let dyn = a[lo..hi]`）。extC 没有保留字表 ⇒ **新语法必须按"形状"判定，不能按"单词"**
-   （现在的条件是 `dyn <标识符> (`，用解析器既有的 `pk(p,k)` 前瞻）；
+（`let dyn = a[lo..hi]`）。extC 没有保留字表 ⇒ **新语法必须按"形状"判定，不能按"单词"**
+（现在的条件是 `dyn <标识符>(`，用解析器既有的 `pk(p,k)` 前瞻）；
 2. **故意编不过的用例必须放 `tests/<suite>/errors/`**：`check.sh` 有一节全量编译所有 `.extc`
    并与基线比对，顶层放反例会让那一节红。
 
@@ -155,7 +155,7 @@ extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间�
    只在调用位置合法（否则报上面那条诊断）；
 2. **检查器**：trait 必须存在（复用第一期的查找）→ 方法必须在 trait 里 → **object safety 三条**
    → 载荷类型必须**已实现**该 trait（复用第一期的 `(trait, 类型)` 记录）→ 按 trait 签名比对实参
-   （`Self` 用既有 `ttSubstitute` 代入载荷类型）；
+（`Self` 用既有 `ttSubstitute` 代入载荷类型）；
 3. **codegen**：载荷落一个临时量，然后**经表字段调用**；
 4. **判据**（注册进 `tests/dyn/run.sh`，再由 `check.sh` 拉起）：`dyn_call.extc`（两个实现，正例）·
    `dyn_object_safety.extc`（泛型方法 / 返回 `Self` / 无 `self` 的关联函数，三条各一例）·
@@ -253,7 +253,7 @@ const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
 2. **派发表达式**：`fname` 取 `((const struct extc_vt$T$T_t *)<slot>->vt)-><method>`，
    接收者 `recvC` 取 `<slot>->addr`；
    因为既有代码把调用印成 `"%s(%s"`，所以这两处替换后**自然**得到
-   `((const struct …_t *)__extc_ds0->vt)->tag(__extc_ds0->addr, …)` ✓ 其余参数（home/池/`@overwrite`）
+   `((const struct …_t *)__extc_ds0->vt)->tag(__extc_ds0->addr, …)` 其余参数（home/池/`@overwrite`）
    一律不动；
 3. 源位置照 `cgLine(g, "extc_trapMsg(\"%s\", %d, …)", <file>, <line>)`（`src/codegen.c:2559`）
    的既有写法取；
@@ -272,9 +272,9 @@ const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
 生成物形状（实测）：
 
 ```c
-ExtcDynHandle __extc_dyn0 = extc_dyn_put((const void *)(&(b)), (int64_t)sizeof(box), &extc_vt$Tag$box);
+ExtcDynHandle __extc_dyn0 = extc_dyn_put((const void *)(&(b)),(int64_t)sizeof(box), &extc_vt$Tag$box);
 ExtcDynSlot  *__extc_ds1  = extc_dyn_slot(__extc_dyn0, "tests/dyn/dyn_call.extc", 15);
-io$ostream_shl_i64(&(io$cout), ((const struct extc_vt$Tag$box_t *)__extc_ds1->vt)->tag(__extc_ds1->addr));
+io$ostream_shl_i64(&(io$cout),((const struct extc_vt$Tag$box_t *)__extc_ds1->vt)->tag(__extc_ds1->addr));
 ```
 
 两条语句用**既有的 `pfLine`** 发（前缀语句机制）；派发表达式仍是既有那条 `"%s(%s"` 通路，只换了
@@ -315,18 +315,18 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 
 | 能力 | 现状 | 判据 |
 |---|---|---|
-| `let d: dyn Tag = dyn Tag(x)` | ✅ | `dyn_stored` · `dyn_stored_codegen` |
-| `d.tag()`（标识符接收者） | ✅ | `dyn_stored_call`（`calls=7,105`，两种实现经同一张表） |
-| `h.d.tag()`（**字段**接收者） | ✅ | `dyn_in_field` |
-| **容器**：`[3]dyn Tag`（定长数组） | ✅ | `dyn_in_array`（两种实现混存，`arr=106`） |
-| 值**逃出 place**（函数返回） | ✅ **不会失效**：home-zone 提升把它放进调用者的 place | `dyn_promoted_return`（`escaped=88`） |
-| 陈旧值在派发前被拦下 | ✅ | `dyn_o5_stale_trap`（运行期判据，四要件） |
-| `varArray<dyn Tag>` 等泛型容器 | ✅ | `dyn_in_varArray`（`va=13`） |
-| 容器清空后 dyn 值仍有效（**保守：载荷在 dyn 池，不在容器缓冲**） | ✅ 已写死语义 | `dyn_container_clear`（`afterClear=9`） |
+| `let d: dyn Tag = dyn Tag(x)` |  | `dyn_stored` · `dyn_stored_codegen` |
+| `d.tag()`（标识符接收者） |  | `dyn_stored_call`（`calls=7,105`，两种实现经同一张表） |
+| `h.d.tag()`（**字段**接收者） |  | `dyn_in_field` |
+| **容器**：`[3]dyn Tag`（定长数组） |  | `dyn_in_array`（两种实现混存，`arr=106`） |
+| 值**逃出 place**（函数返回） |  **不会失效**：home-zone 提升把它放进调用者的 place | `dyn_promoted_return`（`escaped=88`） |
+| 陈旧值在派发前被拦下 |  | `dyn_o5_stale_trap`（运行期判据，四要件） |
+| `varArray<dyn Tag>` 等泛型容器 |  | `dyn_in_varArray`（`va=13`） |
+| 容器清空后 dyn 值仍有效（**保守：载荷在 dyn 池，不在容器缓冲**） |  已写死语义 | `dyn_container_clear`（`afterClear=9`） |
 | 卸载墓碑 / 开放注册 | ⏳ 第三期 | —— |
 
 **两条实现要点（本轮）**
-1. **dyn 分流放在"方法查找失败"处**（`src/check_expr.c` 的 `if (!f) {` 内），不是在 `case EX_METHOD` 开头：
+1. **dyn 分流放在"方法查找失败"处**（`src/check_expr.c` 的 `if(!f) {` 内），不是在 `case EX_METHOD` 开头：
    那里接收者**已经被检查过** ⇒ 任何接收者形状（`d`、`h.d`、`xs[i]`）都能走 dyn 路径，
    且接收者节点的类型已就位供 codegen 用。第一版只认标识符、且**提前检查接收者**，打乱了整个检查趟
    的顺序（把一个无关的 stdlib 用例弄坏）；
@@ -374,7 +374,7 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 
 ### 阶段 4 · 文档与义务表回填
 
-- `SOUNDNESS.md`：O4（⚠️→✅）、O5（❌→✅），并写明判据名；
+- `SOUNDNESS.md`：O4（→）、O5（→），并写明判据名；
 - `POOL-SOUNDNESS.md`：把 E3 从"设计期反例"改为"已被判据焊住"；
 - 手册：语言页补 `dyn` 一节；`16-unimplemented.md` 的 `dyn` 条目改为已落地（保留仍缺项）。
 
@@ -406,7 +406,7 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 | **陈旧值 trap 且方法体未被执行**（O5 核心，运行期单测） | `dyn_o5_stale_trap` |
 | 生成物合同（`-std=c11 -fwrapv -Wall -Werror`） | `dyn_contract` |
 
-文档侧：`SOUNDNESS.md` 的 O4 已翻 ✅（只追加那一半，判据具名）、O5 已记为 ⚠️（dyn 侧已焊，判据具名）；
+文档侧：`SOUNDNESS.md` 的 O4 已翻（只追加那一半，判据具名）、O5 已记为（dyn 侧已焊，判据具名）；
 `POOL-SOUNDNESS.md` 的 **E3 标为已闭合**、INV-A 标为实现；手册语言页 **§7.3 `dyn`** 与「还没定的」条目均已更新。
 提交：`b67a28c`（阶段 1）· `8e3b42b`（object safety）· `9f9bcab`/`3c4191e`（运行期）· `29efaad`（接线）·
 `50e4925`（O5 行为判据）· `262ec44`（载荷实现检查）· `527a302`/`0ec7ad6`/`edeffd6`（文档）。
@@ -420,11 +420,11 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 
 | 位置 | 现状 | 还差什么 |
 |---|---|---|
-| `dyn Tag` 作**参数类型** | ✅ 已接受（无诊断） | —— |
-| `dyn Tag` 作**字段类型** | ✅ 已接受（无诊断） | —— |
-| `d.tag()`，接收者是 `dyn Tag` | ❌ `no method \`tag\` on \`Tag\`` | 检查器：接收者类型是 `TY_DYN` ⇒ 在 **trait 签名**里找方法并定型（**下一件**） |
-| `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） | ✅ **已落地**（`EX_DYN` + 定型 `TY_DYN` + `extc_dyn_put`；判据 `dyn_stored`、`dyn_stored_codegen`） | —— |
-| 具体值传 `dyn` 形参 | ✅ 被拒，信息清楚：``argument expects `Tag`, found `box` `` | 可选：诊断里提示写 `dyn Tag(x)` |
+| `dyn Tag` 作**参数类型** |  已接受（无诊断） | —— |
+| `dyn Tag` 作**字段类型** |  已接受（无诊断） | —— |
+| `d.tag()`，接收者是 `dyn Tag` |  `no method \`tag\` on \`Tag\`` | 检查器：接收者类型是 `TY_DYN` ⇒ 在 **trait 签名**里找方法并定型（**下一件**） |
+| `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） |  **已落地**（`EX_DYN` + 定型 `TY_DYN` + `extc_dyn_put`；判据 `dyn_stored`、`dyn_stored_codegen`） | —— |
+| 具体值传 `dyn` 形参 |  被拒，信息清楚：``argument expects `Tag`, found `box` `` | 可选：诊断里提示写 `dyn Tag(x)` |
 
 **脚手架已就位（2026-09-26）**：`ExprKind` 加 `EX_DYN`、`Expr` 联合体加 `dynv { payload, traitName }`、
 `ttEquals` 加 `TY_DYN` **按名字比较**分支（`dyn Trait` 没有声明点，属于"结构比较"那一类）。
@@ -442,12 +442,12 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 但存储值（`let d: dyn Tag = …; d.tag()`）的**具体类型在调用点未知** ⇒
 `((const struct extc_vt$Tag$box_t *)s->vt)` 里的 `box` 根本写不出来。
 
-**定案：每个 trait 一份统一签名的表 + 每个 (trait, 类型, 方法) 一个 thunk。**
+**定案：每个 trait 一份统一签名的表 + 每个(trait, 类型, 方法) 一个 thunk。**
 
 ```c
 /* 统一签名：只把接收者擦成 void *，其余参数与返回照 trait 声明。
- * （object safety 已禁止返回 Self / 泛型方法，所以"其余"里不会再有 Self。） */
-struct extc_vt$Tag_t { int64_t (*tag)(void *); };
+ *（object safety 已禁止返回 Self / 泛型方法，所以"其余"里不会再有 Self。） */
+struct extc_vt$Tag_t { int64_t(*tag)(void *); };
 
 static int64_t extc_th$Tag$box$tag(void *self) { return box_tag((box *)self); }
 
@@ -456,21 +456,21 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 ```
 
 于是**两种形式共用同一张表**，调用点都写成 `((const struct extc_vt$Tag_t *)<slot>->vt)->tag(<slot>->addr)`
-—— trait 名来自值的**静态类型**（`dyn Tag`），具体类型由运行期槽里的表指针决定 ✓
-（立即形式的 `&(b)` 是 `box *`，隐式转 `void *` ✓ 照旧可用）。
+—— trait 名来自值的**静态类型**（`dyn Tag`），具体类型由运行期槽里的表指针决定
+（立即形式的 `&(b)` 是 `box *`，隐式转 `void *` 照旧可用）。
 
 **这是本期第二次"以为不用大改、结果要改结构"**（第一次是 `TT_DYN` 的 `-Wswitch` 误判）——
 共同教训：**"静态已知"是第一期的隐含前提，存储面一旦打开就会失效**。
 
 **改动清单（下一轮）**
-1. `src/codegen.c` 的表发出（`generateC` 收尾处）：改成"每 trait 一个 struct + 每 (trait,类型,方法) 一个 thunk +
-   每 (trait,类型) 一个实例"；thunk 名 `extc_th$<Trait>$<Type>$<method>`，表实例名与键**保持不变**
-   （`extc_vt$<Trait>$<Type>`，稳定键与槽位顺序都不变 ⇒ 与第一期的规则一致）；
+1. `src/codegen.c` 的表发出（`generateC` 收尾处）：改成"每 trait 一个 struct + 每(trait,类型,方法) 一个 thunk +
+   每(trait,类型) 一个实例"；thunk 名 `extc_th$<Trait>$<Type>$<method>`，表实例名与键**保持不变**
+（`extc_vt$<Trait>$<Type>`，稳定键与槽位顺序都不变 ⇒ 与第一期的规则一致）；
 2. `genMethodCall`：`dynTrait` 分支里，若接收者不是 `EX_DYN`（存储值）⇒ **只发** `extc_dyn_slot(<值>, "file", line)`，
    接收者取 `s->addr`；表字段名用 trait 的 `struct extc_vt$<Trait>_t`；
 3. 检查器：接收者是 `TY_DYN` ⇒ 在 trait 签名里找方法（参数按 trait 声明比对，`Self` 位置跳过）；
-4. 判据：`dyn_pool_dispatch` 的 `->vt)->tag(` 形式**不变** ✓；`tests/impl` 的 `vtable_order` 需要看一眼
-   （现在多了一行 struct 定义，`grep -m1` 可能挑错行 —— 按纪律**同时改判据**）；新增
+4. 判据：`dyn_pool_dispatch` 的 `->vt)->tag(` 形式**不变**；`tests/impl` 的 `vtable_order` 需要看一眼
+（现在多了一行 struct 定义，`grep -m1` 可能挑错行 —— 按纪律**同时改判据**）；新增
    `dyn_stored_call`（存储值派发，输出与立即形式一致）· `dyn_stale_stored`（语言级 O5）。
 
 **两个实现细节（2026-09-26 勘察，动手前必读）**
@@ -491,25 +491,25 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 
 **判据**：翻面 `tests/dyn/errors/dyn_store.extc`（保存变合法 ⇒ 改成别的非法形状）；
 新增 `dyn_stored`（保存 + 派发，输出与立即形式一致）· `dyn_stale_stored`（语言级 O5）。
-**完成后**把 `SOUNDNESS.md` 的 O5 从 ⚠️ 翻 ✅，并在 §7.3 手册里把"现阶段只支持构造即调用"改成完整规则。
+**完成后**把 `SOUNDNESS.md` 的 O5 从  翻，并在 §7.3 手册里把"现阶段只支持构造即调用"改成完整规则。
 
 ### 原计划记录（含已被推翻的 `-Wswitch` 判断）
 
 1. `src/ast.h:28` 的 `TypeKind` 加 **`TY_DYN`**（`t->name` 存 trait 名，与 `TY_STRUCT` 同形）；
-   ⚠️ **新增枚举值会让每个穷举 `TypeKind` 的 switch 触发 `-Wswitch`**（在 `-Wall` 里）⇒
+    **新增枚举值会让每个穷举 `TypeKind` 的 switch 触发 `-Wswitch`**（在 `-Wall` 里）⇒
    **必须一次性改完所有 switch**，否则构建带告警、违反零告警约定 —— 这是它不能分批落地的原因；
 2. `src/codegen.c:397` 的 `cType` 加 `case TY_DYN: return "ExtcDynHandle";`；
 3. `src/types.c` 的 `ttEquals` 对同名 trait 视为相同（另需类型打印走 trait 名）；
 4. `src/parser.c:1225` 的 `parseType` 加 `dyn <TraitName>` 分支（按**形状**判定，`dyn` 不是保留字）；
 5. 检查器：`dyn Trait(x)` 的类型是 `TY_DYN`；`EX_METHOD` 的接收者若是 `TY_DYN`，方法在 **trait 签名**里找
-   （载荷"实现了该 trait"的检查已在 `src/check_expr.c` 的 dyn 块里，可直接复用）；
+（载荷"实现了该 trait"的检查已在 `src/check_expr.c` 的 dyn 块里，可直接复用）；
 6. codegen 分两种载荷来源：**立即形式照旧**（`extc_dyn_put` → `extc_dyn_slot` → 派发），
    **存储形式只发 `extc_dyn_slot(<值>, "file", line)`** 一步，接收者取 `->addr`。
-   （`genMethodCall` 的 dyn 分支现在就是这两种的来源点；"表达式需要前置语句"用既有的 `pfLine`。）
+（`genMethodCall` 的 dyn 分支现在就是这两种的来源点；"表达式需要前置语句"用既有的 `pfLine`。）
 
 **要翻面的判据**：`tests/dyn/errors/dyn_store.extc`（保存变成合法 ⇒ 该反例要么删，要么改成别的非法形状，
 例如把具体类型直接赋给 `dyn` 变量）；`dyn_field` 保留。新增：`dyn_stored` · `dyn_stale_stored` ·
-`dyn_no_wrong_dispatch`。**翻面后**把 `SOUNDNESS.md` 的 O5 从 ⚠️ 改成 ✅。
+`dyn_no_wrong_dispatch`。**翻面后**把 `SOUNDNESS.md` 的 O5 从  改成。
 
 ### 三条纪律（本期踩出来的，动手前先读）
 
@@ -518,7 +518,7 @@ static const struct extc_vt$Tag_t __attribute__((unused))
    正确锚点是**发出函数的收尾大括号**，转义交给脚本；
 3. **新增结构体字段必须同时找它的初始化点**（`Module.traits` 忘 `vecInit` 曾导致段错误）；
    凡是"发出决定发生在体生成之前"的东西（运行期文本、place 进入），必须由**检查器**在类型已知处标记
-   （`makesPool` 就是这个例子）。
+（`makesPool` 就是这个例子）。
 
 ### 值形式落地时踩到的四件事（2026-09-26）
 
@@ -531,7 +531,7 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 4. **`ExtcDynHandle` 必须先于原型可见**：定义它的运行期是后来拼接的 ⇒ 序言区提前声明。两处坑：
    匿名 struct 的 `typedef` **不能重复**（不同类型）⇒ 带标签 + `#ifndef EXTC_DYN_HANDLE_DEFINED` 守卫；
    单个字符串分块超过 **4095** 字节触发 `-Woverlength-strings` ⇒ 按仓库既有做法拆成两块
-   （1628 + 2597 字节）。
+（1628 + 2597 字节）。
 
 **判据给的教训**：`dyn_stored_codegen` 起初断言生成物里出现 `= extc_dyn_put(`，但测试里 `d` 从未被读
 ⇒ **死变量消除**删掉声明、只保留初始化式的副作用（调用成裸语句）。行为**正确**，判据改为让测试
@@ -549,7 +549,7 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 逐字节比对生成物：
 - **113 个完全相同**；
 - 其余 **57 个各恰好两个"纯删除"补丁块、零新增** —— 分别是序言那 3 行声明与池运行期里的 dyn 块，
-  即本改动的两处门控 ✓ 没有其它任何变化。
+  即本改动的两处门控 没有其它任何变化。
 
 （方法说明：`tools/golden.sh` 按定案 83 **不是闸门**，但它记录的"同一刀内 A/B"用法正是这里用的。）
 
@@ -587,7 +587,7 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
 
 **根因（本轮查清，很关键）**：**池 id 会被复用**。循环体的 zone 下标每轮复用 ⇒ 每轮新建的 dyn 池
 拿到**同一个 pid** ⇒ 旧槽的 `pid` 与新建的活池相同 ⇒ 清扫按"这个 id 是不是活的对象表"判断会认为它
-**还活着** ✗。（安全性没有受损：旧句柄的 **pool 世代** 与 **槽世代** 对不上 ⇒ 派发时 trap ✓
+**还活着**。（安全性没有受损：旧句柄的 **pool 世代** 与 **槽世代** 对不上 ⇒ 派发时 trap
 —— 受损的只是**回收**。）
 
 **定案修法**（三处，都很小）：
@@ -599,7 +599,7 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
 
 **已把修正后的完整运行期文本存盘**（下一轮**直接粘贴**，不要再做文本手术）：
 `/tmp/dyn_rt_p1.c`（854B，类型/静态量）与 `/tmp/dyn_rt_p2.c`（3842B，清扫/put/slot）。
-替换方法：定位 `src/pools.c` 里**全部**含 `dyn values (DYN.md` 或 `extc_dynTrap` 的 `bufPuts` 语句，
+替换方法：定位 `src/pools.c` 里**全部**含 `dyn values(DYN.md` 或 `extc_dynTrap` 的 `bufPuts` 语句，
 整体替换为两条新语句 —— **注意保留 `bufPuts(out, "...");` 外壳**（本轮我两次只写了转义内容、
 丢掉外壳，把文件写坏；这也是"不要再做文本手术"的原因）。替换后必须验证：
 `-Woverlength-strings`（两块都 <4095）、生成物合同编译、`make` 零告警。
@@ -613,9 +613,9 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
 - **两处语义已写死**（都配判据）：① 逃出 place 的值被**提升**进调用者的 place（仍然有效）；
   ② 容器清空**不会**让 dyn 值失效（载荷在 dyn 池，不在容器缓冲）——保守但安全；
 - **已知限制（诚实记账）**：严格说"容器元素应随容器回收"需要把**容器的池 id 当 parent** 建 dyn 池
-  （`extc_pool_new_table(parent)` 已支持）。当前行为**不会悬垂**，只是回收推迟到 place 退出；
-- **O5 已翻 ✅**（`SOUNDNESS.md`）：派发键决定布局在 dyn 侧成立；第三期的"开放注册"是**新的独立义务**
-  （可注册的表 + 键→表注册表、接口文件 + ABI 握手、卸载墓碑），不改变 O5 的结论。
+（`extc_pool_new_table(parent)` 已支持）。当前行为**不会悬垂**，只是回收推迟到 place 退出；
+- **O5 已翻 **（`SOUNDNESS.md`）：派发键决定布局在 dyn 侧成立；第三期的"开放注册"是**新的独立义务**
+（可注册的表 + 键→表注册表、接口文件 + ABI 握手、卸载墓碑），不改变 O5 的结论。
 
 ## 9. 第二期总报告（2026-09-26）
 
@@ -664,7 +664,7 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
 
 ### 9.4 三条纪律（本期踩出来的）
 
-1. **`dyn` 不是保留字** ⇒ 新语法按**形状**判定（`dyn <标识符> (`），不能按单词；
+1. **`dyn` 不是保留字** ⇒ 新语法按**形状**判定（`dyn <标识符>(`），不能按单词；
 2. **检查趟有顺序** ⇒ 不要在检查器里"提前检查"接收者来窥视类型（曾把一个无关的 stdlib 用例弄坏）；
 3. **codegen 读节点上的类型** ⇒ 凡是"窥视"得到的类型都要**写回节点**（本期三次同类问题）。
 
@@ -686,14 +686,14 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
 
 | # | 不变量 | 今天为什么成立 |
 |---|---|---|
-| 1 | **表指针只允许出现在"槽"里**，不得进入句柄、载荷或任何 ABI 可见的布局 | 槽是运行期侧结构（`ExtcDynSlot`），句柄只有 `{pid, slot, gen, pgen}`（4×i64），载荷是用户数据的拷贝 —— 都看不到表指针 ✓ |
-| 2 | **键是稳定的 mangled 名**（`extc_vt$Trait$Type`），不依赖插入序/哈希 | 第一期就定下：槽位顺序 = trait 声明顺序，名字 = mangled ✓ |
-| 3 | **失效信号与"谁拥有"解耦**：值的有效性只看槽/池的世代，不看"哪个模块装的" | `extc_dyn_slot` 的校验链（槽在界内 → pid → 槽世代 → 池是对象表 → 池世代）不带模块概念 ✓ |
+| 1 | **表指针只允许出现在"槽"里**，不得进入句柄、载荷或任何 ABI 可见的布局 | 槽是运行期侧结构（`ExtcDynSlot`），句柄只有 `{pid, slot, gen, pgen}`（4×i64），载荷是用户数据的拷贝 —— 都看不到表指针 |
+| 2 | **键是稳定的 mangled 名**（`extc_vt$Trait$Type`），不依赖插入序/哈希 | 第一期就定下：槽位顺序 = trait 声明顺序，名字 = mangled |
+| 3 | **失效信号与"谁拥有"解耦**：值的有效性只看槽/池的世代，不看"哪个模块装的" | `extc_dyn_slot` 的校验链（槽在界内 → pid → 槽世代 → 池是对象表 → 池世代）不带模块概念 |
 
 **推论**：卸载将来只需要能做两件事 ——
 ① **让"某个模块的表"整体作废**（于是引用它们的槽全部失效 ⇒ 旧值 trap）；
 ② **允许同一个键重新注册**（重载 ⇒ 新表接上同一个键）。
-这两件事**都不需要动句柄或载荷的布局** ✓ —— 这就是"门还开着"的确切含义。
+这两件事**都不需要动句柄或载荷的布局** —— 这就是"门还开着"的确切含义。
 
 ### 10.2 将来要加的两处（现在只留位置，不写代码）
 
@@ -733,8 +733,8 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
 ```c
 /* 修前 */ ExtcDynHandle h = extc_dyn_put((const void *)(&(b)), sizeof(box), &extc_vt$Tag$box);
            ExtcDynSlot *s = extc_dyn_slot(h, "…", 15);
-           ((const struct extc_vt$Tag_t *)s->vt)->tag(s->addr)
-/* 修后 */ ((const struct extc_vt$Tag_t *)&extc_vt$Tag$box)->tag((void *)(&(b)))
+((const struct extc_vt$Tag_t *)s->vt)->tag(s->addr)
+/* 修后 */((const struct extc_vt$Tag_t *)&extc_vt$Tag$box)->tag((void *)(&(b)))
 ```
 
 **实测**（`bench/dyn`）：`dynimm` **55.6 ns/次 + 89.8 MB → 0.3 ns/次 + 1.5 MB**；
