@@ -239,20 +239,25 @@ const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
 载荷的地址从**值**里取（`addr`），不从栈上取 —— 这是阶段 2 与阶段 1 的关键差别：
 阶段 1 直接 `&(b)`，阶段 2 必须用池里的地址，否则"拷贝进池"没有意义。
 
-**④之一 · 接线时的一个实现选择（2026-09-26 勘察，下一轮先定这个）**
+**④之一 · 接线方案（2026-09-26 第二次勘察，**上一轮那条"codegen 没有此机制"是错的**）**
 
-派发要写成三步，其中"取槽"的结果要用**两次**（`s->vt` 派发、`s->addr` 当接收者），因此生成物里
-必须有**一个临时量**。而 `genMethodCall` 返回的是**一个表达式字符串**，无法顺手发语句；
-已勘察确认 **codegen 今天没有"表达式里先发一条语句"的机制**（`grep prelude|preStmt|tmpDecl` 无命中）。
-两条路：
+**更正**：codegen **已经有**"表达式需要前置语句"的机制 —— `pfLine(CG *g, fmt, …)`（`src/codegen.c:335`）
+把一条完整语句（带缩进）写进 `g->prefix`，由语句发出点统一 flush；既有用法见 `__extc_pn%d` 那处
+（`:2129`，`e->needTemp` 的临时量就是这么发的）。所以**不需要**新造 `Buf pre`，也**不需要** GNU 语句
+表达式。（上一轮我 grep 的关键词是 `prelude|preStmt|tmpDecl`，漏掉了 `pfLine` —— 教训：查"有没有某机制"
+要按**行为**搜，不能只按想象中的命名搜。）
 
-| 选项 | 做法 | 取舍 |
-|---|---|---|
-| **① 前缀语句缓冲**（我建议） | 给 `CG` 加一个 `Buf pre`：需要先发语句的表达式把语句放进去，由**语句发出点**统一 flush 到当前语句之前 | 生成物保持**朴素 C**（与 codegen 开篇那句"deliberately boring: no macro tricks"一致）；代价是要改语句发出点，属基础设施小改 |
-| ② GNU 语句表达式 `({ … })` | 把三步塞进一个表达式 | 改动最小；但生成物会依赖 GNU 扩展（项目已是 gcc-only，`__typeof__` 已在用），与"朴素"取向有张力 |
-
-**推荐 ①**：dyn 只是第一个需要它的特性，之后"表达式需要前置语句"还会再出现（阶段 3 的容器元素、
-`try` 类构造），做成一处机制比到处塞语句表达式更符合本项目"一处规则"的取向。
+于是接线是**很小的改动**，全部落在 `genMethodCall` 的 dyn 分支里：
+1. 两个临时量：`ExtcDynHandle __extc_dyn%d = extc_dyn_put((const void *)(<载荷>), sizeof(<T>), &extc_vt$T$T);`
+   与 `ExtcDynSlot *__extc_ds%d = extc_dyn_slot(<handle>, "<file>", <line>);` —— 都用 `pfLine` 发；
+2. **派发表达式**：`fname` 取 `((const struct extc_vt$T$T_t *)<slot>->vt)-><method>`，
+   接收者 `recvC` 取 `<slot>->addr`；
+   因为既有代码把调用印成 `"%s(%s"`，所以这两处替换后**自然**得到
+   `((const struct …_t *)__extc_ds0->vt)->tag(__extc_ds0->addr, …)` ✓ 其余参数（home/池/`@overwrite`）
+   一律不动；
+3. 源位置照 `cgLine(g, "extc_trapMsg(\"%s\", %d, …)", <file>, <line>)`（`src/codegen.c:2559`）
+   的既有写法取；
+4. 生成物要能编过，还需**发出两个助手的 C 原型**（函数体在它们的定义之前）—— 与函数原型同一区。
 
 **⑤ 判据（三条，按重要性排序）**
 
