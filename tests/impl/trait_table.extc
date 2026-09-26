@@ -1,0 +1,15 @@
+/* 静态方法表：槽位顺序必须是 **trait 的声明顺序**。
+ * 故意让声明顺序与字母序相反（zeta 在前、alpha 在后）：若实现按字母序发字段，这条判据会红。 */
+trait Both {
+    fn zeta(self: ref Self) -> i64
+    fn alpha(self: ref Self) -> i64
+}
+
+struct box { v: i64 }
+
+impl Both for box {
+    fn zeta(self: ref box) -> i64 { return self.v }
+    fn alpha(self: ref box) -> i64 { return self.v + i64(1) }
+}
+
+fn main() -> i32 { return 0 }
