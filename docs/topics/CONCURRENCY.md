@@ -503,7 +503,8 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 |---|---|
 | **A1 ✅（2026-09-26 已落地）** | `coroutine<T>`（prelude 标记）+ `yield` 语句（解析器/AST）+ 检查器（"是不是协程"由**返回类型**决定 ✓ / yielded 值与 `T` 的兼容检查 ✓）+ **规则 ③**（`yield` 不许落在会回收的块里 ✓ `placeBoundaryDepth` ✓ 判据 = `stmtHasNew \|\| stmtMakesPool` 的保守超集 ✓）+ **codegen 守门**（未实现的协程体发 `#error` ⇒ 在 C 编译器处**响亮失败**，绝不静默生成错的 C ✓）+ 两条拒收判据进 `tests/errors/` ✓ |
 | **A2 ✅（2026-09-26 已落地）** | 规则 ② 的**活跃性分析**（跨挂起点的局部；**环回安全**：用/`yield` 共享同一个外层循环也算跨挂起点 ✓ "恢复后循环还会再转一轮" ✓）+ **拒收**（带引用 ⇒ 报错 + 两条改法 ✓）+ **帧布局**（`pc` + `ret` + 按需 `zone` + 跨挂起点局部 ✓ `FuncDef.coroFrame`）+ `EXTC_DBG_CORO` dump ✓ 判据：帧布局断言（`tests/coro` ✓）+ 拒收（`tests/errors/coro_view_lives_across_yield.extc` ✓）|
-| **B** | codegen：帧结构体 + Duff's-device `switch(pc)` + `next`/`value`（复用迭代器协议）⇒ 判据 1 转绿 |
+| **B1 ⚠️（2026-09-26 部分落地）** | codegen 的**定义侧**已写：`genCoroFunc` 发射**帧结构体**（`pc` + `ret` +（按需 `zone`）+ `coroFrame` 字段 ✓）+ **step 状态机**（`switch (f->pc)`，每个 `yield` 存 pc 后 `return true;` 紧跟 `case k: ;` = Duff's device ✓ 合法 C11 ✓ 零间接调用 ✓）；帧字段重定向在**唯一一处**（`EX_IDENT` 的名字解析 ✓）；`ST_VAR` 若落在帧里就只赋值不声明 ✓；**参数也进帧** ✓（恢复时调用者没有实参可传 —— 这是对 A2 那句"参数不进帧"的更正 ✗，dump 实测 `frame = pc, ret, n: i64, i: i64` ✓ 判据已同步 ✓）。调用点仍**响亮守门**（`#error`，且只允许 B1 判据用 `-DEXTC_CORO_B1_HARNESS` 绕过 ✓ 绝不静默 ✗）<br>**还差两处才能开 B1 的差分判据**：① 帧 `typedef` 的**开口几行没进生成物** ✗（只剩孤零零一行 ` counter$frame;` ✗）② **协程体里照旧发射 `extc_arena_release`** ✗ —— 那正是规则 ③ 的地方边界，协程体必须**抑制**它（存储归任务 place 所有 ✓ 与切片 C 同一件事 ✓）<br>靶子已就位：`tests/coro/coro_step.extc`（定义侧）+ `tests/coro/coro_step_harness.c`（C 驱动 ⇒ 期望 `0 1 2 `，与手写状态机逐字节相同 ✓）；**判据暂缓**（不留红判据 ✓ 修好后打开 ✓）|
+| **B2** | `coroutine<T>` 的表示 + `next`/`value` 解析（复用迭代器协议）⇒ `for x in coro` 直接可用 ✓ |
 | **C** | 任务 place（B 方案：调度器/任务表拥有 ⇒ `zoneLeaveTo`）+ **用户自己 `new` 的站点提权到任务层**（标准机制 ✓ 不新增隐式分配 ✗）+ 判据 2/5 |
 
 #### 二期（明确"不急"）

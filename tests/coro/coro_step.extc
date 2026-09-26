@@ -1,0 +1,18 @@
+/* 切片 B1 的**定义侧**：协程被发射成"帧结构体 + step 状态机" ✓
+ * 调用协程要等 B2（`coroutine<T>` 表示 + `next`/`value`）⇒ 这里调用只是为了**让函数被发射**
+ * （未使用的函数会被省略，PLAN #69）✓ 判据编译时用 `-DEXTC_CORO_B1_HARNESS` 绕过守门 ✓
+ *
+ * 判据（tests/coro/run.sh）：① 生成物过 `-std=c11 -Wall -Werror` ✓
+ * ② C harness 驱动 `counter$step` ⇒ 序列必须与手写状态机**逐字节相同** ✓ */
+fn counter(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n {
+        yield i
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    let c = counter(i64(3))     /* 只为了让 counter 被发射；调用本身是 B2 的事 ✓ */
+    return 0
+}

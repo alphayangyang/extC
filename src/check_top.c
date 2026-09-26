@@ -5717,7 +5717,14 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
         coroScanStmt(sp, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
     if (s.yields.len == 0) return;                  /* nothing to lay out */
 
+    /* The frame holds the **parameters** too: a resume has no arguments to pass them again, so they
+     * are captured at spawn and read back on every step (docs/topics/CONCURRENCY.md 4.4). */
     vecInit(&f->coroFrame, c->arena, sizeof(Param));   /* by value, like the scan above */
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *src = *(Param **)vecAt(&f->params, i);
+        Param *p = (Param *)vecPush(&f->coroFrame);
+        *p = *src;
+    }
     for (size_t i = 0; i < s.decls.len; i++) {
         const CoroDecl *d = (const CoroDecl *)vecAt(&s.decls, i);
         bool live = false;
@@ -5750,7 +5757,9 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             const Param *p = (const Param *)vecAt(&f->coroFrame, i);
             fprintf(stderr, ", %s: %s", p->name, typeStr(c, p->type));
         }
-        fprintf(stderr, "   (%zu of %zu locals live across a yield)\n",
-                f->coroFrame.len, s.decls.len);
+        fprintf(stderr, "   (%zu fields: %zu param%s + %zu live-across-yield local%s)\n",
+                f->coroFrame.len, f->params.len, f->params.len == 1 ? "" : "s",
+                f->coroFrame.len - f->params.len,
+                f->coroFrame.len - f->params.len == 1 ? "" : "s");
     }
 }

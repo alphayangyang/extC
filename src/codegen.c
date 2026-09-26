@@ -170,6 +170,13 @@ typedef struct {
      * `loopLevel[]` is the block level of each enclosing loop body, so that
      * `break` and `continue` know down to which level to release. */
     int         blkLevel;
+
+    /* Coroutine lowering (docs/topics/CONCURRENCY.md 4.4). Set while the body of a coroutine is
+     * being emitted: the frame is a plain C struct, `yield` stores the pc and returns, and every
+     * reference to a frame field is redirected by `coroFieldRef` below. */
+    const FuncDef *coroFunc;
+    const char    *coroFrame;       /* the frame parameter's C name: `f` */
+    int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
     bool        noArena;   /* This function puts nothing into its own block arena,
                             * so neither `extc_arena __extc_a[N]` nor the release
                             * calls are emitted. The checker decides this
@@ -1877,7 +1884,20 @@ static const char *genExprInner(CG *g, Expr *e) {
             return arenaPrintf(g->arena,
                 "(%s){ .data = (uint8_t *)\"%s\", .len = sizeof(\"%s\") - 1 }",
                 cType(g, e->type), e->u.str.text, e->u.str.text);
-        case EX_IDENT: return e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
+        case EX_IDENT: {
+            const char *cn = e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
+            /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which
+             * is a plain struct: every mention of them becomes a field access ✓ (one place decides
+             * this, `FuncDef.coroFrame` is the list the checker laid out). */
+            if (g->coroFunc && cn) {
+                for (size_t i = 0; i < g->coroFunc->coroFrame.len; i++) {
+                    const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
+                    if (p->cname && strcmp(p->cname, cn) == 0)
+                        return arenaPrintf(g->arena, "%s.%s", g->coroFrame, cn);
+                }
+            }
+            return cn;
+        }
 
         /* `*p`: an explicit dereference is a C dereference; whether the target
          * may be written is the checker's business. */
@@ -1897,6 +1917,21 @@ static const char *genExprInner(CG *g, Expr *e) {
         }
 
         case EX_CALL: {
+            /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
+             * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
+             * miscompile -- and a coroutine *definition* alone still compiles, which is what the
+             * slice-B1 test drives from a small C harness. */
+            if (e->func && e->func->isCoro) {
+                /* Slice B1 emits the frame and the step function; the **call** needs the
+                 * `coroutine<T>` representation (B2). Until then this is a loud failure -- except
+                 * under `EXTC_CORO_B1_HARNESS`, which the slice-B1 judge defines so it can drive the
+                 * generated `$step` from a small C harness. B2 deletes the hook with the guard. */
+                cgLine(g, "#ifndef EXTC_CORO_B1_HARNESS");
+                cgLine(g, "#error \"calling a coroutine lands in slice B2"
+                           " (docs/topics/CONCURRENCY.md 4.4)\"");
+                cgLine(g, "#endif");
+                return "0";
+            }
             if (e->u.call.callee->kind != EX_IDENT) return "0";
             const char *name = e->u.call.callee->u.ident.name;
             if (strcmp(name, "print") == 0)   return genPrint(g, &e->u.call.args, false);
@@ -3134,6 +3169,24 @@ static void genStmt(CG *g, Stmt *s) {
 static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
         case ST_VAR: {
+            /* A frame field is not declared here: the frame struct holds it, and the assignment is
+             * what a resume re-runs (the initializer runs on every execution, exactly like the C
+             * local it replaces). */
+            if (g->coroFunc && s->u.var.cname) {
+                bool framed = false;
+                for (size_t i = 0; i < g->coroFunc->coroFrame.len && !framed; i++) {
+                    const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
+                    framed = p->cname && strcmp(p->cname, s->u.var.cname) == 0;
+                }
+                if (framed) {
+                    if (s->u.var.init) {
+                        const char *v = genExpr(g, s->u.var.init);
+                        flushPrefix(g);
+                        cgLine(g, "%s.%s = %s;", g->coroFrame, s->u.var.cname, v);
+                    }
+                    return;
+                }
+            }
             /* `cname` is the name the checker decided on; a shadowed one
              * carries a `__2` suffix. */
             const char *nm = s->u.var.cname ? s->u.var.cname : s->u.var.name;
@@ -3315,12 +3368,19 @@ static void genStmtInner(CG *g, Stmt *s) {
             return;
         }
 
-        case ST_YIELD:
-            /* Slice B emits the real thing (frame struct + Duff's-device switch). Until then this
-             * is a **loud** failure at the C compiler, never a silent miscompile. */
-            cgLine(g, "#error \"coroutine code generation lands in slice B"
-                       " (docs/topics/CONCURRENCY.md 4.4)\"");
+        case ST_YIELD: {
+            /* `yield e`: store the return slot and the pc, then return. The `case` label right after
+             * the `return` is where a resume jumps back in -- a label inside whatever block the
+             * `yield` sits in, which is legal C11 (the shape is Duff's device). */
+            const int k = ++g->coroYieldSeq;
+            const char *v = s->u.yield_.value ? genExpr(g, s->u.yield_.value) : "0";
+            flushPrefix(g);
+            cgLine(g, "%s.ret = %s;", g->coroFrame, v);
+            cgLine(g, "%s.pc = %d;", g->coroFrame, k);
+            cgLine(g, "return true;");
+            cgLine(g, "case %d: ;", k);
             return;
+        }
         case ST_RETURN: {
             /* Every return goes through the shared epilogue: only
              * `__extc_ret_v = ...; goto __extc_ret;` is emitted here, and the
@@ -3610,7 +3670,54 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * Params:
  *   f - the function to emit
  */
+/* Emit a coroutine as a **frame struct plus a step function** (docs/topics/CONCURRENCY.md 4.4).
+ *
+ * The frame is a plain value: `pc`, the return slot, and the checker's `coroFrame` list -- the
+ * parameters plus the locals that live across a `yield`, all by value. `step` is a state machine:
+ * the body is wrapped in `switch (f->pc)`, every `yield` stores the pc and returns, and the `case`
+ * label right after that `return` is where a resume jumps back in (Duff's-device shape, legal C11).
+ *
+ * Driving it (`next`/`value`, and therefore `for x in coro`) is slice B2: it needs the
+ * `coroutine<T>` representation. What is emitted here is valid C on its own, so the transformation
+ * is driven from a small C harness in `tests/coro` and compared against the hand-written state
+ * machine -- the differential judge the design asks for.
+ */
+static void genCoroFunc(CG *g, FuncDef *f) {
+    const char *step = arenaPrintf(g->arena, "%s$step", cFuncName(g, f));
+    const char *fr   = arenaPrintf(g->arena, "%s$frame", cFuncName(g, f));
+    cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
+           f->name ? f->name : "?");
+    cgLine(g, "typedef struct %s {", fr);
+    cgLine(g, "    int64_t pc;");
+    cgLine(g, "    %s ret;", cType(g, f->yieldType ? f->yieldType : f->ret));
+    if (f->makesPool)
+        cgLine(g, "    int64_t zone;          /* the task's own place (slice C) */");
+    for (size_t i = 0; i < f->coroFrame.len; i++) {
+        const Param *p = (const Param *)vecAt((Vec *)&f->coroFrame, i);
+        cgLine(g, "    %s;", arenaPrintf(g->arena, "%s %s", cType(g, p->type), p->cname));
+    }
+    cgLine(g, "} %s;", fr);
+    cgLine(g, "static bool %s(%s *f) {", step, fr);
+    cgLine(g, "    switch (f->pc) {");
+    cgLine(g, "    case 0: ;");
+    g->indent++;
+    g->coroFunc     = f;
+    g->coroFrame    = "f";
+    g->coroYieldSeq = 0;
+    for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
+        genStmt(g, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
+    /* Falling off the end finishes the coroutine: a pc nothing can jump back to (`yields + 1`). */
+    cgLine(g, "f.pc = %d;", g->coroYieldSeq + 1);
+    cgLine(g, "return false;");
+    g->indent--;
+    cgLine(g, "    }");
+    cgLine(g, "}");
+    g->coroFunc  = NULL;
+    g->coroFrame = NULL;
+}
+
 static void genFunc(CG *g, FuncDef *f) {
+    if (f->isCoro) { genCoroFunc(g, f); return; }     /* slice B1: frame + step */
     bool isMain = cgIsMain(f);
     /* `main(args)`: the one parameter the language may declare is not a C
      * parameter (C fixes the entry signature), so `argc`/`argv` come in and the
