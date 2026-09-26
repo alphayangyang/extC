@@ -562,17 +562,27 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 
 一个细节值得写下来：任务 place 是**懒**建的 —— 只有协程需要自己那块存储（建池）时才有任务，所以那个判据里的协程要建池。表本身也带依赖：它坐在池的 zone 原语上，所以生成任务表时要把池运行期也标成"需要"（与 zone 实参兜底同一条规则）。
 
-**统一句柄（定案，待落地）**：`coroutine<T>` 这个**写法**表示**句柄**，未标注的 `var c = f(...)` 保持**不装箱**。
+**统一句柄（定案，待落地）**：**表面只有一个类型 `coroutine<T>`**，表示由编译器按**逃逸**决定 ——
+不外逃就把帧留在调用者栈上（零分配 ✓），外逃（容器 / 字段 / 返回值 / 传给可能存指针的被调者）就**装箱**
+到任务 place 里。用户看不见 `worker$frame` 这种东西。
 
-    未标注：  var c = worker(3, 0)                    /* c 的类型是 worker$frame ⇒ 帧在栈上 ✓ 零分配 ✓ */
-    标注了：  var v: vector<coroutine<i64>> = …       /* 元素是句柄 ⇒ 帧从任务 place 分配 ✓ */
-              v.push(worker(3, 0))                    /* 调用点**装箱**：extc_task_alloc 帧 + kind 编号 ✓ */
-              while v[i].next() { v[i].value() }      /* 句柄上的 next/value ⇒ 按 kind 分派 ✓ */
+    var c = worker(3, 0)                        /* c 的类型就是 coroutine<i64> ✓ 内部多半是栈上的帧 ✓ */
+    var v: vector<coroutine<i64>> = …           /* 元素也是 coroutine<i64> ✓ 逃逸了 ⇒ 装箱 ✓ */
+    v.push(worker(3, 0))                        /* 装箱：extc_task_begin + extc_task_alloc 帧 + kind ✓ */
+    while v[i].next() { v[i].value() }          /* next/value 在 coroutine<T> 上 ⇒ 按 kind 分派 ✓ */
+
+于是 `prelude.extc` 里那句"用户不要直接拿它当变量类型"要去掉 —— 它现在是普通存储类型 ✓。
+两个直接收益：① **诊断不再泄露帧类型**（今天会报 `found 'g$frame'`，以后报 `found 'coroutine<i64>'` ✓）
+② 逃逸判断可以**复用现成机制**：`ref` 逃逸 + `effects Addr` 签字（"调用一个没签 `Addr=0` 的函数 ⇒
+你的东西可能被存起来"）⇒ 协程值按同一套规则决定装箱 ✓
+
+判据要钉住**两种表示**：不外逃 ⇒ 生成物里不该出现 `extc_task_begin` / `extc_task_alloc`（零分配 ✓）；
+逃逸 ⇒ 必须出现句柄与 kind 分派 ✓
 
 三条一起落（分着落会出现"接受但生成错 C"的中间态）：
 
 1. **检查器**：`coroutine<T>` 允许当存储类型（撤掉 check_stmt.c:236 那条拒绝）；在 prelude 那个
-   标记类型上合成 `next(self: mut ref coroutine<T>) -> bool` 与 `value(self: ref coroutine<T>) -> T`
+   类型上合成 `next(self: mut ref coroutine<T>) -> bool` 与 `value(self: ref coroutine<T>) -> T`
    —— 与帧上的那两个**同形**，只是 self 是句柄；`T` 走既有的实例化替换，所以 `value()` 的返回类型
    自然是每个实例各自的 `T` ✓
 2. **codegen**：句柄的 C 表示是一个共享结构 `struct extc_coro { void *frame; int64_t kind; }`
