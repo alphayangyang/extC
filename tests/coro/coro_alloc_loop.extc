@@ -1,0 +1,26 @@
+/* 判据：协程里**每轮都分配** ⇒ 块级释放必须真的生效（否则长任务会把内存吃光 —— 这正是帧携带
+ * 块级 arena 要解决的问题）。
+ *
+ * 每轮 `new u8[65536]`（64 KB）× 20000 轮 = **1.28 GB** 的分配量。块释放生效的话常驻只有几 MB；
+ * 不生效就会一路涨到 OOM。run.sh 用 /usr/bin/time 卡上限，并要求 ASan 干净。
+ *
+ * 注意 `buf` 只在本轮用（yield 之后不再碰它）⇒ 不属于"跨挂起持有引用"，规则②不管它 ✓。 */
+fn churn(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        var buf: mut slice<u8> = new u8[65536]
+        buf[0] = u8(1)
+        sum = sum + i64(buf[0])
+        yield sum
+        i = i + 1
+    }
+    yield sum
+}
+
+fn main() -> i32 {
+    var c = churn(i64(20000))
+    var last: i64 = 0
+    while c.next() { last = c.value() }        /* 活着的时候读（规则②）*/
+    return i32(last)                            /* 每轮 +1 ⇒ 20000 % 256 = 32 */
+}

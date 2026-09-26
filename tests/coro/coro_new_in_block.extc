@@ -1,0 +1,26 @@
+/* 判据：**块里 `new` + 挂起 + 恢复后接着用**（原来被规则③拒绝 ✗ 现在合法 ✓）。
+ *
+ * 为什么安全：块级 arena 现在住在**帧里**（`f->arenaK`），所以它活过挂起；块退出时那条
+ * `extc_arena_release(&f->arenaK)` 仍然按作用域回收 ✓。`s` 在恢复之后还被用（`total + s[0]`），
+ * 正是规则②放开"本体内 `new`"要覆盖的形状 ✓。
+ *
+ * 期望 0+1+2+3 = **6**，并要求 ASan 干净。 */
+fn g(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var total: i64 = 0
+    while i < n {
+        var s: mut slice<i64> = new i64[4]
+        s[0] = i
+        yield s[0]                       /* 挂起在块里 */
+        total = total + s[0]             /* 恢复后接着用同一块存储 */
+        i = i + 1
+    }
+    yield total
+}
+
+fn main() -> i32 {
+    var c = g(i64(4))
+    var last: i64 = 0
+    while c.next() { last = c.value() }  /* 活着的时候读 */
+    return i32(last)
+}

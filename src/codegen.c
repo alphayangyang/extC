@@ -2915,6 +2915,11 @@ static const char *homeArg(CG *g, int arenaArg) {
  */
 static const char *arenaRefAt(CG *g, int level) {
     if (level == ARENA_HOME) return "(*__extc_home)";
+    /* A step has no C-stack arena array: the block arenas live **in the frame** (one field per level,
+     * `arena1`..`arenaN`), because a block in a coroutine can span a suspension -- the allocation has
+     * to survive the resume, and the block's own release point still reclaims it. */
+    if (g->coroFunc)
+        return arenaPrintf(g->arena, "%s->arena%d", g->coroFrame, level > 0 ? level : 1);
     return arenaPrintf(g->arena, "__extc_a[%d]", level);
 }
 
@@ -2988,7 +2993,9 @@ static bool blockMakesPool(Stmt *b) {
  */
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
-    if (g->noArena) return;   /* never allocates, so nothing to release */
+    /* A step keeps `noArena` (its prologue has no `__extc_a` and its returns take the direct path),
+     * but it still releases block levels -- out of the frame's per-level arenas. */
+    if (g->noArena && !g->coroFunc) return;   /* never allocates, so nothing to release */
     /* Memory only. A block used to close the descriptors it owned first, which is why
      * this is the one place a block release is emitted -- but files are the program's
      * business now (decision 79), so there is nothing to close here. */
@@ -3004,11 +3011,27 @@ static void cgReleaseLevel(CG *g, int lvl) {
      * 是同一份事实，不可能走散。 */
     if (lvl < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lvl])
         cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
-    /* A coroutine body owns no place of its own: its storage lives in the **task's** place (slice C),
-     * so it must not release the caller's arena levels -- that release would free, at every resume,
-     * exactly what the next resume still needs (rule 3, docs/topics/CONCURRENCY.md 12). */
-    if (!g->coroFunc)
+    /* A coroutine body owns no place of its own, so it must not release the **caller's** arena levels
+     * -- that release would free, at every resume, exactly what the next resume still needs. Its own
+     * block arenas live in the frame (see `arenaRefAt`), and a block's exit still reclaims its level. */
+    if (g->coroFunc)
+        cgLine(g, "extc_arena_release(&%s->arena%d);", g->coroFrame, lvl);
+    else
         cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
+}
+
+/* Destroy the frame's block arenas, at the one point where a coroutine is finished.
+ *
+ * A step never reaches the shared epilogue (it returns `true` at every yield), and the body's own
+ * level lives until the task ends rather than until the step returns -- so the levels a finished
+ * coroutine still holds have to go here, **before** the driver's `extc_task_end` frees the frame
+ * itself. A dropped, never-finished coroutine leaks the blocks its frame arenas still hold; that is
+ * bounded by the deferral and noted in docs/topics/CONCURRENCY.md 4.4. */
+static void cgCoroArenaDestroy(CG *g) {
+    if (!g->coroFunc) return;
+    int n = 1 + blkMaxOfBlock(((FuncDef *)g->coroFunc)->body);
+    for (int lv = 1; lv <= n; lv++)
+        cgLine(g, "extc_arena_destroy(&%s->arena%d);", g->coroFrame, lv);
 }
 
 /* Collect every `@overwrite` site of one function body, in source order.
@@ -3208,7 +3231,7 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome) {
  * The answer sizes the `__extc_a` array, which is a fixed-length array on the
  * stack, so setting up the block arenas needs no allocation.
  */
-static int blkMaxLevel(Stmt *s);
+int blkMaxLevel(Stmt *s);
 
 /* Return the deepest block level inside one statement that is a block.
  *
@@ -3216,7 +3239,7 @@ static int blkMaxLevel(Stmt *s);
  *   The deepest level reached inside the block, not counting the level the block
  *   itself adds; 0 when there is no block.
  */
-static int blkMaxOfBlock(Stmt *block) {
+int blkMaxOfBlock(Stmt *block) {
     int m = 0;
     if (!block || block->kind != ST_BLOCK) return blkMaxLevel(block);
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
@@ -3230,7 +3253,7 @@ static int blkMaxOfBlock(Stmt *block) {
  * add their own, so the result is the number of arena slots the enclosing
  * function needs.
  */
-static int blkMaxLevel(Stmt *s) {
+int blkMaxLevel(Stmt *s) {
     if (!s) return 0;
     switch (s->kind) {
     case ST_BLOCK: return 1 + blkMaxOfBlock(s);
@@ -3628,6 +3651,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                     /* Finishing early: a pc no `case` matches, so the next resume falls through to
                      * the end of the step and reports "done". */
                     flushPrefix(g);
+                    cgCoroArenaDestroy(g);      /* finished here: give the frame arenas back */
                     cgLine(g, "%s->pc = -1;", g->coroFrame);
                     cgLine(g, "return false;");
                     return;
@@ -4297,6 +4321,7 @@ static void genFunc(CG *g, FuncDef *f) {
         /* The step's ending, **after** the body: falling off it finishes the coroutine. The pc gets a
          * value no `case` matches, so a further resume falls through to the closing `return false;`.
          * The switch and the function close here; the epilogue below belongs to a normal function. */
+        cgCoroArenaDestroy(g);          /* falling off the body finishes the coroutine */
         cgLine(g, "f->pc = %d;", g->coroYieldSeq + 1);
         cgLine(g, "return false;");
         cgLine(g, "    }");

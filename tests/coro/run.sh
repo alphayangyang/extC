@@ -13,7 +13,8 @@ tmp=$(mktemp -d)
 mm=$tmp/coro_mem
 if "$EXTC" -w --no-line-map -o "$mm.c" tests/coro/coro_mem.extc >/dev/null 2>&1 \
    && gcc -std=c11 -fwrapv -Wall -Werror -O2 -o "$mm" "$mm.c" 2>"$tmp/mme"; then
-    peak=$(/usr/bin/time -f "%M" "$mm" 2>&1 >/dev/null); rc=$?
+    /usr/bin/time -q -f "%M" -o "$tmp/mm.rss" "$mm" >/dev/null 2>&1; rc=$?
+    peak=$(cat "$tmp/mm.rss" 2>/dev/null)
     if [ "$rc" = 0 ] && [ -n "$peak" ] && [ "$peak" -le 8192 ]; then
         echo "  ok   coro_mem            ->  10000 个活任务：常驻 ${peak} KB（≤ 8192），全部活着"
         pass=$((pass+1))
@@ -22,6 +23,71 @@ if "$EXTC" -w --no-line-map -o "$mm.c" tests/coro/coro_mem.extc >/dev/null 2>&1 
     fi
 else
     echo "  FAIL coro_mem            ->  $(head -2 "$tmp/mme" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 块里 new + 挂起 + 恢复后用（规则③在协程里已取消）。期望 6 + ASan 干净
+nb=$tmp/coro_new_in_block
+if "$EXTC" -w --no-line-map -o "$nb.c" tests/coro/coro_new_in_block.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$nb" "$nb.c" 2>"$tmp/nbe"; then
+    "$nb"; rc=$?
+    if [ "$rc" = 6 ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$nb.asan" "$nb.c" 2>/dev/null; then
+            aout=$("$nb.asan" 2>&1); arc=$?
+            if [ "$arc" = 6 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_new_in_block   ->  块里 new + 挂起 + 恢复后用（6），ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_new_in_block   ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_new_in_block   ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_new_in_block   ->  退出码 $rc（期望 6）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_new_in_block   ->  $(head -2 "$tmp/nbe" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 协程里 `new`（跨挂起使用）+ ASan：帧携带的块 arena 就是为此。期望 4
+nw=$tmp/coro_new
+if "$EXTC" -w --no-line-map -o "$nw.c" tests/coro/coro_new.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$nw" "$nw.c" 2>"$tmp/nwe"; then
+    "$nw"; rc=$?
+    if [ "$rc" = 4 ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$nw.asan" "$nw.c" 2>/dev/null; then
+            aout=$("$nw.asan" 2>&1); arc=$?
+            if [ "$arc" = 4 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_new            ->  协程里 new 的存储跨挂起活着（4），ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_new            ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_new            ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_new            ->  退出码 $rc（期望 4）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_new            ->  $(head -2 "$tmp/nwe" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 长任务：协程里每轮分配 64 KB × 20000 轮（1.28 GB 的分配量）⇒ 常驻必须有界，块释放真的生效
+al=$tmp/coro_alloc_loop
+if "$EXTC" -w --no-line-map -o "$al.c" tests/coro/coro_alloc_loop.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -O2 -o "$al" "$al.c" 2>"$tmp/ale"; then
+    /usr/bin/time -q -f "%M" -o "$tmp/al.rss" "$al" >/dev/null 2>&1; rc=$?
+    peak=$(cat "$tmp/al.rss" 2>/dev/null)
+    if [ "$rc" = 32 ] && [ -n "$peak" ] && [ "$peak" -le 32768 ]; then
+        echo "  ok   coro_alloc_loop     ->  每轮 64 KB × 20000 ⇒ 常驻 ${peak} KB（≤ 32768）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_alloc_loop     ->  退出码 $rc，常驻 ${peak:-?} KB（期望 32 / ≤ 32768）"
+        fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_alloc_loop     ->  $(head -2 "$tmp/ale" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
 # 规则④：复制句柄内存安全（两个副本一个驱动一个读）。期望 (0+1+2)×2 = 6

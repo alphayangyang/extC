@@ -5765,13 +5765,19 @@ static void coroCheckDeferred(Checker *c, Module *m) {
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);
-        if (d->init && exprMakesPool(d->init, true)) continue;
+        /* Two shapes a reference may legally outlive a suspension in:
+         *   - a pooled container: the pool has a place of its own (the older exception);
+         *   - a `new` written **in this coroutine's own body**: its storage is the frame's block arena
+         *     (`arenaRefAt` puts every block level in the frame), which lives as long as the task does.
+         * Everything else -- a parameter, a `ref` into the caller, a view handed in -- still gets the
+         * error below, because that storage really is gone when the step returns. */
+        if (d->init && (exprMakesPool(d->init, true) || d->init->kind == EX_NEW)) continue;
         ckError(c, d->line,
                 "A local that lives across a `yield` may not point at someone else's storage: the C"
-                " stack of this call is gone when the coroutine yields, and a block's arena goes with"
-                " the block. Two fixes: allocate it yourself so it lands in the task's own place (a"
-                " pooled container does that), or keep the offset and take the view again after the"
-                " resume (docs/topics/CONCURRENCY.md 4.4)",
+                " stack of this call is gone when the coroutine yields. Two fixes: allocate it"
+                " yourself in this body (`new` lands in the frame's own arena, a pooled container in"
+                " the pool's place), or keep the offset and take the view again after the resume"
+                " (docs/topics/CONCURRENCY.md 4.4)",
                 "`%s` lives across a `yield` and carries a reference", d->cname);
     }
     c->coroDeferred.len = 0;
@@ -5779,7 +5785,17 @@ static void coroCheckDeferred(Checker *c, Module *m) {
 
 bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro) {
     if (!s) return false;
-    if (inCoro) return stmtHasNew(s);
+    /* A coroutine body has no place boundary any more, and that is measured, not assumed:
+     *   - block arenas live **in the frame** (`arenaRefAt`), so an allocating block survives a
+     *     suspension and its own exit still reclaims it;
+     *   - a pool's storage is the **task's place**, not the block's -- `tests/coro/coro_pool.extc`
+     *     has been creating a vector at body level, growing it across three suspensions and staying
+     *     ASan-clean since before this rule existed; the zone leave in a step goes through the
+     *     "current top" fallback, so the stack-local mark is never read after a resume.
+     * So `placeBoundaryDepth` stays 0 inside a coroutine and the check in the `ST_YIELD` case cannot
+     * fire there. It stays in the code because it is the invariant that would have to come back the
+     * day a suspension can sit somewhere its storage does not survive. */
+    if (inCoro) return false;
     return stmtHasNew(s) || stmtMakesPool(s, true);
 }
 
@@ -5995,6 +6011,23 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             fd = arenaAllocZero(c->arena, sizeof *fd);
             fd->name = "in"; fd->type = f->yieldType; fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
+            /* The block arenas, one per block level. A step has no C-stack arena array, and a block in
+             * a coroutine can span a suspension (`new` ... `yield` ... use), so the arena lives here
+             * and the block's release point still reclaims it. `cType` renders the synthesized field
+             * type verbatim, so the generated struct says `extc_arena arena1;` and friends. */
+            {
+                int maxLv = 1 + blkMaxOfBlock(f->body);
+                for (int lv = 1; lv <= maxLv; lv++) {
+                    Type *at = arenaAllocZero(c->arena, sizeof *at);
+                    at->kind = TY_STRUCT;
+                    at->name = "extc_arena";
+                    FieldDef *af = arenaAllocZero(c->arena, sizeof *af);
+                    af->name = arenaPrintf(c->arena, "arena%d", lv);
+                    af->type = at;
+                    af->line = f->line;
+                    *(FieldDef **)vecPush(&fsd->fields) = af;
+                }
+            }
             /* `yield` bindings recorded while the body was checked: frame locals like any other. */
             for (size_t i = 0; i < c->coroBinds.len; i++) {
                 CoroBind *cb = *(CoroBind **)vecAt(&c->coroBinds, i);

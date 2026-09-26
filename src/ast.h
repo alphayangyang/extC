@@ -79,6 +79,11 @@ Type *typeArray(Arena *a, int64_t n, Type *elem);   /* TY_ARRAY */
  * this function have a home arena", because that would be a second source of truth
  * for a decision that is already made. */
 #define ARENA_HOME (-1)
+
+/* Deepest block level inside a statement / block (defined in codegen.c, used by the checker to size
+ * a coroutine frame's per-level block arenas). A block counts as one level. */
+int blkMaxLevel(Stmt *s);
+int blkMaxOfBlock(Stmt *block);
 /* 「家 zone」的哨兵（池的提权，见 PLAN #87）。与 ARENA_HOME 平行：
  *   0        = 这个调用点不建池（`zoneLevel` 的默认值）
  *   ZONE_HOME= 把它交给**调用者**选的那个地方（隐藏参数 `__extc_home_zone` 往下传）

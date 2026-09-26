@@ -932,9 +932,9 @@ void checkStmt(Checker *c, Stmt *s) {
              * that arena is released before this coroutine is resumed. */
             if (c->placeBoundaryDepth > 0) {
                 ckError(c, s->line,
-                        "A suspension may not sit inside a block that reclaims its storage: the"
-                        " arena is gone before the coroutine resumes. Move the allocation into the"
-                        " task's own place, or move the `yield` out of that block"
+                        "A suspension may not sit inside a block that creates a pool: the pool's"
+                        " place is released when the block exits, before the coroutine resumes."
+                        " Move the pool out of that block, or move the `yield` out of it"
                         " (rule 3, docs/topics/CONCURRENCY.md 12)",
                         "`yield` inside a reclaimed block");
             }
