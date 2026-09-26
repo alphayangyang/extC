@@ -58,5 +58,27 @@ fn main() -> i32 {
     while ai.next() { steps = steps + i64(1) }
     while bi.next() { steps = steps + i64(1) }
     io::cout << "steps=" << steps << "\n"                     /* 期望 steps=4 */
+
+    /* ④ 同一件事用 `for` 驱动（检查器把它改写成上面那个形状）—— 三条数字必须与 ① 逐字节相同 */
+    var c2: counter = counter { i: i64(0), n: i64(5) }
+    var fsum: i64 = 0
+    var fshown: i64 = 0
+    for x in c2 {
+        fsum = fsum + x
+        fshown = fshown + i64(1)
+    }
+    io::cout << "for:sum=" << fsum << " shown=" << fshown << "\n"
+
+    var empty2: counter = counter { i: i64(0), n: i64(0) }
+    var fhits: i64 = 0
+    for x in empty2 { fhits = fhits + i64(1) }
+    io::cout << "for:empty=" << fhits << "\n"
+
+    var a2: counter = counter { i: i64(0), n: i64(2) }
+    var b2: counter = counter { i: i64(0), n: i64(2) }
+    var fsteps: i64 = 0
+    for x in a2 { fsteps = fsteps + i64(1) }
+    for x in b2 { fsteps = fsteps + i64(1) }
+    io::cout << "for:steps=" << fsteps << "\n"
     return 0
 }

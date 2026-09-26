@@ -152,6 +152,13 @@ void moduleInit(Module *m, Arena *a) {
  *   - The const is cast away only because vecAt takes a non-const Vec; the element
  *     is read and never written.
  */
+Expr *exprIdent(Arena *a, const char *name, int line) {
+    Expr *e = exprNew(a, EX_IDENT, line);
+    e->u.ident.name = name;
+    e->u.ident.srcName = name;      /* the parser's `forIdent` set both; one builder sets both */
+    return e;
+}
+
 bool funcIsMethod(const FuncDef *f) {
     if (!f || f->params.len == 0) return false;
     Param *p0 = *(Param **)vecAt((Vec *)&f->params, 0);

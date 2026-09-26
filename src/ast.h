@@ -356,6 +356,7 @@ struct Expr {
 typedef struct { const char *name; Expr *value; } FieldInit;
 
 Expr *exprNew(Arena *a, ExprKind kind, int line);
+Expr *exprIdent(Arena *a, const char *name, int line);   /* the one way an `EX_IDENT` is built */
 
 /* ------------------------------------------------------------ statements */
 
@@ -379,6 +380,11 @@ typedef struct {
 struct Stmt {
     StmtKind kind;
     int      line;
+
+    /* Set on the block that a `for x in SUBJ { … }` was desugared into (the parser cannot decide
+     * whether SUBJ is sliceable -- it does not consult the symbol table -- so this flag is how the
+     * checker finds the candidate for the iterator protocol). See `checkBlockBody`. */
+    bool     forDesugar;
 
     Type    *type;      /* ST_VAR: the final type of the declaration, filled in by
                          * the checker */

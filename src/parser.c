@@ -1713,10 +1713,7 @@ static Stmt *parseIf(Parser *p) {
 
 /* A synthetic `name` of the loop's own making. */
 static Expr *forIdent(Parser *p, const char *name, int line) {
-    Expr *id = exprNew(p->arena, EX_IDENT, line);
-    id->u.ident.name = name;
-    id->u.ident.srcName = name;
-    return id;
+    return exprIdent(p->arena, name, line);      /* one builder for every `EX_IDENT` */
 }
 
 /* A synthetic integer literal, for the loop's `+ 1` and its start at 0. */
@@ -1898,7 +1895,11 @@ static Stmt *parseFor(Parser *p) {
     w->u.whiles.cond = cond;
     w->u.whiles.body = forBlock(p, inner, 3, line);
     Stmt *outer[3] = { viewDecl, idxDecl, w };
-    return forBlock(p, outer, 3, line);
+    Stmt *desugared = forBlock(p, outer, 3, line);
+    /* The subject may not be sliceable at all: the parser cannot tell (it does not consult the
+     * symbol table), so the checker gets the chance to turn this into an iterator loop. */
+    desugared->forDesugar = true;
+    return desugared;
 }
 
 static Stmt *parseWhile(Parser *p) {

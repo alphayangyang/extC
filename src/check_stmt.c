@@ -80,7 +80,78 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
 
 /* Check a block body in a fresh scope, so bindings declared in it go out of scope
  * when the block ends. */
+/* A `for x in SUBJ { … }` desugars to a **slice** loop (`var __extc_s = SUBJ[..] …`). That is
+ * the right shape for an array or a view, but a user type has no `[..]` -- and the parser cannot
+ * tell the difference, because it does not consult the symbol table. So when SUBJ's type is not
+ * sliceable, the same block is retargeted at the iterator protocol:
+ *
+ *     fn iter(self: ref Self) -> It     // the state, a value in this frame
+ *     fn next(self: mut ref It) -> bool // is there another?
+ *     fn value(self: ref It) -> T       // the current one
+ *
+ * The statements are **retargeted, not rebuilt**: the loop variable, the body and the loop are the
+ * ones the parser made, and the three calls are ordinary `EX_METHOD` nodes, so the normal method
+ * resolution checks them (and reports a missing protocol method in the usual way). Nothing is
+ * added to codegen, and the slice path is untouched -- zero churn for every existing program.
+ *
+ * The type is probed **without checking** the subject: `checkExpr` is not memoised, so checking it
+ * here would report its diagnostics twice. SUBJ is a name, a field or `*p` (the parser enforces
+ * that in `forRepeatable`), and only the name case is probed; anything else keeps the slice path,
+ * which is what it did before this existed. */
+static Type *forSubjectType(Checker *c, Expr *e) {
+    if (!e || e->kind != EX_IDENT || !e->u.ident.name) return NULL;
+    Sym *sy = lookup(c, e->u.ident.name);
+    return sy ? sy->type : NULL;
+}
+
+static bool forRetargetToIterator(Checker *c, Stmt *block) {
+    if (block->u.block.stmts.len != 3) return false;
+    Stmt *bind = *(Stmt **)vecAt(&block->u.block.stmts, 0);
+    Stmt *w    = *(Stmt **)vecAt(&block->u.block.stmts, 2);
+    if (!bind || bind->kind != ST_VAR || !bind->u.var.init ||
+        bind->u.var.init->kind != EX_SLICE) return false;
+    if (!w || w->kind != ST_WHILE || !w->u.whiles.body ||
+        w->u.whiles.body->kind != ST_BLOCK || w->u.whiles.body->u.block.stmts.len != 3)
+        return false;
+    Expr *subject = bind->u.var.init->u.slice.obj;
+    Type *st = forSubjectType(c, subject);
+    if (!st) return false;                       /* unknown: leave the slice path alone */
+    Type *sb = ttBase(tsub(c, st));
+    Type *elem = (sb && sb->kind == TY_ARRAY) ? sb->inner : viewElemOf(sb);
+    if (elem) return false;                      /* sliceable after all: today's shape is right */
+    if (!bind->u.var.name) return false;
+
+    /* `var __extc_s = SUBJ` -- bind the subject itself, still evaluated exactly once. */
+    bind->u.var.init = subject;
+
+    /* `var __extc_it = __extc_s.iter()` */
+    Expr *iter = exprNew(c->arena, EX_METHOD, block->line);
+    iter->u.method.recv = exprIdent(c->arena, bind->u.var.name, block->line);
+    iter->u.method.name = "iter";
+    Stmt *itDecl = stmtNew(c->arena, ST_VAR, block->line);
+    itDecl->u.var.name = "__extc_it";
+    itDecl->u.var.init = iter;
+    itDecl->u.var.mut = true;                    /* `next` takes `mut ref Self` */
+    *(Stmt **)vecAt(&block->u.block.stmts, 1) = itDecl;
+
+    /* `while __extc_it.next()`, and the loop variable becomes `__extc_it.value()`. */
+    Stmt *inner = w->u.whiles.body;
+    Stmt *elemDecl = *(Stmt **)vecAt(&inner->u.block.stmts, 0);
+    Expr *next = exprNew(c->arena, EX_METHOD, w->line);
+    next->u.method.recv = exprIdent(c->arena, "__extc_it", w->line);
+    next->u.method.name = "next";
+    w->u.whiles.cond = next;
+    if (!elemDecl || elemDecl->kind != ST_VAR) return false;
+    Expr *value = exprNew(c->arena, EX_METHOD, elemDecl->line);
+    value->u.method.recv = exprIdent(c->arena, "__extc_it", elemDecl->line);
+    value->u.method.name = "value";
+    elemDecl->u.var.init = value;
+    inner->u.block.stmts.len = 2;                /* `[ var x = …value(); BODY ]`, step dropped */
+    return true;
+}
+
 static void checkBlockBody(Checker *c, Stmt *block) {
+    if (block->forDesugar) forRetargetToIterator(c, block);
     pushScope(c);
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&block->u.block.stmts, i));

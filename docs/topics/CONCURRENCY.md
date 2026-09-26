@@ -314,7 +314,23 @@ error: cannot slice a value of type `counter`
 
 ⇒ 今天的脱糖是**基于切片**的（`for d in c` → `var __extc_s = c[..]`）✓ 用户类型没有 `[..]` ✓
 
-**落地清单（下一步，按"先判据后特性"）**
+**已落地（2026-09-26）**：`for x in c` 现在能驱动用户类型了 —— **零 codegen 改动、零既有程序改动**。
+
+- **解析器**：`for x in SUBJ` 照旧脱糖成切片循环（`var __extc_s = SUBJ[..] …`），只在块上打一个
+  `Stmt.forDesugar` 标记 —— 解析器**不查符号表**，所以类型相关的分支不能在这里做 ✓
+- **检查器**：`checkBlockBody` 见到标记块时，用**符号表**探 subject 的类型（**不调用 `checkExpr`**：
+  它没有记忆化 ⇒ 会重复报诊断 ✗）：可切片 ⇒ 原样走今天的路径；不可切片 ⇒ **改写**成协议循环 ——
+  **是改写不是重建**：循环变量、body、循环都是解析器造的那些节点，`iter`/`next`/`value` 是普通的
+  `EX_METHOD` 节点 ⇒ 方法解析、缺失方法的诊断、类型检查全部由既有机制完成 ✓
+- **判据**（`tests/coro/run.sh`，已进 `check.sh`）：**差分判据** —— 同一个 fixture 里
+  `while` 版与 `for` 版各跑一遍，六行数字必须**逐字节相同**（`sum=15 shown=5` · `empty=0` · `steps=4`）✓
+  + 生成物合同零告警 ✓
+- **零回归**：生成物 A/B **330 个程序逐字节相同、零新增拒绝**（切片路径未被触碰 ⇒ 连
+  `tests/errors` 里"不能切片"的那些反例都不受影响 ✓）
+- **已知限制（下一步）**：subject 只探**名字**（`for x in c`）；`for d in self.items` 这类表达式
+  subject 仍走切片路径 ⇒ 用户类型字段上的迭代留待第二步（判据先行的原则不变：先加判据再加面 ✓）
+
+**原落地清单（已按此实现，留档）**
 1. 检查器：`for x in subject` 在 subject **不可切片**时，从它的类型上解析这三个方法，
    把 `FuncDef*` 与元素类型记在 `for` 节点上（**不新增语法** ✓ `for x in c` 已经能解析 ✓）；
 2. codegen：发射 `It __extc_it = subject.iter(); while (__extc_it.next()) { T x = __extc_it.value(); <body> }`
