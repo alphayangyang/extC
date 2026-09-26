@@ -1715,11 +1715,16 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
-        if (f->coroProto == 3) {                      /* `next` on a handle: dispatch on kind */
+        /* The handle protocol: `coroProto` 3/4, or an **instantiated copy** of those -- the instance
+         * machinery names them `coroutine_<T>_next` and does not carry the flag. */
+        int hproto = f ? f->coroProto : 0;
+        if (hproto < 3 && isProtoType(ttBase(recvT), "coroutine", 1))
+            hproto = (f && f->name && strcmp(f->name, "value") == 0) ? 4 : 3;
+        if (hproto == 3) {                            /* `next` on a handle: dispatch on kind */
             g->needCoroHandle = true;
             return arenaPrintf(g->arena, "extc_coro_next(&(%s))", rc);
         }
-        if (f->coroProto == 4) {                      /* `value` on a handle: dispatch, then read */
+        if (hproto == 4) {                            /* `value` on a handle: dispatch, then read */
             g->needCoroHandle = true;
             return arenaPrintf(g->arena, "extc_coro_value_%s(&(%s))",
                                cType(g, subst(g, f->ret)), rc);
@@ -1971,6 +1976,29 @@ static const char *genExprInner(CG *g, Expr *e) {
              * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
              * miscompile -- and a coroutine *definition* alone still compiles, which is what the
              * slice-B1 test drives from a small C harness. */
+            /* A handle-protocol call can arrive here too (a `ref coroutine<T>` receiver resolves as
+             * an ordinary call, not as EX_METHOD), so both paths share the dispatch. */
+            if (e->func && !e->func->isCoro && e->u.call.callee->kind == EX_FIELD) {
+                /* `self` is implicit, so a `ref` receiver arrives as a call with **no** arguments and
+                 * the receiver sits in the callee's field expression. The receiver's type decides
+                 * whether this is the handle protocol. */
+                Expr *rf = e->u.call.args.len > 0
+                               ? *(Expr **)vecAt(&e->u.call.args, 0)
+                               : (e->u.call.callee->kind == EX_FIELD ? e->u.call.callee->u.field.obj
+                                                                     : NULL);
+                int hp = 0;
+                if (rf && isProtoType(ttBase(subst(g, rf->type)), "coroutine", 1))
+                    hp = (e->func->name && strcmp(e->func->name, "value") == 0) ? 4 : 3;
+                if (hp) {
+                    const char *rc = genExpr(g, rf);
+                    const bool viaRef = rf->type && rf->type->kind == TY_REF;
+                    g->needCoroHandle = true;
+                    if (hp == 3)
+                        return arenaPrintf(g->arena, "extc_coro_next(%s%s)", viaRef ? "" : "&", rc);
+                    return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s)",
+                                       cType(g, subst(g, e->func->ret)), viaRef ? "" : "&", rc);
+                }
+            }
             if (e->func && e->func->isCoro && e->boxedCoro) {
                 /* **Boxing**: this coroutine value is stored somewhere that outlives the current C
                  * scope, so its frame goes into the task's own place and the value is a
@@ -1998,7 +2026,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 pfLine(g, "%s", bufCstr(&init));
                 g->needCoroHandle = true;
                 return arenaPrintf(g->arena,
-                                   "((struct extc_coro){ .frame = __extc_czf%d, .kind = %d,"
+                                   "((extc_coro){ .frame = __extc_czf%d, .kind = %d,"
                                    " .task = __extc_czh%d })", sq, cf->coroKind, sq);
             }
             if (e->func && e->func->isCoro) {
@@ -3269,6 +3297,37 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * and left again so the caller keeps its own place current. Everything the coroutine
                  * creates goes in there and outlives every suspension; the task's end releases it in
                  * one go (see the `$next` driver in `genCoroDecls`). */
+                /* `var h: coroutine<T> = f(...)`: the annotation *is* the handle type, so the frame
+                 * goes into the task's own place and the variable holds a 24-byte handle. This is the
+                 * escape-driven choice in its simplest form -- the same source shape without the
+                 * annotation keeps the frame on the caller's stack (zero allocation). */
+                if (s->type && isProtoType(s->type, "coroutine", 1)) {
+                    const char *cn = cFuncName(g, cf);
+                    int sq = g->coroSeq++;
+                    flushPrefix(g);
+                    cgLine(g, "int64_t __extc_czh%d = extc_task_begin();", sq);
+                    cgLine(g, "int64_t __extc_czz%d = extc_task_zone(__extc_czh%d);", sq, sq);
+                    cgLine(g, "struct %s$frame *__extc_czf%d = (struct %s$frame *)extc_task_alloc("
+                              "__extc_czh%d, (int64_t)sizeof(struct %s$frame), \"%s\", %d);",
+                           cn, sq, cn, sq, cn, g->path, s->line);
+                    Buf bx;
+                    bufInit(&bx, g->arena);
+                    bufPrintf(&bx, "*__extc_czf%d = (struct %s$frame){ .pc = 0, .zone = __extc_czz%d,"
+                                  " .task = __extc_czh%d", sq, cn, sq, sq);
+                    for (size_t i = 0; i < cf->params.len; i++) {
+                        Param *p = *(Param **)vecAt(&cf->params, i);
+                        Expr *a = i < s->u.var.init->u.call.args.len
+                                      ? *(Expr **)vecAt(&s->u.var.init->u.call.args, i) : NULL;
+                        bufPrintf(&bx, ", .%s = %s", p->cname, a ? genExpr(g, a) : "0");
+                    }
+                    bufPrintf(&bx, " };");
+                    cgLine(g, "%s", bufCstr(&bx));
+                    cgLine(g, "extc_coro %s = (extc_coro){ .frame = __extc_czf%d, .kind = %d,"
+                              " .task = __extc_czh%d };", s->u.var.cname, sq, cf->coroKind, sq);
+                    g->needCoroHandle = true;
+                    g->needPool = true;      /* the task table brings the zone runtime with it */
+                    return;
+                }
                 const bool hasZone = cf->coroNeedsZone;
                 const int  sq = g->coroSeq++;
                 if (hasZone) {
@@ -3829,9 +3888,21 @@ static void genCoroHandleDecls(CG *g, Module *m) {
     cgLine(g, " * handles from different coroutines live in the same container. `task` is the safety");
     cgLine(g, " * token: driving a handle whose task has ended traps loudly instead of touching freed");
     cgLine(g, " * memory (the frame lives in that task's place). */");
-    cgLine(g, "struct extc_coro { void *frame; int64_t kind; int64_t task; };");
-    cgLine(g, "EXTC_UNUSED static bool extc_coro_next(struct extc_coro *h) {");
-    cgLine(g, "    if (!extc_task_live(h->task)) {");
+    (void)0;   /* the typedef itself is emitted early, before every type that mentions it */
+    /* The task table is spliced in during final assembly, so name what the helpers need here --
+     * the same reason the pool primitives get a prototype in `coroutine.c`. */
+    cgLine(g, "int64_t extc_task_alive(int64_t id);");
+    /* C allows a declaration to be repeated, and these helpers may precede the definitions below. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!cf || !cf->isCoro || cf->tmpl) continue;
+        const char *cn = cFuncName(g, cf);
+        cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);", cn, cn);
+        if (cf->coroNeedsZone)
+            cgLine(g, "EXTC_UNUSED static bool %s$next(struct %s$frame *f);", cn, cn);
+    }
+    cgLine(g, "EXTC_UNUSED static bool extc_coro_next(extc_coro *h) {");
+    cgLine(g, "    if (!extc_task_alive(h->task)) {");
     cgLine(g, "        exit(70);   /* driving a coroutine whose task has already ended */");
     cgLine(g, "    }");
     cgLine(g, "    switch (h->kind) {");
@@ -3857,7 +3928,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
                 strcmp(cType(g, prev->yieldType), yt) == 0) done = true;
         }
         if (done) continue;
-        cgLine(g, "EXTC_UNUSED static %s extc_coro_value_%s(struct extc_coro *h) {", yt, yt);
+        cgLine(g, "EXTC_UNUSED static %s extc_coro_value_%s(extc_coro *h) {", yt, yt);
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck2 = *(FuncDef **)vecAt(&m->funcs, k);
@@ -3917,6 +3988,9 @@ static void genCoroDecls(CG *g, Module *m) {
 }
 
 static void genFunc(CG *g, FuncDef *f) {
+    /* The coroutine protocols (`next`/`value`) have no body: they are emitted inline at their call
+     * sites (see genMethodCall). Never emit one as a function, whichever path got here. */
+    if (f->coroProto) return;
     /* A coroutine's step is generated **through this flow** (docs/topics/CONCURRENCY.md 4.4, slice C):
      * emitting a body is what registers the generic instances it calls, and a definition produced
      * outside this flow called helpers nothing ever emitted. Only two places differ -- the signature
@@ -5789,6 +5863,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
          * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
         if (!f->used && !cgIsMain(f) && !inTraitTable(m, f)) continue;
+        /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
+         * body of their own -- emitting one here hit genBlockBody with a null body. */
+        if (f->coroProto) continue;
         *(FuncDef **)vecPush(&g.funcs) = f;
     }
 
@@ -5815,6 +5892,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 "#define EXTC_DYN_HANDLE_DEFINED 1\n"
                 "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; };\n"
                 "typedef struct ExtcDynHandleS ExtcDynHandle;\n\n");
+        /* The coroutine handle, for the same reason as the dyn one: prototypes and the instance
+         * structs (`vector<coroutine<T>>`) mention it before the runtime could define it. */
+        if (g.needCoroHandle)
+            bufPuts(out,
+                "#define EXTC_CORO_HANDLE_DEFINED 1\n"
+                "struct ExtcCoroS { void *frame; int64_t kind; int64_t task; };\n"
+                "typedef struct ExtcCoroS extc_coro;\n\n");
     }
     /* The dying hook goes between the includes and the trap paths that call it: `int32_t`
      * has to be known, and the definition has to precede every use. It is its own block
@@ -6610,6 +6694,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * is set whenever the template body mentions a call, so a closure
              * such as `push` calling `grow` is included automatically, and
              * emitting too much is the safe direction. */
+            if (md->coroProto) continue;   /* emitted inline at the call site */
             if (!md->used) continue;
             /* Instance methods are candidates too. They used to be left out, and that is
              * exactly where the remaining `unused function` warnings lived: a library
@@ -6689,6 +6774,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
+            if (md->coroProto) continue;   /* emitted inline at the call site */
             if (!md->used) continue;      /* called methods only */
             size_t fb = g.out->len;
             genFunc(&g, md);
