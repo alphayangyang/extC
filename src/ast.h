@@ -36,6 +36,7 @@ typedef enum {
     TY_PARAM,       /* the type parameter itself: the `T` written inside a template */
     TY_GENERIC,     /* an instance, such as `Pair<i32, u8>` */
     TY_ARRAY,       /* a fixed array `[15]i32`: the length is part of the type */
+    TY_DYN,         /* `dyn Trait`: a pool-backed `{pool, slot, gen}` name; `name` is the trait */
     TY_ERROR        /* dummy type for a failed check, so errors do not cascade */
 } TypeKind;
 

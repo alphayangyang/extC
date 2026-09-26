@@ -408,6 +408,9 @@ static const char *cType(CG *g, Type *t) {
         case TY_REF:   return arenaPrintf(g->arena, "%s *", cType(g, t->inner));
         case TY_VOID:  return "void";
         case TY_STRUCT: return t->name;
+        /* A `dyn` value is the runtime's handle: the same `{pid, slot, gen}` triple the pool
+         * runtime defines, which is what `extc_dyn_put` returns and `extc_dyn_slot` checks. */
+        case TY_DYN:    return "ExtcDynHandle";
         case TY_GENERIC: return t->name;    /* already a decorated name */
         case TY_ARRAY:  return t->name;     /* likewise: array_15_i32 */
         case TY_ENUM:  return t->name;      /* a plain enum typedef in C */

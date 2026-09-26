@@ -1223,6 +1223,24 @@ static FuncDef *parseFunc(Parser *p) {
  *     place that decides whether the path names a module or a type.
  */
 static Type *parseType(Parser *p) {
+    /* `dyn Trait` -- the type of a dynamically dispatched value (DYN.md stage 3). Like the
+     * expression form, this is decided by **shape** (`dyn` followed by an identifier), because
+     * `dyn` is not a reserved word in this language. */
+    if (at(p, "dyn") && pk(p, 1) && pk(p, 1)->kind == TK_IDENT) {
+        take(p);                            /* dyn */
+        Token *tn = take(p);
+        if (!startsUpper(tn->text)) {
+            ctxError(p->ctx, tn->line, tn->col,
+                     "Trait names start with a capital letter, which is what keeps them from ever"
+                     " colliding with a type name or a type parameter.",
+                     "`dyn %s` names no trait: trait names start with a capital letter", tn->text);
+            return NULL;
+        }
+        Type *dt = typeNamed(p->arena, tn->text);
+        dt->kind = TY_DYN;
+        return dt;
+    }
+
     /* `mut` means "writing through this value is allowed".  It only means
      * something for something that contains a reference:
      *     `mut ref T`     a writable reference
@@ -2330,7 +2348,7 @@ static Expr *parsePrimary(Parser *p) {
             ctxError(p->ctx, kw->line, kw->col,
                      "Constructing a `dyn` value and calling it are one step; storing one needs a"
                      " pool, which arrives in stage 3.",
-                     "`dyn %%s(x)` must be called immediately: write `dyn %%s(x).method(...)`",
+                     "`dyn %s(x)` must be called immediately: write `dyn %s(x).method(...)`",
                      tn->text, tn->text);
             return NULL;
         }
