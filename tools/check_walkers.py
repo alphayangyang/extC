@@ -36,8 +36,7 @@ LEAF = {
 # a promise that the omission is intentional -- state why.
 ALLOW = {}
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
-RATCHET = 25       # measured 2026-09-26 after migrating `exprUsesCname`/`stmtUsesCname` and
-                   # `exprHasNew`/`stmtHasNew`/`exprCallsAllocator`/`stmtCallsAllocator`.
+RATCHET = 23       # measured 2026-09-26 after migrating the `needsHome` pair as well.
                    # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
 
 

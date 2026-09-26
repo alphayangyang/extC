@@ -405,136 +405,63 @@ static bool stmtHasNew(Stmt *s) {
  *   - Only valid after the calls have been resolved: the walk reads `e->func`, which the
  *     checker fills in when it resolves a call.
  */
-static bool exprCallsNeedsHome(Expr *e, bool precise);
+/* Does this expression, or this statement, reach a callee that needs a home arena?
+ *
+ * Two questions, one walk:
+ *   precise = false  "does the callee reach a function with a home arena?"  -- the escape
+ *                    question, which is what decides whether *this* function gets one;
+ *   precise = true   "does the callee itself take a home arena?"             -- the narrow
+ *                    question a **signature** needs.
+ * `callsNeedsHome` / `callsUsesHome` below name the two, so no call site carries a bare flag.
+ *
+ * The walk is `astWalkExprChildren` / `astWalkStmtChildren` (`ast.c`), the one place that lists
+ * the AST kinds. That matters here more than anywhere else, because the answer decides where
+ * storage lives -- two bugs of exactly this shape are on record:
+ *
+ *   - `EX_STRUCTLIT` was missing from this predicate, so `var b: box = { r: mknode() }` looked
+ *     like a body that reaches no callee with a home arena. The function was not given one, the
+ *     callee allocated into the caller's *block* arena (released when the block ends) while the
+ *     depth recorded for the value said 0, and the pointer dangled. Every shape a call can hide
+ *     in therefore has to be listed -- which is now the job of `ast.c`, not of this file.
+ *   - The hole used to be papered over for `main` alone by an `|| is main` fallback in
+ *     `mayUseArena`, and that fallback had a measurable cost: every `main` carried the whole
+ *     arena prologue, so every `while` body emitted `extc_arena_release(...)`, and a matrix
+ *     multiply ran 103 ms instead of 34 ms (3.0x slower). Covering the root cause here let the
+ *     fallback go.
+ * The same two mistakes were also made once for `EX_DYN`'s payload and once for `EX_SLICE`'s
+ * bounds (docs/topics/AST-WALKERS.md); migrating this predicate ends that class of bug for it.
+ *
+ * Notes:
+ *   - Only valid after the calls have been resolved: the walk reads `e->func`, which the checker
+ *     fills in when it resolves a call. A node without one (a generic primitive) is descended
+ *     into like any other.
+ *   - An associated call (`EX_ASSOC`) counts as well: an associated function such as
+ *     `T::make` is declared without `self` but takes a home arena like any other. */
+typedef struct { bool precise; } HomeQ;
+
+static bool needsHomeInStmt(void *ctx, Stmt *s);
+
+static bool needsHomeInExpr(void *ctx, Expr *e) {
+    HomeQ *q = (HomeQ *)ctx;
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func &&
+        (q->precise ? e->func->usesHome : e->func->needsHome))
+        return false;                       /* found: stop the walk */
+    AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+static bool needsHomeInStmt(void *ctx, Stmt *s) {
+    AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+
 static bool stmtCallsNeedsHome(Stmt *s, bool precise) {
     if (!s) return false;
-    switch (s->kind) {
-    case ST_VAR:    return exprCallsNeedsHome(s->u.var.init, precise);
-    case ST_ASSIGN: return exprCallsNeedsHome(s->u.assign.value, precise) ||
-                           exprCallsNeedsHome(s->u.assign.target, precise);
-    case ST_IF:     return exprCallsNeedsHome(s->u.ifs.cond, precise) ||
-                           stmtCallsNeedsHome(s->u.ifs.thenBody, precise) ||
-                           stmtCallsNeedsHome(s->u.ifs.elseBody, precise);
-    case ST_WHILE:  return exprCallsNeedsHome(s->u.whiles.cond, precise) ||
-                           stmtCallsNeedsHome(s->u.whiles.body, precise);
-    case ST_RETURN: return exprCallsNeedsHome(s->u.ret.value, precise);
-    case ST_EXPR:   return exprCallsNeedsHome(s->u.expr.expr, precise);
-    case ST_BLOCK:
-        for (size_t i = 0; i < s->u.block.stmts.len; i++)
-            if (stmtCallsNeedsHome(*(Stmt **)vecAt(&s->u.block.stmts, i), precise)) return true;
-        return false;
-    case ST_MATCH:
-        if (exprCallsNeedsHome(s->u.match.scrutinee, precise)) return true;
-        for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtCallsNeedsHome((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, precise)) return true;
-        return false;
-    default: return false;
-    }
+    HomeQ q = { precise };
+    return !needsHomeInStmt(&q, s);
 }
-static bool exprCallsNeedsHome(Expr *e, bool precise) {
-    if (!e) return false;
-    /* An associated call (`EX_ASSOC`) counts as well: an associated function such as
-     * `varArray<i32>::withCap(1)` or `bufT<i32>::make(4)` also records its callee in
-     * `e->func`, but this walk used to accept only `EX_CALL` and `EX_METHOD`. A
-     * function that called an allocating associated function was therefore classified
-     * as needing no arena (`mayUseArena = false`, not even an `__extc_a`
-     * declaration), while the call site still emitted `&__extc_a[k]`, and the
-     * generated C did not compile. Repro:
-     *
-     *     fn helper() { var b: bufT<i32> = bufT<i32>::make(4) }   // `make` contains `new`
-     *
-     * The hole was hidden for `main` only, by an `|| is main` fallback in
-     * `mayUseArena`, and that fallback had a measurable cost: every `main` carried the
-     * whole arena prologue, so every `while` body emitted `extc_arena_release(...)`
-     * and a matrix multiply ran 103 ms instead of 34 ms (3.0x slower). Once the root
-     * cause is covered here, the fallback is gone. */
-    /* `precise` asks the narrow question ("does the callee really take a home arena?"), which is
-     * what a signature needs; the wide one is the escape question `needsHome` answers. */
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func &&
-        (precise ? e->func->usesHome : e->func->needsHome))
-        return true;
-    switch (e->kind) {
-    case EX_BIN: return exprCallsNeedsHome(e->u.bin.left, precise) || exprCallsNeedsHome(e->u.bin.right, precise);
-    case EX_UN:  return exprCallsNeedsHome(e->u.un.operand, precise);
-    case EX_REF: return exprCallsNeedsHome(e->u.ref.operand, precise);
-    case EX_DEREF: return exprCallsNeedsHome(e->u.deref.operand, precise);
-    case EX_SIGN:  return exprCallsNeedsHome(e->u.sign.operand, precise);
-    case EX_CONV:  return exprCallsNeedsHome(e->u.conv.operand, precise);
-    case EX_TRY:   return exprCallsNeedsHome(e->u.try_.operand, precise);
-    case EX_INDEX:
-        return exprCallsNeedsHome(e->u.index.obj, precise) || exprCallsNeedsHome(e->u.index.index, precise);
-    case EX_SLICE: return exprCallsNeedsHome(e->u.slice.obj, precise) ||
-                          exprCallsNeedsHome(e->u.slice.lo, precise) ||
-                          exprCallsNeedsHome(e->u.slice.hi, precise);
-    case EX_FIELD: return exprCallsNeedsHome(e->u.field.obj, precise);
-    case EX_COALESCE:
-        return exprCallsNeedsHome(e->u.coalesce.main, precise) ||
-               exprCallsNeedsHome(e->u.coalesce.fallback, precise);
-    case EX_METHOD: {
-        if (exprCallsNeedsHome(e->u.method.recv, precise)) return true;
-        for (size_t i = 0; i < e->u.method.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.method.args, i), precise)) return true;
-        return false;
-    }
-    case EX_CALL: {
-        for (size_t i = 0; i < e->u.call.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.call.args, i), precise)) return true;
-        return false;
-    }
-    case EX_ASSOC: {
-        for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.assoc.args, i), precise)) return true;
-        return false;
-    }
-    case EX_NEW: return exprCallsNeedsHome(e->u.new_.count, precise);
-    /* A call hidden inside a literal used to be invisible here: this predicate looked
-     * only at the direct positions (`EX_CALL`, `EX_METHOD`, `EX_ASSOC`), and the call
-     * in `var b: box = { r: mknode() }` was swallowed by `EX_STRUCTLIT`. The
-     * transitive closure then reported that the function reaches no callee with a
-     * home arena, so the function was not given one, the callee allocated into the
-     * caller's block arena (released when the block ends) while the depth recorded
-     * for the value said 0, and the pointer dangled. Every shape a call can hide in
-     * must therefore be listed: a field initializer, an array element, an enum
-     * payload, and the arguments of a builtin generic call. */
-    case EX_STRUCTLIT:
-        for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            if (exprCallsNeedsHome((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, precise)) return true;
-        return false;
-    case EX_ARRAYLIT:
-        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.arraylit.elems, i), precise)) return true;
-        return false;
-    case EX_ENUMVAL:
-        /* Payload construction: the call hides in the payload, as in
-         * `holder.holding(mknode())`. */
-        for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.enumval.args, i), precise)) return true;
-        return false;
-    case EX_GENCALL:
-        for (size_t i = 0; i < e->u.gencall.args.len; i++)
-            if (exprCallsNeedsHome(*(Expr **)vecAt(&e->u.gencall.args, i), precise)) return true;
-        return false;
-    /* `EX_DYN` was missing from every hand-written walker when the kind was introduced: the
-     * payload is a child expression (`ast.h`: `dynv.payload`), so a call inside it was
-     * invisible here, in `exprMakesPool`, in `collectEffectsExpr`, in `obligExpr`, in
-     * `exprRefDepth` (the questions already migrated to `astWalkExprChildren`, among them
-     * `exprHasNew` and the allocator pair, cannot have this hole),
-     * `valDepthStructural` and the loader's `rwExpr`. These walkers end in `default:`, so
-     * `-Wswitch` cannot warn about the omission -- only reading them can. */
-    case EX_DYN:
-        return exprCallsNeedsHome(e->u.dynv.payload, precise);
-    default: return false;
-    }
-}
-/* Does this expression, or this statement, mention the binding whose generated-C name is `cname`?
- *
- * Used for one question only: is a parameter ever read? The list of shapes mirrors
- * `exprCallsNeedsHome`, and for the same reason its comment gives - an expression can hide
- * anywhere, and a case left out here would report a parameter as unused while the body uses it.
- *
- * The comparison is on the *generated* name, so a local that shadows the parameter (which gets
- * `__2` appended) cannot be mistaken for it.
- */
+
+
 /* Does this expression, or this statement, mention the binding whose generated-C name is
  * `cname`?
  *
