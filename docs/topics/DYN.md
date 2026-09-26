@@ -414,6 +414,44 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
    否则报 `expected ',' or '}'`；
 2. 那条"必须立即调用"的错误信息里原本有 `%%s`（打印成字面量）—— 已顺手修掉。
 
+#### 存储值派发需要 **thunk**（2026-09-26 实现时撞出的设计分叉，**定案**）
+
+立即形式能用今天是**巧合**：调用点静态知道具体类型，所以第一期的表字段写成
+`__typeof__(实现函数) *`（**每个类型签名各不相同**）也能直接调用。
+但存储值（`let d: dyn Tag = …; d.tag()`）的**具体类型在调用点未知** ⇒
+`((const struct extc_vt$Tag$box_t *)s->vt)` 里的 `box` 根本写不出来。
+
+**定案：每个 trait 一份统一签名的表 + 每个 (trait, 类型, 方法) 一个 thunk。**
+
+```c
+/* 统一签名：只把接收者擦成 void *，其余参数与返回照 trait 声明。
+ * （object safety 已禁止返回 Self / 泛型方法，所以"其余"里不会再有 Self。） */
+struct extc_vt$Tag_t { int64_t (*tag)(void *); };
+
+static int64_t extc_th$Tag$box$tag(void *self) { return box_tag((box *)self); }
+
+static const struct extc_vt$Tag_t __attribute__((unused))
+    extc_vt$Tag$box = { extc_th$Tag$box$tag };
+```
+
+于是**两种形式共用同一张表**，调用点都写成 `((const struct extc_vt$Tag_t *)<slot>->vt)->tag(<slot>->addr)`
+—— trait 名来自值的**静态类型**（`dyn Tag`），具体类型由运行期槽里的表指针决定 ✓
+（立即形式的 `&(b)` 是 `box *`，隐式转 `void *` ✓ 照旧可用）。
+
+**这是本期第二次"以为不用大改、结果要改结构"**（第一次是 `TT_DYN` 的 `-Wswitch` 误判）——
+共同教训：**"静态已知"是第一期的隐含前提，存储面一旦打开就会失效**。
+
+**改动清单（下一轮）**
+1. `src/codegen.c` 的表发出（`generateC` 收尾处）：改成"每 trait 一个 struct + 每 (trait,类型,方法) 一个 thunk +
+   每 (trait,类型) 一个实例"；thunk 名 `extc_th$<Trait>$<Type>$<method>`，表实例名与键**保持不变**
+   （`extc_vt$<Trait>$<Type>`，稳定键与槽位顺序都不变 ⇒ 与第一期的规则一致）；
+2. `genMethodCall`：`dynTrait` 分支里，若接收者不是 `EX_DYN`（存储值）⇒ **只发** `extc_dyn_slot(<值>, "file", line)`，
+   接收者取 `s->addr`；表字段名用 trait 的 `struct extc_vt$<Trait>_t`；
+3. 检查器：接收者是 `TY_DYN` ⇒ 在 trait 签名里找方法（参数按 trait 声明比对，`Self` 位置跳过）；
+4. 判据：`dyn_pool_dispatch` 的 `->vt)->tag(` 形式**不变** ✓；`tests/impl` 的 `vtable_order` 需要看一眼
+   （现在多了一行 struct 定义，`grep -m1` 可能挑错行 —— 按纪律**同时改判据**）；新增
+   `dyn_stored_call`（存储值派发，输出与立即形式一致）· `dyn_stale_stored`（语言级 O5）。
+
 **两个实现细节（2026-09-26 勘察，动手前必读）**
 - **`ttEquals` 的语义**（`src/types.c:743`）：注释写明"除引用、类型参数、泛型实例外，**都靠 interning**"。
   `dyn Trait` 类型没有声明点（解析器随写随造）⇒ 它属于"按结构比较"那一类 ⇒ 必须在 `ttEquals` 里加一条
