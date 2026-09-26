@@ -1,0 +1,20 @@
+/* 对象表模式**只追加**：`poolResizeRaw` 也必须被挡住。
+ *
+ * 理由：搬家与否跟清不清零是**正交**的两件事 —— `resize` 与 `resize_raw` 都会 `realloc`，
+ * 都可能把块搬走，而句柄按"格"寻址 ⇒ 块一动，校验通过但数据已经不在原地。
+ * 期望：trap（退出码 1），消息含 `a block may not be resized in place`。 */
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    /* ⚠️ 已知 wart（记在 PLAN）：**对象表池不能是程序里的第一只池** ——
+     * `extc_pool_new_table(-1)` 单独作为第一句会返回 -1（`extc_zoneTop` 还没有值），
+     * 先建一只普通池就正常。dyn 落地前要么修它，要么明确"表池必须晚于第一只普通池"。 */
+    let warm = syspool::extc_pool_new(i64(-1))
+    let rid  = syspool::extc_pool_new_table(i64(-1))    /* 建对象表池 */
+    var s: mut slice<i64> = poolSlice<i64>(rid, i64(4))
+    io::cout << "kind=" << syspool::extc_pool_kind(rid) << "\n"
+    s = poolResizeRaw<i64>(rid, s, i64(8))              /* 对象表：不许原地搬家 ⇒ trap */
+    io::cout << "不应该执行到这里\n"
+    return 0
+}

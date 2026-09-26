@@ -119,6 +119,18 @@ rt_run rt_blockexit tests/pool/rt_blockexit.extc "before=0 in=1 rid=0 after=0 tw
 echo "== 期 1 · churn：容量停在高水位（内存平）=="
 rt_run rt_churn    tests/pool/rt_churn.extc    "live=0 cap=64 gen=0 acc=20000100000"
 
+echo "== 对象表模式：只追加 —— `poolResizeRaw` 同样被挡（搬家与清零是正交的两件事）=="
+if out=$("$EXTC" --run tests/pool/rt_table_no_resize.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-0}" = 1 ] && echo "$out" | grep -q "may not be resized in place"; then
+    echo "  ok   rt_table_no_resize  ->  trap（$(echo "$out" | grep -o 'a block may not be resized in place' | head -1)）"
+else
+    echo "  FAIL rt_table_no_resize  ->  期望 trap + 退出码 1，得到 rc=${rc:-?}：$(echo "$out" | head -2)"
+    fail=1
+fi
+
+echo "== 对照：普通池允许原地搬家（容器扩容照常）=="
+rt_run rt_container_resize_ok tests/pool/rt_container_resize_ok.extc "len=100"
+
 echo "== 期 1 · 旧 handle 带位置地失败（bug ⇒ trap、条件 ⇒ 值）=="
 if out=$("$EXTC" --run tests/pool/rt_stale.extc 2>&1); rc=$?; then :; fi
 if [ "${rc:-1}" = 1 ] && echo "$out" | grep -q "staleHandle" && echo "$out" | grep -q "tests/pool/rt_stale.extc:"; then
