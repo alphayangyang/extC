@@ -6,10 +6,13 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 786 个成员，其中内部 317 个：
+公开面共 816 个成员，其中内部 320 个：
 
 ## prelude
 
+- `coroutine.buf`（字段）
+- `coroutine.cap`（字段）
+- `coroutine.inc`（字段）
 - `pcg32.buf`（字段）
 - `pcg32.cap`（字段）
 - `pcg32.inc`（字段）

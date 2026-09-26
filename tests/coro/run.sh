@@ -9,6 +9,17 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 手工调度器原型（CONCURRENCY.md §4 第 4 步前身）：帧是值、轮转可恢复
+out=$("$EXTC" -w --run tests/coro/scheduler_prototype.extc 2>&1)
+want_sc='t0=0,0,10,11,20,22, sum0=30 sum1=33'
+if [ "$out" = "$want_sc" ]; then
+    echo "  ok   scheduler_prototype ->  两份帧轮转交错推进、互不干扰：$out"
+    pass=$((pass+1))
+else
+    echo "  FAIL scheduler_prototype ->  期望 [$want_sc]，得到 [$out]"
+    fail=$((fail+1))
+fi
+
 # 闭包原型（CONCURRENCY.md §4 第 3 步）：捕获环境 = 显式结构体 ⇒ 既有逃逸规则直接管它
 out=$("$EXTC" -w --run tests/coro/closure_prototype.extc 2>&1)
 want_cl=$(printf 'sum=50\nfold=26\ntwo=14')

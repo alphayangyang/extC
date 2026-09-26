@@ -2952,6 +2952,7 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
 static void collectOwCallsStmt(Stmt *s, Vec *out) {
     if (!s) return;
     switch (s->kind) {
+    case ST_YIELD:  collectOwCallsExpr(s->u.yield_.value, out); return;
     case ST_VAR:    collectOwCallsExpr(s->u.var.init, out); return;
     case ST_ASSIGN: collectOwCallsExpr(s->u.assign.target, out); collectOwCallsExpr(s->u.assign.value, out); return;
     case ST_EXPR:   collectOwCallsExpr(s->u.expr.expr, out); return;
@@ -3314,6 +3315,12 @@ static void genStmtInner(CG *g, Stmt *s) {
             return;
         }
 
+        case ST_YIELD:
+            /* Slice B emits the real thing (frame struct + Duff's-device switch). Until then this
+             * is a **loud** failure at the C compiler, never a silent miscompile. */
+            cgLine(g, "#error \"coroutine code generation lands in slice B"
+                       " (docs/topics/CONCURRENCY.md 4.4)\"");
+            return;
         case ST_RETURN: {
             /* Every return goes through the shared epilogue: only
              * `__extc_ret_v = ...; goto __extc_ret;` is emitted here, and the

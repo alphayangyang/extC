@@ -217,7 +217,17 @@ typedef struct {
                           * but sound */
 } EArenaSite;
 
+/* `stmtNeedsPlaceBoundary` (check_top.c): will codegen bracket this block with a place? The
+ * checker's answer is a **conservative superset** -- it must never say "no" for a block codegen
+ * does bracket -- and rule 3 of CONCURRENCY.md 12 rests on it (`yield` may not sit inside). */
+bool stmtNeedsPlaceBoundary(Stmt *s);
+
 typedef struct Checker {
+    /* How many enclosing blocks will reclaim their own storage (codegen brackets them with
+     * `zoneEnter`/`zoneLeaveTo` + `arena_release`). A `yield` inside one of them is rule 3 of
+     * docs/topics/CONCURRENCY.md 12: that block's arena is gone before the coroutine is resumed. */
+    int      placeBoundaryDepth;
+
     Ctx       *ctx;         /* parser and module context, for diagnostics and lookup */
     Arena     *arena;       /* arena the checker allocates its own bookkeeping from */
     TypeTable *tt;          /* type table of the module being checked */

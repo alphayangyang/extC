@@ -484,7 +484,8 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 
 | 切片 | 内容 |
 |---|---|
-| **A** | `coroutine<T>` + `yield`（解析器/AST）+ 规则 ③ + 规则 ②（借用档的拒绝）+ **值帧**布局 + 判据 1/3/4 |
+| **A1 ✅（2026-09-26 已落地）** | `coroutine<T>`（prelude 标记）+ `yield` 语句（解析器/AST）+ 检查器（"是不是协程"由**返回类型**决定 ✓ / yielded 值与 `T` 的兼容检查 ✓）+ **规则 ③**（`yield` 不许落在会回收的块里 ✓ `placeBoundaryDepth` ✓ 判据 = `stmtHasNew \|\| stmtMakesPool` 的保守超集 ✓）+ **codegen 守门**（未实现的协程体发 `#error` ⇒ 在 C 编译器处**响亮失败**，绝不静默生成错的 C ✓）+ 两条拒收判据进 `tests/errors/` ✓ |
+| **A2** | 规则 ② 的**活跃性分析**（跨挂起点的局部）+ **帧布局**（值档）+ 布局 dump（`EXTC_DBG_CORO`）|
 | **B** | codegen：帧结构体 + Duff's-device `switch(pc)` + `next`/`value`（复用迭代器协议）⇒ 判据 1 转绿 |
 | **C** | 任务 place（B 方案：调度器/任务表拥有 ⇒ `zoneLeaveTo`）+ 视图局部提升进任务 arena + 判据 2/5 |
 

@@ -2547,6 +2547,7 @@ static bool exprMayPrint(Checker *c, Expr *e) {
 static bool stmtMayPrint(Checker *c, Stmt *s) {
     if (!s) return false;
     switch (s->kind) {
+    case ST_YIELD:  return exprMayPrint(c, s->u.yield_.value);
     case ST_VAR:    return exprMayPrint(c, s->u.var.init);
     case ST_ASSIGN: return exprMayPrint(c, s->u.assign.target) || exprMayPrint(c, s->u.assign.value);
     case ST_EXPR:   return exprMayPrint(c, s->u.expr.expr);

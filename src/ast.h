@@ -362,7 +362,8 @@ Expr *exprIdent(Arena *a, const char *name, int line);   /* the one way an `EX_I
 
 typedef enum {
     ST_VAR, ST_ASSIGN, ST_IF, ST_WHILE, ST_RETURN,
-    ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK, ST_MATCH
+    ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK, ST_MATCH,
+    ST_YIELD                /* `yield e`: only inside a `-> coroutine<T>` body */
 } StmtKind;
 
 /* One arm of a `match`: `circle => { ... }`.
@@ -404,6 +405,7 @@ struct Stmt {
          * needs when the operator is a user-defined method (`x += y` is then
          * `x = add(x, y)`, because C's `+=` knows nothing about the method). */
         struct { Expr *target; Expr *value; const char *op; Expr *opExpr; } assign;
+        struct { Expr *value; } yield_;      /* ST_YIELD: the value handed to the resumer */
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
         struct { Expr *cond; Stmt *body; } whiles;
         struct { Expr *value; } ret;
@@ -540,6 +542,12 @@ struct FuncDef {
     const char *instName;        /* the C name of an instance, such as `max_i32` */
     Vec         params;          /* Param* */
     Type       *ret;             /* NULL when the function returns nothing */
+    /* A coroutine: the declared return type is `coroutine<T>`, and the body may `yield`.
+     * `yieldType` is that `T`; the frame the checker lays out for it is a **value** (see
+     * docs/topics/CONCURRENCY.md 4.4). The declaration is a marker: the call's real type and the
+     * protocol methods are synthesized per coroutine (slice B). */
+    bool        isCoro;
+    Type       *yieldType;
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* the struct a method belongs to; NULL for a free function */
     bool        isAssoc;         /* declared inside a struct body but without `self` */

@@ -175,10 +175,17 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
 
 static void checkBlockBody(Checker *c, Stmt *block) {
     if (block->forDesugar) forRetargetToIterator(c, block);
+    /* A block that reclaims its own storage is a place boundary: nothing may be suspended inside
+     * it (rule 3). `placeBoundaryDepth` is what the `ST_YIELD` case asks about. */
+    const bool boundary = stmtNeedsPlaceBoundary(block);
+    if (boundary) c->placeBoundaryDepth++;
+
     pushScope(c);
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&block->u.block.stmts, i));
     popScope(c);
+
+    if (boundary) c->placeBoundaryDepth--;
 }
 
 /* Check one statement and apply the depth and narrowing consequences it has.
@@ -825,6 +832,34 @@ void checkStmt(Checker *c, Stmt *s) {
             checkExpr(c, s->u.expr.expr);
             return;
 
+        case ST_YIELD: {
+            /* `yield e`: legal only inside a coroutine body, and `e` has to be that coroutine's
+             * `T`. Both come from the declared return type `coroutine<T>` (see `check_top.c`). */
+            FuncDef *cf = c->curFunc;
+            if (!cf || !cf->isCoro) {
+                ckError(c, s->line,
+                        "`yield` only works inside a coroutine: declare the function as"
+                        " `fn %s(...) -> coroutine<T>` (that return type is what makes its body a"
+                        " coroutine; docs/topics/CONCURRENCY.md 4.4)",
+                        "`yield` outside a coroutine", cf ? cf->name : "f");
+                checkExpr(c, s->u.yield_.value);
+                return;
+            }
+            /* Rule 3: a suspension may not sit inside a block that reclaims its own storage --
+             * that arena is released before this coroutine is resumed. */
+            if (c->placeBoundaryDepth > 0) {
+                ckError(c, s->line,
+                        "A suspension may not sit inside a block that reclaims its storage: the"
+                        " arena is gone before the coroutine resumes. Move the allocation into the"
+                        " task's own place, or move the `yield` out of that block"
+                        " (rule 3, docs/topics/CONCURRENCY.md 12)",
+                        "`yield` inside a reclaimed block");
+            }
+            Type *got = checkExpr(c, s->u.yield_.value);
+            if (cf->yieldType && got && !ttIsError(got))
+                checkAssignable(c, cf->yieldType, got, s->u.yield_.value, "the yielded value");
+            return;
+        }
         case ST_RETURN: {
             Type *want = c->curFunc ? c->curFunc->ret : NULL;
             if (!s->u.ret.value) {

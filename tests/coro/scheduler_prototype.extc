@@ -1,0 +1,54 @@
+/* 手工调度器原型（CONCURRENCY.md §4 第 4 步的前身）：一行编译器代码都不加。
+ *
+ * 两个任务（第 1 步那种手工状态机）+ 轮转调度；**帧住在调度器所在的那个帧里** ✓
+ * 本文件要测的是规则 1 的那件事：
+ *
+ *   > 调度器 `step` 一个任务时，任务内部的分配（这里是 `new i64[4]`）落在**谁的地方**？
+ *
+ * 今天的机制：隐藏参数 `__extc_home_zone` 顺着**调用链**往下传 ⇒ 任务拿到的是**调度器**的地方 ✗
+ * 单栈下这没错（调度器活在 main 的帧里，两个任务也都死在它之前）；但真任务可以**挂起后从别处恢复**
+ * ⇒ 那时"调用者的地方"不再等于任务自己的地方 ✗✗ 这正是规则 1 要钉的：
+ * **帧必须自己带上它被创建时的那个地方**（`spawn` 的职责），恢复点不许重新推导 ✓
+ *
+ * 顺带撞到一条**设计输入**（不是 bug，是语言边界）：`ref tasks[i]` 不允许
+ * （"only variables and fields can be referenced"）⇒ 帧数组今天声明不了 ⇒
+ * 调度器要拿"一组帧"，只能由 `spawn` 在语言层提供 ✓
+ *
+ * 判据（tests/coro/run.sh）：`t0=0,10,20 t1=0,11,22 sum0=30 sum1=33` */
+use std::io
+
+struct task {
+    pc: i64
+    n: i64
+    sum: i64
+    step10: i64      /* 每个任务自己的步长：两份帧互不干扰的证据 */
+}
+
+/* 推进一个任务一步；返回这一步的值，-1 表示已结束。
+ * 里面的 `new` 的 zone 由**调用链**决定（今天如此）—— 这就是要测的那件事 ✓ */
+fn step(t: mut ref task) -> i64 {
+    if t.pc >= t.n { return i64(-1) }
+    var scratch: mut slice<i64> = new i64[4]
+    scratch[0] = i64(t.pc) * t.step10
+    t.sum = t.sum + scratch[0]
+    t.pc = t.pc + i64(1)
+    return scratch[0]
+}
+
+fn main() -> i32 {
+    /* 两份帧：住在 main 的帧里（今天没有 spawn ⇒ 由写作者摆在这儿）✓ */
+    var t0: task = task { pc: i64(0), n: i64(3), sum: i64(0), step10: i64(10) }
+    var t1: task = task { pc: i64(0), n: i64(3), sum: i64(0), step10: i64(11) }
+
+    io::cout << "t0="
+    var a: i64 = step(ref t0)
+    while a >= i64(0) {
+        io::cout << a << ","
+        var b: i64 = step(ref t1)
+        if b >= i64(0) { io::cout << b << "," }
+        a = step(ref t0)
+    }
+    while step(ref t1) >= i64(0) { }
+    io::cout << " sum0=" << t0.sum << " sum1=" << t1.sum << "\n"
+    return 0
+}

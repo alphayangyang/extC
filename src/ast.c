@@ -226,6 +226,7 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     case ST_VAR:    return visitExpr(v, s->u.var.init);
     case ST_ASSIGN: return visitExpr(v, s->u.assign.target) && visitExpr(v, s->u.assign.value);
     case ST_RETURN: return visitExpr(v, s->u.ret.value);
+    case ST_YIELD:  return visitExpr(v, s->u.yield_.value);
     case ST_EXPR:   return visitExpr(v, s->u.expr.expr);
     case ST_IF:     return visitExpr(v, s->u.ifs.cond) &&
                            visitStmt(v, s->u.ifs.thenBody) && visitStmt(v, s->u.ifs.elseBody);

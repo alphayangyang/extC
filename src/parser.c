@@ -1503,6 +1503,18 @@ static Stmt *parseStmt(Parser *p) {
         if (v) v->u.var.overwrite = true;
         return v;
     }
+    if (at(p, "yield")) {
+        Token *yk = take(p);
+        Stmt *s = stmtNew(p->arena, ST_YIELD, yk->line);
+        if (atKind(p, TK_NEWLINE) || atKind(p, TK_EOF) || at(p, "}")) {
+            ctxError(p->ctx, yk->line, yk->col, NULL,
+                     "`yield` needs a value: `yield expr`",
+                     "`yield` hands a value to whoever resumes the coroutine");
+            return NULL;
+        }
+        s->u.yield_.value = parseExpr(p);
+        return s->u.yield_.value ? s : NULL;
+    }
     if (at(p, "let") || at(p, "var"))  return parseVarDecl(p);
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);

@@ -657,6 +657,7 @@ static FuncDef *resolveOnInstance(Expr *e) {
 bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     if (!s) return false;
     switch (s->kind) {
+    case ST_YIELD:  return exprMakesPool(s->u.yield_.value, descendBlocks);
     case ST_VAR:    return exprMakesPool(s->u.var.init, descendBlocks);
     case ST_ASSIGN: return exprMakesPool(s->u.assign.value, descendBlocks) ||
                            exprMakesPool(s->u.assign.target, descendBlocks);
@@ -1582,6 +1583,13 @@ static bool exprIsFresh(Expr *e) {
 static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
     if (!s) return;
     switch (s->kind) {
+    case ST_YIELD:
+        if (loopId && exprHasNew(s->u.yield_.value)) {
+            *(int *)vecPush(sites) = s->u.yield_.value->line;
+            *(int *)vecPush(sites) = loopId;
+            *(int *)vecPush(sites) = s->u.yield_.value->lexicalLevel;
+        }
+        return;
     case ST_WHILE: {
         Stmt *b = s->u.whiles.body;
         if (!b) return;
@@ -1783,6 +1791,9 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     if (!s) return false;
     bool grew = false;
     switch (s->kind) {
+    case ST_YIELD:
+        /* The value handed to the resumer leaves this frame just like a `return` does. */
+        return markNamesInExpr(c, s->u.yield_.value);
     case ST_RETURN:
         return markNamesInExpr(c, s->u.ret.value);          /* everything handed back escapes */
     case ST_VAR:
@@ -2280,6 +2291,9 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
 static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
     if (!s) return;
     switch (s->kind) {
+    case ST_YIELD:
+        collectEffectsExpr(c, f, s->u.yield_.value);
+        return;
     case ST_ASSIGN: {
         /* Is the target a container named by a `mut ref` parameter?
         * `l.head = ...`, `*p = ...`, and `l.buf[i] = ...` all are. */
@@ -3382,6 +3396,9 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
 static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     if (!s) return;
     switch (s->kind) {
+    case ST_YIELD:
+        obligExpr(c, s->u.yield_.value, obs, true);
+        return;
     case ST_VAR: {
         /* A local of a resource type is where the obligation is born. An initializer that
          * is another handle makes this one an alias: one `close` serves both, because
@@ -3568,6 +3585,12 @@ static void checkFunc(Checker *c, FuncDef *f) {
         f->needsHome = true;
 
     Vec     *savedParams = c->curParams;
+
+    /* A coroutine: the declared return type is `coroutine<T>` (a prototype in the prelude). The
+     * declaration is the marker -- `yield` is legal only here, and the frame the checker lays out
+     * for this function is a value (docs/topics/CONCURRENCY.md 4.4). */
+    f->isCoro = f->ret && isProtoType(f->ret, "coroutine", 1);
+    f->yieldType = f->isCoro ? *(Type **)vecAt(&f->ret->targs, 0) : NULL;
 
     c->curFunc = f;
     /* The arena of each call is chosen with the escape set, so it has to be computed
@@ -5537,4 +5560,14 @@ static bool stmtCallsAllocator(Checker *c, Stmt *s) {
     if (!s) return false;
     AllocCtx a = { c };
     return !allocInStmt(&a, s);
+}
+
+/* Will codegen bracket this block with a place (`zoneEnter`/`zoneLeaveTo` + `arena_release`)?
+ *
+ * The checker needs a **conservative superset**: saying "no" for a block that codegen does bracket
+ * would let a `yield` sit inside a reclaimed block (rule 3, docs/topics/CONCURRENCY.md 12), so it
+ * asks the two predicates it already has. Codegen's own decision is finer, and finer is safe here.
+ */
+bool stmtNeedsPlaceBoundary(Stmt *s) {
+    return s && (stmtHasNew(s) || stmtMakesPool(s, true));
 }

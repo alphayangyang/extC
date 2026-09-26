@@ -1142,6 +1142,9 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
 static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     if (!s) return;
     switch (s->kind) {
+    case ST_YIELD:
+        rwExpr(L, self, s->u.yield_.value);
+        break;
     case ST_VAR:
         if (s->u.var.ann) rwType(L, self, s->u.var.ann);
         rwExpr(L, self, s->u.var.init);
