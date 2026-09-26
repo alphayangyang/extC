@@ -616,3 +616,63 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
   （`extc_pool_new_table(parent)` 已支持）。当前行为**不会悬垂**，只是回收推迟到 place 退出；
 - **O5 已翻 ✅**（`SOUNDNESS.md`）：派发键决定布局在 dyn 侧成立；第三期的"开放注册"是**新的独立义务**
   （可注册的表 + 键→表注册表、接口文件 + ABI 握手、卸载墓碑），不改变 O5 的结论。
+
+## 9. 第二期总报告（2026-09-26）
+
+> **状态：第二期四条目标全部达成。第三期（开放注册/动态链接）经作者明确指示**不做**（"可以先不做第三期，
+> 如你所见，这个 goal 是第二期"）。** 本节是收口账：判据、实测数字、设计决定、复用清单、纪律与已知限制。
+
+### 9.1 判据（17 条，`tests/dyn/run.sh`；已接入 `check.sh` 第 80 行）
+
+| 判据 | 断言/实测 |
+|---|---|
+| `dyn_call` | `dyn=7,5` —— 构造即调用（生成物里第一次受控间接调用） |
+| `dyn_pool_dispatch` | `put=2 slot=2 dispatch=2`，且派发形如 `((const struct extc_vt$T_t *)s->vt)->m(s->addr` |
+| `dyn_object_table` | 生成物里出现 `extc_pool_new_table`（对象表模式） |
+| `dyn_contract` | 生成物过 `-std=c11 -fwrapv -Wall -Werror`，零告警 |
+| `dyn_o5_stale_trap` | 陈旧值 trap（rc=1）· stderr 含 stale · 校验前正常 · **校验后标记不出现**（= 绝不调错实现） |
+| `dyn_slot_reclaim` | 2000 次创建后 `live=16`（界 = **同时存活数**） |
+| `dyn_stored` / `dyn_stored_codegen` | 值形式可存下并作参数传递；生成物出现 `= extc_dyn_put(` |
+| `dyn_stored_call` | `calls=7,105` —— box 与 pt **经同一张统一表**派发 |
+| `dyn_in_field` / `dyn_in_array` / `dyn_in_varArray` | `field=5` · `arr=106` · `va=13` |
+| `dyn_container_clear` | `afterClear=9` —— 容器清空不影响 dyn 值（保守语义，写死） |
+| `dyn_promoted_return` | `escaped=88` —— 逃出 place 的值被**提升**进调用者的 place，仍然有效 |
+| `dyn_implements` / `dyn_object_safety` | 载荷未实现被点名的 trait ⇒ 直指根因；返回 `Self` 不可动态派发 |
+| `dyn_field` | 拒绝在 dyn 值上取字段 |
+
+另有 `tests/impl` 的表判据 3 条：`vtable_order`（字段顺序 = 声明顺序）· `vtable_no_call`（表只出现一次、
+无间接调用）· `vtable_contract`（生成物合同）。
+
+### 9.2 设计决定（四条）
+
+1. **每 trait 一份统一签名的表 + thunk**：接收者擦成 `void *`；每 `(trait,类型,方法)` 一个
+   `extc_th$Trait$Type$method` 适配器；实例键仍是 `extc_vt$Trait$Type`（稳定键、槽位顺序 = 声明顺序不变）。
+   ——**这是存储值派发的前提**：具体类型在调用点未知，per-type 的 `__typeof__(impl) *` 字段做不到跨类型调用。
+2. **dyn 池 = 当前 place 的对象表池**（`extc_pool_new_table`），惰性建、id 记在旁表；
+   place 退出 ⇒ 池被丢 ⇒ 世代前进 ⇒ 旧值 trap。
+3. **句柄四字段** `{pid, slot, gen, pgen}` + 三条校验：槽在界内 → `pid` 相符 → **槽世代**相符 →
+   池仍是对象表 → **池世代**相符。两条"变陈旧"的路径（槽复用 / 池换代或地方消失）各有一条检查。
+4. **槽的墓碑 + 惰性清扫 + 复用**：数组将增长时先清扫"池已消失或池 id 被新池复用"的槽，
+   放入空闲链并 `gen++`。**池 id 会被复用**（循环体的 zone 下标每轮复用）——这是修前的真因。
+
+### 9.3 复用既有机制（没有另起一套）
+
+`p->noBody`（trait 只发签名）· `ttSubstitute` + `mentionsParam`（`Self` 代入）· `pfLine`
+（表达式需要的前置语句，实现存储值派发时直接用它）· 池模式与三处守卫（`give`/`resize`/`_raw`）·
+`extc_pool_reset` 换代（INV-G）· zone/place 生命周期与 home-zone 提升 · `__typeof__` + 4095 分块约定 ·
+既有的 `EX_METHOD` 检查路径（方法解析失败处接 dyn 分流）。
+
+### 9.4 三条纪律（本期踩出来的）
+
+1. **`dyn` 不是保留字** ⇒ 新语法按**形状**判定（`dyn <标识符> (`），不能按单词；
+2. **检查趟有顺序** ⇒ 不要在检查器里"提前检查"接收者来窥视类型（曾把一个无关的 stdlib 用例弄坏）；
+3. **codegen 读节点上的类型** ⇒ 凡是"窥视"得到的类型都要**写回节点**（本期三次同类问题）。
+
+### 9.5 已知限制（诚实记账）
+
+- **容器元素不随容器回收**：载荷在 dyn 池（属于 place），不在容器缓冲里 ⇒ 容器 `clear()` 不影响 dyn 值，
+  回收推迟到 place 退出。严格版需要把**容器的池 id 当 dyn 池的 `parent`**（`extc_pool_new_table(parent)`
+  已支持），但那需要"谁拥有存进容器的 dyn 值"这条语义 —— **是设计决定，留给后续**。
+- **第三期缺件**（不做）：可注册的表 + 键→表注册表、接口文件 + ABI 版本握手、卸载墓碑。
+  一条现在就要知道的约束：统一 struct 的**字段顺序 = 声明顺序** ⇒ 给 trait 加方法会改布局，
+  所以开放注册必须配"**追加式 + 版本号**"的规则。
