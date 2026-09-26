@@ -550,6 +550,16 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 - 验收项本身成了常驻判据 `tests/coro/coro_pool.extc`：**接受 + 跑出 6 + ASan 干净**；
 - `tools/check_concurrency_guards.py` 两处更新：J1 允许**帧字段**作为 zone 实参，但**只许出现在协程单元**里（文件里有 `$step`）；并新增一条收紧 —— **`$step` 体内不许出现 `extc_zoneTop` / `__extc_home_zone`**（已用反证验证它会红）。
 
+**运行期分两层，和池完全一样**（作者问得对：只放 `src/` 里是不够的）：
+
+    stdlib/std/sys/coroutine.extc    特权层：extern!("extc-runtime") 声明任务表原语（extC 能调）
+    src/coroutine.c                  运行期：任务的实现，按需发射进生成物
+    stdlib/prelude.extc              coroutine<T> 这个**标记**（返回值着色，不是存储类型）
+
+`stdlib/std/sys/pool.extc` 就是前者的样板（"用户不写这个模块，`std::stl` 那一类容器用它"），所以协程也照办：**用 extC 写的调度器（§5 第 5 步）能直接调 `syscoro::extc_task_live()` / `extc_task_end()`**；普通程序连这些名字都不该出现。判据 `tests/coro/coro_tasks.extc` 就是这条路的证明：extC 侧读到 before=0 · mid=1 · after=0。
+
+一个细节值得写下来：任务 place 是**懒**建的 —— 只有协程需要自己那块存储（建池）时才有任务，所以那个判据里的协程要建池。表本身也带依赖：它坐在池的 zone 原语上，所以生成任务表时要把池运行期也标成"需要"（与 zone 实参兜底同一条规则）。
+
 **`src/coroutine.c`（任务表，运行时的归属地）**：与 `pools.c` 同构 —— 编译器管的部分（`yield` 脱糖、帧、step）留在编译器里，**运行期**的部分归这个文件。它是**按需发射**的：不 spawn 带任务 place 的协程的程序，一行都不带。
 
     int64_t extc_task_begin(int64_t *idOut);   /* 懒进入任务的地方，登记，回 zone 与 id */

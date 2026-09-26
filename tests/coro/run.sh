@@ -34,6 +34,21 @@ else
     echo "  FAIL coro_pool          ->  $(head -2 "$tmp/cpec" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 任务表（src/coroutine.c）：extC 侧看得见，登记与释放都对。退出码 10 = before0 · mid1 · after0
+ct=$tmp/coro_tasks
+if "$EXTC" -w --no-line-map -o "$ct.c" tests/coro/coro_tasks.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$ct" "$ct.c" 2>"$tmp/cte"; then
+    "$ct"; rc=$?
+    if [ "$rc" = 10 ]; then
+        echo "  ok   coro_tasks         ->  extC 侧读到任务表：before=0 mid=1 after=0（退出码 10）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_tasks         ->  退出码 $rc（期望 10）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_tasks         ->  $(head -2 "$tmp/cte" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 切片 B2a：spawn + 驱动（`while c.next() { c.value() }`）**端到端跑起来** ✓
 b2=$tmp/coro_drive
 if "$EXTC" -w --no-line-map -o "$b2.c" tests/coro/coro_drive.extc >/dev/null 2>&1 \

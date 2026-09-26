@@ -1,0 +1,24 @@
+/* std/sys/coroutine.extc —— 协程任务表的**特权层**（CONCURRENCY.md §4.4，切片 C）
+ *
+ * 与 `std::sys::pool` 同一形状：这一层只把生成器提供的运行期原语声明成 extC 能调的东西。
+ * 实现是 `src/coroutine.c`，按需发射 —— 不 spawn 带任务 place 的协程、也不碰这些名字的程序，
+ * 一行都不带。
+ *
+ * 谁用它：生成器发射的 spawn 与驱动器；以及未来的**调度器**（§5 第 5 步那个 epoll 循环）——
+ * 它拿 `extc_task_live()` 枚举、用 `extc_task_end()` 显式 drop，与"跑完即回收"是同一次释放。
+ * 普通程序不该出现这些名字。
+ *
+ * 任务 = 协程存储所挂的那个**地方**：spawn 懒进入它，每步把它设为当前，任务结束时整批回收。 */
+
+/* 开始一个任务：进入它自己的地方，登记，返回任务 id（`extc_task_zone` 拿得到那个地方）。 */
+extern!("extc-runtime") fn extc_task_begin() -> i64
+    effects Addr=0 Cont=0
+/* 任务的地方（zone 记号）：帧把它存下来，step 分配时读它 —— 恢复点不重新推导（规则 1）。 */
+extern!("extc-runtime") fn extc_task_zone(id: i64) -> i64
+    effects Addr=0 Cont=0
+/* 结束任务：跑完与显式 drop 是**同一次释放**。 */
+extern!("extc-runtime") fn extc_task_end(id: i64) -> void
+    effects Addr=0 Cont=0
+/* 还活着的任务数：调度器（或判据）问的就是这个。 */
+extern!("extc-runtime") fn extc_task_live() -> i64
+    effects Addr=0 Cont=0

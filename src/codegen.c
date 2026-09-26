@@ -3228,8 +3228,8 @@ static void genStmtInner(CG *g, Stmt *s) {
                 if (hasZone) {
                     flushPrefix(g);
                     cgLine(g, "int64_t __extc_czsv%d = extc_zoneTop;", sq);
-                    cgLine(g, "int64_t __extc_czid%d = -1;", sq);
-                    cgLine(g, "int64_t __extc_czm%d = extc_task_begin(&__extc_czid%d);", sq, sq);
+                    cgLine(g, "int64_t __extc_czid%d = extc_task_begin();", sq);
+                    cgLine(g, "int64_t __extc_czm%d = extc_task_zone(__extc_czid%d);", sq, sq);
                 }
                 Buf init;
                 bufInit(&init, g->arena);
@@ -3765,10 +3765,20 @@ static void genCoroDecls(CG *g, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *c0 = *(FuncDef **)vecAt(&m->funcs, i);
         if (c0 && c0->isCoro && !c0->tmpl && c0->coroNeedsZone) { taskTable = true; break; }
+        /* A scheduler written in extC reaches the table through `std::sys::coroutine`; those
+         * declarations are ordinary externs, so their presence is what pulls the runtime in. */
+        if (c0 && c0->isExtern && c0->name && strncmp(c0->name, "extc_task_", 10) == 0) {
+            taskTable = true; break;
+        }
     }
     /* The task table, defined before every body that may spawn or drive: the pool prototypes are
      * already in the prototype region above, so this only needs to precede its users. */
-    if (taskTable) coroutineEmitRuntime(g->arena, g->out);
+    if (taskTable) {
+        /* The table sits on the pool zone runtime (enter/leave), so a program that only spawns
+         * coroutines has to pull that in too -- the same rule the zone-argument fallback follows. */
+        g->needPool = true;
+        coroutineEmitRuntime(g->arena, g->out);
+    }
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */

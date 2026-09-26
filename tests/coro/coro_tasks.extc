@@ -1,0 +1,33 @@
+/* 判据：任务表**对 extC 可见**，而且登记与释放都对。
+ *
+ *   before = syscoro::extc_task_live()  ⇒ 0（还没 spawn）
+ *   mid    = syscoro::extc_task_live()  ⇒ 1（协程活着，任务登记在表里）
+ *   after  = syscoro::extc_task_live()  ⇒ 0（跑完 ⇒ 同一次释放）
+ *
+ * 退出码 = before*100 + mid*10 + after = 10 ✓
+ *
+ * 这也是"调度器用得上它"的证明：`std::sys::coroutine` 声明的那几个名字，extC 代码直接能调。
+ * 反过来，程序不 spawn 也不碰这些名字时，运行期一行都不发。 */
+use std::sys::coroutine as syscoro
+use std::io
+use stl::vector
+
+/* 任务 place 是**懒**建的：只有协程需要自己那块存储时才有任务 —— 所以这个判据里的协程要建池。 */
+fn counter(n: i64) -> coroutine<i64> {
+    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var i: i64 = 0
+    while i < n {
+        v.push(i32(7))
+        yield i
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    var before: i64 = syscoro::extc_task_live()
+    var c = counter(i64(3))
+    var mid: i64 = syscoro::extc_task_live()
+    while c.next() { }
+    var after: i64 = syscoro::extc_task_live()
+    return i32(before * 100 + mid * 10 + after)
+}
