@@ -1,0 +1,27 @@
+/* dyn 值**跨两跳**返回：`main → mid → make`。
+ *
+ * H2 的教训：传递闭包只做一层，就会在"跨两层"时静默坏掉（那是 **arena** 侧）。
+ * 这条把同一个问题钉在 **pool** 侧：句柄要求活多久，池就必须被提升到哪一层的 place，
+ * 中间多一层也不许掉 ✓
+ *
+ * 判据（tests/dyn/run.sh，与 dyn_promoted_return 并排）：输出 `two=88`，且 ASan 干净。 */
+use std::io
+
+trait Tag { fn tag(self: ref Self) -> i64 }
+
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+
+fn make(v: i64) -> dyn Tag { return dyn Tag(box { v: v }) }
+
+/* 第二跳：池的 place 要穿过这一层继续提权 */
+fn mid(v: i64) -> dyn Tag {
+    let d: dyn Tag = make(v)
+    return d
+}
+
+fn main() -> i32 {
+    let d: dyn Tag = mid(i64(88))
+    io::cout << "two=" << d.tag() << "\n"
+    return 0
+}

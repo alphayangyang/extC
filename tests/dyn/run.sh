@@ -36,6 +36,11 @@ out=$("$EXTC" -w --run tests/dyn/dyn_promoted_return.extc 2>&1)
 [ "$out" = "escaped=88" ] && ok dyn_promoted_return "函数返回的 dyn 值被提升进调用者的 place（$out）" \
                           || bad dyn_promoted_return "期望 escaped=88，实得：$out"
 
+# 同一个问题的**两跳**版本：H2 的教训（传递闭包只做一层）在 pool 侧也要成立
+out=$("$EXTC" -w --run tests/dyn/dyn_promoted_two_hops.extc 2>&1)
+[ "$out" = "two=88" ] && ok dyn_promoted_two_hops "跨两跳返回的 dyn 值同样被提升（$out）" \
+                      || bad dyn_promoted_two_hops "期望 two=88，实得：$out"
+
 # 阶段 3：值形式合法（判据翻面 —— 旧判据断言"保存被拒"，保存现在是语言的一部分）
 out=$("$EXTC" -w --run tests/dyn/dyn_stored.extc 2>&1)
 [ "$out" = "stored=0" ] && ok dyn_stored "值形式可存下并作参数传递" \
