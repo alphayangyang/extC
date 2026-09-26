@@ -26,6 +26,11 @@ else
 fi
 rm -rf "$d"
 
+# 阶段 3 核心：**存储值**派发 —— 两个不同具体类型走同一张统一签名的表（thunk 的回报）
+out=$("$EXTC" -w --run tests/dyn/dyn_stored_call.extc 2>&1)
+[ "$out" = "calls=7,105" ] && ok dyn_stored_call "存储值派发：box 与 pt 经同一张表（$out）" \
+                           || bad dyn_stored_call "期望 calls=7,105，实得：$out"
+
 err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_wrong_trait.extc 2>&1)
 case "$err" in
     *"does not implement \`Mark\`"*) ok dyn_implements "载荷未实现被点名的 trait ⇒ 直指根因（而非发一张不存在的表）" ;;

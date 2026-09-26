@@ -2060,6 +2060,68 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_METHOD: {
+            /* `d.tag()` where `d` holds a `dyn Tag` value: the method is looked up in the
+             * **trait's** signature, because the concrete type is not known until runtime
+             * (DYN.md stage 3).
+             *
+             * The receiver's type is read straight off its symbol rather than by checking the
+             * expression here: checking it early reordered the whole pass and broke an unrelated
+             * stdlib case (`io$ioError` reported undefined) -- a reminder that this pass has an
+             * order, and a peek has to respect it. A variable's type is already known by the time a
+             * method is called on it, which is what makes the peek safe. */
+            if (e->u.method.recv->kind == EX_IDENT) {
+                Sym *rs = lookup(c, e->u.method.recv->u.ident.name);
+                Type *rt = rs ? ttBase(rs->type) : NULL;
+                if (rt && rt->kind == TY_DYN) {
+                    TraitDef *tr = NULL;
+                    for (size_t i = 0; i < c->m->traits.len && !tr; i++) {
+                        TraitDef *cand = *(TraitDef **)vecAt(&c->m->traits, i);
+                        if (cand->name && strcmp(cand->name, rt->name) == 0) tr = cand;
+                    }
+                    FuncDef *want = NULL;
+                    for (size_t i = 0; tr && i < tr->methods.len && !want; i++) {
+                        FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, i);
+                        if (strcmp(cand->name, e->u.method.name) == 0) want = cand;
+                    }
+                    if (!want) {
+                        ckError(c, e->line,
+                                "A `dyn` value dispatches through the trait it names, so the method"
+                                " has to be one the trait declares.",
+                                "trait `%s` has no method `%s`", rt->name, e->u.method.name);
+                        return ttError(tt);
+                    }
+                    /* Arguments are compared against the trait's declaration; a parameter mentioning
+                     * `Self` is skipped (the implementing type is deliberately unknown here, and
+                     * object safety keeps such methods out of the table). */
+                    size_t wantArgs = want->params.len > 0 ? want->params.len - 1 : 0;
+                    if (e->u.method.args.len != wantArgs) {
+                        ckError(c, e->line,
+                                "The trait's declaration says how many arguments the method takes.",
+                                "`%s` takes %zu argument(s), but %zu were given",
+                                e->u.method.name, wantArgs, e->u.method.args.len);
+                        return ttError(tt);
+                    }
+                    for (size_t i = 0; i < e->u.method.args.len; i++) {
+                        Expr *a = *(Expr **)vecAt(&e->u.method.args, i);
+                        Type *at = checkExprInner(c, a);
+                        Param *wp = *(Param **)vecAt(&want->params, i + 1);
+                        if (!mentionsParam(wp->type) && !ttEquals(ttBase(wp->type), ttBase(at)))
+                            ckError(c, a->line,
+                                    "Argument types must match the trait's declaration.",
+                                    "argument %zu expects `%s`, found `%s`", i + 1,
+                                    typeStr(c, ttBase(wp->type)), typeStr(c, ttBase(at)));
+                    }
+                    if (c->curFunc) c->curFunc->makesPool = true;
+                    /* Write the type onto the receiver node as well: codegen reads node types, and
+                     * this path deliberately did not check the receiver (`(int){0}`-style gaps come
+                     * from exactly this -- a node left without its type). */
+                    e->u.method.recv->type = rt;
+                    e->func = want;
+                    e->dynTrait = rt->name;
+                    e->type = want->ret ? want->ret : ttVoid(tt);
+                    return e->type;
+                }
+            }
             /* Constructing a variant with a payload can look like this as well: the syntax of
              * `shape.circle(2.0)` is that of a method call, `receiver.name(args)`, and the only
              * difference is that `shape` is a type name rather than a variable. So it is

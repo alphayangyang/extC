@@ -1682,45 +1682,41 @@ static const char *genMethodCall(CG *g, Expr *e) {
     Param *p0 = *(Param **)vecAt(&f->params, 0);
     const char *recvC = genExpr(g, e->u.method.recv);
 
-    recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
+    /* A stored `dyn` value is a handle, not a payload: it is not re-materialised, and its callee is
+     * named by the trait's uniform table instead of a per-type C name. */
+    /* Which source is it? By the receiver's **type**, not its node kind: the parser rewrites the
+     * immediate form's receiver to the payload, so both forms arrive as ordinary expressions and
+     * only the type tells them apart (`dyn Tag` is the stored value). */
+    bool dynStored = e->dynTrait && ttBase(recvT) && ttBase(recvT)->kind == TY_DYN;
+    if (!dynStored)
+        recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
 
-    const char *fname = cMethodName(g, recvT, f);
+    const char *fname = dynStored ? NULL : cMethodName(g, recvT, f);
     /* `dyn Trait(x).m(...)`: dispatch through the table the trait emitted for this type (stage 1
      * of DYN.md). The field **is** the implementation, so the call keeps the same signature --
      * including the hidden home-arena parameter, which the table's `__typeof__` picked up for
      * free when it was emitted. Nothing else in this function changes: same receiver, same
      * arguments, same extra parameters, a different callee expression. */
     if (e->dynTrait) {
-        /* `dyn Trait(x).m(...)`: stage 2 of DYN.md -- the payload is **copied into a pool**, the
-         * value is a `{pool, slot, gen}` name, and the dispatch reads the table and the receiver
-         * out of the **checked slot**:
-         *
-         *   ExtcDynHandle h = extc_dyn_put(&(x), sizeof(T), &extc_vt$Trait$T);
-         *   ExtcDynSlot  *s = extc_dyn_slot(h, "file", line);      <-- traps if stale
-         *   ((const struct extc_vt$Trait$T_t *)s->vt)->m(s->addr, ...)
-         *
-         * Two things follow from taking the slot seriously. The receiver is `s->addr`, not `&(x)`:
-         * the payload lives in the pool, so a stale value must not be able to dispatch against the
-         * stack copy it was built from. And the table pointer is read from the slot, never from the
-         * value -- a value whose slot was reused fails the generation check before it can see
-         * another implementation's table (POOL-SOUNDNESS E3). The statements go through `pfLine`,
-         * the existing mechanism for a statement an expression needs in front of it. */
-        /* The pool runtime is emitted because the checker marked the enclosing function `makesPool`
-         * at this call site -- one decision, made where the types are known, rather than a second
-         * flag set here (an earlier version set it here and the text arrived too late to define
-         * `ExtcDynHandle`). */
-        const char *dynH = arenaPrintf(g->arena, "__extc_dyn%d", g->tmpSeq++);
-        const char *dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
-        const char *dynT = cType(g, ttBase(recvT));
-        pfLine(g, "ExtcDynHandle %s = extc_dyn_put((const void *)(%s), (int64_t)sizeof(%s),"
-                  " &extc_vt$%s$%s);", dynH, recvC, dynT, e->dynTrait, dynT);
+        /* Dispatch through the trait's uniform table (see the table emitter). Two sources:
+         *   - `dyn Trait(x).m(...)`: the payload is copied into the pool here;
+         *   - `d.m(...)` on a stored value: it **is** a handle already, so only the checked slot
+         *     lookup is emitted.
+         * Either way the table and the receiver both come from the **checked slot**. */
+        const char *dynH, *dynS;
+        if (dynStored) {
+            dynH = recvC;
+        } else {
+            const char *dynT = cType(g, ttBase(recvT));
+            dynH = arenaPrintf(g->arena, "__extc_dyn%d", g->tmpSeq++);
+            pfLine(g, "ExtcDynHandle %s = extc_dyn_put((const void *)(%s), (int64_t)sizeof(%s),"
+                      " &extc_vt$%s$%s);", dynH, recvC, dynT, e->dynTrait, dynT);
+        }
+        dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
         pfLine(g, "ExtcDynSlot *%s = extc_dyn_slot(%s, \"%s\", %d);",
                dynS, dynH, g->path, e->line);
         Buf dynSym;
         bufInit(&dynSym, g->arena);
-        /* One struct **per trait** (stage 3): the field types are uniform, so the call site only
-         * needs the trait -- which is what the value's static type names -- while the concrete type
-         * is decided at runtime by the table pointer in the slot. */
         bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)%s->vt)->%s",
                   e->dynTrait, dynS, e->u.method.name);
         fname = bufCstr(&dynSym);

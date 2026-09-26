@@ -1,0 +1,16 @@
+/* 阶段 3 的核心：**存储值**的动态派发。
+ * 两个不同的具体类型（box / pt）通过**同一张统一签名的表**派发 —— 这正是 thunk 要解决的问题：
+ * 调用点只知道 `dyn Tag`，具体类型由运行期槽里的表指针决定。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+struct pt  { x: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + i64(100) } }
+
+fn main() -> i32 {
+    let a: dyn Tag = dyn Tag(box { v: i64(7) })
+    let b: dyn Tag = dyn Tag(pt { x: i64(5) })
+    io::cout << "calls=" << a.tag() << "," << b.tag() << "\n"
+    return 0
+}
