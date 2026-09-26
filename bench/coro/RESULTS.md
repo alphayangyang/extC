@@ -1,0 +1,46 @@
+# 协程微基准（bench/coro）
+
+机器：Intel Ultra 9 275HX，24 核，Linux。编译器：本项目 `-O2`（生成物合同 `-std=c11 -fwrapv`），
+Go 1.26.0 `GOMAXPROCS=1`。所有数字单位 ns，取多次平均。
+
+## 怎么跑
+
+    ./build/extc -w --no-line-map -o /tmp/mb/deep_gen.c <程序>.extc
+    cp bench/coro/deep_main.c /tmp/mb/ && gcc -O2 -std=c11 -fwrapv -DDEPTH_N=<n> -o X /tmp/mb/deep_main.c
+    # 深链程序由脚本生成（见 git log），每层形如：
+    #   fn Lk(n: i64) -> coroutine<i64> { var d = L(k-1)(n)  while d.next() { yield d.value() } }
+    GOMAXPROCS=1 go run bench/coro/deep.go     # Go 对照
+
+`micro.extc` / `deep1.extc` / `deep3.extc` 用 `micro_main.c` / `deep_main.c` 计时。
+
+## 数字
+
+| 操作 | extC（无栈 + 任务 place）| Go 1.26 |
+|---|---|---|
+| 普通函数调用 | 0.22 ns | — |
+| 一次挂起 + 恢复（浅）| 0.77–1.4 ns | 120.7 ns（chan 交接）|
+| spawn + 驱动（10 步）| 14 ns | 507.9 ns（纯 `go`，不等）|
+| **深 1 层**往返 | 0.77 ns（展平）/ 1.58 ns（未展平）| 1273.6 ns |
+| **深 10 层** | 0.78 / 7.2 ns | 1318.8 ns |
+| **深 50 层** | 0.77 / 64.0 ns | 3027.7 ns |
+| **深 200 层** | **0.77 / 267.6 ns** | **7003.0 ns** |
+| 对照 `epoll_wait(0)` | 58.9 ns | — |
+| 对照 `write`+`read` 各 1B | 220.5 ns | — |
+
+## 结论
+
+1. **深链默认免费**：`-O2` 下 gcc 把整条链**内联展平**（帧是普通值、编译器可见），200 层与 1 层同为
+   0.77 ns —— 有栈做不到，它的状态必须在栈内存里。
+2. **不展平时每层 ≈ 1.3 ns**：200 层 268 ns，仍是 Go 深调用往返的 1/26。需要 O(1) 任意深度时上
+   trampoline + 最深层指针（见 §4.4），但**由实测决定**，不是默认。
+3. **Go 在深处崩的原因是栈增长（拷贝）**：新鲜 goroutine 初始 2–8 KB，50/200 层触发拷贝 ⇒ 3 µs / 7 µs。
+   注意口径：这是"spawn + 递归 + 交接"的往返，不是单次切换；**已长好的** goroutine 反复深调用不会付这笔钱。
+4. 一次切换 ≈ **syscall 的 1/60**（1.4 ns vs 58.9 ns）⇒ I/O 场景里切换完全不重要；该优化的是
+   **系统调用次数**（一次 `epoll_ctl` ≈ 42 次切换）。
+
+## 基准方法论（踩过的坑，别再踩）
+
+- 工作量必须**被观察**（返回累加值 + volatile 汇总），否则整段被优化掉 —— 曾测出 0.15 ns/次这种亚周期数字。
+- 外层调用过 **volatile 函数指针**，否则纯调用被提到循环外，时间成 0.00 ns。
+- 生成失败时**不许跑旧二进制**（踩过一次，数字全错）。
+- 引用了未初始化帧字段时数字无效（嵌套 spawn 的 bug，已修，见 git log）。
