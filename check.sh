@@ -213,6 +213,13 @@ if [ "${1:-}" != "quick" ]; then
     echo "== 基准：重负载（bt / radix / mandelbrot）=="
     ./bench/heavy/run.sh 2>&1 | sed 's/^/  /'
     echo "== 基准：STL 容器横评（extC 的容器 vs C++ STL；同算法同参数，校验和必须一致）=="
+    # dyn Trait 基准：轻量档（测量不是闸门，但**校验和不符必须红** —— 见 bench/dyn/REPORT.md）
+    if out=$(N=5000000 NIMM=200000 RUNS=1 ./bench/dyn/stress/run.sh 2>&1); then
+        ok "dyn 极端压测（$(printf '%s' "$out" | grep -m1 '^通过')）"
+    else bad "bench/dyn/stress"; printf '%s\n' "$out" | tail -8; fi
+    if out=$(P=512 MIX=8 RUNS=1 ./bench/dyn/real/run.sh 2>&1); then
+        ok "dyn 现实负载（$(printf '%s' "$out" | grep -m1 '^通过')）"
+    else bad "bench/dyn/real"; printf '%s\n' "$out" | tail -8; fi
     if ./bench/stl/run.sh >/tmp/extc-bench-stl.log 2>&1; then ok "$(grep -m1 '^通过' /tmp/extc-bench-stl.log)"
     else bad "bench/stl"; tail -12 /tmp/extc-bench-stl.log; fi
     echo "== 基准：**综合应用场景横评**（会话表 / 路由表 / 日志缓冲；extC STL vs C++ STL vs Go）=="

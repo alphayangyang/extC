@@ -187,17 +187,22 @@ $CC  -O2 -fwrapv "$D/fptr.c" -o "$D/fptr" || exit 1
 
 printf "【极端压测】N=%s（立即形式 %s）  %s\n" "$N" "$NIMM" "$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')"
 printf "%-9s %-14s %10s %10s %10s %8s\n" 路 校验和 ns/次 秒 峰值RSS 状态
+rows=0
+fails=0
 base=""
 for pair in "static:$D/static" "dynval:$D/dynval" "dynmany:$D/dynmany" "cpp:$D/virtual" "fptr:$D/fptr" "staticimm:$D/staticimm" "dynimm:$D/dynimm"; do
     name=${pair%%:*}; bin=${pair#*:}
+    rows=$((rows+1))
     out=$("$bin"); rss=$( { /usr/bin/time -f "%M" "$bin" >/dev/null; } 2>&1 | tail -1 )
     ns10=$(best_ns "$bin")
     sum=$(echo "$out" | sed -n 's/.*sum=\([0-9-]*\).*/\1/p'); n=$(echo "$out" | sed -n 's/.*n=\([0-9]*\).*/\1/p'); ns10=$(echo "$out" | sed -n 's/.*ns10=\([0-9]*\).*/\1/p')
     st=ok
     case "$name" in
         staticimm) baseimm=$sum ;;   # imm 组：单独配对（N 与快路径不同）
-        dynimm)    [ "$sum" != "$baseimm" ] && st="与 staticimm 不符（$sum ≠ $baseimm）" ;;
-        *)         [ -z "$base" ] && base=$sum; [ "$sum" != "$base" ] && st="校验和不符" ;;
+        dynimm)    [ "$sum" != "$baseimm" ] && { st="与 staticimm 不符（$sum ≠ $baseimm）"; fails=$((fails+1)); } ;;
+        *)         [ -z "$base" ] && base=$sum; [ "$sum" != "$base" ] && { st="校验和不符"; fails=$((fails+1)); } ;;
     esac
     printf "%-9s %-18s %10s %10s %10s %8s\n" "$name" "$sum" "$(awk -v x="$ns10" 'BEGIN{printf "%.1f", x/10}')" "$(awk -v s="$ns10" -v n="$n" 'BEGIN{printf "%.3f", s*n/1e10}')" "$rss" "$st"
 done
+printf "通过 %d，失败 %d\n" "$((rows - fails))" "$fails"
+[ "$fails" = 0 ] || exit 1
