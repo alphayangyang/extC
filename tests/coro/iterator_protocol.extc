@@ -14,6 +14,7 @@ use std::io
 
 /* 一个用户类型：`counter` 数到 n 为止。迭代状态就是它自己（真实场景里通常另有一个小 struct）。 */
 struct counter { i: i64  n: i64 }
+struct holder { c: counter }
 
 impl counter {
     fn iter(self: ref counter) -> counter {
@@ -80,5 +81,22 @@ fn main() -> i32 {
     for x in a2 { fsteps = fsteps + i64(1) }
     for x in b2 { fsteps = fsteps + i64(1) }
     io::cout << "for:steps=" << fsteps << "\n"
+
+    /* ⑤ subject 是**字段**、以及**解引用**：两种形状都要与手写 while 版数字相同 */
+    var h: holder = holder { c: counter { i: i64(0), n: i64(3) } }
+    var hit: counter = h.c.iter()
+    var wfield: i64 = 0
+    while hit.next() { wfield = wfield + hit.value() }
+    var ffield: i64 = 0
+    for x in h.c { ffield = ffield + x }
+    io::cout << "field:while=" << wfield << " for=" << ffield << "\n"
+
+    var p: mut ref counter = ref h.c
+    var pit: counter = p.iter()
+    var wderef: i64 = 0
+    while pit.next() { wderef = wderef + pit.value() }
+    var fderef: i64 = 0
+    for x in *p { fderef = fderef + x }
+    io::cout << "deref:while=" << wderef << " for=" << fderef << "\n"
     return 0
 }

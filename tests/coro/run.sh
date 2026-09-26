@@ -13,7 +13,7 @@ tmp=$(mktemp -d)
 # 用**显式 while** 驱动 —— 先证明这个形状在今天的语言里写得出来、跑得对，
 # 再谈让 `for x in c` 脱糖成它（今天 `for` 只走切片：`cannot slice a value of type ...`）。
 ip=$("$EXTC" -w --run tests/coro/iterator_protocol.extc 2>&1)
-want_it=$(printf 'sum=15 shown=5\nempty=0\nsteps=4\nfor:sum=15 shown=5\nfor:empty=0\nfor:steps=4')
+want_it=$(printf 'sum=15 shown=5\nempty=0\nsteps=4\nfor:sum=15 shown=5\nfor:empty=0\nfor:steps=4\nfield:while=6 for=6\nderef:while=6 for=6')
 if [ "$ip" = "$want_it" ]; then
     echo "  ok   iterator_protocol   ->  手写协议原型（iter/next/value + 显式 while）：$(printf '%s' "$ip" | tr '\n' ' ')"
     pass=$((pass+1))

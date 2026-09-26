@@ -96,12 +96,35 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
  *
  * The type is probed **without checking** the subject: `checkExpr` is not memoised, so checking it
  * here would report its diagnostics twice. SUBJ is a name, a field or `*p` (the parser enforces
- * that in `forRepeatable`), and only the name case is probed; anything else keeps the slice path,
- * which is what it did before this existed. */
+ * that in `forRepeatable`), and all three are answered from the symbol and field tables; anything
+ * whose type cannot be read that way keeps the slice path, which is what it did before. */
 static Type *forSubjectType(Checker *c, Expr *e) {
-    if (!e || e->kind != EX_IDENT || !e->u.ident.name) return NULL;
-    Sym *sy = lookup(c, e->u.ident.name);
-    return sy ? sy->type : NULL;
+    /* The parser allows a name, a field or `*p` as the subject (`forRepeatable`), so those three
+     * are what has to be answered without checking. */
+    switch (e ? e->kind : EX_NULL) {
+    case EX_IDENT: {
+        if (!e->u.ident.name) return NULL;
+        Sym *sy = lookup(c, e->u.ident.name);
+        return sy ? sy->type : NULL;
+    }
+    case EX_DEREF: {
+        Type *inner = forSubjectType(c, e->u.deref.operand);
+        if (!inner) return NULL;
+        /* `ttBase` strips **every** `ref` layer, so the reference test has to look at the
+         * substituted type itself, not at its base: `*p` has the pointee's type. */
+        Type *it = tsub(c, inner);
+        return (it && it->kind == TY_REF) ? it->inner : NULL;
+    }
+    case EX_FIELD: {
+        Type *obj = forSubjectType(c, e->u.field.obj);
+        if (!obj) return NULL;
+        Type *ob = ttBase(tsub(c, obj));
+        if (!ob || ob->kind != TY_STRUCT || !ob->sdef) return NULL;
+        FieldDef *fd = findField(ob->sdef, e->u.field.name);
+        return fd ? fd->type : NULL;
+    }
+    default: return NULL;
+    }
 }
 
 static bool forRetargetToIterator(Checker *c, Stmt *block) {
