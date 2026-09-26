@@ -3491,6 +3491,9 @@ static void checkOpenHandles(Checker *c, FuncDef *f) {
 }
 
 static void checkFunc(Checker *c, FuncDef *f) {
+    /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
+     * their call sites. Checking one here walked a null body. */
+    if (f->coroProto) return;
     /* An extern declaration has no body, so only its signature is checked: the parameter
      * types were already resolved elsewhere, and no arena is involved, since the function
      * takes no arena parameter and needs no home arena (the arena the caller passes). Its
@@ -4514,6 +4517,56 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* arena decisions that depend on escapes */
     vecInit(&c.lvlFacts, arena, sizeof(LvlFact *));
+
+    /* ---- The **handle** protocol, before any body is checked ----
+     * `coroutine<T>` is a storage type, so `next`/`value`/`send` on it must exist whatever order the
+     * checker walks functions in: a library may drive handles without declaring a coroutine itself,
+     * and the method would otherwise be missing when its body is checked. */
+    for (size_t hi = 0; hi < m->structs.len; hi++) {
+        StructDef *hsd = *(StructDef **)vecAt(&m->structs, hi);
+        Checker   *cc  = &c;
+        if (!hsd || !hsd->name || strcmp(hsd->name, "coroutine") != 0) continue;
+        if (hsd->methods.len) continue;                 /* synthesized (pre-pass or on demand) */
+        Type *tp = arenaAllocZero(cc->arena, sizeof *tp);
+        tp->kind = TY_PARAM;
+        tp->name  = "T";
+        tp->param = "T";                                /* ttSubstitute matches on `param` */
+        vecInit(&tp->targs, cc->arena, sizeof(Type *));
+        Type *hinst = arenaAllocZero(cc->arena, sizeof *hinst);
+        hinst->kind = TY_GENERIC;                       /* an instance with targs: `coroutine<T>` */
+        hinst->name = hsd->name;
+        hinst->sdef = hsd;
+        vecInit(&hinst->targs, cc->arena, sizeof(Type *));
+        *(Type **)vecPush(&hinst->targs) = tp;
+        const int hw[3] = { 3, 4, 6 };                  /* next / value / send on the handle */
+        for (int k = 0; k < 3; k++) {
+            const int which = hw[k];
+            FuncDef *pm = arenaAllocZero(cc->arena, sizeof *pm);
+            pm->name      = which == 3 ? "next" : which == 4 ? "value" : "send";
+            pm->owner     = hsd;
+            pm->line      = hsd->line;
+            pm->coroProto = which;
+            pm->ret       = which == 4 ? tp : ttFromName(cc->tt, "bool");
+            vecInit(&pm->params, cc->arena, sizeof(Param *));
+            Param *self = arenaAllocZero(cc->arena, sizeof *self);
+            self->name = self->cname = "self";
+            self->line = hsd->line;
+            Type *rt = arenaAllocZero(cc->arena, sizeof *rt);
+            rt->kind = TY_REF;
+            rt->inner = hinst;
+            rt->mut = which != 4;                       /* `next`/`send` advance, `value` reads */
+            self->type = rt;
+            *(Param **)vecPush(&pm->params) = self;
+            if (which == 6) {
+                Param *vp = arenaAllocZero(cc->arena, sizeof *vp);
+                vp->name = vp->cname = "v";
+                vp->type = tp;
+                vp->line = hsd->line;
+                *(Param **)vecPush(&pm->params) = vp;
+            }
+            *(FuncDef **)vecPush(&hsd->methods) = pm;
+        }
+    }
     vecInit(&c.stores, arena, sizeof(StoreSite *));    /* long-running: "stored at level k" facts */
     /* Must be initialized here, before any pass.
      *

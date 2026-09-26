@@ -9,6 +9,21 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 调度器：一组句柄 + 脚本化事件源（确定性），交替推进两个任务。期望 36
+sc=$tmp/coro_sched
+if "$EXTC" -w --no-line-map -o "$sc.c" tests/coro/coro_sched.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$sc" "$sc.c" 2>"$tmp/sce"; then
+    "$sc"; rc=$?
+    if [ "$rc" = 36 ]; then
+        echo "  ok   coro_sched          ->  调度器握住一组句柄按事件源推进（退出码 36）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_sched          ->  退出码 $rc（期望 36）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_sched          ->  $(head -2 "$tmp/sce" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # `send`：驱动器送进去的值，协程在 `var x = yield e` 的绑定里收到。期望 17
 sd=$tmp/coro_send
 if "$EXTC" -w --no-line-map -o "$sd.c" tests/coro/coro_send.extc >/dev/null 2>&1 \

@@ -1,0 +1,34 @@
+/* 判据：**调度器**能握住一组句柄、按事件源推进它们，并把请求原样送回去（自回显驱动）。
+ *
+ * 两个任务，step 分别 10 和 100：
+ *   任务 0：yield 10 → 收回 10（total=10）· yield 11 → total=21 · yield 12 → total=33 · yield 33 ⇒ 结束
+ *   任务 1：同理 total = 100+101+102 = 303 ⇒ 最后 yield 303
+ *
+ * 脚本化的就绪顺序**交替**推进两者 ⇒ 结束时 live 必须为 0（`left * 100` 那一项就是这条断言）。
+ * 退出码 = 0*100 + (33+303) % 100 = **36** */
+use std::coro::scheduler as sched
+use std::io
+
+fn worker(step: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var total: i64 = 0
+    while i < i64(3) {
+        var got: i64 = yield step + i       /* 请求：等 step+i */
+        total = total + got                 /* 调度器把请求送回来 ⇒ 累加 */
+        i = i + 1
+    }
+    yield total
+}
+
+fn main() -> i32 {
+    var s: sched::loop
+    sched::add(ref s, worker(i64(10)))
+    sched::add(ref s, worker(i64(100)))
+
+    var order: mut slice<i64> = new i64[12]
+    var k: i64 = 0
+    while k < i64(12) { order[k] = k % i64(2)  k = k + 1 }   /* 0 1 0 1 … 交替 */
+
+    var left: i64 = sched::runScripted(ref s, order)
+    return i32(left * i64(100) + (s.tasks[0].value() + s.tasks[1].value()) % i64(100))
+}

@@ -1,0 +1,67 @@
+/* std/coro/scheduler.extc —— 协程调度器（CONCURRENCY.md §4.4 阶段三）
+ *
+ * 一个 `while` 循环 + 一个**事件源**。挂起约定：协程 `yield` 一个等待请求（这里是它想等的那个
+ * 编号，调度器随便解释），恢复后**重试**它自己的操作；需要把结果送回去就用 `send`。
+ *
+ * 任务表是固定容量的数组（v1）：`[8]coroutine<i64>` —— 句柄是 24 字节的普通值，数组元素就是
+ * **可变位置**，所以可以直接 `s.tasks[i].next()` / `.send()`。这是句柄能进容器的直接兑现。
+ *
+ * 两个驱动：
+ *   `runScripted` —— **脚本化的就绪顺序**（判据先用它 ⇒ 确定性，不靠时间也不靠 socket）
+ *   `runEpoll`    —— 真事件源，`epoll_wait`（下一轮接上，走 extern!("extc-runtime")）
+ *
+ * 谁定义"调度域"：库里这个结构 + 驱动函数就是域的 v1 形态；语法糖 `ext f()`（块作用域）是后面
+ * 的事，见 §4.4 的定案。 */
+
+struct loop {
+    tasks: [8]coroutine<i64>
+    done: [8]bool       /* 跑完的任务不再驱动 —— 过期句柄会大声 trap（规则②）*/
+    started: [8]bool    /* 是否已经启动过（第一次只 next，不 send）*/
+    n: i64              /* 已经加进去的任务数 */
+    live: i64           /* 还没跑完的 */
+}
+
+fn add(s: mut ref loop, h: coroutine<i64>) -> bool {
+    if s.n >= i64(8) { return false }
+    s.tasks[s.n] = h
+    s.n = s.n + i64(1)
+    s.live = s.live + i64(1)
+    return true
+}
+
+/* 推进一个任务一步；它交出请求就**把请求原样送回去**（自回显），跑完就少一个活任务。
+ * 返回 false 表示这个任务已经结束。 */
+/* 推进一个任务。协议很关键：`send` **本身就会恢复**协程，所以请求必须在恢复**之前**读出来 ——
+ * 第一次只 `next()` 启动它；之后每次先 `value()` 看它挂起时留下的请求，再 `send(请求)` 把批准结果
+ * 送进去（本次恢复读到的正是它）。`send` 返回 false 说明它跑完了。 */
+fn step(s: mut ref loop, i: i64) -> bool {
+    if s.done[i] { return false }        /* 已经结束：句柄过期，再驱动会 trap（规则②）*/
+    if !s.started[i] {
+        s.started[i] = true
+        if !s.tasks[i].next() {
+            s.done[i] = true
+            s.live = s.live - i64(1)
+            return false
+        }
+        return true
+    }
+    var req: i64 = s.tasks[i].value()    /* 挂起时留下的请求（读在 send 之前）*/
+    if !s.tasks[i].send(req) {
+        s.done[i] = true
+        s.live = s.live - i64(1)
+        return false
+    }
+    return true
+}
+
+/* 脚本化的"事件源"：按 order 里的下标依次推进；返回还剩几个活任务。
+ * 判据用它能做到**逐字节确定**：不靠时间、不靠 socket、不靠调度顺序。 */
+fn runScripted(s: mut ref loop, order: slice<i64>) -> i64 {
+    var k: i64 = 0
+    while k < order.len {
+        var i: i64 = order[k]
+        if i >= i64(0) && i < s.n { step(s, i) }   /* `s` is already a reference */
+        k = k + 1
+    }
+    return s.live
+}

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>标准库参考：`prelude` · extC 手册</title>
+<title>协程调度器（`std::coro::scheduler`） · extC 手册</title>
 <style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
@@ -64,26 +64,35 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <li><a href="24-std-io.html">标准库参考：`std::io`</a></li>
 <li><a href="25-std-fs-term.html">标准库参考：`std::fs` 与 `std::term`</a></li>
 <li><a href="26-stl-containers.html">标准库参考：容器的共同面</a></li>
-<li class="cur"><a href="27-prelude.html">标准库参考：`prelude`</a></li>
+<li><a href="27-prelude.html">标准库参考：`prelude`</a></li>
 </ul>
 <div class="g">透明清单</div><ul>
 <li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
 </ul></nav>
-<main><div class="crumb">extC 手册 · §标准库参考：`prelude`</div>
-<h1 id="标准库参考-prelude">标准库参考：<code>prelude</code></h1>
-<p>prelude 是随每次编译自动前置的一小段 extC 源码（<code>stdlib/prelude.extc</code>），提供语言级设施： <code>slice</code> / <code>option</code> / <code>result</code> / <code>varArray</code> / <code>unit</code>，以及下表的随机数发生器。</p>
-<h2 id="pcg32-随机数"><code>pcg32</code>：随机数</h2>
-<table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>构造</td><td><code>pcg32::seeded(seed: u64) -&gt; pcg32</code></td><td>用种子构造</td></tr><tr><td>构造</td><td><code>pcg32::withStream(seed: u64, stream: u64) -&gt; pcg32</code></td><td>指定种子的同时指定流（同一序列可用于需要独立子序列的场合）</td></tr><tr><td>有界整数</td><td><code>pcg32::nextBounded(self: mut ref pcg32, bound: u64) -&gt; u64</code></td><td>返回 <code>[0, bound)</code> 内的均匀整数</td></tr><tr><td>浮点</td><td><code>pcg32::nextFloat(r: mut ref pcg32) -&gt; f64</code></td><td>返回 <code>[0, 1)</code> 内的浮点数</td></tr><tr><td>洗牌</td><td><code>pcg32::shuffleI32(r: mut ref pcg32, a: mut slice&lt;i32&gt;)</code></td><td>原地洗牌（Fisher–Yates）</td></tr></tbody></table>
-<h2 id="vararray-t-arena-底的动态数组"><code>varArray&lt;T&gt;</code>：arena 底的动态数组</h2>
-<table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>借出可写视图</td><td><code>varArray::asMutSlice(self: mut ref varArray&lt;T&gt;) -&gt; mut slice&lt;T&gt;</code></td><td><strong>零拷贝</strong>：视图指向该容器的存储</td></tr><tr><td>借出只读视图</td><td><code>varArray::asSlice(self: ref varArray&lt;T&gt;) -&gt; slice&lt;T&gt;</code></td><td>同上（只读）</td></tr></tbody></table>
-<p>两条规矩（实测行为，见「内部成员一览」之外的判据 <code>tests/stl/varArray_snapshot.extc</code> 与 <code>tests/stl/varArray_mutview_lost.extc</code>）：</p>
-<ol><li><strong>扩容即作废</strong>：<code>push</code> 触发扩容会换块，旧视图<strong>停在扩容前的快照</strong>上 —— 读到旧值、写进去会静默丢；</li><li><strong>视图可带出调用</strong>（缓冲由 home 机制放在调用者选的地方，比这次调用活得久），因此 <code>sort(v.asSlice())</code> 排的是<strong>真存储</strong>，这正是零拷贝存在的理由。</li></ol>
-<h2 id="pcg32-的状态"><code>pcg32</code> 的状态</h2>
-<table><thead><tr><th>成员</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>状态</td><td><code>pcg32.state: u64</code></td><td>发生器的内部状态；可取可写（存读档时直接存取），按约定属实现细节</td></tr></tbody></table>
-<h2 id="通用算法">通用算法</h2>
-<table><thead><tr><th>函数</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>排序</td><td><code>sort&lt;T&gt;(s: mut slice&lt;T&gt;)</code></td><td><strong>原地</strong>排序；元素类型需要在实例化时提供 <code>less</code> 方法（模板期不查，实例期报错并指出具体实例）</td></tr><tr><td>批量拷贝</td><td><code>copyInto&lt;T&gt;(dst: mut slice&lt;T&gt;, src: slice&lt;T&gt;, n: i64)</code></td><td>把 <code>src</code> 的前 <code>n</code> 个元素拷进 <code>dst</code>（整段移动，不是逐元素循环）</td></tr></tbody></table>
-<p>两者都是与具体容器无关的<strong>切片级</strong>算法：容器先借出视图（<code>toSlice</code> 拷贝或 <code>asSlice</code> 零拷贝）， 再把视图交给算法。<code>copyInto</code> 也是 <code>append</code> 一族"整段追加"的实现基础。</p>
-<div class="pn"><a href="26-stl-containers.html">← 标准库参考：容器的共同面</a> <a href="28-coro-scheduler.html">协程调度器（`std::coro::scheduler`） →</a></div></main>
+<main><div class="crumb">extC 手册 · §协程调度器（`std::coro::scheduler`）</div>
+<h1 id="协程调度器-std-coro-scheduler">协程调度器（<code>std::coro::scheduler</code>）</h1>
+<p><strong>一句话</strong>：一个 <code>while</code> 循环 + 一个事件源，握住一组 <code>coroutine&lt;i64&gt;</code> 句柄轮流推进。</p>
+<h2 id="形状">形状</h2>
+<pre class="lang-extc"><code><span class="k">use</span> std::coro::scheduler <span class="k">as</span> sched
+
+<span class="k">var</span> s: sched::loop                          <span class="c">/* 零初始化：任务数 0 */</span>
+sched::<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">worker</span>(<span class="t">i64</span>(<span class="n">10</span>)))
+sched::<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">worker</span>(<span class="t">i64</span>(<span class="n">100</span>)))
+
+<span class="k">var</span> order: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">i64</span>&gt; = <span class="k">new</span> <span class="t">i64</span>[<span class="n">12</span>]
+<span class="k">var</span> k: <span class="t">i64</span> = <span class="n">0</span>
+<span class="k">while</span> k &lt; <span class="t">i64</span>(<span class="n">12</span>) { order[k] = k % <span class="t">i64</span>(<span class="n">2</span>)  k = k + <span class="n">1</span> }   <span class="c">/* 交替就绪 */</span>
+
+<span class="k">var</span> left: <span class="t">i64</span> = sched::<span class="f">runScripted</span>(<span class="k">ref</span> s, order)</code></pre>
+<p>类型 <code>loop</code> 里是一张<strong>固定容量</strong>的任务表 <code>tasks</code>（<code>[8]coroutine&lt;i64&gt;</code>）：句柄是 24 字节的普通值， 数组元素就是<strong>可变位置</strong>，所以可以直接 <code>s.tasks[i].next()</code> / <code>.send()</code>。另有 <code>done</code>、<code>started</code> 两个标记数组、已放入的任务数 <code>n</code> 和还活着的任务数 <code>live</code>。</p>
+<h2 id="挂起约定-最容易写错的一条">挂起约定（最容易写错的一条）</h2>
+<ul><li>协程 <code>yield</code> 一个<strong>请求</strong>（这里是它想等的编号），恢复后<strong>重试</strong>自己的操作。</li><li>驱动器 <code>send(v)</code> <strong>本身就会恢复</strong>协程 ⇒ 请求必须在恢复<strong>之前</strong>读出来：先 <code>value()</code> 看它挂起时 留下的请求，再 <code>send(请求)</code> 把批准结果送进去 —— 本次恢复读到的正是它。写成"恢复 + 回显"一气呵成 会<strong>错开一格</strong>（实测踩出来的）。</li><li>任务跑完<strong>不要再驱动</strong>：句柄过期，<code>extc_task_alive</code> 会<strong>大声 trap</strong>（<code>exit(70)</code>）。<code>step</code> 用 <code>done</code> 记住它。</li></ul>
+<h2 id="两个驱动">两个驱动</h2>
+<ul><li><code>step(s, i)</code> —— 推进一步（上面那套协议），返回它是否还活着。</li><li><code>runScripted(s, order)</code> —— <strong>脚本化的就绪顺序</strong>：按 <code>order</code> 里的下标依次推进，返回还剩几个活任务。 判据先用它，因为它是<strong>逐字节确定</strong>的：不靠时间、不靠 socket、不靠内核调度顺序。</li><li><code>add(s, h)</code> —— 把一个句柄放进任务表（满了返回 <code>false</code>）。</li></ul>
+<p>真事件源（<code>epoll_wait</code>）是下一步：它挂在同一个 <code>step</code> 协议上，只是"谁就绪"改由内核告诉我们。</p>
+<h2 id="判据">判据</h2>
+<p><code>tests/coro/coro_sched.extc</code> —— 两个任务（step 分别 10 和 100）按交替的就绪顺序推进，断言退出码 <strong>36</strong>：<code>left * 100</code> 那一项就是"两个任务都跑完了"这条断言。</p>
+<div class="pn"><a href="27-prelude.html">← 标准库参考：`prelude`</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
 q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();

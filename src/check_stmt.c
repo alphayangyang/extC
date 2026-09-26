@@ -881,6 +881,11 @@ void checkStmt(Checker *c, Stmt *s) {
              * case so the frame layout pass sees it. */
             if (s->u.yield_.bind && c->curFunc && c->curFunc->isCoro && c->curFunc->yieldType) {
                 Type *bt = c->curFunc->yieldType;
+                if (s->u.yield_.bindAnn)
+                    /* Resolve it exactly like a `var` annotation does: the parser hands over the
+                     * written type, and only `ttResolve` turns it into a usable one. */
+                    s->u.yield_.bindAnn = ttResolve(c->tt, c->ctx, s->u.yield_.bindAnn,
+                                                    s->u.yield_.bindLine, c->curParams);
                 if (s->u.yield_.bindAnn && !ttIsError(s->u.yield_.bindAnn)) {
                     if (strcmp(typeStr(c, s->u.yield_.bindAnn), typeStr(c, bt)) != 0)
                         ckError(c, s->u.yield_.bindLine,
@@ -892,6 +897,16 @@ void checkStmt(Checker *c, Stmt *s) {
                 }
                 /* The frame's Vec is not built yet (that is `coroFrameLay`, after the body), so the
                  * binding is *recorded* and consumed there -- the same shape as `coroDeferred`. */
+                /* Declare it as a local **now** so later statements in the body can name it; the
+                 * frame field itself is built by `coroFrameLay` from the recorded binding. */
+                /* `got = yield e`: `got` is the program's own variable, already declared -- use that
+                 * symbol (declaring again would give it a `__2` suffix, and the frame field would
+                 * not match). `var got = yield e`: no such name yet, so declare it. */
+                Sym *sym = lookup(c, s->u.yield_.bind);
+                if (!sym)
+                    sym = declare(c, s->u.yield_.bind, bt, false, true,
+                                  s->u.yield_.bindLine, c->scopes.len);
+                s->u.yield_.bindCName = sym ? sym->cname : s->u.yield_.bind;
                 if (!c->coroBinds.arena)
                     vecInit(&c->coroBinds, c->arena, sizeof(CoroBind *));
                 CoroBind *cb = arenaAllocZero(c->arena, sizeof *cb);
@@ -900,7 +915,6 @@ void checkStmt(Checker *c, Stmt *s) {
                 cb->type = bt;
                 cb->line = s->u.yield_.bindLine;
                 *(CoroBind **)vecPush(&c->coroBinds) = cb;
-                s->u.yield_.bindCName = arenaPrintf(c->arena, "%s", s->u.yield_.bind);
             }
             /* `yield e`: legal only inside a coroutine body, and `e` has to be that coroutine's
              * `T`. Both come from the declared return type `coroutine<T>` (see `check_top.c`). */

@@ -119,6 +119,17 @@ prelude	varArray	set	method	public
 prelude	varArray	size	method	public
 prelude	varArray	startsWith	method	public
 prelude	varArray	withCap	method	public
+std::coro::scheduler	-	add	fn	public
+std::coro::scheduler	-	runScripted	fn	public
+std::coro::scheduler	-	step	fn	public
+std::coro::scheduler	loop	add	method	public
+std::coro::scheduler	loop	done	field	public
+std::coro::scheduler	loop	live	field	public
+std::coro::scheduler	loop	n	field	internal
+std::coro::scheduler	loop	runScripted	method	public
+std::coro::scheduler	loop	started	field	public
+std::coro::scheduler	loop	step	method	public
+std::coro::scheduler	loop	tasks	field	public
 std::fs	-	closeIn	fn	public
 std::fs	-	closeOut	fn	public
 std::fs	-	flushOut	fn	public
