@@ -13,6 +13,11 @@ bad()  { echo "  FAIL $1  ->  $2"; fail=$((fail+1)); }
 out=$("$EXTC" -w --run tests/dyn/dyn_call.extc 2>&1)
 [ "$out" = "dyn=7,5" ] && ok dyn_call "$out" || bad dyn_call "期望 dyn=7,5，实得：$out"
 
+# 用途向的例子：混存不同形状求总面积（与 Tag 同一套机制，名字更能说明用途）
+out=$("$EXTC" -w --run tests/dyn/dyn_shape_area.extc 2>&1)
+[ "$out" = "rect=12 circle=12 total=24" ] && ok dyn_shape_area "混存 rect/circle 求总面积（$out）" \
+                                          || bad dyn_shape_area "期望 rect=12 circle=12 total=24，实得：$out"
+
 # 阶段 3：dyn 进泛型容器 varArray<T>；以及"容器清空后 dyn 值仍有效"（保守语义，见夹具注释）
 out=$("$EXTC" -w --run tests/dyn/dyn_in_varArray.extc 2>&1)
 [ "$out" = "va=13" ] && ok dyn_in_varArray "dyn 进 varArray<T>（$out）" || bad dyn_in_varArray "期望 va=13，实得：$out"

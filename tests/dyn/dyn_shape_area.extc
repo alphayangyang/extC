@@ -1,0 +1,27 @@
+/* 更能说明用途的例子：一个容器里混存不同形状，循环求总面积。
+ * 调用点只知道 `dyn Shape`，**不知道**是 rect 还是 circle —— 函数在运行期从表里取。
+ * 这与 `Tag` 是同一套机制，只是名字让人看得懂用途。 */
+use std::io
+
+trait Shape { fn area(self: ref Self) -> i64 }
+
+struct rect   { w: i64  h: i64 }
+struct circle { r: i64 }
+
+impl Shape for rect   { fn area(self: ref rect)   -> i64 { return self.w * self.h } }
+impl Shape for circle { fn area(self: ref circle) -> i64 { return i64(3) * self.r * self.r } }
+
+fn main() -> i32 {
+    var xs: [2]dyn Shape
+    xs[0] = dyn Shape(rect { w: i64(3), h: i64(4) })
+    xs[1] = dyn Shape(circle { r: i64(2) })
+
+    var total: i64 = i64(0)
+    var i: i64 = i64(0)
+    while i < i64(2) {
+        total = total + xs[i].area()
+        i = i + i64(1)
+    }
+    io::cout << "rect=" << xs[0].area() << " circle=" << xs[1].area() << " total=" << total << "\n"
+    return 0
+}
