@@ -1692,35 +1692,49 @@ static const char *genMethodCall(CG *g, Expr *e) {
         recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
 
     const char *fname = dynStored ? NULL : cMethodName(g, recvT, f);
-    /* `dyn Trait(x).m(...)`: dispatch through the table the trait emitted for this type (stage 1
-     * of DYN.md). The field **is** the implementation, so the call keeps the same signature --
-     * including the hidden home-arena parameter, which the table's `__typeof__` picked up for
-     * free when it was emitted. Nothing else in this function changes: same receiver, same
-     * arguments, same extra parameters, a different callee expression. */
+    /* `dyn Trait(x).m(...)`: the callee comes from the trait's table instead of a per-type C
+     * name. The field **is** the implementation, so the call keeps the same signature --
+     * including hidden parameters, which the table's field types picked up when it was emitted.
+     * Nothing else in this function changes: same receiver, same arguments, same extra
+     * parameters, a different callee expression. */
     if (e->dynTrait) {
         /* Dispatch through the trait's uniform table (see the table emitter). Two sources:
          *   - `dyn Trait(x).m(...)`: the payload is copied into the pool here;
          *   - `d.m(...)` on a stored value: it **is** a handle already, so only the checked slot
          *     lookup is emitted.
          * Either way the table and the receiver both come from the **checked slot**. */
-        const char *dynH, *dynS;
-        if (dynStored) {
-            dynH = recvC;
-        } else {
-            const char *dynT = cType(g, ttBase(recvT));
-            dynH = arenaPrintf(g->arena, "__extc_dyn%d", g->tmpSeq++);
-            pfLine(g, "ExtcDynHandle %s = extc_dyn_put((const void *)(%s), (int64_t)sizeof(%s),"
-                      " &extc_vt$%s$%s);", dynH, recvC, dynT, e->dynTrait, dynT);
-        }
-        dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
-        pfLine(g, "ExtcDynSlot *%s = extc_dyn_slot(%s, \"%s\", %d);",
-               dynS, dynH, g->path, e->line);
+        /* Two sources, two costs (DYN.md §11, route C):
+         *   - `dyn Trait(x).m(...)`: the payload is a **temporary of this expression**, so it
+         *     needs no owner at all -- the table is a compile-time address and the receiver is
+         *     that temporary. No pool put, no slot, no generation checks: nothing can be stale
+         *     inside one expression, and nothing can escape into another (the method takes the
+         *     receiver by reference, so the depth rules already forbid storing it).
+         *   - `d.m(...)` on a stored value: the value **is** a handle, so the table and the
+         *     receiver both come from the **checked slot**. */
         Buf dynSym;
         bufInit(&dynSym, g->arena);
-        bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)%s->vt)->%s",
-                  e->dynTrait, dynS, e->u.method.name);
+        if (dynStored) {
+            const char *dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
+            pfLine(g, "ExtcDynSlot *%s = extc_dyn_slot(%s, \"%s\", %d);",
+                   dynS, recvC, g->path, e->line);
+            bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)%s->vt)->%s",
+                      e->dynTrait, dynS, e->u.method.name);
+            recvC = arenaPrintf(g->arena, "%s->addr", dynS);
+        } else {
+            const char *dynT = cType(g, ttBase(recvT));
+            bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)&extc_vt$%s$%s)->%s",
+                      e->dynTrait, e->dynTrait, dynT, e->u.method.name);
+            /* **The boundary of route C.** The payload must be copied into a stack temporary
+             * before the call, even though nothing owns it: a method that mutates its receiver
+             * (`mut ref Self`) would otherwise write through to the **source object**, while the
+             * stored form mutates the pool's copy -- the same expression `dyn Tag(b)` would mean
+             * two different things. `recvC` is already a pointer to the payload, so this is one
+             * copy of `sizeof(T)`; the optimiser removes it when the payload is a literal. */
+            const char *slot = arenaPrintf(g->arena, "__extc_dynp%d", g->tmpSeq++);
+            pfLine(g, "%s %s = *(%s);", dynT, slot, recvC);
+            recvC = arenaPrintf(g->arena, "(void *)&%s", slot);
+        }
         fname = bufCstr(&dynSym);
-        recvC = arenaPrintf(g->arena, "%s->addr", dynS);
     }
 
     Buf b;

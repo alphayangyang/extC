@@ -49,6 +49,12 @@ else
 fi
 rm -rf "$d"
 
+# 路线 C 的**边界**：方法改接收者时，立即形式改的是拷贝（与存储值一致），原变量不变
+out=$("$EXTC" -w --run tests/dyn/dyn_imm_mutate.extc 2>&1)
+want=$(printf 'imm: ret=11 b=1\nsto: ret=11 c=1')
+[ "$out" = "$want" ] && ok dyn_imm_copy_semantics "立即形式与存储值对改接收者的语义一致（都不改原变量）" \
+                     || bad dyn_imm_copy_semantics "期望两条 imm/sto 且 b=1 c=1，实得：$out"
+
 # 槽回收（墓碑 + 惰性清扫 + 复用）：界必须是**同时存活数**，不是累计创建数。
 # 2000 次调用后 live 应当是个小常数（容量翻倍的余量），而不是 2000。
 out=$("$EXTC" -w --run tests/dyn/dyn_slot_reclaim.extc 2>&1)
@@ -84,34 +90,45 @@ case "$err" in
 esac
 
 tmp=$(mktemp -d)
+# ── 立即形式（路线 C，DYN.md §11）：载荷是本条表达式的**临时量** ⇒ 不需要拥有者 ──
+#   判的是两件事：① 不碰池（生成物里没有 put/slot 的**调用**）；
+#                ② 派发形状 = **编译期地址的表** + 直接接收者（没有槽查找、没有校验）。
 if "$EXTC" -w --no-line-map -o "$tmp/d.c" tests/dyn/dyn_call.extc >/dev/null 2>&1; then
-    # 阶段 2：载荷进池、值经槽派发。三条一起判：
-    #   ① 建池必须是**对象表模式**（extc_pool_new_table）——挡住"忘了用对象表"这类事故；
-    #   ② 构造走 extc_dyn_put、校验走 extc_dyn_slot；
-    #   ③ 派发形状必须是 `((const struct extc_vt$T$T_t *)s->vt)->m(s->addr …)`：
-    #      表和接收者都来自**已校验的槽**（这正是 O5 的结构性保证）。
     puts=$(grep -o '= extc_dyn_put(' "$tmp/d.c" | wc -l | tr -d " ")
     slots=$(grep -o '= extc_dyn_slot(' "$tmp/d.c" | wc -l | tr -d " ")
-    tbl=$(grep -c 'extc_pool_new_table' "$tmp/d.c" || true)
-    disp=$(grep -o '\->vt)->tag(' "$tmp/d.c" | wc -l | tr -d " ")
-    addr=$(grep -o 'tag(__extc_ds[0-9]*->addr' "$tmp/d.c" | wc -l | tr -d " ")
-    if [ "$puts" = 2 ] && [ "$slots" = 2 ] && [ "$disp" = 2 ] && [ "$addr" = 2 ]; then
-        ok dyn_pool_dispatch "进池 + 经槽派发：put=$puts slot=$slots dispatch=$disp（接收者取自槽）"
+    direct=$(grep -o 'extc_vt\$Tag_t \*)&extc_vt\$Tag\$[a-z]*)->tag((void \*)' "$tmp/d.c" | wc -l | tr -d " ")
+    if [ "$puts" = 0 ] && [ "$slots" = 0 ] && [ "$direct" = 2 ]; then
+        ok dyn_pool_dispatch "立即形式**不碰池**：put=$puts slot=$slots，直接查表 ×$direct（box 与 pt 各一次）"
     else
-        bad dyn_pool_dispatch "put=$puts slot=$slots dispatch=$disp addr=$addr（期望各 2）"
-    fi
-    if [ "$tbl" -ge 1 ]; then
-        ok dyn_object_table "建池用对象表模式（extc_pool_new_table ×$tbl）"
-    else
-        bad dyn_object_table "生成物里没有 extc_pool_new_table"
+        bad dyn_pool_dispatch "put=$puts slot=$slots direct=$direct（期望 0/0/2：立即形式不该进池）"
     fi
     if gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/d.c" 2>"$tmp/e"; then
-        ok dyn_contract "生成物合同编译零告警（-std=c11 -fwrapv -Wall -Werror）"
+        ok dyn_contract "生成物合同编译零告警（立即形式）"
     else
         bad dyn_contract "$(head -2 "$tmp/e" | tr '\n' ' ')"
     fi
 else
     bad dyn_codegen "dyn_call.extc 编译失败"
+fi
+
+# ── 存储值形式：值**会逃出表达式** ⇒ 必须有拥有者 ⇒ 对象表池 + 取用前校验（O5 的结构性保证）──
+if "$EXTC" -w --no-line-map -o "$tmp/s.c" tests/dyn/dyn_stored_call.extc >/dev/null 2>&1; then
+    puts2=$(grep -o '= extc_dyn_put(' "$tmp/s.c" | wc -l | tr -d " ")
+    slots2=$(grep -o '= extc_dyn_slot(' "$tmp/s.c" | wc -l | tr -d " ")
+    tbl=$(grep -c 'extc_pool_new_table' "$tmp/s.c" || true)
+    disp=$(grep -o '\->vt)->' "$tmp/s.c" | wc -l | tr -d " ")
+    if [ "$puts2" -ge 1 ] && [ "$slots2" -ge 1 ] && [ "$tbl" -ge 1 ] && [ "$disp" -ge 1 ]; then
+        ok dyn_object_table "存储值进**对象表池** + 取用前校验：new_table ×$tbl · put ×$puts2 · slot ×$slots2 · dispatch ×$disp"
+    else
+        bad dyn_object_table "new_table=$tbl put=$puts2 slot=$slots2 dispatch=$disp（都期望 ≥1）"
+    fi
+    if gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/s.c" 2>"$tmp/e2"; then
+        ok dyn_stored_contract "生成物合同编译零告警（存储值形式）"
+    else
+        bad dyn_stored_contract "$(head -2 "$tmp/e2" | tr '\n' ' ')"
+    fi
+else
+    bad dyn_object_table "dyn_stored_call.extc 编译失败"
 fi
 # 运行期判据（O5 核心）：陈旧 dyn 值必须 **trap**，而不是派发到别的实现。
 #

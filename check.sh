@@ -217,6 +217,8 @@ if [ "${1:-}" != "quick" ]; then
     if out=$(N=5000000 NIMM=200000 RUNS=1 ./bench/dyn/stress/run.sh 2>&1); then
         ok "dyn 极端压测（$(printf '%s' "$out" | grep -m1 '^通过')）"
     else bad "bench/dyn/stress"; printf '%s\n' "$out" | tail -8; fi
+    if out=$(N=50000 ./bench/dyn/alloc/run.sh 2>&1); then ok "dyn 构造成本（拷贝 vs 分配）"
+    else bad "bench/dyn/alloc"; printf '%s\n' "$out" | tail -6; fi
     if out=$(P=512 MIX=8 RUNS=1 ./bench/dyn/real/run.sh 2>&1); then
         ok "dyn 现实负载（$(printf '%s' "$out" | grep -m1 '^通过')）"
     else bad "bench/dyn/real"; printf '%s\n' "$out" | tail -8; fi

@@ -92,11 +92,18 @@ if "${EXTC:-./build/extc}" -w --no-line-map -o "$tmp/tt.c" tests/impl/trait_tabl
     else
         echo "  FAIL vtable_order    ->  $sline | $iline"; fail=1
     fi
-    calls=$(grep -c 'extc_vt[^ ]*[[:space:]]*(' "$tmp/tt.c" || true)
-    if [ "$calls" = 0 ]; then
-        echo "  ok   vtable_no_call  ->  表只出现在定义处，无间接调用"
+    # **不用 dyn ⇒ 零开销**：生成物里既没有表，也没有任何间接调用。
+    # （原判据只数"经表的调用"，但夹具后来故意做了动态派发 ⇒ 口径改为"纯静态的翻译单元"。）
+    if ! "$EXTC" -w --no-line-map -o "$tmp/st.c" tests/impl/trait_static_only.extc >/dev/null 2>&1; then
+        echo "  FAIL vtable_no_call  ->  夹具 trait_static_only.extc 编译失败"; fail=1
+    fi
+    calls=$(grep -c 'extc_vt[^ ]*[[:space:]]*(' "$tmp/st.c" 2>/dev/null || true)
+    tabs=$(grep -c 'struct extc_vt' "$tmp/st.c" 2>/dev/null || true)
+    calls=${calls:-无}; tabs=${tabs:-无}
+    if [ "$calls" = 0 ] && [ "$tabs" = 0 ]; then
+        echo "  ok   vtable_no_call  ->  不用 dyn ⇒ 无表、无间接调用（零开销）"
     else
-        echo "  FAIL vtable_no_call  ->  出现 $calls 处调用"; fail=1
+        echo "  FAIL vtable_no_call  ->  表 $tabs 处 · 调用 $calls 处（都应为 0）"; fail=1
     fi
     if gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/tt.c" 2>"$tmp/err"; then
         echo "  ok   vtable_contract ->  生成物在 -std=c11 -fwrapv -Wall -Werror 下零告警"

@@ -1,0 +1,14 @@
+/* 只做**静态**分发（不用 dyn）⇒ 生成物里不应出现任何表、也没有间接调用。
+ * `vtable_no_call` 判的就是这条零开销承诺。 */
+use std::io
+
+trait Shape { fn area(self: ref Self) -> i64 }
+
+struct rect { w: i64  h: i64 }
+impl Shape for rect { fn area(self: ref rect) -> i64 { return self.w * self.h } }
+
+fn main() -> i32 {
+    let r = rect { w: i64(3), h: i64(4) }
+    io::cout << "area=" << r.area() << "\n"
+    return 0
+}

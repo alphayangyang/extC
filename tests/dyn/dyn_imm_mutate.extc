@@ -1,0 +1,17 @@
+/* **路线 C 的边界**：方法改接收者（`mut ref Self`）时，立即形式改的必须是**拷贝**，
+ * 与存储值一致 —— 否则同一个 `dyn Tag(b)` 在两种用法下含义不同（一个改到 b，一个改到池里的拷贝）。
+ * 立即形式的实现在调用前把载荷拷进一个**栈上临时量**（不碰池、不分配）。 */
+use std::io
+trait Tag { fn bump(self: mut ref Self, k: i64) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn bump(self: mut ref box, k: i64) -> i64 { self.v = self.v + k  return self.v } }
+fn main() -> i32 {
+    var b = box { v: i64(1) }
+    let x = dyn Tag(b).bump(i64(10))          /* 立即形式 */
+    io::cout << "imm: ret=" << x << " b=" << b.v << "\n"
+    var c = box { v: i64(1) }
+    let d: dyn Tag = dyn Tag(c)
+    let y = d.bump(i64(10))                   /* 存储值 */
+    io::cout << "sto: ret=" << y << " c=" << c.v << "\n"
+    return 0
+}
