@@ -1,0 +1,21 @@
+/* dyn 值进**定长数组**：元素是句柄（普通值），按下标派发；两个不同具体类型混存。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+struct pt  { x: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + i64(100) } }
+fn main() -> i32 {
+    var xs: [3]dyn Tag
+    xs[0] = dyn Tag(box { v: i64(1) })
+    xs[1] = dyn Tag(pt  { x: i64(2) })
+    xs[2] = dyn Tag(box { v: i64(3) })
+    var sum: i64 = i64(0)
+    var i: i64 = i64(0)
+    while i < i64(3) {
+        sum = sum + xs[i].tag()
+        i = i + i64(1)
+    }
+    io::cout << "arr=" << sum << "\n"
+    return 0
+}

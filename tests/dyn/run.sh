@@ -13,6 +13,17 @@ bad()  { echo "  FAIL $1  ->  $2"; fail=$((fail+1)); }
 out=$("$EXTC" -w --run tests/dyn/dyn_call.extc 2>&1)
 [ "$out" = "dyn=7,5" ] && ok dyn_call "$out" || bad dyn_call "期望 dyn=7,5，实得：$out"
 
+# 阶段 3：dyn 进**字段**与**容器**（句柄是普通值，所以它们"本来就能用"）
+out=$("$EXTC" -w --run tests/dyn/dyn_in_field.extc 2>&1)
+[ "$out" = "field=5" ] && ok dyn_in_field "dyn 作结构体字段并派发（$out）" || bad dyn_in_field "期望 field=5，实得：$out"
+out=$("$EXTC" -w --run tests/dyn/dyn_in_array.extc 2>&1)
+[ "$out" = "arr=106" ] && ok dyn_in_array "dyn 进定长数组，两种实现混存（$out）" || bad dyn_in_array "期望 arr=106，实得：$out"
+
+# 值逃出 place 的**正确**处置：能提升就提升（home-zone 提升），提升不了才在派发时 trap
+out=$("$EXTC" -w --run tests/dyn/dyn_promoted_return.extc 2>&1)
+[ "$out" = "escaped=88" ] && ok dyn_promoted_return "函数返回的 dyn 值被提升进调用者的 place（$out）" \
+                          || bad dyn_promoted_return "期望 escaped=88，实得：$out"
+
 # 阶段 3：值形式合法（判据翻面 —— 旧判据断言"保存被拒"，保存现在是语言的一部分）
 out=$("$EXTC" -w --run tests/dyn/dyn_stored.extc 2>&1)
 [ "$out" = "stored=0" ] && ok dyn_stored "值形式可存下并作参数传递" \

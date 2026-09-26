@@ -1,0 +1,14 @@
+/* dyn 值作**结构体字段**：句柄是普通值 ⇒ 字段就是它；派发经字段接收者。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+struct holder {
+    d: dyn Tag
+    n: i64
+}
+fn main() -> i32 {
+    let h = holder { d: dyn Tag(box { v: i64(5) }), n: i64(1) }
+    io::cout << "field=" << h.d.tag() << "\n"
+    return 0
+}

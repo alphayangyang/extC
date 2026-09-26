@@ -1,0 +1,15 @@
+/* dyn 值**从函数返回**：home-zone 提升（POOL.md 3.1）把它放进**调用者的 place** ⇒ 句柄仍有效。
+ * 这条判据钉的是"值逃出 place"的正确处置：**能提升就提升**（这里），
+ * 提升不了才会在派发时 trap（运行期判据 dyn_o5_stale_trap 测的就是那一半）。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+
+fn make() -> dyn Tag { return dyn Tag(box { v: i64(88) }) }
+
+fn main() -> i32 {
+    let d: dyn Tag = make()
+    io::cout << "escaped=" << d.tag() << "\n"
+    return 0
+}
