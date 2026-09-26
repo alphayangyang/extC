@@ -5409,7 +5409,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (anyPoolFn)
             bufPuts(out,
                 "#define EXTC_DYN_HANDLE_DEFINED 1\n"
-                "struct ExtcDynHandleS { int64_t pid, slot, gen; };\n"
+                "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; };\n"
                 "typedef struct ExtcDynHandleS ExtcDynHandle;\n\n");
     }
     /* The dying hook goes between the includes and the trap paths that call it: `int32_t`

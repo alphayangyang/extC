@@ -44,6 +44,17 @@ else
 fi
 rm -rf "$d"
 
+# 槽回收（墓碑 + 惰性清扫 + 复用）：界必须是**同时存活数**，不是累计创建数。
+# 2000 次调用后 live 应当是个小常数（容量翻倍的余量），而不是 2000。
+out=$("$EXTC" -w --run tests/dyn/dyn_slot_reclaim.extc 2>&1)
+live=$(printf '%s' "$out" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
+case "$out" in *sum=14000*) sumok=1 ;; *) sumok=0 ;; esac
+if [ "$sumok" = 1 ] && [ -n "$live" ] && [ "$live" -le 32 ]; then
+    ok dyn_slot_reclaim "槽回收生效：2000 次创建后 live=$live（界是同时存活数）"
+else
+    bad dyn_slot_reclaim "期望 sum=14000 且 live<=32，实得：$out"
+fi
+
 # 阶段 3 核心：**存储值**派发 —— 两个不同具体类型走同一张统一签名的表（thunk 的回报）
 out=$("$EXTC" -w --run tests/dyn/dyn_stored_call.extc 2>&1)
 [ "$out" = "calls=7,105" ] && ok dyn_stored_call "存储值派发：box 与 pt 经同一张表（$out）" \
