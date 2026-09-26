@@ -350,6 +350,7 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
  *   True when the statement contains an allocation or an unknown-length allocation.
  */
 static bool stmtHasNew(Stmt *s);
+static void coroFrameLay(Checker *c, FuncDef *f);   /* the coroutine frame, defined below */
 static bool hasNewInStmt(void *ctx, Stmt *s);
 /* Does this expression contain `new`, or `alloc<T>(n)` (which is the same thing)?
  *
@@ -3621,6 +3622,10 @@ static void checkFunc(Checker *c, FuncDef *f) {
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 
+    /* The types of the declarations are final by now, so this is where a coroutine's frame can be
+     * laid out -- and where rule 2 is enforced on it (docs/topics/CONCURRENCY.md 4.4). */
+    coroFrameLay(c, f);
+
     /* The types of the declarations are final by now, so this is the place to ask
      * whether every handle the function opened also gets closed. */
     checkOpenHandles(c, f);
@@ -5570,4 +5575,182 @@ static bool stmtCallsAllocator(Checker *c, Stmt *s) {
  */
 bool stmtNeedsPlaceBoundary(Stmt *s) {
     return s && (stmtHasNew(s) || stmtMakesPool(s, true));
+}
+
+/* ---- the frame of a coroutine (docs/topics/CONCURRENCY.md 4.4) -------------------------------
+ *
+ * Which locals live in the frame? The ones **live across a `yield`**: declared before it and used
+ * after it. One walk answers both questions the design needs:
+ *
+ *   1. rule 2 -- such a local may not carry a reference (a view, a `ref`, a container): its storage
+ *      is either the C stack of this very call, which is gone the moment the coroutine yields, or an
+ *      arena that dies before the task does. The rejection message carries the two fixes.
+ *   2. the frame layout codegen needs (slice B): those locals by value, plus `pc`, the return slot,
+ *      and the zone id when the body can create a pool.
+ *
+ * The walk is the authoritative one (`astWalkStmtChildren` / `astWalkExprChildren`), so a new kind
+ * cannot be forgotten here, and its pre-order visit order is what "before" and "after" mean.
+ *
+ * **Loop-back edges** make "after" more than source order: a use that sits inside a loop which also
+ * encloses the `yield` can run again *after* the resume, even when the textual use comes first --
+ * `while c { use(a)  yield x }` uses `a` again on the next iteration. So a local counts as live
+ * across when the use and the yield **share an enclosing loop** (the loop chain is recorded per node;
+ * deeper than the chain array means "assume shared", which is the conservative direction). Getting
+ * this wrong the other way would let a dangling view through silently, which is exactly what these
+ * rounds exist to prevent.
+ */
+#define CORO_CHAIN_MAX 8
+typedef struct {
+    const char *cname;
+    int         index;
+    int         chain[CORO_CHAIN_MAX];      /* the enclosing loop ids, outermost first */
+    int         nchain;
+} CoroUse;
+typedef struct {
+    const char *cname;
+    Type       *type;
+    int         index;
+} CoroDecl;
+typedef struct {
+    int index;
+    int line;
+    int chain[CORO_CHAIN_MAX];
+    int nchain;
+} CoroYield;
+typedef struct {
+    AstVisit v;                 /* so the callbacks can share one context */
+    int      index;
+    int      chain[CORO_CHAIN_MAX];
+    int      nchain;
+    int      nextLoop;
+    Vec      decls;             /* CoroDecl*  */
+    Vec      uses;              /* CoroUse*   */
+    Vec      yields;            /* CoroYield* */
+} CoroScan;
+
+static void coroPushLoop(CoroScan *s, int id) {
+    if (s->nchain < CORO_CHAIN_MAX) s->chain[s->nchain++] = id;
+    else s->nchain = CORO_CHAIN_MAX + 1;      /* too deep: `coroSharesLoop` then says yes */
+}
+static void coroPopLoop(CoroScan *s) {
+    if (s->nchain == CORO_CHAIN_MAX + 1) s->nchain = CORO_CHAIN_MAX;
+    else if (s->nchain > 0) s->nchain--;
+}
+static void coroCopyChain(CoroScan *s, int *chain, int *n) {
+    *n = s->nchain > CORO_CHAIN_MAX ? CORO_CHAIN_MAX : s->nchain;
+    for (int i = 0; i < *n; i++) chain[i] = s->chain[i];
+}
+/* Do these two nodes share an enclosing loop? (`a.nchain` too deep means "assume yes".) */
+static bool coroSharesLoop(const int *ac, int an, const int *bc, int bn) {
+    for (int i = 0; i < an; i++)
+        for (int j = 0; j < bn; j++)
+            if (ac[i] == bc[j]) return true;
+    return false;
+}
+
+static bool coroScanStmt(void *ctx, Stmt *s);
+static bool coroScanExpr(void *ctx, Expr *e);
+
+static bool coroScanExpr(void *ctx, Expr *e) {
+    CoroScan *s = (CoroScan *)ctx;
+    if (e->kind == EX_IDENT && e->u.ident.cname) {
+        CoroUse *u = (CoroUse *)vecPush(&s->uses);   /* by value: never a pointer into the vec */
+        u->cname = e->u.ident.cname;
+        u->index = s->index++;
+        coroCopyChain(s, u->chain, &u->nchain);
+    } else {
+        s->index++;
+    }
+    AstVisit v = { coroScanExpr, coroScanStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+static bool coroScanStmt(void *ctx, Stmt *s) {
+    CoroScan *sc = (CoroScan *)ctx;
+    if (s->kind == ST_VAR && s->u.var.cname) {
+        CoroDecl *d = (CoroDecl *)vecPush(&sc->decls);   /* by value */
+        d->cname = s->u.var.cname;
+        d->type = s->type;
+        d->index = sc->index++;
+    } else if (s->kind == ST_YIELD) {
+        CoroYield *y = (CoroYield *)vecPush(&sc->yields);
+        y->index = sc->index++;
+        y->line = s->line;
+        coroCopyChain(sc, y->chain, &y->nchain);
+    } else {
+        sc->index++;
+    }
+    const bool loop = s->kind == ST_WHILE;
+    if (loop) coroPushLoop(sc, sc->nextLoop++);
+    AstVisit v = { coroScanExpr, coroScanStmt, ctx };
+    bool ok = astWalkStmtChildren(s, &v);
+    if (loop) coroPopLoop(sc);
+    return ok;
+}
+
+/* Is `d` live across the yield `y`? Either used after it, or used in a loop they share. */
+static bool coroLiveAcross(const CoroScan *s, const CoroDecl *d, const CoroYield *y) {
+    for (size_t i = 0; i < s->uses.len; i++) {
+        const CoroUse *u = (const CoroUse *)vecAt((Vec *)&s->uses, i);
+        if (!u->cname || strcmp(u->cname, d->cname) != 0) continue;
+        if (u->index > y->index) return true;
+        if (u->index > d->index && coroSharesLoop(u->chain, u->nchain, y->chain, y->nchain))
+            return true;
+    }
+    return false;
+}
+
+/* Lay out the frame of a coroutine, and refuse what may not go in it. Runs after the body has been
+ * checked, so every declaration's type is final. */
+static void coroFrameLay(Checker *c, FuncDef *f) {
+    if (!f || !f->isCoro || !f->body) return;
+    CoroScan s;
+    memset(&s, 0, sizeof s);
+    s.index = 0;
+    /* Stored **by value**: these vectors grow while they are being filled, so holding pointers to
+     * their elements would leave dangling pointers the moment one of them reallocates. */
+    vecInit(&s.decls, c->arena, sizeof(CoroDecl));
+    vecInit(&s.uses, c->arena, sizeof(CoroUse));
+    vecInit(&s.yields, c->arena, sizeof(CoroYield));
+    CoroScan *sp = &s;
+    for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
+        coroScanStmt(sp, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
+    if (s.yields.len == 0) return;                  /* nothing to lay out */
+
+    vecInit(&f->coroFrame, c->arena, sizeof(Param));   /* by value, like the scan above */
+    for (size_t i = 0; i < s.decls.len; i++) {
+        const CoroDecl *d = (const CoroDecl *)vecAt(&s.decls, i);
+        bool live = false;
+        int line = f->body->line;
+        for (size_t k = 0; k < s.yields.len && !live; k++) {
+            const CoroYield *y = (const CoroYield *)vecAt(&s.yields, k);
+            if (d->index < y->index && coroLiveAcross(&s, d, y)) { live = true; line = y->line; }
+        }
+        if (!live) continue;                        /* stays an ordinary C local ✓ */
+        if (typeContainsRef(c->tt, d->type)) {
+            ckError(c, line,
+                    "A local that lives across a `yield` may not carry a reference: its storage is"
+                    " gone when the coroutine resumes (the C stack of this call is, and a block's"
+                    " arena is). Two fixes: allocate it yourself with `new` so it lands in the"
+                    " task's own place, or keep the offset and take the view again after the"
+                    " resume (docs/topics/CONCURRENCY.md 4.4)",
+                    "`%s` lives across a `yield` and carries a reference", d->cname);
+            continue;
+        }
+        Param *p = (Param *)vecPush(&f->coroFrame);
+        p->name = d->cname;
+        p->cname = d->cname;
+        p->type = d->type;
+        p->line = f->body->line;
+    }
+    if (getenv("EXTC_DBG_CORO")) {
+        fprintf(stderr, "[coro] %s: frame = pc, ret%s", f->name,
+                f->makesPool ? ", zone" : "");
+        for (size_t i = 0; i < f->coroFrame.len; i++) {
+            const Param *p = (const Param *)vecAt(&f->coroFrame, i);
+            fprintf(stderr, ", %s: %s", p->name, typeStr(c, p->type));
+        }
+        fprintf(stderr, "   (%zu of %zu locals live across a yield)\n",
+                f->coroFrame.len, s.decls.len);
+    }
 }

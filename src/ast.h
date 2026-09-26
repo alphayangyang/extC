@@ -548,6 +548,10 @@ struct FuncDef {
      * protocol methods are synthesized per coroutine (slice B). */
     bool        isCoro;
     Type       *yieldType;
+    /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
+     * `pc`, the return slot and (when `makesPool`) the zone id come first, then these by value.
+     * See docs/topics/CONCURRENCY.md 4.4. */
+    Vec         coroFrame;       /* Param* */
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* the struct a method belongs to; NULL for a free function */
     bool        isAssoc;         /* declared inside a struct body but without `self` */

@@ -502,7 +502,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 | 切片 | 内容 |
 |---|---|
 | **A1 ✅（2026-09-26 已落地）** | `coroutine<T>`（prelude 标记）+ `yield` 语句（解析器/AST）+ 检查器（"是不是协程"由**返回类型**决定 ✓ / yielded 值与 `T` 的兼容检查 ✓）+ **规则 ③**（`yield` 不许落在会回收的块里 ✓ `placeBoundaryDepth` ✓ 判据 = `stmtHasNew \|\| stmtMakesPool` 的保守超集 ✓）+ **codegen 守门**（未实现的协程体发 `#error` ⇒ 在 C 编译器处**响亮失败**，绝不静默生成错的 C ✓）+ 两条拒收判据进 `tests/errors/` ✓ |
-| **A2** | 规则 ② 的**活跃性分析**（跨挂起点的局部）+ **拒收**（带引用 ⇒ 报错 + 两条改法 ✓）+ **帧布局**（值档）+ 布局 dump（`EXTC_DBG_CORO`）|
+| **A2 ✅（2026-09-26 已落地）** | 规则 ② 的**活跃性分析**（跨挂起点的局部；**环回安全**：用/`yield` 共享同一个外层循环也算跨挂起点 ✓ "恢复后循环还会再转一轮" ✓）+ **拒收**（带引用 ⇒ 报错 + 两条改法 ✓）+ **帧布局**（`pc` + `ret` + 按需 `zone` + 跨挂起点局部 ✓ `FuncDef.coroFrame`）+ `EXTC_DBG_CORO` dump ✓ 判据：帧布局断言（`tests/coro` ✓）+ 拒收（`tests/errors/coro_view_lives_across_yield.extc` ✓）|
 | **B** | codegen：帧结构体 + Duff's-device `switch(pc)` + `next`/`value`（复用迭代器协议）⇒ 判据 1 转绿 |
 | **C** | 任务 place（B 方案：调度器/任务表拥有 ⇒ `zoneLeaveTo`）+ **用户自己 `new` 的站点提权到任务层**（标准机制 ✓ 不新增隐式分配 ✗）+ 判据 2/5 |
 

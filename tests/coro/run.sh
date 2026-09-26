@@ -9,6 +9,17 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 协程 A2：帧布局必须是"跨挂起点存活的局部"（pc/ret + i ⇒ 参数 n 不进帧）
+lay=$(EXTC_DBG_CORO=1 "$EXTC" tests/coro/coro_frame_layout.extc -o "$tmp/cl.c" 2>&1 | grep -o "frame = .*")
+want_lay='frame = pc, ret, i: i64   (1 of 1 locals live across a yield)'
+if [ "$lay" = "$want_lay" ]; then
+    echo "  ok   coro_frame_layout   ->  $lay"
+    pass=$((pass+1))
+else
+    echo "  FAIL coro_frame_layout   ->  期望 [$want_lay]，得到 [$lay]"
+    fail=$((fail+1))
+fi
+
 # 手工调度器原型（CONCURRENCY.md §4 第 4 步前身）：帧是值、轮转可恢复
 out=$("$EXTC" -w --run tests/coro/scheduler_prototype.extc 2>&1)
 want_sc='t0=0,0,10,11,20,22, sum0=30 sum1=33'

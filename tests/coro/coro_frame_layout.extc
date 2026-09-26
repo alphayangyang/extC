@@ -1,0 +1,20 @@
+/* A2 判据：检查器算出的**帧布局**必须恰好是"跨挂起点存活的局部" ✓
+ *
+ * 期望（EXTC_DBG_CORO=1 的 dump）：`frame = pc, ret, i: i64 (1 of 1 locals live across a yield)`
+ *   - `pc` / `ret` 是每个协程都有的 ✓
+ *   - `i` 跨挂起点（`yield` 之后还有 `i = i + 1` 与 `i < n`）⇒ 进帧 ✓
+ *   - `n` 是**参数** ⇒ 不进帧 ✓（每步由调用者重新传 ✓）
+ *   - `zone` 只在 body 可能建池时才加 ⇒ 这个 body 不建池 ⇒ 没有 ✓
+ *
+ * 这条判据在切片 B（codegen）之后继续有效：它是"帧里放什么"的唯一权威 ✓ */
+use std::io
+
+fn counter(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n {
+        yield i
+        i = i + 1
+    }
+}
+
+fn main() -> i32 { return 0 }
