@@ -7,11 +7,7 @@ use std::io
 use std::sys::pool as syspool
 
 fn main() -> i32 {
-    /* ⚠️ 已知 wart（记在 PLAN）：**对象表池不能是程序里的第一只池** ——
-     * `extc_pool_new_table(-1)` 单独作为第一句会返回 -1（`extc_zoneTop` 还没有值），
-     * 先建一只普通池就正常。dyn 落地前要么修它，要么明确"表池必须晚于第一只普通池"。 */
-    let warm = syspool::extc_pool_new(i64(-1))
-    let rid  = syspool::extc_pool_new_table(i64(-1))    /* 建对象表池 */
+    let rid = syspool::extc_pool_new_table(i64(-1))     /* 建对象表池（可以是第一只池） */
     var s: mut slice<i64> = poolSlice<i64>(rid, i64(4))
     io::cout << "kind=" << syspool::extc_pool_kind(rid) << "\n"
     s = poolResizeRaw<i64>(rid, s, i64(8))              /* 对象表：不许原地搬家 ⇒ trap */

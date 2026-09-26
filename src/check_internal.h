@@ -716,7 +716,21 @@ int valDepthForStore (Checker *, Expr *);
  void setCallArenaArg (Checker *c, Expr *e);
  void setCallZoneArg (Checker *c, Expr *e);
  bool calleeMakesPool (FuncDef *f);
- bool calleeCreatesPool (FuncDef *f);
+ /* 运行期**建池**的那一族按名字认（extern 没有函数体，效果推断看不穿它）。规则**只有这一处**：
+ *   · `calleeMakesPool` / `calleeCreatesPool` 问"这一次调用会不会建池" ⇒ 全族；
+ *   · codegen 的改写点只给**不带 zone 参数**的那两个补 home zone（`_at` 自己带着）。
+ * 漏登记一个名字的后果（实测）：`extc_pool_new_table` 拿不到 zone ⇒
+ * `extc_pool_new_at(parent, extc_zoneTop)` 撞上 `extc_zoneTop == -1` ⇒ **返回 -1**，
+ * 表现成"对象表池作为程序里第一只池时创建失败"。判据：`tests/pool/rt_table_first.extc`。 */
+static inline bool isPoolCtorName(const char *n) {
+    return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_at") == 0 ||
+                 strcmp(n, "extc_pool_new_table") == 0);
+}
+static inline bool poolCtorNeedsZone(const char *n) {
+    return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_table") == 0);
+}
+
+bool calleeCreatesPool (FuncDef *f);
  void setPoolCalleeResolver (FuncDef *(*fn)(Expr *e));
  void recordLvlFact (Checker *c, Expr *val, int at);
 /* Report an error when a name of another module is used without its module qualifier. */

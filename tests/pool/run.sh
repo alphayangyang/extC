@@ -113,6 +113,9 @@ rt_run rt_basic    tests/pool/rt_basic.extc    "live=0 up=1 gen=1 down=0 stale=0
 # 模式（容器池 / 对象表池）+ reset 换代：SOUNDNESS.md 的 O3/O4 两条不变量
 rt_run rt_mode_gen  tests/pool/rt_mode_gen.extc  "kind=0/1 genchanged=1"
 
+echo "== 建池族按名字认：表池作为**第一只池**也必须成功（三处登记缺一即 -1）=="
+rt_run rt_table_first tests/pool/rt_table_first.extc "rid_ok=true kind=1"
+
 echo "== 期 1 · 块退出带走子树 · 父释放带走子 =="
 rt_run rt_blockexit tests/pool/rt_blockexit.extc "before=0 in=1 rid=0 after=0 two=2 gone=0"
 

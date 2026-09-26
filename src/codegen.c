@@ -1846,7 +1846,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * `extc_pool_new_at(parent, __extc_home_zone)` —— 池因此生到**调用者选的
              * 那个地方**去（POOLS.md §3.1 的提权落点，PLAN #87）。库侧一个字都不用改。 */
             bool poolNewAt = (e->func && e->func->body == NULL
-                              && strcmp(name, "extc_pool_new") == 0);
+                              && poolCtorNeedsZone(name));
             if (poolNewAt && g->funcHasZoneParam) name = "extc_pool_new_at";
             if (strcmp(name, "extc_cout_f64") == 0) g->needCoutF64 = true;
             Buf b;

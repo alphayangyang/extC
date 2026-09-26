@@ -1377,9 +1377,7 @@ bool calleeMakesPool(FuncDef *f) {
      * `extc_pool_new` 提不了权 ⇒ 池生进构造器自己的帧 ⇒ 返回时被回收 ⇒ 段错误。
      * 库里的容器没这个毛病，只因为库函数"对地方透明"；用户的文件不是库，
      * 于是那条隐藏的差别就露出来了。 */
-    if (f->body == NULL && f->name &&
-        (strcmp(f->name, "extc_pool_new") == 0 || strcmp(f->name, "extc_pool_new_at") == 0))
-        return true;
+    if (f->body == NULL && isPoolCtorName(f->name)) return true;
     return f->isAssoc && f->owner && f->owner->makesPoolAny;
 }
 
@@ -1402,9 +1400,7 @@ bool calleeMakesPool(FuncDef *f) {
 bool calleeCreatesPool(FuncDef *f) {
     if (!f) return true;                       /* 未解析 ⇒ 保守 */
     if (f->makesPool) return true;
-    if (f->body == NULL && f->name &&
-        (strcmp(f->name, "extc_pool_new") == 0 || strcmp(f->name, "extc_pool_new_at") == 0))
-        return true;
+    if (f->body == NULL && isPoolCtorName(f->name)) return true;
     return f->isAssoc && f->owner && f->owner->makesPoolAny;
 }
 

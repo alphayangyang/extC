@@ -1,0 +1,17 @@
+/* 表池作为程序里的**第一只池**必须成功。
+ *
+ * 钉住的是编译器里"建池族**按名字**认"这条规则：`extc_pool_new` / `extc_pool_new_at` /
+ * `extc_pool_new_table` 这三个名字要出现在三处（`calleeMakesPool`、`calleeCreatesPool`、
+ * codegen 的 home-zone 改写点），缺一处就拿不到 zone。
+ *
+ * 曾经的 bug（2026-09-26 实测）：`extc_pool_new_table` 三处都没登记 ⇒
+ * 运行期那句 `extc_pool_new_at(parent, extc_zoneTop)` 撞上 `extc_zoneTop == -1` ⇒ 返回 -1，
+ * 表现成"对象表池建不起来"。dyn 的第一只池很可能就是表池，所以这条必须一直绿。 */
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    let t = syspool::extc_pool_new_table(i64(-1))      /* 程序里的第一只池 */
+    io::cout << "rid_ok=" << (t >= i64(0)) << " kind=" << syspool::extc_pool_kind(t) << "\n"
+    return 0
+}
