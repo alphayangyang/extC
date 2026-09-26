@@ -267,6 +267,37 @@ const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
 3. **防回归**：程序里出现 dyn 时，生成物中**必须**出现 `extc_pool_new_table`（不是 `extc_pool_new`）
    —— 这条挡住"忘了用对象表模式"这类事故（与 `tests/pool/rt_table_first.extc` 同一族）。
 
+#### codegen 接线：**已落地**（2026-09-26）
+
+生成物形状（实测）：
+
+```c
+ExtcDynHandle __extc_dyn0 = extc_dyn_put((const void *)(&(b)), (int64_t)sizeof(box), &extc_vt$Tag$box);
+ExtcDynSlot  *__extc_ds1  = extc_dyn_slot(__extc_dyn0, "tests/dyn/dyn_call.extc", 15);
+io$ostream_shl_i64(&(io$cout), ((const struct extc_vt$Tag$box_t *)__extc_ds1->vt)->tag(__extc_ds1->addr));
+```
+
+两条语句用**既有的 `pfLine`** 发（前缀语句机制）；派发表达式仍是既有那条 `"%s(%s"` 通路，只换了
+callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未动。
+
+**接线时撞到的两个顺序问题（同一个根因，值得记住）**
+1. 我在 codegen 里置 `g->needPool = true` —— **太晚**：生成物报 `unknown type name 'ExtcDynHandle'`，
+   因为池运行期的发出决定已经做过了；
+2. 即使池运行期发出来，`zoneEnter` 也是**函数体开始之前**就决定好的 ⇒ 运行期 trap
+   `a dyn value needs a place to live in`。
+⇒ 正确做法是用**既有的 `makesPool` 标志**，由**检查器**在 dyn 调用点置位（`c->curFunc->makesPool = true`），
+并把 codegen 里那行冗余删除（一处规则一处写）。**教训**：凡是"发出决定发生在体生成之前"的东西
+（运行期文本、place 进入），都必须由**检查器**在类型已知处标记，不能指望 codegen 在体中段补。
+
+**判据（7 条，已接入 `check.sh`）**：正例 · 拒绝存储 · 拒绝字段 · object safety ③ ·
+**`dyn_pool_dispatch`**（`= extc_dyn_put(`/`= extc_dyn_slot(` 各 2 处，且派发形如 `->vt)->tag(__extc_ds…->addr`）·
+**`dyn_object_table`**（生成物里必须出现 `extc_pool_new_table`）· 生成物合同零告警。
+（旧的 `dyn_table_calls` 判据按设计**翻面**为 `dyn_pool_dispatch` —— 形状变了，判据必须同改。）
+
+**顺序上的一个发现**：阶段 2 的两条**行为**判据（陈旧值 trap、绝不调错实现）需要**保存** dyn 值，
+而那正是阶段 3 的能力 ⇒ 它们随阶段 3 一起落地；阶段 2 先用**结构判据**（表与接收者都取自槽）
+把 O5 的保证焊住。
+
 #### 原范围记录（保留）
 
 

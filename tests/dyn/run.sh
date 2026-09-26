@@ -33,9 +33,26 @@ esac
 
 tmp=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$tmp/d.c" tests/dyn/dyn_call.extc >/dev/null 2>&1; then
-    calls=$(grep -o 'extc_vt\$Tag\$[a-z0-9_$]*\.tag(' "$tmp/d.c" | wc -l | tr -d " ")
-    [ "$calls" = 2 ] && ok dyn_table_calls "派发经表：$calls 处" \
-                     || bad dyn_table_calls "期望 2 处经表派发，实得 $calls"
+    # 阶段 2：载荷进池、值经槽派发。三条一起判：
+    #   ① 建池必须是**对象表模式**（extc_pool_new_table）——挡住"忘了用对象表"这类事故；
+    #   ② 构造走 extc_dyn_put、校验走 extc_dyn_slot；
+    #   ③ 派发形状必须是 `((const struct extc_vt$T$T_t *)s->vt)->m(s->addr …)`：
+    #      表和接收者都来自**已校验的槽**（这正是 O5 的结构性保证）。
+    puts=$(grep -o '= extc_dyn_put(' "$tmp/d.c" | wc -l | tr -d " ")
+    slots=$(grep -o '= extc_dyn_slot(' "$tmp/d.c" | wc -l | tr -d " ")
+    tbl=$(grep -c 'extc_pool_new_table' "$tmp/d.c" || true)
+    disp=$(grep -o '\->vt)->tag(' "$tmp/d.c" | wc -l | tr -d " ")
+    addr=$(grep -o 'tag(__extc_ds[0-9]*->addr' "$tmp/d.c" | wc -l | tr -d " ")
+    if [ "$puts" = 2 ] && [ "$slots" = 2 ] && [ "$disp" = 2 ] && [ "$addr" = 2 ]; then
+        ok dyn_pool_dispatch "进池 + 经槽派发：put=$puts slot=$slots dispatch=$disp（接收者取自槽）"
+    else
+        bad dyn_pool_dispatch "put=$puts slot=$slots dispatch=$disp addr=$addr（期望各 2）"
+    fi
+    if [ "$tbl" -ge 1 ]; then
+        ok dyn_object_table "建池用对象表模式（extc_pool_new_table ×$tbl）"
+    else
+        bad dyn_object_table "生成物里没有 extc_pool_new_table"
+    fi
     if gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/d.c" 2>"$tmp/e"; then
         ok dyn_contract "生成物合同编译零告警（-std=c11 -fwrapv -Wall -Werror）"
     else

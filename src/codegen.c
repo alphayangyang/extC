@@ -1670,12 +1670,38 @@ static const char *genMethodCall(CG *g, Expr *e) {
      * including the hidden home-arena parameter, which the table's `__typeof__` picked up for
      * free when it was emitted. Nothing else in this function changes: same receiver, same
      * arguments, same extra parameters, a different callee expression. */
-    Buf dynSym;
     if (e->dynTrait) {
+        /* `dyn Trait(x).m(...)`: stage 2 of DYN.md -- the payload is **copied into a pool**, the
+         * value is a `{pool, slot, gen}` name, and the dispatch reads the table and the receiver
+         * out of the **checked slot**:
+         *
+         *   ExtcDynHandle h = extc_dyn_put(&(x), sizeof(T), &extc_vt$Trait$T);
+         *   ExtcDynSlot  *s = extc_dyn_slot(h, "file", line);      <-- traps if stale
+         *   ((const struct extc_vt$Trait$T_t *)s->vt)->m(s->addr, ...)
+         *
+         * Two things follow from taking the slot seriously. The receiver is `s->addr`, not `&(x)`:
+         * the payload lives in the pool, so a stale value must not be able to dispatch against the
+         * stack copy it was built from. And the table pointer is read from the slot, never from the
+         * value -- a value whose slot was reused fails the generation check before it can see
+         * another implementation's table (POOL-SOUNDNESS E3). The statements go through `pfLine`,
+         * the existing mechanism for a statement an expression needs in front of it. */
+        /* The pool runtime is emitted because the checker marked the enclosing function `makesPool`
+         * at this call site -- one decision, made where the types are known, rather than a second
+         * flag set here (an earlier version set it here and the text arrived too late to define
+         * `ExtcDynHandle`). */
+        const char *dynH = arenaPrintf(g->arena, "__extc_dyn%d", g->tmpSeq++);
+        const char *dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
+        const char *dynT = cType(g, ttBase(recvT));
+        pfLine(g, "ExtcDynHandle %s = extc_dyn_put((const void *)(%s), (int64_t)sizeof(%s),"
+                  " &extc_vt$%s$%s);", dynH, recvC, dynT, e->dynTrait, dynT);
+        pfLine(g, "ExtcDynSlot *%s = extc_dyn_slot(%s, \"%s\", %d);",
+               dynS, dynH, g->path, e->line);
+        Buf dynSym;
         bufInit(&dynSym, g->arena);
-        bufPrintf(&dynSym, "extc_vt$%s$%s.%s",
-                  e->dynTrait, cType(g, ttBase(recvT)), e->u.method.name);
+        bufPrintf(&dynSym, "((const struct extc_vt$%s$%s_t *)%s->vt)->%s",
+                  e->dynTrait, dynT, dynS, e->u.method.name);
         fname = bufCstr(&dynSym);
+        recvC = arenaPrintf(g->arena, "%s->addr", dynS);
     }
 
     Buf b;

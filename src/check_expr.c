@@ -2105,6 +2105,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * about the **trait's** signature, so the trait is looked up by name from the module's
              * declarations (the same lookup the `impl` attachment uses). */
             if (e->dynTrait) {
+                /* A `dyn` value is pool-backed, so the enclosing function creates a pool. That is
+                 * the **existing** flag which makes codegen enter a place for the body and emit the
+                 * pool runtime -- and it has to be set here, in the checker, because the decision to
+                 * emit `zoneEnter` is taken before the body is generated (setting the codegen flag
+                 * mid-body was too late: the program trapped with "a `dyn` value needs a place to
+                 * live in"). */
+                if (c->curFunc) c->curFunc->makesPool = true;
                 TraitDef *tr = NULL;
                 for (size_t ti = 0; ti < c->m->traits.len && !tr; ti++) {
                     TraitDef *cand = *(TraitDef **)vecAt(&c->m->traits, ti);
