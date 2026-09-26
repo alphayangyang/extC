@@ -23,3 +23,7 @@ println(ps[0] == point { x: 1, y: 2 })  // 写全名字
 ---
 
 **[索引](README.md)** · [← 10. 已定案、但还没实现](16-unimplemented.md) · [12. 库与模块（2026-09-22 新增） →](18-modules.md)
+
+- **内联 C（`inline C!`）**：设想已归档，状态为**未定案**；签字的定位与待定问题见
+  [`docs/topics/INLINE-C.md`](../topics/INLINE-C.md)，沙箱那一半见
+  [`docs/topics/BOOTSTRAP.md`](../topics/BOOTSTRAP.md) §4.4。

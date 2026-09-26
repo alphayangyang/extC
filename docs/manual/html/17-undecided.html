@@ -80,6 +80,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p><code>==</code> 是语法糖，展开成 <code>T.==(lhs, rhs)</code> 后右边<strong>确实有</strong>参数类型可推 —— 所以这是 「能推但不推」。<strong>主人定调：显式是对的，不要那么多自动推导。</strong> （顺带避开一个坑：<code>fn ==(self: ref point, other: point)</code> 与 <code>other: ref point</code> 都存在时， 「拿左边类型当右边期望类型」在左操作数是 <code>ref T</code> 时会推错。）</p>
 <hr>
 <p><strong><a href="README.html">索引</a></strong> · <a href="16-unimplemented.html">← 10. 已定案、但还没实现</a> · <a href="18-modules.html">12. 库与模块（2026-09-22 新增） →</a></p>
+<ul><li><strong>内联 C（<code>inline C!</code>）</strong>：设想已归档，状态为<strong>未定案</strong>；签字的定位与待定问题见 <a href="../topics/INLINE-C.html"><code>docs/topics/INLINE-C.md</code></a>，沙箱那一半见 <a href="../topics/BOOTSTRAP.html"><code>docs/topics/BOOTSTRAP.md</code></a> §4.4。</li></ul>
 <div class="pn"><a href="16-unimplemented.html">← 10. 已定案、但还没实现</a> <a href="18-modules.html">12. 库与模块（2026-09-22 新增） →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
