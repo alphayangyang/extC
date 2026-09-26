@@ -47,3 +47,7 @@
 ---
 
 **[索引](README.md)** · [← 9. 错误信息](15-errors.md) · [11. 还没定的 →](17-undecided.md)
+
+- **`trait` / `dyn Trait`**：第一期（声明 + `impl Trait for T` + 静态方法表）**已定案待实现**，
+  七条决策与实施清单见 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)；第二期（`dyn` 值落池）与
+  第三期（开放注册）只在其中记录范围。
