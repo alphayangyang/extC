@@ -425,6 +425,9 @@ static const char *cType(CG *g, Type *t) {
         case TY_REF:   return arenaPrintf(g->arena, "%s *", cType(g, t->inner));
         case TY_VOID:  return "void";
         case TY_STRUCT:
+            /* The **handle** for `coroutine<T>`: one shared struct whatever `T` is -- that is what
+             * lets handles from different coroutines live in the same container. */
+            if (t->sdef && isProtoType(t, "coroutine", 1)) return "extc_coro";
             /* A synthesized coroutine frame: `struct <cname>$frame`, with the function's C name (so
              * methods and generic instances mangle the same way everywhere). */
             if (t->sdef && t->sdef->coroOf)
@@ -433,7 +436,10 @@ static const char *cType(CG *g, Type *t) {
         /* A `dyn` value is the runtime's handle: the same `{pid, slot, gen}` triple the pool
          * runtime defines, which is what `extc_dyn_put` returns and `extc_dyn_slot` checks. */
         case TY_DYN:    return "ExtcDynHandle";
-        case TY_GENERIC: return t->name;    /* already a decorated name */
+        case TY_GENERIC:
+            /* `coroutine<T>` instances are handles too (the decorated name is not emitted). */
+            if (t->sdef && isProtoType(t, "coroutine", 1)) return "extc_coro";
+            return t->name;                 /* already a decorated name */
         case TY_ARRAY:  return t->name;     /* likewise: array_15_i32 */
         case TY_ENUM:  return t->name;      /* a plain enum typedef in C */
         case TY_ERROR: return "int";
@@ -4558,6 +4564,9 @@ static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) 
     /* 2. method signatures, parameters and return type: the place that was missed */
     if (sd) for (size_t i = 0; i < sd->methods.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&sd->methods, i);
+        /* The coroutine protocols (`next`/`value`, on the frame and on the handle) are emitted
+         * inline at their call sites, never as real functions. */
+        if (f->coroProto) continue;
         for (size_t j = 0; j < f->params.len; j++) {
             Type *pt = (*(Param **)vecAt(&f->params, j))->type;
             if (tps && pt) pt = ttSubstitute(tt, pt, tps, tas);
@@ -5508,7 +5517,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-            if (f && f->makesPool) g.needPool = true;
+            if (!f || f->coroProto) continue;
+            if (f->makesPool) g.needPool = true;
         }
     }
     vecInit(&g.funcs, arena, sizeof(void *));
@@ -5637,6 +5647,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         /* Methods are functions too and share the prototype and definition table. */
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
+            if (md->coroProto) continue;      /* emitted inline at the call site, not here */
             /* ⚡ 可达性剪枝（PLAN #69）：**没人调用的方法不发射** ✓
              * 检查器早就在每个调用点打 `used`（`e->func = f; f->used = true;` ✓
              * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓

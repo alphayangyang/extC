@@ -559,6 +559,8 @@ struct FuncDef {
      * 1 = `next` (advance the state machine), 2 = `value` (read the return slot). Codegen emits
      * those two inline instead of calling a function (docs/topics/CONCURRENCY.md 4.4). */
     int         coroProto;
+    int         coroKind;           /* codegen prepass: this coroutine's index, for handle dispatch */
+    bool        coroBoxed;          /* a handle of it was made somewhere ⇒ it always gets a task */
     /* Does this coroutine need a **task place** (its own zone)? Decided after the pool fixpoint and
      * read by codegen (docs/topics/CONCURRENCY.md 4.4, slice C). */
     bool        coroNeedsZone;
