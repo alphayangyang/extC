@@ -1,0 +1,16 @@
+/* 容器清空后，dyn 值**仍然有效** —— 当前实现里**保守但安全**的语义，这条判据把它写死：
+ * 载荷存在 **dyn 池**（属于当前 place）里，**不在容器的缓冲区**里；`clear()` 只改 len，碰不到 dyn 池
+ * ⇒ 旧句柄照旧有效，回收推迟到 place 退出。严格说"容器元素随容器回收"需要把容器的池 id 当
+ * parent 建 dyn 池 —— 后续改动，DYN.md 记为已知限制：**不会悬垂，只是回收晚**。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 {
+    var xs: varArray<dyn Tag> = varArray<dyn Tag>::withCap(2)
+    xs.push(dyn Tag(box { v: i64(9) }))
+    let d: dyn Tag = xs.get(0)!
+    xs.clear()
+    io::cout << "afterClear=" << d.tag() << "\n"
+    return 0
+}

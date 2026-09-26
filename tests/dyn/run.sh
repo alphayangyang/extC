@@ -13,6 +13,13 @@ bad()  { echo "  FAIL $1  ->  $2"; fail=$((fail+1)); }
 out=$("$EXTC" -w --run tests/dyn/dyn_call.extc 2>&1)
 [ "$out" = "dyn=7,5" ] && ok dyn_call "$out" || bad dyn_call "期望 dyn=7,5，实得：$out"
 
+# 阶段 3：dyn 进泛型容器 varArray<T>；以及"容器清空后 dyn 值仍有效"（保守语义，见夹具注释）
+out=$("$EXTC" -w --run tests/dyn/dyn_in_varArray.extc 2>&1)
+[ "$out" = "va=13" ] && ok dyn_in_varArray "dyn 进 varArray<T>（$out）" || bad dyn_in_varArray "期望 va=13，实得：$out"
+out=$("$EXTC" -w --run tests/dyn/dyn_container_clear.extc 2>&1)
+[ "$out" = "afterClear=9" ] && ok dyn_container_clear "容器清空后 dyn 值仍有效（保守：载荷在 dyn 池，回收随 place）" \
+                            || bad dyn_container_clear "期望 afterClear=9，实得：$out"
+
 # 阶段 3：dyn 进**字段**与**容器**（句柄是普通值，所以它们"本来就能用"）
 out=$("$EXTC" -w --run tests/dyn/dyn_in_field.extc 2>&1)
 [ "$out" = "field=5" ] && ok dyn_in_field "dyn 作结构体字段并派发（$out）" || bad dyn_in_field "期望 field=5，实得：$out"

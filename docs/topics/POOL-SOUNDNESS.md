@@ -196,7 +196,8 @@ dyn 的句柄是 `{pool, idx, gen}`。若 `idx` 落在被 `reset` 标记可复�
 > ① **dyn 用的池是对象表**（`extc_dyn_put` 里只走 `extc_pool_new_table`；生成物判据
 > `dyn_object_table` 断言它出现）；② **派发键存在槽里、不在值里**，且派发前校验世代
 > （`extc_dyn_slot`）—— 于是"槽被复用成另一个实现"这条路径上，**校验先失败**，
-> 旧值永远读不到新实现的表。运行期判据 `dyn_o5_stale_trap` 要求四件事同时成立：
+> 旧值永远读不到新实现的表。**存储面也已落地**（`dyn_stored_call`：两种实现经同一张统一表；`dyn_in_field` / `dyn_in_array` /
+> `dyn_in_varArray`）。运行期判据 `dyn_o5_stale_trap` 要求四件事同时成立：
 > 退出码非 0 · 提示 stale · 校验前一切正常 · **校验之后那行标记没有出现** ——
 > 即"陈旧的值被拦下，而不是跳到另一个实现上"。
 

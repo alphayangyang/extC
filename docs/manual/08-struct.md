@@ -217,8 +217,14 @@ io::cout << dyn Tag(b).tag() << "\n"      // 构造与调用一步完成
   `give`/`resize` 一律 trap；
 - **派发前校验世代**：值里带 `{池, 槽, 世代}`，表指针存在**槽**里。槽被复用 ⇒ 校验先失败 ⇒
   陈旧的值 **trap**（带源位置），而不是派发到另一个实现上；
-- **现阶段只支持"构造即调用"**：`dyn Tag(x)` 未紧跟方法调用会被拒绝；保存 dyn 值
-  （`let d: dyn Tag = …`）与字段/容器元素属于后续阶段，尚未提供。
+- **可以存下来**：`let d: dyn Tag = dyn Tag(x)`；也可以放进**结构体字段**、**定长数组**与
+  `varArray<T>` 等容器 —— 句柄是普通值；
+- **逃出 place 的值会被提升**：`fn make() -> dyn Tag { return dyn Tag(…) }` 的返回值落在
+  **调用者的 place** 里（home-zone 提升），因此仍然有效；
+- **陈旧的值在派发前 trap**：载荷归 dyn 池所有，池属于它所在的 place；place 退出或池换代之后，
+  旧句柄在取用时会 trap（带源位置），不会派发到别的实现上；
+- **仍缺**：`dyn` 的开放注册（跨模块/动态加载，第三期）· `T: Trait` 上界 · 关联类型与关联常量 ·
+  trait 默认方法。
 
 实现与义务的完整记录见 [`docs/topics/DYN.md`](../topics/DYN.md)（第二期设计与四阶段）与
 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)（第一期七条决策）。

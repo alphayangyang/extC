@@ -1,0 +1,12 @@
+/* dyn 值进 **varArray<T>** 容器（元素是句柄，普通值）⇒ push/get 都可用，派发照常。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 {
+    var xs: varArray<dyn Tag> = varArray<dyn Tag>::withCap(4)
+    xs.push(dyn Tag(box { v: i64(9) }))
+    xs.push(dyn Tag(box { v: i64(4) }))
+    io::cout << "va=" << xs.get(0)!.tag() + xs.get(1)!.tag() << "\n"
+    return 0
+}
