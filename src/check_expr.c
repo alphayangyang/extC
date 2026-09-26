@@ -2278,11 +2278,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      *     fn fill(out) { var l: list  l.pushOne(7)  out.take(l) }
                      * Here `l` is published by a method call afterwards, so the receiver has to be
                      * treated as escaping. */
-                    if (d != 0 && rrn && c->eSites.arena) {
+                    /* Recorded for a receiver at any depth, `d == 0` included: the arena is
+                     * settled then, but the **zone** is not (it waits for the `makesPool`
+                     * closure), and the final pass needs the site to promote it. */
+                    if (rrn && c->eSites.arena) {
                         EArenaSite *rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
                         rec->call = e;
                         rec->argRoot[0]  = (char *)rrn;      /* the receiver is argument 0 */
-                        rec->argDepth[0] = d;
+                        rec->argDepth[0] = (d == 0) ? 0 : d;
                         rec->n = 1;
                         *(EArenaSite **)vecPush(&c->eSites) = rec;
                     }

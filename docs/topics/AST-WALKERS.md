@@ -1,0 +1,109 @@
+# AST-WALKERS.md —— 遍历器去重（一处权威）
+
+> 起因：作者 2026-09-26「现在 home zone 其实老是出 bug，你可以查一下有没有别的，
+> 或者**一个功能两套完全一样的实现**」。查下来的结论比"两套"更严重：**≈8 套**，
+> 而且仓库自己已经在注释里承认过它们**同时**犯同一个错。
+
+## 0. 现状：同一个问题被手写了很多遍
+
+| # | 遍历器 | 位置 | 问什么 | 有副作用吗 |
+|---|---|---|---|---|
+| 1 | `exprHasNew` / `stmtHasNew` | `check_top.c` | 体里有没有 `new` | 否 |
+| 2 | `exprCallsNeedsHome` / `stmtCallsNeedsHome`（**precise/wide 双变体**） | `check_top.c:443-679` | 会不会走到需要家 arena 的被调者 | 否 |
+| 3 | `exprCallsAllocator` / `stmtCallsAllocator` | `check_top.c`（≈5560 起） | 会不会走到分配者 | 否 |
+| 4 | `exprUsesCname` / `stmtUsesCname` | `check_top.c:582-676` | 参数/名字有没有被读 | 否 |
+| 5 | `markNamesInExpr` | `check_escape.c` | 标记名字（逃逸集） | **是** |
+| 6 | `collectEffectsExpr` | `check_escape.c` / `check_top.c` | 汇总 effects | **是** |
+| 7 | `collectOwCallsExpr` | `codegen.c` | 有没有 `@overwrite` 调用 | 否 |
+| 8 | `rwExpr` | `modules.c`（loader） | 重写限定名 | **是** |
+
+外加三层**传递闭包**（同一个"沿调用图走到不动点"的形状）：
+`needsHome` 闭包（`check_top.c:4876`）· `makesPool` 闭包（`check_top.c:5338`）·
+`funcAllocates` 的**惰性记忆化 DFS**（`check_top.c:5550`，注释里明说"这是 needsHome 闭包回答的同一个问题"）。
+
+## 1. 已经发生过的真缺陷（都是这一类）
+
+- **`EX_SLICE` 的三个子表达式**（对象 · 下界 · 上界）被**每一个**遍历器漏掉 ——
+  `check_top.c:597-607` 原话："**每一个里它都是真缺陷，不只是少个警告**：边界里的调用本该进
+  函数的 effect summary，边界里的限定名从未被重写"。受害者包括 `examples/gomoku-board.extc`
+  （`lo`/`hi` 被报告为"从未使用"）。
+- **`EX_STRUCTLIT`** 里的调用被 `exprCallsNeedsHome` 漏掉 —— `check_top.c:543-551`：
+  传递闭包因此报告"这个函数走不到需要家 arena 的被调者" ⇒ 不给它家 arena ⇒ 被调者分配到
+  调用者的**块** arena（块结束即释放），而值的深度记作 0 ⇒ **悬垂**。
+
+⇒ 结论：**每加一个 AST 种类，就有 8 个地方可能漏**；漏一个就是 soundness 洞（不是少个警告）。
+这正是"home zone 老是出 bug"的结构性原因之一。
+
+## 2. 目标：一处权威
+
+一个通用访问器 + 若干小回调：
+
+```c
+/* 回调返回 false = 提前停止（保持原来"找到就退出"的语义与开销）。 */
+typedef bool (*ExprVisit)(Checker *c, Expr *e, void *ctx);
+bool walkExpr(Checker *c, Expr *e, ExprVisit fn, void *ctx);   /* 列举每个 AST 种类**一次** */
+bool walkStmt(Checker *c, Stmt *s, ExprVisit fn, void *ctx);
+```
+
+每个问题变成 `walkExpr(c, e, visitorX, &ctx)`，**新增 AST 种类只改 `walkExpr` 一处** ✓
+闭包则统一成一个驱动：`closeOverCalls(all, ReachKind)`，`ReachKind` 的四种取值对应
+`needsHome(wide)` / `usesHome(narrow)` / `makesPool` / `allocates` ✓
+（`funcAllocates` 的惰性记忆化保留 —— 它必须在闭包**之前**回答同一个问题，但它的**每节点判据**
+改为调用同一处 ✓）
+
+## 3. 迁移顺序（低风险 → 高风险，每步一个提交）
+
+| 步 | 迁移 | 为什么这个顺序 |
+|---|---|---|
+| 1 | `exprUsesCname`（纯查询、无副作用、有现成判据：参数"未使用"警告） | 形状最干净，先验证访问器本身 |
+| 2 | `exprHasNew` | 纯查询 |
+| 3 | `exprCallsAllocator`（+ 保留惰性记忆化外壳） | 纯查询，含循环防护 |
+| 4 | `exprCallsNeedsHome`（把 precise/wide 收成 `ReachKind` 的两个取值） | 纯查询，但**被 soundness 依赖** ⇒ 迁完立刻跑反例库 |
+| 5 | `markNamesInExpr` / `collectEffectsExpr` | **有副作用** ⇒ 必须保序遍历（先子后父/先父后子要一致） |
+| 6 | codegen 的 `collectOwCallsExpr` | 跨到 codegen，注意它跑在检查之后 |
+| 7 | loader 的 `rwExpr` | 跨到模块加载，最后做 |
+
+## 4. 判据（每步都要有）
+
+1. **机械判据（这次要新增）**：对照 `ExprKind` / `StmtKind` 的**枚举**，断言每个取值都被
+   `walkExpr`/`walkStmt` 处理 —— 加一个 `EXTC_WALK_SELFCHECK`（像既有的 `EXTC_SELFCHECK`
+   那样在检查器里跑一遍），或一个脚本核对 switch 的 case 集合。**这一条是本次去重的核心收益**：
+   它把"漏一种形状"从"运行时悬垂"变成"开机自检报错"。
+2. 每步：`check.sh` 全绿（现 37 quick / 44 full）。
+3. 每步：**生成物逐字节 A/B**（同一批语料，改动前后各编一遍）—— 纯查询类遍历器的迁移应当
+   **零差异**；有差异就必须解释清楚。
+4. 第 4 步之后额外跑 `tests/arena-soundness/`（反例库）与 `tests/arena-promoted/`。
+
+## 5.5 已发现的具体缺陷：`EX_DYN` 没有被任何手写遍历器处理（2026-09-26 审计）
+
+**机制**（这是本文档最重要的发现）：这些遍历器是**手写 `switch` + `default:`** ⇒
+`-Wswitch` **不会**因为新增一个 `ExprKind` 而报警。对比之下，`codegen.c` / `check_expr.c` 里
+那些**没有 `default`** 的 switch 在 `EX_DYN` 加进来时报了警、也被修了；**带 `default` 的
+这一批静默漏掉** ✓
+
+**证据**：`ExprKind` 共 26 个取值（`ast.h:88-135`），其中带子表达式的有 20 个；
+完整读过的两个遍历器 —— `exprCallsNeedsHome`（`check_top.c:495-571`）与
+`exprUsesCname`（`check_top.c:583-650`）—— 的 `case` 集合包含全部那些种类，**唯独没有
+`EX_DYN`**，而 `EX_DYN` 的载荷就在 `u.dynv.payload` 里（`ast.h:134`）。
+
+**后果分级**（诚实评估，别夸大）：
+
+| 遍历器 | 漏看的后果 | 严重度 |
+|---|---|---|
+| `exprUsesCname` | 只出现在载荷里的参数/局部被报"从未使用" ⇒ **多余警告**（零告警规则下可见） | 轻，但**最容易观察** |
+| loader 的 `rwExpr` | 载荷里的限定名不被重写 ⇒ 生成物里的 C 名错误（C 编译期就会炸） | 中 |
+| `collectEffectsExpr` | 载荷里调用的 effects 不进汇总 ⇒ effects 少报 | 中（可用 `--dump-effects` 观察） |
+| `exprHasNew` / `exprCallsAllocator` / `exprCallsNeedsHome` / `markNamesInExpr` | 理论上是 H2 那一类（arena/逃逸判错 ⇒ 悬垂） | **可能重，但今天难触发**：dyn 载荷不能携带引用（载荷会被拷进池），所以"载荷里的分配/引用逃逸"多数形状本来就不合法 ⇒ 实际爆炸半径受限 |
+
+**已写的探针**：`tests/dyn/dyn_payload_param.extc`（钉住第一行：`p` 只在载荷里被用 ⇒
+修好后必须**零告警**且输出 `p=7`）。另外两条（限定名重写、effects 汇总）留作迁移时的判据。
+
+**修法**：正好是本文档 §2 的通用访问器 —— 它一次性把 8 个遍历器的 `EX_DYN`（以及未来任何新种类）
+补齐；§4.1 的机械判据则保证**下次**新增 AST 种类时立刻报错，而不是靠人去数 8 个 switch。
+
+## 6. 与 H2 的关系
+
+H2（home zone 传递闭包只做一层，2026-09-26 已修）是**同一片区域**的另一个症状：
+闭包/遍历的"传递性"被多处各自实现，任一处少一层就静默失效。修 H2 时已经做过一次小合并
+（调用点的 zone 层级改到 `makesPool` 闭包**之后**结算，与 arena 用同一个 `nd`）；
+本文档是那次合并的**系统性延伸**。

@@ -1,4 +1,8 @@
-/* H2 —— home zone 的传递闭包**只做了一层**（2026-09-26 由协程原型挖出）
+/* H2（**已修，这里是回归判据** —— 2026-09-26 由协程原型挖出、同日修掉）
+ *
+ * 原为 `tests/arena-soundness/H2_home_zone_depth2.extc`（反例库语义是反的：`ACCEPT+UAF` = 洞还在）。
+ * 修法与证据见 `docs/topics/CONCURRENCY.md` §4.0 与 `PLAN.md` 的 H2 条目；
+ * 修好后它按该库的约定"毕业"到这里：**必须被接受 + ASan 干净 + 结果正确**。
  *
  * 形状：字符串在 `newString()` 里构造，推入**外层 place 拥有**的容器，中间隔了**两层**函数。
  *   main → put → newString        3 层：正确

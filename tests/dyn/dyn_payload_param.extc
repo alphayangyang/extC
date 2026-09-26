@@ -1,0 +1,28 @@
+/* 探针：**只在 dyn 载荷里被用到**的参数/名字，遍历器看得见吗？
+ *
+ * 症状最轻也最便宜可查：`exprUsesCname` 若漏看 `EX_DYN.u.dynv.payload`，就会把 `p` 报成
+ * "从未使用" ⇒ 一条**多余的警告**（项目规则是零告警，所以它可见）。
+ *
+ * 期望（修好之后）：零告警、输出 `p=7`。
+ * 现状（未修）：可能报 "parameter p is never used" 一类的警告。
+ *
+ * 更严重的邻居（见 docs/topics/AST-WALKERS.md §6）：`markNamesInExpr`（逃逸标记）、
+ * `collectEffectsExpr`（effects 汇总）、loader 的 `rwExpr`（限定名重写）——同一个漏法，
+ * 后果更重；本文件只钉住最容易观察的那一个。 */
+use std::io
+
+trait Tag { fn tag(self: ref Self) -> i64 }
+
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+
+/* `p` 只出现在 `dyn Tag(box { v: p })` 的载荷里 —— 载荷是 EX_DYN 的子表达式。 */
+fn tagOf(p: i64) -> i64 {
+    let d: dyn Tag = dyn Tag(box { v: p })
+    return d.tag()
+}
+
+fn main() -> i32 {
+    io::cout << "p=" << tagOf(i64(7)) << "\n"
+    return 0
+}

@@ -1147,6 +1147,10 @@ void recordLvlFact(Checker *c, Expr *val, int at) {
      * 池的情形是"绑定由一次调用初始化"（`origin` 对调用为空），那种绑定身上带着
      * `poolSite`，把它换出来。（`origin` 那一族本来就在记录时被展平，同一个理由。） */
     if (val->kind == EX_IDENT) {
+        /* Take the name **before** `val` is re-pointed at the origin: after the reassignment
+         * `val` may be any kind, and reading `u.ident.name` off it reads another kind's union
+         * member -- a wild pointer that made the `[fact-sy]` dump itself segfault. */
+        const char *nm = val->u.ident.name ? val->u.ident.name : "-";
         Sym *sy = lookup(c, val->u.ident.name);
         /* 记**站点**，不记绑定：重放跑在所有函数体检查完之后，那时 `lookup` 对当时的局部
          * 绑定一律返回 NULL（符号表是按函数/作用域的）⇒ 记绑定等于记一条谁也走不通的链。
@@ -1155,7 +1159,7 @@ void recordLvlFact(Checker *c, Expr *val, int at) {
         else if (sy && sy->poolSite) val = sy->poolSite;
         if (getenv("EXTC_DBG_ZONE"))
             fprintf(stderr, "[fact-sy] %s sy=%p origin=%p poolSite=%p\n",
-                    val->u.ident.name ? val->u.ident.name : "-", (void *)sy,
+                    nm, (void *)sy,
                     sy ? (void *)sy->origin : NULL, sy ? (void *)sy->poolSite : NULL);
     }
     /* Never record during the level solve: the solve re-enters this function, so

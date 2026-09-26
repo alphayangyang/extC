@@ -1541,30 +1541,33 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
         Expr *a = *(Expr **)vecAt(args, i);
         Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
         int d = placeDepth(c, place);   /* a parameter reports 0, a local its block depth */
+        /* What the record keeps: 0 = a parameter or a global (outside this frame), -1 = an
+         * escaping local (also outside, for good), k >= 1 = a block of this body. */
+        int recD = d;
+        const char *rn = placeRootName(place);
         if (d == 0) d = -1;             /* the place is in a parameter: pass my home arena */
-        else {
-            /* Will this argument be moved out of the current function? If so, the home
-             * arena (the arena the caller of this function passes) must live longer than
-             * anywhere its contents can go, so pass my home arena. If not, keep the arena
-             * the argument already lives in, which preserves the tightness gained from
-             * choosing the arena by escape. */
-            const char *rn = placeRootName(place);
-            if (rn && isEscapeeName(c, rn)) d = -1;
-            /* This answer depends on E, which may not be final yet, so record it and
-             * recompute it in the final pass. */
-            if (callNode && c->eSites.arena) {
-                if (!rec) {
-                    rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
-                    rec->call = callNode;
-                    *(EArenaSite **)vecPush(&c->eSites) = rec;
-                }
-                if (rec->n < 8) {
-                    rec->argRoot[rec->n]  = (char *)rn;
-                    rec->argDepth[rec->n] = d;
-                    rec->n++;
-                } else {
-                    rec->overflow = true;   /* conservative final pass; no silent truncation */
-                }
+        else if (rn && isEscapeeName(c, rn)) { d = -1; recD = -1; }
+        /* Record the site in **both** cases, including the `d == 0` one.
+         *
+         * The arena answer for a parameter is already final -- the caller's home arena is
+         * the longest-lived one there is -- but the **zone** answer is not: the zone is only
+         * passed on when the callee allocates (`makesPool`), and `makesPool` is a closure,
+         * so at this moment a callee that allocates only through its own callees still reads
+         * as "no". Without a record here the final pass never sees the site, the zone keeps
+         * its provisional level, and a call chain of two hops passes its own place down --
+         * that is H2 (`tests/arena-soundness/H2_home_zone_depth2.extc`). */
+        if (callNode && c->eSites.arena) {
+            if (!rec) {
+                rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
+                rec->call = callNode;
+                *(EArenaSite **)vecPush(&c->eSites) = rec;
+            }
+            if (rec->n < 8) {
+                rec->argRoot[rec->n]  = (char *)rn;
+                rec->argDepth[rec->n] = recD;
+                rec->n++;
+            } else {
+                rec->overflow = true;   /* conservative final pass; no silent truncation */
             }
         }
         if (best == 0 || d < best) best = d;
@@ -5369,6 +5372,45 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (f && f->makesPool) { sd->makesPoolAny = true; break; }
         }
     }
+    /* ---- 调用点的 zone 层级：也要在 `makesPool` 闭包之后才能定 ----
+     *
+     * 与上面"电平求解再跑一遍"同一个病根、同一剂药：`zoneLevel` 决定"被调者的池分配活到
+     * 第几层"，而**只有建池的被调者才会收到这个实参**；`makesPool` 是闭包 ⇒ 闭包之前它一律
+     * 读作假，于是调用点停在临时层级上，跨两跳的链就会把自己的 place 传下去：
+     *
+     *     main → wrap → put → newString
+     *
+     * `wrap` 把**自己的** zone 传给了 `put`，`newString` 的缓冲因此生在 `wrap` 的 place 里，
+     * `wrap` 一返回就被释放、下一次分配复用它 ⇒ ASan `heap-use-after-free`
+     * （`tests/arena-soundness/H2_home_zone_depth2.extc`）。
+     *
+     * 判据与 arena 完全同一个问题、同一个量：`nd` = 那个地方必须比被调者能存进去的每个
+     * `mut ref` 实参（含接收者）活得更久；参数/全局算"本帧之外"（0），逃逸的局部量也算
+     * （-1）。`ZONE_HOME` = "把我收到的 zone 一路传下去"。
+     * 只往长里改（`<`），不往短里改：`zoneLevel` 从 `ZONE_HOME`（最长）向上是各层块号。 */
+    for (size_t i = 0; i < c.eSites.len; i++) {
+        EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
+        if (!rec || !rec->call || !rec->call->func) continue;
+        if (!rec->call->func->makesPool || rec->call->zoneLevel == 0) continue;
+        int nd = 0;
+        if (rec->overflow) {
+            nd = -1;                    /* 实参没记全 ⇒ 只能按"活得最久"算 */
+        } else {
+            for (int k = 0; k < rec->n; k++) {
+                int d = rec->argDepth[k];
+                if (d != 0 && rec->argRoot[k] && isEscapeeName(&c, rec->argRoot[k])) d = -1;
+                if (nd == 0 || d < nd) nd = d;
+            }
+            if (nd == 0 && rec->n > 0) nd = rec->argDepth[0];
+        }
+        int zwant = (nd <= 0) ? ZONE_HOME : nd;
+        if (getenv("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[zfix] call=%s nd=%d lvl=%d -> %d\n",
+                    rec->call->func->name ? rec->call->func->name : "-",
+                    nd, rec->call->zoneLevel, zwant);
+        if (zwant < rec->call->zoneLevel) rec->call->zoneLevel = zwant;
+    }
+
     /* ---- 电平求解要再跑一遍 ----
      *
      * 第一遍跑在 `makesPool` 闭包**之前**（见上面那段求解），那时 `calleeMakesPool` 对所有
