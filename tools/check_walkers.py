@@ -33,17 +33,7 @@ LEAF = {
 }
 # Walkers that are known to be deliberately partial, with the reason. Adding an entry here is
 # a promise that the omission is intentional -- state why.
-ALLOW = {
-    # Pre-existing, not from `EX_DYN`: these two depth walkers answer 0 in their `default:`
-    # branch while every neighbour recurses. `valDepthStructural` returns 0 for a slice (a view
-    # *does* carry a reference) and for `?`/conversions; `exprRefDepth` has the same gap for
-    # `?`/conversions/binary ops. Under-estimating a depth is the unsafe direction, so this is a
-    # finding to settle next, not an accepted state -- recorded here so it cannot be forgotten.
-    "check_escape.c:valDepthStructural": "EX_SLICE/EX_TRY/EX_CONV/EX_BIN/EX_UN return 0 via default -- to settle",
-    "check_escape.c:exprRefDepth":        "EX_TRY/EX_CONV/EX_BIN/EX_UN return 0 via default -- to settle",
-    "check_escape.c:exprRefDepthPure":    "same gap as exprRefDepth -- to settle",
-    "dataflow.c:dfExprDepth":             "EX_TRY/EX_CONV/EX_BIN/EX_UN return 0 via default -- to settle",
-}
+ALLOW = {}   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
 
 
 def enum_kinds(header: str, name: str) -> list:

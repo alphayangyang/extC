@@ -203,7 +203,18 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     case EX_INDEX:  return dfExprDepth(c, f, e->u.index.obj, hops + 1);
     case EX_DEREF:  return dfExprDepth(c, f, e->u.deref.operand, hops + 1);
     case EX_SIGN:   return dfExprDepth(c, f, e->u.sign.operand, hops + 1);
+    /* `?` and a conversion pass the operand's references through; an operator can only carry
+     * what its operands carry. This is the oracle the `EXTC_DBG_RHO` diagnostic compares
+     * against, and `dfExprDepth` feeds the flow facts, so both have to answer for these. */
     case EX_SLICE:  return dfExprDepth(c, f, e->u.slice.obj, hops + 1);
+    case EX_TRY:    return dfExprDepth(c, f, e->u.try_.operand, hops + 1);
+    case EX_CONV:   return dfExprDepth(c, f, e->u.conv.operand, hops + 1);
+    case EX_UN:     return dfExprDepth(c, f, e->u.un.operand, hops + 1);
+    case EX_BIN: {
+        int a = dfExprDepth(c, f, e->u.bin.left, hops + 1);
+        int b = dfExprDepth(c, f, e->u.bin.right, hops + 1);
+        return a > b ? a : b;
+    }
     case EX_REF:    return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
     case EX_COALESCE: {
         int a = dfExprDepth(c, f, e->u.coalesce.main, hops + 1);

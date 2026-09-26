@@ -161,6 +161,16 @@ int valDepthStructural(Checker *c, Expr *e) {
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
             d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.enumval.args, i)));
         return d;
+    /* `?` and a conversion pass the operand's references through, a slice is a view over the
+     * object it indexes, and an operator can only carry what its operands carry. Leaving these
+     * to `default: return 0` **under-reported** the depth, which is the unsafe direction: the
+     * depth decides how long the storage has to live. */
+    case EX_SLICE: return placeDepth(c, e->u.slice.obj);
+    case EX_TRY:   return valDepthStructural(c, e->u.try_.operand);
+    case EX_CONV:  return valDepthStructural(c, e->u.conv.operand);
+    case EX_BIN:   return maxInt(valDepthStructural(c, e->u.bin.left),
+                                 valDepthStructural(c, e->u.bin.right));
+    case EX_UN:    return valDepthStructural(c, e->u.un.operand);
     case EX_INDEX: case EX_FIELD: return placeDepth(c, e);
     case EX_CALL:
         for (size_t i = 0; i < e->u.call.args.len; i++)
@@ -344,8 +354,24 @@ int exprRefDepth(Checker *c, Expr *e) {
         d = maxInt(exprRefDepth(c, e->u.coalesce.main),
                    exprRefDepth(c, e->u.coalesce.fallback));
         break;
+    /* `?` and a conversion pass the operand's references through, a slice is a view over the
+     * object it indexes, and an operator can only carry what its operands carry. Leaving these
+     * to `default: return 0` **under-reported** the depth, which is the unsafe direction: the
+     * depth decides how long the storage has to live. */
     case EX_SLICE:
         d = placeDepth(c, e->u.slice.obj);
+        break;
+    case EX_TRY:
+        d = exprRefDepth(c, e->u.try_.operand);
+        break;
+    case EX_CONV:
+        d = exprRefDepth(c, e->u.conv.operand);
+        break;
+    case EX_BIN:
+        d = maxInt(exprRefDepth(c, e->u.bin.left), exprRefDepth(c, e->u.bin.right));
+        break;
+    case EX_UN:
+        d = exprRefDepth(c, e->u.un.operand);
         break;
     case EX_IDENT: {
         /* A binding that holds an aggregate carrying references (a struct, array, or
@@ -2399,6 +2425,17 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
             d = maxInt(d, exprRefDepthPure(c, *(Expr **)vecAt(&e->u.method.args, i),
                                            hops + 1, seen));
         return d;
+    }
+    /* `?` and a conversion pass the operand's references through; an operator can only carry
+     * what its operands carry. This is the oracle the `EXTC_DBG_RHO` diagnostic compares
+     * against, and `dfExprDepth` feeds the flow facts, so both have to answer for these. */
+    case EX_TRY:   return exprRefDepthPure(c, e->u.try_.operand, hops + 1, seen);
+    case EX_CONV:  return exprRefDepthPure(c, e->u.conv.operand, hops + 1, seen);
+    case EX_UN:    return exprRefDepthPure(c, e->u.un.operand, hops + 1, seen);
+    case EX_BIN: {
+        int a = exprRefDepthPure(c, e->u.bin.left, hops + 1, seen);
+        int b = exprRefDepthPure(c, e->u.bin.right, hops + 1, seen);
+        return a > b ? a : b;
     }
     default:
         /* Scalars, string literals, `null`, `true`/`false`: nothing to point at. */
