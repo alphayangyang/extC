@@ -9,6 +9,30 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 真事件源：N=8 条 AF_UNIX 连接、单线程、一个 epoll 循环。期望 36，并要求 ASan 干净
+ep=$tmp/coro_epoll
+if "$EXTC" -w --no-line-map -o "$ep.c" tests/coro/coro_epoll.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$ep" "$ep.c" 2>"$tmp/epe"; then
+    "$ep"; rc=$?
+    if [ "$rc" = 36 ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$ep.asan" "$ep.c" 2>/dev/null; then
+            aout=$("$ep.asan" 2>&1); arc=$?
+            if [ "$arc" = 36 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_epoll          ->  8 条连接单线程跑完 epoll 循环（36），ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_epoll          ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_epoll          ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_epoll          ->  退出码 $rc（期望 36）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_epoll          ->  $(head -2 "$tmp/epe" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 调度器：一组句柄 + 脚本化事件源（确定性），交替推进两个任务。期望 36
 sc=$tmp/coro_sched
 if "$EXTC" -w --no-line-map -o "$sc.c" tests/coro/coro_sched.extc >/dev/null 2>&1 \

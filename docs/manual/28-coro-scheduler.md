@@ -38,9 +38,23 @@ var left: i64 = sched::runScripted(ref s, order)
   判据先用它，因为它是**逐字节确定**的：不靠时间、不靠 socket、不靠内核调度顺序。
 - `add(s, h)` —— 把一个句柄放进任务表（满了返回 `false`）。
 
-真事件源（`epoll_wait`）是下一步：它挂在同一个 `step` 协议上，只是"谁就绪"改由内核告诉我们。
+- `runEpoll(s, timeout_ms)` —— **真事件源**：`epoll_wait`（走 `std::sys::net` 的
+  `extern!("extc-runtime")`）。协议与 `runScripted` 同一条，只是"谁就绪"改由内核告诉我们：
+
+  1. 每个任务 push 到"要么在等真实事件、要么结束"为止；
+  2. 它 `yield` 的请求就是它想等的 fd，**在产生的同一轮**就注册进 epoll（晚一轮会空等超时）；
+  3. `epoll_wait` 报了就绪 fd 之后，用 `send(fd)` 恢复在等它的那个任务；
+  4. **请求为负 = "别等，立刻再推我"** —— 协程收尾时用它交回最后一个值，否则它会去等一个已经被
+     自己读空的 fd，永远不醒（这是实测踩出来的）。
+
+  读写用运行期的 `recv`/`send`，**不是** `read`/`write`：后两个名字已经被 `std::sys::io` 用另一套
+  签名占了，而两者会落在同一个编译单元里（`<unistd.h>` 一 include 就冲突）。
 
 ## 判据
 
 `tests/coro/coro_sched.extc` —— 两个任务（step 分别 10 和 100）按交替的就绪顺序推进，断言退出码
 **36**：`left * 100` 那一项就是"两个任务都跑完了"这条断言。
+
+`tests/coro/coro_epoll.extc` —— **8 条 AF_UNIX 连接、单线程、一个 epoll 循环**：每条连接一个协程，
+先写请求再跑循环，最后收回声累加，退出码 **36**（= 1+2+…+8），并要求 **ASan 干净**。数据在
+socketpair 的内核缓冲里 ⇒ 立刻可读 ⇒ 判据不靠 sleep、不靠时间。

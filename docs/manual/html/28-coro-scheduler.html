@@ -89,9 +89,12 @@ sched::<span class="f">add</span>(<span class="k">ref</span> s, <span class="f">
 <ul><li>协程 <code>yield</code> 一个<strong>请求</strong>（这里是它想等的编号），恢复后<strong>重试</strong>自己的操作。</li><li>驱动器 <code>send(v)</code> <strong>本身就会恢复</strong>协程 ⇒ 请求必须在恢复<strong>之前</strong>读出来：先 <code>value()</code> 看它挂起时 留下的请求，再 <code>send(请求)</code> 把批准结果送进去 —— 本次恢复读到的正是它。写成"恢复 + 回显"一气呵成 会<strong>错开一格</strong>（实测踩出来的）。</li><li>任务跑完<strong>不要再驱动</strong>：句柄过期，<code>extc_task_alive</code> 会<strong>大声 trap</strong>（<code>exit(70)</code>）。<code>step</code> 用 <code>done</code> 记住它。</li></ul>
 <h2 id="两个驱动">两个驱动</h2>
 <ul><li><code>step(s, i)</code> —— 推进一步（上面那套协议），返回它是否还活着。</li><li><code>runScripted(s, order)</code> —— <strong>脚本化的就绪顺序</strong>：按 <code>order</code> 里的下标依次推进，返回还剩几个活任务。 判据先用它，因为它是<strong>逐字节确定</strong>的：不靠时间、不靠 socket、不靠内核调度顺序。</li><li><code>add(s, h)</code> —— 把一个句柄放进任务表（满了返回 <code>false</code>）。</li></ul>
-<p>真事件源（<code>epoll_wait</code>）是下一步：它挂在同一个 <code>step</code> 协议上，只是"谁就绪"改由内核告诉我们。</p>
+<ul><li><code>runEpoll(s, timeout_ms)</code> —— <strong>真事件源</strong>：<code>epoll_wait</code>（走 <code>std::sys::net</code> 的 <code>extern!("extc-runtime")</code>）。协议与 <code>runScripted</code> 同一条，只是"谁就绪"改由内核告诉我们：</li></ul>
+<ol><li>每个任务 push 到"要么在等真实事件、要么结束"为止； 2. 它 <code>yield</code> 的请求就是它想等的 fd，<strong>在产生的同一轮</strong>就注册进 epoll（晚一轮会空等超时）； 3. <code>epoll_wait</code> 报了就绪 fd 之后，用 <code>send(fd)</code> 恢复在等它的那个任务； 4. <strong>请求为负 = "别等，立刻再推我"</strong> —— 协程收尾时用它交回最后一个值，否则它会去等一个已经被 自己读空的 fd，永远不醒（这是实测踩出来的）。</li></ol>
+<p>读写用运行期的 <code>recv</code>/<code>send</code>，<strong>不是</strong> <code>read</code>/<code>write</code>：后两个名字已经被 <code>std::sys::io</code> 用另一套 签名占了，而两者会落在同一个编译单元里（<code>&lt;unistd.h&gt;</code> 一 include 就冲突）。</p>
 <h2 id="判据">判据</h2>
 <p><code>tests/coro/coro_sched.extc</code> —— 两个任务（step 分别 10 和 100）按交替的就绪顺序推进，断言退出码 <strong>36</strong>：<code>left * 100</code> 那一项就是"两个任务都跑完了"这条断言。</p>
+<p><code>tests/coro/coro_epoll.extc</code> —— <strong>8 条 AF_UNIX 连接、单线程、一个 epoll 循环</strong>：每条连接一个协程， 先写请求再跑循环，最后收回声累加，退出码 <strong>36</strong>（= 1+2+…+8），并要求 <strong>ASan 干净</strong>。数据在 socketpair 的内核缓冲里 ⇒ 立刻可读 ⇒ 判据不靠 sleep、不靠时间。</p>
 <div class="pn"><a href="27-prelude.html">← 标准库参考：`prelude`</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));

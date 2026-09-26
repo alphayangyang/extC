@@ -1266,6 +1266,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_NEW: {
+            /* A coroutine's storage outlives its C frame, so a block arena is not usable inside a
+             * step: there is no `__extc_a` there. The way out (allocate in the task's own arena, or
+             * carry block arenas in the frame) is planned in docs/topics/CONCURRENCY.md 4.4. Until
+             * then this is a clean error, not C that would not compile. */
+            if (c->curFunc && c->curFunc->isCoro) {
+                ckError(c, e->line,
+                        "`new` inside a coroutine is not implemented yet: a step has no block arenas."
+                        " Use a frame-local array (`var buf: [8]u8`) or a buffer the caller owns"
+                        " (`buf: slice<u8>`), and hand its `.data` to an extern",
+                        "`new` inside a coroutine");
+                return ttError(c->tt);
+            }
             /* `new T`, `new [N]T`, and `new T[n]`:
              *   a single T      ->  `mut ref T`
              *   a fixed `[N]T`  ->  `mut ref [N]T`

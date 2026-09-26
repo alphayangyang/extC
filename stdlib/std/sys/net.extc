@@ -1,0 +1,31 @@
+/* std/sys/net.extc —— 事件与 socket 的**特权层**（CONCURRENCY.md §4.4 阶段三）
+ *
+ * 与 `std::sys::pool`、`std::sys::coroutine` 同一形状：这一层只把生成器提供的运行期原语声明成
+ * extC 能调的东西，实现是 `src/coroutine.c` 的事件块，**按需发射**。
+ *
+ * 跨边界只有**标量**（和一个指针）：`epoll_event` 的缓冲区留在运行期里，extC 侧永远看不到结构体 ——
+ * 这样调度器不必知道任何平台结构体的布局。缓冲区的写法与 `std::sys::io` 一致：传 `slice` 的 `.data`。
+ *
+ * 读写走 `recv`/`send`（socket 系）而**不是** `read`/`write`：后者已经被 `std::sys::io` 用另一套
+ * 签名占了名字，而两者会落在同一个编译单元里。
+ *
+ * 谁用它：`std::coro::scheduler` 的真事件源 `runEpoll`。 */
+
+/* 建一个 epoll 实例，返回它的 fd。 */
+extern!("extc-runtime") fn extc_epoll_new() -> i64
+    effects Addr=0 Cont=0
+/* 把 fd 加进 epoll 等它可读（`readable` 为 0 表示等可写）。返回 0 成功。 */
+extern!("extc-runtime") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64
+    effects Addr=0 Cont=0
+/* 等事件：就绪的 fd 写进 `out[0..]`，返回写了几个（0 = 超时，负数 = 出错）。 */
+extern!("extc-runtime") fn extc_epoll_wait(ep: i64, out: ref i64, timeout_ms: i64) -> i64
+    effects Addr=0 Cont=0
+/* 一对已连接的 AF_UNIX socket：fd 写进 `out[0]` 与 `out[1]`。返回 0 成功。 */
+extern!("extc-runtime") fn extc_sock_pair(out: ref i64) -> i64
+    effects Addr=0 Cont=0
+/* 读一次：返回字节数，0 是对方关了，负数出错。 */
+extern!("extc-runtime") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+/* 写一次：返回写了几个字节。 */
+extern!("extc-runtime") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0

@@ -178,6 +178,7 @@ typedef struct {
     const FuncDef *coroFunc;
     const char    *coroFrame;       /* the frame parameter's C name: `f` */
     int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
+    bool           needEvent;       /* the program calls the event layer (epoll/sockets) */
     bool           needCoroHandle;  /* some coroutine is stored as a handle ⇒ emit the handle type */
     int            coroSeq;         /* names the temporaries a spawn needs (one per spawn) */
     /* Coroutine frames and step functions go here and are appended **last**, after the passes that
@@ -5715,6 +5716,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             cf->coroKind = ck++;
             if (cf->coroBoxed) g.needCoroHandle = true;
         }
+        /* The event layer is needed if anything used calls one of its entry points. */
+        for (size_t fi = 0; fi < m->funcs.len; fi++) {
+            FuncDef *ef = *(FuncDef **)vecAt(&m->funcs, fi);
+            if (ef && ef->used && ef->name &&
+                (strncmp(ef->name, "extc_epoll_", 11) == 0 || strncmp(ef->name, "extc_sock_", 10) == 0))
+                g.needEvent = true;
+        }
     }
     vecInit(&g.insts, arena, sizeof(void *));
     for (size_t i = 0; i < tt->instances.len; i++) {
@@ -6947,6 +6955,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
     if (g.needPool) poolsEmitRuntime(arena, out);
+    if (g.needEvent) eventEmitRuntime(arena, out);
     /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
     if (m->usesDyn) poolsEmitDynRuntime(arena, out);
     if (g.needRawTerm) {

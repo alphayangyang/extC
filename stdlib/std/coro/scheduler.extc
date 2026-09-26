@@ -6,12 +6,14 @@
  * 任务表是固定容量的数组（v1）：`[8]coroutine<i64>` —— 句柄是 24 字节的普通值，数组元素就是
  * **可变位置**，所以可以直接 `s.tasks[i].next()` / `.send()`。这是句柄能进容器的直接兑现。
  *
- * 两个驱动：
+ * 三个驱动：
  *   `runScripted` —— **脚本化的就绪顺序**（判据先用它 ⇒ 确定性，不靠时间也不靠 socket）
- *   `runEpoll`    —— 真事件源，`epoll_wait`（下一轮接上，走 extern!("extc-runtime")）
+ *   `runEpoll`    —— 真事件源：`epoll_wait`（走 std::sys::net 的 extern!("extc-runtime")）
  *
  * 谁定义"调度域"：库里这个结构 + 驱动函数就是域的 v1 形态；语法糖 `ext f()`（块作用域）是后面
  * 的事，见 §4.4 的定案。 */
+
+use std::sys::net
 
 struct loop {
     tasks: [8]coroutine<i64>
@@ -62,6 +64,66 @@ fn runScripted(s: mut ref loop, order: slice<i64>) -> i64 {
         var i: i64 = order[k]
         if i >= i64(0) && i < s.n { step(s, i) }   /* `s` is already a reference */
         k = k + 1
+    }
+    return s.live
+}
+
+/* 真事件源：`epoll_wait`。协议与 runScripted **同一条** —— 只是"谁就绪"改由内核告诉我们：
+ * 每个任务 yield 的请求就是它想等的 fd；**负数 = 别等，立刻再推我**（收尾时用它交回最后一个值）。
+ *
+ * 一轮：启动还没启动的 ⇒ 把每个挂起任务留下的请求（`value()`）注册进 epoll ⇒ 等 ⇒
+ * 就绪的用 `send(fd)` 恢复（请求读在 send **之前**，见上面那条协议）。`timeout_ms` 到点且没有
+ * 事件就退出循环，剩下的任务算没跑完（由调用者看返回值）。 */
+fn runEpoll(s: mut ref loop, timeout_ms: i64) -> i64 {
+    var ep: i64 = net::extc_epoll_new()
+    var evs: mut slice<i64> = new i64[16]
+    while s.live > i64(0) {
+        var i: i64 = 0
+        while i < s.n {
+            if !s.done[i] {
+                /* 一直推到它"要么在等真实事件、要么结束"为止。请求为负 = "别等，立刻再推我"
+                 * （协程收尾时用它交回最后一个值）；请求 >= 0 = 等那个 fd，注册进 epoll。
+                 * 注册必须在**产生的同一轮**：否则第一次 epoll_wait 会空等超时。 */
+                var more: bool = true
+                while more {
+                    if !s.started[i] {
+                        s.started[i] = true
+                        if !s.tasks[i].next() {
+                            s.done[i] = true
+                            s.live = s.live - i64(1)
+                            more = false
+                        }
+                    } else {
+                        var fd: i64 = s.tasks[i].value()
+                        if fd >= i64(0) {
+                            net::extc_epoll_add(ep, fd, i64(1))
+                            more = false
+                        } else if !s.tasks[i].send(fd) {
+                            s.done[i] = true
+                            s.live = s.live - i64(1)
+                            more = false
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+        var n: i64 = net::extc_epoll_wait(ep, evs.data, timeout_ms)
+        if n <= i64(0) { break }                          /* 超时或出错：不再空转 */
+        var k: i64 = 0
+        while k < n {
+            var j: i64 = 0
+            while j < s.n {
+                if !s.done[j] && s.started[j] && s.tasks[j].value() == evs[k] {
+                    if !s.tasks[j].send(evs[k]) {
+                        s.done[j] = true
+                        s.live = s.live - i64(1)
+                    }
+                }
+                j = j + 1
+            }
+            k = k + 1
+        }
     }
     return s.live
 }

@@ -1,0 +1,58 @@
+/* 判据：**真事件源** —— N 条连接、单线程、一个 epoll 循环（阶段三后半）。
+ *
+ * 每条"连接"是一对 AF_UNIX socket；服务端那个 fd 交给一个协程：它先 `yield fd`（请求：等它可读），
+ * 就绪后读一个字节、原样写回去、结束。主程序先往每条连接写一个字节（socketpair 有内核缓冲 ⇒
+ * 数据**立刻**可读 ⇒ 确定性，不靠 sleep 也不靠时间），跑完循环再把回声收回来累加。
+ *
+ * 缓冲区由**调用者**持有：`slice` 的 `.data` 就是 C 侧要的字节指针（与 std::sys::io 同一惯用法）。
+ * 协程里不分配 —— 任务一个一个跑，共用一块 scratch 是安全的。
+ *
+ * 退出码 = 1+2+…+N；N = 8 ⇒ **36**。有任务没跑完（97）或回声不对（96/98/99）都会是别的数。 */
+use std::coro::scheduler as sched
+use std::sys::net
+
+fn conn(fd: i64, buf: slice<u8>) -> coroutine<i64> {
+    var ready: i64 = yield fd                 /* 请求：等这个 fd 可读 */
+    if net::extc_sock_read(fd, buf.data, i64(1)) == i64(1) {
+        if net::extc_sock_write(fd, buf.data, i64(1)) != i64(1) { return }
+    }
+    yield i64(-1)                             /* 负请求：别等了，立刻再推我 —— 下一推就结束 */
+}
+
+fn main() -> i32 {
+    var s: sched::loop
+    var clients: [16]i64
+    var scratch: mut slice<u8> = new u8[8]    /* 共用：任务是一个一个跑的 */
+    var n: i64 = 8
+
+    var k: i64 = 0
+    while k < n {
+        var pair: mut slice<i64> = new i64[2]
+        if net::extc_sock_pair(pair.data) != i64(0) { return i32(99) }
+        sched::add(ref s, conn(pair[1], scratch))
+        clients[k] = pair[0]                  /* 客户端留在 main */
+        k = k + 1
+    }
+
+    /* 请求先写进去：内核缓冲 ⇒ epoll_wait 立刻报可读 */
+    var ones: mut slice<u8> = new u8[8]
+    k = 0
+    while k < n {
+        ones[0] = u8(k + i64(1))
+        if net::extc_sock_write(clients[k], ones.data, i64(1)) != i64(1) { return i32(98) }
+        k = k + 1
+    }
+
+    var left: i64 = sched::runEpoll(ref s, i64(2000))
+    if left != i64(0) { return i32(97) }      /* 有任务没跑完 */
+
+    var got: mut slice<u8> = new u8[8]
+    var sum: i64 = 0
+    k = 0
+    while k < n {
+        if net::extc_sock_read(clients[k], got.data, i64(1)) != i64(1) { return i32(96) }
+        sum = sum + i64(got[0])
+        k = k + 1
+    }
+    return i32(sum)                           /* 1+2+…+8 = 36 */
+}

@@ -94,4 +94,52 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "    for (int64_t i = 0; i < extc_taskCap; i++) if (extc_taskLive[i]) n++;\n"
         "    return n;\n"
         "}\n");
+
+
+
+}
+
+/* ---- The event layer: epoll + AF_UNIX sockets (the scheduler's real event source) ----
+ * Only scalars and one pointer cross the boundary: the `epoll_event` buffer lives in here, so a
+ * platform struct never crosses into extC. Emitted on its own (not with the task table) because a
+ * program may drive fds without ever spawning a coroutine. */
+void eventEmitRuntime(Arena *arena, Buf *out) {
+    (void)arena;
+    bufPuts(out,
+        "\n/* ---- The event layer: epoll + AF_UNIX sockets ----\n"
+        " * Only scalars and one pointer cross the boundary: the `epoll_event` buffer lives in here. */\n"
+        "#include <sys/epoll.h>\n"
+        "#include <sys/socket.h>\n\n"
+        "int64_t extc_epoll_new(void) { return (int64_t)epoll_create1(0); }\n\n"
+        "int64_t extc_epoll_add(int64_t ep, int64_t fd, int64_t readable) {\n"
+        "    struct epoll_event ev;\n"
+        "    memset(&ev, 0, sizeof ev);\n"
+        "    ev.events = readable ? EPOLLIN : EPOLLOUT;\n"
+        "    ev.data.fd = (int)fd;\n"
+        "    return (int64_t)epoll_ctl((int)ep, EPOLL_CTL_ADD, (int)fd, &ev);\n"
+        "}\n\n"
+        "int64_t extc_epoll_wait(int64_t ep, int64_t *out, int64_t timeout_ms) {\n"
+        "    struct epoll_event evs[16];\n"
+        "    int n = epoll_wait((int)ep, evs, 16, (int)timeout_ms);\n"
+        "    if (n <= 0) return (int64_t)n;\n"
+        "    int64_t k = 0;\n"
+        "    for (int i = 0; i < n && k < 16; i++) out[k++] = (int64_t)evs[i].data.fd;\n"
+        "    return k;\n"
+        "}\n\n"
+        "int64_t extc_sock_pair(int64_t *out) {\n"
+        "    int sv[2];\n"
+        "    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;\n"
+        "    out[0] = (int64_t)sv[0];\n"
+        "    out[1] = (int64_t)sv[1];\n"
+        "    return 0;\n"
+        "}\n\n"
+        "int64_t extc_sock_read(int64_t fd, uint8_t *buf, int64_t n) {\n"
+        "    /* recv/send, not read/write: `std::sys::io` already claims those two names with a\n"
+        "     * different signature, and both would land in the same translation unit. */\n"
+        "    return (int64_t)recv((int)fd, buf, (size_t)n, 0);\n"
+        "}\n\n"
+        "int64_t extc_sock_write(int64_t fd, uint8_t *buf, int64_t n) {\n"
+        "    return (int64_t)send((int)fd, buf, (size_t)n, 0);\n"
+        "}\n\n"
+        "/* No close(): `close` is `std::sys::io`'s, and the fds die with the process. */\n");
 }
