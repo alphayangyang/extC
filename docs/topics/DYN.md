@@ -86,6 +86,18 @@ extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间�
 `src/check_expr.c:835` 构造 `EX_METHOD`，检查在 `:2008`；codegen 走 `genMethodCall`
 （`src/codegen.c:2167` 分派）；第一期的表在 `generateC` 收尾处发出（`extc_vt$…`）。
 
+**第二次勘察的发现（让实现缩到两处 + 一个字段）**：解析器**本来就会直接构造 `EX_METHOD` 节点**
+（`src/parser.c:2190` 的 `.name(args)` 分支：`recv` / `name` / `args`），而第一期的 trait 实现方法
+**已经挂进了类型的方法集** ⇒ 既有的 `EX_METHOD` 检查路径（方法存在性、实参类型与个数、`self` 形状）
+**一行都不用改**。dyn 额外需要的四条检查（trait 存在 · object safety 三条 · 载荷类型已实现该 trait ·
+记住 dyn 标记供 codegen 用）挂在这条既有路径上即可。
+
+于是实现只剩两处 + 一个字段：
+- **解析器**：识别 `dyn Trait(expr)` 前缀，照常构造 `EX_METHOD`，并把 trait 名写进新字段
+  `Expr.dynTrait`（`src/ast.h:319` 的 `method` 联合体旁）；
+- **codegen**：`genMethodCall`（`src/codegen.c:1647`，分派在 `:2167`）加一个分支 —— 有 `dynTrait`
+  就**取表字段调用**（`extc_vt$Trait$Type.method(&tmp)`），否则照旧直接调用。
+
 **落地顺序**：
 1. **解析器**：`dyn` 分支产出新节点 `EX_DYNCALL { trait 名, 载荷 expr, 方法名, 实参 }`；
    只在调用位置合法（否则报上面那条诊断）；
