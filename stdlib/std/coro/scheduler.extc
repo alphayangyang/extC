@@ -3,7 +3,7 @@
  * 一个 `while` 循环 + 一个事件源。挂起约定：协程 `yield` 一个等待请求（这里是它想等的 fd；
  * **负数 = 别等，立刻再推我**），恢复后**重试**它自己的操作；要把结果送回去就用 `send`。
  *
- * 任务表是**固定容量 + 空闲槽位复用**（v1）：`[32]coroutine<i64>`。句柄是 24 字节的普通值，数组元素
+ * 任务表是**固定容量 + 空闲槽位复用**（v1）：`[512]coroutine<i64>`。句柄是 24 字节的普通值，数组元素
  * 就是可变位置 ⇒ 可以直接 `s.tasks[i].next()` / `.send()`。任务跑完把槽位还回 `freelist`，下一次
  * `add` 复用它 —— 一个 listener 循环 accept 上万个连接，同时活着的任务数不超过容量即可。
  *
@@ -18,10 +18,10 @@
 use std::sys::net
 
 struct loop {
-    tasks: [32]coroutine<i64>
-    done: [32]bool          /* 跑完 ⇒ 槽位可以复用（不再驱动，也不会读它的 value）*/
-    started: [32]bool       /* 是否已经启动过（第一次只 next，不 send）*/
-    freelist: [32]i64       /* 空闲槽位栈 */
+    tasks: [512]coroutine<i64>
+    done: [512]bool          /* 跑完 ⇒ 槽位可以复用（不再驱动，也不会读它的 value）*/
+    started: [512]bool       /* 是否已经启动过（第一次只 next，不 send）*/
+    freelist: [512]i64       /* 空闲槽位栈 */
     nfree: i64
     used: i64               /* 用过的槽位数（第一次分配的游标）*/
     live: i64               /* 还没跑完的 */
@@ -118,20 +118,34 @@ fn pump(s: mut ref loop, timeout_ms: i64) -> i64 {
         i = i + 1
     }
     if s.listener >= i64(0) { net::extc_epoll_add(s.ep, s.listener, i64(1)) }
-    /* ② 等一个事件 */
+    /* ② 等第一个事件（带 `timeout_ms`），再把**这一轮就绪的全部**排空（0 超时，不空转）。
+     * 一轮只处理一个事件的话，N 个连接就要 N 轮，每轮还都要扫一遍任务表。 */
+    var accepted: i64 = i64(-1)
     var fd2: i64 = net::extc_epoll_wait(s.ep, timeout_ms)
     if fd2 < i64(0) { return i64(-2) }
-    /* ③ listener 可读 ⇒ accept 一个交给调用者 */
-    if s.listener >= i64(0) && fd2 == s.listener { return net::extc_sock_accept(s.listener) }
-    /* ④ 否则：谁在等这个 fd 就恢复谁（请求读在 send 之前 ✓），把"就绪"送进去 */
-    var j: i64 = 0
-    while j < s.used {
-        if !s.done[j] && s.started[j] && s.tasks[j].value() == fd2 {
-            if !s.tasks[j].send(fd2) { release(s, j) }
+    var draining: bool = true
+    var seen: i64 = 0
+    while draining && seen < i64(64) {
+        seen = seen + 1
+        if s.listener >= i64(0) && fd2 == s.listener {
+            /* 一轮最多 accept 一个：多的留在 backlog，下一轮还会报。
+             * **就此停止排空**：listener 是 level-triggered，只要 backlog 里还有人它就一直是"可读"，
+             * 继续排空只会一次次拿到同一个 listener fd（实测：排空循环死转）。 */
+            if accepted < i64(0) { accepted = net::extc_sock_accept(s.listener) }
+            draining = false
+        } else {
+            var j: i64 = 0
+            while j < s.used {
+                if !s.done[j] && s.started[j] && s.tasks[j].value() == fd2 {
+                    if !s.tasks[j].send(fd2) { release(s, j) }
+                }
+                j = j + 1
+            }
         }
-        j = j + 1
+        fd2 = net::extc_epoll_wait(s.ep, i64(0))
+        if fd2 < i64(0) { draining = false }
     }
-    return i64(-1)
+    return accepted
 }
 
 /* 一直跑到所有任务结束（没有 listener 的用法）。 */

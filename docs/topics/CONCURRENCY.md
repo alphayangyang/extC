@@ -723,6 +723,17 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     与字节序都留在运行期 ✓ extC 侧只收标量 ✓）；关 fd 直接用已有的 `sys::io` 的 `close`（同 `int close(int)`
     ABI ✓ 不需要新原语 ✓）。
 
+15. **任务表换 `vector<coroutine<i64>>`（真增长）被逃逸规则挡住** ✗ —— 试过：`loop` 里放
+    `vector<coroutine<i64>>`（容器内部就是 `mut slice<T>`，`toMutSlice()` 能拿到可写视图 ⇒ 驱动没问题 ✓），
+    但一步 `add` 就撞：`argument 1 of `add` points into a deeper scope (depth 1) than the arena this call
+    may store it in` —— 被调方（无论做成普通函数还是方法）**往 `mut ref` 形参里存句柄**时，调用点所在域的
+    深度不够即拒。同一个形状在 STL 里（`v.push(worker(...))`）没事，因为那是**泛型方法、在调用者上下文里
+    实例化**。⇒ 眼下用**把容量调到 512** 顶上（`[512]coroutine<i64>` ✓ 压测够用 ✓），真增长留到这条规则
+    弄清楚之后再做（要么让 `add` 变成泛型，要么给"往容器里存句柄"一条明确的放宽）。
+16. **`pump` 的"一轮排空"有个 level-triggered 陷阱** ✗（已修 ✓ 但值得记）：listener 只要 backlog 里还有
+    人就一直是"可读"，而一轮只 accept 一个 ⇒ 用 0 超时排空会**一次次拿到同一个 listener fd ⇒ 死转**
+    （实测：`coro_accept` 40 条连接那一轮卡住 ✓）。修法是"遇到 listener 事件即停止排空" + 排空上限 64。
+
 **做的顺序（作者定）**：先 1/2/3（**补判据** ✓ 便宜且能把"说得太满"的地方钉实 ✓）⇒ 再 4（帧携带
 arena ✓ 解掉唯一的真洞 ✓）⇒ 再 5（任务表长起来 + `accept` ✓）⇒ 之后才是 `ext`/域 ✓ `coroutine<A,B>`
 ✓ trampoline ✓ 预算。**可移植性抽象要等这套地基定型再做**（否则白抽一遍 ✗）。
