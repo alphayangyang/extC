@@ -62,6 +62,7 @@ fn main() -> i32 {
 
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(93) }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows() }
 
     var got: mut slice<u8> = new u8[64]
     var seen: [16]i64
@@ -69,9 +70,9 @@ fn main() -> i32 {
     var sum: i64 = 0
     var spins: i64 = 0
     while left > i64(0) && spins < i64(200000) {
-        var fd: i64 = sched::pump(ref s, i64(0))
+        var fd: i64 = tasks.pump(ref s, i64(0))
         if fd >= i64(0) {
-            if !sched::add(ref s, conn(fd)) { return i32(92) }
+            if !tasks.add(ref s, conn(fd)) { return i32(92) }
         }
         i = 0
         while i < n {
@@ -91,7 +92,7 @@ fn main() -> i32 {
     if left != i64(0) { return i32(91) }
     /* 所有连接都必须收尾：任务跑完、槽位还回来（半关 ⇒ 读到 0 ⇒ close ✓）*/
     var spins2: i64 = 0
-    while s.live > i64(0) && spins2 < i64(20000) { var r: i64 = sched::pump(ref s, i64(0))  spins2 = spins2 + 1 }
+    while s.live > i64(0) && spins2 < i64(20000) { var r: i64 = tasks.pump(ref s, i64(0))  spins2 = spins2 + 1 }
     if s.live != i64(0) { return i32(90) }
     return i32(sum)                          /* 5 × (1+2+3+4) = 50 */
 }

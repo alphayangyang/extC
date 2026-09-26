@@ -22,6 +22,7 @@ fn conn(fd: i64, buf: slice<u8>) -> coroutine<i64> {
 fn main() -> i32 {
     var s: sched::loop
     var ok: bool = sched::init(ref s, i64(-1))    /* 没有 listener：只驱动任务 */
+    var tasks: sched::tasks<i64> = { rows: sched::newRows() }
     if !ok { return i32(95) }
     var clients: [16]i64
     var scratch: mut slice<u8> = new u8[8]    /* 共用：任务是一个一个跑的 */
@@ -31,7 +32,7 @@ fn main() -> i32 {
     while k < n {
         var pair: mut slice<i64> = new i64[2]
         if net::extc_sock_pair(pair.data) != i64(0) { return i32(99) }
-        sched::add(ref s, conn(pair[1], scratch))
+        tasks.add(ref s, conn(pair[1], scratch))
         clients[k] = pair[0]                  /* 客户端留在 main */
         k = k + 1
     }
@@ -45,7 +46,7 @@ fn main() -> i32 {
         k = k + 1
     }
 
-    var left: i64 = sched::runEpoll(ref s, i64(2000))
+    var left: i64 = tasks.runEpoll(ref s, i64(2000))
     if left != i64(0) { return i32(97) }      /* 有任务没跑完 */
 
     var got: mut slice<u8> = new u8[8]

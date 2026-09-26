@@ -1227,11 +1227,12 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * the bit-mask loops: this bound only ever LOWERS h (stricter), and the place's
              * depth does not depend on T. Skipping it left "no measurable destination" and
              * fell back to the strict 0, which is what kept rejecting the safe call. */
-            /* The SAME query the store rules use below: for a container the interesting
-             * lifetime is that of its storage (the pool plate), which is what
-             * `exprRefDepth` reports; `placeDepth` answers about the 40-byte handle instead
-             * and disagrees with it, which is what made the first attempt pick h = 0. */
-            int d2 = exprRefDepth(c, place2);
+            /* EXACTLY the expression the store rules use for the same argument below
+             * (`placeRoot ? placeDepth : exprRefDepth`). Mixing the two queries is what made
+             * earlier attempts collapse h to 0: for a container `placeDepth` answers about
+             * the 40-byte handle (1) while `exprRefDepth` answers about its storage, the pool
+             * plate, which is born in the home arena and therefore reports 0. */
+            int d2 = placeRoot(c, place2) ? placeDepth(c, place2) : exprRefDepth(c, place2);
             if (d2 == 0) { h = 0; haveDest = true; break; }   /* lives forever: the strictest */
             if (!haveDest || d2 < h) h = d2;
             haveDest = true;

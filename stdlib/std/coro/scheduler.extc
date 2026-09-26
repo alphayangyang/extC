@@ -3,178 +3,190 @@
  * 一个 `while` 循环 + 一个事件源。挂起约定：协程 `yield` 一个等待请求（这里是它想等的 fd；
  * **负数 = 别等，立刻再推我**），恢复后**重试**它自己的操作；要把结果送回去就用 `send`。
  *
- * 任务表是**固定容量 + 空闲槽位复用**（v1）：`[512]coroutine<i64>`。句柄是 24 字节的普通值，数组元素
- * 就是可变位置 ⇒ 可以直接 `s.tasks[i].next()` / `.send()`。任务跑完把槽位还回 `freelist`，下一次
- * `add` 复用它 —— 一个 listener 循环 accept 上万个连接，同时活着的任务数不超过容量即可。
+ * **任务表是调用者自己的容器**（`tasks<T>` 包着 `vector<row>`）⇒ **会长，没有容量上限**；
+ * 跑完的行由 `add` 就地改写复用，长跑服务器不会把表撑大。句柄是 24 字节的普通值，容器内部是
+ * `mut slice` ⇒ 元素是可写位置，可以直接 `rows.vals[i].h.next()`。
  *
- * 驱动：
- *   `pump`        —— **一轮**事件循环：注册请求 ⇒ 等 ⇒ 推进就绪的任务；有 listener 就 accept 一个，
- *                    把新 fd **返回给调用者**（库不知道用户拿什么协程去接它 ⇒ 这样库里不需要函数值）。
- *   `runEpoll`    —— 一直跑到所有任务结束（没有 listener 的老用法）。
- *   `runScripted` —— 脚本化的就绪顺序：判据先用它 ⇒ 逐字节确定，不靠时间也不靠 socket。
+ * 为什么表做成**泛型**结构体：往容器里存一个句柄这一步，只有在**容器自己的方法**里（实例化于调用者
+ * 上下文）才不受参数生命周期规则的限制。这条限制以前更凶（连库函数 `stash(ref v, h)` 都拒），
+ * 精度修正之后普通函数也能过，但泛型容器是最稳的形状，也正好让表长起来。
  *
- * 谁定义"调度域"：库里这个结构 + 驱动函数就是域的 v1 形态；语法糖 `ext f()`（块作用域）是后面的事。 */
+ * 三条注意点：
+ *   ① vector 的存储是池的板块，生命周期挂在**建它的那个 place** 上 ⇒ 表和调度器都要在驱动它的那个
+ *      作用域里建（`main`）。
+ *   ② `push` 扩容会换掉内部视图 ⇒ 不要跨 `add` 长期持有 `rows` 的视图；方法内部每次现取。
+ *   ③ `pump` 返回：`>= 0` = listener 上 accept 出来的新 fd（用哪种协程接它由调用者决定）；
+ *      `-1` = 处理了事件但没有新连接；`-2` = 超时。 */
 
 use std::sys::net
+use stl::vector
 
-struct loop {
-    tasks: [512]coroutine<i64>
-    done: [512]bool          /* 跑完 ⇒ 槽位可以复用（不再驱动，也不会读它的 value）*/
-    started: [512]bool       /* 是否已经启动过（第一次只 next，不 send）*/
-    freelist: [512]i64       /* 空闲槽位栈 */
-    lastFd: [512]i64         /* 这个槽位**当前已注册**在 epoll 里的 fd（-2 = 没注册）*/
-    ready: [64]i64           /* 本轮收上来的就绪 fd */
-    nready: i64
-    nfree: i64
-    used: i64               /* 用过的槽位数（第一次分配的游标）*/
-    live: i64               /* 还没跑完的 */
-    listener: i64           /* -1 = 没有 listener */
-    ep: i64                 /* epoll 实例 */
+/* 一行任务：句柄 + 两个标记 + **它当前注册在 epoll 里的 fd**（-2 = 没注册）。 */
+struct row {
+    h: coroutine<i64>
+    done: bool
+    started: bool
+    fd: i64
 }
+
+/* 调度器状态：**只有标量**（拿 `mut ref` 传进方法里不会碰任何引用规则）。 */
+struct loop {
+    ep: i64                 /* epoll 实例 */
+    listener: i64           /* -1 = 没有 listener */
+    live: i64               /* 还没跑完的任务数 */
+    ready: [64]i64          /* 本轮收上来的就绪 fd */
+    nready: i64
+}
+
+struct tasks<T> {
+    rows: vector<row>
+
+    /* 加一个任务：先找跑完的行就地复用，没有再长一行。 */
+    fn add(self: mut ref tasks<T>, s: mut ref loop, h: coroutine<i64>) -> bool {
+        var placed: bool = false
+        var i: i64 = 0
+        while i < self.rows.len() && !placed {
+            if self.rows.vals[i].done {
+                self.rows.vals[i] = { h: h, done: false, started: false, fd: i64(-2) }
+                placed = true
+            }
+            i = i + 1
+        }
+        if !placed {
+            self.rows.push({ h: h, done: false, started: false, fd: i64(-2) })
+        }
+        s.live = s.live + i64(1)
+        return true
+    }
+
+    fn count(self: ref tasks<T>) -> i64 { return self.rows.len() }
+
+    /* 推进一个任务一步（脚本化驱动用）：返回它是否还活着。 */
+    fn step(self: mut ref tasks<T>, s: mut ref loop, i: i64) -> bool {
+        if self.rows.vals[i].done { return false }     /* 结束过的句柄过期，再驱动会 trap（规则②）*/
+        if !self.rows.vals[i].started {
+            self.rows.vals[i].started = true
+            if !self.rows.vals[i].h.next() { self.finish(s, i)  return false }
+            return true
+        }
+        var req: i64 = self.rows.vals[i].h.value()     /* 挂起时留下的请求（**读在 send 之前**）*/
+        if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return false }
+        return true
+    }
+
+    /* 收尾一行：标记 + 计数。**不缩表**（`pop` 会换掉内部视图，而索引是外面对表的唯一把手）。 */
+    fn finish(self: mut ref tasks<T>, s: mut ref loop, i: i64) {
+        self.rows.vals[i].done = true
+        self.rows.vals[i].fd = i64(-2)
+        s.live = s.live - i64(1)
+    }
+
+    /* 脚本化的"事件源"：按 order 里的下标依次推进；返回还剩几个活任务。 */
+    fn runScripted(self: mut ref tasks<T>, s: mut ref loop, order: slice<i64>) -> i64 {
+        var k: i64 = 0
+        while k < order.len {
+            var i: i64 = order[k]
+            if i >= i64(0) && i < self.rows.len() { self.step(s, i) }
+            k = k + 1
+        }
+        return s.live
+    }
+
+    /* 一轮事件循环：注册请求 ⇒ 等 ⇒ **把这一轮就绪的全部处理掉**。
+     * 注册只在请求变化时发生（请求没变时内核里那条登记还在，重复 `epoll_ctl(ADD)` 只是白费一次
+     * 系统调用，高并发下这是主要开销）；就绪 fd 先收进小数组再一遍扫表（每个事件扫一遍全表是 O(N²)）。 */
+    fn pump(self: mut ref tasks<T>, s: mut ref loop, timeout_ms: i64) -> i64 {
+        var waitMs: i64 = timeout_ms
+        if waitMs < i64(0) { waitMs = i64(0) }          /* 负超时 = 不阻塞 */
+        if s.ep < i64(0) { return i64(-2) }
+        var i: i64 = 0
+        while i < self.rows.len() {
+            if !self.rows.vals[i].done {
+                var more: bool = true
+                while more {
+                    if !self.rows.vals[i].started {
+                        self.rows.vals[i].started = true
+                        if !self.rows.vals[i].h.next() { self.finish(s, i)  more = false }
+                    } else {
+                        var fd: i64 = self.rows.vals[i].h.value()
+                        if fd >= i64(0) {
+                            if self.rows.vals[i].fd != fd {
+                                net::extc_epoll_add(s.ep, fd, i64(1))
+                                self.rows.vals[i].fd = fd
+                            }
+                            more = false
+                        } else if !self.rows.vals[i].h.send(fd) {
+                            self.finish(s, i)
+                            more = false
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+        if s.listener >= i64(0) { net::extc_epoll_add(s.ep, s.listener, i64(1)) }
+        var accepted: i64 = i64(-1)
+        var fd2: i64 = net::extc_epoll_wait(s.ep, waitMs)
+        if fd2 < i64(0) { return i64(-2) }
+        var draining: bool = true
+        var seen: i64 = 0
+        s.nready = i64(0)
+        while draining && seen < i64(64) {
+            seen = seen + 1
+            if s.listener >= i64(0) && fd2 == s.listener {
+                /* 一轮最多 accept 一个（多的留在 backlog，下一轮还会报）。**就此停止排空**：
+                 * listener 是 level-triggered，只要 backlog 里还有人它就一直是"可读"，继续排空只会
+                 * 一次次拿到同一个 listener fd（实测：排空循环死转）。 */
+                if accepted < i64(0) { accepted = net::extc_sock_accept(s.listener) }
+                draining = false
+            } else if s.nready < i64(64) {
+                s.ready[s.nready] = fd2
+                s.nready = s.nready + i64(1)
+            }
+            fd2 = net::extc_epoll_wait(s.ep, i64(0))
+            if fd2 < i64(0) { draining = false }
+        }
+        var j: i64 = 0
+        while j < self.rows.len() {
+            if !self.rows.vals[j].done && self.rows.vals[j].started {
+                var want: i64 = self.rows.vals[j].h.value()
+                var k: i64 = 0
+                var hit: bool = false
+                while k < s.nready && !hit {
+                    if s.ready[k] == want { hit = true }
+                    k = k + 1
+                }
+                if hit && !self.rows.vals[j].h.send(want) { self.finish(s, j) }
+            }
+            j = j + 1
+        }
+        return accepted
+    }
+
+    /* 一直跑到所有任务结束（没有 listener 的用法）。 */
+    fn runEpoll(self: mut ref tasks<T>, s: mut ref loop, timeout_ms: i64) -> i64 {
+        while s.live > i64(0) {
+            var r: i64 = self.pump(s, timeout_ms)
+            if r == i64(-2) { break }                   /* 超时：不再空转 */
+        }
+        return s.live
+    }
+}
+
+/* 表的存储：库只给一个**裸容器**（容器类型的存储生在调用者所在的地方 ⇒ 返回它没问题 ✓）。
+ * 组装在调用点写一行字面量（**必须写在驱动它的那个作用域里**：池的板块跟着那个 place 走 ✓）：
+ *
+ *     var tasks: sched::tasks<i64> = { rows: sched::newRows() }
+ *
+ * 不能提供 `newTasks() -> tasks<i64>`：**包装结构体不算容器** ⇒ 从函数里返回它会被
+ * "return value would hold a reference to a local variable that dies first" 拒 ✓（实测 ✓）。 */
+fn newRows() -> vector<row> { return vector<row>::new() }
 
 /* `listener` 传 -1 就是"只驱动任务，不 accept"。 */
 fn init(s: mut ref loop, listener: i64) -> bool {
     s.listener = listener
+    s.live = i64(0)
+    s.nready = i64(0)
     s.ep = net::extc_epoll_new()
     return s.ep >= i64(0)
-}
-
-/* 放一个任务：先复用跑完的槽位，没有再开新槽位；满了返回 false。 */
-fn add(s: mut ref loop, h: coroutine<i64>) -> bool {
-    var slot: i64 = i64(-1)
-    if s.nfree > i64(0) {
-        s.nfree = s.nfree - i64(1)
-        slot = s.freelist[s.nfree]
-    } else if s.used < i64(512) {      /* 与 `[512]` 的容量一致（改容量时两处都要改）*/
-        slot = s.used
-        s.used = s.used + i64(1)
-    } else {
-        return false
-    }
-    s.tasks[slot] = h
-    s.done[slot] = false
-    s.started[slot] = false
-    s.lastFd[slot] = i64(-2)      /* 新任务（或复用的槽位）还没注册；fd 号可能是复用的 */
-    s.live = s.live + i64(1)
-    return true
-}
-
-/* 任务结束：槽位还回去，下次 `add` 复用它。 */
-fn release(s: mut ref loop, i: i64) {
-    s.done[i] = true
-    s.live = s.live - i64(1)
-    s.freelist[s.nfree] = i
-    s.nfree = s.nfree + i64(1)
-}
-
-/* 推进一个任务一步（脚本化驱动用）：返回它是否还活着。 */
-fn step(s: mut ref loop, i: i64) -> bool {
-    if s.done[i] { return false }        /* 已经结束：句柄过期，再驱动会 trap（规则②）*/
-    if !s.started[i] {
-        s.started[i] = true
-        if !s.tasks[i].next() { release(s, i)  return false }
-        return true
-    }
-    var req: i64 = s.tasks[i].value()    /* 挂起时留下的请求（**读在 send 之前** ✓）*/
-    if !s.tasks[i].send(req) { release(s, i)  return false }
-    return true
-}
-
-/* 脚本化的"事件源"：按 order 里的下标依次推进；返回还剩几个活任务。 */
-fn runScripted(s: mut ref loop, order: slice<i64>) -> i64 {
-    var k: i64 = 0
-    while k < order.len {
-        var i: i64 = order[k]
-        if i >= i64(0) && i < s.used { step(s, i) }
-        k = k + 1
-    }
-    return s.live
-}
-
-/* 一轮事件循环。返回：
- *   >= 0  listener 上 accept 出来的新 fd（调用者自己 add 一个任务上去）
- *   -1    这轮没有新连接
- *   -2    超时，一点动静都没有（调用者据此决定要不要收工） */
-fn pump(s: mut ref loop, timeout_ms: i64) -> i64 {
-    if s.ep < i64(0) { return i64(-2) }
-    /* ① 每个活任务：还没启动就启动；挂起的把请求**按需**注册进 epoll（请求没变就不再注册 ——
-     *    内核里那条登记还在，重复 `epoll_ctl(ADD)` 只会白费一次系统调用，高并发下这是主要开销）。
-     *    "推到它要么在等真实事件、要么结束"为止（负请求 = 立刻再推）。 */
-    var i: i64 = 0
-    while i < s.used {
-        if !s.done[i] {
-            var more: bool = true
-            while more {
-                if !s.started[i] {
-                    s.started[i] = true
-                    if !s.tasks[i].next() { release(s, i)  more = false }
-                } else {
-                    var fd: i64 = s.tasks[i].value()
-                    if fd >= i64(0) {
-                        if s.lastFd[i] != fd {
-                            net::extc_epoll_add(s.ep, fd, i64(1))
-                            s.lastFd[i] = fd
-                        }
-                        more = false
-                    } else if !s.tasks[i].send(fd) {
-                        release(s, i)
-                        more = false
-                    }
-                }
-            }
-        }
-        i = i + 1
-    }
-    if s.listener >= i64(0) { net::extc_epoll_add(s.ep, s.listener, i64(1)) }
-    /* ② 等第一个事件（带 `timeout_ms`），再把**这一轮就绪的全部**排空（0 超时，不空转）。
-     * 一轮只处理一个事件的话，N 个连接就要 N 轮，每轮还都要扫一遍任务表。 */
-    var accepted: i64 = i64(-1)
-    var fd2: i64 = net::extc_epoll_wait(s.ep, timeout_ms)
-    if fd2 < i64(0) { return i64(-2) }
-    /* 先把这一轮的就绪 fd **收进小数组**，再一遍扫表匹配 —— 每个事件扫一遍全表是 O(N²)，
-     * 高并发下正是它在拖后腿（实测 N=256 掉速）。 */
-    var draining: bool = true
-    var seen: i64 = 0
-    s.nready = i64(0)
-    while draining && seen < i64(64) {
-        seen = seen + 1
-        if s.listener >= i64(0) && fd2 == s.listener {
-            /* 一轮最多 accept 一个：多的留在 backlog，下一轮还会报。
-             * **就此停止排空**：listener 是 level-triggered，只要 backlog 里还有人它就一直是"可读"，
-             * 继续排空只会一次次拿到同一个 listener fd（实测：排空循环死转）。 */
-            if accepted < i64(0) { accepted = net::extc_sock_accept(s.listener) }
-            draining = false
-        } else if s.nready < i64(64) {
-            s.ready[s.nready] = fd2
-            s.nready = s.nready + i64(1)
-        }
-        fd2 = net::extc_epoll_wait(s.ep, i64(0))
-        if fd2 < i64(0) { draining = false }
-    }
-    /* ③ 一遍扫表：谁在等这些 fd 里的某一个，就把它恢复（请求读在 send 之前）。
-     *    同一轮的多个事件一起处理 ⇒ 不再是"每个事件一趟全表"。 */
-    var j: i64 = 0
-    while j < s.used {
-        if !s.done[j] && s.started[j] {
-            var want: i64 = s.tasks[j].value()
-            var k: i64 = 0
-            var hit: bool = false
-            while k < s.nready && !hit {
-                if s.ready[k] == want { hit = true }
-                k = k + 1
-            }
-            if hit && !s.tasks[j].send(want) { release(s, j) }
-        }
-        j = j + 1
-    }
-    return accepted
-}
-
-/* 一直跑到所有任务结束（没有 listener 的用法）。 */
-fn runEpoll(s: mut ref loop, timeout_ms: i64) -> i64 {
-    while s.live > i64(0) {
-        var r: i64 = pump(s, timeout_ms)
-        if r == i64(-2) { break }        /* 超时：不再空转 */
-    }
-    return s.live
 }

@@ -22,8 +22,9 @@ fn worker(step: i64) -> coroutine<i64> {
 
 fn main() -> i32 {
     var s: sched::loop
-    sched::add(ref s, worker(i64(10)))
-    sched::add(ref s, worker(i64(100)))
+    var tasks: sched::tasks<i64> = { rows: sched::newRows() }
+    tasks.add(ref s, worker(i64(10)))
+    tasks.add(ref s, worker(i64(100)))
 
     var order: mut slice<i64> = new i64[12]
     var k: i64 = 0
@@ -36,9 +37,9 @@ fn main() -> i32 {
     var k2: i64 = 0
     while k2 < i64(12) {
         var i: i64 = order[k2]
-        if sched::step(ref s, i) {
-            if i == i64(0) { last0 = s.tasks[0].value() }
-            if i == i64(1) { last1 = s.tasks[1].value() }
+        if tasks.step(ref s, i) {
+            if i == i64(0) { last0 = tasks.rows.vals[0].h.value() }
+            if i == i64(1) { last1 = tasks.rows.vals[1].h.value() }
         }
         k2 = k2 + 1
     }

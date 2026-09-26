@@ -53,6 +53,7 @@ fn main() -> i32 {
 
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(96) }   /* listener = srv */
+    var tasks: sched::tasks<i64> = { rows: sched::newRows() }
 
     /* 一个循环里干三件事：accept ⇒ 交给新任务 ⇒ **非阻塞**收回声。
      * 单线程里绝不能阻塞在读上 ✗（那正是第一版卡住的地方）—— 收不到就继续 pump ✓，有轮数上限兜底 ✓。 */
@@ -63,9 +64,9 @@ fn main() -> i32 {
     var sum: i64 = 0
     var spins: i64 = 0
     while left > i64(0) && spins < i64(200000) {
-        var fd: i64 = sched::pump(ref s, i64(0))
+        var fd: i64 = tasks.pump(ref s, i64(0))
         if fd >= i64(0) {
-            if !sched::add(ref s, conn(fd, scratch)) { return i32(95) }   /* 槽位没复用上 */
+            if !tasks.add(ref s, conn(fd, scratch)) { return i32(95) }   /* 表会长，这里不该失败 */
             accepted = accepted + 1
         }
         i = 0

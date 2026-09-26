@@ -37,9 +37,10 @@ fn main() -> i32 {
     if srv < i64(0) { return i32(1) }          /* 端口被占 */
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(2) }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows() }
     while true {
-        var fd: i64 = sched::pump(ref s, i64(50))
-        if fd >= i64(0) && !sched::add(ref s, conn(fd)) {
+        var fd: i64 = tasks.pump(ref s, i64(50))
+        if fd >= i64(0) && !tasks.add(ref s, conn(fd)) {
             var bad: i32 = io::close(i32(fd))  /* 表满：这个连接不要了 */
             if bad != i32(0) { return i32(3) }
         }
