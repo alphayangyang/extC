@@ -1194,9 +1194,52 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                    || callee->addrMask != 0 || callee->homeAddrMask != 0
                    || callee->otherMask != 0;
     if (!addrMaybe && !contMaybe) return;
-    int h;
-    if (homeDepth != 0) h = (homeDepth < 0) ? 0 : homeDepth;
-    else h = (c->curFunc && c->curFunc->needsHome) ? 0 : c->scopes.len;
+    /* The bound is the DESTINATION's own measured depth (below), falling back to the
+     * caller's body depth. The old `needsHome => 0` and `homeDepth < 0 => 0` guesses are
+     * gone on purpose: both collapsed to "must live in the home arena" for any argument
+     * living in any block, which rejected safe programs (this function's own comment used
+     * to call the second one "too strict for a local `mut ref` argument"). A destination
+     * that is really home-promoted reports depth 0, so h = 0 still happens when it must. */
+    int h = (homeDepth > 0) ? homeDepth : (int)c->scopes.len;
+    /* PRECISION: the destination is one of the `ref`-typed arguments. The callee may store a
+     * value it received into any of them, so that value has to outlive every one of them:
+     * take the shallowest (longest-lived) destination, never a deeper one than the caller's
+     * own body. This replaces the old "the caller owns a home arena => h = 0" fallback,
+     * which rejected every argument that lived in any block at all (see
+     * docs/topics/CONCURRENCY.md, debt 15).
+     *
+     * min() can only make the requirement STRICTER than the destination really demands, so
+     * nothing that was rejected for a real lifetime reason becomes accepted; the guards stay
+     * `tests/errors/ref_arg_too_deep` and `tests/errors/borrowed_into_param_place`, and a
+     * destination that lives forever (depth 0) still forces depth 0 on the source. */
+    /* Only when the callee did NOT declare its arena (`homeDepth > 0` is an explicit
+     * declaration and stays authoritative -- narrowing it further rejected four examples:
+     * examples/borrowing, examples/container-of-view, examples/stream-sum,
+     * tests/traps/main_question). */
+    if ((addrMaybe || contMaybe) && homeDepth <= 0) {
+        bool haveDest = false;
+        for (size_t i2 = 0; i2 < params->len && i2 < args->len; i2++) {
+            Param *p2 = *(Param **)vecAt(params, i2);
+            if (!p2->type || p2->type->kind != TY_REF) continue;
+            Expr *a2 = *(Expr **)vecAt(args, i2);
+            Expr *place2 = (a2->kind == EX_REF) ? a2->u.ref.operand : a2;
+            /* NOTE: a generic parameter (`mut ref table<T>`) is NOT skipped here, unlike in
+             * the bit-mask loops: this bound only ever LOWERS h (stricter), and the place's
+             * depth does not depend on T. Skipping it left "no measurable destination" and
+             * fell back to the strict 0, which is what kept rejecting the safe call. */
+            /* The SAME query the store rules use below: for a container the interesting
+             * lifetime is that of its storage (the pool plate), which is what
+             * `exprRefDepth` reports; `placeDepth` answers about the 40-byte handle instead
+             * and disagrees with it, which is what made the first attempt pick h = 0. */
+            int d2 = exprRefDepth(c, place2);
+            if (d2 == 0) { h = 0; haveDest = true; break; }   /* lives forever: the strictest */
+            if (!haveDest || d2 < h) h = d2;
+            haveDest = true;
+        }
+        /* Nothing measurable to store into, or a summary that is not proven complete: stay
+         * strict, exactly as before this change. */
+        if (!haveDest && (homeDepth < 0 || !complete)) h = 0;
+    }
 
     for (size_t i = 0; addrMaybe && i < params->len; i++) {
         Param *p = *(Param **)vecAt(params, i);
