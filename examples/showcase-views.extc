@@ -1,0 +1,17 @@
+/* ③ 视图：拷贝是默认，零拷贝要签字 —— 而且 Arena 底的视图不悬垂，只会"停在快照上" */
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    var s: string = string::withCap(i64(8))
+    s.append("hello world")
+
+    let copy: slice<u8> = s.toSlice()            /* 拷贝：可以存、可以返回 */
+    let view: slice<u8> = s.subView(i64(0), i64(5))   /* 零拷贝：只在字符串不再变化时有效 */
+
+    var i: i64 = 0
+    var acc: i64 = 0
+    while i < view.len { acc = acc + i64(view[i])  i = i + i64(1) }
+    io::cout << "copy.len=" << copy.len << " view=" << view.len << " sum=" << acc << "\n"
+    return 0
+}

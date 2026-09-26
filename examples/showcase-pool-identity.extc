@@ -1,0 +1,25 @@
+/* ② 池：同一格，不同代 —— 陈旧句柄永远不会指向别人的值 */
+use std::io
+use stl::pool
+
+fn main() -> i32 {
+    var p: pool<i64> = pool<i64>::withCap(i64(4))
+    let h1 = p.insert(i64(111))
+    let h2 = p.insert(i64(222))
+    io::cout << "h1 格=" << i64(h1.slot) << " 代=" << i64(h1.gen) << "\n"
+    io::cout << "h2 格=" << i64(h2.slot) << " 代=" << i64(h2.gen) << "\n"
+
+    p.remove(h1)                                  /* 该槽位换代（旧句柄从此失效）*/
+    let h3 = p.insert(i64(333))                   /* 复用同一格 */
+
+    io::cout << "h3 格=" << i64(h3.slot) << " 代=" << i64(h3.gen) << "\n"
+    match p.get(h1) {
+        some(v) => { io::cout << "陈旧句柄读到 " << v << "（不应该发生）\n" }
+        none    => { io::cout << "陈旧句柄 → none（不会指向 h3 的 333）\n" }
+    }
+    match p.get(h3) {
+        some(v) => { io::cout << "h3 → " << v << "\n" }
+        none    => { io::cout << "h3 读不到（不应该发生）\n" }
+    }
+    return 0
+}

@@ -1,0 +1,12 @@
+/* ⑤ 互操作：与 C 同层 —— extern! 声明一个黑盒，并声明它的影响 */
+use std::io
+
+extern!("libc") fn getpid() -> i32
+    effects Addr=0 Cont=0
+
+fn main() -> i32 {
+    let pid = getpid()
+    io::cout << "pid=" << i64(pid) << "（来自 libc，直通 C ABI）\n"
+    io::cout << "pid>0=" << (pid > i32(0)) << "\n"     /* 供判据逐字比较的那一行 */
+    return 0
+}

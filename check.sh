@@ -140,6 +140,11 @@ if out=$(timeout 600 ./tests/hashmap/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"
 else bad "tests/hashmap/run.sh"; echo "$out" | tail -8; fi
 
+echo "== 展示代码（examples/showcase-*.extc：文档里的六段，每次编译并运行）=="
+if out=$(timeout 300 bash tests/showcase/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（Arena 返回值 · home 机制 · 池身份 · 视图 · impl · extern!）"
+else bad "tests/showcase/run.sh"; echo "$out" | tail -8; fi
+
 echo "== STL 库（一个库装所有动态容器；容器建在池上 —— 见 POOLS.md 期 3）=="
 if out=$(timeout 600 ./tests/stl/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（vector：翻倍/dense 连续/shrink/clear · ASan）"

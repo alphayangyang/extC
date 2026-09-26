@@ -1,0 +1,29 @@
+/* ① 零标注：谁活多久，编译器自己算 */
+use std::io
+
+struct point { x: i64  y: i64 }
+
+/* 没有 free、没有生命周期标注、没有所有权标记。
+ * 返回值的缓冲区落在**调用者**选的地方（home 机制）⇒ 返回值合法且安全。 */
+fn build(n: i64) -> varArray<point> {
+    var out: varArray<point> = varArray<point>::withCap(i64(4))
+    var i: i64 = 0
+    while i < n {
+        out.push(point { x: i, y: i * i })
+        i = i + i64(1)
+    }
+    return out
+}
+
+fn main() -> i32 {
+    let ps = build(i64(5))
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < ps.size() {
+        let p = ps.get(i) ?? point { x: i64(0), y: i64(0) }
+        sum = sum + p.y
+        i = i + i64(1)
+    }
+    io::cout << "n=" << ps.size() << " sum(y)=" << sum << "\n"
+    return 0
+}

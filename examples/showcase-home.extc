@@ -1,0 +1,18 @@
+/* ⑥ home 机制：被调者的分配落在**调用者**选的地方 —— 编译器把这件事直接报出来 */
+use std::io
+
+fn squares(n: i64) -> slice<i64> {
+    var out: mut slice<i64> = new i64[n]      /* 这个分配点由调用者决定归属 */
+    var i: i64 = 0
+    while i < n { out[i] = i * i  i = i + i64(1) }
+    return out
+}
+
+fn main() -> i32 {
+    let s = squares(i64(6))
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < s.len { sum = sum + s[i]  i = i + i64(1) }
+    io::cout << "len=" << s.len << " sum=" << sum << "\n"
+    return 0
+}
