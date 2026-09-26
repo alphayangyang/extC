@@ -3237,21 +3237,32 @@ static void genStmtInner(CG *g, Stmt *s) {
             }
             /* `var __extc_it = c.iter()`: the alias the `for` retargeting introduces. The frame is
              * the iterator, so this is a pointer to it -- copying the frame would fork the state. */
-            const char *itName = s->u.var.cname ? s->u.var.cname : s->u.var.name;
-            if (itName && s->u.var.init && s->u.var.init->kind == EX_METHOD &&
-                strcmp(s->u.var.init->u.method.name, "iter") == 0 &&
-                s->u.var.init->u.method.recv->kind == EX_IDENT) {
-                Expr *rc = s->u.var.init->u.method.recv;
-                const char *rcn = rc->u.ident.cname ? rc->u.ident.cname : rc->u.ident.name;
-                for (size_t i = 0; i < g->coroVars.len; i++) {
-                    CoroVar *cv = *(CoroVar **)vecAt(&g->coroVars, i);
-                    if (!cv || !cv->cname || strcmp(cv->cname, rcn) != 0 || cv->ptr) continue;
-                    flushPrefix(g);
-                    cgLine(g, "%s *%s = &%s;", cv->frame, itName, rcn);
-                    CoroVar *nv = arenaAllocZero(g->arena, sizeof *nv);
-                    *nv = *cv; nv->cname = itName; nv->ptr = true;
-                    *(CoroVar **)vecPush(&g->coroVars) = nv;
-                    return;
+            /* Aliases of a coroutine: the `for` retargeting binds the subject first
+             * (`var __extc_s = c`) and then takes its iterator (`var __extc_it = __extc_s.iter()`),
+             * and both mean "the same state machine", never a copy -- copying a frame would fork the
+             * state. Both are therefore emitted as a pointer to the frame the spawn created. */
+            {
+                const char *alName = s->u.var.cname ? s->u.var.cname : s->u.var.name;
+                Expr *ini = s->u.var.init;
+                Expr *src = NULL;
+                if (ini && ini->kind == EX_IDENT) src = ini;                 /* `var s = c` */
+                else if (ini && ini->kind == EX_METHOD &&
+                         strcmp(ini->u.method.name, "iter") == 0 &&
+                         ini->u.method.recv->kind == EX_IDENT)
+                    src = ini->u.method.recv;                                /* `var it = s.iter()` */
+                if (alName && src) {
+                    const char *srcName = src->u.ident.cname ? src->u.ident.cname : src->u.ident.name;
+                    if (srcName && g->coroVars.arena)
+                    for (size_t i = 0; i < g->coroVars.len; i++) {
+                        CoroVar *cv = *(CoroVar **)vecAt(&g->coroVars, i);
+                        if (!cv || !cv->cname || strcmp(cv->cname, srcName) != 0) continue;
+                        flushPrefix(g);
+                        cgLine(g, "%s *%s = %s%s;", cv->frame, alName, cv->ptr ? "" : "&", srcName);
+                        CoroVar *nv = arenaAllocZero(g->arena, sizeof *nv);
+                        *nv = *cv; nv->cname = alName; nv->ptr = true;
+                        *(CoroVar **)vecPush(&g->coroVars) = nv;
+                        return;
+                    }
                 }
             }
             /* A frame field is not declared here: the frame struct holds it, and the assignment is

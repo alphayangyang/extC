@@ -14,8 +14,8 @@ b2=$tmp/coro_drive
 if "$EXTC" -w --no-line-map -o "$b2.c" tests/coro/coro_drive.extc >/dev/null 2>&1 \
    && gcc -std=c11 -fwrapv -Wall -Werror -o "$b2" "$b2.c" 2>"$tmp/b2c"; then
     out=$("$b2"); rc=$?
-    if [ "$out" = "0 1 2 " ] && [ "$rc" = 3 ]; then
-        echo "  ok   coro_drive         ->  spawn + next/value 跑出 [$out] 退出码 $rc（和 3 次 yield 一致）"
+    if [ "$out" = "0 1 2 | 0 1 2 3 " ] && [ "$rc" = 9 ]; then
+        echo "  ok   coro_drive         ->  spawn + next/value 与 for-in 都跑出 [$out] 退出码 $rc（3+6=9 与 yield 次数一致）"
         pass=$((pass+1))
     else
         echo "  FAIL coro_drive         ->  输出 [$out] 退出码 $rc"; fail=$((fail+1))

@@ -1,12 +1,11 @@
-/* 切片 B2a 判据：**spawn + 驱动**端到端可跑 ✓
+/* 切片 B2 判据：**spawn + 驱动**端到端可跑，两种驱动形式都验 ✓
  *
- *   `let c = counter(i64(3))`      ⇒ 帧是一个普通值，实参初始化参数
- *   `while c.next() { c.value() }` ⇒ next 走 step（状态机），value 读返回槽
+ *   `while c.next() { c.value() }`  显式驱动（协议的三个名字）
+ *   `for x in c { … }`              同一个协议 —— for 会改写成
+ *                                   `var __extc_s = c` / `var __extc_it = __extc_s.iter()` /
+ *                                   `while __extc_it.next()` / `var x = __extc_it.value()`
  *
- * 判据（tests/coro/run.sh）：生成 C、gcc 编译、**真的跑起来**，输出必须正好是 `0 1 2 ` ✓
- * （与 tests/coro/statemachine.extc 那套手写状态机的语义一致 ✓）
- *
- * `for x in c`（迭代器协议那条路）还没接上 ⇒ 见 CONCURRENCY.md 4.4 的 B2 状态 ✓ */
+ * 判据（tests/coro/run.sh）：生成 C、gcc 编译、真的跑，输出与退出码都要对 ✓ */
 use std::io
 
 fn counter(n: i64) -> coroutine<i64> {
@@ -18,11 +17,19 @@ fn counter(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    let c = counter(i64(3))
     var n: i64 = 0
-    while c.next() {
-        io::cout << c.value() << " "
-        n = n + c.value()
+
+    let a = counter(i64(3))
+    while a.next() {
+        io::cout << a.value() << " "
+        n = n + a.value()
+    }
+    io::cout << "| "
+
+    let b = counter(i64(4))
+    for x in b {
+        io::cout << x << " "
+        n = n + x
     }
     io::cout << "\n"
     return i32(n)
