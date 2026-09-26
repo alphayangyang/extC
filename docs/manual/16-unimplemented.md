@@ -50,5 +50,6 @@
 
 - **`trait` / `dyn Trait`**：**第一期已落地**（`trait` 声明 · `impl Trait for T` · 四条检查 ·
   静态分发；见 [结构体与方法 §7.2](08-struct.md)）。**仍缺**：`T: Trait` 上界 · `dyn Trait` 值
-  （第二期，设计与第二、三期范围见 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)）· 关联类型与关联常量 ·
+  （第二期已开工：设计与四阶段计划见 [`docs/topics/DYN.md`](../topics/DYN.md)；
+  第一期七条决策见 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)）· 关联类型与关联常量 ·
   trait 默认方法 · 孤儿规则与跨 trait 撞名的专门诊断。
