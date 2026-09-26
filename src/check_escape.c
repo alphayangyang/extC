@@ -306,6 +306,12 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
 
 int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
+    /* `dyn Trait(x)`: the handle lives in the pool, but the payload is **copied** into it, so
+     * whatever the payload refers to is referred to by this value too. The type test below would
+     * answer "this cannot carry a reference" (`dyn T` carries none), and that is how a payload's
+     * view of a stack local slipped past the scope rule -- family E, see
+     * `tests/arena-soundness/E1_dyn_payload_carries_ref.extc`. */
+    if (e->kind == EX_DYN) return exprRefDepth(c, e->u.dynv.payload);
     /* The only reason to answer without looking: this type cannot carry a reference.
      * A type that mentions a type parameter must not take this exit. Inside a generic
      * body the depth is computed under the assumption that the parameter may carry a
@@ -336,11 +342,6 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_SIGN:
         /* `p!` only drops nullability; it still refers to the same storage. */
         d = exprRefDepth(c, e->u.sign.operand);
-        break;
-    case EX_DYN:
-        /* Same reasoning as `valDepthStructural`: the payload is copied into the pool, so the
-         * references it carries are the references this value carries. */
-        d = exprRefDepth(c, e->u.dynv.payload);
         break;
     case EX_NEW:
     case EX_GENCALL:
@@ -546,6 +547,8 @@ static bool placeIsBorrowed(Checker *c, Expr *e) {
  *     a generic body consumes this answer at instantiation. */
 static bool exprBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
+    /* The payload is copied into the pool, so this value borrows whatever the payload borrows. */
+    if (e->kind == EX_DYN) return exprBorrowed(c, e->u.dynv.payload);
     /* The only reason to answer without looking: this type cannot carry a reference.
      * A type that mentions a type parameter must not take this exit -- the deferred check
      * recorded for a generic body needs this answer.
@@ -685,6 +688,9 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
  *     rejection.
  */
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
+/* `dyn Trait(x)` carries its payload with it, so the payload's allocation sites have to reach the
+ * level this value has to reach -- exactly what the rest of this function does for a struct. */
+
 bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops);
 /* Promote every allocation site inside a value to the level that value has to reach.
  *
@@ -947,6 +953,9 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
      * cap means the value cannot be promoted, so the caller falls back to reporting the
      * error -- the safe direction. */
     if (hops > 32) return false;
+    /* `dyn Trait(x)`: the payload is copied into the pool and the handle keeps it alive, so the
+     * payload's allocation sites have to reach the level this value has to reach. */
+    if (val->kind == EX_DYN) return promoteInto2(c, val->u.dynv.payload, at, hops + 1);
     /* Record one fact in passing. This does not change any behaviour.
      *
      * Only at the outermost level (`hops == 0`): a replay re-runs exactly this level, and the

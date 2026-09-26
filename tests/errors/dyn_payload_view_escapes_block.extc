@@ -1,0 +1,47 @@
+/* 曾经的反例（族 E，2026-09-26 修好）：**带引用的 dyn 载荷不许越出存储的作用域**。
+ *
+ * 这个文件现在住在 `tests/errors/`，即"必须被**拒绝**"那一套 ⇒ 它钉住的是修复本身：
+ * 一旦哪天载荷的引用又变得"看不见"，这条用例会立刻红 ✓
+ *
+ * 探针问题：`dyn` 载荷能不能携带**引用**？
+ *
+ * 载荷会被**拷进池**（池活得比创建它的块久）。若载荷里有一个指向**创建者块**内存储的视图，
+ * 那么块一结束、那份 arena 存储就被回收，而池里的副本仍指着它 ⇒ 就是一条活得比地方久的引用。
+ *
+ * 这正是并发那套规则里的第二条（"跨任务只允许传值或池句柄，禁止传 arena 引用"）在 dyn 上的体现：
+ * 只不过 **dyn 已经是一个"跨任务"通道了**（句柄可以被存下来、交给别的任务）。
+ *
+ * 期望（若模型是保守的）：编译器**拒绝**块内那次赋值（或把载荷的引用提升到 home 层）。
+ * 现状（2026-09-26 修好后）：**REJECT**，诊断与"不带 dyn 的裸视图"**完全同形**
+ * （`borrowed from depth 2, but this can only hold up to depth 1`）⇒ dyn 的行为终于与它承载的值一致 ✓
+ *
+ * 修法是让载荷参与逃逸/深度判断：`exprRefDepth` 与 `exprBorrowed` 的"类型不带引用 ⇒ 直接返回"
+ * 早退为 `EX_DYN` 让路，`valueMayCarryRef`/`promoteInto2`/`valueLevel`/`depthComesFromAlloc2`/
+ * `solvedValDepth` 五个遍历器补上"跟随载荷"（family E，见 CONCURRENCY.md §12.1b）✓ */
+use std::io
+
+trait Peek { fn peek(self: ref Self) -> i64 }
+
+struct holder { v: slice<i64> }
+impl Peek for holder { fn peek(self: ref holder) -> i64 { return self.v[0] } }
+
+fn main() -> i32 {
+    var a0: [2]i64 = [7, 8]
+    var d: dyn Peek = dyn Peek(holder { v: a0[0..2] })   /* 合法：a0 活得比 d 久 */
+
+    {
+        /* 载荷里的视图指向**本块**的存储；而 d 活在块外 ⇒ 应当被拒绝（或把引用提升到 home 层）。
+         *
+         * 实测：编译器**接受**（零告警），ASan 报 `stack-use-after-scope`（`holder_peek` 里那次读）。
+         * 根因与那 16 处手写遍历器同源：`dyn T(x)` 在逃逸/作用域分析眼里是个**不透明值**
+         * （类型 `dyn T` 不带引用）⇒ **载荷里的引用看不见** ⇒ 作用域规则被绕过 ✓
+         *
+         * 这条正是并发规则 #2（"跨任务只能传值或池句柄，禁止传 arena 引用"）在 **dyn 上**的版本 ——
+         * 而 dyn 就是未来跨任务传值的通道 ⇒ 必须先修掉它，并发才谈得上 sound ✓ */
+        var a: [4]i64 = [11, 22, 33, 44]
+        d = dyn Peek(holder { v: a[0..2] })
+    }
+
+    io::cout << "peek=" << d.peek() << "\n"              /* 若上面被放过：这里读的是已回收的存储 */
+    return 0
+}

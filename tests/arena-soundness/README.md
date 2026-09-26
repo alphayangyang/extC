@@ -28,6 +28,7 @@
 | **B · 字段表/整根记账被**覆盖** | `refreshRootDepth`（`check_top.c:882`）是覆盖不是 `max`；非引用型目标的赋值**完全不更新字段表**（`check_stmt.c:229-233` 只覆盖字面量初始化）；`check_escape.c:132` 整值读取只看一个数；`check_escape.c:96` 早退把 `TY_REF` 判成"没有引用" | `A_field_root_lowered`、`B_field_table_stale`、`C1_if_join_fieldcell`、`C2_if_join_refbinding`、`C3_if_join_wholevalue`、`D_elemwrite_clears_table`、`G_stale_origin` |
 | **C · 表达式语句不算逃逸** | `markNamesInStmt` 的 **`ST_EXPR → false`**（`check_top.c:777`）⇒ 经**调用**发布出去的局部不进 E ⇒ `callHomeDepth` / 方法接收者那一支把它当成"深度 1 = 调用者的帧" ⇒ `arenaArg = &本帧arena`（**被调者自己的帧！**）⇒ 调用一返回就 release | `B2_exprstmt_blindspot`、`B3_exprstmt_method` |
 | **D · `ARENA_HOME` 被当成"深度 0"** | `ARENA_HOME` 实际是**调用者按"这次调用的结果存在哪"选的那只**（`markCallHomeIfEscaping`，`check_top.c:618`）；结果存在块里 ⇒ 家 = **块 arena**。而深度修正只覆盖 `EX_CALL/EX_METHOD`（`check_stmt.c:216-224`）⇒ `EX_ASSOC`/字面量包着的调用保持"深度 0" ⇒ 之后发布进调用者对象被放行 | `D1_assoc_publish_home`、`D2_publish_home_block` |
+| ~~**E · 跨任务值（`dyn` 载荷）里的引用看不见**~~ ✅ **已修（2026-09-26）** | `dyn T(x)` 在逃逸/作用域分析眼里是**不透明值**（类型 `dyn T` 不带引用）⇒ 载荷里的视图绕过作用域规则。实测：`stack-use-after-scope`，`holder_peek` 里那次读 ✓ **这是并发规则 #2 在 dyn 上的版本** ⇒ 已修，本条**毕业**进 `tests/errors/dyn_payload_view_escapes_block.extc`（"必须被拒绝"那一套）| — |
 | **F · `@overwrite` 复用格活过了它赖以分配的那只 arena** ✅ **已修（方案 A/B2）** | 旧：格子住**调用者帧**、buffer 住**被调者帧** ⇒ 第二次执行同一调用点对着已 free 的块 `memset`。新：格子永远住本帧 + 格子自带 `home`（有家 ⇒ `__extc_home`，否则 ⇒ `&__extc_a[1]`）⇒ **同生共死** ⇒ 见 `ARENA-SOUNDNESS.md` §10 | `F_overwrite_reuse_cell`（修后 **ACCEPT+CLEAN** ⇒ 应从本库毕业，搬进 `tests/asan/`）|
 
 ## 另外三族（不是内存不安全，但是真缺陷）

@@ -941,6 +941,9 @@ static bool valueMayCarryRef(Expr *v) {
         return true;
     /* These shapes are decided by what they hold. */
     case EX_IDENT:      return true;      /* a binding: unknown content => conservative */
+    /* `dyn Trait(x)`: the payload is copied into the pool, so the references it carries are
+     * carried by this value (family E). */
+    case EX_DYN:        return valueMayCarryRef(v->u.dynv.payload);
     case EX_SIGN:       return valueMayCarryRef(v->u.sign.operand);
     case EX_COALESCE:   return valueMayCarryRef(v->u.coalesce.main)
                             || valueMayCarryRef(v->u.coalesce.fallback);
@@ -2530,6 +2533,8 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
     if (!e || hops > 32) return false;
     switch (e->kind) {
     case EX_NEW: case EX_GENCALL: return true;
+    /* A `dyn` value's depth comes from its payload, which is copied into the pool. */
+    case EX_DYN: return depthComesFromAlloc2(c, e->u.dynv.payload, hops + 1);
     /* Follow the origin: `var v = { buf: new T[cap], ... }  return v` reports `v`, a
     * binding, at the moment the error is raised, and its depth is decided by the `new`
     * it came from. Measured: the diagnostic said `kind=4 dca=0 svd=0` while the depth
@@ -2577,6 +2582,8 @@ static int solvedValDepth(Expr *e) {
         return arenaDepthOf(e->arenaLevel);
     case EX_IDENT: case EX_FIELD: case EX_INDEX:
         return e->refDepth > 0 ? e->refDepth : 0;
+    /* The payload is copied into the pool: its depth is this value's depth (family E). */
+    case EX_DYN:      return solvedValDepth(e->u.dynv.payload);
     case EX_SIGN:     return solvedValDepth(e->u.sign.operand);
     case EX_DEREF:    return solvedValDepth(e->u.deref.operand);
     case EX_SLICE:    return solvedValDepth(e->u.slice.obj);
@@ -2727,6 +2734,8 @@ typedef struct {
 static int  symLevel(LvlState *ls, Sym *sy);
 static bool setSymLevel(LvlState *ls, Sym *sy, int lv);
 static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
+/* The carrier chain of a `dyn Trait(x)` continues into its payload: the payload is copied into
+ * the pool, so it must live as long as this value must. */
 
 /* Walk a value's carrier chain and return the level the value itself has to live at.
  *
@@ -3048,6 +3057,9 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
      * the block. */
     switch (val->kind) {
     case EX_IDENT:  return symLevel(ls, identBindOf(val));
+    /* `dyn Trait(x)`: the carrier chain continues into the payload (it is copied into the pool,
+     * so it has to live as long as this value does). */
+    case EX_DYN:    return valueLevel(c, ls, val->u.dynv.payload, hops + 1);
     /* The join node of an `if`: `h = g` in one arm and `h = zero` in the other is one
      * value with two operands. Since either operand can be what the binding ends up
      * holding, the requirement is the smaller of the two, compared with `dest` as well. */
