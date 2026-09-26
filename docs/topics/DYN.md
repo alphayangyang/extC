@@ -164,6 +164,66 @@ extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间�
 
 ### 阶段 2 · 表进池 + 取表前校验世代（第二期的核心）
 
+#### 设计（2026-09-26 定，下一轮照此实现）
+
+**① dyn 池是"地方的"池，不是程序全局的**
+
+dyn 值的载荷是**一份拷贝**，它必须有个拥有者。选择**当前 place（zone）**：第一次在该 zone 里构造 dyn 值时，
+惰性建一只**对象表池**（`extc_pool_new_table`），把它的 id 记在 **zone 记录**里（`ExtcZone` 加一个字段，
+与既有的 `firstPool`/`color` 同一张表）。于是：
+
+- 离开这个 place ⇒ zone 退出 ⇒ 池被丢 ⇒ **它的世代前进** ⇒ 旧 dyn 值**必然 trap**（这正是阶段 2 要的判据）；
+- 不需要新的生命周期机制 —— 复用 zone 的进入/退出与 `extc_pool_drop`；
+- 也**不会**把载荷的寿命拉长到超出它的地方（与 arena/zone 的口径一致）。
+
+**② 值的形状：`{ pid, slot, gen }`（与池句柄同形，可复制、纯值）**
+
+池里有两样东西：
+- **槽表**（每次增长翻倍）：每槽 `{ int64_t gen; int64_t live; void *addr; const void *vt; }`；
+- **载荷**：从池自己的 plate 取块存放（`extc_pool_take`）。
+
+**墓碑**：删除把 `live` 置 0（内存不还，槽可复用 ⇒ 复用时代 `gen++`）——
+这正是 `POOL-SOUNDNESS` INV-A 说的"删除用墓碑"。
+
+**③ 派发前的校验（O5 的核心）**
+
+```c
+/* 运行期两个新助手（放进 src/pools.c 的池运行期文本里，与既有 extc_pool_* 同区） */
+ExtcDynHandle extc_dyn_put(const void *payload, int64_t size, const void *vt);
+const void   *extc_dyn_vt(ExtcDynHandle h, const char *file, int line);   /* 不合法就 trap */
+```
+
+`extc_dyn_vt` 做三件事：① `pid` 必须是一只活着的**对象表**池；② 槽必须在界内且 `live`；
+③ **`slot` 的世代必须等于值里带的世代**。任一条不成立 ⇒ **trap**（带源位置）。
+只有全部通过，才把 `vt` 交给调用点。
+
+**为什么这样就够**：`vt`（表指针）存在**槽里**，不在值里。因此"槽被复用成另一个实现"这种情况，
+**世代检查会先失败** ⇒ 旧值永远读不到新实现的表 ⇒ `POOL-SOUNDNESS` 的 E3（类型混淆）被结构性排除，
+而不是靠"运气好"。
+
+**④ 生成物形状（预期）**
+
+```c
+/* dyn Tag(b).tag() */
+ExtcDynHandle __extc_dyn0 = extc_dyn_put(&(b), sizeof(box), &extc_vt$Tag$box);
+const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
+((const struct extc_vt$Tag$box_t *)__extc_vt0)->tag(&(b));
+```
+
+载荷的地址从**值**里取（`addr`），不从栈上取 —— 这是阶段 2 与阶段 1 的关键差别：
+阶段 1 直接 `&(b)`，阶段 2 必须用池里的地址，否则"拷贝进池"没有意义。
+
+**⑤ 判据（三条，按重要性排序）**
+
+1. **`dyn_no_wrong_dispatch.extc`（O5 的核心）**：构造 A 的值 → 丢/复用它所在的 place 让槽被 B 复用 →
+   用旧值派发 ⇒ **必须 trap**，且**绝不能**调用到 B 的方法（判据要能区分"trap"与"调错"）；
+2. `dyn_stale_trap.extc`：存下 dyn 值 → 离开 place → 派发 ⇒ trap；
+3. **防回归**：程序里出现 dyn 时，生成物中**必须**出现 `extc_pool_new_table`（不是 `extc_pool_new`）
+   —— 这条挡住"忘了用对象表模式"这类事故（与 `tests/pool/rt_table_first.extc` 同一族）。
+
+#### 原范围记录（保留）
+
+
 - **交付**：dyn 值落到**对象表池**（`extc_pool_new_table`）；表本身也在池里；
   派发前校验 `gen`；陈旧值 **trap**（临时决定 A）。
 - **判据**：
