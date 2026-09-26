@@ -390,7 +390,33 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 提交：`b67a28c`（阶段 1）· `8e3b42b`（object safety）· `9f9bcab`/`3c4191e`（运行期）· `29efaad`（接线）·
 `50e4925`（O5 行为判据）· `262ec44`（载荷实现检查）· `527a302`/`0ec7ad6`/`edeffd6`（文档）。
 
-### 阶段 3（未实现）：六处改动 + 两条判据翻面
+### 阶段 3（进行中）：**实测地图**（2026-09-26，探针结论）
+
+> **更正**：本节此前写"新增 `TypeKind` 会触发 `-Wswitch`，必须一次改完六处" —— **实测为假**。
+> 加 `TY_DYN` 后构建**零告警**（那些 switch 都带 `default`）。改动可以增量落地。
+
+探针实测（`/tmp` 里的四个小程序）确定了每一步的现状：
+
+| 位置 | 现状 | 还差什么 |
+|---|---|---|
+| `dyn Tag` 作**参数类型** | ✅ 已接受（无诊断） | —— |
+| `dyn Tag` 作**字段类型** | ✅ 已接受（无诊断） | —— |
+| `d.tag()`，接收者是 `dyn Tag` | ❌ `no method \`tag\` on \`Tag\`` | 检查器：接收者类型是 `TY_DYN` ⇒ 在 **trait 签名**里找方法并定型 |
+| `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） | ❌ 被解析器拒绝（"must be called immediately"） | `EX_DYN` 表达式 + 检查器定型 `TY_DYN` + codegen 发 `extc_dyn_put` |
+| 具体值传 `dyn` 形参 | ✅ 被拒，信息清楚：``argument expects `Tag`, found `box` `` | 可选：诊断里提示写 `dyn Tag(x)` |
+
+**下一轮要一起做的三处（它们互相耦合，拆开会让构建半坏）**：
+1. `EX_DYN`（`dyn Trait(x)` 作值）—— 解析器构造 + 检查器定型 `TY_DYN`（"载荷实现了该 trait"的检查已在
+   `src/check_expr.c` 的 dyn 块里可复用）+ codegen 发 `extc_dyn_put` 表达式；
+2. **`genMethodCall` 分两种载荷来源**：接收者是 `EX_DYN` ⇒ 走今天那条（put → slot → 派发）；
+   接收者类型是 `TY_DYN` ⇒ **只发 `extc_dyn_slot(<值>, "file", line)`**，接收者取 `->addr`；
+3. 检查器：`TY_DYN` 接收者的方法在 trait 签名里找（`funcIsMethod`/object safety 的检查同样适用）。
+
+**判据**：翻面 `tests/dyn/errors/dyn_store.extc`（保存变合法 ⇒ 改成别的非法形状）；
+新增 `dyn_stored`（保存 + 派发，输出与立即形式一致）· `dyn_stale_stored`（语言级 O5）。
+**完成后**把 `SOUNDNESS.md` 的 O5 从 ⚠️ 翻 ✅，并在 §7.3 手册里把"现阶段只支持构造即调用"改成完整规则。
+
+### 原计划记录（含已被推翻的 `-Wswitch` 判断）
 
 1. `src/ast.h:28` 的 `TypeKind` 加 **`TY_DYN`**（`t->name` 存 trait 名，与 `TY_STRUCT` 同形）；
    ⚠️ **新增枚举值会让每个穷举 `TypeKind` 的 switch 触发 `-Wswitch`**（在 `-Wall` 里）⇒
