@@ -43,3 +43,20 @@ extern!("extc-runtime") fn extc_sock_accept(listener: i64) -> i64
 /* 把 fd 设成非阻塞。 */
 extern!("extc-runtime") fn extc_sock_nonblock(fd: i64) -> i64
     effects Addr=0 Cont=0
+
+/* loopback 上的 TCP 监听。端口传 0 表示让内核挑（用 `extc_sock_local_port` 读回来）。
+ * `sockaddr_in` 与字节序都在运行期里 —— extC 侧只收标量，和 AF_UNIX 那边同形。 */
+extern!("extc-runtime") fn extc_tcp_listen(port: i64, backlog: i64) -> i64
+    effects Addr=0 Cont=0
+/* 连到 loopback 上的某个端口。 */
+extern!("extc-runtime") fn extc_tcp_connect(port: i64) -> i64
+    effects Addr=0 Cont=0
+/* 这个 fd 绑在哪个端口上（配合 `port = 0` 用）。 */
+extern!("extc-runtime") fn extc_sock_local_port(fd: i64) -> i64
+    effects Addr=0 Cont=0
+/* 从偏移处写（部分写要接着写 ✓ extC 没有指针运算 ⇒ 偏移由运行期加）。 */
+extern!("extc-runtime") fn extc_sock_write_from(fd: i64, buf: ref u8, from: i64, n: i64) -> i64
+    effects Addr=0 Cont=0
+/* 半关写端：对端看到 EOF，这一侧还能把回声读回来。 */
+extern!("extc-runtime") fn extc_sock_shutdown_wr(fd: i64) -> i64
+    effects Addr=0 Cont=0

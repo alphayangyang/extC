@@ -81,3 +81,21 @@ while 还有活干 {
 `tests/coro/coro_epoll.extc` —— **8 条 AF_UNIX 连接、单线程、一个 epoll 循环**：每条连接一个协程，
 先写请求再跑循环，最后收回声累加，退出码 **36**（= 1+2+…+8），并要求 **ASan 干净**。数据在
 socketpair 的内核缓冲里 ⇒ 立刻可读 ⇒ 判据不靠 sleep、不靠时间。
+
+## 一个能连的 echo server
+
+`tests/coro/echo_server.extc` 是一个**手动连**的 echo server（刻意不注册进任何套件：它会一直服务到
+被中断）：
+
+    build/extc -w --no-line-map -o /tmp/es.c tests/coro/echo_server.extc
+    gcc -std=c11 -fwrapv -O2 -o /tmp/es /tmp/es.c && /tmp/es
+    printf 'hello\n' | nc 127.0.0.1 7654
+
+固定端口 7654（`SO_REUSEADDR` 已开）。每条连接一个协程，流式回显，对端半关就地收尾并 `close`
+（用的是 `std::sys::io` 的 `close`，不需要额外原语）。判据 `tests/coro/coro_echo.extc` 用同一个形状：
+4 条 TCP 连接、每连接两批数据（3 + 2 字节）、半关写端、收齐回声、任务全部收尾，退出码 50，并要求
+ASan 干净与常驻有界。
+
+**一条仍未解决的协议限制**：v1 的请求只能表达"等这个 fd **可读**"——正数表示等该 fd 可读，负数表示
+立刻再推。需要"等可写"的场景（对端读得慢、发送缓冲满）目前没有表达方式，因此连接协程的写法是
+**读完就地写回**（小批量下 `send` 立刻成功）。请求类型（以及 `coroutine<A,B>`）是这条的正式出路。

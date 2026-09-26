@@ -1,0 +1,48 @@
+/* 手动连的 **echo server**（刻意**不注册**进任何套件：它会一直服务到被 Ctrl-C ✓）。
+ *
+ *   build/extc -w --no-line-map -o /tmp/es.c tests/coro/echo_server.extc
+ *   gcc -std=c11 -fwrapv -O2 -o /tmp/es /tmp/es.c && /tmp/es
+ *   printf 'hello\n' | nc 127.0.0.1 7654        # 或者直接 nc 127.0.0.1 7654 手打
+ *
+ * 固定端口 7654（SO_REUSEADDR 已开）；每条连接一个协程、流式回显（部分写补齐）、
+ * 对端半关就地收尾并 close。形状与 tests/coro/coro_echo.extc 的判据一致，只是不设终止条件。 */
+use std::coro::scheduler as sched
+use std::sys::io
+use std::sys::net
+
+fn conn(fd: i64) -> coroutine<i64> {
+    var buf: mut slice<u8> = new u8[1024]     /* 自己的缓冲：帧 arena ⇒ 跨挂起仍然有效 */
+    var open: bool = true
+    while open {
+        var ready: i64 = yield fd            /* 请求：等这个 fd 可读 */
+        var n: i64 = net::extc_sock_read(fd, buf.data, i64(1024))
+        if n > i64(0) {
+            /* 读完就地写完再回去等（v1 的请求只能表达"等可读" ⇒ 不能等"可写"）*/
+            var off: i64 = i64(0)
+            while off < n {
+                var w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
+                if w > i64(0) { off = off + w }
+            }
+        } else if n == i64(0) {
+            open = false
+        }
+    }
+    var closed: i32 = io::close(i32(fd))
+    if closed != i32(0) { closed = i32(0) }
+    yield i64(-1)
+}
+
+fn main() -> i32 {
+    var srv: i64 = net::extc_tcp_listen(i64(7654), i64(64))
+    if srv < i64(0) { return i32(1) }          /* 端口被占 */
+    var s: sched::loop
+    if !sched::init(ref s, srv) { return i32(2) }
+    while true {
+        var fd: i64 = sched::pump(ref s, i64(50))
+        if fd >= i64(0) && !sched::add(ref s, conn(fd)) {
+            var bad: i32 = io::close(i32(fd))  /* 表满：这个连接不要了 */
+            if bad != i32(0) { return i32(3) }
+        }
+    }
+    return i32(0)
+}

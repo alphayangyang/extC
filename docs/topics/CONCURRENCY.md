@@ -706,6 +706,20 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 11. **"RSS 不线性涨"那句话要按实测改**：它就是**线性的**（每任务一份存储 ✓），赢在常数 ~180 B
     （对照 Go 2.8 KB）⇒ `bench/coro/RESULTS.md` 已写实 ✓ 这句话别再用 ✗。
 
+12. **请求只能表达"等可读"** ✗ —— v1 的 `yield` 槽：正数 = 等该 fd 可读，负数 = 立刻再推，**没有
+    "等可写"**（对端慢读、发送缓冲满时就无从表达 ⇒ 只能靠"读完**就地**写回"与小批量回避）。
+    正式出路是请求类型 / `coroutine<A,B>`。实测细节值得记：判据最初"过"是**走运** —— 客户端半关产生的
+    **粘性 EOF** 一直在唤醒任务 ✓；改成"读完就地写"之后才不依赖那条 ✓。
+13. **未使用的局部量会在生成物里留下未用变量** ✗ —— `var c: i32 = f()` 之后从不使用 ⇒ 生成的 C 报
+    `-Werror=unused-variable` ⇒ 破坏"生成物零告警"这条合同（踩到两次）。要么检查器把"未使用的局部量"
+    报出来，要么 codegen 声明后补一句 `(void)x;`。
+14. **echo server 已经能用** ✓ —— `tests/coro/echo_server.extc`（手动连 ✓ 固定端口 7654 ✓ 不注册进任何
+    套件，因为它一直服务到被 Ctrl-C）+ 判据 `tests/coro/coro_echo.extc`（TCP loopback、4 条连接、
+    每连接两批数据、半关收尾、`close`、退出码 50、ASan 干净、常驻有界）✓。事件层为此补了
+    `tcp_listen` / `tcp_connect` / `sock_local_port` / `sock_write_from` / `sock_shutdown_wr`（`sockaddr_in`
+    与字节序都留在运行期 ✓ extC 侧只收标量 ✓）；关 fd 直接用已有的 `sys::io` 的 `close`（同 `int close(int)`
+    ABI ✓ 不需要新原语 ✓）。
+
 **做的顺序（作者定）**：先 1/2/3（**补判据** ✓ 便宜且能把"说得太满"的地方钉实 ✓）⇒ 再 4（帧携带
 arena ✓ 解掉唯一的真洞 ✓）⇒ 再 5（任务表长起来 + `accept` ✓）⇒ 之后才是 `ext`/域 ✓ `coroutine<A,B>`
 ✓ trampoline ✓ 预算。**可移植性抽象要等这套地基定型再做**（否则白抽一遍 ✗）。

@@ -35,7 +35,11 @@ diagnose() {       # $1 = 用例名或 .extc 路径
     if ! gcc -std=c11 -fwrapv -Wall -Werror -o "$c.bin" "$c" 2> "$c.gccerr"; then
         echo "   gcc 失败："; sed 's/^/     /' "$c.gccerr" | head -12; return
     fi
-    local out; out=$("$c.bin" 2>&1); rc=$?
+    local out; out=$(timeout "${QC_RUN_TIMEOUT:-30}" "$c.bin" 2>&1); rc=$?
+    if [ "$rc" = 124 ]; then
+        echo "   跑出：**超时**（${QC_RUN_TIMEOUT:-30}s 没结束，多半挂住了）· 输出[$(printf '%s' "$out" | head -2 | tr '\n' '|')]"
+        return
+    fi
     echo "   跑出：退出码 $rc · 输出[$(printf '%s' "$out" | head -3 | tr '\n' '|')]"
 }
 

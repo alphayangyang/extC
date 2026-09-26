@@ -150,6 +150,32 @@ else
     echo "  FAIL coro_boxing        ->  $(head -2 "$tmp/bxe" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 流式 echo server（TCP loopback）：多批数据 + 部分写补齐 + 半关收尾 + close。期望 50 + ASan 干净
+ec=$tmp/coro_echo
+if "$EXTC" -w --no-line-map -o "$ec.c" tests/coro/coro_echo.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -O2 -o "$ec" "$ec.c" 2>"$tmp/ece"; then
+    /usr/bin/time -q -f "%M" -o "$tmp/ec.rss" "$ec" >/dev/null 2>&1; rc=$?
+    peak=$(cat "$tmp/ec.rss" 2>/dev/null)
+    if [ "$rc" = 50 ] && [ -n "$peak" ] && [ "$peak" -le 16384 ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -O2 -o "$ec.asan" "$ec.c" 2>/dev/null; then
+            aout=$("$ec.asan" 2>&1); arc=$?
+            if [ "$arc" = 50 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_echo           ->  流式回显两批数据 + 半关收尾 + close（50），常驻 ${peak} KB，ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_echo           ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_echo           ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_echo           ->  退出码 $rc（期望 50；90=有任务没完，91=回声缺，9x=连接失败），常驻 ${peak:-?} KB"
+        fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_echo           ->  $(head -2 "$tmp/ece" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 一个 listener accept 出 N=40 条连接（容量 32 ⇒ 必须复用槽位）。期望 52 + ASan 干净
 ac=$tmp/coro_accept
 if "$EXTC" -w --no-line-map -o "$ac.c" tests/coro/coro_accept.extc >/dev/null 2>&1 \
