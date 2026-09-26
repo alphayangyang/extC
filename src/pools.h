@@ -30,4 +30,7 @@
  */
 void poolsEmitRuntime(Arena *a, Buf *out);
 
+/* The `dyn` half (see pools.c): emitted on its own so a pool-only program stays unchanged. */
+void poolsEmitDynRuntime(Arena *a, Buf *out);
+
 #endif /* EXTC_POOLS_H */

@@ -823,6 +823,8 @@ typedef struct {
     Vec funcs;                   /* FuncDef* */
     Vec globals;                 /* GlobalDef*: top-level let / var */
     Vec traits;                  /* TraitDef*: `trait Name { ... }` declarations */
+    bool usesDyn;                /* a `dyn` form was seen: the dyn runtime and the handle type are
+                                  * emitted only then, so a pool-only program stays unchanged */
     Vec impls;                   /* ImplDef*: `impl Type { ... }` blocks, attached by the
                                   * checker (each module attaches its own; the *effect* on a
                                   * type is global, which is what enforces coherence) */

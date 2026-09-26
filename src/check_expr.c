@@ -400,6 +400,7 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
      * is also what keeps an object-unsafe method (no receiver, generic, or returning `Self`) from
      * having to appear in one. */
     tr->usedDyn = true;
+    c->m->usesDyn = true;
     Type *pt = ttBase(payT);
     bool impl = false;
     for (size_t i = 0; i < c->m->impls.len && !impl; i++) {

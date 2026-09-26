@@ -5403,10 +5403,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * be repeated when it names the same type, so the runtime keeps its own copy. Gated on
      * `makesPool` so a program that cannot use dyn or a pool is byte-for-byte unchanged. */
     {
-        bool anyPoolFn = false;
-        for (size_t i = 0; i < m->funcs.len && !anyPoolFn; i++)
-            anyPoolFn = (*(FuncDef **)vecAt(&m->funcs, i))->makesPool;
-        if (anyPoolFn)
+        if (m->usesDyn)
             bufPuts(out,
                 "#define EXTC_DYN_HANDLE_DEFINED 1\n"
                 "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; };\n"
@@ -6389,6 +6386,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
     if (g.needPool) poolsEmitRuntime(arena, out);
+    /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
+    if (m->usesDyn) poolsEmitDynRuntime(arena, out);
     if (g.needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches
