@@ -2132,22 +2132,6 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
             }
-            if (!f && isProtoType(rb, "coroutine", 1)) {
-                /* A coroutine drives itself through the **iterator protocol** the language already
-                 * has (`for x in c` retargets to exactly these three names), so they resolve here
-                 * instead of to a `FuncDef`: the frame and its step function are synthesized per
-                 * coroutine, and codegen emits the calls inline (docs/topics/CONCURRENCY.md 4.4). */
-                Type *yt = *(Type **)vecAt(&rb->targs, 0);
-                const char *m2 = e->u.method.name;
-                if (e->u.method.args.len != 0) {
-                    ckError(c, e->line, "A coroutine's protocol methods take no arguments.",
-                            "`%s()` takes no arguments", m2);
-                    return ttError(tt);
-                }
-                if (strcmp(m2, "iter") == 0)  { e->type = rb; return rb; }
-                if (strcmp(m2, "next") == 0)  { Type *b = ttFromName(tt, "bool"); e->type = b; return b; }
-                if (strcmp(m2, "value") == 0) { e->type = yt; return yt; }
-            }
             if (!f) {
                 /* `d.m(...)` where `d` is a `dyn Trait` value: the method lives in the **trait's**
                  * declaration, not in any type's method set -- the concrete type is not known until

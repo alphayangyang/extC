@@ -506,6 +506,19 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 | **B1（2026-09-26 部分落地）** | codegen 的**定义侧**已写：`genCoroFunc` 发射**帧结构体**（`pc` + `ret` +（按需 `zone`）+ `coroFrame` 字段）+ **step 状态机**（`switch(f->pc)`，每个 `yield` 存 pc 后 `return true;` 紧跟 `case k: ;` = Duff's device 合法 C11 零间接调用）；帧字段重定向在**唯一一处**（`EX_IDENT` 的名字解析）；`ST_VAR` 若落在帧里就只赋值不声明；**参数也进帧**（恢复时调用者没有实参可传 —— 这是对 A2 那句"参数不进帧"的更正，dump 实测 `frame = pc, ret, n: i64, i: i64` 判据已同步）。调用点仍**响亮守门**（`#error`，且只允许 B1 判据用 `-DEXTC_CORO_B1_HARNESS` 绕过 绝不静默）<br>**还差两处才能开 B1 的差分判据**：① 帧 `typedef` 的**开口几行没进生成物**（只剩孤零零一行 ` counter$frame;`）② **协程体里照旧发射 `extc_arena_release`** —— 那正是规则 ③ 的地方边界，协程体必须**抑制**它（存储归任务 place 所有 与切片 C 同一件事）<br>靶子已就位：`tests/coro/coro_step.extc`（定义侧）+ `tests/coro/coro_step_harness.c`（C 驱动 ⇒ 期望 `0 1 2 `，与手写状态机逐字节相同）；**判据暂缓**（不留红判据 修好后打开）|
 | **B2a（已落地）** | 表示与驱动：`let c = f(args)` 就是 **spawn** —— 帧是调用者里的一个普通值，实参初始化参数（恢复时没有实参可传，所以参数必须在帧里）；`c.next()` / `c.value()` 由检查器直接解析（协程接收者上的三个协议方法，没有 `FuncDef`），codegen 内联发射 `f$step(&c)` 与 `c.ret`；帧的结构体定义与 step 原型在**所有函数体之前**发射，step 的定义在最后（`CG.coroDefs`，与 `vtDecls` 同一条路）。判据：`tests/coro/coro_drive.extc` **真的跑起来**（输出 `0 1 2 `、退出码 3）+ B1 的差分判据照旧 |
 | **B2b（已落地）** | `for x in c` 接通：`for` 的改写是三条语句 —— 把主语绑个名字（`var __extc_s = c`）、取它的迭代器（`var __extc_it = __extc_s.iter()`）、`while __extc_it.next()`（循环变量变成 `__extc_it.value()`）。代码生成把**这两种别名都发射成指向帧的指针**（复制帧就是复制状态，那是错的），于是 `next`/`value` 内联成 `f$step(it)` 与 `it->ret` 自然成立。判据把两种驱动形式一起验：`while c.next()` 与 `for x in c` 跑出 `0 1 2 | 0 1 2 3 `、退出码 9 |
+**B2d（每个协程各自的类型身份）**：调用一个协程得到的不再是"标记"，而是编译器为它合成的**具体值类型**（`counter$frame`，`StructDef.coroOf` 回指那个函数）。协议于是成为该类型上的**真方法**：
+
+    next(self: mut ref F) -> bool      推进状态机
+    value(self: ref F) -> T            读返回槽
+
+这样做的三个后果，都是想要的：
+
+1. **检查器里不再有特例**（原来那个"接收者是 coroutine<T> 就手工认三个名字"的钩子删掉了），驱动走普通方法解析；
+2. `for x in c` 的改写**短路**成 `while c.next() { var x = c.value(); … }`，主语直接复用（主语只能是名字/字段/`*p`，重复求值无副作用），于是 codegen 里那套 `__extc_s`/`__extc_it` 别名记账**整块删掉**；
+3. `next` 取 `mut ref self`，所以协程是**可变状态**：`let c` 会被拒，写 `var c = counter(n)`。这是语言一致的结果，不是特例。
+
+还有一条要写清楚：**把协程传给别的函数今天仍会被拒**，但拒它的是**既有的逃逸规则**（帧是调用者栈上的值，传 `ref` 进"可能存下来"的函数就是悬垂风险）。等帧归**任务 place** 所有（切片 C），句柄跨函数才成立——这正是 C 必须紧接其后的原因。
+
 **B2c（本步）**：`coroutine<T>` 收窄成**只能作返回类型**。它只是"这个函数体是协程、会 yield T"的写法；调用一个协程得到的是**它自己的帧**（每个协程一份、字段各不相同，由活跃性分析定）。当成存储类型用会编译成 C 类型不匹配，或者更糟 —— 变成装了一堆标记、谁也驱动不了的容器。检测是递归的（`typeContainsProto`，形状照 `typeContainsRef`），所以直接写、放进泛型实参、放进视图/数组/字段都会被拒。
 
 还剩一个洞，说准确：把协程**传给函数**今天仍会在 extC 阶段通过，然后在 C 编译器处报 `incompatible type for argument` —— 是**晚但响亮**的失败，不是静默错。彻底解决要**统一表示**（带 step 的盒装句柄），而调度器本来就需要它，所以它随切片 C 一起做。

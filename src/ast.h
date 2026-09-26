@@ -476,6 +476,10 @@ struct StructDef {
                                   * one is interned by ttGeneric instead */
     bool        reserved;        /* came from the prelude: the user may neither redefine it
                                   * nor add methods to it */
+    /* Non-NULL when this struct is a **coroutine frame** the compiler synthesized: a call to that
+     * coroutine evaluates to this type, and codegen derives `$frame` / `$step` from `coroOf`
+     * (docs/topics/CONCURRENCY.md 4.4). */
+    FuncDef    *coroOf;
     /* Synthetic holder for a **builtin scalar** that an `impl` block attached methods to.
      * It is pushed into the module's struct list so that every "struct x method" pass
      * (signature resolution, body checks, escape/borrow rules, operator collection, code
@@ -548,6 +552,13 @@ struct FuncDef {
      * protocol methods are synthesized per coroutine (slice B). */
     bool        isCoro;
     Type       *yieldType;
+    /* The synthesized per-coroutine value type: what a **call** to this coroutine evaluates to.
+     * `ret` is set to it as well, so `let c = f(x)` binds a coroutine of its own concrete type. */
+    Type       *coroFrameType;
+    /* Non-zero on the two protocol methods the checker synthesizes on a coroutine frame:
+     * 1 = `next` (advance the state machine), 2 = `value` (read the return slot). Codegen emits
+     * those two inline instead of calling a function (docs/topics/CONCURRENCY.md 4.4). */
+    int         coroProto;
     /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
      * `pc`, the return slot and (when `makesPool`) the zone id come first, then these by value.
      * See docs/topics/CONCURRENCY.md 4.4. */

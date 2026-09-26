@@ -139,6 +139,30 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
     Expr *subject = bind->u.var.init->u.slice.obj;
     Type *st = forSubjectType(c, subject);
     if (!st) return false;                       /* unknown: leave the slice path alone */
+    /* A coroutine **is** its own iterator -- the frame holds the pc -- so driving it is the two
+     * method calls on the subject itself: no `__extc_s` binding, no `__extc_it` alias, nothing to
+     * keep in sync. The subject is a name, a field or `*p` (the parser guarantees that shape), so
+     * evaluating it twice has no side effects. */
+    {
+        Type *sb0 = ttBase(tsub(c, st));
+        if (sb0 && sb0->sdef && sb0->sdef->coroOf) {
+            Stmt *inner0 = w->u.whiles.body;
+            Stmt *elemDecl0 = *(Stmt **)vecAt(&inner0->u.block.stmts, 0);
+            if (!elemDecl0 || elemDecl0->kind != ST_VAR) return false;
+            Expr *nx = exprNew(c->arena, EX_METHOD, w->line);
+            nx->u.method.recv = subject;
+            nx->u.method.name = "next";
+            w->u.whiles.cond = nx;
+            Expr *vl = exprNew(c->arena, EX_METHOD, elemDecl0->line);
+            vl->u.method.recv = subject;
+            vl->u.method.name = "value";
+            elemDecl0->u.var.init = vl;
+            inner0->u.block.stmts.len = 2;       /* `[ var x = …value(); BODY ]`, step dropped */
+            *(Stmt **)vecAt(&block->u.block.stmts, 0) = w;   /* drop the subject binding */
+            block->u.block.stmts.len = 1;
+            return true;
+        }
+    }
     Type *sb = ttBase(tsub(c, st));
     Type *elem = (sb && sb->kind == TY_ARRAY) ? sb->inner : viewElemOf(sb);
     if (elem) return false;                      /* sliceable after all: today's shape is right */
@@ -872,10 +896,23 @@ void checkStmt(Checker *c, Stmt *s) {
         case ST_RETURN: {
             Type *want = c->curFunc ? c->curFunc->ret : NULL;
             if (!s->u.ret.value) {
+                /* A coroutine ends by falling off the end or by a bare `return`: both mean "no more
+                 * values", which is the state machine's finished state (codegen stores the sentinel).
+                 * `return e` inside a coroutine stays an error -- yielding is how a coroutine hands a
+                 * value out. */
+                if (c->curFunc && c->curFunc->isCoro) return;
                 if (want && !ttIs(want, "void")) {
                     ckError(c, s->line, NULL, "`%s` must return a value of type `%s`",
                             c->curFunc->name, typeStr(c, want));
                 }
+                return;
+            }
+            if (c->curFunc && c->curFunc->isCoro) {
+                checkExpr(c, s->u.ret.value);
+                ckError(c, s->line,
+                        "A coroutine hands values out with `yield`; to finish early use a bare"
+                        " `return` (docs/topics/CONCURRENCY.md 4.4)",
+                        "`return e` is not how a coroutine ends");
                 return;
             }
             if (!want) {

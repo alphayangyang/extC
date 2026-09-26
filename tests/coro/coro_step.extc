@@ -13,7 +13,7 @@ fn counter(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    let c = counter(i64(3))
+    var c = counter(i64(3))
     var n: i64 = 0
     while c.next() { n = n + c.value() }
     return i32(n)

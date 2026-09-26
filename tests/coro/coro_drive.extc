@@ -19,14 +19,14 @@ fn counter(n: i64) -> coroutine<i64> {
 fn main() -> i32 {
     var n: i64 = 0
 
-    let a = counter(i64(3))
+    var a = counter(i64(3))
     while a.next() {
         io::cout << a.value() << " "
         n = n + a.value()
     }
     io::cout << "| "
 
-    let b = counter(i64(4))
+    var b = counter(i64(4))
     for x in b {
         io::cout << x << " "
         n = n + x
