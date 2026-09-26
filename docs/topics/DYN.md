@@ -98,7 +98,25 @@ extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间�
 - **codegen**：`genMethodCall`（`src/codegen.c:1647`，分派在 `:2167`）加一个分支 —— 有 `dynTrait`
   就**取表字段调用**（`extc_vt$Trait$Type.method(&tmp)`），否则照旧直接调用。
 
-**落地顺序**：
+**第三次勘察：两处细节定下来了，一处需要选择**
+
+- **标记怎么活下来**：`dyn Tag(x)` 的载荷由 `parsePrimary` 产出，而 `.tag(args)` 是 `parsePostfix`
+  里的循环**新建**一个 `EX_METHOD` 节点（`src/parser.c:2190`）—— 所以 trait 名必须在那一步
+  **从接收者拷到新节点**（一行）。AST 侧新字段放在 `Expr` 的 `} u;` **之后**（联合体之外），
+  这样既有代码读 `u.method` 不受影响。
+- **`genMethodCall` 的 dyn 分支**：接收者类型是 `subst(g, e->u.method.recv->type)`（模板内可能是 `T`），
+  间接调用写作
+  `extc_vt$<Trait>$<接收者类型的 C 名>.<方法名>(&tmp)`；表符号里那一段必须与第一期发出时用的
+  `tsd->name` 一致（即 `cType` 对结构体的输出），下一轮先在生成物里核对一次再写死。
+- **需要选择的一处（阶段 1 的唯一开放实现细节）**：`dyn Trait(x)` **未紧跟 `.method(`** 时在哪报错。
+  两个选项：
+  ① 在 `parsePrimary` 的 `dyn` 分支里做**三 token 前瞻**（`.` + 标识符 + `(`）——报错位置最准，
+     但要确认解析器有没有多 token 前瞻的现成手段；
+  ② 标记留在节点上，在 `parsePostfix` 循环**结束时**检查"标记是否已被消费"——实现更简单，
+     但要在那一步拿到循环收尾处的锚点（本次未打印）。
+  **下一轮先打印 `parsePrimary` 开头与 `parsePostfix` 的收尾**，再据实选一个；不要凭猜。
+
+**落地顺序**（第 1 步与第 2 步互不依赖，可以先做 1 再决定 2 的报错点）：
 1. **解析器**：`dyn` 分支产出新节点 `EX_DYNCALL { trait 名, 载荷 expr, 方法名, 实参 }`；
    只在调用位置合法（否则报上面那条诊断）；
 2. **检查器**：trait 必须存在（复用第一期的查找）→ 方法必须在 trait 里 → **object safety 三条**
