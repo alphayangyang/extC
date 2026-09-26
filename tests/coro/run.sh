@@ -9,6 +9,44 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 统一句柄：coroutine<T> 是普通存储类型，标注处装箱（帧进任务 place），句柄穿过函数边界驱动。
+# 期望 99/9 = 11；并要求 ASan 干净。
+ch=$tmp/coro_handles
+if "$EXTC" -w --no-line-map -o "$ch.c" tests/coro/coro_handles.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$ch" "$ch.c" 2>"$tmp/che"; then
+    "$ch"; rc=$?
+    if [ "$rc" = 11 ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$ch.asan" "$ch.c" 2>/dev/null; then
+            aout=$("$ch.asan" 2>&1); arc=$?
+            if [ "$arc" = 11 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_handles       ->  句柄进容器并穿过函数边界：跑出 11，ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_handles       ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_handles       ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_handles       ->  退出码 $rc（期望 11）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_handles       ->  $(head -2 "$tmp/che" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# 零分配：不外逃的协程**不该**碰任务表（帧留在调用者栈上）
+zd=$tmp/zeroalloc
+if "$EXTC" -w --no-line-map -o "$zd.c" tests/coro/coro_drive.extc >/dev/null 2>&1; then
+    if grep -q "extc_task_begin\|extc_task_alloc" "$zd.c"; then
+        echo "  FAIL coro_zero_alloc    ->  不外逃的协程也碰了任务表"; fail=$((fail+1))
+    else
+        echo "  ok   coro_zero_alloc    ->  不外逃 ⇒ 生成物里没有 extc_task_begin/alloc（零分配）"
+        pass=$((pass+1))
+    fi
+else
+    echo "  FAIL coro_zero_alloc    ->  生成失败"; fail=$((fail+1))
+fi
+
 # 切片 C 验收项：**体顶层建池（vector）、跨挂起点继续用** ✓ —— 池的 plate 生在任务自己的 place 里，
 # 活过每一次挂起；任务跑完一次性回收。三件事都要成立：接受 ✓ 跑对（0+1+2+3=6）✓ ASan 干净 ✓
 cpo=$tmp/coro_pool

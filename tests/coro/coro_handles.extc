@@ -1,9 +1,12 @@
-/* 判据：**协程能进容器** ⇒ 调度器才谈得上（"统一句柄"的验收项）。
+/* 判据：**统一句柄** —— 一个表面类型 `coroutine<T>`，表示由逃逸决定。
  *
- * 三个 worker 的帧放进 vector，按顺序驱动到完。今天的检查器不允许
- * `coroutine<i64>` 当存储类型（B2c），所以这条现在应当是**响亮地被拒**。
+ * 这里同时压三件事：
+ *   ① 标注 ⇒ 装箱（句柄 = {frame, kind, task} ✓ 帧住进任务 place ✓）
+ *   ② 句柄**穿过函数边界**（`drain(h: mut ref coroutine<i64>)` ✓）—— 正是库调度器要的形状 ✓
+ *   ③ 三个**不同 kind** 的协程 ⇒ 分派表里三个 case 都被走到 ✓
+ *   还有 `v.push(worker(...))`：装箱点在**实参**处 ✓
  *
- * 期望：跑出 0+1+2 + 10+11+12 + 20+21+22 = 99 ⇒ 99/9 = **11** */
+ * 期望：(0+1+2) + (10+11+12) + (20+21+22) = 99 ⇒ 99/9 = **11** */
 use stl::vector
 use std::io
 
@@ -15,16 +18,18 @@ fn worker(n: i64, base: i64) -> coroutine<i64> {
     }
 }
 
+fn drain(h: mut ref coroutine<i64>) -> i64 {
+    var s: i64 = 0
+    while h.next() { s = s + h.value() }
+    return s
+}
+
 fn main() -> i32 {
+    var h1: coroutine<i64> = worker(i64(3), i64(0))
+    var h2: coroutine<i64> = worker(i64(3), i64(10))
+    var h3: coroutine<i64> = worker(i64(3), i64(20))
     var v: vector<coroutine<i64>> = vector<coroutine<i64>>::withCap(i64(3))
-    v.push(worker(i64(3), i64(0)))
-    v.push(worker(i64(3), i64(10)))
-    v.push(worker(i64(3), i64(20)))
-    var i: i64 = 0
-    var sum: i64 = 0
-    while i < i64(3) {
-        while v[i].next() { sum = sum + v[i].value() }
-        i = i + 1
-    }
+    v.push(worker(i64(3), i64(30)))
+    var sum: i64 = drain(ref h1) + drain(ref h2) + drain(ref h3)
     return i32(sum / i64(9))
 }

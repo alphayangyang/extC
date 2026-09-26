@@ -1706,6 +1706,26 @@ static const char *genMethodCall(CG *g, Expr *e) {
     Type *recvT = subst(g, e->u.method.recv->type);
     FuncDef *f = e->func;
     if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
+    /* ---- The **handle** protocol ----
+     * The receiver is a `coroutine<T>` (the marker type, whatever the resolved method's owner looks
+     * like -- instantiated copies carry a decorated name) and the emitted call dispatches on `kind`.
+     * The frame protocol below is unaffected: a frame's type is not a coroutine marker. Placed here,
+     * before this function's other early returns, so nothing else can claim the call. */
+    if (e->u.method.name && f &&
+        (strcmp(e->u.method.name, "next") == 0 || strcmp(e->u.method.name, "value") == 0) &&
+        isProtoType(ttBase(recvT), "coroutine", 1)) {
+        const char *rr = genExpr(g, e->u.method.recv);
+        const bool viaRef = e->u.method.recv->type && e->u.method.recv->type->kind == TY_REF;
+        g->needCoroHandle = true;
+        if (strcmp(e->u.method.name, "next") == 0)
+            return arenaPrintf(g->arena, "extc_coro_next(%s%s)", viaRef ? "" : "&", rr);
+        /* `T` comes from the receiver's own type: the resolved instance method's `ret` may still be
+         * the error type, and the helper is named after the coroutine's yield type. */
+        Type *rb = ttBase(recvT);
+        Type *yt = (rb && rb->targs.len) ? subst(g, *(Type **)vecAt(&rb->targs, 0)) : f->ret;
+        return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s)",
+                           cType(g, yt), viaRef ? "" : "&", rr);
+    }
     if (f && f->coroProto && f->owner && f->owner->coroOf) {
         /* Driving a coroutine. The two protocol methods are the state machine's calling convention,
          * so they are emitted inline -- and whether the receiver is the frame itself or a reference
@@ -1715,20 +1735,6 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
-        /* The handle protocol: `coroProto` 3/4, or an **instantiated copy** of those -- the instance
-         * machinery names them `coroutine_<T>_next` and does not carry the flag. */
-        int hproto = f ? f->coroProto : 0;
-        if (hproto < 3 && isProtoType(ttBase(recvT), "coroutine", 1))
-            hproto = (f && f->name && strcmp(f->name, "value") == 0) ? 4 : 3;
-        if (hproto == 3) {                            /* `next` on a handle: dispatch on kind */
-            g->needCoroHandle = true;
-            return arenaPrintf(g->arena, "extc_coro_next(&(%s))", rc);
-        }
-        if (hproto == 4) {                            /* `value` on a handle: dispatch, then read */
-            g->needCoroHandle = true;
-            return arenaPrintf(g->arena, "extc_coro_value_%s(&(%s))",
-                               cType(g, subst(g, f->ret)), rc);
-        }
         if (f->coroProto == 1) {
             /* With a task place the step is driven through the driver (it owns the place); without
              * one there is nothing to set up, so the step itself is the driver. */

@@ -1212,7 +1212,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * the `coroutine<T>` marker, while codegen materialises the coroutine's own frame.
                  * Loud beats a C type mismatch. The uniform representation (a boxed handle) lands
                  * with slice C, which is what a scheduler needs anyway. */
-                if (typeContainsProto(c->tt, at, "coroutine")) {
+                /* Legal now: `coroutine<T>` is the unified handle, a plain 24-byte value. */
+                if (0 && typeContainsProto(c->tt, at, "coroutine")) {
                     ckError(c, a->line,
                             "A coroutine value stays where it was spawned: today it cannot be passed"
                             " to a function, stored in a container or returned. Keep driving it in"
@@ -2044,7 +2045,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * the `coroutine<T>` marker, while codegen materialises the coroutine's own frame.
                  * Loud beats a C type mismatch. The uniform representation (a boxed handle) lands
                  * with slice C, which is what a scheduler needs anyway. */
-                if (typeContainsProto(c->tt, at, "coroutine")) {
+                /* Legal now: `coroutine<T>` is the unified handle, a plain 24-byte value. */
+                if (0 && typeContainsProto(c->tt, at, "coroutine")) {
                     ckError(c, a->line,
                             "A coroutine value stays where it was spawned: today it cannot be passed"
                             " to a function, stored in a container or returned. Keep driving it in"
@@ -2371,7 +2373,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * the `coroutine<T>` marker, while codegen materialises the coroutine's own frame.
                  * Loud beats a C type mismatch. The uniform representation (a boxed handle) lands
                  * with slice C, which is what a scheduler needs anyway. */
-                if (typeContainsProto(c->tt, at, "coroutine")) {
+                /* Legal now: `coroutine<T>` is the unified handle, a plain 24-byte value. */
+                if (0 && typeContainsProto(c->tt, at, "coroutine")) {
                     ckError(c, a->line,
                             "A coroutine value stays where it was spawned: today it cannot be passed"
                             " to a function, stored in a container or returned. Keep driving it in"

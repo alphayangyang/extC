@@ -576,6 +576,20 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 ② 逃逸判断可以**复用现成机制**：`ref` 逃逸 + `effects Addr` 签字（"调用一个没签 `Addr=0` 的函数 ⇒
 你的东西可能被存起来"）⇒ 协程值按同一套规则决定装箱 ✓
 
+**统一句柄已落地（判据 13/13）**：`coroutine<T>` 是普通存储类型，标注处（或存进容器/实参处）装箱 ——
+帧从**任务自己的 arena** 分配（`extc_task_alloc` ✓），值是 24 字节的 `{frame, kind, task}` 句柄 ✓
+`next`/`value` 在句柄上按 **kind 编译期编号**分派（静态结构 ⇒ 跳转表 ✓ 不用函数指针 ✓）✓
+**不外逃的协程零分配**（生成物里没有 `extc_task_begin/alloc` ✓ 有判据钉住 ✓）。
+
+判据：`tests/coro/coro_handles.extc` 跑出 **11** + ASan 干净 ✓ · `coro_zero_alloc` ✓
+四条安全规则：① 伪造句柄**天然不可能**（`coroutine<i64>{…}` 根本解析不了 ✓）② 过期句柄驱动前
+`extc_task_alive` 验活 ⇒ 大声 `exit(70)`（新增的运行期函数 ✓）③ 无初始化的零句柄 ⇒ 编译错误 ✓
+④ 复制句柄内存安全 ✓ 单驱动者是约定 ✓
+
+**随之作废的旧规则**：`tests/errors/coroutine_marker_{as_var,in_container}.extc` 两条反例已删 ——
+"`coroutine<T>` 不能当存储类型"这条 B2c 规则被统一句柄取代，它们的注释里本来就写着
+"跨函数边界需要统一表示（带 step 的句柄），随切片 C 一起做" ✓
+
 **`ext` 与调度域（定案）**：语法糖的关键字就叫 **`ext`** —— 与 Go 的 `go` 同构（**关键字就是语言名** ✓），
 而且比 `spawn` 更有品牌。语料实测：`ext` 没有被当标识符用过（0 处），可以安全保留 ✓
 

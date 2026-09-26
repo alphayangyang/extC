@@ -428,6 +428,23 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
     }
     if (ttIsError(want) || ttIsError(got)) return true;
 
+    /* ---- Boxing: a coroutine's frame value stored where the handle type is expected ----
+     * There is one surface type, `coroutine<T>`; the representation is the compiler's business. Here
+     * the value is a *frame* (the type the checker synthesized for that coroutine) and the expected
+     * type is the handle, so the frame moves into the task's own place and codegen emits the handle.
+     * The yield types must agree. */
+    if (want && got && isProtoType(want, "coroutine", 1) && got->sdef && got->sdef->coroOf &&
+        node && node->kind == EX_CALL) {
+        Type *yt = want->targs.len ? *(Type **)vecAt(&want->targs, 0) : NULL;
+        Type *ft = got->sdef->coroOf->yieldType;
+        if (yt && ft && strcmp(typeStr(c, yt), typeStr(c, ft)) == 0) {
+            node->boxedCoro = true;
+            node->type = want;
+            got->sdef->coroOf->coroBoxed = true;
+            return true;
+        }
+    }
+
     /* `ref T` has to be a reference on both sides.
      *
      * The trap is subtle: the literal-fitting path calls `ttBase(want)`, which strips the

@@ -233,7 +233,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 s->u.var.ann = ttResolve(c->tt, c->ctx, s->u.var.ann, s->line, c->curParams);
             /* See the parameter case in check_top.c: `coroutine<T>` is a return type, not storage.
              * `let c = counter(n)` is how a coroutine value gets a name (and its type, the frame). */
-            if (s->u.var.ann && typeContainsProto(c->tt, s->u.var.ann, "coroutine")) {
+            if (0 && s->u.var.ann && typeContainsProto(c->tt, s->u.var.ann, "coroutine")) {   /* legal now: the unified handle (CONCURRENCY.md 4.4) */
                 ckError(c, s->line,
                         "`coroutine<T>` names a coroutine's return type, not a value type. `let c ="
                         " counter(n)` gives the coroutine a name and the compiler its frame type",
@@ -244,6 +244,16 @@ void checkStmt(Checker *c, Stmt *s) {
 
             /* No initializer means zero initialization, and the parser guarantees an
              * annotation is present in that case. */
+            /* There is no meaningful zero for a handle -- a null frame and a bogus task. An
+             * uninitialized `coroutine<T>` is an error, not a zero value. */
+            if (!s->u.var.init && s->u.var.ann && isProtoType(s->u.var.ann, "coroutine", 1)) {
+                ckError(c, s->line,
+                        "a `coroutine<T>` value has no zero: it is a handle to a frame living in some"
+                        " task's place. Initialize it (`var c: coroutine<i64> = worker(...)`)",
+                        "`%s` is declared `coroutine<T>` with no initializer",
+                        s->u.var.cname ? s->u.var.cname : "?");
+                s->u.var.ann = ttError(c->tt);
+            }
             if (!s->u.var.init) {
                 /* The annotation mentions `T`, so whether a zero value exists cannot
                  * be decided yet; record the check for the instantiation. */

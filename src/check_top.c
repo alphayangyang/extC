@@ -3601,6 +3601,47 @@ static void checkFunc(Checker *c, FuncDef *f) {
     f->isCoro = f->ret && isProtoType(f->ret, "coroutine", 1);
     f->yieldType = f->isCoro ? *(Type **)vecAt(&f->ret->targs, 0) : NULL;
     if (f->isCoro) {
+        /* ---- The **handle** protocol, once per program ----
+         * `coroutine<T>` is a storage type too (one surface type; the representation is chosen by
+         * escape). Driving a handle is an ordinary method call on the marker type, with `T`
+         * substituted by the existing instantiation machinery -- so `value()` returns each instance's
+         * own `T`. Same shape as the frame's methods below; the difference is only that `self` is the
+         * handle, which is why the two get different `coroProto` values and codegen dispatches on
+         * `kind`. */
+        StructDef *hsd = structOf(f->ret);
+        if (hsd && hsd->methods.len == 0) {
+            Type *tp = arenaAllocZero(c->arena, sizeof *tp);
+            tp->kind = TY_PARAM;
+            tp->name = "T";
+            tp->param = "T";          /* ttSubstitute matches on `param`, not `name` */
+            vecInit(&tp->targs, c->arena, sizeof(Type *));
+            Type *hinst = arenaAllocZero(c->arena, sizeof *hinst);
+            hinst->kind = TY_GENERIC;      /* an *instance* with targs: that is what `coroutine<T>` is */
+            hinst->name = hsd->name;
+            hinst->sdef = hsd;
+            vecInit(&hinst->targs, c->arena, sizeof(Type *));
+            *(Type **)vecPush(&hinst->targs) = tp;
+            for (int which = 3; which <= 4; which++) {
+                FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
+                pm->name      = which == 3 ? "next" : "value";
+                pm->owner     = hsd;
+                pm->modName   = f->modName;
+                pm->line      = f->line;
+                pm->coroProto = which;
+                pm->ret       = which == 3 ? ttFromName(c->tt, "bool") : tp;
+                vecInit(&pm->params, c->arena, sizeof(Param *));
+                Param *self = arenaAllocZero(c->arena, sizeof *self);
+                self->name = self->cname = "self";
+                self->line = f->line;
+                Type *rt = arenaAllocZero(c->arena, sizeof *rt);
+                rt->kind = TY_REF;
+                rt->inner = hinst;
+                rt->mut = which == 3;      /* `next` advances the state, `value` only reads it */
+                self->type = rt;
+                *(Param **)vecPush(&pm->params) = self;
+                *(FuncDef **)vecPush(&hsd->methods) = pm;
+            }
+        }
         /* A call to a coroutine produces **that coroutine's own frame**, a concrete value type the
          * compiler synthesizes here -- before the body is checked, so call sites and the callee
          * agree. `coroutine<T>` stays what it always was: how a body declares "I am a coroutine and
@@ -3654,7 +3695,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * handle), which slice C needs anyway. */
     for (size_t pi = 0; pi < f->params.len; pi++) {
         Param *pp = *(Param **)vecAt(&f->params, pi);
-        if (!pp || !typeContainsProto(c->tt, pp->type, "coroutine")) continue;
+        if (1 || !pp || !typeContainsProto(c->tt, pp->type, "coroutine")) continue;   /* legal now: the handle is a plain value */
         ckError(c, pp->line ? pp->line : f->line,
                 "`coroutine<T>` names a coroutine's return type, not a value type: what a call produces"
                 " is that coroutine's own frame. Keep the value where it was spawned, or take it as a"
@@ -5648,7 +5689,8 @@ static void coroCheckDeferred(Checker *c, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
         if (!cf || !cf->isCoro || cf->tmpl) continue;
-        cf->coroNeedsZone = cf->makesPool;
+        /* A boxed coroutine always has a task: its frame lives in that task's place. */
+        cf->coroNeedsZone = cf->makesPool || cf->coroBoxed;
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);
