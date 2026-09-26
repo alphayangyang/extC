@@ -1,0 +1,130 @@
+/* ============================================================================
+ * 地块面积评估报表 —— 把 extC 现有特性**有机**用在一起的最小真程序（单文件）
+ *
+ *   trait / dyn Trait    三种地块共用 `dyn Shape`：**同一张统一表**，三个实现
+ *   STL pool<dyn Shape>  地块的**身份**由池持有（句柄 + 世代）：移除后旧句柄 → none
+ *   Arena 提权           报表文本在 `line()` 里构造后返回 ⇒ 存储建在**调用者的 place** 里
+ *   模块                 use std::io（cin/cout）· use stl::pool · use stl::string
+ *   cin / cout           从标准输入读地块清单，向标准输出打印报表
+ *
+ * 输入格式：第一行 n，随后 n 行 `kind a b`（**固定三个整数**；圆形只用 a，b 填 0）
+ *   1 = 矩形 a×b   2 = 圆 3a²   3 = 直角三角形 a×b/2
+ * 用法：printf '5\n1 3 4\n2 2 0\n3 6 7\n1 5 5\n2 1 0\n' | ./tour-plots
+ * ========================================================================== */
+use std::io
+use stl::pool
+use stl::string
+
+/* ---- 形状：一个 trait、三个实现，派发经同一张表 ---- */
+trait Shape { fn area(self: ref Self) -> i64 }
+
+struct rect   { w: i64  h: i64 }
+struct circle { r: i64 }
+struct tri    { b: i64  h: i64 }
+
+impl Shape for rect   { fn area(self: ref rect)   -> i64 { return self.w * self.h } }
+impl Shape for circle { fn area(self: ref circle) -> i64 { return i64(3) * self.r * self.r } }
+impl Shape for tri    { fn area(self: ref tri)    -> i64 { return self.b * self.h / i64(2) } }
+
+fn minArea() -> i64 { return i64(10) }
+
+/* ---- 文本工具：把 i64 写进字符串（stdlib 没有这一步，报表需要） ---- */
+fn pushI64(s: mut ref string, v: i64) {
+    var n: i64 = v
+    if n < i64(0) { s.append("-")  n = i64(0) - n }
+    if n >= i64(10) { pushI64(s, n / i64(10)) }
+    s.push(u8(i64(48) + n % i64(10)))
+}
+
+fn kindName(kind: i64) -> slice<u8> {
+    if kind == i64(1) { return "rect  " }
+    if kind == i64(2) { return "circle" }
+    return "tri   "
+}
+
+/* **家 arena 提权**：`string::withCap` 与全部 append 都发生在本函数内，但返回的字符串
+ * 最终建在**调用者的 place** 上 —— 编译器把调用者的家 arena 作为隐藏参数传进来
+ * （生成物里能看到 `line(1, 1, 12, __extc_home0)` 这样的调用）。所以调用者拿到的是
+ * 自己地方里的存储，不会悬垂，也不需要拷贝。 */
+fn line(idx: i64, kind: i64, area: i64) -> string {
+    var out: string = string::withCap(i64(48))
+    out.append(kindName(kind))
+    out.append(" #")
+    pushI64(ref out, idx)
+    out.append("  area=")
+    pushI64(ref out, area)
+    return out
+}
+
+fn main() -> i32 {
+    var n: i64 = i64(0)
+    io::cin >> n
+
+    if n <= i64(0) { io::cout << "no plots\n"  return 0 }
+
+    var kinds: varArray<i64> = varArray<i64>::withCap(n + i64(1))
+    var plots: pool<dyn Shape> = pool<dyn Shape>::withCap(n + i64(1))
+
+    /* 读入：每块地形一个整数标签 + 两个参数 —— 就地造成 dyn 值存进池里 */
+    var i: i64 = i64(0)
+    while i < n {
+        var kind: i64 = i64(0)
+        var a: i64 = i64(0)
+        var b: i64 = i64(0)
+        io::cin >> kind >> a >> b
+        if kind == i64(1) {
+            plots.insert(dyn Shape(rect { w: a, h: b }))
+        } else if kind == i64(2) {
+            plots.insert(dyn Shape(circle { r: a }))
+        } else {
+            plots.insert(dyn Shape(tri { b: a, h: b }))
+        }
+        kinds.push(kind)
+        i = i + i64(1)
+    }
+
+    /* 第一遍：dyn 派发 —— 逐行报表（每行是一个**提权**回来的字符串）+ 面积合计 + 最大块 */
+    io::cout << "kind   #  area\n"
+    io::cout << "--------------\n"
+    var total: i64 = i64(0)
+    var best: i64 = i64(0)
+    var bestAt: i64 = i64(0)
+    i = i64(0)
+    while i < plots.len() {
+        let area = plots.atDense(i).area()          /* ← 动态派发：表与接收者都取自校验过的槽 */
+        io::cout << line(i, kinds.get(i)!, area).toSlice() << "\n"
+        total = total + area
+        if area > best { best = area  bestAt = i }
+        i = i + i64(1)
+    }
+    io::cout << "--------------\n"
+    io::cout << "plots=" << plots.len() << " total=" << total
+    io::cout << " max=" << best << " (at #" << bestAt << ")\n"
+
+    /* 第二遍：移除小块 —— 池让该槽**换代**，旧句柄从此失效（不会指向别人的值） */
+    var removed: i64 = i64(0)
+    var stale: handle = plots.handleAtDense(i64(0))
+    var staleArea: i64 = i64(0)
+    i = plots.len()
+    while i > i64(0) {
+        i = i - i64(1)
+        /* 先取**值**再问句柄：移除会让池紧凑化，密集下标立刻失真 ⇒ 不要在下标上做文章 */
+        let area = plots.atDense(i).area()
+        if area < minArea() {
+            let h = plots.handleAtDense(i)
+            if plots.remove(h) {
+                stale = h
+                staleArea = area
+                removed = removed + i64(1)
+            }
+        }
+    }
+    io::cout << "removed=" << removed << " live=" << plots.len() << " freed_bytes=" << plots.bytesOf() << "\n"
+
+    /* 陈旧句柄是**条件**（none），不是崩溃：池用世代把它挡住 */
+    match plots.get(stale) {
+        some(v) => { io::cout << "陈旧句柄竟读到 " << v.area() << "（不该发生）\n" }
+        none    => { io::cout << "陈旧句柄(area=" << staleArea << ") → none：池的世代挡住了它\n" }
+    }
+    return 0
+}
