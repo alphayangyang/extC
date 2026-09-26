@@ -745,6 +745,11 @@ bool ttEquals(Type *a, Type *b) {
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
 
+    /* `dyn Trait` has no declaration site -- the parser builds it wherever it is written -- so it
+     * belongs with the kinds below that are compared structurally rather than by interning. */
+    if (a->kind == TY_DYN)
+        return a->name && b->name && strcmp(a->name, b->name) == 0;
+
     /* Every kind except references, type parameters, and generic instances is
      * interned, so differing pointers already mean differing types. */
     if (a->kind == TY_REF)

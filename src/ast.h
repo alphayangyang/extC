@@ -127,10 +127,11 @@ typedef enum {
                    * author's word that it is not null. Nothing happens at runtime --
                    * the whole meaning of the signature is that being wrong is the
                    * author's problem, not the compiler's. */
-    EX_NULL       /* `null`: the zero value of a nullable reference (`?ref T`). It may
+    EX_NULL,      /* `null`: the zero value of a nullable reference (`?ref T`). It may
                    * appear only where the context already says which `?ref T` is meant;
                    * the type is supplied by adoptContextType, the same way an empty
                    * array literal picks up its element type. */
+    EX_DYN,         /* `dyn Trait(x)`: the value form (a pool-backed handle) */
 } ExprKind;
 
 struct Expr {
@@ -317,6 +318,7 @@ struct Expr {
         struct { const char *op; Expr *left, *right; } bin;
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
+        struct { Expr *payload; const char *traitName; } dynv;   /* EX_DYN */
         struct { Expr *recv; const char *name; Vec args; } method;
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */

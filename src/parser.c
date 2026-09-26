@@ -2212,10 +2212,18 @@ static Expr *parsePostfix(Parser *p) {
                 /* A `dyn Trait(x)` payload is marked, and the trait has to travel to the call
                  * node: this loop builds a **new** node, so the mark would otherwise be left
                  * behind on the receiver. */
-                m->dynTrait = e->dynTrait;
+                /* `dyn Trait(x).m(...)`: the receiver of the call is the **payload**, so the existing
+                 * method resolution, argument checking and codegen all apply unchanged; the trait
+                 * only travels along so that dispatch goes through the table. */
+                if (e->kind == EX_DYN) {
+                    m->u.method.recv = e->u.dynv.payload;
+                    m->dynTrait = e->u.dynv.traitName;
+                } else {
+                    m->dynTrait = e->dynTrait;
+                }
                 e = m;
             } else {
-                if (e->dynTrait) {
+                if (e->kind == EX_DYN || e->dynTrait) {
                     ctxError(p->ctx, dot->line, dot->col,
                              "A `dyn` value is constructed and called in one step; reading a field"
                              " of the payload is not part of that step.",
@@ -2344,10 +2352,13 @@ static Expr *parsePrimary(Parser *p) {
         Expr *payload = parseExpr(p);
         if (!payload) return NULL;
         if (!expect(p, ")", NULL)) return NULL;
+        /* TEMPORARY: the value form needs the checker's `EX_DYN` case and codegen's
+         * `extc_dyn_put` emission, which are not in yet -- see DYN.md stage 3. Until they are, the
+         * form stays gated so that nothing constructs an `EX_DYN` node. */
         if (!at(p, ".")) {
-            ctxError(p->ctx, kw->line, kw->col,
-                     "Constructing a `dyn` value and calling it are one step; storing one needs a"
-                     " pool, which arrives in stage 3.",
+            ctxError(p->ctx, tn->line, tn->col,
+                     "Constructing a `dyn` value and calling it are one step for now; the value form"
+                     " arrives with the rest of stage 3 (DYN.md).",
                      "`dyn %s(x)` must be called immediately: write `dyn %s(x).method(...)`",
                      tn->text, tn->text);
             return NULL;

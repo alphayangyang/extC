@@ -405,6 +405,15 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 | `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） | ❌ 被解析器拒绝（"must be called immediately"） | `EX_DYN` 表达式 + 检查器定型 `TY_DYN` + codegen 发 `extc_dyn_put` |
 | 具体值传 `dyn` 形参 | ✅ 被拒，信息清楚：``argument expects `Tag`, found `box` `` | 可选：诊断里提示写 `dyn Tag(x)` |
 
+**脚手架已就位（2026-09-26）**：`ExprKind` 加 `EX_DYN`、`Expr` 联合体加 `dynv { payload, traitName }`、
+`ttEquals` 加 `TY_DYN` **按名字比较**分支（`dyn Trait` 没有声明点，属于"结构比较"那一类）。
+**解析器仍保留"必须立即调用"的限制**（`EX_DYN` 暂不构造），因为检查器的 `case EX_DYN` 与 codegen 的
+`extc_dyn_put` 发出还没写 —— 那样做是为了让树一直绿（半成品会让 9 条判据红）。
+两处踩到的语法细节，供下一次参考：
+1. `ExprKind` 的**最后一项 `EX_NULL` 没有逗号**（直接接 `} ExprKind;`）⇒ 追加枚举值时要**同时给前一项加逗号**，
+   否则报 `expected ',' or '}'`；
+2. 那条"必须立即调用"的错误信息里原本有 `%%s`（打印成字面量）—— 已顺手修掉。
+
 **两个实现细节（2026-09-26 勘察，动手前必读）**
 - **`ttEquals` 的语义**（`src/types.c:743`）：注释写明"除引用、类型参数、泛型实例外，**都靠 interning**"。
   `dyn Trait` 类型没有声明点（解析器随写随造）⇒ 它属于"按结构比较"那一类 ⇒ 必须在 `ttEquals` 里加一条
