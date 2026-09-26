@@ -1650,6 +1650,23 @@ static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
     return code;
 }
 
+/* `dyn Trait(x)` as a value: copy the payload into the dyn pool and hand back the handle.
+ *
+ * The payload goes through a temporary so an rvalue works as well as an lvalue -- this is what
+ * `pfLine`, the existing prefix-statement mechanism, is for. The type comes from the checker
+ * (`payloadType`): this node's own type is `dyn Trait` by now, and the temporary has to be the
+ * payload's C type. */
+static const char *genDynValue(CG *g, Expr *e) {
+    const char *payC = genExpr(g, e->u.dynv.payload);
+    Type *pt = subst(g, e->u.dynv.payloadType);
+    const char *ct = cType(g, ttBase(pt));
+    const char *tmp = arenaPrintf(g->arena, "__extc_dyp%d", g->tmpSeq++);
+    pfLine(g, "%s %s = %s;", ct, tmp, payC);
+    return arenaPrintf(g->arena,
+                       "extc_dyn_put((const void *)&%s, (int64_t)sizeof(%s), &extc_vt$%s$%s)",
+                       tmp, ct, e->u.dynv.traitName, ct);
+}
+
 static const char *genMethodCall(CG *g, Expr *e) {
     /* The receiver's type as this instance sees it. Inside a generic body the written type may
      * still mention `T`, and for a call the checker deferred (`#57`, a method on a type
@@ -2209,6 +2226,7 @@ static const char *genExprInner(CG *g, Expr *e) {
         }
 
         case EX_METHOD:    return genMethodCall(g, e);
+        case EX_DYN:       return genDynValue(g, e);
         case EX_STRUCTLIT: return genStructLit(g, e);
 
         case EX_REF:
@@ -5379,6 +5397,22 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "#include <stdio.h>\n"
         "#include <string.h>\n"
         "#include <stdlib.h>\n\n");
+
+    /* The dyn handle's C type is needed by **prototypes**: a `dyn Trait` parameter is a value of
+     * this type, and prototypes are emitted before the runtime that defines it (the pool runtime is
+     * spliced in during final assembly). Declaring it here closes that gap; C11 allows a typedef to
+     * be repeated when it names the same type, so the runtime keeps its own copy. Gated on
+     * `makesPool` so a program that cannot use dyn or a pool is byte-for-byte unchanged. */
+    {
+        bool anyPoolFn = false;
+        for (size_t i = 0; i < m->funcs.len && !anyPoolFn; i++)
+            anyPoolFn = (*(FuncDef **)vecAt(&m->funcs, i))->makesPool;
+        if (anyPoolFn)
+            bufPuts(out,
+                "#define EXTC_DYN_HANDLE_DEFINED 1\n"
+                "struct ExtcDynHandleS { int64_t pid, slot, gen; };\n"
+                "typedef struct ExtcDynHandleS ExtcDynHandle;\n\n");
+    }
     /* The dying hook goes between the includes and the trap paths that call it: `int32_t`
      * has to be known, and the definition has to precede every use. It is its own block
      * because the prologue around it is already at the 4095-byte limit C99 guarantees for

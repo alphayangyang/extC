@@ -1,0 +1,15 @@
+/* 阶段 3：值形式 —— `dyn Trait(x)` 可以存下来并**作为值传递**。
+ * 注意测试必须**使用**这个变量：cdeclcodegen 会消除未被使用的局部变量（只保留初始化式的副作用），
+ * 所以"声明是否出现"取决于它有没有被读 —— 这一点由判据 dyn_stored_codegen 断言。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+
+fn sink(d: dyn Tag) -> i64 { return i64(0) }
+
+fn main() -> i32 {
+    let d: dyn Tag = dyn Tag(box { v: i64(42) })
+    io::cout << "stored=" << sink(d) << "\n"
+    return 0
+}

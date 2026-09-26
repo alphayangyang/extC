@@ -380,6 +380,35 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
     return c->tBool;
 }
 
+/* Resolve the trait a `dyn` form names, and insist the payload implements it.
+ *
+ * One helper for both users -- `dyn Trait(x)` (a value) and `dyn Trait(x).m(...)` (the immediate
+ * form) -- because it is one rule, and the `impl Trait for T` records phase 1 kept are what answer
+ * it. Returns the trait, or NULL after reporting. */
+static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int line) {
+    TraitDef *tr = NULL;
+    for (size_t i = 0; i < c->m->traits.len && !tr; i++) {
+        TraitDef *cand = *(TraitDef **)vecAt(&c->m->traits, i);
+        if (cand->name && strcmp(cand->name, traitName) == 0) tr = cand;
+    }
+    if (!tr) {
+        ckError(c, line, "A trait is declared with `trait Name { ... }`, and a `dyn` value must name"
+                " one that exists.", "`dyn` on unknown trait `%s`", traitName);
+        return NULL;
+    }
+    Type *pt = ttBase(payT);
+    bool impl = false;
+    for (size_t i = 0; i < c->m->impls.len && !impl; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&c->m->impls, i);
+        impl = im->trait == tr && im->target && pt && ttEquals(ttBase(im->target), pt);
+    }
+    if (pt && pt->sdef && !impl)
+        ckError(c, line, "A `dyn` value names a trait its payload implements, because the"
+                " implementation is what the table points at.",
+                "`%s` does not implement `%s`", pt->name, traitName);
+    return tr;
+}
+
 static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
@@ -2005,6 +2034,27 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return f->ret ? f->ret : ttVoid(tt);
         }
 
+        case EX_DYN: {
+            /* `dyn Trait(x)` as a **value**: its type is `dyn Trait`, and the payload must
+             * implement the trait -- the implementation is what the table points at. The payload's
+             * type is kept on the node: codegen needs its C spelling for the temporary and for
+             * `sizeof`, and by then this node's own type is `dyn Trait`. */
+            Type *payT = checkExprInner(c, e->u.dynv.payload);
+            /* The payload's own node needs its type too: codegen emits the temporary from it, and a
+             * node left without one came out as `(int){0}` (found by compiling the generated C). */
+            if (payT) e->u.dynv.payload->type = payT;
+            e->u.dynv.payloadType = payT;
+            /* A `dyn` value is pool-backed, so the enclosing function creates a pool -- the same
+             * existing flag the dispatch site sets, and it must be set here too: without it the pool
+             * runtime was never emitted and the generated C called `extc_dyn_put` undeclared. */
+            if (c->curFunc) c->curFunc->makesPool = true;
+            dynTraitOf(c, e->u.dynv.traitName, payT, e->line);
+            Type *dt = typeNamed(c->arena, e->u.dynv.traitName);
+            dt->kind = TY_DYN;
+            e->type = dt;
+            return dt;
+        }
+
         case EX_METHOD: {
             /* Constructing a variant with a payload can look like this as well: the syntax of
              * `shape.circle(2.0)` is that of a method call, `receiver.name(args)`, and the only
@@ -2112,29 +2162,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * mid-body was too late: the program trapped with "a `dyn` value needs a place to
                  * live in"). */
                 if (c->curFunc) c->curFunc->makesPool = true;
-                TraitDef *tr = NULL;
-                for (size_t ti = 0; ti < c->m->traits.len && !tr; ti++) {
-                    TraitDef *cand = *(TraitDef **)vecAt(&c->m->traits, ti);
-                    if (cand->name && strcmp(cand->name, e->dynTrait) == 0) tr = cand;
-                }
-                /* The payload must **implement** the trait: that implementation is what the table
-                 * points at. The `(trait, type)` records phase 1 kept answer this directly, so the
-                 * check does not have to be inferred from "the method was not found" (which is what
-                 * the reader would otherwise see, far from the `dyn` that caused it). */
-                {
-                    Type *payT = ttBase(e->u.method.recv->type);
-                    bool impl = false;
-                    for (size_t ii = 0; tr && ii < c->m->impls.len && !impl; ii++) {
-                        ImplDef *im = *(ImplDef **)vecAt(&c->m->impls, ii);
-                        impl = im->trait == tr && im->target && payT &&
-                               ttEquals(ttBase(im->target), payT);
-                    }
-                    if (tr && payT && payT->sdef && !impl)
-                        ckError(c, e->line,
-                                "A `dyn` value names a trait its payload implements, because the"
-                                " implementation is what the table points at.",
-                                "`%s` does not implement `%s`", payT->name, e->dynTrait);
-                }
+                TraitDef *tr = dynTraitOf(c, e->dynTrait, e->u.method.recv->type, e->line);
                 FuncDef *want = NULL;
                 for (size_t ti = 0; tr && ti < tr->methods.len && !want; ti++) {
                     FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, ti);

@@ -2340,7 +2340,7 @@ static Expr *parsePrimary(Parser *p) {
      * for the shape `dyn Trait(`, which no expression can otherwise begin with. */
     if (at(p, "dyn") && pk(p, 1) && pk(p, 1)->kind == TK_IDENT &&
         pk(p, 2) && pk(p, 2)->text && strcmp(pk(p, 2)->text, "(") == 0) {
-        Token *kw = take(p);
+        take(p);                            /* dyn */
         Token *tn = cur(p);
         if (tn->kind != TK_IDENT) {
             ctxError(p->ctx, tn->line, tn->col, NULL,
@@ -2352,19 +2352,14 @@ static Expr *parsePrimary(Parser *p) {
         Expr *payload = parseExpr(p);
         if (!payload) return NULL;
         if (!expect(p, ")", NULL)) return NULL;
-        /* TEMPORARY: the value form needs the checker's `EX_DYN` case and codegen's
-         * `extc_dyn_put` emission, which are not in yet -- see DYN.md stage 3. Until they are, the
-         * form stays gated so that nothing constructs an `EX_DYN` node. */
-        if (!at(p, ".")) {
-            ctxError(p->ctx, tn->line, tn->col,
-                     "Constructing a `dyn` value and calling it are one step for now; the value form"
-                     " arrives with the rest of stage 3 (DYN.md).",
-                     "`dyn %s(x)` must be called immediately: write `dyn %s(x).method(...)`",
-                     tn->text, tn->text);
-            return NULL;
-        }
-        payload->dynTrait = tn->text;
-        return payload;
+        /* `dyn Trait(x)` as a **value** (DYN.md stage 3). The immediate form
+         * `dyn Trait(x).m(...)` is built by the postfix loop, which keeps the **payload** as the
+         * call's receiver -- that path is unchanged, so every stage-1/2 judge still exercises
+         * exactly the code it did before. */
+        Expr *dv = exprNew(p->arena, EX_DYN, tn->line);
+        dv->u.dynv.payload = payload;
+        dv->u.dynv.traitName = tn->text;
+        return dv;
     }
 
     if (t->kind == TK_INT) {

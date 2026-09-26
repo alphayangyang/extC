@@ -13,11 +13,18 @@ bad()  { echo "  FAIL $1  ->  $2"; fail=$((fail+1)); }
 out=$("$EXTC" -w --run tests/dyn/dyn_call.extc 2>&1)
 [ "$out" = "dyn=7,5" ] && ok dyn_call "$out" || bad dyn_call "期望 dyn=7,5，实得：$out"
 
-err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_store.extc 2>&1)
-case "$err" in
-    *"must be called immediately"*) ok dyn_store "拒绝存储（阶段 1 只允许构造即调用）" ;;
-    *) bad dyn_store "$err" ;;
-esac
+# 阶段 3：值形式合法（判据翻面 —— 旧判据断言"保存被拒"，保存现在是语言的一部分）
+out=$("$EXTC" -w --run tests/dyn/dyn_stored.extc 2>&1)
+[ "$out" = "stored=0" ] && ok dyn_stored "值形式可存下并作参数传递" \
+                        || bad dyn_stored "期望 stored=0，实得：$out"
+d=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$d/v.c" tests/dyn/dyn_stored.extc >/dev/null 2>&1 \
+   && grep -q '= extc_dyn_put(' "$d/v.c"; then
+    ok dyn_stored_codegen "生成物把载荷拷进池（= extc_dyn_put(）"
+else
+    bad dyn_stored_codegen "生成物里没有 extc_dyn_put"
+fi
+rm -rf "$d"
 
 err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_wrong_trait.extc 2>&1)
 case "$err" in

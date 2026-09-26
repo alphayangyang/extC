@@ -401,8 +401,8 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 |---|---|---|
 | `dyn Tag` 作**参数类型** | ✅ 已接受（无诊断） | —— |
 | `dyn Tag` 作**字段类型** | ✅ 已接受（无诊断） | —— |
-| `d.tag()`，接收者是 `dyn Tag` | ❌ `no method \`tag\` on \`Tag\`` | 检查器：接收者类型是 `TY_DYN` ⇒ 在 **trait 签名**里找方法并定型 |
-| `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） | ❌ 被解析器拒绝（"must be called immediately"） | `EX_DYN` 表达式 + 检查器定型 `TY_DYN` + codegen 发 `extc_dyn_put` |
+| `d.tag()`，接收者是 `dyn Tag` | ❌ `no method \`tag\` on \`Tag\`` | 检查器：接收者类型是 `TY_DYN` ⇒ 在 **trait 签名**里找方法并定型（**下一件**） |
+| `dyn Tag(x)` 作**值**（`var d: dyn Tag = dyn Tag(b)`） | ✅ **已落地**（`EX_DYN` + 定型 `TY_DYN` + `extc_dyn_put`；判据 `dyn_stored`、`dyn_stored_codegen`） | —— |
 | 具体值传 `dyn` 形参 | ✅ 被拒，信息清楚：``argument expects `Tag`, found `box` `` | 可选：诊断里提示写 `dyn Tag(x)` |
 
 **脚手架已就位（2026-09-26）**：`ExprKind` 加 `EX_DYN`、`Expr` 联合体加 `dynv { payload, traitName }`、
@@ -460,3 +460,20 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 3. **新增结构体字段必须同时找它的初始化点**（`Module.traits` 忘 `vecInit` 曾导致段错误）；
    凡是"发出决定发生在体生成之前"的东西（运行期文本、place 进入），必须由**检查器**在类型已知处标记
    （`makesPool` 就是这个例子）。
+
+### 值形式落地时踩到的四件事（2026-09-26）
+
+1. **`ExprKind` 的 `-Wswitch` 是真的**（`check_expr.c` 与 `codegen.c` 各一处）：此前只验了 `TypeKind`
+   就断言"不会触发"，是**误判**；编译器把待处理点列了出来，照改即零告警；
+2. **载荷节点的类型必须显式写回**：`checkExprInner` 返回类型但不写到子节点上 ⇒ codegen 拿到 NULL，
+   发出 `(int){0}`（只在生成物编译时暴露）。修法：`dynv.payloadType` + 写回 `payload->type`；
+3. **值形式同样要在检查器置 `makesPool`**：否则池运行期（含 `extc_dyn_put`）不发出，生成物报
+   `implicit declaration of extc_dyn_put`；
+4. **`ExtcDynHandle` 必须先于原型可见**：定义它的运行期是后来拼接的 ⇒ 序言区提前声明。两处坑：
+   匿名 struct 的 `typedef` **不能重复**（不同类型）⇒ 带标签 + `#ifndef EXTC_DYN_HANDLE_DEFINED` 守卫；
+   单个字符串分块超过 **4095** 字节触发 `-Woverlength-strings` ⇒ 按仓库既有做法拆成两块
+   （1628 + 2597 字节）。
+
+**判据给的教训**：`dyn_stored_codegen` 起初断言生成物里出现 `= extc_dyn_put(`，但测试里 `d` 从未被读
+⇒ **死变量消除**删掉声明、只保留初始化式的副作用（调用成裸语句）。行为**正确**，判据改为让测试
+**真的使用**该值（传给 `dyn Tag` 形参，顺带验证值可作参数传递）。

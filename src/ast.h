@@ -318,7 +318,7 @@ struct Expr {
         struct { const char *op; Expr *left, *right; } bin;
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
-        struct { Expr *payload; const char *traitName; } dynv;   /* EX_DYN */
+        struct { Expr *payload; const char *traitName; Type *payloadType; } dynv;  /* EX_DYN */
         struct { Expr *recv; const char *name; Vec args; } method;
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */
