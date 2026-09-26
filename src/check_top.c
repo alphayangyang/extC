@@ -350,91 +350,35 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
  *   True when the statement contains an allocation or an unknown-length allocation.
  */
 static bool stmtHasNew(Stmt *s);
+static bool hasNewInStmt(void *ctx, Stmt *s);
+/* Does this expression contain `new`, or `alloc<T>(n)` (which is the same thing)?
+ *
+ * The walk lives in `astWalkExprChildren` / `astWalkStmtChildren` (`ast.c`): the AST kinds are
+ * listed **once** there, so this question cannot fall behind the AST. `new` and a generic
+ * allocation are the answer; every other node is answered by its children.
+ *
+ * A callback returns false to stop the walk, so "found" travels as that early exit. */
+static bool hasNewInExpr(void *ctx, Expr *e) {
+    (void)ctx;
+    if (e->kind == EX_NEW || e->kind == EX_GENCALL) return false;   /* found */
+    AstVisit v = { hasNewInExpr, hasNewInStmt, NULL };
+    return astWalkExprChildren(e, &v);
+}
+
+static bool hasNewInStmt(void *ctx, Stmt *s) {
+    (void)ctx;                              /* this question needs no context */
+    AstVisit v = { hasNewInExpr, hasNewInStmt, NULL };
+    return astWalkStmtChildren(s, &v);
+}
+
 static bool exprHasNew(Expr *e) {
     if (!e) return false;
-    switch (e->kind) {
-    case EX_NEW: return true;
-    /* `alloc<T>(n)` is a builtin primitive (it is the only call the checker lowers to
-     * `EX_GENCALL`), and it takes its storage from the block arena exactly like `new`
-     * does. Missing this case was a real bug: a function that allocated only inside a
-     * nested block,
-     *
-     *     fn inner(n: i32) { { var q = alloc<i32>(250000)  *q = n } }
-     *
-     * was classified as needing no arena, so no `__extc_a` was declared, while the
-     * block still emitted `&__extc_a[2]` and the generated C did not compile (gcc:
-     * `__extc_a` undeclared). Worse, `tests/arena/control-flow.extc` has exactly that
-     * shape while the acceptance script only greps for "out of arena memory", so the
-     * case was a no-op until the script was tightened as well. */
-    case EX_GENCALL: return true;
-    /* `dyn Trait(x)`: the handle lives in the pool, but the payload is built from an
-     * expression that may hold a `new`, so the walk has to look inside. */
-    case EX_DYN: return exprHasNew(e->u.dynv.payload);
-    case EX_BIN: return exprHasNew(e->u.bin.left) || exprHasNew(e->u.bin.right);
-    case EX_UN:  return exprHasNew(e->u.un.operand);
-    case EX_REF: return exprHasNew(e->u.ref.operand);
-    case EX_DEREF: return exprHasNew(e->u.deref.operand);
-    case EX_SIGN:  return exprHasNew(e->u.sign.operand);
-    case EX_CONV:  return exprHasNew(e->u.conv.operand);
-    case EX_TRY:   return exprHasNew(e->u.try_.operand);
-    case EX_INDEX: return exprHasNew(e->u.index.obj) || exprHasNew(e->u.index.index);
-    case EX_SLICE: return exprHasNew(e->u.slice.obj) || exprHasNew(e->u.slice.lo) ||
-                          exprHasNew(e->u.slice.hi);
-    case EX_FIELD: return exprHasNew(e->u.field.obj);
-    case EX_METHOD:
-        if (exprHasNew(e->u.method.recv)) return true;
-        for (size_t i = 0; i < e->u.method.args.len; i++)
-            if (exprHasNew(*(Expr **)vecAt(&e->u.method.args, i))) return true;
-        return false;
-    case EX_COALESCE:
-        return exprHasNew(e->u.coalesce.main) || exprHasNew(e->u.coalesce.fallback);
-    case EX_CALL:
-        for (size_t i = 0; i < e->u.call.args.len; i++)
-            if (exprHasNew(*(Expr **)vecAt(&e->u.call.args, i))) return true;
-        return false;
-    case EX_ASSOC:
-        for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            if (exprHasNew(*(Expr **)vecAt(&e->u.assoc.args, i))) return true;
-        return false;
-    case EX_ENUMVAL:
-        for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            if (exprHasNew(*(Expr **)vecAt(&e->u.enumval.args, i))) return true;
-        return false;
-    case EX_STRUCTLIT:
-        for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            if (exprHasNew((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
-        return false;
-    case EX_ARRAYLIT:
-        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            if (exprHasNew(*(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
-        return false;
-    default: return false;
-    }
+    return !hasNewInExpr(NULL, e);
 }
+
 static bool stmtHasNew(Stmt *s) {
     if (!s) return false;
-    switch (s->kind) {
-    case ST_VAR:    return exprHasNew(s->u.var.init);
-    case ST_ASSIGN: return exprHasNew(s->u.assign.value) || exprHasNew(s->u.assign.target);
-    case ST_IF:     return exprHasNew(s->u.ifs.cond) || stmtHasNew(s->u.ifs.thenBody) ||
-                           stmtHasNew(s->u.ifs.elseBody);
-    case ST_WHILE:  return exprHasNew(s->u.whiles.cond) || stmtHasNew(s->u.whiles.body);
-    case ST_RETURN: return exprHasNew(s->u.ret.value);
-    case ST_EXPR:   return exprHasNew(s->u.expr.expr);
-    case ST_BLOCK: case ST_MATCH: {
-        Vec *v = s->kind == ST_BLOCK ? &s->u.block.stmts : NULL;
-        if (v) {
-            for (size_t i = 0; i < v->len; i++)
-                if (stmtHasNew(*(Stmt **)vecAt(v, i))) return true;
-            return false;
-        }
-        if (exprHasNew(s->u.match.scrutinee)) return true;
-        for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtHasNew((*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
-        return false;
-    }
-    default: return false;
-    }
+    return !hasNewInStmt(NULL, s);
 }
 
 /* Does the body call a function that needs a home arena?
@@ -572,8 +516,9 @@ static bool exprCallsNeedsHome(Expr *e, bool precise) {
         return false;
     /* `EX_DYN` was missing from every hand-written walker when the kind was introduced: the
      * payload is a child expression (`ast.h`: `dynv.payload`), so a call inside it was
-     * invisible here, in `exprUsesCname`, in `exprMakesPool`, in `exprCallsAllocator`, in
-     * `exprHasNew`, in `collectEffectsExpr`, in `obligExpr`, in `exprRefDepth`,
+     * invisible here, in `exprMakesPool`, in `collectEffectsExpr`, in `obligExpr`, in
+     * `exprRefDepth` (the questions already migrated to `astWalkExprChildren`, among them
+     * `exprHasNew` and the allocator pair, cannot have this hole),
      * `valDepthStructural` and the loader's `rwExpr`. These walkers end in `default:`, so
      * `-Wswitch` cannot warn about the omission -- only reading them can. */
     case EX_DYN:
@@ -5516,6 +5461,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
  *   - The result is cached in `FuncDef.allocState`, so a repeated query is free.
  */
 static bool stmtCallsAllocator(Checker *c, Stmt *s);   /* defined below; mutually recursive */
+static bool allocInStmt(void *ctx, Stmt *s);
 static bool funcAllocates(Checker *c, FuncDef *f) {
     if (!f) return true;                     /* unknown, so assume it allocates */
     if (f->isExtern) return false;           /* an extern function does not touch our arenas */
@@ -5533,98 +5479,30 @@ static bool funcAllocates(Checker *c, FuncDef *f) {
  * The two walkers are mutually recursive and share the per-function cache, so this is only
  * meaningful after the callee has been checked: `e->func` is filled in by then.
  */
-static bool exprCallsAllocator(Checker *c, Expr *e);
-static bool stmtCallsAllocator(Checker *c, Stmt *s) {
-    if (!s) return false;
-    switch (s->kind) {
-    case ST_VAR:    return exprCallsAllocator(c, s->u.var.init);
-    case ST_ASSIGN: return exprCallsAllocator(c, s->u.assign.value) ||
-                           exprCallsAllocator(c, s->u.assign.target);
-    case ST_IF:     return exprCallsAllocator(c, s->u.ifs.cond) ||
-                           stmtCallsAllocator(c, s->u.ifs.thenBody) ||
-                           stmtCallsAllocator(c, s->u.ifs.elseBody);
-    case ST_WHILE:  return exprCallsAllocator(c, s->u.whiles.cond) ||
-                           stmtCallsAllocator(c, s->u.whiles.body);
-    case ST_RETURN: return exprCallsAllocator(c, s->u.ret.value);
-    case ST_EXPR:   return exprCallsAllocator(c, s->u.expr.expr);
-    case ST_BLOCK:
-        for (size_t i = 0; i < s->u.block.stmts.len; i++)
-            if (stmtCallsAllocator(c, *(Stmt **)vecAt(&s->u.block.stmts, i))) return true;
-        return false;
-    case ST_MATCH:
-        if (exprCallsAllocator(c, s->u.match.scrutinee)) return true;
-        for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtCallsAllocator(c, (*(MatchArm **)vecAt(&s->u.match.arms, i))->body)) return true;
-        return false;
-    default: return false;
-    }
-}
-/* Can this expression reach an allocator?
+/* Can evaluating this expression reach an allocator?
  *
- * Params:
- *   c - checker
- *   e - expression to walk; may be NULL
- *
- * Returns:
- *   True when evaluation of the expression can reach a `new` or another allocator.
- */
-static bool exprCallsAllocator(Checker *c, Expr *e) {
-    if (!e) return false;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && (!e->func || funcAllocates(c, e->func)))
-        return true;
-    switch (e->kind) {
-    case EX_BIN: return exprCallsAllocator(c, e->u.bin.left) || exprCallsAllocator(c, e->u.bin.right);
-    case EX_UN:  return exprCallsAllocator(c, e->u.un.operand);
-    case EX_REF: return exprCallsAllocator(c, e->u.ref.operand);
-    case EX_DEREF: return exprCallsAllocator(c, e->u.deref.operand);
-    case EX_SIGN:  return exprCallsAllocator(c, e->u.sign.operand);
-    case EX_CONV:  return exprCallsAllocator(c, e->u.conv.operand);
-    case EX_TRY:   return exprCallsAllocator(c, e->u.try_.operand);
-    case EX_INDEX:
-        return exprCallsAllocator(c, e->u.index.obj) || exprCallsAllocator(c, e->u.index.index);
-    case EX_SLICE: return exprCallsAllocator(c, e->u.slice.obj) ||
-                          exprCallsAllocator(c, e->u.slice.lo) ||
-                          exprCallsAllocator(c, e->u.slice.hi);
-    /* `alloc<T>(n)` **is** an allocation, the same as `new` - the loop above only caught
-     * the call shapes, so a body whose only allocation was `alloc` answered "no". */
-    case EX_GENCALL:  return true;
-    /* The handle itself is pool-backed, but building the payload may reach an allocator. */
-    case EX_DYN:      return exprCallsAllocator(c, e->u.dynv.payload);
-    case EX_ARRAYLIT:
-        for (size_t k = 0; k < e->u.arraylit.elems.len; k++)
-            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.arraylit.elems, k))) return true;
-        return false;
-    case EX_ENUMVAL:
-        for (size_t k = 0; k < e->u.enumval.args.len; k++)
-            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.enumval.args, k))) return true;
-        return false;
-    case EX_STRUCTLIT:
-        for (size_t k = 0; k < e->u.lit.inits.len; k++)
-            if (exprCallsAllocator(c, (*(FieldInit **)vecAt(&e->u.lit.inits, k))->value))
-                return true;
-        return false;
-    case EX_FIELD: return exprCallsAllocator(c, e->u.field.obj);
-    case EX_COALESCE:
-        return exprCallsAllocator(c, e->u.coalesce.main) ||
-               exprCallsAllocator(c, e->u.coalesce.fallback);
-    case EX_METHOD: {
-        if (exprCallsAllocator(c, e->u.method.recv)) return true;
-        for (size_t i = 0; i < e->u.method.args.len; i++)
-            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.method.args, i))) return true;
-        return false;
-    }
-    case EX_CALL: {
-        for (size_t i = 0; i < e->u.call.args.len; i++)
-            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.call.args, i))) return true;
-        return false;
-    }
-    case EX_ASSOC: {
-        for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            if (exprCallsAllocator(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
-        return false;
-    }
-    case EX_NEW: return exprCallsAllocator(c, e->u.new_.count);
-    default: return false;
-    }
+ * `alloc<T>(n)` **is** an allocation, the same as `new`; a call counts when the callee may
+ * allocate (`funcAllocates`, memoised because it recurses through the call graph); everything
+ * else is answered by the children. The walk is `astWalkExprChildren`, the one place that lists
+ * the kinds. */
+typedef struct { Checker *c; } AllocCtx;
+
+static bool allocInExpr(void *ctx, Expr *e) {
+    AllocCtx *a = (AllocCtx *)ctx;
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) &&
+        (!e->func || funcAllocates(a->c, e->func))) return false;   /* found */
+    if (e->kind == EX_NEW || e->kind == EX_GENCALL) return false;   /* found */
+    AstVisit v = { allocInExpr, allocInStmt, ctx };
+    return astWalkExprChildren(e, &v);
 }
 
+static bool allocInStmt(void *ctx, Stmt *s) {
+    AstVisit v = { allocInExpr, allocInStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+
+static bool stmtCallsAllocator(Checker *c, Stmt *s) {
+    if (!s) return false;
+    AllocCtx a = { c };
+    return !allocInStmt(&a, s);
+}

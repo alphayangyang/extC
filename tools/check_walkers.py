@@ -36,8 +36,8 @@ LEAF = {
 # a promise that the omission is intentional -- state why.
 ALLOW = {}
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
-RATCHET = 29       # measured 2026-09-26 with the enum extraction fixed (the two earlier counts
-                   # were wrong: one spanned both enums, the other ignored statement walkers).
+RATCHET = 25       # measured 2026-09-26 after migrating `exprUsesCname`/`stmtUsesCname` and
+                   # `exprHasNew`/`stmtHasNew`/`exprCallsAllocator`/`stmtCallsAllocator`.
                    # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
 
 

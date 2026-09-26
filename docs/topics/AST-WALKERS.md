@@ -34,9 +34,9 @@
 ⇒ 结论：**每加一个 AST 种类，就有 8 个地方可能漏**；漏一个就是 soundness 洞（不是少个警告）。
 这正是"home zone 老是出 bug"的结构性原因之一。
 
-### 1.1 真实规模：**29 个**手写遍历器（2026-09-26 由判据量出）
+### 1.1 真实规模：**29 → 25 个**手写遍历器（2026-09-26 由判据量出，随迁移下降）
 
-`tools/check_walkers.py` 现在把数量**写进判据**（`RATCHET = 29`）：迁移一个就减一，**新增一个直接红** ✓
+`tools/check_walkers.py` 把数量**写进判据**（`RATCHET`，随迁移只降不升；现已 25）：迁移一个就减一，**新增一个直接红** ✓
 （前两次人工统计分别是 17 与 41，都是错的 —— 第一次的枚举抽取跨了两个 enum、第二次又漏了语句遍历器；
 教训：**这类清单必须由判据数，不能靠人数**。）
 
@@ -62,8 +62,8 @@ bool walkStmt(Checker *c, Stmt *s, ExprVisit fn, void *ctx);
 | 步 | 迁移 | 为什么这个顺序 |
 |---|---|---|
 | ~~1~~ | ~~`exprUsesCname`/`stmtUsesCname`~~ **✅ 2026-09-26 已完成** | 形状最干净。**生成物在 202 个程序上逐字节相同** ⇒ 迁移是行为保持的；`astWalkStmtChildren` 到位后，`exprUsesCname` 成了死代码，删掉 ✓ |
-| 2 | `exprHasNew` | 纯查询 |
-| 3 | `exprCallsAllocator`（+ 保留惰性记忆化外壳） | 纯查询，含循环防护 |
+| ~~2~~ | ~~`exprHasNew`/`stmtHasNew`~~ **✅ 已完成** | 纯查询；生成物 216 个程序逐字节相同 |
+| ~~3~~ | ~~`exprCallsAllocator`/`stmtCallsAllocator`~~ **✅ 已完成**（`funcAllocates` 的惰性记忆化外壳保留） | 纯查询，含循环防护；`exprCallsAllocator` 迁完成死代码，删掉 |
 | 4 | `exprCallsNeedsHome`（把 precise/wide 收成 `ReachKind` 的两个取值） | 纯查询，但**被 soundness 依赖** ⇒ 迁完立刻跑反例库 |
 | 5 | `markNamesInExpr` / `collectEffectsExpr` | **有副作用** ⇒ 必须保序遍历（先子后父/先父后子要一致） |
 | 6 | codegen 的 `collectOwCallsExpr` | 跨到 codegen，注意它跑在检查之后 |
