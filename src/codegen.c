@@ -6200,7 +6200,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "     * empty enough to want it. */\n"
         "    if (!a->top && a->spare) { a->top = a->spare; a->spare = NULL; a->top->used = 0; }\n"
         "    if (!a->top || a->top->cap - a->top->used < n) {\n"
-        "        int64_t cap = n > 4096 ? n : 4096;\n"
+        "        /* Block size: the request, grown by doubling, with a small floor.\n"
+        "         *\n"
+        "         * It used to be a flat 4096 floor, and that is 4 KB per **task**: a coroutine's frame\n"
+        "         * is ~100 bytes, so 10000 live tasks cost 41.8 MB instead of ~1.5 MB (measured,\n"
+        "         * bench/coro/liveN). Doubling keeps the malloc count of an allocation loop the same\n"
+        "         * after a few blocks while a one-shot allocation (the common case in a coroutine)\n"
+        "         * pays only for what it asks. */\n"
+        "        int64_t cap = n > 64 ? n : 64;\n"
+        "        if (a->top && a->top->cap < (INT64_C(1) << 20) && cap < a->top->cap * 2)\n"
+        "            cap = a->top->cap * 2;\n"
         "        extc_ablock *b = (extc_ablock *)malloc(sizeof(extc_ablock) + (size_t)cap);\n"
         /* Like every other trap, this one carries a source position. It used to
          * print a bare "out of arena memory" and exit, which breaks the rule

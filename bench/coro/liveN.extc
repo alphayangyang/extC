@@ -1,0 +1,59 @@
+/* N 个**活任务**：spawn 出来、各驱动**一次**（跑到第一个 yield 就停）—— N 个协程同时挂在自己的
+ * 任务 place 里。每个任务的成本 = 帧 + 24 字节句柄 + 任务 place 的第一块。
+ *
+ * 计时与 RSS 向 C 侧要（bench/coro/liveN_clock.c 提供两个函数），主程序仍在这里 ——
+ * 生成物的可达性剪枝会把没人调的函数删掉，所以从 main 出发调用才留得住。
+ *
+ * 两批：第一批是**冷**的（堆、页、malloc 的 bin 都是新的），第二批是**热**的。 */
+use std::sys::coroutine
+use std::io
+
+/* C 侧：单调时钟（纳秒）与 /proc/self/statm 的常驻内存（KB）。 */
+extern!("liveN") fn bench_now_ns() -> i64
+    effects Addr=0 Cont=0
+extern!("liveN") fn bench_rss_kb() -> i64
+    effects Addr=0 Cont=0
+
+fn worker(id: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < i64(3) {
+        yield id + i                  /* 挂在这里：任务活着 */
+        i = i + 1
+    }
+}
+
+/* 一把：spawn n 个任务、各驱动一次，句柄写进 out（调用者持有 ⇒ 跨过这一把仍然活着）。 */
+fn run_batch(n: i64, out: mut slice<coroutine<i64>>) -> i64 {
+    var k: i64 = 0
+    while k < n {
+        out[k] = worker(k)
+        k = k + 1
+    }
+    k = 0
+    var sum: i64 = 0
+    while k < n {
+        if out[k].next() { sum = sum + out[k].value() }
+        k = k + 1
+    }
+    return sum
+}
+
+fn main() -> i32 {
+    var n: i64 = i64(10000)
+    var b1: mut slice<coroutine<i64>> = new coroutine<i64>[10000]
+    var b2: mut slice<coroutine<i64>> = new coroutine<i64>[10000]
+
+    var r0: i64 = bench_rss_kb()
+    var t0: i64 = bench_now_ns()
+    var s1: i64 = run_batch(n, b1)
+    var cold: i64 = bench_now_ns() - t0
+    var r1: i64 = bench_rss_kb()
+
+    t0 = bench_now_ns()
+    var s2: i64 = run_batch(n, b2)
+    var warm: i64 = bench_now_ns() - t0
+    var r2: i64 = bench_rss_kb()
+
+    io::cout << "extC n=" << n << " live=" << coroutine::extc_task_live() << " cold_ns=" << (cold / n) << " warm_ns=" << (warm / n) << " cold_B=" << ((r1 - r0) * i64(1024) / n) << " warm_B=" << ((r2 - r1) * i64(1024) / n) << " sink=" << (s1 + s2) << "\n"
+    return 0
+}

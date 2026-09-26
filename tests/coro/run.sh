@@ -9,6 +9,21 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# N 个活任务的内存：10000 个挂起的协程 ≤ 8 MB 常驻（曾经是 41.8 MB —— 每块下限 4096 字节）
+mm=$tmp/coro_mem
+if "$EXTC" -w --no-line-map -o "$mm.c" tests/coro/coro_mem.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -O2 -o "$mm" "$mm.c" 2>"$tmp/mme"; then
+    peak=$(/usr/bin/time -f "%M" "$mm" 2>&1 >/dev/null); rc=$?
+    if [ "$rc" = 0 ] && [ -n "$peak" ] && [ "$peak" -le 8192 ]; then
+        echo "  ok   coro_mem            ->  10000 个活任务：常驻 ${peak} KB（≤ 8192），全部活着"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_mem            ->  退出码 $rc，常驻 ${peak:-?} KB（上限 8192）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_mem            ->  $(head -2 "$tmp/mme" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 真事件源：N=8 条 AF_UNIX 连接、单线程、一个 epoll 循环。期望 36，并要求 ASan 干净
 ep=$tmp/coro_epoll
 if "$EXTC" -w --no-line-map -o "$ep.c" tests/coro/coro_epoll.extc >/dev/null 2>&1 \

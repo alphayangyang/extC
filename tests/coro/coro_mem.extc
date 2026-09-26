@@ -1,0 +1,27 @@
+/* 判据：**N 个活任务的内存**（阶段四那一格，钉住防回归）。
+ *
+ * 10000 个挂起的协程：每个的成本 = 帧 + 24 字节句柄 + 任务 place 的第一块。
+ * 曾经每块的**下限是 4096 字节**（`cap = n > 4096 ? n : 4096`），于是 10000 个任务要 41.8 MB ——
+ * 35 倍浪费。改成自适应增长（首块按需、之后倍增）之后是 ~3 MB。run.sh 里用 /usr/bin/time 卡上限。 */
+use std::sys::coroutine
+
+fn w(id: i64) -> coroutine<i64> {
+    yield id
+}
+
+fn main() -> i32 {
+    var n: i64 = i64(10000)
+    var hs: mut slice<coroutine<i64>> = new coroutine<i64>[10000]
+    var k: i64 = 0
+    while k < n {
+        hs[k] = w(k)                       /* 装箱：任务 place + 帧 */
+        k = k + 1
+    }
+    k = 0
+    while k < n {
+        var r: bool = hs[k].next()         /* 驱动一次 ⇒ 挂起 ⇒ 活着 */
+        k = k + 1
+    }
+    if coroutine::extc_task_live() != n { return i32(1) }   /* 真的活着 */
+    return i32(0)
+}
