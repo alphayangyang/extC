@@ -19,6 +19,12 @@ case "$err" in
     *) bad dyn_store "$err" ;;
 esac
 
+err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_self_return.extc 2>&1)
+case "$err" in
+    *"returns \`Self\` and cannot be dispatched"*) ok dyn_object_safety "object safety ③：返回 Self 不可经 dyn 派发" ;;
+    *) bad dyn_object_safety "$err" ;;
+esac
+
 err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_field.extc 2>&1)
 case "$err" in
     *"must be followed by a method call"*) ok dyn_field "拒绝字段访问" ;;

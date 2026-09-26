@@ -2097,6 +2097,43 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             e->func = f;  f->used = true;   /* record the resolved function and its use */
+            /* `dyn Trait(x).m(...)`: **object safety** (DYN.md stage 1).
+             *
+             * Not every method can be dispatched through a table, and the rule is enforced here --
+             * at the `dyn` use site -- rather than on the trait declaration: such a method is
+             * perfectly fine as a static call, it simply has no slot to sit in. The judgment is
+             * about the **trait's** signature, so the trait is looked up by name from the module's
+             * declarations (the same lookup the `impl` attachment uses). */
+            if (e->dynTrait) {
+                TraitDef *tr = NULL;
+                for (size_t ti = 0; ti < c->m->traits.len && !tr; ti++) {
+                    TraitDef *cand = *(TraitDef **)vecAt(&c->m->traits, ti);
+                    if (cand->name && strcmp(cand->name, e->dynTrait) == 0) tr = cand;
+                }
+                FuncDef *want = NULL;
+                for (size_t ti = 0; tr && ti < tr->methods.len && !want; ti++) {
+                    FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, ti);
+                    if (strcmp(cand->name, e->u.method.name) == 0) want = cand;
+                }
+                if (want && !funcIsMethod(want))
+                    ckError(c, e->line,
+                            "A table holds method pointers, so the trait method it names must take"
+                            " a receiver; an associated function is still callable statically.",
+                            "`%s::%s` has no `self`, so it cannot be dispatched through `dyn`",
+                            e->dynTrait, e->u.method.name);
+                else if (want && want->typeParams.len > 1)
+                    ckError(c, e->line,
+                            "A generic method has one implementation per instantiation, so there is"
+                            " no single slot for it in a table.",
+                            "`%s::%s` is generic and cannot be dispatched through `dyn`",
+                            e->dynTrait, e->u.method.name);
+                else if (want && want->ret && mentionsParam(want->ret))
+                    ckError(c, e->line,
+                            "A method returning `Self` would have to name the implementing type,"
+                            " which a table slot cannot do.",
+                            "`%s::%s` returns `Self` and cannot be dispatched through `dyn`",
+                            e->dynTrait, e->u.method.name);
+            }
 
             /* A method that takes `self: mut ref T` needs a writable receiver. This is the other
              * half of making signatures tell the truth: `x.bump()` alone does not show whether

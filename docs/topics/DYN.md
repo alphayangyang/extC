@@ -83,7 +83,16 @@ dyn Tag(b).tag()        /* 阶段 1：构造 + 立即调用（不碰池） */
 2. **故意编不过的用例必须放 `tests/<suite>/errors/`**：`check.sh` 有一节全量编译所有 `.extc`
    并与基线比对，顶层放反例会让那一节红。
 
-**仍欠（阶段 1 的出口条件之一）：object safety 三条检查**
+**object safety（2026-09-26 更新）**：③ **已落地并配判据**（`tests/dyn/errors/dyn_self_return.extc`
+⇒ `` `Dup::dup` returns `Self` and cannot be dispatched through `dyn` ``），且**静态调用仍合法**（正对照实测
+`b.dup().v = 9`）—— 这正是"在 `dyn` 使用点报错，而不是禁止写这样的 trait"的口径。
+① 与 ② 的现状（诚实记录，暂不重复实现）：
+- ① **无 `self` 的关联函数**：调用语法上**不可达** —— 关联函数不会在接收者位置被解析成方法，
+  所以写不出 `dyn T(x).assoc()`；这条作为"设计约束"保留，等阶段 2 真正建表时在**表侧**再检查一次；
+- ② **泛型方法**：会被第一期的**签名比对**先拦下（trait 声明里的类型参数与 impl 无法逐项相符），
+  因此当前不需要第二条诊断；等阶段 2 放开后再看是否需要更早、更准的报错。
+
+**原先记录的落点（保留）**：
 落点：`src/check_expr.c` 的 `EX_METHOD` 分支里**方法解析之后**（`e->func` 已定）。
 需要按 `e->dynTrait` 在 `c->m->traits` 里找到 `TraitDef`，再对它声明的那个方法判三条：
 ① 必须带 `self`（`funcIsMethod`）；② 不能是泛型（`typeParams.len` 只有 `Self` 一个）；
