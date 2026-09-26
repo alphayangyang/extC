@@ -9,6 +9,21 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 切片 B2a：spawn + 驱动（`while c.next() { c.value() }`）**端到端跑起来** ✓
+b2=$tmp/coro_drive
+if "$EXTC" -w --no-line-map -o "$b2.c" tests/coro/coro_drive.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$b2" "$b2.c" 2>"$tmp/b2c"; then
+    out=$("$b2"); rc=$?
+    if [ "$out" = "0 1 2 " ] && [ "$rc" = 3 ]; then
+        echo "  ok   coro_drive         ->  spawn + next/value 跑出 [$out] 退出码 $rc（和 3 次 yield 一致）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_drive         ->  输出 [$out] 退出码 $rc"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_drive         ->  $(head -2 "$tmp/b2c" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 切片 B1：帧 + step 的**差分判据** —— 生成的 step 驱动出的序列必须与手写状态机逐字节相同 ✓
 # （`-DEXTC_CORO_B1_HARNESS` 只用来绕过"调用协程"的守门：调用是 B2 的事 ✓ 定义侧的变换在这里验 ✓）
 gen=$tmp/coro_step_gen.c

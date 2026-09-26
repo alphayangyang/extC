@@ -182,6 +182,10 @@ typedef struct {
      * a coroutine's `counter` matches inside its own `counter$step`. Nothing calls a step function
      * from extC yet (slice B2), so it needs no prototype and C is happy with the definition late. */
     Buf            coroDefs;
+    /* Which locals hold a coroutine frame, and which step function drives it. `let c = f(args)`
+     * emits the frame as a value (`struct f$frame c = (struct f$frame){ .pc = 0, .n = args }`), and
+     * `next`/`value`/`iter` are emitted inline against it (see `genMethodCall`). */
+    Vec            coroVars;        /* CoroVar* */
     bool        noArena;   /* This function puts nothing into its own block arena,
                             * so neither `extc_arena __extc_a[N]` nor the release
                             * calls are emitted. The checker decides this
@@ -306,6 +310,14 @@ typedef struct {
      * table needs it in scope) while the definitions are appended at the very end. */
     Buf          vtDecls;
 } CG;
+
+/* A local that holds a coroutine frame (see `CG.coroVars`). */
+typedef struct {
+    const char *cname;      /* the C name of the local holding the frame */
+    const char *frame;      /* `struct <fn>$frame` */
+    const char *step;       /* `<fn>$step` */
+    bool        ptr;        /* true when the local is an alias, `struct <fn>$frame *` */
+} CoroVar;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
  * collected into a function. A function rather than an expression so that lo
@@ -1689,6 +1701,25 @@ static const char *genMethodCall(CG *g, Expr *e) {
     Type *recvT = subst(g, e->u.method.recv->type);
     FuncDef *f = e->func;
     if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
+    if (!f && e->u.method.recv->kind == EX_IDENT) {
+        /* Driving a coroutine: the three protocol methods are the state machine's calling
+         * convention, so they are emitted inline (the checker resolves them the same way). */
+        Expr *rc = e->u.method.recv;
+        const char *rcn = rc->u.ident.cname ? rc->u.ident.cname : rc->u.ident.name;
+        /* `coroVars` is only built while emitting a unit that spawns; a method call in a unit that
+         * does not (the prelude, an STL body) must not walk an uninitialised vector. */
+        for (size_t i = 0; rc->u.ident.cname && g->coroVars.arena && i < g->coroVars.len; i++) {
+            CoroVar *cv = *(CoroVar **)vecAt(&g->coroVars, i);
+            if (!cv || !cv->cname || strcmp(cv->cname, rcn) != 0) continue;
+            const char *obj = cv->ptr ? rcn : arenaPrintf(g->arena, "&%s", rcn);
+            if (strcmp(e->u.method.name, "iter") == 0)   return obj;
+            if (strcmp(e->u.method.name, "next") == 0)
+                return arenaPrintf(g->arena, "%s(%s)", cv->step, obj);
+            if (strcmp(e->u.method.name, "value") == 0)
+                return arenaPrintf(g->arena, "%s%sret", rcn, cv->ptr ? "->" : ".");
+            break;
+        }
+    }
     if (!f) return "0";
 
     Param *p0 = *(Param **)vecAt(&f->params, 0);
@@ -3180,6 +3211,49 @@ static void genStmt(CG *g, Stmt *s) {
 static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
         case ST_VAR: {
+            /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
+             * arguments initialize the parameters -- a resume has none to pass them again. */
+            if (s->u.var.cname && s->u.var.init && s->u.var.init->kind == EX_CALL &&
+                s->u.var.init->func && s->u.var.init->func->isCoro) {
+                FuncDef *cf = s->u.var.init->func;
+                const char *fr = arenaPrintf(g->arena, "struct %s$frame", cFuncName(g, cf));
+                const char *st = arenaPrintf(g->arena, "%s$step", cFuncName(g, cf));
+                Buf init;
+                bufInit(&init, g->arena);
+                bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, s->u.var.cname, fr);
+                for (size_t i = 0; i < cf->params.len; i++) {
+                    Param *p = *(Param **)vecAt(&cf->params, i);
+                    Expr *a = i < s->u.var.init->u.call.args.len
+                                  ? *(Expr **)vecAt(&s->u.var.init->u.call.args, i) : NULL;
+                    bufPrintf(&init, ", .%s = %s", p->cname, a ? genExpr(g, a) : "0");
+                }
+                bufPrintf(&init, " };");
+                flushPrefix(g);
+                cgLine(g, "%s", bufCstr(&init));
+                CoroVar *cv = arenaAllocZero(g->arena, sizeof *cv);
+                cv->cname = s->u.var.cname; cv->frame = fr; cv->step = st; cv->ptr = false;
+                *(CoroVar **)vecPush(&g->coroVars) = cv;
+                return;
+            }
+            /* `var __extc_it = c.iter()`: the alias the `for` retargeting introduces. The frame is
+             * the iterator, so this is a pointer to it -- copying the frame would fork the state. */
+            const char *itName = s->u.var.cname ? s->u.var.cname : s->u.var.name;
+            if (itName && s->u.var.init && s->u.var.init->kind == EX_METHOD &&
+                strcmp(s->u.var.init->u.method.name, "iter") == 0 &&
+                s->u.var.init->u.method.recv->kind == EX_IDENT) {
+                Expr *rc = s->u.var.init->u.method.recv;
+                const char *rcn = rc->u.ident.cname ? rc->u.ident.cname : rc->u.ident.name;
+                for (size_t i = 0; i < g->coroVars.len; i++) {
+                    CoroVar *cv = *(CoroVar **)vecAt(&g->coroVars, i);
+                    if (!cv || !cv->cname || strcmp(cv->cname, rcn) != 0 || cv->ptr) continue;
+                    flushPrefix(g);
+                    cgLine(g, "%s *%s = &%s;", cv->frame, itName, rcn);
+                    CoroVar *nv = arenaAllocZero(g->arena, sizeof *nv);
+                    *nv = *cv; nv->cname = itName; nv->ptr = true;
+                    *(CoroVar **)vecPush(&g->coroVars) = nv;
+                    return;
+                }
+            }
             /* A frame field is not declared here: the frame struct holds it, and the assignment is
              * what a resume re-runs (the initializer runs on every execution, exactly like the C
              * local it replaces). */
@@ -3693,17 +3767,12 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * is driven from a small C harness in `tests/coro` and compared against the hand-written state
  * machine -- the differential judge the design asks for.
  */
-static void genCoroFunc(CG *g, FuncDef *f) {
-    const char *step = arenaPrintf(g->arena, "%s$step", cFuncName(g, f));
-    const char *fr   = arenaPrintf(g->arena, "%s$frame", cFuncName(g, f));
-    Buf *saved = g->out;                 /* the trailing buffer: see `CG.coroDefs` */
-    g->out = &g->coroDefs;
-    cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
-           f->name ? f->name : "?");
-    /* Emitted in the shape the emitter already uses for user structs -- `struct X { … };`, with the
-     * `struct` keyword spelled at every use, no `typedef`. The unreferenced-definition pass at the
-     * end of codegen recognises that shape (a `typedef struct X { … } X;` it cuts apart). */
-    cgLine(g, "struct %s {", fr);
+/* The frame of one coroutine: a plain struct value, `pc` + return slot + (when the body can create
+ * a pool) the zone id, then the checker's `coroFrame` fields -- the parameters and the locals that
+ * live across a `yield`, all by value. Emitted **before** the bodies (a spawn in a function uses the
+ * type), while the step function's definition goes last (see `CG.coroDefs`). */
+static void genCoroFrame(CG *g, FuncDef *f) {
+    cgLine(g, "struct %s$frame {", cFuncName(g, f));
     cgLine(g, "    int64_t pc;");
     cgLine(g, "    %s ret;", cType(g, f->yieldType ? f->yieldType : f->ret));
     if (f->makesPool)
@@ -3713,6 +3782,27 @@ static void genCoroFunc(CG *g, FuncDef *f) {
         cgLine(g, "    %s;", arenaPrintf(g->arena, "%s %s", cType(g, p->type), p->cname));
     }
     cgLine(g, "};");
+}
+
+/* Every coroutine in the module declares its frame and its step **before** the bodies: a spawn
+ * needs the complete type, and `next`/`value` call the step (whose definition is appended last). */
+static void genCoroDecls(CG *g, Module *m) {
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */
+        genCoroFrame(g, f);
+        cgLine(g, "static bool %s$step(struct %s$frame *f);", cFuncName(g, f), cFuncName(g, f));
+    }
+}
+
+static void genCoroFunc(CG *g, FuncDef *f) {
+    const char *step = arenaPrintf(g->arena, "%s$step", cFuncName(g, f));
+    const char *fr   = arenaPrintf(g->arena, "%s$frame", cFuncName(g, f));
+    Buf *saved = g->out;                 /* the trailing buffer: see `CG.coroDefs` */
+    g->out = &g->coroDefs;
+    cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
+           f->name ? f->name : "?");
+    /* The frame is declared before the bodies (`genCoroDecls`); this is the definition half. */
     cgLine(g, "static bool %s(struct %s *f) {", step, fr);
     cgLine(g, "    switch (f->pc) {");
     cgLine(g, "    case 0: ;");
@@ -5501,6 +5591,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "}\n");
     bufInit(&g.body, arena);
     bufInit(&g.coroDefs, arena);    /* appended last: see `CG.coroDefs` */
+    vecInit(&g.coroVars, arena, sizeof(CoroVar *));
     g.tmpSeq = 0;
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -6418,6 +6509,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * before uses. Everything is spliced together at the end as prototypes, then
      * helpers, then bodies. */
     g.out = &g.body;
+
+    /* Coroutine frames and step prototypes, before any body that may spawn one or drive it. */
+    genCoroDecls(&g, m);
 
     /* The index primitives of the views are not emitted here any more: they are
      * emitted on demand, at the first subscript that needs one (`viewIndexer`).

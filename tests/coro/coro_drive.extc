@@ -1,0 +1,29 @@
+/* 切片 B2a 判据：**spawn + 驱动**端到端可跑 ✓
+ *
+ *   `let c = counter(i64(3))`      ⇒ 帧是一个普通值，实参初始化参数
+ *   `while c.next() { c.value() }` ⇒ next 走 step（状态机），value 读返回槽
+ *
+ * 判据（tests/coro/run.sh）：生成 C、gcc 编译、**真的跑起来**，输出必须正好是 `0 1 2 ` ✓
+ * （与 tests/coro/statemachine.extc 那套手写状态机的语义一致 ✓）
+ *
+ * `for x in c`（迭代器协议那条路）还没接上 ⇒ 见 CONCURRENCY.md 4.4 的 B2 状态 ✓ */
+use std::io
+
+fn counter(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n {
+        yield i
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    let c = counter(i64(3))
+    var n: i64 = 0
+    while c.next() {
+        io::cout << c.value() << " "
+        n = n + c.value()
+    }
+    io::cout << "\n"
+    return i32(n)
+}
