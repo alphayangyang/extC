@@ -61,6 +61,44 @@ if "$EXTC" -w --no-line-map -o "$tmp/d.c" tests/dyn/dyn_call.extc >/dev/null 2>&
 else
     bad dyn_codegen "dyn_call.extc 编译失败"
 fi
+# 运行期判据（O5 核心）：陈旧 dyn 值必须 **trap**，而不是派发到别的实现。
+#
+# 阶段 3 的语法（保存 dyn 值）还没落地，所以这条判据直接测**运行期**：把生成物的 main 改名
+# （编译期 -Dmain=…），接上自己的 main，用运行期助手走一遍"存值 → 离开 place → 派发"。
+# 判据不仅要求"退出码非 0 + 提示 stale"，还要求**方法体没有被执行**（stdout 里没有标记行）——
+# 这正是"绝不调错实现"那一半。
+if "$EXTC" -w --no-line-map -o "$tmp/r.c" tests/dyn/dyn_call.extc >/dev/null 2>&1; then
+    cp "$tmp/r.c" "$tmp/rt.c"
+    cat >> "$tmp/rt.c" <<'EOF'
+#undef main
+int main(void) {
+    int64_t z = extc_pool_zoneEnter();
+    box b; b.v = 7;
+    ExtcDynHandle h = extc_dyn_put((const void *)&b, (int64_t)sizeof(box), &extc_vt$Tag$box);
+    ExtcDynSlot *s = extc_dyn_slot(h, "runtime-judge", 1);
+    printf("alive=%lld\n", (long long)*((int64_t *)s->addr));
+    fflush(stdout);
+    extc_pool_zoneLeaveTo(z);            /* the place that owned the pool is gone */
+    ExtcDynSlot *s2 = extc_dyn_slot(h, "runtime-judge", 2);   /* must trap here */
+    printf("NOT-REACHED %p\n", (void *)s2);
+    return 0;
+}
+EOF
+    if gcc -std=c11 -fwrapv -Wall -Werror -Dmain=extc_gen_main "$tmp/rt.c" -o "$tmp/rt" 2>"$tmp/cc"; then
+        "$tmp/rt" >"$tmp/out" 2>"$tmp/err"; rc=$?
+        if [ "$rc" -ne 0 ] && grep -q 'stale `dyn` value' "$tmp/err" && grep -q 'alive=7' "$tmp/out" \
+           && ! grep -q 'NOT-REACHED' "$tmp/out"; then
+            ok dyn_o5_stale_trap "陈旧值 trap（rc=$rc），且**方法体未被执行**（O5 核心）"
+        else
+            bad dyn_o5_stale_trap "rc=$rc out=[$(tr '\n' ' ' <"$tmp/out")] err=[$(head -1 "$tmp/err")]"
+        fi
+    else
+        bad dyn_o5_stale_trap "单测编译失败：$(head -2 "$tmp/cc" | tr '\n' ' ')"
+    fi
+else
+    bad dyn_o5_stale_trap "生成 C 失败"
+fi
+
 rm -rf "$tmp"
 
 echo "通过 $pass，失败 $fail"
