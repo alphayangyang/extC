@@ -313,6 +313,40 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 
 ### 阶段 3 · 存储面放开 + 卸载墓碑
 
+#### 实施设计（2026-09-26 勘察，锚点已备）
+
+**① 给 `dyn Trait` 一个类型**：在 `TypeKind`（`src/ast.h:28`）加 **`TY_DYN`**，`t->name` 存 **trait 名**
+（与 `TY_STRUCT` 存结构体名同形）。三处映射：`cType`（`src/codegen.c:397`）加
+`case TY_DYN: return "ExtcDynHandle";`；`ttEquals` 对同名 trait 视为相同；类型打印走 trait 名。
+
+**② 解析器**：`parseType`（`src/parser.c:1225`）加 `dyn <TraitName>` 分支（trait 名按第一期的规则：
+首字母大写、**不是**保留字形状 —— 与表达式侧同样的纪律：按"形状"判定，别霸占标识符）。
+
+**③ 检查器**：`dyn Trait(x)` 这个**值**的类型是 `TY_DYN`；载荷类型必须**已实现**该 trait（复用第一期
+`(trait, 类型)` 记录）。**新的解析路径**：`EX_METHOD` 的接收者若是 `TY_DYN`，方法要在 **trait 的签名**里找，
+实参按 trait 签名比对（`Self` 代入……注意这里没有具体类型，所以只比"参数个数 + 各参数类型是否与 trait
+声明一致"，`Self` 位置按 dyn 值自身的类型处理）。
+
+**④ codegen 复用既有通路（关键）**：今天的两步发出（`extc_dyn_put` → `extc_dyn_slot` → 经槽派发）
+**保持不变**，只是分两种来源：
+- **立即形式**（现在的 `dyn Tag(x).m()`）：载荷 = 那个表达式，照旧；
+- **存储形式**（新的 `d.tag()`）：载荷已在池里 ⇒ **只发 `extc_dyn_slot(<值>, "file", line)`**
+  一步，receivers 取 `->addr`。也就是说：**"存"发生在构造处，"取"发生在派发处**，两者共用同一套检查。
+
+**⑤ 要翻面的判据（按项目纪律，行为改了判据必须同改）**
+- `tests/dyn/errors/dyn_store.extc`：今天断言"保存 dyn 值被拒" —— 阶段 3 起**保存是合法的**，
+  该反例要么删除，要么改成**别的**非法形状（例如 `let d: dyn Tag = box{…}` 直接赋具体类型 ⇒ 类型不符）；
+- `dyn_store`/`dyn_field` 两条判据的期望文本必须跟着改（`dyn_field` 保留：dyn 值没有字段）。
+
+**⑥ 新增判据**
+- `dyn_stored.extc`：`let d: dyn Tag = dyn Tag(x)` + `d.tag()`（正例，与立即形式输出一致）；
+- **`dyn_stale_stored.extc`（语言级 O5）**：保存值 → 离开 place → 派发 ⇒ trap（与运行期判据同义，
+  但走语言语义）；
+- **`dyn_no_wrong_dispatch.extc`**：保存 A 的值 → 让池被 B 复用 → 派发 ⇒ trap，绝不调 B 的方法；
+- 卸载墓碑（第三期的动态链接未就绪时，以设计记录 + 单测式判据存在）。
+
+
+
 - **交付**：允许 `let d: dyn Tag`、字段、容器元素；模块卸载时其 dyn 值立**墓碑**（失效 ⇒ trap）。
 - **判据**：`dyn_in_field.extc` · `dyn_in_container.extc`（含遍历与派发）·
   `dyn_unload_tombstone.extc`（若第三期的动态链接未就绪，此判据以"设计记录 + 单测式判据"形式存在）。
