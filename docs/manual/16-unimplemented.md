@@ -48,6 +48,7 @@
 
 **[索引](README.md)** · [← 9. 错误信息](15-errors.md) · [11. 还没定的 →](17-undecided.md)
 
-- **`trait` / `dyn Trait`**：第一期（声明 + `impl Trait for T` + 静态方法表）**已定案待实现**，
-  七条决策与实施清单见 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)；第二期（`dyn` 值落池）与
-  第三期（开放注册）只在其中记录范围。
+- **`trait` / `dyn Trait`**：**第一期已落地**（`trait` 声明 · `impl Trait for T` · 四条检查 ·
+  静态分发；见 [结构体与方法 §7.2](08-struct.md)）。**仍缺**：`T: Trait` 上界 · `dyn Trait` 值
+  （第二期，设计与第二、三期范围见 [`docs/topics/TRAITS.md`](../topics/TRAITS.md)）· 关联类型与关联常量 ·
+  trait 默认方法 · 孤儿规则与跨 trait 撞名的专门诊断。

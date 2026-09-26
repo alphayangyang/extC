@@ -1,0 +1,7 @@
+// 反例⑥：trait 方法名与**固有方法**撞名（一个类型一份方法集）
+// expect: has duplicate method `tag`
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl box { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 { return 0 }

@@ -1,0 +1,5 @@
+// 反例⑧：`Self` 出现在 trait/impl 之外
+// expect: unknown type `Self`
+struct box { v: i64 }
+impl box { fn bad(self: ref box) -> Self { return self } }
+fn main() -> i32 { return 0 }
