@@ -2682,12 +2682,18 @@ static const char *zoneArgRef(CG *g, Expr *e) {
         if (lvl < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lvl])
             return arenaPrintf(g->arena, "__extc_zm%d", lvl);
     }
-    /* 兜底会引用 `extc_pool_zoneDepth`，所以这里要把池运行期标成"需要" ——
+    /* 兜底 = "我此刻所在的那个地方"，运行期自己的名字就是 `extc_zoneTop` ——
+     * 与 `(extc_pool_zoneDepth() - 1)` **完全等价**（运行期里 `zoneDepth() = zoneTop + 1`），
+     * 但不再是一步**派生算术**：`extc_zoneTop` 的含义是直接的，`zoneDepth() - 1` 的含义随
+     * `zoneDepth()` 的定义漂移。规则 1 关心的正是这种"从环境现算"的形状：
+     * 单栈下它就是调用者所在的地方 ✓；**任务体内则不许用它**（那时必须从帧字段读）——
+     * `tools/check_concurrency_guards.py` 的 J1 记账并把计数钉住 ✓ */
+    /* 兜底会引用运行期的那张 zone 表，所以这里要把池运行期标成"需要" ——
      * 运行期文本在函数体之后才发（`if (g.needPool) poolsEmitRuntime(...)`），还来得及。
      * 走到这一支的典型情形是 `stmtMakesPool` 对"未解析的被调者"保守算真：那个函数其实
      * 不建池，于是既没有 zone 也没有运行期，而调用点仍然要凑出第二个实参。 */
     g->needPool = true;
-    return "(extc_pool_zoneDepth() - 1)";
+    return "extc_zoneTop";
 }
 
 static const char *homeArg(CG *g, int arenaArg) {

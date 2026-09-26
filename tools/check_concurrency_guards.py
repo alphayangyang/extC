@@ -54,8 +54,13 @@ ALLOWED_ZONE_ARG = re.compile(r"^(__extc_home_zone|__extc_zm\d+|-?\d+)$")
 # 但它正是**规则 1 禁止的形状**：从环境状态现算，而不是转发调用者钉死的地方。
 # 协程一旦落地，同一个帧在恢复时的 zone 深度可能不同 ⇒ 这个值会变 ⇒ 必须改成帧字段。
 # 在那之前：**计数棘轮** —— 只许少、不许增，且每次都要重新看一眼这条豁免还成不成立 ✓
-FALLBACK = "(extc_pool_zoneDepth() - 1)"
+# "我此刻所在的那个地方"：运行期自己的名字。它**不是**派生算术（`extc_zoneTop` 的含义是直接的），
+# 但仍然是**环境**而不是"调用者钉死的地方" ⇒ 单栈下正确，**任务体内不许用**（规则 1）：
+# `spawn` 落地时，这条要么收紧成"必须来自帧字段"，要么由规则 1 的判据覆盖 ✓ 计数棘轮先钉住它。
+FALLBACK = "extc_zoneTop"
 FALLBACK_BUDGET = 2        # 2026-09-26 在下面这份语料上量到的个数
+# arena 那一个隐藏实参同样只许两种形状：转发 `__extc_home`，或钉死在某一层 `&__extc_a[k]`。
+ALLOWED_ARENA_ARG = re.compile(r"^(__extc_home|&__extc_a\[\d+\]|-?\d+)$")
 
 
 def strip_comments_and_strings(text: str) -> str:
@@ -122,16 +127,23 @@ def split_top_level(args: str):
     return out
 
 
+ARENA_PARAM = "extc_arena *__extc_home"
+
+
 def zone_taking_functions(code: str):
-    """Names of functions whose parameter list ends in the hidden zone parameter."""
-    names = set()
+    """Names of functions taking the hidden zone parameter, and whether they take the arena too.
+
+    Both hidden arguments come as a pair only when the function needs both: `string$string_new`'s
+    signature is `(int64_t c, int64_t __extc_home_zone)` -- checking its second-to-last argument as
+    an arena was 12 false positives."""
+    names = {}
     for m in re.finditer(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\(", code):
         end = match_paren(code, m.end() - 1)
         if end < 0:
             continue
         params = code[m.end():end - 1]
         if ZONE_PARAM in params:
-            names.add(m.group(1))
+            names[m.group(1)] = ARENA_PARAM in params
     return names
 
 
@@ -147,6 +159,7 @@ def check_generated(path: pathlib.Path, stats_fallback):
         name = m.group(1)
         if name not in zone_fns:
             continue
+        takes_arena = zone_fns[name]
         before = code[max(0, m.start() - 40):m.start()]
         # A declaration/definition is preceded by its return type; extC names may contain `$`
         # (`pool$pool_Shape_withCap`), so the character class has to allow it.
@@ -160,6 +173,10 @@ def check_generated(path: pathlib.Path, stats_fallback):
             continue
         calls += 1
         last = args[-1]
+        if takes_arena and len(args) >= 2 and not ALLOWED_ARENA_ARG.match(args[-2]):
+            line = code[:m.start()].count("\n") + 1
+            bad.append(f"J1 {path.name}:{line} {name}(...) 的 arena 实参是 `{args[-2][:50]}`"
+                       f" —— 只允许转发 `__extc_home` 或钉死 `&__extc_a[k]`")
         if last == FALLBACK:
             stats_fallback[0] += 1
             continue
