@@ -1,0 +1,22 @@
+/* 切片 C 的验收项：**体顶层建池（vector）、跨挂起点继续用** ✓
+ * 池的 plate 生在任务自己的 place 里 ⇒ 活过每一次挂起 ✓ 任务跑完一次性回收 ✓ */
+use std::io
+use stl::vector
+
+fn g(n: i64) -> coroutine<i64> {
+    var v: vector<i32> = vector<i32>::withCap(n)
+    var i: i64 = 0
+    while i < n {
+        v.push(i32(7))
+        yield i64(i)
+        i = i + 1
+    }
+    yield v.len()
+}
+
+fn main() -> i32 {
+    var c = g(i64(3))
+    var n: i64 = 0
+    while c.next() { n = n + c.value() }
+    return i32(n)
+}
