@@ -44,6 +44,47 @@
   `reset` 换代、对象表模式禁 `give`/`resize`（含 `_raw`）。
 - **第三期**：开放注册 + 动态链接（前置：接口文件 + ABI 冻结 + 卸载墓碑）。
 
+## 四之一、第一期剩余两项的实施锚点（2026-09-26 勘察结果）
+
+### A. codegen 静态方法表
+
+**发在哪**：全部函数定义之后、`main` 之前（与其它静态数据同一区）。参照现成的原型发出点
+`src/codegen.c:6131`：它已经解决了三件难事 —— 返回类型用 `cType(&g, f->ret)`、参数列表必须用
+**同一个 `cgParamList`**（注释里写着：漏掉隐藏的 home 参数曾造成真实的 C 类型不匹配）、名字走同一个
+mangling 助手。方法表只是把这三样再用于"字段类型 + 函数名"。
+
+**发什么**（形状，`__attribute__((unused))` 是必需的，否则零告警守不住）：
+
+```c
+/* static method table: `Codec` for `circle` -- slot order = the trait's declaration order */
+static const struct { int64_t (*tag)(circle *); } __attribute__((unused))
+    extc_vt$Codec$circle = { circle$tag };
+```
+
+**槽位顺序**：严格按 `TraitDef.methods` 的顺序（声明顺序）。**不许**用哈希/字母序/插入序 ——
+将来的动态链接会把这个顺序当 ABI，重排 trait 声明会静默改变它。
+
+**键**：`trait$type`（trait 名不 mangle；类型名用既有的 mangled 名，例如 `stl$string`）。
+本期**没有任何代码引用这些表**。
+
+**判据（形如）**：
+1. `生成物里没有间接调用`：断言 vtable 符号在生成物里**只出现一次**（定义处），且生成物中不存在
+   通过它调用的形式；再加一条"没有 `(*` 形式的调用语法"作为兜底；
+2. `槽位顺序 = 声明顺序`：把 `trait` 的声明顺序倒过来再编译，生成物的字段顺序必须跟着倒过来
+   （这条判据能挡住"按字母序发"这类实现）。
+
+### B. 撞名的专门诊断
+
+今天两条撞名（trait 与**固有方法**同名、两个 trait 同名）都由既有的"一个类型一份方法集"重复检查
+兜住，消息是 `` struct `box` has duplicate method `tag` ``，**不指名来源**。
+
+实现锚点：在 `impl` 挂载趟里，方法入集**之前**先看 `sd->methods` 里有没有同名者；若有，再从
+`m->impls` 里反查它是哪个 trait 声明的（或判定为固有方法），据此给出"两个 trait 都声明了 `tag`，
+请改名或（将来）用 `Codec::tag(c)`"这类消息。
+
+⚠️ **必须同时翻面**判据 `tests/impl/trait_collide_inherent.extc` 与 `trait_collide_cross.extc`
+（它们现在断言的是通用消息）—— 这是本项目一贯的纪律：判据把行为焊死，改行为就要改判据。
+
 ## 五、两条相关但独立的记录
 
 - **函数重载**：定位 = "把运算符那套**形状键**从右操作数推广到全部参数，**只认精确匹配**"。
