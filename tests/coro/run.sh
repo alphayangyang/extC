@@ -150,6 +150,32 @@ else
     echo "  FAIL coro_boxing        ->  $(head -2 "$tmp/bxe" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 一个 listener accept 出 N=40 条连接（容量 32 ⇒ 必须复用槽位）。期望 52 + ASan 干净
+ac=$tmp/coro_accept
+if "$EXTC" -w --no-line-map -o "$ac.c" tests/coro/coro_accept.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$ac" "$ac.c" 2>"$tmp/ace"; then
+    /usr/bin/time -q -f "%M" -o "$tmp/ac.rss" "$ac" >/dev/null 2>&1; rc=$?
+    peak=$(cat "$tmp/ac.rss" 2>/dev/null)
+    if [ "$rc" = 52 ] && [ -n "$peak" ] && [ "$peak" -le 16384 ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$ac.asan" "$ac.c" 2>/dev/null; then
+            aout=$("$ac.asan" 2>&1); arc=$?
+            if [ "$arc" = 52 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_accept         ->  listener accept 40 条（容量 32 ⇒ 靠槽位复用），常驻 ${peak} KB，ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_accept         ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_accept         ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_accept         ->  退出码 $rc（期望 52；93=回声缺，94=没accept够，95=槽位没复用）"
+        fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_accept         ->  $(head -2 "$tmp/ace" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 真事件源：N=8 条 AF_UNIX 连接、单线程、一个 epoll 循环。期望 36，并要求 ASan 干净
 ep=$tmp/coro_epoll
 if "$EXTC" -w --no-line-map -o "$ep.c" tests/coro/coro_epoll.extc >/dev/null 2>&1 \

@@ -1,0 +1,87 @@
+/* 判据：**一个 listener accept 出 N 条连接**，单线程回显（不再是一开始造好的 socketpair）。
+ *
+ * 全程一个进程一个线程：
+ *   ① 抽象命名空间的 AF_UNIX listener（不落盘、不用清理）；
+ *   ② 先 connect N 个客户端（listen backlog 兜住 ⇒ 不用先 accept）；
+ *   ③ 每个客户端先写 1 字节；
+ *   ④ 循环 `pump`：listener 可读 ⇒ accept ⇒ `add(conn(fd))`；任务回显、结束 ⇒ 槽位回收；
+ *   ⑤ 收齐 N 个回声 ⇒ 退出码 = 1+2+…+N。
+ *
+ * **N = 40 > 容量 32** ⇒ 必须靠**槽位复用**才跑得完（`add` 返回 false 就报 95）。这条就是把
+ * "固定容量 + 跑完复用槽位"钉住。期望 1+…+40 = 820 ⇒ 820 % 256 = **52**（i32 截断 ✓）。 */
+use std::coro::scheduler as sched
+use std::sys::net
+
+fn conn(fd: i64, buf: slice<u8>) -> coroutine<i64> {
+    var ready: i64 = yield fd                     /* 请求：等这个 fd */
+    if net::extc_sock_read(fd, buf.data, i64(1)) == i64(1) {
+        if net::extc_sock_write(fd, buf.data, i64(1)) != i64(1) { return }
+    }
+    yield i64(-1)                                 /* 收尾：别等，立刻再推我 ⇒ 下一推结束 */
+}
+
+fn main() -> i32 {
+    var path: mut slice<u8> = new u8[64]
+    path[0] = u8(0)                               /* 抽象命名空间 */
+    var name: slice<u8> = "extc-accept-judge"
+    var i: i64 = 0
+    while i < name.len { path[i + i64(1)] = name[i]  i = i + 1 }
+    var plen: i64 = name.len + i64(1)
+
+    var srv: i64 = net::extc_unix_listen(path.data, plen, i64(128))
+    if srv < i64(0) { return i32(99) }            /* 建 listener 失败 */
+    var n: i64 = 40
+
+    var clients: mut slice<i64> = new i64[64]
+    i = 0
+    while i < n {
+        clients[i] = net::extc_unix_connect(path.data, plen)
+        if clients[i] < i64(0) { return i32(98) } /* 连不上 */
+        i = i + 1
+    }
+    var one: mut slice<u8> = new u8[4]
+    var scratch: mut slice<u8> = new u8[8]        /* 任务是一个一个跑的 ⇒ 共用一块 scratch ✓ */
+    i = 0
+    while i < n {
+        one[0] = u8(i + i64(1))
+        if net::extc_sock_write(clients[i], one.data, i64(1)) != i64(1) { return i32(97) }
+        i = i + 1
+    }
+
+    i = 0
+    while i < n { var nb: i64 = net::extc_sock_nonblock(clients[i])  i = i + 1 }
+
+    var s: sched::loop
+    if !sched::init(ref s, srv) { return i32(96) }   /* listener = srv */
+
+    /* 一个循环里干三件事：accept ⇒ 交给新任务 ⇒ **非阻塞**收回声。
+     * 单线程里绝不能阻塞在读上 ✗（那正是第一版卡住的地方）—— 收不到就继续 pump ✓，有轮数上限兜底 ✓。 */
+    var eaten: [64]bool
+    var got: mut slice<u8> = new u8[4]
+    var accepted: i64 = 0
+    var left: i64 = n
+    var sum: i64 = 0
+    var spins: i64 = 0
+    while left > i64(0) && spins < i64(200000) {
+        var fd: i64 = sched::pump(ref s, i64(0))
+        if fd >= i64(0) {
+            if !sched::add(ref s, conn(fd, scratch)) { return i32(95) }   /* 槽位没复用上 */
+            accepted = accepted + 1
+        }
+        i = 0
+        while i < n {
+            if !eaten[i] {
+                if net::extc_sock_read(clients[i], got.data, i64(1)) == i64(1) {
+                    sum = sum + i64(got[0])
+                    eaten[i] = true
+                    left = left - i64(1)
+                }
+            }
+            i = i + 1
+        }
+        spins = spins + 1
+    }
+    if accepted != n { return i32(94) }      /* 没 accept 够（客户端都连上了 ⇒ 一定够 ✓）*/
+    if left != i64(0) { return i32(92) }     /* 有回声没到 */
+    return i32(sum)                          /* 1+…+40 = 820 ⇒ 820 % 256 = 52 */
+}

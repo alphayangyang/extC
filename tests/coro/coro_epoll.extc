@@ -21,6 +21,8 @@ fn conn(fd: i64, buf: slice<u8>) -> coroutine<i64> {
 
 fn main() -> i32 {
     var s: sched::loop
+    var ok: bool = sched::init(ref s, i64(-1))    /* 没有 listener：只驱动任务 */
+    if !ok { return i32(95) }
     var clients: [16]i64
     var scratch: mut slice<u8> = new u8[8]    /* 共用：任务是一个一个跑的 */
     var n: i64 = 8

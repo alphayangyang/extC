@@ -6,7 +6,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 829 个成员，其中内部 321 个：
+公开面共 839 个成员，其中内部 321 个：
 
 ## prelude
 
@@ -24,7 +24,7 @@
 
 ## std::coro::scheduler
 
-- `loop.n`（字段）
+- `loop.ep`（字段）
 
 ## std::io
 

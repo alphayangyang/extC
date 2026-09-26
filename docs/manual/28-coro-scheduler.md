@@ -18,9 +18,9 @@ while k < i64(12) { order[k] = k % i64(2)  k = k + 1 }   /* 交替就绪 */
 var left: i64 = sched::runScripted(ref s, order)
 ```
 
-类型 `loop` 里是一张**固定容量**的任务表 `tasks`（`[8]coroutine<i64>`）：句柄是 24 字节的普通值，
+类型 `loop` 里是一张**固定容量**的任务表 `tasks`（`[32]coroutine<i64>`）：句柄是 24 字节的普通值，
 数组元素就是**可变位置**，所以可以直接 `s.tasks[i].next()` / `.send()`。另有 `done`、`started`
-两个标记数组、已放入的任务数 `n` 和还活着的任务数 `live`。
+两个标记数组、空闲槽位栈 `freelist` 与 `nfree`、用过的槽位数 `used` 和还活着的任务数 `live`。
 
 ## 挂起约定（最容易写错的一条）
 
@@ -40,6 +40,12 @@ var left: i64 = sched::runScripted(ref s, order)
   判据先用它，因为它是**逐字节确定**的：不靠时间、不靠 socket、不靠内核调度顺序。
 - `add(s, h)` —— 把一个句柄放进任务表（满了返回 `false`）。
 
+- `init(s, listener)` —— 建 epoll 实例并记下 listener（`i64(-1)` = 只驱动任务、不 accept）。
+- `pump(s, timeout_ms)` —— **一轮**事件循环：注册请求 ⇒ 等 ⇒ 推进就绪任务。listener 可读时它
+  **accept 一个连接并把新 fd 返回给调用者**（用哪种协程去接它由调用者决定），没有新连接返回 -1、
+  超时返回 -2。
+- **任务表是固定容量 + 空闲槽位复用**：32 个槽位，任务跑完把槽位还回去，下一次 `add` 复用它。
+  一个 listener 循环 accept 上千个连接，只要**同时活着**的任务不超过容量就够用。
 - `runEpoll(s, timeout_ms)` —— **真事件源**：`epoll_wait`（走 `std::sys::net` 的
   `extern!("extc-runtime")`）。协议与 `runScripted` 同一条，只是"谁就绪"改由内核告诉我们：
 
@@ -51,6 +57,21 @@ var left: i64 = sched::runScripted(ref s, order)
 
   读写用运行期的 `recv`/`send`，**不是** `read`/`write`：后两个名字已经被 `std::sys::io` 用另一套
   签名占了，而两者会落在同一个编译单元里（`<unistd.h>` 一 include 就冲突）。
+
+## 单线程循环里的铁律：**别阻塞在读上**
+
+`pump` 只处理**一个**事件，所以循环长这样：
+
+```extc
+while 还有活干 {
+    var fd: i64 = sched::pump(ref s, i64(0))     /* 0 超时 = 立刻回来 ⇒ 判据里快而确定 */
+    if fd >= i64(0) { sched::add(ref s, conn(fd, buf)) }   /* 新连接 ⇒ 建一个任务 */
+    /* 收数据要用**非阻塞** fd：收到了就收，收不到就继续 pump，下一轮再试 */
+}
+```
+
+这条是实测踩出来的：判据第一版在循环**之后**用一个阻塞 `read` 收齐所有回声 —— 只要有任何一个
+回声还没到，进程就**永远停在那里**（>60 秒被杀 ✗）。单线程里"等"只能靠 `pump`，不能靠阻塞调用。
 
 ## 判据
 

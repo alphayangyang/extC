@@ -679,9 +679,16 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
    ⇒ **协程里不再有 place 边界** ✓ `tests/errors/yield_inside_place_boundary.extc` 随之删除（它的前提
    就是"块里有 `new` 就是边界" ✗）；`placeBoundaryDepth` 在协程里恒为 0，`ST_YIELD` 那条检查在协程里
    不可能触发（保留着，因为它是"挂起点落在一块活不过它的存储里"这个不变式本身）。
-5. **任务表是死的**：`[8]coroutine<i64>` 固定容量 ✓ 跑完的槽位**不复用** ✓ **没有 `accept`**
-   （判据里的 8 条连接是**一开始造好 8 对 socketpair** ✓ 不是 listener accept 出来的 ✗）⇒
-   真事件循环要：动态加任务 + 回收槽位 + listener。
+5. ~~**任务表是死的**~~ ⇒ **已解（欠账第 2 项）** ✓
+   容量 `[32]` + **空闲槽位复用**（跑完的槽位还回 `freelist`，下一次 `add` 复用它）✓ 事件层加了
+   `listen/connect/accept/nonblock`（AF_UNIX **抽象命名空间** ⇒ 不落盘、不用清理、不碰 `<unistd.h>`）✓
+   调度器加了 `init(s, listener)` 与 `pump(s, timeout_ms)`（一轮事件循环；listener 可读时 accept 一个
+   并把 fd **交回调用者** —— 库里因此不需要函数值 ✓）✓ `extc_epoll_wait` 改成"一次一个 fd + 运行期
+   内部待处理队列" ⇒ 事件循环**零分配** ✓
+   判据 `tests/coro/coro_accept.extc`：**一个 listener accept 出 40 条连接**（容量只有 32 ⇒ 非靠槽位
+   复用跑不完 ✓），单线程回显，退出码 52（= 1+…+40 截断 ✓），常驻有界，ASan 干净 ✓ 105 ms ✓
+   **实测教训**（写进手册了）：pump 只处理一个事件 ⇒ 判据第一版在循环**之后**用阻塞 `read` 收回声
+   ⇒ 有回声没到就**永远停住**（>60 秒 ✓）⇒ 单线程里"等"只能靠 `pump`，数据要用非阻塞 fd 收 ✓
 6. **`ext` + 调度域没实现**（设计见下面「`ext` 与调度域」✓ 一行代码都没有 ✗）。
 7. **`coroutine<A,B>`**（yield 类型 ≠ 收值类型）没做：现在 `send` 的收值类型 = `T`（v1 妥协 ✓）。
 8. **trampoline**（`-fno-inline` 下每层 ~1.3 ns 的真实成本）没做。

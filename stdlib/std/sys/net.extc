@@ -17,8 +17,9 @@ extern!("extc-runtime") fn extc_epoll_new() -> i64
 /* 把 fd 加进 epoll 等它可读（`readable` 为 0 表示等可写）。返回 0 成功。 */
 extern!("extc-runtime") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64
     effects Addr=0 Cont=0
-/* 等事件：就绪的 fd 写进 `out[0..]`，返回写了几个（0 = 超时，负数 = 出错）。 */
-extern!("extc-runtime") fn extc_epoll_wait(ep: i64, out: ref i64, timeout_ms: i64) -> i64
+/* 等事件：返回**一个**就绪的 fd（内部留着一个待处理队列 ⇒ 事件循环零分配），
+ * -1 = 超时/没有事件。 */
+extern!("extc-runtime") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64
     effects Addr=0 Cont=0
 /* 一对已连接的 AF_UNIX socket：fd 写进 `out[0]` 与 `out[1]`。返回 0 成功。 */
 extern!("extc-runtime") fn extc_sock_pair(out: ref i64) -> i64
@@ -28,4 +29,17 @@ extern!("extc-runtime") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
 /* 写一次：返回写了几个字节。 */
 extern!("extc-runtime") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+
+/* AF_UNIX 监听。路径首字节是 NUL 就是**抽象命名空间**：不落盘、不用清理、随进程消失 —— 判据正合用。 */
+extern!("extc-runtime") fn extc_unix_listen(path: ref u8, len: i64, backlog: i64) -> i64
+    effects Addr=0 Cont=0
+/* 连上去（同一个抽象名字）⇒ 返回 fd。 */
+extern!("extc-runtime") fn extc_unix_connect(path: ref u8, len: i64) -> i64
+    effects Addr=0 Cont=0
+/* 非阻塞 accept：backlog 空的时候返回负数（EAGAIN）。 */
+extern!("extc-runtime") fn extc_sock_accept(listener: i64) -> i64
+    effects Addr=0 Cont=0
+/* 把 fd 设成非阻塞。 */
+extern!("extc-runtime") fn extc_sock_nonblock(fd: i64) -> i64
     effects Addr=0 Cont=0

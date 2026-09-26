@@ -1,129 +1,144 @@
 /* std/coro/scheduler.extc —— 协程调度器（CONCURRENCY.md §4.4 阶段三）
  *
- * 一个 `while` 循环 + 一个**事件源**。挂起约定：协程 `yield` 一个等待请求（这里是它想等的那个
- * 编号，调度器随便解释），恢复后**重试**它自己的操作；需要把结果送回去就用 `send`。
+ * 一个 `while` 循环 + 一个事件源。挂起约定：协程 `yield` 一个等待请求（这里是它想等的 fd；
+ * **负数 = 别等，立刻再推我**），恢复后**重试**它自己的操作；要把结果送回去就用 `send`。
  *
- * 任务表是固定容量的数组（v1）：`[8]coroutine<i64>` —— 句柄是 24 字节的普通值，数组元素就是
- * **可变位置**，所以可以直接 `s.tasks[i].next()` / `.send()`。这是句柄能进容器的直接兑现。
+ * 任务表是**固定容量 + 空闲槽位复用**（v1）：`[32]coroutine<i64>`。句柄是 24 字节的普通值，数组元素
+ * 就是可变位置 ⇒ 可以直接 `s.tasks[i].next()` / `.send()`。任务跑完把槽位还回 `freelist`，下一次
+ * `add` 复用它 —— 一个 listener 循环 accept 上万个连接，同时活着的任务数不超过容量即可。
  *
- * 三个驱动：
- *   `runScripted` —— **脚本化的就绪顺序**（判据先用它 ⇒ 确定性，不靠时间也不靠 socket）
- *   `runEpoll`    —— 真事件源：`epoll_wait`（走 std::sys::net 的 extern!("extc-runtime")）
+ * 驱动：
+ *   `pump`        —— **一轮**事件循环：注册请求 ⇒ 等 ⇒ 推进就绪的任务；有 listener 就 accept 一个，
+ *                    把新 fd **返回给调用者**（库不知道用户拿什么协程去接它 ⇒ 这样库里不需要函数值）。
+ *   `runEpoll`    —— 一直跑到所有任务结束（没有 listener 的老用法）。
+ *   `runScripted` —— 脚本化的就绪顺序：判据先用它 ⇒ 逐字节确定，不靠时间也不靠 socket。
  *
- * 谁定义"调度域"：库里这个结构 + 驱动函数就是域的 v1 形态；语法糖 `ext f()`（块作用域）是后面
- * 的事，见 §4.4 的定案。 */
+ * 谁定义"调度域"：库里这个结构 + 驱动函数就是域的 v1 形态；语法糖 `ext f()`（块作用域）是后面的事。 */
 
 use std::sys::net
 
 struct loop {
-    tasks: [8]coroutine<i64>
-    done: [8]bool       /* 跑完的任务不再驱动 —— 过期句柄会大声 trap（规则②）*/
-    started: [8]bool    /* 是否已经启动过（第一次只 next，不 send）*/
-    n: i64              /* 已经加进去的任务数 */
-    live: i64           /* 还没跑完的 */
+    tasks: [32]coroutine<i64>
+    done: [32]bool          /* 跑完 ⇒ 槽位可以复用（不再驱动，也不会读它的 value）*/
+    started: [32]bool       /* 是否已经启动过（第一次只 next，不 send）*/
+    freelist: [32]i64       /* 空闲槽位栈 */
+    nfree: i64
+    used: i64               /* 用过的槽位数（第一次分配的游标）*/
+    live: i64               /* 还没跑完的 */
+    listener: i64           /* -1 = 没有 listener */
+    ep: i64                 /* epoll 实例 */
 }
 
+/* `listener` 传 -1 就是"只驱动任务，不 accept"。 */
+fn init(s: mut ref loop, listener: i64) -> bool {
+    s.listener = listener
+    s.ep = net::extc_epoll_new()
+    return s.ep >= i64(0)
+}
+
+/* 放一个任务：先复用跑完的槽位，没有再开新槽位；满了返回 false。 */
 fn add(s: mut ref loop, h: coroutine<i64>) -> bool {
-    if s.n >= i64(8) { return false }
-    s.tasks[s.n] = h
-    s.n = s.n + i64(1)
+    var slot: i64 = i64(-1)
+    if s.nfree > i64(0) {
+        s.nfree = s.nfree - i64(1)
+        slot = s.freelist[s.nfree]
+    } else if s.used < i64(32) {
+        slot = s.used
+        s.used = s.used + i64(1)
+    } else {
+        return false
+    }
+    s.tasks[slot] = h
+    s.done[slot] = false
+    s.started[slot] = false
     s.live = s.live + i64(1)
     return true
 }
 
-/* 推进一个任务一步；它交出请求就**把请求原样送回去**（自回显），跑完就少一个活任务。
- * 返回 false 表示这个任务已经结束。 */
-/* 推进一个任务。协议很关键：`send` **本身就会恢复**协程，所以请求必须在恢复**之前**读出来 ——
- * 第一次只 `next()` 启动它；之后每次先 `value()` 看它挂起时留下的请求，再 `send(请求)` 把批准结果
- * 送进去（本次恢复读到的正是它）。`send` 返回 false 说明它跑完了。 */
+/* 任务结束：槽位还回去，下次 `add` 复用它。 */
+fn release(s: mut ref loop, i: i64) {
+    s.done[i] = true
+    s.live = s.live - i64(1)
+    s.freelist[s.nfree] = i
+    s.nfree = s.nfree + i64(1)
+}
+
+/* 推进一个任务一步（脚本化驱动用）：返回它是否还活着。 */
 fn step(s: mut ref loop, i: i64) -> bool {
     if s.done[i] { return false }        /* 已经结束：句柄过期，再驱动会 trap（规则②）*/
     if !s.started[i] {
         s.started[i] = true
-        if !s.tasks[i].next() {
-            s.done[i] = true
-            s.live = s.live - i64(1)
-            return false
-        }
+        if !s.tasks[i].next() { release(s, i)  return false }
         return true
     }
-    var req: i64 = s.tasks[i].value()    /* 挂起时留下的请求（读在 send 之前）*/
-    if !s.tasks[i].send(req) {
-        s.done[i] = true
-        s.live = s.live - i64(1)
-        return false
-    }
+    var req: i64 = s.tasks[i].value()    /* 挂起时留下的请求（**读在 send 之前** ✓）*/
+    if !s.tasks[i].send(req) { release(s, i)  return false }
     return true
 }
 
-/* 脚本化的"事件源"：按 order 里的下标依次推进；返回还剩几个活任务。
- * 判据用它能做到**逐字节确定**：不靠时间、不靠 socket、不靠调度顺序。 */
+/* 脚本化的"事件源"：按 order 里的下标依次推进；返回还剩几个活任务。 */
 fn runScripted(s: mut ref loop, order: slice<i64>) -> i64 {
     var k: i64 = 0
     while k < order.len {
         var i: i64 = order[k]
-        if i >= i64(0) && i < s.n { step(s, i) }   /* `s` is already a reference */
+        if i >= i64(0) && i < s.used { step(s, i) }
         k = k + 1
     }
     return s.live
 }
 
-/* 真事件源：`epoll_wait`。协议与 runScripted **同一条** —— 只是"谁就绪"改由内核告诉我们：
- * 每个任务 yield 的请求就是它想等的 fd；**负数 = 别等，立刻再推我**（收尾时用它交回最后一个值）。
- *
- * 一轮：启动还没启动的 ⇒ 把每个挂起任务留下的请求（`value()`）注册进 epoll ⇒ 等 ⇒
- * 就绪的用 `send(fd)` 恢复（请求读在 send **之前**，见上面那条协议）。`timeout_ms` 到点且没有
- * 事件就退出循环，剩下的任务算没跑完（由调用者看返回值）。 */
+/* 一轮事件循环。返回：
+ *   >= 0  listener 上 accept 出来的新 fd（调用者自己 add 一个任务上去）
+ *   -1    这轮没有新连接
+ *   -2    超时，一点动静都没有（调用者据此决定要不要收工） */
+fn pump(s: mut ref loop, timeout_ms: i64) -> i64 {
+    if s.ep < i64(0) { return i64(-2) }
+    /* ① 每个活任务：还没启动就启动；已经挂起的把它的请求注册进 epoll。
+     *    "推到它要么在等真实事件、要么结束"为止（负请求 = 立刻再推）。 */
+    var i: i64 = 0
+    while i < s.used {
+        if !s.done[i] {
+            var more: bool = true
+            while more {
+                if !s.started[i] {
+                    s.started[i] = true
+                    if !s.tasks[i].next() { release(s, i)  more = false }
+                } else {
+                    var fd: i64 = s.tasks[i].value()
+                    if fd >= i64(0) {
+                        net::extc_epoll_add(s.ep, fd, i64(1))
+                        more = false
+                    } else if !s.tasks[i].send(fd) {
+                        release(s, i)
+                        more = false
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    if s.listener >= i64(0) { net::extc_epoll_add(s.ep, s.listener, i64(1)) }
+    /* ② 等一个事件 */
+    var fd2: i64 = net::extc_epoll_wait(s.ep, timeout_ms)
+    if fd2 < i64(0) { return i64(-2) }
+    /* ③ listener 可读 ⇒ accept 一个交给调用者 */
+    if s.listener >= i64(0) && fd2 == s.listener { return net::extc_sock_accept(s.listener) }
+    /* ④ 否则：谁在等这个 fd 就恢复谁（请求读在 send 之前 ✓），把"就绪"送进去 */
+    var j: i64 = 0
+    while j < s.used {
+        if !s.done[j] && s.started[j] && s.tasks[j].value() == fd2 {
+            if !s.tasks[j].send(fd2) { release(s, j) }
+        }
+        j = j + 1
+    }
+    return i64(-1)
+}
+
+/* 一直跑到所有任务结束（没有 listener 的用法）。 */
 fn runEpoll(s: mut ref loop, timeout_ms: i64) -> i64 {
-    var ep: i64 = net::extc_epoll_new()
-    var evs: mut slice<i64> = new i64[16]
     while s.live > i64(0) {
-        var i: i64 = 0
-        while i < s.n {
-            if !s.done[i] {
-                /* 一直推到它"要么在等真实事件、要么结束"为止。请求为负 = "别等，立刻再推我"
-                 * （协程收尾时用它交回最后一个值）；请求 >= 0 = 等那个 fd，注册进 epoll。
-                 * 注册必须在**产生的同一轮**：否则第一次 epoll_wait 会空等超时。 */
-                var more: bool = true
-                while more {
-                    if !s.started[i] {
-                        s.started[i] = true
-                        if !s.tasks[i].next() {
-                            s.done[i] = true
-                            s.live = s.live - i64(1)
-                            more = false
-                        }
-                    } else {
-                        var fd: i64 = s.tasks[i].value()
-                        if fd >= i64(0) {
-                            net::extc_epoll_add(ep, fd, i64(1))
-                            more = false
-                        } else if !s.tasks[i].send(fd) {
-                            s.done[i] = true
-                            s.live = s.live - i64(1)
-                            more = false
-                        }
-                    }
-                }
-            }
-            i = i + 1
-        }
-        var n: i64 = net::extc_epoll_wait(ep, evs.data, timeout_ms)
-        if n <= i64(0) { break }                          /* 超时或出错：不再空转 */
-        var k: i64 = 0
-        while k < n {
-            var j: i64 = 0
-            while j < s.n {
-                if !s.done[j] && s.started[j] && s.tasks[j].value() == evs[k] {
-                    if !s.tasks[j].send(evs[k]) {
-                        s.done[j] = true
-                        s.live = s.live - i64(1)
-                    }
-                }
-                j = j + 1
-            }
-            k = k + 1
-        }
+        var r: i64 = pump(s, timeout_ms)
+        if r == i64(-2) { break }        /* 超时：不再空转 */
     }
     return s.live
 }
