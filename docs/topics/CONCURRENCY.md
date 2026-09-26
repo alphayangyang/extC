@@ -723,7 +723,12 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     与字节序都留在运行期 ✓ extC 侧只收标量 ✓）；关 fd 直接用已有的 `sys::io` 的 `close`（同 `int close(int)`
     ABI ✓ 不需要新原语 ✓）。
 
-15. **任务表换 `vector<coroutine<i64>>`（真增长）被逃逸规则挡住** ✗ —— 试过：`loop` 里放
+15. **任务表换 `vector<coroutine<i64>>`（真增长）被逃逸规则挡住** ✗ —— **三次探针的结论一致**：
+    普通容器 ✗ 泛型容器 ✗ 方法/函数都一样 ✗，只要**容器带视图**（vector 内部是 `mut slice`），往里存
+    句柄就会撞"argument … carries a reference into a deeper scope (depth 1)"。⇒ 这不是库写法问题，
+    是**检查器规则**要细化：现在它把"容器自己带视图"与"被存进去的值"混在一起看，于是 `loop` 一旦装
+    vector 就必被拒。要做真增长就得先动那条规则（有安全含义，要单独设计 + 判据）。
+    眼下容量 512 够压测用（N=512 已实测 ✓）。 —— 试过：`loop` 里放
     `vector<coroutine<i64>>`（容器内部就是 `mut slice<T>`，`toMutSlice()` 能拿到可写视图 ⇒ 驱动没问题 ✓），
     但一步 `add` 就撞：`argument 1 of `add` points into a deeper scope (depth 1) than the arena this call
     may store it in` —— 被调方（无论做成普通函数还是方法）**往 `mut ref` 形参里存句柄**时，调用点所在域的
