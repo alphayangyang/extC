@@ -1,0 +1,7 @@
+/* 判据用模块：声明一个 trait 与一个类型，供另一个模块做"孤儿实现"。
+ * （trait 名首字母大写；类型名 camelCase —— 三个命名空间互不相撞。） */
+trait Tr {
+    fn f(self: ref Self) -> i64
+}
+
+struct thing { v: i64 }

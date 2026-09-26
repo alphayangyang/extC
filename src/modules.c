@@ -1499,12 +1499,14 @@ static void mergeUnit(Loader *L, ModUnit *u) {
      * checker reports it). */
     for (size_t i = 0; i < src->traits.len; i++) {
         TraitDef *tr = *(TraitDef **)vecAt(&src->traits, i);
+        tr->modName = u->modName;
         for (size_t j = 0; j < tr->methods.len; j++)
             rwUnitMethod(L, u, *(FuncDef **)vecAt(&tr->methods, j));
         *(TraitDef **)vecPush(&L->out->traits) = tr;
     }
     for (size_t i = 0; i < src->impls.len; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&src->impls, i);
+        im->modName  = u->modName;
         im->typeName = rwTypeName(L, u, im->typeName);
         for (size_t j = 0; j < im->methods.len; j++)
             rwUnitMethod(L, u, *(FuncDef **)vecAt(&im->methods, j));

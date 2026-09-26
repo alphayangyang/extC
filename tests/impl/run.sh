@@ -68,6 +68,8 @@ check_err tests/impl/trait_sig_type.extc  'but the trait declares `i64`'
 check_err tests/impl/trait_collide_inherent.extc 'has duplicate method `tag`'
 check_err tests/impl/trait_collide_cross.extc    'has duplicate method `tag`'
 check_err tests/impl/trait_self_outside.extc     'unknown type `Self`'
+# 孤儿规则：`impl` 的模块既没声明 trait 也没声明类型（trait/类型都来自另一个模块）
+check_err tests/impl/orphan_impl.extc            'is an orphan'
 
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'

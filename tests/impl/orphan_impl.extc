@@ -1,0 +1,9 @@
+// 反例⑨（孤儿规则）：`impl` 的模块既没声明 trait 也没声明类型
+// expect: is an orphan
+use orphanmod
+
+impl Tr for orphanmod::thing {
+    fn f(self: ref orphanmod::thing) -> i64 { return i64(1) }
+}
+
+fn main() -> i32 { return 0 }

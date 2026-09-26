@@ -37,6 +37,14 @@ Vec *funcTParams(FuncDef *f) {
 
 /* Forward declarations: the effect-summary walk and the escape analysis call each
  * other, so one of them has to be declared ahead of its definition. */
+/* Do two declarations come from the same module? NULL means the root file (or the prelude),
+ * and "the same" for two NULLs: that is this program, where an implementation may always live. */
+static bool sameModule(const char *a, const char *b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    return strcmp(a, b) == 0;
+}
+
 static int  paramIndex(FuncDef *f, const char *name);
 
 /* ------------------------------------------------------------------- top level */
@@ -4498,6 +4506,20 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < im->methods.len; j++) {
             FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
             im->target = t;                 /* resolved here, read by the conformance pass and codegen */
+            /* Orphan rule: the block must live where the trait is declared or where the type is
+             * declared. Anywhere else it has no home -- and because a type has exactly one method
+             * set, a competing implementation from a third module would surface as an unrelated
+             * duplicate-method error far from its cause. */
+            if (im->trait && !sameModule(im->modName, im->trait->modName) &&
+                              !sameModule(im->modName, sd ? sd->modName : NULL)) {
+                ctxError(ctx, im->line, 1,
+                         "Implement a trait in the module that declares the trait, or in the one"
+                         " that declares the type.",
+                         "`impl %s for %s` is an orphan: module `%s` declares neither",
+                         im->traitName, im->typeName,
+                         im->modName ? im->modName : "this file");
+                continue;
+            }
             mth->owner = sd;
             *(FuncDef **)vecPush(&sd->methods) = mth;
         }

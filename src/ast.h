@@ -781,6 +781,8 @@ typedef struct {
 typedef struct {
     const char *typeName;   /* the type the methods attach to, e.g. `i64` or `point` */
     const char *traitName;  /* `impl Trait for Type`: the trait, or NULL for an inherent impl */
+    const char *modName;    /* the module this block came from; NULL for the root file. The
+                             * orphan rule compares it with the trait's and the type's. */
     Type       *target;     /* the resolved implementing type (`Self` substitutes to this) */
     TraitDef   *trait;      /* the resolved trait; NULL for an inherent impl */
     int         line;
@@ -799,6 +801,7 @@ typedef struct {
  * the implementing type, which is why `Self` is legal there and unknown anywhere else. */
 struct TraitDef {
     const char *name;
+    const char *modName;    /* the module that declares it; NULL for the root file */
     int         line;
     Vec         methods;    /* FuncDef*: signatures only (`body == NULL`) */
 };
