@@ -204,6 +204,7 @@ struct Expr {
      * 只有"建池的调用"（`e->func->makesPool`）才用得上；0 = 不是这种站点。
      * 与 `arenaLevel` 平行，提权就是把这个数变小（越小越长寿）。 */
     int       zoneLevel;
+    bool      boxedCoro;         /* a coroutine call whose value is stored as a handle (codegen boxes it) */
     /* The strongest requirement escape analysis placed on this site: the smallest
      * level that satisfies every constraint it takes part in.
      *     -1  = no constraint touched it, so it keeps its own level (`lexicalLevel`)

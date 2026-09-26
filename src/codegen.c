@@ -178,6 +178,7 @@ typedef struct {
     const FuncDef *coroFunc;
     const char    *coroFrame;       /* the frame parameter's C name: `f` */
     int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
+    bool           needCoroHandle;  /* some coroutine is stored as a handle ⇒ emit the handle type */
     int            coroSeq;         /* names the temporaries a spawn needs (one per spawn) */
     /* Coroutine frames and step functions go here and are appended **last**, after the passes that
      * rewrite the unit by byte offset (same reason as `vtDefs` below): those passes match names, and
@@ -1714,6 +1715,15 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
+        if (f->coroProto == 3) {                      /* `next` on a handle: dispatch on kind */
+            g->needCoroHandle = true;
+            return arenaPrintf(g->arena, "extc_coro_next(&(%s))", rc);
+        }
+        if (f->coroProto == 4) {                      /* `value` on a handle: dispatch, then read */
+            g->needCoroHandle = true;
+            return arenaPrintf(g->arena, "extc_coro_value_%s(&(%s))",
+                               cType(g, subst(g, f->ret)), rc);
+        }
         if (f->coroProto == 1) {
             /* With a task place the step is driven through the driver (it owns the place); without
              * one there is nothing to set up, so the step itself is the driver. */
@@ -1961,11 +1971,41 @@ static const char *genExprInner(CG *g, Expr *e) {
              * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
              * miscompile -- and a coroutine *definition* alone still compiles, which is what the
              * slice-B1 test drives from a small C harness. */
+            if (e->func && e->func->isCoro && e->boxedCoro) {
+                /* **Boxing**: this coroutine value is stored somewhere that outlives the current C
+                 * scope, so its frame goes into the task's own place and the value is a
+                 * `{frame, kind, task}` handle -- plain value, 24 bytes, safe to copy and to store in
+                 * a container. The setup statements must precede the statement that reads the handle,
+                 * so they go to the prefix (C11 has no statement expressions). */
+                FuncDef *cf = e->func;
+                const char *cn = cFuncName(g, cf);
+                int sq = g->coroSeq++;
+                pfLine(g, "int64_t __extc_czh%d = extc_task_begin();", sq);
+                pfLine(g, "int64_t __extc_czz%d = extc_task_zone(__extc_czh%d);", sq, sq);
+                pfLine(g, "struct %s$frame *__extc_czf%d = (struct %s$frame *)extc_task_alloc("
+                           "__extc_czh%d, (int64_t)sizeof(struct %s$frame), \"%s\", %d);",
+                       cn, sq, cn, sq, cn, g->path, e->line);
+                Buf init;
+                bufInit(&init, g->arena);
+                bufPrintf(&init, "*__extc_czf%d = (struct %s$frame){ .pc = 0, .zone = __extc_czz%d,"
+                                 " .task = __extc_czh%d", sq, cn, sq, sq);
+                for (size_t i = 0; i < cf->params.len; i++) {
+                    Param *p = *(Param **)vecAt(&cf->params, i);
+                    Expr *a = i < e->u.call.args.len ? *(Expr **)vecAt(&e->u.call.args, i) : NULL;
+                    bufPrintf(&init, ", .%s = %s", p->cname, a ? genExpr(g, a) : "0");
+                }
+                bufPrintf(&init, " };");
+                pfLine(g, "%s", bufCstr(&init));
+                g->needCoroHandle = true;
+                return arenaPrintf(g->arena,
+                                   "((struct extc_coro){ .frame = __extc_czf%d, .kind = %d,"
+                                   " .task = __extc_czh%d })", sq, cf->coroKind, sq);
+            }
             if (e->func && e->func->isCoro) {
-                /* Slice B1 emits the frame and the step function; the **call** needs the
-                 * `coroutine<T>` representation (B2). Until then this is a loud failure -- except
-                 * under `EXTC_CORO_B1_HARNESS`, which the slice-B1 judge defines so it can drive the
-                 * generated `$step` from a small C harness. B2 deletes the hook with the guard. */
+                /* A coroutine call that is neither boxed nor driven: still a loud failure at the C
+                 * compiler rather than a silent miscompile -- except under `EXTC_CORO_B1_HARNESS`,
+                 * which the slice-B1 judge defines so it can drive the generated `$step` from a small
+                 * C harness. */
                 cgLine(g, "#ifndef EXTC_CORO_B1_HARNESS");
                 cgLine(g, "#error \"calling a coroutine lands in slice B2"
                            " (docs/topics/CONCURRENCY.md 4.4)\"");
@@ -3781,6 +3821,59 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * `main` is emitted before the other bodies. The frame itself comes from the type channel (it is a
  * unit), and the step's definition comes from `genFunc` like any other function -- which is what
  * registers the generic instances its body calls (docs/topics/CONCURRENCY.md 4.4, slice C). */
+/* The handle type and its two helpers. Emitted only when a handle exists somewhere; the helpers are
+ * EXTC_UNUSED so that a `value` helper for an unused yield type stays quiet under -Werror. */
+static void genCoroHandleDecls(CG *g, Module *m) {
+    if (!g->needCoroHandle) return;
+    cgLine(g, "/* The coroutine **handle**: one struct for every `coroutine<T>`, which is what lets");
+    cgLine(g, " * handles from different coroutines live in the same container. `task` is the safety");
+    cgLine(g, " * token: driving a handle whose task has ended traps loudly instead of touching freed");
+    cgLine(g, " * memory (the frame lives in that task's place). */");
+    cgLine(g, "struct extc_coro { void *frame; int64_t kind; int64_t task; };");
+    cgLine(g, "EXTC_UNUSED static bool extc_coro_next(struct extc_coro *h) {");
+    cgLine(g, "    if (!extc_task_live(h->task)) {");
+    cgLine(g, "        exit(70);   /* driving a coroutine whose task has already ended */");
+    cgLine(g, "    }");
+    cgLine(g, "    switch (h->kind) {");
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!cf || !cf->isCoro || cf->tmpl) continue;
+        const char *cn = cFuncName(g, cf);
+        cgLine(g, "    case %d: return %s%s((struct %s$frame *)h->frame);",
+               cf->coroKind, cn, cf->coroNeedsZone ? "$next" : "$step", cn);
+    }
+    cgLine(g, "    }");
+    cgLine(g, "    return false;");
+    cgLine(g, "}");
+    /* One `value` helper per yield type that a handle can carry. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!cf || !cf->isCoro || cf->tmpl || !cf->yieldType) continue;
+        const char *yt = cType(g, cf->yieldType);
+        bool done = false;
+        for (size_t k = 0; k < i && !done; k++) {
+            FuncDef *prev = *(FuncDef **)vecAt(&m->funcs, k);
+            if (prev && prev->isCoro && !prev->tmpl && prev->yieldType &&
+                strcmp(cType(g, prev->yieldType), yt) == 0) done = true;
+        }
+        if (done) continue;
+        cgLine(g, "EXTC_UNUSED static %s extc_coro_value_%s(struct extc_coro *h) {", yt, yt);
+        cgLine(g, "    switch (h->kind) {");
+        for (size_t k = 0; k < m->funcs.len; k++) {
+            FuncDef *ck2 = *(FuncDef **)vecAt(&m->funcs, k);
+            if (!ck2 || !ck2->isCoro || ck2->tmpl || !ck2->yieldType) continue;
+            if (strcmp(cType(g, ck2->yieldType), yt) != 0) continue;
+            const char *cn2 = cFuncName(g, ck2);
+            cgLine(g, "    case %d: return ((struct %s$frame *)h->frame)->ret;", ck2->coroKind, cn2);
+        }
+        cgLine(g, "    }");
+        /* Unreachable in type-safe code (a handle's kind always matches its `T`); written as the
+         * first case's expression so it needs no zero value of `T`. */
+        cgLine(g, "    return ((struct %s$frame *)h->frame)->ret;", cFuncName(g, cf));
+        cgLine(g, "}");
+    }
+}
+
 static void genCoroDecls(CG *g, Module *m) {
     bool taskTable = false;
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -3800,6 +3893,7 @@ static void genCoroDecls(CG *g, Module *m) {
         g->needPool = true;
         coroutineEmitRuntime(g->arena, g->out);
     }
+    genCoroHandleDecls(g, m);
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */
@@ -5484,6 +5578,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * `slice_slice_T` - while `ttEquals` counts `mut` as part of the identity,
      * so the type table can hold two instances under one name. Deduplicating by
      * name keeps every later piece from being generated twice. */
+    /* Coroutine handle prepass: one `kind` per coroutine function (the boxing site and the handle
+     * dispatch must agree on it), and whether this program needs the handle type at all -- the
+     * checker sets `coroBoxed` when it coerces a frame into a handle. */
+    {
+        int ck = 0;
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+            if (!cf || !cf->isCoro || cf->tmpl) continue;
+            cf->coroKind = ck++;
+            if (cf->coroBoxed) g.needCoroHandle = true;
+        }
+    }
     vecInit(&g.insts, arena, sizeof(void *));
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->instances, i);
