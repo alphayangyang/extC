@@ -176,6 +176,21 @@ else
     echo "  FAIL coro_echo           ->  $(head -2 "$tmp/ece" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 可增长任务表（逃逸规则精度）：泛型容器包着 vector，方法里往表里 push 句柄。期望 41
+tt=$tmp/coro_table
+if "$EXTC" -w --no-line-map -o "$tt.c" tests/coro/coro_table.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -O2 -o "$tt" "$tt.c" 2>"$tmp/tte"; then
+    "$tt" >/dev/null 2>&1; rc=$?
+    if [ "$rc" = 41 ]; then
+        echo "  ok   coro_table          ->  泛型容器包 vector + 方法里 push 句柄（41）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_table          ->  退出码 $rc（期望 41）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_table          ->  $(head -2 "$tmp/tte" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 一个 listener accept 出 N=40 条连接（容量 32 ⇒ 必须复用槽位）。期望 52 + ASan 干净
 ac=$tmp/coro_accept
 if "$EXTC" -w --no-line-map -o "$ac.c" tests/coro/coro_accept.extc >/dev/null 2>&1 \

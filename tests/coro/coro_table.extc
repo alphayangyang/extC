@@ -1,0 +1,34 @@
+/* 可增长任务表（逃逸规则精度）：**泛型结构体包着 vector**，它的方法里往表里 push 句柄。
+ * 这正是调度器要落地的那张表（无容量上限 ⇒ 靠容器增长）。
+ * 期望退出码 41 = (0 + 0) + 2 行 + 39。 */
+use stl::vector
+
+struct row {
+    h: coroutine<i64>
+    done: bool
+}
+
+struct table<T> {
+    rows: vector<row>
+    fn add(self: mut ref table<T>, h: coroutine<i64>) -> bool {
+        self.rows.push({ h: h, done: false })     /* ← 规则挡的就是这一步 */
+        return true
+    }
+    fn count(self: ref table<T>) -> i64 { return self.rows.len() }
+}
+
+fn w(n: i64) -> coroutine<i64> { var i: i64 = 0  while i < n { yield i  i = i + 1 } }
+
+fn main() -> i32 {
+    var t: table<i64> = { rows: vector<row>::new() }
+    var a: bool = t.add(w(i64(2)))
+    var b: bool = t.add(w(i64(3)))
+    if !a || !b { return i32(90) }
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < t.count() {
+        if t.rows.vals[i].h.next() { s = s + t.rows.vals[i].h.value() }
+        i = i + 1
+    }
+    return i32(s + t.count() + i64(39))          /* 0 + 2 + 39 = 41 */
+}

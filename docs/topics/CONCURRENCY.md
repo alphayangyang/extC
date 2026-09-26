@@ -723,7 +723,21 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     与字节序都留在运行期 ✓ extC 侧只收标量 ✓）；关 fd 直接用已有的 `sys::io` 的 `close`（同 `int close(int)`
     ABI ✓ 不需要新原语 ✓）。
 
-15. **任务表换 `vector<coroutine<i64>>`（真增长）被逃逸规则挡住** ✗ —— **三次探针的结论一致**：
+15. **任务表换 `vector<coroutine<i64>>`（真增长）被逃逸规则挡住** ✗ —— **根因已量到根（本轮）**：
+    `EXTC_DUMP_EFFECTS=1` 打出 `[effects-closed] stash complete=1 toParam[Addr=0x0 Cont=0x2]
+    toHome[Addr=0x0 Cont=0x0] other=0x1` ⇒ 传递闭包**已经是完整的** ✓、`addrMask=0` ✓（根本**没有地址流** ✓）、
+    内容流只记在第 2 个形参 ✓；**唯一触发保守回退的是 `otherMask=0x1`** ✗（`check_top.c:1191` 把它算进
+    `addrMaybe` ✓）。而 `ast.h` 写着 `otherMask: something that cannot hold a reference but can still flow out` ✓
+    且 `check_top.c:2279` 保证只有 `typeContainsRef` 为真才走到置位那行 ✓ ⇒ 它记录的是**内容流** ✓ 不是地址流 ✓
+    ⇒ 把地址规则挂在 `otherMask` 上是**纯过度近似** ✗。
+    **更要紧的是判据本身写错了对象** ✗：规则现在是"实参/目的地的深度 ≤ h"，而这个 `h` 在摘要保守时塌成 **0**
+    （最长命）✓ 于是**任何**深度 > 0 的实参全被拒 ✓。正确的判据是"**被存的内容/地址的深度 ≤ 目的地的深度**" ✓
+    —— 目的地就是被调方**能存进去的那些 `ref` 形参** ✓（调用点知道 ✓）。
+    实测对照（两条都已量 ✓）：安全形状（`outer` 与 `inner` 同作用域，深度都是 1）今天**被误拒** ✗；
+    危险形状（`inner` 建在内层块 ⇒ 深度 2 > 目的地 1）今天**被拒** ✓ —— 但理由是错的 ✗。
+    ⇒ 换成"源 ≤ 目的地"之后：安全 ✓ 收、危险 ✓ 拒，**且仍然 sound**（比的就是真实的生命周期要求 ✓）。
+    正判据 `tests/coro/coro_tasks.extc`（`table<T>` 泛型容器 + 方法里 push 句柄 ✓ 期望退出码 41）**先立着** ✓
+    现在还是红 ✗ ⇒ 修好之前**不入册** ✓ 免得留下红套件。 —— **三次探针的结论一致**：
     普通容器 ✗ 泛型容器 ✗ 方法/函数都一样 ✗，只要**容器带视图**（vector 内部是 `mut slice`），往里存
     句柄就会撞"argument … carries a reference into a deeper scope (depth 1)"。⇒ 这不是库写法问题，
     是**检查器规则**要细化：现在它把"容器自己带视图"与"被存进去的值"混在一起看，于是 `loop` 一旦装
