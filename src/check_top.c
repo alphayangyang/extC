@@ -351,6 +351,7 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
  */
 static bool stmtHasNew(Stmt *s);
 static void coroFrameLay(Checker *c, FuncDef *f);   /* the coroutine frame, defined below */
+
 static bool hasNewInStmt(void *ctx, Stmt *s);
 /* Does this expression contain `new`, or `alloc<T>(n)` (which is the same thing)?
  *
@@ -3598,7 +3599,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * agree. `coroutine<T>` stays what it always was: how a body declares "I am a coroutine and
          * I yield T". See docs/topics/CONCURRENCY.md 4.4. */
         StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
-        cfd->name = f->name ? f->name : "coro";
+        /* A C name of its own: the frame is emitted through the type channel now, so it must not
+         * collide with the function's own name. */
+        cfd->name = arenaPrintf(c->arena, "%s$frame", f->name ? f->name : "coro");
         cfd->coroOf = f;
         vecInit(&cfd->typeParams, c->arena, sizeof(const char *));
         vecInit(&cfd->fields, c->arena, sizeof(FieldDef *));
@@ -5810,6 +5813,34 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
         p->type = d->type;
         p->line = f->body->line;
     }
+    /* The frame is a **real type**, with real fields: the units pass scans a struct's fields to
+     * find the instances its storage needs, and a `vector<i32>` living in the frame is exactly how a
+     * coroutine pulls in that container's helpers. `zone` is always present -- eight bytes, and it
+     * keeps the layout independent of the pool fixpoint, which only runs later. */
+    {
+        StructDef *fsd = f->coroFrameType ? f->coroFrameType->sdef : NULL;
+        if (fsd) {
+            if (!fsd->fields.arena) vecInit(&fsd->fields, c->arena, sizeof(FieldDef *));
+            Type *i64t = ttFromName(c->tt, "i64");
+            FieldDef *fd = arenaAllocZero(c->arena, sizeof *fd);
+            fd->name = "pc"; fd->type = i64t; fd->line = f->line;
+            *(FieldDef **)vecPush(&fsd->fields) = fd;
+            fd = arenaAllocZero(c->arena, sizeof *fd);
+            fd->name = "ret"; fd->type = f->yieldType; fd->line = f->line;
+            *(FieldDef **)vecPush(&fsd->fields) = fd;
+            fd = arenaAllocZero(c->arena, sizeof *fd);
+            fd->name = "zone"; fd->type = i64t; fd->line = f->line;
+            *(FieldDef **)vecPush(&fsd->fields) = fd;
+            for (size_t k = 0; k < f->coroFrame.len; k++) {
+                const Param *p = (const Param *)vecAt(&f->coroFrame, k);
+                fd = arenaAllocZero(c->arena, sizeof *fd);
+                fd->name = p->name; fd->type = p->type; fd->line = f->line;
+                *(FieldDef **)vecPush(&fsd->fields) = fd;
+            }
+            if (!fsd->type) fsd->type = f->coroFrameType;
+        }
+    }
+
     if (getenv("EXTC_DBG_CORO")) {
         fprintf(stderr, "[coro] %s: frame = pc, ret%s", f->name,
                 f->makesPool ? ", zone" : "");

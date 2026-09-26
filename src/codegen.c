@@ -3747,18 +3747,6 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * a pool) the zone id, then the checker's `coroFrame` fields -- the parameters and the locals that
  * live across a `yield`, all by value. Emitted **before** the bodies (a spawn in a function uses the
  * type), while the step function's definition goes last (see `CG.coroDefs`). */
-static void genCoroFrame(CG *g, FuncDef *f) {
-    cgLine(g, "struct %s$frame {", cFuncName(g, f));
-    cgLine(g, "    int64_t pc;");
-    cgLine(g, "    %s ret;", cType(g, f->yieldType ? f->yieldType : f->ret));
-    if (f->makesPool)
-        cgLine(g, "    int64_t zone;          /* the task's own place (slice C) */");
-    for (size_t i = 0; i < f->coroFrame.len; i++) {
-        const Param *p = (const Param *)vecAt((Vec *)&f->coroFrame, i);
-        cgLine(g, "    %s;", arenaPrintf(g->arena, "%s %s", cType(g, p->type), p->cname));
-    }
-    cgLine(g, "};");
-}
 
 /* Every coroutine in the module declares its frame and its step **before** the bodies: a spawn
  * needs the complete type, and `next`/`value` call the step (whose definition is appended last). */
@@ -3766,8 +3754,10 @@ static void genCoroDecls(CG *g, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */
-        genCoroFrame(g, f);
-        cgLine(g, "static bool %s$step(struct %s$frame *f);", cFuncName(g, f), cFuncName(g, f));
+        /* The frame is emitted by the type channel (it is a unit now); here only the prototypes, so
+         * that anything above can call the step and the driver. */
+        cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);",
+               cFuncName(g, f), cFuncName(g, f));
     }
 }
 
@@ -3779,7 +3769,9 @@ static void genCoroFunc(CG *g, FuncDef *f) {
     cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
            f->name ? f->name : "?");
     /* The frame is declared before the bodies (`genCoroDecls`); this is the definition half. */
-    cgLine(g, "static bool %s(struct %s *f) {", step, fr);
+    /* `EXTC_UNUSED`: a program may spawn a coroutine and never drive it, and `-Wall -Werror` stays
+     * clean either way. */
+    cgLine(g, "EXTC_UNUSED static bool %s(struct %s *f) {", step, fr);
     cgLine(g, "    switch (f->pc) {");
     cgLine(g, "    case 0: ;");
     g->indent++;
@@ -6221,6 +6213,18 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->td = it->edef;
         u->inst = it;
+        vecInit(&u->deps, arena, sizeof(int));
+        *(SUnit **)vecPush(&units) = u;
+    }
+    /* Coroutine frames: synthesized structs, but real types. Their fields say what a coroutine's
+     * storage is made of, and scanning them here is what makes the instances those fields mention
+     * (`vector<i32>`, behind a container) get generated at all -- without this a step called
+     * `vector$vector_i32_withCap` and nothing ever emitted it (docs/topics/CONCURRENCY.md 4.4). */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!cf || !cf->isCoro || cf->tmpl || !cf->coroFrameType || !cf->coroFrameType->sdef) continue;
+        SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+        u->sd = cf->coroFrameType->sdef;
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
