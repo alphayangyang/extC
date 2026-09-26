@@ -1,0 +1,21 @@
+/* 深度 3：main → top → mid → tick，每层都是"透明转发"（= 嵌套调度器的最小形态）*/
+fn lcg(s: i64, i: i64) -> i64 { return s * i64(6364136223846793005) + i }
+fn tick(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var s: i64 = 1
+    while i < n { s = lcg(s, i)  yield s  i = i + 1 }
+}
+fn mid(n: i64) -> coroutine<i64> {
+    var d = tick(n)
+    while d.next() { yield d.value() }
+}
+fn top(n: i64) -> coroutine<i64> {
+    var m = mid(n)
+    while m.next() { yield m.value() }
+}
+fn main() -> i32 {
+    var acc: i64 = 0
+    var c = top(i64(5000))
+    while c.next() { acc = acc + c.value() }
+    return i32(acc & i64(2147483647))
+}

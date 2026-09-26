@@ -1,0 +1,51 @@
+/* 微基准：三种操作，工作量用 LCG 串起来并且**结果被观察**（否则会被优化掉）。
+ *   ① spawn + 驱动到完 ② 两个协程交替（一次切换）③ 连续 yield 吞吐 */
+fn lcg(s: i64, i: i64) -> i64 { return s * i64(6364136223846793005) + i }
+
+fn once(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var s: i64 = 1
+    while i < n { s = lcg(s, i)  i = i + 1 }
+    yield s
+}
+
+fn tick(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var s: i64 = 1
+    while i < n { s = lcg(s, i)  yield s  i = i + 1 }
+}
+
+/* 深度链：mid 驱动 leaf 并把它的 yield 原样转发上去（= 嵌套调度器的最小形态）*/
+fn mid(n: i64) -> coroutine<i64> {
+    var d = tick(n)
+    while d.next() { yield d.value() }
+}
+
+/* 深度 3：top 驱动 mid 驱动 leaf —— 每层都是"透明转发"*/
+fn top(n: i64) -> coroutine<i64> {
+    var m = mid(n)
+    while m.next() { yield m.value() }
+}
+
+fn main() -> i32 {
+    var acc: i64 = 0
+    var k: i64 = 0
+    while k < i64(1000) {                       /* ① 1000 次 spawn + 驱动 */
+        var c = once(i64(10))
+        while c.next() { acc = acc + c.value() }
+        k = k + 1
+    }
+    var a = tick(i64(5000))                     /* ② 10000 次切换 */
+    var b = tick(i64(5000))
+    var ia: bool = a.next()
+    var ib: bool = b.next()
+    while ia || ib {
+        if ia { acc = acc + a.value()  ia = a.next() }
+        if ib { acc = acc + b.value()  ib = b.next() }
+    }
+    var c1 = tick(i64(5000))                    /* 基准：直接驱动 tick（深度 1）*/
+    while c1.next() { acc = acc + c1.value() }  /* ③ 5000 次切换（深 1）*/
+    var c3 = top(i64(5000))                     /* 深度 3：同 5000 次切换，但每层多两层 ✓ */
+    while c3.next() { acc = acc + c3.value() }  /* ④ 5000 次切换（深 3）*/
+    return i32(acc & i64(2147483647))           /* 结果被观察 ⇒ 不许被消除 ✓ */
+}

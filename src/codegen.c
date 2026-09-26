@@ -3231,9 +3231,24 @@ static void genStmtInner(CG *g, Stmt *s) {
                     cgLine(g, "int64_t __extc_czid%d = extc_task_begin();", sq);
                     cgLine(g, "int64_t __extc_czm%d = extc_task_zone(__extc_czid%d);", sq, sq);
                 }
+                /* `var d = inner(args)` **inside a coroutine**: the nested frame is a *field* of this
+                 * frame, not a C local -- a resume jumps past the declaration, so the initializer has
+                 * to be an assignment to the field (same rule as every other frame-field local
+                 * below). Emitting a local here left the field uninitialized and drew an
+                 * "unused variable" warning from the generated C. */
+                bool framed = false;
+                if (g->coroFunc) {
+                    for (size_t i = 0; i < g->coroFunc->coroFrame.len && !framed; i++) {
+                        const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
+                        framed = p->cname && strcmp(p->cname, s->u.var.cname) == 0;
+                    }
+                }
                 Buf init;
                 bufInit(&init, g->arena);
-                bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, s->u.var.cname, fr);
+                if (framed)
+                    bufPrintf(&init, "%s->%s = (%s){ .pc = 0", g->coroFrame, s->u.var.cname, fr);
+                else
+                    bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, s->u.var.cname, fr);
                 if (hasZone) bufPrintf(&init, ", .zone = __extc_czm%d, .task = __extc_czid%d", sq, sq);
                 for (size_t i = 0; i < cf->params.len; i++) {
                     Param *p = *(Param **)vecAt(&cf->params, i);
