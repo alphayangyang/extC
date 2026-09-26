@@ -306,17 +306,17 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
 
 int exprRefDepth(Checker *c, Expr *e) {
     if (!e) return 0;
-    /* `dyn Trait(x)`: the handle lives in the pool, but the payload is **copied** into it, so
-     * whatever the payload refers to is referred to by this value too. The type test below would
-     * answer "this cannot carry a reference" (`dyn T` carries none), and that is how a payload's
-     * view of a stack local slipped past the scope rule -- family E, see
-     * `tests/arena-soundness/E1_dyn_payload_carries_ref.extc`. */
-    if (e->kind == EX_DYN) return exprRefDepth(c, e->u.dynv.payload);
     /* The only reason to answer without looking: this type cannot carry a reference.
-     * A type that mentions a type parameter must not take this exit. Inside a generic
-     * body the depth is computed under the assumption that the parameter may carry a
-     * reference, and the instance check decides whether the rule applies. */
-    if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return 0;
+     * A type that mentions a type parameter must not take this exit: inside a generic body the
+     * depth is computed on the assumption that the parameter may carry one, and the instance
+     * check decides whether the rule applies.
+     *
+     * `EX_DYN` must not take it either, even though `dyn T` carries no reference of its own: the
+     * payload is **copied into the pool**, so whatever the payload refers to is referred to by
+     * this value too. Missing that is how a payload's view of a stack local slipped past the
+     * scope rule (family E, `tests/errors/dyn_payload_view_escapes_block.extc`). */
+    if (e->kind != EX_DYN && !typeContainsRef(c->tt, tsub(c, e->type)) &&
+        !mentionsParam(e->type)) return 0;
     /* A binding's depth is authoritative on the binding, not on the expression node: the
      * node's copy is written when the expression is first checked, and the data-flow
      * analysis settles binding depths only afterwards, from the whole control-flow
@@ -342,6 +342,10 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_SIGN:
         /* `p!` only drops nullability; it still refers to the same storage. */
         d = exprRefDepth(c, e->u.sign.operand);
+        break;
+    case EX_DYN:
+        /* The payload is copied into the pool: its references are this value's references. */
+        d = exprRefDepth(c, e->u.dynv.payload);
         break;
     case EX_NEW:
     case EX_GENCALL:
@@ -547,14 +551,14 @@ static bool placeIsBorrowed(Checker *c, Expr *e) {
  *     a generic body consumes this answer at instantiation. */
 static bool exprBorrowed(Checker *c, Expr *e) {
     if (!e) return false;
-    /* The payload is copied into the pool, so this value borrows whatever the payload borrows. */
-    if (e->kind == EX_DYN) return exprBorrowed(c, e->u.dynv.payload);
     /* The only reason to answer without looking: this type cannot carry a reference.
      * A type that mentions a type parameter must not take this exit -- the deferred check
-     * recorded for a generic body needs this answer.
-     */
-    if (!typeContainsRef(c->tt, tsub(c, e->type)) && !mentionsParam(e->type)) return false;
+     * recorded for a generic body needs this answer. `EX_DYN` must not take it either: the
+     * payload is copied into the pool, so this value borrows whatever the payload borrows. */
+    if (e->kind != EX_DYN && !typeContainsRef(c->tt, tsub(c, e->type)) &&
+        !mentionsParam(e->type)) return false;
     switch (e->kind) {
+    case EX_DYN: return exprBorrowed(c, e->u.dynv.payload);
     case EX_IDENT: case EX_FIELD: case EX_INDEX: {
         Sym *root = placeRoot(c, e);
         /* A parameter is depth 0 and is not a global, so the value is borrowed. A global or
