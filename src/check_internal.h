@@ -220,7 +220,7 @@ typedef struct {
 /* `stmtNeedsPlaceBoundary` (check_top.c): will codegen bracket this block with a place? The
  * checker's answer is a **conservative superset** -- it must never say "no" for a block codegen
  * does bracket -- and rule 3 of CONCURRENCY.md 12 rests on it (`yield` may not sit inside). */
-bool stmtNeedsPlaceBoundary(Stmt *s);
+bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro);
 
 /* `typeContainsProto` (check_lookup.c): is the `coroutine<T>` marker anywhere inside this type?
  * `coroutine<T>` is a return type, not storage (docs/topics/CONCURRENCY.md 4.4). */
@@ -231,6 +231,8 @@ typedef struct Checker {
      * `zoneEnter`/`zoneLeaveTo` + `arena_release`). A `yield` inside one of them is rule 3 of
      * docs/topics/CONCURRENCY.md 12: that block's arena is gone before the coroutine is resumed. */
     int      placeBoundaryDepth;
+
+    Vec      coroDeferred;
 
     Ctx       *ctx;         /* parser and module context, for diagnostics and lookup */
     Arena     *arena;       /* arena the checker allocates its own bookkeeping from */

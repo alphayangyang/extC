@@ -525,6 +525,33 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 
 **B 到此完整**：帧结构体与 step（Duff's device）、`next`/`value` 复用迭代器协议、`for x in coro` 可用、差分判据与生成物合同都绿。表示上仍是"extC 可见类型 = `coroutine<T>` 标记、C 侧变量 = 帧结构体、两者由 codegen 记账"；等每个协程有了各自的类型身份（可选后续），这层记账可以换成真类型，`for`、放进容器、按值复制就都由类型系统管了。
 
+**切片 C 已落地（2026-09-26）**。三条判据全绿，其中包括原先写下的验收项。
+
+**step 走 `genFunc` 的正常流程**，不再另开侧路。这正是五轮排查的结论：侧路绕过了"发射函数体"这条主干，而泛型实例（`vector<i32>::withCap` 这类）就是在主干上被登记并发射的。共用主干之后，只有三处按语义**分开**：
+
+    static bool <fn>$step(struct <fn>$frame *f) { switch (f->pc) { case 0: ; … } }
+                                    ↑ 签名没有源参数（恢复时无实参可传），结尾是 pc=<done>; return false;
+                                    ↑ 不开自己的 zone、不要自己的 arena 数组（它不是地方）
+
+**任务 place（作者 B 方案）**：`spawn` 懒进入 `extc_pool_zoneEnter()` 并把记号存进帧的 `zone` 字段，然后**恢复调用者的 place**；每个协程带一个驱动器 `<fn>$next`：
+
+    static bool <fn>$next(struct <fn>$frame *f) {
+        int64_t __sv = extc_zoneTop;
+        extc_zoneTop = f->zone;        /* 恢复点只读帧字段，不重新推导 —— 规则 1 */
+        bool __r = <fn>$step(f);
+        extc_zoneTop = __sv;
+        if (!__r) extc_pool_zoneLeaveTo(f->zone);   /* 任务跑完 ⇒ 它的地方一次性回收 */
+        return __r;
+    }
+
+**规则 ②③ 按语义放宽**：协程体里**建池**不再算"会回收的块"（池落进任务 place，活过每一次挂起）；`new`（arena 块）那半边照旧拒绝 —— 判据 `tests/coro/coro_pool.extc` 与反例都覆盖了。
+
+**判据**：
+- 验收项本身成了常驻判据 `tests/coro/coro_pool.extc`：**接受 + 跑出 6 + ASan 干净**；
+- `tools/check_concurrency_guards.py` 两处更新：J1 允许**帧字段**作为 zone 实参，但**只许出现在协程单元**里（文件里有 `$step`）；并新增一条收紧 —— **`$step` 体内不许出现 `extc_zoneTop` / `__extc_home_zone`**（已用反证验证它会红）。
+
+**还差的两件（不阻塞验收）**：① **显式 drop**：今天回收发生在"任务跑完"，作者 B 方案里的另一半（由调度器/任务表在放弃时回收）要等任务表；② **`src/coroutine.c`**：任务表与驱动器现在是内联发射的文本，按作者的意思应该像 `pools.c` 一样有一个库运行时的归属地。
+
 **切片 C 的第一轮尝试（未落地，教训记在这里）**：任务 place 的设计已经写清（spawn 进入任务 zone、帧里存 zone、每步从帧恢复、跑完一次性 `zoneLeaveTo`、规则 ③ 的池半边放宽、规则 ② 改成"自己拥有存储才许跨挂起点"），但发射落地时连撞四堵墙，回退了。下一轮从这四条开始：
 
 1. **`makesPool` 是不动点，函数体检查时还没定** ✗ —— 我按它决定帧的 `zone` 字段、驱动包装和分派，结果一处都没发射。要像规则 ② 那样加一个 `FuncDef.coroNeedsZone`，在 `closeReach(REACH_POOL, roundMakesPool)` **之后**统一设置，codegen（跑在最后）读它。

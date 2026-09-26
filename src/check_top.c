@@ -350,7 +350,14 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
  *   True when the statement contains an allocation or an unknown-length allocation.
  */
 static bool stmtHasNew(Stmt *s);
-static void coroFrameLay(Checker *c, FuncDef *f);   /* the coroutine frame, defined below */
+static void coroFrameLay(Checker *c, FuncDef *f);
+static void coroCheckDeferred(Checker *c, Module *m);
+
+typedef struct {
+    const char *cname;
+    Expr       *init;
+    int         line;
+} CoroDeferred;
 
 static bool hasNewInStmt(void *ctx, Stmt *s);
 /* Does this expression contain `new`, or `alloc<T>(n)` (which is the same thing)?
@@ -5397,6 +5404,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * the instances themselves. The rule and the iteration are `closeReach`; only the list of
      * functions a round visits is spelled here. */
     closeReach(&closeCtx, REACH_POOL, roundMakesPool);
+    coroCheckDeferred(&c, m);
     /* 顺手把"这个结构体的某个方法建池"记到结构体上（见 StructDef.makesPoolAny）。 */
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -5636,8 +5644,30 @@ static bool stmtCallsAllocator(Checker *c, Stmt *s) {
  * would let a `yield` sit inside a reclaimed block (rule 3, docs/topics/CONCURRENCY.md 12), so it
  * asks the two predicates it already has. Codegen's own decision is finer, and finer is safe here.
  */
-bool stmtNeedsPlaceBoundary(Stmt *s) {
-    return s && (stmtHasNew(s) || stmtMakesPool(s, true));
+static void coroCheckDeferred(Checker *c, Module *m) {
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!cf || !cf->isCoro || cf->tmpl) continue;
+        cf->coroNeedsZone = cf->makesPool;
+    }
+    for (size_t i = 0; i < c->coroDeferred.len; i++) {
+        CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);
+        if (d->init && exprMakesPool(d->init, true)) continue;
+        ckError(c, d->line,
+                "A local that lives across a `yield` may not point at someone else's storage: the C"
+                " stack of this call is gone when the coroutine yields, and a block's arena goes with"
+                " the block. Two fixes: allocate it yourself so it lands in the task's own place (a"
+                " pooled container does that), or keep the offset and take the view again after the"
+                " resume (docs/topics/CONCURRENCY.md 4.4)",
+                "`%s` lives across a `yield` and carries a reference", d->cname);
+    }
+    c->coroDeferred.len = 0;
+}
+
+bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro) {
+    if (!s) return false;
+    if (inCoro) return stmtHasNew(s);
+    return stmtHasNew(s) || stmtMakesPool(s, true);
 }
 
 /* ---- the frame of a coroutine (docs/topics/CONCURRENCY.md 4.4) -------------------------------
@@ -5672,6 +5702,7 @@ typedef struct {
 typedef struct {
     const char *cname;
     Type       *type;
+    Expr       *init;
     int         index;
 } CoroDecl;
 typedef struct {
@@ -5734,6 +5765,7 @@ static bool coroScanStmt(void *ctx, Stmt *s) {
         CoroDecl *d = (CoroDecl *)vecPush(&sc->decls);   /* by value */
         d->cname = s->u.var.cname;
         d->type = s->type;
+        d->init = s->u.var.init;
         d->index = sc->index++;
     } else if (s->kind == ST_YIELD) {
         CoroYield *y = (CoroYield *)vecPush(&sc->yields);
@@ -5798,6 +5830,16 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
         }
         if (!live) continue;                        /* stays an ordinary C local ✓ */
         if (typeContainsRef(c->tt, d->type)) {
+            /* Safe or not depends on who owns the storage, which the pool fixpoint only settles
+             * later; the decision is made in `coroCheckDeferred`. **No `continue`**: the local still
+             * belongs in the frame (a resume jumps past its declaration). */
+            if (!c->coroDeferred.arena)
+                vecInit(&c->coroDeferred, c->arena, sizeof(CoroDeferred *));
+            CoroDeferred *dl = arenaAllocZero(c->arena, sizeof *dl);
+            dl->cname = d->cname; dl->init = d->init; dl->line = line;
+            *(CoroDeferred **)vecPush(&c->coroDeferred) = dl;
+        }
+        if (0 && typeContainsRef(c->tt, d->type)) {
             ckError(c, line,
                     "A local that lives across a `yield` may not carry a reference: its storage is"
                     " gone when the coroutine resumes (the C stack of this call is, and a block's"

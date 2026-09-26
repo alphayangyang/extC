@@ -177,6 +177,7 @@ typedef struct {
     const FuncDef *coroFunc;
     const char    *coroFrame;       /* the frame parameter's C name: `f` */
     int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
+    int            coroSeq;         /* names the temporaries a spawn needs (one per spawn) */
     /* Coroutine frames and step functions go here and are appended **last**, after the passes that
      * rewrite the unit by byte offset (same reason as `vtDefs` below): those passes match names, and
      * a coroutine's `counter` matches inside its own `counter$step`. Nothing calls a step function
@@ -1706,9 +1707,14 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
-        if (f->coroProto == 1)
-            return arenaPrintf(g->arena, "%s$step(%s%s)", cFuncName(g, f->owner->coroOf),
-                               viaRef ? "" : "&", rc);
+        if (f->coroProto == 1) {
+            /* With a task place the step is driven through the driver (it owns the place); without
+             * one there is nothing to set up, so the step itself is the driver. */
+            FuncDef *cf = f->owner->coroOf;
+            return cf->coroNeedsZone
+                       ? arenaPrintf(g->arena, "%s$next(%s%s)", cFuncName(g, cf), viaRef ? "" : "&", rc)
+                       : arenaPrintf(g->arena, "%s$step(%s%s)", cFuncName(g, cf), viaRef ? "" : "&", rc);
+        }
         return arenaPrintf(g->arena, "%s%sret", rc, viaRef ? "->" : ".");
     }
     if (!f) return "0";
@@ -2731,6 +2737,10 @@ static const char *zoneArgRef(CG *g, Expr *e) {
         fprintf(stderr, "[zonearg] %s node=%p lvl=%d mark1=%d mark2=%d blk=%d\n",
                 g->curFuncName ? g->curFuncName : "-", (void *)e, e ? e->zoneLevel : 0,
                 (int)g->zoneMark[1], (int)g->zoneMark[2], g->blkLevel);
+    /* Inside a coroutine's step the place is **read from the frame**: rule 1 of the design says a
+     * resume must not re-derive it from the environment, and a step has nothing to re-derive it from
+     * anyway -- no hidden parameters, no zone mark of its own (docs/topics/CONCURRENCY.md 4.4). */
+    if (g->coroFunc) return "f->zone";
     if (e && e->zoneLevel != 0) {
         if (e->zoneLevel == ZONE_HOME && g->funcHasZoneParam) return "__extc_home_zone";
         if (e->zoneLevel == 1 && g->zoneFrameMarked) return "__extc_zm1";
@@ -3208,9 +3218,21 @@ static void genStmtInner(CG *g, Stmt *s) {
                 s->u.var.init->func && s->u.var.init->func->isCoro) {
                 FuncDef *cf = s->u.var.init->func;
                 const char *fr = cType(g, s->type);      /* the synthesized frame type */
+                /* The **task's own place**: entered here (lazily, at the spawn), stored in the frame,
+                 * and left again so the caller keeps its own place current. Everything the coroutine
+                 * creates goes in there and outlives every suspension; the task's end releases it in
+                 * one go (see the `$next` driver in `genCoroDecls`). */
+                const bool hasZone = cf->coroNeedsZone;
+                const int  sq = g->coroSeq++;
+                if (hasZone) {
+                    flushPrefix(g);
+                    cgLine(g, "int64_t __extc_czsv%d = extc_zoneTop;", sq);
+                    cgLine(g, "int64_t __extc_czm%d = extc_pool_zoneEnter();", sq);
+                }
                 Buf init;
                 bufInit(&init, g->arena);
                 bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, s->u.var.cname, fr);
+                if (hasZone) bufPrintf(&init, ", .zone = __extc_czm%d", sq);
                 for (size_t i = 0; i < cf->params.len; i++) {
                     Param *p = *(Param **)vecAt(&cf->params, i);
                     Expr *a = i < s->u.var.init->u.call.args.len
@@ -3220,6 +3242,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 bufPrintf(&init, " };");
                 flushPrefix(g);
                 cgLine(g, "%s", bufCstr(&init));
+                if (hasZone) cgLine(g, "extc_zoneTop = __extc_czsv%d;", sq);
                 return;
             }
             /* A frame field is not declared here: the frame struct holds it, and the assignment is
@@ -3731,71 +3754,43 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * Params:
  *   f - the function to emit
  */
-/* Emit a coroutine as a **frame struct plus a step function** (docs/topics/CONCURRENCY.md 4.4).
- *
- * The frame is a plain value: `pc`, the return slot, and the checker's `coroFrame` list -- the
- * parameters plus the locals that live across a `yield`, all by value. `step` is a state machine:
- * the body is wrapped in `switch (f->pc)`, every `yield` stores the pc and returns, and the `case`
- * label right after that `return` is where a resume jumps back in (Duff's-device shape, legal C11).
- *
- * Driving it (`next`/`value`, and therefore `for x in coro`) is slice B2: it needs the
- * `coroutine<T>` representation. What is emitted here is valid C on its own, so the transformation
- * is driven from a small C harness in `tests/coro` and compared against the hand-written state
- * machine -- the differential judge the design asks for.
- */
-/* The frame of one coroutine: a plain struct value, `pc` + return slot + (when the body can create
- * a pool) the zone id, then the checker's `coroFrame` fields -- the parameters and the locals that
- * live across a `yield`, all by value. Emitted **before** the bodies (a spawn in a function uses the
- * type), while the step function's definition goes last (see `CG.coroDefs`). */
-
-/* Every coroutine in the module declares its frame and its step **before** the bodies: a spawn
- * needs the complete type, and `next`/`value` call the step (whose definition is appended last). */
+/* Every coroutine in the module declares its step **before** the bodies: a body may drive one, and
+ * `main` is emitted before the other bodies. The frame itself comes from the type channel (it is a
+ * unit), and the step's definition comes from `genFunc` like any other function -- which is what
+ * registers the generic instances its body calls (docs/topics/CONCURRENCY.md 4.4, slice C). */
 static void genCoroDecls(CG *g, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */
-        /* The frame is emitted by the type channel (it is a unit now); here only the prototypes, so
-         * that anything above can call the step and the driver. */
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);",
                cFuncName(g, f), cFuncName(g, f));
+        /* The **task driver**, defined here (before every body that may drive it): the place is read
+         * from the frame -- never re-derived at a resume (rule 1) -- made current for the step, and
+         * restored afterwards so the caller's place is untouched. When the step reports "done", the
+         * task's whole place goes in one release: the author's B decision for slice C. */
+        if (f->coroNeedsZone) {
+            cgLine(g, "static bool %s$next(struct %s$frame *f) {", cFuncName(g, f), cFuncName(g, f));
+            cgLine(g, "    int64_t __sv = extc_zoneTop;");
+            cgLine(g, "    extc_zoneTop = f->zone;");
+            cgLine(g, "    bool __r = %s$step(f);", cFuncName(g, f));
+            cgLine(g, "    extc_zoneTop = __sv;");
+            cgLine(g, "    if (!__r) extc_pool_zoneLeaveTo(f->zone);");
+            cgLine(g, "    return __r;");
+            cgLine(g, "}");
+        }
     }
 }
 
-static void genCoroFunc(CG *g, FuncDef *f) {
-    const char *step = arenaPrintf(g->arena, "%s$step", cFuncName(g, f));
-    const char *fr   = arenaPrintf(g->arena, "%s$frame", cFuncName(g, f));
-    Buf *saved = g->out;                 /* the trailing buffer: see `CG.coroDefs` */
-    g->out = &g->coroDefs;
-    cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
-           f->name ? f->name : "?");
-    /* The frame is declared before the bodies (`genCoroDecls`); this is the definition half. */
-    /* `EXTC_UNUSED`: a program may spawn a coroutine and never drive it, and `-Wall -Werror` stays
-     * clean either way. */
-    cgLine(g, "EXTC_UNUSED static bool %s(struct %s *f) {", step, fr);
-    cgLine(g, "    switch (f->pc) {");
-    cgLine(g, "    case 0: ;");
-    g->indent++;
-    g->coroFunc     = f;
-    g->coroFrame    = "f";
-    g->coroYieldSeq = 0;
-    for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
-        genStmt(g, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
-    /* Falling off the end finishes the coroutine: a pc nothing can jump back to (`yields + 1`). */
-    cgLine(g, "f->pc = %d;", g->coroYieldSeq + 1);
-    cgLine(g, "return false;");
-    g->indent--;
-    cgLine(g, "    }");
-    /* The switch covers every pc that exists; this keeps the C compiler happy (and `-Werror`
-     * quiet) about a value that cannot happen. */
-    cgLine(g, "return false;");
-    cgLine(g, "}");
-    g->coroFunc  = NULL;
-    g->coroFrame = NULL;
-    g->out = saved;
-}
-
 static void genFunc(CG *g, FuncDef *f) {
-    if (f->isCoro) { genCoroFunc(g, f); return; }     /* slice B1: frame + step */
+    /* A coroutine's step is generated **through this flow** (docs/topics/CONCURRENCY.md 4.4, slice C):
+     * emitting a body is what registers the generic instances it calls, and a definition produced
+     * outside this flow called helpers nothing ever emitted. Only two places differ -- the signature
+     * below and the ending at the epilogue. */
+    if (f->isCoro) {
+        g->coroFunc     = f;
+        g->coroFrame    = "f";
+        g->coroYieldSeq = 0;
+    }
     bool isMain = cgIsMain(f);
     /* `main(args)`: the one parameter the language may declare is not a C
      * parameter (C fixes the entry signature), so `argc`/`argv` come in and the
@@ -3805,6 +3800,14 @@ static void genFunc(CG *g, FuncDef *f) {
         /* C fixes the signature of `main`, so it takes no hidden parameter; its
          * home arena is one of its own block arenas. */
         cgLine(g, "int main(%s) {", mainArgs ? "int argc, char **argv" : "void");
+    } else if (g->coroFunc) {
+        /* The step's signature: it takes **the frame**, not the coroutine's source parameters -- a
+         * resume has no arguments to pass them again. `switch (f->pc)` is Duff's device: every `yield`
+         * stores the pc and returns, and the `case` label right after it is where a resume jumps in. */
+        cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f) {",
+               cFuncName(g, (FuncDef *)g->coroFunc), cFuncName(g, (FuncDef *)g->coroFunc));
+        cgLine(g, "    switch (f->pc) {");
+        cgLine(g, "    case 0: ;");
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
@@ -3854,6 +3857,10 @@ static void genFunc(CG *g, FuncDef *f) {
      * nothing. An @overwrite variable in `main` is exactly that case, and
      * missing it left `__extc_a` undeclared. */
     g->noArena = !f->mayUseArena && !(owNow.len > 0 || owcNow.len > 0);
+    /* A step owns no arena array: it is not a place, and what it allocates belongs to the task's own
+     * place (docs/topics/CONCURRENCY.md 4.4, slice C). Emitting one also made it unused, which
+     * `-Wall -Werror` rejects. */
+    if (g->coroFunc) g->noArena = true;
     /* `main(args)` builds the view of `argv` in `&__extc_a[1]`, so the arena
      * array is needed even when the body allocates nothing. A program that only
      * prints its arguments is exactly that case. */
@@ -3903,7 +3910,9 @@ static void genFunc(CG *g, FuncDef *f) {
         fprintf(stderr, "[zonehook] %s zoneHere=%d noArena=%d makesPool=%d needPool=%d isMain=%d\n",
                 f->name ? f->name : "-", (int)g->zoneHere, (int)g->noArena,
                 (int)f->makesPool, (int)g->needPool, (int)isMain);
-    if (g->zoneHere && !g->noArena && f->makesPool) {
+    /* A step is not a place of its own: the task's place (slice C) is what its storage hangs off, so
+     * it must not open a zone of its own here -- that mark also went unused in the generated C. */
+    if (g->zoneHere && !g->noArena && f->makesPool && !g->coroFunc) {
         cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* 函数体是一个地方 */");
         g->zoneMark[1] = true;
         g->zoneFrameMarked = true;
@@ -4009,6 +4018,28 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "extc_rec_enter(\"%s\", %d);", g->path, f->line);
     size_t mb = g->out->len;
     genBlockBody(g, f->body);
+    if (g->coroFunc) {
+        /* The step's ending, **after** the body: falling off it finishes the coroutine. The pc gets a
+         * value no `case` matches, so a further resume falls through to the closing `return false;`.
+         * The switch and the function close here; the epilogue below belongs to a normal function. */
+        cgLine(g, "f->pc = %d;", g->coroYieldSeq + 1);
+        cgLine(g, "return false;");
+        cgLine(g, "    }");
+        cgLine(g, "return false;");
+        g->curFuncName = savedFuncName;
+        g->retType = savedRet;
+        g->inMain  = false;
+        g->tmpSeq = savedSeq;
+        g->noArena = savedNoArena;
+        g->owSites = savedOw;
+        g->owCalls = savedOwCalls;
+        g->owLocal = savedOwLocal;
+        g->coroFunc  = NULL;
+        g->coroFrame = NULL;
+        g->indent--;
+        cgLine(g, "}");
+        return;
+    }
     if (isMain) {
         g->mainFuncName = g->curFuncName;      /* the text is taken once the buffer is complete */
         g->mainOff = mb;

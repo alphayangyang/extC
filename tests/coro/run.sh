@@ -9,6 +9,31 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 切片 C 验收项：**体顶层建池（vector）、跨挂起点继续用** ✓ —— 池的 plate 生在任务自己的 place 里，
+# 活过每一次挂起；任务跑完一次性回收。三件事都要成立：接受 ✓ 跑对（0+1+2+3=6）✓ ASan 干净 ✓
+cpo=$tmp/coro_pool
+if "$EXTC" -w --no-line-map -o "$cpo.c" tests/coro/coro_pool.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$cpo" "$cpo.c" 2>"$tmp/cpec"; then
+    out=$("$cpo"); rc=$?
+    if [ "$rc" = 6 ] && [ -z "$out" ]; then
+        if gcc -std=c11 -fwrapv -g -fsanitize=address -o "$cpo.asan" "$cpo.c" 2>/dev/null; then
+            aout=$("$cpo.asan" 2>&1); arc=$?
+            if [ "$arc" = 6 ] && [ -z "$aout" ]; then
+                echo "  ok   coro_pool          ->  体顶层建池跨挂起点：跑出 6，ASan 干净"
+                pass=$((pass+1))
+            else
+                echo "  FAIL coro_pool          ->  ASan：退出码 $arc [$aout]"; fail=$((fail+1))
+            fi
+        else
+            echo "  FAIL coro_pool          ->  ASan 编译失败"; fail=$((fail+1))
+        fi
+    else
+        echo "  FAIL coro_pool          ->  输出 [$out] 退出码 $rc"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_pool          ->  $(head -2 "$tmp/cpec" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 切片 B2a：spawn + 驱动（`while c.next() { c.value() }`）**端到端跑起来** ✓
 b2=$tmp/coro_drive
 if "$EXTC" -w --no-line-map -o "$b2.c" tests/coro/coro_drive.extc >/dev/null 2>&1 \

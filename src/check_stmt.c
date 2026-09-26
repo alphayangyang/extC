@@ -201,7 +201,7 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     if (block->forDesugar) forRetargetToIterator(c, block);
     /* A block that reclaims its own storage is a place boundary: nothing may be suspended inside
      * it (rule 3). `placeBoundaryDepth` is what the `ST_YIELD` case asks about. */
-    const bool boundary = stmtNeedsPlaceBoundary(block);
+    const bool boundary = stmtNeedsPlaceBoundary(block, c->curFunc && c->curFunc->isCoro);
     if (boundary) c->placeBoundaryDepth++;
 
     pushScope(c);

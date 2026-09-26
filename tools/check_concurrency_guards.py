@@ -46,8 +46,12 @@ CORPUS = [
 ]
 
 ZONE_PARAM = "int64_t __extc_home_zone"
-# J1 允许的实参形状：转发 / 本帧记号 / 整数字面量
-ALLOWED_ZONE_ARG = re.compile(r"^(__extc_home_zone|__extc_zm\d+|-?\d+)$")
+# J1 允许的实参形状：转发 / 本帧记号 / 整数字面量 / **帧字段**（`f->zone`）。
+# 最后一种正是规则 1 在任务体内要求的形状：恢复点**只读字段**，不重新推导 ——
+# 就是上面那条兜底注释里写的"spawn 落地时收紧成必须来自帧字段"。
+ALLOWED_ZONE_ARG = re.compile(r"^(__extc_home_zone|__extc_zm\d+|-?\d+|[A-Za-z_]\w*->zone)$")
+# 帧字段只许出现在**协程单元**里（文件里有 `$step`）：别处的 zone 实参该是转发或本帧记号。
+FRAME_ZONE_ARG = re.compile(r"^[A-Za-z_]\w*->zone$")
 
 # **有理由的兜底**：`codegen.c:2663-2690` 里那条"当前 zone 顶减一"，
 # 只对没有 zone 上下文的函数（`noArena`）发射。单栈下它是良定义的（动态链上的当前顶），
@@ -180,10 +184,19 @@ def check_generated(path: pathlib.Path, stats_fallback):
         if last == FALLBACK:
             stats_fallback[0] += 1
             continue
+        if FRAME_ZONE_ARG.match(last):
+            # The task's own place, read from the frame: legal inside a coroutine's step, and only
+            # there -- a unit without a `$step` has no frame to read it from.
+            if "$step" not in code:
+                line = code[:m.start()].count("\n") + 1
+                bad.append(f"J1 {path.name}:{line} {name}(...) 的 zone 实参是帧字段 `{last[:50]}`"
+                           f" —— 帧字段只许出现在协程单元里（那里才有 $step）")
+            continue
         if not ALLOWED_ZONE_ARG.match(last):
             line = code[:m.start()].count("\n") + 1
             bad.append(f"J1 {path.name}:{line} {name}(...) 的 zone 实参是 `{last[:50]}`"
-                       f" —— 只允许转发 `__extc_home_zone` / 本帧记号 `__extc_zm<k>` / 整数字面量")
+                       f" —— 只允许转发 `__extc_home_zone` / 本帧记号 `__extc_zm<k>` / 整数字面量"
+                       f" / 任务体内的帧字段 `<f>->zone`")
 
     # J2a: `extc_arena_release(&__extc_a[k])` must stay inside the declared array.
     released = set()
@@ -207,6 +220,17 @@ def check_generated(path: pathlib.Path, stats_fallback):
             bad.append(f"J2 {path.name}:{line} 用了 __extc_zm{m.group(1)}，但这段代码里没有它的"
                        f" `= extc_pool_zoneEnter()` 定义")
             break
+    # J1 收紧（切片 C 落地后才有意义）：**任务体**里不许出现环境 zone。
+    # `$step` 是任务体，恢复点的地方只能从帧字段读；`$next`（驱动器）不在这个范围内 ——
+    # 它本来就该在这里读写环境并把帧里的地方设为当前。
+    for m in re.finditer(r"\nEXTC_UNUSED static bool \w+\$step\([^)]*\)\s*\{", code):
+        end = code.find("\n}\n", m.end())
+        body = code[m.end():end if end != -1 else len(code)]
+        for env in ("extc_zoneTop", "__extc_home_zone"):
+            if env in body:
+                line = code[:m.start()].count("\n") + 1
+                bad.append(f"J1 {path.name}:{line} `$step` 里出现了 `{env}` —— "
+                           f"任务体的地方必须从帧字段读（规则 1）")
     return bad, {"zone_fns": len(zone_fns), "calls": calls, "arena_levels": sorted(released)}
 
 
