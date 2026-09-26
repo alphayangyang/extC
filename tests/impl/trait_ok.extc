@@ -1,0 +1,23 @@
+// trait 第一期：声明 + 两个 `impl … for` + 直接调用（静态分发，零间接）
+// expect: box=7|pt=11|via=7
+use std::io
+
+trait Tag {
+    fn tag(self: ref Self) -> i64
+}
+
+struct box { v: i64 }
+struct point2 { x: i64  y: i64 }
+
+impl Tag for box    { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for point2 { fn tag(self: ref point2) -> i64 { return self.x + self.y } }
+
+/* 泛型函数按具体类型调用（第一期不做 `T: Trait` 上界）*/
+fn tagOf(v: box) -> i64 { return v.tag() }
+
+fn main() -> i32 {
+    let b = box { v: i64(7) }
+    let p = point2 { x: i64(4), y: i64(7) }
+    io::cout << "box=" << b.tag() << "|pt=" << p.tag() << "|via=" << tagOf(b) << "\n"
+    return 0
+}

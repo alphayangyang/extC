@@ -1,0 +1,7 @@
+// 反例③：同一 (trait, 类型) 实现两次
+// expect: is already implemented for `box`
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v + i64(1) } }
+fn main() -> i32 { return 0 }

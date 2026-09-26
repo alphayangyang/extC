@@ -171,6 +171,8 @@ static FuncDef   *parseFunc(Parser *p);
 static bool       parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate);
 static TypeDef   *parseTypeDecl(Parser *p);
 static ImplDef   *parseImpl(Parser *p);
+static TraitDef  *parseTrait(Parser *p);
+static bool       parseDottedName(Parser *p, Buf *out, const char *what);
 
 static bool   startsUpper(const char *s);
 static Token *expectTypeName(Parser *p, const char *what);
@@ -532,6 +534,19 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             ImplDef *im = parseImpl(&p);
             if (!im) return false;
             *(ImplDef **)vecPush(&out->impls) = im;
+        } else if (at(&p, "trait")) {
+            /* No annotation applies: like an `impl` block, a trait declares behaviour only. */
+            if (isPrivate || fnInline || noCopy || sharesStorage || poolObject) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "A `trait` declares method signatures only: it has no storage to hide"
+                         " and nothing to copy.",
+                         "no annotation applies to a `trait` declaration");
+                return false;
+            }
+            TraitDef *tr = parseTrait(&p);
+            if (!tr) return false;
+            *(TraitDef **)vecPush(&out->traits) = tr;
         } else if (at(&p, "type")) {
             if (noCopy) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
@@ -703,6 +718,104 @@ static StructDef *parseStruct(Parser *p) {
  * Returns:
  *   The new ImplDef, or NULL after reporting an error.
  */
+/* Parse a possibly-qualified name into `out`: `point`, `i64`, `io::istream`.
+ *
+ * One helper for both names an `impl` block may carry (`impl Type`, `impl Trait for Type`),
+ * because they follow exactly the same rules: qualified names resolve through the unit's
+ * imports, and whether the name denotes anything at all is a question for the checker, which
+ * owns the type table.
+ *
+ * Params:
+ *   p    - parser
+ *   out  - buffer the name is appended to
+ *   what - how to name it in a diagnostic, e.g. "a type name after `for`"
+ *
+ * Returns:
+ *   False after reporting an error.
+ */
+static bool parseDottedName(Parser *p, Buf *out, const char *what) {
+    if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col, NULL, "expected %s, found `%s`", what, shown(t));
+        return false;
+    }
+    bufPuts(out, take(p)->text);
+    while (at(p, "::")) {
+        take(p);
+        if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
+            Token *t = cur(p);
+            ctxError(p->ctx, t->line, t->col, NULL,
+                     "expected a name after `::`, found `%s`", shown(t));
+            return false;
+        }
+        bufPuts(out, "::");
+        bufPuts(out, take(p)->text);
+    }
+    return true;
+}
+
+/* Parse a `trait Name { fn ... }` declaration.
+ *
+ * The methods are **signatures only**, and the parser already has the switch for that: setting
+ * `p->noBody` around `parseFunc` is exactly how `extern!` declares a function without a body,
+ * so a trait method needs no second parsing path.
+ *
+ * Nothing here resolves types. A signature mentioning `Self` is stored as written; `Self` only
+ * means something once an `impl` supplies the implementing type (see `TraitDef` in ast.h).
+ *
+ * Params:
+ *   p - parser, positioned at `trait`
+ *
+ * Returns:
+ *   The new TraitDef, or NULL after reporting an error.
+ */
+static TraitDef *parseTrait(Parser *p) {
+    Token *kw = take(p);                        /* trait */
+    /* Deliberately not `expectTypeName`: type names are camelCase, and a leading capital is
+     * reserved for type parameters. A trait name is a **third** kind of name, so taking it as
+     * written is what keeps the three namespaces from colliding. */
+    if (cur(p)->kind != TK_IDENT) {
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col, NULL,
+                 "expected a trait name after `trait`, found `%s`", shown(t));
+        return NULL;
+    }
+    Token *name = take(p);
+    if (!startsUpper(name->text)) {
+        ctxError(p->ctx, name->line, name->col,
+                 "Trait names start with a capital letter, which is what keeps them from ever"
+                 " colliding with a type name (camelCase) or a type parameter.",
+                 "trait name `%s` must start with a capital letter", name->text);
+        return NULL;
+    }
+    TraitDef *tr = (TraitDef *)arenaAllocZero(p->arena, sizeof(TraitDef));
+    tr->name = name->text;
+    tr->line = kw->line;
+    vecInit(&tr->methods, p->arena, sizeof(void *));
+    if (!expect(p, "{", NULL)) return NULL;
+    skipJunk(p);
+    while (!at(p, "}")) {
+        if (!at(p, "fn")) {
+            Token *t = cur(p);
+            ctxError(p->ctx, t->line, t->col,
+                     "A trait declares behaviour, never storage or visibility: the implementing"
+                     " type owns its fields, and `@private`/`@inline` belong where there is an"
+                     " implementation.",
+                     "expected `fn` in the `trait` body, found `%s`", shown(t));
+            return NULL;
+        }
+        bool saved = p->noBody;
+        p->noBody = true;                       /* the `extern!` switch: signature only */
+        FuncDef *m = parseFunc(p);
+        p->noBody = saved;
+        if (!m) return NULL;
+        *(FuncDef **)vecPush(&tr->methods) = m;
+        skipJunk(p);
+    }
+    if (!expect(p, "}", NULL)) return NULL;
+    return tr;
+}
+
 static ImplDef *parseImpl(Parser *p) {
     Token *kw = take(p);                    /* impl */
     /* Any name, and possibly a **qualified** one (`impl io::istream { ... }`), because an impl
@@ -713,31 +826,23 @@ static ImplDef *parseImpl(Parser *p) {
      *     (`stl::string`), so `expectTypeName` would be wrong for them.
      * Whether the name denotes a type at all is a question for the checker, which owns the type
      * table (and resolves the qualified form). */
-    if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
-        Token *t = cur(p);
-        ctxError(p->ctx, t->line, t->col, NULL,
-                 "expected a type name after `impl`, found `%s`", shown(t));
-        return NULL;
-    }
     Buf target;
     bufInit(&target, p->arena);
-    bufPuts(&target, take(p)->text);
-    while (at(p, "::")) {
-        take(p);
-        if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
-            Token *t = cur(p);
-            ctxError(p->ctx, t->line, t->col, NULL,
-                     "expected a name after `::`, found `%s`", shown(t));
-            return NULL;
-        }
-        bufPuts(&target, "::");
-        bufPuts(&target, take(p)->text);
-    }
-    Token *name = NULL;
-    (void)name;
+    if (!parseDottedName(p, &target, "a type name after `impl`")) return NULL;
 
     ImplDef *im = (ImplDef *)arenaAllocZero(p->arena, sizeof(ImplDef));
     im->typeName = bufCstr(&target);
+    /* `impl Trait for Type`: the name after `impl` is the **trait**, and the type follows
+     * `for`. `typeName` always ends up being the type the methods attach to -- the only name
+     * the rest of the pipeline needs -- while `traitName` is what the conformance check reads. */
+    if (at(p, "for")) {
+        take(p);
+        Buf ty;
+        bufInit(&ty, p->arena);
+        if (!parseDottedName(p, &ty, "a type name after `for`")) return NULL;
+        im->traitName = im->typeName;
+        im->typeName  = bufCstr(&ty);
+    }
     im->line = kw->line;
     vecInit(&im->methods, p->arena, sizeof(void *));
 

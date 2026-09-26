@@ -1,0 +1,9 @@
+// 反例②：实现不齐（trait 声明了两个，只给了一个）
+// expect: is missing `tag`
+trait Both {
+    fn tag(self: ref Self) -> i64
+    fn other(self: ref Self) -> i64
+}
+struct box { v: i64 }
+impl Both for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 { return 0 }

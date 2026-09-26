@@ -4329,6 +4329,50 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
         if (dbgOn("EXTC_DBG_IMPL"))
             fprintf(stderr, "[impl]   target `%s` with %zu method(s)\n", im->typeName, im->methods.len);
+        /* `impl Trait for Type` asks three questions, and all three are about the **pair**, which
+         * is why they are answered here -- at the attachment point, where the type's one method
+         * set is decided -- rather than in a pass of their own. */
+        if (im->traitName) {
+            TraitDef *tr = NULL;
+            for (size_t k = 0; k < m->traits.len; k++) {
+                TraitDef *cand = *(TraitDef **)vecAt(&m->traits, k);
+                if (cand->name && strcmp(cand->name, im->traitName) == 0) { tr = cand; break; }
+            }
+            if (!tr) {
+                ctxError(ctx, im->line, 1,
+                         "A trait is declared with `trait Name { ... }`, and an `impl` block must"
+                         " name one that exists.",
+                         "`impl` on unknown trait `%s`", im->traitName);
+                continue;
+            }
+            /* One implementation per (trait, type): the method set of a type is flat, so a second
+             * implementation could only be a silent redefinition. */
+            bool dup = false;
+            for (size_t k = 0; k < i && !dup; k++) {
+                ImplDef *prev = *(ImplDef **)vecAt(&m->impls, k);
+                dup = prev->traitName && strcmp(prev->traitName, im->traitName) == 0 &&
+                      strcmp(prev->typeName, im->typeName) == 0;
+                if (dup)
+                    ctxError(ctx, im->line, 1,
+                             "A type has one implementation of a trait. Two behaviours means two"
+                             " traits.",
+                             "`%s` is already implemented for `%s` (first at line %d)",
+                             im->traitName, im->typeName, prev->line);
+            }
+            /* Completeness. Whether the signatures agree is a question for the types, and is
+             * answered once those are resolved; this half asks whether the names are there. */
+            for (size_t k = 0; k < tr->methods.len; k++) {
+                FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
+                bool found = false;
+                for (size_t j = 0; j < im->methods.len && !found; j++)
+                    found = strcmp((*(FuncDef **)vecAt(&im->methods, j))->name, want->name) == 0;
+                if (!found)
+                    ctxError(ctx, im->line, 1,
+                             "An implementation supplies every method the trait declares.",
+                             "`impl %s for %s` is missing `%s`",
+                             im->traitName, im->typeName, want->name);
+            }
+        }
         /* Resolve the target the way a type annotation is resolved: `ttResolve` consults the
          * module's rename table and the bare-name aliases (`string` -> `stl$string`), counts
          * matches, and refuses an ambiguous bare name with the message every other type

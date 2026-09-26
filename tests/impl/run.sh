@@ -57,6 +57,13 @@ check_err tests/impl/errors/dup_two_impls.extc     'has duplicate method `sum`'
 check_err tests/impl/privacy_field.extc   'field `seen` of `privmod::counter` is private to module `privmod`'
 check_err tests/impl/privacy_method.extc  '`zero` is private to module `privmod`'
 check_err tests/impl/privacy_literal.extc 'field `seen` of `privmod::counter` is private to module `privmod`'
+
+# trait 第一期：声明 + `impl … for` + 直接调用（静态分发）；三条反例（未知 trait / 实现不齐 / 重复实现）
+check_pos impl_trait_ok tests/impl/trait_ok.extc
+check_err tests/impl/trait_unknown.extc '`impl` on unknown trait `Nope`'
+check_err tests/impl/trait_missing.extc 'is missing `other`'
+check_err tests/impl/trait_dup.extc     'is already implemented for `box`'
+
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
 check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'

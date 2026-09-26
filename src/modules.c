@@ -1492,6 +1492,17 @@ static void mergeUnit(Loader *L, ModUnit *u) {
      * renamed (`pair` -> `liba$pair`), so it goes through the same rename table as every other
      * name. A builtin is never renamed -- `renLookup` only answers for names this unit declares
      * itself. The attachment itself happens in the checker, where the type table exists. */
+    /* Traits travel like types: their method signatures are rewritten through this unit's
+     * table, so a qualified type name inside a signature resolves exactly as it would in a
+     * struct body. The **name** is not mangled: like every other top-level name, a trait is
+     * program-global today, and two modules declaring `trait Codec` is a duplicate (the
+     * checker reports it). */
+    for (size_t i = 0; i < src->traits.len; i++) {
+        TraitDef *tr = *(TraitDef **)vecAt(&src->traits, i);
+        for (size_t j = 0; j < tr->methods.len; j++)
+            rwUnitMethod(L, u, *(FuncDef **)vecAt(&tr->methods, j));
+        *(TraitDef **)vecPush(&L->out->traits) = tr;
+    }
     for (size_t i = 0; i < src->impls.len; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&src->impls, i);
         im->typeName = rwTypeName(L, u, im->typeName);

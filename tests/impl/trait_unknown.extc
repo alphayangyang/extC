@@ -1,0 +1,5 @@
+// 反例①：`impl` 指了一个不存在的 trait
+// expect: `impl` on unknown trait `Nope`
+struct box { v: i64 }
+impl Nope for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 { return 0 }

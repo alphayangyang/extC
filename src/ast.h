@@ -769,20 +769,43 @@ typedef struct {
  * impl block may appear before the type it extends, and so that the attachment happens in one
  * place (the effect on the type is what every later pass sees -- see `checkModule`).
  *
- * What this is NOT: a trait. There is no requirement set and no separate implementation to
- * match against; methods attached here join the type's one method set, exactly as if they had
- * been written inside its body. */
+ * Two forms, and the difference is only the `for` clause:
+ *   - `impl Type { ... }`        -- inherent methods; `traitName == NULL`
+ *   - `impl Trait for Type { ... }` -- the methods still join the type's **one method set**
+ *     (that is what makes `x.method()` work with no extra machinery), and `traitName` records
+ *     the contract the checker verifies conformance against.
+ *
+ * Traits are a separate namespace from types: a trait name starts with a capital letter while a
+ * type name is camelCase, so the two can never collide. */
 typedef struct {
-    const char *typeName;   /* the name written after `impl`, e.g. `i64` or `point` */
+    const char *typeName;   /* the type the methods attach to, e.g. `i64` or `point` */
+    const char *traitName;  /* `impl Trait for Type`: the trait, or NULL for an inherent impl */
     int         line;
     Vec         methods;    /* FuncDef*: `owner` is filled in when the block is attached */
 } ImplDef;
+
+/* A `trait` declaration: method **signatures** only -- no bodies, no storage, no runtime
+ * existence of its own.
+ *
+ * It is read by two things: the conformance check (`impl Trait for T` must supply every method
+ * with a matching signature), and codegen, which emits one static method table per
+ * (trait, type) pair in **declaration order** -- that order is the slot order, and it must
+ * never depend on insertion or hashing, or a later dynamic-link step would break silently.
+ *
+ * `Self` inside a trait body is an **implicit type parameter**: the trait is a template over
+ * the implementing type, which is why `Self` is legal there and unknown anywhere else. */
+typedef struct {
+    const char *name;
+    int         line;
+    Vec         methods;    /* FuncDef*: signatures only (`body == NULL`) */
+} TraitDef;
 
 typedef struct {
     Vec structs;                 /* StructDef* */
     Vec types;                   /* TypeDef*: the `type` enums */
     Vec funcs;                   /* FuncDef* */
     Vec globals;                 /* GlobalDef*: top-level let / var */
+    Vec traits;                  /* TraitDef*: `trait Name { ... }` declarations */
     Vec impls;                   /* ImplDef*: `impl Type { ... }` blocks, attached by the
                                   * checker (each module attaches its own; the *effect* on a
                                   * type is global, which is what enforces coherence) */
