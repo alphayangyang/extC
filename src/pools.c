@@ -61,10 +61,15 @@ void poolsEmitRuntime(Arena *a, Buf *out) {
      * 实测（`bench/stl`，去掉这两处 memset）：map 时间 −3.7% / RSS −17.7%，string −6.0% /
      * −10.8%，vector −10.9%；容量有余量时最多 −40% / −46%。
      * 副作用面由 `tests/pool` 的毒化金丝雀钉住（`-DEXTC_POISON_RAW=1`）。 */
-    bufPuts(out, "/* 与 `resize` 相同，只是新长出来那一段**不清零**（理由见 pools.c）。 */\n"
+    bufPuts(out, "/* 与 `resize` 相同，只是新长出来那一段**不清零**（理由见 pools.c）。\n * `Raw` 只表示**不清零**，不表示放弃检查：对象表模式下它同样拒绝原地搬家 ——\n * 搬家与否跟清不清零是正交的两件事（见 `extc_pool_resize` 的守卫）。 */\n"
         "void *extc_pool_resize_raw(int64_t rid, void *p, int64_t bytes) {\n"
         "    ExtcBlock **link;\n"
         "    if (rid < 0 || rid >= extc_poolCap || !extc_pools[rid].live || !p) return NULL;\n"
+        "    if (rid < extc_poolKindCap && extc_poolKind[rid] != 0) {\n"
+        "        fprintf(stderr, \"trap: this pool is an object table: a block may not be resized in place\");\n"
+        "        fprintf(stderr, \" (realloc may move it, and element handles would dangle)\\n\");\n"
+        "        extc_die(1);\n"
+        "    }\n"
         "    if (bytes <= 0) bytes = 1;\n"
         "    link = &extc_pools[rid].blocks;\n"
         "    while (*link) {\n"
