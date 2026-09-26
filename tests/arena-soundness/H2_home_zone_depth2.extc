@@ -1,0 +1,39 @@
+/* H2 —— home zone 的传递闭包**只做了一层**（2026-09-26 由协程原型挖出）
+ *
+ * 形状：字符串在 `newString()` 里构造，推入**外层 place 拥有**的容器，中间隔了**两层**函数。
+ *   main → put → newString        3 层：正确
+ *   main → wrap → put → newString 4 层：**坏**
+ *
+ * 机制（生成物证据）：`wrap` 把**自己的** zone（`extc_pool_zoneEnter()` 的返回值）传给 `put`，
+ * 并把自己的 `__extc_home_zone` 参数标成 `EXTC_UNUSED`。于是 `newString` 的缓冲分配在
+ * `wrap` 那个 place 里，`wrap` 一返回该 place 被弹出 ⇒ 缓冲被下一次分配复用 ⇒ **静默改坏**。
+ *
+ * 后果：**不 trap、ASan 也不报**（块在大缓冲里被逻辑复用，不是真的 unmap）——
+ * 所以这是"静默错值"而不是"悬垂崩溃"：`keys[0]` 从 "k" 变成 "a"。
+ *
+ * `ARENA-FORMAL.md:678` 写的是"needsHome 的**传递闭包**" ⇒ 实现比文档少一层 ⇒ 反例成立。 */
+use std::io
+use stl::string
+
+struct store { keys: varArray<string> }
+
+fn newString(s: slice<u8>) -> string {
+    var t: string = string::withCap(s.len + i64(1))
+    t.append(s)
+    return t
+}
+fn mk() -> store { return store { keys: varArray<string>::withCap(i64(8)) } }
+fn put(st: mut ref store, k: slice<u8>) { st.keys.push(newString(k)) }
+fn wrap(st: mut ref store, k: slice<u8>) { put(st, k) }      /* ← 多这一层就坏 */
+
+fn main() -> i32 {
+    var a: store = mk()
+    wrap(ref a, "k")
+    wrap(ref a, "aa")
+    let k0 = a.keys.get(i64(0))!.toSlice()
+    let k1 = a.keys.get(i64(1))!.toSlice()
+    io::cout << "keys[0]=" << k0 << " keys[1]=" << k1 << "\n"
+    if k0 == "k" { return 0 }
+    io::cout << "SILENT-WRONG: keys[0] 应为 k，实际是 " << k0 << "（未 trap）\n"
+    return 3
+}

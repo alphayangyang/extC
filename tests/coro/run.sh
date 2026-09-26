@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# 协程原型（CONCURRENCY.md §4 第 1 步）：**手工写的状态机**，零编译器改动。
+#
+# 判据：RESP 风格协议按**任意切分**喂进去，产出必须与一次喂完逐字节相同；
+# 且整段响应与黄金值一致（既判"可恢复"也判"语义对"）。
+set -u
+cd "$(dirname "$0")/../.."
+EXTC=${EXTC:-./build/extc}
+pass=0; fail=0
+tmp=$(mktemp -d)
+
+out=$("$EXTC" -w --run tests/coro/statemachine.extc 2>&1)
+# 行尾是 CRLF（协议定义如此）；文本比对时去掉 \r，另用一条断言盯住 CRLF 本身。
+got=$(printf '%s' "$out" | sed -n '/--- 一次喂完 ---/,$p' | tail -n +2 | head -9 | tr -d '\r')
+want=$(printf '+PONG\n+OK\n$5\nhello\n$-1\n+OK\n$3\nxyz\n+PONG')
+case "$out" in *$'+OK\r\n'*) crlf=1 ;; *) crlf=0 ;; esac
+
+if [ "$got" = "$want" ] && [ "$crlf" = 1 ]; then
+    echo "  ok   coro_sm_transcript  ->  响应逐行正确（PING/SET/GET/未命中/二次 SET · CRLF 也验了）"; pass=$((pass+1))
+else
+    echo "  FAIL coro_sm_transcript  ->  响应不符"; printf '%s\n' "$got" | sed 's/^/        /'; fail=$((fail+1))
+fi
+case "$out" in
+    *"切分 1..16 与一次喂完一致：true"*)
+        echo "  ok   coro_sm_chunking    ->  切分 1..16 字节与一次喂完结果逐字节相同（可恢复性）"; pass=$((pass+1)) ;;
+    *)
+        echo "  FAIL coro_sm_chunking    ->  切分不变性不成立"; fail=$((fail+1)) ;;
+esac
+# 合同：生成物必须过 -std=c11 零告警
+if "$EXTC" -w --no-line-map -o "$tmp/sm.c" tests/coro/statemachine.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/sm.c" 2>"$tmp/e"; then
+    echo "  ok   coro_sm_contract    ->  生成物合同编译零告警（-std=c11 -fwrapv -Wall -Werror）"; pass=$((pass+1))
+else
+    echo "  FAIL coro_sm_contract    ->  $(head -2 "$tmp/e" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+rm -rf "$tmp"
+echo "通过 $pass，失败 $fail"
+[ "$fail" = 0 ] || exit 1

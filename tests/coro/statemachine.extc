@@ -1,0 +1,233 @@
+/* ============================================================================
+ * 协程原型 · 第 1 步：**手工写的状态机**（零编译器改动）
+ * 目的：在写一行编译器代码之前，先用手把一个"协程"写出来，回答三件事：
+ *   ① 帧（= 一个普通 struct）放 arena 顺不顺？
+ *   ② 哪些局部变量必须搬进帧？
+ *   ③ 引用能不能跨"暂停"活着（跨 yield 的深度规则该是几）？
+ *
+ * 协议（RESP 风格，故意选会咬人的）：
+ *   PING\r\n                       → +PONG\r\n
+ *   SET <key> <len>\r\n<value>\r\n → +OK\r\n        （值体**可以跨 chunk**）
+ *   GET <key>\r\n                  → $<len>\r\n<value>\r\n 或 $-1\r\n
+ * 要求：同一段字节流按**任意切分**喂进去，产出的响应必须逐字节相同。
+ * ========================================================================== */
+use std::io
+use stl::string
+
+/* ---- 应用状态：也做成**无引用**（定长缓冲 + 偏移表）------------------------
+ * 为什么不用 `varArray<string>`：`newString()` 这种"在辅助函数里构造字符串、再推入
+ * 外层容器"的写法，今天在**跨两层以上调用**时会静默损坏（home zone 只传了一层，
+ * 见 tests/arena-soundness/ 里那条反例）⇒ 这里改成自有字节缓冲，**一个字节都不分配**，
+ * 顺带得到一条好性质：整个会话（帧 + 状态）就是一块普通内存，可以自由移动/复制。 */
+struct store {
+    n: i64
+    kn: i64
+    vn: i64
+    koff: [8]i64
+    klen: [8]i64
+    voff: [8]i64
+    vlen: [8]i64
+    kbuf: [256]u8
+    vbuf: [512]u8
+}
+
+fn storeFind(s: ref store, k: slice<u8>) -> i64 {
+    var i: i64 = i64(0)
+    while i < s.n {
+        let off = s.koff[i]
+        let len = s.klen[i]
+        if len == k.len {
+            var same: bool = true
+            var j: i64 = i64(0)
+            while j < len {
+                if s.kbuf[off + j] != k[j] { same = false }
+                j = j + i64(1)
+            }
+            if same { return i }
+        }
+        i = i + i64(1)
+    }
+    return i64(-1)
+}
+
+fn storeSet(s: mut ref store, k: slice<u8>, v: slice<u8>) {
+    let at = storeFind(s, k)
+    if at >= i64(0) {
+        s.voff[at] = s.vn
+        s.vlen[at] = v.len
+        var t: i64 = i64(0)
+        while t < v.len { s.vbuf[s.vn + t] = v[t]  t = t + i64(1) }
+        s.vn = s.vn + v.len
+        return
+    }
+    s.koff[s.n] = s.kn
+    s.klen[s.n] = k.len
+    var j: i64 = i64(0)
+    while j < k.len { s.kbuf[s.kn + j] = k[j]  j = j + i64(1) }
+    s.kn = s.kn + k.len
+    s.voff[s.n] = s.vn
+    s.vlen[s.n] = v.len
+    j = i64(0)
+    while j < v.len { s.vbuf[s.vn + j] = v[j]  j = j + i64(1) }
+    s.vn = s.vn + v.len
+    s.n = s.n + i64(1)
+}
+
+/* ---- 帧：**无引用**（F3）-----------------------------------------------------
+ * pc + 定长字节缓冲 + 长度。这样：
+ *   · 可以 `var f: frame` 零初始化（含引用的版本做不到，见 F1）；
+ *   · 跨暂停的数据全在帧**内部** ⇒ 没有任何引用跨越暂停（§9 第 4 条不会出现）；
+ *   · 帧可以被自由移动/复制（调度器要挪帧、要池化帧，都要这个性质）。 */
+struct frame {
+    pc: i64                  /* 0=读命令行 1=读值体（还差 need 字节）2=吃掉值体的 CRLF */
+    need: i64                /* 值体还差多少字节 */
+    lineLen: i64             /* 半截的行 */
+    keyLen: i64              /* SET 的键（**拷进帧**，因为 lineBuf 会被复用） */
+    valLen: i64              /* 值体累积 */
+    lineBuf: [128]u8
+    keyBuf: [32]u8
+    valBuf: [256]u8
+}
+
+/* 令牌 i 的起止（按空格 / CR 切）。纯函数，不产生引用 ⇒ 不碰深度规则。 */
+fn tokStart(buf: [128]u8, len: i64, which: i64) -> i64 {
+    var i: i64 = i64(0)
+    var idx: i64 = i64(0)
+    var start: i64 = i64(0)
+    while i <= len {
+        let sp = i == len || buf[i] == u8(32) || buf[i] == u8(13)
+        if sp {
+            if idx == which { return start }
+            idx = idx + i64(1)
+            start = i + i64(1)
+        }
+        i = i + i64(1)
+    }
+    return len
+}
+
+fn tokEnd(buf: [128]u8, len: i64, which: i64) -> i64 {
+    var i: i64 = tokStart(buf, len, which)
+    while i < len {
+        if buf[i] == u8(32) || buf[i] == u8(13) { return i }
+        i = i + i64(1)
+    }
+    return len
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = i64(0)
+    var i: i64 = i64(0)
+    while i < s.len {
+        let d = i64(s[i]) - i64(48)
+        if d < i64(0) || d > i64(9) { return i64(-1) }
+        v = v * i64(10) + d
+        i = i + i64(1)
+    }
+    return v
+}
+
+fn pushI64(out: mut ref string, v: i64) {
+    var n: i64 = v
+    if n >= i64(10) { pushI64(out, n / i64(10)) }
+    out.push(u8(i64(48) + n % i64(10)))
+}
+
+/* ---- "协程体"里 yield 之后的那段：处理一条完整的命令行 ---- */
+fn handle(f: mut ref frame, st: mut ref store, out: mut ref string) {
+    let k0 = tokStart(f.lineBuf, f.lineLen, i64(0))
+    let k1 = tokEnd(f.lineBuf, f.lineLen, i64(0))
+    let cmd = f.lineBuf[k0..k1]
+    if cmd == "PING" {
+        out.append("+PONG\r\n")
+        return
+    }
+    if cmd == "SET" {
+        let a0 = tokStart(f.lineBuf, f.lineLen, i64(1))
+        let a1 = tokEnd(f.lineBuf, f.lineLen, i64(1))
+        let n0 = tokStart(f.lineBuf, f.lineLen, i64(2))
+        let n1 = tokEnd(f.lineBuf, f.lineLen, i64(2))
+        f.keyLen = i64(0)
+        var i: i64 = a0
+        while i < a1 { f.keyBuf[f.keyLen] = f.lineBuf[i]  f.keyLen = f.keyLen + i64(1)  i = i + i64(1) }
+        f.need = parseI64(f.lineBuf[n0..n1])
+        f.valLen = i64(0)
+        f.pc = i64(1)
+        return
+    }
+    if cmd == "GET" {
+        let a0 = tokStart(f.lineBuf, f.lineLen, i64(1))
+        let a1 = tokEnd(f.lineBuf, f.lineLen, i64(1))
+        let at = storeFind(st, f.lineBuf[a0..a1])
+        if at < i64(0) { out.append("$-1\r\n")  return }
+        out.append("$")
+        pushI64(out, st.vlen[at])
+        out.append("\r\n")
+        var t: i64 = i64(0)
+        while t < st.vlen[at] { out.push(st.vbuf[st.voff[at] + t])  t = t + i64(1) }
+        out.append("\r\n")
+        return
+    }
+    out.append("-ERR unknown\r\n")
+}
+
+/* ---- 驱动器：**这就是调度器** —— 字节一个个喂，状态机随时可以停下再继续 ---- */
+fn step(f: mut ref frame, st: mut ref store, in: slice<u8>, out: mut ref string) {
+    var i: i64 = i64(0)
+    while i < in.len {
+        let b = in[i]
+        i = i + i64(1)
+        if f.pc == i64(0) {
+            if b == u8(10) {
+                handle(f, st, out)
+                f.lineLen = i64(0)
+            } else if b != u8(13) {
+                if f.lineLen < i64(128) { f.lineBuf[f.lineLen] = b  f.lineLen = f.lineLen + i64(1) }
+            }
+        } else if f.pc == i64(1) {
+            if f.valLen < i64(256) { f.valBuf[f.valLen] = b  f.valLen = f.valLen + i64(1) }
+            f.need = f.need - i64(1)
+            if f.need <= i64(0) { f.pc = i64(2) }
+        } else {
+            if b == u8(10) {
+                storeSet(st, f.keyBuf[0..f.keyLen], f.valBuf[0..f.valLen])
+                out.append("+OK\r\n")
+                f.pc = i64(0)
+            }
+        }
+    }
+}
+
+fn runFeed(input: slice<u8>, chunk: i64, out: mut ref string) {
+    var f: frame                       /* ← 无引用的帧：零初始化合法（F3） */
+    var st: store                       /* 无引用 ⇒ 零初始化（F3 同款）*/
+    var pos: i64 = i64(0)
+    while pos < input.len {
+        var end: i64 = pos + chunk
+        if chunk <= i64(0) || end > input.len { end = input.len }
+        step(ref f, ref st, input[pos..end], out)
+        pos = end
+    }
+}
+
+fn main() -> i32 {
+    let input: slice<u8> = "PING\r\nSET k 5\r\nhello\r\nGET k\r\nGET nope\r\nSET a 3\r\nxyz\r\nGET a\r\nPING\r\n"
+    var base: string = string::withCap(i64(256))
+    runFeed(input, i64(0), ref base)
+    io::cout << "--- 一次喂完 ---\n" << base.toSlice()
+
+    var chunk: i64 = i64(1)
+    var bad: i64 = i64(0)
+    while chunk <= i64(16) {
+        var got: string = string::withCap(i64(256))
+        runFeed(input, chunk, ref got)
+        if !(got.toSlice() == base.toSlice()) {
+            io::cout << "MISMATCH at chunk=" << chunk << ":\n" << got.toSlice()
+            bad = bad + i64(1)
+        }
+        chunk = chunk + i64(1)
+    }
+    io::cout << "切分 1..16 与一次喂完一致：" << (bad == i64(0)) << "\n"
+    if bad != i64(0) { return 1 }
+    return 0
+}

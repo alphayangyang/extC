@@ -14,6 +14,7 @@
 | `REJECT` | **洞已修好**（现在被编译期挡住了）✓ | 把这一条**搬到 `tests/errors/`**，从这里删掉 |
 | `CRASH` | 编译器**崩了**（不是报错）| R1 那一族：要的是**响亮的诊断** ✗ |
 | `GCC-ERR` | 生成的 C 编不过（extC 自己的 bug）| R2 那一族 ✗ |
+| `ACCEPT+WRONG` | **静默改坏**：编过、跑完、ASan 干净，但结果错（不 trap，最难查）✓ 证据成立 | 与 `ACCEPT+UAF` 同等对待 |
 | `ACCEPT+CLEAN` | 反例**不成立**了（可能被"修"成了别的形状）| **复核**：要么是修好了，要么是反例退化了 |
 
 ⇒ **`./run.sh` 永远返回 0**（不参与 `check.sh` 的通过/失败计数）——这是**证据**，不是回归判据 ✓
@@ -22,6 +23,7 @@
 
 | 族 | 机制（哪一句写错了） | 成员 |
 |---|---|---|
+| **H2** | **home zone 传递闭包只做了一层**（`ARENA-FORMAL.md:678` 要求闭包）⇒ 跨两层调用时缓冲分配在中间层的 place，返回即被复用 ⇒ **静默改坏**（2026-09-26 协程原型挖出） | `H2_home_zone_depth2.extc` |
 | **A · 藏在字面量里的调用看不见** | `exprCallsNeedsHome`（`check_top.c:273-322`）**没有 `EX_STRUCTLIT/EX_ARRAYLIT/EX_ENUMVAL/EX_GENCALL` 分支** ⇒ 传递闭包判"我没有有家被调者" ⇒ 调用点的 pending 站点永远不被改写成 `ARENA_HOME` ⇒ 被调者分配进**调用者的块 arena**，而出块就 `release` | `E_literal_hidden_home`（原 E）、`A2_literal_enum_hidden`、`A3_literal_arr_hidden`、`A4_literal_into_outerfield` |
 | **B · 字段表/整根记账被**覆盖** | `refreshRootDepth`（`check_top.c:882`）是覆盖不是 `max`；非引用型目标的赋值**完全不更新字段表**（`check_stmt.c:229-233` 只覆盖字面量初始化）；`check_escape.c:132` 整值读取只看一个数；`check_escape.c:96` 早退把 `TY_REF` 判成"没有引用" | `A_field_root_lowered`、`B_field_table_stale`、`C1_if_join_fieldcell`、`C2_if_join_refbinding`、`C3_if_join_wholevalue`、`D_elemwrite_clears_table`、`G_stale_origin` |
 | **C · 表达式语句不算逃逸** | `markNamesInStmt` 的 **`ST_EXPR → false`**（`check_top.c:777`）⇒ 经**调用**发布出去的局部不进 E ⇒ `callHomeDepth` / 方法接收者那一支把它当成"深度 1 = 调用者的帧" ⇒ `arenaArg = &本帧arena`（**被调者自己的帧！**）⇒ 调用一返回就 release | `B2_exprstmt_blindspot`、`B3_exprstmt_method` |

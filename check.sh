@@ -77,6 +77,8 @@ if out=$(timeout 600 ./tests/impl/run.sh 2>&1); then
 else bad "tests/impl/run.sh"; echo "$out"; fi
 
 echo "== dyn 阶段 1（构造即调用：派发经表、拒绝存储、生成物合同）=="
+if out=$(timeout 600 ./tests/coro/run.sh 2>&1); then ok "$(printf '%s' "$out" | grep -m1 '^通过')"
+else bad "tests/coro/run.sh"; echo "$out"; fi
 if out=$(timeout 600 ./tests/dyn/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（正例 + 拒绝存储/字段 + 派发经表 + 合同编译）"
 else bad "tests/dyn/run.sh"; echo "$out"; fi

@@ -253,6 +253,37 @@ typedef struct extc_arena { extc_ablock *top; int64_t blkSize; } extc_arena;
 | **5** | stdlib 调度器 + `epoll_wait` | 纯用户land（§2.4）|
 | **6** | `parallel` + channel | **并行是最后一件事，不是第一件** |
 
+### 4.0 第 1 步结果（2026-09-26 实测 —— 已做，结论：**可行，但撞出一个真洞**）
+
+**做了什么**：`tests/coro/statemachine.extc` —— 一个 RESP 风格协议（`PING` / `SET k n` + 长度前缀值体 / `GET k`）
+的**手工状态机**：`struct frame { pc, need, lineBuf[128], keyBuf[32], valBuf[256], … }` +
+`fn step(f, st, in, out)`，字节一个个喂。**一行编译器代码都没写。**
+判据 `tests/coro/run.sh`（已接进 `check.sh`）：① 响应逐行正确（含 CRLF）；② **切分 1..16 字节与一次喂完逐字节相同**；
+③ 生成物过 `-std=c11 -Wall -Werror`。
+
+**三个待答问题的答案**
+
+| 问题 | 答案 | 依据 |
+|---|---|---|
+| ① 帧放 arena 顺不顺 | **顺 —— 但今天最省的帧根本不需要 arena** | 帧若含 `string`（⇒ 含 `ref`），`var f: frame` **编不过**（"cannot zero-initialize … it contains a reference"），必须用结构体字面量或构造函数初始化；**无引用的帧**（`pc` + 定长缓冲 + 长度）直接 `var f: frame` ✓ |
+| ② 哪些局部变量必须搬进帧 | `pc`（走到哪）· **半截的行缓冲** · 待读长度 `need` · 键/值累积缓冲 | 实测：少了任一个，切分不变性立刻不成立 |
+| ③ 引用能不能跨暂停活着 | **在"帧内自有存储"的设计下，这个问题根本不会出现** | 帧里只放字节缓冲 + 偏移 ⇒ **没有任何引用跨越暂停** ⇒ §9 第 4 条（跨 yield 的引用深度）无需新规则 ✓ 顺带：帧可自由移动/复制（调度器挪帧、池化帧都要这个性质） |
+
+**顺带得到的两条可用结论**
+- **含引用的结构体数组今天声明不了**（`var a: [2]p` 报同一个零值错误，且没有数组字面量语法）⇒ 帧里不能放"表"，应用状态要么放帧外、要么做成无引用；
+- **模型在推着你把帧和状态都做成"无引用聚合"**：整个会话 = 一块普通内存，零分配、可整体搬运 ✓ 对协程是**好消息**（帧便宜、可池化）。
+
+**⚠️ 撞出的洞（不是协程的问题，是既有 arena 机制的缺口）**：[`tests/arena-soundness/H2_home_zone_depth2.extc`](../../tests/arena-soundness/H2_home_zone_depth2.extc)
+> **home zone 的传递闭包只做了一层。** `main → put → newString`（3 层）正确；
+> `main → wrap → put → newString`（**4 层**）就坏：`wrap` 把**自己的** zone 传给 `put`，并把自己的
+> `__extc_home_zone` 标成 `EXTC_UNUSED` ⇒ `newString` 的缓冲分配在 `wrap` 的 place 里，返回即被释放 ⇒
+> 缓冲被下一次分配复用 ⇒ **静默改坏**（`keys[0]` 从 `"k"` 变成 `"a"`）。
+> **ASan 判定 `heap-use-after-free`**（反例库按自己的语义记为 `ACCEPT+UAF` = 洞成立）。
+> 文档对照：[`ARENA-FORMAL.md`](ARENA-FORMAL.md):678 写的就是"**needsHome 的传递闭包**" ⇒ **实现比文档少一层**。
+>
+> **对协程的含义**：任何"多层辅助函数 + 往容器里塞新建的值"的写法都会中招，而**协程调度器正是这种写法**
+> （调度器 → 处理函数 → 辅助函数 → 往容器里放结果）。⇒ **修它应当排在协程第 2 步之前**。
+
 **第 1 步要挑"最像会咬人"的例子，不是最简单的**
 挑最简单的会给你**假信心**。建议挑一个真的请求-响应协议（比如 HTTP 解析的一小段），
 看无栈写起来有多别扭 —— 如果别扭到不能忍，§1 那个前提就要重新审

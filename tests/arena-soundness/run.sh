@@ -34,11 +34,15 @@ for f in [A-Z]*.extc; do
         printf '  \033[33mGCC-ERR\033[0m %-34s %s\n' "$n" "$(head -1 "$TMP/$n.gerr" | cut -c1-60)"
         fail=$((fail+1)); continue
     fi
-    out=$(timeout 20 "$TMP/$n" 2>&1 || true)
+    out=$(timeout 20 "$TMP/$n" 2>&1); rc=$?
     kind=$(printf '%s' "$out" | grep -m1 -o 'ERROR: AddressSanitizer: [a-z-]*' || true)
     if [ -n "$kind" ]; then
         freed=$(printf '%s' "$out" | grep -c 'extc_arena_release' || true)
         printf '  \033[31mACCEPT+UAF\033[0m %-34s %s（arena 回收帧出现 %s 次）\n' "$n" "$kind" "$freed"
+        fail=$((fail+1))
+    elif printf '%s' "$out" | grep -q 'SILENT-WRONG'; then
+        # 编过、跑完、ASan 干净，但结果被**静默改坏** ⇒ 同样是洞，而且更阴（没有崩溃可查）
+        printf '  \033[31mACCEPT+WRONG\033[0m %-32s 静默改坏结果（不 trap、ASan 不报，rc=%s）\n' "$n" "$rc"
         fail=$((fail+1))
     else
         printf '  \033[33mACCEPT+CLEAN\033[0m %-31s ← 反例不成立了？请复核\n' "$n"

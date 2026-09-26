@@ -920,3 +920,8 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
 - **dyn 卸载/重载：不做，但留门**（2026-09-26 作者拍板）。三条不变量已成立、两处改动点已定位，
   顺序与外部风险见 [`docs/topics/DYN.md`](topics/DYN.md) §10。**注意**：将来若动"表指针只在槽里"
   这条不变量（例如把表指针塞进句柄），就等于关上了这扇门。
+
+- **⚠️ H2（2026-09-26，协程原型挖出）：home zone 传递闭包只做了一层** —— 跨**两层**调用时，
+  "在辅助函数里构造值、再存进外层容器"会被分配在中间层的 place，返回即释放 ⇒ ASan `heap-use-after-free`，
+  运行时表现为**静默改坏**（不 trap）。反例：`tests/arena-soundness/H2_home_zone_depth2.extc`（`ACCEPT+UAF`）。
+  文档要求见 `docs/topics/ARENA-FORMAL.md:678`（"needsHome 的传递闭包"）。**优先级：高**（协程调度器正中此形状）。
