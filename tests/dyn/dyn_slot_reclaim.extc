@@ -1,0 +1,26 @@
+/* 槽回收（墓碑 + 惰性清扫 + 复用）：在**被调函数**里造 dyn 值并在同一函数里用掉 ⇒ 它不逃逸，
+ * 该 place 退出时 dyn 池被丢 ⇒ 槽可回收。循环 2000 次之后，**同时存活**的槽必须是个小常数
+ * —— 这直接回答了"只追加会不会无限增长"：界是**同时存活数**，不是累计创建数。 */
+use std::io
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+
+extern!("extc") fn extc_dyn_liveSlots() -> i64
+    effects Addr=0 Cont=0
+
+fn one() -> i64 {
+    let d: dyn Tag = dyn Tag(box { v: i64(7) })
+    return d.tag()
+}
+
+fn main() -> i32 {
+    var i: i64 = i64(0)
+    var sum: i64 = i64(0)
+    while i < i64(2000) {
+        sum = sum + one()
+        i = i + i64(1)
+    }
+    io::cout << "sum=" << sum << " live=" << extc_dyn_liveSlots() << "\n"
+    return 0
+}
