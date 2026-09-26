@@ -9,6 +9,19 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
+# 迭代器协议原型（CONCURRENCY.md §4 第 2 步）：用户类型 + 三个方法（iter/next/value），
+# 用**显式 while** 驱动 —— 先证明这个形状在今天的语言里写得出来、跑得对，
+# 再谈让 `for x in c` 脱糖成它（今天 `for` 只走切片：`cannot slice a value of type ...`）。
+ip=$("$EXTC" -w --run tests/coro/iterator_protocol.extc 2>&1)
+want_it=$(printf 'sum=15 shown=5\nempty=0\nsteps=4')
+if [ "$ip" = "$want_it" ]; then
+    echo "  ok   iterator_protocol   ->  手写协议原型（iter/next/value + 显式 while）：$(printf '%s' "$ip" | tr '\n' ' ')"
+    pass=$((pass+1))
+else
+    echo "  FAIL iterator_protocol   ->  期望 [$(printf '%s' "$want_it" | tr '\n' ' ')]，得到 [$(printf '%s' "$ip" | tr '\n' ' ')]"
+    fail=$((fail+1))
+fi
+
 out=$("$EXTC" -w --run tests/coro/statemachine.extc 2>&1)
 # 行尾是 CRLF（协议定义如此）；文本比对时去掉 \r，另用一条断言盯住 CRLF 本身。
 got=$(printf '%s' "$out" | sed -n '/--- 一次喂完 ---/,$p' | tail -n +2 | head -9 | tr -d '\r')

@@ -288,6 +288,43 @@ typedef struct extc_arena { extc_ablock *top; int64_t blkSize; } extc_arena;
 挑最简单的会给你**假信心**。建议挑一个真的请求-响应协议（比如 HTTP 解析的一小段），
 看无栈写起来有多别扭 —— 如果别扭到不能忍，§1 那个前提就要重新审
 
+### 4.1 第 2 步进展（2026-09-26）：迭代器协议**原型已跑通**，特性待落地
+
+**做了什么**：`tests/coro/iterator_protocol.extc`（判据已进 `tests/coro/run.sh`，`check.sh` 里跑）——
+一个**用户类型**加三个方法，用**显式 `while`** 驱动：
+
+```extc
+fn iter(self: ref counter)  -> counter   // 迭代状态是**值**，活在调用者帧里
+fn next(self: mut ref counter) -> bool   // 还有一个吗？
+fn value(self: ref counter) -> i64       // 当前这个
+```
+
+实测：`sum=15 shown=5` · `empty=0` · `steps=4`（第三个断言是**两个迭代器互不干扰** —— 状态是值、
+不共享 ⇒ 这是无引用聚合模型的直接好处 ✓）
+
+**为什么是这三个方法，而不是 `option<T> next()`**：`option` 要 `?T` 解包，而"先问有没有、再取值"
+两步在无引用聚合的模型里更省：状态就是一个普通 struct，零分配、零引用 ✓（与第 1 步的状态机同款）
+
+**`for x in c` 今天为什么驱动不了它**（这就是特性的"before"）：
+
+```
+error: cannot slice a value of type `counter`
+  note: Only a fixed array or a view can be sliced.
+```
+
+⇒ 今天的脱糖是**基于切片**的（`for d in c` → `var __extc_s = c[..]`）✓ 用户类型没有 `[..]` ✓
+
+**落地清单（下一步，按"先判据后特性"）**
+1. 检查器：`for x in subject` 在 subject **不可切片**时，从它的类型上解析这三个方法，
+   把 `FuncDef*` 与元素类型记在 `for` 节点上（**不新增语法** ✓ `for x in c` 已经能解析 ✓）；
+2. codegen：发射 `It __extc_it = subject.iter(); while (__extc_it.next()) { T x = __extc_it.value(); <body> }`
+   —— **复用既有 `while` 机制，不加运行期** ✓（迭代状态是调用者帧里的值 ⇒ 不需要帧、不需要调度器 ✓
+   这正是"迭代器 = 最弱的协程"的意思 ✓）；
+3. 判据：① 原型的三条输出不变；② **同一程序写成 `for` 与写成 `while` 必须产出逐字节相同的输出**
+   （差分判据 ✓ 形态见 §12.1c 的"同形对照"手法）；③ 生成物合同零告警；
+4. soundness：迭代状态跨 `next` 调用存活 ⇒ 它携带的引用受**既有逃逸规则**管（`next` 的返回、
+   `value` 的返回都要过同一套检查 ✓）⇒ 不需要新规则，但**要有一条判据**把这个事实钉住。
+
 ---
 
 ## 5. 并行：三种原语，一个模型

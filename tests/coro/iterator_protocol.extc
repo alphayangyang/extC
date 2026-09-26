@@ -1,0 +1,62 @@
+/* 迭代器协议原型（CONCURRENCY.md §4 第 2 步："迭代器 = 最弱的协程"）。
+ *
+ * 一行编译器代码都没加：先手写一个**用户类型 + 三个方法**的协议，用显式 `while` 驱动它，
+ * 看这个形状写起来顺不顺、以及 `for` 今天为什么驱动不了它 ✓
+ *
+ * 协议（拟定，待落地时定稿）：
+ *   fn iter(self: ref Self) -> It        // 取得迭代状态（值拷贝，活在调用者帧里）
+ *   fn next(self: mut ref It) -> bool    // 还有一个吗？（推进到下一个）
+ *   fn value(self: ref It) -> T          // 当前这个
+ *
+ * 为什么是这三个而不是 `option<T> next()`：extC 的 `option` 需要 `?T` 解包，而
+ * "先问有没有、再取值"两步在**无引用聚合**的模型里更省（状态就是一个普通 struct ✓） */
+use std::io
+
+/* 一个用户类型：`counter` 数到 n 为止。迭代状态就是它自己（真实场景里通常另有一个小 struct）。 */
+struct counter { i: i64  n: i64 }
+
+impl counter {
+    fn iter(self: ref counter) -> counter {
+        return counter { i: i64(0), n: self.n }
+    }
+    fn next(self: mut ref counter) -> bool {
+        if self.i >= self.n { return false }
+        self.i = self.i + i64(1)
+        return true
+    }
+    fn value(self: ref counter) -> i64 {
+        return self.i
+    }
+}
+
+fn main() -> i32 {
+    var c: counter = counter { i: i64(0), n: i64(5) }
+
+    /* ① 手写驱动：这就是 `for x in c` 落地后应当被脱糖成的形状 */
+    var it: counter = c.iter()
+    var sum: i64 = 0
+    var shown: i64 = 0
+    while it.next() {
+        sum = sum + it.value()
+        shown = shown + i64(1)
+    }
+    io::cout << "sum=" << sum << " shown=" << shown << "\n"   /* 期望 sum=15 shown=5 */
+
+    /* ② 空集合：一次都不该进 */
+    var empty: counter = counter { i: i64(0), n: i64(0) }
+    var eit: counter = empty.iter()
+    var hits: i64 = 0
+    while eit.next() { hits = hits + i64(1) }
+    io::cout << "empty=" << hits << "\n"                      /* 期望 empty=0 */
+
+    /* ③ 迭代状态是**值**、活在调用者帧里 ⇒ 两个迭代器互不干扰（无引用聚合的直接好处） */
+    var a: counter = counter { i: i64(0), n: i64(2) }
+    var b: counter = counter { i: i64(0), n: i64(2) }
+    var ai: counter = a.iter()
+    var bi: counter = b.iter()
+    var steps: i64 = 0
+    while ai.next() { steps = steps + i64(1) }
+    while bi.next() { steps = steps + i64(1) }
+    io::cout << "steps=" << steps << "\n"                     /* 期望 steps=4 */
+    return 0
+}
