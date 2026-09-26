@@ -369,3 +369,50 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 1. 临时决定 **A**：陈旧值 `trap` 还是给 `failure`；
 2. 临时决定 **B**：阶段 3 才放开存储，是否接受；
 3. 是否同期做 `T: Trait` 上界（**不属于**第二期，但会是"用 trait 写库"最想要的东西）。
+
+## 8. 交接清单（2026-09-26，目标轮次用尽时）
+
+### 已完成（阶段 1、2 与阶段 4 的可兑现部分）
+
+| 能力 | 判据（`tests/dyn/run.sh`，已接入 `check.sh`） |
+|---|---|
+| `dyn Trait(x).method()` 构造即调用 | `dyn_call` |
+| 存储被拒、字段访问被拒 | `dyn_store` · `dyn_field` |
+| object safety ③（返回 `Self` 不可动态派发） | `dyn_object_safety` |
+| 载荷必须实现被点名的 trait | `dyn_implements` |
+| **载荷进池 + 经槽派发**（表与接收者都取自槽） | `dyn_pool_dispatch` |
+| **建池必须是对象表模式** | `dyn_object_table` |
+| **陈旧值 trap 且方法体未被执行**（O5 核心，运行期单测） | `dyn_o5_stale_trap` |
+| 生成物合同（`-std=c11 -fwrapv -Wall -Werror`） | `dyn_contract` |
+
+文档侧：`SOUNDNESS.md` 的 O4 已翻 ✅（只追加那一半，判据具名）、O5 已记为 ⚠️（dyn 侧已焊，判据具名）；
+`POOL-SOUNDNESS.md` 的 **E3 标为已闭合**、INV-A 标为实现；手册语言页 **§7.3 `dyn`** 与「还没定的」条目均已更新。
+提交：`b67a28c`（阶段 1）· `8e3b42b`（object safety）· `9f9bcab`/`3c4191e`（运行期）· `29efaad`（接线）·
+`50e4925`（O5 行为判据）· `262ec44`（载荷实现检查）· `527a302`/`0ec7ad6`/`edeffd6`（文档）。
+
+### 阶段 3（未实现）：六处改动 + 两条判据翻面
+
+1. `src/ast.h:28` 的 `TypeKind` 加 **`TY_DYN`**（`t->name` 存 trait 名，与 `TY_STRUCT` 同形）；
+   ⚠️ **新增枚举值会让每个穷举 `TypeKind` 的 switch 触发 `-Wswitch`**（在 `-Wall` 里）⇒
+   **必须一次性改完所有 switch**，否则构建带告警、违反零告警约定 —— 这是它不能分批落地的原因；
+2. `src/codegen.c:397` 的 `cType` 加 `case TY_DYN: return "ExtcDynHandle";`；
+3. `src/types.c` 的 `ttEquals` 对同名 trait 视为相同（另需类型打印走 trait 名）；
+4. `src/parser.c:1225` 的 `parseType` 加 `dyn <TraitName>` 分支（按**形状**判定，`dyn` 不是保留字）；
+5. 检查器：`dyn Trait(x)` 的类型是 `TY_DYN`；`EX_METHOD` 的接收者若是 `TY_DYN`，方法在 **trait 签名**里找
+   （载荷"实现了该 trait"的检查已在 `src/check_expr.c` 的 dyn 块里，可直接复用）；
+6. codegen 分两种载荷来源：**立即形式照旧**（`extc_dyn_put` → `extc_dyn_slot` → 派发），
+   **存储形式只发 `extc_dyn_slot(<值>, "file", line)`** 一步，接收者取 `->addr`。
+   （`genMethodCall` 的 dyn 分支现在就是这两种的来源点；"表达式需要前置语句"用既有的 `pfLine`。）
+
+**要翻面的判据**：`tests/dyn/errors/dyn_store.extc`（保存变成合法 ⇒ 该反例要么删，要么改成别的非法形状，
+例如把具体类型直接赋给 `dyn` 变量）；`dyn_field` 保留。新增：`dyn_stored` · `dyn_stale_stored` ·
+`dyn_no_wrong_dispatch`。**翻面后**把 `SOUNDNESS.md` 的 O5 从 ⚠️ 改成 ✅。
+
+### 三条纪律（本期踩出来的，动手前先读）
+
+1. **`dyn` 不是保留字**（`examples/slices.extc` 里 `let dyn = a[lo..hi]`）⇒ 新语法必须按**形状**判定；
+2. **往 `src/pools.c` 追加文本不能按行边界插入** —— 那里的 `bufPuts` 是**跨行的一条语句**，
+   正确锚点是**发出函数的收尾大括号**，转义交给脚本；
+3. **新增结构体字段必须同时找它的初始化点**（`Module.traits` 忘 `vecInit` 曾导致段错误）；
+   凡是"发出决定发生在体生成之前"的东西（运行期文本、place 进入），必须由**检查器**在类型已知处标记
+   （`makesPool` 就是这个例子）。
