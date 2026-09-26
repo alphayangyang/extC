@@ -579,13 +579,25 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 判据要钉住**两种表示**：不外逃 ⇒ 生成物里不该出现 `extc_task_begin` / `extc_task_alloc`（零分配 ✓）；
 逃逸 ⇒ 必须出现句柄与 kind 分派 ✓
 
+**句柄的四条安全规则**（缺一条就不安全；都不是新机制，照池句柄那套）：
+
+1. **不许伪造**：`coroutine<T>` 的**结构字面量要拒绝**（prelude 那个声明是给类型系统一个形状用的，
+   手搓出来就是垃圾 kind/frame ✗）。
+2. **过期要 trap**：句柄带 `task`（加世代更好），`next()`/`value()` 先 `extc_task_live(task)` 验活 ⇒
+   跑完/被 drop 之后再驱动 = **大声 trap**，不是 use-after-free。
+3. **没有零值**：`var c: coroutine<i64>` 不带初始化 ⇒ 拒（零句柄无意义）。
+4. **一个逻辑驱动者**：复制句柄内存安全（只是会双驱动同一个状态机），所以这条是**约定**，可选 busy 位。
+
 三条一起落（分着落会出现"接受但生成错 C"的中间态）：
 
 1. **检查器**：`coroutine<T>` 允许当存储类型（撤掉 check_stmt.c:236 那条拒绝）；在 prelude 那个
    类型上合成 `next(self: mut ref coroutine<T>) -> bool` 与 `value(self: ref coroutine<T>) -> T`
    —— 与帧上的那两个**同形**，只是 self 是句柄；`T` 走既有的实例化替换，所以 `value()` 的返回类型
    自然是每个实例各自的 `T` ✓
-2. **codegen**：句柄的 C 表示是一个共享结构 `struct extc_coro { void *frame; int64_t kind; }`
+2. **codegen**：句柄的 C 表示是一个共享结构 `struct extc_coro { void *frame; int64_t kind; int64_t task; }`
+   —— **三个字（24 字节）**：`task` 是安全凭据，`next()` 先 `extc_task_live(task)` 验活 ⇒ **过期的句柄
+   大声 trap**（不是 use-after-free）。这与池句柄 `{pid,slot,gen}` 是同一个套路 —— **句柄不是新概念，
+   是池句柄的兄弟** ✓
    （`coroutine<T>` 的实例类型 cType 都映射到它）；每个协程函数有一个**编译期 kind 编号**；
    句柄方法发成 `switch (h->kind)` 分派到 `<fn>$next` / `<fn>$frame`.ret；每个用到的 `T` 一个
    `value` 辅助函数（返回类型随 T 变）
