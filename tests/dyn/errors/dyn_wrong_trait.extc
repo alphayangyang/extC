@@ -1,0 +1,13 @@
+// 载荷**没有实现**被点名的 trait，但它有同名方法（来自另一个 trait）。
+// 若不做这条检查，生成物会去引用一张**不存在**的表（extc_vt$Mark$box）⇒ 报错落在生成物里，
+// 离 `dyn` 那一行很远。这里要求诊断直指根因。
+// expect: does not implement `Mark`
+trait Tag  { fn tag(self: ref Self) -> i64 }
+trait Mark { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 {
+    let b = box { v: i64(1) }
+    let x = dyn Mark(b).tag()
+    return 0
+}

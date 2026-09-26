@@ -1,0 +1,9 @@
+// 载荷类型没有实现该 trait ⇒ 不能成为 dyn 值
+// expect: no method `tag` on `box`（方法解析先于 dyn 检查；真正需要 dyn 检查的是"同名方法来自别的 trait"那种形状，见 dyn_wrong_trait.extc）
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+fn main() -> i32 {
+    let b = box { v: i64(1) }
+    let x = dyn Tag(b).tag()
+    return 0
+}

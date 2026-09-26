@@ -2117,6 +2117,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     TraitDef *cand = *(TraitDef **)vecAt(&c->m->traits, ti);
                     if (cand->name && strcmp(cand->name, e->dynTrait) == 0) tr = cand;
                 }
+                /* The payload must **implement** the trait: that implementation is what the table
+                 * points at. The `(trait, type)` records phase 1 kept answer this directly, so the
+                 * check does not have to be inferred from "the method was not found" (which is what
+                 * the reader would otherwise see, far from the `dyn` that caused it). */
+                {
+                    Type *payT = ttBase(e->u.method.recv->type);
+                    bool impl = false;
+                    for (size_t ii = 0; tr && ii < c->m->impls.len && !impl; ii++) {
+                        ImplDef *im = *(ImplDef **)vecAt(&c->m->impls, ii);
+                        impl = im->trait == tr && im->target && payT &&
+                               ttEquals(ttBase(im->target), payT);
+                    }
+                    if (tr && payT && payT->sdef && !impl)
+                        ckError(c, e->line,
+                                "A `dyn` value names a trait its payload implements, because the"
+                                " implementation is what the table points at.",
+                                "`%s` does not implement `%s`", payT->name, e->dynTrait);
+                }
                 FuncDef *want = NULL;
                 for (size_t ti = 0; tr && ti < tr->methods.len && !want; ti++) {
                     FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, ti);

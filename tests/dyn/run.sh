@@ -19,6 +19,12 @@ case "$err" in
     *) bad dyn_store "$err" ;;
 esac
 
+err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_wrong_trait.extc 2>&1)
+case "$err" in
+    *"does not implement \`Mark\`"*) ok dyn_implements "载荷未实现被点名的 trait ⇒ 直指根因（而非发一张不存在的表）" ;;
+    *) bad dyn_implements "$err" ;;
+esac
+
 err=$("$EXTC" -w -o /dev/null tests/dyn/errors/dyn_self_return.extc 2>&1)
 case "$err" in
     *"returns \`Self\` and cannot be dispatched"*) ok dyn_object_safety "object safety ③：返回 Self 不可经 dyn 派发" ;;
