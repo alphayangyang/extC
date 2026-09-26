@@ -1,0 +1,17 @@
+/* dyn 阶段 1：构造与调用一步完成；生成物里经**表**派发（受控间接调用）。 */
+use std::io
+
+trait Tag { fn tag(self: ref Self) -> i64 }
+
+struct box { v: i64 }
+struct pt  { x: i64 }
+
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + i64(1) } }
+
+fn main() -> i32 {
+    let b = box { v: i64(7) }
+    let p = pt  { x: i64(4) }
+    io::cout << "dyn=" << dyn Tag(b).tag() << "," << dyn Tag(p).tag() << "\n"
+    return 0
+}

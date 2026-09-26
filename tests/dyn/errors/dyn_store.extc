@@ -1,0 +1,10 @@
+// 阶段 1：只允许"构造即调用"，保存 dyn 值需要池（阶段 3）
+// expect: must be called immediately
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 {
+    let b = box { v: i64(1) }
+    let d = dyn Tag(b)
+    return 0
+}

@@ -76,6 +76,11 @@ if out=$(timeout 600 ./tests/impl/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 8 反例项：含 coherence 重名与内建标量）"
 else bad "tests/impl/run.sh"; echo "$out"; fi
 
+echo "== dyn 阶段 1（构造即调用：派发经表、拒绝存储、生成物合同）=="
+if out=$(timeout 600 ./tests/dyn/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（正例 + 拒绝存储/字段 + 派发经表 + 合同编译）"
+else bad "tests/dyn/run.sh"; echo "$out"; fi
+
 echo "== IO 第一块（定案 73：std::sys 原语 + std::io 库 —— 能从 stdin 读了）=="
 if out=$(timeout 600 ./tests/io/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（stdin 读取 + 分层 + 流式：控制台 cin >> x · 文件 fin >> 整数 >> 一行 >> 一个字节 · cerr 与 stdout 分开）"

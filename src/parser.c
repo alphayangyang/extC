@@ -2191,8 +2191,19 @@ static Expr *parsePostfix(Parser *p) {
                 m->u.method.recv = e;
                 m->u.method.name = name->text;
                 m->u.method.args = args;
+                /* A `dyn Trait(x)` payload is marked, and the trait has to travel to the call
+                 * node: this loop builds a **new** node, so the mark would otherwise be left
+                 * behind on the receiver. */
+                m->dynTrait = e->dynTrait;
                 e = m;
             } else {
+                if (e->dynTrait) {
+                    ctxError(p->ctx, dot->line, dot->col,
+                             "A `dyn` value is constructed and called in one step; reading a field"
+                             " of the payload is not part of that step.",
+                             "`dyn %s(...)` must be followed by a method call", e->dynTrait);
+                    return NULL;
+                }
                 Expr *f = exprNew(p->arena, EX_FIELD, dot->line);
                 f->u.field.obj = e;
                 f->u.field.name = name->text;
@@ -2291,6 +2302,41 @@ static bool parseArgs(Parser *p, Vec *out) {
  */
 static Expr *parsePrimary(Parser *p) {
     Token *t = cur(p);
+
+    /* `dyn Trait(expr)` -- the construction for dynamic dispatch (DYN.md stage 1).
+     *
+     * Stage 1 keeps construction and the call in **one expression**: the mark set below travels
+     * to the `EX_METHOD` node the postfix loop builds, and anything that is not a method call on
+     * it is refused here. Storing a `dyn` value needs a pool and arrives in stage 3, so there is
+     * deliberately no way to write one yet. */
+    /* `dyn` is **not** a reserved word: `let dyn = a[lo..hi]` is a legal binding (examples/slices.extc
+     * writes exactly that, and the first version of this branch broke it). The form is entered only
+     * for the shape `dyn Trait(`, which no expression can otherwise begin with. */
+    if (at(p, "dyn") && pk(p, 1) && pk(p, 1)->kind == TK_IDENT &&
+        pk(p, 2) && pk(p, 2)->text && strcmp(pk(p, 2)->text, "(") == 0) {
+        Token *kw = take(p);
+        Token *tn = cur(p);
+        if (tn->kind != TK_IDENT) {
+            ctxError(p->ctx, tn->line, tn->col, NULL,
+                     "expected a trait name after `dyn`, found `%s`", shown(tn));
+            return NULL;
+        }
+        take(p);
+        if (!expect(p, "(", NULL)) return NULL;
+        Expr *payload = parseExpr(p);
+        if (!payload) return NULL;
+        if (!expect(p, ")", NULL)) return NULL;
+        if (!at(p, ".")) {
+            ctxError(p->ctx, kw->line, kw->col,
+                     "Constructing a `dyn` value and calling it are one step; storing one needs a"
+                     " pool, which arrives in stage 3.",
+                     "`dyn %%s(x)` must be called immediately: write `dyn %%s(x).method(...)`",
+                     tn->text, tn->text);
+            return NULL;
+        }
+        payload->dynTrait = tn->text;
+        return payload;
+    }
 
     if (t->kind == TK_INT) {
         take(p);

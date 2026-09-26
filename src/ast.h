@@ -343,6 +343,11 @@ struct Expr {
         /*   Empty args = a variant without payload (`status.ok`); non-empty = a
          *   payload construction (`shape.circle(2.0)`). */
     } u;
+    /* `dyn Trait(x).m(...)`: stage 1 of DYN.md keeps construction and the call in one
+     * expression, so the trait being dispatched through is a property of the call node rather
+     * than a type of its own. The parser sets it and refuses to let it be stored; codegen reads
+     * it to dispatch through the table instead of calling the implementation directly. */
+    const char *dynTrait;
 };
 
 typedef struct { const char *name; Expr *value; } FieldInit;

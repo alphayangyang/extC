@@ -290,6 +290,9 @@ typedef struct {
      * body is recorded as an offset into that buffer, and this turns it into a
      * position in the assembled unit. */
     size_t      bodyOff;
+    /* Method-table declarations: emitted with the prototypes (a body that dispatches through a
+     * table needs it in scope) while the definitions are appended at the very end. */
+    Buf          vtDecls;
 } CG;
 
 /* One slice helper: the bounds check and the view construction for `a[lo..hi]`
@@ -1662,6 +1665,18 @@ static const char *genMethodCall(CG *g, Expr *e) {
     recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
 
     const char *fname = cMethodName(g, recvT, f);
+    /* `dyn Trait(x).m(...)`: dispatch through the table the trait emitted for this type (stage 1
+     * of DYN.md). The field **is** the implementation, so the call keeps the same signature --
+     * including the hidden home-arena parameter, which the table's `__typeof__` picked up for
+     * free when it was emitted. Nothing else in this function changes: same receiver, same
+     * arguments, same extra parameters, a different callee expression. */
+    Buf dynSym;
+    if (e->dynTrait) {
+        bufInit(&dynSym, g->arena);
+        bufPrintf(&dynSym, "extc_vt$%s$%s.%s",
+                  e->dynTrait, cType(g, ttBase(recvT)), e->u.method.name);
+        fname = bufCstr(&dynSym);
+    }
 
     Buf b;
     bufInit(&b, g->arena);
@@ -6201,6 +6216,54 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         substLeave(&g);
     }
 
+    /* Static method tables: one per (trait, type) pair, in the trait's **declaration order**.
+     *
+     * Nothing dispatches through them unless the program writes `dyn Trait(x).m(...)`, and then
+     * the **declaration** has to be visible where the body that calls through it is emitted --
+     * the definition itself is appended after every offset-rewriting pass (see the end of this
+     * function), because those passes locate spans by name and the table repeats the method
+     * names. So: declare here, define there, and compute the field list once.
+     *
+     * The order is the trait's declaration order -- never hashing, sorting or insertion order --
+     * because a later dynamic-link step would treat it as ABI.
+     *
+     * `__typeof__(fn) *` gives every field the exact type of its implementation, so this needs no
+     * opinion about receivers, the hidden home-arena parameter, or the C spelling of any extC
+     * type. The reserved spelling (`__typeof__`, not `typeof`) is what compiles under `-std=c11`,
+     * and `__attribute__((unused))` keeps the zero-warning rule for a table nothing calls. */
+    Buf vtDefs;
+    bufInit(&vtDefs, arena);
+    bufInit(&g.vtDecls, arena);
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+        if (!im->trait || !im->target) continue;
+        Type *bt = ttBase(im->target);
+        StructDef *tsd = bt ? bt->sdef : NULL;
+        if (!tsd) continue;
+        Buf fields, inits;
+        bufInit(&fields, arena);
+        bufInit(&inits, arena);
+        for (size_t k = 0; k < im->trait->methods.len; k++) {
+            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
+            FuncDef *have = NULL;
+            for (size_t j = 0; j < tsd->methods.len && !have; j++) {
+                FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                if (strcmp(cand->name, want->name) == 0) have = cand;
+            }
+            if (!have) continue;             /* completeness is enforced by the checker */
+            bufPrintf(&fields, " __typeof__(%s) *%s;", cFuncName(&g, have), want->name);
+            bufPrintf(&inits, "%s %s", k ? "," : "", cFuncName(&g, have));
+        }
+        bufPrintf(&g.vtDecls, "struct extc_vt$%s$%s_t {%s };\n"
+                              "static const struct extc_vt$%s$%s_t extc_vt$%s$%s;\n",
+                  im->trait->name, tsd->name, bufCstr(&fields),
+                  im->trait->name, tsd->name, im->trait->name, tsd->name);
+        bufPrintf(&vtDefs, "static const struct extc_vt$%s$%s_t extc_vt$%s$%s "
+                           "__attribute__((unused)) = {%s };\n",
+                  im->trait->name, tsd->name, im->trait->name, tsd->name, bufCstr(&inits));
+    }
+    bufPuts(out, bufCstr(&g.vtDecls));
+
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
         if (f->isExtern) continue;              /* an external declaration has no body */
@@ -6332,57 +6395,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     markUncalledFunctions(&g, out);
     markUnusedParams(&g, out);
 
-    /* Static method tables: one per (trait, type) pair, in the trait's **declaration order**.
-     *
-     * Nothing reads them yet. The first reader is `dyn`, and what it needs is exactly this: the
-     * implementations of a trait for a type, in a fixed order, reachable by a stable key
-     * (`Trait$Type`). The order is the trait's declaration order -- never hashing, sorting or
-     * insertion order -- because a later dynamic-link step would treat it as ABI.
-     *
-     * Emitted **last**, after every pass that rewrites the unit by byte offset: writing this
-     * earlier (through `cgLine`, or appended to `g.body`) put the table where those passes were
-     * working, and since they locate spans by name -- which the table repeats -- the result was a
-     * header comment cut in half, which the generated-C contract judge reports as an unterminated
-     * comment.
-     *
-     * `__typeof__(fn) *` is deliberate: each field takes the exact type of its implementation, so
-     * this needs no opinion about receivers, the hidden home-arena parameter, or the C spelling of
-     * any extC type. The reserved spelling (`__typeof__`, not `typeof`) is what compiles under
-     * `-std=c11`, and `__attribute__((unused))` keeps the zero-warning rule while nothing refers
-     * to the table. */
-    for (size_t i = 0; i < m->impls.len; i++) {
-        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
-        if (!im->trait || !im->target) continue;
-        Type *bt = ttBase(im->target);
-        StructDef *tsd = bt ? bt->sdef : NULL;
-        if (!tsd) continue;
-        Buf tb;
-        bufInit(&tb, arena);
-        bufPuts(&tb, "static const struct {");
-        for (size_t k = 0; k < im->trait->methods.len; k++) {
-            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
-            FuncDef *have = NULL;
-            for (size_t j = 0; j < tsd->methods.len && !have; j++) {
-                FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
-                if (strcmp(cand->name, want->name) == 0) have = cand;
-            }
-            if (!have) continue;             /* completeness is enforced by the checker */
-            bufPrintf(&tb, " __typeof__(%s) *%s;", cFuncName(&g, have), want->name);
-        }
-        bufPrintf(&tb, " } __attribute__((unused)) extc_vt$%s$%s = {", im->trait->name, tsd->name);
-        for (size_t k = 0; k < im->trait->methods.len; k++) {
-            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
-            FuncDef *have = NULL;
-            for (size_t j = 0; j < tsd->methods.len && !have; j++) {
-                FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
-                if (strcmp(cand->name, want->name) == 0) have = cand;
-            }
-            if (!have) continue;
-            bufPrintf(&tb, "%s %s", k ? "," : "", cFuncName(&g, have));
-        }
-        bufPuts(&tb, " };\n");
-        bufPuts(out, bufCstr(&tb));
-    }
+    /* The method-table **definitions** built before the bodies (see there): they come last so
+     * that no pass which rewrites the unit by byte offset ever sees them, and the declarations
+     * emitted earlier are what lets a dispatch site in a body refer to them. */
+    bufPuts(out, bufCstr(&vtDefs));
 
     return !ctx->hasError;
 }
