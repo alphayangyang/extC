@@ -810,6 +810,9 @@ typedef struct {
 struct TraitDef {
     const char *name;
     const char *modName;    /* the module that declares it; NULL for the root file */
+    bool        usedDyn;    /* set by the checker when a `dyn` form names it: only then are the
+                             * uniform method tables emitted (a trait used only statically needs no
+                             * table at all, and an object-unsafe method would make one invalid C) */
     int         line;
     Vec         methods;    /* FuncDef*: signatures only (`body == NULL`) */
 };

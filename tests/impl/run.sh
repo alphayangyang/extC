@@ -78,15 +78,21 @@ check_err tests/impl/orphan_impl.extc            'is an orphan'
 echo "== 静态方法表（声明顺序、无间接调用、生成物合同）=="
 tmp=$(mktemp -d)
 if "${EXTC:-./build/extc}" -w --no-line-map -o "$tmp/tt.c" tests/impl/trait_table.extc >/dev/null 2>&1; then
-    line=$(grep -m1 'extc_vt\$Both\$box' "$tmp/tt.c")
+    # 阶段 3 起表的形状是"每 trait 一份统一签名 struct + thunk"：
+    #   ① struct 定义里的**字段顺序**必须 = trait 声明顺序（zeta 在前，与字母序相反）；
+    #   ② 实例的**初始化式顺序**必须与之相同（thunk 名同序）。
+    sline=$(grep -m1 'struct extc_vt\$Both_t {' "$tmp/tt.c")
+    iline=$(grep -m1 'extc_vt\$Both\$box = {' "$tmp/tt.c")
     order=0
-    printf '%s' "$line" | grep -q '\*zeta;.*\*alpha;' && order=1
-    calls=$(grep -c 'extc_vt[^ ]*[[:space:]]*(' "$tmp/tt.c" || true)
+    printf '%s' "$sline" | grep -q '\*zeta)(void \*).*\*alpha)(void \*)' \
+        && printf '%s' "$iline" | grep -q 'extc_th\$Both\$box\$zeta, extc_th\$Both\$box\$alpha' \
+        && order=1
     if [ "$order" = 1 ]; then
         echo "  ok   vtable_order    ->  字段顺序 = 声明顺序（zeta 在前，与字母序相反）"
     else
-        echo "  FAIL vtable_order    ->  $line"; fail=1
+        echo "  FAIL vtable_order    ->  $sline | $iline"; fail=1
     fi
+    calls=$(grep -c 'extc_vt[^ ]*[[:space:]]*(' "$tmp/tt.c" || true)
     if [ "$calls" = 0 ]; then
         echo "  ok   vtable_no_call  ->  表只出现在定义处，无间接调用"
     else

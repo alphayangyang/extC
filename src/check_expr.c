@@ -396,6 +396,10 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
                 " one that exists.", "`dyn` on unknown trait `%s`", traitName);
         return NULL;
     }
+    /* The uniform tables are emitted only for a trait that is actually dispatched through -- this
+     * is also what keeps an object-unsafe method (no receiver, generic, or returning `Self`) from
+     * having to appear in one. */
+    tr->usedDyn = true;
     Type *pt = ttBase(payT);
     bool impl = false;
     for (size_t i = 0; i < c->m->impls.len && !impl; i++) {

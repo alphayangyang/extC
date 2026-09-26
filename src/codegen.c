@@ -1718,8 +1718,11 @@ static const char *genMethodCall(CG *g, Expr *e) {
                dynS, dynH, g->path, e->line);
         Buf dynSym;
         bufInit(&dynSym, g->arena);
-        bufPrintf(&dynSym, "((const struct extc_vt$%s$%s_t *)%s->vt)->%s",
-                  e->dynTrait, dynT, dynS, e->u.method.name);
+        /* One struct **per trait** (stage 3): the field types are uniform, so the call site only
+         * needs the trait -- which is what the value's static type names -- while the concrete type
+         * is decided at runtime by the table pointer in the slot. */
+        bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)%s->vt)->%s",
+                  e->dynTrait, dynS, e->u.method.name);
         fname = bufCstr(&dynSym);
         recvC = arenaPrintf(g->arena, "%s->addr", dynS);
     }
@@ -6279,51 +6282,88 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         substLeave(&g);
     }
 
-    /* Static method tables: one per (trait, type) pair, in the trait's **declaration order**.
+    /* Uniform method tables, one **per trait** (DYN.md stage 3).
      *
-     * Nothing dispatches through them unless the program writes `dyn Trait(x).m(...)`, and then
-     * the **declaration** has to be visible where the body that calls through it is emitted --
-     * the definition itself is appended after every offset-rewriting pass (see the end of this
-     * function), because those passes locate spans by name and the table repeats the method
-     * names. So: declare here, define there, and compute the field list once.
+     * The receiver is erased to `void *`, and that is what lets a stored `dyn` value call through a
+     * table at all: its concrete type is not known at the call site. The per-type field types the
+     * first version used (`__typeof__(impl) *`) only worked because the immediate form knows the
+     * type statically. Each (trait, type, method) gets a thunk adapting the implementation to the
+     * uniform signature; the instance keeps the stable key `extc_vt$Trait$Type` and the trait's
+     * declaration order, so the phase-1 contract is unchanged.
      *
-     * The order is the trait's declaration order -- never hashing, sorting or insertion order --
-     * because a later dynamic-link step would treat it as ABI.
+     * Only traits the checker saw in a `dyn` form (`usedDyn`) get a table: a statically used trait
+     * needs none. A method that cannot be dispatched (no receiver, generic, or returning `Self`)
+     * keeps its slot -- order is ABI -- but gets a `void *` type and a NULL entry, and the checker
+     * refuses to dispatch through it, so the slot is unreachable rather than miscompiled.
      *
-     * `__typeof__(fn) *` gives every field the exact type of its implementation, so this needs no
-     * opinion about receivers, the hidden home-arena parameter, or the C spelling of any extC
-     * type. The reserved spelling (`__typeof__`, not `typeof`) is what compiles under `-std=c11`,
-     * and `__attribute__((unused))` keeps the zero-warning rule for a table nothing calls. */
+     * Declarations are emitted with the prototypes (a body that dispatches needs the struct in
+     * scope); definitions are appended after every pass that rewrites the unit by offset. */
     Buf vtDefs;
     bufInit(&vtDefs, arena);
     bufInit(&g.vtDecls, arena);
-    for (size_t i = 0; i < m->impls.len; i++) {
-        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
-        if (!im->trait || !im->target) continue;
-        Type *bt = ttBase(im->target);
-        StructDef *tsd = bt ? bt->sdef : NULL;
-        if (!tsd) continue;
-        Buf fields, inits;
-        bufInit(&fields, arena);
-        bufInit(&inits, arena);
-        for (size_t k = 0; k < im->trait->methods.len; k++) {
-            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
-            FuncDef *have = NULL;
-            for (size_t j = 0; j < tsd->methods.len && !have; j++) {
-                FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
-                if (strcmp(cand->name, want->name) == 0) have = cand;
-            }
-            if (!have) continue;             /* completeness is enforced by the checker */
-            bufPrintf(&fields, " __typeof__(%s) *%s;", cFuncName(&g, have), want->name);
-            bufPrintf(&inits, "%s %s", k ? "," : "", cFuncName(&g, have));
+    for (size_t ti = 0; ti < m->traits.len; ti++) {
+        TraitDef *tr = *(TraitDef **)vecAt(&m->traits, ti);
+        if (!tr->usedDyn) continue;
+        bufPrintf(&g.vtDecls, "struct extc_vt$%s_t {", tr->name);
+        for (size_t k = 0; k < tr->methods.len; k++) {
+            FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
+            bool unsafe = funcIsMethod(want) == false || (want->ret && mentionsParam(want->ret));
+            bufPrintf(&g.vtDecls, " %s (*%s)(void *",
+                      unsafe ? "void *" : (want->ret ? cType(&g, ttBase(want->ret)) : "void"),
+                      want->name);
+            for (size_t pi = 1; pi < want->params.len; pi++)
+                bufPrintf(&g.vtDecls, ", %s",
+                          cType(&g, ttBase((*(Param **)vecAt(&want->params, pi))->type)));
+            bufPuts(&g.vtDecls, ");");
         }
-        bufPrintf(&g.vtDecls, "struct extc_vt$%s$%s_t {%s };\n"
-                              "static const struct extc_vt$%s$%s_t extc_vt$%s$%s;\n",
-                  im->trait->name, tsd->name, bufCstr(&fields),
-                  im->trait->name, tsd->name, im->trait->name, tsd->name);
-        bufPrintf(&vtDefs, "static const struct extc_vt$%s$%s_t extc_vt$%s$%s "
-                           "__attribute__((unused)) = {%s };\n",
-                  im->trait->name, tsd->name, im->trait->name, tsd->name, bufCstr(&inits));
+        bufPuts(&g.vtDecls, " };\n");
+        for (size_t i = 0; i < m->impls.len; i++) {
+            ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+            if (im->trait != tr || !im->target) continue;
+            Type *bt = ttBase(im->target);
+            StructDef *tsd = bt ? bt->sdef : NULL;
+            if (!tsd) continue;
+            bufPrintf(&g.vtDecls, "static const struct extc_vt$%s_t extc_vt$%s$%s;\n",
+                      tr->name, tr->name, tsd->name);
+            for (size_t k = 0; k < tr->methods.len; k++) {
+                FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
+                FuncDef *have = NULL;
+                for (size_t j = 0; j < tsd->methods.len && !have; j++) {
+                    FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                    if (strcmp(cand->name, want->name) == 0) have = cand;
+                }
+                if (!have) continue;                 /* completeness is the checker's business */
+                if (!funcIsMethod(want) || (want->ret && mentionsParam(want->ret))) continue;
+                bufPrintf(&vtDefs, "static %s extc_th$%s$%s$%s(void *self",
+                          want->ret ? cType(&g, ttBase(want->ret)) : "void",
+                          tr->name, tsd->name, want->name);
+                for (size_t pi = 1; pi < want->params.len; pi++) {
+                    Param *pp = *(Param **)vecAt(&want->params, pi);
+                    bufPrintf(&vtDefs, ", %s %s", cType(&g, ttBase(pp->type)), pp->name);
+                }
+                bufPrintf(&vtDefs, ") { %s%s((%s *)self", want->ret ? "return " : "",
+                          cFuncName(&g, have), cType(&g, bt));
+                for (size_t pi = 1; pi < want->params.len; pi++)
+                    bufPrintf(&vtDefs, ", %s", (*(Param **)vecAt(&want->params, pi))->name);
+                bufPuts(&vtDefs, "); }\n");
+            }
+            bufPrintf(&vtDefs, "static const struct extc_vt$%s_t __attribute__((unused)) "
+                               "extc_vt$%s$%s = {", tr->name, tr->name, tsd->name);
+            for (size_t k = 0; k < tr->methods.len; k++) {
+                FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
+                bool unsafe = funcIsMethod(want) == false || (want->ret && mentionsParam(want->ret));
+                FuncDef *have = NULL;
+                for (size_t j = 0; j < tsd->methods.len && !have; j++) {
+                    FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                    if (strcmp(cand->name, want->name) == 0) have = cand;
+                }
+                bufPrintf(&vtDefs, "%s %s", k ? "," : "",
+                          (unsafe || !have) ? "NULL"
+                                            : arenaPrintf(arena, "extc_th$%s$%s$%s",
+                                                          tr->name, tsd->name, want->name));
+            }
+            bufPuts(&vtDefs, " };\n");
+        }
     }
     bufPuts(out, bufCstr(&g.vtDecls));
 
