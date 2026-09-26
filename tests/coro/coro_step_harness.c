@@ -4,7 +4,7 @@
 #include "coro_step_gen.c"
 
 int main(void) {
-    counter$frame f = {0};
+    struct counter$frame f = {0};
     f.n = 3;
     while (counter$step(&f)) printf("%lld ", (long long)f.ret);
     printf("\n");

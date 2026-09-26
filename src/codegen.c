@@ -2854,7 +2854,11 @@ static void cgReleaseLevel(CG *g, int lvl) {
      * 是同一份事实，不可能走散。 */
     if (lvl < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0]) && g->zoneMark[lvl])
         cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
-    cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
+    /* A coroutine body owns no place of its own: its storage lives in the **task's** place (slice C),
+     * so it must not release the caller's arena levels -- that release would free, at every resume,
+     * exactly what the next resume still needs (rule 3, docs/topics/CONCURRENCY.md 12). */
+    if (!g->coroFunc)
+        cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
 /* Collect every `@overwrite` site of one function body, in source order.
@@ -3132,14 +3136,16 @@ static void genBlockBody(CG *g, Stmt *block) {
      * left, but the save costs a byte and removes the question. */
     bool savedZoneMark = g->zoneMark[g->blkLevel];
     if (!g->noArena) {
-        cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
+        if (!g->coroFunc)   /* a coroutine's storage is the task's, not this block's */
+            cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
         /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）。
          * 只在这个块**可能建池**时才压（`blockMakesPool`）：只调用 `v.push` 这类不建池的
          * 库函数的循环体不需要自己的 zone，而每个循环体压/弹一次正是这轮要消掉的开销。
          * 弹出发射与否记进 `zoneMark`，`cgReleaseLevel` 查同一张表。 */
         g->zoneMark[g->blkLevel] = false;
         if (g->zoneHere && g->blkLevel > 1 && blockMakesPool(block)) {
-            cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+            if (!g->coroFunc)      /* see the note on the release below: the task owns the place */
+                cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
             g->zoneMark[g->blkLevel] = true;
         }
     }
@@ -3687,7 +3693,10 @@ static void genCoroFunc(CG *g, FuncDef *f) {
     const char *fr   = arenaPrintf(g->arena, "%s$frame", cFuncName(g, f));
     cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
            f->name ? f->name : "?");
-    cgLine(g, "typedef struct %s {", fr);
+    /* Emitted in the shape the emitter already uses for user structs -- `struct X { … };`, with the
+     * `struct` keyword spelled at every use, no `typedef`. The unreferenced-definition pass at the
+     * end of codegen recognises that shape (a `typedef struct X { … } X;` it cuts apart). */
+    cgLine(g, "struct %s {", fr);
     cgLine(g, "    int64_t pc;");
     cgLine(g, "    %s ret;", cType(g, f->yieldType ? f->yieldType : f->ret));
     if (f->makesPool)
@@ -3696,8 +3705,8 @@ static void genCoroFunc(CG *g, FuncDef *f) {
         const Param *p = (const Param *)vecAt((Vec *)&f->coroFrame, i);
         cgLine(g, "    %s;", arenaPrintf(g->arena, "%s %s", cType(g, p->type), p->cname));
     }
-    cgLine(g, "} %s;", fr);
-    cgLine(g, "static bool %s(%s *f) {", step, fr);
+    cgLine(g, "};");
+    cgLine(g, "static bool %s(struct %s *f) {", step, fr);
     cgLine(g, "    switch (f->pc) {");
     cgLine(g, "    case 0: ;");
     g->indent++;
