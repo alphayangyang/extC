@@ -9,12 +9,24 @@ EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
 tmp=$(mktemp -d)
 
-# B1（帧 + step）的差分判据**暂缓**：生成物还有两个缺陷要修 ——
-#   ① 帧 typedef 的开口几行没进生成物（` counter$frame;` 孤零零一行 ✗）
-#   ② 协程体里照旧发射 `extc_arena_release(&__extc_a[1])` ✗（那正是规则 ③ 的地方边界：
-#      协程体必须**抑制**它 —— 存储归任务 place 所有，见 CONCURRENCY.md 4.4 切片 C）
-# 靶子已就位：`tests/coro/coro_step.extc`（定义侧）+ `tests/coro/coro_step_harness.c`（C 驱动）
-# 修好后把 judge 打开，期望 hand-written == generated ⇒ `0 1 2 ` ✓
+# 切片 B1：帧 + step 的**差分判据** —— 生成的 step 驱动出的序列必须与手写状态机逐字节相同 ✓
+# （`-DEXTC_CORO_B1_HARNESS` 只用来绕过"调用协程"的守门：调用是 B2 的事 ✓ 定义侧的变换在这里验 ✓）
+gen=$tmp/coro_step_gen.c
+if "$EXTC" -w --no-line-map -o "$gen" tests/coro/coro_step.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -DEXTC_CORO_B1_HARNESS -fsyntax-only "$gen" 2>"$tmp/b1e"; then
+    if gcc -std=c11 -fwrapv -Wall -Werror -DEXTC_CORO_B1_HARNESS -I "$tmp" \
+           tests/coro/coro_step_harness.c -o "$tmp/b1h" 2>"$tmp/b1c" \
+       && [ "$("$tmp/b1h")" = "0 1 2 " ]; then
+        echo "  ok   coro_step_harness  ->  生成的 step 产出 $( "$tmp/b1h" | tr -d '\n' )（与手写状态机逐字节相同）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_step_harness  ->  harness：$(head -2 "$tmp/b1c" | tr '\n' ' ')"
+        fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_step_harness  ->  生成物合同：$(head -2 "$tmp/b1e" | tr '\n' ' ')"
+    fail=$((fail+1))
+fi
 
 # 协程 A2：帧布局必须是"跨挂起点存活的局部"（pc/ret + i ⇒ 参数 n 不进帧）
 lay=$(EXTC_DBG_CORO=1 "$EXTC" tests/coro/coro_frame_layout.extc -o "$tmp/cl.c" 2>&1 | grep -o "frame = .*")

@@ -177,6 +177,11 @@ typedef struct {
     const FuncDef *coroFunc;
     const char    *coroFrame;       /* the frame parameter's C name: `f` */
     int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
+    /* Coroutine frames and step functions go here and are appended **last**, after the passes that
+     * rewrite the unit by byte offset (same reason as `vtDefs` below): those passes match names, and
+     * a coroutine's `counter` matches inside its own `counter$step`. Nothing calls a step function
+     * from extC yet (slice B2), so it needs no prototype and C is happy with the definition late. */
+    Buf            coroDefs;
     bool        noArena;   /* This function puts nothing into its own block arena,
                             * so neither `extc_arena __extc_a[N]` nor the release
                             * calls are emitted. The checker decides this
@@ -1893,7 +1898,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 for (size_t i = 0; i < g->coroFunc->coroFrame.len; i++) {
                     const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
                     if (p->cname && strcmp(p->cname, cn) == 0)
-                        return arenaPrintf(g->arena, "%s.%s", g->coroFrame, cn);
+                        return arenaPrintf(g->arena, "%s->%s", g->coroFrame, cn);
                 }
             }
             return cn;
@@ -3188,7 +3193,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                     if (s->u.var.init) {
                         const char *v = genExpr(g, s->u.var.init);
                         flushPrefix(g);
-                        cgLine(g, "%s.%s = %s;", g->coroFrame, s->u.var.cname, v);
+                        cgLine(g, "%s->%s = %s;", g->coroFrame, s->u.var.cname, v);
                     }
                     return;
                 }
@@ -3381,8 +3386,8 @@ static void genStmtInner(CG *g, Stmt *s) {
             const int k = ++g->coroYieldSeq;
             const char *v = s->u.yield_.value ? genExpr(g, s->u.yield_.value) : "0";
             flushPrefix(g);
-            cgLine(g, "%s.ret = %s;", g->coroFrame, v);
-            cgLine(g, "%s.pc = %d;", g->coroFrame, k);
+            cgLine(g, "%s->ret = %s;", g->coroFrame, v);
+            cgLine(g, "%s->pc = %d;", g->coroFrame, k);
             cgLine(g, "return true;");
             cgLine(g, "case %d: ;", k);
             return;
@@ -3691,6 +3696,8 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
 static void genCoroFunc(CG *g, FuncDef *f) {
     const char *step = arenaPrintf(g->arena, "%s$step", cFuncName(g, f));
     const char *fr   = arenaPrintf(g->arena, "%s$frame", cFuncName(g, f));
+    Buf *saved = g->out;                 /* the trailing buffer: see `CG.coroDefs` */
+    g->out = &g->coroDefs;
     cgLine(g, "/* coroutine `%s`: `$frame` is a plain value, `$step` is the state machine */",
            f->name ? f->name : "?");
     /* Emitted in the shape the emitter already uses for user structs -- `struct X { … };`, with the
@@ -3716,13 +3723,17 @@ static void genCoroFunc(CG *g, FuncDef *f) {
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
         genStmt(g, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
     /* Falling off the end finishes the coroutine: a pc nothing can jump back to (`yields + 1`). */
-    cgLine(g, "f.pc = %d;", g->coroYieldSeq + 1);
+    cgLine(g, "f->pc = %d;", g->coroYieldSeq + 1);
     cgLine(g, "return false;");
     g->indent--;
     cgLine(g, "    }");
+    /* The switch covers every pc that exists; this keeps the C compiler happy (and `-Werror`
+     * quiet) about a value that cannot happen. */
+    cgLine(g, "return false;");
     cgLine(g, "}");
     g->coroFunc  = NULL;
     g->coroFrame = NULL;
+    g->out = saved;
 }
 
 static void genFunc(CG *g, FuncDef *f) {
@@ -4071,6 +4082,11 @@ static bool cgIsMain(const FuncDef *f) {
  * in any order.
  */
 static void genFuncProto(CG *g, FuncDef *f) {
+    /* A coroutine emits no prototype for its own name: there is no C function called `counter`, the
+     * artifact is `counter$frame` + `counter$step` (emitted together, so the frame is defined before
+     * it is used). Emitting an undefined prototype also poisons the byte-offset passes later on --
+     * `counter` matches inside `counter$step` and they blank the text in between. */
+    if (f->isCoro) return;
     Buf sig;
     bufInit(&sig, g->arena);
     /* `@inline` has to appear on the prototype as well as on the definition. */
@@ -5484,6 +5500,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    __extc_dying  = extc_raw_leave;   /* if we die before restore(), put it back */\n"
         "}\n");
     bufInit(&g.body, arena);
+    bufInit(&g.coroDefs, arena);    /* appended last: see `CG.coroDefs` */
     g.tmpSeq = 0;
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -6378,6 +6395,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * it, and only its prototype is emitted. */
         /* `@inline` has to be on the prototype too, or the attribute on the definition
          * alone does not bind: C takes the first declaration as the function's type. */
+        if (f->isCoro) continue;   /* a coroutine emits `$frame` + `$step` last */
         bufPrintf(&sig, "%s%s %s(%s);",
                   (cgIsMain(f) || f->isExtern) ? ""
                                                : (f->isInline ? "EXTC_INLINE " : "static "),
@@ -6645,6 +6663,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* The method-table **definitions** built before the bodies (see there): they come last so
      * that no pass which rewrites the unit by byte offset ever sees them, and the declarations
      * emitted earlier are what lets a dispatch site in a body refer to them. */
+    /* Coroutine frames and step functions: appended here, after every byte-offset pass, for the
+     * same reason as `vtDefs` right below -- and before it, so the frame type a step function uses
+     * is defined above it in the file. */
+    bufPuts(out, bufCstr(&g.coroDefs));
     bufPuts(out, bufCstr(&vtDefs));
 
     return !ctx->hasError;
