@@ -544,6 +544,8 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
         return __r;
     }
 
+**任务自己的 arena**（`extc_task_alloc` ✓）：箱装协程的帧住在这里 ✓，协程自己 `new` 的东西也住这里（切片 C 的提权 ✓）—— 与块 arena / 池 plate **同一个形状**（一整批释放 ✓）。任务结束时 `extc_arena_release` + `zoneLeaveTo` 一起放 ✓。
+
 **规则 ②③ 按语义放宽**：协程体里**建池**不再算"会回收的块"（池落进任务 place，活过每一次挂起）；`new`（arena 块）那半边照旧拒绝 —— 判据 `tests/coro/coro_pool.extc` 与反例都覆盖了。
 
 **判据**：

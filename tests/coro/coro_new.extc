@@ -1,0 +1,22 @@
+/* 判据：协程体里自己 `new` 的存储**提权到任务层** ⇒ 跨挂起点合法、跑对、ASan 干净。
+ *
+ * `p` 只建一次，每次恢复都用同一个：累加 0 → 1 → 3，和 = 4。
+ * （普通函数里 `new` 的存储挂在块级 arena 上，函数一返回/块一退出就整层释放；
+ *   协程的 step 每次恢复都重建 C 帧 ⇒ 它必须落在任务的地方，而不是帧上的临时层。） */
+fn g(n: i64) -> coroutine<i64> {
+    var p: mut ref i64 = new i64
+    *p = i64(0)
+    var i: i64 = 0
+    while i < n {
+        *p = *p + i
+        yield *p
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    var c = g(i64(3))
+    var s: i64 = 0
+    while c.next() { s = s + c.value() }
+    return i32(s)
+}
