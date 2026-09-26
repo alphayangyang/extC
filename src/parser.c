@@ -809,6 +809,11 @@ static TraitDef *parseTrait(Parser *p) {
         FuncDef *m = parseFunc(p);
         p->noBody = saved;
         if (!m) return NULL;
+        /* `Self` **is** a type parameter of the trait (see TraitDef in ast.h): giving every
+         * signature its own parameter list is what lets the existing `resolveSignature` resolve
+         * `ref Self` with no knowledge of traits at all. */
+        vecInit(&m->typeParams, p->arena, sizeof(void *));
+        *(const char **)vecPush(&m->typeParams) = "Self";
         *(FuncDef **)vecPush(&tr->methods) = m;
         skipJunk(p);
     }

@@ -194,6 +194,70 @@ static void checkDeclarations(Checker *c) {
                 ckError(c, td->line, NULL, "`%s` is already a struct", DN(td));
         }
     }
+    /* `impl Trait for Type`: do the signatures agree?
+     *
+     * This runs here rather than at attachment because comparing types requires them to be
+     * **resolved** -- `Self` in a trait body is one name away from the implementing type, and
+     * `ttSubstitute` is the existing machinery for exactly that substitution. The pair itself
+     * (which trait, which type) was recorded at attachment, so nothing is looked up twice. */
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+        if (!im->trait || !im->target) continue;
+        StructDef *sd = structOf(im->target);
+        if (!sd) continue;
+        Vec selfParams, selfArgs;
+        vecInit(&selfParams, c->arena, sizeof(const char *));
+        vecInit(&selfArgs,   c->arena, sizeof(Type *));
+        *(const char **)vecPush(&selfParams) = "Self";
+        *(Type **)vecPush(&selfArgs) = im->target;
+        for (size_t k = 0; k < im->trait->methods.len; k++) {
+            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
+            FuncDef *have = NULL;
+            for (size_t j = 0; j < sd->methods.len && !have; j++) {
+                FuncDef *cand = *(FuncDef **)vecAt(&sd->methods, j);
+                if (strcmp(cand->name, want->name) == 0) have = cand;
+            }
+            if (!have) continue;            /* absence was reported at attachment */
+            if (funcIsMethod(want) != funcIsMethod(have) ||
+                want->params.len != have->params.len) {
+                ckError(c, im->line,
+                        "The implementation repeats the trait's signature exactly, including"
+                        " whether the method takes a receiver.",
+                        "`%s`: `%s` does not match the signature the trait declares",
+                        im->trait->name, want->name);
+                continue;
+            }
+            for (size_t j = 1; j < want->params.len; j++) {
+                Param *wp = *(Param **)vecAt(&want->params, j);
+                Param *hp = *(Param **)vecAt(&have->params, j);
+                /* Substitute only when the type actually mentions a parameter: `ttEquals` is
+                 * interning identity, and rebuilding `i64` through `ttSubstitute` produces a
+                 * look-alike node that would never compare equal (found by a false positive on
+                 * the positive case). */
+                Type  *wantT = mentionsParam(wp->type)
+                             ? ttBase(ttSubstitute(c->tt, wp->type, &selfParams, &selfArgs))
+                             : ttBase(wp->type);
+                if (!ttEquals(wantT, ttBase(hp->type)))
+                    ckError(c, have->line,
+                            "A trait method's parameter types are part of the contract and must"
+                            " match exactly (`Self` stands for the implementing type).",
+                            "`%s`: parameter %zu of `%s` is `%s`, but the trait declares `%s`",
+                            im->trait->name, j + 1, want->name,
+                            typeStr(c, ttBase(hp->type)), typeStr(c, wantT));
+            }
+            Type *wantR = want->ret && mentionsParam(want->ret)
+                        ? ttBase(ttSubstitute(c->tt, want->ret, &selfParams, &selfArgs))
+                        : (want->ret ? ttBase(want->ret) : NULL);
+            Type *haveR = have->ret ? ttBase(have->ret) : NULL;
+            if (wantR && haveR && !ttEquals(wantR, haveR))
+                ckError(c, have->line,
+                        "A trait method's return type is part of the contract and must match"
+                        " exactly (`Self` stands for the implementing type).",
+                        "`%s`: `%s` returns `%s`, but the trait declares `%s`",
+                        im->trait->name, want->name, typeStr(c, haveR), typeStr(c, wantR));
+        }
+    }
+
 }
 
 /* Check the shape of a method: where it is declared, and what `self` is.
@@ -4359,6 +4423,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                              "`%s` is already implemented for `%s` (first at line %d)",
                              im->traitName, im->typeName, prev->line);
             }
+            im->trait = tr;
             /* Completeness. Whether the signatures agree is a question for the types, and is
              * answered once those are resolved; this half asks whether the names are there. */
             for (size_t k = 0; k < tr->methods.len; k++) {
@@ -4432,6 +4497,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * the operand types, which is only meaningful then). */
         for (size_t j = 0; j < im->methods.len; j++) {
             FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
+            im->target = t;                 /* resolved here, read by the conformance pass and codegen */
             mth->owner = sd;
             *(FuncDef **)vecPush(&sd->methods) = mth;
         }
@@ -4459,6 +4525,17 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
     for (size_t i = 0; i < m->funcs.len; i++)
         resolveSignature(&c, *(FuncDef **)vecAt(&m->funcs, i));
+
+    /* Trait method signatures are resolved here for the same reason struct methods are: the
+     * conformance check compares resolved types on both sides. `Self` resolves because the
+     * parser gave every signature that type parameter (see parseTrait) -- which is the whole
+     * implementation of "`Self` is an implicit type parameter". */
+    for (size_t i = 0; i < m->traits.len; i++) {
+        TraitDef *td = *(TraitDef **)vecAt(&m->traits, i);
+        for (size_t j = 0; j < td->methods.len; j++)
+            resolveSignature(&c, *(FuncDef **)vecAt(&td->methods, j));
+    }
+
 
     checkGlobals(&c);
     checkDeclarations(&c);

@@ -22,6 +22,7 @@ typedef struct TypeDef TypeDef;
 typedef struct StructDef StructDef;
 typedef struct FuncDef FuncDef;
 typedef struct FieldDef FieldDef;
+typedef struct TraitDef  TraitDef;
 typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 
@@ -780,6 +781,8 @@ typedef struct {
 typedef struct {
     const char *typeName;   /* the type the methods attach to, e.g. `i64` or `point` */
     const char *traitName;  /* `impl Trait for Type`: the trait, or NULL for an inherent impl */
+    Type       *target;     /* the resolved implementing type (`Self` substitutes to this) */
+    TraitDef   *trait;      /* the resolved trait; NULL for an inherent impl */
     int         line;
     Vec         methods;    /* FuncDef*: `owner` is filled in when the block is attached */
 } ImplDef;
@@ -794,11 +797,11 @@ typedef struct {
  *
  * `Self` inside a trait body is an **implicit type parameter**: the trait is a template over
  * the implementing type, which is why `Self` is legal there and unknown anywhere else. */
-typedef struct {
+struct TraitDef {
     const char *name;
     int         line;
     Vec         methods;    /* FuncDef*: signatures only (`body == NULL`) */
-} TraitDef;
+};
 
 typedef struct {
     Vec structs;                 /* StructDef* */

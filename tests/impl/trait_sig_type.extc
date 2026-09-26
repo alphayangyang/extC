@@ -1,0 +1,6 @@
+// 反例⑤：签名不符（返回类型；`Self` 应代入实现类型）
+// expect: but the trait declares `i64`
+trait Get { fn get(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Get for box { fn get(self: ref box) -> bool { return true } }
+fn main() -> i32 { return 0 }

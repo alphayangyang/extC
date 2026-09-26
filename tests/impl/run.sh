@@ -63,6 +63,8 @@ check_pos impl_trait_ok tests/impl/trait_ok.extc
 check_err tests/impl/trait_unknown.extc '`impl` on unknown trait `Nope`'
 check_err tests/impl/trait_missing.extc 'is missing `other`'
 check_err tests/impl/trait_dup.extc     'is already implemented for `box`'
+check_err tests/impl/trait_sig_arity.extc 'does not match the signature the trait declares'
+check_err tests/impl/trait_sig_type.extc  'but the trait declares `i64`'
 
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
