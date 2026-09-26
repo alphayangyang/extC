@@ -532,6 +532,20 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 3. **发射时要处在协程自己的名字修饰上下文里** ✗ —— 那段发在 helpers 之后，上一个泛型实例的替换上下文可能还开着，`cFuncName` 于是把名字弄成 `vector$vector_i32_g$step`。试过 `substEnterFunc/substLeaveFunc` 包起来，**没有解决**；下一轮先弄清 `cFuncName` 到底依赖哪份状态再动手。
 4. **验收探针必须真的 spawn 并驱动** ✗ —— 第一版 `main` 只 `return 0`，协程被当未使用省略，而原型还在 ⇒ `-Werror=unused-function`，即使编过也什么都没验到。
 
+**第六轮尝试：方向被实验证实（代码回退，结论留下）**。做法是"先做小实验验证方向，再动手重构"：
+
+把协程体的发射**放回 `genFunc` 的正常流程**（哪怕签名暂时不对、生成物编不过），再数生成物里那四个符号：`vector<i32>::withCap` / `push` / `len` / `grow` **各出现 3 次**（原型 + 定义 + 调用），与普通程序**完全一致**。
+
+⇒ 根因确认：**侧路发射绕过了正常流程的实例登记**。前几轮排除掉的三条（`used` 标记、实例表、缓冲切换）都不是原因 —— 这一条才是。
+
+接下来是三件机械活：
+
+1. **签名钩子**：`g->coroFunc` 非空时，发 step 自己的签名（`EXTC_UNUSED static bool <fn>$step(struct <fn>$frame *f) {`）加 `switch (f->pc) { case 0: ;`；
+2. **收尾钩子**：发 `f->pc = <done>; return false; } return false; }`，并**恢复 `genFunc` 开头保存的那批状态**（`retType`/`inMain`/`tmpSeq`/`noArena`/`owSites`/`owCalls`/`owLocal`/`indent`）；
+3. **压掉 prologue 里假设"有隐藏参数、有自己 arena"的部分**：zone 标记（`__extc_zm1` 在 step 里成了未用变量）与 arena 数组（`extc_arena __extc_a[3]`）。
+
+**教训（第二次，同一个坑）**：不要用"文本切片"去改 C 代码。两次都把函数体切坏过（一次把 `check_top.c` 清成 0 行，一次让 `genFunc` 结构失衡）。钩子一律**先 `read` 看清锚点，再用 `edit` 手工改**。
+
 **第五轮尝试（同样回退）用生成物把链条走通了一半**，关键结论是：**不是 `used` 标记的问题**。
 
 实测（普通 vs 协程两次对照，全部带"阶段确实跑了"的打印）：
