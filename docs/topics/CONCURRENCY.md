@@ -562,6 +562,30 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 
 一个细节值得写下来：任务 place 是**懒**建的 —— 只有协程需要自己那块存储（建池）时才有任务，所以那个判据里的协程要建池。表本身也带依赖：它坐在池的 zone 原语上，所以生成任务表时要把池运行期也标成"需要"（与 zone 实参兜底同一条规则）。
 
+**统一句柄（定案，待落地）**：`coroutine<T>` 这个**写法**表示**句柄**，未标注的 `var c = f(...)` 保持**不装箱**。
+
+    未标注：  var c = worker(3, 0)                    /* c 的类型是 worker$frame ⇒ 帧在栈上 ✓ 零分配 ✓ */
+    标注了：  var v: vector<coroutine<i64>> = …       /* 元素是句柄 ⇒ 帧从任务 place 分配 ✓ */
+              v.push(worker(3, 0))                    /* 调用点**装箱**：extc_task_alloc 帧 + kind 编号 ✓ */
+              while v[i].next() { v[i].value() }      /* 句柄上的 next/value ⇒ 按 kind 分派 ✓ */
+
+三条一起落（分着落会出现"接受但生成错 C"的中间态）：
+
+1. **检查器**：`coroutine<T>` 允许当存储类型（撤掉 check_stmt.c:236 那条拒绝）；在 prelude 那个
+   标记类型上合成 `next(self: mut ref coroutine<T>) -> bool` 与 `value(self: ref coroutine<T>) -> T`
+   —— 与帧上的那两个**同形**，只是 self 是句柄；`T` 走既有的实例化替换，所以 `value()` 的返回类型
+   自然是每个实例各自的 `T` ✓
+2. **codegen**：句柄的 C 表示是一个共享结构 `struct extc_coro { void *frame; int64_t kind; }`
+   （`coroutine<T>` 的实例类型 cType 都映射到它）；每个协程函数有一个**编译期 kind 编号**；
+   句柄方法发成 `switch (h->kind)` 分派到 `<fn>$next` / `<fn>$frame`.ret；每个用到的 `T` 一个
+   `value` 辅助函数（返回类型随 T 变）
+3. **装箱点**：类型从"某协程的帧"**强制到**"句柄"的地方（赋值/实参/元素）⇒ 发
+   `extc_task_begin()` + `extc_task_alloc` 帧 + 逐个参数写进**分配出来的那块** + 交出句柄。
+   装箱的协程**一定有任务**（帧要有地方住），所以 `hasZone` 对装箱路径恒为真 ✓
+
+判据 `tests/coro/coro_handles.extc` 已经立着（三个 worker 的句柄进 vector 按顺序驱动，期望 11），
+今天响亮地被拒 —— 三处落地后翻绿 ✓
+
 **`src/coroutine.c`（任务表，运行时的归属地）**：与 `pools.c` 同构 —— 编译器管的部分（`yield` 脱糖、帧、step）留在编译器里，**运行期**的部分归这个文件。它是**按需发射**的：不 spawn 带任务 place 的协程的程序，一行都不带。
 
     int64_t extc_task_begin(int64_t *idOut);   /* 懒进入任务的地方，登记，回 zone 与 id */
