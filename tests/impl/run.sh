@@ -71,6 +71,38 @@ check_err tests/impl/trait_self_outside.extc     'unknown type `Self`'
 # 孤儿规则：`impl` 的模块既没声明 trait 也没声明类型（trait/类型都来自另一个模块）
 check_err tests/impl/orphan_impl.extc            'is an orphan'
 
+# 静态方法表：① 槽位顺序 = trait 声明顺序；② 表存在但**没有被调用**（第一期无动态分发）；
+# ③ 生成物满足**文档化合同**：-std=c11 -fwrapv，且零告警（驱动自己带 -std=c11，但 --check-c 用 -w
+#    静音了警告，所以这里取出生成物独立编译一次）。这三条挡的是一整类错误：本会话实测过
+#    `typeof`（严格模式下须写 `__typeof__`）、表文本被插进按偏移重写的区域（未闭合注释）。
+echo "== 静态方法表（声明顺序、无间接调用、生成物合同）=="
+tmp=$(mktemp -d)
+if "${EXTC:-./build/extc}" -w --no-line-map -o "$tmp/tt.c" tests/impl/trait_table.extc >/dev/null 2>&1; then
+    line=$(grep -m1 'extc_vt\$Both\$box' "$tmp/tt.c")
+    order=0
+    printf '%s' "$line" | grep -q '\*zeta;.*\*alpha;' && order=1
+    calls=$(grep -c 'extc_vt[^ ]*[[:space:]]*(' "$tmp/tt.c" || true)
+    if [ "$order" = 1 ]; then
+        echo "  ok   vtable_order    ->  字段顺序 = 声明顺序（zeta 在前，与字母序相反）"
+    else
+        echo "  FAIL vtable_order    ->  $line"; fail=1
+    fi
+    if [ "$calls" = 0 ]; then
+        echo "  ok   vtable_no_call  ->  表只出现在定义处，无间接调用"
+    else
+        echo "  FAIL vtable_no_call  ->  出现 $calls 处调用"; fail=1
+    fi
+    if gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/tt.c" 2>"$tmp/err"; then
+        echo "  ok   vtable_contract ->  生成物在 -std=c11 -fwrapv -Wall -Werror 下零告警"
+    else
+        echo "  FAIL vtable_contract ->  合同编译失败"
+        head -3 "$tmp/err" | sed 's/^/        /'; fail=1
+    fi
+else
+    echo "  FAIL vtable          ->  trait_table.extc 编译失败"; fail=1
+fi
+rm -rf "$tmp"
+
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
 check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'

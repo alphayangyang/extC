@@ -5080,6 +5080,33 @@ static void markUnusedParams(CG *g, Buf *out) {
     out->cap  = nb.len + 1;
 }
 
+/* Is this method an implementation named by a static method table?
+ *
+ * Such a function is a **root**: nothing in the program calls it, yet the table refers to it, so
+ * it has to be emitted and must not be pruned as unreferenced. The reachability filter below only
+ * keeps `used` functions (plus `main`), which is why the first tables emitted nothing that
+ * resolved -- `'box_zeta' undeclared` in the generated C was how that showed up. Each of the two
+ * seeding loops (methods, free functions) asks this same question, so it lives here once.
+ *
+ * The owner is compared first, which keeps a same-named method of another type out; the name
+ * comparison is there because codegen can hold its own copy of a declaration (instances,
+ * substituted signatures). */
+static bool inTraitTable(Module *m, FuncDef *f) {
+    if (!f->owner) return false;
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+        if (!im->trait || !im->target) continue;
+        Type *bt = ttBase(im->target);
+        if (!bt || bt->sdef != f->owner) continue;
+        for (size_t j = 0; j < im->methods.len; j++) {
+            FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
+            if (mth == f) return true;
+            if (mth->name && f->name && strcmp(mth->name, f->name) == 0) return true;
+        }
+    }
+    return false;
+}
+
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     CG g;
     memset(&g, 0, sizeof g);
@@ -5264,7 +5291,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓
              * 为什么重要：一个小程序会带出 prelude + 库的**整片**代码 ✗
              * （实测 `tests/io/stream-file.extc` 曾生成 **2437 行 / 169 个静态函数** ✓）*/
-            if (!md->used) continue;
+            if ((!md->used) && !inTraitTable(m, md)) continue;
             *(FuncDef **)vecPush(&g.funcs) = md;
         }
     }
@@ -5293,7 +5320,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         /* 同上：自由函数/库函数/预置也按可达性剪枝 ✓
          * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
          * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
-        if (!f->used && !cgIsMain(f)) continue;
+        if (!f->used && !cgIsMain(f) && !inTraitTable(m, f)) continue;
         *(FuncDef **)vecPush(&g.funcs) = f;
     }
 
@@ -6133,7 +6160,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                                                : (f->isInline ? "EXTC_INLINE " : "static "),
                   ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
-        if (!cgIsMain(f) && !f->isExtern) {
+        if (!cgIsMain(f) && !f->isExtern && !inTraitTable(m, f)) {
             DeadFunc *df = arenaAllocZero(g.arena, sizeof *df);
             df->name  = cFuncName(&g, f);
             df->proto = bufCstr(&sig);
@@ -6304,6 +6331,58 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* A function nothing calls says so; then the parameters a body never reads. */
     markUncalledFunctions(&g, out);
     markUnusedParams(&g, out);
+
+    /* Static method tables: one per (trait, type) pair, in the trait's **declaration order**.
+     *
+     * Nothing reads them yet. The first reader is `dyn`, and what it needs is exactly this: the
+     * implementations of a trait for a type, in a fixed order, reachable by a stable key
+     * (`Trait$Type`). The order is the trait's declaration order -- never hashing, sorting or
+     * insertion order -- because a later dynamic-link step would treat it as ABI.
+     *
+     * Emitted **last**, after every pass that rewrites the unit by byte offset: writing this
+     * earlier (through `cgLine`, or appended to `g.body`) put the table where those passes were
+     * working, and since they locate spans by name -- which the table repeats -- the result was a
+     * header comment cut in half, which the generated-C contract judge reports as an unterminated
+     * comment.
+     *
+     * `__typeof__(fn) *` is deliberate: each field takes the exact type of its implementation, so
+     * this needs no opinion about receivers, the hidden home-arena parameter, or the C spelling of
+     * any extC type. The reserved spelling (`__typeof__`, not `typeof`) is what compiles under
+     * `-std=c11`, and `__attribute__((unused))` keeps the zero-warning rule while nothing refers
+     * to the table. */
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+        if (!im->trait || !im->target) continue;
+        Type *bt = ttBase(im->target);
+        StructDef *tsd = bt ? bt->sdef : NULL;
+        if (!tsd) continue;
+        Buf tb;
+        bufInit(&tb, arena);
+        bufPuts(&tb, "static const struct {");
+        for (size_t k = 0; k < im->trait->methods.len; k++) {
+            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
+            FuncDef *have = NULL;
+            for (size_t j = 0; j < tsd->methods.len && !have; j++) {
+                FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                if (strcmp(cand->name, want->name) == 0) have = cand;
+            }
+            if (!have) continue;             /* completeness is enforced by the checker */
+            bufPrintf(&tb, " __typeof__(%s) *%s;", cFuncName(&g, have), want->name);
+        }
+        bufPrintf(&tb, " } __attribute__((unused)) extc_vt$%s$%s = {", im->trait->name, tsd->name);
+        for (size_t k = 0; k < im->trait->methods.len; k++) {
+            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
+            FuncDef *have = NULL;
+            for (size_t j = 0; j < tsd->methods.len && !have; j++) {
+                FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                if (strcmp(cand->name, want->name) == 0) have = cand;
+            }
+            if (!have) continue;
+            bufPrintf(&tb, "%s %s", k ? "," : "", cFuncName(&g, have));
+        }
+        bufPuts(&tb, " };\n");
+        bufPuts(out, bufCstr(&tb));
+    }
 
     return !ctx->hasError;
 }
