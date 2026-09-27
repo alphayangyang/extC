@@ -435,7 +435,104 @@ VIEWS = [
      '  while i < i64(s.len) { y = y + s[i]\n    i = i + i64(1) }\n  return i32(x - y) }'),
 ]
 
-GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS}
+# ---------------------------------------------------------------- dyn 表
+# 攻击面：表的构造与派发、对象安全性边界（无接收者 / 泛型 / 返回 Self）、表里的 NULL 槽、
+# dyn 值存容器/结构体/协程、生命周期（载荷先死）、跨模块的 impl、内建类型上的 impl。
+DYN = [
+    ('D1 基本构造与派发', 'ok',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(7)\n  var d: dyn Tag = dyn Tag(a)\n'
+     '  return i32(d.tag()) - 7 }'),
+    ('D2 无接收者的方法不能进 dyn（对象安全）', 'reject',
+     'trait Bad { fn nope() -> i64 }\nstruct s { v: i64 }\n'
+     'impl Bad for s { fn nope() -> i64 { return i64(1) } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(0)\n  var d: dyn Bad = dyn Bad(a)\n'
+     '  return i32(d.nope()) }'),
+    ('D3 返回 Self 的方法不能进 dyn', 'reject',
+     'trait Clone2 { fn dup(self: ref Self) -> Self }\nstruct s { v: i64 }\n'
+     'impl Clone2 for s { fn dup(self: ref s) -> s { var r: s\n  r.v = self.v\n  return r } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(1)\n  var d: dyn Clone2 = dyn Clone2(a)\n'
+     '  return i32(d.dup().v) }'),
+    ('D4 dyn 值存进变量并在函数间传递', 'ok',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'fn get(d: dyn Tag) -> i64 { return d.tag() }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(3)\n  var d: dyn Tag = dyn Tag(a)\n'
+     '  var e: dyn Tag = d\n  return i32(get(e)) - 3 }'),
+    ('D5 两种载荷派发到各自的实现', 'ok',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\nstruct t { w: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'impl Tag for t { fn tag(self: ref t) -> i64 { return self.w * i64(2) } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(1)\n  var b: t\n  b.w = i64(2)\n'
+     '  var d1: dyn Tag = dyn Tag(a)\n  var d2: dyn Tag = dyn Tag(b)\n'
+     '  return i32(d1.tag() + d2.tag()) - 5 }'),
+    ('D6 内建类型上的 impl 进 dyn', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\n'
+     'impl Tag for i64 { fn tag(self: ref i64) -> i64 { return *self + i64(1) } }\n'
+     'fn main() -> i32 { var v: i64 = 5\n  var d: dyn Tag = dyn Tag(v)\n'
+     '  return i32(d.tag()) - 6 }'),
+    ('D7 带参数的方法经 dyn 派发', 'ok',
+     'trait Add2 { fn plus(self: ref Self, n: i64) -> i64 }\nstruct s { v: i64 }\n'
+     'impl Add2 for s { fn plus(self: ref s, n: i64) -> i64 { return self.v + n } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(10)\n  var d: dyn Add2 = dyn Add2(a)\n'
+     '  return i32(d.plus(i64(5))) - 15 }'),
+    ('D8 实现里改自己的字段（派发到真身）', 'ok',
+     'trait Bump { fn bump(self: mut ref Self) }\nstruct s { v: i64 }\n'
+     'impl Bump for s { fn bump(self: mut ref s) { self.v = self.v + i64(1) } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(1)\n  var d: dyn Bump = dyn Bump(a)\n'
+     '  d.bump()\n  d.bump()\n  return i32(a.v) - 3 }'),
+    ('D9 泛型 impl 的实例进 dyn（F1 那条）', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct pair<T> { a: T }\n'
+     'impl<T> Tag for pair<T> { fn tag(self: ref pair<T>) -> i64 { return i64(7) } }\n'
+     'fn main() -> i32 { var p: pair<i64>\n  p.a = i64(0)\n  var d: dyn Tag = dyn Tag(p)\n'
+     '  return i32(d.tag()) - 7 }'),
+    ('D10 dyn 值从函数返回（句柄活着）', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nvar g: i64 = 4\n'
+     'struct s { v: i64 }\nimpl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'fn make() -> dyn Tag { var a: s\n  a.v = i64(4)\n  return dyn Tag(a) }\n'
+     'fn main() -> i32 { var d: dyn Tag = make()\n  return i32(d.tag()) - 4 }'),
+    ('D11 dyn 值放进数组（两种载荷）', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\nstruct t { w: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'impl Tag for t { fn tag(self: ref t) -> i64 { return self.w } }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(1)\n  var b: t\n  b.w = i64(2)\n'
+     '  var arr: [2]dyn Tag = [dyn Tag(a), dyn Tag(b)]\n'
+     '  return i32(arr[0].tag() + arr[1].tag()) - 3 }'),
+    ('D12 载荷先死：dyn **复制**载荷 ⇒ 安全（题目原先期望 reject 是错的）', 'ok',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'fn main() -> i32 { var d: dyn Tag = makeBad()\n  var x: i32 = 0\n'
+     '  { var a: s\n    a.v = i64(1)\n    d = dyn Tag(a) }\n  return i32(d.tag()) + x }\n'
+     'fn makeBad() -> dyn Tag { var z: s\n  z.v = i64(0)\n  return dyn Tag(z) }'),
+    ('D13 dyn 值存进协程并跨 suspend 用', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'fn gen(a: s) -> coroutine<i64> { var d: dyn Tag = dyn Tag(a)\n  yield d.tag()\n'
+     '  yield d.tag() }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(6)\n  var c = gen(a)\n  var t: i64 = 0\n'
+     '  while c.next() { t = t + c.value() }\n  return i32(t) - 12 }'),
+    ('D14 跨模块的 impl 经 dyn 派发', 'ok', {
+        'tag.extc': 'trait Tag { fn tag(self: ref Self) -> i64 }\nfn go(d: dyn Tag) -> i64 { return d.tag() }',
+        'thing.extc': 'use tag\nstruct thing { v: i64 }\n'
+                     'impl Tag for thing { fn tag(self: ref thing) -> i64 { return self.v + i64(1) } }',
+        'main.extc': 'use tag\nuse thing\nfn main() -> i32 { var t: thing::thing\n  t.v = i64(8)\n'
+                     '  return i32(tag::go(dyn Tag(t))) - 9 }'}),
+    ('D15 两个方法，其中一个没实现（完整性）', 'reject',
+     'trait Two { fn a(self: ref Self) -> i64\n  fn b(self: ref Self) -> i64 }\n'
+     'struct s { v: i64 }\nimpl Two for s { fn a(self: ref s) -> i64 { return self.v } }\n'
+     'fn main() -> i32 { var x: s\n  x.v = i64(1)\n  var d: dyn Two = dyn Two(x)\n'
+     '  return i32(d.a() + d.b()) }'),
+    ('D16 dyn 值当结构体字段', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct s { v: i64 }\n'
+     'impl Tag for s { fn tag(self: ref s) -> i64 { return self.v } }\n'
+     'struct holder { d: dyn Tag }\n'
+     'fn main() -> i32 { var a: s\n  a.v = i64(5)\n  var h: holder\n  h.d = dyn Tag(a)\n'
+     '  return i32(h.d.tag()) - 5 }'),
+]
+
+GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
+          'dyn': DYN}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)

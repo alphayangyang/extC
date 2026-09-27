@@ -763,12 +763,18 @@ impl Bad for s { fn nope() -> i64 { return i64(1) } }
 `tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0** ✓（零输出变化 ⇒ 只新增拒绝 ✓）；回归
 `tests/errors/dyn_no_receiver.extc` ✓；parrun ✓；`make` 零诊断 ✓。
 
-### dyn 组余下的一条（下一轮 ✓）
+### D12 结案 ✓：是**我题目的期望写错了** —— `dyn` **复制**载荷，本来就安全
 
-**D12**（`ok_or_reject` 里被判"期望被拒但通过了" ✗）：dyn 值在**载荷所在作用域结束之后**继续使用 ✓
-（`{ var a: s  d = dyn Tag(a) }` 之后 `d.tag()` ✗）⇒ 程序照常跑出结果 ✓，没有 trap ✓（句柄按
-`{pid, slot, gen}` 三元组本应在槽位释放后失效 ✓）⇒ 要查这是**提升到了外层 arena**（安全 ✓）
-还是**use-after-free**（✗ 严重 ✓）。下一轮第一个打这里 ✓。
+判据三条 ✓：
+
+1. 生成物是 `extc_dyn_put((const void *)&__extc_dyp0, (int64_t)sizeof(s), &extc_vt$Tag$s)` ✓ ⇒
+   载荷被**复制**进池存储 ✓（不是留一个指向局部变量的指针 ✓）；
+2. ASan/UBSan 下运行**零报告** ✓（无 use-after-free ✓）；
+3. 更狠的形状也被**正确挡住** ✓：载荷里含**视图**（`struct holder { s: slice<i64>  v: i64 }` ✓）
+   且局部先死 ⇒ 检查器报 "this return value would hold a reference to a local variable that dies
+   first" ✓ —— **逃逸分析**在起作用 ✓（这条才是真正的攻击面 ✓，它守住了 ✓）。
+
+⇒ 题目期望已从 `reject` 改成 `ok` ✓，`tools/attack.py dyn` 现在 **16/16** ✓。
 
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
