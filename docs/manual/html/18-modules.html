@@ -129,6 +129,13 @@ indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)  
 <span class="k">extern</span>!(<span class="c">"libc"</span>) <span class="k">fn</span> <span class="f">fill</span>(p: <span class="k">ref</span> <span class="t">i32</span>, n: <span class="t">i32</span>) -&gt; <span class="t">i32</span>     <span class="c">// 没签字</span>
 <span class="c">// fill(ref x, 3)  ⇒ **编译错误**：C 可能把 `&x` 存到帧外（默认最保守）</span></code></pre>
 <ul><li>参数/返回只用<strong>标量或单指针</strong>（<code>ref T</code> / <code>?ref T</code>）—— <code>slice&lt;T&gt;</code> 在 C 那边是两个参数</li><li>想调"往 buffer 里写"的那种（<code>read</code>/<code>write</code>），传 <code>s.data</code> 和 <code>s.len</code></li><li><code>owned</code>（来自 C 的内存由本模块负责）<strong>尚未实现</strong> ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是<strong>显式释放</strong>，编译器只证明能证明的泄漏）</li></ul>
+<p><code>Thread=</code> 是同一套签字里的<strong>第三项</strong>，为并行准备（2026-09-28 新增）：</p>
+<pre class="lang-extc"><code><span class="k">extern</span>!(<span class="c">"extc-runtime"</span>) <span class="k">fn</span> <span class="f">extc_sock_read</span>(fd: <span class="t">i64</span>, buf: <span class="k">ref</span> <span class="t">u8</span>, n: <span class="t">i64</span>) -&gt; <span class="t">i64</span>
+    effects Addr=<span class="n">0</span> Cont=<span class="n">0</span> Thread=<span class="n">0</span>   <span class="c">// 只碰实参（fd 与缓冲区）⇒ worker 里可以调用</span>
+
+<span class="k">extern</span>!(<span class="c">"extc-runtime"</span>) <span class="k">fn</span> <span class="f">extc_epoll_wait</span>(ep: <span class="t">i64</span>, timeout_ms: <span class="t">i64</span>) -&gt; <span class="t">i64</span>
+    effects Addr=<span class="n">0</span> Cont=<span class="n">0</span> Thread=<span class="n">1</span>   <span class="c">// 碰实例里那个待处理队列 ⇒ 不该跨线程共享</span></code></pre>
+<ul><li><code>Thread=0</code>：这次调用<strong>不碰任何跨线程共享的状态</strong>（模块级 <code>var</code>、运行期缓冲、输出流）⇒ 它允许出现在 worker 里；</li><li><code>Thread=1</code>（<strong>缺省</strong>）：它碰 ⇒ 保守处理。<strong>没有 <code>effects</code> 子句时同样按 1 处理</strong>，与 <code>Addr</code> 那条"默认最保守"是同一条规矩；</li><li>取值只允许 0 或 1（<code>Thread=2</code> 会报错）：这是关于<strong>整次调用</strong>的一个事实，不像 <code>Addr</code>/<code>Cont</code> 那样是按实参逐位的掩码；</li><li>它服务的是并行那一步：worker 体内只允许调用 <code>Thread=0</code> 的东西，于是诊断能说清原因（"<code>fs</code> 用了模块级缓冲"），而不是笼统地拒绝一切。</li></ul>
 <h3 id="12-4-让编译器内联-inline-2026-09-24-新增">12.4 让编译器内联：<code>@inline</code>（2026-09-24 新增）</h3>
 <p>写在<strong>函数声明前</strong>，要求这个调用点必须被内联：</p>
 <pre class="lang-extc"><code>@inline <span class="k">fn</span> <span class="f">sq</span>(x: <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> x * x }        <span class="c">// 普通函数</span>

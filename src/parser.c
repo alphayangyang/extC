@@ -375,8 +375,9 @@ static FuncDef *parseExtern(Parser *p) {
         if (at(p, "effects")) {
             take(p);
             f->hasEffects = true;
+            f->extThreadMask = 1u;   /* 缺省保守：假定它碰跨线程共享的状态 */
             for (;;) {
-                Token *nm = expectIdent(p, "`Addr` or `Cont`");
+                Token *nm = expectIdent(p, "`Addr`, `Cont` or `Thread`");
                 if (!nm) return NULL;
                 if (!expect(p, "=", NULL)) return NULL;
                 Token *val = cur(p);
@@ -387,16 +388,26 @@ static FuncDef *parseExtern(Parser *p) {
                 }
                 take(p);
                 unsigned bits = (unsigned)val->ival;
-                if (strcmp(nm->text, "Addr") == 0)      f->extAddrMask = bits;
-                else if (strcmp(nm->text, "Cont") == 0) f->extContMask = bits;
+                if (strcmp(nm->text, "Addr") == 0)        f->extAddrMask = bits;
+                else if (strcmp(nm->text, "Cont") == 0)   f->extContMask = bits;
+                else if (strcmp(nm->text, "Thread") == 0) {
+                    if (bits > 1u) {
+                        ctxError(p->ctx, nm->line, nm->col,
+                                 "`Thread` is a single fact about the call, not a per-argument mask:"
+                                 " 0 = it touches no cross-thread shared state, 1 = it does.",
+                                 "`Thread=%u` is out of range (use 0 or 1)", bits);
+                        return NULL;
+                    }
+                    f->extThreadMask = bits;
+                }
                 else {
                     ctxError(p->ctx, nm->line, nm->col,
                              "`Addr` = it stores `&argument`; `Cont` = it stores a pointer it"
                              " read out of an argument. Bit i = the i-th argument.",
-                             "unknown effect `%s` (only `Addr` and `Cont` exist)", nm->text);
+                             "unknown effect `%s` (only `Addr`, `Cont` and `Thread` exist)", nm->text);
                     return NULL;
                 }
-                if (at(p, "Addr") || at(p, "Cont")) continue;
+                if (at(p, "Addr") || at(p, "Cont") || at(p, "Thread")) continue;
                 break;
             }
             continue;

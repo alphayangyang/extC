@@ -635,6 +635,13 @@ struct FuncDef {
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;
+    /* `Thread=N`: N = 0 表示这次调用**不碰跨线程共享的状态**（模块级 `var`、运行期缓冲、输出流），
+     * 因此它可以出现在 worker 里；N = 1（缺省）表示它碰，保守处理。
+     *
+     * 与 `Addr`/`Cont` 同一性质：**作者签字**，不是编译器算出来的。区别在于这两个已经有人读
+     * （寿命分析），而 `Thread` 至今只被存下来 —— 它服务的是并行那一步：worker 体内只许调用
+     * `Thread=0` 的东西，诊断才有可能说人话（"`fs` 用了模块级缓冲"），而不是笼统地拒绝一切。 */
+    unsigned    extThreadMask;
     bool        reserved;        /* came from the prelude */
     /* Does this function need a home arena?
      *

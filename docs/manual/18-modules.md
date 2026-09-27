@@ -131,6 +131,21 @@ extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
 - 想调"往 buffer 里写"的那种（`read`/`write`），传 `s.data` 和 `s.len`
 - `owned`（来自 C 的内存由本模块负责）**尚未实现** ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是**显式释放**，编译器只证明能证明的泄漏）
 
+`Thread=` 是同一套签字里的**第三项**，为并行准备（2026-09-28 新增）：
+
+```extc
+extern!("extc-runtime") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0 Thread=0   // 只碰实参（fd 与缓冲区）⇒ worker 里可以调用
+
+extern!("extc-runtime") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64
+    effects Addr=0 Cont=0 Thread=1   // 碰实例里那个待处理队列 ⇒ 不该跨线程共享
+```
+
+- `Thread=0`：这次调用**不碰任何跨线程共享的状态**（模块级 `var`、运行期缓冲、输出流）⇒ 它允许出现在 worker 里；
+- `Thread=1`（**缺省**）：它碰 ⇒ 保守处理。**没有 `effects` 子句时同样按 1 处理**，与 `Addr` 那条"默认最保守"是同一条规矩；
+- 取值只允许 0 或 1（`Thread=2` 会报错）：这是关于**整次调用**的一个事实，不像 `Addr`/`Cont` 那样是按实参逐位的掩码；
+- 它服务的是并行那一步：worker 体内只允许调用 `Thread=0` 的东西，于是诊断能说清原因（"`fs` 用了模块级缓冲"），而不是笼统地拒绝一切。
+
 ### 12.4 让编译器内联：`@inline`（2026-09-24 新增）
 
 写在**函数声明前**，要求这个调用点必须被内联：

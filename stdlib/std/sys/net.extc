@@ -23,47 +23,47 @@ extern!("extc-runtime") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64
     effects Addr=0 Cont=0
 /* 一对已连接的 AF_UNIX socket：fd 写进 `out[0]` 与 `out[1]`。返回 0 成功。 */
 extern!("extc-runtime") fn extc_sock_pair(out: ref i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 读一次：返回字节数，0 是对方关了，负数出错。 */
 extern!("extc-runtime") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 写一次：返回写了几个字节。 */
 extern!("extc-runtime") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 
 /* AF_UNIX 监听。路径首字节是 NUL 就是**抽象命名空间**：不落盘、不用清理、随进程消失 —— 判据正合用。 */
 extern!("extc-runtime") fn extc_unix_listen(path: ref u8, len: i64, backlog: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 连上去（同一个抽象名字）⇒ 返回 fd。 */
 extern!("extc-runtime") fn extc_unix_connect(path: ref u8, len: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 非阻塞 accept：backlog 空的时候返回负数（EAGAIN）。 */
 extern!("extc-runtime") fn extc_sock_accept(listener: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 把 fd 设成非阻塞。 */
 extern!("extc-runtime") fn extc_sock_nonblock(fd: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 关掉 Nagle。小批量、多轮写的时候，Nagle 与对端的 delayed ACK 会凑出经典的 ~40ms 停滞
  *（实测：pipeline 形态、1024 字节回显，extC 侧设上它之后从 363 req/s 变成百万级）。 */
 extern!("extc-runtime") fn extc_sock_nodelay(fd: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 
 /* loopback 上的 TCP 监听。端口传 0 表示让内核挑（用 `extc_sock_local_port` 读回来）。
  * `sockaddr_in` 与字节序都在运行期里 —— extC 侧只收标量，和 AF_UNIX 那边同形。 */
 extern!("extc-runtime") fn extc_tcp_listen(port: i64, backlog: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 连到 loopback 上的某个端口。 */
 extern!("extc-runtime") fn extc_tcp_connect(port: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 这个 fd 绑在哪个端口上（配合 `port = 0` 用）。 */
 extern!("extc-runtime") fn extc_sock_local_port(fd: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 从偏移处写（部分写要接着写 ✓ extC 没有指针运算 ⇒ 偏移由运行期加）。 */
 extern!("extc-runtime") fn extc_sock_write_from(fd: i64, buf: ref u8, from: i64, n: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 半关写端：对端看到 EOF，这一侧还能把回声读回来。 */
 extern!("extc-runtime") fn extc_sock_shutdown_wr(fd: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 
 /* 和 `extc_tcp_listen` 同形，但设上 `SO_REUSEPORT`（在 bind **之前**）⇒ **N 个独立进程**可以绑
  * 同一个端口，内核按流哈希把连接分给它们。这就是多进程的全部：不共享内存、不加锁、不改语言 ——
@@ -75,4 +75,4 @@ extern!("extc-runtime") fn extc_sock_shutdown_wr(fd: i64) -> i64
  * 8 个单线程进程 **1,317,455 req/s / 15 MB RSS**；nginx 1.28.3 八个 worker（调优到牙齿）
  * 1,064,775 req/s / 249 MB。 */
 extern!("extc-runtime") fn extc_tcp_listen_shared(port: i64, backlog: i64) -> i64
-    effects Addr=0 Cont=0
+    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
