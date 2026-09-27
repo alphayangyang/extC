@@ -535,11 +535,24 @@ extc_th$Tag$pair_T$tag → 里面用 pair_tag((pair_T *)self)   ✗ pair_T 根�
   的 `bufPrintf(&vtDefs, "static const struct extc_vt$%s_t __attribute__…` 之后）手工定位 ✓，
   不要靠脚本猜括号 ✓。
 
-**完整补丁（下一轮手工落）** ✓：① `check_expr.c` 的 `dynTraitOf` 认"同 `sdef` 的泛型 impl" ✓；
-② 表发射的循环头改为"泛型 impl ⇒ 对 `g.insts` 里同 `sdef` 的每个实例各发一份" ✓；
-③ 发 thunk 前 `g->ownerPrefix = vtKey`、之后恢复 ✓。
+**尝试 4（三步全部手工落地 ✓，差最后一块 ✗）**：用**逐字锚点切片**改写（不再猜括号 ✓）⇒
 
-**注意闸门** ✓：这条修好后会让 `tools/golden.sh` 变红（**5 份产物不同 + 5 份非法 C** ✗，
+- ✓ 第①步（检查器放行）与第②步（按实例发表）**都成功**：表名 `extc_vt$Tag$pair_i64` ✓；
+- ✓ 第③步（`g->ownerPrefix = vtKey` ✓ 保存/恢复 ✓）**也成功**：thunk 体变成了
+  `return pair_i64_tag((pair_i64 *)self);` ✓ —— 名字正是实例限定的那个 ✓；
+- ✗ **但 `pair_i64_tag` 从未被生成** ⇒ `implicit declaration of function 'pair_i64_tag'` ✗。
+
+⇒ **最后一块** ✓：泛型 impl 的方法实例（`pair_i64_tag` ✓）只有在**被调用**时才由调用点造出来 ✓，
+被 **vt 表引用**时没人造它 ✗ ⇒ 表发射这一趟必须**主动为该实例造/取方法实例**（走第 6 轮那套
+"按实例解析方法"的入口 ✓，而不是直接用 `tsd->methods` 里的模板方法 ✓），这样 codegen 才会把它的
+函数体也发出来 ✓。
+
+⇒ 三次尝试的产出**都已回退** ✓（闸门保持 413/413 ✓）；完整补丁的四步（①检查器 ②按实例发表
+③ownerPrefix ④**造出实例方法**）都写在上面 ✓，前三步已验证可行 ✓。
+
+**注意闸门** ✓（尝试 4 实测：三步落地后闸门**仍是绿的** 413/413 ✓ —— 语料里的 dyn+泛型 impl 组合
+要么没走到这条路径、要么本来就正常 ✓；先前两次变红是我改坏了中间状态 ✗）：这条修到底后**可能**会让
+`tools/golden.sh` 变红（**5 份产物不同 + 5 份非法 C** ✗，
 `tests/dyn/dyn_stored_call.extc` 等 ✓）—— 说明语料里**确有**泛型 impl + dyn 的组合 ✓，所以这条修好
 之后要**重设这几份基准** ✓（并在提交信息里写明"新增按实例的 vt 表" ✓）。
 
