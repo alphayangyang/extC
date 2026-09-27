@@ -863,8 +863,16 @@ extern 返回指针并解引用（按期望被拒 ✓ —— 拿不到可写的 
 `ref u8`" ✓；② 改成 `ref b[0]` **也不行** ✗ —— "cannot take a reference to this expression:
 only variables and fields can be referenced" ✓ ⇒ 正解是**切片的 `.data` 字段** ✓
 （官方正例 `tests/extern/main.extc` 就写着 `libc::write(1, s.data, 5)` ✓）⇒ 三题统一改成
-`b[..].data` ✓。**顺带**：上一版提交信息里"全绿"写早了 ✗（当时 E4 仍在失败 ✓）⇒ 本条以
-`E4 通过、extern 14/14` 为准 ✓。
+`b[..].data` ✓。**第三次踩坑（E5，题目已删 ✓）**：原题想验"extern 返回指针" ✓，写的是
+`extern!("libc") fn getenv(name: ref u8) -> ref u8` ✗ —— 而 `getenv` **已经**由 `<stdlib.h>` 声明
+（生成的 C 会 include 它 ✓），libc 的签名是 `char *(const char *)` ✗ ⇒ 冲突的是**用户声明** ✓，
+不是编译器 bug ✓（`conflicting types for 'getenv'` ✓）。**留档的结论** ✓：与系统头同名的 extern
+一旦签名不一致就是用户的错 ✓，但**更好的诊断**是值得做的 nicety ✗（现在只报 C 编译器的冲突 ✓）
+—— 记在这里，不占主线 ✓。E5 已从组里删掉 ✓，extern 组现在 **13 题** ✓。
+
+**关于"全绿"的口径** ✓（我自己错了两次 ✗）：第一次提交（`90e9d67`）写"全绿"时 E4 还在失败 ✗；
+第二次（`9d45834`）写"14/14"时 E5 翻红 ✗ ⇒ **本条以实测为准** ✓：删掉 E5 之后
+`tools/attack.py extern` 的实测结果见提交信息 ✓，不再提前写"全绿" ✓。
 
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 

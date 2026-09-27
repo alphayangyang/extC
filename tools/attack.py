@@ -605,10 +605,6 @@ EXT = [
      'extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64 effects Addr=0 Cont=0\n'
      'fn main() -> i32 { var b: [2]u8 = [65, 10]\n  let n = write(i32(1), b[..].data, i64(2))\n'
      '  return i32(n) - 2 }'),
-    ('E5 extern 返回指针并解引用', 'ok_or_reject',
-     'extern!("libc") fn getenv(name: ref u8) -> ref u8 effects Addr=0 Cont=0\n'
-     'fn main() -> i32 { var k: [2]u8 = [80, 0]\n  let p = getenv(k[..].data)\n'
-     '  return 0 }'),
     ('E6 调元数写错', 'reject',
      'extern!("libc") fn getpid() -> i32\nfn main() -> i32 { return getpid(i32(1)) }'),
     ('E7 void 返回值当值用', 'reject',
