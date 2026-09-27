@@ -242,6 +242,16 @@ static void lexIdent(Lexer *lx, Vec *out, int line, int col) {
     size_t n = lx->pos - start;
     const char *text = lx->src + start;
 
+    /* `__` is reserved for what the compiler generates (C reserves it for the implementation for
+     * the same reason). Every name codegen invents -- instances, method holders, view helpers,
+     * tables, the runtime -- is spelled with that prefix, so a program cannot collide with one.
+     * The token is still pushed: one clear error beats a cascade from a missing name. */
+    if (n >= 2 && text[0] == '_' && text[1] == '_')
+        ctxError(lx->ctx, line, col,
+                 "The compiler gives its own generated names the `__` prefix (C reserves it for the"
+                 " implementation too), so a program may not use it.",
+                 "identifiers starting with `__` are reserved for the compiler");
+
     TokenKind kind = TK_IDENT;
     if (inList(KEYWORDS, text, n))           kind = TK_KEYWORD;
     else if (inList(BUILTIN_TYPES, text, n)) kind = TK_TYPE;

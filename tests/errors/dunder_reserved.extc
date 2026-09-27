@@ -1,0 +1,7 @@
+// 回归（主人 2026-09-28 的设计）：`__` 前缀保留给编译器生成的名字（C 也是这么为"实现"保留的）。
+// codegen 造出来的一切（实例名、方法持有者、视图辅助、各种表、运行期）都会用这个前缀，
+// 于是程序不可能与它们撞名 —— 整族 mangling 冲突（H10 的 pair_i64、撞运行期的 extc_arena 等）
+// 从根上消失。语言层面禁掉用户使用它，比事后逐个比对可靠得多。
+// expect: reserved for the compiler
+fn __helper(x: i64) -> i64 { return x }
+fn main() -> i32 { return i32(__helper(i64(1))) }
