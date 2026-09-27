@@ -169,7 +169,7 @@ zone（一个地方的索引头，独立旁链）
 
 * 生成物 **`-Wall -Wextra -Werror` 零告警**（`check.sh` 全量扫描）；
 * **ASan 含泄漏检查干净**（例：pool 注册表自己 `malloc` 的那块也被 `free`）；
-* **压力/churn**：pool 20 万次 churn 后 `live=0 cap=64`（内存平的机械判据）；
+* **压力/churn**：pool 20 万次 churn 后 `live=0 cap=64`（`tests/pool/run.sh` 的 `rt_churn`；内存平的机械判据）；
 * 反例套件 `tests/arena-soundness/`、`tests/arena-promoted/`、`tests/pool-soundness/`、
   `tests/nocopy/`、`tests/asan/`、`tests/attacks/` 全部在 `check.sh` 里常设。
 
@@ -211,7 +211,7 @@ zone（一个地方的索引头，独立旁链）
 |---|---|---|
 | `pool` churn | 1e5 → **1e6** 轮：1,660 KB → **1,724 KB** | 平的（元素等大 ⇒ free slot 复用率极高、几乎无碎片）|
 | 不留槽位的对照（canary）| 9,916 → **67,324 KB** | 判据有牙：不回收就会涨 |
-| `region`（期 1）churn | 20 万次后 `live=0 cap=64` | **容量停在高水位**，内存平的机械判据 |
+| pool 期 1 注册表 churn | 20 万次后 `live=0 cap=64 gen=0`（`tests/pool/run.sh` 的 `rt_churn`）| **容量停在高水位**，内存平的机械判据 |
 | 哈希表墓碑 churn | 1e5 → 1e6：**1,660 → 1,660 KB** | 墓碑复用有效 |
 | `map` 墓碑 canary | 8,380 → 55,036 KB | 同上，判据有牙 |
 
@@ -349,7 +349,7 @@ dyn Tag(b).tag()          /* 阶段 1：构造 + 立即调用（不碰池） */
 | arena 释放保留一块 spare（≤1 MB）· 150 MB 预算 | `src/codegen.c` 注释 · `tests/arena/` |
 | pool 模型 · 边界三条 · arena-vs-pool 实测 | `POOLS.md` §1/§2/§2.2 |
 | 两层失效（epoch×color + gen）· 只比一层的两种漏法 | `POOLS.md` §7 |
-| 递归/复用实测（churn 平、canary 有牙） | `tests/pool/`、`tests/map/`、`tests/region/` |
+| 递归/复用实测（churn 平、canary 有牙） | `tests/pool/`（`rt_churn`/`rt_zone`）、`tests/hashmap/`、`tests/map/`、`tests/stl/` |
 | 协程无栈 · 帧的寿命 · resume 的 home 规则 | `CONCURRENCY.md` §1/§2.1/§2.5 |
 | `dyn` 值形状 · object safety · 五条义务 | `DYN.md` §2/§4 |
 | 反例与判据 | `tests/arena-soundness/`、`tests/arena-promoted/`、`tests/pool-soundness/`、`tests/coro/`、`tests/dyn/`、`tests/asan/`、`tests/attacks/`、`tests/nocopy/` |
@@ -357,7 +357,7 @@ dyn Tag(b).tag()          /* 阶段 1：构造 + 立即调用（不碰池） */
 **速查（跑这三条就够看个大概）**：
 
 ```bash
-./check.sh quick                       # 22 节：语义、警告、反例、套件（完整 43 节含基准）
+./check.sh                             # 完整 43 节：语义、警告、反例、套件、基准（quick 跳过基准节）
 EXTC=$PWD/build/extc ./tests/coro/run.sh     # 协程 27 项
 EXTC=$PWD/build/extc ./tests/dyn/run.sh      # dyn（表进池 + 世代校验）
 ```
