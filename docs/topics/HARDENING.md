@@ -1270,7 +1270,22 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
 
 **结果** ✓：12 条绿 ✓、**2 条红** ✗（都精确定位 ✓）：
 
-1. **W9 泛型 impl 的实例在泛型函数里进 dyn** ✗ —— `In function 'mk_i64': unknown type name 'pair_i64'` ✓
+1. **W9（第 18 轮已把根因钉死 ✓，修法待落 ✓）** —— 报错 `In function 'mk_i64': unknown type name
+   'pair_i64'` ✓（`pair_i64 p = (pair_i64){ .a = 0 };` ✓）。
+
+   **打点结论（很硬 ✓）**：在 units 定点循环之后打印 ⇒ `units=4`（unit/pcg32/slice_u8/slice_i32 ✓）、
+   `insts=2`（slice_u8/slice_i32 ✓）—— **`pair_i64` 两边都不在** ✗ ⇒ 它**根本没被 intern 成类型实例**
+   ⇒ 所以 struct 定义不发射 ✓。
+   再往上查 ✓：intern 原语是 **`ttGeneric`**（`types.c:492` ✓，"concrete 才 `vecPush(&tt->instances)`" ✓
+   `:521` ✓），而 **`ttSubstitute` 的泛型分支确实会走它** ✓（`types.c:697` ✓）
+   ⇒ 所以**不是**"忘了 intern" ✗，而是**时机** ✗：泛型函数体里 `var p: pair<T>` 的类型是在
+   **体发射**时（`subst` ✓）才被替换的 ✓ ⇒ intern 发生在 **units 定点循环 + struct 发射之后** ✓
+   ⇒ 定义永远不发 ✓ —— **与 B7/F4 是同一个时机族** ✓（"实例出现得太晚" ✓）。
+   **修法** ✓：在**检查器**阶段把它提前 intern ✓ —— 最自然的挂点就是那个**延迟回放**
+   （`#57`/`#79` ✓，B7/F4 的 `coroSetup` 补跑也在那里 ✓）：回放实例体时，对**提及类型参数的局部
+   声明**做一次 `ttSubstitute`/`ttGeneric` ✓（副作用就是 intern ✓），让 units 那趟能看见 ✓。
+
+   （历史）1. **W9 泛型 impl 的实例在泛型函数里进 dyn** ✗ —— `In function 'mk_i64': unknown type name 'pair_i64'` ✓
    （`pair_i64 p = (pair_i64){ .a = 0 };` ✓）⇒ 泛型函数**体内**写的 `pair<T>` 被正确替换成 `pair_i64` ✓，
    但该实例的 **struct 定义没被登记/发射** ✗ ⇒ **F1 × B8 的交叉** ✓（静态路径 W7/W8 都对 ✓）——
    大概率又是"实例在**延迟实例化那一趟**才出现 ✓ ⇒ 单元登记已经跑过" ✓（与 B7/F4 同一个时机族 ✓）。
