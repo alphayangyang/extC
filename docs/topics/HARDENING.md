@@ -625,6 +625,20 @@ parameter list" 消失 ✓。剩下两条，都已定位到行 ✓：
 
 ⇒ 两条都只差一处 ✓；本轮整体回退 ✓（闸门 413/413 ✓）。
 
+**第 35 轮：把"跳过实例"的三处一起改成"收实例、跳过泛型模板"** ✓（已回退 ✗，剩两条枝节）
+
+改动 ✓：预扫的 `coroKind` 分配（`:4143` 一带 ✓）、`$step`/`$next` 声明（`:4145` ✓）、取值助手的
+`switch`（`:4191` ✓）、以及 `$next` 驱动循环（`:4252` ✓）全部改成
+`(!cf->tmpl && cf->typeParams.len > 0) ⇒ 跳过`（即**收实例、跳过泛型模板** ✓）——
+与前一轮"帧单元收实例"（第⑤块 ✓）同一口径 ✓。结果 ✓：
+
+- ✗ 新枝节：**临时实例** `gen_T`（`targs` 就是 `T` ✓）也被收进来了 ⇒
+  `'struct gen_T$frame' declared inside parameter list` ✗ ⇒ 用现成的 **`provisionalInstance(&cf->targs)`**
+  跳过即可 ✓（检查器里已有这个 helper ✓，第 6/7 轮的延迟检查就在用 ✓）；
+- ✗ B7 的 `extc_coro_value_int64_t` 仍缺 ✓：取值助手循环已收实例 ✓，但那条"按 yield 类型"的路径
+  还是没发出实例的类型 ✓ ⇒ 下一轮先打点（`EXTC_CV=1`：打印每个候选的 `cType(yieldType)` 与
+  `coroKind` ✓）再看是"没进循环"还是"kind 不匹配" ✓。
+
 **原清单（每一块都验证过或已定位 ✓）**：① `ast.h` 的 `coroRetProto` + 记录 ✓；
 ② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
 ④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；
