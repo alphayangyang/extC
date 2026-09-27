@@ -4135,6 +4135,29 @@ static void genCoroDecls(CG *g, Module *m) {
     }
 }
 
+#include <time.h>
+
+/* Sub-phase timers for codegen, off unless EXTC_DBG_TIME=1. The front-end timers say codegen
+ * is 91% of a big build; these say which part of it, because the profile's leaf shares (vecAt
+ * 60%) do not name the loop behind the calls. Accumulated per name and reported once. */
+static int cgTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+static double cgNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+typedef struct { const char *name; double sec; } CgAcc;
+static CgAcc cgAccs[8];
+static void cgAcc(const char *name, double sec) {
+    if (!cgTimeOn()) return;
+    for (size_t i = 0; i < 8; i++) {
+        if (!cgAccs[i].name) { cgAccs[i].name = name; cgAccs[i].sec = sec; return; }
+        if (strcmp(cgAccs[i].name, name) == 0) { cgAccs[i].sec += sec; return; }
+    }
+}
+#define CGACC(name, call) do { double t_ = cgNow(); call; cgAcc((name), cgNow() - t_); } while (0)
+static void cgReport(void) {
+    if (!cgTimeOn()) return;
+    for (size_t i = 0; i < 8 && cgAccs[i].name; i++)
+        fprintf(stderr, "[time] %-9s %.3f s\n", cgAccs[i].name, cgAccs[i].sec);
+}
+
 static void genFunc(CG *g, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`) have no body: they are emitted inline at their call
      * sites (see genMethodCall). Never emit one as a function, whichever path got here. */
@@ -5463,7 +5486,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
     /* Local declarations that nothing reads: after the offset-based phase, before the
      * phases that remove whole functions (a local of a function that is gone needs no
      * decision). */
-    dropUnusedLocals(g, out, &text, &len);
+    CGACC("cg-locals", dropUnusedLocals(g, out, &text, &len));
     /* Functions nobody calls. Both halves are located by their own text, so what is
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
@@ -5493,7 +5516,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
      * primitive can be called only from code that the function phase has just removed
      * (`extc_modU` is called by dead library functions), and its own calls disappear as
      * it goes, so this is the point where the counts mean what they should. */
-    dropRuntimeDefs(g, out, &text, &len);
+    CGACC("cg-runtime", dropRuntimeDefs(g, out, &text, &len));
     /* Then the top-level definitions, to a fixed point: a definition can be the only
      * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
      * which no program refers to either), so one pass leaves a chain behind. Each
@@ -6953,7 +6976,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             if (md->coroProto) continue;   /* emitted inline at the call site */
             if (!md->used) continue;      /* called methods only */
             size_t fb = g.out->len;
-            genFunc(&g, md);
+            CGACC("cg-emit", genFunc(&g, md));
             deadFuncBody(&g, md, fb, g.out->len - fb);
             cgLine(&g, "");
         }
@@ -7051,7 +7074,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         Vec *svP, *svA;
         substEnterFunc(&g, f, &svP, &svA);      /* instances need substitution */
         size_t fb = g.out->len;
-        genFunc(&g, f);
+        CGACC("cg-emit", genFunc(&g, f));
         deadFuncBody(&g, f, fb, g.out->len - fb);
         substLeaveFunc(&g, svP, svA);
         cgLine(&g, "");
@@ -7175,7 +7198,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * offset-based phase inside simply finds its spans changed and skips them, which is safe. */
     for (int round = 0; round < 8; round++) {
         size_t before = out->len;
-        dropUnreferenced(&g, out);
+        CGACC("cg-prune", dropUnreferenced(&g, out));
+        cgReport();
         if (out->len == before) break;
     }
     /* A function nothing calls says so; then the parameters a body never reads. */
