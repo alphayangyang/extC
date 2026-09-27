@@ -27,6 +27,15 @@
 #include "parser.h"
 #include "modules.h"
 #include "prelude.h"
+#include <time.h>
+
+/* Phase timing, off unless EXTC_DBG_TIME=1: "which stage got slow" is the question that
+ * matters when a big input takes seconds. Use PHASE(name, call) so the timing variable
+ * lives in its own `do { } while (0)` scope and cannot collide with its neighbours. */
+static int timeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+static double nowSec(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+static void phase(const char *name, double t0) { if (timeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", name, nowSec() - t0); }
+#define PHASE(name, call) do { double t_ = nowSec(); call; phase((name), t_); } while (0)
 
 /* ------------------------------------------------------------- utilities */
 
@@ -390,7 +399,7 @@ int main(int argc, char **argv) {
 
     Vec toks;
     vecInit(&toks, &arena, sizeof(Token));
-    lexAll(&ctx, &toks);
+    PHASE("lex", lexAll(&ctx, &toks));
 
     if (!ctx.hasError && dumpTokens) {
         Buf out;
@@ -420,7 +429,7 @@ int main(int argc, char **argv) {
     Module rootm;
     memset(&rootm, 0, sizeof rootm);
     moduleInit(&rootm, &arena);
-    if (!ctx.hasError) parseModule(&ctx, &arena, &toks, &rootm);
+    if (!ctx.hasError) PHASE("parse", parseModule(&ctx, &arena, &toks, &rootm));
 
     /* 3. load the imported modules recursively, in topological order, merging them
      *    into the main module, so that the checker still sees one flat table: the
@@ -478,7 +487,7 @@ int main(int argc, char **argv) {
         ttRegister(tt, &m);
         g_explainRoot = true;       /* this is the file the user named */
         setenv("EXTC_EXPLAIN_ROOT", "1", 1);
-        checkModule(&ctx, &arena, tt, &m);
+        PHASE("check", checkModule(&ctx, &arena, tt, &m));
     }
 
     /* A body that lives in a module is checked under **that file's** context, so a mistake
