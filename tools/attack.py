@@ -963,6 +963,14 @@ DEEP = [
      'use stl::vector\nfn gen<T>(x: T) -> coroutine<T> { yield x }\nfn main() -> i32 { var c = gen(i64(2))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 2 }'),
     ('W14 dyn 值在协程体里使用', 'ok_or_reject',
      'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct pt { a: i64 }\nimpl Tag for pt { fn tag(self: ref pt) -> i64 { return self.a } }\nfn drive() -> coroutine<i64> { var p: pt\n  p.a = i64(7)\n  var d: dyn Tag = dyn Tag(p)\n  yield d.tag() }\nfn main() -> i32 { var c = drive()\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 7 }'),
+    # 第 41 轮（回答主人「let n = 1 + 2 能不能行」时顺手撞到的）：字面量默认推成 i32，而两个大
+    # 字面量的**常量**运算在生成的 C 里溢出 ⇒ gcc 的编译期诊断（-Werror 下直接失败 ✗）：
+    # `int32_t n = (2000000000 + 2000000000);` ⇒ "integer overflow in expression of type 'int'"。
+    # 运行期的 -fwrapv 救不了常量折叠 ⇒ 判据是「说成功就必须产出合法 C」这一条 oracle。
+    ('W15 大整数字面量的常量加法（i32 溢出）', 'ok_or_reject',
+     'fn main() -> i32 { let n = 2000000000 + 2000000000\n  println(n)\n  return 0 }'),
+    ('W16 大整数字面量的常量乘法', 'ok_or_reject',
+     'fn main() -> i32 { let n = 1000000 * 1000000\n  println(n)\n  return 0 }'),
 ]
 
 # ---------------------------------------------------------------- 事件 / 并发（extern! 路线）
