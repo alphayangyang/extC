@@ -3788,7 +3788,18 @@ static void genStmtInner(CG *g, Stmt *s) {
             }
             const char *ex = genExpr(g, s->u.expr.expr);
             flushPrefix(g);
-            cgLine(g, "%s;", ex);
+            /* A discarded **unwrap** (`f()!` as a statement) is the one shape that needs `(void)`:
+             * it lowers to a union field read (`(g()).u.success._0;`), which gcc reports as
+             * `unused-value` -- an error under `-Werror`. `tests/fs/close-twice.extc:16` writes
+             * exactly that. The parser builds `x!` as an `EX_SIGN` node, the same node the prefix
+             * `!x` uses, distinguished only by position (parser.c:2400-2412); here the **type** tells
+             * them apart: a negation always yields `bool`, an unwrap never does. Wrapping every
+             * discarded value instead rewrote 194 generated files (measured) for nothing, and
+             * narrowing to "not a call" still rewrote 178 (`io::cout << x` is a binary expression). */
+            Type *xt = s->u.expr.expr->type;
+            bool isBool = xt && xt->kind == TY_BUILTIN && xt->name && strcmp(xt->name, "bool") == 0;
+            bool unwrap = s->u.expr.expr->kind == EX_SIGN && xt && xt->kind != TY_VOID && !isBool;
+            cgLine(g, unwrap ? "(void)(%s);" : "%s;", ex);
             return;
 
         case ST_BLOCK:

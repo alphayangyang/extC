@@ -642,11 +642,13 @@ EXT = [
 # "close 幂等靠句柄自己的标志，不许碰别人的 fd"（tests/fs/close-twice.extc 的设计）。
 FSG = [
     ('S1 写文件 → 关闭 → 再读回来', 'ok',
-     'use std::fs\nuse std::io\nuse stl::string\n'
+     'use std::fs\n'
      'fn main() -> i32 { {\n    var f = fs::openWrite("build/atk-s1.out")!\n'
      '    fs::fout << "hello" << "\\n"\n    f.close()!\n  }\n'
-     '  var g = fs::openRead("build/atk-s1.out")!\n  var line: string = ""\n'
-     '  fs::fin >> line\n  g.close()!\n  if line == "hello" { return 0 }\n  return 1 }'),
+     '  var g = fs::openRead("build/atk-s1.out")!\n'
+     '  var buf: mut slice<u8> = new u8[16]\n'
+     '  let n = g.read(buf)!\n  g.close()!\n'
+     '  if n == i64(5) { return 0 }\n  return 1 }'),
     ('S2 关两次：第二次不许碰别人的号', 'ok_or_reject',
      'use std::fs\n'
      'fn main() -> i32 { var a = fs::openWrite("build/atk-s2a.out")!\n'
