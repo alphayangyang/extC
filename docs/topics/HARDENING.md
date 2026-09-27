@@ -1263,6 +1263,23 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
 **性质** ✓：属**质量类**（只在 `-Werror` 下可见 ✓），
 不是健全性 ✓ ⇒ 不占主线 ✓，留着给下一阶段 ✓。
 
+## 三点十九之前、攻击组 match（14 题）：**抓到一次编译器崩溃（自引用枚举）** ✓
+
+**H16（本轮）** ✓：`type list = | cons(i64, list) | nil` —— 一个**自引用枚举**（载荷是它自己 ✓）
+即可让编译器 **SIGSEGV** ✗（`rc=-11` ✓）。gdb 一击给出根因 ✓：**三个类型遍历函数无限递归** ✓ ——
+`typeContainsRef`（`check_lookup.c:567` ✓）、`typeLacksZeroValue`（`:616` ✓）、
+`typeContainsProto`（`:553/:555` ✓）都在枚举载荷上**不设深度**地往下走 ✗ ⇒ 爆栈 ✓
+（我先修了第一个 ✓，一跑又崩在第二个 ✓ ⇒ **同族三处** ✓ 一次全修 ✓）。
+
+**修法** ✓：每个函数拆成 `X(...)` 入口 + `XAt(..., int depth)` 递归体 ✓，`depth > ZERO_VALUE_DEPTH_LIMIT (64)`
+时返回**保守值 `true`** ✓（"含引用 / 无零值 / 含原型" ✓ ⇒ 检查器给出**干净诊断** ✓ 而不是崩 ✓），
+与 H8 的 `TYPE_DEPTH_LIMIT` 同一手法 ✓。修好后 `M12` 退出码 **1** ✓、诊断是
+`cannot zero-initialize 'l': it contains a reference` ✓（正是设计意图 ✓：`?ref T` 的存在就是为了给链表一个 null ✓）。
+
+**match 组其余 13 条全绿** ✓：全变体匹配 ✓ · **漏变体被拒（穷尽性 ✓）** · 兜底臂 ✓ · 载荷绑定 ✓ ·
+载荷是泛型实例 ✓ · 嵌套 match ✓ · option/result 的 match ✓ · 各臂返回值 ✓ · 整数字面量 ✓ ·
+泛型函数里 match ✓ · 枚举进容器 ✓。
+
 ## 三点二十之前、攻击组 time（12 题）：**时机族第二批，一次抓到 5 条** ✓
 
 W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓，修法只覆盖了 **`ST_VAR` 的类型标注** ✓

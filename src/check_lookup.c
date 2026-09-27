@@ -7,6 +7,12 @@
 #include <string.h>
 #include "check_internal.h"
 
+/* One recursion cap for the type walkers below: an enum may hold **itself**
+ * (`type list = | cons(i64, list) | nil`), which sent them into unbounded recursion and
+ * crashed the compiler (tools/attack.py M12, found by the new match/enum group).
+ * Past the cap each answers conservatively. */
+#define ZERO_VALUE_DEPTH_LIMIT 64
+
 /* ----------------------------------------------- non-null narrowing for `?ref T` */
 /* Resolve a name to a binding, innermost scope first and module-level bindings last. */
 /* Defer the size check of `new T[n]` to instantiation, for a body whose type parameter
@@ -537,16 +543,25 @@ bool enumHasPayload(TypeDef *td) {
  * on where resolution left it -- the generic itself, or the instance (whose `sdef` is still the
  * prelude's `coroutine`) -- so both are accepted here. See `typeContainsRef` below for the shape of
  * this walk. */
+static bool typeContainsProtoAt(TypeTable *tt, Type *t, const char *name, int depth);
+
+/* Third member of the same family (`typeContainsRef`, `typeLacksZeroValue`): a self-referential enum
+ * would recurse here too, so it gets the same cap (tools/attack.py M12). */
 bool typeContainsProto(TypeTable *tt, Type *t, const char *name) {
+    return typeContainsProtoAt(tt, t, name, 0);
+}
+
+static bool typeContainsProtoAt(TypeTable *tt, Type *t, const char *name, int depth) {
+    if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */
     if (!t) return false;
     if (isProtoType(t, name, 1)) return true;
     /* Three spellings reach here: the generic itself (`TY_GENERIC` + sdef), a plain name that has not
      * been resolved into a struct yet, and the instance (whose `sdef` is the prelude's `coroutine`). */
     if (t->sdef && t->sdef->name && strcmp(t->sdef->name, name) == 0) return true;
     if (t->name && strcmp(t->name, name) == 0) return true;
-    if (t->kind == TY_ARRAY || t->kind == TY_REF) return typeContainsProto(tt, t->inner, name);
+    if (t->kind == TY_ARRAY || t->kind == TY_REF) return typeContainsProtoAt(tt, t->inner, name, depth + 1);
     for (size_t i = 0; i < t->targs.len; i++)
-        if (typeContainsProto(tt, *(Type **)vecAt(&t->targs, i), name)) return true;
+        if (typeContainsProtoAt(tt, *(Type **)vecAt(&t->targs, i), name, depth + 1)) return true;
     /* Deliberately **not** walking struct fields: substituting a generic's own `T` hands back a type
      * that mentions itself, and the walk never terminated (found the hard way: a stack overflow on
      * every corpus program with a generic argument). The shapes that matter are covered above -- a
@@ -555,16 +570,23 @@ bool typeContainsProto(TypeTable *tt, Type *t, const char *name) {
     return false;
 }
 
+static bool typeContainsRefAt(TypeTable *tt, Type *t, int depth);
+
 bool typeContainsRef(TypeTable *tt, Type *t) {
+    return typeContainsRefAt(tt, t, 0);
+}
+
+static bool typeContainsRefAt(TypeTable *tt, Type *t, int depth) {
+    if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */
     if (!t) return false;
     if (t->kind == TY_REF) return true;
-    if (t->kind == TY_ARRAY) return typeContainsRef(tt, t->inner);
+    if (t->kind == TY_ARRAY) return typeContainsRefAt(tt, t->inner, depth + 1);
     /* Any variant payload can carry a reference, so all of them are inspected. */
     if (t->kind == TY_ENUM && t->edef) {
         for (size_t v = 0; v < t->edef->variants.len; v++) {
             Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
             for (size_t i = 0; i < va->types.len; i++)
-                if (typeContainsRef(tt, payloadType(tt, t, va, i))) return true;
+                if (typeContainsRefAt(tt, payloadType(tt, t, va, i), depth + 1)) return true;
         }
         return false;
     }
@@ -577,7 +599,7 @@ bool typeContainsRef(TypeTable *tt, Type *t) {
     }
     for (size_t i = 0; i < sd->fields.len; i++) {
         Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
-        if (typeContainsRef(tt, ttSubstitute(tt, ft, sp, sa))) return true;
+        if (typeContainsRefAt(tt, ttSubstitute(tt, ft, sp, sa), depth + 1)) return true;
     }
     return false;
 }
@@ -603,17 +625,24 @@ bool typeContainsRef(TypeTable *tt, Type *t) {
  *     reference. Without the substitution `T` looks harmless, the check passes, and the
  *     generated C names a reference that has no zero value.
  */
+static bool typeLacksZeroValueAt(TypeTable *tt, Type *t, int depth);
+
 bool typeLacksZeroValue(TypeTable *tt, Type *t) {
+    return typeLacksZeroValueAt(tt, t, 0);
+}
+
+static bool typeLacksZeroValueAt(TypeTable *tt, Type *t, int depth) {
+    if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */
     if (!t) return false;
     /* The zero value of `?ref T` is null, which is the reason it exists: the `next` of a
      * list or a tree node finally has one. */
     if (t->kind == TY_REF) return !t->nullable;
-    if (t->kind == TY_ARRAY) return typeLacksZeroValue(tt, t->inner);
+    if (t->kind == TY_ARRAY) return typeLacksZeroValueAt(tt, t->inner, depth + 1);
     if (t->kind == TY_ENUM && t->edef) {
         if (t->edef->variants.len == 0) return false;
         Variant *v0 = *(Variant **)vecAt(&t->edef->variants, 0);
         for (size_t i = 0; i < v0->types.len; i++)
-            if (typeLacksZeroValue(tt, payloadType(tt, t, v0, i))) return true;
+            if (typeLacksZeroValueAt(tt, payloadType(tt, t, v0, i), depth + 1)) return true;
         return false;
     }
     StructDef *sd = structOf(t);
@@ -625,7 +654,7 @@ bool typeLacksZeroValue(TypeTable *tt, Type *t) {
     }
     for (size_t i = 0; i < sd->fields.len; i++) {
         Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
-        if (typeLacksZeroValue(tt, ttSubstitute(tt, ft, sp, sa))) return true;
+        if (typeLacksZeroValueAt(tt, ttSubstitute(tt, ft, sp, sa), depth + 1)) return true;
     }
     return false;
 }
