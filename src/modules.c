@@ -52,6 +52,20 @@
 static int ldTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
 static double ldNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 static void ldPhase(const char *n, double t0) { if (ldTimeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ldNow() - t0); }
+typedef struct { const char *name; double sec; } LdAcc;
+static LdAcc ldAccs[8];
+static void ldAcc(const char *n, double sec) {
+    if (!ldTimeOn()) return;
+    for (size_t i = 0; i < 8; i++) {
+        if (!ldAccs[i].name) { ldAccs[i].name = n; ldAccs[i].sec = sec; return; }
+        if (strcmp(ldAccs[i].name, n) == 0) { ldAccs[i].sec += sec; return; }
+    }
+}
+static void ldReport(void) {
+    if (!ldTimeOn()) return;
+    for (size_t i = 0; i < 8 && ldAccs[i].name; i++)
+        fprintf(stderr, "[time] %-9s %.3f s\n", ldAccs[i].name, ldAccs[i].sec);
+}
 
 /* -------------------------------------------------------------- small helpers */
 
@@ -1491,6 +1505,7 @@ static void rwUnitMethod(Loader *L, ModUnit *u, FuncDef *m) {
 static void mergeUnit(Loader *L, ModUnit *u) {
     Module *src = &u->mod;
     mangleUnitDecls(L, u);
+    double t_pre_fn = ldNow();
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *s = *(StructDef **)vecAt(&src->structs, i);
         s->modName = u->modName;
@@ -1546,6 +1561,8 @@ static void mergeUnit(Loader *L, ModUnit *u) {
         rwExpr(L, u, g->init);
         *(GlobalDef **)vecPush(&L->out->globals) = g;
     }
+    double t_fn = ldNow();
+    ldPhase("mg-rest", t_pre_fn);
     for (size_t i = 0; i < src->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&src->funcs, i);
         f->modName = u->modName;
@@ -1553,9 +1570,11 @@ static void mergeUnit(Loader *L, ModUnit *u) {
         if (f->ret) rwType(L, u, f->ret);
         for (size_t j = 0; j < f->params.len; j++)
             rwType(L, u, (*(Param **)vecAt(&f->params, j))->type);
-        rwStmt(L, u, f->body);
+        {double t_rs = ldNow(); rwStmt(L, u, f->body); ldAcc("mg-rwstmt", ldNow()-t_rs);}
         *(FuncDef **)vecPush(&L->out->funcs) = f;
     }
+    ldPhase("mg-funcs", t_fn);
+    ldReport();
 }
 
 /* --------------------------------------------------------- recursive loading */
