@@ -5305,11 +5305,31 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                     }
                     if (isDef && !wholeBody) {              /* to the `}` at column zero */
                         char *p = ln;
-                        while (p < rp + rl) {
-                            if (p[0] == '}' && p[-1] == '\n') { span = (size_t)(p - ln) + 1; break; }
-                            p++;
+                        /* Pair braces instead of trusting "the first `}` in column zero": the runtime
+                         * block can already have lost part of its text by the time a later round of
+                         * this pipeline runs, and then that rule walks past the definition and stops
+                         * at some **user** function's closing brace. With depth counting an intact
+                         * definition ends at its own brace, and one whose tail is gone never comes
+                         * back to zero -- `span` stays 0 and nothing is removed, which is the safe
+                         * direction (docs/topics/HARDENING.md section 2). */
+                        {
+                            int depth = 0;
+                            for (; p < rp + rl && p < text + len; p++) {
+                                if (p[0] == '{') depth++;
+                                else if (p[0] == '}') {
+                                    depth--;
+                                    if (depth <= 0) { span = (size_t)(p - ln) + 1; break; }
+                                }
+                            }
                         }
                     }
+                    /* And never delete past the end of the text: `rp + rl` still starts from the
+                     * **original** runtime length, so in a later round it can point past the
+                     * buffer. A `span` measured out there made the `memmove` length
+                     * (`len - (ln - text) - span + 1`) underflow to a huge `size_t` and copy over
+                     * the rest of the file -- that is how `examples/prelude.extc` lost a call
+                     * inside `main` while no single deletion appeared to cover it. */
+                    if (ln + span > text + len) span = 0;
                     if (span) {
                         /* every mention inside the candidate itself? */
                         size_t total  = countMentions(text, name);

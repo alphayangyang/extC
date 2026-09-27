@@ -1,9 +1,11 @@
 # 已知的"生成物不是合法 C"的语料（每行一个路径，与 tools/golden.sha256 里的写法一致）。
 # 修好那条 bug 那天，从本文件删掉对应行，闸门就会开始要求它必须合法。
 #
-# examples/prelude.extc：
-#   文本 pass 的偏移失效 —— dropRuntimeDefs 改写文本后，dropUnreferenced 仍用生成时捕获的
-#   body/长度定位，删除范围落在错误的位置，把 main 里一次调用的文本吞掉
-#   （`slice_u8_isEmpty(&(b)) ? "true" : "false"` 变成 `slice_u8_e" : "false"`）。
-#   机制与修法见 docs/topics/TRAITS.md 第八节。
-examples/prelude.extc
+# 已修：examples/prelude.extc（2026-09-28）—— 曾经是唯一一份"生成物不是合法 C"的语料：
+#   `dropRuntimeDefs` 里多行定义的结束靠"扫到第一个列 0 的 `}`"，而扫描窗口的上界
+#   `rp + rl` 用的是**原始**运行期文本长度 ⇒ 流水线跑到第二轮时窗口越过缓冲区末端，
+#   `span` 在界外算出后 `memmove` 的长度下溢成天文数字，一次拷贝毁掉后面整个文件
+#   （`main` 里 `slice_u8_isEmpty(&(b)) ? "true" : "false"` 变成 `slice_u8_e" : "false"`）。
+#   修法：定义结束改成**按括号深度配对**，加上"扫描与删除都不许越过文本末尾"。
+#   机制、走过的弯路与证据见 docs/topics/HARDENING.md 第二节。
+#   ⇒ 本文件现在**不应**再列出任何语料：任何一份生成物不是合法 C 都应当让闸门变红。
