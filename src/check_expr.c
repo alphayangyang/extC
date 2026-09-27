@@ -2442,7 +2442,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 bool missing = false;
                 for (size_t i = 0; i < mt.len; i++) {
                     if (*(Type **)vecAt(&mt, i)) continue;
-                    ckError(c, e->line, NULL,
+                    ckError(c, e->line,
                             "A generic method's type parameters are inferred from its arguments;"
                             " give an argument whose type mentions the parameter.",
                             "cannot infer type parameter `%s` of `%s`",
