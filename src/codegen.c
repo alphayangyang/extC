@@ -2422,9 +2422,12 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `alloc<T>(n)`: ask the arena of the level the checker chose for the place of
              * n values of T, and hand back a pointer to it.
              *
-             * Zeroing is not this path's job and never was: `extc_arena_alloc` memsets every
+             * Zeroing is not this path's job and never was: `extc_arena_alloc` zeroes every
              * allocation, and that is what makes the language's promise hold -- a byte read
-             * after its lifetime ends is always an initialized byte (SPEC section 0.6).
+             * after its lifetime ends is always an initialized byte (SPEC section 0.6). It
+             * does so for the cheapest sufficient set of bytes: a block obtained from
+             * `calloc` is zero throughout, so only blocks that came back from the spare
+             * (where a previous life wrote) need the `memset`.
              * `allocSlice<T>(n)` used to sit here and gave the zeroing as its reason for
              * existing; it only spelled `new T[n]`, so it was removed (decision 81). */
             /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory
@@ -6715,7 +6718,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * There is no shared state in the process, since every frame has its own
          * object, so threading will not have to change this structure.
          * ------------------------------------------------------------------ */
-        "typedef struct extc_ablock { struct extc_ablock *prev; int64_t cap, used; char data[1]; } extc_ablock;\n"
+        "typedef struct extc_ablock { struct extc_ablock *prev; int fresh; int64_t cap, used; char data[1]; } extc_ablock;\n"
         /* `spare` is one released block kept for the next round.
          *
          * The cost of an arena is now one `malloc` per **block**, so a block that
@@ -6750,7 +6753,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "         * loop, and skipping it put the churn shape back to its old time\n"
         "         * (measured: 139.9ms -> 389.9ms). */\n"
         "        if (!a->spare && a->top->cap <= EXTC_ARENA_SPARE_MAX) {\n"
-        "            a->spare = a->top; a->spare->prev = NULL;\n"
+        "            a->spare = a->top; a->spare->prev = NULL; a->spare->fresh = 0;\n"
         "        } else {\n"
         "            free(a->top);\n"
         "        }\n"
@@ -6825,20 +6828,30 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        int64_t cap = n > 64 ? n : 64;\n"
         "        if (a->top && a->top->cap < (INT64_C(1) << 20) && cap < a->top->cap * 2)\n"
         "            cap = a->top->cap * 2;\n"
-        "        extc_ablock *b = (extc_ablock *)malloc(sizeof(extc_ablock) + (size_t)cap);\n"
+        "        extc_ablock *b = (extc_ablock *)calloc(1, sizeof(extc_ablock) + (size_t)cap);\n"
         /* Like every other trap, this one carries a source position. It used to
          * print a bare "out of arena memory" and exit, which breaks the rule
          * that a failure the compiler can locate must say where it happened. */
         "        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n"
         "                        \" (this allocation wanted %lld bytes)\\n\",\n"
         "                        f, l, (long long)n); extc_die(1); }\n"
-        "        b->prev = a->top; b->cap = cap; b->used = 0;\n"
+        "        b->prev = a->top; b->cap = cap; b->used = 0; b->fresh = 1;\n"
+        "        /* `fresh` goes before `cap`/`used`: right before `data` it pushed the payload to\n"
+        "         * offset 28, every allocation became 4-byte aligned, and storing an int64_t there\n"
+        "         * is a misaligned store (UBSan: arena R1..R6, deep W1..W13). */\n"
         "        a->top = b;\n"
         "    }\n"
         "    {\n"
         "        void *p = a->top->data + a->top->used;\n"
         "        a->top->used += n;\n"
-        "        memset(p, 0, (size_t)n);   /* fresh allocations are always zeroed */\n"
+        "        /* A block straight from `calloc` is zero **throughout**, and only the bytes not yet\n"
+        "         * handed out are ever looked at again, so those need no clearing; a block that came\n"
+        "         * back from the spare was written to in its previous life and does. The promise is\n"
+        "         * unchanged either way: a byte read after its lifetime ends is an initialized byte\n"
+        "         * (SPEC section 0.6). Skipping it matters for the one-shot large buffer: a 32 MiB\n"
+        "         * `new` used to touch all 32 MiB even when the program wrote a few pages, and now\n"
+        "         * it only pays for what it touches. */\n"
+        "        if (!a->top->fresh) memset(p, 0, (size_t)n);\n"
         "        return p;\n"
         "    }\n"
         "}\n\n");
