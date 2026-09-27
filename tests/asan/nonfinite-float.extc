@@ -1,0 +1,10 @@
+/* 非有限浮点字面量必须生成**合法 C**：`1e400` 溢出成无穷，而 `%g` 把它打成 `inf` ——
+ * C 里没有这个标识符（`-1e400` 生成 `-inf`，gcc 直接报 'inf' undeclared）。
+ * 这是 tools/fuzz.py 抓到的：两个程序因为一个 `1e400` 而"extC 说成功、gcc 编不过"。
+ * 现在走 __builtin_inf()/__builtin_nan("")，不必引入 <math.h>（那会改动每一份生成物）。 */
+fn main() -> i32 {
+    var big: f64 = 1e400
+    var neg: f64 = -1e400
+    if big > f64(0) && neg < f64(0) { return 0 }
+    return 1
+}

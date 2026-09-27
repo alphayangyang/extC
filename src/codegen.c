@@ -1981,10 +1981,23 @@ static const char *genExprInner(CG *g, Expr *e) {
              * that to a `float` is an implicit narrowing conversion clang reports
              * (`-Wimplicit-float-conversion`; `float e = 3.14;` in `examples/types.extc`). The value
              * is the same either way - the cast just says so. */
-            if (e->type && e->type->kind == TY_BUILTIN && e->type->name &&
-                strcmp(e->type->name, "f32") == 0)
-                return arenaPrintf(g->arena, "(float)%g", e->u.fval);
-            return arenaPrintf(g->arena, "%g", e->u.fval);
+            {
+                bool isF32 = e->type && e->type->kind == TY_BUILTIN && e->type->name &&
+                             strcmp(e->type->name, "f32") == 0;
+                /* A literal that overflows a `double` -- `tools/fuzz.py` writes `1e400` -- has no
+                 * C literal to be written as, and `%g` prints it as `inf`, which is an **undeclared
+                 * identifier** in C: `-1e400` came out as `-inf` and gcc stopped there (found by the
+                 * fuzzer on two programs). The builtins say the same thing without pulling in
+                 * `<math.h>`, whose include would change the bytes of every emitted file. */
+                const char *special = NULL;
+                if (e->u.fval != e->u.fval)                       special = "__builtin_nan(\"\")";
+                else if (e->u.fval != 0.0 && e->u.fval * 0.5 == e->u.fval)
+                    special = e->u.fval < 0 ? "-__builtin_inf()" : "__builtin_inf()";
+                if (special)
+                    return isF32 ? arenaPrintf(g->arena, "(float)%s", special) : (char *)special;
+                if (isF32) return arenaPrintf(g->arena, "(float)%g", e->u.fval);
+                return arenaPrintf(g->arena, "%g", e->u.fval);
+            }
         case EX_BOOL:  return e->u.bval ? "true" : "false";
         case EX_STR:
             /* `"abc"` becomes a byte view of the literal in read-only memory.

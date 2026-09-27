@@ -15,6 +15,21 @@
 **Fuzzer 本身**：变异保留源码行结构（只换 token），否则几乎全成语法错、走不到 codegen；实测 yield 100%
 （3 seed × 400 次里 1199 次编译成功）。失败用例带 seed/迭代号，可复现。
 
+### H3（已修）非有限浮点字面量生成 `inf`，C 里没有这个标识符
+
+`tools/fuzz.py` 的变异词表里有 `1e400`，两个程序因此"extC 说成功、gcc 编不过"：
+`-1e400` 被 `%g` 打成 `-inf` ⇒ `error: 'inf' undeclared`。
+
+修法：`EX_FLOAT` 落地时先判断 NaN / ±∞（`v != v`、`v * 0.5 == v`），走
+`__builtin_nan("")` / `±__builtin_inf()`；**不引入 `<math.h>`**，否则每一份生成物都会变。
+实测：`1e400` / `-1e400` / `f32(-1e400)` 都产出合法 C，且 413 份生成物**逐字节不变**
+（正常浮点走原路径）。回归：`tests/asan/nonfinite-float.extc`（该套件按目录 glob 收集）。
+
+### H4（未修，排队）读只读游标时生成非左值赋值
+
+`fail-00075`（变异自 `tests/…/readonly-cursor.extc`）：extC 说成功，gcc 报
+`lvalue required as left operand of assignment`（生成的 C 第 278 行）。下一步从这条接。
+
 ## 二、正在追：文本后处理 pass 的**越界删除**（未修完，见"待拍板"）
 
 **症状**：`examples/prelude.extc` 的生成物在某种路径写法下是**非法 C**：
