@@ -1440,6 +1440,13 @@ static const char *elemBraces(CG *g, Type *t) {
 }
 
 static const char *zeroValue(CG *g, Type *t) {
+    /* Substitute first, exactly as `cType` does. A local declared inside a generic function
+     * carries the **template** type (`box<T>`, whose `targs` is `[T]`), so entering "the instance
+     * context" below substituted `T` with `T` -- a no-op -- and the initializer came out as
+     * `(box_T){ .v = 0 }` while the declaration beside it said `box_i64`: gcc then stopped at
+     * "`box_T` undeclared" (tools/attack.py B14, a generic function returning `box<T>`; A4 and F4
+     * are the same family). */
+    t = subst(g, t);
     if (!t) return "0";
     /* The zero value of an enum with payloads is tag 0 with a cleared payload,
      * which is exactly what `(shape){0}` means: C clears the tag and the whole
@@ -1467,7 +1474,7 @@ static const char *zeroValue(CG *g, Type *t) {
      * types and then spells the zero value out field by field. */
     if (t->kind == TY_GENERIC && t->sdef) {
         StructDef *sd = t->sdef;
-        if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", t->name);
+        if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", cType(g, t));
 
         Vec *sp, *sa;
         const char *sn;
@@ -1475,7 +1482,7 @@ static const char *zeroValue(CG *g, Type *t) {
 
         Buf b;
         bufInit(&b, g->arena);
-        bufPrintf(&b, "(%s){ ", t->name);
+        bufPrintf(&b, "(%s){ ", cType(g, t));
         for (size_t i = 0; i < sd->fields.len; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
             if (i) bufPuts(&b, ", ");

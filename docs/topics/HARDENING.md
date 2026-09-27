@@ -364,11 +364,40 @@ program; please report it …"），并给实例**总数**留一个兜底（`FUN
 十层嵌套（攻击套件 A4）不受影响；`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0**（零输出变化）；
 parrun ⇒ 289/0。
 
-### 泛型组剩余的 8 条（按严重度排队，下一轮继续）
+### H9（已落地）：泛型函数返回 `T` 构造的实例 ⇒ 零值初始化用了**模板名**（生成的 C 非法）
+
+**触发**（B14，最小的那个）：
+
+```extc
+struct box<T> { v: T }
+fn wrap<T>(x: T) -> box<T> { var b: box<T>
+  b.v = x
+  return b }
+```
+
+生成物里**声明与初始化用了两个名字**：
+
+```c
+box_i64 b = (box_T){ .v = 0 };      /* gcc: `box_T` undeclared ⇒ 整份文件编不过 */
+```
+
+**根因**：`zeroValue` 收到的是**模板**类型 `box<T>`（检查器在替换 `T` 之前就把局部变量的类型
+记下来了），而它随后"进入实例上下文"用的是 `t->targs` —— 那恰好就是 `[T]` ⇒ **用 T 替换 T**，
+原地打转 ✗。声明侧用的是 `cType`，它**第一步就 `subst`** ⇒ 于是两处名字不一致。
+（第一次尝试只把 `t->name` 换成 `cType(g, t)`，因为替换上下文是空的，输出**一点没变** ✗ ——
+真正缺的是入口那一步 `subst`。）
+
+**修法**：`zeroValue` 入口先 `t = subst(g, t);`（与 `cType` 同步），`TY_GENERIC` 分支用 `cType(g, t)`。
+
+**验证**：B14 与 **A4（十层嵌套）**都产出合法 C 并运行正确（`box=8 pair=3,4`）；
+`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0**（零输出变化 ⇒ 语料里没有这种形状，所以它一直是
+"能编过就看不见"的暗坑）；回归 `tests/instimpl/t_gen_return.extc`（含 `pair<A,B>` 双参数版本）。
+
+### 泛型组剩余的 7 条（按严重度排队，下一轮继续）
 
 | 题目 | 症状 | 归类 |
 |---|---|---|
-| A4 / B14 / F4 | 泛型函数**返回/使用**由 `T` 构造的实例 ⇒ **生成的 C 非法** | 同一族（当年 `mk<T> -> pair<T>` 那条）|
+| F4 | 泛型函数里开协程（`coroutine<T>`）⇒ **生成的 C 非法** | A4/B14 的同族残余 |
 | A5 | 用户类型名 `pair_i64` 与实例 C 名撞车 ⇒ `redefinition of 'struct pair_i64'` | 生成非法 C |
 | F1 | `dyn Tag` 打在"泛型 trait impl"的实例上 ⇒ 被误拒（`` `pair_i64` does not implement `Tag` ``）| 误拒 |
 | B7 | `var c: coroutine<i64> = gen(i64(9))`（`gen<T> -> coroutine<T>`）⇒ 被误拒 | 误拒（待查）|

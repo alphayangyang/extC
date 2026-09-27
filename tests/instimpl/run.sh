@@ -37,6 +37,7 @@ one "泛型 impl（impl<T> pair<T>）" "$(src t_gen_inherent.extc)" "get=5"
 one "泛型 trait impl（impl<T> Tag for pair<T>）" "$(src t_gen_trait.extc)" "tag=1"
 one "带参 trait（trait Codec<T>）" "$(src t_param_trait.extc)" "enc=7"
 one "泛型方法（方法自己的 <U> 按实参推断）" "$(src t_gen_method.extc)" "5 2"
+one "泛型函数返回 T 构造的实例（零值名与声明一致）" "$(src t_gen_return.extc)" "box=8 pair=3,4"
 # 反向金丝雀：实现体不读 `self` 时，dyn 表保住的实现不会被"未用参数"那趟看到
 # （markUnusedParams 只遍历 g.deadFuncs）⇒ 今天**必须**失败。修好那天它会变绿，这条就会报出来。
 if "$EXTC" -w --no-line-map -o "$tmp/m.c" "$(src t_dyn_multi.extc)" 2>/dev/null &&

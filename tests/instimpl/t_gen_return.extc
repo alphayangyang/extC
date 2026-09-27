@@ -1,0 +1,24 @@
+use std::io
+/* 泛型函数**返回**由 T 构造的实例（B14/A4 家族）：零值初始化的类型名必须与声明一致。
+ * 以前生成 `box_i64 b = (box_T){ .v = 0 };` ⇒ gcc 报 "`box_T` undeclared" 整份编不过，
+ * 因为 zeroValue 拿到的是**模板**类型 `box<T>`（它的 targs 就是 [T]），
+ * "进入实例上下文"等于原地打转。现在 zeroValue 入口先 subst，与 cType 同一步。 */
+struct box<T> { v: T }
+fn wrap<T>(x: T) -> box<T> {
+  var b: box<T>
+  b.v = x
+  return b
+}
+struct pair<A, B> { a: A  b: B }
+fn dup<A, B>(x: A, y: B) -> pair<A, B> {
+  var p: pair<A, B>
+  p.a = x
+  p.b = y
+  return p
+}
+fn main() -> i32 {
+  var b: box<i64> = wrap(i64(8))
+  var p: pair<i64, u8> = dup(i64(3), u8(4))
+  io::cout << "box=" << b.v << " pair=" << p.a << "," << i32(p.b) << "\n"
+  return 0
+}
