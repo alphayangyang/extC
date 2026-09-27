@@ -5947,6 +5947,18 @@ static void markUncalledFunctions(CG *g, Buf *out) {
     size_t len  = out->len;
     Vec    at;
     vecInit(&at, g->arena, sizeof(size_t));
+    /* One pass over the finished text fills the counts the loop below asks for. Counting by
+     * scanning per function is O(N^2): the strstr site histogram put 23.4 GB of scanning on the
+     * per-name query here at N=1600, and the per-function instruction diff showed the whole run is
+     * 75% inside strstr. The text does not change while the loop runs -- it only collects offsets
+     * -- so the counts are the same numbers, byte for byte. */
+    CountTable counts;
+    countInit(&counts, g->arena, g->deadFuncs.len + 1);
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        DeadFunc *dfk = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (dfk->name) countPut(&counts, dfk->name, strlen(dfk->name));
+    }
+    countSpan(&counts, text, 0, len, 1);
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;
@@ -5957,7 +5969,7 @@ static void markUncalledFunctions(CG *g, Buf *out) {
         size_t own = 1;                                  /* the definition always mentions it */
         if (pt && pt < bd) own++;
         if (bd) (void)blen;
-        if (countMentions(text, df->name) != own) continue;   /* something calls it: leave it alone */
+        if (((size_t)countGet(&counts, df->name, strlen(df->name))) != own) continue;   /* something calls it: leave it alone */
         /* The attribute goes at the start of the declaration. It used to be looked up by the
          * literal `static `, which missed every `@inline` function: those are declared through the
          * `EXTC_INLINE` macro, so no `static` is spelled out (`io$pairsReady` in
