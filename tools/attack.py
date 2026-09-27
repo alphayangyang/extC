@@ -180,7 +180,101 @@ GENERICS = [
      'fn main() -> i32 { return i32(run(i64(1))) }'),
 ]
 
-GROUPS = {'generics': GENERICS}
+# ---------------------------------------------------------------- 协程 × 池 / arena
+# 攻击面：跨 suspend 的值与视图、帧的归属（home zone）、任务表的生命周期、两个帧交错、
+# 耗尽后继续驱动、以及"帧里存的引用/切片到底能不能跨 yield 活着"。
+CORO = [
+    ('K1 基本驱动（while + next/value）', 'ok',
+     'use std::io\nfn counter(n: i64) -> coroutine<i64> {\n  var i: i64 = 0\n'
+     '  while i < n { yield i\n    i = i + 1 } }\n'
+     'fn main() -> i32 { var s: i64 = 0\n  var c = counter(i64(4))\n'
+     '  while c.next() { s = s + c.value() }\n  io::cout << s << "\\n"\n  return i32(s) }'),
+    ('K2 for 驱动与显式驱动结果一致', 'ok',
+     'use std::io\nfn counter(n: i64) -> coroutine<i64> {\n  var i: i64 = 0\n'
+     '  while i < n { yield i\n    i = i + 1 } }\n'
+     'fn main() -> i32 { var a: i64 = 0\n  var b: i64 = 0\n'
+     '  var c1 = counter(i64(5))\n  while c1.next() { a = a + c1.value() }\n'
+     '  var c2 = counter(i64(5))\n  for x in c2 { b = b + x }\n'
+     '  io::cout << a << " " << b << "\\n"\n  return i32(b - a) }'),
+    ('K3 耗尽后继续调 next 必须为 false（不许 trap）', 'ok',
+     'fn one() -> coroutine<i64> { yield i64(7) }\n'
+     'fn main() -> i32 { var c = one()\n  var n: i64 = 0\n'
+     '  while c.next() { n = n + i64(1) }\n'
+     '  if c.next() { return 1 }\n  if c.next() { return 2 }\n  return i32(n) }'),
+    ('K4 两个帧交错驱动互不串扰', 'ok',
+     'use std::io\nfn ids(base: i64) -> coroutine<i64> {\n  var i: i64 = 0\n'
+     '  while i < i64(3) { yield base + i\n    i = i + i64(1) } }\n'
+     'fn main() -> i32 { var a = ids(i64(10))\n  var b = ids(i64(100))\n'
+     '  var s: i64 = 0\n  while a.next() { s = s + a.value()\n'
+     '    if b.next() { s = s + b.value() } }\n  io::cout << s << "\\n" }'),
+    ('K5 局部数组跨 yield（必须进帧）', 'ok',
+     'fn gen() -> coroutine<i64> { var buf: [3]i64 = [7, 8, 9]\n'
+     '  var i: i64 = 0\n  while i < i64(3) { yield buf[i]\n    i = i + i64(1) } }\n'
+     'fn main() -> i32 { var s: i64 = 0\n  var c = gen()\n'
+     '  while c.next() { s = s + c.value() }\n  return i32(s) }'),
+    ('K6 suspend 前后各写一次同一局部', 'ok',
+     'fn gen() -> coroutine<i64> { var x: i64 = i64(1)\n  yield x\n  x = x + i64(41)\n'
+     '  yield x }\nfn main() -> i32 { var c = gen()\n  var last: i64 = 0\n'
+     '  while c.next() { last = c.value() }\n  return i32(last) }'),
+    ('K7 协程体内分配（引用不能跨 yield ⇒ 设计上拒绝）', 'reject',
+     'fn gen() -> coroutine<i64> { var i: i64 = 0\n'
+     '  while i < i64(3) { var p: mut ref i64 = alloc<i64>(1)\n    *p = i * i64(2)\n'
+     '    yield *p\n    i = i + i64(1) } }\n'
+     'fn main() -> i32 { var s: i64 = 0\n  var c = gen()\n'
+     '  while c.next() { s = s + c.value() }\n  return i32(s) }'),
+    ('K8 视图在 yield 之后仍可用（帧内数据）', 'ok_or_reject',
+     'fn gen() -> coroutine<i64> { var buf: [4]i64 = [1, 2, 3, 4]\n'
+     '  var v: slice<i64> = buf[..]\n  yield i64(1)\n  return_v(v) }\n'
+     'fn return_v(v: slice<i64>) -> i64 { return v[2] }\n'
+     'fn main() -> i32 { var c = gen()\n  var r: i64 = 0\n'
+     '  while c.next() { r = c.value() }\n  return i32(r) }'),
+    ('K9 跨 yield 取局部地址（应被拒或安全）', 'ok_or_reject',
+     'fn gen() -> coroutine<i64> { var x: i64 = i64(5)\n  var p: ref i64 = ref x\n'
+     '  yield i64(1)\n  return *p }\n'
+     'fn main() -> i32 { var c = gen()\n  var r: i64 = 0\n'
+     '  while c.next() { r = c.value() }\n  return i32(r) }'),
+    ('K10 send：把值交给下一次 resume', 'ok_or_reject',
+     'fn echo() -> coroutine<i64> { var got: i64 = yield i64(1)\n  yield got\n  yield got }' '\n'
+     'fn main() -> i32 { var c = echo()\n  if !c.next() { return 1 }\n'
+     '  var v: i64 = c.value()\n  if !c.send(i64(77)) { return 2 }\n'
+     '  return i32(c.value() - i64(77)) + i32(v) - 1 }'),
+    ('K11 协程驱动另一个协程', 'ok',
+     'fn inner() -> coroutine<i64> { yield i64(2)\n  yield i64(3) }\n'
+     'fn outer() -> coroutine<i64> { var c = inner()\n'
+     '  while c.next() { yield c.value() * i64(10) } }\n'
+     'fn main() -> i32 { var s: i64 = 0\n  var o = outer()\n'
+     '  while o.next() { s = s + o.value() }\n  return i32(s) }'),
+    ('K12 帧在循环里反复创建（不串扰）', 'ok',
+     'fn ids(base: i64) -> coroutine<i64> { yield base\n  yield base + i64(1) }\n'
+     'fn main() -> i32 { var s: i64 = 0\n  var k: i64 = 0\n'
+     '  while k < i64(4) { var c = ids(k)\n    while c.next() { s = s + c.value() }\n'
+     '    k = k + i64(1) }\n  return i32(s) }'),
+    ('K13 协程与池对象共存', 'ok_or_reject',
+     'fn gen() -> coroutine<i64> { var i: i64 = 0\n'
+     '  while i < i64(2) { yield i\n    i = i + i64(1) } }\n'
+     'fn main() -> i32 { let rid = syspool::extc_pool_new(i64(64))\n'
+     '  var c = gen()\n  var s: i64 = 0\n'
+     '  while c.next() { s = s + c.value() }\n'
+     '  syspool::extc_pool_give(rid)\n  return i32(s) }'),
+    ('K14 协程内建池切片并 yield 其长度', 'ok_or_reject',
+     'fn gen() -> coroutine<i64> { let rid = syspool::extc_pool_new(i64(64))\n'
+     '  let s: mut slice<u8> = syspool::extc_pool_slice(rid)\n'
+     '  yield i64(s.len)\n  syspool::extc_pool_give(rid) }\n'
+     'fn main() -> i32 { var c = gen()\n  var n: i64 = 0\n'
+     '  while c.next() { n = n + c.value() }\n  return i32(n) }'),
+    ('K15 协程帧句柄存进数组再驱动', 'ok_or_reject',
+     'fn ids(base: i64) -> coroutine<i64> { yield base }\n'
+     'fn main() -> i32 { var a = ids(i64(3))\n  var b = ids(i64(4))\n'
+     '  var s: i64 = 0\n  while a.next() { s = s + a.value() }\n'
+     '  while b.next() { s = s + b.value() }\n  return i32(s) }'),
+    ('K16 协程存进局部切片后驱动（视图 vs 帧）', 'ok_or_reject',
+     'fn ids(base: i64) -> coroutine<i64> { yield base }\n'
+     'fn main() -> i32 { var a = ids(i64(9))\n  var arr: [1]i64 = [0]\n'
+     '  arr[0] = i64(1)\n  var s: i64 = 0\n  while a.next() { s = s + a.value() + arr[0] }\n'
+     '  return i32(s) }'),
+]
+
+GROUPS = {'generics': GENERICS, 'coro': CORO}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)

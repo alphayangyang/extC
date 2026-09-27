@@ -643,6 +643,40 @@ parrun ⇒ **292/0** ✓（回归 `tests/errors/explicit_targs_no_seed.extc` ✓
 那种**限定调用**的节点不是它造的 ✓ ⇒ 新字段仍可能是垃圾 ✓，上一轮已实测踩到 ✓）；② `EX_CALL` 推断时
 用它预填 `targs` ✓；③ 两处注释（`check_expr.c:2000` 与 `:2026` 的 *docs 注释* ✓）也跟着对齐 ✓。
 
+## 三点十五、新攻击组 coro（协程 × 池/arena）：16 题抓到两条
+
+`tools/attack.py coro`：基本驱动 ✓ `for` 与显式驱动一致 ✓ 耗尽后 `next` 为 false ✓ 局部数组跨 yield ✓
+suspend 前后写同一局部 ✓ 视图跨 yield ✓ 跨 yield 取局部地址（拒 ✓）✓ `send` ✓ 协程驱动协程 ✓
+帧在循环里反复创建 ✓ 池对象共存 ✓ 池切片 ✓ 句柄存数组 ✓ —— 14/16 通过 ✓。
+
+### K7 = 题目的期望写错了（已改 ✓）
+
+`var p: mut ref i64 = alloc<i64>(1)` 在协程体内跨 `yield` ⇒ 检查器拒绝 ✓：
+"`p` lives across a `yield` and carries a …" ✓ —— 这是**设计限制**（引用不跨 suspend ✓），
+不是 bug ✓ ⇒ 题目期望改为 `reject` ✓。
+
+### K4 = **两个真问题**（同一条用例）
+
+**症状 1（明确 ✓）**：`main` 不写 `return` 时，生成物末尾是 **trap** ✗：
+
+```c
+    while (ids$step(&a)) { s = (s + a.ret); if (ids$step(&b)) { s = (s + b.ret); } }
+    io$ostream_shl_slice_u8(…);
+    extc_trapMsg("/tmp/k4suite.extc", 6, "a non-void function reached its end without returning");
+```
+
+而 C 约定 `main` 掉出末尾等价 `return 0` ✓，检查器里也写着"`main` 的返回类型可以缺省" ✓
+⇒ **假 trap** ✗（程序白死 ✓）。修法二选一：codegen 对 `main` 发 `return 0;` ✓，或检查器直接要求
+`main` 显式 return ✓（前者更贴近 C 与既有注释 ✓）。
+
+**症状 2（待查 ✓）**：交错驱动**丢了一个值** ✗ —— 期望 `10+100+11+101+12+102 = 436` ✓，实测
+**336** ✓（正好少一个 `100` ✓）⇒ 即第一次 `ids$step(&b)` 之后 `b.ret` 不是 100 ✗。生成物里两个帧
+是**各自独立的局部 struct** ✓，`ids$step` 无状态 ✓ ⇒ 下一步：写一个每轮打印 `a.ret`/`b.ret` 的变体 ✓
+把丢失点钉住 ✓。
+
+**注意**：这两个症状都出现在**栈上（未装箱）表示** ✓（生成物里没有 `extc_task_*`/`extc_coro_*` ✓，
+逃逸分析选了未装箱 ✓）—— 装箱路径是否也有同样问题另行验证 ✓。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
