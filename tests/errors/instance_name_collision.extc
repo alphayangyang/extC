@@ -1,0 +1,14 @@
+// 回归（tools/attack.py A5）：用户类型名与**编译器生成的实例名**撞车。
+// 实例的 C 名是 `<模板>_<实参>`（`pair` + `i64` ⇒ `pair_i64`），而程序里恰好定义了
+// 同名结构体 ⇒ 生成的 C 里出现两份 `struct pair_i64` ⇒ gcc 报 redefinition，整份编不过，
+// 而 extC 却说成功。现在在生成器入口核对实例名与用户声明，撞了就指名报错。
+// expect: is the name the compiler needs
+struct pair<T> { a: T }
+struct pair_i64 { a: i64 }
+fn main() -> i32 {
+    var p: pair<i64>
+    p.a = i64(1)
+    var q: pair_i64
+    q.a = i64(2)
+    return i32(p.a + q.a)
+}

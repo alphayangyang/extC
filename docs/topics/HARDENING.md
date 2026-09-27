@@ -403,6 +403,26 @@ box_i64 b = (box_T){ .v = 0 };      /* gcc: `box_T` undeclared ⇒ 整份文件�
 | B7 | `var c: coroutine<i64> = gen(i64(9))`（`gen<T> -> coroutine<T>`）⇒ 被误拒 | 误拒（待查）|
 | B3 / B10 | 显式实参 `zero<i64>()` 不支持 ⇒ 但报的是"cannot infer type parameter" | 诊断措辞误导 |
 
+## 三点九、H10（已落地，兜底）：用户类型名撞实例 C 名 ⇒ 生成非法 C
+
+**来源**：攻击套件 A5（三行）：`struct pair_i64 { a: i64 }` 与 `pair<i64>` 的实例名 `pair_i64`
+同时存在 ⇒ 生成的 C 里两份 `struct pair_i64` ⇒ gcc 报 redefinition，extC 却说成功。
+
+**修法**（兜底）：在 `generateC` 入口核对"实例的 C 名 vs 用户声明"，撞了指名报错，并给另一处
+交代怎么改。两个坑：① 放在检查器里**从不触发**（最后一批实例是在检查器之后才建的）；
+② 第一版把编译器自己造的**方法持有者**（`pair<i64>` 的持有者也叫 `pair_i64`）当用户声明 ✗
+⇒ 误报了 `impl pair<i64> { … }` 与泛型 receiver（套件 D3/F2）。判据最终用
+"`sd->type->sdef != sd` ⇒ 编译器造的持有者，跳过"。
+
+**验证**：A5 报 `` `pair_i64` is the name the compiler needs for an instance of `pair`, and the
+program already defines it ``（退出码 1）；`tools/golden.sh` ⇒ 413/413 · 非法 C 0（零输出变化）；
+parrun 290/0；回归 `tests/errors/instance_name_collision.extc`。
+
+**注意这是兜底**：主人提出**根治**方案 —— codegen 生成的一切名字一律以**双下划线**开头，
+语言层面禁止用户标识符以 `__` 开头（C 也是这么保留给实现的）。那样整族 mangling 冲突
+（本条、`struct extc_arena` 撞运行期、`array_*`、`_index` 辅助函数…）一次性消失，
+本条检查退化成"永不触发"的安全网。落地要改所有生成名的拼写 ⇒ 413 份基准全量重设。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`

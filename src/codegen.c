@@ -6189,6 +6189,35 @@ static bool inTraitTable(Module *m, FuncDef *f) {
 }
 
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
+    /* A generated instance's C name is `<template>_<argument>...` (`pair` + `i64` = `pair_i64`).
+     * Nothing stopped the program from defining that very name, and then the emitted unit held two
+     * definitions of `struct pair_i64` -- gcc refused the whole file (tools/attack.py A5, a
+     * three-line program). The compiler cannot rename one side without changing every emitted
+     * file, so it says which name it needs. Checked **here** rather than in the checker: the last
+     * instantiation wave happens after the checker's passes (putting it there never fired). */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (!inst || inst->kind != TY_GENERIC || !inst->sdef || !inst->name) continue;
+        for (size_t j = 0; j < m->structs.len; j++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, j);
+            /* Skip the holders the compiler builds for generic instances itself: they carry the
+             * very name being checked (`pair<i64>`'s method holder is `pair_i64`) and are not
+             * user declarations. Without this the check rejected `impl pair<i64> { … }` and any
+             * generic receiver (attack suite D3 and F2). */
+            if (sd == inst->sdef || !sd->name) continue;
+            /* A compiler-built holder points at the **instance** as its type; a user declaration
+             * points at itself. (Checking `mholder` was not enough: for nested instances the
+             * holder chain differs and the check misfired on attack suite A4.) */
+            if (sd->type && sd->type->sdef != sd) continue;
+            if (strcmp(sd->name, inst->name) != 0) continue;
+            ctxError(ctx, sd->line ? sd->line : 1, 1,
+                     "The compiler names an instance of a generic type `<type>_<argument>`;"
+                     " give this declaration another name.",
+                     "`%s` is the name the compiler needs for an instance of `%s`, and the"
+                     " program already defines it", inst->name, inst->sdef->name);
+            return false;
+        }
+    }
     CG g;
     memset(&g, 0, sizeof g);
     g.arena = arena;
