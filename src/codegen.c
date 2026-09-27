@@ -5397,6 +5397,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                         bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
             /* The declaration's own mention is not a read of the variable, so the body is
              * examined without that line. Any other read keeps everything. */
+            double t_bm = cgNow();
             Buf bm;
             bufInit(&bm, g->arena);
             size_t declAt = 0;
@@ -5412,6 +5413,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             } else {
                 bufPutn(&bm, bp, bl);
             }
+            cgAcc("cg-loc-bm", cgNow() - t_bm);
             g_locRead += (long long)bm.len;
             if (countReads(bufCstr(&bm), bm.len, d->name) != 0) continue;   /* it is read */
             (void)declInside;
