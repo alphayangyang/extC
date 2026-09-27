@@ -775,6 +775,45 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- io 边界
+# 攻击面：把 `tests/io/` 已覆盖的（EOF、CRLF、超长行、cerr/cout 分流）**避开**，
+# 专打相邻形状：整数溢出、部分读、零长/极小缓冲、写失败路径、关流后再写、浮点与布尔的
+# 文本往返。每题自带输入文件（先 openOut 写、再 openIn 读），不依赖仓库里的数据文件。
+IOG = [
+    ('R1 写完再读回一个整数', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r1.txt\')?\n  fs::fout << "123" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r1.txt")?\n  var n: i64 = 0\n  fs::fin >> n\n  fs::closeIn()?\n  if n == i64(123) { return 0 }\n  return 1 }'),
+    ('R2 读过大的整数（溢出 i64）', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r2.txt\')?\n  fs::fout << "99999999999999999999999" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r2.txt")?\n  var n: i64 = 0\n  fs::fin >> n\n  fs::closeIn()?\n  return 0 }'),
+    ('R3 读负数', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r3.txt\')?\n  fs::fout << "-42" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r3.txt")?\n  var n: i64 = 0\n  fs::fin >> n\n  fs::closeIn()?\n  if n == i64(-42) { return 0 }\n  return 1 }'),
+    ('R4 读带正号的整数', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r4.txt\')?\n  fs::fout << "+7" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r4.txt")?\n  var n: i64 = 0\n  fs::fin >> n\n  fs::closeIn()?\n  return 0 }'),
+    ('R5 读一个浮点', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r5.txt\')?\n  fs::fout << "2.5" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r5.txt")?\n  var x: f64 = 0.0\n  fs::fin >> x\n  fs::closeIn()?\n  if x > 2.4 && x < 2.6 { return 0 }\n  return 1 }'),
+    ('R6 没 openIn 就读（应失败）', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 { var n: i64 = 0\n  fs::fin >> n\n  return 0 }'),
+    ('R7 写进不存在的目录（应失败）', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut("build/atk-nodir/x/y.txt")?\n  fs::fout << "x" << endl\n  fs::closeOut()?\n  return 0 }'),
+    ('R8 读到 EOF 之后的整数', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r8.txt\')?\n  fs::fout << "1" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r8.txt")?\n  var a: i64 = 0\n  var b: i64 = 0\n  fs::fin >> a >> b\n  fs::closeIn()?\n  return 0 }'),
+    ('R9 超过一个整数一次读完（部分读）', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r9.txt\')?\n  fs::fout << "1 2 3" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r9.txt")?\n  var a: i64 = 0\n  var b: i64 = 0\n  fs::fin >> a >> b\n  fs::closeIn()?\n  if a == i64(1) && b == i64(2) { return 0 }\n  return 1 }'),
+    ('R10 读进零长缓冲', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r10.txt\')?\n  fs::fout << "abc" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r10.txt")?\n  var buf: mut slice<u8> = new u8[0]\n  fs::fin >> buf\n  fs::closeIn()?\n  return 0 }'),
+    ('R11 读进很小的缓冲（截断）', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r11.txt\')?\n  fs::fout << "0123456789012345678901234567890123456789" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r11.txt")?\n  var buf: mut slice<u8> = new u8[4]\n  fs::fin >> buf\n  fs::closeIn()?\n  return 0 }'),
+    ('R12 关掉输出流之后再写', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut("build/atk-r12.txt")?\n  fs::fout << "a" << endl\n  fs::closeOut()?\n  fs::fout << "b" << endl\n  return 0 }'),
+    ('R13 读回刚写的浮点', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r13.txt\')?\n  fs::fout << "1.5" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r13.txt")?\n  var x: f64 = 0.0\n  fs::fin >> x\n  fs::closeIn()?\n  if x > 1.4 && x < 1.6 { return 0 }\n  return 1 }'),
+    ('R14 读一个布尔字面量', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut(\'build/atk-r14.txt\')?\n  fs::fout << "true" << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r14.txt")?\n  var b: bool = false\n  fs::fin >> b\n  fs::closeIn()?\n  return 0 }'),
+    ('R15 二进制路径：写 u8 切片再读回', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  var data: mut slice<u8> = new u8[3]\n  data[0] = u8(65)\n  data[1] = u8(66)\n  data[2] = u8(67)\n  fs::openOut("build/atk-r15.txt")?\n  fs::fout << data << endl\n  fs::closeOut()?\n  fs::openIn("build/atk-r15.txt")?\n  var back: mut slice<u8> = new u8[8]\n  fs::fin >> back\n  fs::closeIn()?\n  return 0 }'),
+    ('R16 同一个文件开两次输出流', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 {\n  fs::openOut("build/atk-r16.txt")?\n  fs::fout << "one" << endl\n  fs::openOut("build/atk-r16b.txt")?\n  fs::fout << "two" << endl\n  fs::closeOut()?\n  return 0 }'),
+]
+
 # ---------------------------------------------------------------- 容器（vector / hashMap / hashSet）
 # 攻击面：容量增长与 dense 切片下标、越界（option vs 带位置 trap）、空容器、
 # 元素是结构体/泛型实例/@noCopy、容器跨函数传递、hashMap 的覆盖与删除。
@@ -817,7 +856,7 @@ CNT = [
 
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
-          'containers': CNT}
+          'containers': CNT, 'io': IOG}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
