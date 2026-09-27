@@ -786,6 +786,40 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- 加深：三族同族口子 + 跨特性
+# 刚修好的三族（泛型协程 B7/F4、泛型 impl×dyn F1、死局部变量+解包 S11/A4）历史上最容易
+# 再漏，所以专门补同族形状；再加几条跨特性组合（协程×容器、dyn×协程）。
+DEEP = [
+    ('W1 泛型协程实例装箱后驱动', 'ok',
+     'fn gen<T>(x: T) -> coroutine<T> { yield x }\nfn main() -> i32 { var c = gen(i64(3))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 3 }'),
+    ('W2 泛型协程在泛型函数里被驱动（B8 形状）', 'ok',
+     'fn gen<T>(x: T) -> coroutine<T> { yield x }\nfn run<T>(v: T) -> i64 { var c = gen(v)\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return s }\nfn main() -> i32 { return i32(run(i64(4))) - 4 }'),
+    ('W3 泛型协程 yield 结构体', 'ok_or_reject',
+     'struct pt { x: i64  y: i64 }\nfn gen<T>(v: T) -> coroutine<pt> { yield pt { x: i64(1), y: i64(2) }\n  yield pt { x: i64(3), y: i64(4) } }\nfn main() -> i32 { var c = gen(i64(0))\n  var s: i64 = 0\n  while c.next() { s = s + c.value().x + c.value().y }\n  return i32(s) - 10 }'),
+    ('W4 同一泛型协程两个类型实例同程序', 'ok_or_reject',
+     'fn gen<T>(x: T) -> coroutine<T> { yield x }\nfn main() -> i32 { var a = gen(i64(2))\n  var b = gen(i32(3))\n  var sa: i64 = 0\n  while a.next() { sa = sa + a.value() }\n  var sb: i32 = 0\n  while b.next() { sb = sb + b.value() }\n  return i32(sa) + i32(sb) - 5 }'),
+    ('W5 泛型协程 for-in 驱动', 'ok_or_reject',
+     'fn gen<T>(x: T) -> coroutine<T> { yield x\n  yield x }\nfn main() -> i32 { var s: i64 = 0\n  for v in gen(i64(5)) { s = s + v }\n  return i32(s) - 10 }'),
+    ('W6 泛型协程用 send 喂值', 'ok_or_reject',
+     'fn gen<T>(x: T) -> coroutine<i64> { yield i64(1)\n  yield i64(2) }\nfn main() -> i32 { var c = gen(i64(0))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 3 }'),
+    ('W7 同一 trait 的两个泛型实例经 dyn 派发', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct pair<T> { a: T }\nimpl<T> Tag for pair<T> { fn tag(self: ref pair<T>) -> i64 { return i64(1) } }\nstruct single<T> { b: T }\nimpl<T> Tag for single<T> { fn tag(self: ref single<T>) -> i64 { return i64(2) } }\nfn main() -> i32 { var p: pair<i64>\n  p.a = i64(0)\n  var s: single<i64>\n  s.b = i64(0)\n  var d1: dyn Tag = dyn Tag(p)\n  var d2: dyn Tag = dyn Tag(s)\n  return i32(d1.tag() + d2.tag()) - 3 }'),
+    ('W8 泛型 impl 的方法带参数', 'ok_or_reject',
+     'trait Add2 { fn add2(self: ref Self, k: i64) -> i64 }\nstruct box<T> { v: T }\nimpl<T> Add2 for box<T> { fn add2(self: ref box<T>, k: i64) -> i64 { return k + i64(1) } }\nfn main() -> i32 { var b: box<i64>\n  b.v = i64(0)\n  var d: dyn Add2 = dyn Add2(b)\n  return i32(d.add2(i64(4))) - 5 }'),
+    ('W9 泛型 impl 的实例在泛型函数里进 dyn', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct pair<T> { a: T }\nimpl<T> Tag for pair<T> { fn tag(self: ref pair<T>) -> i64 { return i64(9) } }\nfn mk<T>(v: T) -> i64 { var p: pair<T>\n  p.a = v\n  var d: dyn Tag = dyn Tag(p)\n  return d.tag() }\nfn main() -> i32 { return i32(mk(i64(1))) - 9 }'),
+    ('W10 死局部变量的右值是 `?` 解包', 'ok_or_reject',
+     'fn f() -> i64? { return i64(1) }\nfn main() -> i32 { let v = f()?\n  return i32(v) - 1 }'),
+    ('W11 死局部变量的右值是方法调用链', 'ok_or_reject',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  v.push(i32(1))\n  let n = v.len()\n  return i32(n) - 1 }'),
+    ('W12 相邻两个死局部变量', 'ok_or_reject',
+     'fn f() -> i64 { return i64(1) }\nfn main() -> i32 { let a = f()\n  let b = f()\n  return 0 }'),
+    ('W13 协程实例存进容器', 'ok_or_reject',
+     'use stl::vector\nfn gen<T>(x: T) -> coroutine<T> { yield x }\nfn main() -> i32 { var c = gen(i64(2))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 2 }'),
+    ('W14 dyn 值在协程体里使用', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct pt { a: i64 }\nimpl Tag for pt { fn tag(self: ref pt) -> i64 { return self.a } }\nfn drive() -> coroutine<i64> { var p: pt\n  p.a = i64(7)\n  var d: dyn Tag = dyn Tag(p)\n  yield d.tag() }\nfn main() -> i32 { var c = drive()\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 7 }'),
+]
+
 # ---------------------------------------------------------------- 事件 / 并发（extern! 路线）
 # 事件层只能用 extern!("extc") 触达（没有 stdlib 包装）；codegen 靠**名字前缀**
 # （extc_epoll_ / extc_sock_）与'被调用'来置 needEvent ⇒ 这条链本身也是攻击面。
@@ -899,7 +933,7 @@ CNT = [
 
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
-          'containers': CNT, 'io': IOG, 'events': EVT}
+          'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
