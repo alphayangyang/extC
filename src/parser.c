@@ -25,7 +25,8 @@ typedef struct {
      * parenthesized.  This positional rule replaced an earlier one that told
      * literals apart by capitalizing the type name. */
     bool   inCond;
-    bool   noBody;      /* true while parsing an `extern!` signature (no body) */
+    bool   noBody;
+    bool   sawBuiltin;   /* the annotation loop saw @builtin for this declaration */      /* true while parsing an `extern!` signature (no body) */
 } Parser;
 
 /* ---------------------------------------------------------------- lookahead */
@@ -441,7 +442,8 @@ static FuncDef *parseExtern(Parser *p) {
  *   set, in which case `out` holds what was parsed up to that point.
  */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
-    Parser p = { ctx, arena, toks, 0, false, false };
+    Parser p = { ctx, arena, toks, 0, false, false, false };
+    p.sawBuiltin = false;                 /* 位置初始化列表不动，免得顺序一变就错位 */
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
@@ -458,6 +460,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
          * default, so hiding one has to be written out. */
         bool isPrivate = false;
         bool fnInline  = false;
+        bool builtinDecl = false;  /* @builtin：这个声明由编译器实现（没有函数体） */
         bool fnUnchecked = false;  /* @unchecked：这个函数体的下标不生成边界检查 */
         bool noCopy    = false;
         bool poolObject = false;   /* @poolObject：这个 struct 拥有一个池（作者口径） */
@@ -517,6 +520,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
              * 不禁止、只警告（作者口径：万一用户就是神人，但必须让他知道这一行在做什么）。 */
             if (strcmp(nm->text, "sharesStorage") == 0) {
                 sharesStorage = true;
+                skipJunk(&p);
+                continue;
+            }
+            if (strcmp(nm->text, "builtin") == 0) {
+                /* `@builtin`：声明由编译器实现（没有函数体）。真正的解析在注解循环里，
+                 * 这里只放行，免得"白名单"把它当成未知注解拒掉。 */
+                builtinDecl = true;
                 skipJunk(&p);
                 continue;
             }
@@ -667,11 +677,18 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          shown(t));
                 return false;
             }
+            bool builtin = builtinDecl;
+            builtinDecl = false;
+            p.sawBuiltin = false;
+            bool savedNoBody = p.noBody;
+            if (builtin) p.noBody = true;      /* `@builtin` 和 `extern!` 一样：只要签名 */
             FuncDef *f = parseFunc(&p);
+            p.noBody = savedNoBody;
             if (!f) return false;
             f->isInline  = inl;
             f->isUnchecked = unchk;
             f->isPrivate = isPrivate;
+            f->isBuiltin = builtin;
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else {
             Token *t = cur(&p);
@@ -1278,6 +1295,18 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
                 return false;
             }
             *outInline = true;
+            skipNl(p);
+            continue;
+        }
+        if (strcmp(nm->text, "builtin") == 0) {
+            /* `@builtin`: 这个声明由编译器实现，所以**没有函数体**（与 `extern!` 同走 noBody）。
+             * 它存在的理由和 `alloc<T>` 一样：要生成的代码必须由编译器命名那个函数（并行 worker 的
+             * trampoline），库给不出 —— 但声明仍然放在库里，可发现、可文档化。 */
+            if (p->sawBuiltin) {
+                ctxError(p->ctx, a->line, a->col, NULL, "`@builtin` appears twice on the same function");
+                return false;
+            }
+            p->sawBuiltin = true;
             skipNl(p);
             continue;
         }

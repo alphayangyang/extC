@@ -1326,6 +1326,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.assoc.name, e->u.assoc.typeName);
                 return ttError(tt);
             }
+            if (f->isBuiltin) {
+                ckError(c, e->line,
+                        "The declaration carries `@builtin`, so the code has to come from the"
+                        " compiler, and there is no implementation for this one yet.",
+                        "`%s` is a builtin that is not implemented yet", f->name);
+                return ttError(tt);
+            }
             e->func = f;  f->used = true;   /* record the resolved function and its use */
 
             Vec *sp = NULL, *sa = NULL;
@@ -2092,6 +2099,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "call to undefined function `%s`", name);
                 return ttError(tt);
             }
+            if (f->isBuiltin) {
+                ckError(c, e->line,
+                        "The declaration carries `@builtin`, so the code has to come from the"
+                        " compiler, and there is no implementation for this one yet.",
+                        "`%s` is a builtin that is not implemented yet", f->name);
+                return ttError(tt);
+            }
             e->func = f;  f->used = true;   /* record the resolved function and its use */
 
             /* A generic free function: `T` can be inferred from an argument only, because an
@@ -2420,6 +2434,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                               e->u.method.name, provider, provider);
                 ckError(c, e->line, bufCstr(&note), "no method `%s` on `%s`",
                         e->u.method.name, typeStr(c, rb ? rb : recvT));
+                return ttError(tt);
+            }
+            if (f->isBuiltin) {
+                ckError(c, e->line,
+                        "The declaration carries `@builtin`, so the code has to come from the"
+                        " compiler, and there is no implementation for this one yet.",
+                        "`%s` is a builtin that is not implemented yet", f->name);
                 return ttError(tt);
             }
             e->func = f;  f->used = true;   /* record the resolved function and its use */

@@ -3834,6 +3834,12 @@ static void coroSetup(Checker *c, FuncDef *f) {
 }
 
 static void checkFunc(Checker *c, FuncDef *f) {
+    /* `@builtin` 声明只有签名、没有函数体（与 `extern!` 同款），而这条路后面会直接遍历
+     * `f->body` ⇒ 无体声明一进来就段错误（2026-09-28 实测：exit 139，bt 落在下面那行 for）。
+     * 内建的实现由编译器在**调用点**给出，所以这里什么都不用查；对它的调用由 check_expr 里的
+     * "尚未实现" 守卫负责拒绝。只挡内建，不动 extern 的既有行为。 */
+    if (f->isBuiltin && !f->body) return;
+
     /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
      * their call sites. Checking one here walked a null body. */
     if (f->coroProto) return;

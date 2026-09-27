@@ -632,6 +632,10 @@ struct FuncDef {
      * and the checker's own static rejections (a constant index outside a known length at a
      * site it can see) still happen. Codegen only stops emitting the trap. */
     bool        isUnchecked;
+    /* `@builtin`: 这个声明由**编译器**实现（没有函数体），库只提供可发现性与文档。
+     * 理由与 `alloc<T>`/`poolSlice<T>` 相同：它要生成的代码（并行 worker 的 trampoline）
+     * 必须由编译器命名那个函数，库给不出。目前只有 `std::parallel::run`。 */
+    bool        isBuiltin;
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;

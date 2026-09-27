@@ -1,0 +1,27 @@
+/* std/parallel.extc —— 并行（线程）那条线的**用户层**，与 `std::coro::scheduler` 对偶。
+ *
+ * 两个对称的入口：
+ *   · `std::coro::scheduler` —— 单核上很多**等待**（I/O、协程）；
+ *   · `std::parallel`        —— 多核上一件**大活**（可切块的计算）。
+ *
+ * 为什么它在库里、却仍是个内建：语言层没有一等函数值，所以"把 `worker` 放到线程上跑"这件事必须由
+ * 编译器生成一个 `static` trampoline 去调它（`alloc<T>` 也是同样的道理：要生成的代码只能由编译器
+ * 命名）。`@builtin` 就是把这层事实写进声明 —— 库提供可发现性、文档与类型面，编译器提供实现。
+ *
+ * 形状（2026-09-28 定，③a 正在实现）：
+ *
+ *   fn worker(id: i64, lo: i64, hi: i64, out: mut slice<T>) -> i32
+ *   parallel::run(worker, out, n, threads) -> i32
+ *
+ * 语义要点：
+ *   · 区间 [0, n) 按 `threads` 个 worker 分块，每块拿到自己的 `[lo, hi)`；
+ *   · **`out` 被切成互不重叠的一段**交给每个 worker ⇒ 读只共享、写必分区 ⇒ 不需要新的可发送性
+ *     分析就能保证没有数据竞争（这是 ③a 能立刻做出来的原因）；
+ *   · 返回第一个非零的 worker 返回值（0 = 全部成功）；
+ *   · 每个 worker 有**自己的 arena**（`extc_tls_arena`），线程结束整块回收；
+ *   · worker 体内只允许调用 `Thread=0` 的东西（见手册 §12.3），调用户函数、`new`、模块级 `var`
+ *     目前一律拒绝 —— 传递性检查与线程本地 arena 的路由是 ③c。
+ *
+ * 实测上界（本机 8 个 P 核）：矩阵乘法 7.3x；运行期线程池自测 5.31x（绑核 0-7）。 */
+@builtin
+fn run(worker: i64, out: i64, n: i64, threads: i64) -> i32

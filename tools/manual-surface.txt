@@ -352,6 +352,7 @@ std::io	writer	readerOf	method	public
 std::io	writer	skipSpace	method	public
 std::io	writer	write	method	public
 std::io	writer	writerOf	method	public
+std::parallel	-	run	fn	public
 std::proc	-	exit	fn	public
 std::proc	-	pin	fn	public
 std::proc	-	self	fn	public
