@@ -786,9 +786,38 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
-# ---------------------------------------------------------------- 加深：三族同族口子 + 跨特性
-# 刚修好的三族（泛型协程 B7/F4、泛型 impl×dyn F1、死局部变量+解包 S11/A4）历史上最容易
-# 再漏，所以专门补同族形状；再加几条跨特性组合（协程×容器、dyn×协程）。
+# ---------------------------------------------------------------- 时机族：实例只出现在泛型体内
+# W9（第 19 轮修）是「局部声明里的类型实例 intern 太晚」，修法只覆盖 ST_VAR 的类型标注；
+# 这一组专打**其它**「实例只出现在泛型体内」的形状。拼写要点：泛型体内**不能**写
+# `box<T> { … }`（参数不能当显式实参）⇒ 要么用上下文定型的裸字面量 `{ v: v }`，
+# 要么先 `var b: box<T>` 再赋字段。
+TIM = [
+    ('X1 泛型函数返回泛型实例', 'ok',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> box<T> { return { v: v } }\nfn main() -> i32 { let c = mk(i64(2))\n  return i32(c.v) - 2 }'),
+    ('X2 嵌套泛型实例 box<box<T>>', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> box<box<T>> { var inner: box<T>\n  inner.v = v\n  return { v: inner } }\nfn main() -> i32 { let c = mk(i64(3))\n  return i32(c.v.v) - 3 }'),
+    ('X3 容器元素是泛型实例', 'ok_or_reject',
+     'use stl::vector\nstruct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var vec = vector<box<T>>::new()\n  var b: box<T>\n  b.v = v\n  vec.push(b)\n  let dv = vec.toSlice()\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(1))) }'),
+    ('X4 数组元素是泛型实例', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var b: box<T>\n  b.v = v\n  var arr: [2]box<T> = [b, b]\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(1))) }'),
+    ('X5 new 一个泛型实例数组', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var arr: mut slice<box<T>> = new box<T>[2]\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(1))) }'),
+    ('X6 泛型实例的 option（match 载荷）', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var o: box<T>? = null\n  match o { null => { return i64(0) }\n    x => { return i64(1) } } }\nfn main() -> i32 { return i32(mk(i64(1))) }'),
+    ('X7 泛型实例作为别的泛型的字段', 'ok_or_reject',
+     'struct box<T> { v: T }\nstruct pair2<A, B> { x: A  y: B }\nfn mk<T>(v: T) -> i64 { var inner: box<T>\n  inner.v = v\n  var p: pair2<box<T>, i64>\n  p.x = inner\n  p.y = i64(0)\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(1))) }'),
+    ('X8 协程 yield 泛型实例', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn gen<T>(v: T) -> coroutine<box<T>> { var b: box<T>\n  b.v = v\n  yield b }\nfn main() -> i32 { var c = gen(i64(4))\n  var s: i64 = 0\n  while c.next() { s = s + c.value().v }\n  return i32(s) - 4 }'),
+    ('X9 泛型实例作切片元素', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var b: box<T>\n  b.v = v\n  var arr: [1]box<T> = [b]\n  let sl = arr[..]\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(1))) }'),
+    ('X10 泛型实例传给另一个泛型函数', 'ok',
+     'struct box<T> { v: T }\nfn use1<T>(b: box<T>) -> i64 { return b.v }\nfn mk<T>(v: T) -> i64 { var b: box<T>\n  b.v = v\n  return use1(b) }\nfn main() -> i32 { return i32(mk(i64(7))) - 7 }'),
+    ('X11 泛型实例的返回值直接使用', 'ok',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> box<T> { return { v: v } }\nfn main() -> i32 { return i32(mk(i64(5)).v) - 5 }'),
+    ('X12 两层泛型函数间的实例传递', 'ok',
+     'struct box<T> { v: T }\nfn inner<T>(v: T) -> box<T> { return { v: v } }\nfn outer<T>(v: T) -> box<T> { return inner(v) }\nfn main() -> i32 { return i32(outer(i64(6)).v) - 6 }'),
+]
+
 DEEP = [
     ('W1 泛型协程实例装箱后驱动', 'ok',
      'fn gen<T>(x: T) -> coroutine<T> { yield x }\nfn main() -> i32 { var c = gen(i64(3))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 3 }'),
@@ -933,7 +962,7 @@ CNT = [
 
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
-          'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP}
+          'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP, 'time': TIM}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
