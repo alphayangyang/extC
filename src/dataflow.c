@@ -23,6 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+long g_dfRounds, g_dfMax, g_dfCalls;
+static void dfReport(void) {
+    if (getenv("EXTC_DBG_TIME"))
+        fprintf(stderr, "[df] analyze=%ld rounds=%ld maxRounds=%ld\n", g_dfCalls, g_dfRounds, g_dfMax);
+}
+static void dfReg(void) { static int done; if (!done) { done = 1; atexit(dfReport); } }
+
 #define DFA_MAX_VARS 256     /* bindings tracked per function */
 #define DFA_MAX_FIELDS 4     /* fields tracked per binding, as in the field table */
 #define DFA_ROUNDS 64        /* fixed-point iteration limit for loops */
@@ -375,6 +382,8 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
             dfBlock(c, s->u.whiles.body, &body, depth);
             joinInto(f, &body);
             rounds++;
+            g_dfRounds++;
+            if ((long)rounds > g_dfMax) g_dfMax = (long)rounds;
             if (sameFacts(&saved, f)) break;
             if (rounds >= DFA_ROUNDS) { f->overflow = true; break; }
         }
@@ -426,6 +435,7 @@ void dfAnalyze(Checker *c, FuncDef *f, DfResult *out) {
         Param *p = *(Param **)vecAt(&f->params, i);
         if (p->cname) raiseTo(&facts, p->cname, 0);
     }
+    dfReg(); g_dfCalls++;
     dfBlock(c, f->body, &facts, 1);
 
     out->overflow = facts.overflow;
