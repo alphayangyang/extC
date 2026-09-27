@@ -5646,10 +5646,20 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                     size_t rhs = (size_t)(assign - text) + 1;
                     while (rhs < le && (text[rhs] == ' ' || text[rhs] == '\t')) rhs++;
                     if (textHasCall(text + rhs, le - rhs)) {
+                        /* Keep the call, but **discard its value explicitly**: the right-hand side is
+                         * often an unwrap (`var f = fs::openWrite(p)!`), and the text left behind was
+                         * a bare payload read -- `(fs$openWrite(...)).u.success._0;` -- which gcc
+                         * reports as `unused-value`, an error under `-Werror`. That is both the A4
+                         * residue and the fs group's S11. */
+                        size_t re = le;
+                        while (re > rhs && (text[re - 1] == ';' || text[re - 1] == '\n' ||
+                                            text[re - 1] == ' ' || text[re - 1] == '\t')) re--;
                         Buf r;
                         bufInit(&r, g->arena);
                         bufPutn(&r, text + ls, ws);
-                        bufPutn(&r, text + rhs, le - rhs);
+                        bufPuts(&r, "(void)(");
+                        bufPutn(&r, text + rhs, re - rhs);
+                        bufPuts(&r, ");\n");
                         c.repl = bufCstr(&r);
                     }
                 }
