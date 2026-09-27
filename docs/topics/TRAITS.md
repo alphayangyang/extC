@@ -283,3 +283,29 @@ impl Tag for box { fn tag(self: ref box) -> i64 { return i64(9) } }   /* 不读 
 ⇒ 说明**计数那一侧的错**才是第一因，长度只是放大器。下一轮从这里接：为什么一个被调用的名字
 计数是 2（`countSpan` 的 token 规则？还是那次调用在更早的 pass 里已经被搬走/改写？），
 把它钉死之后再谈长度与删除。
+
+### 8.2 第六轮（时间段用尽）：偏移在 `dropRuntimeDefs` 之后失效，删除区间只剩"签名行"
+
+两个探针（`EXTC_LOG_COUNT` / `EXTC_LOG_DEF`，均已回退）把链条钉到了最后一步：
+
+```
+[count] slice_u8_isEmpty = 3  len=11548      ← runtime 块还在时，表里是 3（原型+定义+调用）✓
+[count] slice_u8_isEmpty = 2  len=4950       ← runtime 块被删掉之后，只剩 2 ⇒ 判定"没人调用"✗
+[def]   slice_u8_isEmpty  at=3413 bl=78  last=[…u8_isEmpty(slice_u8 * self) {   ← 区间只有签名那一行
+```
+
+⇒ **两件事**：
+
+1. **判定错是后果，不是原因**：那次调用的文本是在 `dropRuntimeDefs` 删掉整块 runtime
+   （11548 → 4950 字节）时**一起消失**的（`countSpan(…, -1)` 随后把计数减到 2）。
+2. **删除区间与目标对不上**：`bl=78` 只覆盖**签名行**，而 `slice_u8_isEmpty` 是多行函数
+   ⇒ 这一刀落在**别的文本**上。结合第 1 点，结论是 **`dropRuntimeDefs` 改写文本之后，
+   `deadFuncs` 里那批"生成时捕获的 body/长度"就失效了**（`funcDefStart` 拿旧副本去当前文本里找，
+   找到的位置与长度都不再对应）。
+
+**修的方向（下一轮或换人接）**：`dropUnreferenced` 定位定义时**不要用捕获的副本与长度**——
+用当前文本里那一段的**首行做 `strstr`**，再扫到列 0 的 `}` 取长度；并且 `dropRuntimeDefs`
+每删一段就**同步失效它后面所有 pass 依赖的偏移**（`deadFuncs` 的 body/proto、`bpCache`、`bodyOff`），
+否则同类事故还会以别的形状回来（本次 410/413 变样、`examples/prelude.extc` 变成非法 C 都由此而来）。
+
+时间段用尽 ⇒ 按目标自己的优先级先转 ⑤ 的段错误（139）、⑦ 泛型方法推断、探针 I；本条目留在档里。
