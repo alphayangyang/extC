@@ -259,3 +259,27 @@ impl Tag for box { fn tag(self: ref box) -> i64 { return i64(9) } }   /* 不读 
 最后从后往前一次性应用"的写法——后者在 `markUncalkedFunctions` 里已经有先例，
 注释还记着同类事故 `EXEXTC_UNUSED TC_INLINE`），并加一条判据：删除范围的**两端必须落在 token 边界**。
 修好之后 ① `self` 标记 ② L 债 才有机会以"413 逐字节不变"的方式落地。
+
+### 8.1 第五轮：日志把链条收窄到"计数判定"这一步
+
+给三处删除点装了日志（`[rt]` = `dropRuntimeDefs`、`[prune-def]`/`[prune-proto]` = `dropUnreferenced`），
+用**未经任何改动**的构建跑 `examples/prelude.extc`，关键两行是：
+
+```
+[prune-def]   at=2747 bl=78  del=[static bool slice_u8_isEmpty(slice_u8 * self) {
+[prune-proto] at=2517 pl=47  del=[static bool slice_u8_isEmpty(slice_u8 * self);
+```
+
+⇒ **判定先错，删除后错**：
+
+1. **判定错**：`slice_u8_isEmpty` 在 `main` 里**明明被调用**（原来的 `b.isEmpty()` ✓），而
+   `countGet(&counts, name) != 2` 这条判据说"只有原型+定义两次提及 ⇒ 没人调用" ⇒ 于是它被选中删除。
+2. **删除错**：`bl` 用的是**生成时捕获的 body 长度**（代码注释自己写着"生成时的副本常常对不上了"），
+   而 `dropRuntimeDefs` 等 pass 已经改写过 body ⇒ 长度比当前文本**长** ⇒ 这一刀越界，
+   把 `main` 里那次调用的文本吞掉 ⇒ 剩下的正是 `slice_u8_e" : "false"` 这种形状。
+
+**试过但没修掉的两种改法**（都已回退，量过无效）：把 `dropRuntimeDefs` 的扫描窗口 `rl` 提到循环外；
+把 `dropUnreferenced` 的定义长度改成"在当前文本里找列 0 的 `}`"。两者都不改变该文件的输出
+⇒ 说明**计数那一侧的错**才是第一因，长度只是放大器。下一轮从这里接：为什么一个被调用的名字
+计数是 2（`countSpan` 的 token 规则？还是那次调用在更早的 pass 里已经被搬走/改写？），
+把它钉死之后再谈长度与删除。
