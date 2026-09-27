@@ -1286,7 +1286,18 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
      **重建前**的旧文本 ✗）⇒ 第二条的查找落在过期内存上" ✓，于是把退路改成**按原型在新文本里现搜**
      （用现成的 `funcDefStart` ✓）⇒ **毫无效果** ✗（三组名字依旧残留第二条 ✓、闸门零变化 ✓）
      ⇒ 所以症结**不在**这个退路 ✓；
-   - **下一轮的打点** ✓：在那趟里对每条 `DeadLocal` 打印
+   - **第 16 轮的打点（已做 ✓，结论很硬 ✓）**：在循环头打印
+     `i/name/own/text/func` ✓ ⇒ 那趟**确实在反复重跑** ✓（40 行日志 ✓，`i=4 skip text=NULL` 就是
+     被切掉的那条 ✓）✓；对 `main` 的两条：
+     ```
+     i=7 name=a own=1 text=yes  func=main      ⇒ 下一轮 text=NULL（**a 被切掉了** ✓）
+     i=8 name=b own=1 text=yes  func=main      ⇒ **每一轮都是 text=yes**（**b 始终没被切** ✗）
+     ```
+     ⇒ **拒绝发生在循环头之后的某个守卫** ✓：要么 body 没找到 ✓，要么 `countMentionsIn` 认为有人读它 ✓，
+     要么 `own` 判定 ✓。**下一轮的打点**（已缩到三行 ✓）：在 body 查找之后打印 `body 找到与否` ✓、
+     在提及计数处打印 `count` ✓、在 `own` 判定处打印结果 ✓ —— 定位后一处一行就能修 ✓。
+
+   （历史）**下一轮的打点** ✓：在那趟里对每条 `DeadLocal` 打印
      `name/own/找到 body 与否/是否进入切分支/cuts 条数` ✓（含 `EXTC_LOC` 门控 ✓），
      看第二条是"**根本没进循环**"（登记没进去 ✓）还是"进了但被某个 `continue` 挡下" ✓
      （`:5564` 的 `!d->text || !d->funcName` ✓ / `own` 判定 ✓ / `countMentionsIn` 认为被读了 ✓）。
