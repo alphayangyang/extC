@@ -352,7 +352,53 @@ typedef struct Checker {
      * This has the same shape as the call-site arena decision and as the transitive
      * closure of `needsHome`. */
     Vec        lvlFacts;    /* LvlFact* */
+    /* Publications, appended while the bodies are checked one after another.
+     *
+     * The vector is **module-wide** (a body's records have to survive the body, because the
+     * module-wide requirement replay and the `[store]` dump read them), but every reader
+     * asks a question about **one** body, and each record carries the body it came from
+     * (`StoreSite.fn`) plus the index that body's records start at (`storeBase`). Folding
+     * the whole vector instead was quadratic in the length of a call chain: the level pass
+     * of function k re-folded the publications of functions 0..k-1, which also put their
+     * bindings into k's level table -- measured on a chain of N functions with one loop
+     * each, 4.5e9 table comparisons at N=800, and the front end growing by 4-7x per
+     * doubling of N. A reader that wants "the publications of this body" walks
+     * `[storeBase, stores.len)` and skips records whose `fn` is not its own (a nested
+     * body's records fall inside the slice, hence the second test). The module-wide
+     * requirement table, which is deliberately kept across bodies, is `lvlFacts`. */
     Vec        stores;      /* StoreSite* -- publications, folded over by the level pass */
+    size_t     storeBase;   /* index in `stores` where the current body's records begin */
+    /* ---- `EXTC_DBG_FX=1`: what the level pass and the effect closures cost ----
+     *
+     * Cheap counters, in the style of the other `EXTC_DBG_*` switches: each one is bumped
+     * next to work that already walks a value, so reading them costs nothing that the pass
+     * was not already doing, and they are printed once by `checkModule` when the switch is
+     * on. They exist because "the front end is quadratic in the length of a call chain"
+     * cannot be told apart from "the front end is linear and slow" without knowing which
+     * quantity is growing: the counters below separate the records a pass **visits** from
+     * the records that are its own, and the table **comparisons** from the calls that make
+     * them. `fxOn` caches the switch so the per-element loops never call `dbgOn`. */
+    bool       fxOn;          /* `EXTC_DBG_FX`, read once per pass */
+    long       fxLvlPasses;   /* level-pass runs (one per checked body) */
+    long       fxStoresSeen;  /* store records the level-pass loops looked at */
+    long       fxStoresOwn;   /* ... of those, records of the body being solved */
+    long       fxTailRecords; /* sum over bodies of the records each body owns */
+    long       fxSymCalls;    /* `symLevel` + `setSymLevel` calls */
+    long       fxSymCmp;      /* level-table entries compared by those calls */
+    long       fxTblSum;      /* sum over passes of the table size at the end */
+    long       fxTblMax;      /* largest table a single pass built */
+    long       fxLvlRounds1;  /* rounds the "binding level" fixed point ran */
+    long       fxLvlRounds2;  /* rounds the "site level" fixed point ran */
+    long       fxLvlMoved;    /* bindings whose level really moved */
+    long       fxAliasWalks;  /* extra values walked by the join rule of step two */
+    long       fxDedupSteps;  /* backward scans of `recordStore`'s duplicate test */
+    long       fxPreBodyStores;  /* records made before the first body was walked */
+    long       fxAltScan;     /* store records the "every assignment of `dst`" loop looked at */
+    long       fxReplayRounds, fxReplayFacts;   /* the module-wide fact replay */
+    long       fxEffCalls, fxEffEdges;          /* `computeEffectsTransitive` */
+    long       fxEffCached;   /* those calls answered from the memo instead of recursing */
+    long       fxReachRounds;                   /* rounds of the `closeReach` driver */
+    long       fxReachVisits;                   /* functions a round of `closeReach` considered */
     /* True while requirements are being replayed. Recording a new requirement during a
      * replay would make the table grow without bound, which once ended with the compiler
      * killed by the memory limit. */
@@ -426,6 +472,19 @@ typedef struct {
     Expr       *target;  /* the place it is published into; for a return, the returned value */
     int         at;      /* arena level of the destination; 0 = beyond this frame */
     int         line;    /* for diagnostics */
+    /* The body this publication came out of (`Checker.curFunc` at the time), or NULL for one
+     * recorded outside every body.
+     *
+     * The record table is per module, because it is filled while the functions are checked
+     * one after another, but every reader of it asks a question about **one** body: the
+     * level pass folds the publications "recorded while the body was checked", and the
+     * extent of a walk is a property of the body's own expressions and bindings. The owner
+     * is what lets a reader say which records are its own -- without it, the level pass of
+     * every function re-folded every earlier function's publications, which also entered
+     * the bindings of those bodies into the level table of a body that cannot reach them
+     * (measured: 4.5e9 table comparisons on the N=800 chain, O(N^2) for what is O(1) per
+     * body). A record made outside every body has no owner and is never folded. */
+    FuncDef    *fn;
 } StoreSite;
 
 /* A rejection that depends on a level, recorded so it can be re-judged against the

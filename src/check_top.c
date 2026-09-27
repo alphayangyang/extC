@@ -541,8 +541,9 @@ typedef enum {
 
 /* What a round needs: the module being closed, and the type table (`makesPool` resolves protocol
  * methods on generic instances through it). The closures never needed a `Checker *` -- their
- * criterion is `e->func`, which the checker filled in while the bodies were checked. */
-typedef struct { Module *m; TypeTable *tt; } CloseCtx;
+ * criterion is `e->func`, which the checker filled in while the bodies were checked -- and the
+ * pointer is here for one reason only: `EXTC_DBG_FX` counts the rounds this driver runs. */
+typedef struct { Module *m; TypeTable *tt; Checker *c; } CloseCtx;
 
 static bool getReach(const FuncDef *f, ReachKind k) {
     switch (k) {
@@ -591,6 +592,7 @@ static void closeReach(CloseCtx *cx, ReachKind k,
     for (bool changed = true; changed; ) {
         changed = false;
         round(cx, k, &changed);
+        if (cx->c && cx->c->fxOn) cx->c->fxReachRounds++;
     }
 }
 
@@ -600,6 +602,7 @@ static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipE
     Module *m = cx->m;
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (cx->c && cx->c->fxOn) cx->c->fxReachVisits++;
         if (getReach(f, k) || !f->body || (skipExtern && f->isExtern)) continue;
         if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
     }
@@ -607,6 +610,7 @@ static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipE
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+            if (cx->c && cx->c->fxOn) cx->c->fxReachVisits++;
             if (getReach(f, k) || !f->body) continue;
             if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
         }
@@ -1090,12 +1094,14 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
      * summary.
      */
     if (f->isExtern) return true;
-    if (f->effState == 1) return f->effComplete;
+    if (f->effState == 1) { if (c->fxOn) c->fxEffCached++; return f->effComplete; }
     if (f->effState == 3) { f->effComplete = false; return false; }   /* a cycle => incomplete */
     f->effState = 3;
+    if (c->fxOn) c->fxEffCalls++;      /* one body entered (a memo hit returned above) */
     bool complete = !f->effUnknown;
     for (size_t i = 0; i < f->callees.len; i++) {
         FuncDef *g = *(FuncDef **)vecAt(&f->callees, i);
+        if (c->fxOn) c->fxEffEdges++;  /* one callee edge merged */
         if (g == f) { complete = false; continue; }                   /* self-call: conservative */
         if (computeEffectsTransitive(c, g)) {                         /* merge the callee summary */
             f->addrMask     |= g->addrMask;
@@ -2848,6 +2854,8 @@ typedef struct {
     long     steps;   /* pairs visited in this pass, against LVL_STEP_BUDGET */
     bool     loud;    /* the budget was already reported */
     FuncDef *fn;      /* the function being decided, for the diagnostic */
+    Checker *c;       /* the checker, for the `EXTC_DBG_FX` counters */
+    bool     fx;      /* `EXTC_DBG_FX`: count, or do not */
 } LvlState;
 
 static int  symLevel(LvlState *ls, Sym *sy);
@@ -3021,9 +3029,10 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
          * each assigned expression, and walking all of them is the merge done properly
          * rather than a race between statements. */
         bool viaRecords = false;
-        for (size_t i = 0; i < c->stores.len; i++) {
+        for (size_t i = c->storeBase; i < c->stores.len; i++) {
             StoreSite *alt = *(StoreSite **)vecAt(&c->stores, i);
-            if (!alt || !alt->target || alt->target->kind != EX_IDENT) continue;
+            if (!alt || alt->fn != ls->fn) continue;
+            if (!alt->target || alt->target->kind != EX_IDENT) continue;
             if (identBindOf(alt->target) != sy) continue;
             viaRecords = true;
             int v = levelOfValue(c, ls, alt->value, inner, hops + 1);
@@ -3132,7 +3141,9 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
 
 static int symLevel(LvlState *ls, Sym *sy) {
     if (!ls || !sy) return LEVEL_INF;
+    if (ls->fx) ls->c->fxSymCalls++;
     for (size_t i = 0; i < ls->tbl.len; i++) {
+        if (ls->fx) ls->c->fxSymCmp++;
         SymLevel *e = (SymLevel *)vecAt(&ls->tbl, i);
         if (e->sym == sy) return e->lv;
     }
@@ -3143,7 +3154,9 @@ static int symLevel(LvlState *ls, Sym *sy) {
  * exists: a level is a requirement, and requirements accumulate. */
 static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
     if (!ls || !sy || lv >= LEVEL_INF) return false;
+    if (ls->fx) ls->c->fxSymCalls++;
     for (size_t i = 0; i < ls->tbl.len; i++) {
+        if (ls->fx) ls->c->fxSymCmp++;
         SymLevel *e = (SymLevel *)vecAt(&ls->tbl, i);
         if (e->sym != sy) continue;
         if (lv < e->lv) {
@@ -3264,6 +3277,9 @@ static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
     ls.steps = 0;
     ls.loud = false;
     ls.fn = f;
+    ls.c  = c;
+    ls.fx = c->fxOn;
+    if (ls.fx) c->fxLvlPasses++;
 
     /* Step one: how long does each binding have to live?
      *
@@ -3278,15 +3294,18 @@ static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
      * shorter. */
     for (int round = 0; round < 64; round++) {
         bool moved = false;
-        for (size_t i = 0; i < c->stores.len; i++) {
+        if (ls.fx) c->fxLvlRounds1++;
+        for (size_t i = c->storeBase; i < c->stores.len; i++) {
             StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
-            if (!st || !st->target || st->target->kind != EX_IDENT) continue;
+            if (ls.fx) { c->fxStoresSeen++; if (st && st->fn == f) c->fxStoresOwn++; }
+            if (!st || st->fn != f) continue;   /* another body's publication */
+            if (!st->target || st->target->kind != EX_IDENT) continue;
             Sym *d = identBindOf(st->target);
             if (!d) continue;
             int at = st->at;
             int v  = valueLevel(c, &ls, st->value, 0);
             if (v < at) at = v;
-            if (setSymLevel(&ls, d, at)) moved = true;
+            if (setSymLevel(&ls, d, at)) { moved = true; if (ls.fx) c->fxLvlMoved++; }
         }
         if (!moved) break;
     }
@@ -3306,9 +3325,11 @@ static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
      * round -- the per-block refinement the arena tests exist to protect. */
     for (int round = 0; round < 64; round++) {
         bool moved = false;
-        for (size_t i = 0; i < c->stores.len; i++) {
+        if (ls.fx) c->fxLvlRounds2++;
+        for (size_t i = c->storeBase; i < c->stores.len; i++) {
             StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
-            if (!st) continue;
+            if (ls.fx) { c->fxStoresSeen++; if (st && st->fn == f) c->fxStoresOwn++; }
+            if (!st || st->fn != f) continue;   /* another body's publication */
             int at = st->at;
             Sym *dst = (st->target && st->target->kind == EX_IDENT)
                        ? identBindOf(st->target) : NULL;
@@ -3332,9 +3353,11 @@ static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
              * Every assigned value is in the record table, so walking them all is what
              * covers "one of these". Each is walked at the destination's level, which is
              * the level anything `h` holds has to reach. */            if (dst && dl < LEVEL_INF) {
-                for (size_t k = 0; k < c->stores.len; k++) {
+                for (size_t k = c->storeBase; k < c->stores.len; k++) {
                     StoreSite *alt = *(StoreSite **)vecAt(&c->stores, k);
-                    if (!alt || alt == st || !alt->target) continue;
+                    if (ls.fx) { c->fxAliasWalks++; if (alt && alt->fn == f) c->fxStoresOwn++; }
+                    if (!alt || alt->fn != f) continue;
+                    if (alt == st || !alt->target) continue;
                     if (alt->target->kind != EX_IDENT) continue;
                     if (identBindOf(alt->target) != dst) continue;
                     if (!typeContainsRef(c->tt, tsub(c, alt->value->type))
@@ -3349,9 +3372,22 @@ static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
                     levelOfValue(c, &ls, alt->value, dl, 0);
                 }
             }
-            if (dst && dl < st->at && setSymLevel(&ls, dst, at)) moved = true;
+            if (dst && dl < st->at && setSymLevel(&ls, dst, at)) { moved = true; if (ls.fx) c->fxLvlMoved++; }
         }
         if (!moved) break;
+    }
+    if (ls.fx) {
+        c->fxTblSum += (long)ls.tbl.len;
+        if ((long)ls.tbl.len > c->fxTblMax) c->fxTblMax = (long)ls.tbl.len;
+        for (size_t i = c->storeBase; i < c->stores.len; i++) {
+            StoreSite *st = *(StoreSite **)vecAt(&c->stores, i);
+            if (st && st->fn == f) c->fxTailRecords++;
+        }
+        if (getenv("EXTC_DBG_FX_VERBOSE"))
+            fprintf(stderr, "[fx] %-24s tbl=%-5zu seen=%-9ld own=%-9ld symCmp=%-12ld"
+                            " rounds=%ld/%ld moved=%ld\n",
+                    f->name ? f->name : "?", ls.tbl.len, c->fxStoresSeen, c->fxStoresOwn,
+                    c->fxSymCmp, c->fxLvlRounds1, c->fxLvlRounds2, c->fxLvlMoved);
     }
 }
 
@@ -3822,6 +3858,13 @@ static void checkFunc(Checker *c, FuncDef *f) {
     }
 
     c->curFunc = f;
+    /* The publications of this body start here, and the level pass below folds exactly
+     * this slice of `c->stores` -- see `Checker.storeBase`. Nothing recorded before this
+     * point belongs to this body, so the pass does not even look at it; the owner field
+     * (`StoreSite.fn`) is the second half of the same filter, for the records a nested
+     * body appends inside this slice. */
+    size_t savedStoreBase = c->storeBase;
+    c->storeBase = c->stores.len;
     /* The arena of each call is chosen with the escape set, so it has to be computed
      * before the body is checked. */
     computeEscapes(c, f);
@@ -3933,6 +3976,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     c->curFunc = savedFunc;
     c->curParams = savedParams;
     c->ctx = savedCtx;
+    c->storeBase = savedStoreBase;
 }
 
 /* Is this initializer a constant expression?
@@ -4599,6 +4643,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     c.arena = arena;
     c.tt = tt;
     c.m = m;
+    /* `EXTC_DBG_FX=1`: the growth counters, read once here so the loops below never call
+     * `dbgOn` per element. `EXTC_DBG_FX_VERBOSE=1` adds one line per body (`levelPass`),
+     * which is what tells "a few huge passes" from "many small ones"; the summary at the
+     * end of this function is what a scaling table is read from. */
+    c.fxOn = dbgOn("EXTC_DBG_FX");
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.opChecks, arena, sizeof(void *));
     vecInit(&c.methodChecks, arena, sizeof(void *));   /* #57: method calls on a type parameter */
@@ -5202,7 +5251,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * must have something to pass (`__extc_home`, or `&__extc_a[current block]`), so the caller
      * needs a home arena of its own. The rule and the iteration are `closeReach`; what is spelled
      * here is only which functions a round visits. */
-    CloseCtx closeCtx = { m, tt };
+    CloseCtx closeCtx = { m, tt, &c };
     closeReach(&closeCtx, REACH_HOME, roundNeedsHome);
 
     /* Single authority for arena levels: the checker hands codegen every decision it
@@ -5376,6 +5425,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (!changed) break;
         }
         c.lvlSolving = false;
+        if (c.fxOn) { c.fxReplayRounds += solveRounds; c.fxReplayFacts += (long)nFacts; }
         if (getenv("EXTC_DUMP_LVL"))
             fprintf(stderr, "[lvl] %zu level facts, converged after %d round(s)\n",
                     c.lvlFacts.len, solveRounds);
@@ -5770,6 +5820,49 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&sd->methods, j);
         }
         reportMemory(&c, &allF);
+    }
+
+    /* `EXTC_DBG_FX=1`: what the analysis cost, in the quantities that can grow.
+     *
+     * The point of the split is that a scaling table can be read off it: `stores`/`lvlFacts`
+     * are the **sizes** of the two fact tables, `storesSeen`/`symCmp`/`reachVisits` are what
+     * the passes **walked** to fold them. A pass that is linear shows walked ~= size; the
+     * front end being superlinear shows up as walked growing faster than size -- and which
+     * of the three walked quantities it is tells which pass to look at. `own` is the share
+     * of the walked records that belongs to the body being solved, so `seen/own` is the
+     * ratio a per-body slice would remove. */
+    if (c.fxOn) {
+        size_t nBodies = 0, nEdges = 0;
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            if (!f || !f->body) continue;
+            nBodies++;
+            nEdges += f->callees.len;
+        }
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
+                if (!f || !f->body) continue;
+                nBodies++;
+                nEdges += f->callees.len;
+            }
+        }
+        fprintf(stderr, "[fx] sizes: bodies=%zu stores=%zu ownRecords=%ld lvlFacts=%zu"
+                        " calleeEdges=%zu\n",
+                nBodies, c.stores.len, c.fxTailRecords, c.lvlFacts.len, nEdges);
+        fprintf(stderr, "[fx] levelpass: passes=%ld seen=%ld own=%ld altScan=%ld tblSum=%ld"
+                        " tblMax=%ld\n",
+                c.fxLvlPasses, c.fxStoresSeen, c.fxStoresOwn, c.fxAliasWalks,
+                c.fxTblSum, c.fxTblMax);
+        fprintf(stderr, "[fx] levelpass: rounds=%ld/%ld moved=%ld symCalls=%ld symCmp=%ld\n",
+                c.fxLvlRounds1, c.fxLvlRounds2, c.fxLvlMoved, c.fxSymCalls, c.fxSymCmp);
+        fprintf(stderr, "[fx] effects: calls=%ld cached=%ld edges=%ld\n",
+                c.fxEffCalls, c.fxEffCached, c.fxEffEdges);
+        fprintf(stderr, "[fx] reach: rounds=%ld visits=%ld replay=%ld rounds/%ld facts\n",
+                c.fxReachRounds, c.fxReachVisits, c.fxReplayRounds, c.fxReplayFacts);
+        fprintf(stderr, "[fx] stores: dedupSteps=%ld preBody=%ld\n",
+                c.fxDedupSteps, c.fxPreBodyStores);
     }
 
     return !ctx->hasError;

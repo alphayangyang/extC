@@ -808,8 +808,9 @@ void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
          * the destination, not the value, that decides which of them the binding's level
          * has to cover. Skipping the second record lost that arm, and with it the demand
          * that made the allocation inside the first arm outlive the block. */
-        for (size_t i = c->stores.len; i > 0; i--) {
+        for (size_t i = c->stores.len; i > c->storeBase; i--) {
             StoreSite *prev = *(StoreSite **)vecAt(&c->stores, i - 1);
+            if (c->fxOn) c->fxDedupSteps++;
             if (prev && prev->value == val && prev->target == target) return;
         }
         if (!target) return;
@@ -820,6 +821,8 @@ void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
     st->target = target;
     st->at     = at;
     st->line   = line;
+    st->fn     = c->curFunc;    /* which body's fold this record belongs to */
+    if (c->fxOn && !st->fn) c->fxPreBodyStores++;      /* recorded outside every body */
     *(StoreSite **)vecPush(&c->stores) = st;
 }
 
