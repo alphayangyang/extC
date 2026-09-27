@@ -143,6 +143,14 @@ views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** 
    `cFuncName` 在两种上下文里是否同名 ✓）⇒ 若确认是这条 ✓，修法是让 `markUnusedParams` 也走
    **实例方法**（例如在按实例发方法体的循环里把 `md` 加进一份单独清单 ✓）。
 
+   **第 11 轮末的实测（关键）** ✓：F1b 的生成物里 **`p2_i64_tag` 的原型与定义都在** ✓
+   （`static int64_t p2_i64_tag(p2_i64 * self);` ✓ + 定义 ✓ + thunk ✓）—— 只是**两处都没有
+   `__attribute__((unused))`** ✗ ⇒ 所以这一族**不是**"尸体被删" ✓，而是 **`markUnusedParams` 没处理
+   它** ✓。那趟只走 `g.deadFuncs` ✓，而实例方法的条目由 `:7391` 登记（在 `substEnter` 里 ✓ 名字应为
+   `p2_i64_tag` ✓）✓ ⇒ **下一轮的打点**：在那趟里对名字含 `_tag` 的条目打印
+   `body/off/len/proto` ✓，确认是"条目没被 `deadFuncBody` 认领（`body` 为空 ✓）"还是
+   "认领了但定位失败（`funcDefStart` 找不到 ✓）" ✓ —— 两者都很容易补 ✓。
+
    （历史）**下一轮的正确做法** ✓：先找 `g.deadFuncs` 的**创建处**（`grep -n "DeadFunc" src/codegen.c` ✓ ——
    我只找到读处与 `deadFuncBody` 的**匹配**处 `:5205` ✓，所以创建必在别处 ✓），用它登记实例方法 ✓，
    而不要手搓条目 ✓。
