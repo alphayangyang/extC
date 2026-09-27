@@ -153,7 +153,7 @@
 >
 > ⚠️ **更正（2026-09-28，作者本意）**：上面那条关于 **`#73`** 的"迁到 `io::cout` + 把警告改成错误"**作废** —— `println` 是作者**有意保留在语言里的历史彩蛋**（原话"很有历史意义"）⇒ **现状即目标**：保持只发 `warning: 'println' is deprecated`、退出码 0，**不要迁移、也不要改成错误**。
 > · **协程欠账（2026-09-28 实测确认，设计口径见 `docs/topics/CONCURRENCY.md` §4.4）**：落地的只有 **`coroutine<T>`**（单向生成器：`yield` 往外送、`for x in c` 走迭代器协议、spawn 就是调用、不做 `spawn`/`resume` 关键字）。实测 `` `coroutine` expects 1 type argument(s), got 2 `` ⇒ **`coroutine<A,B>` 还没有**，欠的是**请求类型（send-in）** —— `yield` 目前也只能是**语句**不是表达式。测试注释里就点着这笔账（`tests/coro/coro_echo.extc:21`），`CONCURRENCY.md` §4「落地顺序」的第 4 步（`coroutine<A,B>` + `spawn`/`resume`）与第 6 步（`parallel`+channel）都还没走。
-> · **lambda（`SPEC.md` §12.3 第 6 步，六步里唯一真没做的）**：设计稿见 [`LAMBDA.md`](topics/LAMBDA.md)（2026-09-28，**提案待拍板**）—— 三条推论由"开集/间接调用永久不做"逼出来：身份编译期唯一、调用是直接调用、异构存放不做；语法推荐 `fn(x: i64) -> i64 { … }`（不新增符号）；"传"走**泛型参数单态化**；捕获按用、按值进结构体，**生命周期直接复用现有逃逸/arena 规则**（不新增概念）。它同时是 `coroutine<A,B>` 的前一步（同一个变换）。
+> · **lambda（`SPEC.md` §12.3 第 6 步，六步里唯一真没做的）**：方案见 [`LAMBDA.md`](topics/LAMBDA.md)（**v2，2026-09-28 按作者决策重写**）—— 决策已定：**B 语法** `fn(x: i64) -> i64 { … }`（零新符号）· **单态化**传参（泛型参数，直接调用）· **可写引用捕获必须显式**（`[mut ref x]`，读则按值拷贝不写）· 其余从简。**v1 的前提已作废**：SPEC "开放注册永久不做"过时了 —— 有 Pool 之后运行期注册**已经成立**，实测 `pool<dyn Tag>` 可 insert/get/派发（`varArray<dyn T>` 不行、`trait Fn1<A,R>` 带参 trait 也不行，后者与 lambda 无关）。两条路分工：编译期已知 ⇒ lambda + 单态化；运行期注册 ⇒ `pool<dyn Trait>`；闭集分派 ⇒ `match` + 枚举。
 > **③ 非待办（别当活儿数）**：`#14`（已知边界 —— 实测正例 `examples/path-narrowing.extc`
 > 跑出「非空 = 1」，反例 `tests/errors/path_narrow_param_root.extc` 被明确拒）· `#30`（设计备选，
 > 原文"记着，不选"）
