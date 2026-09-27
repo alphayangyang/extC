@@ -64,3 +64,15 @@ extern!("extc-runtime") fn extc_sock_write_from(fd: i64, buf: ref u8, from: i64,
 /* 半关写端：对端看到 EOF，这一侧还能把回声读回来。 */
 extern!("extc-runtime") fn extc_sock_shutdown_wr(fd: i64) -> i64
     effects Addr=0 Cont=0
+
+/* 和 `extc_tcp_listen` 同形，但设上 `SO_REUSEPORT`（在 bind **之前**）⇒ **N 个独立进程**可以绑
+ * 同一个端口，内核按流哈希把连接分给它们。这就是多进程的全部：不共享内存、不加锁、不改语言 ——
+ * `extc_pool_*` 与 `extc_task_*` 天然各进程一份，某个 worker 崩了也只带走自己的连接。
+ *
+ * 启动用 `tools/extc-workers.sh N <程序>`：一条命令起 N 个进程、各绑一个核、崩了自动重启。
+ *
+ * 实测（2026-09-28 · 8 个 P 核 · loopback · 256 连接 · HTTP keep-alive · 同一个 50 行响应器）：
+ * 8 个单线程进程 **1,317,455 req/s / 15 MB RSS**；nginx 1.28.3 八个 worker（调优到牙齿）
+ * 1,064,775 req/s / 249 MB。 */
+extern!("extc-runtime") fn extc_tcp_listen_shared(port: i64, backlog: i64) -> i64
+    effects Addr=0 Cont=0

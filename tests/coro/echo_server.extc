@@ -4,6 +4,15 @@
  *   gcc -std=c11 -fwrapv -O2 -o /tmp/es /tmp/es.c && /tmp/es
  *   printf 'hello\n' | nc 127.0.0.1 7654        # 或者直接 nc 127.0.0.1 7654 手打
  *
+ * **多进程**（extC 的第一并行形态）：监听用的是 `extc_tcp_listen_shared`（bind 之前设
+ * SO_REUSEPORT）⇒ 一条命令就能起 N 个单线程进程，内核按流哈希分连接：
+ *
+ *   tools/extc-workers.sh 8 -- /tmp/es        # 8 个进程、各绑一个核（P 核优先）、一个崩了全收
+ *
+ * 实测（2026-09-28 · 8 个 P 核 · loopback · 256 连接 · ping-pong）：单进程 327,556 req/s ⇒
+ * 8 进程 1,343,561 req/s（**4.10x**）；流水线口径 1,125 ⇒ 5,002 MB/s（4.45x）。同期 Go 1.26
+ * 八个 goroutine 8 线程只有 304,764 req/s（0.93x，几乎不动），nginx 八个 worker 1,064,775。
+ *
  * 固定端口 7654（SO_REUSEADDR 已开）；每条连接一个协程、流式回显（部分写补齐）、
  * 对端半关就地收尾并 close。形状与 tests/coro/coro_echo.extc 的判据一致，只是不设终止条件。 */
 use std::coro::scheduler as sched
@@ -33,7 +42,7 @@ fn conn(fd: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var srv: i64 = net::extc_tcp_listen(i64(7654), i64(64))
+    var srv: i64 = net::extc_tcp_listen_shared(i64(7654), i64(1024))
     if srv < i64(0) { return i32(1) }          /* 端口被占 */
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(2) }
