@@ -586,8 +586,63 @@ ARENA = [
      'fn main() -> i32 { let o = make()\n  return i32(o.c.v) - 4 }'),
 ]
 
+# ---------------------------------------------------------------- extern / C 互操作
+# 这一面按设计是"**纯信任**"（签了 `effects Addr=0 Cont=0` 的声明若在 C 那侧撒谎，分析自然失效
+# —— FFI 皆如此 ✓，属设计边界）。所以打的是**可验证的那半**：保守规则到底有没有被执行。
+EXT = [
+    ('E1 未签字的 extern 不许收本帧地址', 'reject',
+     'extern!("libc") fn strlen(s: ref u8) -> i64\n'
+     'fn main() -> i32 { var buf: [4]u8 = [65, 0, 0, 0]\n'
+     '  return i32(strlen(buf[..].data)) }'),
+    ('E2 跨边界传 slice（不许静默）', 'reject',
+     'extern!("libc") fn write(fd: i32, buf: slice<u8>, n: i64) -> i64\n'
+     'fn main() -> i32 { var b: [2]u8 = [1, 2]\n  return i32(write(i32(1), b[..], i64(2))) }'),
+    ('E3 跨边界传 struct', 'reject',
+     'struct pt { x: i64  y: i64 }\n'
+     'extern!("libc") fn take(p: pt) -> i64\n'
+     'fn main() -> i32 { var p: pt\n  p.x = i64(1)\n  p.y = i64(2)\n  return i32(take(p)) }'),
+    ('E4 签字后可以传本帧地址（write 到 stdout）', 'ok',
+     'extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64 effects Addr=0 Cont=0\n'
+     'fn main() -> i32 { var b: [2]u8 = [65, 10]\n  let n = write(i32(1), b[0], i64(2))\n'
+     '  return i32(n) - 2 }'),
+    ('E5 extern 返回指针并解引用', 'ok_or_reject',
+     'extern!("libc") fn getenv(name: ref u8) -> ref u8 effects Addr=0 Cont=0\n'
+     'fn main() -> i32 { var k: [2]u8 = [80, 0]\n  let p = getenv(k[0])\n'
+     '  return 0 }'),
+    ('E6 调元数写错', 'reject',
+     'extern!("libc") fn getpid() -> i32\nfn main() -> i32 { return getpid(i32(1)) }'),
+    ('E7 void 返回值当值用', 'reject',
+     'extern!("libc") fn srand(seed: u32) -> void effects Addr=0 Cont=0\n'
+     'fn main() -> i32 { return i32(srand(u32(1))) }'),
+    ('E8 声明了但从不调用（死代码消除要对）', 'ok',
+     'extern!("libc") fn getpid() -> i32\n'
+     'extern!("libc") fn getppid() -> i32\n'
+     'fn main() -> i32 { return 0 }'),
+    ('E9 extern 名与 extC 侧函数同名', 'ok_or_reject',
+     'extern!("libc") fn getpid() -> i32\nfn main() -> i32 { return 0 }'),
+    ('E10 effects 子句写成别的形状', 'reject',
+     'extern!("libc") fn getpid() -> i32 effects Nonsense=1\n'
+     'fn main() -> i32 { return i32(getpid()) }'),
+    ('E11 extern 调用放进协程体', 'ok_or_reject',
+     'extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64 effects Addr=0 Cont=0\n'
+     'fn gen() -> coroutine<i64> { var b: [1]u8 = [66]\n  yield write(i32(1), b[0], i64(1))\n'
+     '  yield i64(0) }\n'
+     'fn main() -> i32 { var c = gen()\n  var t: i64 = 0\n'
+     '  while c.next() { t = t + c.value() }\n  return i32(t) - 1 }'),
+    ('E12 extern 返回值直接算进 i32', 'ok',
+     'extern!("libc") fn getpid() -> i32\n'
+     'fn main() -> i32 { let p = getpid()\n  if p > i32(0) { return 0 }\n  return 1 }'),
+    ('E13 签字后把全局地址交出去', 'ok_or_reject',
+     'extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64 effects Addr=0 Cont=0\n'
+     'var g: [4]u8 = [88, 10, 0, 0]\n'
+     'fn main() -> i32 { let n = write(i32(1), g[0], i64(2))\n  return i32(n) - 2 }'),
+    ('E14 extern 指针参数收 null', 'ok_or_reject',
+     'extern!("libc") fn free(p: ref u8) -> void effects Addr=0 Cont=0\n'
+     'fn main() -> i32 { return 0 }'),
+]
+
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
-          'dyn': DYN, 'arena': ARENA}
+          'dyn': DYN, 'arena': ARENA, 'extern': EXT}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
