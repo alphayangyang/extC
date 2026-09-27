@@ -262,13 +262,15 @@ def one(args):
     if why is None:
         shutil.rmtree(d, ignore_errors=True)
         return (None, compiled_ok)
-    keep = os.path.join(out, 'fail-%05d' % it)
+    # 目录名带上 mode 与 seed：只用迭代号会让**不同片之间撞名互相覆盖**（战役5 日志里
+    # 3 片各有 1 条失败，却只存下 2 个用例，丢的那个就是这么没的）。
+    keep = os.path.join(out, 'fail-%s-s%d-%05d' % (MODE[0], seed, it))
     os.makedirs(keep, exist_ok=True)
     shutil.move(extc_f, os.path.join(keep, 'case.extc'))
     for f, n in ((c_f, 'case.c'),):
         if os.path.exists(f): shutil.move(f, os.path.join(keep, n))
-    open(os.path.join(keep, 'log.txt'), 'w').write('seed=%d it=%d src=%s\n%s\n%s\n' %
-                                                   (seed, it, path, why, '\n'.join(log)))
+    open(os.path.join(keep, 'log.txt'), 'w').write('mode=%s seed=%d it=%d src=%s\n%s\n%s\n' %
+                                                   (MODE[0], seed, it, path, why, '\n'.join(log)))
     shutil.rmtree(d, ignore_errors=True)
     return ((it, path, why), compiled_ok)
 
