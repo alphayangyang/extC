@@ -2020,9 +2020,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     if (want->kind == TY_REF && at->kind == TY_REF) { want = want->inner; at = at->inner; }
                     if (!unifyTParams(c->tt, &f->typeParams, &targs, want, at)) {
                         ckError(c, e->line,
-                                "Type inference for a generic function's type parameters must see"
-                                " them in an argument. If one only appears in the return type,"
-                                " write it explicitly: `f<i32>(...)`.",
+                                "A generic function's type parameters are inferred from its arguments."
+                                " Writing them out is accepted (`f<i32>(...)`) but does **not** seed the"
+                                " inference: give an argument whose type mentions the parameter, or a typed"
+                                " variable to assign into.",
                                 "cannot infer type parameter(s) of `%s` from the arguments", name);
                         return f->ret ? f->ret : ttVoid(tt);
                     }
@@ -2030,9 +2031,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 for (size_t i = 0; i < f->typeParams.len; i++) {
                     if (*(Type **)vecAt(&targs, i)) continue;
                     ckError(c, e->line,
-                            "Type inference for a generic function's type parameters must see"
-                            " them in an argument. If one only appears in the return type,"
-                            " write it explicitly: `f<i32>(...)`.",
+                            "A generic function's type parameters are inferred from its arguments."
+                            " Writing them out is accepted (`f<i32>(...)`) but does **not** seed the"
+                            " inference: give an argument whose type mentions the parameter, or a typed"
+                            " variable to assign into.",
                             "cannot infer type parameter `%s` of `%s`",
                             *(const char **)vecAt(&f->typeParams, i), name);
                     return f->ret ? f->ret : ttVoid(tt);

@@ -620,6 +620,29 @@ extc_th$Tag$pair_T$tag → 里面用 pair_tag((pair_T *)self)   ✗ pair_T 根�
 本就跳过 ✓ 见 `vecPush(NULL)` 那段的模式 ✓）；④ 两处诊断文案一起改成实情 ✓（写出来**不参与**推断 ✓，
 给出真正能用的做法 ✓）。前三步都不动既有产物 ✓，第四步只改字符串 ✓。
 
+## 三点十四、B3/B10 的**诊断**已落地（H11）：不再推荐一个不工作的写法
+
+**落地内容**：两处逐字相同、**缩进不同**（32 空格 / 28 空格 ✓）的解释，一起改成实情：
+
+```
+A generic function's type parameters are inferred from its arguments. Writing them out is
+accepted (`f<i32>(...)`) but does **not** seed the inference: give an argument whose type
+mentions the parameter, or a typed variable to assign into.
+```
+
+**证据** ✓：`f<i64>(i64(1))` 与 `zero<i64>()` 现在都给出上面这段（旧文是
+"…If one only appears in the return type, write it explicitly: `f<i32>(...)`" ✗ —— 推荐的正是那个
+必然失败的写法 ✓）；`maxOf<i32>(4, 3)` 照旧通过 ✓（它靠推断成功 ✓，与显式实参无关 ✓）。
+
+**验证** ✓：`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0** ✓（纯字符串改动 ⇒ 零输出变化 ✓）；
+parrun ⇒ **292/0** ✓（回归 `tests/errors/explicit_targs_no_seed.extc` ✓）；`check.sh quick` ⇒
+**41/0**、退出码 0 ✓；`make` 零诊断 ✓。
+
+**仍然开着的那半**（让显式实参真去喂推断 ✓）留档在三点十三 ✓，顺序是：① 先把显式实参放进**检查器侧的
+小表**（按节点索引 ✓ —— **不要碰 `Expr` 的字段** ✗：`exprNew` 虽然 `arenaAllocZero`，但 `sort::sort(x)`
+那种**限定调用**的节点不是它造的 ✓ ⇒ 新字段仍可能是垃圾 ✓，上一轮已实测踩到 ✓）；② `EX_CALL` 推断时
+用它预填 `targs` ✓；③ 两处注释（`check_expr.c:2000` 与 `:2026` 的 *docs 注释* ✓）也跟着对齐 ✓。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
