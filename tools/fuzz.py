@@ -3,8 +3,12 @@
 
 用法：
     python3 tools/fuzz.py --iters 2000 --seed 1 [--jobs 4] [--keep-going]
-失败会落到 --out（默认 /tmp/extc-fuzz），每个失败一个目录：case.extc / case.c / log.txt。
+失败会落到 --out（默认 `~/extc-fuzz`），每个失败一个目录：case.extc / case.c / log.txt。
 同一个 seed 必然复现同一条用例（变异序列由 seed 与迭代号共同决定）。
+
+**不要放在 /tmp**：那里常常是 tmpfs（内存盘），几轮战役就能把它写满，而写满之后连 bash
+都起不来（它的暂存也在 /tmp）—— 2026-09-28 就这样卡住过一次，见
+docs/topics/HARDENING.md 第四节。
 """
 import argparse, os, random, re, shutil, subprocess, sys, hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -242,7 +246,8 @@ def main():
     ap.add_argument('--dry-run', type=int, default=0, help='只打印 N 个生成结果，不调用编译器')
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--limit', type=int, default=0, help='语料文件数上限')
-    ap.add_argument('--out', default='/tmp/extc-fuzz')
+    ap.add_argument('--out', default=os.path.expanduser('~/extc-fuzz'),
+                    help='失败用例的落盘目录（默认 ~/extc-fuzz；别用 /tmp，见模块文档）')
     ap.add_argument('--timeout', type=int, default=1800)
     a = ap.parse_args()
     MODE[0] = a.mode
