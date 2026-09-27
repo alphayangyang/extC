@@ -255,6 +255,13 @@ typedef struct Checker {
     Vec        opChecks;    /* OpCheck*: overloadable operators deferred to instantiation */
     Vec        methodChecks; /* MethodCheck*: method calls on a type parameter (`#57`) */
     Vec        deferredUses; /* DeferredUse*: uses of such a call's result, re-checked (`#79`) */
+    /* Explicit type arguments written at a call site (`f<i32>(...)`): the node plus the arguments.
+     * The `EX_GENCALL` path rewrites itself into an ordinary `EX_CALL` and the inference there used
+     * to start from scratch, so the written form was pure decoration -- it worked only where
+     * inference happened to succeed anyway. Kept **here** and not as a field on `Expr`: that union
+     * is not zeroed for every node kind, so a field only one path sets reads as garbage on the
+     * others (docs/topics/HARDENING.md 三点十三). */
+    Vec        explicitTargs; /* ExplicitTargs* */
     /* Instances of generic free functions: `fn f<T>` gets one instance per set of type
      * arguments. They are created here, at the call site that infers the arguments, and
      * the code generator emits them as ordinary functions. */
@@ -532,6 +539,12 @@ typedef struct {
     size_t      nargs;    /* arguments written at the call site */
     FuncDef    *func;     /* the template function the call sits in */
 } MethodCheck;
+
+/* A call written `f<i32>(...)`: what the rewrite to `EX_CALL` must hand to inference. */
+typedef struct {
+    Expr *node;      /* the call node the arguments belong to */
+    Vec   targs;     /* Type*: the written arguments, in declaration order */
+} ExplicitTargs;
 
 /* A use of a deferred method call's RESULT, re-checked at instantiation (`#79`).
  *

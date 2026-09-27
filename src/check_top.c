@@ -4816,7 +4816,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.scopes, arena, sizeof(void *));
     vecInit(&c.opChecks, arena, sizeof(void *));
     vecInit(&c.methodChecks, arena, sizeof(void *));   /* #57: method calls on a type parameter */
-    vecInit(&c.deferredUses, arena, sizeof(void *));   /* #79: uses of a deferred call's result */
+    vecInit(&c.deferredUses, arena, sizeof(void *));
+    vecInit(&c.explicitTargs, arena, sizeof(void *));  /* `f<i32>(...)`: handed to inference */   /* #79: uses of a deferred call's result */
     vecInit(&c.globals, arena, sizeof(void *));
     vecInit(&c.allSyms, arena, sizeof(void *));     /* kept for the EXTC_SELFCHECK invariant scan */
     vecInit(&c.nameUses, arena, sizeof(void *));

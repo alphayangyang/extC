@@ -1,0 +1,19 @@
+use std::io
+/* 回归（tools/attack.py B3/B10 的功能半）：显式类型实参**真的喂推断** ✓
+ *   `fn zero<T>() -> i64`（T 只在返回类型里）⇒ `zero<i64>()` 现在能编能跑 ✓
+ *   `fn f<T>(x: i64)`（实参完全不提及 T）⇒ `f<i64>(i64(1))` 同上 ✓
+ * 以前这两条都报 "cannot infer type parameter" —— 写出来的 `<...>` 是**纯装饰**（EX_GENCALL
+ * 改写成 EX_CALL 时没带过去）⇒ 而诊断还偏偏推荐这个写法。现在通过检查器侧的小表按节点带过去
+ * （不给 Expr 加字段：那个 union 不清零 ⇒ 新字段在别的节点上是垃圾）。
+ * 顺带说明：`maxOf<i32>(4, 3)` 一直能过只是因为推断本来就成功。 */
+fn zero<T>() -> i64 { return i64(0) }
+fn f<T>(x: i64) -> i64 { return x + i64(1) }
+fn maxOf<T>(a: T, b: T) -> T { if a < b { return b }
+  return a }
+fn main() -> i32 {
+  let a = zero<i64>()
+  let b = f<i64>(i64(1))
+  let c = maxOf<i32>(4, 3)
+  io::cout << "a=" << a << " b=" << b << " c=" << i64(c) << "\n"
+  return 0
+}

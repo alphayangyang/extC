@@ -1474,6 +1474,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->u.call.args   = args;
                     e->qualified     = true;      /* do not trigger the qualification check */
                     e->func = inst;
+                    /* Hand the written type arguments to the EX_CALL path below through a side
+                     * table: without it that path inferred from scratch, so `f<i64>(x)` was pure
+                     * decoration -- it worked only where inference happened to succeed anyway
+                     * (`maxOf<i32>(4, 3)`) and failed exactly where the diagnostic recommends it
+                     * (`T` in the return type alone, or no argument to infer from:
+                     * tools/attack.py B10/B3). */
+                    ExplicitTargs *et = (ExplicitTargs *)arenaAllocZero(c->arena, sizeof *et);
+                    et->node  = e;
+                    et->targs = targs;
+                    *(ExplicitTargs **)vecPush(&c->explicitTargs) = et;
                     /* After the rewrite, walk the node again: the argument checks, the
                      * return type, and the home arena all live on the EX_CALL path, so
                      * returning void here instead is wrong. That mistake was made once. */
@@ -2006,8 +2016,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 Vec targs;
                 vecInit(&targs, c->arena, sizeof(void *));
-                for (size_t i = 0; i < f->typeParams.len; i++)
-                    *(Type **)vecPush(&targs) = NULL;
+                Vec *written = NULL;
+                for (size_t k = 0; k < c->explicitTargs.len && !written; k++) {
+                    ExplicitTargs *cand = *(ExplicitTargs **)vecAt(&c->explicitTargs, k);
+                    if (cand->node == e) written = &cand->targs;
+                }
+                for (size_t i = 0; i < f->typeParams.len; i++) {
+                    /* Seeded with the written `<...>`; the arguments still have to agree with it
+                     * (unification reports a mismatch). `NULL` means "infer this one". */
+                    Type *ex = (written && i < written->len)
+                                   ? *(Type **)vecAt(written, i) : NULL;
+                    *(Type **)vecPush(&targs) = ex;
+                }
                 for (size_t i = 0; i < f->params.len; i++) {
                     Param *p = *(Param **)vecAt(&f->params, i);
                     Expr  *a = *(Expr **)vecAt(&e->u.call.args, i);
@@ -2021,9 +2041,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     if (!unifyTParams(c->tt, &f->typeParams, &targs, want, at)) {
                         ckError(c, e->line,
                                 "A generic function's type parameters are inferred from its arguments."
-                                " Writing them out is accepted (`f<i32>(...)`) but does **not** seed the"
-                                " inference: give an argument whose type mentions the parameter, or a typed"
-                                " variable to assign into.",
+                                " Write them out at the call to supply one that no argument mentions:"
+                                " `f<i32>(...)` seeds the inference.",
                                 "cannot infer type parameter(s) of `%s` from the arguments", name);
                         return f->ret ? f->ret : ttVoid(tt);
                     }
@@ -2032,9 +2051,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     if (*(Type **)vecAt(&targs, i)) continue;
                     ckError(c, e->line,
                             "A generic function's type parameters are inferred from its arguments."
-                            " Writing them out is accepted (`f<i32>(...)`) but does **not** seed the"
-                            " inference: give an argument whose type mentions the parameter, or a typed"
-                            " variable to assign into.",
+                            " Write them out at the call to supply one that no argument mentions:"
+                            " `f<i32>(...)` seeds the inference.",
                             "cannot infer type parameter `%s` of `%s`",
                             *(const char **)vecAt(&f->typeParams, i), name);
                     return f->ret ? f->ret : ttVoid(tt);
