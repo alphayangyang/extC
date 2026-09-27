@@ -5786,11 +5786,13 @@ static void dropUnreferenced(CG *g, Buf *out) {
     CountTable counts;
     countInit(&counts, g->arena, g->deadFuncs.len + 1);
     for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        if (k + 8 < g->deadFuncs.len) __builtin_prefetch(*(DeadFunc **)vecAt(&g->deadFuncs, k + 8), 0, 0);
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
         if (df->name) countPut(&counts, df->name, strlen(df->name));
     }
     countSpan(&counts, text, 0, len, 1);
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
+        if (i + 8 < g->deadFuncs.len) __builtin_prefetch(*(DeadFunc **)vecAt(&g->deadFuncs, i + 8), 0, 0);
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;                                   /* no definition emitted */
         if (countGet(&counts, df->name, strlen(df->name)) != 2) continue;   /* someone calls it */
@@ -5838,11 +5840,13 @@ static void dropUnreferenced(CG *g, Buf *out) {
     while (dropped) {
         dropped = false;
         for (size_t i = 0; i < g->deadDefs.len; i++) {
+            if (i + 8 < g->deadDefs.len) __builtin_prefetch(*(DeadDef **)vecAt(&g->deadDefs, i + 8), 0, 0);
             DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
             if (d->scoped || !d->text) continue;            /* inside a body, or already gone */
             size_t starts[8], ends[8], pieces = 0;
             bool   allThere = true;
             for (size_t k = 0; k < g->deadDefs.len; k++) {
+                if (k + 8 < g->deadDefs.len) __builtin_prefetch(*(DeadDef **)vecAt(&g->deadDefs, k + 8), 0, 0);
                 DeadDef *o = *(DeadDef **)vecAt(&g->deadDefs, k);
                 if (o->scoped || !o->text || strcmp(o->name, d->name) != 0) continue;
                 char  *p = strstr(text, o->text);
@@ -5960,11 +5964,13 @@ static void markUncalledFunctions(CG *g, Buf *out) {
     CountTable counts;
     countInit(&counts, g->arena, g->deadFuncs.len + 1);
     for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        if (k + 8 < g->deadFuncs.len) __builtin_prefetch(*(DeadFunc **)vecAt(&g->deadFuncs, k + 8), 0, 0);
         DeadFunc *dfk = *(DeadFunc **)vecAt(&g->deadFuncs, k);
         if (dfk->name) countPut(&counts, dfk->name, strlen(dfk->name));
     }
     countSpan(&counts, text, 0, len, 1);
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
+        if (i + 8 < g->deadFuncs.len) __builtin_prefetch(*(DeadFunc **)vecAt(&g->deadFuncs, i + 8), 0, 0);
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;
         size_t blen = 0;

@@ -95,6 +95,7 @@ static void checkDeclarations(Checker *c) {
 
     /* Duplicate struct and function names. */
     for (size_t i = 0; i < m->structs.len; i++) {
+        if (i + 8 < m->structs.len) __builtin_prefetch(*(StructDef **)vecAt(&m->structs, i + 8), 0, 0);
         StructDef *a = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = i + 1; j < m->structs.len; j++) {
             StructDef *b = *(StructDef **)vecAt(&m->structs, j);
@@ -109,6 +110,7 @@ static void checkDeclarations(Checker *c) {
         }
     }
     for (size_t i = 0; i < m->funcs.len; i++) {
+        if (i + 8 < m->funcs.len) __builtin_prefetch(*(FuncDef **)vecAt(&m->funcs, i + 8), 0, 0);
         FuncDef *a = *(FuncDef **)vecAt(&m->funcs, i);
         for (size_t j = i + 1; j < m->funcs.len; j++) {
             FuncDef *b = *(FuncDef **)vecAt(&m->funcs, j);
@@ -126,8 +128,10 @@ static void checkDeclarations(Checker *c) {
     /* Duplicate field names, duplicate method names, and a method that collides with
      * a field of the same struct (the field would become unreachable). */
     for (size_t i = 0; i < m->structs.len; i++) {
+        if (i + 8 < m->structs.len) __builtin_prefetch(*(StructDef **)vecAt(&m->structs, i + 8), 0, 0);
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->fields.len; j++) {
+            if (j + 8 < sd->fields.len) __builtin_prefetch(*(FieldDef **)vecAt(&sd->fields, j + 8), 0, 0);
             FieldDef *fa = *(FieldDef **)vecAt(&sd->fields, j);
             for (size_t k = j + 1; k < sd->fields.len; k++) {
                 FieldDef *fb = *(FieldDef **)vecAt(&sd->fields, k);
@@ -137,6 +141,7 @@ static void checkDeclarations(Checker *c) {
             }
         }
         for (size_t j = 0; j < sd->methods.len; j++) {
+            if (j + 8 < sd->methods.len) __builtin_prefetch(*(FuncDef **)vecAt(&sd->methods, j + 8), 0, 0);
             FuncDef *ma = *(FuncDef **)vecAt(&sd->methods, j);
             if (findField(sd, ma->name))
                 ckError(c, ma->line, NULL, "`%s.%s`: a field and a method cannot share a name",
@@ -179,6 +184,7 @@ static void checkDeclarations(Checker *c) {
     /* Duplicate type names, duplicate variant names, and a type with no variants
      * (there would be no value of it to construct). */
     for (size_t i = 0; i < m->types.len; i++) {
+        if (i + 8 < m->types.len) __builtin_prefetch(*(TypeDef **)vecAt(&m->types, i + 8), 0, 0);
         TypeDef *a = *(TypeDef **)vecAt(&m->types, i);
         for (size_t j = i + 1; j < m->types.len; j++) {
             TypeDef *b = *(TypeDef **)vecAt(&m->types, j);
@@ -188,6 +194,7 @@ static void checkDeclarations(Checker *c) {
         if (a->variants.len == 0)
             ckError(c, a->line, NULL, "type `%s` has no variants", a->name);
         for (size_t j = 0; j < a->variants.len; j++) {
+            if (j + 8 < a->variants.len) __builtin_prefetch(*(Variant **)vecAt(&a->variants, j + 8), 0, 0);
             Variant *va = *(Variant **)vecAt(&a->variants, j);
             for (size_t k = j + 1; k < a->variants.len; k++) {
                 Variant *vb = *(Variant **)vecAt(&a->variants, k);
@@ -200,8 +207,10 @@ static void checkDeclarations(Checker *c) {
 
     /* A struct and a type share one namespace, so they may not collide either. */
     for (size_t i = 0; i < m->structs.len; i++) {
+        if (i + 8 < m->structs.len) __builtin_prefetch(*(StructDef **)vecAt(&m->structs, i + 8), 0, 0);
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < m->types.len; j++) {
+            if (j + 8 < m->types.len) __builtin_prefetch(*(TypeDef **)vecAt(&m->types, j + 8), 0, 0);
             TypeDef *td = *(TypeDef **)vecAt(&m->types, j);
             if (strcmp(sd->name, td->name) == 0)
                 ckError(c, td->line, NULL, "`%s` is already a struct", DN(td));
@@ -214,6 +223,7 @@ static void checkDeclarations(Checker *c) {
      * `ttSubstitute` is the existing machinery for exactly that substitution. The pair itself
      * (which trait, which type) was recorded at attachment, so nothing is looked up twice. */
     for (size_t i = 0; i < m->impls.len; i++) {
+        if (i + 8 < m->impls.len) __builtin_prefetch(*(ImplDef **)vecAt(&m->impls, i + 8), 0, 0);
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
         if (!im->trait || !im->target) continue;
         StructDef *sd = structOf(im->target);
@@ -224,6 +234,7 @@ static void checkDeclarations(Checker *c) {
         *(const char **)vecPush(&selfParams) = "Self";
         *(Type **)vecPush(&selfArgs) = im->target;
         for (size_t k = 0; k < im->trait->methods.len; k++) {
+            if (k + 8 < im->trait->methods.len) __builtin_prefetch(*(FuncDef **)vecAt(&im->trait->methods, k + 8), 0, 0);
             FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
             FuncDef *have = NULL;
             for (size_t j = 0; j < sd->methods.len && !have; j++) {
