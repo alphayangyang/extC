@@ -707,8 +707,76 @@ FSG = [
      'use std::fs\nfn main() -> i32 { var g = fs::openRead("tests/fs")\n  return 0 }'),
 ]
 
+# ---------------------------------------------------------------- nocopy / ctor / ops
+# 攻击面：移动语义（@noCopy）、构造函数糖 `T(args)`、算符重载（含 `!=` 的派生与异构重载）。
+NOC = [
+    ('P1 @noCopy 值被移走后不能再 use', 'reject',
+     '@noCopy struct c { n: i64 }\nfn take(x: c) -> i64 { return x.n }\n'
+     'fn main() -> i32 { var a: c = { n: i64(1) }\n  var v = take(a)\n'
+     '  return i32(v) + i32(a.n) }'),
+    ('P2 @noCopy 按 ref 传（允许）', 'ok',
+     '@noCopy struct c { n: i64 }\nfn peek(x: ref c) -> i64 { return x.n }\n'
+     'fn main() -> i32 { var a: c = { n: i64(7) }\n  return i32(peek(ref a)) - 7 }'),
+    ('P3 @noCopy 读字段 / 调方法（允许）', 'ok',
+     '@noCopy struct c { n: i64\n  fn bump(self: mut ref c) -> i64 { self.n = self.n + i64(1)\n'
+     '    return self.n } }\n'
+     'fn main() -> i32 { var a: c = { n: i64(1) }\n  let x = a.bump()\n'
+     '  return i32(x + a.n) - 4 }'),
+    # 语言没有"从局部变量移动出去"：值位置使用一律算拷贝（官方 tests/nocopy/errors 的
+    # bind_copy/assign_copy 就是这么判的）⇒ `return a` 同样是拷贝，必须拒；要返回新值就直接
+    # 返回字面量（官方 ctor 用例的写法）。
+    ('P4 @noCopy 从局部变量 return（值位置 = 拷贝 ⇒ 应拒）', 'reject',
+     '@noCopy struct c { n: i64 }\nfn make() -> c { var a: c = { n: i64(5) }\n  return a }\n'
+     'fn main() -> i32 { let a = make()\n  return i32(a.n) - 5 }'),
+    ('P4b @noCopy 直接返回新字面量（允许）', 'ok',
+     '@noCopy struct c { n: i64 }\nfn make() -> c { return { n: i64(5) } }\n'
+     'fn main() -> i32 { let a = make()\n  return i32(a.n) - 5 }'),
+    ('P5 @noCopy 赋给另一个变量后再用源（应拒）', 'reject',
+     '@noCopy struct c { n: i64 }\n'
+     'fn main() -> i32 { var a: c = { n: i64(1) }\n  var b: c = a\n  return i32(a.n + b.n) }'),
+    ('P6 @noCopy 在结构体字面量里被复制（应拒）', 'reject',
+     '@noCopy struct c { n: i64 }\nstruct boxer { v: c }\n'
+     'fn main() -> i32 { var a: c = { n: i64(1) }\n  var b: boxer = { v: a }\n'
+     '  return i32(a.n) + i32(b.v.n) }'),
+    ('P7 构造糖 T(args) 走 new', 'ok',
+     'struct pt { x: i64  y: i64\n  fn new(x: i64, y: i64) -> pt { return { x: x, y: y } } }\n'
+     'fn main() -> i32 { let p = pt(3, 4)\n  return i32(p.x + p.y) - 7 }'),
+    ('P8 构造糖元数写错（应拒）', 'reject',
+     'struct pt { x: i64\n  fn new(x: i64) -> pt { return { x: x } } }\n'
+     'fn main() -> i32 { let p = pt(1, 2)\n  return i32(p.x) }'),
+    ('P9 new 返回别的类型（应拒）', 'reject',
+     'struct pt { x: i64\n  fn new(x: i64) -> i64 { return x } }\n'
+     'fn main() -> i32 { let p = pt(1)\n  return 0 }'),
+    ('P10 可失败的构造（`!`/`?` 路径）', 'ok_or_reject',
+     'struct pt { x: i64\n  fn new(x: i64) -> pt? {\n    if x < i64(0) { return null }\n'
+     '    return { x: x } } }\n'
+     'fn main() -> i32 { var p = pt(3)?\n  return i32(p.x) - 3 }'),
+    ('P11 泛型结构的构造糖', 'ok_or_reject',
+     'struct pair2<T> { a: T\n  fn new(a: T) -> pair2<T> { return { a: a } } }\n'
+     'fn main() -> i32 { let p = pair2<i64>(7)\n  return i32(p.a) - 7 }'),
+    ('P12 == 与派生的 !=', 'ok',
+     'struct onlyEq { n: i64\n  fn ==(self: ref onlyEq, o: ref onlyEq) -> bool { return self.n == o.n } }\n'
+     'fn main() -> i32 { var a: onlyEq = { n: i64(5) }\n  var b: onlyEq = { n: i64(5) }\n'
+     '  if a == b && !(a != b) { return 0 }\n  return 1 }'),
+    ('P13 == 的右操作数类型不对（应拒）', 'reject',
+     'struct onlyEq { n: i64\n  fn ==(self: ref onlyEq, o: ref onlyEq) -> bool { return self.n == o.n } }\n'
+     'fn main() -> i32 { var a: onlyEq = { n: i64(5) }\n  if a == i64(5) { return 0 }\n  return 1 }'),
+    ('P14 同一算符的两个异构重载', 'ok_or_reject',
+     'struct v2 { n: i64\n'
+     '  fn ==(self: ref v2, o: ref v2) -> bool { return self.n == o.n }\n'
+     '  fn ==(self: ref v2, o: i64) -> bool { return self.n == o } }\n'
+     'fn main() -> i32 { var a: v2 = { n: i64(5) }\n  if a == a && a == i64(5) { return 0 }\n  return 1 }'),
+    ('P15 比较算符返回非 bool（应拒）', 'reject',
+     'struct w { n: i64\n  fn <(self: ref w, o: ref w) -> i64 { return self.n - o.n } }\n'
+     'fn main() -> i32 { var a: w = { n: i64(1) }\n  if a < a { return 0 }\n  return 1 }'),
+    ('P16 @noCopy 放进数组字面量', 'ok_or_reject',
+     '@noCopy struct c { n: i64 }\n'
+     'fn main() -> i32 { var a: c = { n: i64(1) }\n  var arr: [1]c = [a]\n'
+     '  return i32(arr[0].n) - 1 }'),
+]
+
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
-          'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG}
+          'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
