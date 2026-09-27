@@ -10,6 +10,7 @@ import argparse, os, random, re, shutil, subprocess, sys, hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODE = ['mutate']   # 由 --mode 设置；线程里只读
 EXTC = os.environ.get('EXTC', os.path.join(ROOT, 'build', 'extc'))
 
 def corpus(limit):
@@ -72,6 +73,101 @@ def mutate(src, rng, rounds):
         n += 1
     return join_src(parts), n
 
+
+# ---------------------------------------------------------------- 生成式（--mode gen）
+#
+# 变异 fuzzer 只能走到"已有语料附近"的地方；生成式从语法出发造**又大又合法**的程序，专门压
+# codegen 与优化通道（结构体、泛型实例、trait/dyn、协程、match、切片）。两个模式共用同一套
+# oracle：编译器不许崩、说成功就必须产出合法 C、能跑的过 sanitizer。
+
+SCALARS = ['i64', 'i32', 'u8', 'f64', 'bool']
+INT_T   = ['i64', 'i32', 'u8']
+
+def gen_expr(rng, vars_, depth=0):
+    """表达式：优先用已声明的变量，其次字面量/二元/调用。"""
+    choices = ['lit', 'lit', 'lit']
+    if vars_: choices += ['var', 'var']
+    if depth < 2: choices += ['bin', 'cmp']
+    k = rng.choice(choices)
+    if k == 'lit':
+        t = rng.choice(INT_T)
+        v = rng.choice(['0', '1', '2', '7', '255', '256', '65535', '9223372036854775807'])
+        return '%s(%s)' % (t, v)
+    if k == 'var':
+        return rng.choice(vars_)
+    if k == 'bin':
+        op = rng.choice(['+', '-', '*', '/', '%'])
+        a = gen_expr(rng, vars_, depth + 1)
+        b = gen_expr(rng, vars_, depth + 1)
+        return '%s %s %s' % (a, op, b)
+    op = rng.choice(['<', '<=', '>', '>=', '==', '!='])
+    return '%s %s %s' % (gen_expr(rng, vars_, depth + 1), op, gen_expr(rng, vars_, depth + 1))
+
+def gen_stmt(rng, vars_, ind):
+    pad = '    ' * ind
+    k = rng.randrange(6)
+    if k == 0 and vars_:
+        return ['%s%s = %s' % (pad, rng.choice(vars_), gen_expr(rng, vars_))]
+    if k == 1:
+        t = rng.choice(INT_T); nm = 'v%d' % rng.randrange(1000)
+        out = ['%svar %s: %s = %s' % (pad, nm, t, gen_expr(rng, vars_))]
+        vars_.append(nm); return out
+    if k == 2 and vars_:
+        v = rng.choice(vars_)
+        out = ['%sif %s {' % (pad, gen_expr(rng, vars_))]
+        for _ in range(rng.randrange(1, 3)): out += gen_stmt(rng, vars_, ind + 1)
+        out += ['%s}' % pad]; return out
+    if k == 3 and vars_:
+        v = rng.choice(vars_); c = 'c%d' % rng.randrange(1000)
+        out = ['%svar %s: i64 = 0' % (pad, c),
+               '%swhile %s < i64(%d) {' % (pad, c, rng.randrange(1, 5))]
+        for _ in range(rng.randrange(1, 3)): out += gen_stmt(rng, vars_, ind + 1)
+        out += ['%s    %s = %s + i64(1)' % (pad, c, c), '%s}' % pad]
+        vars_.append(c); return out
+    if k == 4:
+        return ['%sio::cout << %s << "\\n"' % (pad, gen_expr(rng, vars_))]
+    return ['%smatch %s {' % (pad, gen_expr(rng, vars_)) if False else
+            '%s// 空语句占位' % pad]
+
+def gen_program(rng):
+    L = ['use std::io']
+    # 结构体 + 泛型结构体 + 泛型 impl
+    L += ['struct p%d { a: i64  b: i64 }' % 0]
+    L += ['struct box<T> { v: T }']
+    L += ['impl<T> box<T> { fn get(self: ref box<T>) -> T { return self.v } }']
+    # 内建实例上挂方法（本族能力）+ trait/dyn
+    L += ['impl slice<u8> { fn total(self: ref slice<u8>) -> i64 {',
+          '    var s: i64 = 0', '    for i in 0..self.len { s = s + i64(self[i]) }',
+          '    return s } }']
+    L += ['trait Tag { fn tag(self: ref Self) -> i64 }']
+    L += ['impl Tag for p0 { fn tag(self: ref p0) -> i64 { return self.a + self.b } }']
+    # 枚举 + match
+    L += ['type e0 = | none | some(i64)']
+    L += ['fn pick(x: e0) -> i64 { match x { none => { return i64(0) }',
+          '    some(v) => { return v } } }']
+    # 几个函数
+    for fi in range(rng.randrange(1, 3)):
+        vars_ = ['a', 'b']
+        body = []
+        for _ in range(rng.randrange(2, 5)): body += gen_stmt(rng, vars_, 1)
+        L += ['fn f%d(a: i64, b: i64) -> i64 {' % fi] + body + ['    return a + b', '}']
+    # 协程
+    L += ['fn counter(n: i64) -> coroutine<i64> { var i: i64 = 0',
+          '    while i < n { yield i', '        i = i + i64(1) } }']
+    # main
+    L += ['fn main() -> i32 {',
+          '    var p: p0', '    p.a = i64(3)', '    p.b = i64(4)',
+          '    var g: box<i64>', '    g.v = p.tag()',
+          '    var s: slice<u8> = "abc"',
+          '    var c: coroutine<i64> = counter(i64(2))',
+          '    var acc: i64 = g.get() + s.total()',
+          '    while c.next() { acc = acc + c.value() }',
+          '    match e0::some(acc) { none => { acc = i64(0) }',
+          '        some(v) => { acc = v + pick(e0::some(v)) } }',
+          '    io::cout << f0(i64(1), acc) << "\\n"' if True else '',
+          '    return 0', '}']
+    return '\n'.join(x for x in L if x != '') + '\n'
+
 def run(cmd, timeout, **kw):
     return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw)
 
@@ -80,7 +176,7 @@ def one(args):
     rng = random.Random((seed << 20) ^ it)
     try: src = open(path, encoding='utf-8', errors='replace').read()
     except OSError: return None
-    case, _nm = mutate(src, rng, rng.randrange(1, 6))
+    case = gen_program(rng) if MODE[0] == 'gen' else mutate(src, rng, rng.randrange(1, 6))[0]
     d = os.path.join(out, 'w%05d' % it)   # 每次迭代独占目录：32 个共享目录会让并发互相删掉对方的产物
     os.makedirs(d, exist_ok=True)
     extc_f = os.path.join(d, 'case.extc'); c_f = os.path.join(d, 'case.c'); exe = os.path.join(d, 'case')
@@ -128,11 +224,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--iters', type=int, default=200)
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--mode', choices=['mutate', 'gen'], default='mutate')
+    ap.add_argument('--dry-run', type=int, default=0, help='只打印 N 个生成结果，不调用编译器')
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--limit', type=int, default=0, help='语料文件数上限')
     ap.add_argument('--out', default='/tmp/extc-fuzz')
     ap.add_argument('--timeout', type=int, default=1800)
     a = ap.parse_args()
+    MODE[0] = a.mode
+    if a.dry_run:
+        for i in range(a.dry_run):
+            print(''.join('=' for _ in range(20)), 'sample', i, ''.join('=' for _ in range(20)))
+            print(gen_program(random.Random(a.seed + i)))
+        return 0
     files = corpus(a.limit)
     if not files: print('没有语料'); return 2
     os.makedirs(a.out, exist_ok=True)
