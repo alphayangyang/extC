@@ -123,7 +123,7 @@ check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'
 check_err tests/impl/errors/method_needs_import.extc 'declared by module `stl::hashMap` -- add `use stl::hashMap`'
 check_err tests/impl/errors/on_enum.extc           'cannot own methods'
 check_err tests/impl/errors/with_field.extc        'expected `fn` in the `impl` block'
-check_err tests/impl/errors/generic_target.extc    '`impl` on a generic type is not supported yet'
+check_err tests/impl/errors/generic_target.extc    'unknown type `T`'
 check_err tests/impl/errors/annotation.extc        'no annotation applies to an `impl` block'
 
 exit $fail
