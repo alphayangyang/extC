@@ -1324,8 +1324,17 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
   **修法（两半合起来 ✓）**：① `ttHasParam` 补数组（与枚举）递归 ✓（`types.c:463` ✓）；
   ② 在 **`g.insts` 的收集处**加 `if (!it || mentionsParam(it)) continue;` ✓ ⇒ **X4 转绿** ✓、
   闸门 **1 份**差异 ✓（正是"泛型体内用数组实例"的程序 ✓ = 本 bug 的受害者 ✓，已重设 ✓）。
-  剩下 **X3/X7/X8/X9** ✓（容器元素 / 嵌套泛型字段 / 协程 yield / 切片元素 ✓）= **同根的另一批形状** ✓
-  ⇒ 下一轮同一套手法继续 ✓（很可能是另几个"只认直接实参"的谓词 ✓，或单元从**别的**收集点进来 ✓）。
+  **第 26 轮把剩下 4 条按真实报错分了类** ✓（比"同一根"精确得多 ✓）：
+
+  | 题 | 真实报错 | 性质与修法方向 |
+  |---|---|---|
+  | **X3** | `unknown type name 'vector$vector_box_i64'` ✗ | **实例没被发射** ✓（名字是**正确的** ✓）⇒ W9 那个"intern 太晚"的同族 ✓ |
+  | **X9** | `'slice_box_i64' undeclared` ✗ | 同上 ✓ —— 切片实例来自**表达式** `arr[..]` ✗，而我的 `internLocalTypes` **只走类型标注** ✗ |
+  | **X8** | `incompatible types when assigning to type 'box_i64' from type 'box_T'` ✗ | **替换漏了一处** ✗ —— 协程 yield 的**值**仍是临时名 ✓ |
+  | **X7** | `variable 'p' set but not used [-Werror=unused-but-set-variable]` ✗ | **质量类** ✓（同 H15/S11 一族 ✓：`p` 的声明与逐字段赋值没被删干净 ✓） |
+
+  ⇒ **X3 + X9 是同一个修法** ✓（把检查器的 walker 从"只走类型标注"扩到**也走表达式** ✓ ——
+  替换的副作用就是 intern ✓，正是 W9 那条路的推广 ✓）。
 
 （历史）**下一轮该怎么定位（工具已经就位 ✓）** ✓：`EXTC_ABORT` 探针就在**数组 struct 写点**
   （`cgLine(g, "%s data[%lld];", cType(g, u->inst->inner), …)` ✓ 现 `:4879` ✓）—— 直接在 gdb 里
