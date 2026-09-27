@@ -185,3 +185,37 @@ thunk 报 `implicit declaration of function 'slice_u8_enc'` —— **定义被�
 一个"没有任何调用点"的函数 ⇒ 删掉。⇒ 正确做法不是"登记"，而是让那趟 pass 知道
 **`dyn` 表会调用它**（例如给 `DeadFunc` 一个"被表引用"的标记并跳过），或者把表的发射挪到
 剪枝之前。这一条才是修 L 的正路；两次"登记"尝试都已回退，代码停在 `0ac10be`（F/A/M 复验全绿）。
+
+## 七、第五条（带参 trait）与"未读 self"的现状（2026-09-28 第三轮）
+
+### 5. 带参 trait：声明已通，impl 侧会**段错误**
+
+已验证可行（本轮实测，改动随后回退）：
+`trait Codec<T> { fn enc(self: ref Self, v: T) -> i64 }` 能声明、签名里的 `T` 能解析 ——
+靠的是 parser 早就铺好的那条路：**每个 trait 方法自带一个 `typeParams` 列表，第一个是 `"Self"`**
+（`parser.c` 里那条注释写着"这让 `resolveSignature` 一点不用懂 trait"）。带参 trait 只需把
+`tr->typeParams` 接在 `"Self"` **后面**（一行），零新字段。
+
+**但 `impl Codec<i64> for box { … }` 会段错误**（实测退出码 **139**，零输出）⇒ 语法一旦放行
+就比原来的 `expected '{', found 'for'` 更糟，所以本轮把 parser/checker 的改动**全部回退**。
+下一轮要修的是这条崩溃路径（`impl` 侧 trait 实参已能解析进 `ImplDef.traitArgs`，崩溃点在
+"用实参去匹配/替换 trait 方法签名"那一段，先定位再放行）。
+
+### "实现体不读 self" 是真 bug，但被逐字节闸门挡住
+
+形状（**与 dyn 无关**，普通静态调用就踩）：
+
+```extc
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return i64(9) } }   /* 不读 self */
+```
+生成物里 `box_tag(box * self)` 没有 `EXTC_UNUSED` ⇒ `-Wextra` 的 unused-parameter 在 `-Werror` 下失败。
+根因同第五节的第 1 条：`markUnusedParams` 只遍历 `g.deadFuncs`，而 `impl` 附加的方法**没有被登记**
+（登记只发生在泛型实例那一路）。
+
+**修法与代价（量过）**：在原型循环里登记"**有调用点**的 `impl` 方法"后，bug 修好、
+`tests/impl` 与 413 文件里只有 **1 个文件差 3 个空行**（`examples/alloc-in-block.extc`，
+`153,155d152`，**无任何语义差异**）⇒ 撞上"生成物逐字节不变"这条硬约束 ⇒ 已回退。
+**要落地需要一次基准重设（或主人拍板）**：修好它之后重跑 413 文件、替换 MANIFEST，
+并把 `tests/instimpl` 的金丝雀改成普通用例。
