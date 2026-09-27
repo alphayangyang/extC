@@ -4241,6 +4241,34 @@ static void checkGlobals(Checker *c) {
  */
 #define FUNC_INST_PREFIX "__extc_fi_"
 
+/* How many concrete instances of free generic functions one compilation may build.
+ *
+ * A template can be instantiated inside its own body with a bigger type -- `grow<T>(x)` calling
+ * `grow(box<T>)` -- and nothing stopped it: the compiler kept creating instances until it was
+ * killed (tools/attack.py E3: extC did not return within 25 seconds on a three-line program).
+ * This is a limit of the compiler, not of the language, so the message says so. */
+#define FUNC_INST_LIMIT 4096
+
+/* How deeply a **created** type may nest. The runaway in E3 does not just add instances: each
+ * step instantiates with a type one level deeper (`box<T>` again), so by step N the type is N
+ * levels deep and every copy of it costs O(N) -- the total is O(N^2) and the compiler was
+ * OOM-killed after 54 seconds. Depth is the quantity that has to be bounded; the instance count
+ * above is only a backstop. 64 is far above anything a source file can write by hand
+ * (the attack suite's A4 uses 10) and far below anything that can exhaust memory. */
+#define TYPE_DEPTH_LIMIT 64
+
+/* Nesting depth of a type's instantiation arguments (a plain type is 0). The recursion is cut
+ * defensively: this runs on types the compiler built itself. */
+static int typeDepth(Type *t) {
+    if (!t) return 0;
+    int best = 0;
+    for (size_t i = 0; i < t->targs.len; i++) {
+        int d = typeDepth(*(Type **)vecAt(&t->targs, i));
+        if (d > best) best = d;
+    }
+    return best + (t->targs.len ? 1 : 0);
+}
+
 /* Create or find the concrete instance of a free generic function.
  *
  * A type instance (`varArray<i32>`) is decided by the type, but the type arguments of a
@@ -4259,6 +4287,26 @@ static void checkGlobals(Checker *c) {
  */
 FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     if (!tmpl) return NULL;
+    for (size_t j = 0; targs && j < targs->len; j++) {
+        int d = typeDepth(*(Type **)vecAt(targs, j));
+        if (d > TYPE_DEPTH_LIMIT) {
+            ctxError(c->ctx, line, 1,
+                     "This is a limit of the compiler, not something wrong with the program;"
+                     " please report it together with the program that triggered it.",
+                     "internal: a generic instance was requested with a type nested %d levels"
+                     " deep (a template instantiated inside its own body with a growing type?)", d);
+            return NULL;
+        }
+    }
+    if (c->funcInsts.len >= FUNC_INST_LIMIT) {
+        ctxError(c->ctx, line, 1,
+                 "This is a limit of the compiler, not something wrong with the program;"
+                 " please report it together with the program that triggered it.",
+                 "internal: more than %d generic function instances were created"
+                 " (a template instantiated inside its own body with a growing type?)",
+                 FUNC_INST_LIMIT);
+        return NULL;
+    }
     /* Already built? One template plus one set of type arguments is one instance, so a
      * match is returned instead of allocating a second one. */
     for (size_t i = 0; i < c->funcInsts.len; i++) {

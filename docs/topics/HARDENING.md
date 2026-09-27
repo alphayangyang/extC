@@ -332,6 +332,48 @@ static inline int32_t *slice_i32_index(slice_i32 v, int64_t i, const char *file,
 `tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0**（**零输出变化**，收紧了判据而已）；
 parrun ⇒ **288/0**（无任何误拒）；回归 `tests/errors/array_vs_scalar_eq.extc`。
 
+## 三点八、定向攻击（tools/attack.py）：泛型组 47 题，先修 H8（实例化失控 ⇒ 挂死 + OOM）
+
+**换打法**：不再只撒网（fuzz），而是**按实现结构点名攻击**。`tools/attack.py` 每组题都带期望
+（ok / reject / trap），再叠三条硬 oracle（不许崩 / 说成功就必须合法 C / 不许 UB），组名可单独跑。
+
+第一组 **泛型 47 题**（实例化身份与命名撞车、替换与签名、延迟检查即 H7 家族、每实例方法集隔离、
+递归终止、与 dyn/协程交叉）。首轮命中 9 条，先修最严重的：
+
+### H8（已落地）：自递归实例化让编译器失控（挂死 54 秒后被 OOM 杀掉）
+
+**触发**（三行）：
+
+```extc
+struct box<T> { v: T }
+fn grow<T>(x: T) -> i64 { var b: box<T>
+  b.v = x
+  return grow(b) }        // 每实例化一次，实参类型就深一层
+```
+
+**性质**：不是"慢" —— 它**同时吃爆内存**：每步的实参类型比上一步深一层（`box<T>` 再嵌一层），
+第 N 步的类型有 N 层，而每份拷贝是 O(N) ⇒ 总量 O(N²) ⇒ 实测 54 秒后被 SIGKILL（OOM）。
+
+**修法**：在 `funcInstance` 入口按**创建的类型的嵌套深度**设限（`TYPE_DEPTH_LIMIT 64`），
+超限就用仓库既有的那句措辞报错（"This is a limit of the compiler, not something wrong with the
+program; please report it …"），并给实例**总数**留一个兜底（`FUNC_INST_LIMIT 4096`）。
+深度才是要害：只限个数时，4096 步 × 每步 O(深度) 照样把内存吃光（第一版就是这么失败的）。
+
+**验证**：E3 现在**立即**返回
+`error: internal: a generic instance was requested with a type nested 65 levels deep …`（退出码 1）；
+十层嵌套（攻击套件 A4）不受影响；`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0**（零输出变化）；
+parrun ⇒ 289/0。
+
+### 泛型组剩余的 8 条（按严重度排队，下一轮继续）
+
+| 题目 | 症状 | 归类 |
+|---|---|---|
+| A4 / B14 / F4 | 泛型函数**返回/使用**由 `T` 构造的实例 ⇒ **生成的 C 非法** | 同一族（当年 `mk<T> -> pair<T>` 那条）|
+| A5 | 用户类型名 `pair_i64` 与实例 C 名撞车 ⇒ `redefinition of 'struct pair_i64'` | 生成非法 C |
+| F1 | `dyn Tag` 打在"泛型 trait impl"的实例上 ⇒ 被误拒（`` `pair_i64` does not implement `Tag` ``）| 误拒 |
+| B7 | `var c: coroutine<i64> = gen(i64(9))`（`gen<T> -> coroutine<T>`）⇒ 被误拒 | 误拒（待查）|
+| B3 / B10 | 显式实参 `zero<i64>()` 不支持 ⇒ 但报的是"cannot infer type parameter" | 诊断措辞误导 |
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
