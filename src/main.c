@@ -508,7 +508,9 @@ int main(int argc, char **argv) {
 
     Buf c;
     bufInit(&c, &arena);
+    double t_cg0 = nowSec();
     if (!ctx.hasError && !bodyDiag) generateC(&ctx, &arena, tt, &m, lineMap, &c);
+    phase("codegen", t_cg0);
 
     if (ctx.hasError) {
         Buf diag;
