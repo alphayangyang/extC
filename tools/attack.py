@@ -311,6 +311,59 @@ MODULES = [
         'main.extc': 'use a\nfn main() -> i32 { return a::callB() + i32(1) - 3 }'}),
     ('M9 use 一个不存在的模块', 'reject', {
         'main.extc': 'use nosuchmodule\nfn main() -> i32 { return 0 }'}),
+    ('N1 跨模块 trait impl + dyn', 'ok', {
+        'tag.extc': 'trait Tag { fn tag(self: ref Self) -> i64 }\nfn dynTag(t: dyn Tag) -> i64 { return t.tag() }',
+        'thing.extc': 'use tag\nstruct thing { v: i64 }\n'
+                     'impl Tag for thing { fn tag(self: ref thing) -> i64 { return self.v } }',
+        'main.extc': 'use tag\nuse thing\nfn main() -> i32 { var t: thing::thing\n  t.v = i64(6)\n'
+                     '  return i32(tag::dynTag(dyn Tag(t))) - 6 }'}),   # `dyn` 收无限定的 trait 名：`use tag` 已把 Tag 带进作用域；`dyn tag::Tag(...)` 不是合法语法（题目自己踩过）
+    ('N2 @private 类型从公开函数签名漏出', 'ok_or_reject', {
+        'secret.extc': '@private struct secret { v: i64 }\n'
+                      'fn make() -> secret { var s: secret\n  s.v = i64(9)\n  return s }\n'
+                      'fn get(s: ref secret) -> i64 { return s.v }',
+        'main.extc': 'use secret\nfn main() -> i32 { let s = secret::make()\n'
+                     '  return i32(secret::get(ref s)) - 9 }'}),
+    ('N3 模块文件与同名子目录并存', 'ok_or_reject', {
+        'foo.extc': 'fn f() -> i32 { return i32(1) }',
+        'main.extc': 'use foo\nfn main() -> i32 { return foo::f() - 1 }'}),
+    ('N4 跨模块类型闭环', 'ok_or_reject', {
+        'a.extc': 'use b\nstruct A { other: ?ref b::B  v: i64 }\nfn mkA() -> A { var x: A\n  x.v = i64(1)\n  x.other = null\n  return x }',
+        'b.extc': 'use a\nstruct B { other: ?ref a::A  v: i64 }',
+        'main.extc': 'use a\nfn main() -> i32 { let x = a::mkA()\n  return i32(x.v) - 1 }'}),
+    ('N5 模块名撞 std 模块名（io.extc）', 'ok_or_reject', {
+        'io.extc': 'fn shout() -> i32 { return i32(5) }',
+        'main.extc': 'use io\nfn main() -> i32 { return io::shout() - 5 }'}),
+    ('N6 同一泛型在两个模块各实例化一次', 'ok', {
+        'gen.extc': 'fn id<T>(x: T) -> T { return x }\nfn a() -> i64 { return id(i64(3)) }',
+        'main.extc': 'use gen\nfn main() -> i32 { return i32(gen::a() + gen::id(i64(4))) - 7 }'}),
+    ('N7 @private 泛型经公开包装跨模块用', 'ok_or_reject', {
+        'box.extc': '@private fn wrap<T>(x: T) -> T { return x }\n'
+                    'fn pub1(x: i64) -> i64 { return wrap(x) }\n'
+                    'fn pub2(x: u8) -> u8 { return wrap(x) }',
+        'main.extc': 'use box\nfn main() -> i32 { return i32(box::pub1(i64(2))) + i32(box::pub2(u8(3))) - 5 }'}),
+    ('N8 两个模块同名结构体各实例化', 'ok_or_reject', {
+        'p.extc': 'struct item<T> { v: T }\nfn mk() -> item<i64> { var x: item<i64>\n  x.v = i64(1)\n  return x }',
+        'q.extc': 'struct item<T> { v: T }\nfn mk() -> item<u8> { var x: item<u8>\n  x.v = u8(2)\n  return x }',
+        'main.extc': 'use p\nuse q\nfn main() -> i32 { return i32(p::mk().v) + i32(q::mk().v) - 3 }'}),
+    ('N9 模块函数遮蔽内置/标准名', 'ok_or_reject', {
+        'sh.extc': 'fn printlnInt(n: i64) -> i64 { return n }',
+        'main.extc': 'use sh\nuse std::io\nfn main() -> i32 { io::cout << sh::printlnInt(i64(1)) << "\\n" }'}),
+    ('N10 @private 常量经公开常量漏出', 'ok_or_reject', {
+        'c.extc': '@private let HIDDEN: i64 = 41\nlet SHOWN: i64 = HIDDEN + 1',
+        'main.extc': 'use c\nfn main() -> i32 { return i32(c::SHOWN) - 42 }'}),
+    ('N11 三模块链（a → b → c）', 'ok', {
+        'c.extc': 'fn base() -> i64 { return i64(7) }',
+        'b.extc': 'use c\nfn mid() -> i64 { return c::base() + i64(1) }',
+        'a.extc': 'use b\nfn top() -> i64 { return b::mid() + i64(1) }',
+        'main.extc': 'use a\nfn main() -> i32 { return i32(a::top()) - 9 }'}),
+    ('N12 跨模块 impl 一个别处的 trait', 'ok_or_reject', {
+        'tag.extc': 'trait Tag { fn tag(self: ref Self) -> i64 }',
+        'wrap.extc': 'struct w { v: i64 }\nimpl Tag for w { fn tag(self: ref w) -> i64 { return self.v } }',
+        'main.extc': 'use tag\nuse wrap\nfn main() -> i32 { var x: wrap::w\n  x.v = i64(4)\n'
+                     '  return i32(x.tag()) - 4 }'}),
+    ('N13 模块名形似关键字', 'ok_or_reject', {
+        'self_mod.extc': 'fn f() -> i32 { return i32(2) }',
+        'main.extc': 'use self_mod\nfn main() -> i32 { return self_mod::f() - 2 }'}),
     ('M10 模块内 main 不夺走入口', 'ok_or_reject', {
         'other.extc': 'fn main() -> i32 { return i32(99) }\nfn helper() -> i32 { return i32(1) }',
         'main.extc': 'use other\nfn main() -> i32 { return other::helper() - 1 }'}),
