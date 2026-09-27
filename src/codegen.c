@@ -3960,13 +3960,51 @@ static bool stmtIsDefiniteReturn(Stmt *s) {
  *   - The graph is small and the answer is computed once per generated function,
  *     so the plainest fixed-point iteration is good enough.
  */
+/* Is `f` reachable from itself? The walk itself is fine; what made it cubic was the *dedup*:
+ * `seen` was a Vec scanned linearly for every edge, so the walk from a function that reaches k
+ * others cost O(k^2), and the whole build paid that once per emitted function (measured:
+ * cg-emit x7.7 per doubling, all of it inside this function's vecAt calls). A pointer-keyed set
+ * answers the same question with the same result -- only the lookup changes, never the verdict. */
+typedef struct { FuncDef **slot; size_t cap, len; } FuncSet;
+
+static void funcSetInit(FuncSet *s, Arena *a) {
+    s->cap = 64; s->len = 0;
+    s->slot = arenaAllocZero(a, s->cap * sizeof *s->slot);
+}
+static size_t funcSetHash(FuncDef *p) { return ((size_t)(uintptr_t)p >> 4) * 2654435761u; }
+static bool funcSetHas(FuncSet *s, FuncDef *p) {
+    for (size_t i = funcSetHash(p) & (s->cap - 1); ; i = (i + 1) & (s->cap - 1)) {
+        if (!s->slot[i]) return false;
+        if (s->slot[i] == p) return true;
+    }
+}
+static void funcSetGrow(FuncSet *s, Arena *a) {
+    FuncSet bigger;
+    funcSetInit(&bigger, a);
+    bigger.cap = s->cap * 2;
+    bigger.slot = arenaAllocZero(a, bigger.cap * sizeof *bigger.slot);
+    for (size_t i = 0; i < s->cap; i++) {
+        if (!s->slot[i]) continue;
+        FuncDef *p = s->slot[i];
+        for (size_t j = funcSetHash(p) & (bigger.cap - 1); ; j = (j + 1) & (bigger.cap - 1))
+            if (!bigger.slot[j]) { bigger.slot[j] = p; bigger.len++; break; }
+    }
+    *s = bigger;
+}
+static void funcSetAdd(FuncSet *s, Arena *a, FuncDef *p) {
+    if (s->len * 2 >= s->cap) funcSetGrow(s, a);
+    for (size_t i = funcSetHash(p) & (s->cap - 1); ; i = (i + 1) & (s->cap - 1))
+        if (!s->slot[i]) { s->slot[i] = p; s->len++; return; }
+        else if (s->slot[i] == p) return;
+}
+
 static bool funcCallsItself(CG *g, FuncDef *f) {
     if (!f || !f->body) return false;
     /* Direct calls, `EX_ASSOC` and `EX_METHOD` included; both carry `e->func`. */
-    Vec seen;  vecInit(&seen, g->arena, sizeof(FuncDef *));
+    FuncSet seen; funcSetInit(&seen, g->arena);
     Vec work;  vecInit(&work, g->arena, sizeof(FuncDef *));
     *(FuncDef **)vecPush(&work) = f;
-    *(FuncDef **)vecPush(&seen) = f;
+    funcSetAdd(&seen, g->arena, f);
     bool hit = false;
     for (size_t i = 0; i < work.len; i++) {
         FuncDef *cur = *(FuncDef **)vecAt(&work, i);
@@ -3976,11 +4014,10 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
             FuncDef *nx = *(FuncDef **)vecAt(&cur->callees, j);
             if (!nx) continue;
             if (nx == f) { hit = true; break; }
-            bool dup = false;
-            for (size_t k = 0; k < seen.len && !dup; k++)
-                if (*(FuncDef **)vecAt(&seen, k) == nx) dup = true;
-            if (!dup) { *(FuncDef **)vecPush(&seen) = nx;
-                        *(FuncDef **)vecPush(&work) = nx; }
+            if (!funcSetHas(&seen, nx)) {
+                funcSetAdd(&seen, g->arena, nx);
+                *(FuncDef **)vecPush(&work) = nx;
+            }
         }
         if (hit) break;
     }
