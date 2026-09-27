@@ -52,6 +52,10 @@
 static int ldTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
 static double ldNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 static void ldPhase(const char *n, double t0) { if (ldTimeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ldNow() - t0); }
+static long g_stN, g_exN;
+static void ldCount(void) {
+    if (ldTimeOn()) fprintf(stderr, "[walk] rwStmt=%ld rwExpr=%ld\n", g_stN, g_exN);
+}
 typedef struct { const char *name; double sec; } LdAcc;
 static LdAcc ldAccs[8];
 static void ldAcc(const char *n, double sec) {
@@ -1055,6 +1059,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
  */
 
 static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
+    g_exN++;
     if (!e) return;
     switch (e->kind) {
     case EX_STRUCTLIT: {
@@ -1162,6 +1167,7 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
  */
 
 static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
+    g_stN++;
     if (!s) return;
     switch (s->kind) {
     case ST_YIELD:
@@ -1868,6 +1874,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         mergeUnit(&L, &root);
     }
     ldPhase("ld-root", t_root);   /* the root unit's own merge: where the loader's time is */
+    ldCount();
     if (dbgOn("EXTC_DBG_MOD")) fprintf(stderr, "[mod] merge done: errors=%d declarations funcs=%zu globals=%zu\n",
                                          L.errors, out->funcs.len, out->globals.len);
     if (L.errors) return false;
