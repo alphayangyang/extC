@@ -1021,6 +1021,31 @@ only variables and fields can be referenced" ✓ ⇒ 正解是**切片的 `.data
 第二次（`9d45834`）写"14/14"时 E5 翻红 ✗ ⇒ **本条以实测为准** ✓：删掉 E5 之后
 `tools/attack.py extern` 的实测结果见提交信息 ✓，不再提前写"全绿" ✓。
 
+## 三点二十一、H15 候选（未落地 ✓ 已定位）：`f()!` 作**语句**时生成裸值 ⇒ `-Werror=unused-value`
+
+**发现路径** ✓：新开的 **fs 攻击组**（`tools/attack.py fs` ✓，12 题）里 `a.close()!` 作语句时生成：
+
+```c
+    (fs$ofstream_close(&(a))).u.success._0;      /* 裸表达式 ✗ */
+```
+
+gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `tests/fs/close-twice.extc:16`
+写的就是同一形状** ✓（`a.close()!` ✓）—— 它的 runner 不带 `-Werror` ✓，所以这条一直没被看见 ✓。
+
+**试过的修法** ✓（`genStmtInner` 的 `ST_EXPR` 一般分支 ✓，`:3789` 一带 ✓）：
+
+1. 只要类型非 void 就发 `(void)(%s);` ✗ ⇒ **194 份**产物变化 ✓（等价重写，但面太大 ✗）；
+2. 收窄到"**非调用**"（`kind != EX_CALL && != EX_METHOD` ✓）✗ ⇒ 仍 **178 份** ✓ —— 因为
+   `io::cout << …` 这类**二元**表达式也是非调用 ✓；
+3. 需要的精确判据是"**这个值来自解包（`!`/`?`）的载荷**" ✓ —— `?` 走的是 `EX_TRY` 的专门分支
+   （`:3785` ✓，本来就不发裸值 ✓），而 `!` 的节点种类**尚未确认** ✓（`grep -E "EX_TRY|'!'" src/parser.c`
+   只找到 `:2418` 的 `EX_TRY` ✓）⇒ 下一步：在 parser 里找 `!` 后缀的造节点处 ✓（token 名可能是
+   `TK_BANG` ✓），或给那个节点加一个"丢弃时发 `(void)`"的标记 ✓。
+
+**判据** ✓：`tools/attack.py fs` 的 **S2/S3/S7/S8/S11** 五条 ✓（现在 12 题剩 2 条 S1/S11 ✓，其中 S1 是
+题目自己缺 `use stl::string` ✓ 已修 ✓）。**性质** ✓：属**质量类**（只在 `-Werror` 下可见 ✓），
+不是健全性 ✓ ⇒ 不占主线 ✓，留着给下一阶段 ✓。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`

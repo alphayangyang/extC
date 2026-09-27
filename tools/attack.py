@@ -637,8 +637,68 @@ EXT = [
      'fn main() -> i32 { return 0 }'),
 ]
 
+# ---------------------------------------------------------------- fs / io
+# 攻击面：句柄的生命周期（关两次、关后使用、逃出作用域）、错误路径、以及文档里那条
+# "close 幂等靠句柄自己的标志，不许碰别人的 fd"（tests/fs/close-twice.extc 的设计）。
+FSG = [
+    ('S1 写文件 → 关闭 → 再读回来', 'ok',
+     'use std::fs\nuse std::io\nuse stl::string\n'
+     'fn main() -> i32 { {\n    var f = fs::openWrite("build/atk-s1.out")!\n'
+     '    fs::fout << "hello" << "\\n"\n    f.close()!\n  }\n'
+     '  var g = fs::openRead("build/atk-s1.out")!\n  var line: string = ""\n'
+     '  fs::fin >> line\n  g.close()!\n  if line == "hello" { return 0 }\n  return 1 }'),
+    ('S2 关两次：第二次不许碰别人的号', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var a = fs::openWrite("build/atk-s2a.out")!\n'
+     '  let fa = a.fd\n  a.close()!\n  a.close()!\n'
+     '  var b = fs::openWrite("build/atk-s2b.out")!\n'
+     '  fs::fout << "still fine" << "\\n"\n  b.close()!\n  return 0 }'),
+    ('S3 关闭之后再用同一个句柄', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var a = fs::openWrite("build/atk-s3.out")!\n'
+     '  a.close()!\n  fs::fout << "after close" << "\\n"\n  return 0 }'),
+    ('S4 打开一个不存在的文件（错误路径）', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var g = fs::openRead("build/atk-does-not-exist.out")\n'
+     '  return 0 }'),
+    ('S5 句柄存进结构体', 'ok_or_reject',
+     'use std::fs\nstruct holder { f: fs::file }\n'
+     'fn main() -> i32 { var h: holder\n  h.f = fs::openWrite("build/atk-s5.out")!\n'
+     '  fs::fout << "in struct" << "\\n"\n  h.f.close()!\n  return 0 }'),
+    ('S6 句柄传进函数', 'ok_or_reject',
+     'use std::fs\nfn writeIt(f: mut ref fs::file) { fs::fout << "via fn" << "\\n" }\n'
+     'fn main() -> i32 { var f = fs::openWrite("build/atk-s6.out")!\n  writeIt(ref f)\n'
+     '  f.close()!\n  return 0 }'),
+    ('S7 两个句柄读同一个文件互不影响', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var a = fs::openRead("tests/fs/data.txt")!\n'
+     '  var b = fs::openRead("tests/fs/data.txt")!\n  a.close()!\n  b.close()!\n  return 0 }'),
+    ('S8 循环里开一千次（fd 不许漂）', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var first: i32 = i32(-1)\n  var i: i64 = 0\n'
+     '  while i < 1000 {\n    var f = fs::openWrite("build/atk-s8.out")!\n'
+     '    if i == 0 { first = f.fd }\n    if f.fd != first { return 1 }\n'
+     '    f.close()!\n    i = i + 1 }\n  return 0 }'),
+    ('S9 句柄逃出它所在的作用域', 'reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var g: fs::file = fs::openWrite("build/atk-s9.out")!\n'
+     '  { var f = fs::openWrite("build/atk-s9b.out")!\n    g = f }\n'
+     '  fs::fout << "escaped" << "\\n"\n  g.close()!\n  return 0 }'),
+    ('S10 读一个空文件 / 读到 EOF', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { { var w = fs::openWrite("build/atk-s10.out")!\n    w.close()! }\n'
+     '  var g = fs::openRead("build/atk-s10.out")!\n  var line: string = ""\n'
+     '  fs::fin >> line\n  g.close()!\n  return 0 }'),
+    ('S11 写完不关就退出（析构/泄漏路径）', 'ok_or_reject',
+     'use std::fs\n'
+     'fn main() -> i32 { var f = fs::openWrite("build/atk-s11.out")!\n'
+     '  fs::fout << "no close" << "\\n"\n  return 0 }'),
+    ('S12 读目录当文件', 'ok_or_reject',
+     'use std::fs\nfn main() -> i32 { var g = fs::openRead("tests/fs")\n  return 0 }'),
+]
+
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
-          'dyn': DYN, 'arena': ARENA, 'extern': EXT}
+          'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
