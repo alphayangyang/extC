@@ -4377,10 +4377,14 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
     TypeTable *tt = c->tt;
     Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type, params, targs);
     Type *rt2 = ttSubstitute(tt, ec->node->u.bin.right->type, params, targs);
-    /* A `T op T` in the template is an instance's `A op B` here, and an operator method is
-     * matched on the right operand's type, so the two only have to be equal when the left
-     * operand is not a struct. */
-    if (!ttEquals(lt, rt2) && !structOf(ttBase(lt))) return;
+    /* A `T op T` in the template is an instance's `A op B` here. The equality of the two is
+     * **not** this function's business: `typeSupportsOp` below is the authority on "can this
+     * type be compared with that one" -- it accepts native numerics, judges an array by its
+     * element type **and the same array type on the other side**, and finds an operator method
+     * for structs. An early `return` here used to skip all of that whenever the left operand was
+     * not a struct, so a `[1]i32 == i32` slipped through and the emitted descriptor comparison
+     * read 8 bytes out of a 4-byte operand (ASan: stack-buffer-overflow in `extc_eq`, found by
+     * tools/fuzz.py in a mutation of examples/generic-free-fn.extc). Let the authority decide. */
     if (!typeSupportsOp(tt, lt, ec->op, rt2)) {
         const char *op = ec->op;
         Type *b = ttBase(lt);

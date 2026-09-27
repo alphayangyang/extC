@@ -304,6 +304,34 @@ static inline int32_t *slice_i32_index(slice_i32 v, int64_t i, const char *file,
 不准确。战役5 的 3 片失败**都存下来了**（`fail-00021` / `fail-00034` / `fail-00086`）。
 目录名带 mode+seed 仍然是值得的加固（避免将来撞名覆盖），但那次并没有真丢东西。
 
+## 三点七、H7（已落地）：数组与标量比较被放行 ⇒ 描述符比较越界读
+
+**来源**：战役7（三模式 × 6 种子 × 500 次）的变异体（原语料 `examples/generic-free-fn.extc`，
+同一种子在 `mutate` 与 `modules` 两个模式各命中一次）：
+
+```
+==ERROR: AddressSanitizer: stack-buffer-overflow ... READ of size 8
+    #0 ... in extc_eq
+```
+
+**形状**：变异把 `a[i] == x` 削成 `[i] == x` ⇒ extC 把 `[i]` 当成 **1 元素数组字面量** ⇒
+泛型实例化后是"`[1]i32` vs `i32`"的比较。生成物按**左操作数的描述符**（`array_1_i64`，元素 8 字节）
+去读右操作数（`i32`，4 字节）⇒ 越界读。
+
+**两处放行**（都要修，缺一不可）：
+
+1. `check_escape.c` 的数组规则递归问"**元素**能不能和 `rhs` 比" ⇒ `i32` 能比 `i32` ⇒ 通过 ✗；
+   改为"数组只能和**同一个数组类型**比，再判元素"，一行。
+2. `check_top.c` 的延迟复查（`runOpCheck`）在"两边类型不等且左边不是结构体"时**直接 return** ✗
+   ⇒ 那次比较从头到尾没人判。删掉这句提前返回，把判定交给 `typeSupportsOp` —— 它本来就是
+   "这个类型能不能和那个类型比"的唯一权威（数值走 `cmpIsNative`、数组判元素与同型、结构体走
+   `findOp`）。
+
+**验证**：变异体现在报 `` `indexOf_i32` needs `[1]i64` to define `==` ``；
+`examples/generic-free-fn.extc` **本体照旧编译运行正确**（`indexOf(30) = 2 …`，退出码 0）；
+`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0**（**零输出变化**，收紧了判据而已）；
+parrun ⇒ **288/0**（无任何误拒）；回归 `tests/errors/array_vs_scalar_eq.extc`。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`

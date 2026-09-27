@@ -1,0 +1,17 @@
+// 回归（tools/fuzz.py 战役7，变异自 examples/generic-free-fn.extc）：
+// 泛型体里的 `[i] == x` 实例化之后是"**1 元素数组** vs i32" ⇒ 曾经一路被放行：
+//   ① check_escape.c 的数组规则递归去问"**元素**能不能和 rhs 比"（i32 能比 i32 ⇒ 通过）；
+//   ② check_top.c 的延迟复查在"两边类型不等且左边不是结构体"时**直接 return**。
+// 于是生成物按左操作数的描述符（array_1_i64，8 字节元素）比较右操作数（i32，4 字节）
+// ⇒ 越界读 ⇒ ASan: stack-buffer-overflow in `extc_eq`。
+// 现在两边判据都收紧了：数组只能和**同一个数组类型**比，且延迟复查把判定交给
+// typeSupportsOp 这个唯一权威。
+// expect: to define
+fn indexOf<T>(a: slice<T>, x: T) -> i64 {
+    if [0] == x { return 0 }
+    return 0 - 1
+}
+fn main() -> i32 {
+    var a: [1]i64 = [1]
+    return i32(indexOf(a[..], i64(1)))
+}

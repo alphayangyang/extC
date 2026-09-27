@@ -1929,8 +1929,16 @@ bool typeSupportsOp(TypeTable *tt, Type *t, const char *op, Type *rhs) {
     if (isEq ? cmpIsNative(t) : ttIsNumeric(t)) {
         if (strcmp(op, "%") != 0 || ttIsInteger(t)) return true;
     }
-    /* the compiler derives `==` for arrays, provided the elements can be compared */
-    if (isEq && t->kind == TY_ARRAY) return typeSupportsOp(tt, t->inner, op, rhs);
+    /* The compiler derives `==` for arrays, provided the elements can be compared -- and only
+     * against the **same** array type. This used to recurse into the element and ask whether the
+     * element compares with `rhs`, so `[1]i64 == i32` was approved at instantiation time (the
+     * deferred re-check runs once `T` is known and the element `i64` does compare with `i32`);
+     * the emitted descriptor comparison then read 8 bytes out of a 4-byte operand.
+     * ASan: stack-buffer-overflow in `extc_eq`, found by tools/fuzz.py in a mutation of
+     * examples/generic-free-fn.extc (docs/topics/HARDENING.md 三点七). */
+    if (isEq && t->kind == TY_ARRAY)
+        return rhs && ttEquals(ttBase(t), ttBase(rhs)) &&
+               typeSupportsOp(tt, t->inner, op, t->inner);
 
     Type *b = ttBase(t);
     if (!structOf(b)) return false;
