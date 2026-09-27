@@ -86,6 +86,10 @@ typedef struct {
     const char *proto;   /* the declaration, exactly as emitted */
     const char *body;    /* the definition; filled in once the body buffer is complete */
     size_t      off, len;   /* where it sits in `g.body`, until `body` is filled in */
+    /* Named from **outside** its instance -- a `dyn` table's thunk calls it, and the table is spliced
+     * in **after** the "definitions nothing names" pass has run, so that pass cannot see the mention
+     * and would remove a method instance nothing else calls. */
+    bool        dynTable;
 } DeadFunc;
 
 /* A local declaration that may never be read.
@@ -5212,6 +5216,7 @@ static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
          * `examples/out-param.extc` kept its warning. */
         df->off = off;
         df->len = len;
+        df->dynTable = f->dynTable;   /* see the field */
         return;
     }
 }
@@ -5903,6 +5908,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (i + 8 < g->deadFuncs.len) __builtin_prefetch(*(DeadFunc **)vecAt(&g->deadFuncs, i + 8), 0, 0);
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;                                   /* no definition emitted */
+        if (df->dynTable) continue;   /* named by a `dyn` table, which is spliced in later */
         if (countGet(&counts, df->name, strlen(df->name)) != 2) continue;   /* someone calls it */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of
@@ -7463,7 +7469,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * `pair_i64_tag` and left the thunk calling a function nobody emitted (tools/attack.py F1).
              * Everything else keeps the previous treatment -- exempting all instance methods rewrote
              * 73 corpus files for nothing. */
-            if (!md->dynTable) deadFuncBody(&g, md, fb, g.out->len - fb);
+            /* Always register the body: the prototype loop above already created this entry (with
+             * `proto`), and `deadFuncBody` only fills `off`/`len` on it. Skipping that call -- which is
+             * what the first `dyn` exemption did -- left the entry without a body, so
+             * `markUnusedParams` never saw it and a method that ignores `self` made the generated C
+             * fail `-Werror=unused-parameter` (tools/attack.py F1b + D9; measured: `body=NULL off=0
+             * len=0 proto=yes`). */
+            deadFuncBody(&g, md, fb, g.out->len - fb);
             cgLine(&g, "");
         }
         substLeave(&g);
