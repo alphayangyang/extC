@@ -17,6 +17,10 @@
 #include <stdlib.h>   /* getenv (the EXTC_DUMP_EFFECTS debug switch) */
 #include <time.h>
 
+static int ctOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+static double ctNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+static void ctPhase(const char *n, double t0) { if (ctOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ctNow() - t0); }
+
 /* Type parameters visible inside a function.
  *
  * A method declared inside a struct sees the struct's type parameters; a free
@@ -3669,7 +3673,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
                         "`extern!` return type `%s` cannot cross the C boundary",
                         typeStr(c, f->ret));
         }
-        collectEffects(c, f);            /* summary = the signed clause, or the worst case */
+        double tE = ctNow();
+        collectEffects(c, f);
+        ctPhase("cf-effects", tE);            /* summary = the signed clause, or the worst case */
         return;
     }
     /* `main(args)`: the entry point may take the command line, and the shape is fixed
@@ -4637,9 +4643,7 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
     }
 }
 
-static int ctOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
-static double ctNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
-static void ctPhase(const char *n, double t0) { if (ctOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ctNow() - t0); }
+
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     double tB0=0,tB1=0,tB2=0,tB3=0,tB4=0,tB5=0,tB6=0,tB7=0,tB8=0;
     Checker c;    memset(&c, 0, sizeof c);
