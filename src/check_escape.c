@@ -2277,7 +2277,13 @@ Type *checkTryInner(Checker *c, Expr *e) {
      * The rule is narrow on purpose: `main` only. Every other function still has to
      * declare a `result` to use `?`, because there the failure has somewhere to go. */
     if (c->curFunc && !c->curFunc->owner && c->curFunc->name &&
-        strcmp(c->curFunc->name, "main") == 0) {
+        strcmp(c->curFunc->name, "main") == 0 &&
+        /* ...and only when the operand really carries a payload. `5?` inside `main` used to
+         * reach `vecAt(&ob->targs, 0)` with an empty list and take the compiler down with a
+         * SIGSEGV (found by tools/fuzz.py in five lines: `fn main() -> i32 { let x = 5?`).
+         * Without the guard the ordinary path below reports the honest
+         * "`?` needs an `option<...>` or `result<...>`" instead. */
+        ob && ob->targs.len > 0) {
         Type *payloadM = *(Type **)vecAt(&ob->targs, 0);
         e->type = payloadM;
         return payloadM;

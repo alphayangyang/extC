@@ -3070,6 +3070,13 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
         /* A binding with no publication of its own -- only ever initialized, or written
          * through a projection -- is still described by the expression it was given. */
         if (!viaRecords) {
+            /* An identifier that never resolved has no binding to walk, and this used to reach
+             * `sy->heldSrc` with a NULL `sy` -- a SIGSEGV, found by tools/fuzz.py from a
+             * three-line program (`fn make<T>(x: T) -> pair<T> { return { a: make, b: x } impl }`).
+             * `best` is the answer for a binding with no publication to follow, and this cannot
+             * hide an escape: an unresolved name is reported as an error, so no accepted program
+             * takes this path. */
+            if (!sy) return best;
             Expr *held = sy->heldSrc ? sy->heldSrc : sy->origin;
             if (!held) return fromSym;
             int v = levelOfValue(c, ls, held, inner, hops + 1);

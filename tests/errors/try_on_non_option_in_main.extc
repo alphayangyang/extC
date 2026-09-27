@@ -1,0 +1,8 @@
+// 回归（tools/fuzz.py 抓到，seed 101 it 343）：`main` 里对**非 option** 用 `?`
+// 曾经 SIGSEGV —— checkTryInner 的"main 里失败即 trap"分支直接取 ob->targs[0]，
+// 而 `5?` 的操作数是 int，targs 为空。
+// expect: needs an `option
+fn main() -> i32 {
+    let x = 5?
+    return 0
+}
