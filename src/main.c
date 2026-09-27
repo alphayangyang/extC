@@ -437,8 +437,13 @@ int main(int argc, char **argv) {
     Vec moduleCtxs;
     vecInit(&moduleCtxs, &arena, sizeof(Ctx *));
     bool modsOk = true;
-    if (!ctx.hasError)
+    if (!ctx.hasError) {
+        /* The loader (and the AST rewrite it drives) sits between parse and check and was the one
+         * big untimed stretch -- the timers accounted for about 1.2 s of a 3.13 s build before. */
+        double t_ld = nowSec();
         modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
+        phase("load", t_ld);
+    }
 
     /* Hand the bare-name mappings the loader collected to the type table. The loader
      * does not know TypeTable and ttResolve knows nothing else, so the two are joined
