@@ -2066,6 +2066,13 @@ static const char *genExprInner(CG *g, Expr *e) {
         }
 
         case EX_CALL: {
+            /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
+             * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
+            if (e->parWorker) {
+                ctxError(g->ctx, e->line, 1, NULL,
+                         "parallel::run: codegen is not implemented yet (step 3a is in progress)");
+                return arenaPrintf(g->arena, "0");
+            }
             /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
              * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
              * miscompile -- and a coroutine *definition* alone still compiles, which is what the

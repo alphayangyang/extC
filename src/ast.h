@@ -147,6 +147,8 @@ struct Expr {
     Type     *type;
     FuncDef  *func;     /* the function an EX_CALL or EX_METHOD resolved to; for `==`
                          * it is the eq method */
+    /* `parallel::run(worker, ...)`: 内建识别出来的那个 worker（codegen 据此生成 trampoline）。 */
+    FuncDef  *parWorker;
     FieldDef *field;    /* the field an EX_FIELD resolved to */
     Type     *assocOwner; /* EX_ASSOC: the instance type it resolved to, kept so the
                            * C name can be mangled */

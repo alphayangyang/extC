@@ -32,6 +32,70 @@ static bool intLitRange(Type *t, long long *lo, unsigned long long *hi) {
 /* ---------------------------------------------------------------- expressions */
 
 
+/* ---------------------------------------------------------------- parallel::run
+ *
+ * `parallel::run(worker, out, n, threads)` 是 stdlib/std/parallel.extc 里用 `@builtin` 声明的内建：
+ * 语言没有一等函数值，所以"把 worker 放到线程上跑"这件事必须由编译器生成一个 trampoline 去调它。
+ *
+ * ③a 的语义（与库文件头一致）：区间 [0,n) 分块，worker 拿到自己的 [lo,hi)；**`out` 按 [lo,hi) 切成
+ * 互不重叠的一段**交给每个 worker ⇒ 读只共享、写必分区 ⇒ 不需要新的可发送性分析。
+ *
+ * ③b（本文件的语法白名单，保守但可靠）：worker 体内只许算符、字面量、下标、它自己的参数与局部；
+ * 任何调用（含用户函数与 stdlib）、`new`、以及既非参数又非局部的名字（模块级 `var` 就在这一档）
+ * 一律拒绝。传递性（worker 调用户辅助函数）与线程本地 arena 的路由是 ③c。 */
+static bool isParRunDecl(FuncDef *f) {
+    return f && f->isBuiltin && f->name && strcmp(f->name, "parallel$run") == 0;
+}
+static bool isI64Type(Type *t) {
+    return t && t->kind == TY_BUILTIN && t->name && strcmp(t->name, "i64") == 0;
+}
+typedef struct { Vec names; const char *why; } ParQ;
+static bool parQHas(ParQ *q, const char *n) {
+    for (size_t i = 0; i < q->names.len; i++)
+        if (strcmp(*(const char **)vecAt(&q->names, i), n) == 0) return true;
+    return false;
+}
+static bool parScanStmt(void *ctx, Stmt *s);
+static bool parScanExpr(void *ctx, Expr *e) {
+    ParQ *q = (ParQ *)ctx;
+    if (e->kind == EX_IDENT && !parQHas(q, e->u.ident.name)) {
+        if (!q->why) q->why = "it names something that is neither a parameter nor a local of the worker";
+        return false;
+    }
+    if (e->kind == EX_NEW) {
+        if (!q->why) q->why = "`new` inside a worker needs the per-worker arena (step 3c)";
+        return false;
+    }
+    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+        if (!q->why) q->why = "a call inside a worker needs the transitivity check (step 3c)";
+        return false;
+    }
+    AstVisit v = { parScanExpr, parScanStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+static bool parScanStmt(void *ctx, Stmt *s) {
+    ParQ *q = (ParQ *)ctx;
+    if (s->kind == ST_VAR && s->u.var.name) *(const char **)vecPush(&q->names) = s->u.var.name;
+    AstVisit v = { parScanExpr, parScanStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+/* 两趟：先收全局部名，再按白名单查一遍；返回第一条问题的说明，没问题返回 NULL。 */
+static const char *parWorkerProblem(Checker *c, FuncDef *wf) {
+    ParQ q;
+    vecInit(&q.names, c->arena, sizeof(const char *));
+    q.why = NULL;
+    if (!wf->body) return "the worker has no body";
+    { AstVisit v = { NULL, parScanStmt, &q }; astWalkStmtChildren(wf->body, &v); }
+    for (size_t i = 0; i < wf->params.len; i++) {
+        Param *pp = *(Param **)vecAt(&wf->params, i);
+        *(const char **)vecPush(&q.names) = pp->name;
+    }
+    { AstVisit v = { parScanExpr, parScanStmt, &q };
+      if (!astWalkStmtChildren(wf->body, &v))
+          return q.why ? q.why : "an unsupported construct"; }
+    return NULL;
+}
+
 static bool exprHasCall(Checker *c, Expr *e);   /* defined at the end of this file */
 static bool exprHasAnyCall(Expr *e);            /* the syntactic question; see its comment */
 
@@ -1327,11 +1391,86 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (f->isBuiltin) {
-                ckError(c, e->line,
-                        "The declaration carries `@builtin`, so the code has to come from the"
-                        " compiler, and there is no implementation for this one yet.",
-                        "`%s` is a builtin that is not implemented yet", f->name);
-                return ttError(tt);
+                if (!isParRunDecl(f)) {
+                    ckError(c, e->line,
+                            "The declaration carries `@builtin`, so the code has to come from the"
+                            " compiler, and there is no implementation for this one yet.",
+                            "`%s` is a builtin that is not implemented yet", f->name);
+                    return ttError(tt);
+                }
+                /* `parallel::run(worker, out, n, threads)` */
+                if (e->u.call.args.len != 4) {
+                    ckError(c, e->line, NULL,
+                            "`parallel::run` takes `(worker, out, n, threads)`, so 4 arguments, got %d",
+                            (int)e->u.call.args.len);
+                    return ttError(tt);
+                }
+                Expr *wa = *(Expr **)vecAt(&e->u.call.args, 0);
+                FuncDef *wf = (wa->kind == EX_IDENT) ? findFunc(c, wa->u.ident.name) : NULL;
+                if (!wf || !wf->body) {
+                    ckError(c, e->line,
+                            "v1 has no first-class function values, so the worker is written as a name, and"
+                            " the compiler generates the trampoline that puts it on a thread.",
+                            "the first argument of `parallel::run` must be the name of a function");
+                    return ttError(tt);
+                }
+                if (wf->params.len != 4 || !isI64Type((*(Param **)vecAt(&wf->params, 0))->type)
+                    || !isI64Type((*(Param **)vecAt(&wf->params, 1))->type)
+                    || !isI64Type((*(Param **)vecAt(&wf->params, 2))->type)
+                    || !ttIsViewType((*(Param **)vecAt(&wf->params, 3))->type)) {
+                    ckError(c, e->line,
+                            "A worker is handed its slice of the range and its slice of the output, so the"
+                            " signature is fixed: `(id: i64, lo: i64, hi: i64, out: mut slice<T>)`.",
+                            "worker `%s` must take exactly `(id: i64, lo: i64, hi: i64, out: slice<T>)`", wf->name);
+                    return ttError(tt);
+                }
+                {
+                    const char *why = parWorkerProblem(c, wf);
+                    if (why) {
+                        ckError(c, e->line,
+                                "A worker runs on another thread while the caller keeps running, so step 3b"
+                                " allows only operators, literals, indexing, its own parameters and locals.",
+                                "worker `%s` cannot be used here: %s", wf->name, why);
+                        return ttError(tt);
+                    }
+                }
+                e->parWorker = wf;
+                wf->used = true;                 /* the trampoline names it, so it must be emitted */
+                {
+                    /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参是函数名"
+                     * 这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects i64, found
+                     * mut slice<i64>`）。自己查完再返回，既不放松任何检查，也不让占位类型漏进产物。 */
+                    Expr *a1 = *(Expr **)vecAt(&e->u.call.args, 1);
+                    Expr *a2 = *(Expr **)vecAt(&e->u.call.args, 2);
+                    Expr *a3 = *(Expr **)vecAt(&e->u.call.args, 3);
+                    Type *t1 = checkExpr(c, a1);
+                    Type *t2 = checkExpr(c, a2);
+                    Type *t3 = checkExpr(c, a3);
+                    if (!ttIsViewType(t1)) {
+                        ckError(c, a1->line,
+                                "A worker writes only its own slice of the range, so the output has to be a view.",
+                                "`out` must be a `mut slice<T>`, found `%s`", typeStr(c, t1));
+                        return ttError(tt);
+                    }
+                    if (!isI64Type(t2) || !isI64Type(t3)) {
+                        ckError(c, e->line, NULL,
+                                "`parallel::run` takes `(worker, out, n, threads)`: `n` and `threads` are `i64`");
+                        return ttError(tt);
+                    }
+                    {   /* worker 的第四个形参必须与 out 的类型一致：不一致 ⇒ 它拿到的不是自己那一段 */
+                        Type *wp = (*(Param **)vecAt(&wf->params, 3))->type;
+                        if (!ttEquals(wp, t1)) {
+                            ckError(c, e->line,
+                                    "The worker writes into the caller's output, so both sides must name the"
+                                    " same view.",
+                                    "worker `%s` takes `%s` but `out` is `%s`",
+                                    wf->name, typeStr(c, wp), typeStr(c, t1));
+                            return ttError(tt);
+                        }
+                    }
+                    e->type = c->tI32;
+                    return c->tI32;
+                }
             }
             e->func = f;  f->used = true;   /* record the resolved function and its use */
 
@@ -2100,11 +2239,84 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (f->isBuiltin) {
-                ckError(c, e->line,
-                        "The declaration carries `@builtin`, so the code has to come from the"
-                        " compiler, and there is no implementation for this one yet.",
-                        "`%s` is a builtin that is not implemented yet", f->name);
-                return ttError(tt);
+                if (!isParRunDecl(f)) {
+                    ckError(c, e->line,
+                            "The declaration carries `@builtin`, so the code has to come from the"
+                            " compiler, and there is no implementation for this one yet.",
+                            "`%s` is a builtin that is not implemented yet", f->name);
+                    return ttError(tt);
+                }
+                /* `parallel::run(worker, out, n, threads)` */
+                if (e->u.call.args.len != 4) {
+                    ckError(c, e->line, NULL,
+                            "`parallel::run` takes `(worker, out, n, threads)`, so 4 arguments, got %d",
+                            (int)e->u.call.args.len);
+                    return ttError(tt);
+                }
+                Expr *wa = *(Expr **)vecAt(&e->u.call.args, 0);
+                FuncDef *wf = (wa->kind == EX_IDENT) ? findFunc(c, wa->u.ident.name) : NULL;
+                if (!wf || !wf->body) {
+                    ckError(c, e->line,
+                            "v1 has no first-class function values, so the worker is written as a name, and"
+                            " the compiler generates the trampoline that puts it on a thread.",
+                            "the first argument of `parallel::run` must be the name of a function");
+                    return ttError(tt);
+                }
+                if (wf->params.len != 4 || !isI64Type((*(Param **)vecAt(&wf->params, 0))->type)
+                    || !isI64Type((*(Param **)vecAt(&wf->params, 1))->type)
+                    || !isI64Type((*(Param **)vecAt(&wf->params, 2))->type)
+                    || !ttIsViewType((*(Param **)vecAt(&wf->params, 3))->type)) {
+                    ckError(c, e->line,
+                            "A worker is handed its slice of the range and its slice of the output, so the"
+                            " signature is fixed: `(id: i64, lo: i64, hi: i64, out: mut slice<T>)`.",
+                            "worker `%s` must take exactly `(id: i64, lo: i64, hi: i64, out: slice<T>)`", wf->name);
+                    return ttError(tt);
+                }
+                {
+                    const char *why = parWorkerProblem(c, wf);
+                    if (why) {
+                        ckError(c, e->line,
+                                "A worker runs on another thread while the caller keeps running, so step 3b"
+                                " allows only operators, literals, indexing, its own parameters and locals.",
+                                "worker `%s` cannot be used here: %s", wf->name, why);
+                        return ttError(tt);
+                    }
+                }
+                e->parWorker = wf;
+                wf->used = true;                 /* the trampoline names it, so it must be emitted */
+                    /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参
+                     * 是函数名"这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects
+                     * i64, found mut slice<i64>`）。自己查完再返回，既不放松检查，也不让占位类型漏进产物。 */
+                    Expr *a1 = *(Expr **)vecAt(&e->u.call.args, 1);
+                    Expr *a2 = *(Expr **)vecAt(&e->u.call.args, 2);
+                    Expr *a3 = *(Expr **)vecAt(&e->u.call.args, 3);
+                    Type *t1 = checkExpr(c, a1);
+                    Type *t2 = checkExpr(c, a2);
+                    Type *t3 = checkExpr(c, a3);
+                    if (!ttIsViewType(t1)) {
+                        ckError(c, a1->line,
+                                "A worker writes only its own slice of the range, so the output has to be a view.",
+                                "`out` must be a `mut slice<T>`, found `%s`", typeStr(c, t1));
+                        return ttError(tt);
+                    }
+                    if (!isI64Type(t2) || !isI64Type(t3)) {
+                        ckError(c, e->line, NULL,
+                                "`parallel::run` takes `(worker, out, n, threads)`: `n` and `threads` are `i64`");
+                        return ttError(tt);
+                    }
+                    {   /* worker 的第四个形参必须与 out 的类型一致：不一致 ⇒ 它拿到的不是自己那一段 */
+                        Type *wp = (*(Param **)vecAt(&wf->params, 3))->type;
+                        if (!ttEquals(wp, t1)) {
+                            ckError(c, e->line,
+                                    "The worker writes into the caller's output, so both sides must name the same"
+                                    " view.",
+                                    "worker `%s` takes `%s` but `out` is `%s`",
+                                    wf->name, typeStr(c, wp), typeStr(c, t1));
+                            return ttError(tt);
+                        }
+                    }
+                    e->type = c->tI32;
+                    return c->tI32;
             }
             e->func = f;  f->used = true;   /* record the resolved function and its use */
 
@@ -2437,11 +2649,84 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (f->isBuiltin) {
-                ckError(c, e->line,
-                        "The declaration carries `@builtin`, so the code has to come from the"
-                        " compiler, and there is no implementation for this one yet.",
-                        "`%s` is a builtin that is not implemented yet", f->name);
-                return ttError(tt);
+                if (!isParRunDecl(f)) {
+                    ckError(c, e->line,
+                            "The declaration carries `@builtin`, so the code has to come from the"
+                            " compiler, and there is no implementation for this one yet.",
+                            "`%s` is a builtin that is not implemented yet", f->name);
+                    return ttError(tt);
+                }
+                /* `parallel::run(worker, out, n, threads)` */
+                if (e->u.call.args.len != 4) {
+                    ckError(c, e->line, NULL,
+                            "`parallel::run` takes `(worker, out, n, threads)`, so 4 arguments, got %d",
+                            (int)e->u.call.args.len);
+                    return ttError(tt);
+                }
+                Expr *wa = *(Expr **)vecAt(&e->u.call.args, 0);
+                FuncDef *wf = (wa->kind == EX_IDENT) ? findFunc(c, wa->u.ident.name) : NULL;
+                if (!wf || !wf->body) {
+                    ckError(c, e->line,
+                            "v1 has no first-class function values, so the worker is written as a name, and"
+                            " the compiler generates the trampoline that puts it on a thread.",
+                            "the first argument of `parallel::run` must be the name of a function");
+                    return ttError(tt);
+                }
+                if (wf->params.len != 4 || !isI64Type((*(Param **)vecAt(&wf->params, 0))->type)
+                    || !isI64Type((*(Param **)vecAt(&wf->params, 1))->type)
+                    || !isI64Type((*(Param **)vecAt(&wf->params, 2))->type)
+                    || !ttIsViewType((*(Param **)vecAt(&wf->params, 3))->type)) {
+                    ckError(c, e->line,
+                            "A worker is handed its slice of the range and its slice of the output, so the"
+                            " signature is fixed: `(id: i64, lo: i64, hi: i64, out: mut slice<T>)`.",
+                            "worker `%s` must take exactly `(id: i64, lo: i64, hi: i64, out: slice<T>)`", wf->name);
+                    return ttError(tt);
+                }
+                {
+                    const char *why = parWorkerProblem(c, wf);
+                    if (why) {
+                        ckError(c, e->line,
+                                "A worker runs on another thread while the caller keeps running, so step 3b"
+                                " allows only operators, literals, indexing, its own parameters and locals.",
+                                "worker `%s` cannot be used here: %s", wf->name, why);
+                        return ttError(tt);
+                    }
+                }
+                e->parWorker = wf;
+                wf->used = true;                 /* the trampoline names it, so it must be emitted */
+                    /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参
+                     * 是函数名"这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects
+                     * i64, found mut slice<i64>`）。自己查完再返回，既不放松检查，也不让占位类型漏进产物。 */
+                    Expr *a1 = *(Expr **)vecAt(&e->u.call.args, 1);
+                    Expr *a2 = *(Expr **)vecAt(&e->u.call.args, 2);
+                    Expr *a3 = *(Expr **)vecAt(&e->u.call.args, 3);
+                    Type *t1 = checkExpr(c, a1);
+                    Type *t2 = checkExpr(c, a2);
+                    Type *t3 = checkExpr(c, a3);
+                    if (!ttIsViewType(t1)) {
+                        ckError(c, a1->line,
+                                "A worker writes only its own slice of the range, so the output has to be a view.",
+                                "`out` must be a `mut slice<T>`, found `%s`", typeStr(c, t1));
+                        return ttError(tt);
+                    }
+                    if (!isI64Type(t2) || !isI64Type(t3)) {
+                        ckError(c, e->line, NULL,
+                                "`parallel::run` takes `(worker, out, n, threads)`: `n` and `threads` are `i64`");
+                        return ttError(tt);
+                    }
+                    {   /* worker 的第四个形参必须与 out 的类型一致：不一致 ⇒ 它拿到的不是自己那一段 */
+                        Type *wp = (*(Param **)vecAt(&wf->params, 3))->type;
+                        if (!ttEquals(wp, t1)) {
+                            ckError(c, e->line,
+                                    "The worker writes into the caller's output, so both sides must name the same"
+                                    " view.",
+                                    "worker `%s` takes `%s` but `out` is `%s`",
+                                    wf->name, typeStr(c, wp), typeStr(c, t1));
+                            return ttError(tt);
+                        }
+                    }
+                    e->type = c->tI32;
+                    return c->tI32;
             }
             e->func = f;  f->used = true;   /* record the resolved function and its use */
             /* `dyn Trait(x).m(...)`: **object safety** (DYN.md stage 1).
