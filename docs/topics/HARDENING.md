@@ -543,6 +543,29 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
 第 5 块（帧名 `instName` 优先 ✓）+ 在**延迟实例化之后**对 `c.funcInsts` 里的协程实例补跑
 `coroSetup` ✓（第 4 块那种"body 检查放行实例"证明不行 ✓：那时实例还没建 ✓）。
 
+**第 31 轮 Step B：一路推到只剩"拼接点位置"这一件事** ✓（已回退 ✗，但每一步的实测都在）
+
+逐块落地并实测（每块都过闸门 ✓，语料始终零变化 ✓）：
+
+1. ✓ `coroRetProto` 字段 + 记录 ✓；`funcInstance` 重建原型/清继承帧/`isCoro=false` ✓；
+2. ✓ 帧名 **`instName` 优先** ✓（`coroSetup` 里 ✓）；
+3. ✓ **延迟回放之后补跑 `coroSetup`** ✓（锚点：callChecks 回放循环之后、`#79` 注释之前 ✓）——
+   这一块是**第 29 轮真根的正解** ✓（实例是那时才建出来的 ✓）；给实例先替换
+   `yieldTime`/`isCoro=true` ✓；
+4. ✓ 生成器：`coroDefPrinted`/`coroDefA` + 装箱点（`extc_task_begin` 两处 ✓）置位 ✓ +
+   **带守卫的按需插入** ✓。插入的 typedef **生效** ✓（`extc_coro` 未定义的错误消失 ✓！）；
+5. ✓ 任务表运行期（`coroutineEmitRuntime` ✓）原来只在"程序自己声明了 `extc_task_*`"时才发 ✗
+   ⇒ 一并放进插入 ✓ ⇒ `extc_task_begin` 的错误消失 ✓；
+6. ✓ 池运行期（`poolsEmitRuntime` ✓）也要在前面（任务表用到 `extc_arena` ✓）⇒ 再放进插入 ✓
+   （并用 `poolDone` 防止最终装配重复发 ✓）⇒ `extc_arena` 的错误消失 ✓；
+7. ✗ **只剩拼接点的位置** ✓：必须在"**`#include` 之后 + 死钩子块之后 + 所有函数体之前**" ✓。
+   实测走过三个位置：`genCoroHandleDecls` 之前（❌ `int64_t` 未知 ⇒ 落在 include 之前 ✓）、
+   早期 typedef 块之后（❌ 池运行期里的 `extc_die` 未知 ⇒ 死钩子在它之后 ✓）、
+   ⇒ **正解：死钩子块结束处** ✓ —— `codegen.c:6527` 写 `g.rtDie` ✓、**块结束在 `:6547`** ✓，
+   紧接 `:6548` 是下一段输出 ✓ ⇒ 捕获点放这两行之间 ✓。
+
+⇒ 本轮已整体回退 ✓（闸门 413/413 ✓）；下一轮只需把那**一个捕获点**放对 ✓，前面的 1–6 块照用 ✓。
+
 **原清单（每一块都验证过或已定位 ✓）**：① `ast.h` 的 `coroRetProto` + 记录 ✓；
 ② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
 ④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；
