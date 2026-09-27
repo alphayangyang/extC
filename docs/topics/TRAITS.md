@@ -235,3 +235,27 @@ impl Tag for box { fn tag(self: ref box) -> i64 { return i64(9) } }   /* 不读 
 **正确的下一步**是先修那个 pass（触发条件是"被它重写的文本里含字符串字面量 + 某些偏移"），
 再回来做 `self` 标记 —— 那时 413 文件应当**逐字节不变**，也就不需要动基准。已回退，
 代码停在 `4ef4dc9`。
+
+## 八、文本 pass 的偏移失效 bug（2026-09-28 第四轮，先于 self 标记修）
+
+**已经证实的两件事**（都可复跑）：
+
+1. **基准里冻着一份非法 C**：`/tmp/refC/examples__prelude.extc.c:123`
+
+   ```c
+   (printf("%s", (slice_u8_e" : "false"), printf("\n"));
+   ```
+   `gcc -fsyntax-only` 直接报 `'slice_u8_e' undeclared`。原样应为
+   `slice_u8_isEmpty(&(b)) ? "true" : "false"`。⇒ 这个文件只被哈希、不被编译，所以坏了很久没人发现
+   （**基准本身有问题**，不是我这轮引入的）。
+2. **触发条件与范围**：给 `impl` 附加的方法做"未读参数"标记（登记进 `g.deadFuncs`）会让这个 bug
+   以另一种形态再现（`slice_ue" : "false"`），并且**全量 413 个文件里 410 个都变样**
+   （406 个只删 3 个空行；4 个另有死代码删除；1 个把字符串改坏）。
+   用环境变量逐个关掉 pass 定位：**跳过 `dropRuntimeDefs` 或跳过 `dropUnreferenced` 任一，损坏即消失**
+   ⇒ 两个 pass 都在"文本已被前一次改写后"继续用**旧偏移**做删除（`memmove(ln, ln+span, …)` /
+   `memmove(bd, bd+bl, …)` / `memmove(pt, pt+pl, …)`），span 与实际文本不同步时会**删进字符串字面量**。
+
+**修的方向**（下一轮）：删除点一律**重新定位**（每次 memmove 后用 `strstr` 重取，或用"删除集合先收集、
+最后从后往前一次性应用"的写法——后者在 `markUncalkedFunctions` 里已经有先例，
+注释还记着同类事故 `EXEXTC_UNUSED TC_INLINE`），并加一条判据：删除范围的**两端必须落在 token 边界**。
+修好之后 ① `self` 标记 ② L 债 才有机会以"413 逐字节不变"的方式落地。
