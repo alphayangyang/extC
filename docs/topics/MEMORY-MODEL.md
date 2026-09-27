@@ -207,6 +207,26 @@ needsHome 的传递闭包  ⇐ 需要所有函数体都查完
 codegen 的 `arenaRefAt`/`homeArg` 只做文本翻译。
 **验收（最有说服力的一条）**：删掉 codegen 兜底后 **golden 88 个文件逐字节相同**。
 
+## 2.7′ 提权在生成物里长什么样（机械证据）
+
+把 §2.6 的 `mk()` 真编一遍，生成物里"家"是一个**形参**：
+
+```c
+static void      varArray_i32_push(varArray_i32 *self, int32_t v, extc_arena *__extc_home);
+static void      varArray_i32_grow(varArray_i32 *self, extc_arena *__extc_home);
+static varArray_i32 mk(extc_arena *__extc_home);
+...
+varArray_i32 v = (varArray_i32){ .buf = (slice_i32){
+        .data = (int32_t *)extc_arena_alloc(&(*__extc_home), ...) } };   /* 分配落在家 */
+```
+
+⇒ **`H_f` 是调用点传进来的**（正是约束 C5"调用点实例化"）⇒ 同一个 `push` 在**不同调用点拿到不同的家**：
+
+* `mk()` 的调用点传 **main 的家** ⇒ 返回出去的那个容器**活着**（这就是"提权"）；
+* `main` 里临时用的 `wall` 传 **main 的块** ⇒ 出块即回收（这就是推论 3.1 说的"最短命"）。
+
+⇒ 提权不是隐藏的魔法：它是**一个被解出来的形参**。用户既不写它，也无法写错它。
+
 ## 2.8 这条机制的补丁史（都是同一族）
 
 | 洞/缺口 | 形态 | 结局 |
@@ -385,6 +405,13 @@ for x in c { … }                             /* ① 复用迭代器协议（�
 while c.next() { … c.value() … }             /* ② 显式：与用户迭代器同一套名字 */
 ```
 
+**两个实测纠正**（编这两个例子时发现的，与 `CONCURRENCY.md` §4.4 的示例有出入）：
+
+* **`for x in c` 今天不行** ✗：检查器报 `` no method `iter` on `coroutine<i64>` `` ⇒ 实际驱动是
+  `while c.next() { … c.value() … }`（§4.4 里"① 复用迭代器协议（推荐）"那条与实现不一致）；
+* **`send` 已经存在** ✓：同一个报错把方法集列了出来 —— `` methods of coroutine: next value send ``；
+  所以缺的不是"往协程里送值"这个能力本身，而是**带类型的请求参数**（`coroutine<A,B>` 的第二参）。
+
 **实测与欠账**：`tests/coro` **27/27**（调度器 · `epoll` · echo server · 帧布局 · 协程池 · 句柄 ·
 状态机 · 迭代器协议）。欠账：**`coroutine<A,B>`（请求类型/send-in）未做**（实测
 `` `coroutine` expects 1 type argument(s), got 2 ``）；`parallel`+channel 未做
@@ -432,6 +459,142 @@ dyn Tag(b).tag()          /* 阶段 1：构造 + 立即调用（不碰池） */
 | `map` 的手搓 freeList | arena（现状）| 原因与两条待裁决路线见 `PLAN.md` 的 `#84` |
 
 ---
+
+## 6.4 时序图 ①：提权 —— 一次调用里"家"怎么往下传
+
+例子（就是 §2.6 的 `mk()`，实编过，运行退出码 2）：
+
+```extc
+fn mk() -> varArray<i32> {
+    var v: varArray<i32> = varArray<i32>::withCap(0)
+    v.push(i32(42))
+    return v
+}
+fn main() -> i32 {
+    var w:   varArray<i32> = mk()                                  /* w 要活到 main 结束 */
+    var wall: varArray<i32> = varArray<i32>::withCap(0)            /* 本帧用完即弃 */
+    wall.push(i32(7))
+    return i32(w.len + wall.len)
+}
+```
+
+```
+main                          mk(H_mk = main 的家)          withCap/push(H)          extc_arena_alloc
+ │                                    │                          │                        │
+ │─ mk(main 的家) ───────────────────▶│                          │                        │
+ │                                    │─ withCap(H_mk) ─────────▶│                        │
+ │                                    │                          │─ alloc(&H_mk) ────────▶│  ← 缓冲区落在「家」
+ │                                    │─ v.push(42, H_mk) ──────▶│                        │
+ │                                    │                          │─ grow → alloc(&H_mk) ─▶│  ← 扩容也落在家
+ │◀── 返回 v（缓冲区在家 ⇒ 活着）─────│                          │                        │
+ │                                                                                        │
+ │─ wall = withCap(main 的块) ────────────────────────────────▶ alloc(&块) ──────────────▶│  ← 最小解：能短就短
+ │   （出块 ⇒ 整块回收）                                                                   │
+```
+
+**校验点**：① `Addr(push,0)=∅` ⇒ 没有约束把家钉在 `mk` 的帧上（§2.3）；② 调用点实例化 `H_mk`（C5）
+⇒ 同一个 `push` 在两处拿到不同的家；③ 生成物里可见 `__extc_home` 形参（§2.7′）。
+
+## 6.5 时序图 ②：无栈协程 —— **任务 Arena**
+
+例子（实编、实跑，输出 `0 10 20`）：
+
+```extc
+use std::io
+fn worker(n: i64) -> coroutine<i64> {
+  var i: i64 = 0
+  while i < n {
+    var box: mut ref i64 = new i64      /* ← `new` 落在**帧自己的 arena** */
+    *box = i * i64(10)
+    yield *box
+    i = i + 1
+  }
+}
+fn main() -> i32 {
+  var c: coroutine<i64> = worker(i64(3))          /* spawn = 就是调用 */
+  while c.next() { io::cout << c.value() << "\n" }   /* 驱动 */
+  return 0
+}
+```
+
+```
+main                      worker(=$spawn)        extc_taskArena[id]           runtime 校验
+ │                              │                       │                        │
+ │─ 调用 worker(3) ────────────▶│                       │                        │
+ │                              │─ zoneEnter() ─────────────────────────────────▶│ 进入任务自己的 place
+ │                              │  （帧记住 zone：`extc_taskZone[id] = zone`）   │
+ │                              │─ new i64 ────────────▶│ extc_task_alloc(id,…)  │  ← **不走恢复者的块**
+ │                              │─ yield *box（存 pc、return）                    │
+ │◀── 控制权回到 main ──────────│                       │                        │
+ │─ c.next() ──────────────────▶│ extc_task_alive(id) ──────────────────────────▶│ 句柄还活着吗？
+ │                              │─ 从帧里的 zone 继续（**不重新推导**，rule 1）   │
+ │                              │─ 再 new ⇒ 仍进 taskArena[id]                   │
+ │   … 循环 3 次 …              │                       │                        │
+ │─ 结束 ⇒ extc_task_end(id) ──▶│ extc_arena_release(&extc_taskArena[id]) ──────▶│ **一次性**回收整个任务
+ │                              │ extc_pool_zoneLeaveTo(zone) ─────────────────▶│ 离开任务 place（zone 色翻位）
+```
+
+**三处校验**（都能跑出来）：
+
+1. **编译期**：跨 `yield` 活着的局部**不可以指向别人的存储** —— 我第一版就踩到了，诊断是
+   `` `box` lives across a `yield` and carries a reference ``，note 给出两个修法
+   （**在体内 `new`** ⇒ 落进帧自己的 arena；或"只保偏移、resume 后再取视图"）；
+2. **运行期（驱动前）**：`extc_task_alive(id)`；过期句柄**必须大声 trap** ——
+   `tests/coro/coro_copy_expired.extc` 实测：**退出码 70** +
+   `…coro_copy_expired.extc:15: trap: driving a coroutine whose task has already ended (its frame was released with the task)`
+   （**带源码位置**，不是 use-after-free）；
+3. **静态守卫**：`tools/check_concurrency_guards.py` 强制"`$step` 里**不许出现** `extc_zoneTop`"
+   （即 step 只能读帧里记着的 zone，不能重新推导 —— 这就是 §2.5 那条"必须传帧自己的 arena"的机械保证）。
+
+⇒ **"任务 Arena"就是把每一个任务变成 arena 的一个实例**：帧、帧里的 `new`、容器板块全挂在
+`extc_taskArena[id]` 上，任务结束**一次性**回收（`extc_arena_release` + `zoneLeaveTo`）。
+
+## 6.6 时序图 ③：dyn 的一次派发与**六段校验**
+
+例子（实编、实跑，输出 `7 10`）：
+
+```extc
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box   { v: i64 }   impl Tag for box   { fn tag(self: ref box)   -> i64 { return self.v } }
+struct other { w: i64 }   impl Tag for other { fn tag(self: ref other) -> i64 { return self.w * i64(2) } }
+
+fn pick(k: i64) -> dyn Tag {
+    if k == 0 { return dyn Tag(box   { v: 7 }) }
+    return dyn Tag(other { w: 5 })
+}
+fn main() -> i32 {
+    var d: dyn Tag = pick(i64(0))    io::cout << d.tag() << "\n"    /* 7  */
+    var e: dyn Tag = pick(i64(1))    io::cout << e.tag() << "\n"    /* 10 */
+    return 0
+}
+```
+
+```
+pick / main                    extc_dyn_put（装盒）            extc_dyn_slot（**派发前校验**）      虚表
+ │                                   │                                 │                        │
+ │─ dyn Tag(box{7}) ────────────────▶│ 载荷**拷贝**进 dyn 池的槽        │                        │
+ │                                   │ 槽表 += {pid, gen}              │                        │
+ │◀── 句柄 {slot, pid, gen, pgen} ───│                                 │                        │
+ │─ d.tag() ────────────────────────────────────────────────────────▶│                        │
+ │                                   │                                 │─ 六段校验（下表）──────▶│
+ │                                   │                                 │─ 取表项 ⇒ 调用 ───────▶│
+```
+
+生成物里的**六段校验**（`extc_dyn_slot`，逐字抄自编译输出）：
+
+```c
+if (h.slot < 0 || h.slot >= extc_dynN)      trap "stale `dyn` value";                        /* 1 索引在界内   */
+if (s->pid < 0)                             trap "stale `dyn` value (slot recycled)";        /* 2 槽还占着     */
+if (s->pid != h.pid)                        trap "stale `dyn` value";                        /* 3 池对上       */
+if (s->gen != h.gen)                        trap "stale `dyn` value (slot recycled)";        /* 4 **槽级**世代 */
+if (extc_pool_kind(h.pid) != 1)             trap "stale `dyn` value";                        /* 5 池还是 dyn 的*/
+if (extc_pool_generation(h.pid) != h.pgen)  trap "stale `dyn` value (its pool was reset, or its place is gone)";
+                                                                                             /* 6 **池级**世代 */
+```
+
+⇒ 第 6 条就是 §5.2 那两层失效的落点：**"池被 reset，或者它那个 place 没了"** ——
+所以一个 `dyn` 值**不可能**悄悄指向已经作废的载荷；错了就是**带源码位置的 trap**。
+配合 §6.5 第 2 条的实测（退出码 70 + 位置），这套校验是**可演示**的，不是纸面承诺。
 
 # 7. 一页速查
 
