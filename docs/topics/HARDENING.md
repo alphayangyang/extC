@@ -859,8 +859,12 @@ extern 返回指针并解引用（按期望被拒 ✓ —— 拿不到可写的 
 `effects` 子句写错（拒 ✓）✓ extern 调用放进**协程体** ✓ 返回值直接算进 `i32` ✓ 指针参数收 `null` ✓
 ⇒ **14/14** ✓。
 
-**题目自己踩过一次** ✓：传地址要写 `ref b[0]`（`b[0]` 是值 ✗，报错信息自己就说了 ✓）—— 顺手把另外
-两题也改成正确写法 ✓，否则它们靠"被拒"过关 ✓、测不到**允许**的那条路径 ✓。
+**题目自己踩过两次** ✓（都记下来，免得下次再踩 ✓）：① `b[0]` 是**值** ✗ ⇒ 报 "argument expects
+`ref u8`" ✓；② 改成 `ref b[0]` **也不行** ✗ —— "cannot take a reference to this expression:
+only variables and fields can be referenced" ✓ ⇒ 正解是**切片的 `.data` 字段** ✓
+（官方正例 `tests/extern/main.extc` 就写着 `libc::write(1, s.data, 5)` ✓）⇒ 三题统一改成
+`b[..].data` ✓。**顺带**：上一版提交信息里"全绿"写早了 ✗（当时 E4 仍在失败 ✓）⇒ 本条以
+`E4 通过、extern 14/14` 为准 ✓。
 
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 

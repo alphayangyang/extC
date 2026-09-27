@@ -603,11 +603,11 @@ EXT = [
      'fn main() -> i32 { var p: pt\n  p.x = i64(1)\n  p.y = i64(2)\n  return i32(take(p)) }'),
     ('E4 签字后可以传本帧地址（write 到 stdout）', 'ok',
      'extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64 effects Addr=0 Cont=0\n'
-     'fn main() -> i32 { var b: [2]u8 = [65, 10]\n  let n = write(i32(1), b[0], i64(2))\n'
+     'fn main() -> i32 { var b: [2]u8 = [65, 10]\n  let n = write(i32(1), b[..].data, i64(2))\n'
      '  return i32(n) - 2 }'),
     ('E5 extern 返回指针并解引用', 'ok_or_reject',
      'extern!("libc") fn getenv(name: ref u8) -> ref u8 effects Addr=0 Cont=0\n'
-     'fn main() -> i32 { var k: [2]u8 = [80, 0]\n  let p = getenv(k[0])\n'
+     'fn main() -> i32 { var k: [2]u8 = [80, 0]\n  let p = getenv(k[..].data)\n'
      '  return 0 }'),
     ('E6 调元数写错', 'reject',
      'extern!("libc") fn getpid() -> i32\nfn main() -> i32 { return getpid(i32(1)) }'),
@@ -635,7 +635,7 @@ EXT = [
     ('E13 签字后把全局地址交出去', 'ok_or_reject',
      'extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64 effects Addr=0 Cont=0\n'
      'var g: [4]u8 = [88, 10, 0, 0]\n'
-     'fn main() -> i32 { let n = write(i32(1), g[0], i64(2))\n  return i32(n) - 2 }'),
+     'fn main() -> i32 { let n = write(i32(1), g[..].data, i64(2))\n  return i32(n) - 2 }'),
     ('E14 extern 指针参数收 null', 'ok_or_reject',
      'extern!("libc") fn free(p: ref u8) -> void effects Addr=0 Cont=0\n'
      'fn main() -> i32 { return 0 }'),
