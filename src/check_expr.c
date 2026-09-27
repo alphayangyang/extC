@@ -74,7 +74,10 @@ static bool parBodyExpr(void *ctx, Expr *e) {
         return false;
     }
     if (e->kind == EX_NEW) {
-        if (!q->why) q->why = "`new` inside a worker needs the per-worker arena (step 3c)";
+        /* ③c 进行中：`parTlsArena` 与 arenaRefAt 的线程本地方案都已就位（`(*extc_tls_arena)`），
+         * 但 worker 一旦分配就会多出一个隐藏的 home 形参 —— trampoline 得跟着补传，那一步还没做。
+         * 在那之前保持拒绝：宁可现在不能用，也不产出"参数个数不对"的非法 C。 */
+        if (!q->why) q->why = "`new` inside a worker needs the per-worker arena (step 3c, in progress)";
         return false;
     }
     if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
@@ -126,6 +129,7 @@ static const char *parBodyProblem(Checker *c, FuncDef *f, int depth) {
         if (!astWalkStmtChildren(f->body, &v))
             return q.why ? q.why : "an unsupported construct";
     }
+    f->parTlsArena = true;        /* 这条链上的每个人：`new` 都走线程本地 arena（③c） */
     return NULL;
 }
 
@@ -1469,6 +1473,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 e->parWorker = wf;
     wf->isParWorker = true;   /* codegen 据此生成 trampoline */
+    wf->parTlsArena = true;   /* worker 里的 new 走线程本地 arena（③c） */
                 wf->used = true;                 /* the trampoline names it, so it must be emitted */
                 {
                     /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参是函数名"
@@ -2318,6 +2323,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 e->parWorker = wf;
     wf->isParWorker = true;   /* codegen 据此生成 trampoline */
+    wf->parTlsArena = true;   /* worker 里的 new 走线程本地 arena（③c） */
                 wf->used = true;                 /* the trampoline names it, so it must be emitted */
                     /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参
                      * 是函数名"这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects
@@ -2729,6 +2735,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 e->parWorker = wf;
     wf->isParWorker = true;   /* codegen 据此生成 trampoline */
+    wf->parTlsArena = true;   /* worker 里的 new 走线程本地 arena（③c） */
                 wf->used = true;                 /* the trampoline names it, so it must be emitted */
                     /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参
                      * 是函数名"这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects

@@ -270,6 +270,7 @@ typedef struct {
      * genPrint raises this flag directly instead. */
     bool        needRuntime;
     bool        needPar;      /* par::run/par::map 用到了线程运行期 */
+    bool        parTls;     /* 当前函数在 parallel::run 的调用链上 ⇒ new 走 extc_tls_arena */
     /* The program uses the raw-terminal primitives: the runtime then keeps a copy of the
      * terminal settings and gives them back before the process dies. Emitted on demand
      * because the block is only reachable through `extc_raw_enter`, which the library
@@ -3033,6 +3034,11 @@ static const char *homeArg(CG *g, int arenaArg) {
  *     authorities agreed all along.
  */
 static const char *arenaRefAt(CG *g, int level) {
+    /* parallel::run 的调用链上（worker 与它调用的每个函数）⇒ 用**线程本地** arena：
+     * 帧 arena（`__extc_a[]`）属于主线程，两个 worker 同时用就是数据竞争；而 worker 的签名
+     * 固定（只写 out、只返回 i64）⇒ 分配逃不出这个 worker ⇒ 线程本地是安全的。 */
+    /* 调用处会在这个结果外面加 `&`（见 arenaRefAt 的约定）⇒ 这里给的是 `extc_arena*` 的解引用形式 */
+    if (g->parTls) return "(*extc_tls_arena)";
     if (level == ARENA_HOME) return "(*__extc_home)";
     /* A step has no C-stack arena array: the block arenas live **in the frame** (one field per level,
      * `arena1`..`arenaN`), because a block in a coroutine can span a suspension -- the allocation has
@@ -4576,6 +4582,8 @@ static void genFunc(CG *g, FuncDef *f) {
     g->loopLen  = 0;
     const char *savedFuncName = g->curFuncName;
     g->curFuncName = cFuncName(g, f);
+    bool savedParTls = g->parTls;
+    g->parTls = f->parTlsArena;
     if (isMain && f->usesHome) {
         size_t hb = g->out->len;
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
@@ -4613,6 +4621,8 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "    }");
         cgLine(g, "return false;");
         g->curFuncName = savedFuncName;
+    g->parTls = savedParTls;
+        g->parTls = savedParTls;
         g->retType = savedRet;
         g->inMain  = false;
         g->tmpSeq = savedSeq;

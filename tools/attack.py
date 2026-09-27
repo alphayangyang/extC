@@ -797,7 +797,7 @@ PARG = [
      'use std::parallel\nfn w(id: i64, lo: i64, hi: i64) -> i32 { return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
     ('P3 worker 里 println（应拒）', 'reject',
      'use std::parallel\nuse std::io\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  println("x")\n  out[lo] = i64(1)\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
-    ('P4 worker 里 new（应拒）', 'reject',
+    ('P4 worker 里 new（应拒；线程本地 arena 的路由是 ③c，进行中）', 'reject',
      'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var t: mut slice<i64> = new i64[8]\n  out[lo] = t[0]\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
     ('P5 worker 读模块级 var（应拒）', 'reject',
      'use std::parallel\nvar G: i64 = 7\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 { out[lo] = G\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),

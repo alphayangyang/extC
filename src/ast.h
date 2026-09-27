@@ -641,6 +641,10 @@ struct FuncDef {
     /* 被 `parallel::run` 用过一次的 worker：codegen 要给它生成一个 static trampoline
      * （语言层没有函数指针，所以这份"取地址"只能由编译器写出来）。 */
     bool        isParWorker;
+    /* 这个函数（worker 或它调用链上的辅助函数）里的 `new` 要用**线程本地** arena：
+     * worker 的签名固定（只写 out、只返回 i64）⇒ 分配逃不出去 ⇒ 线程本地是安全的；
+     * 而帧 arena 是主线程的，两个 worker 同时用就是数据竞争 ⇒ 必须换。 */
+    bool        parTlsArena;
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;
