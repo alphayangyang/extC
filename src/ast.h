@@ -572,6 +572,9 @@ struct FuncDef {
      * `ret` is set to it as well, so `let c = f(x)` binds a coroutine of its own concrete type. */
     Type       *coroFrameType;
     Type       *coroRetProto;
+    /* Named from **outside** its instance: a `dyn` table's thunk calls it, so its body must survive
+     * the "definitions nothing names" pass (which cannot see that reference). */
+    bool        dynTable;
     /* Non-zero on the two protocol methods the checker synthesizes on a coroutine frame:
      * 1 = `next` (advance the state machine), 2 = `value` (read the return slot). Codegen emits
      * those two inline instead of calling a function (docs/topics/CONCURRENCY.md 4.4). */

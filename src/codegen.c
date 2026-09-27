@@ -7458,12 +7458,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             if (!md->used) continue;      /* called methods only */
             size_t fb = g.out->len;
             CGACC("cg-emit", genFunc(&g, md));
-            deadFuncBody(&g, md, fb, g.out->len - fb);
+            /* A method named by a **`dyn` table's thunk** is referenced from outside its own scope, and
+             * the "definitions nothing names" pass cannot see that reference: registering it dropped
+             * `pair_i64_tag` and left the thunk calling a function nobody emitted (tools/attack.py F1).
+             * Everything else keeps the previous treatment -- exempting all instance methods rewrote
+             * 73 corpus files for nothing. */
+            if (!md->dynTable) deadFuncBody(&g, md, fb, g.out->len - fb);
             cgLine(&g, "");
         }
         substLeave(&g);
     }
-
     /* Uniform method tables, one **per trait** (DYN.md stage 3).
      *
      * The receiver is erased to `void *`, and that is what lets a stored `dyn` value call through a
@@ -7514,14 +7518,37 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * they name the table after the concrete type: `extc_vt$Codec$slice_u8`. Naming it
              * after `sdef->name` produced `extc_vt$Codec$slice` -- one table, two names, and the
              * generated C did not compile (`extc_vt$Codec$slice_u8` undeclared). */
-            const char *vtKey = cType(&g, bt);
+            /* A generic target is spelled once per **instance**. The construction site names the
+             * table after the concrete type (`cType`), so `impl<T> Tag for pair<T>` needs
+             * `extc_vt$Tag$pair_i64` for every used instance of `pair` -- and emitting the thunk
+             * inside `substEnter` is also what makes the body pool name `pair_i64_tag`, which in
+             * turn keeps that body alive (a definition nothing names is dropped). Without this the
+             * `dyn` handle pointed at a table nobody declared: `extc_vt$Tag$pair_i64` undeclared
+             * (tools/attack.py F1). */
+            Vec spellings;
+            vecInit(&spellings, arena, sizeof(Type *));
+            if (bt->kind == TY_GENERIC && bt->sdef) {
+                for (size_t ii = 0; ii < g.insts.len; ii++) {
+                    Type *cand = *(Type **)vecAt(&g.insts, ii);
+                    if (cand->kind == TY_GENERIC && cand->sdef == bt->sdef)
+                        *(Type **)vecPush(&spellings) = cand;
+                }
+            } else {
+                *(Type **)vecPush(&spellings) = bt;
+            }
+            for (size_t vi = 0; vi < spellings.len; vi++) {
+            Type *vb = *(Type **)vecAt(&spellings, vi);
+            StructDef *vsd = (vb == bt) ? tsd : (vb->mholder ? vb->mholder : vb->sdef);
+            if (!vsd) continue;
+            if (vb != bt) substEnter(&g, vb);
+            const char *vtKey = cType(&g, vb);
             bufPrintf(&g.vtDecls, "static const struct extc_vt$%s_t extc_vt$%s$%s;\n",
                       tr->name, tr->name, vtKey);
             for (size_t k = 0; k < tr->methods.len; k++) {
                 FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
                 FuncDef *have = NULL;
-                for (size_t j = 0; j < tsd->methods.len && !have; j++) {
-                    FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                for (size_t j = 0; j < vsd->methods.len && !have; j++) {
+                    FuncDef *cand = *(FuncDef **)vecAt(&vsd->methods, j);
                     if (strcmp(cand->name, want->name) == 0) have = cand;
                 }
                 if (!have) continue;                 /* completeness is the checker's business */
@@ -7534,7 +7561,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                     bufPrintf(&vtDefs, ", %s %s", cType(&g, ttBase(pp->type)), pp->name);
                 }
                 bufPrintf(&vtDefs, ") { %s%s((%s *)self", want->ret ? "return " : "",
-                          cFuncName(&g, have), cType(&g, bt));
+                          cFuncName(&g, have), cType(&g, vb));
                 for (size_t pi = 1; pi < want->params.len; pi++)
                     bufPrintf(&vtDefs, ", %s", (*(Param **)vecAt(&want->params, pi))->name);
                 bufPuts(&vtDefs, "); }\n");
@@ -7545,8 +7572,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
                 bool unsafe = funcIsMethod(want) == false || (want->ret && mentionsParam(want->ret));
                 FuncDef *have = NULL;
-                for (size_t j = 0; j < tsd->methods.len && !have; j++) {
-                    FuncDef *cand = *(FuncDef **)vecAt(&tsd->methods, j);
+                for (size_t j = 0; j < vsd->methods.len && !have; j++) {
+                    FuncDef *cand = *(FuncDef **)vecAt(&vsd->methods, j);
                     if (strcmp(cand->name, want->name) == 0) have = cand;
                 }
                 bufPrintf(&vtDefs, "%s %s", k ? "," : "",
@@ -7555,6 +7582,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                                                           tr->name, vtKey, want->name));
             }
             bufPuts(&vtDefs, " };\n");
+            if (vb != bt) substLeave(&g);
+            }   /* one table per concrete spelling */
         }
     }
     bufPuts(out, bufCstr(&g.vtDecls));

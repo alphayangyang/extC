@@ -167,11 +167,22 @@ GENERICS = [
      'fn main() -> i32 { return i32(grow(i64(1))) }'),
 
     # ---- F. 与本族能力交叉 ----
+    # 同族新缺口（第 8→9 轮修 F1 时发现，单列追踪）：**泛型实例的方法体在忽略 `self` 时**
+    # 没走 `markUnusedParams` 那趟（它只按 g.funcs 找候选，实例方法不在里面）⇒ 生成物在
+    # -Werror=unused-parameter 下编译失败。
+    ('F1b 泛型实例的方法忽略 self', 'ok',
+     'trait Tag2 { fn tag(self: ref Self) -> i64 }\n'
+     'struct p2<T> { a: T }\n'
+     'impl<T> Tag2 for p2<T> { fn tag(self: ref p2<T>) -> i64 { return i64(7) } }\n'
+     'fn main() -> i32 { var p: p2<i64>\n  p.a = i64(0)\n'
+     '  var d: dyn Tag2 = dyn Tag2(p)\n  return i32(d.tag()) - 7 }'),
+
     ('F1 dyn 打在泛型实例上', 'ok',
-     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct pair<T> { a: T }\n'
-     'impl<T> Tag for pair<T> { fn tag(self: ref pair<T>) -> i64 { return i64(7) } }\n'
-     'fn main() -> i32 { var p: pair<i64>\n  p.a = i64(0)\n  var d: dyn Tag = dyn Tag(p)\n'
-     '  return i32(d.tag()) }'),
+     'trait Tag { fn tag(self: ref Self) -> i64 }\n'
+     'struct pair<T> { a: T }\n'
+     'impl<T> Tag for pair<T> { fn tag(self: ref pair<T>) -> i64 { return self.a } }\n'
+     'fn main() -> i32 { var p: pair<i64>\n  p.a = i64(7)\n'
+     '  var d: dyn Tag = dyn Tag(p)\n  return i32(d.tag()) - 7 }'),
     ('F2 trait Codec<T> + 泛型 receiver', 'ok',
      'trait Codec<T> { fn enc(self: ref Self, v: T) -> i64 }\nstruct pair<U> { a: U }\n'
      'impl Codec<i64> for pair<u8> { fn enc(self: ref pair<u8>, v: i64) -> i64 { return v + i64(self.a) } }\n'

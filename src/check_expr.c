@@ -146,9 +146,14 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
             setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
             return lt;
         }
-        if (lt->kind == TY_PARAM) {
+        /* Defer when **either** operand is a type parameter, not just the left one. Deferring only
+         * on the left made `s + c.value()` an error the moment a coroutine was driven from inside a
+         * generic function: `value()` returns the template's `T`, which arrives on the **right**
+         * (`cannot apply `+` to `i64` and `T`, tools/attack.py B8). The instance decides what the
+         * operands really are; the result is pinned to the parameter either way. */
+        if (lt->kind == TY_PARAM || rt->kind == TY_PARAM) {
             deferOp(c, e, op);
-            return lt;           /* `T op T` has type `T` */
+            return lt->kind == TY_PARAM ? lt : rt;
         }
     }
 
@@ -452,7 +457,24 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
     bool impl = false;
     for (size_t i = 0; i < c->m->impls.len && !impl; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&c->m->impls, i);
-        impl = im->trait == tr && im->target && pt && ttEquals(ttBase(im->target), pt);
+        /* `impl<T> Tag for pair<T>` covers **every** instance of `pair`, so the declaration being
+         * the same is what counts -- comparing the types themselves never matches `pair<i64>`
+         * against `pair<T>`, which is what rejected `dyn Tag(p)` with "`pair_i64` does not
+         * implement `Tag`" (tools/attack.py F1). */
+        Type *it = im->target ? ttBase(im->target) : NULL;
+        impl = im->trait == tr && it && pt &&
+               (ttEquals(it, pt) || (it->sdef && it->sdef == pt->sdef));
+        /* A **generic** impl (`impl<T> Tag for pair<T>`) is matched by declaration, and its methods
+         * are shared by every instance -- so mark them used here: that is what makes the per-instance
+         * emission loop (`codegen.c`, "method definitions of the instances") write `pair_i64_tag`.
+         * Without it the `dyn` table pointed at a function nobody emitted
+         * (`extc_vt$Tag$pair_i64` undeclared, tools/attack.py F1). */
+        if (impl && it && it->sdef && it->kind == TY_GENERIC)
+            for (size_t k = 0; k < im->methods.len; k++) {
+                FuncDef *mf = *(FuncDef **)vecAt(&im->methods, k);
+                mf->used = true;
+                mf->dynTable = true;   /* its body is named by the vt thunk, from outside */
+            }
     }
     if (pt && pt->sdef && !impl)
         ckError(c, line, "A `dyn` value names a trait its payload implements, because the"
