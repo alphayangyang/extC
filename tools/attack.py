@@ -369,7 +369,73 @@ MODULES = [
         'main.extc': 'use other\nfn main() -> i32 { return other::helper() - 1 }'}),
 ]
 
-GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES}
+# ---------------------------------------------------------------- 视图与切片
+# 攻击面：mut/只读两视图的同一 C 结构（第 6 轮统一过 unitFind 的那条）、空切片与边界、
+# 越界必须**带位置 trap**、切片元素是结构体/泛型实例、从字面量取的可写视图、别名与嵌套、
+# 跨函数/跨协程/跨池的视图生命周期。
+VIEWS = [
+    ('V1 基本切片读写与长度', 'ok',
+     'fn main() -> i32 { var a: [4]i64 = [1, 2, 3, 4]\n  var s: slice<i64> = a[..]\n'
+     '  return i32(s[0] + s[3] + i64(s.len)) }'),
+    ('V2 mut 与只读视图是同一个 C 结构', 'ok',
+     'fn sum(s: slice<i64>) -> i64 { var t: i64 = 0\n  var i: i64 = 0\n'
+     '  while i < i64(s.len) { t = t + s[i]\n    i = i + i64(1) }\n  return t }\n'
+     'fn bump(s: mut slice<i64>) { s[0] = s[0] + i64(10) }\n'
+     'fn main() -> i32 { var a: [3]i64 = [1, 2, 3]\n  bump(a[..])\n'
+     '  return i32(sum(a[..])) - 16 }'),
+    ('V3 空切片：长度 0、不许 trap、不许越界读', 'ok',
+     'fn main() -> i32 { var a: [3]i64 = [1, 2, 3]\n  var e: slice<i64> = a[0..0]\n'
+     '  var n: i64 = 0\n  for x in e { n = n + x }\n  return i32(n) + i32(e.len) }'),
+    ('V4 越界索引必须带位置 trap', 'trap',
+     'fn main() -> i32 { var a: [3]i64 = [1, 2, 3]\n  var s: slice<i64> = a[..]\n'
+     '  return i32(s[3]) }'),
+    ('V5 切片元素是结构体（字段可写）', 'ok',
+     'struct pt { x: i64  y: i64 }\nfn main() -> i32 { var a: [2]pt\n'
+     '  a[0].x = i64(1)\n  a[0].y = i64(2)\n  a[1].x = i64(3)\n  a[1].y = i64(4)\n'
+     '  var s: mut slice<pt> = a[..]\n  s[1].x = s[1].x + i64(10)\n'
+     '  return i32(a[0].x + a[0].y + a[1].x + a[1].y) }'),
+    ('V6 切片元素是泛型实例', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn main() -> i32 { var a: [2]box<i64>\n'
+     '  a[0].v = i64(5)\n  a[1].v = i64(6)\n  var s: slice<box<i64>> = a[..]\n'
+     '  return i32(s[0].v + s[1].v) - 11 }'),
+    ('V7 切片从函数返回（逃逸规则）', 'ok_or_reject',
+     'var g: [3]i64 = [7, 8, 9]\nfn get() -> slice<i64> { return g[..] }\n'
+     'fn main() -> i32 { var s: slice<i64> = get()\n  return i32(s[1]) - 8 }'),
+    ('V8 new T[n] 得到可写切片', 'ok',
+     'fn main() -> i32 { var s: mut slice<i64> = new i64[4]\n  var i: i64 = 0\n'
+     '  while i < i64(s.len) { s[i] = i * i\n    i = i + i64(1) }\n'
+     '  return i32(s[3]) - 9 }'),
+    ('V9 把 [4]i64 当 slice<u8> 重解释', 'reject',
+     'fn main() -> i32 { var a: [4]i64 = [1, 2, 3, 4]\n  var b: mut slice<u8> = a[..]\n'
+     '  return i32(b[0]) }'),
+    ('V10 同一数组两个可写视图（别名）', 'ok_or_reject',
+     'fn main() -> i32 { var a: [2]i64 = [1, 2]\n  var x: mut slice<i64> = a[..]\n'
+     '  var y: mut slice<i64> = a[..]\n  x[0] = i64(5)\n  return i32(y[0]) - 5 }'),
+    ('V11 切片的切片（嵌套视图）', 'ok_or_reject',
+     'fn main() -> i32 { var a: [6]i64 = [1, 2, 3, 4, 5, 6]\n  var s: slice<i64> = a[..]\n'
+     '  var t: slice<i64> = s[2..5]\n  return i32(t[0] + t[2]) - 8 }'),
+    ('V12 从字符串字面量取可写视图（应被拒）', 'reject',
+     'fn main() -> i32 { var s: mut slice<u8> = "abc"\n  s[0] = u8(65)\n  return i32(s[0]) }'),
+    ('V13 结构体里存视图（第 6 轮 unitFind 那条）', 'ok_or_reject',
+     'struct reader { chunk: mut slice<u8> }\n'
+     'fn main() -> i32 { var a: [4]u8 = [1, 2, 3, 4]\n  var r: reader\n  r.chunk = a[..]\n'
+     '  r.chunk[1] = u8(9)\n  return i32(a[1]) - 9 }'),
+    ('V14 视图传进协程（跨 suspend）', 'ok_or_reject',
+     'fn gen(s: slice<i64>) -> coroutine<i64> { var i: i64 = 0\n'
+     '  while i < i64(s.len) { yield s[i]\n    i = i + i64(1) } }\n'
+     'fn main() -> i32 { var a: [3]i64 = [2, 3, 4]\n  var c = gen(a[..])\n  var t: i64 = 0\n'
+     '  while c.next() { t = t + c.value() }\n  return i32(t) - 9 }'),
+    ('V15 池切片的读写', 'ok_or_reject',
+     'fn main() -> i32 { let rid = syspool::extc_pool_new(i64(64))\n'
+     '  let s: mut slice<u8> = syspool::extc_pool_slice(rid)\n  s[0] = u8(7)\n'
+     '  var v: i64 = i64(s[0])\n  syspool::extc_pool_give(rid)\n  return i32(v) - 7 }'),
+    ('V16 for 遍历切片与下标循环一致', 'ok',
+     'fn main() -> i32 { var a: [5]i64 = [1, 2, 3, 4, 5]\n  var s: slice<i64> = a[..]\n'
+     '  var x: i64 = 0\n  for v in s { x = x + v }\n  var y: i64 = 0\n  var i: i64 = 0\n'
+     '  while i < i64(s.len) { y = y + s[i]\n    i = i + i64(1) }\n  return i32(x - y) }'),
+]
+
+GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
