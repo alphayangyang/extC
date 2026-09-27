@@ -222,12 +222,15 @@ rt_run rt_rett     tests/pool/rt_return_promote.extc "live=1 len=3 v0=5 v2=7"
 echo "== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 =="
 rt_run rt_color    tests/pool/rt_color.extc    "c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0"
 
+# 措辞放宽的由来：守卫把过期别名的切片存储置空后，**依赖下标检查**来 trap（原先报 "trap: index"）；
+# H5 给视图索引原语加的"存储为空"检查现在排在前面（报 "trap: the view has no storage"）。
+# 两者都是带源码位置的 trap、退出码都是 1，而本用例的本意正是"过期别名必须带位置地 trap" ⇒ 都收。
 echo "== 守卫（别名那一档）：一份 release 之后另一份不许静默写已释放的板块 =="
 if out=$("./build/extc" --run tests/pool/rt_stale_alias.extc 2>&1); rc=$?; then :; fi
-if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -q "trap: index" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
+if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -qE "trap: (index|the view has no storage)" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
     echo "  ok   rt_alias   ->  $(printf '%s' "$out" | head -1 | cut -c1-76)"
 else
-    echo "  FAIL rt_alias   ->  期望带位置的下标 trap + 退出码 1，得到 rc=${rc:-?}：$(printf '%s' "$out" | head -1)"; fail=1
+    echo "  FAIL rt_alias   ->  期望带位置的 trap（下标或空存储）+ 退出码 1，得到 rc=${rc:-?}：$(printf '%s' "$out" | head -1)"; fail=1
 fi
 
 echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="
