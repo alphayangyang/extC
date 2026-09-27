@@ -786,6 +786,35 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- parallel::run（第 ③ 步：内建 + trampoline + worker 安全检查）
+# 正例：分区正确性（worker 拿到的是切好的那一段，下标从 0 数）、安全辅助函数链、大 n × 8 线程。
+# 反例：签名不符、worker 里 println / new / 模块级 var、参数个数、第一个实参不是函数名，
+#       以及**传递**反例（经辅助函数间接碰 println / 全局）。
+PARG = [
+    ('P1 分区正确性（8 线程各写自己那段）', 'ok',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = i * i64(2)  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 {\n  var out: mut slice<i64> = new i64[64]\n  if parallel::run(w, out, i64(64), i64(8)) != i32(0) { return i32(1) }\n  return i32(out[63]) - 126 }'),
+    ('P2 worker 签名不符（应拒）', 'reject',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64) -> i32 { return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P3 worker 里 println（应拒）', 'reject',
+     'use std::parallel\nuse std::io\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  println("x")\n  out[lo] = i64(1)\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P4 worker 里 new（应拒）', 'reject',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var t: mut slice<i64> = new i64[8]\n  out[lo] = t[0]\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P5 worker 读模块级 var（应拒）', 'reject',
+     'use std::parallel\nvar G: i64 = 7\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 { out[lo] = G\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P6 参数个数不对（应拒）', 'reject',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 { return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64)) }'),
+    ('P7 第一个实参不是函数名（应拒）', 'reject',
+     'use std::parallel\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(i64(3), out, i64(64), i64(8)) }'),
+    ('P8 安全辅助函数链（允许 ✓）', 'ok',
+     'use std::parallel\nfn helper(x: i64) -> i64 { return x + i64(1) }\nfn helper2(x: i64) -> i64 { return helper(x) * i64(2) }\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = helper2(i)  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P9 经辅助函数间接碰 println（应拒）', 'reject',
+     'use std::parallel\nuse std::io\nfn helper(x: i64) -> i64 { println("deep")  return x }\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = helper(i)  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P10 经辅助函数间接读全局（应拒）', 'reject',
+     'use std::parallel\nvar G: i64 = 7\nfn helper(x: i64) -> i64 { return x + G }\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = helper(i)  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
+    ('P11 大 n × 8 线程（功能 ✓）', 'ok',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = i  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 {\n  let n: i64 = i64(4096)\n  var out: mut slice<i64> = new i64[n]\n  if parallel::run(w, out, n, i64(8)) != i32(0) { return i32(1) }\n  return i32(out[n - i64(1)]) - 4095 }'),
+]
+
 # ---------------------------------------------------------------- @inline × 代码消除
 # 与刚修过三条 bug 的死代码族相邻：@inline 的函数被消除 / 只被死代码调用 / 递归 / 泛型实例 /
 # 方法 / 协程 / 返回泛型实例 / 两个互调 / 落在 main 或 extern 上（反例）。
@@ -1087,7 +1116,7 @@ CNT = [
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
           'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP, 'time': TIM,
-          'match': MATCH, 'rec': REC, 'inline': INL}
+          'match': MATCH, 'rec': REC, 'inline': INL, 'par': PARG}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
