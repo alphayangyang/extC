@@ -52,9 +52,15 @@
 static int ldTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
 static double ldNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 static void ldPhase(const char *n, double t0) { if (ldTimeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ldNow() - t0); }
+static long g_renCalls, g_renEarly, g_renCmps, g_usCalls, g_usCmps, g_utCalls, g_utCmps;
 static long g_stN, g_exN;
 static void ldCount(void) {
-    if (ldTimeOn()) fprintf(stderr, "[walk] rwStmt=%ld rwExpr=%ld\n", g_stN, g_exN);
+    if (ldTimeOn()) {
+        fprintf(stderr, "[walk] rwStmt=%ld rwExpr=%ld | renLookup=%ld early=%ld cmps=%ld",
+                g_stN, g_exN, g_renCalls, g_renEarly, g_renCmps);
+        fprintf(stderr, " | unitStruct=%ld cmps=%ld | unitType=%ld cmps=%ld\n",
+                g_usCalls, g_usCmps, g_utCalls, g_utCmps);
+    }
 }
 typedef struct { const char *name; double sec; } LdAcc;
 static LdAcc ldAccs[8];
@@ -297,9 +303,11 @@ static const char *renOfTarget(ModUnit *target, const char *name) {
  */
 
 static const char *renLookup(ModUnit *u, const char *name) {
-    if (!u || !u->modName || !*u->modName) return name;
+    g_renCalls++;
+    if (!u || !u->modName || !*u->modName) { g_renEarly++; return name; }
     for (size_t i = 0; i < u->ren.len; i++) {
         Ren *r = (Ren *)vecAt(&u->ren, i);
+        g_renCmps++;
         if (strcmp(r->from, name) == 0) return r->to;
     }
     return NULL;
@@ -520,10 +528,12 @@ static GlobalDef *unitGlobal(ModUnit *u, const char *name) {
 
 static StructDef *unitStruct(ModUnit *u, const char *name) {
     /* The caller passes a source name, the declaration may be renamed: try both. */
+    g_usCalls++;
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.structs.len; i++) {
         StructDef *s = *(StructDef **)vecAt(&u->mod.structs, i);
+        g_usCmps += 2;
         if (strcmp(s->name, want) == 0 || strcmp(s->name, name) == 0) return s;
     }
     return NULL;
@@ -544,10 +554,12 @@ static StructDef *unitStruct(ModUnit *u, const char *name) {
 
 static TypeDef *unitType(ModUnit *u, const char *name) {
     /* Same as `unitStruct`. */
+    g_utCalls++;
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.types.len; i++) {
         TypeDef *t = *(TypeDef **)vecAt(&u->mod.types, i);
+        g_utCmps += 2;
         if (strcmp(t->name, want) == 0 || strcmp(t->name, name) == 0) return t;
     }
     return NULL;
