@@ -5336,6 +5336,28 @@ static void bodyMapPut(BodyMap *m, const char *name, const char *body) {
         if (strcmp(s->name, name) == 0) return;                 /* first one wins: so does the scan */
     }
 }
+/* Content-search results, cached per function name. `DeadFunc.body` is a pointer from emission
+ * time and the text has been rewritten since (`dropRuntimeDefs` runs first), so it is usually
+ * stale and the lookup falls back to strstr(text, body) -- for **every local** of that function.
+ * callgrind put that site at 71.67% of all instructions (117,643 calls, 9.33 G instructions).
+ * All locals of one function resolve the same body, so one search per name is enough: the cached
+ * value is exactly what the search would return while the text is unchanged. */
+typedef struct { const char *name; char *bp; size_t bl; int filled; } BpEntry;
+typedef struct { BpEntry *slot; size_t mask; } BpMap;
+static void bpMapInit(BpMap *m, Arena *a, size_t n) {
+    size_t cap = 16;
+    while (cap < n * 2) cap <<= 1;
+    m->slot = arenaAllocZero(a, cap * sizeof *m->slot);
+    m->mask = cap - 1;
+}
+static BpEntry *bpMapAt(BpMap *m, const char *name) {
+    for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
+        BpEntry *s = &m->slot[i];
+        if (!s->name) { s->name = name; return s; }
+        if (strcmp(s->name, name) == 0) return s;
+    }
+}
+
 static const char *bodyMapGet(BodyMap *m, const char *name) {
     for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
         NameBody *s = &m->slot[i];
@@ -5360,6 +5382,8 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             if (o < firstBody) firstBody = o;
         }
     }
+    BpMap bpCache;
+    bpMapInit(&bpCache, g->arena, g->deadFuncs.len + 1);
     BodyMap bodyMap;
     bodyMapInit(&bodyMap, g->arena, g->deadFuncs.len + 1);
     for (size_t k = 0; k < g->deadFuncs.len; k++) {
@@ -5388,10 +5412,17 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                         g->mainFuncName ? g->mainFuncName : "(null)", body ? "yes" : "no");
             if (!body) continue;                       /* its function is gone already */
             g_locN++;
-            char  *bp = (textIsOriginal && body >= text && body < text + len)
-                            ? (char *)body : strstr(text, body);
+            char  *bp = NULL;
+            size_t bl = 0;
+            if (textIsOriginal) {
+                BpEntry *e = bpMapAt(&bpCache, d->funcName);
+                if (!e->filled) { e->bp = strstr(text, body); e->bl = strlen(body); e->filled = 1; }
+                bp = e->bp; bl = e->bl;
+            } else {
+                bp = strstr(text, body);           /* text moved: the old behaviour, exactly */
+                bl = strlen(body);
+            }
             if (!bp) continue;
-            size_t bl = strlen(body);
             if (dbgOn("EXTC_DBG_LOCAL"))
                 fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
                         bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
