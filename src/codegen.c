@@ -6332,6 +6332,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.insts, arena, sizeof(void *));
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->instances, i);
+        /* A type that still mentions a type parameter gets no C: `[2]box<T>` inside a generic body is
+         * interned unconditionally, and emitting its struct named the undefined `box_T`
+         * (tools/attack.py X4, X3, X7, X8, X9). gdb put the entry point here: the provisional array was
+         * already in `units` when `scanUnitForUnits` first saw it, i.e. it came from this loop. */
+        if (!it || mentionsParam(it)) continue;
         bool dup = false;
         for (size_t k = 0; k < g.insts.len && !dup; k++)
             dup = strcmp((*(Type **)vecAt(&g.insts, k))->name, it->name) == 0;

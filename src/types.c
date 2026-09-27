@@ -464,7 +464,12 @@ bool ttHasParam(Type *t) {
     if (!t) return false;
     if (t->kind == TY_PARAM) return true;
     if (t->kind == TY_REF) return ttHasParam(t->inner);
-    if (t->kind == TY_GENERIC) {
+    /* Arrays and enums were missing, and that is what let a **provisional** type through: `[2]box<T>`
+     * inside a generic body is interned unconditionally (arrays do not go through `ttGeneric`'s
+     * "concrete only" rule), so it landed in `tt->instances` -- and from there in the unit list, whose
+     * struct definition named the undefined `box_T` (tools/attack.py X4; same root under X3/X7/X8/X9). */
+    if (t->kind == TY_ARRAY) return ttHasParam(t->inner);
+    if (t->kind == TY_GENERIC || t->kind == TY_ENUM) {
         for (size_t i = 0; i < t->targs.len; i++)
             if (ttHasParam(*(Type **)vecAt(&t->targs, i))) return true;
     }
