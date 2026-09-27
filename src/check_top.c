@@ -233,6 +233,19 @@ static void checkDeclarations(Checker *c) {
         vecInit(&selfArgs,   c->arena, sizeof(Type *));
         *(const char **)vecPush(&selfParams) = "Self";
         *(Type **)vecPush(&selfArgs) = im->target;
+        /* `impl Codec<i64> for box`: the trait's **own** parameters substitute through the same
+         * pair of parallel lists, so a declared signature that mentions `T` is compared against
+         * the implementation as `i64`. Without this the conformance check compared `T` with `i64`
+         * and rejected every explicit-parameter trait. */
+        for (size_t pi = 0; pi < im->traitArgs.len && pi < im->trait->typeParams.len; pi++) {
+            *(const char **)vecPush(&selfParams) =
+                *(const char **)vecAt(&im->trait->typeParams, pi);
+            /* Resolved, not as written: the parser hands back an unresolved `i64`, and substituting
+             * that in produces a look-alike node that `ttEquals` (interning identity) rejects --
+             * the check then reported "is `i64`, but the trait declares `i64`". */
+            *(Type **)vecPush(&selfArgs) =
+                ttResolve(c->tt, c->ctx, *(Type **)vecAt(&im->traitArgs, pi), im->line, NULL);
+        }
         for (size_t k = 0; k < im->trait->methods.len; k++) {
             if (k + 8 < im->trait->methods.len) __builtin_prefetch(*(FuncDef **)vecAt(&im->trait->methods, k + 8), 0, 0);
             FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
@@ -4877,7 +4890,21 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             TraitDef *tr = NULL;
             for (size_t k = 0; k < m->traits.len; k++) {
                 TraitDef *cand = *(TraitDef **)vecAt(&m->traits, k);
-                if (cand->name && strcmp(cand->name, im->traitName) == 0) { tr = cand; break; }
+                if (cand->name && strcmp(cand->name, im->traitName) == 0) {
+                    /* `impl Codec<i64> for X`: an explicit-parameter trait must be implemented
+                     * with that many arguments. The *matching* is still by name -- the arguments
+                     * are not part of the conformance check yet -- but a wrong arity is caught
+                     * here instead of silently binding `T` to nothing. */
+                    if (im->traitArgs.len != cand->typeParams.len) {
+                        ctxError(ctx, im->line, 1,
+                                 "Name the trait's type arguments here: `impl Codec<i64> for X`.",
+                                 "`impl %s for %s`: the trait has %zu type parameter(s), %zu given",
+                                 im->traitName, im->typeName, cand->typeParams.len, im->traitArgs.len);
+                        break;
+                    }
+                    tr = cand;
+                    break;
+                }
             }
             if (!tr) {
                 ctxError(ctx, im->line, 1,

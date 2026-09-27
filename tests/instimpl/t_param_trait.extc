@@ -1,0 +1,12 @@
+use std::io
+/* `trait Codec<T>` + `impl Codec<i64> for …`：带参 trait（声明侧把显式参数接在 `Self` 之后，
+ * 实现侧的一致性检查按实参替换 `T` 再比） */
+trait Codec<T> { fn enc(self: ref Self, v: T) -> i64 }
+struct bi { v: i64 }
+impl Codec<i64> for bi { fn enc(self: ref bi, v: i64) -> i64 { return self.v + v } }
+fn main() -> i32 {
+  var a: bi
+  a.v = i64(4)
+  io::cout << "enc=" << a.enc(i64(3)) << "\n"
+  return 0
+}

@@ -1,0 +1,5 @@
+/* 一致性检查按实参替换 `T` 后再比：`v: bool` 与 `T = i64` 不符，应被拒 */
+trait Codec<T> { fn enc(self: ref Self, v: T) -> i64 }
+struct box { v: i64 }
+impl Codec<i64> for box { fn enc(self: ref box, v: bool) -> i64 { return self.v } }
+fn main() -> i32 { return 0 }

@@ -1,0 +1,5 @@
+/* 带参 trait 的实现必须给出实参：`impl Codec for box` 应被拒 */
+trait Codec<T> { fn enc(self: ref Self, v: T) -> i64 }
+struct box { v: i64 }
+impl Codec for box { fn enc(self: ref box, v: i64) -> i64 { return self.v } }
+fn main() -> i32 { return 0 }

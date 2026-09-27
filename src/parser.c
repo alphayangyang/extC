@@ -855,7 +855,26 @@ static TraitDef *parseTrait(Parser *p) {
     TraitDef *tr = (TraitDef *)arenaAllocZero(p->arena, sizeof(TraitDef));
     tr->name = name->text;
     tr->line = kw->line;
+    vecInit(&tr->typeParams, p->arena, sizeof(const char *));
     vecInit(&tr->methods, p->arena, sizeof(void *));
+    if (at(p, "<")) {
+        take(p);
+        skipJunk(p);
+        for (;;) {
+            Token *tp = cur(p);
+            if (tp->kind != TK_IDENT) {
+                ctxError(p->ctx, tp->line, tp->col, NULL,
+                         "expected a type parameter name, found `%s`", shown(tp));
+                return NULL;
+            }
+            take(p);
+            *(const char **)vecPush(&tr->typeParams) = tp->text;
+            skipJunk(p);
+            if (at(p, ",")) { take(p); skipJunk(p); continue; }
+            break;
+        }
+        if (!expect(p, ">", NULL)) return NULL;
+    }
     if (!expect(p, "{", NULL)) return NULL;
     skipJunk(p);
     while (!at(p, "}")) {
@@ -878,6 +897,10 @@ static TraitDef *parseTrait(Parser *p) {
          * `ref Self` with no knowledge of traits at all. */
         vecInit(&m->typeParams, p->arena, sizeof(void *));
         *(const char **)vecPush(&m->typeParams) = "Self";
+        /* `trait Codec<T>`: the explicit parameters follow the implicit `Self`, so a signature that
+         * mentions `T` resolves through the very same list. */
+        for (size_t pi = 0; pi < tr->typeParams.len; pi++)
+            *(const char **)vecPush(&m->typeParams) = *(const char **)vecAt(&tr->typeParams, pi);
         *(FuncDef **)vecPush(&tr->methods) = m;
         skipJunk(p);
     }
@@ -897,6 +920,10 @@ static ImplDef *parseImpl(Parser *p) {
      * table (and resolves the qualified form). */
     ImplDef *im = (ImplDef *)arenaAllocZero(p->arena, sizeof(ImplDef));
     vecInit(&im->typeParams, p->arena, sizeof(const char *));
+    /* `traitArgs` is filled **before** the `for` clause, so it needs its arena here -- the
+     * `typeArgs` initialisation below happens too late for it (pushing into a Vec whose arena is
+     * NULL dereferences a null arena: SIGSEGV inside arenaAlloc). */
+    vecInit(&im->traitArgs, p->arena, sizeof(void *));
     /* `impl<T> pair<T> { ... }`: the block's own type parameters come first. The methods land on
      * the generic declaration's body, so their signatures resolve against that body's parameters
      * -- hence the names have to agree with the declaration's (the checker says so at the attach
@@ -928,7 +955,30 @@ static ImplDef *parseImpl(Parser *p) {
     /* `impl Trait for Type`: the name after `impl` is the **trait**, and the type follows
      * `for`. `typeName` always ends up being the type the methods attach to -- the only name
      * the rest of the pipeline needs -- while `traitName` is what the conformance check reads. */
+    /* The `<...>` after the first name belongs to the **trait** when a `for` follows
+     * (`impl Codec<i64> for box`) and to the **type** otherwise (`impl pair<T>`, `impl slice<u8>`).
+     * Which one it is only shows up after parsing it, so it is collected first and filed second --
+     * filing it as a trait argument unconditionally made `impl<T> pair<T>` lose the type's own
+     * arguments and report "`pair` is generic and needs type arguments". */
+    Vec leadArgs;
+    vecInit(&leadArgs, p->arena, sizeof(void *));
+    if (at(p, "<")) {
+        take(p);
+        skipJunk(p);
+        for (;;) {
+            Type *arg = parseType(p);
+            if (!arg) return NULL;
+            *(Type **)vecPush(&leadArgs) = arg;
+            skipJunk(p);
+            if (at(p, ",")) { take(p); skipJunk(p); continue; }
+            break;
+        }
+        if (!expect(p, ">", NULL)) return NULL;
+    }
+    bool hadFor = false;
     if (at(p, "for")) {
+        im->traitArgs = leadArgs;
+        hadFor = true;
         take(p);
         Buf ty;
         bufInit(&ty, p->arena);
@@ -939,6 +989,9 @@ static ImplDef *parseImpl(Parser *p) {
     im->line = kw->line;
     vecInit(&im->methods, p->arena, sizeof(void *));
     vecInit(&im->typeArgs, p->arena, sizeof(void *));
+    /* No `for`: the leading `<...>` was the **type's** own arguments after all. This has to come
+     * *after* the `vecInit` above -- assigning it earlier was silently thrown away. */
+    if (!hadFor && leadArgs.len) im->typeArgs = leadArgs;
 
     /* `impl slice<u8> { ... }`: the target's type arguments. They are parsed here and resolved by
      * the checker the way an annotation's are (`ttResolve` recurses into `targs`), because only

@@ -868,6 +868,8 @@ typedef struct {
                              * `typeParams` is what `resolveSignature` resolves against, so the
                              * names must agree with the declaration's; the checker says so where
                              * it attaches the block, which beats a puzzling "unknown type `U`". */
+    Vec         traitArgs;  /* Type*: `impl Codec<i64> for X` -- the trait's arguments, parsed
+                             * before `for`, next to the trait's name. */
     Vec         typeArgs;   /* Type*: the target's type arguments (`impl slice<u8>`). A generic
                              * type's method set is per instance, so the block names the instance;
                              * an unbound parameter (`impl pair<T>`) is rejected by the checker,
@@ -892,6 +894,9 @@ struct TraitDef {
                              * uniform method tables emitted (a trait used only statically needs no
                              * table at all, and an object-unsafe method would make one invalid C) */
     int         line;
+    Vec         typeParams; /* const char*: `trait Codec<T>`. `Self` is the trait's **implicit**
+                             * type parameter (TRAITS.md decision 2); these are the explicit ones,
+                             * and every method's own list carries `Self` followed by these. */
     Vec         methods;    /* FuncDef*: signatures only (`body == NULL`) */
 };
 
