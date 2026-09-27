@@ -1,0 +1,16 @@
+// 回归（tools/attack.py dyn D2）：**编译器自身的段错误** ✗
+//   trait Bad { fn nope() -> i64 }        ← 没有接收者的方法
+//   impl Bad for s { fn nope() -> i64 { … } }
+//   var d: dyn Bad = dyn Bad(a)
+//   d.nope()                              ← extC SIGSEGV（genMethodCall，codegen.c:1803 索引了空参数表）
+// 对象安全本来就要拦住这一条（"no receiver / generic / 返回 Self" —— 检查器注释里写着 ✓，
+// 而"返回 Self"那半早就拒了 ✓）：dyn 调用走 trait 的统一表，表里每一项都要接收者。
+// 现在报 "`nope` has no receiver, so it cannot be called through `dyn`"；
+// 生成器那边另加一句 params.len == 0 的防御（诊断留给检查器）。
+trait Bad { fn nope() -> i64 }
+struct s { v: i64 }
+impl Bad for s { fn nope() -> i64 { return i64(1) } }
+fn main() -> i32 { var a: s
+  a.v = i64(0)
+  var d: dyn Bad = dyn Bad(a)
+  return i32(d.nope()) }

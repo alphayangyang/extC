@@ -1800,6 +1800,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
     }
     if (!f) return "0";
 
+    /* The checker refuses a receiver-less method through `dyn` (that is where the diagnostic can
+     * name it), so this only keeps the generator from indexing an empty parameter list if some
+     * future path reaches here first. */
+    if (f->params.len == 0) return "0";
     Param *p0 = *(Param **)vecAt(&f->params, 0);
     const char *recvC = genExpr(g, e->u.method.recv);
 

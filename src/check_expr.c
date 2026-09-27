@@ -2219,6 +2219,22 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, i);
                         if (strcmp(cand->name, e->u.method.name) == 0) want = cand;
                     }
+                    /* Object safety, the half that was missing: a `dyn` call goes through the trait's
+                     * uniform table and hands the receiver to the thunk, so a method **without a
+                     * receiver** has no slot to sit in. `want->params.len == 0` used to reach code
+                     * generation, which indexed `params[0]` and crashed the compiler
+                     * (tools/attack.py dyn D2: `trait Bad { fn nope() -> i64 }` + `d.nope()` --
+                     * SIGSEGV in genMethodCall, codegen.c:1803). The `Self`-returning case was
+                     * already refused; this is the same rule. */
+                    if (want && want->params.len == 0) {
+                        ckError(c, e->line,
+                                "A `dyn` value dispatches through the trait's uniform table, and that"
+                                " table hands a receiver to every entry. A method with no receiver has"
+                                " no place in it -- make it a free function, or give it a receiver.",
+                                "`%s` has no receiver, so it cannot be called through `dyn`",
+                                e->u.method.name);
+                        return ttError(tt);
+                    }
                     if (!want) {
                         ckError(c, e->line,
                                 "A `dyn` value dispatches through the trait it names, so the method"

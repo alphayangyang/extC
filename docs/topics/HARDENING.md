@@ -734,6 +734,42 @@ H12 已整个修好 ✓：`tools/attack.py coro` 现在 **16/16** ✓。教训�
 这 16 题已成为常设判据 ✓。**下一批加压方向**：视图的逃逸级别（全局数组 ✓ 局部 ✓ 帧内 ✓
 池内 ✓ 四档各写一题 ✓）、对视图元素做 `ref` 再跨 suspend ✓、`slice<slice<T>>` 的写穿 ✓。
 
+## 三点十八、攻击组 dyn（16 题）：**H13 修掉一个编译器段错误** ✓ + 一条待查
+
+### H13（已落地 ✓）：无接收者的方法经 `dyn` 调用 ⇒ **编译器 SIGSEGV**
+
+**触发**（`tools/attack.py dyn` D2 ✓，六行）：
+
+```extc
+trait Bad { fn nope() -> i64 }              /* 没有接收者 */
+struct s { v: i64 }
+impl Bad for s { fn nope() -> i64 { return i64(1) } }
+… var d: dyn Bad = dyn Bad(a)
+  return i32(d.nope())                      /* extc 段错误 ✗ */
+```
+
+**gdb** ✓：`genMethodCall`（`codegen.c:1803` ✓）里 `Param *p0 = *(Param **)vecAt(&f->params, 0);`
+—— 方法**没有参数**（连 `self` 都没有 ✓）⇒ 索引空表 ⇒ 崩溃 ✓。
+
+**对象安全本来就要拦它** ✓：检查器的注释（`dynTraitOf` ✓）写着"no receiver、generic、返回 `Self`"三类 ✓，
+而"返回 `Self`"那半**早就拒了** ✓（D3 ✓）—— 缺的就是"no receiver" ✓。
+
+**修法** ✓（两处 ✓）：① 检查器在 dyn 调用解析出 trait 方法之后判 `want->params.len == 0` ⇒
+报 `` `%s` has no receiver, so it cannot be called through `dyn` `` ✓（并说明"dyn 走统一表、每项都要接收者"✓，
+或改写成自由函数 ✓）；② 生成器加一句 `if (f->params.len == 0) return "0";` 兜底 ✓
+（诊断留在检查器 ✓，注释写明这是防御 ✓）。
+
+**验证** ✓：D2 现在退出码 1 + 上面的报错 ✓；`tools/attack.py dyn` **16 题剩 1 条** ✓；
+`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0** ✓（零输出变化 ⇒ 只新增拒绝 ✓）；回归
+`tests/errors/dyn_no_receiver.extc` ✓；parrun ✓；`make` 零诊断 ✓。
+
+### dyn 组余下的一条（下一轮 ✓）
+
+**D12**（`ok_or_reject` 里被判"期望被拒但通过了" ✗）：dyn 值在**载荷所在作用域结束之后**继续使用 ✓
+（`{ var a: s  d = dyn Tag(a) }` 之后 `d.tag()` ✗）⇒ 程序照常跑出结果 ✓，没有 trap ✓（句柄按
+`{pid, slot, gen}` 三元组本应在槽位释放后失效 ✓）⇒ 要查这是**提升到了外层 arena**（安全 ✓）
+还是**use-after-free**（✗ 严重 ✓）。下一轮第一个打这里 ✓。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
