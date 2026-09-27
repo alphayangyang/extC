@@ -1,0 +1,11 @@
+use std::io
+trait Shape { fn area(self: ref Self) -> i64
+              fn name(self: ref Self) -> i64 }
+impl Shape for i64 { fn area(self: ref i64) -> i64 { return *self * *self }
+                     fn name(self: ref i64) -> i64 { return i64(7) } }
+fn main() -> i32 {
+  var n: i64 = 6
+  var d: dyn Shape = dyn Shape(n)
+  io::cout << d.area() << " " << d.name() << "\n"
+  return 0
+}

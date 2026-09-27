@@ -1,0 +1,12 @@
+use std::io
+trait Codec { fn enc(self: ref Self) -> i64 }
+impl Codec for slice<u8> { fn enc(self: ref slice<u8>) -> i64 { return i64(self.len) } }
+impl Codec for i64 { fn enc(self: ref i64) -> i64 { return *self * i64(2) } }
+fn main() -> i32 {
+  var s: slice<u8> = "abcd"
+  var d: dyn Codec = dyn Codec(s)
+  var n: i64 = 21
+  var e: dyn Codec = dyn Codec(n)
+  io::cout << d.enc() << " " << e.enc() << "\n"
+  return 0
+}

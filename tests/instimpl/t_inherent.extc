@@ -1,0 +1,14 @@
+use std::io
+impl slice<u8> {
+  fn half(self: ref slice<u8>) -> i64 { return i64(self.len) / i64(2) }
+  fn trimmed(self: ref slice<u8>) -> i64 {
+    var n: i64 = self.len
+    while n > i64(0) && (self[n - i64(1)] == u8(32) || self[n - i64(1)] == u8(10)) { n = n - i64(1) }
+    return n
+  }
+}
+fn main() -> i32 {
+  var s: slice<u8> = "GET /x  \n"
+  io::cout << "half=" << s.half() << " trimmed=" << s.trimmed() << "\n"
+  return 0
+}

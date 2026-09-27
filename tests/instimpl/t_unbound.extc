@@ -1,0 +1,3 @@
+struct pair<T> { a: T }
+impl pair<T> { fn get(self: ref pair<T>) -> T { return self.a } }
+fn main() -> i32 { return 0 }

@@ -1,0 +1,4 @@
+use std::io
+trait Codec { fn enc(self: ref Self) -> i64 }
+impl Codec for slice<u8> { fn enc(self: ref slice<u8>) -> i64 { return i64(self.len) } }
+fn main() -> i32 { var s: slice<u8> = "abcd"  io::cout << "enc=" << s.enc() << "\n"  return 0 }

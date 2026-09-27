@@ -1,0 +1,6 @@
+impl slice<u8> { fn half(self: ref slice<u8>) -> i64 { return i64(self.len) / i64(2) } }
+fn main() -> i32 {
+  var a: [2]i64 = [1, 2]
+  var t: slice<i64> = a[..]
+  return i32(t.half())
+}

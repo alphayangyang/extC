@@ -1,0 +1,10 @@
+use std::io
+impl slice<u8>  { fn tag(self: ref slice<u8>)  -> i64 { return i64(1) } }
+impl slice<i64> { fn tag(self: ref slice<i64>) -> i64 { return i64(2) } }
+fn main() -> i32 {
+  var s: slice<u8> = "ab"
+  var a: [2]i64 = [1, 2]
+  var t: slice<i64> = a[..]
+  io::cout << "u8=" << s.tag() << " i64=" << t.tag() << "\n"
+  return 0
+}
