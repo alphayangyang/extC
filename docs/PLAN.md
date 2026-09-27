@@ -139,7 +139,10 @@
 > `cannot index a value of type mut ref i32`）· **§2 本表 11b / `@main`**（实测：`@main` 三字直接报
 > **"`@main` is not implemented yet"** —— 是显式未实现，不是漏了报错）· **`#86`**（本轮复核仍在：
 > `stdlib/stl/hashMap.extc:250 rebuild` 仍是 `poolSlice` 开新四列 + `poolGive` 还旧列）· **`#84`**（本轮复核**仍在**：
-> 手搓 freeList 在 `stdlib/stl/map.extc` 的 `freeHead`/`freeNext`，第 64/86/184 行，不在 `stdlib/std/`）· **`#83`**（自拟最小例
+> 手搓 freeList 在 `stdlib/stl/map.extc` 的 `freeHead`/`freeNext`，第 64/86/184 行，不在 `stdlib/std/`。**它不是漏做，是在等裁决**：
+> ① 语言限制 —— `struct gnode<K> { keys: [4]K }` 被直接拒（"定长数组的元素类型必须是具体的"）⇒ 泛型 `pool<bnode<K,V>>` 的节点没法内联 `keys: [16]K`；
+> ② 现状本身有理：三块扁平存储「一次分配/翻倍」而不是「一节点一分配」，且**按块分配会在块尾释放** —— `put` 分裂循环里新建的节点会悬垂（压力用例以 ASan heap-use-after-free 抓到过，注释就写在 `map.extc` 里）；
+> ③ 所以 `POOLS.md` §"两条路，待裁决"等着拍板：**甲**「实例化时定尺寸」（文档标倾向：`gnode<i32>` 的尺寸实例化期已知，今天拒得过早，与 #79/#80 同机制）· **乙**「节点继续用视图 + 三块存储改由 pool 供给」（代价是多一层间接）。两者都还要 `POOLS.md` 期 2/3（pool 有自己的板块 · 整个 STL 建在池上，`stl/map.extc`/`set.extc` 标着待做）⇒ **#84 不是独立小活，先裁决再动**。
 > —— 池建在 `fn +` 体内 —— extC 通过、gcc 通过、运行得 10 ⇒ **本轮未能复现**，保留待原始复现）· **`#48`**
 > （无产物缓存机制 —— 但它是**可选优化**，不是缺陷）
 > check_stmt 2，与原文数字一致）· **§2 本表 9**（`var p = alloc<i32>(4)  p[0] = 1` 仍报
