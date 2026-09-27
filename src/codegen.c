@@ -6115,13 +6115,24 @@ static void markUnusedParams(CG *g, Buf *out) {
  * The owner is compared first, which keeps a same-named method of another type out; the name
  * comparison is there because codegen can hold its own copy of a declaration (instances,
  * substituted signatures). */
+/* **The** method set of a type: `Type.mholder` when the type has no body of its own -- a builtin
+ * scalar (`impl i64 { ... }`) or a generic **instance** (`impl slice<u8> { ... }`) -- and the
+ * declaration's body otherwise. Every pass that asks "does this type have this method" must come
+ * through here: reading `sdef` alone silently missed both cases, and each miss showed up as a
+ * different bug (a table of `{ NULL }`, a pruned method that a `dyn` dispatch needed, a thunk
+ * calling a function nobody emitted). */
+static StructDef *methodSetOf(Type *t) {
+    if (!t) return NULL;
+    return t->mholder ? t->mholder : t->sdef;
+}
+
 static bool inTraitTable(Module *m, FuncDef *f) {
     if (!f->owner) return false;
     for (size_t i = 0; i < m->impls.len; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
         if (!im->trait || !im->target) continue;
         Type *bt = ttBase(im->target);
-        if (!bt || bt->sdef != f->owner) continue;
+        if (!bt || methodSetOf(bt) != f->owner) continue;
         for (size_t j = 0; j < im->methods.len; j++) {
             FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
             if (mth == f) return true;
@@ -7341,10 +7352,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
             if (im->trait != tr || !im->target) continue;
             Type *bt = ttBase(im->target);
-            StructDef *tsd = bt ? bt->sdef : NULL;
+            /* The methods of `bt` live in **its own** method set: `Type.mholder` when the type has
+             * no body of its own -- a builtin scalar (`impl Codec for i64`) or a generic
+             * **instance** (`impl Codec for slice<u8>`) -- and `sdef` otherwise. Reading `sdef`
+             * alone skipped both: `impl Codec for i64` produced no table at all, and
+             * `impl Codec for slice<u8>` produced `{ NULL }` (an empty table dispatches to NULL). */
+            StructDef *tsd = bt ? (bt->mholder ? bt->mholder : bt->sdef) : NULL;
             if (!tsd) continue;
+            /* The **same** derivation the construction and dispatch sites use (`cType`), because
+             * they name the table after the concrete type: `extc_vt$Codec$slice_u8`. Naming it
+             * after `sdef->name` produced `extc_vt$Codec$slice` -- one table, two names, and the
+             * generated C did not compile (`extc_vt$Codec$slice_u8` undeclared). */
+            const char *vtKey = cType(&g, bt);
             bufPrintf(&g.vtDecls, "static const struct extc_vt$%s_t extc_vt$%s$%s;\n",
-                      tr->name, tr->name, tsd->name);
+                      tr->name, tr->name, vtKey);
             for (size_t k = 0; k < tr->methods.len; k++) {
                 FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
                 FuncDef *have = NULL;
@@ -7356,7 +7377,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 if (!funcIsMethod(want) || (want->ret && mentionsParam(want->ret))) continue;
                 bufPrintf(&vtDefs, "static %s extc_th$%s$%s$%s(void *self",
                           want->ret ? cType(&g, ttBase(want->ret)) : "void",
-                          tr->name, tsd->name, want->name);
+                          tr->name, vtKey, want->name);
                 for (size_t pi = 1; pi < want->params.len; pi++) {
                     Param *pp = *(Param **)vecAt(&want->params, pi);
                     bufPrintf(&vtDefs, ", %s %s", cType(&g, ttBase(pp->type)), pp->name);
@@ -7368,7 +7389,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 bufPuts(&vtDefs, "); }\n");
             }
             bufPrintf(&vtDefs, "static const struct extc_vt$%s_t __attribute__((unused)) "
-                               "extc_vt$%s$%s = {", tr->name, tr->name, tsd->name);
+                               "extc_vt$%s$%s = {", tr->name, tr->name, vtKey);
             for (size_t k = 0; k < tr->methods.len; k++) {
                 FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
                 bool unsafe = funcIsMethod(want) == false || (want->ret && mentionsParam(want->ret));
@@ -7380,7 +7401,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
                 bufPrintf(&vtDefs, "%s %s", k ? "," : "",
                           (unsafe || !have) ? "NULL"
                                             : arenaPrintf(arena, "extc_th$%s$%s$%s",
-                                                          tr->name, tsd->name, want->name));
+                                                          tr->name, vtKey, want->name));
             }
             bufPuts(&vtDefs, " };\n");
         }
