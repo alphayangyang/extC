@@ -465,7 +465,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
     switch (e->kind) {
-        case EX_INT:   return c->tI32;
+        case EX_INT:
+            /* The literal's own type is the smallest integer that holds it. It used to be i32
+             * unconditionally, so a value that does not fit was truncated silently wherever no
+             * context supplied a type -- an unannotated `let n = 5000000000` inside a generic body
+             * became 32-bit (PLAN #92). SPEC §3.4 says only lossless widening is implicit and
+             * there is no implicit truncation; contexts that want another integer type still type
+             * the literal themselves through `literalFits` / `adoptContextType`. */
+            if (e->u.ival < -2147483648LL || e->u.ival > 2147483647LL) return c->tI64;
+            return c->tI32;
         case EX_FLOAT: return c->tF64;
         case EX_BOOL:  return c->tBool;
         case EX_STR:   return c->tSliceU8;
