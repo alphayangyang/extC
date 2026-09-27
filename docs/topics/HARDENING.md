@@ -446,7 +446,32 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
    实例的 body **不走** `checkFunc` 那个 prologue ⇒ `ret` 停留在原型 `coroutine<i64>` ⇒
    codegen 按"句柄"发成 `extc_coro` ✗，而它期待的其实是帧类型。
 
-**正确的修法**：帧合成要放进**实例的 body 检查路径**（就是"检查泛型实例会把同一个 body 再走一遍"
+### F4 + B7 的共同根：实例**完全不跑**协程 prologue（拼图已完成三块中的两块）
+
+**关键发现（第 10 轮）** ✓：实例根本不走 `checkFunc` —— 检查 body 那一趟写着
+`if (fx->tmpl) continue;   /* covered by the per-instance recheck */`（`check_top.c:5204` ✓），
+而"per-instance recheck"只是**延迟检查**（算符 ✓ 方法 ✓ 可赋值性 ✓），**从未建帧、也从未替换
+协议方法的类型** ✗。B7（`c.value()` 的类型还是 `T` ✗）与 F4（实例没有帧 ⇒ 生成非法 C ✗）
+因此**同一个根** ✓。
+
+**三块拼图（都已实测 ✓，还差最后一块 ✗）**：
+
+1. ✓ `ast.h` 记 `coroRetProto`（写下来的 `coroutine<T>` ✓ —— 模板的 `ret` 会被改写成帧 ✓，
+   实例是浅拷贝 ⇒ 必须能重建原型 ✓）；`funcInstance` 里重建原型 + 清空继承来的帧 + `isCoro=false` ✓。
+   实测：帧名变成**实例自己的** `struct gen_i64$frame` ✓，B7 的调用也变成了
+   `extc_coro_value_int64_t` ✓（`T` 替换成功 ✓）；
+2. ✓ 让协程实例走 `checkFunc`：把 `if (fx->tmpl) continue;` 放宽成
+   `if (fx->tmpl && !fx->tmpl->isCoro) continue;` ✓ —— prologue 就在里面 ✓，那里的注释本来就写着
+   "检查泛型实例会把同一个 body 再走一遍" ✓（同一顺序 ⇒ 生成的 C 名不会漂移 ✓）；
+3. ✗ **还差**：① 该帧结构没进**单元列表**（"用了没定义" ⇒ 早先那次"给帧收集补一趟 `g.funcs`"的
+   尝试 ✗ 当时失败是因为帧还不存在 ✓，现在帧真的存在了 ✓ ⇒ 这两块可以合起来 ✓）；
+   ② 协程**运行期文本**（`extc_coro` / `extc_task_*` ✓，来自 `src/coroutine.c` ✓）没被触发 ✓
+   （`unknown type name 'extc_coro'` ✓）⇒ 要找到它的触发条件并让"有协程实例"也算数 ✓。
+
+**已验证的三块都在补丁里 ✓、都已回退 ✓**（闸门保持 413/413 ✓）；下一轮把第 3 块接上 ⇒ 一次清掉
+**B7 + F4** 两条 ✓。
+
+**正确的修法（原记，仍适用）**：帧合成要放进**实例的 body 检查路径**（就是"检查泛型实例会把同一个 body 再走一遍"
 那条路径），而不是 `checkFunc` 的 prologue —— 让实例在那里建自己的 `<实例名>$frame`（字段按实参
 替换），帧单元收集自然也就对了。两次试错都已回退，代码停在 `084303c`。
 
