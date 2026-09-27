@@ -1389,8 +1389,46 @@ static bool useListHas(UseDecl *u, const char *name) {
  *   - For the **root file and the prelude** only, whose declarations are never renamed.
  *     A loaded module is asked through its rename table instead.
  */
+/* Memo for the ownership test below. `unitOwns` is asked 102,383,988 times at N=3200 (call-site
+ * histogram of strcmp/strstr via LD_PRELOAD + addr2line) and each call scans all four declaration
+ * lists of the unit -- for the root unit that is the whole program, so the rewrite walk is O(N^2)
+ * (the load phase x5.8 per doubling, and the source of the 63% of instructions inside strcmp).
+ *
+ * The answer depends on the four list lengths: they grow while a unit is being merged (that is
+ * what made an unguarded memo change the generated C earlier). Every entry therefore records all
+ * four and is re-scanned the moment one of them moves, and a miss -- empty slot, evicted entry, or
+ * a full probe window -- falls back to the original scan. Fixed size: nothing to allocate. */
+typedef struct {
+    const ModUnit *u; const char *name; size_t n0, n1, n2, n3; char val; int filled, done;
+} OwnMemo;
+static OwnMemo g_ownMemo[1 << 16];
+
+static size_t ownHash(const ModUnit *u, const char *name) {
+    size_t h = (size_t)(uintptr_t)u * 1000003u + 1469598103934665603u;
+    for (const char *q = name; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211u; }
+    return h & 0xFFFFu;
+}
+static OwnMemo *ownMemoFind(const ModUnit *u, const char *name, int create) {
+    size_t h = ownHash(u, name);
+    for (int step = 0; step < 8; step++, h = (h + 1) & 0xFFFFu) {
+        OwnMemo *m = &g_ownMemo[h];
+        if (m->filled) {
+            if (m->u == u && strcmp(m->name, name) == 0) return m;
+            continue;
+        }
+        if (!create) return NULL;
+        m->u = u; m->name = name; m->filled = 1; m->done = 0; m->val = 0;
+        return m;
+    }
+    return NULL;
+}
+
 static bool unitOwns(ModUnit *u, const char *name) {
     Module *m = &u->mod;
+    OwnMemo *memo = ownMemoFind(u, name, 1);
+    if (memo && memo->done && memo->n0 == m->structs.len && memo->n1 == m->types.len &&
+        memo->n2 == m->globals.len && memo->n3 == m->funcs.len)
+        return memo->val != 0;
     for (size_t i = 0; i < m->structs.len; i++)
         if (strcmp((*(StructDef **)vecAt(&m->structs, i))->name, name) == 0) return true;
     for (size_t i = 0; i < m->types.len; i++)
@@ -1398,7 +1436,13 @@ static bool unitOwns(ModUnit *u, const char *name) {
     for (size_t i = 0; i < m->globals.len; i++)
         if (strcmp((*(GlobalDef **)vecAt(&m->globals, i))->name, name) == 0) return true;
     for (size_t i = 0; i < m->funcs.len; i++)
-        if (strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0) return true;
+        if (strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0) {
+            if (memo) { memo->n0 = m->structs.len; memo->n1 = m->types.len; memo->n2 = m->globals.len;
+                        memo->n3 = m->funcs.len; memo->val = 1; memo->done = 1; }
+            return true;
+        }
+    if (memo) { memo->n0 = m->structs.len; memo->n1 = m->types.len; memo->n2 = m->globals.len;
+                memo->n3 = m->funcs.len; memo->val = 0; memo->done = 1; }
     return false;
 }
 
