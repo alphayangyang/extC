@@ -1333,8 +1333,11 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
   | **X8** | `incompatible types when assigning to type 'box_i64' from type 'box_T'` ✗ | **替换漏了一处** ✗ —— 协程 yield 的**值**仍是临时名 ✓ |
   | **X7** | `variable 'p' set but not used [-Werror=unused-but-set-variable]` ✗ | **质量类** ✓（同 H15/S11 一族 ✓：`p` 的声明与逐字段赋值没被删干净 ✓） |
 
-  ⇒ **X3 + X9 是同一个修法** ✓（把检查器的 walker 从"只走类型标注"扩到**也走表达式** ✓ ——
-  替换的副作用就是 intern ✓，正是 W9 那条路的推广 ✓）。
+  ⇒ **X3 + X9 已修（第 26 轮）** ✅ ✓ —— 而且比预想的**省得多** ✓：不必写表达式 walker ✓，因为
+  检查器把结果写回了 AST（`Stmt.type` ✓，codegen 头注释原话："`Expr.type`, `Expr.func`,
+  `Expr.field`, `Stmt.type`" ✓）⇒ 只要在 `internLocalTypes` 里对**每条语句**的 `type` 也做一次
+  `ttSubstitute` ✓（intern 是副作用 ✓），就覆盖了 `let sl = arr[..]`（类型 `slice<box<T>>` ✓ ——
+  **语句类型**是唯一提到它的地方 ✓）与容器那条 ✓ ⇒ **X3 + X9 同时转绿** ✓、**闸门零变化** ✓。
 
 （历史）**下一轮该怎么定位（工具已经就位 ✓）** ✓：`EXTC_ABORT` 探针就在**数组 struct 写点**
   （`cgLine(g, "%s data[%lld];", cType(g, u->inst->inner), …)` ✓ 现 `:4879` ✓）—— 直接在 gdb 里

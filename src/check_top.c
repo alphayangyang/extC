@@ -4720,6 +4720,13 @@ static void internLocalTypes(Checker *c, FuncDef *f) {
         Stmt *st = *(Stmt **)vecAt(&stack, stack.len - 1);
         stack.len--;
         if (!st) continue;
+        /* The checker writes its results back into the AST (`Stmt.type`, `Expr.type`, ...), so a
+         * statement's own type is often where an instance hides -- `let sl = arr[..]` has type
+         * `slice<box<T>>` and nothing else in the body mentions that slice. Substituting it here
+         * interns it (`ttGeneric`), early enough for the unit list: without this the generated C
+         * named an instance nobody emitted (`'slice_box_i64' undeclared`, tools/attack.py X9; the
+         * container case X3 has the same shape). */
+        if (st->type) (void)ttSubstitute(c->tt, st->type, params, targs);
         switch (st->kind) {
         case ST_VAR:
             if (st->u.var.ann) (void)ttSubstitute(c->tt, st->u.var.ann, params, targs);
