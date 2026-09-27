@@ -40,6 +40,7 @@ one "泛型方法（方法自己的 <U> 按实参推断）" "$(src t_gen_method.
 one "泛型函数返回 T 构造的实例（零值名与声明一致）" "$(src t_gen_return.extc)" "box=8 pair=3,4"
 one "main 掉出末尾 = C 的隐式 return 0（不许 trap）" "$(src t_main_falls_off.extc)" "sum=6"
 one "显式类型实参喂推断（T 只在返回类型 / 实参不提 T）" "$(src t_explicit_targs.extc)" "a=0 b=2 c=4"
+one "泛型协程：实例有自己的帧、协议方法按实例替换（B7+F4）" "$(src t_generic_coro.extc)" "sum=8"
 # 反向金丝雀：实现体不读 `self` 时，dyn 表保住的实现不会被"未用参数"那趟看到
 # （markUnusedParams 只遍历 g.deadFuncs）⇒ 今天**必须**失败。修好那天它会变绿，这条就会报出来。
 if "$EXTC" -w --no-line-map -o "$tmp/m.c" "$(src t_dyn_multi.extc)" 2>/dev/null &&

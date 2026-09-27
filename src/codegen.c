@@ -180,7 +180,12 @@ typedef struct {
     const char    *coroFrame;       /* the frame parameter's C name: `f` */
     int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
     bool           needEvent;       /* the program calls the event layer (epoll/sockets) */
-    bool           needCoroHandle;  /* some coroutine is stored as a handle ⇒ emit the handle type */
+    bool           needCoroHandle;
+    bool           coroDefPrinted;
+    bool           coroDeclsDone;
+    bool           taskTableDone;
+    bool           poolDone;
+    size_t         coroDefA;  /* some coroutine is stored as a handle ⇒ emit the handle type */
     int            coroSeq;         /* names the temporaries a spawn needs (one per spawn) */
     /* Coroutine frames and step functions go here and are appended **last**, after the passes that
      * rewrite the unit by byte offset (same reason as `vtDefs` below): those passes match names, and
@@ -2107,6 +2112,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 FuncDef *cf = e->func;
                 const char *cn = cFuncName(g, cf);
                 int sq = g->coroSeq++;
+                g->needCoroHandle = true;
                 pfLine(g, "int64_t __extc_czh%d = extc_task_begin();", sq);
                 pfLine(g, "int64_t __extc_czz%d = extc_task_zone(__extc_czh%d);", sq, sq);
                 pfLine(g, "struct %s$frame *__extc_czf%d = (struct %s$frame *)extc_task_alloc("
@@ -3454,6 +3460,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                     const char *cn = cFuncName(g, cf);
                     int sq = g->coroSeq++;
                     flushPrefix(g);
+                    g->needCoroHandle = true;
                     cgLine(g, "int64_t __extc_czh%d = extc_task_begin();", sq);
                     cgLine(g, "int64_t __extc_czz%d = extc_task_zone(__extc_czh%d);", sq, sq);
                     cgLine(g, "struct %s$frame *__extc_czf%d = (struct %s$frame *)extc_task_alloc("
@@ -4140,6 +4147,25 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * registers the generic instances its body calls (docs/topics/CONCURRENCY.md 4.4, slice C). */
 /* The handle type and its two helpers. Emitted only when a handle exists somewhere; the helpers are
  * EXTC_UNUSED so that a `value` helper for an unused yield type stays quiet under -Werror. */
+/* A **provisional** instance (`gen_T`, arguments still `T`) is never emitted; same test as the
+ * checker's `provisionalInstance`, which is static to check_top.c. */
+static bool coroProvisional(Vec *targs) {
+    if (!targs) return false;
+    for (size_t i = 0; i < targs->len; i++)
+        if (mentionsParam(*(Type **)vecAt(targs, i))) return true;
+    return false;
+}
+
+/* The coroutines that are actually emitted: instances of a coroutine, never a generic template and
+ * never a provisional instance (`gen_T`). Every loop below that used to `continue` on `cf->tmpl` was
+ * skipping exactly the wrong set -- the instance is what `genFunc` emits, and a template never is
+ * (tools/attack.py F4 + B7). */
+static bool coroEmitted(FuncDef *f) {
+    if (!f || !f->isCoro) return false;
+    if (!f->tmpl) return f->typeParams.len == 0;
+    return f->tmpl->typeParams.len == 0 ? true : !coroProvisional(&f->targs);
+}
+
 static void genCoroHandleDecls(CG *g, Module *m) {
     if (!g->needCoroHandle) return;
     cgLine(g, "/* The coroutine **handle**: one struct for every `coroutine<T>`, which is what lets");
@@ -4153,7 +4179,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
     /* C allows a declaration to be repeated, and these helpers may precede the definitions below. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !cf->isCoro || cf->tmpl) continue;
+        if (!coroEmitted(cf)) continue;
         const char *cn = cFuncName(g, cf);
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);", cn, cn);
         if (cf->coroNeedsZone)
@@ -4171,7 +4197,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
     cgLine(g, "    switch (h->kind) {");
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !cf->isCoro || cf->tmpl) continue;
+        if (!coroEmitted(cf)) continue;
         const char *cn = cFuncName(g, cf);
         cgLine(g, "    case %d: return %s%s((struct %s$frame *)h->frame);",
                cf->coroKind, cn, cf->coroNeedsZone ? "$next" : "$step", cn);
@@ -4182,12 +4208,12 @@ static void genCoroHandleDecls(CG *g, Module *m) {
     /* One `value` helper per yield type that a handle can carry. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !cf->isCoro || cf->tmpl || !cf->yieldType) continue;
+        if (!coroEmitted(cf) || !cf->yieldType) continue;
         const char *yt = cType(g, cf->yieldType);
         bool done = false;
         for (size_t k = 0; k < i && !done; k++) {
             FuncDef *prev = *(FuncDef **)vecAt(&m->funcs, k);
-            if (prev && prev->isCoro && !prev->tmpl && prev->yieldType &&
+            if (coroEmitted(prev) && prev->yieldType &&
                 strcmp(cType(g, prev->yieldType), yt) == 0) done = true;
         }
         if (done) continue;
@@ -4199,7 +4225,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck2 = *(FuncDef **)vecAt(&m->funcs, k);
-            if (!ck2 || !ck2->isCoro || ck2->tmpl || !ck2->yieldType) continue;
+            if (!coroEmitted(ck2) || !ck2->yieldType) continue;
             if (strcmp(cType(g, ck2->yieldType), yt) != 0) continue;
             const char *cn2 = cFuncName(g, ck2);
             cgLine(g, "    case %d: return ((struct %s$frame *)h->frame)->ret;", ck2->coroKind, cn2);
@@ -4216,7 +4242,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck3 = *(FuncDef **)vecAt(&m->funcs, k);
-            if (!ck3 || !ck3->isCoro || ck3->tmpl || !ck3->yieldType) continue;
+            if (!coroEmitted(ck3) || !ck3->yieldType) continue;
             if (strcmp(cType(g, ck3->yieldType), yt) != 0) continue;
             const char *cn3 = cFuncName(g, ck3);
             cgLine(g, "    case %d: ((struct %s$frame *)h->frame)->in = v; return %s%s("
@@ -4242,16 +4268,18 @@ static void genCoroDecls(CG *g, Module *m) {
     }
     /* The task table, defined before every body that may spawn or drive: the pool prototypes are
      * already in the prototype region above, so this only needs to precede its users. */
+    g->taskTableDone = taskTable;
     if (taskTable) {
         /* The table sits on the pool zone runtime (enter/leave), so a program that only spawns
          * coroutines has to pull that in too -- the same rule the zone-argument fallback follows. */
         g->needPool = true;
         coroutineEmitRuntime(g->arena, g->out);
     }
+    g->coroDeclsDone = g->needCoroHandle;
     genCoroHandleDecls(g, m);
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!f || !f->isCoro || f->tmpl) continue;     /* instances: per-instance frames come later */
+        if (!f || !f->isCoro || f->tmpl || f->typeParams.len > 0) continue;
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);",
                cFuncName(g, f), cFuncName(g, f));
         /* The **task driver**, defined here (before every body that may drive it): the place is read
@@ -6266,7 +6294,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         int ck = 0;
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-            if (!cf || !cf->isCoro || cf->tmpl) continue;
+            if (!coroEmitted(cf)) continue;
+            if (cf->tmpl && cf->tmpl->coroBoxed) cf->coroBoxed = true;
             cf->coroKind = ck++;
             if (cf->coroBoxed) g.needCoroHandle = true;
         }
@@ -6786,6 +6815,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "        return p;\n"
         "    }\n"
         "}\n\n");
+    g.coroDefPrinted = g.needCoroHandle;
+    g.coroDefA = out->len;
+
     {   /* Kept as text: dropRuntimeDefs scans it for definitions nothing names. */
         Buf pb;
         bufInit(&pb, arena);
@@ -7118,6 +7150,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
         if (!cf || !cf->isCoro || cf->tmpl || !cf->coroFrameType || !cf->coroFrameType->sdef) continue;
+        SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
+        u->sd = cf->coroFrameType->sdef;
+        vecInit(&u->deps, arena, sizeof(int));
+        *(SUnit **)vecPush(&units) = u;
+    }
+
+    for (size_t i = 0; i < g.funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&g.funcs, i);
+        if (!cf || !cf->isCoro || !cf->tmpl || !cf->coroFrameType || !cf->coroFrameType->sdef) continue;
+        if (coroProvisional(&cf->targs)) continue;
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->sd = cf->coroFrameType->sdef;
         vecInit(&u->deps, arena, sizeof(int));
@@ -7525,14 +7567,45 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * helpers. The order is prototypes, then descriptors, then bodies, which is
      * what the define-before-use rule of C requires. */
     g.out = out;
+    if (g.needCoroHandle && g.coroDefA && (!g.coroDefPrinted || !g.taskTableDone)) {
+        Buf nb;
+        bufInit(&nb, arena);
+        bufPutn(&nb, out->data, g.coroDefA);
+        if (!g.coroDefPrinted)
+            bufPuts(&nb,
+                    "#define EXTC_CORO_HANDLE_DEFINED 1\n"
+                    "struct ExtcCoroS { void *frame; int64_t kind; int64_t task; };\n"
+                    "typedef struct ExtcCoroS extc_coro;\n\n");
+        if (!g.taskTableDone) {
+            if (!g.poolDone) {
+                Buf pr;
+                bufInit(&pr, arena);
+                poolsEmitRuntime(arena, &pr);
+                bufPuts(&nb, bufCstr(&pr));
+                g.poolDone = true;
+            }
+            Buf rt;
+            bufInit(&rt, arena);
+            coroutineEmitRuntime(arena, &rt);
+            bufPuts(&nb, bufCstr(&rt));
+            g.needPool = true;
+        }
+        bufPutn(&nb, out->data + g.coroDefA, out->len - g.coroDefA);
+        /* Rebuild through `Buf` instead of `memcpy`-ing into `out->data`: the spliced text makes the
+         * unit **longer**, so writing it in place ran past the buffer's end and corrupted whatever
+         * followed it -- the symptom was a wild pointer inside `dropUnreferenced` and a compiler
+         * SIGSEGV on a generic coroutine (caught by tests/instimpl/t_generic_coro.extc). */
+        *out = nb;
+    }
     emitDescRegion(&g);
+    if (g.needCoroHandle && !g.coroDeclsDone) genCoroHandleDecls(&g, m);
     /* Descriptor types and shared scalar descriptors: needed by printing or by
      * comparison, whichever comes first. */
     if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
-    if (g.needPool) poolsEmitRuntime(arena, out);
+    if (g.needPool && !g.poolDone) poolsEmitRuntime(arena, out);
     /* The byte-search runtime, for a program that declares `extern!("extc-mem")`. Its trigger
      * also decided the `_GNU_SOURCE` preamble above; here only the bodies are appended. */
     if (g.needMemFind) memfindEmitRuntime(arena, out);

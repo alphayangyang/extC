@@ -3783,7 +3783,9 @@ static void coroSetup(Checker *c, FuncDef *f) {
         StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
         /* A C name of its own: the frame is emitted through the type channel now, so it must not
          * collide with the function's own name. */
-        cfd->name = arenaPrintf(c->arena, "%s$frame", f->name ? f->name : "coro");
+        const char *frameOwner = (f->instName && f->instName[0]) ? f->instName
+                                : (f->name ? f->name : "coro");
+        cfd->name = arenaPrintf(c->arena, "%s$frame", frameOwner);
         cfd->coroOf = f;
         vecInit(&cfd->typeParams, c->arena, sizeof(const char *));
         vecInit(&cfd->fields, c->arena, sizeof(FieldDef *));
@@ -3945,6 +3947,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * declaration is the marker -- `yield` is legal only here, and the frame the checker lays out
      * for this function is a value (docs/topics/CONCURRENCY.md 4.4). */
     f->isCoro = f->ret && isProtoType(f->ret, "coroutine", 1);
+    f->coroRetProto = f->isCoro ? f->ret : NULL;
     f->yieldType = f->isCoro ? *(Type **)vecAt(&f->ret->targs, 0) : NULL;
     if (f->isCoro) coroSetup(c, f);
     /* `coroutine<T>` is how a **return type** says "this body is a coroutine that yields T". It is not
@@ -4354,6 +4357,11 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
         in->params = newParams;
     }
     if (in->ret) in->ret = ttSubstitute(c->tt, in->ret, &tmpl->typeParams, targs);
+    if (tmpl->coroRetProto) {
+        in->ret = ttSubstitute(c->tt, tmpl->coroRetProto, &tmpl->typeParams, targs);
+        in->coroFrameType = NULL;
+        in->isCoro = false;
+    }
     /* C name: `max_i32`, built by mangling the type arguments onto the name. */
     Buf b;
     bufInit(&b, c->arena);
@@ -5322,6 +5330,17 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (provisionalInstance(&fi->targs)) continue;
             runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, fi->instName);
         }
+    }
+
+    for (size_t j = 0; j < c.funcInsts.len; j++) {
+        FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+        if (!fi || !fi->tmpl || !fi->tmpl->isCoro || fi->coroFrameType) continue;
+        if (provisionalInstance(&fi->targs)) continue;
+        fi->isCoro = true;
+        if (fi->tmpl->yieldType)
+            fi->yieldType = ttSubstitute(c.tt, fi->tmpl->yieldType, &fi->tmpl->typeParams, &fi->targs);
+        coroSetup(&c, fi);
+        coroFrameLay(&c, fi);
     }
 
     /* Deferred uses of such a call's result (`#79`): same two branches, but the question is now

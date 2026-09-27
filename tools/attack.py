@@ -92,6 +92,12 @@ GENERICS = [
      'fn main() -> i32 { return i32(outer(i64(2))) }'),
 
     # ---- C. 延迟检查（H7 家族）----
+    ('B8 泛型协程在**泛型函数体内**被驱动（延迟路径）', 'ok',
+     'fn gen<T>(x: T) -> coroutine<T> { yield x }\n'
+     'fn run<T>(v: T) -> i64 { var c = gen(v)\n  var s: i64 = 0\n'
+     '  while c.next() { s = s + c.value() }\n  return s }\n'
+     'fn main() -> i32 { return i32(run(i64(4))) }'),
+
     ('C1 T == T（i64）', 'ok',
      'fn eq<T>(a: T, b: T) -> bool { return a == b }\nfn main() -> i32 { if eq(i64(1), i64(1)) { return 0 }\n'
      '  return 1 }'),

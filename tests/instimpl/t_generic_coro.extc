@@ -1,0 +1,19 @@
+use std::io
+/* 回归（tools/attack.py generics **B7 + F4**）：泛型协程。
+ *   `var c = gen(i64(4))` —— 调用产生的是**该实例自己的帧**（`gen_i64$frame`）✓；
+ *   协议方法按实例替换：`c.value()` 是 `i64`，不是未替换的 `T` ✓。
+ * 以前两条都坏：实例驱动 `gen_i64$frame` 而没人定义它（生成的 C 非法 ✗）；
+ * `c.value()` 的类型停在 `T`（误拒 ✗）。第 25→36 轮逐环定位，真根是**时机**：
+ * `gen(i64(9))` 写在泛型函数体里 ⇒ 调用被延迟 ⇒ 实例在**延迟实例化那一趟**（body 检查之后）
+ * 才建出来 ⇒ 协程设置必须从 checkFunc 提取成 coroSetup，并在延迟回放之后对实例补跑
+ * （另加 coroFrameLay 填帧字段、统一判据 coroEmitted 决定"谁被发射"）。 */
+fn gen<T>(x: T) -> coroutine<T> {
+  yield x
+  yield x
+}
+fn main() -> i32 {
+  var c = gen(i64(4))
+  var s: i64 = 0
+  while c.next() { s = s + c.value() }
+  io::cout << "sum=" << s << "\n"
+}

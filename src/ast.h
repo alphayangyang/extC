@@ -571,6 +571,7 @@ struct FuncDef {
     /* The synthesized per-coroutine value type: what a **call** to this coroutine evaluates to.
      * `ret` is set to it as well, so `let c = f(x)` binds a coroutine of its own concrete type. */
     Type       *coroFrameType;
+    Type       *coroRetProto;
     /* Non-zero on the two protocol methods the checker synthesizes on a coroutine frame:
      * 1 = `next` (advance the state machine), 2 = `value` (read the return slot). Codegen emits
      * those two inline instead of calling a function (docs/topics/CONCURRENCY.md 4.4). */
