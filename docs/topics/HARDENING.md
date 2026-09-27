@@ -468,8 +468,18 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
    ② 协程**运行期文本**（`extc_coro` / `extc_task_*` ✓，来自 `src/coroutine.c` ✓）没被触发 ✓
    （`unknown type name 'extc_coro'` ✓）⇒ 要找到它的触发条件并让"有协程实例"也算数 ✓。
 
-**已验证的三块都在补丁里 ✓、都已回退 ✓**（闸门保持 413/413 ✓）；下一轮把第 3 块接上 ⇒ 一次清掉
-**B7 + F4** 两条 ✓。
+**第 11 轮：四块补丁一起落 ⇒ 只剩两个精确的阻碍** ✓（都已定位 ✓、都已回退 ✓）
+
+- ✗ **F4**：`unknown type name 'extc_coro'` ⇒ 协程的 **typedef 与运行期文本**（`codegen.c:6496` 的
+  `typedef struct ExtcCoroS extc_coro;` + `src/coroutine.c` 的 `extc_task_*`）**没被发出** ✓
+  ⇒ 触发条件要找到并让"有协程实例"也算数 ✓；
+- ✗ **B7**：`redefinition of 'struct gen$frame'` ⇒ 说明实例的 `coroFrameType` **仍然指向模板的帧** ✓
+  （否则我的"帧单元也收实例"那趟不会把模板帧登记两遍 ✓）⇒ 也就是**建帧那段对这个实例没跑/没生效** ✓
+  ⇒ 下一步应在 prologue 里打点确认：实例进来时 `isCoro` 是否为真 ✓、`f->coroFrameType` 是否真的被
+  换成新帧 ✓。
+
+**四块补丁（原型字段 ✓ 实例重建 ✓ 放行实例 ✓ 帧单元收实例 ✓）都已回退 ✓**，闸门保持 413/413 ✓；
+两个阻碍各自只剩一处待查 ✓。
 
 **正确的修法（原记，仍适用）**：帧合成要放进**实例的 body 检查路径**（就是"检查泛型实例会把同一个 body 再走一遍"
 那条路径），而不是 `checkFunc` 的 prologue —— 让实例在那里建自己的 `<实例名>$frame`（字段按实参
