@@ -260,11 +260,16 @@ static void lexIdent(Lexer *lx, Vec *out, int line, int col) {
  * Notes:
  *   - A newline inside the literal is an error rather than part of the string,
  *     so a missing closing quote does not swallow the rest of the file.
- *   - Escape sequences are copied through verbatim for the C backend to emit;
- *     the parser and the type checker never look inside them.
+ *   - Escape sequences are validated by `lexEscape` (the same list character literals use)
+ *     and then copied through verbatim for the C backend to emit; the parser and the type
+ *     checker never look inside them.
  *   - The stored text is unquoted, which is why the parser must ask lexIsPunct
  *     before comparing token text with a punctuation spelling.
  */
+/* Defined just below: the escape list is shared with the character literals, so `lexString`
+ * needs the prototype. */
+static long lexEscape(Lexer *lx, int line, int col, const char *what);
+
 static void lexString(Lexer *lx, Vec *out, int line, int col) {
     lxAdvance(lx);                              /* opening quote */
     size_t start = lx->pos;
@@ -274,7 +279,18 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
             ctxError(lx->ctx, line, col, NULL, "unterminated string literal");
             return;
         }
-        if (lxPeek(lx, 0) == '\\') lxAdvance(lx);   /* escape: keep it for C */
+        if (lxPeek(lx, 0) == '\\') {
+            /* The same validator the character literals use -- one authority for "which escapes
+             * exist". Copying escapes through verbatim let `"\u64"` reach the C backend, which
+             * then refused the whole file with "incomplete universal character name \u64"
+             * (found by tools/fuzz.py: a mutation of tests/pool/rt_nest_promote.extc).
+             * `lexEscape` consumes the escape and its arguments, so this iteration must not
+             * advance again -- doing so ate one extra character of every literal and changed
+             * 197 of the 413 generated files. */
+            lxAdvance(lx);                                        /* the backslash */
+            if (lexEscape(lx, line, col, "a string literal") < 0) return;
+            continue;
+        }
         lxAdvance(lx);
     }
     if (lx->pos >= lx->len) {
@@ -290,7 +306,7 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
 /* The byte value of one escape sequence inside a character literal, or -1 after
  * reporting it. Kept next to `lexChar` so the two lists (escapes, error wording) stay in
  * one place. `\0` is the NUL byte; `\xHH` takes one or two hex digits. */
-static long lexCharEscape(Lexer *lx, int line, int col) {
+static long lexEscape(Lexer *lx, int line, int col, const char *what) {
     int c = lxPeek(lx, 0);
     lxAdvance(lx);
     switch (c) {
@@ -326,7 +342,7 @@ static long lexCharEscape(Lexer *lx, int line, int col) {
     }
     default:
         ctxError(lx->ctx, line, col, NULL,
-                 "unknown escape `\\%c` in a character literal", c);
+                 "unknown escape `\\%c` in %s", c, what);
         return -1;
     }
 }
@@ -363,7 +379,7 @@ static void lexChar(Lexer *lx, Vec *out, int line, int col) {
     long v;
     if (lx->src[start + 1] == '\\') {
         lx->pos = start + 2;                       /* decode from just after the backslash */
-        v = lexCharEscape(lx, line, col);
+        v = lexEscape(lx, line, col, "a character literal");
         if (v < 0) return;
         if (lx->pos != close) {
             ctxError(lx->ctx, line, col, NULL,

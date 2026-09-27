@@ -1,0 +1,10 @@
+// 回归（tools/fuzz.py 战役5，原语料 tests/pool/rt_nest_promote.extc）：字符串里的**非法转义**
+// 曾经被原样透传给 C 后端 ⇒ extC 说成功、gcc 却报
+// "incomplete universal character name \u64"，整份文件编不过。
+// 现在字符串与字符字面量共用同一个转义校验器（lexEscape），列表只有一份。
+// expect: unknown escape
+use std::io
+fn main() -> i32 {
+    io::cout << "\u64"
+    return 0
+}
