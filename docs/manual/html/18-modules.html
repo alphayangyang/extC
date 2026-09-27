@@ -210,6 +210,11 @@ indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)  
                 <span class="f">readFailed</span>(fd)  =&gt; <span class="f">println</span>(<span class="c">"io: 读失败 (fd = "</span>, fd, <span class="c">")"</span>)
                 <span class="f">lineTooLong</span>(n)  =&gt; <span class="f">println</span>(<span class="c">"io: 一行太长了（"</span>, n, <span class="c">" 字节）"</span>)
                 <span class="f">writeFailed</span>(fd) =&gt; <span class="f">println</span>(<span class="c">"io: 写失败 (fd = "</span>, fd, <span class="c">")"</span>)
+                <span class="c">/* 枚举是穷尽的：ioError 一共有六个变体（readFailed / lineTooLong /
+                 * writeFailed / notATerminal / closed / destFull），少一个就编不过。 */</span>
+                <span class="f">notATerminal</span>(fd) =&gt; <span class="f">println</span>(<span class="c">"io: 不是终端 (fd = "</span>, fd, <span class="c">")"</span>)
+                <span class="f">closed</span>(fd)       =&gt; <span class="f">println</span>(<span class="c">"io: 句柄已关 (fd = "</span>, fd, <span class="c">")"</span>)
+                <span class="f">destFull</span>(n)      =&gt; <span class="f">println</span>(<span class="c">"io: 目标缓冲满（"</span>, n, <span class="c">" 字节）"</span>)
             }
             <span class="k">return</span> <span class="n">1</span>
         }

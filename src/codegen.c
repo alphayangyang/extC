@@ -1799,9 +1799,17 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Buf dynSym;
         bufInit(&dynSym, g->arena);
         if (dynStored) {
+            /* The receiver may be reached **through a reference** (`fn f(r: ref dyn Tag)`), in
+             * which case the C expression is a pointer to the handle: `extc_dyn_slot` takes the
+             * handle **by value**, so the pointer has to be dereferenced here. Without this the
+             * compiler accepted `ref dyn Tag` and emitted C that did not build
+             * (`incompatible type for argument 1 of 'extc_dyn_slot'`). */
+            const char *handleC = recvC;
+            if (e->dynRecvViaRef)
+                handleC = arenaPrintf(g->arena, "(*%s)", recvC);
             const char *dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
             pfLine(g, "ExtcDynSlot *%s = extc_dyn_slot(%s, \"%s\", %d);",
-                   dynS, recvC, g->path, e->line);
+                   dynS, handleC, g->path, e->line);
             bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)%s->vt)->%s",
                       e->dynTrait, dynS, e->u.method.name);
             recvC = arenaPrintf(g->arena, "%s->addr", dynS);

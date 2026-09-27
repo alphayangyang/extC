@@ -69,14 +69,16 @@ impl point {
 
 
 
-**方法写在 `struct` 体内**（定案 9），首参数必须是 `self: ref 本类型`：
+**方法写在 `struct` 体内**（定案 9），首参数必须是本类型的引用：只读用 `self: ref 本类型`，
+**要写字段就得 `self: mut ref 本类型`**（`self: ref` 里写字段会报 "cannot write through a read-only
+reference"）：
 
 ```extc
 struct point {
     x: i32
     y: i32
 
-    fn moveBy(self: ref point, dx: i32, dy: i32) {
+    fn moveBy(self: mut ref point, dx: i32, dy: i32) {
         self.x = self.x + dx
         self.y = self.y + dy
     }

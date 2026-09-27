@@ -2143,6 +2143,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * first version, and it reordered this pass badly enough to break an unrelated
                  * stdlib case. */
                 if (ttBase(recvT) && ttBase(recvT)->kind == TY_DYN) {
+                    /* The receiver may be reached through a reference (`r.tag()` with
+                     * `r: ref dyn Tag`). `ttBase` unwraps it here, so record the fact for codegen:
+                     * it has to dereference the C expression when it hands the handle to
+                     * `extc_dyn_slot`. */
+                    e->dynRecvViaRef = (recvT && recvT->kind == TY_REF);
                     const char *traitName = ttBase(recvT)->name;
                     TraitDef *tr = NULL;
                     for (size_t i = 0; i < c->m->traits.len && !tr; i++) {
@@ -2253,31 +2258,42 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, ti);
                     if (strcmp(cand->name, e->u.method.name) == 0) want = cand;
                 }
-                if (want && !funcIsMethod(want))
+                /* Object safety. These three are FATAL on purpose: a trait method with no
+                 * receiver makes `f->params` empty, and the receiver checks below read
+                 * `params[0]`. Reporting and carrying on used to segfault the compiler
+                 * (`dyn Tag(b).zero()` with a `fn zero()` in the trait: exit 139, no
+                 * diagnostic at all). */
+                bool objSafeBad = false;
+                if (want && !funcIsMethod(want)) {
                     ckError(c, e->line,
                             "A table holds method pointers, so the trait method it names must take"
                             " a receiver; an associated function is still callable statically.",
                             "`%s::%s` has no `self`, so it cannot be dispatched through `dyn`",
                             e->dynTrait, e->u.method.name);
-                else if (want && want->typeParams.len > 1)
+                    objSafeBad = true;
+                } else if (want && want->typeParams.len > 1) {
                     ckError(c, e->line,
                             "A generic method has one implementation per instantiation, so there is"
                             " no single slot for it in a table.",
                             "`%s::%s` is generic and cannot be dispatched through `dyn`",
                             e->dynTrait, e->u.method.name);
-                else if (want && want->ret && mentionsParam(want->ret))
+                    objSafeBad = true;
+                } else if (want && want->ret && mentionsParam(want->ret)) {
                     ckError(c, e->line,
                             "A method returning `Self` would have to name the implementing type,"
                             " which a table slot cannot do.",
                             "`%s::%s` returns `Self` and cannot be dispatched through `dyn`",
                             e->dynTrait, e->u.method.name);
+                    objSafeBad = true;
+                }
+                if (objSafeBad) return ttError(tt);
             }
 
             /* A method that takes `self: mut ref T` needs a writable receiver. This is the other
              * half of making signatures tell the truth: `x.bump()` alone does not show whether
              * `x` will be modified, `self: mut ref` in the signature does, and this is where that
              * promise is enforced. */
-            {
+            if (f->params.len > 0) {
                 Param *selfP = *(Param **)vecAt(&f->params, 0);
                 if (selfP->type->kind == TY_REF && selfP->type->mut &&
                     requireMutable(c, e->u.method.recv, e->line, "call a method that writes"))
@@ -2286,7 +2302,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
             /* The receiver is the shallowest `mut ref` argument, since `self` comes first, so
              * what the callee allocates follows the arena the receiver lives in. */
-            {
+            if (f->params.len > 0) {
                 Param *selfP = *(Param **)vecAt(&f->params, 0);
                 if (selfP->type && selfP->type->kind == TY_REF && selfP->type->mut) {
                     int d = placeDepth(c, e->u.method.recv);

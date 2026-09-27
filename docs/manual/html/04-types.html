@@ -157,9 +157,11 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 
 <span class="k">struct</span> box&lt;T&gt; {
     value: T
-    <span class="k">fn</span> <span class="f">set</span>(self: <span class="k">ref</span> box&lt;T&gt;, v: T) { self.value = v }
+    <span class="k">fn</span> <span class="f">set</span>(self: <span class="k">mut</span> <span class="k">ref</span> box&lt;T&gt;, v: T) { self.value = v }   <span class="c">// 写字段 ⇒ mut ref</span>
     <span class="k">fn</span> <span class="f">get</span>(self: <span class="k">ref</span> box&lt;T&gt;) -&gt; T { <span class="k">return</span> self.value }
 }
+
+<span class="k">struct</span> point { x: <span class="t">i32</span>  y: <span class="t">i32</span> }
 
 <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
     <span class="k">var</span> p: pair&lt;<span class="t">i32</span>, <span class="t">u8</span>&gt; = { first: <span class="n">1</span>, second: <span class="n">2</span> }

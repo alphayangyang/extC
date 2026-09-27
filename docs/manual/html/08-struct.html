@@ -101,12 +101,12 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
     <span class="k">fn</span> +(self: <span class="k">ref</span> point, o: point) -&gt; point { <span class="k">return</span> point { x: self.x + o.x  y: self.y + o.y } }
 }</code></pre>
 <ul><li><strong>按右操作数的类型</strong>区分重载：<code>&gt;&gt;</code> 可以同时为 <code>i64</code>、<code>slice&lt;u8&gt;</code>、<code>string</code> 各写一个；</li><li>同一个<strong>右操作数类型</strong>写两次是错误（无法在两者间选择），诊断会指出冲突的两处；</li><li>运算符方法的形状固定（<code>self</code> 加一个操作数），因此操作数类型是两个定义之间唯一可区分的东西；</li><li>两侧类型都可比较时，<code>==</code> / <code>!=</code> 走原生比较，无需重载。</li></ul>
-<p><strong>方法写在 <code>struct</code> 体内</strong>（定案 9），首参数必须是 <code>self: ref 本类型</code>：</p>
+<p><strong>方法写在 <code>struct</code> 体内</strong>（定案 9），首参数必须是本类型的引用：只读用 <code>self: ref 本类型</code>， <strong>要写字段就得 <code>self: mut ref 本类型</code></strong>（<code>self: ref</code> 里写字段会报 "cannot write through a read-only reference"）：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> point {
     x: <span class="t">i32</span>
     y: <span class="t">i32</span>
 
-    <span class="k">fn</span> <span class="f">moveBy</span>(self: <span class="k">ref</span> point, dx: <span class="t">i32</span>, dy: <span class="t">i32</span>) {
+    <span class="k">fn</span> <span class="f">moveBy</span>(self: <span class="k">mut</span> <span class="k">ref</span> point, dx: <span class="t">i32</span>, dy: <span class="t">i32</span>) {
         self.x = self.x + dx
         self.y = self.y + dy
     }

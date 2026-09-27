@@ -1,0 +1,16 @@
+// 无 `self` 的 trait 方法不能经 `dyn` 派发：表里放的是"方法指针"，必须带接收者。
+// 这条反例同时钉住一个曾经的**编译器段错误**（exit 139、无任何诊断）：object-safety 诊断只报错
+// 不终止，随后对零参函数取 params[0] 拿到 NULL。修法是那句诊断直接终止该表达式的检查。
+trait Tag {
+    fn tag(self: ref Self) -> i64
+    fn zero() -> i64
+}
+struct box { v: i64 }
+impl Tag for box {
+    fn tag(self: ref box) -> i64 { return self.v }
+    fn zero() -> i64 { return i64(0) }
+}
+fn main() -> i32 {
+    var b: box = box { v: i64(7) }
+    return i32(dyn Tag(b).zero())
+}

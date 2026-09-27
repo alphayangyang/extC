@@ -190,9 +190,11 @@ struct pair<A, B> {
 
 struct box<T> {
     value: T
-    fn set(self: ref box<T>, v: T) { self.value = v }
+    fn set(self: mut ref box<T>, v: T) { self.value = v }   // 写字段 ⇒ mut ref
     fn get(self: ref box<T>) -> T { return self.value }
 }
+
+struct point { x: i32  y: i32 }
 
 fn main() -> i32 {
     var p: pair<i32, u8> = { first: 1, second: 2 }

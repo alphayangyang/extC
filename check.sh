@@ -61,6 +61,14 @@ echo "== 公开面清单与源码一致（tools/manual-surface.txt）=="
 if out=$(python3 tools/manual_surface.py --check 2>&1); then ok "$out"; else bad "公开面清单已过期"; echo "  跑 python3 tools/manual_surface.py"; fi
 
 echo "== 手册 HTML 与 Markdown 一致（docs/manual/html 是生成物）=="
+# 手册里的**完整示例**（带 fn main 的块）必须编得过：前四道闸门都不检查"话是不是真的"，
+# 2026-09-27 的审计里就有三个示例编不过而没有任何闸门会红。有意的片段用
+# `<!-- manual-example: skip -->` 显式跳过。
+if out=$(timeout 600 python3 tools/check_manual_examples.py --gate 2>&1); then
+    ok "$(printf '%s' "$out" | head -1)"
+else
+    bad "手册里有示例编不过（tools/check_manual_examples.py）"; printf '%s\n' "$out" | head -8
+fi
 if out=$(python3 tools/build_manual.py --check 2>&1); then ok "$out"; else bad "docs/manual/html 已过期"; echo "  跑 python3 tools/build_manual.py"; fi
 
 echo "== stdlib/INDEX 与源码一致（impl 方法表不许漂）=="

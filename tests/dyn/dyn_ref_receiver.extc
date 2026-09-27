@@ -1,0 +1,34 @@
+/* `ref dyn Tag` / `mut ref dyn Tag` 接收者：句柄**经由引用**到达派发点时，codegen 必须先解引用，
+ * 再交给按值取句柄的 `extc_dyn_slot`。
+ *
+ * 曾经的行为：前端 0 诊断通过，可生成的 C 编不过
+ *（`incompatible type for argument 1 of 'extc_dyn_slot'`）。修法是在 `Expr` 上记下"接收者经由
+ * 引用"这个事实并在派发处解引用 —— 不是把 `ref dyn T` 禁掉。
+ * 期望输出：ref=7 mutref=8 */
+use std::io
+
+trait Tag {
+    fn tag(self: ref Self) -> i64
+    fn bump(self: mut ref Self) -> i64
+}
+
+struct box { v: i64 }
+
+impl Tag for box {
+    fn tag(self: ref box) -> i64 { return self.v }
+    fn bump(self: mut ref box) -> i64 { self.v = self.v + i64(1)  return self.v }
+}
+
+fn viaRef(r: ref dyn Tag) -> i64 { return r.tag() }
+fn viaMutRef(r: mut ref dyn Tag) -> i64 { return r.bump() }
+
+fn main() -> i32 {
+    var b: box = box { v: i64(7) }
+    var d: dyn Tag = dyn Tag(b)
+    /* 先把两个值算出来再打印：`<<` 链上的实参求值顺序是未指定的（codegen 从右往左也行），
+     * 直接写在一个链里会让 bump 先跑、把 tag 读到的值从 7 变成 8。 */
+    var r1: i64 = viaRef(ref d)
+    var r2: i64 = viaMutRef(ref d)
+    io::cout << "ref=" << r1 << " mutref=" << r2 << "\n"
+    return i32(0)
+}

@@ -45,6 +45,20 @@ out=$("$EXTC" -w --run tests/dyn/dyn_promoted_two_hops.extc 2>&1)
 out=$("$EXTC" -w --run tests/dyn/dyn_stored.extc 2>&1)
 [ "$out" = "stored=0" ] && ok dyn_stored "值形式可存下并作参数传递" \
                         || bad dyn_stored "期望 stored=0，实得：$out"
+# 接收者经由引用（`ref dyn Tag` / `mut ref dyn Tag`）：句柄到达派发点时要先解引用。
+# 曾经是"前端收下、生成的 C 编不过" —— 见夹具头注。
+out=$("$EXTC" -w --run tests/dyn/dyn_ref_receiver.extc 2>&1)
+[ "$out" = "ref=7 mutref=8" ] && ok dyn_ref_receiver "ref/mut ref dyn 接收者（$out）" \
+                              || bad dyn_ref_receiver "期望 ref=7 mutref=8，实得：$out"
+
+# 无 `self` 的 trait 方法经 dyn 派发：必须是**干净报错**，不是段错误（曾经 exit 139）
+out=$("$EXTC" -w -o /dev/null tests/errors/dyn_assoc_dispatch.extc 2>&1); rc=$?
+case "$out" in
+*"has no \`self\`"*) [ "$rc" != 0 ] && ok dyn_assoc_dispatch "无 self ⇒ 明确诊断（rc=$rc）" \
+                                        || bad dyn_assoc_dispatch "报了消息却 rc=0" ;;
+*) bad dyn_assoc_dispatch "期望 'has no self' 诊断，实得 rc=$rc：$(printf '%s' "$out" | head -1)" ;;
+esac
+
 d=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$d/v.c" tests/dyn/dyn_stored.extc >/dev/null 2>&1 \
    && grep -q '= extc_dyn_put(' "$d/v.c"; then

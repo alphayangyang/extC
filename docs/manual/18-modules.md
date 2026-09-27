@@ -21,6 +21,7 @@ fn total(p: pair) -> i32 { return p.a + p.b }
 @private fn helper() -> i32 { return 1 }     // 藏起来：**别的模块引用不到**
 ```
 
+<!-- manual-example: skip —— 这段是**多文件**示例（另一个文件不在这里） -->
 ```extc
 // main.extc
 use lib::util                                // **语义导入**（不是 C 的文本包含）
@@ -168,6 +169,7 @@ struct pt {
 > ⇒ **先量再用**：`objdump` 里还有 `call` 才谈得上"内联能不能帮上忙"
 ### 12.3.1 `main` 里的 `?`：失败即 trap（2026-09-24，定案 89）
 
+<!-- manual-example: skip —— 这段用 `...` 省略了中间部分 -->
 ```extc
 fn main() -> i32 {
     var f = fs::ifstream("input.txt")?     // 打不开 ⇒ trap（带位置 + 退出码 1）
@@ -268,6 +270,11 @@ fn main() -> i32 {
                 readFailed(fd)  => println("io: 读失败 (fd = ", fd, ")")
                 lineTooLong(n)  => println("io: 一行太长了（", n, " 字节）")
                 writeFailed(fd) => println("io: 写失败 (fd = ", fd, ")")
+                /* 枚举是穷尽的：ioError 一共有六个变体（readFailed / lineTooLong /
+                 * writeFailed / notATerminal / closed / destFull），少一个就编不过。 */
+                notATerminal(fd) => println("io: 不是终端 (fd = ", fd, ")")
+                closed(fd)       => println("io: 句柄已关 (fd = ", fd, ")")
+                destFull(n)      => println("io: 目标缓冲满（", n, " 字节）")
             }
             return 1
         }
