@@ -28,12 +28,27 @@ use std::sys::net
 use std::proc
 
 fn conn(fd: i64) -> coroutine<i64> {
-    var buf: mut slice<u8> = new u8[16384]
+    /* **惰性缓冲**：读缓冲的尺寸事先不知道（对端可能一个字都不发），所以 1 KB 起步，某次读**读满**
+     * 了才翻倍（上限 64 KB）。实测动机：急切分配 16 KB 时，1000 条**一个字节都没发**的连接要占
+     * 16.4 MB（每条约 16.8 KB，其中 16 KB 就是这个缓冲）；惰性之后每条约 1.8 KB。
+     * 旧块留在帧 arena 里（协程结束才回收）⇒ 峰值约为最终容量的两倍，这是标准的倍增代价。 */
+    var cap: i64 = i64(1024)
+    var buf: mut slice<u8> = new u8[1024]
+    var full: bool = false                    /* 上一轮是否读满 ⇒ 该长了 */
     var open: bool = true
     while open {
         var ready: i64 = yield fd
-        var n: i64 = net::extc_sock_read(fd, buf.data, i64(16384))
+        if full {
+            let ncap: i64 = cap * i64(2)
+            if ncap <= i64(65536) {
+                buf = new u8[ncap]            /* 上一轮的内容已经回写完了 ⇒ 不必拷贝 */
+                cap = ncap
+            }
+            full = false
+        }
+        var n: i64 = net::extc_sock_read(fd, buf.data, cap)
         if n > i64(0) {
+            if n == cap { full = true }
             var off: i64 = i64(0)
             while off < n {
                 var w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
