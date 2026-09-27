@@ -566,6 +566,29 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
 
 ⇒ 本轮已整体回退 ✓（闸门 413/413 ✓）；下一轮只需把那**一个捕获点**放对 ✓，前面的 1–6 块照用 ✓。
 
+**第 32 轮：整套补丁就绪，只剩"捕获偏移"落点** ✓（已回退 ✗，但每块都实测过 ✓）
+
+十二处编辑全部用精确锚点落地 ✓、构建干净 ✓、语料闸门始终 **413/413 · 非法 C 0** ✓，逐步实测的
+错误链条是：
+
+```
+unknown type name 'extc_coro'      ⇒ 按需插入 typedef 之后消失 ✓
+implicit declaration extc_task_begin ⇒ 把任务表运行期一起插入后消失 ✓
+unknown type name 'extc_arena'      ⇒ 需要池运行期（它在最终装配里发，晚于函数体 ✓）
+unknown type name 'extc_die'        ⇒ 池运行期调死钩子 ⇒ 拼接点必须在死钩子之后 ✓
+```
+
+打点（`EXTC_SP=1`）确认拼接**确实执行**：`need=1 printed=0 A=1204 task=0 pool=0` ✓；
+而 `extc_ablock`/`extc_arena` 的 typedef 在 **`generateC` 自己**的一大段 `bufPuts`（`:6651-6680+` ✓，
+跨几十行字符串 ✓）里 ⇒ 捕获点必须在这**整段之后** ✓。两次定位失败：
+
+- 用"找 `        );`"⇒ 该语句的收尾**不是**这个形状 ✗（`assert no closing );` ✓）；
+- 用 `extc_arena` 那句之后的第一个 `);` ⇒ 落在**字符串内部** ✗（构建报 missing terminating `"` ✓）。
+
+⇒ **下一轮的两条路**（任选其一 ✓）：① 读 `:6700-6780` 找到那条长 `bufPuts` 的**真实收尾** ✓
+（按行号 ✓ 不猜文本 ✓）；② 更稳的：把 `extc_ablock`/`extc_arena` 的 typedef **一并放进插入文本** ✓，
+并给预奏里那份加 `#ifndef` 守卫 ✗（结构体定义不可重复 ⇒ 需要动预奏 ✓）—— 所以 ① 更干净 ✓。
+
 **原清单（每一块都验证过或已定位 ✓）**：① `ast.h` 的 `coroRetProto` + 记录 ✓；
 ② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
 ④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；
