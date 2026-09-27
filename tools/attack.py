@@ -274,14 +274,71 @@ CORO = [
      '  return i32(s) }'),
 ]
 
-GROUPS = {'generics': GENERICS, 'coro': CORO}
+# ---------------------------------------------------------------- 模块系统
+# 一个文件 = 一个模块；跨模块引用写限定名；`@private` 藏起来。攻击面：名字可见性、
+# mangling 撞车（模块前缀那一族）、跨模块的实例共享、循环 import、模块名与类型名互撞。
+MODULES = [
+    ('M1 基本跨模块调用与常量', 'ok', {
+        'greet.extc': 'let LIMIT: i32 = 42\nfn shout(n: i32) -> i32 { return n + n }',
+        'main.extc': 'use greet\nfn main() -> i32 { return greet::shout(i32(21)) - i32(42) }'}),
+    ('M2 @private 不可跨模块', 'reject', {
+        'greet.extc': '@private fn twice(n: i32) -> i32 { return n + n }\nfn shout(n: i32) -> i32 { return twice(n) }',
+        'main.extc': 'use greet\nfn main() -> i32 { return greet::twice(i32(1)) }'}),
+    ('M3 两个模块的同名私有函数互不干扰', 'ok', {
+        'a.extc': '@private fn helper(n: i32) -> i32 { return n + i32(1) }\nfn fa(n: i32) -> i32 { return helper(n) }',
+        'b.extc': '@private fn helper(n: i32) -> i32 { return n + i32(2) }\nfn fb(n: i32) -> i32 { return helper(n) }',
+        'main.extc': 'use a\nuse b\nfn main() -> i32 { return a::fa(i32(0)) + b::fb(i32(0)) }'}),
+    ('M4 两个模块的同名公开函数各归各的', 'ok', {
+        'a.extc': 'fn f() -> i32 { return i32(1) }',
+        'b.extc': 'fn f() -> i32 { return i32(2) }',
+        'main.extc': 'use a\nuse b\nfn main() -> i32 { return a::f() * i32(10) + b::f() }'}),
+    ('M5 模块名与类型名撞车（mangling 家族）', 'ok_or_reject', {
+        'pair.extc': 'struct pair<A, B> { a: A  b: B }\nfn make() -> i32 { return i32(1) }',
+        'main.extc': 'use pair\nstruct pair_i64 { v: i64 }\n'
+                     'fn main() -> i32 { var p: pair::pair<i64, u8>\n  p.a = i64(1)\n  p.b = u8(2)\n'
+                     '  var q: pair_i64\n  q.v = i64(3)\n  return pair::make() + i32(p.a) + i32(q.v) }'}),
+    ('M6 跨模块共享泛型实例（一份还是两份都对）', 'ok', {
+        'gen.extc': 'fn id<T>(x: T) -> T { return x }\nfn useIt() -> i64 { return id(i64(5)) }',
+        'main.extc': 'use gen\nfn main() -> i32 { return i32(gen::useIt() + gen::id(i64(2))) - 7 }'}),
+    ('M7 跨模块的结构体与方法', 'ok', {
+        'point.extc': 'struct point { x: i64  y: i64 }\n'
+                      'impl point { fn sum(self: ref point) -> i64 { return self.x + self.y } }',
+        'main.extc': 'use point\nfn main() -> i32 { var p: point::point\n  p.x = i64(3)\n  p.y = i64(4)\n'
+                     '  return i32(p.sum()) - 7 }'}),
+    ('M8 循环 import（不许挂死/不许重复定义）', 'ok_or_reject', {
+        'a.extc': 'use b\nfn fa() -> i32 { return i32(1) }\nfn callB() -> i32 { return b::fb() }',
+        'b.extc': 'use a\nfn fb() -> i32 { return i32(2) }\nfn callA() -> i32 { return a::fa() }',
+        'main.extc': 'use a\nfn main() -> i32 { return a::callB() + i32(1) - 3 }'}),
+    ('M9 use 一个不存在的模块', 'reject', {
+        'main.extc': 'use nosuchmodule\nfn main() -> i32 { return 0 }'}),
+    ('M10 模块内 main 不夺走入口', 'ok_or_reject', {
+        'other.extc': 'fn main() -> i32 { return i32(99) }\nfn helper() -> i32 { return i32(1) }',
+        'main.extc': 'use other\nfn main() -> i32 { return other::helper() - 1 }'}),
+]
+
+GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
     f = os.path.join(WORK, 'case.extc')
     c = os.path.join(WORK, 'case.c')
     exe = os.path.join(WORK, 'case')
-    open(f, 'w', encoding='utf-8').write(src + '\n')
+    if isinstance(src, dict):
+        # 多文件探针：一个文件 = 一个模块。目录每次清空，免得上一题的文件被 `use` 找到。
+        import shutil
+        shutil.rmtree(WORK, ignore_errors=True)
+        os.makedirs(WORK, exist_ok=True)
+        for fn, fs in src.items():
+            open(os.path.join(WORK, fn), 'w', encoding='utf-8').write(fs + '\n')
+        entry = 'main.extc' if 'main.extc' in src else sorted(src)[0]
+        f = os.path.join(WORK, entry)
+        src = src[entry]
+    else:
+        for junk in os.listdir(WORK):
+            fp = os.path.join(WORK, junk)
+            if fp != f:
+                os.remove(fp) if os.path.isfile(fp) else None
+        open(f, 'w', encoding='utf-8').write(src + '\n')
     try:
         r = subprocess.run([EXTC, '-w', '--no-line-map', '-o', c, f], capture_output=True, timeout=25)
     except subprocess.TimeoutExpired:
