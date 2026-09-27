@@ -2069,12 +2069,19 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
              * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
             if (e->parWorker) {
-                /* 临时拦截：trampoline 的发射点还没接对（实测：调用点、ctx、运行期都对，但产物里
-                 * 少了 __extc_par_* ⇒ gcc 报 undeclared）。宁可现在报错，也绝不产出"少一个函数"的非法 C。
-                 * 已就位的部分：genParTramp（生成器）、运行期 extc_par_run、ctx 的切段语义。 */
-                ctxError(g->ctx, e->line, 1, NULL,
-                         "parallel::run: codegen hookup is not finished yet (step 3a)");
-                return arenaPrintf(g->arena, "0");
+                /* `parallel::run(worker, out, n, threads)`：ctx 里放调用者的那个 view，trampoline 按 [lo,hi)
+                 * 切段；chunk 传 0 让运行期自己取（≈每线程 8 块，动态取块实测优于静态切分）。 */
+                Expr *o1 = *(Expr **)vecAt(&e->u.call.args, 1);
+                Expr *o2 = *(Expr **)vecAt(&e->u.call.args, 2);
+                Expr *o3 = *(Expr **)vecAt(&e->u.call.args, 3);
+                Type *vt = (*(Param **)vecAt(&e->parWorker->params, 3))->type;
+                const char *vn = cType(g, vt);
+                const char *tmp = arenaPrintf(g->arena, "__extc_pc%d", g->tmpSeq++);
+                pfLine(g, "%s %s = %s;", vn, tmp, genExpr(g, o1));
+                g->needPar = true;
+                return arenaPrintf(g->arena,
+                    "((int32_t)extc_par_run(__extc_par_%s, &%s, (int64_t)(%s), (int64_t)(%s), 0))",
+                    e->parWorker->name, tmp, genExpr(g, o2), genExpr(g, o3));
             }
             /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
              * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
@@ -7440,7 +7447,6 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * the trap of #64 - one node, many instances - does not apply. */
             size_t pb = g.out->len;
             genFuncProto(&g, md);
-            if (md->isParWorker) genParTramp(&g, md);   /* 紧跟它自己的原型 ⇒ 先声明后使用 */
             {
                 Buf pt;
                 bufInit(&pt, g.arena);
@@ -7650,6 +7656,27 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         }
     }
     bufPuts(out, bufCstr(&g.vtDecls));
+
+    /* `parallel::run` 的 trampoline 必须落在**任何函数体之前**：调用点要看到它的声明，它自己要看到
+     * worker 的原型。产物的顺序是 includes → 原型 → 运行期 → 函数体，所以函数体循环的开头就是唯一
+     * 正确的位置（2026-09-28 实测过一次错误的挂钩：挂在"按函数发原型"的循环里，而那个循环只走模板与
+     * 实例方法，普通函数根本不到 ⇒ 产物里少了 __extc_par_* ⇒ gcc 报 undeclared）。worker 的原型用
+     * 同一个 genFuncProto 补一份：重复声明合法，而且文本与后面那次完全一致。 */
+    {
+        bool parAny = false;
+        for (size_t i = 0; i < g.funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
+            if (!f->isParWorker) continue;
+            if (!parAny) {
+                cgLine(&g, "/* ---- parallel::run trampolines (stdlib/std/parallel.extc) ---- */");
+                parAny = true;
+            }
+            genFuncProto(&g, f);
+            genParTramp(&g, f);
+            g.needPar = true;               /* 运行期里那两个 pthread 原型与 extc_par_run 才会发射 */
+        }
+        if (parAny) cgLine(&g, "");
+    }
 
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
