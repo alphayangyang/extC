@@ -15,3 +15,44 @@ use std::sys::proc as sysproc
  * reached the kernel; anything still buffered in your own `writer` is not flushed for
  * you, so flush it if you care (`io::flushOut()`). */
 fn exit(code: i32) { sysproc::exit(code) }
+
+/* Start a child process. The parent gets the child's id (> 0), the child gets 0, a failure
+ * gets -1 -- POSIX `fork` semantics, unchanged.
+ *
+ * The child continues **from this call**: whatever the program does next runs in both. The
+ * usual shape is `let pid = spawn()  if pid == 0 { serve() }`, and the child should end with
+ * `exit(code)` rather than returning, so it does not run the parent's remaining work.
+ *
+ * POSIX only. `tools/extc-workers.sh` is the script version of the same thing (N processes,
+ * one core each, fail-fast); this is the in-language one. */
+fn spawn() -> i32 { return sysproc::fork() }
+
+/* Wait for the child `pid` (use -1 for "any child") and return its **exit status**, or -1
+ * if it cannot be reaped. A child killed by a signal reports 0 here -- the raw status is
+ * still visible in `sysproc::waitpid` if you need to tell those apart. */
+fn wait(pid: i32) -> i32 {
+    var st: i32 = 0
+    let r: i32 = sysproc::waitpid(pid, ref st, 0)
+    if r < i32(0) { return i32(-1) }
+    return (st >> i32(8)) & i32(255)
+}
+
+/* This process's id. */
+fn self() -> i32 { return sysproc::getpid() }
+
+/* Pin this process to one core (`cpu < 0` clears the pin). Returns 0 on success.
+ *
+ * Worth doing for every worker: on a hybrid CPU the scheduler happily puts a worker on a
+ * little core next to a busy one, and measured scaling suffers (8 P-cores gave 7.3x while
+ * 16 mixed cores gave ~10x for twice the cores). */
+fn pin(cpu: i64) -> i32 {
+    var mask: mut slice<u8> = new u8[8]
+    var i: i64 = 0
+    while i < i64(8) { mask[i] = u8(0)  i = i + i64(1) }
+    if cpu >= i64(0) {
+        let byte: i64 = cpu / i64(8)
+        let bit: i64 = cpu % i64(8)
+        mask[byte] = u8(i32(mask[byte]) | (i32(1) << i32(bit)))
+    }
+    return sysproc::sched_setaffinity(i32(0), i64(8), mask.data)
+}

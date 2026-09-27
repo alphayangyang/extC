@@ -17,3 +17,33 @@
  */
 extern!("libc") fn exit(code: i32) -> void
     effects Addr=0 Cont=0
+
+/* Duplicate this process. The parent gets the child's id (> 0), the child gets 0, a failure
+ * gets -1 -- exactly as POSIX `fork` reports it. POSIX only (Linux/macOS); a Windows layer
+ * would be its own file and its own decision.
+ *
+ * This is the primitive behind "one command, N workers": every child calls
+ * `net::extc_tcp_listen_shared` (SO_REUSEPORT) and serves on its own core, so nothing is
+ * shared between them and no sendability rule is involved -- which is why the multi-process
+ * shape needs no compiler work at all (`docs/topics/CONCURRENCY.md` section 5.1).
+ *
+ * Measured 2026-09-28 on 8 P-cores, loopback, 256 connections, ping-pong: 1 process
+ * 327,556 req/s => 8 processes 1,320,297 req/s (4.03x) at 15 MB RSS, against Go 1.26 with
+ * 8 OS threads at 304,764 (0.93x) and nginx 1.28.3 with 8 workers at 1,064,775. */
+extern!("libc") fn fork() -> i32
+    effects Addr=0 Cont=0
+
+/* Reap one child: its raw status lands in `status`, the return value is the child's id
+ * (> 0), 0 when `options` asked not to wait and none was ready, -1 on error. */
+extern!("libc") fn waitpid(pid: i32, status: ref i32, options: i32) -> i32
+    effects Addr=0 Cont=0
+
+/* This process's id. */
+extern!("libc") fn getpid() -> i32
+    effects Addr=0 Cont=0
+
+/* Pin a process (`pid` 0 = this one) to a set of cores: `mask` is a CPU bitmask, 8 bytes
+ * little-endian on a 64-bit host -- the first 8 bytes of `cpu_set_t`, which is all
+ * `std::proc::pin` hands over. POSIX; on Linux this is `sched_setaffinity`. */
+extern!("libc") fn sched_setaffinity(pid: i32, cpusetsize: i64, mask: ref u8) -> i32
+    effects Addr=0 Cont=0

@@ -93,3 +93,4 @@ dd45f4397471aaec943b01acf79ab12f  bench_multi_matmul
 af354a34122289b21c1ccd8b9bdbedee  bench_multi_sieve
 ef8589926066e91cc9acdfe02554c8ed  bench_oi_p3810
 44b90df229262d951151f170027b67c6  bench_stress_stress
+tests/coro/echo_server_fork.extc
