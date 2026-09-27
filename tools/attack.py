@@ -786,6 +786,72 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- 递归 / 互递归类型（时机族之后的新面）
+# 缘起：match 面第一题就撞出 H16（自引用枚举让三个类型遍历函数无限递归 ⇒ SIGSEGV）⇒ 这一族值得再打：
+# 互递归枚举、载荷是自身的 option/数组、三跳互递归、递归遍历函数、?ref 自引用（设计意图）、
+# 泛型枚举自引用、深层嵌套实例（TYPE_DEPTH_LIMIT 那条路）、结构体与枚举互指、递归类型只在泛型函数里出现。
+REC = [
+    ('R1 互递归枚举', 'ok_or_reject',
+     'type a = | a1(b) | a0\ntype b = | b1(a) | b0\nfn main() -> i32 { var x: a\n  x = a.a0\n  return 0 }'),
+    ('R2 自引用枚举 + 零初始化（应拒）', 'reject',
+     'type list = | cons(i64, list) | nil\nfn main() -> i32 { var l: list\n  return 0 }'),
+    ('R3 载荷是自身的 option', 'ok_or_reject',
+     'type l = | c(i64, l?) | n\nfn main() -> i32 { var x: l\n  x = l.n\n  return 0 }'),
+    ('R4 载荷是自身的数组', 'ok_or_reject',
+     'type t = | arr([2]t) | stop\nfn main() -> i32 { var x: t\n  x = t.stop\n  return 0 }'),
+    ('R5 三跳互递归', 'ok_or_reject',
+     'type a = | a1(b) | a0\ntype b = | b1(c) | b0\ntype c = | c1(a) | c0\nfn main() -> i32 { var x: a\n  x = a.a0\n  return 0 }'),
+    ('R6 递归函数遍历自引用枚举', 'ok_or_reject',
+     'type list = | cons(i64, list) | nil\nfn len(l: list) -> i64 { match l { cons(h, t) => { return i64(1) + len(t) }\n    nil => { return i64(0) } } }\nfn main() -> i32 { var l: list\n  l = list.nil\n  return i32(len(l)) }'),
+    ('R7 ?ref 自引用（设计意图：链表 null）', 'ok_or_reject',
+     'struct node { v: i64  next: ref node? }\nfn main() -> i32 { var n: node\n  n.v = i64(1)\n  n.next = null\n  return i32(n.v) - 1 }'),
+    ('R8 泛型枚举自引用', 'ok_or_reject',
+     'type nest<T> = | more(nest<T>) | stop\nfn main() -> i32 { var x: nest<i64>\n  x = nest<i64>.stop\n  return 0 }'),
+    ('R9 深层嵌套实例（box^20）', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn main() -> i32 { var b: box<box<box<box<box<box<box<box<box<box<i64>>>>>>>>>>\n  return 0 }'),
+    ('R10 结构体与枚举互指', 'ok_or_reject',
+     'type st = | has(holder) | none\nstruct holder { s: st }\nfn main() -> i32 { var h: holder\n  h.s = st.none\n  return 0 }'),
+    ('R11 递归类型只出现在泛型函数里', 'ok_or_reject',
+     'type list = | cons(i64, list) | nil\nfn make<T>(v: T) -> list { var l: list\n  l = list.nil\n  return l }\nfn main() -> i32 { var l = make(i64(1))\n  return 0 }'),
+    ('R12 自引用枚举的 match 穷尽性（应拒）', 'reject',
+     'type list = | cons(i64, list) | nil\nfn main() -> i32 { var l: list\n  l = list.nil\n  match l { nil => { return 0 } }\n  return 1 }'),
+]
+
+# ---------------------------------------------------------------- match / 枚举穷尽性
+# 语法：`type why = | neg(i64) | other` 声明；`match w { neg(n) => {...}  other => {...} }`。
+# 打：全变体匹配、漏变体（穷尽性）、兜底臂、载荷绑定、载荷是泛型实例（与 time 族交叉）、
+# 嵌套 match、option/result 的 match、各臂返回值、整数字面量、自引用枚举、泛型函数里 match、枚举进容器。
+MATCH = [
+    ('M1 枚举全变体都匹配', 'ok',
+     'type why = | neg(i64) | other\nfn main() -> i32 { var w: why\n  w = why.neg(i64(3))\n  match w { neg(n) => { if n != i64(3) { return 1 } }\n    other => { return 2 } }\n  return 0 }'),
+    ('M2 漏掉一个变体（应拒）', 'reject',
+     'type why = | neg(i64) | other\nfn main() -> i32 { var w: why\n  w = why.neg(i64(3))\n  match w { neg(n) => { return 0 } }\n  return 1 }'),
+    ('M3 用通配/兜底臂', 'ok_or_reject',
+     'type why = | neg(i64) | other\nfn main() -> i32 { var w: why\n  w = why.other\n  match w { neg(n) => { return 1 }\n    _ => { return 0 } } }'),
+    ('M4 载荷绑定并使用', 'ok',
+     'type why = | neg(i64) | other\nfn main() -> i32 { var w: why\n  w = why.neg(i64(9))\n  match w { neg(n) => { return i32(n) - 9 }\n    other => { return 1 } } }'),
+    ('M5 载荷是泛型实例', 'ok_or_reject',
+     'struct box<T> { v: T }\ntype wrap = | has(box<i64>) | none\nfn main() -> i32 { var x: wrap\n  x = wrap.has(box<i64> { v: i64(4) })\n  match x { has(b) => { return i32(b.v) - 4 }\n    none => { return 1 } } }'),
+    ('M6 嵌套 match', 'ok_or_reject',
+     'type why = | neg(i64) | other\nfn main() -> i32 { var w: why\n  w = why.neg(i64(1))\n  match w { neg(n) => { match w { neg(m) => { return i32(m) - 1 }\n      other => { return 2 } } }\n    other => { return 3 } } }'),
+    ('M7 match option（null / x）', 'ok_or_reject',
+     'fn main() -> i32 { var o: i64? = null\n  match o { null => { return 0 }\n    x => { return 1 } } }'),
+    ('M8 match result（success / failure）', 'ok_or_reject',
+     'type why = | neg(i64) | other\nfn f(n: i64) -> result<i64, why> { if n < i64(0) { return failure(why.neg(n)) }\n  return success(n) }\nfn main() -> i32 { match f(i64(2)) {\n    success(v) => { return i32(v) - 2 }\n    failure(e) => { return 1 } } }'),
+    ('M9 两个臂绑同一个名字（应拒或允许）', 'ok_or_reject',
+     'type why = | neg(i64) | other\nfn main() -> i32 { var w: why\n  w = why.other\n  match w { neg(n) => { return 1 }\n    other => { return 0 } } }'),
+    ('M10 各臂返回值', 'ok_or_reject',
+     'type why = | neg(i64) | other\nfn pick(w: why) -> i64 { match w { neg(n) => { return n }\n    other => { return i64(0) } } }\nfn main() -> i32 { return i32(pick(why.neg(i64(5)))) - 5 }'),
+    ('M11 match 整数字面量', 'ok_or_reject',
+     'fn main() -> i32 { var n: i64 = i64(1)\n  match n { 1 => { return 0 }\n    _ => { return 1 } } }'),
+    ('M12 自引用枚举的载荷', 'ok_or_reject',
+     'type list = | cons(i64, list) | nil\nfn main() -> i32 { var l: list\n  l = list.nil\n  return 0 }'),
+    ('M13 泛型函数里 match 枚举', 'ok_or_reject',
+     'type why = | neg(i64) | other\nfn pick<T>(w: why) -> i64 { match w { neg(n) => { return n }\n    other => { return i64(0) } } }\nfn main() -> i32 { return i32(pick(i64(1), why.neg(i64(7)))) - 7 }'),
+    ('M14 枚举实例进容器', 'ok_or_reject',
+     'use stl::vector\ntype why = | neg(i64) | other\nfn main() -> i32 { var v = vector<why>::new()\n  v.push(why.neg(i64(1)))\n  let dv = v.toSlice()\n  match dv[i64(0)] { neg(n) => { return i32(n) - 1 }\n    other => { return 1 } } }'),
+]
+
 # ---------------------------------------------------------------- 时机族：实例只出现在泛型体内
 # W9（第 19 轮修）是「局部声明里的类型实例 intern 太晚」，修法只覆盖 ST_VAR 的类型标注；
 # 这一组专打**其它**「实例只出现在泛型体内」的形状。拼写要点：泛型体内**不能**写
@@ -962,7 +1028,8 @@ CNT = [
 
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
-          'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP, 'time': TIM}
+          'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP, 'time': TIM,
+          'match': MATCH, 'rec': REC}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
