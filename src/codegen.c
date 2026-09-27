@@ -5283,18 +5283,81 @@ static size_t countReads(const char *hay, size_t n, const char *name) {
     return reads;
 }
 
+/* name -> body, for the per-local lookup `dropUnusedLocals` does. That lookup was a linear scan
+ * over `deadFuncs` for every local (3N locals against N functions is the quadratic this pass
+ * still had). The map is built once while the text is original -- `DeadFunc.body` is validated
+ * rather than trusted -- and after the first cut the code falls back to the scan, so the
+ * decisions and the emitted C stay exactly the same. */
+typedef struct { const char *name; const char *body; } NameBody;
+typedef struct { NameBody *slot; size_t mask; } BodyMap;
+
+static size_t bodyHash(const char *p) {
+    size_t h = 1469598103934665603u;
+    for (; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211u; }
+    return h;
+}
+static void bodyMapInit(BodyMap *m, Arena *a, size_t n) {
+    size_t cap = 16;
+    while (cap < n * 2) cap <<= 1;
+    m->slot = arenaAllocZero(a, cap * sizeof *m->slot);
+    m->mask = cap - 1;
+}
+static void bodyMapPut(BodyMap *m, const char *name, const char *body) {
+    for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
+        NameBody *s = &m->slot[i];
+        if (!s->name) { s->name = name; s->body = body; return; }
+        if (strcmp(s->name, name) == 0) { return; }              /* first one wins: the scan did too */
+    }
+}
+static const char *bodyMapGet(BodyMap *m, const char *name) {
+    for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
+        NameBody *s = &m->slot[i];
+        if (!s->name) return NULL;
+        if (strcmp(s->name, name) == 0) return s->body;
+    }
+}
+
 static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     char  *text = *textp;
     size_t len  = *lenp;
+    /* `DeadFunc.body` points into the current text and an `own == 0` declaration sits in the
+     * prologue before the first body -- both hold only while nothing has been rewritten, and each
+     * local otherwise pays a full-text search per round (the pass is quadratic without this).
+     * After the first cut the text has moved and every round falls back to exactly the searches
+     * the old code made, so the decisions -- and the emitted C -- are unchanged. */
+    size_t firstBody = len;
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (df->body && df->body >= text && df->body < text + len) {
+            size_t o = (size_t)(df->body - text);
+            if (o < firstBody) firstBody = o;
+        }
+    }
+    BodyMap bodyMap;
+    bodyMapInit(&bodyMap, g->arena, g->deadFuncs.len + 1);
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (df->body && df->body >= text && df->body < text + len)
+            bodyMapPut(&bodyMap, df->name, df->body);
+    }
+    int textIsOriginal = 1;
     for (;;) {
         bool cut = false;
         for (size_t i = 0; i < g->deadLocals.len && !cut; i++) {
             DeadLocal *d = *(DeadLocal **)vecAt(&g->deadLocals, i);
             if (!d->text || !d->funcName) continue;
             const char *body = NULL;
-            for (size_t k = 0; k < g->deadFuncs.len; k++) {
-                DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
-                if (df->body && strcmp(df->name, d->funcName) == 0) { body = df->body; break; }
+            if (textIsOriginal) body = bodyMapGet(&bodyMap, d->funcName);
+            if (!body) {
+                /* Miss, or the text has been rewritten: exactly the scan the old code did. The
+                 * map holds only bodies whose recorded pointer is still inside the text, and the
+                 * scan accepts a stale pointer whose *content* is still there -- so a miss must
+                 * fall through to it, or a local of such a function would be judged differently
+                 * (the first version of the map did, and the generated C changed). */
+                for (size_t k = 0; k < g->deadFuncs.len; k++) {
+                    DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+                    if (df->body && strcmp(df->name, d->funcName) == 0) { body = df->body; break; }
+                }
             }
             if (!body && g->mainBody && strcmp(d->funcName, g->mainFuncName) == 0)
                 body = g->mainBody;                    /* main has no DeadFunc entry */
@@ -5303,7 +5366,8 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                         d->funcName ? d->funcName : "(null)",
                         g->mainFuncName ? g->mainFuncName : "(null)", body ? "yes" : "no");
             if (!body) continue;                       /* its function is gone already */
-            char  *bp = strstr(text, body);
+            char  *bp = (textIsOriginal && body >= text && body < text + len)
+                            ? (char *)body : strstr(text, body);
             if (!bp) continue;
             size_t bl = strlen(body);
             if (dbgOn("EXTC_DBG_LOCAL"))
@@ -5332,7 +5396,22 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
              * that calls something leaves the call behind; anything else disappears. */
             Vec cuts;
             vecInit(&cuts, g->arena, sizeof(LocalCut));
-            char *dl = (d->own == 0) ? strstr(text, d->text) : strstr(bp, d->text);
+            char *dl;
+            if (d->own == 0) {
+                /* A name's declaration is unique and `own == 0` means it is in the prologue, so
+                 * a search bounded by `firstBody` finds the same hit -- while the text is still
+                 * the original one; afterwards the unbounded search is the exact fallback. */
+                dl = NULL;
+                size_t dtl = strlen(d->text);
+                if (textIsOriginal) {
+                    for (char *p2 = text; (size_t)(p2 - text) + dtl <= firstBody; p2++)
+                        if (memcmp(p2, d->text, dtl) == 0) { dl = p2; break; }
+                } else {
+                    dl = strstr(text, d->text);
+                }
+            } else {
+                dl = strstr(bp, d->text);
+            }
             if (!dl || (d->own != 0 && dl >= bp + bl)) continue;
             {
                 size_t ls = (size_t)(dl - text);
@@ -5407,6 +5486,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             out->len = nb.len;
             len = nb.len;
             text = out->data;
+            textIsOriginal = 0;            /* positions are stale from here on: search again */
             d->text = NULL;
             cut = true;
         }
@@ -5500,6 +5580,62 @@ static size_t countMentionsOutside(const char *hay, const char *name,
  * mentions that sit inside code that is itself unreachable. That keeps the
  * decision on the safe side: the worst case is a definition that is still
  * emitted, never a name that nothing defines. */
+/* Occurrence counts of the names this phase decides on, kept in step with the text.
+ *
+ * `countMentions(text, name)` is called once per candidate over the whole unit, which is one of
+ * the quadratic terms here. The counts are the same numbers, maintained instead of re-scanned: one
+ * pass fills them and every removal subtracts the runs inside the text it deletes, so the
+ * decisions -- and the emitted C -- are identical. Only the names this phase asks about live in
+ * the table, so a scan never inserts and the table cannot fill up. */
+typedef struct { const char *name; size_t len; long count; } NameCount;
+typedef struct { NameCount *slot; size_t mask; } CountTable;
+
+static size_t countHash(const char *p, size_t n) {
+    size_t h = 1469598103934665603u;
+    for (size_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211u; }
+    return h;
+}
+static void countInit(CountTable *t, Arena *a, size_t n) {
+    size_t cap = 16;
+    while (cap < n * 2) cap <<= 1;
+    t->slot = arenaAllocZero(a, cap * sizeof *t->slot);
+    t->mask = cap - 1;
+}
+static void countPut(CountTable *t, const char *p, size_t n) {
+    for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
+        NameCount *s = &t->slot[i];
+        if (!s->name) { s->name = p; s->len = n; s->count = 0; return; }
+        if (s->len == n && memcmp(s->name, p, n) == 0) return;
+    }
+}
+static void countBump(CountTable *t, const char *p, size_t n, long delta) {
+    for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
+        NameCount *s = &t->slot[i];
+        if (!s->name) return;                                  /* not one of ours */
+        if (s->len == n && memcmp(s->name, p, n) == 0) { s->count += delta; return; }
+    }
+}
+static long countGet(CountTable *t, const char *p, size_t n) {
+    for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
+        NameCount *s = &t->slot[i];
+        if (!s->name) return 0;
+        if (s->len == n && memcmp(s->name, p, n) == 0) return s->count;
+    }
+}
+/* Add the `identByte` runs of a span. A run touching the span's edge only counts when the byte
+ * outside is not an identifier byte either -- otherwise it is a piece of a longer name. */
+static void countSpan(CountTable *t, const char *text, size_t start, size_t len, long delta) {
+    size_t i = 0;
+    while (i < len) {
+        if (!identByte(text[start + i])) { i++; continue; }
+        size_t s0 = i;
+        while (i < len && identByte(text[start + i])) i++;
+        if (s0 == 0 && start > 0 && identByte(text[start - 1])) continue;
+        if (i == len && identByte(text[start + len])) continue;
+        countBump(t, text + start + s0, i - s0, delta);
+    }
+}
+
 static void dropUnreferenced(CG *g, Buf *out) {
     char  *text = bufCstr(out);              /* terminate: the searches below are C strings */
     size_t len  = out->len;
@@ -5528,10 +5664,17 @@ static void dropUnreferenced(CG *g, Buf *out) {
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
      * position stays valid. */
+    CountTable counts;
+    countInit(&counts, g->arena, g->deadFuncs.len + 1);
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {                /* the names we decide on */
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (df->name) countPut(&counts, df->name, strlen(df->name));
+    }
+    countSpan(&counts, text, 0, len, 1);                           /* one pass fills every count */
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;                                   /* no definition emitted */
-        if (countMentions(text, df->name) != 2) continue;           /* someone calls it */
+        if (countGet(&counts, df->name, strlen(df->name)) != 2) continue;   /* someone calls it */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of
          * bodies, so the copy taken at generation time often no longer matches - and every function
@@ -5541,6 +5684,9 @@ static void dropUnreferenced(CG *g, Buf *out) {
         char  *bd = funcDefStart(text, df, &blen);
         if (!pt || !bd || bd < pt || !blen) continue;               /* not both, in order */
         size_t bl = blen, pl = strlen(df->proto);
+        /* The counts follow the text: subtract what the two removals take away. */
+        countSpan(&counts, text, (size_t)(bd - text), bl, -1);
+        countSpan(&counts, text, (size_t)(pt - text), pl, -1);
         memmove(bd, bd + bl, len - (size_t)(bd - text) - bl + 1);    /* definition first */
         len -= bl;
         memmove(pt, pt + pl, len - (size_t)(pt - text) - pl + 1);    /* then declaration */
