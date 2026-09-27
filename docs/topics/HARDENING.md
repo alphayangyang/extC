@@ -53,6 +53,25 @@ views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** 
    **第 1 轮（新 goal）的排查** ✓：第一处嫌疑 `runDeferredUse`（`check_top.c:4519-4520` ✓，只在
    `rt->kind == TY_GENERIC && f->owner == rt->sdef` 时替换 ✓，而协程协议方法的接收者是**帧类型**
    ⇒ 不替换 ✗）——改成"从帧的 `coroOf` 取 `yieldType`"之后**报错照旧** ✗ ⇒ 说明症结不在那里 ✓。
+   **第 2 轮（打点 + 两处修改，全部回退 ✗）** ✓：
+
+   - 打点 `runOpCheck`（`EXTC_OP=1` ✓）⇒ **零输出** ✗ ⇒ 报错**不是**延迟复查发的 ✓，而是**模板期**
+     的具体算符检查 ✓：`check_expr.c:149` 只判"**左边**是不是参数"（`lt->kind == TY_PARAM` ✓）
+     ⇒ `i64 + T`（参数在**右边** ✗）掉进 `:155` 的数值检查 ⇒ 报错 ✓；
+   - 于是改成"**任一侧**是参数就 `deferOp`" ✓ ⇒ `+` 的错**消失** ✓，错误前移到**赋值**：
+     `assignment expects 'i64', found 'T'` ✗ ⇒ 继续查 `checkAssignable`（`check.c:414` ✓）：
+     它只在"**延迟方法调用**"（`EX_METHOD && !func && mentionsParam(recv)` ✓）时记录复查 ✗，
+     而这里的值来自 **`EX_BIN`（`+`）** ⇒ 不记录 ⇒ 报错 ✓；
+   - 于是我改成"值是参数也记录并接受" ✗ ⇒ **灾难** ✗：`runDeferredUse`（`check_top.c:4511` ✓）
+     假设记录下来的节点是 **`EX_METHOD`**（它读 `du->call->u.method.recv` ✓）⇒ 我塞进去的
+     `EX_BIN` 让那里读**垃圾指针** ⇒ **几十个文件编译器 SIGSEGV** ✗（闸门 126 份差异 ✓、
+     parrun **278/17** ✗）⇒ **两处修改全部回退** ✓（闸门 413/413 ✓、parrun 295/0 ✓、
+     instimpl 19/0 ✓）；
+   - **正确的下一步** ✓：把 `DeferredUse` 从"记方法调用"**推广成"记表达式"** ✓ ——
+     存 `Expr *node` + `Type *want` ✓，在实例期用 `ttSubstitute` 重算该节点的类型 ✓
+     （而不是复用 `u.method.recv` ✗）；这样"值是参数"就能安全地延迟 ✓，`+` 与赋值两处
+     都走同一条路 ✓。
+
    真正的报错来自 **`OpCheck`**（`cannot apply '+' to i64 and T` ✓，`check_top.c:4426-4427` ✓ 用
    `ttSubstitute` 替换两个操作数 ✓）：`+` 的**右操作数类型**在模板期就记成了 `T` ✓ ⇒
    下一轮的打点位置就是 `:4426`（打印 `typeStr(lt)` / `typeStr(rt2)` ✓）与记录处（操作数类型
