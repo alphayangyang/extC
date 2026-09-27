@@ -1275,6 +1275,25 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
 绿的 7 条里 ✓ **X1/X11/X12（返回值/裸字面量）** ✓ 与 **X5（`new box<T>[2]`）** ✓ **X6（option+match）** ✓
 都通过 ✓ ⇒ 说明"返回值那条路"没问题 ✓。
 
+**第 21 轮的定位（含两次失败尝试 ✓）** ✓：
+
+- `cType` 那侧**没问题** ✓：打点显示 `array_2_box_T -> array_2_box_i64` ✓（`params=set` ✓）⇒ 顶层替换是对的 ✓；
+- 真正的证据在**生成物**里 ✓：**同时**存在
+  ```
+  typedef struct array_2_box_T array_2_box_T;      /* 临时的 ✗ */
+  struct array_2_box_T {  box_T data[2];  };       /* ← box_T 未定义 ✗ */
+  typedef struct box_i64 box_i64;                  /* 正确的也在 ✓ */
+  typedef struct array_2_box_i64 array_2_box_i64;  /* ✓ */
+  ```
+  ⇒ **含类型参数的临时数组类型也拿到了单元并发了 struct 定义** ✗；
+- **两次失败尝试（都已回退 ✗，闸门零变化 ✓）**：① 在 `g.insts` 的收集处（`codegen.c:6341` ✓）用 `ttHasParam`
+  过滤 ✗；② 换成**递归**的 `mentionsParam` ✗ —— 都**毫无效果** ✗ ⇒ 说明那个临时数组**不是**从 `g.insts`
+  来的 ✓（units 还有另外几个来源：`g.structs`（`:7147` ✓）、`g.insts`（`:7153` ✓）、协程帧 ✓、
+  以及 **`scanUnitForUnits` 的递归**（它会按字段/元素**再派生**单元 ✓ —— 最可能是这里 ✓）。
+- **下一轮的打点** ✓：在全部 **6 处** `vecPush(&units)`（`:7151/7159/7170/7180/7192/7202` ✓）各打印一次
+  `unitName` ✓，跑 X4 看 `array_2_box_T` 是从**哪一处**进来的 ✓ ⇒ 定位后在同一处加同一个守卫
+  （"含类型参数的实例不发单元" ✓，与协程的 `coroProvisional` 同一口径 ✓）。
+
 **关键证据** ✓（X4）：`unknown type name 'box_T'; did you mean 'box_i64'?` ✓ ⇒ 生成物里用的是
 **未替换的临时名** `box_T` ✗，而 `box_i64` **已经存在** ✓（walker 已 intern ✓）⇒ 所以症结是
 **替换没有下探到元素类型** ✓：数组 `[2]box<T>` ✓ / 容器 `vector<box<T>>` ✓ / 字段 `pair2<box<T>,i64>` ✓ /
