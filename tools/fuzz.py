@@ -179,8 +179,16 @@ def one(args):
     case = gen_program(rng) if MODE[0] == 'gen' else mutate(src, rng, rng.randrange(1, 6))[0]
     d = os.path.join(out, 'w%05d' % it)   # 每次迭代独占目录：32 个共享目录会让并发互相删掉对方的产物
     os.makedirs(d, exist_ok=True)
-    extc_f = os.path.join(d, 'case.extc'); c_f = os.path.join(d, 'case.c'); exe = os.path.join(d, 'case')
-    open(extc_f, 'w', encoding='utf-8').write(case)
+    if MODE[0] == 'modules':
+        # 模块级：把源文件**所在目录**整个拷进来（`use a::b` 要能找到兄弟文件），只变异其中一个。
+        # 模块解析是独立的一条代码路径，单文件变异永远走不到。
+        shutil.copytree(os.path.dirname(path), d, dirs_exist_ok=True)
+        extc_f = os.path.join(d, os.path.basename(path))
+        open(extc_f, 'w', encoding='utf-8').write(case)
+    else:
+        extc_f = os.path.join(d, 'case.extc')
+        open(extc_f, 'w', encoding='utf-8').write(case)
+    c_f = os.path.join(d, 'case.c'); exe = os.path.join(d, 'case')
     why = None; log = []
     try:
         r = run([EXTC, '-w', '--no-line-map', '-o', c_f, extc_f], 20)
@@ -224,7 +232,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--iters', type=int, default=200)
     ap.add_argument('--seed', type=int, default=1)
-    ap.add_argument('--mode', choices=['mutate', 'gen'], default='mutate')
+    ap.add_argument('--mode', choices=['mutate', 'gen', 'modules'], default='mutate')
     ap.add_argument('--dry-run', type=int, default=0, help='只打印 N 个生成结果，不调用编译器')
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--limit', type=int, default=0, help='语料文件数上限')
