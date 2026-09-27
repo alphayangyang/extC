@@ -5452,6 +5452,11 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     for (;;) {
         bool cut = false;
         for (size_t i = 0; i < g->deadLocals.len && !cut; i++) {
+            /* Prefetch the next elements' objects: this walk's cost is memory latency, and the
+             * pointer chase into a fresh DeadLocal is what stalls. The base pointer is re-read
+             * through vecAt (so a resize could not go unnoticed). */
+            if (i + 8 < g->deadLocals.len)
+                __builtin_prefetch(*(DeadLocal **)vecAt(&g->deadLocals, i + 8), 0, 0);
             DeadLocal *d = *(DeadLocal **)vecAt(&g->deadLocals, i);
             if (!d->text || !d->funcName) continue;
             const char *body = NULL;

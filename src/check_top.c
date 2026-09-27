@@ -5046,6 +5046,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
     ctPhase("ckB7", tB7); tB8 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++) {
+        /* `m->funcs` grows during this loop (instance materialisation pushes to it), so the base
+         * pointer is still taken through vecAt every time -- only the next function is prefetched. */
+        if (i + 4 < m->funcs.len) __builtin_prefetch(*(FuncDef **)vecAt(&m->funcs, i + 4), 0, 0);
         FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
         if (fx->tmpl) continue;              /* covered by the per-instance recheck */
         checkFunc(&c, fx);
