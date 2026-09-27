@@ -533,6 +533,16 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
 在"实例建好之后"调用 ✓。前三块（字段/记录/重建）与第 5 块（帧名 `instName`）都已验证正确 ✓，
 可以照用 ✓。**本轮已整体回退** ✓（闸门 413/413 ✓）。
 
+**第 30 轮 Step A（已落地 ✓）：把协程设置整段提取成 `coroSetup(c, f)`**
+
+按第 29 轮的修法方向，先把 `checkFunc` 里那 105 行的协程设置（handle 协议 + 帧类型 + 帧上的协议
+方法）**整段提取**成 `static void coroSetup(Checker *c, FuncDef *f)` ✓，`checkFunc` 里只留
+`if (f->isCoro) coroSetup(c, f);` ✓。判据是"**纯重构必须零变化**" ✓：
+`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0** ✓、parrun **295/0** ✓、`make` 零诊断 ✓
+⇒ 行为不变**可证** ✓。**Step B**（下一轮 ✓）：第 1–3 块（`coroRetProto` ✓ 记录 ✓ 重建 ✓）+
+第 5 块（帧名 `instName` 优先 ✓）+ 在**延迟实例化之后**对 `c.funcInsts` 里的协程实例补跑
+`coroSetup` ✓（第 4 块那种"body 检查放行实例"证明不行 ✓：那时实例还没建 ✓）。
+
 **原清单（每一块都验证过或已定位 ✓）**：① `ast.h` 的 `coroRetProto` + 记录 ✓；
 ② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
 ④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；

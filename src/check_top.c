@@ -3716,6 +3716,121 @@ static void symIdxSync(Checker *c) {
     g_sbBuilt = c->allSyms.len;
 }
 
+/* The coroutine setup for one function: the **handle** protocol (emitted once per program) and,
+ * for this function, the frame type a call produces plus the protocol methods on it.
+ *
+ * Extracted from `checkFunc` so it can also be run for an **instance created late**: a call inside a
+ * generic body is deferred (`fn run<T>() { gen(v) }`), so `funcInstance` for `gen<i64>` runs after
+ * the body-checking pass, which used to be the only place this setup happened. The instance then
+ * drove `<name>$frame` while nothing defined it, and `value()` kept the unsubstituted `T`
+ * (tools/attack.py F4 + B7). */
+static void coroSetup(Checker *c, FuncDef *f) {
+
+        /* ---- The **handle** protocol, once per program ----
+         * `coroutine<T>` is a storage type too (one surface type; the representation is chosen by
+         * escape). Driving a handle is an ordinary method call on the marker type, with `T`
+         * substituted by the existing instantiation machinery -- so `value()` returns each instance's
+         * own `T`. Same shape as the frame's methods below; the difference is only that `self` is the
+         * handle, which is why the two get different `coroProto` values and codegen dispatches on
+         * `kind`. */
+        StructDef *hsd = structOf(f->ret);
+        if (hsd && hsd->methods.len == 0) {
+            Type *tp = arenaAllocZero(c->arena, sizeof *tp);
+            tp->kind = TY_PARAM;
+            tp->name = "T";
+            tp->param = "T";          /* ttSubstitute matches on `param`, not `name` */
+            vecInit(&tp->targs, c->arena, sizeof(Type *));
+            Type *hinst = arenaAllocZero(c->arena, sizeof *hinst);
+            hinst->kind = TY_GENERIC;      /* an *instance* with targs: that is what `coroutine<T>` is */
+            hinst->name = hsd->name;
+            hinst->sdef = hsd;
+            vecInit(&hinst->targs, c->arena, sizeof(Type *));
+            *(Type **)vecPush(&hinst->targs) = tp;
+            const int hw[3] = { 3, 4, 6 };    /* next / value / send on the handle */
+            for (int hi = 0; hi < 3; hi++) {
+                const int which = hw[hi];
+                FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
+                pm->name      = which == 3 ? "next" : which == 4 ? "value" : "send";
+                pm->owner     = hsd;
+                pm->modName   = f->modName;
+                pm->line      = f->line;
+                pm->coroProto = which;
+                pm->ret       = which == 4 ? tp : ttFromName(c->tt, "bool");
+                vecInit(&pm->params, c->arena, sizeof(Param *));
+                Param *self = arenaAllocZero(c->arena, sizeof *self);
+                self->name = self->cname = "self";
+                self->line = f->line;
+                Type *rt = arenaAllocZero(c->arena, sizeof *rt);
+                rt->kind = TY_REF;
+                rt->inner = hinst;
+                rt->mut = which == 3;      /* `next` advances the state, `value` only reads it */
+                self->type = rt;
+                *(Param **)vecPush(&pm->params) = self;
+                if (which == 6) {
+                    Param *vp = arenaAllocZero(c->arena, sizeof *vp);
+                    vp->name = vp->cname = "v";
+                    vp->type = tp;
+                    vp->line = f->line;
+                    *(Param **)vecPush(&pm->params) = vp;
+                }
+                *(FuncDef **)vecPush(&hsd->methods) = pm;
+            }
+        }
+        /* A call to a coroutine produces **that coroutine's own frame**, a concrete value type the
+         * compiler synthesizes here -- before the body is checked, so call sites and the callee
+         * agree. `coroutine<T>` stays what it always was: how a body declares "I am a coroutine and
+         * I yield T". See docs/topics/CONCURRENCY.md 4.4. */
+        StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
+        /* A C name of its own: the frame is emitted through the type channel now, so it must not
+         * collide with the function's own name. */
+        cfd->name = arenaPrintf(c->arena, "%s$frame", f->name ? f->name : "coro");
+        cfd->coroOf = f;
+        vecInit(&cfd->typeParams, c->arena, sizeof(const char *));
+        vecInit(&cfd->fields, c->arena, sizeof(FieldDef *));
+        vecInit(&cfd->methods, c->arena, sizeof(FuncDef *));
+        Type *cft = arenaAllocZero(c->arena, sizeof *cft);
+        cft->kind = TY_STRUCT;
+        cft->name = cfd->name;
+        cft->sdef = cfd;
+        vecInit(&cft->targs, c->arena, sizeof(Type *));
+        /* The protocol, as **real methods** on that type: `next(self: mut ref F) -> bool` and
+         * `value(self: ref F) -> T`. Driving a coroutine is then ordinary method resolution -- no
+         * special case in the checker -- and `fn drive<C>(c: mut ref C)` works at instantiation
+         * through the existing deferred-method machinery (#57). Codegen emits the two inline. */
+        for (int which = 1; which <= 3; which++) {
+            FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
+            pm->name     = which == 1 ? "next" : which == 2 ? "value" : "send";
+            pm->owner    = cfd;
+            pm->modName  = f->modName;
+            pm->line     = f->line;
+            pm->coroProto = which == 3 ? 5 : which;   /* 5 = `send` on the frame (the handle's is 6) */
+            pm->ret      = which == 2 ? f->yieldType : ttFromName(c->tt, "bool");
+            vecInit(&pm->params, c->arena, sizeof(Param *));
+            Param *self = arenaAllocZero(c->arena, sizeof *self);
+            self->name = self->cname = "self";
+            self->line = f->line;
+            Type *rt = arenaAllocZero(c->arena, sizeof *rt);
+            rt->kind = TY_REF;
+            rt->inner = cft;
+            rt->mut = which != 2;              /* `next`/`send` advance the state, `value` reads */
+            self->type = rt;
+            *(Param **)vecPush(&pm->params) = self;
+            if (which == 3) {
+                /* `send(self: mut ref F, v: T) -> bool`: hand a value to the next resume, which the
+                 * coroutine reads through a `var x = yield e` binding (the frame's `in` slot). */
+                Param *vp = arenaAllocZero(c->arena, sizeof *vp);
+                vp->name = vp->cname = "v";
+                vp->type = f->yieldType;
+                vp->line = f->line;
+                *(Param **)vecPush(&pm->params) = vp;
+            }
+            *(FuncDef **)vecPush(&cfd->methods) = pm;
+        }
+        f->coroFrameType = cft;
+        f->ret = cft;
+    
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
      * their call sites. Checking one here walked a null body. */
@@ -3831,111 +3946,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * for this function is a value (docs/topics/CONCURRENCY.md 4.4). */
     f->isCoro = f->ret && isProtoType(f->ret, "coroutine", 1);
     f->yieldType = f->isCoro ? *(Type **)vecAt(&f->ret->targs, 0) : NULL;
-    if (f->isCoro) {
-        /* ---- The **handle** protocol, once per program ----
-         * `coroutine<T>` is a storage type too (one surface type; the representation is chosen by
-         * escape). Driving a handle is an ordinary method call on the marker type, with `T`
-         * substituted by the existing instantiation machinery -- so `value()` returns each instance's
-         * own `T`. Same shape as the frame's methods below; the difference is only that `self` is the
-         * handle, which is why the two get different `coroProto` values and codegen dispatches on
-         * `kind`. */
-        StructDef *hsd = structOf(f->ret);
-        if (hsd && hsd->methods.len == 0) {
-            Type *tp = arenaAllocZero(c->arena, sizeof *tp);
-            tp->kind = TY_PARAM;
-            tp->name = "T";
-            tp->param = "T";          /* ttSubstitute matches on `param`, not `name` */
-            vecInit(&tp->targs, c->arena, sizeof(Type *));
-            Type *hinst = arenaAllocZero(c->arena, sizeof *hinst);
-            hinst->kind = TY_GENERIC;      /* an *instance* with targs: that is what `coroutine<T>` is */
-            hinst->name = hsd->name;
-            hinst->sdef = hsd;
-            vecInit(&hinst->targs, c->arena, sizeof(Type *));
-            *(Type **)vecPush(&hinst->targs) = tp;
-            const int hw[3] = { 3, 4, 6 };    /* next / value / send on the handle */
-            for (int hi = 0; hi < 3; hi++) {
-                const int which = hw[hi];
-                FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
-                pm->name      = which == 3 ? "next" : which == 4 ? "value" : "send";
-                pm->owner     = hsd;
-                pm->modName   = f->modName;
-                pm->line      = f->line;
-                pm->coroProto = which;
-                pm->ret       = which == 4 ? tp : ttFromName(c->tt, "bool");
-                vecInit(&pm->params, c->arena, sizeof(Param *));
-                Param *self = arenaAllocZero(c->arena, sizeof *self);
-                self->name = self->cname = "self";
-                self->line = f->line;
-                Type *rt = arenaAllocZero(c->arena, sizeof *rt);
-                rt->kind = TY_REF;
-                rt->inner = hinst;
-                rt->mut = which == 3;      /* `next` advances the state, `value` only reads it */
-                self->type = rt;
-                *(Param **)vecPush(&pm->params) = self;
-                if (which == 6) {
-                    Param *vp = arenaAllocZero(c->arena, sizeof *vp);
-                    vp->name = vp->cname = "v";
-                    vp->type = tp;
-                    vp->line = f->line;
-                    *(Param **)vecPush(&pm->params) = vp;
-                }
-                *(FuncDef **)vecPush(&hsd->methods) = pm;
-            }
-        }
-        /* A call to a coroutine produces **that coroutine's own frame**, a concrete value type the
-         * compiler synthesizes here -- before the body is checked, so call sites and the callee
-         * agree. `coroutine<T>` stays what it always was: how a body declares "I am a coroutine and
-         * I yield T". See docs/topics/CONCURRENCY.md 4.4. */
-        StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
-        /* A C name of its own: the frame is emitted through the type channel now, so it must not
-         * collide with the function's own name. */
-        cfd->name = arenaPrintf(c->arena, "%s$frame", f->name ? f->name : "coro");
-        cfd->coroOf = f;
-        vecInit(&cfd->typeParams, c->arena, sizeof(const char *));
-        vecInit(&cfd->fields, c->arena, sizeof(FieldDef *));
-        vecInit(&cfd->methods, c->arena, sizeof(FuncDef *));
-        Type *cft = arenaAllocZero(c->arena, sizeof *cft);
-        cft->kind = TY_STRUCT;
-        cft->name = cfd->name;
-        cft->sdef = cfd;
-        vecInit(&cft->targs, c->arena, sizeof(Type *));
-        /* The protocol, as **real methods** on that type: `next(self: mut ref F) -> bool` and
-         * `value(self: ref F) -> T`. Driving a coroutine is then ordinary method resolution -- no
-         * special case in the checker -- and `fn drive<C>(c: mut ref C)` works at instantiation
-         * through the existing deferred-method machinery (#57). Codegen emits the two inline. */
-        for (int which = 1; which <= 3; which++) {
-            FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
-            pm->name     = which == 1 ? "next" : which == 2 ? "value" : "send";
-            pm->owner    = cfd;
-            pm->modName  = f->modName;
-            pm->line     = f->line;
-            pm->coroProto = which == 3 ? 5 : which;   /* 5 = `send` on the frame (the handle's is 6) */
-            pm->ret      = which == 2 ? f->yieldType : ttFromName(c->tt, "bool");
-            vecInit(&pm->params, c->arena, sizeof(Param *));
-            Param *self = arenaAllocZero(c->arena, sizeof *self);
-            self->name = self->cname = "self";
-            self->line = f->line;
-            Type *rt = arenaAllocZero(c->arena, sizeof *rt);
-            rt->kind = TY_REF;
-            rt->inner = cft;
-            rt->mut = which != 2;              /* `next`/`send` advance the state, `value` reads */
-            self->type = rt;
-            *(Param **)vecPush(&pm->params) = self;
-            if (which == 3) {
-                /* `send(self: mut ref F, v: T) -> bool`: hand a value to the next resume, which the
-                 * coroutine reads through a `var x = yield e` binding (the frame's `in` slot). */
-                Param *vp = arenaAllocZero(c->arena, sizeof *vp);
-                vp->name = vp->cname = "v";
-                vp->type = f->yieldType;
-                vp->line = f->line;
-                *(Param **)vecPush(&pm->params) = vp;
-            }
-            *(FuncDef **)vecPush(&cfd->methods) = pm;
-        }
-        f->coroFrameType = cft;
-        f->ret = cft;
-    }
-
+    if (f->isCoro) coroSetup(c, f);
     /* `coroutine<T>` is how a **return type** says "this body is a coroutine that yields T". It is not
      * a value type: a call to a coroutine produces that coroutine's own frame, whose type the compiler
      * synthesizes. A parameter typed `coroutine<T>` therefore compiled into a C type mismatch -- or
