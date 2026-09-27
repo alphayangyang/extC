@@ -1,0 +1,10 @@
+// 回归（tools/fuzz.py，fail-00075）：给**字面量**赋值曾被接受，生成的 C 是
+// `9223372036854775807 = (total + p->val);`，gcc 报
+// "lvalue required as left operand of assignment"。
+// 判据：左边必须是"链式形态"（绑定 / 字段 / 下标 / 切片 / `*` / `!`），与 C 一致 ——
+// 只看**最外层**，所以 `f().x = v` 仍然合法。
+// expect: not a place
+fn main() -> i32 {
+    18446744073709551615 = 1
+    return 0
+}

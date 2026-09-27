@@ -25,10 +25,23 @@
 实测：`1e400` / `-1e400` / `f32(-1e400)` 都产出合法 C，且 413 份生成物**逐字节不变**
 （正常浮点走原路径）。回归：`tests/asan/nonfinite-float.extc`（该套件按目录 glob 收集）。
 
-### H4（未修，排队）读只读游标时生成非左值赋值
+### H4（已修）给字面量赋值被接受，生成的 C 不是左值
 
-`fail-00075`（变异自 `tests/…/readonly-cursor.extc`）：extC 说成功，gcc 报
-`lvalue required as left operand of assignment`（生成的 C 第 278 行）。下一步从这条接。
+`fail-00075`：变异把标识符换成了字面量 ⇒ 源码 `18446744073709551615 = total + p.val`，
+extC 说成功，生成的 C 是 `9223372036854775807 = (total + p->val);`，gcc 报
+`lvalue required as left operand of assignment`。**赋值左边从来没被要求是可写位置**。
+
+修法：`case ST_ASSIGN` 开头加校验，判据与 C 一致 —— 只看**最外层形态**
+（`EX_IDENT` / `EX_FIELD` / `EX_INDEX` / `EX_SLICE` / `EX_DEREF` / `EX_SIGN`），其余（字面量、
+算术/比较表达式、调用）没有存储。两处踩到又修掉的误拒，都靠语料抓出来：
+
+1. 先写成 `isPlace(target)`（那是为**切片**写的判据，只认绑定/字段/下标/切片）⇒ 25 份语料编不过；
+2. 补上 `EX_DEREF` 后仍是 5 份 ⇒ 真正原因是"最外层"这个原则：`self.big![self.n] = b`（stdlib）
+   与 `(*buf)[k] = (*src)[i]`（bench/oi）的外层是下标/签名，C 允许，而按根递归就误判了。
+
+实测：6 种非法形状全拒（字面量 / 大整数 / 调用结果 / 算术 / 比较 / 复合 `+=` 字面量），
+6 种合法形状全通（变量 / 字段 / 下标 / 解引用 / 括号解引用下标 / 取字段再下标）；
+**413 份生成物逐字节不变**；parrun 285 → 286/0（回归 `tests/errors/assign_to_literal.extc`）。
 
 ## 二、正在追：文本后处理 pass 的**越界删除**（未修完，见"待拍板"）
 

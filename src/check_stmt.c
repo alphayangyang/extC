@@ -488,6 +488,32 @@ void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_ASSIGN: {
+            /* The left side has to be a **place** -- a binding, a field, an index or a `*`
+             * dereference. Nothing required that, so the fuzzer's mutation of an identifier into a
+             * literal (`18446744073709551615 = total + p.val`, tools/fuzz.py) was accepted and the
+             * generated C said `9223372036854775807 = (total + p->val);`, which gcc rejects with
+             * "lvalue required as left operand of assignment". `isPlace` is the predicate the rest
+             * of the checker already uses for exactly this question. */
+            /* Whether the left side may be written is a question about its **outermost** form,
+             * exactly as in C: `f().x = v` is a valid store because the member access is the
+             * lvalue, even though the call inside it is not. So the check is a list of the five
+             * chain forms, and everything else -- a literal, an arithmetic or comparison
+             * expression, a call -- has no storage. (Nothing required this at all, so the fuzzer's
+             * mutation of an identifier into a literal, `18446744073709551615 = total + p.val`,
+             * was accepted and the generated C said `9223372036854775807 = ...`, which gcc rejects
+             * with "lvalue required as left operand of assignment".) */
+            Expr *tgt0 = s->u.assign.target;
+            bool targetWritable = tgt0 && (tgt0->kind == EX_IDENT || tgt0->kind == EX_FIELD ||
+                                           tgt0->kind == EX_INDEX || tgt0->kind == EX_SLICE ||
+                                           tgt0->kind == EX_DEREF || tgt0->kind == EX_SIGN);
+            if (s->u.assign.target && !targetWritable) {
+                ckError(c, s->line,
+                        "The left side of an assignment must be a place: a variable, a field, an"
+                        " index, or a `*` dereference. A literal or an expression has no storage to"
+                        " write.",
+                        "cannot assign to this expression: it is not a place");
+                return;
+            }
             /* `x += y` is `x = x + y` (定案 92). Which operator that is, and whether it
              * applies to these two types at all, is decided by the same function a written
              * `x + y` goes through, so the rules cannot drift; what stays here is the
