@@ -1435,6 +1435,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 e->parWorker = wf;
+    wf->isParWorker = true;   /* codegen 据此生成 trampoline */
                 wf->used = true;                 /* the trampoline names it, so it must be emitted */
                 {
                     /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参是函数名"
@@ -2283,6 +2284,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 e->parWorker = wf;
+    wf->isParWorker = true;   /* codegen 据此生成 trampoline */
                 wf->used = true;                 /* the trampoline names it, so it must be emitted */
                     /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参
                      * 是函数名"这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects
@@ -2693,6 +2695,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 e->parWorker = wf;
+    wf->isParWorker = true;   /* codegen 据此生成 trampoline */
                 wf->used = true;                 /* the trampoline names it, so it must be emitted */
                     /* 三个实参由内建自己查完，然后**直接返回**：库里的声明只能用占位类型（"第一个形参
                      * 是函数名"这件事写不成类型），走通用实参检查必然对不上（实测：`argument expects

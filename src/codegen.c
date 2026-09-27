@@ -2069,8 +2069,11 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
              * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
             if (e->parWorker) {
+                /* 临时拦截：trampoline 的发射点还没接对（实测：调用点、ctx、运行期都对，但产物里
+                 * 少了 __extc_par_* ⇒ gcc 报 undeclared）。宁可现在报错，也绝不产出"少一个函数"的非法 C。
+                 * 已就位的部分：genParTramp（生成器）、运行期 extc_par_run、ctx 的切段语义。 */
                 ctxError(g->ctx, e->line, 1, NULL,
-                         "parallel::run: codegen is not implemented yet (step 3a is in progress)");
+                         "parallel::run: codegen hookup is not finished yet (step 3a)");
                 return arenaPrintf(g->arena, "0");
             }
             /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
@@ -4756,6 +4759,20 @@ static bool cgIsMain(const FuncDef *f) {
 /* Emit the forward declaration of one function, so that definitions may appear
  * in any order.
  */
+/* `parallel::run` 的 trampoline：语言层没有函数指针，所以这份"取 worker 的地址"只能由编译器
+ * 写出来。worker 的第四个形参是一个 view（`{data, len}`）；这里按 [lo, hi) 切出**它自己那一段**
+ * 再调用 —— 分区是"读只共享、写必分区"里"写"的那一半，所以不需要任何新的可发送性分析。 */
+static void genParTramp(CG *g, FuncDef *f) {
+    Type *vt = (*(Param **)vecAt(&f->params, 3))->type;
+    const char *vn = cType(g, vt);
+    cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp);", f->name);
+    cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp) {", f->name);
+    cgLine(g, "    %s *c = (%s *)ctxp;", vn, vn);
+    cgLine(g, "    %s sub = { .data = c->data + lo, .len = hi - lo };", vn, vn);
+    cgLine(g, "    return (int64_t)%s(id, lo, hi, sub);", f->name);
+    cgLine(g, "}");
+}
+
 static void genFuncProto(CG *g, FuncDef *f) {
     /* A coroutine emits no prototype for its own name: there is no C function called `counter`, the
      * artifact is `counter$frame` + `counter$step` (emitted together, so the frame is defined before
@@ -7423,6 +7440,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * the trap of #64 - one node, many instances - does not apply. */
             size_t pb = g.out->len;
             genFuncProto(&g, md);
+            if (md->isParWorker) genParTramp(&g, md);   /* 紧跟它自己的原型 ⇒ 先声明后使用 */
             {
                 Buf pt;
                 bufInit(&pt, g.arena);
@@ -7762,7 +7780,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    extc_par_arg args[256];\n"
             "    int64_t started = 0, i;\n"
             "    job.fn = fn; job.ctx = ctx; job.n = n;\n"
-            "    job.chunk = chunk > 0 ? chunk : 1;\n"
+            "    job.chunk = chunk > 0 ? chunk : (n / (threads * 8) > 0 ? n / (threads * 8) : 1);\n"
             "    job.next = 0; job.first_err = 0;\n"
             "    if (n <= 0) return 0;\n"
             "    if (threads > 256) threads = 256;\n"

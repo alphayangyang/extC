@@ -638,6 +638,9 @@ struct FuncDef {
      * 理由与 `alloc<T>`/`poolSlice<T>` 相同：它要生成的代码（并行 worker 的 trampoline）
      * 必须由编译器命名那个函数，库给不出。目前只有 `std::parallel::run`。 */
     bool        isBuiltin;
+    /* 被 `parallel::run` 用过一次的 worker：codegen 要给它生成一个 static trampoline
+     * （语言层没有函数指针，所以这份"取地址"只能由编译器写出来）。 */
+    bool        isParWorker;
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;
