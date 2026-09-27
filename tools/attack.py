@@ -775,8 +775,49 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- 容器（vector / hashMap / hashSet）
+# 攻击面：容量增长与 dense 切片下标、越界（option vs 带位置 trap）、空容器、
+# 元素是结构体/泛型实例/@noCopy、容器跨函数传递、hashMap 的覆盖与删除。
+CNT = [
+    ('Q1 vector 基本 push/len/下标', 'ok',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  var i: i32 = 0\n  while i < i32(5) { v.push(i)\n    i = i + i32(1) }\n  let dv = v.toSlice()\n  var sum: i64 = 0\n  var k: i64 = 0\n  while k < dv.len { sum = sum + i64(dv[k])\n    k = k + i64(1) }\n  return i32(sum) - 10 }'),
+    ('Q2 跨容量边界增长后仍 dense', 'ok',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  var i: i32 = 0\n  while i < i32(1000) { v.push(i)\n    i = i + i32(1) }\n  let dv = v.toSlice()\n  var k: i64 = 0\n  while k < dv.len { if i64(dv[k]) != k { return 1 }\n    k = k + i64(1) }\n  return i32(v.len()) - 1000 }'),
+    ('Q3 get 越界给 null、?? 取默认', 'ok',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  v.push(i32(7))\n  let a = v.get(i64(0)) ?? i32(-1)\n  let b = v.get(i64(9)) ?? i32(-1)\n  return i32(a) + i32(b) - 6 }'),
+    ('Q4 切片下标越界必须带位置 trap', 'trap',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  v.push(i32(1))\n  let dv = v.toSlice()\n  return i32(dv[i64(5)]) }'),
+    ('Q5 空容器：len 0、get 给 null', 'ok',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  let g = v.get(i64(0)) ?? i32(3)\n  return i32(v.len()) + i32(g) - 3 }'),
+    ('Q6 元素是结构体', 'ok_or_reject',
+     'use stl::vector\nstruct pt { x: i64  y: i64 }\nfn main() -> i32 { var v = vector<pt>::new()\n  v.push(pt { x: i64(1), y: i64(2) })\n  v.push(pt { x: i64(3), y: i64(4) })\n  let dv = v.toSlice()\n  return i32(dv[i64(0)].x + dv[i64(1)].y) - 5 }'),
+    ('Q7 元素是泛型实例', 'ok_or_reject',
+     'use stl::vector\nstruct box<T> { v: T }\nfn main() -> i32 { var vec = vector<box<i64>>::new()\n  vec.push(box<i64> { v: i64(5) })\n  let dv = vec.toSlice()\n  return i32(dv[i64(0)].v) - 5 }'),
+    ('Q8 元素是 @noCopy（应拒）', 'reject',
+     'use stl::vector\n@noCopy struct c { n: i64 }\nfn main() -> i32 { var v = vector<c>::new()\n  var a: c = { n: i64(1) }\n  v.push(a)\n  return i32(a.n) }'),
+    ('Q9 容器传进函数', 'ok_or_reject',
+     'use stl::vector\nfn total(v: ref vector<i32>) -> i64 { var s: i64 = 0\n  let dv = v.toSlice()\n  var k: i64 = 0\n  while k < dv.len { s = s + i64(dv[k])\n    k = k + i64(1) }\n  return s }\nfn main() -> i32 { var v = vector<i32>::new()\n  v.push(i32(2))\n  v.push(i32(3))\n  return i32(total(ref v)) - 5 }'),
+    ('Q10 空容器 pop（option）', 'ok_or_reject',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  let x = v.pop() ?? i32(0)\n  return i32(x) }'),
+    ('Q11 hashMap 基本 put/get/覆盖/删除', 'ok',
+     'use stl::hashMap\nfn main() -> i32 { var m = hashMapI64<i32>::withCap(4)\n  m.put(1, i32(11))\n  m.put(2, i32(22))\n  let a = m.get(2) ?? i32(-1)\n  m.put(2, i32(99))\n  let b = m.get(2) ?? i32(-1)\n  let had = m.remove(1)\n  let n = m.len()\n  return i32(a) + i32(b) + i32(n) - 122 }'),
+    ('Q12 hashMap 装结构体值', 'ok_or_reject',
+     'use stl::hashMap\nstruct pt { x: i64  y: i64 }\nfn main() -> i32 { var m = hashMapI64<pt>::withCap(4)\n  m.put(1, pt { x: i64(3), y: i64(4) })\n  let p = m.get(1) ?? pt { x: i64(0), y: i64(0) }\n  return i32(p.x + p.y) - 7 }'),
+    ('Q13 空 hashMap：contains/len', 'ok',
+     'use stl::hashMap\nfn main() -> i32 { var m = hashMapI64<i32>::withCap(4)\n  if m.contains(1) { return 1 }\n  return i32(m.len()) }'),
+    ('Q14 hashSet 基本操作', 'ok_or_reject',
+     'use stl::hashSet\nfn main() -> i32 { var s = hashSetI64::withCap(4)\n  s.put(1)\n  s.put(1)\n  return i32(s.len()) - 1 }'),
+    ('Q15 容器 clear 之后再用', 'ok_or_reject',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  v.push(i32(1))\n  v.clear()\n  v.push(i32(2))\n  let dv = v.toSlice()\n  return i32(dv[i64(0)]) - 2 }'),
+    ('Q16 容量与 len 的关系', 'ok_or_reject',
+     'use stl::vector\nfn main() -> i32 { var v = vector<i32>::new()\n  v.push(i32(1))\n  if v.capacity() < v.len() { return 1 }\n  return 0 }'),
+    ('Q17 @noCopy 存进 hashMap（应拒）', 'reject',
+     'use stl::hashMap\n@noCopy struct c { n: i64 }\nfn main() -> i32 { var m = hashMapI64<c>::withCap(4)\n  var a: c = { n: i64(1) }\n  m.put(1, a)\n  return i32(a.n) }'),
+]
+
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
-          'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC}
+          'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
+          'containers': CNT}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)

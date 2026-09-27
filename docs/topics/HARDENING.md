@@ -1204,6 +1204,23 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
 出去"** ✓，`return a` 与 `var b = a` 同判 ✓。要返回新值就直接返回**字面量** ✓（官方 ctor 用例的
 写法 ✓）⇒ 题目改成两条：`reject` + 一个新的正例（直接返回字面量 ✓）。
 
+## 三点二十三、攻击组 containers（17 题）：**全绿** ✓
+
+覆盖 `vector<T>`（push/len/capacity ✓、**跨容量边界 1000 次后仍 dense** ✓、`get` 越界给 `null` + `??` ✓、
+**切片下标越界带位置 trap** ✓、空容器 ✓、元素是结构体/泛型实例 ✓、`@noCopy` 元素被拒 ✓、容器传进
+函数 ✓、`pop` 的 option ✓、`clear` 之后再用 ✓、容量 ≥ len ✓）与 `hashMapI64<T>`/`hashSetI64`
+（put/get/覆盖/删除/contains/len ✓、装结构体值 ✓、空表 ✓、`@noCopy` 值被拒 ✓）。
+
+**两条题目写法教训** ✓（都是我自己的错 ✓，记下来省下次的时间 ✓）：
+
+1. **vector 本身不可下标** ✗ —— 下标要在 `let dv = v.toSlice()` 得到的切片上 ✓（官方
+   `tests/stl/vector.extc` 的写法 ✓）；`pop()` 返回 **option** ✓（`?? 默认值` ✓）。
+2. **hashMap 要 `use stl::hashMap`** ✓（大写 M ✓）；且我这轮**两次**在生成题目时踩了转义坑 ✓：
+   第一次写 `"\\n"`（heredoc 直传 ⇒ Python 得到**字面反斜杠+n** ✗）⇒ 题目源码里出现 `\` ⇒
+   extC 报 `unexpected character` ✓；第二次 `%r` 输出把真换行转义成 `\n` 是对的 ✓，但**源头**必须是
+   真换行 ✓ ⇒ 结论：**用逐行列表 + `"\n".join` 构造题目源码** ✓（heredoc 里写**单个** `\n` ✓），
+   并**先 dump 出题面看一眼**再跑 ✓。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
