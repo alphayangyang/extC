@@ -207,7 +207,13 @@ def one(args):
                           '-fno-sanitize-recover=all', '-o', exe, c_f], 60)
                 if ge.returncode == 0:
                     try:
-                        p = run([exe], 5)
+                        # `allocator_may_return_null=1`: ASan aborts on a **huge allocation
+                        # request** by default, so a program that deliberately asks for 1PB to
+                        # make `malloc` fail (`tests/traps/arena_oom.extc`) never gets the NULL the
+                        # runtime is supposed to handle -- and the oracle reported the compiler for
+                        # ASan's own complaint. With this the runtime traps as designed.
+                        env = dict(os.environ, ASAN_OPTIONS='allocator_may_return_null=1')
+                        p = run([exe], 5, env=env)
                         err = p.stderr.decode('utf-8', 'replace')
                         hit = [l for l in err.splitlines() if 'runtime error' in l or 'AddressSanitizer' in l]
                         if hit:
