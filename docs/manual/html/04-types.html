@@ -79,7 +79,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p>字面量的默认类型：整数 <code>i32</code>，浮点 <code>f64</code>。</p>
 <h3 id="类型转换规则-t2-起">类型转换规则（T2 起）</h3>
 <p>extC <strong>只自动做无损失的拓宽</strong>；收窄 / 换符号 / 整数↔浮点<strong>必须显式写出来</strong>（<code>T(x)</code>）</p>
-<table><thead><tr><th>转换</th><th>是否自动</th></tr></thead><tbody><tr><td>同类型</td><td></td></tr><tr><td><code>i8</code>→<code>i16</code>→<code>i32</code>→<code>i64</code></td><td></td></tr><tr><td><code>u8</code>→<code>u16</code>→<code>u32</code>→<code>u64</code></td><td></td></tr><tr><td><code>u*</code> → 更宽的 <code>i*</code>（如 <code>u32</code>→<code>i64</code>）</td><td></td></tr><tr><td><code>i*</code> → <code>u*</code>（一律，包括同宽）</td><td>有损</td></tr><tr><td>能精确表示的整数 → 浮点（<code>i16</code>→<code>f32</code>、<code>i32</code>→<code>f64</code>）</td><td></td></tr><tr><td><code>i32</code> → <code>f32</code></td><td>f32 尾数只有 24 位</td></tr><tr><td><code>f32</code> → <code>f64</code></td><td></td></tr><tr><td><code>f64</code> → <code>f32</code></td><td></td></tr></tbody></table>
+<table><thead><tr><th>转换</th><th>是否自动</th></tr></thead><tbody><tr><td>同类型</td><td></td></tr><tr><td><code>i8</code>→<code>i16</code>→<code>i32</code>→<code>i64</code></td><td></td></tr><tr><td><code>u8</code>→<code>u16</code>→<code>u32</code>→<code>u64</code></td><td></td></tr><tr><td><code>u*</code> → 更宽的 <code>i*</code>（如 <code>u32</code>→<code>i64</code>）</td><td></td></tr><tr><td><code>i*</code> → <code>u*</code>（一律，包括同宽）</td><td>有损</td></tr><tr><td>能精确表示的整数 → 浮点（<code>i16</code>→<code>f32</code>、<code>i32</code>→<code>f64</code>）</td><td></td></tr><tr><td><code>i32</code> → <code>f32</code></td><td>f32 尾数只有 24 位</td></tr><tr><td><code>f32</code> → <code>f64</code></td><td></td></tr><tr><td><code>f64</code> → <code>f32</code></td><td>有损，必须显式写 <code>f32(x)</code></td></tr></tbody></table>
 <p><strong>字面量按值适配</strong>（<code>DESIGN.md</code> §5 的「字面量类型推导」）：</p>
 <pre class="lang-extc"><code><span class="k">let</span> a: <span class="t">u8</span>  = <span class="n">200</span>        <span class="c">// 200 放得进 u8 → 可以</span>
 <span class="k">let</span> b: <span class="t">u16</span> = <span class="n">60000</span>      <span class="c">// 可以</span>
@@ -197,36 +197,48 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <span class="k">let</span> m: <span class="t">i64</span> = <span class="n">7</span>
 <span class="c">// bump(ref m)       // 对 let 只能取到只读引用 ⇒ 交不给要写权限的参数</span></code></pre>
 <p><strong>降级是自动的、单向的</strong>：<code>mut ref T</code> 可以当 <code>ref T</code> 用（能写当然能读）； 反过来不行，必须显式写 <code>mut</code> —— 「安全是默认」的直接体现。</p>
-<h4 id="值位置自动解引用-ref-在表达式里的行为">值位置自动解引用（<code>ref</code> 在表达式里的行为）</h4>
-<p><code>ref T</code> 的值在<strong>当值用</strong>的时候自动解引用 —— 于是标量引用也能用了：</p>
-<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">bump</span>(p: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>) { p = p + <span class="n">1</span> }        <span class="c">// 读 p 得值；写 p 写进所指的地方</span>
+<h4 id="引用就是引用-当值用要写-p">引用就是引用：当值用要写 <code>*p</code></h4>
+<p><code>ref T</code> / <code>mut ref T</code> 是<strong>一等值</strong>，不会因为"出现在值的位置"就自动解引用 —— 想拿所指的值， 显式写 <code>*p</code>（定案 ㉝）：</p>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">bump</span>(p: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>) { *p = *p + <span class="n">1</span> }      <span class="c">// 读要用 *p，写也要用 *p</span>
 <span class="k">fn</span> <span class="f">swap</span>(a: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>, b: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span>) {
-    <span class="k">let</span> t = a
-    a = b
-    b = t
+    <span class="k">let</span> t: <span class="t">i64</span> = *a
+    *a = *b
+    *b = t
 }
 
-<span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
-<span class="f">bump</span>(<span class="k">ref</span> n)              <span class="c">// n = 11</span>
-<span class="f">println</span>(n)               <span class="c">// 11</span>
-<span class="k">let</span> m: <span class="t">i64</span> = <span class="k">ref</span> n       <span class="c">// 值位置 ⇒ 拷值</span>
-<span class="f">println</span>(m)               <span class="c">// 11</span></code></pre>
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
+    <span class="f">bump</span>(<span class="k">ref</span> n)              <span class="c">// n = 11</span>
+    <span class="f">println</span>(n)               <span class="c">// 11</span>
+    <span class="k">var</span> r: <span class="k">ref</span> <span class="t">i64</span> = <span class="k">ref</span> n
+    <span class="k">let</span> m: <span class="t">i64</span> = *r          <span class="c">// 想拷值就显式解引用</span>
+    <span class="f">println</span>(m)               <span class="c">// 11</span>
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
 <p>两条要记住的规则：</p>
-<ul><li><strong><code>ref x</code> 自己永远不解引用</strong> —— 否则就是「解掉自己刚取的那个引用」，自相矛盾。 所以 <code>let r = ref n</code> 拿到的是<strong>引用</strong>，而 <code>let y = r</code> 拿到的是<strong>值</strong>。</li><li><strong>「换指向」看右边</strong>：<code>=</code> 在引用上有两个意思，<strong>由右边是什么决定</strong> —— 右边是<strong>值</strong>就写进去，右边是<strong>引用</strong>就换指向 类型自己消歧义，而且右边就在源码里看得见。</li></ul>
-<pre class="lang-extc"><code><span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
-<span class="k">var</span> r: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span> = <span class="k">ref</span> n
-r = r + <span class="n">5</span>                <span class="c">// 右边是**值** ⇒ 写穿：n 变成 15（RHS 求值用的是 r 指向的值）</span>
+<ul><li><strong>只有内建 <code>println</code> 打引用时自动解引用</strong>（地址不可打印，<code>println(r)</code> 打的就是值）； 其它地方当值用一律要写 <code>*p</code>，漏了会报 `<code> </code>mut ref i64<code> is a <strong>reference</strong>, not a value -- dereference it first: </code>*p<code> </code>`。</li><li><strong><code>=</code> 在引用上只有一个意思：换指向</strong>。写穿要写 <code>*p = v</code>。</li></ul>
+<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> n: <span class="t">i64</span> = <span class="n">10</span>
+    <span class="k">var</span> r: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span> = <span class="k">ref</span> n
+    *r = *r + <span class="n">5</span>              <span class="c">// 写穿：n 变成 15</span>
+    <span class="f">println</span>(n)               <span class="c">// 15</span>
 
-<span class="k">var</span> a: <span class="t">i64</span> = <span class="n">1</span>
-<span class="k">var</span> b: <span class="t">i64</span> = <span class="n">2</span>
-r = <span class="k">ref</span> a                <span class="c">// 右边是**引用** ⇒ 换指向：r 现在指 a</span>
-r = <span class="n">7</span>                    <span class="c">// 之后写的是 a</span>
-r = <span class="k">ref</span> b                <span class="c">// 再换指向 b</span></code></pre>
-<p><strong>字段也一样</strong>（<code>self.data = bigger</code> 就是「换 buffer」那个动作）：</p>
+    <span class="k">var</span> a: <span class="t">i64</span> = <span class="n">1</span>
+    r = <span class="k">ref</span> a                <span class="c">// 换指向：r 现在指 a</span>
+    *r = <span class="n">7</span>                   <span class="c">// 写穿：a 变成 7</span>
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<p><strong>字段里的引用也一样</strong>：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> slot { p: <span class="k">mut</span> <span class="k">ref</span> <span class="t">i64</span> }
-<span class="k">var</span> s: slot = { p: <span class="k">ref</span> a }
-s.p = <span class="n">5</span>                  <span class="c">// 值 ⇒ 写进 a</span>
-s.p = <span class="k">ref</span> b              <span class="c">// 引用 ⇒ 字段换指向 b</span></code></pre>
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> a: <span class="t">i64</span> = <span class="n">1</span>
+    <span class="k">var</span> b: <span class="t">i64</span> = <span class="n">2</span>
+    <span class="k">var</span> s: slot = { p: <span class="k">ref</span> a }
+    *s.p = <span class="n">5</span>                 <span class="c">// 写穿：a 变成 5</span>
+    s.p = <span class="k">ref</span> b              <span class="c">// 换指向：字段现在指 b</span>
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
 <p>换指向也要过逃逸检查（新指向的东西不能活得比这个引用短）</p>
 <h4 id="透过只读引用写-编译错误">透过只读引用写 = 编译错误</h4>
 <pre class="lang-extc"><code><span class="k">fn</span> <span class="f">f</span>(b: <span class="k">ref</span> board) { b.cell[<span class="n">0</span>] = <span class="n">1</span> }

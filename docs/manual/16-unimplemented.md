@@ -28,7 +28,7 @@
 | ~~**借用规则挪到调用点**~~ | 被调者**只发布约束**（效果摘要 `Addr`/`Cont`），**调用点代入求解** ⇒ `varArray<slice<u8>>`（字符串表）· `varArray<varArray<T>>`（邻接表）· 通用 `stash(dest,v)` 全通 摘要不完整/带环 ⇒ 调用点**保守拒**（fail loudly）| **2026-09-22 完成**（定案 67 / PLAN #43；`ARENA-FORMAL` §9 + §9.5 落地实录；正例 `examples/container-of-view.extc` · `container-nested.extc`，反例 `tests/errors/stash_view_from_deeper.extc`）|
 | ~~**`new` 的写法**~~ | `new node` / `new i32[1000]` / `new [4]i32`（清零），分配进**当前块**的 arena，存进更外层的地方会**提升**（定案 63）| **2026-09-20 完成**（A1）+ 提升 2026-09-22 |
 | **`region` 显式命名**（**逃逸提升 A3 已完成**）| 跨函数接线（`fn build() -> mut ref node` / 出参 `mut ref`）**已经在跑**；**只剩"显式给一个分配命名区域"**（A4，主人说"不急"）| A4 待定 |  **2026-09-26 主人拍板：死了，不需要**（逃逸提升 A3 已覆盖实际需要）
-| ~~**动态数组 `varArray<T>`**~~ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, home: ref arena }` + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
+| ~~**动态数组 `varArray<T>`**~~ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, cap: i64 }`（`len` 是字段；取长度的方法叫 `size`） + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | ~~**算术 UB 三处**~~ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap）|
 | ~~**全局常量 / 全局变量**~~ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
 | **输入（`reader` / `argv`）** | 全通了：**整块读（64KB）+ 内存里切**（`nextInt` / `nextLine` / `nextToken`）· `std::fs` 三个名字 · `close()` = 提交点 + **编译期查泄漏**（定案 79）· `main(args)` | 已完成 —— 五子棋能真的跟人下 |
@@ -49,8 +49,8 @@
 **[索引](README.md)** · [← 9. 错误信息](15-errors.md) · [11. 还没定的 →](17-undecided.md)
 
 - **`trait` / `dyn Trait`**：**第一期已落地**（声明 · `impl Trait for T` · 六条检查 · 静态分发 ·
-  静态方法表）。**第二期的阶段 1、2 已落地**：`dyn Trait(x).method()` 构造即调用、载荷**进池**、
-  建池用**对象表模式**、派发前**校验世代**、陈旧值 **trap 而不是跳到另一个实现**（`tests/dyn` 9 条判据；
-  设计与四阶段计划见 [`docs/topics/DYN.md`](../topics/DYN.md)）。**仍缺**：保存 dyn 值
-  （`let d: dyn Tag = …`）与字段/容器元素 · 卸载墓碑 · `T: Trait` 上界 · 关联类型与关联常量 ·
-  trait 默认方法 · 孤儿规则与跨 trait 撞名的专门诊断。
+  静态方法表）。**第二期的阶段 1–3 已落地**：`dyn Trait(x).method()` 构造即调用、载荷**进池**、
+  建池用**对象表模式**、派发前**校验世代**、陈旧值 **trap 而不是跳到另一个实现**（`tests/dyn` 13 个夹具 / 24 条判据；
+  设计与四阶段计划见 [`docs/topics/DYN.md`](../topics/DYN.md)）。**已落地**：保存 dyn 值（`let d: dyn Tag = …`）、字段与容器元素、经 `ref dyn T` 接收者派发。
+  **仍缺**：卸载墓碑 · `T: Trait` 上界 · 关联类型与关联常量 ·
+  trait 默认方法 · 跨 trait 撞名的专门诊断（孤儿规则已有专门诊断）。

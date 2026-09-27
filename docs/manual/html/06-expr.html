@@ -76,7 +76,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h3 id="运算符-从高到低">运算符（从高到低）</h3>
 <p><strong>优先级跟 C（和 Go）一致</strong> —— 这是有意的：写算法题的人手上有 C 的肌肉记忆， 这里要是「设计得更好」反而天天出错。</p>
 <table><thead><tr><th>优先级</th><th>运算符</th></tr></thead><tbody><tr><td>1</td><td><code>f(x)</code> 调用、<code>a.b</code> 字段、<code>a.f(x)</code> 方法、<code>::</code> 关联函数</td></tr><tr><td>2</td><td><code>-x</code>、<code>!x</code>、<code>~x</code>（一元）</td></tr><tr><td>3</td><td><code>*</code> <code>/</code> <code>%</code></td></tr><tr><td>4</td><td><code>+</code> <code>-</code></td></tr><tr><td>5</td><td><code>&lt;&lt;</code> <code>&gt;&gt;</code></td></tr><tr><td>6</td><td><code>&lt;</code> <code>&lt;=</code> <code>&gt;</code> <code>&gt;=</code></td></tr><tr><td>7</td><td><code>==</code> <code>!=</code></td></tr><tr><td>8</td><td><code>&amp;</code>（按位与）</td></tr><tr><td>9</td><td><code>^</code>（按位异或）</td></tr><tr><td>10</td><td>`\</td><td>`（按位或）</td></tr><tr><td>11</td><td><code>&amp;&amp;</code></td></tr><tr><td>12</td><td>`\</td><td>\</td><td>`</td></tr></tbody></table>
-<p><strong>赋值 <code>=</code> 不是表达式，是语句</strong> —— 所以 <code>a = b = c</code> 写不出来，<code>+=</code> 之类的复合赋值也还没有。</p>
+<p><strong>赋值 <code>=</code> 不是表达式，是语句</strong> —— 所以 <code>a = b = c</code> 写不出来。复合赋值 <code>+=</code> <code>-=</code> <code>*=</code> <code>/=</code> <code>%=</code> 有（定案 92）；<code>++</code> / <code>--</code> 有意不做。</p>
 <p>位运算只许<strong>整数</strong>（不是数字就行）：<code>1.5 &amp; 2</code> 报错，<code>true &amp; false</code> 也报错 —— <strong><code>bool</code> 在 extC 里不是整数</strong>（不像 C）。</p>
 <p>于是 C 那个著名坑在这里是<strong>编译错误</strong>而不是静默算错：</p>
 <pre class="lang-extc"><code><span class="k">if</span> <span class="n">6</span> &amp; <span class="n">3</span> == <span class="n">3</span> { }     <span class="c">// error: cannot apply `&` to `i32` and `bool`</span>
@@ -92,12 +92,23 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
     p = <span class="n">5</span>              <span class="c">// error: expects `ref i64`, found `i32` -- a value is not a reference</span>
 }</code></pre>
 <p><strong>为什么必须报错</strong>：C 里 <code>p + 1</code>（p 是 <code>int64_t *</code>）是指针算术 —— 它编得过，但意思完全不是用户想的那样。</p>
-<p>透过 <code>ref</code> 写<strong>字段和元素</strong>是允许的（这才是方法的用法）：</p>
-<pre class="lang-extc"><code><span class="k">fn</span> <span class="f">clear</span>(self: <span class="k">ref</span> board) {
-    self.moves = <span class="n">0</span>              <span class="c">// 写字段</span>
-    self.cell[<span class="n">0</span>][<span class="n">0</span>] = <span class="n">0</span>         <span class="c">// 写元素</span>
+<p>要写字段或元素，接收者必须是 <strong><code>mut ref</code></strong>（定案 ㉝）—— <code>self: ref</code> 里写会报 "cannot write through a read-only reference"：</p>
+<pre class="lang-extc"><code><span class="k">struct</span> board {
+    moves: <span class="t">i64</span>
+    cell: [<span class="n">2</span>][<span class="n">2</span>]<span class="t">i64</span>
+
+    <span class="k">fn</span> <span class="f">clear</span>(self: <span class="k">mut</span> <span class="k">ref</span> board) {   <span class="c">// 写字段/元素 ⇒ mut ref</span>
+        self.moves = <span class="t">i64</span>(<span class="n">0</span>)
+        self.cell[<span class="n">0</span>][<span class="n">0</span>] = <span class="t">i64</span>(<span class="n">0</span>)
+    }
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> b: board = { moves: <span class="t">i64</span>(<span class="n">1</span>), cell: [[<span class="n">1</span>, <span class="n">2</span>], [<span class="n">3</span>, <span class="n">4</span>]] }
+    b.<span class="f">clear</span>()
+    <span class="k">return</span> <span class="t">i32</span>(b.moves)              <span class="c">// 0</span>
 }</code></pre>
-<p><strong>但「透过 <code>ref</code> 写一个标量」现在写不出来</strong>（<code>p = p + 1</code> 会被拒）。 绕法：把值包进一个 struct 再透过 <code>self.field</code> 写。 要不要加解引用写法（比如 <code>p.*</code>）还是个待定项，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a>。</p>
+<p>**写标量就写 <code>*p = v</code><strong>：引用本身是值，<code>p = p + 1</code> 会被拒（"<code>mut ref i64</code> is a </strong>reference**, not a value -- dereference it first: <code>*p</code>"）；显式解引用之后读写都通， <code>examples/ref-scalar.extc</code> 就是这个形状。。</p>
 <h3 id="没有-取地址运算符">没有 <code>&amp;</code> 取地址运算符</h3>
 <p><strong>用户写不出取地址。</strong> 引用只通过 <code>ref T</code> 形参进入函数。这是「无裸指针」的实现方式。</p>
 <h3 id="结构体字面量">结构体字面量</h3>

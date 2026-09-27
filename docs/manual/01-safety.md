@@ -37,7 +37,7 @@
 | 5 | **越界 = trap 带 extC 位置** | | `a[i]` 越界 → `trap: index 7 out of range (length 3)` + 文件行号 |
 | 6 | **切片越界** | | 能证明的**编译期报错**，不能证明的运行时 trap 带位置 |
 | 7 | **只读 / 可写看得见** | | `ref T` / `mut ref T`、`slice<T>` / `mut slice<T>`（见 §3） |
-| 8 | **算术无 UB** | **部分** | 溢出用 `-fwrapv` 兜成确定行为；**除零崩了没位置**、**移位超宽静默错**（待补） |
+| 8 | **算术无 UB** | **是** | 溢出用 `-fwrapv` 兜成确定行为；**除零与移位超宽都 trap，且带 extC 位置**（`tests/traps/div_zero.extc`、`shift_too_big.extc`） |
 | 9 | **引用不能活得比被指对象长**（逃逸检查） | | 词法深度 `depth(r) ≥ depth(v)`；参数 = 0、函数体 = 1、每层块 +1。**比两个整数，不写生命周期** |
 
 ### 逃逸检查：唯一引用规则
@@ -100,16 +100,16 @@ fn stash(s: slice<u8>) { G = s }   // cannot store a borrowed value into somethi
 > 深度模型**不是为今天设计的，是为内存模型设计的**：
 > 加上 arena（深度 0 的存储）之后，`g.s = a[..]` 这类照样被同一条规则挡住
 
-### 还剩下的：算术 UB 三处
+### 算术 UB：三处都已带位置 trap
 
 | 情况 | 现状 |
 |---|---|
 | 有符号溢出 | `-fwrapv` 兜成确定的绕回 |
-| **除零** | 崩（SIGFPE）但**没有 extC 位置** |
-| **移位 ≥ 位宽** | **静默算错**（只有 gcc warning 漏出来） |
+| **除零** | trap：`trap: division by zero`，带 `.extc:行号` |
+| **移位 ≥ 位宽** | trap：`trap: shift count out of range`，带位置 |
 
-这两条是**从 C 继承来的**（编译到 C 就意味着要负责把 C 的 UB 一处一处堵上），
-堵法都不贵，见 [`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md) §6。
+这三条是从 C 继承来的（编译到 C 就意味着要负责把 C 的 UB 一处一处堵上）。生成物里对应的是
+`extc_divI` / `extc_shiftCount` 这类检查过的帮助函数，常设判据在 `tests/traps/`。
 
 ---
 

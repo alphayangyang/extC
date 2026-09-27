@@ -26,7 +26,7 @@
 | 11 | `&&` |
 | 12 | `\|\|` |
 
-**赋值 `=` 不是表达式，是语句** —— 所以 `a = b = c` 写不出来，`+=` 之类的复合赋值也还没有。
+**赋值 `=` 不是表达式，是语句** —— 所以 `a = b = c` 写不出来。复合赋值 `+=` `-=` `*=` `/=` `%=` 有（定案 92）；`++` / `--` 有意不做。
 
 位运算只许**整数**（不是数字就行）：`1.5 & 2` 报错，`true & false` 也报错 ——
 **`bool` 在 extC 里不是整数**（不像 C）。
@@ -61,18 +61,30 @@ fn bump(p: ref i64) {
 **为什么必须报错**：C 里 `p + 1`（p 是 `int64_t *`）是指针算术 ——
 它编得过，但意思完全不是用户想的那样。
 
-透过 `ref` 写**字段和元素**是允许的（这才是方法的用法）：
+要写字段或元素，接收者必须是 **`mut ref`**（定案 ㉝）—— `self: ref` 里写会报
+"cannot write through a read-only reference"：
 
 ```extc
-fn clear(self: ref board) {
-    self.moves = 0              // 写字段
-    self.cell[0][0] = 0         // 写元素
+struct board {
+    moves: i64
+    cell: [2][2]i64
+
+    fn clear(self: mut ref board) {   // 写字段/元素 ⇒ mut ref
+        self.moves = i64(0)
+        self.cell[0][0] = i64(0)
+    }
+}
+
+fn main() -> i32 {
+    var b: board = { moves: i64(1), cell: [[1, 2], [3, 4]] }
+    b.clear()
+    return i32(b.moves)              // 0
 }
 ```
 
-**但「透过 `ref` 写一个标量」现在写不出来**（`p = p + 1` 会被拒）。
-绕法：把值包进一个 struct 再透过 `self.field` 写。
-要不要加解引用写法（比如 `p.*`）还是个待定项，见 [`DECISIONS.md`](../docs/DECISIONS.md)。
+**写标量就写 `*p = v`**：引用本身是值，`p = p + 1` 会被拒（"`mut ref i64` is a **reference**,
+not a value -- dereference it first: `*p`"）；显式解引用之后读写都通，
+`examples/ref-scalar.extc` 就是这个形状。。
 
 ### 没有 `&` 取地址运算符
 

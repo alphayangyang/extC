@@ -120,7 +120,7 @@ t.<span class="f">push</span>(<span class="c">"abc"</span>)                     
 <p>现在：<strong>被调者只声明"会把什么存到哪里"，由调用点代入实际实参求解</strong> ⇒ 判据变成<strong>调用点上这个实参活得够不够久</strong>：</p>
 <table><thead><tr><th>写法</th><th>结果</th></tr></thead><tbody><tr><td><code>stash(ref outer, local[..])</code> —— <code>local</code> 与 <code>outer</code> <strong>同一个块</strong></td><td>合法（同层 ⇒ 安全 <code>tests/asan/borrowed-stash-sameframe.extc</code>）</td></tr><tr><td><code>stash(ref outer, local[..])</code> —— <code>local</code> 在<strong>更深的块</strong>里</td><td>编译错误（<code>tests/errors/stash_view_from_deeper.extc</code>）</td></tr><tr><td><code>stash(ref slot, i)</code> —— 值不是引用</td><td>合法（没有引用可悬垂）</td></tr></tbody></table>
 <p>拿不准的时候（<strong>递归 / 互相调用 / 有解析不出来的东西</strong> ⇒ 效果摘要算不完整）⇒ 调用点<strong>保守拒</strong>， 消息会说清是"分析不出来"而不是"一定错" —— 这是<strong>故意的</strong>：宁可误拒，不可漏 UB 处方：把那个助手函数的体<strong>写简单些</strong>（让摘要算得出来），或让值活到调用点那一层</p>
-<p>（旧限制，已解）<code>new</code> 出来的东西以前交不出去 —— 现在上面三种都行：<code>fn make() -&gt; mut ref node { return new node }</code> 是<strong>编译错误</strong>（它活不过当前块）。跨函数接线要等 <strong>A3 逃逸提升</strong> （今天要在函数间传递，就让<strong>调用者</strong>提供 buffer/<code>mut ref</code> —— 这也是 <code>IO.md</code> 的设计）</p>
+<p>（旧限制<strong>已解</strong>：A3 逃逸提升 2026-09-20 落地）<code>new</code> 出来的东西可以用上面三种方式交出去，例如 <code>fn make() -&gt; mut ref node { return new node }</code> 是<strong>编译错误</strong>（它活不过当前块）。跨函数接线要等 <strong>A3 逃逸提升</strong> （今天要在函数间传递，就让<strong>调用者</strong>提供 buffer/<code>mut ref</code> —— 这也是 <code>IO.md</code> 的设计）</p>
 <p><code>new T</code> 的 <code>T</code> 必须是<strong>具体类型</strong>（模板里的 <code>T</code> 大小不知道 ⇒ 报错）</p>
 <p><code>new T[n]</code> 里的 <code>n</code> <strong>只求值一次</strong>（不纯时编译器自己引临时变量）。</p>
 <hr>

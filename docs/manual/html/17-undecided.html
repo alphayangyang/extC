@@ -73,7 +73,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p><strong><a href="README.html">索引</a></strong> · <a href="16-unimplemented.html">← 10. 已定案、但还没实现</a> · <a href="18-modules.html">12. 库与模块（2026-09-22 新增） →</a></p>
 <hr>
 <h1 id="11-还没定的">11. 还没定的</h1>
-<p><code>result&lt;void,E&gt;</code> 还是 <code>result&lt;(),E&gt;</code>、<code>@main</code> 和 <code>module main</code> 的优先关系、<code>+=</code> 复合赋值、<code>&amp;&amp;</code>/<code>||</code> vs <code>and</code>/<code>or</code>、无返回值函数要不要强制 <code>-&gt; void</code>、要不要做多错误报告。</p>
+<p><code>result&lt;void,E&gt;</code> 还是 <code>result&lt;(),E&gt;</code>、<code>@main</code> 和 <code>module main</code> 的优先关系、<code>&amp;&amp;</code>/<code>||</code> vs <code>and</code>/<code>or</code>、无返回值函数要不要强制 <code>-&gt; void</code>、要不要做多错误报告。</p>
 <p><strong><code>==</code> 右边的裸 <code>{}</code> 不推</strong>（已定，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a> 定案 27）：</p>
 <pre class="lang-extc"><code><span class="f">println</span>(ps[<span class="n">0</span>] == { x: <span class="n">1</span>, y: <span class="n">2</span> })        <span class="c">// cannot infer the type of a bare `{}` here</span>
 <span class="f">println</span>(ps[<span class="n">0</span>] == point { x: <span class="n">1</span>, y: <span class="n">2</span> })  <span class="c">// 写全名字</span></code></pre>

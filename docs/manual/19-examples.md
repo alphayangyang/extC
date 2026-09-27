@@ -10,7 +10,7 @@
 
 | 文件 | 演示 |
 |---|---|
-| `tour.extc` | **语言巡礼** —— 一份能跑的完整示例，把现在能用的东西全用上了 |
+| `tour.extc` | **语言巡礼** —— 一份能跑的完整示例（`for` 与 `+=` 还没进这份示例）|
 | `hello.extc` | 变量、`if/else`、`while`、函数调用、打印 |
 | `fizzbuzz.extc` | `else if` 链、`%`、`while` |
 | `types.extc` | 拓宽自动、字面量按值适配（T2） |
@@ -26,7 +26,7 @@
 | `slices.extc` | **切片视图**：四种写法、编译期证明的零检查、透过视图写 |
 | `mut-views.extc` | **`slice<T>` / `mut slice<T>`**：源头继承、就地 `reverse`/`fill`、签名说实话 |
 | `refs.extc` · `mut-ref.extc` | **`ref T` / `mut ref T`**：只读借用 vs 可写借用、`let` 也能借 |
-| `ref-scalar.extc` | **标量引用**：自动解引用、写穿、**`swap`**（以前写不出来） |
+| `ref-scalar.extc` | **标量引用**：显式 `*p` 解引用、写穿、**`swap`**（以前写不出来） |
 | `array-of-struct.extc` | 数组元素是带 `fn ==` 的 struct（含一个**回归 bug** 的守卫） |
 | `option-result.extc` | **`option` / `result` / `?`**：五子棋的落子与寻位 |
 | `fenwick.extc` | **树状数组**：对拍 2 万次零不一致 + 逆序对（第一道真算法题） |

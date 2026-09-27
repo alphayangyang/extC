@@ -46,7 +46,7 @@ println(v.size(), " ", v.get(0) ?? -1)
 - `set(i, v)` 只在 `i ≥ cap` 时 trap；`i` 落在 `[len, cap)` 之间会写进未使用区
   （跟 C++ 的 `operator[]` 同款）⇒ **想安全读就 `get(i)`**
 
-**明确不做**（免得以后有人问）：迭代器 / 范围 for（要等 `for` 和函数值）、
+**明确不做**（免得以后有人问）：`varArray` 自己的迭代器 / 直接 `for d in v`（要等函数值/协议那一步；先 `var sl = v.asSlice()` 再 `for d in sl` 是行的 —— `for` 本身早已能用）、
 `at()` 那种"双入口"（extC 的 `[]` 已经 trap 带位置，不需要两个）、
 分配器模板参数、`shrink_to_fit`、`vector<bool>` 位压缩
 `insertAt` / `eraseAt` 留到第二版 —— 而且**先要定"引用失效"的策略**（见上面第一条）

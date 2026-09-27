@@ -35,7 +35,7 @@ extC **只自动做无损失的拓宽**；收窄 / 换符号 / 整数↔浮点**
 | 能精确表示的整数 → 浮点（`i16`→`f32`、`i32`→`f64`） | |
 | `i32` → `f32` | f32 尾数只有 24 位 |
 | `f32` → `f64` | |
-| `f64` → `f32` | |
+| `f64` → `f32` | 有损，必须显式写 `f32(x)` |
 
 **字面量按值适配**（`DESIGN.md` §5 的「字面量类型推导」）：
 
@@ -297,51 +297,64 @@ let m: i64 = 7
 **降级是自动的、单向的**：`mut ref T` 可以当 `ref T` 用（能写当然能读）；
 反过来不行，必须显式写 `mut` —— 「安全是默认」的直接体现。
 
-#### 值位置自动解引用（`ref` 在表达式里的行为）
+#### 引用就是引用：当值用要写 `*p`
 
-`ref T` 的值在**当值用**的时候自动解引用 —— 于是标量引用也能用了：
+`ref T` / `mut ref T` 是**一等值**，不会因为"出现在值的位置"就自动解引用 —— 想拿所指的值，
+显式写 `*p`（定案 ㉝）：
 
 ```extc
-fn bump(p: mut ref i64) { p = p + 1 }        // 读 p 得值；写 p 写进所指的地方
+fn bump(p: mut ref i64) { *p = *p + 1 }      // 读要用 *p，写也要用 *p
 fn swap(a: mut ref i64, b: mut ref i64) {
-    let t = a
-    a = b
-    b = t
+    let t: i64 = *a
+    *a = *b
+    *b = t
 }
 
-var n: i64 = 10
-bump(ref n)              // n = 11
-println(n)               // 11
-let m: i64 = ref n       // 值位置 ⇒ 拷值
-println(m)               // 11
+fn main() -> i32 {
+    var n: i64 = 10
+    bump(ref n)              // n = 11
+    println(n)               // 11
+    var r: ref i64 = ref n
+    let m: i64 = *r          // 想拷值就显式解引用
+    println(m)               // 11
+    return 0
+}
 ```
 
 两条要记住的规则：
 
-- **`ref x` 自己永远不解引用** —— 否则就是「解掉自己刚取的那个引用」，自相矛盾。
-  所以 `let r = ref n` 拿到的是**引用**，而 `let y = r` 拿到的是**值**。
-- **「换指向」看右边**：`=` 在引用上有两个意思，**由右边是什么决定** ——
-  右边是**值**就写进去，右边是**引用**就换指向 类型自己消歧义，而且右边就在源码里看得见。
+- **只有内建 `println` 打引用时自动解引用**（地址不可打印，`println(r)` 打的就是值）；
+  其它地方当值用一律要写 `*p`，漏了会报
+  `` `mut ref i64` is a **reference**, not a value -- dereference it first: `*p` ``。
+- **`=` 在引用上只有一个意思：换指向**。写穿要写 `*p = v`。
 
 ```extc
-var n: i64 = 10
-var r: mut ref i64 = ref n
-r = r + 5                // 右边是**值** ⇒ 写穿：n 变成 15（RHS 求值用的是 r 指向的值）
+fn main() -> i32 {
+    var n: i64 = 10
+    var r: mut ref i64 = ref n
+    *r = *r + 5              // 写穿：n 变成 15
+    println(n)               // 15
 
-var a: i64 = 1
-var b: i64 = 2
-r = ref a                // 右边是**引用** ⇒ 换指向：r 现在指 a
-r = 7                    // 之后写的是 a
-r = ref b                // 再换指向 b
+    var a: i64 = 1
+    r = ref a                // 换指向：r 现在指 a
+    *r = 7                   // 写穿：a 变成 7
+    return 0
+}
 ```
 
-**字段也一样**（`self.data = bigger` 就是「换 buffer」那个动作）：
+**字段里的引用也一样**：
 
 ```extc
 struct slot { p: mut ref i64 }
-var s: slot = { p: ref a }
-s.p = 5                  // 值 ⇒ 写进 a
-s.p = ref b              // 引用 ⇒ 字段换指向 b
+
+fn main() -> i32 {
+    var a: i64 = 1
+    var b: i64 = 2
+    var s: slot = { p: ref a }
+    *s.p = 5                 // 写穿：a 变成 5
+    s.p = ref b              // 换指向：字段现在指 b
+    return 0
+}
 ```
 
 换指向也要过逃逸检查（新指向的东西不能活得比这个引用短）

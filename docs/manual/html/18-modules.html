@@ -121,7 +121,7 @@ cin &gt;&gt; a &gt;&gt; b</code></pre>
 
 <span class="f">indexOf</span>(nums[..], <span class="n">30</span>)          <span class="c">// 从实参**推导**</span>
 indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)     <span class="c">// **显式实参**（`T` 只出现在返回类型时必须这么写）</span></code></pre>
-<ul><li><code>T</code> 上的 <code>==</code> / <code>!=</code>（<strong>推迟到实例化</strong>再查"这个 <code>T</code> 有没有 <code>fn ==</code>"）</li><li><code>T</code> 上的 <code>&lt;</code> / <code>&gt;</code>（还没有比较协议 —— 要等函数值/协议那一步）</li><li>泛型体里<strong>不能</strong>再调用泛型函数（报错会说清原因，见 <code>PLAN #50</code>）</li></ul>
+<ul><li><code>T</code> 上的 <code>==</code> / <code>!=</code>（<strong>推迟到实例化</strong>再查"这个 <code>T</code> 有没有 <code>fn ==</code>"）</li><li><code>T</code> 上的 <code>&lt;</code> / <code>&gt;</code>（与上一行同款：模板放行，<strong>推迟到实例化</strong>再查这个 <code>T</code> 有没有 <code>fn &lt;</code>）</li><li>泛型体能调用泛型函数了（<code>PLAN #50</code> 已解）</li></ul>
 <h3 id="12-3-跟-c-打交道-extern-信任声明">12.3 跟 C 打交道：<code>extern!</code> + 信任声明</h3>
 <pre class="lang-extc"><code><span class="k">extern</span>!(<span class="c">"libc"</span>) <span class="k">fn</span> <span class="f">write</span>(fd: <span class="t">i32</span>, buf: <span class="k">ref</span> <span class="t">u8</span>, n: <span class="t">i64</span>) -&gt; <span class="t">i64</span>
     effects Addr=<span class="n">0</span> Cont=<span class="n">0</span>        <span class="c">// 我签字：**我不存你的指针** ⇒ 实参不受寿命约束</span>
