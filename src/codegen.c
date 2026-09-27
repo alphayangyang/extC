@@ -4598,9 +4598,18 @@ static void genFunc(CG *g, FuncDef *f) {
      * returned the slot the return statements never wrote. Measured on
      * `fn f(x: bool) -> i32 { var p = new i32  if x { return i32(*p) } }` called with
      * `false`: the caller received whatever the stack held. */
-    if (fallsOff && !retVoid)
-        cgLine(g, "extc_trapMsg(\"%s\", %d, \"a non-void function reached its end without returning\");",
-               g->path, f->line);
+    if (fallsOff && !retVoid) {
+        /* `main` is the one function C gives an implicit `return 0` for, and the checker's rule for
+         * it says as much ("the return type may be absent or `i32`"). Trapping there killed a program
+         * every C programmer expects to exit 0: the trap sat at the end of `main` right after its
+         * output (tools/attack.py coro K4 -- the coroutine itself was fine, the program died on the
+         * way out). Still a trap everywhere else: the value there is genuinely undefined. */
+        if (g->mainFuncName && f->name && strcmp(g->mainFuncName, f->name) == 0)
+            cgLine(g, "return 0;");
+        else
+            cgLine(g, "extc_trapMsg(\"%s\", %d, \"a non-void function reached its end without returning\");",
+                   g->path, f->line);
+    }
     /* The shared epilogue: the release sequence appears once, and falling off
      * the end of the body goes through it as well. The `goto` guarantees that
      * the label has a user, so there is no -Wunused-label warning.

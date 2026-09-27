@@ -1,0 +1,16 @@
+use std::io
+/* 回归（tools/attack.py coro K4）：`main` 不写 `return` 时，生成物末尾曾经是一句
+ * extc_trapMsg("… reached its end without returning") ✗ —— 程序打印完正常结果后在**退出时白死**
+ * （C 的约定是 main 掉出末尾等价 return 0，检查器注释也写着 main 的返回可以缺省）。
+ * 现在只有 main 走 C 的隐式规则，别的非 void 函数掉出末尾仍旧 trap（那里的值是真的未定义）。 */
+fn count(n: i64) -> coroutine<i64> {
+  var i: i64 = 0
+  while i < n { yield i
+    i = i + i64(1) }
+}
+fn main() -> i32 {
+  var s: i64 = 0
+  var c = count(i64(4))
+  while c.next() { s = s + c.value() }
+  io::cout << "sum=" << s << "\n"
+}
