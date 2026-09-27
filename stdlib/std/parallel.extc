@@ -8,7 +8,7 @@
  * 编译器生成一个 `static` trampoline 去调它（`alloc<T>` 也是同样的道理：要生成的代码只能由编译器
  * 命名）。`@builtin` 就是把这层事实写进声明 —— 库提供可发现性、文档与类型面，编译器提供实现。
  *
- * 形状（2026-09-28 定，③a 正在实现）：
+ * 形状（2026-09-28 定，③a / ③b / ③c **均已落地**）：
  *
  *   fn worker(id: i64, lo: i64, hi: i64, out: mut slice<T>) -> i32
  *   parallel::run(worker, out, n, threads) -> i32
@@ -19,9 +19,15 @@
  *     分析就能保证没有数据竞争（这是 ③a 能立刻做出来的原因）；
  *   · 返回第一个非零的 worker 返回值（0 = 全部成功）；
  *   · 每个 worker 有**自己的 arena**（`extc_tls_arena`），线程结束整块回收；
- *   · worker 体内只允许调用 `Thread=0` 的东西（见手册 §12.3），调用户函数、`new`、模块级 `var`
- *     目前一律拒绝 —— 传递性检查与线程本地 arena 的路由是 ③c。
+ *   · worker 体内只允许调用 `Thread=0` 的东西（见手册 §12.3）或**同样形状**的顶层函数（检查是
+ *     传递的，深度上限 16）；模块级 `var` 一律拒绝；
+ *   · worker 里的 `new` 走**线程本地 arena**（`extc_tls_arena`，每个 worker 一个，线程结束
+ *     整块回收）；trampoline 会给需要 home 的 worker 补传这个 arena。
  *
- * 实测上界（本机 8 个 P 核）：矩阵乘法 7.3x；运行期线程池自测 5.31x（绑核 0-7）。 */
+ * 实测（本机 8 个 P 核，绑核 0-7，3 次取最好）：分块计算 8192 块 × 20000 次混合运算 ——
+ * 1 线程 133ms ⇒ 2 69ms(1.93x) ⇒ 4 38ms(3.50x) ⇒ **8 线程 21ms(6.33x)**；上界参考是矩阵乘法 7.3x。
+ *
+ * ⚠️ worker 拿到的是**分区后**的 view ⇒ **下标从 0 数**（`out[i - lo]`，不是 `out[i]`）。
+ * 这条踩过两次，都被语言自己的边界检查当场抓住：`trap: index 1 out of range (length 1)`。 */
 @builtin
 fn run(worker: i64, out: i64, n: i64, threads: i64) -> i32

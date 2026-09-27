@@ -110,7 +110,16 @@ int32_t n = (2000000000 + 2000000000);      /* gcc: integer overflow in expressi
 函数链 ✓ 大 n × 8 线程 ✓）+ 7 条按期望被拒（签名 ✓ `println` ✓ `new` ✓ 模块级 `var` ✓ 参数个数 ✓
 第一个实参不是函数名 ✓ 以及两条**传递**反例 ✓）。
 
-**还没做（③c）**：worker 里的 `new` 路由到 `extc_tls_arena` ✓ ⇒ 之后放开"worker 不许 `new`" ✓；
+**③c 已完成（2026-09-28）**：worker 里的 `new` 走**线程本地 arena**（`extc_tls_arena`）：worker 链上每个
+函数都带 `parTlsArena` ⇒ `arenaRefAt` 给 `(*extc_tls_arena)`；而 worker 体内一有分配就会多一个隐藏的
+`home` **尾参**（`needsHome` 那套），trampoline 补传的也是同一个线程本地 arena ⇒ 实测
+`too few arguments to function 'w'; expected 5, have 4` 之后修好。判定：worker 内分配端到端探针 rc=0；
+`tools/attack.py par` 的 P4 从"应拒"翻成"允许"并通过（11/11）。安全性来自签名：worker 只能写 `out`、
+只能返回 `i64` ⇒ 分配逃不出这个 worker。
+
+**还剩（收尾项）**：诊断改进（无法解析的调用应指名说它碰共享，而不是 "cannot resolve"）；手册 §12.3
+补 `parallel::run` 的用法与"下标从 0 数"这条纪律。**并发那条线到此三步齐全**：③a 内建+trampoline、
+③b 传递性 worker 安全检查、③c 线程本地 arena。
 另有一处诊断待改好：无法解析的调用现在说"cannot resolve" ✓ 理想是指名说它碰共享 ✓（拒绝是安全的 ✓）。
 
 ## 0.1.2 第二程（44 次提交，27 条修复收在这里）✓
