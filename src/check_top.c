@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include <stdlib.h>   /* getenv (the EXTC_DUMP_EFFECTS debug switch) */
+#include <time.h>
 
 /* Type parameters visible inside a function.
  *
@@ -4636,7 +4637,11 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
     }
 }
 
+static int ctOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+static double ctNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+static void ctPhase(const char *n, double t0) { if (ctOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ctNow() - t0); }
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
+    double tB0=0,tB1=0,tB2=0,tB3=0,tB4=0,tB5=0,tB6=0,tB7=0,tB8=0;
     Checker c;    memset(&c, 0, sizeof c);
     vecInit(&c.funcInsts, arena, sizeof(void *));   /* free function instances */
     c.ctx = ctx;
@@ -4903,6 +4908,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
     /* First pass: resolve the type names in every signature and field. */
     /* Enum payload types are resolved here as well (`| circle(f64) | rect(f64, f64)`). */
+    ctPhase("ckB0", tB0); tB1 = ctNow();
     for (size_t i = 0; i < m->types.len; i++) {
         TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
         for (size_t j = 0; j < td->variants.len; j++) {
@@ -4912,6 +4918,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                     ttResolve(tt, ctx, *(Type **)vecAt(&v->types, k), v->line, &td->typeParams);
         }
     }
+    ctPhase("ckB1", tB1); tB2 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->fields.len; j++) {
@@ -4921,6 +4928,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < sd->methods.len; j++)
             resolveSignature(&c, *(FuncDef **)vecAt(&sd->methods, j));
     }
+    ctPhase("ckB2", tB2); tB3 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++)
         resolveSignature(&c, *(FuncDef **)vecAt(&m->funcs, i));
 
@@ -4928,6 +4936,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * conformance check compares resolved types on both sides. `Self` resolves because the
      * parser gave every signature that type parameter (see parseTrait) -- which is the whole
      * implementation of "`Self` is an implicit type parameter". */
+    ctPhase("ckB3", tB3); tB4 = ctNow();
     for (size_t i = 0; i < m->traits.len; i++) {
         TraitDef *td = *(TraitDef **)vecAt(&m->traits, i);
         for (size_t j = 0; j < td->methods.len; j++)
@@ -4938,11 +4947,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     checkGlobals(&c);
     checkDeclarations(&c);
 
+    ctPhase("ckB4", tB4); tB5 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++)
             checkMethodShape(&c, *(FuncDef **)vecAt(&sd->methods, j));
     }
+    ctPhase("ckB5", tB5); tB6 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
         if (fx->tmpl) continue;              /* an instance is not checked separately */
@@ -4950,11 +4961,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
 
     /* Second pass: check function bodies. */
+    ctPhase("ckB6", tB6); tB7 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++)
             checkFunc(&c, *(FuncDef **)vecAt(&sd->methods, j));
     }
+    ctPhase("ckB7", tB7); tB8 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
         if (fx->tmpl) continue;              /* covered by the per-instance recheck */
@@ -4982,6 +4995,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * then point the call expression's `func` at it. Static instances are interned
      * (`funcInstance` de-duplicates), so one argument combination has exactly one
      * instance. */
+    ctPhase("ckB8", tB8);   /* after the last of the eight: the rest of checkModule */
     for (size_t i = 0; i < c.callChecks.len; i++) {
         CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
         if (!cc->node || !cc->tmpl) continue;
