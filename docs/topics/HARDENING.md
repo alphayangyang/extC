@@ -280,6 +280,30 @@ static inline int32_t *slice_i32_index(slice_i32 v, int64_t i, const char *file,
 包括为此重设相应基准；只有**很严重**的问题（大范围语义变化、需要改语言规则、影响面无法估算）
 才需要事先报备。这条规则写在这里，后续轮次照此执行，不再逐条请示。
 
+## 三点六、H6（已落地）：字符串里的非法转义原样透传给 C 后端
+
+**来源**：战役5 的第 3 条发现（`fail-00021`，原语料 `tests/pool/rt_nest_promote.extc`；战役6
+又独立抓到同一条）——变异在字符串里插了 `\u64`。extC 说成功，gcc 拒绝整份文件：
+`incomplete universal character name \u64`（C 的 `\u` 必须跟 4 位十六进制）。
+
+**根因**：`lexString` 的注释写着"转义原样透传给 C 后端，parser 与检查器从不看里面" ⇒ 它只做
+`lxAdvance` 跳过转义；而**字符字面量那边早就有**一个完整校验器（`lexCharEscape`：`n t r 0 \ ' " a b f v x`，
+`\x` 要求至少一位十六进制，其余报错）。
+
+**修法**：把那份唯一的权威改名为 `lexEscape(…, const char *what)`（错误措辞按种类），
+`lexString` 复用它 ⇒ **一份列表管两种字面量**。
+
+**踩到并修掉的坑**：`lexEscape` 会消费转义及其参数，我在循环末尾又 `lxAdvance()` 了一次
+⇒ 每个转义多跳一个字符 ⇒ **197/413 份生成物的字符串文本被改**（闸门当场抓住）⇒ 改成 `continue`。
+
+**验证**：复现用例报 `error: unknown escape '\u' in a string literal`；合法转义
+（`\t \n \" \\ \x41`）照旧编译运行正确；`tools/golden.sh` ⇒ **413/413 逐字节 · 非法 C 0**
+（纯加诊断，**零输出变化**）；回归 `tests/errors/bad_escape_in_string.extc`，parrun 287 → 288/0。
+
+**更正上一轮的一条不实说法**：提交 `5659c28` 的信息里写"战役5 因此丢了一个用例"——
+不准确。战役5 的 3 片失败**都存下来了**（`fail-00021` / `fail-00034` / `fail-00086`）。
+目录名带 mode+seed 仍然是值得的加固（避免将来撞名覆盖），但那次并没有真丢东西。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
