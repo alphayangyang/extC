@@ -1,0 +1,64 @@
+// 正例：`@unchecked` 是**函数级**的 —— 同一个文件里，未标注的函数仍然有边界检查。
+//
+// 判据有两条，都在 tests/annot/run.sh 里：
+//   ① 运行：本文件与"把 `@unchecked` 那一行删掉"的孪生文件（run.sh 用 sed 现生成）
+//      输出**逐字节相同** —— 注解不许改变任何一个字节的结果；
+//   ② 生成物：只从标注过的那个函数体里消失，未标注的函数体里一个字都不许少。
+use std::io
+
+struct tape {
+    xs: [8]i64
+
+    /* 未标注：这个函数体的下标走带位置的边界检查 */
+    fn checkedTotal(self: ref tape, v: slice<u8>) -> i64 {
+        var acc: i64 = 0
+        var i: i64 = 0
+        while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+        i = 0
+        while i < i64(8) { acc = acc + self.xs[i]  i = i + i64(1) }
+        return acc
+    }
+
+    /* 已标注：同样的循环，范围由那两行循环条件保证（`i < v.len`、`i < 8`） */
+    @unchecked
+    fn freeTotal(self: ref tape, v: slice<u8>) -> i64 {
+        var acc: i64 = 0
+        var i: i64 = 0
+        while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+        i = 0
+        while i < i64(8) { acc = acc + self.xs[i]  i = i + i64(1) }
+        return acc
+    }
+}
+
+/* 未标注的自由函数 */
+fn sumChecked(v: slice<u8>, a: ref [8]i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    i = 0
+    while i < i64(8) { acc = acc + a[i]  i = i + i64(1) }
+    return acc
+}
+
+/* 已标注的自由函数（写法与上面一字不差，只多了那一行） */
+@unchecked
+fn sumFree(v: slice<u8>, a: ref [8]i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    i = 0
+    while i < i64(8) { acc = acc + a[i]  i = i + i64(1) }
+    return acc
+}
+
+fn main() -> i32 {
+    var a: [8]i64
+    var i: i64 = 0
+    while i < i64(8) { a[i] = i * i64(7)  i = i + i64(1) }
+    var t: tape = { xs: a }
+    let s: slice<u8> = "abcdefgh"
+    /* 四条路都算同一个数：加不加注解只该影响生成的 C，不该影响结果 */
+    io::cout << "checked=" << sumChecked(s, ref a) << " free=" << sumFree(s, ref a) << " method=" << t.checkedTotal(s) << " methodFree=" << t.freeTotal(s) << "\n"
+    return 0
+}

@@ -1,0 +1,23 @@
+// `std::sys::mem` 的两条运行期原语的**边界用例**（直调原语，不经过 string）：
+//   · hay 为空、needle 为空、needle 恰好等于整串、needle 比 hay 长
+//   · 自重叠模式（`aa` 在 `aaaa` 里必须是 0 = 最左）、命中在开头/结尾、不命中
+//   · 长度 0 但指针非空的切片（`s[2..2]` 那种视图）同样安全：长度先判，指针后碰
+//     （extC 里造不出「data 是空指针」的切片：`ref` 没有零值 —— 那一条由语言挡住，不靠运行期）
+// expect: e0=0 e1=-1 e2=0 e3=-1 e4=0 e5=0 e6=2 e7=4 e8=-1 e9=5 z0=0 z1=-1 eq=1,0,1
+use std::io
+use std::sys::mem as sysmem
+
+fn mf(hay: slice<u8>, needle: slice<u8>) -> i64 {
+    return sysmem::extc_memFind(hay.data, hay.len, needle.data, needle.len)
+}
+
+fn main() -> i32 {
+    let empty: slice<u8> = ""
+    let aaaa: slice<u8> = "aaaa"
+    let aa: slice<u8> = "aa"
+    let abcdef: slice<u8> = "abcdef"
+    let longer: slice<u8> = "abcdefg"
+    let zv: slice<u8> = abcdef[i64(2)..i64(2)]      /* 长度 0、指针有效 */
+    io::cout << "e0=" << mf(empty, empty) << " e1=" << mf(empty, aa) << " e2=" << mf(abcdef, empty) << " e3=" << mf(abcdef, longer) << " e4=" << mf(abcdef, abcdef) << " e5=" << mf(aaaa, aa) << " e6=" << mf(abcdef, "cd") << " e7=" << mf(abcdef, "ef") << " e8=" << mf(abcdef, "zz") << " e9=" << mf(abcdef, "f") << " z0=" << mf(zv, empty) << " z1=" << mf(zv, aa) << " eq=" << sysmem::extc_memEq("abc".data, "abc".data, i64(3)) << "," << sysmem::extc_memEq("abc".data, "abd".data, i64(3)) << "," << sysmem::extc_memEq(empty.data, empty.data, i64(0)) << "\n"
+    return 0
+}

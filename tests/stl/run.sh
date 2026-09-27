@@ -110,8 +110,45 @@ run_case setStructKey tests/stl/setStructKey.extc "order=1,2,3 len=3 has2=1 lb2=
 echo "== string：拼接（+ / +=）· 比较 · 查找 · 视图 · 当 hashMap 键 =="
 run_case stringOps  tests/stl/stringOps.extc  "c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20"
 
-echo "== string::find 的穷举对拍（{a,b} 上 1..4 的模式 × 0..10 的文本 vs 朴素查找）+ 大输入 =="
-run_case stringFind tests/stl/stringFind.extc "checked=61410|bad=0"
+echo "== string::find：穷举对拍（{a,b} 上 1..4 的模式 × 0..10 的文本 vs 朴素查找）+ 逐条边界 =="
+run_case stringFind tests/stl/stringFind.extc "checked=61410|edge=0|bad=0"
+
+echo "== std::sys::mem：运行期原语的边界（空 hay · 空 needle · needle 等于整串 · 自重叠 · 零长视图）=="
+run_case memFind tests/stl/memFind.extc "e0=0 e1=-1 e2=0 e3=-1 e4=0 e5=0 e6=2 e7=4 e8=-1 e9=5 z0=0 z1=-1 eq=1,0,1"
+
+echo "== 非 GNU 回退（memchr + memcmp）：同一份生成的 C 撤掉 __linux__ 再编一次，输出必须逐字节相同 =="
+# 判据是"两条路给同一个答案"，不是"回退那一段编得过"：`#else` 里是自己写的扫描循环，
+# 最左匹配、空模式、越界这几条都要再走一遍（自重叠模式最容易在这种手写循环里写错）。
+TMPFB=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$TMPFB/m.c" tests/stl/memFind.extc >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPFB/m" "$TMPFB/m.c" >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -U__linux__ -o "$TMPFB/mfb" "$TMPFB/m.c" >/dev/null 2>&1 \
+   && "$TMPFB/m" > "$TMPFB/a.out" 2>&1 && "$TMPFB/mfb" > "$TMPFB/b.out" 2>&1; then
+    if cmp -s "$TMPFB/a.out" "$TMPFB/b.out"; then
+        echo "  ok   memFind 回退  ->  两条路输出逐字节相同：$(cat "$TMPFB/a.out")"
+    else
+        echo "  FAIL memFind 回退  ->  非 GNU 回退与 memmem 不一致"; diff "$TMPFB/a.out" "$TMPFB/b.out" | head -4; fail=1
+    fi
+else
+    echo "  FAIL memFind 回退  ->  生成或编译失败"; fail=1
+fi
+rm -rf "$TMPFB"
+
+echo "== string::find 走运行期 memmem（生成物断言：extc_memFind 出现、并且只在要它的程序里）=="
+# 判据两头都要：① 用了 find 的程序，生成的 C 里**有** `extc_memFind`（不是又退回逐字节循环）；
+# ② 从没用过 `std::sys::mem` 的程序，生成的 C 里**没有**（否则这条运行期是白带的）。
+TMPF=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$TMPF/ops.c" tests/stl/stringOps.extc >/dev/null 2>&1 \
+   && "$EXTC" -w --no-line-map -o "$TMPF/vec.c" tests/stl/vector.extc >/dev/null 2>&1; then
+    if grep -q "extc_memFind" "$TMPF/ops.c" && ! grep -q "extc_memFind" "$TMPF/vec.c"; then
+        echo "  ok   memFind  ->  stringOps 的 C 里有 extc_memFind · vector 的 C 里没有（按需发射 ✓）"
+    else
+        echo "  FAIL memFind  ->  stringOps=$(grep -c extc_memFind "$TMPF/ops.c") 处 · vector=$(grep -c extc_memFind "$TMPF/vec.c") 处"; fail=1
+    fi
+else
+    echo "  FAIL memFind  ->  生成失败"; fail=1
+fi
+rm -rf "$TMPF"
 
 echo "== string：churn 内存平（1e5 与 1e6 两轮）=="
 TMP2=$(mktemp -d)

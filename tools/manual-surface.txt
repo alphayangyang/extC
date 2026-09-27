@@ -818,7 +818,6 @@ stl::string	string	grow	method	public
 stl::string	string	hash	method	public
 stl::string	string	isEmpty	method	public
 stl::string	string	len	method	public
-stl::string	string	maxSuffix	method	internal
 stl::string	string	n	field	internal
 stl::string	string	n	field	internal
 stl::string	string	new	method	public

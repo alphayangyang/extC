@@ -34,7 +34,7 @@
 | 2 | **无异常、无栈展开** | | 失败归 `result`，`?` 展开成三句语句 |
 | 3 | **未初始化 UB 消失** | | 默认零初始化：`var b: board` 自动清零 |
 | 4 | **`ref` 不可为空** | | 没有 `null`；`ref` 也没有零值 |
-| 5 | **越界 = trap 带 extC 位置** | | `a[i]` 越界 → `trap: index 7 out of range (length 3)` + 文件行号 |
+| 5 | **越界 = trap 带 extC 位置** | | `a[i]` 越界 → `trap: index 7 out of range (length 3)` + 文件行号。**一处显式例外**：函数标了 `@unchecked` 时，该函数体的元素下标不生成检查，越界 = **UB**（§[12.5](18-modules.md)，写的人签字） |
 | 6 | **切片越界** | | 能证明的**编译期报错**，不能证明的运行时 trap 带位置 |
 | 7 | **只读 / 可写看得见** | | `ref T` / `mut ref T`、`slice<T>` / `mut slice<T>`（见 §3） |
 | 8 | **算术无 UB** | **是** | 溢出用 `-fwrapv` 兜成确定行为；**除零与移位超宽都 trap，且带 extC 位置**（`tests/traps/div_zero.extc`、`shift_too_big.extc`） |
@@ -110,6 +110,10 @@ fn stash(s: slice<u8>) { G = s }   // cannot store a borrowed value into somethi
 
 这三条是从 C 继承来的（编译到 C 就意味着要负责把 C 的 UB 一处一处堵上）。生成物里对应的是
 `extc_divI` / `extc_shiftCount` 这类检查过的帮助函数，常设判据在 `tests/traps/`。
+
+**唯一一处主动交出去的 UB** 是 `@unchecked`（§[12.5](18-modules.md)）：它让一个函数体的元素下标
+不再生成边界检查，换来的是逐字节热循环里每字节省下一条检查。它不改动算术那三条，
+也不影响范围 `x[a..b]` 与 `copyInto` 的计数检查 —— 那些本来就是每次调用一次。
 
 ---
 

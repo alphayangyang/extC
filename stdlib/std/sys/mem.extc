@@ -1,0 +1,27 @@
+/* std/sys/mem.extc —— 字节搜索与整块比较的**特权层**（与 `std::sys::io` / `std::sys::net` 同一层）
+ *
+ * 与那两层同一形状：这里只把生成器按需发射的运行期原语声明成 extC 能调的东西，实现在
+ * `src/memfind.c` 里，**由 `extern!("extc-mem")` 的声明触发发射**（codegen 的 `needMemFind`，
+ * 与 `needPool` / `needRawTerm` 同一套机制）。
+ *
+ * 为什么需要这一层（量出来的，不是设计口味）：`string::find` 原本是纯 extC 的 Two-Way，逐字节走
+ * `hay[i]` —— 每个字节过一次边界检查。缩样探针上 callgrind 是 **25.5 条指令/字节**，其中 30% 集中
+ * 在那条 `extc_trap` 边界检查上；同样的算法交给 libc 的 `memmem`（内部 Two-Way + `memchr` 首字节
+ * 扫描，向量化）之后，`bench/string_vs_cpp` 的 find 一格从 3173 ms 掉到与 C++ 同一量级。
+ *
+ * 跨边界只有**整数和一个指针**（这里是两个指针 + 两个长度），extC 侧永远看不到 `size_t`、
+ * `const`、`void *` 这些 C 形状 —— 这正是 `memmem` / `memcmp` 不能直接声明的原因：
+ * C 库的签名里有 `const void *` 与 `size_t`，而生成文件 include 了 `<string.h>`，
+ * 手写一份声明会与它**冲突**（gcc: `conflicting types for 'memcmp'`）。
+ *
+ * 谁用它：`stl::string` 的 `find` / `contains` / `startsWith` / `endsWith`。
+ * 用户代码不该直接用它（v1 尚未强制只有 `std::sys::*` 能声明原语）。 */
+
+/* 在 `hay` 里找 `needle` 的**第一个**匹配（最左），返回偏移；没有返回 -1；`needleLen == 0` 返回 0。
+ * 语义与原来的 Two-Way 实现逐条相同（自重叠模式 `aa` 在 `aaaa` 里返回 0）。 */
+extern!("extc-mem") fn extc_memFind(hay: ref u8, hayLen: i64, needle: ref u8, needleLen: i64) -> i64
+    effects Addr=0 Cont=0
+/* 这 `n` 个字节是否逐字节相同：1 = 相同，0 = 不同；`n <= 0` 算相同（空区间没有反例）。
+ * `memcmp` 走的是同一条门 —— 理由见文件头。 */
+extern!("extc-mem") fn extc_memEq(a: ref u8, b: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0

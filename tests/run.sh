@@ -58,6 +58,20 @@ if [ -x tests/asan/run.sh ]; then
     fi
 fi
 
+# 注解套件放在这里也跑一遍（`check.sh` 另有自己那一节）：`@unchecked` 的判据之一是**生成物**
+# 断言 —— 检查有没有按函数粒度消失 —— 它和 ASan 一样属于"编过了不算数"的那一类。
+echo "== 注解：@inline / @unchecked 要真的生效，写错的必须编译期报错 =="
+if [ -x tests/annot/run.sh ]; then
+    if out=$(tests/annot/run.sh 2>&1); then
+        # 这一节自己也上色 ⇒ 先剥掉 ANSI 再筛行（不剥的话 `ok ` 一条都匹配不到，踩过）
+        printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E "ok |FAIL"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "注解用例"
+    fi
+fi
+
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

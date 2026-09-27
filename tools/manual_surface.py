@@ -26,7 +26,7 @@ side subMinKey height kidsCnt bucketOfDense keyAtDense valAtDense dead deadOf
 denseLen liveAt pidOf tagCensus ep gen gather handleAtDense chunk got fillState isSpaceByte
 newlineAfter nextI64State pairsReady errWrite flushCout fmtI64 fmtI64Fast rawbuf saved inc""".split())
 INTERNAL_NAMES = {'bn', 'childSlot', 'atDense', 'borrowLeft', 'borrowRight', 'accDigit',
-                  'kd', 'leafOf', 'nth', 'maxSuffix',   # maxSuffix：Two-Way 查找算法的内部助手
+                  'kd', 'leafOf', 'nth',
                   'buf', 'small', 'big',   # `string` 的两态存储：small = 内联缓冲，big = 升级后的池块
                   'pid', 'pidGen', 'vals', 'slots', 'ent', 'cursor', 'holeHead', 'epoch',
                   'nnodes', 'root', 'kids', 'keys', 'tags', 'n', 'cap', 'freeHead'}

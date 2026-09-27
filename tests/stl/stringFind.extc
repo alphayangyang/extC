@@ -1,6 +1,11 @@
-// find 的**穷举对拍**：{a,b} 上长度 1..4 的所有模式 × 长度 0..10 的所有文本，逐个与朴素查找比
-// （Two-Way 是带周期位移的算法，位移写错就会漏配或多配；穷举小字母表是最能抓住这类错的判据）
-// expect: checked=61410|bad=0
+// find 的两层判据：
+//   ① **穷举对拍**：{a,b} 上长度 1..4 的所有模式 × 长度 0..10 的所有文本，逐个与朴素查找比
+//      （查找是带周期位移的算法，位移写错就会漏配或多配；穷举小字母表是最能抓住这类错的判据）
+//   ② **逐条点名**的边界：空模式、模式比串长、自重叠（aa 在 aaaa 里 = 0）、命中在开头/结尾、
+//      不命中、两处匹配取最左 —— 每条既对期望值，也对朴素实现（`edge` = 没过的条数）
+// 实现从 extC 的 Two-Way 换成运行期 memmem（`std::sys::mem`）之后，这两层**一个字都没改**：
+// 判据管的是语义（最左、`none`、空模式 0），不是算法。
+// expect: checked=61410|edge=0|bad=0
 use std::io
 use stl::string
 
@@ -33,6 +38,17 @@ fn naive(h: slice<u8>, nd: slice<u8>) -> i64 {
     }
     return i64(-1)
 }
+
+/* 一个边界用例：既对**期望值**，也对**朴素实现**（两样都要对上才算过；返回 1 = 没过）。
+ * 期望值写成字面量是有意的：只跟朴素实现对拍的话，两边一起错就看不出来了。 */
+fn checkOne(h: ref string, nd: ref string, want: i64) -> i64 {
+    let got = h.find(nd.toSlice()) ?? i64(-1)
+    if got != want { return i64(1) }
+    if got != naive(h.toSlice(), nd.toSlice()) { return i64(1) }
+    return i64(0)
+}
+
+fn mkLit(s: mut ref string, text: slice<u8>) { s.clear()  s.append(text) }
 
 fn main() -> i32 {
     var hay: string = string::withCap(i64(64))
@@ -87,6 +103,25 @@ fn main() -> i32 {
     p3.append("ba")
     if (cyc.find(p3.toSlice()) ?? i64(-1)) != i64(1) { bad = bad + i64(1) }
 
-    io::cout << "checked=" << checked << "|bad=" << bad << "\n"
+    /* 边界的**逐条点名**：穷举那一轮的 `nl` 从 1 起（空模式不在里面），这里把每一个都写成
+     * 一行 —— 每个都同时与朴素实现对拍（`checkOne`），`edge` 是没过的条数，必须是 0。 */
+    var s4: string = string::withCap(i64(16))
+    var q:  string = string::withCap(i64(16))
+    var edge: i64 = 0
+    mkLit(ref s4, "aaaa")
+    mkLit(ref q, "")           ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 空模式 ⇒ 0 */
+    mkLit(ref q, "aaaaa")      ; edge = edge + checkOne(ref s4, ref q, i64(-1))      /* 模式比串长 ⇒ none */
+    mkLit(ref q, "aa")         ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 自重叠 ⇒ 最左 0 */
+    mkLit(ref q, "a")          ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 命中在开头 */
+    mkLit(ref s4, "xyzzy")
+    mkLit(ref q, "zy")         ; edge = edge + checkOne(ref s4, ref q, i64(3))       /* 命中在结尾 */
+    mkLit(ref q, "xy")         ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 命中在开头 */
+    mkLit(ref q, "qq")         ; edge = edge + checkOne(ref s4, ref q, i64(-1))      /* 不命中 */
+    mkLit(ref s4, "ababab")
+    mkLit(ref q, "abab")       ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 两处匹配 ⇒ 取最左 */
+    mkLit(ref q, "ba")         ; edge = edge + checkOne(ref s4, ref q, i64(1))       /* 偏移 1 */
+    mkLit(ref q, "abababab")   ; edge = edge + checkOne(ref s4, ref q, i64(-1))      /* 差一个字节就超长 */
+
+    io::cout << "checked=" << checked << "|edge=" << edge << "|bad=" << bad << "\n"
     return 0
 }

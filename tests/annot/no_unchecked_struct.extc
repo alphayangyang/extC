@@ -1,0 +1,4 @@
+// expect-error: applies to a function, not to a `struct`
+// 注解描述的是**函数体**；struct 是声明，没有身体。每个方法各自决定
+@unchecked struct pt { x: i64 }
+fn main() { var p: pt = { x: i64(1) }  println(p.x) }

@@ -11,6 +11,7 @@
 #include "codegen.h"
 #include "pools.h"
 #include "coroutine.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
+#include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
@@ -265,6 +266,18 @@ typedef struct {
      * declares as an `extern!` -- a program that never touches a terminal does not carry
      * it. */
     bool        needRawTerm;
+    /* Does the program declare an `extern!("extc-mem")` symbol? Then the byte-search runtime
+     * (`extc_memFind` / `extc_memEq`) is emitted after the bodies, exactly like the raw-terminal
+     * and pool blocks. The declaration is the trigger rather than a call: the library module is
+     * what names the primitive, and a program that never uses `find` must not carry it.
+     *
+     * The block brings its own declaration of `memmem` (see `memfind.c`), so nothing has to be
+     * written ahead of the includes and a program without the flag keeps byte-identical C. */
+    bool        needMemFind;
+    /* Is the function being generated marked `@unchecked`? Then its element indexes are lowered
+     * without the bounds check (see `FuncDef.isUnchecked`). Saved and restored around every body,
+     * so the answer is per function: the flag is the whole granularity the annotation promises. */
+    bool        uncheckedIdx;
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
@@ -2173,6 +2186,12 @@ static const char *genExprInner(CG *g, Expr *e) {
                  * "'p' is a pointer; did you mean to use '->'?" */
                 if (ot && ot->kind == TY_REF)
                     obj = arenaPrintf(g->arena, "(*%s)", obj);
+                /* `@unchecked`: the length is still known here, but the programmer has signed
+                 * for the range, so the index is used as written. No `extc_checkedIndex` call
+                 * means no trap position -- that is the cost of the annotation, and the manual
+                 * says so (18-modules.md 12.5). */
+                if (g->uncheckedIdx)
+                    return arenaPrintf(g->arena, "%s.data[%s]", obj, idx);
                 return arenaPrintf(g->arena,
                     "%s.data[extc_checkedIndex((int64_t)(%s), %lld, \"%s\", %d)]",
                     obj, idx, (long long)ob->asize, g->path, e->line);
@@ -2181,6 +2200,15 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* The primitive takes the view by value, so a reference is
              * dereferenced. */
             if (ot && ot->kind == TY_REF) obj = arenaPrintf(g->arena, "*(%s)", obj);
+
+            /* `@unchecked`: the view's element is reached through its data pointer directly.
+             * The shape is the checked primitive's, `&v.data[i]` written out as an lvalue
+             * (`*(p + i)`), so a read, an assignment and a `ref` argument all still work, and
+             * the `file`/`line` arguments have nowhere to go because there is no check. The
+             * primitive is *not* emitted for this body: nothing in it names the checked one,
+             * which is what the generated-C criterion in tests/annot greps for. */
+            if (g->uncheckedIdx)
+                return arenaPrintf(g->arena, "(*((%s).data + (int64_t)(%s)))", obj, idx);
 
             /* The primitive returns a pointer and the dereference is an
              * lvalue: it can be read, addressed for a `ref` parameter, and
@@ -4154,6 +4182,11 @@ static void genFunc(CG *g, FuncDef *f) {
     g->retType = subst(g, f->ret);
     g->inMain  = isMain;
     g->tmpSeq = 0;
+    /* `@unchecked` is a property of **this body**, so it is set on entry and restored on the way
+     * out. A coroutine's step function is generated from its own `FuncDef` (the one the
+     * annotation sits on), so the flag covers `yield`-split bodies as well. */
+    bool savedUnchecked = g->uncheckedIdx;
+    g->uncheckedIdx = f->isUnchecked;
     /* ---- One arena per block level ----
      * The number of levels is known at compile time, being the maximum nesting
      * depth of the blocks, so the array has a fixed length and lives on the
@@ -4454,6 +4487,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->retType = savedRet;
     g->inMain  = false;
     g->tmpSeq = savedSeq;
+    g->uncheckedIdx = savedUnchecked;
     g->noArena = savedNoArena;
     g->owSites = savedOw;          /* restored last, see the note above */
     g->owCalls = savedOwCalls;
@@ -5811,6 +5845,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `extern!`, so their presence is what says the program uses pools at all. */
         if (f->name && strncmp(f->name, "extc_pool_", strlen("extc_pool_")) == 0) g.needPool = true;
         if (strcmp(f->name, "extc_cout_put") == 0)  g.needCout    = true;
+        /* The byte-search runtime, on the same footing: `std::sys::mem` is the only module
+         * that declares these, and its declarations are what says the program wants `memmem`
+         * instead of a byte loop. The flag is read again before the includes (the `_GNU_SOURCE`
+         * block below), so this scan has to run before the preamble -- it does. */
+        if (f->externLib && strcmp(f->externLib, "extc-mem") == 0)  g.needMemFind = true;
     }
     /* 池还多一条来源：**检查器早就算好的 `makesPool`**。只看"这个模块里声明了 `extc_pool_*`
      * 的 extern"是不够的 —— 那些声明在**库模块**里，而 `m` 是入口模块，于是 main 的 prologue
@@ -7032,6 +7071,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
     if (g.needPool) poolsEmitRuntime(arena, out);
+    /* The byte-search runtime, for a program that declares `extern!("extc-mem")`. Its trigger
+     * also decided the `_GNU_SOURCE` preamble above; here only the bodies are appended. */
+    if (g.needMemFind) memfindEmitRuntime(arena, out);
     if (g.needEvent) eventEmitRuntime(arena, out);
     /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
     if (m->usesDyn) poolsEmitDynRuntime(arena, out);

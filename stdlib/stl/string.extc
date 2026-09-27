@@ -23,6 +23,7 @@
  * 还能再装 16 个字节 —— 写入路径 `push` / `append` 先看 `n < 16` 就地写，装不下才升级。
  */
 use std::sys::pool as syspool
+use std::sys::mem as sysmem
 
 @sharesStorage        /* **升级到池之后**按值拷贝 ⇒ 两份共用同一块板块，编译器在这里报警告；
                        * 要独立副本用 `clone()`（内联态其实各拿各的 16 字节，但检查器一律保守） */
@@ -119,6 +120,15 @@ struct string {
 
     fn <(self: ref string, other: slice<u8>) -> bool { return string::bytesLt(self.subView(i64(0), self.n), other) }
 
+    /* 逐字节比较的两条循环都**跳过边界检查**（`@unchecked`，手册 12.5）。
+     *
+     * 范围由哪一行保证，一个用点一行 —— 这正是这个注解的规矩：指不出那一行就不许标。
+     *   · `bytesEq`：上一句 `if a.len != b.len { return false }` 之后 `a.len == b.len`，
+     *     循环条件又是 `i < a.len` ⇒ 两个下标同时在范围内；
+     *   · `bytesLt`：循环条件自己就是 `i < a.len && i < b.len`，一人管一半。
+     * 代价写在手册里：越界从此是未定义行为，不再有带位置的 trap。所以只对"长度已经对上"的
+     * 字节循环成立；它们是 `string` 的 `==` / `<` 的内层，每次比较都要走一遍。 */
+    @unchecked
     fn bytesEq(a: slice<u8>, b: slice<u8>) -> bool {
         if a.len != b.len { return false }
         var i: i64 = 0
@@ -129,6 +139,7 @@ struct string {
         return true
     }
 
+    @unchecked
     fn bytesLt(a: slice<u8>, b: slice<u8>) -> bool {
         var i: i64 = 0
         while i < a.len && i < b.len {
@@ -140,6 +151,8 @@ struct string {
 
     /* FNV-1a over the bytes, folded to a non-negative i64 -- good enough for a hash table and
      * cheap: `hashMap<string, V>` needs exactly this plus `==`. */
+    /* `@unchecked`：范围由循环条件 `i < v.len` 那一行保证（`v` 是本函数自己取的视图，之后不再变）。 */
+    @unchecked
     fn hash(self: ref string) -> i64 {
         let v = self.subView(i64(0), self.n)
         var h: i64 = i64(1469598103934665603)
@@ -239,87 +252,38 @@ struct string {
         return self.big![a..b]
     }
 
-    /* ---------------------------------------------------------------- 子串查找：Two-Way
+    /* ---------------------------------------------------------------- 子串查找：交给运行期
      *
-     * WHY TWO-WAY (Crochemore–Perrin) and not KMP: both are linear in the worst case, but KMP needs
-     * a failure table of `needle.len` entries. In this model that table would either be allocated
-     * per call (arena churn inside a loop) or parked in the container -- which would make a
-     * read-only query take `mut ref` and stop working on a `let`-bound string. Two-Way finds the
-     * pattern's critical factorization in O(n) with two counters and then compares the two halves,
-     * so a plain `ref self` is enough.
+     * WHY NOT Two-Way IN extC (it was here, and it was correct -- `tests/stl/stringFind.extc`
+     * exhaustive cross-check is what proved it): the algorithm was fine, the *cost model* was not.
+     * Every byte of the haystack went through `hay[i]`, and every subscript paid the boundary
+     * check the language promises. callgrind on a reduced probe: **25.5 instructions per byte**,
+     * 30% of them concentrated in the single line
+     * `if (i < 0 || i >= v.len) extc_trap(file, line, ...)`.
      *
-     * The search loop is the paper's, minus the "memory" optimisation (it only saves repeated
-     * comparisons, not asymptotics): compare the right half first; a mismatch after at least one
-     * full period shifts by the period, anything shorter shifts by one. */
+     * The measurement, from `bench/string_vs_cpp/` (10,000 patterns of 4..15 bytes, half of them
+     * absent, on a 1 MB string): `find` took 3172.7 ms against libstdc++'s 138.8 ms, and the two
+     * things libstdc++ has that a byte-at-a-time extC loop does not are `memchr`/`memcmp` being
+     * vectorised and the absence of a per-byte check. So the search is handed to libc's `memmem`
+     * (two-way inside glibc, with a `memchr` first-byte scan), through `std::sys::mem` -- the
+     * same door `read`/`write` go through, integers only, on the byte-search runtime
+     * (`src/memfind.c`, emitted on demand).
+     *
+     * THE CONTRACT IS UNCHANGED, and `tests/stl/stringFind.extc` still checks it exhaustively:
+     * first (leftmost) match, `none` when absent, `some(0)` for the empty pattern, `none` when
+     * the pattern is longer than the string, and a self-overlapping pattern (`aa` in `aaaa`)
+     * still answers 0. `memmem` returns the leftmost match, which is exactly the promise. */
     fn find(self: ref string, needle: slice<u8>) -> ?i64 {
         let m = self.n
         let n = needle.len
         if n == i64(0) { return some(i64(0)) }
         if n > m { return none }
         let hay = self.subView(i64(0), m)
-        if n == i64(1) {
-            var i: i64 = 0
-            while i < m {
-                if hay[i] == needle[i64(0)] { return some(i) }
-                i = i + i64(1)
-            }
-            return none
-        }
-        /* critical factorization: take the split with the larger local period */
-        let f1 = string::maxSuffix(needle, true)
-        let f2 = string::maxSuffix(needle, false)
-        var pos: i64 = f1 / i64(4294967296)
-        var per: i64 = f1 % i64(4294967296)
-        if f2 / i64(4294967296) > pos {
-            pos = f2 / i64(4294967296)
-            per = f2 % i64(4294967296)
-        }
-        if per <= i64(0) { per = i64(1) }
-
-        var i: i64 = 0
-        while i + n <= m {
-            /* right half first: needle[pos..n) against hay[i+pos..i+n) */
-            var j: i64 = pos
-            while j < n && needle[j] == hay[i + j] { j = j + i64(1) }
-            if j < n {
-                if j - pos >= per { i = i + per } else { i = i + i64(1) }
-            } else {
-                /* the right half matched; the left half is checked backwards, from the split */
-                var q: i64 = pos - i64(1)
-                while q >= i64(0) && needle[q] == hay[i + q] { q = q - i64(1) }
-                if q < i64(0) { return some(i) }
-                i = i + i64(1)
-            }
-        }
-        return none
-    }
-
-    /* The maximal suffix of `p` under one ordering, packed as `start * 2^32 + period` (extC has no
-     * out-parameters, and a two-counter helper does not deserve a struct). */
-    fn maxSuffix(p: slice<u8>, wantLess: bool) -> i64 {
-        let n = p.len
-        var ms: i64 = 0
-        var j: i64 = 0
-        var k: i64 = 1
-        while k + j < n {
-            let a = p[k + j]
-            let b = p[ms + j]
-            if a == b {
-                j = j + i64(1)
-            } else {
-                var extend: bool = a > b
-                if !wantLess { extend = a < b }
-                if extend {
-                    ms = k
-                    k = ms + i64(1)
-                    j = i64(0)
-                } else {
-                    k = k + j + i64(1)
-                    j = i64(0)
-                }
-            }
-        }
-        return ms * i64(4294967296) + (k - ms)
+        /* `hay.data` is the first byte, `needle.data` the first pattern byte; `m` is the whole
+         * string and `n <= m` holds from the line above, so the runtime sees a range it can use. */
+        let r = sysmem::extc_memFind(hay.data, m, needle.data, n)
+        if r < i64(0) { return none }
+        return some(r)
     }
 
     fn contains(self: ref string, needle: slice<u8>) -> bool {
@@ -327,27 +291,27 @@ struct string {
         return at >= i64(0)
     }
 
+    /* `startsWith` / `endsWith` are one `memcmp` (through the runtime's integer door --
+     * `memcmp` itself cannot be declared in extC: `<string.h>` is included by the generated C
+     * and the C library's prototype (`const void *`, `size_t`) would collide with ours;
+     * measured: gcc answers `conflicting types for 'memcmp'`).
+     *
+     * Both take a prefix/suffix view first, so the lengths on the two sides of the compare are
+     * equal by construction: `subView(0, p.len)` clamps to `self.n`, and the `p.len > self.n`
+     * guard above means no clamping happens. The empty pattern compares nothing and is true. */
     fn startsWith(self: ref string, p: slice<u8>) -> bool {
         if p.len > self.n { return false }
+        if p.len == i64(0) { return true }
         let v = self.subView(i64(0), p.len)
-        var i: i64 = 0
-        while i < p.len {
-            if v[i] != p[i] { return false }
-            i = i + i64(1)
-        }
-        return true
+        return sysmem::extc_memEq(v.data, p.data, p.len) == i64(1)
     }
 
     fn endsWith(self: ref string, p: slice<u8>) -> bool {
         if p.len > self.n { return false }
+        if p.len == i64(0) { return true }
         let off = self.n - p.len
         let v = self.subView(off, self.n)
-        var i: i64 = 0
-        while i < p.len {
-            if v[i] != p[i] { return false }
-            i = i + i64(1)
-        }
-        return true
+        return sysmem::extc_memEq(v.data, p.data, p.len) == i64(1)
     }
 
     /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。

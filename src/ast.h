@@ -609,6 +609,25 @@ struct FuncDef {
      * 48%; the attribute is what a library reaches for first, and it is what makes the
      * difference between 33.7ms and 22.9ms over 3e6 integers. */
     bool        isInline;
+    /* `@unchecked fn f(...)`: **the bounds checks on the index expressions inside this body
+     * are not emitted.**
+     *
+     * The promise the language makes everywhere else -- out-of-range means a located `trap:`,
+     * never undefined behaviour -- is deliberately given up here, and only here, by writing
+     * it out. That puts the annotation in the same category as `extern!` and `!`: the
+     * programmer signs for a fact the compiler cannot check, and the manual says what the
+     * signature costs (`docs/manual/18-modules.md` 12.5, `docs/manual/01-safety.md`).
+     *
+     * The granularity is the whole function, on purpose: an `unchecked { ... }` block would
+     * make the guarantee depend on a statement's position, and a reader has to see, before
+     * reading the body, that this one body is on its own. What the annotation covers is the
+     * **element index** `x[i]` on `[N]T` and on `slice<T>` / `mut slice<T>`; a **range**
+     * `x[a..b]` keeps its check (`genSlice` does not consult this flag).
+     *
+     * Nothing else changes: an out-of-range index was never the only thing a subscript did,
+     * and the checker's own static rejections (a constant index outside a known length at a
+     * site it can see) still happen. Codegen only stops emitting the trap. */
+    bool        isUnchecked;
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;

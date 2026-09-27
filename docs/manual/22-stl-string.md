@@ -89,12 +89,23 @@ fn main() -> i32 {
 
 | 方法 | 说明 |
 |---|---|
-| `find(needle: slice<u8>) -> i64` | 首次出现的位置；未找到返回 `-1`（线性时间，Two-Way 算法）|
-| `contains(needle)` | 是否包含 |
-| `startsWith(prefix)` / `endsWith(suffix)` | 前缀 / 后缀判定 |
-| `bytesEq(a, b) -> bool` | 逐字节相等 |
-| `bytesLt(a, b) -> bool` | 字典序小于 |
+| `find(needle: slice<u8>) -> i64` | 首次出现的位置（**最左**）；未找到返回 `-1`；空模式返回 `0` |
+| `contains(needle)` | 是否包含（走 `find` 的结果）|
+| `startsWith(prefix)` / `endsWith(suffix)` | 前缀 / 后缀判定（一次整块比较）|
+| `bytesEq(a, b) -> bool` | 逐字节相等（内层循环跳过边界检查 —— 长度已在上面对上）|
+| `bytesLt(a, b) -> bool` | 字典序小于（同上）|
 | `hash() -> i64` | 供 `hashMap<string, V>` 一类的键使用 |
+
+**查找在运行期做**：`find` 调 `std::sys::mem` 的 `extc_memFind`，内部是 libc 的 `memmem`
+（glibc 里是 Two-Way 加 `memchr` 首字节扫描；非 GNU 平台回退成 `memchr` 加 `memcmp`）。
+交给 libc 的理由是**量出来**的：extC 自己那份 Two-Way 算法没错，但每个字节都过一次下标边界检查 ——
+`bench/string_vs_cpp` 的 find 一格因此是 3172.7 ms 对 libstdc++ 的 138.8 ms；改走 `memmem` 之后
+落到同一量级（12 个场景的校验和两边逐位相同，语义没动）。
+语义判据一个字没改：`tests/stl/stringFind.extc` 仍是穷举对拍（`{a,b}` 上 1..4 的模式 × 0..10 的文本
+加逐条边界），自重叠模式（`aa` 在 `aaaa` 里）仍然返回 `0`。
+
+`bytesEq` / `bytesLt` / `hash` 的内层循环标了 `@unchecked`（§[12.5](18-modules.md)）：
+范围由紧邻的那一行循环条件保证，源码注释里逐条写明了是哪一行。
 
 ## 拼接
 
@@ -116,6 +127,6 @@ fn main() -> i32 {
 
 ## 按约定属于内部的成员
 
-`small` `big` `n` `cap` `pid` `pidGen` `grow` `maxSuffix` 等：可达（编译器不阻止），但不受兼容性承诺保护。
+`small` `big` `n` `cap` `pid` `pidGen` `grow` 等：可达（编译器不阻止），但不受兼容性承诺保护。
 存储字段从升级前的单个 `buf` 变成了 `small` / `big` 两态，判据只有一个 `cap == 0`。
 完整清单一律见 [内部成员一览](20-internals.md)，不在此重复。

@@ -1,0 +1,43 @@
+// 生成物判据（整文件）：**全部**下标都在 `@unchecked` 里 ⇒ 生成的 C 里一条检查都不剩。
+//
+// run.sh 把本文件与它的孪生（`sed 's/^@unchecked$//'`，"只差那一行"）各编译一遍，断言：
+//   · 本文件：`extc_checkedIndex` 出现 0 次、`slice_u8_index` 出现 0 次
+//     （检查过的下标原语没人引用 ⇒ 生成器把整段定义剪掉）
+//   · 孪生：两者都 > 0（否则这条判据是空的 —— "检查本来就没发"也能骗过上面那一条）
+//
+// 这个程序**不打印**任何东西：一旦用 `io::cout`，`std::io` 自己的函数体里就有下标，
+// 整文件计数会被它们污染。结果由 `main` 的退出码承担（0 = 算对了）。
+struct tape {
+    xs: [8]i64
+
+    @unchecked
+    fn total(self: ref tape, v: slice<u8>) -> i64 {
+        var acc: i64 = 0
+        var i: i64 = 0
+        while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+        i = 0
+        while i < i64(8) { acc = acc + self.xs[i]  i = i + i64(1) }
+        return acc
+    }
+}
+
+@unchecked
+fn sumFree(v: slice<u8>, a: ref [8]i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    i = 0
+    while i < i64(8) { acc = acc + a[i]  i = i + i64(1) }
+    return acc
+}
+
+fn main() -> i32 {
+    var a: [8]i64 = [1, ...]
+    var t: tape = { xs: a }
+    let s: slice<u8> = "abc"
+    /* "abc" 的字节和 = 294；`[1, ...]` 是 1 后面全零 ⇒ 数组和 = 1。
+     * 两条已标注的路各算 294 + 1，一共 590（退出码只取低 8 位，0 = 算对了）。 */
+    let r = sumFree(s, ref a) + t.total(s)
+    if r == i64(590) { return 0 }
+    return 1
+}

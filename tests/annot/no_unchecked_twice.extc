@@ -1,0 +1,4 @@
+// expect-error: appears twice
+// 同一件事说两遍 ⇒ 报错（与 @inline / @private 同一条规矩）
+@unchecked @unchecked fn f(n: i64) -> i64 { return n }
+fn main() { println(f(i64(1))) }

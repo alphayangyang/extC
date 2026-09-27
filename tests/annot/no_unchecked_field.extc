@@ -1,0 +1,6 @@
+// expect-error: applies to a function, not to a field
+// struct 体内的注解循环同时管方法**和字段**：注解写在字段上要说清它管不着
+struct pt {
+    @unchecked xs: [4]i64
+}
+fn main() { var p: pt = { xs: [1, ...] }  println(p.xs[0]) }

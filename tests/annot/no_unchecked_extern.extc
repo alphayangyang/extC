@@ -1,0 +1,4 @@
+// expect-error: needs a body
+// `extern!` 只有签名，没有身体 ⇒ 没有下标的检查可以跳过。明说，而不是静默接受
+@unchecked extern!("libc") fn getpid() -> i32
+fn main() { println(getpid()) }

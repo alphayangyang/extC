@@ -168,7 +168,8 @@ static Stmt    *parseWhile(Parser *p);
 static Stmt    *parseFor(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
-static bool       parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate);
+static bool       parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
+                                       bool *outUnchecked);
 static TypeDef   *parseTypeDecl(Parser *p);
 static ImplDef   *parseImpl(Parser *p);
 static TraitDef  *parseTrait(Parser *p);
@@ -350,7 +351,7 @@ static FuncDef *parseExtern(Parser *p) {
     p->noBody = true;                          /* signature only, no body */
     bool extInl = false;
     if (at(p, "@")) {
-        if (!parseFuncAnnotations(p, &extInl, NULL)) return NULL;
+        if (!parseFuncAnnotations(p, &extInl, NULL, NULL)) return NULL;
         if (extInl) {
             ctxError(p->ctx, kw->line, kw->col,
                      "There is no body to inline: this declaration only names a function that"
@@ -446,6 +447,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
          * default, so hiding one has to be written out. */
         bool isPrivate = false;
         bool fnInline  = false;
+        bool fnUnchecked = false;  /* @unchecked：这个函数体的下标不生成边界检查 */
         bool noCopy    = false;
         bool poolObject = false;   /* @poolObject：这个 struct 拥有一个池（作者口径） */
         bool sharesStorage = false; /* @sharesStorage：按值拷贝时两份共用存储（容器那一族） */
@@ -469,6 +471,19 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             if (strcmp(nm->text, "inline") == 0) {
                 fnInline = true;
+                skipJunk(&p);
+                continue;
+            }
+            /* `@unchecked`：这个函数体的下标**不生成**边界检查。和 `@inline` 同族（都是对
+             * 函数体的指令），所以在这里一起读；跟错了声明会在下面各自的分支里被拒。
+             * 说两遍要报错：与 `@private` / struct 体内那条路同一条规矩。 */
+            if (strcmp(nm->text, "unchecked") == 0) {
+                if (fnUnchecked) {
+                    ctxError(ctx, a->line, a->col, NULL,
+                             "`@unchecked` appears twice on the same function");
+                    return false;
+                }
+                fnUnchecked = true;
                 skipJunk(&p);
                 continue;
             }
@@ -503,7 +518,9 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             ctxError(ctx, a->line, a->col,
                      "The top-level annotations today are `@private` (hide a declaration from"
-                     " other modules), `@inline` (on a function), `@noCopy` (on a struct:"
+                     " other modules), `@inline` (on a function: the call must be inlined),"
+                     " `@unchecked` (on a function: its index expressions lose the bounds check),"
+                     " `@noCopy` (on a struct:"
                      " it may only be passed as `ref` / `mut ref`), `@poolObject` (on a struct: it owns"
                      " a pool) and `@sharesStorage` (on a struct: a by-value copy shares storage). `@overwrite` is for"
                      " locals.",
@@ -511,6 +528,16 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             return false;
         }
         if (at(&p, "struct")) {
+            /* `@unchecked` describes a body; a struct is a declaration. Each method opts in on
+             * its own line, which is the granularity the annotation promises. */
+            if (fnUnchecked) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "`@unchecked` describes a function **body**. Write it on each method"
+                         " whose indexes are already known to be in range.",
+                         "`@unchecked` applies to a function, not to a `struct`");
+                return false;
+            }
             StructDef *s = parseStruct(&p);
             if (!s) return false;
             s->isPrivate = isPrivate;
@@ -521,9 +548,10 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else if (at(&p, "impl")) {
             /* An `impl` block attaches methods to a type declared elsewhere. None of the
              * top-level annotations apply to it: `@private` and `@noCopy` describe a
-             * declaration, `@poolObject`/`@sharesStorage` describe storage, and the block
-             * declares neither. Saying so beats silently ignoring them. */
-            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline) {
+             * declaration, `@poolObject`/`@sharesStorage` describe storage, `@inline` and
+             * `@unchecked` describe a body, and the block declares none of them. Saying so
+             * beats silently ignoring them. */
+            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "An `impl` block adds methods to a type that is declared elsewhere, so it "
@@ -536,7 +564,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             *(ImplDef **)vecPush(&out->impls) = im;
         } else if (at(&p, "trait")) {
             /* No annotation applies: like an `impl` block, a trait declares behaviour only. */
-            if (isPrivate || fnInline || noCopy || sharesStorage || poolObject) {
+            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "A `trait` declares method signatures only: it has no storage to hide"
@@ -548,6 +576,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!tr) return false;
             *(TraitDef **)vecPush(&out->traits) = tr;
         } else if (at(&p, "type")) {
+            if (fnUnchecked) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "`@unchecked` describes a function **body**, and an enum has none.",
+                         "`@unchecked` applies to a function, not to a `type`");
+                return false;
+            }
             if (noCopy) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "Only a `struct` has a copy to forbid; an enum is copied as a value.",
@@ -572,6 +607,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             td->isPrivate = isPrivate;
             *(TypeDef **)vecPush(&out->types) = td;
         } else if (at(&p, "let") || at(&p, "var")) {
+            if (fnUnchecked) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "`@unchecked` describes a function **body**, and a global is a value.",
+                         "`@unchecked` applies to a function, not to a global");
+                return false;
+            }
             GlobalDef *g = parseGlobalDecl(&p);
             if (!g) return false;
             g->isPrivate = isPrivate;
@@ -579,7 +621,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else if (at(&p, "extern")) {
             /* `@inline` on an external declaration is refused rather than ignored: there is
              * no body to inline, so accepting it would leave the reader believing something
-             * was asked for that never happened. */
+             * was asked for that never happened. `@unchecked` has exactly the same problem:
+             * there is no body whose subscript checks could be left out. */
             if (fnInline) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
@@ -589,13 +632,23 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`@inline` needs a body, and an `extern` declaration has none");
                 return false;
             }
+            if (fnUnchecked) {
+                Token *t = cur(&p);
+                ctxError(ctx, t->line, t->col,
+                         "There is no body whose index checks could be skipped: this declaration"
+                         " only names a function that lives in another library. Mark the extC"
+                         " function that wraps it.",
+                         "`@unchecked` needs a body, and an `extern` declaration has none");
+                return false;
+            }
             FuncDef *f = parseExtern(&p);
             if (!f) return false;
             f->isPrivate = isPrivate;
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else if (at(&p, "fn") || at(&p, "@")) {
             bool inl = fnInline;
-            if (!parseFuncAnnotations(&p, &inl, NULL)) return false;
+            bool unchk = fnUnchecked;
+            if (!parseFuncAnnotations(&p, &inl, NULL, &unchk)) return false;
             if (!at(&p, "fn")) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col, NULL,
@@ -606,6 +659,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             FuncDef *f = parseFunc(&p);
             if (!f) return false;
             f->isInline  = inl;
+            f->isUnchecked = unchk;
             f->isPrivate = isPrivate;
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else {
@@ -666,13 +720,15 @@ static StructDef *parseStruct(Parser *p) {
          * declaration that follows decides which one it was. */
         bool inl = false;
         bool priv = false;
-        if (at(p, "@") && !parseFuncAnnotations(p, &inl, &priv)) return NULL;
+        bool unchk = false;
+        if (at(p, "@") && !parseFuncAnnotations(p, &inl, &priv, &unchk)) return NULL;
         /* A method is declared inside the struct body, like a field. */
         if (at(p, "fn")) {
             FuncDef *m = parseFunc(p);
             if (!m) return NULL;
             m->isInline  = inl;
             m->isPrivate = priv;
+            m->isUnchecked = unchk;
             m->owner = sd;
             *(FuncDef **)vecPush(&sd->methods) = m;
             skipJunk(p);
@@ -685,6 +741,14 @@ static StructDef *parseStruct(Parser *p) {
                      "`@inline` asks for a call to be expanded at the call site, and a field is"
                      " never called.",
                      "`@inline` applies to a function, not to a field");
+            return NULL;
+        }
+        if (unchk) {
+            Token *t = cur(p);
+            ctxError(p->ctx, t->line, t->col,
+                     "`@unchecked` says the index expressions **inside a body** are not"
+                     " bounds-checked, and a field has no body.",
+                     "`@unchecked` applies to a function, not to a field");
             return NULL;
         }
 
@@ -869,7 +933,8 @@ static ImplDef *parseImpl(Parser *p) {
         if (at(p, "fn") || at(p, "@")) {
             bool inl = false;
             bool priv = false;
-            if (!parseFuncAnnotations(p, &inl, &priv)) return NULL;
+            bool unchk = false;
+            if (!parseFuncAnnotations(p, &inl, &priv, &unchk)) return NULL;
             if (!at(p, "fn")) {
                 Token *t = cur(p);
                 ctxError(p->ctx, t->line, t->col, NULL,
@@ -881,6 +946,7 @@ static ImplDef *parseImpl(Parser *p) {
             if (!m) return NULL;
             m->isInline    = inl;
             m->isPrivate   = priv;
+            m->isUnchecked = unchk;
             /* `owner` is filled in when the block is attached: the target type's name is not
              * resolved yet (an impl may even appear before the type it extends). */
             *(FuncDef **)vecPush(&im->methods) = m;
@@ -1090,9 +1156,17 @@ static Token *expectFuncName(Parser *p) {
  * believing something was asked for that never happened. `@recursive` and `@main` are
  * designed but not implemented, and they get told so rather than being accepted silently.
  *
+ * `@unchecked` belongs to the same place: it says something about the **body** that follows, so
+ * it is read wherever a body may be declared and refused wherever one may not (an `extern!`
+ * declaration, a field). `outUnchecked` is NULL at those sites, and reaching the annotation
+ * there is an error rather than a silent acceptance -- the same rule `@private` follows one
+ * branch below, and for the same reason: the reader must not believe a request was honoured.
+ *
  * Returns:
- *   False after reporting an error. `*outInline` is set when `@inline` was seen. */
-static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate) {
+ *   False after reporting an error. `*outInline` is set when `@inline` was seen, and
+ *   `*outUnchecked` when `@unchecked` was seen (when the caller passed a slot for it). */
+static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
+                                 bool *outUnchecked) {
     /* Not reset here: a caller may already have seen `@inline` in the top-level annotation
      * loop, which reads `@private` and `@inline` together before the declaration is known to
      * be a function. Clearing the flag made `@inline fn f()` parse as if nothing had been
@@ -1129,6 +1203,28 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate) {
             skipNl(p);
             continue;
         }
+        if (strcmp(nm->text, "unchecked") == 0) {
+            /* `@unchecked` describes a **body**: it is the body's index expressions that lose
+             * their bounds check. Where there is a body to describe, the flag is set; where
+             * there is none (an `extern!` declaration) saying so beats accepting a request that
+             * nothing can carry out. */
+            if (!outUnchecked) {
+                ctxError(p->ctx, a->line, a->col,
+                         "This declaration only names a function that lives elsewhere, so there"
+                         " is no body whose index checks could be skipped. Mark the extC function"
+                         " that has one.",
+                         "`@unchecked` needs a body");
+                return false;
+            }
+            if (*outUnchecked) {
+                ctxError(p->ctx, a->line, a->col, NULL,
+                         "`@unchecked` appears twice on the same function");
+                return false;
+            }
+            *outUnchecked = true;
+            skipNl(p);
+            continue;
+        }
         if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
             ctxError(p->ctx, a->line, a->col,
                      "The annotation is designed but not implemented yet, and accepting it"
@@ -1138,9 +1234,10 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate) {
         }
         ctxError(p->ctx, a->line, a->col,
                  "Annotations are compile-time instructions written in the source, so a"
-                 " typo must not be silently ignored. On a function the only one is"
-                 " `@inline`.",
-                 "unknown annotation `@%s` on a function -- only `@inline` exists today",
+                 " typo must not be silently ignored. On a function they are `@inline`"
+                 " (the call must be inlined) and `@unchecked` (this body's indexes are not"
+                 " bounds-checked).",
+                 "unknown annotation `@%s` on a function -- `@inline` and `@unchecked` exist today",
                  nm->text);
         return false;
     }
