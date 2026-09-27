@@ -31,7 +31,8 @@ GENERICS = [
     ('A4 十层嵌套（终止性）', 'ok',
      'struct box<T> { v: T }\nfn main() -> i32 { var a: box<i64>\n  a.v = i64(1)\n'
      '  var b: box<box<box<box<box<box<box<box<box<box<i64>>>>>>>>>>\n'
-     '  return i32(a.v) }'),
+     '  b.v.v.v.v.v.v.v.v.v.v = a.v\n'      # 题目自己踩过坑：声明了 b 却不用 ⇒ -Werror 报 unused
+     '  return i32(b.v.v.v.v.v.v.v.v.v.v) }'),
     ('A5 用户类型名与实例 C 名撞车', 'ok_or_reject',
      'struct pair<T> { a: T }\nstruct pair_i64 { a: i64 }\nfn main() -> i32 { var p: pair<i64>\n'
      '  p.a = i64(1)\n  var q: pair_i64\n  q.a = i64(2)\n  return i32(p.a + q.a) }'),
