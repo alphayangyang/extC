@@ -1,0 +1,386 @@
+/* bench/string_vs_cpp/s.extc —— extC `stl::string`（SSO）这一侧的横评程序。
+ *
+ * 12 个场景，`args[1]` 选一个（不给就跑全部）。每个场景打印一行 `名字 cs=整数`：
+ * 那个整数是**校验和**，两边必须逐位相同 —— 对不上就是没做等价的工作（不是"跑得慢"的问题）。
+ * 另有一个不进表的 `noop`：什么都不做，只为在同一口径下量出"进程启动 + 运行时"这个常数项。
+ *
+ * 计时**不在程序里做**：由 run.sh 在外面用 python 的 time.perf_counter() 量（best of 5），
+ * 这样两边的口径完全一样；RSS 由 /usr/bin/time -v 的 Maximum resident set size 取。
+ *
+ * `args[2]` 是可选的**盐水**（取它第一个字节，不给就是 0）：内容恒定的那两个循环不加它会被
+ * gcc 整个折成常数（那样这一格就没量到东西）。默认 0 时推的字节与不加盐完全一样。
+ *
+ * 与 cpp.cpp 的等价关系逐条写在每个场景上。凡是 C++ 靠析构函数归还的存储，
+ * 这边就显式 `release()`（`string` 的板块住在池里，池的寿命挂在"地方"上：
+ * 循环体里 push 出来的池落在**函数**那个地方，函数不返回就不会回收 ——
+ * 这条是实测出来的，见 RESULTS.md「不公平的地方」）。
+ */
+use std::io
+use stl::string
+
+/* ---------------------------------------------------------------- 公共公式
+ *
+ * 所有"随机"字节都由这一个公式产生：两边一个字都不能差。
+ * 值域 [0,255]，i 最大 6400 万 ⇒ i * 1103515245 <= 7.1e16，不会溢出 i64。 */
+@inline
+fn lcgByte(i: i64) -> u8 {
+    return u8(((i * i64(1103515245) + i64(12345)) >> i64(16)) & i64(255))
+}
+
+/* xorshift64：read_at 的随机下标用它（与 C++ 侧同一个常数、同一个顺序）。 */
+@inline
+fn xs(x: u64) -> u64 {
+    var v: u64 = x
+    v = v ^ (v << u64(13))
+    v = v ^ (v >> u64(7))
+    v = v ^ (v << u64(17))
+    return v
+}
+
+/* 大串的校验和：隔 step 个字节取一个求和（够敏感，又不把整串扫描算进计时）。 */
+fn sampleSum(s: ref string, step: i64) -> i64 {
+    var acc: i64 = 0
+    var p: i64 = 0
+    while p < s.len() {
+        acc = acc + i64(s.at(p) ?? u8(0))
+        p = p + step
+    }
+    return acc
+}
+
+/* 头 / 中 / 尾三个字节，各配一个不同的权重（位置敏感）。 */
+fn triple(s: ref string) -> i64 {
+    if s.len() == i64(0) { return i64(0) }
+    let a = i64(s.at(i64(0)) ?? u8(0))
+    let b = i64(s.at(s.len() / i64(2)) ?? u8(0))
+    let c = i64(s.at(s.len() - i64(1)) ?? u8(0))
+    return a * i64(3) + b * i64(5) + c * i64(7)
+}
+
+/* ================================================================ 1. short_many
+ * 100 万次「默认构造 + push 3 字节 + 读回长度」。
+ * 两边都该**一次分配都没有**（extC 内联 16 字节 / libstdc++ SSO 15 字节）。
+ * C++：`std::string s; s.push_back(...) x3; acc += s.size() + (unsigned char)s[2];` */
+fn scene_short_many(salt: i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < i64(1000000) {
+        var s: string
+        s.push(u8((97 + (i % i64(26))) ^ salt))
+        s.push(u8(98 + (i % i64(24))))
+        s.push(u8(99))
+        acc = acc + s.len() + i64(s.at(i64(2)) ?? u8(0))
+        i = i + i64(1)
+    }
+    return acc
+}
+
+/* ================================================================ 2. short_cross
+ * 100 万次「默认构造 + push 到 20 字节」—— 第 17 个字节跨过内联缓冲。
+ * extC：第 17 个字节建池（32 字节块）；libstdc++：第 16 个字节 malloc（30 字节块）。
+ * 每轮结束归还：这边 `release()`，那边离开作用域（析构函数）。
+ * 不 release 的话池会挂在函数那个"地方"上，100 万轮 = 100 万个池（实测 155 MB，见 RESULTS.md）。 */
+fn scene_short_cross(salt: i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < i64(1000000) {
+        var s: string
+        var k: i64 = 0
+        while k < i64(20) {
+            s.push(u8((32 + k) ^ salt))
+            k = k + i64(1)
+        }
+        acc = acc + s.len() + i64(s.at(i64(19)) ?? u8(0))
+        s.release()
+        i = i + i64(1)
+    }
+    return acc
+}
+
+/* ================================================================ 3. long_build_byte
+ * 一条长串逐字节 push 到 400 万字节（不预分配 ⇒ 量的是增长曲线）。
+ * extC：0 → 内联 16 → 池 32 → 1.5 倍；libstdc++：SSO 15 → 30 → 2 倍。 */
+fn scene_long_build_byte() -> i64 {
+    var s: string
+    var i: i64 = 0
+    while i < i64(4000000) {
+        s.push(lcgByte(i))
+        i = i + i64(1)
+    }
+    return s.len() + triple(ref s) + sampleSum(ref s, i64(4096))
+}
+
+/* ================================================================ 4. long_build_chunk
+ * 一条长串用 4 KB 块 append 到 64 MB（16384 块）。
+ * extC：`s.append(buf)`（一次 copyInto）；C++：`s.append(buf, 4096)`。 */
+fn scene_long_build_chunk() -> i64 {
+    let CH: i64 = 4096
+    let TOT: i64 = 67108864
+    var buf: [4096]u8
+    var s: string
+    var done: i64 = 0
+    while done < TOT {
+        var k: i64 = 0
+        while k < CH {
+            buf[k] = lcgByte(done + k)
+            k = k + i64(1)
+        }
+        s.append(buf[0..CH])
+        done = done + CH
+    }
+    return s.len() + triple(ref s) + sampleSum(ref s, i64(1048576))
+}
+
+/* ================================================================ 5. reserve_growth
+ * 空串先 reserve 到 64 MB，再逐字节写满（对照 `reserve` + `push_back`）。
+ * extC 的 `string::withCap(n)` 与 C++ 的 `reserve(n)` 是同一件事：一次要满，之后不再长。 */
+fn scene_reserve_growth() -> i64 {
+    let TOT: i64 = 67108864
+    var s: string = string::withCap(TOT)
+    var i: i64 = 0
+    while i < TOT {
+        s.push(lcgByte(i))
+        i = i + i64(1)
+    }
+    return s.len() + triple(ref s) + sampleSum(ref s, i64(1048576))
+}
+
+/* ================================================================ 6. read_at
+ * 一条 1 MB 串上随机位置读 1000 万次。
+ * extC：`s.at(i) -> ?u8`（**有界检查**，越界是 none）；C++：`s[i]`（无检查）。
+ * 这一条是明账：extC 每读一次多一次边界比较 + 一次 option 解包。 */
+fn scene_read_at() -> i64 {
+    let N: i64 = 1048576
+    var s: string = string::withCap(N)
+    var i: i64 = 0
+    while i < N {
+        s.push(lcgByte(i))
+        i = i + i64(1)
+    }
+    var st: u64 = u64(88172645463325252)
+    var acc: i64 = 0
+    i = 0
+    while i < i64(10000000) {
+        st = xs(st)
+        let idx = i64((st >> u64(16)) % u64(N))
+        acc = acc + i64(s.at(idx) ?? u8(0))
+        i = i + i64(1)
+    }
+    return acc + s.len()
+}
+
+/* ================================================================ 7. find
+ * 一条 1 MB 串上找 1 万个不同的短模式（长度 4..15，各找一次）。
+ * 模式从串自己的字节公式生成：偶数下标的模式把首字节 +1（大概率找不到 ⇒ 扫满全程），
+ * 奇数下标是原样（一定能找到 ⇒ 平均扫一半）。两边同一个公式、同一个结果。
+ * extC 是 Two-Way；C++ 是 `std::string::find`（libstdc++ 里对短模式走 memchr 加速）。 */
+fn scene_find() -> i64 {
+    let N: i64 = 1048576
+    var s: string = string::withCap(N)
+    var i: i64 = 0
+    while i < N {
+        s.push(lcgByte(i))
+        i = i + i64(1)
+    }
+    var pat: [16]u8
+    var acc: i64 = 0
+    i = 0
+    while i < i64(10000) {
+        let L: i64 = i64(4) + (i % i64(12))
+        let pos: i64 = (i * i64(7919)) % (N - i64(32))
+        var k: i64 = 0
+        while k < L {
+            var b: i64 = i64(lcgByte(pos + k))
+            if k == i64(0) {
+                if (i % i64(2)) == i64(0) { b = (b + i64(1)) & i64(255) }
+            }
+            pat[k] = u8(b)
+            k = k + i64(1)
+        }
+        let at = s.find(pat[i64(0)..L]) ?? i64(-1)
+        acc = acc + at + i64(1)
+        i = i + i64(1)
+    }
+    return acc
+}
+
+/* ================================================================ 8. compare
+ * 100 万次两条 32 字节串的 `==` 与 `<`。
+ * 两条串每轮各"转一格"（push 一个字节 + 丢掉最前面的字节）—— C++ 那边是
+ * `push_back` + `erase(0,1)`。这么做有两个理由：① 32 字节的池态串本来就不该每轮重新构造；
+ * ② 内容每轮都变，编译器没法把比较提到循环外（那样这一格就没量到东西了）。
+ * extC 的 `==`/`<` 是自己的逐字节循环；C++ 的是 memcmp。 */
+fn scene_compare() -> i64 {
+    var a: string = string::withCap(i64(64))
+    var b: string = string::withCap(i64(64))
+    var i: i64 = 0
+    while i < i64(32) {
+        a.push(u8(97 + (i % i64(26))))
+        b.push(u8(97 + ((i + i64(13)) % i64(26))))
+        i = i + i64(1)
+    }
+    var eq: i64 = 0
+    var lt: i64 = 0
+    i = 0
+    while i < i64(1000000) {
+        let x: i64 = i & i64(255)
+        a.push(u8(x))
+        a.removeFront(i64(1))
+        b.push(u8((x + i64(128)) & i64(255)))
+        b.removeFront(i64(1))
+        if a == b { eq = eq + i64(1) }
+        if a < b { lt = lt + i64(1) }
+        i = i + i64(1)
+    }
+    return eq * i64(1000) + lt
+}
+
+/* ================================================================ 9. substr_copy
+ * 10 万次 `sub(1000, 2000)`（**拷贝** 1000 字节）到一条 1 MB 串上。
+ * C++ 侧同一个半开区间是 `s.substr(1000, 1000)`（起点, 长度）—— 这一点两边要对上。
+ * extC 的 `sub` 是 `new u8[1000]` + copyInto：分配落在**调用者这一轮的 arena** 里，
+ * 循环体每轮释放 ⇒ 与 C++ 每轮 malloc/free 同形。 */
+fn scene_substr_copy() -> i64 {
+    let N: i64 = 1048576
+    var s: string = string::withCap(N)
+    var i: i64 = 0
+    while i < N {
+        s.push(lcgByte(i))
+        i = i + i64(1)
+    }
+    var acc: i64 = 0
+    i = 0
+    while i < i64(100000) {
+        var p = s.sub(i64(1000), i64(2000))
+        acc = acc + p.len + i64(p[i64(0)]) + i64(p[i64(999)])
+        i = i + i64(1)
+    }
+    return acc
+}
+
+/* ================================================================ 10. clone_many
+ * 100 万次 clone 一条 32 字节串（深拷贝：模式串住在池里，所以 clone 会拿一块新板块）。
+ * 每轮 `release()` 归还（C++ 那边是离开作用域时析构）。 */
+fn scene_clone_many() -> i64 {
+    var base: string = string::withCap(i64(64))
+    var i: i64 = 0
+    while i < i64(32) {
+        base.push(u8(97 + (i % i64(26))))
+        i = i + i64(1)
+    }
+    var acc: i64 = 0
+    i = 0
+    while i < i64(1000000) {
+        var c = base.clone()
+        acc = acc + c.len() + i64(c.at(i64(31)) ?? u8(0))
+        c.release()
+        i = i + i64(1)
+    }
+    return acc
+}
+
+/* ================================================================ 11. clear_shrink_cycle
+ * 1 万轮「写满到 64 KB → clear → shrink」。
+ * extC：`shrink()` 把池块缩到 16（池态，cap=16）；C++：`shrink_to_fit()` 把空串缩回 SSO。
+ * 每轮的写入都是 16 个 4 KB 的 append（不是逐字节：那样 6.5 亿次 push 会盖掉 shrink 本身）。 */
+fn scene_clear_shrink_cycle() -> i64 {
+    let CH: i64 = 4096
+    let TOT: i64 = 65536
+    var buf: [4096]u8
+    var s: string
+    var acc: i64 = 0
+    var round: i64 = 0
+    while round < i64(10000) {
+        s.clear()
+        var done: i64 = 0
+        while done < TOT {
+            var k: i64 = 0
+            while k < CH {
+                buf[k] = lcgByte(round * TOT + done + k)
+                k = k + i64(1)
+            }
+            s.append(buf[0..CH])
+            done = done + CH
+        }
+        acc = acc + s.len() + i64(s.at(i64(0)) ?? u8(0)) + i64(s.at(i64(65535)) ?? u8(0))
+        s.clear()
+        s.shrink()
+        round = round + i64(1)
+    }
+    return acc + s.len()
+}
+
+/* ================================================================ 12. many_live_short
+ * 同时活着 100 万条 8 字节串（一条 100 万元素的数组），最后汇总长度。
+ * 两边都该是**零池 / 零堆**：extC 的内联 16 字节与 SSO 都装得下 8 字节。
+ * 这一格主要看 **RSS**：extC 的 `string` 值是 72 字节（16 内联 + n + cap + option<slice> + pid + gen），
+ * libstdc++ 的 `std::string` 是 32 字节（16 内联 + size + 指针借用位）。 */
+fn scene_many_live_short() -> i64 {
+    let N: i64 = 1000000
+    var arr: mut slice<string> = new string[N]
+    var i: i64 = 0
+    while i < N {
+        var k: i64 = 0
+        while k < i64(8) {
+            arr[i].push(u8(65 + ((i + k) % i64(26))))
+            k = k + i64(1)
+        }
+        i = i + i64(1)
+    }
+    var acc: i64 = 0
+    i = 0
+    while i < N {
+        acc = acc + arr[i].len() + i64(arr[i].at(i64(7)) ?? u8(0))
+        i = i + i64(1)
+    }
+    return acc
+}
+
+/* ================================================================ 调度 */
+fn run(name: slice<u8>, salt: i64) -> bool {
+    /* 地板：什么都不做，只打印一个 cs。`run.sh` 用它量"进程启动 + 运行时"这个常数项
+     * （每一格都含它，所以它必须在同一套测量口径下量出来，不能靠估）。不进结果表。 */
+    if name == "noop"              { io::cout << "noop cs=0" << "\n"  return true }
+    if name == "short_many"        { io::cout << "short_many cs="        << scene_short_many(salt)    << "\n"  return true }
+    if name == "short_cross"       { io::cout << "short_cross cs="       << scene_short_cross(salt)   << "\n"  return true }
+    if name == "long_build_byte"   { io::cout << "long_build_byte cs="   << scene_long_build_byte()   << "\n"  return true }
+    if name == "long_build_chunk"  { io::cout << "long_build_chunk cs="  << scene_long_build_chunk()  << "\n"  return true }
+    if name == "reserve_growth"    { io::cout << "reserve_growth cs="    << scene_reserve_growth()    << "\n"  return true }
+    if name == "read_at"           { io::cout << "read_at cs="           << scene_read_at()           << "\n"  return true }
+    if name == "find"              { io::cout << "find cs="              << scene_find()              << "\n"  return true }
+    if name == "compare"           { io::cout << "compare cs="           << scene_compare()           << "\n"  return true }
+    if name == "substr_copy"       { io::cout << "substr_copy cs="       << scene_substr_copy()       << "\n"  return true }
+    if name == "clone_many"        { io::cout << "clone_many cs="        << scene_clone_many()        << "\n"  return true }
+    if name == "clear_shrink_cycle"{ io::cout << "clear_shrink_cycle cs=" << scene_clear_shrink_cycle() << "\n" return true }
+    if name == "many_live_short"   { io::cout << "many_live_short cs="   << scene_many_live_short()   << "\n"  return true }
+    return false
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    /* 可选的"盐水"（`args[2]` 的第一个字节，不给就是 0）：只为了让**内容恒定**的那两个循环
+     * 在编译期不可知 —— 否则 gcc 会把它们整个折成常数（实测：100 万次 push 变成一句
+     * `mov $0x6146580,%eax`），那样这一格量的就不是字符串而是"编译器会不会做算术"。
+     * 默认 0 时推的字节与不加盐完全一样 ⇒ 两边的校验和照旧逐位相同。 */
+    var salt: i64 = 0
+    if args.len > 2 { salt = i64(args[i64(2)][i64(0)]) & i64(255) }
+    if args.len > 1 {
+        if !run(args[i64(1)], salt) {
+            io::cout << "unknown scenario: " << args[i64(1)] << "\n"
+            return 2
+        }
+        return 0
+    }
+    run("short_many", salt)
+    run("short_cross", salt)
+    run("long_build_byte", salt)
+    run("long_build_chunk", salt)
+    run("reserve_growth", salt)
+    run("read_at", salt)
+    run("find", salt)
+    run("compare", salt)
+    run("substr_copy", salt)
+    run("clone_many", salt)
+    run("clear_shrink_cycle", salt)
+    run("many_live_short", salt)
+    return 0
+}
