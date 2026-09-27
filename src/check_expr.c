@@ -49,14 +49,25 @@ static bool isParRunDecl(FuncDef *f) {
 static bool isI64Type(Type *t) {
     return t && t->kind == TY_BUILTIN && t->name && strcmp(t->name, "i64") == 0;
 }
-typedef struct { Vec names; const char *why; } ParQ;
-static bool parQHas(ParQ *q, const char *n) {
-    for (size_t i = 0; i < q->names.len; i++)
-        if (strcmp(*(const char **)vecAt(&q->names, i), n) == 0) return true;
-    return false;
+typedef struct { Vec names; const char *why; int depth; Checker *c; } ParQ;
+static bool parQHas(ParQ *q, const char *n);
+static const char *parBodyProblem(Checker *c, FuncDef *f, int depth);
+static bool parLocalStmt(void *ctx, Stmt *s);
+static bool parBodyExpr(void *ctx, Expr *e);
+static bool parBodyStmt(void *ctx, Stmt *s);
+
+/* 收局部名（`let`/`var`）。 */
+static bool parLocalStmt(void *ctx, Stmt *s) {
+    ParQ *q = (ParQ *)ctx;
+    if (s->kind == ST_VAR && s->u.var.name) *(const char **)vecPush(&q->names) = s->u.var.name;
+    AstVisit v = { NULL, parLocalStmt, ctx };
+    return astWalkStmtChildren(s, &v);
 }
-static bool parScanStmt(void *ctx, Stmt *s);
-static bool parScanExpr(void *ctx, Expr *e) {
+static bool parBodyStmt(void *ctx, Stmt *s) {
+    AstVisit v = { parBodyExpr, parBodyStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+static bool parBodyExpr(void *ctx, Expr *e) {
     ParQ *q = (ParQ *)ctx;
     if (e->kind == EX_IDENT && !parQHas(q, e->u.ident.name)) {
         if (!q->why) q->why = "it names something that is neither a parameter nor a local of the worker";
@@ -67,32 +78,54 @@ static bool parScanExpr(void *ctx, Expr *e) {
         return false;
     }
     if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
-        if (!q->why) q->why = "a call inside a worker needs the transitivity check (step 3c)";
-        return false;
+        FuncDef *g = e->func;
+        if (!g) {
+            Expr *ce = e->u.call.callee;
+            if (ce && ce->kind == EX_IDENT) g = findFunc(q->c, ce->u.ident.name);
+        }
+        if (!g) { if (!q->why) q->why = "it makes a call this check cannot resolve"; return false; }
+        if (g->isExtern) {
+            if (g->extThreadMask != 0) {
+                if (!q->why) q->why = "it calls into shared runtime state (that declaration is not signed `Thread=0`)";
+                return false;
+            }
+        } else {
+            const char *sub = parBodyProblem(q->c, g, q->depth + 1);
+            if (sub) { if (!q->why) q->why = sub; return false; }
+        }
     }
-    AstVisit v = { parScanExpr, parScanStmt, ctx };
+    AstVisit v = { parBodyExpr, parBodyStmt, ctx };
     return astWalkExprChildren(e, &v);
 }
-static bool parScanStmt(void *ctx, Stmt *s) {
-    ParQ *q = (ParQ *)ctx;
-    if (s->kind == ST_VAR && s->u.var.name) *(const char **)vecPush(&q->names) = s->u.var.name;
-    AstVisit v = { parScanExpr, parScanStmt, ctx };
-    return astWalkStmtChildren(s, &v);
+
+#define PAR_DEPTH_LIMIT 16      /* 递归深度上限：宁可拒绝，也不让检查自己爆栈（记忆化留给以后） */
+static bool parQHas(ParQ *q, const char *n) {
+    for (size_t i = 0; i < q->names.len; i++)
+        if (strcmp(*(const char **)vecAt(&q->names, i), n) == 0) return true;
+    return false;
 }
-/* 两趟：先收全局部名，再按白名单查一遍；返回第一条问题的说明，没问题返回 NULL。 */
-static const char *parWorkerProblem(Checker *c, FuncDef *wf) {
+/* 一个函数能不能出现在 worker 里（含**传递**）：
+ *   · 语法上只碰自己的参数与局部（模块级 `var` 既非参数也非局部 ⇒ 自然落在这一档 ⇒ 不用另做全局分析）；
+ *   · 不 `new`（线程本地 arena 的路由是 ③c）；
+ *   · 调用只能是：签过 `Thread=0` 的 extern，或另一个同样通过这一关的顶层函数。
+ * 递归带深度上限；超限按"不安全"处理（保守方向）。 */
+static const char *parBodyProblem(Checker *c, FuncDef *f, int depth) {
     ParQ q;
+    if (depth > PAR_DEPTH_LIMIT) return "the call chain is too deep to check (conservative refusal)";
+    if (!f->body) return NULL;                       /* extern/内建：由调用点的规则管 */
     vecInit(&q.names, c->arena, sizeof(const char *));
-    q.why = NULL;
-    if (!wf->body) return "the worker has no body";
-    { AstVisit v = { NULL, parScanStmt, &q }; astWalkStmtChildren(wf->body, &v); }
-    for (size_t i = 0; i < wf->params.len; i++) {
-        Param *pp = *(Param **)vecAt(&wf->params, i);
-        *(const char **)vecPush(&q.names) = pp->name;
+    q.why = NULL; q.depth = depth; q.c = c;
+    {
+        AstVisit v = { NULL, parLocalStmt, &q };
+        astWalkStmtChildren(f->body, &v);
     }
-    { AstVisit v = { parScanExpr, parScanStmt, &q };
-      if (!astWalkStmtChildren(wf->body, &v))
-          return q.why ? q.why : "an unsupported construct"; }
+    for (size_t i = 0; i < f->params.len; i++)
+        *(const char **)vecPush(&q.names) = (*(Param **)vecAt(&f->params, i))->name;
+    {
+        AstVisit v = { parBodyExpr, parBodyStmt, &q };
+        if (!astWalkStmtChildren(f->body, &v))
+            return q.why ? q.why : "an unsupported construct";
+    }
     return NULL;
 }
 
@@ -1425,7 +1458,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
                 {
-                    const char *why = parWorkerProblem(c, wf);
+                    const char *why = parBodyProblem(c, wf, 0);
                     if (why) {
                         ckError(c, e->line,
                                 "A worker runs on another thread while the caller keeps running, so step 3b"
@@ -2274,7 +2307,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
                 {
-                    const char *why = parWorkerProblem(c, wf);
+                    const char *why = parBodyProblem(c, wf, 0);
                     if (why) {
                         ckError(c, e->line,
                                 "A worker runs on another thread while the caller keeps running, so step 3b"
@@ -2685,7 +2718,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
                 {
-                    const char *why = parWorkerProblem(c, wf);
+                    const char *why = parBodyProblem(c, wf, 0);
                     if (why) {
                         ckError(c, e->line,
                                 "A worker runs on another thread while the caller keeps running, so step 3b"
