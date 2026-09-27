@@ -4921,7 +4921,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * position gets. `ttFromName` alone only knows the builtins and the declarations of
          * this module -- which silently made `impl string { ... }` from an importing module an
          * "unknown type" (found by writing `stl/stringio.extc`, the streaming pilot). */
-        Type *t = ttResolve(tt, ctx, typeNamed(arena, im->typeName), im->line, NULL);
+        Type *base = typeNamed(arena, im->typeName);
+        /* `impl slice<u8>`: the arguments belong to the target, and `ttResolve` resolves them the
+         * way it resolves an annotation's (`targs` is recursed into). */
+        base->targs = im->typeArgs;
+        Type *t = ttResolve(tt, ctx, base, im->line, NULL);
         StructDef *sd = NULL;
         if (ttIsError(t)) continue;
         if (!t) {
@@ -4955,11 +4959,39 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 continue;
             }
             if (sd->typeParams.len > 0) {
-                ctxError(ctx, im->line, 1,
-                         "A generic type's methods are declared inside its own body; extending it "
-                         "from outside needs the block's own type parameters.",
-                         "`impl` on generic type `%s` is not supported yet", im->typeName);
-                continue;
+                if (t->targs.len == 0) {
+                    ctxError(ctx, im->line, 1,
+                             "A generic type's methods are declared inside its own body; extending "
+                             "every instance at once needs the block's own type parameters.",
+                             "`impl` on generic type `%s` is not supported yet", im->typeName);
+                    continue;
+                }
+                /* The block names an **instance** (`slice<u8>`), and an instance's method set is
+                 * its own: attaching to the generic body would hand `slice<i32>` the same methods
+                 * and substitute `Self` to the wrong type. The holder hangs off the `Type`, which
+                 * is exactly how a builtin scalar's `impl i64 { ... }` block is kept. */
+                StructDef *ih = t->mholder;
+                if (!ih) {
+                    ih = (StructDef *)arenaAllocZero(arena, sizeof(StructDef));
+                    /* The holder is a **distinct declaration** from the generic one, so it needs a
+                     * distinct name: reusing `im->typeName` collided with the generic's own
+                     * declaration and tripped the reserved-definition check (`slice` comes from
+                     * the prelude). The mangled name of the instance is unique by construction. */
+                    ih->name = (t->name && t->name[0]) ? t->name : "$inst";
+                    ih->line = im->line;
+                    ih->builtinHolder = true;   /* no C struct of its own: the instance has one */
+                    ih->type = t;
+                    vecInit(&ih->typeParams, arena, sizeof(void *));
+                    vecInit(&ih->fields, arena, sizeof(void *));
+                    vecInit(&ih->methods, arena, sizeof(void *));
+                    t->mholder = ih;
+                    /* The holder has to be in `m->structs`, exactly like a builtin scalar's: the
+                     * pass that resolves method signatures walks `StructDef.methods`, so a holder
+                     * nobody walks keeps `TY_UNRESOLVED` signatures -- which showed up as
+                     * "initializer expects `i64`, found `i64`" (two names, one unresolved type). */
+                    *(StructDef **)vecPush(&m->structs) = ih;
+                }
+                sd = ih;
             }
         }
         /* No duplicate check here **on purpose**. Attaching a method must make it

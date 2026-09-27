@@ -914,17 +914,25 @@ static ImplDef *parseImpl(Parser *p) {
     }
     im->line = kw->line;
     vecInit(&im->methods, p->arena, sizeof(void *));
+    vecInit(&im->typeArgs, p->arena, sizeof(void *));
 
-    /* `impl Pair<T> { ... }`: a generic type's method set is per instance, so the block would
-     * need its own type parameters. Not supported yet, and rejected here so the error arrives
-     * where the syntax is rather than as a confusing lookup failure later. */
+    /* `impl slice<u8> { ... }`: the target's type arguments. They are parsed here and resolved by
+     * the checker the way an annotation's are (`ttResolve` recurses into `targs`), because only
+     * the checker owns the type table: `slice<u8>` names an instance, while `pair<T>` would name
+     * a parameter that no block-level binding can supply. Deciding that here would mean guessing
+     * at names the parser cannot resolve. */
     if (at(p, "<")) {
-        Token *t = cur(p);
-        ctxError(p->ctx, t->line, t->col,
-                 "A generic type's methods are declared inside its own body. Extending it from "
-                 "outside would need the block's own type parameters, which is not supported yet.",
-                 "`impl` on a generic type is not supported yet");
-        return NULL;
+        take(p);
+        skipJunk(p);
+        for (;;) {
+            Type *arg = parseType(p);
+            if (!arg) return NULL;
+            *(Type **)vecPush(&im->typeArgs) = arg;
+            skipJunk(p);
+            if (at(p, ",")) { take(p); skipJunk(p); continue; }
+            break;
+        }
+        if (!expect(p, ">", NULL)) return NULL;
     }
 
     if (!expect(p, "{", NULL)) return NULL;

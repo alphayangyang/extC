@@ -863,6 +863,10 @@ typedef struct {
     Type       *target;     /* the resolved implementing type (`Self` substitutes to this) */
     TraitDef   *trait;      /* the resolved trait; NULL for an inherent impl */
     int         line;
+    Vec         typeArgs;   /* Type*: the target's type arguments (`impl slice<u8>`). A generic
+                             * type's method set is per instance, so the block names the instance;
+                             * an unbound parameter (`impl pair<T>`) is rejected by the checker,
+                             * which is where the type table can tell the two apart. */
     Vec         methods;    /* FuncDef*: `owner` is filled in when the block is attached */
 } ImplDef;
 
