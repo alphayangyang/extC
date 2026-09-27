@@ -5302,18 +5302,74 @@ static size_t countReads(const char *hay, size_t n, const char *name) {
     return reads;
 }
 
+/* name -> body for the per-local lookup below. That lookup is a linear scan over `deadFuncs` for
+ * every local -- 3N locals against N functions is the quadratic this pass still has (cg-locals is
+ * 41% of the build at N=3200 and grows x4 per doubling). The map reproduces the scan exactly: the
+ * **first** entry with a non-NULL body, stale pointer and all, because that pointer is what the
+ * later strstr(text, body) is applied to. */
+typedef struct { const char *name; const char *body; } NameBody;
+typedef struct { NameBody *slot; size_t mask; } BodyMap;
+static size_t bodyHash(const char *p) {
+    size_t h = 1469598103934665603u;
+    for (; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211u; }
+    return h;
+}
+static void bodyMapInit(BodyMap *m, Arena *a, size_t n) {
+    size_t cap = 16;
+    while (cap < n * 2) cap <<= 1;
+    m->slot = arenaAllocZero(a, cap * sizeof *m->slot);
+    m->mask = cap - 1;
+}
+static void bodyMapPut(BodyMap *m, const char *name, const char *body) {
+    for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
+        NameBody *s = &m->slot[i];
+        if (!s->name) { s->name = name; s->body = body; return; }
+        if (strcmp(s->name, name) == 0) return;                 /* first one wins: so does the scan */
+    }
+}
+static const char *bodyMapGet(BodyMap *m, const char *name) {
+    for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
+        NameBody *s = &m->slot[i];
+        if (!s->name) return NULL;
+        if (strcmp(s->name, name) == 0) return s->body;
+    }
+}
+
 static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     char  *text = *textp;
     size_t len  = *lenp;
+    /* `DeadFunc.body` points into the current text and an `own == 0` declaration sits in the
+     * prologue before the first body -- both hold only while nothing has been rewritten, and each
+     * local otherwise pays a full-text search per round. After the first cut the text has moved
+     * and every round falls back to exactly the searches the old code made, so the decisions --
+     * and the emitted C -- are unchanged. */
+    size_t firstBody = len;
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (df->body && df->body >= text && df->body < text + len) {
+            size_t o = (size_t)(df->body - text);
+            if (o < firstBody) firstBody = o;
+        }
+    }
+    BodyMap bodyMap;
+    bodyMapInit(&bodyMap, g->arena, g->deadFuncs.len + 1);
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (df->body) bodyMapPut(&bodyMap, df->name, df->body);
+    }
+    int textIsOriginal = 1;
     for (;;) {
         bool cut = false;
         for (size_t i = 0; i < g->deadLocals.len && !cut; i++) {
             DeadLocal *d = *(DeadLocal **)vecAt(&g->deadLocals, i);
             if (!d->text || !d->funcName) continue;
             const char *body = NULL;
-            for (size_t k = 0; k < g->deadFuncs.len; k++) {
-                DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
-                if (df->body && strcmp(df->name, d->funcName) == 0) { body = df->body; break; }
+            if (textIsOriginal) body = bodyMapGet(&bodyMap, d->funcName);
+            if (!body) {
+                for (size_t k = 0; k < g->deadFuncs.len; k++) {
+                    DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+                    if (df->body && strcmp(df->name, d->funcName) == 0) { body = df->body; break; }
+                }
             }
             if (!body && g->mainBody && strcmp(d->funcName, g->mainFuncName) == 0)
                 body = g->mainBody;                    /* main has no DeadFunc entry */
@@ -5322,7 +5378,8 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                         d->funcName ? d->funcName : "(null)",
                         g->mainFuncName ? g->mainFuncName : "(null)", body ? "yes" : "no");
             if (!body) continue;                       /* its function is gone already */
-            char  *bp = strstr(text, body);
+            char  *bp = (textIsOriginal && body >= text && body < text + len)
+                            ? (char *)body : strstr(text, body);
             if (!bp) continue;
             size_t bl = strlen(body);
             if (dbgOn("EXTC_DBG_LOCAL"))
@@ -5351,7 +5408,19 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
              * that calls something leaves the call behind; anything else disappears. */
             Vec cuts;
             vecInit(&cuts, g->arena, sizeof(LocalCut));
-            char *dl = (d->own == 0) ? strstr(text, d->text) : strstr(bp, d->text);
+            char *dl;
+            if (d->own == 0) {
+                dl = NULL;
+                size_t dtl = strlen(d->text);
+                if (textIsOriginal) {
+                    for (char *p2 = text; (size_t)(p2 - text) + dtl <= firstBody; p2++)
+                        if (memcmp(p2, d->text, dtl) == 0) { dl = p2; break; }
+                } else {
+                    dl = strstr(text, d->text);
+                }
+            } else {
+                dl = strstr(bp, d->text);
+            }
             if (!dl || (d->own != 0 && dl >= bp + bl)) continue;
             {
                 size_t ls = (size_t)(dl - text);
@@ -5426,6 +5495,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             out->len = nb.len;
             len = nb.len;
             text = out->data;
+            textIsOriginal = 0;            /* positions are stale from here on: search again */
             d->text = NULL;
             cut = true;
         }
