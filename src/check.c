@@ -417,8 +417,14 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
      * must not be the last word, or `fn f<T>(x: T) -> i8 { return x.hash() }` silently truncates
      * when the instance's `hash` returns `i64`. The expected type is known at this point, so the
      * pair is recorded and re-checked per instance (PLAN #79). */
-    if (ttIsError(got) && node && node->kind == EX_METHOD && !node->func &&
-        mentionsParam(node->u.method.recv->type)) {
+    /* Two shapes defer: a method call resolved late (`got` is the error type there), and **any**
+     * expression whose type is a parameter or mentions one -- `s = s + c.value()` inside `fn run<T>`,
+     * where the sum has type `T` and the assignment expects `i64`. Only the first was recorded, so the
+     * second was rejected on the template ("assignment expects `i64`, found `T`", tools/attack.py B8).
+     * The instance re-checks the pair, which is what makes accepting it here safe. */
+    if ((ttIsError(got) && node && node->kind == EX_METHOD && !node->func &&
+         mentionsParam(node->u.method.recv->type)) ||
+        (node && got && (got->kind == TY_PARAM || mentionsParam(got)))) {
         DeferredUse *du = (DeferredUse *)arenaAllocZero(c->arena, sizeof(DeferredUse));
         du->call  = node;
         du->want  = want;
@@ -427,6 +433,9 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         *(DeferredUse **)vecPush(&c->deferredUses) = du;
     }
     if (ttIsError(want) || ttIsError(got)) return true;
+    /* A parameter is not knowable yet either; the recorded use enforces the real type once the instance
+     * is known (a wrong one is reported there, naming the instance). */
+    if (got && (got->kind == TY_PARAM || mentionsParam(got))) return true;
 
     /* ---- Boxing: a coroutine's frame value stored where the handle type is expected ----
      * There is one surface type, `coroutine<T>`; the representation is the compiler's business. Here

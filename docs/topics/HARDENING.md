@@ -48,7 +48,12 @@ views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** 
    统一判据 `coroEmitted` 决定"谁被发射"、handle typedef/池/任务表按需拼接）。**过程中还发现并修掉
    自己引入的一个编译器段错误** ✓：拼接用 `memcpy(out->data, …, nb.len)` 直接写 ✗ 而单元变长了
    ⇒ 写越界 ⇒ `dropUnreferenced` 里的野指针 SIGSEGV ✓ ⇒ 改成**经 `Buf` 重建** ✓。
-   仍开着**同族变体 B8** ✓：协程**在泛型函数体内被驱动**时 `value()` 的类型停在 `T` ✗。
+   **B8 也已修** ✓（第 3 轮）：把 `DeferredUse` 推广成"**记表达式**" —— 复查时
+   ① 非"延迟方法"的节点按**自身类型**复查（`ttSubstitute(du->call->type, …)` ✓，不再读
+   `u.method.recv` ✗ —— 那正是第 2 轮崩溃的原因 ✓）；② **两边都替换**（`want` 也 `ttSubstitute` ✓ ——
+   只替换一边会给语料里每个泛型调用报假错 `` `gen_i64` expects `T`, found `i64` `` ✗，闸门当场 144 份
+   差异 ✓）；③ `checkAssignable` 在"值是参数"时也记录并接受 ✓。三形状（1/2/3 次 yield）rc=4/8/12 全对 ✓；
+   闸门 413/413 · 非法 C 0（零变化 ✓）、parrun 295/0、instimpl 19/0 ✓。
 
    **第 1 轮（新 goal）的排查** ✓：第一处嫌疑 `runDeferredUse`（`check_top.c:4519-4520` ✓，只在
    `rt->kind == TY_GENERIC && f->owner == rt->sdef` 时替换 ✓，而协程协议方法的接收者是**帧类型**
@@ -67,7 +72,9 @@ views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** 
      `EX_BIN` 让那里读**垃圾指针** ⇒ **几十个文件编译器 SIGSEGV** ✗（闸门 126 份差异 ✓、
      parrun **278/17** ✗）⇒ **两处修改全部回退** ✓（闸门 413/413 ✓、parrun 295/0 ✓、
      instimpl 19/0 ✓）；
-   - **正确的下一步** ✓：把 `DeferredUse` 从"记方法调用"**推广成"记表达式"** ✓ ——
+   - **第 3 轮：按该路径做完 ⇒ B8 收口** ✓（见下）✓。
+
+   （原记录）**正确的下一步** ✓：把 `DeferredUse` 从"记方法调用"**推广成"记表达式"** ✓ ——
      存 `Expr *node` + `Type *want` ✓，在实例期用 `ttSubstitute` 重算该节点的类型 ✓
      （而不是复用 `u.method.recv` ✗）；这样"值是参数"就能安全地延迟 ✓，`+` 与赋值两处
      都走同一条路 ✓。

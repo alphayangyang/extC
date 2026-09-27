@@ -4511,6 +4511,21 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
 static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
                            const char *instName) {
     TypeTable *tt = c->tt;
+    /* Anything that is not a late method carries its own type: substitute the expression's type and
+     * compare. That is the path a **type-parameter-typed value** takes -- `s = s + c.value()` inside
+     * `fn run<T>` records the sum, whose type is `T` on the template (tools/attack.py B8). Reading
+     * `u.method.recv` here for such a node is what crashed the compiler when this generalization was
+     * first attempted (the union member is not an `EX_METHOD`). */
+    if (du->call->kind != EX_METHOD || du->call->func) {
+        Type *vt = ttSubstitute(tt, du->call->type, params, targs);
+        /* **Both** sides: `want` is very often the template's own parameter too (an argument checked
+         * against `gen<T>`'s parameter, say), and substituting only the value reported a bogus
+         * `` `gen_i64` expects `T`, found `i64` `` for every generic call in the corpus. */
+        Type *wt = ttSubstitute(tt, du->want, params, targs);
+        if (ttIsError(vt) || ttIsError(wt)) return;
+        checkAssignable(c, wt, vt, du->call, arenaPrintf(c->arena, "`%s`", instName));
+        return;
+    }
     Type *rt = ttSubstitute(tt, du->call->u.method.recv->type, params, targs);
     FuncDef *f = findMethod(ttBase(rt), du->call->u.method.name);
     /* A missing method is reported by runMethodCheck; nothing to add here. */

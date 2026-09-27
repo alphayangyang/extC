@@ -558,7 +558,9 @@ typedef struct {
  * instance, once the real signature is resolvable. `want` is that expected type; `call` is the
  * deferred call the value came from. */
 typedef struct {
-    Expr      *call;      /* the deferred EX_METHOD the value came from */
+    Expr      *call;      /* the expression the value came from: a method call deferred to
+                           * instantiation, or any expression whose type is a **type parameter**
+                           * (the two shapes `checkAssignable` records below) */
     Type      *want;      /* the type the context expects */
     StructDef *owner;     /* enclosing generic struct/enum, or NULL in a free function */
     FuncDef   *func;      /* the template holding the use, which picks the instances */
