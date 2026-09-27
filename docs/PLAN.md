@@ -941,7 +941,9 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
   顺序与外部风险见 [`docs/topics/DYN.md`](topics/DYN.md) §10。**注意**：将来若动"表指针只在槽里"
   这条不变量（例如把表指针塞进句柄），就等于关上了这扇门。
 
-- ** H2（2026-09-26，协程原型挖出）：home zone 传递闭包只做了一层** —— 跨**两层**调用时，
-  "在辅助函数里构造值、再存进外层容器"会被分配在中间层的 place，返回即释放 ⇒ ASan `heap-use-after-free`，
-  运行时表现为**静默改坏**（不 trap）。反例：`tests/arena-soundness/H2_home_zone_depth2.extc`（`ACCEPT+UAF`）。
+- ~~**H2（2026-09-26，协程原型挖出）：home zone 传递闭包只做了一层**~~ **已修（2026-09-26，`f3b0c13`）**：
+  调用点的 zone 层级改在 `makesPool` 闭包**之后**结算 ⇒ 跨两层调用不再静默 UAF。
+  **2026-09-28 复核**：从 git 取回原反例（`f3b0c13~1`）用当前编译器重跑 —— 输出 `keys[0]=k keys[1]=aa`
+  （病症原本是把 `k` 静默改成 `a`）、ASan 干净、退出码 0；用例已改名保留为
+  `tests/arena-soundness/H2_home_zone_two_hops.extc` ⇒ **这条不再是待办，也不在"优先级：高"里**。
   文档要求见 `docs/topics/ARENA-FORMAL.md:678`（"needsHome 的传递闭包"）。**优先级：高**（协程调度器正中此形状）。

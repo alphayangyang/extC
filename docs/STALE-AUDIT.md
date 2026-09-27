@@ -35,7 +35,7 @@
 ## 二、专题页（`docs/topics/`）
 
 8. **`CONCURRENCY.md:134`** 把调度器模块写成 `stdlib/std/sched.extc`，实际是 `stdlib/std/coro/scheduler.extc`。
-9. **`CONCURRENCY.md:276`** 引用 `tests/arena-soundness/H2_home_zone_depth2.extc`，该目录不存在。
+9. **`CONCURRENCY.md:276`** 引用 `tests/arena-soundness/H2_home_zone_depth2.extc`，该目录不存在。  —— **2026-09-28 已修**：文件改名为 `H2_home_zone_two_hops.extc`，引用已更新。
 10. **`POOLS.md:332`** 写 `stdlib/std/pool.extc`，实际是 `stdlib/std/sys/pool.extc`。
 11. **`DYN.md` 有 13 处引用了不存在的夹具名**（`dyn_in_container` · `dyn_object_safety` · `dyn_not_object_safe` ·
     `dyn_bind_rejected` · `dyn_no_wrong_dispatch` · `dyn_stale_stored` · `dyn_rt_p1.c` …）—— 要么改名没跟，

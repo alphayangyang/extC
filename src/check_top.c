@@ -1581,7 +1581,7 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
          * so at this moment a callee that allocates only through its own callees still reads
          * as "no". Without a record here the final pass never sees the site, the zone keeps
          * its provisional level, and a call chain of two hops passes its own place down --
-         * that is H2 (`tests/arena-soundness/H2_home_zone_depth2.extc`). */
+         * that is H2 (`tests/arena-soundness/H2_home_zone_two_hops.extc`). */
         if (callNode && c->eSites.arena) {
             if (!rec) {
                 rec = (EArenaSite *)arenaAllocZero(c->arena, sizeof(EArenaSite));
@@ -5786,7 +5786,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      *
      * `wrap` 把**自己的** zone 传给了 `put`，`newString` 的缓冲因此生在 `wrap` 的 place 里，
      * `wrap` 一返回就被释放、下一次分配复用它 ⇒ ASan `heap-use-after-free`
-     * （`tests/arena-soundness/H2_home_zone_depth2.extc`）。
+     * （`tests/arena-soundness/H2_home_zone_two_hops.extc`）。
      *
      * 判据与 arena 完全同一个问题、同一个量：`nd` = 那个地方必须比被调者能存进去的每个
      * `mut ref` 实参（含接收者）活得更久；参数/全局算"本帧之外"（0），逃逸的局部量也算
