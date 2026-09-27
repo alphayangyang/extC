@@ -83,18 +83,26 @@ views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** 
    `ttSubstitute` 替换两个操作数 ✓）：`+` 的**右操作数类型**在模板期就记成了 `T` ✓ ⇒
    下一轮的打点位置就是 `:4426`（打印 `typeStr(lt)` / `typeStr(rt2)` ✓）与记录处（操作数类型
    从哪来 ✓：`e->u.bin.right->type` ✓＝方法调用表达式的类型 ✓）。**已回退** ✓（闸门 413/413 ✓）。
-2. **F1 第④步**（dyn × 泛型 trait impl ✓）—— 前三步已验证 ✓（检查器放行 ✓、按实例发表 ✓、
-thunk 用 `ownerPrefix` ✓），缺的是"**让方法体在实例前缀下被发射**" ✓。
+2. ~~**F1**~~ ✅ **已修（第 9 轮）** ✓ —— 四步同轮落地 ✓（第 25→36 轮地图里的最后一块 ✓）：
 
-   **第 4 轮（新 goal）把机制彻底看清** ✓：泛型 impl（`impl<T> Tag for pair<T>` ✓）的方法挂在
-   **泛型声明体**上（`check_top.c:5074-5090` ✓：`im->typeParams.len > 0` ⇒ `sd = structOf(t)` ✓，
-   注释明写"`resolveSignature` + `ttSubstitute` over `tt->instances` 会给每个实例一份自己的拷贝" ✓）；
-   而**按实例的方法体是调用点按需发射的** ✓ —— 同一个 `FuncDef`，换 `g->ownerPrefix` 得到
-   `<实例>_<方法>` 这样的 C 名 ✓（第 26 轮的发现 ✓）。⇒ **只被 vt 表引用、从没被调用的方法，
-   没人发射它** ✗ ⇒ `implicit declaration of pair_i64_tag` ✓。
-   **修法的新方向** ✓：在表的构建处（已设 `ownerPrefix` ✓ 的那段 ✓）**同时驱动方法体的发射** ✓
-   （挂到调用点用的同一条发射路径 ✓），而不是在检查器里另造一套实例方法 ✓ —— 状态：**功能缺口、
-   非健全性** ✓，留档待办 ✓（实测证据：`tools/attack.py generics` 的 F1 ✓）。
+   ① **检查器的实现查询**（`check_expr.c:458` ✓）用 `ttEquals(im->target, pt)` ✗ ⇒ `pair<i64>` 与
+      `pair<T>` 永不相等 ⇒ 改成"**同一泛型声明即算覆盖**" ✓（`it->sdef == pt->sdef` ✓，与 H10 同手法 ✓）；
+   ② **把 impl 的方法标 `used` + 新增 `dynTable`** ✓ —— `codegen.c:7450` 那段 "method definitions
+      of the instances" ✓ 只发 `md->used` 的方法 ✓，而**实例方法体没被点名就会被"definitions
+      nothing names"删掉** ✓（打点实测：`inst=pair_i64 … md=tag used=1` ✓，生成物里却出现 **0** 次 ✓）；
+   ③ **vt 表按实例发表** ✓（`codegen.c:7502` ✓）：泛型 target 时遍历 `g.insts` ✓，在
+      `substEnter(&g, inst)` 里发表 ✓ ⇒ 表名 `extc_vt$Tag$pair_i64` ✓、thunk
+      `extc_th$Tag$pair_i64$tag` ✓、调用 `pair_i64_tag` ✓ —— 一套名字全对齐 ✓；
+   ④ **豁免只给打了 `dynTable` 的方法** ✓ —— 一开始把**所有**实例方法都豁免 ✗ ⇒ **73 份**基准变化 ✗
+      （那些是本来该被删的未用实例方法 ✓）⇒ 改成按需豁免后**零变化** ✓（`c497870` ✓）。
+
+   **同轮还暴露一个同族缺口** ✓，单列追踪为 **F1b** ✓（`tools/attack.py generics` ✓）：**泛型实例的
+   方法体在忽略 `self` 时**没走 `markUnusedParams` 那趟 ✓（它只按 `g.funcs` 找候选 ✓，实例方法不在
+   里面 ✓）⇒ 生成物在 `-Werror=unused-parameter` 下编译失败 ✓。**它同时让 dyn 组的 D9 变红** ✓
+   （D9 原先在检查器就被拒 ✓ 算 `ok_or_reject` 通过 ✓；现在一路编到 gcc ✓ 栽在同一处 ✓）⇒
+   **一个修法清两条** ✓：把实例方法也纳入那趟的候选 ✓（最简：在按实例发方法体的循环里登记
+   方法体的偏移 ✓，让那趟一并处理 ✓）。
+
 3. ~~**H15 同族（S11）**~~ ✅ **已修（第 5 轮）** ✓ —— 实测**它与 A4 残留是同一个 bug** ✓：
    `var f = fs::openWrite(p)!` 里 `f` 没人用 ⇒ 死局部变量消除**删掉声明前缀** ✗、按设计**保留**
    了带调用的右值 ✓，而留下的那段是**解包后的载荷读取**（`(fs$openWrite(…)).u.success._0;` ✗）
