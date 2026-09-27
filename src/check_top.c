@@ -4925,7 +4925,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* `impl slice<u8>`: the arguments belong to the target, and `ttResolve` resolves them the
          * way it resolves an annotation's (`targs` is recursed into). */
         base->targs = im->typeArgs;
-        Type *t = ttResolve(tt, ctx, base, im->line, NULL);
+        Type *t = ttResolve(tt, ctx, base, im->line,
+                            im->typeParams.len ? &im->typeParams : NULL);
         StructDef *sd = NULL;
         if (ttIsError(t)) continue;
         if (!t) {
@@ -4958,7 +4959,28 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                          "`impl` on `%s`, which cannot own methods", im->typeName);
                 continue;
             }
-            if (sd->typeParams.len > 0) {
+            /* `impl<T> pair<T> { ... }`: the methods belong to the generic declaration's body --
+             * `structOf(t)` already is that body, and the machinery that instantiates
+             * body-declared methods (`resolveSignature` + `ttSubstitute` over `tt->instances`)
+             * then gives every instance its own copy. The only thing to check is the names: a
+             * method's signature resolves against `f->owner->typeParams`, so a block that renames
+             * `T` to `U` would leave `U` unknown. Flat on purpose -- a nested version of this
+             * check is what broke the build the first time. */
+            if (im->typeParams.len > 0) {
+                bool bad = im->typeParams.len != sd->typeParams.len;
+                for (size_t pi = 0; !bad && pi < im->typeParams.len; pi++)
+                    bad = strcmp(*(const char **)vecAt(&im->typeParams, pi),
+                                 *(const char **)vecAt(&sd->typeParams, pi)) != 0;
+                if (bad) {
+                    ctxError(ctx, im->line, 1,
+                             "Name the block's type parameters exactly as the type declares them:"
+                             " the methods are resolved against the declaration's body.",
+                             "`impl` on `%s`: the type parameters must match the declaration's",
+                             im->typeName);
+                    continue;
+                }
+            }
+            if (sd->typeParams.len > 0 && im->typeParams.len == 0) {
                 if (t->targs.len == 0) {
                     ctxError(ctx, im->line, 1,
                              "A generic type's methods are declared inside its own body; extending "

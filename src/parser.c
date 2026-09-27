@@ -895,11 +895,35 @@ static ImplDef *parseImpl(Parser *p) {
      *     (`stl::string`), so `expectTypeName` would be wrong for them.
      * Whether the name denotes a type at all is a question for the checker, which owns the type
      * table (and resolves the qualified form). */
+    ImplDef *im = (ImplDef *)arenaAllocZero(p->arena, sizeof(ImplDef));
+    vecInit(&im->typeParams, p->arena, sizeof(const char *));
+    /* `impl<T> pair<T> { ... }`: the block's own type parameters come first. The methods land on
+     * the generic declaration's body, so their signatures resolve against that body's parameters
+     * -- hence the names have to agree with the declaration's (the checker says so at the attach
+     * point, rather than leaving a puzzling "unknown type `U`" behind). */
+    if (at(p, "<")) {
+        take(p);
+        skipJunk(p);
+        for (;;) {
+            Token *tp = cur(p);
+            if (tp->kind != TK_IDENT) {
+                ctxError(p->ctx, tp->line, tp->col, NULL,
+                         "expected a type parameter name, found `%s`", shown(tp));
+                return NULL;
+            }
+            take(p);
+            *(const char **)vecPush(&im->typeParams) = tp->text;
+            skipJunk(p);
+            if (at(p, ",")) { take(p); skipJunk(p); continue; }
+            break;
+        }
+        if (!expect(p, ">", NULL)) return NULL;
+    }
+
     Buf target;
     bufInit(&target, p->arena);
     if (!parseDottedName(p, &target, "a type name after `impl`")) return NULL;
 
-    ImplDef *im = (ImplDef *)arenaAllocZero(p->arena, sizeof(ImplDef));
     im->typeName = bufCstr(&target);
     /* `impl Trait for Type`: the name after `impl` is the **trait**, and the type follows
      * `for`. `typeName` always ends up being the type the methods attach to -- the only name

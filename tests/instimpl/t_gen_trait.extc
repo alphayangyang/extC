@@ -1,0 +1,11 @@
+use std::io
+/* `impl<T> Tag for pair<T>`：泛型 trait impl */
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct pair<T> { a: T }
+impl<T> Tag for pair<T> { fn tag(self: ref pair<T>) -> i64 { return i64(1) } }
+fn main() -> i32 {
+  var p: pair<i64>
+  p.a = i64(7)
+  io::cout << "tag=" << p.tag() << "\n"
+  return 0
+}

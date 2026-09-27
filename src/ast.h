@@ -863,6 +863,11 @@ typedef struct {
     Type       *target;     /* the resolved implementing type (`Self` substitutes to this) */
     TraitDef   *trait;      /* the resolved trait; NULL for an inherent impl */
     int         line;
+    Vec         typeParams; /* const char*: the block's own type parameters (`impl<T> pair<T>`).
+                             * The methods attach to the generic declaration's body, whose
+                             * `typeParams` is what `resolveSignature` resolves against, so the
+                             * names must agree with the declaration's; the checker says so where
+                             * it attaches the block, which beats a puzzling "unknown type `U`". */
     Vec         typeArgs;   /* Type*: the target's type arguments (`impl slice<u8>`). A generic
                              * type's method set is per instance, so the block names the instance;
                              * an unbound parameter (`impl pair<T>`) is rejected by the checker,

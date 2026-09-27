@@ -33,6 +33,8 @@ one "固有方法挂 slice<u8>"        "$(src t_inherent.extc)"  "half=4 trimmed
 one "trait impl 挂 slice<u8>"     "$(src t_trait.extc)"     "enc=4"
 one "两实例各挂各的方法"           "$(src t_two.extc)"       "u8=1 i64=2"
 one "dyn 打在实例与内建上"         "$(src t_dyn.extc)"       "4 42"
+one "泛型 impl（impl<T> pair<T>）" "$(src t_gen_inherent.extc)" "get=5"
+one "泛型 trait impl（impl<T> Tag for pair<T>）" "$(src t_gen_trait.extc)" "tag=1"
 # 反向金丝雀：实现体不读 `self` 时，dyn 表保住的实现不会被"未用参数"那趟看到
 # （markUnusedParams 只遍历 g.deadFuncs）⇒ 今天**必须**失败。修好那天它会变绿，这条就会报出来。
 if "$EXTC" -w --no-line-map -o "$tmp/m.c" "$(src t_dyn_multi.extc)" 2>/dev/null &&
@@ -41,6 +43,7 @@ if "$EXTC" -w --no-line-map -o "$tmp/m.c" "$(src t_dyn_multi.extc)" 2>/dev/null 
 else ok "dyn 多方法（金丝雀）" "如预期仍失败（L 债：未用 self 触发 -Werror）"; fi
 neg "slice<i64> 上没有 u8 的方法" "$(src t_isolate.extc)"   "no method"
 neg "未绑定参数仍被拒"             "$(src t_unbound.extc)"   "unknown type"
+neg "块级参数名与声明不一致要报清楚" "$(src t_gen_badname.extc)" "type parameters must match"
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

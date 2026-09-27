@@ -1,0 +1,4 @@
+/* 块级参数名必须与声明一致：方法签名是按声明体的 typeParams 解析的 */
+struct pair<T> { a: T }
+impl<U> pair<U> { fn get(self: ref pair<U>) -> U { return self.a } }
+fn main() -> i32 { return 0 }

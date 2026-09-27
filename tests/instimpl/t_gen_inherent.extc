@@ -1,0 +1,13 @@
+use std::io
+/* `impl<T> pair<T> { … }`：泛型 impl —— 方法挂到泛型声明体，签名按实例替换 `T` */
+struct pair<T> { a: T }
+impl<T> pair<T> {
+  fn get(self: ref pair<T>) -> T { return self.a }
+}
+fn main() -> i32 {
+  var five: i64 = 5
+  var p: pair<i64>
+  p.a = five
+  io::cout << "get=" << p.get() << "\n"
+  return 0
+}
