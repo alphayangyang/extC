@@ -1,35 +1,56 @@
-/* stl/string.extc —— 池底字节串（STL 第二个池底容器）
+/* stl/string.extc —— SSO 字节串（内联 16 字节，超过了才进池；STL 第二个池底容器）
  *
  * 口径（POOLS.md §5）：**序列化面保持连续** —— 下游全吃 `slice<u8>`
  * （print · IO · 哈希 · `extern!` 边界），所以这里绝不分块；**拿到内容只有 `toSlice()` 一条路
  * （拷一份），池里不放视图出去**（POOLS.md §5.4）。
  *
- * 与 vector<T> 同一套骨架：随容器登记一条运行期池记录（寿命挂在"地方"上）· grow 翻倍 ·
- * shrink 降高水位 · clear 留容量 · release 校验世代。**缓冲区是池的板块**（POOLS.md §2.1
- * 裁决一）：扩容时旧块当场还回去，不留历代旧副本；`toSlice()` 给的仍是连续的一份。
+ * 两态存储，判据**只有一个**：`cap == 0` ⟺ 内联（内容在 `small[16]u8` 里）。
+ *   · **零值 = 内联空串**：合法、可用、零分配 —— `var s: string` 直接写，`isEmpty()` 为真、
+ *     `capacity()` 为 0（没有池）。所以这个类型可以零初始化（字段里没有裸的引用，
+ *     `big` 的零值是 `none`）；
+ *   · **第一次写到第 17 个字节才升级**：建池 → 拿一块 32 字节的板块 → 把 16 个内联字节拷过去
+ *     → 填 `cap`/`pid`/`pidGen`/`big`。之后就是普通池底容器：`grow` 按 1.5 倍原地长
+ *     （旧块当场还回去，不留历代旧副本）、`shrink` 降高水位、`release` 校验世代后整批还。
+ *
+ * **`pid == 0` 绝不是"没有池"的哨兵**：第一个池的 rid 恰好就是 0（`{index,generation}` 打包）。
+ * 内联还是池，只问 `cap == 0`；`pStale` / `pPoison` / `release` / `grow` / `push` / `append` /
+ * `removeFront` / `shrink` / `at` / `toSlice` / `subView` 各问一次，问的都是同一个字段。
+ *
+ * 内联态没有池记录（`pid` 只是零值 0），所以**不花池、不分配**：100 万次"构造 + 写一字节 + 读回"
+ * 实测 eager 9.35 ms · 零值惰性 14.59 ms · **SSO 0.39 ms**。`pid`/`pidGen` 只在升级时才有意义。
+ *
+ * 内联态的容量：字段 `cap` 是 0（`capacity()` 因此对零值/短串如实回答"没有池"），但**物理上**
+ * 还能再装 16 个字节 —— 写入路径 `push` / `append` 先看 `n < 16` 就地写，装不下才升级。
  */
 use std::sys::pool as syspool
 
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
+@sharesStorage        /* **升级到池之后**按值拷贝 ⇒ 两份共用同一块板块，编译器在这里报警告；
+                       * 要独立副本用 `clone()`（内联态其实各拿各的 16 字节，但检查器一律保守） */
+@poolObject            /* 这个类型**可能拥有一个池**：升级之后存储住在池自己的板块上，寿命随它所在的地方 */
 struct string {
-    buf:    mut slice<u8>
+    small:  [16]u8          /* 内联缓冲：零值 = 内联空串（零分配的合法状态） */
     n:      i64
-    cap:    i64
+    cap:    i64             /* 0 = 内联；!= 0 = 池里，且 cap 就是池块容量（>= 16） */
+    big:    ?mut slice<u8>  /* 只有升级到池之后才 some —— 存一次、之后复用（每次 poolSliceRaw 都是新分配） */
     pid:    i64
     pidGen: u64
 
-    /* 构造器用 `T(args)` 糖的落点名字 `new`：非泛型类型上 `string::new(...)` 会被读成
-     * "模块 string 的函数 new"（模块名与类型名同名），而 `string(16)` 没有歧义。 */
-    fn new(c: i64) -> string {
+    /* 构造器（`withCap` 的落点）。非泛型类型上 `string::new(...)` 会被读成
+     * "模块 string 的函数 new"（模块名与类型名同名），所以这里叫 `create`；
+     * `new` / `empty` 两个名字留给**模块级**函数（文件末尾），从模块外写才对得上。
+     *
+     * 语义与老的 `new` 一字不差：**要了容量就建池**（`c` 下限 16 ⇒ `capacity()` 立刻 >= 16），
+     * 因为"预分配 n 字节"这句承诺不能靠内联的 16 字节兑现。SSO 省下的是**零值**与短串的默认构造，
+     * 不是显式的 `withCap`。 */
+    fn create(c: i64) -> string {
         let rp = syspool::extc_pool_new(i64(-1))
         let rpg = syspool::extc_pool_generation(rp)
         var cc: i64 = c
         if cc < i64(16) { cc = i64(16) }
         var s: string = {
-            buf:    poolSliceRaw<u8>(rp, cc),
             n:      i64(0),
             cap:    cc,
+            big:    some(poolSliceRaw<u8>(rp, cc)),
             pid:    rp,
             pidGen: rpg,
         }
@@ -54,31 +75,25 @@ struct string {
      * 因为我插入一下扩容一下你就完蛋了」。`toSlice` 这个名字也不容易读错（`as*` 那种
      * 命名看起来就像"给了里面的一个视图"）。
      *
+     * 内联态**也照拷**：`string` 是值，`small` 就在这个结构体里 —— 交一个指向自己的视图出去，
+     * 调用者一拷贝/一移动就悬垂。所以这里两条路都是"新分配 + 搬字节"，
      * 实现上 `new u8[n]` 写在方法体里，但逃逸分析会把这次分配提到**调用者**选的地方
      *（arena 的 home 机制）⇒ 它活得比这一次调用长，可以存、可以返回。 */
     fn toSlice(self: ref string) -> slice<u8> {
         var out: mut slice<u8> = new u8[self.n]
-        var i: i64 = 0
-        while i < self.n {
-            out[i] = self.buf[i]
-            i = i + i64(1)
-        }
+        copyInto<u8>(out, self.subView(i64(0), self.n), self.n)
         return out
     }
 
     /* **深拷贝：要一份独立的字符串就用它。**
      *
-     * `var b = a` 不是深拷贝 —— 那是结构体逐成员拷贝，两份共用同一块缓冲区
-     * （`buf` 是指针被抄了一份）：`b.push(...)` 会改到 `a` 的内容，`a.release()` 会让 `b` 悬垂。
-     * 显式拷贝的代价可见（一次 O(n) 拷贝 + 一块新板块），新缓冲区生在调用者所在的地方。 */
+     * `var b = a` 不是深拷贝 —— 那是结构体逐成员拷贝：内联态倒是各拿各的 16 个字节，
+     * 可**升级到池之后**两份共用同一块板块（`big` 是指针被抄了一份），`b.push(...)` 会改到
+     * `a` 的内容、`a.release()` 会让 `b` 悬垂。显式拷贝的代价可见（一次 O(n) 拷贝 + 最多一块新板块），
+     * 新缓冲区生在调用者所在的地方。短串从这里出去仍是**内联**的：`append` 会自己按需升级。 */
     fn clone(self: ref string) -> string {
-        var out = string::new(self.n)
-        let src = self.buf
-        var i: i64 = 0
-        while i < self.n {
-            out.push(src[i])
-            i = i + i64(1)
-        }
+        var out: string
+        out.append(self.subView(i64(0), self.n))
         return out
     }
     
@@ -88,14 +103,21 @@ struct string {
      * extC is matched), so a string can be compared with another string and with a raw `slice<u8>`
      * alike -- the second is what makes `s == "abc"` work, since a literal is a byte slice.
      * `!=` needs no method: the operator lookup falls back to `==`. There is no implicit
-     * conversion between `string` and `slice<u8>`, hence the two spellings instead of one. */
-    fn ==(self: ref string, other: string) -> bool { return string::bytesEq(self.buf[0..self.n], other.buf[0..other.n]) }
+     * conversion between `string` and `slice<u8>`, hence the two spellings instead of one.
+     *
+     * Both sides go through `subView(0, n)`: a read-only view of this value, consumed by the
+     * comparison before anything can change. */
+    fn ==(self: ref string, other: string) -> bool {
+        return string::bytesEq(self.subView(i64(0), self.n), other.subView(i64(0), other.n))
+    }
 
-    fn ==(self: ref string, other: slice<u8>) -> bool { return string::bytesEq(self.buf[0..self.n], other) }
+    fn ==(self: ref string, other: slice<u8>) -> bool { return string::bytesEq(self.subView(i64(0), self.n), other) }
 
-    fn <(self: ref string, other: string) -> bool { return string::bytesLt(self.buf[0..self.n], other.buf[0..other.n]) }
+    fn <(self: ref string, other: string) -> bool {
+        return string::bytesLt(self.subView(i64(0), self.n), other.subView(i64(0), other.n))
+    }
 
-    fn <(self: ref string, other: slice<u8>) -> bool { return string::bytesLt(self.buf[0..self.n], other) }
+    fn <(self: ref string, other: slice<u8>) -> bool { return string::bytesLt(self.subView(i64(0), self.n), other) }
 
     fn bytesEq(a: slice<u8>, b: slice<u8>) -> bool {
         if a.len != b.len { return false }
@@ -119,10 +141,11 @@ struct string {
     /* FNV-1a over the bytes, folded to a non-negative i64 -- good enough for a hash table and
      * cheap: `hashMap<string, V>` needs exactly this plus `==`. */
     fn hash(self: ref string) -> i64 {
+        let v = self.subView(i64(0), self.n)
         var h: i64 = i64(1469598103934665603)
         var i: i64 = 0
-        while i < self.n {
-            h = h ^ i64(self.buf[i])
+        while i < v.len {
+            h = h ^ i64(v[i])
             h = h * i64(1099511628211)
             i = i + i64(1)
         }
@@ -140,17 +163,20 @@ struct string {
      * three parameters -- self, other, home -- and the call two), and the first repair attempt
      * leaked the buffer into an arena nothing reclaims (PLAN #83). The operator path has to pick
      * up the whole `homeDepth` + `setCallArenaArg` + escape-site bookkeeping the method-call path
-     * does; until then concatenation is spelled as a method. */
+     * does; until then concatenation is spelled as a method.
+     *
+     * The result starts as a **zero value** (inline, no pool) and reaches for the pool only if the
+     * concatenation does not fit in the 16 inline bytes -- a short join allocates nothing at all. */
     fn concat(self: ref string, other: string) -> string {
-        var out: string = string::new(self.n + other.n)
-        out.append(self.buf[0..self.n])
-        out.append(other.buf[0..other.n])
+        var out: string
+        out.append(self.subView(i64(0), self.n))
+        out.append(other.subView(i64(0), other.n))
         return out
     }
 
     fn concatBytes(self: ref string, other: slice<u8>) -> string {
-        var out: string = string::new(self.n + other.len)
-        out.append(self.buf[0..self.n])
+        var out: string
+        out.append(self.subView(i64(0), self.n))
         out.append(other)
         return out
     }
@@ -159,7 +185,8 @@ struct string {
     /* One byte, or `none` when out of range (no trap: reading past the end is a condition). */
     fn at(self: ref string, i: i64) -> ?u8 {
         if i < i64(0) || i >= self.n { return none }
-        return some(self.buf[i])
+        if self.cap == i64(0) { return some(self.small[i]) }
+        return some(self.big![i])
     }
 
     /* A zero-copy view of [lo, hi). Bounds are clamped, so a bad range gives an empty view rather
@@ -186,23 +213,30 @@ struct string {
         if b > self.n { b = self.n }
         if b < a { b = a }
         var out: mut slice<u8> = new u8[b - a]
-        copyInto<u8>(out, self.buf[a..b], b - a)
+        copyInto<u8>(out, self.subView(a, b), b - a)
         return out
     }
 
     /* A zero-copy view -- valid **only while the string is not changed**.
      *
-     * Growing the string (`push` / `append`) replaces its block, and the view dangles at once;
+     * Growing the string (`push` / `append`) replaces the block, and the view dangles at once;
      * the checker cannot see that, because it is not a lifetime question but a "the block was
      * replaced" one. This is the same category as `!` and `extern!`: you sign, you own it.
-     * Use `sub` unless a profile says otherwise. */
+     * Use `sub` unless a profile says otherwise.
+     *
+     * SSO adds one wrinkle to that contract for the INLINE case: the view then points into the
+     * string value itself (`small`), so it is also invalidated by **copying / moving the string**
+     * -- the escape checker does catch the lifetime half (a view of a local cannot escape its
+     * block), but the "the value was copied" half is still a signature. In the pool case nothing
+     * changed: the view points at the plate. */
     fn subView(self: ref string, lo: i64, hi: i64) -> slice<u8> {
         var a: i64 = lo
         var b: i64 = hi
         if a < i64(0) { a = i64(0) }
         if b > self.n { b = self.n }
         if b < a { b = a }
-        return self.buf[a..b]
+        if self.cap == i64(0) { return self.small[a..b] }
+        return self.big![a..b]
     }
 
     /* ---------------------------------------------------------------- 子串查找：Two-Way
@@ -222,10 +256,11 @@ struct string {
         let n = needle.len
         if n == i64(0) { return some(i64(0)) }
         if n > m { return none }
+        let hay = self.subView(i64(0), m)
         if n == i64(1) {
             var i: i64 = 0
             while i < m {
-                if self.buf[i] == needle[i64(0)] { return some(i) }
+                if hay[i] == needle[i64(0)] { return some(i) }
                 i = i + i64(1)
             }
             return none
@@ -245,13 +280,13 @@ struct string {
         while i + n <= m {
             /* right half first: needle[pos..n) against hay[i+pos..i+n) */
             var j: i64 = pos
-            while j < n && needle[j] == self.buf[i + j] { j = j + i64(1) }
+            while j < n && needle[j] == hay[i + j] { j = j + i64(1) }
             if j < n {
                 if j - pos >= per { i = i + per } else { i = i + i64(1) }
             } else {
                 /* the right half matched; the left half is checked backwards, from the split */
                 var q: i64 = pos - i64(1)
-                while q >= i64(0) && needle[q] == self.buf[i + q] { q = q - i64(1) }
+                while q >= i64(0) && needle[q] == hay[i + q] { q = q - i64(1) }
                 if q < i64(0) { return some(i) }
                 i = i + i64(1)
             }
@@ -294,9 +329,10 @@ struct string {
 
     fn startsWith(self: ref string, p: slice<u8>) -> bool {
         if p.len > self.n { return false }
+        let v = self.subView(i64(0), p.len)
         var i: i64 = 0
         while i < p.len {
-            if self.buf[i] != p[i] { return false }
+            if v[i] != p[i] { return false }
             i = i + i64(1)
         }
         return true
@@ -305,27 +341,54 @@ struct string {
     fn endsWith(self: ref string, p: slice<u8>) -> bool {
         if p.len > self.n { return false }
         let off = self.n - p.len
+        let v = self.subView(off, self.n)
         var i: i64 = 0
         while i < p.len {
-            if self.buf[off + i] != p[i] { return false }
+            if v[i] != p[i] { return false }
             i = i + i64(1)
         }
         return true
     }
 
     /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。
-     * 连续性与「不留历代旧副本」同时成立。 */
+     * 连续性与「不留历代旧副本」同时成立。
+     *
+     * SSO：`cap == 0` 时这一步是**升级**，不是扩容 —— 建池、拿第一块 32 字节的板块、
+     * 把 16 个内联字节拷进去。之后才走 1.5 倍那条老路。两条路的纪律是同一条：
+     * 换块时旧块（这里是"没有块"）当场还回去，不留历代旧副本。 */
     fn grow(self: mut ref string) {
+        if self.cap == i64(0) {
+            let rp = syspool::extc_pool_new(i64(-1))
+            let rpg = syspool::extc_pool_generation(rp)
+            var blk: mut slice<u8> = poolSliceRaw<u8>(rp, i64(32))
+            copyInto<u8>(blk, self.small[0..i64(16)], i64(16))
+            self.big = some(blk)
+            self.cap = i64(32)
+            self.pid = rp
+            self.pidGen = rpg
+            return
+        }
         if self.pid < i64(0) { return }
         let ncap = self.cap + self.cap / i64(2)
-        self.buf = poolResizeRaw<u8>(self.pid, self.buf, ncap)
+        self.big = some(poolResizeRaw<u8>(self.pid, self.big!, ncap))
         self.cap = ncap
     }
 
     fn push(self: mut ref string, b: u8) {
         if self.pStale() { self.pPoison() }
+        if self.cap == i64(0) && self.n < i64(16) {
+            self.small[self.n] = b
+            self.n = self.n + i64(1)
+            return
+        }
         if self.n >= self.cap { self.grow() }
-        self.buf[self.n] = b
+        /* 走到这里 `cap != 0` ⇒ 池态。逐字节的热路径直接取载荷（`!` 是"调用者签字"，
+         * 不生成标签检查）：`match` 每字节都要拷一次切片值，实测 10M 次 push 慢 2–3×
+         * （bench/stl/string.extc）。不变式由本文件维持 —— 五个改动点
+         * （`create` / `grow` / `pPoison` / `release` / 这里的 `grow`）都同时设 `cap` 与 `big`；
+         * 若有人手工拼一个 `{ cap: 8 }`（`big` 为零值 `none`），载荷是零值切片
+         * ⇒ 下标写带位置 trap，而不是野指针。 */
+        self.big![self.n] = b
         self.n = self.n + i64(1)
     }
 
@@ -333,13 +396,26 @@ struct string {
      *
      * **一次 `copyInto`，不是逐字节 `push`**：`push` 每来一个字节都要做一次陈旧池守卫
      * （`pStale()` = 池世代的加载+比较，实测约 1 cycle/字节）与一次容量检查。批量做就只付一次
-     * —— 这正是 `bench/app` 场景 C 里那 28% 的来源（DEVLOG 第十一段续八）。 */
+     * —— 这正是 `bench/app` 场景 C 里那 28% 的来源（DEVLOG 第十一段续八）。
+     *
+     * SSO：装得下 16 个内联字节就地写（**一个池都不建**）；装不下先 `grow` 升级再搬。 */
     fn append(self: mut ref string, s: slice<u8>) {
         if self.pStale() { self.pPoison() }
         if s.len <= i64(0) { return }
         let need: i64 = self.n + s.len
+        if self.cap == i64(0) && need <= i64(16) {
+            copyInto<u8>(self.small[self.n..need], s, s.len)
+            self.n = need
+            return
+        }
         while self.cap < need { self.grow() }
-        copyInto<u8>(self.buf[self.n..need], s, s.len)
+        match self.big {
+            some(bk) => {
+                var w: mut slice<u8> = bk
+                copyInto<u8>(w[self.n..need], s, s.len)
+            }
+            none => { }
+        }
         self.n = need
     }
 
@@ -351,59 +427,93 @@ struct string {
         var k: i64 = n
         if k > self.n { k = self.n }
         let keep: i64 = self.n - k
-        copyInto<u8>(self.buf[0..keep], self.buf[k..self.n], keep)
+        if self.cap == i64(0) {
+            copyInto<u8>(self.small[i64(0)..keep], self.small[k..self.n], keep)
+            self.n = keep
+            return
+        }
+        match self.big {
+            some(bk) => {
+                var w: mut slice<u8> = bk
+                copyInto<u8>(w[i64(0)..keep], w[k..self.n], keep)
+            }
+            none => { }
+        }
         self.n = keep
     }
 
     fn appendByte(self: mut ref string, b: u8) { self.push(b) }
 
-    /* 缩容到刚好装下（下限 16）；连续性与字节不变 */
+    /* 缩容到刚好装下（下限 16）；连续性与字节不变。
+     *
+     * 内联态（`cap == 0`）没有可缩的：它本来就只占 16 字节，而且"下限 16"这条承诺
+     * 与内联缓冲等大 —— 池态缩到 16 之后仍是池态，不往回退（退回内联会让 `capacity()`
+     * 从 16 掉到 0，那是另一个语义）。 */
     fn shrink(self: mut ref string) {
+        if self.cap == i64(0) { return }
         var ncap: i64 = self.n
         if ncap < i64(16) { ncap = i64(16) }
         if ncap >= self.cap { return }
-        self.buf = poolResizeRaw<u8>(self.pid, self.buf, ncap)
+        self.big = some(poolResizeRaw<u8>(self.pid, self.big!, ncap))
         self.cap = ncap
     }
 
     fn clear(self: mut ref string) { self.n = i64(0) }
 
     /* **守卫**：这一份容器值还指着它的池吗？（池被 release 掉 / 槽位被别的池复用时世代对不上）
-     * 陈旧 ⇒ 把这一份收成空容器，让下一次下标访问带位置地 trap，而不是写已还给 malloc 的内存。 */
+     * 陈旧 ⇒ 把这一份收成空容器，让下一次下标访问带位置地 trap，而不是写已还给 malloc 的内存。
+     *
+     * 内联态（`cap == 0`）没有池，谈不上陈旧 —— 这一条**必须问在 `pid` 之前**：
+     * 零值的 `pid` 就是 0，而 0 是一个合法的池 rid（第一个池）。 */
     fn pStale(self: ref string) -> bool {
+        if self.cap == i64(0) { return false }
         if self.pid < i64(0) { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
+    /* 收成**零值**（内联空串）：这是 SSO 之后唯一的"空且合法"状态 ——
+     * 陈旧拷贝从此不再指向任何池块，所以既不会写已还给 malloc 的内存，
+     * 也不会像旧实现那样把 0 长视图留在身上（那要求每个访问点都记得自己会 trap）。 */
     fn pPoison(self: mut ref string) {
-        self.buf = poolSlice<u8>(i64(-1), i64(0))
         self.n   = i64(0)
         self.cap = i64(0)
+        self.big = none
         self.pid = i64(-1)
     }
 
     fn release(self: mut ref string) {
-        if self.pid < i64(0) { return }
+        /* 内联：没有池可还（`pid` 可能是 0 —— 第一个池的 rid —— 所以这里**不能**看 pid）。 */
+        if self.cap == i64(0) { return }
         /* One staleness question, one place to ask it (`pStale`): the inline copy of this
          * compare used to live here too, and two copies of a load-bearing check drift. */
         if self.pStale() {
-            self.pid = i64(-1)
+            self.pPoison()      /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
             return
         }
-        /* 先把视图收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界
-         * （带位置的 trap），而不是写进一块已经还掉的内存。 */
-        self.buf = poolResize<u8>(self.pid, self.buf, i64(0))
+        let rp = self.pid
+        /* 先把视图收成 0 长，再把板块还给池：之后任何下标都是响亮越界
+         * （带位置的 trap），而不是写进一块已经还掉的内存。还完收成零值（内联空串）：
+         * 释放过的字符串就是空串 —— 读它不再需要"记得它会 trap"。 */
+        self.big = some(poolResize<u8>(rp, self.big!, i64(0)))
         self.cap = i64(0)
-        syspool::extc_pool_reset(self.pid)
-        syspool::extc_pool_drop(self.pid)
+        self.big = none
+        self.n   = i64(0)
+        syspool::extc_pool_reset(rp)
+        syspool::extc_pool_drop(rp)
         self.pid = i64(-1)
     }
 }
 
 /* 模块级构造器。
  *
- * 为什么需要它：模块名与类型名同名（`stl/string.extc` 里的 `string`）时，
+ * 为什么需要它们：模块名与类型名同名（`stl/string.extc` 里的 `string`）时，
  * `string::new(c)` 会被读成"模块 string 的函数 new"，`string(c)` 也解析不到类型
  * （两条路都要消歧）。泛型容器没这个问题 —— `vector<i32>::new()` 的 `<>` 就消歧了。
  * 这里用"模块级函数"这条路：`string::withCap(n)` 明确是模块导出的函数。
- * 将来若要统一，可给非泛型类型也加一条消歧语法（记在 POOLS.md 的待办里）。 */
-fn withCap(c: i64) -> string { return string::new(c) }
+ *
+ * 所以：**要容量用 `withCap(n)`；要空串用 `new()` / `empty()`；零值 `var s: string` 也对**。
+ * `new()` / `empty()` 与零值完全等价（内联、零分配、`capacity() == 0`）——
+ * 它们存在只是为了让手册里那句 `string::new()` 真的能用（此前只有类型上的 `new(c)`，
+ * 从模块外写 `string::new()` 根本不存在）。 */
+fn withCap(c: i64) -> string { return string::create(c) }
+fn new() -> string { var s: string  return s }
+fn empty() -> string { var s: string  return s }

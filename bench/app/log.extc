@@ -61,7 +61,8 @@ fn main(args: slice<slice<u8>>) -> i32 {
             findSum = findSum + at
         }
         if s.len() >= CAP {
-            acc = acc + i64(s.buf[i64(0)]) + i64(s.buf[s.len() - i64(1)])
+            /* 读两个字节走公开的 `at()`：SSO 之后存储分内联/池两态，`buf` 字段没有了。 */
+            acc = acc + i64(s.at(i64(0)) ?? u8(0)) + i64(s.at(s.len() - i64(1)) ?? u8(0))
             s.removeFront(s.len() - KEEP)
             trunc = trunc + i64(1)
         }

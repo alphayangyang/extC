@@ -24,7 +24,9 @@ fn main() -> i32 {
     while i < i64(4) { io::cout << i64(a[i])  i = i + i64(1) }
     var sum: i64 = 0
     i = i64(0)
-    while i < s.len() { sum = sum + i64(s.buf[i])  i = i + i64(1) }
+    /* 读字节走公开的 `at()`：SSO 之后存储分内联/池两态，`buf` 字段没有了（`string::toSlice`
+     * 仍是"拿内容"那条路，这里逐字节读，不必为了一次求和拷一份）。 */
+    while i < s.len() { sum = sum + i64(s.at(i) ?? u8(0))  i = i + i64(1) }
     io::cout << " slen=" << s.len() << " ssum=" << sum
     return 0
 }

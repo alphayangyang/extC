@@ -71,24 +71,44 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 </ul></nav>
 <main><div class="crumb">extC 手册 · §标准库参考：`string`</div>
 <h1 id="标准库参考-string">标准库参考：<code>string</code></h1>
-<p><code>stl::string</code> 是<strong>池底</strong>的连续字节串：内容连续（可整体取出传给 C 函数）、容量按 1.5 倍增长、 <code>release()</code> 整批还给池。池底意味着<strong>存储不外借</strong>：凡交出内容的接口，要么拷贝（<code>toSlice</code> / <code>sub</code>）， 要么明确签字（<code>subView</code>）。</p>
+<p><code>stl::string</code> 是<strong>短串内联</strong>的连续字节串（SSO，short string optimization）：<strong>零值就是一块合法的内联空串</strong> ——16 字节就地存储在值里，不建池、不分配；只有写到<strong>第 17 个字节</strong>才升级到池。升级之后是池底容器： 容量按 1.5 倍增长、<code>release()</code> 整批还给池。池底意味着<strong>存储不外借</strong>：凡交出内容的接口，要么拷贝 （<code>toSlice</code> / <code>sub</code>），要么明确签字（<code>subView</code>）。</p>
 <p>用法：<code>use stl::string</code>。</p>
+<h2 id="内部布局">内部布局</h2>
+<table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td><code>small</code></td><td>内联缓冲 <code>[16]u8</code>：零值即内联空串，<code>len()</code> 个字节就住在这里</td></tr><tr><td><code>n</code></td><td>当前字节数</td></tr><tr><td><code>cap</code></td><td><strong>0 = 内联</strong>（内容在 <code>small</code> 里）；非 0 = 池里，且 <code>cap</code> 就是池块容量（不小于 16）</td></tr><tr><td><code>big</code></td><td><code>?mut slice&lt;u8&gt;</code>：<strong>只有升级到池之后才有值</strong>，指向池板块；存一次、之后复用</td></tr><tr><td><code>pid</code> / <code>pidGen</code></td><td>池下标与建池时的世代（升级时填写；内联态不参与判断）</td></tr></tbody></table>
+<p>判据只有一条：<strong><code>cap == 0</code> 就是内联</strong>。<code>pid</code> 不能当哨兵用（第一个池的下标恰好是 0）；内联态没有池， 所以短暂的串<strong>完全不碰池</strong>，也不参与池的登记与回收。</p>
 <h2 id="构造">构造</h2>
-<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>string::new()</code></td><td>空串（首次增长时按 1.5 倍扩容）</td></tr><tr><td><code>string::withCap(n)</code></td><td>预分配 <code>n</code> 字节容量</td></tr><tr><td><code>clone()</code></td><td>深拷贝，得到独立的一份（板与池记录都是新的）</td></tr></tbody></table>
+<table><thead><tr><th>写法</th><th>说明</th></tr></thead><tbody><tr><td><code>var s: string</code></td><td>空串：内联、零分配、<code>capacity()</code> 为 0（0 表示"没有池"）</td></tr><tr><td><code>string::new()</code> / <code>string::empty()</code></td><td>与零值<strong>完全等价</strong>的空串（模块级函数，写法直白些）</td></tr><tr><td><code>string::withCap(n)</code></td><td>预分配 <code>n</code> 字节池容量（下限 16）：立刻建池，<code>capacity()</code> 不小于 16</td></tr><tr><td><code>string::create(n)</code></td><td>与 <code>withCap(n)</code> 同义（类型上的落点，模块级入口是 <code>withCap</code>）</td></tr><tr><td><code>clone()</code></td><td>深拷贝，得到独立的一份（短串拷出来仍是内联的，不建池）</td></tr></tbody></table>
+<pre class="lang-extc"><code><span class="k">use</span> std::io
+<span class="k">use</span> stl::<span class="t">string</span>
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> s: <span class="t">string</span>                     <span class="c">// 内联空串：零分配</span>
+    s.<span class="f">append</span>(<span class="c">"hi"</span>)                    <span class="c">// 3 个字节就地写进 small</span>
+    <span class="k">var</span> t = <span class="t">string</span>::<span class="k">new</span>()             <span class="c">// 同上，写法直白</span>
+    t.<span class="f">append</span>(s.<span class="f">toSlice</span>())
+    <span class="k">var</span> u: <span class="t">string</span> = <span class="t">string</span>::<span class="f">withCap</span>(<span class="t">i64</span>(<span class="n">64</span>))   <span class="c">// 显式要容量 ⇒ 建池</span>
+    u.<span class="f">append</span>(t.<span class="f">toSlice</span>())
+    io::cout &lt;&lt; s.<span class="f">len</span>() &lt;&lt; <span class="c">" "</span> &lt;&lt; u.<span class="f">capacity</span>() &lt;&lt; <span class="c">"\n"</span>
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
 <h2 id="长度与容量">长度与容量</h2>
-<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>len()</code></td><td>当前字节数</td></tr><tr><td><code>capacity()</code></td><td>当前容量（不小于 <code>len()</code>）</td></tr><tr><td><code>isEmpty()</code></td><td><code>len() == 0</code></td></tr><tr><td><code>clear()</code></td><td>长度归零，<strong>保留容量</strong></td></tr><tr><td><code>shrink()</code></td><td>容量收缩到不小于当前长度（下限 16 字节）</td></tr><tr><td><code>release()</code></td><td>把整块存储还给池；对<strong>陈旧拷贝</strong>是空操作（不会误放别人的池）</td></tr></tbody></table>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>len()</code></td><td>当前字节数</td></tr><tr><td><code>capacity()</code></td><td>当前容量：<strong>内联返回 0</strong>（没有池）；池态返回池块容量（不小于 <code>len()</code>）</td></tr><tr><td><code>isEmpty()</code></td><td><code>len() == 0</code></td></tr><tr><td><code>clear()</code></td><td>长度归零，<strong>保留存储</strong>（内联态保留那 16 字节，池态保留池块）</td></tr><tr><td><code>shrink()</code></td><td>容量收缩到不小于当前长度（下限 16 字节）；<strong>内联态没有可缩的，是空操作</strong></td></tr><tr><td><code>release()</code></td><td>把池整批还回去；内联态是空操作；对<strong>陈旧拷贝</strong>是空操作（不会误放别的池）</td></tr></tbody></table>
+<p><code>release()</code> 之后这个值收成<strong>空的、合法的内联串</strong>：<code>len()</code> 与 <code>capacity()</code> 都是 0，可以继续当空串用。 <code>toSlice()</code> 之类的读取因此不会去碰已还给池的内存。</p>
 <h2 id="写入">写入</h2>
 <table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>push(b: u8)</code></td><td>追加一个字节</td></tr><tr><td><code>append(bytes: slice&lt;u8&gt;)</code></td><td>追加一段字节（整段 <code>memmove</code>，不是逐字节循环）</td></tr><tr><td><code>appendByte(b: u8)</code></td><td>与 <code>push</code> 同义，供链式书写</td></tr><tr><td><code>removeFront(n)</code></td><td>从头部删除 <code>n</code> 个字节（余下部分前移）</td></tr></tbody></table>
+<p><strong>升级规则</strong>：前 16 个字节就地写进 <code>small</code>；第 17 个字节触发升级——建池、取一块 32 字节的板块、 把 16 个内联字节搬过去，此后 <code>capacity()</code> 就是池块容量，增长按 1.5 倍（换块时旧块当场还回去， 不留历代旧副本）。</p>
 <h2 id="读取">读取</h2>
-<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>at(i) -&gt; ?u8</code></td><td>第 <code>i</code> 个字节；越界返回 <code>none</code>（不是 trap）</td></tr><tr><td><code>toSlice() -&gt; slice&lt;u8&gt;</code></td><td><strong>拷贝</strong>整串内容；结果落在调用者选的地方，可以存、可以返回</td></tr><tr><td><code>sub(lo, hi) -&gt; slice&lt;u8&gt;</code></td><td><strong>拷贝</strong>子串（区间自动夹到合法范围）</td></tr><tr><td><code>subView(lo, hi) -&gt; slice&lt;u8&gt;</code></td><td><strong>零拷贝视图</strong>：只在字符串不再变化时有效，增长即失效；与 <code>!</code>、<code>extern!</code> 同类，<strong>由调用者签字</strong></td></tr></tbody></table>
+<table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>at(i) -&gt; ?u8</code></td><td>第 <code>i</code> 个字节；越界返回 <code>none</code>（不是 trap）</td></tr><tr><td><code>toSlice() -&gt; slice&lt;u8&gt;</code></td><td><strong>拷贝</strong>整串内容（内联态也拷：<code>string</code> 是值）；结果落在调用者选的地方，可以存、可以返回</td></tr><tr><td><code>sub(lo, hi) -&gt; slice&lt;u8&gt;</code></td><td><strong>拷贝</strong>子串（区间自动夹到合法范围）</td></tr><tr><td><code>subView(lo, hi) -&gt; slice&lt;u8&gt;</code></td><td><strong>零拷贝视图</strong>：只在字符串不再变化时有效，增长即失效；与 <code>!</code>、<code>extern!</code> 同类，<strong>由调用者签字</strong></td></tr></tbody></table>
+<p><code>subView</code> 的视图在内联态指向<strong>值自己</strong>（<code>small</code>），所以除了"别再改它"，还多一条"别把它拷走"； 池态的视图指向池板块，与升级之前同一条规矩。要长期持有就用 <code>toSlice</code> 拷一份。</p>
 <h2 id="查找与比较">查找与比较</h2>
 <table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>find(needle: slice&lt;u8&gt;) -&gt; i64</code></td><td>首次出现的位置；未找到返回 <code>-1</code>（线性时间，Two-Way 算法）</td></tr><tr><td><code>contains(needle)</code></td><td>是否包含</td></tr><tr><td><code>startsWith(prefix)</code> / <code>endsWith(suffix)</code></td><td>前缀 / 后缀判定</td></tr><tr><td><code>bytesEq(a, b) -&gt; bool</code></td><td>逐字节相等</td></tr><tr><td><code>bytesLt(a, b) -&gt; bool</code></td><td>字典序小于</td></tr><tr><td><code>hash() -&gt; i64</code></td><td>供 <code>hashMap&lt;string, V&gt;</code> 一类的键使用</td></tr></tbody></table>
 <h2 id="拼接">拼接</h2>
 <table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>concat(other: string) -&gt; string</code></td><td>新串 = 自身 + <code>other</code></td></tr><tr><td><code>concatBytes(bytes: slice&lt;u8&gt;) -&gt; string</code></td><td>新串 = 自身 + 一段字节</td></tr></tbody></table>
+<p>两条都从<strong>零值</strong>开始拼，所以结果不超过 16 字节时同样是内联的（不建池）；超过了才升级。</p>
 <h2 id="流式-i-o-在-stl-stringio-中挂载">流式 I/O（在 <code>stl::stringio</code> 中挂载）</h2>
 <table><thead><tr><th>方法</th><th>说明</th></tr></thead><tbody><tr><td><code>readLineFrom(r: mut ref io::reader) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>读一行追加进串（去掉行尾换行；CRLF 亦处理）；<code>0</code> 表示读到结尾</td></tr><tr><td><code>readAllFrom(r) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>读到结尾，每次整块追加</td></tr><tr><td><code>writeTo(w: mut ref io::writer) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>整串写给 writer（零拷贝直取，由 writer 拷进自己的缓冲）</td></tr><tr><td><code>writeLineTo(w) -&gt; result&lt;i64, io::ioError&gt;</code></td><td>整串 + 换行</td></tr></tbody></table>
 <h2 id="按约定属于内部的成员">按约定属于内部的成员</h2>
-<p><code>buf</code> <code>n</code> <code>cap</code> <code>pid</code> <code>pidGen</code> <code>grow</code> <code>maxSuffix</code> 等：可达（编译器不阻止），但不受兼容性承诺保护。 完整清单一律见 <a href="20-internals.html">内部成员一览</a>，不在此重复。</p>
+<p><code>small</code> <code>big</code> <code>n</code> <code>cap</code> <code>pid</code> <code>pidGen</code> <code>grow</code> <code>maxSuffix</code> 等：可达（编译器不阻止），但不受兼容性承诺保护。 存储字段从升级前的单个 <code>buf</code> 变成了 <code>small</code> / <code>big</code> 两态，判据只有一个 <code>cap == 0</code>。 完整清单一律见 <a href="20-internals.html">内部成员一览</a>，不在此重复。</p>
 <div class="pn"><a href="21-flags.html">← 驱动开关</a> <a href="23-stl-stringio.html">标准库参考：`stringio` →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));

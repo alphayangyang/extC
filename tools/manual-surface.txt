@@ -792,12 +792,14 @@ stl::set	set	new	method	public
 stl::set	set	put	method	public
 stl::set	set	remove	method	public
 stl::set	set	withCap	method	public
+stl::string	-	empty	fn	public
+stl::string	-	new	fn	public
 stl::string	-	withCap	fn	public
 stl::string	string	append	method	public
 stl::string	string	appendByte	method	public
 stl::string	string	at	method	public
-stl::string	string	buf	field	internal
-stl::string	string	buf	field	internal
+stl::string	string	big	field	internal
+stl::string	string	big	field	internal
 stl::string	string	bytesEq	method	public
 stl::string	string	bytesLt	method	public
 stl::string	string	cap	field	internal
@@ -808,6 +810,8 @@ stl::string	string	clone	method	public
 stl::string	string	concat	method	public
 stl::string	string	concatBytes	method	public
 stl::string	string	contains	method	public
+stl::string	string	create	method	public
+stl::string	string	empty	method	public
 stl::string	string	endsWith	method	public
 stl::string	string	find	method	public
 stl::string	string	grow	method	public
@@ -828,6 +832,7 @@ stl::string	string	push	method	public
 stl::string	string	release	method	public
 stl::string	string	removeFront	method	public
 stl::string	string	shrink	method	public
+stl::string	string	small	field	internal
 stl::string	string	startsWith	method	public
 stl::string	string	sub	method	public
 stl::string	string	subView	method	public

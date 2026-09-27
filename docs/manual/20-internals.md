@@ -6,7 +6,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 862 个成员，其中内部 322 个：
+公开面共 867 个成员，其中内部 323 个：
 
 ## prelude
 
@@ -334,8 +334,8 @@
 
 ## stl::string
 
-- `string.buf`（字段）
-- `string.buf`（字段）
+- `string.big`（字段）
+- `string.big`（字段）
 - `string.cap`（字段）
 - `string.cap`（字段）
 - `string.maxSuffix`（方法）
@@ -347,6 +347,7 @@
 - `string.pid`（字段）
 - `string.pidGen`（字段）
 - `string.pidGen`（字段）
+- `string.small`（字段）
 
 ## stl::vector
 

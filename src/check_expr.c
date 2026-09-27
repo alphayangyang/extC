@@ -46,6 +46,52 @@ static void deferOp(Checker *c, Expr *e, const char *op) {
     *(OpCheck **)vecPush(&c->opChecks) = oc;
 }
 
+/* The two hidden arguments of an overloadable operator, resolved exactly as `EX_METHOD` does.
+ *
+ * An operator IS a method call: the left operand is the receiver and the right one is the
+ * single argument, and the callee can allocate (`usesHome`) or create a pool (`makesPool`)
+ * just like any method. So the call site owes it the same hidden arguments, and the decision
+ * of *which* arena/zone belongs to the same two functions the method path uses.
+ *
+ * The arena half is still open (PLAN #83: an operator that allocates and returns the value
+ * needs the escape-site bookkeeping as well), but the ZONE half cannot wait: `push`/`append`
+ * on an SSO string create the pool on the way out of the inline buffer, which makes the
+ * string-reading operators (`io >> string`, `ifstream >> string`) pool-creating callees.
+ * Without this the declaration carries `int64_t __extc_home_zone` and the call site passes
+ * two arguments -- the generated C does not compile at all.
+ *
+ * `setCallZoneArg` fixes the provisional level (the current block in a program, "pass my own
+ * zone down" inside a library module); `callHomeDepth` is then given the two operands so the
+ * escape site is recorded -- the final pass lowers the level again when an operand escapes
+ * this frame (`makesPool` is a closure, so it is still false here, exactly as on the method
+ * path: the record is unconditional and the final pass filters on the flag).
+ *
+ * Params:
+ *   c - checker
+ *   e - the EX_BIN node carrying the operator
+ *   m - the operator method the checker resolved for this node
+ */
+static void setOpCallArgs(Checker *c, Expr *e, FuncDef *m) {
+    setCallZoneArg(c, e);
+    if (!m || !c->eSites.arena) return;
+    /* Only a `mut ref` operand can be published into, so only then is there an escape site
+     * to record: `==` / `<` take both operands by `ref` and record nothing. */
+    bool anyMut = false;
+    for (size_t i = 0; i < m->params.len && i < 2; i++) {
+        Param *p = *(Param **)vecAt(&m->params, i);
+        if (p->type && p->type->kind == TY_REF && p->type->mut) anyMut = true;
+    }
+    if (!anyMut) return;
+    /* An operator has exactly two parameters and two operands, in the same order
+     * (`checkOperatorSig` is what keeps it that way), so the operands can be handed to the
+     * method path's own recorder without a second copy of the depth/escape rules. */
+    Vec args;
+    vecInit(&args, c->arena, sizeof(Expr *));
+    *(Expr **)vecPush(&args) = e->u.bin.left;
+    *(Expr **)vecPush(&args) = e->u.bin.right;
+    (void)callHomeDepth(c, &args, &m->params, e);
+}
+
 /* Compute the result type of a binary arithmetic operator.
  *
  * Params:
@@ -97,6 +143,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
             }
             e->func = m;
             m->used = true;      /* record that this method is used */
+            setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
             return lt;
         }
         if (lt->kind == TY_PARAM) {
@@ -631,6 +678,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
 
                     e->func = m;  m->used = true;   /* record that this method is used */
+                    setOpCallArgs(c, e, m);         /* the hidden zone argument of an operator call */
                     return c->tBool;
                 }
             notEq:
@@ -664,6 +712,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                     e->func = m;
                     m->used = true;      /* record that this method is used */
+                    setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
                     return c->tBool;
                 }
 
@@ -717,6 +766,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
                         e->func = m;
                         m->used = true;
+                        setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
                         return m->ret ? ttSubstitute(tt, m->ret, sp, sa) : ttVoid(tt);
                     }
                 }

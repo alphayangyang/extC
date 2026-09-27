@@ -466,6 +466,7 @@ static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
 static bool printArgIsPlace(const Expr *e);
 static bool cgIsMain(const FuncDef *f);
+static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-creating callee */
 
 static bool isPlaceExpr(const Expr *e);
 
@@ -1229,8 +1230,17 @@ static const char *genBin(CG *g, Expr *e) {
         l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
         if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
 
-        const char *call = arenaPrintf(g->arena, "%s(%s, %s)",
-                                       cMethodName(g, e->u.bin.left->type, m), l, r);
+        /* The hidden arguments, exactly as the method-call path emits them (`f->usesHome` /
+         * `f->makesPool`): an operator IS a method call, and the checker decided the level
+         * for it (`setOpCallArgs`). Only the zone is emitted here; the arena half is PLAN #83
+         * and still open, so an operator that allocates and returns the value keeps failing
+         * loudly in the C compiler instead of silently leaking. */
+        Buf cb;
+        bufInit(&cb, g->arena);
+        bufPrintf(&cb, "%s(%s, %s", cMethodName(g, e->u.bin.left->type, m), l, r);
+        if (m->makesPool) bufPrintf(&cb, ", %s", zoneArgRef(g, e));
+        bufPutc(&cb, ')');
+        const char *call = bufCstr(&cb);
         return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
     }
 
@@ -2863,7 +2873,19 @@ static const char *zoneArgRef(CG *g, Expr *e) {
      * anyway -- no hidden parameters, no zone mark of its own (docs/topics/CONCURRENCY.md 4.4). */
     if (g->coroFunc) return "f->zone";
     if (e && e->zoneLevel != 0) {
-        if (e->zoneLevel == ZONE_HOME && g->funcHasZoneParam) return "__extc_home_zone";
+        if (e->zoneLevel == ZONE_HOME) {
+            if (g->funcHasZoneParam) return "__extc_home_zone";
+            /* `main` 的 C 签名是固定的，收不到家 zone 参数 ⇒ 它的"家"就是**它自己那个体**
+             * （与家 arena 的 `__extc_home = &__extc_a[1]` 同一条口径）。
+             *
+             * 这里以前直接落到下面那条"最近一层压过的 zone"，而那是个**错的地方**：
+             * 一个在内层块里升级出来的池会登记到内层块的 zone 上，出块就被回收，
+             * 而接收者还活着。实测（SSO 的 `push` 是第一个"为接收者建池"的方法）：
+             * 循环里 push 到第 17 个字节升级 ⇒ 每轮出块收掉池 ⇒ 下一次 `pStale` 把串毒成空，
+             * `len=3` 而不是 20；串声明在循环外面时更糟 —— 池已还给 malloc，读到的是复用的内存。
+             * 家 zone 更长寿，代价只是内存（与逃逸分析"宁可多算"的方向一致）。 */
+            if (g->zoneFrameMarked) return "__extc_zm1";
+        }
         if (e->zoneLevel == 1 && g->zoneFrameMarked) return "__extc_zm1";
         if (e->zoneLevel > 1
             && e->zoneLevel < (int)(sizeof g->zoneMark / sizeof g->zoneMark[0])

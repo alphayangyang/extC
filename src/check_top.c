@@ -1179,6 +1179,15 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
     }
 
     bool complete = callee && computeEffectsTransitive(c, callee);
+    /* The summary this check is about to use -- the switch that answers "why was this call
+     * site rejected / why did it pass". Same shape as `EXTC_DBG_ZONE` / `EXTC_DUMP_EFFECTS`. */
+    if (getenv("EXTC_DBG_REFARGS"))
+        fprintf(stderr, "[refargs] %-16s mod=%-8s line=%-5d complete=%d"
+                        " addr=0x%x cont=0x%x other=0x%x homeAddr=0x%x homeCont=0x%x homeDepth=%d\n",
+                fname, callee && callee->modName ? callee->modName : "-", callee ? callee->line : -1,
+                (int)complete, callee ? callee->addrMask : 0, callee ? callee->contMask : 0,
+                callee ? callee->otherMask : 0, callee ? callee->homeAddrMask : 0,
+                callee ? callee->homeContMask : 0, homeDepth);
     /* The two checks decide independently whether to run; do not give them one shared
      * early return. Sharing that return already cost a bug: a `Cont` bit on `push` made
      * the address-flow check run as well, and `examples/list-return` was wrongly rejected
@@ -1585,10 +1594,35 @@ static bool vecHasName(Vec *v, const char *n) {
         if (strcmp(*(const char **)vecAt(v, i), n) == 0) return true;
     return false;
 }
+/* Is this expression a block out of a **pool plate**?
+ *
+ * `poolSlice<T>(rid, n)` / `poolSliceRaw<T>(rid, n)` take a fresh block; `poolResize<T>` /
+ * `poolResizeRaw<T>` grow or shrink the block already held. Either way the memory belongs to
+ * the pool the *container* owns, not to anything the caller passed: storing such a block
+ * publishes no caller reference, so it constrains no argument's lifetime -- the same
+ * exemption `new` gets. SSO `string` is what needs it: `grow` stores the block into
+ * `self.big`, and without this the whole `push`/`append` chain acquires `otherMask`
+ * ("stores something unattributable"), after which **every** call site of a function that
+ * appends to a string is required to pass arguments that live outside the frame
+ * (measured: `tests/coro/statemachine.extc` was rejected at `step(ref f, ref st, …)`).
+ *
+ * Params:
+ *   e - expression; may be NULL
+ *
+ * Returns:
+ *   True when the value is a pool plate block.
+ */
+static bool exprIsPoolBlock(Expr *e) {
+    if (!e || e->kind != EX_GENCALL || !e->u.gencall.name) return false;
+    const char *n = e->u.gencall.name;
+    return strcmp(n, "poolSlice")     == 0 || strcmp(n, "poolSliceRaw") == 0 ||
+           strcmp(n, "poolResize")    == 0 || strcmp(n, "poolResizeRaw") == 0;
+}
+
 /* Is the initial value something freshly allocated in this frame?
  *
- * A `new` counts, and so does a struct literal whose every field is itself fresh or a
- * scalar.
+ * A `new` counts, a block out of a pool plate counts (see `exprIsPoolBlock`), and so does a
+ * struct literal whose every field is itself fresh or a scalar.
  *
  * Params:
  *   e - initializer expression; may be NULL
@@ -1599,6 +1633,7 @@ static bool vecHasName(Vec *v, const char *n) {
 static bool exprIsFresh(Expr *e) {
     if (!e) return false;
     if (e->kind == EX_NEW) return true;
+    if (exprIsPoolBlock(e)) return true;
     if (e->kind == EX_STRUCTLIT) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (!exprIsFresh((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return false;
@@ -2265,6 +2300,12 @@ static int paramIndex(FuncDef *f, const char *name) {
  */
 static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool intoHome, Vec *fresh) {
     if (!e || !f) return;
+    /* A one-payload variant construction (`some(v)`, `success(v)`) holds exactly what `v`
+     * holds -- one tag and one copy -- so classify the payload, not the wrapper: the wrapper
+     * is not a second source of references. SSO `string` keeps its pool block in an `option`
+     * field (`self.big = some(blk)`), and without this the store reads as unattributable. */
+    if (e->kind == EX_ENUMVAL && e->u.enumval.args.len == 1)
+        e = *(Expr **)vecAt(&e->u.enumval.args, 0);
     /* Address flow: the address of a place is stored, so that place has to live at least
      * as long as the container it is stored into. */
     if (e->kind == EX_REF) {
@@ -2318,6 +2359,17 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
         }
     }
     if (e->kind == EX_NEW) return;                /* freshly allocated, so it is trivially safe */
+    if (exprIsPoolBlock(e)) return;               /* a pool plate block: fresh, and the container owns it */
+    /* A variant construction with **no payload** (`none`, and any payload-free enum variant)
+     * holds no reference, whatever the union's type says: the payload is simply not there.
+     * Without this, `self.big = none` -- how an SSO string clears its pool view -- marks the
+     * whole container as "stores something unknown", every caller of `push` inherits
+     * `otherMask`, and the call-site rule turns into the strictest one there is: an argument
+     * of a caller may not live in any block at all (measured: `tests/coro/statemachine.extc`
+     * was rejected -- "argument 1 of `step` points into a deeper scope (depth 1) than the
+     * arena this call may store it in (depth 0)"). `failure(e)` and `some(v)` carry a value
+     * and are classified as before. */
+    if (e->kind == EX_ENUMVAL && e->u.enumval.args.len == 0) return;
     { const char *vr = placeRootName(e);          /* `l.head = n`: the source is a fresh local */
       if (vr && vecHasName(fresh, vr)) return; }
     if (c && e->type && !typeContainsRef(c->tt, e->type)) return;   /* scalar, trivially safe */

@@ -60,7 +60,7 @@ impl string {
         /* Straight at the storage, no intermediate copy: `w.write` copies the bytes into the
          * writer's own buffer anyway, so a `toSlice()` here would copy them twice. The view is
          * consumed by the call and dies with it. */
-        let n = w.write(self.buf[i64(0)..self.n])?
+        let n = w.write(self.subView(i64(0), self.n))?
         return success(n)
     }
 
@@ -70,7 +70,7 @@ impl string {
      * static (depth 0), while `nl[..]` hands an unanalyzable callee a reference into the
      * callee's own frame -- the escape checker refuses that, and rightly so. */
     fn writeLineTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
-        let n = w.write(self.buf[i64(0)..self.n])?   /* see `writeTo`: no intermediate copy */
+        let n = w.write(self.subView(i64(0), self.n))?   /* see `writeTo`: no intermediate copy */
         let m = w.write("\n")?
         return success(n + m)
     }

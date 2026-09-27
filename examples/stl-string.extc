@@ -1,0 +1,58 @@
+// SSO：`string` 的零值是**内联空串**（合法可用、零分配），短串完全不碰池，超过 16 字节才升级。
+//
+// 判据（六条）：
+//   ① `var s: string` 默认构造 = 空串，且 `capacity() == 0`（`cap == 0` 就是"内联"，证明没建池）
+//   ② 写 3 个字节 → `toSlice()` 内容正确，仍然 `capacity() == 0`
+//   ③ 接着写到第 17 个字节 ⇒ **升级**（建池、搬走 16 个内联字节）
+//   ④ 升级后内容仍正确、`capacity() > 16`
+//   ⑤ 两个实例各写各的，互不干扰
+//   ⑥ `clone()` 独立：改副本不改原件；原件 `release()` 之后副本照旧可用（内容一字不差）
+// expect: empty=true cap0=0 new=true blank=true s=hi! len=3 cap=0 up=hi!defghijklmnopq cap=32 gt16=true len=17 a=aaa b=bbb clone=aaac a=aaa indep=true d=hi!defghijklmnopq rel=0 capRel=0
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    /* ① 零值 = 合法的内联空串：能读、能查、没有池。`string::new()` / `string::empty()` 与零值等价 */
+    var s: string
+    io::cout << "empty=" << s.isEmpty() << " cap0=" << s.capacity()
+    io::cout << " new=" << string::new().isEmpty() << " blank=" << string::empty().isEmpty()
+
+    /* ② 短串就地写进内联缓冲：3 个字节，一个池都不建（`cap` 仍是 0） */
+    s.push(u8(104))                 /* h */
+    s.push(u8(105))                 /* i */
+    s.push(u8(33))                  /* ! */
+    io::cout << " s=" << s.toSlice() << " len=" << s.len() << " cap=" << s.capacity()
+
+    /* ③ 跨过 16 字节 ⇒ 升级：建池 → 拿 32 字节的块 → 把 16 个内联字节搬过去 */
+    var k: i64 = 3
+    while k < i64(17) {
+        s.push(u8(97 + k % i64(26)))
+        k = k + i64(1)
+    }
+    /* ④ 升级之后内容仍正确、容量大于 16（池态） */
+    io::cout << " up=" << s.toSlice() << " cap=" << s.capacity()
+    io::cout << " gt16=" << (s.capacity() > i64(16)) << " len=" << s.len()
+
+    /* ⑤ 两个实例各写各的（内联缓冲在值里，天然互不干扰） */
+    var a: string
+    var b: string
+    var i: i64 = 0
+    while i < i64(3) {
+        a.push(u8(97))
+        b.push(u8(98))
+        i = i + i64(1)
+    }
+    io::cout << " a=" << a.toSlice() << " b=" << b.toSlice()
+
+    /* ⑥ clone() 独立：改副本不改原件；`var d = s` 才是共享（检查器会为它报 `@sharesStorage` 警告） */
+    var c = a.clone()
+    c.push(u8(99))
+    io::cout << " clone=" << c.toSlice() << " a=" << a.toSlice()
+    io::cout << " indep=" << (a.len() != c.len())
+
+    /* 原件是**池态**时才是硬判据：release 把整块还回去，副本照旧 */
+    var d = s.clone()
+    s.release()
+    io::cout << " d=" << d.toSlice() << " rel=" << s.len() << " capRel=" << s.capacity() << "\n"
+    return 0
+}
