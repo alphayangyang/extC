@@ -656,6 +656,12 @@ static void genViewIndexer(CG *g, Type *inst) {
     cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
+    /* A view whose storage is gone has no `i` that could be in range: `data == NULL` with a
+     * non-zero `len` used to pass the bounds check and store straight through the null pointer
+     * (UBSan: "store to null pointer of type 'int32_t'", found by tools/fuzz.py in a mutation of
+     * tests/pool/rt_promote.extc: a pool take returned nothing while the slice still claimed
+     * length 4). The message says what actually happened instead of blaming the index. */
+    cgLine(g, "if (!v.data) extc_trapMsg(file, line, \"the view has no storage\");");
     cgLine(g, "if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);");
     cgLine(g, "return &v.data[i];");
     g->indent--;

@@ -1,0 +1,26 @@
+// 视图的存储为空时，索引必须 **trap**（带源码位置），不能直写 null。
+//
+// 回归来源：tools/fuzz.py 战役5 的变异体（原语料 tests/pool/rt_promote.extc）——
+// `extc_pool_take` 什么都没给（`.data` 是 NULL），而切片仍宣称长度 4，
+// 于是 `slice_i32_index(s, 0, …)` 通过范围检查、赋值直接写空指针
+// （UBSan: store to null pointer of type 'int32_t'）。
+// 现在 genViewIndexer 生成的索引原语先查 `!v.data` 并 extc_trapMsg 报
+// "the view has no storage"。
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    let home = syspool::extc_pool_zoneDepth() - i64(1)   /* 外层地方的 zone 下标 */
+    var kept: i64 = i64(-1)
+    var temporary: i64 = i64(-1)
+    {
+        kept      = syspool::extc_pool_new_at(i64(-1), 9223372036854775807)
+        temporary = syspool::extc_pool_new(i64(-1))
+        io::cout << "in=" << syspool::extc_pool_live()
+    }
+    io::cout << " out=" << syspool::extc_pool_live()
+    var s: mut slice<i32> = poolSlice<i32>(kept, 4)
+    s[0] = i32(42)
+    io::cout << " use=" << i64(s[0]) << " live=" << syspool::extc_pool_live() << "\n"
+    return 0
+}
