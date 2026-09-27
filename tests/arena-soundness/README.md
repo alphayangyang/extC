@@ -89,3 +89,24 @@ gcc -O1 -g -fsanitize=address /tmp/a.c -o /tmp/a && /tmp/a                 # hea
 | `E_literal_hidden_home` | 加一个**可见**的 `mknode()` 调用 ⇒ **ACCEPT + 干净** | 洞在 `exprCallsNeedsHome` 缺分支 |
 | `G_stale_origin` | 让 origin 里没有 `new` ⇒ **被正确拒绝** | 洞在 origin 不失效 |
 | `F_overwrite_reuse_cell` | 把 `@overwrite` 去掉（每轮新分配）⇒ ASan 干净 | 洞在复用格与 arena 寿命由两条规则定 |
+
+---
+
+## 2026-09-28 登记：库已**清空**（洞全部闭合 ✓）
+
+`./run.sh` 现状：**洞还在 = 0 条 · 已修 = 3 条** ⇒ 最后三条按本库自己的规矩**毕业**进
+`tests/errors/`（在那里它们必须被拒 ✓，由 parrun 计数 ✓）：
+
+| 毕业的条目 | 现在的判据 |
+|---|---|
+| `B_field_table_stale.extc` | `error: this return value would hold a reference to a local variable that dies first` |
+| `D_elemwrite_clears_table.extc` | 同上 |
+| `H1_strongupdate_missed.extc` | 同上 |
+
+于是本目录只剩 `README.md` 与 `run.sh` ✓（`run.sh` 现在跑 0 条、照旧返回 0 ✓）。
+README 上面那张"五族"表记录的是**历史**（A/B/C/D 四族与 R1/R2 的机制说明仍然有效 ✓，
+H2/E/F 早已标注已修 ✓）—— 留着是为了"哪一句曾经写错过"能被查到 ✓，不再表示当前状态 ✓。
+
+**口径** ✓：`tests/arena-soundness/` 的语义是"**反例库**"（ACCEPT+ASan UAF = 洞还在 ✓），
+而 `tests/errors/` 是"必须被拒" ✓、`tools/attack.py arena` 是"应当安全的相邻形状必须干净" ✓
+—— 三者互补 ✓，都留在树里 ✓。

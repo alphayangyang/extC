@@ -1,3 +1,6 @@
+// 从 tests/arena-soundness/ 毕业（2026-09-28）：该库的判据是ACCEPT + ASan UAF = 洞还在，
+// 而这 3 条现在是 REJECT —— 洞已被编译期挡住 ⇒ 按库的 README 搬进 tests/errors/。
+// 原文件：tests/arena-soundness/B_field_table_stale.extc（该文件已删除）
 /* D8：字段表过期 + **引用型结构体的值** ⇒ 让 arena 内存逃出函数 */
 struct inner { v: mut ref i32 }
 struct box   { c: inner }

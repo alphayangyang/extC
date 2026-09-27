@@ -1,3 +1,6 @@
+// 从 tests/arena-soundness/ 毕业（2026-09-28）：该库的判据是ACCEPT + ASan UAF = 洞还在，
+// 而这 3 条现在是 REJECT —— 洞已被编译期挡住 ⇒ 按库的 README 搬进 tests/errors/。
+// 原文件：tests/arena-soundness/H1_strongupdate_missed.extc（该文件已删除）
 /* ⚠️ **强更新做一半就会漏的那种形状**（2026-09-23 实测抓到的）
  *
  * 背景：`examples/field-strong-update.extc` 是个**误拒**（`h.p = null` 之后那个容器
