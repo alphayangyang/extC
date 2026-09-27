@@ -786,6 +786,38 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- 事件 / 并发（extern! 路线）
+# 事件层只能用 extern!("extc") 触达（没有 stdlib 包装）；codegen 靠**名字前缀**
+# （extc_epoll_ / extc_sock_）与'被调用'来置 needEvent ⇒ 这条链本身也是攻击面。
+# 覆盖：epoll_new/add/wait、socket 对的写读、坏 fd/负超时/0 字节读、非 0/1 的 readable、
+# nonblock 后读空、端到端就绪、以及**跨特性**（协程体里 / 泛型函数里调事件层）。
+EVT = [
+    ('V1 事件层 epoll_new 拿到一个 fd', 'ok',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 { let ep = extc_epoll_new()\n  if ep < i64(0) { return 1 }\n  return 0 }'),
+    ('V2 空 epoll 上的 wait（超时 0）', 'ok',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 { let ep = extc_epoll_new()\n  let r = extc_epoll_wait(ep, i64(0))\n  if r < i64(0) { return 1 }\n  return 0 }'),
+    ('V3 socket 对：写一个字节再读回来', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 {\n  var fds: [2]i64 = [0, 0]\n  if extc_sock_pair(fds[..].data) < i64(0) { return 1 }\n  var b: [1]u8 = [u8(65)]\n  let w = extc_sock_write(fds[0], b[..].data, i64(1))\n  if w != i64(1) { return 2 }\n  var got: [1]u8 = [u8(0)]\n  let rd = extc_sock_read(fds[1], got[..].data, i64(1))\n  if rd != i64(1) { return 3 }\n  return i32(got[0]) - 65 }'),
+    ('V4 epoll_add 用负 fd', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 { let ep = extc_epoll_new()\n  let r = extc_epoll_add(ep, i64(-1), i64(1))\n  return 0 }'),
+    ('V5 wait 用坏的 ep 号', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 { let r = extc_epoll_wait(i64(-1), i64(0))\n  return 0 }'),
+    ('V6 sock_read 读 0 字节', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 {\n  var fds: [2]i64 = [0, 0]\n  if extc_sock_pair(fds[..].data) < i64(0) { return 1 }\n  var got: [4]u8 = [u8(0), u8(0), u8(0), u8(0)]\n  let rd = extc_sock_read(fds[0], got[..].data, i64(0))\n  return 0 }'),
+    ('V7 epoll_add 的 readable 传 2', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 {\n  var fds: [2]i64 = [0, 0]\n  if extc_sock_pair(fds[..].data) < i64(0) { return 1 }\n  let ep = extc_epoll_new()\n  let r = extc_epoll_add(ep, fds[0], i64(2))\n  return 0 }'),
+    ('V8 nonblock 后读空', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 {\n  var fds: [2]i64 = [0, 0]\n  if extc_sock_pair(fds[..].data) < i64(0) { return 1 }\n  extc_sock_nonblock(fds[1])\n  var got: [4]u8 = [u8(0), u8(0), u8(0), u8(0)]\n  let rd = extc_sock_read(fds[1], got[..].data, i64(4))\n  return 0 }'),
+    ('V9 epoll 端到端：可读事件就绪', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 {\n  var fds: [2]i64 = [0, 0]\n  if extc_sock_pair(fds[..].data) < i64(0) { return 1 }\n  let ep = extc_epoll_new()\n  if extc_epoll_add(ep, fds[1], i64(1)) < i64(0) { return 2 }\n  var b: [1]u8 = [u8(66)]\n  extc_sock_write(fds[0], b[..].data, i64(1))\n  let r = extc_epoll_wait(ep, i64(1000))\n  if r < i64(0) { return 3 }\n  return 0 }'),
+    ('V10 wait 用负超时', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn main() -> i32 { let ep = extc_epoll_new()\n  let r = extc_epoll_wait(ep, i64(-5))\n  return 0 }'),
+    ('V11 事件层在协程体里用', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn watcher(n: i64) -> coroutine<i64> {\n  var i: i64 = 0\n  while i < n { let ep = extc_epoll_new()\n    let r = extc_epoll_wait(ep, i64(0))\n    yield r\n    i = i + i64(1) } }\nfn main() -> i32 { var c = watcher(i64(2))\n  while c.next() { let v = c.value()\n    if v < i64(0) { return 1 } }\n  return 0 }'),
+    ('V12 事件层在泛型函数里用', 'ok_or_reject',
+     'extern!("extc") fn extc_epoll_new() -> i64\nextern!("extc") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64\nextern!("extc") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64\nextern!("extc") fn extc_sock_pair(out: mut ref i64) -> i64\nextern!("extc") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64\nextern!("extc") fn extc_sock_nonblock(fd: i64) -> i64\nfn probe<T>(v: T) -> i64 { let ep = extc_epoll_new()\n  let r = extc_epoll_wait(ep, i64(0))\n  return r }\nfn main() -> i32 { let r = probe(i64(1))\n  if r < i64(0) { return 1 }\n  return 0 }'),
+]
+
 # ---------------------------------------------------------------- io 边界
 # 攻击面：把 `tests/io/` 已覆盖的（EOF、CRLF、超长行、cerr/cout 分流）**避开**，
 # 专打相邻形状：整数溢出、部分读、零长/极小缓冲、写失败路径、关流后再写、浮点与布尔的
@@ -867,7 +899,7 @@ CNT = [
 
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
-          'containers': CNT, 'io': IOG}
+          'containers': CNT, 'io': IOG, 'events': EVT}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)

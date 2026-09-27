@@ -1263,6 +1263,21 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
 **性质** ✓：属**质量类**（只在 `-Werror` 下可见 ✓），
 不是健全性 ✓ ⇒ 不占主线 ✓，留着给下一阶段 ✓。
 
+## 三点二十二之前、攻击组 events（12 题）：**全绿** ✓
+
+事件层（`epoll` + `AF_UNIX` socket）**没有 stdlib 包装** ✓，只能用 `extern!("extc")` 触达 ✓ ——
+而 codegen 置 `needEvent` 靠的正是"**名字前缀**（`extc_epoll_` / `extc_sock_`）+ **被调用**" ✓
+（`codegen.c:6318-6324` ✓）⇒ **这条链本身**就是攻击面 ✓。运行期导出与签名 ✓：
+`extc_epoll_new()` ✓、`extc_epoll_add(ep, fd, readable)` ✓、`extc_epoll_wait(ep, timeout_ms)` ✓、
+`extc_sock_pair(out: mut ref i64)` ✓、`extc_sock_read/write(fd, buf: ref u8, n)` ✓、
+`extc_sock_nonblock(fd)` ✓（都在 `src/coroutine.c:106` 的 `eventEmitRuntime` 里 ✓）。
+
+覆盖 12 题 ✓：`epoll_new` 拿到 fd ✓ · 空 epoll 上 `wait(0)` ✓ · **socket 对写一字节再读回** ✓ ·
+`epoll_add` 用**负 fd** ✓ · `wait` 用**坏 ep 号** ✓ · `sock_read` 读 **0 字节** ✓ ·
+`readable` 传 **2** ✓ · `nonblock` 后读空 ✓ · **端到端就绪**（写 ⇒ epoll 就绪 ✓）✓ ·
+**负超时** ✓ · **跨特性**：事件层在**协程体**里 ✓ / 在**泛型函数**里 ✓ ⇒ 全绿 ✓
+（其中几条走的是 `extern!` 的类型规则被拒 ✓ —— 也在攻击面内 ✓）。
+
 ## 三点二十二、攻击组 nocopy / ctor / ops（17 题）：**全绿** ✓
 
 覆盖：`@noCopy` 被移走后不能再 use（拒 ✓）· 按 `ref` 传 ✓ · 读字段/调方法 ✓ ·
