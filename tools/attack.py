@@ -914,6 +914,24 @@ TIM = [
      'struct box<T> { v: T }\nfn mk<T>(v: T) -> box<T> { return { v: v } }\nfn main() -> i32 { return i32(mk(i64(5)).v) - 5 }'),
     ('X12 两层泛型函数间的实例传递', 'ok',
      'struct box<T> { v: T }\nfn inner<T>(v: T) -> box<T> { return { v: v } }\nfn outer<T>(v: T) -> box<T> { return inner(v) }\nfn main() -> i32 { return i32(outer(i64(6)).v) - 6 }'),
+    # --- 第三批（第 36 轮）：实例只出现在泛型体内的**其它**形状——match 载荷绑定、方法返回类型、
+    # 枚举载荷、嵌套数组、协程帧局部、dyn 载荷、option 载荷、同体内两个不同实例。
+    ('Y1 实例只出现在 match 载荷绑定', 'ok_or_reject',
+     'struct box<T> { v: T }\ntype w = | has(box<i64>) | none\nfn pick<T>(x: T) -> i64 { var y: w\n  y = w.has(box<i64> { v: i64(1) })\n  match y { has(b) => { return b.v }\n    none => { return i64(0) } } }\nfn main() -> i32 { return i32(pick(i64(1))) - 1 }'),
+    ('Y2 实例只作为方法返回类型', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn make<T>(v: T) -> box<i64> { return box<i64> { v: i64(9) } }\nfn main() -> i32 { return i32(make(i64(0)).v) - 9 }'),
+    ('Y3 实例只出现在枚举载荷里', 'ok_or_reject',
+     'struct box<T> { v: T }\ntype w = | has(box<i64>) | none\nfn mk<T>(v: T) -> w { return w.has(box<i64> { v: i64(2) }) }\nfn main() -> i32 { match mk(i64(0)) { has(b) => { return i32(b.v) - 2 }\n    none => { return 1 } } }'),
+    ('Y4 实例只作为嵌套数组元素', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var a: [2][2]box<i64> = [[box<i64> { v: i64(1) }, box<i64> { v: i64(1) }],\n    [box<i64> { v: i64(1) }, box<i64> { v: i64(1) }]]\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(0))) }'),
+    ('Y5 实例只出现在协程帧的局部', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn gen<T>(v: T) -> coroutine<i64> { var b: box<i64>\n  b.v = i64(3)\n  yield b.v }\nfn main() -> i32 { var c = gen(i64(0))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 3 }'),
+    ('Y6 实例只作为 dyn 载荷', 'ok_or_reject',
+     'trait Tag { fn tag(self: ref Self) -> i64 }\nstruct box<T> { v: T }\nimpl Tag for box<i64> { fn tag(self: ref box<i64>) -> i64 { return self.v } }\nfn mk<T>(v: T) -> i64 { var b: box<i64>\n  b.v = i64(4)\n  var d: dyn Tag = dyn Tag(b)\n  return d.tag() }\nfn main() -> i32 { return i32(mk(i64(0))) - 4 }'),
+    ('Y7 实例只出现在 option 载荷', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var o: box<i64>? = null\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(0))) }'),
+    ('Y8 一个泛型体内两个不同实例', 'ok_or_reject',
+     'struct box<T> { v: T }\nfn mk<T>(v: T) -> i64 { var a: box<i64>\n  a.v = i64(1)\n  var b: box<i32>\n  b.v = i32(2)\n  return i64(0) }\nfn main() -> i32 { return i32(mk(i64(0))) }'),
 ]
 
 DEEP = [
