@@ -44,6 +44,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>   /* readlink: locate `<extc>/../stdlib` */
+#include <time.h>
+
+/* Time-based split of the loader: it is the steepest phase (x5.8 per doubling) and callgrind's
+ * instruction ranking does not explain it (strstr is 71% of instructions but SIMD-cheap, getenv
+ * 1.6% and free in time). So measure time: mergeUnit per unit against everything else. */
+static int ldTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+static double ldNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+static void ldPhase(const char *n, double t0) { if (ldTimeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ldNow() - t0); }
 
 /* -------------------------------------------------------------- small helpers */
 
@@ -1690,6 +1698,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                  const char *rootPath, Vec *searchDirs, Vec *outCtxs) {
     Loader L;
     memset(&L, 0, sizeof L);
+    double t_pre = ldNow();
     L.a = a;
     L.out = out;
     L.rootDir = dirOf(a, rootPath);          /* project root */
@@ -1743,8 +1752,13 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     if (L.errors) return false;
 
     /* Merge the modules in topological order, dependencies first. */
-    for (size_t i = 0; i < L.order.len; i++)
-        mergeUnit(&L, *(ModUnit **)vecAt(&L.order, i));
+    ldPhase("ld-pre", t_pre);
+    {
+        double t_mu = ldNow();
+        for (size_t i = 0; i < L.order.len; i++)
+            mergeUnit(&L, *(ModUnit **)vecAt(&L.order, i));
+        ldPhase("ld-merge", t_mu);
+    }
 
     /* Collect the return tickets for bare names. This has to run after `mergeUnit`,
      * because that is where the rename tables are built. */
@@ -1823,6 +1837,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
      * were silently dropped from the root file (the field was merged only in `mergeUnit`), and
      * a qualified `impl` target missed `rwTypeName` for the same reason. Both were found by
      * running the thing, not by reading it. */
+    double t_root = ldNow();
     {
         ModUnit root;
         memset(&root, 0, sizeof root);
@@ -1833,6 +1848,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         root.modName = NULL;      /* the root module: never renamed */
         mergeUnit(&L, &root);
     }
+    ldPhase("ld-root", t_root);   /* the root unit's own merge: where the loader's time is */
     if (dbgOn("EXTC_DBG_MOD")) fprintf(stderr, "[mod] merge done: errors=%d declarations funcs=%zu globals=%zu\n",
                                          L.errors, out->funcs.len, out->globals.len);
     if (L.errors) return false;
