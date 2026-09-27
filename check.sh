@@ -226,6 +226,11 @@ fi
 rm -f "$now"
 
 if [ "${1:-}" != "quick" ]; then
+    # 生成物黄金闸门：413 份逐字节比对 + **每份都必须是合法 C**。放在完整模式（要跑 413 次编译
+    # 加 413 次 gcc，约一分钟）；quick 只跑测试与攻击库，保持快。
+    echo "== 生成物黄金闸门（413 份逐字节比对 + gcc -fsyntax-only 体检 · 已知坏列在 tools/golden-known-bad.txt）=="
+    if out=$(timeout 900 ./tools/golden.sh 2>&1); then ok "$(printf '%s' "$out" | tail -1 | sed 's/^ *//')"
+    else bad "tools/golden.sh"; printf '%s\n' "$out" | tail -8; fi
     echo "== 基准：extC vs C =="
     ./bench/run.sh 2>&1 | tail -n +1 | sed 's/^/  /' | tail -12
     echo "== 基准：重负载（bt / radix / mandelbrot）=="

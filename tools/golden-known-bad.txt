@@ -1,0 +1,9 @@
+# 已知的"生成物不是合法 C"的语料（每行一个路径，与 tools/golden.sha256 里的写法一致）。
+# 修好那条 bug 那天，从本文件删掉对应行，闸门就会开始要求它必须合法。
+#
+# examples/prelude.extc：
+#   文本 pass 的偏移失效 —— dropRuntimeDefs 改写文本后，dropUnreferenced 仍用生成时捕获的
+#   body/长度定位，删除范围落在错误的位置，把 main 里一次调用的文本吞掉
+#   （`slice_u8_isEmpty(&(b)) ? "true" : "false"` 变成 `slice_u8_e" : "false"`）。
+#   机制与修法见 docs/topics/TRAITS.md 第八节。
+examples/prelude.extc
