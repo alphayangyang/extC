@@ -90,7 +90,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 }</code></pre>
 <p>判据（编译器自动算，用户不写注解）：<strong>被调者会不会把"&amp;实参"存进它分配的东西里</strong>（地址流） - <strong>不会</strong>（<code>push</code> 这类"只往容器里塞新东西"的）⇒ 家 arena 按<strong>逃逸需求</strong>选 ⇒ 想返回就活得够久 - <strong>会</strong>（<code>s.r = target</code> 这种把调用者的指针存进容器/家内存的）⇒ 仍然要求实参活得够家 arena ⇒ 想让它逃出去就<strong>报错</strong>（<code>tests/errors/ref_arg_too_deep</code> 就是这个形状）</p>
 <p><strong>2026-09-22 加的第二半（定案 67 / PLAN #43）</strong>：上面这条只说了"<strong>地址</strong>流"（把 <code>&amp;实参</code> 存进容器） 还有一条<strong>内容</strong>流——<strong>「从实参里读出来的、含引用的那份值」被存进容器</strong>（<code>self.buf[self.len] = v</code>， <code>v</code> 是带引用的 <code>T</code>）它同样<strong>在调用点判</strong>：那个实参（以及它携带的引用）必须活得 ≥ 目的地那一层 - 摘要说得清"第几个参数会被存" ⇒ 只查那几个 - 摘要说不清（递归 / 环 / 有解析不出来的调用）⇒ <strong>每个含引用的实参都按最坏情况查</strong> 消息会说清原因</p>
-<p>推导见 <a href="../docs/topics/ARENA-FORMAL.html"><code>ARENA-FORMAL.md</code></a> §2/§3/§9（§9.5 = 落地实录 + 双向证据）， 执行计划见 <a href="../docs/history/PLAN-REGION.html"><code>PLAN-REGION.md</code></a></p>
+<p>推导见 <a href="../topics/ARENA-FORMAL.html"><code>ARENA-FORMAL.md</code></a> §2/§3/§9（§9.5 = 落地实录 + 双向证据）， 执行计划见 <a href="../history/PLAN-REGION.html"><code>PLAN-REGION.md</code></a></p>
 <hr>
 <p><strong><a href="README.html">索引</a></strong> · <a href="18-modules.html">← 12. 库与模块（2026-09-22 新增）</a> · 下一页 →</p>
 <div class="pn"><a href="18-modules.html">← 12. 库与模块（2026-09-22 新增）</a> <a href="20-internals.html">内部成员一览（透明清单） →</a></div></main>

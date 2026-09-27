@@ -89,7 +89,7 @@ a[<span class="n">0</span>] = <span class="n">9</span>           <span class="c"
 <span class="k">let</span> n = <span class="n">7</span>
 <span class="k">let</span> r = <span class="k">ref</span> n      <span class="c">// error: cannot take a reference through `n`, which is a `let`</span>
                    <span class="c">//（`ref T` 是**可变**引用 —— 见 §7.5）</span></code></pre>
-<blockquote><strong>这条规则是「浅」的：它管名字，不管数据。</strong> 把 <code>let</code> 视图拷给一个 <code>var</code>、或者传进函数，那边照样能写同一块内存； 调用一个 <code>self: ref T</code> 的方法也算（<code>let p; p.moveBy(1)</code> 现在是允许的）。 要管到数据层，可变性就得进<strong>类型</strong>（Rust 的 <code>&amp;</code> / <code>&amp;mut</code>）—— 那是 week-4 引用规则的范围，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a> 定案 28。</blockquote>
+<blockquote><strong>这条规则是「浅」的：它管名字，不管数据。</strong> 把 <code>let</code> 视图拷给一个 <code>var</code>、或者传进函数，那边照样能写同一块内存； 调用一个 <code>self: ref T</code> 的方法也算（<code>let p; p.moveBy(1)</code> 现在是允许的）。 要管到数据层，可变性就得进<strong>类型</strong>（Rust 的 <code>&amp;</code> / <code>&amp;mut</code>）—— 那是 week-4 引用规则的范围，见 <a href="../DECISIONS.html"><code>DECISIONS.md</code></a> 定案 28。</blockquote>
 <pre class="lang-extc"><code><span class="k">var</span> b: board       <span class="c">// 所有字段清零</span>
 <span class="k">var</span> n: <span class="t">i32</span>         <span class="c">// 0</span>
 <span class="k">var</span> ok: <span class="t">bool</span>       <span class="c">// false</span></code></pre>

@@ -17,7 +17,7 @@
 | （字符串） | 没有内建字符串类型 —— 见下面的 **`slice<u8>`** | — |
 | 空 | `void` | `void` |
 
-**没有 `int` / `long` / `char` / `double`** —— 类型名一律带位宽（见 [`SYNTAX.md`](../docs/SYNTAX.md) 的命名规范）。
+**没有 `int` / `long` / `char` / `double`** —— 类型名一律带位宽（见 [`SYNTAX.md`](../SYNTAX.md) 的命名规范）。
 
 字面量的默认类型：整数 `i32`，浮点 `f64`。
 
@@ -422,7 +422,7 @@ println(a[0])      // 1
 println(a[7])      // trap: index 7 out of range (length 5) —— 带文件名和行号
 ```
 
-**切片视图 `a[lo..hi]`** —— 四种写法，**不拷贝数据**（见 [`ARRAYS.md`](../docs/topics/ARRAYS.md) §4）：
+**切片视图 `a[lo..hi]`** —— 四种写法，**不拷贝数据**（见 [`ARRAYS.md`](../topics/ARRAYS.md) §4）：
 
 ```extc
 var a: [8]i32 = [10, 20, 30, 40, 50, 60, 70, 80]
@@ -590,7 +590,7 @@ println(p!.value)                 // ?ref：我知道非空
 `?` 的语义是「**不成功即向上返回**」。它在**四个位置**合法（见下节）。
 
 用**关联函数**构造：写在 `struct` 体内但**不带 `self`** 的函数，
-调用时类型写全（不靠上下文猜，见 [`DECISIONS.md`](../docs/DECISIONS.md) 定案 27/29）：
+调用时类型写全（不靠上下文猜，见 [`DECISIONS.md`](../DECISIONS.md) 定案 27/29）：
 
 ```extc
 struct box<T> {

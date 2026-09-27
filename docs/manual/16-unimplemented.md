@@ -41,8 +41,8 @@
 | **`@recursive`** | 编译器展开成「显式栈 + 循环」，深度上限是编译期常数 | **无限期推后**（2026-09-24 主人拍板：「recursive 关键字可以无限期推后了，没啥意义」）—— **不是待办** |
 | **线程** | 保守的 fork-join + 归约；「引用不过线程」 | 低 |
 
-完整清单和理由见 [`DECISIONS.md`](../docs/DECISIONS.md)、[`PLAN.md`](../docs/PLAN.md)、
-[`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md)（依赖顺序与优先级）。
+完整清单和理由见 [`DECISIONS.md`](../DECISIONS.md)、[`PLAN.md`](../PLAN.md)、
+[`BOOTSTRAP.md`](../topics/BOOTSTRAP.md)（依赖顺序与优先级）。
 
 ---
 

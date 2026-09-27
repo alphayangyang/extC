@@ -273,7 +273,7 @@ typedef struct extc_arena { extc_ablock *top; int64_t blkSize; } extc_arena;
 - **含引用的结构体数组今天声明不了**（`var a: [2]p` 报同一个零值错误，且没有数组字面量语法）⇒ 帧里不能放"表"，应用状态要么放帧外、要么做成无引用；
 - **模型在推着你把帧和状态都做成"无引用聚合"**：整个会话 = 一块普通内存，零分配、可整体搬运 对协程是**好消息**（帧便宜、可池化）。
 
-** 撞出的洞（不是协程的问题，是既有 arena 机制的缺口）**：[`tests/arena-soundness/H2_home_zone_depth2.extc`](../../tests/arena-soundness/H2_home_zone_depth2.extc)
+** 撞出的洞（**2026-09-26 已修**；不是协程的问题，是既有 arena 机制的缺口）**：当时那条反例与结论见 [`tests/arena-soundness/README.md`](../../tests/arena-soundness/README.md) 的 H2 行（修法：调用点的 `zoneLevel` 现在做传递闭包）
 > **home zone 的传递闭包只做了一层。** `main → put → newString`（3 层）正确；
 > `main → wrap → put → newString`（**4 层**）就坏：`wrap` 把**自己的** zone 传给 `put`，并把自己的
 > `__extc_home_zone` 标成 `EXTC_UNUSED` ⇒ `newString` 的缓冲分配在 `wrap` 的 place 里，返回即被释放 ⇒

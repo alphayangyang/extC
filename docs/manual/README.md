@@ -6,7 +6,7 @@
 >
 > 当前版本：**week-0**（2026-09-18）
 >
-> 设计理由看 [`DESIGN.md`](../docs/DESIGN.md)；为什么这么定看 [`DECISIONS.md`](../docs/DECISIONS.md)；接下来做什么看 [`PLAN.md`](../docs/PLAN.md)。
+> 设计理由看 [`DESIGN.md`](../DESIGN.md)；为什么这么定看 [`DECISIONS.md`](../DECISIONS.md)；接下来做什么看 [`PLAN.md`](../PLAN.md)。
 
 ---
 

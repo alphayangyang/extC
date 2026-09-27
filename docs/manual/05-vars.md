@@ -39,7 +39,7 @@ let r = ref n      // error: cannot take a reference through `n`, which is a `le
 > 把 `let` 视图拷给一个 `var`、或者传进函数，那边照样能写同一块内存；
 > 调用一个 `self: ref T` 的方法也算（`let p; p.moveBy(1)` 现在是允许的）。
 > 要管到数据层，可变性就得进**类型**（Rust 的 `&` / `&mut`）——
-> 那是 week-4 引用规则的范围，见 [`DECISIONS.md`](../docs/DECISIONS.md) 定案 28。
+> 那是 week-4 引用规则的范围，见 [`DECISIONS.md`](../DECISIONS.md) 定案 28。
 
 ```extc
 var b: board       // 所有字段清零

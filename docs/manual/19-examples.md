@@ -63,8 +63,8 @@ fn mkSlice() -> slice<i32> {        // 合法：扩容过的容器，把视图�
 - 摘要说得清"第几个参数会被存" ⇒ 只查那几个
 - 摘要说不清（递归 / 环 / 有解析不出来的调用）⇒ **每个含引用的实参都按最坏情况查** 消息会说清原因
 
-推导见 [`ARENA-FORMAL.md`](../docs/topics/ARENA-FORMAL.md) §2/§3/§9（§9.5 = 落地实录 + 双向证据），
-执行计划见 [`PLAN-REGION.md`](../docs/history/PLAN-REGION.md)
+推导见 [`ARENA-FORMAL.md`](../topics/ARENA-FORMAL.md) §2/§3/§9（§9.5 = 落地实录 + 双向证据），
+执行计划见 [`PLAN-REGION.md`](../history/PLAN-REGION.md)
 
 ---
 

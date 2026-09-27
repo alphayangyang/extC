@@ -8,7 +8,7 @@
 
 `result<void,E>` 还是 `result<(),E>`、`@main` 和 `module main` 的优先关系、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
 
-**`==` 右边的裸 `{}` 不推**（已定，见 [`DECISIONS.md`](../docs/DECISIONS.md) 定案 27）：
+**`==` 右边的裸 `{}` 不推**（已定，见 [`DECISIONS.md`](../DECISIONS.md) 定案 27）：
 
 ```extc
 println(ps[0] == { x: 1, y: 2 })        // cannot infer the type of a bare `{}` here

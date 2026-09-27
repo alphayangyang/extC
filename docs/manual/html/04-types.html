@@ -75,7 +75,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h1 id="3-类型">3. 类型</h1>
 <h3 id="内建类型">内建类型</h3>
 <table><thead><tr><th>类别</th><th>名字</th><th>C 里的对应</th></tr></thead><tbody><tr><td>有符号整数</td><td><code>i8</code> <code>i16</code> <code>i32</code> <code>i64</code></td><td><code>int8_t</code> … <code>int64_t</code></td></tr><tr><td>无符号整数</td><td><code>u8</code> <code>u16</code> <code>u32</code> <code>u64</code></td><td><code>uint8_t</code> … <code>uint64_t</code></td></tr><tr><td>浮点</td><td><code>f32</code> <code>f64</code></td><td><code>float</code> / <code>double</code></td></tr><tr><td>布尔</td><td><code>bool</code></td><td><code>bool</code></td></tr><tr><td>（字符串）</td><td>没有内建字符串类型 —— 见下面的 <strong><code>slice&lt;u8&gt;</code></strong></td><td>—</td></tr><tr><td>空</td><td><code>void</code></td><td><code>void</code></td></tr></tbody></table>
-<p><strong>没有 <code>int</code> / <code>long</code> / <code>char</code> / <code>double</code></strong> —— 类型名一律带位宽（见 <a href="../docs/SYNTAX.html"><code>SYNTAX.md</code></a> 的命名规范）。</p>
+<p><strong>没有 <code>int</code> / <code>long</code> / <code>char</code> / <code>double</code></strong> —— 类型名一律带位宽（见 <a href="../SYNTAX.html"><code>SYNTAX.md</code></a> 的命名规范）。</p>
 <p>字面量的默认类型：整数 <code>i32</code>，浮点 <code>f64</code>。</p>
 <h3 id="类型转换规则-t2-起">类型转换规则（T2 起）</h3>
 <p>extC <strong>只自动做无损失的拓宽</strong>；收窄 / 换符号 / 整数↔浮点<strong>必须显式写出来</strong>（<code>T(x)</code>）</p>
@@ -268,7 +268,7 @@ y[<span class="n">0</span>] = <span class="n">99</span>          <span class="c"
 <p><strong>索引 <code>a[i]</code> 带边界检查</strong>，越界 trap 并报 extC 位置：</p>
 <pre class="lang-extc"><code><span class="f">println</span>(a[<span class="n">0</span>])      <span class="c">// 1</span>
 <span class="f">println</span>(a[<span class="n">7</span>])      <span class="c">// trap: index 7 out of range (length 5) —— 带文件名和行号</span></code></pre>
-<p><strong>切片视图 <code>a[lo..hi]</code></strong> —— 四种写法，<strong>不拷贝数据</strong>（见 <a href="../docs/topics/ARRAYS.html"><code>ARRAYS.md</code></a> §4）：</p>
+<p><strong>切片视图 <code>a[lo..hi]</code></strong> —— 四种写法，<strong>不拷贝数据</strong>（见 <a href="../topics/ARRAYS.html"><code>ARRAYS.md</code></a> §4）：</p>
 <pre class="lang-extc"><code><span class="k">var</span> a: [<span class="n">8</span>]<span class="t">i32</span> = [<span class="n">10</span>, <span class="n">20</span>, <span class="n">30</span>, <span class="n">40</span>, <span class="n">50</span>, <span class="n">60</span>, <span class="n">70</span>, <span class="n">80</span>]
 <span class="k">var</span> s1 = a[<span class="n">2</span>..<span class="n">5</span>]      <span class="c">// [30, 40, 50]   mut slice<i32>（从 var 切出来 ⇒ 可写）</span>
 <span class="k">let</span> s2 = a[<span class="n">6</span>..]       <span class="c">// [70, 80]       到尾</span>
@@ -358,7 +358,7 @@ c.retries = <span class="f">some</span>(<span class="n">3</span>)               
 <p>⇒ 所以 <strong>prelude 里不需要 <code>unwrap()</code> / <code>valueOr</code> / <code>has</code> / <code>ok</code></strong> —— 那些名字当年存在，只是因为当时 <code>match</code> 不了、也没有 <code>??</code> / <code>!</code> （也因此<strong>不用</strong>去给枚举加方法、也不用泛型自由函数：语法糖把这件事解决掉了）</p>
 <p><code>!</code> 表示"<strong>断言由调用者负责</strong>"，不是"检查的宽松版本"：确实没有值即为 UB。 需要可报错的版本时，改写为 <code>match</code> 并给出所需的失败处理</p>
 <p><code>?</code> 的语义是「<strong>不成功即向上返回</strong>」。它在<strong>四个位置</strong>合法（见下节）。</p>
-<p>用<strong>关联函数</strong>构造：写在 <code>struct</code> 体内但<strong>不带 <code>self</code></strong> 的函数， 调用时类型写全（不靠上下文猜，见 <a href="../docs/DECISIONS.html"><code>DECISIONS.md</code></a> 定案 27/29）：</p>
+<p>用<strong>关联函数</strong>构造：写在 <code>struct</code> 体内但<strong>不带 <code>self</code></strong> 的函数， 调用时类型写全（不靠上下文猜，见 <a href="../DECISIONS.html"><code>DECISIONS.md</code></a> 定案 27/29）：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> box&lt;T&gt; {
     value: T
     <span class="k">fn</span> <span class="f">make</span>(v: T) -&gt; box&lt;T&gt; { <span class="k">return</span> { value: v } }   <span class="c">// 关联函数</span>
