@@ -4189,8 +4189,10 @@ static void cgAcc(const char *name, double sec) {
     }
 }
 #define CGACC(name, call) do { double t_ = cgNow(); call; cgAcc((name), cgNow() - t_); } while (0)
+static void strReport(void);   /* defined with the scan counters, below */
 static void cgReport(void) {
     if (!cgTimeOn()) return;
+    strReport();
     for (size_t i = 0; i < 8 && cgAccs[i].name; i++)
         fprintf(stderr, "[time] %-9s %.3f s\n", cgAccs[i].name, cgAccs[i].sec);
 }
@@ -5020,7 +5022,24 @@ static bool identByte(char c) {
 /* How many times does the name `needle` occur in the finished output, as a whole
  * name? A mention inside a string literal still counts, which only ever keeps a
  * definition alive. */
+/* Which text scan is actually running, and over how many bytes. The leaf profile says 53% of a
+ * big build sits in `strstr`, but its caller chains have been wrong three times in this session
+ * (strcmp to the parser, vecAt to rwStmt, strstr to dropUnusedLocals -- all disproved by the
+ * phase timers). These counters answer it directly under EXTC_DBG_TIME=1. */
+static long g_scanCalls, g_scanBytes;
+static const char *g_scanWho;
+static void strAccount(const char *who, size_t n) {
+    if (!cgTimeOn()) return;
+    g_scanCalls++; g_scanBytes += (long)n; g_scanWho = who;
+}
+static void strReport(void) {
+    if (!cgTimeOn()) return;
+    fprintf(stderr, "[scan] calls=%ld bytes=%lld (last site: %s)\n",
+            g_scanCalls, (long long)g_scanBytes, g_scanWho ? g_scanWho : "-");
+}
+
 static size_t countMentions(const char *hay, const char *needle) {
+    strAccount("countMentions", strlen(hay));
     size_t n = 0, len = strlen(needle);
     for (const char *p = hay; (p = strstr(p, needle)) != NULL; p += len) {
         if (p > hay && identByte(p[-1])) continue;
@@ -5421,6 +5440,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
  * counted as a use of `v`, which kept declarations that nothing reads, and the same held for
  * `e`, `n` and `d` all over the corpus. */
 static size_t countCodeMentions(const char *hay, size_t n, const char *name) {
+    strAccount("countCodeMentions", n);
     size_t len = strlen(name), count = 0;
     for (size_t i = 0; i < n; ) {
         char c = hay[i];
@@ -5457,6 +5477,7 @@ static size_t countCodeMentions(const char *hay, size_t n, const char *name) {
 
 /* The same count, over one piece of the body buffer, which is not terminated. */
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
+    strAccount("countMentionsIn", n);
     (void)g;
     return countCodeMentions(hay, n, needle);
 }
@@ -5500,6 +5521,58 @@ static size_t countMentionsOutside(const char *hay, const char *name,
  * mentions that sit inside code that is itself unreachable. That keeps the
  * decision on the safe side: the worst case is a definition that is still
  * emitted, never a name that nothing defines. */
+/* Occurrence counts of the names this phase decides on. `countMentions(text, name)` runs once per
+ * candidate over the whole unit -- the scan counters put that at 11.4 GB of scanning for N=3200
+ * (x3.85 per doubling, the largest single cost left). Same numbers, maintained instead of
+ * re-scanned: one pass fills them and every removal subtracts the runs inside the text it deletes,
+ * so the decisions -- and the emitted C -- are byte for byte the same. Only the names asked about
+ * live in the table, so a scan never inserts and the table cannot fill up. */
+typedef struct { const char *name; size_t len; long count; } NameCount;
+typedef struct { NameCount *slot; size_t mask; } CountTable;
+static size_t countHash(const char *p, size_t n) {
+    size_t h = 1469598103934665603u;
+    for (size_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211u; }
+    return h;
+}
+static void countInit(CountTable *t, Arena *a, size_t n) {
+    size_t cap = 16;
+    while (cap < n * 2) cap <<= 1;
+    t->slot = arenaAllocZero(a, cap * sizeof *t->slot);
+    t->mask = cap - 1;
+}
+static void countPut(CountTable *t, const char *p, size_t n) {
+    for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
+        NameCount *s = &t->slot[i];
+        if (!s->name) { s->name = p; s->len = n; s->count = 0; return; }
+        if (s->len == n && memcmp(s->name, p, n) == 0) return;
+    }
+}
+static void countBump(CountTable *t, const char *p, size_t n, long delta) {
+    for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
+        NameCount *s = &t->slot[i];
+        if (!s->name) return;
+        if (s->len == n && memcmp(s->name, p, n) == 0) { s->count += delta; return; }
+    }
+}
+static long countGet(CountTable *t, const char *p, size_t n) {
+    for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
+        NameCount *s = &t->slot[i];
+        if (!s->name) return 0;
+        if (s->len == n && memcmp(s->name, p, n) == 0) return s->count;
+    }
+}
+static void countSpan(CountTable *t, const char *text, size_t start, size_t len, long delta) {
+    size_t i = 0;
+    while (i < len) {
+        if (!identByte(text[start + i])) { i++; continue; }
+        size_t s0 = i;
+        while (i < len && identByte(text[start + i])) i++;
+        if (s0 == 0 && start > 0 && identByte(text[start - 1])) continue;
+        if (i == len && identByte(text[start + len])) continue;
+        countBump(t, text + start + s0, i - s0, delta);
+    }
+}
+
 static void dropUnreferenced(CG *g, Buf *out) {
     char  *text = bufCstr(out);              /* terminate: the searches below are C strings */
     size_t len  = out->len;
@@ -5528,10 +5601,17 @@ static void dropUnreferenced(CG *g, Buf *out) {
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
      * position stays valid. */
+    CountTable counts;
+    countInit(&counts, g->arena, g->deadFuncs.len + 1);
+    for (size_t k = 0; k < g->deadFuncs.len; k++) {
+        DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
+        if (df->name) countPut(&counts, df->name, strlen(df->name));
+    }
+    countSpan(&counts, text, 0, len, 1);
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;                                   /* no definition emitted */
-        if (countMentions(text, df->name) != 2) continue;           /* someone calls it */
+        if (countGet(&counts, df->name, strlen(df->name)) != 2) continue;   /* someone calls it */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of
          * bodies, so the copy taken at generation time often no longer matches - and every function
@@ -5541,6 +5621,8 @@ static void dropUnreferenced(CG *g, Buf *out) {
         char  *bd = funcDefStart(text, df, &blen);
         if (!pt || !bd || bd < pt || !blen) continue;               /* not both, in order */
         size_t bl = blen, pl = strlen(df->proto);
+        countSpan(&counts, text, (size_t)(bd - text), bl, -1);
+        countSpan(&counts, text, (size_t)(pt - text), pl, -1);
         memmove(bd, bd + bl, len - (size_t)(bd - text) - bl + 1);    /* definition first */
         len -= bl;
         memmove(pt, pt + pl, len - (size_t)(pt - text) - pl + 1);    /* then declaration */
