@@ -2412,12 +2412,59 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
 
             /* When the receiver is a generic instance, the `T` in the method signature has to
-             * be replaced with the type arguments. */
+             * be replaced with the type arguments -- and when the **method itself** is generic
+             * (`fn cast<U>(self: ref box, u: U)`), its own parameters are inferred from the
+             * arguments exactly like a free generic function's (`unifyTParams`, the same call the
+             * `EX_CALL` path makes). Before this, a method's own parameters were neither inferred
+             * nor substituted, so every such call failed with "argument expects `U`, found `i64`"
+             * -- even when the signature never mentioned `U`. */
             StructDef *msd = structOf(rb);
             Vec *sp = NULL, *sa = NULL;
+            Vec  mp, ma;
+            vecInit(&mp, c->arena, sizeof(const char *));
+            vecInit(&ma, c->arena, sizeof(Type *));
             if (rb && rb->kind == TY_GENERIC && msd) {
                 sp = &msd->typeParams;
                 sa = &rb->targs;
+            }
+            if (f->typeParams.len) {
+                Vec mt;
+                vecInit(&mt, c->arena, sizeof(Type *));
+                for (size_t i = 0; i < f->typeParams.len; i++)
+                    *(Type **)vecPush(&mt) = NULL;
+                for (size_t i = 0; i < e->u.method.args.len && i < f->params.len; i++) {
+                    Param *p = *(Param **)vecAt(&f->params, i + 1);
+                    Expr  *arg = *(Expr **)vecAt(&e->u.method.args, i);
+                    Type  *want = ttSubstitute(tt, p->type, sp, sa);
+                    Type  *got  = checkExprInner(c, arg);
+                    (void)unifyTParams(tt, &f->typeParams, &mt, want, got);
+                }
+                bool missing = false;
+                for (size_t i = 0; i < mt.len; i++) {
+                    if (*(Type **)vecAt(&mt, i)) continue;
+                    ckError(c, e->line, NULL,
+                            "A generic method's type parameters are inferred from its arguments;"
+                            " give an argument whose type mentions the parameter.",
+                            "cannot infer type parameter `%s` of `%s`",
+                            *(const char **)vecAt(&f->typeParams, i), e->u.method.name);
+                    missing = true;
+                    break;
+                }
+                if (missing) return ttError(tt);
+                /* The method's own parameters come **after** the receiver's, so the parallel lists
+                 * the substitutions below use cover both. */
+                for (size_t i = 0; i < f->typeParams.len; i++) {
+                    *(const char **)vecPush(&mp) = *(const char **)vecAt(&f->typeParams, i);
+                    *(Type **)vecPush(&ma) = *(Type **)vecAt(&mt, i);
+                }
+                if (sp) {
+                    for (size_t i = 0; i < sp->len; i++) {
+                        *(const char **)vecPush(&mp) = *(const char **)vecAt(sp, i);
+                        *(Type **)vecPush(&ma) = *(Type **)vecAt(sa, i);
+                    }
+                }
+                sp = &mp;
+                sa = &ma;
             }
 
             size_t want = f->params.len - 1;

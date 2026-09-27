@@ -36,6 +36,7 @@ one "dyn 打在实例与内建上"         "$(src t_dyn.extc)"       "4 42"
 one "泛型 impl（impl<T> pair<T>）" "$(src t_gen_inherent.extc)" "get=5"
 one "泛型 trait impl（impl<T> Tag for pair<T>）" "$(src t_gen_trait.extc)" "tag=1"
 one "带参 trait（trait Codec<T>）" "$(src t_param_trait.extc)" "enc=7"
+one "泛型方法（方法自己的 <U> 按实参推断）" "$(src t_gen_method.extc)" "5 2"
 # 反向金丝雀：实现体不读 `self` 时，dyn 表保住的实现不会被"未用参数"那趟看到
 # （markUnusedParams 只遍历 g.deadFuncs）⇒ 今天**必须**失败。修好那天它会变绿，这条就会报出来。
 if "$EXTC" -w --no-line-map -o "$tmp/m.c" "$(src t_dyn_multi.extc)" 2>/dev/null &&
@@ -47,6 +48,7 @@ neg "未绑定参数仍被拒"             "$(src t_unbound.extc)"   "unknown ty
 neg "块级参数名与声明不一致要报清楚" "$(src t_gen_badname.extc)" "type parameters must match"
 neg "带参 trait 必须给实参" "$(src t_param_arity.extc)" "has 1 type parameter"
 neg "带参 trait 的签名按实参替换后要比" "$(src t_param_sig.extc)" "parameter 2 of"
+neg "泛型方法推断不出要报清楚" "$(src t_gen_method_bad.extc)" "cannot infer type parameter"
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

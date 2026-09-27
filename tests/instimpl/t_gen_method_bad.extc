@@ -1,0 +1,8 @@
+/* 推断不出方法自己的类型参数时要报清楚 */
+struct box { v: i64 }
+impl box { fn make<U>(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 {
+  var b: box
+  b.v = i64(1)
+  return i32(b.make())
+}
