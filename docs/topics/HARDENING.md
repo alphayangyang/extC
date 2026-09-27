@@ -523,7 +523,23 @@ extc_th$Tag$pair_T$tag → 里面用 pair_tag((pair_T *)self)   ✗ pair_T 根�
 "按实例解析方法"那套命名 ✓），而 thunk 是**在任何函数上下文之外**写的 ⇒ 必须显式用实例上下文
 求名（`cFuncName` + 实例替换 ✓），不能靠"当前函数"的隐式状态 ✓。
 
-**注意闸门** ✓：尝试 1/2 都会让 `tools/golden.sh` 变红（**5 份产物不同 + 5 份非法 C** ✗，
+**尝试 3（找到了正确的着力点 ✓，但脚本改写的插入点算错 ⇒ 已回退 ✗）**：
+
+- **关键发现** ✓：实例限定的方法 C 名由 **`g->ownerPrefix`** 决定 —— `cFuncName`（`codegen.c:569`）里
+  就是 `if (g->ownerPrefix) return "<prefix>_<method>"` ✓（注释写着"a generic instance uses its own
+  name" ✓）。所以在发 thunk 时把 `ownerPrefix` 临时设成实例的 C 名（`pair_i64` ✓），名字自然就是
+  `pair_i64_tag` ✓ —— 一处 `保存/设置/恢复` 即可 ✓，不需要任何新命名逻辑 ✓；
+- ✗ 失败原因纯属我自己的脚本：用"从替换段之后找第一个 `{`"来定位循环体末尾 ✓，可外层 `for` 的 `{`
+  已经包含在替换段里 ✓ ⇒ 插入点落进了循环体内部 ⇒ 编译错（`expected ')' before ';'` ✓）⇒ 回退 ✓。
+  **教训**：这种改写要在**原文**里用精确锚点（例如 `const char *vtKey = cType(&g, bt);` 与循环体末尾
+  的 `bufPrintf(&vtDefs, "static const struct extc_vt$%s_t __attribute__…` 之后）手工定位 ✓，
+  不要靠脚本猜括号 ✓。
+
+**完整补丁（下一轮手工落）** ✓：① `check_expr.c` 的 `dynTraitOf` 认"同 `sdef` 的泛型 impl" ✓；
+② 表发射的循环头改为"泛型 impl ⇒ 对 `g.insts` 里同 `sdef` 的每个实例各发一份" ✓；
+③ 发 thunk 前 `g->ownerPrefix = vtKey`、之后恢复 ✓。
+
+**注意闸门** ✓：这条修好后会让 `tools/golden.sh` 变红（**5 份产物不同 + 5 份非法 C** ✗，
 `tests/dyn/dyn_stored_call.extc` 等 ✓）—— 说明语料里**确有**泛型 impl + dyn 的组合 ✓，所以这条修好
 之后要**重设这几份基准** ✓（并在提交信息里写明"新增按实例的 vt 表" ✓）。
 
