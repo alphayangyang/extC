@@ -589,6 +589,26 @@ unknown type name 'extc_die'        ⇒ 池运行期调死钩子 ⇒ 拼接点�
 （按行号 ✓ 不猜文本 ✓）；② 更稳的：把 `extc_ablock`/`extc_arena` 的 typedef **一并放进插入文本** ✓，
 并给预奏里那份加 `#ifndef` 守卫 ✗（结构体定义不可重复 ⇒ 需要动预奏 ✓）—— 所以 ① 更干净 ✓。
 
+**第 33 轮：链条推到只剩"顺序"一项** ✓（已回退 ✗，链条完整 ✓）
+
+十三块编辑 + 精确捕获点（**按内容定位**：`extc_arena` 那句 typedef 之后**第一个以 `");` 结尾的行**
+= `codegen.c:6699` ✓；后来发现更好的落点是**整个预奏运行期之后**，即 `:6792` 那个带注释的块之前 ✓）。
+逐步实测的**完整错误链**（每一步都消掉上一环 ✓）：
+
+```
+unknown type name 'extc_coro'              ⇒ 拼接 typedef ✓
+implicit declaration extc_task_begin       ⇒ 拼接任务表运行期 ✓
+unknown type name 'extc_arena'             ⇒ 拼接池运行期 ✓
+invalid application of sizeof … incomplete ⇒ 帧单元收集补上实例（第⑤块 ✓）
+has no member named 'pc'                   ⇒ 补调 coroFrameLay（`:6396` ✓，帧字段那一趟）
+implicit declaration extc_coro_next        ⇒ 把 genCoroHandleDecls（`:4138` ✓）也渲染进拼接 ✓
+'struct gen$frame' declared inside parameter list ⇒ **只剩顺序**：步骤原型出现在帧结构之前 ✗
+```
+
+⇒ **只剩一项** ✓：`genCoroHandleDecls` 里那批 `$step` **原型**要排在**帧结构定义之后** ✓
+（现在拼接把它们放在帧单元之前 ✓；非泛型协程之所以没事 ✓，是因为它的帧结构由类型通道更早发出 ✓）。
+下一轮做法：把 `$step` 原型那一段**单独挪到单元区之后** ✓，或在拼接文本里**连帧结构一起插** ✓。
+
 **原清单（每一块都验证过或已定位 ✓）**：① `ast.h` 的 `coroRetProto` + 记录 ✓；
 ② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
 ④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；
