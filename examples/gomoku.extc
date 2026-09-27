@@ -1,0 +1,247 @@
+// 五子棋对局程序（试水版）：15×15，双方都是"随机落子"，先把"跑完一局"这件事本身跑通。
+//
+// 与 /home/alphayang/gomoku/DESIGN.md 的关系：那份是完整引擎设想（协议 · 评估 · VCF/VCT · 调参）。
+// 这里只做它 §1 主线要的那个收尾物 —— **一份能跑完一局的对局程序**，刻意做窄：
+//   · 落子随机：在"距已有子 Chebyshev ≤ 2"的候选点里等概率挑（候选点的定义见设计 §4.3），
+//     棋盘空时下天元。**没有**评估、搜索、算杀 —— 先不写；
+//   · 没有 TUI：输出是行文本，棋盘用 ASCII 画；
+//   · 记谱按设计 §2/D6：列 A–O、行 1–15，**不跳 I**（`H8` = 第 8 列第 8 行）；
+//   · 输出确定（固定种子），给一个命令行参数可以换种子 ⇒ 能进 examples 套件当判据。
+//
+// expect: 结果：白胜
+// （`// expect:` 是**子串**匹配，所以这里写结果就够；棋盘与手数在输出里能看到。）
+
+use std::io
+
+let N: i64 = 15
+let EMPTY: i32 = 0
+let BLACK: i32 = 1
+let WHITE: i32 = 2
+
+/* 一个能复现的伪随机数发生器：就是 LCG，够"随机落子"用。
+ * 乘法会溢出 —— 契约是 `-fwrapv`，所以这是**确定的绕回**，不是 UB。 */
+struct rng {
+    s: i64
+
+    fn make(seed: i64) -> rng {
+        return rng { s: seed }
+    }
+
+    fn below(self: mut ref rng, n: i64) -> i64 {
+        self.s = self.s * i64(6364136223846793005) + i64(1442695040888963407)
+        var v: i64 = self.s / i64(65536)
+        if v < i64(0) { v = i64(0) - v }
+        return v % n
+    }
+}
+
+struct board {
+    cell: [15][15]i32
+    moves: i64
+
+    fn at(self: ref board, x: i64, y: i64) -> i32 {
+        return self.cell[y][x]
+    }
+
+    fn inside(self: ref board, x: i64, y: i64) -> bool {
+        return x >= i64(0) && x < N && y >= i64(0) && y < N
+    }
+
+    fn place(self: mut ref board, x: i64, y: i64, p: i32) -> bool {
+        if !self.inside(x, y) { return false }
+        if self.cell[y][x] != EMPTY { return false }
+        self.cell[y][x] = p
+        self.moves = self.moves + i64(1)
+        return true
+    }
+
+    fn full(self: ref board) -> bool {
+        return self.moves >= N * N
+    }
+
+    /* 从 (x,y) 沿 (dx,dy) 数同色连子（不含自己）。 */
+    fn run(self: ref board, x: i64, y: i64, dx: i64, dy: i64, p: i32) -> i64 {
+        var n: i64 = 0
+        var cx: i64 = x + dx
+        var cy: i64 = y + dy
+        while self.inside(cx, cy) {
+            if self.cell[cy][cx] != p { break }
+            n = n + i64(1)
+            cx = cx + dx
+            cy = cy + dy
+        }
+        return n
+    }
+
+    /* 刚落下的 (x,y) 是否成五（四个方向，正反各数一次）。 */
+    fn wins(self: ref board, x: i64, y: i64) -> bool {
+        let p: i32 = self.cell[y][x]
+        if p == EMPTY { return false }
+        let dx: [4]i64 = [i64(1), i64(0), i64(1), i64(1)]
+        let dy: [4]i64 = [i64(0), i64(1), i64(1), i64(-1)]
+        var d: i64 = 0
+        while d < i64(4) {
+            var n: i64 = i64(1) + self.run(x, y, dx[d], dy[d], p)
+            n = n + self.run(x, y, i64(0) - dx[d], i64(0) - dy[d], p)
+            if n >= i64(5) { return true }
+            d = d + i64(1)
+        }
+        return false
+    }
+
+    /* 候选点用：这一步周围 r 格内有没有子。 */
+    fn near(self: ref board, x: i64, y: i64, r: i64) -> bool {
+        var dy: i64 = i64(0) - r
+        while dy <= r {
+            var dx: i64 = i64(0) - r
+            while dx <= r {
+                if self.inside(x + dx, y + dy) && self.cell[y + dy][x + dx] != EMPTY {
+                    return true
+                }
+                dx = dx + i64(1)
+            }
+            dy = dy + i64(1)
+        }
+        return false
+    }
+}
+
+fn sideName(p: i32) -> slice<u8> {
+    if p == BLACK { return "黑" }
+    return "白"
+}
+
+/* `H8`：列字母 + 行号（设计 D6：A–O，不跳 I）。`buf` 由调用者给，返回写了几字节。 */
+fn coordText(buf: mut slice<u8>, x: i64, y: i64) -> i64 {
+    buf[0] = u8(65 + x)
+    var k: i64 = i64(1)
+    let v: i64 = y + i64(1)
+    if v >= i64(10) {
+        buf[k] = u8(48 + v / i64(10))
+        k = k + i64(1)
+    }
+    buf[k] = u8(48 + v % i64(10))
+    return k + i64(1)
+}
+
+fn printMove(no: i64, p: i32, x: i64, y: i64) {
+    var buf: [4]u8
+    let k: i64 = coordText(buf[..], x, y)
+    io::cout << "  " << no << "\t" << sideName(p) << "\t" << buf[0..k] << "\n"
+}
+
+fn printBoard(b: ref board) {
+    var head: [24]u8
+    head[0] = u8(32)
+    head[1] = u8(32)
+    var x: i64 = i64(0)
+    while x < N {
+        head[i64(2) + x] = u8(65 + x)
+        x = x + i64(1)
+    }
+    io::cout << head[0..i64(2) + N] << "\n"
+    var y: i64 = i64(0)
+    while y < N {
+        var line: [24]u8
+        var k: i64 = i64(0)
+        let v: i64 = y + i64(1)
+        if v < i64(10) {
+            line[k] = u8(32)  k = k + i64(1)
+            line[k] = u8(48 + v)  k = k + i64(1)
+        } else {
+            line[k] = u8(48 + v / i64(10))  k = k + i64(1)
+            line[k] = u8(48 + v % i64(10))  k = k + i64(1)
+        }
+        line[k] = u8(32)  k = k + i64(1)
+        var xx: i64 = i64(0)
+        while xx < N {
+            let c: i32 = b.at(xx, y)
+            if c == BLACK { line[k] = u8(88) }        /* X */
+            else if c == WHITE { line[k] = u8(79) }   /* O */
+            else { line[k] = u8(46) }                 /* . */
+            k = k + i64(1)
+            xx = xx + i64(1)
+        }
+        io::cout << line[0..k] << "\n"
+        y = y + i64(1)
+    }
+}
+
+/* 随机挑一个候选点：距已有子 ≤2 的空点里等概率；棋盘空时下天元；候选为空则退化成第一个空点。 */
+fn pick(b: ref board, r: mut ref rng) -> [2]i64 {
+    var out: [2]i64 = [i64(7), i64(7)]
+    if b.moves == i64(0) { return out }
+    var cand: [225][2]i64
+    var n: i64 = i64(0)
+    var y: i64 = i64(0)
+    while y < N {
+        var x: i64 = i64(0)
+        while x < N {
+            if b.at(x, y) == EMPTY && b.near(x, y, i64(2)) {
+                cand[n][0] = x
+                cand[n][1] = y
+                n = n + i64(1)
+            }
+            x = x + i64(1)
+        }
+        y = y + i64(1)
+    }
+    if n > i64(0) {
+        let k: i64 = r.below(n)
+        out[0] = cand[k][0]
+        out[1] = cand[k][1]
+        return out
+    }
+    y = i64(0)
+    while y < N {
+        var x: i64 = i64(0)
+        while x < N {
+            if b.at(x, y) == EMPTY {
+                out[0] = x  out[1] = y
+                return out
+            }
+            x = x + i64(1)
+        }
+        y = y + i64(1)
+    }
+    return out
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var seed: i64 = i64(20260927)
+    if args.len > i64(1) && args[i64(1)].len > i64(0) {
+        seed = seed + i64(args[i64(1)][i64(0)])     /* 换个种子：用第一个参数的第一个字节 */
+    }
+    var r: rng = rng::make(seed)
+    var b: board
+    var turn: i32 = BLACK
+    var winner: i32 = EMPTY
+    var wx: i64 = i64(-1)
+    var wy: i64 = i64(-1)
+    io::cout << "五子棋（试水版 · 双方随机落子 · 15×15 · 种子 " << seed << "）\n"
+    while winner == EMPTY && !b.full() {
+        let pos: [2]i64 = pick(ref b, ref r)
+        let ok: bool = b.place(pos[0], pos[1], turn)
+        if !ok { return i32(90) }
+        printMove(b.moves, turn, pos[0], pos[1])
+        if b.wins(pos[0], pos[1]) {
+            winner = turn
+            wx = pos[0]
+            wy = pos[1]
+        } else {
+            if turn == BLACK { turn = WHITE } else { turn = BLACK }
+        }
+    }
+    printBoard(ref b)
+    io::cout << "手数：" << b.moves << "\n"
+    if winner != EMPTY {
+        io::cout << "结果："
+        if winner == BLACK { io::cout << "黑胜" } else { io::cout << "白胜" }
+        var buf: [4]u8
+        let k: i64 = coordText(buf[..], wx, wy)
+        io::cout << "（第 " << b.moves << " 手 " << buf[0..k] << "）\n"
+    } else {
+        io::cout << "结果：平局（棋盘下满）\n"
+    }
+    return 0
+}
