@@ -4786,7 +4786,14 @@ static void genParTramp(CG *g, FuncDef *f) {
     cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp) {", f->name);
     cgLine(g, "    %s *c = (%s *)ctxp;", vn, vn);
     cgLine(g, "    %s sub = { .data = c->data + lo, .len = hi - lo };", vn, vn);
-    cgLine(g, "    return (int64_t)%s(id, lo, hi, sub);", f->name);
+    /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参）—— 实测报过
+     * "too few arguments to function 'w'; expected 5, have 4"。这里补传 **线程本地 arena**：
+     * worker 的签名固定（只写 out、只返回 i64）⇒ 分配逃不出这个 worker ⇒ 线程本地安全，而且
+     * 两个 worker 不会去抢主线程的帧 arena。 */
+    if (f->usesHome)
+        cgLine(g, "    return (int64_t)%s(id, lo, hi, sub, extc_tls_arena);", f->name);
+    else
+        cgLine(g, "    return (int64_t)%s(id, lo, hi, sub);", f->name);
     cgLine(g, "}");
 }
 

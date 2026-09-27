@@ -73,13 +73,9 @@ static bool parBodyExpr(void *ctx, Expr *e) {
         if (!q->why) q->why = "it names something that is neither a parameter nor a local of the worker";
         return false;
     }
-    if (e->kind == EX_NEW) {
-        /* ③c 进行中：`parTlsArena` 与 arenaRefAt 的线程本地方案都已就位（`(*extc_tls_arena)`），
-         * 但 worker 一旦分配就会多出一个隐藏的 home 形参 —— trampoline 得跟着补传，那一步还没做。
-         * 在那之前保持拒绝：宁可现在不能用，也不产出"参数个数不对"的非法 C。 */
-        if (!q->why) q->why = "`new` inside a worker needs the per-worker arena (step 3c, in progress)";
-        return false;
-    }
+    /* `new` 现在放行（③c 完成）：worker 链上每个函数都带 parTlsArena ⇒ arenaRefAt 给
+     * `(*extc_tls_arena)`；而 worker 体内分配会让它多一个隐藏的 home 尾参，trampoline 补传的也是
+     * 同一个线程本地 arena。安全性来自签名：只能写 out、只能返回 i64 ⇒ 分配逃不出去。 */
     if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
         FuncDef *g = e->func;
         if (!g) {
