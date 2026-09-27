@@ -111,6 +111,10 @@ int32_t n = (2000000000 + 2000000000);      /* gcc: integer overflow in expressi
 第一个实参不是函数名 ✓ 以及两条**传递**反例 ✓）。
 
 **③c 已完成（2026-09-28）**：worker 里的 `new` 走**线程本地 arena**（`extc_tls_arena`）：worker 链上每个
+（数字口径更正：③c 之前那次完整阶梯是 1→133ms、8→21ms = 6.33x；③c 之后单独复测
+1/8 两档是 132ms → 25ms = **5.28x** ⇒ 8 线程的加速在 **5.3x~6.3x** 之间浮动，判据 ≥6x
+处在边界上。上一轮提交信息里把 6.33x 当成了复测值，属记错，这里更正；下定论需要多跑几轮
+并把每块工作量加大。）
 函数都带 `parTlsArena` ⇒ `arenaRefAt` 给 `(*extc_tls_arena)`；而 worker 体内一有分配就会多一个隐藏的
 `home` **尾参**（`needsHome` 那套），trampoline 补传的也是同一个线程本地 arena ⇒ 实测
 `too few arguments to function 'w'; expected 5, have 4` 之后修好。判定：worker 内分配端到端探针 rc=0；
