@@ -1,0 +1,2 @@
+// 反例：'中'
+fn main() -> i32 { let c: u8 = '中'  return i32(c) }

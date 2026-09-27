@@ -1,0 +1,2 @@
+// 反例：未知转义
+fn main() -> i32 { let c: u8 = '\q'  return i32(c) }

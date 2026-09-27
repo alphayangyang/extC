@@ -113,14 +113,14 @@ fn sideName(p: i32) -> slice<u8> {
 
 /* `H8`：列字母 + 行号（设计 D6：A–O，不跳 I）。`buf` 由调用者给，返回写了几字节。 */
 fn coordText(buf: mut slice<u8>, x: i64, y: i64) -> i64 {
-    buf[0] = u8(65 + x)
+    buf[0] = u8('A' + x)
     var k: i64 = i64(1)
     let v: i64 = y + i64(1)
     if v >= i64(10) {
-        buf[k] = u8(48 + v / i64(10))
+        buf[k] = u8('0' + v / i64(10))
         k = k + i64(1)
     }
-    buf[k] = u8(48 + v % i64(10))
+    buf[k] = u8('0' + v % i64(10))
     return k + i64(1)
 }
 
@@ -132,11 +132,11 @@ fn printMove(no: i64, p: i32, x: i64, y: i64) {
 
 fn printBoard(b: ref board) {
     var head: [24]u8
-    head[0] = u8(32)
-    head[1] = u8(32)
+    head[0] = ' '
+    head[1] = ' '
     var x: i64 = i64(0)
     while x < N {
-        head[i64(2) + x] = u8(65 + x)
+        head[i64(2) + x] = u8('A' + x)
         x = x + i64(1)
     }
     io::cout << head[0..i64(2) + N] << "\n"
@@ -146,19 +146,19 @@ fn printBoard(b: ref board) {
         var k: i64 = i64(0)
         let v: i64 = y + i64(1)
         if v < i64(10) {
-            line[k] = u8(32)  k = k + i64(1)
-            line[k] = u8(48 + v)  k = k + i64(1)
+            line[k] = ' '  k = k + i64(1)
+            line[k] = u8('0' + v)  k = k + i64(1)
         } else {
-            line[k] = u8(48 + v / i64(10))  k = k + i64(1)
-            line[k] = u8(48 + v % i64(10))  k = k + i64(1)
+            line[k] = u8('0' + v / i64(10))  k = k + i64(1)
+            line[k] = u8('0' + v % i64(10))  k = k + i64(1)
         }
-        line[k] = u8(32)  k = k + i64(1)
+        line[k] = ' '  k = k + i64(1)
         var xx: i64 = i64(0)
         while xx < N {
             let c: i32 = b.at(xx, y)
-            if c == BLACK { line[k] = u8(88) }        /* X */
-            else if c == WHITE { line[k] = u8(79) }   /* O */
-            else { line[k] = u8(46) }                 /* . */
+            if c == BLACK { line[k] = 'X' }        /* X */
+            else if c == WHITE { line[k] = 'O' }   /* O */
+            else { line[k] = '.' }                 /* . */
             k = k + i64(1)
             xx = xx + i64(1)
         }

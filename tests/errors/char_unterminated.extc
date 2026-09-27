@@ -1,0 +1,2 @@
+// 反例：未闭合的字符字面量
+fn main() -> i32 { let c: u8 = 'a  return i32(c) }

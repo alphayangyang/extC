@@ -75,7 +75,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h1 id="3-类型">3. 类型</h1>
 <h3 id="内建类型">内建类型</h3>
 <table><thead><tr><th>类别</th><th>名字</th><th>C 里的对应</th></tr></thead><tbody><tr><td>有符号整数</td><td><code>i8</code> <code>i16</code> <code>i32</code> <code>i64</code></td><td><code>int8_t</code> … <code>int64_t</code></td></tr><tr><td>无符号整数</td><td><code>u8</code> <code>u16</code> <code>u32</code> <code>u64</code></td><td><code>uint8_t</code> … <code>uint64_t</code></td></tr><tr><td>浮点</td><td><code>f32</code> <code>f64</code></td><td><code>float</code> / <code>double</code></td></tr><tr><td>布尔</td><td><code>bool</code></td><td><code>bool</code></td></tr><tr><td>（字符串）</td><td>没有内建字符串类型 —— 见下面的 <strong><code>slice&lt;u8&gt;</code></strong></td><td>—</td></tr><tr><td>空</td><td><code>void</code></td><td><code>void</code></td></tr></tbody></table>
-<p><strong>没有 <code>int</code> / <code>long</code> / <code>char</code> / <code>double</code></strong> —— 类型名一律带位宽（见 <a href="../SYNTAX.html"><code>SYNTAX.md</code></a> 的命名规范）。</p>
+<p><strong>没有 <code>int</code> / <code>long</code> / <code>char</code> / <code>double</code></strong>（字符字面量 <code>'a'</code> 就是 <code>u8</code>，见 §2） —— 类型名一律带位宽（见 <a href="../SYNTAX.html"><code>SYNTAX.md</code></a> 的命名规范）。</p>
 <p>字面量的默认类型：整数 <code>i32</code>，浮点 <code>f64</code>。</p>
 <h3 id="类型转换规则-t2-起">类型转换规则（T2 起）</h3>
 <p>extC <strong>只自动做无损失的拓宽</strong>；收窄 / 换符号 / 整数↔浮点<strong>必须显式写出来</strong>（<code>T(x)</code>）</p>

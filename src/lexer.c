@@ -287,6 +287,103 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
     lxAdvance(lx);                              /* closing quote */
 }
 
+/* The byte value of one escape sequence inside a character literal, or -1 after
+ * reporting it. Kept next to `lexChar` so the two lists (escapes, error wording) stay in
+ * one place. `\0` is the NUL byte; `\xHH` takes one or two hex digits. */
+static long lexCharEscape(Lexer *lx, int line, int col) {
+    int c = lxPeek(lx, 0);
+    lxAdvance(lx);
+    switch (c) {
+    case 'n': return 10;
+    case 't': return 9;
+    case 'r': return 13;
+    case '0': return 0;
+    case '\\': return '\\';
+    case '\'': return '\'';
+    case '"': return '"';
+    case 'a': return 7;
+    case 'b': return 8;
+    case 'f': return 12;
+    case 'v': return 11;
+    case 'x': {
+        long v = 0;
+        int n = 0;
+        for (; n < 2; n++) {
+            int h = lxPeek(lx, 0);
+            int d;
+            if (h >= '0' && h <= '9') d = h - '0';
+            else if (h >= 'a' && h <= 'f') d = h - 'a' + 10;
+            else if (h >= 'A' && h <= 'F') d = h - 'A' + 10;
+            else break;
+            v = v * 16 + d;
+            lxAdvance(lx);
+        }
+        if (n == 0) {
+            ctxError(lx->ctx, line, col, NULL, "`\\x` needs at least one hex digit");
+            return -1;
+        }
+        return v;
+    }
+    default:
+        ctxError(lx->ctx, line, col, NULL,
+                 "unknown escape `\\%c` in a character literal", c);
+        return -1;
+    }
+}
+
+/* One character literal: `'a'`, `'\n'`, `'\x41'`, `'\''`.
+ *
+ * It becomes an ordinary **integer literal** carrying the byte value, so the parser and the
+ * type checker need no new case at all: `'a'` is `u8(97)` without the noise, and the manual's
+ * rule ("no `char`; a type name carries its width") stays true.
+ *
+ * Shape of the scan: first find the closing quote **on this line** (honouring `\\`), because
+ * that is what tells "unterminated" from "more than one byte"; only then decode the contents.
+ * The token text is the source spelling so `--dump-tokens` shows the literal as written;
+ * only `ival` is meaningful to the parser. */
+static void lexChar(Lexer *lx, Vec *out, int line, int col) {
+    size_t start = lx->pos;                        /* the opening quote */
+    size_t p = start + 1;
+    size_t close = 0;
+    bool closed = false;
+    while (p < lx->len && lx->src[p] != '\n') {
+        if (lx->src[p] == '\\') { p += 2; continue; }
+        if (lx->src[p] == '\'') { closed = true; close = p; break; }
+        p++;
+    }
+    if (!closed) {
+        ctxError(lx->ctx, line, col, NULL, "unterminated character literal");
+        return;
+    }
+    if (close == start + 1) {
+        ctxError(lx->ctx, line, col, NULL,
+                 "empty character literal (write `'\\''` for the quote itself)");
+        return;
+    }
+    long v;
+    if (lx->src[start + 1] == '\\') {
+        lx->pos = start + 2;                       /* decode from just after the backslash */
+        v = lexCharEscape(lx, line, col);
+        if (v < 0) return;
+        if (lx->pos != close) {
+            ctxError(lx->ctx, line, col, NULL,
+                     "a character literal holds exactly one byte; use a string literal for"
+                     " multi-byte text");
+            return;
+        }
+    } else if (close == start + 2) {
+        v = (long)(unsigned char)lx->src[start + 1];
+    } else {
+        ctxError(lx->ctx, line, col, NULL,
+                 "a character literal holds exactly one byte; use a string literal for"
+                 " multi-byte text");
+        return;
+    }
+    lx->pos = close + 1;                           /* consume through the closing quote */
+    Token *t = lxPushAt(lx, out, TK_INT, lx->src + start, close + 1 - start, line, col);
+    t->ival = v;
+}
+
 /* See lexer.h for the contract: a string literal's text can equal a punctuation
  * spelling, so the parser uses this to reject tokens that are not punctuation. */
 bool lexIsPunct(const char *value) {
@@ -390,6 +487,7 @@ void lexAll(Ctx *ctx, Vec *out) {
         if (isDigit(c))                      { lexNumber(&lx, out); if (ctx->hasError) return; continue; }
         if (isAlpha(c))                      { lexIdent(&lx, out, line, col); continue; }
         if (c == '"')                        { lexString(&lx, out, line, col); if (ctx->hasError) return; continue; }
+        if (c == '\'')                      { lexChar(&lx, out, line, col); if (ctx->hasError) return; continue; }
         if (!lexPunct(&lx, out, line, col))  { return; }
     }
 

@@ -1,0 +1,2 @@
+// 反例：''
+fn main() -> i32 { let c: u8 = ''  return i32(c) }
