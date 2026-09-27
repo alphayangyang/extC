@@ -249,7 +249,11 @@ def one(args):
                         env = dict(os.environ, ASAN_OPTIONS='allocator_may_return_null=1')
                         p = run([exe], 5, env=env)
                         err = p.stderr.decode('utf-8', 'replace')
-                        hit = [l for l in err.splitlines() if 'runtime error' in l or 'AddressSanitizer' in l]
+                        # `ERROR: AddressSanitizer` 才算，`WARNING:` 不算 —— 后者是
+                        # "failed to allocate N bytes"（配 allocator_may_return_null=1 就是
+                        # 正常现象），曾经把 tests/traps/arena_oom.extc 又误报了一次。
+                        hit = [l for l in err.splitlines()
+                               if 'runtime error' in l or 'ERROR: AddressSanitizer' in l]
                         if hit:
                             why = 'sanitizer 报告（UB）'; log.append(hit[0])
                     except subprocess.TimeoutExpired:

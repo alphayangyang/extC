@@ -237,6 +237,42 @@ pass 的重写是"整份逐字节拷贝 + 按偏移插入属性"，理论上不�
 若要验证这个解释：装上完整的 ③ 登记（含原型循环那一段），取一份变化的文件，看那 3 个空行是不是
 紧跟在某个被删除的运行期块之后。
 
+## 三点五、H5（已修好、待拍板才能落地）：视图存储为空时索引会**往 null 写**
+
+**来源**：战役5（三模式 × 5 种子 × 400 次）第 2 条真发现，变异自 `tests/pool/rt_promote.extc`：
+
+```
+/home/alphayang/extc-fuzz/w00086/case.c:819:91: runtime error: store to null pointer of type 'int32_t'
+```
+
+**根因**：视图索引原语只查下标范围，不查存储指针（`genViewIndexer`，`codegen.c:653`）：
+
+```c
+static inline int32_t *slice_i32_index(slice_i32 v, int64_t i, const char *file, int line) {
+    if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
+    return &v.data[i];        /* data == NULL 且 i == 0 时，范围检查通过 ⇒ 直写 null */
+}
+```
+
+变异后的程序里 `extc_pool_take` 什么都没给（`.data` 是 NULL），而切片仍宣称长度 4 ⇒
+`slice_i32_index(s, 0, …)` 返回空指针 ⇒ 赋值写空。按 extC 的规矩这里**应当 trap**（解引用 null
+要报错），实际放行成 UB ⇒ 这是健全性缺口，不是程序的错。
+
+**修法**（已在 worktree 里验证，补丁存 `~/extc-work/h5-view-null-check.patch`）：
+
+```c
+    if (!v.data) extc_trapMsg(file, line, "the view has no storage");
+    if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
+```
+
+用已有的 `extc_trapMsg`，**不新增运行期原语**。实测复现用例从"往 null 写"变成
+`case.extc:24: trap: the view has no storage`（退出码 1）✓。
+
+**为什么还没落地**：它会改动**生成物** —— 凡是用到视图下标的程序都会多这一句检查，实测
+**258 / 413** 份语料变化（都是"多一句安全网"，语义方向明确，但确实是基准变化）。按目标的硬约束
+"改输出一律退回并记档"，这属于**需要主人拍板**的事项：允许的话我就落地 + 重设这 258 份的基准
+（并在提交信息里写清"变化只限加了空存储检查"）。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
