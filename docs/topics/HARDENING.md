@@ -609,6 +609,22 @@ implicit declaration extc_coro_next        ⇒ 把 genCoroHandleDecls（`:4138` 
 （现在拼接把它们放在帧单元之前 ✓；非泛型协程之所以没事 ✓，是因为它的帧结构由类型通道更早发出 ✓）。
 下一轮做法：把 `$step` 原型那一段**单独挪到单元区之后** ✓，或在拼接文本里**连帧结构一起插** ✓。
 
+**第 34 轮：顺序修好之后只剩两条"声明/定义"错配** ✓（已回退 ✗）
+
+按上一轮的判断把 `genCoroHandleDecls` **挪到 `emitDescRegion` 之后**再调一次 ✓（早调那次在
+`needCoroHandle` 置位前空转 ✓，用 `coroDeclsDone` 记住 ✓）⇒ "`struct gen$frame` declared inside
+parameter list" 消失 ✓。剩下两条，都已定位到行 ✓：
+
+1. **F4**：`gen$step declared 'static' but never defined` ✗ —— `$step` 声明的循环
+   （`codegen.c:4250-4252` ✓）写的是 `if (!f->isCoro || f->tmpl) continue;` ✓ ⇒ 它给**模板**声明、
+   **跳过实例** ✗，而**定义**来自 `genFunc`（发实例 ✓ 不发模板 ✗）⇒ 泛型模板的声明成了孤声明 ✓。
+   修法：该循环跳过**泛型模板**（`f->typeParams.len > 0` ✓）✓，实例的声明本来就由别处发 ✓；
+2. **B7**：`extc_coro_value_int64_t` 未声明 ✗ —— 取值助手在 `genCoroHandleDecls` 里按 **yield 类型**
+   发（`codegen.c:4190` ✓）✓，我的晚调覆盖它 ✓，但那条"按类型"的列表很可能**以模板为键** ✗
+   ⇒ 实例的类型没登记 ✓。修法：登记时用**实例自己的** yield 类型 ✓（或把列表改成按具体类型 ✓）。
+
+⇒ 两条都只差一处 ✓；本轮整体回退 ✓（闸门 413/413 ✓）。
+
 **原清单（每一块都验证过或已定位 ✓）**：① `ast.h` 的 `coroRetProto` + 记录 ✓；
 ② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
 ④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；
