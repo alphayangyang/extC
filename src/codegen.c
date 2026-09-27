@@ -5588,7 +5588,13 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                 bp = strstr(text, body);           /* text moved: the old behaviour, exactly */
                 bl = strlen(body);
             }
-            if (!bp) continue;
+            /* `g->mainBody` is a copy of `main` taken **before** these passes, and every cut rebuilds
+             * the text -- so after the first cut in `main` the search below cannot find it any more and
+             * `continue` skipped the local. That is why, with two adjacent unread locals, the **second**
+             * one always survived (`-Werror=unused-variable`, tools/attack.py W12; `a`/`b`, `aa`/`bb`,
+             * `alpha`/`beta` all showed it). Searching the whole unit is safe here: a local's name is
+             * only in scope in its own function, so an over-wide scope can only keep a local alive. */
+            if (!bp) { bp = (char *)text; bl = len; }
             if (dbgOn("EXTC_DBG_LOCAL"))
                 fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
                         bp ? "hit" : "miss", bp ? countMentionsIn(g, bp, bl, d->name) : 0, d->own);
