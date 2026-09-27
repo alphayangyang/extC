@@ -776,6 +776,22 @@ impl Bad for s { fn nope() -> i64 { return i64(1) } }
 
 ⇒ 题目期望已从 `reject` 改成 `ok` ✓，`tools/attack.py dyn` 现在 **16/16** ✓。
 
+## 三点十九、攻击组 arena（arena / 逃逸，12 题）：**全绿** ✓
+
+**策略** ✓：`tests/arena-soundness/` 已经收录了一批**已知**的逃逸漏洞 ✓（如 `B_field_table_stale.extc`：
+"字段表过期 + 引用型结构体的值 ⇒ 让 arena 内存逃出函数" ✗）⇒ 这一组**避开**已收录的族 ✓，
+专打"按级别规则**应当安全**"的相邻形状 ✓ —— 真漏了才是新发现 ✓。判据是硬 oracle ✓（ASan/UBSan 零报告 ✓）。
+
+**结果**：局部 `new` 在块内用 ✓ `new` 值从函数返回（提升 ✓）✓ 跨两层调用提升 ✓ `new` 切片从函数返回 ✓
+循环里分配并保留最后一次 ✓ 泛型返回 `new` 值 ✓ 结构体装 `new` 值再返回 ✓ 辅助函数里的 `alloc`
+用于外层 ✓ 协程里持有 `new` 切片跨 yield ✓ `alloc` 计数为 0 ✓ 嵌套结构体装 `new` 值 ✓
+两层容器返回 ✓ ⇒ **12/12** ✓。
+
+**顺带确认一条语言规则** ✓（题目踩过一次 ✓）：含**引用/视图**的结构体**不能零初始化** ✓ ——
+`var h: holder`（`holder { v: mut ref i64 }`）报 "cannot zero-initialize `h`: it contains a reference" ✓
+（零值引用会是 NULL ✓，直接拒绝是对的 ✓）⇒ 要用字面量一次写全 ✓
+（`var h: holder = holder { v: new i64 }` ✓）。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`

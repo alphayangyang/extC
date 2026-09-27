@@ -531,8 +531,63 @@ DYN = [
      '  return i32(h.d.tag()) - 5 }'),
 ]
 
+# ---------------------------------------------------------------- arena / 逃逸
+# 这一组**避开** tests/arena-soundness 已收录的族，专打"按级别规则**应当安全**"的形状：
+# 返回 new 出来的值、跨调用提升、循环里保留最后一次、泛型函数返回、协程里持有 new 切片、
+# 结构体里装 new 值再返回、alloc 在辅助函数里。判据是硬 oracle：ASan/UBSan 零报告 ✓。
+ARENA = [
+    ('R1 局部 new 在块内使用', 'ok',
+     'fn main() -> i32 { var s: i64 = 0\n  { var p: mut ref i64 = new i64\n    *p = i64(7)\n'
+     '    s = *p }\n  return i32(s) - 7 }'),
+    ('R2 new 出来的值从函数返回（提升）', 'ok',
+     'fn make() -> mut ref i64 { var p: mut ref i64 = new i64\n  *p = i64(9)\n  return p }\n'
+     'fn main() -> i32 { var q: mut ref i64 = make()\n  return i32(*q) - 9 }'),
+    ('R3 跨两层调用提升', 'ok',
+     'fn inner() -> mut ref i64 { var p: mut ref i64 = new i64\n  *p = i64(5)\n  return p }\n'
+     'fn outer() -> mut ref i64 { return inner() }\n'
+     'fn main() -> i32 { var q: mut ref i64 = outer()\n  return i32(*q) - 5 }'),
+    ('R4 new 切片从函数返回', 'ok',
+     'fn make(n: i64) -> mut slice<i64> { var s: mut slice<i64> = new i64[3]\n'
+     '  s[0] = n\n  s[1] = n + i64(1)\n  s[2] = n + i64(2)\n  return s }\n'
+     'fn main() -> i32 { var s: mut slice<i64> = make(i64(10))\n'
+     '  return i32(s[0] + s[1] + s[2]) - 33 }'),
+    ('R5 循环里分配、保留最后一次', 'ok',
+     'fn main() -> i32 { var keep: mut ref i64 = new i64\n  *keep = i64(0)\n  var i: i64 = 0\n'
+     '  while i < i64(4) { var p: mut ref i64 = new i64\n    *p = i\n    keep = p\n'
+     '    i = i + i64(1) }\n  return i32(*keep) - 3 }'),
+    ('R6 泛型函数返回 new 出来的值', 'ok_or_reject',
+     'fn mk<T>(v: T) -> mut ref T { var p: mut ref T = alloc<T>(1)\n  *p = v\n  return p }\n'
+     'fn main() -> i32 { var p: mut ref i64 = mk(i64(8))\n  return i32(*p) - 8 }'),
+    ('R7 结构体装 new 值再返回', 'ok',
+     'struct holder { v: mut ref i64 }\n'
+     # 含引用的结构体不能**零初始化**（零值引用会是 NULL ⇒ 语言直接拒绝）⇒ 用字面量一次写全。
+     'fn make() -> holder { var h: holder = holder { v: new i64 }\n  *h.v = i64(3)\n  return h }\n'
+     'fn main() -> i32 { let h = make()\n  return i32(*h.v) - 3 }'),
+    ('R8 辅助函数里的 alloc 用于外层', 'ok_or_reject',
+     'fn fill(dst: mut slice<i64>, v: i64) { var i: i64 = 0\n'
+     '  while i < i64(dst.len) { dst[i] = v + i\n    i = i + i64(1) } }\n'
+     'fn main() -> i32 { var s: mut slice<i64> = new i64[3]\n  fill(s, i64(5))\n'
+     '  return i32(s[2]) - 7 }'),
+    ('R9 协程里持有 new 切片跨 yield', 'ok_or_reject',
+     'fn gen(n: i64) -> coroutine<i64> { var s: mut slice<i64> = new i64[2]\n  s[0] = n\n'
+     '  s[1] = n + i64(1)\n  var i: i64 = 0\n  while i < i64(2) { yield s[i]\n'
+     '    i = i + i64(1) } }\n'
+     'fn main() -> i32 { var c = gen(i64(4))\n  var t: i64 = 0\n'
+     '  while c.next() { t = t + c.value() }\n  return i32(t) - 9 }'),
+    ('R10 alloc 计数为 0', 'ok_or_reject',
+     'fn main() -> i32 { var p: mut ref i64 = alloc<i64>(0)\n  return 0 }'),
+    ('R11 嵌套结构体里装 new 值并返回', 'ok_or_reject',
+     'struct inner { v: mut ref i64 }\nstruct outer2 { c: inner }\n'
+     'fn make() -> outer2 { var o: outer2\n  o.c.v = new i64\n  *o.c.v = i64(6)\n  return o }\n'
+     'fn main() -> i32 { let o = make()\n  return i32(*o.c.v) - 6 }'),
+    ('R12 new 值经两层容器返回', 'ok_or_reject',
+     'struct inner { v: i64 }\nstruct outer2 { c: inner }\n'
+     'fn make() -> outer2 { var o: outer2\n  o.c.v = i64(4)\n  return o }\n'
+     'fn main() -> i32 { let o = make()\n  return i32(o.c.v) - 4 }'),
+]
+
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
-          'dyn': DYN}
+          'dyn': DYN, 'arena': ARENA}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
