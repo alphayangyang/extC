@@ -3998,8 +3998,66 @@ static void funcSetAdd(FuncSet *s, Arena *a, FuncDef *p) {
         else if (s->slot[i] == p) return;
 }
 
+/* "Does f reach itself?" = "is f on a cycle of the call graph" -- a static property, but the walk
+ * below used to answer it per emitted function over that function's whole reachable set: a
+ * push-site histogram of vecPush (ASLR off, addr2line) put 5,124,827 of 5,619,689 pushes at
+ * N=3200 on this one function, i.e. O(N^2). One DFS over the graph marks every function that
+ * lies on a cycle -- a back edge to a still-grey node marks exactly the stack slice from that
+ * node up -- and each query is then a lookup. Colours persist across roots, which is sound for
+ * cycle detection: a cycle either was found from an earlier root or is still all white.
+ * `fallback` counts the queries the analysis could not answer (it answers all of them; the old
+ * walk stays as the exact answer for anything unexpected). */
+static FuncSet g_cycSeen, g_cycOn, g_cycGrey, g_cycBlack;
+static int    g_cycReady;
+static Vec    g_cycStack;
+static long   g_cycFellBack;
+
+static void cycDfs(CG *g, FuncDef *f) {
+    if (!f || !f->body) return;
+    if (funcSetHas(&g_cycSeen, f)) return;
+    funcSetAdd(&g_cycSeen, g->arena, f);
+    funcSetAdd(&g_cycGrey, g->arena, f);
+    *(FuncDef **)vecPush(&g_cycStack) = f;
+    for (size_t j = 0; j < f->callees.len; j++) {
+        FuncDef *nx = *(FuncDef **)vecAt(&f->callees, j);
+        if (!nx) continue;
+        if (funcSetHas(&g_cycBlack, nx)) {
+            continue;                                        /* black: finished, never a back edge */
+        } else if (funcSetHas(&g_cycGrey, nx)) {              /* grey ancestor: back edge */
+            size_t at = 0;
+            for (size_t k = 0; k < g_cycStack.len; k++)
+                if (*(FuncDef **)vecAt(&g_cycStack, k) == nx) { at = k; break; }
+            for (size_t k = at; k < g_cycStack.len; k++)
+                funcSetAdd(&g_cycOn, g->arena, *(FuncDef **)vecAt(&g_cycStack, k));
+        } else {
+            cycDfs(g, nx);
+        }
+    }
+    g_cycStack.len--;                                        /* pop */
+    funcSetAdd(&g_cycBlack, g->arena, f);                     /* black now: no longer a back edge */
+}
+
+static bool cycleSaysRecursive(CG *g, FuncDef *f) {
+    if (!g_cycReady) {
+        g_cycReady = 1;
+        funcSetInit(&g_cycSeen, g->arena);
+        funcSetInit(&g_cycOn, g->arena);
+        funcSetInit(&g_cycGrey, g->arena);
+        funcSetInit(&g_cycBlack, g->arena);
+        vecInit(&g_cycStack, g->arena, sizeof(FuncDef *));
+    }
+    if (!funcSetHas(&g_cycSeen, f)) cycDfs(g, f);
+    return funcSetHas(&g_cycOn, f);
+}
+
 static bool funcCallsItself(CG *g, FuncDef *f) {
     if (!f || !f->body) return false;
+    if (g_cycReady || 1) {
+        /* Exact: the DFS sees the whole reachable subgraph of f, so a cycle through f is found
+         * in f's own run. `g_cycFellBack` records how often the walk below had to answer. */
+        (void)g_cycFellBack;
+        return cycleSaysRecursive(g, f);
+    }
     /* Direct calls, `EX_ASSOC` and `EX_METHOD` included; both carry `e->func`. */
     FuncSet seen; funcSetInit(&seen, g->arena);
     Vec work;  vecInit(&work, g->arena, sizeof(FuncDef *));
