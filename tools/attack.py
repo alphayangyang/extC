@@ -786,6 +786,38 @@ NOC = [
      '  return i32(arr[0].n) - 1 }'),
 ]
 
+# ---------------------------------------------------------------- @inline × 代码消除
+# 与刚修过三条 bug 的死代码族相邻：@inline 的函数被消除 / 只被死代码调用 / 递归 / 泛型实例 /
+# 方法 / 协程 / 返回泛型实例 / 两个互调 / 落在 main 或 extern 上（反例）。
+INL = [
+    ('I1 @inline 被调用的普通函数', 'ok',
+     '@inline fn sq(x: i64) -> i64 { return x * x }\nfn main() -> i32 { return i32(sq(i64(7))) - 49 }'),
+    ('I2 @inline 但没人调用（应被消除）', 'ok',
+     '@inline fn unused(x: i64) -> i64 { return x * x }\nfn main() -> i32 { return 0 }'),
+    ('I3 @inline 递归函数', 'ok_or_reject',
+     '@inline fn fact(n: i64) -> i64 { if n <= i64(1) { return i64(1) }\n  return n * fact(n - i64(1)) }\nfn main() -> i32 { return i32(fact(i64(5))) - 120 }'),
+    ('I4 @inline 只被死代码调用', 'ok_or_reject',
+     '@inline fn twice(x: i64) -> i64 { return x + x }\nfn dead() -> i64 { return twice(i64(3)) }\nfn main() -> i32 { return 0 }'),
+    ('I5 @inline 泛型函数被调用', 'ok',
+     '@inline fn id<T>(v: T) -> T { return v }\nfn main() -> i32 { return i32(id(i64(4))) - 4 }'),
+    ('I6 @inline 泛型实例没人调用', 'ok',
+     '@inline fn id<T>(v: T) -> T { return v }\nfn main() -> i32 { return 0 }'),
+    ('I7 @inline 方法（结构体体内）', 'ok',
+     'struct pt { x: i64\n  @inline fn get(self: ref pt) -> i64 { return self.x } }\nfn main() -> i32 { var p: pt\n  p.x = i64(5)\n  return i32(p.get()) - 5 }'),
+    ('I8 @private @inline 同文件使用', 'ok_or_reject',
+     '@private @inline fn twice(x: i64) -> i64 { return x + x }\nfn main() -> i32 { return i32(twice(i64(3))) - 6 }'),
+    ('I9 @inline 落在 main 上', 'ok_or_reject',
+     '@inline fn main() -> i32 { return 0 }'),
+    ('I10 @inline 协程函数', 'ok_or_reject',
+     '@inline fn gen(n: i64) -> coroutine<i64> { yield n }\nfn main() -> i32 { var c = gen(i64(2))\n  var s: i64 = 0\n  while c.next() { s = s + c.value() }\n  return i32(s) - 2 }'),
+    ('I11 @inline 返回泛型实例', 'ok_or_reject',
+     'struct box<T> { v: T }\n@inline fn mk<T>(v: T) -> box<T> { return { v: v } }\nfn main() -> i32 { return i32(mk(i64(3)).v) - 3 }'),
+    ('I12 两个 @inline 函数互调', 'ok_or_reject',
+     '@inline fn odd(n: i64) -> bool { if n == i64(0) { return false }\n  return even(n - i64(1)) }\n@inline fn even(n: i64) -> bool { if n == i64(0) { return true }\n  return odd(n - i64(1)) }\nfn main() -> i32 { if even(i64(4)) { return 0 }\n  return 1 }'),
+    ('I13 @inline 落在 extern 上（应拒）', 'reject',
+     '@inline extern!("libc") fn getpid() -> i32\nfn main() -> i32 { return 0 }'),
+]
+
 # ---------------------------------------------------------------- 递归 / 互递归类型（时机族之后的新面）
 # 缘起：match 面第一题就撞出 H16（自引用枚举让三个类型遍历函数无限递归 ⇒ SIGSEGV）⇒ 这一族值得再打：
 # 互递归枚举、载荷是自身的 option/数组、三跳互递归、递归遍历函数、?ref 自引用（设计意图）、
@@ -1029,7 +1061,7 @@ CNT = [
 GROUPS = {'generics': GENERICS, 'coro': CORO, 'modules': MODULES, 'views': VIEWS,
           'dyn': DYN, 'arena': ARENA, 'extern': EXT, 'fs': FSG, 'nocopy': NOC,
           'containers': CNT, 'io': IOG, 'events': EVT, 'deep': DEEP, 'time': TIM,
-          'match': MATCH, 'rec': REC}
+          'match': MATCH, 'rec': REC, 'inline': INL}
 
 def one(name, kind, want, src):
     os.makedirs(WORK, exist_ok=True)
