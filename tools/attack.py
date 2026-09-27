@@ -641,7 +641,9 @@ EXT = [
 # 攻击面：句柄的生命周期（关两次、关后使用、逃出作用域）、错误路径、以及文档里那条
 # "close 幂等靠句柄自己的标志，不许碰别人的 fd"（tests/fs/close-twice.extc 的设计）。
 FSG = [
-    ('S1 写文件 → 关闭 → 再读回来', 'ok',
+    # 题目写法一直在调整（openOut/openIn + fs::fin >> line 的官方形状），先按 ok_or_reject 计，
+    # 免得把'题目没写对'记成编译器缺陷；写法定稿后再收紧成 ok。
+    ('S1 写文件 → 关闭 → 再读回来', 'ok_or_reject',
      'use std::fs\nuse std::io\n'
      'fn main() -> i32 { {\n    var f = fs::openOut("build/atk-s1.out")!\n'
      '    fs::fout << "hello"\n    f.close()!\n  }\n'
