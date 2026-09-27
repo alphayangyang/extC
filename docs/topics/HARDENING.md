@@ -498,7 +498,25 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
    `coroBoxed` 在这个程序里**连模板都是 0** ✗；`coroNeedsZone` 会把不该要的也算进来 ✗
    （闸门当场变红 2 份：`tests/coro/coro_tasks.extc` 等 ✓）。
 
-⇒ **正确的修法**（结构性 ✓，不是一行）：要么把 handle typedef 与运行期改成**按需拼接**
+**第 27 轮：按需拼接试通了一半，拿到了"该怎么做"的准确形状** ✓（已回退 ✗）
+
+- 拼接机制在仓库里**已有先例** ✓：`primA`（`codegen.c:6519` ✓）捕获"运行期原语块"的偏移 ✓，
+  最终装配时用 `bufPutn(&pb, out->data + primA, out->len - primA)` 之类把新片段**插回前面** ✓
+  ⇒ 协程 handle typedef 用同一招 ✓；
+- 在**早期 typedef 块之后**捕获偏移 ✓，体发射时若 `g->needCoroHandle` 才置位 ✓（装箱点
+  `extc_task_begin` 那两处 ✓），最终装配时**按需插入** ✓ —— 机制本身工作 ✓；
+- ✗ 第一次试出了 `redefinition of 'struct ExtcCoroS'` ✓：早期块**也**打了这份定义 ✓ ⇒
+  插入必须**仅在"早期块没打过"时**做 ✓（**typedef 可以重复，结构体定义不行** ✓）⇒ 形状是：
+  早期块之后记 `coroDefPrinted = g.needCoroHandle;` ✓（此时为真就别再插 ✓）；
+- ✗ 第二次的脚本在应用补丁时**断言中断**（锚点没匹配上 ✓）⇒ 只落了一部分 ✓，已整体回退 ✓，
+  闸门保持 413/413 ✓。
+
+⇒ **下一轮的完整清单**（每一块都验证过或已定位 ✓）：① `ast.h` 的 `coroRetProto` + 记录 ✓；
+② `funcInstance` 重建原型/清帧/`isCoro=false` ✓；③ 放行协程实例走 `checkFunc` ✓；
+④ 帧名 **`instName` 优先** ✓（这条让 `redefinition` 消失 ✓，第 25 轮实测 ✓）；
+⑤ 帧单元收集收实例 ✓；⑥ 生成器：`coroDefPrinted`/`coroDefA` + 装箱点置位 + **带守卫的按需插入** ✓。
+
+**原记的修法（仍适用）**：要么把 handle typedef 与运行期改成**按需拼接**
 （body 发射时发现需要再插到前面 ✓ —— 仓库里"final assembly"那段已经在做类似的事 ✓），
 要么在预扫里**重放装箱判定**（与调用点同一套判据 ✓，不能靠新标志 ✓）。六块补丁**全部已回退** ✓，
 闸门保持 413/413 ✓；本轮的净产出是**这条完整的根因链**与"哪一块是错的" ✓。
