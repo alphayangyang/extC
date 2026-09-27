@@ -486,6 +486,31 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
 （以及"实际删掉的字节数" ✓），看它与 415 的差在哪里 ⇒ 然后照 ② 的成熟做法修：**应用前重新定位并
 校验完整匹配，失配就跳过**（宁可不删 ✓ 绝不删半截 ✗）。
 
+## 三点十二、F1（两段式，第一段已做通、第二段待做，故整体未落地）：`dyn` 打在泛型 impl 的实例上
+
+**症状**（攻击套件 F1）：`` `pair_i64` does not implement `Tag` `` —— 而 `impl<T> Tag for pair<T>` 明明写了。
+
+**第一段（检查器，已验证可行 ✓）**：`dynTraitOf`（`check_expr.c:435`）用
+`ttEquals(im->target, pt)` 找实现，而泛型 impl 记录的 `target` 是**模板** `pair<T>`（`targs` 是块级
+类型参数）⇒ 与实例 `pair<i64>` 永不相等。补一条"**同一个 `sdef` + 该 impl 有块级参数** ⇒ 视为覆盖
+所有实例"（语义上正是 `impl<T> … for pair<T>` 的意思；每实例的一致性检查已在别处做过）⇒ 检查器
+**放行** ✓。
+
+**第二段（codegen，未做 ✗）**：放行之后生成物变成**非法 C** ✗ —— 表和 thunk 是按**模板**发的：
+
+```
+extc_vt$Tag$pair_i64   —— 使用处（对的）
+extc_vt$Tag$pair_T     —— 定义处（模板名 ✗，于是"未声明"）
+extc_th$Tag$pair_T$tag → 里面用 pair_tag((pair_T *)self)   ✗ pair_T 根本不存在
+```
+
+⇒ 需要让**泛型 impl 也按实例发表与 thunk**（表名用 `vtKey` 的实例名、thunk 里用实例的 C 类型）。
+这与第 6/7 轮统一过的 `methodSetOf`/`vtKey` 是同一套机制 —— 那次统一了"表名从哪来"，这次要统一
+"**泛型 impl 的实例也要各发一份**"。
+
+**为什么不落地半段**：只改检查器会把"误拒"变成"生成非法 C" ✗（更糟）⇒ 已回退，两段一起做才算数。
+补丁思路留在本条，下一轮接着做。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
