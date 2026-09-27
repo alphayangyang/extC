@@ -1307,9 +1307,20 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
   ⇒ **仍是 5 条** ✗（闸门 1 份差异 ✓）⇒ 说明此时数组的 **`inner` 已被替换成具体类型** ✓
   （所以 `mentionsParam` 仍为假 ✗）而它的 **`name` 还是旧的 `array_2_box_T`** ✗ —— 名字与 inner 不同步 ✓。
   **已全部回退** ✓（闸门 413/413 ✓）。
-- **下一轮的确切改法** ✓：守卫**看名字**（该类型在 C 里就叫那个名字 ✓ ⇒ 名字含未替换参数就跳过 ✓），
-  或者更干净：**替换之后重新 `ttMangle` 一次名字** ✓（让 `name` 与 `inner` 同步 ✓）⇒ 两者都能清这 5 条 ✓；
-  判据 **time 12/12** ✓。
+- **第 24 轮：把"守卫"这条路走完了 ✓（仍未清 ✓，已全部回退 ✗）** ✓：
+  · 把 `tt` 一路传进 `addInstanceUnit`/`scanTypeForUnits` ✓，守卫用**重算名字对比**
+    （`strcmp(t->name, ttMangle(tt, t)) != 0 ⇒ 跳过` ✓，能自维护 ✓）；
+  · 再把 **`ttHasParam` 的数组/枚举递归**补上 ✓（`types.c:463` ✓ ⇒ 现在 `mentionsParam` 对
+    `[2]box<T>` 为**真** ✓）；
+  · 两者**同时**在位 ⇒ **仍是 5 条** ✗ ⇒ **结论：那个临时数组根本不经过 `addInstanceUnit`** ✗
+    （也不经过那 6 处 `vecPush(&units)` ✓ —— 探针零输出 ✓）⇒ 它是**另一条单元收集路径**发的 ✓。
+  · 已全部回退 ✓（闸门 413/413 ✓）。
+- **下一轮该怎么定位（工具已经就位 ✓）** ✓：`EXTC_ABORT` 探针就在**数组 struct 写点**
+  （`cgLine(g, "%s data[%lld];", cType(g, u->inst->inner), …)` ✓ 现 `:4879` ✓）—— 直接在 gdb 里
+  **`break addInstanceUnit` / `break scanTypeForUnits` / `break scanUnitForUnits`** ✓，跑 X4 看
+  **哪个先命中、命中时 `t->name` 是什么** ✓ ⇒ 一次就能分清"它到底走哪条收集路径" ✓（比再加探针快 ✓）；
+  若三个都不命中 ✓ ⇒ 说明有一条**完全独立**的路径（很可能在**模块/预奏单元**那一层 ✓ 或
+  `emitDescRegion` 的类型通道 ✓）⇒ 再从 `unitBody` 的调用者往上一层找 ✓。
 
 **关键证据** ✓（X4）：`unknown type name 'box_T'; did you mean 'box_i64'?` ✓ ⇒ 生成物里用的是
 **未替换的临时名** `box_T` ✗，而 `box_i64` **已经存在** ✓（walker 已 intern ✓）⇒ 所以症结是
