@@ -4190,9 +4190,18 @@ static void cgAcc(const char *name, double sec) {
 }
 #define CGACC(name, call) do { double t_ = cgNow(); call; cgAcc((name), cgNow() - t_); } while (0)
 static void strReport(void);   /* defined with the scan counters, below */
+/* What dropUnusedLocals actually does per local, in bytes: the pass is still x4 per doubling and
+ * the per-local work is all O(body), which should be linear -- so one of these four counters must
+ * be growing with the program. */
+static long g_locN, g_locCopy, g_locRead, g_locLine, g_cuts;
+static void locReport(void) {
+    if (!cgTimeOn()) return;
+    fprintf(stderr, "[locals] n=%ld copy=%lld reads=%lld lines=%lld cuts=%ld\n",
+            g_locN, (long long)g_locCopy, (long long)g_locRead, (long long)g_locLine, g_cuts);
+}
 static void cgReport(void) {
     if (!cgTimeOn()) return;
-    strReport();
+    strReport(); locReport();
     for (size_t i = 0; i < 8 && cgAccs[i].name; i++)
         fprintf(stderr, "[time] %-9s %.3f s\n", cgAccs[i].name, cgAccs[i].sec);
 }
@@ -5378,6 +5387,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                         d->funcName ? d->funcName : "(null)",
                         g->mainFuncName ? g->mainFuncName : "(null)", body ? "yes" : "no");
             if (!body) continue;                       /* its function is gone already */
+            g_locN++;
             char  *bp = (textIsOriginal && body >= text && body < text + len)
                             ? (char *)body : strstr(text, body);
             if (!bp) continue;
@@ -5391,6 +5401,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             bufInit(&bm, g->arena);
             size_t declAt = 0;
             bool   declInside = false;
+            g_locCopy += (long long)bl;
             if (d->own == 1) {
                 char *dl = strstr(bp, d->text);
                 if (!dl) continue;
@@ -5401,6 +5412,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             } else {
                 bufPutn(&bm, bp, bl);
             }
+            g_locRead += (long long)bm.len;
             if (countReads(bufCstr(&bm), bm.len, d->name) != 0) continue;   /* it is read */
             (void)declInside;
             (void)declAt;
@@ -5449,6 +5461,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                 }
                 *(LocalCut *)vecPush(&cuts) = c;
             }
+            g_locLine += (long long)bl;
             for (char *p = bp; p < bp + bl; ) {
                 char  *nl2 = memchr(p, '\n', (size_t)(bp + bl - p));
                 size_t ll2 = nl2 ? (size_t)(nl2 - p) : (size_t)(bp + bl - p);
@@ -5479,6 +5492,8 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             }
             /* One assembly, in order: the spans are disjoint and ascending, and the result is
              * never longer than what it replaces, so it fits in the same buffer. */
+            g_cuts++;
+            double t_rw = cgNow();
             Buf nb;
             bufInit(&nb, g->arena);
             size_t prev = 0;
@@ -5496,6 +5511,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             len = nb.len;
             text = out->data;
             textIsOriginal = 0;            /* positions are stale from here on: search again */
+            cgAcc("cg-rewrite", cgNow() - t_rw);
             d->text = NULL;
             cut = true;
         }
