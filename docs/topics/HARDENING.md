@@ -1270,7 +1270,17 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
 
 **结果** ✓：12 条绿 ✓、**2 条红** ✗（都精确定位 ✓）：
 
-1. **W9（第 18 轮已把根因钉死 ✓，修法待落 ✓）** —— 报错 `In function 'mk_i64': unknown type name
+1. ~~**W9**~~ ✅ **已修（第 19 轮）** ✓ —— 根因：**局部声明里的类型实例被 intern 得太晚** ✓
+   （`ttSubstitute` 会 intern ✓ `types.c:697` ✓，但泛型函数体里 `var p: pair<T>` 的类型是**体发射**时
+   才替换的 ✗ ⇒ 晚于 units 定点循环 + struct 发射 ✓ ⇒ 定义永不发 ✓）。**修法** ✓：在**检查器**阶段
+   提前 intern —— 新增 `internLocalTypes`（只走**语句** ✓，对 `ST_VAR` 的 `ann` 做一次 `ttSubstitute` ✓，
+   intern 是它的副作用 ✓），并且**必须是独立一趟**地对 `c.funcInsts` 里所有泛型实例跑 ✓：
+   我第一版把它挂在**协程补跑循环**里 ✗ ⇒ 打点**零输出** ✓（那个循环开头就 `!fi->tmpl->isCoro … continue`
+   ⇒ `mk<i64>` 根本不经过 ✓）⇒ 换成独立一趟后 ✓ 打点显示 `var p ann=pair<T> -> pair<i64>` ✓、
+   **W9 rc=0** ✓、**闸门零变化** ✓、套件回到 **233 题 / 0 条** ✓。**教训**：挂点要确认**它的循环真的
+   覆盖目标** ✗（打点零输出就是"挂错了地方"的signature ✓）—— 这与本轮/上轮的时机族是同一主题 ✓。
+
+   （历史）1. **W9（第 18 轮已把根因钉死 ✓，修法待落 ✓）** —— 报错 `In function 'mk_i64': unknown type name
    'pair_i64'` ✓（`pair_i64 p = (pair_i64){ .a = 0 };` ✓）。
 
    **打点结论（很硬 ✓）**：在 units 定点循环之后打印 ⇒ `units=4`（unit/pcg32/slice_u8/slice_i32 ✓）、

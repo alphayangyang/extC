@@ -4704,6 +4704,47 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
  * asking the one question that cannot be answered on a template -- it is the price of having
  * no traits, and the concrete instance answers it instead.
  */
+/* Intern the type instances that appear as **local declaration types** in a body (`s->u.var.ann`).
+ *
+ * Only the statement walk is needed: the shape that broke was `var p: pair<T>` inside a generic
+ * function (tools/attack.py W9), and interning is a side effect of the substitution itself. */
+static void internLocalTypes(Checker *c, FuncDef *f) {
+    if (!f || !f->body) return;
+    Vec *params = f->typeParams.len ? &f->typeParams : (f->tmpl ? &f->tmpl->typeParams : NULL);
+    Vec *targs  = f->targs.len ? &f->targs : NULL;
+    if (!params || !targs) return;
+    Vec stack;
+    vecInit(&stack, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&stack) = f->body;
+    while (stack.len) {
+        Stmt *st = *(Stmt **)vecAt(&stack, stack.len - 1);
+        stack.len--;
+        if (!st) continue;
+        switch (st->kind) {
+        case ST_VAR:
+            if (st->u.var.ann) (void)ttSubstitute(c->tt, st->u.var.ann, params, targs);
+            break;
+        case ST_BLOCK:
+            for (size_t i = 0; i < st->u.block.stmts.len; i++)
+                *(Stmt **)vecPush(&stack) = *(Stmt **)vecAt(&st->u.block.stmts, i);
+            break;
+        case ST_IF:
+            *(Stmt **)vecPush(&stack) = st->u.ifs.thenBody;
+            *(Stmt **)vecPush(&stack) = st->u.ifs.elseBody;
+            break;
+        case ST_WHILE:
+            *(Stmt **)vecPush(&stack) = st->u.whiles.body;
+            break;
+        case ST_MATCH:
+            for (size_t i = 0; i < st->u.match.arms.len; i++)
+                *(Stmt **)vecPush(&stack) = (*(MatchArm **)vecAt(&st->u.match.arms, i))->body;
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 static bool provisionalInstance(Vec *targs) {
     for (size_t i = 0; i < targs->len; i++)
         if (ttHasParam(*(Type **)vecAt(targs, i))) return true;
@@ -5355,7 +5396,25 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (fi->tmpl->yieldType)
             fi->yieldType = ttSubstitute(c.tt, fi->tmpl->yieldType, &fi->tmpl->typeParams, &fi->targs);
         coroSetup(&c, fi);
+        /* A local declaration's type inside a generic body is substituted only while the body is
+         * **emitted** -- which happens after code generation has built its unit list and emitted the
+         * struct definitions. A type instance that appears **only** as a local's type was therefore
+         * never interned in time and its C struct was never emitted: `unknown type name 'pair_i64'`
+         * on a local inside `mk<i64>` (tools/attack.py W9). Substituting the annotation here interns
+         * it (`ttGeneric`), early enough for the unit list to see it. It is the same kind of fix as
+         * the `coroSetup` re-run above: the instance existed, it just appeared too late. */
         coroFrameLay(&c, fi);
+    }
+
+    /* Every generic function **instance**: intern the type instances its body declares as local
+     * types. The loop above is coroutine-only (it skips instances that already have a frame), and the
+     * substitution that would normally intern such a type happens during **body emission** -- after
+     * code generation built its unit list and emitted the struct definitions, so the struct never
+     * appeared (`unknown type name 'pair_i64'`, tools/attack.py W9; measured: the hook inside the
+     * coroutine loop never ran for `mk<i64>`). */
+    for (size_t j = 0; j < c.funcInsts.len; j++) {
+        FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+        if (fi && fi->tmpl) internLocalTypes(&c, fi);
     }
 
     /* Deferred uses of such a call's result (`#79`): same two branches, but the question is now
