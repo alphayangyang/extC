@@ -1331,7 +1331,7 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
   | **X3** | `unknown type name 'vector$vector_box_i64'` ✗ | **实例没被发射** ✓（名字是**正确的** ✓）⇒ W9 那个"intern 太晚"的同族 ✓ |
   | **X9** | `'slice_box_i64' undeclared` ✗ | 同上 ✓ —— 切片实例来自**表达式** `arr[..]` ✗，而我的 `internLocalTypes` **只走类型标注** ✗ |
   | **X8** | ~~`incompatible types when assigning to type 'box_i64' from type 'box_T'`~~ ✅ **已修（第 27 轮）** ✓ | 真因：**帧字段用了模板体里记录的局部类型** ✗ —— 生成物里实例帧是 `box_i64 ret; box_i64 in;` **加 `box_T b;`** ✗（`b` 的声明是 `var b: box<T>` ✓）⇒ `coroFrameLay` 的 `p->type = d->type;`（现 `:6530` ✓）没有按实例替换 ✓。修法：`f->tmpl && f->targs.len` 时 `ttSubstitute(c->tt, d->type, &f->tmpl->typeParams, &f->targs)` ✓ ⇒ X8 转绿 ✓、**coro 16/0 · generics 49/0** ✓、**闸门零变化** ✓ |
-  | **X7** | `variable 'p' set but not used [-Werror=unused-but-set-variable]` ✗ | **质量类** ✓（同 H15/S11 一族 ✓：`p` 的声明与逐字段赋值没被删干净 ✓） |
+  | **X7** | `variable 'p' set but not used [-Werror=unused-but-set-variable]` ✗ | **质量类** ✓（同 H15/S11 一族 ✓）。**第 28 轮实测**：用**现成的** `EXTC_DBG_LOCAL`（W12 时学到的那招 ✓）看到 `p` 在那趟里是 `bp=hit cnt=3 own=1` ✓ ⇒ 之后**再没出现**（= 声明被切掉了 ✓），可**生成物里 `p.x = inner;` / `p.y = …;` 还在** ✗ ⇒ 症结是"**切只切了声明、逐字段赋值没跟着走**" ✓；我按"字段赋值不算读"改 `countReads`（`:5466` ✓ 那条只在名字后**直接**跟 `=` 时才不算读 ✗）⇒ **毫无效果** ✗（已回退 ✓）⇒ 决策**不由读计数**驱动 ✓。下一步：把 `p.x = …` 这类**字段赋值**也收进 `cuts`（第二处 `vecPush(&cuts)` ✓ 现 `:5696`-ish ✓，那里的条件大概是"`d->name` 后跟 `=`" ✓ ⇒ 要放宽到"`.字段链` 后跟 `=`" ✓），并确认删除时**声明与全部赋值一起走** ✓。 |
 
   ⇒ **X3 + X9 已修（第 26 轮）** ✅ ✓ —— 而且比预想的**省得多** ✓：不必写表达式 walker ✓，因为
   检查器把结果写回了 AST（`Stmt.type` ✓，codegen 头注释原话："`Expr.type`, `Expr.func`,
