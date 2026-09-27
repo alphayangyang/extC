@@ -423,6 +423,33 @@ parrun 290/0；回归 `tests/errors/instance_name_collision.extc`。
 （本条、`struct extc_arena` 撞运行期、`array_*`、`_index` 辅助函数…）一次性消失，
 本条检查退化成"永不触发"的安全网。落地要改所有生成名的拼写 ⇒ 413 份基准全量重设。
 
+## 三点十、F4（已定位到根，修法比预想深一层，未落地）：泛型协程**没有自己的帧**
+
+**症状**（攻击套件 F4，泛型函数里开协程）：
+
+```
+invalid application of 'sizeof' to incomplete type 'struct gen_i64$frame'
+EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step 反而"用了没定义" */
+```
+
+**根因链**（两次试错逐层剥出来的）：
+
+1. 帧类型由 `checkFunc` 的协程 prologue 建立（`check_top.c:3834` 的 `if (f->isCoro)`），
+   并且它把 `f->ret` **改写**成帧类型（`f->ret = cft`）✓；
+2. 泛型实例是模板的**浅拷贝**（`funcInstance` 里 `*in = *tmpl`）⇒ 实例继承的是**已经改写过的**
+   `ret`（模板的帧类型 ✗）⇒ `isProtoType(ret, "coroutine")` 为假；
+3. 于是实例的协程 prologue 被跳过 ⇒ **没人给实例建帧** ⇒ 生成物里 `gen_i64$frame`
+   只有使用、没有定义 ✗；
+4. 第一次尝试（给"帧单元收集"那趟补上 `g.funcs`）**更糟** ✗：实例的 `coroFrameType` 仍指着模板的帧
+   ⇒ `struct gen$frame` 被发两遍（redefinition）✗，而 `gen_i64$frame` 依然不存在；
+5. 第二次尝试（记住写下来的 `coroutine<T>`，实例化时替换回来并清空 `coroFrameType`）也失败 ✗：
+   实例的 body **不走** `checkFunc` 那个 prologue ⇒ `ret` 停留在原型 `coroutine<i64>` ⇒
+   codegen 按"句柄"发成 `extc_coro` ✗，而它期待的其实是帧类型。
+
+**正确的修法**：帧合成要放进**实例的 body 检查路径**（就是"检查泛型实例会把同一个 body 再走一遍"
+那条路径），而不是 `checkFunc` 的 prologue —— 让实例在那里建自己的 `<实例名>$frame`（字段按实参
+替换），帧单元收集自然也就对了。两次试错都已回退，代码停在 `084303c`。
+
 ## 四、事故：fuzz 产物把 /tmp 写满，连带把工具链卡死（2026-09-28，round 9）
 
 **现象**：`/tmp` 写满（`ENOSPC`）⇒ **bash 工具起不来**（它的暂存也在 `/tmp`）⇒ `rm`/`df`/`grep`
