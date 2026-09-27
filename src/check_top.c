@@ -3627,6 +3627,64 @@ static void checkOpenHandles(Checker *c, FuncDef *f) {
     }
 }
 
+/* name -> symbols, built incrementally, for the sweep at the end of checkFunc.
+ *
+ * That sweep walks *every* symbol of the module for *every* function (the vecAt read histogram:
+ * 21,102,050 reads, ~6,400 per function at N=3200 -- the checker's x4.3). Its effect is "each
+ * symbol's refDepth = max(refDepth, dataflow depth of its name)", which can be produced the other
+ * way round if the symbols of a name can be found quickly.
+ *
+ * The first attempt rebuilt a flat index per module and was 2.6x SLOWER: `allSyms` grows while
+ * checking, so a length-guarded full rebuild turned the O(N) build into O(N^2). This one appends
+ * only the symbols added since the last call (amortised O(1) each, arena-backed Vec), and falls
+ * back to the original loop -- permanently, for the rest of the run -- the moment anything is not
+ * exactly the list it indexed (table window full, list shrank, different arena/first symbol). */
+typedef struct { const char *name; Vec syms; int used; } SymBucket;
+static SymBucket *g_sb;
+static size_t g_sbCap, g_sbBuilt;
+static Arena *g_sbArena;
+static const Sym *g_sbFirst;
+static int g_sbBad;
+
+static size_t sgHash(const char *p) {
+    size_t h = 1469598103934665603u;
+    for (const char *q = p; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211u; }
+    return h;
+}
+static SymBucket *symBucket(const char *name, int create) {
+    size_t h = sgHash(name) & (g_sbCap - 1);
+    for (int step = 0; step < 16; step++, h = (h + 1) & (g_sbCap - 1)) {
+        SymBucket *b = &g_sb[h];
+        if (b->used) {
+            if (strcmp(b->name, name) == 0) return b;
+            continue;
+        }
+        if (!create) return NULL;
+        b->used = 1; b->name = name;
+        vecInit(&b->syms, g_sbArena, sizeof(Sym *));
+        return b;
+    }
+    return NULL;                                   /* window full: caller falls back */
+}
+static void symIdxSync(Checker *c) {
+    const Sym *first = c->allSyms.len ? *(Sym **)vecAt(&c->allSyms, 0) : NULL;
+    if (g_sbArena != c->arena || g_sbFirst != first || c->allSyms.len < g_sbBuilt) {
+        size_t cap = 4096;
+        g_sb = arenaAllocZero(c->arena, cap * sizeof *g_sb);
+        g_sbCap = cap; g_sbBuilt = 0; g_sbBad = 0;
+        g_sbArena = c->arena; g_sbFirst = first;
+    }
+    if (g_sbBad) return;
+    for (size_t i = g_sbBuilt; i < c->allSyms.len; i++) {
+        Sym *sy = *(Sym **)vecAt(&c->allSyms, i);
+        if (!sy || sy->line < 0 || !sy->cname) continue;
+        SymBucket *b = symBucket(sy->cname, 1);
+        if (!b) { g_sbBad = 1; return; }           /* incomplete: never use it again */
+        *(Sym **)vecPush(&b->syms) = sy;
+    }
+    g_sbBuilt = c->allSyms.len;
+}
+
 static void checkFunc(Checker *c, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
      * their call sites. Checking one here walked a null body. */
@@ -3971,11 +4029,26 @@ static void checkFunc(Checker *c, FuncDef *f) {
             }
         }
         if (!dfr.overflow) {
-            for (size_t i = 0; i < c->allSyms.len; i++) {
-                Sym *sy = *(Sym **)vecAt(&c->allSyms, i);
-                if (!sy || sy->line < 0) continue;
-                int d = dfLookup(&dfr, sy->cname);
-                if (d > sy->refDepth) sy->refDepth = d;
+            symIdxSync(c);
+            if (g_sbBad) {
+                for (size_t i = 0; i < c->allSyms.len; i++) {      /* exactly the old loop */
+                    Sym *sy = *(Sym **)vecAt(&c->allSyms, i);
+                    if (!sy || sy->line < 0) continue;
+                    int d = dfLookup(&dfr, sy->cname);
+                    if (d > sy->refDepth) sy->refDepth = d;
+                }
+            } else {
+                for (int i = 0; i < dfr.nvars; i++) {
+                    const char *nm = dfr.vars[i].cname;
+                    int d = dfr.vars[i].depth;
+                    if (!nm || d < 0) continue;
+                    SymBucket *b = symBucket(nm, 0);
+                    if (!b) continue;
+                    for (size_t k = 0; k < b->syms.len; k++) {
+                        Sym *sy = *(Sym **)vecAt(&b->syms, k);
+                        if (sy && sy->line >= 0 && d > sy->refDepth) sy->refDepth = d;
+                    }
+                }
             }
         }
     }
