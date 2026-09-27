@@ -16,6 +16,29 @@
 八组余量 ✓：generics **47 题剩 3**（B7 ✓ F1 ✓ F4 ✓）· coro 16 **0** ✓ · modules 23 **0** ✓ ·
 views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** ✓ · **fs 12 剩 1**（S11 ✓）。
 
+## 0.1.3 语言能力问答：能不能 `impl coroutine<i32> { fn <(…) }`？（实测 ✓ 2026-09-28）
+
+**结论：那个写法今天不能编译 ✓，但原因不是"`impl coroutine<T>` 不许" ✗。** 实测矩阵 ✓：
+
+| 写法 | 结果 |
+|---|---|
+| `impl coroutine<i32> { fn tag(self: ref coroutine<i32>) -> i64 {…} }` | **声明通过** ✓（编译 ✓）|
+| 同上 + **调用** `c.tag()` | **被拒** ✗ `no method `tag` on `gen$frame`` ✓（协程值是**帧** ✓ 方法集按帧的类型查 ✓）|
+| `impl coroutine<i32> { fn <(self: ref coroutine<i32>, x: ref coroutine<i32>) -> bool {…} }` | **被拒** ✗ `the left operand of operator `<` must be `coroutine_i32`` ✓ |
+| 同上用 `==` | 同样被拒 ✗（同一句话 ✓）|
+| `impl pair<i64> { fn tag(self: ref pair<i64>) -> i64 {…} }` + 调用 | **编译并运行** ✓ rc=0 ✓ |
+| `impl pair<i64> { fn ==(self: ref pair<i64>, o: ref pair<i64>) -> bool {…} }` | **被拒** ✗ `…must be `pair_i64`` ✓ |
+| `struct w { n: i64  fn <(…)  fn ==(…) }`（**非泛型**结构体上的算符 ✓）| **编译并运行** ✓ rc=0 ✓ |
+| `impl i64 { fn <(…) }`（内建类型上的算符）| **被拒** ✗ `…must be `i64`` ✓ |
+| `fn lt(a: ref coroutine<i32>, b: ref coroutine<i32>) -> bool` + `lt(ref a, ref b)` | **被拒** ✗ `argument expects `ref coroutine<i32>`, found `mut ref gen$frame`` ✓ |
+| **绕法** ✓：`struct cmpc { c: coroutine<i32>  fn <(…)  fn ==(…) }` + `a < b && a == b` | **编译并运行** ✓ rc=0 ✓ |
+
+**两处缺口（记下来，属"功能/质量"而非健全性 ✓）**：
+① **算符 impl 要的是"被 mangle 过的实例名"**（`coroutine_i32` / `pair_i64` ✓），而语言里能写的只有 `coroutine<i32>` / `pair<i64>` ✗
+⇒ **泛型实例上的算符今天不可达** ✓（诊断还会报一个**语言无法拼写**的类型名 ✓）；
+② `impl coroutine<i32>` 的方法**能声明不能调用** ✓（`no method … on `gen$frame`` ✓ —— 帧 vs handle 的老问题 ✓，与 B7/F4 同一族 ✓）。
+⇒ 想给协程加比较/算符 ✓，今天的正解是**包一层自己的结构体** ✓（见上表最后一行 ✓）。
+
 ## 0.1.2 第二程（44 次提交，27 条修复收在这里）✓
 
 **实测状态（第 38 轮复核 ✓）**：`make` 0 诊断 ✓ · 闸门 **413/413 逐字节 · 非法 C 0** ✓ ·
