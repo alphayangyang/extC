@@ -152,6 +152,7 @@
 >（无产物缓存机制 —— 但它是**可选优化**，不是缺陷）
 >
 > ⚠️ **更正（2026-09-28，作者本意）**：上面那条关于 **`#73`** 的"迁到 `io::cout` + 把警告改成错误"**作废** —— `println` 是作者**有意保留在语言里的历史彩蛋**（原话"很有历史意义"）⇒ **现状即目标**：保持只发 `warning: 'println' is deprecated`、退出码 0，**不要迁移、也不要改成错误**。
+> · **协程欠账（2026-09-28 实测确认，设计口径见 `docs/topics/CONCURRENCY.md` §4.4）**：落地的只有 **`coroutine<T>`**（单向生成器：`yield` 往外送、`for x in c` 走迭代器协议、spawn 就是调用、不做 `spawn`/`resume` 关键字）。实测 `` `coroutine` expects 1 type argument(s), got 2 `` ⇒ **`coroutine<A,B>` 还没有**，欠的是**请求类型（send-in）** —— `yield` 目前也只能是**语句**不是表达式。测试注释里就点着这笔账（`tests/coro/coro_echo.extc:21`），`CONCURRENCY.md` §4「落地顺序」的第 4 步（`coroutine<A,B>` + `spawn`/`resume`）与第 6 步（`parallel`+channel）都还没走。
 > **③ 非待办（别当活儿数）**：`#14`（已知边界 —— 实测正例 `examples/path-narrowing.extc`
 > 跑出「非空 = 1」，反例 `tests/errors/path_narrow_param_root.extc` 被明确拒）· `#30`（设计备选，
 > 原文"记着，不选"）
