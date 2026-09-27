@@ -280,6 +280,20 @@ declared inside a `struct`" —— `impl` 块里的方法早已合法。
 建议加一条：把手册里带 `fn main` 的完整示例抽出来逐个编译（有意的片段用一行标记跳过）。
 这条闸门会当场抓住上面第 1、2、5 条，而不是等人读出来。
 
+## 七之前：修复进度（2026-09-27）
+
+- **批次 1 已完成并提交**（`da45ed6`）：`dyn` 段错误、`ref dyn Tag` 生成错 C，各配判据；
+  另加"手册示例编译闸门"（`tools/check_manual_examples.py`，接进 `check.sh` 第 49 节）。
+- **批次 2 已完成**（同上提交）：闸门当场抓出并修好三个编不过的手册示例。
+- **批次 3 已完成并提交**（`2dc6f04`）：手册 11 页的过时句子；三处语义示例改成闸门能编译的形状 ⇒
+  闸门覆盖的完整示例 6 → **10** 个。
+- **批次 4 进行中**：29 处坏链接已修完并提交（`ba7ed67`，现在全仓失效 0 处）；
+  `DYN.md`（22 处）与 `TRAITS.md`（6 处）的状态句已改；`PLAN.md` 的计数与抬头、`DEVLOG.md` 的抬头、
+  `HANDOFF.md` 移入 `docs/history/` 并加历史抬头 —— 这些在下一笔提交里。
+- **批次 4 还剩**：`IO` · `MODULES` · `BOOTSTRAP` · `SPEC` · `SOUNDNESS` · `DESIGN` · `DECISIONS` ·
+  `WHY-EXTC` · `SYNTAX` · `WARNINGS` · `COMMENT-STYLE` · `MIGRATION` · `ARENA*` · `AST-WALKERS` ·
+  `MEMORY-SAFETY` 各若干条（明细见上文各节表格）。
+
 ## 七、修复批次（建议顺序）
 
 | 批次 | 内容 | 为什么这个顺序 |
