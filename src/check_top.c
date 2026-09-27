@@ -6527,7 +6527,15 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
         Param *p = (Param *)vecPush(&f->coroFrame);
         p->name = d->cname;
         p->cname = d->cname;
-        p->type = d->type;
+        /* The frame is laid out from the **body's** recorded declarations, and for an instance that
+         * body is still the template's -- so a local declared `var b: box<T>` kept the parameter
+         * spelling in the frame: the instance's frame had `box_i64 ret` next to `box_T b` and the C
+         * said "incompatible types when assigning to type 'box_i64' from type 'box_T'"
+         * (tools/attack.py X8). Substitute with the instance's arguments here; the template keeps its
+         * own spelling, which is what `ttSubstitute` returns unchanged when there is no template. */
+        p->type = (f->tmpl && f->targs.len)
+                    ? ttSubstitute(c->tt, d->type, &f->tmpl->typeParams, &f->targs)
+                    : d->type;
         p->line = f->body->line;
     }
     /* The frame is a **real type**, with real fields: the units pass scans a struct's fields to

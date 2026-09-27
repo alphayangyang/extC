@@ -1330,7 +1330,7 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
   |---|---|---|
   | **X3** | `unknown type name 'vector$vector_box_i64'` ✗ | **实例没被发射** ✓（名字是**正确的** ✓）⇒ W9 那个"intern 太晚"的同族 ✓ |
   | **X9** | `'slice_box_i64' undeclared` ✗ | 同上 ✓ —— 切片实例来自**表达式** `arr[..]` ✗，而我的 `internLocalTypes` **只走类型标注** ✗ |
-  | **X8** | `incompatible types when assigning to type 'box_i64' from type 'box_T'` ✗ | **替换漏了一处** ✗ —— 协程 yield 的**值**仍是临时名 ✓ |
+  | **X8** | ~~`incompatible types when assigning to type 'box_i64' from type 'box_T'`~~ ✅ **已修（第 27 轮）** ✓ | 真因：**帧字段用了模板体里记录的局部类型** ✗ —— 生成物里实例帧是 `box_i64 ret; box_i64 in;` **加 `box_T b;`** ✗（`b` 的声明是 `var b: box<T>` ✓）⇒ `coroFrameLay` 的 `p->type = d->type;`（现 `:6530` ✓）没有按实例替换 ✓。修法：`f->tmpl && f->targs.len` 时 `ttSubstitute(c->tt, d->type, &f->tmpl->typeParams, &f->targs)` ✓ ⇒ X8 转绿 ✓、**coro 16/0 · generics 49/0** ✓、**闸门零变化** ✓ |
   | **X7** | `variable 'p' set but not used [-Werror=unused-but-set-variable]` ✗ | **质量类** ✓（同 H15/S11 一族 ✓：`p` 的声明与逐字段赋值没被删干净 ✓） |
 
   ⇒ **X3 + X9 已修（第 26 轮）** ✅ ✓ —— 而且比预想的**省得多** ✓：不必写表达式 walker ✓，因为
