@@ -11,6 +11,24 @@
 #include <stdlib.h>
 #include "check_internal.h"
 
+/* The inclusive range of a **builtin integer** type, by name.
+ *
+ * Used by the constant-fold check below: two integer literals are folded by the C compiler, and C's
+ * constant folding is exactly where gcc rejects the result (`int32_t n = (2000000000 + 2000000000);`
+ * is an error under `-Werror`, even though `-fwrapv` defines the runtime behaviour). */
+static bool intLitRange(Type *t, long long *lo, unsigned long long *hi) {
+    if (!t || t->kind != TY_BUILTIN || !t->name) return false;
+    if (strcmp(t->name, "i8")  == 0) { *lo = -128LL;   *hi = 127ULL;   return true; }
+    if (strcmp(t->name, "i16") == 0) { *lo = -32768LL; *hi = 32767ULL; return true; }
+    if (strcmp(t->name, "i32") == 0) { *lo = -2147483648LL; *hi = 2147483647ULL; return true; }
+    if (strcmp(t->name, "i64") == 0) { *lo = (-9223372036854775807LL - 1); *hi = 9223372036854775807ULL; return true; }
+    if (strcmp(t->name, "u8")  == 0) { *lo = 0; *hi = 255ULL;   return true; }
+    if (strcmp(t->name, "u16") == 0) { *lo = 0; *hi = 65535ULL; return true; }
+    if (strcmp(t->name, "u32") == 0) { *lo = 0; *hi = 4294967295ULL; return true; }
+    if (strcmp(t->name, "u64") == 0) { *lo = 0; *hi = 18446744073709551615ULL; return true; }
+    return false;
+}
+
 /* ---------------------------------------------------------------- expressions */
 
 
@@ -166,6 +184,58 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
         ckError(c, e->line, "`%` is only meaningful for integers",
                 "cannot apply `%%` to `%s` and `%s`", typeStr(c, lt), typeStr(c, rt));
         return err;
+    }
+
+    /* Two integer **literals** and an arithmetic operator: the fold happens in C, and C's constant
+     * folding is where gcc rejects it -- `int32_t n = (2000000000 + 2000000000);` is
+     * "integer overflow in expression" and an error under `-Werror`, even though `-fwrapv` defines
+     * what the runtime would do. The author's decision is to **report it here**, where the language
+     * can say what to write (`i64(...)`), because wrapping would spread boundary conditions through
+     * the whole language (tools/attack.py W15/W16 -- found by "can extC do `let n = 1 + 2` now?"). */
+    if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0 || strcmp(op, "*") == 0) &&
+        e->u.bin.left->kind == EX_INT && e->u.bin.right->kind == EX_INT &&
+        ttEquals(lt, rt) && ttIsInteger(lt)) {
+        long long lo; unsigned long long hi;
+        if (intLitRange(lt, &lo, &hi)) {
+            long long a = e->u.bin.left->u.ival;
+            long long b = e->u.bin.right->u.ival;
+            bool over = false;
+            long long r = 0;
+            /* Detect first, compute second: `a + b` may itself overflow `long long`, which would be
+             * undefined. A result outside `long long` is outside every one of these types anyway. */
+            if (op[0] == '+') {
+                if (b > 0 && a > 9223372036854775807LL - b) over = true;
+                else if (b < 0 && a < (-9223372036854775807LL - 1) - b) over = true;
+                else r = a + b;
+            } else if (op[0] == '-') {
+                if (b < 0 && a > 9223372036854775807LL + b) over = true;
+                else if (b > 0 && a < (-9223372036854775807LL - 1) + b) over = true;
+                else r = a - b;
+            } else {   /* `*` */
+                if (a == 0 || b == 0) r = 0;
+                else if (a > 0 && b > 0 && a > 9223372036854775807LL / b) over = true;
+                else if (a > 0 && b < 0 && b < (-9223372036854775807LL - 1) / a) over = true;
+                else if (a < 0 && b > 0 && a < (-9223372036854775807LL - 1) / b) over = true;
+                else if (a < 0 && b < 0 && a < 9223372036854775807LL / b) over = true;
+                else r = a * b;
+            }
+            /* The upper bound is unsigned (`u64` does not fit in `long long`), so only cast a
+             * **non-negative** result: casting `-1` produced a huge unsigned value and made every
+             * negative constant look like an overflow (caught by examples/generic-free-fn.extc,
+             * whose `return 0 - 1` is perfectly fine). */
+            if (!over && (r < lo ||
+                          (r >= 0 && hi <= 9223372036854775807ULL && (unsigned long long)r > hi)))
+                over = true;
+            if (over) {
+                ckError(c, e->line,
+                        "a constant that does not fit its type is reported here, not left to the C"
+                        " compiler: it folds the expression and rejects the overflow",
+                        "the constant `%lld %s %lld` overflows `%s`; write the type you mean,"
+                        " e.g. `i64(...)`",
+                        a, op, b, typeStr(c, lt));
+                return err;
+            }
+        }
     }
 
     /* A literal adapts to the other operand by value: in `u32 + 1` the `1` is a u32. */

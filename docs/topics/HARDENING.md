@@ -16,6 +16,29 @@
 八组余量 ✓：generics **47 题剩 3**（B7 ✓ F1 ✓ F4 ✓）· coro 16 **0** ✓ · modules 23 **0** ✓ ·
 views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** ✓ · **fs 12 剩 1**（S11 ✓）。
 
+## 0.1.5 H17（已落地 ✓）：大整数字面量的常量折叠溢出 ⇒ **报错**（主人拍板 ✓）
+
+主人在"报错"与"按无符号环绕"之间选了**报错** ✓，理由很实在：**不报错的话边界条件会铺得到处都是** ✓。
+
+**实现**（`src/check_expr.c` ✓）：新助手 `intLitRange`（按类型名给出 `i8/i16/i32/i64/u8/u16/u32/u64` 的范围 ✓）+
+在**字面量适配分支之前**（关键 ✓：那两个分支会先 `return` ✗）对"两个整数字面量 + `+`/`-`/`*`"做折叠 ✓，
+**先判后算**（`long long` 的加减乘各自带溢出探测 ✓ —— 一版用 `__int128` 被 `-Wpedantic` 拦下 ✗ ⇒ 换掉 ✓），
+越界就 `ckError` ✓：
+
+```
+error: the constant `2000000000 + 2000000000` overflows `i32`; write the type you mean, e.g. `i64(...)`
+  note: a constant that does not fit its type is reported here, not left to the C compiler:
+        it folds the expression and rejects the overflow
+```
+
+**过程里自己的一个错** ✓（记下来 ✓）：上界是 `unsigned long long`（`u64` 装不进 `long long` ✓）⇒ 我无条件把结果
+强转成无符号比较 ✗ ⇒ **任何负数常量都被判成溢出** ✗（`examples/generic-free-fn.extc` 里 `return 0 - 1` 当场
+被误拒 ✓、闸门 1 份差异 ✓、parrun 294/1 ✓）⇒ 修法是**只有 `r >= 0` 时才比上界** ✓ ⇒ 恢复全绿 ✓。
+
+**判据** ✓：`tools/attack.py deep` 组的 **W15/W16** ✓（就是这次被"说成功就必须产出合法 C"那条 oracle 抓出来的 ✓）。
+**验证** ✓：deep 组 16/16 ✓ · 闸门 **413/413 · 非法 C 0** ✓（**零差异** ✓）· parrun **295/0** ✓ · instimpl 19/0 ✓ ·
+quick 41/0 ✓ · `make` 0 诊断 ✓。
+
 ## 0.1.4 待你拍板：大整数字面量的**常量**运算在生成的 C 里溢出（第 41 轮发现 ✓）
 
 **发现路径** ✓：回答"`let n = 1 + 2` 现在能不能行"时顺手撞到 ✓ —— 现在**能行** ✓（十种写法全过 ✓：
