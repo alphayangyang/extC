@@ -1315,46 +1315,44 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
 static void mangleUnitDecls(Loader *L, ModUnit *u) {
     if (!u->modName || !*u->modName) return;              /* the root module: never renamed */
     Module *src = &u->mod;
-    /* Allocate every name first and only then fill the table. */
-    const char **names = (const char **)arenaAlloc(L->a, sizeof(char *) * 64);
-    size_t n = 0;
-    /* The user-facing name is built on this pass, while the source name is still
-     * available: `alpha::pair`. */
-    for (size_t i = 0; i < src->structs.len && n < 64; i++) {
-        StructDef *d = *(StructDef **)vecAt(&src->structs, i);
-        d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
-        names[n++] = mangleName(L, u, d->name);
-    }
-    for (size_t i = 0; i < src->types.len && n < 64; i++) {
-        TypeDef *d = *(TypeDef **)vecAt(&src->types, i);
-        d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
-        names[n++] = mangleName(L, u, d->name);
-    }
-    for (size_t i = 0; i < src->globals.len && n < 64; i++)
-        names[n++] = mangleName(L, u, (*(GlobalDef **)vecAt(&src->globals, i))->name);
-    for (size_t i = 0; i < src->funcs.len && n < 64; i++) {
-        const char *fn = (*(FuncDef **)vecAt(&src->funcs, i))->name;
-        /* An `extern!` keeps its name: see the note on `externKeepsName`. */
-        names[n++] = externKeepsName(src, fn) ? fn : mangleName(L, u, fn);
-    }
-    /* Every name is computed, so this pass only stores pointers and allocates nothing. */
-    size_t k = 0;
+    /* One pass per list: compute a declaration's new name and record the rename **right away**.
+     *
+     * This used to allocate a `names[64]` array, compute at most 64 names into it, and then walk the
+     * lists a second time to store them -- so a module with 65 declarations indexed past the end and
+     * crashed (measured: 63/64 fine, 65/70 SIGSEGV; the largest bundled module, `stdlib/std/io.extc`,
+     * renames 41, i.e. 23 away). The array existed because a comment claimed `arenaPrintf` may reuse
+     * the buffer it returned earlier: it cannot. `arenaAlloc` is a pure bump allocator (nothing is
+     * ever recycled) and `arenaPrintf` allocates `n + 1` fresh bytes per call, so every name stays
+     * valid for the life of the process. With the array and the second pass gone, compute and store
+     * cannot disagree -- that is the property the cap was hiding, and the reason no limit has to be
+     * kept in step here. */
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *d = *(StructDef **)vecAt(&src->structs, i);
-        Ren *r = (Ren *)vecPush(&u->ren); r->from = d->name; r->to = names[k++]; }
+        d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
+        Ren *r = (Ren *)vecPush(&u->ren);
+        r->from = d->name; r->to = mangleName(L, u, d->name);
+    }
     for (size_t i = 0; i < src->types.len; i++) {
         TypeDef *d = *(TypeDef **)vecAt(&src->types, i);
-        Ren *r = (Ren *)vecPush(&u->ren); r->from = d->name; r->to = names[k++]; }
+        d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
+        Ren *r = (Ren *)vecPush(&u->ren);
+        r->from = d->name; r->to = mangleName(L, u, d->name);
+    }
     for (size_t i = 0; i < src->globals.len; i++) {
         GlobalDef *d = *(GlobalDef **)vecAt(&src->globals, i);
-        Ren *r = (Ren *)vecPush(&u->ren); r->from = d->name; r->to = names[k++]; }
+        Ren *r = (Ren *)vecPush(&u->ren);
+        r->from = d->name; r->to = mangleName(L, u, d->name);
+    }
     for (size_t i = 0; i < src->funcs.len; i++) {
         FuncDef *d = *(FuncDef **)vecAt(&src->funcs, i);
         Ren *r = (Ren *)vecPush(&u->ren);
-        r->from = d->name; r->to = names[k++];
-        /* When `to` equals `from` nothing is renamed, but the return ticket is still
-         * recorded - it maps the name to itself. That keeps `renLookup` returning a
-         * value, so a bare reference inside the module is not skipped. */}
+        r->from = d->name;
+        /* An `extern!` keeps its name: see the note on `externKeepsName`. */
+        r->to = externKeepsName(src, d->name) ? d->name : mangleName(L, u, d->name);
+        /* When `to` equals `from` nothing is renamed, but the return ticket is still recorded - it
+         * maps the name to itself. That keeps `renLookup` returning a value, so a bare reference
+         * inside the module is not skipped. */
+    }
     for (size_t i = 0; i < u->ren.len; i++) {
         Ren *r = (Ren *)vecAt(&u->ren, i);
         for (size_t j = 0; j < src->structs.len; j++)

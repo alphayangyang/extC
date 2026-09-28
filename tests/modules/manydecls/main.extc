@@ -1,0 +1,7 @@
+// expect: 0|64
+use many
+use std::io
+
+fn main() -> i32 {
+  io::cout << many::g0() << " " << many::g64() << "\n"
+  return 0 }
