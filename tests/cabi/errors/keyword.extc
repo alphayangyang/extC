@@ -1,0 +1,3 @@
+/* 反例：C 关键字当导出名 ⇒ 编译器只能改名（`double__c`），而 C 那边猜不到 ✗ */
+@export fn double(x: i64) -> i64 { return x * 2 }
+fn main() -> i32 { return i32(double(1)) }

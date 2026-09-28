@@ -1,0 +1,5 @@
+/* 反例：方法的名字带接收者（`point_dist`），没有单一符号可以交出去 ✗ */
+struct point { x: i64
+    @export fn dist(self: ref point) -> i64 { return self.x }
+}
+fn main() -> i32 { return 0 }

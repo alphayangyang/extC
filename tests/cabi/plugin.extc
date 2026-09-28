@@ -1,0 +1,17 @@
+/* tests/cabi/plugin.extc —— **一个 extC 写的 C 模块**（C-ABI.md §9.9 第 3 步，第 ① 块）
+ *
+ * 没有 `main`，只有 `@export`：产物里它们是**外部链接**的 C 符号，名字就是这里写的那个
+ * （模块前缀 `plugin$` 会被去掉），于是 C 那边 `dlsym(h, "triple")` 或者直接链接都找得到。
+ *
+ * 三个形状各一：标量进出 · 指向 `@frozen` 结构体的指针 · **按值**返回 `@frozen` 结构体
+ * （System V 上 16 字节的结构体从 RAX:RDX 回来）。 */
+@frozen struct pair2 {
+    lo: i64
+    hi: i64
+}
+
+@export fn triple(x: i64) -> i64 { return x * 3 }
+
+@export fn mid(p: ref pair2, b: i64) -> i64 { return ((*p).lo + (*p).hi) / b }
+
+@export fn makePair(lo: i64, hi: i64) -> pair2 { return pair2 { lo: lo, hi: hi } }

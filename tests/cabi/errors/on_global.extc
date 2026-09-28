@@ -1,0 +1,3 @@
+/* 反例：`@export` 标在全局上（这一版只导函数）✗ */
+@export let g: i64 = 1
+fn main() -> i32 { return 0 }

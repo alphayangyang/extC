@@ -1,0 +1,3 @@
+use dup_a
+use dup_b
+fn main() -> i32 { return 0 }

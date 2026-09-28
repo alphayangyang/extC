@@ -112,6 +112,11 @@ if out=$(timeout 600 ./tests/frozen/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（真调 libc 按值返回 · **C 侧镜像**比 sizeof/offsetof · 产物断言与镜像各有牙 · 5 反例）"
 else bad "tests/frozen/run.sh"; echo "$out"; fi
 
+echo "== C-ABI 线（C-ABI.md §9：跟 C 打交道，进与出两个方向）=="
+if out=$(timeout 600 ./tests/cabi/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（@export：C 宿主**真的链接并调用** · .so 里 nm -D 看得见符号 · 10 种"没有那一个 C 符号"的反例）"
+else bad "tests/cabi/run.sh"; echo "$out"; fi
+
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(timeout 600 ./tests/modules/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（8 正例 + 14 反例 + mangle 判据 · 含 use mod::* 与 use mod::{a,b} 各 1 正例 + 6 条边界）"

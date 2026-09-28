@@ -756,6 +756,16 @@ struct FuncDef {
      * 理由与 `alloc<T>`/`poolSlice<T>` 相同：它要生成的代码（并行 worker 的 trampoline）
      * 必须由编译器命名那个函数，库给不出。目前只有 `std::parallel::run`。 */
     bool        isBuiltin;
+    /* `@export`：**这个函数的 C 符号是给外面用的** —— 产物里它不是 `static`，而且它的 C 名
+     * 就是源码里写的那个（`$` 之前那段，见 codegen 的 `cFuncName`），于是 C 那边能
+     * `dlsym(h, "init")` 找到它。这是 `extern!` 的另一面：那个是"我调别人"，这个是"别人调我"。
+     *
+     * 三条配套的硬规矩，都在实现处各自报错：
+     *   · **签名必须能过 C 边界**（复用 `ttCrossesC` —— 与 `extern!` 同一把尺子）；
+     *   · **不能有隐藏参数**（收 home arena / zone 的函数会多一个 C 参数，调用方看不见）；
+     *   · **不能被可达性剪枝剪掉**（extC 侧没人调它，剪枝只看"有没有人提这个名字"）。
+     * 泛型、方法、协程、`extern!` 都不能导出：它们没有"那一个 C 符号"。 */
+    bool        isExport;
     /* 被 `parallel::run` 用过一次的 worker：codegen 要给它生成一个 static trampoline
      * （语言层没有函数指针，所以这份"取地址"只能由编译器写出来）。 */
     bool        isParWorker;

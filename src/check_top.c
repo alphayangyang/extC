@@ -5374,6 +5374,32 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++)
         resolveSignature(&c, *(FuncDef **)vecAt(&m->funcs, i));
 
+    /* `@export`: the function is called **from C**, so C has to be able to write its signature down.
+     * The predicate is the one `extern!` obeys (`ttCrossesC`), asked in the other direction -- one
+     * spelling and two callers, which is what keeps the two halves of the boundary from drifting.
+     * One more thing can break the promise (a hidden arena/zone parameter) and is refused in codegen,
+     * where that transitive closure is final. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!f || !f->isExport) continue;
+        for (size_t j = 0; j < f->params.len; j++) {
+            Param *p = *(Param **)vecAt(&f->params, j);
+            if (ttCrossesC(p->type, false)) continue;
+            ctxError(ctx, p->line ? p->line : f->line, 1,
+                     "A function C calls must take what C can pass: one machine word per parameter"
+                     " -- a scalar, a pointer, a function pointer, or a `@frozen` struct. A"
+                     " `slice<T>` is two C parameters, so it cannot be one.",
+                     "`@export` parameter %zu has type `%s`, which C cannot pass",
+                     j + 1, typeStr(&c, p->type));
+        }
+        Type *rt = f->ret ? f->ret : ttVoid(tt);
+        if (!ttCrossesC(rt, true))
+            ctxError(ctx, f->line, 1,
+                     "A function C calls must return what C can return: `void`, one machine word, or"
+                     " a `@frozen` struct.",
+                     "`@export` returns `%s`, which C cannot return", typeStr(&c, rt));
+    }
+
     /* Trait method signatures are resolved here for the same reason struct methods are: the
      * conformance check compares resolved types on both sides. `Self` resolves because the
      * parser gave every signature that type parameter (see parseTrait) -- which is the whole

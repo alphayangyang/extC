@@ -581,6 +581,19 @@ static const char *cSymName(CG *g, const char *name) {
     return name;
 }
 
+/* The C symbol of an `@export`ed function: **the name the author wrote**.
+ *
+ * `$` is not legal in an extC identifier, so a `$` in `f->name` can only be the loader's module
+ * prefix (`plugin$init`); the symbol is what follows it. This is why an export writes its own name
+ * instead of going through `cSymName`: an exported symbol is a contract with the C side, and a name
+ * this compiler would have to rename (`fn double`) is refused where it is written rather than
+ * quietly becoming `double__c`, which the C side could never guess. */
+static const char *exportName(const FuncDef *f) {
+    const char *n = (f && f->name) ? f->name : "?";
+    const char *d = strrchr(n, '$');
+    return d ? d + 1 : n;
+}
+
 /* Name of a function in the generated C.
  *
  * A method name is prefixed with its owner so that `Point_eq` and `Board_eq`
@@ -621,6 +634,11 @@ static const char *opOverloadSuffix(CG *g, FuncDef *f) {
 }
 
 static const char *cFuncName(CG *g, FuncDef *f) {
+    /* An exported function answers with its own source name, **first**: the call sites inside this
+     * program have to agree with the symbol C will look up, and neither the module prefix
+     * (`plugin$init`) nor an instance prefix (`pair_i64_init`) nor a keyword rename may come
+     * between. */
+    if (f->isExport) return exportName(f);
     /* An instance of a generic free function carries its own C name (eq2_i32). */
     if (f->instName) return f->instName;
     const char *suffix = opOverloadSuffix(g, f);
@@ -4618,7 +4636,10 @@ static void genFunc(CG *g, FuncDef *f) {
     } else {
         Buf sig;
         bufInit(&sig, g->arena);
-        bufPrintf(&sig, "%s%s %s(%s) {", f->isInline ? "EXTC_INLINE " : "static ",
+        /* `@export`: external linkage, exactly its own name -- the same decision the prototype
+         * makes (see `genFuncProto`), and the two have to agree or C sees two types. */
+        bufPrintf(&sig, "%s%s %s(%s) {",
+                  f->isExport ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
                   cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
         cgLine(g, "%s", bufCstr(&sig));
     }
@@ -5053,7 +5074,7 @@ static void genFuncProto(CG *g, FuncDef *f) {
     bufInit(&sig, g->arena);
     /* `@inline` has to appear on the prototype as well as on the definition. */
     bufPrintf(&sig, "%s%s %s(%s);",
-              cgIsMain(f) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
+              (cgIsMain(f) || f->isExport) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
               cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
@@ -6638,6 +6659,39 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     g.indent = 0;
     g.tt = tt;
 
+    /* `@export` promises the C side a symbol. Three things can break that promise, and all three are
+     * decided here because this is where the answers are final: the hidden parameters (a transitive
+     * closure the checker settles in its last pass), the name (this file's business), and uniqueness
+     * among exports. A fourth -- that the signature is one C can write -- is the checker's, next to
+     * `extern!`'s, so that the two halves of the boundary keep using one predicate (`ttCrossesC`). */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!f || !f->isExport) continue;
+        const char *en = exportName(f);
+        if (funcTakesHomeArena(f) || funcTakesHomeZone(f))
+            ctxError(ctx, f->line ? f->line : 1, 1,
+                     "A function that takes a home arena or zone is compiled with one hidden"
+                     " parameter more than its source signature, so C's call would not match. Let it"
+                     " allocate in its own block arenas instead, or export a wrapper that does.",
+                     "`@export` on `%s`, which takes a hidden arena parameter", en);
+        if (cSymName(&g, en) != en)
+            ctxError(ctx, f->line ? f->line : 1, 1,
+                     "An exported symbol is a contract with the C side: the name has to be the one C"
+                     " will look up, so this compiler will not rename it. Pick another name.",
+                     "`@export` on `%s`: that name is a C keyword, so the symbol would have to be"
+                     " renamed", en);
+        for (size_t j = 0; j < i; j++) {
+            FuncDef *o = *(FuncDef **)vecAt(&m->funcs, j);
+            if (!o || !o->isExport) continue;
+            if (strcmp(exportName(o), en) != 0) continue;
+            ctxError(ctx, f->line ? f->line : 1, 1,
+                     "Two exported functions with one C name would be one symbol with two bodies."
+                     " The module prefix is stripped from an exported name, so the two declarations"
+                     " have to differ in the name they write.",
+                     "`@export` name `%s` is already taken by another exported function", en);
+        }
+    }
+
     vecInit(&g.structs, arena, sizeof(void *));
     bufInit(&g.prefix, arena);          /* statement prefix; uninitialized, it segfaults */
     /* Deduplicate by C name: a writable and a read-only view are the same C
@@ -6886,7 +6940,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         /* 同上：自由函数/库函数/预置也按可达性剪枝 ✓
          * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
          * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
-        if (!f->used && !cgIsMain(f) && !inTraitTable(m, f)) continue;
+        /* `@export` 也是根：extC 侧没人提它的名字，剪枝看的就是"有没有人提" ⇒ 不豁免就没定义。 */
+        if (!f->used && !cgIsMain(f) && !f->isExport && !inTraitTable(m, f)) continue;
         /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
          * body of their own -- emitting one here hit genBlockBody with a null body. */
         if (f->coroProto) continue;
@@ -7872,11 +7927,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * alone does not bind: C takes the first declaration as the function's type. */
         if (f->isCoro) continue;   /* a coroutine emits `$frame` + `$step` last */
         bufPrintf(&sig, "%s%s %s(%s);",
-                  (cgIsMain(f) || f->isExtern) ? ""
+                  (cgIsMain(f) || f->isExtern || f->isExport) ? ""
                                                : (f->isInline ? "EXTC_INLINE " : "static "),
                   ret, cFuncName(&g, f), cgParamList(&g, f));
         cgLine(&g, "%s", bufCstr(&sig));
-        if (!cgIsMain(f) && !f->isExtern && !inTraitTable(m, f)) {
+        /* An exported function is registered like `main`: nowhere. The pruners drop a definition
+         * only when its name occurs nowhere but its own declaration and definition, and a symbol
+         * C calls is mentioned by nobody in this file -- so registering it would delete it. */
+        if (!cgIsMain(f) && !f->isExtern && !f->isExport && !inTraitTable(m, f)) {
             DeadFunc *df = arenaAllocZero(g.arena, sizeof *df);
             df->name  = cFuncName(&g, f);
             df->proto = bufCstr(&sig);

@@ -1,0 +1,3 @@
+/* 反例：`extern!` 说"这个符号来自 C"，`@export` 说"交出去" —— 两者矛盾 ✗ */
+@export extern!("libc") fn getpid() -> i32
+fn main() -> i32 { return 0 }

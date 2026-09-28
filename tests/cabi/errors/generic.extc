@@ -1,0 +1,3 @@
+/* 反例：泛型函数没有"那一个 C 符号"（每个实例一个函数体）✗ */
+@export fn id<T>(x: T) -> T { return x }
+fn main() -> i32 { return i32(id(1)) }

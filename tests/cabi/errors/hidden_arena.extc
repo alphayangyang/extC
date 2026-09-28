@@ -1,0 +1,6 @@
+/* 反例：函数体分配且返回引用 ⇒ 编译后多一个隐藏的 home arena 参数，C 的调用对不上 ✗ */
+@export fn make() -> mut ref i64 {
+    var p: mut ref i64 = new i64
+    return p
+}
+fn main() -> i32 { return 0 }

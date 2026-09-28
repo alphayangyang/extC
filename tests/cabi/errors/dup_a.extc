@@ -1,0 +1,2 @@
+/* 反例（与 dup_b 一起）：两个模块各导出一个 `init` ⇒ 一个符号两个函数体 ✗ */
+@export fn init() -> i64 { return 1 }

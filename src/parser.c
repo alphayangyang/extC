@@ -478,6 +478,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool poolObject = false;   /* @poolObject：这个 struct 拥有一个池（作者口径） */
         bool sharesStorage = false; /* @sharesStorage：按值拷贝时两份共用存储（容器那一族） */
         bool frozen     = false;   /* @frozen：作者签字"布局就是 C 的布局"（按值过界的门票） */
+        bool exported   = false;   /* @export：这个函数的 C 符号给外面用（extern! 的另一面） */
         /* `@private` hides a declaration; `@inline` asks for a function to be inlined.
          * They are read together because both may precede the same declaration, and the
          * order between them carries no meaning. Any other annotation is an error: these
@@ -498,6 +499,17 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             if (strcmp(nm->text, "inline") == 0) {
                 fnInline = true;
+                skipJunk(&p);
+                continue;
+            }
+            /* `@export`：把 C 符号交出去（`extern!` 的另一面）。它只对自由函数有意义，
+             * 所以别的声明各自把它拒掉（与 `@frozen` 同一形状）。 */
+            if (strcmp(nm->text, "export") == 0) {
+                if (exported) {
+                    ctxError(ctx, a->line, a->col, NULL, "`@export` appears twice");
+                    return false;
+                }
+                exported = true;
                 skipJunk(&p);
                 continue;
             }
@@ -570,12 +582,19 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                      " it may only be passed as `ref` / `mut ref`), `@poolObject` (on a struct: it owns"
                      " a pool), `@sharesStorage` (on a struct: a by-value copy shares storage) and"
                      " `@frozen` (on a struct: its layout is the C layout, so it may cross the C"
-                     " boundary by value). `@overwrite` is for"
+                     " boundary by value) and `@export` (on a function: it becomes a C symbol that"
+                     " C can call). `@overwrite` is for"
                      " locals.",
                      "unknown top-level annotation `@%s`", nm->text);
             return false;
         }
         if (at(&p, "struct")) {
+            if (exported) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "A struct is storage, not code. Export the functions that operate on it.",
+                         "`@export` goes on a function");
+                return false;
+            }
             /* `@unchecked` describes a body; a struct is a declaration. Each method opts in on
              * its own line, which is the granularity the annotation promises. */
             if (fnUnchecked) {
@@ -600,7 +619,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
              * declaration, `@poolObject`/`@sharesStorage` describe storage, `@inline` and
              * `@unchecked` describe a body, and the block declares none of them. Saying so
              * beats silently ignoring them. */
-            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked || frozen) {
+            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked || frozen
+                || exported) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "An `impl` block adds methods to a type that is declared elsewhere, so it "
@@ -613,7 +633,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             *(ImplDef **)vecPush(&out->impls) = im;
         } else if (at(&p, "trait")) {
             /* No annotation applies: like an `impl` block, a trait declares behaviour only. */
-            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject || frozen) {
+            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject || frozen
+                || exported) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "A `trait` declares method signatures only: it has no storage to hide"
@@ -659,11 +680,25 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`@frozen` goes on a `struct`");
                 return false;
             }
+            if (exported) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "Only a function has a C symbol to hand out; an enum has no code.",
+                         "`@export` goes on a function");
+                return false;
+            }
             TypeDef *td = parseTypeDecl(&p);
             if (!td) return false;
             td->isPrivate = isPrivate;
             *(TypeDef **)vecPush(&out->types) = td;
         } else if (at(&p, "let") || at(&p, "var")) {
+            if (exported) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "A global is a C object, and this language has no `@export` for objects yet"
+                         " -- a shared symbol needs a name the two sides agree on, which is the"
+                         " decision `@export` makes for functions.",
+                         "`@export` goes on a function");
+                return false;
+            }
             if (frozen) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "`@frozen` promises a byte layout for a field list; only a `struct` has one."
@@ -683,6 +718,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
         } else if (at(&p, "extern")) {
+            if (exported) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "`extern!` already says this symbol comes **from** C; `@export` says the"
+                         " opposite. An `extern!` declaration has no body to hand out.",
+                         "`@export` and `extern!` contradict each other");
+                return false;
+            }
             if (frozen) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "`@frozen` promises a byte layout for a field list; only a `struct` has one."
@@ -747,6 +789,26 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             f->isUnchecked = unchk;
             f->isPrivate = isPrivate;
             f->isBuiltin = builtin;
+            /* `@export`：符号交出去。三个"没有那一个 C 符号"的形状当场拒掉（泛型的每个实例是
+             * 一个函数、协程的值是帧句柄、`extern!` 已经在别处了），方法与它自己的成员循环里拒。 */
+            if (exported) {
+                if (f->typeParams.len > 0) {
+                    ctxError(ctx, f->line, 1,
+                             "A generic function has one body per instantiation, so a bare name is"
+                             " not one C symbol. Write a non-generic function for the signature you"
+                             " want to export.",
+                             "`@export` on a generic function");
+                    return false;
+                }
+                if (f->isCoro) {
+                    ctxError(ctx, f->line, 1,
+                             "A coroutine's value is a frame handle driven by a task, not a C"
+                             " function C could call.",
+                             "`@export` on a coroutine");
+                    return false;
+                }
+                f->isExport = true;
+            }
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else {
             Token *t = cur(&p);
@@ -1413,6 +1475,18 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
                      "The annotation is designed but not implemented yet, and accepting it"
                      " without doing anything would say otherwise.",
                      "`@%s` is not implemented yet", nm->text);
+            return false;
+        }
+        /* `@export` on a **member**: this function reads annotations for a function declaration
+         * wherever one may appear, and a method is the one place where the C symbol is not the name
+         * written here (its C name carries the owner: `point_dist`). Saying which symbol the author
+         * would have to write beats "unknown annotation", which reads like a typo. */
+        if (strcmp(nm->text, "export") == 0 && outPrivate) {
+            ctxError(p->ctx, a->line, a->col,
+                     "A method is reached through its receiver, so its C name carries the owner"
+                     " (`point_dist`); there is no single symbol to hand out. Write a free function"
+                     " that forwards to it and export that one.",
+                     "`@export` goes on a free function, not on a method");
             return false;
         }
         ctxError(p->ctx, a->line, a->col,

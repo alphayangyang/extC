@@ -1,0 +1,3 @@
+/* 反例：C 调不了 `slice<T>` 参数（在 C 那边是两个参数）✗ —— 与 `extern!` 同一把尺子 */
+@export fn count(b: slice<u8>) -> i64 { return b.len }
+fn main() -> i32 { return 0 }
