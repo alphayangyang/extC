@@ -1685,6 +1685,47 @@ static bool isPlaceExpr(const Expr *e) {
 
 static const char *homeArg(CG *g, int marked);   /* defined below */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
+/* ---- the implicit trailing arguments: **one owner** ----
+ *
+ * Two kinds exist -- the home arena (`usesHome`, `extc_arena *__extc_home`) and the zone
+ * (`makesPool`, `int64_t __extc_home_zone`) -- and **both sides have to agree**: a call site must
+ * pass what the definition's signature declares, or the generated C does not even compile
+ * (`too few arguments to function ...`). That agreement used to be spelled out at nine places
+ * (three call emitters, the assoc path, the coroutine path, the signature emitter), and a
+ * definition with `__extc_home` while its call site passed nothing is exactly how they drifted.
+ *
+ * Every site now asks these two functions instead. The compiler's own speed is irrelevant at this
+ * scale; the emitted C is what runs, and decoupling the convention from its consumers is what keeps
+ * this file maintainable.
+ *
+ * `nargs` is how many **source** arguments were already emitted, so the separating comma lands in
+ * the right place when there are none. `forSignature` picks the declaration spelling; otherwise
+ * `site` supplies the arena level (`homeArg` explains why the level matters, and `zoneArgRef` the
+ * zone's). Returns nothing: `cgHasImplicitArgs` is the predicate the `@overwrite` cell pass needs.
+ *
+ * One site is **knowingly** not routed through here: the operator path (`genOpCall`) emits only the
+ * zone half, because the arena half is PLAN #83 and still open -- it should keep failing loudly in
+ * the C compiler rather than silently leaking.
+ */
+static bool cgHasImplicitArgs(const FuncDef *callee) {
+    return callee && (callee->usesHome || callee->makesPool);
+}
+static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site,
+                           size_t nargs, bool forSignature) {
+    if (!callee) return;
+    size_t n = nargs;
+    if (callee->usesHome) {
+        if (n) bufPuts(b, ", ");
+        bufPuts(b, forSignature ? "extc_arena *__extc_home"
+                                : homeArg(g, site ? site->arenaArg : ARENA_HOME));
+        n++;
+    }
+    if (callee->makesPool) {
+        if (n) bufPuts(b, ", ");
+        bufPuts(b, forSignature ? "int64_t __extc_home_zone" : zoneArgRef(g, (Expr *)site));
+        n++;
+    }
+}
 static bool f_owLocal(CG *g, Stmt *s);
 static const char *zoneArgRef(CG *g, Expr *e);
 
@@ -1897,11 +1938,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
     /* A method passes the home arena too; the receiver counts as the
      * shallowest mutable reference argument. */
-    if (f->usesHome) bufPrintf(&b, ", %s", homeArg(g, e->arenaArg));
-    if (f->makesPool) bufPrintf(&b, ", %s", zoneArgRef(g, e));
+    cgImplicitArgs(g, &b, f, e, e->u.method.args.len + 1, false);   /* +1: the receiver */
     /* A method passes the @overwrite cells as well; the receiver counts as the
      * first argument, and the comma handling follows that. */
-    owPassCells(g, &b, e, e->u.method.args.len + 1, f->usesHome || f->makesPool);
+    owPassCells(g, &b, e, e->u.method.args.len + 1, cgHasImplicitArgs(f));
     bufPutc(&b, ')');
     return bufCstr(&b);
 }
@@ -2298,28 +2338,18 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             /* The callee needs a home arena, so mine is passed down; the
              * current block's arena would be tighter. */
-            if (e->func->usesHome) {
-                if (e->u.call.args.len) bufPuts(&b, ", ");
-                bufPuts(&b, homeArg(g, e->arenaArg));
-            }
-            /* `extc_pool_new` 是运行期那一层：在收「家 zone」的函数里换成 `_at` 那一扇门
-             * （POOLS.md §3.1 的提权落点，PLAN #87）。库侧因此一个字都不用改。 */
-            if (poolNewAt) {
-                /* 名字已经换成 `_at` 那一扇门，这里只补第二个实参。
-                 * 注意别写成 `e->func->makesPool && ...`：`extc_pool_new` 是 extern，
-                 * 工作清单不遍历没有函数体的函数 ⇒ 它的 `makesPool` **是假**的
-                 *（被标记的是调用它的那些函数），所以只能按名字认它。 */
-                if (g->funcHasZoneParam) {
-                    bufPuts(&b, ", ");
-                    bufPuts(&b, zoneArgRef(g, e));
-                }
-            } else if (e->func->makesPool) {
-                if (e->u.call.args.len || e->func->usesHome) bufPuts(&b, ", ");
+            /* 问主人**一次**就够：它把 home 与 zone 都发。分两次问（先 home，再 zone）会让两者
+             * 都需要的函数各发两遍 —— 实测产物里长成
+             * `put(st, k, __extc_home, __extc_home_zone, __extc_home, __extc_home_zone)`。
+             * `poolNewAt` 那条路是**例外**：名字已经换成 `extc_pool_new_at` 那一扇门，只补它的
+             * 第二个实参，而且别写成 `e->func->makesPool` —— `extc_pool_new` 是 extern，工作清单
+             * 不遍历没有函数体的函数 ⇒ 它的 `makesPool` 是假，只能按名字认它。 */
+            cgImplicitArgs(g, &b, e->func, e, e->u.call.args.len, false);
+            if (poolNewAt && g->funcHasZoneParam) {
+                bufPuts(&b, ", ");
                 bufPuts(&b, zoneArgRef(g, e));
             }
-            /* The callee needs @overwrite cells, so cells of my own frame are
-             * passed down. */
-            owPassCells(g, &b, e, e->u.call.args.len, e->func->usesHome || e->func->makesPool);
+            owPassCells(g, &b, e, e->u.call.args.len, cgHasImplicitArgs(e->func));
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -2416,15 +2446,8 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             /* An associated function such as `Type::make()` allocates, so the
              * home arena argument is appended. */
-            if (e->func->usesHome) {
-                if (e->u.assoc.args.len) bufPuts(&b, ", ");
-                bufPuts(&b, homeArg(g, e->arenaArg));
-            }
-            if (e->func->makesPool) {
-                if (e->u.assoc.args.len || e->func->usesHome) bufPuts(&b, ", ");
-                bufPuts(&b, zoneArgRef(g, e));
-            }
-            owPassCells(g, &b, e, e->u.assoc.args.len, e->func->usesHome || e->func->makesPool);   /* @overwrite cells */
+            cgImplicitArgs(g, &b, e->func, e, e->u.assoc.args.len, false);
+            owPassCells(g, &b, e, e->u.assoc.args.len, cgHasImplicitArgs(e->func));   /* @overwrite cells */
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -4106,17 +4129,13 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         if (i) bufPuts(&sig, ", ");
         bufPrintf(&sig, "%s %s", cType(g, p->type), p->cname ? p->cname : p->name);
     }
-    if (f->usesHome) {
-        if (f->params.len) bufPuts(&sig, ", ");
-        bufPuts(&sig, "extc_arena *__extc_home");
-    }
+    cgImplicitArgs(g, &sig, f, NULL, f->params.len, true);   /* 声明拼法，同一个主人 */
     /* 建池的函数多收一个隐藏的「家 zone」——arena 那个隐藏参数的镜像
      *（`makesPool` 是可传递的最小不动点，所以整条链上每个函数都收得到）。
      * 容器"生在哪里"因此由**调用者**决定，而不是由库内部那一层词法块决定。 */
-    if (f->makesPool) {
-        if (f->params.len || f->usesHome) bufPuts(&sig, ", ");
-        bufPuts(&sig, "int64_t __extc_home_zone");
-    }
+    /* 注意：**不要**在这里再补一次 `makesPool` —— 上面那一次 `cgImplicitArgs` 已经把两种隐式形参
+     * 都发了（`usesHome` 与 `makesPool` 各一次）。这里多写一手就是"只建池的函数多一个形参"，
+     * 实测当场 116 个产物变非法 C —— 这正是"约定没有主人"会长出来的东西。 */
     /* @overwrite cells live in the frame of the call site and are passed in as
      * opaque `extc_owcell *`: opaque means a caller does not need to know the
      * types of the callee's sites, and a generic instance needs no special
