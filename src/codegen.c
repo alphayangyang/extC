@@ -10,7 +10,8 @@
 
 #include "codegen.h"
 #include "pools.h"
-#include "coroutine.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
+#include "coroutine.h"
+#include "domain.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
 #include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
@@ -185,6 +186,7 @@ typedef struct {
     int            coroYieldSeq;    /* how many `yield`s have been emitted: the next pc value */
     bool           needEvent;       /* the program calls the event layer (epoll/sockets) */
     bool           needCoroHandle;
+    bool           needDomain;       /* the program starts a task (`ext` inside a domain block) */
     bool           coroDefPrinted;
     bool           coroDeclsDone;
     bool           taskTableDone;
@@ -8006,6 +8008,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * also decided the `_GNU_SOURCE` preamble above; here only the bodies are appended. */
     if (g.needMemFind) memfindEmitRuntime(arena, out);
     if (g.needEvent) eventEmitRuntime(arena, out);
+    if (g.needDomain) domainEmitRuntime(arena, out);
     /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
     if (m->usesDyn) poolsEmitDynRuntime(arena, out);
     if (g.needRawTerm) {
