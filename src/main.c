@@ -162,10 +162,21 @@ static void usage(const char *argv0) {
         "  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)\n"
         "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
         "\n"
-        "debug switches (they never change the output):\n"
+        /* This text used to say "debug switches (they never change the output)". Measured, that
+         * was false: `EXTC_NO_LEVELPASS` moves arena placement in 2 of the 414 golden programs, and
+         * `EXTC_SELFCHECK` turns a good build red. A documentation claim the code contradicts is
+         * worse than no claim -- so the two exceptions are named, and `tools/check_switches.py`
+         * keeps "every switch is either documented here or listed there with a reason" true. */
+        "debug switches -- diagnostics only, **except the two marked below**:\n"
         "  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen\n"
         "  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved\n"
+        "  EXTC_DBG_M=1         print the per-module renamed-declaration counts\n"
+        "  EXTC_DBG_IMPL=1      print each `impl` block and the type it attaches to\n"
+        "  EXTC_DBG_HOME=1      print each function's home/zone flags and its arena sites\n"
         "  EXTC_DUMP_EFFECTS=1  print each function's effect summary\n"
+        "  EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena\n"
+        "                       placement in 2 of the 414 golden programs\n"
+        "  EXTC_SELFCHECK=1     run the checker's self-check -- **CAN FAIL THE BUILD** (exit 1)\n"
         "\n"
         "  -h, --help       show this help\n",
         argv0);

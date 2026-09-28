@@ -22,10 +22,16 @@ options:
   --dump-effects   print each function's effect summary (Addr/Cont, arena rule)
   --no-line-map    do not emit `#line` directives (default: emit them)
 
-debug switches (they never change the output):
+debug switches -- diagnostics only, **except the two marked below**:
   EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen
   EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved
+  EXTC_DBG_M=1         print the per-module renamed-declaration counts
+  EXTC_DBG_IMPL=1      print each `impl` block and the type it attaches to
+  EXTC_DBG_HOME=1      print each function's home/zone flags and its arena sites
   EXTC_DUMP_EFFECTS=1  print each function's effect summary
+  EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena
+                       placement in 2 of the 414 golden programs
+  EXTC_SELFCHECK=1     run the checker's self-check -- **CAN FAIL THE BUILD** (exit 1)
 
   -h, --help       show this help
 ```
