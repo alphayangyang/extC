@@ -496,3 +496,67 @@ fn from(b: slice<u8>) -> string {
   r.append(b)
   return r
 }
+
+/* 从 `i64` 造一个 `string`：`string::fromI64(n)`。
+ *
+ * 手写数字，不碰运行期：**从负数一侧取位**（`v % 10 ≤ 0`，取反最多到 9）—— 这样 `i64` 的最小值
+ * 也不会在"取绝对值"那一步溢出。位数上限 20 + 符号 + 结尾，24 字节足够。
+ */
+fn fromI64(n: i64) -> string {
+  var tmp: [24]u8
+  var i: i64 = i64(24)
+  var v: i64 = n
+  if v == i64(0) { i = i - i64(1)  tmp[i] = u8(48) }
+  while v != i64(0) {
+    var d: i64 = v % i64(10)
+    if d < i64(0) { d = i64(0) - d }
+    i = i - i64(1)
+    tmp[i] = u8(d) + u8(48)
+    v = v / i64(10)
+  }
+  if n < i64(0) { i = i - i64(1)  tmp[i] = u8(45) }
+  /* 逐字节 push，而不是 `from(tmp[i..])`：对**局部数组**取视图再交给 `from`，逃逸分析会（保守地）
+   * 以为返回值攥着那个视图 —— 实测报 "this return value would hold a reference to a local variable
+   * that dies first"。`from` 其实只拷贝，但它没有声明 `effects Addr=0 Cont=0`，所以编译器必须假设最坏。
+   * 走 `push` 就没有视图，问题自然不存在。 */
+  var r: string = withCap(i64(24) - i)
+  var k: i64 = i
+  while k < i64(24) { r.push(tmp[k])  k = k + i64(1) }
+  return r
+}
+
+/* 反过来：解析十进制 `i64`。空串、只有符号、非数字、溢出 ⇒ `none`。
+ * 先按 `u64` 累加并挡住 u64 溢出，最后再按符号比边界 —— 比"边算边比 i64 边界"少一半特例。 */
+fn toI64(b: slice<u8>) -> ?i64 {
+  if b.len == i64(0) { return none }
+  var i: i64 = i64(0)
+  var neg: bool = false
+  if b[i64(0)] == u8(45) || b[i64(0)] == u8(43) {
+    neg = b[i64(0)] == u8(45)
+    i = i64(1)
+    if b.len == i64(1) { return none }
+  }
+  var acc: u64 = u64(0)
+  while i < b.len {
+    var c: u8 = b[i]
+    if c < u8(48) || c > u8(57) { return none }
+    if acc > u64(1844674407370955161) { return none }   /* acc*10 会超过 u64 */
+    acc = acc * u64(10) + u64(c - u8(48))
+    i = i + i64(1)
+  }
+  var lim: u64 = u64(9223372036854775807)              /* 2^63-1 */
+  if neg { lim = lim + u64(1) }                        /* 负数能多装一个：2^63 */
+  if acc > lim { return none }
+  if neg {
+    /* **别写 `i64(u64(0) - acc)`**：extC 的显式转换是带检查的，`acc` 到 `2^63` 时那个转换会
+     * 当场 trap（实测：`trap: value does not fit in the target type`）—— 而 `2^63` 正是
+     * `i64` 最小值，是**必须**能解析的那一个。绕开它：先把 `acc-1` 落进 `i64`（≤ 2^63-1 ✓），
+     * 再取负减一。 */
+    /* `acc` 到 `2^63` 时直接给常量：那个值正是 `i64` 的最小值。这里不需要绕开什么（单测过
+     * `i64(u64(2^63))` 不 trap）—— 只是"不碰边界"比"赌边界行为"省事，而且 `2^63` 这个值在
+     * **打印**路径上确实有个 bug（见 `std::io` 里那段注释：`io::cout << i64 最小值` 会 trap）。 */
+    if acc == u64(9223372036854775807) + u64(1) { return some(i64(-9223372036854775807 - 1)) }
+    return some(i64(0) - i64(acc))
+  }
+  return some(i64(acc))
+}

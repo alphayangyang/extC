@@ -1,0 +1,35 @@
+// 数字 ↔ 字符串：`fromI64` / `toI64`
+//
+// 注意：**不要**在判据里直接打印 `i64` 的最小值 —— `io::cout << i64 最小值` 目前会 trap（已知 bug，
+// 记在 `std::io` 里）。所以最小值的验证走**字节**：把它 `fromI64` 回字符串再打出来 ✓。
+use stl::string
+use std::io
+
+fn check(name: slice<u8>, got: slice<u8>, want: slice<u8>) -> i64 {
+  if string::from(got) == string::from(want) { return i64(0) }
+  io::cout << "MISMATCH " << name << ": got " << got << " want " << want << "\n"
+  return i64(1)
+}
+
+fn main() -> i32 {
+  var bad: i64 = i64(0)
+  bad = bad + check("zero", string::fromI64(i64(0)).toSlice(), "0")
+  bad = bad + check("pos", string::fromI64(i64(1234567890)).toSlice(), "1234567890")
+  bad = bad + check("neg", string::fromI64(i64(0) - i64(42)).toSlice(), "-42")
+  bad = bad + check("max", string::fromI64(i64(9223372036854775807)).toSlice(), "9223372036854775807")
+  var m = i64(-9223372036854775807 - 1)
+  bad = bad + check("min", string::fromI64(m).toSlice(), "-9223372036854775808")
+
+  // 往返：解析回来再打出来，和原串一致
+  bad = bad + check("rt-pos", string::fromI64(string::toI64("1234567890") ?? i64(0)).toSlice(), "1234567890")
+  bad = bad + check("rt-min", string::fromI64(string::toI64("-9223372036854775808") ?? i64(0)).toSlice(), "-9223372036854775808")
+
+  // 拒绝的样子：空串 / 只有符号 / 非数字 / 溢出 ⇒ none
+  var n: i64 = i64(0)
+  match string::toI64("") { some(v) => { n = n + i64(1) } none => { } }
+  match string::toI64("-") { some(v) => { n = n + i64(1) } none => { } }
+  match string::toI64("12x") { some(v) => { n = n + i64(1) } none => { } }
+  match string::toI64("99999999999999999999") { some(v) => { n = n + i64(1) } none => { } }
+  match string::toI64("9223372036854775808") { some(v) => { n = n + i64(1) } none => { } }
+  io::cout << "bad=" << bad << " accepted=" << n << "\n"
+  return i32(bad) }

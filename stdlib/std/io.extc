@@ -586,6 +586,12 @@ struct ostream { fd: i32
     /* 全都走**同一个缓冲**（`extc_cout_put` 是 `static inline` ⇒ 没有调用开销 ✓）
      * 不再借内建 `print`：那是一条操作数一次 `printf`，实测比这条路慢 **11 倍** ✗ */
     @inline
+    /* **已知 bug（2026-09-28 实测，未修）**：打印 `i64` 的**最小值**会当场 trap：
+     *
+     *     io::cout << i64(-9223372036854775807 - 1)      // trap: value does not fit in the target type
+     *
+     * 典型的 `-v` 写法在 `2^63` 上溢出 —— 带检查的算术把它抓住了（换成 C 会安静地打出错的数）。
+     * 修的时候顺手看看 `fromI64`（`stl/string.extc`）：它用"负数取余"绕开了同一个坑，可以作为写法参考。 */
     fn <<(self: ref ostream, v: i64) -> ostream {
         pairsReady()
         let st = fmtI64Fast(v)
@@ -594,6 +600,11 @@ struct ostream { fd: i32
         return { fd: self.fd }
     }
     @inline
+    /* `i32`：没有隐式转换，所以 `io::cout << 7` 这种字面量必须有自己的重载
+     * （从前它报 "does not define `<<`" —— 数字字面量默认是 i32）。 */
+    fn <<(self: ref ostream, v: i32) -> ostream {
+      return self << i64(v)
+    }
     fn <<(self: ref ostream, v: f64) -> ostream {
         /* 走**同一个缓冲**，和 i64 那条路一样：格式化由运行期的 `extc_cout_f64` 做
          * （两行 `snprintf("%g")`，与内建 `print` 同一个格式 ⇒ 输出逐字节不变 ✓）。

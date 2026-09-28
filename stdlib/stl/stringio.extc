@@ -132,3 +132,10 @@ impl fs::ifstream {
         return self
     }
 }
+
+/* 注意：这里**曾经**试过用 `impl ostream { fn <<(self: ref ostream, v: string) }` 补一个 `string`
+ * 重载（分层上最干净的做法：让 string 这侧依赖 std，而不是反过来）。它暴露了一个**编译器 bug** ——
+ * 生成的 C 函数被少传了实参（`too few arguments to function 'io$ostream_shl_string$string'`），
+ * 也就是"方法收一个按值结构体参数"这条路在调用点漏了参数（大概是 home/arena 那一个）。
+ * 撤掉，等 bug 修好再回来：今天要打 `string` 就先 `io::cout << s.toSlice()`（明确、能用）。
+ */
