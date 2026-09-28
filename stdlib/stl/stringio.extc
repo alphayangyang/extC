@@ -188,4 +188,19 @@ impl fs::ifstream {
  * 下一步：找出 `usesHome` 真正的**种子**在哪（body 检查时置位？还是 closeReach 传播？），确认
  * `impl` 方法的那次 body 检查有没有走到种子那一步；结算遍在 `check_top.c:5948`（`site->func->usesHome`
  * 那 9 行），它只是**消费者**。
+ * 2026-09-28 第二轮实测（都不改代码，只量）：
+ *   · **用户级复现成立**（不用碰库！）：一个用户模块 `addstr.extc` 里写
+ *       use std::io / use stl::string
+ *       impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
+ *     主程序 `io::cout << s` ⇒ extC 无诊断，gcc 报
+ *       `too few arguments to function 'io\$ostream_shl_string\$string'; expected 3`。
+ *   · `EXTC_DBG_HOME=1` 在复现上打出来：`[home] main uses=0 needs=1 sites=1 L0` 与
+ *     `[home] toSlice uses=1 needs=1 sites=2` —— 而那个 `impl` 声明的方法**根本不在表里**。
+ *   · 把 `m->impls[i].methods` 补进"arena 层级唯一权威"那段的列表（4 处 `all`/`allF`）**无效**：
+ *     golden 仍 414/414（对现有产物中性），但方法依旧不在表里。加一行临时打印到那段列表的
+ *     构建处 ⇒ **一次都没打** ⇒ 那段代码在这条路径上**根本没执行**：真正在跑的是 settle 区
+ *     那份 `allF`（`[home]` 调试就长在那里）。
+ *   · ⇒ 下一轮第一件事：在**会跑的那份** `allF` 构建处打 `m->impls.len` —— 如果它是 0，说明
+ *     `impl` 块的方法在别的 `Module` 对象里（或 attach 时被搬进了目标类型的列表，而那个类型住在
+ *     另一个模块）⇒ 修法就不是"补列表"，而是**让列表的来源与模块无关**（从类型表/所有模块取）。
  */
