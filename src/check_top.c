@@ -3334,8 +3334,13 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
  *
  * Params:
  *   c   - checker
- *   dfr - the data-flow fixed point for the same body; its depths are final by now, so a
- *         reader of them sees a number that does not depend on traversal order
+ *
+ * It does **not** take the data-flow fixed point: the level solve reads its own table, seeded from
+ * the publications recorded while the body was walked, and it runs *before* the DFA's numbers are
+ * copied into `Sym.refDepth`. The parameter used to be passed in and ignored (`(void)dfr;`) while
+ * this comment claimed the opposite -- that is the "decision sees the final depths" claim the
+ * review called out. Making it *true* means moving the write-back above this call, which changes
+ * arena placement and is a change of its own, not a comment fix.
  *
  * Returns:
  *   Nothing. The result is written to each allocation site's `minAt`.
@@ -3358,8 +3363,7 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
  * Every step only lowers a number, so the iteration is monotone and the answer does not
  * depend on the order the records are visited in. The round cap is the same shape as the
  * other fixed points in this file. */
-static void levelPass(Checker *c, FuncDef *f, const DfResult *dfr) {
-    (void)dfr;
+static void levelPass(Checker *c, FuncDef *f) {
     LvlState ls;
     vecInit(&ls.tbl, c->arena, sizeof(SymLevel));
     vecInit(&ls.path, c->arena, sizeof(LvlVisit));
@@ -4138,7 +4142,10 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * here, after the depth fixed point, is the point of the whole split: the
          * decision sees the final depths instead of the numbers that happened to be
          * true while the body was being walked. */
-        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, f, &dfr);
+        /* No `dfr`: the level solve reads its own table and runs before the write-back below (see
+         * the note on `levelPass`). `EXTC_NO_LEVELPASS=1` skips it -- and, as `--help` now says,
+         * that **changes the output**. */
+        if (!getenv("EXTC_NO_LEVELPASS")) levelPass(c, f);
         /* Ask the same question again with the numbers the passes settled on. Reporting
          * stays with the check; this is what makes the two answers comparable. */
         if (dbgOn("EXTC_DBG_DEFER")) recheckLevelRejections(c);
@@ -4165,6 +4172,14 @@ static void checkFunc(Checker *c, FuncDef *f) {
                 fprintf(stderr, "\n");
             }
         }
+        /* When the DFA gives up (`dfr.overflow`: a fifth ref-carrying field of one binding, or its
+         * round cap) its **whole result is dropped** and the depths stay whatever the checking walk
+         * left behind -- the walk this file calls unsound at control-flow merges. So the fallback is
+         * real and it is weaker; what it is *not* is rare: `stdlib/stl/string.extc`'s own
+         * `string::create` trips it, so a per-function warning here would be ~100% noise and would
+         * break the "no false positives on the positive corpus" rule that `tests/warnings` enforces.
+         * It is therefore documented rather than announced; `EXTC_DBG_DFA=1` still prints
+         * "(OVERFLOW: result unused)" next to the body it happened in. */
         if (!dfr.overflow) {
             symIdxSync(c);
             if (g_sbBad) {
