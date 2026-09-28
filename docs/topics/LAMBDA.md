@@ -169,12 +169,19 @@ lambda 是**纯增量**：现有语料一个 lambda 都没有 ⇒ 正确的实�
 **协程的请求类型 ≈ "往协程里送值"**，而实测 `send` 方法**已经存在**（方法集 `next value send`），
 缺的只是**带类型的请求参数** —— 这件事与 lambda 共用同一套"环境显式化成结构体"的变换。
 
-> **状态（2026-09-28 核实）：`coroutine<A,B>` 还没做。** 具体卡在哪，查源码就能说清：
-> prelude 里是 `struct coroutine<T> { unit: bool }`（**一个**类型参数），而 `check_top.c` 合成
-> 协议方法时 `next`/`value`/`send` **都用那唯一的 `T`** —— 于是今天的 `send` 送进去的类型和
-> `yield` 出来的类型是同一个。要做的是：prelude 改成两个参数，`send` 取请求类型、`value` 取应答
-> 类型，帧里放得下挂起时的那个请求。**这不是 lambda 的前置条件**（lambda 已经落地），但它是
-> "worker 当协程 + `send`/父线程 resume"那条线的前置条件。
+> **状态（2026-09-28）：`coroutine<A, B>` 已落地。** prelude 现在是
+> `struct coroutine<A, B>`（`A` = `send` 送进去的请求，`B` = `yield` 交出来的应答）；旧写法
+> `coroutine<T>` 保留为**同型两遍的简写**，由类型替换那一处回落（`B` 缺省时取 `A`），所以语料里
+> 的单参数写法语义与产物都不变（闸门 414/414 逐字节，未重设基线）。
+>
+> 关键实现点：协议方法（句柄的 `next`/`value`/`send`，以及**帧**自己的那一套）必须用**标记自己的
+> 类型参数名**表达 —— 替换是按名字（`Type.param`）匹配的，用一个人造的 `T` 会在声明改名的那一刻
+> 全部失配（实测报 `argument expects T, found i64`）。帧的 `send` 形参取的是声明里**第一个**类型
+> 参数，`value` 的返回取 `yieldType`（最后一个参数）。
+>
+> 判据在 `tests/coro/`：`coro_req_resp`（请求 i64 / 应答 f64，退出码 25）与 `coro_shorthand`
+> （`coroutine<i64>` 与 `coroutine<i64, i64>` 结果相同，退出码 17）。这条线也是"worker 当协程 +
+> `send`/父线程 resume"（`HEAP.md` §6）的前置条件。
 
 另外顺带纠正 `CONCURRENCY.md` §4.4 的一处过时示例：**`for x in c` 今天不行** ✗
 （检查器要 `iter` 方法），实际驱动是 `while c.next() { … c.value() … }`。

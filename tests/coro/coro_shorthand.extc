@@ -1,0 +1,41 @@
+/* 判据：`coroutine<T>` 与 `coroutine<T, T>` **等价** —— 一个参数的写法是"请求与应答同型"的
+ * 简写，不是省略。两个驱动器跑同一份体（与 coro_send 同一套驱动），结果不同返回 1。 */
+fn adderOne(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    var got: i64 = 0
+    while i < n {
+        got = yield i
+        i = i + 1
+    }
+    yield got
+}
+fn adderTwo(n: i64) -> coroutine<i64, i64> {
+    var i: i64 = 0
+    var got: i64 = 0
+    while i < n {
+        got = yield i
+        i = i + 1
+    }
+    yield got
+}
+fn main() -> i32 {
+    var a = adderOne(i64(3))
+    var ra: bool = a.next()
+    var seenA: i64 = 0
+    while ra {
+        seenA = seenA + a.value()
+        ra = a.send(i64(7))
+    }
+    seenA = seenA + a.value()
+
+    var b = adderTwo(i64(3))
+    var rb: bool = b.next()
+    var seenB: i64 = 0
+    while rb {
+        seenB = seenB + b.value()
+        rb = b.send(i64(7))
+    }
+    seenB = seenB + b.value()
+
+    if seenA != seenB { return i32(1) }
+    return i32(seenA) }   /* 循环里累加 0+1+2，最后再读一次 value() = 7 ⇒ 退出码 17 */

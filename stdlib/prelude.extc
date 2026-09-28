@@ -43,7 +43,7 @@ struct unit {
 /* 协程的**接口标记**：函数返回类型写 `coroutine<T>` 就表示"这是个协程、会 yield T"。
  * 真实表示由编译器按**每个协程函数**合成的帧结构体（帧是普通值，见 CONCURRENCY.md 4.4）——
  * 所以这个声明本身不承载数据，只是让名字可解析 ✓ 用户不要直接拿它当变量类型用。 */
-struct coroutine<T> { unit: bool }
+struct coroutine<A, B> { unit: bool }   /* A = `send` 进去的（请求），B = `yield` 出来的（应答）；`coroutine<T>` 是同型两遍的简写 */
 
 type option<T> = | none | some(T)
 

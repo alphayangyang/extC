@@ -1,0 +1,23 @@
+/* 判据：`coroutine<A, B>` —— 请求与应答**类型不同**。
+ *   A = i64：驱动器 `send(i64(2))` 送进去的；B = f64：`yield` 交出来的。
+ *   循环体 `k = yield f64(k) * 0.5` ⇒ 恢复时送进来的值落进 `k`。
+ *   三轮：0.5 + 1.0 + 1.0 = 2.5 ⇒ 退出码 25。 */
+use std::io
+fn scaler(n: i64) -> coroutine<i64, f64> {
+    var i: i64 = 0
+    var k: i64 = 1
+    while i < n {
+        k = yield f64(k) * f64(0.5)
+        i = i + 1
+    }
+}
+fn main() -> i32 {
+    var c = scaler(i64(3))
+    var seen: f64 = f64(0)
+    var r: bool = c.next()
+    while r {
+        seen = seen + c.value()
+        r = c.send(i64(2))
+    }
+    io::cout << seen << "\n"
+    return i32(seen * f64(10)) }

@@ -322,7 +322,14 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                              t->name);
                     return tt->tError;
                 }
-                if (base->sdef->typeParams.len != t->targs.len) {
+                /* `coroutine<T>` 是**同型两遍**的简写：请求类型与应答类型都是 T（语料里全是这个
+                 * 写法，语义不变）；`coroutine<A, B>` 才是一般形态，`A` 送给它、`B` 是它 yield 出来
+                 * 的。这里**不**把参数补成两个：实例化的 C 名是从写出来的参数算的，补了会让每个
+                 * coroutine 程序的产物改名（实测 70 个），而写一个参数的那些本来就不该变。读参数的
+                 * 地方按"最后一个参数是应答类型"取值，见 coroTarg。 */
+                bool coroMarker = base->sdef->name && strcmp(base->sdef->name, "coroutine") == 0;
+                if (base->sdef->typeParams.len != t->targs.len
+                    && !(coroMarker && base->sdef->typeParams.len == 2 && t->targs.len == 1)) {
                     ctxError(ctx, line, 1, NULL,
                              "`%s` expects %zu type argument(s), got %zu",
                              t->name, base->sdef->typeParams.len, t->targs.len);
@@ -687,6 +694,10 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
                 if (strcmp(*(const char **)vecAt(params, i), t->param) == 0)
                     return *(Type **)vecAt(args, i);
             }
+            /* `coroutine<T>` 是"请求与应答同型"的**简写**：标记声明了两个类型参数，实例只给了一个
+             * （这是个数检查唯一放行的"少给参数"情形），于是应答类型 B 回落到 A。其余泛型的参数
+             * 个数不匹配在类型解析处就被拒了，所以这一条不会替别的类型兜底。 */
+            if (params->len == 2 && args->len == 1) return *(Type **)vecAt(args, 0);
             return t;
         case TY_REF:
             return refLike(tt, t, ttSubstitute(tt, t->inner, params, args));

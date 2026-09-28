@@ -454,5 +454,37 @@ else
     echo "  FAIL coro_sm_contract    ->  $(head -2 "$tmp/e" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 rm -rf "$tmp"
+# 注意：脚本前段已经 `rm -rf "$tmp"` 过一次（那是它原来的收尾），这里要把目录建回来
+mkdir -p "$tmp"
+# `coroutine<A, B>`：请求与应答类型不同（A = i64 由 send 送入，B = f64 由 yield 交出）
+rr=$tmp/coro_req_resp
+if "$EXTC" -w --no-line-map -o "$rr.c" tests/coro/coro_req_resp.extc 2>"$tmp/rre" \
+   && gcc -O2 -std=c11 -fwrapv -Wall -Wextra -Werror -o "$rr" "$rr.c" 2>"$tmp/rre"; then
+    "$rr" >"$tmp/rro" 2>&1; rc=$?
+    if [ $rc -eq 25 ]; then
+        echo "  ok   coro_req_resp     ->  请求 i64 / 应答 f64：2.5 ⇒ 退出码 25，打印 $(cat "$tmp/rro")"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_req_resp     ->  退出码 $rc（期望 25）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_req_resp     ->  $(head -2 "$tmp/rre" 2>/dev/null | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
+# `coroutine<T>` 与 `coroutine<T, T>` 等价（前者是"请求与应答同型"的简写）
+sh=$tmp/coro_shorthand
+if "$EXTC" -w --no-line-map -o "$sh.c" tests/coro/coro_shorthand.extc 2>"$tmp/she" \
+   && gcc -O2 -std=c11 -fwrapv -Wall -Wextra -Werror -o "$sh" "$sh.c" 2>"$tmp/she"; then
+    "$sh" >/dev/null 2>&1; rc=$?
+    if [ $rc -eq 17 ]; then
+        echo "  ok   coro_shorthand     ->  coroutine<i64> 与 coroutine<i64, i64> 结果相同（退出码 17）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_shorthand     ->  退出码 $rc（期望 17）"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_shorthand     ->  $(head -2 "$tmp/she" 2>/dev/null | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ] || exit 1

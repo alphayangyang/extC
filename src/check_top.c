@@ -3760,17 +3760,28 @@ static void coroSetup(Checker *c, FuncDef *f) {
          * `kind`. */
         StructDef *hsd = structOf(f->ret);
         if (hsd && hsd->methods.len == 0) {
-            Type *tp = arenaAllocZero(c->arena, sizeof *tp);
-            tp->kind = TY_PARAM;
-            tp->name = "T";
-            tp->param = "T";          /* ttSubstitute matches on `param`, not `name` */
-            vecInit(&tp->targs, c->arena, sizeof(Type *));
+            /* The protocol methods name the marker's **own** type parameters: substitution matches on
+             * the parameter *name* (`ttSubstitute` compares `param`), so a synthetic `T` would stop
+             * matching the moment the declaration is spelled `coroutine<A, B>`. `A` is what `send`
+             * takes in, `B` is what `value` hands back; a one-argument `coroutine<T>` leaves `B`
+             * unbound, and substitution falls back to `A` (types.c). */
+            const char *an = hsd->typeParams.len > 0
+                ? *(const char **)vecAt(&hsd->typeParams, 0) : "A";
+            const char *bn = hsd->typeParams.len > 1
+                ? *(const char **)vecAt(&hsd->typeParams, 1) : an;
+            Type *tpA = arenaAllocZero(c->arena, sizeof *tpA);
+            tpA->kind = TY_PARAM; tpA->name = an; tpA->param = an;
+            vecInit(&tpA->targs, c->arena, sizeof(Type *));
+            Type *tpB = arenaAllocZero(c->arena, sizeof *tpB);
+            tpB->kind = TY_PARAM; tpB->name = bn; tpB->param = bn;
+            vecInit(&tpB->targs, c->arena, sizeof(Type *));
             Type *hinst = arenaAllocZero(c->arena, sizeof *hinst);
-            hinst->kind = TY_GENERIC;      /* an *instance* with targs: that is what `coroutine<T>` is */
+            hinst->kind = TY_GENERIC;      /* an *instance* with targs: that is what `coroutine<A,B>` is */
             hinst->name = hsd->name;
             hinst->sdef = hsd;
             vecInit(&hinst->targs, c->arena, sizeof(Type *));
-            *(Type **)vecPush(&hinst->targs) = tp;
+            *(Type **)vecPush(&hinst->targs) = tpA;
+            *(Type **)vecPush(&hinst->targs) = tpB;
             const int hw[3] = { 3, 4, 6 };    /* next / value / send on the handle */
             for (int hi = 0; hi < 3; hi++) {
                 const int which = hw[hi];
@@ -3780,7 +3791,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
                 pm->modName   = f->modName;
                 pm->line      = f->line;
                 pm->coroProto = which;
-                pm->ret       = which == 4 ? tp : ttFromName(c->tt, "bool");
+                pm->ret       = which == 4 ? tpB : ttFromName(c->tt, "bool");
                 vecInit(&pm->params, c->arena, sizeof(Param *));
                 Param *self = arenaAllocZero(c->arena, sizeof *self);
                 self->name = self->cname = "self";
@@ -3794,7 +3805,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
                 if (which == 6) {
                     Param *vp = arenaAllocZero(c->arena, sizeof *vp);
                     vp->name = vp->cname = "v";
-                    vp->type = tp;
+                    vp->type = tpA;            /* `send(v: A)`: what goes **into** the coroutine */
                     vp->line = f->line;
                     *(Param **)vecPush(&pm->params) = vp;
                 }
@@ -3847,7 +3858,11 @@ static void coroSetup(Checker *c, FuncDef *f) {
                  * coroutine reads through a `var x = yield e` binding (the frame's `in` slot). */
                 Param *vp = arenaAllocZero(c->arena, sizeof *vp);
                 vp->name = vp->cname = "v";
-                vp->type = f->yieldType;
+                /* `send(v: A)`: A is the marker's **first** type argument (`coroutine<A, B>`); the
+                 * one-argument shorthand leaves A = B = the yield type, which is why a corpus file
+                 * that only ever yielded keeps type-checking unchanged. */
+                vp->type = f->ret->targs.len > 0
+                    ? *(Type **)vecAt(&f->ret->targs, 0) : f->yieldType;
                 vp->line = f->line;
                 *(Param **)vecPush(&pm->params) = vp;
             }
@@ -3980,9 +3995,15 @@ static void checkFunc(Checker *c, FuncDef *f) {
     /* A coroutine: the declared return type is `coroutine<T>` (a prototype in the prelude). The
      * declaration is the marker -- `yield` is legal only here, and the frame the checker lays out
      * for this function is a value (docs/topics/CONCURRENCY.md 4.4). */
-    f->isCoro = f->ret && isProtoType(f->ret, "coroutine", 1);
+    /* `coroutine<T>`（简写：请求与应答同型）与 `coroutine<A, B>` 都算协程：前者一个类型参数，
+     * 后者两个。协议方法各自取哪个参数见下面合成那段。 */
+    f->isCoro = f->ret && (isProtoType(f->ret, "coroutine", 1)
+                           || isProtoType(f->ret, "coroutine", 2));
     f->coroRetProto = f->isCoro ? f->ret : NULL;
-    f->yieldType = f->isCoro ? *(Type **)vecAt(&f->ret->targs, 0) : NULL;
+    /* `coroutine<A, B>`：`B`（最后一个参数）是 yield 出来的类型。简写 `coroutine<T>` 只有一个
+     * 参数，那个就是它。 */
+    f->yieldType = f->isCoro
+        ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL;
     if (f->isCoro) coroSetup(c, f);
     /* `coroutine<T>` is how a **return type** says "this body is a coroutine that yields T". It is not
      * a value type: a call to a coroutine produces that coroutine's own frame, whose type the compiler
@@ -4954,17 +4975,25 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         Checker   *cc  = &c;
         if (!hsd || !hsd->name || strcmp(hsd->name, "coroutine") != 0) continue;
         if (hsd->methods.len) continue;                 /* synthesized (pre-pass or on demand) */
-        Type *tp = arenaAllocZero(cc->arena, sizeof *tp);
-        tp->kind = TY_PARAM;
-        tp->name  = "T";
-        tp->param = "T";                                /* ttSubstitute matches on `param` */
-        vecInit(&tp->targs, cc->arena, sizeof(Type *));
+        /* 与按需合成那条一致：用**标记自己的类型参数名**，因为替换是按名字（`param`）匹配的。
+         * `A` 由 `send` 送进去，`B` 由 `value` 交出来；只写一个参数的 `coroutine<T>` 在替换处回落。 */
+        const char *an = hsd->typeParams.len > 0
+            ? *(const char **)vecAt(&hsd->typeParams, 0) : "A";
+        const char *bn = hsd->typeParams.len > 1
+            ? *(const char **)vecAt(&hsd->typeParams, 1) : an;
+        Type *tpA = arenaAllocZero(cc->arena, sizeof *tpA);
+        tpA->kind = TY_PARAM; tpA->name = an; tpA->param = an;
+        vecInit(&tpA->targs, cc->arena, sizeof(Type *));
+        Type *tpB = arenaAllocZero(cc->arena, sizeof *tpB);
+        tpB->kind = TY_PARAM; tpB->name = bn; tpB->param = bn;
+        vecInit(&tpB->targs, cc->arena, sizeof(Type *));
         Type *hinst = arenaAllocZero(cc->arena, sizeof *hinst);
         hinst->kind = TY_GENERIC;                       /* an instance with targs: `coroutine<T>` */
         hinst->name = hsd->name;
         hinst->sdef = hsd;
         vecInit(&hinst->targs, cc->arena, sizeof(Type *));
-        *(Type **)vecPush(&hinst->targs) = tp;
+        *(Type **)vecPush(&hinst->targs) = tpA;
+        *(Type **)vecPush(&hinst->targs) = tpB;
         const int hw[3] = { 3, 4, 6 };                  /* next / value / send on the handle */
         for (int k = 0; k < 3; k++) {
             const int which = hw[k];
@@ -4973,7 +5002,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             pm->owner     = hsd;
             pm->line      = hsd->line;
             pm->coroProto = which;
-            pm->ret       = which == 4 ? tp : ttFromName(cc->tt, "bool");
+            pm->ret       = which == 4 ? tpB : ttFromName(cc->tt, "bool");
             vecInit(&pm->params, cc->arena, sizeof(Param *));
             Param *self = arenaAllocZero(cc->arena, sizeof *self);
             self->name = self->cname = "self";
@@ -4987,7 +5016,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (which == 6) {
                 Param *vp = arenaAllocZero(cc->arena, sizeof *vp);
                 vp->name = vp->cname = "v";
-                vp->type = tp;
+                vp->type = tpA;   /* `send(v: A)` */
                 vp->line = hsd->line;
                 *(Param **)vecPush(&pm->params) = vp;
             }
