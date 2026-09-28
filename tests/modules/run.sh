@@ -18,7 +18,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective; do
+for d in tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -89,7 +89,7 @@ for d in tests/modules/errors/*/ tests/modules/samenames/; do
     fi
 done
 # 正例也不能漏（含跨模块的类型/枚举/泛型实例 —— 那几种最容易漏 ✓）
-for d in tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective; do
+for d in tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective; do
     out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
     if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
         echo "  FAIL $(basename "$d")(正例)  ->  输出里出现了 mangle 名（\$）"

@@ -1,0 +1,16 @@
+// 给**标准库**的类型加固有方法：`impl` 块在**本模块**，类型（`ostream`）在 `std::io`。
+//
+// 这条形状 2026-09-28 之前是坏的：调用点是**运算符**（`io::cout << s`），而运算符路径当时只发
+// zone、不发 home arena ⇒ 定义发三参、调用只有两参 ⇒ gcc 报
+//     too few arguments to function 'io$ostream_shl_string$string'; expected 3
+// 那是 PLAN #83 的 arena 那半（有意"响亮失败"而不是偷偷漏掉），现已关闭：运算符路径与其它调用
+// 一样问唯一的主人 `cgImplicitArgs`。这条用例就是它的常驻守卫 —— 它跑的是 `--run`，
+// 所以 gcc 那一关也在判据里。
+use std::io
+use stl::string
+
+impl ostream {
+  fn <<(self: ref ostream, v: string) -> ostream {
+    return self << v.toSlice()
+  }
+}

@@ -1,0 +1,10 @@
+// expect: hi|len=2
+use std::io
+use stl::string
+use addstr
+
+fn main() -> i32 {
+  let s = string::from("hi")
+  io::cout << s << "\n"
+  io::cout << "len=" << s.len() << "\n"
+  return 0 }
