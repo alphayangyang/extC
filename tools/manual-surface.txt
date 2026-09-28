@@ -33,6 +33,7 @@ prelude	coroutine	state	field	public
 prelude	coroutine	unit	field	public
 prelude	coroutine	withCap	method	public
 prelude	coroutine	withStream	method	public
+prelude	domain	unit	field	public
 prelude	pcg32	asMutSlice	method	public
 prelude	pcg32	asSlice	method	public
 prelude	pcg32	buf	field	internal
