@@ -2209,8 +2209,35 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             e->u.conv.type = t;
-            Type *src = checkValue(c, e->u.conv.operand);
+            /* `checkExpr`, not `checkValue`: this node owns one exception to the value-position rule.
+             * `u64(p)` / `i64(p)` is **the address of `p`** -- the one thing the plate model needs
+             * (`base <= p < base + size`, one comparison, then trust) and the one thing a reference
+             * cannot be asked for any other way, because `*p` would read the pointee and there is no
+             * pointer arithmetic to compare with.
+             *
+             * It is deliberately **one way**: nothing turns a number back into a reference, so a
+             * pointer can be checked but never forged, and the only operations on the number are the
+             * integer ones (compare, subtract, index). The other half of `checkValue`
+             * (`rejectNoCopy`) has nothing to say here: a source that is numeric is not a `@noCopy`
+             * value, and a source that is a reference is the case handled right here. */
+            Type *src = checkExpr(c, e->u.conv.operand);
             if (ttIsError(src)) return ttError(tt);
+            if (src->kind == TY_REF) {
+                if (ttIs(t, "u64") || ttIs(t, "i64")) {
+                    /* `convCheck = false`: there is nothing to check -- the bits are the same width,
+                     * and a pointer's value is whatever the machine put there. */
+                    e->convCheck = false;
+                    return t;
+                }
+                ckError(c, e->line,
+                        src->nullable
+                          ? "it is a nullable reference (`?ref T`) -- check it first:"
+                            " `if p != null { ... *p ... }`"
+                          : "write `*p` where the value is needed (`*p + 1`, `let v = *p`, `f(*p)`)",
+                        "`%s` is a **reference**, not a value -- dereference it first: `*p`",
+                        typeStr(c, src));
+                return ttError(tt);
+            }
             bool si = ttIsInteger(src), sf = ttIsFloat(src);
             bool ti = ttIsInteger(t),   tf = ttIsFloat(t);
             if (!((si || sf) && (ti || tf))) {

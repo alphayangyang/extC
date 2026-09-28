@@ -236,6 +236,36 @@ indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)  
 <span class="f">init</span>(<span class="k">ref</span> t)
 dl::<span class="f">close</span>(h)</code></pre>
 <ul><li><code>open</code> / <code>sym</code> 失败都返回 <code>null</code>（要原因就自己声明 <code>dlerror</code>）。名字参数必须是 <strong>NUL 结尾</strong>的 缓冲区：字符串字面量本来就满足，运行期拼出来的名字先用 <code>cstr</code> 补一个终止符 —— 规矩与 <code>std::fs</code> 的文件名<strong>完全一样</strong>，理由也一样（C 的长度在终止符里，切片的长度在值里）。</li><li><code>close</code> 收掉句柄。</li><li>**<code>fn(A) -&gt; R(ptr)</code> 这条转换只为 C 的 <code>void *</code> 存在，而且要求非空<strong>：<code>dlsym</code> 回来的是 <code>?ref void</code>，先判空（语言本来就有的空值规则），判完收窄成 <code>ref void</code>，转换才合法。 它只有</strong>一个方向** —— 代码指针再也变不回数据指针，要把它交给 C 就放进 <code>fn</code> 字段或 <code>fn</code> 参数里。</li></ul>
+<h3 id="12-3-5-一张表交给-c-模块-export-fn-槽-std-dl-2026-09-29">12.3.5 一张表交给 C 模块：<code>@export</code> + <code>fn</code> 槽 + <code>std::dl</code>（2026-09-29）</h3>
+<p>三样东西合起来就是"C 模块 + 宿主"这条线（完整例子见 <code>tests/cabi/heapmain.extc</code> 与 <code>tests/cabi/heapmod.c</code>）：</p>
+<pre class="lang-extc"><code>@frozen <span class="k">struct</span> heapapi {                  <span class="c">// 表：给 C 模块看的接口</span>
+    size: <span class="t">i64</span>
+    ctx: ?<span class="k">ref</span> <span class="t">void</span>
+    alloc: <span class="k">fn</span>(<span class="t">i64</span>, ?<span class="k">ref</span> <span class="t">void</span>) -&gt; <span class="k">ref</span> <span class="t">u8</span> effects Addr=<span class="n">0</span> Cont=<span class="n">0</span>   <span class="c">// 槽上签字</span>
+}
+
+<span class="k">var</span> plate: [<span class="n">256</span>]<span class="t">u8</span>                        <span class="c">// 板（全局 ⇒ 深度 0，借给 C 合法）</span>
+<span class="k">var</span> api: heapapi = heapapi { size: <span class="t">i64</span>(<span class="n">3</span>), ctx: null, alloc: hostAlloc }
+<span class="c">//          ↑ 全局的初始化器里可以写函数名：函数地址是常量</span>
+
+<span class="k">fn</span> <span class="f">hostAlloc</span>(n: <span class="t">i64</span>, ctx: ?<span class="k">ref</span> <span class="t">void</span>) -&gt; <span class="k">ref</span> <span class="t">u8</span> {
+    <span class="k">var</span> off: <span class="t">i64</span> = used
+    used = used + n
+    <span class="k">return</span> plate[off..].data               <span class="c">// 板内地址：视图的 data（`ref plate[i]` 不行）</span>
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> h: ?<span class="k">ref</span> <span class="t">void</span> = dl::<span class="f">open</span>(<span class="c">"plugin.so"</span>)
+    <span class="k">var</span> raw: ?<span class="k">ref</span> <span class="t">void</span> = dl::<span class="f">sym</span>(h, <span class="c">"init"</span>)
+    <span class="k">var</span> init: <span class="k">fn</span>(<span class="k">mut</span> <span class="k">ref</span> heapapi) -&gt; <span class="k">ref</span> <span class="t">u8</span> = <span class="k">fn</span>(<span class="k">mut</span> <span class="k">ref</span> heapapi) -&gt; <span class="k">ref</span> <span class="t">u8</span>(raw)
+    <span class="k">var</span> p: <span class="k">ref</span> <span class="t">u8</span> = <span class="f">init</span>(<span class="k">ref</span> api)          <span class="c">// 模块经表回调宿主，再把板内指针还回来</span>
+    <span class="k">var</span> addr: <span class="t">u64</span> = <span class="t">u64</span>(p)                 <span class="c">// 指针 → 整数：**一次**区间检查</span>
+    <span class="k">if</span> addr &gt;= base &amp;&amp; addr &lt; base + <span class="t">u64</span>(<span class="n">256</span>) { io::cout &lt;&lt; <span class="t">i64</span>(*p) }
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<blockquote>这一块是<strong>梗概</strong>（省略了 <code>used</code>/<code>base</code> 的记账与函数的其余部分），所以显式跳过"手册示例必须编得过" 那道闸门；能编能跑的那份在 <code>tests/cabi/heapmain.extc</code>（每次 <code>check.sh</code> 都会真编真跑）。</blockquote>
+<p>几条边界，都是这几格新定的：</p>
+<ul><li><strong>函数地址是常量</strong>：全局初始化器里可以写函数名（表必须在声明处初始化，因为 <code>fn</code> 没有零值）。</li><li><strong>板内的地址</strong>用 <code>plate[i..].data</code> 取（<code>ref plate[i]</code> 不行），而且这个视图<strong>不能先存进局部</strong> （逃逸分析只看到局部，看不到它指向全局）。</li><li><strong><code>u64(p)</code> / <code>i64(p)</code> 只有一个方向</strong>：数字变不回引用 ⇒ 指针能被验证、不能被伪造； <code>u32(p)</code>（会截断）仍被拒。</li><li><strong>模块返回的指针必须自己检查</strong>再解引用 —— 它不是语言担保的东西，是 C 给的。</li></ul>
 <h3 id="12-4-1-nocopy-状态有-身份-的类型不许按值拷贝-2026-09-24-定案-88">12.4.1 <code>@noCopy</code>：状态有<strong>身份</strong>的类型不许按值拷贝（2026-09-24，定案 88）</h3>
 <pre class="lang-extc"><code>@noCopy
 <span class="k">struct</span> reader {

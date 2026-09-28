@@ -5079,6 +5079,25 @@ static void genFuncProto(CG *g, FuncDef *f) {
     cgLine(g, "%s", bufCstr(&sig));
 }
 
+/* Emit the prototype of every function a **global's initializer** names.
+ *
+ * A function's address is a constant, so `var t: api = api { alloc: hostAlloc }` is a legal global
+ * (that is how a table is built: `C-ABI.md` section 9.9 -- a table of `fn` fields cannot be
+ * zero-initialized, so it must be initialized where it is declared, and it belongs at the top level
+ * because a module may hold on to it). C, however, still needs to have **seen** the declaration: the
+ * globals are emitted before the prototype pool, so `static api t = { .alloc = &hostAlloc };` came
+ * out as "`hostAlloc` undeclared here". Emitting that prototype here is the whole fix; the pool
+ * repeats it later, and C allows repeated declarations. */
+static bool globalFnProto(void *ctx, Expr *e) {
+    if (e->kind == EX_IDENT && e->func) genFuncProto((CG *)ctx, e->func);
+    return true;
+}
+
+static bool globalFnProtoStmt(void *ctx, Stmt *s) {
+    AstVisit v = { globalFnProto, globalFnProtoStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+
 /* ------------------------------------------------------- struct definition order
  *
  * Ordinary structs and generic instances contain each other - a `player` holds a
@@ -7835,6 +7854,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
         if (ttIsError(gd->ann)) continue;
         const char *ct = cType(&g, gd->ann);
+        /* A global may name functions (a table of `fn` fields); C needs them declared first. */
+        if (gd->init) {
+            AstVisit v = { globalFnProto, globalFnProtoStmt, &g };
+            astWalkExprChildren(gd->init, &v);
+        }
         size_t before = g.out->len;                 /* recorded for dropUnreferenced */
         if (gd->init) {
             cgLine(&g, "static %s %s = %s;", ct, gd->name, genGlobalInit(&g, gd->init));

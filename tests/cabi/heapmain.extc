@@ -1,0 +1,108 @@
+// expect: plate=ok byte=42 logged=2 outside=rejected
+// C-ABI 第 3 步第 ④ 块：**一张表 + 一个 C 模块 + 一次区间检查**（`prototype-heap/` 那套在 extC 里）。
+//
+// 分工与 HEAP.md §2 一致：
+//   · **宿主**（本文件）拥有"板"（一个定长数组）并实现表里的三个函数；
+//   · **模块**（tests/cabi/heapmod.c，编成 .so）只经这张表拿内存、回调宿主，把板内指针还回来；
+//   · 宿主拿到指针做**一次区间检查**（`base <= p < base + size`），通过才解引用。
+//
+// 三个"语言这一格必须存在"的地方：
+//   ① 表的槽是 `fn` 字段、签名写在**槽**上（`effects Addr=0 Cont=0`）⇒ 模块回调宿主时不被拒；
+//   ② `dlsym` 的地址经**显式转换**变成 `fn(mut ref heapapi) -> ref u8`（那是作者的签字）；
+//   ③ 区间检查要**指针变整数**（`u64(p)`）—— 第 ④ 块新增的那一格，而且只有一个方向：
+//      数字变不回引用 ⇒ 指针能被验证、不能被伪造。
+use std::io
+use std::dl
+
+/* 与 tests/cabi/heapmod.c 里那份手写结构体**同一个约定**（`@frozen` + tests/frozen 的镜像测试）。 */
+@frozen struct heapapi {
+    size: i64
+    ctx: ?ref void
+    alloc: fn(i64, ?ref void) -> ref u8 effects Addr=0 Cont=0
+    len: fn(?ref void) -> i64 effects Addr=0 Cont=0
+    log: fn(ref u8, i64, ?ref void) -> i64 effects Addr=0 Cont=0
+}
+
+/* 板：定长数组（全局 = 深度 0 ⇒ 借给 C 合法），bump 用**偏移**记（`used`），不存指针。 */
+let PLATE_LEN: i64 = 256
+var plate: [256]u8
+var used: i64 = 0
+var logged: i64 = 0
+var api: heapapi = heapapi {
+    size: i64(3), ctx: null, alloc: hostAlloc, len: hostLen, log: hostLog
+}
+
+fn hostAlloc(n: i64, ctx: ?ref void) -> ref u8 {
+    /* 板内偏移 → 视图 → `data`。两条都值得记：
+     *   · `ref plate[i]` 不行（只有变量与字段能取引用），而 `plate[i..]` 是视图，它的 `data`
+     *     就是那个地址；
+     *   · 视图**不能先存进局部**：那样逃逸分析看到的是"返回一个指向本帧局部的指针"（它只知道
+     *     局部的深度，不知道视图指向全局）⇒ 直接写 `plate[off..].data`，临时视图的深度是板
+     *     （全局，深度 0）。 */
+    var off: i64 = used
+    used = used + n
+    return plate[off..].data
+}
+
+fn hostLen(ctx: ?ref void) -> i64 { return PLATE_LEN }
+
+fn plateBase() -> u64 {
+    var s: slice<u8> = plate[..]
+    return u64(s.data)
+}
+
+/* 模块回调进来：**一次区间检查**，通过才记账。 */
+fn hostLog(p: ref u8, n: i64, ctx: ?ref void) -> i64 {
+    var addr: u64 = u64(p)
+    var base: u64 = plateBase()
+    if addr < base { return i64(-1) }
+    if addr + u64(n) > base + u64(PLATE_LEN) { return i64(-1) }
+    logged = logged + n
+    return n
+}
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/cabi-heapmod.so")
+    if h == null {
+        io::cout << "open=fail\n"
+        return 1
+    }
+    var raw: ?ref void = dl::sym(h, "init")
+    if raw == null {
+        io::cout << "sym=fail\n"
+        dl::close(h)
+        return 1
+    }
+    /* 这一句就是"模块入口的签名"，由宿主写下来（C 只给了一个地址）。 */
+    var init: fn(mut ref heapapi) -> ref u8 = fn(mut ref heapapi) -> ref u8(raw)
+
+    var p: ref u8 = init(ref api)
+    var h2: ?ref void = h          /* 同一个句柄，第二个符号 */
+
+    /* 宿主自己再做一次同样的检查（模块也可能是坏的）。 */
+    var addr: u64 = u64(p)
+    var base: u64 = plateBase()
+    if !(addr >= base && addr < base + u64(PLATE_LEN) && logged == i64(2)) {
+        io::cout << "plate=bad\n"
+        return 1
+    }
+    io::cout << "plate=ok byte=" << i64(*p) << " logged=" << logged
+
+    /* **判据有牙**：同一个检查要挡住板外指针。模块里那个 `badPtr` 返回的是它自己一个静态变量
+     * 的地址 —— 谁也看不出来它不该被信任，只有这一比较知道。 */
+    var rawBad: ?ref void = dl::sym(h2, "badPtr")
+    if rawBad == null {
+        io::cout << " outside=missing\n"
+        return 1
+    }
+    var badPtr: fn(mut ref heapapi) -> ref u8 = fn(mut ref heapapi) -> ref u8(rawBad)
+    var q: ref u8 = badPtr(ref api)
+    var qa: u64 = u64(q)
+    if qa >= base && qa < base + u64(PLATE_LEN) {
+        io::cout << " outside=accepted\n"
+        return 1
+    }
+    dl::close(h)
+    io::cout << " outside=rejected\n"
+    return 0
+}

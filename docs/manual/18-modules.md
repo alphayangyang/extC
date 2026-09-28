@@ -384,6 +384,52 @@ dl::close(h)
   它只有**一个方向** —— 代码指针再也变不回数据指针，要把它交给 C 就放进 `fn` 字段或
   `fn` 参数里。
 
+### 12.3.5 一张表交给 C 模块：`@export` + `fn` 槽 + `std::dl`（2026-09-29）
+
+三样东西合起来就是"C 模块 + 宿主"这条线（完整例子见 `tests/cabi/heapmain.extc` 与
+`tests/cabi/heapmod.c`）：
+
+<!-- manual-example: skip -->
+```extc
+@frozen struct heapapi {                  // 表：给 C 模块看的接口
+    size: i64
+    ctx: ?ref void
+    alloc: fn(i64, ?ref void) -> ref u8 effects Addr=0 Cont=0   // 槽上签字
+}
+
+var plate: [256]u8                        // 板（全局 ⇒ 深度 0，借给 C 合法）
+var api: heapapi = heapapi { size: i64(3), ctx: null, alloc: hostAlloc }
+//          ↑ 全局的初始化器里可以写函数名：函数地址是常量
+
+fn hostAlloc(n: i64, ctx: ?ref void) -> ref u8 {
+    var off: i64 = used
+    used = used + n
+    return plate[off..].data               // 板内地址：视图的 data（`ref plate[i]` 不行）
+}
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("plugin.so")
+    var raw: ?ref void = dl::sym(h, "init")
+    var init: fn(mut ref heapapi) -> ref u8 = fn(mut ref heapapi) -> ref u8(raw)
+    var p: ref u8 = init(ref api)          // 模块经表回调宿主，再把板内指针还回来
+    var addr: u64 = u64(p)                 // 指针 → 整数：**一次**区间检查
+    if addr >= base && addr < base + u64(256) { io::cout << i64(*p) }
+    return 0
+}
+```
+
+> 这一块是**梗概**（省略了 `used`/`base` 的记账与函数的其余部分），所以显式跳过"手册示例必须编得过"
+> 那道闸门；能编能跑的那份在 `tests/cabi/heapmain.extc`（每次 `check.sh` 都会真编真跑）。
+
+几条边界，都是这几格新定的：
+
+- **函数地址是常量**：全局初始化器里可以写函数名（表必须在声明处初始化，因为 `fn` 没有零值）。
+- **板内的地址**用 `plate[i..].data` 取（`ref plate[i]` 不行），而且这个视图**不能先存进局部**
+  （逃逸分析只看到局部，看不到它指向全局）。
+- **`u64(p)` / `i64(p)` 只有一个方向**：数字变不回引用 ⇒ 指针能被验证、不能被伪造；
+  `u32(p)`（会截断）仍被拒。
+- **模块返回的指针必须自己检查**再解引用 —— 它不是语言担保的东西，是 C 给的。
+
 ### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
 
 ```extc

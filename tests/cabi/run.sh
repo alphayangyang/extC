@@ -110,5 +110,21 @@ check_err tests/cabi/errors/conv_nullable.extc 'it may be null'
 check_err tests/cabi/errors/conv_notptr.extc   'cannot convert `i64` to `fn(i64) -> i64`'
 check_err tests/cabi/errors/conv_no_ret.extc   'needs its return type'
 
+echo '== ④ 一张表 + 一个 C 模块 + 一次区间检查（prototype-heap 那套在 extC 里）=='
+if gcc -std=c11 -fPIC -shared -o build/cabi-heapmod.so tests/cabi/heapmod.c 2>"$tmp/err4"; then
+    if out=$("$EXTC" --run tests/cabi/heapmain.extc 2>&1); then
+        ok=1
+        for p in "plate=ok" "byte=42" "logged=2" "outside=rejected"; do
+            echo "$out" | grep -qF -- "$p" || { ok=0; echo "  FAIL 输出里缺「$p」"; }
+        done
+        if [ "$ok" = 1 ]; then echo "  ok   table-e2e  ->  $(echo "$out" | grep -E 'plate=|outside=' | tr '\n' '|')（宿主建表 → dlsym+转换 → 模块经表回调 → 板内指针 → 一次区间检查；板外的被挡住）"
+        else echo "  FAIL table-e2e  ->  输出对不上"; fail=1; fi
+    else
+        echo "  FAIL table-e2e  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+    fi
+else
+    echo "  FAIL 编 .so 失败（heapmod.c）"; head -3 "$tmp/err4" | sed 's/^/        /'; fail=1
+fi
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]
