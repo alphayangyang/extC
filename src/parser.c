@@ -2981,7 +2981,14 @@ static Expr *parsePrimary(Parser *p) {
             if (looksLikeAssoc(p)) {
                 const char *modPrefix = NULL;
                 Expr *ae = parseAssoc(p, t->text, t->line, assocPos, &modPrefix);
-                if (ae) ae->u.assoc.modPrefix = modPrefix;
+                /* `modPrefix` is a field of the **assoc** union member. `parseAssoc` returns an
+                 * `EX_ASSOC` for a qualified type/value, but an `EX_CALL` when the path ends in a
+                 * call (`sysio::write(...)`) -- and writing `u.assoc.modPrefix` on *that* node used
+                 * to scribble over whatever the `call` member has at the same offset. It was
+                 * harmless only because nothing read those bytes; adding one field to `call` was
+                 * enough to turn it into "every `a::b(...)` call has a bogus trailing block".
+                 * Guard on the kind: only the node that owns the field gets written. */
+                if (ae && ae->kind == EX_ASSOC) ae->u.assoc.modPrefix = modPrefix;
                 return ae;
             }
         }
