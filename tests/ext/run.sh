@@ -41,7 +41,9 @@ neg ext-nested-in-call   "$(src nested.extc)"    "$NODOM"
 neg ext-in-plain-fn      "$(src plain_fn.extc)"  "$NODOM"
 neg ext-needs-operand    "$(src bare.extc)"      'expected an expression'
 neg domain-block-recognised  "$(src domain_block.extc)"   '`ext` inside a domain is not implemented yet'
-neg domain-block-needs-object "$(src domain_needs_object.extc)" 'a trailing block needs a domain object'
+neg domain-block-needs-object "$(src domain_needs_object.extc)" 'a trailing block needs'
+neg domain-block-wrong-method "$(src domain_wrong_method.extc)" 'a trailing block needs `run`'
+
 one domain-block-is-not-just-a-block "$(src plain_block.extc)" "7"
 one ext-does-not-swallow-prefixes "$(src control_ident.extc)" "12"
 

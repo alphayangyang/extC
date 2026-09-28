@@ -1,0 +1,5 @@
+// 反例：域对象上的方法名写错 ⇒ 编译错误（不是"带个块就收下"）
+fn useIt(d: ref domain) -> i32 {
+  d.rnu { }
+  return 0 }
+fn main() -> i32 { return 0 }

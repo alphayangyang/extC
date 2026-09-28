@@ -1175,11 +1175,18 @@ void checkStmt(Checker *c, Stmt *s) {
                 rt = recv->type;
                 while (rt && rt->kind == TY_REF) rt = rt->inner;   /* `d: ref domain` */
             }
-            if (!rt || rt->kind != TY_STRUCT || !rt->name || strcmp(rt->name, "domain") != 0) {
+            /* The domain's own method is `run` (`d.run { … }` in CONCURRENCY.md).  The receiver's
+             * **type** is what makes it a domain; the method name is part of that object's protocol,
+             * so a typo like `d.rnu { … }` is a compile error rather than a silently accepted block.
+             * (A follow-up synthesizes the method properly, the way `coroutine`'s `next`/`value`/
+             * `send` are synthesized, so the symbol table knows about it too.) */
+            const char *mname = (cal && cal->kind == EX_FIELD) ? cal->u.field.name : NULL;
+            if (!mname || strcmp(mname, "run") != 0 ||
+                !rt || rt->kind != TY_STRUCT || !rt->name || strcmp(rt->name, "domain") != 0) {
                 ckError(c, s->line,
                         "A trailing block is the body of a **domain**: it says where the concurrency in it"
                         " runs and that all of it must be finished before the block ends.",
-                        "a trailing block needs a domain object on the left, found `%s`",
+                        "a trailing block needs `run` on a domain object, found `%s`",
                         rt ? typeStr(c, rt) : "something that is not an object");
                 return;
             }
