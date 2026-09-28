@@ -2567,6 +2567,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (rejectNullableDeref(c, ot, e->u.deref.operand, "`*`")) return ttError(tt);
+            /* `ref void` is C's `void *`: one pointer with no element type, so there is nothing to
+             * read. C refuses the same thing, but it refuses it in the generated C, where the error
+             * points at a line the author never wrote; the boundary admits `ref void` on purpose
+             * (`mmap`, an opaque handle), and this is the other half of that deal. */
+            if (ot->inner && ot->inner->kind == TY_VOID) {
+                ckError(c, e->line,
+                        "A `ref void` is C's `void *` -- a handle extC cannot look inside. Hand it"
+                        " back to C, or declare the parameter with the pointee type it really has"
+                        " (`ref i64`, `ref point`).",
+                        "cannot dereference `%s`: `void` has no size", typeStr(c, ot));
+                return ttError(tt);
+            }
             return ot->inner;
         }
 

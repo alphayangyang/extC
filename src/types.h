@@ -317,12 +317,14 @@ bool ttHasParam(Type *t);
  *   isReturn - true for a return type, where `void` is legal
  *
  * Returns:
- *   True when the type is one C parameter: a scalar, optionally behind references.
+ *   True when the type is one C parameter: a scalar, or a **pointer to anything** (`ref T`,
+ *   `mut ref T`, `?ref T`, `ref void`), or a function type.
  *
  * Notes:
  *   - One spelling for two askers -- an `extern!` signature and a function type (`fn(A) -> R`),
  *     which are the two ways a C function is reached. A `slice<T>` is two C arguments, so it never
- *     crosses as one; a pointer to a declared type and `ref void` are C-ABI.md section 9 step 2.
+ *     crosses as one; a struct or a payload-carrying enum by value has a layout this language never
+ *     promised to match, and does not cross either (C-ABI.md section 9 step 2).
  */
 
 bool ttCrossesC(Type *t, bool isReturn);

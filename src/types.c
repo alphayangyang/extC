@@ -1204,24 +1204,29 @@ static const char *ttShow(TypeTable *tt, Type *t) {
  *     reached. Two spellings of this question is how the boundary drifts, and the drift has a
  *     shape: `fn(slice<u8>) -> void` would declare one argument while the C function takes two,
  *     so every call site would compile and call it wrong.
- *   - What the rule is today: a scalar, optionally behind references -- `ttBase` strips them, so
- *     `ref u8` is one pointer (`uint8_t *`) and crosses, while `ref point` does **not**, even
- *     though the platform ABI would pass it fine. That narrowness is unchanged by this refactor
- *     and it is the same narrowness `extern!` has always had; a pointer to a declared type and
- *     `ref void` (C's `void *`) are C-ABI.md section 9 step 2, which owns the frozen-layout story
- *     the pointee needs.
- *   - A `slice<T>` is two C arguments (data + len), so it never crosses as one; the caller writes
- *     `s.data` and `s.len` out (`stdlib/std/sys/mem.extc` is the worked example).
+ *   - **A pointer crosses whatever it points at** (2026-09-29, C-ABI.md section 9.6 step 2). The
+ *     platform ABI passes every object pointer the same way, so the pointee type is what makes the
+ *     declaration *readable*, not what makes the call correct: `ref point`, `ref Pair<i64, u8>` and
+ *     `ref void` are one machine word each. The type system is not narrowed by admitting them --
+ *     see the section of C-ABI.md that answers exactly that question -- and before this, the
+ *     boundary could not express an opaque handle (`mmap`'s `void *`), which is most of what a C
+ *     library hands out.
+ *   - What still does **not** cross is anything that is not one machine word: a `slice<T>` is two
+ *     C arguments (data + len; the caller writes `s.data` and `s.len` out -- `stdlib/std/sys/mem.extc`
+ *     is the worked example), and a struct or a payload-carrying enum has a layout this language
+ *     never promised to match. `void` by value is not a value at all; it is a return type only.
  */
 
 bool ttCrossesC(Type *t, bool isReturn) {
+    if (!t) return false;
+    /* `ref T` for any T, including `void`: one pointer. `?ref T` is the same word with a null
+     * allowed, which is C's own convention for a pointer it may hand back as null. */
+    if (t->kind == TY_REF) return true;
     Type *b = ttBase(t);
     if (!b) return false;
     if (b->kind == TY_BUILTIN) return true;
-    /* A function type crosses as one pointer, and it is the one constructed type that does: a code
-     * pointer is the same width whatever it points at, and C passes those freely (`qsort`'s
-     * comparator is exactly this shape). Without this a callback could not be handed to C at all,
-     * which would make the type useless for the case it exists for. */
+    /* A function type crosses as one pointer, and it is a pointer whatever it points at -- C passes
+     * those freely (`qsort`'s comparator is exactly this shape). */
     if (b->kind == TY_FN) return true;
     return isReturn && b->kind == TY_VOID;
 }

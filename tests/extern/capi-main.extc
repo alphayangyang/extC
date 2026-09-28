@@ -1,0 +1,43 @@
+// expect: timeval=ok void=ok indirect=ok
+// 跨边界**指针**的常设验收（C-ABI.md §9.6 第 2 步）。
+//
+// ① `mut ref <声明类型>`：C 真的写进 extC 的结构体，字段再读回来（指针放宽之后新增的能力）；
+// ② `ref void` / `?ref void`：不透明句柄进出一趟（`mmap` 给、`munmap` 收），`null` 是它的零值；
+// ③ 同一个边界谓词也管 `fn` 的签名 ⇒ `fn(mut ref point) -> void` 这种函数指针类型现在能写，
+//    生成的 typedef 里那个参数是 `point *`。
+use capi
+use std::io
+
+struct point {
+    x: i64
+    y: i64
+}
+
+fn bump(p: mut ref point) { (*p).x = (*p).x + 1 }
+
+fn main() -> i32 {
+    /* ① C 写进我们的结构体 */
+    var tv: capi::timeval = capi::timeval { tv_sec: 0, tv_usec: 0 }
+    if capi::gettimeofday(ref tv, null) == 0 && tv.tv_sec > 0 {
+        io::cout << "timeval=ok"
+    } else {
+        io::cout << "timeval=bad"
+    }
+
+    /* ② `void *` 进出一趟：PROT_READ|PROT_WRITE = 3，MAP_PRIVATE|MAP_ANONYMOUS = 34 */
+    var p: ref void = capi::mmap(null, 4096, 3, 34, -1, 0)
+    if capi::munmap(p, 4096) == 0 {
+        io::cout << " void=ok"
+    } else {
+        io::cout << " void=bad"
+    }
+
+    /* ③ 同一个谓词给 `fn` 的签名用：指向声明类型的指针可以是一个函数指针的参数 */
+    var f: fn(mut ref point) -> void = bump
+    var pt: point = point { x: 41, y: 0 }
+    f(ref pt)
+    if pt.x == 42 { io::cout << " indirect=ok" } else { io::cout << " indirect=bad" }
+
+    io::cout << "\n"
+    return 0
+}

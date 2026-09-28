@@ -1,0 +1,16 @@
+/* 反例：**没签字**的声明 = "它可能留住一切" ⇒ 把帧内的指针交给它是编译错误 ✗
+ *
+ * 指针放宽（第 2 步）之后这条**更重要**，不是更松：`ref T` 让 C 除了留下地址，还能从我们
+ * 内存里**读出一个指针**再留着（`next` 那种字段）—— 那是 `Cont` 那一半在管的事。
+ * 所以 `ref point` 能过界，但"过界"不等于"随便给"：签了字才行。 */
+struct node {
+    next: ?ref node
+    v: i64
+}
+
+extern!("libc") fn bad(n: ref node) -> i32      /* 没有 effects 子句 */
+
+fn main() -> i32 {
+    var x: node = node { next: null, v: 1 }
+    return bad(ref x)
+}
