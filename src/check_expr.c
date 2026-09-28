@@ -2938,6 +2938,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         in->func ? in->func->name : "this");
                 return ttError(tt);
             }
+            e->extDom = c->curDom;          /* codegen 把任务登记到这个域上 */
+            in->func->isExtTarget = true;   /* ⇒ 为它生成域用的适配器（只为它，别的产物不受影响） */
             /* The value is **void on purpose**: `let h = ext f(x)` is refused by the type system
              * rather than by a special rule, and the handle (the取件单) lands with the driving
              * loop (docs/topics/CONCURRENCY.md「`ext` 与调度域」). */

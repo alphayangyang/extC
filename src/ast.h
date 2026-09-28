@@ -172,6 +172,9 @@ struct Expr {
      * above) because the node carries no `func` by the time codegen runs -- measured: an assoc
      * builtin call reached codegen with `e->func == NULL`, so keying on it could never fire. */
     bool      domNew;
+    /* `EX_EXT`: the domain this task is handed to (the nearest `d.run { … }` receiver, resolved by
+     * the checker). Codegen registers the task there. */
+    Expr     *extDom;
     FieldDef *field;    /* the field an EX_FIELD resolved to */
     Type     *assocOwner; /* EX_ASSOC: the instance type it resolved to, kept so the
                            * C name can be mangled */
@@ -620,6 +623,11 @@ struct FuncDef {
      * docs/topics/CONCURRENCY.md 4.4). The declaration is a marker: the call's real type and the
      * protocol methods are synthesized per coroutine (slice B). */
     bool        isCoro;
+    /* Some `ext f(x)` starts this coroutine as a task. The stable adapter that the domain's task
+     * table needs -- `bool (*)(void *)` while `$next` takes a concrete frame pointer, and calling one
+     * through the other's type is undefined -- is emitted **only** for these, so a program that never
+     * starts a task carries nothing extra. */
+    bool        isExtTarget;
     /* A lambda's `call` method: its body was already checked **in place**, in the scope the lambda
      * was written in (that is where the capture set comes from), so the pass that checks struct
      * methods must not check it a second time. */

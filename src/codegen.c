@@ -2010,12 +2010,51 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is
  */
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
-        case EX_EXT:
-            /* Unreachable today: the checker refuses `ext` before codegen runs. Loud on purpose --
-             * a silent value here would be exactly the kind of miscompile this file refuses. */
-            ctxError(g->ctx, e->line, 1, NULL,
-                     "ext: codegen is not implemented yet (CONCURRENCY.md, `ext` 与调度域)");
-            return "0";
+        case EX_EXT: {
+            /* `ext f(x)`: **start one task** -- build the frame (the same plain-frame path
+             * `let c = counter(args)` uses; the frame is a local of this function, and the domain
+             * drives it before the block ends, so it stays alive for exactly as long as it is
+             * needed), then hand it to the domain as `(frame, step)`. The expression's value is
+             * void (the checker says so): the取件单 lands with the driving loop. */
+            Expr *in = e->u.ext_.call;
+            FuncDef *cf = (in && in->kind == EX_CALL) ? in->func : NULL;
+            if (!cf || !cf->isCoro || !e->extDom || g->coroFunc) {
+                ctxError(g->ctx, e->line, 1, NULL,
+                         "domain task: only a plain-function context with a coroutine callee is"
+                         " implemented so far (nesting a task inside a coroutine is the next step)");
+                return "0";
+            }
+            const char *cn = cFuncName(g, cf);
+            const char *tmp = arenaPrintf(g->arena, "__extc_dt%d", g->tmpSeq++);
+            const char *sv = arenaPrintf(g->arena, "__extc_dtsv%d", g->tmpSeq++);
+            const char *id = arenaPrintf(g->arena, "__extc_dtid%d", g->tmpSeq++);
+            const char *zn = arenaPrintf(g->arena, "__extc_dtzn%d", g->tmpSeq++);
+            Buf init;
+            bufInit(&init, g->arena);
+            if (cf->coroNeedsZone) {
+                flushPrefix(g);
+                cgLine(g, "int64_t %s = extc_zoneTop;", sv);
+                cgLine(g, "int64_t %s = extc_task_begin();", id);
+                cgLine(g, "int64_t %s = extc_task_zone(%s);", zn, id);
+                g->needCoroHandle = true;
+                g->needPool = true;
+            }
+            bufPrintf(&init, "struct %s$frame %s = (struct %s$frame){ .pc = 0", cn, tmp, cn);
+            if (cf->coroNeedsZone) bufPrintf(&init, ", .zone = %s, .task = %s", zn, id);
+            for (size_t i = 0; i < cf->params.len; i++) {
+                Param *pp = *(Param **)vecAt(&cf->params, i);
+                Expr *arg = (in->u.call.args.len > i) ? *(Expr **)vecAt(&in->u.call.args, i) : NULL;
+                bufPrintf(&init, ", .%s = %s", pp->cname, arg ? genExpr(g, arg) : "0");
+            }
+            bufPrintf(&init, " };");
+            flushPrefix(g);
+            cgLine(g, "%s", bufCstr(&init));
+            if (cf->coroNeedsZone) cgLine(g, "extc_zoneTop = %s;", sv);
+            g->needDomain = true;
+            flushPrefix(g);
+            cgLine(g, "extc_dom_add(%s, (void *)&%s, %s$domstep);", genExpr(g, e->extDom), tmp, cn);
+            return "(void)0";
+        }
         case EX_LAMBDA: {
             /* The environment, built where the lambda is written. The checker put the field values on
              * the node (check_expr.c, checkLambda), so this is a struct literal written out by hand:
@@ -3541,12 +3580,28 @@ static void genStmt(CG *g, Stmt *s) {
 /* Emit the statement itself; the prefix bookkeeping lives in genStmt. */
 static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
-        case ST_DOMAIN:
-            /* Unreachable today: the checker refuses `ext` inside a domain before codegen runs
-             * (building the task and the drive loop is the next step). Loud on purpose. */
-            ctxError(g->ctx, s->line, 1, NULL,
-                     "domain block: codegen is not implemented yet (CONCURRENCY.md「`ext` 与调度域」)");
+        case ST_DOMAIN: {
+            /* `d.run { … }`: the block ends by **running its tasks to completion** -- that is what
+             * makes the block structured (nothing it started is still unfinished when it exits).
+             * The domain itself is not freed here: the caller owns it (`single()` handed it over) and
+             * may run another block on it; its lifetime is its own step. */
+            Expr *recv = (s->u.domain_.callee && s->u.domain_.callee->kind == EX_FIELD)
+                             ? s->u.domain_.callee->u.field.obj : NULL;
+            if (!recv) {
+                ctxError(g->ctx, s->line, 1, NULL, "domain block: no receiver to drive");
+                return;
+            }
+            /* The block's own statements come **first**: they are what registers the tasks
+             * (`ext f(x)` ⇒ `extc_dom_add`) and what the caller's locals hold. Only then does the
+             * domain drive them to completion -- "the block cannot end while a task it started is
+             * still unfinished" is exactly this order. */
+            genStmt(g, s->u.domain_.body);
+            const char *dv = genExpr(g, recv);
+            g->needDomain = true;
+            flushPrefix(g);
+            cgLine(g, "extc_dom_run(%s);", dv);
             return;
+        }
         case ST_VAR: {
             /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
              * arguments initialize the parameters -- a resume has none to pass them again. */
@@ -4290,6 +4345,10 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);", cn, cn);
         if (cf->coroNeedsZone)
             cgLine(g, "EXTC_UNUSED static bool %s$next(struct %s$frame *f);", cn, cn);
+        /* The domain's task table stores `bool (*)(void *)`, while `$step`/`$next` take a concrete
+         * frame pointer -- calling one through the other's type is undefined behaviour, so a program
+         * that starts tasks gets this typed adapter. Emitted **only** for coroutines that some `ext`
+         * starts (`isExtTarget`, known at check time) ⇒ every other product is byte-identical. */
     }
     /* One trap for all three helpers: every trap in this project carries a source position, and a
      * handle outliving its task is the one thing a `coroutine<T>` can get wrong. */
@@ -8016,7 +8075,25 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * also decided the `_GNU_SOURCE` preamble above; here only the bodies are appended. */
     if (g.needMemFind) memfindEmitRuntime(arena, out);
     if (g.needEvent) eventEmitRuntime(arena, out);
-    if (g.needDomain) domainEmitRuntime(arena, out);
+    if (g.needDomain) {
+        /* The typed adapters the task table needs. They have to be declared **here**, in the
+         * preamble: a call site sits inside a function body, while the coroutine section (where
+         * `$step`/`$next` are defined) is appended last. `EXTC_UNUSED` because only the coroutines
+         * some `ext` actually starts get one. */
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+            if (!cf->isExtTarget || !cf->isCoro) continue;
+            const char *cn = cFuncName(&g, cf);
+            bufPrintf(out, "typedef struct %s$frame %s$frame;\n", cn, cn);
+            bufPrintf(out, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);\n", cn, cn);
+            if (cf->coroNeedsZone)
+                bufPrintf(out, "EXTC_UNUSED static bool %s$next(struct %s$frame *f);\n", cn, cn);
+            bufPrintf(out, "EXTC_UNUSED static bool %s$domstep(void *p)"
+                           " { return %s$%s((struct %s$frame *)p); }\n",
+                      cn, cn, cf->coroNeedsZone ? "next" : "step", cn);
+        }
+        domainEmitRuntime(arena, out);
+    }
     /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
     if (m->usesDyn) poolsEmitDynRuntime(arena, out);
     if (g.needRawTerm) {

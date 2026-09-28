@@ -1,0 +1,18 @@
+// **能跑的判据**：一个域里起两个协程任务，块结束前它们必须全部跑完 —— 所以 "done" 必须最后出现。
+// 顺序是确定的：域按登记顺序把每个任务驱动到结束（同一线程，结构化）。
+use std::sys::domain
+use std::io
+
+fn task(n: i64, tag: i64) -> coroutine<i64> {
+  var i: i64 = 0
+  while i < n { io::cout << tag << ":" << i << "\n"  yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+  let d = domain::single()
+  d.run {
+    ext task(i64(2), i64(1))
+    ext task(i64(3), i64(2))
+  }
+  io::cout << "done\n"
+  return 0 }
