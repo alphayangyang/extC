@@ -2144,8 +2144,15 @@ static const char *genExprInner(CG *g, Expr *e) {
                     special = e->u.fval < 0 ? "-__builtin_inf()" : "__builtin_inf()";
                 if (special)
                     return isF32 ? arenaPrintf(g->arena, "(float)%s", special) : (char *)special;
-                if (isF32) return arenaPrintf(g->arena, "(float)%g", e->u.fval);
-                return arenaPrintf(g->arena, "%g", e->u.fval);
+                /* **Round-trippable**, not `%g`: `%g` keeps six significant digits, which silently
+                 * changes the value of any literal that needs more (`4294967295.0` came out as
+                 * `4.29497e+09` -- measured: `x - 4294967296.0` gave 0 instead of -1, and a
+                 * conversion of that literal then trapped on a range it was inside). 17 digits
+                 * round-trip a `double` and 9 a `float` (the cast below is what makes the f32
+                 * literal a float, so its digits only need to survive that). `%g` still drops
+                 * trailing zeros, so ordinary literals (`2.5`, `0.5`) are unchanged. */
+                if (isF32) return arenaPrintf(g->arena, "(float)%.9g", e->u.fval);
+                return arenaPrintf(g->arena, "%.17g", e->u.fval);
             }
         case EX_BOOL:  return e->u.bval ? "true" : "false";
         case EX_STR:
