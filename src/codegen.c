@@ -501,7 +501,6 @@ static bool printArgIsPlace(const Expr *e);
 static bool cgIsMain(const FuncDef *f);
 static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-creating callee */
 
-static bool isPlaceExpr(const Expr *e);
 
     
 
@@ -1565,8 +1564,8 @@ static const char *zeroInit(CG *g, Type *t) {
 /* Is the generated C expression of a `println` argument an lvalue, that is, can
  * its address be taken?
  *
- * This is not the question isPlaceExpr answers, and confusing the two breaks
- * code:
+ * This is the **one** owner of that question (`selfOperandAsParam` asks it too; the ambiguous
+ * `isPlaceExpr` it used to share the job with is gone). Confusing the two breaks code:
  *   - the slice expression `s[0..5]` is a place in extC, but its C form is
  *     `slice_u8_slice(s, 0, 5, "...", 54)`, a function call, and `&` on a call
  *     is illegal. That really happened: examples/slices.extc and
@@ -1671,25 +1670,6 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
     return bufCstr(&b);
 }
 
-/* Is this expression a place in extC, meaning its address can be taken in C?
- *
- * The same predicate the checker uses, repeated here for a different reason: the
- * generated `&(f())` would not be legal C.
- *
- * Returns:
- *   true for an identifier, for a field of a place, for an index into a place
- *   and for a slice of a place.
- */
-static bool isPlaceExpr(const Expr *e) {
-    switch (e->kind) {
-    case EX_IDENT: return true;
-    case EX_FIELD: return isPlaceExpr(e->u.field.obj);
-    case EX_INDEX: return isPlaceExpr(e->u.index.obj);
-    case EX_SLICE: return isPlaceExpr(e->u.slice.obj);
-    default:       return false;
-    }
-}
-
 static const char *homeArg(CG *g, int marked);   /* defined below */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
 /* ---- the implicit trailing arguments: **one owner** ----
@@ -1777,7 +1757,12 @@ static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
     bool wantRef = p0->type && p0->type->kind == TY_REF;
     bool haveRef = want && want->kind == TY_REF;
     if (wantRef && !haveRef) {
-        if (isPlaceExpr(operand)) return arenaPrintf(g->arena, "&(%s)", code);
+        /* The question is "is the **generated C** an lvalue", not "is this a place in extC":
+         * `printArgIsPlace` owns it (see its comment -- a slice expression is a place in extC but
+         * its C form is a call, and taking `&` of that is what broke `examples/slices.extc` and
+         * `euler-sieve.extc`). Asking `isPlaceExpr` here emitted `&(slice_i32_slice(...))`, which
+         * gcc rejects while the compiler still exited 0. */
+        if (printArgIsPlace(operand)) return arenaPrintf(g->arena, "&(%s)", code);
         return arenaPrintf(g->arena, "(%s[]){ %s }", cType(g, subst(g, want)), code);
     }
     if (!wantRef && haveRef) return arenaPrintf(g->arena, "*(%s)", code);

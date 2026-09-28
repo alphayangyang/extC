@@ -38,6 +38,7 @@ check_err() {
 }
 
 echo "== 正例：具体类型（比较 + 算术）· 有牙 · 泛型体 · 内建不改 =="
+run_case slice_place
 run_case conv_float
 run_case concrete
 run_case teeth
