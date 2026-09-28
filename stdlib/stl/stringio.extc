@@ -139,3 +139,14 @@ impl fs::ifstream {
  * 也就是"方法收一个按值结构体参数"这条路在调用点漏了参数（大概是 home/arena 那一个）。
  * 撤掉，等 bug 修好再回来：今天要打 `string` 就先 `io::cout << s.toSlice()`（明确、能用）。
  */
+
+/* bug 2 复现要点（2026-09-28 定位，未修）：把这个形状装回来就会炸 ——
+ *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
+ * 症状：生成的 C 里**定义**是三参（`..., string$string v, extc_arena *__extc_home`），
+ * 而**调用点只传两个** ⇒ `too few arguments to function 'io$ostream_shl_string$string'`。
+ * 也就是说：`usesHome` 为真的方法，调用点少补那个 home 隐式实参 ——
+ * 方法调用走的是 `genMethodCall`（src/codegen.c:1756），而 assoc 那条路是有补的
+ * （src/codegen.c 约 2387：`if (e->func->usesHome) { ", " + homeArg(...) }`）。
+ * 对照实验：同模块里"方法收按值结构体参数"是好的（bisect 过）⇒ 触发点在 impl 声明的方法 +
+ * 调用点的 home 参数，不在参数类型。
+ */
