@@ -200,6 +200,9 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     case EX_FIELD: return visitExpr(v, e->u.field.obj);
     case EX_NEW:   return visitExpr(v, e->u.new_.count);
     case EX_DYN:   return visitExpr(v, e->u.dynv.payload);
+    case EX_LAMBDA:return visitStmt(v, e->u.lambda.body);   /* the body is the only child: the
+                                                             * parameters and the capture list are
+                                                             * names, not expressions */
     /* a receiver, or a list */
     case EX_METHOD:  return visitExpr(v, e->u.method.recv) && visitExprList(v, &e->u.method.args);
     case EX_CALL:    return visitExprList(v, &e->u.call.args);

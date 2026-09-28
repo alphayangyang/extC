@@ -193,6 +193,7 @@ static Expr *parseFactor(Parser *p);
 static Expr *parseUnary(Parser *p);
 static Expr *parsePostfix(Parser *p);
 static Expr *parsePrimary(Parser *p);
+static Expr *parseLambda(Parser *p);   /* `fn(x: i64) -> i64 { ... }`, LAMBDA.md section 2 */
 
 /* Report whether `n` is one of the ten scalar builtin type names.
  *
@@ -2589,8 +2590,93 @@ static bool parseArgs(Parser *p, Vec *out) {
  * Returns:
  *   The new Expr, or NULL after reporting an error.
  */
+/* `fn(x: i64) -> i64 { ... }` / `fn() -> i64 { ... }` / `fn(x: i64) [mut ref hits] -> i64 { ... }`
+ *
+ * The author's syntax B (LAMBDA.md section 2): `fn` is reused, so the language gains no new symbol;
+ * the return type may be left out and is inferred from the body, exactly as for a named function;
+ * and the optional capture list writes down **only the captures the body writes** -- a read is
+ * captured by value and needs no entry.
+ *
+ * Returns:
+ *   The new EX_LAMBDA, or NULL after reporting an error.
+ */
+static Expr *parseLambda(Parser *p) {
+    Token *ft = take(p);                       /* fn */
+    Expr *e = exprNew(p->arena, EX_LAMBDA, ft->line);
+    vecInit(&e->u.lambda.params, p->arena, sizeof(void *));
+    vecInit(&e->u.lambda.captures, p->arena, sizeof(void *));
+    vecInit(&e->u.lambda.fields, p->arena, sizeof(void *));
+    e->u.lambda.ret = NULL;
+    e->u.lambda.body = NULL;
+    e->u.lambda.sdef = NULL;
+    e->u.lambda.tname = NULL;
+
+    if (!expect(p, "(", NULL)) return NULL;
+    skipNl(p);
+    while (!at(p, ")")) {
+        Token *pn = expectIdent(p, "a parameter name");
+        if (!pn) return NULL;
+        if (!expect(p, ":", "parameters must be typed: `name: Type`")) return NULL;
+        Type *pt = parseType(p);
+        if (!pt) return NULL;
+        Param *pm = (Param *)arenaAllocZero(p->arena, sizeof(Param));
+        pm->name = pn->text;
+        pm->type = pt;
+        pm->line = pn->line;
+        *(Param **)vecPush(&e->u.lambda.params) = pm;
+        if (accept(p, ",")) skipNl(p);
+        else break;
+    }
+    if (!expect(p, ")", NULL)) return NULL;
+    skipNl(p);
+    if (at(p, "[")) {                          /* 捕获列表：只写 body 会**写**的那些 */
+        take(p);
+        skipNl(p);
+        while (!at(p, "]")) {
+            Token *mt = cur(p);
+            if (!at(p, "mut") || !(pk(p, 1) && pk(p, 1)->text && strcmp(pk(p, 1)->text, "ref") == 0)) {
+                ctxError(p->ctx, mt->line, mt->col,
+                         "A captured read needs no entry: it is captured by value. Write an entry"
+                         " only for a variable the body writes.",
+                         "a capture list entry is `mut ref name`, found `%s`", shown(mt));
+                return NULL;
+            }
+            take(p);                           /* mut */
+            take(p);                           /* ref */
+            Token *cn = expectIdent(p, "a captured variable name");
+            if (!cn) return NULL;
+            LamCap *cap = (LamCap *)arenaAllocZero(p->arena, sizeof(LamCap));
+            cap->name = cn->text;
+            cap->mutRef = true;
+            cap->line = cn->line;
+            *(LamCap **)vecPush(&e->u.lambda.captures) = cap;
+            if (accept(p, ",")) skipNl(p);
+            else break;
+        }
+        if (!expect(p, "]", NULL)) return NULL;
+        skipNl(p);
+    }
+    if (accept(p, "->")) {
+        e->u.lambda.ret = parseType(p);
+        if (!e->u.lambda.ret) return NULL;
+    }
+    skipNl(p);
+    e->u.lambda.body = parseBlock(p);
+    if (!e->u.lambda.body) return NULL;
+    return e;
+}
+
 static Expr *parsePrimary(Parser *p) {
     Token *t = cur(p);
+
+    /* `fn(x: i64) -> i64 { ... }`: a closure literal (docs/topics/LAMBDA.md, syntax B).
+     *
+     * `fn` is entered here only in **expression** position and only when a `(` follows, which is
+     * what tells it apart from a declaration; at the top level and inside a struct body the `fn`
+     * branches of their own loops have already run. Reusing `fn` keeps the language at zero new
+     * symbols, which is the point of syntax B. */
+    if (at(p, "fn") && pk(p, 1) && pk(p, 1)->text && strcmp(pk(p, 1)->text, "(") == 0)
+        return parseLambda(p);
 
     /* `dyn Trait(expr)` -- the construction for dynamic dispatch (DYN.md stage 1).
      *

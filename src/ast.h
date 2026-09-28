@@ -137,7 +137,21 @@ typedef enum {
                    * the type is supplied by adoptContextType, the same way an empty
                    * array literal picks up its element type. */
     EX_DYN,         /* `dyn Trait(x)`: the value form (a pool-backed handle) */
+    EX_LAMBDA,      /* `fn(x: i64) -> i64 { ... }`: a closure literal. The checker gives it a
+                     * generated unique type (a capture struct + a `call` method), so a lambda is
+                     * an ordinary value of an ordinary type; see docs/topics/LAMBDA.md. */
 } ExprKind;
+
+/* One entry of a lambda's capture list, `[mut ref hits]` (LAMBDA.md section 2).
+ *
+ * The list only ever names the captures the body **writes**: a read is captured by value and is
+ * not written in the source. That is the author's decision, and it has a second payoff -- every
+ * writable alias is visible in the program text, which is what the escape and arena passes read. */
+typedef struct {
+    const char *name;
+    bool        mutRef;   /* written as `mut ref x`: the closure may write through it */
+    int         line;
+} LamCap;
 
 struct Expr {
     ExprKind kind;
@@ -327,6 +341,20 @@ struct Expr {
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
         struct { Expr *payload; const char *traitName; Type *payloadType; } dynv;  /* EX_DYN */
+        /* `fn(params) -> ret [mut ref x, ...] { body }` (EX_LAMBDA). `captures` holds the
+         * **written** entries only (the writable ones); the checker records what it actually
+         * captured in `fields`, in declaration order, and builds `sdef` (the capture struct)
+         * plus a `call` method on it. `tname` is that struct's generated name, which diagnostics
+         * show as `fn(A) -> R`. See docs/topics/LAMBDA.md sections 3 and 4. */
+        struct {
+            Vec         params;    /* Param* */
+            Type       *ret;       /* NULL: inferred from the body, like a named function */
+            Vec         captures;  /* LamCap*: the explicitly written `mut ref x` entries */
+            Stmt       *body;
+            StructDef  *sdef;      /* filled in by the checker */
+            const char *tname;
+            Vec         fields;    /* LamCap*: everything captured, in declaration order */
+        } lambda;
         struct { Expr *recv; const char *name; Vec args; } method;
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */

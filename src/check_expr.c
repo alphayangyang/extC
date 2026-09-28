@@ -2522,6 +2522,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return f->ret ? f->ret : ttVoid(tt);
         }
 
+        case EX_LAMBDA: {
+            /* `fn(x: i64) -> i64 { ... }`: the plan is written down in docs/topics/LAMBDA.md with the
+             * author's decisions already made (syntax B, monomorphized parameters, writable captures
+             * spelled out), and the parser accepts the syntax. The checker's capture analysis is the
+             * next step; until it lands this is a loud refusal, never a silent empty struct. */
+            ckError(c, e->line,
+                    "The syntax and the plan are in place (docs/topics/LAMBDA.md); the capture"
+                    " analysis -- which variables the body takes, and where the environment lives --"
+                    " is the step that is still missing.",
+                    "a lambda is not implemented yet");
+            return ttError(tt);
+        }
         case EX_DYN: {
             /* `dyn Trait(x)` as a **value**: its type is `dyn Trait`, and the payload must
              * implement the trait -- the implementation is what the table points at. The payload's

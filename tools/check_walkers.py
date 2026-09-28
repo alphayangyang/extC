@@ -35,6 +35,30 @@ LEAF = {
 # Walkers that are known to be deliberately partial, with the reason. Adding an entry here is
 # a promise that the omission is intentional -- state why.
 ALLOW = {}
+# --- lambda (EX_LAMBDA), recorded 2026-09-28 ------------------------------------------------
+# The parser accepts `fn(x: i64) -> i64 { ... }` (docs/topics/LAMBDA.md section 6 step 1) and the
+# checker refuses it loudly, so **no live lambda exists yet** and none of these walkers can meet
+# one. They walk expressions and a lambda's only child is a *statement*, so the case is not a
+# one-liner: it needs a statement walk of the same shape. That is part of step 2 (the capture
+# analysis -- "what does the body reference" is the same question), and clearing these entries
+# belongs in the same commit that makes the checker accept a lambda.
+_LAM = ("lambda: EX_LAMBDA is parsed but refused by the checker, so no walker can see one yet;"
+        " entering the body lands with the capture analysis (LAMBDA.md step 2)")
+ALLOW = {
+    "check_escape.c:valDepthStructural": _LAM,
+    "check_escape.c:exprRefDepth":       _LAM,
+    "check_escape.c:exprRefDepthPure":   _LAM,
+    "check_expr.c:exprMayPrint":         _LAM,
+    "check_expr.c:exprHasAnyCall":       _LAM,
+    "check_expr.c:exprHasCall":          _LAM,
+    "check_top.c:exprMakesPool":         _LAM,
+    "check_top.c:markNamesInExpr":       _LAM,
+    "check_top.c:collectEffectsExpr":    _LAM,
+    "check_top.c:obligExpr":             _LAM,
+    "codegen.c:collectOwCallsExpr":      _LAM,
+    "dataflow.c:dfExprDepth":            _LAM,
+    "modules.c:rwExpr":                  _LAM,
+}
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
 RATCHET = 23       # measured 2026-09-26 after migrating the `needsHome` pair as well.
                    # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 

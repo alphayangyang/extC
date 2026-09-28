@@ -1,0 +1,10 @@
+// 对照：`fn` 声明、if、while、块嵌套都不含闭包 —— 解析器的新分支只认表达式位置的 `fn(`
+use std::io
+fn main() -> i32 {
+  var n: i64 = 0
+  var i: i64 = 0
+  while i < i64(4) {
+    if i % i64(2) == i64(0) { n = n + i64(1) }
+    i = i + i64(1) }
+  io::cout << n + i64(3) << "\n"
+  return 0 }

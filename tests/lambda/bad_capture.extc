@@ -1,0 +1,5 @@
+fn main() -> i32 {
+  var hits: i64 = 0
+  var f = fn(x: i64) [hits] -> i64 { return x }
+  return i32(hits)
+}

@@ -1,0 +1,4 @@
+fn main() -> i32 {
+  var z = fn() -> i64 { return 0 }
+  return i32(z())
+}

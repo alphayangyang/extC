@@ -1,0 +1,5 @@
+fn main() -> i32 {
+  var base: i64 = 100
+  var f = fn(x: i64) -> i64 { return x + base }
+  return i32(f(i64(1)))
+}

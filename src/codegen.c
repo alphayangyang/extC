@@ -2003,6 +2003,13 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is
  */
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
+        case EX_LAMBDA:
+            /* Unreachable today: the checker refuses a lambda before codegen runs (LAMBDA.md
+             * section 6 still owes the capture analysis). Loud on purpose -- a silent `0` here is
+             * exactly the kind of miscompile the rest of this file refuses to produce. */
+            ctxError(g->ctx, e->line, 1, NULL,
+                     "lambda: codegen is not implemented yet (LAMBDA.md section 6, steps 2-4)");
+            return "0";
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
         case EX_FLOAT:
             /* An `f32` literal is written as the float it is: `%g` prints a `double`, and assigning
