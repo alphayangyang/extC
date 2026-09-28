@@ -225,6 +225,17 @@ indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)  
     free:  <span class="k">fn</span>(<span class="k">ref</span> <span class="t">u8</span>, ?<span class="k">ref</span> <span class="t">void</span>) -&gt; <span class="t">i32</span> effects Addr=<span class="n">0</span> Cont=<span class="n">0</span>
 }</code></pre>
 <ul><li>语义与 <code>extern!</code> 上那条<strong>完全一样</strong>（同一把尺子）：签了字的槽，<code>ref</code> 实参可以指向<strong>帧内</strong>； 没签字的槽按"它可能留住一切"算 —— 与"没签字的 <code>extern!</code>"同一档，于是帧内指针被拒。</li><li><strong>签名在槽上，不在类型上</strong>：<code>fn(A) -&gt; R</code> 这个类型没有地方写 <code>effects</code>。所以<strong>从槽里直接调</strong> 带着签名，<code>var g = api.alloc</code> 拷到局部之后就没有了（按最保守算）。要传帧内指针就从槽里调。</li><li><code>Thread=</code> 在字段上暂时<strong>报错</strong>：读它的那条检查是冲着已解析的调用去的，运行期填的槽不是。</li></ul>
+<h3 id="12-3-4-std-dl-加载一个-c-模块-2026-09-29-见-c-abi-md-topics-c-abi-md-9-9">12.3.4 <code>std::dl</code>：加载一个 C 模块（2026-09-29，见 <a href="../topics/C-ABI.html"><code>C-ABI.md</code></a> §9.9）</h3>
+<pre class="lang-extc"><code><span class="k">use</span> std::dl
+
+<span class="k">var</span> h: ?<span class="k">ref</span> <span class="t">void</span> = dl::<span class="f">open</span>(<span class="c">"build/plugin.so"</span>)   <span class="c">// 字面量在 C 那边本来就是 NUL 结尾的</span>
+<span class="k">if</span> h == null { <span class="c">/* 打不开：dlerror() 能问为什么 */</span> }
+<span class="k">var</span> raw: ?<span class="k">ref</span> <span class="t">void</span> = dl::<span class="f">sym</span>(h, <span class="c">"init"</span>)
+<span class="k">if</span> raw == null { <span class="c">/* 没有这个符号 */</span> }
+<span class="k">var</span> init: <span class="k">fn</span>(<span class="k">mut</span> <span class="k">ref</span> table) -&gt; <span class="t">i32</span> = <span class="k">fn</span>(<span class="k">mut</span> <span class="k">ref</span> table) -&gt; <span class="t">i32</span>(raw)   <span class="c">// ← 这一句是作者的签字</span>
+<span class="f">init</span>(<span class="k">ref</span> t)
+dl::<span class="f">close</span>(h)</code></pre>
+<ul><li><code>open</code> / <code>sym</code> 失败都返回 <code>null</code>（要原因就自己声明 <code>dlerror</code>）。名字参数必须是 <strong>NUL 结尾</strong>的 缓冲区：字符串字面量本来就满足，运行期拼出来的名字先用 <code>cstr</code> 补一个终止符 —— 规矩与 <code>std::fs</code> 的文件名<strong>完全一样</strong>，理由也一样（C 的长度在终止符里，切片的长度在值里）。</li><li><code>close</code> 收掉句柄。</li><li>**<code>fn(A) -&gt; R(ptr)</code> 这条转换只为 C 的 <code>void *</code> 存在，而且要求非空<strong>：<code>dlsym</code> 回来的是 <code>?ref void</code>，先判空（语言本来就有的空值规则），判完收窄成 <code>ref void</code>，转换才合法。 它只有</strong>一个方向** —— 代码指针再也变不回数据指针，要把它交给 C 就放进 <code>fn</code> 字段或 <code>fn</code> 参数里。</li></ul>
 <h3 id="12-4-1-nocopy-状态有-身份-的类型不许按值拷贝-2026-09-24-定案-88">12.4.1 <code>@noCopy</code>：状态有<strong>身份</strong>的类型不许按值拷贝（2026-09-24，定案 88）</h3>
 <pre class="lang-extc"><code>@noCopy
 <span class="k">struct</span> reader {

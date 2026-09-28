@@ -412,7 +412,12 @@ struct Expr {
         struct { Expr *operand; } sign;   /* `e!`: the author's signature */
         struct { Expr *main, *fallback; } coalesce;   /* `a ?? b` */
         struct { const char *typeName; Type *type; Expr *count; } new_;  /* `new T[n]` */
-        struct { const char *typeName; Type *type; Expr *operand; } conv; /* `i32(x)` */
+        /* `i32(x)` / `f64(y)`: a conversion, and one case that is not about numbers at all --
+         * `fn(i64) -> i64(p)`, which turns C's `void *` into a callable code pointer (or back). For
+         * the numeric form `typeName` is the scalar's name and `type` is filled in by the checker;
+         * for the function-type form `type` is the **parsed** type (resolved by the checker) and
+         * `typeName` is NULL, because a function type is not a name. See `C-ABI.md` section 9.9. */
+        struct { const char *typeName; Type *type; Expr *operand; } conv;
         /* An associated function call: `typeName<targs>::name(args)`.
          * Writing the whole type is deliberate: nothing is guessed from context. */
         struct { const char *typeName; Vec targs; const char *name; Vec args; bool isCall;

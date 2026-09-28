@@ -1,0 +1,8 @@
+/* 反例：`?ref void` 直接变成 `fn` ⇒ 拒 ✗（`fn` 没有空值；先判空或 `!` 签字） */
+extern!("libc") fn extc_probe_mmap(a: ?ref void, n: u64, p: i32, f: i32, d: i32, o: i64) -> ?ref void
+    effects Addr=0 Cont=0
+fn main() -> i32 {
+    var raw: ?ref void = extc_probe_mmap(null, 4096, 3, 34, -1, 0)
+    var f: fn(i64) -> i64 = fn(i64) -> i64(raw)
+    return i32(f(1))
+}

@@ -1,0 +1,41 @@
+// expect: triple=42 add=35 closed=ok
+// `std::dl` 的常设验收（C-ABI.md §9.9 第 ③ 块）：**真的 dlopen 一个 .so**，dlsym 一个符号，
+// 把它**显式转换**成 `fn` 再调用。
+//
+// 三件事各自有分量：
+//   ① `dl::open` 走的是"调用方保证 NUL 结尾"（与 std::fs 同一条规矩）——字面量在 C 那边本来
+//      就是 0 结尾的，所以直接传；
+//   ② `dlsym` 回来的是 `?ref void`，`if h == null { ... }` 之后它被**收窄**，于是那句
+//      `fn(i64) -> i64(raw)` 合法 —— 转换要求非空指针，语言本来就有的空值规则在这里起了作用；
+//   ③ 那句转换就是**作者的签字**：C 只给一个地址，谁也不知道它到底是什么。
+use std::io
+use std::dl
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/cabi-probe.so")
+    if h == null {
+        io::cout << "open=fail\n"
+        return 1
+    }
+    var raw: ?ref void = dl::sym(h, "triple")
+    if raw == null {
+        io::cout << "sym=fail\n"
+        dl::close(h)
+        return 1
+    }
+    var triple: fn(i64) -> i64 = fn(i64) -> i64(raw)
+    io::cout << "triple=" << triple(14)
+
+    /* 第二个符号：这次是"两个参数"的签名，证明写法是通用的 */
+    var rawAdd: ?ref void = dl::sym(h, "addPair")
+    if rawAdd == null {
+        io::cout << " add=fail"
+    } else {
+        var addPair: fn(i64, i64) -> i64 = fn(i64, i64) -> i64(rawAdd)
+        io::cout << " add=" << addPair(15, 20)
+    }
+
+    if dl::close(h) == 0 { io::cout << " closed=ok" } else { io::cout << " closed=bad" }
+    io::cout << "\n"
+    return 0
+}

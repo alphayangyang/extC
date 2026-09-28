@@ -361,6 +361,29 @@ struct extc_heap_api {
   带着签名，`var g = api.alloc` 拷到局部之后就没有了（按最保守算）。要传帧内指针就从槽里调。
 - `Thread=` 在字段上暂时**报错**：读它的那条检查是冲着已解析的调用去的，运行期填的槽不是。
 
+### 12.3.4 `std::dl`：加载一个 C 模块（2026-09-29，见 [`C-ABI.md`](../topics/C-ABI.md) §9.9）
+
+```extc
+use std::dl
+
+var h: ?ref void = dl::open("build/plugin.so")   // 字面量在 C 那边本来就是 NUL 结尾的
+if h == null { /* 打不开：dlerror() 能问为什么 */ }
+var raw: ?ref void = dl::sym(h, "init")
+if raw == null { /* 没有这个符号 */ }
+var init: fn(mut ref table) -> i32 = fn(mut ref table) -> i32(raw)   // ← 这一句是作者的签字
+init(ref t)
+dl::close(h)
+```
+
+- `open` / `sym` 失败都返回 `null`（要原因就自己声明 `dlerror`）。名字参数必须是 **NUL 结尾**的
+  缓冲区：字符串字面量本来就满足，运行期拼出来的名字先用 `cstr` 补一个终止符 —— 规矩与
+  `std::fs` 的文件名**完全一样**，理由也一样（C 的长度在终止符里，切片的长度在值里）。
+- `close` 收掉句柄。
+- **`fn(A) -> R(ptr)` 这条转换只为 C 的 `void *` 存在，而且要求非空**：`dlsym` 回来的是
+  `?ref void`，先判空（语言本来就有的空值规则），判完收窄成 `ref void`，转换才合法。
+  它只有**一个方向** —— 代码指针再也变不回数据指针，要把它交给 C 就放进 `fn` 字段或
+  `fn` 参数里。
+
 ### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
 
 ```extc

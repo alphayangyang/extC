@@ -2858,11 +2858,47 @@ static bool parseArgs(Parser *p, Vec *out) {
  * Returns:
  *   The new EX_LAMBDA, or NULL after reporting an error.
  */
+/* Is the `( ... )` after an expression-position `fn` a **type list** rather than `name: Type`?
+ *
+ * True when the first parameter is followed by something other than `:`; an empty list answers false
+ * (the caller lets `parseLambda` decide it after the return type). */
+static bool fnParenIsTypeList(Parser *p) {
+    Token *first = pk(p, 2);                       /* pk(1) is the `(` */
+    if (!first || !first->text || strcmp(first->text, ")") == 0) return false;
+    Token *after = pk(p, 3);
+    return !(after && after->text && strcmp(after->text, ":") == 0);
+}
+
+/* Parse `fn(A, B) -> R(expr)` in expression position: the conversion of a value to a function type.
+ *
+ * The type itself is parsed by `parseFnType`, the same routine type position uses, so a function type
+ * has one parser wherever it is written. What follows it is an ordinary `(expr)`, which is how every
+ * other conversion is spelled (`i32(x)`). */
+static Expr *parseFnConv(Parser *p) {
+    Token *ft = cur(p);
+    Type *t = parseFnType(p);
+    if (!t) return NULL;
+    if (!expect(p, "(", NULL)) return NULL;
+    skipNl(p);
+    Expr *in = parseExpr(p);
+    if (!in) return NULL;
+    skipNl(p);
+    if (!expect(p, ")", NULL)) return NULL;
+    Expr *cv = exprNew(p->arena, EX_CONV, ft->line);
+    cv->u.conv.type    = t;
+    cv->u.conv.operand = in;
+    return cv;
+}
+
 static Expr *parseLambda(Parser *p) {
     Token *ft = take(p);                       /* fn */
     Expr *e = exprNew(p->arena, EX_LAMBDA, ft->line);
     vecInit(&e->u.lambda.params, p->arena, sizeof(void *));
     vecInit(&e->u.lambda.captures, p->arena, sizeof(void *));
+    /* The parameter **types** as well, for the one case where this turns out to be a conversion
+     * rather than a literal (`fn(i64) -> i64(p)`): a function type holds types, not `Param`s. */
+    Vec paramTypes;
+    vecInit(&paramTypes, p->arena, sizeof(void *));
     vecInit(&e->u.lambda.inits, p->arena, sizeof(void *));
     e->u.lambda.ret = NULL;
     e->u.lambda.body = NULL;
@@ -2882,6 +2918,7 @@ static Expr *parseLambda(Parser *p) {
         pm->type = pt;
         pm->line = pn->line;
         *(Param **)vecPush(&e->u.lambda.params) = pm;
+        *(Type **)vecPush(&paramTypes) = pt;
         if (accept(p, ",")) skipNl(p);
         else break;
     }
@@ -2918,6 +2955,30 @@ static Expr *parseLambda(Parser *p) {
         e->u.lambda.ret = parseType(p);
         if (!e->u.lambda.ret) return NULL;
     }
+    /* A **conversion**, not a literal: `fn(i64) -> i64(p)` (`C-ABI.md` section 9.9 piece ③).
+     * The two shapes are decidable right here and nowhere earlier: a literal's body is a `{` (or a
+     * capture list `[`, read above), while a conversion continues with `(`. The spelling is the one
+     * every other conversion uses -- `type(expr)` -- and it is unambiguous only because a function
+     * type always writes its return type. */
+    if (at(p, "(")) {
+        take(p);                                   /* ( */
+        skipNl(p);
+        Expr *in = parseExpr(p);
+        if (!in) return NULL;
+        skipNl(p);
+        if (!expect(p, ")", NULL)) return NULL;
+        if (!e->u.lambda.ret) {
+            ctxError(p->ctx, ft->line, ft->col,
+                     "A conversion writes the type it converts **to**, and a function type always"
+                     " writes its return type: `fn(i64) -> i64(p)`.",
+                     "a function-type conversion needs a return type");
+            return NULL;
+        }
+        Expr *cv = exprNew(p->arena, EX_CONV, ft->line);
+        cv->u.conv.type    = typeFn(p->arena, &paramTypes, e->u.lambda.ret);
+        cv->u.conv.operand = in;
+        return cv;
+    }
     skipNl(p);
     e->u.lambda.body = parseBlock(p);
     if (!e->u.lambda.body) return NULL;
@@ -2933,6 +2994,17 @@ static Expr *parsePrimary(Parser *p) {
      * what tells it apart from a declaration; at the top level and inside a struct body the `fn`
      * branches of their own loops have already run. Reusing `fn` keeps the language at zero new
      * symbols, which is the point of syntax B. */
+    /* `fn(i64) -> i64(p)`: a **conversion**, not a literal (`C-ABI.md` section 9.9 piece ③).
+     *
+     * The two shapes are told apart by the **parameter list**: a literal's parameters are
+     * `name: Type` and a type's are bare types, so the token after the first parameter decides
+     * (`,` / `)` / `->` means a type list, `:` means a literal). Nothing else in the language begins
+     * with `fn(` in expression position, so that is the whole test. The empty list (`fn() -> R(...)`)
+     * is decided later, in `parseLambda`, because only what follows the return type tells it apart
+     * from `fn() -> R { ... }`. */
+    if (at(p, "fn") && pk(p, 1) && pk(p, 1)->text && strcmp(pk(p, 1)->text, "(") == 0 &&
+        fnParenIsTypeList(p))
+        return parseFnConv(p);
     if (at(p, "fn") && pk(p, 1) && pk(p, 1)->text && strcmp(pk(p, 1)->text, "(") == 0)
         return parseLambda(p);
 

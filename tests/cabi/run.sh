@@ -89,5 +89,26 @@ check_err tests/cabi/errors/slot_copied_out.extc 'may be kept by C forever'
 check_err tests/cabi/errors/slot_on_nonfn.extc   'which is not a function pointer'
 check_err tests/cabi/errors/slot_thread.extc     '`Thread=` on a field is not used yet'
 
+echo "== ③ std::dl（真的 dlopen 一个 .so：dlsym + 显式转换 + 调用）=="
+if gcc -std=c11 -fPIC -shared -o build/cabi-probe.so tests/cabi/dlprobe.c 2>"$tmp/err3"; then
+    if out=$("$EXTC" --run tests/cabi/dlmain.extc 2>&1); then
+        ok=1
+        for p in "triple=42" "add=35" "closed=ok"; do
+            echo "$out" | grep -qF -- "$p" || { ok=0; echo "  FAIL 输出里缺「$p」"; }
+        done
+        if [ "$ok" = 1 ]; then echo "  ok   dl-runtime  ->  $(echo "$out" | tr '\n' '|')（dlopen/dlsym/显式转换/调用/close 全通）"
+        else echo "  FAIL dl-runtime  ->  输出对不上"; fail=1; fi
+    else
+        echo "  FAIL dl-runtime  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+    fi
+else
+    echo "  FAIL 编 .so 失败"; head -3 "$tmp/err3" | sed 's/^/        /'; fail=1
+fi
+
+echo "== ③ 反例（代码指针这条转换只能朝一个方向、且必须非空）=="
+check_err tests/cabi/errors/conv_nullable.extc 'it may be null'
+check_err tests/cabi/errors/conv_notptr.extc   'cannot convert `i64` to `fn(i64) -> i64`'
+check_err tests/cabi/errors/conv_no_ret.extc   'needs its return type'
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

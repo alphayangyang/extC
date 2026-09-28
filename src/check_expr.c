@@ -2150,6 +2150,59 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *     range check on the float-to-integer direction.
              * A conversion the compiler can prove fits, such as `i32(u8 value)`, generates no
              * check either. */
+            /* The one conversion that is not about numbers: a **code pointer**.
+             *   `fn(i64) -> i64(p)`   C's `void *` becomes callable
+             *   `ref void(f)`         a code pointer becomes an opaque address again
+             * It is narrow on purpose. The only source type is `ref void` -- a pointer with **no
+             * operations at all** (no `*`, no `[i]`, no `.field`), so the only thing it could ever
+             * become is a call target, and the type written out *is* the author's signature, exactly
+             * as `effects` is. A general pointer cast (`ref void` -> `ref point`) is deliberately not
+             * here: that is the point where a type system stops being one.
+             *
+             * The null rule is the language's own: `fn` has no null value, so a **nullable** `?ref
+             * void` (what `dlsym` returns when it fails) cannot become a `fn` without proving it is
+             * not null first -- `p!` is how the author signs for that, and it is checked elsewhere. */
+            /* `typeName` is the marker, not `type`: the numeric path below **writes** `type`, and
+             * the checker walks a generic body once per instantiation -- so a numeric conversion
+             * seen a second time had `type` set and was claimed by this branch ("cannot convert
+             * `i32` to `i64`" on `i64(9)`, found by tests/generics/deferred_op_through_call and
+             * tests/pool). The parser sets exactly one of the two: a name for `i32(x)`, the parsed
+             * type for `fn(...)  -> R (x)`. */
+            if (!e->u.conv.typeName && e->u.conv.type) {
+                Type *want = ttResolve(tt, c->ctx, e->u.conv.type, e->line, c->curParams);
+                e->u.conv.type = want;
+                /* `checkExpr`, not `checkValue`: in value position a reference is an error that
+                 * tells the author to write `*p`, but **here the reference is the value** -- the
+                 * pointer itself is what is being converted. `ref x` and `alloc` are the language's
+                 * other two stated exceptions to that rule, for the same reason. */
+                Type *src = checkExpr(c, e->u.conv.operand);
+                if (ttIsError(src)) return ttError(tt);
+                Type *sb = src->kind == TY_REF ? ttBase(src->inner) : NULL;
+                bool srcVoid = sb && sb->kind == TY_VOID;
+                if (want->kind == TY_FN && srcVoid) {
+                    if (src->nullable) {
+                        ckError(c, e->line,
+                                "`dlsym` returns a nullable pointer, and a `fn` has no null value:"
+                                " check it or sign for it first (`p!`), then convert.",
+                                "cannot convert `%s` to `%s`: it may be null",
+                                typeStr(c, src), typeStr(c, want));
+                        return ttError(tt);
+                    }
+                    return want;
+                }
+                /* One direction only. Handing a code pointer back out as an opaque address has no
+                 * user in this line (the table carries `fn` fields, `dlclose` takes the handle the
+                 * loader gave back), and **not** having it is worth something: a code pointer stays
+                 * a code pointer, and cannot be laundered into a data pointer through here. The
+                 * spelling would also collide with `ref x` (`ref void(f)` reads as `ref (void(f))`),
+                 * so a real need would come with its own syntax decision rather than a quiet one. */
+                ckError(c, e->line,
+                        "This conversion exists for one thing: turning a C code address into a"
+                        " callable value -- `fn(i64) -> i64(p)` where `p` is a non-null `ref void`."
+                        " Pointers to data change type where they are declared, not here.",
+                        "cannot convert `%s` to `%s`", typeStr(c, src), typeStr(c, want));
+                return ttError(tt);
+            }
             Type *t = ttFromName(tt, e->u.conv.typeName);
             if (!t || t->kind != TY_BUILTIN) {
                 ckError(c, e->line, NULL, "`%s` is not a scalar type", e->u.conv.typeName);

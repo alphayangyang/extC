@@ -166,6 +166,10 @@ std::coro::scheduler	tasks	rows	field	public
 std::coro::scheduler	tasks	runEpoll	method	public
 std::coro::scheduler	tasks	runScripted	method	public
 std::coro::scheduler	tasks	step	method	public
+std::dl	-	close	fn	public
+std::dl	-	cstr	fn	public
+std::dl	-	open	fn	public
+std::dl	-	sym	fn	public
 std::fs	-	closeIn	fn	public
 std::fs	-	closeOut	fn	public
 std::fs	-	flushOut	fn	public
