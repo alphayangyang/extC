@@ -2885,14 +2885,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_EXT: {
-            /* Step 1 of the `ext` sugar: the syntax is frozen here. What is missing is the domain
-             * rule (legal inside a domain, a compile error outside) and the spawn itself; until
-             * that lands this is a loud refusal, never a silent call. */
+            /* `ext` hands a task to a **domain**, and a domain is a lexical block from the library
+             * (`sched::run { … }`, `par::pool(n) { … }`). Outside one there is nobody to hand it to,
+             * so this is a compile error -- the point of the design is that it fails here and not at
+             * run time (docs/topics/CONCURRENCY.md, `ext` 与调度域). */
+            if (c->domainDepth == 0) {
+                ckError(c, e->line,
+                        "A domain is a lexical block that says where the concurrency runs and when"
+                        " it must all be finished; `ext` hands the task to the nearest one.",
+                        "there is no domain here: `ext` is only legal inside `sched::run { … }` or"
+                        " `par::pool(n) { … }`");
+                return ttError(tt);
+            }
+            /* Inside a domain the shape is accepted; the spawn itself (building the task and
+             * handing it over) is the next step. Loud, never a silent call. */
             ckError(c, e->line,
-                    "The `ext` sugar is parsed and its shape is fixed; the domain rule (inside a"
-                    " domain it is legal, outside it is a compile error) and the spawn are the next"
-                    " step (docs/topics/CONCURRENCY.md, `ext` 与调度域).",
-                    "`ext` is not implemented yet");
+                    "The domain rule is in place; building the task and handing it to the domain is"
+                    " the next step (docs/topics/CONCURRENCY.md, `ext` 与调度域).",
+                    "`ext` inside a domain is not implemented yet");
             return ttError(tt);
         }
         case EX_LAMBDA: return checkLambda(c, e);

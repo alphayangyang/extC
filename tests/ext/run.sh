@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # `ext f(x)` 第一步判据：**只做解析**（CONCURRENCY.md「`ext` 与调度域」）。
 #
-# 这一刀的验收：语法被接受、形状被钉住（是表达式，能绑、能当实参），然后由 checker 响亮拒绝；
-# 域规则（域内合法、域外编译错误）与真正的"起一份"是下一刀。所以正例的期望就是那条拒绝信息 ✓。
+# 这一刀的验收：① 语法被接受、形状被钉住（是表达式，能绑、能当实参）；
+# ② **域外 `ext` 是编译错误** —— 这条是 `ext` 设计的核心（失败发生在编译期，而不是运行期）。
+# 域本身（注解 + 库里的块形式）与"起一份"是下一小步，所以"域内"那条目前还测不到 ✓。
 #
 # 对照用例证明 `ext` 是**整词**匹配：`extc_flag` / `extra` / `next_one` 这些名字照常工作。
 set -u
@@ -31,10 +32,11 @@ neg() { # name file want-substring
   else bad "$name" "理由不对：$(grep -m1 error "$tmp/e" | cut -c1-60)"; fi
 }
 
-NOTYET='`ext` is not implemented yet'
-neg ext-as-statement     "$(src stmt.extc)"      "$NOTYET"
-neg ext-is-expression    "$(src binding.extc)"   "$NOTYET"
-neg ext-nested-in-call   "$(src nested.extc)"    "$NOTYET"
+NODOM='there is no domain here'
+neg ext-as-statement     "$(src stmt.extc)"      "$NODOM"
+neg ext-is-expression    "$(src binding.extc)"   "$NODOM"
+neg ext-nested-in-call   "$(src nested.extc)"    "$NODOM"
+neg ext-in-plain-fn      "$(src plain_fn.extc)"  "$NODOM"
 neg ext-needs-operand    "$(src bare.extc)"      'expected an expression'
 one ext-does-not-swallow-prefixes "$(src control_ident.extc)" "12"
 

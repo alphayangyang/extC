@@ -422,6 +422,10 @@ typedef struct Checker {
     Vec        narrowMarks; /* size_t: length of `narrow` when each scope was entered,
                              * used to unwind it on scope exit */
 
+    /* How many **domains** the checker is inside right now (`sched::run { … }`,
+    * `par::pool(n) { … }`). `ext` is legal only when this is non-zero: outside a domain there is
+    * nobody to hand the task to, and that is a compile error rather than a runtime surprise. */
+    int        domainDepth;
     /* How many lambda bodies are being checked right now. A lambda inside a lambda would have its
      * environment laid out as part of the outer one; version 1 refuses that instead of laying it
      * out wrongly (docs/topics/LAMBDA.md section 7). */
