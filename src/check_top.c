@@ -5717,6 +5717,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * and only translates the number the checker produced. */
     {
         Vec all; vecInit(&all, arena, sizeof(FuncDef *));
+        /* `impl` 块里的方法**不在** `m->structs` 里 —— 块常住在别的模块（`impl ostream` 在
+         * `stl::stringio`，类型在 `std::io`），而入口模块自己就带着 `m->impls`（实测：
+         * `impls=1 structs=12 funcs=51`）。分析若看不见它们，事实就漏成"定义发 home 形参、
+         * 调用点不传"——实测 gcc 报 `too few arguments`。和 `sd->methods` 同样处理。 */
+        for (size_t i = 0; i < m->impls.len; i++) {
+            ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+            for (size_t j = 0; j < im->methods.len; j++)
+                *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&im->methods, j);
+        }
         for (size_t i = 0; i < m->funcs.len; i++)
             *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&m->funcs, i);
         for (size_t i = 0; i < m->structs.len; i++) {
@@ -6040,6 +6049,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * itself is decided from the call graph. */
     {
         Vec all; vecInit(&all, arena, sizeof(FuncDef *));
+        /* `impl` 块里的方法**不在** `m->structs` 里 —— 块常住在别的模块（`impl ostream` 在
+         * `stl::stringio`，类型在 `std::io`），而入口模块自己就带着 `m->impls`（实测：
+         * `impls=1 structs=12 funcs=51`）。分析若看不见它们，事实就漏成"定义发 home 形参、
+         * 调用点不传"——实测 gcc 报 `too few arguments`。和 `sd->methods` 同样处理。 */
+        for (size_t i = 0; i < m->impls.len; i++) {
+            ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+            for (size_t j = 0; j < im->methods.len; j++)
+                *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&im->methods, j);
+        }
         for (size_t i = 0; i < m->funcs.len; i++) *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&m->funcs, i);
         for (size_t i = 0; i < m->structs.len; i++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -6216,6 +6234,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             }
         }
         Vec allF; vecInit(&allF, arena, sizeof(FuncDef *));
+        /* `impl` 块里的方法**不在** `m->structs` 里 —— 块常住在别的模块（`impl ostream` 在
+         * `stl::stringio`，类型在 `std::io`），而入口模块自己就带着 `m->impls`（实测：
+         * `impls=1 structs=12 funcs=51`）。分析若看不见它们，事实就漏成"定义发 home 形参、
+         * 调用点不传"——实测 gcc 报 `too few arguments`。和 `sd->methods` 同样处理。 */
+        for (size_t i = 0; i < m->impls.len; i++) {
+            ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+            for (size_t j = 0; j < im->methods.len; j++)
+                *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&im->methods, j);
+        }
         for (size_t i = 0; i < m->funcs.len; i++) *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&m->funcs, i);
         for (size_t i = 0; i < m->structs.len; i++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -6258,6 +6285,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     if (getenv("EXTC_EXPLAIN_MEMORY") && getenv("EXTC_EXPLAIN_ROOT")
         && strcmp(getenv("EXTC_EXPLAIN_ROOT"), "1") == 0) {
         Vec allF; vecInit(&allF, arena, sizeof(FuncDef *));
+        /* `impl` 块里的方法**不在** `m->structs` 里 —— 块常住在别的模块（`impl ostream` 在
+         * `stl::stringio`，类型在 `std::io`），而入口模块自己就带着 `m->impls`（实测：
+         * `impls=1 structs=12 funcs=51`）。分析若看不见它们，事实就漏成"定义发 home 形参、
+         * 调用点不传"——实测 gcc 报 `too few arguments`。和 `sd->methods` 同样处理。 */
+        for (size_t i = 0; i < m->impls.len; i++) {
+            ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+            for (size_t j = 0; j < im->methods.len; j++)
+                *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&im->methods, j);
+        }
         for (size_t i = 0; i < m->funcs.len; i++)
             *(FuncDef **)vecPush(&allF) = *(FuncDef **)vecAt(&m->funcs, i);
         for (size_t i = 0; i < m->structs.len; i++) {

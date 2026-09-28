@@ -1205,6 +1205,12 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
  * Returns:
  *   A C expression; the caller is responsible for the surrounding syntax.
  */
+/* The single owner of the implicit trailing arguments (home arena / zone). Declared up here because
+ * the operator path -- an operator is a method call too -- asks it from inside `genBin`, which sits
+ * above the definition. */
+static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site, size_t nargs,
+                           bool forSignature);
+
 static const char *genBin(CG *g, Expr *e) {
     const char *op = e->u.bin.op;
 
@@ -1269,15 +1275,16 @@ static const char *genBin(CG *g, Expr *e) {
         l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
         if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
 
-        /* The hidden arguments, exactly as the method-call path emits them (`f->usesHome` /
-         * `f->makesPool`): an operator IS a method call, and the checker decided the level
-         * for it (`setOpCallArgs`). Only the zone is emitted here; the arena half is PLAN #83
-         * and still open, so an operator that allocates and returns the value keeps failing
-         * loudly in the C compiler instead of silently leaking. */
+        /* The hidden arguments: an operator **is** a method call, so it asks the same single owner
+         * everything else asks (`cgImplicitArgs`) -- the checker already decided the level for it
+         * (`setOpCallArgs`). This used to emit only the zone half; the arena half was PLAN #83, and
+         * an operator that allocated and returned the value failed loudly in the C compiler
+         * (`too few arguments to function ...`) instead of silently leaking. Emitting both is what
+         * closed #83 -- and it is what makes the operator path stop being "the one exception". */
         Buf cb;
         bufInit(&cb, g->arena);
         bufPrintf(&cb, "%s(%s, %s", cMethodName(g, e->u.bin.left->type, m), l, r);
-        if (m->makesPool) bufPrintf(&cb, ", %s", zoneArgRef(g, e));
+        cgImplicitArgs(g, &cb, m, e, 2, false);   /* 2 = the two operands already emitted */
         bufPutc(&cb, ')');
         const char *call = bufCstr(&cb);
         return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
