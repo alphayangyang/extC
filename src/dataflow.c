@@ -321,6 +321,9 @@ static void dfBlock(Checker *c, Stmt *block, Facts *f, int depth) {
 
 static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
     if (!s) return;
+    /*@@all-kinds*/  /* tagged so `tools/check_walkers.py` looks at this switch: `dfStmt` is
+                      * mutually recursive with `dfBlock`, so the gate's "mentions its own name"
+                      * test does not recognise it as a walker. */
     switch (s->kind) {
     case ST_VAR: {
         if (!s->u.var.init) break;
@@ -423,6 +426,15 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
         joinInto(f, &acc);
         break;
     }
+    case ST_DOMAIN:
+        /* The domain block is a statement on purpose (`ast.h`): a store inside `d.run { ... }` is a
+         * store in this body, so the walker must descend into it. This case was missing while
+         * `ast.h` claimed the statement walkers handle its body "the same way they handle any other
+         * block" -- and `tools/check_walkers.py` could not see the omission, because it only
+         * recognises a walker that names its own function while `dfStmt` is mutually recursive with
+         * `dfBlock` (that half is still to do). */
+        dfBlock(c, s->u.domain_.body, f, depth);
+        break;
     case ST_RETURN:
     case ST_BREAK:
     case ST_CONTINUE:

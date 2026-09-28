@@ -34,7 +34,14 @@ LEAF = {
 }
 # Walkers that are known to be deliberately partial, with the reason. Adding an entry here is
 # a promise that the omission is intentional -- state why.
-ALLOW = {}
+ALLOW = {
+    # Keys are `file.c:function`. A walker that **legitimately** does not descend into some kind
+    # records it here with the reason; the gate then prints `allowed` instead of `MISSING`. This
+    # only became visible after `dfStmt` was tagged `/*@@all-kinds*/` -- before that the gate did
+    # not even look at it (it is mutually recursive with `dfBlock`).
+    "dataflow.c:dfStmt": "`ST_YIELD` carries only an expression, and dfStmt tracks binding depths "
+                         "without descending into expressions (its `ST_EXPR` case is a leaf too)",
+}
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
 RATCHET = 23       # measured 2026-09-26 after migrating the `needsHome` pair as well.
                    # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
