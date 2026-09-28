@@ -1,0 +1,8 @@
+fn main() -> i32 {
+  var b: mut slice<u8> = new u8[16384]
+  var i: i64 = 0  var sum: i64 = 0
+  while i < i64(20000) {
+    b[0] = u8(3)  b[16383] = u8(5)
+    sum = sum + i64(b[0]) + i64(b[16383])
+    i = i + i64(1) }
+  return i32(sum - i64(160000)) }

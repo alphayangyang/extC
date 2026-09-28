@@ -1,0 +1,15 @@
+use std::io
+fn run(k: i64, m: i64) -> i64 {
+  var sum: i64 = 0
+  var id: i64 = 0
+  while id < k {
+    var i: i64 = 0
+    while i < m { sum = sum + (i % i64(65536)) * i64(65521) + id * i64(40503)  i = i + i64(1) }
+    id = id + i64(1) }
+  return sum }
+fn main() -> i32 {
+  var total: i64 = run(i64(8), i64(2000))
+  var r: i64 = 0
+  while r < i64(1) { total = total + run(i64(512), i64(20000))  r = r + i64(1) }
+  io::cout << total << "\n"
+  return 0 }

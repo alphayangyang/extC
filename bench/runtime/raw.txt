@@ -1,0 +1,17 @@
+resume loop 3335
+resume statemachine 3133
+resume cpp20 5052
+resume extc 3567
+bounds checked 10195
+bounds unchecked 10519
+arena extc_fresh 4385
+arena c_calloc 2830
+arena c_malloc_memset 3085
+arena extc_reuse 2961
+arena c_reuse 3319
+matmul handc_O2 22.26 40693
+matmul handc_O3native 28.19 32136
+matmul extc_O2 9.12 99372
+matmul extc_O2_unchecked 8.70 104182
+matmul extc_O3native 26.34 34389
+compile 316 3486

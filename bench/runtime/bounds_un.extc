@@ -1,0 +1,14 @@
+use std::io
+@unchecked
+fn work(a: slice<i64>) -> i64 {
+  var i: i64 = 0  var s: i64 = 0
+  while i < i64(64) { s = s + a[i]  i = i + i64(1) }
+  return s }
+fn main() -> i32 {
+  var a: mut slice<i64> = new i64[64]
+  var i: i64 = 0
+  while i < i64(64) { a[i] = i  i = i + i64(1) }
+  var k: i64 = 0  var s: i64 = 0
+  while k < i64(800000) { s = s + work(a[..])  k = k + i64(1) }
+  io::cout << s << "\n"
+  return 0 }

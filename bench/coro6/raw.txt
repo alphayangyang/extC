@@ -1,0 +1,30 @@
+single extc 7 5 10256000
+single cpp 14 3 10256000
+single rust 10 2 10256000
+single go 1083 6 10256000
+single java 21968 34 10256000
+single python 415 349 10256000
+scale extc 1 886 2051200000
+scale extc 4 898 2051200000
+scale extc 8 922 2051200000
+scale cpp 1 1060 1025600000
+scale cpp 4 1051 1025600000
+scale cpp 8 1112 1025600000
+scale rust 1 1109 1538400000
+scale rust 4 1114 1538400000
+scale rust 8 1143 1538400000
+scale go 1 1250 10256000
+scale go 4 1266 10256000
+scale go 8 1302 10256000
+scale python 1 477 20512000
+scale python 4 487 20512000
+scale python 8 508 20512000
+scale java 1 18466 10256000
+scale java 4 20500 10256000
+scale java 8 21600 10256000
+rss extc 1024
+rss cpp 4096
+rss rust 2048
+rss go 2048
+rss python 9216
+rss java 201728

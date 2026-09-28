@@ -1,0 +1,8 @@
+fn gen(n: i64) -> coroutine<i64> { var i: i64 = 0
+  while i < n { yield i
+    i = i + i64(1) } }
+fn main() -> i32 { var c = gen(i64(1000000))
+  var s: i64 = 0
+  while c.next() { s = s + c.value() }
+  println(s)
+  return 0 }
