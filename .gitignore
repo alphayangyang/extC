@@ -40,3 +40,7 @@ bench/gc/io/in_lines.txt
 # 本地助手工具与废弃草稿（不入库）
 .claude/
 prototype-python/
+
+# prototype-heap 的产物（run.sh 会重新编）
+prototype-heap/host
+prototype-heap/plugin.so
