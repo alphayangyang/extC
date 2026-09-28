@@ -350,21 +350,35 @@ typedef struct {
     char       *text;
 } SliceHelper;
 
+/* Format one line into a freshly allocated arena string -- **with no length limit**.
+ *
+ * There used to be a `char tmp[4096]` here whose comment claimed "every caller stays far below
+ * that". It did not truncate loudly: a 5000-byte string literal produced a 4099-byte line, the
+ * compiler exited **0 with no diagnostic**, and gcc then reported `missing terminating " character`
+ * -- invalid C behind a successful exit. The corpus never emitted a line near 4096, so the gate
+ * could not see it. Measuring first and allocating is the same shape `arenaPrintf` already uses,
+ * and it makes the limit disappear rather than moving it. */
+static char *cgFormat(CG *g, const char *fmt, va_list ap) {
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap);
+    size_t len = (n > 0) ? (size_t)n : 0;
+    char *p = (char *)arenaAlloc(g->arena, len + 1);
+    vsnprintf(p, len + 1, fmt, ap2);
+    va_end(ap2);
+    return p;
+}
+
 /* Append one formatted line to the generated output at the current indent.
  *
  * Params:
  *   g   - generator state; supplies the output buffer, the indent and the arena
  *   fmt - printf-style format
- *
- * Notes:
- *   - The formatted line is truncated at 4096 bytes; every caller stays far
- *     below that.
  */
 static void cgLine(CG *g, const char *fmt, ...) {
-    char tmp[4096];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(tmp, sizeof tmp, fmt, ap);
+    const char *tmp = cgFormat(g, fmt, ap);
     va_end(ap);
 
     for (int i = 0; i < g->indent; i++) bufPuts(g->out, "    ");
@@ -379,10 +393,9 @@ static void cgLine(CG *g, const char *fmt, ...) {
  */
 
 static void pfLine(CG *g, const char *fmt, ...) {
-    char tmp[4096];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(tmp, sizeof tmp, fmt, ap);
+    const char *tmp = cgFormat(g, fmt, ap);   /* the same no-limit formatter as cgLine */
     va_end(ap);
     for (int i = 0; i < g->indent; i++) bufPuts(&g->prefix, "    ");
     bufPuts(&g->prefix, tmp);
