@@ -1,0 +1,9 @@
+// `@builtin` 也能声明 effects（与 `extern!` 同一条规则：编译器看不见它背后）。
+// 从前这里会把 `effects` 当成新声明，报 "the top level allows `fn`, `struct`, …"。
+use std::io
+@builtin
+fn foo() -> i64 effects Addr=0 Cont=0      /* 从未被调用：这条判据只钉"解析器接受它" */
+fn main() -> i32 {
+  var x: i64 = 7
+  io::cout << x << "\n"
+  return 0 }

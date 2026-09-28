@@ -1,0 +1,7 @@
+// 正例：**照诊断说的写**能编能跑（`use std::sys::domain` 之后用 `domain::single()`）。
+use std::sys::domain
+use std::io
+fn main() -> i32 {
+  let d = domain::single()
+  io::cout << "ok\n"
+  return 0 }

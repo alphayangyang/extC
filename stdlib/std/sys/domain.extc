@@ -25,4 +25,6 @@
  * `extern!` 的边界规则要求参数是标量或单指针，而 `domain` 在类型系统眼里不是指针 ⇒ 本来也过不了
  * 边界检查（实测报 "cannot cross the C boundary"）—— 正好说明它们不该对用户开放。 */
 @builtin
-fn single() -> domain
+fn single() -> domain effects Thread=1
+/* 上一行的效果是**诚实**的：域对象来自进程堆（`calloc`），那是跨线程共享的东西 ⇒ `Thread=1`。
+ * 没有参数 ⇒ `Addr`/`Cont` 都是 0（默认），它们的位是"第 i 个参数"的意思。 */

@@ -42,6 +42,12 @@ neg ext-in-plain-fn      "$(src plain_fn.extc)"  "$NODOM"
 neg ext-needs-operand    "$(src bare.extc)"      'expected an expression'
 neg domain-block-needs-coroutine "$(src domain_plain_task.extc)" '`ext` needs a coroutine function'
 # **能跑**：两个协程任务在同一个域里被驱动到结束，"done" 最后出现（结构化：块结束前必须全部跑完）
+# 模块诊断给的 `use` 必须**真能用**（从前照源码写法建议 `use sys::domain`，照做失败）
+neg use-advice-names-a-real-path "$(src use_advice.extc)" 'add `use std::sys::domain`'
+one use-advice-works-when-followed "$(src use_advice_works.extc)" "ok"
+# `@builtin` 也能声明 effects（从前 `effects` 会被当成新声明）
+one builtin-can-declare-effects "$(src builtin_effects.extc)" "7"
+
 one domain-runs-tasks "$(src domain_runs.extc)" $'1:0\n1:1\n2:0\n2:1\n2:2\ndone'
 neg domain-block-needs-object "$(src domain_needs_object.extc)" 'a trailing block needs'
 neg domain-block-wrong-method "$(src domain_wrong_method.extc)" 'a trailing block needs `run`'

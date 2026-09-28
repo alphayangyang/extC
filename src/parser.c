@@ -334,6 +334,52 @@ static UseDecl *parseUse(Parser *p) {
  *     stop after the signature, so no body is parsed and the C library is the
  *     implementation.
  */
+/* The `effects Addr=… Cont=… Thread=…` clause: what a function does with its arguments' addresses,
+ * and whether it touches cross-thread shared state. Written by **any declaration with no body** --
+ * `extern!` and `@builtin` alike, because the compiler cannot see behind either one. Each round
+ * skips newlines first, or `at()` would see a TK_NEWLINE and miss the keyword. */
+static bool parseEffectsClause(Parser *p, FuncDef *f) {
+            take(p);
+            f->hasEffects = true;
+            f->extThreadMask = 1u;   /* 缺省保守：假定它碰跨线程共享的状态 */
+            for (;;) {
+                Token *nm = expectIdent(p, "`Addr`, `Cont` or `Thread`");
+                if (!nm) return NULL;
+                if (!expect(p, "=", NULL)) return NULL;
+                Token *val = cur(p);
+                if (val->kind != TK_INT) {
+                    ctxError(p->ctx, val->line, val->col, NULL,
+                             "`effects` takes small integers, e.g. `effects Addr=0 Cont=0`");
+                    return NULL;
+                }
+                take(p);
+                unsigned bits = (unsigned)val->ival;
+                if (strcmp(nm->text, "Addr") == 0)        f->extAddrMask = bits;
+                else if (strcmp(nm->text, "Cont") == 0)   f->extContMask = bits;
+                else if (strcmp(nm->text, "Thread") == 0) {
+                    if (bits > 1u) {
+                        ctxError(p->ctx, nm->line, nm->col,
+                                 "`Thread` is a single fact about the call, not a per-argument mask:"
+                                 " 0 = it touches no cross-thread shared state, 1 = it does.",
+                                 "`Thread=%u` is out of range (use 0 or 1)", bits);
+                        return NULL;
+                    }
+                    f->extThreadMask = bits;
+                }
+                else {
+                    ctxError(p->ctx, nm->line, nm->col,
+                             "`Addr` = it stores `&argument`; `Cont` = it stores a pointer it"
+                             " read out of an argument. Bit i = the i-th argument.",
+                             "unknown effect `%s` (only `Addr`, `Cont` and `Thread` exist)", nm->text);
+                    return NULL;
+                }
+                if (at(p, "Addr") || at(p, "Cont") || at(p, "Thread")) continue;
+                break;
+            }
+            return true;
+    return true;
+}
+
 static FuncDef *parseExtern(Parser *p) {
     Token *kw = take(p);                       /* extern */
     if (!expect(p, "!", NULL)) return NULL;
@@ -375,43 +421,7 @@ static FuncDef *parseExtern(Parser *p) {
     while (true) {
         skipJunk(p);
         if (at(p, "effects")) {
-            take(p);
-            f->hasEffects = true;
-            f->extThreadMask = 1u;   /* 缺省保守：假定它碰跨线程共享的状态 */
-            for (;;) {
-                Token *nm = expectIdent(p, "`Addr`, `Cont` or `Thread`");
-                if (!nm) return NULL;
-                if (!expect(p, "=", NULL)) return NULL;
-                Token *val = cur(p);
-                if (val->kind != TK_INT) {
-                    ctxError(p->ctx, val->line, val->col, NULL,
-                             "`effects` takes small integers, e.g. `effects Addr=0 Cont=0`");
-                    return NULL;
-                }
-                take(p);
-                unsigned bits = (unsigned)val->ival;
-                if (strcmp(nm->text, "Addr") == 0)        f->extAddrMask = bits;
-                else if (strcmp(nm->text, "Cont") == 0)   f->extContMask = bits;
-                else if (strcmp(nm->text, "Thread") == 0) {
-                    if (bits > 1u) {
-                        ctxError(p->ctx, nm->line, nm->col,
-                                 "`Thread` is a single fact about the call, not a per-argument mask:"
-                                 " 0 = it touches no cross-thread shared state, 1 = it does.",
-                                 "`Thread=%u` is out of range (use 0 or 1)", bits);
-                        return NULL;
-                    }
-                    f->extThreadMask = bits;
-                }
-                else {
-                    ctxError(p->ctx, nm->line, nm->col,
-                             "`Addr` = it stores `&argument`; `Cont` = it stores a pointer it"
-                             " read out of an argument. Bit i = the i-th argument.",
-                             "unknown effect `%s` (only `Addr`, `Cont` and `Thread` exist)", nm->text);
-                    return NULL;
-                }
-                if (at(p, "Addr") || at(p, "Cont") || at(p, "Thread")) continue;
-                break;
-            }
+            if (!parseEffectsClause(p, f)) return NULL;
             continue;
         }
         if (at(p, "owned")) {
@@ -1426,9 +1436,18 @@ static FuncDef *parseFunc(Parser *p) {
         if (!fd->ret) return NULL;
     }
 
-    /* An `extern!` declaration has no body; p->noBody told parseFunc to stop
-     * after the return type. */
-    if (p->noBody) return fd;
+    /* A declaration with **no body** -- `extern!` or `@builtin` -- stops after the return type.
+     * Both kinds have to be able to state their `effects`: the compiler cannot see behind either one.
+     * (`extern!` also reads the clause in `parseExtern`, which is what lets it appear after another
+     * clause such as `owned`; here it must follow the signature directly.) */
+    if (p->noBody) {
+        /* The helper starts at the `effects` keyword and takes it, so the guard has to be here:
+         * an unconditional call ate whatever token came next (measured: `stdlib/std/sys/io.extc`
+         * came apart at `expected '='`, and 224 golden products changed). */
+        skipJunk(p);
+        if (at(p, "effects") && !parseEffectsClause(p, fd)) return NULL;
+        return fd;
+    }
     fd->body = parseBlock(p);
     if (!fd->body) return NULL;
     return fd;

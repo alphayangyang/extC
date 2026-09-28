@@ -215,6 +215,51 @@ typedef struct {
     int         errors;     /* number of errors reported; non-zero means the load failed */
 } Loader;
 
+/* The name a module is **called by** is not the path it is imported with: `use std::sys::domain`
+ * brings that module in as `domain`, so suggesting "add `use sys::domain`" tells the reader to
+ * import something that does not exist (measured: the standard library lives under `std/`).
+ * Look the file up quietly and suggest the path that would really work; if nothing matches, say
+ * nothing about a path and state the rule instead of inventing one. */
+static const char *suggestImportPath(Loader *L, const char *spelled) {
+    if (!spelled || !*spelled) return NULL;
+    Buf rel;
+    bufInit(&rel, L->a);
+    for (const char *s = spelled; *s; s++) {
+        if (s[0] == ':' && s[1] == ':') { bufPutc(&rel, '/'); s++; }
+        else bufPutc(&rel, *s);
+    }
+    const char *relC = bufCstr(&rel);
+    /* Two kinds of root: the `-I` directories (a module sits right under one of them) and the
+     * standard library root -- `stdDir` is the directory that *holds* `std/…`, so the interesting
+     * candidates there are `<stdDir>/<rel>` and `<stdDir>/std/<rel>`, the second of which is where
+     * `sys::domain` really lives (`…/std/sys/domain.extc` ⇒ `use std::sys::domain`). */
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1 && !L->stdDir) break;
+        size_t n = (pass == 0) ? L->searchDirs.len : 1;
+        for (size_t i = 0; i < n; i++) {
+            const char *dir = (pass == 0) ? *(const char **)vecAt(&L->searchDirs, i) : L->stdDir;
+            const char *subs[2] = { "", "std/" };
+            for (int k = 0; k < 2; k++) {
+                Buf b;
+                bufInit(&b, L->a);
+                bufPrintf(&b, "%s/%s%s.extc", dir, subs[k], relC);
+                FILE *fp = fopen(bufCstr(&b), "r");
+                if (!fp) continue;
+                fclose(fp);
+                /* The suggestion is spelled with `::` -- which is exactly the caller's own
+                 * spelling (`relC` is only that with `/` for the file system). */
+                if (subs[k][0] == '\0') return spelled;
+                Buf u;
+                bufInit(&u, L->a);
+                bufPrintf(&u, "std::%s", spelled);
+                return bufCstr(&u);
+            }
+        }
+    }
+    return NULL;
+}
+
+
 /* Prefix a declaration name with its module name: `readLine` -> `io$readLine`.
  *
  * Params:
@@ -678,10 +723,19 @@ static const char *rwTypeName(Loader *L, ModUnit *self, const char *name) {
     const char *restTop = restSep ? arenaStrndup(L->a, rest, (size_t)(restSep - rest)) : rest;
     ModUnit *target = importedAs(L, self, shortName);
     if (!target) {
+        /* 说清楚**规则**，并且在能找到文件时给出**真能用的那条 `use`** —— 源码里的写法
+         * （`sys::domain`）只是它被**叫**的名字，不是导入路径（实测：stdlib 在 `std/` 下，
+         * 「add `use sys::domain`」照做会失败）。 */
+        const char *sug1 = suggestImportPath(L, shortName);
+        const char *msg1 = sug1
+            ? arenaPrintf(L->a, "`%s` is not imported here -- add `use %s` and call it `%s::Name`",
+                          shortName, sug1, strrchr(sug1, ':') ? strrchr(sug1, ':') + 1 : sug1)
+            : arenaPrintf(L->a, "`%s` is not imported here -- add the `use` line that imports it"
+                                " (the name you call it by is the last segment of that path)",
+                          shortName);
         ctxError(self->ctx, 0, 1,
-                 "Modules are imported explicitly (semantic import, not a textual include)."
-                 " Write `use a::b` at the top of the file, then use `b::Name`.",
-                 "`%s` is not imported here -- add `use %s`", shortName, shortName);
+                 "Modules are imported explicitly (semantic import, not a textual include).",
+                 "%s", msg1);
         L->errors++;
         return rest;
     }
@@ -867,11 +921,16 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
              * would get two errors. Just say "not imported" and name the `use` to add;
              * if the file really is missing, the loader says so once the `use` exists
              * and lists every path it searched. */
-            const char *note = arenaPrintf(L->a,
-                    "Modules are imported explicitly (semantic import, not a textual include)."
-                    " Add `use %s` at the top of the file.", modPrefix);
-            ctxError(self->ctx, e->line, 1, note,
-                     "`%s` is not imported here -- add `use %s`", modPrefix, modPrefix);
+            /* 同上一处：给真能用的路径，找不到就别瞎猜。 */
+            const char *sug2 = suggestImportPath(L, modPrefix);
+            const char *note = "Modules are imported explicitly (semantic import, not a textual include).";
+            const char *msg2 = sug2
+                ? arenaPrintf(L->a, "`%s` is not imported here -- add `use %s` and call it `%s::Name`",
+                              modPrefix, sug2, strrchr(sug2, ':') ? strrchr(sug2, ':') + 1 : sug2)
+                : arenaPrintf(L->a, "`%s` is not imported here -- add the `use` line that imports it"
+                                    " (the name you call it by is the last segment of that path)",
+                              modPrefix);
+            ctxError(self->ctx, e->line, 1, note, "%s", msg2);
             L->errors++;
             return;
         }

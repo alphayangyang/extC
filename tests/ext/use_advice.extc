@@ -1,0 +1,7 @@
+// 反例（守的是模块那条诊断）：源码写法 `sys::domain::single()` 而那个模块没被 import。
+// 诊断必须给出**真能用的**那条 `use` —— 从前它照源码写法建议 `use sys::domain`，照做会失败。
+use std::io
+fn main() -> i32 {
+  let d = sys::domain::single()
+  io::cout << "never\n"
+  return 0 }
