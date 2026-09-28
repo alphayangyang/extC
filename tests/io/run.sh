@@ -329,4 +329,31 @@ else
     echo "  FAIL 大输入求和  ->  $(echo "$out" | tail -2 | tr '\n' '|')"; fail=1
 fi
 
+# F4 回归：单次写**大于** cout 缓冲区（256 KiB）时不能越界。
+# 从前的守卫只在缓冲区"快满"时 flush，而"写本身大于缓冲区"它管不着 ⇒ memcpy 越界。实测 glibc
+# 直接 abort（"buffer overflow detected"）。这里用 ASan 跑，越界必红。
+f4dir=$(mktemp -d)
+cat > "$f4dir/w.extc" <<'EOF'
+use std::io
+fn main() -> i32 {
+  var a: [300000]u8
+  var i: i64 = 0
+  while i < i64(300000) { a[i] = u8(65 + i32(i % i64(26)))  i = i + i64(1) }
+  var s: mut slice<u8> = a[..]
+  io::cout << s
+  return 0 }
+EOF
+if "$EXTC" -w -o "$f4dir/w.c" "$f4dir/w.extc" 2>/dev/null \
+   && gcc -O1 -fsanitize=address -std=c11 -fwrapv -o "$f4dir/w" "$f4dir/w.c" 2>/dev/null; then
+    n=$("$f4dir/w" 2>"$f4dir/err" | wc -c)
+    if [ "$n" = "300000" ] && ! grep -q AddressSanitizer "$f4dir/err"; then
+        echo "  ok   巨型写（300 KB）-> 300000 字节，ASan 干净"
+    else
+        echo "  FAIL 巨型写：输出 $n 字节 / $(grep -m1 AddressSanitizer "$f4dir/err")"; fail=1
+    fi
+else
+    echo "  FAIL 巨型写：编译失败"; fail=1
+fi
+rm -rf "$f4dir"
+
 exit $fail
