@@ -2884,6 +2884,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return f->ret ? f->ret : ttVoid(tt);
         }
 
+        case EX_EXT: {
+            /* Step 1 of the `ext` sugar: the syntax is frozen here. What is missing is the domain
+             * rule (legal inside a domain, a compile error outside) and the spawn itself; until
+             * that lands this is a loud refusal, never a silent call. */
+            ckError(c, e->line,
+                    "The `ext` sugar is parsed and its shape is fixed; the domain rule (inside a"
+                    " domain it is legal, outside it is a compile error) and the spawn are the next"
+                    " step (docs/topics/CONCURRENCY.md, `ext` 与调度域).",
+                    "`ext` is not implemented yet");
+            return ttError(tt);
+        }
         case EX_LAMBDA: return checkLambda(c, e);
         case EX_DYN: {
             /* `dyn Trait(x)` as a **value**: its type is `dyn Trait`, and the payload must
@@ -3553,6 +3564,7 @@ static bool exprMayPrint(Checker *c, Expr *e) {
             if (exprMayPrint(c, *(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
         return false;
     case EX_REF:   return exprMayPrint(c, e->u.ref.operand);
+    case EX_EXT: return exprMayPrint(c, e->u.ext_.call);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF: return exprMayPrint(c, e->u.deref.operand);
     case EX_SIGN:  return exprMayPrint(c, e->u.sign.operand);
     case EX_CONV:  return exprMayPrint(c, e->u.conv.operand);
@@ -3700,6 +3712,7 @@ static bool exprHasAnyCall(Expr *e) {
     case EX_BIN:   return exprHasAnyCall(e->u.bin.left) || exprHasAnyCall(e->u.bin.right);
     case EX_UN:    return exprHasAnyCall(e->u.un.operand);
     case EX_REF:   return exprHasAnyCall(e->u.ref.operand);
+    case EX_EXT: return exprHasAnyCall(e->u.ext_.call);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF: return exprHasAnyCall(e->u.deref.operand);
     case EX_SIGN:  return exprHasAnyCall(e->u.sign.operand);
     case EX_CONV:  return exprHasAnyCall(e->u.conv.operand);
@@ -3768,6 +3781,7 @@ static bool exprHasCall(Checker *c, Expr *e) {
                               e->kind == EX_DEREF ? e->u.deref.operand :
                               e->kind == EX_SIGN ? e->u.sign.operand :
                               e->kind == EX_CONV ? e->u.conv.operand : e->u.try_.operand);
+    case EX_EXT:      return exprHasCall(c, e->u.ext_.call);   /* `ext f(x)`: the spawned call */
     case EX_NEW:      return exprHasCall(c, e->u.new_.count);
     case EX_GENCALL:
         for (size_t i = 0; i < e->u.gencall.args.len; i++)

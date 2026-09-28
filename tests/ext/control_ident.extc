@@ -1,0 +1,8 @@
+// 对照：名字里**含** ext 的标识符不受影响（`ext` 是整词匹配，不是前缀）
+use std::io
+fn main() -> i32 {
+  var extc_flag: i64 = 3
+  var extra: i64 = 4
+  var next_one: i64 = 5
+  io::cout << extc_flag + extra + next_one << "\n"
+  return 0 }

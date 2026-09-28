@@ -157,6 +157,8 @@ else bad "tests/map/run.sh"; echo "$out" | tail -8; fi
 echo "== 实例化类型上的 impl 与 dyn（slice<u8> 挂方法 · 按实例隔离 · dyn 派发 · L 债金丝雀）=="
 if out=$(timeout 600 ./tests/instimpl/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
 if out=$(timeout 600 ./tests/lambda/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
+if out=$(timeout 600 ./tests/ext/run.sh 2>&1); then ok "$(echo "$out" | tail -1)"
+else bad "tests/ext/run.sh"; echo "$out" | tail -8; fi
 else bad "tests/lambda/run.sh"; echo "$out" | tail -8; fi
 else bad "tests/instimpl/run.sh"; echo "$out" | tail -8; fi
 

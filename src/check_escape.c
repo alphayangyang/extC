@@ -144,6 +144,7 @@ int valDepthStructural(Checker *c, Expr *e) {
         return 0;
     }
     case EX_REF:    return placeDepth(c, e->u.ref.operand);
+    case EX_EXT: return placeDepth(c, e->u.ext_.call);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:  return valDepthStructural(c, e->u.deref.operand);
     case EX_SIGN:   return valDepthStructural(c, e->u.sign.operand);
     case EX_COALESCE:
@@ -342,6 +343,9 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_REF:
         d = placeDepth(c, e->u.ref.operand);
         break;
+    case EX_EXT: 
+        d = placeDepth(c, e->u.ext_.call);
+        break;   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:
         /* The value of `*p` lives where `p` points, so it has the depth of `p`. */
         d = exprRefDepth(c, e->u.deref.operand);
@@ -2484,6 +2488,7 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     case EX_TRY:   return exprRefDepthPure(c, e->u.try_.operand, hops + 1, seen);
     case EX_CONV:  return exprRefDepthPure(c, e->u.conv.operand, hops + 1, seen);
     case EX_UN:    return exprRefDepthPure(c, e->u.un.operand, hops + 1, seen);
+    case EX_EXT: return exprRefDepthPure(c, e->u.ext_.call, hops + 1, seen);   /* `ext f(x)`: spawned call (cloned from EX_UN) */
     case EX_BIN: {
         int a = exprRefDepthPure(c, e->u.bin.left, hops + 1, seen);
         int b = exprRefDepthPure(c, e->u.bin.right, hops + 1, seen);

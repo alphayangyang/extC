@@ -1,0 +1,4 @@
+// 能嵌在别的表达式里当实参
+fn f(x: i64) -> i64 { return x }
+fn g(a: i64, b: i64) -> i64 { return a + b }
+fn main() -> i32 { return i32(g(ext f(i64(1)), i64(2))) }

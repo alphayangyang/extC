@@ -2395,6 +2395,21 @@ static Expr *parseFactor(Parser *p) {
  *     a left operand.
  */
 static Expr *parseUnary(Parser *p) {
+    /* `ext f(x)`: "start one concurrent task". Parsed as a **prefix** thing whose operand is an
+     * ordinary expression (normally a call), so the node is an expression and `let h = ext f(x)`
+     * reads naturally. Whether the operand really is a call, and whether there is a domain around
+     * it, is the checker's business -- the parser only locks the shape in.
+     *
+     * `ext` is not reserved anywhere else: measured 0 uses as an identifier in the corpus, and a
+     * name starting with `ext` (such as `extern!`) is a different token. */
+    if (at(p, "ext")) {
+        Token *kw = take(p);
+        Expr *inner = parseUnary(p);
+        if (!inner) return NULL;
+        Expr *e = exprNew(p->arena, EX_EXT, kw->line);
+        e->u.ext_.call = inner;
+        return e;
+    }
     if (at(p, "!") || at(p, "-") || at(p, "~")) {
         Token *op = take(p);
         Expr *operand = parseUnary(p);

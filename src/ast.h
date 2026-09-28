@@ -137,6 +137,11 @@ typedef enum {
                    * the type is supplied by adoptContextType, the same way an empty
                    * array literal picks up its element type. */
     EX_DYN,         /* `dyn Trait(x)`: the value form (a pool-backed handle) */
+    EX_EXT,         /* `ext f(x)`: start one concurrent task (the `ext` sugar, CONCURRENCY.md
+                     * "`ext` 与调度域"). It is an **expression**: it evaluates to a handle, so
+                     * `let h = ext f(x)` is the normal spelling. Legal only inside a domain --
+                     * that rule and the spawn itself are the checker's job; the parser only
+                     * builds the node. */
     EX_LAMBDA,      /* `fn(x: i64) -> i64 { ... }`: a closure literal. The checker gives it a
                      * generated unique type (a capture struct + a `call` method), so a lambda is
                      * an ordinary value of an ordinary type; see docs/topics/LAMBDA.md. */
@@ -355,6 +360,9 @@ struct Expr {
             const char *tname;
             Vec         inits;     /* FieldInit*: the environment's field values, in field order */
         } lambda;
+        /* `ext f(x)` (EX_EXT): `call` is the spawned expression, syntactically an ordinary call.
+         * The checker fills in what it resolved to; see the kind's comment in ExprKind. */
+        struct { Expr *call; } ext_;
         struct { Expr *recv; const char *name; Vec args; } method;
         struct { Expr *obj; const char *name; } field;
         struct { const char *name; Vec inits; } lit;      /* inits: FieldInit* */

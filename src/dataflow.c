@@ -217,6 +217,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     case EX_TRY:    return dfExprDepth(c, f, e->u.try_.operand, hops + 1);
     case EX_CONV:   return dfExprDepth(c, f, e->u.conv.operand, hops + 1);
     case EX_UN:     return dfExprDepth(c, f, e->u.un.operand, hops + 1);
+    case EX_EXT: return dfExprDepth(c, f, e->u.ext_.call, hops + 1);   /* `ext f(x)`: spawned call (cloned from EX_UN) */
     case EX_BIN: {
         int a = dfExprDepth(c, f, e->u.bin.left, hops + 1);
         int b = dfExprDepth(c, f, e->u.bin.right, hops + 1);

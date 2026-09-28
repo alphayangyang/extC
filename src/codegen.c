@@ -2004,6 +2004,12 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is
  */
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
+        case EX_EXT:
+            /* Unreachable today: the checker refuses `ext` before codegen runs. Loud on purpose --
+             * a silent value here would be exactly the kind of miscompile this file refuses. */
+            ctxError(g->ctx, e->line, 1, NULL,
+                     "ext: codegen is not implemented yet (CONCURRENCY.md, `ext` 与调度域)");
+            return "0";
         case EX_LAMBDA: {
             /* The environment, built where the lambda is written. The checker put the field values on
              * the node (check_expr.c, checkLambda), so this is a struct literal written out by hand:
@@ -3307,6 +3313,7 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.arraylit.elems, i), out);
         return;
     case EX_REF:      collectOwCallsExpr(e->u.ref.operand, out); return;
+    case EX_EXT: collectOwCallsExpr(e->u.ext_.call, out); return;   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:    collectOwCallsExpr(e->u.deref.operand, out); return;
     case EX_SIGN:     collectOwCallsExpr(e->u.sign.operand, out); return;
     case EX_CONV:     collectOwCallsExpr(e->u.conv.operand, out); return;

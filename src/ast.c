@@ -200,6 +200,7 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     case EX_FIELD: return visitExpr(v, e->u.field.obj);
     case EX_NEW:   return visitExpr(v, e->u.new_.count);
     case EX_DYN:   return visitExpr(v, e->u.dynv.payload);
+    case EX_EXT:   return visitExpr(v, e->u.ext_.call);   /* the spawned call is the only child */
     case EX_LAMBDA:                                          /* the body, plus the environment's
                                                              * field values: those are the reads that
                                                              * happen where the lambda is written */

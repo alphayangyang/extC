@@ -1116,6 +1116,7 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     case EX_BIN:    rwExpr(L, self, e->u.bin.left);  rwExpr(L, self, e->u.bin.right); break;
     case EX_UN:     rwExpr(L, self, e->u.un.operand); break;
     case EX_REF:    rwExpr(L, self, e->u.ref.operand); break;
+    case EX_EXT: rwExpr(L, self, e->u.ext_.call); break;   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:  rwExpr(L, self, e->u.deref.operand); break;
     case EX_SIGN:   rwExpr(L, self, e->u.sign.operand); break;
     case EX_CONV:   rwExpr(L, self, e->u.conv.operand); break;

@@ -759,6 +759,7 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
                        exprMakesPool(e->u.bin.right, descendBlocks);
     case EX_UN:  return exprMakesPool(e->u.un.operand, descendBlocks);
     case EX_REF: return exprMakesPool(e->u.ref.operand, descendBlocks);
+    case EX_EXT: return exprMakesPool(e->u.ext_.call, descendBlocks);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF: return exprMakesPool(e->u.deref.operand, descendBlocks);
     case EX_SIGN:  return exprMakesPool(e->u.sign.operand, descendBlocks);
     case EX_CONV:  return exprMakesPool(e->u.conv.operand, descendBlocks);
@@ -2034,6 +2035,7 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
                    grew |= markNamesInExpr(c, e->u.bin.right); return grew;
     case EX_UN:    return markNamesInExpr(c, e->u.un.operand);
     case EX_REF:   return markNamesInExpr(c, e->u.ref.operand);
+    case EX_EXT: return markNamesInExpr(c, e->u.ext_.call);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF: return markNamesInExpr(c, e->u.deref.operand);
     case EX_SIGN:  return markNamesInExpr(c, e->u.sign.operand);
     case EX_CONV:  return markNamesInExpr(c, e->u.conv.operand);
@@ -2520,6 +2522,7 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
                    collectEffectsExpr(c, f, e->u.bin.right); return;
     case EX_UN:    collectEffectsExpr(c, f, e->u.un.operand); return;
     case EX_REF:   collectEffectsExpr(c, f, e->u.ref.operand); return;
+    case EX_EXT: collectEffectsExpr(c, f, e->u.ext_.call); return;   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF: collectEffectsExpr(c, f, e->u.deref.operand); return;
     case EX_SIGN:  collectEffectsExpr(c, f, e->u.sign.operand); return;
     case EX_CONV:  collectEffectsExpr(c, f, e->u.conv.operand); return;
@@ -3583,6 +3586,7 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
                       obligExpr(c, e->u.bin.right, obs, escape); return;
     case EX_UN:       obligExpr(c, e->u.un.operand, obs, escape); return;
     case EX_REF:      obligExpr(c, e->u.ref.operand, obs, escape); return;
+    case EX_EXT: obligExpr(c, e->u.ext_.call, obs, escape); return;   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:    obligExpr(c, e->u.deref.operand, obs, escape); return;
     case EX_SIGN:     obligExpr(c, e->u.sign.operand, obs, escape); return;
     case EX_TRY:      obligExpr(c, e->u.try_.operand, obs, escape); return;

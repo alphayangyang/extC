@@ -1,0 +1,2 @@
+// 反例：`ext` 后面什么都没有 ⇒ 解析期错误
+fn main() -> i32 { ext  return 0 }
