@@ -1,7 +1,8 @@
 // 数字 ↔ 字符串：`fromI64` / `toI64`
 //
-// 注意：**不要**在判据里直接打印 `i64` 的最小值 —— `io::cout << i64 最小值` 目前会 trap（已知 bug，
-// 记在 `std::io` 里）。所以最小值的验证走**字节**：把它 `fromI64` 回字符串再打出来 ✓。
+// 这里**故意**直接打印 `i64` 的最小值与最大值：它们曾经是 bug（`io::cout << i64 最小值` 会 trap，
+// 2026-09-28 修 —— `fmtI64Fast` 从前先取绝对值，在 `2^63` 上溢出）。这一行就是那条的回归守卫 ✓。
+// 最小值的**字符串**验证另走一条（`fromI64` 回字节再比），两条互不替代。
 use stl::string
 use std::io
 
@@ -31,5 +32,6 @@ fn main() -> i32 {
   match string::toI64("12x") { some(v) => { n = n + i64(1) } none => { } }
   match string::toI64("99999999999999999999") { some(v) => { n = n + i64(1) } none => { } }
   match string::toI64("9223372036854775808") { some(v) => { n = n + i64(1) } none => { } }
+  io::cout << "min=" << m << " max=" << i64(9223372036854775807) << "\n"
   io::cout << "bad=" << bad << " accepted=" << n << "\n"
   return i32(bad) }

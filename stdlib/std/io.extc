@@ -301,7 +301,9 @@ fn nextI64State(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64,
 
     *got = saw
     if !saw { return success(i64(0)) }
-    if neg { return success(i64(0) - v) }
+    /* 同一个坑：`v` 是"大小"，可能正好是 `2^63` ⇒ `i64(0) - v` 溢出。先减一落回可表示范围，
+     * 再取负减一（对 1 也成立：`0 - 0 - 1 = -1`）。 */
+    if neg { return success(i64(0) - (v - i64(1)) - i64(1)) }
     return success(v)
 }
 
@@ -586,12 +588,9 @@ struct ostream { fd: i32
     /* 全都走**同一个缓冲**（`extc_cout_put` 是 `static inline` ⇒ 没有调用开销 ✓）
      * 不再借内建 `print`：那是一条操作数一次 `printf`，实测比这条路慢 **11 倍** ✗ */
     @inline
-    /* **已知 bug（2026-09-28 实测，未修）**：打印 `i64` 的**最小值**会当场 trap：
-     *
-     *     io::cout << i64(-9223372036854775807 - 1)      // trap: value does not fit in the target type
-     *
-     * 典型的 `-v` 写法在 `2^63` 上溢出 —— 带检查的算术把它抓住了（换成 C 会安静地打出错的数）。
-     * 修的时候顺手看看 `fromI64`（`stl/string.extc`）：它用"负数取余"绕开了同一个坑，可以作为写法参考。 */
+    /* 打印 `i64` 的最小值曾经会 trap（2026-09-28 修）：`fmtI64Fast` 里的 `i64(0) - v` 在
+     * `2^63` 上溢出，而带检查的算术当场抓住它（换 C 会安静地打出错的数）。现在那个函数从
+     * **负数一侧**取位，永不取绝对值 —— 与 `stl::string::fromI64` 同一招。 */
     fn <<(self: ref ostream, v: i64) -> ostream {
         pairsReady()
         let st = fmtI64Fast(v)
@@ -777,23 +776,28 @@ fn pairsReady() {
 @inline
 fn fmtI64Fast(v: i64) -> i64 {
     var end: i64 = i64(24)
-    var u: i64 = v
     var neg: bool = v < i64(0)
-    if neg { u = i64(0) - u }
-    while u >= i64(100) {
-        let r = u % i64(100)
-        u = u / i64(100)
+    /* 取位**从负数一侧**做，绝不先取绝对值：`i64(0) - v` 在 `v` 是 `i64` 最小值时溢出
+     * （实测：打印它会 `trap: value does not fit in the target type` —— 因为带检查的算术把它
+     * 抓住了；换成 C 会安静地打出错的数）。负数取余 `v % 100 ∈ (-100, 0]` ⇒ `0 - (v % 100)`
+     * 永远落在 `[0, 100)`，安全；`v / 100` 向零截断，循环照旧收敛。 */
+    while v >= i64(100) || v <= i64(-100) {
+        var m: i64 = v % i64(100)
+        if m < i64(0) { m = i64(0) - m }    /* m ∈ (-100, 100) ⇒ 这一步永远安全 */
+        v = v / i64(100)                    /* 向零截断 ⇒ 循环收敛，符号不影响 */
+        end = end - i64(2)
+        FMT[end]     = PAIRS[m * i64(2)]
+        FMT[end + 1] = PAIRS[m * i64(2) + i64(1)]
+    }
+    var r: i64 = v
+    if r < i64(0) { r = i64(0) - r }        /* |v| < 100 ⇒ 安全；`2^63` 那种大小从不出现 */
+    if r >= i64(10) {
         end = end - i64(2)
         FMT[end]     = PAIRS[r * i64(2)]
         FMT[end + 1] = PAIRS[r * i64(2) + i64(1)]
-    }
-    if u >= i64(10) {
-        end = end - i64(2)
-        FMT[end]     = PAIRS[u * i64(2)]
-        FMT[end + 1] = PAIRS[u * i64(2) + i64(1)]
     } else {
         end = end - i64(1)
-        FMT[end] = u8(48 + u)
+        FMT[end] = u8(48 + r)
     }
     if neg {
         end = end - i64(1)

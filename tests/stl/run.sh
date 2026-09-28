@@ -25,7 +25,8 @@ echo "== copyInto<T>：一次带检查的整块搬移（memmove，区间可重�
 run_case copyInto tests/stl/copyInto.extc "n=5 b=12345 m=4 a=3456 slen=6 ssum=396"
 
 echo "== sort<T>：introsort（显式栈）· 随机/已升/已降/全相等/风琴管/极小规模 + 结构体键 =="
-run_case fromI64 tests/stl/fromI64.extc "bad=0 accepted=0"
+run_case fromI64 tests/stl/fromI64.extc "min=-9223372036854775808 max=9223372036854775807
+bad=0 accepted=0"
 run_case from    tests/stl/from.extc  "s=5 e=0 v=3 w=2 sum=6"
 run_case sort tests/stl/sort.extc "ok=11 sorted=1 sum=499500 xo=0 sm0=0 sm1=999 i64ok=1 ptok=1 pt0=1"
 
