@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>0. 三分钟上手 · extC 手册</title>
+<title>28. 时间（`std::time`） · extC 手册</title>
 <style>:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d0d7de;--side:#f6f8fa;--acc:#0969da;--code:#f6f8fa;--k:#cf222e;--t:#0550ae;--n:#0550ae;--f:#8250df;--c:#6e7781}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--side:#161b22;--acc:#58a6ff;--code:#161b22;--k:#ff7b72;--t:#79c0ff;--n:#79c0ff;--f:#d2a8ff;--c:#8b949e}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
@@ -28,7 +28,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <nav class="side"><div class="brand"><a href="index.html">extC 手册</a></div>
 <input id="q" type="search" placeholder="搜索（/ 聚焦）" autocomplete="off">
 <div class="g">上路</div><ul>
-<li class="cur"><a href="00-quickstart.html">0. 三分钟上手</a></li>
+<li><a href="00-quickstart.html">0. 三分钟上手</a></li>
 <li><a href="01-safety.html">0.5 内存安全：承诺 × 现状</a></li>
 </ul>
 <div class="g">语言</div><ul>
@@ -65,37 +65,33 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <li><a href="25-std-fs-term.html">标准库参考：`std::fs` 与 `std::term`</a></li>
 <li><a href="26-stl-containers.html">标准库参考：容器的共同面</a></li>
 <li><a href="27-prelude.html">标准库参考：`prelude`</a></li>
-<li><a href="28-std-time.html">28. 时间（`std::time`）</a></li>
+<li class="cur"><a href="28-std-time.html">28. 时间（`std::time`）</a></li>
 </ul>
 <div class="g">透明清单</div><ul>
 <li><a href="20-internals.html">内部成员一览（透明清单）</a></li>
 </ul></nav>
-<main><div class="crumb">extC 手册 · §0.</div>
-<p><strong><a href="README.html">索引</a></strong> · ← 上一页 · <a href="01-safety.html">0.5 内存安全：承诺 × 现状 →</a></p>
-<hr>
-<h1 id="0-三分钟上手">0. 三分钟上手</h1>
-<pre class="lang-other"><code>make                                   # 产出 build/extc
-./build/extc --run examples/hello.extc # 生成 C、编译、直接运行</code></pre>
-<p>第一个程序：</p>
-<pre class="lang-extc"><code><span class="k">use</span> std::io
-<span class="c">// 这是注释</span>
-<span class="k">fn</span> <span class="f">add</span>(a: <span class="t">i64</span>, b: <span class="t">i64</span>) -&gt; <span class="t">i64</span> {
-    <span class="k">return</span> a + b
-}
+<main><div class="crumb">extC 手册 · §28.</div>
+<h1 id="28-时间-std-time">28. 时间（<code>std::time</code>）</h1>
+<p><strong>两个钟，问的是两个不同的问题，别混</strong>：</p>
+<table><thead><tr><th></th><th>是什么</th><th>拿它干什么</th><th>会跳吗</th></tr></thead><tbody><tr><td><code>time::now()</code></td><td>单调钟（<code>CLOCK_MONOTONIC</code>）</td><td><strong>测"这段代码花了多久"</strong></td><td><strong>不会</strong>（这正是它存在的理由）</td></tr><tr><td><code>time::real()</code></td><td>墙钟（<code>CLOCK_REALTIME</code>）</td><td>问"现在几点"</td><td>会（NTP、时区、管理员改表）</td></tr></tbody></table>
+<p>两个都返回 <strong>i64 纳秒</strong>。为什么是整数纳秒：跨边界只走标量（见下），而整数纳秒既没有精度损失， 也不会把"精度是多少"藏进浮点里。</p>
+<p><strong>计时用 <code>time::start()</code></strong>（闭包还不能当参数，所以没有 <code>time::perf(fn)</code> 那种东西 —— 计时是显式的）：</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::time
+<span class="k">use</span> std::io
 
 <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
-    <span class="k">let</span> x: <span class="t">i64</span> = <span class="n">3</span>
-    <span class="k">var</span> y = <span class="n">4</span>                  <span class="c">// 局部变量可以省类型标注，从初始化式推导</span>
-    y = y + <span class="n">1</span>
-    <span class="k">if</span> x &lt; y {
-        io::cout &lt;&lt; <span class="c">"sum = "</span> &lt;&lt; <span class="f">add</span>(x, y) &lt;&lt; <span class="c">"\n"</span>   <span class="c">// 控制台唯一出口，见第 8 节</span>
-    }
-    <span class="k">return</span> <span class="n">0</span>
-}</code></pre>
-<p>extC 编译到 C，再由系统的 C 编译器编成可执行文件。生成的 C 带 <code>#line</code>，所以 <strong>gcc 的报错会指回 <code>.extc</code> 的行号</strong>。</p>
-<hr>
-<p><strong><a href="README.html">索引</a></strong> · ← 上一页 · <a href="01-safety.html">0.5 内存安全：承诺 × 现状 →</a></p>
-<div class="pn"><span></span> <a href="01-safety.html">0.5 内存安全：承诺 × 现状 →</a></div></main>
+  <span class="k">var</span> n: <span class="t">i64</span> = time::<span class="f">now</span>() % <span class="t">i64</span>(<span class="n">200000</span>) + <span class="t">i64</span>(<span class="n">50000</span>)
+  <span class="k">var</span> t = time::<span class="f">start</span>()
+  <span class="k">var</span> s: <span class="t">i64</span> = <span class="n">0</span>
+  <span class="k">var</span> i: <span class="t">i64</span> = <span class="n">0</span>
+  <span class="k">while</span> i &lt; n { s = s + i * i  i = i + <span class="t">i64</span>(<span class="n">1</span>) }
+  io::cout &lt;&lt; <span class="c">"took "</span> &lt;&lt; t.<span class="f">elapsedUs</span>() &lt;&lt; <span class="c">" us (sum="</span> &lt;&lt; (s % <span class="t">i64</span>(<span class="n">1000</span>)) &lt;&lt; <span class="c">")\n"</span>
+  <span class="k">return</span> <span class="n">0</span> }</code></pre>
+<p><code>timer</code> 上的五个问题：<code>elapsedNs()</code> / <code>elapsedUs()</code> / <code>elapsedMs()</code> / <code>elapsedSecs()</code>（f64 秒）/ 以及 <code>time::now()</code> 本身。</p>
+<p><strong>睡眠</strong>：<code>time::sleepNs(ns)</code> / <code>sleepUs(us)</code> / <code>sleepMs(ms)</code> —— 至少睡够这么久（被信号打断会 自动接着睡剩下的）。</p>
+<h2 id="边界与已知取舍">边界与已知取舍</h2>
+<ul><li><strong>分辨率 ≠ 精度</strong>。在这台机器上，连续两次 <code>time::now()</code> 的最小正差值是 <strong>11 ns</strong>（走 vDSO 的 <code>CLOCK_MONOTONIC</code>）。这是"读数能细到多少"，不是"计时准到多少" —— 后面那个取决于操作系统与硬件。</li><li>时钟在<strong>运行期</strong>（<code>src/time.c</code>，按需发射）：<code>clock_gettime</code> 要一个 <code>struct timespec</code>，而本项目的 边界规矩是<strong>平台结构体的布局不让 extC 知道</strong>（<code>std::sys::net</code> 对 <code>epoll_event</code> 也是这么办的）。 所以布局留在 C 里，extC 这边只看见一个 <code>i64</code>。不问时间的程序，产物里一行都不带。</li><li>产物用 <code>-std=c11</code>（严格 ISO）编译，而 <code>clock_gettime</code> / <code>nanosleep</code> 是 POSIX ⇒ 用到时间时， 生成物开头会多一行 <code>#define _POSIX_C_SOURCE 200809L</code>（特性宏<strong>必须在第一个 include 之前</strong>， 所以它是按需发在前言里的）。</li><li>计时循环要<strong>折不掉</strong>：<code>while i &lt; 3000000 { s = s + i }</code> 会被 GCC 闭式求值（实测"耗时" 21 ns ✗）。 让上界来自时钟（像上面那样）或者来自输入，量到的才是真的。</li></ul>
+<div class="pn"><a href="28-coro-scheduler.html">← 协程调度器（`std::coro::scheduler`）</a> <span></span></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
 q.addEventListener('input',function(){var v=q.value.trim().toLowerCase();

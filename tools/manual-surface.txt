@@ -369,6 +369,17 @@ std::term	terminal	rawTerminal	method	public
 std::term	terminal	rawbuf	field	internal
 std::term	terminal	restore	method	public
 std::term	terminal	saved	field	internal
+std::time	-	now	fn	public
+std::time	-	real	fn	public
+std::time	-	sleepMs	fn	public
+std::time	-	sleepNs	fn	public
+std::time	-	sleepUs	fn	public
+std::time	-	start	fn	public
+std::time	timer	elapsedMs	method	public
+std::time	timer	elapsedNs	method	public
+std::time	timer	elapsedSecs	method	public
+std::time	timer	elapsedUs	method	public
+std::time	timer	start	method	public
 stl::hashMap	-	hashI64	fn	public
 stl::hashMap	hashMap	bucketOfDense	field	internal
 stl::hashMap	hashMap	bucketOfDense	field	internal

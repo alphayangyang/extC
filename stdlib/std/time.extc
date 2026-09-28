@@ -1,0 +1,43 @@
+/* std/time.extc —— **时间**（用户面）。
+ *
+ * 两个钟，问的是两个不同的问题，别混：
+ *   - `now()`  单调钟：**不会倒退**，测"这段代码花了多久"用它 ✓
+ *   - `real()` 墙钟：问"现在几点"用它；它会跳（NTP/时区/改表），拿它测时长是经典 bug ✗
+ * 两个都是 **i64 纳秒**。为什么是整数纳秒：跨边界只走标量（见 `std::sys::time` 的说明），
+ * 而整数纳秒既没有精度损失，也不会把"精度是多少"藏进浮点里。
+ *
+ * 为什么没有 `time::perf(fn)` 这种：闭包**还不能当参数**（lambda 的类型不可命名），所以计时
+ * 只能是显式的 —— 起一个 `Timer`，跑你的代码，问它过了多久：
+ *
+ *   var t = time::start()
+ *   …要测的代码…
+ *   io::cout << t.elapsedMs() << " ms\n"
+ */
+use std::sys::time
+
+/* 单调纳秒。测时长用这个。 */
+fn now() -> i64 { return extc_time_mono_ns() }
+
+/* 墙钟纳秒（Unix epoch 起算）。问"现在几点"用这个。 */
+fn real() -> i64 { return extc_time_real_ns() }
+
+fn sleepNs(ns: i64) -> void { extc_time_sleep_ns(ns) }
+fn sleepUs(us: i64) -> void { extc_time_sleep_ns(us * i64(1000)) }
+fn sleepMs(ms: i64) -> void { extc_time_sleep_ns(ms * i64(1000000)) }
+
+/* 一个秒表：`time::start()` 起，之后随便问它过了多久。（类型名小写：extC 把大写留给类型参数 `T`。） */
+struct timer {
+  /* `@private`：起点是**实现细节** —— 秒表对外只有那几个 `elapsed*` 问题，别人不该改起点
+   * （能改就等于能把计时改坏，而且公开面清单会把它算进"对外承诺"）。 */
+  @private
+  t0: i64
+
+  fn elapsedNs(self: ref timer) -> i64 { return now() - self.t0 }
+  fn elapsedUs(self: ref timer) -> i64 { return self.elapsedNs() / i64(1000) }
+  fn elapsedMs(self: ref timer) -> i64 { return self.elapsedNs() / i64(1000000) }
+  /* 秒，带小数：`f64` 在这里是合适的（人看的数，不是要精确累加的数）。 */
+  fn elapsedSecs(self: ref timer) -> f64 { return f64(self.elapsedNs()) / f64(1000000000) }
+}
+
+/* 起表。 */
+fn start() -> timer { return timer { t0: now() } }

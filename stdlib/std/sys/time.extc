@@ -1,0 +1,24 @@
+/* std/sys/time.extc —— 时间的**特权层**。
+ *
+ * 与 `std::sys::io`、`std::sys::net` 同一形状：这一层只把生成器提供的运行期原语声明成
+ * extC 能调的东西，实现是 `src/time.c`，**按需发射**（`CG.needTime`，由这里的
+ * `extern!("extc-time")` 触发）—— 不问时间的程序一行都不带。
+ *
+ * 为什么时钟在运行期而不是这里：`clock_gettime` 要一个 `struct timespec`，而本项目的边界规矩是
+ * **平台结构体的布局不让 extC 知道**（`std::sys::net` 对 `epoll_event` 也是这么办的）。
+ * 于是布局留在 C 里，extC 这边只看见一个标量：**i64 纳秒**。
+ *
+ * `Thread=0`：读时钟只碰自己的返回值，不碰任何跨线程共享状态。
+ */
+
+/* 单调钟：**不会倒退**，不受墙钟调整影响 —— 测"过了多久"用它。失败返回 -1。 */
+extern!("extc-time") fn extc_time_mono_ns() -> i64
+    effects Addr=0 Cont=0 Thread=0
+
+/* 墙钟：问"现在几点"用它。它会跳（NTP、时区、管理员改表）—— 别拿它测时长。失败返回 -1。 */
+extern!("extc-time") fn extc_time_real_ns() -> i64
+    effects Addr=0 Cont=0 Thread=0
+
+/* 至少睡这么多纳秒（被信号打断会自动接着睡剩下的）。 */
+extern!("extc-time") fn extc_time_sleep_ns(ns: i64) -> void
+    effects Addr=0 Cont=0 Thread=0

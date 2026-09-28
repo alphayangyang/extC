@@ -12,7 +12,7 @@ GROUPS = [('上路', ['00-quickstart', '01-safety']),
           ('结构与内存', ['08-struct', '09-ref', '10-nullref', '11-alloc', '12-driver', '13-vararray']),
           ('标准库与工具', ['14-builtins', '15-errors', '18-modules', '21-flags']),
           ('状态与示例', ['16-unimplemented', '17-undecided', '19-examples']),
-          ('标准库参考', ['22-stl-string', '23-stl-stringio', '24-std-io', '25-std-fs-term', '26-stl-containers', '27-prelude']),
+          ('标准库参考', ['22-stl-string', '23-stl-stringio', '24-std-io', '25-std-fs-term', '26-stl-containers', '27-prelude', '28-std-time']),
           ('透明清单', ['20-internals'])]
 KW = {'r': 'i64 u8 ref mut', 'keywords': 'fn let var struct enum impl trait match while'}
 KW_EXT = ('fn let var if else while for match return struct enum impl trait ref mut use new break '

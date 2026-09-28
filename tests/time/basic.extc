@@ -1,0 +1,34 @@
+// 时间库的四条判据，一个程序跑完（输出是机器可读的 key=value，runner 逐条查）
+use std::time
+use std::io
+
+fn main() -> i32 {
+  // ① 睡眠真的要睡够：sleepMs(50) 至少 45ms（上限交给 runner，CI 机器可能慢）
+  var t = time::start()
+  time::sleepMs(i64(50))
+  io::cout << "sleep_ms=" << t.elapsedMs() << "\n"
+
+  // ② 单调钟不倒退，且分辨率是亚毫秒的（连续两次采样取最小正差值）
+  var minD: i64 = i64(1000000000)
+  var backwards: i64 = 0
+  var k: i64 = 0
+  while k < i64(100000) {
+    var a: i64 = time::now()
+    var b: i64 = time::now()
+    if b < a { backwards = backwards + i64(1) }
+    var d: i64 = b - a
+    if d > i64(0) && d < minD { minD = d }
+    k = k + i64(1) }
+  io::cout << "backwards=" << backwards << "\n"
+  io::cout << "min_tick_ns=" << minD << "\n"
+
+  // ③ 计时一个**折不掉**的忙循环：上界来自时钟（编译期不知道），优化器没法闭式求值。
+  //    （直接写 `while i < 3000000 { s = s + i }` 会被 GCC 折掉 —— 实测 elapsed 21ns。）
+  var n: i64 = time::now() % i64(300000) + i64(50000)
+  var t2 = time::start()
+  var s: i64 = 0
+  var i: i64 = 0
+  while i < n { s = s + i * i  i = i + i64(1) }
+  io::cout << "busy_ns=" << t2.elapsedNs() << "\n"
+  io::cout << "sum=" << (s % i64(1000)) << "\n"
+  return 0 }
