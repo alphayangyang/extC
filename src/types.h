@@ -39,6 +39,13 @@ typedef struct {
      * is what keeps one view type with one method set (Rust instead mints two
      * distinct slice types). */
     Vec    viewShadows; /* Type* */
+    /* Function types (`fn(A) -> R`), interned like generic instances: a function type is a
+     * constructor, so `fn(i64) -> i64` written twice is the same type. Codegen emits one C
+     * `typedef` per entry here -- and this table **is** the demand set, which is why there is no
+     * separate "which function types does the program use" scan: every function type the program
+     * mentions was resolved through `ttFn` at some point, whether it was written in a struct
+     * field, a parameter, a local, or produced by substituting a generic. */
+    Vec    fnTypes;     /* Type* - function types; interned */
     Type  *tVoid;       /* the interned `void` type, which is the only one */
     Type  *tError;      /* the error type; every failed resolution returns it, and
                          * widening to or from it succeeds, so one bad type does not
@@ -185,6 +192,27 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args);
 
 Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args);
 
+/* Create (or reuse) the function type `fn(params...) -> ret`.
+ *
+ * Params:
+ *   tt     - type table
+ *   params - the resolved parameter types, in order (`Type *` entries); the vector is copied
+ *   ret    - the resolved return type; NULL is read as `void`
+ *
+ * Returns:
+ *   The interned function type, so the same signature always gives the same pointer.
+ *
+ * Notes:
+ *   - Interned only when every part is concrete, exactly like `ttGeneric`: checking a template
+ *     builds `fn(T) -> T`, which exists to compare types with and must not be emitted as C.
+ *   - The C spelling of a function type is a **typedef name** and not a declarator, because the
+ *     rest of this compiler spells a type as a prefix of a declaration while a C function pointer
+ *     wraps the name: `int64_t (*)(int64_t)` is a type, but `int64_t (*f)(int64_t)` is not "type
+ *     plus name". `ttMangle` is what produces that name, and codegen is what emits the typedef.
+ */
+
+Type *ttFn(TypeTable *tt, Vec *params, Type *ret);
+
 /* Report whether a value of type `got` may be used where `want` is expected, by
  * dropping `mut` at any depth. `mut` may only be removed, never added.
  *
@@ -281,6 +309,23 @@ Type *ttArray(TypeTable *tt, int64_t n, Type *elem);
  */
 
 bool ttHasParam(Type *t);
+
+/* Report whether a value of this type crosses the C boundary as **one** C parameter.
+ *
+ * Params:
+ *   t        - the type of the argument, or of the return value
+ *   isReturn - true for a return type, where `void` is legal
+ *
+ * Returns:
+ *   True when the type is one C parameter: a scalar, optionally behind references.
+ *
+ * Notes:
+ *   - One spelling for two askers -- an `extern!` signature and a function type (`fn(A) -> R`),
+ *     which are the two ways a C function is reached. A `slice<T>` is two C arguments, so it never
+ *     crosses as one; a pointer to a declared type and `ref void` are C-ABI.md section 9 step 2.
+ */
+
+bool ttCrossesC(Type *t, bool isReturn);
 
 /* Replace the type parameters of `t` with concrete types.
  *

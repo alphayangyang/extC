@@ -1,0 +1,51 @@
+// expect: v=42 via=42 ret=42 field=21 twice=84 nested=42 pid=yes
+// `fn(A) -> R`：裸函数指针（docs/topics/C-ABI.md 第 9 节第 1 步）的常设验收。
+//
+// 四种出现位置各一次（值 / 参数 / 返回值 / 结构体字段），加两个更难得对的地方：
+//   · **嵌套**：`fn(fn(i64) -> i64, i64) -> i64`，外层 typedef 必须在内层之后发射；
+//   · **extern 当值**：`getpid` 是 libc 的符号（`<unistd.h>` 没被前言 include ⇒ 不冲突），
+//     取它的地址再经指针调用，走的是"零参数签名 + 跨 C 边界"那两条路。
+use std::io
+
+extern!("libc") fn getpid() -> i32
+
+struct op {
+    f: fn(i64) -> i64
+    tag: i32
+}
+
+fn double_it(x: i64) -> i64 { return x * 2 }
+fn add_one(x: i64) -> i64 { return x + 1 }
+
+// 参数位置
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 { return f(x) }
+
+// 返回值位置：两个分支返回**不同**的函数，调用点看不出是哪一个
+fn pick(which: bool) -> fn(i64) -> i64 {
+    if which { return double_it }
+    return add_one
+}
+
+// 嵌套：参数本身是 `fn(i64) -> i64`
+fn twice(f: fn(i64) -> i64, x: i64) -> i64 { return f(f(x)) }
+
+fn main() -> i32 {
+    var f: fn(i64) -> i64 = double_it          // 值
+    io::cout << "v=" << f(21)
+
+    io::cout << " via=" << apply(double_it, 21)  // 参数
+
+    var g: fn(i64) -> i64 = pick(true)          // 返回值
+    io::cout << " ret=" << g(21)
+
+    var o: op = op { f: add_one, tag: 7 }       // 结构体字段
+    io::cout << " field=" << o.f(20)           // 字段里的函数直接调
+
+    io::cout << " twice=" << twice(double_it, 21)   // 嵌套签名
+    io::cout << " nested=" << apply(pick(false), 41)
+
+    var p: fn() -> i32 = getpid                 // extern 符号当值
+    if p() > 0 { io::cout << " pid=yes" } else { io::cout << " pid=no" }
+    io::cout << "\n"
+    return 0
+}

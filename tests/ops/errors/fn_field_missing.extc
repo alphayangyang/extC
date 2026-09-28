@@ -1,0 +1,10 @@
+/* 反例：结构体字段是 `fn` 而字面量没给它 ⇒ 报错，并且**要说对原因** ✗
+ *
+ * 与 `ref` 同一条规则（没有零值），但理由不同：零值的函数指针是 NULL，不是"空引用"。 */
+struct op { f: fn(i64) -> i64
+            tag: i32 }
+fn double_it(x: i64) -> i64 { return x * 2 }
+fn main() -> i32 {
+    var o: op = op { tag: 3 }
+    return o.tag
+}

@@ -253,11 +253,20 @@ void checkStmt(Checker *c, Stmt *s) {
                 if (s->u.var.ann && mentionsParam(s->u.var.ann))
                     recordZeroCheck(c, s->u.var.ann, s->line, s->u.var.name);
                 else if (s->u.var.ann && typeLacksZeroValue(c->tt, s->u.var.ann)) {
-                    ckError(c, s->line,
-                            "`ref` is a non-nullable reference, so it has no zero value -- "
-                            "and neither does any struct that contains one",
-                            "cannot zero-initialize `%s`: it contains a reference",
-                            s->u.var.name);
+                    /* Two reasons a type has no zero value, and the sentence has to name the right
+                     * one: a null `ref` is a dangling-looking value, while a null `fn` is a code
+                     * pointer that jumps to address zero when called. */
+                    if (typeContainsFn(c->tt, s->u.var.ann))
+                        ckError(c, s->line,
+                                "A `fn` value is a code pointer with no null in this language:"
+                                " initialize it, or write `option<fn …>` when it may be absent.",
+                                "cannot zero-initialize `%s`: it contains a `fn`", s->u.var.name);
+                    else
+                        ckError(c, s->line,
+                                "`ref` is a non-nullable reference, so it has no zero value -- "
+                                "and neither does any struct that contains one",
+                                "cannot zero-initialize `%s`: it contains a reference",
+                                s->u.var.name);
                 }
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
                 Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,

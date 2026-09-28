@@ -38,6 +38,7 @@ check_err() {
 }
 
 echo "== 正例：具体类型（比较 + 算术）· 有牙 · 泛型体 · 内建不改 =="
+run_case fnptr
 run_case long_line
 run_case slice_place
 run_case conv_float
@@ -108,6 +109,12 @@ check_err tests/ops/errors/instance_bool_order.extc    'cannot apply `<` to `boo
 # 流运算符的**引用结果**边界：它是借来的，不是值 ⇒ 存起来 / 传出去都必须挡住 ✓
 check_err tests/ops/errors/ref_value.extc               'can only be chained'
 check_err tests/ops/errors/ref_arg.extc                 'can only be chained'
+# `fn(A) -> R`（裸函数指针，C-ABI.md 第 9 节第 1 步）的四条边界：零值 · 骗人的签名 ·
+# 泛型裸名 · 结构体字段漏给。每一条都必须是**检查器/代码生成器**报的，不许漏到 gcc ✓
+check_err tests/ops/errors/fn_no_init.extc               'it contains a `fn`'
+check_err tests/ops/errors/fn_slice.extc                 'cannot cross the C boundary'
+check_err tests/ops/errors/fn_generic.extc               'is generic, so its bare name is not a value'
+check_err tests/ops/errors/fn_field_missing.extc         'must be given explicitly'
 
 echo "== 那三条“实例化时才检查”的诊断不许来自 gcc（生成物里的报错用户看不见源码）=="
 out=$("$EXTC" tests/ops/errors/instance_missing.extc -o /dev/null 2>&1)

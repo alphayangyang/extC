@@ -489,6 +489,12 @@ static const char *cType(CG *g, Type *t) {
             if (t->sdef && isProtoType(t, "coroutine", 1)) return "extc_coro";
             return t->name;                 /* already a decorated name */
         case TY_ARRAY:  return t->name;     /* likewise: array_15_i32 */
+        /* A function type is spelled by a **typedef name**, never by a declarator: every call site
+         * of `cType` concatenates the result with a name ("%s %s"), and a C function pointer wraps
+         * that name inside the declarator (`int64_t (*f)(int64_t)`). `t->name` is the mangle
+         * (`extc_fn_i64__i64`), and the typedef itself is emitted once, ahead of every struct
+         * definition; see `C-ABI.md` section 9.5. */
+        case TY_FN:    return t->name ? t->name : "void *";
         case TY_ENUM:  return t->name;      /* a plain enum typedef in C */
         case TY_ERROR: return "int";
         case TY_BUILTIN:
@@ -501,6 +507,22 @@ static const char *cType(CG *g, Type *t) {
             return "int";       /* already handled above; this only silences -Wswitch */
     }
     return "int";
+}
+
+/* The C parameter list of a function type: `int64_t, uint8_t *`, or `void` when there is none.
+ *
+ * `void` rather than an empty pair of parentheses, because `()` in a C declaration means
+ * "unspecified arguments" -- a different type, which would let a call through the pointer pass
+ * anything at all. */
+static const char *fnParamList(CG *g, Type *ft) {
+    if (ft->params.len == 0) return "void";
+    Buf b;
+    bufInit(&b, g->arena);
+    for (size_t i = 0; i < ft->params.len; i++) {
+        if (i) bufPuts(&b, ", ");
+        bufPuts(&b, cType(g, *(Type **)vecAt(&ft->params, i)));
+    }
+    return bufCstr(&b);
 }
 
 /* ---------------------------------------------------------------- expressions */
@@ -1566,6 +1588,13 @@ static const char *zeroValue(CG *g, Type *t) {
     if (t->kind == TY_REF) return t->nullable ? nullValue(g, t)
                                               : "__extc_reference_has_no_zero_value__";
 
+    /* Same defensive shape as the `ref` line above, for a stronger reason: the `0` that would fall
+     * out below is a **null function pointer**, and calling one jumps to address zero. The checker
+     * refuses to zero-initialize a `fn` (`typeLacksZeroValue` says a function type has no zero
+     * value), so this line is unreachable; if a later path slips through, the C compiler names the
+     * missing identifier instead of the program jumping to 0. */
+    if (t->kind == TY_FN) return "__extc_fn_has_no_zero_value__";
+
     return "0";
 }
 
@@ -2158,6 +2187,30 @@ static const char *genExprInner(CG *g, Expr *e) {
                 "(%s){ .data = (uint8_t *)\"%s\", .len = sizeof(\"%s\") - 1 }",
                 cType(g, e->type), e->u.str.text, e->u.str.text);
         case EX_IDENT: {
+            /* A function used as a value: the expression is its **address** (C-ABI.md section 9 step
+             * 1). C would also convert a function designator to a pointer by itself, but writing the
+             * `&` out is what makes the expression's C type the pointer the `fn` type promises, and it
+             * keeps a reader from having to know that rule to see what crosses the boundary.
+             *
+             * Two functions whose C signature cannot be the type's are refused here rather than
+             * emitted: a function that takes a hidden home arena or zone has one parameter more than
+             * the type says, and those two flags are settled only after every body has been checked
+             * (they are transitive closures), so this is the first place the answer is final. It is a
+             * compile error, and the alternative -- a differing pointer type -- is one gcc reports
+             * against generated code instead of against the line the author wrote. */
+            if (e->func) {
+                if (funcTakesHomeArena(e->func) || funcTakesHomeZone(e->func)) {
+                    ctxError(g->ctx, e->line, 1,
+                             "A function that takes a home arena or zone is compiled with one hidden"
+                             " parameter more than its source signature, so its address does not have"
+                             " the type this `fn` says. Call it, or write a free function that wraps"
+                             " it without the hidden argument.",
+                             "`%s` takes a hidden arena parameter, so its address is not a `fn` value",
+                             e->func->name ? e->func->name : "?");
+                    return "0";
+                }
+                return arenaPrintf(g->arena, "&%s", cFuncName(g, e->func));
+            }
             const char *cn = e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
             /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which
              * is a plain struct: every mention of them becomes a field access ✓ (one place decides
@@ -2310,6 +2363,25 @@ static const char *genExprInner(CG *g, Expr *e) {
                            " (docs/topics/CONCURRENCY.md 4.4)\"");
                 cgLine(g, "#endif");
                 return "0";
+            }
+            /* A call **through a value** of function type: the callee is an expression holding a code
+             * pointer, so there is no C name to print -- and none is needed, because the pointer is
+             * the callee and C calls through it directly. The checker has already matched every
+             * argument against the signature the type carries (C-ABI.md section 9 step 1); this only
+             * prints the expression. The parentheses are not decoration: a callee that is a compound
+             * expression or a dereference must not bind to the argument list. */
+            if (e->callViaFn) {
+                Buf fb;
+                bufInit(&fb, g->arena);
+                bufPutc(&fb, '(');
+                bufPuts(&fb, genExpr(g, e->u.call.callee));
+                bufPuts(&fb, ")(");
+                for (size_t i = 0; i < e->u.call.args.len; i++) {
+                    if (i) bufPuts(&fb, ", ");
+                    bufPuts(&fb, genExpr(g, *(Expr **)vecAt(&e->u.call.args, i)));
+                }
+                bufPutc(&fb, ')');
+                return bufCstr(&fb);
             }
             if (e->u.call.callee->kind != EX_IDENT) return "0";
             const char *name = e->u.call.callee->u.ident.name;
@@ -5302,6 +5374,16 @@ static void scanTypeForUnits(Arena *arena, Vec *units, Type *t, int depth) {
     if (t->inner) scanTypeForUnits(arena, units, t->inner, depth + 1);
     for (size_t i = 0; i < t->targs.len; i++)
         scanTypeForUnits(arena, units, *(Type **)vecAt(&t->targs, i), depth + 1);
+    /* A function type mentions its parts through `params` / `ret` and not through `inner` /
+     * `targs`, so it needs its own walk: `f: fn(pair<i32, u8>) -> void` inside a struct is a
+     * mention of the instance `pair_i32_u8`, and without this walk nothing ever emitted that
+     * struct. (It cannot be reached today -- a `fn` signature only carries scalars -- but a
+     * walker that walks half a type is exactly how the next change breaks silently.) */
+    if (t->kind == TY_FN) {
+        scanTypeForUnits(arena, units, t->ret, depth + 1);
+        for (size_t i = 0; i < t->params.len; i++)
+            scanTypeForUnits(arena, units, *(Type **)vecAt(&t->params, i), depth + 1);
+    }
 }
 
 /* Scan everything one unit mentions and add the instances found.
@@ -7518,6 +7600,59 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         cgLine(&g, "typedef struct %s %s;", unitName(u), unitName(u));
     }
     if (units.len) cgLine(&g, "");
+
+    /* ---- the function types (`fn(A) -> R`), one C typedef each ------------------------------
+     *
+     * Right here, and the position is the whole argument: **after** the enum typedefs and the struct
+     * forward typedefs, because a signature names the types it takes and returns; **before** the
+     * struct definitions, because a field of function type names its typedef.
+     *
+     * A function type cannot be spelled as a prefix of a declaration the way every other type here
+     * is. C wraps the declared name *inside* the pointer declarator -- `int64_t (*)(int64_t)` is a
+     * type, `int64_t (*f)(int64_t)` is not "type plus name" -- while every call site of `cType`
+     * concatenates its answer with a name. So a signature is spelled by a **typedef**, and `cType`
+     * answers with the typedef's name (`C-ABI.md` section 9.5).
+     *
+     * There is no "collect the demand" pass: `tt->fnTypes` **is** the demand set. Every function type
+     * the program mentions went through `ttFn` -- written in a field, a parameter, a local, or
+     * produced by substituting a generic -- so a program with no `fn` in it leaves the table empty and
+     * this block emits nothing at all.
+     *
+     * Signatures are emitted in creation order, and a nested one (`fn(fn(i64) -> i64) -> void`) is
+     * always created before the one that mentions it: the parser and `ttSubstitute` both build the
+     * parts before the whole, so the inner typedef is already there when the outer one names it. */
+    if (tt->fnTypes.len) {
+        cgLine(&g, "/* ---- function types (`fn(A) -> R`): one typedef per signature ---- */");
+        for (size_t i = 0; i < tt->fnTypes.len; i++) {
+            Type *ft = *(Type **)vecAt(&tt->fnTypes, i);
+            if (!ft->name) continue;
+            /* Two distinct signatures must never share one C name: the mangle separates the parts
+             * with `__`, which no mangle produces unless a source name itself contains a double
+             * underscore. Rather than assume that never happens, a collision is **reported** -- the
+             * same "say which name is needed instead of emitting C that does not compile" the
+             * generic-instance name check at the top of `generateC` does. */
+            bool clash = false;
+            for (size_t j = 0; j < i && !clash; j++)
+                clash = strcmp((*(Type **)vecAt(&tt->fnTypes, j))->name, ft->name) == 0;
+            for (size_t j = 0; j < m->structs.len && !clash; j++)
+                clash = strcmp((*(StructDef **)vecAt(&m->structs, j))->name, ft->name) == 0;
+            for (size_t j = 0; j < m->types.len && !clash; j++)
+                clash = strcmp((*(TypeDef **)vecAt(&m->types, j))->name, ft->name) == 0;
+            if (clash) {
+                Buf tb;
+                bufInit(&tb, g.arena);
+                ttRender(ft, &tb);
+                ctxError(ctx, 1, 1,
+                         "The compiler names the C typedef of a function type `extc_fn_<return>__"
+                         "<argument>...`. Give this declaration another name.",
+                         "`%s` is a name the compiler needs for the function type `%s`",
+                         ft->name, bufCstr(&tb));
+                continue;
+            }
+            cgLine(&g, "typedef %s (*%s)(%s);", cType(&g, ft->ret), ft->name, fnParamList(&g, ft));
+        }
+        cgLine(&g, "");
+    }
 
     /* Compute the dependencies: another struct-like type held by value in a
      * field. */

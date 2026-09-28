@@ -3938,14 +3938,15 @@ static void checkFunc(Checker *c, FuncDef *f) {
         /* Only scalars and single pointers may cross the boundary. A `slice<T>` would
         * become two C arguments (data and length), so the names would not match, and a
         * struct has no frozen layout; the stdlib wrappers pass `s.data` and `s.len`
-        * explicitly. */
+        * explicitly.
+        *
+        * The predicate itself lives in `ttCrossesC`: one spelling, shared with the `fn` type
+        * (`ttResolve`), which is the other way a C function is reached. It used to be spelled out
+        * here twice, with a branch that could never be taken -- the test asked
+        * `t->kind == TY_REF` about a type `ttBase` had already stripped every reference from. */
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
-            Type *t = ttBase(p->type);
-            bool ok = t && (t->kind == TY_BUILTIN ||
-                            (t->kind == TY_REF && ttBase(t->inner) &&
-                             ttBase(t->inner)->kind == TY_BUILTIN));
-            if (!ok)
+            if (!ttCrossesC(p->type, false))
                 ckError(c, p->line,
                         "A C function's arguments are scalars and single pointers. A `slice<T>`"
                         " becomes two C arguments (data + len), and a struct's layout is not"
@@ -3955,14 +3956,11 @@ static void checkFunc(Checker *c, FuncDef *f) {
                         i + 1, typeStr(c, p->type));
         }
         {
-            Type *r = f->ret ? ttBase(f->ret) : NULL;
             /* `void` is a C return type like any other -- `exit`, `free`, `srand` and
              * `cfmakeraw` all have it, and refusing it left the privileged layer unable to
              * declare them. What has no C-level representation is a struct, a slice (two
              * arguments), or a view. */
-            bool ok = !r || r->kind == TY_VOID || r->kind == TY_BUILTIN ||
-                      (r->kind == TY_REF && ttBase(r->inner) && ttBase(r->inner)->kind == TY_BUILTIN);
-            if (!ok)
+            if (!ttCrossesC(f->ret, true))
                 ckError(c, f->line,
                         "A C function can return `void`, a scalar, or a single pointer; anything"
                         " else has no C-level representation here.",

@@ -752,9 +752,14 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
 /* True when the type can carry a reference, directly or inside an array, a struct, or a payload
  * of any variant. */
  _Bool typeContainsRef (TypeTable *tt, Type *t);
-/* True when the type has no zero value, which holds for a non-nullable reference and for any
- * aggregate that contains one. A payload-carrying enum looks only at its first variant, because
- * its zero value is tag 0 with the payload zeroed. */
+/* True when the type is a function type (`fn(A) -> R`) or contains one inside an array, a struct, or
+ * a payload of any variant. Asked only to word one diagnostic correctly: a `fn` has no zero value,
+ * but the reason is not a reference. */
+ _Bool typeContainsFn (TypeTable *tt, Type *t);
+/* True when the type has no zero value, which holds for a non-nullable reference, for a function
+ * type (whose zero value would be a null code pointer), and for any aggregate that contains one. A
+ * payload-carrying enum looks only at its first variant, because its zero value is tag 0 with the
+ * payload zeroed. */
  _Bool typeLacksZeroValue (TypeTable *tt, Type *t);
 /* True when values of this type can be compared with `op`: the comparison is native, or the type
  * is an array of a comparable element, or it defines the operator method. */

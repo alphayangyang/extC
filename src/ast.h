@@ -36,6 +36,13 @@ typedef enum {
     TY_PARAM,       /* the type parameter itself: the `T` written inside a template */
     TY_GENERIC,     /* an instance, such as `Pair<i32, u8>` */
     TY_ARRAY,       /* a fixed array `[15]i32`: the length is part of the type */
+    TY_FN,          /* `fn(A, B) -> R`: a **bare code pointer** with no environment. This is the
+                     * type that crosses a C ABI boundary (`docs/topics/C-ABI.md`), not a closure:
+                     * a lambda with captures is a different type (a capture struct + a `call`
+                     * method), and only a capture-free lambda could ever be one of these. It has
+                     * **no null value**, exactly like a non-nullable `ref` -- see
+                     * `typeLacksZeroValue` -- and `option<fn …>` is how "may be absent" is
+                     * written. */
     TY_DYN,         /* `dyn Trait`: a pool-backed `{pool, slot, gen}` name; `name` is the trait */
     TY_ERROR        /* dummy type for a failed check, so errors do not cascade */
 } TypeKind;
@@ -58,6 +65,19 @@ struct Type {
     const char *param;   /* TY_PARAM: the parameter name, such as "T" */
     int         tpIndex; /* TY_PARAM: which parameter it is, by position */
     int64_t     asize;   /* TY_ARRAY: the length, a compile-time constant */
+    /* TY_FN: `fn(A, B) -> R`, a bare code pointer (`docs/topics/C-ABI.md`).
+     *
+     * `params` holds the parameter types (`Type *`) in order and `ret` is the return type, which
+     * is never NULL: `fn() -> void` is a real type and `void` is a real type in extC.
+     *
+     * Two fields of its own rather than a share of `inner` / `targs`, because a function type is
+     * a constructor like any other and every walker over the type tree has to visit both halves:
+     * sharing a field with a different meaning is how a walker silently walks half a type. The
+     * mangle of a function type is a **typedef name** (`extc_fn_i64__i64`), because a C function
+     * pointer declarator wraps the name ("int64_t (*f)(int64_t)") and the rest of this compiler
+     * spells a type as a prefix of the declaration. */
+    Vec         params;  /* TY_FN: the parameter types (Type*), in order */
+    Type       *ret;     /* TY_FN: the return type; `void` for none */
     /* TY_BUILTIN: where an `impl i64 { ... }` block put the methods it attached. A builtin
      * scalar has no declaration body, so methods written for it from outside need a holder of
      * their own; `NULL` when no impl ever targeted this builtin. Every other kind is covered by
@@ -69,6 +89,11 @@ Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED; targs may be fi
 Type *typeRef(Arena *a, Type *inner);
 Type *typeParam(Arena *a, const char *name, int idx);
 Type *typeArray(Arena *a, int64_t n, Type *elem);   /* TY_ARRAY */
+/* Build a function type from the parser's pieces: `fn(params...) -> ret` (TY_FN).
+ *
+ * The parser hands over parameter and return types that may still be `TY_UNRESOLVED` names, so
+ * this only builds the shape; interning happens in `ttResolve`. `ret` must not be NULL. */
+Type *typeFn(Arena *a, Vec *params, Type *ret);
 
 /* ------------------------------------------------------------ expressions */
 
@@ -165,7 +190,12 @@ struct Expr {
     /* ---- filled in by the type checker ---- */
     Type     *type;
     FuncDef  *func;     /* the function an EX_CALL or EX_METHOD resolved to; for `==`
-                         * it is the eq method */
+                         * it is the eq method.
+                         * On an **EX_IDENT** it means something else: this identifier is a
+                         * **function used as a value** (`var f: fn(i64) -> i64 = double_it`), so
+                         * the expression is a code pointer and codegen prints its address. The
+                         * checker's `lookup` finds bindings and never functions, which is why this
+                         * node arrives at the "undefined name" path and is claimed there. */
     /* `parallel::run(worker, ...)`: 内建识别出来的那个 worker（codegen 据此生成 trampoline）。 */
     FuncDef  *parWorker;
     /* `sys::domain::single()`: the checker marks the **call node** (the way it marks `parWorker`
@@ -408,6 +438,14 @@ struct Expr {
      * this flag is what tells it. (Without it the compiler accepted `ref dyn Tag` and emitted C
      * that did not build.) */
     bool dynRecvViaRef;
+    /* `f(x)` where `f` is a **value** of function type and not a declaration: the call goes through
+     * the code pointer, so there is no `FuncDef` for codegen to name.
+     *
+     * The checker sets this once it has matched every argument against the signature the **type**
+     * carries (`docs/topics/C-ABI.md` section 9 step 1). Without the flag, codegen's call path would
+     * look for `e->func`, find NULL, and drop the call on the floor -- `if (!e->func) return "0"`
+     * turns a missing call into a valid-looking product, which is worse than invalid C. */
+    bool callViaFn;
 };
 
 typedef struct { const char *name; Expr *value; } FieldInit;

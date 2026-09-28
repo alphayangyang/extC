@@ -1,0 +1,9 @@
+/* 反例：`fn` 的签名里放 slice ⇒ 那个类型是**骗人的** ✗
+ *
+ * C 的函数签名里没有 slice：`s.data` + `s.len` 是**两个** C 实参，而 `fn(slice<u8>) -> i64`
+ * 声明的是一个。这类类型必须当场拒绝（与 `extern!` 同一条谓词，C-ABI.md 第 9 节第 1 步）。 */
+fn slurp(b: slice<u8>) -> i64 { return i64(b.len) }
+fn main() -> i32 {
+    var f: fn(slice<u8>) -> i64 = slurp
+    return 0
+}

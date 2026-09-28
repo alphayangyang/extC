@@ -604,6 +604,43 @@ static bool typeContainsRefAt(TypeTable *tt, Type *t, int depth) {
     return false;
 }
 
+/* True when the type **is** a function type or contains one. The fourth member of the family above
+ * (`typeContainsRef`, `typeContainsProto`, `typeLacksZeroValue`), and it exists for the wording of
+ * one diagnostic: "it contains a reference" is the wrong sentence for `var f: fn(i64) -> i64`, and a
+ * message that names the wrong thing sends the reader looking for a reference that is not there. */
+static bool typeContainsFnAt(TypeTable *tt, Type *t, int depth);
+
+bool typeContainsFn(TypeTable *tt, Type *t) {
+    return typeContainsFnAt(tt, t, 0);
+}
+
+static bool typeContainsFnAt(TypeTable *tt, Type *t, int depth) {
+    if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */
+    if (!t) return false;
+    if (t->kind == TY_FN) return true;
+    if (t->kind == TY_ARRAY) return typeContainsFnAt(tt, t->inner, depth + 1);
+    if (t->kind == TY_ENUM && t->edef) {
+        for (size_t v = 0; v < t->edef->variants.len; v++) {
+            Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
+            for (size_t i = 0; i < va->types.len; i++)
+                if (typeContainsFnAt(tt, payloadType(tt, t, va, i), depth + 1)) return true;
+        }
+        return false;
+    }
+    StructDef *sd = structOf(t);
+    if (!sd) return false;
+    Vec *sp = NULL, *sa = NULL;
+    if (t->kind == TY_GENERIC && t->targs.len == sd->typeParams.len) {
+        sp = &sd->typeParams;
+        sa = &t->targs;
+    }
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
+        if (typeContainsFnAt(tt, ttSubstitute(tt, ft, sp, sa), depth + 1)) return true;
+    }
+    return false;
+}
+
 /* True when the type has no zero value.
  *
  * A `ref` has none, and neither does any aggregate that contains one. For a
@@ -637,6 +674,11 @@ static bool typeLacksZeroValueAt(TypeTable *tt, Type *t, int depth) {
     /* The zero value of `?ref T` is null, which is the reason it exists: the `next` of a
      * list or a tree node finally has one. */
     if (t->kind == TY_REF) return !t->nullable;
+    /* A function type has none either, and for a sharper reason than a `ref`: the zero value of a
+     * code pointer is a **null function pointer**, so `var f: fn(i64) -> i64` with no initializer
+     * would produce a value that jumps to address zero when called. `option<fn …>` is how "may be
+     * absent" is written (C-ABI.md section 2). */
+    if (t->kind == TY_FN) return true;
     if (t->kind == TY_ARRAY) return typeLacksZeroValueAt(tt, t->inner, depth + 1);
     if (t->kind == TY_ENUM && t->edef) {
         if (t->edef->variants.len == 0) return false;

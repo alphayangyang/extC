@@ -1003,6 +1003,166 @@ static Type *checkLambda(Checker *c, Expr *e) {
     return lt;
 }
 
+/* The type of a **function name used as a value**: the function's own signature, as a `fn` type.
+ *
+ * Params:
+ *   c - checker
+ *   e - the EX_IDENT node carrying the name
+ *   f - the function that name resolved to
+ *
+ * Returns:
+ *   The function type, written onto the node as well, or the error type after reporting.
+ *
+ * Notes:
+ *   - This is `C-ABI.md` section 9 step 1's way to make a `fn` value, and the smallest one: the
+ *     address of a function that already exists. Letting a capture-free lambda become a `fn` is the
+ *     next step and deliberately not here.
+ *   - The signature has to be exactly the C one, so three shapes are refused with a reason each:
+ *       * **generic**: one body per instantiation, so a bare name is not one code pointer;
+ *       * **method**: its first parameter is the receiver, which is not written at a call through a
+ *         pointer -- a free function wrapping it is the honest spelling;
+ *       * **coroutine**: its value is a frame handle, not a code pointer.
+ *   - A fourth refusal has to wait for codegen: a function that ends up taking a hidden home arena
+ *     or zone parameter has a C signature with an extra parameter that the `fn` type does not have.
+ *     Those two flags are settled only after every body has been checked (they are transitive
+ *     closures), so codegen -- where they are final -- is the place that refuses it.
+ */
+static Type *fnValueOf(Checker *c, Expr *e, FuncDef *f) {
+    if (f->typeParams.len > 0) {
+        ckError(c, e->line,
+                "Which instance? A `fn` value is one code pointer, and a generic function has one"
+                " body per instantiation. Call it, or write a free function with the signature you"
+                " want.",
+                "`%s` is generic, so its bare name is not a value", e->u.ident.name);
+        return ttError(c->tt);
+    }
+    if (funcIsMethod(f)) {
+        ckError(c, e->line,
+                "A method's first parameter is its receiver, which a call through a pointer would"
+                " have to write out. Write a free function that forwards to it.",
+                "`%s` is a method, not a function, so its name is not a `fn` value", e->u.ident.name);
+        return ttError(c->tt);
+    }
+    if (f->isCoro) {
+        ckError(c, e->line,
+                "A coroutine's value is a frame handle that some task drives, not a code pointer.",
+                "`%s` is a coroutine, so its name is not a `fn` value", e->u.ident.name);
+        return ttError(c->tt);
+    }
+
+    Vec ps;
+    vecInit(&ps, c->arena, sizeof(void *));
+    for (size_t i = 0; i < f->params.len; i++)
+        *(Type **)vecPush(&ps) = tsub(c, (*(Param **)vecAt(&f->params, i))->type);
+    Type *ft = ttFn(c->tt, &ps, tsub(c, f->ret ? f->ret : ttVoid(c->tt)));
+
+    e->func = f;
+    /* Taking the address is a use like any other: codegen emits only the functions something
+     * calls or names, so without this the definition would be missing and the C compiler would
+     * report an undeclared identifier. */
+    f->used = true;
+    return ft;
+}
+
+/* The type a **field access** would have, worked out without checking the expression.
+ *
+ * Why this exists rather than a `checkInto` on the callee: `o.f(x)` is parsed as a method call, so
+ * before the method path claims it the question "is `f` a field of function type?" has to be
+ * answerable. Checking `o.f` to find out would run the receiver's own checks a second time on the
+ * ordinary path -- and that path is every method call in every program.
+ *
+ * Returns:
+ *   The field's type, substituted for a generic receiver, or NULL when the answer is not available
+ *   this cheaply (the receiver is not a binding, the type is not a struct, there is no such field).
+ *   NULL means "not my case" and never an error: the caller falls through to the ordinary paths,
+ *   which report what is wrong with the program.
+ */
+static Type *peekFieldType(Checker *c, Expr *field) {
+    if (!field || field->kind != EX_FIELD) return NULL;
+    Expr *obj = field->u.field.obj;
+    if (!obj || obj->kind != EX_IDENT) return NULL;
+    Sym *s = lookup(c, obj->u.ident.name);
+    if (!s || !s->type) return NULL;
+    Type *bt = ttBase(tsub(c, s->type));
+    if (ttIsError(bt)) return NULL;
+    StructDef *sd = structOf(bt);
+    if (!sd) return NULL;
+    FieldDef *fd = findField(sd, field->u.field.name);
+    if (!fd || !fd->type) return NULL;
+    /* The same substitution the field-access case does: a field type may mention the receiver's
+     * type arguments. */
+    return (bt->kind == TY_GENERIC)
+               ? tsub(c, ttSubstitute(c->tt, fd->type, &sd->typeParams, &bt->targs))
+               : tsub(c, fd->type);
+}
+
+/* Materialize a `fn` type's parameters as `Param` nodes.
+ *
+ * The argument rules are written against a declaration's parameter list (`checkAssignable` per
+ * argument, then `checkCallRefArgs` over the whole list), and a function type is a signature without
+ * a declaration. Rather than write those rules a second time for the indirect call -- which is how
+ * one rule becomes two that drift -- they are handed the same shape. The names are empty on purpose:
+ * a function type has no parameter names, and nothing on this path prints one. */
+static Vec fnTypeParams(Checker *c, Type *ft) {
+    Vec ps;
+    vecInit(&ps, c->arena, sizeof(void *));
+    for (size_t i = 0; i < ft->params.len; i++) {
+        Param *p = (Param *)arenaAllocZero(c->arena, sizeof(Param));
+        p->name = p->cname = "";
+        p->type = *(Type **)vecAt(&ft->params, i);
+        *(Param **)vecPush(&ps) = p;
+    }
+    return ps;
+}
+
+/* Check `f(x)` where `f` **holds a value** of function type, not a declaration (`C-ABI.md` section 9
+ * step 1). The signature is the value's own, so every argument is matched against the type.
+ *
+ * Returns:
+ *   The return type the signature carries.
+ *
+ * Notes:
+ *   - The callee expression is checked, not looked up: codegen prints it as it stands, and its
+ *     binding (`cname`) has to be frozen by the checker like every other identifier.
+ *   - `checkCallRefArgs` is given a **NULL** callee on purpose: a code pointer carries no `effects`
+ *     signature (a signature is a property of a declaration, and this value has none), so the honest
+ *     summary is the conservative one -- "it may store anything it is given". That is the same
+ *     default an `extern!` without a clause gets, and it is why passing a frame-local pointer through
+ *     a `fn` value is refused until a later step gives the type somewhere to sign.
+ */
+static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
+    checkInto(c, NULL, e->u.call.callee);      /* freezes the callee's C name for codegen */
+
+    Vec ps = fnTypeParams(c, ft);
+    if (e->u.call.args.len != ps.len) {
+        ckError(c, e->line, NULL, "this `fn` value expects %zu argument(s), got %zu",
+                ps.len, e->u.call.args.len);
+        return ft->ret;
+    }
+    for (size_t i = 0; i < ps.len; i++) {
+        Param *p = *(Param **)vecAt(&ps, i);
+        Expr  *a = *(Expr **)vecAt(&e->u.call.args, i);
+        adoptContextType(a, p->type);
+        Type *at = checkInto(c, p->type, a);
+
+        /* The same spelling rule as an ordinary call: passing a reference to a `ref T` parameter is
+         * written `ref ...` at the site, so a reader sees a reference and not a copy. */
+        if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
+            ckError(c, a->line,
+                    "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
+                    "`ref` is a mutable reference, so the target must be a `var`",
+                    "argument expects `%s`; write `ref ...` here to pass a reference",
+                    typeStr(c, p->type));
+            continue;
+        }
+        checkAssignable(c, p->type, at, a, "argument");
+    }
+    checkCallRefArgs(c, NULL, &e->u.call.args, &ps, 0, e->line, "this `fn` value");
+
+    e->callViaFn = true;
+    return ft->ret;
+}
+
 static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
@@ -1039,6 +1199,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (s && s->modName && !e->qualified)
                 requireQualified(c, e->u.ident.name, s->modName, false, e->line);
             if (!s) {
+                /* A **function name used as a value**: `var f: fn(i64) -> i64 = double_it`.
+                 *
+                 * `lookup` finds bindings -- locals, parameters, globals -- and a function is not one,
+                 * so this is where a function name arrives: at the point the language would otherwise
+                 * say "undefined name". The expression's type is the function's **own signature**,
+                 * built here; no context is consulted, exactly as every other expression has a type
+                 * of its own (an annotation on the left of `=` then checks against it as usual).
+                 *
+                 * Three kinds of function cannot be a `fn` value, and each is refused with its own
+                 * reason rather than being allowed to produce C that does not compile; see
+                 * `fnValueOf`. */
+                FuncDef *fv = findFunc(c, e->u.ident.name);
+                if (fv) return fnValueOf(c, e, fv);
                 /* A bare variant name, with no payload. After `type st = | ok | bad`,
                  * writing `let s: st = ok` would otherwise report `undefined name `ok``,
                  * which does not show that the qualified form `st.ok` is wanted. A variant
@@ -2454,6 +2627,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return checkExprInner(c, e);
                 }
             }
+            /* `f(x)` where `f` **holds a value** of function type rather than naming a declaration:
+             * the call goes through the code pointer, and the signature comes from the type
+             * (`C-ABI.md` section 9 step 1). Placed before every name-based branch below, because
+             * those are all about a declaration this call does not have. */
+            if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+                Sym *sy = lookup(c, e->u.call.callee->u.ident.name);
+                Type *ct = (sy && sy->type) ? tsub(c, sy->type) : NULL;
+                if (ct && ct->kind == TY_FN) return checkCallThroughFn(c, e, ct);
+            }
+            /* `o.f(x)` where `f` is a **field** holding a `fn`, not a method. Without this the
+             * method path answers "no method `f` on `op`" -- a sentence about the wrong thing, on a
+             * program that has the field. The field's type is peeked at rather than checked, so the
+             * ordinary method path (which checks the receiver itself) is untouched. */
+            if (e->u.call.callee && e->u.call.callee->kind == EX_FIELD) {
+                Type *ft2 = peekFieldType(c, e->u.call.callee);
+                if (ft2 && ft2->kind == TY_FN) return checkCallThroughFn(c, e, ft2);
+            }
             /* Constructing a variant with a payload, `shape.circle(2.0)`: it looks like a field
              * access followed by a call, but `shape` is a type name and not a variable, so it is
              * recognised as an enum construction and rewritten to EX_ENUMVAL. */
@@ -2963,6 +3153,33 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_METHOD: {
+            /* `o.f(x)` where `f` is a **field** holding a `fn`, not a method. The parser reads the
+             * shape `receiver.name(args)` as a method call (only a bare `f(x)` becomes EX_CALL), so
+             * the field case has to be recognised here -- otherwise the answer is "no method `f` on
+             * `op`", a sentence about the wrong thing, on a program that has the field.
+             *
+             * The field's type is peeked at, never checked: if this turns out to be an ordinary
+             * method call (the overwhelmingly common case) the receiver's own checks must run once,
+             * and they run on the path below. The node is then rewritten in place into a call
+             * through the value, which is what `o.f(x)` means. */
+            if (e->u.method.recv->kind == EX_IDENT && lookup(c, e->u.method.recv->u.ident.name)) {
+                /* The callee node has to be a **real** field access on the arena, not a stack
+                 * temporary: it becomes the callee of the rewritten call, and codegen prints it
+                 * (`(o.f)(x)`). Building it and then pointing the call at the *receiver* instead is
+                 * what the first version did, and the generated C called `o`. */
+                Expr *fldE = exprNew(c->arena, EX_FIELD, e->line);
+                fldE->u.field.obj  = e->u.method.recv;
+                fldE->u.field.name = e->u.method.name;
+                Type *ft2 = peekFieldType(c, fldE);
+                if (ft2 && ft2->kind == TY_FN) {
+                    Vec args = e->u.method.args;
+                    e->kind = EX_CALL;
+                    e->u.call.callee = fldE;
+                    e->u.call.args   = args;
+                    return checkCallThroughFn(c, e, ft2);
+                }
+            }
+
             /* Constructing a variant with a payload can look like this as well: the syntax of
              * `shape.circle(2.0)` is that of a method call, `receiver.name(args)`, and the only
              * difference is that `shape` is a type name rather than a variable. So it is
@@ -3542,7 +3759,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     ft = ttSubstitute(tt, ft, &sd->typeParams, &st->targs);
                 if (typeLacksZeroValue(tt, ft))
                     ckError(c, e->line,
-                            "`ref` has no default value (it is a non-nullable reference)",
+                            typeContainsFn(tt, ft)
+                                ? "A `fn` field is a code pointer, and this language has no null"
+                                  " one: give it explicitly, or declare the field as"
+                                  " `option<fn …>`."
+                                : "`ref` has no default value (it is a non-nullable reference)",
                             "field `%s` must be given explicitly", fd->name);
             }
             return st;

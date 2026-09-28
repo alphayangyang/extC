@@ -253,6 +253,34 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p><strong>判据一句话</strong>：写一个「地方」要<strong>穿过</strong>哪些引用，每一只都得是 <code>mut ref</code> <strong>目标自己的类型不算</strong> —— <code>cur = v</code>（换指向）写的是<strong>槽位</strong>， 跟"<code>cur</code> 是不是只读引用"无关（<code>var cur: ?ref node</code> 照样可以换指向）</p>
 <p>这条会<strong>顺着调用图追</strong>：<code>rng::below</code> 因为里面调了 <code>next()</code>（要可写接收者）， 自己的签名也得改成 <code>mut ref</code> —— 光看函数体是看不出这种问题的。</p>
 <hr>
+<h3 id="函数指针-fn-a-b-r">函数指针 <code>fn(A, B) -&gt; R</code></h3>
+<p>一个<strong>裸代码指针</strong>：没有环境、没有捕获、没有空值。它只为「<strong>被调方编译期未知</strong>」的场合存在 —— <code>dlopen</code> 进来的模块、以及我们自己链接的 C 库（设计与理由见 <a href="../topics/C-ABI.html"><code>C-ABI.md</code></a>）。 程序<strong>内部</strong>的分发继续用<strong>枚举 + <code>match</code></strong>：行为集合是闭集时那个严格更好（穷尽性、能内联、没有寿命面）。</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::io
+
+<span class="k">fn</span> <span class="f">double_it</span>(x: <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> x * <span class="n">2</span> }
+<span class="k">fn</span> <span class="f">triple_it</span>(x: <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> x * <span class="n">3</span> }
+
+<span class="k">fn</span> <span class="f">apply</span>(f: <span class="k">fn</span>(<span class="t">i64</span>) -&gt; <span class="t">i64</span>, x: <span class="t">i64</span>) -&gt; <span class="t">i64</span> { <span class="k">return</span> <span class="f">f</span>(x) }   <span class="c">// 参数位置</span>
+
+<span class="k">fn</span> <span class="f">pick</span>(which: <span class="t">bool</span>) -&gt; <span class="k">fn</span>(<span class="t">i64</span>) -&gt; <span class="t">i64</span> {                     <span class="c">// 返回值位置</span>
+    <span class="k">if</span> which { <span class="k">return</span> double_it }
+    <span class="k">return</span> triple_it
+}
+
+<span class="k">struct</span> op { f: <span class="k">fn</span>(<span class="t">i64</span>) -&gt; <span class="t">i64</span> }                              <span class="c">// 结构体字段</span>
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+    <span class="k">var</span> f: <span class="k">fn</span>(<span class="t">i64</span>) -&gt; <span class="t">i64</span> = double_it    <span class="c">// 函数名当值：取它的地址</span>
+    io::cout &lt;&lt; <span class="c">"f="</span> &lt;&lt; <span class="f">f</span>(<span class="n">21</span>) &lt;&lt; <span class="c">"\n"</span>    <span class="c">// 经指针调用</span>
+    io::cout &lt;&lt; <span class="c">"apply="</span> &lt;&lt; <span class="f">apply</span>(double_it, <span class="n">21</span>) &lt;&lt; <span class="c">"\n"</span>
+    <span class="k">var</span> g: <span class="k">fn</span>(<span class="t">i64</span>) -&gt; <span class="t">i64</span> = <span class="f">pick</span>(<span class="k">false</span>)
+    io::cout &lt;&lt; <span class="c">"g="</span> &lt;&lt; <span class="f">g</span>(<span class="n">21</span>) &lt;&lt; <span class="c">"\n"</span>
+    <span class="k">var</span> o: op = op { f: triple_it }
+    io::cout &lt;&lt; <span class="c">"field="</span> &lt;&lt; o.<span class="f">f</span>(<span class="n">14</span>) &lt;&lt; <span class="c">"\n"</span>
+    <span class="k">return</span> <span class="n">0</span>
+}</code></pre>
+<ul><li><strong>它是值</strong>：能出现在参数、返回值、结构体字段、数组元素、<code>slice&lt;T&gt;</code> 的元素、泛型实参里。 调用就是 <code>f(x)</code>；<code>o.f(x)</code>（字段里的函数）也是调用，不是方法。</li><li><strong>没有空值</strong>：零值的函数指针是 <strong>NULL</strong>，而语言里没有空值 ⇒ 声明一个 <code>fn</code> 而不初始化是 <strong>编译错误</strong>。要"可能没有"就写 <code>option&lt;fn(i64) -&gt; i64&gt;</code>（<code>none</code> 是它的零值）。</li><li><strong>没有环境</strong>：带捕获的闭包<strong>不能</strong>变成 <code>fn</code>（那需要 <code>{code, env}</code> 两个词，属于"闭包当值"另一条线）。 要状态就<strong>显式传一个 <code>ctx</code> 参数</strong> —— 表里的那只 <code>ctx</code>、或每个注册项自己的那只。</li><li><strong>怎么造一个 <code>fn</code> 值</strong>：目前只有<strong>函数名当值</strong>这一种（下降成 <code>&amp;f</code>）；捕获为零的闭包自动转成 <code>fn</code> 还没有做。泛型函数的<strong>裸名字</strong>不是值（一个名字对应多个实例）；方法也不是（它第一个参数是接收者） —— 编译器会点名是哪一种，并指出该怎么写。</li><li><strong>签名只许放能过 C 边界的东西</strong>：标量、单指针、以及 <code>fn</code> 自己。<strong><code>slice&lt;T&gt;</code> 不行</strong> —— C 的签名里没有切片，它是 <code>s.data</code> + <code>s.len</code> <strong>两个</strong>实参，写成 <code>fn(slice&lt;u8&gt;) -&gt; void</code> 会是一个"声明一个、实际两个"的<strong>骗人类型</strong>，所以当场拒绝（与 <code>extern!</code> 同一条规则）。 跨界的函数就这样声明：<code>extern!("libc") fn f(p: ref u8, n: i64) -&gt; i64</code>，实参写 <code>s.data, s.len</code>。</li><li><strong>ABI 就是平台 C 的 ABI</strong>：不发明调用约定，产物本来就按 <code>-std=c11 -fwrapv</code> 编译。</li><li><strong>不承诺</strong>：<code>==</code> / 哈希（代码地址可能被合并）；生成物的 C 类型名是编译器按签名取的 （<code>extc_fn_i64__i64</code> 这种），作者不用也不该写它。</li></ul>
+<hr>
 <h3 id="数组类型-n-t">数组类型 <code>[N]T</code></h3>
 <p><strong>长度写在前面</strong>，因为「数组的长」是类型的一部分，跟 <code>[15][15]i32</code> 从左往右念一致。</p>
 <pre class="lang-extc"><code><span class="k">var</span> a: [<span class="n">5</span>]<span class="t">i32</span>                    <span class="c">// 5 个 i32，全零（零初始化是默认，不需要专门语法）</span>

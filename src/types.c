@@ -30,6 +30,10 @@ bool ttIsBuiltinName(const char *name) {
     return false;
 }
 
+/* Render a type for a diagnostic; defined next to `ttRender` below, declared here because
+ * `ttResolve` (which reports the shape errors of a `fn` type) needs it. */
+static const char *ttShow(TypeTable *tt, Type *t);
+
 /* Allocate a zeroed type node of `kind` carrying `name`. */
 static Type *mkType(Arena *a, TypeKind kind, const char *name) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -58,6 +62,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
     vecInit(&tt->instances, a, sizeof(void *));
     vecInit(&tt->enumInstances, a, sizeof(void *));
     vecInit(&tt->viewShadows, a, sizeof(void *));
+    vecInit(&tt->fnTypes, a, sizeof(void *));
 
     for (size_t i = 0; BUILTIN_NAMES[i]; i++)
         *(Type **)vecPush(&tt->builtins) = mkType(a, TY_BUILTIN, BUILTIN_NAMES[i]);
@@ -386,6 +391,50 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
             }
             return ttArray(tt, t->asize, e);
         }
+        /* `fn(A, B) -> R` as the parser wrote it: resolve both halves, then intern through
+         * `ttFn`. A name in scope resolves to a type parameter exactly as it does anywhere else,
+         * so a template's callback type is `fn(T) -> T` and stays uninterned until instantiation. */
+        case TY_FN: {
+            Vec np;
+            vecInit(&np, tt->arena, sizeof(void *));
+            for (size_t i = 0; i < t->params.len; i++)
+                *(Type **)vecPush(&np) =
+                    ttResolve(tt, ctx, *(Type **)vecAt(&t->params, i), line, params);
+            Type *fr = ttFn(tt, &np, ttResolve(tt, ctx, t->ret, line, params));
+
+            /* What may a function type carry? The same rule an `extern!` signature obeys, because
+             * this is the other way a C function is reached (C-ABI.md section 9 step 1). Without it
+             * `fn(slice<u8>) -> void` would be a **lying type**: it declares one argument while the
+             * C function takes two, and every call site would compile and call it wrong.
+             *
+             * Skipped while a type parameter is still in the signature: the answer depends on what
+             * `T` becomes, and a template is checked with `T` opaque. The substituted signature is
+             * not re-checked here yet -- nothing in the language builds one except this rule's own
+             * generic case, and step 2 owns the revision of the predicate (see `ttCrossesC`). */
+            /* `ttHasParam` and not the checker's `mentionsParam`: the latter is just this test plus
+             * a bare-`TY_PARAM` case, and `fr` is a function type, never a bare parameter. Asking the
+             * checker's copy here would make the type table depend on the layer above it. */
+            if (!ttHasParam(fr)) {
+                if (!ttCrossesC(fr->ret, true))
+                    ctxError(ctx, line, 1,
+                             "A C function can return `void`, a scalar, or a single pointer; anything"
+                             " else has no C-level representation here.",
+                             "`fn` return type `%s` cannot cross the C boundary",
+                             ttShow(tt, fr->ret));
+                for (size_t i = 0; i < fr->params.len; i++) {
+                    Type *pt = *(Type **)vecAt(&fr->params, i);
+                    if (ttCrossesC(pt, false)) continue;
+                    ctxError(ctx, line, 1,
+                             "A C function's arguments are scalars and single pointers. A"
+                             " `slice<T>` becomes two C arguments (data + len), and a struct's"
+                             " layout is not frozen -- write the two arguments out (`s.data` /"
+                             " `s.len`) instead of one.",
+                             "`fn` argument %zu has type `%s`, which cannot cross the C boundary",
+                             i + 1, ttShow(tt, pt));
+                }
+            }
+            return fr;
+        }
                 /* kind-default: a kind not listed above carries no unresolved name: the parser only ever builds UNRESOLVED / REF / ARRAY, and every other kind is already interned. A new *syntactic* shape must get a case here, not a default. */
 default:
             return t;
@@ -447,6 +496,28 @@ const char *ttMangle(TypeTable *tt, Type *t) {
         case TY_PARAM: return t->param;
         case TY_VOID:  return "void";
         case TY_ERROR: return "Error";
+        case TY_FN: {
+            /* The name of the C **typedef** that stands for this signature (`extc_fn_i64__i64`).
+             * A function type cannot be spelled as a prefix of a declaration the way every other
+             * type here can: C wraps the declared name *inside* the pointer declarator
+             * (`int64_t (*f)(int64_t)`), so the name has to be introduced by a typedef first and
+             * the type text is then just that name; see `C-ABI.md` section 9.5.
+             *
+             * `__` separates the parts because a mangle already joins its own pieces with a single
+             * `_` (`pair_i32_u8`), so one `_` would read as part of a name. Two signatures could
+             * still collide if a type name itself contained `__`; codegen refuses that case by name
+             * instead of emitting two different typedefs under one name (see the guard where the
+             * typedefs are emitted). */
+            Buf b;
+            bufInit(&b, tt->arena);
+            bufPuts(&b, "extc_fn_");
+            bufPuts(&b, ttMangle(tt, t->ret));
+            for (size_t i = 0; i < t->params.len; i++) {
+                bufPuts(&b, "__");
+                bufPuts(&b, ttMangle(tt, *(Type **)vecAt(&t->params, i)));
+            }
+            return bufCstr(&b);
+        }
                 /* kind-default: a kind not listed above has no structure to mangle -- it is an interned name (builtin, struct, payload-free enum), so its own name is already unique. A constructed kind must never land here: `Pair<i32>` and `Pair<u8>` would mangle alike. */
 default:       return t->name ? t->name : "?";
     }
@@ -476,6 +547,15 @@ bool ttHasParam(Type *t) {
      * "concrete only" rule), so it landed in `tt->instances` -- and from there in the unit list, whose
      * struct definition named the undefined `box_T` (tools/attack.py X4; same root under X3/X7/X8/X9). */
     if (t->kind == TY_ARRAY) return ttHasParam(t->inner);
+    /* A function type can carry a parameter through its signature (`fn(T) -> T` inside a
+     * template), so both halves are inspected. Missing this would let a rule that depends on the
+     * parameter be decided as if the signature were concrete. */
+    if (t->kind == TY_FN) {
+        if (ttHasParam(t->ret)) return true;
+        for (size_t i = 0; i < t->params.len; i++)
+            if (ttHasParam(*(Type **)vecAt(&t->params, i))) return true;
+        return false;
+    }
     if (t->kind == TY_GENERIC || t->kind == TY_ENUM) {
         for (size_t i = 0; i < t->targs.len; i++)
             if (ttHasParam(*(Type **)vecAt(&t->targs, i))) return true;
@@ -531,6 +611,53 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
         *(Type **)vecPush(&t->targs) = *(Type **)vecAt(args, j);
     t->name = ttMangle(tt, t);
     if (concrete) *(Type **)vecPush(&tt->instances) = t;
+    return t;
+}
+
+/* Create (or reuse) the function type `fn(params...) -> ret`.
+ *
+ * Params:
+ *   tt     - type table
+ *   params - resolved parameter types, in order
+ *   ret    - the resolved return type; NULL means `void`
+ *
+ * Returns:
+ *   The interned function type.
+ *
+ * Notes:
+ *   - Interning follows `ttGeneric`: only a fully concrete signature enters the table. A template
+ *     body is checked with `T` still opaque, so `fn(T) -> T` is built for comparison only; the
+ *     concrete instance is built by `ttSubstitute` at instantiation.
+ *   - `name` is the mangle (the C typedef name), computed once here rather than on every `cType`
+ *     call, the same way `ttGeneric` stores it.
+ */
+
+Type *ttFn(TypeTable *tt, Vec *params, Type *ret) {
+    if (!ret) ret = tt->tVoid;
+    bool concrete = !ttHasParam(ret);
+    for (size_t i = 0; i < params->len && concrete; i++)
+        if (ttHasParam(*(Type **)vecAt(params, i))) concrete = false;
+
+    if (concrete) {
+        for (size_t i = 0; i < tt->fnTypes.len; i++) {
+            Type *c = *(Type **)vecAt(&tt->fnTypes, i);
+            if (c->params.len != params->len) continue;
+            if (!ttEquals(c->ret, ret)) continue;
+            bool same = true;
+            for (size_t j = 0; j < params->len && same; j++)
+                same = ttEquals(*(Type **)vecAt(&c->params, j), *(Type **)vecAt(params, j));
+            if (same) return c;
+        }
+    }
+
+    Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
+    t->kind = TY_FN;
+    t->ret  = ret;
+    vecInit(&t->params, tt->arena, sizeof(void *));
+    for (size_t i = 0; i < params->len; i++)
+        *(Type **)vecPush(&t->params) = *(Type **)vecAt(params, i);
+    t->name = ttMangle(tt, t);
+    if (concrete) *(Type **)vecPush(&tt->fnTypes) = t;
     return t;
 }
 
@@ -703,6 +830,18 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
             return refLike(tt, t, ttSubstitute(tt, t->inner, params, args));
         case TY_ARRAY:
             return ttArray(tt, t->asize, ttSubstitute(tt, t->inner, params, args));
+        /* A function type is a constructor too, and it is the one whose parts are *both* walked:
+         * a template holding a callback (`fn(T) -> T`) hands back a concrete signature only if the
+         * parameter and the argument are substituted here. Falling into `default` left `fn(T) -> T`
+         * unchanged, and the call site then wanted `fn_T__T`. */
+        case TY_FN: {
+            Vec np;
+            vecInit(&np, tt->arena, sizeof(void *));
+            for (size_t i = 0; i < t->params.len; i++)
+                *(Type **)vecPush(&np) =
+                    ttSubstitute(tt, *(Type **)vecAt(&t->params, i), params, args);
+            return ttFn(tt, &np, ttSubstitute(tt, t->ret, params, args));
+        }
         case TY_GENERIC: {
             Vec na;
             vecInit(&na, tt->arena, sizeof(void *));
@@ -777,6 +916,17 @@ bool ttEquals(Type *a, Type *b) {
 
     if (a->kind == TY_PARAM)
         return a->tpIndex == b->tpIndex && strcmp(a->param, b->param) == 0;
+
+    /* A function type is interned when it is concrete and built fresh when it is not
+     * (`ttFn`), so like a generic instance it needs the structural comparison: the parser's
+     * `fn(T) -> T` inside a template and the one `ttSubstitute` builds are two pointers. */
+    if (a->kind == TY_FN) {
+        if (!ttEquals(a->ret, b->ret) || a->params.len != b->params.len) return false;
+        for (size_t i = 0; i < a->params.len; i++)
+            if (!ttEquals(*(Type **)vecAt(&a->params, i), *(Type **)vecAt(&b->params, i)))
+                return false;
+        return true;
+    }
 
     if (a->kind == TY_GENERIC) {
         if (a->mut != b->mut) return false;   /* a writable view is not the read-only view */
@@ -988,6 +1138,18 @@ void ttRender(Type *t, Buf *out) {
         case TY_PARAM: bufPuts(out, t->param); return;
         case TY_VOID:  bufPuts(out, "void"); return;
         case TY_ERROR: bufPuts(out, "<error>"); return;
+        case TY_FN:
+            /* The user-facing spelling is the one they wrote: `fn(i64) -> i64`. Printing the C
+             * typedef name here would show a word the author never wrote (`extc_fn_i64__i64`), which
+             * is the same mistake `ttDispName` exists to prevent for module types. */
+            bufPuts(out, "fn(");
+            for (size_t i = 0; i < t->params.len; i++) {
+                if (i) bufPuts(out, ", ");
+                ttRender(*(Type **)vecAt(&t->params, i), out);
+            }
+            bufPuts(out, ") -> ");
+            ttRender(t->ret, out);
+            return;
         case TY_ENUM:
             /* A generic enum instance is an ordinary enum type that carries type
              * arguments (`option<i64>`), so the arguments have to be printed too.
@@ -1017,6 +1179,51 @@ default: {
             return;
         }
     }
+}
+
+/* Render a type for a diagnostic. */
+static const char *ttShow(TypeTable *tt, Type *t) {
+    Buf b;
+    bufInit(&b, tt->arena);
+    ttRender(t, &b);
+    return bufCstr(&b);
+}
+
+/* Report whether a value of this type crosses the C boundary as **one** C parameter.
+ *
+ * Params:
+ *   t        - the type of the argument, or of the return value
+ *   isReturn - true for a return type, where `void` is legal
+ *
+ * Returns:
+ *   True when the type is one C parameter.
+ *
+ * Notes:
+ *   - One spelling, two askers: an `extern!` signature (`check_top.c` checks its parameter list
+ *     and its return type) and a **function type**, which is the other way a C function is
+ *     reached. Two spellings of this question is how the boundary drifts, and the drift has a
+ *     shape: `fn(slice<u8>) -> void` would declare one argument while the C function takes two,
+ *     so every call site would compile and call it wrong.
+ *   - What the rule is today: a scalar, optionally behind references -- `ttBase` strips them, so
+ *     `ref u8` is one pointer (`uint8_t *`) and crosses, while `ref point` does **not**, even
+ *     though the platform ABI would pass it fine. That narrowness is unchanged by this refactor
+ *     and it is the same narrowness `extern!` has always had; a pointer to a declared type and
+ *     `ref void` (C's `void *`) are C-ABI.md section 9 step 2, which owns the frozen-layout story
+ *     the pointee needs.
+ *   - A `slice<T>` is two C arguments (data + len), so it never crosses as one; the caller writes
+ *     `s.data` and `s.len` out (`stdlib/std/sys/mem.extc` is the worked example).
+ */
+
+bool ttCrossesC(Type *t, bool isReturn) {
+    Type *b = ttBase(t);
+    if (!b) return false;
+    if (b->kind == TY_BUILTIN) return true;
+    /* A function type crosses as one pointer, and it is the one constructed type that does: a code
+     * pointer is the same width whatever it points at, and C passes those freely (`qsort`'s
+     * comparator is exactly this shape). Without this a callback could not be handed to C at all,
+     * which would make the type useless for the case it exists for. */
+    if (b->kind == TY_FN) return true;
+    return isReturn && b->kind == TY_VOID;
 }
 
 /* Report whether `t` is a view type.

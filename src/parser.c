@@ -160,6 +160,7 @@ static void skipJunk(Parser *p) {
 /* ---------------------------------------------------------------- forward declarations */
 
 static Type    *parseType(Parser *p);
+static Type    *parseFnType(Parser *p);
 static Stmt    *parseBlock(Parser *p);
 static Stmt    *parseStmt(Parser *p);
 static Stmt    *parseVarDecl(Parser *p);
@@ -1555,6 +1556,15 @@ static Type *parseType(Parser *p) {
         return typeArray(p->arena, n->ival, elem);
     }
 
+    /* `fn(A, B) -> R` in **type** position: a bare code pointer (`docs/topics/C-ABI.md`).
+     *
+     * The spelling is the lambda literal's signature on purpose, so the language gains no new
+     * symbol; what differs is that these parameters are **types**, not `name: Type`. Only the
+     * shape is parsed here -- resolving and interning the signature is `ttResolve`'s job, as it is
+     * for every other type. */
+    if (at(p, "fn") && pk(p, 1) && pk(p, 1)->text && strcmp(pk(p, 1)->text, "(") == 0)
+        return parseFnType(p);
+
     Token *t = cur(p);
     if (t->kind == TK_TYPE || t->kind == TK_IDENT) {
         take(p);
@@ -1596,6 +1606,49 @@ static Type *parseType(Parser *p) {
     }
     ctxError(p->ctx, t->line, t->col, NULL, "expected a type, found `%s`", shown(t));
     return NULL;
+}
+
+/* Parse `fn(A, B) -> R` in type position into a TY_FN node.
+ *
+ * Returns:
+ *   The new Type node, or NULL after reporting an error.
+ *
+ * Notes:
+ *   - The return type is **required**. A lambda may leave it out because its body says what it is;
+ *     a type has no body, so `var f: fn(i64)` has nothing to infer from and is rejected here rather
+ *     than resolved into something guessed.
+ *   - Parameters carry no names, unlike a lambda's: the names of a function type are not part of
+ *     it, and the value that is called is not a declaration.
+ */
+static Type *parseFnType(Parser *p) {
+    Token *ft = take(p);                       /* fn */
+    if (!expect(p, "(", NULL)) return NULL;
+
+    Vec params;
+    vecInit(&params, p->arena, sizeof(void *));
+    skipNl(p);
+    while (!at(p, ")")) {
+        Type *pt = parseType(p);
+        if (!pt) return NULL;
+        *(Type **)vecPush(&params) = pt;
+        if (accept(p, ",")) skipNl(p);
+        else break;
+    }
+    if (!expect(p, ")", NULL)) return NULL;
+
+    if (!at(p, "->")) {
+        Token *bad = cur(p);
+        ctxError(p->ctx, bad->line, bad->col,
+                 "A lambda's return type may be inferred from its body; a function type has no"
+                 " body, so its return type is written out.",
+                 "a function type needs its return type: `fn(...) -> R`, found `%s`", shown(bad));
+        (void)ft;
+        return NULL;
+    }
+    take(p);                                   /* -> */
+    Type *ret = parseType(p);
+    if (!ret) return NULL;
+    return typeFn(p->arena, &params, ret);
 }
 
 /* ================================================================ statements */

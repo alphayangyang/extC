@@ -64,6 +64,32 @@ Type *typeArray(Arena *a, int64_t n, Type *elem) {
     return t;
 }
 
+/* Build the function type `fn(params...) -> ret` as the parser wrote it.
+ *
+ * Params:
+ *   a      - arena that owns the node and the parameter vector
+ *   params - parameter types, in order (`Type *` entries); the vector is copied
+ *   ret    - the return type; never NULL, `void` is passed as a real type
+ *
+ * Returns:
+ *   A TY_FN type whose parts may still be unresolved names.
+ *
+ * Notes:
+ *   - The shape is built here, but the interned type is not: `ttResolve` resolves the parameter
+ *     and return types and calls `ttFn`, which is the only place a TY_FN is interned. This split is
+ *     the same one `typeNamed` / `ttResolve` already have for every other type constructor, and it
+ *     is what keeps `ast.c` free of the type table.
+ */
+Type *typeFn(Arena *a, Vec *params, Type *ret) {
+    Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
+    t->kind = TY_FN;
+    vecInit(&t->params, a, sizeof(void *));
+    for (size_t i = 0; i < params->len; i++)
+        *(Type **)vecPush(&t->params) = *(Type **)vecAt(params, i);
+    t->ret = ret;
+    return t;
+}
+
 /* Create a reference to a generic parameter by name.
  *
  * Params:
@@ -209,7 +235,14 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
         return visitStmt(v, e->u.lambda.body);
     /* a receiver, or a list */
     case EX_METHOD:  return visitExpr(v, e->u.method.recv) && visitExprList(v, &e->u.method.args);
-    case EX_CALL:    return visitExprList(v, &e->u.call.args);
+    /* The callee of a call is normally a **name**, not an expression: nothing can be read through it
+     * and every walker would only ever report the function it resolved to. A call through a **value**
+     * (`f(x)` where `f` holds a `fn`) is the exception -- there the callee really is a read of a
+     * binding, so it is a child like any other. Without this the binding looks unread: the
+     * used-parameter question below reported `fn apply(f: fn(i64) -> i64, ...)`'s own parameter as
+     * never used, on a body whose only statement calls it. */
+    case EX_CALL:    return (!e->callViaFn || !e->u.call.callee || visitExpr(v, e->u.call.callee)) &&
+                            visitExprList(v, &e->u.call.args);
     case EX_ASSOC:   return visitExprList(v, &e->u.assoc.args);
     case EX_GENCALL: return visitExprList(v, &e->u.gencall.args);
     case EX_ENUMVAL: return visitExprList(v, &e->u.enumval.args);
