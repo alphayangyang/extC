@@ -82,6 +82,13 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <hr>
 <p><strong><a href="README.html">索引</a></strong> · <a href="16-unimplemented.html">← 10. 已定案、但还没实现</a> · <a href="18-modules.html">12. 库与模块（2026-09-22 新增） →</a></p>
 <ul><li><strong>内联 C（<code>inline C!</code>）</strong>：设想已归档，状态为<strong>未定案</strong>；签字的定位与待定问题见 <a href="../topics/INLINE-C.html"><code>docs/topics/INLINE-C.md</code></a>，沙箱那一半见 <a href="../topics/BOOTSTRAP.html"><code>docs/topics/BOOTSTRAP.md</code></a> §4.4。</li></ul>
+<h2 id="数组长度作为类型参数-size-实例化-想过-暂不做">数组长度作为类型参数（size 实例化）——<strong>想过，暂不做</strong></h2>
+<p><strong>现状（实测）</strong>：数组长度只能是<strong>字面量</strong>。</p>
+<pre class="lang-extc"><code>error: <span class="t">array</span> length must be an integer literal, found `N`</code></pre>
+<p>所以写不出 <code>fn from&lt;T, N&gt;(a: [N]T) -&gt; vector&lt;T&gt;</code> —— 也就是说 <code>vector::from([1, 2, 3])</code> 这种 "列表直接给 <code>from</code>"目前走不通，只能 <code>var a: [3]i64 = [...]</code> + <code>vector::from(a[..])</code> 两行。</p>
+<p><strong>为什么暂不做</strong>（作者口径）：size 实例化是签名层面的事 ⇒ 每个 <code>(T, N)</code> 一份展开 ⇒ 代码膨胀、 编译时间、mangle 与 <code>impl</code> 表都要带上长度、诊断更难读。这与"数组长度写进类型"本身无关 （Rust 也一样），代价来自<strong>把它泛型化</strong>。<code>@inline</code> 救不了：<code>N</code> 仍要出现在签名里。</p>
+<p><strong>将来若要"一行"</strong>，更便宜的路子是<strong>字面量形态</strong>（对应 Rust 的 <code>vec![1, 2, 3]</code>）：编译器在<strong>现场</strong> 就看见有几个元素 ⇒ 现场发一段构造，不参与泛型机制、不产生 N 份函数。它是<strong>字面量</strong>，不是特殊权限 （与 <code>[1, 2, 3]</code> 同级），所以和"不开特殊权限"的口径不冲突。</p>
+<p><strong>今天够用</strong>：<code>string::from("abc")</code> 一行；<code>vector::from(a[..])</code> 两行。</p>
 <div class="pn"><a href="16-unimplemented.html">← 10. 已定案、但还没实现</a> <a href="18-modules.html">12. 库与模块（2026-09-22 新增） →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));

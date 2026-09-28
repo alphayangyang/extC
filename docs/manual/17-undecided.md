@@ -27,3 +27,24 @@ println(ps[0] == point { x: 1, y: 2 })  // 写全名字
 - **内联 C（`inline C!`）**：设想已归档，状态为**未定案**；签字的定位与待定问题见
   [`docs/topics/INLINE-C.md`](../topics/INLINE-C.md)，沙箱那一半见
   [`docs/topics/BOOTSTRAP.md`](../topics/BOOTSTRAP.md) §4.4。
+
+## 数组长度作为类型参数（size 实例化）——**想过，暂不做**
+
+**现状（实测）**：数组长度只能是**字面量**。
+
+```
+error: array length must be an integer literal, found `N`
+```
+
+所以写不出 `fn from<T, N>(a: [N]T) -> vector<T>` —— 也就是说 `vector::from([1, 2, 3])` 这种
+"列表直接给 `from`"目前走不通，只能 `var a: [3]i64 = [...]` + `vector::from(a[..])` 两行。
+
+**为什么暂不做**（作者口径）：size 实例化是签名层面的事 ⇒ 每个 `(T, N)` 一份展开 ⇒ 代码膨胀、
+编译时间、mangle 与 `impl` 表都要带上长度、诊断更难读。这与"数组长度写进类型"本身无关
+（Rust 也一样），代价来自**把它泛型化**。`@inline` 救不了：`N` 仍要出现在签名里。
+
+**将来若要"一行"**，更便宜的路子是**字面量形态**（对应 Rust 的 `vec![1, 2, 3]`）：编译器在**现场**
+就看见有几个元素 ⇒ 现场发一段构造，不参与泛型机制、不产生 N 份函数。它是**字面量**，不是特殊权限
+（与 `[1, 2, 3]` 同级），所以和"不开特殊权限"的口径不冲突。
+
+**今天够用**：`string::from("abc")` 一行；`vector::from(a[..])` 两行。
