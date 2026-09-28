@@ -2473,15 +2473,27 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *tn = t->name;
             bool isF = ttIsFloat(subst(g, e->u.conv.operand->type));
             if (isF) {
-                int64_t lo = 0, hi = 0;
-                if (strcmp(tn,"i8")==0)  { lo = -128; hi = 127; }
-                else if (strcmp(tn,"i16")==0) { lo = -32768; hi = 32767; }
-                else if (strcmp(tn,"i32")==0) { lo = -2147483648LL; hi = 2147483647LL; }
-                else if (strcmp(tn,"i64")==0) { lo = 1; hi = 0; }   /* macro form, see below */
-                else if (strcmp(tn,"u8")==0)  { lo = 0; hi = 255; }
-                else if (strcmp(tn,"u16")==0) { lo = 0; hi = 65535; }
-                else if (strcmp(tn,"u32")==0) { lo = 0; hi = 4294967295LL; }
-                else { lo = 0; hi = INT64_MAX; }        /* u64 from a float: checked as i64 */
+                /* The range comes from the same table the checker uses (`ttIntBits` /
+                 * `ttIntSigned`, src/types.c) instead of a hand-written chain per type name.
+                 * That chain had `i64` as `lo = 1; hi = 0`, so **every** float-to-`i64`
+                 * conversion trapped at runtime ("float does not fit in the target integer
+                 * type") and `u64` was capped at INT64_MAX; two of the eight cases were wrong
+                 * and no corpus program converted a float to a 64-bit integer, which is why the
+                 * suite stayed green. The two 64-bit ends cannot be written as `%lldLL` (`INT64_MIN`
+                 * / `INT64_MAX` / `UINT64_MAX` are macros), so they take the macro spelling. */
+                int bits = ttIntBits(t);
+                if (bits == 0)                          /* not an integer: the plain cast is the whole conversion */
+                    return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
+                if (bits == 64) {
+                    bool sgn = ttIntSigned(t);
+                    return arenaPrintf(g->arena,
+                        "((%s)extc_convFloat((double)(%s), %s, %s, \"%s\", %d))",
+                        cType(g, t), x, sgn ? "INT64_MIN" : "0",
+                        sgn ? "INT64_MAX" : "UINT64_MAX", g->path, e->line);
+                }
+                int64_t lo = ttIntSigned(t) ? -((int64_t)1 << (bits - 1)) : 0;
+                int64_t hi = ttIntSigned(t) ? (((int64_t)1 << (bits - 1)) - 1)
+                                            : (((int64_t)1 << bits) - 1);
                 return arenaPrintf(g->arena,
                     "((%s)extc_convFloat((double)(%s), %lldLL, %lldLL, \"%s\", %d))",
                     cType(g, t), x, (long long)lo, (long long)hi, g->path, e->line);

@@ -1,0 +1,17 @@
+// expect: i64=2 i32=3 u64=4 i64n=-2 trunc=2 u8=200 big=4294967295
+// 浮点 → 整数：从前 `i64` 那一支的上下界写成 `lo = 1; hi = 0` ⇒ **每一次** f64→i64 都在运行期 trap
+// （"float does not fit in the target integer type"），`u64` 又被 INT64_MAX 卡住。这条用例就是它的
+// 回归守卫：64 位两种、窄类型、以及 u32 的上界各来一次。
+use std::io
+
+fn main() -> i32 {
+  var a: f64 = 2.5
+  var b: f64 = 3.9
+  var c: f64 = 4.0
+  var d: f64 = 0.0 - 2.5
+  var e: f64 = 2.75
+  io::cout << "i64=" << i64(a) << " i32=" << i32(b) << " u64=" << i64(u64(c)) <<   /* 打印用 i64：ostream 还没有 u64 重载（另一件事） */ " i64n=" << i64(d)
+  io::cout   /* 打印一律显式转 i64：`ostream` 目前只有 i64/i32/f64/bool/slice<u8> 的重载，
+   * 缺 u8/u16/u32/u64（写这条探针时撞到的，另记）。 */
+  io::cout << " trunc=" << i64(e) << " u8=" << i64(u8(f64(200.0))) << " big=" << i64(u32(f64(4294967295.0))) << "\n"
+  return 0 }
