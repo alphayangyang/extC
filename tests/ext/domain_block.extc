@@ -1,6 +1,8 @@
-// 域块：`d.run { … }` 的体里 `ext` 合法 —— 这一步要证明**域被认出来了**（按类型，不按名字）
-fn f(x: i64) -> i64 { return x }
-fn useIt(d: ref domain) -> i32 {
-  d.run { ext f(i64(1)) }
+// 域块 + 协程任务：**checker 那一半应当通过**（域认出来、任务必须是能暂停的协程），
+// 停在 codegen 的"驱动循环还没实现"上。codegen 落地后这条期望会往前推一格。
+use std::sys::domain
+fn task(n: i64) -> coroutine<i64> { var i: i64 = 0  while i < n { yield i  i = i + 1 } }
+fn main() -> i32 {
+  let d = domain::single()
+  d.run { ext task(i64(3)) }
   return 0 }
-fn main() -> i32 { return 0 }

@@ -1190,9 +1190,14 @@ void checkStmt(Checker *c, Stmt *s) {
                         rt ? typeStr(c, rt) : "something that is not an object");
                 return;
             }
+            /* The scope rule: `ext` inside this block goes to **this** domain. Save/restore is the
+             * whole stack -- nested domains shadow the outer one and give it back on the way out. */
+            Expr *savedDom = c->curDom;
+            c->curDom = (cal && cal->kind == EX_FIELD) ? cal->u.field.obj : NULL;
             c->domainDepth++;
             checkStmt(c, s->u.domain_.body);
             c->domainDepth--;
+            c->curDom = savedDom;
             return;
         }
         case ST_BLOCK:            checkBlockBody(c, s);

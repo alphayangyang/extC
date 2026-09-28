@@ -2915,13 +2915,34 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         " `par::pool(n) { … }`");
                 return ttError(tt);
             }
-            /* Inside a domain the shape is accepted; the spawn itself (building the task and
-             * handing it over) is the next step. Loud, never a silent call. */
-            ckError(c, e->line,
-                    "The domain rule is in place; building the task and handing it to the domain is"
-                    " the next step (docs/topics/CONCURRENCY.md, `ext` 与调度域).",
-                    "`ext` inside a domain is not implemented yet");
-            return ttError(tt);
+            /* Inside a domain: the operand must be a call to a function that **can suspend**, i.e. a
+             * coroutine. A plain function has no frame to stop in, so "starting" it would silently
+             * be an ordinary call -- exactly the kind of quiet difference this design refuses. */
+            Expr *in = e->u.ext_.call;
+            if (!in || in->kind != EX_CALL) {
+                ckError(c, e->line,
+                        "`ext` starts one task, and a task is a call: it needs arguments and a frame"
+                        " to hold its progress.",
+                        "`ext` takes a call, found something else");
+                return ttError(tt);
+            }
+            Type *inner = checkExpr(c, in);
+            (void)inner;
+            if (!in->func || !in->func->isCoro) {
+                ckError(c, in->line,
+                        "A task must be able to **stop in the middle**: only a coroutine has a frame to"
+                        " hold where it stopped and what its locals were. A plain function would just"
+                        " run to completion right here, so `ext` on one would be a silent ordinary"
+                        " call.",
+                        "`ext` needs a coroutine function, and `%s` is a plain function",
+                        in->func ? in->func->name : "this");
+                return ttError(tt);
+            }
+            /* The value is **void on purpose**: `let h = ext f(x)` is refused by the type system
+             * rather than by a special rule, and the handle (the取件单) lands with the driving
+             * loop (docs/topics/CONCURRENCY.md「`ext` 与调度域」). */
+            e->type = ttVoid(tt);
+            return e->type;
         }
         case EX_LAMBDA: return checkLambda(c, e);
         case EX_DYN: {

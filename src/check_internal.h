@@ -426,6 +426,11 @@ typedef struct Checker {
     * `par::pool(n) { … }`). `ext` is legal only when this is non-zero: outside a domain there is
     * nobody to hand the task to, and that is a compile error rather than a runtime surprise. */
     int        domainDepth;
+    /* **The nearest domain** (`d.run { … }`), i.e. the receiver expression whose block we are
+     * checking right now. The scope rule is "`ext` hands the task to the nearest domain", which is a
+     * stack; saving and restoring this one field around a block *is* that stack, with no allocation.
+     * NULL means "no domain in scope", and that is a compile error at the `ext` (see check_expr.c). */
+    Expr      *curDom;
     /* How many lambda bodies are being checked right now. A lambda inside a lambda would have its
      * environment laid out as part of the outer one; version 1 refuses that instead of laying it
      * out wrongly (docs/topics/LAMBDA.md section 7). */

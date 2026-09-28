@@ -40,7 +40,9 @@ neg ext-is-expression    "$(src binding.extc)"   "$NODOM"
 neg ext-nested-in-call   "$(src nested.extc)"    "$NODOM"
 neg ext-in-plain-fn      "$(src plain_fn.extc)"  "$NODOM"
 neg ext-needs-operand    "$(src bare.extc)"      'expected an expression'
-neg domain-block-recognised  "$(src domain_block.extc)"   '`ext` inside a domain is not implemented yet'
+# 域块 + 协程任务：checker 那半通过，停在 codegen 的"驱动循环还没实现"（codegen 落地后这里会往前推）
+neg domain-block-passes-checker "$(src domain_block.extc)" 'domain block: codegen is not implemented yet'
+neg domain-block-needs-coroutine "$(src domain_plain_task.extc)" '`ext` needs a coroutine function'
 neg domain-block-needs-object "$(src domain_needs_object.extc)" 'a trailing block needs'
 neg domain-block-wrong-method "$(src domain_wrong_method.extc)" 'a trailing block needs `run`'
 

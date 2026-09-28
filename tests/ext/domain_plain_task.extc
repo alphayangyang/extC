@@ -1,0 +1,8 @@
+// 反例：`ext` 一个**普通函数** ⇒ 明确拒绝。它跑起来不会停，所以"起一份"会悄悄变成一次普通调用 ——
+// 这正是这套设计不肯要的"安静的不一样"。
+use std::sys::domain
+fn plain(n: i64) -> i64 { return n }
+fn main() -> i32 {
+  let d = domain::single()
+  d.run { ext plain(i64(3)) }
+  return 0 }
