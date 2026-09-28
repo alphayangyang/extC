@@ -4261,7 +4261,6 @@ static void funcSetAdd(FuncSet *s, Arena *a, FuncDef *p) {
 static FuncSet g_cycSeen, g_cycOn, g_cycGrey, g_cycBlack;
 static int    g_cycReady;
 static Vec    g_cycStack;
-static long   g_cycFellBack;
 
 static void cycDfs(CG *g, FuncDef *f) {
     if (!f || !f->body) return;
@@ -4303,34 +4302,12 @@ static bool cycleSaysRecursive(CG *g, FuncDef *f) {
 
 static bool funcCallsItself(CG *g, FuncDef *f) {
     if (!f || !f->body) return false;
-    if (g_cycReady || 1) {
-        /* Exact: the DFS sees the whole reachable subgraph of f, so a cycle through f is found
-         * in f's own run. `g_cycFellBack` records how often the walk below had to answer. */
-        (void)g_cycFellBack;
-        return cycleSaysRecursive(g, f);
-    }
-    /* Direct calls, `EX_ASSOC` and `EX_METHOD` included; both carry `e->func`. */
-    FuncSet seen; funcSetInit(&seen, g->arena);
-    Vec work;  vecInit(&work, g->arena, sizeof(FuncDef *));
-    *(FuncDef **)vecPush(&work) = f;
-    funcSetAdd(&seen, g->arena, f);
-    bool hit = false;
-    for (size_t i = 0; i < work.len; i++) {
-        FuncDef *cur = *(FuncDef **)vecAt(&work, i);
-        if (!cur || !cur->body) continue;
-        if (cur == f && i > 0) { hit = true; break; }   /* reached again: recursive */
-        for (size_t j = 0; j < cur->callees.len; j++) {
-            FuncDef *nx = *(FuncDef **)vecAt(&cur->callees, j);
-            if (!nx) continue;
-            if (nx == f) { hit = true; break; }
-            if (!funcSetHas(&seen, nx)) {
-                funcSetAdd(&seen, g->arena, nx);
-                *(FuncDef **)vecPush(&work) = nx;
-            }
-        }
-        if (hit) break;
-    }
-    return hit;
+    /* Exact: the DFS sees the whole reachable subgraph of f, so a cycle through f is found in f's
+     * own run. This used to sit behind `if (g_cycReady || 1)` with a 22-line fallback walk below it:
+     * the guard is always true, so the walk was unreachable, and `g_cycFellBack` existed only to keep
+     * `-Wunused` quiet (it was `(void)`-ed and never written). Both are gone -- git has the walk if a
+     * fallback is ever wanted again. */
+    return cycleSaysRecursive(g, f);
 }
 
 /* Emit one complete function definition.
