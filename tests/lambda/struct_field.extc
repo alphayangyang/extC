@@ -1,0 +1,7 @@
+use std::io
+struct pair { a: i64  b: i64 }
+fn main() -> i32 {
+  var p = pair { a: 3  b: 4 }
+  var s = fn(k: i64) -> i64 { return (p.a + p.b) * k }
+  io::cout << s(i64(6)) << "\n"
+  return 0 }

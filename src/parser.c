@@ -2605,7 +2605,7 @@ static Expr *parseLambda(Parser *p) {
     Expr *e = exprNew(p->arena, EX_LAMBDA, ft->line);
     vecInit(&e->u.lambda.params, p->arena, sizeof(void *));
     vecInit(&e->u.lambda.captures, p->arena, sizeof(void *));
-    vecInit(&e->u.lambda.fields, p->arena, sizeof(void *));
+    vecInit(&e->u.lambda.inits, p->arena, sizeof(void *));
     e->u.lambda.ret = NULL;
     e->u.lambda.body = NULL;
     e->u.lambda.sdef = NULL;

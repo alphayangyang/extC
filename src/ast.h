@@ -353,7 +353,7 @@ struct Expr {
             Stmt       *body;
             StructDef  *sdef;      /* filled in by the checker */
             const char *tname;
-            Vec         fields;    /* LamCap*: everything captured, in declaration order */
+            Vec         inits;     /* FieldInit*: the environment's field values, in field order */
         } lambda;
         struct { Expr *recv; const char *name; Vec args; } method;
         struct { Expr *obj; const char *name; } field;
@@ -578,6 +578,10 @@ struct StructDef {
      * observed once as `struct \`alpha$pair\` has no field \`zzz\``. For a single-file
      * program the two are the same string. */
     const char *srcName;
+    /* A lambda's environment struct: the signature it was written as, `fn(i64) -> i64`, so a
+     * diagnostic shows what the user wrote instead of the generated `$lam$f$3`. NULL otherwise
+     * (docs/topics/LAMBDA.md). */
+    const char *lamSig;
 };
 
 struct FuncDef {
@@ -597,6 +601,13 @@ struct FuncDef {
      * docs/topics/CONCURRENCY.md 4.4). The declaration is a marker: the call's real type and the
      * protocol methods are synthesized per coroutine (slice B). */
     bool        isCoro;
+    /* A lambda's `call` method: its body was already checked **in place**, in the scope the lambda
+     * was written in (that is where the capture set comes from), so the pass that checks struct
+     * methods must not check it a second time. */
+    bool        lamChecked;
+    /* A lambda whose result type was left out: the first `return <value>` decides it, and this flag
+     * is what lets that return through before the type is known (check_stmt.c, ST_RETURN). */
+    bool        lamInferRet;
     Type       *yieldType;
     /* The synthesized per-coroutine value type: what a **call** to this coroutine evaluates to.
      * `ret` is set to it as well, so `let c = f(x)` binds a coroutine of its own concrete type. */

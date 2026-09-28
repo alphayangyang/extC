@@ -1,5 +1,8 @@
+use std::io
+// 闭包写在具名函数体内，环境在那里的作用域上
 fn twice(x: i64) -> i64 {
   var f = fn(y: i64) -> i64 { return y * i64(2) }
-  return f(x)
-}
-fn main() -> i32 { return i32(twice(i64(21))) }
+  return f(x) }
+fn main() -> i32 {
+  io::cout << twice(i64(21)) << "\n"
+  return 0 }

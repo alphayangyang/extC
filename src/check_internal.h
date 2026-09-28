@@ -422,6 +422,13 @@ typedef struct Checker {
     Vec        narrowMarks; /* size_t: length of `narrow` when each scope was entered,
                              * used to unwind it on scope exit */
 
+    /* How many lambda bodies are being checked right now. A lambda inside a lambda would have its
+     * environment laid out as part of the outer one; version 1 refuses that instead of laying it
+     * out wrongly (docs/topics/LAMBDA.md section 7). */
+    int        lamDepth;
+    /* How many lambda environments this compilation has generated, for unique names. */
+    int        lamSeq;
+
     Type *tI32, *tI64, *tF64, *tBool;  /* cached primitive types */
     StructDef *sliceDef;/* declaration of `slice<T>` from the prelude, which is the view
                          * protocol */
@@ -797,6 +804,10 @@ int valDepthForStore (Checker *, Expr *);
  void checkOperatorSig (Checker *c, FuncDef *f);
 /* Check one statement and apply the depth and narrowing consequences it has. */
  void checkStmt (Checker *c, Stmt *s);
+/* Resolve a signature's type names into the type table (in place). A synthesized function -- a
+ * lambda's `call` method -- has to go through the same step a declared one does, or its parameter
+ * types are the parser's raw nodes and `i64 + i64` stops type checking (measured). */
+ void resolveSignature (Checker *c, FuncDef *f);
 /* Report a compile error at a line, with an optional note suggesting a fix. */
  void ckError (Checker *c, int line, const char *note, const char *fmt, ...);
 /* Report a warning at a line. A warning is recorded but does not stop the compilation. */

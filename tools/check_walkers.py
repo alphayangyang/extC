@@ -36,14 +36,20 @@ LEAF = {
 # a promise that the omission is intentional -- state why.
 ALLOW = {}
 # --- lambda (EX_LAMBDA), recorded 2026-09-28 ------------------------------------------------
-# The parser accepts `fn(x: i64) -> i64 { ... }` (docs/topics/LAMBDA.md section 6 step 1) and the
-# checker refuses it loudly, so **no live lambda exists yet** and none of these walkers can meet
-# one. They walk expressions and a lambda's only child is a *statement*, so the case is not a
-# one-liner: it needs a statement walk of the same shape. That is part of step 2 (the capture
-# analysis -- "what does the body reference" is the same question), and clearing these entries
-# belongs in the same commit that makes the checker accept a lambda.
-_LAM = ("lambda: EX_LAMBDA is parsed but refused by the checker, so no walker can see one yet;"
-        " entering the body lands with the capture analysis (LAMBDA.md step 2)")
+# Lambdas are live: `fn(x: i64) -> i64 { ... }` is checked, its environment is a generated struct
+# and `f(x)` is rewritten to `f.call(x)` (docs/topics/LAMBDA.md). These are **expression** walkers
+# and a lambda's children are a *statement* body plus the environment's field values, so entering
+# one is not a one-liner: it needs a statement walk of the same family (most families in check_top.c
+# and check_expr.c have one; check_escape.c and dataflow.c do not yet).
+#
+# What is missed while they stay here -- the reason this is written down rather than quietly
+# allowed: a variable used **only** inside a lambda body looks unused, an effect or a call in a
+# body is invisible to the enclosing function's analysis, and a captured reference's depth is not
+# followed. The body itself **is** covered by the ordinary per-function passes, because it is also
+# the `call` method's body (a real FuncDef on a real StructDef).
+_LAM = ("lambda: this expression walker does not enter a lambda body yet; the body is covered as the"
+        " `call` method's body, but what the *enclosing* function sees through the lambda node is"
+        " not -- closing this is the next step (LAMBDA.md section 6)")
 ALLOW = {
     "check_escape.c:valDepthStructural": _LAM,
     "check_escape.c:exprRefDepth":       _LAM,

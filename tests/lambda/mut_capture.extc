@@ -1,5 +1,9 @@
+use std::io
+// 可写捕获必须显式写 `[mut ref hits]`，写的是外层的那个变量
 fn main() -> i32 {
   var hits: i64 = 0
   var f = fn(x: i64) [mut ref hits] -> i64 { hits = hits + i64(1)  return x }
-  return i32(f(i64(3)))
-}
+  var a: i64 = f(i64(5))
+  var b: i64 = f(i64(6))
+  io::cout << a + b << " " << hits << "\n"
+  return 0 }

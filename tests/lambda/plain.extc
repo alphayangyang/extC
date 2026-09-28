@@ -1,5 +1,5 @@
-// 对照：没有闭包的普通程序照常编译、运行（新加的 `fn(` 分支不许干扰正常解析）
 use std::io
+// 对照：没有闭包的普通程序照常
 fn helper(x: i64) -> i64 { return x + i64(2) }
 fn main() -> i32 {
   io::cout << helper(i64(40)) << "\n"

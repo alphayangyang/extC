@@ -2003,13 +2003,26 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is
  */
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
-        case EX_LAMBDA:
-            /* Unreachable today: the checker refuses a lambda before codegen runs (LAMBDA.md
-             * section 6 still owes the capture analysis). Loud on purpose -- a silent `0` here is
-             * exactly the kind of miscompile the rest of this file refuses to produce. */
-            ctxError(g->ctx, e->line, 1, NULL,
-                     "lambda: codegen is not implemented yet (LAMBDA.md section 6, steps 2-4)");
-            return "0";
+        case EX_LAMBDA: {
+            /* The environment, built where the lambda is written. The checker put the field values on
+             * the node (check_expr.c, checkLambda), so this is a struct literal written out by hand:
+             * the name-based literal path cannot be used, because a lambda's type has no name in the
+             * source to look up. */
+            StructDef *sd = e->type ? e->type->sdef : NULL;
+            if (!sd) {
+                ctxError(g->ctx, e->line, 1, NULL, "lambda: the checker left no environment type");
+                return "0";
+            }
+            Buf b;
+            bufInit(&b, g->arena);
+            bufPrintf(&b, "(%s){", cType(g, e->type));
+            for (size_t i = 0; i < e->u.lambda.inits.len; i++) {
+                FieldInit *fi = *(FieldInit **)vecAt(&e->u.lambda.inits, i);
+                bufPrintf(&b, "%s.%s = %s", i ? ", " : "", fi->name, genExpr(g, fi->value));
+            }
+            bufPuts(&b, "}");
+            return bufCstr(&b);
+        }
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
         case EX_FLOAT:
             /* An `f32` literal is written as the float it is: `%g` prints a `double`, and assigning

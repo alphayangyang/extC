@@ -1,0 +1,6 @@
+use std::io
+// 省略返回类型：由体内第一个 `return <value>` 定下来
+fn main() -> i32 {
+  var f = fn(x: i64) { return x + i64(1) }
+  io::cout << f(i64(41)) << "\n"
+  return 0 }

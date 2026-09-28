@@ -1,0 +1,8 @@
+use std::io
+// 捕获视图（按值拷贝的是 {data, len} ⇒ 存储共享）
+fn main() -> i32 {
+  var xs: mut slice<i64> = new i64[3]
+  xs[0] = i64(10)  xs[1] = i64(20)  xs[2] = i64(30)
+  var at = fn(i: i64) -> i64 { return xs[i] }
+  io::cout << at(i64(1)) + at(i64(0)) << "\n"
+  return 0 }

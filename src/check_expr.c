@@ -650,6 +650,352 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
     return tr;
 }
 
+
+/* ---------------------------------------------------------------- lambda literals --------------
+ *
+ * docs/topics/LAMBDA.md, the author's v2 decisions: syntax B (`fn(x: i64) -> i64 { ... }`),
+ * monomorphized parameters -- so no function pointers enter the language -- and **writable captures
+ * spelled out** in `[mut ref x]`, because a read is captured by value and needs no entry.
+ *
+ * The order below is the whole design:
+ *
+ *   1. the body is checked **in place**, in a scope that holds the lambda's parameters, so every
+ *      name in it is resolved by the ordinary rules -- shadowing included, which a name-only
+ *      pre-pass would get wrong;
+ *   2. what the body then refers to from *outside* that scope is exactly the capture set: it is
+ *      read off the resolved `Sym`s, not guessed from the text;
+ *   3. each capture becomes a field of a generated struct -- by value (a copy, so the closure sees
+ *      the value it was made with) or, for `mut ref x`, a reference to the enclosing variable;
+ *   4. the body becomes that struct's `call` method, and each captured name is emitted as
+ *      `self.<field>` (`(*self.<field>)` for a writable one). That last step needs no AST surgery:
+ *      codegen prints an identifier through its `cname`, so the rewrite is a `cname` assignment.
+ *
+ * `f(x)` where `f` holds such a value is a call through a value, which v1 has no syntax for; the
+ * call site rewrites itself in place into the method call `f.call(x)` -- the same rewriting the
+ * enum-construction branch of EX_CALL already does.
+ */
+typedef struct {
+    Checker *c;
+    size_t   nOuter;      /* scopes below this index belong to the enclosing functions */
+    Vec      caps;        /* Sym*: the capture set, in declaration order */
+    Vec      written;     /* Sym*: the captured variables the body writes */
+    bool     usedNew;
+    bool     sawReturn;
+} LamWalk;
+
+static void lamAddUnique(Vec *v, Sym *s) {
+    if (!s) return;
+    for (size_t i = 0; i < v->len; i++)
+        if (*(Sym **)vecAt(v, i) == s) return;
+    *(Sym **)vecPush(v) = s;
+}
+
+/* Is this binding declared below the lambda's own scope? Membership in the scope stack is checked
+ * by pointer: `Sym.depth` is the *arena* depth and answers a different question. */
+static bool lamIsOuter(LamWalk *w, Sym *s) {
+    for (size_t i = 0; i < w->nOuter && i < w->c->scopes.len; i++) {
+        Scope *sc = *(Scope **)vecAt(&w->c->scopes, i);
+        for (size_t j = 0; j < sc->syms.len; j++)
+            if (*(Sym **)vecAt(&sc->syms, j) == s) return true;
+    }
+    return false;
+}
+
+static bool lamWritten(LamWalk *w, Sym *s) {
+    for (size_t i = 0; i < w->written.len; i++)
+        if (*(Sym **)vecAt(&w->written, i) == s) return true;
+    return false;
+}
+
+/* The root binding of an assignment target: `x[3].f = ...` writes through `x`. */
+static Expr *lamRootOf(Expr *t) {
+    while (t) {
+        if (t->kind == EX_INDEX)      t = t->u.index.obj;
+        else if (t->kind == EX_FIELD) t = t->u.field.obj;
+        else if (t->kind == EX_DEREF) t = t->u.deref.operand;
+        else break;
+    }
+    return t;
+}
+
+static bool lamWalkExpr(void *ctx, Expr *e);
+static bool lamWalkStmt(void *ctx, Stmt *s);
+
+static bool lamWalkExpr(void *ctx, Expr *e) {
+    LamWalk *w = (LamWalk *)ctx;
+    if (!e) return true;
+    if (e->kind == EX_IDENT) {
+        Sym *sy = identBindOf(e);
+        if (sy && lamIsOuter(w, sy)) lamAddUnique(&w->caps, sy);
+    } else if (e->kind == EX_NEW) {
+        w->usedNew = true;
+    }
+    AstVisit v = { lamWalkExpr, lamWalkStmt, w };
+    return astWalkExprChildren(e, &v);
+}
+
+static bool lamWalkStmt(void *ctx, Stmt *s) {
+    LamWalk *w = (LamWalk *)ctx;
+    if (!s) return true;
+    if (s->kind == ST_RETURN) w->sawReturn = true;
+    if (s->kind == ST_ASSIGN) {
+        Sym *sy = identBindOf(lamRootOf(s->u.assign.target));
+        if (sy && lamIsOuter(w, sy)) lamAddUnique(&w->written, sy);
+    }
+    AstVisit v = { lamWalkExpr, lamWalkStmt, w };
+    return astWalkStmtChildren(s, &v);
+}
+
+static bool lamCapListed(Expr *lam, const char *name) {
+    for (size_t i = 0; i < lam->u.lambda.captures.len; i++)
+        if (strcmp((*(LamCap **)vecAt(&lam->u.lambda.captures, i))->name, name) == 0) return true;
+    return false;
+}
+
+/* Step 4: rewrite the captured names to the environment's fields. */
+typedef struct { Checker *c; LamWalk *w; Vec *fields; } LamRw;   /* fields: const char*, per cap */
+static bool lamRwExpr(void *ctx, Expr *e);
+static bool lamRwStmt(void *ctx, Stmt *s);
+
+static bool lamRwExpr(void *ctx, Expr *e) {
+    LamRw *r = (LamRw *)ctx;
+    if (!e) return true;
+    if (e->kind == EX_IDENT) {
+        Sym *sy = identBindOf(e);
+        for (size_t i = 0; i < r->w->caps.len; i++) {
+            if (*(Sym **)vecAt(&r->w->caps, i) != sy) continue;
+            const char *fn = *(const char **)vecAt(r->fields, i);
+            /* A writable capture is a reference: `(*self->c0)` is an lvalue, so a read and a write
+             * through it both come out right, and the node's type never changes. */
+            e->u.ident.cname = arenaPrintf(r->c->arena,
+                                           lamWritten(r->w, sy) ? "(*self->%s)" : "self->%s", fn);
+            break;
+        }
+    }
+    AstVisit v = { lamRwExpr, lamRwStmt, r };
+    return astWalkExprChildren(e, &v);
+}
+static bool lamRwStmt(void *ctx, Stmt *s) {
+    LamRw *r = (LamRw *)ctx;
+    if (!s) return true;
+    AstVisit v = { lamRwExpr, lamRwStmt, r };
+    return astWalkStmtChildren(s, &v);
+}
+
+static Type *checkExprInner(Checker *c, Expr *e);   /* the struct-literal path is re-entered below */
+
+static Type *checkLambda(Checker *c, Expr *e) {
+    TypeTable *tt = c->tt;
+
+    if (c->lamDepth > 0) {
+        ckError(c, e->line,
+                "A lambda inside a lambda would have to lay its environment out inside the outer"
+                " one; version 1 refuses that instead of laying it out wrongly.",
+                "a lambda inside a lambda is not supported yet");
+        return ttError(tt);
+    }
+    c->lamDepth++;
+
+    /* The environment's type exists before the body is checked, because the body is checked as the
+     * `call` method of it: the method's `self` is a `ref` to this very type. Its fields are filled in
+     * after the body (that is where the capture set comes from) -- layout is read later, by codegen,
+     * so an empty field list now is not a problem. */
+    const char *owner = (c->curFunc && c->curFunc->name) ? c->curFunc->name : "top";
+    const char *lname = arenaPrintf(c->arena, "$lam$%s$%d", owner, c->lamSeq++);
+    StructDef *sd = arenaAllocZero(c->arena, sizeof *sd);
+    sd->name = lname;
+    sd->srcName = lname;
+    sd->ctx = c->ctx;
+    sd->modName = c->curFunc ? c->curFunc->modName : NULL;
+    sd->line = e->line;
+    vecInit(&sd->typeParams, c->arena, sizeof(const char *));
+    vecInit(&sd->fields, c->arena, sizeof(FieldDef *));
+    vecInit(&sd->methods, c->arena, sizeof(FuncDef *));
+    Type *lt = arenaAllocZero(c->arena, sizeof *lt);
+    lt->kind = TY_STRUCT;
+    lt->name = lname;
+    lt->sdef = sd;
+    vecInit(&lt->targs, c->arena, sizeof(Type *));
+
+    /* The `call` method exists **before** the body is checked: a `return` inside a lambda belongs to
+     * the lambda, and the checker reads the return type off `curFunc` (check_stmt.c). With no `->`
+     * written, `ret` stays NULL while the body is checked and is filled in from the first `return`
+     * below -- the same freedom a named function has in the syntax. */
+    FuncDef *cf = arenaAllocZero(c->arena, sizeof *cf);
+    cf->name = "call";
+    cf->modName = sd->modName;
+    cf->ctx = c->ctx;
+    cf->line = e->line;
+    cf->ret = e->u.lambda.ret;
+    vecInit(&cf->params, c->arena, sizeof(Param *));
+    {
+        Param *self = arenaAllocZero(c->arena, sizeof *self);
+        self->name = self->cname = "self";
+        self->line = e->line;
+        Type *st = arenaAllocZero(c->arena, sizeof *st);
+        st->kind = TY_REF;
+        st->inner = lt;
+        st->mut = false;                     /* `call` reads the environment */
+        self->type = st;
+        *(Param **)vecPush(&cf->params) = self;
+    }
+    for (size_t i = 0; i < e->u.lambda.params.len; i++)
+        *(Param **)vecPush(&cf->params) = *(Param **)vecAt(&e->u.lambda.params, i);
+    /* A declared function's signature is resolved before its body is checked; a synthesized one has
+     * to go through the same step or its parameter types stay the parser's raw nodes -- measured as
+     * "cannot apply `+` to `i64` and `i64`". */
+    resolveSignature(c, cf);
+    {   /* the signature the user wrote, for diagnostics: `fn(i64) -> i64` */
+        Buf sig;
+        bufInit(&sig, c->arena);
+        bufPuts(&sig, "fn(");
+        for (size_t i = 0; i < e->u.lambda.params.len; i++) {
+            Param *p = *(Param **)vecAt(&e->u.lambda.params, i);
+            bufPrintf(&sig, "%s%s", i ? ", " : "", typeStr(c, p->type));
+        }
+        bufPrintf(&sig, ") -> %s", cf->ret ? typeStr(c, cf->ret) : "?");
+        sd->lamSig = bufCstr(&sig);
+    }
+
+    /* (1) the parameters in scope, so the body's names resolve by the ordinary rules -- shadowing
+     * included, which a name-only pre-pass would get wrong. */
+    const size_t nOuter = c->scopes.len;     /* below this: the enclosing functions' scopes */
+    pushScope(c);
+    for (size_t i = 0; i < e->u.lambda.params.len; i++) {
+        Param *p = *(Param **)vecAt(&e->u.lambda.params, i);
+        Sym *sy = declare(c, p->name, p->type, true, false, p->line, 0);
+        p->cname = sy->cname;
+    }
+    FuncDef *saveCur = c->curFunc;
+    c->curFunc = cf;
+    /* With no `->` written the result type is decided by the first `return <value>` in the body; the
+     * ST_RETURN case fills it in (check_stmt.c). */
+    cf->lamInferRet = (cf->ret == NULL);
+    checkStmt(c, e->u.lambda.body);
+    cf->lamInferRet = false;
+    c->curFunc = saveCur;
+    popScope(c);
+
+    if (!cf->ret) {
+        ckError(c, e->line,
+                "A lambda's result type has to be inferable: either write `-> T`, or give the body a"
+                " `return <value>`.",
+                "cannot infer the result type of this lambda");
+        cf->ret = ttError(tt);
+    }
+
+    /* (2) the capture set, read off the resolved bindings (not guessed from the text) */
+    LamWalk w;
+    w.c = c; w.nOuter = nOuter; w.usedNew = false; w.sawReturn = false;
+    vecInit(&w.caps, c->arena, sizeof(Sym *));
+    vecInit(&w.written, c->arena, sizeof(Sym *));
+    {
+        AstVisit v = { lamWalkExpr, lamWalkStmt, &w };
+        astWalkStmtChildren(e->u.lambda.body, &v);
+    }
+    /* The `call` method is skipped by `checkFunc` (its body was already checked above), so the
+     * "does a value-returning function return?" check that a named function gets from there has to
+     * happen here -- otherwise the generated C falls off the end of a non-void function. */
+    if (cf->ret && !ttIs(cf->ret, "void") && !w.sawReturn)
+        ckError(c, e->line,
+                "The lambda declares a result type, so its body has to return one.",
+                "this lambda returns no value, but its type says `%s`", typeStr(c, cf->ret));
+
+    if (w.usedNew) {
+        ckError(c, e->line,
+                "A lambda runs wherever the value is called from, so which arena a `new` inside it"
+                " would belong to is not decided yet. Take the place as a parameter instead.",
+                "a lambda body may not allocate yet");
+    }
+
+    /* Every writable capture is written down in the source (the author's decision) -- which is also
+     * what the escape and arena passes read: every writable alias is visible in the program text. */
+    for (size_t i = 0; i < w.written.len; i++) {
+        Sym *sy = *(Sym **)vecAt(&w.written, i);
+        if (!lamCapListed(e, sy->name))
+            ckError(c, e->line,
+                    "A lambda that writes an enclosing variable must say so, so that every writable"
+                    " alias stays visible in the source: write `[mut ref %s]` after the parameter"
+                    " list.",
+                    "the body writes `%s`, but the capture list does not name it", sy->name);
+    }
+    for (size_t i = 0; i < e->u.lambda.captures.len; i++) {
+        LamCap *cap = *(LamCap **)vecAt(&e->u.lambda.captures, i);
+        bool found = false;
+        for (size_t j = 0; j < w.caps.len && !found; j++)
+            found = strcmp((*(Sym **)vecAt(&w.caps, j))->name, cap->name) == 0;
+        if (!found)
+            ckError(c, cap->line, NULL,
+                    "`%s` is not an enclosing variable this body uses", cap->name);
+    }
+
+    /* (3) the environment: one field per capture, in declaration order, and the value it is built
+     * with at the place the lambda is written. */
+    Vec fields;                              /* const char*: the generated field of caps[i] */
+    vecInit(&fields, c->arena, sizeof(const char *));
+    Vec inits;                               /* FieldInit* */
+    vecInit(&inits, c->arena, sizeof(FieldInit *));
+    for (size_t i = 0; i < w.caps.len; i++) {
+        Sym *sy = *(Sym **)vecAt(&w.caps, i);
+        bool wr = lamWritten(&w, sy);
+        FieldDef *fd = arenaAllocZero(c->arena, sizeof *fd);
+        fd->name = arenaPrintf(c->arena, "c%zu", i);   /* index-based: two captures may share a name */
+        fd->line = e->line;
+        if (wr) {
+            Type *rt = arenaAllocZero(c->arena, sizeof *rt);
+            rt->kind = TY_REF;
+            rt->inner = sy->type;
+            rt->mut = true;
+            fd->type = rt;
+        } else {
+            fd->type = sy->type;             /* a copy: the closure sees the value it was made with */
+        }
+        *(FieldDef **)vecPush(&sd->fields) = fd;
+        *(const char **)vecPush(&fields) = fd->name;
+
+        Expr *id = exprNew(c->arena, EX_IDENT, e->line);
+        id->u.ident.name = sy->name;
+        id->u.ident.cname = sy->cname;
+        id->type = sy->type;
+        Expr *val = id;
+        if (wr) {                            /* `mut ref x`: a reference to the variable itself */
+            Expr *rf = exprNew(c->arena, EX_REF, e->line);
+            rf->u.ref.operand = id;
+            rf->type = fd->type;
+            val = rf;
+        }
+        FieldInit *fi = arenaAllocZero(c->arena, sizeof *fi);
+        fi->name = fd->name;
+        fi->value = val;
+        *(FieldInit **)vecPush(&inits) = fi;
+    }
+
+    {   /* (4) rewrite the captured names to the environment's fields */
+        LamRw rw; rw.c = c; rw.w = &w; rw.fields = &fields;
+        AstVisit v = { lamRwExpr, lamRwStmt, &rw };
+        astWalkStmtChildren(e->u.lambda.body, &v);
+    }
+
+    cf->owner = sd;
+    cf->body = e->u.lambda.body;
+    cf->lamChecked = true;                   /* checked above, in the scope it was written in */
+    *(FuncDef **)vecPush(&sd->methods) = cf;
+    /* The struct has to be reachable from the module: codegen collects struct types and the methods
+     * to emit from `m->structs` (codegen.c). */
+    *(StructDef **)vecPush(&c->m->structs) = sd;
+
+    c->lamDepth--;
+
+    /* The value **is** the environment. It stays an EX_LAMBDA node -- codegen writes the literal out
+     * from the field values stored here -- because the generated type has no name in the source for
+     * the ordinary struct-literal path to look up. */
+    e->u.lambda.sdef = sd;
+    e->u.lambda.tname = lname;
+    e->u.lambda.inits = inits;
+    e->type = lt;
+    return lt;
+}
+
 static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
@@ -2085,6 +2431,22 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_CALL: {
+            /* `f(x)` where `f` holds a lambda. v1 has no call through a value, so the node rewrites
+             * itself **in place** into the method call `f.call(x)` and the ordinary method path takes
+             * it from there -- the same in-place rewriting the variant branch below does. */
+            if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+                Sym *sy = lookup(c, e->u.call.callee->u.ident.name);
+                if (sy && sy->type && sy->type->kind == TY_STRUCT && sy->type->sdef
+                    && sy->type->sdef->lamSig) {
+                    Expr *recv = e->u.call.callee;      /* read before `u.method` overwrites them */
+                    Vec   args = e->u.call.args;
+                    e->kind = EX_METHOD;
+                    e->u.method.recv = recv;
+                    e->u.method.name = "call";
+                    e->u.method.args = args;
+                    return checkExprInner(c, e);
+                }
+            }
             /* Constructing a variant with a payload, `shape.circle(2.0)`: it looks like a field
              * access followed by a call, but `shape` is a type name and not a variable, so it is
              * recognised as an enum construction and rewritten to EX_ENUMVAL. */
@@ -2522,18 +2884,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return f->ret ? f->ret : ttVoid(tt);
         }
 
-        case EX_LAMBDA: {
-            /* `fn(x: i64) -> i64 { ... }`: the plan is written down in docs/topics/LAMBDA.md with the
-             * author's decisions already made (syntax B, monomorphized parameters, writable captures
-             * spelled out), and the parser accepts the syntax. The checker's capture analysis is the
-             * next step; until it lands this is a loud refusal, never a silent empty struct. */
-            ckError(c, e->line,
-                    "The syntax and the plan are in place (docs/topics/LAMBDA.md); the capture"
-                    " analysis -- which variables the body takes, and where the environment lives --"
-                    " is the step that is still missing.",
-                    "a lambda is not implemented yet");
-            return ttError(tt);
-        }
+        case EX_LAMBDA: return checkLambda(c, e);
         case EX_DYN: {
             /* `dyn Trait(x)` as a **value**: its type is `dyn Trait`, and the payload must
              * implement the trait -- the implementation is what the table points at. The payload's

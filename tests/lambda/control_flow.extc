@@ -1,5 +1,5 @@
-// 对照：`fn` 声明、if、while、块嵌套都不含闭包 —— 解析器的新分支只认表达式位置的 `fn(`
 use std::io
+// 对照：`fn` 声明、if、while、块嵌套都不含闭包
 fn main() -> i32 {
   var n: i64 = 0
   var i: i64 = 0

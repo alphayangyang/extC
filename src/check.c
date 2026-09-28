@@ -75,6 +75,9 @@ void ckWarn(Checker *c, int line, const char *note, const char *fmt, ...) {
  *   A NUL-terminated string owned by the checker's arena, valid for the rest of the run.
  */
 const char *typeStr(Checker *c, Type *t) {
+    /* A lambda's type is a generated environment struct; the user wrote a signature, so that is
+     * what a diagnostic shows. */
+    if (t && t->sdef && t->sdef->lamSig) return t->sdef->lamSig;
     Buf b;
     bufInit(&b, c->arena);
     ttRender(t, &b);

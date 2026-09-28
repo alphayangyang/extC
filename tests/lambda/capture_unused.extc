@@ -1,0 +1,4 @@
+fn main() -> i32 {
+  var a: i64 = 1
+  var f = fn(x: i64) [mut ref a] -> i64 { return x }
+  return i32(a) }

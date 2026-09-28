@@ -992,7 +992,15 @@ void checkStmt(Checker *c, Stmt *s) {
                 return;
             }
             if (!want) {
-                checkExpr(c, s->u.ret.value);
+                Type *got = checkExpr(c, s->u.ret.value);
+                /* A lambda may leave its result type out (docs/topics/LAMBDA.md section 2): the first
+                 * `return <value>` decides it. Filling it in here is what lets the rest of the body --
+                 * and every later return -- be checked against a real type. */
+                if (c->curFunc && c->curFunc->lamInferRet && got && !ttIsError(got)) {
+                    c->curFunc->ret = got;
+                    c->curFunc->lamInferRet = false;
+                    return;
+                }
                 ckError(c, s->line, NULL, "`%s` does not return a value",
                         c->curFunc ? c->curFunc->name : "this function");
                 return;
