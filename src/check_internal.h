@@ -850,6 +850,16 @@ static inline bool poolCtorNeedsZone(const char *n) {
     return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_table") == 0);
 }
 
+/* The six pool primitives: `check_expr.c`'s `checkPoolPrim` validates their arity, `codegen.c`
+ * lowers them by hand. **One list, one spelling** -- the two files used to write the six names out
+ * separately (review F11), so a name added on one side would leave the other reading arguments it
+ * never checked and re-deriving an arity of its own. */
+static inline bool isPoolPrimitiveName(const char *n) {
+    return n && (strcmp(n, "poolSlice") == 0 || strcmp(n, "poolSliceRaw") == 0 ||
+                 strcmp(n, "poolResize") == 0 || strcmp(n, "poolResizeRaw") == 0 ||
+                 strcmp(n, "poolGive") == 0 || strcmp(n, "copyInto") == 0);
+}
+
 bool calleeCreatesPool (FuncDef *f);
  void setPoolCalleeResolver (FuncDef *(*fn)(Expr *e));
  void recordLvlFact (Checker *c, Expr *val, int at);

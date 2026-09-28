@@ -2600,9 +2600,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * long note on `checkPoolPrim` in check_expr.c for what may and may not use
              * them, and what the two canaries in tests/pool/run.sh pin down. */
             const char *gcName = e->u.gencall.name;
-            if (strcmp(gcName, "poolSlice") == 0 || strcmp(gcName, "poolSliceRaw") == 0
-                || strcmp(gcName, "poolResize") == 0 || strcmp(gcName, "poolResizeRaw") == 0
-                || strcmp(gcName, "poolGive") == 0 || strcmp(gcName, "copyInto") == 0) {
+            if (isPoolPrimitiveName(gcName)) {
                 const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
                 if (strcmp(gcName, "poolGive") == 0) {
                     return arenaPrintf(g->arena,

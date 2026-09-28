@@ -2083,12 +2083,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
             /* The pool primitives share this path for the same reason `alloc` does: the
              * library needs memory the compiler has to name the type of. */
-            bool isPoolPrim = strcmp(e->u.gencall.name, "poolSlice") == 0
-                           || strcmp(e->u.gencall.name, "poolSliceRaw") == 0
-                           || strcmp(e->u.gencall.name, "poolResize") == 0
-                           || strcmp(e->u.gencall.name, "poolResizeRaw") == 0
-                           || strcmp(e->u.gencall.name, "poolGive") == 0
-                           || strcmp(e->u.gencall.name, "copyInto") == 0;
+            bool isPoolPrim = isPoolPrimitiveName(e->u.gencall.name);
             if (!isAlloc && !isPoolPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
