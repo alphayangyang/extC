@@ -452,13 +452,12 @@ void dfAnalyze(Checker *c, FuncDef *f, DfResult *out) {
     Facts facts;
     memset(&facts, 0, sizeof facts);
 
-    /* Bindings are discovered by walking statements before the analysis proper, so that
-     * the fact table has an entry for every one of them; a variable that is only read
-     * still needs a row. */
-    for (size_t i = 0; i < f->params.len; i++) {
-        Param *p = *(Param **)vecAt(&f->params, i);
-        if (p->cname) raiseTo(&facts, p->cname, 0);
-    }
+    /* Nothing to do here. This used to be a "discovery" pass that was supposed to give the
+     * fact table a row for every binding; it called `raiseTo(&facts, p->cname, 0)`, and
+     * `raiseTo` returns immediately for a depth <= 0, so it created no rows at all --
+     * while the comment claimed otherwise. Readers tolerate an absent row (`dataflow.c`
+     * guards with `if (v)`), so the honest fix is to delete the loop rather than pretend
+     * an invariant that never held. */
     dfReg(); g_dfCalls++;
     dfBlock(c, f->body, &facts, 1);
 
