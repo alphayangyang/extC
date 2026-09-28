@@ -6082,9 +6082,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             /* Set `owLocal` even when there are no sites: otherwise the signature of a
              * function with no parameters and no home arena loses its `void` (a golden test
              * caught this immediately). */
-            /* An `@overwrite` cell always lives in the current frame. */
+            /* An `@overwrite` cell always lives in the current frame -- **for the functions this
+             * pass sees**. It is not always true at code generation time: a generic instance is
+             * created later, during codegen, and keeps the `false` it was born with. That is the
+             * case the comment above is about (a no-parameter instance whose signature then carries
+             * parameters instead of `void`), which is why the flag is still read in four places in
+             * `codegen.c` -- and why `funcReachesItself` is not called here any more: the decision
+             * it was meant to feed is a constant for this pass's functions. */
             f->owLocal = true;
-            (void)funcReachesItself;
         }
         if (getenv("EXTC_DUMP_OW"))
             for (size_t i = 0; i < all.len; i++) {

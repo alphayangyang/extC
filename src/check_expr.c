@@ -176,8 +176,7 @@ static void deferOp(Checker *c, Expr *e, const char *op) {
  * just like any method. So the call site owes it the same hidden arguments, and the decision
  * of *which* arena/zone belongs to the same two functions the method path uses.
  *
- * The arena half is still open (PLAN #83: an operator that allocates and returns the value
- * needs the escape-site bookkeeping as well), but the ZONE half cannot wait: `push`/`append`
+ * The ZONE half cannot wait: `push`/`append`
  * on an SSO string create the pool on the way out of the inline buffer, which makes the
  * string-reading operators (`io >> string`, `ifstream >> string`) pool-creating callees.
  * Without this the declaration carries `int64_t __extc_home_zone` and the call site passes
