@@ -1703,9 +1703,6 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
  * `site` supplies the arena level (`homeArg` explains why the level matters, and `zoneArgRef` the
  * zone's). Returns nothing: `cgHasImplicitArgs` is the predicate the `@overwrite` cell pass needs.
  *
- * One site is **knowingly** not routed through here: the operator path (`genOpCall`) emits only the
- * zone half, because the arena half is PLAN #83 and still open -- it should keep failing loudly in
- * the C compiler rather than silently leaking.
  */
 static bool cgHasImplicitArgs(const FuncDef *callee) {
     return callee && (funcTakesHomeArena(callee) || callee->makesPool);
