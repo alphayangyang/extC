@@ -171,3 +171,21 @@ impl fs::ifstream {
  * 下一步：让两侧问同一个字段（`check_top.c:5948` 那段"现在 usesHome 已定型，结算每个往下递 arena
  * 的调用点"就是现成的机械），然后用这条形状做判据。
  */
+
+/* bug 2 定位（2026-09-28，未修；已排掉两条猜测）—— 装回这个形状就炸：
+ *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
+ * 定义是**三参**（`… string$string v, extc_arena *__extc_home`），`main` 里的调用只传两个
+ * ⇒ extC 不报错，**gcc** 报 `too few arguments`。
+ *
+ * 已经量的东西（避免重复劳动）：
+ *   · 作者的调试开关 `EXTC_DBG_HOME=1` 会打印每个函数的 `uses=/needs=/sites=` —— 用它看，**体内
+ *     声明**的方法（`withCap`、`toSlice`）都在表里（`uses=1`），而 **`impl` 里声明**的那个不在；
+ *   · 那些表由 `m->funcs` + 各 `sd->methods` 拼成（`check_top.c` 5719 / 6042 / 6218 三处），
+ *     而 `impl` 块的方法存在 `m->impls[i].methods`（块常在与被扩展类型**不同的模块**里：
+ *     `impl ostream` 在 `stl::stringio`，类型在 `std::io`）⇒ 那三份列表里看不到它们；
+ *   · 但**只**把 `m->impls` 补进那三处**不够**（试过：补了 5 处、其中 2 处是无关联表，而且 `main`
+ *     的调用点仍然少传 —— 说明那些列表是按**模块**建的，而块在另一个模块里）。
+ * 下一步：找出 `usesHome` 真正的**种子**在哪（body 检查时置位？还是 closeReach 传播？），确认
+ * `impl` 方法的那次 body 检查有没有走到种子那一步；结算遍在 `check_top.c:5948`（`site->func->usesHome`
+ * 那 9 行），它只是**消费者**。
+ */
