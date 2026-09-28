@@ -79,6 +79,20 @@ struct plate {
         return some(self.mem[i64(start)..i64(start + n)])
     }
 
+    /* 板内 `[off, off+n)` 的视图（也要过门：区间必须在保留区**且已经 commit**）。
+     *
+     * 这是"把板内内存交给会**留着**它的 C 函数"的正确取法：内联在调用点写 `pl.view(off, n)!.data`。
+     * 别先把视图存进局部 —— 逃逸分析只知道"本帧里有一个视图"（深度 1），而 `effects Addr=1`
+     * （"我存了你的指针"）要求它活得比这一帧久，于是编译期就挡住（实测报
+     * "may be kept by C forever, but it points into this frame (depth 1)"）。直接从板里取就没这问题：
+     * 视图的深度跟着 `self`（参数，深度 0）。 */
+    fn view(self: mut ref plate, off: u64, n: u64) -> ?mut slice<u8> {
+        if self.closed { return none }
+        if off + n > self.reserved { return none }
+        if off + n > self.committed { return none }
+        return some(self.mem[i64(off)..i64(off + n)])
+    }
+
     /* **那道门**：一次区间比较。板外的指针一律不是（不是"可能不是"）。 */
     fn holds(self: ref plate, p: ref u8) -> bool {
         var a: u64 = u64(p)

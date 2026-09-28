@@ -378,6 +378,10 @@ dl::close(h)
 - `open` / `sym` 失败都返回 `null`（要原因就自己声明 `dlerror`）。名字参数必须是 **NUL 结尾**的
   缓冲区：字符串字面量本来就满足，运行期拼出来的名字先用 `cstr` 补一个终止符 —— 规矩与
   `std::fs` 的文件名**完全一样**，理由也一样（C 的长度在终止符里，切片的长度在值里）。
+- **反方向**（C 返回一个字符串）：`cstrLen(p)` 数到终止符为止（上限 `CSTR_MAX = 1024`，超了返回
+  `-1`），`viewCStr(p)` 直接给一个不含终止符的视图 —— `cairo_version_string`、`dlerror` 这类
+  都靠它。数长度的写法本身说明了一件事：语言里没有指针算术，所以每往前一格都要重新要一个更长的
+  视图（`extc_viewOf`），代价 O(n²)，对几十字节的字符串完全够。
 - `close` 收掉句柄。
 - **`fn(A) -> R(ptr)` 这条转换只为 C 的 `void *` 存在，而且要求非空**：`dlsym` 回来的是
   `?ref void`，先判空（语言本来就有的空值规则），判完收窄成 `ref void`，转换才合法。
@@ -451,6 +455,7 @@ pl.close()                                                        // munmap；�
 | `alloc(n)` | 申请 `n` 字节，返回 `?mut slice<u8>`（板满 = `none`），commit 按 `CHUNK` 粒度 |
 | `store(src)` | 申请 + `copyIn`，一步拿到板内视图 |
 | `copyIn(dst, src)` / `copyOut(src, dst)` | 整块拷进 / 拷回；**两边都要过那道门**（不在板内返回 `-1`） |
+| `view(off, n)` | 板内 `[off, off+n)` 的视图（也要过门：区间在保留区内**且已 commit**）。**把板内内存交给会留着它的 C 函数时，内联写 `pl.view(off, n)!.data`** —— 先存进局部的视图在逃逸分析眼里只有本帧寿命 |
 | `holds(p)` / `holdsView(v)` | 那道门：一次（或两次）区间比较 |
 | `reservedBytes()` / `committedBytes()` / `usedBytes()` / `remaining()` / `isClosed()` | 账（读法） |
 | `reserved` / `committed` / `used` / `closed` | 同上的字段（也直接读得到） |

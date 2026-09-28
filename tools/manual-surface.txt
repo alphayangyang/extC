@@ -168,8 +168,10 @@ std::coro::scheduler	tasks	runScripted	method	public
 std::coro::scheduler	tasks	step	method	public
 std::dl	-	close	fn	public
 std::dl	-	cstr	fn	public
+std::dl	-	cstrLen	fn	public
 std::dl	-	open	fn	public
 std::dl	-	sym	fn	public
+std::dl	-	viewCStr	fn	public
 std::fs	-	closeIn	fn	public
 std::fs	-	closeOut	fn	public
 std::fs	-	flushOut	fn	public
@@ -266,6 +268,7 @@ std::heap	plate	reservedBytes	method	public
 std::heap	plate	store	method	public
 std::heap	plate	used	field	public
 std::heap	plate	usedBytes	method	public
+std::heap	plate	view	method	public
 std::io	-	accDigit	fn	internal
 std::io	-	errWrite	fn	internal
 std::io	-	fillState	fn	internal

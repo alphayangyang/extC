@@ -10,6 +10,8 @@
  * **显式转换**（`fn(i64) -> i64(raw)`）—— 那句话就是作者的签字，与 `effects` 同一类。
  *
  * 谁能声明这些原语：与 `std::sys::*` 同一档（`LIBS.md` §5；v1 尚未强制只有特权模块能声明）。 */
+use std::sys::heap as sysheap    /* 只要那一格：`extc_viewOf`（C 字符串 → 视图） */
+
 /* `void *dlopen(const char *file, int flags)`；`void *dlsym(void *h, const char *name)`；
  * `int dlclose(void *h)`；`char *dlerror(void)`。
  * 三条都签 `Addr=0 Cont=0`：glibc 不会留下我们给的缓冲区（名字是当场拷走的）。 */
@@ -60,3 +62,33 @@ fn open(path: slice<u8>) -> ?ref void { return dlopen(path.data, RTLD_NOW) }
 fn sym(h: ?ref void, name: slice<u8>) -> ?ref void { return dlsym(h, name.data) }
 
 fn close(h: ?ref void) -> i32 { return dlclose(h) }
+
+/* ---------------------------------------------------------------- C 字符串那一边
+
+ * 上面 `cstr` 是 extC → C（补终止符）；这里两只是反方向：C 的字符串**没有长度**，长度在终止符里，
+ * 而 extC 的视图要长度。所以先数（`p` 起、逐字节看，遇到 0 停），再要一个视图。
+
+ * 数长度的写法值得看一眼：语言里**没有指针算术**（第 4 步 ①/② 只开了"抹除"和"指针+长度→视图"
+ * 两个方向），所以每往前走一格都要重新要一个更长的视图，再看它的最后一个字节。代价是 O(n²) 的
+ * 视图构造 —— 对库返回的短字符串（版本号、错误消息）完全够，而且它把"这一格必须存在"讲清楚了。
+
+ * 上限是防线：C 那边忘了终止符的话，谁也不想读到越界。`dlerror` / `cairo_version_string` 这类
+ * 都是几十字节以内，1024 足够。 */
+let CSTR_MAX: i64 = 1024
+
+fn cstrLen(p: ref u8) -> i64 {
+    var i: i64 = 0
+    while i < CSTR_MAX {
+        var v: slice<u8> = sysheap::extc_viewOf(p, i + i64(1))
+        if v[i] == u8(0) { return i }
+        i = i + 1
+    }
+    return i64(-1)
+}
+
+/* C 字符串 → extC 视图（不含终止符）。`len < 0` 表示在 `CSTR_MAX` 之内没找到终止符。 */
+fn viewCStr(p: ref u8) -> slice<u8> {
+    var n: i64 = cstrLen(p)
+    if n < i64(0) { n = i64(0) }
+    return sysheap::extc_viewOf(p, n)
+}

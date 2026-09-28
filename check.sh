@@ -117,6 +117,11 @@ if out=$(timeout 600 ./tests/cabi/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（@export：C 宿主**真的链接并调用** · .so 里 nm -D 看得见符号 · 10 种"没有那一个 C 符号"的反例）"
 else bad "tests/cabi/run.sh"; echo "$out"; fi
 
+echo "== 真库（C-ABI.md §9.11：用 cairo 画一张画 —— dlopen 真第三方 .so，不链接它）=="
+if out=$(timeout 600 ./tests/real-lib/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（dlopen libcairo + 20 个符号 + 签名的表槽 + 板里的画布 + PNG；'画对了'由像素数与四边判据钉住；无 cairo 的机器显式跳过）"
+else bad "tests/real-lib/run.sh"; echo "$out"; fi
+
 echo "== 板 / Heap（HEAP.md · C-ABI.md §9.10：保留便宜 · 按需 commit · 门有牙 · close 即 munmap）=="
 if out=$(timeout 600 ./tests/heap/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（4 GiB 保留只涨 4 KB RSS · commit 1 MiB 粒度 · 板外指针被拒 · **close 之后再用 = SIGSEGV**）"

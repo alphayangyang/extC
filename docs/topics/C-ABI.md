@@ -488,3 +488,44 @@ reserve=4096MB rss_delta=4 commit=1024KB stored=11 holds=true outside=false copy
 **还没做的**：Arena 兜底（`HEAP.md` §3：忘了 `close` 就由 open 它的那只 Arena 收）今天只是漏到
 进程结束；只读借出（`mprotect` 成 `PROT_READ`，原型量过 ≈0.7 MiB 盈亏平衡）与"板的表"（§9.9 ④
 那张 `extc_heap_api`）把它们接起来，是第 5 步。
+
+## 9.11 第 5 步 ③：用**真的**第三方库画一张画（cairo 1.18.4）
+
+前四步的 dl 测试用的都是我们自己编的 `.so`：签名我们写的、布局我们定的、行为我们知道。
+这一节换成 `libcairo.so.2` —— 一个我们没参与过的库，没有它的头文件，也**不链接**它。
+
+```
+cairo=1.18.4 surface=ok png=ok green=30771 white=9532 edges=1111 drawn=1 center=ok
+```
+
+`tests/real-lib/cairo-logo.extc`：`dlopen` → 20 个 `dlsym` → 填一张带签名的表 → `plate` 里拿画布
+内存 → 二十来个真 API 调用 → `cairo_surface_write_to_png` 落盘 512×512 的 PNG。
+
+"画对了"不靠眼睛：绿色（边框 + 大括号 + 基线）30771 像素、白色（三个字母）9532 像素、四条边各有
+绿色、中间横带有白色；同一组数字用 Python 解 PNG **独立复核过一遍**（30771 / 9532 / 1111 / mid=1）。
+没有 cairo 的机器上这套测试**显式跳过**。
+
+它逼出来的四件事（前两件是语言层的，值得记）：
+
+1. **`extern!("libcairo")` 会去链接，不会去 dlopen**：声明写下去，链接器就找那些符号
+   （实测 `undefined reference to cairo_select_font_face`）。dl 那条路上函数只是**地址**，所以
+   这里一个 `extern!` 都没有 —— 全是 `dlsym`。
+2. **地址必须有签名，而签名在槽上**：转换出来的 `fn` 值**没有签名** ⇒ 按最保守算（"它可能留住
+   每一个实参"）⇒ 连一个 `var c: ref void = cr` 这样的本帧局部都会被拒（实测报
+   "may be kept by C forever, but it points into this frame (depth 1)"）。于是把地址填进
+   `struct cairoApi` 的**字段**，每个字段带 `effects`，调用点走槽的签名。**表要传下去，不能把
+   函数指针拷出来** —— 拷出来签名就丢了。
+3. **"可能留住"要求实参活得比这一帧久 ⇒ 指针要内联从板里取**：`cairo_image_surface_create_for_data`
+   的槽签 `Addr=1`（surface 持有那块内存），而 `var px = pl.alloc(...)` 之后再传 `px.data` 会被拒
+   （存进局部的视图在逃逸分析眼里只有本帧寿命）⇒ 写 `pl.view(off, n)!.data` 内联在调用点 ✓
+   为此给板加了 `view(off, n)`（同一道门的另一个出口）。
+4. **包一层 helper 会让签名失效**：把槽调用包进一个 extC 函数（`fn rgb(api, cr, ...)`）之后，
+   那个 helper 的 effect 总结是 **incomplete**（实测 `EXTC_DBG_REFARGS=1`：`complete=0`，因为
+   经函数指针的调用在收集阶段被记成 `effUnknown`），于是**它的调用者**不能再传本帧的指针
+   （实测报 "points into a deeper scope (depth 1) than the arena this call may store it in"）。
+   今天的选择是**保守不放松**（这套分析有过一次"放松即放跑悬垂引用"的教训，注释里写着）；
+   画图的调用因此直接写在槽那里。把签名接进总结（"经签字的槽调用不该让总结变得 incomplete"）
+   是**下一步该做的事**，不是顺手改的。
+
+顺带两件小的：C 字符串反方向（`dl::cstrLen` / `dl::viewCStr`，`cairo_version_string` 那种），
+以及库层的 `plate::view(off, n)`。
