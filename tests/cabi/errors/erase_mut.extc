@@ -1,0 +1,10 @@
+/* 反例：**只读**指针交给 `mut ref void` ⇒ 那是在要写权限 ✗（抹除不新增权限）
+ *
+ * 注意 `ref x`（x 是 `var`）给的是 `mut ref i64`，那是**合法**的抹除；这里用的是 `slice` 的
+ * `data` —— 它是 `ref u8`，没有写权限。 */
+fn int3(p: mut ref void) -> i32 { return 0 }
+fn main() -> i32 {
+    var a: [4]u8 = [1, 2, 3, 4]
+    var s: slice<u8> = a[..]
+    return int3(s.data)
+}

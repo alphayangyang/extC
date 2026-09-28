@@ -1,0 +1,6 @@
+/* 反例：`?ref T` 交给 `ref void` ⇒ 那是在声称"它不是空"，与 C 的 `void *` 无关 ✗ */
+extern!("libc") fn int3(p: ref void) -> i32
+fn main() -> i32 {
+    var p: ?ref i64 = null
+    return int3(p)
+}

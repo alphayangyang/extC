@@ -499,6 +499,26 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
     if (want->kind == TY_REF && got->kind == TY_REF && want->nullable && !got->nullable &&
         want->mut == got->mut && ttEquals(want->inner, got->inner)) return true;
 
+    /* **Erasing a pointer**: `ref T` may be handed to a `ref void` target (and `mut ref T` to
+     * `mut ref void`), which is C's `T *` -> `void *`.
+     *
+     * Nothing is lost by it: the pointee type is not a permission -- what may be done with a pointer
+     * is decided by `ref` versus `mut ref` and by the pointee type of the *place* it came from, and a
+     * `ref void` can do strictly less (no `*`, no `[i]`, no `.field`; the checker refuses all three).
+     * It exists because a boundary API says `void *` when the pointee is not its business: `munmap`,
+     * `memcpy`, `mprotect`, and `Heap.md`'s plate, whose handle is an erased pointer by design.
+     *
+     * Three things stay impossible, and they are the whole reason this is written as an erasure and
+     * not as a cast:
+     *   - the reverse (`ref void` -> `ref T`) never happens; the declarations that know the real type
+     *     are the only way back (and `fn(...)` from a symbol is the code-pointer case of it),
+     *   - `?ref T` -> `ref void` would claim it is not null, and the check for that is above,
+     *   - `ref T` -> `mut ref void` would ask for write permission it does not have. */
+    if (want->kind == TY_REF && got->kind == TY_REF &&
+        want->inner && ttBase(want->inner) && ttBase(want->inner)->kind == TY_VOID &&
+        (!got->nullable || want->nullable) && (!want->mut || got->mut))
+        return true;
+
     /* Dropping `mut` is implicit: what may be written may of course be read. It is
      * one-way and always safe. The reverse direction asks for write permission and has to
      * be written as `mut`. Both references (`mut ref T` to `ref T`) and views

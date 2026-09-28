@@ -126,5 +126,15 @@ else
     echo "  FAIL 编 .so 失败（heapmod.c）"; head -3 "$tmp/err4" | sed 's/^/        /'; fail=1
 fi
 
+echo '== ①b 指针的抹除方向（ref T -> ref void，C 的 T* -> void*）=='
+if out=$("$EXTC" --run tests/cabi/erase.extc 2>&1); then
+    if echo "$out" | grep -qF "erase=ok"; then echo "  ok   erase  ->  ref u8 / mut ref i64 / ref void 三种来源都能进 ref void 参数（mmap→mprotect→munmap 生命周期同场跑完）"
+    else echo "  FAIL erase  ->  输出对不上：$(echo "$out" | tr '\n' '|')"; fail=1; fi
+else
+    echo "  FAIL erase  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+fi
+check_err tests/cabi/errors/erase_nullable.extc 'found `?ref'
+check_err tests/cabi/errors/erase_mut.extc      'found `ref'
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]
