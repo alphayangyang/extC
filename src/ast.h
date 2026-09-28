@@ -202,6 +202,12 @@ struct Expr {
      * above) because the node carries no `func` by the time codegen runs -- measured: an assoc
      * builtin call reached codegen with `e->func == NULL`, so keying on it could never fire. */
     bool      domNew;
+    /* `std::sys::heap::extc_viewOf(p, n)`: the plate layer's one primitive. A flag for the same
+     * reason `domNew` is one -- the declaration carries `@builtin`, so the node would otherwise have
+     * to name a `FuncDef` with no body (and letting it be treated as a callee would drag a
+     * body-less function into the effect summaries). Codegen emits a call to the runtime helper the
+     * declaration triggers (`src/plate.c`). */
+    bool      viewOf;
     /* `EX_EXT`: the domain this task is handed to (the nearest `d.run { … }` receiver, resolved by
      * the checker). Codegen registers the task there. */
     Expr     *extDom;

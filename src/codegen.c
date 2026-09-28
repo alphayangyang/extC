@@ -13,6 +13,7 @@
 #include "coroutine.h"
 #include "domain.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
 #include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */
+#include "plate.h"          /* the plate runtime (std::sys::heap), emitted on demand */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
@@ -289,6 +290,9 @@ typedef struct {
      * The block brings its own declaration of `memmem` (see `memfind.c`), so nothing has to be
      * written ahead of the includes and a program without the flag keeps byte-identical C. */
     bool        needMemFind;
+    /* 板那一层的按需发射：**一个声明一个标志**（声明了哪个才发哪个）。 */
+    bool        needPlateView;    /* `extc_viewOf`：板把保留区当视图用的唯一入口 */
+    bool        needPlateCopy;    /* `extc_memCopy`：板 copyIn/copyOut 的整块拷贝 */
     bool        needTime;     /* 程序用了 `extern!("extc-time")` ⇒ 发射时钟与 sleep */
     /* Is the function being generated marked `@unchecked`? Then its element indexes are lowered
      * without the bounds check (see `FuncDef.isUnchecked`). Saved and restored around every body,
@@ -2265,6 +2269,20 @@ static const char *genExprInner(CG *g, Expr *e) {
              * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
             /* `domain::single()`：造一个域（不透明指针）。按 checker 盖的**节点标记**认 —— 见 ast.h。 */
             if (e->domNew) { g->needDomain = true; return "extc_dom_new()"; }
+            /* The plate layer's one primitive: a call to the helper the declaration triggers
+             * (`src/plate.c`). The callee is a `@builtin` with no body, so there is no `FuncDef` to
+             * name -- hence the flag, exactly as `domNew` above. */
+            if (e->viewOf) {
+                Buf vb;
+                bufInit(&vb, g->arena);
+                bufPuts(&vb, "extc_viewOf(");
+                for (size_t i = 0; i < e->u.call.args.len; i++) {
+                    if (i) bufPuts(&vb, ", ");
+                    bufPuts(&vb, genExpr(g, *(Expr **)vecAt(&e->u.call.args, i)));
+                }
+                bufPutc(&vb, ')');
+                return bufCstr(&vb);
+            }
             if (e->parWorker) {
                 /* `parallel::run(worker, 视图们…, n, threads)`：ctx 是 trampoline 那个"每视图一个字段"的
                  * 结构体，只读视图原样带过去、输出的那一份在 trampoline 里按 [lo,hi) 切段；每个实参
@@ -6767,6 +6785,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * instead of a byte loop. The flag is read again before the includes (the `_GNU_SOURCE`
          * block below), so this scan has to run before the preamble -- it does. */
         if (f->externLib && strcmp(f->externLib, "extc-mem") == 0)  g.needMemFind = true;
+        /* 板的运行期与 memfind 同一形状：触发点是**声明**（只有特权层 std::sys::heap 会声明它）。 */
+        if (f->externLib && strcmp(f->externLib, "extc-heap") == 0) {
+            if (plateIsMemCopyName(f->name)) g.needPlateCopy = true;
+            else                             g.needPlateView = true;
+        }
         if (f->externLib && strcmp(f->externLib, "extc-time") == 0)  g.needTime = true;
     }
     /* 池还多一条来源：**检查器早就算好的 `makesPool`**。只看"这个模块里声明了 `extc_pool_*`
@@ -6777,6 +6800,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         if (f && f->makesPool) g.needPool = true;
+        /* `@builtin` 的那一个原语同理：声明在特权层（`std::sys::heap`），编译器给函数体。
+         * 它不是 `extern!`，所以上面那条按 `externLib` 的扫描看不见它。 */
+        if (f && f->isBuiltin && plateIsViewOfName(f->name)) g.needPlateView = true;
     }
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -8362,6 +8388,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* The byte-search runtime, for a program that declares `extern!("extc-mem")`. Its trigger
      * also decided the `_GNU_SOURCE` preamble above; here only the bodies are appended. */
     if (g.needMemFind) memfindEmitRuntime(arena, out);
+    if (g.needPlateView) plateEmitViewOf(arena, out);
+    if (g.needPlateCopy) plateEmitMemCopy(arena, out);
     if (g.needTime) timeEmitRuntime(arena, out);
     if (g.needEvent) eventEmitRuntime(arena, out);
     if (g.needDomain) {

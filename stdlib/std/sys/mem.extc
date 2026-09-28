@@ -25,3 +25,7 @@ extern!("extc-mem") fn extc_memFind(hay: ref u8, hayLen: i64, needle: ref u8, ne
  * `memcmp` 走的是同一条门 —— 理由见文件头。 */
 extern!("extc-mem") fn extc_memEq(a: ref u8, b: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
+/* 整块拷贝（`extc_memCopy`）**不在这里**：它声明在 `std::sys::heap`、与板的运行期一起发。
+ * 理由与这一块的触发方式有关 —— `extern!("extc-mem")` 一被声明就发这一整块，而 `std::string`
+ * 的用户全都声明它 ⇒ 往里加一个函数会让 21 个产物逐字节变化（golden 当场抓到）。板的触发点是
+ * 它自己的声明，加什么都不会动到别人。 */

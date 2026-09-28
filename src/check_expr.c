@@ -7,7 +7,9 @@
  * borrow rules themselves live in check_escape.c.
  */
 
+#include "modules.h"
 #include "modules.h"   /* modulesMethodHint: "no method" says which module to import */
+#include "plate.h"     /* plateIsViewOfName: the plate layer's one primitive */
 #include <stdlib.h>
 #include "check_internal.h"
 
@@ -53,6 +55,17 @@ static bool isDomSingleDecl(FuncDef *f) {
     return f && f->isBuiltin && f->name && strcmp(f->name, "domain$single") == 0 &&
            f->ret && f->ret->kind == TY_STRUCT && f->ret->name &&
            strcmp(f->ret->name, "domain") == 0;
+}
+/* `std::sys::heap`'s one primitive: `extc_viewOf(p, n)` -- a view over a pointer and a length.
+ *
+ * Recognised the way the other two builtins are (mangled `@builtin` name plus its shape, never by
+ * module path). Why it needs the compiler at all: a view cannot be **built** in extC -- its type is a
+ * generic instance, so no struct literal spells it (`slice<u8> { ... }` is read as a type in
+ * expression position and refused), and the pointer would have to come back from `ref void`, which is
+ * refused on purpose. The three lines of C live in `src/plate.c`, emitted on demand. */
+static bool isViewOfDecl(FuncDef *f) {
+    return f && f->isBuiltin && plateIsViewOfName(f->name) &&
+           f->params.len == 2 && f->ret && ttIsViewType(f->ret);
 }
 static bool isI64Type(Type *t) {
     return t && t->kind == TY_BUILTIN && t->name && strcmp(t->name, "i64") == 0;
@@ -2975,6 +2988,32 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (f->isBuiltin) {
                 if (isDomSingleDecl(f)) {
                     e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    e->type = f->ret;
+                    return f->ret;
+                }
+                if (isViewOfDecl(f)) {
+                    /* `extc_viewOf(p, n)`: no runtime check of any kind -- whoever calls it owns the
+                     * pointer (the plate checks it with `holds`, the boundary signs for it in a
+                     * declaration). The shapes are still checked: a byte pointer and a length. */
+                    if (e->u.call.args.len != 2) {
+                        ckError(c, e->line, NULL, "`extc_viewOf` takes 2 arguments, got %zu",
+                                e->u.call.args.len);
+                        return ttError(tt);
+                    }
+                    Expr *ap = *(Expr **)vecAt(&e->u.call.args, 0);
+                    Expr *an = *(Expr **)vecAt(&e->u.call.args, 1);
+                    Type *tp = checkExpr(c, ap);   /* the reference **is** the value here */
+                    Type *tn = checkExpr(c, an);
+                    if (!ttIsError(tp) && !(tp->kind == TY_REF &&
+                                            ttBase(tp->inner) && ttBase(tp->inner)->kind == TY_BUILTIN))
+                        ckError(c, ap->line,
+                                "It re-types a pointer without checking anything, so it insists on"
+                                " the one shape it can mean: `ref u8`.",
+                                "`extc_viewOf` wants a `ref u8`, found `%s`", typeStr(c, tp));
+                    if (!ttIsError(tn) && !ttIsInteger(tn))
+                        ckError(c, an->line, NULL,
+                                "`extc_viewOf` wants an integer length, found `%s`", typeStr(c, tn));
+                    e->viewOf = true;              /* codegen 认这个标记（声明没有函数体，没 func 可认） */
                     e->type = f->ret;
                     return f->ret;
                 }
