@@ -359,6 +359,7 @@ std::proc	-	pin	fn	public
 std::proc	-	self	fn	public
 std::proc	-	spawn	fn	public
 std::proc	-	wait	fn	public
+std::sys::domain	-	single	fn	public
 std::term	-	rawTerminal	fn	public
 std::term	terminal	close	method	public
 std::term	terminal	fd	field	public

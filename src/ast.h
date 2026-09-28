@@ -168,6 +168,10 @@ struct Expr {
                          * it is the eq method */
     /* `parallel::run(worker, ...)`: 内建识别出来的那个 worker（codegen 据此生成 trampoline）。 */
     FuncDef  *parWorker;
+    /* `sys::domain::single()`: the checker marks the **call node** (the way it marks `parWorker`
+     * above) because the node carries no `func` by the time codegen runs -- measured: an assoc
+     * builtin call reached codegen with `e->func == NULL`, so keying on it could never fire. */
+    bool      domNew;
     FieldDef *field;    /* the field an EX_FIELD resolved to */
     Type     *assocOwner; /* EX_ASSOC: the instance type it resolved to, kept so the
                            * C name can be mangled */

@@ -86,3 +86,27 @@ fn copy(src: slice<u8>, dst: slice<u8>) -> result<unit, io::ioError> {
 ---
 
 **[索引](README.md)** · [← 7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）](13-vararray.md) · [9. 错误信息 →](15-errors.md)
+
+---
+
+### `sys::domain::single()` —— 域的入口（**进行中**）
+
+```extc
+use std::sys::domain
+
+fn main() -> i32 {
+  let d = domain::single()      // 域：与 `slice`、`coroutine<T>` 同级的语言级特殊对象
+  return 0 }
+```
+
+**域**是任务的归属处：`d.run { … }` 里用 `ext f(x)` 起的任务归它，**块结束前必须全部跑完**
+（结构化）。它是**类型**说了算的 —— 不认名字、也不认注解（注解无法验证"我是域"，谁都能自称 ⇒
+信任漏洞；按名字特判又会随改名悄悄失效）。
+
+`single()` 是它今天唯一的公开入口（内建，见 `stdlib/std/sys/domain.extc`）。域在 extC 侧是
+**不透明**的：C 里是一个指针，另外三个原语（`extc_dom_add` / `extc_dom_run` / `extc_dom_free`）
+由**编译器**发射，普通程序既写不到也过不了 `extern!` 的边界检查。
+
+进度：`single()` 可用，域的运行期按需发射（不用域的程序产物里一行都不出现）。
+`ext` 的帧创建与驱动循环是**下一步**，所以域内写 `ext` 目前仍是编译错误（响亮拒绝，不是静默
+编过去）。设计出处：`docs/topics/CONCURRENCY.md`「`ext` 与调度域」。

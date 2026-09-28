@@ -456,6 +456,8 @@ static const char *cType(CG *g, Type *t) {
         case TY_STRUCT:
             /* The **handle** for `coroutine<T>`: one shared struct whatever `T` is -- that is what
              * lets handles from different coroutines live in the same container. */
+            /* `domain` is opaque to extC: one pointer, produced by the runtime. */
+            if (t->sdef && t->sdef->name && strcmp(t->sdef->name, "domain") == 0) return "void *";
             if (t->sdef && isProtoType(t, "coroutine", 1)) return "extc_coro";
             /* A synthesized coroutine frame: `struct <cname>$frame`, with the function's C name (so
              * methods and generic instances mangle the same way everywhere). */
@@ -467,6 +469,8 @@ static const char *cType(CG *g, Type *t) {
         case TY_DYN:    return "ExtcDynHandle";
         case TY_GENERIC:
             /* `coroutine<T>` instances are handles too (the decorated name is not emitted). */
+            /* `domain` is opaque to extC: one pointer, produced by the runtime. */
+            if (t->sdef && t->sdef->name && strcmp(t->sdef->name, "domain") == 0) return "void *";
             if (t->sdef && isProtoType(t, "coroutine", 1)) return "extc_coro";
             return t->name;                 /* already a decorated name */
         case TY_ARRAY:  return t->name;     /* likewise: array_15_i32 */
@@ -2098,6 +2102,8 @@ static const char *genExprInner(CG *g, Expr *e) {
         case EX_CALL: {
             /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
              * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
+            /* `domain::single()`：造一个域（不透明指针）。按 checker 盖的**节点标记**认 —— 见 ast.h。 */
+            if (e->domNew) { g->needDomain = true; return "extc_dom_new()"; }
             if (e->parWorker) {
                 /* `parallel::run(worker, 视图们…, n, threads)`：ctx 是 trampoline 那个"每视图一个字段"的
                  * 结构体，只读视图原样带过去、输出的那一份在 trampoline 里按 [lo,hi) 切段；每个实参
@@ -2354,6 +2360,8 @@ static const char *genExprInner(CG *g, Expr *e) {
             return "0";
 
         case EX_ASSOC: {
+            /* 模块限定的调用走 assoc 节点 ⇒ 域构造这条也要在这里（同 EX_CALL 那条，认标记）。 */
+            if (e->domNew) { g->needDomain = true; return "extc_dom_new()"; }
             /* An associated function decorates its C name with the instance
              * name (`option_i64_some`), which is the same decoration rule
              * methods follow, so cMethodName is reused directly. */

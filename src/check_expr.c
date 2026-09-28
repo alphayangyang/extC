@@ -46,6 +46,14 @@ static bool intLitRange(Type *t, long long *lo, unsigned long long *hi) {
 static bool isParRunDecl(FuncDef *f) {
     return f && f->isBuiltin && f->name && strcmp(f->name, "parallel$run") == 0;
 }
+/* `sys::domain::single()`: the domain layer's one entry point. Recognised the way
+ * `parallel::run` is -- mangled builtin name plus its shape -- not by module path, so a user function
+ * named `single` is untouched (it is not marked `@builtin`). */
+static bool isDomSingleDecl(FuncDef *f) {
+    return f && f->isBuiltin && f->name && strcmp(f->name, "domain$single") == 0 &&
+           f->ret && f->ret->kind == TY_STRUCT && f->ret->name &&
+           strcmp(f->ret->name, "domain") == 0;
+}
 static bool isI64Type(Type *t) {
     return t && t->kind == TY_BUILTIN && t->name && strcmp(t->name, "i64") == 0;
 }
@@ -1770,6 +1778,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (f->isBuiltin) {
+                if (isDomSingleDecl(f)) {
+                    e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    e->type = f->ret;
+                    return f->ret;
+                }
                 if (!isParRunDecl(f)) {
                     ckError(c, e->line,
                             "The declaration carries `@builtin`, so the code has to come from the"
@@ -2649,6 +2662,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (f->isBuiltin) {
+                if (isDomSingleDecl(f)) {
+                    e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    e->type = f->ret;
+                    return f->ret;
+                }
                 if (!isParRunDecl(f)) {
                     ckError(c, e->line,
                             "The declaration carries `@builtin`, so the code has to come from the"
@@ -3094,6 +3112,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             if (f->isBuiltin) {
+                if (isDomSingleDecl(f)) {
+                    e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    e->type = f->ret;
+                    return f->ret;
+                }
                 if (!isParRunDecl(f)) {
                     ckError(c, e->line,
                             "The declaration carries `@builtin`, so the code has to come from the"
