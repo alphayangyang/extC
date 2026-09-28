@@ -2070,19 +2070,34 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
              * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
             if (e->parWorker) {
-                /* `parallel::run(worker, out, n, threads)`：ctx 里放调用者的那个 view，trampoline 按 [lo,hi)
-                 * 切段；chunk 传 0 让运行期自己取（≈每线程 8 块，动态取块实测优于静态切分）。 */
-                Expr *o1 = *(Expr **)vecAt(&e->u.call.args, 1);
-                Expr *o2 = *(Expr **)vecAt(&e->u.call.args, 2);
-                Expr *o3 = *(Expr **)vecAt(&e->u.call.args, 3);
-                Type *vt = (*(Param **)vecAt(&e->parWorker->params, 3))->type;
-                const char *vn = cType(g, vt);
+                /* `parallel::run(worker, 视图们…, n, threads)`：ctx 是 trampoline 那个"每视图一个字段"的
+                 * 结构体，只读视图原样带过去、输出的那一份在 trampoline 里按 [lo,hi) 切段；每个实参
+                 * **只求值一次**。chunk 传 0 让运行期自己取（≈每线程 8 块，动态取块实测优于静态切分）。 */
+                FuncDef *wf = e->parWorker;
+                size_t nViews = wf->params.len - 3, mutIdx = 0;
+                for (size_t i = 0; i < nViews; i++)
+                    if ((*(Param **)vecAt(&wf->params, 3 + i))->type->mut) mutIdx = i;
+                const char *ctn = arenaPrintf(g->arena, "__extc_parctx_%s", wf->name);
                 const char *tmp = arenaPrintf(g->arena, "__extc_pc%d", g->tmpSeq++);
-                pfLine(g, "%s %s = %s;", vn, tmp, genExpr(g, o1));
+                const char *ntmp = arenaPrintf(g->arena, "__extc_pn%d", g->tmpSeq++);
+                Buf init;
+                bufInit(&init, g->arena);
+                for (size_t i = 0; i < nViews; i++)
+                    bufPrintf(&init, "%s.v%zu = (%s)", i ? ", " : "", i,
+                              genExpr(g, *(Expr **)vecAt(&e->u.call.args, 1 + i)));
+                pfLine(g, "%s %s = { %s };", ctn, tmp, bufCstr(&init));
+                pfLine(g, "int64_t %s = (int64_t)(%s);", ntmp,
+                       genExpr(g, *(Expr **)vecAt(&e->u.call.args, 1 + nViews)));
+                /* 分区按 [lo,hi) 切 ⇒ 输出比 n 短的话会切到界外。在这里挡住（worker 里那些检查是
+                 * 另一道防线，`@unchecked` 的 worker 没有它们）。 */
+                pfLine(g, "if (%s > 0 && %s.v%zu.len < %s)"
+                          " extc_trapMsg(\"%s\", %d, \"parallel::run: the output view is shorter than n\");",
+                       ntmp, tmp, mutIdx, ntmp, g->path, e->line);
                 g->needPar = true;
                 return arenaPrintf(g->arena,
-                    "((int32_t)extc_par_run(__extc_par_%s, &%s, (int64_t)(%s), (int64_t)(%s), 0))",
-                    e->parWorker->name, tmp, genExpr(g, o2), genExpr(g, o3));
+                    "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, (int64_t)(%s), 0))",
+                    wf->name, tmp, ntmp,
+                    genExpr(g, *(Expr **)vecAt(&e->u.call.args, 2 + nViews)));
             }
             /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
              * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
@@ -4779,21 +4794,46 @@ static bool cgIsMain(const FuncDef *f) {
 /* `parallel::run` 的 trampoline：语言层没有函数指针，所以这份"取 worker 的地址"只能由编译器
  * 写出来。worker 的第四个形参是一个 view（`{data, len}`）；这里按 [lo, hi) 切出**它自己那一段**
  * 再调用 —— 分区是"读只共享、写必分区"里"写"的那一半，所以不需要任何新的可发送性分析。 */
+/* `parallel::run` 的 trampoline 与它的 ctx 类型。
+ *
+ * worker 形参是 `(id, lo, hi, 视图们…)`，其中**恰好一个** `mut slice<T>` 是输出：它按 `[lo,hi)`
+ * 分区，每个 worker 只碰自己那一段；其余是**只读**视图，原样共享给每个 worker（谁都不写它们 ⇒
+ * 不需要分区，也不需要新的可发送性分析）。ctx 就是"每个视图一个字段"的结构体，按值带过去。 */
 static void genParTramp(CG *g, FuncDef *f) {
-    Type *vt = (*(Param **)vecAt(&f->params, 3))->type;
+    size_t nViews = f->params.len - 3;
+    size_t mutIdx = 0;
+    for (size_t i = 0; i < nViews; i++)
+        if ((*(Param **)vecAt(&f->params, 3 + i))->type->mut) mutIdx = i;
+    {   /* ctx 类型：字段名 v0..vN，类型就是各视图的 C 名（mut 与否同名，见 ttViewMut 的注释） */
+        Buf ct;
+        bufInit(&ct, g->arena);
+        bufPrintf(&ct, "typedef struct {");
+        for (size_t i = 0; i < nViews; i++)
+            bufPrintf(&ct, " %s v%zu;",
+                      cType(g, (*(Param **)vecAt(&f->params, 3 + i))->type), i);
+        bufPrintf(&ct, " } __extc_parctx_%s;", f->name);
+        cgLine(g, "%s", bufCstr(&ct));
+    }
+    Type *vt = (*(Param **)vecAt(&f->params, 3 + mutIdx))->type;
     const char *vn = cType(g, vt);
+    const char *ctn = arenaPrintf(g->arena, "__extc_parctx_%s", f->name);
     cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp);", f->name);
     cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp) {", f->name);
-    cgLine(g, "    %s *c = (%s *)ctxp;", vn, vn);
-    cgLine(g, "    %s sub = { .data = c->data + lo, .len = hi - lo };", vn, vn);
-    /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参）—— 实测报过
-     * "too few arguments to function 'w'; expected 5, have 4"。这里补传 **线程本地 arena**：
-     * worker 的签名固定（只写 out、只返回 i64）⇒ 分配逃不出这个 worker ⇒ 线程本地安全，而且
-     * 两个 worker 不会去抢主线程的帧 arena。 */
-    if (f->usesHome)
-        cgLine(g, "    return (int64_t)%s(id, lo, hi, sub, extc_tls_arena);", f->name);
-    else
-        cgLine(g, "    return (int64_t)%s(id, lo, hi, sub);", f->name);
+    cgLine(g, "    %s *c = (%s *)ctxp;", ctn, ctn);
+    cgLine(g, "    %s sub = { .data = c->v%zu.data + lo, .len = hi - lo };", vn, mutIdx);
+    {   /* 实参：只读视图原样，输出的那一份换成切好的 sub */
+        Buf args;
+        bufInit(&args, g->arena);
+        for (size_t i = 0; i < nViews; i++)
+            bufPrintf(&args, "%s%s", i ? ", " : "",
+                      i == mutIdx ? "sub" : arenaPrintf(g->arena, "c->v%zu", i));
+        /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参）—— 实测报过
+         * "too few arguments to function 'w'; expected 5, have 4"。这里补传 **线程本地 arena**：
+         * worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出这个 worker ⇒ 线程本地安全，而且两个
+         * worker 不会去抢主线程的帧 arena。 */
+        if (f->usesHome) bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
+        cgLine(g, "    return (int64_t)%s(id, lo, hi, %s);", f->name, bufCstr(&args));
+    }
     cgLine(g, "}");
 }
 

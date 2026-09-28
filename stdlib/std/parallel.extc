@@ -10,8 +10,14 @@
  *
  * 形状（2026-09-28 定，③a / ③b / ③c **均已落地**）：
  *
- *   fn worker(id: i64, lo: i64, hi: i64, out: mut slice<T>) -> i32
- *   parallel::run(worker, out, n, threads) -> i32
+ *   fn worker(id: i64, lo: i64, hi: i64, <只读视图>…, out: mut slice<T>) -> i32
+ *   parallel::run(worker, <视图实参>…, n, threads) -> i32
+ *
+ * 视图分成两种，**看 worker 怎么声明**：
+ *   · `out: mut slice<T>`（**恰好一个**）：按元素下标切成 [lo,hi) 互不重叠的一段，worker 里用
+ *     `out[i - lo]`（从 0 数）；
+ *   · `slice<T>`（任意多个，只读）：**每个 worker 拿到同一份**，不分区 ⇒ 里面用**绝对下标**。
+ *     只读共享不需要新的可发送性分析：谁都不写它们。
  *
  * 语义要点：
  *   · 区间 [0, n) 按 `threads` 个 worker 分块，每块拿到自己的 `[lo, hi)`；

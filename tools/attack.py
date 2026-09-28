@@ -813,6 +813,14 @@ PARG = [
      'use std::parallel\nvar G: i64 = 7\nfn helper(x: i64) -> i64 { return x + G }\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = helper(i)  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[64]\n  return parallel::run(w, out, i64(64), i64(8)) }'),
     ('P11 大 n × 8 线程（功能 ✓）', 'ok',
      'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = i  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 {\n  let n: i64 = i64(4096)\n  var out: mut slice<i64> = new i64[n]\n  if parallel::run(w, out, n, i64(8)) != i32(0) { return i32(1) }\n  return i32(out[n - i64(1)]) - 4095 }'),
+    ('P12 只读共享输入（允许 ✓）', 'ok',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, a: slice<i64>, out: mut slice<i64>) -> i32 {\n  var i: i64 = lo\n  while i < hi { out[i - lo] = a[i] + a[i] * i64(2)  i = i + i64(1) }\n  return 0 }\nfn main() -> i32 {\n  let n: i64 = i64(64)\n  var a: mut slice<i64> = new i64[n]\n  var out: mut slice<i64> = new i64[n]\n  var i: i64 = 0\n  while i < n { a[i] = i  i = i + i64(1) }\n  if parallel::run(w, a[..], out, n, i64(8)) != i32(0) { return i32(1) }\n  return i32(out[63]) - 189 }'),
+    ('P13 两个 mut 视图（应拒）', 'reject',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, a: mut slice<i64>, b: mut slice<i64>) -> i32 { return 0 }\nfn main() -> i32 { var a: mut slice<i64> = new i64[8]  var b: mut slice<i64> = new i64[8]\n  return parallel::run(w, a, b, i64(8), i64(2)) }'),
+    ('P14 只读输入元素类型不符（应拒）', 'reject',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, a: slice<f32>, out: mut slice<i64>) -> i32 { return 0 }\nfn main() -> i32 { var a: mut slice<i64> = new i64[8]  var out: mut slice<i64> = new i64[8]\n  return parallel::run(w, a, out, i64(8), i64(2)) }'),
+    ('P15 标量当只读视图（应拒）', 'reject',
+     'use std::parallel\nfn w(id: i64, lo: i64, hi: i64, k: slice<i64>, out: mut slice<i64>) -> i32 { return 0 }\nfn main() -> i32 { var out: mut slice<i64> = new i64[8]\n  return parallel::run(w, i64(3), out, i64(8), i64(2)) }'),
 ]
 
 # ---------------------------------------------------------------- @inline × 代码消除
