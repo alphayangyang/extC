@@ -1,0 +1,3 @@
+/* 反例：`effects` 写在**不是函数指针**的字段上 ⇒ 没有被调方可以描述 ✗ */
+struct api { n: i64 effects Addr=0 }
+fn main() -> i32 { return 0 }

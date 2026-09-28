@@ -1,0 +1,25 @@
+// expect: signed=7 r=7
+// `fn` 字段的 `effects` 签字（C-ABI.md §9.9 第 ② 块）—— **表槽**的签名。
+//
+// 为什么签名必须能挂在槽上：表的被调方不是声明（宿主在运行期才把函数地址填进去），所以
+// "我不留你的指针"这句话没有别的地方可写。签了字的槽把**帧内**指针放行；没签字的槽拿到的是
+// 与"没签字的 `extern!`"完全一样的最坏情况（反例 errors/slot_unsigned.extc）。
+//
+// 走的是**同一把尺子**：调用点把掩码交给 `checkCallRefArgs` 的 extern 那条路（合成一份声明），
+// 所以签字的槽与签字的 `extern!` 不可能漂。签名留在**槽**上、不在类型上 ⇒ 拷贝到局部之后按最保守
+// 算（反例 errors/slot_copied_out.extc），这是诚实的方向。
+use std::io
+
+struct api {
+    copy: fn(mut ref i64, i64) -> i32 effects Addr=0 Cont=0
+}
+
+fn fill(p: mut ref i64, n: i64) -> i32 { *p = n  return i32(n) }
+
+fn main() -> i32 {
+    var t: api = api { copy: fill }
+    var x: i64 = 1
+    var r: i32 = t.copy(ref x, 7)      /* 帧内指针经签字的槽 ⇒ 放行（本文件能编过就是判据） */
+    io::cout << "signed=" << x << " r=" << r << "\n"
+    return 0
+}

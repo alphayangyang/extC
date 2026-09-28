@@ -71,5 +71,23 @@ check_err tests/cabi/errors/on_struct.extc     '`@export` goes on a function'
 check_err tests/cabi/errors/on_global.extc     '`@export` goes on a function'
 check_err tests/cabi/errors/dup_main.extc      'is already taken by another exported function'
 
+echo '== ② 表槽的签名（fn 字段上的 effects）=='
+if out=$("$EXTC" --run tests/cabi/slots.extc 2>&1); then
+    want=$(grep -o '// expect:.*' tests/cabi/slots.extc | sed 's|// expect: *||' | head -1)
+    ok=1
+    IFS=' ' read -ra parts <<< "$want"
+    for p in "${parts[@]}"; do echo "$out" | grep -qF -- "$p" || { ok=0; echo "  FAIL 输出里缺「$p」"; }; done
+    if [ "$ok" = 1 ]; then echo "  ok   slot-signed  ->  $(echo "$out" | tr '\n' '|')（帧内指针经签字的槽放行，且调用真的发生）"
+    else echo "  FAIL slot-signed  ->  输出对不上"; fail=1; fi
+else
+    echo "  FAIL slot-signed  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+fi
+
+echo "== ② 反例（签名是承诺：没签字 · 拷出槽 · 写错地方，都得挡住）=="
+check_err tests/cabi/errors/slot_unsigned.extc   'argument 1 of `copy` may be kept by C forever'
+check_err tests/cabi/errors/slot_copied_out.extc 'may be kept by C forever'
+check_err tests/cabi/errors/slot_on_nonfn.extc   'which is not a function pointer'
+check_err tests/cabi/errors/slot_thread.extc     '`Thread=` on a field is not used yet'
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

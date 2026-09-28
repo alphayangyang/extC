@@ -371,12 +371,36 @@ _Static_assert(sizeof(mixed) <= offsetof(mixed, arr) + sizeof(((mixed *)0)->arr)
 `nm -D` 查到 `T triple / T mid / T makePair` —— 后者正是 `dlsym` 的前提。加十条反例（泛型 · 方法 ·
 `extern!` · C 关键字名 · `slice` 参数 · 隐藏 arena · 写两遍 · 标在 struct / 全局上 · 两个模块重名）。
 
-### ②③④ 还没做
+### ② `fn` 字段的 `effects` 签字（已完成）
 
-* **② `fn` 字段的 `effects` 签字**：表槽是函数指针，而签字今天只挂在**声明**上（`collectEffects`
-  只对 `extern!` 读那条子句）。没有它，经表槽的调用只能按"它可能留住一切"算 —— 与"没签字的
-  `extern!`"同一档：安全，但表不好用。做法：把子句写在**字段**上（`alloc: fn(…) -> ref u8 effects
-  Addr=0 Cont=0`），调用时把掩码喂给 `checkCallRefArgs` 的 extern 那条路（**不写第二份规则**）。
+表槽是函数指针，而签字从前只挂在**声明**上（`collectEffects` 只对 `extern!` 读那条子句）——
+表的被调方不是声明（宿主运行期才填地址），所以那句话没有别的地方可写。现在写在**槽**上：
+
+```extc
+struct extc_heap_api {
+    size:  u64
+    ctx:   ?ref void
+    alloc: fn(i64, ?ref void) -> ref u8 effects Addr=0 Cont=0
+    free:  fn(ref u8, ?ref void) -> i32 effects Addr=0 Cont=0
+}
+```
+
+三件事值得记下来：
+
+1. **同一把尺子**：调用点把掩码交给 `checkCallRefArgs` 的 **extern 那条路**（合成一份声明），
+   所以"签字的槽"与"签字的 `extern!`"不可能漂 —— 这正是 §9.5 那条"一处理一处"。
+2. **顺带补掉一个真洞**：从前经 `fn` 值调用走的是 `callee == NULL` 的**非 extern** 保守路径，
+   而那条路的界是"被调方拿到的那只 arena 活多久"—— 经指针调用的被调方**根本没拿到 arena**，
+   于是帧内指针能被交出去（实测：没签字的槽放行了 `ref x`）。现在没签字的槽拿到的正是
+   `extern!` 的最坏情况（掩码全 1），拒绝帧内指针 ✓。
+3. **签名在槽上、不在类型上**：`fn(A) -> R` 这个**类型**没有地方写 effects（它不是声明），
+   所以从槽里直接调带着签名，**拷贝到局部就丢了**（按最保守算）。这是刻意的边界，反例
+   `errors/slot_copied_out.extc` 钉着。
+
+`Thread=` 在字段上暂时**报错**（"还没有用"）：读它的那条检查（worker 里允许调谁）是冲着
+**已解析**的调用去的，运行期填的槽不是；记下来却没人读，比拒绝更坏。
+
+### ③④ 还没做
 * **③ `std::dl`**：`open` / `close` / `sym`。两个缺口：extC 的 `str` **不是 NUL 结尾**的（库侧
   适配函数解决），以及从 `dlsym` 拿回来的 `ref void` 要变成 `fn(…)` —— 用**显式转换** `T(x)`
   （走"收窄必须写出来"那条既有的路，不新增 builtin）。

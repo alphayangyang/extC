@@ -1157,7 +1157,42 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
         }
         checkAssignable(c, p->type, at, a, "argument");
     }
-    checkCallRefArgs(c, NULL, &e->u.call.args, &ps, 0, e->line, "this `fn` value");
+    /* Whose signature is this call under? A `fn` value carries no `effects` in its **type** -- the
+     * clause is written on a declaration, and a function type is not one. What can carry it is the
+     * **slot** the pointer came out of (`HEAP.md` section 2): a field of function type may write
+     * `effects Addr=0 Cont=0`, and the callee of this call is exactly that field. A `fn` copied into
+     * a local loses the signature, which is the honest direction to lose it in.
+     *
+     * The masks are handed to the **same** rule a signed `extern!` goes through -- a synthetic
+     * declaration is all `checkCallRefArgs` wants, so the two cannot drift apart.
+     *
+     * A slot with **no** clause gets the worst case, exactly as an unsigned `extern!` does: every
+     * argument may be kept forever (`collectEffects` fills the same all-ones masks for that case).
+     * That is what makes "the signature is a promise" mean something at the call site -- and it is
+     * why a `fn` value is not the weak spot it would be if it took the *intra-extC* path, where the
+     * bound is "as long as the arena the callee was given" (a callee reached through a pointer was
+     * given no arena at all, so that bound does not exist). */
+    FuncDef *sig = (FuncDef *)arenaAllocZero(c->arena, sizeof(FuncDef));
+    sig->isExtern    = true;        /* "a black box whose signature is the whole basis" */
+    sig->effComplete = true;
+    {
+        FieldDef *fd = (e->u.call.callee && e->u.call.callee->kind == EX_FIELD)
+                           ? e->u.call.callee->field : NULL;
+        if (fd && fd->hasEffects) {
+            sig->name     = fd->name;
+            sig->hasEffects = true;
+            sig->addrMask = fd->effAddrMask;
+            sig->contMask = fd->effContMask;
+        } else {
+            /* Named after the slot when there is one: "argument 1 of `copy` may be kept by C
+             * forever" points at the line to sign. The message wraps this in backticks, so it has to
+             * be a bare word. */
+            sig->name = fd ? fd->name : "fn";
+            for (size_t i = 0; i < ps.len && i < 32; i++)
+                sig->addrMask |= (1u << i), sig->contMask |= (1u << i);
+        }
+    }
+    checkCallRefArgs(c, sig, &e->u.call.args, &ps, 0, e->line, sig->name);
 
     e->callViaFn = true;
     return ft->ret;

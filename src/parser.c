@@ -339,7 +339,7 @@ static UseDecl *parseUse(Parser *p) {
  * and whether it touches cross-thread shared state. Written by **any declaration with no body** --
  * `extern!` and `@builtin` alike, because the compiler cannot see behind either one. Each round
  * skips newlines first, or `at()` would see a TK_NEWLINE and miss the keyword. */
-static bool parseEffectsClause(Parser *p, FuncDef *f) {
+static bool parseEffectsClause(Parser *p, FuncDef *f, bool *outSawThread) {
             take(p);
             f->hasEffects = true;
             f->extThreadMask = 1u;   /* 缺省保守：假定它碰跨线程共享的状态 */
@@ -358,6 +358,7 @@ static bool parseEffectsClause(Parser *p, FuncDef *f) {
                 if (strcmp(nm->text, "Addr") == 0)        f->extAddrMask = bits;
                 else if (strcmp(nm->text, "Cont") == 0)   f->extContMask = bits;
                 else if (strcmp(nm->text, "Thread") == 0) {
+                    if (outSawThread) *outSawThread = true;
                     if (bits > 1u) {
                         ctxError(p->ctx, nm->line, nm->col,
                                  "`Thread` is a single fact about the call, not a per-argument mask:"
@@ -422,7 +423,7 @@ static FuncDef *parseExtern(Parser *p) {
     while (true) {
         skipJunk(p);
         if (at(p, "effects")) {
-            if (!parseEffectsClause(p, f)) return NULL;
+            if (!parseEffectsClause(p, f, NULL)) return NULL;
             continue;
         }
         if (at(p, "owned")) {
@@ -911,6 +912,40 @@ static StructDef *parseStruct(Parser *p) {
         fd->type = ft;
         fd->line = fname->line;
         fd->isPrivate = priv;
+
+        /* `effects Addr=… Cont=…` on a field: the signature of the function pointer this slot will
+         * hold (HEAP.md section 2 -- the callee is not a declaration, the host fills the slot at run
+         * time). The clause is read by the **same** routine a declaration uses, into a throw-away
+         * `FuncDef`, and only the masks are kept: one parser for one syntax. It goes on the field's
+         * own line, like every other part of a declaration here. */
+        if (at(p, "effects")) {
+            if (!ft || ft->kind != TY_FN) {
+                Token *e = cur(p);
+                ctxError(p->ctx, e->line, e->col,
+                         "An `effects` clause describes what the callee does with the pointers it is"
+                         " given, so there has to be a callee: declare the field as `fn(...) -> R`"
+                         " first.",
+                         "`effects` on field `%s`, which is not a function pointer", fname->text);
+                return NULL;
+            }
+            FuncDef tmp;
+            memset(&tmp, 0, sizeof tmp);
+            bool sawThread = false;
+            if (!parseEffectsClause(p, &tmp, &sawThread)) return NULL;
+            if (sawThread) {
+                ctxError(p->ctx, fname->line, fname->col,
+                         "`Thread` says whether a call touches cross-thread shared state, and the"
+                         " check that reads it (which calls may appear in a worker) is about"
+                         " **resolved** calls. A slot filled at run time is not one, so the clause"
+                         " would be recorded and never read -- write it when that check grows a case"
+                         " for function pointers.",
+                         "`Thread=` on a field is not used yet");
+                return NULL;
+            }
+            fd->hasEffects  = tmp.hasEffects;
+            fd->effAddrMask = tmp.extAddrMask;
+            fd->effContMask = tmp.extContMask;
+        }
         *(FieldDef **)vecPush(&sd->fields) = fd;
         skipJunk(p);
     }
@@ -1566,7 +1601,7 @@ static FuncDef *parseFunc(Parser *p) {
          * an unconditional call ate whatever token came next (measured: `stdlib/std/sys/io.extc`
          * came apart at `expected '='`, and 224 golden products changed). */
         skipJunk(p);
-        if (at(p, "effects") && !parseEffectsClause(p, fd)) return NULL;
+        if (at(p, "effects") && !parseEffectsClause(p, fd, NULL)) return NULL;
         return fd;
     }
     fd->body = parseBlock(p);

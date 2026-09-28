@@ -540,6 +540,21 @@ struct FieldDef {
      * exists as much as behaviour is -- a public `buf`/`vals` hands the reader a view into pool
      * storage, which is exactly what the pool tier forbids (POOLS.md 5.4, ruling #89). */
     bool        isPrivate;
+    /* `effects Addr=… Cont=…` on a **field of function-pointer type**: the signature of the function
+     * that slot will hold.
+     *
+     * It exists for the table (`HEAP.md` section 2): the callee is not a declaration -- the host fills
+     * the slot at run time -- so "I do not keep the pointers you hand me" has nowhere to live except
+     * the slot itself. Without it a call through the slot gets the conservative answer every
+     * unsigned `extern!` gets ("it may keep everything"), which is safe and makes the table unusable.
+     *
+     * The masks mean exactly what they mean on a declaration (`FuncDef.extAddrMask` / `extContMask`),
+     * and the call site hands them to the **same** rule (`checkCallRefArgs`), so a signed slot and a
+     * signed `extern!` cannot drift apart. `hasEffects` says the author wrote the clause; a slot
+     * without one keeps the conservative default. */
+    bool        hasEffects;
+    unsigned    effAddrMask;
+    unsigned    effContMask;
 };
 
 typedef struct {

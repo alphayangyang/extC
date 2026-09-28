@@ -1,0 +1,16 @@
+/* 反例：签名留在**槽**上，不在类型上 ⇒ 把槽里的指针拷进局部之后按最保守算 ✗
+ *
+ * 这是刻意的边界：`fn(A) -> R` 这个**类型**没有地方写 effects（它不是一个声明），所以只有
+ * "从槽里直接调"这一种形态带着签名。要传帧内指针，就从槽里调。 */
+struct api {
+    copy: fn(mut ref i64, i64) -> i32 effects Addr=0 Cont=0
+}
+
+fn fill(p: mut ref i64, n: i64) -> i32 { *p = n  return i32(n) }
+
+fn main() -> i32 {
+    var t: api = api { copy: fill }
+    var g: fn(mut ref i64, i64) -> i32 = t.copy
+    var y: i64 = 2
+    return g(ref y, 9)
+}

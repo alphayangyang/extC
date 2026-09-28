@@ -1228,10 +1228,10 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             int d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, a);
             if (d == 0) continue;                /* it already outlives this frame */
             ckError(c, line,
-                    "A C function is a black box: unless the `extern!` declaration says it does"
-                    " not keep the pointer (`effects Addr=0 Cont=0`), it may store it somewhere"
-                    " that outlives this frame. Sign the declaration, or pass something that"
-                    " lives longer.",
+                    "A C function is a black box: unless its declaration says it does not keep the"
+                    " pointer, it may store it somewhere that outlives this frame. Sign it --"
+                    " `effects Addr=0 Cont=0` on the `extern!`, or on the table slot that holds the"
+                    " function pointer -- or pass something that lives longer.",
                     "argument %zu of `%s` may be kept by C forever, but it points into this"
                     " frame (depth %d)", j + 1, fname, d);
         }

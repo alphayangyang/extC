@@ -1,0 +1,15 @@
+/* 反例：**没签字**的表槽与没签字的 `extern!` 同档 ⇒ 把帧内指针交给它就是编译错误 ✗
+ *
+ * 与 extern 那条是同一把尺子（`checkCallRefArgs` 的 extern 分支）：签字的槽放行、没签字的拒。
+ * 这条也是第 ② 块存在的理由 —— 没有它，整张表都只能按最保守算。 */
+struct loose {
+    copy: fn(mut ref i64, i64) -> i32
+}
+
+fn fill(p: mut ref i64, n: i64) -> i32 { *p = n  return i32(n) }
+
+fn main() -> i32 {
+    var l: loose = loose { copy: fill }
+    var y: i64 = 2
+    return l.copy(ref y, 9)
+}

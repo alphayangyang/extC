@@ -15,6 +15,9 @@ struct point {
 
 fn bump(p: mut ref point) { (*p).x = (*p).x + 1 }
 
+/* ③ 用的那个：全局 = 深度 0，"活得比任何帧久" —— 经**没签字**的代码指针传出去也合法。 */
+var gp: point = point { x: 41, y: 0 }
+
 fn main() -> i32 {
     /* ① C 写进我们的结构体 */
     var tv: capi::timeval = capi::timeval { tv_sec: 0, tv_usec: 0 }
@@ -32,11 +35,15 @@ fn main() -> i32 {
         io::cout << " void=bad"
     }
 
-    /* ③ 同一个谓词给 `fn` 的签名用：指向声明类型的指针可以是一个函数指针的参数 */
+    /* ③ 同一个谓词给 `fn` 的签名用：指向声明类型的指针可以是一个函数指针的参数。
+     *
+     * 传的是**全局**（深度 0 = 活得比任何帧久），不是帧内局部：`f` 是**没签字**的代码指针，
+     * 按"它可能留住一切"算 ⇒ 帧内地址会被拒（这一条是第 ② 块收紧之后实测出来的，见
+     * tests/cabi/errors/slot_unsigned.extc）。要传帧内地址，就把指针放进**签了字的表槽**里调
+     * （tests/cabi/slots.extc）。 */
     var f: fn(mut ref point) -> void = bump
-    var pt: point = point { x: 41, y: 0 }
-    f(ref pt)
-    if pt.x == 42 { io::cout << " indirect=ok" } else { io::cout << " indirect=bad" }
+    f(ref gp)
+    if gp.x == 42 { io::cout << " indirect=ok" } else { io::cout << " indirect=bad" }
 
     io::cout << "\n"
     return 0

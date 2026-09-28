@@ -216,6 +216,15 @@ indexOf&lt;<span class="t">i32</span>&gt;(nums[..], <span class="n">50</span>)  
 <pre class="lang-extc"><code>int64_t <span class="f">triple</span>(int64_t);                       <span class="c">/* C 侧手写声明 */</span>
 <span class="k">struct</span> pair2 { int64_t lo, hi; };              <span class="c">/* @frozen 让两边布局是同一个约定 */</span></code></pre>
 <ul><li><strong>签名要是 C 能写的</strong>：每个参数/返回值一个机器字（标量 · 指针 · 函数指针），或者一个 <code>@frozen</code> 结构体（按值也行）。<code>slice&lt;T&gt;</code> 在 C 那边是两个参数，所以不能当一个 —— 尺子与 <code>extern!</code> 是 <strong>同一把</strong>（<code>ttCrossesC</code>）。</li><li><strong>不能有隐藏参数</strong>：函数体里分配且返回引用的函数会多一个 home arena 参数，C 的调用对不上 ⇒ 拒绝（要导出就让它只在自己块里分配，或者导出一个不做分配的包装）。</li><li><strong>名字是契约</strong>：C 关键字这种必须改名的名字会被拒（编译器不会悄悄改一个 C 那边猜不到的名字）； 两个导出重名也拒（模块前缀去掉之后就是同一个符号）。</li><li><strong>泛型 / 方法 / 协程 / <code>extern!</code> 不能导出</strong>：它们没有"那一个 C 符号"（泛型每个实例一个函数体 · 方法的名字带接收者 · 协程的值是帧句柄 · <code>extern!</code> 已经是别人家的符号）。</li><li>没有 <code>main</code> 的文件也能编（模块/插件就是这样）—— <code>@export</code> 自己就是根，不会被可达性剪枝剪掉。</li></ul>
+<h3 id="12-3-3-表槽的签名-fn-字段上的-effects-2026-09-29">12.3.3 表槽的签名：<code>fn</code> 字段上的 <code>effects</code>（2026-09-29）</h3>
+<p>宿主在运行期把函数地址填进表里，所以"这个函数不留我的指针"这句话<strong>没有声明可写</strong> —— 写在<strong>槽</strong>上：</p>
+<pre class="lang-extc"><code><span class="k">struct</span> extc_heap_api {
+    size:  <span class="t">u64</span>
+    ctx:   ?<span class="k">ref</span> <span class="t">void</span>
+    alloc: <span class="k">fn</span>(<span class="t">i64</span>, ?<span class="k">ref</span> <span class="t">void</span>) -&gt; <span class="k">ref</span> <span class="t">u8</span> effects Addr=<span class="n">0</span> Cont=<span class="n">0</span>
+    free:  <span class="k">fn</span>(<span class="k">ref</span> <span class="t">u8</span>, ?<span class="k">ref</span> <span class="t">void</span>) -&gt; <span class="t">i32</span> effects Addr=<span class="n">0</span> Cont=<span class="n">0</span>
+}</code></pre>
+<ul><li>语义与 <code>extern!</code> 上那条<strong>完全一样</strong>（同一把尺子）：签了字的槽，<code>ref</code> 实参可以指向<strong>帧内</strong>； 没签字的槽按"它可能留住一切"算 —— 与"没签字的 <code>extern!</code>"同一档，于是帧内指针被拒。</li><li><strong>签名在槽上，不在类型上</strong>：<code>fn(A) -&gt; R</code> 这个类型没有地方写 <code>effects</code>。所以<strong>从槽里直接调</strong> 带着签名，<code>var g = api.alloc</code> 拷到局部之后就没有了（按最保守算）。要传帧内指针就从槽里调。</li><li><code>Thread=</code> 在字段上暂时<strong>报错</strong>：读它的那条检查是冲着已解析的调用去的，运行期填的槽不是。</li></ul>
 <h3 id="12-4-1-nocopy-状态有-身份-的类型不许按值拷贝-2026-09-24-定案-88">12.4.1 <code>@noCopy</code>：状态有<strong>身份</strong>的类型不许按值拷贝（2026-09-24，定案 88）</h3>
 <pre class="lang-extc"><code>@noCopy
 <span class="k">struct</span> reader {
