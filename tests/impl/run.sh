@@ -34,7 +34,7 @@ check_pos impl_privacy_ok tests/impl/privacy_ok.extc
 
 
 # stdin 驱动的正例：`cin >> string`（链式、去换行、替换语义）
-echo "== 正例：跨模块挂的运算符 `cin >> string`（stdin 两行）=="
+echo "== 正例：跨模块挂的运算符 \`cin >> string\`（stdin 两行）=="
 if out=$(printf 'hello world\nsecond line\n' | "$EXTC" --run tests/impl/cin_string.extc 2>&1); then
     ok=1
     for p in "a=[hello world]" "la=11" "b=[second line]" "lb=11"; do echo "$out" | grep -qF -- "$p" || ok=0; done

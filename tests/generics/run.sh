@@ -32,7 +32,7 @@ check_pos() {
 }
 check_pos method_on_t tests/generics/method_on_t.extc
 
-echo "== 正例：泛型调泛型，内层的 `<` / `==` / 协议方法由外层实例兑现（要求上抛）=="
+echo "== 正例：泛型调泛型，内层的 \`<\` / \`==\` / 协议方法由外层实例兑现（要求上抛）=="
 check_pos deferred_op_through_call tests/generics/deferred_op_through_call.extc
 
 echo "== 反例（都必须编译期挡住）=="

@@ -122,7 +122,7 @@ rt_run rt_blockexit tests/pool/rt_blockexit.extc "before=0 in=1 rid=0 after=0 tw
 echo "== 期 1 · churn：容量停在高水位（内存平）=="
 rt_run rt_churn    tests/pool/rt_churn.extc    "live=0 cap=64 gen=0 acc=20000100000"
 
-echo "== 对象表模式：只追加 —— `poolResizeRaw` 同样被挡（搬家与清零是正交的两件事）=="
+echo "== 对象表模式：只追加 —— \`poolResizeRaw\` 同样被挡（搬家与清零是正交的两件事）=="
 if out=$("$EXTC" --run tests/pool/rt_table_no_resize.extc 2>&1); rc=$?; then :; fi
 if [ "${rc:-0}" = 1 ] && echo "$out" | grep -q "may not be resized in place"; then
     echo "  ok   rt_table_no_resize  ->  trap（$(echo "$out" | grep -o 'a block may not be resized in place' | head -1)）"

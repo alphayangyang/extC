@@ -87,7 +87,7 @@ else
     echo "  FAIL cerr  ->  跑不起来"; fail=1
 fi
 
-echo "== 定案 89：**main 里的 `?` 直接 trap**（在 main 里开文件是最常见的写法）=="
+echo "== 定案 89：**main 里的 \`?\` 直接 trap**（在 main 里开文件是最常见的写法）=="
 if out=$("$EXTC" --run tests/io/main-question.extc 2>&1); then
     rc=$?
     ok=1
@@ -184,7 +184,7 @@ else
     echo "  FAIL read-failed  ->  $(echo "$out" | tr '\n' '|')"; fail=1
 fi
 
-echo "== 文件当输入源（IO-2 ①：`f.reader()` —— 与 stdin 同一套 API）=="
+echo "== 文件当输入源（IO-2 ①：\`f.reader()\` —— 与 stdin 同一套 API）=="
 # 判据：`nextInt` / `nextLine` / `nextToken` 在**文件**上逐条实测，
 # 外加边界：关掉的句柄再要 reader ⇒ `failure(closed)` 带位置、不 trap ✓
 if out=$("$EXTC" --run tests/io/file-reader.extc 2>&1); then
@@ -203,7 +203,7 @@ else
     echo "  FAIL file-reader  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
-echo "== 退出码（IO-2 ②：`proc::exit(code)` —— 它之前的输出要出来、之后的语句不执行）=="
+echo "== 退出码（IO-2 ②：\`proc::exit(code)\` —— 它之前的输出要出来、之后的语句不执行）=="
 # 判据三条：① 之前的 println 必须在（C 的 exit 会 flush 流 ✓）
 #           ② shell 看到的退出码 == 给的那个数 ✓
 #           ③ 它之后的 `return 0` 不许把退出码改回去 ✓

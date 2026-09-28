@@ -56,7 +56,7 @@ else
 fi
 # ⚠️ 消息必须报**全名**：报 `std` 的话用户照着写会 `use std`（一个不存在的模块 ✗）
 if echo "$out" | grep -q 'add `use std`' && ! echo "$out" | grep -q 'use std::sys::io'; then
-    echo "  FAIL not-imported  ->  指路指到了 `std`（路径前缀不是模块名 ✗）"; fail=1
+    echo "  FAIL not-imported  ->  指路指到了 \`std\`（路径前缀不是模块名 ✗）"; fail=1
 fi
 
 # ⚠️ 结构判据：`as` 别名必须**只换 shortName**、不许动 `path`

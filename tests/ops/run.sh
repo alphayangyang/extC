@@ -68,9 +68,9 @@ if "$EXTC" tests/ops/hetero.extc -o build/ops-hetero.c >/dev/null 2>&1 &&
     grep -qE '\bvec2_lt\b' build/ops-hetero.c || { echo "  FAIL 生成的 C 里没有 vec2_lt（单一重载不该带后缀）"; fail=1; bad=1; }
     # 流运算符：同一个 `<<` 的两份重载 ⇒ `out_shl_i64` 与 `out_shl_slice_u8`（带右操作数类型后缀 ✓）
     grep -qE '\bout_shl_i64\b'      build/ops-stream.c || { echo "  FAIL 生成的 C 里没有 out_shl_i64"; fail=1; bad=1; }
-    grep -qE '\bout_shl_slice_u8\b' build/ops-stream.c || { echo "  FAIL 生成的 C 里没有 out_shl_slice_u8 ⇒ 两份 `<<` 撞在同一个名字上了"; fail=1; bad=1; }
+    grep -qE '\bout_shl_slice_u8\b' build/ops-stream.c || { echo "  FAIL 生成的 C 里没有 out_shl_slice_u8 ⇒ 两份 \`<<\` 撞在同一个名字上了"; fail=1; bad=1; }
     if grep -qE '[A-Za-z0-9_]+_[<>+*/%]' build/ops-hetero.c build/ops-stream.c; then
-        echo "  FAIL 生成的 C 里有没用 mangle 的运算符名（`<<`/`>>` 也得进 mangle 表）"; fail=1; bad=1
+        echo "  FAIL 生成的 C 里有没用 mangle 的运算符名（\`<<\`/\`>>\` 也得进 mangle 表）"; fail=1; bad=1
     fi
     [ "$bad" = 0 ] && echo "  ok   重名分派  ->  5 个运算符方法各自一个 C 函数 · 两份 << 是两个符号 ✓"
 else

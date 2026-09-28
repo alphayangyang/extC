@@ -51,7 +51,7 @@ else bad "tests/generics/run.sh"; echo "$out"; fi
 echo "== 手册文体（正式书面语：无第一/第二人称、无口语、无反问）=="
 if out=$(python3 tools/check_tone.py --gate 2>&1); then ok "$out"; else bad "手册文体新增了非正式写法"; echo "$out" | head -5; fi
 
-echo "== 驱动开关页与 `extc --help` 一致（单一真源）=="
+echo "== 驱动开关页与 \`extc --help\` 一致（单一真源）=="
 if out=$(python3 tools/gen_flags.py --check 2>&1); then ok "$out"; else bad "21-flags.md 已过期"; echo "  跑 python3 tools/gen_flags.py"; fi
 
 echo "== 手册覆盖（驱动开关逐项 + 公开面棘轮）=="

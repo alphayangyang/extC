@@ -52,7 +52,7 @@ if "$EXTC" -w --no-line-map -o "$TMPA/all.c" tests/annot/unchecked_all.extc \
 import re, sys
 
 def body(src, name):
-    """The C body of `name`, from its definition line to the first line that is only `}`."""
+    """The C body of \`name\`, from its definition line to the first line that is only \`}\`."""
     lines = src.splitlines()
     pat = re.compile(r'^static\s+[\w ]*\**\s*%s\s*\(' % re.escape(name))
     for k, ln in enumerate(lines):
