@@ -270,6 +270,7 @@ typedef struct {
      * genPrint raises this flag directly instead. */
     bool        needRuntime;
     bool        needPar;      /* par::run/par::map 用到了线程运行期 */
+    bool        needParRegion; /* 有 worker 会 new ⇒ 区域共享 arena 那半套要参与编译 */
     bool        parTls;     /* 当前函数在 parallel::run 的调用链上 ⇒ new 走 extc_tls_arena */
     /* The program uses the raw-terminal primitives: the runtime then keeps a copy of the
      * terminal settings and gives them back before the process dies. Emitted on demand
@@ -2114,6 +2115,9 @@ static const char *genExprInner(CG *g, Expr *e) {
                           " extc_trapMsg(\"%s\", %d, \"parallel::run: the output view is shorter than n\");",
                        ntmp, tmp, mutIdx, ntmp, g->path, e->line);
                 g->needPar = true;
+                /* A worker that allocates takes its memory from the run's region, so the region
+                 * half of the runtime has to be compiled in for this program. */
+                if (wf->usesHome) g->needParRegion = true;
                 return arenaPrintf(g->arena,
                     "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s, (int64_t)(%s), 0))",
                     wf->name, tmp, wf->usesHome ? "1" : "0", ntmp,
@@ -7853,6 +7857,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * 8 and 16 both 13 ms -- 5.31x at 8 threads, and the checksum is identical at 1, 8 and
      * 16 threads. `gcc -std=c11 -fwrapv -O2` links it without `-pthread` (glibc >= 2.34 has
      * pthreads in libc), so the language's compile contract does not change. */
+    /* One source text, two configurations: without the define the region half is not compiled at
+     * all (not dead code). Chosen over keeping two spellings of the runtime. */
+    if (g.needParRegion) bufPuts(out, "#define EXTC_PAR_REGION 1\n");
     if (g.needPar || getenv("EXTC_DBG_PAR"))
         bufPuts(out,
             "extern int pthread_create(unsigned long *th, const void *attr,\n"
@@ -7869,6 +7876,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "/* Where `new` inside a worker takes its memory from. */\n"
             "_Thread_local extc_arena *extc_tls_arena = NULL;\n"
             "\n"
+            "#ifdef EXTC_PAR_REGION\n"
             "/* Region-shared arena for one parallel run (docs/topics/HEAP.md). */\n"
             "typedef struct extc_par_region {\n"
             "    int64_t     workers;\n"
@@ -7894,21 +7902,21 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    for (int64_t i = 0; i < r->workers; i++) extc_arena_destroy(&r->arenas[i]);\n"
             "    free(r);\n"
             "}\n"
+            "#endif\n"
             "\n"
             "typedef struct extc_par_arg { extc_par_job *job; int64_t id; } extc_par_arg;\n"
             "\n"
             "static void *extc_par_worker(void *p) {\n"
             "    extc_par_arg *a = (extc_par_arg *)p;\n"
             "    extc_par_job *j = a->job;\n"
-            "    extc_par_region *r = (extc_par_region *)j->region;\n"
             "    extc_arena local;\n"
-            "    if (r) {\n"
-            "        extc_tls_arena = &r->arenas[a->id];   /* init done in the parent; */\n"
-            "        /* not destroyed here -- the parent reads it after the join */\n"
-            "    } else {\n"
-            "        extc_arena_init(&local);              /* no region: fall back to thread-local */\n"
-            "        extc_tls_arena = &local;\n"
-            "    }\n"
+            "#ifdef EXTC_PAR_REGION\n"
+            "    void *r = j->region;\n"
+            "    if (r)   /* the parent reads it after the join, so it is not destroyed here */\n"
+            "        extc_tls_arena = &((extc_par_region *)r)->arenas[a->id];\n"
+            "    else\n"
+            "#endif\n"
+            "    { extc_arena_init(&local); extc_tls_arena = &local; }\n"
             "    for (;;) {\n"
             "        int64_t k = __atomic_fetch_add(&j->next, 1, __ATOMIC_RELAXED);\n"
             "        int64_t lo = k * j->chunk;\n"
@@ -7920,7 +7928,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "            __atomic_store_n(&j->first_err, rc, __ATOMIC_RELAXED);\n"
             "    }\n"
             "    extc_tls_arena = NULL;\n"
-            "    if (!r) extc_arena_destroy(&local);   /* a region's arenas are the parent's to free */\n"
+            "#ifdef EXTC_PAR_REGION\n"
+            "    if (!r)\n"
+            "#endif\n"
+            "        extc_arena_destroy(&local);   /* a region's arenas are the parent's to free */\n"
             "    return NULL;\n"
             "}\n"
             "\n"
@@ -7937,12 +7948,15 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    job.fn = fn; job.ctx = ctx; job.n = n;\n"
             "    job.chunk = chunk > 0 ? chunk : (n / (threads * 8) > 0 ? n / (threads * 8) : 1);\n"
             "    job.next = 0; job.first_err = 0; job.region = NULL;\n"
+            "    (void)withRegion;\n"
+            "#ifdef EXTC_PAR_REGION\n"
             "    if (withRegion) {\n"
             "        /* One region per thread, refreshed per run. */\n"
             "        extc_par_close(extc_tls_region);\n"
             "        extc_tls_region = extc_par_open(threads > 0 ? threads : 1);\n"
             "        job.region = extc_tls_region;\n"
             "    }\n"
+            "#endif\n"
             "    if (n <= 0) return 0;\n"
             "    if (threads > 256) threads = 256;\n"
             "    for (i = 1; i < threads; i++) {\n"
