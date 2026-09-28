@@ -150,3 +150,24 @@ impl fs::ifstream {
  * 对照实验：同模块里"方法收按值结构体参数"是好的（bisect 过）⇒ 触发点在 impl 声明的方法 +
  * 调用点的 home 参数，不在参数类型。
  */
+
+/* bug 2 定位（2026-09-28，未修）—— 装回下面这个形状就会炸：
+ *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
+ *
+ * **证据（生成的 C）**：定义/原型是**三参**
+ *     static io$ostream io$ostream_shl_string$string(io$ostream * self, string$string v, extc_arena *__extc_home);
+ * 而 `main` 里的调用只传两个 —— 内层那句长这样：
+ *     io$ostream_shl_slice_u8((io$ostream[]){ io$ostream_shl_string$string(&(io$cout), s) }, (slice_u8){ … })
+ * ⇒ extC 自己不报错，是 **gcc** 报 `too few arguments to function 'io$ostream_shl_string$string'`。
+ *
+ * **方向**：这里有两个不同的字段 —— `FuncDef.usesHome`（"体里真的用到了交给它的 home"）与
+ * `FuncDef.needsHome`（"可达地需要 home"，可达性分析 `REACH_HOME` 置位）。`src/check_top.c:485`
+ * 那句
+ *     (q->precise ? e->func->usesHome : e->func->needsHome)
+ * 说明同一个调用点会**按查询模式**落到两个不同字段上 ⇒ 定义侧（发 home 形参）与调用侧（决定补不补
+ * 那个实参）各按一个，`impl` 里声明的方法正好落在两者不一致的那一格（同模块方法、跨模块 impl 且
+ * 参数是 i64/普通结构体的情形都实测正常 ⇒ 触发点是"impl 声明 + home 形参"）。
+ *
+ * 下一步：让两侧问同一个字段（`check_top.c:5948` 那段"现在 usesHome 已定型，结算每个往下递 arena
+ * 的调用点"就是现成的机械），然后用这条形状做判据。
+ */
