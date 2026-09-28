@@ -798,6 +798,13 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, descendBlocks)) return true;
         return false;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
+                              descendBlocks)) return true;
+        return false;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             if (exprMakesPool(*(Expr **)vecAt(&e->u.arraylit.elems, i), descendBlocks)) return true;
@@ -2062,6 +2069,12 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
         for (size_t k = 0; k < e->u.lit.inits.len; k++)
             grew |= markNamesInExpr(c, (*(FieldInit **)vecAt(&e->u.lit.inits, k))->value);
         return grew;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t k = 0; k < e->u.lambda.inits.len; k++)
+            grew |= markNamesInExpr(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, k))->value);
+        return grew;
     case EX_ARRAYLIT:
         for (size_t k = 0; k < e->u.arraylit.elems.len; k++)
             grew |= markNamesInExpr(c, *(Expr **)vecAt(&e->u.arraylit.elems, k));
@@ -2550,6 +2563,12 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     case EX_STRUCTLIT:
         for (size_t k = 0; k < e->u.lit.inits.len; k++)
             collectEffectsExpr(c, f, (*(FieldInit **)vecAt(&e->u.lit.inits, k))->value);
+        return;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t k = 0; k < e->u.lambda.inits.len; k++)
+            collectEffectsExpr(c, f, (*(FieldInit **)vecAt(&e->u.lambda.inits, k))->value);
         return;
     case EX_GENCALL:
         for (size_t k = 0; k < e->u.gencall.args.len; k++)
@@ -3539,6 +3558,12 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             obligExpr(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, obs, true);
+        return;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            obligExpr(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value, obs, true);
         return;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)

@@ -7,8 +7,10 @@
 #   · 返回类型可省 ⇒ 由体内第一个 `return <value>` 定下来；
 #   · 闭包的**类型不可命名** ⇒ v1 里它只能活在写它的那个作用域（既不能声明也不能返回）。
 #
-# 走查器的欠账（tools/check_walkers.py 的 ALLOW）：13 个手写表达式走查器还没有进入闭包体。
-# 体本身由"`call` 方法"那条常规通路覆盖，实测没有误报（只在闭包体内使用的变量不会被报未使用）。
+# 走查器：13 个手写表达式走查器只走闭包的**环境字段值**（构造点那几次读），体归 `call` 方法
+# 自己的按函数分析——于是 ALLOW 清空，`tools/check_walkers.py` 报 every kind ✓。
+# 例外是模块改写（modules.c 的 rwExpr）：那是**改写**不是分析，必须进体，否则体内对同模块函数
+# 的调用不会被 mangling，`call` 方法成空壳、静默算错（见 modcross 用例）。
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 EXTC="${EXTC:-$(cd "$here/../.." && pwd)/build/extc}"
@@ -53,6 +55,15 @@ neg nested_lambda          "$(src nested_lambda.extc)"  "a lambda inside a lambd
 neg new_in_body            "$(src new_in_body.extc)"  "a lambda body may not allocate yet"
 neg ret_no_value           "$(src ret_no_value.extc)"  "this lambda returns no value"
 neg cannot_infer           "$(src cannot_infer.extc)"  "cannot infer the result type of this lambda"
+
+# 跨模块：**模块文件**里的闭包，体内调用同模块函数（曾经静默返回 0，无诊断）
+modcase() { # name dir want
+  local name="$1" dir="$2" want="$3" got
+  if ! got=$("$EXTC" --run "$here/$dir/main.extc" 2>"$tmp/m"); then
+    bad "$name" "$(head -1 "$tmp/m")"; return; fi
+  [ "$got" = "$want" ] && ok "$name" "→ $got" || bad "$name" "期望 [$want] 实得 [$got]"
+}
+modcase mod-cross-module        modcross "42"
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

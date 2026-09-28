@@ -1,0 +1,5 @@
+// 模块里的闭包：体内对**同模块**函数的调用必须被 mangling（曾静默算错：call 方法是空壳）
+fn shout(n: i64) -> i64 { return n + n }
+fn make() -> i64 {
+  var f = fn(x: i64) -> i64 { return shout(x) }
+  return f(i64(21)) }

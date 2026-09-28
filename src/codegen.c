@@ -3292,6 +3292,12 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             collectOwCallsExpr((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, out);
         return;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            collectOwCallsExpr((*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value, out);
+        return;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.arraylit.elems, i), out);

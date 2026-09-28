@@ -1162,6 +1162,20 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             rwExpr(L, self, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value);
         break;
+    /* A lambda is the one node where a **rewriting** pass must go further than an analysis pass:
+     * its body is emitted as the generated `call` method's source, so every name and type in it has
+     * to be rewritten by the module it was written in. Leaving the body out kept the unmangled name
+     * of a module-local function, and the `call` method came out as an empty body that silently
+     * returned 0 (measured: `make=0`, no diagnostic, in a module file). The field values are walked
+     * as well -- they are the reads that happen where the lambda is written. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.params.len; i++)
+            rwType(L, self, (*(Param **)vecAt(&e->u.lambda.params, i))->type);
+        if (e->u.lambda.ret) rwType(L, self, e->u.lambda.ret);
+        rwStmt(L, self, e->u.lambda.body);
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            rwExpr(L, self, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value);
+        break;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             rwExpr(L, self, *(Expr **)vecAt(&e->u.arraylit.elems, i));

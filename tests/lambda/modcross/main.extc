@@ -1,0 +1,5 @@
+use std::io
+use greet
+fn main() -> i32 {
+  io::cout << greet::make() << "\n"
+  return 0 }

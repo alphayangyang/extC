@@ -236,6 +236,17 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
         }
         return d;
     }
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA: {
+        int d = 0;
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++) {
+            int x = dfExprDepth(c, f, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
+                                hops + 1);
+            if (x > d) d = x;
+        }
+        return d;
+    }
     case EX_ARRAYLIT: {
         int d = 0;
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++) {

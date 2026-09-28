@@ -3542,6 +3542,12 @@ static bool exprMayPrint(Checker *c, Expr *e) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (exprMayPrint(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
         return false;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            if (exprMayPrint(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value)) return true;
+        return false;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             if (exprMayPrint(c, *(Expr **)vecAt(&e->u.arraylit.elems, i))) return true;
@@ -3717,6 +3723,12 @@ static bool exprHasAnyCall(Expr *e) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (exprHasAnyCall((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
         return false;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            if (exprHasAnyCall((*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value)) return true;
+        return false;
     default: return false;      /* literals, bindings, `null` */
     }
 }
@@ -3740,6 +3752,12 @@ static bool exprHasCall(Checker *c, Expr *e) {
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (exprHasCall(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return true;
+        return false;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            if (exprHasCall(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value)) return true;
         return false;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)

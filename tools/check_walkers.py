@@ -35,36 +35,6 @@ LEAF = {
 # Walkers that are known to be deliberately partial, with the reason. Adding an entry here is
 # a promise that the omission is intentional -- state why.
 ALLOW = {}
-# --- lambda (EX_LAMBDA), recorded 2026-09-28 ------------------------------------------------
-# Lambdas are live: `fn(x: i64) -> i64 { ... }` is checked, its environment is a generated struct
-# and `f(x)` is rewritten to `f.call(x)` (docs/topics/LAMBDA.md). These are **expression** walkers
-# and a lambda's children are a *statement* body plus the environment's field values, so entering
-# one is not a one-liner: it needs a statement walk of the same family (most families in check_top.c
-# and check_expr.c have one; check_escape.c and dataflow.c do not yet).
-#
-# What is missed while they stay here -- the reason this is written down rather than quietly
-# allowed: a variable used **only** inside a lambda body looks unused, an effect or a call in a
-# body is invisible to the enclosing function's analysis, and a captured reference's depth is not
-# followed. The body itself **is** covered by the ordinary per-function passes, because it is also
-# the `call` method's body (a real FuncDef on a real StructDef).
-_LAM = ("lambda: this expression walker does not enter a lambda body yet; the body is covered as the"
-        " `call` method's body, but what the *enclosing* function sees through the lambda node is"
-        " not -- closing this is the next step (LAMBDA.md section 6)")
-ALLOW = {
-    "check_escape.c:valDepthStructural": _LAM,
-    "check_escape.c:exprRefDepth":       _LAM,
-    "check_escape.c:exprRefDepthPure":   _LAM,
-    "check_expr.c:exprMayPrint":         _LAM,
-    "check_expr.c:exprHasAnyCall":       _LAM,
-    "check_expr.c:exprHasCall":          _LAM,
-    "check_top.c:exprMakesPool":         _LAM,
-    "check_top.c:markNamesInExpr":       _LAM,
-    "check_top.c:collectEffectsExpr":    _LAM,
-    "check_top.c:obligExpr":             _LAM,
-    "codegen.c:collectOwCallsExpr":      _LAM,
-    "dataflow.c:dfExprDepth":            _LAM,
-    "modules.c:rwExpr":                  _LAM,
-}
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
 RATCHET = 23       # measured 2026-09-26 after migrating the `needsHome` pair as well.
                    # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 

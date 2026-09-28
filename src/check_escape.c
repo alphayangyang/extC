@@ -153,6 +153,13 @@ int valDepthStructural(Checker *c, Expr *e) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             d = maxInt(d, valDepthStructural(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value));
         return d;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            d = maxInt(d, valDepthStructural(c,
+                                             (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value));
+        return d;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
             d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
@@ -422,6 +429,12 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             d = maxInt(d, exprRefDepth(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value));
+        break;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            d = maxInt(d, exprRefDepth(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value));
         break;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
@@ -2422,6 +2435,15 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         int d = 0;
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             d = maxInt(d, exprRefDepthPure(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value,
+                                           hops + 1, seen));
+        return d;
+    }
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA: {
+        int d = 0;
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            d = maxInt(d, exprRefDepthPure(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
                                            hops + 1, seen));
         return d;
     }
