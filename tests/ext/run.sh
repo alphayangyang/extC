@@ -39,12 +39,16 @@ neg ext-as-statement     "$(src stmt.extc)"      "$NODOM"
 neg ext-is-expression    "$(src binding.extc)"   "$NODOM"
 neg ext-nested-in-call   "$(src nested.extc)"    "$NODOM"
 neg ext-in-plain-fn      "$(src plain_fn.extc)"  "$NODOM"
-neg ext-needs-operand    "$(src bare.extc)"      'expected an expression'
+# `ext` 后面什么都没有：仍然是错误，但现在的说法是"没有这个名字"（`ext` 只在后面跟着**能当操作数的
+# 东西**时才算算符 —— 否则 `ref ext` / `f(ext)` 这种把 `ext` 当变量用的写法没法过）。
+neg ext-needs-operand    "$(src bare.extc)"      'undefined name `ext`'
 neg domain-block-needs-coroutine "$(src domain_plain_task.extc)" '`ext` needs a coroutine function'
 # **能跑**：两个协程任务在同一个域里被驱动到结束，"done" 最后出现（结构化：块结束前必须全部跑完）
 # 模块诊断给的 `use` 必须**真能用**（从前照源码写法建议 `use sys::domain`，照做失败）
 neg use-advice-names-a-real-path "$(src use_advice.extc)" 'add `use std::sys::domain`'
 one use-advice-works-when-followed "$(src use_advice_works.extc)" "ok"
+# `ext` 也是个合法变量名：`ref ext` / `-ext` / `f(ext)` 都要按变量解析（它们从前被当成算符）
+one variable-named-ext                    "$(src variable_named_ext.extc)" "7"
 # `@builtin` 也能声明 effects（从前 `effects` 会被当成新声明）
 one builtin-can-declare-effects "$(src builtin_effects.extc)" "7"
 

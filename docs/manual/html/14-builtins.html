@@ -116,7 +116,7 @@ io::cout &lt;&lt; <span class="c">"sum = "</span> &lt;&lt; <span class="f">add</
 <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
   <span class="k">let</span> d = domain::<span class="f">single</span>()      <span class="c">// 域：与 `slice`、`coroutine<T>` 同级的语言级特殊对象</span>
   <span class="k">return</span> <span class="n">0</span> }</code></pre>
-<p><strong>域</strong>是任务的归属处：<code>d.run { … }</code> 里用 <code>ext f(x)</code> 起的任务归它，<strong>块结束前必须全部跑完</strong> （结构化）。它是<strong>类型</strong>说了算的 —— 不认名字、也不认注解（注解无法验证"我是域"，谁都能自称 ⇒ 信任漏洞；按名字特判又会随改名悄悄失效）。</p>
+<p><strong>域</strong>是任务的归属处：<code>d.run { … }</code> 里用 <code>ext f(x)</code> 起的任务归它，<strong>块结束前必须全部跑完</strong> （结构化）。<code>ext</code> 只在后面跟着<strong>能当操作数的东西</strong>时才是算符 —— 它同时是个合法的变量名， <code>ref ext</code> / <code>-ext</code> / <code>f(ext)</code> 都按变量解析（<code>ext</code> 单独出现仍是错误，只是说法变成"没有这个名字"）。它是<strong>类型</strong>说了算的 —— 不认名字、也不认注解（注解无法验证"我是域"，谁都能自称 ⇒ 信任漏洞；按名字特判又会随改名悄悄失效）。</p>
 <p><code>single()</code> 是它今天唯一的公开入口（内建，见 <code>stdlib/std/sys/domain.extc</code>）。域在 extC 侧是 <strong>不透明</strong>的：C 里是一个指针，另外三个原语（<code>extc_dom_add</code> / <code>extc_dom_run</code> / <code>extc_dom_free</code>） 由<strong>编译器</strong>发射，普通程序既写不到也过不了 <code>extern!</code> 的边界检查。</p>
 <p>进度：<code>single()</code> 可用，域的运行期按需发射（不用域的程序产物里一行都不出现）。 <code>ext</code> 的帧创建与驱动循环是<strong>下一步</strong>，所以域内写 <code>ext</code> 目前仍是编译错误（响亮拒绝，不是静默 编过去）。设计出处：<code>docs/topics/CONCURRENCY.md</code>「<code>ext</code> 与调度域」。</p>
 <div class="pn"><a href="13-vararray.html">← 7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**）</a> <a href="15-errors.html">9. 错误信息 →</a></div></main>

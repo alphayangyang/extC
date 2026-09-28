@@ -1,0 +1,11 @@
+// `ext` 同时是一个**前缀算符**（`ext f(x)`）和一个合法的变量名 ⇒ 只有后面跟着"能当操作数的东西"
+// 时才算算符。`ref ext` / `f(ext)` / `-ext` 都按变量解析（从前这三种都报 "expected an expression"）。
+use std::io
+fn take(p: ref i64) -> i64 { return *p }
+fn main() -> i32 {
+    var ext: i64 = 7
+    var r: ref i64 = ref ext
+    var neg: i64 = -ext
+    io::cout << take(r) + neg + ext << "\n"
+    return 0
+}

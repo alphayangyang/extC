@@ -2637,6 +2637,32 @@ static Expr *parseFactor(Parser *p) {
  *   - `*` is unambiguous in prefix position, because multiplication always has
  *     a left operand.
  */
+/* Can this token begin an expression?
+ *
+ * Needed for exactly one decision: `ext` is a **prefix operator** (`ext f(x)`, the domain feature)
+ * whose spelling is also a perfectly good variable name. Recognising it by shape alone meant that
+ * `ref ext`, `f(ext)` and `-ext` were parsed as the operator and then died with "expected an
+ * expression, found `)`" -- a bad way to learn that a name is also an operator (measured: the first
+ * use of `ext` as an identifier in the corpus was mine, in `tests/real-lib/cairo-logo.extc`).
+ *
+ * So the operator is recognised only when something that can *be* an operand follows. `ext` with
+ * nothing after it stays an error (tests/ext/bare.extc), it just says "no variable named `ext`". */
+static bool tokenStartsExpr(Token *t) {
+    if (!t || !t->text) return false;
+    switch (t->kind) {
+    case TK_IDENT: case TK_INT: case TK_FLOAT: case TK_STRING: case TK_TYPE: return true;
+    case TK_KEYWORD:
+        return strcmp(t->text, "true") == 0 || strcmp(t->text, "false") == 0 ||
+               strcmp(t->text, "ref") == 0  || strcmp(t->text, "fn") == 0 ||
+               strcmp(t->text, "if") == 0   || strcmp(t->text, "match") == 0 ||
+               strcmp(t->text, "new") == 0;
+    default: break;
+    }
+    return strcmp(t->text, "(") == 0 || strcmp(t->text, "-") == 0 ||
+           strcmp(t->text, "!") == 0 || strcmp(t->text, "~") == 0 ||
+           strcmp(t->text, "[") == 0 || strcmp(t->text, "null") == 0;
+}
+
 static Expr *parseUnary(Parser *p) {
     /* `ext f(x)`: "start one concurrent task". Parsed as a **prefix** thing whose operand is an
      * ordinary expression (normally a call), so the node is an expression and `let h = ext f(x)`
@@ -2645,7 +2671,7 @@ static Expr *parseUnary(Parser *p) {
      *
      * `ext` is not reserved anywhere else: measured 0 uses as an identifier in the corpus, and a
      * name starting with `ext` (such as `extern!`) is a different token. */
-    if (at(p, "ext")) {
+    if (at(p, "ext") && tokenStartsExpr(pk(p, 1))) {
         Token *kw = take(p);
         Expr *inner = parseUnary(p);
         if (!inner) return NULL;

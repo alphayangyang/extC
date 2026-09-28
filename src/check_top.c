@@ -3961,7 +3961,15 @@ static void checkFunc(Checker *c, FuncDef *f) {
              * `cfmakeraw` all have it, and refusing it left the privileged layer unable to
              * declare them. What has no C-level representation is a struct, a slice (two
              * arguments), or a view. */
-            if (!ttCrossesC(f->ret, true))
+            /* A missing return type is a different mistake from a type that cannot cross, and the
+             * message used to be the same for both -- it printed `void` for a NULL return type, so
+             * `fn f(x: i32)` looked like "`void` cannot cross the C boundary" (measured while
+             * writing the cairo bindings: 16 declarations in a row said exactly that). */
+            if (!f->ret)
+                ckError(c, f->line,
+                        "A declaration has to say what it returns; `-> void` if it returns nothing.",
+                        "`extern!` declaration `%s` has no return type", f->name);
+            else if (!ttCrossesC(f->ret, true))
                 ckError(c, f->line,
                         "A C return value is one machine word -- a scalar, a pointer, or a function"
                         " pointer -- or a `@frozen` struct, whose layout the declaration promises.",
