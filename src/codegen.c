@@ -7861,6 +7861,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * all (not dead code). Chosen over keeping two spellings of the runtime. */
     if (g.needParRegion) bufPuts(out, "#define EXTC_PAR_REGION 1\n");
     if (g.needPar || getenv("EXTC_DBG_PAR"))
+    {
         bufPuts(out,
             "extern int pthread_create(unsigned long *th, const void *attr,\n"
             "                          void *(*fn)(void *), void *arg);\n"
@@ -7873,16 +7874,19 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    void   *region;   /* extc_par_region*, or NULL when no worker allocates */\n"
             "} extc_par_job;\n"
             "\n"
-            "/* Where `new` inside a worker takes its memory from. */\n"
+            "/* Where `new` inside a worker takes its memory from; step 3 wires the analysis\n"
+            " * to it. NULL outside a worker, so the checker can say so loudly. */\n"
             "_Thread_local extc_arena *extc_tls_arena = NULL;\n"
             "\n"
             "#ifdef EXTC_PAR_REGION\n"
-            "/* Region-shared arena for one parallel run (docs/topics/HEAP.md). */\n"
+            "/* Region-shared arena for one parallel run (docs/topics/HEAP.md): one arena per worker,\n"
+            " * owned by the region -- the parent reads worker allocations after the join. */\n"
             "typedef struct extc_par_region {\n"
             "    int64_t     workers;\n"
             "    extc_arena *arenas;\n"
             "} extc_par_region;\n"
-            "/* The last run's region: the caller reads worker allocations through it. */\n"
+            "/* The region the last parallel run in this thread produced into: the caller reads\n"
+            " * worker allocations through it after the run. Closed by the next run (or never). */\n"
             "_Thread_local extc_par_region *extc_tls_region = NULL;\n"
             "\n"
             "EXTC_UNUSED static extc_par_region *extc_par_open(int64_t workers) {\n"
@@ -7915,6 +7919,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    if (r)   /* the parent reads it after the join, so it is not destroyed here */\n"
             "        extc_tls_arena = &((extc_par_region *)r)->arenas[a->id];\n"
             "    else\n"
+            );
+            bufPuts(out,
             "#endif\n"
             "    { extc_arena_init(&local); extc_tls_arena = &local; }\n"
             "    for (;;) {\n"
@@ -7951,7 +7957,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    (void)withRegion;\n"
             "#ifdef EXTC_PAR_REGION\n"
             "    if (withRegion) {\n"
-            "        /* One region per thread, refreshed per run. */\n"
+            "        /* One region per thread, refreshed per run: the previous one is closed here,\n"
+            "         * which is exactly the moment the caller stops being able to read it. */\n"
             "        extc_par_close(extc_tls_region);\n"
             "        extc_tls_region = extc_par_open(threads > 0 ? threads : 1);\n"
             "        job.region = extc_tls_region;\n"
@@ -7968,6 +7975,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "    for (i = 1; i <= started; i++) { void *r = NULL; pthread_join(th[i], &r); }\n"
             "    return job.first_err;\n"
             "}\n");
+    }
 
     if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
     if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
