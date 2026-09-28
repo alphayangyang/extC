@@ -413,7 +413,11 @@ Expr *exprIdent(Arena *a, const char *name, int line);   /* the one way an `EX_I
 typedef enum {
     ST_VAR, ST_ASSIGN, ST_IF, ST_WHILE, ST_RETURN,
     ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK, ST_MATCH,
-    ST_YIELD                /* `yield e`: only inside a `-> coroutine<T>` body */
+    ST_YIELD,               /* `yield e`: only inside a `-> coroutine<T>` body */
+    ST_DOMAIN               /* `d.run { … }`: a **domain block**. A statement on purpose: the block
+                             * is not a value and cannot be used as an expression, the expression
+                             * walkers never have to see it, and the statement walkers handle its
+                             * body the same way they handle any other block. */
 } StmtKind;
 
 /* One arm of a `match`: `circle => { ... }`.
@@ -464,6 +468,9 @@ struct Stmt {
         struct { Expr *cond; Stmt *body; } whiles;
         struct { Expr *value; } ret;
         struct { Expr *expr; } expr;
+        /* ST_DOMAIN: `callee` is the `d.run` that opened the block, `body` is the block itself.
+         * Only a value of the language-level object `domain` may carry one (check_stmt.c). */
+        struct { Expr *callee; Stmt *body; } domain_;
         struct { Vec stmts; } block;                      /* stmts: Stmt* */
         struct { Expr *scrutinee; Vec arms; } match;      /* arms: MatchArm* */
     } u;

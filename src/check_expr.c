@@ -3613,6 +3613,8 @@ static bool stmtMayPrint(Checker *c, Stmt *s) {
     case ST_RETURN: return exprMayPrint(c, s->u.ret.value);
     case ST_IF:     return exprMayPrint(c, s->u.ifs.cond) ||
                            stmtMayPrint(c, s->u.ifs.thenBody) || stmtMayPrint(c, s->u.ifs.elseBody);
+    /* `d.run { … }`: the receiver is an expression, the block is a body -- walk both. */
+    case ST_DOMAIN: return exprMayPrint(c, s->u.domain_.callee) || stmtMayPrint(c, s->u.domain_.body);
     case ST_WHILE:  return exprMayPrint(c, s->u.whiles.cond) || stmtMayPrint(c, s->u.whiles.body);
     case ST_BLOCK:
         for (size_t i = 0; i < s->u.block.stmts.len; i++)

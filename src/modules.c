@@ -1200,6 +1200,10 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     case ST_YIELD:
         rwExpr(L, self, s->u.yield_.value);
         break;
+    case ST_DOMAIN:   /* `d.run { … }`: 域块 —— 接收者与块体都要改写（和 ST_IF 同一形状）。 */
+        rwExpr(L, self, s->u.domain_.callee);
+        rwStmt(L, self, s->u.domain_.body);
+        break;
     case ST_VAR:
         if (s->u.var.ann) rwType(L, self, s->u.var.ann);
         rwExpr(L, self, s->u.var.init);

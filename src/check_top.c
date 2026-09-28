@@ -706,6 +706,12 @@ bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     case ST_IF:     return exprMakesPool(s->u.ifs.cond, descendBlocks) ||
                            stmtMakesPool(s->u.ifs.thenBody, descendBlocks) ||
                            stmtMakesPool(s->u.ifs.elseBody, descendBlocks);
+    case ST_DOMAIN:
+        /* A domain block is a place of its own, exactly like a block: what happens inside is that
+         * block's business, and the transitive question walks in. */
+        if (!descendBlocks) return false;
+        return exprMakesPool(s->u.domain_.callee, descendBlocks) ||
+               stmtMakesPool(s->u.domain_.body, descendBlocks);
     case ST_WHILE:  return exprMakesPool(s->u.whiles.cond, descendBlocks) ||
                            stmtMakesPool(s->u.whiles.body, descendBlocks);
     case ST_RETURN: return exprMakesPool(s->u.ret.value, descendBlocks);
@@ -1721,6 +1727,11 @@ static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
             *(int *)vecPush(sites) = s->u.yield_.value->lexicalLevel;
         }
         return;
+    case ST_DOMAIN:
+        /* A domain block is not a loop: it introduces no new loop id, so the enclosing one is
+         * passed straight through and only the body is walked. */
+        collectLoopSites(s->u.domain_.body, loopId, nextLoop, sites);
+        return;
     case ST_WHILE: {
         Stmt *b = s->u.whiles.body;
         if (!b) return;
@@ -1941,6 +1952,11 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
             grew |= markNamesInExpr(c, s->u.assign.value);
         return grew;
     }
+    case ST_DOMAIN:
+        /* The receiver (`d.run`) is a domain object, not a name that escapes; the block's
+         * body is ordinary code and gets exactly the treatment a block gets. */
+        grew |= markNamesInStmt(c, f, s->u.domain_.body);
+        return grew;
     case ST_IF:
         /* Names in the condition do not count as escaping. Adding them unconditionally
          * made E too large, so the home arena changed all over the place and
@@ -2470,6 +2486,10 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
         return;
     }
     case ST_VAR:    collectEffectsExpr(c, f, s->u.var.init); return;
+    case ST_DOMAIN:
+        /* The receiver is a domain object; the body is ordinary code. */
+        collectEffectsStmt(c, f, s->u.domain_.body, fresh);
+        return;
     case ST_IF:
         collectEffectsExpr(c, f, s->u.ifs.cond);
         collectEffectsStmt(c, f, s->u.ifs.thenBody, fresh);
@@ -3639,6 +3659,8 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
         obligExpr(c, s->u.assign.value, obs, true);
         return;
     }
+    case ST_DOMAIN: obligExpr(c, s->u.domain_.callee, obs, false);
+                    obligStmt(c, s->u.domain_.body, obs); return;
     case ST_IF:    obligExpr(c, s->u.ifs.cond, obs, false);
                    obligStmt(c, s->u.ifs.thenBody, obs);
                    obligStmt(c, s->u.ifs.elseBody, obs); return;

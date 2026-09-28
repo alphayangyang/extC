@@ -3,7 +3,9 @@
 #
 # 这一刀的验收：① 语法被接受、形状被钉住（是表达式，能绑、能当实参）；
 # ② **域外 `ext` 是编译错误** —— 这条是 `ext` 设计的核心（失败发生在编译期，而不是运行期）。
-# 域本身（注解 + 库里的块形式）与"起一份"是下一小步，所以"域内"那条目前还测不到 ✓。
+# 域本身与"起一份"是下一小步。两条目前**没法**测到的路径：域内 `ext` 之外的东西（例如空体）要走到
+# codegen 才谈得上"驱动未实现"，而域块要在**可达**的函数里才会被发射 —— 可达就得先能造出一个域值，
+# 那正是下一步；所以这里只钉住"域被认出来了"（域内 `ext` 停在拒绝上 ✓）。
 #
 # 对照用例证明 `ext` 是**整词**匹配：`extc_flag` / `extra` / `next_one` 这些名字照常工作。
 set -u
@@ -38,6 +40,9 @@ neg ext-is-expression    "$(src binding.extc)"   "$NODOM"
 neg ext-nested-in-call   "$(src nested.extc)"    "$NODOM"
 neg ext-in-plain-fn      "$(src plain_fn.extc)"  "$NODOM"
 neg ext-needs-operand    "$(src bare.extc)"      'expected an expression'
+neg domain-block-recognised  "$(src domain_block.extc)"   '`ext` inside a domain is not implemented yet'
+neg domain-block-needs-object "$(src domain_needs_object.extc)" 'a trailing block needs a domain object'
+one domain-block-is-not-just-a-block "$(src plain_block.extc)" "7"
 one ext-does-not-swallow-prefixes "$(src control_ident.extc)" "12"
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"

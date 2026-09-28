@@ -1770,6 +1770,22 @@ static Stmt *parseStmt(Parser *p) {
     Expr *e = parseExpr(p);
     if (!e) return NULL;
 
+    /* `d.run { … }`: a **trailing block**, i.e. a domain's body (CONCURRENCY.md「`ext` 与调度域」).
+     * It becomes a `ST_DOMAIN` statement: the block is not a value (so it must not be an expression)
+     * and the shape is `receiver.field { … }`.
+     *
+     * `{` must be on the **same line** as the statement: that keeps "a name, then a plain block on
+     * the next line" meaning exactly what it meant before, so this form cannot quietly change the
+     * meaning of an existing program. */
+    if (at(p, "{") && cur(p)->line == t->line && e->kind == EX_FIELD) {
+        Stmt *body = parseBlock(p);
+        if (!body) return NULL;
+        Stmt *s = stmtNew(p->arena, ST_DOMAIN, t->line);
+        s->u.domain_.callee = e;
+        s->u.domain_.body = body;
+        return s;
+    }
+
     /* `=` and the five compound forms. `+=` and friends mean `x = x + y` (定案 92), so
      * they are the same statement with one extra field: the checker resolves the operator
      * and codegen keeps the compound form in the C output, which evaluates the target

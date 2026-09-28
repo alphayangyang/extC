@@ -3209,13 +3209,18 @@ static void cgCoroArenaDestroy(CG *g) {
  * The order is what makes the numbering stable: the prologue emits one storage
  * cell per site in this same order, and owIndex looks a site up by position.
  */
+/* Defined below; `collectOwSites` walks a domain block's receiver with it. */
+static void collectOwCallsExpr(Expr *e, Vec *out);
+
 static void collectOwSites(Stmt *s, Vec *out) {
     if (!s) return;
     switch (s->kind) {
     case ST_VAR:
         if (s->u.var.overwrite) *(Stmt **)vecPush(out) = s;
         return;
-    case ST_BLOCK:
+    /* `d.run { … }`: the receiver is an expression and the block is a body -- collect both, the
+     * same shape as `ST_IF`. */
+    case ST_DOMAIN: collectOwCallsExpr(s->u.domain_.callee, out); collectOwSites(s->u.domain_.body, out); return;    case ST_BLOCK:
         for (size_t i = 0; i < s->u.block.stmts.len; i++)
             collectOwSites(*(Stmt **)vecAt(&s->u.block.stmts, i), out);
         return;
@@ -3346,6 +3351,8 @@ static void collectOwCallsStmt(Stmt *s, Vec *out) {
     case ST_ASSIGN: collectOwCallsExpr(s->u.assign.target, out); collectOwCallsExpr(s->u.assign.value, out); return;
     case ST_EXPR:   collectOwCallsExpr(s->u.expr.expr, out); return;
     case ST_RETURN: collectOwCallsExpr(s->u.ret.value, out); return;
+    case ST_DOMAIN: collectOwCallsExpr(s->u.domain_.callee, out);
+                    collectOwCallsStmt(s->u.domain_.body, out); return;
     case ST_IF:     collectOwCallsExpr(s->u.ifs.cond, out);
                     collectOwCallsStmt(s->u.ifs.thenBody, out); collectOwCallsStmt(s->u.ifs.elseBody, out); return;
     case ST_WHILE:  collectOwCallsExpr(s->u.whiles.cond, out); collectOwCallsStmt(s->u.whiles.body, out); return;
@@ -3524,6 +3531,12 @@ static void genStmt(CG *g, Stmt *s) {
 /* Emit the statement itself; the prefix bookkeeping lives in genStmt. */
 static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
+        case ST_DOMAIN:
+            /* Unreachable today: the checker refuses `ext` inside a domain before codegen runs
+             * (building the task and the drive loop is the next step). Loud on purpose. */
+            ctxError(g->ctx, s->line, 1, NULL,
+                     "domain block: codegen is not implemented yet (CONCURRENCY.md「`ext` 与调度域」)");
+            return;
         case ST_VAR: {
             /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
              * arguments initialize the parameters -- a resume has none to pass them again. */

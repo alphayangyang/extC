@@ -1160,6 +1160,34 @@ void checkStmt(Checker *c, Stmt *s) {
             return;
         }
 
+        case ST_DOMAIN: {
+            /* `d.run { … }`: the trailing block is a **domain block** -- "what concurrency runs here,
+             * and it must all be finished before this block ends".  Who may carry one is decided by
+             * **type** (the language-level object `domain` declared in prelude.extc), never by a name or
+             * an annotation: an annotation cannot be verified (anybody could claim "I am a domain") and a
+             * name special-case dies silently on rename.  The body is checked **inside** the domain, which
+             * is what makes `ext` legal there; it stays a compile error everywhere else. */
+            Expr *cal = s->u.domain_.callee;
+            Type *rt = NULL;
+            if (cal && cal->kind == EX_FIELD && cal->u.field.obj) {
+                Expr *recv = cal->u.field.obj;
+                checkExpr(c, recv);
+                rt = recv->type;
+                while (rt && rt->kind == TY_REF) rt = rt->inner;   /* `d: ref domain` */
+            }
+            if (!rt || rt->kind != TY_STRUCT || !rt->name || strcmp(rt->name, "domain") != 0) {
+                ckError(c, s->line,
+                        "A trailing block is the body of a **domain**: it says where the concurrency in it"
+                        " runs and that all of it must be finished before the block ends.",
+                        "a trailing block needs a domain object on the left, found `%s`",
+                        rt ? typeStr(c, rt) : "something that is not an object");
+                return;
+            }
+            c->domainDepth++;
+            checkStmt(c, s->u.domain_.body);
+            c->domainDepth--;
+            return;
+        }
         case ST_BLOCK:            checkBlockBody(c, s);
             return;
     }
