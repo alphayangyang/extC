@@ -130,3 +130,16 @@ fn main() -> i32 {
 `small` `big` `n` `cap` `pid` `pidGen` `grow` 等：可达（编译器不阻止），但不受兼容性承诺保护。
 存储字段从升级前的单个 `buf` 变成了 `small` / `big` 两态，判据只有一个 `cap == 0`。
 完整清单一律见 [内部成员一览](20-internals.md)，不在此重复。
+
+## 造一个 `string`：`string::from`
+
+```extc
+use stl::string
+
+fn main() -> i32 {
+  let s = string::from("abc")   // 拷贝一段字节；`from` 是这里唯一顺手的起点
+  return i32(s.len()) }
+```
+
+没有它就只能 `withCap` + `append` 两行起步，而且 `var s: string = "abc"` 是**写不出来**的
+（字面量的类型是 `slice<u8>`，extC 不做隐式转换 —— 作者口径：只加 `from`，不开特殊权限）。

@@ -43,3 +43,21 @@
 
 `map` 的迭代次序是**键的升序**；`hashMap` / `linmap` 是插入与重排之后的物理次序（`linmap` 保持插入次序，
 哈希表在 `rebuild` 之后次序会改变）。
+
+## 造一个"装着内容"的容器：`from`
+
+没有隐式转换，也没有"字面量偷偷采纳上下文类型" —— 所以从一段内容造容器要**明写**：
+
+```extc
+use stl::string
+use stl::vector
+
+fn main() -> i32 {
+  let s = string::from("abc")            // slice<u8> → string（拷贝）
+  var a: [3]i64 = [i64(1), i64(2), i64(3)]
+  let v = vector::from(a[..])            // slice<T> → vector<T>（拷贝；T 靠推断，不用写）
+  return i32(s.len() + v.len()) }
+```
+
+`vector::from` 那条要个**有名字的数组**：字面量是临时的，而"不能切临时值"是有意的规矩
+（视图必须有主人）。字符串字面量没这个问题 —— 它本身就是 `slice<u8>`，直接给 `string::from`。

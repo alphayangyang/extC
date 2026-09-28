@@ -163,3 +163,15 @@ struct vector<T> {
         self.pid = i64(-1)
     }
 }
+
+/* 从一段视图**拷贝**出一个 `vector`：`vector::from(xs)`（`T` 靠推断，不用写类型参数）。
+ *
+ * 同上：数组字面量**不会**自己变成 vector（没有隐式转换、也没有上下文采纳）—— 要造就明写。
+ * 写法照 `stl::sort::sort<T>`：泛型自由函数，调用点推断。
+ */
+fn from<T>(a: slice<T>) -> vector<T> {
+  var v = vector<T>::withCap(i64(a.len))
+  var i: i64 = 0
+  while i < a.len { v.push(a[i])  i = i + i64(1) }
+  return v
+}

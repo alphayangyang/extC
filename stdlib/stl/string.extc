@@ -481,3 +481,18 @@ struct string {
 fn withCap(c: i64) -> string { return string::create(c) }
 fn new() -> string { var s: string  return s }
 fn empty() -> string { var s: string  return s }
+
+/* 从一段字节**拷贝**出一个 `string`：`string::from("abc")`。
+ *
+ * 为什么需要它（实测）：字符串字面量的类型是 `slice<u8>`，而 extC **不做隐式转换** ——
+ * 没有这一步，`var s: string = "abc"` 根本写不出来（`initializer expects string::string,
+ * found slice<u8>`），起步就得 `withCap` + `append` 两行。
+ *
+ * 名字与语义都向 Rust 的 `String::from` 学：**显式构造**。作者口径：只加 `from`，不开特殊权限
+ * （字面量不偷偷采纳上下文类型）—— 一旦开了，"哪里会发生什么"就要靠背了。
+ */
+fn from(b: slice<u8>) -> string {
+  var r: string = withCap(i64(b.len) + i64(1))   /* +1：结尾那个 0 */
+  r.append(b)
+  return r
+}

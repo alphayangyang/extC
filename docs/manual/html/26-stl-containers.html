@@ -82,6 +82,17 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h2 id="遍历与名次-有序-线性-哈希容器同形">遍历与名次（有序 / 线性 / 哈希容器同形）</h2>
 <table><thead><tr><th>操作</th><th>签名</th><th>说明</th></tr></thead><tbody><tr><td>取键</td><td><code>keyAt(self: ref C, i: i64) -&gt; K</code></td><td>第 <code>i</code> 个<strong>存活</strong>键（<code>0 ≤ i &lt; len()</code>），按容器的迭代次序</td></tr><tr><td>取值</td><td><code>valAt(self: ref C, i: i64) -&gt; V</code></td><td>与 <code>keyAt(i)</code> 配对的取值</td></tr><tr><td>名次</td><td><code>map::lowerBound(self: ref map&lt;K, V&gt;, k: K) -&gt; i64</code></td><td><strong>首个不小于 <code>k</code> 的键的名次</strong>，即严格小于 <code>k</code> 的键的个数；借助子树规模，O(log n) 而非遍历</td></tr><tr><td>名次反查</td><td><code>map::rankAt(self: ref map&lt;K, V&gt;, i: i64) -&gt; i64</code></td><td><strong>第 <code>i</code> 小的条目</strong>所属的叶子位置，编码为 <code>leafId * 16 + position</code>（<code>16</code> 即 <code>ORDER</code>，一个叶子不会超过它）。之所以编码成一个整数：语言里没有元组类型</td></tr><tr><td>下界</td><td><code>set::lowerBound(self: ref set&lt;T&gt;, k: T) -&gt; i64</code></td><td>集合上同义的名次查询</td></tr><tr><td>集合取键</td><td><code>hashSet::keyAt(self: ref hashSetI64, i: i64) -&gt; i64</code></td><td>哈希集合的第 <code>i</code> 个元素</td></tr></tbody></table>
 <p><code>map</code> 的迭代次序是<strong>键的升序</strong>；<code>hashMap</code> / <code>linmap</code> 是插入与重排之后的物理次序（<code>linmap</code> 保持插入次序， 哈希表在 <code>rebuild</code> 之后次序会改变）。</p>
+<h2 id="造一个-装着内容-的容器-from">造一个"装着内容"的容器：<code>from</code></h2>
+<p>没有隐式转换，也没有"字面量偷偷采纳上下文类型" —— 所以从一段内容造容器要<strong>明写</strong>：</p>
+<pre class="lang-extc"><code><span class="k">use</span> stl::<span class="t">string</span>
+<span class="k">use</span> stl::<span class="t">vector</span>
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> s = <span class="t">string</span>::<span class="f">from</span>(<span class="c">"abc"</span>)            <span class="c">// slice<u8> → string（拷贝）</span>
+  <span class="k">var</span> a: [<span class="n">3</span>]<span class="t">i64</span> = [<span class="t">i64</span>(<span class="n">1</span>), <span class="t">i64</span>(<span class="n">2</span>), <span class="t">i64</span>(<span class="n">3</span>)]
+  <span class="k">let</span> v = <span class="t">vector</span>::<span class="f">from</span>(a[..])            <span class="c">// slice<T> → vector<T>（拷贝；T 靠推断，不用写）</span>
+  <span class="k">return</span> <span class="t">i32</span>(s.<span class="f">len</span>() + v.<span class="f">len</span>()) }</code></pre>
+<p><code>vector::from</code> 那条要个<strong>有名字的数组</strong>：字面量是临时的，而"不能切临时值"是有意的规矩 （视图必须有主人）。字符串字面量没这个问题 —— 它本身就是 <code>slice&lt;u8&gt;</code>，直接给 <code>string::from</code>。</p>
 <div class="pn"><a href="25-std-fs-term.html">← 标准库参考：`std::fs` 与 `std::term`</a> <a href="27-prelude.html">标准库参考：`prelude` →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));

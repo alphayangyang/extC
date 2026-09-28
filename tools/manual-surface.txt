@@ -811,6 +811,7 @@ stl::set	set	put	method	public
 stl::set	set	remove	method	public
 stl::set	set	withCap	method	public
 stl::string	-	empty	fn	public
+stl::string	-	from	fn	public
 stl::string	-	new	fn	public
 stl::string	-	withCap	fn	public
 stl::string	string	append	method	public
@@ -832,6 +833,7 @@ stl::string	string	create	method	public
 stl::string	string	empty	method	public
 stl::string	string	endsWith	method	public
 stl::string	string	find	method	public
+stl::string	string	from	method	public
 stl::string	string	grow	method	public
 stl::string	string	hash	method	public
 stl::string	string	isEmpty	method	public

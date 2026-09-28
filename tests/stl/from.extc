@@ -1,0 +1,20 @@
+// `from`：把"造一个装着内容的 string / vector"压成一行（string）或两行（vector）——
+// 从前是 withCap + append / new + push 起步。
+// 注意 vector 那条：字面量**不能**直接切片（"cannot slice a temporary value"，有意为之：
+// 视图得有主人），所以数组先有个名字，再 `a[..]`。
+use stl::string
+use stl::vector
+use std::io
+
+fn main() -> i32 {
+  let s = string::from("hello")
+  let e = string::from("")
+  var a: [3]i64 = [i64(1), i64(2), i64(3)]
+  let v = vector::from(a[..])
+  var b: [2]i64 = [i64(7), i64(8)]
+  let w = vector::from(b[..])
+  let vs = v.toSlice()
+  /* `<<` 链不能跨行续（下一行的 `<<` 会被当成新表达式）—— 一行写完，或者拆成两次输出。 */
+  io::cout << "s=" << s.len() << " e=" << e.len() << " v=" << v.len() << " w=" << w.len() << " sum="
+  io::cout << (vs[i64(0)] + vs[i64(1)] + vs[i64(2)]) << "\n"
+  return 0 }
