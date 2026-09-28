@@ -942,6 +942,21 @@ typedef struct {
  * decides whether a body needs an arena of its own, not whether a call passes one. */
 static inline bool funcTakesHomeArena(const FuncDef *f) { return f && f->usesHome; }
 
+/* Does this function **take** the hidden home zone -- i.e. does a call to it hand one down?
+ *
+ * One spelling, two askers, same shape as `funcTakesHomeArena`: the checker's promotion decision
+ * and codegen's implicit-argument owner (`cgImplicitArgs`, which emits both the parameter in a
+ * signature and the argument at a call site).
+ *
+ * **Known divergence, not yet fixed** (review F9): the checker promotes on the richer
+ * `calleeMakesPool` (`check_top.c`), which is also true for `@poolObject` methods, extern
+ * constructor names and `isAssoc && owner->makesPoolAny`; this accessor reads the raw flag, which
+ * those three do not set. So a site can be promoted to the zone level and still have no argument
+ * emitted -- the same shape as the home-arena bug that was fixed. Closing it means teaching both
+ * sides the same question, which needs the pool-constructor name list to be shared instead of
+ * spelled twice (`check_top.c` / `codegen.c`, review F11): do the two together. */
+static inline bool funcTakesHomeZone(const FuncDef *f) { return f && f->makesPool; }
+
 /* An `impl Type { fn ... }` block: methods attached to a type that is declared elsewhere
  * (or is a compiler builtin, which has no body to write them in).
  *

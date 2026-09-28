@@ -1705,7 +1705,7 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
  *
  */
 static bool cgHasImplicitArgs(const FuncDef *callee) {
-    return callee && (funcTakesHomeArena(callee) || callee->makesPool);
+    return callee && (funcTakesHomeArena(callee) || funcTakesHomeZone(callee));
 }
 static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site,
                            size_t nargs, bool forSignature) {
@@ -1717,7 +1717,7 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
                                 : homeArg(g, site ? site->arenaArg : ARENA_HOME));
         n++;
     }
-    if (callee->makesPool) {
+    if (funcTakesHomeZone(callee)) {
         if (n) bufPuts(b, ", ");
         bufPuts(b, forSignature ? "int64_t __extc_home_zone" : zoneArgRef(g, (Expr *)site));
         n++;
