@@ -1,0 +1,12 @@
+/* 反例：**没标记**的结构体按值过 C 边界 ⇒ 拒 ✗
+ *
+ * 这正是 `@frozen` 的门票作用：产物里的布局今天确实是 C 的，但**没人承诺过**，而按值传结构体
+ * 一旦布局不一致就是静默错（C 按错的偏移读写，不 trap 也不报错）。要传就在声明上写 `@frozen`。 */
+struct point { x: i64  y: i64 }
+
+extern!("libc") fn bad(p: point) -> i64
+
+fn main() -> i32 {
+    var pt: point = point { x: 1, y: 2 }
+    return i32(bad(pt))
+}

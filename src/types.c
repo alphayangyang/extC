@@ -425,10 +425,10 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                     Type *pt = *(Type **)vecAt(&fr->params, i);
                     if (ttCrossesC(pt, false)) continue;
                     ctxError(ctx, line, 1,
-                             "A C function's arguments are scalars and single pointers. A"
-                             " `slice<T>` becomes two C arguments (data + len), and a struct's"
-                             " layout is not frozen -- write the two arguments out (`s.data` /"
-                             " `s.len`) instead of one.",
+                             "A C argument is one machine word: a scalar, a pointer, or a function"
+                             " pointer; a `slice<T>` becomes two C arguments (data + len), and a"
+                             " struct crosses by value only when its layout is promised (`@frozen`)."
+                             " Write the two arguments out (`s.data` / `s.len`) instead of one.",
                              "`fn` argument %zu has type `%s`, which cannot cross the C boundary",
                              i + 1, ttShow(tt, pt));
                 }
@@ -1228,6 +1228,13 @@ bool ttCrossesC(Type *t, bool isReturn) {
     /* A function type crosses as one pointer, and it is a pointer whatever it points at -- C passes
      * those freely (`qsort`'s comparator is exactly this shape). */
     if (b->kind == TY_FN) return true;
+    /* An aggregate **by value**: only with `@frozen`, which is the author's promise that this
+     * struct's bytes are laid out the way C lays out this field list (C-ABI.md section 9.8). The
+     * promise is what makes it safe, not the compiler's own layout rules: our layout *is* C's today
+     * by construction, but nothing said so, and a reordering would be a **silent** wrong answer at
+     * the call. Without the marker the answer stays no -- and the diagnostic says which marker to
+     * write. */
+    if ((b->kind == TY_STRUCT || b->kind == TY_GENERIC) && b->sdef && b->sdef->frozen) return true;
     return isReturn && b->kind == TY_VOID;
 }
 

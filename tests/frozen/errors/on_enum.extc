@@ -1,0 +1,3 @@
+/* 反例：`@frozen` 标在枚举上 ⇒ 拒 ✗（C 枚举的宽度是实现定义的，没有"可冻结的布局"） */
+@frozen type st = | ok | bad
+fn main() -> i32 { return 0 }

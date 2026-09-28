@@ -477,6 +477,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool noCopy    = false;
         bool poolObject = false;   /* @poolObject：这个 struct 拥有一个池（作者口径） */
         bool sharesStorage = false; /* @sharesStorage：按值拷贝时两份共用存储（容器那一族） */
+        bool frozen     = false;   /* @frozen：作者签字"布局就是 C 的布局"（按值过界的门票） */
         /* `@private` hides a declaration; `@inline` asks for a function to be inlined.
          * They are read together because both may precede the same declaration, and the
          * order between them carries no meaning. Any other annotation is an error: these
@@ -535,6 +536,18 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
+            /* `@frozen`：这个 struct 的布局**就是 C 的布局**（字段顺序、对齐、没有隐藏字段）。
+             * 它是"按值过 C 边界"的门票，也是一句签字：编译器不审里面放了什么，代价由作者担
+             * —— 与 `effects` 同一类（C-ABI.md §9.8）。 */
+            if (strcmp(nm->text, "frozen") == 0) {
+                if (frozen) {
+                    ctxError(ctx, a->line, a->col, NULL, "`@frozen` appears twice");
+                    return false;
+                }
+                frozen = true;
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "builtin") == 0) {
                 /* `@builtin`：声明由编译器实现（没有函数体）。真正的解析在注解循环里，
                  * 这里只放行，免得"白名单"把它当成未知注解拒掉。 */
@@ -555,7 +568,9 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                      " `@unchecked` (on a function: its index expressions lose the bounds check),"
                      " `@noCopy` (on a struct:"
                      " it may only be passed as `ref` / `mut ref`), `@poolObject` (on a struct: it owns"
-                     " a pool) and `@sharesStorage` (on a struct: a by-value copy shares storage). `@overwrite` is for"
+                     " a pool), `@sharesStorage` (on a struct: a by-value copy shares storage) and"
+                     " `@frozen` (on a struct: its layout is the C layout, so it may cross the C"
+                     " boundary by value). `@overwrite` is for"
                      " locals.",
                      "unknown top-level annotation `@%s`", nm->text);
             return false;
@@ -575,6 +590,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!s) return false;
             s->isPrivate = isPrivate;
             s->noCopy    = noCopy;
+            if (frozen) s->frozen = true;
             if (sharesStorage) s->sharesStorage = true;
             if (poolObject) s->poolObject = true;
             *(StructDef **)vecPush(&out->structs) = s;
@@ -584,7 +600,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
              * declaration, `@poolObject`/`@sharesStorage` describe storage, `@inline` and
              * `@unchecked` describe a body, and the block declares none of them. Saying so
              * beats silently ignoring them. */
-            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked) {
+            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked || frozen) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "An `impl` block adds methods to a type that is declared elsewhere, so it "
@@ -597,7 +613,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             *(ImplDef **)vecPush(&out->impls) = im;
         } else if (at(&p, "trait")) {
             /* No annotation applies: like an `impl` block, a trait declares behaviour only. */
-            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject) {
+            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject || frozen) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "A `trait` declares method signatures only: it has no storage to hide"
@@ -635,11 +651,26 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`@poolObject` goes on a `struct`");
                 return false;
             }
+            if (frozen) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "`@frozen` promises a byte layout for a field list; an enum's C width is"
+                         " implementation-defined, so there is nothing here to freeze. Use an i32"
+                         " where the C side needs a number.",
+                         "`@frozen` goes on a `struct`");
+                return false;
+            }
             TypeDef *td = parseTypeDecl(&p);
             if (!td) return false;
             td->isPrivate = isPrivate;
             *(TypeDef **)vecPush(&out->types) = td;
         } else if (at(&p, "let") || at(&p, "var")) {
+            if (frozen) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "`@frozen` promises a byte layout for a field list; only a `struct` has one."
+                         " A function **pointer** has a layout, and that type is `fn(A) -> R`.",
+                         "`@frozen` goes on a `struct`");
+                return false;
+            }
             if (fnUnchecked) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
@@ -652,6 +683,14 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
         } else if (at(&p, "extern")) {
+            if (frozen) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "`@frozen` promises a byte layout for a field list; only a `struct` has one."
+                         " A function **pointer** has a layout, and that type is `fn(A) -> R`.",
+                         "`@frozen` goes on a `struct`");
+                return false;
+            }
+
             /* `@inline` on an external declaration is refused rather than ignored: there is
              * no body to inline, so accepting it would leave the reader believing something
              * was asked for that never happened. `@unchecked` has exactly the same problem:
@@ -679,6 +718,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             f->isPrivate = isPrivate;
             *(FuncDef **)vecPush(&out->funcs) = f;
         } else if (at(&p, "fn") || at(&p, "@")) {
+            if (frozen) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "`@frozen` promises a byte layout for a field list; only a `struct` has one."
+                         " A function **pointer** has a layout, and that type is `fn(A) -> R`.",
+                         "`@frozen` goes on a `struct`");
+                return false;
+            }
             bool inl = fnInline;
             bool unchk = fnUnchecked;
             if (!parseFuncAnnotations(&p, &inl, NULL, &unchk)) return false;

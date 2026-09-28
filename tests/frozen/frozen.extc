@@ -1,0 +1,61 @@
+// expect: imaxdiv=(-3,2) mixed=(-7,3.5,true,900,1) nested=(11,22) byvalue=33
+// `@frozen` 的常设验收（C-ABI.md §9.8）：**作者签字"布局就是 C 的布局"**，于是按值过 C 边界。
+//
+// 这里验四件事：
+//   ① **真调 libc 的按值返回**：`imaxdiv` 返回 `{intmax_t quot; intmax_t rem;}`（两个 i64 的结构体，
+//      System V 从 RAX:RDX 回来）—— `<inttypes.h>` 没被前言 include ⇒ 我们自己的声明不冲突；
+//   ② 字段形状凑齐：i8 / i64 / f64 / bool / **可写指针** / 定长数组 / **嵌套 frozen**
+//      （中间填充与尾部填充都会被踩到）；
+//   ③ 经 `fn` 值**按值传参**（生成的 typedef 里那个参数就是 `inner`，不是指针）；
+//   ④ 布局本身由 run.sh 的**镜像测试**钉住：把产物与一份手写等价 C 结构体拼在一起，
+//      编译期断言 `sizeof` 与每个字段的 `offsetof` 相等，运行期再打印一遍（tests/frozen/run.sh）。
+//
+// 一个**没有**放在这里的东西：把带指针字段的 `mixed` 经 `fn` 值传出去 —— 那条路会（正确地）被拒：
+// 未签字的代码指针按"它可能留住一切"算，而 `mixed` 里有一个 `mut ref`，于是它可能被存到帧外。
+// 与"没签字的 `extern!` 拿帧内地址"是同一条规则（反例 tests/extern/errors/ptr_unsigned.extc）。
+use std::io
+
+@frozen struct inner {
+    x: i64
+    y: i64
+}
+
+@frozen struct mixed {
+    a: i8
+    b: i64
+    f: f64
+    ok: bool
+    p: mut ref i64
+    arr: [4]u8
+    inr: inner
+}
+
+/* 两个 i64 的结构体，给 `imaxdiv` 当返回类型（`mixed` 只是形状齐全，不是 libc 的形状）。 */
+@frozen struct mixed2 {
+    quot: i64
+    rem: i64
+}
+
+extern!("libc") fn imaxdiv(num: i64, den: i64) -> mixed2
+    effects Addr=0 Cont=0
+
+fn addInner(v: inner) -> i64 { return v.x + v.y }
+
+fn main() -> i32 {
+    var d: mixed2 = imaxdiv(17, -5)
+    io::cout << "imaxdiv=(" << d.quot << "," << d.rem << ")"
+
+    var n: i64 = 900
+    var m: mixed = mixed {
+        a: i8(-7), b: 3, f: 3.5, ok: true, p: ref n,
+        arr: [9, 1, 1, 2], inr: inner { x: 11, y: 22 }
+    }
+    io::cout << " mixed=(" << i64(m.a) << "," << m.f << "," << m.ok << "," << *m.p << "," << i64(m.arr[2]) << ")"
+    io::cout << " nested=(" << m.inr.x << "," << m.inr.y << ")"
+
+    var f: fn(inner) -> i64 = addInner
+    io::cout << " byvalue=" << f(inner { x: 11, y: 22 })
+
+    io::cout << "\n"
+    return 0
+}

@@ -5190,6 +5190,34 @@ static void unitBody(CG *g, SUnit *u) {
     }
     g->indent--;
     cgLine(g, "};");
+
+    /* `@frozen`: the promise is that this struct's bytes are laid out the way C lays out this field
+     * list -- declaration order, C's alignment and padding, and nothing else inside. Two
+     * platform-independent assertions pin the two halves of that promise, so a future change to this
+     * compiler that reordered a field or slipped a hidden one in makes the **product** fail to
+     * compile instead of a call reading the wrong bytes (C-ABI.md section 9.8):
+     *   - neighbours are in increasing offset order: declaration order, never sorted by size;
+     *   - `sizeof` is no larger than the end of the last field plus the struct's own alignment, which
+     *     is exactly the trailing padding C is allowed to add -- so an added field shows up as a
+     *     larger size, unless it fits in that padding (in which case the layout did not change and
+     *     there is nothing to catch).
+     * Every number is derived from C itself (`offsetof`, `sizeof`, `_Alignof`) rather than written
+     * down: a hard-coded `== 8` would break a legitimate build on a platform whose alignment rules
+     * differ, and that is the opposite of what a frozen layout is for. */
+    if (u->sd && u->sd->frozen && u->sd->fields.len > 0) {
+        const char *tn = unitName(u);
+        for (size_t i = 1; i < u->sd->fields.len; i++) {
+            FieldDef *a = *(FieldDef **)vecAt(&u->sd->fields, i - 1);
+            FieldDef *b = *(FieldDef **)vecAt(&u->sd->fields, i);
+            cgLine(g, "_Static_assert(offsetof(%s, %s) < offsetof(%s, %s),", tn, a->name, tn, b->name);
+            cgLine(g, "               \"extC @frozen: the fields stay in declaration order\");");
+        }
+        FieldDef *last = *(FieldDef **)vecAt(&u->sd->fields, u->sd->fields.len - 1);
+        cgLine(g, "_Static_assert(sizeof(%s) <= offsetof(%s, %s) + sizeof(((%s *)0)->%s)"
+                   " + _Alignof(%s),",
+               tn, tn, last->name, tn, last->name, tn);
+        cgLine(g, "               \"extC @frozen: nothing may be added to a frozen struct\");");
+    }
     cgLine(g, "");
     if (generic) substLeave(g);
 }

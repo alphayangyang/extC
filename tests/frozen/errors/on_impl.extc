@@ -1,0 +1,4 @@
+/* 反例：`@frozen` 标在 `impl` 块上 ⇒ 拒 ✗（impl 声明的是行为，不是布局） */
+struct box { v: i64 }
+@frozen impl box { fn get(self: ref box) -> i64 { return self.v } }
+fn main() -> i32 { return 0 }

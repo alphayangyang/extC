@@ -144,7 +144,7 @@ var m: hashMap<i64, i32> = hashMap<i64, i32>::withCap(i64(8))   // 不需要任�
 - **目标**只能是 `struct` 或**内建标量**。枚举用 `match` 读，没有方法；泛型类型的 `impl`
   需要块自己的类型参数 —— 暂不支持（会在语法处报清楚）。
 - **只加行为，不加存储**：字段仍然只在类型自己的声明里。impl 块里出现字段是错误。
-- **顶层注解不适用**于 impl（`@private` / `@noCopy` / `@poolObject` / `@sharesStorage` 描述的是
+- **顶层注解不适用**于 impl（`@private` / `@noCopy` / `@poolObject` / `@sharesStorage` / `@frozen` 描述的是
   声明与存储，impl 两者都不声明）。
 - **coherence：一个类型只有一个方法集。** 同一个方法名在类型体、另一个 impl、另一个模块里
   再出现一次 ⇒ **报错**（不是"后者覆盖前者"）。所以"给 `i64` 加 `hash`"这件事全程序只能有一个出处，

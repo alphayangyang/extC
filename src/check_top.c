@@ -3948,10 +3948,11 @@ static void checkFunc(Checker *c, FuncDef *f) {
             Param *p = *(Param **)vecAt(&f->params, i);
             if (!ttCrossesC(p->type, false))
                 ckError(c, p->line,
-                        "A C function's arguments are scalars and single pointers. A `slice<T>`"
-                        " becomes two C arguments (data + len), and a struct's layout is not"
-                        " frozen -- wrap those in an extC function that passes `s.data` / `s.len`"
-                        " explicitly.",
+                        "A C argument is one machine word: a scalar, a pointer, or a function"
+                        " pointer; a `slice<T>` becomes two C arguments (data + len), and a struct"
+                        " crosses **by value** only when its layout is promised (`@frozen` on its"
+                        " declaration). Otherwise wrap it in an extC function that passes `s.data` /"
+                        " `s.len` explicitly.",
                         "`extern!` argument %zu has type `%s`, which cannot cross the C boundary",
                         i + 1, typeStr(c, p->type));
         }
@@ -3962,8 +3963,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
              * arguments), or a view. */
             if (!ttCrossesC(f->ret, true))
                 ckError(c, f->line,
-                        "A C function can return `void`, a scalar, or a single pointer; anything"
-                        " else has no C-level representation here.",
+                        "A C return value is one machine word -- a scalar, a pointer, or a function"
+                        " pointer -- or a `@frozen` struct, whose layout the declaration promises.",
                         "`extern!` return type `%s` cannot cross the C boundary",
                         typeStr(c, f->ret));
         }

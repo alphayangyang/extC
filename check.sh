@@ -104,8 +104,13 @@ else bad "tests/io/run.sh"; echo "$out"; fi
 
 echo "== extern! + 信任声明（定案 72：签字才放行 · 默认最保守）=="
 if out=$(timeout 600 ./tests/extern/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 6 反例 · 指针过界：ref T / ref void / ?ref void）"
 else bad "tests/extern/run.sh"; echo "$out"; fi
+
+echo "== @frozen（C-ABI.md §9.8：作者签字"布局就是 C 的布局" ⇒ 按值过界）=="
+if out=$(timeout 600 ./tests/frozen/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（真调 libc 按值返回 · **C 侧镜像**比 sizeof/offsetof · 产物断言与镜像各有牙 · 5 反例）"
+else bad "tests/frozen/run.sh"; echo "$out"; fi
 
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(timeout 600 ./tests/modules/run.sh 2>&1); then

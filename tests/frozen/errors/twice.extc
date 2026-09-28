@@ -1,0 +1,3 @@
+/* 反例：`@frozen` 写两遍 ⇒ 拒 ✗（与 `@private` / `@unchecked` 同一条规矩） */
+@frozen @frozen struct pair { a: i64  b: i64 }
+fn main() -> i32 { return 0 }
