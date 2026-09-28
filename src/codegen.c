@@ -2487,11 +2487,13 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (bits == 0)                          /* not an integer: the plain cast is the whole conversion */
                     return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
                 if (bits == 64) {
-                    bool sgn = ttIntSigned(t);
+                    if (!ttIntSigned(t))        /* u64: the helper's bounds are int64_t, so it gets its own */
+                        return arenaPrintf(g->arena,
+                            "((%s)extc_convFloatU((double)(%s), \"%s\", %d))",
+                            cType(g, t), x, g->path, e->line);
                     return arenaPrintf(g->arena,
-                        "((%s)extc_convFloat((double)(%s), %s, %s, \"%s\", %d))",
-                        cType(g, t), x, sgn ? "INT64_MIN" : "0",
-                        sgn ? "INT64_MAX" : "UINT64_MAX", g->path, e->line);
+                        "((%s)extc_convFloat((double)(%s), INT64_MIN, INT64_MAX, \"%s\", %d))",
+                        cType(g, t), x, g->path, e->line);
                 }
                 int64_t lo = ttIntSigned(t) ? -((int64_t)1 << (bits - 1)) : 0;
                 int64_t hi = ttIntSigned(t) ? (((int64_t)1 << (bits - 1)) - 1)
@@ -7026,6 +7028,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         "    if (!(v >= (double)lo && v <= (double)hi))"
         " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
         "    return (int64_t)v;   /* truncation toward zero, as in C */\n"
+        "}\n"
+        "/* float -> u64: the range cannot be expressed with the int64_t bounds above\n"
+        " * (UINT64_MAX does not fit in int64_t), so it is its own helper. 2^64 is\n"
+        " * exactly representable as a double, which is why the upper test is `<`. */\n"
+        "static inline uint64_t extc_convFloatU(double v, const char *f, int l) {\n"
+        "    if (!(v >= 0.0 && v < 18446744073709551616.0))"
+        " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
+        "    return (uint64_t)v;\n"
         "}\n"
         /* Getting this function inlined is worth a lot: it has one call site per program
          * and that site is usually inside a loop, so an out-of-line call costs a call and a

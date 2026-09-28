@@ -1,4 +1,4 @@
-// expect: i64=2 i32=3 i64n=-2 trunc=2 u8=200 big=4294967295 lit=-1
+// expect: i64=2 i32=3 i64n=-2 trunc=2 u8=200 big=4294967295 lit=-1 u64=4 u64big=ok
 // 浮点 → 整数 + 浮点字面量的回归守卫。
 //
 // ① F3：修之前 `codegen.c` 的 float 分支把手抄的 if 链里 `i64` 写成 `lo = 1; hi = 0`
@@ -17,5 +17,14 @@ fn main() -> i32 {
   var x: f64 = 4294967295.0
   io::cout << "i64=" << i64(a) << " i32=" << i32(b) << " i64n=" << i64(d)
   io::cout << " trunc=" << i64(e) << " u8=" << i64(u8(f64(200.0)))
-  io::cout << " big=" << i64(u32(f64(4294967295.0))) << " lit=" << i64(x - f64(4294967296.0)) << "\n"
+  io::cout << " big=" << i64(u32(f64(4294967295.0))) << " lit=" << i64(x - f64(4294967296.0))
+  /* u64 ← float：旧代码把它的上界也写成 INT64_MAX（helper 的界是 int64_t，装不下 UINT64_MAX），
+   * 所以 2^63 会被拒绝。这里**不做 u64→i64 转换**（那是另一条 checked conversion），改成与原值比较。 */
+  io::cout << " u64=" << i64(u64(f64(4.0)))
+  if u64(f64(9223372036854775808.0)) == u64(9223372036854775807) + u64(1) {
+    io::cout << " u64big=ok"
+  } else {
+    io::cout << " u64big=bad"
+  }
+  io::cout << "\n"
   return 0 }
