@@ -6279,8 +6279,8 @@ static char *funcDefStart(char *text, DeadFunc *df, size_t *lenOut) {
     }
     if (!at) return NULL;
     char *e = at;
-    for (char *p = at; *p; p++)
-        if (p[0] == '}' && p[-1] == '\n') { e = p + 1; break; }
+    for (char *p = at; *p; p++)   /* `p != at`: `p[-1]` below must not read before the buffer */
+        if (p != at && p[0] == '}' && p[-1] == '\n') { e = p + 1; break; }
     *lenOut = (size_t)(e - at);
     return at;
 }
