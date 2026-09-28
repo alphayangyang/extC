@@ -1,0 +1,27 @@
+// expect-crash: 139
+// 板的寿命验收：**close 之后再用板内指针 = 硬缺页（SIGSEGV）**。
+//
+// 这是"少检验"换来的东西（HEAP.md §3）：板内的槽**不做世代**、`close` 也不跟模块打招呼 ——
+// 换来的是关板之后再用就是一次硬缺页，而不是悄悄读到别人的数据。swallowed 的 use-after-free
+// 比崩溃坏得多，所以这里让测试**检查退出码**（139 = 128 + SIGSEGV），并要求崩溃前那行标记
+// 真的打出来了（否则"立刻崩"和"用完之后崩"分不清）。
+use std::io
+use std::heap
+
+fn main() -> i32 {
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var s: mut slice<u8> = pl.store("x")!
+    var keep: mut slice<u8> = s          /* 视图是两个词的值：留一份 */
+    if pl.close() != 0 {
+        io::cout << "close=fail\n"
+        return 1
+    }
+    io::cout << "closed\n"               /* 这一行必须出现在 stdout 里 */
+    /* 两道缓冲都得冲：`cout` 自己的缓冲 → stdio（`flushCout`），stdio → fd 1（`flush`）。
+     * 只冲第一道不够 —— 实测：崩掉时 `atexit` 不跑，stdio 那 4 KB 缓冲整个丢掉，标记看不见。 */
+    io::flushCout()
+    flush()
+    keep[0] = u8(9)                      /* munmap 之后写 ⇒ 硬缺页 */
+    io::cout << "unreachable\n"
+    return 0
+}

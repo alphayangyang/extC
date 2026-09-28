@@ -117,6 +117,11 @@ if out=$(timeout 600 ./tests/cabi/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（@export：C 宿主**真的链接并调用** · .so 里 nm -D 看得见符号 · 10 种"没有那一个 C 符号"的反例）"
 else bad "tests/cabi/run.sh"; echo "$out"; fi
 
+echo "== 板 / Heap（HEAP.md · C-ABI.md §9.10：保留便宜 · 按需 commit · 门有牙 · close 即 munmap）=="
+if out=$(timeout 600 ./tests/heap/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（4 GiB 保留只涨 4 KB RSS · commit 1 MiB 粒度 · 板外指针被拒 · **close 之后再用 = SIGSEGV**）"
+else bad "tests/heap/run.sh"; echo "$out"; fi
+
 echo "== 模块（定案 70：语义导入 · 一个文件一个模块 · @private · 禁环）=="
 if out=$(timeout 600 ./tests/modules/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（8 正例 + 14 反例 + mangle 判据 · 含 use mod::* 与 use mod::{a,b} 各 1 正例 + 6 条边界）"

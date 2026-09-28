@@ -437,10 +437,54 @@ plate=ok byte=42 logged=2 outside=rejected
 后者（**整数 → 引用**）**故意不开**：那是"把数字当指针用"，是另一个决定。所以今天复现 `holds`
 要写成宿主里的一个函数（本测试就是这么做的），把它做成**板对象的方法**是下一步的事。
 
-### ⑤ 还没做（第 4 步：Heap 进运行期）
+### ⑤ 还没做（第 5 步）
 * **③ `std::dl`**：`open` / `close` / `sym`。两个缺口：extC 的 `str` **不是 NUL 结尾**的（库侧
   适配函数解决），以及从 `dlsym` 拿回来的 `ref void` 要变成 `fn(…)` —— 用**显式转换** `T(x)`
   （走"收窄必须写出来"那条既有的路，不新增 builtin）。
 * **④ 端到端**：`gcc -shared` 编一个 C 模块导出 `init(table)` 填表，extC 宿主用 `std::dl` 打开、
   经签字的表槽调用、再经表里的函数指针调用，拿回一个指针用**一次区间检查**验证 —— 也就是把
   `prototype-heap/` 那套搬进语言。
+
+## 9.10 第 4 步：板（Heap）进运行期（已完成）
+
+`stdlib/std/heap.extc` + `stdlib/std/sys/heap.extc`（特权层）。设计见 [`HEAP.md`](HEAP.md)，
+这里只记"哪几格语言必须存在"与实测。
+
+```
+reserve=4096MB rss_delta=4 commit=1024KB stored=11 holds=true outside=false copyin_teeth=-1 reuse=ok closed=0
+```
+
+（`tests/heap/`：保留 4 GiB 只让 RSS 涨 **4 KB**；commit 按 CHUNK = 1 MiB 走；板外指针 `holds`
+为假、`copyIn` 的目标不在板内返回 -1；第二笔分配之后第一笔的视图仍可写（不搬家）。另有一条
+`afterclose`：`close` 之后写板内指针 ⇒ **SIGSEGV**，测试检查退出码 139 且崩溃前的标记可见。）
+
+四件"不做就写不出来"的事：
+
+1. **指针的抹除方向**（§9.10 上一节 ①）：`mprotect` / `munmap` 的参数在 C 里就是 `void *`，
+   而板手里是 `ref u8` 视图的 `data`。擦掉 pointee 类型不丢权限（`ref void` 什么都解引用不了）。
+2. **视图造不出来** —— 这是第 ② 块。`slice<u8> { … }` 写不出（泛型实例没有结构体字面量，实测
+   被当成"类型出现在表达式位置"拒绝），而 `ref void` → `ref T` 又故意不开。所以
+   `extc_viewOf(p, n)` 由**编译器**给三行 C（`src/plate.c`，`@builtin` + `needPlateView` 触发）。
+   它是"指针 + 长度 ⇒ 视图"的唯一入口，**不做任何检查**：谁调用谁负责（板用 `holds`，C 边界用
+   声明处的签字）。
+3. **`memcpy` 也需要一道门**：它的签名里有 `const void *` 与 `size_t`，而手写声明会与
+   `<string.h>` 撞（`src/memfind.c` 的文件头记过同一件事）。`extc_memCopy` 与 `extc_viewOf`
+   同一块发射，**按声明触发**（一个声明一个标志）—— 这一条是被闸门逼出来的：最初把它加进
+   `extern!("extc-mem")` 那一块，`std::string` 的用户全都声明它 ⇒ **21 个产物逐字节变化**，
+   golden 当场抓住。
+4. **`mmap` 家族按 C 的原型声明，但返回类型写 `?ref u8`**：`<sys/mman.h>` 没被 include，所以
+   声明是我们的；指针的指向类型在**声明处**定，这正是把保留区当视图用的前提。
+   `MAP_FAILED` 是 `(void *)-1` 而不是 null ⇒ 用最高一页的地址比较来判失败。
+
+两个副产物（都记了理由，不是顺手加的）：
+
+* `isConstInit` 接受**无损**转换（`i64(3)`）—— 表与板的常量就这么写。带运行时检查的转换
+  （`u64(4096)`，产物里是 `extc_narrowU(...)` 调用）**不算**常量：gcc 会报 "initializer element
+  is not constant"。这是实测出来的（`let PAGE: u64 = u64(4096)` 编不过），所以库里的常量写字面量：
+  `let CHUNK: u64 = 1048576`（`1024 * 1024` 是 i32 算术 ✗）。
+* 崩溃可见的输出要**两道 flush**：`io::flushCout()`（cout 缓冲 → stdio）+ `flush()`（stdio → fd）。
+  只做第一道时，`afterclose` 的标记在 SIGSEGV 后看不见（`atexit` 不跑，stdio 那 4 KB 缓冲整个丢掉）。
+
+**还没做的**：Arena 兜底（`HEAP.md` §3：忘了 `close` 就由 open 它的那只 Arena 收）今天只是漏到
+进程结束；只读借出（`mprotect` 成 `PROT_READ`，原型量过 ≈0.7 MiB 盈亏平衡）与"板的表"（§9.9 ④
+那张 `extc_heap_api`）把它们接起来，是第 5 步。

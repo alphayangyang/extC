@@ -4251,10 +4251,13 @@ static bool isConstInit(Expr *e) {
      * line above does -- a table has a `ctx: ?ref void` field, and the slot beside it holds a
      * function address. */
     case EX_NULL:  return true;
-    /* A conversion of a constant is one: `i64(3)` is `(int64_t)3` in C, which folds. A table's
-     * `size: i64(3)` field is written exactly that way (a literal in a narrower default type has to
-     * say which width it means), so without this a table could not be a global either. */
-    case EX_CONV: return isConstInit(e->u.conv.operand);
+    /* A **lossless** conversion of a constant is one: `i64(3)` is `(int64_t)3` in C, which folds,
+     * and a table's `size: i64(3)` field is written exactly that way. A conversion the checker marked
+     * as needing a runtime check is **not** a constant -- it comes out as a call to a helper
+     * (`((uint64_t)extc_narrowU((uint64_t)(4096), ...))`, measured with `let PAGE: u64 = u64(4096)`),
+     * and gcc refuses that in a static initializer. Saying so here means the user gets "must be
+     * initialized with a constant" instead of a gcc error in the product. */
+    case EX_CONV: return !e->convCheck && isConstInit(e->u.conv.operand);
     default: return false;
     }
 }

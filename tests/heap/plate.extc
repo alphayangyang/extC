@@ -1,0 +1,61 @@
+// expect: reserve=4096MB rss_delta= commit=1024KB stored=11 holds=true outside=false copyin_teeth=-1 reuse=ok closed=0
+// 板的常设验收（HEAP.md / C-ABI.md §9.10）：保留、按需 commit、那道门、寿命。
+//
+// 这里量两件**设计赖以成立**的事（原型里的数字在 `prototype-heap/README.md`，这里在 extC 侧复现）：
+//   ① 保留 4 GiB **不占物理页** —— 看 `/proc/self/statm` 的 resident 差（期望远小于 4096 KB）；
+//   ② commit **按 CHUNK（1 MiB）粒度**走，而不是整块 4 GiB。
+// 判据的牙：板外指针 `holds` 为假；`copyIn` 目标不在板内 ⇒ -1（那道门真的在验）。
+use std::io
+use std::fs
+use std::heap
+
+/* `/proc/self/statm` 的**第二个**字段是 resident 页数 ⇒ ×4 = KB。 */
+fn rssKB() -> i64 {
+    var buf: mut slice<u8> = new u8[256]
+    var f = fs::ifstream("/proc/self/statm")!
+    var n: i64 = f.readAll(buf)!
+    f.close()!
+    var i: i64 = 0
+    while i < n && buf[i] != u8(32) { i = i + 1 }        /* 跳过 size */
+    i = i + 1
+    var v: i64 = 0
+    while i < n && buf[i] >= u8(48) && buf[i] <= u8(57) {
+        v = v * i64(10) + (i64(buf[i]) - i64(48))
+        i = i + 1
+    }
+    return v * i64(4)
+}
+
+fn main() -> i32 {
+    var before: i64 = rssKB()
+
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var afterOpen: i64 = rssKB()
+    io::cout << "reserve=" << i64(pl.reservedBytes() / (u64(1024) * u64(1024))) << "MB"
+    var delta: i64 = afterOpen - before
+    if delta < i64(0) { delta = i64(0) }
+    io::cout << " rss_delta=" << delta
+
+    /* 第一笔分配：commit 一个 CHUNK（1 MiB），不是 4 GiB。 */
+    var s: mut slice<u8> = pl.store("hello plate")!
+    io::cout << " commit=" << i64(pl.committedBytes() / u64(1024)) << "KB"
+    io::cout << " stored=" << s.len
+    io::cout << " holds=" << pl.holds(s.data)
+
+    /* 门的第一颗牙：板外的指针不是板内的。 */
+    var outside: [4]u8 = [1, 2, 3, 4]
+    var os: slice<u8> = outside[..]
+    io::cout << " outside=" << pl.holds(os.data)
+
+    /* 门的第二颗牙：`copyIn` 的目标必须在板内（否则返回 -1，一个字节都不碰）。 */
+    io::cout << " copyin_teeth=" << pl.copyIn(outside[..], os)
+
+    /* 板是 arena 之外的第二种寿命：下一笔分配接着上一笔（不搬家 ⇒ 老视图仍然有效）。 */
+    var t: mut slice<u8> = pl.store("second")!
+    s[0] = u8(72)                                   /* 'H' —— 第一笔仍然可写（地址没变） */
+    if t.len == i64(6) && pl.usedBytes() >= u64(17) { io::cout << " reuse=ok" }
+
+    io::cout << " closed=" << pl.close()
+    io::cout << "\n"
+    return 0
+}

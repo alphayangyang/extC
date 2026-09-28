@@ -430,6 +430,42 @@ fn main() -> i32 {
   `u32(p)`（会截断）仍被拒。
 - **模块返回的指针必须自己检查**再解引用 —— 它不是语言担保的东西，是 C 给的。
 
+### 12.3.6 `std::heap`：板（Heap）—— 一块连续内存 + 一道门（2026-09-29，见 [`HEAP.md`](../topics/HEAP.md)）
+
+给外来 C 库用的一片连续内存。设计的三句话：**一次保留、按需 commit、永不搬家**；每个出口都
+验一次"这个指针在板内"；寿命显式（`close` 就是 `munmap`）。
+
+```extc
+use std::heap
+
+var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!   // 4 GiB 地址空间，不占物理页
+var s: mut slice<u8> = pl.store("hello plate")!                   // 申请 + 拷进去，拿回板内视图
+io::cout << pl.holds(s.data)                                      // true：一次区间比较
+io::cout << pl.holds(other[..].data)                              // false：板外的不是板内的
+pl.close()                                                        // munmap；之后再用板内指针就崩
+```
+
+| 名字 | 作用 |
+|---|---|
+| `plate` / `plate::open(n)` | 板本身 / 保留 `n` 字节地址空间（失败返回 `none`） |
+| `alloc(n)` | 申请 `n` 字节，返回 `?mut slice<u8>`（板满 = `none`），commit 按 `CHUNK` 粒度 |
+| `store(src)` | 申请 + `copyIn`，一步拿到板内视图 |
+| `copyIn(dst, src)` / `copyOut(src, dst)` | 整块拷进 / 拷回；**两边都要过那道门**（不在板内返回 `-1`） |
+| `holds(p)` / `holdsView(v)` | 那道门：一次（或两次）区间比较 |
+| `reservedBytes()` / `committedBytes()` / `usedBytes()` / `remaining()` / `isClosed()` | 账（读法） |
+| `reserved` / `committed` / `used` / `closed` | 同上的字段（也直接读得到） |
+| `close()` | `munmap`（双关安全）。**关完之后板内指针再用 = SIGSEGV**，这是设计 |
+| `PAGE` / `CHUNK` / `DEFAULT_RESERVE` | 页、commit 粒度（1 MiB）、默认保留（4 GiB） |
+
+三条要知道的边界：
+
+- **不搬家**：`alloc` 只会往前推 `used`，地址一给出就不变 ⇒ 模块手里的板内指针一直有效（到
+  `close` 为止）。这也是"老视图在新分配之后仍然可写"的原因。
+- **不做世代、不做 use-after-free 检查**：那是外来库自己的事。少检验换来的是关板之后再用
+  **硬缺页**（SIGSEGV），而不是悄悄读到别人的数据。
+- **忘了 `close` 今天只是漏到进程结束**（`close` 方法的存在让"开了没关"有编译期提醒）；Arena
+  兜底（`HEAP.md` §3）还没做。
+
 ### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
 
 ```extc

@@ -1,0 +1,129 @@
+/* std/heap.extc —— 板（Heap）：**一块连续内存 + 一道门**（HEAP.md；C-ABI.md §9.10）
+ *
+ * 设计见 `docs/topics/HEAP.md`。这一层是它的实现侧，三条要点：
+ *
+ * 1. **一次保留、按需 commit、永不搬家**。`open` 只 `mmap` 一片地址空间（`PROT_NONE` +
+ *    `MAP_NORESERVE`：不占物理页），`alloc` 把要用的那几页 `mprotect` 成 RW。地址一给出就不变
+ *    ⇒ 模块手里的板内指针永远有效（直到 `close`）。
+ * 2. **一道门**：每个出口都验一次"这个指针在板内"（`holds`：一次区间比较）。板**不做**世代、
+ *    不做 use-after-free 检查 —— 那是外来库自己的事；`close` 是 `munmap` ⇒ 关板之后再用板内
+ *    指针是**硬缺页**（SIGSEGV），不是悄悄读到别人的数据。
+ * 3. **寿命显式**：`close`（与 `std::fs` 的句柄同一套：`close` 方法一存在，"开了没关"就有编译期
+ *    提醒；双关安全）。Arena 兜底**还没做**（`HEAP.md` §3 那条），今天忘了关就是漏到进程结束。
+ *
+ * 指针算术在这门语言里**故意没有**（`u64(p)` 只朝一个方向），所以板内的一切都用**偏移**做：
+ * 分配是 `used` 往前推、commit 是记 `committed`；需要地址的地方就切一片视图（`mem[a..b]`）。
+ * `viewOf`（`std::sys::heap`）是唯一一处"指针 + 长度 → 视图"，而它是编译器给的三行 C。 */
+use std::sys::heap as sysheap
+
+/* 常量写成字面量而不是 `u64(4096)`：`i32` 字面量到 `u64` 是一次**带检查**的转换 ⇒ 产物里是
+ * `extc_narrowU(...)` 调用 ⇒ 静态初始化器不是常量（实测：gcc 报 "initializer element is not
+ * constant"）。字面量直接适配目标类型，没有这一层。（`isConstInit` 现在也把"要带检查的转换"
+ * 排除在常量之外 —— 于是这种写法会在编译期得到一句人话。） */
+let PAGE: u64 = 4096               /* 字面量直接适配目标类型 */
+/* commit 的粒度。原型量过：一次 commit 1 MiB 最省（`prototype-heap/README.md`）。 */
+let CHUNK: u64 = 1048576            /* 1 MiB，写成一个字面量：`1024 * 1024` 是 i32 算术 ✗ */
+let DEFAULT_RESERVE: u64 = 4294967296   /* 4 GiB */
+
+/* 内部齿轮：`@private` 对编译器，`p`-前缀对 `tools/manual_surface.py`（它按约定把 `p*`
+ * 当容器内部助手，不算公开面 —— 公开面清单是 check.sh 的一道闸门）。 */
+@private
+fn pRoundUp(x: u64, a: u64) -> u64 { return ((x + a - u64(1)) / a) * a }
+
+@noCopy
+struct plate {
+    /* 整块保留区。`open` 之后它是 `PROT_NONE` 的 —— 视图本身不碰内存，所以拿得住。 */
+    mem: mut slice<u8>
+    reserved: u64
+    committed: u64
+    used: u64
+    closed: bool
+
+    /* 保留一片地址空间。失败返回 `null`（`mmap` 的失败约定是 `MAP_FAILED` = `(void *)-1`，
+     * 不是 null，所以这里两样都当失败 —— 见下面的比较）。 */
+    fn open(reserve: u64) -> ?plate {
+        var p: ?ref u8 = sysheap::mmap(null, reserve, sysheap::PROT_NONE,
+                                       sysheap::MAP_PRIVATE | sysheap::MAP_ANONYMOUS |
+                                       sysheap::MAP_NORESERVE,
+                                       -1, i64(0))
+        if p == null { return none }
+        /* 最高一页里的地址都不是合法的映射起点（`MAP_FAILED` 就在那里）。 */
+        if u64(p) >= u64(0) - PAGE { return none }
+        var mem: mut slice<u8> = sysheap::extc_viewOf(p, i64(reserve))
+        return some(plate { mem: mem, reserved: reserve, committed: u64(0), used: u64(0), closed: false })
+    }
+
+    fn reservedBytes(self: ref plate) -> u64 { return self.reserved }
+    fn committedBytes(self: ref plate) -> u64 { return self.committed }
+    fn usedBytes(self: ref plate) -> u64 { return self.used }
+    fn remaining(self: ref plate) -> u64 { return self.reserved - self.used }
+    fn isClosed(self: ref plate) -> bool { return self.closed }
+
+    /* 申请 `n` 字节。返回**板内视图**；板满了返回 `none`（调用点写 `!` 表示"我知道还有地方"，
+     * 或者 match 一下）。commit 按 `CHUNK` 粒度做：一次 `mprotect` 管一片，不是每页一次。 */
+    fn alloc(self: mut ref plate, n: u64) -> ?mut slice<u8> {
+        if self.closed { return none }
+        var end: u64 = pRoundUp(self.used + n, PAGE)
+        if end > self.reserved { return none }
+        if end > self.committed {
+            var newEnd: u64 = pRoundUp(end, CHUNK)
+            if newEnd > self.reserved { newEnd = self.reserved }
+            /* 切一片视图只为拿到那个地址（指针算术没有）；`tail.data` 是 `ref u8`，
+             * 而 `mprotect` 要 `ref void` —— 抹除方向（C-ABI 第 4 步 ①）。 */
+            var tail: mut slice<u8> = self.mem[i64(self.committed)..i64(newEnd)]
+            if sysheap::mprotect(tail.data, newEnd - self.committed, sysheap::PROT_RW) != 0 { return none }
+            self.committed = newEnd
+        }
+        var start: u64 = self.used
+        self.used = end
+        return some(self.mem[i64(start)..i64(start + n)])
+    }
+
+    /* **那道门**：一次区间比较。板外的指针一律不是（不是"可能不是"）。 */
+    fn holds(self: ref plate, p: ref u8) -> bool {
+        var a: u64 = u64(p)
+        var base: u64 = u64(self.mem.data)
+        return a >= base && a < base + self.reserved
+    }
+
+    /* 带的长度的那一版：视图两半都要在板内。 */
+    fn holdsView(self: ref plate, v: slice<u8>) -> bool {
+        if v.len == i64(0) { return true }
+        var a: u64 = u64(v.data)
+        var base: u64 = u64(self.mem.data)
+        return a >= base && a + u64(v.len) <= base + self.reserved
+    }
+
+    /* 宿主把一块内存拷进板里（`dst` 必须是板内的视图 —— 门在这里）。返回拷了多少字节。 */
+    fn copyIn(self: ref plate, dst: mut slice<u8>, src: slice<u8>) -> i64 {
+        if !self.holdsView(dst) { return i64(-1) }
+        var n: i64 = dst.len
+        if src.len < n { n = src.len }
+        return sysheap::extc_memCopy(dst.data, src.data, n)
+    }
+
+    /* 模块的结果拷回宿主的视图（`src` 必须是板内的 —— 同一道门）。方向反过来。 */
+    fn copyOut(self: ref plate, src: slice<u8>, dst: mut slice<u8>) -> i64 {
+        if !self.holdsView(src) { return i64(-1) }
+        var n: i64 = src.len
+        if dst.len < n { n = dst.len }
+        return sysheap::extc_memCopy(dst.data, src.data, n)
+    }
+
+    /* 申请 + 拷进去：宿主最常用的一步（"把这块数据放进板里，给我板内视图"）。 */
+    fn store(self: mut ref plate, src: slice<u8>) -> ?mut slice<u8> {
+        var dst: mut slice<u8> = self.alloc(u64(src.len))?
+        if self.copyIn(dst, src) < i64(0) { return none }
+        return some(dst)
+    }
+
+    /* 关板：`munmap`。关完之后板内指针再用就是硬缺页（这是设计，不是事故）。双关安全。 */
+    fn close(self: mut ref plate) -> i32 {
+        if self.closed { return 0 }
+        var r: i32 = sysheap::munmap(self.mem.data, self.reserved)
+        self.closed = true
+        self.used = u64(0)
+        self.committed = u64(0)
+        return r
+    }
+}
