@@ -1,0 +1,1497 @@
+
+;; Function extc_arena_release (extc_arena_release, funcdef_no=34, decl_uid=3082, cgraph_uid=36, symbol_order=35)
+
+
+Analyzing loop at prod_un.c:80
+prod_un.c:80:12: note:  === analyze_loop_nest ===
+prod_un.c:80:12: note:   === vect_analyze_loop_form ===
+prod_un.c:80:12: note:   using as main loop exit: 7 -> 8 [AUX: (nil)]
+prod_un.c:80:12: missed:   not vectorized: unsupported control flow in loop.
+prod_un.c:80:12: missed:  bad loop form.
+prod_un.c:80:12: missed: couldn't vectorize loop
+prod_un.c:79:20: note: vectorized 0 loops in function.
+void extc_arena_release (struct extc_arena * a)
+{
+  struct extc_ablock * p;
+  struct extc_ablock * _1;
+  long int _2;
+  struct extc_ablock * _3;
+  struct extc_ablock * _16;
+  struct extc_ablock * _17;
+
+  <bb 2> [local count: 118111600]:
+  _16 = a_8(D)->top;
+  if (_16 != 0B)
+    goto <bb 9>; [89.00%]
+  else
+    goto <bb 8>; [11.00%]
+
+  <bb 9> [local count: 105119324]:
+
+  <bb 3> [local count: 955630224]:
+  # _17 = PHI <p_9(10), _16(9)>
+  p_9 = _17->prev;
+  _1 = a_8(D)->spare;
+  if (_1 == 0B)
+    goto <bb 4>; [46.53%]
+  else
+    goto <bb 6>; [53.47%]
+
+  <bb 4> [local count: 444654745]:
+  _2 = _17->cap;
+  if (_2 <= 1048576)
+    goto <bb 5>; [50.00%]
+  else
+    goto <bb 11>; [50.00%]
+
+  <bb 5> [local count: 222327372]:
+  a_8(D)->spare = _17;
+  _17->prev = 0B;
+  _3 = a_8(D)->spare;
+  _3->fresh = 0;
+  goto <bb 7>; [100.00%]
+
+  <bb 11> [local count: 222327373]:
+
+  <bb 6> [local count: 733302852]:
+  free (_17);
+
+  <bb 7> [local count: 955630226]:
+  a_8(D)->top = p_9;
+  if (p_9 != 0B)
+    goto <bb 10>; [89.00%]
+  else
+    goto <bb 8>; [11.00%]
+
+  <bb 10> [local count: 850510902]:
+  goto <bb 3>; [100.00%]
+
+  <bb 8> [local count: 118111600]:
+  return;
+
+}
+
+
+
+;; Function main (main, funcdef_no=46, decl_uid=3240, cgraph_uid=51, symbol_order=50) (executed once)
+
+
+Analyzing loop at prod_un.c:392
+prod_un.c:392:14: note:  === analyze_loop_nest ===
+prod_un.c:392:14: note:   === vect_analyze_loop_form ===
+prod_un.c:392:14: note:   using as main loop exit: 41 -> 43 [AUX: (nil)]
+prod_un.c:392:14: missed:   not vectorized: multiple nested loops.
+prod_un.c:392:14: missed:  bad loop form.
+prod_un.c:392:14: missed: couldn't vectorize loop
+
+Analyzing loop at prod_un.c:394
+prod_un.c:394:18: note:  === analyze_loop_nest ===
+prod_un.c:394:18: note:   === vect_analyze_loop_form ===
+prod_un.c:394:18: note:   using as main loop exit: 40 -> 41 [AUX: (nil)]
+prod_un.c:394:18: note:    === vect_analyze_loop_form ===
+prod_un.c:394:18: note:    using as main loop exit: 39 -> 40 [AUX: (nil)]
+prod_un.c:394:18: note:     === get_loop_niters ===
+prod_un.c:394:18: note:     Loop has 1 exits.
+prod_un.c:394:18: note:     Analyzing exit 0...
+Analyzing # of iterations of loop 6
+  exit condition [767, + , 18446744073709551615] != 0
+  bounds on difference of bases: -767 ... -767
+  result:
+    # of iterations 767, bounded by 767
+prod_un.c:394:18: note:     All loop exits successfully analyzed.
+prod_un.c:394:18: note:   Considering outer-loop vectorization.
+prod_un.c:394:18: note:    === get_loop_niters ===
+prod_un.c:394:18: note:    Loop has 1 exits.
+prod_un.c:394:18: note:    Analyzing exit 0...
+Analyzing # of iterations of loop 5
+  exit condition [767, + , 18446744073709551615] != 0
+  bounds on difference of bases: -767 ... -767
+  result:
+    # of iterations 767, bounded by 767
+prod_un.c:394:18: note:    All loop exits successfully analyzed.
+Estimating # of iterations of loop 6
+Analyzing # of iterations of loop 6
+  exit condition [767, + , 18446744073709551615] != 0
+  bounds on difference of bases: -767 ... -767
+  result:
+    # of iterations 767, bounded by 767
+Statement (exit)if (ivtmp_282 != 0)
+ is executed at most 767 (bounded by 767) + 1 times in loop 6.
+Induction variable (float *) (float *) p_60 + (long unsigned int) _200 * 4 + 4 * iteration does not wrap in statement _211 = p_60 + _210;
+ in loop 6.
+Statement _211 = p_60 + _210;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 6.
+Induction variable (float *) _149 + (long unsigned int) _214 * 4 + 4 * iteration does not wrap in statement _218 = _149 + _217;
+ in loop 6.
+Statement _218 = _149 + _217;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 6.
+Creating dr for *_205
+analyze_innermost: success.
+	base_address: _148 + (sizetype) i_164 * 3072
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_148 + (sizetype) i_164 * 3072
+	Access function 0: {0B, +, 4}_5
+Creating dr for *_211
+analyze_innermost: success.
+	base_address: (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	offset from base address: 0
+	constant offset from base address: 32
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *(float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	Access function 0: {32B, +, 4}_6
+Creating dr for *_218
+analyze_innermost: success.
+	base_address: _149 + (sizetype) k_158 * 3072
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_149
+	Access function 0: {{0B, +, 3072}_5, +, 4}_6
+Creating dr for *_211
+analyze_innermost: success.
+	base_address: (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	offset from base address: 0
+	constant offset from base address: 32
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *(float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	Access function 0: {32B, +, 4}_6
+prod_un.c:394:18: note:   === vect_analyze_data_refs ===
+prod_un.c:394:18: note:   got vectype for stmt: aik_206 = *_205;
+vector(4) float
+prod_un.c:394:18: note:   analyze in outer loop: *((float *) __extc_a$16$top_199 + (((sizetype) i_164 * 3072 + (sizetype) prephitmp_138) + 32))
+analyze_innermost: success.
+prod_un.c:394:18: note:   	outer base_address: (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	outer offset from base address: 0
+	outer constant offset from base address: 32
+	outer step: 0
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 128
+prod_un.c:394:18: note:   got vectype for stmt: _212 = *_211;
+vector(4) float
+prod_un.c:394:18: note:   analyze in outer loop: *(_149 + (sizetype) k_158 * 3072)
+analyze_innermost: success.
+prod_un.c:394:18: note:   	outer base_address: _149
+	outer offset from base address: 0
+	outer constant offset from base address: 0
+	outer step: 3072
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 128
+prod_un.c:394:18: note:   got vectype for stmt: _219 = *_218;
+vector(4) float
+prod_un.c:394:18: note:   analyze in outer loop: *((float *) __extc_a$16$top_199 + (((sizetype) i_164 * 3072 + (sizetype) prephitmp_138) + 32))
+analyze_innermost: success.
+prod_un.c:394:18: note:   	outer base_address: (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	outer offset from base address: 0
+	outer constant offset from base address: 32
+	outer step: 0
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 128
+prod_un.c:394:18: note:   got vectype for stmt: *_211 = _221;
+vector(4) float
+prod_un.c:394:18: note:   === vect_analyze_scalar_cycles ===
+prod_un.c:394:18: note:   Analyze phi: k_158 = PHI <k_223(50), 0(42)>
+prod_un.c:394:18: note:   Access function of PHI: {0, +, 1}_5
+prod_un.c:394:18: note:   step: 1,  init: 0
+prod_un.c:394:18: note:   Detected induction.
+prod_un.c:394:18: note:   Analyze phi: .MEM_8 = PHI <.MEM_304(50), .MEM_1(42)>
+prod_un.c:394:18: note:   Analyze phi: ivtmp_281 = PHI <ivtmp_274(50), 768(42)>
+prod_un.c:394:18: note:   Access function of PHI: {768, +, 18446744073709551615}_5
+prod_un.c:394:18: note:   step: 18446744073709551615,  init: 768
+prod_un.c:394:18: note:   Detected induction.
+prod_un.c:394:18: note:   === vect_analyze_scalar_cycles ===
+prod_un.c:394:18: note:   Analyze phi: j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:394:18: note:   Access function of PHI: {0, +, 1}_6
+prod_un.c:394:18: note:   step: 1,  init: 0
+prod_un.c:394:18: note:   Detected induction.
+prod_un.c:394:18: note:   Analyze phi: .MEM_267 = PHI <.MEM_255(51), .MEM_8(38)>
+prod_un.c:394:18: note:   Analyze phi: ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:394:18: note:   Access function of PHI: {768, +, 18446744073709551615}_6
+prod_un.c:394:18: note:   step: 18446744073709551615,  init: 768
+prod_un.c:394:18: note:   Detected induction.
+prod_un.c:394:18: note:   === vect_determine_precisions ===
+prod_un.c:394:18: note:   ivtmp_274 has no range info
+prod_un.c:394:18: note:   k_223 has range [0x1, 0x300]
+prod_un.c:394:18: note:   can narrow to unsigned:10 without loss of precision: k_223 = k_158 + 1;
+prod_un.c:394:18: note:   ivtmp_282 has no range info
+prod_un.c:394:18: note:   j_222 has range [0x1, 0x300]
+prod_un.c:394:18: note:   can narrow to unsigned:10 without loss of precision: j_222 = j_243 + 1;
+prod_un.c:394:18: note:   _217 has range [0x0, 0x23fffc]
+prod_un.c:394:18: note:   can narrow to unsigned:22 without loss of precision: _217 = _216 * 4;
+prod_un.c:394:18: note:   _216 has range [0x0, 0x8ffff]
+prod_un.c:394:18: note:   _215 has range [0x0, 0x8ffff]
+prod_un.c:394:18: note:   can narrow to unsigned:20 without loss of precision: _215 = _214 + j_243;
+prod_un.c:394:18: note:   _210 has range [0x0, 0x23fffc]
+prod_un.c:394:18: note:   can narrow to unsigned:22 without loss of precision: _210 = _209 * 4;
+prod_un.c:394:18: note:   _209 has range [0x0, 0x8ffff]
+prod_un.c:394:18: note:   _208 has range [0x0, 0x8ffff]
+prod_un.c:394:18: note:   can narrow to unsigned:20 without loss of precision: _208 = _200 + j_243;
+prod_un.c:394:18: note:   _214 has range [0x0, 0x8fd00]
+prod_un.c:394:18: note:   can narrow to unsigned:20 without loss of precision: _214 = k_158 * 768;
+prod_un.c:394:18: note:   _204 has range [0x0, 0x23fffc]
+prod_un.c:394:18: note:   can narrow to unsigned:22 without loss of precision: _204 = _203 * 4;
+prod_un.c:394:18: note:   _203 has range [0x0, 0x8ffff]
+prod_un.c:394:18: note:   _202 has range [0x0, 0x8ffff]
+prod_un.c:394:18: note:   can narrow to unsigned:20 without loss of precision: _202 = k_158 + _200;
+prod_un.c:394:18: note:   === vect_pattern_recog ===
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 = PHI <k_223(50), 0(42)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 = PHI <k_223(50), 0(42)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand (long unsigned int) _202, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 + _200, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand (long unsigned int) _202, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 + _200, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 = PHI <k_223(50), 0(42)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 = PHI <k_223(50), 0(42)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:394:18: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:394:18: note:   vect_is_simple_use: operand (long unsigned int) _208, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand _200 + j_243, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand (long unsigned int) _208, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand _200 + j_243, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 * 768, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 * 768, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand (long unsigned int) _215, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand _214 + j_243, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand (long unsigned int) _215, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand _214 + j_243, type of def: internal
+prod_un.c:394:18: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand ivtmp_297 = PHI <ivtmp_282(51), 768(38)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 = PHI <k_223(50), 0(42)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand k_158 = PHI <k_223(50), 0(42)>, type of def: induction
+prod_un.c:394:18: note:   vect_is_simple_use: operand ivtmp_281 = PHI <ivtmp_274(50), 768(42)>, type of def: induction
+prod_un.c:394:18: note:   === vect_analyze_data_ref_accesses ===
+prod_un.c:394:18: note:   zero step in outer loop.
+prod_un.c:394:18: note:   zero step in outer loop.
+prod_un.c:394:18: missed:   not vectorized: complicated access pattern.
+prod_un.c:398:58: missed:   not vectorized: complicated access pattern.
+prod_un.c:394:18: missed:  bad data access.
+prod_un.c:394:18: note:  ***** Analysis failed with vector mode V4SF
+prod_un.c:394:18: note:  ***** The result for vector mode V16QI would be the same
+prod_un.c:394:18: missed: couldn't vectorize loop
+
+Analyzing loop at prod_un.c:397
+prod_un.c:397:22: note:  === analyze_loop_nest ===
+prod_un.c:397:22: note:   === vect_analyze_loop_form ===
+prod_un.c:397:22: note:   using as main loop exit: 39 -> 40 [AUX: (nil)]
+prod_un.c:397:22: note:    === get_loop_niters ===
+prod_un.c:397:22: note:    Loop has 1 exits.
+prod_un.c:397:22: note:    Analyzing exit 0...
+Analyzing # of iterations of loop 6
+  exit condition [767, + , 18446744073709551615] != 0
+  bounds on difference of bases: -767 ... -767
+  result:
+    # of iterations 767, bounded by 767
+prod_un.c:397:22: note:    All loop exits successfully analyzed.
+Creating dr for *_211
+analyze_innermost: success.
+	base_address: (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	offset from base address: 0
+	constant offset from base address: 32
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *(float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	Access function 0: {32B, +, 4}_6
+Creating dr for *_218
+analyze_innermost: success.
+	base_address: _149 + (sizetype) k_158 * 3072
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_149 + (sizetype) k_158 * 3072
+	Access function 0: {0B, +, 4}_6
+Creating dr for *_211
+analyze_innermost: success.
+	base_address: (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	offset from base address: 0
+	constant offset from base address: 32
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *(float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+	Access function 0: {32B, +, 4}_6
+prod_un.c:397:22: note:   === vect_analyze_data_refs ===
+prod_un.c:397:22: note:   got vectype for stmt: _212 = *_211;
+vector(4) float
+prod_un.c:397:22: note:   got vectype for stmt: _219 = *_218;
+vector(4) float
+prod_un.c:397:22: note:   got vectype for stmt: *_211 = _221;
+vector(4) float
+prod_un.c:397:22: note:   === vect_analyze_scalar_cycles ===
+prod_un.c:397:22: note:   Analyze phi: j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:397:22: note:   Access function of PHI: {0, +, 1}_6
+prod_un.c:397:22: note:   step: 1,  init: 0
+prod_un.c:397:22: note:   Detected induction.
+prod_un.c:397:22: note:   Analyze phi: .MEM_267 = PHI <.MEM_255(51), .MEM_8(38)>
+prod_un.c:397:22: note:   Analyze phi: ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:397:22: note:   Access function of PHI: {768, +, 18446744073709551615}_6
+prod_un.c:397:22: note:   step: 18446744073709551615,  init: 768
+prod_un.c:397:22: note:   Detected induction.
+prod_un.c:397:22: note:   === vect_determine_precisions ===
+prod_un.c:397:22: note:   ivtmp_282 has no range info
+prod_un.c:397:22: note:   j_222 has range [0x1, 0x300]
+prod_un.c:397:22: note:   can narrow to unsigned:10 without loss of precision: j_222 = j_243 + 1;
+prod_un.c:397:22: note:   _217 has range [0x0, 0x23fffc]
+prod_un.c:397:22: note:   can narrow to unsigned:22 without loss of precision: _217 = _216 * 4;
+prod_un.c:397:22: note:   _216 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   _215 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   can narrow to unsigned:20 without loss of precision: _215 = _214 + j_243;
+prod_un.c:397:22: note:   _210 has range [0x0, 0x23fffc]
+prod_un.c:397:22: note:   can narrow to unsigned:22 without loss of precision: _210 = _209 * 4;
+prod_un.c:397:22: note:   _209 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   _208 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   can narrow to unsigned:20 without loss of precision: _208 = _200 + j_243;
+prod_un.c:397:22: note:   === vect_pattern_recog ===
+prod_un.c:397:22: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _208, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _200 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _208, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _200 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand k_158 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand k_158 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _215, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _214 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _215, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _214 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand ivtmp_297 = PHI <ivtmp_282(51), 768(38)>, type of def: induction
+prod_un.c:397:22: note:   === vect_analyze_data_ref_accesses ===
+prod_un.c:397:22: note:   === vect_mark_stmts_to_be_vectorized ===
+prod_un.c:397:22: note:   init: phi relevant? j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:397:22: note:   init: phi relevant? ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:397:22: note:   init: stmt relevant? _208 = _200 + j_243;
+prod_un.c:397:22: note:   init: stmt relevant? _209 = (long unsigned int) _208;
+prod_un.c:397:22: note:   init: stmt relevant? _210 = _209 * 4;
+prod_un.c:397:22: note:   init: stmt relevant? _211 = p_60 + _210;
+prod_un.c:397:22: note:   init: stmt relevant? _212 = *_211;
+prod_un.c:397:22: note:   init: stmt relevant? _215 = _214 + j_243;
+prod_un.c:397:22: note:   init: stmt relevant? _216 = (long unsigned int) _215;
+prod_un.c:397:22: note:   init: stmt relevant? _217 = _216 * 4;
+prod_un.c:397:22: note:   init: stmt relevant? _218 = _149 + _217;
+prod_un.c:397:22: note:   init: stmt relevant? _219 = *_218;
+prod_un.c:397:22: note:   init: stmt relevant? _220 = aik_206 * _219;
+prod_un.c:397:22: note:   init: stmt relevant? _221 = _212 + _220;
+prod_un.c:397:22: note:   init: stmt relevant? *_211 = _221;
+prod_un.c:397:22: note:   vec_stmt_relevant_p: stmt has vdefs.
+prod_un.c:397:22: note:   mark relevant 5, live 0: *_211 = _221;
+prod_un.c:397:22: note:   init: stmt relevant? j_222 = j_243 + 1;
+prod_un.c:397:22: note:   init: stmt relevant? ivtmp_282 = ivtmp_297 - 1;
+prod_un.c:397:22: note:   init: stmt relevant? if (ivtmp_282 != 0)
+prod_un.c:397:22: note:   worklist: examine stmt: *_211 = _221;
+prod_un.c:397:22: note:   vect_is_simple_use: operand _212 + _220, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _221 = _212 + _220;
+prod_un.c:397:22: note:   worklist: examine stmt: _221 = _212 + _220;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_211, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _212 = *_211;
+prod_un.c:397:22: note:   vect_is_simple_use: operand aik_206 * _219, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   worklist: examine stmt: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_205, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_218, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _219 = *_218;
+prod_un.c:397:22: note:   worklist: examine stmt: _219 = *_218;
+prod_un.c:397:22: note:   worklist: examine stmt: _212 = *_211;
+prod_un.c:397:22: note:   === vect_analyze_data_ref_dependences ===
+(compute_affine_dependence
+  ref_a: *_211, stmt_a: _212 = *_211;
+  ref_b: *_211, stmt_b: *_211 = _221;
+(analyze_overlapping_iterations 
+  (chrec_a = {32B, +, 4}_6)
+  (chrec_b = {32B, +, 4}_6)
+  (overlap_iterations_a = [0])
+  (overlap_iterations_b = [0]))
+(build_classic_dist_vector
+  dist_vector = (0 
+  )
+)
+)
+(compute_affine_dependence
+  ref_a: *_218, stmt_a: _219 = *_218;
+  ref_b: *_211, stmt_b: *_211 = _221;
+) -> dependence analysis failed
+prod_un.c:397:22: note:   dependence distance  = 0.
+prod_un.c:397:22: note:   dependence distance == 0 between *_211 and *_211
+prod_un.c:398:112: missed:   versioning for alias required: can't determine dependence between *_218 and *_211
+consider run-time aliasing test between *_218 and *_211
+prod_un.c:397:22: note:   === vect_determine_vectorization_factor ===
+prod_un.c:397:22: note:   ==> examining phi: j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:397:22: note:   ==> examining phi: .MEM_267 = PHI <.MEM_255(51), .MEM_8(38)>
+prod_un.c:397:22: note:   ==> examining phi: ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:397:22: note:   ==> examining statement: _208 = _200 + j_243;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _209 = (long unsigned int) _208;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _210 = _209 * 4;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _211 = p_60 + _210;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _212 = *_211;
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   ==> examining statement: _215 = _214 + j_243;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _216 = (long unsigned int) _215;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _217 = _216 * 4;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _218 = _149 + _217;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _219 = *_218;
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   ==> examining statement: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   get vectype for scalar type: float
+prod_un.c:397:22: note:   vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   ==> examining statement: _221 = _212 + _220;
+prod_un.c:397:22: note:   get vectype for scalar type: float
+prod_un.c:397:22: note:   vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   ==> examining statement: *_211 = _221;
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   ==> examining statement: j_222 = j_243 + 1;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: ivtmp_282 = ivtmp_297 - 1;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: if (ivtmp_282 != 0)
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   vectorization factor = 4
+prod_un.c:397:22: note:   === vect_compute_single_scalar_iteration_cost ===
+*_211 1 times scalar_load costs 12 in prologue
+*_218 1 times scalar_load costs 12 in prologue
+aik_206 * _219 1 times scalar_stmt costs 16 in prologue
+_212 + _220 1 times scalar_stmt costs 12 in prologue
+_221 1 times scalar_store costs 12 in prologue
+prod_un.c:397:22: note:   === vect_analyze_slp ===
+prod_un.c:397:22: note:   Starting SLP discovery for
+prod_un.c:397:22: note:     *_211 = _221;
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b32a8
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   Build SLP for *_211 = _221;
+prod_un.c:397:22: note:   vect_is_simple_use: operand _212 + _220, type of def: internal
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b3330
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   Build SLP for _221 = _212 + _220;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_211, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand aik_206 * _219, type of def: internal
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b33b8
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   Build SLP for _212 = *_211;
+prod_un.c:397:22: note:   SLP discovery for node 0x289b33b8 succeeded
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b3440
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   Build SLP for _220 = aik_206 * _219;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_205, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_218, type of def: internal
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b3550
+prod_un.c:397:22: note:   precomputed vectype: vector(4) float
+prod_un.c:397:22: note:   nunits = 4
+prod_un.c:397:22: note:   Build SLP for _219 = *_218;
+prod_un.c:397:22: note:   SLP discovery for node 0x289b3550 succeeded
+prod_un.c:397:22: note:   SLP discovery for node 0x289b3440 succeeded
+prod_un.c:397:22: note:   SLP discovery for node 0x289b3330 succeeded
+prod_un.c:397:22: note:   SLP discovery for node 0x289b32a8 succeeded
+prod_un.c:397:22: note:   SLP size 5 vs. limit 19.
+prod_un.c:397:22: note:   Final SLP tree for instance 0x289290c0:
+prod_un.c:397:22: note:   node 0x289b32a8 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: *_211 = _221;
+prod_un.c:397:22: note:   	stmt 0 *_211 = _221;
+prod_un.c:397:22: note:   	children 0x289b3330
+prod_un.c:397:22: note:   node 0x289b3330 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _221 = _212 + _220;
+prod_un.c:397:22: note:   	stmt 0 _221 = _212 + _220;
+prod_un.c:397:22: note:   	children 0x289b33b8 0x289b3440
+prod_un.c:397:22: note:   node 0x289b33b8 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _212 = *_211;
+prod_un.c:397:22: note:   	stmt 0 _212 = *_211;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:   node 0x289b3440 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	stmt 0 _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	children 0x289b34c8 0x289b3550
+prod_un.c:397:22: note:   node (external) 0x289b34c8 (max_nunits=1, refcnt=1)
+prod_un.c:397:22: note:   	{ aik_206 }
+prod_un.c:397:22: note:   node 0x289b3550 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _219 = *_218;
+prod_un.c:397:22: note:   	stmt 0 _219 = *_218;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:    === vect_match_slp_patterns ===
+prod_un.c:397:22: note:    Analyzing SLP tree 0x289b32a8 for patterns
+prod_un.c:397:22: note:   SLP graph after lowering permutations:
+prod_un.c:397:22: note:   node 0x289b32a8 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: *_211 = _221;
+prod_un.c:397:22: note:   	stmt 0 *_211 = _221;
+prod_un.c:397:22: note:   	children 0x289b3330
+prod_un.c:397:22: note:   node 0x289b3330 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _221 = _212 + _220;
+prod_un.c:397:22: note:   	stmt 0 _221 = _212 + _220;
+prod_un.c:397:22: note:   	children 0x289b33b8 0x289b3440
+prod_un.c:397:22: note:   node 0x289b33b8 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _212 = *_211;
+prod_un.c:397:22: note:   	stmt 0 _212 = *_211;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:   node 0x289b3440 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	stmt 0 _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	children 0x289b34c8 0x289b3550
+prod_un.c:397:22: note:   node (external) 0x289b34c8 (max_nunits=1, refcnt=1)
+prod_un.c:397:22: note:   	{ aik_206 }
+prod_un.c:397:22: note:   node 0x289b3550 (max_nunits=4, refcnt=2) vector(4) float
+prod_un.c:397:22: note:   op template: _219 = *_218;
+prod_un.c:397:22: note:   	stmt 0 _219 = *_218;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:   === vect_make_slp_decision ===
+prod_un.c:397:22: note:   Decided to SLP 1 instances. Unrolling factor 4
+prod_un.c:397:22: note:   === vect_detect_hybrid_slp ===
+prod_un.c:397:22: note:   === vect_update_vf_for_slp ===
+prod_un.c:397:22: note:   Loop contains only SLP stmts
+prod_un.c:397:22: note:   Updating vectorization factor to 4.
+prod_un.c:397:22: note:  vectorization_factor = 4, niters = 768
+prod_un.c:397:22: note:   === vect_analyze_data_refs_alignment ===
+prod_un.c:397:22: note:   recording new base alignment for (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+  alignment:    4
+  misalignment: 0
+  based on:     _212 = *_211;
+prod_un.c:397:22: note:   recording new base alignment for _149 + (sizetype) k_158 * 3072
+  alignment:    4
+  misalignment: 0
+  based on:     _219 = *_218;
+prod_un.c:397:22: note:   vect_compute_data_ref_alignment:
+prod_un.c:397:22: note:   can't force alignment of ref: *_211
+prod_un.c:397:22: note:   vect_compute_data_ref_alignment:
+prod_un.c:397:22: note:   can't force alignment of ref: *_218
+prod_un.c:397:22: note:   vect_compute_data_ref_alignment:
+prod_un.c:397:22: note:   can't force alignment of ref: *_211
+prod_un.c:397:22: note:   === vect_prune_runtime_alias_test_list ===
+merged alias checks:
+  reference:      *_218 vs. *_211
+  segment length: 12
+  access size:    4
+  alignment:      4
+  flags:          WAR
+prod_un.c:397:22: missed:   would need a runtime alias check
+prod_un.c:397:22: note:  ***** Analysis failed with vector mode V4SF
+prod_un.c:397:22: note:  ***** The result for vector mode V16QI would be the same
+prod_un.c:397:22: note:  ***** Re-trying analysis with vector mode V8QI
+prod_un.c:397:22: note:   === vect_analyze_data_refs ===
+prod_un.c:397:22: note:   got vectype for stmt: _212 = *_211;
+vector(2) float
+prod_un.c:397:22: note:   got vectype for stmt: _219 = *_218;
+vector(2) float
+prod_un.c:397:22: note:   got vectype for stmt: *_211 = _221;
+vector(2) float
+prod_un.c:397:22: note:   === vect_analyze_scalar_cycles ===
+prod_un.c:397:22: note:   Analyze phi: j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:397:22: note:   Access function of PHI: {0, +, 1}_6
+prod_un.c:397:22: note:   step: 1,  init: 0
+prod_un.c:397:22: note:   Detected induction.
+prod_un.c:397:22: note:   Analyze phi: .MEM_267 = PHI <.MEM_255(51), .MEM_8(38)>
+prod_un.c:397:22: note:   Analyze phi: ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:397:22: note:   Access function of PHI: {768, +, 18446744073709551615}_6
+prod_un.c:397:22: note:   step: 18446744073709551615,  init: 768
+prod_un.c:397:22: note:   Detected induction.
+prod_un.c:397:22: note:   === vect_determine_precisions ===
+prod_un.c:397:22: note:   ivtmp_282 has no range info
+prod_un.c:397:22: note:   j_222 has range [0x1, 0x300]
+prod_un.c:397:22: note:   can narrow to unsigned:10 without loss of precision: j_222 = j_243 + 1;
+prod_un.c:397:22: note:   _217 has range [0x0, 0x23fffc]
+prod_un.c:397:22: note:   can narrow to unsigned:22 without loss of precision: _217 = _216 * 4;
+prod_un.c:397:22: note:   _216 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   _215 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   can narrow to unsigned:20 without loss of precision: _215 = _214 + j_243;
+prod_un.c:397:22: note:   _210 has range [0x0, 0x23fffc]
+prod_un.c:397:22: note:   can narrow to unsigned:22 without loss of precision: _210 = _209 * 4;
+prod_un.c:397:22: note:   _209 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   _208 has range [0x0, 0x8ffff]
+prod_un.c:397:22: note:   can narrow to unsigned:20 without loss of precision: _208 = _200 + j_243;
+prod_un.c:397:22: note:   === vect_pattern_recog ===
+prod_un.c:397:22: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand i_164 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _208, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _200 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _208, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _200 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand k_158 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand k_158 * 768, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _215, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _214 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand (long unsigned int) _215, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand _214 + j_243, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand j_243 = PHI <j_222(51), 0(38)>, type of def: induction
+prod_un.c:397:22: note:   vect_is_simple_use: operand ivtmp_297 = PHI <ivtmp_282(51), 768(38)>, type of def: induction
+prod_un.c:397:22: note:   === vect_analyze_data_ref_accesses ===
+prod_un.c:397:22: note:   === vect_mark_stmts_to_be_vectorized ===
+prod_un.c:397:22: note:   init: phi relevant? j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:397:22: note:   init: phi relevant? ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:397:22: note:   init: stmt relevant? _208 = _200 + j_243;
+prod_un.c:397:22: note:   init: stmt relevant? _209 = (long unsigned int) _208;
+prod_un.c:397:22: note:   init: stmt relevant? _210 = _209 * 4;
+prod_un.c:397:22: note:   init: stmt relevant? _211 = p_60 + _210;
+prod_un.c:397:22: note:   init: stmt relevant? _212 = *_211;
+prod_un.c:397:22: note:   init: stmt relevant? _215 = _214 + j_243;
+prod_un.c:397:22: note:   init: stmt relevant? _216 = (long unsigned int) _215;
+prod_un.c:397:22: note:   init: stmt relevant? _217 = _216 * 4;
+prod_un.c:397:22: note:   init: stmt relevant? _218 = _149 + _217;
+prod_un.c:397:22: note:   init: stmt relevant? _219 = *_218;
+prod_un.c:397:22: note:   init: stmt relevant? _220 = aik_206 * _219;
+prod_un.c:397:22: note:   init: stmt relevant? _221 = _212 + _220;
+prod_un.c:397:22: note:   init: stmt relevant? *_211 = _221;
+prod_un.c:397:22: note:   vec_stmt_relevant_p: stmt has vdefs.
+prod_un.c:397:22: note:   mark relevant 5, live 0: *_211 = _221;
+prod_un.c:397:22: note:   init: stmt relevant? j_222 = j_243 + 1;
+prod_un.c:397:22: note:   init: stmt relevant? ivtmp_282 = ivtmp_297 - 1;
+prod_un.c:397:22: note:   init: stmt relevant? if (ivtmp_282 != 0)
+prod_un.c:397:22: note:   worklist: examine stmt: *_211 = _221;
+prod_un.c:397:22: note:   vect_is_simple_use: operand _212 + _220, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _221 = _212 + _220;
+prod_un.c:397:22: note:   worklist: examine stmt: _221 = _212 + _220;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_211, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _212 = *_211;
+prod_un.c:397:22: note:   vect_is_simple_use: operand aik_206 * _219, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   worklist: examine stmt: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_205, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_218, type of def: internal
+prod_un.c:397:22: note:   mark relevant 5, live 0: _219 = *_218;
+prod_un.c:397:22: note:   worklist: examine stmt: _219 = *_218;
+prod_un.c:397:22: note:   worklist: examine stmt: _212 = *_211;
+prod_un.c:397:22: note:   === vect_analyze_data_ref_dependences ===
+prod_un.c:397:22: note:   dependence distance  = 0.
+prod_un.c:397:22: note:   dependence distance == 0 between *_211 and *_211
+prod_un.c:398:112: missed:   versioning for alias required: can't determine dependence between *_218 and *_211
+consider run-time aliasing test between *_218 and *_211
+prod_un.c:397:22: note:   === vect_determine_vectorization_factor ===
+prod_un.c:397:22: note:   ==> examining phi: j_243 = PHI <j_222(51), 0(38)>
+prod_un.c:397:22: note:   ==> examining phi: .MEM_267 = PHI <.MEM_255(51), .MEM_8(38)>
+prod_un.c:397:22: note:   ==> examining phi: ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+prod_un.c:397:22: note:   ==> examining statement: _208 = _200 + j_243;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _209 = (long unsigned int) _208;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _210 = _209 * 4;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _211 = p_60 + _210;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _212 = *_211;
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   ==> examining statement: _215 = _214 + j_243;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _216 = (long unsigned int) _215;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _217 = _216 * 4;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _218 = _149 + _217;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: _219 = *_218;
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   ==> examining statement: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   get vectype for scalar type: float
+prod_un.c:397:22: note:   vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   ==> examining statement: _221 = _212 + _220;
+prod_un.c:397:22: note:   get vectype for scalar type: float
+prod_un.c:397:22: note:   vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   ==> examining statement: *_211 = _221;
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   ==> examining statement: j_222 = j_243 + 1;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: ivtmp_282 = ivtmp_297 - 1;
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   ==> examining statement: if (ivtmp_282 != 0)
+prod_un.c:397:22: note:   skip.
+prod_un.c:397:22: note:   vectorization factor = 2
+prod_un.c:397:22: note:   === vect_compute_single_scalar_iteration_cost ===
+*_211 1 times scalar_load costs 12 in prologue
+*_218 1 times scalar_load costs 12 in prologue
+aik_206 * _219 1 times scalar_stmt costs 16 in prologue
+_212 + _220 1 times scalar_stmt costs 12 in prologue
+_221 1 times scalar_store costs 12 in prologue
+prod_un.c:397:22: note:   === vect_analyze_slp ===
+prod_un.c:397:22: note:   Starting SLP discovery for
+prod_un.c:397:22: note:     *_211 = _221;
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b32a8
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   Build SLP for *_211 = _221;
+prod_un.c:397:22: note:   vect_is_simple_use: operand _212 + _220, type of def: internal
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b3330
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   Build SLP for _221 = _212 + _220;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_211, type of def: internal
+prod_un.c:397:22: note:   vect_is_simple_use: operand aik_206 * _219, type of def: internal
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b3440
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   Build SLP for _212 = *_211;
+prod_un.c:397:22: note:   SLP discovery for node 0x289b3440 succeeded
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b3550
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   Build SLP for _220 = aik_206 * _219;
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_205, type of def: external
+prod_un.c:397:22: note:   vect_is_simple_use: operand *_218, type of def: internal
+prod_un.c:397:22: note:   starting SLP discovery for node 0x289b33b8
+prod_un.c:397:22: note:   precomputed vectype: vector(2) float
+prod_un.c:397:22: note:   nunits = 2
+prod_un.c:397:22: note:   Build SLP for _219 = *_218;
+prod_un.c:397:22: note:   SLP discovery for node 0x289b33b8 succeeded
+prod_un.c:397:22: note:   SLP discovery for node 0x289b3550 succeeded
+prod_un.c:397:22: note:   SLP discovery for node 0x289b3330 succeeded
+prod_un.c:397:22: note:   SLP discovery for node 0x289b32a8 succeeded
+prod_un.c:397:22: note:   SLP size 5 vs. limit 19.
+prod_un.c:397:22: note:   Final SLP tree for instance 0x289290c0:
+prod_un.c:397:22: note:   node 0x289b32a8 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: *_211 = _221;
+prod_un.c:397:22: note:   	stmt 0 *_211 = _221;
+prod_un.c:397:22: note:   	children 0x289b3330
+prod_un.c:397:22: note:   node 0x289b3330 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _221 = _212 + _220;
+prod_un.c:397:22: note:   	stmt 0 _221 = _212 + _220;
+prod_un.c:397:22: note:   	children 0x289b3440 0x289b3550
+prod_un.c:397:22: note:   node 0x289b3440 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _212 = *_211;
+prod_un.c:397:22: note:   	stmt 0 _212 = *_211;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:   node 0x289b3550 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	stmt 0 _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	children 0x289b34c8 0x289b33b8
+prod_un.c:397:22: note:   node (external) 0x289b34c8 (max_nunits=1, refcnt=1)
+prod_un.c:397:22: note:   	{ aik_206 }
+prod_un.c:397:22: note:   node 0x289b33b8 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _219 = *_218;
+prod_un.c:397:22: note:   	stmt 0 _219 = *_218;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:    === vect_match_slp_patterns ===
+prod_un.c:397:22: note:    Analyzing SLP tree 0x289b32a8 for patterns
+prod_un.c:397:22: note:   SLP graph after lowering permutations:
+prod_un.c:397:22: note:   node 0x289b32a8 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: *_211 = _221;
+prod_un.c:397:22: note:   	stmt 0 *_211 = _221;
+prod_un.c:397:22: note:   	children 0x289b3330
+prod_un.c:397:22: note:   node 0x289b3330 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _221 = _212 + _220;
+prod_un.c:397:22: note:   	stmt 0 _221 = _212 + _220;
+prod_un.c:397:22: note:   	children 0x289b3440 0x289b3550
+prod_un.c:397:22: note:   node 0x289b3440 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _212 = *_211;
+prod_un.c:397:22: note:   	stmt 0 _212 = *_211;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:   node 0x289b3550 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	stmt 0 _220 = aik_206 * _219;
+prod_un.c:397:22: note:   	children 0x289b34c8 0x289b33b8
+prod_un.c:397:22: note:   node (external) 0x289b34c8 (max_nunits=1, refcnt=1)
+prod_un.c:397:22: note:   	{ aik_206 }
+prod_un.c:397:22: note:   node 0x289b33b8 (max_nunits=2, refcnt=2) vector(2) float
+prod_un.c:397:22: note:   op template: _219 = *_218;
+prod_un.c:397:22: note:   	stmt 0 _219 = *_218;
+prod_un.c:397:22: note:   	load permutation { 0 }
+prod_un.c:397:22: note:   === vect_make_slp_decision ===
+prod_un.c:397:22: note:   Decided to SLP 1 instances. Unrolling factor 2
+prod_un.c:397:22: note:   === vect_detect_hybrid_slp ===
+prod_un.c:397:22: note:   === vect_update_vf_for_slp ===
+prod_un.c:397:22: note:   Loop contains only SLP stmts
+prod_un.c:397:22: note:   Updating vectorization factor to 2.
+prod_un.c:397:22: note:  vectorization_factor = 2, niters = 768
+prod_un.c:397:22: note:   === vect_analyze_data_refs_alignment ===
+prod_un.c:397:22: note:   recording new base alignment for (float *) __extc_a$16$top_199 + ((sizetype) i_164 * 3072 + (sizetype) prephitmp_138)
+  alignment:    4
+  misalignment: 0
+  based on:     _212 = *_211;
+prod_un.c:397:22: note:   recording new base alignment for _149 + (sizetype) k_158 * 3072
+  alignment:    4
+  misalignment: 0
+  based on:     _219 = *_218;
+prod_un.c:397:22: note:   vect_compute_data_ref_alignment:
+prod_un.c:397:22: note:   can't force alignment of ref: *_211
+prod_un.c:397:22: note:   vect_compute_data_ref_alignment:
+prod_un.c:397:22: note:   can't force alignment of ref: *_218
+prod_un.c:397:22: note:   vect_compute_data_ref_alignment:
+prod_un.c:397:22: note:   can't force alignment of ref: *_211
+prod_un.c:397:22: note:   === vect_prune_runtime_alias_test_list ===
+merged alias checks:
+  reference:      *_218 vs. *_211
+  segment length: 4
+  access size:    4
+  alignment:      4
+  flags:          WAR
+prod_un.c:397:22: missed:   would need a runtime alias check
+prod_un.c:397:22: note:  ***** Analysis failed with vector mode V8QI
+prod_un.c:397:22: note:  ***** Re-trying analysis with vector mode V4QI
+prod_un.c:397:22: note:   === vect_analyze_data_refs ===
+prod_un.c:397:22: missed:   not vectorized: no vectype for stmt: _212 = *_211;
+ scalar_type: float
+prod_un.c:398:62: missed:   not vectorized: no vectype for stmt: _212 = *_211;
+ scalar_type: float
+prod_un.c:397:22: missed:  bad data references.
+prod_un.c:397:22: note:  ***** Analysis failed with vector mode V4QI
+prod_un.c:397:22: missed: couldn't vectorize loop
+
+Analyzing loop at prod_un.c:418
+prod_un.c:418:14: note:  === analyze_loop_nest ===
+prod_un.c:418:14: note:   === vect_analyze_loop_form ===
+prod_un.c:418:14: note:   using as main loop exit: 35 -> 37 [AUX: (nil)]
+prod_un.c:418:14: missed:   not vectorized: unsupported control flow in loop.
+prod_un.c:418:14: missed:  bad loop form.
+prod_un.c:418:14: missed: couldn't vectorize loop
+
+Analyzing loop at prod_un.c:80
+prod_un.c:80:12: note:  === analyze_loop_nest ===
+prod_un.c:80:12: note:   === vect_analyze_loop_form ===
+prod_un.c:80:12: note:   using as main loop exit: 34 -> 67 [AUX: (nil)]
+prod_un.c:80:12: missed:   not vectorized: unsupported control flow in loop.
+prod_un.c:80:12: missed:  bad loop form.
+prod_un.c:80:12: missed: couldn't vectorize loop
+prod_un.c:408:5: note: vectorized 0 loops in function.
+int main ()
+{
+  long int v$len;
+  float * v$data;
+  long int v$len;
+  float * v$data;
+  long int v$len;
+  float * v$data;
+  long int v$len;
+  float * v$data;
+  long int v$len;
+  float * v$data;
+  long int c$len;
+  float * c$data;
+  long int b$len;
+  float * b$data;
+  long int a$len;
+  float * a$data;
+  struct extc_ablock * __extc_a$32$spare;
+  struct extc_ablock * __extc_a$32$top;
+  struct extc_ablock * __extc_a$16$spare;
+  struct extc_ablock * __extc_a$16$top;
+  int64_t i;
+  int64_t k;
+  float aik;
+  int64_t j;
+  long int v$len;
+  float * v$data;
+  struct slice_f32 v;
+  long int v$len;
+  float * v$data;
+  struct slice_f32 v;
+  struct extc_ablock * p;
+  long int v$len;
+  float * v$data;
+  struct slice_f32 v;
+  long int v$len;
+  float * v$data;
+  struct slice_f32 v;
+  long int v$len;
+  float * v$data;
+  struct slice_f32 v;
+  int64_t cap;
+  struct extc_ablock * b;
+  void * p;
+  int64_t cap;
+  struct extc_ablock * b;
+  void * p;
+  int64_t cap;
+  struct extc_ablock * b;
+  void * p;
+  int64_t i;
+  struct slice_f32 c;
+  struct slice_f32 b;
+  struct slice_f32 a;
+  struct extc_arena __extc_a[3];
+  struct slice_f32 D.3348;
+  struct slice_f32 D.3347;
+  float _3;
+  long int prephitmp_4;
+  long int prephitmp_5;
+  float _7;
+  long int pretmp_9;
+  long int pretmp_10;
+  long int prephitmp_13;
+  float _14;
+  double _15;
+  long int _37;
+  long int _41;
+  long int _43;
+  long int _50;
+  long unsigned int cap.9_52;
+  long unsigned int _53;
+  struct FILE * stderr.10_55;
+  char[1] * _57;
+  sizetype _59;
+  long int _61;
+  int _62;
+  long int _65;
+  long int _67;
+  long int _68;
+  long int _69;
+  long unsigned int cap.9_71;
+  long unsigned int _72;
+  struct FILE * stderr.10_74;
+  char[1] * _76;
+  sizetype _78;
+  long int _80;
+  int _81;
+  long int _86;
+  long int _87;
+  long int _88;
+  long int _89;
+  long int _90;
+  long unsigned int cap.9_92;
+  long unsigned int _93;
+  struct FILE * stderr.10_95;
+  char[1] * _97;
+  sizetype _99;
+  long int _101;
+  int _102;
+  struct extc_ablock * _129;
+  long int prephitmp_138;
+  float _141;
+  float _142;
+  float * _148;
+  float * _149;
+  float * _160;
+  float * _165;
+  long int _169;
+  long unsigned int i.16_172;
+  long unsigned int _173;
+  float * _174;
+  long int _178;
+  long int _182;
+  long int _200;
+  long int _202;
+  long unsigned int _203;
+  long unsigned int _204;
+  float * _205;
+  long int _208;
+  long unsigned int _209;
+  long unsigned int _210;
+  float * _211;
+  float _212;
+  long int _214;
+  long int _215;
+  long unsigned int _216;
+  long unsigned int _217;
+  float * _218;
+  float _219;
+  float _220;
+  float _221;
+  struct extc_ablock * _245;
+  long int prephitmp_248;
+  struct extc_ablock * _250;
+  double _259;
+  float _261;
+  unsigned long ivtmp_264;
+  unsigned long ivtmp_269;
+  unsigned long ivtmp_270;
+  unsigned long ivtmp_273;
+  unsigned long ivtmp_274;
+  unsigned long ivtmp_281;
+  unsigned long ivtmp_282;
+  unsigned long ivtmp_297;
+
+  <bb 2> [local count: 1477382]:
+  MEM <char[16]> [(struct extc_arena[3] *)&__extc_a] = {};
+  atexit (extc_cout_flush);
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 16B] = 0B;
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 24B] = 0B;
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 32B] = 0B;
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 40B] = 0B;
+  extc_arena_release (&__extc_a[1]);
+  __extc_a$16$top_190 = MEM <struct extc_ablock *> [(void *)&__extc_a + 16B];
+  __extc_a$16$spare_260 = MEM <struct extc_ablock *> [(void *)&__extc_a + 24B];
+  __extc_a$32$top_257 = MEM <struct extc_ablock *> [(void *)&__extc_a + 32B];
+  __extc_a$32$spare_213 = MEM <struct extc_ablock *> [(void *)&__extc_a + 40B];
+  if (__extc_a$16$top_190 == 0B)
+    goto <bb 3>; [30.00%]
+  else
+    goto <bb 54>; [70.00%]
+
+  <bb 54> [local count: 1034167]:
+  goto <bb 5>; [100.00%]
+
+  <bb 3> [local count: 443215]:
+  if (__extc_a$16$spare_260 != 0B)
+    goto <bb 4>; [70.00%]
+  else
+    goto <bb 55>; [30.00%]
+
+  <bb 55> [local count: 132964]:
+  goto <bb 8>; [100.00%]
+
+  <bb 4> [local count: 310250]:
+  __extc_a$16$spare_260->used = 0;
+
+  <bb 5> [local count: 1034167]:
+  # _250 = PHI <__extc_a$16$spare_260(4), __extc_a$16$top_190(54)>
+  # __extc_a$16$spare_225 = PHI <0B(4), __extc_a$16$spare_260(54)>
+  _86 = _250->cap;
+  _87 = _250->used;
+  _88 = _86 - _87;
+  if (_88 <= 2359295)
+    goto <bb 6>; [50.00%]
+  else
+    goto <bb 56>; [50.00%]
+
+  <bb 56> [local count: 517084]:
+  goto <bb 11>; [100.00%]
+
+  <bb 6> [local count: 517084]:
+  if (_86 <= 1048575)
+    goto <bb 7>; [50.00%]
+  else
+    goto <bb 57>; [50.00%]
+
+  <bb 57> [local count: 258542]:
+  goto <bb 8>; [100.00%]
+
+  <bb 7> [local count: 258542]:
+  _89 = _86 * 2;
+  _90 = MAX_EXPR <_89, 2359296>;
+
+  <bb 8> [local count: 960298]:
+  # cap_91 = PHI <2359296(57), _90(7), 2359296(55)>
+  # _129 = PHI <_250(57), _250(7), 0B(55)>
+  # __extc_a$16$spare_120 = PHI <__extc_a$16$spare_225(57), __extc_a$16$spare_225(7), 0B(55)>
+  cap.9_92 = (long unsigned int) cap_91;
+  _93 = cap.9_92 + 40;
+  b_94 = calloc (1, _93);
+  if (b_94 == 0B)
+    goto <bb 9>; [0.04%]
+  else
+    goto <bb 10>; [99.96%]
+
+  <bb 9> [local count: 384]:
+  stderr.10_95 = stderr;
+  __fprintf_chk (stderr.10_95, 2, "%s:%d: trap: out of arena memory (this allocation wanted %lld bytes)\n", "mmext_un.extc", 22, 2359296);
+  extc_die.constprop ();
+
+  <bb 10> [local count: 959914]:
+  b_94->prev = _129;
+  b_94->cap = cap_91;
+  b_94->used = 0;
+  b_94->fresh = 1;
+
+  <bb 11> [local count: 1476998]:
+  # __extc_a$16$top_25 = PHI <_250(56), b_94(10)>
+  # __extc_a$16$spare_112 = PHI <__extc_a$16$spare_225(56), __extc_a$16$spare_120(10)>
+  # prephitmp_13 = PHI <_87(56), 0(10)>
+  _97 = &__extc_a$16$top_25->data;
+  _99 = (sizetype) prephitmp_13;
+  p_100 = _97 + _99;
+  _101 = prephitmp_13 + 2359296;
+  __extc_a$16$top_25->used = _101;
+  _102 = __extc_a$16$top_25->fresh;
+  if (_102 == 0)
+    goto <bb 12>; [33.00%]
+  else
+    goto <bb 58>; [67.00%]
+
+  <bb 58> [local count: 989589]:
+  goto <bb 13>; [100.00%]
+
+  <bb 12> [local count: 487409]:
+  __builtin_memset (p_100, 0, 2359296);
+  pretmp_10 = __extc_a$16$top_25->used;
+
+  <bb 13> [local count: 1033899]:
+  # prephitmp_4 = PHI <pretmp_10(12), _101(58)>
+  _65 = __extc_a$16$top_25->cap;
+  _67 = _65 - prephitmp_4;
+  if (_67 <= 2359295)
+    goto <bb 14>; [50.00%]
+  else
+    goto <bb 59>; [50.00%]
+
+  <bb 59> [local count: 516950]:
+  goto <bb 19>; [100.00%]
+
+  <bb 14> [local count: 516949]:
+  if (_65 <= 1048575)
+    goto <bb 15>; [50.00%]
+  else
+    goto <bb 60>; [50.00%]
+
+  <bb 60> [local count: 258475]:
+  goto <bb 16>; [100.00%]
+
+  <bb 15> [local count: 258475]:
+  _68 = _65 * 2;
+  _69 = MAX_EXPR <_68, 2359296>;
+
+  <bb 16> [local count: 960049]:
+  # cap_70 = PHI <2359296(60), _69(15)>
+  cap.9_71 = (long unsigned int) cap_70;
+  _72 = cap.9_71 + 40;
+  b_73 = calloc (1, _72);
+  if (b_73 == 0B)
+    goto <bb 17>; [0.04%]
+  else
+    goto <bb 18>; [99.96%]
+
+  <bb 17> [local count: 384]:
+  stderr.10_74 = stderr;
+  __fprintf_chk (stderr.10_74, 2, "%s:%d: trap: out of arena memory (this allocation wanted %lld bytes)\n", "mmext_un.extc", 23, 2359296);
+  extc_die.constprop ();
+
+  <bb 18> [local count: 959665]:
+  b_73->prev = __extc_a$16$top_25;
+  b_73->cap = cap_70;
+  b_73->used = 0;
+  b_73->fresh = 1;
+
+  <bb 19> [local count: 1476614]:
+  # __extc_a$16$top_233 = PHI <__extc_a$16$top_25(59), b_73(18)>
+  # prephitmp_5 = PHI <prephitmp_4(59), 0(18)>
+  _76 = &__extc_a$16$top_233->data;
+  _78 = (sizetype) prephitmp_5;
+  p_79 = _76 + _78;
+  _80 = prephitmp_5 + 2359296;
+  __extc_a$16$top_233->used = _80;
+  _81 = __extc_a$16$top_233->fresh;
+  if (_81 == 0)
+    goto <bb 20>; [33.00%]
+  else
+    goto <bb 61>; [67.00%]
+
+  <bb 61> [local count: 989331]:
+  goto <bb 21>; [100.00%]
+
+  <bb 20> [local count: 487283]:
+  __builtin_memset (p_79, 0, 2359296);
+  pretmp_9 = __extc_a$16$top_233->used;
+
+  <bb 21> [local count: 1033630]:
+  # prephitmp_248 = PHI <_80(61), pretmp_9(20)>
+  _43 = __extc_a$16$top_233->cap;
+  _41 = _43 - prephitmp_248;
+  if (_41 <= 2359295)
+    goto <bb 22>; [50.00%]
+  else
+    goto <bb 62>; [50.00%]
+
+  <bb 62> [local count: 516815]:
+  goto <bb 27>; [100.00%]
+
+  <bb 22> [local count: 516815]:
+  if (_43 <= 1048575)
+    goto <bb 23>; [50.00%]
+  else
+    goto <bb 63>; [50.00%]
+
+  <bb 63> [local count: 258408]:
+  goto <bb 24>; [100.00%]
+
+  <bb 23> [local count: 258407]:
+  _37 = _43 * 2;
+  _50 = MAX_EXPR <_37, 2359296>;
+
+  <bb 24> [local count: 959799]:
+  # cap_51 = PHI <2359296(63), _50(23)>
+  cap.9_52 = (long unsigned int) cap_51;
+  _53 = cap.9_52 + 40;
+  b_54 = calloc (1, _53);
+  if (b_54 == 0B)
+    goto <bb 25>; [0.04%]
+  else
+    goto <bb 26>; [99.96%]
+
+  <bb 25> [local count: 384]:
+  stderr.10_55 = stderr;
+  __fprintf_chk (stderr.10_55, 2, "%s:%d: trap: out of arena memory (this allocation wanted %lld bytes)\n", "mmext_un.extc", 24, 2359296);
+  extc_die.constprop ();
+
+  <bb 26> [local count: 959415]:
+  b_54->prev = __extc_a$16$top_233;
+  b_54->cap = cap_51;
+  b_54->used = 0;
+  b_54->fresh = 1;
+
+  <bb 27> [local count: 1476230]:
+  # __extc_a$16$top_199 = PHI <__extc_a$16$top_233(62), b_54(26)>
+  # prephitmp_138 = PHI <prephitmp_248(62), 0(26)>
+  _57 = &__extc_a$16$top_199->data;
+  _59 = (sizetype) prephitmp_138;
+  p_60 = _57 + _59;
+  _61 = prephitmp_138 + 2359296;
+  __extc_a$16$top_199->used = _61;
+  _62 = __extc_a$16$top_199->fresh;
+  if (_62 == 0)
+    goto <bb 28>; [33.00%]
+  else
+    goto <bb 64>; [67.00%]
+
+  <bb 64> [local count: 989074]:
+  goto <bb 29>; [100.00%]
+
+  <bb 28> [local count: 487156]:
+  __builtin_memset (p_60, 0, 2359296);
+
+  <bb 29> [local count: 1476230]:
+  goto <bb 36>; [100.00%]
+
+  <bb 48> [local count: 105119324]:
+
+  <bb 30> [local count: 955630224]:
+  # _245 = PHI <p_180(53), __extc_a$32$top_207(48)>
+  # __extc_a$32$spare_23 = PHI <__extc_a$32$spare_152(53), __extc_a$32$spare_16(48)>
+  p_180 = _245->prev;
+  if (__extc_a$32$spare_23 == 0B)
+    goto <bb 31>; [46.53%]
+  else
+    goto <bb 65>; [53.47%]
+
+  <bb 31> [local count: 444654744]:
+  _182 = _245->cap;
+  if (_182 <= 1048576)
+    goto <bb 32>; [50.00%]
+  else
+    goto <bb 66>; [50.00%]
+
+  <bb 66> [local count: 222327372]:
+  goto <bb 33>; [100.00%]
+
+  <bb 32> [local count: 222327372]:
+  _245->prev = 0B;
+  _245->fresh = 0;
+  goto <bb 34>; [100.00%]
+
+  <bb 65> [local count: 510975480]:
+
+  <bb 33> [local count: 733302852]:
+  free (_245);
+
+  <bb 34> [local count: 955630224]:
+  # __extc_a$32$spare_152 = PHI <_245(32), __extc_a$32$spare_23(33)>
+  if (p_180 != 0B)
+    goto <bb 53>; [89.00%]
+  else
+    goto <bb 67>; [11.00%]
+
+  <bb 53> [local count: 850510900]:
+  goto <bb 30>; [100.00%]
+
+  <bb 67> [local count: 105119324]:
+  # __extc_a$32$spare_296 = PHI <__extc_a$32$spare_152(34)>
+  # p_317 = PHI <p_180(34)>
+
+  <bb 35> [local count: 118111600]:
+  # __extc_a$32$top_231 = PHI <p_317(67), 0B(68)>
+  # __extc_a$32$spare_17 = PHI <__extc_a$32$spare_296(67), __extc_a$32$spare_16(68)>
+  _178 = i_22 % 7;
+  _3 = (float) _178;
+  i.16_172 = (long unsigned int) i_22;
+  _173 = i.16_172 * 4;
+  _174 = p_100 + _173;
+  _142 = _3 * 1.25e-1;
+  *_174 = _142;
+  _169 = i_22 % 5;
+  _7 = (float) _169;
+  _165 = p_79 + _173;
+  _141 = _7 * 2.5e-1;
+  *_165 = _141;
+  _160 = p_60 + _173;
+  *_160 = 0.0;
+  i_48 = i_22 + 1;
+  ivtmp_264 = ivtmp_269 - 1;
+  if (ivtmp_264 != 0)
+    goto <bb 52>; [98.99%]
+  else
+    goto <bb 37>; [1.01%]
+
+  <bb 52> [local count: 116915686]:
+
+  <bb 36> [local count: 118111600]:
+  # i_22 = PHI <i_48(52), 0(29)>
+  # __extc_a$32$top_207 = PHI <__extc_a$32$top_231(52), __extc_a$32$top_257(29)>
+  # __extc_a$32$spare_16 = PHI <__extc_a$32$spare_17(52), __extc_a$32$spare_213(29)>
+  # ivtmp_269 = PHI <ivtmp_264(52), 589824(29)>
+  if (__extc_a$32$top_207 != 0B)
+    goto <bb 48>; [89.00%]
+  else
+    goto <bb 68>; [11.00%]
+
+  <bb 68> [local count: 12992276]:
+  goto <bb 35>; [100.00%]
+
+  <bb 37> [local count: 1193046]:
+  # __extc_a$32$spare_293 = PHI <__extc_a$32$spare_17(35)>
+  MEM <float *> [(struct slice_f32 *)&b] = p_79;
+  b.len = 589824;
+  D.3347 = extc_sliceTo_slice_f32.constprop (b);
+  MEM <float *> [(struct slice_f32 *)&a] = p_100;
+  a.len = 589824;
+  D.3348 = extc_sliceTo_slice_f32.constprop (a);
+  _148 = MEM[(float * *)&D.3348];
+  _149 = MEM[(float * *)&D.3347];
+  goto <bb 42>; [100.00%]
+
+  <bb 50> [local count: 68447330]:
+
+  <bb 38> [local count: 78100159]:
+  # k_158 = PHI <k_223(50), 0(42)>
+  # ivtmp_281 = PHI <ivtmp_274(50), 768(42)>
+  _202 = k_158 + _200;
+  _203 = (long unsigned int) _202;
+  _204 = _203 * 4;
+  _205 = _148 + _204;
+  aik_206 = *_205;
+  _214 = k_158 * 768;
+
+  <bb 39> [local count: 631901286]:
+  # j_243 = PHI <j_222(51), 0(38)>
+  # ivtmp_297 = PHI <ivtmp_282(51), 768(38)>
+  _208 = _200 + j_243;
+  _209 = (long unsigned int) _208;
+  _210 = _209 * 4;
+  _211 = p_60 + _210;
+  _212 = *_211;
+  _215 = _214 + j_243;
+  _216 = (long unsigned int) _215;
+  _217 = _216 * 4;
+  _218 = _149 + _217;
+  _219 = *_218;
+  _220 = aik_206 * _219;
+  _221 = _212 + _220;
+  *_211 = _221;
+  j_222 = j_243 + 1;
+  ivtmp_282 = ivtmp_297 - 1;
+  if (ivtmp_282 != 0)
+    goto <bb 51>; [87.64%]
+  else
+    goto <bb 40>; [12.36%]
+
+  <bb 51> [local count: 553801127]:
+  goto <bb 39>; [100.00%]
+
+  <bb 40> [local count: 78100159]:
+  k_223 = k_158 + 1;
+  ivtmp_274 = ivtmp_281 - 1;
+  if (ivtmp_274 != 0)
+    goto <bb 50>; [87.64%]
+  else
+    goto <bb 41>; [12.36%]
+
+  <bb 41> [local count: 9652829]:
+  i_224 = i_164 + 1;
+  ivtmp_270 = ivtmp_273 - 1;
+  if (ivtmp_270 != 0)
+    goto <bb 49>; [87.64%]
+  else
+    goto <bb 43>; [12.36%]
+
+  <bb 49> [local count: 8459783]:
+
+  <bb 42> [local count: 9652829]:
+  # i_164 = PHI <i_224(49), 0(37)>
+  # ivtmp_273 = PHI <ivtmp_270(49), 768(37)>
+  _200 = i_164 * 768;
+  goto <bb 38>; [100.00%]
+
+  <bb 43> [local count: 1193046]:
+  _261 = MEM[(float *)p_60 + 2359292B];
+  _259 = (double) _261;
+  _14 = MEM[(float *)p_60];
+  _15 = (double) _14;
+  extc_cout_put ("c0=", 3);
+  extc_cout_f64 (_15);
+  extc_cout_put (" clast=", 7);
+  extc_cout_f64 (_259);
+  extc_cout_put ("\n", 1);
+  extc_cout_flush ();
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 16B] = __extc_a$16$top_199;
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 24B] = __extc_a$16$spare_112;
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 32B] = 0B;
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 40B] = __extc_a$32$spare_293;
+  extc_arena_release (&__extc_a[1]);
+  __extc_a$16$spare_294 = MEM <struct extc_ablock *> [(void *)&__extc_a + 24B];
+  if (__extc_a$16$spare_294 != 0B)
+    goto <bb 44>; [53.47%]
+  else
+    goto <bb 69>; [46.53%]
+
+  <bb 69> [local count: 555124]:
+  goto <bb 45>; [100.00%]
+
+  <bb 44> [local count: 636902]:
+  free (__extc_a$16$spare_294);
+
+  <bb 45> [local count: 1191138]:
+  MEM <struct extc_ablock *> [(void *)&__extc_a + 24B] = 0B;
+  extc_arena_release (&__extc_a[2]);
+  __extc_a$32$spare_305 = MEM <struct extc_ablock *> [(void *)&__extc_a + 40B];
+  if (__extc_a$32$spare_305 != 0B)
+    goto <bb 46>; [53.47%]
+  else
+    goto <bb 70>; [46.53%]
+
+  <bb 70> [local count: 554237]:
+  goto <bb 47>; [100.00%]
+
+  <bb 46> [local count: 636902]:
+  free (__extc_a$32$spare_305);
+
+  <bb 47> [local count: 1191138]:
+  extc_cout_flush ();
+  __extc_a ={v} {CLOBBER(eos)};
+  return 0;
+
+}
+
+

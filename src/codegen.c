@@ -6850,10 +6850,22 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * 函数那一族由 DeadFunc 逐对剪枝（原型+定义一起删），但**剪不到的那些**（只被死代码提到）
          * 仍然需要这个属性，否则 gcc 会为每个这样的定义报一条 unused-function ✗ */
         "#define EXTC_UNUSED __attribute__((unused))\n"
+        /* `malloc` + **不内联**，缺一不可：属性告诉 GCC 返回值是不与别的东西别名的新内存，而
+         * `always_inline` 会把函数体折进调用者、让数组基址退化成"arena 块 + 偏移"、属性随之失效。
+         * 实测（bench/runtime/analysis/，i-k-j 矩阵乘法、同次序同开关）：只加属性 8.2~8.9 GFLOP/s
+         * （内层不被向量化 ✗）；属性 + noinline 16.7~22.6（被向量化 ✓）⇒ 2.2 倍。 */
+        "#define EXTC_MALLOC __attribute__((malloc))\n"
+        "#define EXTC_NOINLINE __attribute__((noinline))\n"
+    );
+    /* 这一段运行期文本到这里已经贴着 C99 的 4095 字节上限（相邻字符串拼接后算一个字面量）⇒ 从这里
+     * 拆成第二次 bufPuts。拆开只是把长字面量分成两处，**生成物逐字节不变**（闸门会核这一点）。 */
+    bufPuts(out,
         "#else\n"
         "#define EXTC_INLINE static inline\n"
+        "#define EXTC_MALLOC\n"
+        "#define EXTC_NOINLINE\n"
         "#endif\n"
-        "EXTC_INLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
+        "static EXTC_MALLOC EXTC_NOINLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
         "    if (n <= 0) n = 1;\n"
         "    n = (n + 7) & ~(int64_t)7;\n"
         "    /* Adopt the spare only when the arena is empty.\n"
