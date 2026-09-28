@@ -59,9 +59,10 @@ struct plate {
     fn remaining(self: ref plate) -> u64 { return self.reserved - self.used }
     fn isClosed(self: ref plate) -> bool { return self.closed }
 
-    /* 申请 `n` 字节。返回**板内视图**；板满了返回 `none`（调用点写 `!` 表示"我知道还有地方"，
-     * 或者 match 一下）。commit 按 `CHUNK` 粒度做：一次 `mprotect` 管一片，不是每页一次。 */
-    fn alloc(self: mut ref plate, n: u64) -> ?mut slice<u8> {
+    /* 申请 `n` 字节的**偏移**（bump + 按需 commit）。两个出口共用这一段：
+     * `alloc` 给视图、`allocPtr` 给裸指针（C 那边的门要的就是后者）。 */
+    @private
+    fn pAllocOff(self: mut ref plate, n: u64) -> ?u64 {
         if self.closed { return none }
         var end: u64 = pRoundUp(self.used + n, PAGE)
         if end > self.reserved { return none }
@@ -76,7 +77,26 @@ struct plate {
         }
         var start: u64 = self.used
         self.used = end
-        return some(self.mem[i64(start)..i64(start + n)])
+        return some(start)
+    }
+
+    /* 申请 `n` 字节，返回**板内视图**；板满了返回 `none`（调用点写 `!` 表示"我知道还有地方"，
+     * 或者 match 一下）。commit 按 `CHUNK` 粒度做：一次 `mprotect` 管一片，不是每页一次。 */
+    fn alloc(self: mut ref plate, n: u64) -> ?mut slice<u8> {
+        match self.pAllocOff(n) {
+            some(off) => { return some(self.mem[i64(off)..i64(off + n)]) }
+            none      => { return none }
+        }
+    }
+
+    /* 同一个申请的**裸指针**出口。存在的理由很具体：板内的指针要交给 C（表的门），而"先把视图
+     * 存进局部、再取 `.data`"会被逃逸分析挡住 —— 存进局部的视图在它眼里只有本帧的寿命，而
+     * `Addr=1` 那种签名要求活得更久（实测）。这里视图是**临时**的，深度跟着 `self`（参数，0）。 */
+    fn allocPtr(self: mut ref plate, n: u64) -> ?ref u8 {
+        match self.pAllocOff(n) {
+            some(off) => { return self.mem[i64(off)..i64(off + n)].data }
+            none      => { return null }
+        }
     }
 
     /* 板内 `[off, off+n)` 的视图（也要过门：区间必须在保留区**且已经 commit**）。
@@ -100,12 +120,19 @@ struct plate {
         return a >= base && a < base + self.reserved
     }
 
-    /* 带的长度的那一版：视图两半都要在板内。 */
-    fn holdsView(self: ref plate, v: slice<u8>) -> bool {
-        if v.len == i64(0) { return true }
-        var a: u64 = u64(v.data)
+    /* 带的长度的那一版：指针 + 长度整段都要在板内。**给 C 的门用这个**（拿到的常常是裸指针 +
+     * 长度，而"先把指针变成视图再验"会多绕一圈：`extc_viewOf` 让调用者带上隐藏的 arena 参数，
+     * 于是那个函数的地址就不是一个 `fn` 值了，放不进表槽 —— 实测的报错很直白）。 */
+    fn holdsRange(self: ref plate, p: ref u8, n: i64) -> bool {
+        if n <= i64(0) { return true }
+        var a: u64 = u64(p)
         var base: u64 = u64(self.mem.data)
-        return a >= base && a + u64(v.len) <= base + self.reserved
+        return a >= base && a + u64(n) <= base + self.reserved
+    }
+
+    /* 视图形态的同一条门。 */
+    fn holdsView(self: ref plate, v: slice<u8>) -> bool {
+        return self.holdsRange(v.data, v.len)
     }
 
     /* 宿主把一块内存拷进板里（`dst` 必须是板内的视图 —— 门在这里）。返回拷了多少字节。 */
@@ -129,6 +156,31 @@ struct plate {
         var dst: mut slice<u8> = self.alloc(u64(src.len))?
         if self.copyIn(dst, src) < i64(0) { return none }
         return some(dst)
+    }
+
+    /* **只读借出**：把 `[off, off+n)` 降成 `PROT_READ`（往里写 ⇒ 硬 SIGSEGV），`loanRW` 还回来。
+     *
+     * 大输入用它替代拷贝：原型量过（`prototype-heap/README.md` 4b）只读借出读 21.6 GB/s 零拷贝，
+     * 两次 `mprotect` 各 ≈370 µs（64 MiB 时）⇒ 盈亏平衡 ≈0.7 MiB，比它大就值得借。
+     *
+     * `mprotect` 只认**页对齐**的地址 ⇒ `off` 必须是 `PAGE` 的倍数（`alloc` 每次都从页边界开始，
+     * 所以正常分配出来的偏移天然满足），长度向上取整到页。 */
+    fn loanRO(self: mut ref plate, off: u64, n: u64) -> bool {
+        return self.pLoan(off, n, sysheap::PROT_READ)
+    }
+
+    fn loanRW(self: mut ref plate, off: u64, n: u64) -> bool {
+        return self.pLoan(off, n, sysheap::PROT_RW)
+    }
+
+    @private
+    fn pLoan(self: mut ref plate, off: u64, n: u64, prot: i32) -> bool {
+        if self.closed { return false }
+        if off % PAGE != u64(0) { return false }
+        var end: u64 = pRoundUp(off + n, PAGE)
+        if end > self.committed { return false }
+        var region: mut slice<u8> = self.mem[i64(off)..i64(end)]
+        return sysheap::mprotect(region.data, end - off, prot) == 0
     }
 
     /* 关板：`munmap`。关完之后板内指针再用就是硬缺页（这是设计，不是事故）。双关安全。 */

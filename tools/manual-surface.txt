@@ -251,6 +251,7 @@ std::fs	outStream	openOut	method	public
 std::fs	outStream	outPut	method	public
 std::heap	-	pRoundUp	fn	internal
 std::heap	plate	alloc	method	public
+std::heap	plate	allocPtr	method	public
 std::heap	plate	close	method	public
 std::heap	plate	closed	field	public
 std::heap	plate	committed	field	public
@@ -258,8 +259,11 @@ std::heap	plate	committedBytes	method	public
 std::heap	plate	copyIn	method	public
 std::heap	plate	copyOut	method	public
 std::heap	plate	holds	method	public
+std::heap	plate	holdsRange	method	public
 std::heap	plate	holdsView	method	public
 std::heap	plate	isClosed	method	public
+std::heap	plate	loanRO	method	public
+std::heap	plate	loanRW	method	public
 std::heap	plate	mem	field	public
 std::heap	plate	open	method	public
 std::heap	plate	remaining	method	public

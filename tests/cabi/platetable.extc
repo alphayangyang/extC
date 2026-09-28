@@ -1,0 +1,132 @@
+// expect: init=16 holds=true byte=42 logged=16 outside=rejected closed=0
+// C-ABI 第 5 步 ①：**板 + 表 + C 模块**（HEAP.md §2 那张表，两边都签字）
+//
+// 分工：
+//   · **宿主**（本文件）开一块真板（`std::heap`：4 GiB 保留、按需 commit、`close` 即 munmap），
+//     并实现两个**门**：`alloc`（从板里要一块）与 `copyOut`（这块在板内吗）；
+//   · **模块**（tests/cabi/platetable.c，编成 .so）只经表拿内存、写进去、回调门验一次，
+//     再把板内/板外两种指针还回来 —— 后者必须被挡住。
+//
+// 三件事在这里同时成立（各自都有前面的格子撑着）：
+//   ① **两个方向都要签字**：宿主 → 模块的 `init` 走的是**带签名的槽**（`Addr=0`：模块不留表），
+//      否则经"裸转换出来的 fn 值"调用会按最保守算，连一个本帧的表都传不进去（实测，见 §9.11 ②）；
+//      模块 → 宿主的门也走槽（同样带签名）。
+//   ② **`ctx` 的真类型写在声明处**：C 那边是 `void *`，extC 这边写 `mut ref plate` —— 于是门函数
+//      直接就能用那块板（`pl.alloc` / `pl.holds`），不需要全局、也不需要把类型从 `ref void` 里
+//      抠出来（那条回路故意不存在）。
+//   ③ **"拿回一个指针，用一次区间检查验证"**：模块还回来的指针先过 `pl.holds`（一次比较），
+//      再用第 4 步的 `extc_viewOf` 变成视图才解引用 —— 板外那个在 `holds` 就被挡住。
+use std::io
+use std::dl
+use std::heap
+use std::sys::heap as sysheap
+
+/* 表：模块只看得到这一张。`@frozen` 是对 C 的布局承诺（tests/frozen 那套镜像测试担保它）。 */
+@frozen struct plate_api {
+    size:    u64
+    ctx:     mut ref plate
+    alloc:   fn(u64, mut ref plate) -> ?ref u8 effects Addr=0 Cont=0
+    copyOut: fn(ref u8, i64, mut ref plate) -> i64 effects Addr=0 Cont=0
+}
+
+/* 模块入口那一张（宿主 → 模块）。槽上写清"我不留你的表" ⇒ 本帧的表可以传。
+ * 返回板内指针（写不进去就是 `null`）。 */
+struct plugin_api {
+    init:     fn(mut ref plate_api) -> i64 effects Addr=0 Cont=0
+    platePtr: fn(mut ref plate_api) -> ?ref u8 effects Addr=0 Cont=0
+    badPtr:   fn(mut ref plate_api) -> ?ref u8 effects Addr=0 Cont=0
+}
+
+let ALLOC_SIZE: u64 = 16
+var logged: i64 = 0
+
+/* 门一：从板里要一块（板满返回 `null`）。 */
+fn doorAlloc(n: u64, pl: mut ref plate) -> ?ref u8 {
+    return pl.allocPtr(n)      /* 板内指针的直接出口（视图那条路要落局部，深度就不够了） */
+}
+
+/* 门二：这段在板内吗（一次区间比较）+ 记账。板外的返回 -1。
+ *
+ * 用 `holdsRange(p, n)` 而不是"先 `extc_viewOf` 变成视图再 `holdsView`"：`extc_viewOf` 让调用者
+ * 带上隐藏的 arena 参数，于是这个函数的地址不再是 `fn` 值、放不进表槽（实测的报错说得很清楚）。
+ * 门要的本来也就是"指针 + 长度"这一件事。 */
+fn doorCopyOut(p: ref u8, n: i64, pl: mut ref plate) -> i64 {
+    if !pl.holdsRange(p, n) { return i64(-1) }
+    logged = logged + n
+    return n
+}
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/cabi-platetable.so")
+    if h == null {
+        io::cout << "open=fail\n"
+        return 1
+    }
+    var sInit: ?ref void = dl::sym(h, "init")
+    var sPlate: ?ref void = dl::sym(h, "platePtr")
+    var sBad: ?ref void = dl::sym(h, "badPtr")
+    if sInit == null || sPlate == null || sBad == null {
+        io::cout << "sym=fail\n"
+        dl::close(h)
+        return 1
+    }
+
+    /* 板：真板（不是数组）。 */
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+
+    /* 表：填函数地址（每个槽一句显式转换 = 签字）。`ctx` 就是这块板。 */
+    var api: plate_api = plate_api {
+        size: u64(2),
+        ctx: ref pl,
+        alloc: doorAlloc,
+        copyOut: doorCopyOut
+    }
+    var plug: plugin_api = plugin_api {
+        init:     fn(mut ref plate_api) -> i64(sInit!),
+        platePtr: fn(mut ref plate_api) -> ?ref u8(sPlate!),
+        badPtr:   fn(mut ref plate_api) -> ?ref u8(sBad!)
+    }
+
+    var n: i64 = plug.init(ref api)
+    io::cout << "init=" << n
+    if n != i64(16) {
+        io::cout << "\n"
+        pl.close()
+        dl::close(h)
+        return 1
+    }
+
+    /* 模块交回来的**板内**指针：一次区间检查，然后才变成视图去读。 */
+    var p: ?ref u8 = plug.platePtr(ref api)
+    if p == null {
+        io::cout << " ptr=fail\n"
+        pl.close()
+        dl::close(h)
+        return 1
+    }
+    var pp: ref u8 = p
+    if !pl.holds(pp) {
+        io::cout << " holds=false\n"
+        pl.close()
+        dl::close(h)
+        return 1
+    }
+    io::cout << " holds=true"
+    var pv: slice<u8> = sysheap::extc_viewOf(pp, i64(1))
+    io::cout << " byte=" << i64(pv[0])
+
+    /* 模块交回来的**板外**指针：同一道门必须挡住（这就是判据的牙）。 */
+    var q: ?ref u8 = plug.badPtr(ref api)
+    if q == null {
+        io::cout << " bad=null"
+    } else {
+        var qq: ref u8 = q
+        if pl.holds(qq) { io::cout << " outside=accepted" } else { io::cout << " outside=rejected" }
+    }
+    io::cout << " logged=" << logged
+
+    io::cout << " closed=" << pl.close()
+    dl::close(h)
+    io::cout << "\n"
+    return 0
+}

@@ -529,3 +529,49 @@ cairo=1.18.4 surface=ok png=ok green=30771 white=9532 edges=1111 drawn=1 center=
 
 顺带两件小的：C 字符串反方向（`dl::cstrLen` / `dl::viewCStr`，`cairo_version_string` 那种），
 以及库层的 `plate::view(off, n)`。
+
+## 9.12 第 5 步 ①：板 + 表 + C 模块（HEAP.md §2 那张表，两边都签字）
+
+```
+init=16 holds=true byte=42 outside=rejected logged=16 closed=0
+```
+
+`tests/cabi/platetable.{extc,c}`：宿主开一块**真板**（`std::heap`：4 GiB 保留、按需 commit、
+`close` 即 munmap），给模块一张 `@frozen` 的表，槽就是板的门（`alloc` / `copyOut`，两个槽都签
+`Addr=0 Cont=0`）；模块（C，编成 `.so`）经表申请板内内存、写进去、回调宿主的门验一次，再把
+**板内**与**板外**两种指针还回来 —— 后者被 `holds` 挡住（`outside=rejected` 是判据的牙）。
+
+三条"不做就写不出来"的：
+
+1. **两个方向都要签字**。宿主 → 模块的 `init` 也必须走**带签名的槽**：经"裸转换出来的 `fn` 值"
+   调用按最保守算 ⇒ 连一个本帧的表都传不进去（§9.11 ② 那条）。所以这里有两张表：`plugin_api`
+   （宿主 → 模块）与 `plate_api`（模块 → 宿主）。
+2. **`ctx` 的真类型写在声明处**。C 那边是 `void *`，extC 这边写 `mut ref plate` —— 指针的指向类型
+   在**声明处**定（§9.6/§9.7 的口径），于是门函数直接就能用那块板（`pl.allocPtr` / `pl.holdsRange`），
+   **不需要全局、也不需要把类型从 `ref void` 里抠出来**（那条回路故意不存在）。模板也照样成立：
+   `@frozen` 是对 C 的布局承诺，`tests/frozen` 的镜像测试担保它。
+3. **"拿回一个指针，用一次区间检查验证"**：模块还回来的 `ref u8` 先过 `pl.holds`（一次比较），
+   再用第 4 步的 `extc_viewOf` 变成视图才解引用（`byte=42`）。
+
+两个被这件事逼出来的库 API（都记着理由）：
+
+* `plate::allocPtr(n) -> ?ref u8`：门要的是**裸指针**，而"先 `alloc` 拿视图、再取 `.data`"会被逃逸
+  分析挡住 —— 存进局部的视图在它眼里只有本帧寿命，`Addr=1` 那种签名要求活得更久（§9.11 ③）。
+  板内部把视图做成**临时**的（`self.mem[a..b].data`），深度跟着 `self`（参数，0）⇒ 合法。
+* `plate::holdsRange(p, n)`：门拿到的是"指针 + 长度"，而"先 `extc_viewOf` 变成视图再 `holdsView`"
+  会让**那个门函数带上隐藏的 arena 参数**，于是它的地址不是 `fn` 值、放不进表槽（实测的报错很直白：
+  "takes a hidden arena parameter, so its address is not a `fn` value"）。门要的本来也就是这一件事。
+
+## 9.13 第 5 步 ②：只读借出（`mprotect PROT_READ`）
+
+板的两个方法：`loanRO(off, n)` / `loanRW(off, n)`（`off` 必须页对齐；长度向上取整到页；
+区间必须在**已 commit** 的板内）。
+
+```
+alloc=ok write=ok ro=true read=after-ro rw=true write2=ok closed=0      （tests/heap/loan.extc）
+loaned ⇒ 写 ⇒ SIGSEGV（rc=139，崩溃前标记可见）                          （tests/heap/loanwrite.extc）
+```
+
+为什么要有它：大输入进来时"拷贝进板"是 1830 MB/s，而只读借出是**零拷贝**（`prototype-heap/`
+4b 量过 21.6 GB/s，两次 `mprotect` 各 ≈370 µs ⇒ 盈亏平衡 ≈0.7 MiB）。代价是那段内存借出期间
+**谁都不能写** —— 内核保证，写就是硬缺页，而这一条有专门的测试盯着。

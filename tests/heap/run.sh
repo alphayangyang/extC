@@ -12,6 +12,8 @@ cd "$(dirname "$0")/../.."
 EXTC=./build/extc
 fail=0
 
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
 echo "== ① 保留便宜 · ② 按需 commit · ③ 门有牙 · ④ 不搬家 =="
 if out=$("$EXTC" --run tests/heap/plate.extc 2>&1); then
     # `// expect:` 只列**稳定**的部分；两个数字判据在下面单独量（阈值才是判据，不是那几个数字本身）。
@@ -32,7 +34,6 @@ fi
 
 echo "== ⑤ close 之后再用 = 硬缺页（退出码 139 = 128 + SIGSEGV）=="
 # `--run` 只报驱动程序自己的退出码（实测 255），拿不到信号；所以这里**编出二进制直接跑**。
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 if "$EXTC" -w --no-line-map -o "$tmp/ac.c" tests/heap/afterclose.extc >/dev/null 2>&1 &&
    gcc -std=c11 -fwrapv -o "$tmp/ac" "$tmp/ac.c" 2>"$tmp/err"; then
     set +e
@@ -50,6 +51,34 @@ if "$EXTC" -w --no-line-map -o "$tmp/ac.c" tests/heap/afterclose.extc >/dev/null
     fi
 else
     echo "  FAIL afterclose  ->  编不出来"; head -3 "$tmp/err" 2>/dev/null | sed 's/^/        /'; fail=1
+fi
+
+echo "== ⑥ 只读借出（mprotect PROT_READ）：借出期间只能读，写 ⇒ 硬缺页 =="
+if out=$("$EXTC" --run tests/heap/loan.extc 2>&1); then
+    want=$(grep -o '// expect:.*' tests/heap/loan.extc | sed 's|// expect: *||' | head -1)
+    ok=1
+    IFS=' ' read -ra parts <<< "$want"
+    for p in "${parts[@]}"; do echo "$out" | grep -qF -- "$p" || { ok=0; echo "  FAIL 输出里缺「$p」"; }; done
+    if [ "$ok" = 1 ]; then echo "  ok   loan  ->  $(echo "$out" | tr '\n' '|')（写 → 借只读 → 读得到 → 还回写权限 → 再写）"
+    else echo "  FAIL loan  ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
+else
+    echo "  FAIL loan  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+fi
+
+echo "== ⑥ 只读借出的牙：借出期间写入 = 硬缺页（退出码 139）=="
+if "$EXTC" -w --no-line-map -o "$tmp/lw.c" tests/heap/loanwrite.extc >/dev/null 2>&1 &&
+   gcc -std=c11 -fwrapv -o "$tmp/lw" "$tmp/lw.c" 2>"$tmp/errlw"; then
+    set +e
+    out=$("$tmp/lw" 2>&1)
+    rc=$?
+    set -e
+    if [ "$rc" = 139 ] && echo "$out" | grep -qF "loaned"; then
+        echo "  ok   loanwrite  ->  只读借出后写入 ⇒ SIGSEGV（rc=139，崩溃前的标记可见）"
+    else
+        echo "  FAIL loanwrite  ->  期望 rc=139 且标记可见，实得 rc=$rc"; fail=1
+    fi
+else
+    echo "  FAIL loanwrite  ->  编不出来"; head -3 "$tmp/errlw" 2>/dev/null | sed 's/^/        /'; fail=1
 fi
 
 echo "失败 $fail 个（0 = 全过）"

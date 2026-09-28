@@ -1,0 +1,40 @@
+// expect: alloc=ok write=ok ro=true read=after-ro rw=true write2=ok closed=0
+// 板的**只读借出**（HEAP.md §4b 的 extC 侧）：`loanRO` 之后只能读，`loanRW` 还回写权限。
+//
+// 为什么要有它：大输入进来时"拷贝进板"是 1830 MB/s，而只读借出是零拷贝（原型量过 21.6 GB/s，
+// 两次 mprotect 各 ≈370 µs ⇒ 盈亏平衡 ≈0.7 MiB）。代价是那段内存**谁都不能写** —— 内核保证，
+// 写就是硬 SIGSEGV（`tests/heap/loanwrite.extc` 专门验这一条）。
+use std::io
+use std::heap
+
+fn main() -> i32 {
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var off: u64 = pl.usedBytes()
+    var n: u64 = 8192
+    var v: mut slice<u8> = pl.alloc(n)!
+    v[0] = u8(65)
+    v[8191] = u8(90)
+    io::cout << "alloc=ok"
+
+    /* 写完再借出去（借出期间不可写） */
+    if !pl.loanRO(off, n) {
+        io::cout << " ro=fail\n"
+        pl.close()
+        return 1
+    }
+    io::cout << " write=ok ro=true"
+    io::cout << " read="
+    if v[0] == u8(65) && v[8191] == u8(90) { io::cout << "after-ro" } else { io::cout << "wrong" }
+
+    if !pl.loanRW(off, n) {
+        io::cout << " rw=fail\n"
+        pl.close()
+        return 1
+    }
+    io::cout << " rw=true"
+    v[1] = u8(66)
+    if v[1] == u8(66) { io::cout << " write2=ok" }
+    io::cout << " closed=" << pl.close()
+    io::cout << "\n"
+    return 0
+}

@@ -453,10 +453,13 @@ pl.close()                                                        // munmap；�
 |---|---|
 | `plate` / `plate::open(n)` | 板本身 / 保留 `n` 字节地址空间（失败返回 `none`） |
 | `alloc(n)` | 申请 `n` 字节，返回 `?mut slice<u8>`（板满 = `none`），commit 按 `CHUNK` 粒度 |
+| `allocPtr(n)` | 同一个申请的**裸指针**出口（交给 C 的门时用这个：视图落进局部会丢掉逃逸深度） |
+| `view(off, n)` | 板内 `[off, off+n)` 的视图（区间要在已 commit 的板内） |
+| `loanRO(off, n)` / `loanRW(off, n)` | 只读借出 / 还回写权限（`off` 页对齐；借出期间写 ⇒ **SIGSEGV**） |
 | `store(src)` | 申请 + `copyIn`，一步拿到板内视图 |
 | `copyIn(dst, src)` / `copyOut(src, dst)` | 整块拷进 / 拷回；**两边都要过那道门**（不在板内返回 `-1`） |
 | `view(off, n)` | 板内 `[off, off+n)` 的视图（也要过门：区间在保留区内**且已 commit**）。**把板内内存交给会留着它的 C 函数时，内联写 `pl.view(off, n)!.data`** —— 先存进局部的视图在逃逸分析眼里只有本帧寿命 |
-| `holds(p)` / `holdsView(v)` | 那道门：一次（或两次）区间比较 |
+| `holds(p)` / `holdsRange(p, n)` / `holdsView(v)` | 那道门：一次（或两次）区间比较（门函数用 `holdsRange`：`extc_viewOf` 会给调用者带上隐藏 arena，地址就不是 `fn` 值了） |
 | `reservedBytes()` / `committedBytes()` / `usedBytes()` / `remaining()` / `isClosed()` | 账（读法） |
 | `reserved` / `committed` / `used` / `closed` | 同上的字段（也直接读得到） |
 | `close()` | `munmap`（双关安全）。**关完之后板内指针再用 = SIGSEGV**，这是设计 |

@@ -1,0 +1,26 @@
+// expect-crash: 139
+// 只读借出的**牙**：借出去之后往里写 = 硬 SIGSEGV（不是"写进去了但没人知道"）。
+//
+// 这一条是"少检验"的另一半：板不检查每个访问，它靠 `mprotect` 让内核挡 —— 借出期间那段内存
+// 的写权限真的不在（`PROT_READ`），写就是缺页。
+use std::io
+use std::heap
+
+fn main() -> i32 {
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var off: u64 = pl.usedBytes()
+    var n: u64 = 4096
+    var v: mut slice<u8> = pl.alloc(n)!
+    v[0] = u8(1)
+    if !pl.loanRO(off, n) {
+        io::cout << "ro=fail\n"
+        pl.close()
+        return 1
+    }
+    io::cout << "loaned\n"
+    io::flushCout()      /* 崩掉时 atexit 不跑 ⇒ 两道 flush 才看得见标记 */
+    flush()
+    v[1] = u8(2)         /* 只读页 ⇒ SIGSEGV */
+    io::cout << "unreachable\n"
+    return 0
+}
