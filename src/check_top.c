@@ -475,14 +475,24 @@ static bool stmtHasNew(Stmt *s) {
  *     into like any other.
  *   - An associated call (`EX_ASSOC`) counts as well: an associated function such as
  *     `T::make` is declared without `self` but takes a home arena like any other. */
-typedef struct { bool precise; } HomeQ;
+/* **One question, one name.** This used to be `bool precise` -- a switch that changed what the
+ * predicate below *meant* ("does the callee reach a home arena?" versus "does it take one itself?"),
+ * which is precisely the shape that lets the two sides of a convention drift apart: the definition
+ * asks one, the call site the other, and nothing in the code says which is which. The question now
+ * travels as a predicate with a name, and the two entry points below (`callsNeedsHome` /
+ * `callsUsesHome`) are the only places that pick one. */
+typedef struct { bool (*takesHomeArena)(const FuncDef *); } HomeQ;
+
+/* "does the callee **reach** a function that takes one?" -- the conservative, transitive question,
+ * which decides whether *this* body needs a home arena of its own (`needsHome`). */
+static bool reachesHomeArenaTaker(const FuncDef *f) { return f && f->needsHome; }
 
 static bool needsHomeInStmt(void *ctx, Stmt *s);
 
 static bool needsHomeInExpr(void *ctx, Expr *e) {
     HomeQ *q = (HomeQ *)ctx;
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func &&
-        (q->precise ? e->func->usesHome : e->func->needsHome))
+        q->takesHomeArena(e->func))
         return false;                       /* found: stop the walk */
     AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
     return astWalkExprChildren(e, &v);
@@ -493,9 +503,9 @@ static bool needsHomeInStmt(void *ctx, Stmt *s) {
     return astWalkStmtChildren(s, &v);
 }
 
-static bool stmtCallsNeedsHome(Stmt *s, bool precise) {
+static bool stmtCallsNeedsHome(Stmt *s, bool (*takesHomeArena)(const FuncDef *)) {
     if (!s) return false;
-    HomeQ q = { precise };
+    HomeQ q = { takesHomeArena };
     return !needsHomeInStmt(&q, s);
 }
 
@@ -538,8 +548,9 @@ static bool stmtUsesCname(Stmt *s, const char *cname) {
     return !cnameInStmt(&c, s);
 }
 
-static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, false); }
-static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, true); }
+static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, reachesHomeArenaTaker); }
+/* 精确那一问直接用共享 accessor（`ast.h`）—— 与 codegen 的主人问的是同一处拼写。 */
+static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, funcTakesHomeArena); }
 
 /* ---- how a "reaches X through its calls" property is closed over the call graph ----
  *

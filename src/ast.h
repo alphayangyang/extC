@@ -930,6 +930,18 @@ typedef struct {
                             * table without threading the loader through every pass */
 } UseDecl;
 
+/* Does this function **take** a home arena -- i.e. does a call to it hand one down?
+ *
+ * One spelling, two askers: the checker's precise question (which decides whether a call site hands
+ * an arena down) and codegen's implicit-argument owner (`cgImplicitArgs`, which both emits the
+ * parameter in a signature and passes the argument at a call site). They must never disagree: a
+ * definition declaring `extc_arena *__extc_home` while its call site passes nothing is exactly the
+ * bug this closes (gcc: `too few arguments to function ...`).
+ *
+ * `needsHome` is the **other** question -- "does it reach one?" -- and deliberately not this one: it
+ * decides whether a body needs an arena of its own, not whether a call passes one. */
+static inline bool funcTakesHomeArena(const FuncDef *f) { return f && f->usesHome; }
+
 /* An `impl Type { fn ... }` block: methods attached to a type that is declared elsewhere
  * (or is a compiler builtin, which has no body to write them in).
  *

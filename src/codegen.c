@@ -1715,13 +1715,13 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
  * the C compiler rather than silently leaking.
  */
 static bool cgHasImplicitArgs(const FuncDef *callee) {
-    return callee && (callee->usesHome || callee->makesPool);
+    return callee && (funcTakesHomeArena(callee) || callee->makesPool);
 }
 static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site,
                            size_t nargs, bool forSignature) {
     if (!callee) return;
     size_t n = nargs;
-    if (callee->usesHome) {
+    if (funcTakesHomeArena(callee)) {
         if (n) bufPuts(b, ", ");
         bufPuts(b, forSignature ? "extc_arena *__extc_home"
                                 : homeArg(g, site ? site->arenaArg : ARENA_HOME));
