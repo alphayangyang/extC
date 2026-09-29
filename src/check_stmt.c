@@ -466,7 +466,17 @@ void checkStmt(Checker *c, Stmt *s) {
                 if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
                     && ini->func && ini->func->needsHome && (int)c->scopes.len > d)
                     d = (int)c->scopes.len;      /* a callee with a home arena uses mine */
-                sym->refDepth = d;
+                /* Storage the initializer signed as out-of-frame (`effects Ret=0`, or a chain
+                 * rooted at a global) is not in a frame at all, so the home-arena heuristic above
+                 * does not apply and the depth is 0 -- authoritatively, not "not decided yet".
+                 * That is what lets a **view** binding keep working when its `.data` is handed to
+                 * an unsigned C function; see `Sym.outOfFrame` and `placeDepth`. */
+                if (exprOutOfFrame(c, ini)) {
+                    sym->outOfFrame = true;
+                    sym->refDepth   = 0;
+                } else {
+                    sym->refDepth = d;
+                }
             }
             /* A struct literal records a depth for each field it writes. A field that
              * is omitted is zero-initialized, so it can only hold nulls and has depth
@@ -505,6 +515,15 @@ void checkStmt(Checker *c, Stmt *s) {
              * was accepted and the generated C said `9223372036854775807 = ...`, which gcc rejects
              * with "lvalue required as left operand of assignment".) */
             Expr *tgt0 = s->u.assign.target;
+            /* A binding that was marked "my storage is out of this frame" stops being trusted the
+             * moment it is written again: `if c { v = mem[..] } else { v = buf[..] }` would
+             * otherwise keep the trust from one branch and let the other branch's frame view reach
+             * C. Conservative on purpose -- a reassigned binding simply goes back to the slot
+             * depth, and `var v = …` (the shape the plate is used in) is untouched. */
+            if (tgt0 && tgt0->kind == EX_IDENT) {
+                Sym *tsy = lookup(c, tgt0->u.ident.name);
+                if (tsy) tsy->outOfFrame = false;
+            }
             bool targetWritable = tgt0 && (tgt0->kind == EX_IDENT || tgt0->kind == EX_FIELD ||
                                            tgt0->kind == EX_INDEX || tgt0->kind == EX_SLICE ||
                                            tgt0->kind == EX_DEREF || tgt0->kind == EX_SIGN);

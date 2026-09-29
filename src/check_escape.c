@@ -58,6 +58,65 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen);
  *    this frame; the block depth for a local; for a reference-typed binding, the
  *    depth of the storage it points at (the slot itself does not hold the value).
  */
+/* Is the storage this expression denotes provably **not** in any frame?
+ *
+ * Two sources, both authored rather than guessed:
+ *   - a chain rooted at a **global** (static storage outlives every frame), and
+ *   - a call whose declaration carries `effects Ret=0` -- "the reference/view I return does not
+ *     point into the caller's frames". The plate signs that once (`std::heap`), and `mmap`-style
+ *     handles are the same shape.
+ *
+ * Everything else answers false, which keeps the conservative rule: a `new` block, an arena
+ * allocation, a stack array, or a callee that did not claim it may all die with the frame.
+ *
+ * Params:
+ *   c - checker
+ *   e - the initializer (or right-hand side) of a binding
+ *
+ * Returns:
+ *   True when the storage is out of this frame; the caller records it on the binding
+ *   (`Sym.outOfFrame`) so that a view may then answer with its pointee's depth. */
+bool exprOutOfFrame(Checker *c, Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_SIGN:  return exprOutOfFrame(c, e->u.sign.operand);      /* `p!` 只去掉可空 */
+    case EX_TRY:   return exprOutOfFrame(c, e->u.try_.operand);
+    case EX_CONV:  return exprOutOfFrame(c, e->u.conv.operand);
+    case EX_COALESCE:
+        return exprOutOfFrame(c, e->u.coalesce.main) &&
+               exprOutOfFrame(c, e->u.coalesce.fallback);
+    case EX_IDENT: {
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (!sy) return false;
+        if (isGlobalSym(c, sy)) return true;          /* static storage: depth 0, for real */
+        return sy->outOfFrame;                        /* propagated from its own initializer */
+    }
+    case EX_SLICE:  return exprOutOfFrame(c, e->u.slice.obj);   /* `mem[..]`: the view's storage */
+    case EX_FIELD: return exprOutOfFrame(c, e->u.field.obj);
+    case EX_INDEX: return exprOutOfFrame(c, e->u.index.obj);
+    case EX_DEREF: {
+        /* `*p` lives where `p` points; a pointer that is out of frame says so itself. */
+        Expr *p = e->u.deref.operand;
+        return p && p->type && tsub(c, p->type)->kind == TY_REF &&
+               exprOutOfFrame(c, p);
+    }
+    case EX_CALL: case EX_METHOD: case EX_ASSOC: {
+        /* A return value the declaration vouched for. A slot on a table field carries the same
+         * clause, so a table entry is covered by the same test. */
+        if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_FIELD) {
+            FieldDef *fd = e->u.call.callee->field;
+            if (fd && fd->hasEffects && fd->effRetFresh) return true;
+        }
+        if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_FIELD) {
+            FieldDef *fd = e->u.method.recv->field;
+            if (fd && fd->hasEffects && fd->effRetFresh) return true;
+        }
+        return e->func && e->func->extRetFresh;
+    }
+    default: return false;
+    }
+}
+
 int placeDepth(Checker *c, Expr *e) {
     if (!e) return 0;
     /* Dereference does not create storage; it only names storage through a pointer,
@@ -67,7 +126,18 @@ int placeDepth(Checker *c, Expr *e) {
      * (`var cur: ?ref node = head`: the slot is in this frame, the node is outside). */
     if (e->kind == EX_IDENT) {
         Sym *sy = lookup(c, e->u.ident.name);
-        if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy->refDepth;
+        if (sy && sy->type) {
+            Type *st = tsub(c, sy->type);
+            if (st && st->kind == TY_REF) return sy->refDepth;
+            /* A **view** whose storage is out of this frame denotes that storage, not the slot it
+             * sits in: `var v = pl.view(off, n)!` is a two-word handle whose bytes point into the
+             * plate, so `v.data` must not be read as "a pointer into this frame". `outOfFrame` is
+             * set where the binding is initialized, from a global or from a call that signed
+             * `effects Ret=0` (the plate signed it once); a view over frame storage, a `new` block
+             * or an arena allocation keeps the slot depth, which is what the conservative rule
+             * needs. */
+            if (st && ttIsViewType(st) && sy->outOfFrame) return sy->refDepth;
+        }
         return sy ? sy->depth : 0;
     }
     /* A field or element lives inside the object that contains it. */

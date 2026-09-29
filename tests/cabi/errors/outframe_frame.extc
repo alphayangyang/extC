@@ -1,0 +1,11 @@
+/* 反例：**栈上**数组的视图（帧内）交给未签字的 C ⇒ 拒 ✗（`Ret=0` 没能盖住它，这是对的） */
+use std::dl
+fn main() -> i32 {
+    var h: ?ref void = dl::open("libcairo.so.2")!
+    var raw: ?ref void = dl::sym(h, "cairo_version_string")
+    if raw == null { return 1 }
+    var f: fn(ref u8) -> i64 = fn(ref u8) -> i64(raw)
+    var buf: [64]u8
+    var b: slice<u8> = buf[..]
+    return i32(f(b.data))
+}

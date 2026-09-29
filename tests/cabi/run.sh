@@ -163,5 +163,19 @@ else
     echo "  FAIL slot-summary  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
 fi
 
+echo '== ⑦ `effects Ret=0`：stdlib 签一次，用户零签字（C-ABI.md §9.15）=='
+if out=$("$EXTC" --run tests/cabi/outframe.extc 2>&1); then
+    if echo "$out" | grep -qF "view-in-local=ok global-view=ok allocptr=ok"; then
+        echo "  ok   outframe  ->  板内/全局视图**存进局部**再交给未签字的 C 函数：通过（从前报 depth 1）"
+    else
+        echo "  FAIL outframe  ->  输出对不上：$(echo "$out" | tr '\n' '|')"; fail=1
+    fi
+else
+    echo "  FAIL outframe  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+fi
+check_err tests/cabi/errors/outframe_frame.extc      'may be kept by C forever'
+check_err tests/cabi/errors/outframe_new.extc        'may be kept by C forever'
+check_err tests/cabi/errors/outframe_reassigned.extc 'may be kept by C forever'
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

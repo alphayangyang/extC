@@ -566,6 +566,12 @@ struct FieldDef {
     bool        hasEffects;
     unsigned    effAddrMask;
     unsigned    effContMask;
+    /* `effects Ret=0` on the slot: "the value I return does not point into the caller's frames".
+     * Believed for a `fn` value exactly like `Addr`/`Cont` are, and it is the fact that lets a
+     * caller keep a **view** returned by this slot in a local variable and still hand its `.data`
+     * to C (see `Sym.outOfFrame`). Signed by whoever wrote the declaration -- for the standard
+     * library that is once, in the privileged layer. */
+    bool        effRetFresh;
 };
 
 typedef struct {
@@ -802,6 +808,12 @@ struct FuncDef {
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;
+    /* `effects Ret=0` on the declaration: "the reference/view I return does not point into the
+     * caller's frames" (the return side of `Addr`). Believed for an `extern!` (a black box) and
+     * for an extC function as well, because a library author writes it where the memory's
+     * lifetime is known -- `std::heap`'s `alloc`/`view`/`allocPtr` are the first users: the plate
+     * region is `mmap`ed and lives to `close()`, so its views are `Ret=0` by construction. */
+    bool        extRetFresh;
     /* `Thread=N`: N = 0 表示这次调用**不碰跨线程共享的状态**（模块级 `var`、运行期缓冲、输出流），
      * 因此它可以出现在 worker 里；N = 1（缺省）表示它碰，保守处理。
      *

@@ -1,0 +1,10 @@
+/* 反例：`new` 出来的视图（本帧 arena）交给未签字的 C ⇒ 拒 ✗ */
+use std::dl
+fn main() -> i32 {
+    var h: ?ref void = dl::open("libcairo.so.2")!
+    var raw: ?ref void = dl::sym(h, "cairo_version_string")
+    if raw == null { return 1 }
+    var f: fn(ref u8) -> i64 = fn(ref u8) -> i64(raw)
+    var v: mut slice<u8> = new u8[64]
+    return i32(f(v.data))
+}

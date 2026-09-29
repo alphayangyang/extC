@@ -357,6 +357,19 @@ static bool parseEffectsClause(Parser *p, FuncDef *f, bool *outSawThread) {
                 unsigned bits = (unsigned)val->ival;
                 if (strcmp(nm->text, "Addr") == 0)        f->extAddrMask = bits;
                 else if (strcmp(nm->text, "Cont") == 0)   f->extContMask = bits;
+                else if (strcmp(nm->text, "Ret") == 0) {
+                    /* `Ret=0`: "the reference/view I return does not point into the caller's
+                     * frames" -- the return side of `Addr`. `Ret=1` says nothing extra (it is the
+                     * conservative default), so only 0 is interesting; anything else is a typo. */
+                    if (bits > 1) {
+                        ctxError(p->ctx, nm->line, nm->col,
+                                 "`Ret` is one fact about the return value: 0 = it does not point"
+                                 " into the caller's frames, 1 = say nothing (the default).",
+                                 "`Ret=%u` is out of range (use 0 or 1)", bits);
+                        return NULL;
+                    }
+                    f->extRetFresh = (bits == 0);
+                }
                 else if (strcmp(nm->text, "Thread") == 0) {
                     if (outSawThread) *outSawThread = true;
                     if (bits > 1u) {
@@ -372,7 +385,8 @@ static bool parseEffectsClause(Parser *p, FuncDef *f, bool *outSawThread) {
                     ctxError(p->ctx, nm->line, nm->col,
                              "`Addr` = it stores `&argument`; `Cont` = it stores a pointer it"
                              " read out of an argument. Bit i = the i-th argument.",
-                             "unknown effect `%s` (only `Addr`, `Cont` and `Thread` exist)", nm->text);
+                             "unknown effect `%s` (only `Addr`, `Cont`, `Ret` and `Thread` exist)",
+                             nm->text);
                     return NULL;
                 }
                 if (at(p, "Addr") || at(p, "Cont") || at(p, "Thread")) continue;
@@ -945,6 +959,7 @@ static StructDef *parseStruct(Parser *p) {
             fd->hasEffects  = tmp.hasEffects;
             fd->effAddrMask = tmp.extAddrMask;
             fd->effContMask = tmp.extContMask;
+            fd->effRetFresh = tmp.extRetFresh;   /* the return side of `Addr`, same clause */
         }
         *(FieldDef **)vecPush(&sd->fields) = fd;
         skipJunk(p);
@@ -1603,6 +1618,31 @@ static FuncDef *parseFunc(Parser *p) {
         skipJunk(p);
         if (at(p, "effects") && !parseEffectsClause(p, fd, NULL)) return NULL;
         return fd;
+    }
+    /* A function **with a body** may state `effects` too, but only the keys the body cannot
+     * answer for itself: `Ret` (what the returned reference points at) and `Thread` (a fact about
+     * the call, not about a store). `Addr`/`Cont` are computed from the body (`collectEffects`), so
+     * accepting them here would look like a signature and be silently ignored -- refuse instead.
+     *
+     * This is where the standard library signs "my views do not point into the caller's frames"
+     * once, for every user: `std::heap`'s `alloc`/`view`/`allocPtr`/`store` are ordinary extC
+     * methods with bodies. */
+    {
+        bool sawThread = false;
+        skipJunk(p);
+        if (at(p, "effects")) {
+            if (!parseEffectsClause(p, fd, &sawThread)) return NULL;
+            if (fd->extAddrMask || fd->extContMask) {
+                ctxError(p->ctx, fd->line, 0,
+                         "A body already says what it stores: `Addr` and `Cont` are computed from it,"
+                         " so writing them here would change nothing. A function with a body uses"
+                         " `effects` for the keys the body cannot answer for itself: `Ret=0` (what"
+                         " my return value points at) and `Thread=`.",
+                         "`effects Addr=`/`Cont=` is for declarations without a body"
+                         " (`extern!`); on a function with a body only `Ret` and `Thread` apply");
+                return NULL;
+            }
+        }
     }
     fd->body = parseBlock(p);
     if (!fd->body) return NULL;

@@ -1,0 +1,15 @@
+/* 反例：签过字的视图**又被赋值** ⇒ 信任立刻收回（否则 `if c { v = mem[..] } else { v = buf[..] }`
+ * 会留着一条分支的信任去放另一条分支的帧内视图）⇒ 拒 ✗ */
+use std::heap
+use std::dl
+fn main() -> i32 {
+    var h: ?ref void = dl::open("libcairo.so.2")!
+    var raw: ?ref void = dl::sym(h, "cairo_version_string")
+    if raw == null { return 1 }
+    var f: fn(ref u8) -> i64 = fn(ref u8) -> i64(raw)
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(8))!
+    var buf: [64]u8
+    v = buf[..]
+    return i32(f(v.data))
+}

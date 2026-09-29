@@ -122,9 +122,11 @@ fn main() -> i32 {
     var pxOff: u64 = pl.usedBytes()
     pl.alloc(pxBytes)!
 
-    /* 指针内联从板里取：`Addr=1` 要求它活得比这一帧久。 */
-    var surf: ?ref void = api.surfaceForData(pl.view(pxOff, pxBytes)!.data,
-                                             FORMAT_ARGB32, W, H, W * i32(4))
+    /* 画布指针：`Addr=1`（surface 会留着它）要求它活得比这一帧久 —— 板内视图满足这一点，
+     * 而"存进局部再看它指向哪"这件事由库签的 `effects Ret=0` 保证（§9.15），所以这里不必内联：
+     * `var px = pl.view(...)!` 之后再给 C 也合法。 */
+    var px: mut slice<u8> = pl.view(pxOff, pxBytes)!
+    var surf: ?ref void = api.surfaceForData(px.data, FORMAT_ARGB32, W, H, W * i32(4))
     if surf == null {
         io::cout << " surface=fail\n"
         pl.close()
@@ -202,7 +204,6 @@ fn main() -> i32 {
      *   · 白（0.925, 0.949, 0.976）→ 中间三个字母。
      * 位置也查：四条边（y=26 那条上沿、y=486 下沿、x=26 左沿、x=486 右沿）各有绿色，
      * 中间那条横带（y=250..300）有白色 —— 空图、纯色图、画错位置都过不了。 */
-    var px: mut slice<u8> = pl.view(pxOff, pxBytes)!
     var different: i64 = 0
     var green: i64 = 0
     var white: i64 = 0

@@ -82,7 +82,10 @@ struct plate {
 
     /* 申请 `n` 字节，返回**板内视图**；板满了返回 `none`（调用点写 `!` 表示"我知道还有地方"，
      * 或者 match 一下）。commit 按 `CHUNK` 粒度做：一次 `mprotect` 管一片，不是每页一次。 */
-    fn alloc(self: mut ref plate, n: u64) -> ?mut slice<u8> {
+    /* `effects Ret=0`：我返回的视图**不指向调用方的任何帧**（板是 `mmap` 来的，活到 `close`）。
+     * 这一句是 stdlib 替所有使用者签的 —— 用户于是可以 `var v = pl.alloc(n)!` 之后再 `v.data`
+     * 交给任何没签字的 C 函数，自己一个字都不用写。签字只放一处，且在能证明它的这一层。 */
+    fn alloc(self: mut ref plate, n: u64) -> ?mut slice<u8> effects Ret=0 {
         match self.pAllocOff(n) {
             some(off) => { return some(self.mem[i64(off)..i64(off + n)]) }
             none      => { return none }
@@ -92,7 +95,7 @@ struct plate {
     /* 同一个申请的**裸指针**出口。存在的理由很具体：板内的指针要交给 C（表的门），而"先把视图
      * 存进局部、再取 `.data`"会被逃逸分析挡住 —— 存进局部的视图在它眼里只有本帧的寿命，而
      * `Addr=1` 那种签名要求活得更久（实测）。这里视图是**临时**的，深度跟着 `self`（参数，0）。 */
-    fn allocPtr(self: mut ref plate, n: u64) -> ?ref u8 {
+    fn allocPtr(self: mut ref plate, n: u64) -> ?ref u8 effects Ret=0 {
         match self.pAllocOff(n) {
             some(off) => { return self.mem[i64(off)..i64(off + n)].data }
             none      => { return null }
@@ -106,7 +109,7 @@ struct plate {
      * （"我存了你的指针"）要求它活得比这一帧久，于是编译期就挡住（实测报
      * "may be kept by C forever, but it points into this frame (depth 1)"）。直接从板里取就没这问题：
      * 视图的深度跟着 `self`（参数，深度 0）。 */
-    fn view(self: mut ref plate, off: u64, n: u64) -> ?mut slice<u8> {
+    fn view(self: mut ref plate, off: u64, n: u64) -> ?mut slice<u8> effects Ret=0 {
         if self.closed { return none }
         if off + n > self.reserved { return none }
         if off + n > self.committed { return none }
@@ -152,7 +155,7 @@ struct plate {
     }
 
     /* 申请 + 拷进去：宿主最常用的一步（"把这块数据放进板里，给我板内视图"）。 */
-    fn store(self: mut ref plate, src: slice<u8>) -> ?mut slice<u8> {
+    fn store(self: mut ref plate, src: slice<u8>) -> ?mut slice<u8> effects Ret=0 {
         var dst: mut slice<u8> = self.alloc(u64(src.len))?
         if self.copyIn(dst, src) < i64(0) { return none }
         return some(dst)

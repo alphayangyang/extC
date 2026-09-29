@@ -104,6 +104,18 @@ typedef struct {
      * the slot depth, the conservative answer; a declaration or a retarget narrows it
      * to the real depth of the value. */
     int         refDepth;
+    /* Set when this binding was initialized from an expression whose storage is provably **not**
+     * in any frame: a chain rooted at a global, or a call whose declaration says `effects Ret=0`
+     * (the plate's views; `mmap`-style handles). Then a **view**-typed binding answers with
+     * `refDepth` instead of its slot's block depth, which is what lets
+     *
+     *     var v: mut slice<u8> = pl.view(off, n)!      // 板的内存，不在帧里
+     *     c.func(v.data)                               // 未签字的 C 调用也接受
+     *
+     * work without the user signing anything (`std::heap` signed `Ret=0` once). Conservative by
+     * default: an unmarked binding keeps the slot depth -- a `new` block, a stack array, an arena
+     * allocation, or a callee that did not claim it. */
+    bool        outOfFrame;
     /* The value this binding was initialized with, or NULL when it had no initializer.
      *
      * Promotion walks origins backwards:
@@ -798,6 +810,9 @@ int valDepthForStore (Checker *, Expr *);
 /* Depth of the storage a place expression denotes, as opposed to the depth of what a reference
  * stored there points at. */
  int placeDepth (Checker *c, Expr *e);
+/* Does this expression's storage provably live outside every frame? (`effects Ret=0` calls, and
+ * chains rooted at a global.) Used where a binding is initialized, to mark it (`Sym.outOfFrame`). */
+ bool exprOutOfFrame (Checker *c, Expr *e);
 /* Arena level at which the storage of a place lives, which is a different question from
  * `placeDepth`. */
  int storeLayer (Checker *c, Expr *e);
