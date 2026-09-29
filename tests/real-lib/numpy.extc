@@ -1,0 +1,83 @@
+// expect: c-api-version=33554432 size-via-capi=5 sum=10
+// **通过 ABI 接 numpy**（2026-09-29 实测）。numpy 是最狠的一块试金石：它的 C API 不是普通符号，
+// 而是**运行期拿到的一张函数指针表** —— 正好是 extC 这套东西的形状。
+//
+// 三步，全部零 C 胶水：
+//   ① `dlopen("libpython3.14.so.1.0")` + `Py_Initialize()` —— 普通导出符号 ✓
+//   ② numpy 的 C-API 表：`numpy._core._multiarray_umath._ARRAY_API` 是个 capsule；
+//      `PyCapsule_GetPointer` **由我们自己签类型**（返回 `?ref apiTable`）⇒ 那张表就变成了
+//      **字段访问** ✓ 不用指针算术、不用 `void*`→`ref T` 的转换（那条回路语言里故意不存在 ✓）
+//   ③ 表的每一格按**装着的** numpy 头文件里 `PyArray_API[N]` 的编号镜像成 `@frozen` 字段
+//      （本文件 `use npytable` 用的是 run.sh 现场从 `__multiarray_api.h` 生成的镜像 ✓）
+//
+// 为什么编号必须**读**不能猜：实测猜错一格（槽 1）就是 SIGSEGV ✗ —— C 的 ABI 不为签名负责，
+// 这一格只能由头文件说话。
+use std::io
+use std::dl
+use npytable                       /* run.sh 生成：表镜像（只含用到的格子，编号来自真头文件） */
+
+let PY_LIB: slice<u8> = "libpython3.14.so.1.0"
+
+extern!("c") fn Py_Initialize() -> void
+extern!("c") fn PyImport_ImportModule(name: ?ref u8) -> ?ref void
+extern!("c") fn PyObject_GetAttrString(o: ref void, name: ?ref u8) -> ?ref void
+extern!("c") fn PyCapsule_GetPointer(c: ref void, name: ?ref u8) -> ?ref apiTable
+extern!("c") fn PyTuple_New(n: i64) -> ?ref void
+extern!("c") fn PyLong_FromLong(v: i64) -> ?ref void
+extern!("c") fn PyTuple_SetItem(t: ref void, i: i64, v: ref void) -> i32
+extern!("c") fn PyObject_CallObject(f: ref void, args: ref void) -> ?ref void
+extern!("c") fn PyObject_Str(o: ref void) -> ?ref void
+extern!("c") fn PyUnicode_AsUTF8(o: ref void) -> ?ref u8
+
+fn cs(s: slice<u8>) -> ref u8 { return s.data }
+
+fn main() -> i32 {
+    var h: ref void = dl::open(PY_LIB)!
+    Py_Initialize()
+
+    /* ② 表：按 numpy 自己的配方（`_import_array()`）取 `_ARRAY_API` */
+    var mm: ?ref void = PyImport_ImportModule(cs("numpy._core._multiarray_umath"))
+    if mm == null { io::cout << "import=failed\n"  return 1 }
+    var mv: ref void = mm
+    var cc: ?ref void = PyObject_GetAttrString(mv, cs("_ARRAY_API"))
+    if cc == null { io::cout << "capsule=missing\n"  return 1 }
+    var cv: ref void = cc
+    var tt: ?ref apiTable = PyCapsule_GetPointer(cv, null)
+    if tt == null { io::cout << "table=missing\n"  return 1 }
+    var t: ref apiTable = tt
+
+    /* ③ 经表的槽 0 问版本（`PyArray_GetNDArrayCVersion` ⇒ numpy 2.0 API = 33554432） */
+    io::cout << "c-api-version=" << i64(t.ver())
+
+    /* 真数组：numpy.arange(5)（Python 层，用元组传参 —— `PyObject_CallFunction` 是变参 ✗） */
+    var np: ?ref void = PyImport_ImportModule(cs("numpy"))
+    if np == null { io::cout << " numpy=missing\n"  return 1 }
+    var npv: ref void = np
+    var ar: ?ref void = PyObject_GetAttrString(npv, cs("arange"))
+    if ar == null { io::cout << " arange=missing\n"  return 1 }
+    var arv: ref void = ar
+    var args: ref void = PyTuple_New(i64(1))!
+    PyTuple_SetItem(args, i64(0), PyLong_FromLong(i64(5))!)
+    var arr: ?ref void = PyObject_CallObject(arv, args)
+    if arr == null { io::cout << " arange=failed\n"  return 1 }
+    var arrv: ref void = arr
+
+    /* ③b 经表的槽 59（`PyArray_Size`）直接问：这个数组多大 —— **C-API 快路** */
+    io::cout << " size-via-capi=" << t.size(arrv)
+
+    /* 再用 Python 层算一次和，两条路都走通 */
+    var sf: ?ref void = PyObject_GetAttrString(arrv, cs("sum"))
+    if sf == null { io::cout << " sum=missing\n"  return 1 }
+    var sfv: ref void = sf
+    var s: ?ref void = PyObject_CallObject(sfv, PyTuple_New(i64(0))!)
+    if s == null { io::cout << " sum=failed\n"  return 1 }
+    var sv: ref void = s
+    var sc: ?ref void = PyObject_Str(sv)
+    if sc == null { io::cout << " str=failed\n"  return 1 }
+    var scv: ref void = sc
+    var txt: ?ref u8 = PyUnicode_AsUTF8(scv)
+    if txt == null { io::cout << " utf8=failed\n"  return 1 }
+    var tv: ref u8 = txt
+    io::cout << " sum=" << dl::viewCStr(tv) << "\n"
+    return 0
+}

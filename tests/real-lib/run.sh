@@ -68,5 +68,35 @@ else
     echo "  FAIL cairo  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
+echo "== 真库：通过 ABI 接 numpy（Python C API + numpy 的 C-API 函数指针表）=="
+if ! python3 -c "import numpy" 2>/dev/null; then
+    echo "  跳过  numpy 不在本机（这一步需要它）。拿到它不需要 root："
+    echo "        pip install --target /tmp/npypip numpy && PYTHONPATH=/tmp/npypip ./tests/real-lib/run.sh"
+else
+    NPY_INC=$(python3 -c "import numpy; print(numpy.get_include())")
+    PY_LIBDIR=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+    # `LIBRARY` 是**静态**库名（libpython3.14.a ✗ 没有它）⇒ 要 `LDLIBRARY`（.so ✓）
+    PY_LINK=$(python3 -c "import sysconfig; v=sysconfig.get_config_var('LDLIBRARY'); print(v[3:-3] if v.startswith('lib') and v.endswith('.so') else v)")
+    PY_SO=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('INSTSONAME'))")
+    mkdir -p build
+    # 表镜像：编号与签名**从装着的头文件里读**（猜就是 SIGSEGV —— 实测过 ✗）
+    if python3 tools/npytable.py "$NPY_INC/numpy/__multiarray_api.h" "$PY_SO" > build/npytable.extc; then
+        if "$EXTC" -w --no-line-map -I build -o build/numpy.c tests/real-lib/numpy.extc 2>build/numpy.err \
+           && gcc -std=c11 -o build/numpy build/numpy.c -L"$PY_LIBDIR" -l"${PY_LINK#lib}" -Wl,-rpath,"$PY_LIBDIR" 2>>build/numpy.err; then
+            if out=$(PYTHONPATH="${PYTHONPATH:-}" ./build/numpy 2>/dev/null) \
+               && echo "$out" | grep -qF "c-api-version=33554432 size-via-capi=5 sum=10"; then
+                echo "  ok   numpy  ->  $out"
+                echo "        （表由 ${NPY_INC##*/} 的 __multiarray_api.h 现场生成：槽 0 版本 · 槽 59 PyArray_Size）"
+            else
+                echo "  FAIL numpy  ->  输出对不上：$(echo "$out" | tr '\n' '|')"; fail=1
+            fi
+        else
+            echo "  FAIL numpy  ->  编/链不过：$(head -2 build/numpy.err | tr '\n' '|')"; fail=1
+        fi
+    else
+        echo "  FAIL numpy  ->  表镜像生成失败"; fail=1
+    fi
+fi
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]
