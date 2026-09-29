@@ -274,6 +274,7 @@ std::heap	plate	store	method	public
 std::heap	plate	used	field	public
 std::heap	plate	usedBytes	method	public
 std::heap	plate	view	method	public
+std::heap	plate	viewAt	method	public
 std::io	-	accDigit	fn	internal
 std::io	-	errWrite	fn	internal
 std::io	-	fillState	fn	internal

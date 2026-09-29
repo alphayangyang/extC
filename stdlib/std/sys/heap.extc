@@ -11,18 +11,22 @@
  *    所以这一格由编译器发三行 C（`stdlib/std/sys/heap.extc` 一被声明就发，见 codegen 的
  *    `needPlate`）。
  */
-extern!("libc") fn mmap(addr: ?ref void, len: u64, prot: i32, flags: i32, fd: i32, off: i64) -> ?ref u8
+/* 四个调用都**不留**交给它们的指针（`mmap` 不保存 `addr` 那个建议地址；`munmap`/`mprotect`
+ * 只当场读；`extc_viewOf` 只是把 (指针,长度) 打包）。签上是**真话**，而且很有用：不签的话，
+ * 任何包一层的 extC 函数（比如 `std::heap` 的 `viewAt`）的 effect 总结都会变成"可能留住每个实参"
+ * ⇒ 调用点退化到最坏情况 ✗（实测：`pl.viewAt(out[..].data, 4)` 直接被拒）。 */
+extern!("libc") fn mmap(addr: ?ref void, len: u64, prot: i32, flags: i32, fd: i32, off: i64) -> ?ref u8 effects Addr=0 Cont=0
     effects Addr=0 Cont=0
-extern!("libc") fn mprotect(p: ref void, len: u64, prot: i32) -> i32
+extern!("libc") fn mprotect(p: ref void, len: u64, prot: i32) -> i32 effects Addr=0 Cont=0
     effects Addr=0 Cont=0
-extern!("libc") fn munmap(p: ref void, len: u64) -> i32
+extern!("libc") fn munmap(p: ref void, len: u64) -> i32 effects Addr=0 Cont=0
     effects Addr=0 Cont=0
 
 /* `@builtin`（不是 `extern!`）：**编译器**给这个函数体（codegen 按 `needPlate` 发三行 C 的
  * `extc_viewOf`）。写成 `extern!` 是不行的：它的返回类型是视图 —— 一个不是 `@frozen` 的聚合 ——
  * 而 `extern!` 的签名要守"一个机器字"那条边界规则（实测报错 "cannot cross the C boundary"）。
  * `@builtin` 的语义本来就对：它不是 C 库里的函数，是编译器实现的原语（与 `parallel::run` 同族）。 */
-@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>
+@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8> effects Addr=0 Cont=0
 
 /* `memcpy` 后面的门（与 `std::sys::mem` 的 `extc_memEq` 同一个理由：它的签名里有 `const void *`
  * 与 `size_t`，extC 都写不出来，而手写声明会与 `<string.h>` 撞）。板的 `copyIn`/`copyOut` 要

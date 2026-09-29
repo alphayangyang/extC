@@ -3465,6 +3465,35 @@ let n = io::readLine(line[..])
 
 ---
 
+## 定案 96 · **`@builtin` 与 `std::sys::*` 只有标准库能碰**（2026-09-29，主人「为了C ABI开了这么多口，这些口会不会导致问题？……我现在感觉很危险啊」）
+
+**先量**（这是这条定案的由来）：不用碰 C 也能在语言里造 UB ——
+
+```extc
+use std::sys::heap as sh
+var mem: [8]u8
+var v: mut slice<u8> = sh::extc_viewOf(mem[..].data, i64(1000000))   /* 长度是自己写的 */
+io::cout << i64(v[999999])                                           /* 边界检查形同虚设 */
+```
+
+实测：编得过、跑起来、**rc=139**（落到映射里就是静默读错 ⇒ 比崩更坏）。`std::sys::heap` 自己的注释
+早就写着"v1 尚未强制只有特权模块能声明原语" —— 这条把它强制掉。
+
+**口径**
+
+1. **`@builtin` 声明只有标准库能写**（加载器按文件位置判，入口文件也覆盖）。用户程序要用原语，
+   用库的**有检查的门**：`plate::open/alloc/view(off,n)/viewAt(p,n)/holds(p)`。
+2. **`std::sys::heap` 只有标准库能导入**（一张显式清单，一句话就能加下一个；每个条目必须配一条
+   反例判据）。`std::sys::io` 与 `std::sys::domain` 不在此列（它们不做地址空间的事）。
+3. 新增 `plate::viewAt(p, n)`：从 C 拿回指针之后，把它变成视图的**唯一正路**（先 `holdsRange`
+   再交给特权层），返回 `?mut slice<u8> effects Ret=0`。
+4. 手册 §[1](manual/01-safety.md) 里"**唯一一处主动交出去的 UB** 是 `@unchecked`"这句话**作废** ——
+   改成一张**UB 出口清单**（九个出口、各自的门、以及"纯 extC 碰不碰得到"），因为 C ABI 那条线上
+   还有 `fn` 转换、`effects` 谎报、`@frozen` 布局、`!` 这几处。
+
+**判据**：`tests/errors/builtin_outside_std.extc`、`tests/errors/privileged_import.extc`（都必须在
+编译期被挡）+ `tests/cabi/platetable.extc` 的 `viewat=rejected`（板外指针在 `viewAt` 也过不去）。
+
 ## 定案 95 · **`trap(msg)`：用户可写的 trap，与编译器自己插的走同一条路**（2026-09-29，主人「加，一般来说能trap就够了。这个不是异常，这是无法处理的事情」）
 
 **为什么**：此前 trap 只有编译器插的那些（越界 / 除零 / 移位 / 收窄），用户想"这里必须停"没有任何

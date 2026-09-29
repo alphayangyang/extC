@@ -1,0 +1,4 @@
+// 反例：`@builtin` = "运行期里有这么一个函数，照这个签名调它" ⇒ 只有标准库能声明。
+// 用户自己写一句就等于自己造原语（任意 (指针,长度) 变视图，边界检查随即形同虚设）。
+@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>
+fn main() -> i32 { return 0 }

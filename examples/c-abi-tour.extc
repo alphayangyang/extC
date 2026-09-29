@@ -1,0 +1,93 @@
+// expect: pod=3/1 pid=yes plate=ok viewat=rejected ts=yes write=ok
+// **C ABI 的全貌**（2026-09-29）：一个能编能跑的文件，按"零签字 → 要签字"读一遍。
+//
+//   ① dl 表（零签字）：`fn` 字段 + 一次显式转换 = 作者的签名；**布局按 `@frozen` 过界**
+//   ② 板（零签字）：内存从板里给 ⇒ C 随便留都不怕（库里用 `Ret=0` 签过一次）
+//   ③ `extern!`（链接）+ **唯一要签的那一格**：把帧内地址就地交给 C
+//   ④ 失败怎么走：可预期的失败是返回值（`option`），不能继续才 `trap`
+use std::io
+use std::dl
+use std::heap
+
+let CLOCK_MONOTONIC: i32 = 1
+
+/* 名字**不必**和 C 那边一样：过界靠**布局**（`@frozen`）与**符号名**，不是类型名。
+ * `div_t` 是 `{int,int}` ⇒ 8 字节，一个 INTEGER eightbyte ⇒ 按值返回时 ABI 分类由 gcc 两边各做一次 ✓
+ * （40 字节的、`{float,float}` 的同样能过 —— 见 C-ABI.md §9.18 的实测表） */
+@frozen struct divResult { quot: i32  rem: i32 }
+
+/* 同一份布局用在 `extern!` 上会和 `<stdlib.h>` 的 `div_t` 打架（codegen 会发原型，C 看得见），
+ * 所以"按值传结构体"这条在这里走 **dl**：表不发原型，也就没有重名问题 ✓ */
+extern!("libc") fn getpid() -> i32
+
+struct libcApi {
+    handle: ref void
+    div:    fn(i32, i32) -> divResult        /* 按值进、按值出 */
+    pid:    fn() -> i32
+}
+
+fn openLibc() -> libcApi {
+    var h: ref void = dl::open("libc.so.6")!
+    var d: ref void = dl::sym(h, "div")!
+    var p: ref void = dl::sym(h, "getpid")!
+    return libcApi {
+        handle: h,
+        div: fn(i32, i32) -> divResult(d),    /* 这两句转换就是作者的话："这个地址就是这个签名" */
+        pid: fn() -> i32(p)
+    }
+}
+
+/* ③ 就地交帧内地址：这一句要签。`clock_gettime` 往**栈上的** `ts` 里写 ⇒ "把帧内地址就地交给 C"。
+ * 少了 `effects Addr=0 Cont=0`，编译器只能按最坏情况算（C 可能把这个指针留到将来）⇒ 拒 ✗
+ * —— 这就是 `effects` 存在的全部理由。libc 碰巧不留，所以这句话是**真的** ✓ */
+@frozen struct timespec { sec: i64  nsec: i64 }
+extern!("libc") fn clock_gettime(clk: i32, ts: ref timespec) -> i32 effects Addr=0 Cont=0
+
+fn main() -> i32 {
+    /* ① dl 表：字段就是函数，调用就是 `lib.div(7, 2)`。一个 `effects` 都没写（= 最坏情况：
+     * "它可能留住每个实参"），而这份代码照样安全 —— 因为底下没有一个是**帧内**地址 ✓ */
+    var lib: libcApi = openLibc()
+    var q: divResult = lib.div(i32(7), i32(2))
+    io::cout << "pod=" << q.quot << "/" << q.rem
+
+    /* 表里那个槽没签字 ⇒ C 收不收指针都随便；`getpid` 一个实参也不收 */
+    if lib.pid() > i32(0) { io::cout << " pid=yes" }
+
+    /* ② 板：内存从板里给。`alloc` 返回的视图**存进局部**也合法 —— 库里签了 `effects Ret=0`
+     * （"返回的视图不指向调用方的任何帧"）⇒ 它的深度取"指向的存储"，不取"槽所在的块" ✓ */
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(16))!
+    v[0] = u8(104)  v[1] = u8(105)  v[2] = u8(10)            /* "hi\n" */
+    io::cout << " plate=ok"
+
+    /* ②b 从 C 拿回一个指针之后，把它变成视图的**唯一正路**是 `viewAt`：先做一次区间检查。
+     * `loc` 在栈上、不在板里 ⇒ 必须说不 ✓（"一道门"就是这一格） */
+    var loc: [8]u8
+    match pl.viewAt(loc[..].data, u64(4)) {
+        some(w) => { io::cout << " viewat=accepted" }
+        none    => { io::cout << " viewat=rejected" }
+    }
+
+    /* ③ 帧内地址就地交：`ts` 在栈上，这一句之所以编得过，全靠在上面签了那一个槽 */
+    var ts: timespec = timespec { sec: 0, nsec: 0 }
+    var rc: i32 = clock_gettime(CLOCK_MONOTONIC, ref ts)
+    if rc == i32(0) && ts.sec > i64(0) { io::cout << " ts=yes" } else { io::cout << " ts=no" }
+
+    /* ⑤ 未签字的 dl 槽 + 板内视图：`write` 那条没有 effects（最坏情况），而 `v` 在板里
+     * ⇒ 交给它合法 ✓。换成**栈上**缓冲区的指针，同一句在编译期就被拒 ✗
+     * —— 这就是"库签一次、用户零签字"的形状：板里的东西本来就是 C 留也留不坏的 */
+    var w: ref void = dl::sym(lib.handle, "write")!
+    var writeFn: fn(i32, ref u8, u64) -> i64 = fn(i32, ref u8, u64) -> i64(w)
+    var n: i64 = writeFn(i32(1), v.data, u64(3))
+    if n == i64(3) { io::cout << " write=ok" } else { io::cout << " write=short" }
+
+    /* ④ 失败怎么走：可预期的失败是**返回值**（`open`/`sym` 返回 `option`），所以上面用 `!` 是
+     * 作者的签字。真"不能继续"时才 `trap` —— 它印位置并退出（码 1），临终钩子照跑，
+     * 所以已经缓冲的输出不会丢。这里放在一个不会走到的分支上，只为让你看见它的形状 ✓ */
+    if false { trap("这一格坏了：不变量不成立") }
+
+    pl.close()
+    dl::close(lib.handle)
+    io::cout << "\n"
+    return 0
+}

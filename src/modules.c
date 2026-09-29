@@ -1744,9 +1744,51 @@ static void mergeUnit(Loader *L, ModUnit *u) {
  *     topological order.
  */
 
+/* Modules that may be imported **only from inside the standard library**.
+ *
+ * Every entry is a hole. `std::sys::heap` can turn any (pointer, length) into a view
+ * (`extc_viewOf`), unmap any range (`munmap`) and map anywhere (`mmap`) -- the rest of the
+ * language is built so that a program can neither forge a pointer nor grow a length, and one
+ * import would step around all of it (measured before this gate existed: a fabricated length of
+ * 1,000,000 over an 8-byte global, indexed at 999,999, ran and died with SIGSEGV -- and would
+ * have read silently wrong bytes had the address happened to be mapped).
+ *
+ * The list is deliberately short ("特殊权限不能给太多") and every entry gets a negative test
+ * (`tests/errors/privileged_import.extc`). What a program normally needs is `std::heap`: the plate's
+ * doors are **checked** (`open` / `alloc` / `view(off, n)` / `viewAt(p, n)` / `holds(p)`). */
+static const char *PRIVILEGED_MODULES[] = { "std::sys::heap", NULL };
+
+static bool isPrivilegedImport(const char *modPath) {
+    for (int i = 0; PRIVILEGED_MODULES[i]; i++)
+        if (strcmp(modPath, PRIVILEGED_MODULES[i]) == 0) return true;
+    return false;
+}
+
+/* Whether `file` lives inside the standard library tree. Both the std directory and the resolved
+ * module paths are built from the same string (`L.stdDir`), so a prefix comparison is exact. */
+static bool isStdlibFile(Loader *L, const char *file) {
+    if (!L->stdDir || !file) return false;
+    return strncmp(file, L->stdDir, strlen(L->stdDir)) == 0;
+}
+
 static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFile, int line) {
     char *file = resolveModFile(L, modPath, importerFile);
     if (!file) return NULL;
+
+    if (isPrivilegedImport(modPath) && !isStdlibFile(L, importerFile)) {
+        fprintf(stderr,
+                "%s:%d: error: `%s` is the standard library's **privileged layer**: it turns any"
+                " (pointer, length) into a view and can map or unmap any range of the address"
+                " space.\n"
+                "note:  importing it from a program would step around the whole safety net"
+                " (bounds checks, escape checks, the plate's range check), so only the standard"
+                " library may.\n"
+                "note:  what a program normally needs is `std::heap`: `plate::open` / `alloc` /"
+                " `view(off, n)` / `viewAt(p, n)` / `holds(p)` are the checked doors.\n",
+                importerFile, line, modPath);
+        L->errors++;
+        return NULL;
+    }
 
     ModUnit *u = findUnit(L, file);
     if (u) {
@@ -1788,6 +1830,24 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
         fprintf(stderr, "[mod] loaded %s: %zu tokens, %zu funcs, %zu globals\n",
                 file, toks.len, u->mod.funcs.len, u->mod.globals.len);
     if (u->ctx->hasError) { L->errors++; u->state = 2; return u; }
+
+    /* `@builtin` = "the runtime has a function with this signature" -- that is, **naming a
+     * primitive**. Only the standard library may (定案 96): one such declaration hands a program a
+     * pointer or a length the rest of the language cannot forge (measured before this check
+     * existed: `@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>` plus a length of
+     * 1,000,000 over an 8-byte global compiled and ran, rc=139). */
+    for (size_t i = 0; i < u->mod.funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&u->mod.funcs, i);
+        if (f->isBuiltin && !isStdlibFile(L, u->file)) {
+            ctxError(u->ctx, f->line, 1,
+                     "Builtin primitives are how the standard library names what the runtime"
+                     " implements; a program uses the library's checked doors instead"
+                     " (`std::heap`'s `plate::view(off, n)` / `viewAt(p, n)`).",
+                     "`@builtin` declarations are standard-library only");
+            L->errors++;
+            break;
+        }
+    }
 
     /* Only the root file may define `main`: a module is a library. */
     for (size_t i = 0; i < u->mod.funcs.len; i++) {
@@ -1867,7 +1927,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
      * here; a real module such as `std::io` needs a real file. */
     {
         const char *env = getenv("EXTC_STD");
-        if (env && *env) L.stdDir = env;
+        if (env && *env) { L.stdDir = env; stdDirSeen = L.stdDir; }
         else {
             char buf[4096];
             ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
@@ -1885,6 +1945,21 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     else { L.ctxs = (Vec *)arenaAllocZero(a, sizeof(Vec)); vecInit(L.ctxs, a, sizeof(void *)); }
     if (searchDirs) L.searchDirs = *searchDirs;
     else vecInit(&L.searchDirs, a, sizeof(void *));
+
+    /* The same `@builtin` rule for the **entry file**, which the driver parsed before this call and
+     * which therefore never goes through `loadUnit`. */
+    for (size_t i = 0; i < rootm->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&rootm->funcs, i);
+        if (f->isBuiltin && !isStdlibFile(&L, rootPath)) {
+            ctxError(rootCtx, f->line, 1,
+                     "Builtin primitives are how the standard library names what the runtime"
+                     " implements; a program uses the library's checked doors instead"
+                     " (`std::heap`'s `plate::view(off, n)` / `viewAt(p, n)`).",
+                     "`@builtin` declarations are standard-library only");
+            L.errors++;
+            break;
+        }
+    }
 
     /* The root file's own imports. */
     for (size_t i = 0; i < rootm->uses.len; i++) {

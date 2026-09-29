@@ -548,6 +548,32 @@ fn open(lib: slice<u8>) -> ?api { … }         /* dlopen + 每个符号一句 d
 头文件从哪来：`-dev` 包，或者不要 root 的 `apt-get download libcairo2-dev && dpkg-deb -x …`。
 生成物入库，`--check` 进闸门（头文件不在的机器上显式跳过）。
 
+### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
+
+`@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和
+`std::sys::heap`（板的特权层：`mmap`/`mprotect`/`munmap` + `extc_viewOf`）都**只有标准库能碰**：
+
+```extc
+@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>   // ✗ 程序里不许写
+use std::sys::heap as sysheap                                 // ✗ 程序里不许导入
+```
+
+理由很直白：语言里其它地方都造不出指针、也改不了长度（没有指针运算、没有跨类型转换、下标有检查），
+而这两句任意一句就能把整张网拆掉 —— 实测（门加之前）8 字节的全局配 1,000,000 的长度，读第 999,999
+个字节，编得过、跑起来、rc=139。
+
+程序正常要用的是 **`std::heap` 的板**，它的门都是**有检查**的：
+
+```extc
+var pl = heap::plate::open(heap::DEFAULT_RESERVE)!
+var v  = pl.view(off, n)!        /* 板的偏移 + 长度（在册区间内） */
+var w  = pl.viewAt(p, n)!        /* 从 C 拿回的指针：先 holdsRange，再变视图 */
+var ok = pl.holds(p)             /* 一个指针对不对得上这块板 */
+```
+
+判据：`tests/errors/builtin_outside_std.extc`、`tests/errors/privileged_import.extc`（两条都必须被
+编译期挡掉），以及 `tests/cabi/platetable.extc` 里的 `viewat=rejected`（板外指针在 `viewAt` 也过不去 ✓）。
+
 ### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
 
 ```extc

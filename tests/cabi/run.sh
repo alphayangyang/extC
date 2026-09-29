@@ -140,7 +140,7 @@ echo '== ⑤ 板 + 表 + C 模块（HEAP.md §2 那张表，两边都签字）==
 if gcc -std=c11 -fPIC -shared -o build/cabi-platetable.so tests/cabi/platetable.c 2>"$tmp/err5"; then
     if out=$("$EXTC" --run tests/cabi/platetable.extc 2>&1); then
         ok=1
-        for p in "init=16" "holds=true" "byte=42" "logged=16" "outside=rejected" "closed=0"; do
+        for p in "init=16" "holds=true" "byte=42" "logged=16" "outside=rejected" "viewat=rejected" "closed=0"; do
             echo "$out" | grep -qF -- "$p" || { ok=0; echo "  FAIL 输出里缺「$p」"; }
         done
         if [ "$ok" = 1 ]; then echo "  ok   plate-table  ->  $(echo "$out" | tr '\n' '|')（模块经表申请板内内存 → 回调宿主的门验一次 → 还回板内指针过 holds → 板外的被挡住）"

@@ -50,7 +50,23 @@ one use-advice-works-when-followed "$(src use_advice_works.extc)" "ok"
 # `ext` 也是个合法变量名：`ref ext` / `-ext` / `f(ext)` 都要按变量解析（它们从前被当成算符）
 one variable-named-ext                    "$(src variable_named_ext.extc)" "7"
 # `@builtin` 也能声明 effects（从前 `effects` 会被当成新声明）
-one builtin-can-declare-effects "$(src builtin_effects.extc)" "7"
+# `@builtin` 现在**只有标准库能声明**（定案 96）⇒ 这条"解析器接受 `@builtin` + `effects`"的判据
+# 要在一个"标准库树"里跑。`$EXTC_STD` 指到一个临时目录，里面放一份探针 + 指向真 std 的软链
+# （不软链的话 `use std::io` 找不到）。
+fake="$tmp/fakestd"; mkdir -p "$fake"; ln -sfn "$(cd "$here/../.." && pwd)/stdlib/std" "$fake/std"
+cp "$(src builtin_effects.extc)" "$fake/probe.extc"
+if EXTC_STD="$fake" "$EXTC" -w --no-line-map -o "$tmp/b.c" "$fake/probe.extc" 2>"$tmp/e1"; then
+    if gcc -O2 -std=c11 -fwrapv -Wall -Wextra -Werror -o "$tmp/b" "$tmp/b.c" 2>"$tmp/e2"; then
+        got=$("$tmp/b")
+        [ "$got" = "7" ] && ok builtin-can-declare-effects "→ $got（在标准库树里 ✓）" \
+                         || bad builtin-can-declare-effects "期望 [7] 实得 [$got]"
+    else bad builtin-can-declare-effects "gcc: $(head -1 "$tmp/e2")"; fi
+else
+    bad builtin-can-declare-effects "extC: $(head -1 "$tmp/e1")"
+fi
+
+# 同一句话在**程序**里（不在标准库树里）必须被挡住 —— 这就是那道门本身。
+neg builtin-outside-std  "$(src ../errors/builtin_outside_std.extc)" 'standard-library only'
 
 one domain-runs-tasks "$(src domain_runs.extc)" $'1:0\n1:1\n2:0\n2:1\n2:2\ndone'
 neg domain-block-needs-object "$(src domain_needs_object.extc)" 'a trailing block needs'

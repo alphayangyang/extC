@@ -117,6 +117,15 @@ struct plate {
     }
 
     /* **那道门**：一次区间比较。板外的指针一律不是（不是"可能不是"）。 */
+    /* 从 C 拿回一个指针之后，把它变成视图的**唯一正路**：先过一遍区间检查，再交给特权层造视图。
+     * `extc_viewOf` 本身关在 `std::sys::heap` 里（用户导不进来，见定案 96），所以门外那句话
+     * "一个指针 + 一个长度 = 一片随便读写的内存"在这里被压成一次比较 ✓。 */
+    fn viewAt(self: ref plate, p: ref u8, n: u64) -> ?mut slice<u8> effects Ret=0 {
+        if n == u64(0) { return none }
+        if !self.holdsRange(p, i64(n)) { return none }
+        return some(sysheap::extc_viewOf(p, i64(n)))
+    }
+
     fn holds(self: ref plate, p: ref u8) -> bool {
         var a: u64 = u64(p)
         var base: u64 = u64(self.mem.data)

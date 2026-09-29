@@ -1,0 +1,4 @@
+// 反例：`std::sys::heap` 是标准库的**特权层**（任意 (指针,长度) 造视图、任意区间 mmap/munmap）
+// ⇒ 用户代码不许导入（定案 96）。正常程序要的是 `std::heap` 的板：它的门都是有检查的。
+use std::sys::heap as sysheap
+fn main() -> i32 { return 0 }

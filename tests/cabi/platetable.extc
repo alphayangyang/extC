@@ -1,4 +1,4 @@
-// expect: init=16 holds=true byte=42 logged=16 outside=rejected closed=0
+// expect: init=16 holds=true byte=42 logged=16 outside=rejected viewat=rejected closed=0
 // C-ABI 第 5 步 ①：**板 + 表 + C 模块**（HEAP.md §2 那张表，两边都签字）
 //
 // 分工：
@@ -19,7 +19,6 @@
 use std::io
 use std::dl
 use std::heap
-use std::sys::heap as sysheap
 
 /* 表：模块只看得到这一张。`@frozen` 是对 C 的布局承诺（tests/frozen 那套镜像测试担保它）。 */
 @frozen struct plate_api {
@@ -104,7 +103,7 @@ fn main() -> i32 {
         return 1
     }
     io::cout << " holds=true"
-    var pv: slice<u8> = sysheap::extc_viewOf(pp, i64(1))
+    var pv: slice<u8> = pl.viewAt(pp, u64(1))!        /* 公开门：先区间检查再变视图（定案 96） */
     io::cout << " byte=" << i64(pv[0])
 
     /* 模块交回来的**板外**指针：同一道门必须挡住（这就是判据的牙）。 */
@@ -114,6 +113,17 @@ fn main() -> i32 {
     } else {
         var qq: ref u8 = q
         if pl.holds(qq) { io::cout << " outside=accepted" } else { io::cout << " outside=rejected" }
+    }
+    /* 同一道门（`viewAt`）：**外面**的指针在这里也必须过不去 —— 它是"先区间检查，再变视图"。 */
+    var q2: ?ref u8 = plug.badPtr(ref api)
+    if q2 == null {
+        io::cout << " viewat=null"
+    } else {
+        var qq2: ref u8 = q2
+        match pl.viewAt(qq2, u64(1)) {
+            some(v) => { io::cout << " viewat=accepted" }
+            none    => { io::cout << " viewat=rejected" }
+        }
     }
     io::cout << " logged=" << logged
 

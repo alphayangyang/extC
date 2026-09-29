@@ -303,6 +303,17 @@ pl.<span class="f">close</span>()                                               
 <p><strong>工具不做的三件事</strong>，都是刻意的：</p>
 <ul><li><strong>不生成 <code>effects</code></strong>：槽不签 = 最坏情况 = <strong>安全的那一侧</strong>（帧内地址会被拒）。只有"把帧内地址 <strong>就地</strong>交给 C"那几个函数要人签一句 <code>Addr=0 Cont=0</code>（§12.3：那是 <code>effects</code> 唯一存在的理由）。</li><li><strong>不假装布局</strong>：不认识的指针一律 <code>?ref void</code>。要读结构体字段就自己写 <code>@frozen</code> 镜像（§12.3.1）， 按类型撒谎没有任何检查会拦得住。</li><li><strong>不猜</strong>：不支持的东西（按值传的结构体、变参……）会<strong>列出来并以非 0 退出</strong>；枚举常量由 clang 真求值（隐式值也不猜）。宁可不生成，也不要一个签名错的绑定。</li></ul>
 <p>头文件从哪来：<code>-dev</code> 包，或者不要 root 的 <code>apt-get download libcairo2-dev &amp;&amp; dpkg-deb -x …</code>。 生成物入库，<code>--check</code> 进闸门（头文件不在的机器上显式跳过）。</p>
+<h3 id="12-6-特权层-builtin-与-std-sys-只有标准库能用-定案-96">12.6 特权层：<code>@builtin</code> 与 <code>std::sys::*</code> 只有标准库能用（定案 96）</h3>
+<p><code>@builtin</code> 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是<strong>给原语起名字</strong>。它和 <code>std::sys::heap</code>（板的特权层：<code>mmap</code>/<code>mprotect</code>/<code>munmap</code> + <code>extc_viewOf</code>）都<strong>只有标准库能碰</strong>：</p>
+<pre class="lang-extc"><code>@builtin <span class="k">fn</span> <span class="f">extc_viewOf</span>(p: <span class="k">ref</span> <span class="t">u8</span>, n: <span class="t">i64</span>) -&gt; <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">u8</span>&gt;   <span class="c">// ✗ 程序里不许写</span>
+<span class="k">use</span> std::sys::heap <span class="k">as</span> sysheap                                 <span class="c">// ✗ 程序里不许导入</span></code></pre>
+<p>理由很直白：语言里其它地方都造不出指针、也改不了长度（没有指针运算、没有跨类型转换、下标有检查）， 而这两句任意一句就能把整张网拆掉 —— 实测（门加之前）8 字节的全局配 1,000,000 的长度，读第 999,999 个字节，编得过、跑起来、rc=139。</p>
+<p>程序正常要用的是 <strong><code>std::heap</code> 的板</strong>，它的门都是<strong>有检查</strong>的：</p>
+<pre class="lang-extc"><code><span class="k">var</span> pl = heap::plate::<span class="f">open</span>(heap::DEFAULT_RESERVE)!
+<span class="k">var</span> v  = pl.<span class="f">view</span>(off, n)!        <span class="c">/* 板的偏移 + 长度（在册区间内） */</span>
+<span class="k">var</span> w  = pl.<span class="f">viewAt</span>(p, n)!        <span class="c">/* 从 C 拿回的指针：先 holdsRange，再变视图 */</span>
+<span class="k">var</span> ok = pl.<span class="f">holds</span>(p)             <span class="c">/* 一个指针对不对得上这块板 */</span></code></pre>
+<p>判据：<code>tests/errors/builtin_outside_std.extc</code>、<code>tests/errors/privileged_import.extc</code>（两条都必须被 编译期挡掉），以及 <code>tests/cabi/platetable.extc</code> 里的 <code>viewat=rejected</code>（板外指针在 <code>viewAt</code> 也过不去 ✓）。</p>
 <h3 id="12-4-1-nocopy-状态有-身份-的类型不许按值拷贝-2026-09-24-定案-88">12.4.1 <code>@noCopy</code>：状态有<strong>身份</strong>的类型不许按值拷贝（2026-09-24，定案 88）</h3>
 <pre class="lang-extc"><code>@noCopy
 <span class="k">struct</span> reader {

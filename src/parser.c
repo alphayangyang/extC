@@ -1629,15 +1629,15 @@ static FuncDef *parseFunc(Parser *p) {
      * methods with bodies. */
     {
         bool sawThread = false;
-        skipJunk(p);
+        skipJunk(p);                       /* 注释/换行之后写 `effects` 也算（skipNl 会漏注释） */
         if (at(p, "effects")) {
             if (!parseEffectsClause(p, fd, &sawThread)) return NULL;
             if (fd->extAddrMask || fd->extContMask) {
                 ctxError(p->ctx, fd->line, 0,
-                         "A body already says what it stores: `Addr` and `Cont` are computed from it,"
-                         " so writing them here would change nothing. A function with a body uses"
-                         " `effects` for the keys the body cannot answer for itself: `Ret=0` (what"
-                         " my return value points at) and `Thread=`.",
+                         "A body already says what it stores: `Addr` and `Cont` are computed from"
+                         " it, so writing them here would change nothing. A function with a body"
+                         " uses `effects` for the keys the body cannot answer for itself: `Ret=0`"
+                         " (what my return value points at) and `Thread=`.",
                          "`effects Addr=`/`Cont=` is for declarations without a body"
                          " (`extern!`); on a function with a body only `Ret` and `Thread` apply");
                 return NULL;
