@@ -123,6 +123,7 @@ prelude	varArray	withCap	method	public
 std::coro::scheduler	-	init	fn	public
 std::coro::scheduler	-	newQ	fn	public
 std::coro::scheduler	-	newRows	fn	public
+std::coro::scheduler	loop	acceptq	field	public
 std::coro::scheduler	loop	add	method	public
 std::coro::scheduler	loop	count	method	public
 std::coro::scheduler	loop	ep	field	internal
@@ -141,6 +142,7 @@ std::coro::scheduler	loop	runEpoll	method	public
 std::coro::scheduler	loop	runScripted	method	public
 std::coro::scheduler	loop	runq	field	public
 std::coro::scheduler	loop	step	method	public
+std::coro::scheduler	row	acceptq	field	public
 std::coro::scheduler	row	add	method	public
 std::coro::scheduler	row	count	method	public
 std::coro::scheduler	row	done	field	public
@@ -163,6 +165,7 @@ std::coro::scheduler	row	runScripted	method	public
 std::coro::scheduler	row	runq	field	public
 std::coro::scheduler	row	started	field	public
 std::coro::scheduler	row	step	method	public
+std::coro::scheduler	tasks	acceptq	field	public
 std::coro::scheduler	tasks	add	method	public
 std::coro::scheduler	tasks	count	method	public
 std::coro::scheduler	tasks	finish	method	public

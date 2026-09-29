@@ -170,3 +170,49 @@ ss 核对：        40000 条 established ✓（conns.py 自报 40000/40000，�
 
 （量法提醒：`python3 -u` 才看得到进度 ✗ —— 有一次日志 0 字节我却当成"通过"了 ✓；连接数一律用
 `ss -tn state established` 复核 ✓。）
+
+## 忙连接（正在跑往返的连接）能挂多少（2026-09-29）
+
+量具换成自写的 C 压测器 `bench/httpd/load.c`（**多线程 + 每个连接绑一个 `127.0.0.x` 源地址** ✓）：
+wrk 不能绑源地址 ⇒ 单源 ~28k 临时端口就到顶（实测 `wrk -c 10000` 直接 0 ✗），而且它是"一条条慢慢加" ✗。
+
+```sh
+gcc -O2 -std=c11 -pthread -o build/load bench/httpd/load.c
+ulimit -n 500000
+./build/load 127.0.0.1 18080 /small.txt <连接数> 8 <秒数>
+# 输出：ok=建连成功 connfail= 失败 req/s MB/s p50 p99 errors ramp=全部握手耗时
+```
+
+| 忙连接 | extC 1 进程 | extC 8 进程 | nginx 8 worker |
+|---|---|---|---|
+| 10,000 | 104k–122k req/s | **803k req/s** | 782k req/s |
+| 50,000 | 排队超出窗口 ✗ | **456k–466k req/s**（稳态 ✓，Recv-Q 0 ✓，8.2 核满载 ✓） | 683k req/s |
+| 100,000 | — | 全部 ESTAB ✓、**首次响应慢于窗口** ✗ | **631k req/s** ✓ |
+| 200,000 | — | 全部 ESTAB ✓、同上 ✗ | — |
+
+读法：**吞吐**在 50k 忙连接下与 nginx 同量级（456k vs 683k = −33%），但**延迟**在 ≥50k 时崩 ✗
+（p50 4.2s vs nginx 的毫秒级）—— 单进程调度 + `pipeline=1`（每个连接要等上一个响应 ✓）的公平性问题，
+是接下来要啃的一格 ✓。另外 8 进程 × 50k 忙连接的 RSS 只有 **82 MB** ✓。
+
+### 这一轮靠实测抓出来的四个真 bug（都不在语言里，在服务器/运行时）
+
+1. **`listen()` 的 backlog 是应用传的** ✗：我一直传 1024 ⇒ 突发建连时 `ok` 卡在 ~1029、内核
+   `ListenOverflows` 一路涨 ✗（即使 `somaxconn` 已经抬到 65535 ✓）。两级取小 ✓ ⇒ 应用这级也要大 ✓。
+2. **每轮只 accept 一个** ✗：accept 速率被"每轮 ~20µs"卡在 ~50k/s ⇒ 10k 忙连接的 p50 就有 1.05s ✗。
+   改成每轮最多 accept 64 个、多的入 `acceptq` 由 `pump` 依次还回（调用方循环一个字不改 ✓）。
+3. **listener 不是非阻塞** ✗：于是"抽到 EAGAIN"的批量 accept 会在 backlog 抽干的瞬间**卡死整个
+   事件循环**（实测：50k 全 ESTAB、零响应 ✗）⇒ 两个 `extc_tcp_listen*` 都补 `O_NONBLOCK` ✓。
+4. **待发队列是 LIFO 栈** ✗（`pending[--npend]`）⇒ 后到的先服务、早到的饿死 ⇒ 高并发下秒级尾延迟 ✓。
+   改成 64 槽 FIFO 环 ✓。
+
+（内核那半由机器主人抬了：`somaxconn`/`tcp_max_syn_backlog` 65535、`netdev_max_backlog` 32768、
+`ip_local_port_range` 10240–65535、`tcp_tw_reuse=1`、`rmem/wmem_max` 16 MB ✓。台账见提交信息 ✓。）
+
+### 量测卫生（这次踩了四个坑，都记下来）
+
+- **同名服务器必须先杀干净** ✗✗：`SO_REUSEPORT` 下**残留实例会悄悄偷走约一半连接** ⇒ 我量到的
+  "ok≈50% 建不上"就是它（`ss` 显示客户端 5,071 条 SYN-SENT、服务端 66,848 条 CLOSE-WAIT ✓）。
+  每轮开跑前 `pkill -x httpd` + `ss -tln | grep -c ':18080'` 核对 ✓。
+- **窗口要算上冷启动** ✗：50k 忙连接的首次响应要 ~8s ⇒ 3 秒窗口量出来是 0（我一度当成服务器崩了 ✗）。
+- **`python3 -u`** ✓：打印被缓冲 ⇒ 日志 0 字节曾被误当成"通过" ✗。
+- **连接数一律 `ss -tn state established` 复核** ✓，不信自报 ✓。

@@ -49,6 +49,8 @@ struct tasks<T> {
     runq: vector<i64>
     rqHead: i64
     freeq: vector<i64>
+    /* 本轮多 accept 出来的连接（`pump` 先还这一个队列，调用方的循环一个字都不用改 ✓）*/
+    acceptq: vector<i64>
 
     /* 加一个任务：座位从 `freeq` 里 O(1) 拿（没有就长一行），并进 `runq` 等第一次推进。 */
     fn add(self: mut ref tasks<T>, s: mut ref loop, h: coroutine<i64>) -> bool {
@@ -137,6 +139,11 @@ struct tasks<T> {
     /* 一轮事件循环：**先推进 runq 里的行**（新任务 / `yield 负数`）⇒ 等事件 ⇒ 就绪的按标签
      * O(1) 派发。全程不扫任务表 ✓（这是 10k 空闲连接不再砍半的原因）。 */
     fn pump(self: mut ref tasks<T>, s: mut ref loop, timeout_ms: i64) -> i64 {
+        /* **先还上一次批量 accept 攒下的连接**（不花系统调用 ✓）*/
+        if self.acceptq.len() > i64(0) {
+            var oq: option<i64> = self.acceptq.pop()
+            return oq!
+        }
         var waitMs: i64 = timeout_ms
         if waitMs < i64(0) { waitMs = i64(0) }          /* 负超时 = 不阻塞 */
         if s.ep < i64(0) { return i64(-2) }
@@ -159,11 +166,16 @@ struct tasks<T> {
         var draining: bool = true
         while draining {
             if tag == i64(-1) {
-                /* 一轮最多 accept 一个（多的留在 backlog，下一轮还会报）。**就此停止排空**：
-                 * listener 是 level-triggered，只要 backlog 里还有人它就一直是"可读"，继续排空只会
-                 * 一次次拿到同一个 listener 标签（实测：排空循环死转）。 */
-                if s.listener >= i64(0) && accepted < i64(0) {
-                    accepted = net::extc_sock_accept(s.listener)
+                /* **一次 accept 一批**（上限 64，别把别的事件饿死 ✓）。从前是"一轮只 accept 一个" ✗
+                 * —— 建连风暴时 accept 速率被"每轮 ~20µs"卡在 ~50k/s：实测 10k 忙连接的 p50 就有
+                 * 1.05s ✗，50k 直接排队到测量窗口之外（0 响应 ✗）。多出来的先入队，由 `pump` 开头
+                 * 依次还回去 ⇒ 调用方的 `while { fd = pump(); if fd >= 0 add(fd) }` 一个字不改 ✓。 */
+                var k: i64 = 0
+                while s.listener >= i64(0) && k < i64(64) {
+                    var cfd: i64 = net::extc_sock_accept(s.listener)
+                    if cfd < i64(0) { break }
+                    if accepted < i64(0) { accepted = cfd } else { self.acceptq.push(cfd) }
+                    k = k + i64(1)
                 }
                 draining = false
             } else if tag >= i64(0) && tag < self.rows.len() {
@@ -189,7 +201,7 @@ struct tasks<T> {
  * 组装在调用点写一行字面量（**必须写在驱动它的那个作用域里**：池的板块跟着那个 place 走 ✓）：
  *
  *     var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(),
- *                                     rqHead: i64(0), freeq: sched::newQ() }
+ *                                     rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
  *
  * 不能提供 `newTasks() -> tasks<i64>`：**包装结构体不算容器** ⇒ 从函数里返回它会被
  * "return value would hold a reference to a local variable that dies first" 拒 ✓（实测 ✓）。 */

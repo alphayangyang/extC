@@ -321,11 +321,14 @@ fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 1 { port = parseI64(args[1]) }
     var root: slice<u8> = "bench/httpd/www"
     if args.len > 2 { root = args[2] }
-    var srv: i64 = net::extc_tcp_listen_shared(port, i64(1024))
+    /* backlog 有两级：**应用传给 `listen()` 的这个数**，和内核的 `net.core.somaxconn`（取小的 ✓）。
+     * 一直传 1024 ⇒ 突发建连时 `ok` 卡在 ~1029、`ListenOverflows` 一路涨 ✗（实测，即使
+     * `somaxconn` 已抬到 65535 ✓）。两边都要大 ✓。 */
+    var srv: i64 = net::extc_tcp_listen_shared(port, i64(65535))
     if srv < i64(0) { io::cout << "listen failed\n"  return 1 }
     var s: sched::loop
     if !sched::init(ref s, srv) { return 2 }
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ() }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
     while true {
         var fd: i64 = tasks.pump(ref s, i64(50))
         if fd >= i64(0) {

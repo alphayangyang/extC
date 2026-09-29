@@ -46,7 +46,7 @@ fn main() -> i32 {
     if srv < i64(0) { return i32(1) }          /* 端口被占 */
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(2) }
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ() }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
     while true {
         var fd: i64 = tasks.pump(ref s, i64(50))
         if fd >= i64(0) {

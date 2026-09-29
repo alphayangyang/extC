@@ -550,7 +550,7 @@ fn open(lib: slice<u8>) -> ?api { … }         /* dlopen + 每个符号一句 d
 
 ### 12.5b 协程调度器（`std::coro::scheduler`）的派发是 O(1)
 
-这一层的公开成员：`init` `newQ` `newRows` `add` `count` `finish` `freeq` `listener` `live` `pump` `resumeRow` `rows` `rqHead` `runEpoll` `runScripted` `runq` `step` `done` `fd` `h` `started`。
+这一层的公开成员：`init` `newQ` `newRows` `acceptq` `add` `count` `finish` `freeq` `listener` `live` `pump` `resumeRow` `rows` `rqHead` `runEpoll` `runScripted` `runq` `step` `done` `fd` `h` `started`。
 
 `tasks<T>` 里除了 `rows` 还有两个队列：`runq`（要**立刻推进**的行号：新任务、`yield 负数`）与
 `freeq`（跑完的行号 ⇒ `add` 复用座位不找空行）。
