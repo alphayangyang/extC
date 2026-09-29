@@ -548,6 +548,35 @@ fn open(lib: slice<u8>) -> ?api { … }         /* dlopen + 每个符号一句 d
 头文件从哪来：`-dev` 包，或者不要 root 的 `apt-get download libcairo2-dev && dpkg-deb -x …`。
 生成物入库，`--check` 进闸门（头文件不在的机器上显式跳过）。
 
+### 12.5b 协程调度器（`std::coro::scheduler`）的派发是 O(1)
+
+这一层的公开成员：`init` `newQ` `newRows` `add` `count` `finish` `freeq` `listener` `live` `pump` `resumeRow` `rows` `rqHead` `runEpoll` `runScripted` `runq` `step` `done` `fd` `h` `started`。
+
+`tasks<T>` 里除了 `rows` 还有两个队列：`runq`（要**立刻推进**的行号：新任务、`yield 负数`）与
+`freeq`（跑完的行号 ⇒ `add` 复用座位不找空行）。
+
+```extc
+var s: sched::loop
+if !sched::init(ref s, listener) { … }
+var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(),
+                                 rqHead: i64(0), freeq: sched::newQ() }
+…
+var fd: i64 = tasks.pump(ref s, i64(50))
+```
+
+要点（`CONCURRENCY.md` §4.4 的口径不变：`yield fd` = 等可读、`yield 负数` = 不等，立刻再推一次）：
+
+- **epoll 事件的 user-data 里放的是任务行号**（listener 用 -1 这个哨兵）⇒ 一个事件一次数组定位，
+  **不扫任务表** ✓；`extc_epoll_wait` 因此返回**标签**，队列空时返回 `-100`。
+- `resumeRow(self, s, i, ready)` 是**唯一**推进任务的地方：`ready` 区分"某 fd 刚就绪"与
+  "立刻推进"，负请求只在那里处理一次（两条路各写一遍时，就绪那条漏掉负请求 ⇒ 任务卡死 ✗，
+  两个判据当场抓到 ✓）。
+- `loop` **只有标量**，这是语言规则不是风格：含引用的结构体没有零值，`var s: sched::loop` 会写不出来 ✗
+  ⇒ 队列住在调用者的容器 `tasks<T>` 里。
+
+**实测**（`bench/httpd/`）：挂着 **10,000** 条空闲 keep-alive 连接时，吞吐
+**99,442 → 198,026 req/s**（改前砍半 ✗，改后与空闲 0 条的 197,516 持平 ✓）。
+
 ### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
 
 `@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和

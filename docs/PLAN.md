@@ -983,3 +983,10 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
   （病症原本是把 `k` 静默改成 `a`）、ASan 干净、退出码 0；用例已改名保留为
   `tests/arena-soundness/H2_home_zone_two_hops.extc` ⇒ **这条不再是待办，也不在"优先级：高"里**。
   文档要求见 `docs/topics/ARENA-FORMAL.md:678`（"needsHome 的传递闭包"）。**优先级：高**（协程调度器正中此形状）。
+
+**2026-09-29 晚：协程调度器派发改成 O(1)**（`bench/httpd/` 那条线量出来的）—— epoll 的 user-data
+放任务行号（listener = -1）⇒ 事件即定位；`tasks<T>` 加 `runq`/`freeq` 队列；listener 只注册一次；
+推进收口到 `resumeRow`。**实测**：挂 10,000 条空闲连接时吞吐从"砍半"（99,442）变成**不掉**
+（198,026 vs 空闲 0 的 197,516）✓。`tests/coro/` 29/29 · `client.py` 13/13 · golden 414/414
+（6 个协程产物按规矩更新 ✓）。"百万并发连接"因此只剩两件：**每连接内存**（现在 ~31.6 KB ⇒
+目标 ~1 KB：缓冲懒分配 ✓）与**内核/压测端预算**（`somaxconn`、多源 IP）✓。

@@ -303,6 +303,18 @@ pl.<span class="f">close</span>()                                               
 <p><strong>工具不做的三件事</strong>，都是刻意的：</p>
 <ul><li><strong>不生成 <code>effects</code></strong>：槽不签 = 最坏情况 = <strong>安全的那一侧</strong>（帧内地址会被拒）。只有"把帧内地址 <strong>就地</strong>交给 C"那几个函数要人签一句 <code>Addr=0 Cont=0</code>（§12.3：那是 <code>effects</code> 唯一存在的理由）。</li><li><strong>不假装布局</strong>：不认识的指针一律 <code>?ref void</code>。要读结构体字段就自己写 <code>@frozen</code> 镜像（§12.3.1）， 按类型撒谎没有任何检查会拦得住。</li><li><strong>不猜</strong>：不支持的东西（按值传的结构体、变参……）会<strong>列出来并以非 0 退出</strong>；枚举常量由 clang 真求值（隐式值也不猜）。宁可不生成，也不要一个签名错的绑定。</li></ul>
 <p>头文件从哪来：<code>-dev</code> 包，或者不要 root 的 <code>apt-get download libcairo2-dev &amp;&amp; dpkg-deb -x …</code>。 生成物入库，<code>--check</code> 进闸门（头文件不在的机器上显式跳过）。</p>
+<h3 id="12-5b-协程调度器-std-coro-scheduler-的派发是-o-1">12.5b 协程调度器（<code>std::coro::scheduler</code>）的派发是 O(1)</h3>
+<p>这一层的公开成员：<code>init</code> <code>newQ</code> <code>newRows</code> <code>add</code> <code>count</code> <code>finish</code> <code>freeq</code> <code>listener</code> <code>live</code> <code>pump</code> <code>resumeRow</code> <code>rows</code> <code>rqHead</code> <code>runEpoll</code> <code>runScripted</code> <code>runq</code> <code>step</code> <code>done</code> <code>fd</code> <code>h</code> <code>started</code>。</p>
+<p><code>tasks&lt;T&gt;</code> 里除了 <code>rows</code> 还有两个队列：<code>runq</code>（要<strong>立刻推进</strong>的行号：新任务、<code>yield 负数</code>）与 <code>freeq</code>（跑完的行号 ⇒ <code>add</code> 复用座位不找空行）。</p>
+<pre class="lang-extc"><code><span class="k">var</span> s: sched::loop
+<span class="k">if</span> !sched::<span class="f">init</span>(<span class="k">ref</span> s, listener) { … }
+<span class="k">var</span> tasks: sched::tasks&lt;<span class="t">i64</span>&gt; = { rows: sched::<span class="f">newRows</span>(), runq: sched::<span class="f">newQ</span>(),
+                                 rqHead: <span class="t">i64</span>(<span class="n">0</span>), freeq: sched::<span class="f">newQ</span>() }
+…
+<span class="k">var</span> fd: <span class="t">i64</span> = tasks.<span class="f">pump</span>(<span class="k">ref</span> s, <span class="t">i64</span>(<span class="n">50</span>))</code></pre>
+<p>要点（<code>CONCURRENCY.md</code> §4.4 的口径不变：<code>yield fd</code> = 等可读、<code>yield 负数</code> = 不等，立刻再推一次）：</p>
+<ul><li><strong>epoll 事件的 user-data 里放的是任务行号</strong>（listener 用 -1 这个哨兵）⇒ 一个事件一次数组定位， <strong>不扫任务表</strong> ✓；<code>extc_epoll_wait</code> 因此返回<strong>标签</strong>，队列空时返回 <code>-100</code>。</li><li><code>resumeRow(self, s, i, ready)</code> 是<strong>唯一</strong>推进任务的地方：<code>ready</code> 区分"某 fd 刚就绪"与 "立刻推进"，负请求只在那里处理一次（两条路各写一遍时，就绪那条漏掉负请求 ⇒ 任务卡死 ✗， 两个判据当场抓到 ✓）。</li><li><code>loop</code> <strong>只有标量</strong>，这是语言规则不是风格：含引用的结构体没有零值，<code>var s: sched::loop</code> 会写不出来 ✗ ⇒ 队列住在调用者的容器 <code>tasks&lt;T&gt;</code> 里。</li></ul>
+<p><strong>实测</strong>（<code>bench/httpd/</code>）：挂着 <strong>10,000</strong> 条空闲 keep-alive 连接时，吞吐 <strong>99,442 → 198,026 req/s</strong>（改前砍半 ✗，改后与空闲 0 条的 197,516 持平 ✓）。</p>
 <h3 id="12-6-特权层-builtin-与-std-sys-只有标准库能用-定案-96">12.6 特权层：<code>@builtin</code> 与 <code>std::sys::*</code> 只有标准库能用（定案 96）</h3>
 <p><code>@builtin</code> 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是<strong>给原语起名字</strong>。它和 <code>std::sys::heap</code>（板的特权层：<code>mmap</code>/<code>mprotect</code>/<code>munmap</code> + <code>extc_viewOf</code>）都<strong>只有标准库能碰</strong>：</p>
 <pre class="lang-extc"><code>@builtin <span class="k">fn</span> <span class="f">extc_viewOf</span>(p: <span class="k">ref</span> <span class="t">u8</span>, n: <span class="t">i64</span>) -&gt; <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">u8</span>&gt;   <span class="c">// ✗ 程序里不许写</span>

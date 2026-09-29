@@ -15,10 +15,12 @@
 extern!("extc-runtime") fn extc_epoll_new() -> i64
     effects Addr=0 Cont=0
 /* 把 fd 加进 epoll 等它可读（`readable` 为 0 表示等可写）。返回 0 成功。 */
-extern!("extc-runtime") fn extc_epoll_add(ep: i64, fd: i64, readable: i64) -> i64
+/* `tag` 随事件一起回来（epoll 的 user-data）：调度器放**任务行号**，于是派发是 O(1) ✓ */
+extern!("extc-runtime") fn extc_epoll_add(ep: i64, fd: i64, readable: i64, tag: i64) -> i64
     effects Addr=0 Cont=0
 /* 等事件：返回**一个**就绪的 fd（内部留着一个待处理队列 ⇒ 事件循环零分配），
  * -1 = 超时/没有事件。 */
+/* 每次返回一个就绪的 **tag**；队列空返回 **-100**（tag 本身 >= -1，-1 是 listener） */
 extern!("extc-runtime") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64
     effects Addr=0 Cont=0
 /* 一对已连接的 AF_UNIX socket：fd 写进 `out[0]` 与 `out[1]`。返回 0 成功。 */
