@@ -1,0 +1,23 @@
+// 由 tools/cbindgen.py 生成 —— 不要手改；重新生成：见文件头那条命令。
+//
+// libc：1 个函数（头的来源见 run.sh / 命令）。
+// **没有 effects**：槽不签 = 最坏情况 = 安全的那一侧（帧内地址会被拒）。帧内就地
+// 交给 C 的那几个函数要人签 `Addr=0 Cont=0`，工具不替作者说话（C-ABI.md §9.15）。
+// 结构体指针一律 `ref void`：不假装布局（要读字段就自己写 @frozen 镜像，§9.8）。
+use std::dl
+
+struct api {
+    /* 库句柄：表里全是这个库里的代码指针，所以**别 dlclose** 它（要用 `dl::close(a.handle)` 自己担）。 */
+    handle: ?ref void
+    getpid: fn() -> i32
+}
+
+/* 打开库并填表。`!` 是"我查过了"：符号不在就是一次带源码位置的 trap。 */
+fn open(lib: slice<u8>) -> ?api {
+    var h: ?ref void = dl::open(lib)
+    if h == null { return none }
+    return some(api {
+        handle: h,
+        getpid: fn() -> i32(dl::sym(h, "getpid")!)
+    })
+}

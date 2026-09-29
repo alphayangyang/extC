@@ -406,17 +406,18 @@ def main():
         for e in dict.fromkeys(used_enums):
             if e in enums_all:
                 enums[e] = enums_all[e]
-        # 隐式值（JSON 里没有）交给 clang 求值；还拿不到就留 None（emit 里跳过）
-        missing = [n for _e, vals in enums.items() for n, v in vals if v is None]
-        if missing:
-            got = eval_constants(args.include, args.incdirs, missing)
-            enums = {e: [(n, (v if v is not None else got.get(n))) for n, v in vals]
-                     for e, vals in enums.items()}
-            still = [n for n in missing if n not in got]
-            for n in still:
-                sys.stderr.write('[cbindgen] 枚举常量 %s 的值没求出来：跳过（不猜）\n' % n)
+
     if not args.no_enums and args.all:
         enums = enums_all
+    # 隐式值（JSON 里没有）交给 clang 求值；还拿不到就留 None（emit 里跳过 —— 不猜）。
+    missing = [n for _e, vals in enums.items() for n, v in vals if v is None]
+    if missing:
+        got = eval_constants(args.include, args.incdirs, missing)
+        enums = {e: [(n, (v if v is not None else got.get(n))) for n, v in vals]
+                 for e, vals in enums.items()}
+        for n in missing:
+            if n not in got:
+                sys.stderr.write('[cbindgen] 枚举常量 %s 的值没求出来：跳过（不猜）\n' % n)
 
     text = emit(out_fns, enums, args.name)
     for p in problems:

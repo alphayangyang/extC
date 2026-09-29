@@ -1,0 +1,18 @@
+// expect: generated-ok pid=
+// 生成器自检的"真跑一遍"：`tools/cbindgen.py` 从 `libcmini.h` 生成 `libcmini.extc`（模块），
+// 这里 `use` 它、`dlopen("libc.so.6")`、调 `getpid()` —— 判据是它真的是我们这个进程的号。
+use std::io
+use std::dl
+use libcmini
+
+fn main() -> i32 {
+    /* `!` 是作者的签字：库不在就是一次带源码位置的 trap（`open` 返回的是 option）。 */
+    var a: libcmini::api = libcmini::open("libc.so.6")!
+    var p: i32 = a.getpid()
+    if p <= i32(0) {
+        io::cout << "generated-bad pid=" << p << "\n"
+        return 1
+    }
+    io::cout << "generated-ok pid=" << p << "\n"
+    return 0
+}
