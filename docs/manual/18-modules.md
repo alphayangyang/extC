@@ -566,6 +566,14 @@ var fd: i64 = tasks.pump(ref s, i64(50))
 
 要点（`CONCURRENCY.md` §4.4 的口径不变：`yield fd` = 等可读、`yield 负数` = 不等，立刻再推一次）：
 
+- **跨 `yield` 的视图一律拒**：不只是"指向局部"，**指向全局的视图**同样拒 ✗（实测
+  `var req: mut slice<u8> = gBuf[..]` 挂在第一个 `yield` 上）。两条正解：视图**在挂起之后再取**
+  （放在 `yield` 之后声明 ✓），或者把数据 `new` 进任务 arena ✓。
+- **长命协程里按迭代 `new` 会一路累积** ✗：任务 arena 只在任务结束时回收，keep-alive 连接里
+  每请求 `new` 两个 4 KB ⇒ 每连接 **9,110 B**（实测）；改成"每次迭代复用"或"全局瞬时缓冲"后
+  是 **1,623 B/连接** ✓（`CONCURRENCY.md` §3.2）。
+
+
 - **epoll 事件的 user-data 里放的是任务行号**（listener 用 -1 这个哨兵）⇒ 一个事件一次数组定位，
   **不扫任务表** ✓；`extc_epoll_wait` 因此返回**标签**，队列空时返回 `-100`。
 - `resumeRow(self, s, i, ready)` 是**唯一**推进任务的地方：`ready` 区分"某 fd 刚就绪"与

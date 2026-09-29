@@ -21,9 +21,15 @@ def rss_kb(pid):
 socks = []
 t0 = time.perf_counter()
 fail = 0
+# **多源 IP**：`ip_local_port_range` 只有 ~28k 个临时端口 ⇒ 单源地址在 28k 条左右就到顶
+# （实测：40k 从 127.0.0.1 连不上 ✗）。loopback 整个 127.0.0.0/8 都是本机 ⇒ 每条连接绑一个
+# 不同的源地址（每地址约 28k 个端口 ✓）。
 for i in range(N):
     try:
-        s = socket.create_connection((HOST, PORT), timeout=5)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.bind((f"127.0.0.{2 + (i // 20000) % 250}", 0))
+        s.connect((HOST, PORT))
         s.sendall(b"GET /small.txt HTTP/1.1\r\nHost: x\r\n\r\n")
         s.setblocking(False)
         socks.append(s)
@@ -38,7 +44,8 @@ for i in range(N):
                 s.recv(65536)
             except BlockingIOError:
                 pass
-print(f"  建连 {len(socks)}/{N}（失败 {fail}），耗时 {time.perf_counter() - t0:.1f}s")
+print(f"  建连 {len(socks)}/{N}（失败 {fail}，源地址 {2 + (max(len(socks), 1) - 1) // 20000 + 1 - 2 + 1} 个），"
+      f"耗时 {time.perf_counter() - t0:.1f}s")
 print(f"  服务器 RSS = {rss_kb(PID) / 1024:.1f} MB")
 import os
 hold = float(os.environ.get("HOLD", "1"))

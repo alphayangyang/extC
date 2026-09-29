@@ -14,10 +14,22 @@ use std::sys::file as sysfile
 use std::sys::io as sysio     /* `close(fd)` 在这儿（`std::io` 是格式化那层）*/
 use std::sys::net
 
-let MAXREQ: i64 = 8192
-let MAXHDR: i64 = 4096
+/* 请求头上限 1 KB —— 就是 nginx `client_header_buffer_size` 的默认值 ✓（超了回 431 ✓）。 */
+let MAXREQ: i64 = 1024
+let MAXHDR: i64 = 1024
+/* **每请求的临时缓冲一律走全局**，不要 `new`：协程的任务 arena 只在**任务结束**时回收，
+ * 长命 keep-alive 连接里按请求 `new` 会一路累积 ✗✗（`CONCURRENCY.md` §3.2 的"累积不是寿命"✓）。
+ * 实测：每次请求 `new` 两个 4 KB ⇒ **9,110 B/连接**；改成全局后 ~1.2 KB ✓。
+ * 安全性来自"它们只在一次恢复之内用"：填和用之间没有 `yield` ✓（`resp` 同理 ✓）。 */
+var gRel: [4096]u8
+var gFull: [4096]u8
+var gResp: [1024]u8
+var gHdr: [1024]u8
 let MAXKEEP: i64 = 10000      /* 一条 keep-alive 连接最多这么多请求（nginx 默认 1000 ✓）*/
-let IDLE_TICKS: i64 = 20            /* 50ms 一个 tick ⇒ 约 1 秒无完整请求就收摊 */
+/* 空闲超时：50ms 一个 tick。**1 秒太短** —— 实测挂 40k 空闲 keep-alive 连接时，服务器在 ~1.5k
+ * 就把它们全踢了（`ss` 核对：只剩 1521 条 ✗），而浏览器正是靠复用空闲连接省握手 ✓。
+ * nginx 的 `keepalive_timeout` 默认 75s ⇒ 这里取 60s（1200 tick）。 */
+let IDLE_TICKS: i64 = 1200
 
 /* ---------------------------------------------------------------- 小工具（都不分配）*/
 
@@ -185,9 +197,7 @@ fn respondErr(fd: i64, resp: mut slice<u8>, status: slice<u8>) -> bool {
 /* ---------------------------------------------------------------- 一条连接 = 一个协程*/
 
 fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
-    var req: mut slice<u8> = new u8[MAXREQ]
-    var resp: mut slice<u8> = new u8[MAXHDR]
-    var hdr: mut slice<u8> = new u8[MAXHDR]
+    var req: mut slice<u8> = new u8[MAXREQ]   /* 只有它必须跨挂起（半截请求）⇒ 每连接 1 KB ✓ */
     var have: i64 = i64(0)
     var kept: i64 = i64(0)
     while kept < MAXKEEP {
@@ -197,7 +207,7 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
         var idle: i64 = i64(0)
         while hdrEnd < i64(0) {
             var ready: i64 = yield fd
-            if have >= MAXREQ - i64(1) { respondErr(fd, resp, "431 Request Header Fields Too Large")  sysio::close(i32(fd))  return }
+            if have >= MAXREQ - i64(1) { respondErr(fd, gResp[..], "431 Request Header Fields Too Large")  sysio::close(i32(fd))  return }
             var n: i64 = net::extc_sock_read(fd, req.data, MAXREQ - have)
             if n > i64(0) {
                 var rv: slice<u8> = req[..have + n]
@@ -211,6 +221,9 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
                 if idle > IDLE_TICKS { sysio::close(i32(fd))  return }   /* 超时：收摊 */
             }
         }
+        /* **挂起全部结束** ⇒ 到这里才取视图（规则：跨 `yield` 的视图一律拒，指向全局也不行 ✗）*/
+        var resp: mut slice<u8> = gResp[..]
+        var hdr: mut slice<u8> = gHdr[..]
         /* **先把头拷出来、再把这条请求从缓冲里吃掉，然后才解析** —— 顺序很重要：
          * 早期返回（405/400/404…）如果没吃掉请求，下一条请求会被当成同一个（实测：
          * POST 之后所有请求都回 405 ✗）；而先吃掉 `req` 又会让 `head` 失效 ⇒ 拷一份。 */
@@ -261,11 +274,11 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
         var q: i64 = findSub(target, i64(0), "?")
         var pathOnly: slice<u8> = target
         if q >= i64(0) { pathOnly = target[..q] }
-        var rel: mut slice<u8> = new u8[4096]
+        var rel: mut slice<u8> = gRel[..]
         var relLen: i64 = decodePath(pathOnly, rel)
         /* 能解析出边界的失败**保持 keep-alive**（nginx 也这样）；只有"框架不明"的失败才关连接 ✓ */
         if relLen < i64(0) { respondErr(fd, resp, "400 Bad Request")  continue }
-        var full: mut slice<u8> = new u8[4096]
+        var full: mut slice<u8> = gFull[..]
         var at: i64 = i64(0)
         at = appS(full, at, root)
         if relLen == i64(0) || rel[relLen - i64(1)] == u8(47) {

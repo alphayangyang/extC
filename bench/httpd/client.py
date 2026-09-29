@@ -102,6 +102,17 @@ def main():
     # ⑦ 方法：POST 必须被拒（extC 给 405；python -m http.server 给 501 —— 都是"不支持"）
     st, _, _, _ = c.send(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
     check("POST 被拒（405/501）", st in (405, 501), f"st={st}")
+    # ⑦b 请求头超过 1 KB ⇒ 431（策略：`MAXREQ` 就是 nginx `client_header_buffer_size` 的默认 1 KB）
+    # 用**独立连接**判这条（1 KB 头上限是**本服务器**的策略 ⇒ 只在 --strict 下判）：431 之后服务器会关连接（还可能带 RST），共用连接会被重连路径搅进来
+    if STRICT:
+        big = socket.create_connection((HOST, PORT), timeout=5)
+        big.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nX-Pad: " + b"a" * 2000 + b"\r\n\r\n")
+        try:
+            line = big.recv(256).split(b"\r\n")[0]
+        except OSError:
+            line = b"(reset)"
+        big.close()
+        check("超大请求头 -> 431", line.startswith(b"HTTP/1.1 431"), f"line={line!r}")
     # ⑧ 流水线：一口气两个请求，两条响应都要回来（`--strict`；python -m http.server 不支持）
     if STRICT:
         c.s.sendall(b"GET /small.txt HTTP/1.1\r\nHost: x\r\n\r\nGET /small.txt HTTP/1.1\r\nHost: x\r\n\r\n")
