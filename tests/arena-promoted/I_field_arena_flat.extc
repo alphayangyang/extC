@@ -1,0 +1,23 @@
+/* I：**结构体字段装 `new` 出来的容器**，结构体从函数返回 ⇒ 应当接受 ✓（今天确实接受 ✓）
+ *
+ * 为什么安全：`new` 分配在 **`__extc_home`**（= 调用者 place ✓，生成物一行可见 ✓），
+ * 字段只是把这个容器**搬**出去；块/帧结束不影响它 ✓。
+ *
+ * 与它成对的那一格（**当前被误拒** ✗）：同一个东西只要把 `new` 放进一个嵌套 `{}`
+ *   ⇒ 深度按词法算成 2 ⇒ 拒 ✗ 见 `K_field_arena_nested_block.extc.known-gap`。
+ * 记在一起，是为了让"块深度 vs arena place"这条账一眼看得见 ✓。 */
+use std::io
+
+struct holder { buf: mut slice<u8> }
+
+fn make() -> holder {
+    var t: holder = holder { buf: new u8[16] }
+    t.buf[0] = u8(73)
+    return t
+}
+
+fn main() -> i32 {
+    var h: holder = make()
+    io::cout << "I 字段装 new 容器: " << h.buf[..i64(1)] << "\n"
+    return 0
+}

@@ -1,0 +1,14 @@
+// 结构体字段指向**帧内嵌**的数组，出了那个块再用 ⇒ 必须拒 ✗
+// （这是"结构体成员逃逸"的**危险方向**；今天抓得住 ✓ —— 好消息：没有不健全 ✗）
+// expect:this assignment would hold a reference to a local variable that dies first
+struct holder { v: slice<u8> }
+
+fn main() -> i32 {
+    var h: holder = holder { v: "x" }
+    {
+        var arr: [8]u8
+        arr[0] = u8(90)
+        h.v = arr[..i64(1)]
+    }
+    return i32(h.v.len)
+}

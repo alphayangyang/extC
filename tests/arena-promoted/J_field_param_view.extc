@@ -1,0 +1,16 @@
+/* J：**结构体字段装参数的视图**（depth 0），结构体从函数返回 ⇒ 应当接受 ✓（今天接受 ✓）
+ *
+ * 这一条证明"字段里放视图"本身没问题 ✗不是被一刀切拒掉的 —— 判据是**那个视图指向谁** ✓：
+ * 指向参数 ✓ 放行；指向帧内嵌的局部 ✗ 拒（见 `tests/errors/field_view_frame_array.extc`；
+ * 指向自己 `new` 的子视图 ✗ 目前也拒 = 裸视图那笔单独的账 ✓）。 */
+use std::io
+
+struct view2 { v: slice<u8> }
+
+fn wrap(s: slice<u8>) -> view2 { return view2 { v: s } }
+
+fn main() -> i32 {
+    var h: view2 = wrap("J")
+    io::cout << "J 字段装参数视图: " << h.v << "\n"
+    return 0
+}

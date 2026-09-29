@@ -1,0 +1,39 @@
+/* K（**已知缺口 ✗，所以后缀是 `.known-gap`，跑法不会碰它**）：
+ * 和 I 一模一样，只把 `new` 包进一个嵌套 `{}` ⇒ **今天被拒** ✗，但它是**安全**的 ✓。
+ *
+ * 量到的判决（2026-09-29）：
+ *   I（new 在函数体这层）        ⇒ 接受 ✓
+ *   K（new 在嵌套 `{}` 里）      ⇒ **拒** ✗   ← 只差那一个 {}
+ *   字段指向帧内嵌数组（危险）    ⇒ 拒 ✓（该拒的拒住了）
+ *   字段指向参数视图              ⇒ 接受 ✓
+ *
+ * 原因：深度是**纯词法**的（`src/check_escape.c:19`：parameter=0、函数体=1、每个嵌套块 +1），
+ * 而 `new` 的存储寿命由 **place / `zoneLevel`** 决定 —— 模型缺 arena 这一维，结构体字段只是把
+ * 它暴露得最明显（字段把一个值的来源"藏"起来了 ✓）。
+ *
+ * 正确的口径（作者 2026-09-29 定）：**结构体里的成员也要逐个算逃逸** ⇒ 一个 struct 值的深度
+ * 应当取**成员各自真实来源深度**（帧内嵌 = 词法 ✓；arena = place 层级 ✓）。
+ * 坑：不能简化成"在 arena 里 ⇒ 安全" ✗ —— `tests/arena-promoted/H2_home_zone_two_hops.extc`
+ * 正是 place 拿错一层 ⇒ 静默改坏 ✓ 必须走 `zoneLevel` 的**传递闭包** ✓。
+ *
+ * 修好之后：把它改名成 `K_field_arena_nested_block.extc` 就自动进跑法 ✓（run.sh 的 glob 认 `.extc` ✓）。
+ */
+use std::io
+
+struct holder { buf: mut slice<u8> }
+
+fn make() -> holder {
+    var h: holder = holder { buf: new u8[8] }
+    {
+        var t: holder = holder { buf: new u8[16] }
+        t.buf[0] = u8(75)
+        h = t
+    }
+    return h
+}
+
+fn main() -> i32 {
+    var h: holder = make()
+    io::cout << "K 嵌套块里的 new 容器: " << h.buf[..i64(1)] << "\n"
+    return 0
+}

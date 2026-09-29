@@ -2,6 +2,9 @@
 # 「**转正**」库（2026-09-23）：这些形状以前被**误拒**或**放行成 UB**，现在编译器
 # 应该**接受**它们，而且 ASan 必须干净 ✓
 #
+# 后缀 `.known-gap` 的**不参与**（glob 只认 `.extc` ✓）：那是"**该接受、今天被误拒**"的形状，
+# 摆在同一目录里是为了让缺口和它的对照组成对出现 ✓（见 K_field_arena_nested_block.extc.known-gap）。
+#
 # 来源：`docs/topics/ARENA-SOUNDNESS.md` §9 档 1（B2：`alloc<T>` 与 `new` 对称）
 #   · `alloc_return_local` / `allocSlice_escape_return` —— 以前被误拒
 #     （`alloc` 的层号无条件按块层算，而不看"有家 ⇒ 进家"）
