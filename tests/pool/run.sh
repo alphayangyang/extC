@@ -221,6 +221,16 @@ rt_run rt_rett     tests/pool/rt_return_promote.extc "live=1 len=3 v0=5 v2=7"
 
 echo "== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 =="
 rt_run rt_color    tests/pool/rt_color.extc    "c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0"
+if command -v valgrind >/dev/null 2>&1; then
+    if "$CC" -std=c11 -O0 -g -fwrapv build/rt_color.c -o build/rt_color_memcheck \
+       && valgrind --quiet --error-exitcode=99 ./build/rt_color_memcheck >/dev/null; then
+        echo "  ok   rt_color_memcheck  ->  新 zone 的颜色先初始化再读取"
+    else
+        echo "  FAIL rt_color_memcheck  ->  未初始化读取或 C 编译失败"; fail=1
+    fi
+else
+    echo "  skip rt_color_memcheck  ->  valgrind 不可用"
+fi
 
 # 措辞放宽的由来：守卫把过期别名的切片存储置空后，**依赖下标检查**来 trap（原先报 "trap: index"）；
 # H5 给视图索引原语加的"存储为空"检查现在排在前面（报 "trap: the view has no storage"）。

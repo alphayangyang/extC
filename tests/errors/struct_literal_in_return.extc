@@ -1,6 +1,6 @@
 // 回归（tools/fuzz.py 抓到，seed 202 it 394）：畸形结构体字面量 + 泛型返回值
 // 曾经让逃逸级别分析在 levelOfValue2 里对 NULL 的 Sym 解引用 ⇒ SIGSEGV。
-// expect: undefined name
+// expect: bare name is not a value
 struct pair<T> {
     a: T
     b: T

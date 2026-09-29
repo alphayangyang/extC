@@ -71,11 +71,17 @@ def case_must_reject(f):
     rc, out = sh([str(EXTC), str(f)])
     if rc == 0:
         return False, "应该报错但通过了", out
+    want_match = re.search(r"(?m)^[ \t]*// expect:[ \t]*(.*?)[ \t]*$",
+                           f.read_text(encoding="utf-8", errors="replace"))
+    want = want_match.group(1).strip() if want_match else ""
     # 取**第一条 error**，不是第一行：警告（比如 `println` 弃置提醒）也写 stderr，而且
     # 先于错误渲染 ⇒ 拿第一行会把"这条反例到底在说什么"记成一条无关的提醒 ✗
-    line = next((l for l in out.splitlines() if ": error:" in l),
-                out.splitlines()[0] if out else "")
-    msg = line.split(": ", 1)[-1] if ": " in line else line
+    line = next((l for l in out.splitlines() if ": error:" in l), "")
+    if not line:
+        return False, "编译器退出但没有带源位置的 error 诊断", out
+    if want and want not in out:
+        return False, f"诊断未包含「{want}」", out
+    msg = line.split(": ", 1)[-1]
     return True, msg, ""
 
 

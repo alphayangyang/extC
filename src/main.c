@@ -542,13 +542,31 @@ int main(int argc, char **argv) {
      * only ever happen under `--run`. */
     if (doCheckC && !doRun) {
         const char *ccx = getenv("CC") ? getenv("CC") : "cc";
-        const char *tmp = "/tmp/extc-syntaxcheck.c";
-        if (!writeFile(tmp, bufCstr(&c), c.len)) {
+        char tmp[] = "/tmp/extc-syntaxcheck-XXXXXX";
+        int fd = mkstemp(tmp);
+        if (fd < 0) {
             fprintf(stderr, "extc: cannot write the syntax-check file\n");
             return 1;
         }
-        char *argv2[] = { (char *)ccx, "-std=c11", "-fsyntax-only", "-w", (char *)tmp, NULL };
-        if (runCmd(argv2) != 0) {
+        FILE *f = fdopen(fd, "wb");
+        if (!f) {
+            close(fd);
+            unlink(tmp);
+            fprintf(stderr, "extc: cannot write the syntax-check file\n");
+            return 1;
+        }
+        size_t written = fwrite(bufCstr(&c), 1, c.len, f);
+        int closed = fclose(f);
+        if (written != c.len || closed != 0) {
+            unlink(tmp);
+            fprintf(stderr, "extc: cannot write the syntax-check file\n");
+            return 1;
+        }
+        char *argv2[] = { (char *)ccx, "-std=c11", "-fsyntax-only", "-w",
+                          "-x", "c", tmp, NULL };
+        int checkRc = runCmd(argv2);
+        unlink(tmp);
+        if (checkRc != 0) {
             fprintf(stderr, "extc: **the generated C does not compile** -- this is an extc"
                             " bug, not a mistake in your program\n");
             return 1;

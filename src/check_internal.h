@@ -797,6 +797,9 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
 /* Record that a value of depth `d2` was stored into a field, updating the field entry and the
  * effective depth of the root. */
  void noteFieldDepthWrite (Checker *, Sym *, const char *, int);
+/* Record a whole-value assignment into a binding. When the source has a complete field table,
+ * copy that table so later promotion can still reach each field's allocation site. */
+ void noteWholeValueDepthWrite (Checker *, Sym *, Expr *, int);
 /* The name of the binding at the root of a place, or NULL when the place is not rooted in one. */
  const char *placeRootName (Expr *);
 /* The depth of the home arena to pass at this call site, derived from the arguments and the

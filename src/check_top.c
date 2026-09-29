@@ -2357,6 +2357,34 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
      * describes what is stored inside the pointee, so `refDepth` is restored here. */
     if (isRefRoot && root->refDepth < before) root->refDepth = before;
 }
+
+/* Record a whole aggregate assignment without throwing away its per-field provenance.
+ *
+ * A plain `h = t` copies the fields by value. Recording only `h.otherDepth = depth(t)` loses
+ * the allocation site stored in `t.fields[i].src`; a later `return h` can still promote the
+ * site through `t`, but cannot lower the stale aggregate depth left on `h`, so a safe value is
+ * rejected. A complete source table can be copied exactly. An exposed destination or an
+ * incomplete source keeps the existing conservative aggregate update.
+ */
+void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
+    if (!dst) return;
+
+    Sym *src = value && value->kind == EX_IDENT ? identBindOf(value) : NULL;
+    if (!dst->addressed && src && src != dst && src->fieldsComplete) {
+        dst->nfields = src->nfields;
+        for (int i = 0; i < src->nfields; i++) dst->fields[i] = src->fields[i];
+        dst->otherDepth = src->otherDepth;
+        dst->fieldsComplete = true;
+
+        int m = dst->otherDepth;
+        for (int i = 0; i < dst->nfields; i++)
+            if (dst->fields[i].depth > m) m = dst->fields[i].depth;
+        dst->refDepth = m;
+        return;
+    }
+
+    noteFieldDepthWrite(c, dst, NULL, d2);
+}
 /* Position of a named parameter, or -1.
  *
  * Params:

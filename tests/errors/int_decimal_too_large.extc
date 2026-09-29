@@ -1,0 +1,5 @@
+// expect: integer literal exceeds the supported signed 64-bit range
+fn main() -> i32 {
+    let n = 18446744073709551616
+    return 0
+}

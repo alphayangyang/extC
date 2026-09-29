@@ -8,6 +8,8 @@
  */
 #include "lexer.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -190,10 +192,20 @@ static void lexNumber(Lexer *lx, Vec *out) {
         size_t hexStart = lx->pos;
         while (isHex(lxPeek(lx, 0))) lxAdvance(lx);
 
+        if (lx->pos == hexStart) {
+            ctxError(lx->ctx, line, col, NULL, "hexadecimal literal needs at least one digit");
+            return;
+        }
+
         long long v = 0;
         for (size_t i = hexStart; i < lx->pos; i++) {
             char h = lx->src[i];
             long long d = isDigit(h) ? (h - '0') : ((h | 0x20) - 'a' + 10);
+            if (v > (LLONG_MAX - d) / 16) {
+                ctxError(lx->ctx, line, col, NULL,
+                         "integer literal exceeds the supported signed 64-bit range");
+                return;
+            }
             v = v * 16 + d;
         }
         Token *t = lxPushAt(lx, out, TK_INT, lx->src + start, lx->pos - start, line, col);
@@ -220,8 +232,15 @@ static void lexNumber(Lexer *lx, Vec *out) {
 
     Token *t = lxPushAt(lx, out, isFloat ? TK_FLOAT : TK_INT,
                         lx->src + start, lx->pos - start, line, col);
-    if (isFloat) t->fval = strtod(t->text, NULL);
-    else         t->ival = strtoll(t->text, NULL, 10);
+    if (isFloat) {
+        t->fval = strtod(t->text, NULL);
+    } else {
+        errno = 0;
+        t->ival = strtoll(t->text, NULL, 10);
+        if (errno == ERANGE)
+            ctxError(lx->ctx, line, col, NULL,
+                     "integer literal exceeds the supported signed 64-bit range");
+    }
 }
 
 /* Lex one identifier, keyword, or builtin type name into `out`.

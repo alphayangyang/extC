@@ -841,9 +841,13 @@ void checkStmt(Checker *c, Stmt *s) {
                     const char *fn2 = (s->u.assign.target->kind == EX_FIELD)
                                         ? s->u.assign.target->u.field.name : NULL;
                     if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type))) {
-                        c->curStoreVal = s->u.assign.value;
-                        noteFieldDepthWrite(c, vs, fn2, d2);
-                        c->curStoreVal = NULL;
+                        if (s->u.assign.target->kind == EX_IDENT) {
+                            noteWholeValueDepthWrite(c, vs, s->u.assign.value, d2);
+                        } else {
+                            c->curStoreVal = s->u.assign.value;
+                            noteFieldDepthWrite(c, vs, fn2, d2);
+                            c->curStoreVal = NULL;
+                        }
                     }
                 }
             }
@@ -1265,4 +1269,3 @@ void checkStmt(Checker *c, Stmt *s) {
             return;
     }
 }
-

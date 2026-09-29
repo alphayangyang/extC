@@ -3,9 +3,7 @@
  * 为什么安全：`new` 分配在 **`__extc_home`**（= 调用者 place ✓，生成物一行可见 ✓），
  * 字段只是把这个容器**搬**出去；块/帧结束不影响它 ✓。
  *
- * 与它成对的那一格（**当前被误拒** ✗）：同一个东西只要把 `new` 放进一个嵌套 `{}`
- *   ⇒ 深度按词法算成 2 ⇒ 拒 ✗ 见 `K_field_arena_nested_block.extc.known-gap`。
- * 记在一起，是为了让"块深度 vs arena place"这条账一眼看得见 ✓。 */
+ * 嵌套块对照见 `K_field_arena_nested_block.extc`：整值赋值复制字段账本后也应接受。 */
 use std::io
 
 struct holder { buf: mut slice<u8> }

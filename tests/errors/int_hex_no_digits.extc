@@ -1,0 +1,5 @@
+// expect: hexadecimal literal needs at least one digit
+fn main() -> i32 {
+    let n = 0x
+    return 0
+}

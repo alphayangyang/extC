@@ -1,0 +1,24 @@
+/* K：和 I 一样，只把 `new` 放进嵌套块。`h = t` 必须复制逐字段的深度和
+ * 分配来源，返回时才能把字段里的 `new` 提到 home arena。
+ *
+ * 2026-09-30 修复后进入常设 ASan 正例。危险对照仍由
+ * `tests/errors/field_view_frame_array.extc` 保证：指向块内数组的字段必须拒绝。 */
+use std::io
+
+struct holder { buf: mut slice<u8> }
+
+fn make() -> holder {
+    var h: holder = holder { buf: new u8[8] }
+    {
+        var t: holder = holder { buf: new u8[16] }
+        t.buf[0] = u8(75)
+        h = t
+    }
+    return h
+}
+
+fn main() -> i32 {
+    var h: holder = make()
+    io::cout << "K 嵌套块里的 new 容器: " << h.buf[..i64(1)] << "\n"
+    return 0
+}
