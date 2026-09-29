@@ -47,23 +47,23 @@ fn main() -> i32 {
     /* ① dl 表：字段就是函数，调用就是 `lib.div(7, 2)`。一个 `effects` 都没写（= 最坏情况：
      * "它可能留住每个实参"），而这份代码照样安全 —— 因为底下没有一个是**帧内**地址 ✓ */
     var lib: libcApi = openLibc()
-    var q: divResult = lib.div(i32(7), i32(2))
+    var q: divResult = lib.div(7, 2)
     io::cout << "pod=" << q.quot << "/" << q.rem
 
     /* 表里那个槽没签字 ⇒ C 收不收指针都随便；`getpid` 一个实参也不收 */
-    if lib.pid() > i32(0) { io::cout << " pid=yes" }
+    if lib.pid() > 0 { io::cout << " pid=yes" }
 
     /* ② 板：内存从板里给。`alloc` 返回的视图**存进局部**也合法 —— 库里签了 `effects Ret=0`
      * （"返回的视图不指向调用方的任何帧"）⇒ 它的深度取"指向的存储"，不取"槽所在的块" ✓ */
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
-    var v: mut slice<u8> = pl.alloc(u64(16))!
-    v[0] = u8(104)  v[1] = u8(105)  v[2] = u8(10)            /* "hi\n" */
+    var v: mut slice<u8> = pl.alloc(16)!
+    v[0] = 104  v[1] = 105  v[2] = 10            /* "hi\n" */
     io::cout << " plate=ok"
 
     /* ②b 从 C 拿回一个指针之后，把它变成视图的**唯一正路**是 `viewAt`：先做一次区间检查。
      * `loc` 在栈上、不在板里 ⇒ 必须说不 ✓（"一道门"就是这一格） */
     var loc: [8]u8
-    match pl.viewAt(loc[..].data, u64(4)) {
+    match pl.viewAt(loc[..].data, 4) {
         some(w) => { io::cout << " viewat=accepted" }
         none    => { io::cout << " viewat=rejected" }
     }
@@ -71,15 +71,15 @@ fn main() -> i32 {
     /* ③ 帧内地址就地交：`ts` 在栈上，这一句之所以编得过，全靠在上面签了那一个槽 */
     var ts: timespec = timespec { sec: 0, nsec: 0 }
     var rc: i32 = clock_gettime(CLOCK_MONOTONIC, ref ts)
-    if rc == i32(0) && ts.sec > i64(0) { io::cout << " ts=yes" } else { io::cout << " ts=no" }
+    if rc == 0 && ts.sec > 0 { io::cout << " ts=yes" } else { io::cout << " ts=no" }
 
     /* ⑤ 未签字的 dl 槽 + 板内视图：`write` 那条没有 effects（最坏情况），而 `v` 在板里
      * ⇒ 交给它合法 ✓。换成**栈上**缓冲区的指针，同一句在编译期就被拒 ✗
      * —— 这就是"库签一次、用户零签字"的形状：板里的东西本来就是 C 留也留不坏的 */
     var w: ref void = dl::sym(lib.handle, "write")!
     var writeFn: fn(i32, ref u8, u64) -> i64 = fn(i32, ref u8, u64) -> i64(w)
-    var n: i64 = writeFn(i32(1), v.data, u64(3))
-    if n == i64(3) { io::cout << " write=ok" } else { io::cout << " write=short" }
+    var n: i64 = writeFn(1, v.data, 3)
+    if n == 3 { io::cout << " write=ok" } else { io::cout << " write=short" }
 
     /* ④ 失败怎么走：可预期的失败是**返回值**（`open`/`sym` 返回 `option`），所以上面用 `!` 是
      * 作者的签字。真"不能继续"时才 `trap` —— 它印位置并退出（码 1），临终钩子照跑，
