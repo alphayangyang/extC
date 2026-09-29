@@ -71,3 +71,26 @@ bash bench/httpd/run.sh
 所以本文件最初那版 `var head: slice<u8> = hdr[..hdrEnd]` 被拒**是对的** —— `hdr` 虽然是
 `new` 出来的，但**"对局部再取视图"**这一格按设计就拒 ✗。两条正解：把视图留在**不挂起的函数**里
 （现在的 `planRequest(head: slice<u8>, …)` 就是这条 ✓），或者存偏移、恢复后重取 ✓。
+
+## 对 nginx（`vs-nginx.sh`，wrk 多线程 C 客户端 + 24 核，2026-09-29）
+
+`client.py`/`bench.py` 是**判据**；量具用 **wrk**（Python 客户端自己就是瓶颈：同一个服务器
+Python 量到 39k req/s，wrk 量到 **183k** ✗⇒✓）。服务器是**多进程**（`extc_tcp_listen_shared`
+就是 `SO_REUSEPORT` ⇒ 起 N 份共用一个端口，零代码改动 ✓）。
+
+| | extC 1 进程 | **extC 8 进程** | nginx 8 worker |
+|---|---|---|---|
+| tiny（11 B，256 连接） | 183,383 req/s | **1,319,815 req/s** | 1,222,896 req/s |
+| big（256 KB，128 连接） | 18.3 GB/s | **61.6 GB/s** | 62.1 GB/s |
+| p50 / p99（tiny） | 1.31 ms / 28 ms | 155 µs / 24.7 ms | 174 µs / 14.4 ms |
+| CPU（big，8 份合计） | — | 714% 单核 | 703% |
+| 峰值 RSS | 1.9 MB | **24 MB** | ~44 MB |
+| **单核**（big） | 18.3 GB/s | 7.7 GB/s/核 | 7.8 GB/s/核 |
+| socket errors | 0 | **0** | 0 |
+
+读法：单核比 nginx 快（tiny +20%、big **2.4×** —— `sendfile` + 更瘦的路径 ✓），8 进程打平
+（tiny +8%、big −0.8%），CPU 效率打平，RSS 约一半。
+
+**一个真协议 bug 是这轮抓到的**：撞上 keep-alive 上限（`MAXKEEP`）时我直接关 fd，没在那条响应里
+发 `Connection: close` ⇒ wrk 每 1.27M 请求报 **53 次 read error** ✗（nginx 是体面关闭 ✓）。修完
+errors 归零 ✓。

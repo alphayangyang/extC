@@ -144,7 +144,7 @@ fn sendAll(fd: i64, buf: slice<u8>, n: i64) -> bool {
 
 /* 响应头 + 可选 body。`body` 为 -1 表示没有 body（HEAD / 304）。 */
 fn respond(fd: i64, resp: mut slice<u8>, status: slice<u8>, mime: slice<u8>,
-           size: i64, mtime: i64, withBody: bool, fileFd: i64) -> bool {
+           size: i64, mtime: i64, withBody: bool, fileFd: i64, closeAfter: bool) -> bool {
     var at: i64 = i64(0)
     at = appS(resp, at, "HTTP/1.1 ")
     at = appS(resp, at, status)
@@ -163,7 +163,11 @@ fn respond(fd: i64, resp: mut slice<u8>, status: slice<u8>, mime: slice<u8>,
         var n: i64 = sysfile::extc_http_date(mtime, dv.data)
         if n > i64(0) { at = appS(resp, at, d[..n]) }
     }
-    at = appS(resp, at, "\r\nConnection: keep-alive\r\n\r\n")
+    /* **关之前必须说出来**：撞上 keep-alive 上限（或客户端要求 close）时，最后一条响应要带
+     * `Connection: close` —— 直接关 fd 会让客户端读到截断的流（实测：wrk 报 read error ✗，
+     * 每 1.27M 请求约 53 次）。nginx 也是这么做的 ✓ */
+    if closeAfter { at = appS(resp, at, "\r\nConnection: close\r\n\r\n") }
+    else          { at = appS(resp, at, "\r\nConnection: keep-alive\r\n\r\n") }
     if !sendAll(fd, resp, at) { return false }
     if !withBody || size == i64(0) { return true }
     var sent: i64 = i64(0)
@@ -175,7 +179,7 @@ fn respond(fd: i64, resp: mut slice<u8>, status: slice<u8>, mime: slice<u8>,
 }
 
 fn respondErr(fd: i64, resp: mut slice<u8>, status: slice<u8>) -> bool {
-    return respond(fd, resp, status, "text/plain; charset=utf-8", i64(0), i64(0), false, i64(-1))
+    return respond(fd, resp, status, "text/plain; charset=utf-8", i64(0), i64(0), false, i64(-1), false)
 }
 
 /* ---------------------------------------------------------------- 一条连接 = 一个协程*/
@@ -231,6 +235,9 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
         /* 头的其余部分：`If-Modified-Since` 与 `Connection` */
         var ifMod: i64 = i64(-1)
         var wantClose: bool = false
+        /* 到了 keep-alive 上限 ⇒ 这条响应要带 `Connection: close` 再收摊。直接关 fd 会让客户端
+         * 读到截断的流：实测 wrk 每 1.27M 请求报 ~53 次 read error ✗（nginx 是体面关闭 ✓）。 */
+        if kept + i64(1) >= MAXKEEP { wantClose = true }
         var p: i64 = sp2 + i64(1)
         while p < head.len {
             var eol: i64 = findSub(head, p, "\r\n")
@@ -280,9 +287,9 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
         /* `If-Modified-Since`：秒级比较（HTTP 的粒度就是秒）*/
         if ifMod >= i64(0) && mtime > i64(0) && mtime <= ifMod {
             sysfile::extc_file_close(ffd)
-            respond(fd, resp, "304 Not Modified", "", i64(0), mtime, false, i64(-1))
+            respond(fd, resp, "304 Not Modified", "", i64(0), mtime, false, i64(-1), wantClose)
         } else {
-            if !respond(fd, resp, "200 OK", mimeOf(full[..at]), size, mtime, !isHead, ffd) {
+            if !respond(fd, resp, "200 OK", mimeOf(full[..at]), size, mtime, !isHead, ffd, wantClose) {
                 sysfile::extc_file_close(ffd)
                 sysio::close(i32(fd))
                 return
