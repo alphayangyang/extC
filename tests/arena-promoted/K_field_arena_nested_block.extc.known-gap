@@ -23,6 +23,17 @@
  * 坑：不能简化成"在 arena 里 ⇒ 安全" ✗ —— `tests/arena-promoted/H2_home_zone_two_hops.extc`
  * 正是 place 拿错一层 ⇒ 静默改坏 ✓ 必须走 `zoneLevel` 的**传递闭包** ✓。
  *
+ * 打点证据（2026-09-29，临时在 `placeDepth` 的 `EX_FIELD` 分支上打一行、跑完即还原 ✓）：
+ *   字段指向**帧内嵌数组**（必须拒 ✓）：`[field] obj depth 1` + 报错
+ *       "this assignment would hold a reference to a local variable that dies first
+ *        (borrowed from depth 2, but this can only hold up to depth 1)" ✓
+ *   本文件（嵌套块里的 `new` 容器，该接受 ✗）：`[field] obj depth 2` + 报错
+ *       "this return value would hold a reference to a local variable that dies first
+ *        (borrowed from depth 1, but this can only hold up to depth 0)" ✗
+ *   ⇒ 深度确实取自**持有它的那个变量**（main 里 1 层、块里 2 层），从不问"被指的是谁" ✓。
+ *   同时 `EXTC_DBG_ZONE=1` 的现成通道在这两个程序里**一次都没响** ✓（`poolCallDepth` 只对建池
+ *   调用生效）⇒ 域/place 那一维**存在**于编译器，只是**这条字段路没接上它** ✓。
+ *
  * 修好之后：把它改名成 `K_field_arena_nested_block.extc` 就自动进跑法 ✓（run.sh 的 glob 认 `.extc` ✓）。
  */
 use std::io
