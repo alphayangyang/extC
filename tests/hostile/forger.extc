@@ -13,7 +13,7 @@ fn main() -> i32 {
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
     var p: ?ref u8 = a.forge()
     if p == null {
-        io::cout << "forged=null\n"
+        io::cout << "forge=null\n"
         pl.close()
         dl::close(h)
         return 1

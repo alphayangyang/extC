@@ -16,19 +16,19 @@ struct api {
 }
 
 impl api {
-    /* 取一个符号，缺了就把名字说出来（**不用 `!`**：它是编译期签字、没有运行期检查，
-     * 靠它会得到一张全是空指针的表，第一次调用跳 null）。 */
+    /* 取一个符号。用**可空引用**形态（`symOrNull`）而不是 `?`：`?` 只能用在返回
+     * `option`/`result` 的函数里，而这里要"缺了就把名字印出来再判空" —— 打得出人话的
+     * 那条路必须是判空。手上有 option 时用 `dl::sym(...)?`（编译器强制处理，见 `open`）。 */
     @private
     fn needSym(h: ?ref void, name: slice<u8>) -> ?ref void {
-        var p: ?ref void = dl::sym(h, name)
+        var p: ?ref void = dl::symOrNull(h, name)
         if p == null { io::cout << "cbindgen: 库里没有符号 " << name << "\n" }
         return p
     }
 
     /* 打开库并填表。缺任何一个符号都返回 `none`（消息见上）。 */
     fn open(lib: slice<u8>) -> ?api {
-        var h: ?ref void = dl::open(lib)
-        if h == null { io::cout << "cbindgen: 打不开 " << lib << "\n"  return none }
+        var h: ref void = dl::open(lib)?      /* `?`：打不开就早退，编译器强制处理 */
         var s0: ?ref void = api::needSym(h, "getpid")
         if s0 == null { return none }
         return some(api {

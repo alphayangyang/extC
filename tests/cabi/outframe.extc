@@ -16,15 +16,13 @@ var mem: [64]u8
 
 fn main() -> i32 {
     var h: ?ref void = dl::open("libcairo.so.2")!     /* 借一个真实符号当"未签字的 C 函数" */
-    var raw: ?ref void = dl::sym(h, "cairo_version_string")
-    if raw == null { return 1 }
+    var raw: ref void = dl::sym(h, "cairo_version_string")!
     var f: fn(ref u8) -> i64 = fn(ref u8) -> i64(raw) /* 裸转换 ⇒ 没有 effects ⇒ 最坏情况 */
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
 
     var v: mut slice<u8> = pl.alloc(u64(8))!          /* 板内视图，存局部 */
     var g: slice<u8> = mem[..]                        /* 全局视图，存局部 */
-    var p: ?ref u8 = pl.allocPtr(u64(8))              /* 裸指针出口 */
-    if p == null { return 1 }
+    var p: ref u8 = pl.allocPtr(u64(8))!              /* 裸指针出口（`!`：板里有地方） */
 
     var a: i64 = f(v.data) + f(g.data) + f(p)
     io::cout << "view-in-local=ok global-view=ok allocptr=ok\n"

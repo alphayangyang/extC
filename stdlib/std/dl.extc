@@ -54,12 +54,30 @@ fn cstr(s: slice<u8>) -> mut slice<u8> {
 
 /* 打开一个共享对象（`path` 必须 NUL 结尾：字面量直接传，运行期拼的先用 `cstr`）。
  * 失败返回 `null`（要问为什么就 `dlerror()`）。 */
-fn open(path: slice<u8>) -> ?ref void { return dlopen(path.data, RTLD_NOW) }
+/* 返回 **`option`**（不是可空引用）：这样两条路都在调用方手里 ——
+ *     var h: ref void = dl::open("x.so")?     // `?`：失败就早退（**编译器强制**处理）
+ *     var h: ref void = dl::open("x.so")!     // `!`：我签字（**不检查**，失败就是空值）
+ * 可空引用（`?ref void`）只有 `!` 一条路 —— 语言里 `?` 只认 `option`/`result`（实测的报错原文：
+ * "needs an `option<...>` or `result<...>`, found `?ref void`"）。 */
+fn open(path: slice<u8>) -> option<ref void> {
+    var p: ?ref void = dlopen(path.data, RTLD_NOW)
+    if p == null { return none }
+    return some(p)
+}
 
 /* 取一个符号。**给的是地址，不是类型** —— 把它变成可调用的值要调用方写一次显式转换：
  *     var f: fn(i64) -> i64 = fn(i64) -> i64(raw!)
  * 这就是作者的签字：C 的 `dlsym` 回来的是 `void *`，谁也不知道它到底是什么。 */
-fn sym(h: ?ref void, name: slice<u8>) -> ?ref void { return dlsym(h, name.data) }
+fn sym(h: ?ref void, name: slice<u8>) -> option<ref void> {
+    var p: ?ref void = dlsym(h, name.data)
+    if p == null { return none }
+    return some(p)
+}
+
+/* 同一个符号的**可空引用**形态。为什么两个都要有：`?` 只认 `option`/`result`，所以"失败早退"
+ * 那条路要 `sym`；而"失败了我要打一句人话（缺的是哪个符号）"那条路要自己判空 —— 判空写在
+ * 返回 `option` 的函数里会变成"把匹配出来的指针绑进局部再返回"（逃逸分析拒），写成可空引用就顺。 */
+fn symOrNull(h: ?ref void, name: slice<u8>) -> ?ref void { return dlsym(h, name.data) }
 
 fn close(h: ?ref void) -> i32 { return dlclose(h) }
 

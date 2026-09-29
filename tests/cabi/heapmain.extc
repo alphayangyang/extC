@@ -62,17 +62,9 @@ fn hostLog(p: ref u8, n: i64, ctx: ?ref void) -> i64 {
 }
 
 fn main() -> i32 {
-    var h: ?ref void = dl::open("build/cabi-heapmod.so")
-    if h == null {
-        io::cout << "open=fail\n"
-        return 1
-    }
-    var raw: ?ref void = dl::sym(h, "init")
-    if raw == null {
-        io::cout << "sym=fail\n"
-        dl::close(h)
-        return 1
-    }
+    /* 库是我们自己编的 ⇒ 用 `!` 签字（失败就是空指针，测试环境的责任）。 */
+    var h: ref void = dl::open("build/cabi-heapmod.so")!
+    var raw: ref void = dl::sym(h, "init")!
     /* 这一句就是"模块入口的签名"，由宿主写下来（C 只给了一个地址）。 */
     var init: fn(mut ref heapapi) -> ref u8 = fn(mut ref heapapi) -> ref u8(raw)
 
@@ -90,11 +82,7 @@ fn main() -> i32 {
 
     /* **判据有牙**：同一个检查要挡住板外指针。模块里那个 `badPtr` 返回的是它自己一个静态变量
      * 的地址 —— 谁也看不出来它不该被信任，只有这一比较知道。 */
-    var rawBad: ?ref void = dl::sym(h2, "badPtr")
-    if rawBad == null {
-        io::cout << " outside=missing\n"
-        return 1
-    }
+    var rawBad: ref void = dl::sym(h2, "badPtr")!
     var badPtr: fn(mut ref heapapi) -> ref u8 = fn(mut ref heapapi) -> ref u8(rawBad)
     var q: ref u8 = badPtr(ref api)
     var qa: u64 = u64(q)

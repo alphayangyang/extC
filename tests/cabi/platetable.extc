@@ -57,19 +57,11 @@ fn doorCopyOut(p: ref u8, n: i64, pl: mut ref plate) -> i64 {
 }
 
 fn main() -> i32 {
-    var h: ?ref void = dl::open("build/cabi-platetable.so")
-    if h == null {
-        io::cout << "open=fail\n"
-        return 1
-    }
-    var sInit: ?ref void = dl::sym(h, "init")
-    var sPlate: ?ref void = dl::sym(h, "platePtr")
-    var sBad: ?ref void = dl::sym(h, "badPtr")
-    if sInit == null || sPlate == null || sBad == null {
-        io::cout << "sym=fail\n"
-        dl::close(h)
-        return 1
-    }
+    /* 库是我们自己编的 ⇒ 用 `!` 签字（失败就是空指针，测试环境的责任）。 */
+    var h: ref void = dl::open("build/cabi-platetable.so")!
+    var sInit: ref void = dl::sym(h, "init")!
+    var sPlate: ref void = dl::sym(h, "platePtr")!
+    var sBad: ref void = dl::sym(h, "badPtr")!
 
     /* 板：真板（不是数组）。 */
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
@@ -82,9 +74,9 @@ fn main() -> i32 {
         copyOut: doorCopyOut
     }
     var plug: plugin_api = plugin_api {
-        init:     fn(mut ref plate_api) -> i64(sInit!),
-        platePtr: fn(mut ref plate_api) -> ?ref u8(sPlate!),
-        badPtr:   fn(mut ref plate_api) -> ?ref u8(sBad!)
+        init:     fn(mut ref plate_api) -> i64(sInit),
+        platePtr: fn(mut ref plate_api) -> ?ref u8(sPlate),
+        badPtr:   fn(mut ref plate_api) -> ?ref u8(sBad)
     }
 
     var n: i64 = plug.init(ref api)
@@ -96,10 +88,10 @@ fn main() -> i32 {
         return 1
     }
 
-    /* 模块交回来的**板内**指针：一次区间检查，然后才变成视图去读。 */
+    /* 模块交回来的**板内**指针：先判空（模块可能写不进去），再一次区间检查，然后才变成视图去读。 */
     var p: ?ref u8 = plug.platePtr(ref api)
     if p == null {
-        io::cout << " ptr=fail\n"
+        io::cout << " ptr=null\n"
         pl.close()
         dl::close(h)
         return 1
@@ -118,7 +110,7 @@ fn main() -> i32 {
     /* 模块交回来的**板外**指针：同一道门必须挡住（这就是判据的牙）。 */
     var q: ?ref u8 = plug.badPtr(ref api)
     if q == null {
-        io::cout << " bad=null"
+        io::cout << " outside=fail"
     } else {
         var qq: ref u8 = q
         if pl.holds(qq) { io::cout << " outside=accepted" } else { io::cout << " outside=rejected" }

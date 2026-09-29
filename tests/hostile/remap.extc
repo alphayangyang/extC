@@ -17,7 +17,7 @@ fn main() -> i32 {
     v[0] = u8(0x11)
     var p: ?ref u8 = a.hijack(v.data, i64(pl.reservedBytes()))
     if p == null {
-        io::cout << "hijack=failed\n"
+        io::cout << "hijack=null\n"
         pl.close()
         dl::close(h)
         return 1

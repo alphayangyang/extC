@@ -325,19 +325,19 @@ def emit(fns_in, enums, libname):
     # 顶层通用名会撞 —— 实测 `use std::io` 之后本模块里的 `fn open` 直接报 "duplicate
     # function `open`"（导入一个模块会把它连同传递导入的顶层名字占住，哪怕调用要写限定名）。
     lines.append('impl api {')
-    lines.append('    /* 取一个符号，缺了就把名字说出来（**不用 `!`**：它是编译期签字、没有运行期检查，')
-    lines.append('     * 靠它会得到一张全是空指针的表，第一次调用跳 null）。 */')
+    lines.append('    /* 取一个符号。用**可空引用**形态（`symOrNull`）而不是 `?`：`?` 只能用在返回')
+    lines.append('     * `option`/`result` 的函数里，而这里要"缺了就把名字印出来再判空" —— 打得出人话的')
+    lines.append('     * 那条路必须是判空。手上有 option 时用 `dl::sym(...)?`（编译器强制处理，见 `open`）。 */')
     lines.append('    @private')
     lines.append('    fn needSym(h: ?ref void, name: slice<u8>) -> ?ref void {')
-    lines.append('        var p: ?ref void = dl::sym(h, name)')
+    lines.append('        var p: ?ref void = dl::symOrNull(h, name)')
     lines.append('        if p == null { io::cout << "cbindgen: 库里没有符号 " << name << "\\n" }')
     lines.append('        return p')
     lines.append('    }')
     lines.append('')
     lines.append('    /* 打开库并填表。缺任何一个符号都返回 `none`（消息见上）。 */')
     lines.append('    fn open(lib: slice<u8>) -> ?api {')
-    lines.append('        var h: ?ref void = dl::open(lib)')
-    lines.append('        if h == null { io::cout << "cbindgen: 打不开 " << lib << "\\n"  return none }')
+    lines.append('        var h: ref void = dl::open(lib)?      /* `?`：打不开就早退，编译器强制处理 */')
     for i, (short, cname, sig) in enumerate(fns_in):
         lines.append('        var s%d: ?ref void = api::needSym(h, "%s")' % (i, cname))
         lines.append('        if s%d == null { return none }' % i)
@@ -345,7 +345,6 @@ def emit(fns_in, enums, libname):
     lines.append('            handle: h,')
     for i, (short, cname, sig) in enumerate(fns_in):
         comma = ',' if i + 1 < len(fns_in) else ''
-        # 判空那一行把它收窄成非空了 ⇒ 这里写裸名字
         lines.append('            %s: %s(s%d)%s' % (short, sig, i, comma))
     lines.append('        })')
     lines.append('    }')
