@@ -523,9 +523,7 @@ cairo=1.18.4 surface=ok png=ok green=30771 white=9532 edges=1111 drawn=1 center=
    那个 helper 的 effect 总结是 **incomplete**（实测 `EXTC_DBG_REFARGS=1`：`complete=0`，因为
    经函数指针的调用在收集阶段被记成 `effUnknown`），于是**它的调用者**不能再传本帧的指针
    （实测报 "points into a deeper scope (depth 1) than the arena this call may store it in"）。
-   今天的选择是**保守不放松**（这套分析有过一次"放松即放跑悬垂引用"的教训，注释里写着）；
-   画图的调用因此直接写在槽那里。把签名接进总结（"经签字的槽调用不该让总结变得 incomplete"）
-   是**下一步该做的事**，不是顺手改的。
+   这条**已经修了**（§9.14）：经签字的槽调用现在并进所在函数的总结，不再把它记成 incomplete。
 
 顺带两件小的：C 字符串反方向（`dl::cstrLen` / `dl::viewCStr`，`cairo_version_string` 那种），
 以及库层的 `plate::view(off, n)`。
@@ -575,3 +573,36 @@ loaned ⇒ 写 ⇒ SIGSEGV（rc=139，崩溃前标记可见）                  
 为什么要有它：大输入进来时"拷贝进板"是 1830 MB/s，而只读借出是**零拷贝**（`prototype-heap/`
 4b 量过 21.6 GB/s，两次 `mprotect` 各 ≈370 µs ⇒ 盈亏平衡 ≈0.7 MiB）。代价是那段内存借出期间
 **谁都不能写** —— 内核保证，写就是硬缺页，而这一条有专门的测试盯着。
+
+## 9.14 第 5 步 ④：把槽的签名接进 effect 总结（包一层不再丢签名）
+
+上一节 ④ 那条留下的口子。修之前，把槽调用包进一个 extC 函数之后：
+
+```
+$ ./build/extc tests/cabi/slotsummary.extc
+error: argument 1 of `inner` points into a deeper scope (depth 1) than the arena this call
+       may store it in (depth 0)
+```
+
+槽明明签着 `Addr=0 Cont=0`（"我不留你的指针"），却因为**总结不完整**按最坏情况办 —— 而一旦那个
+调用点有一个"活到帧外"的目的地（深度 0，比如从 C 回来的指针、指向全局的指针），实参里的本帧局部
+就被拒。cairo 那次就是这么被逼着把画图的调用一行行摊在 `main` 里的。
+
+**修法**（`src/check_top.c` 的 `collectEffectsExpr`）：经 `fn` 值调用时，如果那个值来自**带
+`effects` 的槽**，就把槽的掩码并进本函数的总结，并**保持 complete** —— 它与 `extern!` 上的子句
+是同一件事（同一个解析器、同一套键，调用点的签名本来就是从它建出来的）：
+
+* `Addr` 第 j 位 ⇒ 那个实参的"地址"被留下 ⇒ 能追到本函数的某个参数就把那位点上（`addrMask`），
+  追不上就记 `otherMask`（"不可归属"，调用点读作最严）；
+* 槽**没签**（或值只是局部拷贝、参数传来）⇒ 仍然 `effUnknown`（总结不完整，保守）—— 这一条没变。
+
+修完 `wrapped=41 twice=41`（包两层、传本帧局部都编得过），而**没有放松别处**：
+
+* `make` 0 诊断 · `tools/golden.sh` **414/414 逐字节不变**（effects 只影响检查，不影响产物）·
+  `./check.sh quick` **49/0**（含逃逸/借用那几套判据：`ref_arg_too_deep`、`borrowed_into_param_place`）。
+
+**还没修的（同一片区域，记在这里免得下次重推）**：槽签 `Addr=1`（"我留下你的指针"）时，
+**直接**在调用点经槽调用会被正确处理（报 "may be kept by C forever, but it points into this frame"），
+但**包一层**之后那层要求会退化成"活得比我的某个 ref 实参久"—— 因为总结的词汇表里没有"存到 C 自己的
+内存里（永久）"这一档：`addrMask`/`contMask`/`homeAddrMask` 说的都是"存进调用方给的某处"。
+要补就得给总结加一档（例如 `foreignMask`：这些位置的实参必须深度 0），那是独立的一步。

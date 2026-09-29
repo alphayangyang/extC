@@ -152,5 +152,16 @@ else
     echo "  FAIL 编 .so 失败（platetable.c）"; head -3 "$tmp/err5" | sed 's/^/        /'; fail=1
 fi
 
+echo '== ⑥ 带签名的槽被包一层不丢签名（C-ABI.md §9.14）=='
+if out=$("$EXTC" --run tests/cabi/slotsummary.extc 2>&1); then
+    if echo "$out" | grep -qF "wrapped=41 twice=41"; then
+        echo "  ok   slot-summary  ->  包两层、传本帧局部都编得过（从前报 depth 1 / depth 0）"
+    else
+        echo "  FAIL slot-summary  ->  输出对不上：$(echo "$out" | tr '\n' '|')"; fail=1
+    fi
+else
+    echo "  FAIL slot-summary  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+fi
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

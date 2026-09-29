@@ -2540,8 +2540,54 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
 */
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!e) return;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !e->func)
-        f->effUnknown = true;   /* unresolved -> the summary stays incomplete, conservatively */
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !e->func) {
+        /* A call through a `fn` **value** (no `FuncDef` on the node).
+         *
+         * When the value came from a **table slot that carries an `effects` clause**, that clause
+         * is exactly as authoritative as an `extern!` declaration -- it is the same parser, the
+         * same three keys, and the checker already builds the call-site signature out of it. So
+         * merge it into this function's summary and keep the summary **complete**; marking it
+         * unknown instead made every caller of a wrapper pay the worst case, even when the slot
+         * said "I store nothing":
+         *
+         *     fn rgb(api: ref cairoApi, cr: ref void, …) { api.setSourceRgb(cr, …) }
+         *     // `setSourceRgb` is signed `Addr=0 Cont=0`, yet `rgb`'s summary came out
+         *     // incomplete ⇒ its callers could no longer pass a frame-local pointer
+         *     // ("points into a deeper scope (depth 1) than the arena this call may store it
+         *     // it in"), measured while writing the cairo bindings (C-ABI.md §9.11 ④).
+         *
+         * A `fn` value that did **not** come from a signed slot (a local copy, a parameter, an
+         * unsigned slot) still has nothing to go on: the summary stays incomplete, conservatively.
+         * Note this is the same trade the extern path makes: the clause is believed, and the whole
+         * basis for believing it is that the author wrote it. */
+        FieldDef *sfd = NULL;
+        if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_FIELD)
+            sfd = e->u.call.callee->field;
+        else if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_FIELD)
+            sfd = e->u.method.recv->field;
+        if (sfd && sfd->hasEffects) {
+            Vec *args = (e->kind == EX_CALL)  ? &e->u.call.args :
+                        (e->kind == EX_METHOD) ? &e->u.method.args : &e->u.assoc.args;
+            unsigned addr = sfd->effAddrMask, cont = sfd->effContMask;
+            for (size_t j = 0; j < args->len && j < 32; j++) {
+                if (!(((addr | cont) >> j) & 1u)) continue;      /* this argument is not kept */
+                Expr *a = *(Expr **)vecAt(args, j);
+                if (a && a->kind == EX_REF) a = a->u.ref.operand; /* `f(ref x)` stores `&x` */
+                int pi = paramIndex(f, placeRootName(a));
+                if (pi >= 0) {
+                    if ((addr >> j) & 1u) f->addrMask |= (1u << pi);
+                    if ((cont >> j) & 1u) f->contMask |= (1u << pi);
+                } else {
+                    /* It keeps something that does not trace back to a parameter of mine: say so
+                     * in the one way the summary has (`otherMask` = "not attributable"), which the
+                     * call site reads as the strictest case. */
+                    f->otherMask |= 1u;
+                }
+            }
+        } else {
+            f->effUnknown = true;   /* nothing to go on -> incomplete, conservatively */
+        }
+    }
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func) {
         bool seen = false;
         for (size_t k = 0; k < f->callees.len; k++)

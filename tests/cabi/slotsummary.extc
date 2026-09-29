@@ -1,0 +1,30 @@
+// expect: wrapped=41 twice=41
+// ③ 的回归（C-ABI.md §9.14）：**带签名的槽被包一层不丢签名**。
+//
+// 经 `fn` 值调用（表槽）从前一律把所在函数的 effect 总结记成 incomplete ⇒ 调用者按最坏情况办：
+// 一旦这个调用点有一个"活到帧外"的目的地（深度 0），实参里的**本帧局部**就会被拒 —— 哪怕槽签的是
+// `Addr=0 Cont=0`（"我不留你的指针"）。实测的原文：
+//     argument 1 of `rgb` points into a deeper scope (depth 1) than the arena this call may store it in (depth 0)
+// 现在槽上的 `effects` 与 `extern!` 上的同样权威：并进总结、保持 complete，调用点直接跳过寿命检查。
+use std::io
+
+struct ops { touch: fn(ref i64) -> i64 effects Addr=0 Cont=0 }
+
+/* 一个**深度 0** 的目的地：指向全局内存的指针（全局活到进程结束）。C 那边回来的指针也是这个
+ * 深度 —— cairo 那次就是把 context 这样的指针传进 helper，才把那句误报逼出来的。 */
+var mem: [16]u8
+
+fn cb(p: ref i64) -> i64 { return *p }
+
+/* 包一层，再包一层：两层都要保持 complete（总结沿调用图传递）。 */
+fn inner(o: ref ops, ctx: ref u8, p: ref i64) -> i64 { return o.touch(p) }
+fn outer(o: ref ops, ctx: ref u8, p: ref i64) -> i64 { return inner(o, ctx, p) }
+
+fn main() -> i32 {
+    var o: ops = ops { touch: cb }
+    var x: i64 = 41
+    var q: ref i64 = ref x                  /* 本帧局部：从前这里就被拒 */
+    io::cout << "wrapped=" << inner(ref o, mem[..].data, q)
+    io::cout << " twice=" << outer(ref o, mem[..].data, q) << "\n"
+    return 0
+}
