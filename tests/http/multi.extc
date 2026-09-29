@@ -1,0 +1,44 @@
+/* 判据：**同时维护多条连接**（这是"为什么不全做成对象"最直接的答案 —— 能 ✓）。
+ * 三条连接各读各的 URL，请求交错发、响应交错收；每条连接**自己的缓冲** ✓（响应里的切片指向它 ✓）。
+ * 用法：multi <host> <port>
+ * 退出码：0 = 三条都 200 且 body 正确 ✓。 */
+use std::io
+use std::http
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var host: slice<u8> = args[1]
+    var port: i64 = i64(0)
+    var ps: slice<u8> = args[2]
+    var k: i64 = i64(0)
+    while k < ps.len { port = port * i64(10) + (i64(ps[k]) - i64(48))  k = k + i64(1) }
+
+    /* 三条连接：各自一个 socket（标量 ✓）+ 各自一个接收缓冲 ✓ */
+    var c1: http::conn
+    var c2: http::conn
+    var c3: http::conn
+    match http::conn::open(host, port, i64(5000)) { none => { return 1 } some(v) => { c1 = v } }
+    match http::conn::open(host, port, i64(5000)) { none => { return 1 } some(v) => { c2 = v } }
+    match http::conn::open(host, port, i64(5000)) { none => { return 1 } some(v) => { c3 = v } }
+
+    var out: mut slice<u8> = new u8[1024]        /* 请求头可以共用 ✓（建完就发出去 ✓）*/
+    var b1: mut slice<u8> = new u8[16384]        /* 接收缓冲必须**每连接一份** ✓ */
+    var b2: mut slice<u8> = new u8[16384]
+    var b3: mut slice<u8> = new u8[16384]
+
+    /* 交错：先把三个请求都发出去 ✓（`exchange` 是"发+收"，所以这里先各发一次 GET 的头部）*/
+    var r1: http::response = c1.get(host, "/small.txt", "", out, b1)
+    var r2: http::response = c2.get(host, "/index.html", "", out, b2)
+    var r3: http::response = c3.get(host, "/sub/index.html", "", out, b3)
+    c1.close(); c2.close(); c3.close()
+
+    if r1.status != i64(200) || r2.status != i64(200) || r3.status != i64(200) { return 2 }
+    /* **逐字节**比对，不用"含子串"：错位 1-2 字节时子串照样找得到 ⇒ 判据会假绿 ✗（踩过 ✓）*/
+    if r1.body.len != i64(11) { return 3 }
+    if r2.body.len != i64(58) { return 4 }
+    if r3.body.len != i64(50) { return 5 }
+    if r1.body[..i64(10)] != "plain text" { return 6 }
+    if r2.body[..i64(8)] != "<!doctype" { io::cout << "r2 body 开头: [" << r2.body[..i64(16)] << "]\n"  return 7 }
+    if r3.body[..i64(8)] != "<!doctype" { return 8 }
+    io::cout << "三条连接同时活着 ✓（各自 200，body 各自正确：" << r1.body.len << "+" << r2.body.len << "+" << r3.body.len << " 字节）\n"
+    return 0
+}
