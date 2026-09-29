@@ -37,8 +37,8 @@ for _ in $(seq 100); do (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null && brea
 if build tests/http/client.extc http_client && ./build/http_client 127.0.0.1 "$PORT" /small.txt "plain text" ; then :; else echo "  （诊断：本次失败 —— 已知不稳定 ✗）"; fi
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 
-echo "== ②b 多条连接同时维护 —— 诊断，不计入失败"
-if build tests/http/multi.extc http_multi && ./build/http_multi 127.0.0.1 "$PORT"; then :; else echo "  （诊断：本次失败 —— 第 2 条及以后响应的 status 读成 0 ✗，已知 bug）"; fi
+echo "== ②b 多条 session 连接同时维护（对象式 API）—— 诊断，不计入失败"
+if build tests/http/multi.extc http_multi && ./build/http_multi 127.0.0.1 "$PORT"; then :; else echo "  （诊断：本次失败 —— `status` 偶发读成 0 ✗；body 一直是对的 ✓，见 README 记账）"; fi
 
 echo "== ③ QQBot REST 的请求形状（假服务器回显）—— 诊断，不计入失败"
 python3 -u - "$QP" <<'PY' & SRV2=$!

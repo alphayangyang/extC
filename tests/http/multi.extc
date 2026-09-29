@@ -1,7 +1,7 @@
-/* 判据：**同时维护多条连接**（这是"为什么不全做成对象"最直接的答案 —— 能 ✓）。
- * 三条连接各读各的 URL，请求交错发、响应交错收；每条连接**自己的缓冲** ✓（响应里的切片指向它 ✓）。
+/* 判据：**同时维护多条 session 连接**（对象式 API ✓）。
+ * 每条 session 自带请求/接收缓冲 ⇒ 调用点不再传缓冲 ✓（`new` 出来的容器可以随对象逃逸 ✓）。
  * 用法：multi <host> <port>
- * 退出码：0 = 三条都 200 且 body 正确 ✓。 */
+ * 退出码 0 = 三条都 200、body **逐字节**正确 ✓（不用"含某子串"：错位也能假绿 ✗ 踩过）。 */
 use std::io
 use std::http
 
@@ -12,33 +12,25 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var k: i64 = i64(0)
     while k < ps.len { port = port * i64(10) + (i64(ps[k]) - i64(48))  k = k + i64(1) }
 
-    /* 三条连接：各自一个 socket（标量 ✓）+ 各自一个接收缓冲 ✓ */
-    var c1: http::conn
-    var c2: http::conn
-    var c3: http::conn
-    match http::conn::open(host, port, i64(5000)) { none => { return 1 } some(v) => { c1 = v } }
-    match http::conn::open(host, port, i64(5000)) { none => { return 1 } some(v) => { c2 = v } }
-    match http::conn::open(host, port, i64(5000)) { none => { return 1 } some(v) => { c3 = v } }
+    var a: http::session = http::session::make(host, port, i64(5000))
+    var b: http::session = http::session::make(host, port, i64(5000))
+    var c: http::session = http::session::make(host, port, i64(5000))
+    if !a.ok() || !b.ok() || !c.ok() { return 1 }
 
-    var out: mut slice<u8> = new u8[1024]        /* 请求头可以共用 ✓（建完就发出去 ✓）*/
-    var b1: mut slice<u8> = new u8[16384]        /* 接收缓冲必须**每连接一份** ✓ */
-    var b2: mut slice<u8> = new u8[16384]
-    var b3: mut slice<u8> = new u8[16384]
+    /* 三条**交错**发（各自的缓冲 ✓，互不干扰 ✓）*/
+    var ra: http::response = a.get(host, "/small.txt", "")
+    var rb: http::response = b.get(host, "/index.html", "")
+    var rc: http::response = c.get(host, "/sub/index.html", "")
+    a.close(); b.close(); c.close()
 
-    /* 交错：先把三个请求都发出去 ✓（`exchange` 是"发+收"，所以这里先各发一次 GET 的头部）*/
-    var r1: http::response = c1.get(host, "/small.txt", "", out, b1)
-    var r2: http::response = c2.get(host, "/index.html", "", out, b2)
-    var r3: http::response = c3.get(host, "/sub/index.html", "", out, b3)
-    c1.close(); c2.close(); c3.close()
-
-    if r1.status != i64(200) || r2.status != i64(200) || r3.status != i64(200) { return 2 }
-    /* **逐字节**比对，不用"含子串"：错位 1-2 字节时子串照样找得到 ⇒ 判据会假绿 ✗（踩过 ✓）*/
-    if r1.body.len != i64(11) { return 3 }
-    if r2.body.len != i64(58) { return 4 }
-    if r3.body.len != i64(50) { return 5 }
-    if r1.body[..i64(10)] != "plain text" { return 6 }
-    if r2.body[..i64(8)] != "<!doctype" { io::cout << "r2 body 开头: [" << r2.body[..i64(16)] << "]\n"  return 7 }
-    if r3.body[..i64(8)] != "<!doctype" { return 8 }
-    io::cout << "三条连接同时活着 ✓（各自 200，body 各自正确：" << r1.body.len << "+" << r2.body.len << "+" << r3.body.len << " 字节）\n"
+    if !ra.is(200) || !rb.is(200) || !rc.is(200) {
+        io::cout << "状态 " << ra.status << "/" << rb.status << "/" << rc.status << "\n"
+        return 2
+    }
+    if ra.body.len != i64(11) || ra.body != "plain text\n" { return 3 }
+    if rb.body.len != i64(58) || rb.body[..i64(9)] != "<!doctype" { return 4 }
+    if rc.body.len != i64(50) || rc.body[..i64(9)] != "<!doctype" { return 5 }
+    var ct: slice<u8> = ra.header("Content-Type")!
+    io::cout << "三条 session 同时活着 ✓ 各自 " << ra.status << "/" << rb.status << "/" << rc.status << "，body 逐字节正确（11/58/50），ct=[" << ct << "]\n"
     return 0
 }

@@ -610,7 +610,17 @@ var resp: http::response = c.get("api.example.com", "/v1/me", "Authorization: Bo
 c.close()
 ```
 
-- 公开成员：`beginRequest` `beginResponse` `contentLength` `decode` `endHeaders` `eqCI` `findSub` `headerBlockEnd` `headerEnd` `headerOf` `hexVal` `isSpace` `lower` `parseRequest` `parseResponse` `pathOf` `putBytes` `putHeader` `putHeaderI64` `putI64` `queryOf` `reasonOf` `resolve` `shiftToFront` `simpleResponse` `body` `close` `exchange` `exchangeClose` `extraHeaders` `fd` `get` `open` `out` `post` `readResponse` `rest` `send` `complete` `headers` `method` `path` `reason` `status` `target` `version`。
+- **自带缓冲的 `session`**（用户要的形状 ✓）：`new` 出来的**容器**可以装进结构体、跟着对象逃逸 ✓
+  （编译器原话："build it here with `new` … so it may escape"）⇒ 调用点不必再传缓冲 ✓：
+  ```extc
+  var a: http::session = http::session::make("api.example.com", i64(80), i64(5000))
+  var r: http::response = a.get("api.example.com", "/v1/me", "Authorization: Bot x\r\n")
+  if r.isOk() { … r.body … r.header("Content-Type") … }
+  a.close()
+  ```
+  含引用的结构体**没有零值** ⇒ 必须 `var a: … = make(...)`（这正是"对象自己管缓冲"的代价 ✓）。
+  被拒的是另一件事：把**指向局部的子视图**带出函数 ✗（探针量过 ✓）。
+- 公开成员：`beginRequest` `beginResponse` `contentLength` `decode` `endHeaders` `eqCI` `findSub` `headerBlockEnd` `headerEnd` `headerOf` `hexVal` `isSpace` `lower` `parseRequest` `parseResponse` `pathOf` `putBytes` `putHeader` `putHeaderI64` `putI64` `queryOf` `reasonOf` `resolve` `shiftToFront` `simpleResponse` `body` `c` `close` `exchange` `exchangeClose` `extraHeaders` `fd` `get` `make` `ok` `open` `out` `post` `readResponse` `rest` `send` `complete` `header` `headers` `is` `isGet` `isOk` `isPost` `length` `method` `path` `query` `reason` `status` `target` `version`。
 - **没有做**（明确记账）：chunked、header 折叠、TLS、代理、cookie。QQBot 那类 HTTPS API 要
   `TLS` ⇒ 见 `docs/topics/C-ABI.md` 的 OpenSSL 绑定那条线 ✓。
 - 三条语言规则值得记：**跨 `yield` 的视图一律拒**（指向全局的也算）；**逃逸检查要求"全用下标、

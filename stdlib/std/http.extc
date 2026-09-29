@@ -73,6 +73,18 @@ struct request {
     headers: slice<u8>         /* 头块（不含末尾那个空行 ✓）；取值用 `headerOf` ✓ */
     body: slice<u8>            /* 头之后的部分（有多少给多少 ✓）*/
     complete: bool             /* 请求行 + 头齐了 ✓ */
+
+    /* 方法从**自己的字段**派生视图 ✓（探针量过合法 ✓；自由函数用 `self` 会被拒 ✗）*/
+    fn path(self: ref request) -> slice<u8> { return pathOf(self.target) }
+    fn query(self: ref request, name: slice<u8>) -> option<slice<u8>> {
+        return queryOf(self.target, name)
+    }
+    fn header(self: ref request, name: slice<u8>) -> option<slice<u8>> {
+        return headerOf(self.headers, name)
+    }
+    fn length(self: ref request) -> i64 { return contentLength(self.headers) }
+    fn isGet(self: ref request) -> bool { return eqCI(self.method, "GET") }
+    fn isPost(self: ref request) -> bool { return eqCI(self.method, "POST") }
 }
 
 /* 头块结束（`\r\n\r\n` 的**末尾之后**那个位置）——没找到返回 -1 ✓。 */
@@ -216,6 +228,16 @@ struct response {
     headers: slice<u8>
     body: slice<u8>
     complete: bool
+
+    fn header(self: ref response, name: slice<u8>) -> option<slice<u8>> {
+        return headerOf(self.headers, name)
+    }
+    fn length(self: ref response) -> i64 { return contentLength(self.headers) }
+    fn isOk(self: ref response) -> bool {
+        return self.status >= i64(200) && self.status < i64(300)
+    }
+    /* 状态是否等于给定的那个（写 `r.is(200)` 比 `r.status == 200` 更像对象 ✓）*/
+    fn is(self: ref response, status: i64) -> bool { return self.status == status }
 }
 
 /* 常见状态码的 reason（够用就好；没有的给空串 ✓）。 */
@@ -484,5 +506,58 @@ struct conn {
                      extraHeaders: slice<u8>, body: slice<u8>, out: mut slice<u8>,
                      buf: mut slice<u8>) -> response {
         return self.exchange(method, host, path, extraHeaders, body, out, buf, false)
+    }
+}
+
+/* ---------------------------------------------------------------- session：自带缓冲的对象
+ *
+ * 用户要的形状：`var a: http::session = http::session::make(host, port); a.get("/x")` ——
+ * **方法动的是 a 自己**，不再把缓冲一格格传进去 ✓。
+ *
+ * 为什么这次能行（探针量过 ✓）：`new` 出来的**容器**装进结构体、结构体整体从函数返回是
+ * **合法**的 ✓（编译器原话："build it here with `new` … so it may escape"）；被拒的是把
+ * **指向局部的子视图**带出去 ✗。所以缓冲用 `new`，视图一律**从 `self` 的字段现取** ✓。
+ *
+ * 注意：含引用的结构体**没有零值** ⇒ `var a: http::session` 写不出来 ✗，必须
+ * `var a: http::session = http::session::make(...)` ✓（这正是"对象自己管缓冲"的代价 ✓）。
+ */
+struct session {
+    c: conn                     /* 标量 ✓ */
+    out: mut slice<u8>          /* 请求头缓冲：new ✓ */
+    buf: mut slice<u8>          /* 接收缓冲：new ✓（响应里的切片指向它 ✓）*/
+
+    fn make(host: slice<u8>, port: i64, timeoutMs: i64) -> session {
+        var fd: i64 = i64(-1)
+        var ip: [64]u8
+        var ipv: mut slice<u8> = ip[..]
+        var n: i64 = resolve(host, ipv)
+        if n > i64(0) {
+            fd = net::extc_tcp_connect_to(ipv.data, n, port)
+        }
+        if fd >= i64(0) && timeoutMs > i64(0) {
+            var _t: i64 = net::extc_sock_timeout(fd, timeoutMs)
+        }
+        return session { c: conn { fd: fd, rest: i64(0) },
+                         out: new u8[1024], buf: new u8[65536] }
+    }
+
+    fn ok(self: ref session) -> bool { return self.c.fd >= i64(0) }
+
+    fn close(self: mut ref session) { self.c.close() }
+
+    /* 发一个请求并读回响应（缓冲都在对象里 ✓，返回的切片指向 `self.buf` ✓ ⇒ 来源是参数 ✓）。 */
+    fn exchange(self: mut ref session, method: slice<u8>, host: slice<u8>, path: slice<u8>,
+                extraHeaders: slice<u8>, body: slice<u8>) -> response {
+        return self.c.exchange(method, host, path, extraHeaders, body,
+                               self.out, self.buf, true)
+    }
+
+    fn get(self: mut ref session, host: slice<u8>, path: slice<u8>, extraHeaders: slice<u8>) -> response {
+        return self.exchange("GET", host, path, extraHeaders, "")
+    }
+
+    fn post(self: mut ref session, host: slice<u8>, path: slice<u8>, extraHeaders: slice<u8>,
+            body: slice<u8>) -> response {
+        return self.exchange("POST", host, path, extraHeaders, body)
     }
 }
