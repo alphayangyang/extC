@@ -1,0 +1,14 @@
+// expect-crash: 139
+// 攻击 ⓪b：缺符号**还照调**会怎么爆。`dl::sym` 给回 null，extC 的 `!` 是**纯编译期签字**
+// （没有运行期检查 —— 实测 `null!` 拿到 0），于是那句转换把一个空指针当函数调 ⇒ **跳 null**。
+// 这就是生成器为什么要逐个人工判空（`api::needSym`）：不判，你得到的是一张全是空指针的表。
+use std::io
+use std::dl
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-empty.so")!
+    var p: ref void = dl::sym(h, "no_such_symbol")!   /* `!` 只是**编译期**签字 ⇒ 这里是 null */
+    var f: fn() -> i64 = fn() -> i64(p)
+    var r: i64 = f()                  /* 跳到 null */
+    io::cout << "unreachable " << r << "\n"
+    return 0
+}

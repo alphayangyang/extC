@@ -79,7 +79,7 @@ fn centeredText(c: api, tx: textApi, cr: ref void, s: ref u8,
 }
 
 fn main() -> i32 {
-    var c: api = open("libcairo.so.2")!
+    var c: api = api::open("libcairo.so.2")!
     var tx: textApi = openText(c.handle)!
     /* 生成物里返回值一律 `?ref`（C 的头文件不说可空性）⇒ 判空一次（语言本来就有的那条规则）。 */
     var vp: ?ref u8 = c.version_string()

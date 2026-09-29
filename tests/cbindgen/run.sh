@@ -17,7 +17,7 @@ if python3 tools/cbindgen.py --include demo.h -I tests/cbindgen --name demo --al
         -o "$tmp/demoapi.extc" >"$tmp/gen.log" 2>&1; then
     ok=1
     want=(
-      'open: fn(?ref u8, i32) -> ?ref void'                                   # const char* → ?ref u8
+      'demo_open: fn(?ref u8, i32) -> ?ref void'                               # const char* → ?ref u8
       'write: fn(?ref void, ?ref void, u64) -> i32'                            # const void* · unsigned long
       'set_callback: fn(?ref void, fn(?ref void, ?ref u8) -> void, ?ref void) -> void'  # 函数指针
       'scale: fn(f64, f32) -> f64'                                             # double · float
@@ -25,6 +25,8 @@ if python3 tools/cbindgen.py --include demo.h -I tests/cbindgen --name demo --al
       'let DEMO_ONE: i32 = 1'
       'let DEMO_TWO: i32 = 2'                                                 # 隐式值：clang 求值，不猜
       'let DEMO_THREE: i32 = 3'
+      'fn open(lib: slice<u8>) -> ?api'                                        # 填充器是关联函数
+      'fn needSym(h: ?ref void, name: slice<u8>) -> ?ref void'                 # 缺符号真的判空（不用 !）
     )
     for w in "${want[@]}"; do
         grep -qF -- "$w" "$tmp/demoapi.extc" || { ok=0; echo "  FAIL 生成物里缺：$w"; }
@@ -58,6 +60,21 @@ if out=$("$EXTC" --run tests/cbindgen/libcmain.extc 2>&1); then
     esac
 else
     echo "  FAIL run  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
+fi
+
+echo "== ④ 缺符号：逐个人工判空，并把缺的名字说出来 =="
+if gcc -std=c11 -fPIC -shared -o build/hostile-fakelib.so tests/hostile/fakelib.c 2>/dev/null; then
+    if out=$("$EXTC" --run tests/cbindgen/missym.extc 2>&1); then
+        if echo "$out" | grep -qF 'getpid' && echo "$out" | grep -qF 'missing-symbol-reported'; then
+            echo "  ok   missym  ->  $(echo "$out" | tr '\n' '|' | cut -c1-96)"
+        else
+            echo "  FAIL missym  ->  期望报出缺哪个符号：$(echo "$out" | tr '\n' '|' | cut -c1-70)"; fail=1
+        fi
+    else
+        echo "  FAIL missym  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -3; fail=1
+    fi
+else
+    echo "  FAIL missym  ->  编不出假库"; fail=1
 fi
 
 echo "失败 $fail 个（0 = 全过）"

@@ -1,0 +1,20 @@
+// expect: missing-symbol-reported
+// 生成器对"缺符号"的回答：`api::open` **逐个人工判空**并把缺的名字说出来。
+// （`!` 是纯编译期签字，没有运行期检查 —— 实测 `null!` 拿到 0，靠它就会得到一张全是空指针的表。）
+// 这里用一个少了 `getpid` 的假库（tests/hostile/fakelib.c），看报错对不对。
+use std::io
+use libcmini
+
+fn main() -> i32 {
+    /* `open` 返回的是 `option`（不是可空引用）⇒ 用 match 分辨，两种结果分开报。 */
+    match libcmini::api::open("build/hostile-fakelib.so") {
+        some(a) => {
+            io::cout << "missing-symbol-opened-anyway\n"
+            return 1
+        }
+        none => {
+            io::cout << "missing-symbol-reported\n"
+            return 0
+        }
+    }
+}

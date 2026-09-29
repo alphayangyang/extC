@@ -1,0 +1,26 @@
+// expect: forged=rejected
+// 攻击 ③：**伪造板内指针**。模块还回它自己一个静态变量的地址（板外）—— 宿主那**一次区间检查**
+// 必须说不。（这类"混淆代理"是最常见的一种：库想让你去读它的、或者别人的内存。）
+use std::io
+use std::dl
+use std::heap
+
+struct api { forge: fn() -> ?ref u8 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-forger.so")!
+    var a: api = api { forge: fn() -> ?ref u8(dl::sym(h, "forge")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var p: ?ref u8 = a.forge()
+    if p == null {
+        io::cout << "forged=null\n"
+        pl.close()
+        dl::close(h)
+        return 1
+    }
+    var pp: ref u8 = p
+    if pl.holds(pp) { io::cout << "forged=accepted\n" } else { io::cout << "forged=rejected\n" }
+    pl.close()
+    dl::close(h)
+    return 0
+}

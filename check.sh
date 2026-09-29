@@ -117,6 +117,11 @@ if out=$(timeout 600 ./tests/cabi/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（@export：C 宿主**真的链接并调用** · .so 里 nm -D 看得见符号 · 10 种"没有那一个 C 符号"的反例）"
 else bad "tests/cabi/run.sh"; echo "$out"; fi
 
+echo "== 攻击测试（tests/hostile：不规范的 .so 打主程序 —— 判据是"怎么爆"）=="
+if out=$(timeout 600 ./tests/hostile/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（设计赢：伪造指针被拒 · 板内 containment · 关板后硬缺页；攻击赢：食言/越界写栈/munmap 重映射/改表 —— 边界写在明处）"
+else bad "tests/hostile/run.sh"; echo "$out"; fi
+
 echo "== 绑定生成器（tools/cbindgen.py：类型映射 · 零 effects · 生成物能编译并真调用）=="
 if out=$(timeout 600 ./tests/cbindgen/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（8 条声明逐条对拍 · 零 effects · --check · 生成的绑定真 dlopen libc 调 getpid）"

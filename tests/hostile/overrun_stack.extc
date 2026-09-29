@@ -1,0 +1,21 @@
+// expect: stack-canary=smashed
+// 攻击 ①b：同一个越界模块，但缓冲区是**栈上的**，而那个槽签了 `Addr=0`（"我不留你的指针"）。
+// 这是 `effects` **管不住**的那一格：签名说的是"不留"，不是"不越界"。判据故意是"smashed"——
+// 记下这个极限，而不是假装它不存在（C-ABI.md §9.17）。
+use std::io
+use std::dl
+
+struct api { ctx: ?ref void  scribble: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0 }
+struct box { buf: [128]u8  canary: i64 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-overrun.so")!
+    var a: api = api { ctx: null, scribble: fn(?ref u8, i64) -> i64(dl::sym(h, "scribble")!) }
+    var b: box
+    b.canary = i64(123456789)
+    var s: slice<u8> = b.buf[..]
+    a.scribble(s.data, i64(128))
+    if b.canary == 123456789 { io::cout << "stack-canary=intact\n" } else { io::cout << "stack-canary=smashed\n" }
+    dl::close(h)
+    return 0
+}

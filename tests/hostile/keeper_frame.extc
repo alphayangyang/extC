@@ -1,0 +1,25 @@
+// expect: keep=write-succeeded
+// 攻击 ②：**食言**（槽签 `Addr=0`，模块却把指针存进静态变量），缓冲区是**栈上的**、函数已经返回。
+// 模块事后往那块死掉的帧里写 —— 没有任何东西能拦（签名是信任，不是证明）。判据记下这个极限。
+use std::io
+use std::dl
+
+struct api { take: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
+             useLater: fn() -> i64 }
+
+fn give(a: api) {
+    var tmp: [64]u8
+    tmp[0] = u8(0x11)
+    a.take(tmp[..].data, i64(64))
+}
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-keeper.so")!
+    var a: api = api { take: fn(?ref u8, i64) -> i64(dl::sym(h, "take")!),
+                       useLater: fn() -> i64(dl::sym(h, "use_later")!) }
+    give(a)
+    var r: i64 = a.useLater()          /* 往已经还回去的栈帧里写 */
+    if r == i64(0x77) { io::cout << "keep=write-succeeded\n" } else { io::cout << "keep=blocked\n" }
+    dl::close(h)
+    return 0
+}

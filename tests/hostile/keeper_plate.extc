@@ -1,0 +1,26 @@
+// expect-crash: 139
+// 攻击 ②b：同样的"食言"模块，但缓冲区在**板**里，而且宿主已经 `close()`（= `munmap`）。
+// 模块事后再写 ⇒ **硬缺页**（SIGSEGV）。判据是退出码 139 —— 这就是"少检验"换来的东西：
+// 不是悄悄读到别人的数据，而是一次响亮的崩。
+use std::io
+use std::dl
+use std::heap
+
+struct api { take: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
+             useLater: fn() -> i64 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-keeper.so")!
+    var a: api = api { take: fn(?ref u8, i64) -> i64(dl::sym(h, "take")!),
+                       useLater: fn() -> i64(dl::sym(h, "use_later")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(64))!
+    a.take(v.data, i64(64))
+    pl.close()
+    io::cout << "closed\n"
+    io::flushCout()
+    flush()
+    var r: i64 = a.useLater()          /* 写一个已经 munmap 的地址 ⇒ 硬缺页 */
+    io::cout << "unreachable " << r << "\n"
+    return 0
+}

@@ -1,0 +1,12 @@
+// expect: symbol-missing=trap
+// 攻击 ⓪：**库少一个符号**。C 里 `dlsym` 返回 NULL、照调就崩在别处；extC 里 `!` 是作者的签字
+// ⇒ 缺符号 = 一次**带源码位置的 trap**。判据是它真的 trap 了（而不是返回 0 或者崩在别处）。
+use std::io
+use std::dl
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-empty.so")!
+    /* `!` 是作者的签字"这个符号存在"。它不在 ⇒ trap（带源码位置），不是 NULL 照调。 */
+    var p: ?ref void = dl::sym(h, "no_such_symbol")!
+    io::cout << "symbol-missing=null-returned " << i64(u64(p)) << "\n"
+    return 1
+}

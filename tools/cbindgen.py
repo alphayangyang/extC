@@ -299,8 +299,11 @@ def emit(fns_in, enums, libname):
     lines.append('// %s：%d 个函数（头的来源见 run.sh / 命令）。' % (libname, len(fns_in)))
     lines.append('// **没有 effects**：槽不签 = 最坏情况 = 安全的那一侧（帧内地址会被拒）。帧内就地')
     lines.append('// 交给 C 的那几个函数要人签 `Addr=0 Cont=0`，工具不替作者说话（C-ABI.md §9.15）。')
+    lines.append('// 缺符号是**逐个人工判空**的：extC 的 `!` 是纯编译期签字（没有运行期检查，实测 `null!`')
+    lines.append('// 拿到 0），靠它就会得到一张全是空指针的表、第一次调用跳 null。')
     lines.append('// 结构体指针一律 `ref void`：不假装布局（要读字段就自己写 @frozen 镜像，§9.8）。')
     lines.append('use std::dl')
+    lines.append('use std::io')
     lines.append('')
     if enums:
         lines.append('/* 头文件里那些枚举：extC 里就是 `i32` 常量（值由 clang 求出来，一个不猜）。 */')
@@ -318,16 +321,34 @@ def emit(fns_in, enums, libname):
         lines.append('    %s: %s%s' % (short, sig, note))
     lines.append('}')
     lines.append('')
-    lines.append('/* 打开库并填表。`!` 是"我查过了"：符号不在就是一次带源码位置的 trap。 */')
-    lines.append('fn open(lib: slice<u8>) -> ?api {')
-    lines.append('    var h: ?ref void = dl::open(lib)')
-    lines.append('    if h == null { return none }')
-    lines.append('    return some(api {')
-    lines.append('        handle: h,')
+    # 取符号与填充都**挂在类型上**（关联函数，与 `ifstream::new` 同一个风格）：
+    # 顶层通用名会撞 —— 实测 `use std::io` 之后本模块里的 `fn open` 直接报 "duplicate
+    # function `open`"（导入一个模块会把它连同传递导入的顶层名字占住，哪怕调用要写限定名）。
+    lines.append('impl api {')
+    lines.append('    /* 取一个符号，缺了就把名字说出来（**不用 `!`**：它是编译期签字、没有运行期检查，')
+    lines.append('     * 靠它会得到一张全是空指针的表，第一次调用跳 null）。 */')
+    lines.append('    @private')
+    lines.append('    fn needSym(h: ?ref void, name: slice<u8>) -> ?ref void {')
+    lines.append('        var p: ?ref void = dl::sym(h, name)')
+    lines.append('        if p == null { io::cout << "cbindgen: 库里没有符号 " << name << "\\n" }')
+    lines.append('        return p')
+    lines.append('    }')
+    lines.append('')
+    lines.append('    /* 打开库并填表。缺任何一个符号都返回 `none`（消息见上）。 */')
+    lines.append('    fn open(lib: slice<u8>) -> ?api {')
+    lines.append('        var h: ?ref void = dl::open(lib)')
+    lines.append('        if h == null { io::cout << "cbindgen: 打不开 " << lib << "\\n"  return none }')
+    for i, (short, cname, sig) in enumerate(fns_in):
+        lines.append('        var s%d: ?ref void = api::needSym(h, "%s")' % (i, cname))
+        lines.append('        if s%d == null { return none }' % i)
+    lines.append('        return some(api {')
+    lines.append('            handle: h,')
     for i, (short, cname, sig) in enumerate(fns_in):
         comma = ',' if i + 1 < len(fns_in) else ''
-        lines.append('        %s: %s(dl::sym(h, "%s")!)%s' % (short, sig, cname, comma))
-    lines.append('    })')
+        # 判空那一行把它收窄成非空了 ⇒ 这里写裸名字
+        lines.append('            %s: %s(s%d)%s' % (short, sig, i, comma))
+    lines.append('        })')
+    lines.append('    }')
     lines.append('}')
     return '\n'.join(lines) + '\n'
 
@@ -399,6 +420,10 @@ def main():
         # 生成物要能编译，参数名里有 `_n` 这类没关系（我们用不到），所以只留类型。
         sig = 'fn(%s) -> %s' % (', '.join(t for _, t in ps), ret)
         short = name[len(prefix):] if prefix and name.startswith(prefix) else name
+        # 模块自己的名字（`open` 填充器、`need` 取符号、`api` 表）不能被字段名撞掉 ——
+        # `demo_open` 脱前缀正好会变成 `open`，实测报 "duplicate function `open`"。
+        if short in ('open', 'need', 'api'):
+            short = name
         out_fns.append((short, name, sig))
 
     enums = {}

@@ -1,0 +1,23 @@
+// expect: plate-contained canary=ok
+// 攻击 ①：**越界写**，缓冲区在**板**里。模块写 n+64 字节 —— 板里那一片它随便写（那本来就是它的
+// 空间），但**宿主帧里的哨兵必须完好**：这是"把库要的内存都从板里给"换来的containment。
+use std::io
+use std::dl
+use std::heap
+
+struct api { ctx: ?ref void  scribble: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0 }
+
+var canary: i64 = 123456789          /* 宿主帧/全局里的哨兵 */
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-overrun.so")!
+    var a: api = api { ctx: null, scribble: fn(?ref u8, i64) -> i64(dl::sym(h, "scribble")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(64))!
+    var n: i64 = a.scribble(v.data, i64(64))
+    io::cout << "wrote=" << n
+    if canary == 123456789 { io::cout << " canary=ok\n" } else { io::cout << " canary=smashed\n" }
+    pl.close()
+    dl::close(h)
+    return 0
+}

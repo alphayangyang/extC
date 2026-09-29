@@ -1,0 +1,35 @@
+// expect: hijacked=0x41
+// 攻击 ④：**釜底抽薪**。表里本来就把板的基址和长度交给了模块（它要用），于是模块
+// `munmap` 掉那块、在**同一个地址**映射自己的一页 —— 宿主的区间检查**照样通过**（区间没变），
+// 但读到的字节是攻击者的。这是"一道门"的极限，也是 HEAP.md 那句"防错不防敌"的具体形状：
+// 判据故意是"攻击成功"，因为**没有沙箱**这件事必须写在明处（C-ABI.md §9.17）。
+use std::io
+use std::dl
+use std::heap
+
+struct api { hijack: fn(?ref u8, i64) -> ?ref u8 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-remap.so")!
+    var a: api = api { hijack: fn(?ref u8, i64) -> ?ref u8(dl::sym(h, "hijack")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(64))!
+    v[0] = u8(0x11)
+    var p: ?ref u8 = a.hijack(v.data, i64(pl.reservedBytes()))
+    if p == null {
+        io::cout << "hijack=failed\n"
+        pl.close()
+        dl::close(h)
+        return 1
+    }
+    var pp: ref u8 = p
+    if !pl.holds(pp) {
+        io::cout << "hijack=rejected-by-holds\n"
+    } else {
+        var w: slice<u8> = pl.view(u64(0), u64(1))!     /* 板内第 0 字节：区间检查照样通过 */
+        io::cout << "hijacked=" << i64(w[0]) << "   /* 65 = 0x41，模块写的那个字节 */\n"
+    }
+    pl.close()
+    dl::close(h)
+    return 0
+}

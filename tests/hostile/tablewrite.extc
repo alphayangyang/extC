@@ -1,0 +1,26 @@
+// expect: slot-hijacked=1042
+// 攻击 ⑤：**改宿主的表**。模块确实需要这张表（`mut ref`），于是它顺手把槽改成自己的函数 ——
+// 之后宿主经那个槽调用，跑的是模块的代码。表的可写性是共享状态，宿主只能在**调用之后**把它
+// 当成不可信（判据故意是"攻击成功"：这是模型的边界，不是 bug，C-ABI.md §9.17）。
+use std::io
+use std::dl
+
+struct tab { slot0: fn(i64) -> i64 effects Addr=0 Cont=0  ctx: ?ref void }
+
+/* 注意：这个槽**必须签字**才让攻击成立 —— 没签字（最坏情况）时，编译器根本不让把本帧的表
+ * 交给它（实测报 "may be kept by C forever, but it points into this frame"）。也就是说
+ * "表可写"这条边界只在作者签了"我不留它"之后才暴露出来。 */
+struct api { rewrite: fn(mut ref tab) -> void effects Addr=0 Cont=0 }
+
+fn realSlot(x: i64) -> i64 { return x * 2 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/hostile-table.so")!
+    var t: tab = tab { slot0: realSlot, ctx: null }
+    var a: api = api { rewrite: fn(mut ref tab) -> void(dl::sym(h, "rewrite")!) }
+    a.rewrite(ref t)                     /* 模块在里面把 t.slot0 改掉了 */
+    var r: i64 = t.slot0(i64(42))        /* 宿主以为还是自己那个 ×2 ⇒ 取回 84 才对 */
+    io::cout << "slot-hijacked=" << r << "\n"
+    dl::close(h)
+    return 0
+}

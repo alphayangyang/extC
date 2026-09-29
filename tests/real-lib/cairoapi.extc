@@ -3,8 +3,11 @@
 // cairo 1.18.4：19 个函数（头的来源见 run.sh / 命令）。
 // **没有 effects**：槽不签 = 最坏情况 = 安全的那一侧（帧内地址会被拒）。帧内就地
 // 交给 C 的那几个函数要人签 `Addr=0 Cont=0`，工具不替作者说话（C-ABI.md §9.15）。
+// 缺符号是**逐个人工判空**的：extC 的 `!` 是纯编译期签字（没有运行期检查，实测 `null!`
+// 拿到 0），靠它就会得到一张全是空指针的表、第一次调用跳 null。
 // 结构体指针一律 `ref void`：不假装布局（要读字段就自己写 @frozen 镜像，§9.8）。
 use std::dl
+use std::io
 
 /* 头文件里那些枚举：extC 里就是 `i32` 常量（值由 clang 求出来，一个不猜）。 */
 let CAIRO_FORMAT_INVALID: i32 = -1
@@ -46,30 +49,79 @@ struct api {
     show_text: fn(?ref void, ?ref u8) -> void   /* C: cairo_show_text */
 }
 
-/* 打开库并填表。`!` 是"我查过了"：符号不在就是一次带源码位置的 trap。 */
-fn open(lib: slice<u8>) -> ?api {
-    var h: ?ref void = dl::open(lib)
-    if h == null { return none }
-    return some(api {
-        handle: h,
-        version_string: fn() -> ?ref u8(dl::sym(h, "cairo_version_string")!),
-        image_surface_create_for_data: fn(?ref u8, i32, i32, i32, i32) -> ?ref void(dl::sym(h, "cairo_image_surface_create_for_data")!),
-        create: fn(?ref void) -> ?ref void(dl::sym(h, "cairo_create")!),
-        destroy: fn(?ref void) -> void(dl::sym(h, "cairo_destroy")!),
-        surface_destroy: fn(?ref void) -> void(dl::sym(h, "cairo_surface_destroy")!),
-        surface_flush: fn(?ref void) -> void(dl::sym(h, "cairo_surface_flush")!),
-        surface_write_to_png: fn(?ref void, ?ref u8) -> i32(dl::sym(h, "cairo_surface_write_to_png")!),
-        set_source_rgb: fn(?ref void, f64, f64, f64) -> void(dl::sym(h, "cairo_set_source_rgb")!),
-        paint: fn(?ref void) -> void(dl::sym(h, "cairo_paint")!),
-        set_line_width: fn(?ref void, f64) -> void(dl::sym(h, "cairo_set_line_width")!),
-        move_to: fn(?ref void, f64, f64) -> void(dl::sym(h, "cairo_move_to")!),
-        line_to: fn(?ref void, f64, f64) -> void(dl::sym(h, "cairo_line_to")!),
-        arc: fn(?ref void, f64, f64, f64, f64, f64) -> void(dl::sym(h, "cairo_arc")!),
-        close_path: fn(?ref void) -> void(dl::sym(h, "cairo_close_path")!),
-        stroke: fn(?ref void) -> void(dl::sym(h, "cairo_stroke")!),
-        fill: fn(?ref void) -> void(dl::sym(h, "cairo_fill")!),
-        select_font_face: fn(?ref void, ?ref u8, i32, i32) -> void(dl::sym(h, "cairo_select_font_face")!),
-        set_font_size: fn(?ref void, f64) -> void(dl::sym(h, "cairo_set_font_size")!),
-        show_text: fn(?ref void, ?ref u8) -> void(dl::sym(h, "cairo_show_text")!)
-    })
+impl api {
+    /* 取一个符号，缺了就把名字说出来（**不用 `!`**：它是编译期签字、没有运行期检查，
+     * 靠它会得到一张全是空指针的表，第一次调用跳 null）。 */
+    @private
+    fn needSym(h: ?ref void, name: slice<u8>) -> ?ref void {
+        var p: ?ref void = dl::sym(h, name)
+        if p == null { io::cout << "cbindgen: 库里没有符号 " << name << "\n" }
+        return p
+    }
+
+    /* 打开库并填表。缺任何一个符号都返回 `none`（消息见上）。 */
+    fn open(lib: slice<u8>) -> ?api {
+        var h: ?ref void = dl::open(lib)
+        if h == null { io::cout << "cbindgen: 打不开 " << lib << "\n"  return none }
+        var s0: ?ref void = api::needSym(h, "cairo_version_string")
+        if s0 == null { return none }
+        var s1: ?ref void = api::needSym(h, "cairo_image_surface_create_for_data")
+        if s1 == null { return none }
+        var s2: ?ref void = api::needSym(h, "cairo_create")
+        if s2 == null { return none }
+        var s3: ?ref void = api::needSym(h, "cairo_destroy")
+        if s3 == null { return none }
+        var s4: ?ref void = api::needSym(h, "cairo_surface_destroy")
+        if s4 == null { return none }
+        var s5: ?ref void = api::needSym(h, "cairo_surface_flush")
+        if s5 == null { return none }
+        var s6: ?ref void = api::needSym(h, "cairo_surface_write_to_png")
+        if s6 == null { return none }
+        var s7: ?ref void = api::needSym(h, "cairo_set_source_rgb")
+        if s7 == null { return none }
+        var s8: ?ref void = api::needSym(h, "cairo_paint")
+        if s8 == null { return none }
+        var s9: ?ref void = api::needSym(h, "cairo_set_line_width")
+        if s9 == null { return none }
+        var s10: ?ref void = api::needSym(h, "cairo_move_to")
+        if s10 == null { return none }
+        var s11: ?ref void = api::needSym(h, "cairo_line_to")
+        if s11 == null { return none }
+        var s12: ?ref void = api::needSym(h, "cairo_arc")
+        if s12 == null { return none }
+        var s13: ?ref void = api::needSym(h, "cairo_close_path")
+        if s13 == null { return none }
+        var s14: ?ref void = api::needSym(h, "cairo_stroke")
+        if s14 == null { return none }
+        var s15: ?ref void = api::needSym(h, "cairo_fill")
+        if s15 == null { return none }
+        var s16: ?ref void = api::needSym(h, "cairo_select_font_face")
+        if s16 == null { return none }
+        var s17: ?ref void = api::needSym(h, "cairo_set_font_size")
+        if s17 == null { return none }
+        var s18: ?ref void = api::needSym(h, "cairo_show_text")
+        if s18 == null { return none }
+        return some(api {
+            handle: h,
+            version_string: fn() -> ?ref u8(s0),
+            image_surface_create_for_data: fn(?ref u8, i32, i32, i32, i32) -> ?ref void(s1),
+            create: fn(?ref void) -> ?ref void(s2),
+            destroy: fn(?ref void) -> void(s3),
+            surface_destroy: fn(?ref void) -> void(s4),
+            surface_flush: fn(?ref void) -> void(s5),
+            surface_write_to_png: fn(?ref void, ?ref u8) -> i32(s6),
+            set_source_rgb: fn(?ref void, f64, f64, f64) -> void(s7),
+            paint: fn(?ref void) -> void(s8),
+            set_line_width: fn(?ref void, f64) -> void(s9),
+            move_to: fn(?ref void, f64, f64) -> void(s10),
+            line_to: fn(?ref void, f64, f64) -> void(s11),
+            arc: fn(?ref void, f64, f64, f64, f64, f64) -> void(s12),
+            close_path: fn(?ref void) -> void(s13),
+            stroke: fn(?ref void) -> void(s14),
+            fill: fn(?ref void) -> void(s15),
+            select_font_face: fn(?ref void, ?ref u8, i32, i32) -> void(s16),
+            set_font_size: fn(?ref void, f64) -> void(s17),
+            show_text: fn(?ref void, ?ref u8) -> void(s18)
+        })
+    }
 }
