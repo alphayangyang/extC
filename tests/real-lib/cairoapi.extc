@@ -1,0 +1,75 @@
+// 由 tools/cbindgen.py 生成 —— 不要手改；重新生成：见文件头那条命令。
+//
+// cairo 1.18.4：19 个函数（头的来源见 run.sh / 命令）。
+// **没有 effects**：槽不签 = 最坏情况 = 安全的那一侧（帧内地址会被拒）。帧内就地
+// 交给 C 的那几个函数要人签 `Addr=0 Cont=0`，工具不替作者说话（C-ABI.md §9.15）。
+// 结构体指针一律 `ref void`：不假装布局（要读字段就自己写 @frozen 镜像，§9.8）。
+use std::dl
+
+/* 头文件里那些枚举：extC 里就是 `i32` 常量（值由 clang 求出来，一个不猜）。 */
+let CAIRO_FORMAT_INVALID: i32 = -1
+let CAIRO_FORMAT_ARGB32: i32 = 0
+let CAIRO_FORMAT_RGB24: i32 = 1
+let CAIRO_FORMAT_A8: i32 = 2
+let CAIRO_FORMAT_A1: i32 = 3
+let CAIRO_FORMAT_RGB16_565: i32 = 4
+let CAIRO_FORMAT_RGB30: i32 = 5
+let CAIRO_FORMAT_RGB96F: i32 = 6
+let CAIRO_FORMAT_RGBA128F: i32 = 7
+let CAIRO_FONT_SLANT_NORMAL: i32 = 0
+let CAIRO_FONT_SLANT_ITALIC: i32 = 1
+let CAIRO_FONT_SLANT_OBLIQUE: i32 = 2
+let CAIRO_FONT_WEIGHT_NORMAL: i32 = 0
+let CAIRO_FONT_WEIGHT_BOLD: i32 = 1
+
+struct api {
+    /* 库句柄：表里全是这个库里的代码指针，所以**别 dlclose** 它（要用 `dl::close(a.handle)` 自己担）。 */
+    handle: ?ref void
+    version_string: fn() -> ?ref u8   /* C: cairo_version_string */
+    image_surface_create_for_data: fn(?ref u8, i32, i32, i32, i32) -> ?ref void   /* C: cairo_image_surface_create_for_data */
+    create: fn(?ref void) -> ?ref void   /* C: cairo_create */
+    destroy: fn(?ref void) -> void   /* C: cairo_destroy */
+    surface_destroy: fn(?ref void) -> void   /* C: cairo_surface_destroy */
+    surface_flush: fn(?ref void) -> void   /* C: cairo_surface_flush */
+    surface_write_to_png: fn(?ref void, ?ref u8) -> i32   /* C: cairo_surface_write_to_png */
+    set_source_rgb: fn(?ref void, f64, f64, f64) -> void   /* C: cairo_set_source_rgb */
+    paint: fn(?ref void) -> void   /* C: cairo_paint */
+    set_line_width: fn(?ref void, f64) -> void   /* C: cairo_set_line_width */
+    move_to: fn(?ref void, f64, f64) -> void   /* C: cairo_move_to */
+    line_to: fn(?ref void, f64, f64) -> void   /* C: cairo_line_to */
+    arc: fn(?ref void, f64, f64, f64, f64, f64) -> void   /* C: cairo_arc */
+    close_path: fn(?ref void) -> void   /* C: cairo_close_path */
+    stroke: fn(?ref void) -> void   /* C: cairo_stroke */
+    fill: fn(?ref void) -> void   /* C: cairo_fill */
+    select_font_face: fn(?ref void, ?ref u8, i32, i32) -> void   /* C: cairo_select_font_face */
+    set_font_size: fn(?ref void, f64) -> void   /* C: cairo_set_font_size */
+    show_text: fn(?ref void, ?ref u8) -> void   /* C: cairo_show_text */
+}
+
+/* 打开库并填表。`!` 是"我查过了"：符号不在就是一次带源码位置的 trap。 */
+fn open(lib: slice<u8>) -> ?api {
+    var h: ?ref void = dl::open(lib)
+    if h == null { return none }
+    return some(api {
+        handle: h,
+        version_string: fn() -> ?ref u8(dl::sym(h, "cairo_version_string")!),
+        image_surface_create_for_data: fn(?ref u8, i32, i32, i32, i32) -> ?ref void(dl::sym(h, "cairo_image_surface_create_for_data")!),
+        create: fn(?ref void) -> ?ref void(dl::sym(h, "cairo_create")!),
+        destroy: fn(?ref void) -> void(dl::sym(h, "cairo_destroy")!),
+        surface_destroy: fn(?ref void) -> void(dl::sym(h, "cairo_surface_destroy")!),
+        surface_flush: fn(?ref void) -> void(dl::sym(h, "cairo_surface_flush")!),
+        surface_write_to_png: fn(?ref void, ?ref u8) -> i32(dl::sym(h, "cairo_surface_write_to_png")!),
+        set_source_rgb: fn(?ref void, f64, f64, f64) -> void(dl::sym(h, "cairo_set_source_rgb")!),
+        paint: fn(?ref void) -> void(dl::sym(h, "cairo_paint")!),
+        set_line_width: fn(?ref void, f64) -> void(dl::sym(h, "cairo_set_line_width")!),
+        move_to: fn(?ref void, f64, f64) -> void(dl::sym(h, "cairo_move_to")!),
+        line_to: fn(?ref void, f64, f64) -> void(dl::sym(h, "cairo_line_to")!),
+        arc: fn(?ref void, f64, f64, f64, f64, f64) -> void(dl::sym(h, "cairo_arc")!),
+        close_path: fn(?ref void) -> void(dl::sym(h, "cairo_close_path")!),
+        stroke: fn(?ref void) -> void(dl::sym(h, "cairo_stroke")!),
+        fill: fn(?ref void) -> void(dl::sym(h, "cairo_fill")!),
+        select_font_face: fn(?ref void, ?ref u8, i32, i32) -> void(dl::sym(h, "cairo_select_font_face")!),
+        set_font_size: fn(?ref void, f64) -> void(dl::sym(h, "cairo_set_font_size")!),
+        show_text: fn(?ref void, ?ref u8) -> void(dl::sym(h, "cairo_show_text")!)
+    })
+}

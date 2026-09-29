@@ -1,14 +1,29 @@
 // expect: cairo=1.18.4 surface=ok png=ok green= white= edges=1111 drawn=1 center=ok
-// 用**真的**第三方库画一张画：`dlopen("libcairo.so.2")`（不链接它、没有头文件）→ 20 个 `dlsym`
-// → 填一张带签名的表 → 画布内存从**板**里拿 → 二十来个真 API 调用 → 写 PNG（`--run` 直接跑）。
+// C-ABI 第 5 步 ⑥：**用生成出来的绑定**画同一张画（`tools/cbindgen.py`，零签字）。
 //
-// 这条路上撞到的四件事写在 `docs/topics/C-ABI.md` §9.11（链接 vs dlopen · 签名在槽上 · "会留住"
-// 要求指针内联从板里取 · C 字符串没有长度）。这里有牙的判据在文件末尾：按颜色与位置数像素。
+// 与手写那版（本文件的历史）比，差别就是几条命令：
+//
+//     tools/cbindgen.py @tools/cbindgen-cairo.args --include cairo.h -I <cairo 头文件目录>
+//
+// 生成物 `tests/real-lib/cairoapi.extc`：19 个函数 + 3 组枚举常量，**一条 effects 都不写**
+// （槽不签 = 最坏情况 = 安全的那一侧），结构体指针一律 `?ref void`（不假装布局）。
+// 于是 `use cairoapi` 之后调用就是 `c.paint(cr)` / `c.arc(cr, …)`，一个字符都不用签。
+//
+// 剩下**两格是人写的**，就在下面（工具不替人说话）：
+//   ① `cairo_text_extents_t` 的**布局**要人写 `@frozen` 镜像（§9.8）—— 按类型撒谎没有任何检查
+//      会拦，所以工具一律映射成 `?ref void`，要读字段就自己写镜像；
+//   ② 它是"把**帧内**的东西就地交给 C"的那种（`te` 在栈上）⇒ 那个槽要一句 `Addr=0 Cont=0`
+//      （§9.15：这是 `effects` 唯一必须存在的理由）。
 use std::io
 use std::dl
 use std::heap
+use cairoapi::*     /* 生成物：19 个函数 + 3 组枚举常量 */
 
-/* cairo_text_extents_t：六个 double，就这么多。量文字要靠它（居中）。 */
+let W: i32 = 512
+let H: i32 = 512
+let PI: f64 = 3.14159265358979
+
+/* ① 布局镜像：`cairo_text_extents_t` 就是六个 double。 */
 @frozen struct textExtents {
     xBearing: f64
     yBearing: f64
@@ -18,192 +33,132 @@ use std::heap
     yAdvance: f64
 }
 
-/* cairo 的**表**：我们自己填（cairo 不参与）。每个槽带签名 —— 这是 `dlopen` 那条路上唯一能
- * 给函数指针写上"它会/不会留住你的指针"的地方。签的都是实话：
- *   · `Addr=1` 的：surface 留着像素缓冲区（第 0 个实参）、context 留着 surface；
- *   · `Addr=0` 的：调用期间用完就完（画、描、设色只碰上下文）。
- * 类型上 `cairo_t *` / `cairo_surface_t *` 都是不透明句柄 ⇒ `ref void`（看不进去，也不用看进去）。 */
-struct cairoApi {
-    versionString:  fn() -> ref u8 effects Addr=0 Cont=0
-    surfaceForData: fn(ref u8, i32, i32, i32, i32) -> ?ref void effects Addr=1 Cont=0
-    create:         fn(ref void) -> ?ref void effects Addr=1 Cont=0
-    destroy:        fn(ref void) -> void effects Addr=0 Cont=0
-    surfaceDestroy: fn(ref void) -> void effects Addr=0 Cont=0
-    surfaceFlush:   fn(ref void) -> void effects Addr=0 Cont=0
-    writePng:       fn(ref void, ref u8) -> i32 effects Addr=0 Cont=0
-    setSourceRgb:   fn(ref void, f64, f64, f64) -> void effects Addr=0 Cont=0
-    paint:          fn(ref void) -> void effects Addr=0 Cont=0
-    setLineWidth:   fn(ref void, f64) -> void effects Addr=0 Cont=0
-    moveTo:         fn(ref void, f64, f64) -> void effects Addr=0 Cont=0
-    lineTo:         fn(ref void, f64, f64) -> void effects Addr=0 Cont=0
-    arc:            fn(ref void, f64, f64, f64, f64, f64) -> void effects Addr=0 Cont=0
-    closePath:      fn(ref void) -> void effects Addr=0 Cont=0
-    stroke:         fn(ref void) -> void effects Addr=0 Cont=0
-    fill:           fn(ref void) -> void effects Addr=0 Cont=0
-    selectFontFace: fn(ref void, ref u8, i32, i32) -> void effects Addr=0 Cont=0
-    setFontSize:    fn(ref void, f64) -> void effects Addr=0 Cont=0
-    showText:       fn(ref void, ref u8) -> void effects Addr=0 Cont=0
-    textExtents:    fn(ref void, ref u8, mut ref textExtents) -> void effects Addr=0 Cont=0
+/* ② 那一个要签字的槽：帧内地址就地交给 C。 */
+struct textApi {
+    textExtents: fn(?ref void, ?ref u8, mut ref textExtents) -> void effects Addr=0 Cont=0
 }
 
-let W: i32 = 512
-let H: i32 = 512
-let FORMAT_ARGB32: i32 = 0
-let PI: f64 = 3.14159265358979
+fn openText(h: ?ref void) -> ?textApi {
+    return some(textApi {
+        textExtents: fn(?ref void, ?ref u8, mut ref textExtents) -> void(
+                         dl::sym(h, "cairo_text_extents")!)
+    })
+}
 
-/* C 的字符串参数是 `const char *`（**一个机器字**，所以只能声明成 `ref u8`，不能是 `slice<u8>`）。
- * 字面量在 C 那边本来就是 NUL 结尾的 ⇒ 取 `.data` 直接用；运行期拼出来的才要 `dl::cstr`。 */
+/* C 的字符串参数是 `const char *`（一个机器字）。字面量在 C 那边本来就 NUL 结尾 ⇒ 取 `.data`。 */
 fn cs(s: slice<u8>) -> ref u8 { return s.data }
 
-fn rgb(api: ref cairoApi, cr: ref void, r: f64, g: f64, b: f64) { api.setSourceRgb(cr, r, g, b) }
-
 /* 圆角矩形：四段 1/4 圆弧 + 四条边，一条闭合路径（cairo 的标准画法）。
- * 这几个 helper **包得住**，是因为第 5 步之后"经签字的槽调用"会进 effect 总结（§9.11 ④）：
- * 从前它们的总结是 incomplete ⇒ 调用者连本帧的指针都传不进来。 */
-fn roundedRect(api: ref cairoApi, cr: ref void, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    api.moveTo(cr, x + r, y)
-    api.lineTo(cr, x + w - r, y)
-    api.arc(cr, x + w - r, y + r, r, -PI / 2.0, 0.0)
-    api.lineTo(cr, x + w, y + h - r)
-    api.arc(cr, x + w - r, y + h - r, r, 0.0, PI / 2.0)
-    api.lineTo(cr, x + r, y + h)
-    api.arc(cr, x + r, y + h - r, r, PI / 2.0, PI)
-    api.lineTo(cr, x, y + r)
-    api.arc(cr, x + r, y + r, r, PI, PI * 1.5)
-    api.closePath(cr)
+ *
+ * 注意表是**按值**传的（`c: api`，21 个指针的副本）。理由具体：生成的槽**没签字** ⇒ 最坏情况
+ * = "它可能留住每个实参" ⇒ 这个 helper 的 effect 总结是 incomplete ⇒ 它的调用者再传**本帧的**
+ * 地址（`ref c`，那个表就在 main 的帧里）就会被拒。按值传就没有这件事：callee 拿到自己的一份副本，
+ * 什么都不悬 ✓。想用 `ref` 也行 —— 给那几个槽签 `Addr=0 Cont=0`（§9.15 那件人写的事）。 */
+fn roundedRect(c: api, cr: ref void, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    c.move_to(cr, x + r, y)
+    c.line_to(cr, x + w - r, y)
+    c.arc(cr, x + w - r, y + r, r, -PI / 2.0, 0.0)
+    c.line_to(cr, x + w, y + h - r)
+    c.arc(cr, x + w - r, y + h - r, r, 0.0, PI / 2.0)
+    c.line_to(cr, x + r, y + h)
+    c.arc(cr, x + r, y + h - r, r, PI / 2.0, PI)
+    c.line_to(cr, x, y + r)
+    c.arc(cr, x + r, y + r, r, PI, PI * 1.5)
+    c.close_path(cr)
 }
 
-/* 一段文字**水平居中**画在 (cx, baselineY)：先量宽度（`cairo_text_extents`），再挪回去。 */
-fn centeredText(api: ref cairoApi, cr: ref void, s: ref u8, cx: f64, baselineY: f64) {
+/* 一段文字**水平居中**画在 (cx, baselineY)：量宽度要走那个签过字的槽（`te` 是帧内的，所以那个
+ * 槽必须签 `Addr=0 Cont=0` —— 这正是 `effects` 唯一必须存在的理由）。 */
+fn centeredText(c: api, tx: textApi, cr: ref void, s: ref u8,
+                cx: f64, baselineY: f64) {
     var te: textExtents = textExtents { xBearing: 0.0, yBearing: 0.0, width: 0.0,
                                         height: 0.0, xAdvance: 0.0, yAdvance: 0.0 }
-    api.textExtents(cr, s, ref te)
-    api.moveTo(cr, cx - te.width / 2.0 - te.xBearing, baselineY)
-    api.showText(cr, s)
+    tx.textExtents(cr, s, ref te)
+    c.move_to(cr, cx - te.width / 2.0 - te.xBearing, baselineY)
+    c.show_text(cr, s)
 }
 
 fn main() -> i32 {
-    var h: ?ref void = dl::open("libcairo.so.2")!
-
-    /* 填表：一句 `dlsym` + 一句显式转换（**每个槽一句**）—— 转换就是作者的签字：
-     * "这个地址确实是这个签名"。`!` 是"我查过了"：符号不在就是一次带源码位置的 trap。 */
-    var api: cairoApi = cairoApi {
-        versionString:  fn() -> ref u8(dl::sym(h, "cairo_version_string")!),
-        surfaceForData: fn(ref u8, i32, i32, i32, i32) -> ?ref void(
-                            dl::sym(h, "cairo_image_surface_create_for_data")!),
-        create:         fn(ref void) -> ?ref void(dl::sym(h, "cairo_create")!),
-        destroy:        fn(ref void) -> void(dl::sym(h, "cairo_destroy")!),
-        surfaceDestroy: fn(ref void) -> void(dl::sym(h, "cairo_surface_destroy")!),
-        surfaceFlush:   fn(ref void) -> void(dl::sym(h, "cairo_surface_flush")!),
-        writePng:       fn(ref void, ref u8) -> i32(dl::sym(h, "cairo_surface_write_to_png")!),
-        setSourceRgb:   fn(ref void, f64, f64, f64) -> void(dl::sym(h, "cairo_set_source_rgb")!),
-        paint:          fn(ref void) -> void(dl::sym(h, "cairo_paint")!),
-        setLineWidth:   fn(ref void, f64) -> void(dl::sym(h, "cairo_set_line_width")!),
-        moveTo:         fn(ref void, f64, f64) -> void(dl::sym(h, "cairo_move_to")!),
-        lineTo:         fn(ref void, f64, f64) -> void(dl::sym(h, "cairo_line_to")!),
-        arc:            fn(ref void, f64, f64, f64, f64, f64) -> void(dl::sym(h, "cairo_arc")!),
-        closePath:      fn(ref void) -> void(dl::sym(h, "cairo_close_path")!),
-        stroke:         fn(ref void) -> void(dl::sym(h, "cairo_stroke")!),
-        fill:           fn(ref void) -> void(dl::sym(h, "cairo_fill")!),
-        selectFontFace: fn(ref void, ref u8, i32, i32) -> void(
-                            dl::sym(h, "cairo_select_font_face")!),
-        setFontSize:    fn(ref void, f64) -> void(dl::sym(h, "cairo_set_font_size")!),
-        showText:       fn(ref void, ref u8) -> void(dl::sym(h, "cairo_show_text")!),
-        textExtents:    fn(ref void, ref u8, mut ref textExtents) -> void(
-                            dl::sym(h, "cairo_text_extents")!)
+    var c: api = open("libcairo.so.2")!
+    var tx: textApi = openText(c.handle)!
+    /* 生成物里返回值一律 `?ref`（C 的头文件不说可空性）⇒ 判空一次（语言本来就有的那条规则）。 */
+    var vp: ?ref u8 = c.version_string()
+    if vp == null {
+        io::cout << "version=fail\n"
+        return 1
     }
-
-    var vp: ref u8 = api.versionString()
     io::cout << "cairo=" << dl::viewCStr(vp)
 
-    /* 画布内存：**板**里。偏移记下来（不存视图 —— 见文件头 ③）。 */
+    /* 画布内存：**板**里。板签了 `effects Ret=0`（§9.15）⇒ 视图存局部也行，指针交给 C 不用签字。 */
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
     var pxBytes: u64 = u64(W) * u64(H) * u64(4)
     var pxOff: u64 = pl.usedBytes()
-    pl.alloc(pxBytes)!
+    var px: mut slice<u8> = pl.alloc(pxBytes)!
 
-    /* 画布指针：`Addr=1`（surface 会留着它）要求它活得比这一帧久 —— 板内视图满足这一点，
-     * 而"存进局部再看它指向哪"这件事由库签的 `effects Ret=0` 保证（§9.15），所以这里不必内联：
-     * `var px = pl.view(...)!` 之后再给 C 也合法。 */
-    var px: mut slice<u8> = pl.view(pxOff, pxBytes)!
-    var surf: ?ref void = api.surfaceForData(px.data, FORMAT_ARGB32, W, H, W * i32(4))
+    var surf: ?ref void = c.image_surface_create_for_data(px.data, CAIRO_FORMAT_ARGB32, W, H,
+                                                          W * i32(4))
     if surf == null {
         io::cout << " surface=fail\n"
         pl.close()
-        dl::close(h)
         return 1
     }
-    var cr: ?ref void = api.create(surf)
+    var cr: ?ref void = c.create(surf)
     if cr == null {
         io::cout << " context=fail\n"
-        api.surfaceDestroy(surf)
+        c.surface_destroy(surf)
         pl.close()
-        dl::close(h)
         return 1
     }
     io::cout << " surface=ok"
-    var c: ref void = cr
-
-    /* 画的时候**每一步都直接经槽调**（`api.paint(c)` 这种），不包 extC helper —— 这不是风格问题：
-     * 包一层之后那个 helper 的 effect 总结是 **incomplete**（实测 `EXTC_DBG_REFARGS=1`：`complete=0`），
-     * 于是它的调用者不能再把本帧的指针传进去（会报 "points into a deeper scope (depth 1) than the
-     * arena this call may store it in"）。签名在**槽**上 ⇒ 调用就要发生在槽那里 ✓
-     * （长度不变式：指针只在本帧里用 ⇒ 槽签 `Addr=0` 时本帧局部完全合法。） */
+    var r: ref void = cr
 
     /* 底色 */
-    rgb(ref api, c, 0.055, 0.070, 0.100)
-    api.paint(c)
+    c.set_source_rgb(r, 0.055, 0.070, 0.100)
+    c.paint(r)
 
     /* 一圈圆角边框（extC 的绿） */
-    rgb(ref api, c, 0.239, 0.859, 0.518)
-    api.setLineWidth(c, 10.0)
-    roundedRect(ref api, c, 26.0, 26.0, 460.0, 460.0, 84.0)
-    api.stroke(c)
+    c.set_source_rgb(r, 0.239, 0.859, 0.518)
+    c.set_line_width(r, 10.0)
+    roundedRect(c, r, 26.0, 26.0, 460.0, 460.0, 84.0)
+    c.stroke(r)
 
-    /* 大括号 `{ }`（cairo 的 toy 字体 API） */
-    rgb(ref api, c, 0.239, 0.859, 0.518)
-    api.selectFontFace(c, cs("monospace"), 0, 1)
-    api.setFontSize(c, 230.0)
-    centeredText(ref api, c, cs("{"), 150.0, 330.0)
-    centeredText(ref api, c, cs("}"), 362.0, 330.0)
+    /* 大括号 `{ }` */
+    c.select_font_face(r, cs("monospace"), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD)
+    c.set_font_size(r, 230.0)
+    centeredText(c, tx, r, cs("{"), 150.0, 330.0)
+    centeredText(c, tx, r, cs("}"), 362.0, 330.0)
 
     /* 中间三个字母 + 一条基线 */
-    rgb(ref api, c, 0.925, 0.949, 0.976)
-    api.selectFontFace(c, cs("sans"), 0, 1)
-    api.setFontSize(c, 112.0)
-    centeredText(ref api, c, cs("extC"), 256.0, 300.0)
-    rgb(ref api, c, 0.239, 0.859, 0.518)
-    api.setLineWidth(c, 6.0)
-    api.moveTo(c, 176.0, 328.0)
-    api.lineTo(c, 336.0, 328.0)
-    api.stroke(c)
+    c.select_font_face(r, cs("sans"), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD)
+    c.set_font_size(r, 112.0)
+    c.set_source_rgb(r, 0.925, 0.949, 0.976)
+    centeredText(c, tx, r, cs("extC"), 256.0, 300.0)
+    c.set_source_rgb(r, 0.239, 0.859, 0.518)
+    c.set_line_width(r, 6.0)
+    c.move_to(r, 176.0, 328.0)
+    c.line_to(r, 336.0, 328.0)
+    c.stroke(r)
 
     /* 页脚：谁画的（版本号是 cairo 自己给的） */
-    rgb(ref api, c, 0.58, 0.64, 0.72)
-    api.selectFontFace(c, cs("monospace"), 0, 0)
-    api.setFontSize(c, 30.0)
-    centeredText(ref api, c, cs("extC x cairo 1.18.4"), 256.0, 452.0)
+    c.select_font_face(r, cs("monospace"), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL)
+    c.set_font_size(r, 30.0)
+    c.set_source_rgb(r, 0.58, 0.64, 0.72)
+    centeredText(c, tx, r, cs("extC x cairo 1.18.4"), 256.0, 452.0)
 
-    /* 落盘：先 flush（cairo 自己也有缓冲），再写 PNG */
-    api.surfaceFlush(surf)
-    var st: i32 = api.writePng(surf, cs("build/extc-logo.png"))
+    /* 落盘 */
+    c.surface_flush(surf)
+    var st: i32 = c.surface_write_to_png(surf, cs("build/extc-logo.png"))
     if st != 0 {
         io::cout << " png=fail(" << st << ")\n"
-        api.destroy(c)
-        api.surfaceDestroy(surf)
+        c.destroy(r)
+        c.surface_destroy(surf)
         pl.close()
-        dl::close(h)
         return 1
     }
     io::cout << " png=ok"
 
     /* **画对了吗**：不能靠眼睛（谁跑这个测试都得能判），所以按颜色与位置数。
-     *
-     * ARGB32 每像素 4 字节，小端序是 BB GG RR AA：
-     *   · 绿（0.239, 0.859, 0.518）→ 边框 + 大括号 + 基线；
-     *   · 白（0.925, 0.949, 0.976）→ 中间三个字母。
-     * 位置也查：四条边（y=26 那条上沿、y=486 下沿、x=26 左沿、x=486 右沿）各有绿色，
-     * 中间那条横带（y=250..300）有白色 —— 空图、纯色图、画错位置都过不了。 */
+     * ARGB32 每像素 4 字节，小端序是 BB GG RR AA：绿 = 边框+大括号+基线，白 = 三个字母。 */
     var different: i64 = 0
     var green: i64 = 0
     var white: i64 = 0
@@ -217,10 +172,10 @@ fn main() -> i32 {
         var o: i64 = i * i64(4)
         var b: i64 = i64(px[o])
         var g: i64 = i64(px[o + 1])
-        var r: i64 = i64(px[o + 2])
-        var isGreen: bool = r > i64(30) && r < i64(95) && g > i64(185) && g < i64(245) &&
+        var rd: i64 = i64(px[o + 2])
+        var isGreen: bool = rd > i64(30) && rd < i64(95) && g > i64(185) && g < i64(245) &&
                            b > i64(95) && b < i64(170)
-        var isWhite: bool = r > i64(200) && g > i64(200) && b > i64(200)
+        var isWhite: bool = rd > i64(200) && g > i64(200) && b > i64(200)
         if isGreen { green = green + 1 }
         if isWhite { white = white + 1 }
         if isGreen || isWhite { different = different + 1 }
@@ -236,7 +191,6 @@ fn main() -> i32 {
         i = i + 1
     }
     io::cout << " green=" << green << " white=" << white
-    /* 四条边各占一位（`i64(bool)` 不合法：显式转换只在数字之间 ⇒ 用加法把判据编成一个数）。 */
     var edges: i64 = 0
     if topEdge > i64(100) { edges = edges + 1000 }
     if bottomEdge > i64(100) { edges = edges + 100 }
@@ -246,10 +200,9 @@ fn main() -> i32 {
     if different > i64(1000) { io::cout << " drawn=1" } else { io::cout << " drawn=0" }
     if midBand > i64(200) { io::cout << " center=ok" } else { io::cout << " center=thin" }
 
-    api.destroy(c)
-    api.surfaceDestroy(surf)
+    c.destroy(r)
+    c.surface_destroy(surf)
     pl.close()
-    dl::close(h)
     io::cout << "\n"
     return 0
 }

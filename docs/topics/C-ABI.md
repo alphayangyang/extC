@@ -643,3 +643,33 @@ error: argument 1 of `inner` points into a deeper scope (depth 1) than the arena
 
 判据：`make` 0 诊断 · `tools/golden.sh` **414/414 逐字节不变**（这次没有产物变化：事实只来自
 作者写的 `Ret=0` 与全局根，不像上一版那样去读"还没算出来"的 0 哨兵）· `./check.sh quick` **49/0**。
+
+## 9.16 第 5 步 ⑥：绑定生成器（`tools/cbindgen.py`）
+
+用户在 9.15 之后的目标是"随心所欲 dlopen 任何库、一个字都不签"。剩下的是**工具问题**，不是语言
+问题，所以做成了一个构建期工具（在 extc 仓库里，但**不为每个库建 stdlib 模块** —— 产出写到用户
+自己的项目路径）。
+
+```
+$ python3 tools/cbindgen.py @tools/cbindgen-cairo.args --include cairo.h -I <cairo 头>
+生成 tests/real-lib/cairoapi.extc：19 个函数，3 组枚举
+$ CAIRO_INC=<cairo 头> ./tests/real-lib/run.sh
+ok   cbindgen  ->  ok  tests/real-lib/cairoapi.extc 与头文件一致（19 个函数）
+ok   cairo      ->  cairo=1.18.4 surface=ok png=ok green=30771 white=9532 edges=1111 drawn=1 center=ok
+```
+
+那个夹具现在**用生成出来的绑定**画同一张画，判据不变（同一组像素数 = 类型映射没错）。
+
+三条刻意的"不做"：
+
+1. **不生成 `effects`**。槽不签 = 最坏情况 = 安全的那一侧；只有"帧内地址就地交给 C"要人签一句。
+   （`cairo_text_extents` 就是那一个：`te` 在栈上 ⇒ 夹具里手写的 `textApi` 只有这一个槽，签了
+   `Addr=0 Cont=0`。19 个自动，1 个人写 —— 这就是 9.15 那条规则的实际形状。）
+2. **不假装布局**。不认识的指针一律 `?ref void`；要读字段就人写 `@frozen` 镜像（§9.8）。
+3. **不猜**。按值传的结构体/变参等直接列出来并非 0 退出；枚举常量由 clang **求值**（JSON AST 对
+   隐式值是空的 —— 试过数组初始值也不折叠，所以最后是"编个小程序打印出来再读回"）；求不出来就
+   **跳过并报告**，绝不给一个猜测值。
+
+**实测的一条使用细节**：生成的槽没签字 ⇒ 包一层 extC helper 时，那个 helper 的总结是 incomplete
+⇒ 它的调用者不能再把**本帧**的表地址（`ref c`）传进去 ✗。两种解法都写进夹具注释了：
+把表**按值**传（callee 拿自己的副本，什么都不悬 ✓），或者给那几个槽签 `Addr=0 Cont=0` ✓。

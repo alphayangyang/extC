@@ -504,6 +504,42 @@ pl.close()                                                        // munmap；�
 - **忘了 `close` 今天只是漏到进程结束**（`close` 方法的存在让"开了没关"有编译期提醒）；Arena
   兜底（`HEAP.md` §3）还没做。
 
+### 12.3.7 绑一个库：`tools/cbindgen.py`（2026-09-29）
+
+一个动态库不需要为它单独建 stdlib 模块，也不需要手写声明：读头文件，产出用到的那部分。
+
+```sh
+tools/cbindgen.py --include cairo.h -I /usr/include/cairo \
+    --only cairo_paint,cairo_create,cairo_arc -o myproj/cairoapi.extc
+```
+
+产出两样东西（`tests/real-lib/cairoapi.extc` 是 cairo 的实例）：
+
+```extc
+struct api {
+    handle: ?ref void
+    paint: fn(?ref void) -> void              /* C: cairo_paint */
+    image_surface_create_for_data: fn(?ref u8, i32, i32, i32, i32) -> ?ref void
+    ...
+}
+let CAIRO_FORMAT_ARGB32: i32 = 0
+fn open(lib: slice<u8>) -> ?api { … }         /* dlopen + 每个符号一句 dlsym + 显式转换 */
+```
+
+用法就是 `use myproj::cairoapi` 之后 `var c = cairoapi::open("libcairo.so.2")!`，然后 `c.paint(cr)`。
+
+**工具不做的三件事**，都是刻意的：
+
+- **不生成 `effects`**：槽不签 = 最坏情况 = **安全的那一侧**（帧内地址会被拒）。只有"把帧内地址
+  **就地**交给 C"那几个函数要人签一句 `Addr=0 Cont=0`（§12.3：那是 `effects` 唯一存在的理由）。
+- **不假装布局**：不认识的指针一律 `?ref void`。要读结构体字段就自己写 `@frozen` 镜像（§12.3.1），
+  按类型撒谎没有任何检查会拦得住。
+- **不猜**：不支持的东西（按值传的结构体、变参……）会**列出来并以非 0 退出**；枚举常量由 clang
+  真求值（隐式值也不猜）。宁可不生成，也不要一个签名错的绑定。
+
+头文件从哪来：`-dev` 包，或者不要 root 的 `apt-get download libcairo2-dev && dpkg-deb -x …`。
+生成物入库，`--check` 进闸门（头文件不在的机器上显式跳过）。
+
 ### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
 
 ```extc

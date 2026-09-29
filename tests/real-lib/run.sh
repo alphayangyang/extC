@@ -16,7 +16,27 @@ cd "$(dirname "$0")/../.."
 EXTC=./build/extc
 fail=0
 
-echo "== 真库功能测试：用 cairo 画一张 extC 的 logo =="
+echo "== 绑定生成器（tools/cbindgen.py）：生成物与头文件一致吗 =="
+# 头文件目录：$CAIRO_INC > pkg-config > /usr/include/cairo > 本机解包的 deb（见下面的命令）
+CAIRO_INC=${CAIRO_INC:-}
+if [ -z "$CAIRO_INC" ]; then
+    for d in "$(pkg-config --variable=includedir cairo 2>/dev/null)/cairo" /usr/include/cairo; do
+        if [ -f "$d/cairo.h" ]; then CAIRO_INC="$d"; break; fi
+    done
+fi
+if [ -z "$CAIRO_INC" ]; then
+    echo "  跳过  cairo 的头文件不在本机（生成物的 --check 需要它）。拿到它不需要 root："
+    echo "        apt-get download libcairo2-dev && dpkg-deb -x libcairo2-dev_*.deb /tmp/cairohdr"
+    echo "        CAIRO_INC=/tmp/cairohdr/usr/include/cairo ./tests/real-lib/run.sh"
+else
+    if gen=$(python3 tools/cbindgen.py @tools/cbindgen-cairo.args --include cairo.h -I "$CAIRO_INC" --check 2>&1); then
+        echo "  ok   cbindgen  ->  $(echo "$gen" | tail -1)（头文件目录 $CAIRO_INC）"
+    else
+        echo "  FAIL cbindgen  ->  $gen"; fail=1
+    fi
+fi
+
+echo "== 真库功能测试：用 cairo 画一张 extC 的 logo（绑定由生成器产出）=="
 if ! ldconfig -p 2>/dev/null | grep -q 'libcairo\.so\.2'; then
     echo "  跳过  libcairo.so.2 不在本机（ldconfig -p 没找到）—— 这不是失败，是环境没有"
     echo "失败 0 个（0 = 全过，1 项跳过）"
