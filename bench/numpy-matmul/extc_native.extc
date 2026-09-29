@@ -1,0 +1,93 @@
+// extC **自己**算矩阵乘法（不进 numpy）—— 第三根柱子：这门语言裸算的代价与占用。
+// 只在小 N 上跑（三重循环 vs BLAS 不是一个量级 ✓，见 run.sh 的 N 名单）。
+use std::io
+
+extern!("c") fn clock_gettime(clk: i32, ts: ref timespec) -> i32 effects Addr=0 Cont=0
+extern!("c") fn getrusage(who: i32, r: ref rusageMin) -> i32 effects Addr=0 Cont=0
+
+
+@frozen struct timespec { sec: i64  nsec: i64 }
+/* `struct rusage` 的镜像：**必须整份**（glibc 是 19 个 long = 152 字节 ✗ 只写前 5 个就等着被踩栈）。
+ * 实测教训：镜像写小了，`getrusage` 往里写完直接 SIGSEGV ✗ —— `@frozen` 只保证"我声明的这些字段
+ * 彼此自洽"，**不保证**跟 C 那边一样大（布局是作者的声明，见手册 §1 的 UB 出口清单）。 */
+@frozen struct rusageMin {
+    uSec: i64  uMicro: i64  sSec: i64  sMicro: i64  maxrss: i64
+    ixrss: i64  idrss: i64  isrss: i64  minflt: i64  majflt: i64
+    nswap: i64  inblock: i64  oublock: i64  msgsnd: i64  msgrcv: i64
+    nsignals: i64  nvcsw: i64  nivcsw: i64  pad0: i64  pad1: i64
+    pad2: i64  pad3: i64  pad4: i64  pad5: i64
+}
+
+let CLOCK_MONOTONIC: i32 = 1
+let RUSAGE_SELF: i32 = 0
+
+fn cs(s: slice<u8>) -> ref u8 { return s.data }
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        v = v * i64(10) + i64(s[i]) - i64(48)
+        i = i + 1
+    }
+    return v
+}
+
+fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
+    if i >= args.len { return dflt }
+    if args[i].len == 0 { return dflt }
+    return parseI64(args[i])
+}
+
+/* ijk 三重循环，用 `f64` 的切片——这是"语言裸算"的样子（没有分块、没有 SIMD、没有 BLAS） */
+fn mul(a: slice<f64>, b: slice<f64>, c: mut slice<f64>, n: i64) {
+    var i: i64 = 0
+    while i < n {
+        var j: i64 = 0
+        while j < n {
+            var sum: f64 = 0.0
+            var k: i64 = 0
+            while k < n {
+                sum = sum + a[i * n + k] * b[k * n + j]
+                k = k + 1
+            }
+            c[i * n + j] = sum
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = argOr(args, i64(1), i64(256))
+    var reps: i64 = argOr(args, i64(2), i64(3))
+    /* 裸算三块矩阵用 **arena**（`new`）：板是给"过 C 边界的内存"用的，这里不需要 ✓ */
+    var a: mut slice<f64> = new f64[n * n]
+    var b: mut slice<f64> = new f64[n * n]
+    var c: mut slice<f64> = new f64[n * n]
+    var i: i64 = 0
+    while i < n * n {
+        a[i] = 1.0
+        b[i] = 1.0
+        c[i] = 0.0
+        i = i + 1
+    }
+    mul(a, b, c, n)                                   /* 预热 */
+    var best: f64 = 1.0e30
+    var r: i64 = 0
+    while r < i64(3) {
+        var t0: timespec = timespec { sec: 0, nsec: 0 }
+        clock_gettime(CLOCK_MONOTONIC, ref t0)
+        var q: i64 = 0
+        while q < reps { mul(a, b, c, n)  q = q + 1 }
+        var t1: timespec = timespec { sec: 0, nsec: 0 }
+        clock_gettime(CLOCK_MONOTONIC, ref t1)
+        var ms: f64 = (f64(t1.sec - t0.sec) * 1000.0 + f64(t1.nsec - t0.nsec) / 1000000.0) / f64(reps)
+        if ms < best { best = ms }
+        r = r + 1
+    }
+    var ru: rusageMin = rusageMin { uSec: 0, uMicro: 0, sSec: 0, sMicro: 0, maxrss: 0 }
+    getrusage(RUSAGE_SELF, ref ru)
+    io::cout << "n=" << n << " best_ms=" << best << " peak_rss_kb=" << ru.maxrss << "\n"
+    return 0
+}

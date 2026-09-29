@@ -1,0 +1,130 @@
+// extC + numpy 做矩阵乘法：**乘法走 numpy 的 C-API 表**（槽 280 = PyArray_MatrixProduct2），
+// 数组用 Python 层造（造数组不计时）。打印一行：`n=… best_ms=… peak_rss_kb=…`
+use std::io
+use std::dl
+use npytable                     /* run.sh 生成：表的镜像（编号读自装着的 __multiarray_api.h） */
+
+let PY_LIB: slice<u8> = "libpython3.14.so.1.0"
+let CLOCK_MONOTONIC: i32 = 1
+let RUSAGE_SELF: i32 = 0
+
+extern!("c") fn Py_Initialize() -> void
+extern!("c") fn PyImport_ImportModule(name: ?ref u8) -> ?ref void
+extern!("c") fn PyObject_GetAttrString(o: ref void, name: ?ref u8) -> ?ref void
+extern!("c") fn PyCapsule_GetPointer(c: ref void, name: ?ref u8) -> ?ref apiTable
+extern!("c") fn PyTuple_New(n: i64) -> ?ref void
+extern!("c") fn PyLong_FromLong(v: i64) -> ?ref void
+extern!("c") fn PyTuple_SetItem(t: ref void, i: i64, v: ref void) -> i32
+extern!("c") fn PyObject_CallObject(f: ref void, args: ref void) -> ?ref void
+extern!("c") fn clock_gettime(clk: i32, ts: ref timespec) -> i32 effects Addr=0 Cont=0
+extern!("c") fn getrusage(who: i32, r: ref rusageMin) -> i32 effects Addr=0 Cont=0
+
+
+@frozen struct timespec { sec: i64  nsec: i64 }
+/* `struct rusage` 的前五个字段（`ru_maxrss` 在第三个 ✓）；`@frozen` 保证布局与 C 一致 ✓ */
+/* `struct rusage` 的镜像：**必须整份**（glibc 是 19 个 long = 152 字节 ✗ 只写前 5 个就等着被踩栈）。
+ * 实测教训：镜像写小了，`getrusage` 往里写完直接 SIGSEGV ✗ —— `@frozen` 只保证"我声明的这些字段
+ * 彼此自洽"，**不保证**跟 C 那边一样大（布局是作者的声明，见手册 §1 的 UB 出口清单）。 */
+@frozen struct rusageMin {
+    uSec: i64  uMicro: i64  sSec: i64  sMicro: i64  maxrss: i64
+    ixrss: i64  idrss: i64  isrss: i64  minflt: i64  majflt: i64
+    nswap: i64  inblock: i64  oublock: i64  msgsnd: i64  msgrcv: i64
+    nsignals: i64  nvcsw: i64  nivcsw: i64  pad0: i64  pad1: i64
+    pad2: i64  pad3: i64  pad4: i64  pad5: i64
+}
+
+fn cs(s: slice<u8>) -> ref u8 { return s.data }
+
+/* 参数走**命令行**（`main(args)`，IO.md §7）：为一行 `getenv` 去和 `<stdlib.h>` 的原型打架
+ * 不值得（实测：`extern!("c") fn getenv(name: ?ref u8)` 直接报 conflicting types ✗）。 */
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        v = v * i64(10) + i64(s[i]) - i64(48)
+        i = i + 1
+    }
+    return v
+}
+
+fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
+    if i >= args.len { return dflt }
+    if args[i].len == 0 { return dflt }
+    return parseI64(args[i])
+}
+
+fn nowMs() -> f64 {
+    var t: timespec = timespec { sec: 0, nsec: 0 }
+    clock_gettime(CLOCK_MONOTONIC, ref t)
+    return f64(t.sec) * 1000.0 + f64(t.nsec) / 1000000.0
+}
+
+/* `numpy.ones((n,n))`：元组套元组（`PyObject_CallFunction` 是变参 ✗ 今天不支持） */
+fn ones(n: i64) -> ?ref void {
+    var dims: ?ref void = PyTuple_New(i64(2))
+    if dims == null { return null }
+    var dv: ref void = dims
+    PyTuple_SetItem(dv, i64(0), PyLong_FromLong(n)!)
+    PyTuple_SetItem(dv, i64(1), PyLong_FromLong(n)!)
+    var np: ?ref void = PyImport_ImportModule(cs("numpy"))
+    if np == null { return null }
+    var npv: ref void = np
+    var onesFn: ?ref void = PyObject_GetAttrString(npv, cs("ones"))
+    if onesFn == null { return null }
+    var fv: ref void = onesFn
+    var args: ref void = PyTuple_New(i64(1))!
+    PyTuple_SetItem(args, i64(0), dv)
+    return PyObject_CallObject(fv, args)
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = argOr(args, i64(1), i64(256))
+    var reps: i64 = argOr(args, i64(2), i64(20))
+
+    var h: ref void = dl::open(PY_LIB)!
+    Py_Initialize()
+
+    var mm: ?ref void = PyImport_ImportModule(cs("numpy._core._multiarray_umath"))
+    if mm == null { io::cout << "import=failed\n"  return 1 }
+    var mv: ref void = mm
+    var cc: ?ref void = PyObject_GetAttrString(mv, cs("_ARRAY_API"))
+    if cc == null { io::cout << "capsule=missing\n"  return 1 }
+    var cv: ref void = cc
+    var tt: ?ref apiTable = PyCapsule_GetPointer(cv, null)
+    if tt == null { io::cout << "table=missing\n"  return 1 }
+    var t: ref apiTable = tt
+
+    var a: ?ref void = ones(n)
+    var b: ?ref void = ones(n)
+    var c: ?ref void = ones(n)
+    /* 注意：`a == null || b == null` 这种**复合**判空不产生收窄（实测 ✗）—— 只能一个一个判 */
+    if a == null { io::cout << "alloc=failed\n"  return 1 }
+    if b == null { io::cout << "alloc=failed\n"  return 1 }
+    if c == null { io::cout << "alloc=failed\n"  return 1 }
+    var av: ref void = a
+    var bv: ref void = b
+    var cvv: ref void = c
+
+    /* 预热 + 三轮取最好（和 Python 那根柱子同一套计法） */
+    var warm: ?ref void = t.matrixProduct2(av, bv, cvv)
+    if warm == null { io::cout << "matmul=failed\n"  return 1 }
+    var best: f64 = 1.0e30
+    var round: i64 = 0
+    while round < i64(3) {
+        var t0: f64 = nowMs()
+        var i: i64 = 0
+        while i < reps {
+            var r: ?ref void = t.matrixProduct2(av, bv, cvv)
+            if r == null { io::cout << "matmul=failed\n"  return 1 }
+            i = i + 1
+        }
+        var per: f64 = (nowMs() - t0) / f64(reps)
+        if per < best { best = per }
+        round = round + 1
+    }
+
+    var ru: rusageMin = rusageMin { uSec: 0, uMicro: 0, sSec: 0, sMicro: 0, maxrss: 0 }
+    getrusage(RUSAGE_SELF, ref ru)
+    io::cout << "n=" << n << " best_ms=" << best << " peak_rss_kb=" << ru.maxrss << "\n"
+    return 0
+}
