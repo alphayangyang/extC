@@ -1259,6 +1259,9 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     case ST_YIELD:
         rwExpr(L, self, s->u.yield_.value);
         break;
+    case ST_TRAP:     /* `trap(msg)`：消息也是一条表达式（可能带模块限定的名字）。 */
+        rwExpr(L, self, s->u.trap_.msg);
+        break;
     case ST_DOMAIN:   /* `d.run { … }`: 域块 —— 接收者与块体都要改写（和 ST_IF 同一形状）。 */
         rwExpr(L, self, s->u.domain_.callee);
         rwStmt(L, self, s->u.domain_.body);

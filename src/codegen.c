@@ -3546,6 +3546,7 @@ static void collectOwCallsStmt(Stmt *s, Vec *out) {
     if (!s) return;
     switch (s->kind) {
     case ST_YIELD:  collectOwCallsExpr(s->u.yield_.value, out); return;
+    case ST_TRAP:   collectOwCallsExpr(s->u.trap_.msg, out); return;
     case ST_VAR:    collectOwCallsExpr(s->u.var.init, out); return;
     case ST_ASSIGN: collectOwCallsExpr(s->u.assign.target, out); collectOwCallsExpr(s->u.assign.value, out); return;
     case ST_EXPR:   collectOwCallsExpr(s->u.expr.expr, out); return;
@@ -3730,6 +3731,33 @@ static void genStmt(CG *g, Stmt *s) {
 /* Emit the statement itself; the prefix bookkeeping lives in genStmt. */
 static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
+        case ST_TRAP: {
+            /* `trap(msg)`: **同一个出口**，编译器自己插的那些 trap 走的就是它 ——
+             * `extc_trapMsg` 印 `文件:行号: trap: 消息` 到 stderr，然后 `extc_die(1)`
+             * （临终钩子照跑 ⇒ 缓冲输出不丢，定案 80）。也就是说"程序坏了"在这门语言里
+             * 只有一种说法，不管那句话是编译器说的还是写代码的人说的。 */
+            Expr *m = s->u.trap_.msg;
+            g->needRuntime = true;                  /* extc_trapMsg 住在 trap 运行时里 */
+            if (m->kind == EX_STR) {
+                /* 字面量：走短路径，消息作为**参数**而不是格式串（用户的消息里有 `%` 也安全）。 */
+                cgLine(g, "extc_trapMsg(\"%s\", %d, \"%s\");", g->path, s->line, m->u.str.text);
+                return;
+            }
+            Type *mt = m->type;
+            if (mt && mt->kind == TY_REF) {
+                cgLine(g, "extc_trapMsg(\"%s\", %d, (const char *)(%s));",
+                       g->path, s->line, genExpr(g, m));
+                return;
+            }
+            /* 运行时切片：求值一次（可能有副作用）再印长度那么大一片。 */
+            const char *t = arenaPrintf(g->arena, "__extc_trap%d", g->tmpSeq++);
+            cgLine(g, "%s %s = %s;", cType(g, mt), t, genExpr(g, m));
+            cgLine(g, "fprintf(stderr, \"%%s:%%d: trap: %%.*s\\n\", \"%s\", %d,"
+                      " (int)(%s).len, (const char *)(%s).data);",
+                   g->path, s->line, t, t);
+            cgLine(g, "extc_die(1);");
+            return;
+        }
         case ST_DOMAIN: {
             /* `d.run { … }`: the block ends by **running its tasks to completion** -- that is what
              * makes the block structured (nothing it started is still unfinished when it exits).

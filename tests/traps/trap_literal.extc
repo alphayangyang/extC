@@ -1,0 +1,8 @@
+// `trap("…")`：**用户写的 trap**，与编译器自己插的那些走同一条路（`文件:行号: trap: 消息`、rc=1、
+// 临终钩子照跑 ⇒ 已经缓冲的输出不会丢）。判据在 tools/parrun.py 的 case_must_trap 里：
+// 必须编得过、必须死、而且 stderr 上必须有一行带位置的 `trap:`。
+use std::io
+fn main() -> i32 {
+    io::cout << "before-trap\n"
+    trap("这一格坏了：不变量不成立")
+}

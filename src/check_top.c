@@ -711,6 +711,7 @@ bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     if (!s) return false;
     switch (s->kind) {
     case ST_YIELD:  return exprMakesPool(s->u.yield_.value, descendBlocks);
+    case ST_TRAP:   return exprMakesPool(s->u.trap_.msg, descendBlocks);
     case ST_VAR:    return exprMakesPool(s->u.var.init, descendBlocks);
     case ST_ASSIGN: return exprMakesPool(s->u.assign.value, descendBlocks) ||
                            exprMakesPool(s->u.assign.target, descendBlocks);
@@ -1731,6 +1732,13 @@ static bool exprIsFresh(Expr *e) {
 static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
     if (!s) return;
     switch (s->kind) {
+    case ST_TRAP:
+        if (loopId && exprHasNew(s->u.trap_.msg)) {
+            *(int *)vecPush(sites) = s->u.trap_.msg->line;
+            *(int *)vecPush(sites) = loopId;
+            *(int *)vecPush(sites) = s->u.trap_.msg->lexicalLevel;
+        }
+        return;
     case ST_YIELD:
         if (loopId && exprHasNew(s->u.yield_.value)) {
             *(int *)vecPush(sites) = s->u.yield_.value->line;
@@ -1944,6 +1952,9 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     if (!s) return false;
     bool grew = false;
     switch (s->kind) {
+    case ST_TRAP:
+        /* The message is read in this frame; nothing in it leaves. */
+        return markNamesInExpr(c, s->u.trap_.msg);
     case ST_YIELD:
         /* The value handed to the resumer leaves this frame just like a `return` does. */
         return markNamesInExpr(c, s->u.yield_.value);
@@ -2473,6 +2484,9 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
 static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
     if (!s) return;
     switch (s->kind) {
+    case ST_TRAP:
+        collectEffectsExpr(c, f, s->u.trap_.msg);
+        return;
     case ST_YIELD:
         collectEffectsExpr(c, f, s->u.yield_.value);
         return;
@@ -3683,6 +3697,9 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
 static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     if (!s) return;
     switch (s->kind) {
+    case ST_TRAP:
+        obligExpr(c, s->u.trap_.msg, obs, false);
+        return;
     case ST_YIELD:
         obligExpr(c, s->u.yield_.value, obs, true);
         return;

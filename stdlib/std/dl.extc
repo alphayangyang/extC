@@ -58,7 +58,8 @@ fn cstr(s: slice<u8>) -> mut slice<u8> {
  *     var h: ref void = dl::open("x.so")?     // `?`：失败就早退（**编译器强制**处理）
  *     var h: ref void = dl::open("x.so")!     // `!`：我签字（**不检查**，失败就是空值）
  * 可空引用（`?ref void`）只有 `!` 一条路 —— 语言里 `?` 只认 `option`/`result`（实测的报错原文：
- * "needs an `option<...>` or `result<...>`, found `?ref void`"）。 */
+ * "needs an `option<...>` or `result<...>`, found `?ref void`"）。
+ * 两条都不合适时（"库没装就不是能继续的事"）用 `trap("…")`：它不返回、印位置、退出码 1。 */
 fn open(path: slice<u8>) -> option<ref void> {
     var p: ?ref void = dlopen(path.data, RTLD_NOW)
     if p == null { return none }

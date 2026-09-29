@@ -470,6 +470,12 @@ typedef enum {
     ST_VAR, ST_ASSIGN, ST_IF, ST_WHILE, ST_RETURN,
     ST_BREAK, ST_CONTINUE, ST_EXPR, ST_BLOCK, ST_MATCH,
     ST_YIELD,               /* `yield e`: only inside a `-> coroutine<T>` body */
+    ST_TRAP,                /* `trap(msg)`: the program cannot continue. **Not an exception**: there
+                             * is no handler and no unwinding -- the process writes
+                             * `file:line: trap: msg` to stderr and stops with code 1, down the same
+                             * road the compiler's own checks take (bounds, division by zero), dying
+                             * hook included (docs/DECISIONS.md 80). For what cannot be handled;
+                             * expected failures are `result`/`option` values. */
     ST_DOMAIN               /* `d.run { … }`: a **domain block**. A statement on purpose: the block
                              * is not a value and cannot be used as an expression, the expression
                              * walkers never have to see it, and the statement walkers handle its
@@ -523,6 +529,7 @@ struct Stmt {
         struct { Expr *cond; Stmt *thenBody; Stmt *elseBody; } ifs;
         struct { Expr *cond; Stmt *body; } whiles;
         struct { Expr *value; } ret;
+        struct { Expr *msg; } trap_;      /* ST_TRAP: the message (`slice<u8>` / `ref u8` / literal) */
         struct { Expr *expr; } expr;
         /* ST_DOMAIN: `callee` is the `d.run` that opened the block, `body` is the block itself.
          * Only a value of the language-level object `domain` may carry one (check_stmt.c). */

@@ -1,0 +1,7 @@
+// 消息是 C 字符串（`ref u8`）：同一个出口，长度靠 NUL 终止符。
+use std::io
+fn main() -> i32 {
+    var s: slice<u8> = "C 字符串形态"
+    io::cout << "cstr\n"
+    trap(s.data)
+}

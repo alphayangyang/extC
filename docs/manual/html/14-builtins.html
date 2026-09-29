@@ -74,6 +74,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <p><strong><a href="README.html">索引</a></strong> · <a href="13-vararray.html">← 7.9 动态数组 <code>varArray&lt;T&gt;</code>（对标 <code>std::vector</code> 的<strong>基础部分</strong>）</a> · <a href="15-errors.html">9. 错误信息 →</a></p>
 <hr>
 <h1 id="8-内建函数">8. 内建函数</h1>
+<h3 id="trap-msg-停在这里-2026-09-29"><code>trap(msg)</code> —— 停在这里（2026-09-29）</h3>
+<p>无法处理的事情：<code>trap("消息")</code> 把 <code>文件:行号: trap: 消息</code> 印到 stderr 并退出（码 1），临终钩子照跑。 消息必须是文本（字面量 / <code>slice&lt;u8&gt;</code> / <code>ref u8</code>），否则编译错误。<strong>它不是异常</strong>，也不该用来报告 可预期的失败（那些是 <code>result</code> / <code>option</code> 的值）。语义细节与判据见 §<a href="01-safety.html">1</a>。</p>
 <h3 id="print-println-已弃置-2026-09-26-改走-io-cout">~~<code>print</code> / <code>println</code>~~ ⇒ <strong>已弃置</strong>（2026-09-26）：改走 <code>io::cout</code></h3>
 <pre class="lang-extc"><code><span class="k">use</span> std::io
 io::cout &lt;&lt; <span class="c">"sum = "</span> &lt;&lt; <span class="f">add</span>(x, y) &lt;&lt; <span class="c">"\n"</span></code></pre>

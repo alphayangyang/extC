@@ -40,6 +40,29 @@
 | 8 | **算术无 UB** | **是** | 溢出用 `-fwrapv` 兜成确定行为；**除零与移位超宽都 trap，且带 extC 位置**（`tests/traps/div_zero.extc`、`shift_too_big.extc`） |
 | 9 | **引用不能活得比被指对象长**（逃逸检查） | | 词法深度 `depth(r) ≥ depth(v)`；参数 = 0、函数体 = 1、每层块 +1。**比两个整数，不写生命周期** |
 
+### `trap(msg)`：无法处理的事情（2026-09-29）
+
+编译器自己插的那些 trap（越界 / 除零 / 移位 / 收窄，见上表第 5、6、8 行）现在有了**用户版本**：
+
+```extc
+fn sym(h: ?ref void, name: slice<u8>) -> ref void {
+    var p: ?ref void = dl::symOrNull(h, name)
+    if p == null { trap("库里没有符号") }     /* 这里没有"怎么办"：程序不该再往下走 */
+    return p
+}
+```
+
+- **同一条路**：`文件:行号: trap: 消息` 印到 stderr，退出码 **1**，经 `extc_die` ⇒ **临终钩子照跑**，
+  所以已经缓冲的 `io::cout` 输出不会丢（实测：`before-trap` 那行先出来 ✓）。
+- **消息必须是文本**：字面量 / `slice<u8>` / `ref u8`。给一个数字是**编译错误** —— 把数字当消息印
+  出来，正是 `trap` 要避免的那种安静的错。消息里带 `%` 也安全（它是参数，不是格式串）。
+- **它不是异常**：没有处理器、没有栈展开、不会返回。**只用于无法处理的事情**（不变量破了、硬编码
+  的绑定缺一个符号）；**可预期的失败**（文件不存在、库打不开、解析失败）是 `result` / `option` 的
+  值，用 `?` 往上交。这条界线就是"无异常"那一条承诺的具体形状（上表第 2 行）。
+
+判据：`tests/traps/trap_literal.extc`（字面量）、`trap_slice.extc`（运行时切片）、`trap_cstr.extc`
+（C 字符串）、反例 `tests/errors/trap_bad_message.extc`（非文本消息必须编译期挡掉）。
+
 ### 逃逸检查：唯一引用规则
 
 > **若引用 `r` 指向值 `v`，则 `depth(r) ≥ depth(v)`。**

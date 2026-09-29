@@ -1,0 +1,13 @@
+// 消息是**运行时**的切片（不是字面量）：按长度印那一片，且只求值一次。
+use std::io
+fn main() -> i32 {
+    var buf: [64]u8
+    var i: i64 = 0
+    while i < i64(5) {
+        buf[i] = u8(65) + u8(i)
+        i = i + 1
+    }
+    var msg: slice<u8> = buf[..5]
+    io::cout << "computed\n"
+    trap(msg)
+}

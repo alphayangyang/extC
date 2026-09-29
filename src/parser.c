@@ -2009,6 +2009,24 @@ static Stmt *parseStmt(Parser *p) {
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);
     if (at(p, "for"))                  return parseFor(p);
+    /* `trap(msg)` -- the program cannot continue (see `ST_TRAP` in ast.h). Recognized **by shape**
+     * (the word followed by `(`), the same trick the `ext` operator uses: a variable, field or
+     * parameter named `trap` keeps working, and only a statement-position call is the builtin. */
+    if (at(p, "trap") && pk(p, 1) && strcmp(pk(p, 1)->text, "(") == 0) {
+        Token *tk = take(p);
+        Stmt *s = stmtNew(p->arena, ST_TRAP, tk->line);
+        take(p);                                     /* `(` */
+        s->u.trap_.msg = parseExpr(p);
+        if (!s->u.trap_.msg) return NULL;
+        if (!at(p, ")")) {
+            ctxError(p->ctx, cur(p)->line, cur(p)->col, NULL,
+                     "`trap` takes exactly one message: `trap(\"why the program cannot go on\")`",
+                     "expected `)` after the `trap` message");
+            return NULL;
+        }
+        take(p);
+        return s;
+    }
     if (at(p, "match"))                return parseMatch(p);
 
     if (at(p, "return")) {

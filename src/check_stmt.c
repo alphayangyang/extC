@@ -988,6 +988,34 @@ void checkStmt(Checker *c, Stmt *s) {
                 checkAssignable(c, cf->yieldType, got, s->u.yield_.value, "the yielded value");
             return;
         }
+        case ST_TRAP: {
+            /* The message is the only thing a reader sees when the program stops, so it has to be
+             * text: a literal, a `slice<u8>`, or a C string (`ref u8`). Everything else is a mistake
+             * worth a compile error -- quietly printing a number as if it were a message would be
+             * exactly the kind of silent wrong answer `trap` exists to avoid.
+             *
+             * The test is by **shape** (`ttIs` only knows builtin types, so `ttIs(t, "slice<u8>")` is
+             * always false): a view of `u8`, or a reference to `u8`. `mut` is a permission and does
+             * not change what can be printed. */
+            Type *t = checkExpr(c, s->u.trap_.msg);
+            bool isText = true;
+            if (t && !ttIsError(t)) {
+                if (t->kind == TY_REF) {
+                    isText = ttIs(t->inner, "u8");
+                } else if (ttIsViewType(t) && t->targs.len == 1) {
+                    isText = ttIs(*(Type **)vecAt(&t->targs, 0), "u8");
+                } else {
+                    isText = false;
+                }
+            }
+            if (!isText) {
+                ckError(c, s->line,
+                        "`trap` stops the program and prints its message, so the message has to be"
+                        " text: a string literal, a `slice<u8>`, or a `ref u8`.",
+                        "`trap` needs a message of text, found `%s`", typeStr(c, t));
+            }
+            return;
+        }
         case ST_RETURN: {
             Type *want = c->curFunc ? c->curFunc->ret : NULL;
             if (!s->u.ret.value) {
