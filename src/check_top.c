@@ -1291,6 +1291,14 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         for (size_t i2 = 0; i2 < params->len && i2 < args->len; i2++) {
             Param *p2 = *(Param **)vecAt(params, i2);
             if (!p2->type || p2->type->kind != TY_REF) continue;
+            /* Only a reference to something that can **hold** references can be the destination a
+             * callee stores into (a container, a plate, a record with ref fields). A `ref u8` is
+             * not one: counting it let a depth-0 argument (a view of a global) collapse the
+             * destination to "lives forever", which then rejected the *callee's own table*
+             * (measured: `pl.viewAt(globalView.data, 4)` reported "argument 1 of `viewAt` points
+             * into a deeper scope (depth 1) than the arena this call may store it in (depth 0)").
+             * The predicate is the framework's own "this type can carry a reference". */
+            if (!typeContainsRef(c->tt, tsub(c, p2->type->inner))) continue;
             Expr *a2 = *(Expr **)vecAt(args, i2);
             Expr *place2 = (a2->kind == EX_REF) ? a2->u.ref.operand : a2;
             /* NOTE: a generic parameter (`mut ref table<T>`) is NOT skipped here, unlike in

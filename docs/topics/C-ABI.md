@@ -703,3 +703,42 @@ ok   cairo      ->  cairo=1.18.4 surface=ok png=ok green=30771 white=9532 edges=
 2. **`use std::io` 之后本模块里的 `fn open` 报 "duplicate function `open`"** —— 导入一个模块会把
    它（连同**传递导入**的）顶层名字占住，哪怕调用要写限定名。生成的取符号/填充因此改成挂在类型上的
    关联函数（`api::needSym` / `api::open`，与 `ifstream::new` 同一风格），天然不占通用名。
+
+## 9.19 分析精度：两处"复用已有框架"的修复（定案 97）
+
+写 §9.18 那份 93 行的 C ABI 全貌时，8 次编译尝试里有 3 次撞在**分析本身**上（不是设计）。摊开看，
+两处的根因是同一句话：**框架早就有这个答案，是某条路没有去问它**。
+
+**① `match` 的 payload 拷贝没做"收窄"。** `declare()` 的注释把契约写得很清楚：
+
+> "A reference-typed binding starts with the depth of its slot as the pointee depth, the conservative
+> answer. **Whoever knows the initializer narrows this to the real depth afterwards**"
+
+`var` 那条路做了（`exprRefDepth` + home-arena 修正 + `outOfFrame`），`match` 那条路**只调了 `declare`
+就完事** ✗。于是这份**指针的拷贝**被当成"借了 arm 块里的局部变量"：
+
+```extc
+match dl::sym(h, n) {
+    some(p) => { return p }      // ✗ this return value would hold a reference to a local
+    none    => { trap("没有") }   //    variable that dies first (borrowed from depth 2)
+}
+```
+
+**后果比"多写几个字"严重得多**：检查过的那条路不可写 ⇒ 只剩 `!`（不检查的签字）⇒ "不方便"和
+"不安全"是同一个 bug 的两面。修法是复用：payload 的引用指向哪儿 = scrutinee 的引用指向哪儿，
+而 scrutinee 的**绑定上**已经有这个答案（`exprRefDepth` 对标识符正是去读绑定，见 `check_escape.c`
+里那段"binding's depth is authoritative on the binding, not on the expression node"）。
+
+**② 目的地深度的代理把 `ref u8` 也算进去了。** 调用点用"引用型实参里最浅的那个"当作"callee 可能
+存进去的 arena 深度"。但只有**能装引用的东西**才可能是目的地（容器、板、带 ref 字段的记录）；
+`ref u8` 不是。算进去的后果：一个 depth 0 的实参（全局内存的视图）把目的地压成"活到永远"⇒ 连
+callee **自己的表**（局部）都被判"活得不够久" ✗（实测 `pl.viewAt(全局视图.data, 4)`）。修法同样是
+复用：用框架自己的 `typeContainsRef` 当过滤条件。
+
+**判据**：`tests/cabi/checked_path.extc`（`match` 取指针再还回去 ✓、取标量 ✓、depth 0 实参不再
+压垮目的地且**运行时照样被区间检查拒** ✓）· golden **414/414 逐字节不变**（两处都是精度修复：
+只把"误拒"变成"接受"，没有一个已有生成物改变 ⇒ 这也正是它们安全的原因）· `./check.sh quick`
+**51/0** · 带超时扫描 414/0/42s。
+
+**留一条规矩**（定案 97）：新增"声明一个绑定"的路径时，必须复用 `declare` 的收窄契约 —— 谁引入
+新的绑定点（`match`、`yield`、将来的 `if let`……），谁就要问一句"我知道初始化器吗"。

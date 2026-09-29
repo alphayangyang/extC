@@ -177,5 +177,17 @@ check_err tests/cabi/errors/outframe_frame.extc      'may be kept by C forever'
 check_err tests/cabi/errors/outframe_new.extc        'may be kept by C forever'
 check_err tests/cabi/errors/outframe_reassigned.extc 'may be kept by C forever'
 
+echo '== ⑧ 分析精度：match payload 的 provenance + 目的地深度（C-ABI.md §9.19）=='
+if out=$("$EXTC" --run tests/cabi/checked_path.extc 2>&1); then
+    if echo "$out" | grep -qF "match-return=ok narrowed=7 viewat=rejected"; then
+        echo "  ok   checked-path  ->  $(echo "$out" | tr '\n' '|')"
+        echo '        （payload 拷贝能还回去 ⇒ 检查过的那条路可写，不必再靠 ! ；depth 0 的实参不再压垮目的地）'
+    else
+        echo "  FAIL checked-path  ->  输出对不上：$(echo "$out" | tr '\n' '|')"; fail=1
+    fi
+else
+    echo "  FAIL checked-path  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
+fi
+
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

@@ -1193,6 +1193,20 @@ void checkStmt(Checker *c, Stmt *s) {
                      * semantics, and the name is read-only; copy it into a `var` to
                      * modify it. */
                     Sym *bs = declare(c, bn, bt, false, false, arm->line, c->scopes.len);
+                    /* `declare` gives the conservative answer -- "the pointee lives at the depth of
+                     * my own slot" -- and its comment says whoever knows the initializer narrows it.
+                     * Here the initializer is the **scrutinee**: a payload is a copy, so whatever its
+                     * references point at is whatever the scrutinee's references point at (and the
+                     * scrutinee's own binding already carries that answer, which is why
+                     * `exprRefDepth` consults the binding rather than the expression node).
+                     *
+                     * Without this line the natural checked pattern was refused --
+                     * `match dl::sym(h, n) { some(p) => { return p } ... }` reported "this return
+                     * value would hold a reference to a local variable that dies first (borrowed from
+                     * depth 2)" for a plain copy of a C pointer, which left `!` (the unchecked
+                     * signature) as the only way to write it. */
+                    if (bt && typeContainsRef(c->tt, bt))
+                        bs->refDepth = exprRefDepth(c, s->u.match.scrutinee);
                     /* Write the resolved C name back into the arm, the same treatment
                      * `Param.cname` and a declaration's `cname` get. Without it, two
                      * `match` statements in one scope binding the same name would declare

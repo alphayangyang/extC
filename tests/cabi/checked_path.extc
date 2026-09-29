@@ -1,0 +1,48 @@
+// expect: match-return=ok narrowed=7 viewat=rejected
+// `match` 绑出来的 payload 能**还回去/传出去**（定案 97）：它是那份值的**拷贝**，所以它的引用指向
+// 哪儿，取决于 scrutinee 的引用指向哪儿 —— 而 scrutinee 的绑定上早就算好了这个答案
+// （`declare` 的契约就是"知道初始化器的人随后收窄"，`match` 这条以前漏了这一步 ✗）。
+//
+// 这条判据的意义不只是"少写一个 `!`"：它让**检查过的那条路**变得可写。
+// 从前 `match … some(p) => { return p }` 会被拒（"borrowed from depth 2"），于是只剩 `!`
+// 那条不检查的路 —— 不方便和不安全是同一个 bug 的两面。
+use std::io
+use std::dl
+use std::heap
+
+var out: [64]u8
+
+/* 从 option 里取出指针：**检查过**地取（match 两个分支都写出来），再还回去 */
+fn symOrTrap(h: ref void, name: slice<u8>) -> ref void {
+    match dl::sym(h, name) {
+        some(p) => { return p }
+        none    => { trap("这个 .so 里没有那个符号") }
+    }
+}
+
+/* payload 是值也能照样用 */
+fn unwrapOr(o: ?i64, dflt: i64) -> i64 {
+    match o {
+        some(v) => { return v }
+        none    => { return dflt }
+    }
+}
+
+fn main() -> i32 {
+    var h: ref void = dl::open("libc.so.6")!
+    var p: ref void = symOrTrap(h, "getpid")
+    var f: fn() -> i32 = fn() -> i32(p)
+    io::cout << "match-return=ok" << " narrowed=" << unwrapOr(some(i64(7)), i64(0))
+
+    /* ③ 同一片区域的第二处：一个 **depth 0 的实参**（全局内存的视图）不再把"目的地深度"压成 0
+     * ⇒ `pl`（局部）不再被误判成"活得不够久" ✓；而**运行时**该拒的照样拒（区间检查 ✓） */
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    match pl.viewAt(out[..].data, u64(4)) {
+        some(w) => { io::cout << " viewat=accepted" }
+        none    => { io::cout << " viewat=rejected" }
+    }
+    pl.close()
+    dl::close(h)
+    io::cout << "\n"
+    return 0
+}
