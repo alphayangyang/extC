@@ -321,6 +321,14 @@ match payload 的收窄 + 目的地代理的过滤）。**这不是欠账，是�
 
 **精度账**：定案 97 已清 ①③ 两条；剩下的账在 `§0.4.1` 与 `docs/topics/C-ABI.md` §9.19。
 
+**"URL 解释器"那一线已开**（2026-09-29）：`bench/httpd/` 里有一个**能用的静态服务器**
+（epoll + 协程 + `sendfile`，约 300 行 extC）。分工是"内核接口走 C shim（新加的 `std::sys::file`
+五个函数，`struct stat` 留在 C 侧）+ 报文解析/路由/状态机写在 extC"。实测（单进程单线程、loopback）：
+吞吐 **5376 req/s · 1344 MB/s**，峰值 RSS **1.9 MB**；同判据下 `python3 -m http.server` 是
+4368 req/s · 1092 MB/s · 22.7 MB。13 条判据含 **304 / HEAD / 404 / 路径穿越（`..` 与 `%2e%2e`）/
+流水线 / `Connection: close`** ✓。下一格是**多 worker**（`fork` + `SO_REUSEPORT` 都已可用 ✓）
+与 gzip（zlib ✓）。
+
 ---
 
 

@@ -273,3 +273,61 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "    return (int64_t)shutdown((int)fd, SHUT_WR);\n"
         "}\n");
 }
+
+/* 文件层：最小 HTTP 服务器要的那几个 shim。**独立发射**（按需，跟着声明走），
+ * 不搭协程表的车 —— 那辆车的最终发射还被 `needCoroHandle` 之类的条件门着，实测拉不动 ✗。 */
+void fileLayerEmitRuntime(Arena *a, Buf *out) {
+    (void)a;
+    /* 一个 `bufPuts` 字符串不许超 4095 字节（C99 保证）⇒ 分块。 */
+    bufPuts(out,
+        "/* ---- 文件层（最小 HTTP 服务器要的那几个）：`struct stat`、`off_t`、路径的 NUL 终止\n"
+        " * 全都留在 C 侧 —— extC 只拿标量。理由是一条实测教训：把 `struct rusage` 镜像成前 5 个字段\n"
+        " * 让 `getrusage` 越界写栈 ⇒ SIGSEGV；`struct stat` 比那更大更平台相关，不该让作者去声明布局。 */\n"
+        "#include <sys/stat.h>\n"
+        "/* 不 include <unistd.h>：它会和程序自己声明的 `read`/`write` 撞原型（`extern!` 那条老摩擦）。\n"
+        " * `close` 我们自己声明一行就够。 */\n"
+        "extern int close(int);\n"
+        "#include <sys/sendfile.h>\n"
+        "#include <fcntl.h>\n"
+                "#include <time.h>\n"
+        "int64_t extc_file_open(uint8_t *path, int64_t len, int64_t *out_size, int64_t *out_mtime,\n"
+        "                       int64_t *out_isdir) {\n"
+        "    char p[4096];   /* 不用 PATH_MAX：`-std=c11` 下它不可见（要 POSIX 特性宏），自定一个 ✓ */\n"
+        "    if (len <= 0 || len >= (int64_t)sizeof p) return -1;\n"
+        "    memcpy(p, path, (size_t)len);\n"
+        "    p[len] = 0;\n"
+        "    int fd = open(p, O_RDONLY);\n"
+        "    if (fd < 0) return -1;\n"
+        "    struct stat st;\n"
+        "    if (fstat(fd, &st) != 0) { close(fd); return -1; }\n"
+        "    *out_size  = (int64_t)st.st_size;\n"
+        "    *out_mtime = (int64_t)st.st_mtime;\n"
+        "    *out_isdir = S_ISDIR(st.st_mode) ? 1 : 0;\n"
+        "    return (int64_t)fd;\n"
+        "}\n\n"
+        "/* 非阻塞 socket 上的 sendfile：返回**这次**送出去多少（可能少于 n ⇒ 调用方补）。\n"
+        " * 偏移由调用方给，于是 Range 与部分写都能续。 */\n"
+        "int64_t extc_sendfile(int64_t out_fd, int64_t in_fd, int64_t off, int64_t n) {\n"
+        "    off_t o = (off_t)off;\n"
+        "    ssize_t r = sendfile((int)out_fd, (int)in_fd, &o, (size_t)n);\n"
+        "    return (int64_t)r;\n"
+        "}\n\n"
+        "/* HTTP 日期：正确性交给 libc（`strftime`/`strptime` 是打过仗的），extC 只拿长度与秒数。 */\n"
+        "int64_t extc_http_date(int64_t epoch, uint8_t *out) {\n"
+        "    time_t t = (time_t)epoch;\n"
+        "    struct tm tm;\n"
+        "    if (!gmtime_r(&t, &tm)) return -1;\n"
+        "    return (int64_t)strftime((char *)out, 64, \"%a, %d %b %Y %H:%M:%S GMT\", &tm);\n"
+        "}\n\n"
+        "int64_t extc_http_parse_date(uint8_t *s, int64_t len) {\n"
+        "    char buf[64];\n"
+        "    if (len <= 0 || len >= (int64_t)sizeof buf) return -1;\n"
+        "    memcpy(buf, s, (size_t)len);\n"
+        "    buf[len] = 0;\n"
+        "    struct tm tm;\n"
+        "    memset(&tm, 0, sizeof tm);\n"
+        "    if (!strptime(buf, \"%a, %d %b %Y %H:%M:%S GMT\", &tm)) return -1;\n"
+        "    return (int64_t)timegm(&tm);\n"
+        "}\n\n"
+        "int64_t extc_file_close(int64_t fd) { return (int64_t)close((int)fd); }\n");
+}

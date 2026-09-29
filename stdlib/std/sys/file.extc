@@ -1,0 +1,23 @@
+/* std/sys/file.extc —— **文件层**的运行期 shim：最小 HTTP 服务器要的那几个。
+ *
+ * 为什么单开一个模块（而不是塞进 `sys::io`/`sys::net`）：运行期的发射触发点是
+ * **"这个 extern 声明在不在"**，而模块是整包导入的 ⇒ 声明混在 `sys::net` 里就会让每个
+ * 用网络的程序都拖上文件层（实测：6 个协程产物因此变了字节 ✗）。一层一个模块，各拉各的 ✓。
+ *
+ * 为什么这些 shim 在 C 侧而不在 extC 侧：`struct stat` / `off_t` / 路径的 NUL 终止都留在 C 里，
+ * extC 只拿标量。一条实测教训：把 `struct rusage` 镜像成前 5 个字段就让 `getrusage` 越界写栈
+ * ⇒ SIGSEGV ✗ —— `struct stat` 更大更平台相关，不该让作者去声明布局。 */
+use std::io
+
+extern!("extc-runtime") fn extc_file_open(path: ref u8, len: i64, outSize: ref i64,
+                                         outMtime: ref i64, outIsDir: ref i64) -> i64
+    effects Addr=0 Cont=0      /* 拷进自己的缓冲就扔：不留路径，也不留那几个出参的地址 */
+extern!("extc-runtime") fn extc_file_close(fd: i64) -> i64
+/* 非阻塞 socket 上的 `sendfile`：返回**这次**送出去多少（可能少于 n ⇒ 调用方补）。 */
+extern!("extc-runtime") fn extc_sendfile(outFd: i64, inFd: i64, off: i64, n: i64) -> i64
+    effects Addr=0 Cont=0
+/* HTTP 日期：正确性交给 libc（`strftime`/`strptime` 打过仗），extC 只拿长度与秒数。 */
+extern!("extc-runtime") fn extc_http_date(epoch: i64, out: ref u8) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_http_parse_date(s: ref u8, len: i64) -> i64
+    effects Addr=0 Cont=0
