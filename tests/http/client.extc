@@ -1,0 +1,37 @@
+/* 端到端判据：用 `std::http` 的客户端连一台**真的** HTTP 服务器，GET 一个已知文件。
+ * 用法：client <host> <port> <path> <期望 body 里的子串>
+ * 退出码：0 = 200 且 body 含期望子串 ✓；1 = 连接失败；2 = 状态不是 200；3 = body 不对。 */
+use std::io
+use std::http
+
+fn arg(args: slice<slice<u8>>, i: i64) -> slice<u8> {
+    if i < args.len { return args[i] }
+    return ""
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var host: slice<u8> = arg(args, 1)
+    var port: i64 = i64(0)
+    var ps: slice<u8> = arg(args, 2)
+    var k: i64 = i64(0)
+    while k < ps.len { port = port * i64(10) + (i64(ps[k]) - i64(48))  k = k + i64(1) }
+    var path: slice<u8> = arg(args, 3)
+    var want: slice<u8> = arg(args, 4)
+
+    /* 用 `match` 而不是 `!`：`!` 是未检查版，失败会给出**零值**（`fd = 0` 就是 stdin ✗ —— 实测
+     * 请求发给 stdin、状态读成 0 ✓）。库的文档口径也是"失败要处理" ✓。 */
+    var c: http::conn                        /* `conn` 只有标量 ⇒ 可零初始化 ✓ */
+    match http::conn::open(host, port, i64(5000)) {
+        none => { io::cout << "连不上\n"  return 1 }
+        some(v) => { c = v }
+    }
+    var out: mut slice<u8> = new u8[1024]
+    var buf: mut slice<u8> = new u8[65536]
+    var r: http::response = c.get(host, path, "", out, buf)
+    if r.status != i64(200) { io::cout << "状态 " << r.status << "\n"  return 2 }
+    var n: i64 = http::findSub(r.body, i64(0), want)
+    c.close()
+    if n < i64(0) { io::cout << "body 不含期望内容：" << r.body[..i64(64)] << "\n"  return 3 }
+    io::cout << "GET " << path << " -> " << r.status << " " << r.reason << " · " << r.body.len << " 字节 ✓\n"
+    return 0
+}

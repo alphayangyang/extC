@@ -1,0 +1,488 @@
+/* std/http.extc —— HTTP/1.1 的三件事：**解析请求、拼响应、发请求**。
+ *
+ * 设计口径（跟库里其它模块一致）：
+ *   · **不分配** —— 缓冲一律由调用者给（`mut slice<u8>` ✓），函数只返回**指向入参的视图** ✓。
+ *     于是"谁管内存"没有任何悬念，也不会有隐式拷贝 ✓。
+ *   · **纯函数优先** —— 解析/取头/拼头都不碰 socket ✓，单测不用起网络 ✓。
+ *   · **客户端是显式连接** —— `Conn` 只有标量（fd + 缓冲区游标 ✓）⇒ 可零初始化 ✓、可放进任何
+ *     作用域 ✓；keep-alive 由"滑窗"实现（上次没消费完的字节挪到前面再读 ✓）。
+ *
+ * 还没做（明确记账，不假装有）：chunked 编码、header 折叠、HTTP/2、TLS（QQBot 是 HTTPS ⇒ 见
+ * `docs/topics/C-ABI.md` 的 OpenSSL 绑定那条线 ✓）、代理、cookie 罐。
+ *
+ * 用法（客户端 GET）：
+ *     var buf: mut slice<u8> = new u8[65536]
+ *     var c: http::Conn = http::open("127.0.0.1", i64(8080), i64(5000))!
+ *     var r: http::Response = http::get(ref c, "127.0.0.1", "/small.txt", "", buf)
+ *     if r.status == i64(200) { io::cout << r.body }
+ *     http::close(ref c)
+ *
+ * 用法（服务端一个请求）：
+ *     var req: http::Request = http::parseRequest(raw)
+ *     var out: mut slice<u8> = new u8[4096]
+ *     var at: i64 = http::beginResponse(out, i64(0), i64(200))
+ *     at = http::putHeader(out, at, "Content-Type", "text/plain; charset=utf-8")
+ *     at = http::putHeaderI64(out, at, "Content-Length", body.len)
+ *     at = http::endHeaders(out, at)
+ */
+use std::sys::net
+use std::sys::io as sysio
+
+/* ---------------------------------------------------------------- 小工具（不导出） */
+
+fn findSub(hay: slice<u8>, from: i64, needle: slice<u8>) -> i64 {
+    if needle.len == i64(0) { return from }
+    var i: i64 = from
+    while i + needle.len <= hay.len {
+        var j: i64 = i64(0)
+        var hit: bool = true
+        while j < needle.len {
+            if hay[i + j] != needle[j] { hit = false  break }
+            j = j + i64(1)
+        }
+        if hit { return i }
+        i = i + i64(1)
+    }
+    return i64(-1)
+}
+
+fn lower(c: u8) -> u8 {
+    if c >= u8(65) && c <= u8(90) { return c + u8(32) }
+    return c
+}
+
+/* 头名比较：**大小写不敏感**（HTTP 的头名本来就是 ✓）。也导出 —— 调用者常要自己比 ✓ */
+fn eqCI(a: slice<u8>, b: slice<u8>) -> bool {
+    if a.len != b.len { return false }
+    var i: i64 = i64(0)
+    while i < a.len {
+        if lower(a[i]) != lower(b[i]) { return false }
+        i = i + i64(1)
+    }
+    return true
+}
+
+fn isSpace(c: u8) -> bool { return c == u8(32) || c == u8(9) }
+
+/* ---------------------------------------------------------------- 请求 */
+
+struct request {
+    method: slice<u8>
+    target: slice<u8>          /* 原样（含查询串 ✓）*/
+    version: slice<u8>
+    headers: slice<u8>         /* 头块（不含末尾那个空行 ✓）；取值用 `headerOf` ✓ */
+    body: slice<u8>            /* 头之后的部分（有多少给多少 ✓）*/
+    complete: bool             /* 请求行 + 头齐了 ✓ */
+}
+
+/* 头块结束（`\r\n\r\n` 的**末尾之后**那个位置）——没找到返回 -1 ✓。 */
+fn headerEnd(raw: slice<u8>) -> i64 {
+    var i: i64 = findSub(raw, i64(0), "\r\n\r\n")
+    if i < i64(0) { return i64(-1) }
+    return i + i64(4)
+}
+
+/* 头**块**结束（不含末尾空行）——`headers` 字段用这个 ✓。 */
+fn headerBlockEnd(raw: slice<u8>) -> i64 { return findSub(raw, i64(0), "\r\n\r\n") }
+
+/* 解析一个请求。**只切视图，不校验语义**（状态码那类判断留给调用者 ✓）。 */
+fn parseRequest(raw: slice<u8>) -> request {
+    var r: request = request { method: raw[..i64(0)], target: raw[..i64(0)], version: raw[..i64(0)],
+                               headers: raw[..i64(0)], body: raw[..i64(0)], complete: false }
+    var end: i64 = headerEnd(raw)
+    if end < i64(0) { return r }                       /* 头还没齐 ⇒ complete = false ✓ */
+    r.complete = true
+    var sp1: i64 = findSub(raw, i64(0), " ")
+    if sp1 < i64(0) { return r }
+    var sp2: i64 = findSub(raw, sp1 + i64(1), " ")
+    if sp2 < i64(0) { return r }
+    var eol: i64 = findSub(raw, i64(0), "\r\n")
+    if eol < i64(0) { eol = end }
+    r.method = raw[..sp1]
+    r.target = raw[sp1 + i64(1)..sp2]
+    r.version = raw[sp2 + i64(1)..eol]
+    r.headers = raw[eol + i64(2)..headerBlockEnd(raw)]
+    r.body = raw[end..]
+    return r
+}
+
+/* 取一个头（值两边的空白去掉 ✓，名字不分大小写 ✓）。
+ *
+ * 注意写法：**全用下标、最后直接从参数上取视图** ✓ —— 把子视图赋给局部再返回会被逃逸检查拒
+ * （实测 `borrowed from depth 3`：赋值之后来源就说不清了 ✗）。 */
+fn headerOf(hdrs: slice<u8>, name: slice<u8>) -> option<slice<u8>> {
+    var p: i64 = i64(0)
+    while p < hdrs.len {
+        var eol: i64 = findSub(hdrs, p, "\r\n")
+        if eol < i64(0) { eol = hdrs.len }
+        var colon: i64 = findSub(hdrs, p, ":")
+        if colon > p && colon < eol {
+            var vs: i64 = colon + i64(1)
+            var ve: i64 = eol
+            while vs < ve && isSpace(hdrs[vs]) { vs = vs + i64(1) }
+            while ve > vs && isSpace(hdrs[ve - i64(1)]) { ve = ve - i64(1) }
+            if eqCI(hdrs[p..colon], name) { return some(hdrs[vs..ve]) }
+        }
+        if eol >= hdrs.len { break }
+        p = eol + i64(2)
+    }
+    return none
+}
+
+/* `Content-Length`（没有或不是数字 ⇒ -1 ✓）。 */
+fn contentLength(hdrs: slice<u8>) -> i64 {
+    match headerOf(hdrs, "Content-Length") {
+        none => { return i64(-1) }
+        some(s) => {
+            if s.len == i64(0) { return i64(-1) }
+            var n: i64 = i64(0)
+            var i: i64 = i64(0)
+            while i < s.len {
+                if s[i] < u8(48) || s[i] > u8(57) { return i64(-1) }
+                n = n * i64(10) + (i64(s[i]) - i64(48))
+                i = i + i64(1)
+            }
+            return n
+        }
+    }
+}
+
+/* 路径部分（去掉 `?查询串` ✓）。 */
+fn pathOf(target: slice<u8>) -> slice<u8> {
+    var q: i64 = findSub(target, i64(0), "?")
+    if q < i64(0) { return target }
+    return target[..q]
+}
+
+/* 查询串里取一个参数（`?a=1&b=2` ✓；不做百分号解码 —— 那是 `decode` 的事 ✓）。
+ * 同样：下标运算 + 从参数取视图 ✓。 */
+fn queryOf(target: slice<u8>, name: slice<u8>) -> option<slice<u8>> {
+    var q: i64 = findSub(target, i64(0), "?")
+    if q < i64(0) { return none }
+    var p: i64 = q + i64(1)
+    while p <= target.len {
+        var amp: i64 = findSub(target, p, "&")
+        if amp < i64(0) { amp = target.len }
+        var eq: i64 = findSub(target, p, "=")
+        if eq > p && eq < amp {
+            if eqCI(target[p..eq], name) { return some(target[eq + i64(1)..amp]) }
+        }
+        if amp >= target.len { break }
+        p = amp + i64(1)
+    }
+    return none
+}
+
+/* 十六进制一位（不是十六进制数字 ⇒ 255 ✓）。 */
+fn hexVal(c: u8) -> u8 {
+    if c >= u8(48) && c <= u8(57) { return c - u8(48) }
+    if c >= u8(97) && c <= u8(102) { return c - u8(97) + u8(10) }
+    if c >= u8(65) && c <= u8(70) { return c - u8(65) + u8(10) }
+    return u8(255)
+}
+
+/* 百分号解码 + `+` 当空格（查串/表单的标准口径 ✓）。写进调用者的 `dst` ✓，返回长度；坏输入 -1 ✓。 */
+fn decode(src: slice<u8>, dst: mut slice<u8>) -> i64 {
+    var i: i64 = i64(0)
+    var o: i64 = i64(0)
+    while i < src.len {
+        var c: u8 = src[i]
+        if c == u8(37) {                                   /* '%' */
+            if i + i64(2) >= src.len { return i64(-1) }
+            var hi: u8 = hexVal(src[i + i64(1)])
+            var lo: u8 = hexVal(src[i + i64(2)])
+            if hi == u8(255) || lo == u8(255) { return i64(-1) }
+            c = hi * u8(16) + lo
+            i = i + i64(3)
+        } else if c == u8(43) {                            /* '+' */
+            c = u8(32)
+            i = i + i64(1)
+        } else {
+            i = i + i64(1)
+        }
+        if o >= dst.len { return i64(-1) }
+        dst[o] = c
+        o = o + i64(1)
+    }
+    return o
+}
+
+/* ---------------------------------------------------------------- 响应 */
+
+struct response {
+    version: slice<u8>
+    status: i64
+    reason: slice<u8>
+    headers: slice<u8>
+    body: slice<u8>
+    complete: bool
+}
+
+/* 常见状态码的 reason（够用就好；没有的给空串 ✓）。 */
+fn reasonOf(status: i64) -> slice<u8> {
+    if status == i64(200) { return "OK" }
+    if status == i64(201) { return "Created" }
+    if status == i64(204) { return "No Content" }
+    if status == i64(301) { return "Moved Permanently" }
+    if status == i64(302) { return "Found" }
+    if status == i64(304) { return "Not Modified" }
+    if status == i64(400) { return "Bad Request" }
+    if status == i64(401) { return "Unauthorized" }
+    if status == i64(403) { return "Forbidden" }
+    if status == i64(404) { return "Not Found" }
+    if status == i64(405) { return "Method Not Allowed" }
+    if status == i64(413) { return "Payload Too Large" }
+    if status == i64(429) { return "Too Many Requests" }
+    if status == i64(431) { return "Request Header Fields Too Large" }
+    if status == i64(500) { return "Internal Server Error" }
+    if status == i64(502) { return "Bad Gateway" }
+    if status == i64(503) { return "Service Unavailable" }
+    return ""
+}
+
+/* 解析一个响应（**状态行 + 头**；body 是"头之后的全部字节" ✓ —— chunked 不做 ✗）。 */
+fn parseResponse(raw: slice<u8>) -> response {
+    var r: response = response { version: raw[..i64(0)], status: i64(0), reason: raw[..i64(0)],
+                                 headers: raw[..i64(0)], body: raw[..i64(0)], complete: false }
+    var end: i64 = headerEnd(raw)
+    if end < i64(0) { return r }
+    r.complete = true
+    var eol: i64 = findSub(raw, i64(0), "\r\n")
+    if eol < i64(0) { eol = end }
+    var sp1: i64 = findSub(raw, i64(0), " ")
+    if sp1 < i64(0) { return r }
+    r.version = raw[..sp1]
+    var codeEnd: i64 = sp1 + i64(4)
+    if codeEnd > eol { codeEnd = eol }
+    var code: i64 = i64(0)
+    var i: i64 = sp1 + i64(1)
+    while i < codeEnd {
+        if raw[i] < u8(48) || raw[i] > u8(57) { break }
+        code = code * i64(10) + (i64(raw[i]) - i64(48))
+        i = i + i64(1)
+    }
+    r.status = code
+    if i + i64(1) <= eol { r.reason = raw[i + i64(1)..eol] }
+    r.headers = raw[eol + i64(2)..headerBlockEnd(raw)]
+    r.body = raw[end..]
+    return r
+}
+
+/* 往调用者的缓冲里拼响应头。**返回新位置** —— extC 里只有字段/下标能透过引用写 ✓，
+ * 所以这一族函数都返回游标 ✓（比传 `mut ref i64` 干净，也少一层解引用 ✓）。 */
+
+fn putBytes(out: mut slice<u8>, at: i64, s: slice<u8>) -> i64 {
+    var i: i64 = i64(0)
+    while i < s.len {
+        out[at + i] = s[i]
+        i = i + i64(1)
+    }
+    return at + s.len
+}
+
+fn putI64(out: mut slice<u8>, at: i64, v0: i64) -> i64 {
+    var v: i64 = v0
+    var at2: i64 = at
+    if v == i64(0) { out[at2] = u8(48)  return at2 + i64(1) }
+    var tmp: [24]u8
+    var n: i64 = i64(0)
+    var neg: bool = v < i64(0)
+    if neg { v = i64(0) - v }
+    while v > i64(0) {
+        tmp[n] = u8(48 + v % i64(10))
+        n = n + i64(1)
+        v = v / i64(10)
+    }
+    if neg { out[at2] = u8(45)  at2 = at2 + i64(1) }
+    var i: i64 = n
+    while i > i64(0) {
+        i = i - i64(1)
+        out[at2] = tmp[i]
+        at2 = at2 + i64(1)
+    }
+    return at2
+}
+
+fn beginResponse(out: mut slice<u8>, at: i64, status: i64) -> i64 {
+    var p: i64 = putBytes(out, at, "HTTP/1.1 ")
+    p = putI64(out, p, status)
+    p = putBytes(out, p, " ")
+    p = putBytes(out, p, reasonOf(status))
+    return putBytes(out, p, "\r\n")
+}
+
+fn putHeader(out: mut slice<u8>, at: i64, name: slice<u8>, value: slice<u8>) -> i64 {
+    var p: i64 = putBytes(out, at, name)
+    p = putBytes(out, p, ": ")
+    p = putBytes(out, p, value)
+    return putBytes(out, p, "\r\n")
+}
+
+fn putHeaderI64(out: mut slice<u8>, at: i64, name: slice<u8>, v: i64) -> i64 {
+    var p: i64 = putBytes(out, at, name)
+    p = putBytes(out, p, ": ")
+    p = putI64(out, p, v)
+    return putBytes(out, p, "\r\n")
+}
+
+fn endHeaders(out: mut slice<u8>, at: i64) -> i64 { return putBytes(out, at, "\r\n") }
+
+/* 一个最小响应：状态 + `Content-Length` + `Content-Type`（一行搞定常见情形 ✓）。 */
+fn simpleResponse(out: mut slice<u8>, status: i64, ctype: slice<u8>, bodyLen: i64) -> i64 {
+    var p: i64 = beginResponse(out, i64(0), status)
+    if bodyLen > i64(0) {
+        p = putHeader(out, p, "Content-Type", ctype)
+        p = putHeaderI64(out, p, "Content-Length", bodyLen)
+    } else {
+        p = putHeaderI64(out, p, "Content-Length", i64(0))
+    }
+    return endHeaders(out, p)
+}
+
+/* 拼一个请求头（GET/POST 共用 ✓；`host` 会填进 `Host:` ✓）。
+ * `extraHeaders` 是**原样**追加的多行头（自己带 `\r\n` ✓ —— QQBot 的 `Authorization: Bot …` 走这里 ✓）。 */
+fn beginRequest(out: mut slice<u8>, at: i64, method: slice<u8>, host: slice<u8>,
+                path: slice<u8>, extraHeaders: slice<u8>, bodyLen: i64, keepAlive: bool) -> i64 {
+    var p: i64 = putBytes(out, at, method)
+    p = putBytes(out, p, " ")
+    p = putBytes(out, p, path)
+    p = putBytes(out, p, " HTTP/1.1\r\nHost: ")
+    p = putBytes(out, p, host)
+    p = putBytes(out, p, "\r\n")
+    if bodyLen > i64(0) { p = putHeaderI64(out, p, "Content-Length", bodyLen) }
+    p = putBytes(out, p, extraHeaders)
+    if keepAlive { p = putBytes(out, p, "Connection: keep-alive\r\n") }
+    else         { p = putBytes(out, p, "Connection: close\r\n") }
+    return putBytes(out, p, "\r\n")
+}
+
+/* 把 `buf[from..from+n]` 挪到最前面（keep-alive 的滑窗 ✓）。 */
+fn shiftToFront(buf: mut slice<u8>, from: i64, n: i64) {
+    var i: i64 = i64(0)
+    while i < n {
+        buf[i] = buf[from + i]
+        i = i + i64(1)
+    }
+}
+
+/* 域名 → 第一个 IPv4（写进 `out` ✓，返回长度；失败 -1 ✓）。给点分串也能用 ✓。 */
+fn resolve(host: slice<u8>, out: mut slice<u8>) -> i64 {
+    return net::extc_dns_lookup(host.data, host.len, out.data, out.len)
+}
+
+/* ---------------------------------------------------------------- 客户端
+ *
+ * `conn` 的方法是这一层唯一的"对象"：`conn::open(...)` 拿连接 ✓，`c.get(...)` 发请求 ✓。
+ * 为什么用方法而不是自由的 `open`/`get`/`post`：**导入会占用调用方的顶层名字** ✗
+ * （实测过 `use std::io` + 自定义 `fn open` ⇒ "duplicate function `open`" ✓）⇒ 方法有名字空间 ✓。
+ *
+ * 所有缓冲都由调用者给：`out` 放请求头、`buf` 收响应 ✓（响应里的切片都指向 `buf` ✓）。
+ */
+struct conn {
+    fd: i64
+    rest: i64          /* 缓冲区开头还剩多少字节没被上一条响应消费（keep-alive ✓）*/
+
+    /* 打开一条连接：解析域名 + 连接 + 设收发超时（`timeoutMs` 0 = 不设 ✓）。 */
+    fn open(host: slice<u8>, port: i64, timeoutMs: i64) -> ?conn {
+        var ip: [64]u8
+        var ipv: mut slice<u8> = ip[..]
+        var n: i64 = resolve(host, ipv)
+        if n <= i64(0) { return none }
+        var fd: i64 = net::extc_tcp_connect_to(ipv.data, n, port)
+        if fd < i64(0) { return none }
+        if timeoutMs > i64(0) {
+            var _t: i64 = net::extc_sock_timeout(fd, timeoutMs)
+        }
+        return some(conn { fd: fd, rest: i64(0) })
+    }
+
+    fn close(self: mut ref conn) {
+        if self.fd >= i64(0) {
+            var _r: i32 = sysio::close(i32(self.fd))
+            self.fd = i64(-1)
+        }
+    }
+
+    /* 把一整片写完（阻塞 socket ⇒ 写不动就重试 ✓）。 */
+    fn send(self: mut ref conn, raw: slice<u8>) -> bool {
+        var off: i64 = i64(0)
+        while off < raw.len {
+            var w: i64 = net::extc_sock_write_from(self.fd, raw.data, off, raw.len - off)
+            if w <= i64(0) { return false }
+            off = off + w
+        }
+        return true
+    }
+
+    /* 读一个响应进 `buf`（返回的切片都指向 `buf` ✓）。`complete` 为假 ⇒ 头没读齐 ✗。 */
+    fn readResponse(self: mut ref conn, buf: mut slice<u8>) -> response {
+        var have: i64 = self.rest                        /* 残字节已经在开头 ✓ */
+        var end: i64 = headerEnd(buf[..have])
+        while end < i64(0) {
+            if have >= buf.len { break }                 /* 缓冲满了头还没齐 ⇒ 放弃 ✓ */
+            var n: i64 = net::extc_sock_read(self.fd, buf.data, buf.len - have)
+            if n <= i64(0) { break }
+            have = have + n
+            end = headerEnd(buf[..have])
+        }
+        if end < i64(0) {
+            self.rest = have
+            return parseResponse(buf[..have])
+        }
+        var r: response = parseResponse(buf[..have])
+        var cl: i64 = contentLength(r.headers)
+        /* 没有 `Content-Length` 就只有 204/304 才算"读完"（它们本来没有 body ✓）；
+         * 其它情况**不许**猜 0 —— 猜了就会把没读完的响应当成读完 ⇒ 滑窗搬出垃圾（实测 ✗）。 */
+        if cl < i64(0) {
+            if r.status == i64(204) || r.status == i64(304) { cl = i64(0) } else { cl = i64(-1) }
+        }
+        if cl < i64(0) {                                 /* 长度未知 ⇒ 不搬字节，交给上层 ✓ */
+            self.rest = i64(0)
+            return parseResponse(buf[..have])
+        }
+        var total: i64 = end + cl
+        while have < total {
+            if have >= buf.len { break }                 /* 装不下 ⇒ 调用者换大缓冲 ✓ */
+            var n2: i64 = net::extc_sock_read(self.fd, buf.data, buf.len - have)
+            if n2 <= i64(0) { break }
+            have = have + n2
+        }
+        r = parseResponse(buf[..have])
+        /* 读完整了 ⇒ 多余的字节挪到开头（keep-alive 的下一条响应可能已经在缓冲里 ✓）*/
+        if have >= total {
+            var left: i64 = have - total
+            if left > i64(0) { shiftToFront(buf, total, left) }
+            self.rest = left
+        } else {
+            self.rest = i64(0)
+        }
+        return r
+    }
+
+    /* 发一个请求并读回响应（`extraHeaders` 原样追加 ✓ —— QQBot 的 `Authorization: Bot …` 走这里 ✓）。 */
+    fn exchange(self: mut ref conn, method: slice<u8>, host: slice<u8>, path: slice<u8>,
+                extraHeaders: slice<u8>, body: slice<u8>, out: mut slice<u8>,
+                buf: mut slice<u8>, keepAlive: bool) -> response {
+        var at: i64 = beginRequest(out, i64(0), method, host, path, extraHeaders, body.len, keepAlive)
+        if !self.send(out[..at]) { return parseResponse(buf[..i64(0)]) }
+        if body.len > i64(0) && !self.send(body) { return parseResponse(buf[..i64(0)]) }
+        return self.readResponse(buf)
+    }
+
+    fn get(self: mut ref conn, host: slice<u8>, path: slice<u8>, extraHeaders: slice<u8>,
+           out: mut slice<u8>, buf: mut slice<u8>) -> response {
+        return self.exchange("GET", host, path, extraHeaders, "", out, buf, true)
+    }
+
+    /* POST（QQBot 的交互回调都是 POST + JSON body ✓）。`extraHeaders` 里请自己带 `Content-Type` ✓。 */
+    fn post(self: mut ref conn, host: slice<u8>, path: slice<u8>, extraHeaders: slice<u8>,
+            body: slice<u8>, out: mut slice<u8>, buf: mut slice<u8>) -> response {
+        return self.exchange("POST", host, path, extraHeaders, body, out, buf, true)
+    }
+
+    fn exchangeClose(self: mut ref conn, method: slice<u8>, host: slice<u8>, path: slice<u8>,
+                     extraHeaders: slice<u8>, body: slice<u8>, out: mut slice<u8>,
+                     buf: mut slice<u8>) -> response {
+        return self.exchange(method, host, path, extraHeaders, body, out, buf, false)
+    }
+}

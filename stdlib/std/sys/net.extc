@@ -78,3 +78,14 @@ extern!("extc-runtime") fn extc_sock_shutdown_wr(fd: i64) -> i64
  * 1,064,775 req/s / 249 MB。 */
 extern!("extc-runtime") fn extc_tcp_listen_shared(port: i64, backlog: i64) -> i64
     effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
+
+/* 域名 → 第一个 IPv4（写进调用者的 `out` ✓，返回长度；失败 -1 ✓）。
+ * 同步阻塞：库这一层不做异步解析（一个进程解析几次就够 ✓）。 */
+extern!("extc-runtime") fn extc_dns_lookup(host: ref u8, hostlen: i64, out: ref u8, outcap: i64) -> i64
+    effects Addr=0 Cont=0
+
+/* 客户端：连到**给定 IP**（域名先 `extc_dns_lookup` ✓）+ 收发超时（毫秒，0 = 取消 ✓）。 */
+extern!("extc-runtime") fn extc_tcp_connect_to(ip: ref u8, iplen: i64, port: i64) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_sock_timeout(fd: i64, ms: i64) -> i64
+    effects Addr=0 Cont=0

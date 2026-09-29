@@ -316,6 +316,27 @@ pl.<span class="f">close</span>()                                               
 <ul><li><strong>跨 <code>yield</code> 的视图一律拒</strong>：不只是"指向局部"，<strong>指向全局的视图</strong>同样拒 ✗（实测 <code>var req: mut slice&lt;u8&gt; = gBuf[..]</code> 挂在第一个 <code>yield</code> 上）。两条正解：视图<strong>在挂起之后再取</strong> （放在 <code>yield</code> 之后声明 ✓），或者把数据 <code>new</code> 进任务 arena ✓。</li><li><strong>长命协程里按迭代 <code>new</code> 会一路累积</strong> ✗：任务 arena 只在任务结束时回收，keep-alive 连接里 每请求 <code>new</code> 两个 4 KB ⇒ 每连接 <strong>9,110 B</strong>（实测）；改成"每次迭代复用"或"全局瞬时缓冲"后 是 <strong>1,623 B/连接</strong> ✓（<code>CONCURRENCY.md</code> §3.2）。</li></ul>
 <ul><li><strong>epoll 事件的 user-data 里放的是任务行号</strong>（listener 用 -1 这个哨兵）⇒ 一个事件一次数组定位， <strong>不扫任务表</strong> ✓；<code>extc_epoll_wait</code> 因此返回<strong>标签</strong>，队列空时返回 <code>-100</code>。</li><li><code>resumeRow(self, s, i, ready)</code> 是<strong>唯一</strong>推进任务的地方：<code>ready</code> 区分"某 fd 刚就绪"与 "立刻推进"，负请求只在那里处理一次（两条路各写一遍时，就绪那条漏掉负请求 ⇒ 任务卡死 ✗， 两个判据当场抓到 ✓）。</li><li><code>loop</code> <strong>只有标量</strong>，这是语言规则不是风格：含引用的结构体没有零值，<code>var s: sched::loop</code> 会写不出来 ✗ ⇒ 队列住在调用者的容器 <code>tasks&lt;T&gt;</code> 里。</li></ul>
 <p><strong>实测</strong>（<code>bench/httpd/</code>）：挂着 <strong>10,000</strong> 条空闲 keep-alive 连接时，吞吐 <strong>99,442 → 198,026 req/s</strong>（改前砍半 ✗，改后与空闲 0 条的 197,516 持平 ✓）。</p>
+<h3 id="12-5c-http-std-http-解析请求-拼响应-客户端">12.5c HTTP（<code>std::http</code>）：解析请求 / 拼响应 / 客户端</h3>
+<p>三件事各自独立、<strong>都不分配</strong>：缓冲由调用者给，返回的切片都指向入参 ✓。</p>
+<pre class="lang-extc"><code><span class="k">use</span> std::http
+<span class="c">/* 服务端：解析 + 拼响应 */</span>
+<span class="k">var</span> r: http::request = http::<span class="f">parseRequest</span>(raw)          <span class="c">/* complete = 头齐了 ✓ */</span>
+<span class="k">if</span> r.complete &amp;&amp; r.method == <span class="c">"GET"</span> { … }
+<span class="k">var</span> host: <span class="t">slice</span>&lt;<span class="t">u8</span>&gt; = http::<span class="f">headerOf</span>(r.headers, <span class="c">"Host"</span>)!
+<span class="k">var</span> out: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">u8</span>&gt; = <span class="k">new</span> <span class="t">u8</span>[<span class="n">4096</span>]
+<span class="k">var</span> at: <span class="t">i64</span> = http::<span class="f">simpleResponse</span>(out, <span class="t">i64</span>(<span class="n">200</span>), <span class="c">"text/plain"</span>, <span class="t">i64</span>(<span class="n">2</span>))
+at = http::<span class="f">putBytes</span>(out, at, <span class="c">"ok"</span>)
+
+<span class="c">/* 客户端：显式连接 + keep-alive（`conn` 只有标量 ⇒ 可零初始化 ✓）*/</span>
+<span class="k">var</span> c: http::conn
+<span class="k">match</span> http::conn::<span class="f">open</span>(<span class="c">"api.example.com"</span>, <span class="t">i64</span>(<span class="n">80</span>), <span class="t">i64</span>(<span class="n">5000</span>)) {
+    none =&gt; { <span class="k">return</span> <span class="n">1</span> }
+    <span class="f">some</span>(v) =&gt; { c = v }
+}
+<span class="k">var</span> buf: <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">u8</span>&gt; = <span class="k">new</span> <span class="t">u8</span>[<span class="n">65536</span>]
+<span class="k">var</span> resp: http::response = c.<span class="f">get</span>(<span class="c">"api.example.com"</span>, <span class="c">"/v1/me"</span>, <span class="c">"Authorization: Bot x\r\n"</span>, out, buf)
+c.<span class="f">close</span>()</code></pre>
+<ul><li>公开成员：<code>beginRequest</code> <code>beginResponse</code> <code>contentLength</code> <code>decode</code> <code>endHeaders</code> <code>eqCI</code> <code>findSub</code> <code>headerBlockEnd</code> <code>headerEnd</code> <code>headerOf</code> <code>hexVal</code> <code>isSpace</code> <code>lower</code> <code>parseRequest</code> <code>parseResponse</code> <code>pathOf</code> <code>putBytes</code> <code>putHeader</code> <code>putHeaderI64</code> <code>putI64</code> <code>queryOf</code> <code>reasonOf</code> <code>resolve</code> <code>shiftToFront</code> <code>simpleResponse</code> <code>body</code> <code>close</code> <code>exchange</code> <code>exchangeClose</code> <code>extraHeaders</code> <code>fd</code> <code>get</code> <code>open</code> <code>out</code> <code>post</code> <code>readResponse</code> <code>rest</code> <code>send</code> <code>complete</code> <code>headers</code> <code>method</code> <code>path</code> <code>reason</code> <code>status</code> <code>target</code> <code>version</code>。</li><li><strong>没有做</strong>（明确记账）：chunked、header 折叠、TLS、代理、cookie。QQBot 那类 HTTPS API 要 <code>TLS</code> ⇒ 见 <code>docs/topics/C-ABI.md</code> 的 OpenSSL 绑定那条线 ✓。</li><li>三条语言规则值得记：<strong>跨 <code>yield</code> 的视图一律拒</strong>（指向全局的也算）；<strong>逃逸检查要求"全用下标、 最后从参数取视图"</strong>（把子视图赋给局部再返回会被拒）；<code>match</code> 是<strong>语句</strong>，不能当表达式用。</li></ul>
 <h3 id="12-6-特权层-builtin-与-std-sys-只有标准库能用-定案-96">12.6 特权层：<code>@builtin</code> 与 <code>std::sys::*</code> 只有标准库能用（定案 96）</h3>
 <p><code>@builtin</code> 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是<strong>给原语起名字</strong>。它和 <code>std::sys::heap</code>（板的特权层：<code>mmap</code>/<code>mprotect</code>/<code>munmap</code> + <code>extc_viewOf</code>）都<strong>只有标准库能碰</strong>：</p>
 <pre class="lang-extc"><code>@builtin <span class="k">fn</span> <span class="f">extc_viewOf</span>(p: <span class="k">ref</span> <span class="t">u8</span>, n: <span class="t">i64</span>) -&gt; <span class="k">mut</span> <span class="t">slice</span>&lt;<span class="t">u8</span>&gt;   <span class="c">// ✗ 程序里不许写</span>

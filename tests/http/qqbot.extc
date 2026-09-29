@@ -1,0 +1,38 @@
+/* QQBot REST 的**请求形状**判据（TLS 还没接 ⇒ 打本机的假服务器 ✓）：
+ *   POST /v2/users/123/messages  +  Authorization: Bot xxx  +  Content-Type: application/json  +  JSON body
+ * 假服务器把收到的字节回显，这里逐字验形状 ✓。真机要 HTTPS ⇒ 见 README 的记账 ✓。 */
+use std::io
+use std::http
+
+fn arg(args: slice<slice<u8>>, i: i64) -> slice<u8> {
+    if i < args.len { return args[i] }
+    return ""
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var port: i64 = i64(0)
+    var ps: slice<u8> = arg(args, 1)
+    var k: i64 = i64(0)
+    while k < ps.len { port = port * i64(10) + (i64(ps[k]) - i64(48))  k = k + i64(1) }
+    var c: http::conn                        /* `conn` 只有标量 ⇒ 可零初始化 ✓ */
+    match http::conn::open("127.0.0.1", port, i64(5000)) {
+        none => { io::cout << "连不上\n"  return 1 }
+        some(v) => { c = v }
+    }
+    var json: slice<u8> = "{\"content\":\"hello\",\"msg_type\":0}"
+    var out: mut slice<u8> = new u8[2048]
+    var buf: mut slice<u8> = new u8[65536]
+    var r: http::response = c.post("127.0.0.1", "/v2/users/123/messages",
+                                   "Authorization: Bot 1020xxxx\r\nContent-Type: application/json\r\n",
+                                   json, out, buf)
+    /* 假服务器把请求原样回显在 body 里 ⇒ 逐条验 ✓ */
+    var b: slice<u8> = r.body
+    if http::findSub(b, i64(0), "POST /v2/users/123/messages HTTP/1.1") < i64(0) { return 2 }
+    if http::findSub(b, i64(0), "Authorization: Bot 1020xxxx") < i64(0) { return 3 }
+    if http::findSub(b, i64(0), "Content-Type: application/json") < i64(0) { return 4 }
+    if http::findSub(b, i64(0), "Content-Length: 33") < i64(0) { return 5 }
+    if http::findSub(b, i64(0), json) < i64(0) { return 6 }
+    c.close()
+    io::cout << "QQBot 形状 ✓（POST + Authorization + JSON body " << json.len << " 字节）\n"
+    return 0
+}

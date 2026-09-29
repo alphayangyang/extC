@@ -1,0 +1,33 @@
+use std::io
+use std::http
+
+fn main() -> i32 {
+    var raw: slice<u8> = "GET /a/b?x=1&name=%E4%BD%A0 HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello"
+    var r: http::request = http::parseRequest(raw)
+    if !r.complete { return 1 }
+    if r.method != "GET" { return 2 }
+    if http::pathOf(r.target) != "/a/b" { return 3 }
+    var xv: slice<u8> = http::queryOf(r.target, "x")!      /* `!` 是未检查版：none ⇒ 空视图 ✓ */
+    if xv.len == i64(0) { return 4 }
+    if xv != "1" { return 5 }
+    var nm: slice<u8> = http::queryOf(r.target, "name")!
+    if nm.len == i64(0) { return 6 }
+    var dec: mut slice<u8> = new u8[64]
+    var dn: i64 = http::decode(nm, dec)
+    if dn != i64(3) { return 7 }
+    if http::contentLength(r.headers) != i64(5) { return 8 }
+    if r.body != "hello" { return 9 }
+    var hv: slice<u8> = http::headerOf(r.headers, "host")!
+    if hv != "h" { return 10 }
+    var out: mut slice<u8> = new u8[512]
+    var at: i64 = http::simpleResponse(out, i64(200), "text/plain", i64(2))
+    at = http::putBytes(out, at, "ok")
+    var want: slice<u8> = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok"
+    if out[..at] != want { io::cout << "响应拼错: " << out[..at] << "\n"  return 12 }
+    var pr: http::response = http::parseResponse(want)
+    if pr.status != i64(200) { return 13 }
+    if pr.body != "ok" { return 14 }
+    if pr.reason != "OK" { return 15 }
+    if http::reasonOf(i64(404)) != "Not Found" { return 16 }
+    return 0
+}

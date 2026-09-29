@@ -585,6 +585,37 @@ var fd: i64 = tasks.pump(ref s, i64(50))
 **实测**（`bench/httpd/`）：挂着 **10,000** 条空闲 keep-alive 连接时，吞吐
 **99,442 → 198,026 req/s**（改前砍半 ✗，改后与空闲 0 条的 197,516 持平 ✓）。
 
+### 12.5c HTTP（`std::http`）：解析请求 / 拼响应 / 客户端
+
+三件事各自独立、**都不分配**：缓冲由调用者给，返回的切片都指向入参 ✓。
+
+```extc
+use std::http
+/* 服务端：解析 + 拼响应 */
+var r: http::request = http::parseRequest(raw)          /* complete = 头齐了 ✓ */
+if r.complete && r.method == "GET" { … }
+var host: slice<u8> = http::headerOf(r.headers, "Host")!
+var out: mut slice<u8> = new u8[4096]
+var at: i64 = http::simpleResponse(out, i64(200), "text/plain", i64(2))
+at = http::putBytes(out, at, "ok")
+
+/* 客户端：显式连接 + keep-alive（`conn` 只有标量 ⇒ 可零初始化 ✓）*/
+var c: http::conn
+match http::conn::open("api.example.com", i64(80), i64(5000)) {
+    none => { return 1 }
+    some(v) => { c = v }
+}
+var buf: mut slice<u8> = new u8[65536]
+var resp: http::response = c.get("api.example.com", "/v1/me", "Authorization: Bot x\r\n", out, buf)
+c.close()
+```
+
+- 公开成员：`beginRequest` `beginResponse` `contentLength` `decode` `endHeaders` `eqCI` `findSub` `headerBlockEnd` `headerEnd` `headerOf` `hexVal` `isSpace` `lower` `parseRequest` `parseResponse` `pathOf` `putBytes` `putHeader` `putHeaderI64` `putI64` `queryOf` `reasonOf` `resolve` `shiftToFront` `simpleResponse` `body` `close` `exchange` `exchangeClose` `extraHeaders` `fd` `get` `open` `out` `post` `readResponse` `rest` `send` `complete` `headers` `method` `path` `reason` `status` `target` `version`。
+- **没有做**（明确记账）：chunked、header 折叠、TLS、代理、cookie。QQBot 那类 HTTPS API 要
+  `TLS` ⇒ 见 `docs/topics/C-ABI.md` 的 OpenSSL 绑定那条线 ✓。
+- 三条语言规则值得记：**跨 `yield` 的视图一律拒**（指向全局的也算）；**逃逸检查要求"全用下标、
+  最后从参数取视图"**（把子视图赋给局部再返回会被拒）；`match` 是**语句**，不能当表达式用。
+
 ### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
 
 `@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和

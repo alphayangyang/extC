@@ -189,6 +189,7 @@ typedef struct {
     bool           needEvent;       /* the program calls the event layer (epoll/sockets) */
     bool           needCoroHandle;
     bool           needHttpFile;      /* 文件层 shim（open/fstat/sendfile/HTTP 日期）被声明了 */
+    bool           needDns;           /* `extc_dns_lookup` 被声明了（同步 getaddrinfo）*/
     bool           needDomain;       /* the program starts a task (`ext` inside a domain block) */
     bool           coroDefPrinted;
     bool           coroDeclsDone;
@@ -6781,7 +6782,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         for (size_t fi = 0; fi < m->funcs.len; fi++) {
             FuncDef *ef = *(FuncDef **)vecAt(&m->funcs, fi);
             if (ef && ef->used && ef->name &&
-                (strncmp(ef->name, "extc_epoll_", 11) == 0 || strncmp(ef->name, "extc_sock_", 10) == 0))
+                (strncmp(ef->name, "extc_epoll_", 11) == 0 || strncmp(ef->name, "extc_sock_", 10) == 0 ||
+                 strncmp(ef->name, "extc_tcp_", 9) == 0))
                 g.needEvent = true;
         }
     }
@@ -6826,6 +6828,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (f->name && (strncmp(f->name, "extc_file_", 10) == 0 ||
                         strncmp(f->name, "extc_sendfile", 13) == 0 ||
                         strncmp(f->name, "extc_http_", 10) == 0))  g.needHttpFile = true;
+        if (f->name && strcmp(f->name, "extc_dns_lookup") == 0)  g.needDns = true;
     }
     /* 池还多一条来源：**检查器早就算好的 `makesPool`**。只看"这个模块里声明了 `extc_pool_*`
      * 的 extern"是不够的 —— 那些声明在**库模块**里，而 `m` 是入口模块，于是 main 的 prologue
@@ -7033,8 +7036,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * defining it later has no effect -- so it goes here, above the include block, and only for a
      * program that actually asks for the time (`needTime` is set by the declaration scan above,
      * which is why that scan has to run first). */
-    if (g.needTime)
-        bufPuts(out, "#define _POSIX_C_SOURCE 200809L   /* clock_gettime/nanosleep 是 POSIX */\n");
+    /* `clock_gettime`/`nanosleep` 是 POSIX；`getaddrinfo`/`inet_ntop` 也是（严格 c11 下 `struct
+     * addrinfo` 直接不可见 ✗ 实测）。宏必须在**第一个 include 之前** ✓。 */
+    if (g.needTime || g.needDns)
+        bufPuts(out, "#define _POSIX_C_SOURCE 200809L   /* clock_gettime/nanosleep/getaddrinfo */\n");
     /* 文件层的 HTTP 日期用 `strptime`/`timegm`/`gmtime_r`：前两个不是 ISO C ⇒ 要 `_GNU_SOURCE`
      * （`timegm` 连 POSIX 都不是）。只在这个程序真的声明了那几个 shim 时才开，golden 不受影响 ✓ */
     if (g.needHttpFile)
@@ -8425,6 +8430,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
     if (g.needPool && !g.poolDone) poolsEmitRuntime(arena, out);
     if (g.needHttpFile) fileLayerEmitRuntime(arena, out);
+    if (g.needDns) dnsEmitRuntime(arena, out);
     /* The byte-search runtime, for a program that declares `extern!("extc-mem")`. Its trigger
      * also decided the `_GNU_SOURCE` preamble above; here only the bodies are appended. */
     if (g.needMemFind) memfindEmitRuntime(arena, out);

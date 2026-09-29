@@ -17,6 +17,7 @@
 /* Append the task table to the generated translation unit. */
 void coroutineEmitRuntime(Arena *a, Buf *out);
 void fileLayerEmitRuntime(Arena *a, Buf *out);
+void dnsEmitRuntime(Arena *a, Buf *out);
 
 /* The event layer (epoll + AF_UNIX sockets), emitted when a program calls it. */
 void eventEmitRuntime(Arena *arena, Buf *out);
