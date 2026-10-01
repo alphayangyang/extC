@@ -996,6 +996,11 @@ void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
     int d2 = valDepthForStore(c, value);
     if (!(d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))) return;
     if (target->kind == EX_IDENT) {
+        /* 写点失效的**检查期**那一半（见 check_internal.h 的"写点失效"一节）：一个整值写发生时，
+         * 关于这个绑定的非空证明必须已经作废。断言把它变成被看守的不变量 —— 一旦某个写路径漏了
+         * `unNarrow`，调试构建当场响（P0-17 就是这一类，只不过那次漏的是"被调方改写"）。*/
+        EXTC_DBG_ASSERT_MSGF(!isNarrowed(c, vs->cname),
+                             "write without invalidating the non-null proof of `%s`", vs->name);
         noteWholeValueDepthWrite(c, vs, value, d2);
     } else {
         const char *fn2 = (target->kind == EX_FIELD) ? target->u.field.name : NULL;

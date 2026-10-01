@@ -33,6 +33,18 @@ void extcDbgNote(const char *what, const char *file, int line) {
     fprintf(stderr, "[note] %s:%d: %s\n", file ? file : "?", line, what ? what : "?");
 }
 
+void extcDbgHitF(const char *kind, const char *file, int line, const char *fmt, ...) {
+    va_list ap;
+    if (!dbgEnabled()) return;
+    fprintf(stderr, "[%s] %s:%d: ", kind ? kind : "dbg", file ? file : "?", line);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+    abort();
+}
+
 void extcDbgHit(const char *kind, const char *what, const char *file, int line) {
     if (!dbgEnabled()) return;
     /* `[assert]` / `[fallback]` 前缀是给闸门与 `check.sh` 抓的：一节红不靠"输出里有字样"，

@@ -286,3 +286,49 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec)
 * **U4 arena/zone 两条通道的调用点决策收成一份实现**（P0-2 的哨兵曾在两条里各一份）。
 * **U5 哨兵 → 断言/显式状态**：审核 checker 里的 16 处 `return 0`（用 `EXTC_DBG_ASSERT`/`FALLBACK`
   逐条分清"合法语义"与"兜底"），并把 U1 的 NOTE 计数接成可比的观察项。
+
+---
+
+## U 批次收口（本轮）：最后一件结构性收尾 + 全量验收
+
+### 本轮做的两件事
+
+1. **"写点失效"立成和"四个问题"并列的权威一节**（`check_internal.h`）：一个概念、两处实现，
+   表格写清"哪个事实 / 谁让它失效 / 活在哪个 pass / 不失效的后果"：
+   非空证明（`unNarrow`，检查期，P0-17）与 fresh 集合（`freshDrop`，摘要期，P1-5）。
+   —— 它们在两个 pass 里，所以"统一"在这里只能是"一个概念 + 两处实现各自点名"，
+   硬合成一个函数反而会掩盖"触发条件不同"这个事实。
+2. **把检查期那一半变成被看守的不变量**：`noteStore` 的整值写分支加
+   `EXTC_DBG_ASSERT_MSGF(!isNarrowed(c, vs->cname), …)` —— "写发生了 ⇒ 关于这个绑定的非空证明
+   必须已经作废"。实测：**整个套件零命中** ⇒ 这条不变量成立，而且从此**一旦某条写路径漏了
+   `unNarrow`，调试构建当场响**（P0-17 就是这一类，只不过那次漏的是"被调方改写"）。
+3. 顺带补了两个宏变体（都是这轮踩出来的真实需要）：`EXTC_DBG_NOTEF`、
+   `EXTC_DBG_ASSERT_MSGF`（带 printf 细节；非 varargs 的那版会让人写出编译期错误，我踩了两次）。
+
+### 与目标①的一处**有意的偏离**（记清楚）
+
+目标①写的是"`-DEXTC_DEBUG` + `make DEBUG=1` 路径"。实现改成了**运行时开关** `EXTC_DBG=1`，
+理由有两条，都是仓库自己的规矩逼出来的：
+* `tools/check_guards.py` 的房规是"include guard 内不许有第二个 `#endif`" ⇒ 条件编译**不能**放头文件
+  （第一版就被判红：17 ok / 1 broken）；
+* 运行时开关不需要第二套构建、同一只二进制两用，`check.sh` 那一节也因此更简单。
+
+### 全量验收（本轮末）
+
+| 检查 | 结果 |
+|---|---|
+| `tests/run.sh`（发布 / `EXTC_DBG=1`） | **325 / 0** / **325 / 0**（断言与兜底命中 **0**） |
+| `check.sh quick` | **55 / 0**（含新增的"断言版全量"一节） |
+| 闸门⑤·语料 · ①checkc 全量 · ②ASan 全量 · ③差分 · ④规模 | 全绿（四条基线为空；语料基线 1 条 = P0-6e） |
+| `tools/check_walkers.py` | `every recursive kind-walker handles every kind ✓`（23，ratchet 23） |
+| `tools/check_guards.py` | 18 ok / 0 broken |
+
+### 五项完成情况
+
+| 目标项 | 状态 | 关键改动 |
+|---|---|---|
+| ① 断言基础设施 | ✅（机制改进：运行时开关） | `src/dbg.h`+`dbg.c`：ASSERT / FALLBACK / NOTE（+ 两个 printf 变体）；`check.sh` 断言版一节，断言或兜底命中即红 |
+| ② 单一指称 | ✅ | `extcRootLeaf` + `EXTC_ROOT_*` 掩码把三套根遍历收成一个；头文件"四个问题 + 极性契约"；`paramIndexByName` 标注遗留 |
+| ③ 写点单一入口 | ✅ | `noteStore`（四步固定顺序）+ `noteReturnPublish`；未收进来的形状逐个说明为何不同；"写点失效"一节 + 被看守的不变量 |
+| ④ arena/zone 决策收一份 | ✅ | `callSiteMinDestDepth`（P0-2 的哨兵曾在两条里各一份） |
+| ⑤ 哨兵 → 断言/显式状态 | ✅ | 16 处 `return 0` 逐条分类；预算兜底分 FALLBACK/NOTE；候选第 14 条定位并结案（INT/CONV，均不带引用） |

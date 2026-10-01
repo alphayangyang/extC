@@ -26,12 +26,17 @@
 /* 由 `src/dbg.c` 实现：开关关着时立即返回；开着时打印并按 abort 结束。
  * `kind` 是 `"assert"` 或 `"fallback"`，`what` 是断言式或"哪条兜底被走到了"的说明。 */
 void extcDbgHit(const char *kind, const char *what, const char *file, int line);
+void extcDbgHitF(const char *kind, const char *file, int line, const char *fmt, ...);
 void extcDbgNote(const char *what, const char *file, int line);
 void extcDbgNoteF(const char *file, int line, const char *fmt, ...);
 
 /* 不变量：不成立就是编译器自己的 bug。 */
 #define EXTC_DBG_ASSERT(cond)          ((cond) ? (void)0 : extcDbgHit("assert", #cond, __FILE__, __LINE__))
 #define EXTC_DBG_ASSERT_MSG(cond, msg) ((cond) ? (void)0 : extcDbgHit("assert", (msg), __FILE__, __LINE__))
+
+/* 同上，带格式化细节（断言失败时要看到是哪个绑定/哪个数值）。*/
+#define EXTC_DBG_ASSERT_MSGF(cond, ...) \
+    ((cond) ? (void)0 : extcDbgHitF("assert", __FILE__, __LINE__, __VA_ARGS__))
 
 /* 兜底：按设计不该被走到；被走到时（开关开着）立刻暴露，而不是让哨兵悄悄流下去。 */
 #define EXTC_DBG_FALLBACK(what)        extcDbgHit("fallback", (what), __FILE__, __LINE__)
