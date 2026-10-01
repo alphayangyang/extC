@@ -1,0 +1,28 @@
+/* 闸门⑤ 语料 · P0-2_sentinel_zero（审计 P0-2）—— **已修，改判"应当接受"**
+ * 期望：被接受，且生成物在 ASan 下跑干净（`gate-expect: run`）。
+ * 为什么改判：INV-S 修好之后，调用点传的是 `__extc_home` 而不是调用方本帧的块 arena
+ * （修前生成 `stash(dest, &(deep), 5, &__extc_a[1])`，块一退就 UAF；修后是 `__extc_home`），
+ * 同一程序从 heap-use-after-free 变成 ASan 干净、打印 `v=5`。逼它"拒绝"就是误拒。
+ * 原洞：调用点 arena 深度把 `0` 同时当『未设置』与『参数/全局（活得最久）』⇒ 求成最大值而非最小值。
+ * gate-expect: run
+ * gate-expect-out: v=5
+ */
+use std::io
+struct node { value: i64  next: ?ref node }
+struct slot_t { v: ?ref node }
+fn stash(dest: mut ref slot_t, other: mut ref slot_t, v: i64) {
+    @overwrite var n = new node
+    n.value = v
+    dest.v = n
+}
+fn caller(dest: mut ref slot_t) -> i32 {
+    var deep: slot_t = { v: null }
+    stash(dest, ref deep, i64(5))
+    return 0
+}
+fn main() -> i32 {
+    var s: slot_t = { v: null }
+    caller(ref s)
+    io::cout << "v=" << (*s.v!).value << "\n"
+    return 0
+}

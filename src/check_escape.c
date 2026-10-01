@@ -5,6 +5,7 @@
  * (see the block below) and by the per-expression depth recorded for every value.
  */
 
+#include "dbg.h"
 #include "check_internal.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -144,7 +145,21 @@ int placeDepth(Checker *c, Expr *e) {
     if (e->kind == EX_FIELD) return placeDepth(c, e->u.field.obj);
     if (e->kind == EX_INDEX) return placeDepth(c, e->u.index.obj);
     Sym *root = placeRoot(c, e);
-    return root ? root->depth : 0;
+    /* A shape `placeRoot` cannot name is not "storage that lives forever" -- that reading pointed
+     * the conservative direction exactly backwards. `placeRoot` knows `EX_IDENT` / `EX_FIELD` /
+     * `EX_INDEX` / `EX_SLICE`, so anything built on the fly fell through to `0`, and a store of such
+     * a value was accepted although the storage it names dies with this frame:
+     *
+     *     G = v              // rejected: a local of this frame
+     *     G = [v, v][0]      // accepted, and read a dead array (audit P0-6c)
+     *
+     * The right question for an unnamed shape is the one the rest of the checker asks about values:
+     * how deep is what it *points at* (`exprRefDepth`). For `[v, v][0]` that is the depth of `v`;
+     * for a call result it is the level the callee allocated in. Note this cannot recurse back
+     * here: `exprRefDepth` only consults `placeDepth` for expressions that *are* places, and this
+     * branch is the one where `placeRoot` already answered NULL (INV-U: the fallback records the
+     * longer-lived requirement, never the shorter one). */
+    return root ? root->depth : exprRefDepth(c, e);
 }
 
 /* Arena level at which the storage of a place lives.
@@ -211,6 +226,8 @@ int valDepthStructural(Checker *c, Expr *e) {
     case EX_IDENT: {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy->refDepth;
+        /* 注意轴不同：这里是"**结构里有没有引用**"（`valDepthStructural`），不是"活多久"。
+         * 非引用绑定结构上没有引用 ⇒ 0 是**语义**，不是兜底。*/
         return 0;
     }
     case EX_REF:    return placeDepth(c, e->u.ref.operand);
@@ -268,7 +285,11 @@ int valDepthStructural(Checker *c, Expr *e) {
     /* The payload is **copied** into the pool, so any reference it carries is carried by this
      * value too -- take the payload's depth. */
     case EX_DYN: return valDepthStructural(c, e->u.dynv.payload);
-    default: return 0;
+    default:
+        /* 认不出的形状答"结构里没有引用"是**不安全的那一侧**（它可能真的带着引用）⇒
+         * 这是兜底，不是语义。实测它会不会被走到：见 .audit/U-LOG.md 的 U5 一节。*/
+        EXTC_DBG_NOTE("valDepthStructural: unrecognized shape answered 0");
+        return 0;
     }
 }
 
@@ -651,7 +672,28 @@ static bool exprBorrowed(Checker *c, Expr *e) {
         /* A parameter is depth 0 and is not a global, so the value is borrowed. A global or
          * static is depth 0 as well, but anyone may store it.
          */
-        return root && root->depth == 0 && !isGlobalSym(c, root);
+        if (root && root->depth == 0 && !isGlobalSym(c, root)) return true;
+        /* A local that was **initialized from** a borrowed value carries that borrow with it:
+         * `var q: slice<u8> = p` gives `q` the parameter's lifetime, so `G = q` stores a borrow
+         * into a global although `q` itself is a local of this frame. Asking only about the
+         * binding's own lexical depth answered `false` and let the write through (audit P0-6a:
+         * `G` then read a sibling block's dead stack slot).
+         *
+         * Only a **name-like** origin is followed. A call result is deliberately excluded: `var x =
+         * f(p)` may well be a fresh allocation that merely took `p` as an argument, and treating
+         * that as borrowed would reject storing it -- the over-approximation that broke whole
+         * corpora in the earlier attempt at this rule. */
+        Sym *sy = (e->kind == EX_IDENT) ? identBindOf(e) : root;
+        if (sy && sy->depth > 0 && sy->origin && sy->origin->kind == EX_IDENT)
+            return exprBorrowed(c, sy->origin);
+        /* Only a **plain binding** is followed, and the narrowness is load-bearing: following
+         * `EX_FIELD` origins as well made `self.top = t.next` (read a reference out of the object
+         * `self` points at, write it back into that same object) report "cannot store a borrowed
+         * value into something that outlives this call". Both sides live behind the same `mut ref`,
+         * so nothing is extended -- a false rejection, and it made the *other* corpus entry
+         * (P0-17) look fixed while its real hole was still open. A rule that turns one hole into a
+         * rejection of ordinary code is worse than the hole. */
+        return false;
     }
     case EX_SIGN:
         /* The nullability suffix changes what the type promises, not where the value came
@@ -828,9 +870,15 @@ bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at
  *   report the depth error.
  */
 bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
-    if (!sy || hops > 32) return true;
-    /* An alias may write it, so the table cannot be trusted. */
-    if (sy->addressed) return true;
+    if (!sy) return true;
+    if (hops > 32) { EXTC_DBG_FALLBACK("promoteFieldsAt: recursion budget (32) exhausted"); return true; }
+    /* An addressed root gets two questions, and they point in opposite directions: lowering a
+     * recorded depth is unsound when an alias may write (it can put a deeper value in), while
+     * promoting the site behind a recorded source is always safe -- it only moves the allocation
+     * to a longer-lived arena. Refusing the promotion left `stash(ref b, n)` with `n = new node`
+     * accepted while reading a freed block (audit P0-16): `ref b` marks `b` addressed, this
+     * function bailed out, and the site kept its block level. */
+    bool lower = !sy->addressed;
     bool ok = true;
     for (int i = 0; i < sy->nfields; i++) {
         Expr *src = sy->fields[i].src;
@@ -846,7 +894,28 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         int want = sy->fields[i].depth;
         if (sy->fields[i].minReq < want) want = sy->fields[i].minReq;
         if (!promoteInto2(c, src, want, hops + 1)) { ok = false; continue; }
-        if (sy->fields[i].depth > want) sy->fields[i].depth = want;   /* promoted -> lower it too */
+        if (lower && sy->fields[i].depth > want) sy->fields[i].depth = want;   /* promoted -> lower it too */
+    }
+    /* Same for a store that belongs to no single field: element writes, and stores a callee made
+     * through an out-parameter. Both directions follow the rule above. */
+    if (sy->otherSrc) {
+        if (dbgOn("EXTC_DBG_FS"))
+            fprintf(stderr, "[fs-promote] %s kind=%d depth=%d minReq=%d at=%d\n", sy->name,
+                    (int)sy->otherSrc->kind, sy->otherDepth, sy->otherMinReq, at);
+        if (at < sy->otherMinReq) sy->otherMinReq = at;
+        int want = sy->otherDepth;
+        if (sy->otherMinReq < want) want = sy->otherMinReq;
+        if (!promoteInto2(c, sy->otherSrc, want, hops + 1)) ok = false;
+        else if (lower && sy->otherDepth > want) sy->otherDepth = want;
+    }
+    /* The same for a store a callee made through a `mut ref` argument (audit P0-16d). Nothing is
+     * lowered here; the site behind the source is what has to move, because `return b` needs the
+     * home arena. */
+    if (sy->callSrc) {
+        if (at < sy->callMinReq) sy->callMinReq = at;
+        int want = sy->callSrcDepth;
+        if (sy->callMinReq < want) want = sy->callMinReq;
+        if (!promoteInto2(c, sy->callSrc, want, hops + 1)) ok = false;
     }
     return ok;
 }
@@ -911,6 +980,35 @@ void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
     st->fn     = c->curFunc;    /* which body's fold this record belongs to */
     if (c->fxOn && !st->fn) c->fxPreBodyStores++;      /* recorded outside every body */
     *(StoreSite **)vecPush(&c->stores) = st;
+}
+
+/* 一次写的**唯一入口**（U3）：四件事按固定顺序做完，站点不再各写一遍。
+ * 顺序是有意义的 —— `recordStore` 必须在 `promoteInto` 之前（求解器先看到要求），
+ * 字段表必须在提权之后（`promoteFieldsAt` 会读它，先写会让它在同一次调用里看到新条目）。 */
+void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
+    if (!c || !value) return;
+    recordStore(c, value, target, at, line);          /* ① 电平记录 */
+    promoteInto(c, value, at);                        /* ② 提权（提不动就保守） */
+    markCallHomeIfEscaping(c, value, at);             /* ③ 逃逸集合那一半 */
+    /* ④ 字段表 / 整值表 */
+    Sym *vs = target ? placeRoot(c, target) : NULL;
+    if (!vs) return;
+    int d2 = valDepthForStore(c, value);
+    if (!(d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))) return;
+    if (target->kind == EX_IDENT) {
+        noteWholeValueDepthWrite(c, vs, value, d2);
+    } else {
+        const char *fn2 = (target->kind == EX_FIELD) ? target->u.field.name : NULL;
+        c->curStoreVal = value;
+        noteFieldDepthWrite(c, vs, fn2, d2);
+        c->curStoreVal = NULL;
+    }
+}
+
+/* 返回值发布：目标就是值本身（没有"目的地"这个"), 层 0 = 活过本帧。见头文件的形状清单。*/
+void noteReturnPublish(Checker *c, Expr *value, int line) {
+    if (!c || !value) return;
+    recordStore(c, value, value, 0, line);
 }
 
 /* Record a level-dependent rejection so it can be re-judged later. Reports nothing.
@@ -1046,7 +1144,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
      * assignment updates the origin), which would loop forever without a cap. Hitting the
      * cap means the value cannot be promoted, so the caller falls back to reporting the
      * error -- the safe direction. */
-    if (hops > 32) return false;
+    if (hops > 32) { EXTC_DBG_NOTE("promoteInto2: recursion budget (32) exhausted"); return false; }
     /* `dyn Trait(x)`: the payload is copied into the pool and the handle keeps it alive, so the
      * payload's allocation sites have to reach the level this value has to reach. */
     if (val->kind == EX_DYN) return promoteInto2(c, val->u.dynv.payload, at, hops + 1);
@@ -1343,7 +1441,8 @@ static void applyLvlFact(Checker *c, Expr *val, int at) {
  * Returns:
  *   The root expression, which is `val` itself when there is no followable origin. */
 Expr *originOf(Checker *c, Expr *val, int hops) {
-    if (!val || hops > 32) return val;
+    if (!val) return val;
+    if (hops > 32) { EXTC_DBG_NOTE("carrier walk: recursion budget (32) exhausted"); return val; }
     /* A struct literal, `new`, or any other shape is its own origin. */
     if (val->kind != EX_IDENT) return val;
     Sym *sy = lookup(c, val->u.ident.name);
@@ -1444,7 +1543,16 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
          *
          * Without that guarantee, accepting the store outright would be a hole;
          * `ref_launder_field` caught one. */
-        if (c->curFunc && c->curFunc->needsHome) return bad;
+        /* The excuse is "the destination and this call's home arena live exactly as long as each
+         * other, so the call site has already guaranteed the value reaches that level". It does not
+         * hold when the destination is a **global**: static storage outlives every arena, so no
+         * home arena makes the borrow safe. `fn stash(p: slice<u8>) -> hbox { G = p  var b = new
+         * u8[4]  return {p: b} }` was accepted and read `G = AAAAA...`, while the same function
+         * returning `i32` (no home arena at all) was correctly rejected (audit P0-6b). Ask where the
+         * destination lives instead of assuming: a global target falls through to the error. */
+        Sym *destRoot = target ? placeRoot(c, target) : NULL;
+        if (c->curFunc && c->curFunc->needsHome && !(destRoot && isGlobalSym(c, destRoot)))
+            return bad;
         ckError(c, line,
                 "A borrowed value may not be stored where it outlives the call: its real "
                 "lifetime is unknown here. Copy it, or store it into a local of this frame.",
@@ -1494,7 +1602,14 @@ void recordNewSizeCheck(Checker *c, Type *t, int line) {
  *   line - source line, for the diagnostic
  *   name - the name of the binding, for the diagnostic */
 void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
-    if (!c->curFunc || !c->curFunc->owner) return;
+    /* Free generic functions need this record as much as methods do: the replay loop already
+     * walks `c.funcInsts` (see `refCheckApplies`), and the rule is the same one -- a `T` with no
+     * zero value may not be defaulted. The `!owner` test here was written when only type
+     * instances were replayed, so `fn mk<T>() -> T { var local: T  return local }` never recorded
+     * anything and `mk<slice<u8>>()` produced C that did not even compile
+     * (`__extc_reference_has_no_zero_value__`), while the method twin was correctly rejected
+     * (audit P0-3). */
+    if (!c->curFunc) return;
     if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
     rc->isZero   = true;
@@ -2457,8 +2572,14 @@ mismatch:
  *   An upper bound on the depth of the references the value can carry.
  */
 static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
-    if (!e || hops >= 40) return 0;
-    for (int i = 0; i < hops; i++) if (seen[i] == e) return 0;
+    if (!e) return 0;                 /* nothing to ask about: 0 is the honest answer */
+    /* The budget and the cycle guard are **fallbacks**, and both used to answer `0` -- the value
+     * whose meaning is "lives the longest" -- so exhausting either of them pointed the
+     * conservative direction backwards (audit P0-6c is the same family). They are supposed never
+     * to be reached in a real program; a debug build must find out if that is true. */
+    if (hops >= 40) { EXTC_DBG_FALLBACK("exprRefDepthPure: recursion budget (40) exhausted"); return 0; }
+    for (int i = 0; i < hops; i++)
+        if (seen[i] == e) { EXTC_DBG_FALLBACK("exprRefDepthPure: origin cycle"); return 0; }
     seen[hops] = e;
 
     switch (e->kind) {
@@ -2473,7 +2594,10 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         /* Follow the origin to the site it came from; a binding on its own carries no
          * depth that is independent of where that site ends up. */
         Sym *sy = identBindOf(e);
-        if (!sy || !sy->origin) return 0;
+        /* `!sy` 是"这个 ident 没解析过" —— 不该在检查器里发生（走到这里说明有别的 bug），
+         * 而"没有 origin"是**合法**的：参数的 origin 就是空的，它的深度本来就是 0。*/
+        if (!sy) { EXTC_DBG_FALLBACK("exprRefDepthPure: unresolved ident"); return 0; }
+        if (!sy->origin) return 0;
         return exprRefDepthPure(c, sy->origin, hops + 1, seen);
     }
     case EX_FIELD: {

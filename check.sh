@@ -35,6 +35,44 @@ else
     else bad "tests/run.sh"; echo "$out" | grep FAIL | head -5; fi
 fi
 
+echo "== 闸门·规模（任何输入都要给结论：不许 SIGSEGV / 不许挂住 —— 审计 §7 闸门④）=="
+# 2026-09-30 P0 批次新增。基线在 tools/gate-scale-known-bad.txt：**修好的条目必须删掉**，
+# 否则这条会红（棘轮只往一个方向转）。它挡的是"编译器自己崩/不返回"这一类。
+if out=$(timeout 600 python3 tools/gate_scale.py 2>&1); then
+    ok "$(printf '%s' "$out" | grep -m1 '^\[scale\]')"
+else bad "tools/gate_scale.py（规模用例变红）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -12; fi
+
+echo "== 断言版全量（EXTC_DBG=1：断言/兜底一旦被走到就 abort —— src/dbg.h）=="
+# 关掉时每个断言点只花一次分支；打开后同一只二进制即可当断言版用（不需要第二套构建）。
+# 语义：断言与"按设计不该走到的兜底"被走到 = 信号 ⇒ 这一节只在**没有**任何 abort 时才是绿。
+if out=$(EXTC_DBG=1 timeout 1800 ./tests/run.sh 2>&1); then
+    esc=$(EXTC_DBG=1 timeout 600 python3 tools/gate_escape.py 2>&1 | tail -1)
+    if printf '%s' "$out" | tail -1 | grep -q "失败 0" && printf '%s' "$esc" | grep -q "^\[escape\] ok"; then
+        notes=$(printf '%s' "$out" | grep -ac "\[note\]" || true)
+        ok "断言版：$(printf '%s' "$out" | tail -1)；闸门⑤ ok；断言/兜底 0 命中；已知活路径 note×$notes" 
+    else
+        bad "断言版跑出问题：$(printf '%s' "$esc" | tail -1)"
+        printf '%s\n' "$out" | grep -a "assert\]\|fallback\]" | head -5
+    fi
+else
+    bad "断言版 tests/run.sh 变红（断言或兜底被走到 ⇒ 见上面的 [assert]/[fallback]）"
+    printf '%s\n' "$out" | grep -a "assert\]\|fallback\]" | head -5
+fi
+
+echo "== 闸门·逃逸健全性（语料必须被拒绝；基线 = R1/R3 施工单 —— 审计 §7 闸门⑤）=="
+# 语料在 tools/escape-corpus/：每份都是「记账比真实情况小」的洞的最小复现 —— 现在被接受，
+# 生成物在 ASan 下真的 UAF / SEGV / 编不过。control_* 是孪生对照（已能正确拒绝），永远不许进基线。
+if out=$(timeout 600 python3 tools/gate_escape.py 2>&1); then
+    ok "$(printf '%s' "$out" | grep -m1 '^\[escape\]')"
+else bad "tools/gate_escape.py（逃逸健全性语料变红）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -12; fi
+
+echo "== 闸门·差分（同一段语义：extC 与等价 C 必须给出同一结论 —— 审计 §7 闸门③）=="
+# 挡的是"静默算错"：浮点字面量、窄类型回绕、转换、求值次数、for+continue。
+# 基线在 tools/gate-diff-known-bad.txt，同样只许缩小。
+if out=$(timeout 600 python3 tools/gate_difffuzz.py 2>&1); then
+    ok "$(printf '%s' "$out" | grep -m1 '^\[diff\]')"
+else bad "tools/gate_difffuzz.py（差分用例变红）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -12; fi
+
 echo "== arena（按块细化：150MB 上限下不许涨）=="
 if out=$(timeout 600 ./tests/arena/run.sh 2>&1); then ok "$(echo "$out" | wc -l) 个用例"; else bad "tests/arena/run.sh"; echo "$out"; fi
 
@@ -266,9 +304,27 @@ rm -f "$now"
 if [ "${1:-}" != "quick" ]; then
     # 生成物黄金闸门：413 份逐字节比对 + **每份都必须是合法 C**。放在完整模式（要跑 413 次编译
     # 加 413 次 gcc，约一分钟）；quick 只跑测试与攻击库，保持快。
-    echo "== 生成物黄金闸门（413 份逐字节比对 + gcc -fsyntax-only 体检 · 已知坏列在 tools/golden-known-bad.txt）=="
-    if out=$(timeout 900 ./tools/golden.sh 2>&1); then ok "$(printf '%s' "$out" | tail -1 | sed 's/^ *//')"
-    else bad "tools/golden.sh"; printf '%s\n' "$out" | tail -8; fi
+    echo "== 闸门·全语料 --check-c（挡"extc 报成功、生成物编不过"；gcc + clang —— 审计 §7 闸门①）=="
+    # 2026-09-30 P0 批次新增。`-fsyntax-only` 看不到中端告警，这里用 `-c -O2`，
+    # 并只对"指向生成器缺陷"的告警类别判红（tools/gatecommon.py 的 GEN_WARN）。
+    if out=$(timeout 1800 python3 tools/gate_checkc.py --scope full 2>&1); then
+        ok "$(printf '%s' "$out" | grep -m1 '^\[checkc\]')"
+    else bad "tools/gate_checkc.py（全语料 --check-c 变红）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -14; fi
+
+    echo "== 闸门·正例生成物 ASan+UBSan（-O2 会把 UB 优化掉，这里必须真跑 —— 审计 §7 闸门②）=="
+    # 挡的是"生成物有 UB 却看起来正常"：从 NULL memmove（P0-8）、越界 arena 格（P0-11）等。
+    if out=$(timeout 1800 python3 tools/gate_asan_corpus.py --scope full 2>&1); then
+        ok "$(printf '%s' "$out" | grep -m1 '^\[asan\]')"
+    else bad "tools/gate_asan_corpus.py（正例生成物出现 sanitizer 报告）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -14; fi
+
+    echo "== 生成物快照（**观察项**：与冻结哈希的差异不作为判据 —— 定案 98；判据只有「必须是合法 C」）=="
+    # 2026-09-30 降级（所有者：「golden 应该降级，因为现在需要修理，代码相同不保证正确」）。
+    # 「生成物能不能用」由闸门①（tools/gate_checkc.py：全语料 gcc+clang `-c -O2`）与
+    # 闸门②（tools/gate_asan_corpus.py：ASan+UBSan 真跑）判；这里只报变化面 + 挡住非法 C。
+    if out=$(timeout 900 ./tools/golden.sh 2>&1); then
+        ok "$(printf '%s' "$out" | grep -m1 '^  ok' | sed 's/^ *//')"
+        printf '%s\n' "$out" | grep '^  · ' | sed 's/^  /  /'
+    else bad "tools/golden.sh（生成物里有非法 C）"; printf '%s\n' "$out" | tail -8; fi
     echo "== 基准：extC vs C =="
     ./bench/run.sh 2>&1 | tail -n +1 | sed 's/^/  /' | tail -12
     echo "== 基准：重负载（bt / radix / mandelbrot）=="

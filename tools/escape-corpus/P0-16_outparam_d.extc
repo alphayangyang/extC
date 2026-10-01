@@ -1,0 +1,31 @@
+/* 闸门⑤ 语料 · P0-16_outparam_d（审计 P0-16，堆版本）—— **已修，改判"应当接受"**
+ * 期望：被接受，且生成物在 ASan 下跑干净（`gate-expect: run`）。
+ * 为什么改判：被调方经 `mut ref` 出参写入之后，站点**可以**被提升到调用方的 home arena，
+ * 于是这个形状的正确终态是"编译对"而不是"拒绝"（与直接孪生 `b.p = n; return b` 的 rc=42 一致）。
+ * 修法（INV-K 最后一环，三步收窄）：
+ *   1. 出参发布用**专用槽** `callSrc/callSrcDepth/callMinReq`（复用元素写的 `otherSrc` 会给元素写
+ *      加提升压力：实测打红 store-promotion/promote-slice/promote-through-mid）；
+ *   2. 不加 `recordLvlFact`（对**每次** mut ref 调用压电平要求，实测误拒 pool 的一例）；
+ *   3. 专用槽**只在**电平已知（`dj != 0`）**或**来源可提升（`n` 的 origin 是 fresh 分配）时才写
+ *      —— 无条件发布误拒了 pool 的另一例与 stl 的 custom；`dj == 0` 且不可提升时不发布。
+ * 实测：修前 ASan heap-use-after-free（`freed by extc_arena_destroy`）；修后 exit=42、stderr 0 字节。
+ * gate-expect: run
+ * gate-expect-out: v = 42
+ */
+use std::io
+
+struct node { v: i32 }
+struct box { p: ?ref node }
+fn stash(out: mut ref box, v: ?ref node) { out.p = v }
+fn f() -> box {
+    var b: box = { p: null }
+    var n: mut ref node = new node
+    n.v = 42
+    stash(ref b, n)
+    return b
+}
+fn main() -> i32 {
+    var r: box = f()
+    if r.p != null { io::cout << "v = " << r.p.v << "\n" }
+    return 0
+}

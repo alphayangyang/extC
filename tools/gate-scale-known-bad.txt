@@ -1,0 +1,9 @@
+# 规模闸门的已知坏（基线）。格式：<用例名>	<原因>	<跟踪>
+# 规矩：每个失败都必须在基线里；基线里已经不再失败的条目会让闸门变红（棘轮只往一个方向转）。
+#
+# 当前**没有已知坏**。战果（2026-09-30）：
+#   · P0 批次：blocks30（blkMax 指数 5.4s）、types65（funcInstance NULL 崩溃）、
+#     hashset_root（dropRuntimeDefs 死循环）；
+#   · P1 批次：blocks200 / blocks1000 / parens16000（递归无预算 ⇒ SIGSEGV）——
+#     现在由 parser 的嵌套预算给出带位置的诊断（`nesting too deep ... limit is 64 levels`），
+#     codegen 的层级表也从固定 64 槽改成按 `blkMax` 动态分配。

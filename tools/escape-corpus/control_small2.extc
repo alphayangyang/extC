@@ -1,0 +1,20 @@
+/* 闸门⑤ 语料 · control_small2（审计 对照）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：**必须现在就拒绝**：与 P1-4 同一形状但参数少于 32 ⇒ 证明闸门判的是这个形状，不是『一律拒绝』
+ * 原探针：/tmp/rev/findings/small2.extc
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+struct cell { r: ?ref i32 }
+struct slot { c: cell }
+fn stash(s: mut ref slot, v: cell) {
+    s.c = v
+}
+fn main() -> i32 {
+    var k: slot = slot { c: cell { r: null } }
+    {
+        var deep: i32 = 7
+        stash(ref k, cell { r: ref deep })
+    }
+    println("k.c.r = ", *(k.c.r!))
+    return 0
+}

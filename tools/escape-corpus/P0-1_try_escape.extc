@@ -1,0 +1,53 @@
+/* 闸门⑤ 语料 · P0-1_try_escape（审计 P0-1）—— **已修，改判"应当接受"**
+ * 期望：被接受，且生成物在 ASan 下跑干净（`gate-expect: run`）。
+ * 为什么改判：`out.put(x)?` 是 `EX_TRY` 包着调用，语句级的逃逸登记只认 `EX_CALL`/`EX_METHOD`/
+ * `EX_ASSOC`，于是这个调用的实参从不进逃逸集合 ⇒ `callHomeDepth` 把接收者按 depth 1 算、
+ * 传给被调方的是**本帧的块 arena**（块一退，被调方存进去的东西就死了）。
+ * 修法：登记前先拆掉 `EX_TRY`（`?` 决定调用**之后**发生什么，不决定调用能发布什么）。
+ * 实测：生成物从 `list_pushOne(&(l), 7, &__extc_a[1])` 变成 `list_pushOne(&(l), 7, __extc_home)`；
+ * ASan 从 heap-use-after-free ... tryb3.extc:40 in main 变成干净、打印 `head = 7`。
+ * gate-expect: run
+ * gate-expect-out: head = 7
+ */
+use std::io
+struct node { value: i64  next: ?ref node }
+struct list {
+    head: ?ref node
+    n: i64
+    fn pushOne(self: mut ref list, v: i64) -> option<i64> {
+        var c: mut ref node = new node
+        c.value = v
+        c.next = self.head
+        self.head = c
+        self.n = self.n + 1
+        return option<i64>::some(0)
+    }
+}
+struct sinker {
+    slot: list
+    fn take(self: mut ref sinker, src: list) -> option<i64> {
+        self.slot = src
+        return option<i64>::some(0)
+    }
+}
+fn churn() {
+    var i: i64 = 0
+    while i < 40 {
+        var w: varArray<i64> = varArray<i64>::withCap(200)
+        w.push(i * 13)
+        i = i + 1
+    }
+}
+fn fill(out: mut ref sinker) -> option<i64> {
+    var l: list = { head: null, n: 0 }
+    l.pushOne(7)?
+    out.take(l)?
+    return option<i64>::some(0)
+}
+fn main() -> i32 {
+    var s: sinker = { slot: { head: null, n: 0 } }
+    let r = fill(ref s)
+    churn()
+    io::cout << "head = " << s.slot.head!.value << "\n"
+    return 0
+}

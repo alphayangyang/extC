@@ -5,6 +5,7 @@
  */
 
 #include <string.h>
+#include "dbg.h"
 #include "check_internal.h"
 
 /* One recursion cap for the type walkers below: an enum may hold **itself**
@@ -819,15 +820,30 @@ bool isPlace(Expr *e) {
  *     memory. Governing the data would mean putting mutability into the type system, as in
  *     `&` and `&mut`.
  */
-Sym *placeRoot(Checker *c, Expr *e) {
-    while (e) {
-        if (e->kind == EX_IDENT)  return lookup(c, e->u.ident.name);
-        if (e->kind == EX_FIELD)  { e = e->u.field.obj; continue; }
-        if (e->kind == EX_INDEX)  { e = e->u.index.obj; continue; }
-        if (e->kind == EX_SLICE)  { e = e->u.slice.obj; continue; }
+Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops) {
+    /* 掩码本身是不变量：空掩码或未知位都是调用点的笔误，而"走不到根"会被上层当成"这不是
+     * 一个地方"（保守），于是笔误**不会**报错、只会让分析悄悄变保守 —— 正是要断言的地方。*/
+    EXTC_DBG_ASSERT(steps != 0 &&
+                    (steps & ~(EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_SLICE |
+                               EXTC_ROOT_DEREF | EXTC_ROOT_SIGN)) == 0);
+    for (int hops = 0; e; hops++) {
+        if (maxHops > 0 && hops >= maxHops) return NULL;
+        if (e->kind == EX_IDENT) return e;
+        if (e->kind == EX_FIELD && (steps & EXTC_ROOT_FIELD)) { e = e->u.field.obj;     continue; }
+        if (e->kind == EX_INDEX && (steps & EXTC_ROOT_INDEX)) { e = e->u.index.obj;     continue; }
+        if (e->kind == EX_SLICE && (steps & EXTC_ROOT_SLICE)) { e = e->u.slice.obj;     continue; }
+        if (e->kind == EX_DEREF && (steps & EXTC_ROOT_DEREF)) { e = e->u.deref.operand; continue; }
+        if (e->kind == EX_SIGN  && (steps & EXTC_ROOT_SIGN))  { e = e->u.sign.operand;  continue; }
         return NULL;
     }
     return NULL;
+}
+
+/* 问题③（查作用域版）：掩码 = FIELD|INDEX|SLICE，无跳数上限 —— 与另两个入口的差别现在写在
+ * 掩码里，见 check_internal.h 的那张表。*/
+Sym *placeRoot(Checker *c, Expr *e) {
+    Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_SLICE, 0);
+    return leaf ? lookup(c, leaf->u.ident.name) : NULL;
 }
 
 /* True when the path to this place crosses a read-only reference, including the type of

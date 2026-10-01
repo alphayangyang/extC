@@ -1,0 +1,33 @@
+/* 闸门⑤ 语料 · P0-6d_param_by_name（审计 P0-6(d)）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：参数匹配按**名字字符串**而非符号；参数遮蔽是合法的 ⇒ 约束记到另一个绑定头上
+ * 原探针：/tmp/rev/repro/m3.extc
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+struct box { s: slice<u8> }
+
+fn stash(b: mut ref box, s: slice<u8>, t: slice<u8>) {
+    var q: slice<u8> = t
+    {
+        var s: slice<u8> = q
+        b.s = s
+    }
+}
+
+fn main() -> i32 {
+    var out: box = { s: "keep" }
+    {
+        var a: [16]u8
+        var i: i32 = 0
+        while i < 16 { a[i] = 65 + u8(i)  i = i + 1 }
+        stash(ref out, "shallow", a[..])
+    }
+    {
+        var c: [16]u8
+        var i: i32 = 0
+        while i < 16 { c[i] = 90  i = i + 1 }
+        println("c0 = ", c[0])
+    }
+    println("out.s = ", out.s)
+    return 0
+}

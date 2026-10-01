@@ -1,0 +1,29 @@
+/* 闸门⑤ 语料 · P0-6b_needshome_early（审计 P0-6(b)）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：`needsHome` 早退：目的地是**全局**时『与 home 同寿』不成立 ⇒ 块内视图写进全局
+ * 原探针：/tmp/rev/repro/c4.extc
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+var G: slice<u8> = "hi"
+struct hbox { p: mut slice<u8> }
+
+fn stash(p: slice<u8>) -> hbox {
+    G = p
+    var b: mut slice<u8> = new u8[4]
+    return { p: b }
+}
+
+fn main() -> i32 {
+    {
+        var a: mut slice<u8> = new u8[64]
+        var i: i32 = 0
+        while i < 64 { a[i] = 65  i = i + 1 }
+        let h = stash(a[..])
+        println("h.p.len = ", h.p.len)
+    }
+    var b2: mut slice<u8> = new u8[64]
+    var j: i32 = 0
+    while j < 64 { b2[j] = 90  j = j + 1 }
+    println("G = ", G)
+    return 0
+}

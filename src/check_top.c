@@ -7,7 +7,10 @@
  * arena levels.
  */
 
+#include "dbg.h"
 #include "check_internal.h"
+/* Defined further down; the call-site publication needs it (INV-K / audit P0-16). */
+static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
 #include "dataflow.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -50,7 +53,8 @@ static bool sameModule(const char *a, const char *b) {
     return strcmp(a, b) == 0;
 }
 
-static int  paramIndex(FuncDef *f, const char *name);
+static int  paramIndexByName(FuncDef *f, const char *name);   /* 只在只有名字时用；有表达式用 paramIndexOfExpr */
+static bool exprIsFresh(Expr *e);   /* used by the call-site publication (INV-K) */
 
 /* ------------------------------------------------------------------- top level */
 
@@ -934,14 +938,10 @@ static bool funcReachesItself(Checker *c, FuncDef *f, int depth) {
  *     parameter.
  */
 const char *placeRootName(Expr *e) {
-    while (e) {
-        if (e->kind == EX_IDENT) return e->u.ident.name;
-        if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
-        if (e->kind == EX_INDEX) { e = e->u.index.obj; continue; }
-        if (e->kind == EX_DEREF) { e = e->u.deref.operand; continue; }
-        return NULL;
-    }
-    return NULL;
+    /* 问题④：根的**语法名字**（诊断与老接口）。掩码 = FIELD|INDEX|DEREF，不解析 ——
+     * 所以它对未解析的节点也能用，这正是它与 `placeRoot` 的关键差别。*/
+    Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_DEREF, 0);
+    return leaf ? leaf->u.ident.name : NULL;
 }
 /* True when `n` names a parameter of `f`.
  *
@@ -1172,9 +1172,9 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     f->effComplete = complete;
     f->effState = 1;
     if (getenv("EXTC_DUMP_EFFECTS"))
-        fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%x Cont=0x%x] toHome[Addr=0x%x Cont=0x%x] other=0x%x\n",
-                FN(f), (int)f->effComplete, f->addrMask, f->contMask,
-                f->homeAddrMask, f->homeContMask, f->otherMask);
+        fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%llx Cont=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] other=0x%llx\n",
+                FN(f), (int)f->effComplete, (unsigned long long)f->addrMask, (unsigned long long)f->contMask,
+                (unsigned long long)f->homeAddrMask, (unsigned long long)f->homeContMask, (unsigned long long)f->otherMask);
     return complete;
 }
 
@@ -1218,9 +1218,9 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * at all, which is what makes such a declaration usable.
      */
     if (callee && callee->isExtern) {
-        unsigned stored = callee->addrMask | callee->contMask | callee->otherMask;
+        uint64_t stored = callee->addrMask | callee->contMask | callee->otherMask;
         if (stored == 0) return;                 /* the signature says nothing is stored */
-        for (size_t j = 0; j < params->len && j < args->len && j < 32; j++) {
+        for (size_t j = 0; j < params->len && j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((stored >> j) & 1u)) continue;
             Expr *a = *(Expr **)vecAt(args, j);
             Param *p = *(Param **)vecAt(params, j);
@@ -1244,11 +1244,13 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * site rejected / why did it pass". Same shape as `EXTC_DBG_ZONE` / `EXTC_DUMP_EFFECTS`. */
     if (getenv("EXTC_DBG_REFARGS"))
         fprintf(stderr, "[refargs] %-16s mod=%-8s line=%-5d complete=%d"
-                        " addr=0x%x cont=0x%x other=0x%x homeAddr=0x%x homeCont=0x%x homeDepth=%d\n",
+                        " addr=0x%llx cont=0x%llx other=0x%llx homeAddr=0x%llx homeCont=0x%llx homeDepth=%d\n",
                 fname, callee && callee->modName ? callee->modName : "-", callee ? callee->line : -1,
-                (int)complete, callee ? callee->addrMask : 0, callee ? callee->contMask : 0,
-                callee ? callee->otherMask : 0, callee ? callee->homeAddrMask : 0,
-                callee ? callee->homeContMask : 0, homeDepth);
+                (int)complete, callee ? (unsigned long long)callee->addrMask : 0,
+                callee ? (unsigned long long)callee->contMask : 0,
+                callee ? (unsigned long long)callee->otherMask : 0,
+                callee ? (unsigned long long)callee->homeAddrMask : 0,
+                callee ? (unsigned long long)callee->homeContMask : 0, homeDepth);
     /* The two checks decide independently whether to run; do not give them one shared
      * early return. Sharing that return already cost a bug: a `Cont` bit on `push` made
      * the address-flow check run as well, and `examples/list-return` was wrongly rejected
@@ -1396,9 +1398,9 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
          * Checking only the content-flow bits used to accept `names.push(buf[..])` with
          * `buf` declared in a deeper block. That is a real dangling pointer, and the
          * tests caught it at once. */
-        unsigned cont = callee->contMask | callee->homeContMask
+        uint64_t cont = callee->contMask | callee->homeContMask
                       | callee->addrMask | callee->homeAddrMask;
-        for (size_t j = 0; j < args->len && j < 32; j++) {
+        for (size_t j = 0; j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((cont >> j) & 1u)) continue;
             Param *pj = *(Param **)vecAt(params, j);
             if (pj->type && pj->type->kind == TY_REF) continue;   /* `ref` arg: checked above */
@@ -1430,6 +1432,82 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                     " than the place the callee may store it (depth %d)", j + 1, fname, d, h);
         }
     }
+
+    /* ---- P0-17: a `mut ref` argument is write access, so the proofs about it are stale --------
+     * The callee may rewrite what the place holds, so every non-null proof about that binding --
+     * and about a path through it -- stops holding: `if s.top != null { s.pop() ... s.top.value }`
+     * dereferenced a NULL `s.top`, because `pop` had set it and the proof was still in effect
+     * (audit P0-17, ASan SEGV). This is the write-point invalidation of the proof stack, the same
+     * one an assignment performs (`unNarrow`); the stack drops a path fact when its root is
+     * dropped, so un-narrowing the root is enough.
+     *
+     * The condition is `mut ref`, not "the summary says it stores": a `mut ref` parameter is write
+     * access by definition, and the summary is an upper bound on stores into the caller's
+     * containers, not on writes through the reference. */
+    for (size_t i = 0; i < params->len && i < args->len; i++) {
+        Param *p = *(Param **)vecAt(params, i);
+        if (!p->type || p->type->kind != TY_REF || !p->type->mut) continue;
+        Expr *a = *(Expr **)vecAt(args, i);
+        Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
+        Sym *rs = placeRoot(c, place);
+        if (rs) unNarrow(c, rs->cname);
+    }
+
+    /* ---- INV-K: the other half of a store, on the caller's side ---------------------------
+     * A store has two halves and the second one was missing: the **destination** has to learn that
+     * something was written into it, or the caller's binding goes on looking like a record with no
+     * live references. `fn stash(out: mut ref box, v: ?ref node) { out.p = v }` called as
+     * `stash(ref b, ref n)` and then `return b` was accepted, and the generated program read a
+     * local of the returning frame after it died (audit P0-16, ASan heap-use-after-free).
+     *
+     * The summary says *which argument* was stored, never into which field, so the write goes to
+     * the binding's whole-object slot (`field == NULL`). The destination is normally **addressed**
+     * here -- `ref b` is what takes its address -- which is not a reason to skip it: the depth
+     * update is a weak max, and `promoteFieldsAt` now promotes for an addressed root while refusing
+     * to lower it. No `recordStore` here: it constrains the level solver and was the suspected
+     * source of two false rejections (R1R3-LOG 补8/补9). */
+    if (callee && (addrMaybe || contMaybe)) {
+        uint64_t stored = callee->addrMask | callee->homeAddrMask
+                        | callee->contMask | callee->homeContMask;
+        for (size_t j = 0; stored && j < args->len && j < EFF_MAX_PARAMS; j++) {
+            if (!((stored >> j) & 1u)) continue;
+            Expr *src = *(Expr **)vecAt(args, j);
+            if (mentionsParam(src->type)) continue;
+            Expr *splace = (src->kind == EX_REF) ? src->u.ref.operand : src;
+            int dj = exprRefDepth(c, splace);
+            if (dj == 0 && placeRoot(c, splace)) dj = placeDepth(c, splace);
+            /* not skipped: for a reference-typed argument the level is not filled in yet */
+            for (size_t i = 0; i < params->len && i < args->len; i++) {
+                if (i == j) continue;
+                Param *pp = *(Param **)vecAt(params, i);
+                if (!pp->type || pp->type->kind != TY_REF || !pp->type->mut) continue;
+                Expr *a = *(Expr **)vecAt(args, i);
+                Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
+                Sym *dsym = placeRoot(c, place);
+                if (!dsym) continue;
+                if (dj != 0) {
+                    noteFieldSrc(dsym, NULL, dj, splace);
+                    noteFieldDepthWrite(c, dsym, NULL, dj);
+                }
+                /* The dedicated slot (audit P0-16d). No `recordLvlFact` here: constraining the level
+                 * for *every* `mut ref` call was the first suspect for the three false rejections the
+                 * full version produced (`tests/pool` rt_nest/rt_rett, `tests/stl` custom). */
+                /* Publish the dedicated slot when the level is known, **or** when the source is a
+                 * promotable fresh allocation -- those are the shapes whose site can really be moved,
+                 * which is what `return b` needs (audit P0-16d: `var n: mut ref node = new node`).
+                 * An unknown level whose source cannot be promoted gets no slot: publishing it added
+                 * promotion pressure and nothing else, and that is what rejected `tests/pool`'s
+                 * rt_nest/rt_rett and `tests/stl`'s custom when the publication was unconditional. */
+                Sym *ss = placeRoot(c, splace);
+                bool promotable = ss && ss->origin && exprIsFresh(ss->origin);
+                if (dj != 0 || promotable) {
+                    if (!dsym->callSrc) dsym->callSrc = splace;
+                    if (dj > dsym->callSrcDepth) dsym->callSrcDepth = dj;
+                }
+            }
+        }
+    }
+
 }
 
 /* Choose the arena for a call result by asking whether the result escapes this block.
@@ -1635,6 +1713,7 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
                 rec->call = callNode;
                 *(EArenaSite **)vecPush(&c->eSites) = rec;
             }
+            EXTC_DBG_ASSERT(rec->n <= 8);   /* the slot count the struct declares */
             if (rec->n < 8) {
                 rec->argRoot[rec->n]  = (char *)rn;
                 rec->argDepth[rec->n] = recD;
@@ -1886,12 +1965,44 @@ static void reportMemory(Checker *c, Vec *all) {
     fprintf(stderr, "  (this report prints facts only: it does not yet say which sites grow)\n");
 }
 
+/* Drop a name from the fresh set. The set is a plain name vector and stays small (locals of one
+ * function), so a compaction is cheaper than any index. */
+static void freshDrop(Vec *fresh, const char *name) {
+    if (!fresh || !name) return;
+    size_t w = 0;
+    for (size_t r = 0; r < fresh->len; r++) {
+        const char *n = *(const char **)vecAt(fresh, r);
+        if (strcmp(n, name) == 0) continue;
+        *(const char **)vecAt(fresh, w++) = n;
+    }
+    fresh->len = w;
+}
+
 static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
     if (!s) return;
     switch (s->kind) {
     case ST_VAR:
         if (exprIsFresh(s->u.var.init)) *(const char **)vecPush(fresh) = s->u.var.name;
         return;
+    case ST_ASSIGN: {
+        /* A name stops being fresh the moment an assignment gives it a value that is not itself
+         * fresh: `n = id(target)` no longer points at the `new i32` its declaration made. Keeping
+         * the name made `classifyStoredValue` answer "freshly allocated, so trivially safe" for a
+         * value that now points into the caller's frame, so `stash`'s summary recorded nothing,
+         * `effComplete` stayed true, and the whole call-site lifetime check was skipped -- a real
+         * stack-use-after-scope (audit P1-5). This is the write-point invalidation of the fresh
+         * set; the fresh-value case keeps the name, so `p = new i32` does not lose it. */
+        /* Only a binding that is **retargeted** stops being fresh. A field write such as
+         * `n.value = v` writes *through* the binding: `n` still points at the object its
+         * declaration made. Dropping it there removed the fresh answer for a value that really is
+         * fresh, and the call-site check then rejected `stash(dest, ref deep, v)` -- the accepted
+         * and ASan-clean program of audit P0-2 -- which is how this narrowing was found. */
+        if (s->u.assign.target && s->u.assign.target->kind == EX_IDENT) {
+            const char *rn = placeRootName(s->u.assign.target);
+            if (rn && !exprIsFresh(s->u.assign.value)) freshDrop(fresh, rn);
+        }
+        return;
+    }
     case ST_IF:    collectFreshLocals(a, fresh, s->u.ifs.thenBody);
                    collectFreshLocals(a, fresh, s->u.ifs.elseBody); return;
     case ST_WHILE: collectFreshLocals(a, fresh, s->u.whiles.body); return;
@@ -1978,7 +2089,7 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
         /* Propagate only when the target is in E or is a container a parameter points
          * at. Propagating on every assignment made E too large. */
         const char *rn = placeRootName(s->u.assign.target);
-        if (rn && (isEscapeeName(c, rn) || paramIndex(f, rn) >= 0))
+        if (rn && (isEscapeeName(c, rn) || paramIndexByName(f, rn) >= 0))
             grew |= markNamesInExpr(c, s->u.assign.value);
         return grew;
     }
@@ -2019,11 +2130,23 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
          *
          * The summary is an upper bound on whether a store happens at all, so answering
          * that it may store is the safe direction. */
-        switch (s->u.expr.expr->kind) {
+        /* `out.put(x)?` is an **`EX_TRY` around the call**: the statement's top-level kind is
+         * therefore neither `EX_CALL` nor `EX_METHOD`, so it fell into the `default` below and the
+         * call's arguments never entered E. `callHomeDepth` then took the receiver for depth 1,
+         * the arena argument became this frame's arena instead of the home arena, and whatever the
+         * callee stored was released when the call returned -- audit P0-1, heap-use-after-free,
+         * with a one-character difference from the accepted twin (`out.put(x)` without the `?`).
+         * The `?` decides what happens *after* the call, not what the call can publish, so unwrap
+         * it and ask the same question. */
+        {
+        Expr *se = s->u.expr.expr;
+        while (se && se->kind == EX_TRY) se = se->u.try_.operand;
+        if (!se) return false;
+        switch (se->kind) {
         case EX_CALL: case EX_METHOD: case EX_ASSOC: {
-            FuncDef *cf = s->u.expr.expr->func;
+            FuncDef *cf = se->func;
             if (!cf) return false;
-            unsigned pub = cf->addrMask | cf->contMask | cf->otherMask
+            uint64_t pub = cf->addrMask | cf->contMask | cf->otherMask
                          | cf->homeAddrMask | cf->homeContMask;
             if (cf->addrFromLocal) pub |= 1u;
             /* An incomplete summary must never be read as proof that nothing is
@@ -2038,10 +2161,11 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
                 }
             }
             if (pub == 0) return false;        /* the callee stores nothing (e.g. `println`) */
-            return markNamesInExpr(c, s->u.expr.expr);
+            return markNamesInExpr(c, se);
         }
         default:
             return false;                      /* other expression statements do not escape */
+        }
         }
     case ST_BLOCK:
         for (size_t k = 0; k < s->u.block.stmts.len; k++)
@@ -2196,6 +2320,7 @@ int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
     for (int i = 0; i < s->nfields; i++)
         if (s->fields[i].name && strcmp(s->fields[i].name, field) == 0) return &s->fields[i].depth;
     if (!create) return NULL;
+    EXTC_DBG_ASSERT(s->nfields <= 4);             /* the table's declared capacity */
     if (s->nfields >= 4) return NULL;             /* table full: `otherDepth` is the fallback */
     s->fields[s->nfields].name  = field;          /* interned in the AST, so it cannot dangle */
     s->fields[s->nfields].depth = 0;
@@ -2394,10 +2519,39 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
  * Returns:
  *   Zero-based index of the parameter, or -1 when it is not a parameter.
  */
-static int paramIndex(FuncDef *f, const char *name) {
+/* **按名字**找参数：只在调用点手上只有名字时才用（`paramIndexOfExpr` 才是身份版）。
+ * 参数遮蔽是合法语言特性，按名字匹配会认错人（P0-6d）—— 所以有了表达式就不要再走这个。*/
+static int paramIndexByName(FuncDef *f, const char *name) {
     if (!name) return -1;
     for (size_t i = 0; i < f->params.len; i++)
         if (strcmp((*(Param **)vecAt(&f->params, i))->name, name) == 0) return (int)i;
+    return -1;
+}
+
+/* The binding an expression's root resolved to, **without a scope lookup**.
+ *
+ * `placeRoot` answers the same question by walking the checker's scopes, and those only exist while
+ * a body is being checked; the effect summary runs afterwards. The `Sym` is already on the
+ * `EX_IDENT` node, put there by resolution, so this needs no scope. */
+static Sym *rootSymNoScope(Expr *e) {
+    /* 问题③的**无作用域**版本（摘要 pass 在所有函数体检查完之后才跑，那时没有作用域可查，
+     * 这是 P0-6d 的根因）。掩码含 `SIGN`、保留 16 跳上限 —— 差异来自历史，现在写在掩码里。*/
+    Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_DEREF | EXTC_ROOT_SIGN, 16);
+    return leaf ? identBindOf(leaf) : NULL;
+}
+
+/* Which parameter of `f` does the value `e` come from? **By symbol, not by spelling.**
+ *
+ * The summary records "argument j was stored" and the call site checks argument j, so this answer
+ * has to survive shadowing. `paramIndex` by name stays for callers that only have a name. */
+static int paramIndexOfExpr(Checker *c, FuncDef *f, Expr *e) {
+    (void)c;
+    if (!f || !e) return -1;
+    Sym *root = rootSymNoScope(e);
+    if (!root) return -1;
+    EXTC_DBG_ASSERT(f->nParamSyms <= 64);         /* must equal the array the struct declares */
+    for (int i = 0; i < f->nParamSyms; i++)
+        if ((Sym *)f->paramSyms[i] == root) return i;
     return -1;
 }
 
@@ -2433,10 +2587,10 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     /* Address flow: the address of a place is stored, so that place has to live at least
      * as long as the container it is stored into. */
     if (e->kind == EX_REF) {
-        int j = paramIndex(f, placeRootName(e->u.ref.operand));
+        int j = paramIndexOfExpr(c, f, e->u.ref.operand);
         if (j >= 0) {
-            if (intoHome) f->homeAddrMask |= (1u << j);
-            else if (i >= 0) f->addrMask |= (1u << j);
+            if (intoHome) f->homeAddrMask |= ((uint64_t)1 << j);
+            else if (i >= 0) f->addrMask |= ((uint64_t)1 << j);
         } else {
             f->addrFromLocal = true;              /* local address: a different problem */
         }
@@ -2454,7 +2608,7 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
      * rule that requires whatever an argument points at to outlive the destination
      * accepts a dangling pointer instead. */
     {
-        int j = paramIndex(f, placeRootName(e));
+        int j = paramIndexOfExpr(c, f, e);
         if (j >= 0) {
             /* A scalar carries no reference and so imposes no lifetime constraint;
              * saying otherwise would make `varArray<i32>::push` a false positive. A type
@@ -2472,11 +2626,11 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
                          (e->type->kind == TY_REF || ttIsViewType(e->type));
             if (carrier) {
                 if (isPtr) {                      /* address flow: the caller's pointer is stored */
-                    if (intoHome) f->homeAddrMask |= (1u << j);
-                    else if (i >= 0) f->addrMask |= (1u << j);
+                    if (intoHome) f->homeAddrMask |= ((uint64_t)1 << j);
+                    else if (i >= 0) f->addrMask |= ((uint64_t)1 << j);
                 } else {                          /* content flow: pointer read from a container */
-                    if (intoHome) f->homeContMask |= (1u << j);
-                    else if (i >= 0) f->contMask |= (1u << j);
+                    if (intoHome) f->homeContMask |= ((uint64_t)1 << j);
+                    else if (i >= 0) f->contMask |= ((uint64_t)1 << j);
                 }
             }
             return;
@@ -2497,7 +2651,7 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     { const char *vr = placeRootName(e);          /* `l.head = n`: the source is a fresh local */
       if (vr && vecHasName(fresh, vr)) return; }
     if (c && e->type && !typeContainsRef(c->tt, e->type)) return;   /* scalar, trivially safe */
-    if (i >= 0) f->otherMask |= (1u << i);        /* not sure, so stay conservative */
+    if (i >= 0) f->otherMask |= ((uint64_t)1 << i);        /* not sure, so stay conservative */
 }
 
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
@@ -2530,7 +2684,7 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
         /* Is the target a container named by a `mut ref` parameter?
         * `l.head = ...`, `*p = ...`, and `l.buf[i] = ...` all are. */
         const char *dstRoot = placeRootName(s->u.assign.target);
-        int i = paramIndex(f, dstRoot);
+        int i = paramIndexByName(f, dstRoot);
         if (i >= 0) {
             /* Destination: the container parameter `i` names. */
             Param *p = *(Param **)vecAt(&f->params, i);
@@ -2618,15 +2772,15 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
         if (sfd && sfd->hasEffects) {
             Vec *args = (e->kind == EX_CALL)  ? &e->u.call.args :
                         (e->kind == EX_METHOD) ? &e->u.method.args : &e->u.assoc.args;
-            unsigned addr = sfd->effAddrMask, cont = sfd->effContMask;
-            for (size_t j = 0; j < args->len && j < 32; j++) {
+            uint64_t addr = sfd->effAddrMask, cont = sfd->effContMask;
+            for (size_t j = 0; j < args->len && j < EFF_MAX_PARAMS; j++) {
                 if (!(((addr | cont) >> j) & 1u)) continue;      /* this argument is not kept */
                 Expr *a = *(Expr **)vecAt(args, j);
                 if (a && a->kind == EX_REF) a = a->u.ref.operand; /* `f(ref x)` stores `&x` */
-                int pi = paramIndex(f, placeRootName(a));
+                int pi = paramIndexByName(f, placeRootName(a));
                 if (pi >= 0) {
-                    if ((addr >> j) & 1u) f->addrMask |= (1u << pi);
-                    if ((cont >> j) & 1u) f->contMask |= (1u << pi);
+                    if ((addr >> j) & 1u) f->addrMask |= ((uint64_t)1 << pi);
+                    if ((cont >> j) & 1u) f->contMask |= ((uint64_t)1 << pi);
                 } else {
                     /* It keeps something that does not trace back to a parameter of mine: say so
                      * in the one way the summary has (`otherMask` = "not attributable"), which the
@@ -2750,8 +2904,8 @@ static void collectEffects(Checker *c, FuncDef *f) {
             /* No clause means every parameter may be stored. That is nearly unusable, and it
             * is what a safe default should look like: sign the declaration to make it
             * usable. */
-            unsigned all = 0;
-            for (size_t i = 0; i < f->params.len && i < 32; i++) all |= (1u << i);
+            uint64_t all = 0;
+            for (size_t i = 0; i < f->params.len && i < EFF_MAX_PARAMS; i++) all |= ((uint64_t)1 << i);
             f->addrMask = all;
             f->contMask = all;
         }
@@ -2772,9 +2926,10 @@ static void collectEffects(Checker *c, FuncDef *f) {
     f->freshCount = (unsigned)fresh.len;
     collectEffectsStmt(c, f, f->body, &fresh);
     if (getenv("EXTC_DUMP_EFFECTS"))
-        fprintf(stderr, "[effects] %-22s toParam[Addr=0x%x Cont=0x%x Other=0x%x] toHome[Addr=0x%x Cont=0x%x] localAddr=%d fresh=%u callees=%zu\n",
-                FN(f), f->addrMask, f->contMask, f->otherMask,
-                f->homeAddrMask, f->homeContMask,
+        fprintf(stderr, "[effects] %-22s toParam[Addr=0x%llx Cont=0x%llx Other=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] localAddr=%d fresh=%u callees=%zu\n",
+                FN(f), (unsigned long long)f->addrMask, (unsigned long long)f->contMask,
+                (unsigned long long)f->otherMask,
+                (unsigned long long)f->homeAddrMask, (unsigned long long)f->homeContMask,
                 (int)f->addrFromLocal, f->freshCount, f->callees.len);
 }
 
@@ -2927,7 +3082,19 @@ static int solvedValDepth(Expr *e) {
         }
         return d;
     }
-    default: return 0;
+    default:
+        /* **实测（U5）：这条兜底是活路径**（套件里按行计 84 条 note，其中约 178 次匹配来自这里；
+         * 命中的形状**不**是 ENUMVAL/ARRAYLIT/REF/TRY/METHOD/ASSOC/EXT —— 那些一次没被走到，
+         * 而真正走到的是字面量一类，另外把"可能带引用的形状"单列成断言时**断言会响 3 次**，
+         * 说明还有 `EX_CONV`/`EX_LAMBDA` 之类没定位到的形状）。答 0 = "没有引用"是不安全那一侧，
+         * 与 P0-6c 同族 ⇒ 记成候选第 14 条，判据与下一步见 .audit/U-LOG.md 的 U5 一节。
+         *
+         * 为什么**不**在这里逐个列形状：本仓库有一条 **walker 预算**（`tools/check_walkers.py`，
+         * 上限 23 个手写遍历；`docs/topics/AST-WALKERS.md`）—— 列全就把它推成第 24 个，
+         * 闸门当场判红（"migrate one instead of adding another"）。要么先迁移一个旧遍历，
+         * 要么用通用遍历，这正是 U 批次剩下的方向。*/
+        EXTC_DBG_NOTE("solvedValDepth: unrecognized shape answered 0");
+        return 0;
     }
 }
 
@@ -4026,6 +4193,21 @@ static void checkFunc(Checker *c, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
      * their call sites. Checking one here walked a null body. */
     if (f->coroProto) return;
+    /* More parameters than the effect summary has bits would silently lose the high ones. That is
+     * exactly the audit's P1-4: the same store shape with 4 parameters was rejected while its
+     * 40-parameter twin was accepted, because parameter 40's `addrMask` bit fell off the end of a
+     * 32-bit mask. The mask is 64 bits now, and this is the contract on top of it: refusing loudly
+     * beats ignoring a parameter. A function that needs more has to be split (an array-backed
+     * summary is the deliberate later step if a real program ever asks for it). */
+    if (f->params.len > EFF_MAX_PARAMS) {
+        ckError(c, f->line,
+                "The effect summary indexes parameters by position in a 64-bit mask, so the"
+                " compiler refuses more than 64 of them instead of silently ignoring the rest"
+                " (audit P1-4). Split the function.",
+                "`%s` has %zu parameters; the compiler's limit is %d",
+                f->name ? f->name : "this function", f->params.len, (int)EFF_MAX_PARAMS);
+        return;
+    }
     /* An extern declaration has no body, so only its signature is checked: the parameter
      * types were already resolved elsewhere, and no arena is involved, since the function
      * takes no arena parameter and needs no home arena (the arena the caller passes). Its
@@ -4181,12 +4363,16 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * generated names are identical and do not drift. */
     c->nameUses.len = 0;
 
+    f->nParamSyms = 0;                    /* a generic body may be walked more than once */
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
         /* A parameter is mutable: it is a local copy handed over by the caller, as in C,
          * so `ref real` is allowed inside `fn f(real: Board)`. */
         Sym *sym = declare(c, p->name, p->type, true, false, p->line, 0);
         p->cname = sym->cname;
+        /* Record the binding now, while the scope exists: the effect summary runs later, with no
+         * scope at all, and needs the identity to attribute a store to the right parameter. */
+        if (f->nParamSyms < EFF_MAX_PARAMS) f->paramSyms[f->nParamSyms++] = sym;
     }
     /* The body does not open a scope of its own: parameters and body locals share one.
      * Shadowing a parameter with `let a = ...` is therefore only a new name, which is
@@ -5131,6 +5317,32 @@ static void allFunctions(Arena *arena, Module *m, Vec *out) {
     }
 }
 
+/* 调用点的"**目的地有多浅**"决策 —— arena 与 zone 两条通道共用这一份（U4）。
+ *
+ * 语义与极性（见 check_internal.h 的极性契约）：返回的是**深度**，数越小活得越久；
+ * 调用方看到 `<= 0` 就取自己的 HOME（`ARENA_HOME` / `ZONE_HOME`）。
+ *   · `rec->overflow`（实参没记全）⇒ 按"活得最久"算（-1），这是安全方向；
+ *   · 深度 0 的实参（参数/全局）本身就让结果是 0；
+ *   · 逃逸集合命中的实参按 -1 算（它活过本帧）。
+ *
+ * 为什么要共享：这两条通道曾经**各写一遍**，而 P0-2 的哨兵 bug（`nd == 0` 既表示"还没见过"
+ * 又表示"活得最久"⇒ 循环求成了最大值）**在两条里各有一份** —— 修一条不会修另一条。
+ * `seen` 把两义分开，`EXTC_DBG_ASSERT` 让这个分离在调试构建里被看守（U1）。*/
+static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
+    if (rec->overflow) return -1;
+    bool seen = false;
+    int nd = 0;
+    for (int k = 0; k < rec->n; k++) {
+        int d = rec->argDepth[k];        /* 0 = parameter/global: outside this frame */
+        /* Only the depths whose argument is local to this frame consult the escape set; an
+         * argument at depth 0 already forces the home arena. */
+        if (d != 0 && rec->argRoot[k] && isEscapeeName(c, rec->argRoot[k])) d = -1;
+        if (!seen || d < nd) { nd = d; seen = true; }
+    }
+    EXTC_DBG_ASSERT(seen || rec->n == 0);
+    return nd;
+}
+
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     double tB0=0,tB1=0,tB2=0,tB3=0,tB4=0,tB5=0,tB6=0,tB7=0,tB8=0;
     Checker c;    memset(&c, 0, sizeof c);
@@ -5593,23 +5805,42 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * (`funcInstance` de-duplicates), so one argument combination has exactly one
      * instance. */
     ctPhase("ckB8", tB8);   /* after the last of the eight: the rest of checkModule */
-    for (size_t i = 0; i < c.callChecks.len; i++) {
-        CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
-        if (!cc->node || !cc->tmpl) continue;
-        /* (1) The enclosing body is a free-function instance. */
-        for (size_t j = 0; j < c.funcInsts.len; j++) {
-            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-            if (fi->tmpl != cc->func) continue;       /* not a call in this template body */
-            resolveDeferredCall(&c, cc, &fi->tmpl->typeParams, &fi->targs);
-        }
-        /* (2) The enclosing body is a type instance (a generic call inside a method);
-         * `owner` is the struct or enum definition. */
-        StructDef *owner = cc->func ? cc->func->owner : NULL;
-        if (!owner) continue;
-        for (size_t j = 0; j < tt->instances.len; j++) {
-            Type *inst = *(Type **)vecAt(&tt->instances, j);
-            if (inst->sdef != owner) continue;
-            resolveDeferredCall(&c, cc, &owner->typeParams, &inst->targs);
+    /* **To a fixpoint**, not in a single pass.
+     *
+     * Resolving one call site can *create* the callee's instance (`funcInstance` interns on
+     * demand), and that new instance has deferred call sites of its own that also need resolving.
+     * One pass therefore left the inner ones dangling: `fn f<T>` / `fn g<T> { f(x) }` /
+     * `fn m<T> { g(x) }` **declared in that order** generated a call to `f_T` that was never
+     * emitted, so the C did not compile -- while the same program with the declarations reversed
+     * compiled, which is what made this look like a declaration-order oddity instead of a missing
+     * round (audit P0-5). `resolveDeferredCall` is idempotent (interning the same argument
+     * combination gives the same instance), so repeating the pass is free; the loop stops as soon
+     * as a round creates no new instance. The bound mirrors the other fixpoints here and is high
+     * enough that a real program never reaches it (each round strictly grows one of the two
+     * tables). */
+    size_t instsSeen = 0, tinstsSeen = 0;
+    for (int round = 0; round < 64; round++) {
+        if (round > 0 && c.funcInsts.len == instsSeen && tt->instances.len == tinstsSeen) break;
+        instsSeen  = c.funcInsts.len;
+        tinstsSeen = tt->instances.len;
+        for (size_t i = 0; i < c.callChecks.len; i++) {
+            CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
+            if (!cc->node || !cc->tmpl) continue;
+            /* (1) The enclosing body is a free-function instance. */
+            for (size_t j = 0; j < c.funcInsts.len; j++) {
+                FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+                if (fi->tmpl != cc->func) continue;   /* not a call in this template body */
+                resolveDeferredCall(&c, cc, &fi->tmpl->typeParams, &fi->targs);
+            }
+            /* (2) The enclosing body is a type instance (a generic call inside a method);
+             * `owner` is the struct or enum definition. */
+            StructDef *owner = cc->func ? cc->func->owner : NULL;
+            if (!owner) continue;
+            for (size_t j = 0; j < tt->instances.len; j++) {
+                Type *inst = *(Type **)vecAt(&tt->instances, j);
+                if (inst->sdef != owner) continue;
+                resolveDeferredCall(&c, cc, &owner->typeParams, &inst->targs);
+            }
         }
     }
 
@@ -6016,15 +6247,20 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 rec->call->arenaArgPending = false;
                 continue;
             }
-            int nd = 0;
-            for (int k = 0; k < rec->n; k++) {
-                int d = rec->argDepth[k];        /* 0 = parameter/global: outside this frame */
-                /* Only the depths whose argument is local to this frame consult the escape
-                 * set; an argument at depth 0 already forces the home arena. */
-                if (d != 0 && rec->argRoot[k] && isEscapeeName(&c, rec->argRoot[k])) d = -1;
-                if (nd == 0 || d < nd) nd = d;
-            }
-            if (nd == 0 && rec->n > 0) nd = rec->n ? rec->argDepth[0] : 0;
+            /* The minimum depth over the recorded destinations, with `seen` to say whether a
+             * value has been seen at all (INV-S).
+             *
+             * `nd == 0` used to double as "nothing seen yet" and as "this destination lives
+             * outside the frame" -- and depth 0 is the *shallowest* there is, so the loop
+             * computed the **maximum** instead of the minimum: `argDepth = {0, 1}` came out as
+             * 1, and the call handed over the caller's own block arena where it had to hand over
+             * the home arena. The generated program then read a block that had already been
+             * released (audit P0-2: heap-use-after-free). Two separate representations remove
+             * the ambiguity -- no argument recorded leaves `nd` at 0, which still means "home
+             * arena", the conservative answer. */
+            /* 目的地有多浅：与 zone 通道**共用一份**实现（U4；P0-2 的哨兵 bug 曾在这里
+             * 与 zone 通道各有一份）。`overflow` 已在上面的分支里 `continue` 处理掉了。*/
+            int nd = callSiteMinDestDepth(&c, rec);
             /* Write the new homeDepth onto `arenaArg`, by the same rules as `setCallArenaArg`. */
             int want = (nd <= 0) ? ARENA_HOME : nd;
             if (rec->call->arenaArg != want) { rec->call->arenaArg = want; eFixed++; }
@@ -6323,17 +6559,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
         if (!rec || !rec->call || !rec->call->func) continue;
         if (!rec->call->func->makesPool || rec->call->zoneLevel == 0) continue;
-        int nd = 0;
-        if (rec->overflow) {
-            nd = -1;                    /* 实参没记全 ⇒ 只能按"活得最久"算 */
-        } else {
-            for (int k = 0; k < rec->n; k++) {
-                int d = rec->argDepth[k];
-                if (d != 0 && rec->argRoot[k] && isEscapeeName(&c, rec->argRoot[k])) d = -1;
-                if (nd == 0 || d < nd) nd = d;
-            }
-            if (nd == 0 && rec->n > 0) nd = rec->argDepth[0];
-        }
+        /* 目的地有多浅：与 arena 通道**共用一份**实现（U4）；`overflow` 由它在内部按
+         * "活得最久"处理（两条通道的差别只剩这一点，现在写在共享函数里而不是两处代码里）。*/
+        int nd = callSiteMinDestDepth(&c, rec);
         int zwant = (nd <= 0) ? ZONE_HOME : nd;
         if (getenv("EXTC_DBG_ZONE"))
             fprintf(stderr, "[zfix] call=%s nd=%d lvl=%d -> %d\n",
@@ -6570,6 +6798,18 @@ static void coroCheckDeferred(Checker *c, Module *m) {
         if (!cf || !cf->isCoro || cf->tmpl) continue;
         /* A boxed coroutine always has a task: its frame lives in that task's place. */
         cf->coroNeedsZone = cf->makesPool || cf->coroBoxed;
+    }
+    /* **Instances** need the same answer, and this loop used to skip them (`cf->tmpl`), so a
+     * generic coroutine never got its place: allocations made inside it landed in the *caller's*
+     * zone, and nothing ever released the task (audit P1-13: `live=20000` after 20000 finished
+     * tasks; the same omission is what the audit's "`coroNeedsZone` 未对实例计算" names).
+     * An instance shares its template's body, so the template's freshly computed answer is the
+     * right one -- and `coroBoxed` is copied onto the instance when a frame is coerced to a
+     * handle. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!cf || !cf->isCoro || !cf->tmpl) continue;
+        cf->coroNeedsZone = cf->tmpl->coroNeedsZone || cf->coroBoxed;
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);

@@ -506,6 +506,23 @@ struct Stmt {
     Type    *type;      /* ST_VAR: the final type of the declaration, filled in by
                          * the checker */
 
+    /* `for` desugars to a `while` whose body ends with the loop's step statement (`parseFor`).
+     * This points at that step from the **body block**, and codegen emits a label right before
+     * it so `continue` can jump there: C's `for` runs the step on the way out of a `continue`,
+     * and without this the desugared form skipped it -- an infinite loop for any `for` that
+     * contains a `continue` (audit P0-15). It is cleared when `forRetargetToIterator` drops the
+     * step (the iterator's own `next()` in the condition advances instead, so a plain
+     * `continue` is right again). */
+    Stmt    *forStep;
+
+    /* Set on a `while` whose **condition allocates**: `checkStmt` measures it by counting
+     * allocation sites across the condition's own check. Codegen then gives the condition its own
+     * arena level and releases it at the top of every round -- without that, the condition's
+     * allocations live until the surrounding block ends, so a loop that allocates in its condition
+     * grows with the number of rounds (measured: `while (new i64[1000000])[0] == 0`, 20000 rounds,
+     * RSS 81.5 MB). 定案 101②. */
+    bool     condAllocs;
+
     union {
         struct { const char *name; Type *ann; Expr *init; bool mut;
                  /* The name used in the generated C; a `let` that shadows another one
@@ -708,6 +725,17 @@ struct FuncDef {
     FuncDef    *tmpl;            /* non-NULL when this is an instance, not the template */
     const char *instName;        /* the C name of an instance, such as `max_i32` */
     Vec         params;          /* Param* */
+    /* The binding each parameter resolved to, in declaration order. `void *` because `Sym` is
+     * defined in the checker's own header, which ast.h does not see; only the checker reads this.
+     *
+     * The effect summary is computed after every body has been checked, when **no scope exists**,
+     * so "which parameter does this value come from" cannot be answered by a lookup and was
+     * answered by comparing names instead. Matching by name is wrong the moment a local shadows a
+     * parameter (legal, documented): audit P0-6(d) declared `var s: slice<u8> = q`, the store was
+     * attributed to parameter `s`, and the call site checked the wrong argument. Identity has to be
+     * recorded while the scope is still there (INV-I). */
+    void       *paramSyms[64];   /* must equal EFF_MAX_PARAMS, the summary mask width */
+    int         nParamSyms;
     Type       *ret;             /* NULL when the function returns nothing */
     /* A coroutine: the declared return type is `coroutine<T>`, and the body may `yield`.
      * `yieldType` is that `T`; the frame the checker lays out for it is a **value** (see
@@ -948,8 +976,16 @@ struct FuncDef {
      *               conservative.
      * addrFromLocal records that the address of a local of this frame was stored, which
      * is a call a caller must never make. */
-    unsigned    addrMask, contMask, otherMask;      /* destination: a parameter's container */
-    unsigned    homeAddrMask, homeContMask;         /* destination: memory allocated here */
+    /* 64 bits, and that is a **contract**, not a convenience (INV-P, 定案见 R1/R3 批次):
+     * the mask is indexed by parameter position, so a function with more parameters than bits
+     * would silently lose the high ones -- `P1-4` in the audit: the same shape with 4 parameters
+     * was rejected while its 40-parameter twin was accepted, because parameter 40's `addrMask`
+     * bit fell off the end. `EFF_MAX_PARAMS` is checked when a function is declared, so the
+     * silent-loss case cannot arise. Widening to an array is the escape hatch if a real program
+     * ever needs more. */
+#define EFF_MAX_PARAMS 64
+    uint64_t    addrMask, contMask, otherMask;      /* destination: a parameter's container */
+    uint64_t    homeAddrMask, homeContMask;         /* destination: memory allocated here */
     unsigned    freshCount;                         /* count only: fresh locals seen this round */
     /* State of the transitive closure of the effect summary:
      *   0 = not computed, 1 = computed (`effComplete` says whether it can be trusted),

@@ -1698,6 +1698,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *it = checkValue(c, e->u.index.index);
             if (ttIsError(ot)) return ttError(tt);
 
+            /* The built-in subscript path dereferences the object, so a nullable reference has to
+             * carry a non-null proof first -- exactly like field access, `*` and method receivers
+             * (which all call this). Without it, `var p: ?ref [4]i32 = null` followed by `p[1]`
+             * compiled with no diagnostic and the generated C read `(*p).data[1]` (audit P0-13:
+             * ASan SEGV at address 0x4). The `[]`-method path above has its own check at the
+             * receiver, so this sits after it on purpose. */
+            if (rejectNullableDeref(c, ot, e->u.index.obj, "a subscript")) return ttError(tt);
+
             Type *ob = ttBase(ot);
             Type *elem = NULL;
             if (ob && ob->kind == TY_ARRAY) elem = ob->inner;
@@ -1748,6 +1756,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * omitted, `hi` when the back is. */
             Type *ot = checkExpr(c, e->u.slice.obj);
             if (ttIsError(ot)) return ttError(tt);
+
+            /* Same rule as the subscript above: slicing a `?ref` view/array takes its address
+             * without asking whether it is null (audit P0-13, the second half). */
+            if (rejectNullableDeref(c, ot, e->u.slice.obj, "a slice")) return ttError(tt);
 
             Type *ob = ttBase(ot);
             Type *elem = NULL;
@@ -2322,6 +2334,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (e->arenaLevel == 0)
                 e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len);
+            c->allocSites++;
             /* Keep the lexical level in its own field: the branch above may have replaced
              * `arenaLevel` with the `ARENA_HOME` sentinel, while the solver still needs to
              * know which block the site started in. */
@@ -2402,6 +2415,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * `T` argument and records the deferred check itself. One place instead of
                      * two, so the two cannot drift apart. */
                     FuncDef *inst = funcInstance(c, tf, &targs, e->line);
+                    /* `funcInstance` reports the limit it hit and returns NULL (type nesting past
+                     * `TYPE_DEPTH_LIMIT`, or more than `FUNC_INST_LIMIT` instances). Dereferencing
+                     * that NULL is how the compiler used to crash *while reporting its own limit*
+                     * (audit P0-4: `z<box<...65 deep...<i64>>>()` was a SIGSEGV, depths <= 64 were
+                     * a clean diagnostic). The error is already recorded; stop here. */
+                    if (!inst) return ttError(tt);
                     inst->used = true;
                     tf->used = true;
                     /* Rewrite the node into an ordinary call: the shape every path except
@@ -2543,6 +2562,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->refDepth   = c->scopes.len;
                 e->arenaLevel = (int)c->scopes.len;
             }
+            c->allocSites++;
             if (e->lexicalLevel == 0) e->lexicalLevel = (int)c->scopes.len;   /* lexical level */
             /* Initial value: no constraint has touched this site yet. Relying on the 0 from
              * `arenaAllocZero` would be wrong, because 0 means "must outlive the frame".
@@ -3024,6 +3044,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             "`%s` is a builtin that is not implemented yet", f->name);
                     return ttError(tt);
                 }
+                /* `args[0]` comes before the arity check further down (which compares against the
+                 * builtin's declared parameter list), and `vecAt` does not bounds-check: a
+                 * zero-argument `parallel::run()` dereferenced the empty vector's NULL base and
+                 * took the compiler down with it -- SIGSEGV, no diagnostic (audit P0-14). Report
+                 * the shape instead; one argument already took the diagnostic path, zero did not. */
+                if (e->u.call.args.len == 0) {
+                    ckError(c, e->line,
+                            "`parallel::run(worker, views..., n)` takes the worker function's"
+                            " **name** first (v1 has no first-class function values).",
+                            "`parallel::run` needs at least the worker function's name");
+                    return ttError(tt);
+                }
                 Expr *wa = *(Expr **)vecAt(&e->u.call.args, 0);
                 FuncDef *wf = (wa->kind == EX_IDENT) ? findFunc(c, wa->u.ident.name) : NULL;
                 if (!wf || !wf->body) {
@@ -3177,6 +3209,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * instance is checked again, `e->func` is redirected to the concrete instance
                  * (`idOf_i32`). */
                 FuncDef *inst = funcInstance(c, f, &targs, e->line);
+                /* Same NULL contract as the `EX_GENCALL` site above (audit P0-4). */
+                if (!inst) return ttError(tt);
                 inst->used = true;
                 e->func = inst;
                 f = inst;                     /* every check below uses the instance */

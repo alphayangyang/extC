@@ -1,0 +1,23 @@
+/* 闸门⑤ 语料 · P1-5_fresh_stale（审计 P1-5）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：`fresh` 局部集合只在声明时建立、从不因『重新指向』失效 ⇒ 调用点整段生命周期检查被跳过（ASan stack-use-after-scope）
+ * 原探针：/tmp/rev/findings/fresh2.extc
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+struct slot { r: mut ref i32 }
+
+fn id(p: mut ref i32) -> mut ref i32 { return p }
+
+fn stash(s: mut ref slot, target: mut ref i32) {
+    var n: mut ref i32 = new i32
+    *n = 1
+    n = id(target)
+    s.r = n
+}
+
+fn main() {
+    var holder: i32 = 0
+    var keeper: slot = { r: ref holder }
+    { var deep: i32 = 2  stash(ref keeper, ref deep) }
+    println("keeper.r = ", *keeper.r)
+}

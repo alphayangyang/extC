@@ -1,0 +1,30 @@
+/* 闸门⑤ 语料 · P0-6e_coro_ref_payload（**新发现**，2026-10-01，来自"跨任务逃逸是否被拒"的探针）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：`yield ref n` 把**指向协程帧内局部**的引用当载荷交给调用方 ——
+ * `n` 是 C 栈局部（`tests/errors/coro_view_lives_across_yield.extc` 的规则②讲的正是这件事：
+ * 没写 `new` 就不进 arena，`yield` 一返回这次调用的 C 栈就没了）⇒ 载荷是悬垂指针。
+ * 现状：**前端接受**（缺口），而且它连生成物都编不过 —— 生成的 C 是
+ *     EXTC_UNUSED static node * extc_coro_value_node *(extc_coro *h, ...)
+ * （载荷类型的 C 拼写以 `*` 结尾时，包装函数的 `*` 被拼到函数名后面）⇒ 第二层缺陷（codegen 拼写）。
+ * 所以这条既是"必须拒绝"的健全性缺口，也是"生成物必须是合法 C"的缺陷；
+ * 前者修完（拒绝）之后，后者要靠"载荷类型是引用时也必须能生成合法 C"来验（否则拒绝会把它藏起来）。
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后从基线删掉那一行。
+ */
+use std::io
+
+struct node { v: i64 }
+struct holder { p: ?ref node }
+var G: holder = holder { p: null }
+
+fn g() -> coroutine<?ref node> {
+    var n: node = { v: 7 }
+    yield ref n
+}
+
+fn main() -> i32 {
+    var h: coroutine<?ref node> = g()
+    if h.next() { G.p = h.value() }
+    var more: bool = h.next()
+    io::cout << (*G.p!).v << "\n"
+    return 0
+}

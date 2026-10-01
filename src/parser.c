@@ -27,7 +27,39 @@ typedef struct {
     bool   inCond;
     bool   noBody;
     bool   sawBuiltin;   /* the annotation loop saw @builtin for this declaration */      /* true while parsing an `extern!` signature (no body) */
+    /* Nesting depth of the recursive descent. Two counters, because the two families have
+     * different safe budgets and different "who reports it first" stories:
+     *   depth     -- blocks and expressions (see `parseTooDeep`);
+     *   typeDepth -- types, where the checker has its own 64-level limit and should get to
+     *                report first (`TYPE_DEPTH_LIMIT`).
+     * The counters are what turn "too deep to parse" into a diagnostic instead of a crash. */
+    int    depth;
+    int    typeDepth;
 } Parser;
+
+/* The compiler's nesting budget for blocks and expressions.
+ *
+ * The parser, the checker, the dataflow pass and the emitter all recurse once per nesting level,
+ * and C's stack is finite: 16000 nested parentheses and 1000 nested blocks used to take the whole
+ * process down with SIGSEGV (audit P0-10) -- no diagnostic, and the driver could not tell "too
+ * deep" from "crashed". Measured thresholds for **block** nesting, where the frames are fattest:
+ *
+ *     release build (`-O1`)          crashes at ~250 levels
+ *     sanitizer build (ASan+UBSan)   crashes at ~96 levels
+ *
+ * 64 is chosen so every build keeps a wide margin, and it is far above anything a human writes
+ * (hand-written code stays under ten; the corpus peak is in the low tens). Deeply nested syntax
+ * only ever comes from a machine, so the honest answer is a diagnostic that names the limit --
+ * not a stack overflow. */
+#define PARSE_DEPTH_LIMIT 64
+
+/* The same budget for **types**, but larger on purpose: the checker has its own documented
+ * `TYPE_DEPTH_LIMIT` (64) and produces a better message about generic instances, so the parser
+ * must not fire first. Types recurse through `parseType` alone, whose frames are small, and the
+ * checker stops them at 64 well before any pass could overflow. */
+#define PARSE_TYPE_DEPTH_LIMIT 96
+
+
 
 /* ---------------------------------------------------------------- lookahead */
 
@@ -51,6 +83,24 @@ static Token *pk(Parser *p, size_t k) {
 
 /* Return the token at the cursor, without consuming it. */
 static Token *cur(Parser *p) { return pk(p, 0); }
+
+static bool parseTooDeepIn(int *counter, int limit, Parser *p, const char *what) {
+    if (++*counter <= limit) return false;
+    (*counter)--;
+    ctxError(p->ctx, cur(p)->line, cur(p)->col,
+             "Deeply nested syntax comes from a machine, and the compiler stops at a fixed depth"
+             " rather than letting its own recursion overflow the C stack.",
+             "nesting too deep in %s (the compiler's limit is %d levels)", what, limit);
+    return true;
+}
+
+static bool parseTooDeep(Parser *p, const char *what) {
+    return parseTooDeepIn(&p->depth, PARSE_DEPTH_LIMIT, p, what);
+}
+
+static bool parseTypeTooDeep(Parser *p) {
+    return parseTooDeepIn(&p->typeDepth, PARSE_TYPE_DEPTH_LIMIT, p, "a type");
+}
 
 /* Report whether the token at the cursor spells `value`.
  *
@@ -181,6 +231,10 @@ static bool   startsUpper(const char *s);
 static Token *expectTypeName(Parser *p, const char *what);
 
 static Expr *parseExpr(Parser *p);
+/* The bodies behind the three nesting-budget wrappers (see `parseTooDeep`). */
+static Type    *parseTypeInner(Parser *p);
+static Stmt    *parseBlockInner(Parser *p);
+static Expr    *parseUnaryInner(Parser *p);
 static Expr *parseOr(Parser *p);
 static Expr *parseAnd(Parser *p);
 static Expr *parseBitOr(Parser *p);
@@ -469,7 +523,7 @@ static FuncDef *parseExtern(Parser *p) {
  *   set, in which case `out` holds what was parsed up to that point.
  */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
-    Parser p = { ctx, arena, toks, 0, false, false, false };
+    Parser p = { ctx, arena, toks, 0, false, false, false, 0, 0 };   /* 末两位 = depth, typeDepth */
     p.sawBuiltin = false;                 /* 位置初始化列表不动，免得顺序一变就错位 */
     skipJunk(&p);
 
@@ -1660,7 +1714,17 @@ static FuncDef *parseFunc(Parser *p) {
  *     This function does not consult a symbol table, so the loader is the only
  *     place that decides whether the path names a module or a type.
  */
+/* Nesting budget, wrapper half: this is the only way into the body, so the counter is
+ * decremented on **every** exit, error paths included -- a diagnostic that left `depth`
+ * raised would make every later file look too deep. */
 static Type *parseType(Parser *p) {
+    if (parseTypeTooDeep(p)) return NULL;
+    Type *t = parseTypeInner(p);
+    p->typeDepth--;
+    return t;
+}
+
+static Type *parseTypeInner(Parser *p) {
     /* `dyn Trait` -- the type of a dynamically dispatched value (DYN.md stage 3). Like the
      * expression form, this is decided by **shape** (`dyn` followed by an identifier), because
      * `dyn` is not a reserved word in this language. */
@@ -1853,7 +1917,17 @@ static Type *parseFnType(Parser *p) {
  * Returns:
  *   The block statement, or NULL after reporting an error.
  */
+/* Nesting budget, wrapper half: this is the only way into the body, so the counter is
+ * decremented on **every** exit, error paths included -- a diagnostic that left `depth`
+ * raised would make every later file look too deep. */
 static Stmt *parseBlock(Parser *p) {
+    if (parseTooDeep(p, "a block")) return NULL;
+    Stmt *t = parseBlockInner(p);
+    p->depth--;
+    return t;
+}
+
+static Stmt *parseBlockInner(Parser *p) {
     Token *open = cur(p);
     if (!expect(p, "{", NULL)) return NULL;
 
@@ -2339,9 +2413,12 @@ static Stmt *parseFor(Parser *p) {
         Stmt *body = parseBlock(p);
         if (!body) return NULL;
 
-        /* The step runs after the body: both go in a block inside the `while`. */
+        /* The step runs after the body: both go in a block inside the `while`. The block also
+         * records **which** statement is the step, so codegen can put a label in front of it and
+         * `continue` can jump there (C's `for` semantics; audit P0-15). */
         Stmt *inner[2] = { body, step };
         Stmt *loopBody = forBlock(p, inner, 2, line);
+        loopBody->forStep = step;
         Stmt *w = stmtNew(p->arena, ST_WHILE, line);
         w->u.whiles.cond = cond;
         w->u.whiles.body = loopBody;
@@ -2386,17 +2463,34 @@ static Stmt *parseFor(Parser *p) {
         decl->u.var.mut  = true;                 /* the loop itself writes it */
         decl->u.var.overwrite = false;
 
+        /* The **upper bound is evaluated once**, when the loop is entered (定案 101).
+         * It used to sit in the condition as written, so the loop re-read it every round and
+         * `for i in 0..n { n = 0 ... }` followed `n` as the body changed it. A range is a bounded
+         * interval -- `for i in 0..xs.len` must mean the length at entry -- and a hidden `let`
+         * gives the bound exactly the lifetime the desugar promises. The name is the same
+         * `__extc_` convention `__extc_s` / `__extc_i` already use; a user binding of that name
+         * is a shadow, which `declare` renames like any other. */
+        Stmt *hiDecl = stmtNew(p->arena, ST_VAR, line);
+        hiDecl->u.var.name = "__extc_hi";
+        hiDecl->u.var.ann  = NULL;
+        hiDecl->u.var.init = hi;
+        hiDecl->u.var.mut  = false;              /* a bound is not something the loop writes */
+        hiDecl->u.var.overwrite = false;
+
         Expr *cond = exprNew(p->arena, EX_BIN, line);
         cond->u.bin.op    = "<";                 /* half open, like a slice range */
         cond->u.bin.left  = forIdent(p, vn->text, line);
-        cond->u.bin.right = hi;
+        cond->u.bin.right = forIdent(p, "__extc_hi", line);
 
-        Stmt *inner[2] = { body, forStep(p, vn->text, "+=", forInt(p, 1, line), line) };
+        Stmt *stepStmt = forStep(p, vn->text, "+=", forInt(p, 1, line), line);
+        Stmt *inner[2] = { body, stepStmt };
+        Stmt *loopBody = forBlock(p, inner, 2, line);
+        loopBody->forStep = stepStmt;         /* label target for `continue` (audit P0-15) */
         Stmt *w = stmtNew(p->arena, ST_WHILE, line);
         w->u.whiles.cond = cond;
-        w->u.whiles.body = forBlock(p, inner, 2, line);
-        Stmt *outer[2] = { decl, w };
-        return forBlock(p, outer, 2, line);
+        w->u.whiles.body = loopBody;
+        Stmt *outer[3] = { decl, hiDecl, w };
+        return forBlock(p, outer, 3, line);
     }
 
     /* ---- form one: `for d in c { B }` ---- */
@@ -2454,10 +2548,13 @@ static Stmt *parseFor(Parser *p) {
     elemDecl->u.var.mut  = false;               /* a copy: writing it does not write back */
     elemDecl->u.var.overwrite = false;
 
-    Stmt *inner[3] = { elemDecl, body, forStep(p, "__extc_i", "+=", forInt(p, 1, line), line) };
+    Stmt *stepStmt = forStep(p, "__extc_i", "+=", forInt(p, 1, line), line);
+    Stmt *inner[3] = { elemDecl, body, stepStmt };
+    Stmt *loopBody = forBlock(p, inner, 3, line);
+    loopBody->forStep = stepStmt;             /* label target for `continue` (audit P0-15) */
     Stmt *w = stmtNew(p->arena, ST_WHILE, line);
     w->u.whiles.cond = cond;
-    w->u.whiles.body = forBlock(p, inner, 3, line);
+    w->u.whiles.body = loopBody;
     Stmt *outer[3] = { viewDecl, idxDecl, w };
     Stmt *desugared = forBlock(p, outer, 3, line);
     /* The subject may not be sliceable at all: the parser cannot tell (it does not consult the
@@ -2721,7 +2818,17 @@ static bool tokenStartsExpr(Token *t) {
            strcmp(t->text, "[") == 0 || strcmp(t->text, "null") == 0;
 }
 
+/* Nesting budget, wrapper half: this is the only way into the body, so the counter is
+ * decremented on **every** exit, error paths included -- a diagnostic that left `depth`
+ * raised would make every later file look too deep. */
 static Expr *parseUnary(Parser *p) {
+    if (parseTooDeep(p, "an expression")) return NULL;
+    Expr *t = parseUnaryInner(p);
+    p->depth--;
+    return t;
+}
+
+static Expr *parseUnaryInner(Parser *p) {
     /* `ext f(x)`: "start one concurrent task". Parsed as a **prefix** thing whose operand is an
      * ordinary expression (normally a call), so the node is an expression and `let h = ext f(x)`
      * reads naturally. Whether the operand really is a call, and whether there is a domain around

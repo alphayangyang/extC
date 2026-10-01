@@ -230,7 +230,36 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec)
 | `check.sh quick` | **55 / 0** |
 | 闸门⑤·语料 · ①checkc 全量 · ②ASan 全量 · ③差分 · ④规模 | 全绿（基线为空；语料基线 1 条 = P0-6e） |
 
-## 下一步（U5 收尾 + 候选探针）
+## U5 补记（本轮末）：`solvedValDepth` 的"认不出 ⇒ 0"是**活路径**，记成候选第 14 条
+
+### 证据链
+
+1. 三个外部调用者里，`check_top.c:5067` 是**延迟复核**（`runRefCheck`，电平稳定后的最后一道判定），
+   另两处是调试转储与记录 ⇒ 这里答 0（"活得最久"）意味着**延迟检查会放行** ⇒ 与 P0-6c 同族。
+2. 细分实测：套件里按行计 84 条 `[note]`，其中该兜底贡献最大；把形状名打进 NOTE 后，
+   **178 次匹配全部落在"其它"** —— 即命中者**不是** `EX_ENUMVAL`/`EX_ARRAYLIT`/`EX_REF`/`EX_TRY`/
+   `EX_METHOD`/`EX_ASSOC`/`EX_EXT`（这些一次都没被走到），而是字面量那类。
+3. 把"可能带引用的形状"单列出来布 `EXTC_DBG_FALLBACK` 之后，**断言真的响了 3 次**
+   ⇒ 除字面量外，还有 `EX_CONV` / `EX_LAMBDA` 之类**没被定位到**的形状会走到这里。
+   （`EXTC_DBG_ASSERT_MSG` 目前不收 varargs，所以那次没能把 kind 数值打出来；
+   下一步要么给 `extcDbgNote` 加一个 printf 变体，要么在本地临时打印。）
+
+### 为什么现在**没有**逐个列形状（一条仓库规则，值得记住）
+
+把形状逐个列全，会让 `solvedValDepth` 变成**第 24 个手写遍历**，而本仓库有一条
+**walker 预算**：`tools/check_walkers.py` 报 `hand-written walkers: 23 (ratchet 23)`，
+`docs/topics/AST-WALKERS.md` 的口径是 **"migrate one instead of adding another"** ⇒
+`check.sh quick` 当场从 55/0 掉到 **54/1**。所以这条要么先**迁移一个旧遍历**（用通用
+`astWalkExprChildren`）再腾出名额，要么就用通用遍历重写它 —— 这正是 U 批次本身的方向。
+
+### 结论（候选第 14 条）
+
+**`solvedValDepth` 对若干可达形状答 0**（延迟复核路径上的"活得最久"），与 P0-6c 同族。
+下一步（下轮）：① 给 NOTE 加 printf 变体，打印 kind 数值定位到具体形状；
+② 逐个判定"该形状能不能带引用"；③ 能带的按"深度取自操作数/载荷"修（**行为变更**，
+按 R1/R3 的规矩：语料 + ASan + 判据），顺带把 walker 名额通过迁移腾出来。
+
+
 
 * **U2 单一指称**：`placeRoot` / `placeRootName` / `placeDepth` / `exprRefDepth` / `identBindOf` /
   `rootSymNoScope` / `paramIndex` / `paramIndexOfExpr`（100+ 调用点）收敛为语义互不重叠的一小组入口，

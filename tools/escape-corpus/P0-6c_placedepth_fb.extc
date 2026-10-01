@@ -1,0 +1,24 @@
+/* 闸门⑤ 语料 · P0-6c_placedepth_fb（审计 P0-6(c)）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：`placeDepth` 兜底 `return 0`（= 活得最久，方向恰好相反）⇒ 认不出的地方按最长寿命处理
+ * 原探针：/tmp/rev/repro/n1.extc
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+var G: slice<u8> = "hi"
+
+fn main() -> i32 {
+    {
+        var a: [16]u8
+        var i: i32 = 0
+        while i < 16 { a[i] = 65 + u8(i)  i = i + 1 }
+        var v: slice<u8> = a[..]
+        G = [v, v][0]
+    }
+    {
+        var c: [16]u8
+        var i: i32 = 0
+        while i < 16 { c[i] = 90  i = i + 1 }
+    }
+    println("G = ", G)
+    return 0
+}

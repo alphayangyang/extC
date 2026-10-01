@@ -1,0 +1,27 @@
+/* 闸门⑤ 语料 · P0-17_nonnull_stale（审计 P0-17）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：字段路径的非空证明在 `mut ref self` 方法调用后不失效 ⇒ 生成物解引用 NULL（ASan SEGV）
+ * 原探针：见审计报告对应小节
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+struct node { value: i64  next: ?ref node }
+struct stack {
+    top: ?ref node
+    fn pop(self: mut ref stack) -> i64 {
+        var t: ?ref node = self.top
+        if t == null { return i64(0) }
+        self.top = t.next
+        return t.value
+    }
+}
+fn main() -> i32 {
+    var s: stack
+    var n: node
+    n.value = i64(5)
+    s.top = ref n
+    if s.top != null {
+        var v: i64 = s.pop()
+        return i32(s.top.value + v)
+    }
+    return 0
+}

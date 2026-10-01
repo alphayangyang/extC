@@ -87,6 +87,22 @@ typedef struct {
     bool        fieldsComplete;
     int         nfields;    /* number of valid entries in `fields` */
     int         otherDepth; /* depth for writes that belong to no single field */
+    /* A store a **callee** made through this binding as a `mut ref` argument. Its own slot: the
+     * "no single field" one is shared with element writes, and feeding both through it gave every
+     * element write promotion pressure (three red promotion corpora). The source expression is what
+     * lets `promoteFieldsAt` move the site behind it -- the difference between accepting
+     * `stash(ref b, n)` with `n = new node` (audit P0-16d) and reading freed memory. */
+    Expr       *callSrc;
+    int         callSrcDepth;
+    int         callMinReq;
+    /* The same facts as one `fields[]` entry, for a store that belongs to no single field: an
+     * element write, or a store the callee made through a `mut ref` out-parameter. Without a
+     * source expression there is nothing to promote, and a `new` handed to a callee that stores it
+     * would be rejected where the same program written as a direct `b.p = n` is accepted
+     * (audit P0-16). */
+    Expr       *otherSrc;
+    int         otherSrcDepth;
+    int         otherMinReq;
     int         depth;      /* lexical depth: a parameter is 0, a local in the function
                              * body is 1, and every nested block adds 1. The escape
                              * checks compare this number. */
@@ -331,6 +347,11 @@ typedef struct Checker {
                              * re-checked, NULL when not re-checking */
     Vec       *substArgs;
     int        noHoist;     /* non-zero while a statement prefix cannot be emitted */
+    /* How many allocation sites have been created so far. A loop condition asks for the
+     * difference across its own check to learn whether it allocates at all (`Stmt.condAllocs`),
+     * which is what decides between the plain `while (cond)` and the per-round-release
+     * shape (定案 101②). */
+    int        allocSites;
     /* How many subexpressions with a side effect have already been checked in the
      * current statement.
      *
@@ -653,6 +674,41 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  Sym *lookup (Checker *c, const char *name);
 /* The binding at the root of a place, found by walking through fields, indexes and slices; NULL
  * when the place is not rooted in a binding. */
+/* ---------------------------------------------------------------- 深度 / 身份：四个问题
+ *
+ * 这个检查器里"这个值活多深 / 它是谁"被问了一百多次，曾经由**三套各写一遍的根遍历**回答，
+ * 差异（走不走 `SLICE`/`SIGN`、跳数上限、取名字还是取符号）只藏在三份循环里 —— R1/R3 批次里
+ * 5 条 bug 正是发生在两个入口"读数不一致"的地方（P0-1/P0-2/P0-6c/P0-6d/P0-16）。
+ *
+ * 从 U2 起，这里就是唯一权威：**问哪件事，用哪个函数，极性是什么**。
+ *
+ *   ① 存储有多深？（`a`、`a.f`、`a[i]` 这些**地方**）      → `placeDepth`
+ *   ② 值指向的东西有多深？（`p`、`f(x)` 这些**值**）        → `exprRefDepth`
+ *   ③ 这个根的**绑定**是谁？（要身份，不要拼写）             → `placeRoot`（查作用域）
+ *                                                           → `rootSymNoScope`/`identBindOf`（只看节点）
+ *   ④ 这个根的**名字**？（诊断与老接口）                     → `placeRootName`
+ *
+ * **极性契约（最重要的一条）**：①② 返回的是**深度**，`0` = "活得最久"（全局、参数所指、
+ * 调用者选的地方）；**数越小活得越久**。因此任何"认不出来"的兜底都必须落在**更长寿**那一侧，
+ * 或者干脆拒绝 —— 反过来（兜底给 0）就是把保守方向搞反，P0-6c 就是这么来的。
+ *
+ * 一个事实一个指称：**新代码不要**再写第四份"从表达式取根"的循环；需要别的步进组合时，
+ * 把 `EXTC_ROOT_*` 掩码传给 `extcRootLeaf`。历史上三个入口的差异就是下面这些掩码：
+ *
+ *   | 入口 | 步进 | 跳数 | `EX_IDENT` 怎么解 |
+ *   |---|---|---|---|
+ *   | `placeRoot`      | FIELD INDEX SLICE | 不限 | 查作用域（`lookup`） |
+ *   | `placeRootName`  | FIELD INDEX DEREF | 不限 | 取**语法名字**（不解析） |
+ *   | `rootSymNoScope` | FIELD INDEX DEREF SIGN | 16 | 取节点上的绑定（`identBindOf`） |*/
+#define EXTC_ROOT_FIELD  (1u << 0)
+#define EXTC_ROOT_INDEX  (1u << 1)
+#define EXTC_ROOT_SLICE  (1u << 2)
+#define EXTC_ROOT_DEREF  (1u << 3)
+#define EXTC_ROOT_SIGN   (1u << 4)
+
+/* 沿掩码允许的步进走到根**标识符节点**（不解析、不查作用域）；`maxHops <= 0` 表示不限跳数。
+ * 返回的节点保证是 `EX_IDENT`，由调用者决定要名字还是要绑定。*/
+Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  Sym *placeRoot (Checker *c, Expr *e);
 /* Check an expression in a place position and return its type; a reference is not dereferenced. */
  Type *checkExpr (Checker *c, Expr *e);
@@ -854,6 +910,24 @@ int valDepthForStore (Checker *, Expr *);
 
 /* Mark the call as allocating into the caller's home arena when the value it produces escapes
  * the current frame. */
+/* ---------------------------------------------------------------- 写点：一个入口（U3）
+ *
+ * 一次写要同时做四件事，**顺序不能变**：
+ *   ① `recordStore`  —— 记下"这个值被发布到了 `at` 这一层"（电平求解器据此折叠）
+ *   ② `promoteInto`  —— 试着把值背后的分配站点提到那一层（提不动就保持保守）
+ *   ③ `markCallHomeIfEscaping` —— 逃逸集合相关的那一半
+ *   ④ 字段表          —— 整值写走 `noteWholeValueDepthWrite`，字段/元素写走 `noteFieldDepthWrite`
+ *                        （后者内部会记 `src`，让后续提权找得到站点）
+ *
+ * ①②③④ 过去散在各站点手写（7 种入口、30 处调用），于是"少写一样"就是一类洞 ——
+ * P0-16（出参写不发布）与 P0-17/P1-5（事实不失效）都长在这种接缝上。
+ * 从 U3 起，**能走这个入口的写一律走它**；只有语义确实不同的（返回值、实参发布、
+ * 证明失效 `unNarrow`、fresh 集合失效 `freshDrop`）才自己组合，并在调用点写明理由。*/
+ void noteStore (Checker *c, Expr *value, Expr *target, int at, int line);
+/* 返回值那一种发布：`recordStore(v, v, 0)` —— "交给调用方的东西按层 0 发布"。两个返回站点
+ * （`e?` 分支与正常路径）共享这一半，各自的后续步骤不同（一个接 `promoteInto`+`recordLvlFact`，
+ * 一个接 `checkEscape`），所以只把共享的这半收成一个名字。*/
+ void noteReturnPublish (Checker *c, Expr *value, int line);
  void markCallHomeIfEscaping (Checker *c, Expr *v, int at);
 /* Resolve the home depth of a call site into the arena argument the code generator emits. */
  void setCallArenaArg (Checker *c, Expr *e);

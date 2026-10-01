@@ -194,6 +194,10 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
     value->u.method.name = "value";
     elemDecl->u.var.init = value;
     inner->u.block.stmts.len = 2;                /* `[ var x = …value(); BODY ]`, step dropped */
+    /* The step is gone, so there is no label for `continue` to jump to any more: the iterator's
+     * `next()` in the condition does the advancing, which is a plain `while` shape again
+     * (audit P0-15). Leaving this set would emit a `goto` to a label nobody writes. */
+    inner->forStep = NULL;
     return true;
 }
 
@@ -821,36 +825,8 @@ void checkStmt(Checker *c, Stmt *s) {
                     dst->heldSrc = s->u.assign.value;
                 }
             }
-            recordStore(c, s->u.assign.value, s->u.assign.target, atDst, s->line);
-            promoteInto(c, s->u.assign.value, atDst);
-            markCallHomeIfEscaping(c, s->u.assign.value, atDst);
-            /* A value binding that can hold references is written, either wholesale or
-             * through one of its fields or elements, so the recorded "where do the
-             * references inside point" is widened with the maximum, since `refDepth` is
-             * an upper bound. */
-            {
-                /* The plain assignment path used to write only the `refDepth` of the
-                 * root and never the field table, so after
-                 * `b.c = inner{v: ref local}` the entry for `b.c` kept its old value and
-                 * `return b.c` was accepted. Both kinds of assignment now go through
-                 * `noteFieldDepthWrite`, which updates the field entry and the root as
-                 * the maximum over the fields. */
-                Sym *vs = placeRoot(c, s->u.assign.target);
-                if (vs) {
-                    int d2 = valDepthForStore(c, s->u.assign.value);
-                    const char *fn2 = (s->u.assign.target->kind == EX_FIELD)
-                                        ? s->u.assign.target->u.field.name : NULL;
-                    if (d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type))) {
-                        if (s->u.assign.target->kind == EX_IDENT) {
-                            noteWholeValueDepthWrite(c, vs, s->u.assign.value, d2);
-                        } else {
-                            c->curStoreVal = s->u.assign.value;
-                            noteFieldDepthWrite(c, vs, fn2, d2);
-                            c->curStoreVal = NULL;
-                        }
-                    }
-                }
-            }
+            /* 一次写：发布 + 提权 + 逃逸集合 + 字段表，四件事一个入口（U3，见 `noteStore`）。*/
+            noteStore(c, s->u.assign.value, s->u.assign.target, atDst, s->line);
             if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
             /* A value stored into a field or an element may not be deeper than the
              * target. */
@@ -892,7 +868,15 @@ void checkStmt(Checker *c, Stmt *s) {
             /* The condition of a `while` may not be hoisted: a hoisted prefix is
              * evaluated once before the loop, not once per round. */
             c->noHoist++;
+            /* The condition is its own **place** (定案 101②): pushed as a scope so the allocation
+             * sites inside it get one level deeper, and measured so codegen knows whether to give
+             * it an arena of its own and release it every round. Without this, `while (new i64[N])[0]
+             * == 0` allocated at the enclosing block's level and grew with the rounds. */
+            pushScope(c);
+            const int sitesBefore = c->allocSites;
             expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
+            popScope(c);
+            s->condAllocs = (c->allocSites != sitesBefore);
             c->noHoist--;
 
             /* `while cur != null { cur = cur.next }` is the shape the whole language
@@ -1076,13 +1060,20 @@ void checkStmt(Checker *c, Stmt *s) {
                  * instantiation reported "depth 1, but this can only hold up to 0". The
                  * payload is a value whose references end up with the caller, so it is
                  * promoted to level 0. */
-                recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
+                noteReturnPublish(c, s->u.ret.value, s->line);
                 promoteInto(c, s->u.ret.value, 0);
                 /* 再记一条事实：这一次调用发生在 `makesPool` 闭包**之前**，闸门那时读到的
                  * 标志还是假 ⇒ 池站点的提权落不下去。闭包之后的重放（`checkModule` 里那一段）
                  * 会拿这条事实再提一次，那时标志已经为真。 */
                 recordLvlFact(c, s->u.ret.value, 0);
-                if (wb && wb->kind == TY_GENERIC && wb->targs.len >= 1)
+                /* `option<T>` and `result<T, E>` are **enum instances**: `TY_ENUM` carrying their
+                 * type arguments. This test used to ask for `TY_GENERIC` only, which is never true
+                 * for them, so the payload was never compared -- `return o?` from an
+                 * `option<i64>` into an `option<u8>` turned 1000 into 232 with no diagnostic at
+                 * all, while writing `option<u8>::some(1000)` directly was correctly rejected
+                 * (audit P0-19: the same value, two answers). Compare against the payload of the
+                 * enum instance -- `targs[0]` is the success type for both families. */
+                if (wb && wb->targs.len >= 1 && (wb->kind == TY_GENERIC || wb->kind == TY_ENUM))
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,
                                     s->u.ret.value, "return value");
                 return;
@@ -1102,7 +1093,7 @@ void checkStmt(Checker *c, Stmt *s) {
                         mentionsParam(s->u.ret.value->type)?1:0);
             /* A returned value is handed to the caller, so it is published at level 0:
              * the whole point of returning it is that it outlives this frame. */
-            recordStore(c, s->u.ret.value, s->u.ret.value, 0, s->line);
+            noteReturnPublish(c, s->u.ret.value, s->line);
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }

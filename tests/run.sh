@@ -3,7 +3,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-EXTC=./build/extc
+EXTC=${EXTC:-./build/extc}   # `EXTC=build-dbg/extc` 可跑断言版（见 src/dbg.h）
 pass=0
 fail=0
 

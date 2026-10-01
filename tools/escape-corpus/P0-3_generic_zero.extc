@@ -1,0 +1,11 @@
+/* 闸门⑤ 语料 · P0-3_generic_zero（审计 P0-3）
+ * 期望：**编译错误**（带源位置）。
+ * 为什么在这里：自由泛型函数的零值检查从不记录（延迟检查记录端 `owner==NULL` 提前返回）⇒ 生成 `__extc_reference_has_no_zero_value__`，产物编不过
+ * 原探针：见审计报告对应小节
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+fn mk<T>() -> T { var local: T  return local }
+fn main() {
+    var x: slice<u8> = mk<slice<u8>>()
+    println("x = ", x)
+}
