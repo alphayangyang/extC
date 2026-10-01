@@ -1,0 +1,15 @@
+// `return e?` 的载荷必须与返回类型的载荷**相容**（审计 P0-19）。
+//
+// 回归前：`option<T>` / `result<T, E>` 是**枚举实例**（`TY_ENUM` + targs），而这条分支只认
+// `TY_GENERIC` ⇒ 载荷从不比较，`option<i64>` → `option<u8>` 把 1000 **静默截断成 232**，
+// 生成物照常编译运行；而直接写 `option<u8>::some(1000)` 会被正确拒绝（同一件事两种答案）。
+// expect: return value expects
+use std::io
+
+fn f(o: option<i64>) -> option<u8> { return o? }
+
+fn main() -> i32 {
+    var r: option<u8> = f(option<i64>::some(1000))
+    match r { some(v) => io::cout << "v=" << i64(v) << "\n"  none => io::cout << "none\n" }
+    return 0
+}

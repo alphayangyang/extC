@@ -1,0 +1,38 @@
+// `for i in lo..hi` 的上界在**进入循环时求值一次**，不是每轮重算（定案 101，2026-09-30）。
+//
+// 起因：审计 P0-15 修完 `continue` 之后暴露的语义空白 —— 上界原本就写在 `while` 条件里，
+// 于是 `for i in 0..n { n = 0 }` 会跟着 `n` 变（range 是"有界区间"，必须按进入时的值算）。
+// 现在 parser 把上界存进隐藏的 `let __extc_hi`；`while` 的条件仍然每轮重读（对照组）。
+// expect: calls=1 rounds=3 once=5 twice=1 len=4
+use std::io
+
+var calls: i32 = 0
+fn limit() -> i32 { calls = calls + 1  return 3 }
+
+fn main() -> i32 {
+    // ① 上界是调用：只调一次（修前是每轮一次 ⇒ 4 次）
+    var rounds: i64 = 0
+    for i in 0..limit() { rounds = rounds + 1 }
+
+    // ② 上界是变量、体内改写它：仍按进入时的值跑 5 轮（修前 1 轮）
+    var n: i32 = 5
+    var once: i64 = 0
+    for i in 0..n { once = once + 1  n = 0 }
+
+    // ③ 对照：`while` 的条件每轮重读 ⇒ 只跑 1 轮
+    var m: i32 = 5
+    var j: i32 = 0
+    var twice: i64 = 0
+    while j < m { twice = twice + 1  m = 0  j = j + 1 }
+
+    // ④ `.len` 形态（数组要先取视图才有 `.len`）
+    var xs: [4]i32 = [0, 1, 2, 3]
+    var len: i64 = 0
+    for x in xs { len = len + 1 }
+    let vs: slice<i32> = xs[..]
+    var len2: i64 = 0
+    for i in 0..vs.len { len2 = len2 + 1 }
+
+    io::cout << "calls=" << i64(calls) << " rounds=" << rounds << " once=" << once << " twice=" << twice << " len=" << len2 << "\n"
+    return 0
+}

@@ -1,0 +1,12 @@
+// `parallel::run` 至少要给出 worker 函数名（审计 P0-14）。
+//
+// 回归前：内建分派在 arity 检查**之前**取 `args[0]`，而 `vecAt` 不做边界检查 ——
+// 零实参时解引用空 `Vec` 的 NULL 基址，编译器自己 SIGSEGV（rc=139，零诊断）；
+// 给一个实参反而正常报错，所以只有"零个"这一格崩。
+// expect: at least the worker function
+use std::parallel
+
+fn main() -> i32 {
+    var r: i32 = parallel::run()
+    return r
+}

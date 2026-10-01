@@ -1,0 +1,24 @@
+// 泛型结构体上的运算符重载：定义与调用必须用**同一个**单态化上下文（审计 P0-9）。
+//
+// 回归前：重载后缀 `opOverloadSuffix` 用**调用方**的替换上下文算第二个参数的类型。
+// `main` 不是泛型 ⇒ 上下文为空 ⇒ `T` 不被替换，调用处发 `w_i32_eq_T`，而定义处（实例上下文里）
+// 发的是 `w_i32_eq_i32` ⇒ 生成物根本编不过：
+//   error: implicit declaration of function 'w_i32_eq_T'
+//   extc: **the generated C does not compile** -- this is an extc bug
+// 现在：后缀由**被调函数自身**的单态化上下文决定（方法实例的 targs，否则接收者实例的 targs）。
+// 三个查询走两个不同的重载：`a == 5` 选 `o: T`（i32），`a == u8(5)` 选 `o: u8`。
+// expect: i32eq=true u8eq=false i64eq=true
+use std::io
+
+struct w<T> {
+    v: T
+    fn ==(self: ref w<T>, o: T) -> bool { return self.v == o }
+    fn ==(self: ref w<T>, o: u8) -> bool { return o == u8(255) }
+}
+
+fn main() -> i32 {
+    var a: w<i32> = { v: 5 }
+    var b: w<i64> = { v: i64(5) }
+    io::cout << "i32eq=" << (a == 5) << " u8eq=" << (a == u8(5)) << " i64eq=" << (b == i64(5)) << "\n"
+    return 0
+}

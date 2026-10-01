@@ -1,0 +1,36 @@
+/* 定案 99 的判据：**任务的地方随任务结束整只回收，且不依赖存活顺序**。
+ *
+ * 旧实现把任务的 zone 挂在块 zone 栈上，`extc_task_end` 用 LIFO 弹栈 ⇒ 两个方向都错：
+ *   · 先结束的任务弹掉仍存活任务的 zone ⇒ 生成物 heap-use-after-free（审计 P0-20）；
+ *   · 调用者 zone 更低时一个都不弹 ⇒ 每任务泄漏 ≈4.2 KB（P1-14，实测 20000 个 85.9 MB）。
+ * 现在任务的地方是一个**根槽**（不在块栈上），结束时精确释放自己那一个。
+ * 判据：两个任务各持一个池容器，较老的先跑完；活着的那个照常工作，收尾时 `live=0`。
+ * expect: a=3 b=4 live=0 */
+use std::io
+use std::sys::pool as syspool
+use stl::vector
+
+fn a() -> coroutine<i64> {
+    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    v.push(i32(1))
+    yield i64(v.len())
+    yield i64(v.len() + i64(1))
+}
+
+fn b() -> coroutine<i64> {
+    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    v.push(i32(2))
+    yield i64(v.len())
+    yield i64(v.len() + i64(2))
+}
+
+fn main() -> i32 {
+    var ha: coroutine<i64> = a()
+    var hb: coroutine<i64> = b()
+    var sa: i64 = 0
+    while ha.next() { sa = sa + ha.value() }      /* 较老的任务先结束 */
+    var sb: i64 = 0
+    while hb.next() { sb = sb + hb.value() }      /* 仍存活的那个继续用**它自己的**地方 */
+    io::cout << "a=" << sa << " b=" << sb << " live=" << syspool::extc_pool_live() << "\n"
+    return 0
+}

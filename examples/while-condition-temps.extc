@@ -1,0 +1,38 @@
+// 循环条件里的临时量**必须每轮重新求值**（审计 P0-7）。
+//
+// 回归前：数组/切片 `==` 的操作数不是"地方"时，`eqOperand` 会把它物化成一个临时量写进**语句前缀**，
+// 而 `while` 在发条件之前冲刷前缀 ⇒ 临时量只算一次，条件却每轮读它：
+// `while a == mk()` 永远和第一次的返回值比较 ⇒ 实测跑了 101 轮（`break` 兜住的），正确是 1 轮。
+// 现在：条件需要临时量时改发 `while (1) { <临时量>; if (!(cond)) break; … }`，
+// 求值次数与源码一致；不需要临时量的条件仍发原来的 `while (cond) {`（生成物字节不动）。
+// expect: rounds=1 iter=3 scaned=3
+use std::io
+
+var g: i32 = 0
+fn mk() -> [2]i32 { g = g + 1  return [g, 0] }
+
+// 条件两侧都是切片表达式（都不是"地方"）：每轮都要重新取切片并比较。
+fn scanWhileEqual(xs: slice<u8>) -> i64 {
+    var i: i64 = 0
+    while xs[i..i + i64(1)] == xs[0..i64(1)] {
+        i = i + i64(1)
+        if i > i64(100) { break }
+    }
+    return i
+}
+
+fn main() -> i32 {
+    var a: [2]i32 = [1, 0]
+    var rounds: i64 = 0
+    while a == mk() { rounds = rounds + 1  if rounds > 100 { break } }
+
+    // 对照：条件不需要临时量（`iter < 3`），每轮重新求值。
+    var iter: i32 = 0
+    var n: i64 = 0
+    while iter < 3 { iter = iter + 1  n = n + 1 }
+
+    var bytes: [4]u8 = [7, 7, 7, 9]
+    var scaned: i64 = scanWhileEqual(bytes[..])
+    io::cout << "rounds=" << rounds << " iter=" << n << " scaned=" << scaned << "\n"
+    return 0
+}

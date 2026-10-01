@@ -1,0 +1,17 @@
+use std::io
+// expect: r = 3
+
+/* 泛型的**声明顺序**不该影响结果：内层函数先声明时，延迟解析必须跑到不动点，
+ * 否则生成物里会出现一个从未生成过的实例 (`f_T`)，C 编不过（审计 P0-5）。
+ *
+ * 本文件同时是闸门①的语料：生成的 C 必须能过 gcc/clang 的 `-c -O2`。
+ */
+fn f<T>(x: T) -> T { return x }
+fn g<T>(x: T) -> T { return f(x) }
+fn m<T>(x: T) -> T { return g(x) }
+
+fn main() -> i32 {
+    let r: i64 = m<i64>(i64(3))
+    io::cout << "r = " << r << "\n"
+    return 0
+}

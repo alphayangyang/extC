@@ -1,0 +1,51 @@
+// `for` 里的 `continue` 必须**仍然执行步进**（审计 P0-15）。
+//
+// 回归前：`for` 被脱糖成 `while cond { BODY; step }`，而 C 的 `continue` 跳回条件、
+// 跳过体尾的步进 ⇒ **任何含 `continue` 的 `for` 都死循环**（`--run` 超时；仓库里唯一
+// 用 `continue` 的用例恰好是 `while`，所以 311 例全绿）。现在步进前有一个标签，
+// `continue` 编译成 `goto` 该标签 —— 与 C 的 `for` 同语义，零运行时开销。
+// 三种形式（range / C 风格 / for-in）与嵌套都要对：内层 `continue` 只跑内层的步进。
+// expect: range=8 cstyle=8 foreach=8 nested=6 skipFirst=10
+use std::io
+
+fn rangeSum() -> i64 {
+    var sum: i64 = 0
+    for i in 0..5 { if i == 2 { continue }  sum = sum + i64(i) }
+    return sum
+}
+
+fn cstyleSum() -> i64 {
+    var sum: i64 = 0
+    for (var i: i32 = 0; i < 5; i = i + 1) { if i == 2 { continue }  sum = sum + i64(i) }
+    return sum
+}
+
+fn foreachSum() -> i64 {
+    var xs: [5]i32 = [0, 1, 2, 3, 4]
+    var sum: i64 = 0
+    for x in xs { if x == 2 { continue }  sum = sum + i64(x) }
+    return sum
+}
+
+fn nestedHits() -> i64 {
+    var hits: i64 = 0
+    for i in 0..3 {
+        for j in 0..3 { if j == 1 { continue }  hits = hits + 1 }
+    }
+    return hits
+}
+
+// `continue` 在嵌套块里：跳的仍然是这一层的步进。
+fn skipFirst() -> i64 {
+    var sum: i64 = 0
+    for i in 0..5 {
+        { if i == 0 { continue } }
+        sum = sum + i64(i)
+    }
+    return sum
+}
+
+fn main() -> i32 {
+    io::cout << "range=" << rangeSum() << " cstyle=" << cstyleSum() << " foreach=" << foreachSum() << " nested=" << nestedHits() << " skipFirst=" << skipFirst() << "\n"
+    return 0
+}

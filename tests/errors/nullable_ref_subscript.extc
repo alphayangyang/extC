@@ -1,0 +1,11 @@
+// 可空引用的**下标**必须先证明非空（审计 P0-13，第一半）。
+//
+// 回归前：`var p: ?ref [4]i32 = null` 之后写 `p[1]` 零诊断通过，生成物是
+// `(*p).data[...]`，运行时 ASan 报 "SEGV on unknown address 0x000000000004"。
+// 检查器对字段访问（`EX_FIELD`）、`*`（`EX_DEREF`）和方法接收者都调用了
+// `rejectNullableDeref`，唯独下标与切片两条路漏了；现在两处都补上。
+// expect: nullable reference
+fn main() -> i32 {
+    var p: ?ref [4]i32 = null
+    return p[1]
+}

@@ -1,0 +1,10 @@
+// 可空引用的**切片**同样要先证明非空（审计 P0-13，第二半）。
+//
+// 回归前：`p[0..2]` 对 `?ref [4]i32` 生成 `&((*p).data[1])`，与下标那条路同一个洞；
+// 两处现在都走 `rejectNullableDeref`，与字段/`*`/方法接收者一致。
+// expect: nullable reference
+fn main() -> i32 {
+    var p: ?ref [4]i32 = null
+    let s = p[0..2]
+    return i32(s.len)
+}

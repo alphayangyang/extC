@@ -1,0 +1,21 @@
+// 存储已死的视图 + `copyInto`：必须 trap 带位置，不能把 `memmove` 从 NULL 拉起来（审计 P0-8）。
+//
+// 回归前：`genViewCopier` 没有姊妹函数 `genViewIndexer` 已有的 `!v.data` 保护，
+// -O0 下 SIGSEGV（gdb: `slice_i32_copy` → `memmove`，`s.data = nil`）；
+// 而 -O2 下 gcc 把这次 UB 调用整条删掉 ⇒ 程序"静默成功"，测试反而变绿。
+// 所以这条用例的判据在 ASan 闸门里（`tools/gate_asan_corpus.py` 把 tests/traps 纳入正例语料，
+// 用 -O1 + sanitizer 编译运行）：本文件必须给出 `trap: the view has no storage`。
+use std::io
+use std::sys::pool as syspool
+
+fn main() -> i32 {
+    var kept: i64 = i64(-1)
+    {
+        kept = syspool::extc_pool_new_at(i64(-1), 9223372036854775807)
+    }
+    var s: mut slice<i32> = poolSlice<i32>(kept, 4)
+    var d: [4]i32 = [0, 0, 0, 0]
+    let n = copyInto<i32>(d[..], s, i64(1))
+    io::cout << "copied=" << n << "\n"
+    return 0
+}
