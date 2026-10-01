@@ -258,7 +258,7 @@ Sym *declare(Checker *c, const char *name, Type *t, bool mut,
  *     would push every local one level deeper.
  */
 Sym *lookup(Checker *c, const char *name) {
-    for (size_t i = c->scopes.len; i-- > 0; ) {
+            for (size_t i = c->scopes.len; i-- > 0; ) {
         Scope *s = *(Scope **)vecAt(&c->scopes, i);
         /* Scanned backwards, so the newest `let` of the scope wins. The other order
          * would resolve the second `a` of `let a = 1  let a = a + 1` back to the first. */
@@ -842,8 +842,22 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops) {
 /* 问题③（查作用域版）：掩码 = FIELD|INDEX|SLICE，无跳数上限 —— 与另两个入口的差别现在写在
  * 掩码里，见 check_internal.h 的那张表。*/
 Sym *placeRoot(Checker *c, Expr *e) {
+    /* 同 `lookup`：解析一个地方的名字需要作用域。*/
+    EXTC_DBG_ASSERT_MSGF(c->scopes.len > 0,
+                         "placeRoot with no open scope (phase=%s): needs a scope",
+                        phaseName(c->phase));
     Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_SLICE, 0);
-    return leaf ? lookup(c, leaf->u.ident.name) : NULL;
+    if (!leaf) return NULL;
+    Sym *sy = lookup(c, leaf->u.ident.name);
+    /* **阶段契约的一条实测结论（V1）**：POST 阶段（所有体检查完之后）`placeRoot`/`lookup` 仍会被
+     * 调用 —— 它们这时**只能解析到模块级绑定**（作用域已全部关闭）。对全局这是对的、也是必需的；
+     * 但如果调用方以为自己在解析一个**局部**，它就会静默拿到 `NULL`、或者更糟：拿到一个**同名全局**
+     * （正是 P0-6d 那一族"身份被拼写顶替"）。所以这里留一个**计数哨兵**：POST 阶段解析成功 =
+     * 一次"靠全局名字兜住"的调用，数量变了就说明有新的调用点依赖它。*/
+    if (sy && c->scopes.len == 0)
+        EXTC_DBG_NOTEF("placeRoot(`%s`) in phase=%s with no scope → module-level binding",
+                       leaf->u.ident.name, phaseName(c->phase));
+    return sy;
 }
 
 /* True when the path to this place crosses a read-only reference, including the type of

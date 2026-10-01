@@ -5344,6 +5344,8 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
 }
 
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
+    /* 阶段 = 显式状态（见 check_internal.h 的阶段契约）。*/
+
     double tB0=0,tB1=0,tB2=0,tB3=0,tB4=0,tB5=0,tB6=0,tB7=0,tB8=0;
     Checker c;    memset(&c, 0, sizeof c);
     vecInit(&c.funcInsts, arena, sizeof(void *));   /* free function instances */
@@ -5767,6 +5769,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
 
     /* Second pass: check function bodies. */
+    c.phase = PHASE_BODIES;   /* 从这一刻起有作用域（见 check_internal.h 的阶段契约）*/
     ctPhase("ckB6", tB6); tB7 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -5804,6 +5807,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * then point the call expression's `func` at it. Static instances are interned
      * (`funcInstance` de-duplicates), so one argument combination has exactly one
      * instance. */
+    c.phase = PHASE_POST;    /* 之后**没有作用域**：只能读表与记在节点/符号上的身份 */
     ctPhase("ckB8", tB8);   /* after the last of the eight: the rest of checkModule */
     /* **To a fixpoint**, not in a single pass.
      *

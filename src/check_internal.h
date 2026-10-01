@@ -10,6 +10,25 @@
 
 #include "check.h"
 
+/* 检查器的阶段：定义放这里是因为 `Checker` 结构体里要存它（契约见本文件后面的"阶段契约"一节）。*/
+typedef enum {
+    PHASE_INIT = 0,      /* 开始之前：还没有任何表 */
+    PHASE_DECLS,         /* ckB0–ckB5：声明、签名、C-ABI 检查 */
+    PHASE_BODIES,        /* ckB6–ckB7：函数体（作用域存在） */
+    PHASE_POST           /* ckB8 起：摘要、电平、重放、复核（**没有作用域**） */
+} CheckPhase;
+
+/* 阶段名（诊断用；也是 `EXTC_DBG_FALLBACK`/断言消息里该出现的东西）。*/
+static inline const char *phaseName(CheckPhase p) {
+    switch (p) {
+    case PHASE_INIT:   return "init";
+    case PHASE_DECLS:  return "decls";
+    case PHASE_BODIES: return "bodies";
+    case PHASE_POST:   return "post";
+    }
+    return "?";
+}
+
 /* Display name of a declaration for diagnostics: `DN(x)` takes a `StructDef *` or a
  * `TypeDef *`.
  *
@@ -352,6 +371,7 @@ typedef struct Checker {
      * which is what decides between the plain `while (cond)` and the per-round-release
      * shape (定案 101②). */
     int        allocSites;
+    CheckPhase phase;      /* 见上面的"阶段契约"：误用由断言看守 */
     /* How many subexpressions with a side effect have already been checked in the
      * current statement.
      *
@@ -674,6 +694,30 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  Sym *lookup (Checker *c, const char *name);
 /* The binding at the root of a place, found by walking through fields, indexes and slices; NULL
  * when the place is not rooted in a binding. */
+/* ---------------------------------------------------------------- 阶段契约（V1 / A2）
+ *
+ * `checkModule` 是一条**流水线**，而过去"阶段"只由**代码位置**表达（`ctPhase("ckB0"…"ckB8")`
+ * 的计时标记 + 顺序）。这带来两类反复出现的 bug：
+ *
+ *   · 在**没有作用域**的阶段里以为有作用域（P0-6d：效果摘要在所有体检查完之后才算，
+ *     那时 `lookup` 无从解析 ⇒ 只能按名字匹配参数，被局部遮蔽时认错人）；
+ *   · 依赖"某个标志这时还没算出来"的事实（`makesPool` 要等闭包 ⇒ 池站点的提权落不下去，
+ *     于是要有 `recordLvlFact` 的末轮重放）。
+ *
+ * 从 V1 起，阶段是**显式状态**（`c->phase`），并且：
+ *
+ *   | 阶段 | 何时 | 能看到什么 | **看不到什么** ⇒ 因此必须靠什么记住 |
+ *   |---|---|---|---|
+ *   | `PHASE_DECLS` | `ckB0`–`ckB5`：声明与签名（结构体/枚举/trait/`@export`/C-ABI 检查） | 声明表、类型表 | 函数体的任何事实 |
+ *   | `PHASE_BODIES` | `ckB6`–`ckB7`：逐个函数体 | **作用域**（`lookup`/`placeRoot` 可用）、`c->stores`、各 `recordXxxCheck` 记录端 | 效果摘要（要么没算、要么只按签名）、`makesPool` |
+ *   | `PHASE_POST` | `ckB8` 起：效果摘要 → 延迟调用不动点 → 操作符/协议/结果类型/引用规则重放 → `eSites` 的 arena 与 zone 通道 → `lvlFacts` 重放 → `allSyms` 提升 → 逃逸集合 union 不动点 | 全部表；`refChecks`/`opChecks`/`lvlFacts` 这些**延迟机制**正是为这一阶段准备的；`lookup`/`placeRoot` **仍可调用，但只能解析到模块级绑定**（实测：套件里有相当数量的调用依赖这一点） | **作用域**（已全部关闭）⇒ 对**局部**名字的解析必然落空或错认同名全局；凡是要"认身份"的事都必须用**记在节点/符号上的**信息（`identBindOf`、`FuncDef.paramSyms`）。`placeRoot` 在无作用域时解析成功会打一条 `[note]`。
+   **实测补充（V1）**：POST 阶段确实有**大量** `lookup` 调用（套件里 341 次，且名字是 `self` 这类**局部**名字）—— 无作用域时它们只能得到 `NULL` 或**同名全局**。这既是"为什么必须有 `FuncDef.paramSyms`/`identBindOf` 这类记在节点上的身份"的实证，也是一条**待查线索**：凡是在 POST 阶段依赖 `lookup` 结果做判断的地方，都值得逐个核对是否在解析局部名字。 |
+ *
+ * 误用要**响亮**：`lookup`/`placeRoot` 需要作用域，所以它们在 `PHASE_POST` 里是非法调用 ——
+ * 调试构建（`EXTC_DBG=1`）会当场 abort 并指出是哪一行，而不是静默给出一个"认不出"的答案。
+ * 反过来，`PHASE_BODIES` 里**不要**去读只在该阶段之后才成立的量（例如 `makesPool`）：
+ * 那类"当时还算不出来"的事实应当走 `recordLvlFact` 之类的延迟机制。*/
+
 /* ---------------------------------------------------------------- 深度 / 身份：四个问题
  *
  * 这个检查器里"这个值活多深 / 它是谁"被问了一百多次，曾经由**三套各写一遍的根遍历**回答，
