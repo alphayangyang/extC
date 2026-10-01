@@ -58,7 +58,7 @@
 
 | 记号 | 含义 | 实现里的对应 |
 |---|---|---|
-| `d(v)` | 值 `v` 里**所有活指针**所指对象的最大层号（**越小活得越久**） | 检查器的记账（`exprRefDepth` / `Sym.refDepth` / 字段表） |
+| `d(v)` | 值 `v` 里**所有活指针**所指对象的最大层号（**越小活得越久**） | 检查器的记账（`targetDepth` / `Sym.refDepth` / 字段表） |
 | `at(p)` | 地方 `p` 的存储所在层 | `storeLayer()`（`check_escape.c:72-84`） |
 | `deref` 悬垂 | 读一个指向**已 release 区域**的指针 | ASan `heap-use-after-free` |
 
@@ -66,7 +66,7 @@
 
 ```c
 /* check_escape.c:520-541 —— 存进去之前问"被指对象活不活得够久" */
-int d = exprRefDepth(c, val);
+int d = targetDepth(c, val);
 if (d <= at) return false;          /* 放行 */
 else ckError(...);                  /* 拒绝 */
 ```
@@ -113,7 +113,7 @@ else ckError(...);                  /* 拒绝 */
 
 | 字段 | 写点 | 读点 | 它答的问题 |
 |---|---|---|---|
-| `Sym.depth` | `check_lookup.c:141`；全局 `check_top.c:1261` | `placeDepth`（`check_escape.c:41`）、`storeLayer`（`:79-80`） | **槽位**在哪一层（参数 0 / 函数体 1 / 每进一层块 +1） |
+| `Sym.depth` | `check_lookup.c:141`；全局 `check_top.c:1261` | `slotDepth`（`check_escape.c:41`）、`storeLayer`（`:79-80`） | **槽位**在哪一层（参数 0 / 函数体 1 / 每进一层块 +1） |
 | `Sym.refDepth` | **9 处**（见 §4） | `check_escape.c:40`（引用型绑定）、`:132`（含引用的绑定） | **一个数答两个问题**：(a) `ref T` 绑定**指着**的东西多深；(b) 聚合绑定**里面**的引用多深 |
 | `Sym.fields[4].depth` / `otherDepth` | `check_top.c:873-913`（4 处） | `check_escape.c:140-144`（`h.p` 读那一格） | 逐字段版 (b)；`otherDepth` = 归不到某一格的兜底 |
 | `Sym.origin` | `noteOrigin`（`check_escape.c:325-327`）← `check_stmt.c:204,341` | `promoteInto2`（`:352-367`） | 这个绑定**从哪个表达式来的**（提升用它往回走） |
@@ -122,9 +122,9 @@ else ckError(...);                  /* 拒绝 */
 | `Sym.addressed` | `check_expr.c:580` | `check_top.c:897,906`；`noteOrigin` | 取过地址 ⇒ 别名可能写它 ⇒ **只许弱更新** |
 
 **读法不对称（这是最容易看漏的一处）**：
-`exprRefDepth` 的**早退**条件是 `typeContainsRef(类型)`，而 `typeContainsRef` 对
+`targetDepth` 的**早退**条件是 `typeContainsRef(类型)`，而 `typeContainsRef` 对
 **`TY_REF` 自己答 `false`**（`check_lookup.c:295` 第一行只对 `t->kind == TY_REF` 之外的分支递归）。
-⇒ 一个类型是 `mut ref i32` 的值，在 `exprRefDepth` 眼里是"**里面不可能有引用**"⇒ 返回 **0**
+⇒ 一个类型是 `mut ref i32` 的值，在 `targetDepth` 眼里是"**里面不可能有引用**"⇒ 返回 **0**
 （真值 = 它指着的东西的层号）。
 
 ---
@@ -145,11 +145,11 @@ static void refreshRootDepth(Sym *s) {
 
 配套的两处"只改一格、却动了整根"的写法：
 
-- `check_escape.c:335`（换指向那一支）：`slot0->refDepth = exprRefDepth(c, v);` —— 覆盖；
+- `check_escape.c:335`（换指向那一支）：`slot0->refDepth = targetDepth(c, v);` —— 覆盖；
 - `check_stmt.c:398`（引用型目标的赋值）：`vs->refDepth = d2;` —— 覆盖。
 
 ⇒ 于是「**先把深的存进 A 格、再往 B 格写一个浅的**」会把整根压成浅的，
-而**浅的那一格并没有抹掉 A 格里还活着的指针** ⇒ `exprRefDepth(x)` = 0（真值 ≥ 1）。
+而**浅的那一格并没有抹掉 A 格里还活着的指针** ⇒ `targetDepth(x)` = 0（真值 ≥ 1）。
 `ARENA-FORMAL.md` §6.6 明写这条纪律是 `max`，实现是**覆盖**
 
 ### 4.2 违例 ②：整值读取只读一个数，**不看字段表**
@@ -158,7 +158,7 @@ static void refreshRootDepth(Sym *s) {
 /* check_escape.c:124-135 —— `EX_IDENT` 的深度 */
 Sym *sy = lookup(c, e->u.ident.name);
 if (sy && ... typeContainsRef(...)) d = sy->refDepth;   /* ← 只看这一个数 */
-else d = placeDepth(c, e);
+else d = slotDepth(c, e);
 ```
 
 而 `h.p` 这条**逐字段**路径是**另算**的（`:140-144` 读字段表）。
@@ -166,7 +166,7 @@ else d = placeDepth(c, e);
 
 ### 4.3 违例 ③：把"深度"当成"**表达式自己**多深"，而不是"**它指着什么**多深"
 
-- `exprRefDepth` 对 `TY_REF` 型早退返回 0（§3 末）。
+- `targetDepth` 对 `TY_REF` 型早退返回 0（§3 末）。
 - "藏在字面量里的分配点"没算进来：`inner { v: mknode() }` 的深度 = 0，
   可 `mknode()` 在调用点被算成"深度 0"，而它实际分配到**当前块**那只 arena
   （`check_stmt.c:221-224` 的"有家被调者 ⇒ 深度 = 当前层"**只覆盖初始化式直接是调用**的情形，
@@ -370,7 +370,7 @@ ASan：`heap-use-after-free`。**对照**：origin 里没有 `new` 时（`{p:x, 
 - `check_top.c:863` 的注释"`otherDepth` 是……只增不减 保守"与实际代码不符
   （元素写那一支是覆盖）
 - `check_stmt.c:343-347` 的注释担心"元素/字段写后 `refDepth` 上界"，
-  但 `noteFieldDepthWrite` 用的是 `exprRefDepth(v)`，而 `v` 是**引用型**时那个函数答 0
+  但 `noteFieldDepthWrite` 用的是 `targetDepth(v)`，而 `v` 是**引用型**时那个函数答 0
 
 ---
 
@@ -378,8 +378,8 @@ ASan：`heap-use-after-free`。**对照**：origin 里没有 `new` 时（`{p:x, 
 
 ### 7.1 必须成立的三条不变量（写进代码，别靠注释）
 
-> **P1（上界性）**：`exprRefDepth(e)` ≥ 真实层号 —— 特别地
-> · `TY_REF` 型**不许**走"类型里没有引用 ⇒ 0"那条早退（应走 `placeDepth`）；
+> **P1（上界性）**：`targetDepth(e)` ≥ 真实层号 —— 特别地
+> · `TY_REF` 型**不许**走"类型里没有引用 ⇒ 0"那条早退（应走 `slotDepth`）；
 > · 结构体/数组/枚举字面量与 `EX_IDENT` 的整值深度必须包含
 >   **藏在里面的分配点层号**（`new`/`alloc`/有家调用的 `arenaLevel`/`arenaArg`）。
 >
@@ -478,7 +478,7 @@ ASan：`heap-use-after-free`。**对照**：origin 里没有 `new` 时（`{p:x, 
 
 | # | 改哪 | 怎么改 | 为什么是"精确"而不是"更保守" |
 |---|---|---|---|
-| 0-a | `check_escape.c:96` | `TY_REF` 不许走"类型里没有引用 ⇒ 0"那条早退，走 `placeDepth` | 把**记错**改成**记对** ⇒ 只可能更精确 |
+| 0-a | `check_escape.c:96` | `TY_REF` 不许走"类型里没有引用 ⇒ 0"那条早退，走 `slotDepth` | 把**记错**改成**记对** ⇒ 只可能更精确 |
 | 0-b | `check_top.c:882` | `refreshRootDepth`：`m = max(旧 refDepth, otherDepth, 各字段)`，**不许降** | 同上（旧值是保守的下界，取 max 只会更真） |
 | 0-c | `check_stmt.c:335` / `:398` | 同样取 `max`，不许覆盖 | 同上 |
 | 0-d | `check_top.c:897` | 元素写（`field == NULL`）**不许清表**，取 max | 现在的"清表"是**凭空丢事实**，只可能更不精确 |
@@ -500,7 +500,7 @@ ASan：`heap-use-after-free`。**对照**：origin 里没有 `new` 时（`{p:x, 
 |---|---|---|---|
 | 2-a | `check_stmt.c:216-224` + `check_top.c:614-616` | `ARENA_HOME` 被当成"深度 0"，可它实际是**调用者按这次调用的结果落点选的**（可能是一个**块** arena）⇒ 记账 0 不成立 | 让"家"的深度**由调用点的落点决定**并记进去（现在只对 CALL/METHOD 打了补丁）。**注意**：`ARENA_HOME = -1` 这个**编码**是对的（`DECISIONS` 定案 68）、`promoteInto2:343` 也对；错的是**"它蕴含深度 0"这个假设** |
 | 2-b | `check_expr.c:788` + `check_top.c:1731-1742` | `alloc<T>` 不进 `arenaSites` ⇒ 永远不会被改写成家 ⇒ `fn f() -> mut ref i32 { return alloc<i32>(1) }` 被拒，而报错还叫人写 `new` | 把 `alloc` 当**一等公民**：与 `new` 同一条路（登记 + 可提升 + 深度从同一权威取）⇒ 消掉**一整个误拒族**，且零保守化 |
-| 2-c | `check_expr.c:1371-1374` | 方法接收者那一支：局部接收者 ⇒ `d = placeDepth(recv) = 1` ⇒ `arenaArg = &__extc_a[1]` = **被调者自己的帧**（"家"的本义是"**调用者选的那只**"，见 `check_escape.c:458-462` 的注释）| 接收者是一个**槽位**：被调者往那个槽里存的东西只能活到**那个槽**死 ⇒ 真正缺的是把"这个槽的存储活到哪"记准（= 2-a 的同一件事）并让它进入调用点那条 `Cont` 约束的判据 **不是**把默认值改成"我的家"——那样 `self` 是本帧局部时会把整个函数变成堆，白费内存（`PLAN-REGION.md:90` 记过同一个坑）|
+| 2-c | `check_expr.c:1371-1374` | 方法接收者那一支：局部接收者 ⇒ `d = slotDepth(recv) = 1` ⇒ `arenaArg = &__extc_a[1]` = **被调者自己的帧**（"家"的本义是"**调用者选的那只**"，见 `check_escape.c:458-462` 的注释）| 接收者是一个**槽位**：被调者往那个槽里存的东西只能活到**那个槽**死 ⇒ 真正缺的是把"这个槽的存储活到哪"记准（= 2-a 的同一件事）并让它进入调用点那条 `Cont` 约束的判据 **不是**把默认值改成"我的家"——那样 `self` 是本帧局部时会把整个函数变成堆，白费内存（`PLAN-REGION.md:90` 记过同一个坑）|
 
 ⇒ 2-a/2-b/2-c 都要做，只做 1-a 不够：`p17_assoc_publish` / `p14_e_blindspot` 在补完 1-a 后**仍然是 UAF**（我实测过）。
 
@@ -508,7 +508,7 @@ ASan：`heap-use-after-free`。**对照**：origin 里没有 `new` 时（`{p:x, 
 
 | # | 做什么 | 为什么这是"精确"而不是"保守" |
 |---|---|---|
-| 3-a | **`D` 换成单调数据流**：把 `exprRefDepth` 从"边查边写 `Sym`"改成**独立前向分析**（在 CFG 上：赋值取 `max`、合流取 `max`、循环取不动点，格就是"能出现的层号集合" ∪ `{⊥}`）；检查器**只读**这张表 | 合流取 max 是**唯一 sound 的 join**；现在合流处**什么都不做**（后写覆盖前写）⇒ 改成 max **必然是"加上缺失的那一步"**，不是在保守化 |
+| 3-a | **`D` 换成单调数据流**：把 `targetDepth` 从"边查边写 `Sym`"改成**独立前向分析**（在 CFG 上：赋值取 `max`、合流取 `max`、循环取不动点，格就是"能出现的层号集合" ∪ `{⊥}`）；检查器**只读**这张表 | 合流取 max 是**唯一 sound 的 join**；现在合流处**什么都不做**（后写覆盖前写）⇒ 改成 max **必然是"加上缺失的那一步"**，不是在保守化 |
 | 3-b | **字段表做全**：不是 4 格 + `otherDepth`，而是**所有静态字段各一格**（静态字段数有界 ⇒ 成本可控）；元素写取 max 不清表（= 0-d） | 现在"表满 ⇒ 兜底格只增不减 ⇒ 误拒"是**已知**的精度损失；做全只增精度 |
 | 3-c | **`at` 侧走约束求解**（`ARENA-FORMAL.md` §3/§8 那套，现在只落地了"两条流 + 调用点代入"）：变量 = 每个分配点的区域；约束 = C1–C5；**取最小解** | 这正是那份文档**定理 8.1（相对完备性）**说的：流事实精确时，"最小解 = 最浅的安全选择"。**它不是额外的复杂度，它是 ②③ 的唯一实现方式** |
 | 3-d | **`for`/`while` 体单独一只区域**（块级细化再细一档） | 现在"提升到函数层"= 整个函数变成一个自动清理的堆（`定案 63` 已认可的代价）。有了"每轮一块"的区域，**同一段代码内存上界从"函数级"降到"一次迭代级"**且**不需要多拒任何程序** |

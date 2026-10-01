@@ -44,7 +44,7 @@
 | 文件 | 修法 | 出处 | 毕业去向 |
 |---|---|---|---|
 | `A_field_root_lowered` | `refreshRootDepth` 取 max（只许长大）| §9 档 0（A1）| `tests/errors/arena_root_depth_lowered.extc` ✓ |
-| `B_field_table_stale` | 普通赋值也走 `noteFieldDepthWrite`；深度改用"值结构上界 ∪ exprRefDepth" | §9 档 0（A2 写点）| `tests/errors/arena_field_table_stale.extc` ✓ |
+| `B_field_table_stale` | 普通赋值也走 `noteFieldDepthWrite`；深度改用"值结构上界 ∪ targetDepth" | §9 档 0（A2 写点）| `tests/errors/arena_field_table_stale.extc` ✓ |
 | `C1_if_join_fieldcell` | 控制流合流取 max join | §9 档 0（A2 join）| `tests/errors/arena_if_join_field_depth.extc` ✓ |
 | `C2_if_join_refbinding` | 同上（引用型绑定那一支）| §9 档 0（A2 join）| `tests/errors/arena_if_join_ref_binding.extc` ✓ |
 | `C3_if_join_wholevalue` | 同上（整值赋值那一支）| §9 档 0（A2 join）| `tests/errors/arena_if_join_whole_value.extc` ✓ |

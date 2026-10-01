@@ -131,7 +131,7 @@ static void copyFacts(Facts *to, const Facts *from) { *to = *from; }
 
 /* Depth of the references inside a value, read from the tree and the facts so far.
  *
- * This mirrors the transfer rule rather than the checker's `exprRefDepth`: it never
+ * This mirrors the transfer rule rather than the checker's `targetDepth`: it never
  * consults an arena level, because those are not final while the checker runs, and it
  * reads binding depths from the facts computed by this analysis instead of from a
  * field the walk happens to have written.

@@ -454,7 +454,7 @@ void checkStmt(Checker *c, Stmt *s) {
              * Only the call site knows where the references in the result live, since
              * the call site picks `arenaArg`, and the field table filled in below only
              * covers a struct literal. Without this, the field `t.p` has no entry,
-             * `exprRefDepth(t)` falls back to `sym->refDepth` and gets 0, and a later
+             * `targetDepth(t)` falls back to `sym->refDepth` and gets 0, and a later
              * `b = t` with a shallower `b` looks safe while the block exit frees the
              * node. The sanitizer reports a heap use after free, and running it once
              * does not even crash: only building inside a block and storing outside it
@@ -465,7 +465,7 @@ void checkStmt(Checker *c, Stmt *s) {
              * `at` just above, so the result has depth `at`. Here `at` is
              * `c->scopes.len`, the level the binding lives at. */
             if (s->type && typeContainsRef(c->tt, s->type)) {
-                int d = exprRefDepth(c, s->u.var.init);
+                int d = targetDepth(c, s->u.var.init);
                 Expr *ini = s->u.var.init;
                 if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
                     && ini->func && ini->func->needsHome && (int)c->scopes.len > d)
@@ -474,7 +474,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * rooted at a global) is not in a frame at all, so the home-arena heuristic above
                  * does not apply and the depth is 0 -- authoritatively, not "not decided yet".
                  * That is what lets a **view** binding keep working when its `.data` is handed to
-                 * an unsigned C function; see `Sym.outOfFrame` and `placeDepth`. */
+                 * an unsigned C function; see `Sym.outOfFrame` and `slotDepth`. */
                 if (exprOutOfFrame(c, ini)) {
                     sym->outOfFrame = true;
                     sym->refDepth   = 0;
@@ -490,7 +490,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 for (size_t fi = 0; fi < s->u.var.init->u.lit.inits.len; fi++) {
                     FieldInit *fip = *(FieldInit **)vecAt(&s->u.var.init->u.lit.inits, fi);
                     c->curStoreVal = fip->value;          /* which value wrote this field */
-                    noteFieldDepthWrite(c, sym, fip->name, exprRefDepth(c, fip->value));
+                    noteFieldDepthWrite(c, sym, fip->name, targetDepth(c, fip->value));
                 }
                 c->curStoreVal = NULL;
                 /* The field table of a struct literal is complete. Every written field
@@ -705,7 +705,7 @@ void checkStmt(Checker *c, Stmt *s) {
                     /* The lifetime this reference has to reach is capped by the life
                      * of the container.
                      *
-                     * `storeLayer(h.q)` goes through `placeDepth` and answers with the
+                     * `storeLayer(h.q)` goes through `slotDepth` and answers with the
                      * depth of the projection, namely 2, while `h` itself lives at
                      * level 1, since a local binding cannot outlive its scope. Resolving
                      * the site at 2 frees it when the block ends, even though the pointer
@@ -727,7 +727,7 @@ void checkStmt(Checker *c, Stmt *s) {
                     if (s->u.assign.target->kind == EX_IDENT) {
                         Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);
                         if (slot0 && slot0->type && slot0->type->kind == TY_REF)
-                            slot0->refDepth = exprRefDepth(c, v);
+                            slot0->refDepth = targetDepth(c, v);
                         /* The origin moves with it: after `mid = n` the origin of `mid`
                          * is `n`, so the intermediate bindings on a promotion walk stay
                          * reachable.
@@ -750,7 +750,7 @@ void checkStmt(Checker *c, Stmt *s) {
                     {
                         Sym *rootA = placeRoot(c, s->u.assign.target);
                         if (rootA && rootA->type && typeContainsRef(c->tt, rootA->type)) {
-                            int dA = exprRefDepth(c, v);
+                            int dA = targetDepth(c, v);
                             /* Record per field. Without a taken address the entry is
                              * overwritten rather than merged, so after `h.p = null` the
                              * effective depth of the root really does go down; always
@@ -791,7 +791,7 @@ void checkStmt(Checker *c, Stmt *s) {
 
             /* Feed the destination depth back into the `new` sites inside the value
              * first. The order matters: the two blocks just below record
-             * `exprRefDepth(value)` into the depth table of the target, and promoting
+             * `targetDepth(value)` into the depth table of the target, and promoting
              * one step later would record the old number and cause false rejections
              * afterwards. */
             int atDst = storeLayer(c, s->u.assign.target);
@@ -1089,7 +1089,7 @@ void checkStmt(Checker *c, Stmt *s) {
             if (dbgOn("EXTC_DBG_RET3"))
                 fprintf(stderr, "[ret3] %-8s line=%d kind=%d d=%d mentionsParam=%d\n",
                         c->curFunc?c->curFunc->name:"?", s->line,
-                        (int)s->u.ret.value->kind, exprRefDepth(c, s->u.ret.value),
+                        (int)s->u.ret.value->kind, targetDepth(c, s->u.ret.value),
                         mentionsParam(s->u.ret.value->type)?1:0);
             /* A returned value is handed to the caller, so it is published at level 0:
              * the whole point of returning it is that it outlives this frame. */
@@ -1193,7 +1193,7 @@ void checkStmt(Checker *c, Stmt *s) {
                      * Here the initializer is the **scrutinee**: a payload is a copy, so whatever its
                      * references point at is whatever the scrutinee's references point at (and the
                      * scrutinee's own binding already carries that answer, which is why
-                     * `exprRefDepth` consults the binding rather than the expression node).
+                     * `targetDepth` consults the binding rather than the expression node).
                      *
                      * Without this line the natural checked pattern was refused --
                      * `match dl::sym(h, n) { some(p) => { return p } ... }` reported "this return
@@ -1201,7 +1201,7 @@ void checkStmt(Checker *c, Stmt *s) {
                      * depth 2)" for a plain copy of a C pointer, which left `!` (the unchecked
                      * signature) as the only way to write it. */
                     if (bt && typeContainsRef(c->tt, bt))
-                        bs->refDepth = exprRefDepth(c, s->u.match.scrutinee);
+                        bs->refDepth = targetDepth(c, s->u.match.scrutinee);
                     /* Write the resolved C name back into the arm, the same treatment
                      * `Param.cname` and a declaration's `cname` get. Without it, two
                      * `match` statements in one scope binding the same name would declare

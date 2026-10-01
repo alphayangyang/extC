@@ -1226,7 +1226,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Param *p = *(Param **)vecAt(params, j);
             if (!p->type || p->type->kind != TY_REF) continue;   /* a scalar has no lifetime */
             Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
-            int d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, a);
+            int d = placeRoot(c, place) ? slotDepth(c, place) : targetDepth(c, a);
             if (d == 0) continue;                /* it already outlives this frame */
             ckError(c, line,
                     "A C function is a black box: unless its declaration says it does not keep the"
@@ -1308,11 +1308,11 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * depth does not depend on T. Skipping it left "no measurable destination" and
              * fell back to the strict 0, which is what kept rejecting the safe call. */
             /* EXACTLY the expression the store rules use for the same argument below
-             * (`placeRoot ? placeDepth : exprRefDepth`). Mixing the two queries is what made
-             * earlier attempts collapse h to 0: for a container `placeDepth` answers about
-             * the 40-byte handle (1) while `exprRefDepth` answers about its storage, the pool
+             * (`placeRoot ? slotDepth : targetDepth`). Mixing the two queries is what made
+             * earlier attempts collapse h to 0: for a container `slotDepth` answers about
+             * the 40-byte handle (1) while `targetDepth` answers about its storage, the pool
              * plate, which is born in the home arena and therefore reports 0. */
-            int d2 = placeRoot(c, place2) ? placeDepth(c, place2) : exprRefDepth(c, place2);
+            int d2 = placeRoot(c, place2) ? slotDepth(c, place2) : targetDepth(c, place2);
             if (d2 == 0) { h = 0; haveDest = true; break; }   /* lives forever: the strictest */
             if (!haveDest || d2 < h) h = d2;
             haveDest = true;
@@ -1329,16 +1329,16 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
         if (mentionsParam(p->type) || mentionsParam(place->type)) continue;  /* generic: defer */
         /* An argument is not always a place (the typical case: `stash(ref l, new node)`
-         * passes a `new` directly). `placeDepth` answers 0 for a non-place, and that
+         * passes a `new` directly). `slotDepth` answers 0 for a non-place, and that
          * number is read as "lives forever", so the rule would check nothing. The
          * lifetime of such an argument is taken from the level of the arena block it was
          * allocated in. */
-        int d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, place);
+        int d = placeRoot(c, place) ? slotDepth(c, place) : targetDepth(c, place);
         /* When the value is out of reach, first try to promote it (the same rule as on
          * assignment edges): if it cannot be promoted, the error below stands as it is;
          * if it can, the value really does live to this level. */
         if (d != 0 && d > h && promoteInto(c, place, h))
-            d = placeRoot(c, place) ? placeDepth(c, place) : exprRefDepth(c, place);
+            d = placeRoot(c, place) ? slotDepth(c, place) : targetDepth(c, place);
         if (d == 0 || d <= h) continue;              /* lives long enough */
         ckError(c, line,
                 "The callee may store this reference into the arena it was given, so the"
@@ -1376,8 +1376,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * `promoteInto` 就能把建池的站点提到 h 那一层。重放忽略返回值，所以多记事实
              * 不会引入新报错（"提不动"的那些照旧由下面的深度判据负责）。 */
             recordLvlFact(c, a, h);
-            int d = exprRefDepth(c, a);
-            if (d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);
+            int d = targetDepth(c, a);
+            if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
             if (d == 0 || d <= h) continue;
             ckError(c, line,
                     "Nothing was stored here that could be checked at this call, so the"
@@ -1408,7 +1408,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (mentionsParam(a->type)) continue;
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
             recordLvlFact(c, a, h);         /* 同上：先记事实，末轮重放时再提（PLAN #87） */
-            int d = exprRefDepth(c, a);
+            int d = targetDepth(c, a);
             /* PROMOTE BEFORE REJECTING -- the same half the incomplete-summary branch above
              * has always had, and the reason a container can be handed to something that
              * outlives it.
@@ -1423,7 +1423,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * Sharing this half matters for pools as much as for arenas: a container built
              * inside a loop body and pushed into a container that outlives the loop needs its
              * pool born at the destination's place (POOLS.md 3.1, PLAN #87). */
-            if (d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);
+            if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
             if (d == 0 || d <= h) continue;
             ckError(c, line,
                     "The callee stores what this value points at into a container it was"
@@ -1474,8 +1474,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *src = *(Expr **)vecAt(args, j);
             if (mentionsParam(src->type)) continue;
             Expr *splace = (src->kind == EX_REF) ? src->u.ref.operand : src;
-            int dj = exprRefDepth(c, splace);
-            if (dj == 0 && placeRoot(c, splace)) dj = placeDepth(c, splace);
+            int dj = targetDepth(c, splace);
+            if (dj == 0 && placeRoot(c, splace)) dj = slotDepth(c, splace);
             /* not skipped: for a reference-typed argument the level is not filled in yet */
             for (size_t i = 0; i < params->len && i < args->len; i++) {
                 if (i == j) continue;
@@ -1691,7 +1691,7 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
         if (!p->type || p->type->kind != TY_REF || !p->type->mut) continue;
         Expr *a = *(Expr **)vecAt(args, i);
         Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
-        int d = placeDepth(c, place);   /* a parameter reports 0, a local its block depth */
+        int d = slotDepth(c, place);   /* a parameter reports 0, a local its block depth */
         /* What the record keeps: 0 = a parameter or a global (outside this frame), -1 = an
          * escaping local (also outside, for good), k >= 1 = a block of this body. */
         int recD = d;
@@ -2951,7 +2951,7 @@ static void collectEffects(Checker *c, FuncDef *f) {
 * pointer. Everything that is not a site (a binding, a call result, a value derived from a
 * parameter) keeps its recorded depth, which errs towards rejection.
 *
-* `exprRefDepth` cannot replace this: it calls `lookup` for a binding, and `runRefCheck`
+* `targetDepth` cannot replace this: it calls `lookup` for a binding, and `runRefCheck`
 * runs in the scope of a different module, so the binding it finds is not the original
 * one. This walk reads the levels already fixed on the nodes, which do not depend on the
 * scope.
@@ -3031,7 +3031,7 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
 }
 
 
-static int solvedValDepth(Expr *e) {
+static int solvedDepth(Expr *e) {
     if (!e) return 0;
     switch (e->kind) {
     case EX_NEW: case EX_GENCALL:
@@ -3041,19 +3041,19 @@ static int solvedValDepth(Expr *e) {
     case EX_IDENT: case EX_FIELD: case EX_INDEX:
         return e->refDepth > 0 ? e->refDepth : 0;
     /* The payload is copied into the pool: its depth is this value's depth (family E). */
-    case EX_DYN:      return solvedValDepth(e->u.dynv.payload);
-    case EX_SIGN:     return solvedValDepth(e->u.sign.operand);
-    case EX_DEREF:    return solvedValDepth(e->u.deref.operand);
-    case EX_SLICE:    return solvedValDepth(e->u.slice.obj);
+    case EX_DYN:      return solvedDepth(e->u.dynv.payload);
+    case EX_SIGN:     return solvedDepth(e->u.sign.operand);
+    case EX_DEREF:    return solvedDepth(e->u.deref.operand);
+    case EX_SLICE:    return solvedDepth(e->u.slice.obj);
     case EX_COALESCE: {
-        int a = solvedValDepth(e->u.coalesce.main);
-        int b = solvedValDepth(e->u.coalesce.fallback);
+        int a = solvedDepth(e->u.coalesce.main);
+        int b = solvedDepth(e->u.coalesce.fallback);
         return a > b ? a : b;
     }
     case EX_STRUCTLIT: {
         int d = 0;
         for (size_t i = 0; i < e->u.lit.inits.len; i++) {
-            int x = solvedValDepth((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value);
+            int x = solvedDepth((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value);
             if (x > d) d = x;
         }
         return d;
@@ -3061,7 +3061,7 @@ static int solvedValDepth(Expr *e) {
     case EX_ARRAYLIT: {
         int d = 0;
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++) {
-            int x = solvedValDepth(*(Expr **)vecAt(&e->u.arraylit.elems, i));
+            int x = solvedDepth(*(Expr **)vecAt(&e->u.arraylit.elems, i));
             if (x > d) d = x;
         }
         return d;
@@ -3069,7 +3069,7 @@ static int solvedValDepth(Expr *e) {
     case EX_ENUMVAL: {
         int d = 0;
         for (size_t i = 0; i < e->u.enumval.args.len; i++) {
-            int x = solvedValDepth(*(Expr **)vecAt(&e->u.enumval.args, i));
+            int x = solvedDepth(*(Expr **)vecAt(&e->u.enumval.args, i));
             if (x > d) d = x;
         }
         return d;
@@ -3077,7 +3077,7 @@ static int solvedValDepth(Expr *e) {
     case EX_CALL: {
         int d = 0;
         for (size_t i = 0; i < e->u.call.args.len; i++) {
-            int x = solvedValDepth(*(Expr **)vecAt(&e->u.call.args, i));
+            int x = solvedDepth(*(Expr **)vecAt(&e->u.call.args, i));
             if (x > d) d = x;
         }
         return d;
@@ -3093,7 +3093,7 @@ static int solvedValDepth(Expr *e) {
          * 计数会变，那才是要查的信号（与 walker 预算的关系：本仓库限制 23 个手写遍历
          * `tools/check_walkers.py`，把这些 kind 逐个列出来会让它变成第 24 个，
          * 而"列全"在这里买不到任何正确性）。*/
-        EXTC_DBG_NOTEF("solvedValDepth: kind=%d answered 0 (INT/CONV only, both carry no reference)", (int)e->kind);
+        EXTC_DBG_NOTEF("solvedDepth: kind=%d answered 0 (INT/CONV only, both carry no reference)", (int)e->kind);
         return 0;
     }
 }
@@ -5073,13 +5073,13 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         /* Recompute with the level the solver settled on: take the smaller value,
          * it can only get tighter. */
         if (depthComesFromAlloc2(c, rc->val, 0)) {
-            int now = solvedValDepth(rc->val);
+            int now = solvedDepth(rc->val);
             if (now < rc->depth) rc->depth = now;
         }
         if (dbgOn("EXTC_DBG_AT"))
             fprintf(stderr, "[at] %s what=%s depth=%d at=%d kind=%d dca=%d svd=%d\n",
                     instName, rc->what, rc->depth, rc->at, (int)rc->val->kind,
-                    depthComesFromAlloc2(c, rc->val, 0)?1:0, solvedValDepth(rc->val));
+                    depthComesFromAlloc2(c, rc->val, 0)?1:0, solvedDepth(rc->val));
         if (rc->depth > rc->at) {
             ckError(c, rc->line,
                     "A generic body is checked once on the template, where `T` is"
@@ -5993,7 +5993,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * every concrete instance is now re-run with its substitution in place.
      *
      * Why it has to be done this way: `typeContainsRef(T)` can only answer false for an
-     * opaque `T`, so `exprRefDepth` / `exprBorrowed` return early for it --
+     * opaque `T`, so `targetDepth` / `exprBorrowed` return early for it --
      *     struct boxT<T> {
      *         v: T
      *         fn stash(self: mut ref boxT<T>, value: T) { self.v = value }
@@ -6456,7 +6456,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * (measured on `container-of-view`: `[post] ... frozen=0 ... now=1`).
              * Only shapes where `depthComesFromAlloc` holds are touched, so bindings (derived
              * from a parameter or from a call result) are never relaxed. */
-            rc->depth = solvedValDepth(rc->val);
+            rc->depth = solvedDepth(rc->val);
         }
         if (getenv("EXTC_DUMP_OW"))
             fprintf(stderr, "[arena] single source of truth: %d site(s) (`new` and call sites) placed in a home arena\n", fixed);

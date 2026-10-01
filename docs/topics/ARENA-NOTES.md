@@ -58,7 +58,7 @@
 ```
 var x = alloc<i32>(1)   => 站点 lexicalLevel=2，而 refDepth=0
                            （EX_GENCALL 分支在函数有家时写 ARENA_HOME，映射回深度 0）
-var g: box = { q: x }   => exprRefDepth(x) 读 sy->refDepth=0
+var g: box = { q: x }   => targetDepth(x) 读 sy->refDepth=0
                            => 字段表记 g.q = 0（真相是 2）
 out = h                 => 提升走路看到 g.q 的深度 0 <= 目的地 1 ⇒ **跳过**
 return out              => 站点没被提升 ⇒ 留在块层 ⇒ 悬垂

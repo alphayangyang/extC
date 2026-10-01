@@ -46,7 +46,21 @@ abort 并打印 `lookup('self') with no open scope (phase=post)` —— 包括�
 | note 计数（断言版） | 84（与 V1 之前一致 ⇒ 没有新增噪声） |
 | `check.sh quick` / 五道闸门 / walker / guards | 见本轮提交前的全量验收 |
 
-## V2（下一轮）：A1 命名与 0/⊤ 显式化
+## V2 第一刀（本轮）：三个"深度"改名 + 命名与注释规范成文
+
+* **改名**（`src/`、`tests/`、`examples/`、`docs/manual`、`docs/topics`、`DESIGN-RESOLUTIONS`、
+  `DECISIONS`）：`placeDepth`→`slotDepth`（55 处）、`exprRefDepth`→`targetDepth`（90 处）、
+  `exprRefDepthPure`→`targetDepthPure`（28 处）、`solvedValDepth`→`solvedDepth`（16 处）；
+  代码与测试里**旧名 0 处**。**历史记录不改**（审计报告与 `.audit/*-LOG.md` 是带日期的记账），
+  对照表写在下面这份新文档里。
+* **规范成文**：`docs/topics/NAMING.md` —— 词的纪律（一个词只指一件事：`depth` 必须带限定词、
+  `level` 与 `depth` 不许混、`name` 不许当身份、`publish` 与 `invalidate` 成对…）、
+  注释的五条义务（回答哪个问题 / 极性契约 / 证据 / 历史 / 阶段）、
+  身份 vs 拼写的教训（含 PHASE_POST 的实测）、以及改名对照表。
+* 验收：tests **325/0**（发布与 `EXTC_DBG=1` 两模式）、`check.sh quick` **55/0**、
+  五道闸门全绿、walker 23 ✓、guards 18 ok。
+
+## V2 第二刀（下一轮）：0/⊤ 显式化
 
 * 三个"深度"改名区分：`placeDepth`（存的地方）→ `slotDepth`；`exprRefDepth`（值指向的东西）→
   `targetDepth`；`solvedValDepth`（电平稳定后重算）→ `solvedDepth`；头文件权威表同步。

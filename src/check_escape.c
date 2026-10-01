@@ -41,7 +41,7 @@ static bool isGlobalSym(Checker *c, Sym *s);   /* defined below; used by storeLa
 /* The diagnostic baseline for `EXTC_DBG_RHO`: a depth that depends only on lexical block
  * depths and origin chains, never on the level solver or on a cache. Not used by the
  * checker itself, so it can be compared against the real answer without changing it. */
-static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen);
+static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen);
 
 
 /* Depth of the storage a place expression denotes.
@@ -118,11 +118,11 @@ bool exprOutOfFrame(Checker *c, Expr *e) {
     }
 }
 
-int placeDepth(Checker *c, Expr *e) {
+int slotDepth(Checker *c, Expr *e) {
     if (!e) return 0;
     /* Dereference does not create storage; it only names storage through a pointer,
      * so the lifetime in question is that of the reference. */
-    if (e->kind == EX_DEREF) return exprRefDepth(c, e->u.deref.operand);
+    if (e->kind == EX_DEREF) return targetDepth(c, e->u.deref.operand);
     /* A reference-typed binding denotes the storage it points at, not its own slot
      * (`var cur: ?ref node = head`: the slot is in this frame, the node is outside). */
     if (e->kind == EX_IDENT) {
@@ -142,8 +142,8 @@ int placeDepth(Checker *c, Expr *e) {
         return sy ? sy->depth : 0;
     }
     /* A field or element lives inside the object that contains it. */
-    if (e->kind == EX_FIELD) return placeDepth(c, e->u.field.obj);
-    if (e->kind == EX_INDEX) return placeDepth(c, e->u.index.obj);
+    if (e->kind == EX_FIELD) return slotDepth(c, e->u.field.obj);
+    if (e->kind == EX_INDEX) return slotDepth(c, e->u.index.obj);
     Sym *root = placeRoot(c, e);
     /* A shape `placeRoot` cannot name is not "storage that lives forever" -- that reading pointed
      * the conservative direction exactly backwards. `placeRoot` knows `EX_IDENT` / `EX_FIELD` /
@@ -154,24 +154,24 @@ int placeDepth(Checker *c, Expr *e) {
      *     G = [v, v][0]      // accepted, and read a dead array (audit P0-6c)
      *
      * The right question for an unnamed shape is the one the rest of the checker asks about values:
-     * how deep is what it *points at* (`exprRefDepth`). For `[v, v][0]` that is the depth of `v`;
+     * how deep is what it *points at* (`targetDepth`). For `[v, v][0]` that is the depth of `v`;
      * for a call result it is the level the callee allocated in. Note this cannot recurse back
-     * here: `exprRefDepth` only consults `placeDepth` for expressions that *are* places, and this
+     * here: `targetDepth` only consults `slotDepth` for expressions that *are* places, and this
      * branch is the one where `placeRoot` already answered NULL (INV-U: the fallback records the
      * longer-lived requirement, never the shorter one). */
-    return root ? root->depth : exprRefDepth(c, e);
+    return root ? root->depth : targetDepth(c, e);
 }
 
 /* Arena level at which the storage of a place lives.
  *
- * This answers a different question from `placeDepth`, and the distinction matters:
+ * This answers a different question from `slotDepth`, and the distinction matters:
  *
- *   - how deep is the object a reference *points at*?  -> `placeDepth`
+ *   - how deep is the object a reference *points at*?  -> `slotDepth`
  *   - how deep is the storage *itself*?                -> this function
  *
  * `head = n` stores a pointer into the slot `head`. The slot lives in this frame,
  * so the value that `n` points at must live at least as long as that slot. Asking
- * `placeDepth(head)` on a reference-typed binding would instead report where the
+ * `slotDepth(head)` on a reference-typed binding would instead report where the
  * *pointee* lives (for `= null`, depth 0), which would reject the ordinary pattern
  * of building a list whose head outlives the loop body.
  *
@@ -183,7 +183,7 @@ int placeDepth(Checker *c, Expr *e) {
  *    Arena level of the storage. A local binding reports its block depth; a parameter
  *    reports 1, because the argument is a copy and the slot is in this frame; a global
  *    reports 0, because static storage outlives every frame. A place projected through
- *    a reference or parameter falls back to `placeDepth`, which reports the caller's
+ *    a reference or parameter falls back to `slotDepth`, which reports the caller's
  *    depth (0), so storing into a caller's object is still treated conservatively.
  */
 int storeLayer(Checker *c, Expr *e) {
@@ -198,12 +198,12 @@ int storeLayer(Checker *c, Expr *e) {
             return sy->depth;
         }
     }
-    return placeDepth(c, e);
+    return slotDepth(c, e);
 }
 
 /* Depth of the references inside a value, computed from syntax rather than types.
  *
- * `exprRefDepth` returns early when `typeContainsRef` says the type carries no
+ * `targetDepth` returns early when `typeContainsRef` says the type carries no
  * reference, but a struct whose *field* type is `ref` reports false there. A value
  * such as `inner { v: ref local }` would then be treated as holding no pointer and
  * be given depth 0, which lets a live pointer escape unnoticed.
@@ -230,8 +230,8 @@ int valDepthStructural(Checker *c, Expr *e) {
          * 非引用绑定结构上没有引用 ⇒ 0 是**语义**，不是兜底。*/
         return 0;
     }
-    case EX_REF:    return placeDepth(c, e->u.ref.operand);
-    case EX_EXT: return placeDepth(c, e->u.ext_.call);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
+    case EX_REF:    return slotDepth(c, e->u.ref.operand);
+    case EX_EXT: return slotDepth(c, e->u.ext_.call);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:  return valDepthStructural(c, e->u.deref.operand);
     case EX_SIGN:   return valDepthStructural(c, e->u.sign.operand);
     case EX_COALESCE:
@@ -260,13 +260,13 @@ int valDepthStructural(Checker *c, Expr *e) {
      * object it indexes, and an operator can only carry what its operands carry. Leaving these
      * to `default: return 0` **under-reported** the depth, which is the unsafe direction: the
      * depth decides how long the storage has to live. */
-    case EX_SLICE: return placeDepth(c, e->u.slice.obj);
+    case EX_SLICE: return slotDepth(c, e->u.slice.obj);
     case EX_TRY:   return valDepthStructural(c, e->u.try_.operand);
     case EX_CONV:  return valDepthStructural(c, e->u.conv.operand);
     case EX_BIN:   return maxInt(valDepthStructural(c, e->u.bin.left),
                                  valDepthStructural(c, e->u.bin.right));
     case EX_UN:    return valDepthStructural(c, e->u.un.operand);
-    case EX_INDEX: case EX_FIELD: return placeDepth(c, e);
+    case EX_INDEX: case EX_FIELD: return slotDepth(c, e);
     case EX_CALL:
         for (size_t i = 0; i < e->u.call.args.len; i++)
             d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.call.args, i)));
@@ -302,7 +302,7 @@ int valDepthStructural(Checker *c, Expr *e) {
  *     as long as the storage it is placed in.
  *   - `v` is a plain value: the bytes are copied, so where the source object lives
  *     and how long it lives have no effect on the stored copy. Only the references
- *     *inside* the copy matter, and those are covered by `exprRefDepth`.
+ *     *inside* the copy matter, and those are covered by `targetDepth`.
  *
  * When no reference can be inside the value, the source object's depth is not a
  * constraint of the store, and promoting it would only cause a false rejection.
@@ -356,7 +356,7 @@ static bool typeCannotCarryRef(Checker *c, Expr *e) {
  *    An upper bound on the depth of the references the stored bytes can carry.
  */
 int valDepthForStore(Checker *c, Expr *e) {
-    int a = exprRefDepth(c, e);
+    int a = targetDepth(c, e);
     /* A plain value copy: where the source object lives and how long it lives
      * are not constraints on the store, because the bytes are copied.
      */
@@ -403,7 +403,7 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
     return maxInt(d, zd);
 }
 
-int exprRefDepth(Checker *c, Expr *e) {
+int targetDepth(Checker *c, Expr *e) {
     if (!e) return 0;
     /* The only reason to answer without looking: this type cannot carry a reference.
      * A type that mentions a type parameter must not take this exit: inside a generic body the
@@ -432,22 +432,22 @@ int exprRefDepth(Checker *c, Expr *e) {
     int d = 0;
     switch (e->kind) {
     case EX_REF:
-        d = placeDepth(c, e->u.ref.operand);
+        d = slotDepth(c, e->u.ref.operand);
         break;
     case EX_EXT: 
-        d = placeDepth(c, e->u.ext_.call);
+        d = slotDepth(c, e->u.ext_.call);
         break;   /* `ext f(x)`: spawned call (cloned from EX_REF) */
     case EX_DEREF:
         /* The value of `*p` lives where `p` points, so it has the depth of `p`. */
-        d = exprRefDepth(c, e->u.deref.operand);
+        d = targetDepth(c, e->u.deref.operand);
         break;
     case EX_SIGN:
         /* `p!` only drops nullability; it still refers to the same storage. */
-        d = exprRefDepth(c, e->u.sign.operand);
+        d = targetDepth(c, e->u.sign.operand);
         break;
     case EX_DYN:
         /* The payload is copied into the pool: its references are this value's references. */
-        d = exprRefDepth(c, e->u.dynv.payload);
+        d = targetDepth(c, e->u.dynv.payload);
         break;
     case EX_NEW:
     case EX_GENCALL:
@@ -458,27 +458,27 @@ int exprRefDepth(Checker *c, Expr *e) {
     case EX_COALESCE:
         /* Either side can become the result, so take the deeper one. The deeper
          * answer is the conservative one. */
-        d = maxInt(exprRefDepth(c, e->u.coalesce.main),
-                   exprRefDepth(c, e->u.coalesce.fallback));
+        d = maxInt(targetDepth(c, e->u.coalesce.main),
+                   targetDepth(c, e->u.coalesce.fallback));
         break;
     /* `?` and a conversion pass the operand's references through, a slice is a view over the
      * object it indexes, and an operator can only carry what its operands carry. Leaving these
      * to `default: return 0` **under-reported** the depth, which is the unsafe direction: the
      * depth decides how long the storage has to live. */
     case EX_SLICE:
-        d = placeDepth(c, e->u.slice.obj);
+        d = slotDepth(c, e->u.slice.obj);
         break;
     case EX_TRY:
-        d = exprRefDepth(c, e->u.try_.operand);
+        d = targetDepth(c, e->u.try_.operand);
         break;
     case EX_CONV:
-        d = exprRefDepth(c, e->u.conv.operand);
+        d = targetDepth(c, e->u.conv.operand);
         break;
     case EX_BIN:
-        d = maxInt(exprRefDepth(c, e->u.bin.left), exprRefDepth(c, e->u.bin.right));
+        d = maxInt(targetDepth(c, e->u.bin.left), targetDepth(c, e->u.bin.right));
         break;
     case EX_UN:
-        d = exprRefDepth(c, e->u.un.operand);
+        d = targetDepth(c, e->u.un.operand);
         break;
     case EX_IDENT: {
         /* A binding that holds an aggregate carrying references (a struct, array, or
@@ -490,10 +490,10 @@ int exprRefDepth(Checker *c, Expr *e) {
          *                                     // to reject this valid program
          *
          * The slot depth is still the right answer for storing into the binding, which
-         * is what `placeDepth` computes. The two questions are kept separate. */
+         * is what `slotDepth` computes. The two questions are kept separate. */
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = sy->refDepth;
-        else d = placeDepth(c, e);
+        else d = slotDepth(c, e);
         /* Do not stop at the `typeContainsRef` answer above: it says false for an aggregate
          * whose field types are themselves references. A binding of
          * `struct holder { p: ?ref i32 }` would then be reported as depth 0 without the field
@@ -519,21 +519,21 @@ int exprRefDepth(Checker *c, Expr *e) {
             int *slot = rf ? fieldDepthEntry(c, rf, e->u.field.name, false) : NULL;
             if (slot) { d = *slot; break; }
         }
-        d = placeDepth(c, e);
+        d = slotDepth(c, e);
         break;
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            d = maxInt(d, exprRefDepth(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value));
+            d = maxInt(d, targetDepth(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value));
         break;
     /* A lambda's value is its environment: the field values are the reads that happen here;
      * the body belongs to the generated `call` method and is analysed there. */
     case EX_LAMBDA:
         for (size_t i = 0; i < e->u.lambda.inits.len; i++)
-            d = maxInt(d, exprRefDepth(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value));
+            d = maxInt(d, targetDepth(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value));
         break;
     case EX_ARRAYLIT:
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
+            d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.arraylit.elems, i)));
         break;
     case EX_CALL:
         /* The depth of a call result is the maximum depth of its arguments.
@@ -550,13 +550,13 @@ int exprRefDepth(Checker *c, Expr *e) {
          * is a compile error.
          */
         for (size_t i = 0; i < e->u.call.args.len; i++)
-            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
+            d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
         d = poolCallDepth(c, e, d);
         break;
     case EX_METHOD:
-        d = maxInt(d, exprRefDepth(c, e->u.method.recv));   /* the receiver is an argument too */
+        d = maxInt(d, targetDepth(c, e->u.method.recv));   /* the receiver is an argument too */
         for (size_t i = 0; i < e->u.method.args.len; i++)
-            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
+            d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
         d = poolCallDepth(c, e, d);
         break;
     case EX_ENUMVAL:
@@ -564,11 +564,11 @@ int exprRefDepth(Checker *c, Expr *e) {
          * value, so the value's depth is the payload's depth, exactly as for an array literal.
          */
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.enumval.args, i)));
+            d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.enumval.args, i)));
         break;
     case EX_ASSOC:
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            d = maxInt(d, exprRefDepth(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
+            d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
         d = poolCallDepth(c, e, d);
         break;
     default:
@@ -586,7 +586,7 @@ int exprRefDepth(Checker *c, Expr *e) {
      * direction that produces dangling allocations. */
     if (dbgOn("EXTC_DBG_RHO")) {
         Expr *seen[40];
-        int pure = exprRefDepthPure(c, e, 0, seen);
+        int pure = targetDepthPure(c, e, 0, seen);
         if (pure != d)
             fprintf(stderr, "[rho] %s:%d kind=%d cached=%d pure=%d %s\n",
                     c->ctx && c->ctx->path ? c->ctx->path : "?", e->line, (int)e->kind, d, pure,
@@ -1054,7 +1054,7 @@ void recheckLevelRejections(Checker *c) {
     for (size_t i = 0; i < c->lvlRejects.len; i++) {
         LvlRejection *lr = *(LvlRejection **)vecAt(&c->lvlRejects, i);
         if (!lr) continue;
-        int d = exprRefDepth(c, lr->val);
+        int d = targetDepth(c, lr->val);
         lr->late = d;
         if (dbgOn("EXTC_DBG_DEFER"))
             fprintf(stderr, "[defer] line=%-4d at=%-2d check=%d settled=%d %s\n",
@@ -1481,11 +1481,11 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
      * whole check. Return here without letting the `checkEscape` below record the
      * deferred check a second time. */
     if (mentionsParam(val->type)) {
-        recordRefCheck(c, val, target, placeDepth(c, target), line, "this assignment");
+        recordRefCheck(c, val, target, slotDepth(c, target), line, "this assignment");
         return false;
     }
     /* The question here is which level the value is stored into, so this uses
-     * `storeLayer` rather than `placeDepth`. For the trap with reference-typed bindings,
+     * `storeLayer` rather than `slotDepth`. For the trap with reference-typed bindings,
      * see the comment on `storeLayer`. */
     int at = storeLayer(c, target);
     /* The level this store needs is capped by the lifetime of the container.
@@ -1662,7 +1662,7 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
      *
      * Computing it later instead was a dead end: by instantiation time the function scope
      * is gone, the depth comes out as 0, and the check silently stops firing. */
-    rc->depth    = exprRefDepth(c, val);
+    rc->depth    = targetDepth(c, val);
     rc->borrowed = exprBorrowed(c, val);
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
@@ -1718,7 +1718,7 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
      * level facts, and the `d <= at` test below returns early, so as soon as the depth looks
      * shallow enough the site ends up with no constraint at all.
      *
-     * Measured on `examples/escape-promotion`: on `return head`, `exprRefDepth(head)`
+     * Measured on `examples/escape-promotion`: on `return head`, `targetDepth(head)`
      * answers 0 first because the `refDepth` on that `EX_IDENT` node has not been filled
      * in yet, so the check returns early, the `new node` site keeps `minAt = -1`, the final
      * pass puts it back at its lexical level, and the caller receives a freed list.
@@ -1726,7 +1726,7 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
      * The order is therefore record the facts first and compare depths second; the
      * predicate itself is unchanged. */
     promoteInto(c, val, at);
-    int d = exprRefDepth(c, val);
+    int d = targetDepth(c, val);
     if (d <= at) return false;
     /* The report below stays; this only keeps the question for the pass that runs after
      * the numbers are settled. */
@@ -2554,13 +2554,13 @@ mismatch:
 /* A depth computed only from lexical block depths and origin chains.
  *
  * This is the diagnostic baseline for `EXTC_DBG_RHO`. It deliberately ignores two inputs
- * that the real `exprRefDepth` depends on:
+ * that the real `targetDepth` depends on:
  *
  *   - the arena level of an allocation site, which the level solver may still change and
  *     which holds a provisional marker while the checker runs. The block depth the site
  *     was born at (`lexicalLevel`) is used instead, since it is stable and the solver can
  *     only give a site a *longer* lifetime than the shallowest block it could occupy;
- *   - the depth cached on a node, which `exprRefDepth` itself writes and which can be
+ *   - the depth cached on a node, which `targetDepth` itself writes and which can be
  *     left over from an earlier traversal after a binding was retargeted.
  *
  * Where the two disagree with `pure` larger, the checker believes a value lives closer to
@@ -2576,20 +2576,20 @@ mismatch:
  * Returns:
  *   An upper bound on the depth of the references the value can carry.
  */
-static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
+static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     if (!e) return 0;                 /* nothing to ask about: 0 is the honest answer */
     /* The budget and the cycle guard are **fallbacks**, and both used to answer `0` -- the value
      * whose meaning is "lives the longest" -- so exhausting either of them pointed the
      * conservative direction backwards (audit P0-6c is the same family). They are supposed never
      * to be reached in a real program; a debug build must find out if that is true. */
-    if (hops >= 40) { EXTC_DBG_FALLBACK("exprRefDepthPure: recursion budget (40) exhausted"); return 0; }
+    if (hops >= 40) { EXTC_DBG_FALLBACK("targetDepthPure: recursion budget (40) exhausted"); return 0; }
     for (int i = 0; i < hops; i++)
-        if (seen[i] == e) { EXTC_DBG_FALLBACK("exprRefDepthPure: origin cycle"); return 0; }
+        if (seen[i] == e) { EXTC_DBG_FALLBACK("targetDepthPure: origin cycle"); return 0; }
     seen[hops] = e;
 
     switch (e->kind) {
     case EX_DYN:
-        return exprRefDepthPure(c, e->u.dynv.payload, hops + 1, seen);   /* payload is copied into the pool */
+        return targetDepthPure(c, e->u.dynv.payload, hops + 1, seen);   /* payload is copied into the pool */
     case EX_NEW:
     case EX_GENCALL:
         /* The block the site was born in. `lexicalLevel` is set the first time the node
@@ -2601,9 +2601,9 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         Sym *sy = identBindOf(e);
         /* `!sy` 是"这个 ident 没解析过" —— 不该在检查器里发生（走到这里说明有别的 bug），
          * 而"没有 origin"是**合法**的：参数的 origin 就是空的，它的深度本来就是 0。*/
-        if (!sy) { EXTC_DBG_FALLBACK("exprRefDepthPure: unresolved ident"); return 0; }
+        if (!sy) { EXTC_DBG_FALLBACK("targetDepthPure: unresolved ident"); return 0; }
         if (!sy->origin) return 0;
-        return exprRefDepthPure(c, sy->origin, hops + 1, seen);
+        return targetDepthPure(c, sy->origin, hops + 1, seen);
     }
     case EX_FIELD: {
         /* The depth recorded for that field, falling back to the object. */
@@ -2614,30 +2614,30 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
                     strcmp(root->fields[i].name, e->u.field.name) == 0)
                     return root->fields[i].depth;
         }
-        return exprRefDepthPure(c, e->u.field.obj, hops + 1, seen);
+        return targetDepthPure(c, e->u.field.obj, hops + 1, seen);
     }
     case EX_INDEX:
-        return exprRefDepthPure(c, e->u.index.obj, hops + 1, seen);
+        return targetDepthPure(c, e->u.index.obj, hops + 1, seen);
     case EX_DEREF:
     case EX_SIGN:
         /* `*p` and `p!` name the same storage as their operand. */
-        return exprRefDepthPure(c, e->kind == EX_DEREF ? e->u.deref.operand
+        return targetDepthPure(c, e->kind == EX_DEREF ? e->u.deref.operand
                                                        : e->u.sign.operand, hops + 1, seen);
     case EX_REF:
         /* A reference created here points into the current block. */
         return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
     case EX_SLICE:
         /* A view carved out of a place lives as long as that place's block. */
-        return exprRefDepthPure(c, e->u.slice.obj, hops + 1, seen);
+        return targetDepthPure(c, e->u.slice.obj, hops + 1, seen);
     case EX_COALESCE: {
-        int a = exprRefDepthPure(c, e->u.coalesce.main, hops + 1, seen);
-        int b = exprRefDepthPure(c, e->u.coalesce.fallback, hops + 1, seen);
+        int a = targetDepthPure(c, e->u.coalesce.main, hops + 1, seen);
+        int b = targetDepthPure(c, e->u.coalesce.fallback, hops + 1, seen);
         return maxInt(a, b);
     }
     case EX_STRUCTLIT: {
         int d = 0;
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            d = maxInt(d, exprRefDepthPure(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value,
+            d = maxInt(d, targetDepthPure(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value,
                                            hops + 1, seen));
         return d;
     }
@@ -2646,21 +2646,21 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     case EX_LAMBDA: {
         int d = 0;
         for (size_t i = 0; i < e->u.lambda.inits.len; i++)
-            d = maxInt(d, exprRefDepthPure(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
+            d = maxInt(d, targetDepthPure(c, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
                                            hops + 1, seen));
         return d;
     }
     case EX_ARRAYLIT: {
         int d = 0;
         for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            d = maxInt(d, exprRefDepthPure(c, *(Expr **)vecAt(&e->u.arraylit.elems, i),
+            d = maxInt(d, targetDepthPure(c, *(Expr **)vecAt(&e->u.arraylit.elems, i),
                                            hops + 1, seen));
         return d;
     }
     case EX_ENUMVAL: {
         int d = 0;
         for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            d = maxInt(d, exprRefDepthPure(c, *(Expr **)vecAt(&e->u.enumval.args, i),
+            d = maxInt(d, targetDepthPure(c, *(Expr **)vecAt(&e->u.enumval.args, i),
                                            hops + 1, seen));
         return d;
     }
@@ -2671,26 +2671,26 @@ static int exprRefDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         Vec *args = e->kind == EX_CALL ? &e->u.call.args : &e->u.assoc.args;
         int d = 0;
         for (size_t i = 0; i < args->len; i++)
-            d = maxInt(d, exprRefDepthPure(c, *(Expr **)vecAt(args, i), hops + 1, seen));
+            d = maxInt(d, targetDepthPure(c, *(Expr **)vecAt(args, i), hops + 1, seen));
         return d;
     }
     case EX_METHOD: {
-        int d = exprRefDepthPure(c, e->u.method.recv, hops + 1, seen);
+        int d = targetDepthPure(c, e->u.method.recv, hops + 1, seen);
         for (size_t i = 0; i < e->u.method.args.len; i++)
-            d = maxInt(d, exprRefDepthPure(c, *(Expr **)vecAt(&e->u.method.args, i),
+            d = maxInt(d, targetDepthPure(c, *(Expr **)vecAt(&e->u.method.args, i),
                                            hops + 1, seen));
         return d;
     }
     /* `?` and a conversion pass the operand's references through; an operator can only carry
      * what its operands carry. This is the oracle the `EXTC_DBG_RHO` diagnostic compares
      * against, and `dfExprDepth` feeds the flow facts, so both have to answer for these. */
-    case EX_TRY:   return exprRefDepthPure(c, e->u.try_.operand, hops + 1, seen);
-    case EX_CONV:  return exprRefDepthPure(c, e->u.conv.operand, hops + 1, seen);
-    case EX_UN:    return exprRefDepthPure(c, e->u.un.operand, hops + 1, seen);
-    case EX_EXT: return exprRefDepthPure(c, e->u.ext_.call, hops + 1, seen);   /* `ext f(x)`: spawned call (cloned from EX_UN) */
+    case EX_TRY:   return targetDepthPure(c, e->u.try_.operand, hops + 1, seen);
+    case EX_CONV:  return targetDepthPure(c, e->u.conv.operand, hops + 1, seen);
+    case EX_UN:    return targetDepthPure(c, e->u.un.operand, hops + 1, seen);
+    case EX_EXT: return targetDepthPure(c, e->u.ext_.call, hops + 1, seen);   /* `ext f(x)`: spawned call (cloned from EX_UN) */
     case EX_BIN: {
-        int a = exprRefDepthPure(c, e->u.bin.left, hops + 1, seen);
-        int b = exprRefDepthPure(c, e->u.bin.right, hops + 1, seen);
+        int a = targetDepthPure(c, e->u.bin.left, hops + 1, seen);
+        int b = targetDepthPure(c, e->u.bin.right, hops + 1, seen);
         return a > b ? a : b;
     }
     default:

@@ -100,7 +100,7 @@ s ::= x := e | x.f := e | x[i] := e | f(e⃗) | return e | s; s | if e s s | whi
 实现的 `checkCallRefArgs` 对**每一个** `ref`/`mut ref` 实参 `i` 要求：
 
 ```
-R_slot(arg_i) ⊒ H        (placeDepth(arg_i) ≤ h)
+R_slot(arg_i) ⊒ H        (slotDepth(arg_i) ≤ h)
 ```
 
 对照引理 1：这正是**只考虑地址流 (A)** 时的要求，而且**无条件地施加于所有实参** ——
@@ -598,9 +598,9 @@ fn stash(dest: mut ref T, v: T) { *dest = v }                            // 通�
 
 | 流 | 摘要位（已有） | 调用点的检查 |
 |---|---|---|
-| `Addr(j)`：把 **&实参 j** 存进容器 | `addrMask` / `homeAddrMask` | `placeDepth(arg_j) ≤ h`（**规则 ④，今天就有**）|
-| `Cont(j)`：把**从实参 j 读出的指针 / 含引用的值**存进容器 | `contMask` / `homeContMask` | **新**：`exprRefDepth(arg_j) ≤ h` |
-| 拿不准（`otherMask` / 摘要不完整）| —— | **新**：对**每个含引用的实参**都要求 `exprRefDepth(arg) ≤ h`（保守 原来那条 blanket 的调用点版）|
+| `Addr(j)`：把 **&实参 j** 存进容器 | `addrMask` / `homeAddrMask` | `slotDepth(arg_j) ≤ h`（**规则 ④，今天就有**）|
+| `Cont(j)`：把**从实参 j 读出的指针 / 含引用的值**存进容器 | `contMask` / `homeContMask` | **新**：`targetDepth(arg_j) ≤ h` |
+| 拿不准（`otherMask` / 摘要不完整）| —— | **新**：对**每个含引用的实参**都要求 `targetDepth(arg) ≤ h`（保守 原来那条 blanket 的调用点版）|
 
 `h` 用同一个数（现有 `checkCallRefArgs` 里那个：最浅的 `mut ref` 实参所在层）。
 

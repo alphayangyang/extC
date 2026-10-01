@@ -726,8 +726,8 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  *
  * 从 U2 起，这里就是唯一权威：**问哪件事，用哪个函数，极性是什么**。
  *
- *   ① 存储有多深？（`a`、`a.f`、`a[i]` 这些**地方**）      → `placeDepth`
- *   ② 值指向的东西有多深？（`p`、`f(x)` 这些**值**）        → `exprRefDepth`
+ *   ① 存储有多深？（`a`、`a.f`、`a[i]` 这些**地方**）      → `slotDepth`
+ *   ② 值指向的东西有多深？（`p`、`f(x)` 这些**值**）        → `targetDepth`
  *   ③ 这个根的**绑定**是谁？（要身份，不要拼写）             → `placeRoot`（查作用域）
  *                                                           → `rootSymNoScope`/`identBindOf`（只看节点）
  *   ④ 这个根的**名字**？（诊断与老接口）                     → `placeRootName`
@@ -909,15 +909,15 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  * the value into account. */
 int valDepthForStore (Checker *, Expr *);
 /* Depth of the references a value can carry, read off its type and its shape. */
- int exprRefDepth (Checker *c, Expr *e);
+ int targetDepth (Checker *c, Expr *e);
 /* Depth of the storage a place expression denotes, as opposed to the depth of what a reference
  * stored there points at. */
- int placeDepth (Checker *c, Expr *e);
+ int slotDepth (Checker *c, Expr *e);
 /* Does this expression's storage provably live outside every frame? (`effects Ret=0` calls, and
  * chains rooted at a global.) Used where a binding is initialized, to mark it (`Sym.outOfFrame`). */
  bool exprOutOfFrame (Checker *c, Expr *e);
 /* Arena level at which the storage of a place lives, which is a different question from
- * `placeDepth`. */
+ * `slotDepth`. */
  int storeLayer (Checker *c, Expr *e);
 /* True when the root of the value is one of the function's parameters, so that the call site can
  * decide its lifetime. */

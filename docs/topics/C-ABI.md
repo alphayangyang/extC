@@ -714,7 +714,7 @@ ok   cairo      ->  cairo=1.18.4 surface=ok png=ok green=30771 white=9532 edges=
 > "A reference-typed binding starts with the depth of its slot as the pointee depth, the conservative
 > answer. **Whoever knows the initializer narrows this to the real depth afterwards**"
 
-`var` 那条路做了（`exprRefDepth` + home-arena 修正 + `outOfFrame`），`match` 那条路**只调了 `declare`
+`var` 那条路做了（`targetDepth` + home-arena 修正 + `outOfFrame`），`match` 那条路**只调了 `declare`
 就完事** ✗。于是这份**指针的拷贝**被当成"借了 arm 块里的局部变量"：
 
 ```extc
@@ -726,7 +726,7 @@ match dl::sym(h, n) {
 
 **后果比"多写几个字"严重得多**：检查过的那条路不可写 ⇒ 只剩 `!`（不检查的签字）⇒ "不方便"和
 "不安全"是同一个 bug 的两面。修法是复用：payload 的引用指向哪儿 = scrutinee 的引用指向哪儿，
-而 scrutinee 的**绑定上**已经有这个答案（`exprRefDepth` 对标识符正是去读绑定，见 `check_escape.c`
+而 scrutinee 的**绑定上**已经有这个答案（`targetDepth` 对标识符正是去读绑定，见 `check_escape.c`
 里那段"binding's depth is authoritative on the binding, not on the expression node"）。
 
 **② 目的地深度的代理把 `ref u8` 也算进去了。** 调用点用"引用型实参里最浅的那个"当作"callee 可能

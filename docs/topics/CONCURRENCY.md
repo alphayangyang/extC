@@ -736,7 +736,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     改的是 `h` 的**算法**，不是规则本身：`h` 现在的语义就是注释里一直写着的"**目的地的层**" ✓
       - `h = (homeDepth > 0) ? homeDepth : 调用者函数体的层`（`needsHome ⇒ 0`、`homeDepth < 0 ⇒ 0`
         这两个猜测都删了 ✓ 它们把"实参活在任何块里"一律判死 ✓）；
-      - 再对**所有 `ref` 形参的实参**取 `exprRefDepth` 的**最小值** ✓（目的地可能是它们中的任何一个 ⇒
+      - 再对**所有 `ref` 形参的实参**取 `targetDepth` 的**最小值** ✓（目的地可能是它们中的任何一个 ⇒
         被存的值必须活得比每一个都久 ⇒ 取最长寿的那个 ✓）。泛型形参 (`mut ref table<T>`) **不跳过** ✓
         （位掩码那几条循环仍按老规矩跳过 ✓ 而这个界只会把 `h` **压低** = 更严 ✓ 且 place 的深度与 `T` 无关）；
       - **没有可测目的地**、或摘要不完整、或 `homeDepth < 0` ⇒ 仍然保守取 0 ✓（和改动前一样严 ✓）。
@@ -746,7 +746,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     `tests/errors` **167 条一条没放宽** ✓。之前被误拒的三个探针（库函数 `stash(ref v, h)`、
     `vector<vector<i32>>` 从库函数 push、`relay` 转发）**全部通过** ✓。
     **实现细节（最终版）**：界的量法必须与规则**完全同一个表达式**
-    （`placeRoot ? placeDepth : exprRefDepth` ✓）；`min` 只把**带引用**的目的地算进去 —— 标量结构体
+    （`placeRoot ? slotDepth : targetDepth` ✓）；`min` 只把**带引用**的目的地算进去 —— 标量结构体
     （`loop`）报 0 是因为它根本没有可存的引用 ✓ 不该把界压成 0 ✗（曾因此把 `bench/stl/set.extc` 与四个
     例子打回 ✗）；`homeDepth > 0` 是被调方的**显式声明** ⇒ 保持权威 ✓ 不再被 `min` 压低 ✓。
     表的构造也因此定了形：库只给裸容器 `newRows() -> vector<row>`（容器类型的存储生在调用者所在的地方 ✓），
@@ -754,7 +754,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     "return value would hold a reference to a local variable that dies first" 拒 ✓（实测 ✓）。
     任务表就此**没有容量上限** ✓（`tasks<T>` 包着 `vector<row>` ✓ 跑完的行就地复用 ✓）。
 
-    **过程教训**：`placeDepth` 与 `exprRefDepth` 对同一个表达式会给出不同的深度（前者答"那个 40 字节的
+    **过程教训**：`slotDepth` 与 `targetDepth` 对同一个表达式会给出不同的深度（前者答"那个 40 字节的
     句柄住在哪" ✓ 后者答"它的存储在池里的板块活多久" ✓）⇒ 界必须用与规则**同一个**查询 ✓ 否则会出现
     "界=0 而待检值=1"这种自相矛盾的拒绝 ✓。
     另外实测：**池的板块活得比建它的块久** ✓（"内层块建的容器推进外层、块退出后再读"在 ASan 下跑出正确
@@ -1096,7 +1096,7 @@ arena 池 / 线程池 / 帧池 / size-class 块池，**没有一处**是 `{pid, 
 **与族 E 的关系（今天已闭环）**：`dyn` 既然是跨任务通道，规则 2 就必须先作用在**它的载荷**上 ——
 这正是 2026-09-26 修掉的族 E：`dyn T(x)` 的载荷在逃逸/作用域分析眼里曾是不透明值，载荷里的
 引用能绕过作用域规则（实测 `stack-use-after-scope`）；现在载荷被当成本值的一部分（6 个
-逃逸/深度遍历器 + `exprRefDepth`/`exprBorrowed` 的类型早退都让路）⇒ 反例 E1 已被**响亮拒绝**
+逃逸/深度遍历器 + `targetDepth`/`exprBorrowed` 的类型早退都让路）⇒ 反例 E1 已被**响亮拒绝**
 并毕业进 `tests/errors/` **跨任务通道的前置条件因此成立**
 
 ### 12.1c 前身判据（2026-09-26 就位，接进 `check.sh`）

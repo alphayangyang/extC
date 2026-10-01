@@ -131,8 +131,8 @@ P1-4（32 位掩码）、P1-5（`fresh` 集合不失效）、P1-6/P1-7（trait �
 
 **落地**：
 1. 在 `check_internal.h` 里把 9 条写成注释块 + 对应断言宏（`EXTC_SELFCHECK` 下启用）；
-2. `check_escape.c`：`exprRefDepth`/`placeDepth`/`exprBorrowed`/`valTracesToParam`/`destIsParam`
-   改成符号身份 + 统一"载体穿透"函数（INV-C/I）；`placeDepth` 的兜底改记最深（INV-U）；
+2. `check_escape.c`：`targetDepth`/`slotDepth`/`exprBorrowed`/`valTracesToParam`/`destIsParam`
+   改成符号身份 + 统一"载体穿透"函数（INV-C/I）；`slotDepth` 的兜底改记最深（INV-U）；
 3. `check_top.c`：`escapees`/`fresh` 改成"写点失效 + worklist 不动点"（INV-F）；
    调用点深度求解的哨兵改 `bool seen`（INV-S）；摘要掩码改 64 位 + 上限断言（INV-P）；
 4. `check_stmt.c`：所有写路径统一走一个 `noteStore()`（INV-K），出参写入由调用点按效果摘要补 publication；

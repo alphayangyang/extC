@@ -41,7 +41,7 @@ if (site->kind == EX_NEW || site->kind == EX_GENCALL)
 
 1. **`valDepthForStore`：值拷贝不背源对象的寿命**（`check_escape.c`）
    存进去的是**字节的副本** ⇒ 源对象活多久与目标格子无关。
-   判据 `typeCannotCarryRef`（跟 `exprRefDepth` 开头那个早退同一条）。
+   判据 `typeCannotCarryRef`（跟 `targetDepth` 开头那个早退同一条）。
 
 2. **`stmtStoresThroughDeref`：往参数里写纯值不算"发布"**（`check_top.c`）
    `varArray<T>::push` 的体是 `self.buf[self.len] = v` —— 值拷贝 ⇒

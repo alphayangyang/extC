@@ -15,9 +15,9 @@
  * 现状（2026-09-26 修好后）：**REJECT**，诊断与"不带 dyn 的裸视图"**完全同形**
  * （`borrowed from depth 2, but this can only hold up to depth 1`）⇒ dyn 的行为终于与它承载的值一致 ✓
  *
- * 修法是让载荷参与逃逸/深度判断：`exprRefDepth` 与 `exprBorrowed` 的"类型不带引用 ⇒ 直接返回"
+ * 修法是让载荷参与逃逸/深度判断：`targetDepth` 与 `exprBorrowed` 的"类型不带引用 ⇒ 直接返回"
  * 早退为 `EX_DYN` 让路，`valueMayCarryRef`/`promoteInto2`/`valueLevel`/`depthComesFromAlloc2`/
- * `solvedValDepth` 五个遍历器补上"跟随载荷"（family E，见 CONCURRENCY.md §12.1b）✓ */
+ * `solvedDepth` 五个遍历器补上"跟随载荷"（family E，见 CONCURRENCY.md §12.1b）✓ */
 use std::io
 
 trait Peek { fn peek(self: ref Self) -> i64 }

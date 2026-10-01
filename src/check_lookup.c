@@ -524,7 +524,7 @@ bool enumHasPayload(TypeDef *td) {
  *      because a zero value is tag 0 with the payload zeroed.
  *
  * Merged into one question, `type box = | empty | holding(slice<u8>)` answered "no
- * reference" from its first variant alone, so `exprRefDepth` returned early with 0, the
+ * reference" from its first variant alone, so `targetDepth` returned early with 0, the
  * depth of the payload was never computed, and `return box.holding(local[..])` compiled
  * into a dangling reference.
  *

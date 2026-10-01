@@ -3281,7 +3281,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * that the callee may store into a container the argument points at, which has
              * nothing to do with the home arena.
              * The position matters as well: after the arguments are checked, because
-             * `exprRefDepth` reads their types. */
+             * `targetDepth` reads their types. */
             checkCallRefArgs(c, f, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
             return f->ret ? f->ret : ttVoid(tt);
         }
@@ -3712,7 +3712,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (f->params.len > 0) {
                 Param *selfP = *(Param **)vecAt(&f->params, 0);
                 if (selfP->type && selfP->type->kind == TY_REF && selfP->type->mut) {
-                    int d = placeDepth(c, e->u.method.recv);
+                    int d = slotDepth(c, e->u.method.recv);
                     /* The `self: mut ref` branch does not go through `callHomeDepth`, so the
                      * escape decision has to be applied here as well. The first version missed it,
                      * and ASan caught the resulting use-after-free. */
