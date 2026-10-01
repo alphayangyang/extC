@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 static int g_on = -1;    /* -1 = 还没判断过；0 = 关；1 = 开 */
 
@@ -15,6 +16,16 @@ static int dbgEnabled(void) {
         g_on = (e && *e && *e != '0') ? 1 : 0;
     }
     return g_on;
+}
+
+void extcDbgNoteF(const char *file, int line, const char *fmt, ...) {
+    va_list ap;
+    if (!dbgEnabled()) return;
+    fprintf(stderr, "[note] %s:%d: ", file ? file : "?", line);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
 }
 
 void extcDbgNote(const char *what, const char *file, int line) {

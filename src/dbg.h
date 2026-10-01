@@ -27,6 +27,7 @@
  * `kind` 是 `"assert"` 或 `"fallback"`，`what` 是断言式或"哪条兜底被走到了"的说明。 */
 void extcDbgHit(const char *kind, const char *what, const char *file, int line);
 void extcDbgNote(const char *what, const char *file, int line);
+void extcDbgNoteF(const char *file, int line, const char *fmt, ...);
 
 /* 不变量：不成立就是编译器自己的 bug。 */
 #define EXTC_DBG_ASSERT(cond)          ((cond) ? (void)0 : extcDbgHit("assert", #cond, __FILE__, __LINE__))
@@ -40,5 +41,9 @@ void extcDbgNote(const char *what, const char *file, int line);
  * list-return / new / nullable-ref / out-param）⇒ 它是活路径，不该当"不该发生"处理。
  * 这类路径的价值是**可计数**：计数变了就说明分析形态变了。 */
 #define EXTC_DBG_NOTE(what)            extcDbgNote((what), __FILE__, __LINE__)
+
+/* 同上，但带格式化细节（例如"是哪个 `ExprKind` 走到了兜底"）—— 定位哨兵时最需要的信息。
+ * `dbg.c` 里关掉时立即返回，开关打开才 `vfprintf`。*/
+#define EXTC_DBG_NOTEF(...)            extcDbgNoteF(__FILE__, __LINE__, __VA_ARGS__)
 
 #endif /* EXTC_DBG_H */

@@ -230,6 +230,24 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec)
 | `check.sh quick` | **55 / 0** |
 | 闸门⑤·语料 · ①checkc 全量 · ②ASan 全量 · ③差分 · ④规模 | 全绿（基线为空；语料基线 1 条 = P0-6e） |
 
+## U5 结案：候选第 14 条 **不是 bug**（实测定位到具体形状）
+
+给 NOTE 加了一个 printf 变体（`EXTC_DBG_NOTEF`，`dbg.h`/`dbg.c`）之后，把 kind 数值打了出来：
+
+| 命中 kind | 次数 | 是什么 | 能带引用吗 |
+|---|---|---|---|
+| `0` = `EX_INT` | **151** | 整数字面量 | ✗（字面量没有引用） |
+| `20` = `EX_CONV` | **18** | 显式转换 | ✗ —— `check_expr.c` 里写得很明确：`EX_CONV` 的源类型**被刻意收窄**（只有 `ref void` 这一种指针来源，"a general pointer cast is deliberately not [allowed]"）|
+
+⇒ **答 0 是语义，不是兜底**：走到那条 `default` 的形状全都真的没有引用可指。
+"与 P0-6c 同族"的担心**排除**；同时验证了我早先那个"把可能带引用的形状单列成断言会响 3 次"的读数
+是我的**误读**（那 3 次是 `EXTC_DBG_ASSERT_MSG` 参数个数写错导致的编译期问题，不是运行期命中）。
+
+处置：**不改分类**（把它逐个列出来会让 `solvedValDepth` 变成第 24 个手写遍历，撞上
+`tools/check_walkers.py` 的 23 预算，而"列全"在这里买不到正确性）—— 改为在源码注释里写清
+"走到这里的只有 INT/CONV，都不可能带引用"，并**保留这个 NOTE 作为计数哨兵**：
+将来有新 `ExprKind` 走到这里，计数会变，那才是要查的信号。
+
 ## U5 补记（本轮末）：`solvedValDepth` 的"认不出 ⇒ 0"是**活路径**，记成候选第 14 条
 
 ### 证据链

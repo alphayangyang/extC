@@ -3083,17 +3083,17 @@ static int solvedValDepth(Expr *e) {
         return d;
     }
     default:
-        /* **实测（U5）：这条兜底是活路径**（套件里按行计 84 条 note，其中约 178 次匹配来自这里；
-         * 命中的形状**不**是 ENUMVAL/ARRAYLIT/REF/TRY/METHOD/ASSOC/EXT —— 那些一次没被走到，
-         * 而真正走到的是字面量一类，另外把"可能带引用的形状"单列成断言时**断言会响 3 次**，
-         * 说明还有 `EX_CONV`/`EX_LAMBDA` 之类没定位到的形状）。答 0 = "没有引用"是不安全那一侧，
-         * 与 P0-6c 同族 ⇒ 记成候选第 14 条，判据与下一步见 .audit/U-LOG.md 的 U5 一节。
+        /* **实测（U5，`EXTC_DBG_NOTEF` 打出 kind 数值）：走到这里的只有两种形状** ——
+         *   `EX_INT`（151 次）与 `EX_CONV`（18 次）。
+         * 两种都**不可能携带引用**：字面量没有引用；`EX_CONV` 的源类型被刻意收窄
+         * （只有 `ref void` 这一种指针来源，不做一般指针转换，见 `check_expr.c` 里 `EX_CONV`
+         * 那一段的注释）⇒ **答 0 是语义，不是兜底**。
          *
-         * 为什么**不**在这里逐个列形状：本仓库有一条 **walker 预算**（`tools/check_walkers.py`，
-         * 上限 23 个手写遍历；`docs/topics/AST-WALKERS.md`）—— 列全就把它推成第 24 个，
-         * 闸门当场判红（"migrate one instead of adding another"）。要么先迁移一个旧遍历，
-         * 要么用通用遍历，这正是 U 批次剩下的方向。*/
-        EXTC_DBG_NOTE("solvedValDepth: unrecognized shape answered 0");
+         * 那为什么还留着这个 NOTE：它是**计数哨兵** —— 将来若有新的 `ExprKind` 走到这里，
+         * 计数会变，那才是要查的信号（与 walker 预算的关系：本仓库限制 23 个手写遍历
+         * `tools/check_walkers.py`，把这些 kind 逐个列出来会让它变成第 24 个，
+         * 而"列全"在这里买不到任何正确性）。*/
+        EXTC_DBG_NOTEF("solvedValDepth: kind=%d answered 0 (INT/CONV only, both carry no reference)", (int)e->kind);
         return 0;
     }
 }
