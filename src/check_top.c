@@ -1124,7 +1124,7 @@ static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
  * Three disciplines:
  *   - lazy plus memoized (`effState`): computed only when it is really needed, and
  *     cached once computed;
- *   - cycle guard: a function that is being computed right now (`effState == 3`) is in
+ *   - cycle guard: a function that is being computed right now (`effState == EFF_IN_PROGRESS`) is in
  *     a cycle, so it is marked "incomplete" (conservative);
  *   - uncertainty marks it incomplete as well: `effUnknown` (a call that cannot be
  *     resolved) means never complete.
@@ -1149,9 +1149,9 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
      * summary.
      */
     if (f->isExtern) return true;
-    if (f->effState == 1) { if (c->fxOn) c->fxEffCached++; return f->effComplete; }
-    if (f->effState == 3) { f->effComplete = false; return false; }   /* a cycle => incomplete */
-    f->effState = 3;
+    if (f->effState == EFF_DONE) { if (c->fxOn) c->fxEffCached++; return f->effComplete; }
+    if (f->effState == EFF_IN_PROGRESS) { f->effComplete = false; return false; }   /* a cycle => incomplete */
+    f->effState = EFF_IN_PROGRESS;
     if (c->fxOn) c->fxEffCalls++;      /* one body entered (a memo hit returned above) */
     bool complete = !f->effUnknown;
     for (size_t i = 0; i < f->callees.len; i++) {
@@ -1170,7 +1170,7 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
         }
     }
     f->effComplete = complete;
-    f->effState = 1;
+    f->effState = EFF_DONE;
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%llx Cont=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] other=0x%llx\n",
                 FN(f), (int)f->effComplete, (unsigned long long)f->addrMask, (unsigned long long)f->contMask,
@@ -2919,7 +2919,9 @@ static void collectEffects(Checker *c, FuncDef *f) {
     /* The escape set decides which arena the calls in this body pass, so it has to be
      * known before the body is walked. */
     computeEscapes(c, f);
-    c->escapeesFor = (int)(size_t)f;   /* marks "already computed", keyed by address */
+    /* 这里曾经写 `c->escapeesFor = (int)(size_t)f;` —— 把指针截断成 `int` 当"已算过"的键，
+     * 而那个字段**只写不读**（V 批次：死字段 + 指针截断，一并删掉）。将来若真需要记忆化，
+     * 用 `FuncDef *` 或 `Sym *` 字段，而不是把地址塞进整数。*/
     if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", FN(f));
     Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
     collectFreshLocals(c->arena, &fresh, f->body);
@@ -6061,7 +6063,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         fi->homeAddrMask = fi->homeContMask = 0;
         fi->addrFromLocal = false;
         fi->freshCount = 0;
-        fi->effState = 0;  fi->effComplete = false;  fi->effUnknown = false;
+        fi->effState = EFF_NONE;  fi->effComplete = false;  fi->effUnknown = false;
         vecInit(&fi->callees, c.arena, sizeof(FuncDef *));
         collectEffects(&c, fi);
     }
@@ -6078,7 +6080,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             f->homeAddrMask = f->homeContMask = 0;
             f->addrFromLocal = false;
             f->freshCount = 0;
-            f->effState = 0;  f->effComplete = false;  f->effUnknown = false;
+            f->effState = EFF_NONE;  f->effComplete = false;  f->effUnknown = false;
             vecInit(&f->callees, c.arena, sizeof(FuncDef *));
             collectEffects(&c, f);
         }

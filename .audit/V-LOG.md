@@ -60,7 +60,19 @@ abort 并打印 `lookup('self') with no open scope (phase=post)` —— 包括�
 * 验收：tests **325/0**（发布与 `EXTC_DBG=1` 两模式）、`check.sh quick` **55/0**、
   五道闸门全绿、walker 23 ✓、guards 18 ok。
 
-## V2 第二刀（下一轮）：0/⊤ 显式化
+## V2 第二刀（本轮）：0/⊤ 的第一批（死字段、魔数编码、兜底定性）
+
+| 项 | 处理 | 证据 |
+|---|---|---|
+| `c->escapeesFor = (int)(size_t)f` | **删除**（字段只写不读；且把指针截断成 `int` 当"已算过"的键） | `grep -rn escapeesFor src/` 现在只剩解释性注释 |
+| `effState` 的 `0/1/3` 魔数（2 空着） | 换成命名枚举 `EFF_NONE / EFF_DONE / EFF_IN_PROGRESS`（7 处 + 字段类型） | 语义写在枚举定义处 |
+| `valDepthStructural` 的"认不出 ⇒ 0" | **定性为语义**：实测被 `tests/asan/promote-field-lit.extc`（正例）走到，kind = `0` = `EX_INT`（字面量，不带引用）⇒ 保留 NOTE 作**计数哨兵** | 先前的"整套零命中"读数**不准**，本轮纠正 |
+
+**这一批的教训**：`grep "\[note\]"` 只在**测试失败时**才回显编译器输出（正例会吞掉 stderr）——
+所以"零命中"的结论必须**直接对触发文件跑一次编译器**才算数，或者看 `check.sh` 里的计数。
+这条已写进 V-LOG，也是下一步做 ⊤ 常量时要遵守的取证方式。
+
+## V2 第三刀（下一轮）：⊤ 常量
 
 * 三个"深度"改名区分：`placeDepth`（存的地方）→ `slotDepth`；`exprRefDepth`（值指向的东西）→
   `targetDepth`；`solvedValDepth`（电平稳定后重算）→ `solvedDepth`；头文件权威表同步。

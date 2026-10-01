@@ -470,7 +470,6 @@ typedef struct Checker {
      * direction is to include too many names: that costs memory, while missing one would
      * let a live pointer dangle. */
     Vec        escapees;    /* const char* */
-    int        escapeesFor; /* function the set was computed for, -1 when not yet */
 
     Vec        narrowMarks; /* size_t: length of `narrow` when each scope was entered,
                              * used to unwind it on scope exit */

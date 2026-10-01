@@ -20,6 +20,13 @@
 typedef struct Type Type;
 typedef struct TypeDef TypeDef;
 typedef struct StructDef StructDef;
+/* 效果摘要的计算状态（V 批次：把 0/1/3 的魔数编码换成命名枚举 —— 原来的 2 空着，是历史留下的）。*/
+typedef enum {
+    EFF_NONE = 0,        /* 还没算（`arenaAllocZero` 出来就是这个值）*/
+    EFF_DONE,            /* 算完了，`effComplete` 说它可不可信 */
+    EFF_IN_PROGRESS      /* 正在算 —— 再遇到它就是环，摘要按"不完整"处理 */
+} EffState;
+
 typedef struct FuncDef FuncDef;
 typedef struct FieldDef FieldDef;
 typedef struct TraitDef  TraitDef;
@@ -992,7 +999,7 @@ struct FuncDef {
      *   3 = being computed, which breaks cycles.
      * `effUnknown` records whether any call could not be resolved; such a summary is
      * never complete, so it is treated conservatively. */
-    int         effState;
+    EffState    effState;
     bool        effComplete;
     bool        effUnknown;
 

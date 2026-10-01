@@ -288,7 +288,17 @@ int valDepthStructural(Checker *c, Expr *e) {
     default:
         /* 认不出的形状答"结构里没有引用"是**不安全的那一侧**（它可能真的带着引用）⇒
          * 这是兜底，不是语义。实测它会不会被走到：见 .audit/U-LOG.md 的 U5 一节。*/
-        EXTC_DBG_NOTE("valDepthStructural: unrecognized shape answered 0");
+        /* **实测（U5）：整个套件零命中** ⇒ 这条兜底按设计走不到，因此它可以响亮：
+         * 认不出的形状答"结构里没有引用"是**不安全的那一侧**，被走到就是分类漏了。
+         * （对照：`solvedDepth` 的同类兜底**是活路径**，所以那边只能是 NOTE —— 见 V-LOG。）*/
+        /* **实测（V2）**：这条兜底**是活路径**（我先前"整套零命中"的读数不准，已纠正）——
+         * `tests/asan/promote-field-lit.extc`（正例）就会走到它，而打出来的 kind = `0` = **`EX_INT`**：
+         * 整数字面量，**不带引用 ⇒ 答 0 是语义，不是兜底**（与 `solvedDepth` 的 INT/CONV 同结论）。
+         *
+         * 为什么留 NOTE 而不是断言：将来若有**别的** kind 走到这里，计数会变 —— 那才是要查的信号
+         * （能不能带引用、要不要改成"取自操作数/载荷"）。逐个列 kind 会撞 walker 预算
+         * （`tools/check_walkers.py` 限 23 个手写遍历），而"列全"在这里买不到正确性。*/
+        EXTC_DBG_NOTEF("valDepthStructural: kind=%d answered 0", (int)e->kind);
         return 0;
     }
 }
