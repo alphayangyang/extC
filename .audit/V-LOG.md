@@ -110,3 +110,33 @@ abort 并打印 `lookup('self') with no open scope (phase=post)` —— 包括�
 还有一行），于是 `/* within comment` + 解析错误。教训：**在注释密集的头文件里做插入，锚点必须
 带注释前缀（` * `），并且要确认插入点在 `*/` 之后** —— 用行级手术（先删后插到下一个
 `#define` 之前）比"字符串替换"稳。
+
+---
+
+## V 批次收口（2026-10-02）
+
+**目标的两项都已完成**（A2 阶段契约、A1 命名与 0/⊤），全量验收一次跑齐：
+
+| 检查 | 结果 |
+|---|---|
+| `tests/run.sh`（发布 / `EXTC_DBG=1`） | **325 / 0** / **325 / 0** |
+| 断言/兜底命中（断言版） | **0**；note 计数 **84** |
+| `check.sh quick` | **55 / 0** |
+| 闸门⑤语料 / ①checkc 全量 / ②ASan 全量 / ③差分 / ④规模 | 全绿（五条基线：四条空，语料 1 条 = P0-6e） |
+| `tools/check_walkers.py` / `check_guards.py` | `every recursive kind-walker handles every kind ✓`（23，ratchet 23）/ 18 ok 0 broken |
+
+**产物**（都在提交里）：
+* `CheckPhase` + 阶段契约权威一节（`check_internal.h`）；
+* [docs/topics/NAMING.md](../docs/topics/NAMING.md)：词的纪律 + 注释的五条义务 + 改名对照表；
+* 改名：`slotDepth` / `targetDepth`（+`targetDepthPure`）/ `solvedDepth`；
+* `DEPTH_UNKNOWN`（⊤）+ `depthIsUnknown`；`EffState` 命名枚举；删掉 `escapeesFor`（死字段 + 指针截断）。
+
+**本批次的方法论收获（三条，都已写进记录）**：
+1. **"零命中"必须对触发文件直接跑编译器才算**——套件只在失败时回显 stderr，正例会吞掉；
+2. **删注释要连语句一起删**：否则断言照样响而套件仍绿（负例把 abort 当"预期报错"）；
+3. **头文件插入要确认落在 `*/` 之后**：注释密集处用行级手术（先删后插到下一个 `#define`）比字符串替换稳。
+
+**留给后续的（不阻塞收口，按价值排序）**：
+1. `checkModule` 拆成显式 pass 函数（纯搬移，让"阶段"成为函数边界而不只是枚举值）；
+2. V1 记下的待查线索：POST 阶段依赖 `lookup` 结果的调用点逐个核对（实测 341 次调用，名字是 `self` 这类局部名）；
+3. `minReq`/`minAt` 这类 `-1` 哨兵也换成显式枚举；`Sym.otherDepth` 的语义再核一遍（当前判定为单一语义）。
