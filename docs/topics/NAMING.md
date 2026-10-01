@@ -12,6 +12,7 @@
 | `slotDepth` | "**存的地方**有多深"（`a`、`a.f`、`a[i]` 这些地方本身的寿命） | 不许指"它指向的东西" | 旧名 `placeDepth` |
 | `targetDepth` | "**值指向的东西**有多深"（`p`、`f(x)` 的结果） | 不许指存储槽本身 | 旧名 `exprRefDepth` / `exprRefDepthPure` |
 | `solvedDepth` | 电平求解**稳定之后**重算出来的深度 | 不许指"当场算的那次" | 旧名 `solvedValDepth` |
+| `DEPTH_UNKNOWN`（⊤） | 「**证不出活得够久**」：比较处一律导致**拒绝** | 不许用 `0` 表示未知（`0` = 活得最久 = 放行）；不许当层号传给提权 | 判据 `depthIsUnknown`；见 `check_internal.h` 的极性契约 |
 | `level` | arena/zone 的**层级号**（`ARENA_HOME`/`ZONE_HOME` 是特殊值，不是层号） | 不许与 `depth` 混用 | `storeLayer` 答的是"存的地方在哪一层" |
 | `place` | **可写的地方**：绑定、字段、元素、切片 | 不许指"值" | |
 | `slot` | 绑定的**存储槽**（与"槽里的值指向什么"区分） | 不许指身份 | |

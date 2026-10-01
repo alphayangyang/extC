@@ -2592,9 +2592,9 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
      * whose meaning is "lives the longest" -- so exhausting either of them pointed the
      * conservative direction backwards (audit P0-6c is the same family). They are supposed never
      * to be reached in a real program; a debug build must find out if that is true. */
-    if (hops >= 40) { EXTC_DBG_FALLBACK("targetDepthPure: recursion budget (40) exhausted"); return 0; }
+    if (hops >= 40) { EXTC_DBG_FALLBACK("targetDepthPure: recursion budget (40) exhausted"); return DEPTH_UNKNOWN; }
     for (int i = 0; i < hops; i++)
-        if (seen[i] == e) { EXTC_DBG_FALLBACK("targetDepthPure: origin cycle"); return 0; }
+        if (seen[i] == e) { EXTC_DBG_FALLBACK("targetDepthPure: origin cycle"); return DEPTH_UNKNOWN; }
     seen[hops] = e;
 
     switch (e->kind) {

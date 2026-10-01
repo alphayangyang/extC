@@ -725,6 +725,13 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  *
  * 从 U2 起，这里就是唯一权威：**问哪件事，用哪个函数，极性是什么**。
  *
+ *
+ * **未知（⊤）**：`DEPTH_UNKNOWN` —— 语义是「**证不出它活得够久**」，因此在**比较**那一侧必须
+ * 导致**拒绝**。为什么不用 `0`：`0` 在本仓库是「活得最久」= **放行**的方向（P0-6c 就是把兜底放在
+ * `0` 上，方向反了）。它只允许出现在比较/记录里，**不许**当层号传给提权
+ * （`promoteInto2` 的 `want` 是「要提到哪一层」，不是深度）。
+ * 实测：走到它的三条路都不可达 —— 来源链被 `noteOrigin` 压平、45 层字段链由字段表直接回答、
+ * 整套件零命中 ⇒ 今天它是「万一可达就失败在安全侧」的**准备性修复**。
  *   ① 存储有多深？（`a`、`a.f`、`a[i]` 这些**地方**）      → `slotDepth`
  *   ② 值指向的东西有多深？（`p`、`f(x)` 这些**值**）        → `targetDepth`
  *   ③ 这个根的**绑定**是谁？（要身份，不要拼写）             → `placeRoot`（查作用域）
@@ -734,6 +741,7 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  * **极性契约（最重要的一条）**：①② 返回的是**深度**，`0` = "活得最久"（全局、参数所指、
  * 调用者选的地方）；**数越小活得越久**。因此任何"认不出来"的兜底都必须落在**更长寿**那一侧，
  * 或者干脆拒绝 —— 反过来（兜底给 0）就是把保守方向搞反，P0-6c 就是这么来的。
+
  *
  * 一个事实一个指称：**新代码不要**再写第四份"从表达式取根"的循环；需要别的步进组合时，
  * 把 `EXTC_ROOT_*` 掩码传给 `extcRootLeaf`。历史上三个入口的差异就是下面这些掩码：
@@ -743,6 +751,13 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  *   | `placeRoot`      | FIELD INDEX SLICE | 不限 | 查作用域（`lookup`） |
  *   | `placeRootName`  | FIELD INDEX DEREF | 不限 | 取**语法名字**（不解析） |
  *   | `rootSymNoScope` | FIELD INDEX DEREF SIGN | 16 | 取节点上的绑定（`identBindOf`） |*/
+/* 未知深度（⊤）：见上面「深度 / 身份」一节的极性契约 —— 比较处一律当「更深」处理（⇒ 拒绝），
+ * 不许当层号传给提权。实测走到它的三条路都不可达（见该节），所以这是「万一可达就失败在安全侧」
+ * 的准备性修复。*/
+#define DEPTH_UNKNOWN  (1 << 24)
+/* 这个数是不是「未知」。*/
+#define depthIsUnknown(d)  ((d) == DEPTH_UNKNOWN || (d) > DEPTH_UNKNOWN)
+
 #define EXTC_ROOT_FIELD  (1u << 0)
 #define EXTC_ROOT_INDEX  (1u << 1)
 #define EXTC_ROOT_SLICE  (1u << 2)
