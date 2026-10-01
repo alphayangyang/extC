@@ -1,0 +1,77 @@
+{
+  "findings": [
+    {
+      "title": "rwType 只下探 TY_REF 与 targs：数组 `[N]m::T` 和函数类型 `fn(m::T)->R` 里的模块限定类型名永远不被改写（误拒合法程序）",
+      "file": "src/modules.c",
+      "line": 759,
+      "kind": "FALSE-REJECT",
+      "severity": "P1",
+      "code_quote": "static void rwType(Loader *L, ModUnit *self, Type *t) {\n    if (!t) return;\n    if (t->kind == TY_REF) { rwType(L, self, t->inner); return; }\n    for (size_t i = 0; i < t->targs.len; i++) rwType(L, self, *(Type **)vecAt(&t->targs, i));\n    if (t->kind != TY_UNRESOLVED || !t->name) return;\n    /* The name rules live in `rwTypeName`: this node is the one caller that carries a Type\n     * instead of a string. */\n    t->name = rwTypeName(L, self, t->name);\n}",
+      "why": "rwType 是加载器对 Type 节点唯一的改写入口，而它只递归两种孩子：`inner` 且仅当 kind==TY_REF（第 761 行），以及任何 kind 的 `targs`。但 TY_ARRAY 的元素类型就存在 `inner`（src/check_lookup.c:562 `t->kind == TY_ARRAY ... t->inner`），TY_FN 的两半存在 `params`/`ret`（src/ast.h:79-80），两者都不被访问。于是 `lib::pair` 原样到达 checker，ttResolve 先按整串查注册表、再把整串和 alias 表的 `from` 比较，而 alias 的 `from` 都是不带 `::` 的源名，于是报 `unknown type `lib::pair``。同一函数里 `slice<lib::pair>`（TY_UNRESOLVED + targs）和 `lib::box<i32>` 都能过，说明这不是设计取舍而是漏了两种 kind。",
+      "trigger": "任何写在数组或函数类型里的模块限定类型名：`fn f(a: [4]lib::pair)`、`fn g(h: fn(lib::pair) -> i32)`、结构体字段 `a: [4]lib::pair`、全局标注、`[2][3]lib::T`（同一代码路径）。被引用的类型是 public 也一样失败。",
+      "repro": "mkdir -p /tmp/x && cd /tmp/x && printf 'struct pair { a: i32 }\\n' > lib.extc && printf 'use lib\\nfn f(a: [4]lib::pair) -> i32 { return a[0].a }\\nfn main() -> i32 { return 0 }\\n' > main.extc && /home/alphayang/extC_Compiler/build/extc -w main.extc -o /dev/null\n观察：`main.extc:2:1: error: unknown type `lib::pair`` + note 列 built-in types。把参数改成 `fn h(s: slice<lib::pair>)` 则 rc=0（对照）。已存好的两份：/tmp/rev/modrev/u1_array（数组）、/tmp/rev/modrev/u1_fn（函数类型）；`fn(lib::pair) -> i32` 同样报 unknown type。",
+      "confidence": "high"
+    },
+    {
+      "title": "限定类型名的诊断用 ctxError(ctx, 0, ...) 报，渲染成 `file: error:`：整条类型改写路径的错误都没有行号",
+      "file": "src/modules.c",
+      "line": 820,
+      "kind": "BUG",
+      "severity": "P2",
+      "code_quote": "    if ((sd && sd->isPrivate) || (td && td->isPrivate)) {\n        ctxError(self->ctx, 0, 1,\n                 \"`@private` means other modules must not name it. Drop the annotation if it is\"\n                 \" meant to be used from here.\",\n                 \"`%s::%s` is private to module `%s`\", shortName, rest, shortName);\n        L->errors++;\n        return true;                               /* already reported: no second error */\n    }",
+      "why": "ctxError 的 line 参与 ctxRenderDiag 的定位输出：line>0 时是 `file:LINE:COL: error:`，line==0 时只剩 `file: error:`（实测两形状都有）。rwQualifiedTypeName 的四个调用点全部来自 rwExpr（第 1138/1144/1150/1160 行），调用点手上就有 `e->line`，却在函数里硬写 0；rwTypeName 的 736/745/751 同理（那条路径确实拿不到行号，但至少把已有的丢掉是不必要的）。用户在几千行文件里只能全文搜索。",
+      "trigger": "任何通过 `mod::T` 写出的类型错误：`var b: lib::priv`（@private 类型）、`impl` 目标、`mod::Type{...}`/`mod::Type.variant`/`mod::T(x)` 表达式形式里类型不存在或 @private。",
+      "repro": "/tmp/rev/modrev/u1_line0：lib.extc = `@private struct priv { x: i32 }`，main.extc 第 3 行 `var b: lib::priv`。\ncd /tmp/rev/modrev/u1_line0 && /home/alphayang/extC_Compiler/build/extc -w main.extc -o /dev/null\n观察：`main.extc: error: `lib::priv` is private to module `lib``（无 3:…），而同一编译器对 `unknown type` 之类带行号的错误是 `main.extc:2:1: error:`。",
+      "confidence": "high"
+    },
+    {
+      "title": "suggestImportPath 不查 L->rootDir，而 findModFile 恰恰先查 rootDir：建议的 `use` 要么给不出，要么指向另一个文件",
+      "file": "src/modules.c",
+      "line": 236,
+      "kind": "BUG",
+      "severity": "P3",
+      "code_quote": "    for (int pass = 0; pass < 2; pass++) {\n        if (pass == 1 && !L->stdDir) break;\n        size_t n = (pass == 0) ? L->searchDirs.len : 1;\n        for (size_t i = 0; i < n; i++) {\n            const char *dir = (pass == 0) ? *(const char **)vecAt(&L->searchDirs, i) : L->stdDir;\n            const char *subs[2] = { \"\", \"std/\" };\n            for (int k = 0; k < 2; k++) {\n                Buf b;",
+      "why": "findModFile（396-413）的搜索顺序是 rootDir → 各 `-I` → stdDir，但给「缺 use」诊断用的 suggestImportPath 只扫 pass0=searchDirs、pass1=stdDir，从不看 rootDir。结果是：模块就放在入口文件旁边（最常见布局）时它找不到文件，诊断退化成「add the `use` line that imports it」的通用话术，给不出真正能用的 `use greet`；而当同一相对路径在 std 树下也存在时，它会返回 `std::greet`，照着写的用户绑定的却是另一个文件（loader 对 `use greet` 本来会命中 <rootDir>/greet.extc）。",
+      "trigger": "入口文件里写了 `m::T`（类型位）或 `a::b::c`（深路径）而没有 `use`，且 m.extc 就在入口文件同目录。",
+      "repro": "A（给不出建议）：/tmp/rev/modrev/u1_suggest（greet.extc 与 main.extc 同目录，main 里写 `greet::thing`）→ `main.extc: error: `greet` is not imported here -- add the `use` line that imports it (...)`，没有 `use greet`。\nB（指到别的文件）：/tmp/rev/modrev/u1_suggest2（本地 greet.extc + fakestd/std/greet.extc，EXTC_STD=fakestd）→ 诊断说 `add `use std::greet``；照做后 `use std::greet` 报 `struct `greet::thing` has no field `a``（绑到了 std 树的那份），而 `use greet`（本地那份）rc=0。",
+      "confidence": "high"
+    },
+    {
+      "title": "`!saveCall` 提前 return：非调用形式的限定名（`greet::K`）丢掉「模块存在但没 import」的诊断，只剩误导性的 unknown type",
+      "file": "src/modules.c",
+      "line": 980,
+      "kind": "BUG",
+      "severity": "P3",
+      "code_quote": "    if (!target) {\n        /* `a` may be a type of module `b` instead of a module itself, which\n         * `rwQualifiedTypeName` recognizes.\n         * Only a two-segment shape is worth trying: three segments or more cannot be\n         * `mod::Type`, and trying anyway produces a misleading \"unknown type `a`\". */\n        if (saveTargs != 0 || !saveCall || strstr(tn, \"::\")) return;\n        const char *mangled = NULL;\n        if (rwQualifiedTypeName(L, self, tn, &mangled) && mangled) {",
+      "why": "这个守卫把整段（rwQualifiedTypeName 的尝试 + `moduleExists` 的缺 import 诊断，第 1000-1011 行）都挡在调用形式之外：只要不是 `m::x(...)`，加载器一句诊断都不给，节点原样留给 checker，checker 把它当类型名解析，报 `unknown type `greet``。而同一文件、同一形状加上 `()` 时给出的是正确的 `module `greet` is not imported here -- add `use greet``。注释里说的窄化（避免把本文件自己声明的类型误报成缺 import）在 999-1000 行已经由 isOwnType/isSelfFile 单独处理，不需要连非调用形式一起挡掉。",
+      "trigger": "`m::K`（模块全局常量）或任何非调用的两段限定名，m 是磁盘上存在但未 import 的模块。",
+      "repro": "/tmp/rev/modrev/u1_noncall（greet.extc: `let K: i32 = 9`；main.extc: `fn main() -> i32 { return greet::K }`）\ncd /tmp/rev/modrev/u1_noncall && /home/alphayang/extC_Compiler/build/extc -w main.extc -o /dev/null\n观察：`main.extc:1:1: error: unknown type `greet``，而把同一行写成 `greet::hi()` 则报正确的 `module `greet` is not imported here -- add `use greet``。",
+      "confidence": "high"
+    },
+    {
+      "title": "文档与代码不一致：头部说 use 解析「next to the importing file」，实际只用入口文件目录；findModFile 的注释还写了一个不存在的参数",
+      "file": "src/modules.c",
+      "line": 12,
+      "kind": "DOC",
+      "severity": "P3",
+      "code_quote": " *   1. A `use` in the root file resolves to a path and then to a file: next to the\n *      importing file, in a `-I` directory, or in the standard library directory.\n *   2. Modules load recursively. A state flag on each unit detects cycles: a module",
+      "why": "findModFile 只用 `L->rootDir`（第 400 行 `arenaPrintf(L->a, \"%s/%s\", L->rootDir, cand)`），`importerFile` 根本没有传进来；rootDir 是 `dirOf(rootPath)`，即入口文件所在目录。所以子目录里的模块 `use x` 解析的是 `<入口目录>/x.extc`，不是「它旁边」的 `<子目录>/x.extc`——按头部这句话布局项目会失败。另外第 388 行的文档块写了 `importerFile - the file containing the `use`, named in the diagnostic`，而 396 行的签名是 `findModFile(Loader *L, const char *modPath)`，该参数不存在（resolveModFile 才有）。",
+      "trigger": "读文档后按「相对导入者所在目录」组织模块目录（例如 sub/a.extc 想 `use b` 拿 sub/b.extc），实际会去找 `<入口目录>/b.extc`。",
+      "repro": "读 src/modules.c:11-13 与 396-401；实测：cd /tmp/rev/mine/m9 之类布局，子目录模块里裸写兄弟模块名会报 cannot find module 并列出 `<rootDir>/b.extc`（错误信息本身列的是 rootDir，与头部注释矛盾）。",
+      "confidence": "high"
+    },
+    {
+      "title": "构造器改写里的 isFn 探测是死代码：拿已 mangle 的声明名去比源名，永远不相等",
+      "file": "src/modules.c",
+      "line": 960,
+      "kind": "HYGIENE",
+      "severity": "P3",
+      "code_quote": "            /* Not a function of that name: a function would have been left for the\n             * checker (and would shadow nothing, since the two cannot share a name). */\n            bool isFn = false;\n            for (size_t i = 0; i < mowner->mod.funcs.len && !isFn; i++)\n                isFn = strcmp((*(FuncDef **)vecAt(&mowner->mod.funcs, i))->name, msym) == 0;\n            if (!isFn) {\n                e->u.assoc.typeName = csd->name;    /* the mangled type name */\n                e->u.assoc.name     = \"new\";\n                return;\n            }",
+      "why": "rwQualified 跑在依赖模块 mergeUnit 之后，此时 `mowner->mod.funcs[i]->name` 已被 mangleUnitDecls 改成 `mowner$Name`（唯一例外是 extern!，而 extern 名与类型名不可能同名：类型名必须小写开头，同名声明本身也会被 checker 判重）。`msym` 是源名（如 `ofstream`），所以 strcmp 恒不为 0，`isFn` 恒 false：第 955 行的 `unitStruct(...)` 命中后一律走构造器分支。这个判断本意是「同名函数优先留给 checker」，但它一行都拦不住；一旦将来放宽同名规则，`m::T(...)` 会被静默绑成 `T::new(...)`。",
+      "trigger": "任何 `mod::Type(...)` 构造器糖（例如 `lib::point(1, 2)`）；isFn 分支永远进不去。",
+      "repro": "读代码即可核实（mangle 见 1359-1373 行；构造器分支 947-969 行）。实测对照：/tmp/rev/mine/m21 等模块里 `Type(...)` 全部走 new 路径成功；找不到任何能命中 isFn=true 的输入。",
+      "confidence": "medium"
+    }
+  ],
+  "coverage_notes": "单元 1 = src/modules.c 1-1050，用 read 分段读完全部行。读过的函数/块：readWholeFile 的注释与调用点、modulesMethodHint（INDEX 提示）、fileExists、baseNameNoExt、pathToRel、dirOf、ModUnit/Loader 结构、suggestImportPath、mangleName、externKeepsName、renOfTarget、renLookup、findUnit、findModFile、resolveModFile、isOwnType、moduleExists、unitFunc/unitGlobal/unitStruct/unitType、importedAsPath/importedAs、rwTypeName、rwType、rwQualifiedTypeName、rwDeepQName、rwQualified、rwExpr、rwStmt、以及 mergeUnit 前半段。已核实为正确的点：搜索顺序 rootDir→-I→std（首个命中者胜，项目内文件可遮蔽 std 同名模块）；pathToRel/dirOf/baseNameNoExt 的边界；resolveModFile 里 parentLen = lastSep-modPath-1 对 `std::io::cin`/`foo::bar` 都算对（手工核对下标）；state==1 检环、环错误在 merge 之前就 return false（不会用到半成品 Module）；同一 unit 内的同名短名冲突检查；限定形式的 @private 三处检查（rwQualified 1020、rwTypeName 744、rwQualifiedTypeName 819）；`e->qualified` 在各分支的设置；模块 ctx 的归属（模块自身的 parse/check 错误确实报在 `./lib.extc:N:M`，实测）；`use` 路径段无法包含 `.`/`/`，因此 mangle 出的 C 标识符始终合法。未能确认/不属本单元：checker 把部分模块声明的错误经由根 Ctx 渲染，出现「文件名是入口文件、行号是模块行号」的错误（实测 `main.extc:1:1: error: duplicate struct util$pair`、`main3.extc:2:1: error: the global lib2$cb must be initialized with a constant`）；modules.c 给 f->ctx/g->ctx/s->ctx/t->ctx 都赋了模块 ctx，所以病灶更像在 check_top.c 的 ckError 调用处（改用声明自己的 ctx），未计入本单元条数。另：modulesMethodHint 的 memo 若在 stdDirSeen 赋值前被首次调用会永久锁死 n=0，且最多读 INDEX 的 256 行（当前 INDEX 只有 9 行、唯一调用点在 loadModules 之后，暂不可达）；aliases 去重是 O(n^2)、mangle 第二遍是 O(ren×decls)，未做归因测量。"
+}

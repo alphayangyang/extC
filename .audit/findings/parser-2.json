@@ -1,0 +1,89 @@
+{
+ "findings": [
+  {
+   "title": "`continue` inside `for i in lo..hi` (and C-style `for`) restarts the loop without running the step: infinite loop",
+   "file": "src/parser.c",
+   "line": 2394,
+   "kind": "HANG",
+   "severity": "P0",
+   "code_quote": "        Stmt *inner[2] = { body, forStep(p, vn->text, \"+=\", forInt(p, 1, line), line) };\n        Stmt *w = stmtNew(p->arena, ST_WHILE, line);\n        w->u.whiles.cond = cond;\n        w->u.whiles.body = forBlock(p, inner, 2, line);\n        Stmt *outer[2] = { decl, w };\n        return forBlock(p, outer, 2, line);",
+   "why": "The range form is desugared into `while i < hi { { user-body } i += 1 }`: the step is the LAST statement of the while body, so a `continue` in the body jumps straight to the loop condition and the increment is never executed. Nothing downstream repairs it: `forDesugar` (parser.c:2465) is only read by check_stmt.c:201, and that retargeting only rewrites for-each-over-iterator loops (it drops the step and advances via `next()`); the same step-at-end shape is produced for the C-style form at parser.c:2343 and for the for-each form at parser.c:2457. The generated C proves the mechanism: `while (i < 5) { if (i == 2) { continue; } sum += i; i += 1; }`.",
+   "trigger": "Any `for` loop whose body can reach a `continue` before the loop variable passes the bound, e.g. `for i in 0..5 { if i == 2 { continue } sum += i }`. Same for `for (var i = 0; i < 5; i += 1) { if i == 2 { continue } ... }`.",
+   "repro": "cat > /tmp/t_cont1.extc <<'EOF'\nfn main() -> i32 {\n    var sum = 0\n    for i in 0..5 {\n        if i == 2 { continue }\n        sum += i\n    }\n    return sum\n}\nEOF\ntimeout 5 /home/alphayang/extC_Compiler/build/extc --run /tmp/t_cont1.extc; echo $?   # -> 124 (hang)\n# control, same loop with `break` instead of `continue`: exit 1 (sum=1), i.e. break is fine.\n# control, `while` + continue: exit 13, terminates.\n/home/alphayang/extC_Compiler/build/extc /tmp/t_cont1.extc | grep -n 'continue\\|i += 1'  # continue before the step",
+   "confidence": "high"
+  },
+  {
+   "title": "`p->sawBuiltin` is parser-global, not per-declaration: a second `@builtin` in a struct/impl body is falsely rejected, and the first is silently ignored",
+   "file": "src/parser.c",
+   "line": 1475,
+   "kind": "FALSE-REJECT",
+   "severity": "P2",
+   "code_quote": "            if (p->sawBuiltin) {\n                ctxError(p->ctx, a->line, a->col, NULL, \"`@builtin` appears twice on the same function\");\n                return false;\n            }\n            p->sawBuiltin = true;\n            skipNl(p);\n            continue;",
+   "why": "The flag means \"this declaration already said @builtin\", but it is stored on the Parser, which parses the whole file. It is reset only on the module-level `fn` path (parser.c:797 `p.sawBuiltin = false;`, immediately before parseFunc). parseStruct (parser.c:887) and parseImpl (parser.c:1220) call parseFuncAnnotations without ever resetting it and without an out-parameter for `@builtin` at all, so: (a) the second `@builtin` method in the file is rejected with an error that names the wrong declaration (\"appears twice on the same function\"), and (b) the first one is accepted with a body and then silently dropped (no isBuiltin is set on a method), which contradicts the file's own rule that an annotation must never be silently ignored (parser.c:1442-1446).",
+   "trigger": "Two `@builtin`-annotated methods anywhere in one file (struct body or impl block).",
+   "repro": "cat > /tmp/t_bi3.extc <<'EOF'\nstruct s {\n    x: i32\n    @builtin fn m1(self: ref s) -> i32 { return 1 }\n    @builtin fn m2(self: ref s) -> i32 { return 2 }\n}\nfn main() -> i32 { return 0 }\nEOF\n/home/alphayang/extC_Compiler/build/extc /tmp/t_bi3.extc; echo $?\n# -> exit 1: t_bi3.extc:4:5: error: `@builtin` appears twice on the same function\n# with only m1 present the file compiles (exit 0), i.e. @builtin on a method is accepted and ignored.",
+   "confidence": "high"
+  },
+  {
+   "title": "Function type parameters are not checked to start uppercase, so `fn f<point>(p: point)` silently shadows the struct `point`",
+   "file": "src/parser.c",
+   "line": 1575,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        for (;;) {\n            /* A type parameter starts uppercase (`T`), so this has to be\n             * expectIdent.  expectTypeName rejects exactly that shape -- it is\n             * there to reserve uppercase for type parameters. */\n            Token *tp = expectIdent(p, \"a type parameter name (uppercase, e.g. `T`)\");\n            if (!tp) return NULL;\n            *(const char **)vecPush(&fd->typeParams) = tp->text;",
+   "why": "parseTypeDecl (parser.c:1277) and parseStruct (parser.c:863) both enforce `startsUpper` on type parameters, and the comment at parser.c:1335-1343 states the invariant (\"the two sets are disjoint and a type parameter can never collide with a type name\"). parseFunc's generic list relies on the comment instead of a check, so a lowercase type parameter is accepted and shadows a real type name for the whole body and signature. Consequence measured: with `struct point` declared, `fn f<point>(p: point)` becomes generic over any type and `f(3)` type-checks, while the identical name in `struct holder<point>` is rejected as an error.",
+   "trigger": "A function type parameter that is not uppercase, most damaging when it is the name of an existing type (loophole the struct/type paths close).",
+   "repro": "cat > /tmp/t_shadow.extc <<'EOF'\nstruct point { x: i32 }\nfn f<point>(p: point) -> i32 { return 0 }\nfn main() -> i32 { return f(3) }\nEOF\n/home/alphayang/extC_Compiler/build/extc /tmp/t_shadow.extc; echo $?   # -> 0, f(3) accepted\ncat > /tmp/t_shadow2.extc <<'EOF'\nstruct point { x: i32 }\nstruct holder<point> { v: point }\nfn main() -> i32 { return 0 }\nEOF\n/home/alphayang/extC_Compiler/build/extc /tmp/t_shadow2.extc; echo $?   # -> 1, same name rejected there",
+   "confidence": "high"
+  },
+  {
+   "title": "`at()` only refuses string-vs-punctuation matches, so a statement-position string literal that spells a keyword is taken for that keyword",
+   "file": "src/parser.c",
+   "line": 1996,
+   "kind": "FALSE-REJECT",
+   "severity": "P2",
+   "code_quote": "    if (at(p, \"yield\")) {\n        Token *yk = take(p);\n        Stmt *s = stmtNew(p->arena, ST_YIELD, yk->line);\n        if (atKind(p, TK_NEWLINE) || atKind(p, TK_EOF) || at(p, \"}\")) {\n            ctxError(p->ctx, yk->line, yk->col, NULL,\n                     \"`yield` needs a value: `yield expr`\",",
+   "why": "at() (parser.c:68-72) guards the text comparison only when the compared spelling is punctuation (`if (t->kind == TK_STRING && lexIsPunct(value)) return false;`). For keyword spellings it compares text alone, and a string token stores its contents without quotes, so a TK_STRING whose text is `yield` compares equal to the keyword. parseStmt dispatches on at(p, \"yield\"/\"let\"/\"var\"/\"if\"/\"while\"/\"for\"/\"trap\"/\"match\"/\"return\"/\"break\"/\"continue\") before ever reaching parseExpr, so a bare string expression statement is misparsed. `\"abc\"` as a statement compiles; `\"yield\"` dies in the yield branch with a message about a keyword the user never wrote.",
+   "trigger": "An expression statement consisting of a single string literal whose contents are exactly a keyword spelling.",
+   "repro": "printf 'fn main() -> i32 {\\n    \"abc\"\\n    return 0\\n}\\n' > /tmp/t_ok.extc   # exit 0\nprintf 'fn main() -> i32 {\\n    \"yield\"\\n    return 0\\n}\\n' > /tmp/t_kw.extc  # exit 1\n/home/alphayang/extC_Compiler/build/extc /tmp/t_ok.extc; echo $?\n/home/alphayang/extC_Compiler/build/extc /tmp/t_kw.extc; echo $?\n# -> t_kw.extc:2:5: error: `yield` needs a value: `yield expr`\n# same for \"let\" (expected a variable name) and \"match\" (expected an expression)",
+   "confidence": "high"
+  },
+  {
+   "title": "Fixed-array length has no upper bound: `[9223372036854775807]i32` type-checks and the generated C is rejected by cc",
+   "file": "src/parser.c",
+   "line": 1746,
+   "kind": "BUG",
+   "severity": "P3",
+   "code_quote": "        if (n->ival <= 0) {\n            ctxError(p->ctx, br->line, br->col, NULL,\n                     \"array length must be positive, got %lld\", (long long)n->ival);\n            return NULL;\n        }\n        return typeArray(p->arena, n->ival, elem);",
+   "why": "The only validation of `[N]T` is positivity, although N is an i64 literal. The checker accepts it and codegen emits `int32_t data[9223372036854775807];`; cc then refuses the file (`size of array ... exceeds maximum object size`). Without --check-c the driver happily prints C that cannot build, which breaks the promise stated at main.c:322-325 (\"a program which type-checks will build\"). With --check-c the diagnostic is the internal-error message \"the generated C does not compile -- this is an extc bug\", which blames the compiler for a source-level absurdity.",
+   "trigger": "Any fixed array whose length is large enough that the element size times the count exceeds what the C compiler accepts (repro uses i64 max; [2305843009213693952]i32 also fails).",
+   "repro": "printf 'fn main() -> i32 {\\n    var a: [9223372036854775807]i32\\n    return 0\\n}\\n' > /tmp/t_big.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_big.extc --check-c; echo $?\n# -> exit 1, cc: size of array 'data' exceeds maximum object size\n/home/alphayang/extC_Compiler/build/extc /tmp/t_big.extc | grep 'int32_t data'   # invalid C emitted anyway",
+   "confidence": "high"
+  },
+  {
+   "title": "`effects` clause rejects `Ret` when it is not the first key (`effects Addr=0 Ret=0`), although `effects Ret=0 Addr=0` is accepted",
+   "file": "src/parser.c",
+   "line": 392,
+   "kind": "FALSE-REJECT",
+   "severity": "P1",
+   "code_quote": "                if (at(p, \"Addr\") || at(p, \"Cont\") || at(p, \"Thread\")) continue;\n                break;\n            }",
+   "why": "parseEffectsClause loops over `name = int` pairs, and after each pair decides whether another key follows by testing only Addr/Cont/Thread. `Ret` (handled at parser.c:360-372) is missing, so the loop stops right after a pair that precedes `Ret`, leaving `Ret=0` to be parsed as the next top-level declaration. `effects Ret=0 Addr=0` works because Addr is in the test; `effects Addr=0 Ret=0` (equally legal, same clause) fails with \"expected `fn`, `struct`, `type`, `let` or `var`, found `Ret`\", which points at the key, not at the ordering rule. parseFunc (parser.c:1619 for no-body declarations, parser.c:1634 for functions with a body) is the caller inside this unit's range; the defective line itself sits at 392, just below the assigned range.",
+   "trigger": "Writing `Ret=` after any other effect key, in an `extern!` declaration or in an `effects` clause on a function with a body.",
+   "repro": "printf 'extern!(\"libc\") fn f1(p: ref u8) -> i32 effects Addr=0 Ret=0\\nfn main() -> i32 { return 0 }\\n' > /tmp/t_A.extc\nprintf 'extern!(\"libc\") fn f2(p: ref u8) -> i32 effects Ret=0 Addr=0\\nfn main() -> i32 { return 0 }\\n' > /tmp/t_B.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_A.extc; echo $?  # -> 1, 'found `Ret`'\n/home/alphayang/extC_Compiler/build/extc /tmp/t_B.extc; echo $?  # -> 0",
+   "confidence": "high"
+  },
+  {
+   "title": "C-style `for (init; cond; step)` cannot omit the init or the step, although the parser documents the C shape",
+   "file": "src/parser.c",
+   "line": 2327,
+   "kind": "FALSE-REJECT",
+   "severity": "P3",
+   "code_quote": "    if (at(p, \"(\")) {\n        take(p);\n        Stmt *init = parseStmt(p);\n        if (!init) return NULL;\n        if (!expect(p, \";\", \"`for (init; cond; step)` needs `;` after the initializer\")) return NULL;\n        skipNl(p);\n        Expr *cond = parseExpr(p);\n        if (!cond) return NULL;\n        if (!expect(p, \";\", \"`for (init; cond; step)` needs `;` after the condition\")) return NULL;\n        skipNl(p);\n        Stmt *step = parseStmt(p);",
+   "why": "All three sections of the C-style header are parsed unconditionally: parseStmt for the initializer (2327) and parseStmt for the step (2335), with parseExpr for the condition (2331). An empty section is therefore not an empty statement but a parse error from the middle of an expression, even though the desugaring comment at parser.c:2264 documents the form as `for (init; cond; step) -> { init while cond { { B } step } }`, where an empty init or step is trivially expressible. The two idioms `for (; p != null; p = p.next)` and `for (i = 0; i < n; )` are rejected with \"expected an expression, found `;`\" / \"found `)`\".",
+   "trigger": "Omitting the initializer or the step in the C-style for header.",
+   "repro": "printf 'fn main() -> i32 {\\n    var i = 0\\n    for (; i < 3; i += 1) { }\\n    return i\\n}\\n' > /tmp/t_for3.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_for3.extc; echo $?\n# -> 1: t_for3.extc:3:10: error: expected an expression, found `;`\nprintf 'fn main() -> i32 {\\n    var i = 0\\n    for (var j = 0; i < 3; ) { i += 1 }\\n    return i\\n}\\n' > /tmp/t_for4.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_for4.extc; echo $?\n# -> 1: t_for4.extc:3:28: error: expected an expression, found `)`",
+   "confidence": "high"
+  }
+ ],
+ "coverage_notes": "Read src/parser.c 1221-2440 line by line (all of it, no sampling). Functions covered: tail of the parseImpl member loop (1221-1250); parseTypeDecl (1259-1330, incl. optional leading `|`, payload types, type-parameter case check); startsUpper (1333); expectTypeName (1344-1356); expectFuncName (1368-1417, operator fusion for ==,!=,<,<=,>,>=,+,-,*,/,%, <<,>>, [],[],=); parseFuncAnnotations (1451-1552); parseFunc (1554-1650, type params, params, return type, noBody/extern and @builtin paths, effects-on-body rejection rules); parseType (1663-1804, dyn/mut/?/ref/[N]T/fn-type/qualified+generic names); parseFnType (1818-1847); parseBlock (1856-1872); parseMatch (1886-1958); parseStmt (1966-2105, @overwrite, yield, let/var, if/while/for, trap-by-shape, match, return/break/continue, nested-decl rejection, trailing-domain block, compound assignment, `x = yield`); parseGlobalDecl (2115-2146); parseVarDecl (2156-2208, incl. `var x = yield`); parseIf (2216-2241); for-desugar helpers forIdent/forInt/forStep/forBlock/forRepeatable (2279-2318); parseFor all four forms (2320-2440). Cross-checked and found NOT to be defects: startsUpper is forward-declared at 180 (no implicit declaration); typeNamed allocates a fresh node per call, so filling ty->targs/mut/nullable cannot alias a shared type; parseGlobalDecl's documented \"initializer must be a literal\" is enforced by the checker (`var g = f()` -> \"the global `g` must be initialized with a constant\"); zero-init for a missing initializer and the `@overwrite`-on-`let` case are both re-rejected by the checker; `for` desugaring names (`__extc_s`, `__extc_i`) cannot collide with user names because lexIdent rejects any identifier starting with `__` (lexer.c:268-272, verified by test); the for-each element copy (`mut=false`) and the half-open range are documented and behave as documented; parseMatch's unchecked `arm->body = parseBlock(p)` at 1944 cannot be observed because ctxError is fatal and the driver stops before any later pass (tested with an unterminated arm: clean error, no crash/hang). The `continue` defect of the range/C-style forms is reported here (line 2394 and, in the same shape, 2343); the for-each variant is reported in parser-3.json against line 2457. One finding (line 392) is just below the assigned range and is included because parseFunc in this range is its only caller; the audit of 1-1220 may report the same line. One more unit-1 finding was added after the first pass: the C-style for header rejects empty init/step sections (line 2327/2335, repro /tmp/t_for3.extc and /tmp/t_for4.extc). Also noted but deliberately NOT reported: `looksLikeAssoc` misreads `a < b > (c)` as the generic call `a<b>(c)` (error message: \"`a` is not a built-in primitive or generic function\"), but both readings are rejected for valid programs, so no accept/reject decision changes; `@inline`/`@builtin` written twice in a row at top level are accepted without the duplicate check that the same annotations get elsewhere (parser.c:515-518 and 578-584, outside this range)."
+}

@@ -1,0 +1,173 @@
+P0	UNSOUND	src/check_escape.c:649	escape-1	exprBorrowed does not walk several carrier shapes, so rule B is bypassed: a borrow laundered through a local copy / struct literal / deref copy is stored into a global and read after the target dies
+P0	UNSOUND	src/check_escape.c:1447	escape-2	needsHome 早退把“有 home arena 的函数”往全局存借用值放行 ⇒ 生成物 heap-use-after-free
+P0	UNSOUND	src/check_expr.c:1684	checkexpr-2	EX_INDEX / EX_SLICE never reject a nullable reference: `p[i]` on `?ref [N]T` dereferences null with no diagnostic
+P0	CRASH	src/check_expr.c:3027	checkexpr-3	`parallel::run()` 一个实参都不给 ⇒ 编译器读空 Vec 段错误（exit 139）
+P0	UNSOUND	src/check_top.c:2022	checktop-2	`call(...)?` (EX_TRY) is invisible to the escape set, so a local published through a call goes into a block arena: generated C has a heap-use-after-free
+P0	CRASH	src/check_top.c:4528	checktop-3	Compiler SIGSEGV: funcInstance returns NULL after the type-depth diagnostic, callers dereference it (deep explicit type argument)
+P0	UNSOUND	src/check_top.c:4865	checktop-3	UNSOUND: the deferred zero-value check is never recorded for free generic functions -> silently zero-initializes a `fn` field (null code pointer) or emits an undeclared marker
+P0	MISCOMPILE	src/check_top.c:5596	checktop-3	MISCOMPILE: deferred generic call sites are resolved in a single pass, so a 3-deep generic chain calls the never-emitted provisional instance f_T (declaration-order dependent)
+P0	UNSOUND	src/check_top.c:6024	checktop-1	Arena/zone depth for a call site is computed with 0 as "unset", so a later deeper `mut ref` argument raises it: caller passes a too-short-lived arena -> heap-use-after-free
+P0	MISCOMPILE	src/codegen.c:630	codegen-1	opOverloadSuffix derives the overload suffix from the *caller's* substitution context, so a generic method's definition and its call site get different C names
+P0	CRASH	src/codegen.c:768	codegen-1	genViewCopier (`copyInto`'s primitive) dereferences a NULL storage pointer: it lacks the `!v.data` guard that the index primitive has
+P0	MISCOMPILE	src/codegen.c:1194	codegen-1	Temporary for an array `==` operand is hoisted out of a `while` condition: the condition's side effect runs once, giving an infinite loop / wrong round count
+P0	MISCOMPILE	src/codegen.c:2203	differential	f64 literals with an integral value are emitted as C integer constants: 1.0/2.0 evaluates to 0, 1e9*1e9 overflows in int, -0.0 becomes +0.0
+P0	CRASH/UNSOUND	src/codegen.c:3642	codegen-2	A `d.run { ... }` block is not counted by blkMaxLevel, so the block arena array is one level too short: out-of-bounds `__extc_a[2]` write (ASan-verified stack buffer overflow), and a missing frame field in coroutines
+P0	HANG	src/codegen.c:5798	hang-hashset	编译 stdlib/stl/hashSet.extc 永不返回：dropRuntimeDefs 的 `continue` 跳过了循环推进语句（100% CPU 死循环）
+P0	UNSOUND	src/coroutine.c:84	coro	任务结束时按 LIFO 弹“任务的地方”：把仍然存活的任务 zone 一起弹掉 ⇒ 生成物 heap-use-after-free（ASan）
+P0	HANG	src/parser.c:2394	parser-2	`continue` inside `for i in lo..hi` (and C-style `for`) restarts the loop without running the step: infinite loop
+P0	HANG	src/parser.c:2457	parser-3	`continue` inside `for x in xs` skips the index step: the loop never advances (same defect in the C-style form)
+P1	BUG	src/ast.c:267	ast	`astWalkStmtChildren` 的 ST_ASSIGN 不访问 `u.assign.opExpr`：复合赋值里的用户运算符调用对**所有**基于 walk 的谓词不可见，产物编不过
+P1	BUG	src/ast.h:192	ast	`Expr.func` 的跨 pass 契约只写了 EX_CALL/EX_METHOD：运算符节点（EX_BIN）也带 `func`，而每个基于 walk 的谓词只认三种 call kind ⇒ `var c = a + b` 的产物编不过
+P1	UNSOUND	src/ast.h:824	ast	`FuncDef.extThreadMask` 的文档缺省值(1=碰共享状态)没有代码实现：无 `effects` 子句的 extern 被当成 Thread=0，并行 worker 里可静默调用它（TSan 实测 data race）
+P1	MISCOMPILE	src/check.c:176	lookup	`cNameFor` 生成的 `名字__N` 会与用户自己写的 `名字__N` 撞名：产物重定义或静默错值
+P1	UNSOUND	src/check_escape.c:147	escape-1	placeDepth answers 0 ('lives forever') for a place whose root is not a binding, so a local view laundered through an index/slice of a temporary is accepted where the direct store is rejected
+P1	UNSOUND	src/check_escape.c:726	escape-1	valTracesToParam / destIsParam compare parameter *names*, so a local that shadows a parameter makes the store publish its lifetime constraint against the wrong argument
+P1	UNSOUND	src/check_escape.c:1447	escape-1	checkStoreEscape's `needsHome` early return lets any function that has a home arena store a borrowed reference into a global
+P1	BUG	src/check_escape.c:2381	escape-2	main 里 `?` 的操作数只查 targs.len>0，非 option/result 的泛型类型被当成 option 解包 ⇒ 生成物编不过
+P1	UNSOUND	src/check_expr.c:108	checkexpr-1	worker 白名单把"没有 effects 子句的 extern!"当成 Thread=0（extThreadMask 缺省为 0）⇒ worker 可任意调用共享状态的 C 函数
+P1	MISCOMPILE	src/check_expr.c:149	checkexpr-1	worker 链上的函数被普通调用时去解引用 NULL 的 extc_tls_arena（生成物必然空指针崩溃）
+P1	FALSE-REJECT	src/check_expr.c:359	checkexpr-1	字面量适配先于隐式拓宽、且失败即报错 ⇒ 同一表达式因字面量左右位置不同而一收一拒
+P1	BUG	src/check_expr.c:971	checkexpr-1	lambda 在泛型函数里捕获 T 时，环境结构体字段保留未替换的类型参数（codegen 退化成 int）
+P1	MISCOMPILE	src/check_expr.c:1376	checkexpr-1	`<`/`<=`/`>`/`>=` 的左操作数是 ref 时不报错，静默生成指针比较
+P1	FALSE-REJECT	src/check_expr.c:3150	checkexpr-2	unifyTParams cannot unify an enum instance: a generic function with an `option<T>` / `result<T,E>` parameter can never be called
+P1	FALSE-REJECT	src/check_expr.c:3457	checkexpr-3	`dyn` 派发的实参检查不做上下文定型 ⇒ `d.area(3)` 误拒（静态调用同一行合法）
+P1	UNSOUND	src/check_expr.c:3459	checkexpr-3	`dyn` 派发的实参检查剥掉 `ref` 再比 ⇒ 接受 `ref i64` 形参收到裸值，生成的 C 编不过
+P1	BUG	src/check_expr.c:3753	checkexpr-3	方法的类型参数在签名里没被实例化 ⇒ 生成的 C 引用未定义的 `slice_U`（编不过），标量时把 `u8` 和 `i64` 当成同一个 U
+P1	UNSOUND	src/check_internal.h:497	internal	被调者通过 `mut ref`/`ref` 出参写入的存储不产生任何 publication：目的绑定的 `refDepth`/字段深度停在旧值，晋升走不到分配站点 ⇒ 编译器接受、产物 heap-use-after-free
+P1	UNSOUND	src/check_lookup.c:105	lookup	字段路径的非空证明在 `mut ref self` 方法调用后不失效 ⇒ 生成物解引用 NULL
+P1	UNSOUND	src/check_lookup.c:671	lookup	聚合里的 `coroutine<T>` / `dyn` 句柄未被当作『没有零值』⇒ 零句柄驱动 NULL 帧（SEGV）
+P1	MISCOMPILE	src/check_stmt.c:1085	stmt	`return e?` 的载荷类型从不与函数返回类型的载荷比较（wb->kind == TY_GENERIC 对 option/result 恒假）⇒ 静默截断
+P1	UNSOUND	src/check_top.c:230	checktop-1	Trait/impl conformance is skipped entirely for targets without a StructDef (builtins and views): `impl Trait for i64` / `for slice<u8>` may contradict the trait
+P1	MISCOMPILE	src/check_top.c:289	checktop-1	Trait/impl conformance compares return types only when BOTH are non-void, so a trait method returning a value may be implemented as `void` (and vice versa): generated C does not compile
+P1	MISCOMPILE	src/check_top.c:857	checktop-1	`countOwSites` does not descend into `ST_DOMAIN`, while codegen's `collectOwSites` does: an `@overwrite` inside `d.run { }` makes the compiler emit a cell of a type it never declares
+P1	UNSOUND	src/check_top.c:2476	checktop-2	Effect-summary masks are 32 bits but a function may have more than 32 parameters: `1u << j` is UB and every argument at index >= 32 is never checked
+P1	UNSOUND	src/check_top.c:2497	checktop-2	`fresh` local set is built once from declarations and never invalidated by retargeting: the callee's effect summary comes out empty and the call-site lifetime rule is skipped
+P1	MISCOMPILE	src/check_top.c:6750	checktop-3	MISCOMPILE: a coroutine whose body has no `yield` skips coroFrameLay's field layout, so the generated frame struct has no members
+P1	BUG	src/check_top.c:6850	checktop-4	泛型协程实例的帧漏掉 `var x = yield e` 引入的绑定（coroBinds 按模板函数指针匹配）⇒ 生成物编不过
+P1	MISCOMPILE	src/codegen.c:1334	codegen-1	genBin wraps a `ref` right operand in `&(...)` without checking whether the operand is already a reference: `a == ref b` emits `&(&(b))`
+P1	MISCOMPILE	src/codegen.c:1379	differential	Integer +,-,*,<<,>>,~,- on i8/i16/u8/u16 are computed at C `int` width and never truncated: the value escapes its declared type
+P1	BUG	src/codegen.c:1574	genwarn	Zero value of a generic instance whose type argument is `coroutine<T>` is emitted as `(extc_coro){ .unit = false }` - a designator for a field the real handle type does not have
+P1	MISCOMPILE	src/codegen.c:2206	codegen-2	String literals with `\xNN` followed by a hex-digit character are re-decoded by the C compiler under different rules: silently wrong bytes and length
+P1	MISSING_TRAP	src/codegen.c:2649	differential	Sign-changing 64-bit conversions never trap: u64(i64(-1)) silently yields 18446744073709551615 and i64(u64max) yields -1
+P1	UB	src/codegen.c:3665	genwarn	-Warray-bounds on generated `__extc_a[3]` with an `extc_arena[2]` declaration: a domain block nested inside an `if` walks off the frame arena array (ASan-confirmed stack-buffer-overflow)
+P1	MISCOMPILE/FALSE-REJECT	src/codegen.c:3756	codegen-2	cgLine evaluates an expression after flushPrefix (or without one), so the temporary it queues in the statement prefix is declared after the statement that reads it: generated C does not compile
+P1	MISCOMPILE	src/codegen.c:3841	codegen-3	Pool-owning coroutine driven as a stack frame leaks its whole place: the spawn restores extc_zoneTop before the task ends, so extc_task_end's zoneLeaveTo(task zone) is a no-op
+P1	MISCOMPILE	src/codegen.c:4521	codegen-3	A boxed instance of a generic coroutine never ends its task: the frame's task arena and zone are leaked and the dead-handle trap can never fire
+P1	FALSE-REJECT	src/codegen.c:4538	codegen-3	Coroutine handle helpers embed the yield type's C spelling in an identifier: a `ref` yield type emits `extc_coro_value_int64_t *` and the call site parses as a multiplication
+P1	BUG	src/codegen.c:4608	genwarn	An unstarted coroutine that touches the domain layer keeps its `$next` wrapper but loses the `$step` body: `-Wundefined-internal` / 'used but never defined', and a hard link error at -O0
+P1	FALSE-REJECT	src/codegen.c:4680	codegen-3	Coroutine declared as a method references `struct <owner>_<name>$frame` while the frame struct is named `<name>$frame` and is never defined
+P1	FALSE-REJECT	src/codegen.c:4852	codegen-3	A coroutine body that needs hidden frame state emits `__extc_a[1]` / `__extc_home`, neither of which exists in a step function (dead @overwrite cell, and calls through the hidden home arena)
+P1	MISCOMPILE	src/codegen.c:4901	codegen-3	Recursive coroutine increments the recursion guard but never decrements it: sequential spawns eventually die with a bogus `recursion too deep` trap
+P1	FALSE-REJECT	src/codegen.c:4953	codegen-3	Recursive non-void function that can fall off its end emits `return __extc_ret_v;` for an undeclared variable (generated C does not compile)
+P1	BUG	src/codegen.c:5109	checkexpr-1	worker 需要 zone 形参时 trampoline 不补传 __extc_home_zone ⇒ 产物编不过（too few arguments）
+P1	BUG	src/codegen.c:6779	genwarn	A `coroutine<T>` named only in a data position (struct field / array element / generic type argument) emits `extc_coro` without ever emitting its typedef: the generated C does not compile
+P1	BUG	src/codegen.c:6785	coro	event 层按需发射的触发名单漏了 `extc_unix_` ⇒ 只用 extc_unix_listen/connect 的程序链接失败（--check-c 却报通过）
+P1	BUG	src/codegen.c:7065	genwarn	A `dyn Trait` used only in a data position (struct field / array element / generic type argument) emits `ExtcDynHandle` without emitting its typedef
+P1	UNSOUND	src/codegen.c:7278	codegen-4	f64 -> i64 conversion at exactly 2^63 is not trapped and is UB in the generated C ((double)INT64_MAX rounds up to 2^63)
+P1	UNSOUND	src/codegen.c:7326	codegen-4	extc_arena_alloc's size rounding overflows for n > INT64_MAX-7, returning a huge slice backed by a tiny block (wild writes)
+P1	MISCOMPILE	src/codegen.c:7696	codegen-4	A payload-free generic enum instance is emitted as a tag+union struct while its values are bare enumerators, so the generated C does not compile (extc exits 0)
+P1	MISCOMPILE	src/codegen.c:7708	codegen-4	A coroutine declared as a method never gets its frame struct defined, so the generated C does not compile (extc exits 0)
+P1	CRASH	src/codegen.c:8402	codegen-4	parallel::run with threads == 0 divides by zero in the generated C (SIGFPE), although the runtime documents threads <= 1 as harmless
+P1	BUG	src/coroutine.c:84	coro	boxed spawn 不还原 extc_zoneTop，extc_task_end 随后弹掉调用方仍在使用的地方（合法程序 trap/UAF）
+P1	BUG	src/coroutine.c:230	coro	event 块用 inet_pton 却只有 DNS 块 include <arpa/inet.h> ⇒ 只声明 extc_tcp_connect_to 的程序生成 C 编不过
+P1	UB	src/domain.c:49	misc	域运行期保存块内局部帧的裸指针：`d.run { }` 在块结束之后才驱动帧 ⇒ 生成物 stack-use-after-scope
+P1	FALSE-REJECT	src/modules.c:759	modules-1	rwType 只下探 TY_REF 与 targs：数组 `[N]m::T` 和函数类型 `fn(m::T)->R` 里的模块限定类型名永远不被改写（误拒合法程序）
+P1	FALSE-REJECT	src/modules.c:1209	modules-2	EX_GENCALL 的 callee 名从不改写：模块里的泛型函数一旦写显式类型实参就再也调不到（误拒 + 误导诊断）
+P1	BUG	src/modules.c:2005	modules-2	@private 类型不设防：alias 表收录了私有声明的返回票据，裸名（含传递 import）就能使用别人的私有 struct/enum
+P1	FALSE-REJECT	src/parser.c:392	parser-2	`effects` clause rejects `Ret` when it is not the first key (`effects Addr=0 Ret=0`), although `effects Ret=0 Addr=0` is accepted
+P1	UNSOUND	src/parser.c:1088	parser-1	A trait method's `effects Ret=0` is believed at `dyn` call sites although no impl is ever checked against it: a view into a dead frame is accepted and the generated C reads freed stack (ASAN stack-use-after-scope)
+P1	NONTERMINATION	src/parser.c:2457	differential	`continue` inside any `for` loop skips the loop step, so every `for` with a continue hangs forever
+P1	BUG	src/pools.c:46	misc	池槽位回收时不清 `extc_poolKind`：容器池继承「对象表」模式 ⇒ 合法程序运行期假 trap（abort）
+P1	BUG	src/pools.c:51	misc	`extc_pool_take/resize` 把非正字节数静默钳成 1：`n * sizeof(T)` 溢出时给出 1 字节板块而切片 `.len` 仍是 n ⇒ 堆越界写
+P1	MISCOMPILE	src/types.c:483	types	The generated C name of an array type (`array_<len>_<elem>`) and of a generic-enum instance (`<enum>_<arg>`) is not reserved: a user declaration with that name yields two `struct` definitions for one tag, and extc still exits 0
+P1	FALSE-REJECT	src/types.c:961	types	`ttIs(t, "void")` can never be true (`void` is TY_VOID, not TY_BUILTIN): a bare `return` inside any `-> void` function and every void-returning lambda are rejected, while the `new void` guards it also disables stay dead
+P2	BUG	src/check.c:162	check	cNameFor 不登记已发出的 C 名 ⇒ 形如 `a__2` 的源码名与第二个 `a` 撞成同一个 C 标识符，生成物重定义编不过
+P2	FALSE-REJECT	src/check_escape.c:144	escape-1	A store into a field/element of a by-value aggregate parameter is judged against depth 0 instead of the frame, so a safe program is rejected
+P2	BUG	src/check_escape.c:1497	escape-2	延迟泛型检查的记录端以 owner==NULL 提前返回 ⇒ 自由泛型函数的零值检查永不执行（生成 __extc_reference_has_no_zero_value__）
+P2	UNSOUND	src/check_expr.c:100	checkexpr-1	worker 白名单不识别 EX_GENCALL ⇒ 池原语（poolSlice/poolResize/poolGive）在 worker 里不经任何检查
+P2	UNSOUND	src/check_expr.c:586	checkexpr-1	poolResize/poolGive 不要求视图是 mut ⇒ 只读 `slice<T>` 被洗成可写 `mut slice<T>`
+P2	UNSOUND	src/check_expr.c:1975	checkexpr-2	`@private` is enforced for fields, methods and operators but not for associated functions: `mod::Type::secret()` is callable from any module
+P2	BUG	src/check_expr.c:2989	checkexpr-2	`domain::single(...)`: a @builtin with no body skips argument checking, so extra arguments are silently discarded (side effects included)
+P2	FALSE-REJECT	src/check_lookup.c:63	lookup	`unNarrow` 直接截断整个证明栈 ⇒ 与该绑定无关的非空证明被一起丢掉（误拒）
+P2	FALSE-REJECT	src/check_lookup.c:457	lookup	`findOperator` 不查 `Type.mholder` ⇒ 泛型实例/内建标量上定义运算符被判非法（并把内部名写进诊断）
+P2	FALSE-REJECT	src/check_lookup.c:791	lookup	`isPlace` 不认 `*p` ⇒ `(*p)[0..2]` 被当成『临时值』拒绝，诊断理由错误
+P2	FALSE-REJECT	src/check_stmt.c:606	lookup	被收窄的**字段**作为赋值目标时沿用收窄后的非空类型 ⇒ 合法的可空写入被拒
+P2	HANG	src/check_top.c:901	checktop-1	`funcReachesItself` has no memo and explores every call path up to depth 64: exponential compile time for an `@inline` function over a fan-out call graph
+P2	HANG	src/check_top.c:3091	checktop-2	The level solver's step budget only prints a message: it never stops the walk, and the message claims it was stopped
+P2	UNSOUND	src/check_top.c:4279	dataflow	overflow 后调用方并不退回保守答案：整个函数的不动点被丢弃，回落到同一文件自称 unsound 的破坏性遍历
+P2	FALSE-REJECT	src/check_top.c:4419	escape-1	A global whose annotated type is a nullable reference cannot be initialized with `null`: the annotation is not used as context for the initializer
+P2	UNSOUND	src/check_top.c:6769	checktop-4	跨 yield 的局部量规则（rule 2）对泛型实例失效：typeContainsRef 问的是未替换的 T
+P2	MISCOMPILE	src/codegen.c:487	codegen-1	C keywords are renamed only for functions/methods: a struct/enum type name or a global variable named after a keyword is emitted verbatim and the generated C does not compile
+P2	MISCOMPILE	src/codegen.c:2077	codegen-1	genGlobalInit makes only the outermost struct literal a brace initializer: a nested literal stays a compound literal, which is not a valid static initializer
+P2	MISCOMPILE	src/codegen.c:2203	codegen-2	Negative-zero float literals are emitted as the integer `-0`, losing the sign: `1.0 / -0.0` prints `inf` instead of `-inf`
+P2	MISSING_TRAP	src/codegen.c:2605	differential	f64 -> i64 conversion accepts exactly 2^63 (`v <= (double)INT64_MAX`) and silently returns INT64_MIN
+P2	HANG	src/codegen.c:3632	codegen-2	blkMaxOfBlock evaluates blkMaxLevel twice per statement, making codegen exponential (2^nesting-depth) in the number of nested blocks: the compiler hangs on ~34 nested blocks
+P2	HANG	src/codegen.c:3632	codegen-3	Exponential compile time in block-depth computation: blkMaxOfBlock evaluates blkMaxLevel twice per statement, so nesting depth d costs 2^d
+P2	MISCOMPILE	src/codegen.c:3778	codegen-2	The receiver of a domain block is generated once per `ext` task and again for the run, so an impure receiver is evaluated N+1 times and the tasks are registered in a different domain than the one driven
+P2	MISCOMPILE	src/codegen.c:6698	codegen-4	The "the compiler needs this name" guard skips array and enum instances, so a user declaration with that name produces two C definitions of one struct (extc exits 0)
+P2	UNSOUND	src/codegen.c:8342	codegen-4	The parallel region is sized and initialized with the uncapped thread count; counts >= 2^60 wrap the size computation into a heap-buffer-overflow
+P2	BUG	src/coroutine.c:83	coro	extc_task_end 用 extc_arena_release 回收任务 arena，而任务槽永不复用 ⇒ 每个跑完的装箱协程永久泄漏一块（实测 30 万任务 +32MB）
+P2	BUG	src/coroutine.c:137	coro	extc_epoll_wait 的待处理队列是函数级 static，不按 epoll 实例区分 ⇒ 跨实例投递别人的 tag
+P2	BUG	src/coroutine.c:203	coro	extc_unix_connect / extc_unix_listen / extc_tcp_listen(_shared) 的失败路径不关 fd ⇒ 重试循环每次漏一个 fd
+P2	BUG	src/coroutine.c:403	coro	extc_http_date 用固定的 64 字节上限写调用方的缓冲区，而 extC 声明的 `out: ref u8` 不带长度 ⇒ 越界写
+P2	UNSOUND	src/dataflow.c:104	dataflow	第 5 个字段（哪怕深度为 0）就把整个函数标成 overflow：字段表满不该升级为整表作废
+P2	UNSOUND	src/dataflow.c:403	dataflow	DFA_ROUNDS=64 不是保险丝：70 步直线循环体就打满，打满即整函数结果作废
+P2	HYGIENE	src/main.c:132	main	A compiled program killed by a signal makes `--run` exit 255 with no message at all
+P2	BUG	src/modules.c:820	modules-1	限定类型名的诊断用 ctxError(ctx, 0, ...) 报，渲染成 `file: error:`：整条类型改写路径的错误都没有行号
+P2	FALSE-REJECT	src/modules.c:1557	modules-2	openLookup 遇到「某个被打开模块里是 @private 的同名声明」就报错返回，压掉了另一个模块公开导出的同名符号（误拒合法程序）
+P2	FALSE-REJECT	src/modules.c:1681	modules-2	impl 块只改写目标类型名、不改写 trait 名：`impl lib::Codec for mine` 报 unknown trait
+P2	UNSOUND	src/modules.c:1769	modules-2	isStdlibFile 用裸前缀比较：路径字符串以 stdDir 开头的任意目录都被当成标准库，@builtin / 特权模块闸门被绕过
+P2	BUG	src/modules.c:1865	modules-2	短名冲突检查只看单个 unit 的 use 列表：跨文件的 `x::util` / `y::util` 漏检，两个模块共用 `util$` 前缀后互相绑错类型，报错却指向无辜代码和根文件行
+P2	BUG	src/parser.c:606	parser-1	Top-level annotations that do not apply to the declaration that follows are silently dropped (except on `let`/`var`, already reported): `@inline`/`@builtin` on struct and enum, `@noCopy`/`@poolObject`/`@sharesStorage`/`@builtin` on fn and `extern!`
+P2	FALSE-REJECT	src/parser.c:708	parser-1	全局声明（let/var）上的 `@noCopy` / `@poolObject` / `@sharesStorage` / `@inline` 被静默接受且完全不做任何事
+P2	BUG	src/parser.c:1096	parser-1	parseTrait throws away the method's own type-parameter list (`fn f<T>` in a trait), so the signature later fails with a misleading `unknown type T`
+P2	FALSE-REJECT	src/parser.c:1475	parser-2	`p->sawBuiltin` is parser-global, not per-declaration: a second `@builtin` in a struct/impl body is falsely rejected, and the first is silently ignored
+P2	BUG	src/parser.c:1575	parser-2	Function type parameters are not checked to start uppercase, so `fn f<point>(p: point)` silently shadows the struct `point`
+P2	FALSE-REJECT	src/parser.c:1996	parser-2	`at()` only refuses string-vs-punctuation matches, so a statement-position string literal that spells a keyword is taken for that keyword
+P2	MISCOMPILE	src/parser.c:3143	parser-3	A raw NUL byte inside a string literal is silently dropped: the parser keeps only `t->text` and codegen re-derives the length with sizeof(), so `"a\0b"` becomes "a"
+P2	BUG	src/plate.c:39	misc	`extc_memCopy` 用 `memcpy` 做板的整块拷贝：`copyIn/copyOut` 允许源与目标都是板内视图 ⇒ 重叠时 -O2 静默拷错
+P2	BUG	src/pools.c:118	misc	`extc_dynPoolOf` 只记 pid、用 `generation == 0` 判陈旧 ⇒ 一个 place 会把 dyn 值生进**别的 place 还活着的对象表**里（地方寿命失效）
+P2	FALSE-REJECT	src/types.c:275	types	A module's own declaration is unreachable by its bare name when the prelude declares the same name: the plain-name lookup wins over the module alias table, so the module is forced to use the prelude's type
+P2	BUG	src/types.c:379	types	`mut` is silently discarded for every non-generic name (`mut i32`, `mut point`) and for generic enum instances (`mut option<i32>`), although the same modifier on a generic struct is a hard error
+P3	HYGIENE	src/ast.c:160	ast	`moduleInit` 漏初始化 `Module.aliases`：结构体里九个 Vec 只 init 了八个，唯一的写入点靠 `if (!out->aliases.arena)` 兜底
+P3	HYGIENE	src/ast.h:358	ast	EX_ASSOC→EX_IDENT 原地改写后 `u.ident.srcName` 别名到 `u.assoc.targs.arena`：该字段是“用户写下的原样名字”，实际却持有一个 arena 指针
+P3	DOC	src/base.h:12	misc	base.h 写下的不变量「没有可变全局状态」与 base.c 的 dbgOn 缓存相反
+P3	HYGIENE	src/check.c:466	check	checkAssignable 不判 want/got 为空就解引用（cppcheck check.c:466 的 want-may-be-NULL 判定：静态成立、当前调用方不可达，但缺护栏）
+P3	HYGIENE	src/check_expr.c:2013	checkexpr-2	EX_ASSOC's `parallel::run` branch reads the wrong union member (`e->u.call.args` on an EX_ASSOC node); it is unreachable today and would dereference NULL if it ever ran
+P3	HYGIENE	src/check_expr.c:3527	checkexpr-3	`parallel::run` 的整段内建处理被复制两份（EX_CALL 与 EX_METHOD），修一处不改另一处
+P3	DOC	src/check_internal.h:274	internal	`explicitTargs` 注释给出的理由（“union 对某些 kind 不清零 ⇒ 只由一条路径写的字段会读到垃圾”）与代码不符：`exprNew` 是唯一分配点且整节点清零；真正的风险是在原地改 kind 时新成员复用旧成员的字节（该风险注释未提）
+P3	HYGIENE	src/check_internal.h:415	internal	`Checker.fxAltScan` 声明后从未被写、也从未被读；`[fx]` 转储把 `fxAliasWalks` 打印在 `altScan=` 标签下 —— 想看的那个“每处赋值扫描”计数永远是 0，看到的是另一个量
+P3	HYGIENE	src/check_lookup.c:550	lookup	死代码：`typeContainsProto` 已无活调用方（三处 `0 &&` 关闭）、`checkFnDisplay` 无任何调用方
+P3	UNSOUND	src/check_top.c:267	checktop-1	Trait/impl parameter comparison starts at index 1 unconditionally: for a receiver-less method the first real parameter is never compared
+P3	HYGIENE	src/check_top.c:2768	checktop-2	Checker.escapeesFor is written but never read: the documented cross-call memo does not exist and the key is a truncated pointer
+P3	PERF	src/check_top.c:3544	checktop-2	Level pass cost is quadratic in the number of store records of one function
+P3	HYGIENE	src/check_top.c:3942	checktop-3	HYGIENE: two copies of the coroutine handle-protocol synthesis disagree on the receiver mutability of `send` (and on modName)
+P3	HYGIENE	src/check_top.c:5118	checktop-3	HYGIENE: allFunctions lists every `impl` method twice (already attached to StructDef.methods), so all four all-passes do the work twice and the 'one owner' list has already drifted
+P3	PERF	src/check_top.c:6048	checktop-4	电平事实重放的收敛判据用错了返回值（promoteInto 返回“成功”而非“有变化”）⇒ 两处不动点循环恒定跑满 32 轮
+P3	HYGIENE	src/codegen.c:1345	codegen-1	The operator-as-method-call path never passes `@overwrite` cells, unlike the three other call emitters (currently latent: owLocal is always true today)
+P3	HYGIENE	src/codegen.c:2167	codegen-2	A lambda with no captures emits an empty initializer `(T){}`, which ISO C11 forbids and which leaves the synthesized `__extc_empty` field uninitialized
+P3	HYGIENE	src/codegen.c:2327	codegen-2	The EX_CALL handle-protocol block (next/value/send on a coroutine receiver) is unreachable, and its `send` argument index contradicts its own receiver selection - duplicated logic that has already diverged from genMethodCall
+P3	HYGIENE	src/codegen.c:6527	codegen-4	markUncalledFunctions lacks the dynTable exemption its sibling pruner has, so a method the dyn table calls is marked EXTC_UNUSED
+P3	BUG	src/coroutine.c:76	coro	extc_task_zone 只查上界不查 liveness ⇒ 对从未用过的 id 返回未初始化内存（ASan 下 0xBEBE...），对死任务返回旧 zone
+P3	HYGIENE	src/dataflow.c:316	dataflow	dfStmt/dfBlock 的 depth 参数从不参与任何比较：只有形状像深度闸门，缺的正是那道闸门
+P3	HYGIENE	src/dataflow.c:494	dataflow	dfValueDepth 没有任何调用者（头文件却称它用于修字段表），且 overflow 时返回 0——恰好是最不保守的答案
+P3	HYGIENE	src/domain.c:55	misc	`extc_dom_free` 没有任何调用者：每个 `domain::single()` 泄漏堆对象（+ 任务表），而这段死代码正好把泄漏盖住
+P3	MISCOMPILE	src/lexer.c:235	lexer	Float literals that overflow or underflow are accepted silently (`1e999` becomes infinity), while the integer path diagnoses ERANGE
+P3	HYGIENE	src/lexer.c:427	lexer	lexChar moves `lx->pos` by hand and never advances line/col, so every diagnostic after a character literal on the same line points at the wrong column
+P3	DOC	src/main.c:355	main	`--help` (documented as listing every accepted switch) omits `--explain-memory`, which the driver accepts
+P3	HYGIENE	src/main.c:576	main	`-o FILE` is silently ignored when `--run` is also given: the requested output file is never written and no error is reported
+P3	HYGIENE	src/main.c:632	main	$CC is exec'd as one program path, so a conventional `CC="cc -m32"` (or `ccache cc`) cannot be used by --run or --check-c
+P3	DOC	src/modules.c:12	modules-1	文档与代码不一致：头部说 use 解析「next to the importing file」，实际只用入口文件目录；findModFile 的注释还写了一个不存在的参数
+P3	BUG	src/modules.c:236	modules-1	suggestImportPath 不查 L->rootDir，而 findModFile 恰恰先查 rootDir：建议的 `use` 要么给不出，要么指向另一个文件
+P3	HYGIENE	src/modules.c:960	modules-1	构造器改写里的 isFn 探测是死代码：拿已 mangle 的声明名去比源名，永远不相等
+P3	BUG	src/modules.c:980	modules-1	`!saveCall` 提前 return：非调用形式的限定名（`greet::K`）丢掉「模块存在但没 import」的诊断，只剩误导性的 unknown type
+P3	UB	src/parser.c:48	parser-1	`pk()` 在令牌向量为空时下标下溢（`p->toks->len - 1` 变成 SIZE_MAX）
+P3	BUG	src/parser.c:107	parser-1	shown() assumes TK_NEWLINE has empty text, but the lexer stores "\n": diagnostics print a raw newline inside the backticks
+P3	HYGIENE	src/parser.c:396	parser-1	`parseEffectsClause` 末尾有不可达的第二个 `return true;`
+P3	BUG	src/parser.c:515	parser-1	重复注解的检查不一致：`@inline @inline` 与 `@noCopy @noCopy` 静默通过，`@frozen @frozen` 报错
+P3	HYGIENE	src/parser.c:777	parser-1	顶层 `fn` 分支里的 `|| at(&p, "@")` 与随后的 `parseFuncAnnotations` 是不可达死路径
+P3	HYGIENE	src/parser.c:1058	parser-1	trait 的类型参数不要求大写，与 struct 的检查不一致
+P3	BUG	src/parser.c:1746	parser-2	Fixed-array length has no upper bound: `[9223372036854775807]i32` type-checks and the generated C is rejected by cc
+P3	FALSE-REJECT	src/parser.c:2327	parser-2	C-style `for (init; cond; step)` cannot omit the init or the step, although the parser documents the C shape
+P3	BUG	src/types.c:264	types	A type parameter written with type arguments (`T<i32>`) silently resolves to `T`: the arguments are dropped instead of rejected
+P3	DOC	src/types.c:301	types	The unknown-type diagnostic advertises `str` as a built-in type, but no such type exists

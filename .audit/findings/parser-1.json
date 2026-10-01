@@ -1,0 +1,125 @@
+{
+ "findings": [
+  {
+   "title": "A trait method's `effects Ret=0` is believed at `dyn` call sites although no impl is ever checked against it: a view into a dead frame is accepted and the generated C reads freed stack (ASAN stack-use-after-scope)",
+   "file": "src/parser.c",
+   "line": 1088,
+   "kind": "UNSOUND",
+   "severity": "P1",
+   "code_quote": "        bool saved = p->noBody;\n        p->noBody = true;                       /* the `extern!` switch: signature only */\n        FuncDef *m = parseFunc(p);\n        p->noBody = saved;\n        if (!m) return NULL;",
+   "why": "parseTrait parses every method with p->noBody set, i.e. down the `extern!` path of parseFunc, whose noBody branch (parser.c:1614-1619) accepts an `effects` clause after the signature. So a trait method -- which has no body and no call site of its own -- can carry `effects Ret=0`, and the clause is stored on the trait's FuncDef. Nothing ever compares that clause with the implementations: the conformance pass checks method names (check_top.c:5333-5342) and resolved parameter/return types, never hasEffects/extRetFresh. But a `dyn Trait` call resolves to the TRAIT's FuncDef (`e->func = want;`, check_expr.c:3467), and the escape analysis answers \"this reference does not point into the caller's frames\" from exactly that FuncDef (`return e->func && e->func->extRetFresh;`, check_escape.c:114). An impl that returns a view into the caller's storage therefore inherits the trait's freshness promise, and a binding initialized from the dyn call is marked outOfFrame (check_stmt.c:470-479), so a pointer that dies with the frame is accepted into a global. The clause is not an `extern!`-style signature over a black box: the impls are in the same program and are checked by this compiler, so believing one declaration's clause about another declaration's body is the hole.",
+   "trigger": "A trait whose method declares `effects Ret=0` and returns a reference or a view (`slice<T>`, `ref T`, `?ref T`), implemented by an impl that returns a view into the caller's storage; the method is called through a `dyn` value and the result (or `.data`) is stored where the pointed-at local is already dead. The same program with a concrete receiver is rejected, and the same program without `effects Ret=0` in the trait is rejected -- the dyn path is the only thing that reads the clause.",
+   "repro": "cat > /tmp/t_traitret.extc <<'EOF'\ntrait C { fn view(self: ref Self) -> slice<u8> effects Ret=0 }\nstruct s { buf: slice<u8> }\nimpl C for s { fn view(self: ref s) -> slice<u8> { return self.buf } }\nstruct box { p: ?ref u8 }\nvar GB: box = box { }\nfn stash(d: dyn C) -> i32 { var v: slice<u8> = d.view()  GB.p = v.data  return 0 }\nfn outer() -> i32 { var t: [8]u8  t[0] = u8(42)  var b: s = { buf: t[..] }  return stash(dyn C(b)) }\nfn main() -> i32 { var r: i32 = outer()  var q: ref u8 = GB.p!  return i32(i64(*q)) + r }\nEOF\n./build/extc /tmp/t_traitret.extc -o /tmp/t_traitret.c   # exit 0, no diagnostic\ngcc -std=c11 -fsanitize=address,undefined -fwrapv -O1 /tmp/t_traitret.c -o /tmp/t_traitret -lm -lpthread\nASAN_OPTIONS=detect_stack_use_after_return=1 /tmp/t_traitret\n# observed: ERROR: AddressSanitizer: stack-use-after-scope ... READ of size 1 ... 't' <== Memory access at offset 64 is inside this variable (frame of outer)\n# control A: sed 's/ effects Ret=0//' -> REJECTED at `GB.p = v.data`: \"this reference would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)\"\n# control B: replace the dyn call with a concrete receiver (`fn stash2(b: ref s)` + `b.view()`) -> also REJECTED with the same message, which isolates the trait's clause as the thing that was believed",
+   "confidence": "high"
+  },
+  {
+   "title": "全局声明（let/var）上的 `@noCopy` / `@poolObject` / `@sharesStorage` / `@inline` 被静默接受且完全不做任何事",
+   "file": "src/parser.c",
+   "line": 708,
+   "kind": "FALSE-REJECT",
+   "severity": "P2",
+   "code_quote": "        } else if (at(&p, \"let\") || at(&p, \"var\")) {\n            if (exported) { ... }\n            if (frozen) { ... }\n            if (fnUnchecked) { ... }\n            GlobalDef *g = parseGlobalDecl(&p);",
+   "why": "顶层注解循环（parser.c:499-604）自己写下的规则是：注解是对编译器的指令，被忽略的注解必须报错，否则写的人会以为要求生效了。`let`/`var` 分支只拒了 `@export` / `@frozen` / `@unchecked` 三个，`@noCopy` / `@poolObject` / `@sharesStorage` / `@inline` 四个既不生效也不报错；而同一批注解在 `struct`（`@noCopy`/`@poolObject`/`@sharesStorage` 有效）、`impl`/`trait`/`type`（全部拒）上都有明确归宿。",
+   "trigger": "任何把 `@noCopy`、`@poolObject`、`@sharesStorage`、`@inline` 写在顶层 `let`/`var` 上的程序。",
+   "repro": "printf '@noCopy\\nvar g: i32 = 0\\nfn main() -> i32 { return 0 }\\n' > g.extc; ./build/extc -w g.extc -o /dev/null   # 退出码 0，无任何诊断；换成 @poolObject/@sharesStorage/@inline 同样。对照：@unchecked / @frozen / @export 在同样的位置会被正确拒绝。",
+   "confidence": "high"
+  },
+  {
+   "title": "Top-level annotations that do not apply to the declaration that follows are silently dropped (except on `let`/`var`, already reported): `@inline`/`@builtin` on struct and enum, `@noCopy`/`@poolObject`/`@sharesStorage`/`@builtin` on fn and `extern!`",
+   "file": "src/parser.c",
+   "line": 606,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        if (at(&p, \"struct\")) {\n            if (exported) {\n                ctxError(ctx, cur(&p)->line, cur(&p)->col,\n                         \"A struct is storage, not code. Export the functions that operate on it.\",\n                         \"`@export` goes on a function\");\n                return false;\n            }",
+   "why": "The dispatch after the annotation loop (parser.c:606-834) checks each flag against only some declaration kinds; every flag it does not check is accepted and thrown away. Concretely: `fnInline` is checked by `impl` (637), `trait` (651) and `extern!` (755) but not by `struct` (606) or `type` (663); `builtinDecl` is read only by the `fn` branch (795) and never checked by `struct`, `impl`, `trait`, `type` or `extern!`; `noCopy`/`poolObject`/`sharesStorage` are checked by `type` (671-689), `impl` (637) and `trait` (651) but not by `fn` (777) or `extern!` (735). That contradicts the rule stated just above the annotation loop: \"Any other annotation is an error: these are instructions to the compiler, and one that is ignored would leave the reader believing something was asked for that never happened\" (parser.c:499-501). The reader of `@builtin struct bi { ... }` is told the compiler supplies the declaration, and of `@noCopy extern! fn getpid()` that the C symbol may not be copied; neither is true and nothing says so. (The `let`/`var` half of the same defect is the Lead's finding at line 708; this one covers the remaining declaration kinds.)",
+   "trigger": "Any of these spellings, each accepted with no diagnostic: `@inline struct`, `@inline type`, `@builtin struct`, `@builtin impl`, `@builtin trait`, `@builtin extern!`, `@noCopy fn`, `@noCopy extern!`, `@sharesStorage fn`, `@poolObject fn`.",
+   "repro": "cat > /tmp/t_ann.extc <<'EOF'\n@inline\nstruct box { x: i32 }\n@inline\ntype e = | a | b\n@builtin\nstruct bi { y: i32 }\n@builtin\nimpl bi { }\n@builtin\ntrait Tr { }\n@noCopy\nfn h() -> i32 { return 2 }\n@sharesStorage\nfn h2() -> i32 { return 3 }\n@poolObject\nfn h3() -> i32 { return 4 }\n@builtin\nextern!(\"libc\") fn getpid() -> i32\nfn main() -> i32 { return h() + h2() + h3() }\nEOF\n./build/extc /tmp/t_ann.extc -o /dev/null; echo exit=$?   # exit=0: ten inapplicable annotations, zero diagnostics\n# contrast: `@unchecked struct s { x: i32 }` and `@private impl s { }` ARE rejected (615, 637), which is what the rule above asks for",
+   "confidence": "high"
+  },
+  {
+   "title": "parseTrait throws away the method's own type-parameter list (`fn f<T>` in a trait), so the signature later fails with a misleading `unknown type T`",
+   "file": "src/parser.c",
+   "line": 1096,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        vecInit(&m->typeParams, p->arena, sizeof(void *));\n        *(const char **)vecPush(&m->typeParams) = \"Self\";\n        /* `trait Codec<T>`: the explicit parameters follow the implicit `Self`, so a signature that\n         * mentions `T` resolves through the very same list. */\n        for (size_t pi = 0; pi < tr->typeParams.len; pi++)\n            *(const char **)vecPush(&m->typeParams) = *(const char **)vecAt(&tr->typeParams, pi);",
+   "why": "parseFunc has already parsed the method's own `<...>` into m->typeParams (parser.c:1569-1583; for generic methods that list is real -- an `impl` method `fn f<T>(self: ref s, x: T)` compiles and works). parseTrait then re-initializes that Vec, discarding the parsed parameters, and fills it with `Self` plus the trait's parameters only. The signature keeps mentioning `T`, so resolveSignature (check_top.c:5534-5536 walks td->methods) fails with \"unknown type `T`\" pointing at the trait's method line. The declaration was accepted by the grammar and mangled in silence; either generic trait methods should be supported, or the parser should reject `fn f<T>` in a trait body with a message that says so.",
+   "trigger": "Any trait method that declares its own type parameters: `trait C { fn f<T>(self: ref Self, v: T) -> i64; }`.",
+   "repro": "cat > /tmp/t_traitgen.extc <<'EOF'\ntrait C {\n    fn f<T>(self: ref Self, v: T) -> i64;\n}\nstruct s { x: i64 }\nimpl C for s {\n    fn f<T>(self: ref s, v: T) -> i64 { return 1 }\n}\nfn main() -> i32 { return 0 }\nEOF\n./build/extc /tmp/t_traitgen.extc -o /dev/null; echo exit=$?\n# observed: t_traitgen.extc:2:1: error: unknown type `T`  (at the trait's method, with the built-in-types note)\n# the same body moved into an `impl` block (`impl s { fn f<T>(self: ref s, x: T) -> i64 { return 1 } }`) compiles (exit 0)",
+   "confidence": "high"
+  },
+  {
+   "title": "重复注解的检查不一致：`@inline @inline` 与 `@noCopy @noCopy` 静默通过，`@frozen @frozen` 报错",
+   "file": "src/parser.c",
+   "line": 515,
+   "kind": "BUG",
+   "severity": "P3",
+   "code_quote": "            if (strcmp(nm->text, \"inline\") == 0) {\n                fnInline = true;\n                skipJunk(&p);\n                continue;\n            }",
+   "why": "`@private`(506-511)、`@export`(522-526)、`@unchecked`(534-540)、`@frozen`(569-576) 都有“说了两遍”检查并报错；`@inline`(515)、`@noCopy`(544)、`@poolObject`(553)、`@sharesStorage`(561)、`@builtin`(578) 只置位不查重。同一层语法里两套规矩，用户无法预期。",
+   "trigger": "同一个声明上重复写 `@inline` / `@noCopy` / `@poolObject` / `@sharesStorage` / `@builtin`。",
+   "repro": "printf '@inline @inline\\nfn f() -> i32 { return 1 }\\nfn main() -> i32 { return f() }\\n' > d.extc; ./build/extc -w d.extc -o /dev/null   # rc=0，无诊断；@noCopy @noCopy 同理。对照 @frozen @frozen 报 “`@frozen` appears twice”。",
+   "confidence": "high"
+  },
+  {
+   "title": "`parseEffectsClause` 末尾有不可达的第二个 `return true;`",
+   "file": "src/parser.c",
+   "line": 396,
+   "kind": "HYGIENE",
+   "severity": "P3",
+   "code_quote": "            return true;\n    return true;\n}",
+   "why": "395 行已经 return，396 行永远不执行；函数还带着 `p->ctx` 未使用的形参语义。属死代码。",
+   "trigger": "静态可见。",
+   "repro": "sed -n '392,397p' src/parser.c",
+   "confidence": "high"
+  },
+  {
+   "title": "`pk()` 在令牌向量为空时下标下溢（`p->toks->len - 1` 变成 SIZE_MAX）",
+   "file": "src/parser.c",
+   "line": 48,
+   "kind": "UB",
+   "severity": "P3",
+   "code_quote": "    size_t i = p->pos + k;\n    if (i >= p->toks->len) i = p->toks->len - 1;    /* clamp at EOF */",
+   "why": "`toks->len == 0` 时 `len - 1` 是 size_t 下溢，`vecAt` 会按 SIZE_MAX 偏移读内存。今天 `lexAll` 保证至少压入一个 TK_EOF，所以不可达；但这是“调用方必须保证非空”的隐含前提，没有任何断言或注释。",
+   "trigger": "任何让 `parseModule` 收到空 token 向量的未来调用方（例如新增一个只做 parse 的入口）。",
+   "repro": "无（不可达）。静态依据：src/lexer.c 的 lexAll 末尾无条件 push TK_EOF。",
+   "confidence": "medium"
+  },
+  {
+   "title": "顶层 `fn` 分支里的 `|| at(&p, \"@\")` 与随后的 `parseFuncAnnotations` 是不可达死路径",
+   "file": "src/parser.c",
+   "line": 777,
+   "kind": "HYGIENE",
+   "severity": "P3",
+   "code_quote": "        } else if (at(&p, \"fn\") || at(&p, \"@\")) {\n            ...\n            if (!parseFuncAnnotations(&p, &inl, NULL, &unchk)) return false;",
+   "why": "从 502 行开始的注解循环在遇到 `@` 时要么消费并置位，要么报错返回；走到 777 行时游标不可能还在 `@` 上。于是 `at(&p, \"@\")` 永远为假，787 行的第二次 `parseFuncAnnotations`（以及 `inl`/`unchk` 的二次读取）没有任何输入能到达——同一份逻辑写了两遍，改一处不会影响另一处。",
+   "trigger": "静态可见。",
+   "repro": "读 parser.c:502-605（注解循环）与 777-800（fn 分支）即可判定；`@inline fn f(){}` 走的是 502 行那一遍。",
+   "confidence": "medium"
+  },
+  {
+   "title": "trait 的类型参数不要求大写，与 struct 的检查不一致",
+   "file": "src/parser.c",
+   "line": 1058,
+   "kind": "HYGIENE",
+   "severity": "P3",
+   "code_quote": "    if (at(p, \"<\")) {\n        take(p);\n        skipJunk(p);\n        for (;;) {\n            Token *tp = cur(p);\n            if (tp->kind != TK_IDENT) { ... }",
+   "why": "`struct`（863-869 行）要求类型参数首字母大写并给出理由（避免与类型名相撞）；`trait`（1058-1075）与 `impl`（1129-1146）只检查 kind。同一种语法位置三套规矩。",
+   "trigger": "`trait t<x> { }` / `impl<x> pair<x> { }` 被接受。",
+   "repro": "printf 'trait t<x> { fn f(self: ref x) -> i32 }\\nfn main() -> i32 { return 0 }\\n' > tt.extc; ./build/extc -w tt.extc -o /dev/null   # rc=0",
+   "confidence": "high"
+  },
+  {
+   "title": "shown() assumes TK_NEWLINE has empty text, but the lexer stores \"\\n\": diagnostics print a raw newline inside the backticks",
+   "file": "src/parser.c",
+   "line": 107,
+   "kind": "BUG",
+   "severity": "P3",
+   "code_quote": "static const char *shown(const Token *t) {\n    return t->text[0] ? t->text : tokenKindName(t->kind);\n}",
+   "why": "The comment above (parser.c:104-105) states \"A token with empty text (TK_EOF, TK_NEWLINE) shows its kind name instead, so a message never ends in `found \"\"`\". Only TK_EOF has empty text: lexAll pushes TK_NEWLINE with text \"\\n\" (lexer.c:509 and :542), so t->text[0] is non-zero and the fallback never fires for newlines. Every \"found `%s`\" in the parser can therefore emit a message with a literal newline in it, splitting the diagnostic across two lines (and the note/caret lines no longer line up with it). The claim in the comment is what hides the bug.",
+   "trigger": "Any syntax error whose cursor lands on a newline, e.g. a field whose type was left off at end of line, or an import list or annotation list broken across lines.",
+   "repro": "printf 'struct s {\\n    x:\\n}\\nfn main() -> i32 { return 0 }\\n' > /tmp/t_nl.extc\n./build/extc /tmp/t_nl.extc -o /dev/null; echo exit=$?\n# observed:\n#   t_nl.extc:2:7: error: expected a type, found `\n#   `\n#       x:\n#         ^\n# (the offending token is rendered as a literal line break instead of `NEWLINE`)",
+   "confidence": "high"
+  }
+ ],
+ "coverage_notes": "Lead 亲读（原定审阅单元未交付）。逐行读完 src/parser.c 1-1220：lookahead 工具（pk/cur/at/atKind/take/accept/shown/expect/expectIdent/skipNl/skipJunk，1-158）、parseUse（245-318）、parseEffectsClause（342-397）、parseExtern（399-456）、parseModule 顶层循环与注解循环（471-838）、parseStruct（845-969）、parseDottedName（998-1017）、parseTrait（1034-1107）、parseImpl（1109-1230 起）。已核实为正确/合理的点：`pk` 对 EOF 的钳位让所有定长前瞻无越界；`take` 不会越过 TK_EOF；`at()` 对字符串字面量与标点的区分（lexIsPunct）；`expectIdent`/`expect` 的报错路径都返回后由调用方立即 return；`parseUse` 的 `::*` 与 `::{a,b}` 分支互斥且报错位置正确；`parseStruct` 对 `@inline`/`@unchecked` 落在字段上的拒绝；`parseTrait` 用 p->noBody 复用 extern 路径且把 Self 作为首个类型参数；`parseImpl` 对 `leadArgs` 先收集后归档（有无 for 两种语义）与三处 vecInit 的先后（注释里记着一次真实踩坑）。未覆盖：1221 之后（由 parser-2/parser-3 单元覆盖）。 另：本次复核确认了两条已由别的单元报告的缺陷（`effects` 续接判断漏 `Ret`，parser.c:392；`extThreadMask` 保守缺省只在子句内设置，parser.c:345），为避免重复计数未列入 findings。\n\n===== parser-1 独立复核单元（src/parser.c 第 1-1220 行，2026-09-30，与上面的 Lead 亲读合并）=====\n逐行读完 1-1220，并在需要判定被调用方行为时读了单元外：startsUpper/expectTypeName(1333-1356)、parseFuncAnnotations(1451-1552)、parseFunc 的签名/noBody/effects 段(1554-1645)、lexer.c 的 lexAll/lexIsPunct/lexChar、collectEffects(check_top.c:2733-2767)、dyn 调用解析(check_expr.c:3380-3470)、exprOutOfFrame(check_escape.c:79-116)、checkStoreEscape/check_stmt.c:440-500。\n本单元函数清单：pk/cur/at/atKind/take/accept/shown/expect/expectIdent/skipNl/skipJunk、mkBin/isScalarTypeName、parseUse、parseEffectsClause、parseExtern、parseModule（顶层分派 + 注解循环）、parseStruct、parseDottedName、parseTrait、parseImpl(到 1220)。\n已核实为正确的点（查过、未报）：pk 的 len-1 钳位因 lexAll 必压 TK_EOF 而安全(lexer.c:538-543)；本单元每处 vecPush 之前都有非 NULL arena 的 vecInit（1121-1123 注释警告的那个坑已处理）；重复字段/重复方法由 checker 报错；parseImpl 的 leadArgs/traitArgs/typeArgs 归位对 `impl Trait<A> for T` / `impl<T> Trait<T> for T<U>` / `impl<T> pair<T>` 三种写法都正确；parseDottedName 首段接受 TK_TYPE（`impl i64` 可用）；`use a::{}` 与尾逗号不会死循环；字符字面量是 TK_INT 且 text 带引号，不会与标点/标识符混淆。\n未确认/未追：`use a::{}`（空名字列表）看起来会静默退化成 `use a`（modules.c:2029 在 names.len==0 时跳过名字列表那一路），未做端到端验证故未列为 finding；重复类型参数（`struct pair<T,T>`）被接受、布局取第一个绑定而修饰名含两个实参（`pair<i64,u8>` 的 a 是 i64），属无意义输入、危害未证明，故不报。\n对已知项的补充证据（不新增条目）：trait 类型参数不大写（Lead 的 1058 条目）在 trait 里能真实遮蔽同名类型——`struct point{x:i64}` + `trait C<point>{ fn f(self: ref Self, v: point)->i64 }` + `impl C<i64> for s{...v: i64...}` 编译通过(exit 0)，即签名里的 `point` 被解析成 trait 参数并被 `i64` 兑现；impl 那一路（1129-1146 同样缺 startsUpper）随后会被 checker 的“类型参数名必须与声明一致”挡住(check_top.c:5400-5405)。\n单元外相邻观察（交给 1221-3649 的审阅者，不计入本单元 findings）：parser.c:1635 只用 `if (fd->extAddrMask || fd->extContMask)` 拒绝有函数体时的 `Addr`/`Cont`，所以 `fn f(self: ref s) -> i64 effects Addr=0 { ... }`（Cont=0 同理）会作为空操作被接受（实测 exit 0），与注释“body already says what it stores”不符。"
+}

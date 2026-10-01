@@ -1,0 +1,53 @@
+{
+ "findings": [
+  {
+   "title": "A compiled program killed by a signal makes `--run` exit 255 with no message at all",
+   "file": "src/main.c",
+   "line": 132,
+   "kind": "HYGIENE",
+   "severity": "P2",
+   "code_quote": "    int status = 0;\n    if (waitpid(pid, &status, 0) < 0) return -1;\n    if (WIFEXITED(status)) return WEXITSTATUS(status);\n    return -1;",
+   "why": "runCmd collapses \"could not start\" and \"killed by a signal\" into -1, and main passes that straight out as its own exit status, which the C runtime truncates to 255 (`return runCmd(runArgv);`, main.c:657). The parent prints nothing in that case -- no `WIFSIGNALED`/`WTERMSIG` report, no one-line note -- so a generated program that segfaults under `--run` is indistinguishable from one that called exit(255), and the documented promise that the compiler never produces undefined behaviour cannot be told apart from a genuine crash. Verified: a null-reference dereference (`*p!`) compiles cleanly (exit 0) and then `--run` exits 255 with empty stderr.",
+   "trigger": "Any program whose process is terminated by a signal (SIGSEGV, SIGABRT, SIGFPE, ...) while running under `--run`.",
+   "repro": "cat > /tmp/t_crash.extc <<'EOF'\nfn main() -> i32 {\n    var p: ?ref i32 = null\n    return *p!\n}\nEOF\n/home/alphayang/extC_Compiler/build/extc /tmp/t_crash.extc; echo \"compile=$?\"        # 0\ntimeout 30 /home/alphayang/extC_Compiler/build/extc --run /tmp/t_crash.extc 2>/tmp/cr.err; echo \"run=$?\"   # 255\nwc -c /tmp/cr.err                                                                     # 0 bytes, no diagnostic",
+   "confidence": "high"
+  },
+  {
+   "title": "`--help` (documented as listing every accepted switch) omits `--explain-memory`, which the driver accepts",
+   "file": "src/main.c",
+   "line": 355,
+   "kind": "DOC",
+   "severity": "P3",
+   "code_quote": "        } else if (strcmp(argv[i], \"--explain-memory\") == 0) {\n            /* One line per allocation site: where it lands and whether it is released each\n             * round of the loop it sits in. Printed after checking, when every level is\n             * final. See `reportMemory`. */\n            setenv(\"EXTC_EXPLAIN_MEMORY\", \"1\", 1);",
+   "why": "usage() (main.c:146-183) enumerates -o, --run, --check-c, -w, -I, -O0..-O3, -march=native, --dump-tokens, --dump-effects, --no-line-map and -h/--help, but never --explain-memory, even though the driver accepts it here and docs/EXTC-SHOWCASE.md:47 uses it as a user-facing command. The comment above usage() calls the text \"the only documentation the driver ships\" and claims it lists every accepted switch; tools/check_switches.py only ratchets the EXTC_* environment variables, so nothing catches this gap. A user cannot discover the flag from the compiler itself.",
+   "trigger": "`extc --help` (or -h); the flag is also missing from README/docs' command synopsis.",
+   "repro": "/home/alphayang/extC_Compiler/build/extc --help 2>&1 | grep -c 'explain-memory'   # -> 0\n/home/alphayang/extC_Compiler/build/extc --explain-memory /tmp/extc-t/empty.extc >/dev/null 2>&1; echo $?  # accepted",
+   "confidence": "high"
+  },
+  {
+   "title": "$CC is exec'd as one program path, so a conventional `CC=\"cc -m32\"` (or `ccache cc`) cannot be used by --run or --check-c",
+   "file": "src/main.c",
+   "line": 632,
+   "kind": "HYGIENE",
+   "severity": "P3",
+   "code_quote": "    char *ccArgv[16];\n    int n = 0;\n    ccArgv[n++] = (char *)cc;\n    ccArgv[n++] = \"-std=c11\";\n    ccArgv[n++] = (char *)(optLevel ? optLevel : \"-O2\");",
+   "why": "`cc` comes from `getenv(\"CC\")` (main.c:605) and is passed as argv[0] to execvp, so any arguments embedded in $CC become part of the program name. The child then fails with `extc: cannot exec `cc -m32`: No such file or directory` and the parent reports `extc: C compiler failed (exit 127)`, which names neither $CC nor the shell-quoting problem. The same single-string assumption is used for the --check-c invocation (main.c:544). $CC values with flags are the norm in make/ninja/CI setups, so this is a common configuration rejected with a misleading message.",
+   "trigger": "`CC` set to anything with a space in it, e.g. `CC=\"cc -m32\"`, `CC=\"ccache cc\"`, `CC=\"gcc -std=gnu11\"`, together with `--run` or `--check-c`.",
+   "repro": "cd /tmp/extc-t && CC=\"cc -m32\" /home/alphayang/extC_Compiler/build/extc --run t_hyg.extc; echo $?\n# -> extc: cannot exec `cc -m32`: No such file or directory\n#    extc: C compiler failed (exit 127) on `build/t_hyg.c`",
+   "confidence": "high"
+  },
+  {
+   "title": "`-o FILE` is silently ignored when `--run` is also given: the requested output file is never written and no error is reported",
+   "file": "src/main.c",
+   "line": 576,
+   "kind": "HYGIENE",
+   "severity": "P3",
+   "code_quote": "    if (!doRun) {\n        if (outPath) {\n            char *text = bufCstr(&c);\n            if (!writeFile(outPath, text, c.len)) {\n                fprintf(stderr, \"extc: cannot write `%s`\\n\", outPath);\n                return 1;\n            }",
+   "why": "The whole -o handling lives inside `if (!doRun)`, so under --run the driver writes only build/<base>.c and never mentions that outPath was dropped. The option parser accepts both flags without complaint (main.c:370-372 and 362-363), and usage() describes -o unconditionally, so an explicit request is discarded silently -- a build script that adds --run to an existing `-o` command line stops producing the C file it used to read, with exit status 0.",
+   "trigger": "`extc --run -o out.c prog.extc` (or `--dump-tokens -o out.c`, which returns before the !doRun block at main.c:415-424 and likewise writes nothing).",
+   "repro": "cd /tmp/extc-t && rm -f /tmp/should_be_written.c\ntimeout 60 /home/alphayang/extC_Compiler/build/extc --run -o /tmp/should_be_written.c t_hyg.extc; echo $?\nls /tmp/should_be_written.c   # -> No such file or directory",
+   "confidence": "high"
+  }
+ ],
+ "coverage_notes": "Read src/main.c (658 lines) line by line (all of it, no sampling). Covered: the file's own doc, phase timing (PHASE/nowSec/timeOn), writeFile, baseName, runCmd (fork/exec/waitpid and the exit-status contract), usage(), viewContractOk, loadPrelude (lex/parse/register/check, reserved marking, view contract, merge order), and main() in full: option parsing (-O0..-O3 validation, -march=native, -w, --dump-tokens, --dump-effects, --explain-memory, --check-c, --run, --no-line-map, -I with the 16-dir cap, -o, -h/--help, unknown-option and multi-input rejection), readWholeFile failure handling, arena/ctx/type-table setup, the lex -> dump-tokens -> prelude -> parse -> loadModules -> aliases -> module diagnostics -> check -> module body diagnostics -> codegen -> --check-c -> write/exec pipeline, and the module-context error rendering. Cross-checked and found NOT to be defects: the pipeline always renders an error before returning 1 (ctx.hasError or a module Ctx), so the `return 1` at main.c:497 is unreachable without a message in every path I could construct (missing module, unreadable module, module syntax error, import clash -- all verified to print); the --check-c temp file handling closes/unlinks on every failure path; `bufCstr` does not change the buffer length (base.c:310-314), so `fwrite(bufCstr(&c), 1, c.len, f)` writes exactly the C text; a directory passed as the input path is rejected with `extc: cannot read` (readWholeFile's fseek/ftell fails); `/dev/null` and an empty file legitimately compile (a file is a module, and `main` is not required for one); errors inside `use`d modules are rendered from the module's own Ctx before codegen (modules.c:1820-1832), which I verified with a deliberately broken module. Not reported: the known `-w`-does-not-reach-module-Ctxs gap (main.c:409, already on the Lead's list), the orphaned readWholeFile doc comment at main.c:42-56 (the function lives in base.c:599; documentation placement only), and the fact that `--dump-tokens`/`--run` ignore `-o` beyond the finding above."
+}

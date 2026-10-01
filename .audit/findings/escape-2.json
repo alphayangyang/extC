@@ -1,0 +1,41 @@
+{
+  "findings": [
+    {
+      "title": "needsHome 早退把“有 home arena 的函数”往全局存借用值放行 ⇒ 生成物 heap-use-after-free",
+      "file": "src/check_escape.c",
+      "line": 1447,
+      "kind": "UNSOUND",
+      "severity": "P0",
+      "code_quote": "    if (storeLayer(c, target) == 0 && exprBorrowed(c, val)\n        && !(destIsParam && valTracesToParam(c, c->curFunc, val))) {\n        /* Accept the store inside a function that has a home arena. ... */\n        if (c->curFunc && c->curFunc->needsHome) return bad;\n        ckError(c, line,\n                \"A borrowed value may not be stored where it outlives the call: ...\",\n                \"cannot store a borrowed value into something that outlives this call\");",
+      "why": "storeLayer(target)==0 同时涵盖“参数/全局”两类目的地：对参数，needsHome 的那段理由（实参至少活到本次调用的 home arena）成立；对**全局**不成立——全局比任何 arena、任何栈帧都长寿，调用点对 home arena 的保证给不出“活到程序结束”。这段代码上方的注释（1421-1424 行）自己写明“目的地是全局（g = s）时……store 必须保持被拒”，但 1447 行的早退恰好把这条前置条件 2 绕过了，且 destIsParam 在全局情形为 false、根本不参与该分支。结果是检查器放行，生成物把指向已释放 arena / 已返回栈帧的视图写进全局。注：docs/reviews/COMPILER-AUDIT-2026-09-30.md 的 P1-3 已记录同一行（症状为“僵尸数据”）；本条给出的是 ASan 实证的 heap-use-after-free，并给出触发所需的 needsHome 最低条件。",
+      "trigger": "被调函数同时满足：① 体内有 `new`（stmtHasNew）；② 返回值类型含引用 或 体里有经解引用的写（stmtStoresThroughDeref）⇒ check_top.c:4136-4138 置 needsHome=true。函数内把来自形参的、含引用的值（slice/ref/含引用结构体）赋给**全局**。",
+      "repro": "cat > /tmp/n6.extc <<'EOF'\nstruct node { v: i32 }\nvar g: slice<u8> = \"hi\"\n\nfn stash(s: slice<u8>) -> ?ref node {\n    var n: ?ref node = new node\n    g = s\n    return n\n}\n\nfn f() -> i32 {\n    var big: mut slice<u8> = new u8[3000000]\n    big[0] = u8(65)\n    big[1] = u8(66)\n    let r = stash(big[0..2])\n    return 0\n}\n\nfn main() -> i32 {\n    f()\n    println(\"g[0] = \", g[0])\n    return 0\n}\nEOF\n./build/extc /tmp/n6.extc -o /tmp/n6.c      # 退出码 0，无诊断\ngcc -O1 -g -fsanitize=address -o /tmp/n6 /tmp/n6.c && /tmp/n6\n# => ERROR: AddressSanitizer: heap-use-after-free ... READ of size 1\n#    freed by: extc_arena_release (f 的块 arena 在 f 返回时释放)\n# 对照：去掉 `new node`/返回引用（needsHome=false）后同一程序被正确拒绝。",
+      "confidence": "high"
+    },
+    {
+      "title": "main 里 `?` 的操作数只查 targs.len>0，非 option/result 的泛型类型被当成 option 解包 ⇒ 生成物编不过",
+      "file": "src/check_escape.c",
+      "line": 2381,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "    if (c->curFunc && !c->curFunc->owner && c->curFunc->name &&\n        strcmp(c->curFunc->name, \"main\") == 0 &&\n        /* ...and only when the operand really carries a payload. `5?` inside `main` used to\n         * reach `vecAt(&ob->targs, 0)` with an empty list and take the compiler down with a\n         * SIGSEGV ... */\n        ob && ob->targs.len > 0) {\n        Type *payloadM = *(Type **)vecAt(&ob->targs, 0);\n        e->type = payloadM;\n        return payloadM;\n    }",
+      "why": "守卫写成“有类型实参”而不是“是 option<...> / result<...>”。任何带类型实参的类型都会走进这个 main 专用分支：TY_GENERIC 的 `box<i64>`、`slice<u8>`、用户泛型枚举 `maybe<i64>` 都被当成 option 解包，payload 取 targs[0]。真正的协议判定（isProtoType(ob,\"option\",1)/isProtoType(ob,\"result\",2)，2391/2396 行）被完全跳过。codegen 对 EX_TRY 生成 `.tag` / `.u.success` / `<T>_success` 访问，只有 option/result 的实例才有这些成员 ⇒ 检查器报成功（退出码 0）而生成的 C 编不过。同族的 `5?` 曾导致编译器 SIGSEGV（注释自述），这次修法只堵了 targs.len==0，没堵“有实参但不是 option/result”。",
+      "trigger": "在 `main` 内对非 option/result 但带类型实参的值使用 `?`，例如 `var b: box<i64>`（零值）或 `let a = maybe<i64>::just(42)` 后的 `a?`。只有 main 命中；其他函数走 2391 行起的协议判定并被正确拒绝。",
+      "repro": "cat > /tmp/t4.extc <<'EOF'\nstruct box<T> { v: T }\nfn main() -> i32 {\n    var b: box<i64>\n    let x = b?\n    return 0\n}\nEOF\n./build/extc /tmp/t4.extc -o /tmp/t4.c ; echo exit=$?   # exit=0，无诊断\ncc -fsyntax-only /tmp/t4.c\n# => error: 'box_i64' has no member named 'tag'\n# => error: 'box_i64_success' undeclared\n# 用户枚举版（type maybe<T> = | nothing | just(T)，let a = maybe<i64>::just(42)，a?）同样 exit=0，\n# cc 报 'maybe_i64_success' undeclared / no member named 'failure'。",
+      "confidence": "high"
+    },
+    {
+      "title": "延迟泛型检查的记录端以 owner==NULL 提前返回 ⇒ 自由泛型函数的零值检查永不执行（生成 __extc_reference_has_no_zero_value__）",
+      "file": "src/check_escape.c",
+      "line": 1497,
+      "kind": "BUG",
+      "severity": "P2",
+      "code_quote": "void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {\n    if (!c->curFunc || !c->curFunc->owner) return;\n    if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;\n    RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));\n    rc->isZero   = true;",
+      "why": "记录端（1497 行 recordZeroCheck、1475 行 recordNewSizeCheck、1529 行 recordRefCheck）都用 `!c->curFunc->owner` 当门槛，而自由泛型函数的 owner==NULL ⇒ 这三类延迟检查对自由函数模板一条都不记。但消费端明确支持自由函数实例：check_top.c:5771-5782 遍历 c.funcInsts 并用 refCheckApplies（fi->tmpl / rc->func == fi->tmpl）逐个重放，注释写着 “Free-function instances need the same recheck: same rule, with T coming from the function's own parameter list.” 记录端与消费端因此不一致：该循环对自由函数永远无事可做。后果：`fn mk<T>() -> T { var local: T return local }` 在模板期不判、实例期也不判；代码生成对含引用的 T 发出未声明的占位符，对 fn 类型的 T 发出零值（见 docs/reviews/COMPILER-AUDIT-2026-09-30.md P0-3，那里给出 SIGSEGV 形状；本条给出“生成物编不过”的形状与记录端根因）。",
+      "trigger": "自由泛型函数体内出现延迟检查的三种形状之一：`var local: T`（零值）、`new T[n]`、类型含 T 的值被存储/返回；随后用含引用的类型实例化（`mk<slice<u8>>()`，或 `mk<ref node>()`）。方法版（boxT<T>::mk）有 owner，会被正确拒绝。",
+      "repro": "cat > /tmp/z4.extc <<'EOF'\nfn mk<T>() -> T { var local: T  return local }\nfn main() {\n    var x: slice<u8> = mk<slice<u8>>()\n    println(\"x = \", x)\n}\nEOF\n./build/extc /tmp/z4.extc -o /tmp/z4.c ; echo exit=$?    # exit=0\ncc -fsyntax-only /tmp/z4.c\n# => error: '__extc_reference_has_no_zero_value__' undeclared  (in mk_slice_u8)\n#\n# cat > /tmp/z1.extc  (T = ref node 直接空指针返回)\n# struct node { v: i32 }\n# fn mk<T>() -> T { var local: T  return local }\n# fn main() -> i32 { var p: ref node = mk<ref node>()  return p.v }\n# ./build/extc /tmp/z1.extc -o /tmp/z1.c   # exit=0；生成物里 `node * local = __extc_reference_has_no_zero_value__;`\n#\n# 对照（方法版，正确拒绝）：\n./build/extc tests/errors/generic_zero_value.extc -o /dev/null\n# => error: in instance `boxT_slice_u8`: `local` has no zero value (it contains a reference)",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "范围 src/check_escape.c 1291-2571 逐行读完（1281 行全读，非抽样），并读了为判定本段不变量的必要上下文：同文件 40-1290（placeDepth/storeLayer/exprRefDepth/valDepthStructural/exprBorrowed/placeRoot 系、promoteInto2、level solve 与 fact 重放）、check_top.c 4120-4145/4819-4950/5740-5800（needsHome 置位、refCheckApplies/runRefCheck、延迟检查消费端）、check_lookup.c 575-605（typeContainsRef）、check_expr.c 2295-2348（new 的 arenaLevel/ARENA_HOME）、codegen 的 arena 运行时与 EX_TRY 生成。本段逐函数核查结论：recordLvlFact/applyLvlFact/originOf/checkStoreEscape/checkEscape/recordNewSizeCheck/recordZeroCheck/recordRefCheck/pathRefsAllMut/pathHasReadonlyRef/requireMutable/viewElemOf/cmpIsNative/findOp/checkCtorSig/checkOperatorSig/typeSupportsOp/checkValue/checkInto/checkPrintArg/warnSharedCopy/warnSharedReturn/rejectNoCopy/isStreamBorrow/rejectStreamBorrow/checkMaybeTry/isProtoType/checkTryInner/exprRefDepthPure 全部读过。已核对未上报的点：(1) pathHasReadonlyRef 对“字段自身类型是 ?ref T 的写入”（(*c).next = n、c.next = null）实测被接受，不构成注释里担心的误拒——赋值路径没有对该 place 的类型触发该谓词；(2) checkValue 里 EX_GENCALL 的引用豁免实测未产生放行（var y: i32 = id(ref x) 被正确拒绝）；(3) typeSupportsOp 的数组 ==/!= 分支、非整数 %、带载荷 enum 的比较路径逐条对照具体类型路径一致；(4) exprRefDepthPure 的 seen[40] 与 hops 边界（hops<40 才写 seen[hops]，下标最大 39）无越界；(5) checkOperatorSig/ checkCtorSig 的返回类型判空顺序无 NULL 解引用；(6) recordRefCheck 里 owner 守卫的另一后果（自由泛型函数的借用存储重放缺失）经多种构造未能拿到“检查器放行且 ASan 报错”的复现：g6（自由泛型返回含 T 的容器）、z13（home arena 发布 T 值）都被调用点效果摘要（Cont(j)）挡住，故只作为记录端/消费端不一致的根因并入第 3 条，不单列；(7) 独立发现的范围外问题：`mut ref T` 作为自由泛型函数形参会让 unifyTParams 直接失败（fn bump<T>(x: mut ref T) 用 bump(v) 报 cannot infer），使这一族函数无法被调用——属 src/check_expr.c:3130-3155，不在本单元，未计入 findings。复现命令与二进制：./build/extc（2026-09-30 本机重建，源码无未提交改动）。"
+}

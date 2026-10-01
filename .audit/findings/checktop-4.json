@@ -1,0 +1,41 @@
+{
+  "findings": [
+    {
+      "title": "泛型协程实例的帧漏掉 `var x = yield e` 引入的绑定（coroBinds 按模板函数指针匹配）⇒ 生成物编不过",
+      "file": "src/check_top.c",
+      "line": 6850,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "            /* `yield` bindings recorded while the body was checked: frame locals like any other. */\n            for (size_t i = 0; i < c->coroBinds.len; i++) {\n                CoroBind *cb = *(CoroBind **)vecAt(&c->coroBinds, i);\n                if (cb->fn != f) continue;\n                bool dup = false;\n                for (size_t k = 0; k < f->coroFrame.len && !dup; k++) {\n                    const Param *pp = (const Param *)vecAt(&f->coroFrame, k);\n                    dup = pp->name && strcmp(pp->name, cb->name) == 0;\n                }\n                if (dup) continue;\n                Param bp;\n                bp.name = bp.cname = cb->name;\n                bp.type = cb->type;",
+      "why": "`CoroBind.fn` 是**检查到那个 `yield` 时**的 `c->curFunc`。模板体只检查一次，所以对 `fn worker<T>` 记下的是**模板** worker；而 `coroFrameLay` 对实例再跑一次时（check_top.c:5696 的 `coroFrameLay(&c, fi)`，fi 是 worker_i64），`cb->fn != f` 成立，绑定被跳过。实例的帧字段只剩「ST_VAR 声明路径」和参数：`var got: T = yield seed` 的绑定**不是** ST_VAR（它由 ST_YIELD 引入，check_stmt.c:954-966 只 declare + 记 CoroBind），decls 扫描看不到它，于是实例帧里根本没有 `got` 字段，而实例的 step 函数体（共享模板体）照样读写 `f->got`。非泛型版本走的是 `cb->fn == f` 的正常路径，帧里有 `got`。修法：匹配时同时接受 `f->tmpl`（`cb->fn == f || (f->tmpl && cb->fn == f->tmpl)`），类型按实例替换（与 6798-6800 行对 decl 的处理一致）。",
+      "trigger": "泛型协程里用 `var x: T = yield e`（绑定由 yield 引入，而不是先 `var x: T` 再 `x = yield e`），并在模板实例上调用。先声明后赋值的形式不受影响（那条走 ST_VAR 的 decls 路径，实测帧里有字段）。",
+      "repro": "cat > /tmp/c2.extc <<'EOF'\nfn worker<T>(seed: T) -> coroutine<T> {\n    var got: T = yield seed\n    yield got\n}\nfn main() -> i32 {\n    var c: coroutine<i64> = worker<i64>(i64(7))\n    var total: i64 = 0\n    while c.next() { total = total + c.value()  c.send(i64(3)) }\n    return i32(total)\n}\nEOF\n./build/extc /tmp/c2.extc -o /tmp/c2.c ; echo exit=$?     # exit=0，无诊断\nsed -n '/^struct worker_i64\\$frame {/,/^};/p' /tmp/c2.c\n#   ... int64_t seed;          ← 没有 int64_t got;\ncc -fsyntax-only /tmp/c2.c\n# => error: 'struct worker_i64$frame' has no member named 'got'\n# => error: 'got' undeclared (first use in this function)\n#\n# 对照（非泛型，帧里有 int64_t got;，编译通过）：\n#   fn worker(seed: i64) -> coroutine<i64> { var got: i64 = yield seed  yield got }\n# 对照（泛型但先声明后赋值，也通过）：\n#   var got: T = seed  got = yield seed  ⇒ struct worker_i64$frame 里有 int64_t got;",
+      "confidence": "high"
+    },
+    {
+      "title": "跨 yield 的局部量规则（rule 2）对泛型实例失效：typeContainsRef 问的是未替换的 T",
+      "file": "src/check_top.c",
+      "line": 6769,
+      "kind": "UNSOUND",
+      "severity": "P2",
+      "code_quote": "        if (!live) continue;                        /* stays an ordinary C local ✓ */\n        if (typeContainsRef(c->tt, d->type)) {\n            /* Safe or not depends on who owns the storage, which the pool fixpoint only settles\n             * later; the decision is made in `coroCheckDeferred`. **No `continue`**: the local still\n             * belongs in the frame (a resume jumps past its declaration). */\n            if (!c->coroDeferred.arena)\n                vecInit(&c->coroDeferred, c->arena, sizeof(CoroDeferred *));\n            CoroDeferred *dl = arenaAllocZero(c->arena, sizeof *dl);\n            dl->cname = d->cname; dl->init = d->init; dl->line = line;\n            *(CoroDeferred **)vecPush(&c->coroDeferred) = dl;\n        }",
+      "why": "`d->type` 来自实例帧扫描时的**模板体语句**（`s->type`），若写的是 `var x: T = v` 就是类型参数 `T` 本身；`typeContainsRef` 对 TY_PARAM 只能答 false（types 侧 typeContainsRefAt 只认 REF/ARRAY/ENUM/struct 字段，TY_PARAM 落不到任何一支）。于是这一格对泛型实例**永不记录 CoroDeferred**，`coroCheckDeferred` 的 rule 2（“跨 yield 的局部量不许携带引用，除非是 `new` 或池”）一条都不会跑；而同一份帧在 6798-6800 行又把字段类型替换成实例类型（T = slice<u8> ⇒ 帧里是一个 slice<u8> 视图）。实测不对称：具体类型版被正确拒绝（`x lives across a yield and carries a reference`），T 版 exit=0 通过。后果是帧持有一个指向调用方存储的视图跨越挂起，而规则的整段理由（挂起期间指向别人的存储会失效）在这里没有被执行 —— 是否需要 rule 2 取决于 `T` 实例是什么，这一点和模板期 `mentionsParam` 的处理方式（留到实例期）不一致：记录格的判据应当与 6798 行一样先做实例替换（或在模板期对 mentionsParam(d->type) 也记录）。注：未能构造出 ASan 复现 —— 新句柄的创建只能发生在持有该句柄的帧里，而“把句柄赋给外层变量”在 codegen 被 slice B2 的守门挡住（`calling a coroutine lands in slice B2`），我试过的几个形状里目标存储也都被提升到更长命的 arena。故置信度 medium：检查缺失是实测的，可观测的悬垂没做出来。",
+      "trigger": "泛型协程体中 `var x: T = <参数或调用结果>`，该局部量跨 `yield` 存活，实例化时 T 取含引用的类型（`slice<u8>`、`ref T`、容器）。具体类型写法的孪生程序会被拒绝。",
+      "repro": "cat > /tmp/c3.extc   # 具体类型：被拒\ntype 略 —— 见下：\nfn w(v: slice<u8>) -> coroutine<slice<u8>> { var x: slice<u8> = v  yield x  yield x }\n./build/extc /tmp/c3.extc -o /dev/null\n# => error: `x` lives across a `yield` and carries a reference\n\ncat > /tmp/c4.extc   # 泛型版：放行\ntype:\nfn w<T>(v: T) -> coroutine<T> { var x: T = v  yield x  yield x }\nfn main() -> i32 {\n    var c: coroutine<slice<u8>> = w<slice<u8>>(\"hello\")\n    var n: i32 = 0\n    while c.next() { n = n + 1  println(c.value()) }\n    return n\n}\n./build/extc /tmp/c4.extc -o /tmp/c4.c ; echo exit=$?    # exit=0，无诊断\n# 生成物里 worker_slice_u8$frame 含 `slice_u8 x;`（跨 yield 的视图）",
+      "confidence": "medium"
+    },
+    {
+      "title": "电平事实重放的收敛判据用错了返回值（promoteInto 返回“成功”而非“有变化”）⇒ 两处不动点循环恒定跑满 32 轮",
+      "file": "src/check_top.c",
+      "line": 6048,
+      "kind": "PERF",
+      "severity": "P3",
+      "code_quote": "        for (int round = 0; round < 32; round++) {\n            bool changed = false;\n            for (size_t i = 0; i < nFacts; i++) {\n                LvlFact *f = *(LvlFact **)vecAt(&c.lvlFacts, i);\n                if (!f || !f->val) continue;\n                if (getenv(\"EXTC_DBG_ZONE\"))\n                    fprintf(stderr, \"[replay] kind=%d at=%d\\n\", (int)f->val->kind, f->at);\n                if (promoteInto(&c, f->val, f->at)) changed = true;\n            }\n            solveRounds++;\n            if (!changed) break;\n        }",
+      "why": "注释写的是“keep going until a round changes nothing”，但 `changed` 被赋成 `promoteInto` 的返回值，而它的语义是 **“这个值里的每个分配站点都已经达到 at”**（check_escape.c:1099 `if (val->arenaLevel == ARENA_HOME) return true;`、:1107/1157 等分支都直接 return true，根本没有“是否改动”这一信息）。只要事实表里有一条已满足的事实，`changed` 每轮都为真，`break` 永远不会发生 ⇒ 恒跑满 32 轮（且 `promoteInto` 内部还会反复走载体链）。第二处同样写法的重放循环（check_top.c:6352-6361，`changed2`）一并命中。实测：`EXTC_DUMP_LVL=1` 在 examples/escape-promotion、examples/list-return、tests/arena-promoted/C2_if_join_refbinding、examples/generics 上一律打印 `converged after 32 round(s)`（每次编译两遍：prelude 一遍、入口一遍），即收敛检测从未生效。正确做法是让 promoteInto 返回“本轮是否有层级被改小”（或比较事实前后值），否则 32 只是兜底上限却成了固定开销，同时也掩盖了真正的不收敛。",
+      "trigger": "任何含至少一条电平事实（几乎任何用 `new`/`alloc` 的程序）的编译；事实越多、载体链越长，浪费越大（最多 32 倍重放 + 第二处 32 倍）。",
+      "repro": "EXTC_DUMP_LVL=1 ./build/extc examples/escape-promotion.extc -o /dev/null 2>&1 | grep 'converged'\n# => [lvl] N level facts, converged after 32 round(s)\n# => [lvl] N level facts, converged after 32 round(s)     （两次 checkModule：prelude + 入口）\n# 四个不同例子（含 tests/arena-promoted/C2_if_join_refbinding）结果相同；\n# 事实表为空时才会在第 1 轮 break。",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "范围 src/check_top.c 5161-6885 逐行读完（1725 行），含 checkModule 尾部（handle 协议合成、impl 挂接与孤儿/一致性检查、签名解析、@export 边界、全局与声明检查、体检查、泛型实例/延迟操作/方法/结果类型/引用规则四批重放、效果摘要逐实例重算、@inline 可达性、needsHome/usesHome/makesPool 闭包、arena 层级求解与二次重放、zone 层级、eSites 决策、EXTC_SELFCHECK、报告与 fx 统计）以及文件末尾的 funcAllocates/stmtCallsAllocator/coroCheckDeferred/stmtNeedsPlaceBoundary/coroFrameLay（含 CoroScan 遍历与帧布局）。已知项核对：P0-2（6024/6330 的 0 当哨兵）、P0-5（5596 单趟 resolveDeferredCall）、P1-22（6750 `s.yields.len == 0` 早退→帧缺 pc/arena），均在既有 docs/reviews/COMPILER-AUDIT-2026-09-30.md 中记录，未重复计入。已核对未上报的点：(1) 5350 行 `typeNamed` 恒返回非 NULL（ast.c:24-29），`base->targs` 无空指针；(2) 5396-5399 的类型参数个数比较在不等时短路，循环不会越界；(3) 6269 行对结构体方法不判 `f->body`，但 stmtHasNew(NULL)=false、stmtCallsNeedsHome 走 astWalk（空体不崩），且 extC 的方法语法强制有体；(4) 6567 coroCheckDeferred 的两条放行条件（`exprMakesPool` / EX_NEW）与非泛型路径一致；(5) 6662-6668 `coroPushLoop`/`coroPopLoop` 在嵌套超过 CORO_CHAIN_MAX(8) 时把 nchain 折回 8，会丢掉“太深⇒保守答是”的标记，理论上 >8 层循环里“回边使用”的局部量可能不被算作跨 yield；构造与观测代价高，未作为 finding（记在此备查）；(6) 6779 行 `if (0 && typeContainsRef(...))` 是明确的死代码（旧 rule 2 的残骸，真正判定已搬到 coroCheckDeferred），属卫生问题未单列；(7) 6121 行 `(void)0;` 空分支同理；(8) 5681-5697 的实例协程循环忽略 `cb->fn` 之外还漏了 `d->type` 的实例替换，见 finding 2。复现均用 ./build/extc（2026-09-30 重建，源码无未提交改动）。"
+}

@@ -1,0 +1,101 @@
+{
+  "findings": [
+    {
+      "title": "worker 链上的函数被普通调用时去解引用 NULL 的 extc_tls_arena（生成物必然空指针崩溃）",
+      "file": "src/check_expr.c",
+      "line": 149,
+      "kind": "MISCOMPILE",
+      "severity": "P1",
+      "code_quote": "        AstVisit v = { parBodyExpr, parBodyStmt, &q };\n        if (!astWalkStmtChildren(f->body, &v))\n            return q.why ? q.why : \"an unsupported construct\";\n    }\n    f->parTlsArena = true;        /* 这条链上的每个人：`new` 都走线程本地 arena（③c） */\n    return NULL;\n}",
+      "why": "parBodyProblem 是**传递**的：worker 本身与它（传递）调用到的每个函数都被打上 FuncDef.parTlsArena。codegen 把这个标志当成\"整个函数体的分配都从 (*extc_tls_arena) 取\"（src/codegen.c:3287 `if (g->parTls) return \"(*extc_tls_arena)\";`，该判断在 arenaRefAt 里排在最前，连 level 都不看；g->parTls 由 src/codegen.c:4876 `g->parTls = f->parTlsArena;` 取自函数）。而 extc_tls_arena 只在 worker 线程里被赋值（生成的运行期自己写着 \"NULL outside a worker, so the checker can say so loudly\"，src/codegen.c:8326 起），主线程上恒为 NULL。被违反的不变量是：\"parTlsArena 只对 worker 线程上的执行成立\"，而它是**函数级**标志，事实却是**调用点级**的；没有任何地方禁止同一个函数在别处被普通调用。",
+      "trigger": "程序里既有 `parallel::run(w, ...)`，又在普通代码里调用 w，或调用 w 链上任何会分配的函数（例如 main 与 worker 共用的、内部有 `new` 的 helper）。顺序无关：标记在所有函数体检查完、codegen 开始时才被读；实测把普通调用写在 parallel::run **之前**也照样崩。",
+      "repro": "printf '%s\\n' 'use std::parallel' 'fn helper(n: i64) -> i64 {' '  var t: mut slice<i64> = new i64[4]' '  t[0] = n' '  return t[0]' '}' 'fn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {' '  var i: i64 = lo' '  while i < hi { out[i - lo] = helper(i)  i = i + i64(1) }' '  return 0' '}' 'fn main() -> i32 {' '  var out: mut slice<i64> = new i64[64]' '  let before: i64 = helper(i64(3))' '  if parallel::run(w, out, i64(64), i64(8)) != i32(0) { return i32(1) }' '  return i32(before) - 3' '}' > /tmp/rev-ce/par2.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/par2.extc -o /tmp/rev-ce/par2.c   # rc=0，接受\ngrep -n 'extc_tls_arena' /tmp/rev-ce/par2.c   # 745 行：extc_arena_alloc(&(*extc_tls_arena), ...)\ngcc -fsanitize=address,undefined -fwrapv -O1 /tmp/rev-ce/par2.c -o /tmp/rev-ce/par2 && /tmp/rev-ce/par2\n# par2.c:120:11: runtime error: member access within null pointer of type 'struct extc_arena'\n# AddressSanitizer: SEGV on unknown address 0x000000000000 ... #1 helper, #2 main   （崩在普通的 helper 调用上，parallel::run 还没执行）\n另：worker 被直接调用同样成立（/tmp/rev-ce/par1.extc：`let rc: i32 = w(i64(0), i64(0), i64(1), out)` → 同一 ASan 报告）。",
+      "confidence": "high"
+    },
+    {
+      "title": "worker 需要 zone 形参时 trampoline 不补传 __extc_home_zone ⇒ 产物编不过（too few arguments）",
+      "file": "src/codegen.c",
+      "line": 5109,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "        /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参）—— 实测报过\n         * \"too few arguments to function 'w'; expected 5, have 4\"。这里补传 **线程本地 arena**：\n         * worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出这个 worker ⇒ 线程本地安全，而且两个\n         * worker 不会去抢主线程的帧 arena。 */\n        if (f->usesHome) bufPrintf(&args, \"%sextc_tls_arena\", nViews ? \", \" : \"\");",
+      "why": "隐藏尾参有两族：`usesHome`（extc_arena *__extc_home）与 `makesPool`（int64_t __extc_home_zone，见 src/codegen.c:1763 cgImplicitArgs）。genParTramp 只补了前者；worker（或它链上任一函数）一旦 makesPool，定义签名就多一个 zone 形参而 trampoline 的调用少一个 ⇒ gcc 直接报 too few arguments。放行这种 worker 的是本单元 src/check_expr.c:132-151 的 parBodyProblem：它只按\"调用/名字\"白名单判断，既不识别 `dyn Trait(x)`（EX_DYN，检查器在 src/check_expr.c:3313 就把当前函数标成 makesPool）这类非调用结点，也不检查 worker 的隐藏参数 trampoline 能否满足。",
+      "trigger": "worker 体内出现 `dyn Trait(x)`（或调用池原语 poolSlice/poolResize 等让该函数成为池创建者的东西），于是 w 带 `int64_t __extc_home_zone`。",
+      "repro": "printf '%s\\n' 'use std::parallel' 'trait Tag { fn tag(self: ref Self) -> i64 }' 'struct box { v: i64 }' 'impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }' 'fn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {' '  var b: box = box { v: i64(7) }' '  let d: dyn Tag = dyn Tag(b)' '  out[lo] = d.tag()' '  return 0' '}' 'fn main() -> i32 {' '  var out: mut slice<i64> = new i64[64]' '  return parallel::run(w, out, i64(64), i64(8))' '}' > /tmp/rev-ce/pardyn.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/pardyn.extc -o /tmp/rev-ce/pardyn.c   # rc=0，报成功\ngcc -fsyntax-only /tmp/rev-ce/pardyn.c\n# pardyn.c: In function '__extc_par_w':\n# pardyn.c:839:21: error: too few arguments to function 'w'; expected 5, have 4\n#   839 |     return (int64_t)w(id, lo, hi, sub);\n# pardyn.c:833: note: declared here ... slice_i64 out, int64_t __extc_home_zone);",
+      "confidence": "high"
+    },
+    {
+      "title": "worker 白名单把\"没有 effects 子句的 extern!\"当成 Thread=0（extThreadMask 缺省为 0）⇒ worker 可任意调用共享状态的 C 函数",
+      "file": "src/check_expr.c",
+      "line": 108,
+      "kind": "UNSOUND",
+      "severity": "P1",
+      "code_quote": "        if (g->isExtern) {\n            if (g->extThreadMask != 0) {\n                if (!q->why) q->why = \"it calls into shared runtime state (that declaration is not signed `Thread=0`)\";\n                return false;\n            }\n        } else {",
+      "why": "错误消息与文档说的规则是\"**没有签 Thread=0** 的 extern 一律拒绝\"（stdlib/std/parallel.extc 头、src/parser.c:342-346 里注释写\"写 none 就是最坏情况\"，而置 1 只发生在子句存在时（第 345 行）），实现却是 `extThreadMask != 0`，即\"只有显式签了 Thread=1 的才拒\"。而 extThreadMask 只在 parseEffectsClause 内部被置 1（src/parser.c:345）——**没有 effects 子句的 extern! 该字段是 0**（FuncDef 由 arenaAllocZero 分配），于是完全未签名的 extern 反而被当成线程安全的。被违反的不变量：worker 只能碰 Thread=0 的东西。",
+      "trigger": "worker 体内调用任一**无 effects 子句**的 extern!，例如 `extc_pool_new(parent)`（stdlib/std/sys/pool.extc:13 就没有 effects 子句）——它读写全局池注册表，多个 worker 并发调用即数据竞争。对照：`vector<T>` 链上的 extern 签了 Thread=1，会被正确拒绝（同一份程序把 worker 体换成 vector 就报 \"that declaration is not signed `Thread=0`\"）。",
+      "repro": "printf '%s\\n' 'use std::parallel' 'use std::sys::pool::*' 'fn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {' '  let rid: i64 = extc_pool_new(i64(-1))' '  var p: mut slice<i64> = poolSlice<i64>(rid, i64(4))' '  p[0] = i64(3)' '  out[lo] = p[0]' '  return 0' '}' 'fn main() -> i32 {' '  var out: mut slice<i64> = new i64[64]' '  return parallel::run(w, out, i64(64), i64(8))' '}' > /tmp/rev-ce/parpool.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/parpool.extc -o /tmp/rev-ce/parpool.c; echo rc=$?   # rc=0：8 个 worker 并发建池/分配（生成的运行期无锁）。\n# 把 w 体换成 `var v = vector<i64>::withCap(i64(4))` 则正确报： worker `w` cannot be used here: it calls into shared runtime state (that declaration is not signed `Thread=0`)",
+      "confidence": "high"
+    },
+    {
+      "title": "`<`/`<=`/`>`/`>=` 的左操作数是 ref 时不报错，静默生成指针比较",
+      "file": "src/check_expr.c",
+      "line": 1376,
+      "kind": "MISCOMPILE",
+      "severity": "P1",
+      "code_quote": "            bool shiftRecv = op0[0] == '<' || op0[0] == '>';\n            Type *lt = shiftRecv ? checkExpr(c, e->u.bin.left) : checkValue(c, e->u.bin.left);\n            Type *rt = checkValue(c, e->u.bin.right);",
+      "why": "shiftRecv 的本意只是让 `<<`/`>>` 的左操作数按\"接收者\"处理（注释在 1369-1373 行明说只有 `<<`/`>>`）。但 `op0[0]=='<'` 同样命中 `<` 与 `<=`，于是这四个比较的左操作数走 checkExpr（拿到的可能是 `ref T` 本身）而不是 checkValue。isCmpOp 分支（1458-1462 行）只做 ttIsNumeric/ttCanWiden/literalFits，**从来没有 isRef 拒绝**（refNotANumber 只挂在算术与位运算路径上），而 ttIsNumeric/literalFits 都会 ttBase 掉 ref、ttCanWiden 见到 ref 返回 false 后还会落到 `isNumericLit(right) && literalFits(right, lt)`（1459→1461 行）⇒ 放行。被违反的不变量：refNotANumber 的文档（446-460 行）\"comparison operator applied to a reference … In C this would silently become pointer arithmetic … Reporting an error is preferred\"；同一份代码对 `==`/`!=` 是正确的（它们走 checkValue，报 dereference first）。",
+      "trigger": "`var p: ref i32 = ref n` 之后写 `if p < 3`、`p <= 3`、`p > 0`、`p >= 3`（右操作数写成字面量才能绕过右操作数的 checkValue 报错）。",
+      "repro": "printf 'fn main() -> i32 {\\n  var n: i32 = 5\\n  var p: ref i32 = ref n\\n  if p < 3 { return 1 }\\n  return 0\\n}\\n' > /tmp/rev-ce/rcx.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/rcx.extc -o /tmp/rev-ce/rcx.c; echo rc=$?   # rc=0\ngrep -n 'if (p' /tmp/rev-ce/rcx.c      # if (p < 3) {      ← 生成的 C 在拿指针和 3 比\ngcc -fsyntax-only /tmp/rev-ce/rcx.c    # warning: comparison between pointer and integer\n# `p > 0` 连 warning 都没有且语义为\"地址非 0\"=恒真：/tmp/rev-ce/refcmp2.extc 编出 `if (p > 0)`，gcc -fwrapv -O0 无告警，跑出 rc=1（走了 then 分支）。\n# 逐运算符矩阵（同一程序换运算符）：< <= > >= 均 rc=0；== != 正确报 \"`ref i32` is a **reference**, not a value -- dereference it first: `*p`\"。",
+      "confidence": "high"
+    },
+    {
+      "title": "lambda 在泛型函数里捕获 T 时，环境结构体字段保留未替换的类型参数（codegen 退化成 int）",
+      "file": "src/check_expr.c",
+      "line": 971,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "        if (wr) {\n            Type *rt = arenaAllocZero(c->arena, sizeof *rt);\n            rt->kind = TY_REF;\n            rt->inner = sy->type;\n            rt->mut = true;\n            fd->type = rt;\n        } else {\n            fd->type = sy->type;             /* a copy: the closure sees the value it was made with */\n        }",
+      "why": "每个 lambda 只生成一个 StructDef（checkLambda 里 `lname` 用 owner+序号，与类型实参无关），字段类型直接取捕获 Sym 的类型。泛型函数体只按模板检查一次，此时捕获变量的类型是 TY_PARAM；该 T 既不做替换，环境结构体也不会按实例重新生成。codegen 对残留的 TY_PARAM 直接给 \"int\"（src/codegen.c:512-513 `case TY_PARAM: return \"int\";`）⇒ T=struct 时生成 `struct $lam$gen$0 { int c0; }` 并用 `{.c0 = x}` 初始化，C 编译报错；T=i64/u64/f64 时则是静默截断/类型混淆。LAMBDA.md §7 列出的 v1 边界里没有\"泛型函数里的 lambda\"这一条，所以这是没被声明的静默失败。",
+      "trigger": "泛型函数体内写一个 lambda，捕获（读）一个类型为该函数类型参数的变量；该泛型函数以聚合类型实例化。",
+      "repro": "printf '%s\\n' 'struct point { x: i64  y: i64 }' 'fn gen<T>(x: T) -> i64 {' '  let f = fn() -> i64 { let y = x  return i64(1) }' '  return f()' '}' 'fn main() -> i32 {' '  var p: point = point { x: i64(1), y: i64(2) }' '  return i32(gen<point>(p))' '}' > /tmp/rev-ce/lam_gen3.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/lam_gen3.extc -o /tmp/rev-ce/lam_gen3.c; echo extc rc=$?   # rc=0\nsed -n '106,108p' /tmp/rev-ce/lam_gen3.c   # struct $lam$gen$0 {  int c0;  };\ngcc -fsyntax-only /tmp/rev-ce/lam_gen3.c\n# lam_gen3.extc:3:39: error: incompatible types when initializing type 'int' using type 'point'\n# 另：T=i64 时同一 struct 字段是 int（见 /tmp/rev-ce/lam_gen2.c:106），捕获值被截断，无任何诊断。",
+      "confidence": "high"
+    },
+    {
+      "title": "字面量适配先于隐式拓宽、且失败即报错 ⇒ 同一表达式因字面量左右位置不同而一收一拒",
+      "file": "src/check_expr.c",
+      "line": 359,
+      "kind": "FALSE-REJECT",
+      "severity": "P1",
+      "code_quote": "    if (isNumericLit(e->u.bin.left) && ttIsNumeric(rt)) {\n        if (!literalFits(e->u.bin.left, rt)) {\n            ckError(c, e->line, NULL, \"literal does not fit in `%s`\", typeStr(c, rt));\n            return err;\n        }\n        return rt;\n    }\n    if (isNumericLit(e->u.bin.right) && ttIsNumeric(lt)) {\n        if (!literalFits(e->u.bin.right, lt)) {\n            ckError(c, e->line, NULL, \"literal does not fit in `%s`\", typeStr(c, lt));\n            return err;\n        }\n        return lt;\n    }",
+      "why": "两个操作数都是字面量时，左边那个先被拿去问\"你装得进右边字面量的默认类型(i32/i64)吗\"——这既不是\"适配另一侧\"（右侧没有独立类型），也把错误当成终局（return err），根本没走到下面的 ttCanWiden（374-376 行）。EX_INT 的自有类型只按量级取 i32/i64（1217-1225 行），所以 `5000000000 + 1` 里左边是 i64、右边是 i32，第一分支立刻以 i32 装不下报错；`1 + 5000000000` 走第一分支（1 装得进 i64）返回 i64 ⇒ 同一个数学表达式结果相反。第二，当另一侧是**有类型的变量**时，字面量装不进去也直接报错而不回落到隐式拓宽：`n: i32` 时 `n + 3000000000` 被拒，可是 i32→i64 是无损拓宽（对照 1458-1459 行的比较路径，那里先问 ttCanWiden 再问 literalFits，顺序是对的；checkAssignable 也是先 ttCanWiden 后 literalFits，src/check.c:534-535）。",
+      "trigger": "任何\"大字面量在左、小字面量在右\"的算术/位运算常量表达式（`5000000000 + 1`、`5000000000 - 1`、`5000000000 * 2`），或\"小类型变量 + 超该类型范围的字面量\"（`var n: i32` 时 `n + 3000000000`）。",
+      "repro": "for e in '5000000000 + 1' '1 + 5000000000' '5000000000 * 2' '2 * 5000000000'; do printf 'fn main() -> i32 {\\n  let x = %s\\n  return 0\\n}\\n' \"$e\" > /tmp/rev-ce/e1.extc; /home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/e1.extc -o /dev/null; echo \"[$e] rc=$?\"; done\n# [5000000000 + 1] rc=1 => e1.extc:2:1: error: literal does not fit in `i32`\n# [1 + 5000000000] rc=0\n# [5000000000 * 2] rc=1 ; [2 * 5000000000] rc=0\nprintf 'fn main() -> i32 {\\n  var n: i32 = 3\\n  let x: i64 = n + 3000000000\\n  return 0\\n}\\n' > /tmp/rev-ce/e4.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/e4.extc -o /dev/null   # e4.extc:3:1: error: literal does not fit in `i32`（i32→i64 本该无损拓宽）",
+      "confidence": "high"
+    },
+    {
+      "title": "worker 白名单不识别 EX_GENCALL ⇒ 池原语（poolSlice/poolResize/poolGive）在 worker 里不经任何检查",
+      "file": "src/check_expr.c",
+      "line": 100,
+      "kind": "UNSOUND",
+      "severity": "P2",
+      "code_quote": "    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {\n        FuncDef *g = e->func;\n        if (!g) {\n            Expr *ce = e->u.call.callee;\n            if (ce && ce->kind == EX_IDENT) g = findFunc(q->c, ce->u.ident.name);\n        }\n        if (!g) { if (!q->why) q->why = \"it makes a call this check cannot resolve\"; return false; }",
+      "why": "③b 白名单的规则是\"worker 体内只许算符、字面量、下标、它自己的参数与局部；任何调用（含用户函数与 stdlib）一律拒绝\"（同文件 45-47 行注释）。实现只枚举 EX_CALL/EX_METHOD/EX_ASSOC 三种结点——编译器的池原语是 EX_GENCALL（`poolSlice<i64>(rid, n)`：checkExprInner 在 2387 行用 isPoolPrimitiveName 认出它、2503 行交给 checkPoolPrim），既不进这个 if，也不会被 EX_IDENT 检查拦下（它的名字不是被引用的绑定），于是直接放行。这些原语不是纯计算：extc_pool_alloc/resize 无锁地改全局池表（生成的 extc_pools[]/ExtcBlock 链表），多个 worker 并发调用即数据竞争。",
+      "trigger": "worker 体内出现 `poolSlice<T>(rid, n)`（或 poolResize/poolGive），rid 由任一可得的来源提供（如另一处 extc_pool_new 或参数的整数值）。",
+      "repro": "printf '%s\\n' 'use std::parallel' 'use std::sys::pool::*' 'fn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {' '  var p: mut slice<i64> = poolSlice<i64>(id, i64(4))' '  p[0] = i64(3)' '  out[lo] = p[0]' '  return 0' '}' 'fn main() -> i32 {' '  var out: mut slice<i64> = new i64[64]' '  return parallel::run(w, out, i64(64), i64(8))' '}' > /tmp/rev-ce/parpool2.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/parpool2.extc -o /tmp/rev-ce/parpool2.c; echo rc=$?   # rc=0，worker 通过检查\n# 对照：worker 体换成 `var v = vector<i64>::withCap(i64(4))`（走 stl::vector）会被正确拒绝，报 worker `w` cannot be used here: it calls into shared runtime state (that declaration is not signed `Thread=0`)；写内置 gencall（本 repro）则不会。",
+      "confidence": "high"
+    },
+    {
+      "title": "poolResize/poolGive 不要求视图是 mut ⇒ 只读 `slice<T>` 被洗成可写 `mut slice<T>`",
+      "file": "src/check_expr.c",
+      "line": 586,
+      "kind": "UNSOUND",
+      "severity": "P2",
+      "code_quote": "    } else if (isResize) {\n        if (!ttIsError(argT)) {\n            Type *se = viewElemOf(argT);\n            if (!se || !ttEquals(se, elem)) {\n                ckError(c, argE->line, NULL, \"`%s` resizes an existing block: `%s`, not `%s`\",\n                        nm, typeStr(c, ttViewMut(tt, sliceOf(c, elem), true)), typeStr(c, argT));\n                return ttError(tt);\n            }\n        }\n    }",
+      "why": "viewElemOf 只看元素类型、完全忽略视图的 mut 位。于是 `poolResize<T>(rid, ro, n)` 接受一个只读 `slice<T>`，却返回 `ttViewMut(..., true)` 的 `mut slice<T>`（594-608 行），poolGive 分支（610-619 行）同样不查 mut。同一个函数在 copyInto 上是查的（536 行 `if (!de || !ttEquals(de, elem) || !dT->mut)`），所以这不是\"池原语一律免检\"的口径，而是漏了。被违反的不变量：\"只有丢掉 mut 是隐式的，反向要写出来\"（src/check.c:522-533；slice/ref 同一套），也就是读权限不能被洗成写权限。注：本次只证明了检查器放行（没有构造出真实内存破坏），因此记 P2 而不是 P1。",
+      "trigger": "把 `mut slice<T>` 隐式降级成只读（`let ro: slice<T> = m`，checkAssignable 允许），再 `var m2: mut slice<T> = poolResize<T>(rid, ro, n)`，随后通过 m2 写入。",
+      "repro": "printf '%s\\n' 'use std::sys::pool::*' 'fn main() -> i32 {' '  let rid: i64 = extc_pool_new(i64(-1))' '  var m: mut slice<i64> = poolSlice<i64>(rid, i64(4))' '  var i: i64 = 0' '  while i < i64(4) { m[i] = i  i = i + i64(1) }' '  let ro: slice<i64> = m' '  var m2: mut slice<i64> = poolResize<i64>(rid, ro, i64(8))' '  m2[0] = i64(99)' '  return i32(m2[0]) - 99' '}' > /tmp/rev-ce/poolmut.extc\n/home/alphayang/extC_Compiler/build/extc -w /tmp/rev-ce/poolmut.extc -o /tmp/rev-ce/poolmut.c; echo rc=$?   # rc=0，只读视图被洗成 mut\ngrep -n 'extc_pool_resize' /tmp/rev-ce/poolmut.c   # 589 行：由 ro.data 造出可写视图\n# 把同一句换成 copyInto<i64>(m2, ro, i64(1)) 则被拒：`copyInto` writes into its destination, so that must be `mut slice<i64>`, not `slice<i64>`",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "读区间：src/check_expr.c 1-1420 全读（分段 1-330 / 331-660 / 661-990 / 991-1320 / 1321-1420），并顺读 1421-1630 以核对 EX_BIN 后半段与调用处语义。逐一看过的函数：intLitRange、isParRunDecl/isDomSingleDecl/isViewOfDecl、parLocalStmt/parBodyStmt/parBodyExpr/parQHas/parBodyProblem（worker 白名单全体）、deferOp、setOpCallArgs、checkArith（含常量折叠与字面量适配）、checkCompoundOp、isBitOp/isRef/refNotANumber、checkPoolPrim（copyInto/poolSlice/poolSliceRaw/poolResize/poolResizeRaw/poolGive）、dynTraitOf、lambda 全体（lamAddUnique/lamIsOuter/lamWritten/lamRootOf/lamWalk*/lamCapListed/lamRw*/checkLambda）、fnValueOf、peekFieldType、fnTypeParams、checkCallThroughFn、checkExprInner 的 EX_INT/EX_FLOAT/EX_BOOL/EX_STR/EX_NULL/EX_IDENT/EX_BIN/EX_UN/EX_FIELD 各分支。\n已核实为正确（自我反驳后不报）：① `-9223372036854775808` 类 i64 边界：折叠的\"先检测后计算\"写法在 +、-、* 三种运算上把所有 long long 溢出都挡住了（r 只在 over==false 时计算），hi 用 unsigned 比较、只对非负 r 做上界检查，i64 的 hi 恰为 INT64_MAX；② checkOperatorSig 强制算术运算符返回 owner 类型，所以 checkArith 的 struct 分支 `return lt` 不会与生成物类型不符；③ `x += 1` 对 ref 目标被 check_stmt.c 拦下（报 write `*p += ...`），checkCompoundOp 不必重复 refNotANumber；④ copyInto 的 n 有运行期检查（src/codegen.c:766-767：n<0||n>d.len||n>s.len 即 trap），没有越界 memmove；⑤ fn 值：codegen 在取地址处拒绝带隐藏 home/zone 形参的函数（src/codegen.c:2230-2234），与 fnValueOf 的说明一致，未发现漏网；⑥ 复合赋值 `v += get()` / `v += vec{...}`（用户定义 +）实测编译并跑对（rc=0）；⑦ 跨模块 dyn（use lib::* + dyn Tag(b)）实测通过，dynTraitOf 的 impl 匹配没有跨模块身份问题；⑧ 收窄（isNarrowed/pushNarrow/narrowFactsOf/narrowTarget）的调用点与 unNarrow 的失效口径在 check_lookup.c/check_stmt.c，本区间只读调用，未见矛盾；⑨ `<<`/`>>` 走 shiftRecv 是正确的（stream 接收者语义），有害的是 `<=`/`>=`/`<`/`>` 共用同一个 op0[0] 判断。\n无法确认 / 未在本单元内结论：① u64 字面量上限——>2^63-1 的十进制字面量在 lexer 就被拒（src/lexer.c:206/242 \"exceeds the supported signed 64-bit range\"），u64 常量只能绕道 `u64(0)-u64(1)` 类写法；这是词法器/规格层面的事，未判为缺陷；② `let x: u64 = 2147483647 + 1` 被拒时消息写的是 i32（折叠按 lt=i64/i32 做），与作者\"常量在 C 里折叠就该在此报\"的口径一致，未判为缺陷（`5000000000 + 1` 才是纯顺序 bug，已报）；③ poolResize 传入\"不属于该池的块\"时运行期返回 NULL、codegen 仍造出 {NULL, n} 视图（后续下标即空指针）——需要 provenance 信息，检查器无法判定，未报；④ checkLambda 里 `mut ref` 捕获造的 EX_REF 结点是合成的、从未走过 checkExpr（逃逸/借用分析可能看不到这次取址），但 v1 不允许闭包逃出帧（LAMBDA.md §7），未能构造出可观测后果，故未报；⑤ `isI64Type`/`isDomSingleDecl` 等未被引用的静态 helper 属纯卫生问题，按协议不报。\n环境说明：审阅期间 src/check_expr.c 被并发编辑（我在 02:12 读到 4268 行、02:17 一度是 4274 行、02:20:35 又回到 4268 行，md5=898e7407871649e70f3d5522075822b5），本文件所有 code_quote/行号都以 md5 898e7407… 的版本逐条复核过；全部 repro 用 02:20:35 重建的 ./build/extc（md5 017fc7ec39e77b76e989460d76a04fe7）重跑过，结论未变；code_quote 亦按当时 src/codegen.c（md5 3791fc0a66bed80ef6633ac148dc0ca9）复核。"
+}

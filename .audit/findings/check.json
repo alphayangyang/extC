@@ -1,0 +1,29 @@
+{
+  "findings": [
+    {
+      "title": "cNameFor 不登记已发出的 C 名 ⇒ 形如 `a__2` 的源码名与第二个 `a` 撞成同一个 C 标识符，生成物重定义编不过",
+      "file": "src/check.c",
+      "line": 162,
+      "kind": "BUG",
+      "severity": "P2",
+      "code_quote": "const char *cNameFor(Checker *c, const char *name) {\n    NameUse *u = NULL;\n    for (size_t i = 0; i < c->nameUses.len; i++) {\n        NameUse *it = *(NameUse **)vecAt(&c->nameUses, i);\n        if (strcmp(it->name, name) == 0) { u = it; break; }\n    }\n    int n = u ? u->count : 0;\n\n    const char *cand;\n    do {\n        n++;\n        cand = (n == 1) ? name : arenaPrintf(c->arena, \"%s__%d\", name, n);\n        /* C keywords have to be avoided too: ... */\n    } while (moduleNameTaken(c, cand) || cIdentIsKeyword(cand));",
+      "why": "去重只按**源名字**记账（c->nameUses 里每个 name 一个计数），候选名的合法性只查“模块级名字表 + C 关键字”。于是编译器自己造出来的 `X__N` 名字与用户写的同名标识符互不知情：`let a`（第二次）得到 `a__2`，而源码里另一个绑定就叫 `a__2`，它的候选名 `a__2` 既不撞模块名也不是关键字 ⇒ 两个不同的源名字拿到**同一个 C 名**。函数开头的注释自己给出约束“Within one function the suffixes are monotonic and never reused”，实现没有做到（没有 taken-set）。后果是 extc 退出码 0，生成物在同一 C 作用域里出现两条同名声明。",
+      "trigger": "同一 C 函数作用域里存在两个会发射的绑定：一个通过后缀重命名得到 `X__N`，另一个源名字恰好等于 `X__N`（例如 `let a` 出现两次 + `let a__2`，或参数 `a__2` + 两次 `let a`）。机器生成/宏展开后的源码很容易出现这种名字。",
+      "repro": "cat > /tmp/n1.extc <<'EOF'\nfn main() -> i32 {\n    let a = 1\n    let a = 2\n    let a__2 = 3\n    return a + a__2\n}\nEOF\n./build/extc /tmp/n1.extc -o /tmp/n1.c ; echo exit=$?    # exit=0，无诊断\nsed -n '/^int main/,$p' /tmp/n1.c | head -12\n#   int32_t a__2 = 2;\n#   int32_t a__2 = 3;\ncc -fsyntax-only /tmp/n1.c\n# => error: redefinition of 'a__2'\n# 参数版同理：fn f(a__2: i32) -> i32 { let a = 1  let a = 2  return a__2 + a }",
+      "confidence": "high"
+    },
+    {
+      "title": "checkAssignable 不判 want/got 为空就解引用（cppcheck check.c:466 的 want-may-be-NULL 判定：静态成立、当前调用方不可达，但缺护栏）",
+      "file": "src/check.c",
+      "line": 466,
+      "kind": "HYGIENE",
+      "severity": "P3",
+      "code_quote": "    if (want->kind == TY_REF && got->kind != TY_REF) {\n        ckError(c, node ? node->line : 0,\n                \"a `ref` can only be assigned another reference; ...\",\n                \"%s expects `%s`, found `%s` -- a value is not a reference\",\n                what, typeStr(c, want), typeStr(c, got));\n        return false;\n    }\n    if (want->kind != TY_REF && got->kind == TY_REF) {",
+      "why": "判定结论：**代码确实没有空指针护栏，但当前所有调用方都传不出 NULL，所以这是潜在缺陷而不是可复现崩溃**。依据：(1) 唯一可能兜住 NULL 的是 438 行 `if (ttIsError(want) || ttIsError(got)) return true;`，而 ttIsError 的实现在 types.c:967 是 `return t && t->kind == TY_ERROR;` —— NULL 返回 false，不会提前返回；441 行只判 got；448 行是 `want && got && ...`。(2) 全仓 20 个调用点逐个核对：参数类型（check_expr.c:1171/2146/2745/3243/3820 的 `p->type`/`pt`）、coalesce 的 want（check_expr.c:2565-2600，三条分支都赋值）、数组元素 elemT（check_expr.c:1847，`want->inner` 或元素自身类型）、结构体字段 fd->type（check_expr.c:3909）、check_stmt.c 的 tt_/lt/want/ann、check_top.c:4421 的 `if (g->ann)` 守卫，全部非 NULL；parser 也强制“parameters must be typed”、lambda 参数必须带类型（实测报错），Param.type 不可能为空。(3) 反向证据：check_top.c:4748-4759 把记录下来的 `du->want` 直接交给 checkAssignable，而 `du->want` 就是本函数第 433 行原样存下的 want；ttSubstitute(types.c:815-816) 对 NULL 返回 NULL，所以一旦将来某个调用点传 NULL，流程会在 4759 行二次进入本函数并在 466 行解引用 —— 缺的不是一条不可达告警，而是把“want 可空”这件事挡住/断言的护栏。",
+      "trigger": "潜在：任何新增调用点（或未来把某个可选类型/字段类型直接透传）传入 want==NULL 或 got==NULL，即立刻 SIGSEGV；当前 in-tree 调用图不可达，未能构造复现程序。",
+      "repro": "无可复现输入（这也是判定为 P3 而不是 CRASH 的原因）。静态验证：\n  grep -n 'ttIsError(Type' -A2 src/types.c          # NULL -> false\n  nm -C build/extc >/dev/null; grep -rn checkAssignable src/*.c   # 20 个调用点逐个核对\n  cppcheck --enable=all src/check.c 2>&1 | grep 466   # 报 want 可能为 NULL\n建议：函数入口加 `if (!want || !got) return false;`（或 assert），并把 du->want 的可空性在记录处挡掉。",
+      "confidence": "medium"
+    }
+  ],
+  "coverage_notes": "src/check.c 571 行、src/check.h 31 行逐行读完。逐函数核查：ckError/ckWarn（EXTC_MAXERR 截断 + vsnprintf 用法正确）、typeStr（NULL 由 ttRender 处理）、cmpNamePtr、moduleNameTaken（缓存键是 funcs+structs+types+globals 的长度和；Checker 是 checkModule 的**局部变量**（check_top.c:5136-5141），每个模块一份，模块内 m->* 在检查期不增删 ⇒ 跨模块与模块内都不会拿到陈旧表，未报）、cNameFor（找到一个真实碰撞，见 finding 1）、pushScope/popScope（scopes 与 narrowMarks 配对，pop 有长度保护）、tsub、mentionsParam、isCmpOp/isLogicOp/isEqualityOp/isOverloadableOp/isArithOp/isNumericLit、isPrintable（ttBase 解引用后判 kind）、literalFits（bits==64 特判、有符号/无符号边界、负数进无符号被拒；int 字面量进 float 目标按“字面量取上下文类型”的设计放行，不算缺陷）、adoptContextType（null 只在 ?ref 上采用、数组/无名结构体字面量采用上下文；覆盖 e->type 的写法在“同节点二次检查”下才会有关联，未找到可达路径）、checkAssignable（引用/可空/可变性/void 擦除/视图降级/加宽/字面量适配逐条核对；DeferredUse 的两条录制路径与消费端 check_top.c:5710-5729 一致，自由函数实例由 funcInsts 分支覆盖，无 gap）、expectBool。cppcheck 在 check.c:466 的 want 可能为 NULL 已逐调用点判定（见 finding 2）。未上报的取舍：ckWarn 与 ckError 的 EXTC_MAXERR 固定缓冲会截断超长消息（仅诊断损失）；cNameFor 的 nameUses 线性查找是性能项，未作为 finding。"
+}

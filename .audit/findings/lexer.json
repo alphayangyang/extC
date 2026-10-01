@@ -1,0 +1,29 @@
+{
+ "findings": [
+  {
+   "title": "lexChar moves `lx->pos` by hand and never advances line/col, so every diagnostic after a character literal on the same line points at the wrong column",
+   "file": "src/lexer.c",
+   "line": 427,
+   "kind": "HYGIENE",
+   "severity": "P3",
+   "code_quote": "    lx->pos = close + 1;                           /* consume through the closing quote */\n    Token *t = lxPushAt(lx, out, TK_INT, lx->src + start, close + 1 - start, line, col);\n    t->ival = v;\n}",
+   "why": "The file's own contract (lexer.c:122-124) says \"Do not advance the cursor any other way. `pos` and `line`/`col` have to move together or every later diagnostic points at the wrong place.\" lexChar finds the closing quote by raw index arithmetic and then assigns `lx->pos = close + 1` without touching `lx->col` (lxAdvance is never called on the simple `'a'` path). All later tokens on that line therefore carry the column of the opening quote. The error caret is visibly misplaced: `var x = 'a' + )` reports column 16 (under `+`) for a `)` that is at column 18, while the identical line written as `97 + )` reports 18.",
+   "trigger": "Any lexical or syntax error on a source line that contains a character literal earlier on the same line (the drift is the literal's byte length).",
+   "repro": "printf \"fn main() -> i32 {\\n    var x = 'a' + )\\n    return 0\\n}\\n\" > /tmp/t_col.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_col.extc\n# -> t_col.extc:2:16: error: expected an expression, found `)`  (caret under the `+`)\nprintf \"fn main() -> i32 {\\n    var x = 97 + )\\n    return 0\\n}\\n\" > /tmp/t_col2.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_col2.extc\n# -> t_col2.extc:2:18 (correct)",
+   "confidence": "high"
+  },
+  {
+   "title": "Float literals that overflow or underflow are accepted silently (`1e999` becomes infinity), while the integer path diagnoses ERANGE",
+   "file": "src/lexer.c",
+   "line": 235,
+   "kind": "MISCOMPILE",
+   "severity": "P3",
+   "code_quote": "    if (isFloat) {\n        t->fval = strtod(t->text, NULL);\n    } else {\n        errno = 0;\n        t->ival = strtoll(t->text, NULL, 10);\n        if (errno == ERANGE)\n            ctxError(lx->ctx, line, col, NULL,\n                     \"integer literal exceeds the supported signed 64-bit range\");\n    }",
+   "why": "The integer branch clears errno, converts, and reports ERANGE; the float branch calls strtod and ignores both the return value and errno. `1e999` therefore lexes to +inf and codegen emits `__builtin_inf()` with no diagnostic, and `1e-999` silently becomes 0.0 -- a mistyped exponent turns into a value the source never spelled, which is exactly the failure mode the integer path is written to prevent (\"integer literal exceeds the supported signed 64-bit range\").",
+   "trigger": "A float literal whose value is outside the double range, e.g. `1e999`, `1e-999`, `1e400`.",
+   "repro": "printf 'fn main() -> i32 {\\n    var x: f64 = 1e999\\n    return 0\\n}\\n' > /tmp/t_f4.extc\n/home/alphayang/extC_Compiler/build/extc /tmp/t_f4.extc --check-c; echo $?   # -> 0, no diagnostic\n/home/alphayang/extC_Compiler/build/extc /tmp/t_f4.extc | grep -n '__builtin_inf'  # -> (void)(__builtin_inf());",
+   "confidence": "high"
+  }
+ ],
+ "coverage_notes": "Read src/lexer.c (581 lines) and src/lexer.h (79 lines) line by line (all of it, no sampling). Covered: token kinds and Token layout; lexIsPunct + inList/isKeyword/isBuiltinType; character classes (ASCII only); Lexer state and lxPeek/lxAdvance/lxPushAt/lxLast; lexNumber (decimal, 0x hex with overflow pre-check, fraction and exponent, strtoll/strtod); lexIdent (keyword/type classification, the reserved `__` prefix rule); lexString (escape validation via lexEscape, verbatim copy of escapes, newline and EOF handling); lexEscape (all escapes, \\xHH, unknown escape); lexChar (closing-quote scan, `\\\\` handling, single-byte enforcement, escape decode); lexPunct (longest-match-by-table-order, <<,>> deliberately absent); lexAll (whitespace, CRLF, newline collapsing and trailing newline, line/block comments, error returns); tokenKindName and tokenDescribe. Cross-checked and found NOT to be defects: the newline-collapsing and always-append-trailing-newline rules hold (verified through the parser's use of TK_EOF); PUNCTS is ordered so that `->`, `==`, `<=`, `..`/`...`, `::`, `=>`, `??` and the compound assignments all win over their prefixes; lexChar's quote scan handles `'\\\\''`, `'\\\\\\\\'` and `'\\x41'` correctly (traced); a source ending in `\"\\\\` makes lexEscape advance past the end once, but both callers keep a NUL one byte past the end (readWholeFile allocates n+1 and writes buf[got]=0, src/base.c:599-611; the prelude is a NUL-terminated literal), so it is not an out-of-bounds read today -- noted as fragile, not reported; lexIdent reports the reserved `__` prefix but lexAll does not return on it (lexer.c:533 has no hasError check, unlike the number/string/char branches), which only means the rest of the file is scanned after the error -- harmless because ctxError keeps the first error (src/base.c) and every caller skips parsing when ctx->hasError is set (main.c:415/436/443, modules.c:1828), so it is recorded here rather than as a finding. The consequence of the discarded string length (lexer.h:27-29 exists so a NUL inside a literal survives) is reported as a parser-level finding in parser-3.json, because the loss happens when the parser copies only t->text into EX_STR."
+}

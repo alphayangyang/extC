@@ -1,0 +1,113 @@
+{
+ "findings": [
+  {
+   "title": "任务结束时按 LIFO 弹“任务的地方”：把仍然存活的任务 zone 一起弹掉 ⇒ 生成物 heap-use-after-free（ASan）",
+   "file": "src/coroutine.c",
+   "line": 84,
+   "kind": "UNSOUND",
+   "severity": "P0",
+   "code_quote": "    \"    extc_pool_zoneLeaveTo(extc_taskZone[id]);\\n\"",
+   "why": "任务按创建顺序不按结束顺序存活（A 先建后完、B 后建未完），但 extc_task_end 直接把 zone 栈弹到“该任务的 zone”位置，于是把栈上更高、仍然存活的任务 zone 一并弹掉，那些任务的池块随之被释放。codegen 侧配合：boxed spawn 不恢复 zoneTop（codegen.c:3805-3826），$next 又先恢复 zoneTop 再调 extc_task_end（codegen.c:4612-4613）。本条与本文件里 P1 的 coroutine.c:84 是同一行的两个方向：这里是 ASan 实证的真 UAF，P1 那条是同一根因在 dyn 形状下先炸出来的假 trap。",
+   "trigger": "两个 boxed 任务各持一个 vector，先跑完较老的那个。",
+   "repro": "/tmp/coro/z2.extc：./build/extc -w z2.extc -o z2.c && gcc -std=c11 -O1 -g -fsanitize=address -fwrapv z2.c -o z2 && ./z2 → 'AddressSanitizer: heap-use-after-free ... z2.extc:15 in B$step'，free 栈 extc_pool_drop←extc_pool_zoneLeaveTo←extc_task_end（Lead 本机复现）。",
+   "confidence": "high"
+  },
+  {
+   "title": "boxed spawn 不还原 extc_zoneTop，extc_task_end 随后弹掉调用方仍在使用的地方（合法程序 trap/UAF）",
+   "file": "src/coroutine.c",
+   "line": 84,
+   "kind": "BUG",
+   "severity": "P1",
+   "code_quote": "        \"/* Ends a task at any time: the same release whether it ran to completion or was dropped. */\\n\"\n        \"void extc_task_end(int64_t id) {\\n\"\n        \"    if (id < 0 || id >= extc_taskCap || !extc_taskLive[id]) return;\\n\"\n        \"    extc_taskLive[id] = 0;\\n\"\n        \"    extc_arena_release(&extc_taskArena[id]);   /* the task's own arena, in one go */\\n\"\n        \"    extc_pool_zoneLeaveTo(extc_taskZone[id]);\\n\"",
+   "why": "extc_task_end 无条件把 zone 栈弹到 spawn 时记下的那个 mark（`extc_pool_zoneLeaveTo(extc_taskZone[id])`，第 84 行）。这条只有在调用方 `extc_zoneTop < mark` 时才安全：pools.c 的 `while (extc_zoneTop >= mark && extc_zoneTop >= 0)` 此时为假 ⇒ 空操作、什么也不弹。非装箱 spawn（codegen.c:3832-3864）确实 save/restore 了 zoneTop；但装箱 spawn 分支（codegen.c:3805-3820）**只**发 `extc_task_begin()/extc_task_zone()/extc_task_alloc()`，从不保存也不还原 extc_zoneTop ⇒ spawn 之后调用方的 zoneTop 一直停在任务自己的 zone id 上。于是任务跑完时 `extc_zoneTop == mark`，leaveTo 真的执行：把**调用方所在的地方**（连同其中所有池）一起 drop，并把 zoneTop 降回 mark-1。运行期自己的原语就能看见这一点：`extc_dyn_put`（pools.c 那段）用 `int64_t zi = extc_zoneTop` 决定 dyn 表放哪个 place ⇒ 装箱 spawn 之后创建的 dyn 值落进任务的 place，任务一结束就被回收。",
+   "trigger": "任何 `var h: coroutine<T> = f(...)`（装箱 spawn）之后，在同一作用域里再创建任何依赖**运行期** zoneTop 的东西（dyn 值；走 `extc_pool_new` 动态兜底路径的容器），然后把该协程驱动到结束，再使用那个值。",
+   "repro": "cat > /tmp/dybox.extc <<'EOF'\nuse std::io\ntrait Tag { fn tag(self: ref Self) -> i64 }\nstruct box2 { v: i64 }\nimpl Tag for box2 { fn tag(self: ref box2) -> i64 { return self.v } }\nfn w(n: i64) -> coroutine<i64> {\n    var i: i64 = 0\n    while i < n { yield i  i = i + 1 }\n}\nfn main() -> i32 {\n    var h: coroutine<i64> = w(i64(1))\n    let d = dyn Tag(box2 { v: i64(5) })\n    while h.next() { }\n    io::cout << d.tag() << \"\\n\"\n    return 0\n}\nEOF\n./build/extc -w --no-line-map -o /tmp/dybox.c /tmp/dybox.extc && gcc -std=c11 -fwrapv -g -fsanitize=address -o /tmp/dybox /tmp/dybox.c && /tmp/dybox\n# 实测：stderr `dybox.extc:15: trap: stale `dyn` value`，退出码 1\n# 另一条证据：把 tests/coro/coro_pool.extc 的 spawn 改成 `var c: coroutine<i64> = g(i64(3))`，在生成的 C 的 extc_task_end 里插一行打印：\n#   [inst] task_end id=0 zoneTop=1 mark=1 live_pools=1  ->  after leaveTo: zoneTop=0 live_pools=0\n# 同一行打印在非装箱版本里是 zoneTop=0 mark=1（leaveTo 空操作，池永不回收）——那一半是已知的 place 泄漏。",
+   "confidence": "high"
+  },
+  {
+   "title": "event 层按需发射的触发名单漏了 `extc_unix_` ⇒ 只用 extc_unix_listen/connect 的程序链接失败（--check-c 却报通过）",
+   "file": "src/codegen.c",
+   "line": 6785,
+   "kind": "BUG",
+   "severity": "P1",
+   "code_quote": "                (strncmp(ef->name, \"extc_epoll_\", 11) == 0 || strncmp(ef->name, \"extc_sock_\", 10) == 0 ||\n                 strncmp(ef->name, \"extc_tcp_\", 9) == 0))\n                g.needEvent = true;\n        }",
+   "why": "eventEmitRuntime（src/coroutine.c:106）里所有函数的按需发射判据是名字前缀，而它定义的 `extc_unix_listen` / `extc_unix_connect` 不匹配 epoll_/sock_/tcp_ 任何一个 ⇒ needEvent 为假 ⇒ 整块事件层（连同这两个定义）都不进产物。extC 侧 stdlib/std/sys/net.extc:40,58-59 只给 extern 原型，于是生成的 C 有声明、无定义。`--check-c` 只做 `-fsyntax-only`（main.c:565），所以编译器自己的闸门报通过；真正的编译要到链接期才炸。",
+   "trigger": "程序只调用 extc_unix_listen / extc_unix_connect（读写走 std::sys::io 的 read/write、关闭走 file::extc_file_close），不碰任何 extc_sock_*/extc_epoll_*/extc_tcp_*。tests/coro/coro_accept.extc 恰好还调了 extc_sock_read/write/accept，所以现有判据把它盖住了。",
+   "repro": "cat > /tmp/unixonly.extc <<'EOF'\nuse std::sys::net\nfn main() -> i32 {\n    var path: mut slice<u8> = new u8[32]\n    path[0] = u8(0)\n    var nm: slice<u8> = \"extc-unix-only\"\n    var i: i64 = 0\n    while i < nm.len { path[i + i64(1)] = nm[i]  i = i + 1 }\n    var fd: i64 = net::extc_unix_listen(path.data, nm.len + i64(1), i64(8))\n    return i32(0)\n}\nEOF\n./build/extc --check-c /tmp/unixonly.extc ; echo rc=$?      # rc=0（闸门盲）\n./build/extc -w --no-line-map -o /tmp/unixonly.c /tmp/unixonly.extc\ngcc -std=c11 -fwrapv -O1 -o /tmp/unixonly /tmp/unixonly.c\n# 实测：/tmp/ccueBbgM.o: in function `main`: undefined reference to `extc_unix_listen`",
+   "confidence": "high"
+  },
+  {
+   "title": "event 块用 inet_pton 却只有 DNS 块 include <arpa/inet.h> ⇒ 只声明 extc_tcp_connect_to 的程序生成 C 编不过",
+   "file": "src/coroutine.c",
+   "line": 230,
+   "kind": "BUG",
+   "severity": "P1",
+   "code_quote": "        \"    struct sockaddr_in sa;\\n\"\n        \"    memset(&sa, 0, sizeof sa);\\n\"\n        \"    sa.sin_family = AF_INET;\\n\"\n        \"    sa.sin_port = htons((uint16_t)port);\\n\"\n        \"    if (inet_pton(AF_INET, name, &sa.sin_addr) != 1) return -1;\\n\"",
+   "why": "eventEmitRuntime 的 include 表（coroutine.c:111-117）只有 sys/epoll.h、sys/socket.h、sys/time.h、sys/un.h、netinet/in.h、netinet/tcp.h、fcntl.h；`inet_pton` 的原型在 <arpa/inet.h>，那一行只在 dnsEmitRuntime（coroutine.c:331-332）里。`#define _POSIX_C_SOURCE` 也只在 needTime||needDns 时发（codegen.c:7041-7042）。gcc 实测：光有 netinet/in.h 时 inet_pton 是隐式声明，而 gcc>=14 默认把隐式声明当**错误**（C11 下本来就是约束违背）。`use std::sys::net` 会连带声明 extc_dns_lookup（needDns 的判据只看声明、不看 used，codegen.c:6830），所以 stdlib 正规路径被掩盖，只有直接 `extern!` 声明这几个原语的特权层用法会踩到。",
+   "trigger": "程序里出现 `extern!(\"extc-runtime\") fn extc_tcp_connect_to(ip: ref u8, iplen: i64, port: i64) -> i64` 并调用它，但没有任何 extc_dns_lookup 声明 ⇒ needEvent 真、needDns 假。",
+   "repro": "cat > /tmp/t_conn.extc <<'EOF'\nextern!(\"extc-runtime\") fn extc_tcp_connect_to(ip: ref u8, iplen: i64, port: i64) -> i64\n    effects Addr=0 Cont=0\nfn main() -> i32 {\n    var ip: mut slice<u8> = new u8[16]\n    ip[0] = u8(49)\n    var fd: i64 = extc_tcp_connect_to(ip.data, i64(1), i64(9))\n    return i32(0)\n}\nEOF\n./build/extc -w --no-line-map -o /tmp/t_conn.c /tmp/t_conn.extc\ngrep -c 'arpa/inet' /tmp/t_conn.c        # 0\ngcc -std=c11 -fwrapv -O2 -o /tmp/t_conn /tmp/t_conn.c\n# 实测：error: implicit declaration of function `inet_pton` [-Wimplicit-function-declaration]\n./build/extc --check-c /tmp/t_conn.extc   # rc=1，编译器打印 “the generated C does not compile”",
+   "confidence": "high"
+  },
+  {
+   "title": "extc_task_end 用 extc_arena_release 回收任务 arena，而任务槽永不复用 ⇒ 每个跑完的装箱协程永久泄漏一块（实测 30 万任务 +32MB）",
+   "file": "src/coroutine.c",
+   "line": 83,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        \"void extc_task_end(int64_t id) {\\n\"\n        \"    if (id < 0 || id >= extc_taskCap || !extc_taskLive[id]) return;\\n\"\n        \"    extc_taskLive[id] = 0;\\n\"\n        \"    extc_arena_release(&extc_taskArena[id]);   /* the task's own arena, in one go */\\n\"",
+   "why": "extc_arena_release 的设计是“永远留一块当 spare 给下一次用”（codegen.c:7247-7262：`if (!a->spare && a->top->cap <= EXTC_ARENA_SPARE_MAX) { a->spare = a->top; ... }`），只有 extc_arena_destroy 才 free 掉 spare。而任务 id 单调递增（第 63 行 `return extc_taskNext++;`），槽位永不复用 ⇒ 这个 spare 再也不会被谁取走，也没有第二次 release：它既不可达于使用者、又永不归还。协程帧自己的块 arena 走的是 `extc_arena_destroy`（codegen.c:3400-3406），任务 arena 是唯一用 release 的地方 ⇒ 语义不对称，第 83 行注释“the task's own arena, in one go”不成立。",
+   "trigger": "任何装箱协程（`var h: coroutine<T> = f(...)`，或调度器里参数类型是 coroutine<T> 的 `tasks::add(h)`）跑完一次；长跑服务器每关一条连接泄漏一块。",
+   "repro": "/tmp/extcw/leakbox.extc：`var h: coroutine<i64> = w(k)` + `while h.next() {}` 循环 30 万次。\ngcc -std=c11 -fwrapv -O2 -o leakbox leakbox.c && /usr/bin/time -q -f \"%M\" ./leakbox\n# 实测 peak=45476 KB；同一份 C 加 -DEXTC_ARENA_SPARE_MAX=0（release 不再留 spare）-> 12584 KB；\n# 非装箱版本（不碰任务 arena）-> 1508 KB。差 ~32MB ≈ 300000 × 一个帧块（cap≈110B）。",
+   "confidence": "high"
+  },
+  {
+   "title": "extc_epoll_wait 的待处理队列是函数级 static，不按 epoll 实例区分 ⇒ 跨实例投递别人的 tag",
+   "file": "src/coroutine.c",
+   "line": 137,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        \"    static int64_t pending[64];\\n\"\n        \"    static int head = 0, tail = 0;\\n\"\n        \"    if (head != tail) { int64_t t = pending[head]; head = (head + 1) % 64; return t; }\\n\"\n        \"    struct epoll_event evs[16];\\n\"\n        \"    int n = epoll_wait((int)ep, evs, 16, (int)timeout_ms);\\n\"\n        \"    if (n <= 0) return -100;\\n\"",
+   "why": "pending/head/tail 是函数内的 static（进程级一份），而函数带 `ep` 参数；一次 epoll_wait 里多出来的最多 15 个事件被塞进这个**与实例无关**的队列，下一次对**另一个** epoll 实例（甚至另一个调度器 loop）的 wait 会先把它们还出去，-100 的“队列空”语义因此失效。tag 由调用方解释：std::coro::scheduler 把行号当 tag、按 index 直接派发（scheduler.extc:105-112），所以被投到另一个调度器就是 resume 了那一侧同号的行，甚至 `send(value)` 把值送进不相干的协程。队列满时丢弃本身没问题（注册全是 level-triggered，会重报），错的是它不认实例。",
+   "trigger": "一个进程里两个 epoll 实例（两个 `sched::loop`，或先建一个再用另一个）；其中一个实例一次 wait 拿到 >=2 个就绪事件，随后对另一个实例调用 extc_epoll_wait。",
+   "repro": "/tmp/extcw/epcross.extc：三对 socketpair 全注册进 epoll A（tag 101/102/103）并各写 1 字节，epoll B 什么都不注册；\n先 `net::extc_epoll_wait(epa, 0)`（返回一个、其余入队），再 `net::extc_epoll_wait(epb, 0)`；\n返回值命中 101/102/103 就 return 7。实测 `exit=7` —— B 的 wait 拿到了只在 A 注册的 tag。",
+   "confidence": "high"
+  },
+  {
+   "title": "extc_unix_connect / extc_unix_listen / extc_tcp_listen(_shared) 的失败路径不关 fd ⇒ 重试循环每次漏一个 fd",
+   "file": "src/coroutine.c",
+   "line": 203,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        \"int64_t extc_unix_connect(uint8_t *path, int64_t len) {\\n\"\n        \"    struct sockaddr_un sa;\\n\"\n        \"    int fd = socket(AF_UNIX, SOCK_STREAM, 0);\\n\"\n        \"    if (fd < 0 || len <= 0 || len > (int64_t)sizeof sa.sun_path) return -1;\\n\"\n        \"    memset(&sa, 0, sizeof sa);\\n\"\n        \"    sa.sun_family = AF_UNIX;\\n\"\n        \"    memcpy(sa.sun_path, path, (size_t)len);\\n\"\n        \"    if (connect(fd, (struct sockaddr *)&sa, (socklen_t)sizeof sa) != 0) return -1;\\n\"\n        \"    return (int64_t)fd;\\n\"",
+   "why": "socket() 已经拿到 fd，之后几条失败路径都直接 `return -1`：len 不合法（第 199 行）、connect 失败（第 203 行）、extc_unix_listen 的 bind/listen 失败（第 188/189 行）、extc_tcp_listen（第 254/255 行）、extc_tcp_listen_shared（第 289/290 行）。调用方看到的是文档承诺的“失败 -1”，自然会重试；每次重试漏一个 fd，最终 EMFILE。对照 extc_tcp_connect_to 的 connect 失败路径**是**关的（第 233 行 `{ close(fd); return -1; }`）⇒ 这是漏写而非约定。",
+   "trigger": "客户端在 listener 还没起来时重试 net::extc_unix_connect（抽象名字不存在 ⇒ ENOENT/ECONNREFUSED）；或端口被占用/EACCES 时反复 extc_tcp_listen；或 extc_unix_listen 传了非法 len。",
+   "repro": "/tmp/extcw/connfail2.extc：同一抽象名字连 50 次（全失败），末尾再调一次 extc_sock_read 把事件层拉进产物。\nstrace -f -e trace=socket,close -o tr2.txt ./connfail2\n# 实测：socket()=50  close()=2（48 个 fd 未关）\n/tmp/extcw/tcpfail.extc：`net::extc_tcp_listen(i64(1), i64(64))` 20 次（非 root ⇒ bind EACCES）\n# 实测：socket()=20  close()=2",
+   "confidence": "high"
+  },
+  {
+   "title": "extc_http_date 用固定的 64 字节上限写调用方的缓冲区，而 extC 声明的 `out: ref u8` 不带长度 ⇒ 越界写",
+   "file": "src/coroutine.c",
+   "line": 403,
+   "kind": "BUG",
+   "severity": "P2",
+   "code_quote": "        \"/* HTTP 日期：正确性交给 libc（`strftime`/`strptime` 是打过仗的），extC 只拿长度与秒数。 */\\n\"\n        \"int64_t extc_http_date(int64_t epoch, uint8_t *out) {\\n\"\n        \"    time_t t = (time_t)epoch;\\n\"\n        \"    struct tm tm;\\n\"\n        \"    if (!gmtime_r(&t, &tm)) return -1;\\n\"\n        \"    return (int64_t)strftime((char *)out, 64, \\\"%a, %d %b %Y %H:%M:%S GMT\\\", &tm);\\n\"",
+   "why": "strftime 的第二个参数是**这里硬写的 64**，不是调用方给的容量；extC 侧 `extern!(\"extc-runtime\") fn extc_http_date(epoch: i64, out: ref u8) -> i64`（stdlib/std/sys/file.extc:20）只要求一个指向 u8 的引用，容量既没传进来、也没写进任何注释或文档。实际格式串产出 29 字节 + NUL；调用方只要给小于 30 字节的对象，写就越过对象边界。这是本文件里唯一“写调用方缓冲区却没有长度参数”的 shim（extc_sock_read/write、sendfile、dns_lookup 都带 n/outcap）。",
+   "trigger": "任何声明并使用这个 shim、且 out 指向小于 30 字节对象的程序（今天 stdlib/测试里只有声明，没有调用者）。",
+   "repro": "/tmp/extcw/httpdate3.extc：`var buf: mut slice<u8> = new u8[64]`，取 `var small: mut slice<u8> = buf[0..8]`，把 small.data 传给 file::extc_http_date，再把 buf[0..40] 打出来。\n实测输出：`29 : 83 117 110 44 32 48 57 32 83 101 112 32 50 48 48 49 ...`\n= 返回值 29（>8），且 8 字节窗口之后的字节被写成 \"Sun, 09 Sep 2001 01:46:40 GMT\"。\n（同形状的 [8]u8 版本用 ASan 编译不报：越界写发生在未插桩的 libc strftime 内部，ASan 只拦插桩访问。）",
+   "confidence": "high"
+  },
+  {
+   "title": "extc_task_zone 只查上界不查 liveness ⇒ 对从未用过的 id 返回未初始化内存（ASan 下 0xBEBE...），对死任务返回旧 zone",
+   "file": "src/coroutine.c",
+   "line": 76,
+   "kind": "BUG",
+   "severity": "P3",
+   "code_quote": "        \" * there instead of re-deriving it (rule 1). */\\n\"\n        \"int64_t extc_task_zone(int64_t id) {\\n\"\n        \"    if (id < 0 || id >= extc_taskCap) return -1;\\n\"\n        \"    return extc_taskZone[id];\\n\"\n        \"}\\n\"",
+   "why": "同一张表的另外三个入口都先查 `extc_taskLive[id]`（extc_task_alloc 第 68 行、extc_task_end 第 81 行、extc_task_alive 第 89 行），只有 extc_task_zone 漏了这一条。extc_taskZone 只在 extc_task_begin 里对 `extc_taskNext` 那一格写过（第 59 行），扩容循环只初始化 live/arena（第 53-56 行）⇒ [extc_taskNext, extc_taskCap) 这段是 malloc 出来的未初始化内存，却被直接读出来交给 extC。文件开头那句“句柄活过任务是错误，驱动它必须大声 trap”在这里没有落实。extC 侧 std::sys::coroutine 公开声明了它（stdlib/std/sys/coroutine.extc:15-16），调度器/判据能直接踩到。",
+   "trigger": "extC 代码调用 `syscoro::extc_task_zone(k)`，k 落在 [extc_taskNext, extc_taskCap)（例如只开过一个任务却问 id=5），或 k 指向已 end 的任务（返回旧 zone 而不是 -1）。",
+   "repro": "/tmp/extcw/taskzone.extc：一个装箱协程跑完后 `io::cout << syscoro::extc_task_zone(i64(5)) << \" \" << syscoro::extc_task_zone(i64(-1)) << \" \" << syscoro::extc_task_zone(i64(999))`。\ngcc -std=c11 -fwrapv -g -fsanitize=address -o taskzone taskzone.c && ./taskzone\n# 实测输出：`-4702111234474983746 -1 -1` —— 第一项 = 0xBEBEBEBEBEBEBEBE（ASan 的未初始化填充）",
+   "confidence": "high"
+  }
+ ],
+ "coverage_notes": "读了 src/coroutine.c 全 416 行与 src/coroutine.h 全 25 行，并逐条对照使用方：codegen.c（4594 / 8264 两处发射、6785-6789 needEvent 扫描、3805-3820 装箱 spawn、3832-3864 非装箱 spawn、4486-4575 handle helper、4606-4615 $next 驱动）、pools.c 的 zone/池运行期、codegen.c:7234-7375 的 arena 运行期、stdlib/std/sys/{coroutine,net,file}.extc、stdlib/std/coro/scheduler.extc、tests/coro/run.sh 与相关 .extc。\n核实为正确的点：\n  · 三个 emitter 的按需发射与依赖链自洽：coroutineEmitRuntime 声明的 extc_pool_zoneEnter/zoneLeaveTo 由 poolsEmitRuntime 定义，两条发射路径都先置 needPool（codegen.c:4594-4596、8264-8277），不会出现“有表无 zone 运行期”。\n  · 每个 bufPuts 块都在 C99 保证的 4095 字节以内：用一个拉进全部四层（task 表 + event + dns + file）的程序跑 `gcc -std=c11 -Woverlength-strings` 无告警 ⇒ 第 213、364 行的分块注释成立。\n  · extc_task_begin 的扩容：realloc 到临时变量、全部成功才提交、失败 exit(70)；新区间的 live/arena 都初始化（zone 格在写入前不会被读，唯一例外是 P3 那条）。\n  · 任务 id 单调不复用（extc_taskNext++ 只增），extc_task_alive 不会被 ABA 骗过；extc_task_end 幂等；extc_task_alloc 对死任务 trap。\n  · extc_arena_alloc 会清零（calloc，或对 spare memset）且 OOM 时 trap ⇒ 装箱协程拿到的帧是零化且非 NULL 的，`*frame = (struct f$frame){...}` 不会踩空指针。\n  · epoll 待处理环容量 63、满了丢事件是安全的：所有注册都走 extc_epoll_add，events 只有 EPOLLIN/EPOLLOUT（无 EPOLLET），level-triggered 会重报；-100 不会和合法 tag 撞（tag 是任务行号或 -1）。\n  · `#ifdef SO_REUSEPORT` 的回退值 15 在 Linux 上正确，且 strict c11 下这个宏确实被 glibc 藏起来（gcc 15 -std=c11 实测）。\n  · extc_task_alloc / extc_task_alive 的签名与 codegen 调用点、codegen.c:4492 的原型一致。\n考虑过但**不报**的点（附证据，避免重复劳动）：\n  · 非装箱路径的任务 place 永不回收 —— 已实测确认：在生成的 C 的 extc_task_end 里插打印，tests/coro/coro_pool.extc 得到 `zoneTop=0 mark=1 live_pools=1` ⇒ leaveTo 空操作、池不回收。这就是已知的“栈帧驱动的池协程泄漏 place”，不重复报；装箱路径是它的镜像（见第 1 条 P1）。\n  · 显式 drop（extc_task_end）不销毁帧的块 arena（codegen.c:3398-3405 自己注明是有界泄漏、docs/topics/CONCURRENCY.md 4.4），属已知设计取舍，不报。\n  · epoll_wait 把 EINTR（n<0）与超时（n==0）一并折叠成 -100：本想按“信号会打断事件循环”报一条，但整个 stdlib/src 里没有任何 signal()/sigaction()，extC 装不了 handler，epoll_wait 实际不可能返回 EINTR ⇒ 撤回。\n  · 三个 listen 路径把非阻塞 fcntl 写了两遍（coroutine.c:192-193、258-259、293-294）：已分叉的重复逻辑，但代价只有一次多余系统调用，为不超 8 条从清单里去掉，在此登记。\n  · extc_task_live() 对一张只增不减的表做 O(cap) 扫描，且 id 永不回收 ⇒ 每个“曾经存在过”的任务常驻约 25 字节（实测 30 万任务约 7.5MB）。这是 id 唯一性（extc_task_alive 健全性的前提）的代价，属设计取舍，登记不报。\n  · stdlib/std/sys/net.extc:22-24 的注释先说“-1 = 超时/没有事件”又说“队列空返回 -100”，与实际实现（-100）不一致：文档在别的文件里，不报。\n  · extc_sock_timeout 的 ms<0、extc_unix_listen 允许 len==sizeof(sun_path)（108，路径无 NUL）、extc_epoll_add 不处理 EEXIST：逐个查过调用方与内核语义，都够不到真实缺陷，不报。\n无法确认的点：\n  · 第 1 条里“调用方的池/裸 new 也会被误弹”只证明了 dyn 那一支；我试过的两种 vector 形状（直接 withCap、经 helper 返回）都被 arena-level pass 静态指定成函数体 zone 而幸免，所以该条在容器形状下的后果（静默 UAF 还是大声 trap）取决于具体形状，本条只以 dyn 的 trap 作为证据。\n  · extc_http_date 目前只有声明没有调用者（stdlib/、tests/、examples/ 全查过），所以那条是给未来调用者的雷，不是现存判据的失败。\n  · 本单元没审 codegen/checker 侧的帧布局与 next/value/send 协议本身（$step 的 pc 机、ret/in 槽、句柄 kind 分派）—— 那些不属于 coroutine.c 正文，只按“运行期侧的契约有没有被违反”检查了 begin/zone/alloc/end 四处。"
+}

@@ -1,0 +1,89 @@
+{
+  "findings": [
+    {
+      "title": "池槽位回收时不清 `extc_poolKind`：容器池继承「对象表」模式 ⇒ 合法程序运行期假 trap（abort）",
+      "file": "src/pools.c",
+      "line": 46,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "    r = &extc_pools[idx];\n    if (r->live) return -1;\n    r->generation++;\n    r->live = 1; r->parent = parent; r->zone = zi;\n    r->color = extc_zones[zi].color;   /* 出生色：与 zone 当前色不符 ⇒ 那个地方死过 */\n    r->firstChild = -1; r->nextSibling = -1; r->zoneNext = -1;\n    r->blocks = NULL; r->bytes = 0;",
+      "why": "上面是 `src/pools.c:46` 那个字面量发射出来的 `extc_pool_new_at` 尾部（逐字取自生成物 /tmp/rev/misc/kind6.c:529-535）。`extc_poolKind` 是一张与槽位平行的旁表：**只有** `extc_pool_new_table` 会写它（src/pools.c:47 `if (rid >= 0 && rid < extc_poolKindCap) extc_poolKind[rid] = 1;`），`extc_pool_freeSelf`（src/pools.c:41）回收槽位时既不读也不写它，`extc_pool_new_at` 复用 free-list 槽位时同样不复位。而 `extc_pool_give` / `extc_pool_resize` / `extc_pool_resize_raw`（src/pools.c:52/53/74）都用 `if (rid < extc_poolKindCap && extc_poolKind[rid] != 0)` 判定「这是对象表」并 `extc_die(1)`。于是：槽位曾给过对象表（`dyn` 用的那种池）⇒ kind 永远是 1 ⇒ 之后任何复用该槽的**容器**池都被当成对象表，扩容/归还板块当场 trap。`extc_pool_new` 从 free list 取槽（LIFO），所以「同一个 place 里对象表比容器先建、place 退出后外层再建容器」必然命中：freeSelf 把槽压回表头，外层下一个容器池正好拿到它。",
+      "trigger": "任何同时用 `dyn` 与容器（vector/string/map）的程序：让一个对象表所在的地方（函数帧/循环体）先退出，再在别处建容器。tests/pool/run.sh 里没有一条用例跨过「对象表死后槽位被容器复用」这步。",
+      "repro": "cat > /tmp/rev/misc/kind6.extc <<'EOF'\nuse std::io\nuse stl::vector\ntrait Tag { fn tag(self: ref Self) -> i64 }\nstruct box { v: i64 }\nimpl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }\nfn f() -> i64 {\n    let b = box { v: i64(7) }\n    let d = dyn Tag(b)                     /* 对象表：本帧最早的池 */\n    var v = vector<i64>::withCap(i64(2))   /* 容器池：本帧的第二个池 */\n    v.push(d.tag())\n    return v.get(i64(0)) ?? i64(-1)\n}\nfn main() -> i32 {\n    io::cout << \"f=\" << f() << \"\\n\"\n    var w = vector<i64>::withCap(i64(2))   /* 复用 f 帧里对象表让出的槽 */\n    var i = 0\n    while i < 100 { w.push(i64(i))  i = i + 1 }\n    io::cout << \"len=\" << w.len() << \"\\n\"\n    return 0\n}\nEOF\ncd /tmp/rev/misc && /home/alphayang/extC_Compiler/build/extc -w kind6.extc -o kind6.c && gcc -fwrapv -O0 kind6.c -o kind6 && ./kind6\n# 实测输出（rc=1）：f=7 之后 →  trap: this pool is an object table: a block may not be resized in place (realloc may move it, and element handles would dangle)\n# 直接看旁表：/tmp/rev/misc/kind1.extc（new_table → drop → new）打印 `table_kind=1 container_kind_after_reuse=1`（正确应为 0）。",
+      "confidence": "high"
+    },
+    {
+      "title": "`extc_pool_take/resize` 把非正字节数静默钳成 1：`n * sizeof(T)` 溢出时给出 1 字节板块而切片 `.len` 仍是 n ⇒ 堆越界写",
+      "file": "src/pools.c",
+      "line": 51,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "    if (bytes <= 0) bytes = 1;\n    b = (ExtcBlock *)malloc(sizeof(ExtcBlock) + (size_t)bytes);\n    if (!b) { fprintf(stderr, \"trap: out of pool memory (this allocation wanted %lld bytes)\\n\",\n                      (long long)bytes); extc_die(1); }\n    memset((void *)(b + 1), 0, (size_t)bytes);",
+      "why": "字节数由调用点的表达式算出来：`src/codegen.c:2761（`poolSlice`）与 :2754（`poolResize`）` 发射 `(int64_t)(n) * (int64_t)sizeof(T)`（`poolSlice`/`poolResize` 同一形状，:2751-2765），不做任何溢出检查。溢出成负数时 `extc_pool_take`（以及 take_raw / resize / resize_raw，src/pools.c:51/52/53/74 四处同一句；引文逐字取自 /tmp/rev/misc/kind6.c:612-617）把它悄悄改成 1 字节并**返回一个有效指针**；而生成物里 `mut slice<T>` 的 `.len` 用的是**未乘的 n**（同上两行里的 `.len = (int64_t)(%s)`）。于是容器拿到「len = 2^60、实际 1 字节」的缓冲，第一次 `v[i] = x` 就写越界。同一句钳位也让合法的「释放成 0 长」（vector::release → poolResize(...,0)）依赖 1 字节分配，所以不能简单删掉；要修的是「不可表示的字节数必须响亮 trap（或按溢出检查后 trap）」，而不是静默降级。注意 `extc_pool_take` 里 `sizeof(ExtcBlock) + (size_t)bytes` 本身也会在 bytes 接近 INT64_MAX 时回绕成小值。",
+      "trigger": "容量来自用户输入的容器：`vector<i64>::withCap(i64(1152921504606846976))`（2^60，×8 = 2^63 → INT64_MIN）；或任何让 n*sizeof(T) 溢出为小正数的 n（例如 2^61+1 → 8 字节）。",
+      "repro": "cat > /tmp/rev/misc/huge1.extc <<'EOF'\nuse std::io\nuse stl::vector\nfn main() -> i32 {\n    var v = vector<i64>::withCap(i64(1152921504606846976))\n    v.push(i64(7))\n    io::cout << \"len=\" << v.len() << \"\\n\"\n    return 0\n}\nEOF\ncd /tmp/rev/misc && /home/alphayang/extC_Compiler/build/extc -w huge1.extc -o huge1.c\ngcc -fsanitize=address,undefined -fwrapv -O1 huge1.c -o huge1.asan && ./huge1.asan\n# → AddressSanitizer: heap-buffer-overflow  WRITE of size 8 ... 0 bytes after 17-byte region\n#   allocated by thread T0 here: #1 ... in extc_pool_take_raw   （不加 ASan 时 rc=0，打印 len=1，静默写越界）",
+      "confidence": "high"
+    },
+    {
+      "title": "域运行期保存块内局部帧的裸指针：`d.run { }` 在块结束之后才驱动帧 ⇒ 生成物 stack-use-after-scope",
+      "file": "src/domain.c",
+      "line": 49,
+      "kind": "UB",
+      "severity": "P1",
+      "code_quote": "void extc_dom_run(void *p) {\n    extc_dom *d = (extc_dom *)p;\n    for (int64_t i = 0; i < d->len; i++)\n        while (d->tasks[i].step(d->tasks[i].frame)) { }\n}",
+      "why": "`extc_dom_add`（src/domain.c:35-46）只把 `frame` 这个 `void *` 存进任务表（`:43 d->tasks[d->len].frame = frame;`），`extc_dom_run`（:49-53）之后才通过它调用 `step`；契约是「帧必须活到 run 结束」。发射侧却把帧声明在 `d.run { }` 的**块作用域里**：codegen.c:2152 `cgLine(g, \"extc_dom_add(%s, (void *)&%s, %s$domstep);\", ...)`，而 `struct <fn>$frame __extc_dt0` 就声明在那个块里；`extc_dom_run` 由 codegen.c:3782 在**块闭合之后**发出。C 里这是对已结束生命期对象的访问（UB），ASan 的 use-after-scope 直接命中 `task$domstep`。域语义（CONCURRENCY.md：「块不能在它起的任务还没跑完时结束」）要求帧活过块，所以现在这份发射文本无法满足 domain.c 的契约 —— 要么帧提到函数作用域，要么域自己拥有帧。",
+      "trigger": "任何 `d.run { ext f(...) }`：tests/ext/domain_runs.extc 就是最小形状（两条 `ext task(...)`）。",
+      "repro": "cd /tmp/rev/misc && /home/alphayang/extC_Compiler/build/extc -w /home/alphayang/extC_Compiler/tests/ext/domain_runs.extc -o dom.c\n# 先绕开已归档的 P0-11（__extc_a[2] 越界，见 docs/reviews/COMPILER-AUDIT-2026-09-30.md），否则它先 abort：\nsed 's/extc_arena __extc_a\\[2\\]/extc_arena __extc_a[8]/' dom.c > dom2.c\ngcc -fsanitize=address -fsanitize-address-use-after-scope -fwrapv -O1 dom2.c -o dom2.asan && ./dom2.asan\n# → AddressSanitizer: stack-use-after-scope  READ of size 8 ...\n#   #0 task$domstep   #1 extc_dom_run   #2 main\n#   地址落在 main 的 `__extc_dt0`（声明在 d.run{} 块里）",
+      "confidence": "high"
+    },
+    {
+      "title": "`extc_memCopy` 用 `memcpy` 做板的整块拷贝：`copyIn/copyOut` 允许源与目标都是板内视图 ⇒ 重叠时 -O2 静默拷错",
+      "file": "src/plate.c",
+      "line": 39,
+      "kind": "BUG",
+      "severity": "P2",
+      "code_quote": "int64_t extc_memCopy(uint8_t *dst, uint8_t *src, int64_t n) {\n    if (n <= 0) return 0;\n    memcpy((void *)dst, (const void *)src, (size_t)n);\n    return n;\n}",
+      "why": "这是 src/plate.c:37-41 发射出来的文本（逐字取自 tests/heap/afterclose.extc 的产物 build/afterclose.c:812-816）。它唯一的调用者是 `plate::copyIn` / `copyOut`（stdlib/std/heap.extc:151-164），两者的契约只要求 **dst（或 src）在板内**（`holdsView` 一次区间检查），完全允许另一个参数是**同一块板的另一个视图**（`plate::view(off,n)` 就是给用户造板内视图的 API）；`src/plate.c:30` 的注释也把它定位成「整块拷贝」门。`memcpy` 对重叠区间是 UB：读到的字节依赖实现（glibc 的 memcpy 在 -O0 走 libc 实现、恰好按 memmove 方向处理；GCC 在 -O2 把 memcpy 展开成向量拷贝后就按块前后覆盖），同一份生成物在 -O0 与 -O2 下结果不同。语言的 `copyInto` 原语用的是 `memmove`（codegen 的 genViewCopier），这里不是 —— 同一个语言里两条「整块拷贝」语义不一致。",
+      "trigger": "板内自拷贝：`pl.copyIn(pl.view(u64(8), u64(2000))!, a[i64(0)..i64(2000)])`，其中 `a` 是同一块板的另一个视图（dst > src 且重叠）。",
+      "repro": "cat > /tmp/rev/misc/ovl.extc <<'EOF'\nuse std::io\nuse std::heap\nfn main() -> i32 {\n    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!\n    var a: mut slice<u8> = pl.alloc(u64(4000))!\n    var i: i64 = 0\n    while i < i64(4000) { a[i] = u8(65 + (i % 26))  i = i + 1 }\n    var dst: mut slice<u8> = pl.view(u64(8), u64(2000))!\n    let n = pl.copyIn(dst, a[i64(0)..i64(2000)])\n    io::cout << \"n=\" << n << \" first32=\"\n    var k: i64 = 0\n    while k < i64(32) { io::cout << i64(a[k]) << \",\"  k = k + 1 }\n    io::cout << \"\\n\"\n    return 0\n}\nEOF\ncd /tmp/rev/misc && /home/alphayang/extC_Compiler/build/extc -w ovl.extc -o ovl.c\ngcc -fwrapv -O2 ovl.c -o ovl && ./ovl    # first32=65,66,67,68,69,70,71,72,65,66,67,68,...  ← 8 字节周期（拷坏）\ngcc -fwrapv -O0 ovl.c -o ovl0 && ./ovl0  # first32=65,...,72,73,74,75,...              ← 正确（memmove 语义）",
+      "confidence": "high"
+    },
+    {
+      "title": "`extc_dynPoolOf` 只记 pid、用 `generation == 0` 判陈旧 ⇒ 一个 place 会把 dyn 值生进**别的 place 还活着的对象表**里（地方寿命失效）",
+      "file": "src/pools.c",
+      "line": 118,
+      "kind": "BUG",
+      "severity": "P2",
+      "code_quote": "    pid = extc_dynPoolOf[zi];\n    if (pid < 0 || extc_pool_kind(pid) != 1 || extc_pool_generation(pid) == 0) {\n        pid = extc_pool_new_table(-1);\n        if (pid < 0) extc_dynTrap(\"?\", 0, \"out of pool memory (dyn)\");\n        extc_dynPoolOf[zi] = pid;\n    }",
+      "why": "引文逐字取自 /tmp/rev/misc/kind6.c:813-817。`extc_dynPoolOf[zi]` 按 **zone 下标**（= 块/帧深度）缓存「这个 place 的对象表」，但只存 pid，不存 pgen。失效判据 `extc_pool_generation(pid) == 0` 只能识别「这个槽位现在没有活池」；槽位被**另一张活着的对象表**复用时 `extc_pool_generation` 返回的是新池的非 0 世代，判据恒假 ⇒ 直接采纳别人的表。`:112` 上方那段注释声称「池 id 被新池接管时世代对不上」能识别，实际存进 `pgen` 的比较只存在于句柄层（`extc_dyn_slot`），这个 zone 缓存没有 pgen 可比。再加上 finding #1 的 kind 泄漏（「另一张池是容器」也会通过 `kind == 1`），命中面更大。后果：dyn 值的载荷落在别的 place 的表里 —— 本 place 退出时它不被回收（值活过了自己的地方），外层 place 退出时它又突然作废（句柄 trap），「值活不过它所在的地方」这条承诺在运行期不再成立。",
+      "trigger": "两个同深度的地方（例如两个函数帧，zone 下标都是 1）先后使用 `dyn`，中间让另一处（main 的 zone 0）先建自己的对象表占住被释放的那个槽位。",
+      "repro": "见 /tmp/rev/misc/alias2.extc（f 帧里先建对象表再建容器 → f 退出；main 建自己的 dyn 表；再调 g）：\ncd /tmp/rev/misc && /home/alphayang/extC_Compiler/build/extc -w alias2.extc -o alias2.c && gcc -fwrapv -O0 alias2.c -o alias2 && ./alias2\n# 实测：f=1 live=0 / main live=1 / `g peak live=2` / g=2 live=1 dm=9\n# 若 g 在自己的 place 里另建对象表，峰值应为 3（main 的表 + g 的容器 + g 的表）；峰值 2 说明 g 采纳了 main 的表。\n# 我**没有**造出用户可见的内存不安全（句柄层仍校验 pid/gen/pgen，逃逸检查也不让句柄活过它的地方），所以按「寿命/身份错」记 P2。",
+      "confidence": "medium"
+    },
+    {
+      "title": "`extc_dom_free` 没有任何调用者：每个 `domain::single()` 泄漏堆对象（+ 任务表），而这段死代码正好把泄漏盖住",
+      "file": "src/domain.c",
+      "line": 55,
+      "kind": "HYGIENE",
+      "severity": "P3",
+      "code_quote": "void extc_dom_free(void *p) {\n    extc_dom *d = (extc_dom *)p;\n    free(d->tasks);\n    free(d);\n}",
+      "why": "codegen 只发四个域原语里的三个：`extc_dom_new`（codegen.c:2273/2554）、`extc_dom_add`（:2152）、`extc_dom_run`（:3782）；`extc_dom_free` 只出现在运行期文本里，全仓库没有任何调用点。`domain` 是不可拷贝的语言对象、`d.run { }` 之后用户也没有释放手段，于是每次 `domain::single()` 泄漏 `calloc` 的 `extc_dom`（24 B）以及 `extc_dom_add` 翻倍出来的任务数组（每个任务 16 B，一直保留到进程结束）。在「每轮循环/每个请求建一个域」的形状里这是无界增长。",
+      "trigger": "循环里建域：`while k < N { let d = domain::single()  d.run { ... }  k = k + 1 }`。",
+      "repro": "cat > /tmp/rev/misc/domleak.extc <<'EOF'\nuse std::sys::domain\nfn main() -> i32 {\n    var k: i64 = 0\n    while k < i64(300000) { let d = domain::single()  d.run { }  k = k + 1 }\n    return 0\n}\nEOF\ncd /tmp/rev/misc && /home/alphayang/extC_Compiler/build/extc -w domleak.extc -o domleak.c\ngrep -c extc_dom_free domleak.c      # 1 —— 只有定义，没有调用\ngcc -fwrapv -O0 domleak.c -o domleak0 && /usr/bin/time -v ./domleak0 2>&1 | grep 'Maximum resident'\n# → 10856 KB（30 万次域 = +9.6 MB）；同形状不建域的基线 1240 KB。\n# 注：-O2 下 GCC 会把「结果没用到的 calloc」整块删掉（RSS 仍是 1240 KB），所以这条要在 -O0 下量。",
+      "confidence": "high"
+    },
+    {
+      "title": "base.h 写下的不变量「没有可变全局状态」与 base.c 的 dbgOn 缓存相反",
+      "file": "src/base.h",
+      "line": 12,
+      "kind": "DOC",
+      "severity": "P3",
+      "code_quote": " *   2. No mutable static globals: all state hangs off a Ctx passed explicitly,\n *      mirroring extC's rule that a program carries no hidden state.",
+      "why": "base.h 是所有 pass 共同的契约文档（arena/Buf/Vec/Ctx 的形状与规则都在这里），第 2 条不变量在实现里立刻不成立：src/base.c:19-20 `static struct { const char *name; int on; } cache[16]; static size_t n = 0;` —— `dbgOn` 把「EXTC_DBG_* 开关是否打开」缓存在进程级可变静态里，跨调用、跨 Ctx 生效。这不是风格问题：它意味着同一次编译里 `dbgOn` 的答案取决于**谁先问过**（同一进程内 setenv 之后再问仍是旧答案），也意味着任何「一个进程跑两次编译」的用法会共享这份隐藏状态。头文件声称不存在这类状态，读它的人（以及按它写的 pass）无法从契约上知道。建议要么把这条不变量改写成事实（列出唯一豁免并说明理由），要么把缓存挂到 Ctx 上。",
+      "trigger": "任何调用 dbgOn 的路径（src/check_top.c、src/codegen.c 等 30+ 处）。",
+      "repro": "读代码即可核实（无运行期复现）：src/base.h:12 与 src/base.c:18-26 直接矛盾；`grep -rn 'static struct' src/base.c` 可看到唯一一处进程级可变状态。",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "读过的文件（逐行）：src/pools.c(119)、src/pools.h(36)、src/plate.c(42)、src/plate.h(47)、src/domain.c(60)、src/domain.h(13)、src/time.c(38)、src/time.h(17)、src/memfind.c(87)、src/memfind.h(27)、src/prelude.c(25)、src/prelude.h(20)、src/base.h(136)；并按「发射文本 vs 使用它的运行期 / 生成物」两侧对照：把 tests/pool/rt_basic.extc、tests/dyn/dyn_call.extc、tests/dyn/dyn_slot_reclaim.extc、tests/ext/domain_runs.extc、tests/heap/afterclose.extc、tests/stl/memFind.extc、tests/heap/plate.extc 编成生成物逐段读（/tmp/rev/misc/*.c）。\n\n已核实为正确的点：① pools.c 的 zoneEnter/zoneLeaveTo 标记回退、freeSelf→free-list LIFO、unlinkZone/drop 的双链摘除、take/take_raw/resize/resize_raw 的 blocks 链与 bytes 记账（除 finding #2 的钳位）、reset 的 generation++、对象表 give/resize 守卫本身；② pools.h 的 `extc_pool_*` 名字与 stdlib/std/sys/pool.extc 的 extern! 声明逐一对齐（返回类型、i64 宽度）；③ plate.c 的 `static extc_viewOf` 与 `@builtin`（不发原型）一致、`extc_memCopy` 非 static 与 extern! 原型一致，`slice_u8 { data, len }` 与 `{p, n}` 字段顺序一致，生成物 `gcc -std=c11 -Wall -Wextra -fsyntax-only` 零告警；④ time.c：`_POSIX_C_SOURCE 200809L` 由 codegen 在第一个 include 之前发（codegen.c:7043），`-std=c11` 严格模式下 clock_gettime/CLOCK_MONOTONIC/nanosleep 可见、`-fsyntax-only` 通过；EINTR 续睡循环与 -1（非 0）失败值是自洽的；⑤ memfind.c：`memmem` 的显式声明在 `_GNU_SOURCE` 下与 glibc 的声明兼容（`gcc -D_GNU_SOURCE -Wall -Wextra` 无告警）；把生成物里的 `#define EXTC_HAVE_MEMMEM 1` 去掉强制走 `#else` 的 memchr+memcmp 回退，tests/stl/memFind.extc 的全部边界（空针/空干草/自重叠 aa in aaaa/命中在尾/不命中/0 长视图）输出与 memmem 路径逐字节相同；⑥ prelude.c/h：`extc_prelude_len` 声明为 `const unsigned long`，与 tools/embed.c 生成的 `const unsigned long <sym>_len` 一致（C 里文件作用域 const 仍是外部链接），唯一调用方 main.c:239-242 用 (src,len) 交给 lexer，不依赖 NUL 终止；⑦ base.h 里 22 个函数的声明与 base.c 的定义逐条比对（参数类型、const、返回类型、可变参数）完全一致，且没有第二个文件重复声明/定义它们（`grep -E '^(static )?[A-Za-z_].*\\b(name)\\s*\\(' src/*.c` 只命中 base.c）；`EXTC_MAXERR=512` 与 errMsg/errNote 的 vsnprintf/snprintf 使用一致；domain.h/time.h/memfind.h/plate.h 的 emit 函数声明与定义一致；⑧ domain.c 的任务表增长/驱动循环（`d->len` 每轮重读、`d->tasks` 经 d 间接读）在 realloc 搬家后仍正确；`extc_dom_run` 期间新增任务能被后续轮次接上。\n\n无法确认 / 未复现的点：① finding #5 的**用户可见危害**没能做出来 —— 句柄层的 pid/gen/pgen 校验和逃逸检查把「值活过它所在的地方」挡在用户代码之外，我只证明了「池身份/寿命错」（峰值 live=2 而非 3）；② `extc_dynPoolOf` 的同类问题还有一个变体：槽位被**容器**池复用而 kind 因 finding #1 残留为 1 时，`extc_dyn_put` 也会把它当成对象表接纳，我没有单独造用例；③ src/base.c:180 `int n = vsnprintf(NULL, 0, fmt, ap);` 若返回负（多字节编码错误）会走 `arenaAlloc(a, 0)` → 16 字节未初始化、`vsnprintf(p, 0, ...)` 一个字节都不写 ⇒ 返回未终止字符串；触发需要非法多字节序列 + 多字节 locale，且 base.c 属 Lead 单元，未计入本表；④ `extc_pool_reset`（src/pools.c:47-48）注释说「内存留在原地，arena 在地方结束时释放」，实际板块是 malloc 的、只有 drop 才归还 —— 注释与实现不符但没有额外危害，未计为条目。\n\n跨单元观察（不计入本单元 JSON，供 Lead 去重）：tests/ext/domain_runs.extc 的生成物里 `extc_arena __extc_a[2]` 却发 `extc_arena_release(&__extc_a[2])`（ASan: stack-buffer-overflow，dom.c:941/953），这与 docs/reviews/COMPILER-AUDIT-2026-09-30.md 的 P0-11 同一条，已归档，不重复上报；本单元 finding #3 的复现必须先用 `sed` 把它绕开。\n\n未覆盖（明确说明）：src/base.c 的实现（Lead 已审）、stdlib/ 与 tests/ 只在与本单元契约相关处读取。"
+}

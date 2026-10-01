@@ -1,0 +1,65 @@
+{
+  "findings": [
+    {
+      "title": "`FuncDef.extThreadMask` 的文档缺省值(1=碰共享状态)没有代码实现：无 `effects` 子句的 extern 被当成 Thread=0，并行 worker 里可静默调用它（TSan 实测 data race）",
+      "file": "src/ast.h",
+      "line": 824,
+      "kind": "UNSOUND",
+      "severity": "P1",
+      "code_quote": "    /* `Thread=N`: N = 0 表示这次调用**不碰跨线程共享的状态**（模块级 `var`、运行期缓冲、输出流），\n     * 因此它可以出现在 worker 里；N = 1（缺省）表示它碰，保守处理。\n     *\n     * 与 `Addr`/`Cont` 同一性质：**作者签字**，不是编译器算出来的。区别在于这两个已经有人读\n     * （寿命分析），而 `Thread` 至今只被存下来 —— 它服务的是并行那一步：worker 体内只许调用\n     * `Thread=0` 的东西，诊断才有可能说人话（\"`fs` 用了模块级缓冲\"），而不是笼统地拒绝一切。 */\n    unsigned    extThreadMask;",
+      "why": "注释宣称两件事，代码只落实了一件的一半：①“`Thread` 至今只被存下来”是假的——`parBodyExpr`（src/check_expr.c:108）**读**它，且 worker 体内“只许调用 Thread=0 的东西”这条规则完全建立在它上面（stdlib/std/parallel.extc 头部“worker 体内只允许调用 Thread=0 的东西”）；②“N = 1（缺省）”没有实现：`parseEffectsClause`（src/parser.c:345）只在**出现 `effects` 子句时**才把 `f->extThreadMask` 置 1，而 `extern!` 声明在**没有** `effects` 子句时根本不进那个函数（src/parser.c:433-445 只在 `at(p,\"effects\")` 时调用它）⇒ arenaAllocZero 留下的 0 一路保留到检查点，检查点把 0 读成“作者签了 Thread=0”。于是“没签字 = 最坏情况”这条全仓一致的保守约定（src/parser.c:333-335 的注释、`checkCallRefArgs` 对无签字 extern 的保守规则）在并行这一路上是反的。被违反的不变量：extern 无签字 ⇒ 必须按最坏情况（碰共享状态）处理。",
+      "trigger": "任何调用未签 `effects Thread=…` 的 `extern!` 的并行 worker：worker 体内 `extern!(\"libc\") fn rand() -> i32`（或任何内部有可变全局的 C 函数）→ 编译通过，生成物用 pthread 起 N 个线程同时调它。",
+      "repro": "cd /tmp/rev2（文件已留在此处）\n# A. 未签字的 extern 被接受\n/home/alphayang/extC_Compiler/build/extc -w par1.extc -o par1.c   # par1 = use std::parallel + extern!(\"libc\") fn rand() -> i32，worker 里调 rand()\n→ rc=0（接受）；生成物 par1.c:710 调 extc_par_run(..., 4 线程)，par1.c:691 `... = rand();`\n# B. 同一个程序签上 Thread=1 就被拒（证明机制就是这一格）\n/home/alphayang/extC_Compiler/build/extc -w par2.extc -o par2.c\n→ par2.extc:13:1: error: worker `w` cannot be used here: it calls into shared runtime state (that declaration is not signed `Thread=0`)\n# C. 真实后果：把 extern 换成有全局计数器的 C 函数（myrace.c: `static int counter; int bump(void){return ++counter;}`），TSan 报 data race\n/home/alphayang/extC_Compiler/build/extc -w par5.extc -o par5.c && gcc -fsanitize=thread -g -O1 par5.c myrace.c -o par5 -lpthread && ./par5\n→ WARNING: ThreadSanitizer: data race ... Location is global 'counter' ... Read by thread T2 ... Previous write by thread T1 ... extc_par_worker par5.c:208\n（另测：`effects Addr=0 Cont=0` 而不写 Thread 时被正确拒绝，因为只要进了 parseEffectsClause 就置 1）",
+      "confidence": "high"
+    },
+    {
+      "title": "`astWalkStmtChildren` 的 ST_ASSIGN 不访问 `u.assign.opExpr`：复合赋值里的用户运算符调用对**所有**基于 walk 的谓词不可见，产物编不过",
+      "file": "src/ast.c",
+      "line": 267,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "    case ST_ASSIGN: return visitExpr(v, s->u.assign.target) && visitExpr(v, s->u.assign.value);\n    case ST_RETURN: return visitExpr(v, s->u.ret.value);\n    case ST_YIELD:  return visitExpr(v, s->u.yield_.value);",
+      "why": "`Stmt.u.assign.opExpr` 是 checker 写的、codegen 读的“这次复合赋值真正调用的那个运算符方法”节点（src/check_stmt.c:557 写入，src/codegen.c:4023-4024 `if (s->u.assign.opExpr && s->u.assign.opExpr->func) ... genBin(g, s->u.assign.opExpr)`），但它是 `EX_BIN`、不在 target/value 的子树里，walker 又不列它 ⇒ 这个调用节点从整棵树里**不可达**。后果按谓词分：`callsNeedsHome`/`needsHomeInExpr`（src/check_top.c:492）看不到被调者 ⇒ `FuncDef.needsHome`/`mayUseArena` 漏算，而 codegen 的 `genBin` 仍会通过 `cgImplicitArgs` 给该方法传隐藏 arena 实参（src/codegen.c:1345）⇒ 生成物引用未声明的 `__extc_a`。被违反的不变量：ast.h:1159-1172 明说“Every question of the form 'what is inside this expression' walks the same tree”，而 `opExpr` 是树里唯一一个没有父边指向的表达式字段。",
+      "trigger": "`x += y`（或 `-=`/`*=`/…）且该运算符被重载成方法，而该方法所属函数**需要 home arena**（体内 `new` 且返回类型含引用/view）——例如把地址/分配经 `mut ref` 参数送出。",
+      "repro": "cd /tmp/rev2\n/home/alphayang/extC_Compiler/build/extc -w op2.extc -o op2.c      # rc=0，无诊断\n# op2.extc: struct box { p: mut ref node  fn +(self: ref box, o: ref box) -> box { var n = new node ... return box{p:n} } }\n#            main: var a/b: box = {p: ref g0/g1}（全局）; a += b\n#            main 自己没有 new、也没有调用 needsHome 的函数 ⇒ mayUseArena(main)=false\n#            但 op2.c:222 仍是 `a = box_add(&(a), &(b), &__extc_a[0]);`\ngcc -fsyntax-only -fwrapv op2.c\n→ op2.extc:14:30: error: ‘__extc_a’ undeclared (first use in this function)\n对照：把 `a += b` 拆成显式调用（`a = add(ref a, ref b)` 形式/普通重载运算符）也可能同样漏算，见下一条。",
+      "confidence": "high"
+    },
+    {
+      "title": "`Expr.func` 的跨 pass 契约只写了 EX_CALL/EX_METHOD：运算符节点（EX_BIN）也带 `func`，而每个基于 walk 的谓词只认三种 call kind ⇒ `var c = a + b` 的产物编不过",
+      "file": "src/ast.h",
+      "line": 192,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "    FuncDef  *func;     /* the function an EX_CALL or EX_METHOD resolved to; for `==`\n                         * it is the eq method.\n                         * On an **EX_IDENT** it means something else: this identifier is a\n                         * **function used as a value** (`var f: fn(i64) -> i64 = double_it`), so\n                         * the expression is a code pointer and codegen prints its address. The\n                         * checker's `lookup` finds bindings and never functions, which is why this\n                         * node arrives at the \"undefined name\" path and is claimed there. */",
+      "why": "这段契约漏了一整族节点：`checkArith`/比较/位运算/一元运算符在解析成方法时把 `e->func = m` 写在 **EX_BIN**（src/check_expr.c:279、:1451、:1484、:1538 等）上，codegen 也真的从 EX_BIN 的 `func` 取被调者（src/codegen.c:1309 `if (e->func || e->needOp)`）；但所有基于共享 walker 的谓词都只把 `EX_CALL|EX_METHOD|EX_ASSOC` 当成“调用”，EX_BIN 落到普通子节点分支 ⇒ 运算符调用的 `needsHome`/`makesPool`/`allocates` 统统看不见。同一缺陷在别的消费点后果不同：`parBodyExpr`（src/check_expr.c:118）会因此把 worker 里用重载运算符做的调用当成“没有调用”，worker 安全性检查被绕过。被违反的不变量：walker 交付了节点，但契约（本行注释）没告诉任何调用方“EX_BIN 上也可能是被调者”。修法方向二选一：把契约写全并让谓词认 EX_BIN/EX_UN，或让 walker 明确交付运算符号节点。",
+      "trigger": "普通二元运算符重载 + 该方法需要 home arena，调用点没有别的 `new`/needsHome 调用：`var c: box = a + b`。",
+      "repro": "cd /tmp/rev2\n/home/alphayang/extC_Compiler/build/extc -w op1.extc -o op1.c      # rc=0，无诊断\n# 与上一条同一组类型/全局，只是把 `a += b` 写成 `var c: box = a + b`\ngcc -fsyntax-only -fwrapv op1.c\n→ op1.extc:14:34: error: ‘__extc_a’ undeclared (first use in this function)\n# 生成物 op1.c:222 `box c = box_add(&(a), &(b), &__extc_a[0]);`，而 main 没有 `extc_arena __extc_a[...]`\n# 同一根因在 src/check_top.c:6263 (`mayUseArena = stmtHasNew || callsNeedsHome`) 与 src/check_expr.c:118 (worker 检查) 上生效",
+      "confidence": "high"
+    },
+    {
+      "title": "`moduleInit` 漏初始化 `Module.aliases`：结构体里九个 Vec 只 init 了八个，唯一的写入点靠 `if (!out->aliases.arena)` 兜底",
+      "file": "src/ast.c",
+      "line": 160,
+      "kind": "HYGIENE",
+      "severity": "P3",
+      "code_quote": "void moduleInit(Module *m, Arena *a) {\n    vecInit(&m->structs, a, sizeof(void *));\n    vecInit(&m->types, a, sizeof(void *));\n    vecInit(&m->funcs, a, sizeof(void *));\n    vecInit(&m->globals, a, sizeof(void *));\n    vecInit(&m->traits, a, sizeof(void *));\n    vecInit(&m->impls, a, sizeof(void *));\n    vecInit(&m->uses, a, sizeof(void *));\n    vecInit(&m->opens, a, sizeof(Open));\n}",
+      "why": "`Module`（src/ast.h:1127-1152）有九个 Vec：structs/types/funcs/globals/traits/impls/uses/**aliases**/opens，这里只初始化八个。漏掉的那个是 `aliases`（ast.h:1141）。零值 Vec 的 `arena == NULL`，而 `vecPush` 在 `len == cap` 时走 `vecGrow` → `arenaAlloc(v->arena, …)`（src/base.c:345-353）—— 通过 NULL arena 分配。当前没爆，只是因为唯一写入点自带补丁：src/modules.c:2000 `if (!out->aliases.arena) vecInit(&out->aliases, a, sizeof(Alias));`（别处只有 src/main.c:464 的只读遍历）。这属于“同一不变量两处拼写”：init 函数漏一格、写入点自己兜底，任何新增的 `vecPush(&m->aliases)` 都会踩空。",
+      "trigger": "未来任何在 moduleInit 之后直接 `vecPush(&m->aliases)` 的代码路径（当前 modules.c:2000 的兜底是唯一防线）。",
+      "repro": "静态核对：`grep -n 'vecInit(&m->' src/ast.c` 得 8 处，`grep -n 'Vec' src/ast.h` 的 Module 得 9 个 Vec；实际写入点 src/modules.c:2000 带 `!out->aliases.arena` 判空。未构造运行时崩溃（现有代码打不到），故 P3/HYGIENE 而非 P1。",
+      "confidence": "high"
+    },
+    {
+      "title": "EX_ASSOC→EX_IDENT 原地改写后 `u.ident.srcName` 别名到 `u.assoc.targs.arena`：该字段是“用户写下的原样名字”，实际却持有一个 arena 指针",
+      "file": "src/ast.h",
+      "line": 358,
+      "kind": "HYGIENE",
+      "severity": "P3",
+      "code_quote": "        struct { const char *name;\n                 /* The name exactly as written in the source, before module mangling;\n                  * diagnostics have to echo it. It must be stored separately because\n                  * `name` is rewritten by the loader into the mangled form (`open`\n                  * becomes `lib$open`), while an error has to point at the word the user\n                  * typed. Without it, the message degenerates into \"please write\n                  * `lib::lib$open`\", which is nonsense. */\n                 const char *srcName;",
+      "why": "union 两个成员的前四个指针字一一重叠（ident.name/srcName/cname/sym ↔ assoc.typeName/targs.arena/targs.data/targs.len）。loader 把 `mod::Type` 形式的 EX_ASSOC **原地**改成 EX_IDENT（src/modules.c:984、:1069、:1099 三处 `e->kind = EX_IDENT; e->u.ident.name = …;`），只写 name；被别名的那个字段就是 `srcName`（引文最后一行，ast.h:365）。`u.assoc.targs` 是 parser 亲手 `vecInit(&targs, p->arena, sizeof(void*))` 过的（src/parser.c:3536-3537），所以 `targs.arena` 非 NULL ⇒ 改写后的节点 `u.ident.srcName` = parser 的 arena 指针（`cname`/`sym` 因为 `targs.len == 0` 恰好是 NULL；这也是那三处入口都被 `e->u.assoc.targs.len != 0 → return`（modules.c:973）挡住的唯一原因）。今天没有活的读者：`ident.srcName` 只有 src/modules.c:1589（且被 `e->qualified` 提前返回挡住）与 src/check_expr.c:2877（只对 EX_CALL 的 callee，那是 exprNew 新建的节点）两处。但字段的注释承诺的是“诊断要回显的原样名字”，下一个相信它的人拿到的是 arena 指针（打印 `%s` 会读任意内存）。这就是 HARDENING 三点十三 记录的那类“union 改写后新成员读到旧成员字节”，只是这次残留的是 srcName。",
+      "trigger": "任何 `use lib` 之后写 `lib::SomeType`（值/变体接收者位置，如 `liba::tone.low`）—— 每个这样的引用都会留下一个 srcName = arena 指针的 EX_IDENT。",
+      "repro": "cd /tmp/rev2\ncat > liba.extc: `type tone = | low | high`；usemod.extc: `use liba` + `var t: liba::tone = liba::tone.low`\n/home/alphayang/extC_Compiler/build/extc -w usemod.extc -o usemod.c   # rc=0，说明确实走了 modules.c:1099 的 EX_ASSOC→EX_IDENT 分支（gdb: `b src/modules.c:1098` 命中后 `next` 到 1099）\n# 未能在运行期观察到误行为：现有两个读者都被别处的条件挡住，所以定级 P3 而非 P1。\n# 机制自查：`pahole`/手算 union 偏移 + src/parser.c:3536 的 vecInit 证明 srcName 非 NULL；`grep -rn 'ident.srcName' src/` 只有上述两处读者。",
+      "confidence": "medium"
+    }
+  ],
+  "coverage_notes": "读完的文件：src/ast.c（289 行，逐行）、src/ast.h（1182 行，逐行）。\n已核实为正确的点：\n- 28 个 ExprKind / 13 个 StmtKind 与 astWalkExprChildren/astWalkStmtChildren 的 case 一一对应，无遗漏 kind，也无 default 掩盖（这两处 `/*@@all-kinds*/` switch 是 ast.h:1159-1172 声明的唯一 kind 清单）；EX_SLICE 的 lo/hi、EX_DYN 的 payload、EX_LAMBDA 的 inits+body、EX_STRUCTLIT 的 inits、EX_MATCH 的 scrutinee+arms、ST_DOMAIN 的 callee+body 都在。\n- `visitExpr/visitStmt/visitExprList` 的语义（回调只收到子节点、NULL 回调=继续下降、false=整体停止）与所有调用点（check_expr.c:85/89/118/140/754/766/796/802/914/996、check_top.c:403/409/498/503/537/542/6547/6552/6696/6718、codegen.c:5146/7930）一致；`EX_CALL` 只在 `callViaFn` 时交付 callee（普通调用的 callee 是名字，不交付）与注释一致，codegen 的 `e->u.call.callee->kind != EX_IDENT → return \"0\"` 也说明了为什么普通调用不需要它。\n- `exprNew` 用 arenaAllocZero 清零**整个**节点（含 union），且全仓 `sizeof(Expr)` 只出现在 ast.c:124 一处（其它任何地方都不新建 Expr）⇒ “union 对某些 kind 没有清零”这句话对**新建**节点是假的（见 internal.json 的 DOC 条目）。\n- `exprIdent` 同时写 name/srcName；parser 的常规 EX_IDENT（parser.c:3410）只写 name，但 srcName 的两个读者都不依赖它。\n- `funcIsMethod` 读 params[0]->name：全部 Param 构造点（parser.c:1594/3000、check_expr.c:852/1123、check_top.c:3936/3946/3987/3999）都设了 name，且 params.len>0 时才取，故 NULL 解引用打不到。\n- `typeFn` 的 params 深拷贝 + vecInit、`typeArray/typeParam/typeRef/typeNamed` 的字段设置与 ast.h 的字段注释一致。\n- 跨 pass 写入契约：type/func/field/assocOwner/needOp/deref/refDepth/arenaLevel/lexicalLevel/zoneLevel/minAt/storedAt/borrowed/needTemp/homeDepth/arenaArg/qualified/convCheck/dynTrait/callViaFn 都有明确的 checker 写入点与 codegen 读取点（抽查了 arenaLevel/zoneLevel/callViaFn/needTemp/assocOwner/qualified）。\n无法确认/未报的点：\n- `Expr.extDom`（ast.h:213，EX_EXT 的域接收者）不在 walker 的孩子里。它是 `d.run { … }` 接收者节点的**同一指针**（check_top.c 设 `c->curDom`），而那个表达式已经通过 ST_DOMAIN 的 callee 被走到；我构造不出“只经 extDom 才能看到的读/调用”，故只记录不报。\n- `Expr.captures`（LamCap*）是名字不是表达式，lambda 的 Param 无默认值，故不算 walker 漏项。\n- `--run` 复现：op1/op2 的 gcc 报错是确定性的；addr/par 的两个复现见 internal.json。所有复现都在 build/extc md5=017fc7ec39e77b76e989460d76a04fe7（02:20:35 构建）上重跑过（build/extc 期间被别的 agent 重建过一次，故记下 md5）。"
+}

@@ -1,0 +1,77 @@
+{
+  "findings": [
+    {
+      "title": "EX_GENCALL 的 callee 名从不改写：模块里的泛型函数一旦写显式类型实参就再也调不到（误拒 + 误导诊断）",
+      "file": "src/modules.c",
+      "line": 1209,
+      "kind": "FALSE-REJECT",
+      "severity": "P1",
+      "code_quote": "    case EX_GENCALL:\n        for (size_t i = 0; i < e->u.gencall.args.len; i++)\n            rwExpr(L, self, *(Expr **)vecAt(&e->u.gencall.args, i));\n        break;",
+      "why": "EX_GENCALL 只带一个字符串名字（ast.h:436 `struct { const char *name; Vec targs; Vec args; } gencall;`），rwExpr 只走 args，从不碰 `e->u.gencall.name`：既不做本模块的 renLookup（声明已被 mangle 成 `lib$make`），也不做 openLookup（`use lib::*` 打开的名字）。checker 侧只用 flat 名查表（src/check_expr.c:2393 `FuncDef *tf = findFunc(c, e->u.gencall.name);`），于是必然失败。紧邻的 EX_CALL 分支专门走了 callee（注释自陈：漏掉它 `b()` 就找不到被改名的本模块函数），EX_GENCALL 漏了同一件事。可用的替代拼写不存在：`lib::make<i32>(...)` 被 parser 拆成比较运算（实测报 ``i32` is a type, not a value`），所以显式类型实参这条路对模块里的泛型函数完全断了（无类型实参的推断形式 `sort::sort(x)` 仍可用，所以现有测试没暴露）。",
+      "trigger": "模块自己调用本模块泛型函数并写类型实参（`fn sum() { var p = make<i32>(1,2) ... }`），或外部模块 `use lib::*` 后写 `make<i32>(...)`。任一处出现即编译失败。",
+      "repro": "A：/tmp/rev/modrev/u1_gencall → `cd /tmp/rev/modrev/u1_gencall && /home/alphayang/extC_Compiler/build/extc -w main.extc -o /dev/null` 观察 `./lib.extc:4:1: error: `make` is not a built-in primitive or generic function`。\nB：/tmp/rev/modrev/u1_gencall2（main.extc 写 `use lib::*` + `make<i32>(1, 2)`）→ `main.extc:2:1: error: `make` is not a built-in primitive or generic function`。\n对照：同一份泛型声明放在根文件里（rootgen.extc: `fn twice<T>(x: T) -> T` + `twice<i32>(7)`）rc=0。",
+      "confidence": "high"
+    },
+    {
+      "title": "@private 类型不设防：alias 表收录了私有声明的返回票据，裸名（含传递 import）就能使用别人的私有 struct/enum",
+      "file": "src/modules.c",
+      "line": 2005,
+      "kind": "BUG",
+      "severity": "P1",
+      "code_quote": "            /* Both entries are kept when two modules export the same name: the type\n             * table has to be able to count two matches and report \"ambiguous, write a\n             * qualified name\". Collapsing them into one would make a bare name resolve\n             * silently to whichever module registered first - it compiles and has the\n             * wrong type. */\n            bool same = false;\n            for (size_t k = 0; k < out->aliases.len && !same; k++) {\n                Alias *seen = (Alias *)vecAt(&out->aliases, k);\n                if (strcmp(seen->from, r->from) == 0 && strcmp(seen->to, r->to) == 0) same = true;\n            }",
+      "why": "mangleUnitDecls 对模块的每个声明都记返回票据（1332-1343 行的 structs/types，1344/1349 行的 globals/funcs），完全不看 `isPrivate`；这里再把它们整批抄进 `out->aliases`，而 ttResolve 走 alias 时只数命中数、不看可见性（src/types.c:284-296）。于是限定形式 `lib::priv` 被三处 @private 检查拒绝（744/819/1089），裸名 `priv` 却直接解析成功——同一份声明两种写法两种结论，显然不是设计意图。而且 aliases 是全局的、按 L.order 收（含传递依赖），根文件从未 `use lib` 也能用 lib 的私有类型。",
+      "trigger": "模块 lib 里 `@private struct secret {...}`/`@private type color = ...`；任何（直接或传递）加载了 lib 的文件用裸名 `secret` 作类型标注/字段类型/参数类型即可。私有 enum 只能拿到类型本身（变体要走 `lib::color.red`，会被拦），struct 可以完整使用（字段若是 public 就能直接构造/改写）。",
+      "repro": "/tmp/rev/modrev/u2_priv：lib.extc=`@private struct secret { x: i32 }`\n  - `cd /tmp/rev/modrev/u2_priv && /home/alphayang/extC_Compiler/build/extc -w bare.extc -o /dev/null` → rc=0（`var s: secret` 被接受）\n  - 同目录 `qualified.extc`（`var s: lib::secret`）→ rc=1，报 `qualified.extc: error: `lib::secret` is private to module `lib``\n传递：/tmp/rev/modrev/u2_priv_trans（main 只 `use mid`，mid `use lib`）→ `var s: secret` 仍 rc=0。\nEXTC_DBG_M=1 可见票据：`[mangle] bare-name return tickets: 2 pub=>lib$pub priv=>lib$priv`。",
+      "confidence": "high"
+    },
+    {
+      "title": "openLookup 遇到「某个被打开模块里是 @private 的同名声明」就报错返回，压掉了另一个模块公开导出的同名符号（误拒合法程序）",
+      "file": "src/modules.c",
+      "line": 1557,
+      "kind": "FALSE-REJECT",
+      "severity": "P2",
+      "code_quote": "        if (!flat) continue;\n        if (!unitExports(dep, flat)) {\n            /* The name is there, but `@private`. Saying \"undefined\" here would send the\n             * reader looking for a typo: opening a module is not a way to reach a private\n             * name, and the message has to say so -- the same words the qualified\n             * reference gets. */\n            ctxError(self->ctx, line, 1,\n                     \"`@private` means other modules must not name it. Drop the annotation if it is\"\n                     \" meant to be used from here.\",\n                     \"`%s::%s` is private to module `%s`\", u->path, name, u->path);",
+      "why": "一个 @private 名字根本不在作用域里，因此它不该干扰别的模块导出的同名符号；但这里一发现 unitExports==false 就 ctxError + `return NULL`（1567 行），根本不继续扫描后面的 use 项（169 行开始的歧义判定反而会继续比 flat 名）。结果：`use a::*` + `use b::*`，a 里是 private `helper`、b 里是 public `helper`，合法的 `helper()` 被拒，且错误信息指着一个用户根本不该看见、也无意使用的私有名。",
+      "trigger": "同一文件里 `use a::*` 与 `use b::*`，a 有 @private 的 X，b 有 public 的 X，然后裸写 `X(...)`/`X`。",
+      "repro": "/tmp/rev/modrev/u2_open：a.extc=`@private fn helper() -> i32 { return 1 }`，b.extc=`fn helper() -> i32 { return 10 }`\n  - `both.extc`（两个都打开，调 `helper()`）→ rc=1：`both.extc:3:1: error: `a::helper` is private to module `a``\n  - `only_b.extc`（只 `use b::*`）→ rc=0（证明 b 的公开 helper 完全可用）",
+      "confidence": "high"
+    },
+    {
+      "title": "短名冲突检查只看单个 unit 的 use 列表：跨文件的 `x::util` / `y::util` 漏检，两个模块共用 `util$` 前缀后互相绑错类型，报错却指向无辜代码和根文件行",
+      "file": "src/modules.c",
+      "line": 1865,
+      "kind": "BUG",
+      "severity": "P2",
+      "code_quote": "    for (size_t i = 0; i < u->mod.uses.len; i++) {\n        UseDecl *a = *(UseDecl **)vecAt(&u->mod.uses, i);\n        for (size_t j = i + 1; j < u->mod.uses.len; j++) {\n            UseDecl *b = *(UseDecl **)vecAt(&u->mod.uses, j);\n            if (strcmp(a->shortName, b->shortName) == 0 && strcmp(a->path, b->path) != 0) {\n                ctxError(u->ctx, b->line, 1,\n                         \"Two modules with the same last name cannot be told apart in the source.\"\n                         \" Rename one of the files.\",\n                         \"both `%s` and `%s` are used as `%s`\", a->path, b->path, b->shortName);\n                L->errors++;",
+      "why": "这个检查只比较同一文件内的两条 use（根文件在 1972-1984 行另有一份同样的），因此 alpha.extc `use x::util` 与 beta.extc `use y::util` 各自合法，可两个 unit 的 modName 都是 `util`，mangleName（282-285 行 `\"%s$%s\"`）给出的名字完全相同。后果有两层：(1) `unitStruct`/ttResolve 按短名前缀绑定时，y/util.extc 自己写的裸名 `pair` 会解析到**先注册的 x/util.extc 的 pair**，在完全正确的代码里报 `struct util::pair has no field b`（连 y/util.extc 自己那行也报）；(2) 真正的重名只在最后以 `duplicate struct util$pair` 出现，且位置是根文件的 `use` 行、名字是用户没写过的 mangle 名。按文件说，这个形状应当是「导入处报短名冲突」，而现在把错误归咎于用户写对了的代码。",
+      "trigger": "两个不同目录下的同名模块文件被不同文件分别 import：alpha.extc `use x::util`、beta.extc `use y::util`，且两者的声明名有交集（struct/type/func/global 任一）。",
+      "repro": "/tmp/rev/modrev/u2_samename（x/util.extc 与 y/util.extc 各声明一个同名 struct `pair`，字段不同；alpha/beta 各导入一个；main 导入 alpha+beta）\ncd /tmp/rev/modrev/u2_samename && /home/alphayang/extC_Compiler/build/extc -w main.extc -o /dev/null\n观察三条错误：`./beta.extc:2:1: error: struct `util::pair` has no field `b``、`./y/util.extc:3:1: error: struct `util::pair` has no field `b``（模块自己的正确代码！）、`main.extc:1:1: error: duplicate struct `util$pair``。同样形状下 duplicate function/global 也一样（`util$h` / `util$g`），消息用的都是 mangle 名。",
+      "confidence": "high"
+    },
+    {
+      "title": "isStdlibFile 用裸前缀比较：路径字符串以 stdDir 开头的任意目录都被当成标准库，@builtin / 特权模块闸门被绕过",
+      "file": "src/modules.c",
+      "line": 1769,
+      "kind": "UNSOUND",
+      "severity": "P2",
+      "code_quote": "/* Whether `file` lives inside the standard library tree. Both the std directory and the resolved\n * module paths are built from the same string (`L.stdDir`), so a prefix comparison is exact. */\nstatic bool isStdlibFile(Loader *L, const char *file) {\n    if (!L->stdDir || !file) return false;\n    return strncmp(file, L->stdDir, strlen(L->stdDir)) == 0;\n}",
+      "why": "`strncmp(file, stdDir, strlen(stdDir))` 没有边界（下一个字符不是 `/` 或 NUL 也通过），而 L.stdDir 默认是 `<exe目录>/../stdlib` 这种带 `..` 的字符串，所以任何以该字符串为前缀的目录都被判为标准库。这是两道闸门（`@builtin` 声明、`std::sys::heap` 特权 import，1778 行；根文件版本 1953 行）唯一的判据：本机实测同一份 `@builtin fn extc_viewOf(...)` 放在普通 `-I` 目录被正确拒绝，放在 `-I /home/alphayang/extC_Compiler/build/../stdlib-x` 就被接受（rc=0），于是「只有标准库能给运行时原语命名」这条防线可以由一个 `-I` 拼写绕过——注释自陈这道门是防 extc_viewOf 式伪造指针/长度（此前实测 rc=139）的。修法：既比前缀也要求下一字符是 '/'（或规范化路径后比较）。",
+      "trigger": "构建时传入 `-I <任意以 stdDir 字符串开头的目录>`（例如 `<exedir>/../stdlib-x`），把带 `@builtin` 的 .extc 放进去被 `use` 到；同理可按需改成 `use std::sys::heap` 的导入者。",
+      "repro": "mkdir -p /home/alphayang/extC_Compiler/build/../stdlib-x && printf '@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>\\n' > /home/alphayang/extC_Compiler/build/../stdlib-x/evil.extc\nprintf 'use evil\\nfn main() -> i32 { return 0 }\\n' > /tmp/rev/modrev/u2_stdgate/main.extc\ncd /tmp/rev/modrev/u2_stdgate && /home/alphayang/extC_Compiler/build/extc -w -I plain main.extc -o /dev/null   # rc=1：`@builtin` declarations are standard-library only\ncd /tmp/rev/modrev/u2_stdgate && /home/alphayang/extC_Compiler/build/extc -w -I /home/alphayang/extC_Compiler/build/../stdlib-x main.extc -o /dev/null   # rc=0：被当成标准库\n（测试后已删除 /home/alphayang/extC_Compiler/stdlib-x。）",
+      "confidence": "high"
+    },
+    {
+      "title": "impl 块只改写目标类型名、不改写 trait 名：`impl lib::Codec for mine` 报 unknown trait",
+      "file": "src/modules.c",
+      "line": 1681,
+      "kind": "FALSE-REJECT",
+      "severity": "P2",
+      "code_quote": "    for (size_t i = 0; i < src->impls.len; i++) {\n        ImplDef *im = *(ImplDef **)vecAt(&src->impls, i);\n        im->modName  = u->modName;\n        im->typeName = rwTypeName(L, u, im->typeName);\n        for (size_t j = 0; j < im->methods.len; j++)\n            rwUnitMethod(L, u, *(FuncDef **)vecAt(&im->methods, j));\n        *(ImplDef **)vecPush(&L->out->impls) = im;\n    }",
+      "why": "mergeUnit 在同一段里把 impl 的目标类型送进 rwTypeName，却完全没有处理 `im->traitName`——全文件搜不到第二处 traitName 改写。trait 名按注释（1666-1670 行）不参与 mangle，所以 checker 只能按源名查表，`lib::Codec` 这种带 `::` 的写法必然查不到，报 `impl on unknown trait `lib::Codec``，尽管该 trait 就在被 import 的模块里。行为不一致：同一行的 `for lib::pair` 被正确改写（实测同一文件里目标类型没报错），只有 trait 名落下。存在裸名替代写法（traits 目前是程序全局的，`impl Codec for mine` 能过），所以是 P2 而非 P1。",
+      "trigger": "在自己声明类型的文件里实现另一个模块的 trait：`impl lib::Codec for mine { ... }`（trait 在 lib 里、类型在本文件里——orphan 规则允许的唯一组合）。",
+      "repro": "/tmp/rev/modrev/u2_trait：lib.extc=`trait Codec { fn enc(self: ref Self) -> i32 }`，main.extc 第 3 行 `impl lib::Codec for mine { ... }`\ncd /tmp/rev/modrev/u2_trait && /home/alphayang/extC_Compiler/build/extc -w main.extc -o /dev/null\n观察：`main.extc:3:1: error: `impl` on unknown trait `lib::Codec``；改成 `impl Codec for mine` 则可编译（traits 不 mangle，全局可见）。",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "单元 2 = src/modules.c 1051-2093，用 read 分段读完全部行。读过的函数/块：rwQualified 后半（构造器糖、shape 检查、EX_CALL/EX_IDENT 改写）、rwExpr 全部分支、rwStmt、mangleUnitDecls、unitExports、useListHas、unitOwns + g_ownMemo、openLookup、rwExprName、rwUnitMethod、mergeUnit、PRIVILEGED_MODULES/isPrivilegedImport/isStdlibFile、loadUnit、loadModules 全部（含 aliases 收集、opens 收集、根 unit 的 merge）。已核实为正确的点：post-order=拓扑序、任何错误都在 merge 前/后统一 return false，环错误不会用到半成品模块；extern! 保名且票据 from==to 仍登记；两个模块导出同名时的 ambiguity 计数有效（实测 `ambiguous type `pair` -- 2 modules export it`）；`use mod::*` 与 `{a,b}` 的 importer/opened 配对与 @private 拒绝；文件名不能含 `.`/`/` 使 mangle 结果始终是合法 C 标识符；模块 parse/check 错误报在模块自己的 ctx（`./lib.extc:N:M`）；plateIsViewOfName 用 plateDeclTail 取 `$` 之后的部分，所以 @builtin 被 mangle 后仍能触发运行时发射（排除误报）；match 模块 enum、`lib::Type(...)`、`lib::Type.variant`、`lib::CONST`、两模块同名函数各自限定调用均实测通过。未计入/未能确认：(1) aliases 去重循环（2011-2013）对每个票据线性重扫是 O(n^2)，mangle 的第二遍（1359-1373）是 O(ren×声明数)，未做耗时归因；(2) Open 的 importer/opened 用模块短名，两个同短名模块会共享 `use ::*` 作用域——与第 4 条同根因，未单列；(3) isStdlibFile 的第二个后果（用同样手法让非标准库文件 import `std::sys::heap`）只做了推理，未实测；(4) 模块声明的重名/全局初始化错误被 checker 用根 ctx 渲染（文件名=入口文件、行号=模块行号），modules.c 侧的 ctx 赋值是对的，疑似 check_top.c 问题，未计条数。"
+}

@@ -1,0 +1,102 @@
+{
+  "unit": "src/check_lookup.c (873 行, 全文读完) — 作用域/遮蔽/声明/名字修饰/符号查找/`?ref` 收窄",
+  "findings": [
+    {
+      "title": "字段路径的非空证明在 `mut ref self` 方法调用后不失效 ⇒ 生成物解引用 NULL",
+      "file": "src/check_lookup.c",
+      "line": 105,
+      "kind": "UNSOUND",
+      "severity": "P1",
+      "code_quote": "    if (var && var->kind == EX_FIELD && var->u.field.obj->kind == EX_IDENT) {\n        Sym *rs = lookup(c, var->u.field.obj->u.ident.name);\n        if (!rs || !rs->type || rs->depth < 1 || rs->addressed) return NULL;\n        if (!var->type || var->type->kind != TY_REF || !var->type->nullable) return NULL;",
+      "why": "`narrowTarget` 为 `h.p != null` 建立事实键 `cname.field`，唯一的安全依据是这一行：根是**从未取过地址**的局部量 ⇒ 不存在别名能改写 `h.p`。这个不变量是明说的特性（examples/path-narrowing.extc 开头：『根绑定 n 是没取过地址的局部 ⇒ 没人能通过别名改它的字段 ⇒ 事实稳定』；tests/errors/path_narrow_param_root.extc 是它的参数版反例）。但全工程只有 EX_REF 会置 `addressed` 并调用 `unNarrow`（check_expr.c:1896）；方法调用对 `self: mut ref T` 接收者是**隐式取地址**（check_expr.c:3671 只调 `requireMutable`，生成物里直接是 `&(h)`），既不设 `addressed` 也不调 `unNarrow`（`unNarrow` 的全部调用点只有 check_stmt.c:686 的 EX_IDENT 赋值、check_expr.c:1896 的 EX_REF）。于是被调方把 `self.p` 写成 null 之后，check_expr.c:1659-1669 仍用同一个 key 命中 `isNarrowed`，把 `?ref T` 当非空的 `ref T` 交出去，codegen 于是生成无检查的 `h.p->f`。旁证这不是有意的保守设计：字段写入已经有一条维护『根事实』的钩子——`noteFieldDepthWrite`（check_stmt.c:757/848 → check_top.c:2303 → `refreshRootDepth`）为 arena 深度更新根的记数，却没有对应的 `unNarrow` 调用；`tests/errors/H1_strongupdate_missed.extc` 正是在盯这类『写了字段却没更新根事实』的形状。",
+      "trigger": "局部结构体变量 `h`（`addressed == false`）→ `if h.p != null { ... }` 建立路径事实 → 在分支内调用 `h` 上任意 `self: mut ref` 方法，该方法把 `self.p` 置 null → 之后读 `h.p.field` / 把 `h.p` 当 `ref T` 用。同源的另一面：因为收窄后的 `h.p` 类型是非空 `ref T`（check_stmt.c:598 的 `tt_` 只对 EX_IDENT 修正，见另一条 finding），在分支内给 `h.p` 赋一个 `?ref T` 反而**被拒**——两个症状都来自『收窄只影响读、不影响写的目标类型且不失效』。",
+      "repro": "cat > /tmp/lk1.extc <<'EOF'\nstruct node { value: i64  next: ?ref node }\nstruct stack {\n    top: ?ref node\n    fn pop(self: mut ref stack) -> i64 {\n        var t: ?ref node = self.top\n        if t == null { return i64(0) }\n        self.top = t.next\n        return t.value\n    }\n}\nfn main() -> i32 {\n    var s: stack\n    var n: node\n    n.value = i64(5)\n    s.top = ref n\n    if s.top != null {\n        var v: i64 = s.pop()\n        return i32(s.top.value + v)\n    }\n    return 0\n}\nEOF\n./build/extc -w /tmp/lk1.extc -o /tmp/lk1.c        # rc=0，无任何诊断\n生成物 main: `int64_t v = stack_pop(&(s));` 之后是 `return ... (s.top->value + v) ...`（s.top 已被 pop 置 null）\ngcc -fsanitize=address,undefined -fwrapv -O1 /tmp/lk1.c -o /tmp/lk1 && /tmp/lk1\n→ runtime error: member access within null pointer of type 'struct node'；AddressSanitizer: SEGV ... in main（extc SEGV）\n最小版（无 pop，直接调用清空方法）：见 /tmp/rev/lookup/methoddrop.extc，同样 ASan SEGV。",
+      "confidence": "high"
+    },
+    {
+      "title": "`cNameFor` 生成的 `名字__N` 会与用户自己写的 `名字__N` 撞名：产物重定义或静默错值",
+      "file": "src/check.c",
+      "line": 176,
+      "kind": "MISCOMPILE",
+      "severity": "P1",
+      "code_quote": "    const char *cand;\n    do {\n        n++;\n        cand = (n == 1) ? name : arenaPrintf(c->arena, \"%s__%d\", name, n);\n        /* C keywords have to be avoided too: `let double = 3` is legal extC, but the\n         * generated C cannot declare a variable named `double`. */\n    } while (moduleNameTaken(c, cand) || cIdentIsKeyword(cand));",
+      "why": "候选 C 名只与**模块级**名字（函数/结构/类型/全局，`moduleNameTaken`）和 C 关键字比较，从不与**已经分配给别的局部绑定的 cname** 比较。`declare` 对同名 `let` 每次调用 `cNameFor` 都会 `n++`，于是同一个函数里第二个 `let a` 的 cname 是 `a__2`；如果同函数里本来就有一个源码名就叫 `a__2` 的绑定（局部或参数），它第一次使用时 cname 也正是 `a__2`（`n==1` 时原样返回）。两个不同绑定拿到同一个 C 名：同一 C 块内 ⇒ 重定义（extc 报成功、产物编不过）；内层块声明 ⇒ C 的内层声明遮蔽外层，外层绑定的引用被解析到内层变量（静默错值）。名字修饰本应把源码名映射成**互不冲突**的 C 名，这一条不变量在这里被破坏。",
+      "trigger": "函数里存在源码名形如 `x__2` 的绑定（或参数），同时又对 `x` 做了 ≥2 次 `let` 声明（`let x` 是同一作用域内合法的重名，见 cNameFor 注释）。顺序无关：cNameFor 不查局部名字空间。",
+      "repro": "同块（产物编不过）：\nprintf 'fn main() -> i32 {\\n    var a__2: i32 = 10\\n    let a: i32 = 1\\n    let a: i32 = 2\\n    return a__2 + a\\n}\\n' > /tmp/lk2.extc\n./build/extc -w /tmp/lk2.extc -o /tmp/lk2.c     # rc=0\n生成物: `int32_t a__2 = 10;` ... `int32_t a__2 = 2;` `return (a__2 + a__2);`\ngcc -fsyntax-only -std=c11 /tmp/lk2.c → error: redefinition of 'a__2'\n\n嵌套块（静默错值，实测 4 而语义应为 12）：/tmp/rev/lookup/nameclash2.extc\nfn main() -> i32 { var a__2: i32 = 10  var out: i32 = 0\n  { let a: i32 = 1  let a: i32 = 2  out = a__2 + a }\n  return out }\nextc rc=0 → 生成物内层 `int32_t a__2 = 2;` `out = (a__2 + a__2);` → 程序 exit code 4（应为 12），gcc 无任何错误。",
+      "confidence": "high"
+    },
+    {
+      "title": "聚合里的 `coroutine<T>` / `dyn` 句柄未被当作『没有零值』⇒ 零句柄驱动 NULL 帧（SEGV）",
+      "file": "src/check_lookup.c",
+      "line": 671,
+      "kind": "UNSOUND",
+      "severity": "P1",
+      "code_quote": "static bool typeLacksZeroValueAt(TypeTable *tt, Type *t, int depth) {\n    if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */\n    if (!t) return false;\n    /* The zero value of `?ref T` is null, which is the reason it exists: the `next` of a\n     * list or a tree node finally has one. */\n    if (t->kind == TY_REF) return !t->nullable;",
+      "why": "这个 walker 只认得 `ref` / `fn` / 数组 / 枚举首变体 / 结构字段；**句柄类型**没有分支：`coroutine<T>` 是 TY_GENERIC，其句柄字段（task/kind/frame…）全是整数，逐字段走完返回 false；`dyn Trait` 是 TY_DYN，`structOf` 返回 NULL，本函数 690-691 行 `if (!sd) return false;` 直接判『有零值』。编译器其实明确认为句柄没有零值——直接写 `var c: coroutine<i64>` 会被 check_stmt.c:242 专门报错（\"a `coroutine<T>` value has no zero\"），但同一个类型放进 struct 字段/数组就绕过了这条规则。生成 `(wrapper){0}`，运行期 `extc_coro_next` 只在 `extc_task_alive(task)` 为假时 trap；task 0 在进程里只要有活着的任务就为真，于是 `worker$step((struct worker$frame *)NULL)` 直接解引用 NULL。",
+      "trigger": "程序里创建过任意一个协程（使 task 0 存活），再用一个含 `coroutine<T>` 字段的结构体做零初始化（`var w: wrapper`），然后驱动该句柄 `w.h.next()`。dyn 版本（`struct wrapper { d: dyn Greet }` + `var w: wrapper` + `w.d.hi()`）同样被接受，运行期被 `extc_dyn_slot` trap 住（无 UB，但声明本身也应像 coroutine 那样被拒）。",
+      "repro": "cat > /tmp/lk3.extc <<'EOF'\nstruct wrapper { h: coroutine<i64> }\nfn worker(n: i64) -> coroutine<i64> { yield n }\nfn main() -> i32 {\n    var c: coroutine<i64> = worker(i64(5))\n    var w: wrapper\n    var b: bool = w.h.next()\n    return 0\n}\nEOF\n./build/extc -w /tmp/lk3.extc -o /tmp/lk3.c      # rc=0，无诊断\n生成物: `wrapper w = (wrapper){0};` `(void)(extc_coro_next(&w.h, ...));`\ngcc -fsanitize=address,undefined -fwrapv -O1 /tmp/lk3.c -o /tmp/lk3 && /tmp/lk3\n→ runtime error: member access within null pointer of type 'struct worker$frame'；AddressSanitizer: SEGV（extc SEGV）\n对照: `fn main() -> i32 { var c: coroutine<i64>  return 0 }` 被正确拒绝。\n（产物文件在 /tmp/rev/lookup/zerocoro2.{extc,c}；dyn 版 /tmp/rev/lookup/zerodyn2.extc 编译运行 → trap: stale `dyn` value）",
+      "confidence": "high"
+    },
+    {
+      "title": "`unNarrow` 直接截断整个证明栈 ⇒ 与该绑定无关的非空证明被一起丢掉（误拒）",
+      "file": "src/check_lookup.c",
+      "line": 63,
+      "kind": "FALSE-REJECT",
+      "severity": "P2",
+      "code_quote": "    for (size_t i = 0; i < c->narrow.len; i++) {\n        const char *k = *(const char **)vecAt(&c->narrow, i);\n        if (strcmp(k, cname) == 0) { c->narrow.len = i; return; }\n        /* A fact about a path, such as `h.p`, is dropped as soon as the prefix matches:\n         * any write to the root, or taking its address, can make it stop holding. */\n        size_t l = strlen(cname);\n        if (strncmp(k, cname, l) == 0 && k[l] == '.') { c->narrow.len = i; return; }",
+      "why": "证明列表被当成『栈』，命中任一条就把 `len` 截到该下标。但列表里各条事实之间并没有嵌套/依赖关系（`p` 非空 与 `q` 非空 相互独立），写 `p` 只需要作废 `p` 那一族条目。截断把下标更大的、关于别的绑定的证明一并删除，随后对这些绑定的解引用被误判为『没有先比较 null』。删除本身是保守的（不产生错码），但拒绝的是合法程序：`if p != null { if q != null { p = null  q.v } }` 里 `q` 的非空证明在语义上完全有效。",
+      "trigger": "先建立两个（或更多）非空证明，其中较早建立的那个绑定在更晚建立的证明仍有效时被赋值/重新绑定，然后在同一分支里使用后者的字段/方法。链表归并、『先判两个再动一个』的写法很常见。",
+      "repro": "cat > /tmp/lk4.extc <<'EOF'\nstruct node { v: i32  next: ?ref node }\nfn main() -> i32 {\n    var a: node\n    var b: node\n    var p: ?ref node = ref a\n    var q: ?ref node = ref b\n    if p != null {\n        if q != null {\n            p = null\n            return q.v\n        }\n    }\n    return 0\n}\nEOF\n./build/extc -w /tmp/lk4.extc -o /dev/null\n→ /tmp/lk4.extc:12:1: error: `?ref node` is a nullable reference (`?ref T`), so field access needs a non-null one\n把 `p = null` 挪到 `q.v` 之后，或去掉外层 `if p != null`，程序即被接受 ⇒ 误拒与 `p` 的写入直接相关。",
+      "confidence": "high"
+    },
+    {
+      "title": "被收窄的**字段**作为赋值目标时沿用收窄后的非空类型 ⇒ 合法的可空写入被拒",
+      "file": "src/check_stmt.c",
+      "line": 606,
+      "kind": "FALSE-REJECT",
+      "severity": "P2",
+      "code_quote": "            if (s->u.assign.target->kind == EX_IDENT) {\n                Sym *slot = lookup(c, s->u.assign.target->u.ident.name);\n                if (slot && slot->type && slot->type->kind == TY_REF && slot->type->nullable &&\n                    tt_->kind == TY_REF && !tt_->nullable) tt_ = slot->type;\n            }",
+      "why": "`tt_` 来自 `checkExpr(c, s->u.assign.target)`（598 行），而在收窄分支内 `h.next` 的读类型是**非空** `ref node`（check_expr.c:1659-1669 的路径收窄、EX_IDENT 的 1303 行同理）。这里只给 EX_IDENT 目标补回『槽的声明类型』，字段目标没有，于是重定目标的类型检查（719 行 `checkAssignable(tt_, vt0)`）要求 `ref node`，合法的 `?ref node` 右值被拒。收窄是**读**的性质，不应改变槽能存什么——注释自己也是这么写的（600-605 行）。",
+      "trigger": "`struct holder { next: ?ref node }`；`if h.next != null { h.next = <某个 ?ref node 值，含 null> }`。分支外同样的赋值合法。",
+      "repro": "cat > /tmp/lk5.extc <<'EOF'\nstruct node { v: i32  next: ?ref node }\nstruct holder { next: ?ref node }\nfn main() -> i32 {\n    var h: holder\n    var n: ?ref node = null\n    if h.next != null {\n        h.next = n\n        return 0\n    }\n    return 0\n}\nEOF\n./build/extc -w /tmp/lk5.extc -o /dev/null\n→ error: assignment expects `ref node`, found `?ref node` -- a nullable reference\n对照组（把 `h.next = n` 放在 if 之外）rc=0：/tmp/rev/lookup/fieldctrl.extc。",
+      "confidence": "high"
+    },
+    {
+      "title": "`findOperator` 不查 `Type.mholder` ⇒ 泛型实例/内建标量上定义运算符被判非法（并把内部名写进诊断）",
+      "file": "src/check_lookup.c",
+      "line": 457,
+      "kind": "FALSE-REJECT",
+      "severity": "P2",
+      "code_quote": "FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {\n    StructDef *sd = structOf(st);\n    if (!sd) return NULL;",
+      "why": "同文件的 `findMethod`（431-432 行）先查 `st->mholder` 再回落到 `structOf`，因为 `impl i64 { ... }` 与 `impl slice<u8> { ... }` 的方法挂在**实例持有者** `Type.mholder` 上（check_top.c:5366-5437），其 `name` 是实例的 mangled 名。`findOperator` 只看 `structOf(st)`（泛型声明本身），所以实例/内建上的运算符方法在**查找**这一层就找不到。用户可见的失败更早：定义处 checkOperatorSig 用 `ttBase(self)->sdef != f->owner` 判断左操作数（check_escape.c:1977-1980），实例持有者的 `sdef` 是泛型声明而 `f->owner` 是 holder ⇒ 报 `the left operand of operator `==` must be `slice_u8``（把 holder 的内部 mangled 名当类型名给用户看）。两处都要认 holder，否则即便定义通过，`a == b` 也仍然找不到方法（checker 的 typeSupportsOp 与 codegen 的 findOpMethod 都走 findOperator）。",
+      "trigger": "`impl slice<u8> { fn ==(self: ref slice<u8>, o: ref slice<u8>) -> bool {...} }` 或 `impl i64 { fn ==(self: ref i64, o: ref i64) -> bool {...} }`。普通方法（如 `fn half(self: ref slice<u8>)`，tests/instimpl/t_isolate.extc）走 findMethod，完全正常 ⇒ 只有运算符这一路被卡。",
+      "repro": "cat > /tmp/lk6.extc <<'EOF'\nimpl slice<u8> {\n    fn ==(self: ref slice<u8>, o: ref slice<u8>) -> bool { return false }\n}\nfn main() -> i32 {\n    var a: [4]u8\n    var b: [4]u8\n    let x = a[..]\n    let y = b[..]\n    if x == y { return 1 }\n    return 0\n}\nEOF\n./build/extc -w /tmp/lk6.extc -o /dev/null\n→ error: the left operand of operator `==` must be `slice_u8`\n   note: signature must be `fn ==(self: ref T, other: A) -> bool` (A is any type)\n（`impl i64` 版本同样失败：/tmp/rev/lookup/opbuiltin.extc）",
+      "confidence": "high"
+    },
+    {
+      "title": "`isPlace` 不认 `*p` ⇒ `(*p)[0..2]` 被当成『临时值』拒绝，诊断理由错误",
+      "file": "src/check_lookup.c",
+      "line": 791,
+      "kind": "FALSE-REJECT",
+      "severity": "P2",
+      "code_quote": "bool isPlace(Expr *e) {\n    if (!e) return false;\n    switch (e->kind) {\n    case EX_IDENT: return true;\n    case EX_FIELD: return isPlace(e->u.field.obj);\n    case EX_INDEX: return isPlace(e->u.index.obj);\n    case EX_SLICE: return isPlace(e->u.slice.obj);\n    default:       return false;\n    }\n}",
+      "why": "`isPlace` 决定能不能对定长数组切片（check_expr.c:1777-1782 调用），理由是『切片要取元素地址，必须是 place』。同一文件的 `isLvalue`（733-735）把 place 定义为『变量、字段，或 `*p` —— p 指向的那块地方』，`isPlace` 却漏了 EX_DEREF，于是 `(*p)[0..2]`（p: `ref [4]u8`，指向调用方的稳定存储）被判成临时值。诊断文本『needs a variable, a field or an index』与实际原因不符：`*p` 正是 p 指向的存储，生命周期由引用保证。",
+      "trigger": "参数为 `ref [4]T` / `mut ref [4]T`，显式解引用后切片：`let s = (*p)[0..2]`（对 `mut ref` 而言这是拿到写视图的唯一显式写法）。",
+      "repro": "cat > /tmp/lk7.extc <<'EOF'\nfn first(p: ref [4]u8) -> u8 {\n    let s = (*p)[0..2]\n    return s[0]\n}\nfn main() -> i32 {\n    var a: [4]u8\n    return i32(first(ref a))\n}\nEOF\n./build/extc -w /tmp/lk7.extc -o /dev/null\n→ error: cannot slice a temporary value; `[4]u8` needs a variable, a field or an index\n变通写法 `let s = p[0..2]`（隐式解引用）可以通过 ⇒ 影响面限于显式 `*` 这一种拼法。",
+      "confidence": "high"
+    },
+    {
+      "title": "死代码：`typeContainsProto` 已无活调用方（三处 `0 &&` 关闭）、`checkFnDisplay` 无任何调用方",
+      "file": "src/check_lookup.c",
+      "line": 550,
+      "kind": "HYGIENE",
+      "severity": "P3",
+      "code_quote": "/* Third member of the same family (`typeContainsRef`, `typeLacksZeroValue`): a self-referential enum\n * would recurse here too, so it gets the same cap (tools/attack.py M12). */\nbool typeContainsProto(TypeTable *tt, Type *t, const char *name) {\n    return typeContainsProtoAt(tt, t, name, 0);\n}",
+      "why": "该函数（含 554-571 行的递归实现）在 check_internal.h:239 有声明、在本文件有 22 行实现，但全部三处调用点都被 `0 &&` 短路：check_expr.c:2139、3236、3813 的 `if (0 && typeContainsProto(c->tt, at, \"coroutine\"))`。也就是说『协程值不能跨函数边界』这条检查已被整体停用（旁边注释写 'Legal now: coroutine<T> is the unified handle'），函数留在原地让人以为检查还在跑，核对其有效性要额外花时间——正是『死代码掩盖 bug』这一类。同文件 `checkFnDisplay`（295-307）也只有定义而无任何调用方（原用途 effect dump 已改），还带一个 static 缓冲。",
+      "trigger": "无运行时触发；纯维护代价（读者/改动者会以为协程跨边界检查仍生效）。",
+      "repro": "grep -rn \"typeContainsProto\" src/ → 只有 check_lookup.c 的定义 + check_expr.c 三处 `0 &&`；\ngrep -rn \"checkFnDisplay\" src/ → 只有 check_lookup.c:295 定义与 check_internal.h 声明。",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "读过的函数（全文 873 行，逐段 read）：isNarrowed / pushNarrow / unNarrow / narrowTarget / narrowFactsOf / blockExits / rejectNullableDeref / declare / lookup / checkFnDisplay / findFunc / nameBrought / requireQualified / findField / structOf / findMethod / findOperator / findVariant / payloadType / enumHasPayload / typeContainsProto(+At) / typeContainsRef(+At) / typeContainsFn(+At) / typeLacksZeroValue(+At) / repeatablePure / isLvalue / sliceOf / intLit / asIntLit / isPlace / placeRoot / isWritablePlace。\n\n【必答】`declare()`（207-240）**不可能返回 NULL**（结论：不能；check_stmt.c:430 的 `if (sym && ...)` 只是过时/无用的防御，不暗示 NULL 路径）。证据链：(1) 函数只有两个 return——220 行 `return old;`（同名 `var` 重复声明时返回已有 Sym，且此前已报错）与 239 行 `return s;`，都非 NULL；(2) `s` 来自 `arenaAllocZero`（base.c:138-142）→ `arenaAlloc` → 空间不足时 `arenaNewBlock`（base.c:87-95）打印 'out of memory' 并 `exit(1)`，分配**不会**返回 NULL；(3) 若真会返回 NULL，同函数 424 行 `s->u.var.cname = sym->cname;`（以及 429 行 `noteOrigin(c, sym, ...)`、437/439 行的 `sym->...`）早就先崩了，430/437 的 `sym &&` 保护不了任何东西——它们位于首次无保护解引用之后，属死防御；(4) 唯一能让 declare 崩掉的输入是 `c->scopes` 为空（209 行 `vecAt(..., len-1)` 会取 SIZE_MAX 下标），但五个调用点（check_top.c:4188、check_expr.c:886、check_stmt.c:272/422/956/1199）全部在 `pushScope` 之后，实际不可达。\n\n已核实为正确的点（自查过、不作为 finding）：`lookup` 的作用域顺序（由内向外、同作用域由新到旧）与 globals 兜底一致；遮蔽靠 `cname` 而非源码名区分，所以内层同名 `let` 不会命中外层的收窄事实（check_expr.c:1303/1665 用的都是 cname）；`findMethod` 先 `mholder` 再 `structOf`，实例方法优先于泛型体方法；`payloadType` 的越界读由调用方保证（match 的 payload 个数在 check_stmt.c:1188 已按变体校验：`some(a,b)` 对 1 载荷变体被正确拒绝）；`blockExits` 只认 ST_RETURN/BREAK/CONTINUE 作块尾，不会把不退出当退出（无误报方向）；`typeContainsRef/LacksZeroValue` 的 ZERO_VALUE_DEPTH_LIMIT 越限一律返回 true（保守）；`typeContainsRef` 对 slice/view 正确（`var s: slice<u8>` 被 'contains a reference' 拒绝，实测）；`asIntLit` 的 `-operand->ival` 不会遇到 INT64_MIN：词法器对十进制用 strtoll，溢出时 errno==ERANGE 报错并留下 LLONG_MAX（正溢出），十六进制在累加时提前报错、不产 token，所以取负不会 UB；`repeatablePure` 对调用/`?`/`??` 一律拒绝（保守），EX_IDENT/FIELD/INDEX 两次求值无可观察差异；`nameBrought`/`requireQualified` 的 `use mod::*` 与 `use mod::{a}` 区分、root 文件（modName==NULL）两条路径都核过，`c->curFunc==NULL` 的静默返回没找到可达路径（模块全局在扁平表里是限定的，root 里写裸名是 'undefined name'，实测）。\n\n无法确认/未证实：(a) `requireQualified` 在 `c->curFunc == NULL` 时静默 return（391-398）是否真的不可达——我测的『全局初始化式里裸用别的模块的 `let`』报的是 undefined name，但没穷尽模块内位置；(b) 我的 coroutine 复现里若被调协程从未被调用，产物会缺 `worker$step` 定义（链接错误）——那是 codegen 的产码范围问题，与本条零值判定是两个缺陷，未深究归属；(c) 编译每次都在 stderr 打两行 `DBG_ASSOC_ENTRY typeName=pcg32 ...`（src/check_expr.c:1940 无条件 fprintf），属 check_expr.c 单元，未计入本文件 findings；(d) checkOperatorSig 对 holder 的比较（check_escape.c:1977-1980）是否有意为之，无文档可依，我只按可观察行为报告；(e) 延迟遍（scopes 已 pop 之后）调用 `lookup`/`placeRoot` 的路径：check_top.c 不直接调 lookup（改用 `placeRootName`/pinned `u.ident.sym`），check_escape.c 有多处 lookup，但都在函数体检查期间调用，未逐一证明全部如此；(f) `if p != null && q != null { q.v }` 会被拒（narrowFactsOf 在 ST_IF 只在 `tg && whenTrue` 时调用，check_stmt.c:873，而 `&&` 条件下 narrowTarget 返回 NULL）——但 docs/manual/10-nullref.md:50 只承诺 `&&` **右侧**证明 p，所以按文档这不是误拒，只是 check_lookup.c:120-129 的注释（『if p != null && p.next != null { ... } 就是这个函数存在的形状』）与实际行为不符，属注释过时，未单列为 finding；(g) 本文件 `typeContainsProto`（550-571）与 `checkFnDisplay`（295-307）均已无活调用方（check_expr.c:2139/3236/3813 三处 `0 &&`；checkFnDisplay 全工程零调用），P3 级死代码，若需凑满 8 条可把它们从本条 notes 提升为一条独立 finding。"
+}

@@ -44,6 +44,32 @@ examples/bad.extc:3:17: error: cannot assign to `x`, which is a `let`
 
 ---
 
+### 9.0 编译器的资源上限（成文限制）
+
+编译器对**嵌套深度**设有上限。超限时给出带位置的诊断，而不是让自身的递归耗尽 C 栈：
+
+| 形状 | 上限 |
+|---|---|
+| 块与表达式的嵌套 | **64 层** |
+| 类型的嵌套 | **96 层**（类型的 64 层上限由检查器先报，消息更具体） |
+
+```
+deep.extc:65:5: error: nesting too deep in a block (the compiler's limit is 64 levels)
+      {
+      ^
+  note: Deeply nested syntax comes from a machine, and the compiler stops at a fixed depth
+        rather than letting its own recursion overflow the C stack.
+```
+
+上限是**实测校准**的临时值：编译器自身在 release 构建下约 250 层、在 sanitizer 构建下约 96 层
+会耗尽栈；手写代码的嵌套深度通常不到十层。把编译器的递归改为显式栈之后，上限会提高
+（定案 100，2026-09-30）。
+
+同一义务的另一个方向：**任何输入都必须在有限时间内给出结论**（编译成功，或一条诊断），
+不允许挂住、也不允许崩溃。`tools/gate_scale.py` 把这条钉成常设判据（13 个用例，含时间与内存预算）。
+
+---
+
 ### 9.1 警告（不是错误，`-w` 可关）
 
 **未被使用的参数**。参数是签名的一部分 —— 编译器**不能**代为删除（会导致调用点不匹配），

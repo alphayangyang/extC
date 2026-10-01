@@ -1,0 +1,17 @@
+{
+  "findings": [
+    {
+      "title": "编译 stdlib/stl/hashSet.extc 永不返回：dropRuntimeDefs 的 `continue` 跳过了循环推进语句（100% CPU 死循环）",
+      "file": "src/codegen.c",
+      "line": 5798,
+      "kind": "HANG",
+      "severity": "P0",
+      "code_quote": "                        totalOverride  = (long)countMentions(text, name) - (long)guards;\n                        insideOverride = (long)defs;\n                        if (!defs) continue;                 /* not this macro's own line */\n                    }",
+      "why": "这个 `continue` 属于外层“逐行扫描锚点块”的循环 `for (char *ln = rp; ln < rp + rl && !cut; )`（codegen.c:5714），而该循环唯一的推进语句在循环体末尾：`if (!eol) break; ln = eol + 1;`（5848-5849）。`continue` 直接跳回循环头，`ln` 原地不动 ⇒ 只要出现“这一行是 `#define`、名字以 extc_/EXTC_ 开头、但 defs==0”的状态，就永远停在同一行。触发状态由上一轮 dropRuntimeDefs 自己制造：它把运行期文本切出一个**截断的 `#define EXTC_ZON` 片段**（原本应是 `#define EXTC_ZONE_*`），下一轮扫到这行时 defs 算成 0（该行位于文本末尾、名字后面没有可判定的非标识符字节），于是死循环。",
+      "trigger": "把 `stdlib/stl/hashSet.extc`（52 行）作为根文件编译：`./build/extc -w stdlib/stl/hashSet.extc -o /dev/null` ⇒ CPU 100%、永不返回、无任何诊断。用 `use stl::hashSet` 的程序（tests/stl/clone.extc）不触发 —— 触发条件取决于该模块被当成根文件时运行期文本被切成的状态。",
+      "repro": "cd /home/alphayang/extC_Compiler\n# 1) 现象：硬超时（20s 足够，实际上 >15 分钟不返回；三次独立运行均如此）\ntimeout -s KILL 20 ./build/extc -w stdlib/stl/hashSet.extc -o /dev/null ; echo rc=$?   # → 124\n# 2) 不是死锁：进程状态 R、CPU 99.8%\n(./build/extc -w stdlib/stl/hashSet.extc -o /dev/null & echo $!) >/dev/null; sleep 5; ps -o stat,pcpu,cmd -p $!   # → R 99.8\n# 3) 定位（不改仓库：src 拷到 /tmp 打点重编）\ncp -r src /tmp/rev/dbg && 在 /tmp/rev/dbg/codegen.c 的 5714 行循环里加计数打印 + 在 5798 行前打印该行内容\ngcc -std=c11 -O1 -g /tmp/rev/dbg/*.c build/prelude_data.c -o /tmp/rev/dbg/extc-dbg\nEXTC_STD=$PWD/stdlib timeout -s KILL 8 /tmp/rev/dbg/extc-dbg -w stdlib/stl/hashSet.extc -o /dev/null\n# 观察：\n#   [dbg] prune round 0 start len=84050 → end len=58180\n#   [dbg] prune round 1 start len=58180\n#   [dbg] dropUnusedLocals ENTER len=58180\n#   [dbg] dropRuntimeDefs ENTER len=35290 rl0=9675\n#   [dbg] RTD   line 9130000 ln_off=10009 rl=9675      ← 同一位置被扫了 900 万次\n#   [dbg] SPIN line=\n#   <<<#define EXTC_ZON>>>\n#        ll=16 name='EXTC_ZON' nlen=8 rl=9675 guards=0",
+      "confidence": "high"
+    }
+  ],
+  "coverage_notes": "Lead 亲测定案（2026-09-30）：现象、进程状态（R/99.8% CPU，排除死锁）、阶段计时（所有 pass 毫秒级，卡在 cg-prune 第二轮）、打点重编（src 拷贝到 /tmp，仓库源码未改动）三步定位；给出的是可复现的完整命令链与观察输出。修复建议（一行）：`if (!defs) { if (!eol) break; ln = eol + 1; continue; }`，或把推进语句改成 for 的第三段（`for (...; ...; ln = eol + 1)`）使任何 continue 都不会漏推进。同族的 `for(;;)` 扫描循环（dropUnusedLocals:5979、dropRuntimeDefs:5709）应一起审一遍：任何“找到候选但不删”的分支都必须推进位置。"
+}
