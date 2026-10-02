@@ -398,3 +398,29 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 **X3 实例族还剩两件**：`FuncDef.tmpl`（53 读，**须先处理与 `Type.tmpl` 的同名**）与
 `Expr.func`（18 写 + 85 检查器读；搬它必须与"物化唯一入口 + codegen 前封闭 + 显式 worklist"
 一起做，否则只是把重指换了个地方）。
+
+## X3 第七步（本轮·**失败并回退**）：消同名（`tmpl`）的两次尝试都不成立
+
+**目标**：我交班笔记里写的下一步是"先解决 `FuncDef.tmpl` 与 `Type.tmpl` 的同名"。本轮发现
+**笔记本身是错的**：`Type.tmpl` **根本不存在**（`grep` + 编译错误都证明）——真正的第三个同名者是
+**`CallCheck.tmpl`**（声明在 `check_internal.h`，不在 `ast.h`）。
+这已经是本批次**第五次**同一类错误（按名字猜归属），说明这条规则必须当成硬约束执行。
+
+**尝试 1（编译器驱动重命名）**：把 `FuncDef.tmpl` 改名，然后"编译器报哪行就改哪行"，
+自动改了 **41 处**（6 轮循环）——**看似成功**。
+**尝试 2**：继续处理 `CallCheck.tmpl` 时暴露了方法的根本缺陷：
+**旧名字同时属于两个结构体**（`FuncDef` 与 `CallCheck`），于是"编译器报的每一行"都还必须先判
+**基座是哪个结构体**——这正是编译器驱动想绕开、却绕不开的那一步。
+结果：`check_expr.c:3227` 的 `CallCheck` 点被错改成 `templateDef`，`check_top.c:5202/5835` 又因
+另一处改名而报 `CallCheck has no member named 'tmpl'` ⇒ **构建失败**。
+
+**处理**：`cp -r /tmp/rev/x3e_src_backup src` 整体回退（含 41 处自动改名一起丢弃）。
+回退后：tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**、`[plan-seam] ok`、
+`git status` 只剩 `?? proofs/`。
+
+**结论 / 留给下一会话**：
+1. 消同名**必须先做静态归属**（按**声明所在结构体**逐个基座确认），**不能**靠编译器报错反推 ——
+   当旧名字属于 ≥2 个结构体时，"报错即该改"是错的；
+2. 更省事的正路：**先给两个字段起不同名**（一次纯机械改名，每个基座用"类型注解/函数签名"判断），
+   或者接受它们同名并**只在迁移时逐点判定**；
+3. `Type.tmpl` 这个说法从交班笔记里**删掉**，改为 `CallCheck.tmpl`（声明 `check_internal.h`）。
