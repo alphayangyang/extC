@@ -10,13 +10,13 @@
  * accessors below. Per field, the comment states who writes it, when it is valid, and
  * what goes wrong when it is stale.
  *
- * Current state: the arena/zone, function-summary, loop, coroutine and instance-name
- * families are in the side table; those fields no longer exist on `ast.h`. Still on the
- * AST and still read here: the resolved callee (`Expr.func`), the instance -> template
- * back pointer (`FuncDef.tmpl`), the `for` step, and the coroutine "boxed" flag. Those
- * wait for the instance set to become explicit -- moving one of them is not a storage
- * change, because the callee pointer is produced by the instance-materialization
- * side effect itself.
+ * Current state: every field family is in the side table except three, and the accessors
+ * for those three read the node because the field is still declared on it: the resolved
+ * callee (`Expr.func`, `planCallee`), the `for` step (`Stmt.forStep`, `planForStep`), and
+ * the coroutine "boxed" flag (`FuncDef.coroBoxed`, `planCoroBoxed`). `Expr.func` is the
+ * one that waits for the instance set to become explicit: moving it is not a storage
+ * change, because that pointer is produced by the instance-materialization side effect
+ * itself. The other two have their own reasons next to their accessors.
  *
  * Rules for callers:
  *   - the checker writes a plan field only through its setter; code generation reads it
@@ -45,7 +45,7 @@
 FuncDef *planCallee(const Expr *e);
 
 /* The template this instance was materialized from (NULL when `f` is not an instance).
- * Writer: instance materialization.
+ * Writer: instance materialization, which is the only place an instance is created.
  * Stale: names and type arguments are taken from the wrong function. */
 FuncDef *planTemplate(const FuncDef *f);
 
@@ -128,9 +128,9 @@ int planCoroProto(const FuncDef *f);
  * can be driven even when it is never spawned explicitly -- so it counts as needing a
  * zone. The checker is the only writer.
  *
- * Still stored on the AST (`FuncDef.coroBoxed`), and the last field here that is still a
- * raw field: read it through this accessor rather than directly, so that moving it later
- * touches one file. */
+ * Still stored on the AST (`FuncDef.coroBoxed`), and now the only remaining plan field that
+ * is both declared on a node and written outside this module: read it through this accessor
+ * rather than directly, so that moving it later touches one file. */
 bool   planCoroBoxed(const FuncDef *f);
 
 /* ---- setters (written by the checker) ----------------------------------------------
@@ -160,13 +160,18 @@ void planSetYieldType(FuncDef *f, Type *v);
 void planSetCoroFrameType(FuncDef *f, Type *v);
 void planSetCoroNeedsZone(FuncDef *f, bool v);
 void planSetCoroProto(FuncDef *f, int v);
-/* The C name of an instance. `FuncDef.tmpl` deliberately has no setter yet: the name is
- * still derived from the call site it was materialized at.
- *
- * When migrating a field named `tmpl`, check the declaring struct first: two structs
- * carry a member with that name (`FuncDef` in `ast.h`, `CallCheck` in
- * `check_internal.h`), so a rename or a move by field name alone catches the wrong one.
- * `tools/check_tmpl_owners.py --verify` answers the ownership question per use. */
+/* The C name of an instance. When migrating a field named `tmpl`, check the declaring
+ * struct first: two structs carry a member with that name (`FuncDef` in `ast.h`,
+ * `CallCheck` in `check_internal.h`), so a rename or a move by field name alone catches
+ * the wrong one. `tools/check_tmpl_owners.py --verify` answers the ownership question
+ * per use. */
 void planSetInstName(FuncDef *f, const char *name);
+/* The instance -> template back pointer, written once per instance by instance
+ * materialization. `FuncDef` must not carry this as a field: the same pointer decides
+ * names, type arguments and which body is shared, and it has to be written through the
+ * plan so that "who writes it, and when" stays one place. An instance is a shallow copy
+ * of its template, so the copy no longer brings the pointer along -- this write is what
+ * establishes it, and it must stay after the copy. */
+void planSetTemplate(FuncDef *f, FuncDef *tmpl);
 
 #endif /* EXTC_PLAN_H */

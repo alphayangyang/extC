@@ -517,4 +517,38 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 * `CallCheck.tmpl`（`check_internal.h:664`）**不搬**：codegen 读点 0，属检查器内部；
   若要消同名，那是**改名**的事，与迁移分开做。
 
+## X4 第二半（续：本轮完成）：`FuncDef.tmpl` 搬进侧表 —— AST 上已无 **15** 个字段
+
+**按上一条"下一步"执行，三处改动 + 一次批改**：
+
+| 步骤 | 结果 |
+|---|---|
+| `plan.c` 加 `PLAN_TEMPLATE` + 槽位成员 `FuncDef *tmpl` + `planSetTemplate`；`planTemplate` 改读侧表（未设置 ⇒ NULL） | 与 `instName` 同形 |
+| 唯一写点改经 setter | `check_top.c` `funcInstance`：`planSetTemplate(in, tmpl)`（仍在 `*in = *tmpl` 之后 —— 整体拷贝已不再带走这个指针） |
+| 读点改经访问器 | `check_top.c` 22 处 + `check_lookup.c` 1 处（后者补 `#include "plan.h"`）；`check_expr.c` 1 处（`cc->tmpl = planTemplate(f) ? … : f`） |
+| 删字段 + 注释 | `ast.h:679` 的 `FuncDef *tmpl` 删除，那段注释改为"反向指针在 plan 侧" |
+| 棘轮 | `check_plan_seam.py` 的 `MOVED` 加 `"tmpl"` |
+
+**顺序的价值（本轮最值得记的一条）**：字段**最后删**。删掉之前，编译器把每一个漏改的直读
+**逐条点出来**（`check_expr.c:3227` 的两处 `f->tmpl`、`check_top.c` 的批改遗漏都是这样抓到的），
+比棘轮更硬、比 grep 更准 —— 而 `grep` 在本批次已经错了五次。**做法固定为：先改读写两侧，
+构建到零错误，再删字段。**
+
+**顺带的三处清理**（都在改动路径上，不是顺手扩张）：
+1. `refCheckApplies` / `internLocalTypes` / 协程实例那一段里 `planTemplate(fi)` 一行调三次 ⇒
+   改成局部变量 `tmpl`（一次查找，顺带把行宽压回 100 列内）；
+2. `EXTC_DBG_HOME` 的调试输出里嵌了三层 `planTemplate` 三元式 ⇒ 提成 `ftName` 一行；
+3. 两处**注释里点名了已删字段**（`fx->tmpl`、`cf->tmpl`）⇒ 改写成不依赖字段拼写的说法
+   （`planTemplate(fx)` / "used to skip them"）——这正是上一轮记的"注释不能指向不存在的字段"。
+
+**验收**：构建零告警；tests **325/0**（发布与 `EXTC_DBG=1`，断言/兜底 **0** 命中、note ×84 与改前一致）；
+`[plan-seam] ok`（AST 上无 `tmpl`）；`[tmpl-owners] ok`（`FuncDef.tmpl` 已不在扫描范围，
+只剩 `CallCheck` 的 3 个站点）；walker 23 ✓、guards 19 ok / 0 broken；`check.sh quick` 与全量见下条。
+
+**工具侧的假红（记下来）**：字段搬走后，`check_tmpl_owners.py` 把 `plan.c` 里 `PlanSlot.tmpl`
+那两处（**存储层自己**）算成"无属主"⇒ 正确的迁移反而判红。修法不是放宽判据，而是**说清扫描范围**：
+`collect()` 跳过 `plan.c`，理由写在 docstring 里。教训：**搬家之后，"字段的存储"与"字段的使用"
+同名**，扫描器必须显式说明它看的是哪一半。
+
+
 

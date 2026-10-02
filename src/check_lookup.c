@@ -7,6 +7,7 @@
 #include <string.h>
 #include "dbg.h"
 #include "check_internal.h"
+#include "plan.h"          /* the plan side: "is this an instance" is a plan question */
 
 /* One recursion cap for the type walkers below: an enum may hold **itself**
  * (`type list = | cons(i64, list) | nil`), which sent them into unbounded recursion and
@@ -320,7 +321,7 @@ const char *checkFnDisplay(const char *name, const char *modName) {
 FuncDef *findFunc(Checker *c, const char *name) {
     for (size_t i = 0; i < c->m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&c->m->funcs, i);
-        if (f->tmpl) continue;               /* an instance is not a name; the template is */
+        if (planTemplate(f)) continue;       /* an instance is not a name; the template is */
         if (strcmp(f->name, name) == 0) return f;
     }
     return NULL;

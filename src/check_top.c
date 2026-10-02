@@ -4736,7 +4736,7 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
      * match is returned instead of allocating a second one. */
     for (size_t i = 0; i < c->funcInsts.len; i++) {
         FuncDef *in = *(FuncDef **)vecAt(&c->funcInsts, i);
-        if (in->tmpl != tmpl || in->targs.len != targs->len) continue;
+        if (planTemplate(in) != tmpl || in->targs.len != targs->len) continue;
         bool same = true;
         for (size_t j = 0; j < targs->len; j++)
             if (!ttEquals(*(Type **)vecAt(&in->targs, j), *(Type **)vecAt(targs, j))) { same = false; break; }
@@ -4744,7 +4744,7 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     }
     FuncDef *in = (FuncDef *)arenaAllocZero(c->arena, sizeof(FuncDef));
     *in = *tmpl;                        /* shallow copy: shares the body (as method instances do) */
-    in->tmpl = tmpl;
+    planSetTemplate(in, tmpl);          /* the back pointer lives in the plan, not on the node */
     in->used = false;
     vecInit(&in->targs, c->arena, sizeof(void *));
     for (size_t j = 0; j < targs->len; j++)
@@ -5006,9 +5006,10 @@ static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
  *   generic. A method takes the type-instance path instead, so it answers false here.
  */
 static bool refCheckApplies(RefCheck *rc, FuncDef *fi) {
-    if (!fi || !fi->tmpl) return false;
-    if (rc->func != fi->tmpl) return false;
-    return fi->tmpl->typeParams.len > 0;
+    FuncDef *tmpl = planTemplate(fi);
+    if (!fi || !tmpl) return false;
+    if (rc->func != tmpl) return false;
+    return tmpl->typeParams.len > 0;
 }
 
 /* Re-check one deferred reference rule for a concrete instance.
@@ -5121,7 +5122,8 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
  * function (tools/attack.py W9), and interning is a side effect of the substitution itself. */
 static void internLocalTypes(Checker *c, FuncDef *f) {
     if (!f || !f->body) return;
-    Vec *params = f->typeParams.len ? &f->typeParams : (f->tmpl ? &f->tmpl->typeParams : NULL);
+    Vec *params = f->typeParams.len ? &f->typeParams
+                                   : (planTemplate(f) ? &planTemplate(f)->typeParams : NULL);
     Vec *targs  = f->targs.len ? &f->targs : NULL;
     if (!params || !targs) return;
     Vec stack;
@@ -5767,7 +5769,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     ctPhase("ckB5", tB5); tB6 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
-        if (fx->tmpl) continue;              /* an instance is not checked separately */
+        if (planTemplate(fx)) continue;      /* an instance is not checked separately */
         checkMethodShape(&c, fx);
     }
 
@@ -5785,7 +5787,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * pointer is still taken through vecAt every time -- only the next function is prefetched. */
         if (i + 4 < m->funcs.len) __builtin_prefetch(*(FuncDef **)vecAt(&m->funcs, i + 4), 0, 0);
         FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
-        if (fx->tmpl) continue;              /* covered by the per-instance recheck */
+        if (planTemplate(fx)) continue;      /* covered by the per-instance recheck */
         checkFunc(&c, fx);
     }
 
@@ -5836,8 +5838,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             /* (1) The enclosing body is a free-function instance. */
             for (size_t j = 0; j < c.funcInsts.len; j++) {
                 FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-                if (fi->tmpl != cc->func) continue;   /* not a call in this template body */
-                resolveDeferredCall(&c, cc, &fi->tmpl->typeParams, &fi->targs);
+                if (planTemplate(fi) != cc->func) continue;   /* not a call in this template body */
+                resolveDeferredCall(&c, cc, &planTemplate(fi)->typeParams, &fi->targs);
             }
             /* (2) The enclosing body is a type instance (a generic call inside a method);
              * `owner` is the struct or enum definition. */
@@ -5880,9 +5882,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* (2) Free-function instances: an operator used on `T` inside `fn f<T>`. */
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-            if (ec->func != fi->tmpl) continue;
+            if (ec->func != planTemplate(fi)) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            runOpCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, planInstName(fi));
+            runOpCheck(&c, ec, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
     }
 
@@ -5910,19 +5912,21 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* (2) Free-function instances: a method call on `T` inside `fn f<T>`. */
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-            if (mc->func != fi->tmpl) continue;
+            if (mc->func != planTemplate(fi)) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, planInstName(fi));
+            runMethodCheck(&c, mc, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
     }
 
     for (size_t j = 0; j < c.funcInsts.len; j++) {
         FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-        if (!fi || !fi->tmpl || !planIsCoro(fi->tmpl) || planCoroFrameType(fi)) continue;
+        FuncDef *tmpl = planTemplate(fi);
+        if (!fi || !tmpl || !planIsCoro(tmpl) || planCoroFrameType(fi)) continue;
         if (provisionalInstance(&fi->targs)) continue;
         planSetIsCoro(fi, true);
-        if (planYieldType(fi->tmpl))
-            planSetYieldType(fi, ttSubstitute(c.tt, planYieldType(fi->tmpl), &fi->tmpl->typeParams, &fi->targs));
+        if (planYieldType(tmpl))
+            planSetYieldType(fi, ttSubstitute(c.tt, planYieldType(tmpl),
+                                              &tmpl->typeParams, &fi->targs));
         coroSetup(&c, fi);
         /* A local declaration's type inside a generic body is substituted only while the body is
          * **emitted** -- which happens after code generation has built its unit list and emitted the
@@ -5942,7 +5946,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * coroutine loop never ran for `mk<i64>`). */
     for (size_t j = 0; j < c.funcInsts.len; j++) {
         FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-        if (fi && fi->tmpl) internLocalTypes(&c, fi);
+        if (fi && planTemplate(fi)) internLocalTypes(&c, fi);
     }
 
     /* Deferred uses of such a call's result (`#79`): same two branches, but the question is now
@@ -5960,9 +5964,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-            if (du->func != fi->tmpl) continue;
+            if (du->func != planTemplate(fi)) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            runDeferredUse(&c, du, &fi->tmpl->typeParams, &fi->targs, planInstName(fi));
+            runDeferredUse(&c, du, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
     }
 
@@ -6014,7 +6018,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (!refCheckApplies(rc, fi)) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            c.substParams = &fi->tmpl->typeParams;
+            c.substParams = &planTemplate(fi)->typeParams;
             c.substArgs   = &fi->targs;
             runRefCheck(&c, rc, planInstName(fi));
         }
@@ -6058,7 +6062,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < c.funcInsts.len; i++) {
         FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, i);
         if (!fi || !fi->body || fi->isExtern) continue;
-        c.substParams = &fi->tmpl->typeParams;
+        c.substParams = &planTemplate(fi)->typeParams;
         c.substArgs   = &fi->targs;
         fi->addrMask = fi->contMask = fi->otherMask = 0;
         fi->homeAddrMask = fi->homeContMask = 0;
@@ -6167,15 +6171,16 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * site (the level it computes does not depend on how often it runs). */
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
-            if (f->tmpl) f->arenaSites = f->tmpl->arenaSites;
+            if (planTemplate(f)) f->arenaSites = planTemplate(f)->arenaSites;
         }
 
         /* Recompute the direct `needsHome` criterion for every function, uniformly.
          *
          * The criterion in `checkFunc` (the body allocates and the return type carries a
          * reference) is evaluated only while that body is being checked, and a generic
-         * instance's body is never checked on its own (`checkFunc` returns early for
-         * `fx->tmpl`). An instance's `needsHome` is therefore only the shallow copy made
+         * instance's body is never checked on its own (`checkFunc` returns early for an
+         * instance, where `planTemplate(fx)` is non-NULL). An instance's `needsHome` is
+         * therefore only the shallow copy made
          * when it was created (`*in = *tmpl`, see `funcInstance`), so it inherits from
          * whichever function was created first and the same program behaves differently
          * under a different declaration order:
@@ -6428,9 +6433,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t i = 0; i < all.len; i++) {
                 FuncDef *f = *(FuncDef **)vecAt(&all, i);
                 if (!f->body && !f->isExtern) continue;
+                FuncDef *ft = planTemplate(f);
+                const char *ftName = !ft ? "-" : (planInstName(ft) ? planInstName(ft) : ft->name);
                 fprintf(stderr, "[home] %-24s uses=%d needs=%d tmpl=%-12s sites=%zu",
                         planInstName(f) ? planInstName(f) : f->name, (int)planUsesHome(f), (int)f->needsHome,
-                        f->tmpl ? (planInstName(f->tmpl) ? planInstName(f->tmpl) : f->tmpl->name) : "-",
+                        ftName,
                         f->arenaSites.len);
                 for (size_t j = 0; j < f->arenaSites.len; j++)
                     fprintf(stderr, " L%d", planArenaLevel(*(Expr **)vecAt(&f->arenaSites, j)));
@@ -6802,11 +6809,11 @@ static bool stmtCallsAllocator(Checker *c, Stmt *s) {
 static void coroCheckDeferred(Checker *c, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !planIsCoro(cf) || cf->tmpl) continue;
+        if (!cf || !planIsCoro(cf) || planTemplate(cf)) continue;
         /* A boxed coroutine always has a task: its frame lives in that task's place. */
         planSetCoroNeedsZone(cf, planMakesPool(cf) || cf->coroBoxed);
     }
-    /* **Instances** need the same answer, and this loop used to skip them (`cf->tmpl`), so a
+    /* **Instances** need the same answer, and this loop used to skip them, so a
      * generic coroutine never got its place: allocations made inside it landed in the *caller's*
      * zone, and nothing ever released the task (audit P1-13: `live=20000` after 20000 finished
      * tasks; the same omission is what the audit's "`coroNeedsZone` 未对实例计算" names).
@@ -6815,8 +6822,8 @@ static void coroCheckDeferred(Checker *c, Module *m) {
      * handle. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !planIsCoro(cf) || !cf->tmpl) continue;
-        planSetCoroNeedsZone(cf, planCoroNeedsZone(cf->tmpl) || cf->coroBoxed);
+        if (!cf || !planIsCoro(cf) || !planTemplate(cf)) continue;
+        planSetCoroNeedsZone(cf, planCoroNeedsZone(planTemplate(cf)) || cf->coroBoxed);
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);
@@ -7042,8 +7049,8 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
          * said "incompatible types when assigning to type 'box_i64' from type 'box_T'"
          * (tools/attack.py X8). Substitute with the instance's arguments here; the template keeps its
          * own spelling, which is what `ttSubstitute` returns unchanged when there is no template. */
-        p->type = (f->tmpl && f->targs.len)
-                    ? ttSubstitute(c->tt, d->type, &f->tmpl->typeParams, &f->targs)
+        p->type = (planTemplate(f) && f->targs.len)
+                    ? ttSubstitute(c->tt, d->type, &planTemplate(f)->typeParams, &f->targs)
                     : d->type;
         p->line = f->body->line;
     }

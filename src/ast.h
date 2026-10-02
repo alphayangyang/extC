@@ -672,11 +672,11 @@ struct FuncDef {
     const char *name;
     /* The type parameters of a generic free function, `fn f<T, U>(...)`. A method
      * keeps its type parameters in `owner->typeParams`, so this field is used by free
-     * functions only. An instance points back at its template through `tmpl`, holds the
-     * instance's type arguments in `targs`, and takes its C name from `instName`. */
+     * functions only. An instance holds the instance's type arguments in `targs`, takes
+     * its C name from `instName`, and points back at its template through the plan (see
+     * `planTemplate` in plan.h) rather than through a field here. */
     Vec         typeParams;      /* const char* */
     Vec         targs;           /* Type*: only an instance has these */
-    FuncDef    *tmpl;            /* non-NULL when this is an instance, not the template */
     Vec         params;          /* Param* */
     /* The binding each parameter resolved to, in declaration order. `void *` because `Sym` is
      * defined in the checker's own header, which ast.h does not see; only the checker reads this.

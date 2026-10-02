@@ -3223,8 +3223,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
                 if (hasParamTarg && c->curFunc) {
                     CallCheck *cc = (CallCheck *)arenaAllocZero(c->arena, sizeof(CallCheck));
+                    FuncDef *tmplOfF = planTemplate(f);
                     cc->node = e;
-                    cc->tmpl = f->tmpl ? f->tmpl : f;   /* the template, not the instance */
+                    cc->tmpl = tmplOfF ? tmplOfF : f;   /* the template, not the instance */
                     cc->func = c->curFunc;   /* which template body this belongs to */
                     vecInit(&cc->targs, c->arena, sizeof(void *));
                     for (size_t i = 0; i < targs.len; i++)

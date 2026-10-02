@@ -27,11 +27,13 @@ PLAN_FIELDS = {
     "needTemp": "planNeedTemp", "condAllocs": "planCondAllocs", "forStep": "planForStep",
 }
 
-# X2 已搬走的字段：它们不许再出现在 AST 上（其余字段还在搬的路上）。
+# 已搬走的字段：它们不许再出现在 AST 上（其余字段还在搬的路上）。
+# `tmpl` 是唯一一个**按名字会被认错属主**的：`CallCheck.tmpl`（check_internal.h）还在，
+# 而它是另一个结构体的成员、且 codegen 读点 0 ⇒ 不搬。故这条检查只覆盖 AST（ast.h）。
 MOVED = ["arenaLevel", "zoneLevel", "arenaArg", "needTemp",
          "usesHome", "mayUseArena", "makesPool", "condAllocs",
          "isCoro", "yieldType", "coroFrameType", "coroNeedsZone", "coroProto",
-         "instName"]
+         "instName", "tmpl"]
 
 WRITE = r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 

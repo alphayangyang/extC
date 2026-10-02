@@ -25,8 +25,8 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        /* coroutine family (`coroBoxed` is not here yet) */
        PLAN_IS_CORO = 1u << 8, PLAN_YIELD_TYPE = 1u << 9, PLAN_CORO_FRAME_TYPE = 1u << 10,
        PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12,
-       /* instance C name (`FuncDef.tmpl` is not here: see plan.h) */
-       PLAN_INST_NAME = 1u << 13 };
+       /* instance C name, and the instance -> template back pointer */
+       PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14 };
 
 typedef struct {
     int arenaLevel, zoneLevel, arenaArg;      /* Expr family */
@@ -37,6 +37,7 @@ typedef struct {
     Type *yieldType, *coroFrameType;
     int coroProto;
     const char *instName;                     /* instance C name */
+    FuncDef *tmpl;                            /* instance -> template */
     unsigned setMask;
 } PlanSlot;
 
@@ -151,6 +152,12 @@ void planSetInstName(FuncDef *f, const char *name) {
     s->instName = name; s->setMask |= PLAN_INST_NAME;
 }
 
+void planSetTemplate(FuncDef *f, FuncDef *tmpl) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->tmpl = tmpl; s->setMask |= PLAN_TEMPLATE;
+}
+
 void planSetCoroProto(FuncDef *f, int v) {
     if (!f) return;
     PlanSlot *s = slotFor(f, true);
@@ -160,7 +167,10 @@ void planSetCoroProto(FuncDef *f, int v) {
 /* ---- accessors (signatures are the public surface) --------------------------------- */
 
 FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
-FuncDef *planTemplate(const FuncDef *f) { return f ? f->tmpl : NULL; }
+FuncDef *planTemplate(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_TEMPLATE) ? s->tmpl : NULL;
+}
 const char *planInstName(const FuncDef *f) {
     PlanSlot *s = slotFor(f, false);
     return s && (s->setMask & PLAN_INST_NAME) ? s->instName : NULL;

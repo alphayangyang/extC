@@ -86,6 +86,12 @@ def struct_members(text: str):
     sequence -- two earlier versions of this scan mis-matched the brace and silently
     attributed members to the wrong struct.
     """
+    for name, members, line in all_structs(text):
+        yield name, members, line
+
+
+def all_structs(text: str):
+    """Same walk as `struct_members`, but over every struct: used to learn type names."""
     code = strip_comments(text)
     for m in re.finditer(r"\bstruct\s+([A-Za-z_]\w*)\s*\{|\btypedef\s+struct\s*(?:\w+\s*)?\{", code):
         open_brace = code.index("{", m.start())
@@ -265,11 +271,18 @@ def function_return_type(code: str, fname: str):
     return m.group(1) if m else None
 
 
-def collect(files, structs):
-    """Walk `files` and return (uses, unknown, coverage, codegen_direct)."""
+def collect(files, structs, type_names):
+    """Walk `files` and return (uses, unknown, coverage, codegen_direct).
+
+    `src/plan.c` is skipped: it is the storage layer of the plan fields, so the members it
+    touches (`PlanSlot.tmpl`, and the accessor that reads it) are the field itself rather
+    than a use of some struct's field.  Everything else is in scope.
+    """
     uses, unknown, coverage, codegen_direct = [], [], [], []
     types_cache = {}
     for path in files:
+        if pathlib.Path(path).name == "plan.c":
+            continue
         p = pathlib.Path(path)
         raw = p.read_text(encoding="utf-8")
         code = strip_comments(raw)
@@ -282,12 +295,18 @@ def collect(files, structs):
         pattern = r"([A-Za-z_]\w*)\s*(?:->|\.)\s*%s\b" % FIELD
         for m in re.finditer(pattern, code):
             pos = m.start(1)
+            base = m.group(1)
             if inside(pos, spans):
                 continue      # a member declaration or a prototype, not a use
+            before = code[:pos].rstrip()
+            if before.endswith("->") or before.endswith("."):
+                continue      # the base is itself a member (`x->tmpl`): skip it, the member
+                              # is what the field read is attached to, not a local here
+            if base in type_names:
+                continue      # a compound literal type (`(PlanSlot){...}.tmpl`): not a use
             if pos in seen:
                 continue
             seen.add(pos)
-            base = m.group(1)
             line = code[:pos].count("\n") + 1
             if p.name == "codegen.c":
                 codegen_direct.append((line, base))
@@ -325,7 +344,8 @@ def verify(uses, unknown, codegen_direct) -> int:
         for b in bad:
             print("[tmpl-owners] bad: %s" % b)
         return 1
-    print("[tmpl-owners] ok: every use attributed (%d sites: %s); codegen reads through %s only"
+    print("[tmpl-owners] ok: every use attributed (%d sites: %s); codegen reads through %s only; "
+          "the `FuncDef` side is plan storage (its field is gone, so a direct use cannot compile)"
           % (len(uses), summary, ACCESSOR))
     return 0
 
@@ -337,13 +357,15 @@ def main() -> int:
             sorted(str(p) for p in (ROOT / "src").glob("*.c")) + \
             sorted(str(p) for p in (ROOT / "src").glob("*.h"))
     structs = {}
+    type_names = set()
     for p in sorted((ROOT / "src").glob("*.h")):
         text = p.read_text(encoding="utf-8")
-        for name, members, line in struct_members(text):
+        for name, members, line in all_structs(text):
+            type_names.add(name)
             if FIELD in members:
                 structs[name] = (p.name, line) if name not in structs else structs[name]
 
-    uses, unknown, coverage, codegen_direct = collect(files, structs)
+    uses, unknown, coverage, codegen_direct = collect(files, structs, type_names)
     if mode_verify:
         return verify(uses, unknown, codegen_direct)
 

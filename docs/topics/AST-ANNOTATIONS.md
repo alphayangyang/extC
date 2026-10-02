@@ -72,7 +72,7 @@
 | 字段 | 为什么还在 AST 上 | 代价 / 下一步 |
 |---|---|---|
 | `Expr.func`（调用点 → 实例） | **X3 的实例集显式化未完成**：要"物化唯一入口 + codegen 前封闭实例集 + 显式 worklist"三件事一起做，单独搬存储没有意义 | 18 写（**全在检查器**）/ 85 检查器读 / 58 codegen 读（已收口）。已知风险：`e->func = instance` 的重指发生在不动点期间 —— **P0-5 的根因** |
-| `FuncDef.tmpl` | **同名陷阱（已更正）**：和它同名的是 **`CallCheck.tmpl`**（声明在 `check_internal.h`，**不是** `Type.tmpl` —— 我先前写错了）。按字段名迁移/改名会把另一个结构体的一起改；实测"编译器驱动重命名"也**不成立**（旧名字属两个结构体时，报错行仍须先判基座，会改错）⇒ 必须先做静态归属 | 2 写 / 53 读。迁移前必须按**声明所在结构体**逐点确认，或先给两处起不同名字（与 NAMING.md「一个词只指一件事」一致） |
+| ~~`FuncDef.tmpl`~~ | **已搬**（X4 第二半，见第 6 节末）：静态归属判清了属主与唯一写点，顺序风险也量清了（驱动两段 + `funcInstance` 不在 codegen 里） ⇒ 照 `instName` 的办法搬进侧表 | 搬迁后 AST 上已无此字段；`CallCheck.tmpl` **有意留在** `check_internal.h`（检查器内部、codegen 读点 0） |
 | `FuncDef.instName` | 与 `tmpl` 同族，等实例集一起做 | 1 写 / 11 读 |
 | `Stmt.forStep` | **半语法**：`parser.c` 两处写（`continue` 的 label 目标） | 留在 AST 是正确的；计划侧只该管「检查器替换后的那一半」（若有） |
 | `FuncDef.coroKind` | codegen 的**发射顺序**传递：读点在 prepass **之前**就会执行 | 实测把表搬进 `CG` ⇒ 5 个 coro 用例红（生成物出现 `__extc_czh-1`）。要么保留并把「prepass 必须先于哪些读点」写进契约，要么把 prepass 提前 —— **不能只换存储位置** |
@@ -116,4 +116,30 @@
    棘轮 `MOVED` 加一项。**代价**：得先离线构造"实例集封闭"的探针，确认 codegen 期间不再出现新实例。
 3. **`CallCheck.tmpl` 不搬**：它只活在检查器的延迟表里，codegen 读点 0 ⇒ 不构成"AST 充当计划"，
    留在 `check_internal.h` 是对的（若要消同名，是**改名**问题，与迁移分开做）。
+
+### 6.1 迁移记录（X4 第二半：已落地）
+
+**做了什么**（与 `instName` 同一套路）：
+
+| 步骤 | 位置 |
+|---|---|
+| 加记录位 `PLAN_TEMPLATE` + 槽位成员 `FuncDef *tmpl` | `plan.c` |
+| setter `planSetTemplate`；`planTemplate` 改读侧表（未设置 ⇒ NULL） | `plan.c` / `plan.h` |
+| 唯一写点改经 setter | `check_top.c` `funcInstance`：`planSetTemplate(in, tmpl)` |
+| 读点改经访问器 | `check_top.c` 22 处、`check_lookup.c` 1 处（后者补 `#include "plan.h"`） |
+| 删字段 + 改那段注释（注释里不能再指一个不存在的字段） | `ast.h:679` |
+| 棘轮加一项 | `tools/check_plan_seam.py` 的 `MOVED` ⇒ AST 上已无 **15** 个字段 |
+
+**判据**：`[plan-seam] ok`（AST 上无 `tmpl`）；`[tmpl-owners] ok`（`FuncDef.tmpl` 已不在扫描范围内，
+只剩 `CallCheck` 的 3 个站点）；tests **325/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中、note ×84 不变）。
+
+**一条顺带得到的保障**：字段删掉之后，**任何漏改的直读都会变成编译错误**
+（实测：`check_expr.c` 与 `check_top.c` 的遗漏点正是被编译器逐条点出来的），
+比棘轮更硬 —— 这也是"先改读点、最后删字段"这个顺序的价值。
+
+**过程教训（工具侧）**：`tmpl` 搬走之后，`check_tmpl_owners.py` 一度把 `plan.c` 里
+`PlanSlot.tmpl` 那两处（存储层自己）算成"无属主"。这类"字段的**存储**与字段的**使用**同名"
+必须显式排除，否则工具会在正确的迁移之后报假红；判据是"**扫描范围要能说清为什么**"——
+现在它只扫 `plan.c` 之外的文件，并把这条理由写在 `collect()` 的 docstring 里。
+
 
