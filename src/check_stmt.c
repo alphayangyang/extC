@@ -250,7 +250,7 @@ void checkStmt(Checker *c, Stmt *s) {
                         "a `coroutine<T>` value has no zero: it is a handle to a frame living in some"
                         " task's place. Initialize it (`var c: coroutine<i64> = worker(...)`)",
                         "`%s` is declared `coroutine<T>` with no initializer",
-                        s->u.var.cname ? s->u.var.cname : "?");
+                        planCName(s) ? planCName(s) : "?");
                 s->u.var.ann = ttError(c->tt);
             }
             if (!s->u.var.init) {
@@ -283,7 +283,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * the depth of the slot -- using the slot depth would falsely reject
                  *   var a: [2]?ref node  a[0] = ref *p  return a */
                 if (s->type && typeContainsRef(c->tt, s->type)) sym->refDepth = 0;
-                s->u.var.cname = sym->cname;
+                planSetCName(s, sym->cname, RKIND_STMT);
                 return;
             }
 
@@ -427,7 +427,7 @@ void checkStmt(Checker *c, Stmt *s) {
             s->type = ttIsError(declT) ? ttError(c->tt) : declT;
             Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                !s->u.var.mut, s->line, c->scopes.len);
-            s->u.var.cname = sym->cname;
+            planSetCName(s, sym->cname, RKIND_STMT);
             /* Record where this binding's value came from, which is its initializer.
              * Promotion walks that chain backwards: after `var n = new node`, a later
              * `head = n` follows `n` to the `new` site and raises it to the level of
@@ -689,7 +689,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * on the proof from the loop condition. Doing this earlier produced a
                  * false rejection. */
                 if (s->u.assign.target->kind == EX_IDENT)
-                    unNarrow(c, s->u.assign.target->u.ident.cname);
+                    unNarrow(c, planCName(s->u.assign.target));
 
                 if (vt0->kind == TY_REF) {
                     /* Retargeting: the types have to line up, downgrading `mut ref` to

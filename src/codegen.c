@@ -2335,7 +2335,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 }
                 return arenaPrintf(g->arena, "&%s", cFuncName(g, planCallee(e)));
             }
-            const char *cn = e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
+            const char *cn = planCName(e) ? planCName(e) : e->u.ident.name;
             /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which
              * is a plain struct: every mention of them becomes a field access ✓ (one place decides
              * this, `FuncDef.coroFrame` is the list the checker laid out). */
@@ -3928,7 +3928,7 @@ static void genStmtInner(CG *g, Stmt *s) {
         case ST_VAR: {
             /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
              * arguments initialize the parameters -- a resume has none to pass them again. */
-            if (s->u.var.cname && s->u.var.init && s->u.var.init->kind == EX_CALL &&
+            if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
                 planCallee(s->u.var.init) && planIsCoro(planCallee(s->u.var.init))) {
                 FuncDef *cf = planCallee(s->u.var.init);
                 const char *fr = cType(g, s->type);      /* the synthesized frame type */
@@ -3963,7 +3963,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                     bufPrintf(&bx, " };");
                     cgLine(g, "%s", bufCstr(&bx));
                     cgLine(g, "extc_coro %s = (extc_coro){ .frame = __extc_czf%d, .kind = %d,"
-                              " .task = __extc_czh%d };", s->u.var.cname, sq, cf->coroKind, sq);
+                              " .task = __extc_czh%d };", planCName(s), sq, cf->coroKind, sq);
                     g->needCoroHandle = true;
                     g->needPool = true;      /* the task table brings the zone runtime with it */
                     return;
@@ -3985,15 +3985,15 @@ static void genStmtInner(CG *g, Stmt *s) {
                 if (g->coroFunc) {
                     for (size_t i = 0; i < g->coroFunc->coroFrame.len && !framed; i++) {
                         const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
-                        framed = p->cname && strcmp(p->cname, s->u.var.cname) == 0;
+                        framed = p->cname && strcmp(p->cname, planCName(s)) == 0;
                     }
                 }
                 Buf init;
                 bufInit(&init, g->arena);
                 if (framed)
-                    bufPrintf(&init, "%s->%s = (%s){ .pc = 0", g->coroFrame, s->u.var.cname, fr);
+                    bufPrintf(&init, "%s->%s = (%s){ .pc = 0", g->coroFrame, planCName(s), fr);
                 else
-                    bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, s->u.var.cname, fr);
+                    bufPrintf(&init, "%s %s = (%s){ .pc = 0", fr, planCName(s), fr);
                 if (hasZone) bufPrintf(&init, ", .zone = __extc_czm%d, .task = __extc_czid%d", sq, sq);
                 for (size_t i = 0; i < cf->params.len; i++) {
                     Param *p = *(Param **)vecAt(&cf->params, i);
@@ -4010,24 +4010,24 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* A frame field is not declared here: the frame struct holds it, and the assignment is
              * what a resume re-runs (the initializer runs on every execution, exactly like the C
              * local it replaces). */
-            if (g->coroFunc && s->u.var.cname) {
+            if (g->coroFunc && planCName(s)) {
                 bool framed = false;
                 for (size_t i = 0; i < g->coroFunc->coroFrame.len && !framed; i++) {
                     const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
-                    framed = p->cname && strcmp(p->cname, s->u.var.cname) == 0;
+                    framed = p->cname && strcmp(p->cname, planCName(s)) == 0;
                 }
                 if (framed) {
                     if (s->u.var.init) {
                         const char *v = genExpr(g, s->u.var.init);
                         flushPrefix(g);
-                        cgLine(g, "%s->%s = %s;", g->coroFrame, s->u.var.cname, v);
+                        cgLine(g, "%s->%s = %s;", g->coroFrame, planCName(s), v);
                     }
                     return;
                 }
             }
             /* `cname` is the name the checker decided on; a shadowed one
              * carries a `__2` suffix. */
-            const char *nm = s->u.var.cname ? s->u.var.cname : s->u.var.name;
+            const char *nm = planCName(s) ? planCName(s) : s->u.var.name;
             /* `@overwrite` keeps exactly one block of storage. It is allocated
              * the first time this statement runs and only cleared and reused
              * afterwards. What comes out is a few lines of inline C,

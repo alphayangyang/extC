@@ -788,8 +788,8 @@ static bool lamRwExpr(void *ctx, Expr *e) {
             const char *fn = *(const char **)vecAt(r->fields, i);
             /* A writable capture is a reference: `(*self->c0)` is an lvalue, so a read and a write
              * through it both come out right, and the node's type never changes. */
-            e->u.ident.cname = arenaPrintf(r->c->arena,
-                                           lamWritten(r->w, sy) ? "(*self->%s)" : "self->%s", fn);
+            planSetCName(e, arenaPrintf(r->c->arena,
+                                        lamWritten(r->w, sy) ? "(*self->%s)" : "self->%s", fn), RKIND_EXPR);
             break;
         }
     }
@@ -978,7 +978,7 @@ static Type *checkLambda(Checker *c, Expr *e) {
 
         Expr *id = exprNew(c->arena, EX_IDENT, e->line);
         id->u.ident.name = sy->name;
-        id->u.ident.cname = sy->cname;
+        planSetCName(id, sy->cname, RKIND_EXPR);
         id->type = sy->type;
         Expr *val = id;
         if (wr) {                            /* `mut ref x`: a reference to the variable itself */
@@ -1289,7 +1289,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* Name resolution is frozen here: codegen prints `cname` directly. This is
              * what tells shadowed names apart (`a` from `a__2`). */
-            e->u.ident.cname = s->cname;
+            planSetCName(e, s->cname, RKIND_EXPR);
             /* Pin the resolved binding itself onto the node. The solving pass at the end
              * of the run happens after every function body has been checked, when the
              * scopes are already popped, so looking the name up again would either fail or
@@ -1660,8 +1660,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * local whose address was never taken, which is exactly the condition relied on
              * here. This mirrors the `EX_IDENT` rule (`isNarrowed(c, s->cname)`) above. */
             if (ftype && ftype->kind == TY_REF && ftype->nullable &&
-                e->u.field.obj->kind == EX_IDENT && e->u.field.obj->u.ident.cname) {
-                const char *rc = e->u.field.obj->u.ident.cname;
+                e->u.field.obj->kind == EX_IDENT && planCName(e->u.field.obj)) {
+                const char *rc = planCName(e->u.field.obj);
                 size_t kn = strlen(rc) + strlen(e->u.field.name) + 2;
                 char *key = (char *)arenaAlloc(c->arena, kn);
                 snprintf(key, kn, "%s.%s", rc, e->u.field.name);

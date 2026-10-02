@@ -33,7 +33,9 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
         * checker only ever says "that step is gone" */
        PLAN_FOR_STEP_DROPPED = 1u << 16,
        /* the resolved callee, and the emission gate ("was this function called?") */
-       PLAN_CALLEE = 1u << 17, PLAN_USED = 1u << 18 };
+       PLAN_CALLEE = 1u << 17, PLAN_USED = 1u << 18,
+       /* the generated-C name of a binding or a variable statement */
+       PLAN_CNAME = 1u << 19 };
 
 /* ---- setters (called by the checker) ----------------------------------------------- */
 
@@ -191,6 +193,31 @@ void planSetCallee(Expr *e, FuncDef *callee) {
 /* Was this function called? Storage is the plan side table (it used to be `FuncDef.used`).
  * The default is false: a function nothing recorded a call for is not emitted, which is the
  * safe direction -- a missing call site would otherwise emit a body nothing references. */
+/* The C name a binding is emitted under. The checker decides it while binding a name to
+ * its declaration (a `Sym`); code generation prints it. Storage is the plan side table; it
+ * used to be `Expr.u.ident.cname` and `Stmt.u.var.cname`.
+ *
+ * **Not for `Param`**: a parameter keeps its own field, because a `Param` is stored by
+ * value (the coroutine frame copies them) and a table addressed by node pointer cannot
+ * follow a copy. Measured: putting it here made every coroutine entry function lose its
+ * parameter identifier and the generated C stopped compiling. */
+const char *planCName(const void *node) {
+    NodeResults *r = resultsOf(node, false);
+    if (!r || !(r->setMask & PLAN_CNAME)) return NULL;
+    /* An empty name means "no name of its own": callers fall back to the declaration's name
+     * (`planCName(x) ? planCName(x) : x->name`), and the checker does write "" for a binding
+     * it cannot name. Returning "" would win that fallback and emit C with no identifier. */
+    return r->cname && r->cname[0] ? r->cname : NULL;
+}
+
+void planSetCName(void *node, const char *name, ResultKind kind) {
+    if (!node) return;
+    NodeResults *r = resultsAs(node, true, kind, __LINE__);
+    if (!r) return;
+    r->cname = name;
+    r->setMask |= PLAN_CNAME;
+}
+
 bool planUsed(const FuncDef *f) {
     NodeResults *r = resultsOf(f, false);
     return r && (r->setMask & PLAN_USED) ? r->used : false;

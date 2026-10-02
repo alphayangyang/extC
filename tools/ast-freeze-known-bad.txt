@@ -16,7 +16,7 @@ src/check_expr.c:assocOwner	4 处（行 1611, 1958, 2835, 3411）	R1 AST 冻结�
 src/check_expr.c:call	1 处（行 3739）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:callViaFn	1 处（行 1213）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:callee	2 处（行 2435, 3381）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:cname	6 处（行 791, 854, 888, 981, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:cname	3 处（行 854, 888, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:contMask	2 处（行 1201, 1208）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:convCheck	2 处（行 2257, 2282）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:domNew	3 处（行 2017, 3013, 3554）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -70,7 +70,6 @@ src/check_stmt.c:args	1 处（行 588）	R1 AST 冻结的施工单：P2 把它�
 src/check_stmt.c:assocOwner	1 处（行 78）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:bindAnn	1 处（行 922）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:bindCName	1 处（行 944）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_stmt.c:cname	2 处（行 286, 430）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:cond	2 处（行 156, 191）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:init	4 处（行 160, 173, 181, 196）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:lamInferRet	1 处（行 1038）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -123,7 +122,7 @@ src/codegen.c:owSites	3 处（行 4927, 5117, 5221）	R1 AST 冻结的施工单�
 src/codegen.c:path	1 处（行 6933）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:payload	1 处（行 3233）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:text	11 处（行 966, 4414, 5569, 6363, 6627）	R1 AST 冻结的施工单：P2 把它降到 0
-src/dataflow.c:cname	3 处（行 75, 467, 484）	R1 AST 冻结的施工单：P2 把它降到 0
+src/dataflow.c:cname	3 处（行 76, 468, 485）	R1 AST 冻结的施工单：P2 把它降到 0
 src/main.c:reserved	3 处（行 278, 281, 283）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:args	1 处（行 1064）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:callee	1 处（行 1063）	R1 AST 冻结的施工单：P2 把它降到 0

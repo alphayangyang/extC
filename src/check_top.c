@@ -537,7 +537,7 @@ static bool cnameInStmt(void *ctx, Stmt *s);
 static bool cnameInExpr(void *ctx, Expr *e) {
     CnameCtx *c = (CnameCtx *)ctx;
     if (e->kind == EX_IDENT)
-        return !(e->u.ident.cname && strcmp(e->u.ident.cname, c->cname) == 0);
+        return !(planCName(e) && strcmp(planCName(e), c->cname) == 0);
     AstVisit v = { cnameInExpr, cnameInStmt, ctx };
     return astWalkExprChildren(e, &v);
 }
@@ -3817,7 +3817,7 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
     if (!e) return;
     switch (e->kind) {
     case EX_IDENT: {
-        FdOblig *o = obligFind(obs, e->u.ident.cname);
+        FdOblig *o = obligFind(obs, planCName(e));
         if (o && escape) o->escaped = true;
         return;
     }
@@ -3827,7 +3827,7 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
         Expr *recv = e->u.method.recv;
         if (recv && recv->kind == EX_IDENT && e->u.method.name &&
             strcmp(e->u.method.name, "close") == 0) {
-            FdOblig *o = obligFind(obs, recv->u.ident.cname);
+            FdOblig *o = obligFind(obs, planCName(recv));
             if (o) o->closed = true;
         }
         obligExpr(c, recv, obs, false);
@@ -3914,10 +3914,10 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
          * is another handle makes this one an alias: one `close` serves both, because
          * both name the same descriptor. */
         if (typeIsResource(s->type)) {
-            const char *cn = s->u.var.cname ? s->u.var.cname : s->u.var.name;
+            const char *cn = planCName(s) ? planCName(s) : s->u.var.name;
             Expr *init = s->u.var.init;
             FdOblig *same = (init && init->kind == EX_IDENT)
-                          ? obligFind(obs, init->u.ident.cname) : NULL;
+                          ? obligFind(obs, planCName(init)) : NULL;
             if (same) {
                 *(const char **)vecPush(&same->aliases) = cn;
             } else {
@@ -3937,7 +3937,7 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
          * the old value may have been closed by whoever handed the new one over, so the
          * safe direction here is silence. The value being stored is out of our hands. */
         if (s->u.assign.target && s->u.assign.target->kind == EX_IDENT) {
-            FdOblig *o = obligFind(obs, s->u.assign.target->u.ident.cname);
+            FdOblig *o = obligFind(obs, planCName(s->u.assign.target));
             if (o) o->escaped = true;
         }
         obligExpr(c, s->u.assign.value, obs, true);
@@ -6950,9 +6950,9 @@ static bool coroScanExpr(void *ctx, Expr *e);
 
 static bool coroScanExpr(void *ctx, Expr *e) {
     CoroScan *s = (CoroScan *)ctx;
-    if (e->kind == EX_IDENT && e->u.ident.cname) {
+    if (e->kind == EX_IDENT && planCName(e)) {
         CoroUse *u = (CoroUse *)vecPush(&s->uses);   /* by value: never a pointer into the vec */
-        u->cname = e->u.ident.cname;
+        u->cname = planCName(e);
         u->index = s->index++;
         coroCopyChain(s, u->chain, &u->nchain);
     } else {
@@ -6964,9 +6964,9 @@ static bool coroScanExpr(void *ctx, Expr *e) {
 
 static bool coroScanStmt(void *ctx, Stmt *s) {
     CoroScan *sc = (CoroScan *)ctx;
-    if (s->kind == ST_VAR && s->u.var.cname) {
+    if (s->kind == ST_VAR && planCName(s)) {
         CoroDecl *d = (CoroDecl *)vecPush(&sc->decls);   /* by value */
-        d->cname = s->u.var.cname;
+        d->cname = planCName(s);
         d->type = s->type;
         d->init = s->u.var.init;
         d->index = sc->index++;

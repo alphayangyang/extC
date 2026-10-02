@@ -73,6 +73,7 @@ typedef struct {
     FuncDef    *tmpl;          /* instance -> template */
     FuncDef    *func;          /* the callee a call site / function value resolves to */
     bool        used;          /* was this function called? the emission gate reads it */
+    const char *cname;         /* the C name a binding is emitted under */
     /* which of the fields above were written; an unset field reads as its default */
     unsigned setMask;
     ResultKind kind;           /* which kind of node this slot belongs to (see ResultKind) */

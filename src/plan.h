@@ -54,6 +54,12 @@ FuncDef *planCallee(const Expr *e);
 bool planUsed(const FuncDef *f);
 void planSetUsed(FuncDef *f, bool v);
 
+/* The C name a binding (`Expr.u.ident.cname`) or a variable statement
+ * (`Stmt.u.var.cname`) is emitted under. `Param` is **not** here on purpose: a parameter is
+ * stored by value, so it keeps its own field. */
+const char *planCName(const void *node);
+void planSetCName(void *node, const char *name, ResultKind kind);
+
 /* The template this instance was materialized from (NULL when `f` is not an instance).
  * Writer: instance materialization, which is the only place an instance is created.
  * Stale: names and type arguments are taken from the wrong function. */

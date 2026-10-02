@@ -18,6 +18,7 @@
  */
 #include "dataflow.h"
 #include "check_internal.h"
+#include "plan.h"      /* planCName: the emitted name is a plan fact */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -332,11 +333,11 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
         if (s->u.var.init->kind == EX_STRUCTLIT) {
             for (size_t i = 0; i < s->u.var.init->u.lit.inits.len; i++) {
                 FieldInit *fi = *(FieldInit **)vecAt(&s->u.var.init->u.lit.inits, i);
-                raiseField(f, s->u.var.cname, fi->name, dfExprDepth(c, f, fi->value, 0));
+                raiseField(f, planCName(s), fi->name, dfExprDepth(c, f, fi->value, 0));
             }
         }
         if (dfCarriesRef(c, s->u.var.init))
-            raiseTo(f, s->u.var.cname, dfExprDepth(c, f, s->u.var.init, 0));
+            raiseTo(f, planCName(s), dfExprDepth(c, f, s->u.var.init, 0));
         break;
     }
     case ST_ASSIGN: {

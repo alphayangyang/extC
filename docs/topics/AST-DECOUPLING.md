@@ -396,3 +396,43 @@ hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 是同一个形状。
 
 **T1 之后 AST 上还剩什么**：`[ast-freeze]` **136** 个 key，主体是 ②分析缓存族（T4）。
 `[plan-seam]` 的 18 个"计划字段"里，只剩 `Stmt.forStep`（半语法，有意保留）。
+
+---
+
+## 13. T2 已落地：绑定名（`Expr.u.ident.cname` + `Stmt.u.var.cname`），并划出一条**按值类型不可入表**的边界
+
+**这一刀的对象是"生成的 C 名"** —— 检查器在把名字绑定到声明（`Sym`）时决定，codegen 打印它。
+分类时它被算作 ANALYSIS，实测后确认它其实是三件不同的事：
+
+| 落点 | 位置 | 处理 |
+|---|---|---|
+| `Expr.u.ident.cname` | `ast.h`（union 成员） | **搬进结果层**（`planCName` / `planSetCName`，`PLAN_CNAME` 位） |
+| `Stmt.u.var.cname` | `ast.h`（union 成员） | 同上 |
+| `Param.cname` | `ast.h`（**独立字段**） | **有意保留在 AST 上**（理由见下） |
+| `Sym.cname` | `check_internal.h` | 本来就不在 AST 上 |
+
+**划出的边界（本轮最重要的实测结论）**：`Param` 是**按值存放**的类型 —— 协程帧的参数表
+（`vecPush(&f->coroFrame)`）会**复制**它。而结果层是**按节点指针寻址**的：拷贝出来的 `Param`
+取不到原来的槽位。实测：把 `Param.cname` 也放进侧表 ⇒ **每个协程入口函数都丢掉参数名**
+（生成物里 `int64_t n` 变成 `int64_t`），`tests/coro` 从 29/0 掉到 8/21。
+⇒ **按值传递的结构体不能进"按指针寻址"的侧表**；这不是实现细节，是接口的适用条件，
+已写进 `plan.h`/`plan.c`/`ast.h` 三处注释。
+
+**另一个语义坑（同一次实测）**：`planCName` 一开始把**空字符串**当"有名字"返回，而调用方的
+惯用写法是 `p->cname ? p->cname : p->name`（检查器确实会写 `""` 表示"没有自己的名字"）。
+返回 `""` 会**赢过那个回落**，于是发出没有标识符的 C 参数。修法：**空名视同未设置（返回 NULL）**，
+与字段时代的语义一致。
+
+**改动**：`results.h` 加槽位；`plan.c` 加位 + 访问器/写入器（带 `ResultKind` 供属主看守）；
+`check_expr.c` 3 处写、`check_stmt.c` 2 处写改经 `planSetCName`；31 处读（check_expr 2 ·
+check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；`ast.h` 删两个 union 成员。
+`dataflow.c` 补 `#include "plan.h"`（它读绑定名，属检查器侧）。
+
+**判据/验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；
+**`tests/coro` 29/0**（这一刀最容易伤到的地方，因为协程帧按值存参数）；
+`[ast-freeze]` **136 → 135**；`[layering]`/`[plan-seam]`/`[callsite]`/`[tmpl-owners]` 不动。
+
+**过程记录（一次回退与一次重放）**：第一次尝试把 `Param` 也一起搬，发现协程崩了以后，
+我用快照回滚时**取早了一个备份点**，把 `Expr`/`Stmt` 那半也一起回退了。重放时把设计改正
+（Param 留字段）后一次通过 —— 教训：**回滚点要按"这次改动的起点"取，不是按"最近一次快照"取**；
+两次快照（`/tmp/rev/t2_base` 与 `/tmp/rev/t2_wip`）的差别正是这个。

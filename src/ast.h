@@ -321,9 +321,8 @@ struct Expr {
                   * when one declaration shadows another. Filled in by the checker,
                   * because resolving names is the checker's job and code generation only
                   * prints the answer. */
-                 const char *cname;
                  /* The binding itself, as resolved: a `Sym *` declared in
-                  * check_internal.h, opaque here for the same reason as `Expr.cname`.
+                  * check_internal.h, opaque because the AST does not know the checker's types.
                   *
                   * Why it is pinned onto the node instead of being looked up again in
                   * the final pass: that pass runs after every function body has been
@@ -336,9 +335,8 @@ struct Expr {
                   * only the answer from the moment of resolution is authoritative:
                   * `lookup` matches on the name and may find a namesake later. */
                  void       *sym; } ident;   /* `sym` is a `Sym *` kept opaque and cast back
-                                             * through `IdentBinding` (check_internal.h)
-                                             * for the same reason as `cname`: the AST does
-                                             * not know the checker's types. */
+                                             * through `IdentBinding` (check_internal.h):
+                                             * the AST does not know the checker's types. */
         struct { const char *op; Expr *left, *right; } bin;
         struct { const char *op; Expr *operand; } un;
         struct { Expr *callee; Vec args; } call;          /* args: Expr* */
@@ -474,7 +472,6 @@ struct Stmt {
         struct { const char *name; Type *ann; Expr *init; bool mut;
                  /* The name used in the generated C; a `let` that shadows another one
                   * in the same block becomes `a__2`. Filled in by the checker. */
-                 const char *cname;
                  /* `@overwrite var n = new T` reuses a single block of storage: it is
                   * allocated once in the function frame, lazily on first use, and
                   * cleared before every later execution of this statement. Legal only
@@ -509,7 +506,11 @@ Stmt *stmtNew(Arena *a, StmtKind kind, int line);
 
 typedef struct {
     const char *name;
-    const char *cname;   /* the name used in the generated C, as for Expr.cname */
+    /* The name this parameter is emitted under. **A plain field on purpose**: a `Param`
+     * is stored by value (the coroutine frame copies them), and the plan side table is
+     * addressed by node pointer -- a copy would have no slot. Measured: putting this in
+     * the side table made every coroutine entry function lose its parameter name. */
+    const char *cname;
     Type       *type;
     int         line;
 } Param;
