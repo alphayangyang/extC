@@ -10,6 +10,13 @@
 
 #include "check.h"
 
+/* **编译计划不在这棵 AST 上**（X 批次）：存储与读写口都在 `src/plan.c` / `src/plan.h`
+ * （按节点寻址的侧表 + 访问器/setter），codegen 只经访问器读；`tools/check_plan_seam.py`
+ * 钉住三件事：codegen 直读计划字段 = 0、AST 上不得再出现已搬走的字段、回写不超基线。
+ * 已搬走：arenaLevel/zoneLevel/arenaArg/needTemp、usesHome/mayUseArena/makesPool/condAllocs、
+ * isCoro/yieldType/coroFrameType/coroNeedsZone/coroProto。尚未搬（理由与代价见
+ * docs/topics/AST-ANNOTATIONS.md 第 5 节）：Expr.func、FuncDef.tmpl、instName、coroKind、
+ * Stmt.forStep（半语法，有意保留）。*/
 /* 检查器的阶段：定义放这里是因为 `Checker` 结构体里要存它（契约见本文件后面的"阶段契约"一节）。*/
 typedef enum {
     PHASE_INIT = 0,      /* 开始之前：还没有任何表 */

@@ -361,3 +361,23 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 **留给 X4 的结论**：`coroKind` 这 1 处要么保留（并把"prepass 必须先于哪些读点"写进契约），
 要么把 prepass 提前到所有读点之前 —— **不能**只换存储位置。这正是本批次反复学到的同一课：
 搬之前先看清**读写顺序**，而不只是"谁引用它"。
+
+## X4 第一半（本轮完成）：把「未迁移/不宜迁移」写进权威处（目标原文的义务）
+
+**做了什么**（纯文档，零代码风险，但仍跑全量验收）：
+
+1. `docs/topics/AST-ANNOTATIONS.md` 新增**第 5 节**：逐字段写明"为什么还在 AST 上 / 代价与下一步" ——
+   `Expr.func`（等实例集三件事一起做；P0-5 的根因）、`FuncDef.tmpl`（**`Type.tmpl` 同名陷阱**，
+   迁移前必须按声明所在结构体逐点确认）、`instName`、`Stmt.forStep`（半语法，**有意保留**）、
+   `FuncDef.coroKind`（**顺序**依赖，不能只换存储位置）、以及 ② 分析缓存族（codegen 读点 0，
+   不构成"AST 充当计划"的耦合，若要继续解耦应搬进与 plan 平行的分析侧结构）。
+2. `src/check_internal.h` 的权威节前加一段：**"编译计划不在这棵 AST 上"** —— 计划在
+   `src/plan.c`/`plan.h`，codegen 只经访问器读，棘轮钉住三件事；并列出**已搬走**与**尚未搬**
+   的字段清单（后者指向第 5 节）。
+
+**验收**：构建零告警、tests **325/0**、`check.sh quick` **56/0**、`[plan-seam] ok`。
+
+**X 批次至此的状态**：X0 ✅、X1 ✅、X2 ✅（13 个字段）、X3 ✅（回写侧：棘轮 + 逐条复核 + 切断
+`coroBoxed`；`coroKind` 一次失败尝试已回退并记档）、X4 ◐（文档那一半完成；剩下的是
+**实例集显式化**本身 —— `Expr.func`/`tmpl`/`instName` 的搬迁与"codegen 前封闭 + 显式 worklist"，
+需要通读 `codegen.c`，留给预算充足的会话）。
