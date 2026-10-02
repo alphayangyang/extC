@@ -873,3 +873,36 @@ Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目�
 **新发现的判据空白（记下来，P2 后续）**：`[ast-freeze]` 只看"直接写 AST 成员"，
 **看不见"经 results 层写一个语法字段"**——`planSetForStepDropped` 正属这一类。
 堵它需要一张"哪些节点字段是语法、不许经分析层写"的名单，在搬 ②分析缓存族时一起定。
+
+## 解耦 T0（本轮完成）：结果按 owner 归属（盖章 + 共享标记 + 观察模式）
+
+**做了什么**（提交 `efc5d3a` + 收尾 `8693663`）
+
+| 部件 | 内容 |
+|---|---|
+| owner 进出 | `resultsEnterOwner` / `resultsLeaveOwner` / `resultsCurrentOwner`；检查器在两处设置：`checkFunc` 进函数体、`CheckLambda` 进 lambda 体 |
+| 盖章 | 槽位第一次创建时把**当前 owner** 记进 `NodeResults.owner`（模块级工作 owner 为 NULL ⇒ 不校验） |
+| **语义修正（实测得出）** | owner 取**函数体的模板**而非实例：`wrap<i32>` 与 `wrap<i64>` **共享同一函数体**，同一批节点被两个实例先后访问；用实例当 owner 会把正常形状判成错 |
+| 共享标记 | 只被单个 body 访问的槽位第一次被另一个 body 碰到 ⇒ 标 `shared` 并只记一次。**共享是正常结果**：泛型体节点本来就被所有实例访问 |
+| 观察模式 | `EXTC_DBG_OWNER=1` 打印；`EXTC_DBG=1` 下**暂不** abort |
+
+**为什么暂不硬判（这是本轮最有价值的实测）**：把"首次跨 body"直接当断言 ⇒ **3 个泛型用例红**
+（`generic-calls-generic` / `generic-instance-order` / `generic-shared-callsite`），
+报的是同一件事：**同一节点上的分析结果被多个实例先后写**——即**最后写赢**，正是 T4 要消除的耦合。
+⇒ 这条判据量的是"**还没修完的量**"，不是"有没有 bug"；T4 把字段归属做完后升为硬判据。
+
+**本轮的数字**：当前代码上 `EXTC_DBG=1 EXTC_DBG_OWNER=1 ./tests/run.sh` **0 次跨 body 首次越界**
+（此前那 4 次来自 `generic-shared-callsite` 的实例循环——它是 T4 的施工单基线）。
+
+**顺带清掉三条假阳性**：`NodeResults.owner` 与 `FuncDef.owner` 同名 ⇒ `[ast-freeze]` 把它误报成新增。
+按既有纪律加 `AMBIGUOUS_NAMES`（明确列出"节点与非节点结构体同名"的成员并说明理由），
+基线 **145 → 142**。同时把新开关 `EXTC_DBG_OWNER` 登记进 `--help` 并重生成手册（`gen_flags.py` +
+`build_manual.py` 两份生成物）。
+
+**T0 的边界（说清楚）**：id 仍是一张**全局稠密表**（owner 只做校验、不切分区）；
+"每个 owner 一张小表"留给 T4 —— 现在做分区没有收益，反而 T4 还要再改一次。
+
+**验收**：`check.sh` 完整 **71/0**（quick 60/0）；tests **326/0**（发布与 `EXTC_DBG=1`，
+断言/兜底 0 命中）；六道老闸门全绿（977 文件 checkc · 218 例 ASan · 21 例差分 · 13 例规模 ·
+18 份逃逸语料 · 实例接线基线 0）；四条棘轮 `[ast-freeze]`(142)/`[layering]`(2)/`[plan-seam]`/
+`[callsite]` 全 ok。
