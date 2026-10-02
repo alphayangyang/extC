@@ -312,3 +312,33 @@ fn tick(n: i64) -> coroutine<i64> { yield n; return n }
       编译期报 `incompatible pointer type` ⇒ 迁移前必须先按**声明所在结构体**确认基座类型）。
 2. **成块删字段用行号区间、从后往前**（"模式 + 向上回溯注释"会把别处注释的尾巴切掉，
    当场语法错）；每次动手前 `cp -r src /tmp/...` 打快照，坏了一键回退。
+
+## X3 第四步（本轮完成）：切断唯一那处真回写（`coroBoxed`）
+
+**做了什么**：`codegen.c` 的协程 handle prepass 里原来是
+
+```c
+if (planTemplate(cf) && planCoroBoxed(planTemplate(cf))) cf->coroBoxed = true;   /* 写进实例 */
+cf->coroKind = ck++;
+if (planCoroBoxed(cf)) g.needCoroHandle = true;                                  /* 下一行又读出来 */
+```
+
+⇒ 把"模板的标记"**写回实例的 `FuncDef`**，再在下一行读出来。改成就地推导：
+
+```c
+bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplate(cf)));
+```
+
+语义等价（实例自己已有的标记仍然算数），但**少了一条"谁在什么时候写"的隐式依赖**。
+实测：codegen 里没有别处读实例的这个字段（grep `coroBoxed` 只剩注释与访问器）。
+
+**再按"逐条看"量了一遍剩余回写**（这次把**基座**也看）：`g->owSites`/`g->owLocal`/`g->coroFrame`
+是 **`CG` 自己的状态**（我的脚本按字段名把它们错标成 `ast.FuncDef` —— **第四次**印证
+"按名字归属不可靠"）；注释行、生成 C 的字符串字面量也都不算。
+**真正剩下的只有 `coroKind` 1 处**（`cf->coroKind = ck++`，`cf` 是 `FuncDef *`）——
+它是 codegen 自己的 prepass 下标，且 `grep` 显示**只有 codegen 用它**（检查器不读）。
+
+**棘轮基线 → `{coroKind: 1}`**，并在注释里写清"`coroBoxed` 已切断、这一处为何保留"。
+
+**验收**：tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**（含 coro 套件）、
+`[plan-seam] ok`。

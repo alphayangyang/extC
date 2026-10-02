@@ -6983,9 +6983,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
             if (!coroEmitted(cf)) continue;
-            if (planTemplate(cf) && planCoroBoxed(planTemplate(cf))) cf->coroBoxed = true;
+            /* X3：这里**不再**把模板的标记写回实例（codegen 不回写共享分析状态）。
+             * 原来的写法是"写进 FuncDef，再在下一行读出来"，于是多了一条隐式的
+             * "谁在什么时候写"依赖；现在就地推导，语义等价（实例自己的标记仍算数）。*/
+            bool boxed = planCoroBoxed(cf)
+                      || (planTemplate(cf) && planCoroBoxed(planTemplate(cf)));
             cf->coroKind = ck++;
-            if (planCoroBoxed(cf)) g.needCoroHandle = true;
+            if (boxed) g.needCoroHandle = true;
         }
         /* The event layer is needed if anything used calls one of its entry points. */
         for (size_t fi = 0; fi < m->funcs.len; fi++) {
