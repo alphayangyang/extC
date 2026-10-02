@@ -21,10 +21,15 @@
  *     "include guard 内不许有第二个 `#endif`"，条件编译放在头文件里会直接判红。
  * 关掉时每个点只花一次分支（`extcDbgHit` 立刻返回），不打印、不 abort。*/
 #ifndef EXTC_DBG_H
+
 #define EXTC_DBG_H
+
+#include <stdbool.h>
+#include <stddef.h>
 
 /* 由 `src/dbg.c` 实现：开关关着时立即返回；开着时打印并按 abort 结束。
  * `kind` 是 `"assert"` 或 `"fallback"`，`what` 是断言式或"哪条兜底被走到了"的说明。 */
+bool extcDbgOn(void);   /* 调试开关是否打开（`EXTC_DBG=1`）*/
 void extcDbgHit(const char *kind, const char *what, const char *file, int line);
 void extcDbgHitF(const char *kind, const char *file, int line, const char *fmt, ...);
 void extcDbgNote(const char *what, const char *file, int line);

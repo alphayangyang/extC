@@ -12,6 +12,7 @@
 #include "plate.h"     /* plateIsViewOfName: the plate layer's one primitive */
 #include <stdlib.h>
 #include "check_internal.h"
+#include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
 
 /* The inclusive range of a **builtin integer** type, by name.
  *
@@ -604,7 +605,7 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
         if (elem->kind == TY_PARAM || ttHasParam(elem)) recordNewSizeCheck(c, elem, e->line);
         /* The count appears twice in the emitted C (once for the bytes, once for `.len`), so
          * an impure count is computed into a temporary first -- the same rule as `new T[n]`. */
-        if (!repeatablePure(nE)) e->plan.needTemp = true;
+        if (!repeatablePure(nE)) planSetNeedTemp(e, true);
         return ttViewMut(tt, sliceOf(c, elem), true);
     }
     if (!ttIsError(argT)) {
@@ -2332,8 +2333,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * decided again by `checkModule`, using `FuncDef.arenaSites`, once the closure is
              * complete. */
             if (e->plan.arenaLevel == 0)
-                e->plan.arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
-                              : (e->reuse ? 1 : (int)c->scopes.len);
+                planSetArenaLevel(e, (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
+                              : (e->reuse ? 1 : (int)c->scopes.len));
             c->allocSites++;
             /* Keep the lexical level in its own field: the branch above may have replaced
              * `arenaLevel` with the `ARENA_HOME` sentinel, while the solver still needs to
@@ -2367,7 +2368,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "the element count must be an integer, found `%s`", typeStr(c, nt));
                 return ttError(tt);
             }
-            if (!repeatablePure(e->u.new_.count)) e->plan.needTemp = true;
+            if (!repeatablePure(e->u.new_.count)) planSetNeedTemp(e, true);
             /* Freshly allocated memory is writable, so the view is a `mut slice<T>`: the
              * same rule that gives `a[..]` a `mut slice<T>` when `a` is writable. */
             return ttViewMut(tt, sliceOf(c, w), true);
@@ -2556,11 +2557,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * Being symmetric with `new` removes that whole family of false rejections: a home
              * arena gives `ARENA_HOME` and depth 0, "the level outside this frame". */
             if (c->curFunc && c->curFunc->needsHome) {
-                e->plan.arenaLevel = ARENA_HOME;
+                planSetArenaLevel(e, ARENA_HOME);
                 e->refDepth   = 0;
             } else {
                 e->refDepth   = c->scopes.len;
-                e->plan.arenaLevel = (int)c->scopes.len;
+                planSetArenaLevel(e, (int)c->scopes.len);
             }
             c->allocSites++;
             if (e->lexicalLevel == 0) e->lexicalLevel = (int)c->scopes.len;   /* lexical level */
@@ -2650,7 +2651,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             " would run once instead of every round");
                     return ttError(tt);
                 }
-                e->plan.needTemp = true;        /* codegen evaluates it once, then tests the temp */
+                planSetNeedTemp(e, true);        /* codegen evaluates it once, then tests the temp */
                 /* Every side effect of the subject is hoisted into the prefix, in source order
                  * relative to the other temporaries, so the subject does not count as a call
                  * left in place. Counting it reported two `f() ?? -1` in one `println` that are

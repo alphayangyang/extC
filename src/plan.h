@@ -72,4 +72,14 @@ int planCoroProto(const FuncDef *f);
 /* 载荷是否装箱（写者曾包含 codegen ⇒ X3 要切断）。*/
 bool   planCoroBoxed(const FuncDef *f);
 
+/* ---- 写入方（检查器）的 setter（X2 第二步：过渡期同时写侧表与 AST 字段） ----
+ *
+ * X1 只收口了**读**点，而耦合的另一半（谁在什么时候写）过去散在检查器里。setter 让
+ * "写入"也变成可以加断言、可以换存储的地方：侧表与字段不一致时，`EXTC_DBG=1` 会在
+ * 访问器里当场响。*/
+void planSetArenaLevel(Expr *e, int v);
+void planSetZoneLevel(Expr *e, int v);
+void planSetArenaArg(Expr *e, int v);
+void planSetNeedTemp(Expr *e, bool v);
+
 #endif /* EXTC_PLAN_H */

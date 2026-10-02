@@ -7,6 +7,7 @@
 
 #include "dbg.h"
 #include "check_internal.h"
+#include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -1211,7 +1212,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * nothing to promote. */
         if (val->plan.arenaLevel == ARENA_HOME) return true;
         int target = (at == 0) ? ARENA_HOME : at;
-        if (val->plan.arenaLevel > target) val->plan.arenaLevel = target;
+        if (planArenaLevel(val) > target) planSetArenaLevel(val, target);
         /* The one place where a level is converted back into a depth is
          * here. */
         int depth = arenaDepthOf(val->plan.arenaLevel);
@@ -1359,7 +1360,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                 if (getenv("EXTC_DBG_ZONE"))
                     fprintf(stderr, "[promoted] node=%p %d -> %d (at=%d)\n",
                             (void *)val, val->plan.zoneLevel, want, at);
-                val->plan.zoneLevel = want;
+                planSetZoneLevel(val, want);
             }
             if (val->refDepth > at) val->refDepth = at;
             return true;

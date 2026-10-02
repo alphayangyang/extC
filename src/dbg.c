@@ -45,6 +45,8 @@ void extcDbgHitF(const char *kind, const char *file, int line, const char *fmt, 
     abort();
 }
 
+bool extcDbgOn(void) { return dbgEnabled(); }
+
 void extcDbgHit(const char *kind, const char *what, const char *file, int line) {
     if (!dbgEnabled()) return;
     /* `[assert]` / `[fallback]` 前缀是给闸门与 `check.sh` 抓的：一节红不靠"输出里有字样"，

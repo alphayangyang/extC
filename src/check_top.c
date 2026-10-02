@@ -9,6 +9,7 @@
 
 #include "dbg.h"
 #include "check_internal.h"
+#include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
 /* Defined further down; the call-site publication needs it (INV-K / audit P0-16). */
 static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
 #include "dataflow.h"
@@ -1634,16 +1635,16 @@ void setCallZoneArg(Checker *c, Expr *e) {
     /* **只往下调，不往上抬**：同一个节点可能被检查不止一次（泛型实例、末轮那一类重走），
      * 而提权已经把这一格改小了；再按"当前块"覆盖一遍就等于把提权抹掉。
      * 越小越长寿，所以取更小的那个。 */
-    if (e->plan.zoneLevel == 0 || lvl < e->plan.zoneLevel) e->plan.zoneLevel = lvl;
+    if (planZoneLevel(e) == 0 || lvl < planZoneLevel(e)) planSetZoneLevel(e, lvl);
 }
 
 void setCallArenaArg(Checker *c, Expr *e) {
     if (!e) return;
     if (e->homeDepth == -1) {                 /* destination at the home level: my home arena */
-        e->plan.arenaArg = ARENA_HOME;
+        planSetArenaArg(e, ARENA_HOME);
         e->arenaArgPending = false;
     } else if (e->homeDepth >= 1) {           /* an explicit block level: use that arena */
-        e->plan.arenaArg = e->homeDepth;
+        planSetArenaArg(e, e->homeDepth);
         e->arenaArgPending = false;
     } else {
         /* No `mut ref` argument gave a reason, so the old rule applies: pass my home
@@ -1657,7 +1658,7 @@ void setCallArenaArg(Checker *c, Expr *e) {
          * This is the job the `if (g->hasHome) return "__extc_home";` line used to do in
          * codegen. It moved into the checker so the decision is made in exactly one
          * place instead of once on each side. */
-        e->plan.arenaArg = (int)c->scopes.len;
+        planSetArenaArg(e, (int)c->scopes.len);
         e->arenaArgPending = true;
         *(Expr **)vecPush(&c->curArenaSites) = e;   /* the final pass comes back to this site */
     }
@@ -6249,7 +6250,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
             if (!rec || !rec->call) continue;
             if (rec->overflow) {        /* args not all recorded => home arena (always sound) */
-                rec->call->plan.arenaArg = ARENA_HOME;
+                planSetArenaArg(rec->call, ARENA_HOME);
                 rec->call->arenaArgPending = false;
                 continue;
             }
@@ -6269,7 +6270,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             int nd = callSiteMinDestDepth(&c, rec);
             /* Write the new homeDepth onto `arenaArg`, by the same rules as `setCallArenaArg`. */
             int want = (nd <= 0) ? ARENA_HOME : nd;
-            if (rec->call->plan.arenaArg != want) { rec->call->plan.arenaArg = want; eFixed++; }
+            if (planArenaArg(rec->call) != want) { planSetArenaArg(rec->call, want); eFixed++; }
             rec->call->arenaArgPending = false;
         }
 
@@ -6346,7 +6347,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                         want = site->lexicalLevel >= 1 ? site->lexicalLevel : 1;
                     }
                     if (site->plan.arenaLevel != want) {
-                        site->plan.arenaLevel = want;
+                        planSetArenaLevel(site, want);
                         site->refDepth   = arenaDepthOf(want);   /* the single conversion point */
                         if (want == ARENA_HOME) fixed++; else keptBlock++;
                     }
@@ -6390,7 +6391,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < f->arenaSites.len; j++) {
             Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
             if (!site->arenaArgPending || !site->func || !site->func->usesHome) continue;
-            site->plan.arenaArg = ARENA_HOME;
+            planSetArenaArg(site, ARENA_HOME);
             site->arenaArgPending = false;
         }
     }
@@ -6573,7 +6574,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             fprintf(stderr, "[zfix] call=%s nd=%d lvl=%d -> %d\n",
                     rec->call->func->name ? rec->call->func->name : "-",
                     nd, rec->call->plan.zoneLevel, zwant);
-        if (zwant < rec->call->plan.zoneLevel) rec->call->plan.zoneLevel = zwant;
+        if (zwant < planZoneLevel(rec->call)) planSetZoneLevel(rec->call, zwant);
     }
 
     /* ---- 电平求解要再跑一遍 ----

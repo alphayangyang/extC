@@ -75,3 +75,33 @@ X4 收尾（AST 只剩语法事实与身份）。**每阶段行为不变**，验
 写入经 setter、检查器读取经（检查器侧）访问器，并用 `EXTC_DBG` 断言"侧表与字段一致"
 过渡一轮再删字段。四族里其余族（`Stmt.condAllocs`/`forStep`、`FuncDef` 的计划字段、
 协程族）同样照此办理。
+
+## X2 第二步（本轮完成）：Expr.plan 的存储搬到计划侧表（过渡态：影子）
+
+**现在的结构**（`src/plan.c`）：
+* 一张**按 `Expr*` 寻址**的开放寻址哈希表（`slotFor`/`grow`，键/槽分开存），跨模块存在 ——
+  因为驱动是"**先查完所有模块，再逐模块 codegen**"（`main.c`），所以侧表不能按模块重置。
+* **setter**（`planSetArenaLevel`/`ZoneLevel`/`ArenaArg`/`NeedTemp`）：过渡期**同时**写侧表与
+  `Expr.plan` 字段。17 个写点全部改经 setter（`check_escape.c` 2、`check_expr.c` 6、`check_top.c` 9）。
+* **访问器**（codegen 侧）：仍读 `Expr.plan`（权威未变 ⇒ 行为不变），但在 `EXTC_DBG=1` 下比较
+  "侧表里应有的值"与字段值，**并且**在"字段非默认值却没有侧表记录"时响亮 —— 那正是
+  "某个写点漏了 setter"。影子检查由 `extcDbgOn()` 保护，**发布版零开销**。
+
+**覆盖性证据**：`EXTC_DBG=1` 跑完整套件，影子断言**零命中** ⇒ 四个字段的所有写点都经过 setter，
+且侧表与字段处处一致（如果漏一个写点，第一次读它就会响）。
+
+**本轮踩的三个坑（都记下来）**
+1. **贪婪正则改坏了代码**：`=\s*([^;]+);` 会匹配 `==` 的第一半，还把 `plan.c` 里 setter 自身的
+   `e->plan.arenaLevel = v;` 改成了递归调用 ✗。教训：**批量改写必须先排除 `==`（`=(?!=)`）并跳过
+   plan.c**；这次靠 `/tmp/rev/x2b_src_backup` 快照整体回退，才没有留下半改状态。
+2. **"恰好一次"的替换会静默漏掉重复文本**：`e->plan.arenaArg = ARENA_HOME;` 在 check_top.c 出现
+   2 次，我的 `count == 1` 保护让它**一处都没换**（而不是换错）—— 这是好事，但要有"未命中清单"
+   并逐一补（本轮补了 2 处）。
+3. **新头文件要先想 include**：三个检查器文件加 setter 调用时忘了 `#include "plan.h"`；
+   `dbg.h` 里加 `bool extcDbgOn(void)` 忘了 `<stdbool.h>`，而且 include 放错位置让
+   `check_guards.py` 判红（**19 ok / 0 broken** 才是对的：include 必须放在守卫的 `#define` 之后）。
+
+**下一步（X2 第三步）**：把权威翻到侧表 —— 访问器改读侧表、setter 不再写 `Expr.plan`、
+然后把 `Expr.plan` 的四个字段从 `ast.h` 删掉（此时 `check_plan_seam.py` 可以升级为
+"字段已不存在"的检查）。之后照同样办法办其余族（`Stmt.condAllocs`/`forStep`、
+`FuncDef` 的 `usesHome`/`mayUseArena`/`makesPool`、协程族）。
