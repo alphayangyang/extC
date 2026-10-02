@@ -476,13 +476,6 @@ struct Stmt {
      * `continue` is right again). */
     Stmt    *forStep;
 
-    /* Set on a `while` whose **condition allocates**: `checkStmt` measures it by counting
-     * allocation sites across the condition's own check. Codegen then gives the condition its own
-     * arena level and releases it at the top of every round -- without that, the condition's
-     * allocations live until the surrounding block ends, so a loop that allocates in its condition
-     * grows with the number of rounds (measured: `while (new i64[1000000])[0] == 0`, 20000 rounds,
-     * RSS 81.5 MB). 定案 101②. */
-    bool     condAllocs;
 
     union {
         struct { const char *name; Type *ann; Expr *init; bool mut;
@@ -828,48 +821,6 @@ struct FuncDef {
      * A caller needs something to pass, so the property is transitive: it is computed
      * as a fixed point over the call graph. */
     bool        needsHome;
-    /* Does this function really place something in its home arena?
-     *
-     * `needsHome` is the conservative answer of an *escape* question ("could this function
-     * hand out storage that outlives the call?"), and it is deliberately wide: `new i32`
-     * whose value is copied into an out-parameter marks the function even though nothing
-     * escapes. The hidden parameter is only needed for the precise question, which the
-     * placement pass answers per allocation site: if no site of this body ends up at
-     * `ARENA_HOME`, and no call passes this function's home on, then the parameter is
-     * written by nobody and read by nobody - `examples/out-param.extc` had exactly that, and
-     * gcc reported the unused parameter. The signature and the call sites both use this
-     * flag, so they stay in step. */
-    bool        usesHome;
-    /* Does this function ever put anything into its own block arenas?
-     *
-     * When it does not, the generated C omits both `extc_arena __extc_a[N]` and the
-     * string of `extc_arena_release` calls. About half of the functions in real programs
-     * are pure computation of this kind, while the arena boilerplate accounted for
-     * roughly 22% of the generated lines.
-     *
-     * Test: the body contains a `new`, or it calls a function that has a home arena,
-     * because such a call writes into this function's block arena.
-     *
-     * Must be computed after the transitive `needsHome` closure has run; computing it
-     * earlier misses a callee that turns out to have a home arena. */
-    bool        mayUseArena;
-    /* Can this function create a pool, directly or through what it calls?
-     *
-     * A created pool is registered in the zone (the `place`) current at the call, and
-     * `extc_pool_new` returns -1 when no zone is current. So the zones are emitted where
-     * they can be needed - and only there: a block whose direct statements cannot reach
-     * `extc_pool_new` gets no `zoneEnter`/`zoneLeaveTo` pair. A loop body that only calls
-     * `v.push` used to pay one pair per iteration, and on `bench/stl/vector.extc` those
-     * hooks were 80% of the profile.
-     *
-     * Test: the body calls `extc_pool_new`, or it calls a function that does. The answer is
-     * the *least* fixed point of that rule over the call graph, taken by `checkModule` once
-     * every body has been checked - the walk reads `e->func`, which checking fills in.
-     *
-     * Conservative in the one direction that matters: an unresolved callee counts as
-     * creating a pool. An unneeded hook costs time; a missing one costs a pool with no zone,
-     * which makes `extc_pool_new` return -1 and the registry lose the record. */
-    bool        makesPool;
     /* Nodes in this body whose arena answer has to wait for the transitive `needsHome`
      * closure, in the order they were checked (`Expr*`):
      *   - an `EX_NEW` site: with a home arena, `arenaLevel` becomes ARENA_HOME, so every
@@ -1044,7 +995,15 @@ typedef struct {
  *
  * `needsHome` is the **other** question -- "does it reach one?" -- and deliberately not this one: it
  * decides whether a body needs an arena of its own, not whether a call passes one. */
-static inline bool funcTakesHomeArena(const FuncDef *f) { return f && f->usesHome; }
+/* The two questions below are **plan** questions ("does a call to this function hand down
+ * the hidden home arena / zone?"), so their answers live in `src/plan.c` like the rest of the
+ * plan (see plan.h). `ast.h` cannot include `plan.h` -- plan.h depends on ast.h -- so the two
+ * accessors are declared here, for these two callers only. If a third one is ever needed,
+ * move these helpers into plan.h instead of growing this list. */
+bool planUsesHome(const FuncDef *f);
+bool planMakesPool(const FuncDef *f);
+
+static inline bool funcTakesHomeArena(const FuncDef *f) { return f && planUsesHome(f); }
 
 /* Does this function **take** the hidden home zone -- i.e. does a call to it hand one down?
  *
@@ -1059,7 +1018,7 @@ static inline bool funcTakesHomeArena(const FuncDef *f) { return f && f->usesHom
  * emitted -- the same shape as the home-arena bug that was fixed. Closing it means teaching both
  * sides the same question, which needs the pool-constructor name list to be shared instead of
  * spelled twice (`check_top.c` / `codegen.c`, review F11): do the two together. */
-static inline bool funcTakesHomeZone(const FuncDef *f) { return f && f->makesPool; }
+static inline bool funcTakesHomeZone(const FuncDef *f) { return f && planMakesPool(f); }
 
 /* An `impl Type { fn ... }` block: methods attached to a type that is declared elsewhere
  * (or is a compiler builtin, which has no body to write them in).

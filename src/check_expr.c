@@ -3345,7 +3345,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* A `dyn` value is pool-backed, so the enclosing function creates a pool -- the same
              * existing flag the dispatch site sets, and it must be set here too: without it the pool
              * runtime was never emitted and the generated C called `extc_dyn_put` undeclared. */
-            if (c->curFunc) c->curFunc->makesPool = true;
+            if (c->curFunc) planSetMakesPool(c->curFunc, true);
             dynTraitOf(c, e->u.dynv.traitName, payT, e->line);
             Type *dt = typeNamed(c->arena, e->u.dynv.traitName);
             dt->kind = TY_DYN;
@@ -3497,7 +3497,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                     "argument %zu expects `%s`, found `%s`", i + 1,
                                     typeStr(c, ttBase(wp->type)), typeStr(c, ttBase(at)));
                     }
-                    if (c->curFunc) c->curFunc->makesPool = true;
+                    if (c->curFunc) planSetMakesPool(c->curFunc, true);
                     e->u.method.recv->type = ttBase(recvT);
                     e->func = want;
                     e->dynTrait = traitName;
@@ -3659,7 +3659,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * emit `zoneEnter` is taken before the body is generated (setting the codegen flag
                  * mid-body was too late: the program trapped with "a `dyn` value needs a place to
                  * live in"). */
-                if (c->curFunc) c->curFunc->makesPool = true;
+                if (c->curFunc) planSetMakesPool(c->curFunc, true);
                 TraitDef *tr = dynTraitOf(c, e->dynTrait, e->u.method.recv->type, e->line);
                 FuncDef *want = NULL;
                 for (size_t ti = 0; tr && ti < tr->methods.len && !want; ti++) {

@@ -408,7 +408,7 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
     if (getenv("EXTC_DBG_ZONE"))
         fprintf(stderr, "[zone] call=%s makesPool=%d zoneLevel=%d d=%d\n",
                 e->func && e->func->name ? e->func->name : "-",
-                e->func ? (int)e->func->makesPool : -1, planZoneLevel(e), d);
+                e->func ? (int)planMakesPool(e->func) : -1, planZoneLevel(e), d);
     if (!calleeMakesPool(e->func) || planZoneLevel(e) == 0) return d;
     int zd = (planZoneLevel(e) == ZONE_HOME) ? 0 : planZoneLevel(e);
     return maxInt(d, zd);
@@ -1352,7 +1352,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
             fprintf(stderr, "[gate] call=%s ptr=%p owner=%p mP=%d cmp=%d lvl=%d at=%d\n",
                     val->func && val->func->name ? val->func->name : "-",
                     (void *)val->func, (void *)(val->func ? val->func->owner : NULL),
-                    val->func ? (int)val->func->makesPool : -1,
+                    val->func ? (int)planMakesPool(val->func) : -1,
                     (int)calleeMakesPool(val->func), planZoneLevel(val), at);
         if (calleeMakesPool(val->func) && planZoneLevel(val) != 0) {
             int want = (at == 0) ? ZONE_HOME : at;

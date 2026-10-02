@@ -593,9 +593,9 @@ typedef struct { Module *m; TypeTable *tt; Checker *c; } CloseCtx;
 static bool getReach(const FuncDef *f, ReachKind k) {
     switch (k) {
     case REACH_HOME:  return f->needsHome;
-    case REACH_POOL:  return f->makesPool;
+    case REACH_POOL:  return planMakesPool(f);
     case REACH_ALLOC: return f->allocState == 1;
-    case REACH_USES_HOME: return f->usesHome;
+    case REACH_USES_HOME: return planUsesHome(f);
     }
     return false;
 }
@@ -603,9 +603,9 @@ static bool getReach(const FuncDef *f, ReachKind k) {
 static void setReach(FuncDef *f, ReachKind k, bool v) {
     switch (k) {
     case REACH_HOME:  f->needsHome = v; break;
-    case REACH_POOL:  f->makesPool = v; break;
+    case REACH_POOL:  planSetMakesPool(f, v); break;
     case REACH_ALLOC: f->allocState = v ? 1 : 2; break;
-    case REACH_USES_HOME: f->usesHome = v; break;
+    case REACH_USES_HOME: planSetUsesHome(f, v); break;
     }
 }
 
@@ -1583,7 +1583,7 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  */
 /* 这个被调者会不会建池 —— 读取处统一走这里。
  *
- * 为什么不能只看 `f->makesPool`：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只走到
+ * 为什么不能只看 `planMakesPool(f)`：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只走到
  * 模板那一份，而调用点上 `e->func` 可能是模板（实测 `owner=vector$vector makesPool=0`，
  * 同一处 codegen 读到的实例却是真）。结构体那一格 `makesPoolAny` 是闭包顺手算的，
  * 只对**关联函数**（构造函数那一族：`new` / `withCap` / `withParent`）放宽 ——
@@ -1593,7 +1593,7 @@ bool calleeMakesPool(FuncDef *f) {
     /* **声明优先**（作者口径 2026-09-26）：`@poolObject` 标在 struct 上，说"这个类型拥有一个池"。
      * 它比推断可靠 —— 早先试过"看有没有 `pid` 字段"（魔数）与"看方法建不建池"（要等闭包）。 */
     if (f->owner && f->owner->poolObject) return true;
-    if (f->makesPool) return true;
+    if (planMakesPool(f)) return true;
     /* 运行期那一句**本身**就是池站点：`extc_pool_new`（extern，没有函数体 ⇒ 闭包标不到它，
      * 所以它按名字认，与 codegen 里把 `extc_pool_new` 改写成 `_at` 的那处同一个名字）。
      *
@@ -1609,7 +1609,7 @@ bool calleeMakesPool(FuncDef *f) {
  *
  * 两个问题一直挤在同一只谓词里：
  *   ① 「这个类型**拥有**池」是**类型**的性质（`@poolObject` 声明）；
- *   ② 「这一次调用**会不会建**池」是**被调者**的性质（`f->makesPool` + 构造器那一族）。
+ *   ② 「这一次调用**会不会建**池」是**被调者**的性质（`planMakesPool(f)` + 构造器那一族）。
  * `calleeMakesPool` 要回答①（"结果会不会住在池上" ⇒ 逃逸深度与提权站点），所以它对
  * `@poolObject` 类型**一律**放宽 —— 在那里这是对的（保守方向）。
  * 但**块级的 zone 钩子**只需要②：一个池只在建它的那个块的 zone 上登记。拿①回答②的代价
@@ -1623,7 +1623,7 @@ bool calleeMakesPool(FuncDef *f) {
  * （模板/实例两份 FuncDef 的口子）。未解析的被调者仍然**保守为真**。 */
 bool calleeCreatesPool(FuncDef *f) {
     if (!f) return true;                       /* 未解析 ⇒ 保守 */
-    if (f->makesPool) return true;
+    if (planMakesPool(f)) return true;
     if (f->body == NULL && isPoolCtorName(f->name)) return true;
     return f->isAssoc && f->owner && f->owner->makesPoolAny;
 }
@@ -4217,7 +4217,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * summary comes from the signed clause, or is the worst case (see `collectEffects`
      * below). */
     if (f->isExtern) {
-        f->mayUseArena = false;
+        planSetMayUseArena(f, false);
         f->needsHome   = false;
         /* Only scalars and single pointers may cross the boundary. A `slice<T>` would
         * become two C arguments (data and length), so the names would not match, and a
@@ -6390,7 +6390,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         FuncDef *f = *(FuncDef **)vecAt(&all, i);
         for (size_t j = 0; j < f->arenaSites.len; j++) {
             Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
-            if (!site->arenaArgPending || !site->func || !site->func->usesHome) continue;
+            if (!site->arenaArgPending || !site->func || !planUsesHome(site->func)) continue;
             planSetArenaArg(site, ARENA_HOME);
             site->arenaArgPending = false;
         }
@@ -6429,7 +6429,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 FuncDef *f = *(FuncDef **)vecAt(&all, i);
                 if (!f->body && !f->isExtern) continue;
                 fprintf(stderr, "[home] %-24s uses=%d needs=%d tmpl=%-12s sites=%zu",
-                        f->instName ? f->instName : f->name, (int)f->usesHome, (int)f->needsHome,
+                        f->instName ? f->instName : f->name, (int)planUsesHome(f), (int)f->needsHome,
                         f->tmpl ? (f->tmpl->instName ? f->tmpl->instName : f->tmpl->name) : "-",
                         f->arenaSites.len);
                 for (size_t j = 0; j < f->arenaSites.len; j++)
@@ -6502,14 +6502,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * the root home arena, and `__extc_home = &__extc_a[1]` needs that array. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        if (f->isExtern || !f->body) { f->mayUseArena = false; continue; } /* no body, no arena */
-        f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
+        if (f->isExtern || !f->body) { planSetMayUseArena(f, false); continue; } /* no body, no arena */
+        planSetMayUseArena(f, stmtHasNew(f->body) || callsNeedsHome(f->body));
     }
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-            f->mayUseArena = stmtHasNew(f->body) || callsNeedsHome(f->body);
+            planSetMayUseArena(f, stmtHasNew(f->body) || callsNeedsHome(f->body));
         }
     }
 
@@ -6543,7 +6543,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-            if (f && f->makesPool) { sd->makesPoolAny = true; break; }
+            if (f && planMakesPool(f)) { sd->makesPoolAny = true; break; }
         }
     }
     /* ---- 调用点的 zone 层级：也要在 `makesPool` 闭包之后才能定 ----
@@ -6565,7 +6565,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < c.eSites.len; i++) {
         EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
         if (!rec || !rec->call || !rec->call->func) continue;
-        if (!rec->call->func->makesPool || planZoneLevel(rec->call) == 0) continue;
+        if (!planMakesPool(rec->call->func) || planZoneLevel(rec->call) == 0) continue;
         /* 目的地有多浅：与 arena 通道**共用一份**实现（U4）；`overflow` 由它在内部按
          * "活得最久"处理（两条通道的差别只剩这一点，现在写在共享函数里而不是两处代码里）。*/
         int nd = callSiteMinDestDepth(&c, rec);
@@ -6600,7 +6600,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
             fprintf(stderr, "[pool] %-28s makesPool=%d mod=%s\n",
-                    f->name ? f->name : "-", (int)f->makesPool,
+                    f->name ? f->name : "-", (int)planMakesPool(f),
                     f->modName && *f->modName ? f->modName : "-");
         }
         for (size_t i = 0; i < m->structs.len; i++) {
@@ -6608,7 +6608,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < sd->methods.len; j++) {
                 FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
                 fprintf(stderr, "[pool] %s::%-22s makesPool=%d mod=%s\n", sd->name,
-                        f->name ? f->name : "-", (int)f->makesPool,
+                        f->name ? f->name : "-", (int)planMakesPool(f),
                         f->modName && *f->modName ? f->modName : "-");
             }
         }
@@ -6804,7 +6804,7 @@ static void coroCheckDeferred(Checker *c, Module *m) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
         if (!cf || !cf->isCoro || cf->tmpl) continue;
         /* A boxed coroutine always has a task: its frame lives in that task's place. */
-        cf->coroNeedsZone = cf->makesPool || cf->coroBoxed;
+        cf->coroNeedsZone = planMakesPool(cf) || cf->coroBoxed;
     }
     /* **Instances** need the same answer, and this loop used to skip them (`cf->tmpl`), so a
      * generic coroutine never got its place: allocations made inside it landed in the *caller's*
@@ -7119,7 +7119,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
 
     if (getenv("EXTC_DBG_CORO")) {
         fprintf(stderr, "[coro] %s: frame = pc, ret%s", f->name,
-                f->makesPool ? ", zone" : "");
+                planMakesPool(f) ? ", zone" : "");
         for (size_t i = 0; i < f->coroFrame.len; i++) {
             const Param *p = (const Param *)vecAt(&f->coroFrame, i);
             fprintf(stderr, ", %s: %s", p->name, typeStr(c, p->type));

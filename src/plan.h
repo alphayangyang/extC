@@ -81,5 +81,12 @@ void planSetArenaLevel(Expr *e, int v);
 void planSetZoneLevel(Expr *e, int v);
 void planSetArenaArg(Expr *e, int v);
 void planSetNeedTemp(Expr *e, bool v);
+/* FuncDef 的 arena/pool 族（X2 第四步）。`makesPool` 要等调用图闭包才定 ⇒ 它是
+ * `lvlFacts` 末轮重放存在的原因之一；`mayUseArena` 决定这个函数要不要带 home arena。*/
+void planSetUsesHome(FuncDef *f, bool v);
+void planSetMayUseArena(FuncDef *f, bool v);
+void planSetMakesPool(FuncDef *f, bool v);
+/* 循环条件里有分配（定案 101②：按轮释放）。`forStep` 仍是半语法字段，留在 AST 上。*/
+void planSetCondAllocs(Stmt *st, bool v);
 
 #endif /* EXTC_PLAN_H */

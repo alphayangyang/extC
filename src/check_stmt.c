@@ -7,6 +7,7 @@
  */
 
 #include "check_internal.h"
+#include "plan.h"          /* 计划：写入经 setter（X2 第四步）*/
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -876,7 +877,7 @@ void checkStmt(Checker *c, Stmt *s) {
             const int sitesBefore = c->allocSites;
             expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
             popScope(c);
-            s->condAllocs = (c->allocSites != sitesBefore);
+            planSetCondAllocs(s, (c->allocSites != sitesBefore));
             c->noHoist--;
 
             /* `while cur != null { cur = cur.next }` is the shape the whole language

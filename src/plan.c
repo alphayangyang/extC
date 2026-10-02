@@ -13,12 +13,18 @@
 #include <stdlib.h>
 
 enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
-       PLAN_ARENA_ARG = 1u << 2, PLAN_NEED_TEMP = 1u << 3 };
+       PLAN_ARENA_ARG = 1u << 2, PLAN_NEED_TEMP = 1u << 3,
+       /* FuncDef 的 arena/pool 族（X2 第四步）*/
+       PLAN_USES_HOME = 1u << 4, PLAN_MAY_USE_ARENA = 1u << 5, PLAN_MAKES_POOL = 1u << 6,
+       /* Stmt 族（X2 第四步；`forStep` 仍是半语法，留在 AST 上）*/
+       PLAN_COND_ALLOCS = 1u << 7 };
 
 typedef struct {
-    int arenaLevel, zoneLevel, arenaArg;
-    unsigned setMask;
+    int arenaLevel, zoneLevel, arenaArg;      /* Expr 族 */
     bool needTemp;
+    bool usesHome, mayUseArena, makesPool;    /* FuncDef 的 arena/pool 族 */
+    bool condAllocs;                          /* Stmt 族 */
+    unsigned setMask;
 } PlanSlot;
 
 static const void **g_keys;
@@ -86,6 +92,27 @@ void planSetNeedTemp(Expr *e, bool v) {
     s->needTemp = v; s->setMask |= PLAN_NEED_TEMP;
 }
 
+void planSetUsesHome(FuncDef *f, bool v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->usesHome = v; s->setMask |= PLAN_USES_HOME;
+}
+void planSetMayUseArena(FuncDef *f, bool v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->mayUseArena = v; s->setMask |= PLAN_MAY_USE_ARENA;
+}
+void planSetMakesPool(FuncDef *f, bool v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->makesPool = v; s->setMask |= PLAN_MAKES_POOL;
+}
+void planSetCondAllocs(Stmt *st, bool v) {
+    if (!st) return;
+    PlanSlot *s = slotFor(st, true);
+    s->condAllocs = v; s->setMask |= PLAN_COND_ALLOCS;
+}
+
 /* ---- 访问器（对外签名不变） -------------------------------------------------------- */
 
 FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
@@ -109,10 +136,22 @@ bool planNeedTemp(const Expr *e) {
     return (s && (s->setMask & PLAN_NEED_TEMP)) ? s->needTemp : false;
 }
 
-bool planUsesHome(const FuncDef *f) { return f ? f->usesHome : false; }
-bool planMayUseArena(const FuncDef *f) { return f ? f->mayUseArena : false; }
-bool planMakesPool(const FuncDef *f) { return f ? f->makesPool : false; }
-bool planCondAllocs(const Stmt *s) { return s ? s->condAllocs : false; }
+bool planUsesHome(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_USES_HOME) ? s->usesHome : false;
+}
+bool planMayUseArena(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_MAY_USE_ARENA) ? s->mayUseArena : false;
+}
+bool planMakesPool(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_MAKES_POOL) ? s->makesPool : false;
+}
+bool planCondAllocs(const Stmt *st) {
+    PlanSlot *s = slotFor(st, false);
+    return s && (s->setMask & PLAN_COND_ALLOCS) ? s->condAllocs : false;
+}
 Stmt *planForStep(const Stmt *s) { return s ? s->forStep : NULL; }
 
 bool planIsCoro(const FuncDef *f) { return f ? f->isCoro : false; }

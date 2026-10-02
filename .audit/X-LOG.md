@@ -132,3 +132,33 @@ X4 收尾（AST 只剩语法事实与身份）。**每阶段行为不变**，验
 `FuncDef` 的 `usesHome`/`mayUseArena`/`makesPool`、协程族
 （`isCoro`/`yieldType`/`coroFrameType`/`coroNeedsZone`/`coroProto`/`coroBoxed`），
 然后 `func`/`tmpl`/`instName`（X3 的实例集）。
+
+## X2 第四步（本轮完成）：FuncDef 的 arena/pool 族 + Stmt.condAllocs 搬进侧表
+
+**搬走的字段**：`FuncDef.usesHome`、`FuncDef.mayUseArena`、`FuncDef.makesPool`、`Stmt.condAllocs`
+（写点 10 处：`check_top.c` 6、`check_expr.c` 3、`check_stmt.c` 1；读点 16 处转访问器）。
+侧表加了对应记录位（`PLAN_USES_HOME` / `PLAN_MAY_USE_ARENA` / `PLAN_MAKES_POOL` /
+`PLAN_COND_ALLOCS`），setter/访问器各 4 个，读经 `planUsesHome`/`planMayUseArena`/
+`planMakesPool`/`planCondAllocs`（未设置 ⇒ `false`）。
+
+**`forStep` 有意留在 AST 上**：它是**半语法**字段（`parser.c` 两处写：`loopBody->forStep = step;`
+与 `continue` 的 label 目标），X0 的分类表里就标了"半语法半计划"。
+把它搬走会把"语法那一半"也拖进计划侧 —— 那不是解耦，是把耦合换个方向。**理由记在这里**。
+
+**顺带解决的一处结构问题**：`ast.h` 里两个 inline 帮助函数
+（`funcTakesHomeArena`/`funcTakesHomeZone`）读的正是这两个字段，而 `ast.h` **不能** include
+`plan.h`（反向依赖）。做法：在这两个函数前**前向声明**两个 plan 访问器，并写明
+"这两个问题是计划问题，答案在 plan.c；若将来需要第三个调用者，就把这两个帮助函数搬进 plan.h，
+而不是把这份声明列表变长"。`funcTakesHomeZone` 那段注释里的 **review F9 已知分歧**原样保留。
+
+**本轮踩的坑（第 N 次同类，新增一条规则）**：按"向上找注释块"的方式删字段，会把
+**别处注释的尾巴**一起切掉（`ast.h` 当场语法错：`stray '`'`）。改为**按行号区间删**、
+**从后往前删**（避免行号漂移），并且只删"字段行 + 紧邻它的注释块"。
+—— 头文件里的成块删除，优先用行号手术，不要用"模式 + 向上回溯"。
+
+**验收（全量）**：tests **325/0**（发布与 `EXTC_DBG=1`，断言/兜底 0）、`check.sh quick` **56/0**、
+闸门⑤语料/①checkc 全量/②ASan 全量/③差分/④规模 **全绿**、walker 23 ✓、guards 19 ok / 0 broken、
+`[plan-seam] ok`（AST 上已无这 8 个字段）。
+
+**下一步（X2 第五步）**：协程族（`isCoro`/`yieldType`/`coroFrameType`/`coroNeedsZone`/`coroProto`；
+`coroBoxed` 在 codegen 里被写，属 X3），然后 X3 的实例集（`func`/`tmpl`/`instName`）。
