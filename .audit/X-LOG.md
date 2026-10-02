@@ -810,3 +810,34 @@ Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目�
 **下一步（P1）**：`src/results.h/.c` —— 按 owner（函数/模块）一份结果包 + arena + 稠密节点 ID；
 先把已收口、无反向写的一族（协程族 + arena/zone 族）从 `plan.c` 的侧表下沉进去，
 `plan.c` 变成它的薄封装。判据仍是全套 + 两道新棘轮"只许减"。
+
+## 解耦 P1（本轮完成）：结果层第一刀 —— `results.h/.c`（arena + 稠密节点 ID + 属主看守）
+
+**做了什么**（提交 `90edb15`）
+
+| 部件 | 内容 |
+|---|---|
+| `src/results.h` | `NodeId`（稠密整数，0 = 无）、`ResultKind`、`NodeResults`（**一个节点一份结果槽**）、`nodeIdOf` / `resultsOf` / `resultsById` / `resultsAs` |
+| `src/results.c` | 两个数组 + 一个指针→id 哈希：`g_nodes[id]`、`g_results[id]`，**id 就是下标**；id 首次需要结果时分配（parser 一行不改），分配后永不变 |
+| `src/plan.c` | 删掉 `PlanSlot` 与 `slotFor` 指针哈希表；32 个函数改走 `resultsAs(...)`；文件只剩"字段什么意思 + 怎么记 + 两个替代表" |
+
+**两个来自调研的设计决定**（写进 `results.h` 的理由里）：
+1. **id 而不是指针**：指针被回收后按地址查表会**静默命中旧条目**（LLVM pass manager 文档自陈此坑）；
+   id 可存、可比较、可校验。与 rustc `ItemLocalId`（"dense range … a `Vec` instead of a tree or
+   hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 同形。
+2. **属主看守**（rustc `validate_hir_id_for_typeck_results`）：`NodeResults.kind` 由第一个写者盖章，
+   之后每次访问比对；不一致是**编译器 bug** ⇒ `EXTC_DBG=1` 响亮 abort，发布版保持旧行为。
+
+**验收**：构建零告警；tests **326/0**（发布）· **326/0**（`EXTC_DBG=1`，**属主看守 0 命中**、
+断言/兜底 0 命中、note ×84 不变）；`check.sh` 完整模式 **71/0**（含 `[ast-freeze]` / `[layering]` /
+`[callsite]` 三条棘轮、六道老闸门：977 文件 checkc · 218 例 ASan · 21 例差分 · 13 例规模 ·
+18 份逃逸语料）；`[plan-seam] ok`。**行为不变**。
+
+**顺手记下的"这一刀不包含什么"**：`NodeId` 还没有按 owner 分组（现在是一张全局稠密表）；
+`ResultKind` 只覆盖 plan 拥有的族——**②分析缓存族**（`refDepth`/`origin`/六个掩码…，即
+`[ast-freeze]` 那 146 个 key 的主体）仍写在 AST 上，进 `NodeResults` 还是进检查器自己的结构，
+是 P2 的内容。
+
+**备份**（P1 开工前按要求做的）：`~/extC-backup/extC-bundle-20261002-162302.git`（完整 history，
+`git bundle verify` 通过）+ `extC-worktree-*.tar.gz`（完整工作树，含未跟踪的 `proofs/`）+
+`SHA256SUMS-*.txt`；并**演练过还原**（clone → `make` → tests 326/0 → 两条棘轮 ok）。
