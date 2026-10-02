@@ -22,6 +22,7 @@
 #include "results.h"
 #include "dbg.h"
 #include <stdlib.h>
+#include <stdio.h>
 
 static const void  **g_nodes;     /* id -> node (the id is the index) */
 static NodeResults  *g_results;   /* id -> result slot */
@@ -91,6 +92,26 @@ NodeId nodeIdOf(const void *node, bool create) {
     return id;
 }
 
+/* ---- owners ----------------------------------------------------------------------- */
+
+static const FuncDef *g_owner;          /* the body whose results are being recorded now */
+static size_t        g_ownerMismatch;   /* accesses from a body other than the slot's */
+
+void resultsEnterOwner(const FuncDef *owner) { g_owner = owner; }
+void resultsLeaveOwner(void) { g_owner = NULL; }
+const FuncDef *resultsCurrentOwner(void) { return g_owner; }
+size_t resultsOwnerMismatches(void) { return g_ownerMismatch; }
+
+/* Is the owner reported? `EXTC_DBG_OWNER=1` counts; `EXTC_DBG=1` aborts (it means a bug). */
+static bool ownerReportOn(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("EXTC_DBG_OWNER");
+        on = (v && *v && *v != '0');
+    }
+    return on != 0;
+}
+
 NodeResults *resultsById(NodeId id) {
     if (id == 0 || id > g_len) return NULL;
     return &g_results[id];
@@ -117,7 +138,32 @@ NodeResults *resultsAs(const void *node, bool create, ResultKind kind, int line)
     if (r->kind == RKIND_NONE) {
         r->kind = kind;
         r->line = line;
+        /* The first writer also decides the scope: a slot created while checking one body
+         * belongs to that body. Module-level work (owner NULL) leaves it unscoped. */
+        r->owner = g_owner;
         return r;
+    }
+    /* Scope check: a slot created while checking one body must not be touched while
+     * checking another. That is the same class of bug as a table from function A indexed
+     * by a node of function B, which rustc's owner-guarded accessors exist to catch. */
+    if (r->owner && g_owner && r->owner != g_owner) {
+        /* The first time a slot crosses a body boundary it is *shared* from then on (the
+         * generic-body case). Only the first crossing is reported, because that is the one
+         * that tells us the node is shared -- after that the slot is exempt by construction. */
+        if (!r->shared) {
+            r->shared = true;
+            g_ownerMismatch++;
+            /* Observation only, for now: a node inside a generic body is *reached* by
+             * every instance of that body, and today the analysis writes per-instance
+             * results onto it (last writer wins -- the same shape the callee pointer had
+             * before X3). That is the coupling T4 removes, so this is a worklist, not a
+             * verdict. It becomes a hard failure once the analysis families own their
+             * results per owner. */
+            if (ownerReportOn())
+                fprintf(stderr, "[owner] slot first reached from another body"
+                                " (first write at line %d, count %zu)\n",
+                        r->line, g_ownerMismatch);
+        }
     }
     /* One slot serves one node, and a node is one kind of thing: a result slot written
      * as a `Stmt`'s and then read as an `Expr`'s means the id was mixed up (or the same

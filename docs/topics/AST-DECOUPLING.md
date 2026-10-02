@@ -325,3 +325,35 @@ hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 是同一个形状。
 **为什么不按风险**：风险排序会让"最安全的先做"，但每个族的**判据完全一样**（全套 + 棘轮只减），
 所以"安全"不产生依赖；而错误顺序的代价是**返工**——例如先搬 `func`（若不先按实例分区）就要
 先造一张实例表，等 T0 落地后那张表又得重做一遍。
+
+---
+
+## 11. T0 已落地：结果按 owner 归属（分区 + 盖章 + 观察模式）
+
+**做了什么**
+
+| 部件 | 内容 | 位置 |
+|---|---|---|
+| owner 进出 | `resultsEnterOwner` / `resultsLeaveOwner` / `resultsCurrentOwner`；检查器在两处进入函数体（`checkFunc`）与 lambda 体（`CheckLambda`）时设置 | `results.h/.c`、`check_top.c:4347`、`check_expr.c:891` |
+| **盖章** | 槽位第一次被创建时，把**当前 owner** 记进 `NodeResults.owner`（模块级工作 owner 为 NULL ⇒ 不参与校验） | `results.c` |
+| **语义修正（实测得出）** | owner 是**函数体的模板**，不是实例：`wrap<i32>` 与 `wrap<i64>` **共享同一个函数体**，同一批节点被两个实例先后访问。用实例当 owner 会把正常形状判成错 | `check_top.c` |
+| **共享标记** | 一个"只被单个 body 访问"的槽位第一次被另一个 body 碰到时，标 `shared` 并只记一次。**共享是正常结果，不是失败**：泛型体的节点本来就被所有实例访问 | `results.c` |
+| 观察模式 | `EXTC_DBG_OWNER=1` 打印每次"首次跨 body"；`EXTC_DBG=1` 下**暂不** abort（原因见下） | `results.c` |
+
+**为什么现在只是观察、不是硬判据**：把 `!shared` 直接当断言（`EXTC_DBG=1` 下 abort）实测
+**3 个泛型用例红**（`generic-calls-generic` / `generic-instance-order` / `generic-shared-callsite`），
+报的都是同一处：**同一节点上的分析结果被多个实例先后写**——也就是**最后写赢**，正是 T4 要消除的耦合。
+⇒ 这条判据不是"有没有 bug"的问题，而是**还没修完的量**：它在 T4 完成字段归属之后才会干净，
+届时把它从观察模式升为硬判据（`EXTC_DBG=1` abort）。
+
+**这一轮量到的**：`EXTC_DBG=1 EXTC_DBG_OWNER=1 ./tests/run.sh` 在**当前代码**上
+**0 次跨 body 首次越界**（因为那 3 个用例里触发的是 `planSetForStepDropped` 之后的路径，
+而它现在已改成结果层写入）；此前报出的 4 次来自 `generic-shared-callsite` 的实例循环。
+两个数字都记在这里，作为 T4 的基线。
+
+**验收**：构建零告警；tests **326/0**（发布）· **326/0**（`EXTC_DBG=1`，断言/兜底 0 命中）；
+`[ast-freeze]` / `[layering]` / `[plan-seam]` / `[callsite]` 基线不动；**行为不变**。
+
+**T0 到此的边界（写清楚，免得越权）**：id 仍是**一张全局稠密表**（owner 只做校验，不切分区）；
+"按 owner 的池"（`PrimaryMap` 那种每人一张小表）留给 T4 —— 那时每个 owner 的结果真的只属于它，
+才有必要把存储也分开。现在做分区没有收益，反而会让 T4 再改一次。

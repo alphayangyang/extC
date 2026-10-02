@@ -73,12 +73,51 @@ typedef struct {
     FuncDef    *tmpl;          /* instance -> template */
     /* which of the fields above were written; an unset field reads as its default */
     unsigned setMask;
-    ResultKind kind;           /* who owns this slot (see ResultKind) */
+    ResultKind kind;           /* which kind of node this slot belongs to (see ResultKind) */
+    const FuncDef *owner;      /* the body whose results this slot holds (NULL = module level) */
+    bool shared;               /* more than one body legitimately reaches this slot */
     int line;                  /* where the first write happened, for the guard's message */
 } NodeResults;
 
 /* The id of `node`, assigning one when `create` is set. Returns 0 for a NULL node. */
 NodeId nodeIdOf(const void *node, bool create);
+
+/* ---- owners: the partition of the result space ------------------------------------
+ *
+ * An id is dense, and a dense id is only useful if its scope is structural: rustc makes an
+ * `HirId` a pair of (owner, local index) and guards every access with
+ * `validate_hir_id_for_typeck_results`, so a table from one body can never be indexed by a
+ * node of another. The same idea, minimally:
+ *
+ *   - a **pool** is a region of the id space with one owner;
+ *   - the owner of a slot is stamped when the slot is first created, from the *current*
+ *     owner (see `resultsEnterOwner`);
+ *   - `resultsAs` compares the two whenever both are known. A mismatch is a compiler bug
+ *     (a result written while checking one body and read while checking another), so it is
+ *     reported under `EXTC_DBG_OWNER=1` and ignored otherwise. It is **observation, not a
+ *     verdict**: a node inside a generic body is reached by every instance of that body,
+ *     and the analysis currently writes per-instance results onto it -- the coupling T4
+ *     removes. The count is T4's worklist.
+ *
+ * **Sharing is a first-class outcome, not a failure.** A node inside a generic body is
+ * reached by every instance of that body (the deferred-call fixpoint resolves the same
+ * call site once per instance) -- and that is by design: the tree is shared, which is why
+ * the answers live beside it. The first time a slot stamped for one body is reached from
+ * another, the slot is marked `shared` and the check stops for it. That is deterministic:
+ * the same sources produce the same set of shared slots. What the check still catches is
+ * the dangerous case -- a slot that only *one* body ever reaches being touched from a
+ * second one.
+ *
+ * `resultsEnterOwner(NULL)` means "not inside a body" -- module-level work. A slot created
+ * there has no owner, and no access to it can mismatch.
+ */
+void resultsEnterOwner(const FuncDef *owner);
+void resultsLeaveOwner(void);
+const FuncDef *resultsCurrentOwner(void);
+
+/* How many accesses were made from a body other than the one that created the slot.
+ * Always counted (one branch per access); the compiler may use it as a signal. */
+size_t resultsOwnerMismatches(void);
 
 /* The result slot of `node`: NULL when it has none and `create` is false. */
 NodeResults *resultsOf(const void *node, bool create);

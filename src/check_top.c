@@ -4345,6 +4345,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * diagnostic is ever needed again. */
 
     c->curFunc = f;
+    /* Instances share their template's body, so the scope of a body's results is the
+     * template, not the instance: `wrap<i32>` and `wrap<i64>` write the same nodes. */
+    resultsEnterOwner(planTemplate(f) ? planTemplate(f) : f);
     /* The publications of this body start here, and the level pass below folds exactly
      * this slice of `c->stores` -- see `Checker.storeBase`. Nothing recorded before this
      * point belongs to this body, so the pass does not even look at it; the owner field
@@ -4491,6 +4494,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     }
     popScope(c);
     c->curFunc = savedFunc;
+    resultsEnterOwner(savedFunc);
     c->curParams = savedParams;
     c->ctx = savedCtx;
     c->storeBase = savedStoreBase;

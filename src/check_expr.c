@@ -889,12 +889,14 @@ static Type *checkLambda(Checker *c, Expr *e) {
     }
     FuncDef *saveCur = c->curFunc;
     c->curFunc = cf;
+    resultsEnterOwner(cf);   /* a lambda body is its own scope */
     /* With no `->` written the result type is decided by the first `return <value>` in the body; the
      * ST_RETURN case fills it in (check_stmt.c). */
     cf->lamInferRet = (cf->ret == NULL);
     checkStmt(c, e->u.lambda.body);
     cf->lamInferRet = false;
     c->curFunc = saveCur;
+    resultsEnterOwner(saveCur);
     popScope(c);
 
     if (!cf->ret) {

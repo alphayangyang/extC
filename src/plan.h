@@ -30,6 +30,7 @@
 #define EXTC_PLAN_H
 
 #include "ast.h"
+#include "results.h"
 
 /* ---- identity and instances ------------------------------------------------------- */
 
