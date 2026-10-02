@@ -604,7 +604,7 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
         if (elem->kind == TY_PARAM || ttHasParam(elem)) recordNewSizeCheck(c, elem, e->line);
         /* The count appears twice in the emitted C (once for the bytes, once for `.len`), so
          * an impure count is computed into a temporary first -- the same rule as `new T[n]`. */
-        if (!repeatablePure(nE)) e->needTemp = true;
+        if (!repeatablePure(nE)) e->plan.needTemp = true;
         return ttViewMut(tt, sliceOf(c, elem), true);
     }
     if (!ttIsError(argT)) {
@@ -2331,8 +2331,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * evidence only. A function that gains a home arena because of a call it makes is
              * decided again by `checkModule`, using `FuncDef.arenaSites`, once the closure is
              * complete. */
-            if (e->arenaLevel == 0)
-                e->arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
+            if (e->plan.arenaLevel == 0)
+                e->plan.arenaLevel = (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len);
             c->allocSites++;
             /* Keep the lexical level in its own field: the branch above may have replaced
@@ -2349,7 +2349,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * 0 as "the level outside this frame", so it maps back to 0 -- the home arena is
              * the scope the caller chose, which is depth 0. */
             {
-                int depth = arenaDepthOf(e->arenaLevel);    /* the one conversion point */
+                int depth = arenaDepthOf(e->plan.arenaLevel);    /* the one conversion point */
                 if (e->refDepth == 0 || e->refDepth > depth) e->refDepth = depth;
             }
 
@@ -2367,7 +2367,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "the element count must be an integer, found `%s`", typeStr(c, nt));
                 return ttError(tt);
             }
-            if (!repeatablePure(e->u.new_.count)) e->needTemp = true;
+            if (!repeatablePure(e->u.new_.count)) e->plan.needTemp = true;
             /* Freshly allocated memory is writable, so the view is a `mut slice<T>`: the
              * same rule that gives `a[..]` a `mut slice<T>` when `a` is writable. */
             return ttViewMut(tt, sliceOf(c, w), true);
@@ -2556,11 +2556,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * Being symmetric with `new` removes that whole family of false rejections: a home
              * arena gives `ARENA_HOME` and depth 0, "the level outside this frame". */
             if (c->curFunc && c->curFunc->needsHome) {
-                e->arenaLevel = ARENA_HOME;
+                e->plan.arenaLevel = ARENA_HOME;
                 e->refDepth   = 0;
             } else {
                 e->refDepth   = c->scopes.len;
-                e->arenaLevel = (int)c->scopes.len;
+                e->plan.arenaLevel = (int)c->scopes.len;
             }
             c->allocSites++;
             if (e->lexicalLevel == 0) e->lexicalLevel = (int)c->scopes.len;   /* lexical level */
@@ -2650,7 +2650,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             " would run once instead of every round");
                     return ttError(tt);
                 }
-                e->needTemp = true;        /* codegen evaluates it once, then tests the temp */
+                e->plan.needTemp = true;        /* codegen evaluates it once, then tests the temp */
                 /* Every side effect of the subject is hoisted into the prefix, in source order
                  * relative to the other temporaries, so the subject does not count as a call
                  * left in place. Counting it reported two `f() ?? -1` in one `println` that are
@@ -4294,7 +4294,7 @@ static bool exprHasCall(Checker *c, Expr *e) {
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
-    if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && e->needTemp)) c->stmtFx = 1;
+    if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && e->plan.needTemp)) c->stmtFx = 1;
     if (!t) t = ttError(c->tt);
     e->type = t;
     return t;

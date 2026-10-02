@@ -10,9 +10,9 @@ const char *planInstName(const FuncDef *f) { return f ? f->instName : NULL; }
 
 /* ---- ③ arena / zone 计划 ------------------------------------------------------------ */
 
-int planArenaLevel(const Expr *e) { return e ? e->arenaLevel : 0; }
-int planArenaArg(const Expr *e) { return e ? e->arenaArg : 0; }
-int planZoneLevel(const Expr *e) { return e ? e->zoneLevel : 0; }
+int planArenaLevel(const Expr *e) { return e ? e->plan.arenaLevel : 0; }
+int planArenaArg(const Expr *e) { return e ? e->plan.arenaArg : 0; }
+int planZoneLevel(const Expr *e) { return e ? e->plan.zoneLevel : 0; }
 
 bool planUsesHome(const FuncDef *f) { return f ? f->usesHome : false; }
 bool planMayUseArena(const FuncDef *f) { return f ? f->mayUseArena : false; }
@@ -20,7 +20,7 @@ bool planMakesPool(const FuncDef *f) { return f ? f->makesPool : false; }
 
 bool planCondAllocs(const Stmt *s) { return s ? s->condAllocs : false; }
 Stmt *planForStep(const Stmt *s) { return s ? s->forStep : NULL; }
-bool planNeedTemp(const Expr *e) { return e ? e->needTemp : false; }
+bool planNeedTemp(const Expr *e) { return e ? e->plan.needTemp : false; }
 
 /* ---- ③ 协程族 ---------------------------------------------------------------------- */
 

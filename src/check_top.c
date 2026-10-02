@@ -623,7 +623,7 @@ static bool bodyReaches(FuncDef *f, ReachKind k) {
          * `examples/out-param.extc` used to carry a parameter nobody read, and gcc said so. */
         if (callsUsesHome(f->body)) return true;
         for (size_t i = 0; i < f->arenaSites.len; i++)
-            if ((*(Expr **)vecAt(&f->arenaSites, i))->arenaLevel == ARENA_HOME) return true;
+            if ((*(Expr **)vecAt(&f->arenaSites, i))->plan.arenaLevel == ARENA_HOME) return true;
         return false;
     }
     return false;
@@ -1634,16 +1634,16 @@ void setCallZoneArg(Checker *c, Expr *e) {
     /* **只往下调，不往上抬**：同一个节点可能被检查不止一次（泛型实例、末轮那一类重走），
      * 而提权已经把这一格改小了；再按"当前块"覆盖一遍就等于把提权抹掉。
      * 越小越长寿，所以取更小的那个。 */
-    if (e->zoneLevel == 0 || lvl < e->zoneLevel) e->zoneLevel = lvl;
+    if (e->plan.zoneLevel == 0 || lvl < e->plan.zoneLevel) e->plan.zoneLevel = lvl;
 }
 
 void setCallArenaArg(Checker *c, Expr *e) {
     if (!e) return;
     if (e->homeDepth == -1) {                 /* destination at the home level: my home arena */
-        e->arenaArg = ARENA_HOME;
+        e->plan.arenaArg = ARENA_HOME;
         e->arenaArgPending = false;
     } else if (e->homeDepth >= 1) {           /* an explicit block level: use that arena */
-        e->arenaArg = e->homeDepth;
+        e->plan.arenaArg = e->homeDepth;
         e->arenaArgPending = false;
     } else {
         /* No `mut ref` argument gave a reason, so the old rule applies: pass my home
@@ -1657,7 +1657,7 @@ void setCallArenaArg(Checker *c, Expr *e) {
          * This is the job the `if (g->hasHome) return "__extc_home";` line used to do in
          * codegen. It moved into the checker so the decision is made in exactly one
          * place instead of once on each side. */
-        e->arenaArg = (int)c->scopes.len;
+        e->plan.arenaArg = (int)c->scopes.len;
         e->arenaArgPending = true;
         *(Expr **)vecPush(&c->curArenaSites) = e;   /* the final pass comes back to this site */
     }
@@ -1943,7 +1943,7 @@ static void reportMemory(Checker *c, Vec *all) {
             bool inLoop = loopIdOf(&sites, site->line) != 0;
             if (inLoop) nLoop++;
             fprintf(stderr, "    line %-5d level %-3d lexical %-3d  %s\n",
-                    site->line, site->arenaLevel, site->lexicalLevel,
+                    site->line, site->plan.arenaLevel, site->lexicalLevel,
                     inLoop ? "allocated once per round of a loop" : "allocated outside any loop");
         }
     }
@@ -3039,7 +3039,7 @@ static int solvedDepth(Expr *e) {
     case EX_NEW: case EX_GENCALL:
         /* Do not fall back to `refDepth`: that number can be stale and would then
         * contradict the arena level. */
-        return arenaDepthOf(e->arenaLevel);
+        return arenaDepthOf(e->plan.arenaLevel);
     case EX_IDENT: case EX_FIELD: case EX_INDEX:
         return e->refDepth > 0 ? e->refDepth : 0;
     /* The payload is copied into the pool: its depth is this value's depth (family E). */
@@ -6249,7 +6249,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
             if (!rec || !rec->call) continue;
             if (rec->overflow) {        /* args not all recorded => home arena (always sound) */
-                rec->call->arenaArg = ARENA_HOME;
+                rec->call->plan.arenaArg = ARENA_HOME;
                 rec->call->arenaArgPending = false;
                 continue;
             }
@@ -6269,7 +6269,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             int nd = callSiteMinDestDepth(&c, rec);
             /* Write the new homeDepth onto `arenaArg`, by the same rules as `setCallArenaArg`. */
             int want = (nd <= 0) ? ARENA_HOME : nd;
-            if (rec->call->arenaArg != want) { rec->call->arenaArg = want; eFixed++; }
+            if (rec->call->plan.arenaArg != want) { rec->call->plan.arenaArg = want; eFixed++; }
             rec->call->arenaArgPending = false;
         }
 
@@ -6324,15 +6324,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                      * same shape with an inlined container needed only 50 MB. */
                     if (dbgOn("EXTC_DBG_MINAT"))
                         fprintf(stderr, "[minAt] %-8s line=%-4d minAt=%-3d arena=%d\n",
-                                f->name ? f->name : "?", site->line, site->minAt, site->arenaLevel);
+                                f->name ? f->name : "?", site->line, site->minAt, site->plan.arenaLevel);
                     if (dbgOn("EXTC_DBG_SITE2"))
                         fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", site->minAt, site->lexicalLevel,
-                                site->arenaLevel, f->needsHome?1:0, (int)site->kind);
+                                site->plan.arenaLevel, f->needsHome?1:0, (int)site->kind);
                     if (dbgOn("EXTC_DBG_S3"))
                         fprintf(stderr, "[s3] %-8s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", site->minAt, site->lexicalLevel,
-                                site->arenaLevel, f->needsHome?1:0, (int)site->kind);
+                                site->plan.arenaLevel, f->needsHome?1:0, (int)site->kind);
                     int want;                            /* the arena it finally belongs to */
                     if (site->minAt == 0) {
                         want = ARENA_HOME;              /* must outlive this frame => home arena */
@@ -6345,8 +6345,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                          * not-yet-decided value. */
                         want = site->lexicalLevel >= 1 ? site->lexicalLevel : 1;
                     }
-                    if (site->arenaLevel != want) {
-                        site->arenaLevel = want;
+                    if (site->plan.arenaLevel != want) {
+                        site->plan.arenaLevel = want;
                         site->refDepth   = arenaDepthOf(want);   /* the single conversion point */
                         if (want == ARENA_HOME) fixed++; else keptBlock++;
                     }
@@ -6390,7 +6390,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t j = 0; j < f->arenaSites.len; j++) {
             Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
             if (!site->arenaArgPending || !site->func || !site->func->usesHome) continue;
-            site->arenaArg = ARENA_HOME;
+            site->plan.arenaArg = ARENA_HOME;
             site->arenaArgPending = false;
         }
     }
@@ -6400,7 +6400,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          *
          * Why (measured with gdb on `tests/arena-promoted/C2_if_join_refbinding`): the
          * `site->refDepth = ...` in the placement loop above sits inside
-         * `if (site->arenaLevel != want)`. For a site that the provisional pass had already
+         * `if (site->plan.arenaLevel != want)`. For a site that the provisional pass had already
          * set to `ARENA_HOME` and the solver also placed in `ARENA_HOME`, the level did not
          * change, so that assignment never ran and `refDepth` kept a value that had been
          * damaged midway. Measured: the site of `alloc<i32>(1)` had `refDepth` 0, meaning
@@ -6415,7 +6415,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < f->arenaSites.len; j++) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
-                site->refDepth = arenaDepthOf(site->arenaLevel);   /* keep the two in sync */
+                site->refDepth = arenaDepthOf(site->plan.arenaLevel);   /* keep the two in sync */
             }
         }
         /* `EXTC_DBG_HOME=1` prints, for every function, the two home flags and the arena
@@ -6432,7 +6432,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                         f->tmpl ? (f->tmpl->instName ? f->tmpl->instName : f->tmpl->name) : "-",
                         f->arenaSites.len);
                 for (size_t j = 0; j < f->arenaSites.len; j++)
-                    fprintf(stderr, " L%d", (*(Expr **)vecAt(&f->arenaSites, j))->arenaLevel);
+                    fprintf(stderr, " L%d", (*(Expr **)vecAt(&f->arenaSites, j))->plan.arenaLevel);
                 fprintf(stderr, "\n");
             }
 
@@ -6564,7 +6564,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < c.eSites.len; i++) {
         EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
         if (!rec || !rec->call || !rec->call->func) continue;
-        if (!rec->call->func->makesPool || rec->call->zoneLevel == 0) continue;
+        if (!rec->call->func->makesPool || rec->call->plan.zoneLevel == 0) continue;
         /* 目的地有多浅：与 arena 通道**共用一份**实现（U4）；`overflow` 由它在内部按
          * "活得最久"处理（两条通道的差别只剩这一点，现在写在共享函数里而不是两处代码里）。*/
         int nd = callSiteMinDestDepth(&c, rec);
@@ -6572,8 +6572,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (getenv("EXTC_DBG_ZONE"))
             fprintf(stderr, "[zfix] call=%s nd=%d lvl=%d -> %d\n",
                     rec->call->func->name ? rec->call->func->name : "-",
-                    nd, rec->call->zoneLevel, zwant);
-        if (zwant < rec->call->zoneLevel) rec->call->zoneLevel = zwant;
+                    nd, rec->call->plan.zoneLevel, zwant);
+        if (zwant < rec->call->plan.zoneLevel) rec->call->plan.zoneLevel = zwant;
     }
 
     /* ---- 电平求解要再跑一遍 ----
@@ -6626,11 +6626,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * The equality version was wrong and the escape-promotion example caught
              * it immediately, so the predicate itself needs checking too. */
             if (sy->origin && (sy->origin->kind == EX_NEW || sy->origin->kind == EX_GENCALL)) {
-                int siteD = arenaDepthOf(sy->origin->arenaLevel);
+                int siteD = arenaDepthOf(sy->origin->plan.arenaLevel);
                 if (sy->refDepth < siteD) {
                     fprintf(stderr, "[selfcheck] binding `%s` has refDepth=%d, shallower than"
                             " its site (level %d => %d)\n", sy->name, sy->refDepth,
-                            sy->origin->arenaLevel, siteD);
+                            sy->origin->plan.arenaLevel, siteD);
                     bad++;
                 }
             }
@@ -6641,14 +6641,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < f->arenaSites.len; j++) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
-                int want = arenaDepthOf(site->arenaLevel);
+                int want = arenaDepthOf(site->plan.arenaLevel);
                 if (site->refDepth != want) {
                     fprintf(stderr, "[selfcheck] site at line %d of %s: refDepth=%d but"
                             " arenaLevel=%d (should be %d)\n", site->line,
-                            f->name ? f->name : "?", site->refDepth, site->arenaLevel, want);
+                            f->name ? f->name : "?", site->refDepth, site->plan.arenaLevel, want);
                     bad++;
                 }
-                if (site->minAt == 0 && site->arenaLevel != ARENA_HOME) {
+                if (site->minAt == 0 && site->plan.arenaLevel != ARENA_HOME) {
                     fprintf(stderr, "[selfcheck] site at line %d of %s: minAt=0 (must outlive"
                             " this frame) but it was not placed in the home arena\n",
                             site->line, f->name ? f->name : "?");

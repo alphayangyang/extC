@@ -281,7 +281,7 @@ int valDepthStructural(Checker *c, Expr *e) {
             d = maxInt(d, valDepthStructural(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
         return d;
     case EX_NEW: case EX_GENCALL:
-        return e->arenaLevel == ARENA_HOME ? 0 : (e->arenaLevel > 0 ? e->arenaLevel : 0);
+        return e->plan.arenaLevel == ARENA_HOME ? 0 : (e->plan.arenaLevel > 0 ? e->plan.arenaLevel : 0);
     /* The payload is **copied** into the pool, so any reference it carries is carried by this
      * value too -- take the payload's depth. */
     case EX_DYN: return valDepthStructural(c, e->u.dynv.payload);
@@ -407,9 +407,9 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
     if (getenv("EXTC_DBG_ZONE"))
         fprintf(stderr, "[zone] call=%s makesPool=%d zoneLevel=%d d=%d\n",
                 e->func && e->func->name ? e->func->name : "-",
-                e->func ? (int)e->func->makesPool : -1, e->zoneLevel, d);
-    if (!calleeMakesPool(e->func) || e->zoneLevel == 0) return d;
-    int zd = (e->zoneLevel == ZONE_HOME) ? 0 : e->zoneLevel;
+                e->func ? (int)e->func->makesPool : -1, e->plan.zoneLevel, d);
+    if (!calleeMakesPool(e->func) || e->plan.zoneLevel == 0) return d;
+    int zd = (e->plan.zoneLevel == ZONE_HOME) ? 0 : e->plan.zoneLevel;
     return maxInt(d, zd);
 }
 
@@ -1209,12 +1209,12 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         if (val->minAt < 0 || at < val->minAt) val->minAt = at;
         /* Already in the home arena: the home lives longest, so there is
          * nothing to promote. */
-        if (val->arenaLevel == ARENA_HOME) return true;
+        if (val->plan.arenaLevel == ARENA_HOME) return true;
         int target = (at == 0) ? ARENA_HOME : at;
-        if (val->arenaLevel > target) val->arenaLevel = target;
+        if (val->plan.arenaLevel > target) val->plan.arenaLevel = target;
         /* The one place where a level is converted back into a depth is
          * here. */
-        int depth = arenaDepthOf(val->arenaLevel);
+        int depth = arenaDepthOf(val->plan.arenaLevel);
         if (val->refDepth > depth || val->refDepth == 0)
             val->refDepth = depth;
         return true;
@@ -1352,14 +1352,14 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                     val->func && val->func->name ? val->func->name : "-",
                     (void *)val->func, (void *)(val->func ? val->func->owner : NULL),
                     val->func ? (int)val->func->makesPool : -1,
-                    (int)calleeMakesPool(val->func), val->zoneLevel, at);
-        if (calleeMakesPool(val->func) && val->zoneLevel != 0) {
+                    (int)calleeMakesPool(val->func), val->plan.zoneLevel, at);
+        if (calleeMakesPool(val->func) && val->plan.zoneLevel != 0) {
             int want = (at == 0) ? ZONE_HOME : at;
-            if (val->zoneLevel > want) {
+            if (val->plan.zoneLevel > want) {
                 if (getenv("EXTC_DBG_ZONE"))
                     fprintf(stderr, "[promoted] node=%p %d -> %d (at=%d)\n",
-                            (void *)val, val->zoneLevel, want, at);
-                val->zoneLevel = want;
+                            (void *)val, val->plan.zoneLevel, want, at);
+                val->plan.zoneLevel = want;
             }
             if (val->refDepth > at) val->refDepth = at;
             return true;
