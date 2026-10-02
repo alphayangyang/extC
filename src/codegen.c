@@ -9,6 +9,7 @@
  */
 
 #include "codegen.h"
+#include "plan.h"          /* 计划/分析产物的唯一读口（X1）*/
 #include "pools.h"
 #include "coroutine.h"
 #include "domain.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
@@ -205,7 +206,7 @@ typedef struct {
     bool        noArena;   /* This function puts nothing into its own block arena,
                             * so neither `extc_arena __extc_a[N]` nor the release
                             * calls are emitted. The checker decides this
-                            * (`f->mayUseArena`); it saves compile time. */
+                            * (`planMayUseArena(f)`); it saves compile time. */
     /* Level-indexed tables, one slot per block level of the function being emitted (the same
      * count `__extc_a` gets). They used to be fixed `[64]` arrays, which both aborted on a legal
      * program (200 nested blocks tripped the assertion in `genBlockBody`) and had nothing to do
@@ -689,7 +690,7 @@ static const char *cFuncName(CG *g, FuncDef *f) {
      * between. */
     if (f->isExport) return exportName(f);
     /* An instance of a generic free function carries its own C name (eq2_i32). */
-    if (f->instName) return f->instName;
+    if (planInstName(f)) return planInstName(f);
     const char *suffix = opOverloadSuffix(g, f);
     if (g->ownerPrefix)
         return arenaPrintf(g->arena, "%s_%s%s", g->ownerPrefix, cSymName(g, f->name), suffix);
@@ -722,8 +723,8 @@ static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
      * compile). A method instance carries its own type arguments; otherwise the receiver
      * instance does -- `cMethodName` is exactly the place that knows the receiver. */
     Vec *sp = NULL, *sa = NULL;
-    if (f->tmpl) {
-        sp = &f->tmpl->typeParams;
+    if (planTemplate(f)) {
+        sp = &planTemplate(f)->typeParams;
         sa = &f->targs;
     } else if (rb && rb->kind == TY_GENERIC && rb->sdef) {
         sp = &rb->sdef->typeParams;
@@ -1317,7 +1318,7 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
 /* Emit a binary operation.
  *
  * An overloadable operator that the checker already resolved carries the method
- * to call in `e->func`: that covers `==` `!=` and the ordering and arithmetic
+ * to call in `planCallee(e)`: that covers `==` `!=` and the ordering and arithmetic
  * operators. The same operators are emitted from here
  * when the operand was a type parameter inside a generic: `e->needOp` says the
  * decision was deferred, and the instance context is what makes `T` resolvable
@@ -1372,7 +1373,7 @@ static const char *genBin(CG *g, Expr *e) {
      * `slice<[6]i32>` is that case. That guard used to be here, so such a
      * comparison fell through to the method lookup below and reported
      * "`array_6_i32` needs to define `!=`". It was a false error. */
-    if (!e->func) {
+    if (!planCallee(e)) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         if (lt && lt->kind == TY_ARRAY &&
             isEqualityOp(op)) {
@@ -1382,10 +1383,10 @@ static const char *genBin(CG *g, Expr *e) {
         }
     }
 
-    if (e->func || e->needOp) {
+    if (planCallee(e) || e->needOp) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
-        FuncDef *m = e->func
-                     ? e->func
+        FuncDef *m = planCallee(e)
+                     ? planCallee(e)
                      : findOpMethod(g->tt, lt, op, ttBase(subst(g, e->u.bin.right->type)),
                                     strcmp(op, "!=") == 0 ? "==" : NULL);
 
@@ -1545,8 +1546,8 @@ static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **
 static void substEnterFunc(CG *g, FuncDef *f, Vec **saveP, Vec **saveA) {
     *saveP = g->substParams;
     *saveA = g->substArgs;
-    if (f && f->tmpl) {
-        g->substParams = &f->tmpl->typeParams;
+    if (f && planTemplate(f)) {
+        g->substParams = &planTemplate(f)->typeParams;
         g->substArgs   = &f->targs;
     }
 }
@@ -1854,7 +1855,7 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
     if (funcTakesHomeArena(callee)) {
         if (n) bufPuts(b, ", ");
         bufPuts(b, forSignature ? "extc_arena *__extc_home"
-                                : homeArg(g, site ? site->arenaArg : ARENA_HOME));
+                                : homeArg(g, site ? planArenaArg(site) : ARENA_HOME));
         n++;
     }
     if (funcTakesHomeZone(callee)) {
@@ -1941,10 +1942,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
      * still mention `T`, and for a call the checker deferred (`#57`, a method on a type
      * parameter) the node carries no `func` at all: the method is resolved here, on the
      * substituted type, the same way the operators are resolved a few functions down. The
-     * checker deliberately leaves `e->func` alone -- one template body has many instances, so a
+     * checker deliberately leaves `planCallee(e)` alone -- one template body has many instances, so a
      * `func` stored there would be the wrong method for all but the last one. */
     Type *recvT = subst(g, e->u.method.recv->type);
-    FuncDef *f = e->func;
+    FuncDef *f = planCallee(e);
     if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
     /* ---- The **handle** protocol ----
      * The receiver is a `coroutine<T>` (the marker type, whatever the resolved method's owner looks
@@ -1976,7 +1977,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
         return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s, \"%s\", %d)",
                            cType(g, yt), viaRef ? "" : "&", rr, g->path, e->line);
     }
-    if (f && f->coroProto && f->owner && f->owner->coroOf) {
+    if (f && planCoroProto(f) && f->owner && f->owner->coroOf) {
         /* Driving a coroutine. The two protocol methods are the state machine's calling convention,
          * so they are emitted inline -- and whether the receiver is the frame itself or a reference
          * to it decides `&x`/`x.ret` versus `x`/`x->ret`. That is what lets a coroutine be driven
@@ -1985,17 +1986,17 @@ static const char *genMethodCall(CG *g, Expr *e) {
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
-        if (f->coroProto == 5) {
+        if (planCoroProto(f) == 5) {
             /* `send(v)`: put the value in the frame's `in` slot, then resume exactly like `next`. */
             const char *vv = e->u.method.args.len
                                  ? genExpr(g, *(Expr **)vecAt(&e->u.method.args, 0)) : "0";
             pfLine(g, "%s%s in = %s;", rc, viaRef ? "->" : ".", vv);
         }
-        if (f->coroProto == 1 || f->coroProto == 5) {
+        if (planCoroProto(f) == 1 || planCoroProto(f) == 5) {
             /* With a task place the step is driven through the driver (it owns the place); without
              * one there is nothing to set up, so the step itself is the driver. */
             FuncDef *cf = f->owner->coroOf;
-            return cf->coroNeedsZone
+            return planCoroNeedsZone(cf)
                        ? arenaPrintf(g->arena, "%s$next(%s%s)", cFuncName(g, cf), viaRef ? "" : "&", rc)
                        : arenaPrintf(g->arena, "%s$step(%s%s)", cFuncName(g, cf), viaRef ? "" : "&", rc);
         }
@@ -2201,8 +2202,8 @@ static const char *genExprInner(CG *g, Expr *e) {
              * needed), then hand it to the domain as `(frame, step)`. The expression's value is
              * void (the checker says so): the取件单 lands with the driving loop. */
             Expr *in = e->u.ext_.call;
-            FuncDef *cf = (in && in->kind == EX_CALL) ? in->func : NULL;
-            if (!cf || !cf->isCoro || !e->extDom || g->coroFunc) {
+            FuncDef *cf = (in && in->kind == EX_CALL) ? planCallee(in) : NULL;
+            if (!cf || !planIsCoro(cf) || !e->extDom || g->coroFunc) {
                 ctxError(g->ctx, e->line, 1, NULL,
                          "domain task: only a plain-function context with a coroutine callee is"
                          " implemented so far (nesting a task inside a coroutine is the next step)");
@@ -2215,7 +2216,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *zn = arenaPrintf(g->arena, "__extc_dtzn%d", g->tmpSeq++);
             Buf init;
             bufInit(&init, g->arena);
-            if (cf->coroNeedsZone) {
+            if (planCoroNeedsZone(cf)) {
                 flushPrefix(g);
                 cgLine(g, "int64_t %s = extc_zoneTop;", sv);
                 cgLine(g, "int64_t %s = extc_task_begin();", id);
@@ -2224,7 +2225,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 g->needPool = true;
             }
             bufPrintf(&init, "struct %s$frame %s = (struct %s$frame){ .pc = 0", cn, tmp, cn);
-            if (cf->coroNeedsZone) bufPrintf(&init, ", .zone = %s, .task = %s", zn, id);
+            if (planCoroNeedsZone(cf)) bufPrintf(&init, ", .zone = %s, .task = %s", zn, id);
             for (size_t i = 0; i < cf->params.len; i++) {
                 Param *pp = *(Param **)vecAt(&cf->params, i);
                 Expr *arg = (in->u.call.args.len > i) ? *(Expr **)vecAt(&in->u.call.args, i) : NULL;
@@ -2233,7 +2234,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             bufPrintf(&init, " };");
             flushPrefix(g);
             cgLine(g, "%s", bufCstr(&init));
-            if (cf->coroNeedsZone) cgLine(g, "extc_zoneTop = %s;", sv);
+            if (planCoroNeedsZone(cf)) cgLine(g, "extc_zoneTop = %s;", sv);
             g->needDomain = true;
             flushPrefix(g);
             cgLine(g, "extc_dom_add(%s, (void *)&%s, %s$domstep);", genExpr(g, e->extDom), tmp, cn);
@@ -2321,18 +2322,18 @@ static const char *genExprInner(CG *g, Expr *e) {
              * (they are transitive closures), so this is the first place the answer is final. It is a
              * compile error, and the alternative -- a differing pointer type -- is one gcc reports
              * against generated code instead of against the line the author wrote. */
-            if (e->func) {
-                if (funcTakesHomeArena(e->func) || funcTakesHomeZone(e->func)) {
+            if (planCallee(e)) {
+                if (funcTakesHomeArena(planCallee(e)) || funcTakesHomeZone(planCallee(e))) {
                     ctxError(g->ctx, e->line, 1,
                              "A function that takes a home arena or zone is compiled with one hidden"
                              " parameter more than its source signature, so its address does not have"
                              " the type this `fn` says. Call it, or write a free function that wraps"
                              " it without the hidden argument.",
                              "`%s` takes a hidden arena parameter, so its address is not a `fn` value",
-                             e->func->name ? e->func->name : "?");
+                             planCallee(e)->name ? planCallee(e)->name : "?");
                     return "0";
                 }
-                return arenaPrintf(g->arena, "&%s", cFuncName(g, e->func));
+                return arenaPrintf(g->arena, "&%s", cFuncName(g, planCallee(e)));
             }
             const char *cn = e->u.ident.cname ? e->u.ident.cname : e->u.ident.name;
             /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which
@@ -2415,10 +2416,10 @@ static const char *genExprInner(CG *g, Expr *e) {
                 g->needPar = true;
                 /* A worker that allocates takes its memory from the run's region, so the region
                  * half of the runtime has to be compiled in for this program. */
-                if (wf->usesHome) g->needParRegion = true;
+                if (planUsesHome(wf)) g->needParRegion = true;
                 return arenaPrintf(g->arena,
                     "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s, (int64_t)(%s), 0))",
-                    wf->name, tmp, wf->usesHome ? "1" : "0", ntmp,
+                    wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp,
                     genExpr(g, *(Expr **)vecAt(&e->u.call.args, 2 + nViews)));
             }
             /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
@@ -2427,7 +2428,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * slice-B1 test drives from a small C harness. */
             /* A handle-protocol call can arrive here too (a `ref coroutine<T>` receiver resolves as
              * an ordinary call, not as EX_METHOD), so both paths share the dispatch. */
-            if (e->func && !e->func->isCoro && e->u.call.callee->kind == EX_FIELD) {
+            if (planCallee(e) && !planIsCoro(planCallee(e)) && e->u.call.callee->kind == EX_FIELD) {
                 /* `self` is implicit, so a `ref` receiver arrives as a call with **no** arguments and
                  * the receiver sits in the callee's field expression. The receiver's type decides
                  * whether this is the handle protocol. */
@@ -2437,8 +2438,8 @@ static const char *genExprInner(CG *g, Expr *e) {
                                                                      : NULL);
                 int hp = 0;
                 if (rf && isProtoType(ttBase(subst(g, rf->type)), "coroutine", 1))
-                    hp = (e->func->name && strcmp(e->func->name, "value") == 0) ? 4
-                       : (e->func->name && strcmp(e->func->name, "send") == 0)  ? 5 : 3;
+                    hp = (planCallee(e)->name && strcmp(planCallee(e)->name, "value") == 0) ? 4
+                       : (planCallee(e)->name && strcmp(planCallee(e)->name, "send") == 0)  ? 5 : 3;
                 if (hp) {
                     const char *rc = genExpr(g, rf);
                     const bool viaRef = rf->type && rf->type->kind == TY_REF;
@@ -2459,17 +2460,17 @@ static const char *genExprInner(CG *g, Expr *e) {
                                            viaRef ? "" : "&", rc, vv, g->path, e->line);
                     }
                     return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s, \"%s\", %d)",
-                                       cType(g, subst(g, e->func->ret)), viaRef ? "" : "&", rc,
+                                       cType(g, subst(g, planCallee(e)->ret)), viaRef ? "" : "&", rc,
                                        g->path, e->line);
                 }
             }
-            if (e->func && e->func->isCoro && e->boxedCoro) {
+            if (planCallee(e) && planIsCoro(planCallee(e)) && e->boxedCoro) {
                 /* **Boxing**: this coroutine value is stored somewhere that outlives the current C
                  * scope, so its frame goes into the task's own place and the value is a
                  * `{frame, kind, task}` handle -- plain value, 24 bytes, safe to copy and to store in
                  * a container. The setup statements must precede the statement that reads the handle,
                  * so they go to the prefix (C11 has no statement expressions). */
-                FuncDef *cf = e->func;
+                FuncDef *cf = planCallee(e);
                 const char *cn = cFuncName(g, cf);
                 int sq = g->coroSeq++;
                 g->needCoroHandle = true;
@@ -2494,7 +2495,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                                    "((extc_coro){ .frame = __extc_czf%d, .kind = %d,"
                                    " .task = __extc_czh%d })", sq, cf->coroKind, sq);
             }
-            if (e->func && e->func->isCoro) {
+            if (planCallee(e) && planIsCoro(planCallee(e))) {
                 /* A coroutine call that is neither boxed nor driven: still a loud failure at the C
                  * compiler rather than a silent miscompile -- except under `EXTC_CORO_B1_HARNESS`,
                  * which the slice-B1 judge defines so it can drive the generated `$step` from a small
@@ -2535,18 +2536,18 @@ static const char *genExprInner(CG *g, Expr *e) {
              * by the block, so nothing registers one and nothing closes one behind the
              * program's back. `std::fs` closes with the `close(2)` it declares itself (see
              * `docs/topics/IO.md` section 5, decision 79). */
-            if (!e->func) return "0";
+            if (!planCallee(e)) return "0";
 
             /* Only `cSymName` is used, without the owner prefix: a call site
              * names the callee itself, whereas `ownerPrefix` is the instance
              * currently being generated. cFuncName has to tell the two apart,
              * as its comment explains. This also renames a name that collides
              * with a C keyword (`fn double`). */
-            name = (e->func && e->func->instName) ? e->func->instName : cSymName(g, name);
+            name = (planCallee(e) && planInstName(planCallee(e))) ? planInstName(planCallee(e)) : cSymName(g, name);
             /* 运行期那一层：库里的 `extc_pool_new(parent)` 在收「家 zone」的函数里换成
              * `extc_pool_new_at(parent, __extc_home_zone)` —— 池因此生到**调用者选的
              * 那个地方**去（POOLS.md §3.1 的提权落点，PLAN #87）。库侧一个字都不用改。 */
-            bool poolNewAt = (e->func && e->func->body == NULL
+            bool poolNewAt = (planCallee(e) && planCallee(e)->body == NULL
                               && poolCtorNeedsZone(name));
             if (poolNewAt && g->funcHasZoneParam) name = "extc_pool_new_at";
             if (strcmp(name, "extc_cout_f64") == 0) g->needCoutF64 = true;
@@ -2564,14 +2565,14 @@ static const char *genExprInner(CG *g, Expr *e) {
              * 都需要的函数各发两遍 —— 实测产物里长成
              * `put(st, k, __extc_home, __extc_home_zone, __extc_home, __extc_home_zone)`。
              * `poolNewAt` 那条路是**例外**：名字已经换成 `extc_pool_new_at` 那一扇门，只补它的
-             * 第二个实参，而且别写成 `e->func->makesPool` —— `extc_pool_new` 是 extern，工作清单
+             * 第二个实参，而且别写成 `planMakesPool(planCallee(e))` —— `extc_pool_new` 是 extern，工作清单
              * 不遍历没有函数体的函数 ⇒ 它的 `makesPool` 是假，只能按名字认它。 */
-            cgImplicitArgs(g, &b, e->func, e, e->u.call.args.len, false);
+            cgImplicitArgs(g, &b, planCallee(e), e, e->u.call.args.len, false);
             if (poolNewAt && g->funcHasZoneParam) {
                 bufPuts(&b, ", ");
                 bufPuts(&b, zoneArgRef(g, e));
             }
-            owPassCells(g, &b, e, e->u.call.args.len, cgHasImplicitArgs(e->func));
+            owPassCells(g, &b, e, e->u.call.args.len, cgHasImplicitArgs(planCallee(e)));
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -2660,7 +2661,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * methods follow, so cMethodName is reused directly. */
             Buf b;
             bufInit(&b, g->arena);
-            bufPuts(&b, cMethodName(g, e->assocOwner, e->func));
+            bufPuts(&b, cMethodName(g, e->assocOwner, planCallee(e)));
             bufPutc(&b, '(');
             for (size_t i = 0; i < e->u.assoc.args.len; i++) {
                 if (i) bufPuts(&b, ", ");
@@ -2668,8 +2669,8 @@ static const char *genExprInner(CG *g, Expr *e) {
             }
             /* An associated function such as `Type::make()` allocates, so the
              * home arena argument is appended. */
-            cgImplicitArgs(g, &b, e->func, e, e->u.assoc.args.len, false);
-            owPassCells(g, &b, e, e->u.assoc.args.len, cgHasImplicitArgs(e->func));   /* @overwrite cells */
+            cgImplicitArgs(g, &b, planCallee(e), e, e->u.assoc.args.len, false);
+            owPassCells(g, &b, e, e->u.assoc.args.len, cgHasImplicitArgs(planCallee(e)));   /* @overwrite cells */
             bufPutc(&b, ')');
             return bufCstr(&b);
         }
@@ -2767,7 +2768,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * further out. This is where memory with automatic cleanup is
              * actually taken. */
             if (dbgOn("EXTC_DBG_ARENA")) arenaDriftCheck(g, e, "new");
-            const char *ar = arenaRefAt(g, e->arenaLevel);
+            const char *ar = arenaRefAt(g, planArenaLevel(e));
             if (!e->u.new_.count) {
                 /* The place of one T (or one [N]T) is simply its address. */
                 return arenaPrintf(g->arena,
@@ -2778,7 +2779,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * exactly once: an impure count is marked `needTemp` by the checker
              * and stored in a temporary first. */
             const char *n;
-            if (e->needTemp) {
+            if (planNeedTemp(e)) {
                 const char *tmp = arenaPrintf(g->arena, "__extc_n%d", g->tmpSeq++);
                 pfLine(g, "int64_t %s = (int64_t)(%s);", tmp, genExpr(g, e->u.new_.count));
                 n = tmp;
@@ -2827,7 +2828,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 size_t nIdx = (strcmp(gcName, "poolResize") == 0
                                || strcmp(gcName, "poolResizeRaw") == 0) ? 2 : 1;
                 const char *n;
-                if (e->needTemp) {
+                if (planNeedTemp(e)) {
                     const char *tmp = arenaPrintf(g->arena, "__extc_pn%d", g->tmpSeq++);
                     pfLine(g, "int64_t %s = (int64_t)(%s);", tmp,
                            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx)));
@@ -2870,7 +2871,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
             /* The level comes from the checker as well, with `alloc` meaning
              * the current block, so `g->blkLevel` is not counted here. */
-            const char *ar = arenaRefAt(g, e->arenaLevel);
+            const char *ar = arenaRefAt(g, planArenaLevel(e));
             return arenaPrintf(g->arena,
                 "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
                 tn, ar, n, tn, g->path, e->line);
@@ -2890,14 +2891,14 @@ static const char *genExprInner(CG *g, Expr *e) {
          *   - An impure subject, as in `f() ?? -1`, is marked `needTemp` by the
          *     checker and computed into a temporary first; flushPrefix emits
          *     those lines before the enclosing statement, which the
-         *     `e->needTemp` branch below relies on.
+         *     `planNeedTemp(e)` branch below relies on.
          *
          * A C conditional evaluates only one side, so the fallback's side
          * effects do not run when the value is present. */
         case EX_COALESCE: {
             Type *mt = e->u.coalesce.main->type;
             const char *m;
-            if (e->needTemp) {
+            if (planNeedTemp(e)) {
                 /* An impure subject (`f() ?? -1`) is computed once into a
                  * temporary, and the conditional then reads that variable;
                  * reading one twice has no side effect. flushPrefix emits these
@@ -3305,14 +3306,14 @@ static const char *zoneArgRef(CG *g, Expr *e) {
      * 家 zone（一路往下传），k>=1 = 第 k 层那个地方的 `__extc_zm<k>`（提权之后这里会变小）。 */
     if (getenv("EXTC_DBG_ZONE"))
         fprintf(stderr, "[zonearg] %s node=%p lvl=%d mark1=%d mark2=%d blk=%d\n",
-                g->curFuncName ? g->curFuncName : "-", (void *)e, e ? e->zoneLevel : 0,
+                g->curFuncName ? g->curFuncName : "-", (void *)e, e ? planZoneLevel(e) : 0,
                 (int)g->zoneMark[1], (int)g->zoneMark[2], g->blkLevel);
     /* Inside a coroutine's step the place is **read from the frame**: rule 1 of the design says a
      * resume must not re-derive it from the environment, and a step has nothing to re-derive it from
      * anyway -- no hidden parameters, no zone mark of its own (docs/topics/CONCURRENCY.md 4.4). */
     if (g->coroFunc) return "f->zone";
-    if (e && e->zoneLevel != 0) {
-        if (e->zoneLevel == ZONE_HOME) {
+    if (e && planZoneLevel(e) != 0) {
+        if (planZoneLevel(e) == ZONE_HOME) {
             if (g->funcHasZoneParam) return "__extc_home_zone";
             /* `main` 的 C 签名是固定的，收不到家 zone 参数 ⇒ 它的"家"就是**它自己那个体**
              * （与家 arena 的 `__extc_home = &__extc_a[1]` 同一条口径）。
@@ -3325,11 +3326,11 @@ static const char *zoneArgRef(CG *g, Expr *e) {
              * 家 zone 更长寿，代价只是内存（与逃逸分析"宁可多算"的方向一致）。 */
             if (g->zoneFrameMarked) return "__extc_zm1";
         }
-        if (e->zoneLevel == 1 && g->zoneFrameMarked) return "__extc_zm1";
-        if (e->zoneLevel > 1
-            && e->zoneLevel < g->levelCap
-            && g->zoneMark[e->zoneLevel])
-            return arenaPrintf(g->arena, "__extc_zm%d", e->zoneLevel);
+        if (planZoneLevel(e) == 1 && g->zoneFrameMarked) return "__extc_zm1";
+        if (planZoneLevel(e) > 1
+            && planZoneLevel(e) < g->levelCap
+            && g->zoneMark[planZoneLevel(e)])
+            return arenaPrintf(g->arena, "__extc_zm%d", planZoneLevel(e));
     }
     if (g->funcHasZoneParam) return "__extc_home_zone";
     for (int lvl = g->blkLevel; lvl >= 1; lvl--) {
@@ -3414,12 +3415,12 @@ static const char *arenaRefAt(CG *g, int level) {
 static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
     if (dbgOn("EXTC_DBG_ARENA_VERBOSE"))
         fprintf(stderr, "[arena-ok?] %s: level=%d block=%d %s:%d\n",
-                what, e->arenaLevel, g->blkLevel, g->path, e->line);
-    if (e->arenaLevel == 0)
+                what, planArenaLevel(e), g->blkLevel, g->path, e->line);
+    if (planArenaLevel(e) == 0)
         fprintf(stderr, "[arena!] %s has level 0 (undecided)  %s:%d\n", what, g->path, e->line);
-    else if (e->arenaLevel != ARENA_HOME && e->arenaLevel > g->blkLevel)
+    else if (planArenaLevel(e) != ARENA_HOME && planArenaLevel(e) > g->blkLevel)
         fprintf(stderr, "[arena!] %s has level %d, deeper than block %d: the two answers disagree  %s:%d\n",
-                what, e->arenaLevel, g->blkLevel, g->path, e->line);
+                what, planArenaLevel(e), g->blkLevel, g->path, e->line);
 }
 
 /* Does this block need a zone of its own?
@@ -3581,20 +3582,20 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
         collectOwCallsExpr(e->u.dynv.payload, out);
         return;
     case EX_CALL:
-        if (e->func && e->func->owSites > 0 && !e->func->owLocal)
+        if (planCallee(e) && planCallee(e)->owSites > 0 && !planCallee(e)->owLocal)
             *(Expr **)vecPush(out) = e;
         for (size_t i = 0; i < e->u.call.args.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.call.args, i), out);
         return;
     case EX_METHOD:
-        if (e->func && e->func->owSites > 0 && !e->func->owLocal)
+        if (planCallee(e) && planCallee(e)->owSites > 0 && !planCallee(e)->owLocal)
             *(Expr **)vecPush(out) = e;
         collectOwCallsExpr(e->u.method.recv, out);
         for (size_t i = 0; i < e->u.method.args.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.method.args, i), out);
         return;
     case EX_ASSOC:
-        if (e->func && e->func->owSites > 0 && !e->func->owLocal)
+        if (planCallee(e) && planCallee(e)->owSites > 0 && !planCallee(e)->owLocal)
             *(Expr **)vecPush(out) = e;
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.assoc.args, i), out);
@@ -3708,10 +3709,10 @@ static bool f_owLocal(CG *g, Stmt *s) { (void)s; return g->owLocal; }
  *     fallback for that, so the program stays defined.
  */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome) {
-    if (!e->func || e->func->owSites == 0 || e->func->owLocal) return;
+    if (!planCallee(e) || planCallee(e)->owSites == 0 || planCallee(e)->owLocal) return;
     int j = owCallIndex(g, e);
     if (j < 0) return;                       /* not registered; the callee has a fallback */
-    for (int k = 0; k < e->func->owSites; k++)
+    for (int k = 0; k < planCallee(e)->owSites; k++)
         bufPrintf(b, "%s&__extc_owc%d_%d", (nargs || hasHome || k) ? ", " : "", j, k);
 }
 
@@ -3763,7 +3764,7 @@ int blkMaxLevel(Stmt *s) {
     case ST_WHILE:
         /* A condition that allocates gets a level of its own (see the emitter), so that shape
          * needs one more than the body's own block. */
-        return (s->condAllocs ? 2 : 1) + blkMaxOfBlock(s->u.whiles.body);
+        return (planCondAllocs(s) ? 2 : 1) + blkMaxOfBlock(s->u.whiles.body);
     /* `d.run { ... }` is a statement that opens a block, and `genStmtInner` emits its body
      * through `genBlockBody`, which takes one arena level (`codegen.c` ST_DOMAIN). This case
      * was missing, so the level count came out one short and the emitted
@@ -3831,7 +3832,7 @@ static void genBlockBody(CG *g, Stmt *block) {
          * it. Emitted from the same walk that emits the statement, which is what keeps the label
          * and the `goto` in agreement (the `goto` is only emitted when ST_WHILE found this exact
          * statement in the block). */
-        if (block->forStep && st == block->forStep && g->loopLen > 0 && g->loopStep[g->loopLen - 1])
+        if (planForStep(block) && st == planForStep(block) && g->loopLen > 0 && g->loopStep[g->loopLen - 1])
             cgLine(g, "__extc_forstep_%d: ;", g->loopStep[g->loopLen - 1]);
         genStmt(g, st);
     }
@@ -3928,8 +3929,8 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
              * arguments initialize the parameters -- a resume has none to pass them again. */
             if (s->u.var.cname && s->u.var.init && s->u.var.init->kind == EX_CALL &&
-                s->u.var.init->func && s->u.var.init->func->isCoro) {
-                FuncDef *cf = s->u.var.init->func;
+                planCallee(s->u.var.init) && planIsCoro(planCallee(s->u.var.init))) {
+                FuncDef *cf = planCallee(s->u.var.init);
                 const char *fr = cType(g, s->type);      /* the synthesized frame type */
                 /* The **task's own place**: entered here (lazily, at the spawn), stored in the frame,
                  * and left again so the caller keeps its own place current. Everything the coroutine
@@ -3967,7 +3968,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                     g->needPool = true;      /* the task table brings the zone runtime with it */
                     return;
                 }
-                const bool hasZone = cf->coroNeedsZone;
+                const bool hasZone = planCoroNeedsZone(cf);
                 const int  sq = g->coroSeq++;
                 if (hasZone) {
                     flushPrefix(g);
@@ -4052,7 +4053,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                                            : arenaPrintf(g->arena, "__extc_owarg%d", k);
                     /* The storage lives where the cell's own `home` says:
                      * with a home it belongs to `__extc_home`, otherwise to
-                     * level 1 of this frame. `arenaRefAt(nx->arenaLevel)` must
+                     * level 1 of this frame. `arenaRefAt(planArenaLevel(nx))` must
                      * not be used here: that number is the callee's own level,
                      * while the cell lives elsewhere, and the two do not share a
                      * lifetime. Using it made a later call memset a block that
@@ -4061,7 +4062,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                      * merely looked as if it worked. */
                     const char *owcv = arenaPrintf(g->arena, "__owc%d", k);
                     const char *ar = arenaPrintf(g->arena, "(*%s->home)", owcv);
-                    (void)nx->arenaLevel;
+                    (void)planArenaLevel(nx);
                     const char *ct = cType(g, st_t);
                     flushPrefix(g);
                     /* The site index has to be part of the name: two
@@ -4094,7 +4095,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                          * twice the largest length seen and does not depend on
                          * the number of iterations. */
                         const char *cnt = genExpr(g, nx->u.new_.count);
-                        if (nx->needTemp) {
+                        if (planNeedTemp(nx)) {
                             const char *t = arenaPrintf(g->arena, "__extc_n%d", g->tmpSeq++);
                             pfLine(g, "int64_t %s = (int64_t)(%s);", t, cnt);
                             cnt = t;
@@ -4162,7 +4163,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * assignment of its call - the checker has already required a target with no
              * call in it, because the call names the target a second time. */
             if (s->u.assign.op) {
-                if (s->u.assign.opExpr && s->u.assign.opExpr->func)
+                if (s->u.assign.opExpr && planCallee(s->u.assign.opExpr))
                     cgLine(g, "%s = %s;", tgt, genBin(g, s->u.assign.opExpr));
                 else
                     cgLine(g, "%s %s %s;", tgt, s->u.assign.op, val);
@@ -4209,9 +4210,9 @@ static void genStmtInner(CG *g, Stmt *s) {
              * `forRetargetToIterator`). `genBlockBody` emits the label, `ST_CONTINUE` jumps to it. */
             Stmt *wbody = s->u.whiles.body;
             int stepLabel = 0;
-            if (wbody && wbody->forStep) {
+            if (wbody && planForStep(wbody)) {
                 for (size_t i = 0; i < wbody->u.block.stmts.len; i++)
-                    if (*(Stmt **)vecAt(&wbody->u.block.stmts, i) == wbody->forStep) { stepLabel = ++g->forStepSeq; break; }
+                    if (*(Stmt **)vecAt(&wbody->u.block.stmts, i) == planForStep(wbody)) { stepLabel = ++g->forStepSeq; break; }
             }
             /* A condition that **allocates** gets its own arena level, released at the top of every
              * round: the checker put its sites one scope deeper for exactly this (定案 101②). Without
@@ -4219,7 +4220,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * with the number of rounds. `g->blkLevel` is raised for the whole loop so the condition
              * and the body agree with what the checker assigned; the body block then sits one level
              * deeper than before, which is why `blkMaxLevel` counts an extra level for this shape. */
-            const bool ownLevel = s->condAllocs;
+            const bool ownLevel = planCondAllocs(s);
             if (condTemps || ownLevel) {
                 cgLine(g, "while (1) {");
                 g->indent++;
@@ -4460,7 +4461,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
         return bufCstr(&sig);
     }
-    if (f->params.len == 0 && !f->usesHome && !f->makesPool && f->owLocal) {   /* no hidden parameters follow */
+    if (f->params.len == 0 && !planUsesHome(f) && !planMakesPool(f) && f->owLocal) {   /* no hidden parameters follow */
         bufPuts(&sig, "void"); return bufCstr(&sig);
     }
     for (size_t i = 0; i < f->params.len; i++) {
@@ -4481,7 +4482,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
      * case. */
     if (!f->owLocal) {
         for (int i = 0; i < f->owSites; i++) {
-            if (f->params.len || f->usesHome || f->makesPool || i) bufPuts(&sig, ", ");
+            if (f->params.len || planUsesHome(f) || planMakesPool(f) || i) bufPuts(&sig, ", ");
             bufPrintf(&sig, "extc_owcell *__extc_owarg%d", i);
         }
     }
@@ -4518,7 +4519,7 @@ static bool stmtIsDefiniteReturn(Stmt *s) {
  * increment and nothing else.
  *
  * The reachability uses the call graph the checker already recorded in
- * `e->func`, so no second AST walker is needed, and it is transitive: in the
+ * `planCallee(e)`, so no second AST walker is needed, and it is transitive: in the
  * mutual recursion `g -> h -> g`, `g` counts as self-recursive. That shape is
  * the one that used to run for 60 seconds without printing anything.
  *
@@ -4655,13 +4656,13 @@ static bool coroProvisional(Vec *targs) {
 }
 
 /* The coroutines that are actually emitted: instances of a coroutine, never a generic template and
- * never a provisional instance (`gen_T`). Every loop below that used to `continue` on `cf->tmpl` was
+ * never a provisional instance (`gen_T`). Every loop below that used to `continue` on `planTemplate(cf)` was
  * skipping exactly the wrong set -- the instance is what `genFunc` emits, and a template never is
  * (tools/attack.py F4 + B7). */
 static bool coroEmitted(FuncDef *f) {
-    if (!f || !f->isCoro) return false;
-    if (!f->tmpl) return f->typeParams.len == 0;
-    return f->tmpl->typeParams.len == 0 ? true : !coroProvisional(&f->targs);
+    if (!f || !planIsCoro(f)) return false;
+    if (!planTemplate(f)) return f->typeParams.len == 0;
+    return planTemplate(f)->typeParams.len == 0 ? true : !coroProvisional(&f->targs);
 }
 
 static void genCoroHandleDecls(CG *g, Module *m) {
@@ -4680,7 +4681,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         if (!coroEmitted(cf)) continue;
         const char *cn = cFuncName(g, cf);
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);", cn, cn);
-        if (cf->coroNeedsZone)
+        if (planCoroNeedsZone(cf))
             cgLine(g, "EXTC_UNUSED static bool %s$next(struct %s$frame *f);", cn, cn);
         /* The domain's task table stores `bool (*)(void *)`, while `$step`/`$next` take a concrete
          * frame pointer -- calling one through the other's type is undefined behaviour, so a program
@@ -4702,7 +4703,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         if (!coroEmitted(cf)) continue;
         const char *cn = cFuncName(g, cf);
         cgLine(g, "    case %d: return %s%s((struct %s$frame *)h->frame);",
-               cf->coroKind, cn, cf->coroNeedsZone ? "$next" : "$step", cn);
+               cf->coroKind, cn, planCoroNeedsZone(cf) ? "$next" : "$step", cn);
     }
     cgLine(g, "    }");
     cgLine(g, "    return false;");
@@ -4710,13 +4711,13 @@ static void genCoroHandleDecls(CG *g, Module *m) {
     /* One `value` helper per yield type that a handle can carry. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!coroEmitted(cf) || !cf->yieldType) continue;
-        const char *yt = cType(g, cf->yieldType);
+        if (!coroEmitted(cf) || !planYieldType(cf)) continue;
+        const char *yt = cType(g, planYieldType(cf));
         bool done = false;
         for (size_t k = 0; k < i && !done; k++) {
             FuncDef *prev = *(FuncDef **)vecAt(&m->funcs, k);
-            if (coroEmitted(prev) && prev->yieldType &&
-                strcmp(cType(g, prev->yieldType), yt) == 0) done = true;
+            if (coroEmitted(prev) && planYieldType(prev) &&
+                strcmp(cType(g, planYieldType(prev)), yt) == 0) done = true;
         }
         if (done) continue;
         cgLine(g, "EXTC_UNUSED static %s extc_coro_value_%s(extc_coro *h, const char *f, int l) {",
@@ -4727,8 +4728,8 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck2 = *(FuncDef **)vecAt(&m->funcs, k);
-            if (!coroEmitted(ck2) || !ck2->yieldType) continue;
-            if (strcmp(cType(g, ck2->yieldType), yt) != 0) continue;
+            if (!coroEmitted(ck2) || !planYieldType(ck2)) continue;
+            if (strcmp(cType(g, planYieldType(ck2)), yt) != 0) continue;
             const char *cn2 = cFuncName(g, ck2);
             cgLine(g, "    case %d: return ((struct %s$frame *)h->frame)->ret;", ck2->coroKind, cn2);
         }
@@ -4744,12 +4745,12 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         cgLine(g, "    switch (h->kind) {");
         for (size_t k = 0; k < m->funcs.len; k++) {
             FuncDef *ck3 = *(FuncDef **)vecAt(&m->funcs, k);
-            if (!coroEmitted(ck3) || !ck3->yieldType) continue;
-            if (strcmp(cType(g, ck3->yieldType), yt) != 0) continue;
+            if (!coroEmitted(ck3) || !planYieldType(ck3)) continue;
+            if (strcmp(cType(g, planYieldType(ck3)), yt) != 0) continue;
             const char *cn3 = cFuncName(g, ck3);
             cgLine(g, "    case %d: ((struct %s$frame *)h->frame)->in = v; return %s%s("
                       "(struct %s$frame *)h->frame);",
-                   ck3->coroKind, cn3, cn3, ck3->coroNeedsZone ? "$next" : "$step", cn3);
+                   ck3->coroKind, cn3, cn3, planCoroNeedsZone(ck3) ? "$next" : "$step", cn3);
         }
         cgLine(g, "    }");
         cgLine(g, "    return false;");
@@ -4761,7 +4762,7 @@ static void genCoroDecls(CG *g, Module *m) {
     bool taskTable = false;
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *c0 = *(FuncDef **)vecAt(&m->funcs, i);
-        if (c0 && c0->isCoro && !c0->tmpl && c0->coroNeedsZone) { taskTable = true; break; }
+        if (c0 && planIsCoro(c0) && !planTemplate(c0) && planCoroNeedsZone(c0)) { taskTable = true; break; }
         /* A scheduler written in extC reaches the table through `std::sys::coroutine`; those
          * declarations are ordinary externs, so their presence is what pulls the runtime in. */
         if (c0 && c0->isExtern && c0->name && strncmp(c0->name, "extc_task_", 10) == 0) {
@@ -4781,18 +4782,18 @@ static void genCoroDecls(CG *g, Module *m) {
     genCoroHandleDecls(g, m);
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        /* Instances emit too: `f->tmpl` used to be skipped here, so a generic coroutine got no
+        /* Instances emit too: `planTemplate(f)` used to be skipped here, so a generic coroutine got no
          * `$next` at all -- the handle dispatcher then called `$step` directly, which neither makes
          * the task's place current nor ends the task (audit P1-13). A *template* still has type
          * parameters left, which is what the second test excludes. */
-        if (!f || !f->isCoro || f->typeParams.len > 0) continue;
+        if (!f || !planIsCoro(f) || f->typeParams.len > 0) continue;
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);",
                cFuncName(g, f), cFuncName(g, f));
         /* The **task driver**, defined here (before every body that may drive it): the place is read
          * from the frame -- never re-derived at a resume (rule 1) -- made current for the step, and
          * restored afterwards so the caller's place is untouched. When the step reports "done", the
          * task's whole place goes in one release: the author's B decision for slice C. */
-        if (f->coroNeedsZone) {
+        if (planCoroNeedsZone(f)) {
             cgLine(g, "static bool %s$next(struct %s$frame *f) {", cFuncName(g, f), cFuncName(g, f));
             cgLine(g, "    int64_t __sv = extc_zoneTop;");
             cgLine(g, "    extc_zoneTop = f->zone;");
@@ -4842,12 +4843,12 @@ static void cgReport(void) {
 static void genFunc(CG *g, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`) have no body: they are emitted inline at their call
      * sites (see genMethodCall). Never emit one as a function, whichever path got here. */
-    if (f->coroProto) return;
+    if (planCoroProto(f)) return;
     /* A coroutine's step is generated **through this flow** (docs/topics/CONCURRENCY.md 4.4, slice C):
      * emitting a body is what registers the generic instances it calls, and a definition produced
      * outside this flow called helpers nothing ever emitted. Only two places differ -- the signature
      * below and the ending at the epilogue. */
-    if (f->isCoro) {
+    if (planIsCoro(f)) {
         g->coroFunc     = f;
         g->coroFrame    = "f";
         g->coroYieldSeq = 0;
@@ -4909,7 +4910,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->loopLevel = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     g->loopStep  = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     /* A function that puts nothing into its own block arenas does not even emit
-     * the array. The checker decides that (`f->mayUseArena`: the body contains a
+     * the array. The checker decides that (`planMayUseArena(f)`: the body contains a
      * `new`, or calls a function that has a home arena), and about half of the
      * functions in real programs are pure computation. cgReleaseLevel skips the
      * release for them as well. */
@@ -4932,7 +4933,7 @@ static void genFunc(CG *g, FuncDef *f) {
      * emitted whenever there is any cell, even in a function that allocates
      * nothing. An @overwrite variable in `main` is exactly that case, and
      * missing it left `__extc_a` undeclared. */
-    g->noArena = !f->mayUseArena && !(owNow.len > 0 || owcNow.len > 0);
+    g->noArena = !planMayUseArena(f) && !(owNow.len > 0 || owcNow.len > 0);
     /* A step owns no arena array: it is not a place, and what it allocates belongs to the task's own
      * place (docs/topics/CONCURRENCY.md 4.4, slice C). Emitting one also made it unused, which
      * `-Wall -Werror` rejects. */
@@ -4948,7 +4949,7 @@ static void genFunc(CG *g, FuncDef *f) {
      * array that was never declared: gcc reported ``__extc_a' undeclared` on
      * `tests/arena-promoted/R2a_generic_instance_first.extc`. Every other function receives
      * `__extc_home` as a parameter and needs no array of its own. */
-    if (isMain && f->usesHome) g->noArena = false;
+    if (isMain && planUsesHome(f)) g->noArena = false;
     /* Same reason, for pools: the frame mark and the per-block release hooks hang off the
      * arena's lifetime, so a `main` that only *uses* a pool (it allocates nothing itself)
      * still needs the frame. Phase 1 keys pools to `main`'s frame; when `new (r) T[n]`
@@ -4964,18 +4965,18 @@ static void genFunc(CG *g, FuncDef *f) {
      * loader 把模块的函数改成 `mod$name`，泛型实例还把带 `$` 的名字放在 `instName` 里。 */
     {
         bool lib = (f->name && strchr(f->name, '$')) ||
-                   (f->instName && strchr(f->instName, '$'));
+                   (planInstName(f) && strchr(planInstName(f), '$'));
         if (dbgOn("EXTC_DBG_ZONE"))
             fprintf(stderr, "[zone] name=%s mod=%s inst=%s owner=%s line=%d\n",
                     f->name ? f->name : "-", f->modName ? f->modName : "-",
-                    f->instName ? f->instName : "-", f->owner ? "yes" : "-", f->line);
+                    planInstName(f) ? planInstName(f) : "-", f->owner ? "yes" : "-", f->line);
         /* 「一个地方」= 入口文件里的函数。`modName` 是 loader 给的模块名：
          * 库方法有它（实测 `withCap` 是 `mod=pool`），入口文件为空，所以库函数对地方透明 ——
          * `pool<T>::withCap` 里建的池属于它的调用者所在的地方。 */
         (void)lib;
         g->zoneHere = g->needPool && (!f->modName || !*f->modName);
         /* main 的 C 签名是固定的，收不了隐藏参数 ⇒ 它用当前那个地方的 zone（今天的行为）。 */
-        g->funcHasZoneParam = f->makesPool && !isMain;
+        g->funcHasZoneParam = planMakesPool(f) && !isMain;
     }
     /* 函数体的 zone（`__extc_zm1`）同样按需发射：没有这个函数，就没有任何池会登记在它的帧上，
      * 压了也是空压。`zoneMark[1]` 记下这次决定，收尾的 `zoneLeaveTo(__extc_zm1)` 查它 ——
@@ -4985,10 +4986,10 @@ static void genFunc(CG *g, FuncDef *f) {
     if (dbgOn("EXTC_DBG_ZONE"))
         fprintf(stderr, "[zonehook] %s zoneHere=%d noArena=%d makesPool=%d needPool=%d isMain=%d\n",
                 f->name ? f->name : "-", (int)g->zoneHere, (int)g->noArena,
-                (int)f->makesPool, (int)g->needPool, (int)isMain);
+                (int)planMakesPool(f), (int)g->needPool, (int)isMain);
     /* A step is not a place of its own: the task's place (slice C) is what its storage hangs off, so
      * it must not open a zone of its own here -- that mark also went unused in the generated C. */
-    if (g->zoneHere && !g->noArena && f->makesPool && !g->coroFunc) {
+    if (g->zoneHere && !g->noArena && planMakesPool(f) && !g->coroFunc) {
         cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* 函数体是一个地方 */");
         g->zoneMark[1] = true;
         g->zoneFrameMarked = true;
@@ -5045,7 +5046,7 @@ static void genFunc(CG *g, FuncDef *f) {
              * reused; otherwise level 1 of this frame, which certainly outlives
              * the statement. It is never NULL. */
             cgLine(g, "extc_owcell __extc_ow%zu = { 0, 0, %s };", i,
-                   f->usesHome ? "__extc_home" : "&__extc_a[1]");
+                   planUsesHome(f) ? "__extc_home" : "&__extc_a[1]");
     (void)owcNow;   /* no cells are prepared for a callee: they live in its frame */
     /* `owSites` must not be restored here: the body has not been generated yet,
      * and restoring it early made every lookup answer -1 and silently fall back
@@ -5070,7 +5071,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->curFuncName = cFuncName(g, f);
     bool savedParTls = g->parTls;
     g->parTls = f->parTlsArena;
-    if (isMain && f->usesHome) {
+    if (isMain && planUsesHome(f)) {
         size_t hb = g->out->len;
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
         localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */
@@ -5302,7 +5303,7 @@ static void genParTramp(CG *g, FuncDef *f) {
          * "too few arguments to function 'w'; expected 5, have 4"。这里补传 **线程本地 arena**：
          * worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出这个 worker ⇒ 线程本地安全，而且两个
          * worker 不会去抢主线程的帧 arena。 */
-        if (f->usesHome) bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
+        if (planUsesHome(f)) bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
         cgLine(g, "    return (int64_t)%s(id, lo, hi, %s);", f->name, bufCstr(&args));
     }
     cgLine(g, "}");
@@ -5313,7 +5314,7 @@ static void genFuncProto(CG *g, FuncDef *f) {
      * artifact is `counter$frame` + `counter$step` (emitted together, so the frame is defined before
      * it is used). Emitting an undefined prototype also poisons the byte-offset passes later on --
      * `counter` matches inside `counter$step` and they blank the text in between. */
-    if (f->isCoro) return;
+    if (planIsCoro(f)) return;
     Buf sig;
     bufInit(&sig, g->arena);
     /* `@inline` has to appear on the prototype as well as on the definition. */
@@ -5333,7 +5334,7 @@ static void genFuncProto(CG *g, FuncDef *f) {
  * out as "`hostAlloc` undeclared here". Emitting that prototype here is the whole fix; the pool
  * repeats it later, and C allows repeated declarations. */
 static bool globalFnProto(void *ctx, Expr *e) {
-    if (e->kind == EX_IDENT && e->func) genFuncProto((CG *)ctx, e->func);
+    if (e->kind == EX_IDENT && planCallee(e)) genFuncProto((CG *)ctx, planCallee(e));
     return true;
 }
 
@@ -5720,7 +5721,7 @@ static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) 
         FuncDef *f = *(FuncDef **)vecAt(&sd->methods, i);
         /* The coroutine protocols (`next`/`value`, on the frame and on the handle) are emitted
          * inline at their call sites, never as real functions. */
-        if (f->coroProto) continue;
+        if (planCoroProto(f)) continue;
         for (size_t j = 0; j < f->params.len; j++) {
             Type *pt = (*(Param **)vecAt(&f->params, j))->type;
             if (tps && pt) pt = ttSubstitute(tt, pt, tps, tas);
@@ -6982,9 +6983,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
             if (!coroEmitted(cf)) continue;
-            if (cf->tmpl && cf->tmpl->coroBoxed) cf->coroBoxed = true;
+            if (planTemplate(cf) && planCoroBoxed(planTemplate(cf))) cf->coroBoxed = true;
             cf->coroKind = ck++;
-            if (cf->coroBoxed) g.needCoroHandle = true;
+            if (planCoroBoxed(cf)) g.needCoroHandle = true;
         }
         /* The event layer is needed if anything used calls one of its entry points. */
         for (size_t fi = 0; fi < m->funcs.len; fi++) {
@@ -7045,7 +7046,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * 为真都说明这个程序用池 —— 这正是这一格要问的问题。 */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        if (f && f->makesPool) g.needPool = true;
+        if (f && planMakesPool(f)) g.needPool = true;
         /* `@builtin` 的那一个原语同理：声明在特权层（`std::sys::heap`），编译器给函数体。
          * 它不是 `extern!`，所以上面那条按 `externLib` 的扫描看不见它。 */
         if (f && f->isBuiltin && plateIsViewOfName(f->name)) g.needPlateView = true;
@@ -7054,8 +7055,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-            if (!f || f->coroProto) continue;
-            if (f->makesPool) g.needPool = true;
+            if (!f || planCoroProto(f)) continue;
+            if (planMakesPool(f)) g.needPool = true;
         }
     }
     vecInit(&g.funcs, arena, sizeof(void *));
@@ -7196,7 +7197,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         /* Methods are functions too and share the prototype and definition table. */
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
-            if (md->coroProto) continue;      /* emitted inline at the call site, not here */
+            if (planCoroProto(md)) continue;      /* emitted inline at the call site, not here */
             /* ⚡ 可达性剪枝（PLAN #69）：**没人调用的方法不发射** ✓
              * 检查器早就在每个调用点打 `used`（`e->func = f; f->used = true;` ✓
              * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓
@@ -7210,7 +7211,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         /* The generic template itself is not generated: `T` is still a
          * parameter, so the result would be wrong C that does not compile. Only
-         * the instances are emitted, those with `f->tmpl != NULL`. Without this
+         * the instances are emitted, those with `planTemplate(f) != NULL`. Without this
          * `continue`, both the template and its instances were emitted and the
          * unsubstituted `T` in the template produced a false error. */
         if (f->typeParams.len > 0) continue;
@@ -7227,7 +7228,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * exist, so the generated C did not compile. It stayed hidden because a lone `T`
          * degenerates to `int` (`static int idOf_T(int x)` compiled fine as dead code),
          * so only a signature with a *constructed* type around the parameter broke. */
-        if (f->tmpl && funcSignatureMentionsParam(f)) continue;
+        if (planTemplate(f) && funcSignatureMentionsParam(f)) continue;
         /* 同上：自由函数/库函数/预置也按可达性剪枝 ✓
          * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
          * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
@@ -7235,7 +7236,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (!f->used && !cgIsMain(f) && !f->isExport && !inTraitTable(m, f)) continue;
         /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
          * body of their own -- emitting one here hit genBlockBody with a null body. */
-        if (f->coroProto) continue;
+        if (planCoroProto(f)) continue;
         *(FuncDef **)vecPush(&g.funcs) = f;
     }
 
@@ -7915,19 +7916,19 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * `vector$vector_i32_withCap` and nothing ever emitted it (docs/topics/CONCURRENCY.md 4.4). */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !cf->isCoro || cf->tmpl || !cf->coroFrameType || !cf->coroFrameType->sdef) continue;
+        if (!cf || !planIsCoro(cf) || planTemplate(cf) || !planCoroFrameType(cf) || !planCoroFrameType(cf)->sdef) continue;
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
-        u->sd = cf->coroFrameType->sdef;
+        u->sd = planCoroFrameType(cf)->sdef;
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
 
     for (size_t i = 0; i < g.funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&g.funcs, i);
-        if (!cf || !cf->isCoro || !cf->tmpl || !cf->coroFrameType || !cf->coroFrameType->sdef) continue;
+        if (!cf || !planIsCoro(cf) || !planTemplate(cf) || !planCoroFrameType(cf) || !planCoroFrameType(cf)->sdef) continue;
         if (coroProvisional(&cf->targs)) continue;
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
-        u->sd = cf->coroFrameType->sdef;
+        u->sd = planCoroFrameType(cf)->sdef;
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
@@ -8188,7 +8189,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * is set whenever the template body mentions a call, so a closure
              * such as `push` calling `grow` is included automatically, and
              * emitting too much is the safe direction. */
-            if (md->coroProto) continue;   /* emitted inline at the call site */
+            if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!md->used) continue;
             /* Instance methods are candidates too. They used to be left out, and that is
              * exactly where the remaining `unused function` warnings lived: a library
@@ -8227,7 +8228,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * it, and only its prototype is emitted. */
         /* `@inline` has to be on the prototype too, or the attribute on the definition
          * alone does not bind: C takes the first declaration as the function's type. */
-        if (f->isCoro) continue;   /* a coroutine emits `$frame` + `$step` last */
+        if (planIsCoro(f)) continue;   /* a coroutine emits `$frame` + `$step` last */
         bufPrintf(&sig, "%s%s %s(%s);",
                   (cgIsMain(f) || f->isExtern || f->isExport) ? ""
                                                : (f->isInline ? "EXTC_INLINE " : "static "),
@@ -8271,7 +8272,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         substEnter(&g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
-            if (md->coroProto) continue;   /* emitted inline at the call site */
+            if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!md->used) continue;      /* called methods only */
             size_t fb = g.out->len;
             CGACC("cg-emit", genFunc(&g, md));
@@ -8653,15 +8654,15 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * some `ext` actually starts get one. */
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-            if (!cf->isExtTarget || !cf->isCoro) continue;
+            if (!cf->isExtTarget || !planIsCoro(cf)) continue;
             const char *cn = cFuncName(&g, cf);
             bufPrintf(out, "typedef struct %s$frame %s$frame;\n", cn, cn);
             bufPrintf(out, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);\n", cn, cn);
-            if (cf->coroNeedsZone)
+            if (planCoroNeedsZone(cf))
                 bufPrintf(out, "EXTC_UNUSED static bool %s$next(struct %s$frame *f);\n", cn, cn);
             bufPrintf(out, "EXTC_UNUSED static bool %s$domstep(void *p)"
                            " { return %s$%s((struct %s$frame *)p); }\n",
-                      cn, cn, cf->coroNeedsZone ? "next" : "step", cn);
+                      cn, cn, planCoroNeedsZone(cf) ? "next" : "step", cn);
         }
         domainEmitRuntime(arena, out);
     }

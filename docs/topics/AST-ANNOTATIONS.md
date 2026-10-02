@@ -60,7 +60,7 @@
 
 | 步 | 动作 | 覆盖 |
 |---|---|---|
-| X1 | 立 `plan` 模块：codegen 只经访问器读第 2 节的字段；**先不改存储**，只为把读点收口 | 第 2 节全部 |
+| X1 ✅ | 立 `src/plan.h`/`plan.c`：codegen 只经访问器读第 2 节的字段（182 个读点已收口）；**存储未动**；棘轮 `tools/check_plan_seam.py` 已接进 `check.sh` | 第 2 节全部 |
 | X2 | 逐族把存储搬到计划侧（按节点寻址）：先 arena/zone 计划（`arenaLevel`/`zoneLevel`/`arenaArg`/`usesHome`/`mayUseArena`/`condAllocs`），再协程族（`isCoro`/`yieldType`/`coroFrameType`/`coroNeedsZone`/`coroProto`/`coroBoxed`），再名字族（`cname`/`instName`） | 第 2 节 |
 | X3 | 实例集显式化：`func`/`tmpl` 的重指改为计划侧查表 + 封闭实例集 + 显式 worklist；**顺带切断第 3 节的反向写**（`substParams`/`substArgs` 改为显式传入） | 第 2、3 节 |
 | X4 | AST 上只剩 ① 与"节点上的身份"，删死字段，更新本表与 `check_internal.h` 的权威节 | 全部 |

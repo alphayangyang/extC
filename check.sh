@@ -125,6 +125,9 @@ else bad "tests/impl/run.sh"; echo "$out"; fi
 echo "== dyn 阶段 1（构造即调用：派发经表、拒绝存储、生成物合同）=="
 if out=$(python3 tools/check_walkers.py 2>&1); then ok "$(printf '%s' "$out" | tail -1)"
 else bad "tools/check_walkers.py"; printf '%s\n' "$out" | sed 's/^/  /'; fi
+# 计划接缝（X1）：codegen 只能经 src/plan.h 读"分析产物/编译计划"，直读即红。
+if out=$(python3 tools/check_plan_seam.py 2>&1); then ok "$(printf '%s' "$out" | tail -1)"
+else bad "tools/check_plan_seam.py"; printf '%s\n' "$out" | sed 's/^/  /'; fi
 if out=$(timeout 120 python3 tools/check_switches.py 2>&1); then ok "$(echo "$out" | tail -1)"
 else bad "tools/check_switches.py"; echo "$out" | head -8; fi
 if out=$(python3 tools/check_concurrency_guards.py 2>&1); then ok "$(printf '%s' "$out" | tail -1)"
