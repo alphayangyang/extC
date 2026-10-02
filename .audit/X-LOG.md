@@ -605,3 +605,21 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 | 1 | `Expr.func` 的实例集显式化 | **未做**（本批次唯一的大头）：18 写（全在检查器）/ 85 检查器读 / 58 codegen 读（已收口）。**先只读侦察 18 个写点**，判"是否都是同一个动作"，再决定搬不搬存储 |
 | 2 | `Stmt.forStep` | **有意保留**（半语法，parser 两处写）——不是待办 |
 | 3 | `FuncDef.coroKind` | 不是计划字段；顺序依赖留给"prepass 契约或提前"那一类（已实测不能只换存储位置） |
+
+**完整模式验收（提交 `b970582`）**：`./check.sh` **68 节 / 0 失败**；五道闸门全绿
+（checkc **976 文件** gcc+clang · ASan **217 正例** · 差分 **21 例** · 规模 **13 例** · 逃逸语料 18 份）；
+`[plan-seam] ok`（AST 上无 **16** 个字段）；`[tmpl-owners] ok`。
+
+## X 批次进度总览（截至本提交）
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| X0 | 盘点表 `docs/topics/AST-ANNOTATIONS.md`（字段/写者/读者/四类归属） | ✅ |
+| X1 | `plan.h`/`plan.c` 接缝 + codegen **182 个读点**收口 + 棘轮进 `check.sh` | ✅ |
+| X2 | **13 个字段**搬离 AST（Expr 四／FuncDef arena-pool 四／协程五） | ✅ |
+| X3 | 回写侧：棘轮 + 逐条复核（47→31→1）+ 切断 `coroBoxed` 回写；**再加本轮的 `coroBoxed` 字段搬迁** | ✅ |
+| X4 | `instName`(X3 第六步) / `tmpl`(第二半) / `coroBoxed`(第三半) 搬入侧表；文档与理由成文 | ✅（**AST 上只剩 2 个**） |
+| X3 余项 | **`Expr.func` 的实例集显式化** | ❌ 未做（唯一大头，先只读侦察 18 个写点） |
+
+**现在 AST 上剩下的两个"计划"字段**：`Expr.func`（等实例集显式化）与 `Stmt.forStep`
+（半语法，有意保留）。其余分析缓存族（②）不构成"AST 充当计划"的耦合，见第 5 节。
