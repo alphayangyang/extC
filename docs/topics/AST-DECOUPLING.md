@@ -190,3 +190,33 @@ parser ──► AST（冻结：构造后只读） ──► checker ──► R
 tests **326/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；`[plan-seam] ok`；
 **`[ast-freeze]` 违规 146（已知 146 / 新增 0）· `[layering]` 违规 3（已知 3 / 新增 0）**。
 零行为改动。
+
+---
+
+## 8. P1 已落地：结果层的第一刀（`results.h/.c`：arena + 稠密节点 ID + 属主看守）
+
+**做了什么**
+
+| 部件 | 内容 |
+|---|---|
+| `src/results.h` | `NodeId`（稠密整数，0 = 无）、`ResultKind`、`NodeResults`（**一个节点一份结果槽**）、三个入口：`nodeIdOf` / `resultsOf` / `resultsById`、`resultsAs`（带属主看守） |
+| `src/results.c` | 两个数组 + 一个指针→id 的哈希：`g_nodes[id]`、`g_results[id]`。id **就是下标** ⇒ 查表是数组索引，不再是"裸指针哈希"。id 在**首次需要结果时**分配（parser 一行不用改），分配后**永不变** |
+| `src/plan.c` | 原来的 `PlanSlot` 结构体与 `slotFor` 指针哈希表**删除**，全部改走 `resultsAs(...)`；`plan.c` 只剩"每个字段什么意思 + 怎么记 + 两个替代表" |
+
+**为什么 id 不是指针**（写进 `results.h` 的理由）：指针一旦被回收，按地址查表会**静默命中旧条目**——
+LLVM 的 pass manager 文档自己写了这个坑（"If a function is deleted in a module pass, its address is
+still used as the key for cached analyses"）；而 id 是可以存、可以比、可以校验的值。
+这条与 rustc `ItemLocalId`（"dense range ... can be implemented by a `Vec` instead of a tree or
+hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 是同一个形状。
+
+**属主看守（rustc 的 `validate_hir_id_for_typeck_results` 那一招）**：`NodeResults.kind` 由**第一个写者**
+盖章，之后每次访问都比对；不一致就是**编译器 bug**（不是程序错误）⇒ `EXTC_DBG=1` 下**响亮 abort**，
+发布版保持旧行为（假阳性不会破坏发布版）。32 个 plan 函数都带上了自己的 kind。
+
+**验收**：构建零告警；tests **326/0**（发布）· **326/0**（`EXTC_DBG=1`，**属主看守 0 命中**、
+断言/兜底 0 命中）；`[plan-seam] ok`；`[ast-freeze]` / `[layering]` / `[callsite]` 基线不动。
+**行为不变**（存储位置与寻址方式变了，语义没变）。
+
+**还没做、留给 P2/P3 的**：`NodeId` 还没有按 owner 分组（现在是一张全局稠密表）；
+`ResultKind` 只覆盖 plan 拥有的那几族字段——②分析缓存族（`refDepth`/`origin`/六个掩码…）仍写在 AST 上，
+它们进 `NodeResults` 或进检查器自己的结构，是 P2 的内容。
