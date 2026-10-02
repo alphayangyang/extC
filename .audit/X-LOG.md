@@ -105,3 +105,30 @@ X4 收尾（AST 只剩语法事实与身份）。**每阶段行为不变**，验
 然后把 `Expr.plan` 的四个字段从 `ast.h` 删掉（此时 `check_plan_seam.py` 可以升级为
 "字段已不存在"的检查）。之后照同样办法办其余族（`Stmt.condAllocs`/`forStep`、
 `FuncDef` 的 `usesHome`/`mayUseArena`/`makesPool`、协程族）。
+
+## X2 第三步（本轮完成）：权威翻到侧表，`Expr.plan` 字段删除
+
+**做了什么**
+1. 检查器侧的**读点**（31 处：`check_escape.c` 13、`check_top.c` 15、`check_expr.c` 3）也改经访问器；
+   余下 2 处基座是 `(*(Expr **)vecAt(...))` 形式（正则覆盖不到），显式手改。
+2. `plan.c`：**访问器改读侧表**（未设置时返回旧字段的默认值 0/false）；**setter 不再写 AST 字段**；
+   过渡期的"影子看守"整段删除。
+3. `ast.h`：`Expr.plan` 子结构**删除**，那个位置留一段注释指向 `plan.c`/`plan.h`
+   （"这个节点的编译计划不在这棵 AST 上"）。
+4. `tools/check_plan_seam.py` 升级为**两条**检查：① codegen 直读计划字段 0 处；
+   ② **AST 上不得再出现已搬走的字段**（`arenaLevel`/`zoneLevel`/`arenaArg`/`needTemp`）——
+   这样以后没人能把耦合加回来而不被判红。
+
+**验收（全量）**：tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**、
+闸门⑤语料/①checkc 全量/②ASan 全量/③差分/④规模 **全绿**、walker 23 ✓、guards **19 ok / 0 broken**。
+
+**一条诚实的性能说明**：权威翻到侧表之后，发布版的读路径多了一次哈希查找。
+闸门④（规模）**只判结论、判不判耗时**，所以它通过**不能**证明没有性能影响；
+本轮**没有**做前后耗时对比（旧二进制已被覆盖）。若以后关注编译速度，
+可用 `tests/stl` 或 `bench/` 计时复测；真要优化，办法是把"计划槽位下标"缓存在节点上
+（但那等于把字段加回来，需要先想清楚代价 —— 记在这里，不做）。
+
+**下一步（X2 第四步）**：其余字段族照同一套路 —— `Stmt.condAllocs`/`forStep`、
+`FuncDef` 的 `usesHome`/`mayUseArena`/`makesPool`、协程族
+（`isCoro`/`yieldType`/`coroFrameType`/`coroNeedsZone`/`coroProto`/`coroBoxed`），
+然后 `func`/`tmpl`/`instName`（X3 的实例集）。

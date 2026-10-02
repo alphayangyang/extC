@@ -240,61 +240,9 @@ struct Expr {
      *   >0 = the block depth of some local
      * Only meaningful when the type contains a reference. */
     int       refDepth;
-    /* ---- 编译计划（X2）：检查器决定、codegen 只读，且**只经** src/plan.h 的访问器 ----
-     * 这四个字段过去散在 `Expr` 里与语法事实混在一起。搬进具名子结构之后，
-     * "AST 里哪一块不是语法"在类型上就看得见；读点由 tools/check_plan_seam.py 钉住。*/
-    struct {
-        /* Which arena does this `new` allocate into?
-         *
-         * This number is the single authority for the level. The checker settles it and
-         * code generation only translates it (through `arenaRefAt`); codegen never
-         * decides for itself whether the function has a home arena.
-         *
-         * The default is the block depth of the statement, so the memory is reclaimed
-         * when that block ends. When the escape check finds that the value is stored
-         * somewhere that lives longer, the level is promoted to that place.
-         *
-         *     ARENA_HOME (-1) = this function's home arena, `*__extc_home`, the arena the
-         *                       caller picked
-         *     > 0             = block k of this function, released when that block ends
-         *     0               = not decided yet; it exists only while the checker runs and
-         *                       code generation never sees it
-         *
-         * A function may turn out to need a home arena only after the bodies of the
-         * functions it calls have been checked, because the property is transitive. While
-         * a body is being checked, `c->curFunc->needsHome` reflects the direct test only,
-         * so a `new` inside a function that needs a home arena only through its callees
-         * was given the block level, while the generated C allocated it in the home
-         * arena. That was still safe -- the home arena lives longer -- but the tree and
-         * the generated code held two different answers. `checkModule` therefore rewrites
-         * every such `new` site to ARENA_HOME once the closure is known; the sites are
-         * collected in `FuncDef.arenaSites`, filled in by `check_top.c`.
-         *
-         * Only EX_NEW goes through this path. `alloc<T>(n)` allocates in the current
-         * block; the checker decides that too, but it takes no part in promotion or in
-         * the home arena. */
-        int       arenaLevel;
-        /* 这个调用点建出来的池该生在哪一层地方（`ZONE_HOME` = 交给调用者）。
-         * 只有"建池的调用"（`e->func->makesPool`）才用得上；0 = 不是这种站点。
-         * 与 `arenaLevel` 平行，提权就是把这个数变小（越小越长寿）。 */
-        int       zoneLevel;
-        /* Which arena the call site actually passes, settled by the checker; code
-         * generation only translates it.
-         *     ARENA_HOME (-1) => `__extc_home`, this function's own home arena
-         *     >= 1            => `&__extc_a[that block level]`
-         *
-         * It may differ from `homeDepth` on purpose: `homeDepth` is the conservative test
-         * that keeps undefined behaviour out (a site at level 0 is looked up as depth 0),
-         * while this is the choice that is actually executed. Both are decided by the
-         * checker, so code generation makes no decision of its own. */
-        int       arenaArg;
-        /* The main side of `??` is not free of side effects, so code generation has to
-         * emit a temporary before the statement and apply the conditional to that
-         * temporary: the main side must be evaluated exactly once.
-         * The checker decides this -- it has already computed `repeatablePure` -- and code
-         * generation only obeys the flag. */
-        bool      needTemp;
-    } plan;
+    /* 这个节点的**编译计划**（arena/zone 层、实参 arena、是否需要临时量）不在这棵 AST 上：
+     * 它的存储与读写口都在 `src/plan.c` / `src/plan.h`（X2：按节点寻址的侧表）。
+     * 这样 AST 只剩语法事实与身份，而"计划何时有效、谁写谁读"由 plan.h 逐字段写明。*/
 
     /* The lexical block level of this site, for long-running programs.
      * The final pass overwrites `arenaLevel` with ARENA_HOME for every allocation in

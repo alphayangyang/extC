@@ -2332,7 +2332,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * evidence only. A function that gains a home arena because of a call it makes is
              * decided again by `checkModule`, using `FuncDef.arenaSites`, once the closure is
              * complete. */
-            if (e->plan.arenaLevel == 0)
+            if (planArenaLevel(e) == 0)
                 planSetArenaLevel(e, (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
                               : (e->reuse ? 1 : (int)c->scopes.len));
             c->allocSites++;
@@ -2350,7 +2350,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * 0 as "the level outside this frame", so it maps back to 0 -- the home arena is
              * the scope the caller chose, which is depth 0. */
             {
-                int depth = arenaDepthOf(e->plan.arenaLevel);    /* the one conversion point */
+                int depth = arenaDepthOf(planArenaLevel(e));    /* the one conversion point */
                 if (e->refDepth == 0 || e->refDepth > depth) e->refDepth = depth;
             }
 
@@ -4295,7 +4295,7 @@ static bool exprHasCall(Checker *c, Expr *e) {
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
-    if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && e->plan.needTemp)) c->stmtFx = 1;
+    if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && planNeedTemp(e))) c->stmtFx = 1;
     if (!t) t = ttError(c->tt);
     e->type = t;
     return t;
