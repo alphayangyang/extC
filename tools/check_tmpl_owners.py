@@ -38,7 +38,7 @@ import sys
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-FIELD = "tmpl"
+FIELD = "tmpl"          # default; `--fields a,b,c` asks about several
 
 # Where each struct is expected to live.  Used only to report, never to decide.
 EXPECTED = {"FuncDef": "ast.h", "CallCheck": "check_internal.h", "Checker": "check_internal.h"}
@@ -353,6 +353,11 @@ def verify(uses, unknown, codegen_direct) -> int:
 def main() -> int:
     argv = sys.argv[1:]
     mode_verify = "--verify" in argv
+    fields = None
+    for a in list(argv):
+        if a.startswith("--fields="):
+            fields = a.split("=", 1)[1].split(",")
+            argv.remove(a)
     files = [a for a in argv if not a.startswith("--")] or \
             sorted(str(p) for p in (ROOT / "src").glob("*.c")) + \
             sorted(str(p) for p in (ROOT / "src").glob("*.h"))
