@@ -5186,7 +5186,8 @@ static bool provisionalInstance(Vec *targs) {
  *   - Instances are interned (`funcInstance` de-duplicates), so one argument
  *     combination has exactly one instance.
  */
-static void resolveDeferredCall(Checker *c, CallCheck *cc, Vec *params, Vec *targs) {
+static void resolveDeferredCall(Checker *c, CallCheck *cc, FuncDef *enclosing,
+                                const Type *enclosingInst, Vec *params, Vec *targs) {
     if (!targs || !params) return;
     Vec concrete;
     vecInit(&concrete, c->arena, sizeof(void *));
@@ -5204,7 +5205,12 @@ static void resolveDeferredCall(Checker *c, CallCheck *cc, Vec *params, Vec *tar
     FuncDef *inst = funcInstance(c, cc->tmpl, &concrete, cc->node->line);
     if (!inst) return;
     inst->used = true;
-    cc->node->func = inst;
+    /* The site may be shared by every instance of the enclosing body (`wrap<i32>` and
+     * `wrap<meter>` share one `pick(x)`), and the answer differs per instance: record it
+     * against the enclosing instance as well. The plain pointer stays as the fallback
+     * answer for a site that belongs to no instance. */
+    planSetCallee(cc->node, inst);
+    planSetAltCallee(cc->node, enclosing, enclosingInst, inst);
 }
 
 /* Check a whole module.
@@ -5839,7 +5845,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < c.funcInsts.len; j++) {
                 FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
                 if (planTemplate(fi) != cc->func) continue;   /* not a call in this template body */
-                resolveDeferredCall(&c, cc, &planTemplate(fi)->typeParams, &fi->targs);
+                resolveDeferredCall(&c, cc, fi, NULL, &planTemplate(fi)->typeParams, &fi->targs);
             }
             /* (2) The enclosing body is a type instance (a generic call inside a method);
              * `owner` is the struct or enum definition. */
@@ -5848,7 +5854,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != owner) continue;
-                resolveDeferredCall(&c, cc, &owner->typeParams, &inst->targs);
+                /* The enclosing body is a **type** instance: the same method body is shared
+                 * by every instance of that struct, so the answer is keyed on the type
+                 * instance (`planEnterInst` on the code generation side). */
+                resolveDeferredCall(&c, cc, NULL, inst, &owner->typeParams, &inst->targs);
             }
         }
     }

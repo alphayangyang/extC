@@ -277,7 +277,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
                 ckError(c, e->line, bufCstr(&note), "`%s` does not define `%s`", DN(sd), op);
                 return err;
             }
-            e->func = m;
+            planSetCallee(e, m);
             m->used = true;      /* record that this method is used */
             setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
             return lt;
@@ -1070,7 +1070,7 @@ static Type *fnValueOf(Checker *c, Expr *e, FuncDef *f) {
         *(Type **)vecPush(&ps) = tsub(c, (*(Param **)vecAt(&f->params, i))->type);
     Type *ft = ttFn(c->tt, &ps, tsub(c, f->ret ? f->ret : ttVoid(c->tt)));
 
-    e->func = f;
+    planSetCallee(e, f);
     /* Taking the address is a use like any other: codegen emits only the functions something
      * calls or names, so without this the definition would be missing and the C compiler would
      * report an undeclared identifier. */
@@ -1449,7 +1449,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
 
-                    e->func = m;  m->used = true;   /* record that this method is used */
+                    planSetCallee(e, m);  m->used = true;   /* record that this method is used */
                     setOpCallArgs(c, e, m);         /* the hidden zone argument of an operator call */
                     return c->tBool;
                 }
@@ -1482,7 +1482,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                 DN(osd), op, typeStr(c, rt));
                         return c->tBool;
                     }
-                    e->func = m;
+                    planSetCallee(e, m);
                     m->used = true;      /* record that this method is used */
                     setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
                     return c->tBool;
@@ -1536,7 +1536,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         }
                         Vec *sp = NULL, *sa = NULL;
                         if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
-                        e->func = m;
+                        planSetCallee(e, m);
                         m->used = true;
                         setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
                         return m->ret ? ttSubstitute(tt, m->ret, sp, sa) : ttVoid(tt);
@@ -2112,7 +2112,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->type = c->tI32;
                 return c->tI32;
             }
-            e->func = f;  f->used = true;   /* record the resolved function and its use */
+            planSetCallee(e, f);  f->used = true;   /* record the resolved function and its use */
 
             Vec *sp = NULL, *sa = NULL;
             if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
@@ -2433,7 +2433,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->u.call.callee = id;
                     e->u.call.args   = args;
                     e->qualified     = true;      /* do not trigger the qualification check */
-                    e->func = inst;
+                    planSetCallee(e, inst);
                     /* Hand the written type arguments to the EX_CALL path below through a side
                      * table: without it that path inferred from scratch, so `f<i64>(x)` was pure
                      * decoration -- it worked only where inference happened to succeed anyway
@@ -3142,7 +3142,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->type = c->tI32;
                 return c->tI32;
             }
-            e->func = f;  f->used = true;   /* record the resolved function and its use */
+            planSetCallee(e, f);  f->used = true;   /* record the resolved function and its use */
 
             /* A generic free function: `T` can be inferred from an argument only, because an
              * instance of a type is decided by the type while a call to a free function has
@@ -3213,7 +3213,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* Same NULL contract as the `EX_GENCALL` site above (audit P0-4). */
                 if (!inst) return ttError(tt);
                 inst->used = true;
-                e->func = inst;
+                planSetCallee(e, inst);
                 f = inst;                     /* every check below uses the instance */
 
                 bool hasParamTarg = false;
@@ -3500,7 +3500,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                     if (c->curFunc) planSetMakesPool(c->curFunc, true);
                     e->u.method.recv->type = ttBase(recvT);
-                    e->func = want;
+                    planSetCallee(e, want);
                     e->dynTrait = traitName;
                     e->type = want->ret ? want->ret : ttVoid(tt);
                     return e->type;
@@ -3645,7 +3645,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->type = c->tI32;
                 return c->tI32;
             }
-            e->func = f;  f->used = true;   /* record the resolved function and its use */
+            planSetCallee(e, f);  f->used = true;   /* record the resolved function and its use */
             /* `dyn Trait(x).m(...)`: **object safety** (DYN.md stage 1).
              *
              * Not every method can be dispatched through a table, and the rule is enforced here --

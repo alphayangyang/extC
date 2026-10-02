@@ -33,15 +33,18 @@
 
 /* ---- identity and instances ------------------------------------------------------- */
 
-/* The instance a call site resolved to (NULL for a builtin, an operator, or one the
+/* The instance a call site resolves to (NULL for a builtin, an operator, or one the
  * checker never resolved).
- * Writer: the checker's deferred-call fixpoint, which rewrites `Expr.func`.
+ * Writer: the checker, at the call site, and again per instance by the deferred-call
+ * fixpoint (`planSetCallee` / `planSetAltCallee`).
  * Valid: after that fixpoint has run in the POST phase; before it, the pointer can still
  * be the template or provisional.
  * Stale: generated C calls a C function that was never emitted.
  *
- * Still stored on the AST: rewriting the call site is how the checker materializes an
- * instance, so this pointer has to move together with the explicit instance set. */
+ * A call site inside a generic body is shared by every instance of that body, so the
+ * answer depends on which instance is being emitted. Code generation brackets each
+ * function with `planEnterFunc` / `planLeaveFunc`, and this accessor then returns the
+ * resolution recorded for that instance. */
 FuncDef *planCallee(const Expr *e);
 
 /* The template this instance was materialized from (NULL when `f` is not an instance).
@@ -165,6 +168,32 @@ void planSetCoroBoxed(FuncDef *f, bool v);
  * the wrong one. `tools/check_tmpl_owners.py --verify` answers the ownership question
  * per use. */
 void planSetInstName(FuncDef *f, const char *name);
+
+/* ---- writing the resolved callee (the checker) ------------------------------------- */
+
+/* Record the callee of a call site: the fallback answer, used when the site is not
+ * shared by several instances. */
+void planSetCallee(Expr *e, FuncDef *callee);
+/* Record the callee of a call site **for one enclosing body**: a site inside a generic
+ * body belongs to every instance of that body, and each one may resolve to a different
+ * instance (`wrap<i32>` calls `pick_i32`, `wrap<meter>` calls `pick_meter`).
+ *   enclosing - the function instance, for a free-function body (else NULL)
+ *   inst      - the type instance, for a method body of a generic struct (else NULL)
+ * Idempotent, because the deferred-call fixpoint replays its rounds. */
+void planSetAltCallee(Expr *e, FuncDef *enclosing, const Type *inst, FuncDef *callee);
+
+/* ---- the emission context (code generation) ----------------------------------------
+ *
+ * Code generation brackets the emission of one function with these two, so that
+ * `planCallee` can answer "inside this instance's body, what does this call site resolve
+ * to". Leaving is not optional: without it the next function's emission would still see
+ * the previous instance's answers. */
+void planEnterFunc(const FuncDef *f);
+void planLeaveFunc(void);
+/* The same, for the methods of one generic type instance. A method body is shared by
+ * every type instance of its struct, so this is the other half of the same question. */
+void planEnterInst(const Type *t);
+void planLeaveInst(void);
 /* The instance -> template back pointer, written once per instance by instance
  * materialization. `FuncDef` must not carry this as a field: the same pointer decides
  * names, type arguments and which body is shared, and it has to be written through the

@@ -1,0 +1,7 @@
+# One method body, two type instances: each emitted method must call its own `pick`.
+require holder_i32_dup
+require holder_i64_dup
+require pick_i32
+require pick_i64
+call holder_i32_dup pick_i32
+call holder_i64_dup pick_i64

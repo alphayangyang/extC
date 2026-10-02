@@ -8278,8 +8278,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!md->used) continue;      /* called methods only */
+            planEnterInst(inst);          /* a method body is shared by every type instance */
             size_t fb = g.out->len;
             CGACC("cg-emit", genFunc(&g, md));
+            planLeaveInst();
             /* A method named by a **`dyn` table's thunk** is referenced from outside its own scope, and
              * the "definitions nothing names" pass cannot see that reference: registering it dropped
              * `pair_i64_tag` and left the thunk calling a function nobody emitted (tools/attack.py F1).
@@ -8442,9 +8444,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         if (f->isExtern) continue;              /* an external declaration has no body */
         Vec *svP, *svA;
         substEnterFunc(&g, f, &svP, &svA);      /* instances need substitution */
+        /* Tell the plan which instance is being emitted: a call site inside a generic
+         * body is shared by every instance, and what it calls depends on this. */
+        planEnterFunc(f);
         size_t fb = g.out->len;
         CGACC("cg-emit", genFunc(&g, f));
         deadFuncBody(&g, f, fb, g.out->len - fb);
+        planLeaveFunc();
         substLeaveFunc(&g, svP, svA);
         cgLine(&g, "");
     }

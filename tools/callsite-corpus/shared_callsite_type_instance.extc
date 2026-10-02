@@ -1,0 +1,17 @@
+/* 闸门⑥ 探针：**类型实例**的那一半 —— 泛型结构体的方法体被每个类型实例共享，
+ * 方法体里那个 `pick(self.v)` 也只有一个被调指针。
+ *
+ * 一个类型实例时正确；`holder<i32>` 与 `holder<i64>` 同时存在时，
+ * 修好之前两边的 `_dup` 都调 `pick_i64` 且 `pick_i32` 从未被发出。 */
+struct holder<T> {
+    v: T
+    fn dup(self: ref holder<T>) -> T { return pick(self.v) }
+}
+fn pick<T>(x: T) -> T { return x }
+
+fn main() -> i32 {
+    var h1: holder<i32> = { v: 7 }
+    var h2: holder<i64> = { v: 8 }
+    println(h1.dup(), " ", h2.dup())
+    return 0
+}

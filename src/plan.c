@@ -173,7 +173,6 @@ void planSetCoroBoxed(FuncDef *f, bool v) {
 
 /* ---- accessors (signatures are the public surface) --------------------------------- */
 
-FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
 FuncDef *planTemplate(const FuncDef *f) {
     PlanSlot *s = slotFor(f, false);
     return s && (s->setMask & PLAN_TEMPLATE) ? s->tmpl : NULL;
@@ -182,6 +181,82 @@ const char *planInstName(const FuncDef *f) {
     PlanSlot *s = slotFor(f, false);
     return s && (s->setMask & PLAN_INST_NAME) ? s->instName : NULL;
 }
+
+/* ---- the resolved callee, per enclosing instance -----------------------------------
+ *
+ * A call site inside a generic body is **one node shared by every instance** of that
+ * body: `wrap<T>` with two type arguments has one `pick(x)` node, and the instance that
+ * callee resolves to depends on which `wrap` is being emitted. Keeping a single pointer
+ * on the node means the last resolution wins -- measured: with `wrap<i32>` and
+ * `wrap<meter>` both emitted functions called the same `pick_*`, the other instance was
+ * never emitted at all, and the generated C did not compile.
+ *
+ * So the deferred-call fixpoint records one entry per (call site, enclosing instance),
+ * and code generation asks for the entry of the body it is emitting: `planEnterFunc` for
+ * a function instance, `planEnterInst` for the type instance whose methods are being
+ * emitted. A call site that belongs to no instance keeps the single pointer on the node,
+ * which is the answer everywhere else. */
+typedef struct {
+    const Expr    *node;      /* the call site */
+    const FuncDef *enclosing; /* the function instance whose body it was resolved in */
+    const Type    *inst;      /* or the type instance, for a method body of a generic struct */
+    FuncDef       *callee;    /* what the call resolves to inside that body */
+} AltCallee;
+
+static AltCallee *g_alt;
+static size_t     g_altLen, g_altCap;
+static const FuncDef *g_emitFunc;   /* the function instance currently being emitted */
+static const Type    *g_emitInst;   /* the type instance whose methods are being emitted */
+
+/* Does this entry describe the body code generation is emitting right now? */
+static bool altMatches(const AltCallee *a) {
+    if (g_emitFunc && a->enclosing == g_emitFunc) return true;
+    if (g_emitInst && a->inst == g_emitInst) return true;
+    return false;
+}
+
+FuncDef *planCallee(const Expr *e) {
+    if (!e) return NULL;
+    if (g_emitFunc || g_emitInst) {
+        for (size_t i = g_altLen; i > 0; i--) {
+            const AltCallee *a = &g_alt[i - 1];
+            if (a->node == e && altMatches(a)) return a->callee;
+        }
+    }
+    return e->func;
+}
+
+void planSetCallee(Expr *e, FuncDef *callee) {
+    if (!e) return;
+    e->func = callee;                     /* the fallback, and the answer outside instances */
+}
+
+void planSetAltCallee(Expr *e, FuncDef *enclosing, const Type *inst, FuncDef *callee) {
+    if (!e || (!enclosing && !inst)) return;
+    for (size_t i = 0; i < g_altLen; i++) {
+        AltCallee *a = &g_alt[i];
+        if (a->node == e && a->enclosing == enclosing && a->inst == inst) {
+            a->callee = callee;           /* idempotent: the fixpoint replays rounds */
+            return;
+        }
+    }
+    if (g_altLen == g_altCap) {
+        g_altCap = g_altCap ? g_altCap * 2 : 64;
+        AltCallee *na = realloc(g_alt, g_altCap * sizeof *na);
+        if (!na) abort();
+        g_alt = na;
+    }
+    g_alt[g_altLen].node = e;
+    g_alt[g_altLen].enclosing = enclosing;
+    g_alt[g_altLen].inst = inst;
+    g_alt[g_altLen].callee = callee;
+    g_altLen++;
+}
+
+void planEnterFunc(const FuncDef *f) { g_emitFunc = f; }
+void planLeaveFunc(void) { g_emitFunc = NULL; }
+void planEnterInst(const Type *t) { g_emitInst = t; }
+void planLeaveInst(void) { g_emitInst = NULL; }
 
 int planArenaLevel(const Expr *e) {
     PlanSlot *s = slotFor(e, false);
