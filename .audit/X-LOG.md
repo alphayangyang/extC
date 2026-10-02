@@ -906,3 +906,40 @@ Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目�
 断言/兜底 0 命中）；六道老闸门全绿（977 文件 checkc · 218 例 ASan · 21 例差分 · 13 例规模 ·
 18 份逃逸语料 · 实例接线基线 0）；四条棘轮 `[ast-freeze]`(142)/`[layering]`(2)/`[plan-seam]`/
 `[callsite]` 全 ok。
+
+## 解耦 T1（本轮完成）：身份族与发射门一起搬（`Expr.func` + `FuncDef.used`）
+
+**为什么必须一起搬**：二者**同写点**——不动点里"把调用点重指到 inst"与"把 inst 标成被调用"
+是**一次决定**（`resolveDeferredCall`）；只搬一个，不动点就会同时写两个存储。
+`used` 另有 3 个写者（检查器 20 处、codegen 1 处、`base.c` 1 处）。
+
+**做了什么**（提交 `272a0da`）
+
+| 部件 | 内容 |
+|---|---|
+| 存储 | `NodeResults.func` / `NodeResults.used`；`PLAN_CALLEE` / `PLAN_USED` 两位 |
+| 写口 | 新增 `planSetUsed`；检查器 20 处 `->used = true|false` 全改经它 |
+| 读口 | 新增 `planUsed`；`check_top.c` 4 处、**codegen 6 处**改经访问器 |
+| 删字段 | `ast.h` 的 `Expr.func` 与 `FuncDef.used` 删除 |
+| 棘轮 | `[plan-seam]` 的 `MOVED` 加 `func`/`used`（**17** 个字段不得再出现在 AST 上） |
+
+**迁移手法（本轮最值钱的经验，已写进 AST-DECOUPLING 第 12 节）**：
+1. **先双写 → 后切读 → 最后删字段**：`planSet*` 同时写两处、访问器优先读侧表并回落原字段
+   ⇒ 每一步都全绿（326/0）；
+2. **删字段让编译器逐条点名**：删掉后 `make` 报 **55 处** `'Expr' has no member named 'func'`，
+   按 (文件,行) 逐行改成 `planCallee(X)`。**我第一版按"标识符白名单"批量替换，误伤了 STL 里
+   一个局部结构体的同名成员**（`d->…`），靠快照整体回退；第二版用编译器点名，一次到位。
+3. **同名成员必须人工判**：`->func` 在 `DeferredUse`/`CallCheck`/`MethodCheck`/`RefCheck`/`OpCheck`
+   上是**另一个结构体的字段**；`planCallee(du->call)` 与 `du->call->func` 是两种东西。
+   编译器报"某结构体没有 planCallee"正是在提示这一点。
+
+**棘轮结果**：`[ast-freeze]` **142 → 136**（6 条 key 消失：`check.c:func`、`check_escape.c:func`、
+`check_expr.c:func`/`used`、`check_stmt.c`、`base.c:used`）；`[layering]` 不动；
+`[plan-seam]` 现在钉住 **17** 个字段。
+
+**验收**：`check.sh` 完整 **71/0**（quick 60/0）；tests **326/0**（发布与 `EXTC_DBG=1`，
+断言/兜底 0 命中、note ×84 不变）；六道老闸门全绿（checkc 977 文件 · ASan 218 例 · 差分 21 ·
+规模 13 · 逃逸语料 18 · 实例接线基线 0）；四条棘轮 ok。**行为不变**。
+
+**T1 之后**：AST 上还剩 **136** 个 `[ast-freeze]` key，主体是 ②分析缓存族（T4）；
+`[plan-seam]` 的 18 个"计划字段"里只剩 `Stmt.forStep`（半语法，**有意保留**）。
