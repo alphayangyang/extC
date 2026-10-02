@@ -10,6 +10,13 @@ The stripping rule is the important part: comments and literals are replaced by 
 these scanners that skipped this step produced false positives -- `e->func` inside a
 comment, `a->top->used` inside a generated-C string literal, `d->name` where `d` was
 codegen's own descriptor -- and those false positives were reported as real findings.
+
+Note the deliberate difference from `tools/comment_neutral.py`, which answers a different
+question ("did this commit change code?"): that one **keeps** literals, because two
+revisions with different messages are still the same code only if the literals match. A
+scanner that looks for *member accesses* must blank them instead, or a generated-C string
+literal like `"a->top->used"` would be read as an access. Same file, two purposes, two
+rules -- hence this module rather than a shared function.
 """
 import re
 
