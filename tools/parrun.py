@@ -38,14 +38,66 @@ EXTC = ROOT / "build" / "extc"
 
 
 def sh(cmd, timeout=120):
-    """Run one command, merge stderr into stdout, and never raise."""
+    """Run one command, merge stderr into stdout, and never raise.
+
+    The command runs in its **own process group**, and a timeout kills the whole group.
+    `extc --run` forks the compiled program, so killing only `extc` used to leave that
+    program behind: two of them spun at 100% CPU for over half an hour after a `--run`
+    case timed out (measured 2026-10-02), one orphan per timed-out case. A hanging case
+    must not outlive the test run.
+    """
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
-    except subprocess.TimeoutExpired:
-        return 124, "(timed out)"
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, start_new_session=True)
     except OSError as e:
         return 127, f"(cannot run: {e})"
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        kill_group(p)
+        try:
+            out, _ = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            out = ""
+        return 124, ((out or "") + "(timed out)")
+
+
+def reap_orphans():
+    """Report and kill compiled test programs still running from this directory.
+
+    A case that hangs must not outlive the run: `extc --run` forks the compiled program,
+    and before the process-group kill was added, a timed-out case left that program
+    spinning forever (measured 2026-10-02: two orphans, 31 and 34 minutes of 100% CPU).
+    Anything matched here is by definition a leak, so it is killed and named.
+    """
+    import signal
+    try:
+        out = subprocess.run(["pgrep", "-f", r"^build/[A-Za-z0-9_]+$"],
+                             capture_output=True, text=True, cwd=str(ROOT)).stdout
+    except OSError:
+        return 0
+    pids = [int(x) for x in out.split()]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if pids:
+        print(f"  [leak] 清理了 {len(pids)} 个跑飞的编译产物进程: {pids}")
+    return len(pids)
+
+
+def kill_group(p):
+    """Kill the process group `p` leads, then reap it."""
+    import signal
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            p.kill()
+        except OSError:
+            pass
 
 
 def case_positive(f):
@@ -235,7 +287,6 @@ def main():
         # 弃置提醒单列：它不是误报，但**要看得见**（每搬一处少一条，搬完这条附注就该消失）✓
         tail = f"（另有 {nDep} 处 `print`/`println` 弃置提醒，迁移中 ⇒ PLAN #67）" if nDep else ""
         print(f"{len(files)} 个{label}：{verdict} ✓{tail}")
-        return 0
 
     groups = collect(args.filter)
 
@@ -269,6 +320,7 @@ def main():
                 for line in (extra or "").splitlines()[:8]:
                     print(f"        {line}")
                 bad += 1
+    reap_orphans()
     print(f"通过 {ok}，失败 {bad}")
     return 1 if bad else 0
 

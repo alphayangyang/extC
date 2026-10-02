@@ -13,6 +13,7 @@ no longer fails is reported as STALE and must be deleted (the ratchet only turns
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -92,15 +93,60 @@ def run(cmd, timeout=120, cwd=None, env=None, mem_mb=0):
     "compiler eats all RAM" is exactly the failure this file exists to catch, and an
     OOM that takes the machine down cannot be reported as a red gate.
     """
+    # The command runs in its own process group, and a timeout kills that group. A gate
+    # that times out must not leave anything running: `extc --run` forks the compiled
+    # program, so killing only the compiler left one orphan per timed-out case spinning at
+    # 100% CPU (measured 2026-10-02: two of them ran for over half an hour).
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           cwd=cwd or ROOT, env=env,
-                           preexec_fn=_limit_mem(mem_mb) if mem_mb else None)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
-    except subprocess.TimeoutExpired:
-        return 124, "(timed out)"
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, cwd=cwd or ROOT, env=env,
+                             start_new_session=True,
+                             preexec_fn=_limit_mem(mem_mb) if mem_mb else None)
     except OSError as e:
         return 127, f"(cannot run: {e})"
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        _kill_group(p)
+        try:
+            out, _ = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            out = ""
+        return 124, ((out or "") + "(timed out)")
+
+
+def reap_orphans():
+    """Kill and report compiled artifacts still running from the repository.
+
+    Same reason as the one in `tools/parrun.py`: a gate that times out must leave nothing
+    behind. Returns the number of processes reaped.
+    """
+    try:
+        out = subprocess.run(["pgrep", "-f", r"^build/[A-Za-z0-9_]+$"],
+                             capture_output=True, text=True, cwd=ROOT).stdout
+    except OSError:
+        return 0
+    pids = [int(x) for x in out.split()]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if pids:
+        print(f"  [leak] 清理了 {len(pids)} 个跑飞的编译产物进程: {pids}")
+    return len(pids)
+
+
+def _kill_group(p):
+    """Kill the process group `p` leads, then let the caller reap it."""
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            p.kill()
+        except OSError:
+            pass
 
 
 def gen_c(extc_path, out_c, timeout=120):

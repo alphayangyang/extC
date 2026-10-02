@@ -943,3 +943,35 @@ Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目�
 
 **T1 之后**：AST 上还剩 **136** 个 `[ast-freeze]` key，主体是 ②分析缓存族（T4）；
 `[plan-seam]` 的 18 个"计划字段"里只剩 `Stmt.forStep`（半语法，**有意保留**）。
+
+## 事后排查（本轮）：两个"神秘进程" = harness 超时杀不干净留下的孤儿
+
+**现象**：`ps` 里两个 `build/recursion_too_deep` 各转 **31 / 34 分钟**、100% CPU、零输出
+（父进程是 `/init` ⇒ 已被孤儿化）。
+
+**查证（三步，都不靠猜）**：
+1. 直接跑那条用例：**0.2 秒**内正常打印 `trap: recursion too deep (unbounded recursion?)`，
+   退出码 1 —— **陷阱本身是好的**，连跑 5 次结果一致；`-O2` 编译出的二进制单独跑也正常。
+2. 所以孤儿不是"用例坏了"，而是**harness 杀进程的方式**：`tools/parrun.py` 的 `sh()` 用
+   `subprocess.run(..., timeout=120)`，超时时 Python 只杀**直接子进程**（`extc`），
+   而 `extc --run` 会 `fork` 出编译好的程序（`src/main.c:119`）⇒ **那个程序活了下来**。
+   一次超时 = 一个孤儿，且它在 `communicate()` 的管道上写、在 CPU 上空转。
+3. 复现验证：用同款 `sh()` + 一个"派生子进程并长睡"的命令 ⇒ 超时后**残留**；
+   改成**进程组杀**后 ⇒ 超时后**(无)**残留。
+
+**修法（两处 harness，都不改编译逻辑）**：
+* `tools/parrun.py` 的 `sh()` 与 `tools/gatecommon.py` 的 `run()`：子进程用
+  `start_new_session=True` 起（自成进程组），超时时 `os.killpg(os.getpgid(pid), SIGKILL)`
+  杀**整组**，再 `communicate(timeout=10)` 回收输出；返回码仍是 124 + `(timed out)`。
+* 各加一个收尾守卫 `reap_orphans()`：`pgrep -f '^build/[A-Za-z0-9_]+$'` 找到跑飞的编译产物
+  ⇒ **杀掉并点名打印**（`[leak] 清理了 N 个…`）。parrun 在打印"通过/失败"之前调用，
+  闸门侧留给后续接进 `check.sh`。
+* **判据（都实测过）**：超时后无残留；正常路径输出不变（`tests/run.sh` 326/0、
+  `check.sh quick` 60/0）；收尾守卫在无残留时静默（0 次输出）。
+
+**过程中的一次自伤（记下来）**：插入守卫的脚本把 `SCAN_MODES` 分支的 `return 0` 误当成
+main 的收尾，导致 `parrun` **提前返回**、`tests/run.sh` 的算术报错（`pass + ` 空值）。
+`tests/run.sh` 立刻报出来了 —— 这正说明"每次改完都跑套件"这条纪律值钱。已修回 326/0。
+
+**诚实说明**：孤儿**为何**撞上 120 秒超时没能在事后复现（该用例 0.2 秒、确定性）。
+能确证的是两件事：① 用例现在正确 trap；② harness 原先在超时后会留孤儿、现在不会。
