@@ -4129,7 +4129,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
         StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
         /* A C name of its own: the frame is emitted through the type channel now, so it must not
          * collide with the function's own name. */
-        const char *frameOwner = (f->instName && f->instName[0]) ? f->instName
+        const char *frameOwner = (planInstName(f) && planInstName(f)[0]) ? planInstName(f)
                                 : (f->name ? f->name : "coro");
         cfd->name = arenaPrintf(c->arena, "%s$frame", frameOwner);
         cfd->coroOf = f;
@@ -4781,7 +4781,7 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
         bufPutc(&b, '_');
         bufPuts(&b, ttMangle(c->tt, *(Type **)vecAt(targs, j)));
     }
-    in->instName = bufCstr(&b);
+    planSetInstName(in, bufCstr(&b));
     in->typeParams.len = 0;             /* an instance has no type parameters left */
     *(FuncDef **)vecPush(&c->funcInsts) = in;
     *(FuncDef **)vecPush(&c->m->funcs) = in;   /* codegen emits the definition from this list */
@@ -5882,7 +5882,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (ec->func != fi->tmpl) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            runOpCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+            runOpCheck(&c, ec, &fi->tmpl->typeParams, &fi->targs, planInstName(fi));
         }
     }
 
@@ -5912,7 +5912,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (mc->func != fi->tmpl) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+            runMethodCheck(&c, mc, &fi->tmpl->typeParams, &fi->targs, planInstName(fi));
         }
     }
 
@@ -5962,7 +5962,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             if (du->func != fi->tmpl) continue;
             if (provisionalInstance(&fi->targs)) continue;
-            runDeferredUse(&c, du, &fi->tmpl->typeParams, &fi->targs, fi->instName);
+            runDeferredUse(&c, du, &fi->tmpl->typeParams, &fi->targs, planInstName(fi));
         }
     }
 
@@ -6016,7 +6016,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (provisionalInstance(&fi->targs)) continue;
             c.substParams = &fi->tmpl->typeParams;
             c.substArgs   = &fi->targs;
-            runRefCheck(&c, rc, fi->instName);
+            runRefCheck(&c, rc, planInstName(fi));
         }
         /* (2) Type instances, the original path: a method's `T` is fixed by the type
          * arguments of the struct that owns it. */
@@ -6429,8 +6429,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 FuncDef *f = *(FuncDef **)vecAt(&all, i);
                 if (!f->body && !f->isExtern) continue;
                 fprintf(stderr, "[home] %-24s uses=%d needs=%d tmpl=%-12s sites=%zu",
-                        f->instName ? f->instName : f->name, (int)planUsesHome(f), (int)f->needsHome,
-                        f->tmpl ? (f->tmpl->instName ? f->tmpl->instName : f->tmpl->name) : "-",
+                        planInstName(f) ? planInstName(f) : f->name, (int)planUsesHome(f), (int)f->needsHome,
+                        f->tmpl ? (planInstName(f->tmpl) ? planInstName(f->tmpl) : f->tmpl->name) : "-",
                         f->arenaSites.len);
                 for (size_t j = 0; j < f->arenaSites.len; j++)
                     fprintf(stderr, " L%d", planArenaLevel(*(Expr **)vecAt(&f->arenaSites, j)));

@@ -20,7 +20,9 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        PLAN_COND_ALLOCS = 1u << 7,
        /* 协程族（X2 第五步；`coroBoxed` 因为 codegen 会写它，留到 X3）*/
        PLAN_IS_CORO = 1u << 8, PLAN_YIELD_TYPE = 1u << 9, PLAN_CORO_FRAME_TYPE = 1u << 10,
-       PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12 };
+       PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12,
+       /* 实例的 C 名（X3；`FuncDef.tmpl` 不在此列 —— `Type.tmpl` 同名，须先按结构体逐点确认）*/
+       PLAN_INST_NAME = 1u << 13 };
 
 typedef struct {
     int arenaLevel, zoneLevel, arenaArg;      /* Expr 族 */
@@ -30,6 +32,7 @@ typedef struct {
     bool isCoro, coroNeedsZone;               /* 协程族 */
     Type *yieldType, *coroFrameType;
     int coroProto;
+    const char *instName;                     /* 实例的 C 名 */
     unsigned setMask;
 } PlanSlot;
 
@@ -139,6 +142,12 @@ void planSetCoroNeedsZone(FuncDef *f, bool v) {
     PlanSlot *s = slotFor(f, true);
     s->coroNeedsZone = v; s->setMask |= PLAN_CORO_NEEDS_ZONE;
 }
+void planSetInstName(FuncDef *f, const char *name) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->instName = name; s->setMask |= PLAN_INST_NAME;
+}
+
 void planSetCoroProto(FuncDef *f, int v) {
     if (!f) return;
     PlanSlot *s = slotFor(f, true);
@@ -149,7 +158,10 @@ void planSetCoroProto(FuncDef *f, int v) {
 
 FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
 FuncDef *planTemplate(const FuncDef *f) { return f ? f->tmpl : NULL; }
-const char *planInstName(const FuncDef *f) { return f ? f->instName : NULL; }
+const char *planInstName(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_INST_NAME) ? s->instName : NULL;
+}
 
 int planArenaLevel(const Expr *e) {
     PlanSlot *s = slotFor(e, false);

@@ -381,3 +381,20 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 `coroBoxed`；`coroKind` 一次失败尝试已回退并记档）、X4 ◐（文档那一半完成；剩下的是
 **实例集显式化**本身 —— `Expr.func`/`tmpl`/`instName` 的搬迁与"codegen 前封闭 + 显式 worklist"，
 需要通读 `codegen.c`，留给预算充足的会话）。
+
+## X3 第六步（本轮完成）：`FuncDef.instName` 搬进侧表（**14 个字段**已离开 AST）
+
+**做法（含前置条件自检）**：脚本先检查"`instName` 恰好一处声明、且属于 `FuncDef`" ——
+结果 `[(680, 'FuncDef')]` ✓ 才动手；不满足就**什么都不改**（这条自检是上轮 `tmpl` 踩坑后加的：
+`tmpl` 在 `Type` 上也有，按名字迁移会连 `Type` 的一起改）。
+
+**改动**：`plan.c` 加记录位 `PLAN_INST_NAME`、槽位成员、setter，访问器改读侧表；
+`plan.h` 加声明（并注明 `tmpl` **不在此列**及其理由）；读点 11 处、写点 1 处改经访问器/setter
+（全在 `check_top.c`）；`ast.h` 删字段；棘轮 `MOVED` 加 `instName`。
+
+**验收**：构建零错误、tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**、
+`[plan-seam] ok` —— AST 上已无 **14** 个字段（…/coroProto/instName）。
+
+**X3 实例族还剩两件**：`FuncDef.tmpl`（53 读，**须先处理与 `Type.tmpl` 的同名**）与
+`Expr.func`（18 写 + 85 检查器读；搬它必须与"物化唯一入口 + codegen 前封闭 + 显式 worklist"
+一起做，否则只是把重指换了个地方）。

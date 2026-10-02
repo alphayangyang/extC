@@ -677,7 +677,6 @@ struct FuncDef {
     Vec         typeParams;      /* const char* */
     Vec         targs;           /* Type*: only an instance has these */
     FuncDef    *tmpl;            /* non-NULL when this is an instance, not the template */
-    const char *instName;        /* the C name of an instance, such as `max_i32` */
     Vec         params;          /* Param* */
     /* The binding each parameter resolved to, in declaration order. `void *` because `Sym` is
      * defined in the checker's own header, which ast.h does not see; only the checker reads this.

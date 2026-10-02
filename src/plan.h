@@ -96,5 +96,8 @@ void planSetYieldType(FuncDef *f, Type *v);
 void planSetCoroFrameType(FuncDef *f, Type *v);
 void planSetCoroNeedsZone(FuncDef *f, bool v);
 void planSetCoroProto(FuncDef *f, int v);
+/* 实例的 C 名（X3）。`FuncDef.tmpl` **不在此列**：`Type.tmpl` 同名，迁移前必须按声明所在的
+ * 结构体逐点确认（见 docs/topics/AST-ANNOTATIONS.md 第 5 节）。*/
+void planSetInstName(FuncDef *f, const char *name);
 
 #endif /* EXTC_PLAN_H */
