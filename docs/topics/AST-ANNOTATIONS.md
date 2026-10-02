@@ -45,7 +45,7 @@
 
 | 字段 | gen 写 | 它被谁读 | 后果 |
 |---|---|---|---|
-| `substParams` / `substArgs` | **各 8** | 检查器的替换机制 | codegen **临时借用检查器的全局替换状态**来做实例代码生成 ⇒ 两条执行路径共用一份可变状态，顺序一变就错 |
+| ~~`substParams` / `substArgs`~~ | ~~各 8~~ | —— | **X3 更正：不是回写**。`CG`（`codegen.c:146`）里有一对**同名的自有字段**，`g->substParams` 指的是它；`Checker` 上那一对是检查器复核实例时自己用的。X0 的计数按字段名跨结构体统计，把两者混在一起了 ⇒ 真实回写基线是 **31** 不是 47 |
 | `used` | 4 | 检查器（"没被调用就不必复核"） | codegen 的遍历顺序**影响**后续复核行为 |
 | `name` | 15 | 各方 | codegen 改名（去重）⇒ 名字不再等于解析结果 |
 | `owSites` / `owLocal` | 各 3 | codegen 自己 | `@overwrite` 的站点表被 codegen 补齐（analysis 与 emission 混在一起） |

@@ -39,9 +39,15 @@ WRITE = r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 # 为什么要有它：codegen 现在会改 `substParams`/`substArgs`（借用检查器的替换状态）、
 # `used`（影响检查器"没被调用就不必复核"的判断）、`name`（去重改名）、`owSites`/`owLocal`、
 # `body`、`coroBoxed`、`ret`、`func` —— 于是"哪个 pass 先跑"变成语义问题（P0-5 的根因）。
+# **X3 更正的误判**：`substParams`/`substArgs` **不在**这张表里。它们有两处同名不同属的声明：
+#   · `CG`（`codegen.c:146`）—— **codegen 自己的**替换上下文，`g->substParams` 指的是它；
+#   · `Checker`（`check_internal.h:365`）—— 检查器复核实例时用的那一对。
+# X0 的计数脚本按 `->字段` 匹配，把两者算在了一起（47 里含 16 处**不是**耦合的）。
+# 教训：按字段名跨结构体计数会张冠李戴 —— 归属必须按声明所在的**结构体**确认。
+# 因此真实基线是 31；下面每一条都是"codegen 写共享状态"（`used` 还被检查器读）。
 WRITE_BACK_BASELINE = {
-    "substParams": 8, "substArgs": 8, "name": 15, "used": 4,
-    "owSites": 3, "owLocal": 3, "body": 3, "coroBoxed": 1, "ret": 1, "func": 1,
+    "name": 15, "used": 4, "owSites": 3, "owLocal": 3,
+    "body": 3, "coroBoxed": 1, "ret": 1, "func": 1,
 }
 
 
@@ -53,10 +59,6 @@ def check_write_backs():
             r"->" + field + r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)", text))
     bad = [(f, counts[f], WRITE_BACK_BASELINE[f]) for f in WRITE_BACK_BASELINE
            if counts[f] > WRITE_BACK_BASELINE[f]]
-    # 基线里没有的字段若出现回写，也算新增耦合
-    for m in set(re.findall(r"->(\w+)\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)", text)):
-        if m not in WRITE_BACK_BASELINE and m in ("substParams", "substArgs"):
-            bad.append((m, 1, 0))
     return counts, bad
 
 

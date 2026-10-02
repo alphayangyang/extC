@@ -215,3 +215,27 @@ fn tick(n: i64) -> coroutine<i64> { yield n; return n }
 ⇒ 结论：**结果是正确的（拒绝）**，但 `parser.c` 那条专用诊断**很可能依然永远不会触发**
 （解析期 `isCoro` 恒为 false）。它不是洞，是一条**死消息**；要彻底确认需要找到能绕过 C-ABI
 检查的路径（例如协程藏在别的返回形状里），留作观察项。
+
+## X3 第二步（本轮）：一处**误判的更正** —— `substParams`/`substArgs` 不是回写
+
+**怎么发现的**：按计划先做只读侦察，第一步就是核实 X0 表里"codegen 借用检查器的替换状态"
+这条。查声明归属时发现：`substParams`/`substArgs` 有**两处同名不同属**的声明 ——
+
+| 声明位置 | 属于谁 | 谁在用 |
+|---|---|---|
+| `codegen.c:146` | **`CG`（codegen 自己的状态结构）** | `g->substParams`（8 处写、若干读）—— 发实例代码时自己的替换上下文 |
+| `check_internal.h:365` | `Checker` | 检查器复核实例时自己用（`c.substParams`，`check_top.c`/`check_escape.c`/`check.c`） |
+
+⇒ X0 的计数脚本按 `->字段` 跨结构体统计，把两者算在了一起：**47 里有 16 处根本不是耦合**。
+
+**更正**：
+* `tools/check_plan_seam.py` 的回写基线从 **47 改到 31**（去掉这两个字段），并把更正理由写在
+  基线表的注释里（含"归属必须按声明所在的**结构体**确认"这条方法教训）；
+* 顺带删掉棘轮里我上一版留下的、针对这两个名字的**硬编码检查**（它在新基线下一跑就误报：
+  `substParams: 现在 1，基线 0`）—— 这正是"棘轮本身也要被验收"的例子；
+* `docs/topics/AST-ANNOTATIONS.md` 第 3 节相应行改为更正说明。
+
+**真实的回写清单（31 处，X3 目标 0）**：`name` 15、`used` 4、`owSites` 3、`owLocal` 3、
+`body` 3、`coroBoxed` 1、`ret` 1、`func` 1。
+
+**验收**：tests **325/0**、`check.sh quick` **56/0**、`[plan-seam] ok`（回写 31 = 基线 31）。
