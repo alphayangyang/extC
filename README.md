@@ -58,7 +58,7 @@ fn main() -> i32 {
 ```sh
 make -j"$(nproc)"                        # 只依赖 C11 标准库，产出 build/extc
 ./build/extc --run examples/hello.extc   # 生成 C、编译并运行
-./tests/run.sh                           # 用例：325 通过 / 0 失败
+./tests/run.sh                           # 用例：326 通过 / 0 失败
 ./check.sh quick                         # 快速验收：56 节（完整模式另含黄金闸门与基准）
 ./check.sh                               # 完整验收：另含基准
 ```

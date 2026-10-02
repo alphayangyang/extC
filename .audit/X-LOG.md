@@ -623,3 +623,55 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 
 **现在 AST 上剩下的两个"计划"字段**：`Expr.func`（等实例集显式化）与 `Stmt.forStep`
 （半语法，有意保留）。其余分析缓存族（②）不构成"AST 充当计划"的耦合，见第 5 节。
+
+## X3 第九步（本轮完成）：`Expr.func` 的只读侦察 —— 并查出"共享调用点"这件真问题
+
+**目标**：交班时定的是"先只读侦察 18 个写点，判是否同一个动作，再决定搬不搬存储"。侦察做了，
+并把旧数字更正为实测值（口径：剥注释/字符串后按基座判类型）：
+
+| 项 | 实测 | 旧记录 |
+|---|---|---|
+| `Expr.func` 写点 | **12**（`check_expr.c` 11 + `check_top.c:5207` 的 `cc->node->func`） | "18 写" |
+| `Expr.func` 直读 | **56**（check_top 20 / check_escape 18 / check_expr 14 / check_stmt 2 / check.c 1 / plan.c 1） | "85 读" |
+| codegen | **54 处 `planCallee`**，`->func` 直读 **0** | "58 读" |
+| codegen 回写 | **0**（`codegen.c:7206` 那处是**注释**） | —— |
+| 同名别的字段 | 5 个写点属 `DeferredUse/RefCheck/OpCheck/CallCheck/MethodCheck` | —— |
+
+**写点分两种性质**：9 处是普通解析（检查该调用点**当时**，多数伴随 `used = true`），
+3 处是**延迟重指**（2436/3216/5207，在 POST 不动点里按实例重跑）。
+
+### 本轮最重要的发现：**一个调用点只有一个值，而它可能属于多个实例**
+
+`funcInstance` 是**浅拷贝** ⇒ 实例共享模板的函数体 ⇒ 泛型体里的调用点被多个实例**先后重指**，
+**只有最后一次写留下来**。实测（新探针 `examples/generic-shared-callsite.extc`）：
+
+```extc
+fn pick<T>(x: T) -> T { return x }
+fn wrap<T>(x: T) -> T { return pick(x) }
+var a: i32 = wrap<i32>(i32(9))   var b: i64 = wrap<i64>(i64(8))
+```
+
+* **一个实例**：生成 `return pick_i32(x);` ✓
+* **两个实例**：`wrap_i32` 与 `wrap_i64` **都**发 `return pick_i64(x);`，
+  而 **`pick_i32` 从未被发出**（`used` 挂在实例上，重指被覆盖 ⇒ 它一直是 false ⇒
+  被 codegen 的"没人调就不发"剪掉）。
+
+**为什么今天没有闸门抓到（诚实说清）**：生成物是**合法 C**（`int64_t` 结果隐式转回 `int32_t`），
+运行结果也对（`pick` 是恒等函数）⇒ 闸门①②③（编得过 / ASan 干净 / 与 C 同结论）**都不会响**；
+tests 的 `// expect:` 也只看输出。**要变成可判红的判据，得让 `pick` 的体依赖 `T` 的宽度**，
+而那是实现落地之后的事（探针先留在 `examples/`，并在文件头写明它是"实现之后的判据"）。
+
+**结论（决定下一步怎么做）**：**只搬存储没有意义**——搬走之后仍然是"每个调用点一个值"，
+"最后一个写赢"只是换个地方发生。要按第 6.3 节写的最小形态做三件事：
+① 不动点跑完后**封闭实例集**（此后只读，可断言）；② 把延迟重指改成**按（调用点，实例）记账**
+（计划侧一张表，`planCallee` 在实例的发射上下文里查）；③ `used` 同族处理（或"被表引用的实例都算 used"）。
+判据：两实例程序生成 `wrap_i32 -> pick_i32` 且 `pick_i32` 被发出。
+
+**本轮的产出**：
+* `docs/topics/AST-ANNOTATIONS.md` 新增 **6.3 节**（实测表 + 两种写点 + 发现 + 最小落地形态），
+  第 5 节 `Expr.func` 行改为实测数字并指向 6.3；
+* `examples/generic-shared-callsite.extc`（新探针；tests run.sh **325 → 326**，README 同步）；
+* 旧数字（18/85/58）在本文件与表里都标注为"X0 的 grep 估算，以实测为准"。
+
+**验收**：构建零告警；tests **326/0**（新增探针）；`--check-c` 对探针通过；
+`[plan-seam] ok` / `[tmpl-owners] ok`。**没有改任何编译器代码**（纯侦察 + 判据）。
