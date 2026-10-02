@@ -239,3 +239,34 @@ fn tick(n: i64) -> coroutine<i64> { yield n; return n }
 `body` 3、`coroBoxed` 1、`ret` 1、`func` 1。
 
 **验收**：tests **325/0**、`check.sh quick` **56/0**、`[plan-seam] ok`（回写 31 = 基线 31）。
+
+## X3 第三步（本轮完成）：逐条复核 31 处"回写" —— 真的只有 **1** 处
+
+按计划做只读侦察的第二半：把 31 处回写**逐条**打开看（不是再数一遍）。结果又推翻了自己的计数：
+
+| 字段 | 原记 | 实际 | 误报原因 |
+|---|---|---|---|
+| `name` | 15 | 0 | `d->name`/`df->name`/`idd->name` 的基座是 **codegen 自己的描述符结构**，不是 AST 节点 |
+| `used` | 4 | 0 | 1 处在**注释**里、3 处在**生成 C 的字符串字面量**里（`a->top->used` 是生成物自己的字段） |
+| `owSites`/`owLocal` | 6 | 0 | `g->owSites`/`g->owLocal` ⇒ **`CG` 自己的状态**（与上一步 `substParams` 同一类错） |
+| `body` | 3 | 0 | `s->body`/`df->body` 同样是 codegen 描述符 |
+| `ret` | 1 | 0 | 在 `cgLine(g, "%s->ret = %s;", …)` 的**字符串**里 |
+| `func` | 1 | 0 | 在**注释**里 |
+| **`coroBoxed`** | 1 | **1** | `cf->coroBoxed = true;`（`cf` 是 `FuncDef`）——**唯一真回写** |
+
+**更正**：棘轮基线 **31 → 1**（只留 `coroBoxed`），并把"哪些是误报、为什么"写进基线表注释；
+`AST-ANNOTATIONS.md` 第 3 节按逐条复核重写。
+
+**方法教训（本批次第三次同类）**：`grep ->字段` 的统计**只能用来找候选** —— 它
+① 分不清同名不同属（`CG.substParams` vs `Checker.substParams`）、
+② 分不清"基座是不是 AST 节点"（`d->name`）、
+③ 不会跳过字符串字面量与注释（`a->top->used`、`e->func`）。
+**落表前必须逐条看**。这条已写进基线表注释与表正文。
+
+**对 X3 的影响（重要）**：原以为"切断 codegen 回写"是一项大工程，实际只有 1 处；
+而 `coroBoxed` 这一处**在当前驱动顺序下是无害的**（先查完所有模块、再逐模块 codegen ⇒
+检查器看不到 codegen 的写），但它**依赖驱动顺序**，已记为 X4 的收尾项。
+⇒ X3 剩余的重头戏是**实例集显式化**（`func`/`tmpl`/`instName` 搬到计划侧 + codegen 前封闭 +
+显式 worklist），与"回写"无关。
+
+**验收**：tests **325/0**、`check.sh quick` **56/0**、`[plan-seam] ok`（回写 1 = 基线 1）。

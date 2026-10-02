@@ -46,12 +46,14 @@
 | 字段 | gen 写 | 它被谁读 | 后果 |
 |---|---|---|---|
 | ~~`substParams` / `substArgs`~~ | ~~各 8~~ | —— | **X3 更正：不是回写**。`CG`（`codegen.c:146`）里有一对**同名的自有字段**，`g->substParams` 指的是它；`Checker` 上那一对是检查器复核实例时自己用的。X0 的计数按字段名跨结构体统计，把两者混在一起了 ⇒ 真实回写基线是 **31** 不是 47 |
-| `used` | 4 | 检查器（"没被调用就不必复核"） | codegen 的遍历顺序**影响**后续复核行为 |
-| `name` | 15 | 各方 | codegen 改名（去重）⇒ 名字不再等于解析结果 |
-| `owSites` / `owLocal` | 各 3 | codegen 自己 | `@overwrite` 的站点表被 codegen 补齐（analysis 与 emission 混在一起） |
-| `body` | 3 | 各方 | codegen 在 body 上挂东西 |
-| `coroBoxed` | 1 | 检查器 + codegen | 装箱决定由 codegen 回写 |
-| `ret` | 1 | 各方 | 同上 |
+| **`coroBoxed`** | 1 | 检查器 + codegen（经 `planCoroBoxed`） | **唯一真正的回写**：codegen 给 `FuncDef` 打"载荷被装箱"的标记。当前驱动是"先查完所有模块、再逐模块 codegen"，所以这个写在检查器看来不可见；但**驱动顺序一变就会变成顺序依赖**（记在这里，属 X4 的收尾项） |
+
+> **X3 更正的第二次**：上表最初列了 10 个字段 47 处，先去掉同名的 `substParams`/`substArgs`（16 处，
+> 属 `CG` 自己）得 31；再**逐条人工复核**后只剩 **1** 处（`coroBoxed`）。其余误报的原因：
+> `name`/`body` 的基座是 codegen 自己的描述符结构、`owSites`/`owLocal` 是 `CG` 自己的状态、
+> `used`/`ret` 在生成 C 的**字符串字面量**里、`func` 在**注释**里。
+> ⇒ **方法教训（第 3 次同类）**：`grep ->field` 的统计只能用来找候选；落表前必须逐条确认
+> "基座是不是 AST 节点、是不是在字符串/注释里、字段属于哪个结构体"。
 
 > 结论：**耦合不止"检查器写、codegen 读"这一半**；codegen 回写分析状态使"哪个 pass 先跑"
 > 变成了语义问题（P0-5 的根因正是"实例物化＝重指节点"这一副作用）。
