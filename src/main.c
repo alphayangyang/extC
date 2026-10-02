@@ -173,6 +173,7 @@ static void usage(const char *argv0) {
         "  EXTC_DBG_M=1         print the per-module renamed-declaration counts\n"
         "  EXTC_DBG_IMPL=1      print each `impl` block and the type it attaches to\n"
         "  EXTC_DBG_HOME=1      print each function's home/zone flags and its arena sites\n"
+        "  EXTC_DBG_OWNER=1     report each result slot first reached from another body\n"
         "  EXTC_DUMP_EFFECTS=1  print each function's effect summary\n"
         "  EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena\n"
         "                       placement in 2 of the 414 golden programs\n"

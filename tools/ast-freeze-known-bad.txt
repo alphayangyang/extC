@@ -4,7 +4,6 @@ src/check.c:boxedCoro	1 处（行 454）	R1 AST 冻结的施工单：P2 把它�
 src/check.c:call	1 处（行 433）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check.c:count	2 处（行 179, 183）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check.c:func	1 处（行 435）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check.c:owner	1 处（行 436）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check.c:type	4 处（行 382, 390, 392, 455）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_escape.c:borrowed	1 处（行 1677）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_escape.c:deref	1 处（行 2271）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -14,60 +13,59 @@ src/check_escape.c:refDepth	8 处（行 606, 1220, 1279, 1280, 1318）	R1 AST �
 src/check_escape.c:storedAt	1 处（行 985）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_escape.c:target	2 处（行 988, 1664）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_escape.c:type	2 处（行 2514, 2552）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:addrMask	2 处（行 1198, 1206）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:args	4 处（行 1694, 2434, 2787, 3380）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:assocOwner	4 处（行 1609, 1956, 2833, 3409）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:call	1 处（行 3737）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:callViaFn	1 处（行 1211）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:callee	2 处（行 2433, 3379）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:cname	6 处（行 791, 854, 888, 979, 1125）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:contMask	2 处（行 1199, 1206）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:convCheck	2 处（行 2255, 2280）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:domNew	3 处（行 2015, 3011, 3552）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:dynRecvViaRef	1 处（行 3445）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:addrMask	2 处（行 1200, 1208）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:args	4 处（行 1696, 2436, 2789, 3382）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:assocOwner	4 处（行 1611, 1958, 2835, 3411）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:call	1 处（行 3739）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:callViaFn	1 处（行 1213）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:callee	2 处（行 2435, 3381）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:cname	6 处（行 791, 854, 888, 981, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:contMask	2 处（行 1201, 1208）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:convCheck	2 处（行 2257, 2282）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:domNew	3 处（行 2017, 3013, 3554）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:dynRecvViaRef	1 处（行 3447）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTable	1 处（行 664）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:dynTrait	1 处（行 3504）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:effComplete	1 处（行 1191）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:extDom	1 处（行 3327）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:field	1 处（行 1650）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:fields	1 处（行 995）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:func	3 处（行 181, 3229, 3522）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:hasEffects	1 处（行 1197）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:hi	1 处（行 1791）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:homeDepth	4 处（行 2123, 3243, 3723, 3744）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:inits	1 处（行 1015）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:isExtTarget	1 处（行 3328）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:isParWorker	3 处（行 2103, 3134, 3637）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:ival	3 处（行 2109, 3139, 3642）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:lamChecked	1 处（行 1002）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:lamInferRet	2 处（行 894, 896）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:dynTrait	1 处（行 3506）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:effComplete	1 处（行 1193）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:extDom	1 处（行 3329）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:field	1 处（行 1652）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:fields	1 处（行 997）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:func	3 处（行 181, 3231, 3524）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:hasEffects	1 处（行 1199）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:hi	1 处（行 1793）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:homeDepth	4 处（行 2125, 3245, 3725, 3746）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:inits	1 处（行 1017）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:isExtTarget	1 处（行 3330）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:isParWorker	3 处（行 2105, 3136, 3639）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:ival	3 处（行 2111, 3141, 3644）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:lamChecked	1 处（行 1004）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:lamInferRet	2 处（行 895, 897）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:lamSig	1 处（行 878）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:left	1 处（行 417）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:lexicalLevel	2 处（行 2343, 2567）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:lo	1 处（行 1790）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:mayPrintState	2 处（行 4117, 4119）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:minAt	2 处（行 2346, 2574）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:lexicalLevel	2 处（行 2345, 2569）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:lo	1 处（行 1792）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:mayPrintState	2 处（行 4119, 4121）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:minAt	2 处（行 2348, 2576）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:modName	2 处（行 830, 847）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:modPrefix	2 处（行 2490, 2964）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:modPrefix	2 处（行 2492, 2966）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:needOp	1 处（行 176）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:obj	1 处（行 3373）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:operand	1 处（行 984）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:owner	3 处（行 182, 1000, 3519）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:parTlsArena	4 处（行 150, 2104, 3135, 3638）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:parWorker	3 处（行 2102, 3133, 3636）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:payloadType	1 处（行 3345）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:recv	2 处（行 1692, 2785）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:refDepth	3 处（行 2354, 2561, 2563）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:obj	1 处（行 3375）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:operand	1 处（行 986）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:parTlsArena	4 处（行 150, 2106, 3137, 3640）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:parWorker	3 处（行 2104, 3135, 3638）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:payloadType	1 处（行 3347）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:recv	2 处（行 1694, 2787）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:refDepth	3 处（行 2356, 2563, 2565）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:right	1 处（行 418）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:srcName	1 处（行 828）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:sym	2 处（行 1297, 1298）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:tname	1 处（行 1014）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:type	25 处（行 860, 970, 972, 980, 985）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:typeName	6 处（行 1607, 1977, 2485, 2830, 2960）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:used	15 处（行 281, 663, 1077, 1452, 1486）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:sym	2 处（行 1299, 1300）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:tname	1 处（行 1016）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:type	25 处（行 860, 972, 974, 982, 987）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:typeName	6 处（行 1609, 1979, 2487, 2832, 2962）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:used	15 处（行 281, 663, 1079, 1454, 1488）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:usedDyn	1 处（行 642）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:usesDyn	1 处（行 643）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:viewOf	1 处（行 3037）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_expr.c:viewOf	1 处（行 3039）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_lookup.c:cname	1 处（行 229）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_lookup.c:ival	1 处（行 756）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_lookup.c:refDepth	1 处（行 237）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -86,43 +84,42 @@ src/check_stmt.c:refDepth	5 处（行 285, 482, 484, 732, 1206）	R1 AST 冻结�
 src/check_stmt.c:reuse	1 处（行 330）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:type	3 处（行 277, 427, 950）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:typeName	1 处（行 75）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:addrFromLocal	4 处（行 1168, 2596, 6078, 6095）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:addrFromLocal	4 处（行 1168, 2596, 6082, 6099）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:addrMask	7 处（行 2594, 2631, 2783, 2902, 2910）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:allocState	3 处（行 607, 6769, 6775）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:ann	4 处（行 4587, 4588, 4600, 4628）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:arenaArgPending	6 处（行 1645, 1648, 1662, 6268, 6288）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:arenaSites	2 处（行 4409, 6183）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:builtinHolder	2 处（行 5596, 5655）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:allocState	3 处（行 607, 6773, 6779）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:ann	4 处（行 4591, 4592, 4604, 4632）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:arenaArgPending	6 处（行 1645, 1648, 1662, 6272, 6292）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:arenaSites	2 处（行 4412, 6187）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:builtinHolder	2 处（行 5600, 5659）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:call	1 处（行 1714）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:cname	13 处（行 3925, 4107, 4117, 4158, 4170）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:contMask	6 处（行 2634, 2784, 2903, 2911, 6076）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:contMask	6 处（行 2634, 2784, 2903, 2911, 6080）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:coroOf	1 处（行 4135）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:coroRetProto	1 处（行 4334）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:effComplete	5 处（行 1154, 1173, 2913, 6080, 6097）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:effState	4 处（行 1155, 1174, 6080, 6097）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:effUnknown	3 处（行 2793, 6080, 6097）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:freshCount	3 处（行 2929, 6079, 6096）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:homeAddrMask	5 处（行 1165, 2593, 2630, 6077, 6094）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:homeContMask	4 处（行 1166, 2633, 6077, 6094）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:effComplete	5 处（行 1154, 1173, 2913, 6084, 6101）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:effState	4 处（行 1155, 1174, 6084, 6101）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:effUnknown	3 处（行 2793, 6084, 6101）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:freshCount	3 处（行 2929, 6083, 6100）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:homeAddrMask	5 处（行 1165, 2593, 2630, 6081, 6098）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:homeContMask	4 处（行 1166, 2633, 6081, 6098）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:homeDepth	1 处（行 1549）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:index	9 处（行 6952, 6952, 6955, 6968, 6968）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:init	2 处（行 6967, 7038）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:index	9 处（行 6956, 6956, 6959, 6972, 6972）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:init	2 处（行 6971, 7042）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:isAssoc	1 处（行 338）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:makesPoolAny	1 处（行 6562）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:makesPoolAny	1 处（行 6566）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:minAt	1 处（行 3287）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:modName	3 处（行 4101, 4152, 4637）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:nParamSyms	2 处（行 4369, 4378）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:needsHome	4 处（行 605, 4221, 4323, 6218）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:otherMask	5 处（行 2655, 2789, 2914, 6076, 6093）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:owLocal	1 处（行 6502）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:owSites	1 处（行 6491）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:owner	1 处（行 5697）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:modName	3 处（行 4101, 4152, 4641）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:nParamSyms	2 处（行 4372, 4381）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:needsHome	4 处（行 605, 4221, 4323, 6222）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:otherMask	5 处（行 2655, 2789, 2914, 6080, 6097）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:owLocal	1 处（行 6506）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:owSites	1 处（行 6495）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:refDepth	10 处（行 2357, 2449, 2470, 2471, 2484）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:sym	1 处（行 3523）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:target	2 处（行 3272, 5682）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:trait	1 处（行 5554）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:target	2 处（行 3272, 5686）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:trait	1 处（行 5558）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:type	23 处（行 82, 4113, 4118, 4164, 4174）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:used	5 处（行 4029, 4748, 4912, 4995, 5207）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check_top.c:used	5 处（行 4029, 4752, 4916, 4999, 5211）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:coroFrame	1 处（行 5121）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:coroKind	1 处（行 6991）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:count	2 处（行 6480, 6488）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -133,7 +130,7 @@ src/codegen.c:path	1 处（行 6933）	R1 AST 冻结的施工单：P2 把它降�
 src/codegen.c:payload	1 处（行 3233）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:text	11 处（行 966, 4414, 5569, 6363, 6627）	R1 AST 冻结的施工单：P2 把它降到 0
 src/dataflow.c:cname	3 处（行 75, 467, 484）	R1 AST 冻结的施工单：P2 把它降到 0
-src/main.c:reserved	3 处（行 277, 280, 282）	R1 AST 冻结的施工单：P2 把它降到 0
+src/main.c:reserved	3 处（行 278, 281, 283）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:args	1 处（行 1064）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:callee	1 处（行 1063）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:file	2 处（行 1883, 1968）	R1 AST 冻结的施工单：P2 把它降到 0
