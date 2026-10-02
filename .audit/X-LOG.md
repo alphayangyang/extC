@@ -342,3 +342,22 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 
 **验收**：tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**（含 coro 套件）、
 `[plan-seam] ok`。
+
+## X3 第五步（本轮·**失败并回退**）：把 `coroKind` 搬进 `CG` 不可行
+
+**想法**：`coroKind` 只有 codegen 读写（`grep` 全仓只有 `ast.h` 的声明与 `codegen.c` 的使用），
+于是把它从 `FuncDef` 搬进 codegen 自己的状态（`CG.coroIdx` 表 + `coroKindOf(g, f)` 查询），
+目标是让回写基线变 **0**。
+
+**结果**：**5 个用例红**（`coro*` 相关），`check.sh quick` 从 56/0 掉到 **48/5**。
+原因很清楚：读点（`codegen.c:2496`/`3966`）在 **prepass 建表之前**就会执行
+⇒ `coroKindOf` 返回 −1 ⇒ 生成物里出现 `__extc_czh-1`。也就是说
+**这处"回写"承担的是"发射顺序"的传递**，不是可以随手搬走的缓存。
+
+**处理**：从快照整体回退（`cp -r /tmp/rev/x3c_src_backup src` + `git checkout -- tools/check_plan_seam.py`
+—— 我的补丁还把棘轮脚本改出了语法错，一并还原）。回退后：tests **325/0**（发布与 `EXTC_DBG=1`）、
+`check.sh quick` **56/0**、`[plan-seam] ok`、`git status` 只剩 `?? proofs/`（另一个会话的在制品）。
+
+**留给 X4 的结论**：`coroKind` 这 1 处要么保留（并把"prepass 必须先于哪些读点"写进契约），
+要么把 prepass 提前到所有读点之前 —— **不能**只换存储位置。这正是本批次反复学到的同一课：
+搬之前先看清**读写顺序**，而不只是"谁引用它"。
