@@ -487,3 +487,34 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 却随每次提交变旧）。本轮的判据是"**每句话都能指到当前代码**"：指不到就删或改写，
 不保留任何"当时如此"的叙述 —— 进展留在 `.audit/*-LOG.md`，代码只写现在。
 
+## 本轮收口：完整验收（提交 `2425ab1`）
+
+| 检查 | 结果 |
+|---|---|
+| `./check.sh`（完整模式） | **68 节通过 / 0 失败**（新增 `tmpl-owners` 一节，quick 56 → 57） |
+| `tests/run.sh` 发布 / `EXTC_DBG=1` | **325 / 0** / **325 / 0**；断言/兜底 **0** 命中；note ×84 |
+| 五道闸门 | ④规模 13 例 ✓ · ⑤逃逸语料 18 份（接受 1 = 对照）✓ · ③差分 21 例 ✓ · ①checkc 976 文件（gcc+clang）✓ · ②ASan 217 正例 ✓ |
+| 接缝与归属 | `[plan-seam] ok`（直读 0、AST 无 14 字段、回写 1=基线）；`[tmpl-owners] ok`（43 站点全有属主） |
+| 纯注释判据 | `comment_neutral.py HEAD` ⇒ plan.h/plan.c **comments only**；`scan_cjk.py` ⇒ 0 |
+
+> 过程里踩到的一个**验收陷阱**（值得记）：我为了省时间让 `check.sh` 与另一个
+> `tests/run.sh` **并行**跑，结果发布版套件报了 5 条"编译/运行失败"（含 `borrowing`、
+> `c-abi-tour` 这类稳定用例），单独重跑立刻 **325/0** —— 是并行争用，不是真红。
+> **规则：全量验收不许与别的重活并行**；出现"从没红过的用例成片红"时，先怀疑环境。
+
+## 下一步（已量清，可直接开工）：`FuncDef.tmpl` 搬进侧表
+
+判据、站点表与顺序结论都在 `docs/topics/AST-ANNOTATIONS.md` 第 6 节。要做的三件事：
+1. `plan.c` 加 `PLAN_TEMPLATE` 记录位 + 槽位成员 + `planSetTemplate`，`planTemplate` 改读侧表、
+   未设置返回 NULL（与 `instName` 同形，可照抄）；
+2. 唯一写点 `check_top.c:4747`（`in->tmpl = tmpl`）改经 setter；`ast.h:679` 删字段；
+3. `tools/check_plan_seam.py` 的 `MOVED` 加 `"tmpl"`（至此 AST 上 15 个字段已搬）。
+
+**注意两条**（本轮量出来的）：
+* `*in = *tmpl;` 是**结构体整体拷贝**，它把 `tmpl` 也复制了一份；因为紧接着那一行就是
+  `in->tmpl = tmpl;`，所以搬走字段不会漏写 —— 但**别把这两行的顺序改掉**（若将来删掉显式那行，
+  必须同时给侧表补写）。
+* `CallCheck.tmpl`（`check_internal.h:664`）**不搬**：codegen 读点 0，属检查器内部；
+  若要消同名，那是**改名**的事，与迁移分开做。
+
+
