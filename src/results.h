@@ -60,6 +60,10 @@ typedef struct {
     bool usesHome, mayUseArena, makesPool;
     /* statements: this loop's condition allocates (released per round) */
     bool condAllocs;
+    /* A desugared `for` carries its step statement as **syntax** (`Stmt.forStep`, written by
+     * the parser). The checker drops that step when it retargets the loop onto an iterator,
+     * and that decision is a result, not syntax -- so it is recorded here. */
+    bool forStepDropped;
     /* coroutines */
     bool isCoro, coroNeedsZone, coroBoxed;
     Type *yieldType, *coroFrameType;

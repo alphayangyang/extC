@@ -197,8 +197,9 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
     inner->u.block.stmts.len = 2;                /* `[ var x = …value(); BODY ]`, step dropped */
     /* The step is gone, so there is no label for `continue` to jump to any more: the iterator's
      * `next()` in the condition does the advancing, which is a plain `while` shape again
-     * (audit P0-15). Leaving this set would emit a `goto` to a label nobody writes. */
-    inner->forStep = NULL;
+     * (audit P0-15). Leaving this set would emit a `goto` to a label nobody writes. The tree
+     * is not edited for this: the decision is recorded as a result. */
+    planSetForStepDropped(inner);
     return true;
 }
 

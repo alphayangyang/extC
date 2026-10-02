@@ -841,3 +841,35 @@ Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目�
 **备份**（P1 开工前按要求做的）：`~/extC-backup/extC-bundle-20261002-162302.git`（完整 history，
 `git bundle verify` 通过）+ `extC-worktree-*.tar.gz`（完整工作树，含未跟踪的 `proofs/`）+
 `SHA256SUMS-*.txt`；并**演练过还原**（clone → `make` → tests 326/0 → 两条棘轮 ok）。
+
+## 解耦 P2 第一刀（本轮完成）：`forStep` 归语法 + 消掉 parser 反向依赖
+
+**两件事，一个目标：让 parser 只写语法、不读计划。**
+
+**(1) `Stmt.forStep` 是语法，判断才是结果。** 它由 parser 写在循环体上（`continue` 要跳到它，
+少了它任何含 `continue` 的 `for` 都死循环，审计 P0-15）。检查器唯一要对它做的判断是
+"**步进没了**"（循环改到迭代器上时 `next()` 推进）⇒ 那是**结果**：
+
+| 之前 | 现在 |
+|---|---|
+| `inner->forStep = NULL;`（**改树**） | `planSetForStepDropped(inner)`（记进 `results` 层，字段一字节不动） |
+| `planForStep` 直接读字段 | 先问结果层"是否被撤销"，再回落语法字段 |
+
+**(2) `parser.c` 不再 include `plan.h`。** 它借计划层只为一处：`@export` 上的协程诊断。
+那处是**解析期读检查器才写的计划值**（`planIsCoro` 由 `check_top.c` 设置）⇒ **恒 false，死消息**
+（W1-LOG 已记档）。改用**语法判据**：解析期返回类型直接写成 `coroutine<...>` 即协程。
+
+**实测（这刀的关键证据）**：`@export fn tick(n: i64) -> coroutine<i64>` 现在报**更准确**的那条
+诊断（`` `@export` on a coroutine ``），不再是泛化的"C-ABI 不能返回 `coroutine<i64>`"；
+两者都拒绝同一个程序。协程**不能写成类型别名**（实测 `type co = coroutine<i64>` 解析期就报错）
+⇒ 两种判据覆盖面**恰好相同**，语法判据更强也够用。
+
+**棘轮结果**：`[layering]` **3 → 2**（`parser.c -> plan.h` 删除）；
+`[ast-freeze]` **146 → 145**（`check_stmt.c:forStep` 删除）。两条都只往一个方向转。
+
+**验收**：构建零告警；tests **326/0**（发布）· **326/0**（`EXTC_DBG=1`）；`tests/coro` **29/0**；
+`[plan-seam] ok`、`[tmpl-owners] ok`、两条棘轮 ok；完整模式见下。
+
+**新发现的判据空白（记下来，P2 后续）**：`[ast-freeze]` 只看"直接写 AST 成员"，
+**看不见"经 results 层写一个语法字段"**——`planSetForStepDropped` 正属这一类。
+堵它需要一张"哪些节点字段是语法、不许经分析层写"的名单，在搬 ②分析缓存族时一起定。

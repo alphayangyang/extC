@@ -100,9 +100,8 @@ bool planMakesPool(const FuncDef *f);
  * Writer: the checker. */
 bool planCondAllocs(const Stmt *s);
 /* The step statement of a desugared `for`, carried on the loop body because `continue`
- * has to reach it. Half syntax, half plan: the parser builds it, and the checker may
- * replace it while lowering, so it stays on the AST.
- * Writer: the parser. */
+ * has to reach it. **Syntax**: the parser writes it, and the checker only ever decides
+ * that the step is gone (recorded as a result, see the setter below). */
 Stmt *planForStep(const Stmt *s);
 /* Does this call site need a temporary for its arguments (evaluation order)?
  * Writer: the checker. */
@@ -149,8 +148,11 @@ void planSetUsesHome(FuncDef *f, bool v);
 void planSetMayUseArena(FuncDef *f, bool v);
 void planSetMakesPool(FuncDef *f, bool v);
 /* Allocation in a loop condition: release it per round. `forStep` stays on the AST -- the
- * parser owns half of it. */
+ * parser owns it; what the checker records about it is only "the step is gone". */
 void planSetCondAllocs(Stmt *st, bool v);
+/* The loop was retargeted onto an iterator, so its step statement is no longer part of the
+ * body and `continue` must not jump to a label nobody emits. */
+void planSetForStepDropped(Stmt *st);
 
 /* The coroutine family. */
 void planSetIsCoro(FuncDef *f, bool v);

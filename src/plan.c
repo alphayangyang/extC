@@ -28,7 +28,10 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12,
        /* instance C name, the instance -> template back pointer, and "a handle of it was
         * made somewhere" (which makes it get a task even when never spawned) */
-       PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14, PLAN_CORO_BOXED = 1u << 15 };
+       PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14, PLAN_CORO_BOXED = 1u << 15,
+       /* the result-side half of the `for` step: the parser owns the statement, the
+        * checker only ever says "that step is gone" */
+       PLAN_FOR_STEP_DROPPED = 1u << 16 };
 
 /* ---- setters (called by the checker) ----------------------------------------------- */
 
@@ -238,7 +241,28 @@ bool planCondAllocs(const Stmt *st) {
     NodeResults *s = resultsAs(st, false, RKIND_STMT, __LINE__);
     return s && (s->setMask & PLAN_COND_ALLOCS) ? s->condAllocs : false;
 }
-Stmt *planForStep(const Stmt *s) { return s ? s->forStep : NULL; }
+/* The step statement of a desugared `for` -- **syntax**, written by the parser on the loop
+ * body, because `continue` has to reach it (C's `for` runs the step on the way out of a
+ * `continue`; without this the desugared form looped forever, audit P0-15).
+ *
+ * The one thing analysis decides about it is that it disappeared: when the loop is
+ * retargeted onto an iterator, the iterator's `next()` advances instead, so a plain
+ * `continue` is right again and the label must not be emitted. That decision is recorded
+ * as a result (`planSetForStepDropped`), never by editing the tree. */
+Stmt *planForStep(const Stmt *s) {
+    if (!s) return NULL;
+    NodeResults *r = resultsOf(s, false);
+    if (r && (r->setMask & PLAN_FOR_STEP_DROPPED) && r->forStepDropped) return NULL;
+    return s->forStep;
+}
+
+void planSetForStepDropped(Stmt *s) {
+    if (!s) return;
+    NodeResults *r = resultsAs(s, true, RKIND_STMT, __LINE__);
+    if (!r) return;
+    r->forStepDropped = true;
+    r->setMask |= PLAN_FOR_STEP_DROPPED;
+}
 
 bool planIsCoro(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);

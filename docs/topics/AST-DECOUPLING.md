@@ -220,3 +220,38 @@ hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 是同一个形状。
 **还没做、留给 P2/P3 的**：`NodeId` 还没有按 owner 分组（现在是一张全局稠密表）；
 `ResultKind` 只覆盖 plan 拥有的那几族字段——②分析缓存族（`refDepth`/`origin`/六个掩码…）仍写在 AST 上，
 它们进 `NodeResults` 或进检查器自己的结构，是 P2 的内容。
+
+---
+
+## 9. P2 第一刀：`forStep` 归语法 + 消掉 parser 反向依赖
+
+**两件事，一个目标：让 parser 只写语法，不读计划。**
+
+**(1) `Stmt.forStep` 是语法，判断才是结果。** 这个字段是脱糖后的 `for` 的步进语句，
+`continue` 要跳到它上面（C 的 `for` 在 `continue` 出栈时会跑步进；少了它任何含 `continue`
+的 `for` 都死循环，审计 P0-15），所以它由 **parser** 写在循环体上。检查器唯一要对它做的判断是
+"**步进没了**"（循环被改到迭代器上时 `next()` 负责推进）—— 那是个结果，不是语法：
+
+| 之前 | 现在 |
+|---|---|
+| 检查器 `inner->forStep = NULL;`（**改树**） | `planSetForStepDropped(inner)`（记在 `results` 层，`Stmt.forStep` 一个字节不动） |
+| `planForStep` 直接读字段 | 先问结果层"这一步是否被撤销"，再回落到语法字段 |
+
+**(2) `parser.c` 不再 `#include "plan.h"`。** 它借计划层只为一处：`@export` 上加协程的诊断。
+那处是**解析期读检查器才写的计划值**（`planIsCoro` 由 `check_top.c` 在类型阶段设置）——
+所以它**恒为 false**，是条死消息（W1-LOG 早先已记为"死消息，不是洞"）。
+改法是**用语法判据**：解析期函数返回类型若直接写成 `coroutine<...>`，就是协程。
+
+**实测（这是这刀的关键证据）**：`@export fn tick(n: i64) -> coroutine<i64>` 现在报的是
+**解析器那条更准确的诊断**（`` `@export` on a coroutine ``），而不再是"C-ABI 不能返回
+`coroutine<i64>`"那条泛化诊断。两者都**拒绝**同一个程序，只是消息更准。
+协程不能写成类型别名（实测 `type co = coroutine<i64>` 在解析期就报错），
+所以两种判据的覆盖面**恰好相同**——语法判据既更强也够用。
+
+**棘轮结果**：`[layering]` **3 → 2**（`parser.c -> plan.h` 已删）；
+`[ast-freeze]` **146 → 145**（`check_stmt.c:forStep` 已删）。两条都是"只许减"的方向。
+
+**顺带得到的一条新判据空白（记下来，P2 后续）**：`[ast-freeze]` 只看"直接写 AST 成员"，
+**看不见"经 results 层写一个语法字段"**（`planSetForStepDropped` 就属于这一类）。
+要堵这个口子需要一张"哪些节点字段是**语法**、不许经分析层写"的名单 ——
+在把 ②分析缓存族搬走时一起定，那时每个字段的归属都要逐条写清。
