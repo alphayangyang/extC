@@ -1057,7 +1057,7 @@ static Type *fnValueOf(Checker *c, Expr *e, FuncDef *f) {
                 "`%s` is a method, not a function, so its name is not a `fn` value", e->u.ident.name);
         return ttError(c->tt);
     }
-    if (f->isCoro) {
+    if (planIsCoro(f)) {
         ckError(c, e->line,
                 "A coroutine's value is a frame handle that some task drives, not a code pointer.",
                 "`%s` is a coroutine, so its name is not a `fn` value", e->u.ident.name);
@@ -3313,7 +3313,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             Type *inner = checkExpr(c, in);
             (void)inner;
-            if (!in->func || !in->func->isCoro) {
+            if (!in->func || !planIsCoro(in->func)) {
                 ckError(c, in->line,
                         "A task must be able to **stop in the middle**: only a coroutine has a frame to"
                         " hold where it stopped and what its locals were. A plain function would just"

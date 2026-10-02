@@ -206,7 +206,7 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     if (block->forDesugar) forRetargetToIterator(c, block);
     /* A block that reclaims its own storage is a place boundary: nothing may be suspended inside
      * it (rule 3). `placeBoundaryDepth` is what the `ST_YIELD` case asks about. */
-    const bool boundary = stmtNeedsPlaceBoundary(block, c->curFunc && c->curFunc->isCoro);
+    const bool boundary = stmtNeedsPlaceBoundary(block, c->curFunc && planIsCoro(c->curFunc));
     if (boundary) c->placeBoundaryDepth++;
 
     pushScope(c);
@@ -913,8 +913,8 @@ void checkStmt(Checker *c, Stmt *s) {
             /* A `yield` with a binding: the name becomes a coroutine-frame local of the yielded type,
              * filled at the resume from the frame's `in` slot. Registered before the rest of this
              * case so the frame layout pass sees it. */
-            if (s->u.yield_.bind && c->curFunc && c->curFunc->isCoro && c->curFunc->yieldType) {
-                Type *bt = c->curFunc->yieldType;
+            if (s->u.yield_.bind && c->curFunc && planIsCoro(c->curFunc) && planYieldType(c->curFunc)) {
+                Type *bt = planYieldType(c->curFunc);
                 if (s->u.yield_.bindAnn)
                     /* Resolve it exactly like a `var` annotation does: the parser hands over the
                      * written type, and only `ttResolve` turns it into a usable one. */
@@ -953,7 +953,7 @@ void checkStmt(Checker *c, Stmt *s) {
             /* `yield e`: legal only inside a coroutine body, and `e` has to be that coroutine's
              * `T`. Both come from the declared return type `coroutine<T>` (see `check_top.c`). */
             FuncDef *cf = c->curFunc;
-            if (!cf || !cf->isCoro) {
+            if (!cf || !planIsCoro(cf)) {
                 ckError(c, s->line,
                         "`yield` only works inside a coroutine: declare the function as"
                         " `fn %s(...) -> coroutine<T>` (that return type is what makes its body a"
@@ -973,8 +973,8 @@ void checkStmt(Checker *c, Stmt *s) {
                         "`yield` inside a reclaimed block");
             }
             Type *got = checkExpr(c, s->u.yield_.value);
-            if (cf->yieldType && got && !ttIsError(got))
-                checkAssignable(c, cf->yieldType, got, s->u.yield_.value, "the yielded value");
+            if (planYieldType(cf) && got && !ttIsError(got))
+                checkAssignable(c, planYieldType(cf), got, s->u.yield_.value, "the yielded value");
             return;
         }
         case ST_TRAP: {
@@ -1012,14 +1012,14 @@ void checkStmt(Checker *c, Stmt *s) {
                  * values", which is the state machine's finished state (codegen stores the sentinel).
                  * `return e` inside a coroutine stays an error -- yielding is how a coroutine hands a
                  * value out. */
-                if (c->curFunc && c->curFunc->isCoro) return;
+                if (c->curFunc && planIsCoro(c->curFunc)) return;
                 if (want && !ttIs(want, "void")) {
                     ckError(c, s->line, NULL, "`%s` must return a value of type `%s`",
                             c->curFunc->name, typeStr(c, want));
                 }
                 return;
             }
-            if (c->curFunc && c->curFunc->isCoro) {
+            if (c->curFunc && planIsCoro(c->curFunc)) {
                 checkExpr(c, s->u.ret.value);
                 ckError(c, s->line,
                         "A coroutine hands values out with `yield`; to finish early use a bare"

@@ -162,3 +162,23 @@ X4 收尾（AST 只剩语法事实与身份）。**每阶段行为不变**，验
 
 **下一步（X2 第五步）**：协程族（`isCoro`/`yieldType`/`coroFrameType`/`coroNeedsZone`/`coroProto`；
 `coroBoxed` 在 codegen 里被写，属 X3），然后 X3 的实例集（`func`/`tmpl`/`instName`）。
+
+## X2 第五步（本轮完成）：协程族搬进侧表
+
+**搬走的字段**：`FuncDef.isCoro`、`yieldType`、`coroFrameType`、`coroNeedsZone`、`coroProto`
+（写点 12 处全在 `check_top.c`；读点 32 处转访问器 —— `check_top.c` 19、`check_stmt.c` 9、
+`check_expr.c` 2、`check.c` 1、`parser.c` 1）。侧表加五个记录位，setter/访问器各 5 个。
+
+**`coroBoxed` 有意不搬**：它有两个写者，其中一个是 **codegen**（`codegen.c:6986`；另一个是 `check.c:455`）。
+在切断 codegen 的回写（X3）之前搬它，只会让"谁在什么时候写"更难看清。
+
+**本轮发现（待查，未修）**：`parser.c` 里有一处读 `isCoro` —— 那是 `@export` 的检查
+（"协程的值是帧句柄，不是 C 能调的函数"）。但 `isCoro` 的**写点全在检查器**（`check_top.c`），
+解析期它恒为 `false` ⇒ **这条诊断很可能永远不会触发**（即 `@export` 加在协程上会被静默接受）。
+本轮只把它从"直读字段"改成"读计划"（行为完全不变），**没有**去改语义。
+要证实需要一个能触发它的最小程序，而我没找到 extC 协程声明的正确写法就停了 ——
+探针 `@export coro fn …` 被判语法错（`expected fn, struct, type…, found coro`）。
+**下一步**：从 `examples/task-place-release.extc` 里抄到正确拼写，再判这条诊断是死是活。
+
+**验收**：tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**、
+闸门⑤语料/②ASan 全量 **全绿**、`[plan-seam] ok`（AST 上已无 **13** 个字段）。

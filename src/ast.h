@@ -691,11 +691,6 @@ struct FuncDef {
     void       *paramSyms[64];   /* must equal EFF_MAX_PARAMS, the summary mask width */
     int         nParamSyms;
     Type       *ret;             /* NULL when the function returns nothing */
-    /* A coroutine: the declared return type is `coroutine<T>`, and the body may `yield`.
-     * `yieldType` is that `T`; the frame the checker lays out for it is a **value** (see
-     * docs/topics/CONCURRENCY.md 4.4). The declaration is a marker: the call's real type and the
-     * protocol methods are synthesized per coroutine (slice B). */
-    bool        isCoro;
     /* Some `ext f(x)` starts this coroutine as a task. The stable adapter that the domain's task
      * table needs -- `bool (*)(void *)` while `$next` takes a concrete frame pointer, and calling one
      * through the other's type is undefined -- is emitted **only** for these, so a program that never
@@ -708,23 +703,12 @@ struct FuncDef {
     /* A lambda whose result type was left out: the first `return <value>` decides it, and this flag
      * is what lets that return through before the type is known (check_stmt.c, ST_RETURN). */
     bool        lamInferRet;
-    Type       *yieldType;
-    /* The synthesized per-coroutine value type: what a **call** to this coroutine evaluates to.
-     * `ret` is set to it as well, so `let c = f(x)` binds a coroutine of its own concrete type. */
-    Type       *coroFrameType;
     Type       *coroRetProto;
     /* Named from **outside** its instance: a `dyn` table's thunk calls it, so its body must survive
      * the "definitions nothing names" pass (which cannot see that reference). */
     bool        dynTable;
-    /* Non-zero on the two protocol methods the checker synthesizes on a coroutine frame:
-     * 1 = `next` (advance the state machine), 2 = `value` (read the return slot). Codegen emits
-     * those two inline instead of calling a function (docs/topics/CONCURRENCY.md 4.4). */
-    int         coroProto;
     int         coroKind;           /* codegen prepass: this coroutine's index, for handle dispatch */
     bool        coroBoxed;          /* a handle of it was made somewhere ⇒ it always gets a task */
-    /* Does this coroutine need a **task place** (its own zone)? Decided after the pool fixpoint and
-     * read by codegen (docs/topics/CONCURRENCY.md 4.4, slice C). */
-    bool        coroNeedsZone;
     /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
      * `pc`, the return slot and (when `makesPool`) the zone id come first, then these by value.
      * See docs/topics/CONCURRENCY.md 4.4. */

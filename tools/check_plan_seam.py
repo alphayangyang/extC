@@ -29,7 +29,8 @@ PLAN_FIELDS = {
 
 # X2 已搬走的字段：它们不许再出现在 AST 上（其余字段还在搬的路上）。
 MOVED = ["arenaLevel", "zoneLevel", "arenaArg", "needTemp",
-         "usesHome", "mayUseArena", "makesPool", "condAllocs"]
+         "usesHome", "mayUseArena", "makesPool", "condAllocs",
+         "isCoro", "yieldType", "coroFrameType", "coroNeedsZone", "coroProto"]
 
 WRITE = r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 

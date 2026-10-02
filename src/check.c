@@ -18,6 +18,7 @@
 
 
 #include "check_internal.h"
+#include "plan.h"          /* 计划：读取经访问器（X2 第五步）*/
 /* ---------------------------------------------------------------- errors */
 
 /* Report a fatal error at a source position.
@@ -448,7 +449,7 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
     if (want && got && isProtoType(want, "coroutine", 1) && got->sdef && got->sdef->coroOf &&
         node && node->kind == EX_CALL) {
         Type *yt = want->targs.len ? *(Type **)vecAt(&want->targs, 0) : NULL;
-        Type *ft = got->sdef->coroOf->yieldType;
+        Type *ft = planYieldType(got->sdef->coroOf);
         if (yt && ft && strcmp(typeStr(c, yt), typeStr(c, ft)) == 0) {
             node->boxedCoro = true;
             node->type = want;

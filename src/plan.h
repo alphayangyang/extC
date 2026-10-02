@@ -89,4 +89,12 @@ void planSetMakesPool(FuncDef *f, bool v);
 /* 循环条件里有分配（定案 101②：按轮释放）。`forStep` 仍是半语法字段，留在 AST 上。*/
 void planSetCondAllocs(Stmt *st, bool v);
 
+/* 协程族（X2 第五步）。`coroBoxed` **不在**这里：codegen 会写它（X3 要切断），
+ * 在切断之前把它搬走只会让"谁在什么时候写"更难看清。*/
+void planSetIsCoro(FuncDef *f, bool v);
+void planSetYieldType(FuncDef *f, Type *v);
+void planSetCoroFrameType(FuncDef *f, Type *v);
+void planSetCoroNeedsZone(FuncDef *f, bool v);
+void planSetCoroProto(FuncDef *f, int v);
+
 #endif /* EXTC_PLAN_H */

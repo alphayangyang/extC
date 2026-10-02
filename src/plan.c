@@ -17,13 +17,19 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        /* FuncDef 的 arena/pool 族（X2 第四步）*/
        PLAN_USES_HOME = 1u << 4, PLAN_MAY_USE_ARENA = 1u << 5, PLAN_MAKES_POOL = 1u << 6,
        /* Stmt 族（X2 第四步；`forStep` 仍是半语法，留在 AST 上）*/
-       PLAN_COND_ALLOCS = 1u << 7 };
+       PLAN_COND_ALLOCS = 1u << 7,
+       /* 协程族（X2 第五步；`coroBoxed` 因为 codegen 会写它，留到 X3）*/
+       PLAN_IS_CORO = 1u << 8, PLAN_YIELD_TYPE = 1u << 9, PLAN_CORO_FRAME_TYPE = 1u << 10,
+       PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12 };
 
 typedef struct {
     int arenaLevel, zoneLevel, arenaArg;      /* Expr 族 */
     bool needTemp;
     bool usesHome, mayUseArena, makesPool;    /* FuncDef 的 arena/pool 族 */
     bool condAllocs;                          /* Stmt 族 */
+    bool isCoro, coroNeedsZone;               /* 协程族 */
+    Type *yieldType, *coroFrameType;
+    int coroProto;
     unsigned setMask;
 } PlanSlot;
 
@@ -113,6 +119,32 @@ void planSetCondAllocs(Stmt *st, bool v) {
     s->condAllocs = v; s->setMask |= PLAN_COND_ALLOCS;
 }
 
+void planSetIsCoro(FuncDef *f, bool v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->isCoro = v; s->setMask |= PLAN_IS_CORO;
+}
+void planSetYieldType(FuncDef *f, Type *v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->yieldType = v; s->setMask |= PLAN_YIELD_TYPE;
+}
+void planSetCoroFrameType(FuncDef *f, Type *v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->coroFrameType = v; s->setMask |= PLAN_CORO_FRAME_TYPE;
+}
+void planSetCoroNeedsZone(FuncDef *f, bool v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->coroNeedsZone = v; s->setMask |= PLAN_CORO_NEEDS_ZONE;
+}
+void planSetCoroProto(FuncDef *f, int v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->coroProto = v; s->setMask |= PLAN_CORO_PROTO;
+}
+
 /* ---- 访问器（对外签名不变） -------------------------------------------------------- */
 
 FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
@@ -154,9 +186,24 @@ bool planCondAllocs(const Stmt *st) {
 }
 Stmt *planForStep(const Stmt *s) { return s ? s->forStep : NULL; }
 
-bool planIsCoro(const FuncDef *f) { return f ? f->isCoro : false; }
-Type *planYieldType(const FuncDef *f) { return f ? f->yieldType : NULL; }
-Type *planCoroFrameType(const FuncDef *f) { return f ? f->coroFrameType : NULL; }
-bool planCoroNeedsZone(const FuncDef *f) { return f ? f->coroNeedsZone : false; }
-int planCoroProto(const FuncDef *f) { return f ? f->coroProto : 0; }
+bool planIsCoro(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_IS_CORO) ? s->isCoro : false;
+}
+Type *planYieldType(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_YIELD_TYPE) ? s->yieldType : NULL;
+}
+Type *planCoroFrameType(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_CORO_FRAME_TYPE) ? s->coroFrameType : NULL;
+}
+bool planCoroNeedsZone(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_CORO_NEEDS_ZONE) ? s->coroNeedsZone : false;
+}
+int planCoroProto(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_CORO_PROTO) ? s->coroProto : 0;
+}
 bool planCoroBoxed(const FuncDef *f) { return f ? f->coroBoxed : false; }

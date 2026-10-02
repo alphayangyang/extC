@@ -8,6 +8,7 @@
  * read as the start of a block instead.
  */
 #include "parser.h"
+#include "plan.h"          /* 计划：读取经访问器（X2 第五步）*/
 
 #include <stdio.h>      /* fprintf: the EXTC_DBG_QN trace */
 #include <stdlib.h>     /* getenv: the EXTC_DBG_QN switch */
@@ -869,7 +870,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                              "`@export` on a generic function");
                     return false;
                 }
-                if (f->isCoro) {
+                if (planIsCoro(f)) {
                     ctxError(ctx, f->line, 1,
                              "A coroutine's value is a frame handle driven by a task, not a C"
                              " function C could call.",

@@ -4100,7 +4100,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
                 pm->owner     = hsd;
                 pm->modName   = f->modName;
                 pm->line      = f->line;
-                pm->coroProto = which;
+                planSetCoroProto(pm, which);
                 pm->ret       = which == 4 ? tpB : ttFromName(c->tt, "bool");
                 vecInit(&pm->params, c->arena, sizeof(Param *));
                 Param *self = arenaAllocZero(c->arena, sizeof *self);
@@ -4151,8 +4151,8 @@ static void coroSetup(Checker *c, FuncDef *f) {
             pm->owner    = cfd;
             pm->modName  = f->modName;
             pm->line     = f->line;
-            pm->coroProto = which == 3 ? 5 : which;   /* 5 = `send` on the frame (the handle's is 6) */
-            pm->ret      = which == 2 ? f->yieldType : ttFromName(c->tt, "bool");
+            planSetCoroProto(pm, which == 3 ? 5 : which);   /* 5 = `send` on the frame (the handle's is 6) */
+            pm->ret      = which == 2 ? planYieldType(f) : ttFromName(c->tt, "bool");
             vecInit(&pm->params, c->arena, sizeof(Param *));
             Param *self = arenaAllocZero(c->arena, sizeof *self);
             self->name = self->cname = "self";
@@ -4172,13 +4172,13 @@ static void coroSetup(Checker *c, FuncDef *f) {
                  * one-argument shorthand leaves A = B = the yield type, which is why a corpus file
                  * that only ever yielded keeps type-checking unchanged. */
                 vp->type = f->ret->targs.len > 0
-                    ? *(Type **)vecAt(&f->ret->targs, 0) : f->yieldType;
+                    ? *(Type **)vecAt(&f->ret->targs, 0) : planYieldType(f);
                 vp->line = f->line;
                 *(Param **)vecPush(&pm->params) = vp;
             }
             *(FuncDef **)vecPush(&cfd->methods) = pm;
         }
-        f->coroFrameType = cft;
+        planSetCoroFrameType(f, cft);
         f->ret = cft;
     
 }
@@ -4195,7 +4195,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
 
     /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
      * their call sites. Checking one here walked a null body. */
-    if (f->coroProto) return;
+    if (planCoroProto(f)) return;
     /* More parameters than the effect summary has bits would silently lose the high ones. That is
      * exactly the audit's P1-4: the same store shape with 4 parameters was rejected while its
      * 40-parameter twin was accepted, because parameter 40's `addrMask` bit fell off the end of a
@@ -4329,14 +4329,14 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * for this function is a value (docs/topics/CONCURRENCY.md 4.4). */
     /* `coroutine<T>`（简写：请求与应答同型）与 `coroutine<A, B>` 都算协程：前者一个类型参数，
      * 后者两个。协议方法各自取哪个参数见下面合成那段。 */
-    f->isCoro = f->ret && (isProtoType(f->ret, "coroutine", 1)
-                           || isProtoType(f->ret, "coroutine", 2));
-    f->coroRetProto = f->isCoro ? f->ret : NULL;
+    planSetIsCoro(f, f->ret && (isProtoType(f->ret, "coroutine", 1)
+                           || isProtoType(f->ret, "coroutine", 2)));
+    f->coroRetProto = planIsCoro(f) ? f->ret : NULL;
     /* `coroutine<A, B>`：`B`（最后一个参数）是 yield 出来的类型。简写 `coroutine<T>` 只有一个
      * 参数，那个就是它。 */
-    f->yieldType = f->isCoro
-        ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL;
-    if (f->isCoro) coroSetup(c, f);
+    planSetYieldType(f, planIsCoro(f)
+        ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL);
+    if (planIsCoro(f)) coroSetup(c, f);
     /* **Retired**: this used to reject a parameter typed `coroutine<T>`, on the grounds that the
      * representation was a marker rather than a value. The unified handle (CONCURRENCY.md §4.4) made
      * those parameters legal, the check was switched off (`if (1 || …) continue;` -- which also made
@@ -4770,8 +4770,8 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     if (in->ret) in->ret = ttSubstitute(c->tt, in->ret, &tmpl->typeParams, targs);
     if (tmpl->coroRetProto) {
         in->ret = ttSubstitute(c->tt, tmpl->coroRetProto, &tmpl->typeParams, targs);
-        in->coroFrameType = NULL;
-        in->isCoro = false;
+        planSetCoroFrameType(in, NULL);
+        planSetIsCoro(in, false);
     }
     /* C name: `max_i32`, built by mangling the type arguments onto the name. */
     Buf b;
@@ -5412,7 +5412,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             pm->name      = which == 3 ? "next" : which == 4 ? "value" : "send";
             pm->owner     = hsd;
             pm->line      = hsd->line;
-            pm->coroProto = which;
+            planSetCoroProto(pm, which);
             pm->ret       = which == 4 ? tpB : ttFromName(cc->tt, "bool");
             vecInit(&pm->params, cc->arena, sizeof(Param *));
             Param *self = arenaAllocZero(cc->arena, sizeof *self);
@@ -5918,11 +5918,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
     for (size_t j = 0; j < c.funcInsts.len; j++) {
         FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-        if (!fi || !fi->tmpl || !fi->tmpl->isCoro || fi->coroFrameType) continue;
+        if (!fi || !fi->tmpl || !planIsCoro(fi->tmpl) || planCoroFrameType(fi)) continue;
         if (provisionalInstance(&fi->targs)) continue;
-        fi->isCoro = true;
-        if (fi->tmpl->yieldType)
-            fi->yieldType = ttSubstitute(c.tt, fi->tmpl->yieldType, &fi->tmpl->typeParams, &fi->targs);
+        planSetIsCoro(fi, true);
+        if (planYieldType(fi->tmpl))
+            planSetYieldType(fi, ttSubstitute(c.tt, planYieldType(fi->tmpl), &fi->tmpl->typeParams, &fi->targs));
         coroSetup(&c, fi);
         /* A local declaration's type inside a generic body is substituted only while the body is
          * **emitted** -- which happens after code generation has built its unit list and emitted the
@@ -6802,9 +6802,9 @@ static bool stmtCallsAllocator(Checker *c, Stmt *s) {
 static void coroCheckDeferred(Checker *c, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !cf->isCoro || cf->tmpl) continue;
+        if (!cf || !planIsCoro(cf) || cf->tmpl) continue;
         /* A boxed coroutine always has a task: its frame lives in that task's place. */
-        cf->coroNeedsZone = planMakesPool(cf) || cf->coroBoxed;
+        planSetCoroNeedsZone(cf, planMakesPool(cf) || cf->coroBoxed);
     }
     /* **Instances** need the same answer, and this loop used to skip them (`cf->tmpl`), so a
      * generic coroutine never got its place: allocations made inside it landed in the *caller's*
@@ -6815,8 +6815,8 @@ static void coroCheckDeferred(Checker *c, Module *m) {
      * handle. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-        if (!cf || !cf->isCoro || !cf->tmpl) continue;
-        cf->coroNeedsZone = cf->tmpl->coroNeedsZone || cf->coroBoxed;
+        if (!cf || !planIsCoro(cf) || !cf->tmpl) continue;
+        planSetCoroNeedsZone(cf, planCoroNeedsZone(cf->tmpl) || cf->coroBoxed);
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);
@@ -6982,7 +6982,7 @@ static bool coroLiveAcross(const CoroScan *s, const CoroDecl *d, const CoroYield
 /* Lay out the frame of a coroutine, and refuse what may not go in it. Runs after the body has been
  * checked, so every declaration's type is final. */
 static void coroFrameLay(Checker *c, FuncDef *f) {
-    if (!f || !f->isCoro || !f->body) return;
+    if (!f || !planIsCoro(f) || !f->body) return;
     CoroScan s;
     memset(&s, 0, sizeof s);
     s.index = 0;
@@ -7052,7 +7052,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
      * coroutine pulls in that container's helpers. `zone` is always present -- eight bytes, and it
      * keeps the layout independent of the pool fixpoint, which only runs later. */
     {
-        StructDef *fsd = f->coroFrameType ? f->coroFrameType->sdef : NULL;
+        StructDef *fsd = planCoroFrameType(f) ? planCoroFrameType(f)->sdef : NULL;
         if (fsd) {
             if (!fsd->fields.arena) vecInit(&fsd->fields, c->arena, sizeof(FieldDef *));
             Type *i64t = ttFromName(c->tt, "i64");
@@ -7060,7 +7060,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             fd->name = "pc"; fd->type = i64t; fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
             fd = arenaAllocZero(c->arena, sizeof *fd);
-            fd->name = "ret"; fd->type = f->yieldType; fd->line = f->line;
+            fd->name = "ret"; fd->type = planYieldType(f); fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
             fd = arenaAllocZero(c->arena, sizeof *fd);
             fd->name = "zone"; fd->type = i64t; fd->line = f->line;
@@ -7072,7 +7072,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             *(FieldDef **)vecPush(&fsd->fields) = fd;
             /* The **incoming slot**: what a resume hands the coroutine, read by a `yield` binding. */
             fd = arenaAllocZero(c->arena, sizeof *fd);
-            fd->name = "in"; fd->type = f->yieldType; fd->line = f->line;
+            fd->name = "in"; fd->type = planYieldType(f); fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
             /* The block arenas, one per block level. A step has no C-stack arena array, and a block in
              * a coroutine can span a suspension (`new` ... `yield` ... use), so the arena lives here
@@ -7113,7 +7113,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
                 fd->name = p->name; fd->type = p->type; fd->line = f->line;
                 *(FieldDef **)vecPush(&fsd->fields) = fd;
             }
-            if (!fsd->type) fsd->type = f->coroFrameType;
+            if (!fsd->type) fsd->type = planCoroFrameType(f);
         }
     }
 
