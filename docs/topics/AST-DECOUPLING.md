@@ -357,3 +357,42 @@ hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 是同一个形状。
 **T0 到此的边界（写清楚，免得越权）**：id 仍是**一张全局稠密表**（owner 只做校验，不切分区）；
 "按 owner 的池"（`PrimaryMap` 那种每人一张小表）留给 T4 —— 那时每个 owner 的结果真的只属于它，
 才有必要把存储也分开。现在做分区没有收益，反而会让 T4 再改一次。
+
+---
+
+## 12. T1 已落地：身份族与发射门（`Expr.func` + `FuncDef.used` 一起搬）
+
+**为什么必须一起搬**（拓扑序的依据，见 10.2）：二者**同写点**——不动点里"把调用点重指到 inst"
+与"把 inst 标成被调用"是**一次决定**（`resolveDeferredCall`）；只搬一个，不动点就会同时写两个存储。
+`used` 另有 3 个写者（检查器 20 处、codegen 1 处、`base.c` 1 处——后者是**另一个结构体**的 `used`，
+块缓冲区的已用字节数，保留）。
+
+**做了什么**
+
+| 部件 | 内容 |
+|---|---|
+| 存储 | `NodeResults.func` 与 `NodeResults.used` 两个槽位字段；`PLAN_CALLEE` / `PLAN_USED` 两个位 |
+| 写口 | `planSetCallee`（已有）与新的 `planSetUsed`；检查器 20 处写 `used` 全部改经 setter |
+| 读口 | `planUsed`（新）与 `planCallee`（已有）；检查器 4 处、codegen **6 处**读 `used` 改经访问器 |
+| 删字段 | `ast.h` 的 `Expr.func` 与 `FuncDef.used` **删除**（两段注释改为指向 plan 侧） |
+| 棘轮 | `[plan-seam]` 的 `MOVED` 加 `func`/`used`（AST 上不得再出现，共 **17** 个字段） |
+
+**迁移手法（这一轮最值得记的经验）**：
+
+1. **先双写、后切读、最后删字段**：`planSetCallee`/`planSetUsed` 先同时写侧表与原字段，
+   访问器**优先读侧表、回落原字段** ⇒ 每一步都全绿（326/0）；
+2. **删字段让编译器逐条点名**：删掉后 `make` 报 **55 处** `'Expr' has no member named 'func'`，
+   按 (文件,行) 逐行把 `X->func` 改成 `planCallee(X)` —— **比按名字批量替换安全得多**
+   （我第一版用"标识符白名单"批量替换，误伤了 STL 里一个局部结构体的同名成员，
+   靠快照整体回退；第二版用编译器点名的位置，一次到位）；
+3. **同名成员要人工判**：`->func` 在 `DeferredUse`/`CallCheck`/`MethodCheck`/`RefCheck`/`OpCheck`
+   上是**另一个结构体的字段**，不是 `Expr.func`；`planCallee(du->call)` 与 `du->call->func`
+   是两种东西。编译器报"某结构体没有 planCallee"正是在提示这一点。
+
+**验收**：构建零告警；tests **326/0**（发布）· **326/0**（`EXTC_DBG=1`，断言/兜底 0 命中）；
+`check.sh quick` **60/0**；`[plan-seam] ok`；`[ast-freeze]` **142 → 136**（6 条 key 消失：
+`check.c:func`、`check_escape.c:func`、`check_expr.c:func`/`used`、`check_stmt.c`、`base.c:used`）；
+`[layering]` 不动。**行为不变**。
+
+**T1 之后 AST 上还剩什么**：`[ast-freeze]` **136** 个 key，主体是 ②分析缓存族（T4）。
+`[plan-seam]` 的 18 个"计划字段"里，只剩 `Stmt.forStep`（半语法，有意保留）。

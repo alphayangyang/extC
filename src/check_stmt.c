@@ -470,7 +470,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 int d = targetDepth(c, s->u.var.init);
                 Expr *ini = s->u.var.init;
                 if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
-                    && ini->func && ini->func->needsHome && (int)c->scopes.len > d)
+                    && planCallee(ini) && planCallee(ini)->needsHome && (int)c->scopes.len > d)
                     d = (int)c->scopes.len;      /* a callee with a home arena uses mine */
                 /* Storage the initializer signed as out-of-frame (`effects Ret=0`, or a chain
                  * rooted at a global) is not in a frame at all, so the home-arena heuristic above

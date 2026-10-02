@@ -6994,7 +6994,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         /* The event layer is needed if anything used calls one of its entry points. */
         for (size_t fi = 0; fi < m->funcs.len; fi++) {
             FuncDef *ef = *(FuncDef **)vecAt(&m->funcs, fi);
-            if (ef && ef->used && ef->name &&
+            if (ef && planUsed(ef) && ef->name &&
                 (strncmp(ef->name, "extc_epoll_", 11) == 0 || strncmp(ef->name, "extc_sock_", 10) == 0 ||
                  strncmp(ef->name, "extc_tcp_", 9) == 0))
                 g.needEvent = true;
@@ -7203,11 +7203,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
             if (planCoroProto(md)) continue;      /* emitted inline at the call site, not here */
             /* ⚡ 可达性剪枝（PLAN #69）：**没人调用的方法不发射** ✓
-             * 检查器早就在每个调用点打 `used`（`e->func = f; f->used = true;` ✓
+             * 检查器早就在每个调用点打 `used`（`e->func = f; planUsed(f) = true;` ✓
              * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓
              * 为什么重要：一个小程序会带出 prelude + 库的**整片**代码 ✗
              * （实测 `tests/io/stream-file.extc` 曾生成 **2437 行 / 169 个静态函数** ✓）*/
-            if ((!md->used) && !inTraitTable(m, md)) continue;
+            if ((!planUsed(md)) && !inTraitTable(m, md)) continue;
             *(FuncDef **)vecPush(&g.funcs) = md;
         }
     }
@@ -7237,7 +7237,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
          * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
         /* `@export` 也是根：extC 侧没人提它的名字，剪枝看的就是"有没有人提" ⇒ 不豁免就没定义。 */
-        if (!f->used && !cgIsMain(f) && !f->isExport && !inTraitTable(m, f)) continue;
+        if (!planUsed(f) && !cgIsMain(f) && !f->isExport && !inTraitTable(m, f)) continue;
         /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
          * body of their own -- emitting one here hit genBlockBody with a null body. */
         if (planCoroProto(f)) continue;
@@ -8194,7 +8194,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * such as `push` calling `grow` is included automatically, and
              * emitting too much is the safe direction. */
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
-            if (!md->used) continue;
+            if (!planUsed(md)) continue;
             /* Instance methods are candidates too. They used to be left out, and that is
              * exactly where the remaining `unused function` warnings lived: a library
              * method of a generic instance (`slice<i32>::isEmpty`) is marked used by the
@@ -8277,7 +8277,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
-            if (!md->used) continue;      /* called methods only */
+            if (!planUsed(md)) continue;      /* called methods only */
             planEnterInst(inst);          /* a method body is shared by every type instance */
             size_t fb = g.out->len;
             CGACC("cg-emit", genFunc(&g, md));

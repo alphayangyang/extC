@@ -113,7 +113,7 @@ bool exprOutOfFrame(Checker *c, Expr *e) {
             FieldDef *fd = e->u.method.recv->field;
             if (fd && fd->hasEffects && fd->effRetFresh) return true;
         }
-        return e->func && e->func->extRetFresh;
+        return planCallee(e) && planCallee(e)->extRetFresh;
     }
     default: return false;
     }
@@ -407,9 +407,9 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
     (void)c;
     if (getenv("EXTC_DBG_ZONE"))
         fprintf(stderr, "[zone] call=%s makesPool=%d zoneLevel=%d d=%d\n",
-                e->func && e->func->name ? e->func->name : "-",
-                e->func ? (int)planMakesPool(e->func) : -1, planZoneLevel(e), d);
-    if (!calleeMakesPool(e->func) || planZoneLevel(e) == 0) return d;
+                planCallee(e) && planCallee(e)->name ? planCallee(e)->name : "-",
+                planCallee(e) ? (int)planMakesPool(planCallee(e)) : -1, planZoneLevel(e), d);
+    if (!calleeMakesPool(planCallee(e)) || planZoneLevel(e) == 0) return d;
     int zd = (planZoneLevel(e) == ZONE_HOME) ? 0 : planZoneLevel(e);
     return maxInt(d, zd);
 }
@@ -1350,11 +1350,11 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * 提不动就是提不动，返回 false 让调用方报错 —— 那是这一格的纪律。 */
         if (getenv("EXTC_DBG_ZONE"))
             fprintf(stderr, "[gate] call=%s ptr=%p owner=%p mP=%d cmp=%d lvl=%d at=%d\n",
-                    val->func && val->func->name ? val->func->name : "-",
-                    (void *)val->func, (void *)(val->func ? val->func->owner : NULL),
-                    val->func ? (int)planMakesPool(val->func) : -1,
-                    (int)calleeMakesPool(val->func), planZoneLevel(val), at);
-        if (calleeMakesPool(val->func) && planZoneLevel(val) != 0) {
+                    planCallee(val) && planCallee(val)->name ? planCallee(val)->name : "-",
+                    (void *)planCallee(val), (void *)(planCallee(val) ? planCallee(val)->owner : NULL),
+                    planCallee(val) ? (int)planMakesPool(planCallee(val)) : -1,
+                    (int)calleeMakesPool(planCallee(val)), planZoneLevel(val), at);
+        if (calleeMakesPool(planCallee(val)) && planZoneLevel(val) != 0) {
             int want = (at == 0) ? ZONE_HOME : at;
             if (planZoneLevel(val) > want) {
                 if (getenv("EXTC_DBG_ZONE"))

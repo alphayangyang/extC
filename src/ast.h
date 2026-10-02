@@ -196,13 +196,6 @@ struct Expr {
 
     /* ---- filled in by the type checker ---- */
     Type     *type;
-    FuncDef  *func;     /* the function an EX_CALL or EX_METHOD resolved to; for `==`
-                         * it is the eq method.
-                         * On an **EX_IDENT** it means something else: this identifier is a
-                         * **function used as a value** (`var f: fn(i64) -> i64 = double_it`), so
-                         * the expression is a code pointer and codegen prints its address. The
-                         * checker's `lookup` finds bindings and never functions, which is why this
-                         * node arrives at the "undefined name" path and is claimed there. */
     /* `parallel::run(worker, ...)`: 内建识别出来的那个 worker（codegen 据此生成 trampoline）。 */
     FuncDef  *parWorker;
     /* `sys::domain::single()`: the checker marks the **call node** (the way it marks `parWorker`
@@ -858,8 +851,8 @@ struct FuncDef {
      *
      * This is a conservative approximation: a call inside a template body counts as a
      * use, so a function may be checked and emitted more often than necessary, never
-     * less. */
-    bool        used;
+     * less. The flag itself is a plan fact, not syntax: it lives in the plan side table
+     * (`planUsed` in plan.h). */
     /* Effect summary: what does this function store into its `mut ref` parameters?
      * Bit i stands for parameter i.
      *   addrMask  : the address of argument j, or the address of one of its fields, was

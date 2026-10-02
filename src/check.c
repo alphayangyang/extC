@@ -426,7 +426,7 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
      * where the sum has type `T` and the assignment expects `i64`. Only the first was recorded, so the
      * second was rejected on the template ("assignment expects `i64`, found `T`", tools/attack.py B8).
      * The instance re-checks the pair, which is what makes accepting it here safe. */
-    if ((ttIsError(got) && node && node->kind == EX_METHOD && !node->func &&
+    if ((ttIsError(got) && node && node->kind == EX_METHOD && !planCallee(node) &&
          mentionsParam(node->u.method.recv->type)) ||
         (node && got && (got->kind == TY_PARAM || mentionsParam(got)))) {
         DeferredUse *du = (DeferredUse *)arenaAllocZero(c->arena, sizeof(DeferredUse));

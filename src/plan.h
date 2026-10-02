@@ -48,6 +48,12 @@
  * resolution recorded for that instance. */
 FuncDef *planCallee(const Expr *e);
 
+/* Was this function called? Code generation emits a function only when something calls it
+ * (plus the roots: `main`, `@export`, a `dyn` table entry). Writers: the checker at every
+ * call site, including the deferred-call fixpoint, which marks each instance it produced. */
+bool planUsed(const FuncDef *f);
+void planSetUsed(FuncDef *f, bool v);
+
 /* The template this instance was materialized from (NULL when `f` is not an instance).
  * Writer: instance materialization, which is the only place an instance is created.
  * Stale: names and type arguments are taken from the wrong function. */

@@ -99,7 +99,7 @@ static bool parBodyExpr(void *ctx, Expr *e) {
      * `(*extc_tls_arena)`；而 worker 体内分配会让它多一个隐藏的 home 尾参，trampoline 补传的也是
      * 同一个线程本地 arena。安全性来自签名：只能写 out、只能返回 i64 ⇒ 分配逃不出去。 */
     if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
-        FuncDef *g = e->func;
+        FuncDef *g = planCallee(e);
         if (!g) {
             Expr *ce = e->u.call.callee;
             if (ce && ce->kind == EX_IDENT) g = findFunc(q->c, ce->u.ident.name);
@@ -278,7 +278,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
                 return err;
             }
             planSetCallee(e, m);
-            m->used = true;      /* record that this method is used */
+            planSetUsed(m, true);      /* record that this method is used */
             setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
             return lt;
         }
@@ -419,7 +419,7 @@ Type *checkCompoundOp(Checker *c, const char *op, Expr *target, Expr *value,
     Type *rt = checkArith(c, bin, tgt, val);
     if (out) *out = bin;
     if (ttIsError(rt)) return rt;
-    if (bin->func && exprHasAnyCall(target)) {
+    if (planCallee(bin) && exprHasAnyCall(target)) {
         ckError(c, target->line,
                 "the statement is rewritten as `x = add(&x, y)`, so the target has to be a"
                 " place that can be named twice without side effects",
@@ -660,7 +660,7 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
         if (impl && it && it->sdef && it->kind == TY_GENERIC)
             for (size_t k = 0; k < im->methods.len; k++) {
                 FuncDef *mf = *(FuncDef **)vecAt(&im->methods, k);
-                mf->used = true;
+                planSetUsed(mf, true);
                 mf->dynTable = true;   /* its body is named by the vt thunk, from outside */
             }
     }
@@ -1076,7 +1076,7 @@ static Type *fnValueOf(Checker *c, Expr *e, FuncDef *f) {
     /* Taking the address is a use like any other: codegen emits only the functions something
      * calls or names, so without this the definition would be missing and the C compiler would
      * report an undeclared identifier. */
-    f->used = true;
+    planSetUsed(f, true);
     return ft;
 }
 
@@ -1451,7 +1451,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
 
-                    planSetCallee(e, m);  m->used = true;   /* record that this method is used */
+                    planSetCallee(e, m);  planSetUsed(m, true);   /* record that this method is used */
                     setOpCallArgs(c, e, m);         /* the hidden zone argument of an operator call */
                     return c->tBool;
                 }
@@ -1485,7 +1485,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return c->tBool;
                     }
                     planSetCallee(e, m);
-                    m->used = true;      /* record that this method is used */
+                    planSetUsed(m, true);      /* record that this method is used */
                     setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
                     return c->tBool;
                 }
@@ -1539,7 +1539,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         Vec *sp = NULL, *sa = NULL;
                         if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
                         planSetCallee(e, m);
-                        m->used = true;
+                        planSetUsed(m, true);
                         setOpCallArgs(c, e, m);   /* the hidden zone argument of an operator call */
                         return m->ret ? ttSubstitute(tt, m->ret, sp, sa) : ttVoid(tt);
                     }
@@ -2104,7 +2104,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->parWorker = wf;
                 wf->isParWorker = true;   /* codegen 据此生成 trampoline */
                 wf->parTlsArena = true;   /* worker 里的 new 走线程本地 arena（③c） */
-                wf->used = true;          /* the trampoline names it, so it must be emitted */
+                planSetUsed(wf, true);          /* the trampoline names it, so it must be emitted */
                 {
                     /* 第一个实参不是表达式，是函数名：换成一个 i64 字面量，后面的实参照常走。 */
                     Expr *lit = exprNew(c->arena, EX_INT, wa->line);
@@ -2114,7 +2114,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->type = c->tI32;
                 return c->tI32;
             }
-            planSetCallee(e, f);  f->used = true;   /* record the resolved function and its use */
+            planSetCallee(e, f);  planSetUsed(f, true);   /* record the resolved function and its use */
 
             Vec *sp = NULL, *sa = NULL;
             if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
@@ -2424,8 +2424,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * (audit P0-4: `z<box<...65 deep...<i64>>>()` was a SIGSEGV, depths <= 64 were
                      * a clean diagnostic). The error is already recorded; stop here. */
                     if (!inst) return ttError(tt);
-                    inst->used = true;
-                    tf->used = true;
+                    planSetUsed(inst, true);
+                    planSetUsed(tf, true);
                     /* Rewrite the node into an ordinary call: the shape every path except
                      * `alloc` uses. */
                     Vec args = e->u.gencall.args;
@@ -3135,7 +3135,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->parWorker = wf;
                 wf->isParWorker = true;
                 wf->parTlsArena = true;
-                wf->used = true;
+                planSetUsed(wf, true);
                 {
                     Expr *lit = exprNew(c->arena, EX_INT, wa->line);
                     lit->u.ival = 0;
@@ -3144,7 +3144,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->type = c->tI32;
                 return c->tI32;
             }
-            planSetCallee(e, f);  f->used = true;   /* record the resolved function and its use */
+            planSetCallee(e, f);  planSetUsed(f, true);   /* record the resolved function and its use */
 
             /* A generic free function: `T` can be inferred from an argument only, because an
              * instance of a type is decided by the type while a call to a free function has
@@ -3209,12 +3209,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * an instance whose arguments are the parameters themselves is created
                  * (`idOf_T`), which is self-consistent and treats `T` as opaque, so the rest of
                  * the template body still type-checks. The call is recorded, and when the
-                 * instance is checked again, `e->func` is redirected to the concrete instance
+                 * instance is checked again, the callee is redirected to the concrete instance
                  * (`idOf_i32`). */
                 FuncDef *inst = funcInstance(c, f, &targs, e->line);
                 /* Same NULL contract as the `EX_GENCALL` site above (audit P0-4). */
                 if (!inst) return ttError(tt);
-                inst->used = true;
+                planSetUsed(inst, true);
                 planSetCallee(e, inst);
                 f = inst;                     /* every check below uses the instance */
 
@@ -3316,18 +3316,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             Type *inner = checkExpr(c, in);
             (void)inner;
-            if (!in->func || !planIsCoro(in->func)) {
+            if (!planCallee(in) || !planIsCoro(planCallee(in))) {
                 ckError(c, in->line,
                         "A task must be able to **stop in the middle**: only a coroutine has a frame to"
                         " hold where it stopped and what its locals were. A plain function would just"
                         " run to completion right here, so `ext` on one would be a silent ordinary"
                         " call.",
                         "`ext` needs a coroutine function, and `%s` is a plain function",
-                        in->func ? in->func->name : "this");
+                        planCallee(in) ? planCallee(in)->name : "this");
                 return ttError(tt);
             }
             e->extDom = c->curDom;          /* codegen 把任务登记到这个域上 */
-            in->func->isExtTarget = true;   /* ⇒ 为它生成域用的适配器（只为它，别的产物不受影响） */
+            planCallee(in)->isExtTarget = true;   /* ⇒ 为它生成域用的适配器（只为它，别的产物不受影响） */
             /* The value is **void on purpose**: `let h = ext f(x)` is refused by the type system
              * rather than by a special rule, and the handle (the取件单) lands with the driving
              * loop (docs/topics/CONCURRENCY.md「`ext` 与调度域」). */
@@ -3638,7 +3638,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->parWorker = wf;
                 wf->isParWorker = true;
                 wf->parTlsArena = true;
-                wf->used = true;
+                planSetUsed(wf, true);
                 {
                     Expr *lit = exprNew(c->arena, EX_INT, wa->line);
                     lit->u.ival = 0;
@@ -3647,7 +3647,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 e->type = c->tI32;
                 return c->tI32;
             }
-            planSetCallee(e, f);  f->used = true;   /* record the resolved function and its use */
+            planSetCallee(e, f);  planSetUsed(f, true);   /* record the resolved function and its use */
             /* `dyn Trait(x).m(...)`: **object safety** (DYN.md stage 1).
              *
              * Not every method can be dispatched through a table, and the rule is enforced here --
@@ -4003,18 +4003,18 @@ static bool exprMayPrint(Checker *c, Expr *e) {
      * never pointed at the omission. */
     case EX_DYN: return exprMayPrint(c, e->u.dynv.payload);
     case EX_CALL:
-        if (e->func && funcMayPrint(c, e->func)) return true;
+        if (planCallee(e) && funcMayPrint(c, planCallee(e))) return true;
         for (size_t i = 0; i < e->u.call.args.len; i++)
             if (exprMayPrint(c, *(Expr **)vecAt(&e->u.call.args, i))) return true;
         return false;
     case EX_METHOD:
-        if (e->func && funcMayPrint(c, e->func)) return true;
+        if (planCallee(e) && funcMayPrint(c, planCallee(e))) return true;
         if (exprMayPrint(c, e->u.method.recv)) return true;
         for (size_t i = 0; i < e->u.method.args.len; i++)
             if (exprMayPrint(c, *(Expr **)vecAt(&e->u.method.args, i))) return true;
         return false;
     case EX_ASSOC:
-        if (e->func && funcMayPrint(c, e->func)) return true;
+        if (planCallee(e) && funcMayPrint(c, planCallee(e))) return true;
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             if (exprMayPrint(c, *(Expr **)vecAt(&e->u.assoc.args, i))) return true;
         return false;
@@ -4232,7 +4232,7 @@ static bool exprHasCall(Checker *c, Expr *e) {
      * pointed at the omission when the kind was added. */
     case EX_DYN: return exprHasCall(c, e->u.dynv.payload);
     case EX_CALL: case EX_METHOD: case EX_ASSOC:
-        if (callIsEffectful(c, e->func)) return true;
+        if (callIsEffectful(c, planCallee(e))) return true;
         return false;
     case EX_BIN:      return exprHasCall(c, e->u.bin.left) || exprHasCall(c, e->u.bin.right);
     case EX_UN:       return exprHasCall(c, e->u.un.operand);

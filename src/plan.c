@@ -31,7 +31,9 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14, PLAN_CORO_BOXED = 1u << 15,
        /* the result-side half of the `for` step: the parser owns the statement, the
         * checker only ever says "that step is gone" */
-       PLAN_FOR_STEP_DROPPED = 1u << 16 };
+       PLAN_FOR_STEP_DROPPED = 1u << 16,
+       /* the resolved callee, and the emission gate ("was this function called?") */
+       PLAN_CALLEE = 1u << 17, PLAN_USED = 1u << 18 };
 
 /* ---- setters (called by the checker) ----------------------------------------------- */
 
@@ -173,12 +175,34 @@ FuncDef *planCallee(const Expr *e) {
             if (a->node == e && altMatches(a)) return a->callee;
         }
     }
-    return e->func;
+    NodeResults *r = resultsOf(e, false);
+    return (r && (r->setMask & PLAN_CALLEE)) ? r->func : NULL;
 }
 
 void planSetCallee(Expr *e, FuncDef *callee) {
     if (!e) return;
-    e->func = callee;                     /* the fallback, and the answer outside instances */
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (r) {
+        r->func = callee;
+        r->setMask |= PLAN_CALLEE;
+    }
+}
+
+/* Was this function called? Storage is the plan side table (it used to be `FuncDef.used`).
+ * The default is false: a function nothing recorded a call for is not emitted, which is the
+ * safe direction -- a missing call site would otherwise emit a body nothing references. */
+bool planUsed(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && (r->setMask & PLAN_USED) ? r->used : false;
+}
+
+void planSetUsed(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (r) {
+        r->used = v;
+        r->setMask |= PLAN_USED;
+    }
 }
 
 void planSetAltCallee(Expr *e, FuncDef *enclosing, const Type *inst, FuncDef *callee) {

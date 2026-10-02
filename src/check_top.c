@@ -433,7 +433,7 @@ static bool stmtHasNew(Stmt *s) {
  *   True when some call in the statement reaches a callee with `needsHome` set.
  *
  * Notes:
- *   - Only valid after the calls have been resolved: the walk reads `e->func`, which
+ *   - Only valid after the calls have been resolved: the walk reads `planCallee(e)`, which
  *     the checker fills in when it resolves a call.
  */
 /* Does the statement call a function that needs a home arena?
@@ -445,7 +445,7 @@ static bool stmtHasNew(Stmt *s) {
  *   True when some call in the statement reaches a callee whose `needsHome` is set.
  *
  * Notes:
- *   - Only valid after the calls have been resolved: the walk reads `e->func`, which the
+ *   - Only valid after the calls have been resolved: the walk reads `planCallee(e)`, which the
  *     checker fills in when it resolves a call.
  */
 /* Does this expression, or this statement, reach a callee that needs a home arena?
@@ -475,7 +475,7 @@ static bool stmtHasNew(Stmt *s) {
  * bounds (docs/topics/AST-WALKERS.md); migrating this predicate ends that class of bug for it.
  *
  * Notes:
- *   - Only valid after the calls have been resolved: the walk reads `e->func`, which the checker
+ *   - Only valid after the calls have been resolved: the walk reads `planCallee(e)`, which the checker
  *     fills in when it resolves a call. A node without one (a generic primitive) is descended
  *     into like any other.
  *   - An associated call (`EX_ASSOC`) counts as well: an associated function such as
@@ -496,8 +496,8 @@ static bool needsHomeInStmt(void *ctx, Stmt *s);
 
 static bool needsHomeInExpr(void *ctx, Expr *e) {
     HomeQ *q = (HomeQ *)ctx;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func &&
-        q->takesHomeArena(e->func))
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e) &&
+        q->takesHomeArena(planCallee(e)))
         return false;                       /* found: stop the walk */
     AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
     return astWalkExprChildren(e, &v);
@@ -586,7 +586,7 @@ typedef enum {
 
 /* What a round needs: the module being closed, and the type table (`makesPool` resolves protocol
  * methods on generic instances through it). The closures never needed a `Checker *` -- their
- * criterion is `e->func`, which the checker filled in while the bodies were checked -- and the
+ * criterion is `planCallee(e)`, which the checker filled in while the bodies were checked -- and the
  * pointer is here for one reason only: `EXTC_DBG_FX` counts the rounds this driver runs. */
 typedef struct { Module *m; TypeTable *tt; Checker *c; } CloseCtx;
 
@@ -692,7 +692,7 @@ static bool exprMakesPool(Expr *e, bool descendBlocks);
 
 /* 解析钩子：checker 这一侧问不到"某个实例的具体方法是谁"。
  *
- * `#57` 让泛型体里对**类型参数**的协议方法调用在模板上**故意不写 `e->func`**（一份模板体
+ * `#57` 让泛型体里对**类型参数**的协议方法调用在模板上**故意不写被调者**（一份模板体
  * 有多个实例，写上去就是给别的实例写错方法）。不解析时 `exprMakesPool` 只能保守算真 ——
  * 而 `hashMap::find` 里正好有 `k.hash()`，于是整条链（find/get/put/remove/contains）全被
  * 标成"会建池"，循环体每轮压/弹一次 zone。
@@ -753,7 +753,7 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
     if (!e) return false;
     /* The three shapes a resolved call takes. `EX_ASSOC` belongs here for the reason its
      * counterpart in `exprCallsNeedsHome` documents: an associated function records its
-     * callee in `e->func` too, and leaving it out is how a summary quietly becomes wrong. */
+     * callee through `planCallee` too, and leaving it out is how a summary quietly becomes wrong. */
     if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
         /* `flush()` / `print(x)` / `println(x)` are builtins dispatched by name, and the
          * checker leaves `e->func` null for them (it returns before resolving a callee).
@@ -773,7 +773,7 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
          *
          * `#57`：泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
          * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
-        FuncDef *cf = e->func;
+        FuncDef *cf = planCallee(e);
         if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
         if (calleeCreatesPool(cf)) return true;
     }
@@ -1544,8 +1544,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
  */
 void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if (!v) return;
-    if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !v->func) return;
-    if (!v->func->needsHome) return;
+    if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !planCallee(v)) return;
+    if (!planCallee(v)->needsHome) return;
     v->homeDepth = (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len;
     setCallArenaArg(c, v);          /* always keep `homeDepth` and `arenaArg` in step */
 }
@@ -2145,7 +2145,7 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
         if (!se) return false;
         switch (se->kind) {
         case EX_CALL: case EX_METHOD: case EX_ASSOC: {
-            FuncDef *cf = se->func;
+            FuncDef *cf = planCallee(se);
             if (!cf) return false;
             uint64_t pub = cf->addrMask | cf->contMask | cf->otherMask
                          | cf->homeAddrMask | cf->homeContMask;
@@ -2745,7 +2745,7 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
 */
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!e) return;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !e->func) {
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !planCallee(e)) {
         /* A call through a `fn` **value** (no `FuncDef` on the node).
          *
          * When the value came from a **table slot that carries an `effects` clause**, that clause
@@ -2793,11 +2793,11 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
             f->effUnknown = true;   /* nothing to go on -> incomplete, conservatively */
         }
     }
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && e->func) {
+    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e)) {
         bool seen = false;
         for (size_t k = 0; k < f->callees.len; k++)
-            if (*(FuncDef **)vecAt(&f->callees, k) == e->func) { seen = true; break; }
-        if (!seen) *(FuncDef **)vecPush(&f->callees) = e->func;
+            if (*(FuncDef **)vecAt(&f->callees, k) == planCallee(e)) { seen = true; break; }
+        if (!seen) *(FuncDef **)vecPush(&f->callees) = planCallee(e);
     }
     switch (e->kind) {
     case EX_BIN:   collectEffectsExpr(c, f, e->u.bin.left);
@@ -4546,7 +4546,7 @@ static bool isConstInit(Expr *e) {
      * declared -- and a table belongs at the top level, because the host hands it to a module that
      * may keep it. Without this the only way to build a table was to assign the slots in a function,
      * which put the storage in a frame: exactly the lifetime a table must not have. */
-    case EX_IDENT: return e->func != NULL;   /* the checker set it: this name is a function */
+    case EX_IDENT: return planCallee(e) != NULL;   /* the checker set it: this name is a function */
     /* `null` is C's `(void *)0`: nothing runs to produce it. It matters for the same reason the
      * line above does -- a table has a `ctx: ?ref void` field, and the slot beside it holds a
      * function address. */
@@ -4749,7 +4749,7 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     FuncDef *in = (FuncDef *)arenaAllocZero(c->arena, sizeof(FuncDef));
     *in = *tmpl;                        /* shallow copy: shares the body (as method instances do) */
     planSetTemplate(in, tmpl);          /* the back pointer lives in the plan, not on the node */
-    in->used = false;
+    planSetUsed(in, false);
     vecInit(&in->targs, c->arena, sizeof(void *));
     for (size_t j = 0; j < targs->len; j++)
         *(Type **)vecPush(&in->targs) = *(Type **)vecAt(targs, j);
@@ -4913,7 +4913,7 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
      * for every other instance. */
     FuncDef *m = findOp(tt, ttBase(lt), ec->op, rt2,
                         strcmp(ec->op, "!=") == 0 ? "==" : NULL);
-    if (m) m->used = true;
+    if (m) planSetUsed(m, true);
 }
 
 /* Re-check one recorded USE of a deferred call's result (`#79`).
@@ -4931,7 +4931,7 @@ static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
      * `fn run<T>` records the sum, whose type is `T` on the template (tools/attack.py B8). Reading
      * `u.method.recv` here for such a node is what crashed the compiler when this generalization was
      * first attempted (the union member is not an `EX_METHOD`). */
-    if (du->call->kind != EX_METHOD || du->call->func) {
+    if (du->call->kind != EX_METHOD || planCallee(du->call)) {
         Type *vt = ttSubstitute(tt, du->call->type, params, targs);
         /* **Both** sides: `want` is very often the template's own parameter too (an argument checked
          * against `gen<T>`'s parameter, say), and substituting only the value reported a bogus
@@ -4996,7 +4996,7 @@ static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
                 mc->name, want, want == 1 ? "" : "s", mc->nargs, mc->nargs == 1 ? "was" : "were");
         return;
     }
-    f->used = true;
+    planSetUsed(f, true);
 }
 
 /* Does this deferred reference check belong to this free-function instance?
@@ -5072,7 +5072,7 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         }
 
         /* Same reasoning: a function that is never called needs no per-instance recheck. */
-        if (rc->func && !rc->func->used) return;
+        if (rc->func && !planUsed(rc->func)) return;
         Type *vt = tsub(c, rc->val->type);
         c->substParams = NULL;
         c->substArgs   = NULL;
@@ -5208,7 +5208,7 @@ static void resolveDeferredCall(Checker *c, CallCheck *cc, FuncDef *enclosing,
     }
     FuncDef *inst = funcInstance(c, cc->tmpl, &concrete, cc->node->line);
     if (!inst) return;
-    inst->used = true;
+    planSetUsed(inst, true);
     /* The site may be shared by every instance of the enclosing body (`wrap<i32>` and
      * `wrap<meter>` share one `pick(x)`), and the answer differs per instance: record it
      * against the enclosing instance as well. The plain pointer stays as the fallback
@@ -5875,7 +5875,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* The function holding the operator is never called, so none of its instances can
          * run and the per-instance recheck is unnecessary. This also spares the user from
          * having to define the operator for a type that is never used with it. */
-        if (ec->func && !ec->func->used) continue;
+        if (ec->func && !planUsed(ec->func)) continue;
         /* (1) Type instances (an operator used on a method's `T`). A free function has no
          * owner, so it has no type instances; it is covered by (2).
          *
@@ -5911,7 +5911,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < c.methodChecks.len; i++) {
         MethodCheck *mc = *(MethodCheck **)vecAt(&c.methodChecks, i);
         /* A template that is never called has no instances, so nothing can be wrong yet. */
-        if (mc->func && !mc->func->used) continue;
+        if (mc->func && !planUsed(mc->func)) continue;
         /* (1) Type instances: a method call inside a generic type's method, where `T` comes
          * from the type arguments of the struct that owns it. */
         if (mc->owner) {
@@ -5966,7 +5966,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * whether the instance's real return type fits the type the use site expected. */
     for (size_t i = 0; i < c.deferredUses.len; i++) {
         DeferredUse *du = *(DeferredUse **)vecAt(&c.deferredUses, i);
-        if (du->func && !du->func->used) continue;
+        if (du->func && !planUsed(du->func)) continue;
         if (du->owner) {
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
@@ -6408,7 +6408,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         FuncDef *f = *(FuncDef **)vecAt(&all, i);
         for (size_t j = 0; j < f->arenaSites.len; j++) {
             Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
-            if (!site->arenaArgPending || !site->func || !planUsesHome(site->func)) continue;
+            if (!site->arenaArgPending || !planCallee(site) || !planUsesHome(planCallee(site))) continue;
             planSetArenaArg(site, ARENA_HOME);
             site->arenaArgPending = false;
         }
@@ -6584,15 +6584,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * 只往长里改（`<`），不往短里改：`zoneLevel` 从 `ZONE_HOME`（最长）向上是各层块号。 */
     for (size_t i = 0; i < c.eSites.len; i++) {
         EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
-        if (!rec || !rec->call || !rec->call->func) continue;
-        if (!planMakesPool(rec->call->func) || planZoneLevel(rec->call) == 0) continue;
+        if (!rec || !rec->call || !planCallee(rec->call)) continue;
+        if (!planMakesPool(planCallee(rec->call)) || planZoneLevel(rec->call) == 0) continue;
         /* 目的地有多浅：与 arena 通道**共用一份**实现（U4）；`overflow` 由它在内部按
          * "活得最久"处理（两条通道的差别只剩这一点，现在写在共享函数里而不是两处代码里）。*/
         int nd = callSiteMinDestDepth(&c, rec);
         int zwant = (nd <= 0) ? ZONE_HOME : nd;
         if (getenv("EXTC_DBG_ZONE"))
             fprintf(stderr, "[zfix] call=%s nd=%d lvl=%d -> %d\n",
-                    rec->call->func->name ? rec->call->func->name : "-",
+                    planCallee(rec->call)->name ? planCallee(rec->call)->name : "-",
                     nd, planZoneLevel(rec->call), zwant);
         if (zwant < planZoneLevel(rec->call)) planSetZoneLevel(rec->call, zwant);
     }
@@ -6796,7 +6796,7 @@ typedef struct { Checker *c; } AllocCtx;
 static bool allocInExpr(void *ctx, Expr *e) {
     AllocCtx *a = (AllocCtx *)ctx;
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) &&
-        (!e->func || funcAllocates(a->c, e->func))) return false;   /* found */
+        (!planCallee(e) || funcAllocates(a->c, planCallee(e)))) return false;   /* found */
     if (e->kind == EX_NEW || e->kind == EX_GENCALL) return false;   /* found */
     AstVisit v = { allocInExpr, allocInStmt, ctx };
     return astWalkExprChildren(e, &v);
