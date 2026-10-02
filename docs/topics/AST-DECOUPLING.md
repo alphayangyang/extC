@@ -255,3 +255,60 @@ hash map"）与 Cranelift `PrimaryMap`/`SecondaryMap` 是同一个形状。
 **看不见"经 results 层写一个语法字段"**（`planSetForStepDropped` 就属于这一类）。
 要堵这个口子需要一张"哪些节点字段是**语法**、不许经分析层写"的名单 ——
 在把 ②分析缓存族搬走时一起定，那时每个字段的归属都要逐条写清。
+
+---
+
+## 10. P2 分类：145 个 key 各归何处（含判据与分辨率边界）
+
+**目标**：动手搬之前，先把 `[ast-freeze]` 那 145 个 `文件:字段` key **按归属分桶**。
+归属由"**谁读它**"决定，不由"它在哪个结构体上"决定：
+
+| 桶 | 判据 | 归宿 |
+|---|---|---|
+| **SYNTAX** | parser 写、按语法语义读 | **留在节点上**；其他阶段只读 |
+| **PLAN** | **codegen 读**（经访问器） | `results` 侧表（`plan.h` 是它的读口） |
+| **ANALYSIS** | 只有检查器读/写（codegen 读点 0） | 检查器自己的**逐节点分析结构**（Clang 的 `AnalysisDeclContext`、rustc 的 `TypeckResults` 就是这个形状） |
+| **CODEGEN-OWN** | codegen 自己写自己读 | 归 `CG`，**不该在 AST 上** |
+
+### 10.1 分类结果（按实测的 codegen 读点逐个核过）
+
+**① PLAN 族 —— 基本已搬完，只剩一个真字段：**
+
+| 字段 | 状态 |
+|---|---|
+| `Expr.func` | **仍在 AST**（行为已正确，见第 6.3/6.4 节）；搬它是 P4 |
+| `cname` / `used` / `dynTable` / `coroFrame` / `boxedCoro` / `viewOf` … | 经 `plan.h` 访问器读（`[plan-seam]` 钉着 18 个字段）；`cname`/`used` 仍在 AST，但**读点已收口** |
+| **`FuncDef.coroKind`** | **误报**：codegen 自己的 prepass 下标（检查器读点 0）⇒ 桶应是 **CODEGEN-OWN**，不是 AST 状态 |
+
+**② 扫描的假阳性（必须点名，否则名单不能用）：**
+
+* `g->owSites` / `g->owLocal` / `g->coroFrame` —— `CG` 自己的状态，被"按字段名跨结构体统计"误算成 `FuncDef` 的字段（**这是本批次第 6 次同类错**）；
+* `.u` / `.type` / `.args` / `.call` / `.init` / `.cond` / `.recv` / `.left` / `.right` / `.text` / `.index` / `.field` / `.count` —— 这些是**节点 union 的成员**与**节点自身字段**，名字在多个结构体上重复。按名字分类时它们必然串味 ⇒ **这类格子只能逐点核，不能按名字判**。
+
+**③ ANALYSIS 族 —— 真正要搬的主体**（codegen 按名字读点 0，已逐个 grep 确认）：
+
+| 属主结构体 | 字段 |
+|---|---|
+| `Expr`（24） | `refDepth` `homeDepth` `lexicalLevel` `storedAt` `borrowed` `minAt` `reuse` `qualified` `arenaArgPending` `assocOwner` `callViaFn` `convCheck` `domNew` `dynRecvViaRef` `dynTrait` `extDom` `needOp` `obj` `operand` `parWorker` `isParWorker` `payloadType` `modPrefix` `tname` `srcName` `sym` `viewOf` |
+| `FuncDef`（25） | `addrMask` `contMask` `otherMask` `homeAddrMask` `homeContMask` `addrFromLocal` `allocState` `arenaSites` `callees` `effState` `effComplete` `effUnknown` `freshCount` `needsHome` `nParamSyms` `paramSyms` `isAssoc` `isExtTarget` `lamChecked` `lamInferRet` `mayPrintState` `parTlsArena` `dynTable`(读点已收口) `owner`(语法) |
+| `StructDef` | `builtinHolder` `coroOf` `lamSig` `makesPoolAny` `nfields` `fieldsComplete` |
+| `Stmt` | `bindAnn` `bindCName` |
+| `ImplDef` / `TraitDef` / `Module` / `UseDecl` / `GlobalDef` | `trait` `target` / `usedDyn` / `usesDyn` / `file` `unit` `path` / `ann` |
+
+**④ 分辨率边界（诚实说明）**：上面的分桶由两份**只读扫描**支撑——`tools/check_ast_freeze.py`
+（谁写）与 `tools/check_tmpl_owners.py` 的口径（谁读）。它能把"**codegen 读点 0**"这一条判得很准
+（决定 PLAN vs ANALYSIS 的那一问），但**分不清 union 成员与同名字段**。
+所以 ③ 里那些"多结构体同名"的格子（`type`/`u`/`args`…）**没有按名字定罪**；
+真正动手时每一族都以"**删字段 ⇒ 残留直写变编译错误**"兜底（第 7 节那条）。
+
+### 10.2 下一步的施工顺序（按风险从低到高）
+
+1. **`coroKind` 归 `CG`**（CODEGEN-OWN，纯 codegen 内部）：只需把它从 `FuncDef` 搬到 `CG`；
+   但注意 **X3 第五步实测过失败**——读点在 prepass 之前，所以必须**同时**把 prepass 提前或把
+   "谁先跑"写成契约。风险中，收益是 AST 上少一个非语法字段。
+2. **`StructDef` 的 6 个**（`nfields`/`fieldsComplete`/`coroOf`/`lamSig`/`makesPoolAny`/`builtinHolder`）：
+   量小、读点集中在检查器，适合当**第一族**验证"搬进检查器逐节点结构"的形状。
+3. **`Expr` 与 `FuncDef` 两大族**：主体工作，按"检查器逐节点结构"成批搬，一族一次提交。
+
+**每一族的判据固定**：`[ast-freeze]` 基线只减 · tests 326/0 两模式 · `check.sh` 完整模式 ·
+`[plan-seam]`/`[callsite]`/`[layering]` 不动 · 生成物观察项无非预期漂移。
