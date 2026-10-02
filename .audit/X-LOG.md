@@ -552,3 +552,19 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 
 
 
+
+**完整模式验收（提交 `1b5c3ee`）**：`./check.sh` **68 节 / 0 失败**；五道闸门全绿
+（checkc **976 文件** gcc+clang · ASan **217 正例** · 差分 **21 例** · 规模 **13 例** · 逃逸语料 18 份）；
+`[plan-seam] ok`（AST 上无 **15** 个字段）；`[tmpl-owners] ok`。
+
+> 小提醒：完整模式会重写 `bench/stl/RESULTS.md`（基准数字），提交前 `git checkout --` 还原，
+> 别把它带进功能提交。
+
+## X 批次余下清单（下一步能开工的顺序）
+
+| 序 | 事项 | 判据 / 代价 |
+|---|---|---|
+| 1 | **`coroBoxed` 搬侧表** | 与 `tmpl` **同形**：唯一写点 `check.c:456`（检查器），codegen 只经 `planCoroBoxed` 读（直读 0、直写 0），检查器读点 `check_top.c:6826` 一处 ⇒ 照抄本轮配方（记录位 + setter + 访问器 + 删字段 + `MOVED` 加一项），AST 将只剩 **2** 个计划字段 |
+| 2 | `Expr.func` 的**实例集显式化** | 本批次剩下的**大头**：18 写（全在检查器）+ 85 检查器读 + 58 codegen 读（已收口）；要"物化唯一入口 + codegen 前封闭实例集 + 显式 worklist"三件事一起做。**先做只读侦察**（把 18 个写点逐个定位、判"是否都是同一个动作"），再决定搬不搬存储 |
+| 3 | `Stmt.forStep` | **有意保留**（半语法：parser 两处写），已在表里写明理由 |
+| 4 | `FuncDef.coroKind` | 顺序依赖（读点在 prepass 之前）⇒ 要么把"prepass 必须先于哪些读点"写进契约，要么把 prepass 提前；**不能只换存储位置**（已实测失败并回退） |
