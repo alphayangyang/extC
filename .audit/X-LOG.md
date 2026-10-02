@@ -270,3 +270,45 @@ fn tick(n: i64) -> coroutine<i64> { yield n; return n }
 显式 worklist），与"回写"无关。
 
 **验收**：tests **325/0**、`check.sh quick` **56/0**、`[plan-seam] ok`（回写 1 = 基线 1）。
+
+---
+
+## 交班（2026-10-02）：X 批次在干净检查点停下
+
+**为什么停**：本会话上下文预算已用尽。X3 剩下的**实例集显式化**需要通读并改动
+`codegen.c`（8.8k 行）与 `check_top.c` 的不动点；在预算见底时开工的风险是留下半改状态
+（本批次已出现两次，都靠快照救回）。当前树**干净、全绿、已提交**。
+
+### 已完成（都可复核）
+
+| 步 | 内容 | 判据 |
+|---|---|---|
+| X0 | 盘点表 → `docs/topics/AST-ANNOTATIONS.md`（字段/写者/读者/陈旧后果 + 四类归属） | 表在仓库里 |
+| X1 | `src/plan.h`/`plan.c` 立接缝；codegen **182 个读点**收口；棘轮 `tools/check_plan_seam.py` 接进 `check.sh` | `[plan-seam] ok`；quick 55→56 |
+| X2 | **13 个字段搬离 AST**：`arenaLevel`/`zoneLevel`/`arenaArg`/`needTemp`、`usesHome`/`mayUseArena`/`makesPool`/`condAllocs`、`isCoro`/`yieldType`/`coroFrameType`/`coroNeedsZone`/`coroProto` | 棘轮第二条检查（AST 上不得再出现这些字段）|
+| X3-1 | 回写棘轮（按字段基线，只能减不能增） | 每次跑都报出规模 |
+| X3-2 | 更正：`substParams`/`substArgs` 属 `CG` 自己 ⇒ 基线 47→31 | 表与注释都改了 |
+| X3-3 | 逐条复核 31 处 ⇒ **真回写只有 `coroBoxed` 1 处** ⇒ 基线 31→1 | 棘轮报 `回写 1 处（基线 1）` |
+
+### 未完成（已定界，下一会话可直接开工）
+
+1. **X3 的实例集显式化**（本批次剩下的大头）：
+   * `Expr.func`：**18 个写点全在检查器**（`e->func = instance` 的重指）、85 个检查器读、
+     58 个 codegen 读（后者已在 X1 收口）；
+   * `FuncDef.tmpl`：2 写、53 读（**注意**：`Type` 上也有一个同名的 `tmpl`，见下）；
+   * `FuncDef.instName`：1 写、11 读；
+   * 目标：物化唯一入口 + **实例集在 codegen 之前封闭** + `checkModule` 里那段不动点写成**显式 worklist**。
+2. **X4 收尾**：AST 只剩语法事实与身份；`forStep`（半语法，**有意保留**，理由已记）；
+   `coroBoxed`（唯一真回写，当前驱动顺序下无害但**依赖驱动顺序** ⇒ 要么切断、要么把顺序写进契约）；
+   更新 `check_internal.h` 的权威节与 `AST-ANNOTATIONS.md`。
+
+### 下一会话开工前必读的两条（本批次用代价换来的）
+
+1. **`grep ->字段` 只能找候选，落表前必须逐条看** —— 本批次它错了四次：
+   ① 同名不同属（`CG.substParams` vs `Checker.substParams`）；
+   ② 基座不是 AST 节点（`d->name` 是 codegen 描述符）；
+   ③ 字符串字面量与注释（`a->top->used`、`e->func`）；
+   ④ **`Type.tmpl` 与 `FuncDef.tmpl` 同名**（本轮实测：按名字迁移会把 `Type` 的也改掉，
+      编译期报 `incompatible pointer type` ⇒ 迁移前必须先按**声明所在结构体**确认基座类型）。
+2. **成块删字段用行号区间、从后往前**（"模式 + 向上回溯注释"会把别处注释的尾巴切掉，
+   当场语法错）；每次动手前 `cp -r src /tmp/...` 打快照，坏了一键回退。
