@@ -182,3 +182,36 @@ X4 收尾（AST 只剩语法事实与身份）。**每阶段行为不变**，验
 
 **验收**：tests **325/0**（发布与 `EXTC_DBG=1`）、`check.sh quick` **56/0**、
 闸门⑤语料/②ASan 全量 **全绿**、`[plan-seam] ok`（AST 上已无 **13** 个字段）。
+
+## X3 第一步（本轮完成）：回写棘轮（把反向耦合成"只能减不能增"）
+
+**做了什么**：`tools/check_plan_seam.py` 增加第三项检查 —— **codegen 回写分析状态的基线**：
+
+```
+[plan-seam] ok：codegen 直读计划字段 0 处（18 个字段）；AST 上已无 …13 个字段；
+            codegen 回写 47 处（基线 47，X3 目标 0）
+```
+
+基线按字段记：`substParams` 8、`substArgs` 8、`name` 15、`used` 4、`owSites`/`owLocal`/`body`
+各 3、`coroBoxed`/`ret`/`func` 各 1。**超过基线即红**；减少了会打一条 note 提醒收紧基线。
+（按字段计数而不是按行号，所以对代码移动是稳的。）
+
+**为什么先做这一步**：X0 的第 3 节把"codegen 反过来写分析状态"列为本批次最危险的一半 ——
+`substParams`/`substArgs` 是**借用检查器的替换状态**、`used` 会让"没被调用就不必复核"的判断
+依赖 codegen 的遍历顺序。先把它变成**可度量、只能减**的量，再逐处切断（X3 的后续步骤）。
+
+## 顺带查实一条上一轮记的待查项：`@export` + 协程
+
+用正确的协程写法（`fn f(...) -> coroutine<T>`）造了最小程序：
+
+```extc
+@export
+fn tick(n: i64) -> coroutine<i64> { yield n; return n }
+```
+
+**结果：被拒绝**，但用的是 **C-ABI 那条规则** ——
+"``@export` returns `coroutine<i64>`, which C cannot return`"（`ttCrossesC`），
+**不是** `parser.c` 里那条协程专用消息（"A coroutine's value is a frame handle driven by a task…"）。
+⇒ 结论：**结果是正确的（拒绝）**，但 `parser.c` 那条专用诊断**很可能依然永远不会触发**
+（解析期 `isCoro` 恒为 false）。它不是洞，是一条**死消息**；要彻底确认需要找到能绕过 C-ABI
+检查的路径（例如协程藏在别的返回形状里），留作观察项。
