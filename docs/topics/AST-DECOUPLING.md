@@ -144,3 +144,43 @@ parser ──► AST（冻结：构造后只读） ──► checker ──► R
 - **不建第二套 IR**（MLIR 那套对 4 万行的编译器不划算；要的是"已分析程序的只读视图"）。
 - **不动已冻结的行为资产**：326 用例、六道闸门、语料、证明。
 - **不为了对称而搬**：`Stmt.forStep` 归 parser（语法），不塞进 Results。
+
+---
+
+## 7. P0 已落地：两条"能看见违规"的判据（2026-10-02）
+
+**加了什么**
+
+| 判据 | 脚本 | 基线 | 现在报什么 |
+|---|---|---|---|
+| **R1 · AST 冻结** | `tools/check_ast_freeze.py` | `tools/ast-freeze-known-bad.txt`（**146** 个 `文件:字段` key） | parser / plan.c / types.c 之外，对 **AST 节点专属成员**的直接写 |
+| **R3 · 只读边界** | `tools/check_layering.py` | `tools/layering-known-bad.txt`（**3** 条边） | 跨阶段 include 私有头、parser 反向依赖 plan |
+
+两条都进 `check.sh`（quick **60** 节，原 58），棘轮只许减：**修好一条就删一行**，
+否则 `STALE` 判红。
+
+**基线告诉我们的（按文件 / 按字段）**
+
+| 文件 | key 数 | 说明 |
+|---|---|---|
+| `check_expr.c` / `check_top.c` | 54 / 37 | 检查器把分析状态写在 AST 上，大头在这两个文件 |
+| `check_stmt.c` / `check_escape.c` / `check_lookup.c` / `check.c` | 15 / 8 / 4 / 6 | 同族 |
+| `modules.c` / `codegen.c` | 9 / 9 | 模块装配与 codegen（codegen 那 9 个是它自己的描述符结构，属**判据已知的假阳性**，见下） |
+| 字段侧 | `type`(6) · `refDepth`(5) · `cname`(5) · `used`(3) · `modName`(3) · `minAt`(3) · `func`(3) … | 与 X0 的"②分析缓存 / ③编译计划"两族吻合 |
+
+**R3 的三条边**（就是 P3/P2 的施工单）：
+
+1. `codegen.c -> check_internal.h` —— 去掉它 14 个编译错误 ⇒ 真正依赖的是
+   `isProtoType` / `isOverloadableOp` / `findOperator` / `findMethod` 这几个**类型层谓词**（P3：抽成共享只读模块）；
+2. `dataflow.c -> check_internal.h` —— 数据流助手写在检查器的 `Stmt` 事实上（P3 同批）；
+3. `parser.c -> plan.h` —— parser 反向依赖计划层（`for` 的步进今天记在 plan 上）（P2：`forStep` 归 parser）。
+
+**判据自己的诚实说明（写进脚本头注释，也写在这里）**
+
+- 文本扫描**分不清基座类型**：`codegen.c` 那 9 处写的是它**自己的描述符结构**（`name`/`text`），
+  不是 AST 节点。这类假阳性靠两件事收敛：① 只统计"**只在节点结构体上**声明的成员名"（已做，
+  把 640 处降到 146 个 key）；② **P2 删字段时由编译器兜底**——字段删掉之后，任何残留直写都是
+  **编译错误**，比任何文本判据都硬。
+- 所以这条基线的定位是**方向指示器**：它的价值在于"只许减"，以及让"还剩多少"每天可见。
+
+**这一轮的性质**：纯加工具 + 两条棘轮，**零行为改动**（tests 326/0、`check.sh quick` 60/0）。

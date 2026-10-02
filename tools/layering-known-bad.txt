@@ -1,0 +1,3 @@
+src/codegen.c -> check_internal.h	包了另一个阶段的私有头（去掉它会有编译错误 ⇒ 说明真正依赖的是里面的谓词，见 docs/topics/AST-DECOUPLING.md P3）	R3 只读边界的施工单
+src/dataflow.c -> check_internal.h	包了另一个阶段的私有头（去掉它会有编译错误 ⇒ 说明真正依赖的是里面的谓词，见 docs/topics/AST-DECOUPLING.md P3）	R3 只读边界的施工单
+src/parser.c -> plan.h	parser 反向依赖计划层（`for` 的步进今天记在 plan 上）⇒ P2 把 forStep 归 parser	R3 只读边界的施工单
