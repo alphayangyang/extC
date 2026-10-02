@@ -6811,19 +6811,18 @@ static void coroCheckDeferred(Checker *c, Module *m) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
         if (!cf || !planIsCoro(cf) || planTemplate(cf)) continue;
         /* A boxed coroutine always has a task: its frame lives in that task's place. */
-        planSetCoroNeedsZone(cf, planMakesPool(cf) || cf->coroBoxed);
+        planSetCoroNeedsZone(cf, planMakesPool(cf) || planCoroBoxed(cf));
     }
     /* **Instances** need the same answer, and this loop used to skip them, so a
      * generic coroutine never got its place: allocations made inside it landed in the *caller's*
      * zone, and nothing ever released the task (audit P1-13: `live=20000` after 20000 finished
      * tasks; the same omission is what the audit's "`coroNeedsZone` 未对实例计算" names).
      * An instance shares its template's body, so the template's freshly computed answer is the
-     * right one -- and `coroBoxed` is copied onto the instance when a frame is coerced to a
-     * handle. */
+     * right one -- and a coercion records `coroBoxed` on whichever function owns the frame. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
         if (!cf || !planIsCoro(cf) || !planTemplate(cf)) continue;
-        planSetCoroNeedsZone(cf, planCoroNeedsZone(planTemplate(cf)) || cf->coroBoxed);
+        planSetCoroNeedsZone(cf, planCoroNeedsZone(planTemplate(cf)) || planCoroBoxed(cf));
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);

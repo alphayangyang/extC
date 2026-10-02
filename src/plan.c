@@ -10,9 +10,9 @@
  * questions are asked about nodes that do not exist.
  *
  * Not every plan field is here yet. The ones that still live on an AST node are the
- * resolved callee, the instance -> template back pointer, the `for` step and
- * `coroBoxed`; their accessors below read the node. Do not add storage for them without
- * also making the instance set explicit. */
+ * resolved callee (`Expr.func`) and the `for` step (`Stmt.forStep`); their accessors below
+ * read the node. Do not add storage for them without also making the instance set
+ * explicit (`forStep` is half syntax -- the parser owns it). */
 #include "plan.h"
 #include <stdlib.h>
 
@@ -22,18 +22,19 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        PLAN_USES_HOME = 1u << 4, PLAN_MAY_USE_ARENA = 1u << 5, PLAN_MAKES_POOL = 1u << 6,
        /* statement family (`forStep` is half syntax and stays on the AST) */
        PLAN_COND_ALLOCS = 1u << 7,
-       /* coroutine family (`coroBoxed` is not here yet) */
+       /* coroutine family */
        PLAN_IS_CORO = 1u << 8, PLAN_YIELD_TYPE = 1u << 9, PLAN_CORO_FRAME_TYPE = 1u << 10,
        PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12,
-       /* instance C name, and the instance -> template back pointer */
-       PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14 };
+       /* instance C name, the instance -> template back pointer, and "a handle of it was
+        * made somewhere" (which makes it get a task even when never spawned) */
+       PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14, PLAN_CORO_BOXED = 1u << 15 };
 
 typedef struct {
     int arenaLevel, zoneLevel, arenaArg;      /* Expr family */
     bool needTemp;
     bool usesHome, mayUseArena, makesPool;    /* function-summary family */
     bool condAllocs;                          /* statement family */
-    bool isCoro, coroNeedsZone;               /* coroutine family */
+    bool isCoro, coroNeedsZone, coroBoxed;    /* coroutine family */
     Type *yieldType, *coroFrameType;
     int coroProto;
     const char *instName;                     /* instance C name */
@@ -164,6 +165,12 @@ void planSetCoroProto(FuncDef *f, int v) {
     s->coroProto = v; s->setMask |= PLAN_CORO_PROTO;
 }
 
+void planSetCoroBoxed(FuncDef *f, bool v) {
+    if (!f) return;
+    PlanSlot *s = slotFor(f, true);
+    s->coroBoxed = v; s->setMask |= PLAN_CORO_BOXED;
+}
+
 /* ---- accessors (signatures are the public surface) --------------------------------- */
 
 FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
@@ -231,4 +238,7 @@ int planCoroProto(const FuncDef *f) {
     PlanSlot *s = slotFor(f, false);
     return s && (s->setMask & PLAN_CORO_PROTO) ? s->coroProto : 0;
 }
-bool planCoroBoxed(const FuncDef *f) { return f ? f->coroBoxed : false; }
+bool planCoroBoxed(const FuncDef *f) {
+    PlanSlot *s = slotFor(f, false);
+    return s && (s->setMask & PLAN_CORO_BOXED) ? s->coroBoxed : false;
+}

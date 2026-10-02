@@ -6977,7 +6977,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * name keeps every later piece from being generated twice. */
     /* Coroutine handle prepass: one `kind` per coroutine function (the boxing site and the handle
      * dispatch must agree on it), and whether this program needs the handle type at all -- the
-     * checker sets `coroBoxed` when it coerces a frame into a handle. */
+     * checker records the "a frame was coerced into a handle" fact through `planSetCoroBoxed`. */
     {
         int ck = 0;
         for (size_t i = 0; i < m->funcs.len; i++) {

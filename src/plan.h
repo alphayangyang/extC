@@ -10,13 +10,13 @@
  * accessors below. Per field, the comment states who writes it, when it is valid, and
  * what goes wrong when it is stale.
  *
- * Current state: every field family is in the side table except three, and the accessors
- * for those three read the node because the field is still declared on it: the resolved
- * callee (`Expr.func`, `planCallee`), the `for` step (`Stmt.forStep`, `planForStep`), and
- * the coroutine "boxed" flag (`FuncDef.coroBoxed`, `planCoroBoxed`). `Expr.func` is the
- * one that waits for the instance set to become explicit: moving it is not a storage
+ * Current state: every field family is in the side table except two, and those two
+ * accessors read the node because the field is still declared on it: the resolved callee
+ * (`Expr.func`, `planCallee`) and the `for` step (`Stmt.forStep`, `planForStep`).
+ * `Expr.func` waits for the instance set to become explicit: moving it is not a storage
  * change, because that pointer is produced by the instance-materialization side effect
- * itself. The other two have their own reasons next to their accessors.
+ * itself. `forStep` is half syntax -- the parser owns one half -- so staying on the node is
+ * the right answer, not a step not yet taken.
  *
  * Rules for callers:
  *   - the checker writes a plan field only through its setter; code generation reads it
@@ -126,11 +126,7 @@ bool   planCoroNeedsZone(const FuncDef *f);
 int planCoroProto(const FuncDef *f);
 /* Was this frame ever coerced into a handle? Such a coroutine always gets a task -- it
  * can be driven even when it is never spawned explicitly -- so it counts as needing a
- * zone. The checker is the only writer.
- *
- * Still stored on the AST (`FuncDef.coroBoxed`), and now the only remaining plan field that
- * is both declared on a node and written outside this module: read it through this accessor
- * rather than directly, so that moving it later touches one file. */
+ * zone. Writer: the checker, at the coercion. */
 bool   planCoroBoxed(const FuncDef *f);
 
 /* ---- setters (written by the checker) ----------------------------------------------
@@ -153,13 +149,16 @@ void planSetMakesPool(FuncDef *f, bool v);
  * parser owns half of it. */
 void planSetCondAllocs(Stmt *st, bool v);
 
-/* The coroutine family. `coroBoxed` is not here yet: `check.c` writes the field directly
- * while coercing a frame into a handle, and that write has to go through a setter first. */
+/* The coroutine family. */
 void planSetIsCoro(FuncDef *f, bool v);
 void planSetYieldType(FuncDef *f, Type *v);
 void planSetCoroFrameType(FuncDef *f, Type *v);
 void planSetCoroNeedsZone(FuncDef *f, bool v);
 void planSetCoroProto(FuncDef *f, int v);
+/* A handle of this coroutine was made somewhere: it gets a task even when it is never
+ * spawned explicitly, which is one of the two reasons a coroutine needs a zone. Written at
+ * the coercion, which is the only place that knows. */
+void planSetCoroBoxed(FuncDef *f, bool v);
 /* The C name of an instance. When migrating a field named `tmpl`, check the declaring
  * struct first: two structs carry a member with that name (`FuncDef` in `ast.h`,
  * `CallCheck` in `check_internal.h`), so a rename or a move by field name alone catches

@@ -46,7 +46,7 @@
 | 字段 | gen 写 | 它被谁读 | 后果 |
 |---|---|---|---|
 | ~~`substParams` / `substArgs`~~ | ~~各 8~~ | —— | **X3 更正：不是回写**。`CG`（`codegen.c:146`）里有一对**同名的自有字段**，`g->substParams` 指的是它；`Checker` 上那一对是检查器复核实例时自己用的。X0 的计数按字段名跨结构体统计，把两者混在一起了 ⇒ 真实回写基线是 **31** 不是 47 |
-| **`coroBoxed`** | 1 | 检查器 + codegen（经 `planCoroBoxed`） | **唯一真正的回写**：codegen 给 `FuncDef` 打"载荷被装箱"的标记。当前驱动是"先查完所有模块、再逐模块 codegen"，所以这个写在检查器看来不可见；但**驱动顺序一变就会变成顺序依赖**（记在这里，属 X4 的收尾项） |
+| ~~`coroBoxed`~~ | ~~1~~ | —— | **已清零**（X4 第三半）：那处回写（codegen 把模板的标记写进实例）在 X3 第四步就改成了就地推导；剩下的唯一写者 `check.c:456` 是**检查器**，本轮改成经 `planSetCoroBoxed` 写侧表 ⇒ **反向回写基线里真正的 AST 字段只剩 `coroKind` 1 处**（codegen 自己的 prepass 下标，见第 5 节） |
 
 > **X3 更正的第二次**：上表最初列了 10 个字段 47 处，先去掉同名的 `substParams`/`substArgs`（16 处，
 > 属 `CG` 自己）得 31；再**逐条人工复核**后只剩 **1** 处（`coroBoxed`）。其余误报的原因：
@@ -73,9 +73,10 @@
 |---|---|---|
 | `Expr.func`（调用点 → 实例） | **X3 的实例集显式化未完成**：要"物化唯一入口 + codegen 前封闭实例集 + 显式 worklist"三件事一起做，单独搬存储没有意义 | 18 写（**全在检查器**）/ 85 检查器读 / 58 codegen 读（已收口）。已知风险：`e->func = instance` 的重指发生在不动点期间 —— **P0-5 的根因** |
 | ~~`FuncDef.tmpl`~~ | **已搬**（X4 第二半，见第 6 节末）：静态归属判清了属主与唯一写点，顺序风险也量清了（驱动两段 + `funcInstance` 不在 codegen 里） ⇒ 照 `instName` 的办法搬进侧表 | 搬迁后 AST 上已无此字段；`CallCheck.tmpl` **有意留在** `check_internal.h`（检查器内部、codegen 读点 0） |
-| `FuncDef.instName` | 与 `tmpl` 同族，等实例集一起做 | 1 写 / 11 读 |
+| ~~`FuncDef.instName`~~ | **已搬**（X3 第六步）：1 写 / 11 读，与 `tmpl` 同族但**不需要**等实例集 —— 它只是"实例的 C 名" | 搬迁后 AST 上已无此字段 |
 | `Stmt.forStep` | **半语法**：`parser.c` 两处写（`continue` 的 label 目标） | 留在 AST 是正确的；计划侧只该管「检查器替换后的那一半」（若有） |
-| `FuncDef.coroKind` | codegen 的**发射顺序**传递：读点在 prepass **之前**就会执行 | 实测把表搬进 `CG` ⇒ 5 个 coro 用例红（生成物出现 `__extc_czh-1`）。要么保留并把「prepass 必须先于哪些读点」写进契约，要么把 prepass 提前 —— **不能只换存储位置** |
+| ~~`FuncDef.coroBoxed`~~ | **已搬**（X4 第三半，见第 6.2 节）：唯一写者在检查器、codegen 直读直写皆 0 | 搬迁后 AST 上已无此字段 |
+| `FuncDef.coroKind` | **不是计划字段**：codegen 自己的 prepass 下标（handle 派发用），检查器读点 0 | 它唯一的问题是实现层面的：读点在 prepass **之前**就会执行 ⇒ **顺序依赖**。实测把它搬进 `CG` 自己的表 ⇒ 5 个 coro 用例红（生成物出现 `__extc_czh-1`）。要么保留并把「prepass 必须先于哪些读点」写进契约，要么把 prepass 提前 —— **不能只换存储位置** |
 | ② 分析缓存族（`refDepth`/`origin`/`lexicalLevel`/`storedAt`/`heldSrc`/`addressed`/`outOfFrame`/`otherDepth`/`nfields`/`effState`/六个掩码…） | 只在**检查器内部**使用（codegen 读点 0）⇒ 不构成「AST 充当计划」的耦合 | 未动。若要进一步解耦，应搬进与 plan 平行的「分析侧」结构，而不是继续留在 AST 上 |
 
 ## 6. `tmpl` 的静态归属（X3 第八步：只读侦察，无代码改动）
@@ -141,5 +142,25 @@
 `PlanSlot.tmpl` 那两处（存储层自己）算成"无属主"。这类"字段的**存储**与字段的**使用**同名"
 必须显式排除，否则工具会在正确的迁移之后报假红；判据是"**扫描范围要能说清为什么**"——
 现在它只扫 `plan.c` 之外的文件，并把这条理由写在 `collect()` 的 docstring 里。
+
+### 6.2 迁移记录（X4 第三半：`coroBoxed` 已落地）
+
+**判据先行**（只读侦察的三条，与 `tmpl` 同形）：① 唯一写点在**检查器**（`check.c:456`，
+"把帧强转成句柄"那一刻）；② codegen **直读 0、直写 0**（X3 第四步已把"模板标记写进实例"改成
+就地推导，读点全经 `planCoroBoxed`）；③ 检查器读点只有一处（`check_top.c:6814/6826` 的
+"协程是否需要 zone"）。⇒ 与 `tmpl` 同一配方，无顺序风险。
+
+| 步骤 | 位置 |
+|---|---|
+| 加记录位 `PLAN_CORO_BOXED` + 槽位成员 + setter `planSetCoroBoxed` | `plan.c` |
+| `planCoroBoxed` 改读侧表（未设置 ⇒ false） | `plan.c` / `plan.h` |
+| 唯一写点改经 setter | `check.c:456`：`planSetCoroBoxed(got->sdef->coroOf, true)` |
+| 读点改经访问器 | `check_top.c:6814`、`:6826` |
+| 删字段 + 改注释 | `ast.h:710` 的 `bool coroBoxed` 删除，注释指向 `planCoroBoxed` |
+| 棘轮 | `MOVED` 加 `"coroBoxed"` ⇒ AST 上已无 **16** 个字段 |
+
+**至此 AST 上的"计划"字段只剩两个**：`Expr.func`（等实例集显式化）与 `Stmt.forStep`
+（**半语法，有意保留**：parser 两处写）。`FuncDef.coroKind` 是**另一个问题**（codegen 自己的
+prepass 下标，不是计划字段），它的"顺序依赖"结论见第 5 节。
 
 

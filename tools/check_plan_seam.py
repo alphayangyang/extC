@@ -33,7 +33,7 @@ PLAN_FIELDS = {
 MOVED = ["arenaLevel", "zoneLevel", "arenaArg", "needTemp",
          "usesHome", "mayUseArena", "makesPool", "condAllocs",
          "isCoro", "yieldType", "coroFrameType", "coroNeedsZone", "coroProto",
-         "instName", "tmpl"]
+         "coroBoxed", "instName", "tmpl"]
 
 WRITE = r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 

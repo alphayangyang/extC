@@ -453,7 +453,7 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         if (yt && ft && strcmp(typeStr(c, yt), typeStr(c, ft)) == 0) {
             node->boxedCoro = true;
             node->type = want;
-            got->sdef->coroOf->coroBoxed = true;
+            planSetCoroBoxed(got->sdef->coroOf, true);
             return true;
         }
     }

@@ -568,3 +568,40 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 | 2 | `Expr.func` 的**实例集显式化** | 本批次剩下的**大头**：18 写（全在检查器）+ 85 检查器读 + 58 codegen 读（已收口）；要"物化唯一入口 + codegen 前封闭实例集 + 显式 worklist"三件事一起做。**先做只读侦察**（把 18 个写点逐个定位、判"是否都是同一个动作"），再决定搬不搬存储 |
 | 3 | `Stmt.forStep` | **有意保留**（半语法：parser 两处写），已在表里写明理由 |
 | 4 | `FuncDef.coroKind` | 顺序依赖（读点在 prepass 之前）⇒ 要么把"prepass 必须先于哪些读点"写进契约，要么把 prepass 提前；**不能只换存储位置**（已实测失败并回退） |
+
+## X4 第三半（本轮完成）：`coroBoxed` 搬进侧表 —— AST 上只剩 **2** 个计划字段
+
+**判据先行**（三条只读侦察，与 `tmpl` 同形）：① 唯一写点在**检查器**（`check.c:456`，
+"把帧强转成句柄"那一刻）；② codegen **直读 0、直写 0**（X3 第四步已把"模板标记写进实例"
+改成就地推导，读点全经 `planCoroBoxed`）；③ 检查器读点只两处（`check_top.c` 的
+"协程是否需要 zone"）。⇒ 同一配方，无顺序风险。
+
+| 步骤 | 位置 |
+|---|---|
+| `PLAN_CORO_BOXED` 记录位 + 槽位成员 + `planSetCoroBoxed` | `plan.c` |
+| `planCoroBoxed` 改读侧表（未设置 ⇒ false） | `plan.c` / `plan.h` |
+| 唯一写点改经 setter | `check.c:456` |
+| 读点改经访问器 | `check_top.c` 两处 |
+| 删字段 + 改注释 | `ast.h:710` |
+| 棘轮 | `MOVED` 加 `"coroBoxed"` ⇒ AST 上已无 **16** 个字段 |
+
+**顺带修掉的三处"注释指向已删字段/旧机制"**（都是上一轮那条规矩的延续）：
+`check_top.c` 那句"`coroBoxed` is copied onto the instance"（搬走后不再成立）、
+`codegen.c:6980` 的 prepass 说明、`plan.c` 头部"还留在 AST 的字段"清单。
+
+**顺手纠正了表里两处陈旧行**（`docs/topics/AST-ANNOTATIONS.md` 第 5 节）：
+`FuncDef.instName` 早在 X3 第六步就搬了、`coroBoxed` 本轮搬了 ⇒ 两行改标"已搬"；
+`FuncDef.coroKind` 澄清为"**不是计划字段**"（codegen 自己的 prepass 下标，检查器读点 0），
+它的问题是实现层面的**顺序依赖**，与"AST 充当计划"无关。
+
+**验收**：构建零告警；tests **325/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中、note ×84）；
+`check.sh quick` **57/0**；`[plan-seam] ok`（AST 上无 `coroBoxed`）；`[tmpl-owners] ok`；
+完整模式见下条。
+
+### X 批次剩余（至此只剩一件半）
+
+| 序 | 事项 | 状态 |
+|---|---|---|
+| 1 | `Expr.func` 的实例集显式化 | **未做**（本批次唯一的大头）：18 写（全在检查器）/ 85 检查器读 / 58 codegen 读（已收口）。**先只读侦察 18 个写点**，判"是否都是同一个动作"，再决定搬不搬存储 |
+| 2 | `Stmt.forStep` | **有意保留**（半语法，parser 两处写）——不是待办 |
+| 3 | `FuncDef.coroKind` | 不是计划字段；顺序依赖留给"prepass 契约或提前"那一类（已实测不能只换存储位置） |

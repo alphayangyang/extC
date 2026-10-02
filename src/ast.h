@@ -707,7 +707,8 @@ struct FuncDef {
      * the "definitions nothing names" pass (which cannot see that reference). */
     bool        dynTable;
     int         coroKind;           /* codegen prepass: this coroutine's index, for handle dispatch */
-    bool        coroBoxed;          /* a handle of it was made somewhere ⇒ it always gets a task */
+    /* "a handle of it was made somewhere" (which makes it get a task even when it is never
+     * spawned) is a plan fact: see `planCoroBoxed` in plan.h. */
     /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
      * `pc`, the return slot and (when `makesPool`) the zone id come first, then these by value.
      * See docs/topics/CONCURRENCY.md 4.4. */
