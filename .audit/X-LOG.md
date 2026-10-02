@@ -774,3 +774,39 @@ call wrap_meter pick_meter
 | X4 | `instName` / `tmpl` / `coroBoxed` 搬入侧表 + 文档成文 | ✅ |
 | **X3 余项** | **实例集显式化第一刀**：按（调用点，实例）记账 + 发射上下文 | ✅（闸门⑥ 转绿、基线清空） |
 | 余下 | `resolveDeferredCall` 仍写一次兜底指针（"部分记录"那种形状尚未覆盖）；`Expr.func` 仍是 AST 上的字段（**行为已正确**，要不要再搬是纯存储问题）；`Stmt.forStep` 半语法有意保留；`FuncDef.coroKind` 顺序依赖（非计划字段） | 记档 |
+
+## 解耦 P0（本轮完成）：两条"能看见违规"的判据 + 棘轮基线
+
+**背景**：X 批次把"计划"字段搬进了侧表，但那是**逐字段补丁**；按主流编译器（rustc/Clang/Go/
+Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目标架构与分期写在
+[docs/topics/AST-DECOUPLING.md](../docs/topics/AST-DECOUPLING.md)。P0 = 先立判据。
+
+**新增工具**：
+
+* `tools/cscan.py`：共用的 C 感知扫描（剥注释/字面量、结构体成员、写/读判定、`Ratchet` 基线类）。
+  与 `comment_neutral.py` 的规则**故意不同**（后者保留字面量，因为"消息不同不算同代码"；
+  找成员访问的扫描器必须抹掉字面量，否则生成 C 里的 `"a->top->used"` 会被当成访问）——已写进模块头。
+* `tools/check_ast_freeze.py`（**R1 · AST 冻结**）：parser / `plan.c` / `types.c` 之外，
+  对 **AST 节点专属成员**的直接写。只统计"只在节点结构体上声明的成员名"（实测把 640 处降到
+  **146 个 key**）。诚实说明：文本扫描分不清基座类型（`codegen.c` 那 9 处是它自己的描述符结构），
+  所以这条基线是**方向指示器**，最终由"删字段 ⇒ 残留直写变编译错误"兜底。
+* `tools/check_layering.py`（**R3 · 只读边界**）：跨阶段 include 私有头 + parser 反向依赖 plan。
+  报出 3 条边：`codegen.c -> check_internal.h`（去掉它 **14 个编译错误**，真正依赖的是
+  `isProtoType`/`isOverloadableOp`/`findOperator`/`findMethod` 这些**类型层谓词**）、
+  `dataflow.c -> check_internal.h`、`parser.c -> plan.h`。
+
+**基线（= 施工单，棘轮只许减）**：`tools/ast-freeze-known-bad.txt` 146 个 `文件:字段` key
+（`check_expr.c` 54 · `check_top.c` 37 · `check_stmt.c` 15 · `modules.c` 9 · `codegen.c` 9 ·
+`check_escape.c` 8 · `check.c` 6 · `check_lookup.c` 4 · 其余 6）；
+字段侧最常被写的是 `type`(6) · `refDepth`(5) · `cname`(5) · `used`(3) · `modName`(3) · `minAt`(3) ·
+`func`(3)…（与 X0 的"②分析缓存 / ③编译计划"两族吻合）。
+`tools/layering-known-bad.txt` 3 条边。
+
+**验收**：`check.sh` 完整模式 **71 节 / 0 失败**（quick 60）；tests **326/0**；
+六道老闸门全绿（977 文件 checkc · 218 例 ASan · 21 例差分 · 13 例规模 · 18 份逃逸语料 ·
+实例接线基线 0）；`[plan-seam] ok`；**`[ast-freeze]` 146 已知 / 0 新增 · `[layering]` 3 已知 / 0 新增**。
+**零行为改动**（纯工具 + 棘轮 + 文档）。
+
+**下一步（P1）**：`src/results.h/.c` —— 按 owner（函数/模块）一份结果包 + arena + 稠密节点 ID；
+先把已收口、无反向写的一族（协程族 + arena/zone 族）从 `plan.c` 的侧表下沉进去，
+`plan.c` 变成它的薄封装。判据仍是全套 + 两道新棘轮"只许减"。
