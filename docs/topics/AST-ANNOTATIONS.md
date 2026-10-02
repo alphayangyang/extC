@@ -224,3 +224,44 @@ fn main() -> i32 { var a: i32 = g(i32(9))  var b: i64 = g(i64(8))  println(a, " 
 
 
 
+
+### 6.4 判据（闸门⑥：实例接线的结构判据）
+
+**为什么需要一条新的判据**：6.3 那个缺陷**生成物仍是合法 C、跑出来也对**，
+所以"编得过"（闸门①）／"ASan 干净"（闸门②）／"与等价 C 同结论"（闸门③）**都看不见它**。
+能看见它的只有**结构**问题：*每个被发出的实例，调的是不是它该调的那个*。
+
+**闸门⑥**（`tools/gate_callsite.py`，已接进 `check.sh`）：
+
+* 探针在 `tools/callsite-corpus/*.extc`，每份配一个 `.expect`：
+
+  ```
+  require wrap_i32        # 这个实例必须**被发出**（有定义）
+  call wrap_i32 pick_i32  # 这个实例的函数体必须调它
+  ```
+
+* **期望必须按语义写，不按今天的输出写** —— 否则闸门只会给 bug 背书。
+  （已验证：把 `.expect` 改成"期望它调错的那个"⇒ 闸门就绿了 ⇒ 说明判据确实由 `.expect` 驱动。）
+* 基线 `tools/gate-callsite-known-bad.txt` = **施工单**（棘轮：期望成立就从基线删那一行）；
+  临时把基线清空 ⇒ 闸门当场判红（负例已验）。
+
+**当前探针**（`shared_callsite_two_instances.extc`）：一个调用点、两个实例，其中一个是
+**带 `+` 重载的结构体** —— 两种类型**不可互换**，所以"调错实例"不是审美问题：
+
+```
+require wrap_i32 / wrap_meter / pick_i32 / pick_meter
+call wrap_i32 pick_i32        ← 今天错：它调 pick_meter
+call wrap_meter pick_meter
+```
+
+**今天的红**（基线里那一条，两条都成立）：`pick_i32` 从未被发出；`wrap_i32` 调 `pick_meter`。
+生成物在这一点上连 C 都编不过（`incompatible type for argument 1 of 'pick_meter'`）——
+**但要注意顺序**：编不过只是"最后写赢"的一个副作用，换一下实例顺序就变成另一个方向
+（`wrap_meter` 调 `pick_i32`）；所以判据不能写成"生成物编不过"，必须是上面那张结构表。
+
+**修好之后的判据**：`gate_callsite.py` 绿（基线删空），且 `examples/generic-shared-callsite.extc`
+的生成物里 `wrap_i32 -> pick_i32`、`wrap_i64 -> pick_i64` 且两个 `pick_*` 都被发出。
+
+**对照组**：`tools/callsite-corpus/control_single_instance.extc` —— 同一形状、只**一个**实例，
+今天已经是绿的（`wrap_i32 -> pick_i32`）。它的作用与闸门⑤ 的 `control_*` 一样：
+证明这条闸门不是"一律判红"，并**永远不许进基线**（已机械化：基线里 0 个 control）。

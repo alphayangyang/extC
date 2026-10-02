@@ -1,0 +1,12 @@
+# One call site in a generic body, two instantiations: each emitted instance must call
+# its own callee, and both callees must be emitted.
+#
+# Written from the intended semantics (2026-10-02), NOT from today's output: today the
+# deferred re-pointing leaves only the last resolution on the shared node, so one of the
+# two `wrap_*` calls the other's `pick_*` and its own `pick_*` is never emitted.
+require wrap_i32
+require wrap_meter
+require pick_i32
+require pick_meter
+call wrap_i32 pick_i32
+call wrap_meter pick_meter

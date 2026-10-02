@@ -1,0 +1,13 @@
+struct meter { v: i64
+    fn +(self: ref meter, o: meter) -> meter { return meter { v: self.v + o.v + 1000 } }
+}
+fn pick<T>(x: T) -> T { return x }
+fn wrap<T>(x: T) -> T { return pick(x) + pick(x) }
+
+fn main() -> i32 {
+    var i: i32 = wrap(i32(3))
+    var a: meter = meter { v: 1 }
+    var m: meter = wrap(a)
+    println("i32=", i, " meter=", m.v)
+    return 0
+}

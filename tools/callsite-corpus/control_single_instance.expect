@@ -1,0 +1,5 @@
+# One instance only: this shape is already correct today (it is the control twin of
+# shared_callsite_two_instances). It must stay green -- never add it to the baseline.
+require wrap_i32
+require pick_i32
+call wrap_i32 pick_i32

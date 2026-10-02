@@ -66,6 +66,14 @@ if out=$(timeout 600 python3 tools/gate_escape.py 2>&1); then
     ok "$(printf '%s' "$out" | grep -m1 '^\[escape\]')"
 else bad "tools/gate_escape.py（逃逸健全性语料变红）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -12; fi
 
+echo "== 闸门·实例接线（每个被发出的实例必须调对它该调的那个 —— 生成物结构判据）=="
+# 挡的是"一个调用点被多实例共享 ⇒ 只有最后一次重指留下"：生成物**仍是合法 C**、跑出来也对，
+# 所以闸门①②③都看不见它。探针在 tools/callsite-corpus/，判据是每份的 `.expect`
+# （要求哪些实例被发出、哪个实例该调谁）；基线 = 施工单，期望成立就删那一行。
+if out=$(timeout 600 python3 tools/gate_callsite.py 2>&1); then
+    ok "$(printf '%s' "$out" | grep -m1 '^\[callsite\]')"
+else bad "tools/gate_callsite.py（实例接线变红）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -12; fi
+
 echo "== 闸门·差分（同一段语义：extC 与等价 C 必须给出同一结论 —— 审计 §7 闸门③）=="
 # 挡的是"静默算错"：浮点字面量、窄类型回绕、转换、求值次数、for+continue。
 # 基线在 tools/gate-diff-known-bad.txt，同样只许缩小。

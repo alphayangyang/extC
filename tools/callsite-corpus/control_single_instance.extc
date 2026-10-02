@@ -1,0 +1,11 @@
+/* 闸门⑥ 对照：**一个实例**的泛型体调用泛型函数 —— 这条今天是绿的，用来证明闸门不是
+ * "一律判红"。它和 shared_callsite_two_instances 是同一形状，只少一个实例。
+ * 规矩与闸门⑤ 的 control_* 一样：对照组永远不许进基线。 */
+fn pick<T>(x: T) -> T { return x }
+fn wrap<T>(x: T) -> T { return pick(x) }
+
+fn main() -> i32 {
+    let a: i32 = wrap<i32>(i32(9))
+    println(a)
+    return 0
+}

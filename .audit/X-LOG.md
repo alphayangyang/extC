@@ -675,3 +675,41 @@ tests 的 `// expect:` 也只看输出。**要变成可判红的判据，得让 
 
 **验收**：构建零告警；tests **326/0**（新增探针）；`--check-c` 对探针通过；
 `[plan-seam] ok` / `[tmpl-owners] ok`。**没有改任何编译器代码**（纯侦察 + 判据）。
+
+## X3 第九步·判据（本轮完成）：闸门⑥ —— 实例接线的结构判据
+
+按"先做判据"的要求：给 6.3 那个缺陷做一条**能判红、且修好后会自动变绿**的判据。
+
+**为什么必须新开一条**：那个缺陷的生成物**仍是合法 C、跑出来也对** ⇒ 闸门①（编得过）、
+②（ASan 干净）、③（与等价 C 同结论）**都看不见它**。能看见的只有**结构**问题：
+*每个被发出的实例，调的是不是它该调的那个*。
+
+**闸门⑥**（`tools/gate_callsite.py`，已接进 `check.sh` quick → **58 节**）：
+
+* 探针 `tools/callsite-corpus/*.extc`，每份配 `.expect`：`require <实例>`（必须被发出）、
+  `call <实例> <被调实例>`；
+* **期望按语义写，不按今天的输出写**。**负例已验**：把 `.expect` 改成"期望它调错的那个"
+  ⇒ 闸门立刻变绿 ⇒ 证明判据确实由 `.expect` 驱动，而不是把今天的输出固化成"对"；
+* 基线 `tools/gate-callsite-known-bad.txt` = **施工单**；清空基线 ⇒ 当场判红（负例已验）；
+* **对照组** `control_single_instance.extc`（同形状、只一个实例，今天已绿）⇒ 证明不是"一律判红"，
+  且**不许进基线**（当前基线里 control 数 = 0）。
+
+**探针用"不可互换"的两种类型**（这是本轮的关键设计）：`meter` 结构体带 `+` 重载，
+所以"调错实例"不是审美问题 —— 生成物在这一点上连 C 都编不过
+（`incompatible type for argument 1 of 'pick_meter'`）。**但判据不写成"生成物编不过"**：
+那只是"最后写赢"的一个副作用，换一下实例顺序方向就反过来（`wrap_meter` 调 `pick_i32`），
+所以判据是那张结构表：
+
+```
+require wrap_i32 / wrap_meter / pick_i32 / pick_meter
+call wrap_i32 pick_i32        ← 今天红：它调 pick_meter
+call wrap_meter pick_meter
+```
+
+**今天的红**（基线那一条，两条都报出来）：`pick_i32` 从未被发出；`wrap_i32` 调 `pick_meter`。
+
+**修好之后的判据**：本闸门绿（基线删空）+ `examples/generic-shared-callsite.extc` 的生成物里
+`wrap_i32 -> pick_i32`、`wrap_i64 -> pick_i64` 且两个 `pick_*` 都被发出。
+
+**验收**：`check.sh quick` **58/0**（新增一节）；`tests/run.sh` **326/0**；
+`[callsite] ok（失败 1 已知 / 新增 0）`；负例两向都验过（清空基线 ⇒ 红；`.expect` 写反 ⇒ 绿）。
