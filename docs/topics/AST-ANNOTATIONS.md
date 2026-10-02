@@ -77,3 +77,43 @@
 | `Stmt.forStep` | **半语法**：`parser.c` 两处写（`continue` 的 label 目标） | 留在 AST 是正确的；计划侧只该管「检查器替换后的那一半」（若有） |
 | `FuncDef.coroKind` | codegen 的**发射顺序**传递：读点在 prepass **之前**就会执行 | 实测把表搬进 `CG` ⇒ 5 个 coro 用例红（生成物出现 `__extc_czh-1`）。要么保留并把「prepass 必须先于哪些读点」写进契约，要么把 prepass 提前 —— **不能只换存储位置** |
 | ② 分析缓存族（`refDepth`/`origin`/`lexicalLevel`/`storedAt`/`heldSrc`/`addressed`/`outOfFrame`/`otherDepth`/`nfields`/`effState`/六个掩码…） | 只在**检查器内部**使用（codegen 读点 0）⇒ 不构成「AST 充当计划」的耦合 | 未动。若要进一步解耦，应搬进与 plan 平行的「分析侧」结构，而不是继续留在 AST 上 |
+
+## 6. `tmpl` 的静态归属（X3 第八步：只读侦察，无代码改动）
+
+**结论**：`tmpl` **一名两属**，两处都**不是** codegen 的读点 ——
+`FuncDef.tmpl`（`ast.h:679`）是实例 → 模板的反向指针，`CallCheck.tmpl`（`check_internal.h:664`）
+是延迟调用点记下的"this call names which template"。全仓 `tmpl` 共 **71 个 token、43 个字段访问点**：
+
+| 属主 | 站点 | 写 | 读 |
+|---|---|---|---|
+| `FuncDef`（实例 → 模板） | **40** | `check_top.c:4747`（`in->tmpl = tmpl`，`funcInstance` 建实例的唯一入口） | 39：`check_top.c` 36、`check_expr.c` 2、`check_lookup.c` 1、`plan.c:163`（即 `planTemplate` 访问器本身） |
+| `CallCheck`（延迟调用点） | **3** | `check_expr.c:3227`（`cc->tmpl = f->tmpl ? f->tmpl : f`） | `check_top.c:5202`、`check_top.c:5835` |
+| codegen | **0** | — | 14 个读点**全部**经 `planTemplate`（`codegen.c` 里 `->tmpl` 直读 0 处） |
+
+**判据**：`python3 tools/check_tmpl_owners.py`（报告）/ `--verify`（一行结论，进 `check.sh`）。
+脚本按**声明所在结构体**认属主：读每个 `struct` 定义拿到成员表，再对每个访问点找回宿主函数，
+用"参数/局部声明、`(Struct *)` 强转、返回该结构体的调用"三条规则定基座类型 ——
+**未定的一律打 UNKNOWN 而不是猜**。负例已验：临时在 `codegen.c` 加一行 `f->tmpl` 直读 ⇒ 当场判红。
+
+**为什么必须用脚本而不是数数**（本批次同类错误已第五次）：`check_top.c` 的 62 个 token 里有
+**11 个在注释里**（脚本先剥注释）；剩下的 51 个里，**38 个**是字段访问、**13 个**是
+`funcInstance` 的**形参** `FuncDef *tmpl` 及其裸用（`*in = *tmpl`、`tmpl->params`…）——
+手数第一版把"形参"与"字段"混在一起算，同一个 token 还会被数两遍（`in->tmpl = tmpl` 一行里
+一个读一个写）。`tmpl` 既是字段名又是形参名，正是本批次反复撞上的那类陷阱。
+
+**对下一步的意义**：
+
+1. **`FuncDef.tmpl` 的迁移与"重指"无关，且顺序风险已量清**：唯一写点在 `funcInstance` 里
+   （`*in = *tmpl` 之后那一行），属"实例物化"这一个动作；而**驱动是严格两段**——
+   `checkModule`（根 + 各模块体）跑完、错误渲染完，才开始 `generateC`（`main.c`），
+   且 `funcInstance` 在 `codegen.c`/`main.c` 里**零调用点** ⇒ codegen 期间不会新造实例。
+   ⇒ `tmpl` 的时间序风险**低于** `coroKind`（后者读点跑在 prepass 之前），可以照 `instName`
+   的办法搬：加记录位 + setter/访问器，棘轮 `MOVED` 加一项。这纠正了第 5 节把 `tmpl` 与
+   `Expr.func` 并成"等实例集一起做"的粗判 —— 两者可以先分开量、分开搬。
+2. **真正的前置条件是驱动的两段式**：眼下是"先查完所有模块、再逐模块 codegen"（`main.c`），
+   侧表因此跨模块存活；`FuncDef` 实例在检查期建、在 codegen 期读，跨模块也存在。
+   这与 `instName`（已搬）同形，所以 `tmpl` 可**照 `instName` 的办法**搬：加记录位 + setter/访问器，
+   棘轮 `MOVED` 加一项。**代价**：得先离线构造"实例集封闭"的探针，确认 codegen 期间不再出现新实例。
+3. **`CallCheck.tmpl` 不搬**：它只活在检查器的延迟表里，codegen 读点 0 ⇒ 不构成"AST 充当计划"，
+   留在 `check_internal.h` 是对的（若要消同名，是**改名**问题，与迁移分开做）。
+

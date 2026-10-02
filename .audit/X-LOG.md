@@ -424,3 +424,66 @@ bool boxed = planCoroBoxed(cf) || (planTemplate(cf) && planCoroBoxed(planTemplat
 2. 更省事的正路：**先给两个字段起不同名**（一次纯机械改名，每个基座用"类型注解/函数签名"判断），
    或者接受它们同名并**只在迁移时逐点判定**；
 3. `Type.tmpl` 这个说法从交班笔记里**删掉**，改为 `CallCheck.tmpl`（声明 `check_internal.h`）。
+
+## X3 第八步（本轮完成）：`tmpl` 的静态归属 —— 用脚本判，不再靠数数
+
+**目标**（上一轮的两条结论之一）：消同名/迁移之前**必须先做静态归属**，即"每个基座到底是
+哪个结构体"，且这一步不能靠编译器报错反推。
+
+**产物**：`tools/check_tmpl_owners.py`（报告 + `--verify` 一行结论，**已接进 `check.sh`**）。
+做法：① 读每个 `struct` 定义拿到**成员表**（唯一真源：哪些结构体声明了 `tmpl`）；
+② 找出每个 `base.tmpl` / `base->tmpl` 访问点；③ 找回宿主函数，用"参数/局部声明、`(Struct *)` 强转、
+返回该结构体的调用"三条规则定基座；④ **未定的一律打 UNKNOWN 而不是猜**。
+
+**实测结论**（全仓 71 个 token / **43 个字段访问点，全部有属主，0 个 UNKNOWN**）：
+
+| 属主 | 站点 | 写 | 读 |
+|---|---|---|---|
+| `FuncDef`（实例 → 模板，`ast.h:679`） | **40** | `check_top.c:4747`（`funcInstance` 唯一入口） | 39（`check_top.c` 36 / `check_expr.c` 2 / `check_lookup.c` 1 / `plan.c` 访问器 1） |
+| `CallCheck`（延迟调用点，`check_internal.h:664`） | **3** | `check_expr.c:3227` | `check_top.c:5202`、`5835` |
+| codegen | **0** | — | 14 个读点**全部**经 `planTemplate` |
+
+**判据的负例已验**：临时在 `codegen.c` 加一行 `f->tmpl` 直读 ⇒ 当场报
+`codegen reads `tmpl` directly at codegen.c:8794 (use planTemplate())`；还原后复绿。
+
+**工具本身的三次翻车（都记下来，因为都是同一类错）**：
+1. 按"闭合花括号后跟名字"认 `struct` 名 ⇒ 把**匿名 typedef struct**（`typedef struct { … } X;`）
+   的成员算到了别的结构体上，于是 `FuncDef` 一度**根本不在**"声明了 `tmpl` 的结构体"里；
+2. 参数表用 `find(")", …)` 取 ⇒ 在 `FuncDef *fi)` 这种嵌套括号里**截断**，导致
+   12 个明明能判的站点被标成 UNKNOWN（一条 `toml` 式的假阴性）；
+3. 一条正则同时匹配"字段访问"与"字段自身作基座"⇒ 同一位置产出两个站点、`UNKNOWN` 翻倍。
+   **教训与主批次同一条**：归属/计数的脚本，**每个数字都要能被逐点复核**，不能只看总数对不对。
+
+**同时查实的顺序问题（决定能不能搬）**：驱动是**严格两段** —— `main.c` 先
+`checkModule`（根 + 各模块体）并渲染完所有错误，**然后**才 `generateC`；而 `funcInstance`
+在 `codegen.c`/`main.c` 里**零调用点** ⇒ **codegen 期间不会新造实例**。
+⇒ `FuncDef.tmpl` 的顺序风险**低于** `coroKind`（后者读点跑在 prepass 之前），
+可以照 `instName` 的办法搬进侧表（记录位 + setter/访问器 + 棘轮 `MOVED` 加一项）。
+这也**推翻了第 5 节**把 `tmpl` 与 `Expr.func` 并成"等实例集一起做"的粗判：两者可以分开搬。
+
+**写入权威处**：`docs/topics/AST-ANNOTATIONS.md` 新增第 6 节（结论表 + 判据 + 对下一步的意义）。
+
+## X4 第二半（本轮完成）：`plan.h` / `plan.c` 的过时状态与旧名字残留
+
+**出发点**（我开工前逐点核实的结果）：这两个文件是 X1/X2 新建的，注释还停在**当时的中间态**，
+而 `COMMENT-STYLE.md` 第 1 条要求 `src/` 注释**英文、ASCII**（仓库里 347 处中文注释是**存量**，
+`tools/scan_cjk.py` 一直红着，没有闸门）—— 于是"改准确"与"改合规"一次做完：
+
+| 位置 | 原来（过时/错） | 现在（按代码实况） |
+|---|---|---|
+| `plan.h` 头 | "X1：只有接缝，没有搬家"、codegen 读点收口 | 已搬 14 个字段；侧表按节点寻址；仍留在 AST 的四个字段与原因；两条调用方规则 |
+| `plan.h:99` / `plan.c:24` | "`Type.tmpl` 同名"（已被上一轮推翻） | "**两个结构体**有同名成员（`FuncDef`/`CallCheck`），迁移前按**声明所在结构体**确认"（本轮复核：`check_internal.h:1051` 那个 `FuncDef *tmpl` 是**函数形参**，不是第三个属主；工具只认"结构体成员+访问点"） |
+| `plan.c` 头 | "X2 第二步过渡态：setter 同时写侧表与 AST 字段" | 权威已在侧表、AST 字段已删；槽位带 setMask（未设 = 默认值，不读 calloc 残留） |
+| `plan.h:71` 三连注释 | "被调者是否用 home arena"（把 `usesHome` 与 `needsHome` 混为一谈） | 逐条分清：`usesHome`=这个函数**收**调用者的 home；`needsHome`=本体**够到**需要 home 的东西；`mayUseArena`=本体有没有自己的分配（省 arena 数组的优化） |
+| `plan.c:90` | "X2 第三步：权威在侧表；AST 字段已删除" | 删（那句话属于提交历史，不属于代码） |
+
+**验收（纯注释，行为不变）**：
+* `python3 tools/comment_neutral.py HEAD src/plan.h src/plan.c` ⇒ **两文件都是 comments only**（同一判据，`grep` 不算）；
+* `python3 tools/scan_cjk.py src/plan.h src/plan.c` ⇒ **0**（这两文件从此合规）；
+* 构建零告警；tests **325/0**（发布与 `EXTC_DBG=1`，断言/兜底 **0** 命中，note ×84 与改前一致）；
+* `check.sh quick` **56/0**；`[plan-seam] ok`；`--verify` ⇒ `[tmpl-owners] ok`。
+
+**方法论**：一个文件被改过很多轮之后，**头部状态节是最先腐烂的注释**（它描述"整体进展"，
+却随每次提交变旧）。本轮的判据是"**每句话都能指到当前代码**"：指不到就删或改写，
+不保留任何"当时如此"的叙述 —— 进展留在 `.audit/*-LOG.md`，代码只写现在。
+

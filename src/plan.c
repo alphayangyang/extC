@@ -1,38 +1,42 @@
-/* 编译计划访问器 + 计划侧表 —— 见 plan.h 的说明。
+/* The plan side table and the accessors declared in plan.h.
  *
- * X2 第二步：`Expr.plan` 的**存储**开始搬到这张按节点寻址的侧表上。现在是**过渡态**：
- *   · 写入方（检查器）改经 setter —— setter 同时写侧表**与** AST 字段；
- *   · 读取方（codegen）仍读 AST 字段（权威未变 ⇒ 行为不变）；
- *   · 访问器在 `EXTC_DBG=1` 下比较"侧表里应有的值"与"AST 字段里的值"，**并且**在
- *     "字段非默认值却没有侧表记录"时响亮 —— 那正是"某个写点没走 setter"。
- * 下一步（X2 第三步）把权威翻到侧表、删掉 AST 字段。
+ * Storage: one open-addressing table keyed by node pointer. A pointer is unique for the
+ * whole compilation, and the driver checks every module before generating any of them, so
+ * the table is process-wide rather than per module. Slots are allocated with malloc and
+ * never shrink; a slot carries the values plus a bitmask of which fields were set, so an
+ * unset field reads as its default instead of as whatever calloc left there.
  *
- * 生命周期：驱动是"先查完所有模块，再逐模块 codegen"（main.c），所以侧表**跨模块**存在、
- * 按 `Expr*` 寻址（指针在整个编译里唯一），不按模块重置。用 malloc/realloc 自己管。*/
+ * A setter with a NULL node is a no-op, and a lookup for a NULL node misses: some plan
+ * questions are asked about nodes that do not exist.
+ *
+ * Not every plan field is here yet. The ones that still live on an AST node are the
+ * resolved callee, the instance -> template back pointer, the `for` step and
+ * `coroBoxed`; their accessors below read the node. Do not add storage for them without
+ * also making the instance set explicit. */
 #include "plan.h"
 #include <stdlib.h>
 
 enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        PLAN_ARENA_ARG = 1u << 2, PLAN_NEED_TEMP = 1u << 3,
-       /* FuncDef 的 arena/pool 族（X2 第四步）*/
+       /* function-summary family */
        PLAN_USES_HOME = 1u << 4, PLAN_MAY_USE_ARENA = 1u << 5, PLAN_MAKES_POOL = 1u << 6,
-       /* Stmt 族（X2 第四步；`forStep` 仍是半语法，留在 AST 上）*/
+       /* statement family (`forStep` is half syntax and stays on the AST) */
        PLAN_COND_ALLOCS = 1u << 7,
-       /* 协程族（X2 第五步；`coroBoxed` 因为 codegen 会写它，留到 X3）*/
+       /* coroutine family (`coroBoxed` is not here yet) */
        PLAN_IS_CORO = 1u << 8, PLAN_YIELD_TYPE = 1u << 9, PLAN_CORO_FRAME_TYPE = 1u << 10,
        PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12,
-       /* 实例的 C 名（X3；`FuncDef.tmpl` 不在此列 —— `Type.tmpl` 同名，须先按结构体逐点确认）*/
+       /* instance C name (`FuncDef.tmpl` is not here: see plan.h) */
        PLAN_INST_NAME = 1u << 13 };
 
 typedef struct {
-    int arenaLevel, zoneLevel, arenaArg;      /* Expr 族 */
+    int arenaLevel, zoneLevel, arenaArg;      /* Expr family */
     bool needTemp;
-    bool usesHome, mayUseArena, makesPool;    /* FuncDef 的 arena/pool 族 */
-    bool condAllocs;                          /* Stmt 族 */
-    bool isCoro, coroNeedsZone;               /* 协程族 */
+    bool usesHome, mayUseArena, makesPool;    /* function-summary family */
+    bool condAllocs;                          /* statement family */
+    bool isCoro, coroNeedsZone;               /* coroutine family */
     Type *yieldType, *coroFrameType;
     int coroProto;
-    const char *instName;                     /* 实例的 C 名 */
+    const char *instName;                     /* instance C name */
     unsigned setMask;
 } PlanSlot;
 
@@ -41,7 +45,7 @@ static PlanSlot    *g_slots;
 static size_t       g_cap, g_len;
 
 static size_t hashKey(const void *k) {
-    size_t h = (size_t)k >> 4;          /* 节点是 8/16 字节对齐的：低位没有信息 */
+    size_t h = (size_t)k >> 4;          /* nodes are 8/16-byte aligned: low bits carry nothing */
     h *= 0x9E3779B97F4A7C15ull;
     return h;
 }
@@ -77,13 +81,12 @@ static PlanSlot *slotFor(const void *key, bool create) {
     return &g_slots[j];
 }
 
-/* ---- 写入方（检查器）的 setter ------------------------------------------------------ */
+/* ---- setters (called by the checker) ----------------------------------------------- */
 
 void planSetArenaLevel(Expr *e, int v) {
     if (!e) return;
     PlanSlot *s = slotFor(e, true);
     s->arenaLevel = v; s->setMask |= PLAN_ARENA_LEVEL;
-    /* X2 第三步：权威在侧表；AST 字段已删除 */
 }
 void planSetZoneLevel(Expr *e, int v) {
     if (!e) return;
@@ -154,7 +157,7 @@ void planSetCoroProto(FuncDef *f, int v) {
     s->coroProto = v; s->setMask |= PLAN_CORO_PROTO;
 }
 
-/* ---- 访问器（对外签名不变） -------------------------------------------------------- */
+/* ---- accessors (signatures are the public surface) --------------------------------- */
 
 FuncDef *planCallee(const Expr *e) { return e ? e->func : NULL; }
 FuncDef *planTemplate(const FuncDef *f) { return f ? f->tmpl : NULL; }

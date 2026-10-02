@@ -128,6 +128,10 @@ else bad "tools/check_walkers.py"; printf '%s\n' "$out" | sed 's/^/  /'; fi
 # 计划接缝（X1）：codegen 只能经 src/plan.h 读"分析产物/编译计划"，直读即红。
 if out=$(python3 tools/check_plan_seam.py 2>&1); then ok "$(printf '%s' "$out" | tail -1)"
 else bad "tools/check_plan_seam.py"; printf '%s\n' "$out" | sed 's/^/  /'; fi
+# 字段归属（X3）：同名 `tmpl` 属两个结构体（FuncDef / CallCheck）⇒ 按**声明所在结构体**认属主，
+# 未定即红；顺带钉住"codegen 只经 planTemplate 读它"。这一节挡的是"按字段名改名/搬家"那类错。
+if out=$(python3 tools/check_tmpl_owners.py --verify 2>&1); then ok "$(printf '%s' "$out" | tail -1)"
+else bad "tools/check_tmpl_owners.py --verify"; printf '%s\n' "$out" | sed 's/^/  /'; fi
 if out=$(timeout 120 python3 tools/check_switches.py 2>&1); then ok "$(echo "$out" | tail -1)"
 else bad "tools/check_switches.py"; echo "$out" | head -8; fi
 if out=$(python3 tools/check_concurrency_guards.py 2>&1); then ok "$(printf '%s' "$out" | tail -1)"
