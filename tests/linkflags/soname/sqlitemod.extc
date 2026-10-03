@@ -1,0 +1,7 @@
+/* 本机 sqlite3 没有 dev 包：链接需求只能写 soname 形式。 */
+extern!("sqlite3") fn sqlite3_libversion() -> ref u8
+
+fn firstByte() -> u8 {
+    let p: ref u8 = sqlite3_libversion()
+    return *p
+}

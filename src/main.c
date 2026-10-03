@@ -8,6 +8,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,6 +134,188 @@ static int runCmd(char *const argv[]) {
     return -1;
 }
 
+/* Run a program and capture its standard output.
+ *
+ * Params:
+ *   argv - NULL-terminated argument vector, exactly as `runCmd` takes it
+ *   out  - buffer the child's standard output is appended to
+ *
+ * Returns:
+ *   The exit status of the program (0 on success), or -1 when it could not be
+ *   started, was killed by a signal, or the pipe could not be read.
+ *
+ * Notes:
+ *   - `--pkg-config <name>` uses this to ask pkg-config for a library's cflags and
+ *     libs. The child's standard error is left alone, so pkg-config's own
+ *     complaints reach the user instead of being swallowed.
+ *   - The pipe is read to EOF **before** the child is reaped: waiting first would
+ *     deadlock as soon as the child writes more than one pipe buffer.
+ */
+static int runCapture(char *const argv[], Buf *out) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        fprintf(stderr, "extc: pipe failed: %s\n", strerror(errno));
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "extc: fork failed: %s\n", strerror(errno));
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(127);
+        close(fds[1]);
+        execvp(argv[0], argv);
+        fprintf(stderr, "extc: cannot exec `%s`: %s\n", argv[0], strerror(errno));
+        _exit(127);
+    }
+    close(fds[1]);
+    char chunk[4096];
+    for (;;) {
+        ssize_t got = read(fds[0], chunk, sizeof chunk);
+        if (got > 0) { bufPutn(out, chunk, (size_t)got); continue; }
+        if (got == 0) break;
+        if (errno == EINTR) continue;
+        close(fds[0]);
+        waitpid(pid, NULL, 0);
+        return -1;
+    }
+    close(fds[0]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -1;
+}
+
+/* Ask pkg-config for one package's flags and append the tokens to a cc argument list.
+ *
+ * Params:
+ *   a    - arena for the split tokens
+ *   args - the argument list the flags are appended to
+ *   name - the pkg-config package name
+ *
+ * Returns:
+ *   False after reporting the failure; the caller decides whether that is fatal. Both
+ *   callers treat it as fatal: linking without the flags surfaces much later as a wall
+ *   of undefined references, which points at the wrong thing.
+ */
+static bool appendPkgConfig(Arena *a, Vec *args, const char *name) {
+    char *argv[] = { (char *)"pkg-config", (char *)"--cflags", (char *)"--libs",
+                     (char *)name, NULL };
+    Buf out;
+    bufInit(&out, a);
+    int rc = runCapture(argv, &out);
+    if (rc != 0) {
+        fprintf(stderr, "extc: `pkg-config --cflags --libs %s` failed (exit %d)\n", name, rc);
+        return false;
+    }
+    char *text = bufCstr(&out);
+    for (char *tok = strtok(text, " \t\r\n"); tok; tok = strtok(NULL, " \t\r\n"))
+        *(char **)vecPush(args) = tok;
+    return true;
+}
+
+/* Read the link requirements of every module the program actually loaded.
+ *
+ * A module that wraps a C library knows which library it needs; every program that
+ * uses it should not have to repeat that on the command line. The requirement lives in
+ * `<module>.link`, next to `<module>.extc`, and is read **only** for modules the
+ * program loaded (`use`d, directly or transitively) -- so nothing is linked by
+ * accident, and nothing is downloaded: a library that is not installed fails at the
+ * link step with the C compiler's own message.
+ *
+ * Grammar (one directive per line; blank lines and `#` comments are ignored):
+ *   lib <name>        append `-l<name>`; `lib :libsqlite3.so.0` spells a soname
+ *   pkgconfig <name>  append the tokens of `pkg-config --cflags --libs <name>`
+ *   ccflag <flag>     append one raw flag (escape hatch, the package author's call)
+ * An unknown directive is an error: a requirement that is silently ignored is the
+ * exact failure this file exists to prevent.
+ *
+ * Params:
+ *   a        - arena for the paths, tokens and file contents
+ *   ctxs     - the Ctx of every loaded module, as `loadModules` filled it
+ *   args     - the cc argument list the flags are appended to
+ *   libNames - receives the `lib` names, for the artifact's `extc-libs:` line
+ *   pkgNames - receives the `pkgconfig` names, for the artifact's `extc-pkg-config:` line
+ *
+ * Returns:
+ *   False after reporting an error (bad directive, empty argument, failed pkg-config).
+ */
+static bool loadModuleLinks(Arena *a, Vec *ctxs, Vec *args, Vec *libNames, Vec *pkgNames) {
+    for (size_t i = 0; i < vecLen(ctxs); i++) {
+        Ctx *mc = *(Ctx **)vecAt(ctxs, i);
+        if (!mc || !mc->path) continue;
+        size_t len = strlen(mc->path);
+        if (len > 5 && strcmp(mc->path + len - 5, ".extc") == 0) len -= 5;
+        const char *linkPath = arenaPrintf(a, "%.*s.link", (int)len, mc->path);
+        if (access(linkPath, R_OK) != 0) continue;      /* no requirements: the common case */
+
+        size_t n = 0;
+        char *text = readWholeFile(a, linkPath, &n);
+        if (!text) {
+            fprintf(stderr, "extc: cannot read `%s`\n", linkPath);
+            return false;
+        }
+        int lineNo = 0;
+        char *p = text;
+        while (*p) {
+            char *line = p;
+            while (*p && *p != '\n') p++;
+            if (*p == '\n') *p++ = 0;
+            lineNo++;
+            while (*line == ' ' || *line == '\t') line++;
+            char *end = line + strlen(line);
+            while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) *--end = 0;
+            if (*line == 0 || *line == '#') continue;
+            /* Split the directive from its argument; the argument keeps its inner spaces
+             * (a `ccflag` may need them), so only the first run of blanks is cut. */
+            char *arg = line;
+            while (*arg && *arg != ' ' && *arg != '\t') arg++;
+            if (*arg) *arg++ = 0;
+            while (*arg == ' ' || *arg == '\t') arg++;
+            if (strcmp(line, "lib") == 0) {
+                if (!*arg) {
+                    fprintf(stderr, "extc: %s:%d: `lib` needs a name\n", linkPath, lineNo);
+                    return false;
+                }
+                for (const char *c = arg; *c; c++) {
+                    if (isalnum((unsigned char)*c) || *c == '_' || *c == '.' || *c == '+'
+                        || *c == '-' || *c == ':') continue;
+                    fprintf(stderr, "extc: %s:%d: bad library name `%s`"
+                                    " (letters, digits, `_ . + - :` only)\n",
+                            linkPath, lineNo, arg);
+                    return false;
+                }
+                *(char **)vecPush(args) = arenaPrintf(a, "-l%s", arg);
+                *(const char **)vecPush(libNames) = arg;
+            } else if (strcmp(line, "pkgconfig") == 0) {
+                if (!*arg) {
+                    fprintf(stderr, "extc: %s:%d: `pkgconfig` needs a package name\n",
+                            linkPath, lineNo);
+                    return false;
+                }
+                if (!appendPkgConfig(a, args, arg)) return false;
+                *(const char **)vecPush(pkgNames) = arg;
+            } else if (strcmp(line, "ccflag") == 0) {
+                if (!*arg) {
+                    fprintf(stderr, "extc: %s:%d: `ccflag` needs a flag\n", linkPath, lineNo);
+                    return false;
+                }
+                *(char **)vecPush(args) = arg;
+            } else {
+                fprintf(stderr, "extc: %s:%d: unknown directive `%s`"
+                                " (expected `lib`, `pkgconfig` or `ccflag`)\n",
+                        linkPath, lineNo, line);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /* Print the command line summary to stderr.
  *
  * Params:
@@ -157,6 +340,12 @@ static void usage(const char *argv0) {
         "  --check-c        syntax-check the generated C with `$CC -fsyntax-only`\n"
         "  -w               suppress warnings\n"
         "  -I <dir>         add a module search directory (for `use a::b`)\n"
+        "  -l <name>        link with `-l<name>` (repeatable; e.g. `-l z`)\n"
+        "  -L <dir>         add a library search directory (repeatable)\n"
+        "  --ccflag <flag>  append one raw flag to the C compiler command (repeatable)\n"
+        "                   escape hatch, e.g. `--ccflag -l:libsqlite3.so.0` (a soname,\n"
+        "                   which `-l` cannot spell) or `--ccflag -I/usr/include/cairo`\n"
+        "  --pkg-config <name>  add `pkg-config --cflags --libs <name>` (repeatable)\n"
         "  -O0 .. -O3       optimisation level for the generated C (default: -O2)\n"
         "  -march=native    allow host-specific instructions (faster, less portable)\n"
         "  --dump-tokens    lex only; print the token table\n"
@@ -333,6 +522,18 @@ int main(int argc, char **argv) {
      * initialised would dereference a garbage pointer. */
     const char *stdDirArgs[16];
     int         nStdDirArgs = 0;
+    /* Link and include flags for the C compiler, collected with the same fixed-size
+     * trick as `-I` and for the same reason (the arena does not exist yet). They are
+     * turned into `cc` arguments after `arenaInit`, because `--pkg-config` has to run
+     * a program and keep its output somewhere. */
+    const char *linkArgs[16];        /* `-l <name>` */
+    int         nLinkArgs = 0;
+    const char *libDirArgs[16];      /* `-L <dir>` */
+    int         nLibDirArgs = 0;
+    const char *ccFlagArgs[32];      /* `--ccflag <flag>`: passed through verbatim */
+    int         nCcFlagArgs = 0;
+    const char *pkgConfigArgs[8];    /* `--pkg-config <name>` */
+    int         nPkgConfigArgs = 0;
 
     for (int i = 1; i < argc; i++) {
         /* Optimisation switches. The default stays `-O2`, but the 2x to 4x that
@@ -369,6 +570,31 @@ int main(int argc, char **argv) {
             if (++i >= argc) { fprintf(stderr, "extc: `-I` needs a directory\n"); return 2; }
             if (nStdDirArgs < 16) stdDirArgs[nStdDirArgs++] = argv[i];
             else { fprintf(stderr, "extc: too many `-I` directories (max 16)\n"); return 2; }
+        } else if (strcmp(argv[i], "-l") == 0) {
+            /* A library to link, named the way `cc` names it: `-l z` becomes `-lz`.
+             * The name is also recorded in the generated C, in an `extc-libs:` line, so
+             * a build system can read the link requirements back out of the artifact
+             * instead of keeping a second copy of them. */
+            if (++i >= argc) { fprintf(stderr, "extc: `-l` needs a library name\n"); return 2; }
+            if (nLinkArgs < 16) linkArgs[nLinkArgs++] = argv[i];
+            else { fprintf(stderr, "extc: too many `-l` libraries (max 16)\n"); return 2; }
+        } else if (strcmp(argv[i], "-L") == 0) {
+            if (++i >= argc) { fprintf(stderr, "extc: `-L` needs a directory\n"); return 2; }
+            if (nLibDirArgs < 16) libDirArgs[nLibDirArgs++] = argv[i];
+            else { fprintf(stderr, "extc: too many `-L` directories (max 16)\n"); return 2; }
+        } else if (strcmp(argv[i], "--ccflag") == 0) {
+            /* The escape hatch: anything `cc` understands, including the shapes the two
+             * switches above cannot spell (`-l:libsqlite3.so.0`, `-I/usr/include/cairo`,
+             * `-Wl,-rpath,...`). Passed through verbatim, one argv entry per flag. */
+            if (++i >= argc) { fprintf(stderr, "extc: `--ccflag` needs a flag\n"); return 2; }
+            if (nCcFlagArgs < 32) ccFlagArgs[nCcFlagArgs++] = argv[i];
+            else { fprintf(stderr, "extc: too many `--ccflag` flags (max 32)\n"); return 2; }
+        } else if (strcmp(argv[i], "--pkg-config") == 0) {
+            /* `--pkg-config openssl` asks pkg-config for that library's cflags and libs.
+             * Resolved after `arenaInit` (it runs a program); see the collection below. */
+            if (++i >= argc) { fprintf(stderr, "extc: `--pkg-config` needs a package name\n"); return 2; }
+            if (nPkgConfigArgs < 8) pkgConfigArgs[nPkgConfigArgs++] = argv[i];
+            else { fprintf(stderr, "extc: too many `--pkg-config` packages (max 8)\n"); return 2; }
         } else if (strcmp(argv[i], "-o") == 0) {
             if (++i >= argc) { fprintf(stderr, "extc: `-o` needs a file name\n"); return 2; }
             outPath = argv[i];
@@ -393,6 +619,24 @@ int main(int argc, char **argv) {
 
     Arena arena;
     arenaInit(&arena, 64 * 1024);
+
+    /* Turn the link switches into `cc` arguments. The order is fixed: pkg-config
+     * output first (its cflags are `-I`/`-D` and its libs are `-l`), then the explicit
+     * `-l`, `-L` and raw flags in the order the user wrote them -- the compiler driver
+     * is not entitled to reorder a link line, because order decides which symbol a
+     * static library resolves. A failing pkg-config is a hard error rather than a
+     * warning: silently linking without the flags would surface later as dozens of
+     * undefined references, pointing at the wrong thing. */
+    Vec ccExtra;
+    vecInit(&ccExtra, &arena, sizeof(char *));
+    for (int k = 0; k < nPkgConfigArgs; k++)
+        if (!appendPkgConfig(&arena, &ccExtra, pkgConfigArgs[k])) return 2;
+    for (int k = 0; k < nLinkArgs; k++)
+        *(char **)vecPush(&ccExtra) = arenaPrintf(&arena, "-l%s", linkArgs[k]);
+    for (int k = 0; k < nLibDirArgs; k++)
+        *(char **)vecPush(&ccExtra) = arenaPrintf(&arena, "-L%s", libDirArgs[k]);
+    for (int k = 0; k < nCcFlagArgs; k++)
+        *(char **)vecPush(&ccExtra) = (char *)ccFlagArgs[k];
 
     size_t srcLen = 0;
     char *src = readWholeFile(&arena, path, &srcLen);
@@ -457,6 +701,18 @@ int main(int argc, char **argv) {
         modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
         phase("load", t_ld);
     }
+
+    /* Auto-link: every loaded module's own requirements (`<module>.link`). They are kept
+     * apart from the command line's flags so the link order stays predictable -- the
+     * program's dependencies in load order first, then whatever the user asked for. */
+    Vec modExtra;
+    vecInit(&modExtra, &arena, sizeof(char *));
+    Vec modLibs;
+    vecInit(&modLibs, &arena, sizeof(const char *));
+    Vec modPkgs;
+    vecInit(&modPkgs, &arena, sizeof(const char *));
+    if (modsOk && !loadModuleLinks(&arena, &moduleCtxs, &modExtra, &modLibs, &modPkgs))
+        return 2;
 
     /* Hand the bare-name mappings the loader collected to the type table. The loader
      * does not know TypeTable and ttResolve knows nothing else, so the two are joined
@@ -539,6 +795,72 @@ int main(int argc, char **argv) {
     }
     if (bodyDiag) return 1;      /* the module files' errors are already rendered above */
 
+    /* Record the link requirements **in the artifact**. Generated C that needs `-lz`
+     * but does not say so is a build trap: compile it by hand and the failure is a wall
+     * of undefined references, far from the extC declaration that caused it. The comment
+     * is machine-readable on purpose (`extc-libs:`), so a Makefile or a package manager
+     * can read the requirement out of the artifact instead of keeping a second copy.
+     * Emitted only when there is something to say, so a program that links nothing keeps
+     * byte-identical output.
+     *
+     * Both sources count: the modules the program loaded (each module's own `<module>.link`)
+     * and the command line's flags. Inside the comment the names are sorted and deduped --
+     * it describes a set, and two builds asking for the same libraries in a different order
+     * must produce the same bytes. The **link line** keeps declaration order instead: a
+     * static library resolves symbols left to right, so reordering it is not the compiler
+     * driver's business. */
+    Vec allLibs;
+    vecInit(&allLibs, &arena, sizeof(const char *));
+    for (size_t k = 0; k < vecLen(&modLibs); k++)
+        *(const char **)vecPush(&allLibs) = *(const char **)vecAt(&modLibs, k);
+    for (int k = 0; k < nLinkArgs; k++)
+        *(const char **)vecPush(&allLibs) = linkArgs[k];
+    Vec allPkgs;
+    vecInit(&allPkgs, &arena, sizeof(const char *));
+    for (size_t k = 0; k < vecLen(&modPkgs); k++)
+        *(const char **)vecPush(&allPkgs) = *(const char **)vecAt(&modPkgs, k);
+    for (int k = 0; k < nPkgConfigArgs; k++)
+        *(const char **)vecPush(&allPkgs) = pkgConfigArgs[k];
+
+    if (vecLen(&allLibs) > 0 || vecLen(&allPkgs) > 0) {
+        Buf head;
+        bufInit(&head, &arena);
+        if (vecLen(&allLibs) > 0) {
+            const char **items = (const char **)vecAt(&allLibs, 0);
+            size_t n = vecLen(&allLibs);
+            for (size_t k = 1; k < n; k++) {          /* insertion sort: n is tiny */
+                const char *key = items[k];
+                size_t j = k;
+                while (j > 0 && strcmp(items[j - 1], key) > 0) { items[j] = items[j - 1]; j--; }
+                items[j] = key;
+            }
+            bufPuts(&head, "/* extc-libs:");
+            for (size_t k = 0; k < n; k++) {
+                if (k > 0 && strcmp(items[k], items[k - 1]) == 0) continue;
+                bufPrintf(&head, " %s", items[k]);
+            }
+            bufPuts(&head, " */\n");
+        }
+        if (vecLen(&allPkgs) > 0) {
+            const char **items = (const char **)vecAt(&allPkgs, 0);
+            size_t n = vecLen(&allPkgs);
+            for (size_t k = 1; k < n; k++) {
+                const char *key = items[k];
+                size_t j = k;
+                while (j > 0 && strcmp(items[j - 1], key) > 0) { items[j] = items[j - 1]; j--; }
+                items[j] = key;
+            }
+            bufPuts(&head, "/* extc-pkg-config:");
+            for (size_t k = 0; k < n; k++) {
+                if (k > 0 && strcmp(items[k], items[k - 1]) == 0) continue;
+                bufPrintf(&head, " %s", items[k]);
+            }
+            bufPuts(&head, " */\n");
+        }
+        bufPutn(&head, bufCstr(&c), c.len);
+        c = head;
+    }
+
     /* `--check-c`: syntax-check the generated C. This has to run before the
      * `if (!doRun)` block below, which prints the C and returns, or the check would
      * only ever happen under `--run`. */
@@ -564,9 +886,24 @@ int main(int argc, char **argv) {
             fprintf(stderr, "extc: cannot write the syntax-check file\n");
             return 1;
         }
-        char *argv2[] = { (char *)ccx, "-std=c11", "-fsyntax-only", "-w",
-                          "-x", "c", tmp, NULL };
-        int checkRc = runCmd(argv2);
+        Vec checkArgv;
+        vecInit(&checkArgv, &arena, sizeof(char *));
+        *(char **)vecPush(&checkArgv) = (char *)ccx;
+        *(char **)vecPush(&checkArgv) = (char *)"-std=c11";
+        *(char **)vecPush(&checkArgv) = (char *)"-fsyntax-only";
+        *(char **)vecPush(&checkArgv) = (char *)"-w";
+        /* The link/include flags go in here too: a header the program needs must be
+         * findable at syntax-check time, or the check would fail on code that compiles
+         * perfectly well under `--run`. */
+        for (size_t k = 0; k < vecLen(&modExtra); k++)
+            *(char **)vecPush(&checkArgv) = *(char **)vecAt(&modExtra, k);
+        for (size_t k = 0; k < vecLen(&ccExtra); k++)
+            *(char **)vecPush(&checkArgv) = *(char **)vecAt(&ccExtra, k);
+        *(char **)vecPush(&checkArgv) = (char *)"-x";
+        *(char **)vecPush(&checkArgv) = (char *)"c";
+        *(char **)vecPush(&checkArgv) = tmp;
+        *(char **)vecPush(&checkArgv) = NULL;
+        int checkRc = runCmd((char *const *)vecAt(&checkArgv, 0));
         unlink(tmp);
         if (checkRc != 0) {
             fprintf(stderr, "extc: **the generated C does not compile** -- this is an extc"
@@ -629,27 +966,34 @@ int main(int argc, char **argv) {
      * 15 ms -- at the cost of portability, so it stays off by default.
      *
      * The last mile to C-level performance is therefore flags, not language design. */
-    char *ccArgv[16];
-    int n = 0;
-    ccArgv[n++] = (char *)cc;
-    ccArgv[n++] = "-std=c11";
-    ccArgv[n++] = (char *)(optLevel ? optLevel : "-O2");
-    ccArgv[n++] = "-fwrapv";
-    if (marchNative) ccArgv[n++] = "-march=native";
+    Vec ccArgv;
+    vecInit(&ccArgv, &arena, sizeof(char *));
+    *(char **)vecPush(&ccArgv) = (char *)cc;
+    *(char **)vecPush(&ccArgv) = (char *)"-std=c11";
+    *(char **)vecPush(&ccArgv) = (char *)(optLevel ? optLevel : "-O2");
+    *(char **)vecPush(&ccArgv) = (char *)"-fwrapv";
+    if (marchNative) *(char **)vecPush(&ccArgv) = (char *)"-march=native";
                        /* The compiler derives `_debug`, `_eq`, `_find` and further
                         * helpers for every type the program uses, and the ones nothing
                         * calls would otherwise stay in the binary: the text segment of
                         * hello fell from 3215 to 1446 bytes and that of euler-sieve from
                         * 6852 to 3475. Letting the linker drop the sections nobody
                         * references changes no semantics. */
-    ccArgv[n++] = "-ffunction-sections";
-    ccArgv[n++] = "-fdata-sections";
-    ccArgv[n++] = "-Wl,--gc-sections";
-    ccArgv[n++] = "-o";
-    ccArgv[n++] = (char *)binPath;
-    ccArgv[n++] = (char *)cPath;
-    ccArgv[n] = NULL;
-    int rc = runCmd(ccArgv);
+    *(char **)vecPush(&ccArgv) = (char *)"-ffunction-sections";
+    *(char **)vecPush(&ccArgv) = (char *)"-fdata-sections";
+    *(char **)vecPush(&ccArgv) = (char *)"-Wl,--gc-sections";
+    *(char **)vecPush(&ccArgv) = (char *)"-o";
+    *(char **)vecPush(&ccArgv) = (char *)binPath;
+    *(char **)vecPush(&ccArgv) = (char *)cPath;
+    /* The user's link/include flags come last, the way a link line reads: inputs and
+     * libraries after the object. `pkg-config`'s cflags are position-independent; its
+     * `-l` entries are not, which is why nothing here reorders them. */
+    for (size_t k = 0; k < vecLen(&modExtra); k++)
+        *(char **)vecPush(&ccArgv) = *(char **)vecAt(&modExtra, k);
+    for (size_t k = 0; k < vecLen(&ccExtra); k++)
+        *(char **)vecPush(&ccArgv) = *(char **)vecAt(&ccExtra, k);
+    *(char **)vecPush(&ccArgv) = NULL;
+    int rc = runCmd((char *const *)vecAt(&ccArgv, 0));
     if (rc != 0) {
         fprintf(stderr, "extc: C compiler failed (exit %d) on `%s`\n", rc, cPath);
         return 1;

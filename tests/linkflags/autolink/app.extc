@@ -1,0 +1,5 @@
+use zmod
+fn main() -> i32 {
+    if zmod::firstByte() == u8(49) { return 0 }   /* zlib 版本串以 '1' 开头 */
+    return 1
+}

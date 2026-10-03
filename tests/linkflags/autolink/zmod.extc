@@ -1,0 +1,7 @@
+/* 包一层 zlib 的模块：链接需求写在同目录的 zmod.link 里，用它的程序不必重复。 */
+extern!("zlib") fn zlibVersion() -> ref u8
+
+fn firstByte() -> u8 {
+    let p: ref u8 = zlibVersion()
+    return *p
+}

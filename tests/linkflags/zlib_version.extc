@@ -1,0 +1,8 @@
+/* 判据：`-l z` 真的把 zlib 链上（在此之前，`extern!("lib")` 的库名只用于诊断）。 */
+extern!("zlib") fn zlibVersion() -> ref u8
+
+fn main() -> i32 {
+    let p: ref u8 = zlibVersion()
+    if *p == u8(49) { return 0 }   /* zlib 的版本串以 '1' 开头 */
+    return 1
+}

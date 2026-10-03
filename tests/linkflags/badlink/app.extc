@@ -1,0 +1,2 @@
+use bmod
+fn main() -> i32 { return bmod::ping() }

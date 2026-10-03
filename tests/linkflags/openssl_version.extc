@@ -1,0 +1,9 @@
+/* 判据：`--pkg-config openssl` 把 `pkg-config --cflags --libs openssl` 的每个 token
+ * 交给 cc（cflags 与 libs 都要，前者让头文件可寻址，后者让符号可解析）。 */
+extern!("openssl") fn OpenSSL_version_num() -> u64
+
+fn main() -> i32 {
+    /* 3.x 的版本号是 0xMNNFFPPS，必然大于 0x30000000（= 805306368）。 */
+    if OpenSSL_version_num() > u64(805306368) { return 0 }
+    return 1
+}

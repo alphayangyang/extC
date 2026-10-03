@@ -1,0 +1,2 @@
+# 链接需求（模块作者写一次）：lib <name> ⇒ -l<name>
+lib z

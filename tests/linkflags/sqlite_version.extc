@@ -1,0 +1,13 @@
+/* 判据：`--ccflag -l:libsqlite3.so.0` —— **soname 形式**。
+ *
+ * 这台机器上 sqlite3 **没有 dev 包**（无头、无 .pc、无 `libsqlite3.so` 软链），
+ * 所以 `-lsqlite3` 链不上；只有 `-l:libsqlite3.so.0` 能链。这条正是 `--ccflag` 存在的理由：
+ * `-l <name>` 拼不出冒号形式。
+ */
+extern!("sqlite3") fn sqlite3_libversion() -> ref u8
+
+fn main() -> i32 {
+    let p: ref u8 = sqlite3_libversion()
+    if *p == u8(51) { return 0 }   /* sqlite 的版本串以 '3' 开头 */
+    return 1
+}

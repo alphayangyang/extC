@@ -742,3 +742,58 @@ callee **自己的表**（局部）都被判"活得不够久" ✗（实测 `pl.v
 
 **留一条规矩**（定案 97）：新增"声明一个绑定"的路径时，必须复用 `declare` 的收窄契约 —— 谁引入
 新的绑定点（`match`、`yield`、将来的 `if let`……），谁就要问一句"我知道初始化器吗"。
+
+## 9.20 链接通道：`extern!` 的库名从此真的参与链接（2026-10-03）
+
+**问题**：`extern!("libc")` 里的库名**只用于诊断**（`src/ast/ast.h:742`），driver 没有任何链接
+通道（cc 的 argv 是手写数组）。于是"消费 C 库"在本仓库只有 `dlopen` 一条路（§9.16 的 cbindgen
+产物、§9.11 的 cairo 画图）—— 主路径（SQLite / TLS / cairo 这类要真链接的库）走不通。
+
+**落地**：四条开关，`--run` 与 `--check-c` 都接受（后者需要 cflags 才能找到头文件）。
+
+| 开关 | 作用 |
+|---|---|
+| `-l <name>` / `-L <dir>` | 交给 cc `-l<name>` / `-L<dir>`（可重复） |
+| `--ccflag <flag>` | 把**一个** flag 原样交给 cc：逃生的那一条（`-l:libX.so.N`、`-I…`、`-Wl,-rpath,…`） |
+| `--pkg-config <name>` | `pkg-config --cflags --libs <name>` 的输出按空白切成若干 flag |
+
+生成物开头写一行机器可读的需求（只在用到时出现；同一组库按名字**排序去重**，与书写顺序无关）：
+
+```c
+/* extc-libs: ssl z */
+/* extc-pkg-config: openssl */
+```
+
+**为什么需求要写进产物**：构建系统（Makefile、包管理器）能从产物把需求读回去，不必维护第二份
+清单；而"没有第二份清单"正是 §9.15 那条"库签一次、用户零签字"能成立的前提。
+
+**判据**（`tests/linkflags/run.sh`，10 项，进 `check.sh quick`）：
+
+1. 三条路各自**真编译真跑**：`-l z` 调 `zlibVersion`；`--ccflag -l:libsqlite3.so.0` 调
+   `sqlite3_libversion`（本机 sqlite **没有 dev 包**，只有 soname）；`--pkg-config openssl` 调
+   `OpenSSL_version_num`；
+2. **flag 是承重的**：同一个 zlib 程序不给 `-l z` 必须链不上；
+3. **不给 flag 时产物一字不变**：与"HEAD 单独 build 出来的基线编译器"对拍 414 份语料，
+   **逐字节相同**（快照本身带 164 份历史差异，不能当基线用 —— 这是拿基线编译器对拍的原因）。
+
+**边界**：`-l` 之间不重排（静态库靠顺序解析符号）；`pkg-config` 失败与缺参数都是 rc=2 的硬错误；
+生成物只记 `-l` 与 `--pkg-config` 的名字，路径类 flag（`-L`、`--ccflag`）留在命令行里。
+
+### 9.20.1 模块自带需求：`<module>.link`（2026-10-03）
+
+链接需求属于**模块**，不属于每一条命令行。模块旁边放 `<module>.link`，driver 对**已加载**的模块
+（直接或间接 `use` 到）读这张表，把 flag 加进链接行；没 `use` 的模块不参与链接，缺库也不下载任何
+东西 —— 直接在链接处报 C 编译器的错。
+
+| 指令 | 作用 |
+|---|---|
+| `lib <name>` | `-l<name>`；`lib :libsqlite3.so.0` 写 soname 形式 |
+| `pkgconfig <name>` | `pkg-config --cflags --libs <name>` 的每个 token |
+| `ccflag <flag>` | 一个 flag 原样交给 cc（包作者的逃生舱） |
+
+未知指令是 rc=2 的硬错误：一条被静默忽略的链接需求正是这张表要防的事。
+
+**实测**（`tests/linkflags/` 的 `auto-link-*` 六项）：`use zmod` + `zmod.link` 的 `lib z`，在
+**不给任何命令行 flag** 时链上并跑通；把 `zmod.link` 拿掉，同一个程序链不上（判据承重）；没被
+`use` 的模块就算写着不存在的库也不参与链接；`lib :libsqlite3.so.0` 让 soname 形式也能写进模块。
+

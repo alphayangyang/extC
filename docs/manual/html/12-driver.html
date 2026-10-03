@@ -79,6 +79,27 @@ extc -O3 foo.extc -o foo.c     # 指定优化级别（-O0..-O3）
 extc -O2 -march=native --run foo.extc   # 让 gcc 用本机指令集（牺牲可移植性）</code></pre>
 <p><strong>实测教训</strong>：这两项<strong>收益完全看负载</strong> —— 矩阵乘上 <code>-march=native</code> 曾让时间<strong>翻倍</strong>， 而 mandelbrot / binary-trees 在本机<strong>几乎没变化</strong>（<code>-O2</code> 已经吃干净了）⇒ <strong>别把它当万能加速</strong>，要压性能先看算法/数据布局（我们那边 matmul 的真正杠杆是<strong>转置 b</strong>） 默认 <code>-O2</code> 保持不变：<code>-O3</code> 收益小、<code>-march=native</code> 牺牲可移植性</p>
 <hr>
+<h1 id="7-8-1-链接-c-库-l-l-ccflag-pkg-config">7.8.1 链接 C 库（<code>-l</code> / <code>-L</code> / <code>--ccflag</code> / <code>--pkg-config</code>）</h1>
+<p>从前 <code>extern!("libc")</code> 里的库名<strong>只用于诊断</strong>：它不产生任何链接动作，消费第三方 C 库只能走 <code>dlopen</code>（<code>std::dl</code>）。driver 现在认识四条链接开关，<code>extern!</code> 因此真正能"用 C 的库"：</p>
+<pre class="lang-other"><code>extc -l z --run hello.extc                        # cc 收到 -lz
+extc --ccflag -l:libsqlite3.so.0 --run q.extc     # soname 形式（-l 拼不出来）
+extc --pkg-config openssl --run tls.extc          # pkg-config --cflags --libs</code></pre>
+<table><thead><tr><th>开关</th><th>作用</th><th>备注</th></tr></thead><tbody><tr><td><code>-l &lt;name&gt;</code></td><td>交给 cc 一个 <code>-l&lt;name&gt;</code></td><td>可重复</td></tr><tr><td><code>-L &lt;dir&gt;</code></td><td>交给 cc 一个 <code>-L&lt;dir&gt;</code></td><td>可重复</td></tr><tr><td><code>--ccflag &lt;flag&gt;</code></td><td>把<strong>一个</strong> flag 原样交给 cc</td><td>逃生舱：<code>-I…</code>、<code>-Wl,-rpath,…</code>、<code>-l:libX.so.N</code></td></tr><tr><td><code>--pkg-config &lt;name&gt;</code></td><td>把 <code>pkg-config --cflags --libs &lt;name&gt;</code> 的输出按空白切成若干 flag</td><td>可重复</td></tr></tbody></table>
+<p><code>--check-c</code> 与 <code>--run</code> 都接受这些开关：前者需要 cflags 才能找到头文件，后者需要 cflags 与 libs 才能编译并链接。</p>
+<p><strong>链接需求写进生成物</strong>（只在用到时出现；同一组库按名字排序去重，与书写顺序无关）：</p>
+<pre class="lang-extc"><code><span class="c">/* extc-libs: ssl z */</span>
+<span class="c">/* extc-pkg-config: openssl */</span></code></pre>
+<p>于是构建系统（Makefile、包管理器）可以从产物里把需求读回去，不必维护第二份清单。<strong>不给任何 链接开关时，产物与从前逐字节相同</strong>（414 份快照没有变化，由 <code>tools/golden.sh --strict-bytes</code> 与 <code>tests/linkflags/</code> 两侧钉住）。</p>
+<p><strong>边界</strong>：缺参数的开关、<code>pkg-config</code> 找不到的包都是退出码 2 的硬错误（不是警告）；<code>-l</code> 之间的 顺序按书写顺序原样传给 cc（静态库靠顺序解析符号）；生成物里的注释只记录 <code>-l</code> 与 <code>--pkg-config</code> 的名字，环境相关的路径（<code>-L</code>、<code>--ccflag</code>）留在命令行里。</p>
+<p><strong>模块可以自带链接需求</strong>：把 <code>&lt;module&gt;.link</code> 放在模块旁边，程序 <code>use</code> 到它时 driver 自动把需求 加进链接行 —— <code>use zmod</code> 不必在命令行重复库名。只对<strong>真正加载</strong>的模块读取（直接或间接 <code>use</code> 到）， 没被用到的模块不参与链接；缺库时不下载任何东西，直接在链接处报 C 编译器的错。</p>
+<pre class="lang-extc"><code># zmod.link —— 与 zmod.extc 同目录，空行与 `#` 注释忽略
+lib z                          # ⇒ -lz
+lib :libsqlite3.so.<span class="n">0</span>           # soname 形式（本机 sqlite 没有 dev 包时只有这一种写法）
+pkgconfig openssl              # ⇒ pkg-config --cflags --libs openssl 的每个 token
+ccflag -Wl,-rpath,/opt/lib     # 逃生舱：一个 flag 原样交给 cc</code></pre>
+<p>未知指令是编译错误（一条被静默忽略的链接需求正是这张表要防的事）。模块带来的库同样写进产物的 <code>extc-libs:</code> 行。</p>
+<p>判据：<code>tests/linkflags/run.sh</code>（三条路各自真编译真跑 · 不给 flag 必须链不上 · 生成物里的需求行 · 不带 flag 产物不变 · 库不在本机时显式跳过）。</p>
+<hr>
 <p><strong><a href="README.html">索引</a></strong> · [← 7.7 分配：<code>new</code>（<code>new T</code> / <code>new [N]T</code> / <code>new T[n]</code>）](11-alloc.md) · <a href="13-vararray.html">7.9 动态数组 <code>varArray&lt;T&gt;</code>（对标 <code>std::vector</code> 的<strong>基础部分</strong>） →</a></p>
 <div class="pn"><a href="11-alloc.html">← 7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）</a> <a href="13-vararray.html">7.9 动态数组 `varArray<T>`（对标 `std::vector` 的**基础部分**） →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;

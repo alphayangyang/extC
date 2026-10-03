@@ -1,0 +1,2 @@
+# soname 形式：lib :libX.so.N（-l 拼不出来，这里能写）
+lib :libsqlite3.so.0

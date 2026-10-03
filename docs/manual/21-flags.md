@@ -2,7 +2,7 @@
 
 本页由编译器自身的 `--help` 生成（`tools/gen_flags.py`），因此与实现同步：`check.sh` 在本页与 `extc --help` 不一致时会失败。
 
-开关共 15 个：`--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--no-line-map` · `--run` · `-I` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-march` · `-o` · `-w`
+开关共 21 个：`--ccflag` · `--cflags` · `--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-line-map` · `--pkg-config` · `--run` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
 
 ```text
 extC compiler
@@ -16,6 +16,12 @@ options:
   --check-c        syntax-check the generated C with `$CC -fsyntax-only`
   -w               suppress warnings
   -I <dir>         add a module search directory (for `use a::b`)
+  -l <name>        link with `-l<name>` (repeatable; e.g. `-l z`)
+  -L <dir>         add a library search directory (repeatable)
+  --ccflag <flag>  append one raw flag to the C compiler command (repeatable)
+                   escape hatch, e.g. `--ccflag -l:libsqlite3.so.0` (a soname,
+                   which `-l` cannot spell) or `--ccflag -I/usr/include/cairo`
+  --pkg-config <name>  add `pkg-config --cflags --libs <name>` (repeatable)
   -O0 .. -O3       optimisation level for the generated C (default: -O2)
   -march=native    allow host-specific instructions (faster, less portable)
   --dump-tokens    lex only; print the token table

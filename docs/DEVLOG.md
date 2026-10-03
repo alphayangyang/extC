@@ -9,6 +9,45 @@
 
 ---
 
+## 2026-10-03 · **链接通道**：`extern!` 的库名第一次真的参与链接（`-l` / `-L` / `--ccflag` / `--pkg-config`）
+
+**做了什么**：driver 认识四条链接开关，`--run` 与 `--check-c` 都带上；链接需求（`extc-libs:` /
+`extc-pkg-config:`）写进生成物，构建系统可以读回去；`tests/linkflags/` 10 项进 `check.sh quick`；
+手册 §7.8.1 与 `21-flags.md` 回填，`C-ABI.md` §9.20 与 `LIBS.md` §6（L2.5）记账。
+
+**为什么**：在这之前 `extern!("lib")` 的名字只用于诊断，消费第三方 C 库只有 `dlopen` 一条路
+（`bench/httpd` 把 epoll/sendfile 留在 C 侧、`tests/real-lib` 用 cairo 画图，都是这么"绕"的）。
+要"像用标准库一样用 C ABI"，第一块砖是让声明真的产生 `-l`：否则每个下游都得自己写 cc 命令行，
+包管理器也无处安放。
+
+**发现了什么**：
+
+- 本机 sqlite3 / cairo / freetype / fontconfig / libcurl / libpng **都没有 dev 包**（无头、无 `.pc`、
+  无 `.so` 软链），但 `-l:libX.so.N`（soname 形式）六个库**全部能链能跑** —— 这正是 `--ccflag`
+  的用例：`-l <name>` 拼不出冒号形式；
+- `-I` 已经被模块搜索目录占用，所以 C 的 include 目录走 `--ccflag -I…`，没有再添一个近义开关；
+- **"不给 flag 产物不变"必须拿基线编译器对拍，不能拿快照**：快照本身带 164 份历史差异（近期重构
+  的存量）。做法是把 HEAD 单独 build 成一份基线编译器，414 份语料逐字节比对 ——
+  **414 同 / 0 异**，于是这条判据是实测而不是推断。
+
+**实测**：`make` 零告警（`-Wcomment` 那条当场修掉）· `check.sh quick` **61/0**（新增一节）·
+`gen_flags --check` / `check_tone --gate` / `check_manual --gate` 全绿。
+
+**同日的第二刀：模块自带链接需求（`<module>.link`）**。链接需求属于模块，不属于每一条命令行：
+`use zmod` 之后 driver 自动读同目录的 `zmod.link`（`lib` / `pkgconfig` / `ccflag` 三种指令），只在
+**已加载**的模块上生效 —— 没 `use` 的模块不参与链接，缺库也不下载任何东西。判据从 10 项扩到
+**16 项**（新增 `auto-link-*` 六项：自动链上 · 需求行进产物 · 拿掉表就链不上 · soname 形式 ·
+未用模块不链 · 未知指令 rc=2）。踩到的两件事记一笔：① 根文件**自己所在的目录**也在模块搜索路径里，
+所以"拿掉 .link 应该链不上"的判据必须把整份夹具（含根文件）拷到临时目录再删表，否则原目录那份
+表会把它满足掉；② `--run` 把二进制写进 **CWD** 的 `build/`，而仓库里已有一个 `build/app/` 目录
+（bench/app 的产物）⇒ 套件改成整体在临时目录里跑，既躲开目录冲突，也不往仓库 `build/` 里丢东西。
+
+**下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
+`use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
+`LANGUAGE-FEEDBACK.md`（F1 因此关闭）。
+
+---
+
 ## 2026-09-26（第十一段续十八）· 手册覆盖收口：公开面未覆盖 **231 → 0**；站点生成器的死循环已修
 
 目标第(3) 步。两件事同时落地：手册补齐，以及**判定标准的收紧**（重要，见下）。

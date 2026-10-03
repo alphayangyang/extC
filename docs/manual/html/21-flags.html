@@ -73,7 +73,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <main><div class="crumb">extC 手册 · §驱动开关</div>
 <h1 id="驱动开关">驱动开关</h1>
 <p>本页由编译器自身的 <code>--help</code> 生成（<code>tools/gen_flags.py</code>），因此与实现同步：<code>check.sh</code> 在本页与 <code>extc --help</code> 不一致时会失败。</p>
-<p>开关共 15 个：<code>--check-c</code> · <code>--dump-effects</code> · <code>--dump-tokens</code> · <code>--help</code> · <code>--no-line-map</code> · <code>--run</code> · <code>-I</code> · <code>-O0</code> · <code>-O2</code> · <code>-O3</code> · <code>-fsyntax-only</code> · <code>-h</code> · <code>-march</code> · <code>-o</code> · <code>-w</code></p>
+<p>开关共 21 个：<code>--ccflag</code> · <code>--cflags</code> · <code>--check-c</code> · <code>--dump-effects</code> · <code>--dump-tokens</code> · <code>--help</code> · <code>--libs</code> · <code>--no-line-map</code> · <code>--pkg-config</code> · <code>--run</code> · <code>-I</code> · <code>-L</code> · <code>-O0</code> · <code>-O2</code> · <code>-O3</code> · <code>-fsyntax-only</code> · <code>-h</code> · <code>-l</code> · <code>-march</code> · <code>-o</code> · <code>-w</code></p>
 <pre class="lang-other"><code>extC compiler
 
 usage: build/extc [options] &lt;file.extc&gt;
@@ -85,6 +85,12 @@ options:
   --check-c        syntax-check the generated C with `$CC -fsyntax-only`
   -w               suppress warnings
   -I &lt;dir&gt;         add a module search directory (for `use a::b`)
+  -l &lt;name&gt;        link with `-l&lt;name&gt;` (repeatable; e.g. `-l z`)
+  -L &lt;dir&gt;         add a library search directory (repeatable)
+  --ccflag &lt;flag&gt;  append one raw flag to the C compiler command (repeatable)
+                   escape hatch, e.g. `--ccflag -l:libsqlite3.so.0` (a soname,
+                   which `-l` cannot spell) or `--ccflag -I/usr/include/cairo`
+  --pkg-config &lt;name&gt;  add `pkg-config --cflags --libs &lt;name&gt;` (repeatable)
   -O0 .. -O3       optimisation level for the generated C (default: -O2)
   -march=native    allow host-specific instructions (faster, less portable)
   --dump-tokens    lex only; print the token table

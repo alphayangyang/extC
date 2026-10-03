@@ -166,6 +166,11 @@ if out=$(timeout 600 ./tests/extern/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 6 反例 · 指针过界：ref T / ref void / ?ref void）"
 else bad "tests/extern/run.sh"; echo "$out"; fi
 
+echo "== 链接通道（-l / -L / --ccflag / --pkg-config：extern! 的库名从此真的参与链接）=="
+if out=$(timeout 600 ./tests/linkflags/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（三条路真跑 · flag 承重 · 模块自带 .link 自动链 · 链接需求写进生成物 · 不带 flag 产物一字不变；缺库显式跳过）"
+else bad "tests/linkflags/run.sh"; echo "$out"; fi
+
 echo "== @frozen（C-ABI.md §9.8：作者签字"布局就是 C 的布局" ⇒ 按值过界）=="
 if out=$(timeout 600 ./tests/frozen/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（真调 libc 按值返回 · **C 侧镜像**比 sizeof/offsetof · 产物断言与镜像各有牙 · 5 反例）"
@@ -180,6 +185,7 @@ echo "== 攻击测试（tests/hostile：不规范的 .so 打主程序 —— 判
 if out=$(timeout 600 ./tests/hostile/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（设计赢：伪造指针被拒 · 板内 containment · 关板后硬缺页；攻击赢：食言/越界写栈/munmap 重映射/改表 —— 边界写在明处）"
 else bad "tests/hostile/run.sh"; echo "$out"; fi
+
 
 echo "== 绑定生成器（tools/cbindgen.py：类型映射 · 零 effects · 生成物能编译并真调用）=="
 if out=$(timeout 600 ./tests/cbindgen/run.sh 2>&1); then
