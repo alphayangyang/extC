@@ -42,6 +42,15 @@
 表会把它满足掉；② `--run` 把二进制写进 **CWD** 的 `build/`，而仓库里已有一个 `build/app/` 目录
 （bench/app 的产物）⇒ 套件改成整体在临时目录里跑，既躲开目录冲突，也不往仓库 `build/` 里丢东西。
 
+**同日的第三刀：契约验证（`tests/contract/`）**。`effects` 是信任不是证明——库里偷偷留了指针，
+编译器不会知道，ASan 也未必抓得到。现在把它变成可证伪的：`std::heap` 加 `quarantine` /
+`unquarantine` / `poison` 三个出口（复用现成的 `mprotect` 路径），调用一个签了 `Addr=0` 的 C 函数
+**返回后立刻隔离**那段内存——库若食言，下次碰就是硬缺页（rc=139）；不想让它崩的场合改毒化
+（哨兵 0xAA ⇒ 可断言的返回值）。四条判据与 `tests/hostile` 是一对孪生：那边问"不规范的 .so 会怎么
+爆"，这边问"契约认不认"；对照组还专门量了"什么都不做 ⇒ 谎言在行为上不可见"。`C-ABI.md` §9.21
+记了边界：只能证伪**落在观察窗口内**的食言，所以 `extpkg verify` 的输出必须是三态
+（通过 / 被证伪 / 不可验证）。
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。

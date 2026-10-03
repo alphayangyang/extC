@@ -1,0 +1,28 @@
+// expect: silent=stale
+// 契约验证 · **对照组**：同样的食言库，什么都不做 ⇒ 它读到旧数据、程序一切正常。
+// 这条判据说明工具买到了什么：没有隔离/毒化，谎言在行为上不可见。
+use std::io
+use std::dl
+use std::heap
+
+struct api { sumKeep: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
+             readLater: fn() -> i64 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/contract-keeper.so")!
+    var a: api = api { sumKeep: fn(?ref u8, i64) -> i64(dl::sym(h, "sum_keep")!),
+                       readLater: fn() -> i64(dl::sym(h, "read_later")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(4096))!
+    v[0] = u8(42)
+    let s: i64 = a.sumKeep(v.data, v.len)
+    let r: i64 = a.readLater()
+    pl.close()
+    dl::close(h)
+    if r == i64(42) {
+        io::cout << "silent=stale sum=" << s << "\n"
+        return 0
+    }
+    io::cout << "silent=changed " << r << "\n"
+    return 1
+}

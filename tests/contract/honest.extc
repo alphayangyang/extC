@@ -1,0 +1,36 @@
+// expect: contract=holds
+// 契约验证 · 正例：`sum` 签了 effects Addr=0 Cont=0（我不留你的指针），而它确实不留。
+// 判据：调用一返回就**隔离**那段内存（PROT_NONE），库继续被调用也不碰它 ⇒ 干净通过。
+use std::io
+use std::dl
+use std::heap
+
+struct api { sum: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
+             touchNothing: fn() -> i64 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/contract-honest.so")!
+    var a: api = api { sum: fn(?ref u8, i64) -> i64(dl::sym(h, "sum")!),
+                       touchNothing: fn() -> i64(dl::sym(h, "touch_nothing")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(4096))!
+    var i: i64 = 0
+    while i < v.len {
+        v[i] = u8(1)
+        i = i + 1
+    }
+    let got: i64 = a.sum(v.data, v.len)
+    if !pl.quarantine(v.data, u64(4096)) {
+        io::cout << "contract=setup-failed\n"
+        return 1
+    }
+    let touched: i64 = a.touchNothing()          /* 隔离之后库照常能被调用 */
+    if got != i64(4096) || touched != i64(1) {
+        io::cout << "contract=bad-result " << got << " " << touched << "\n"
+        return 1
+    }
+    pl.close()
+    dl::close(h)
+    io::cout << "contract=holds\n"
+    return 0
+}

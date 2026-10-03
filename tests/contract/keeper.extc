@@ -1,0 +1,32 @@
+// expect-crash: 139
+// 契约验证 · 反例（隔离路径）：`sum_keep` 也签了 Addr=0 Cont=0，但它**食言**（留了指针）。
+// 调用后立刻隔离 ⇒ 库下一次读它就是硬缺页。这条判据把"签字说错 = 静默 UB"变成
+// "签字说错 = 当场响亮"，退出码 139。
+use std::io
+use std::dl
+use std::heap
+
+struct api { sumKeep: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
+             readLater: fn() -> i64 }
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("build/contract-keeper.so")!
+    var a: api = api { sumKeep: fn(?ref u8, i64) -> i64(dl::sym(h, "sum_keep")!),
+                       readLater: fn() -> i64(dl::sym(h, "read_later")!) }
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(4096))!
+    v[0] = u8(42)
+    let s: i64 = a.sumKeep(v.data, v.len)
+    if !pl.quarantine(v.data, u64(4096)) {
+        io::cout << "contract=setup-failed\n"
+        io::flushCout()
+        flush()
+        return 1
+    }
+    io::cout << "contract=armed sum=" << s << "\n"
+    io::flushCout()
+    flush()
+    let r: i64 = a.readLater()          /* 读一段 PROT_NONE ⇒ 硬缺页 */
+    io::cout << "unreachable " << r << "\n"
+    return 0
+}

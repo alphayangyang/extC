@@ -186,6 +186,10 @@ if out=$(timeout 600 ./tests/hostile/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（设计赢：伪造指针被拒 · 板内 containment · 关板后硬缺页；攻击赢：食言/越界写栈/munmap 重映射/改表 —— 边界写在明处）"
 else bad "tests/hostile/run.sh"; echo "$out"; fi
 
+echo "== 契约验证（tests/contract：签字说错 ⇒ 当场可证伪；与 hostile 是一对孪生）=="
+if out=$(timeout 600 ./tests/contract/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（诚实库 contract=holds · 食言库 + 隔离 rc=139 · 毒化路径 falsified · 对照组 silent=stale）"
+else bad "tests/contract/run.sh"; echo "$out"; fi
 
 echo "== 绑定生成器（tools/cbindgen.py：类型映射 · 零 effects · 生成物能编译并真调用）=="
 if out=$(timeout 600 ./tests/cbindgen/run.sh 2>&1); then

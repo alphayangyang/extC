@@ -195,6 +195,67 @@ struct plate {
         return sysheap::mprotect(region.data, end - off, prot) == 0
     }
 
+    /* 板内视图/指针 → 偏移（内部齿轮）。越界或已关板返回 `none`。 */
+    @private
+    fn pOffOf(self: ref plate, p: ref u8) -> ?u64 {
+        if self.closed { return none }
+        var base: u64 = u64(self.mem.data)
+        var at: u64 = u64(p)
+        if at < base { return none }
+        var off: u64 = at - base
+        if off >= self.committed { return none }
+        return some(off)
+    }
+
+    /* ---------------------------------------------------------------- 契约验证
+     *
+     * 这三个是给"验证我们替库签的那句话"用的（C-ABI.md §9.21）。典型用法：
+     *
+     *     let n = a.take(v.data, v.len)          // a.take 签了 effects Addr=0 Cont=0
+     *     if !pl.quarantine(v.data, u64(4096)) { ... }   // 调用一返回就隔离
+     *     a.useLater()                            // 库若食言（留了指针）⇒ 硬缺页
+     *
+     * 为什么用**指针**而不是偏移：调用点手里就是视图（`v.data`），偏移在板外没有意义；
+     * 与 `viewAt` / `holdsRange` 同一取向。
+     */
+
+    /* **隔离**：把 `[p, p+n)` 所在的那几页降成 `PROT_NONE` —— 读或写都硬缺页。
+     * `p` 必须**页对齐**（`alloc` 的每个起点都是，所以正常分配天然满足），否则返回 false：
+     * 从半个对象开始冻结会连累同页的邻居，那种"顺手冻一片"的语义不该是默认。 */
+    fn quarantine(self: mut ref plate, p: ref u8, n: u64) -> bool {
+        match self.pOffOf(p) {
+            some(off) => { return self.pLoan(off, n, sysheap::PROT_NONE) }
+            none      => { return false }
+        }
+    }
+
+    /* 解除隔离（回到可读写）。验证跑完还要继续用这块内存时调用；与 `close` 不冲突。 */
+    fn unquarantine(self: mut ref plate, p: ref u8, n: u64) -> bool {
+        match self.pOffOf(p) {
+            some(off) => { return self.pLoan(off, n, sysheap::PROT_RW) }
+            none      => { return false }
+        }
+    }
+
+    /* **毒化**：把 `[p, p+n)` 填成哨兵字节。用于**不想让它崩**的验证路径 —— 库食言时读到的是
+     * 毒值（可判定），而不是"看起来正常"的旧数据（不可判定）。与 `quarantine` 的区别只在
+     * 失败形态：一个响亮崩，一个可读出来。 */
+    fn poison(self: mut ref plate, p: ref u8, n: u64, byte: u8) -> bool {
+        match self.pOffOf(p) {
+            some(off) => {
+                if off + n > self.committed { return false }
+                var v: mut slice<u8> = self.mem[i64(off)..i64(off + n)]
+                var i: i64 = 0
+                while i < v.len {
+                    v[i] = byte
+                    i = i + 1
+                }
+                return true
+            }
+            none => { return false }
+        }
+    }
+
     /* 关板：`munmap`。关完之后板内指针再用就是硬缺页（这是设计，不是事故）。双关安全。 */
     fn close(self: mut ref plate) -> i32 {
         if self.closed { return 0 }

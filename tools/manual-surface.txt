@@ -282,10 +282,13 @@ std::heap	plate	loanRO	method	public
 std::heap	plate	loanRW	method	public
 std::heap	plate	mem	field	public
 std::heap	plate	open	method	public
+std::heap	plate	poison	method	public
+std::heap	plate	quarantine	method	public
 std::heap	plate	remaining	method	public
 std::heap	plate	reserved	field	public
 std::heap	plate	reservedBytes	method	public
 std::heap	plate	store	method	public
+std::heap	plate	unquarantine	method	public
 std::heap	plate	used	field	public
 std::heap	plate	usedBytes	method	public
 std::heap	plate	view	method	public
