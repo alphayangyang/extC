@@ -1,0 +1,218 @@
+/* std/hash/sha1.extc —— SHA-1（FIPS 180-4）：流式、零分配、热路径无边界检查。
+ *
+ * 为什么还要 SHA-1：**它没死，只是不该再用它做签名**。UUID v5（RFC 4122 §4.3）就是
+ * SHA-1(namespace ∥ name)，而 QQBot 的数据库主键正是 uuid5 ⇒ 要跟 Python 的 `uuid.uuid5`
+ * **逐字节相同**，就必须有它（`tests/hash/` 里有对拍判据）。
+ *
+ * 形状与 `sha256.extc` 逐条相同（零分配、流式不中转、`@unchecked` 的核心），
+ * 唯一区别是 80 轮分四组（f 与 K 每组不同）—— 分组写在代码结构里，不在热循环里判分支。
+ */
+
+@private
+fn pRotl(x: u32, n: u32) -> u32 {
+    return (x << n) | (x >> (u32(32) - n))
+}
+
+/* 一次算完。`out.len < 20` 返回 false。 */
+fn sum(data: slice<u8>, out: mut slice<u8>) -> bool {
+    var c: state
+    c.init()
+    c.update(data)
+    return c.final(out)
+}
+
+/* 摘要 → 小写十六进制（与 `sha256::hex` 同一形状）。 */
+fn hex(digest: slice<u8>, out: mut slice<u8>) -> i64 {
+    if out.len < digest.len * i64(2) { return i64(-1) }
+    var i: i64 = 0
+    while i < digest.len {
+        let b: u8 = digest[i]
+        let hi: u8 = (b >> 4) & u8(0x0f)
+        let lo: u8 = b & u8(0x0f)
+        if hi < u8(10) { out[i * i64(2)] = u8(48) + hi } else { out[i * i64(2)] = u8(87) + hi }
+        if lo < u8(10) { out[i * i64(2) + i64(1)] = u8(48) + lo } else { out[i * i64(2) + i64(1)] = u8(87) + lo }
+        i = i + 1
+    }
+    return digest.len * i64(2)
+}
+
+@noCopy
+struct state {
+    h: [5]u32
+    buf: [64]u8
+    used: i64
+    total: u64
+
+    fn init(self: mut ref state) -> void {
+        self.h[0] = 0x67452301
+        self.h[1] = 0xefcdab89
+        self.h[2] = 0x98badcfe
+        self.h[3] = 0x10325476
+        self.h[4] = 0xc3d2e1f0
+        self.used = i64(0)
+        self.total = u64(0)
+    }
+
+    /* 唯一签字处：下标全由构造保证在界内。 */
+    @private
+    @unchecked
+    fn pBlockAt(self: mut ref state, d: slice<u8>, off: i64) -> void {
+        var w: [80]u32
+        var i: i64 = 0
+        while i < 16 {
+            let o: i64 = off + i * i64(4)
+            w[i] = (u32(d[o]) << 24) | (u32(d[o + 1]) << 16) | (u32(d[o + 2]) << 8) | u32(d[o + 3])
+            i = i + 1
+        }
+        while i < 80 {
+            w[i] = pRotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], u32(1))
+            i = i + 1
+        }
+        var a: u32 = self.h[0]
+        var b: u32 = self.h[1]
+        var c: u32 = self.h[2]
+        var dd: u32 = self.h[3]
+        var e: u32 = self.h[4]
+        /* 四组各 20 轮：f 与 K 是常量，写在结构里（热循环里没有分支）。 */
+        i = 0
+        while i < 20 {
+            let f: u32 = (b & c) | ((~b) & dd)
+            let t: u32 = pRotl(a, u32(5)) + f + e + u32(0x5a827999) + w[i]
+            e = dd
+            dd = c
+            c = pRotl(b, u32(30))
+            b = a
+            a = t
+            i = i + 1
+        }
+        while i < 40 {
+            let f: u32 = b ^ c ^ dd
+            let t: u32 = pRotl(a, u32(5)) + f + e + u32(0x6ed9eba1) + w[i]
+            e = dd
+            dd = c
+            c = pRotl(b, u32(30))
+            b = a
+            a = t
+            i = i + 1
+        }
+        while i < 60 {
+            let f: u32 = (b & c) | (b & dd) | (c & dd)
+            let t: u32 = pRotl(a, u32(5)) + f + e + u32(0x8f1bbcdc) + w[i]
+            e = dd
+            dd = c
+            c = pRotl(b, u32(30))
+            b = a
+            a = t
+            i = i + 1
+        }
+        while i < 80 {
+            let f: u32 = b ^ c ^ dd
+            let t: u32 = pRotl(a, u32(5)) + f + e + u32(0xca62c1d6) + w[i]
+            e = dd
+            dd = c
+            c = pRotl(b, u32(30))
+            b = a
+            a = t
+            i = i + 1
+        }
+        self.h[0] = self.h[0] + a
+        self.h[1] = self.h[1] + b
+        self.h[2] = self.h[2] + c
+        self.h[3] = self.h[3] + dd
+        self.h[4] = self.h[4] + e
+    }
+
+    fn update(self: mut ref state, data: slice<u8>) -> void {
+        self.total = self.total + u64(data.len)
+        var off: i64 = 0
+        var held: bool = false
+        if self.used > i64(0) {
+            let want: i64 = i64(64) - self.used
+            if data.len < want {
+                var i: i64 = 0
+                while i < data.len {
+                    self.buf[self.used + i] = data[i]
+                    i = i + 1
+                }
+                self.used = self.used + data.len
+                held = true
+            } else {
+                var i: i64 = 0
+                while i < want {
+                    self.buf[self.used + i] = data[i]
+                    i = i + 1
+                }
+                var blk: [64]u8
+                var j: i64 = 0
+                while j < i64(64) {
+                    blk[j] = self.buf[j]
+                    j = j + 1
+                }
+                self.pBlockAt(blk[..], i64(0))
+                self.used = i64(0)
+                off = want
+            }
+        }
+        if !held {
+            while data.len - off >= i64(64) {
+                self.pBlockAt(data, off)
+                off = off + i64(64)
+            }
+            var j: i64 = 0
+            while off + j < data.len {
+                self.buf[j] = data[off + j]
+                j = j + 1
+            }
+            self.used = j
+        }
+    }
+
+    /* 收尾。`out.len < 20` 返回 false。 */
+    fn final(self: mut ref state, out: mut slice<u8>) -> bool {
+        if out.len < i64(20) { return false }
+        let bits: u64 = self.total * u64(8)
+        var i: i64 = self.used
+        self.buf[i] = u8(0x80)
+        i = i + 1
+        if i > i64(56) {
+            while i < i64(64) {
+                self.buf[i] = u8(0)
+                i = i + 1
+            }
+            var blk0: [64]u8
+            var t0: i64 = 0
+            while t0 < i64(64) {
+                blk0[t0] = self.buf[t0]
+                t0 = t0 + 1
+            }
+            self.pBlockAt(blk0[..], i64(0))
+            i = i64(0)
+        }
+        while i < i64(56) {
+            self.buf[i] = u8(0)
+            i = i + 1
+        }
+        var j: i64 = 0
+        while j < i64(8) {
+            self.buf[56 + j] = u8((bits >> u64((7 - j) * 8)) & u64(0xff))
+            j = j + 1
+        }
+        var blk: [64]u8
+        var t: i64 = 0
+        while t < i64(64) {
+            blk[t] = self.buf[t]
+            t = t + 1
+        }
+        self.pBlockAt(blk[..], i64(0))
+        var w: i64 = 0
+        while w < i64(5) {
+            let v: u32 = self.h[w]
+            out[w * i64(4)] = u8((v >> 24) & u32(0xff))
+            out[w * i64(4) + i64(1)] = u8((v >> 16) & u32(0xff))
+            out[w * i64(4) + i64(2)] = u8((v >> 8) & u32(0xff))
+            out[w * i64(4) + i64(3)] = u8(v & u32(0xff))
+            w = w + 1
+        }
+        return true
+    }
+}

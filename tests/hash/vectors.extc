@@ -1,0 +1,65 @@
+// expect: vectors ok
+// RFC/FIPS 官方向量（**不依赖 Python**：这些是标准里的字符串）。
+use std::hash::sha256
+use std::hash::sha1
+use std::io
+
+fn put(label: slice<u8>, hexish: slice<u8>) -> void {
+    io::cout << label << " " << hexish << "\n"
+}
+
+fn main() -> i32 {
+    var d32: [32]u8
+    var d20: [20]u8
+    var hx: [80]u8
+
+    /* FIPS 180-4 / RFC 6234 的 SHA-256 向量 */
+    if !sha256::sum("", d32[..]) { return 1 }
+    sha256::hex(d32[..], hx[..])
+    put("sha256.empty", hx[0..64])
+    if !sha256::sum("abc", d32[..]) { return 1 }
+    sha256::hex(d32[..], hx[..])
+    put("sha256.abc", hx[0..64])
+    if !sha256::sum("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", d32[..]) { return 1 }
+    sha256::hex(d32[..], hx[..])
+    put("sha256.448bit", hx[0..64])
+    if !sha256::sum("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu", d32[..]) { return 1 }
+    sha256::hex(d32[..], hx[..])
+    put("sha256.896bit", hx[0..64])
+
+    /* RFC 3174 / FIPS 180-4 的 SHA-1 向量 */
+    if !sha1::sum("abc", d20[..]) { return 2 }
+    sha1::hex(d20[..], hx[..])
+    put("sha1.abc", hx[0..40])
+    if !sha1::sum("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", d20[..]) { return 2 }
+    sha1::hex(d20[..], hx[..])
+    put("sha1.448bit", hx[0..40])
+
+    /* 100 万个 'a'：走流式（一次 997 字节，非整块边界） */
+    var c32: sha256::state
+    c32.init()
+    var c20: sha1::state
+    c20.init()
+    var chunk: mut slice<u8> = new u8[997]
+    var i: i64 = 0
+    while i < i64(997) {
+        chunk[i] = u8(97)
+        i = i + 1
+    }
+    var left: i64 = i64(1000000)
+    while left > i64(0) {
+        var n: i64 = i64(997)
+        if left < n { n = left }              /* 最后一片按剩下的喂，别越界 */
+        c32.update(chunk[0..n])
+        c20.update(chunk[0..n])
+        left = left - n
+    }
+    if !c32.final(d32[..]) { return 3 }
+    if !c20.final(d20[..]) { return 3 }
+    sha256::hex(d32[..], hx[..])
+    put("sha256.million_a", hx[0..64])
+    sha1::hex(d20[..], hx[..])
+    put("sha1.million_a", hx[0..40])
+    io::cout << "vectors ok\n"
+    return 0
+}

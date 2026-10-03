@@ -1,0 +1,81 @@
+/* std/uuid.extc —— UUID v5（RFC 4122 §4.3）：`SHA-1(namespace ∥ name)` + 版本/变体位。
+ *
+ * 为什么在 stdlib 里：QQBot 的数据库主键就是 uuid5（Python `uuid.uuid5`）。这类值一旦
+ * 与旧实现不一致，表现是"历史数据全部对不上"——所以这里配的是**与 Python 逐字节对拍**的判据
+ * （`tests/hash/uuid.extc`，跑在 `check.sh` 里），而不是"看起来像 UUID"就行。
+ *
+ * 零分配：内部只有 sha1 的 `state`（84 字节）与一个 20 字节摘要。namespace 用局部字面量构造 ——
+ * 全局常量数组装不下带类型的字面量（语言现状），15 个字节的局部拷贝比让用户自己拼要好。
+ */
+
+use std::hash::sha1
+
+/* `SHA-1(ns ∥ name)` 取前 16 字节，钉上 version=5 与 RFC 4122 变体。
+ * `out.len < 16` 返回 false。 */
+fn v5(ns: slice<u8>, name: slice<u8>, out: mut slice<u8>) -> bool {
+    if out.len < i64(16) { return false }
+    var c: sha1::state
+    c.init()
+    c.update(ns)
+    c.update(name)
+    var d: [20]u8
+    if !c.final(d[..]) { return false }
+    var i: i64 = 0
+    while i < i64(16) {
+        out[i] = d[i]
+        i = i + 1
+    }
+    out[6] = (out[6] & u8(0x0f)) | u8(0x50)       /* 版本 5 */
+    out[8] = (out[8] & u8(0x3f)) | u8(0x80)       /* 变体：RFC 4122 */
+    return true
+}
+
+/* RFC 4122 附录 C 的四个标准命名空间。 */
+fn v5dns(name: slice<u8>, out: mut slice<u8>) -> bool {
+    let ns: [16]u8 = [0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1,
+                      0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]
+    return v5(ns[..], name, out)
+}
+
+fn v5url(name: slice<u8>, out: mut slice<u8>) -> bool {
+    let ns: [16]u8 = [0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1,
+                      0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]
+    return v5(ns[..], name, out)
+}
+
+fn v5oid(name: slice<u8>, out: mut slice<u8>) -> bool {
+    let ns: [16]u8 = [0x6b, 0xa7, 0xb8, 0x12, 0x9d, 0xad, 0x11, 0xd1,
+                      0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]
+    return v5(ns[..], name, out)
+}
+
+fn v5x500(name: slice<u8>, out: mut slice<u8>) -> bool {
+    let ns: [16]u8 = [0x6b, 0xa7, 0xb8, 0x14, 0x9d, 0xad, 0x11, 0xd1,
+                      0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]
+    return v5(ns[..], name, out)
+}
+
+/* 16 字节 → 36 字符的规范小写形式（`8-4-4-4-12`）；返回写入的字符数，
+ * `out.len < 36` 返回 -1。 */
+fn format(id: slice<u8>, out: mut slice<u8>) -> i64 {
+    if out.len < i64(36) { return i64(-1) }
+    let dashes: [4]i64 = [8, 13, 18, 23]          /* 输出里的短横位置 */
+    var i: i64 = 0
+    var o: i64 = 0
+    var d: i64 = 0
+    while i < i64(16) {
+        if d < i64(4) && o == dashes[d] {
+            out[o] = u8(45)
+            o = o + 1
+            d = d + 1
+        }
+        let b: u8 = id[i]
+        let hi: u8 = (b >> 4) & u8(0x0f)
+        let lo: u8 = b & u8(0x0f)
+        if hi < u8(10) { out[o] = u8(48) + hi } else { out[o] = u8(87) + hi }
+        if lo < u8(10) { out[o + i64(1)] = u8(48) + lo } else { out[o + i64(1)] = u8(87) + lo }
+        o = o + i64(2)
+        i = i + 1
+    }
+    return i64(36)
+}

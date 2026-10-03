@@ -1,0 +1,54 @@
+// expect: hmac ok
+// RFC 4231 的 HMAC-SHA256 向量（数据全是 ASCII，键含长键与短键两种边界）。
+use std::hash::sha256
+use std::hash::sha1
+use std::hash::hmac
+use std::io
+
+fn main() -> i32 {
+    var m: [32]u8
+    var hx: [64]u8
+    var k20: [20]u8
+
+    /* case 1 */
+    if !hmac::sha256("\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b",
+                     "Hi There", m[..]) { return 1 }
+    sha256::hex(m[..], hx[..])
+    io::cout << "case1 " << hx[0..64] << "\n"
+    /* case 2：键 "Jefe" */
+    if !hmac::sha256("Jefe", "what do ya want for nothing?", m[..]) { return 1 }
+    sha256::hex(m[..], hx[..])
+    io::cout << "case2 " << hx[0..64] << "\n"
+    /* case 3：键 20×0xaa，数据 50×0xdd */
+    if !hmac::sha256("\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa",
+                     "\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd\xdd",
+                     m[..]) { return 1 }
+    sha256::hex(m[..], hx[..])
+    io::cout << "case3 " << hx[0..64] << "\n"
+    /* case 6：131 字节的键（> 64 ⇒ 先散列） */
+    var longkey: mut slice<u8> = new u8[131]
+    var i: i64 = 0
+    while i < i64(131) {
+        longkey[i] = u8(0xaa)
+        i = i + 1
+    }
+    if !hmac::sha256(longkey[..], "Test Using Larger Than Block-Size Key - Hash Key First", m[..]) { return 1 }
+    sha256::hex(m[..], hx[..])
+    io::cout << "case6 " << hx[0..64] << "\n"
+    /* case 7：131 字节键 + RFC 里那句 152 字节 ASCII（不是重复字节） */
+    if !hmac::sha256(longkey[..],
+                     "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.",
+                     m[..]) { return 1 }
+    sha256::hex(m[..], hx[..])
+    io::cout << "case7 " << hx[0..64] << "\n"
+    /* HMAC-SHA1（RFC 2202 case 2）+ 截断到 16 字节（与 Python digest()[:16] 对拍） */
+    if !hmac::sha1("Jefe", "what do ya want for nothing?", k20[..]) { return 2 }
+    sha1::hex(k20[..], hx[..])
+    io::cout << "sha1case2 " << hx[0..40] << "\n"
+    var full: [32]u8
+    if !hmac::sha256("Jefe", "what do ya want for nothing?", full[..]) { return 1 }
+    sha256::hex(full[0..16], hx[..])
+    io::cout << "trunc16 " << hx[0..32] << "\n"
+    io::cout << "hmac ok\n"
+    return 0
+}

@@ -628,6 +628,52 @@ c.close()
 - 三条语言规则值得记：**跨 `yield` 的视图一律拒**（指向全局的也算）；**逃逸检查要求"全用下标、
   最后从参数取视图"**（把子视图赋给局部再返回会被拒）；`match` 是**语句**，不能当表达式用。
 
+### 12.5d 哈希与 UUID：`std::hash::*` / `std::uuid`（2026-10-04）
+
+**为"最快 + 内存少"选的形状**（两条都能量，判据在 `tests/hash/`）：
+
+```extc
+use std::hash::sha256
+var out: [32]u8
+sha256::sum(data, out[..])              // 一次算完（state 在栈上，零分配）
+
+var c: sha256::state                    // 流式：喂任意多次、任意长度
+c.init()
+c.update(chunk1)
+c.update(chunk2)
+if !c.final(out[..]) { ... }            // 缓冲不够返回 false，不 trap
+```
+
+| 模块 | 公开面 | 说明 |
+|---|---|---|
+| `std::hash::sha256` | `state` · `init` · `update` · `final` · `sum` · `hex` | SHA-256（FIPS 180-4）；`hex(digest, out)` 返回写入字符数，缓冲不够 `-1`。`state` 的字段：`h`（8 个中间字）· `used`（缓冲里攒了多少字节）· `total`（累计喂入字节数）—— 都是可读的，正常用法不必碰 |
+| `std::hash::sha1` | `state` · `init` · `update` · `final` · `sum` · `hex` | SHA-1 —— **不是给签名用的**，是 `uuid5`（RFC 4122）要它；`state` 的字段同 sha256（`h` · `used` · `total`） |
+| `std::hash::hmac` | `sha256(key, msg, out)` · `sha1(key, msg, out)` | HMAC（RFC 2104）；键长 > 64 按 RFC 先散列；要截断就传更长的缓冲取前 n 字节 |
+| `std::uuid` | `v5(ns, name, out)` · `v5dns` · `v5url` · `v5oid` · `v5x500` · `format(id, out)` | UUID v5；`format` 写 36 字符小写规范形，缓冲不够 `-1` |
+
+**为什么快**：热循环里没有边界检查 —— 压缩函数的 `@unchecked` 是一处**签字**（下标全由构造保证在
+界内），其教训来自 `std/sys/mem.extc` 的实测（逐字节边界检查占 25.5 条指令/字节里的 30%）。
+满块**直接从输入视图压缩**，不先拷进 64 字节缓冲；流式与一次算完走同一条路。
+
+**量的结果**（本机，`tests/hash/bench.extc`，进 `check.sh`）：
+
+| 项 | 数 |
+|---|---|
+| SHA-256 | **429 MB/s** 整块 · **438 MB/s** 流式（1 KiB 片） |
+| SHA-1 | 287 MB/s |
+| 峰值 RSS | **2412 KB**（1 MiB 输入 × 256 轮 = 256 MiB 数据；零堆分配 ⇒ 只有二进制本身） |
+| 对照 | Python `hashlib` 走 OpenSSL **SHA-NI**：sha256 4518 MB/s · sha1 2464 MB/s |
+
+**诚实记账**：纯 extC 写不出 SHA-NI（那要 intrinsics / 内联汇编，而 `inline C!` 是未定案），
+所以差一个数量级。对 QQBot 的负载（签几 KB、给主键算 uuid5）这不是瓶颈：4 KB 载荷约 9 µs。
+真要硬件速度，路是**包**：`std::hash` 可以配一个带 SHA-NI 的 C shim 包（包机制已经就位）。
+
+**判据**（`tests/hash/run.sh`，6 项，进 `check.sh quick`）：FIPS/RFC 官方向量 8 条 ·
+RFC 4231 HMAC 8 条 · 与 Python `hashlib` 对拍 48 个摘要（含 7 字节分片流式 == 一次算完）·
+API 失败面（缓冲不够 ⇒ `false` / `-1`，不 trap）· 峰值 RSS < 8 MB · 吞吐下限 50 MB/s。
+**uuid5 与 Python `uuid.uuid5` 逐字节对拍**（含中文名字）—— 主键对不上 = 历史数据全对不上，
+这条判据就是钉它的。
+
 ### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
 
 `@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和

@@ -1,0 +1,109 @@
+/* std/hash/hmac.extc —— HMAC（RFC 2104）套在 SHA-256 / SHA-1 上。
+ *
+ * 零分配：两个 hash `state`（各 112 / 84 字节）+ 一个 64 字节块，都在栈上。
+ * 键长 > 64 时按 RFC 先散列一次（这一步也不需要堆：摘要固定 32/20 字节）。
+ *
+ *     var mac: [32]u8
+ *     if !hmac::sha256(key, msg, mac[..]) { ... }
+ *
+ * 要截断（比如 HMAC-SHA256-128）就传一个更长的缓冲，取前 n 字节即可 —— 判据里有一条
+ * 与 Python `hmac.new(...).digest()[:16]` 对拍。
+ */
+use std::hash::sha256
+use std::hash::sha1
+
+/* HMAC-SHA256。`out.len < 32` 返回 false。 */
+fn sha256(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
+    if out.len < i64(32) { return false }
+    var kblk: [64]u8
+    var i: i64 = 0
+    while i < i64(64) {
+        kblk[i] = u8(0)
+        i = i + 1
+    }
+    if key.len > i64(64) {
+        var kh: [32]u8
+        if !sha256::sum(key, kh[..]) { return false }
+        i = 0
+        while i < i64(32) {
+            kblk[i] = kh[i]
+            i = i + 1
+        }
+    } else {
+        i = 0
+        while i < key.len {
+            kblk[i] = key[i]
+            i = i + 1
+        }
+    }
+    var blk: [64]u8
+    var inner: sha256::state
+    inner.init()
+    i = 0
+    while i < i64(64) {
+        blk[i] = kblk[i] ^ u8(0x36)
+        i = i + 1
+    }
+    inner.update(blk[..])
+    inner.update(msg)
+    var ih: [32]u8
+    if !inner.final(ih[..]) { return false }
+    var outer: sha256::state
+    outer.init()
+    i = 0
+    while i < i64(64) {
+        blk[i] = kblk[i] ^ u8(0x5c)
+        i = i + 1
+    }
+    outer.update(blk[..])
+    outer.update(ih[..])
+    return outer.final(out)
+}
+
+/* HMAC-SHA1。`out.len < 20` 返回 false。 */
+fn sha1(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
+    if out.len < i64(20) { return false }
+    var kblk: [64]u8
+    var i: i64 = 0
+    while i < i64(64) {
+        kblk[i] = u8(0)
+        i = i + 1
+    }
+    if key.len > i64(64) {
+        var kh: [20]u8
+        if !sha1::sum(key, kh[..]) { return false }
+        i = 0
+        while i < i64(20) {
+            kblk[i] = kh[i]
+            i = i + 1
+        }
+    } else {
+        i = 0
+        while i < key.len {
+            kblk[i] = key[i]
+            i = i + 1
+        }
+    }
+    var blk: [64]u8
+    var inner: sha1::state
+    inner.init()
+    i = 0
+    while i < i64(64) {
+        blk[i] = kblk[i] ^ u8(0x36)
+        i = i + 1
+    }
+    inner.update(blk[..])
+    inner.update(msg)
+    var ih: [20]u8
+    if !inner.final(ih[..]) { return false }
+    var outer: sha1::state
+    outer.init()
+    i = 0
+    while i < i64(64) {
+        blk[i] = kblk[i] ^ u8(0x5c)
+        i = i + 1
+    }
+    outer.update(blk[..])
+    outer.update(ih[..])
+    return outer.final(out)
+}

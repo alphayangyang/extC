@@ -1,0 +1,63 @@
+// expect: bench
+// 哈希的**速度与内存**判据（用户的要求：最快 + 内存少）。
+//  · 一次算完（1 MiB 整块）与流式（1 KiB 分片）两条路都量 —— 流式不该比整块慢多少；
+//  · 全部在栈/arena 上，零堆分配：进程 RSS 由 run.sh 的 /usr/bin/time -v 钉住。
+use std::hash::sha256
+use std::hash::sha1
+use std::io
+use std::time
+
+fn main() -> i32 {
+    let MB: i64 = 1048576
+    var buf: mut slice<u8> = new u8[MB]
+    var i: i64 = 0
+    while i < MB {
+        buf[i] = u8(i & i64(255))
+        i = i + 1
+    }
+    var out32: [32]u8
+    var out20: [20]u8
+
+    /* ---- SHA-256：整块 256 MiB ---- */
+    var rounds: i64 = 256
+    var t0: i64 = time::now()
+    var r: i64 = 0
+    while r < rounds {
+        if !sha256::sum(buf[..], out32[..]) { return 1 }
+        r = r + 1
+    }
+    var dt: i64 = time::now() - t0
+    let mbps: i64 = (rounds * MB * i64(1000)) / dt        /* ns → MB/s */
+    io::cout << "sha256   " << mbps << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / i64(1000000)) << "ms）\n"
+
+    /* ---- SHA-256：流式 1 KiB 一片（同一条数据） ---- */
+    t0 = time::now()
+    r = 0
+    while r < rounds {
+        var c: sha256::state
+        c.init()
+        var off: i64 = 0
+        while off < MB {
+            c.update(buf[off..off + i64(1024)])
+            off = off + i64(1024)
+        }
+        if !c.final(out32[..]) { return 2 }
+        r = r + 1
+    }
+    dt = time::now() - t0
+    let mbps2: i64 = (rounds * MB * i64(1000)) / dt
+    io::cout << "sha256   " << mbps2 << " MB/s（流式 1 KiB 片）\n"
+
+    /* ---- SHA-1：整块 ---- */
+    t0 = time::now()
+    r = 0
+    while r < rounds {
+        if !sha1::sum(buf[..], out20[..]) { return 3 }
+        r = r + 1
+    }
+    dt = time::now() - t0
+    let mbps3: i64 = (rounds * MB * i64(1000)) / dt
+    io::cout << "sha1     " << mbps3 << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / i64(1000000)) << "ms）\n"
+    io::cout << "bench ok\n"
+    return 0
+}

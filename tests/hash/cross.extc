@@ -1,0 +1,45 @@
+// expect: cross ok
+// 与参考实现对拍用的夹具：固定模式的数据（byte i = (i*31+7) & 255）在 16 种长度上
+// 各算 3 个摘要 —— sha256 一次算完 / sha1 一次算完 / sha256 按 7 字节分片流式。
+// run.sh 用 Python 的 hashlib 生成同一批期望值再逐行比对。
+use std::hash::sha256
+use std::hash::sha1
+use std::io
+
+fn main() -> i32 {
+    var buf: mut slice<u8> = new u8[131072]
+    var i: i64 = 0
+    while i < buf.len {
+        buf[i] = u8((i * i64(31) + i64(7)) & i64(255))
+        i = i + 1
+    }
+    let lens: [16]i64 = [0, 1, 2, 3, 55, 56, 57, 63, 64, 65, 127, 128, 129, 1000, 4096, 100000]
+    var o32: [32]u8
+    var o20: [20]u8
+    var hx: [80]u8
+    i = 0
+    while i < i64(16) {
+        let n: i64 = lens[i]
+        if !sha256::sum(buf[0..n], o32[..]) { return 1 }
+        sha256::hex(o32[..], hx[..])
+        io::cout << "sha256:" << n << " " << hx[0..64] << "\n"
+        if !sha1::sum(buf[0..n], o20[..]) { return 1 }
+        sha1::hex(o20[..], hx[..])
+        io::cout << "sha1:" << n << " " << hx[0..40] << "\n"
+        var c: sha256::state
+        c.init()
+        var off: i64 = 0
+        while off < n {
+            var take: i64 = i64(7)
+            if n - off < take { take = n - off }
+            c.update(buf[off..off + take])
+            off = off + take
+        }
+        if !c.final(o32[..]) { return 2 }
+        sha256::hex(o32[..], hx[..])
+        io::cout << "sha256s:" << n << " " << hx[0..64] << "\n"
+        i = i + 1
+    }
+    io::cout << "cross ok\n"
+    return 0
+}

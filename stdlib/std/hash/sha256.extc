@@ -1,0 +1,246 @@
+/* std/hash/sha256.extc —— SHA-256（FIPS 180-4）：流式、零分配、热路径无边界检查。
+ *
+ * 形状是为"最快 + 内存少"选的，三条都能量：
+ *
+ *   1. **零分配**：整个状态是 `state`（8×u32 + 64B 块缓冲 + 两个计数 = 112 字节），住在调用方的
+ *      栈或 arena 里。热路径上一次 `new`、一次堆操作都没有 ⇒ 哈希不产生垃圾、不碰板。
+ *      （`@noCopy` 是故意的：状态有身份，复制它只会得到两个名字指着同一个位置。）
+ *   2. **流式且不中转**：`update` 对满块**直接从输入视图上压缩**（`pBlockAt(d, off)`），
+ *      不先拷进 64 字节缓冲。1 MiB 的输入与 1 字节的输入走同一条路。
+ *   3. **`@unchecked` 的核心**：`pBlockAt` 的下标全由构造保证在界内（`i < 64`；
+ *      `off + 64 <= d.len` 由调用方在进函数前判过），所以热循环里没有边界检查。
+ *      这不是偷懒：`std/sys/mem.extc` 记过一次实测教训 —— 逐字节的边界检查占了
+ *      **25.5 条指令/字节里的 30%**。代价是这一处**签字**：`grep -c '@unchecked'` 数得清，
+ *      写错就是 UB（`01-safety.md`、手册 §12.5）。
+ *
+ * 用法：
+ *     var out: [32]u8
+ *     sha256::sum(data, out[..])                     // 一次算完
+ *
+ *     var c: sha256::state                           // 流式（零分配）
+ *     c.init()
+ *     c.update(chunk1)
+ *     c.update(chunk2)
+ *     if !c.final(out[..]) { ... }                   // 缓冲不够返回 false，不 trap
+ *
+ *     sha256::hex(out[..], hexbuf[..])               // 十六进制（uuid5 / 签名都用得上）
+ */
+
+@private
+fn pRotr(x: u32, n: u32) -> u32 {
+    return (x >> n) | (x << (u32(32) - n))
+}
+
+/* 一次算完（`state` 在栈上，零分配）。`out.len < 32` 返回 false。 */
+fn sum(data: slice<u8>, out: mut slice<u8>) -> bool {
+    var c: state
+    c.init()
+    c.update(data)
+    return c.final(out)
+}
+
+/* 摘要 → 小写十六进制；返回写入的字符数（`out.len < 2*digest.len` 返回 -1）。
+ * 不查表：十六进制是算术（`v < 10 ⇒ '0'+v`，否则 `'a'+v-10`），而表要一次受检索引。 */
+fn hex(digest: slice<u8>, out: mut slice<u8>) -> i64 {
+    if out.len < digest.len * i64(2) { return i64(-1) }
+    var i: i64 = 0
+    while i < digest.len {
+        let b: u8 = digest[i]
+        let hi: u8 = (b >> 4) & u8(0x0f)
+        let lo: u8 = b & u8(0x0f)
+        if hi < u8(10) { out[i * i64(2)] = u8(48) + hi } else { out[i * i64(2)] = u8(87) + hi }
+        if lo < u8(10) { out[i * i64(2) + i64(1)] = u8(48) + lo } else { out[i * i64(2) + i64(1)] = u8(87) + lo }
+        i = i + 1
+    }
+    return digest.len * i64(2)
+}
+
+@noCopy
+struct state {
+    h: [8]u32
+    buf: [64]u8
+    used: i64
+    total: u64
+
+    fn init(self: mut ref state) -> void {
+        self.h[0] = 0x6a09e667
+        self.h[1] = 0xbb67ae85
+        self.h[2] = 0x3c6ef372
+        self.h[3] = 0xa54ff53a
+        self.h[4] = 0x510e527f
+        self.h[5] = 0x9b05688c
+        self.h[6] = 0x1f83d9ab
+        self.h[7] = 0x5be0cd19
+        self.used = i64(0)
+        self.total = u64(0)
+    }
+
+    /* 唯一签字处：下标全由构造保证在界内（见文件头第 3 条）。 */
+    @private
+    @unchecked
+    fn pBlockAt(self: mut ref state, d: slice<u8>, off: i64) -> void {
+        let k: [64]u32 = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+        ]
+        var w: [64]u32
+        var i: i64 = 0
+        while i < 16 {
+            let o: i64 = off + i * i64(4)
+            w[i] = (u32(d[o]) << 24) | (u32(d[o + 1]) << 16) | (u32(d[o + 2]) << 8) | u32(d[o + 3])
+            i = i + 1
+        }
+        while i < 64 {
+            let x: u32 = w[i - 15]
+            let y: u32 = w[i - 2]
+            let s0: u32 = pRotr(x, u32(7)) ^ pRotr(x, u32(18)) ^ (x >> 3)
+            let s1: u32 = pRotr(y, u32(17)) ^ pRotr(y, u32(19)) ^ (y >> 10)
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1
+            i = i + 1
+        }
+        var a: u32 = self.h[0]
+        var b: u32 = self.h[1]
+        var c: u32 = self.h[2]
+        var d3: u32 = self.h[3]
+        var e: u32 = self.h[4]
+        var f: u32 = self.h[5]
+        var g: u32 = self.h[6]
+        var h8: u32 = self.h[7]
+        i = 0
+        while i < 64 {
+            let S1: u32 = pRotr(e, u32(6)) ^ pRotr(e, u32(11)) ^ pRotr(e, u32(25))
+            let ch: u32 = (e & f) ^ ((~e) & g)
+            let t1: u32 = h8 + S1 + ch + k[i] + w[i]
+            let S0: u32 = pRotr(a, u32(2)) ^ pRotr(a, u32(13)) ^ pRotr(a, u32(22))
+            let maj: u32 = (a & b) ^ (a & c) ^ (b & c)
+            let t2: u32 = S0 + maj
+            h8 = g
+            g = f
+            f = e
+            e = d3 + t1
+            d3 = c
+            c = b
+            b = a
+            a = t1 + t2
+            i = i + 1
+        }
+        self.h[0] = self.h[0] + a
+        self.h[1] = self.h[1] + b
+        self.h[2] = self.h[2] + c
+        self.h[3] = self.h[3] + d3
+        self.h[4] = self.h[4] + e
+        self.h[5] = self.h[5] + f
+        self.h[6] = self.h[6] + g
+        self.h[7] = self.h[7] + h8
+    }
+
+    /* 喂一段数据（任意长度；可喂任意多次）。 */
+    fn update(self: mut ref state, data: slice<u8>) -> void {
+        self.total = self.total + u64(data.len)
+        var off: i64 = 0
+        var held: bool = false          /* 这次 update 全进了缓冲（没有满块可压） */
+        if self.used > i64(0) {
+            let want: i64 = i64(64) - self.used
+            if data.len < want {
+                var i: i64 = 0
+                while i < data.len {
+                    self.buf[self.used + i] = data[i]
+                    i = i + 1
+                }
+                self.used = self.used + data.len
+                held = true
+            } else {
+                var i: i64 = 0
+                while i < want {
+                    self.buf[self.used + i] = data[i]
+                    i = i + 1
+                }
+                var blk: [64]u8
+                var j: i64 = 0
+                while j < i64(64) {
+                    blk[j] = self.buf[j]
+                    j = j + 1
+                }
+                self.pBlockAt(blk[..], i64(0))
+                self.used = i64(0)
+                off = want
+            }
+        }
+        if !held {
+            /* 满块直接从**输入视图**上压缩：不中转、不拷贝。 */
+            while data.len - off >= i64(64) {
+                self.pBlockAt(data, off)
+                off = off + i64(64)
+            }
+            var j: i64 = 0
+            while off + j < data.len {
+                self.buf[j] = data[off + j]
+                j = j + 1
+            }
+            self.used = j
+        }
+    }
+
+    /* 收尾（填充 + 64 位大端长度）。`out.len < 32` 返回 false（不 trap）。 */
+    fn final(self: mut ref state, out: mut slice<u8>) -> bool {
+        if out.len < i64(32) { return false }
+        let bits: u64 = self.total * u64(8)
+        var i: i64 = self.used
+        self.buf[i] = u8(0x80)
+        i = i + 1
+        if i > i64(56) {
+            while i < i64(64) {
+                self.buf[i] = u8(0)
+                i = i + 1
+            }
+            var blk: [64]u8
+            var t: i64 = 0
+            while t < i64(64) {
+                blk[t] = self.buf[t]
+                t = t + 1
+            }
+            self.pBlockAt(blk[..], i64(0))
+            i = i64(0)
+        }
+        while i < i64(56) {
+            self.buf[i] = u8(0)
+            i = i + 1
+        }
+        var j: i64 = 0
+        while j < i64(8) {
+            self.buf[56 + j] = u8((bits >> u64((7 - j) * 8)) & u64(0xff))
+            j = j + 1
+        }
+        var blk: [64]u8
+        var t: i64 = 0
+        while t < i64(64) {
+            blk[t] = self.buf[t]
+            t = t + 1
+        }
+        self.pBlockAt(blk[..], i64(0))
+        var w: i64 = 0
+        while w < i64(8) {
+            let v: u32 = self.h[w]
+            out[w * i64(4)] = u8((v >> 24) & u32(0xff))
+            out[w * i64(4) + i64(1)] = u8((v >> 16) & u32(0xff))
+            out[w * i64(4) + i64(2)] = u8((v >> 8) & u32(0xff))
+            out[w * i64(4) + i64(3)] = u8(v & u32(0xff))
+            w = w + 1
+        }
+        return true
+    }
+}

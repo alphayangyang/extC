@@ -79,6 +79,27 @@
 改成"命令行在前、模块库在后"（objects before libraries），并加了判据 `auto-link-order`——
 拿旧写法验证过它会红。**这一步是 `extpkg` 存在的意义之一：包的作者不必知道这些，包自己带着。**
 
+**同日的第六刀：L2 第一块 —— 哈希与 UUID（`std::hash::sha256` / `sha1` / `hmac` + `std::uuid`）**。
+形状按"最快 + 内存少"选，两条都量了：**429–443 MB/s**（SHA-256，整块/流式）、287 MB/s（SHA-1）、
+峰值 **RSS 2412 KB**（1 MiB 输入 × 256 轮 = 256 MiB 数据，零堆分配）。做法三条：状态是 112 字节的
+值住在调用方栈上（`@noCopy`，不给两个名字指同一个位置）；满块**直接从输入视图压缩**（不中转）；
+压缩函数标 `@unchecked` —— 热循环里没有边界检查，这是**一处签字**，教训来自 `std/sys/mem.extc`
+（逐字节检查占 25.5 条指令/字节的 30%）。
+
+判据 `tests/hash/`（7 项，进 `check.sh`）：FIPS/RFC 向量 8 条（含 100 万个 'a' 的流式路径）·
+RFC 4231 HMAC 8 条（含 131 字节长键与截断）· 与 Python `hashlib` 对拍 **48 个摘要**（16 种长度 ×
+一次算完/7 字节分片流式）· **uuid5 与 Python `uuid.uuid5` 逐字节一致**（含中文名字，QQBot 主键的
+Top-1 风险就此变成判据）· API 失败面（缓冲不够 ⇒ `false`/`-1`，不 trap）· 峰值 RSS < 8 MB ·
+吞吐下限 50 MB/s。
+
+**诚实记账**：纯 extC 写不出 SHA-NI（要 intrinsics / 内联汇编，而 `inline C!` 未定案），所以比
+Python 的 OpenSSL（4518 MB/s）差一个数量级；对 QQBot 的负载（签几 KB、算主键）不是瓶颈（4 KB ≈ 9 µs）。
+真要硬件速度，路是**包**：`std::hash` 配一个带 SHA-NI 的 C shim 包（包机制已就位）。
+
+路上记一笔工具账：`tools/manual_surface.py` 把 struct **之后**的自由函数算成该 struct 的方法
+（brace 深度的 off-by-one）；既有 stdlib 文件靠"自由函数写在 struct 之前"绕过（`heap.extc` 就是）。
+本次守了这个约定，工具本身待修。
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。

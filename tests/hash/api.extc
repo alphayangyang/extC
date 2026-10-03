@@ -1,0 +1,22 @@
+// expect: api ok
+// API 的失败面：缓冲不够**返回 false / -1**，不 trap、不越界写（这是"能安全嵌进机器人"的前提）。
+use std::hash::sha256
+use std::hash::sha1
+use std::io
+
+fn main() -> i32 {
+    var out32: [32]u8
+    var out20: [20]u8
+    var small31: [31]u8
+    var small19: [19]u8
+    var six: [6]u8
+    var hx: [80]u8
+    if !sha256::sum("abc", out32[..]) { return 1 }
+    if sha256::sum("abc", small31[..]) { return 2 }        /* 31 < 32 ⇒ false */
+    if sha1::sum("abc", small19[..]) { return 3 }          /* 19 < 20 ⇒ false */
+    if sha256::hex(out32[..], hx[..]) != i64(64) { return 4 }
+    if sha256::hex(out32[..], six[..]) != i64(-1) { return 5 }
+    if sha1::hex(out20[..], hx[..]) != i64(40) { return 6 }
+    io::cout << "api ok\n"
+    return 0
+}

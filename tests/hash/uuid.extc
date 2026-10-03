@@ -1,0 +1,30 @@
+// expect: uuid ok
+// uuid5 与 Python `uuid.uuid5` **逐字节对拍**（QQBot 主键是它；对不上 = 历史数据全对不上）。
+use std::uuid
+use std::io
+
+fn main() -> i32 {
+    var id: [16]u8
+    var buf: [40]u8
+    if !uuid::v5dns("example.com", id[..]) { return 1 }
+    uuid::format(id[..], buf[..])
+    io::cout << "dns " << buf[0..36] << "\n"
+    if !uuid::v5dns("www.example.com", id[..]) { return 1 }
+    uuid::format(id[..], buf[..])
+    io::cout << "dns2 " << buf[0..36] << "\n"
+    if !uuid::v5url("https://example.com/a?b=1", id[..]) { return 1 }
+    uuid::format(id[..], buf[..])
+    io::cout << "url " << buf[0..36] << "\n"
+    if !uuid::v5oid("1.3.6.1.4.1", id[..]) { return 1 }
+    uuid::format(id[..], buf[..])
+    io::cout << "oid " << buf[0..36] << "\n"
+    if !uuid::v5x500("CN=Test", id[..]) { return 1 }
+    uuid::format(id[..], buf[..])
+    io::cout << "x500 " << buf[0..36] << "\n"
+    /* 中文 + 长名字（机器人里的群/用户标识就是这类） */
+    if !uuid::v5dns("群-123456789-钢琴房", id[..]) { return 1 }
+    uuid::format(id[..], buf[..])
+    io::cout << "utf8 " << buf[0..36] << "\n"
+    io::cout << "uuid ok\n"
+    return 0
+}
