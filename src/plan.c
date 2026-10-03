@@ -41,7 +41,9 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        AN_LAM_SIG = 1u << 22, AN_MAKES_POOL_ANY = 1u << 23,
        /* impl / trait / module facts (T4, second family) */
        PLAN_IMPL_TRAIT = 1u << 24, PLAN_IMPL_TARGET = 1u << 25,
-       PLAN_USED_DYN = 1u << 26, PLAN_USES_DYN = 1u << 27 };
+       PLAN_USED_DYN = 1u << 26, PLAN_USES_DYN = 1u << 27,
+       /* call-site markers for the builtin forms that have no callee to point at */
+       PLAN_PAR_WORKER = 1u << 28, PLAN_DOM_NEW = 1u << 29, PLAN_VIEW_OF = 1u << 30 };
 
 /* The analysis half of the slot, by name: the checker's own working state, which no later
  * phase reads. Named here so the two audiences cannot quietly merge -- a field that code
@@ -273,6 +275,46 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
     r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
+}
+
+/* ---- call-site markers (T4, third family) -------------------------------------------
+ *
+ * Three builtin forms have no `Expr.func` to recognise them by -- measured: an assoc
+ * builtin call and a body-less declaration both reached code generation with a NULL
+ * callee, so keying on the callee could never fire. Each gets its own marker, written by
+ * the checker at the call site and read by code generation. */
+
+FuncDef *planParWorker(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return (r && (r->setMask & PLAN_PAR_WORKER)) ? r->parWorker : NULL;
+}
+void planSetParWorker(Expr *e, FuncDef *wf) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->parWorker = wf; r->setMask |= PLAN_PAR_WORKER;
+}
+
+bool planDomNew(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r && (r->setMask & PLAN_DOM_NEW) ? r->domNew : false;
+}
+void planSetDomNew(Expr *e, bool v) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->domNew = v; r->setMask |= PLAN_DOM_NEW;
+}
+
+bool planViewOf(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r && (r->setMask & PLAN_VIEW_OF) ? r->viewOf : false;
+}
+void planSetViewOf(Expr *e, bool v) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->viewOf = v; r->setMask |= PLAN_VIEW_OF;
 }
 
 /* ---- impl / trait / module facts (T4, second family) -------------------------------- */

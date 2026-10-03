@@ -74,6 +74,17 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- call-site markers for builtin forms (T4) --------------------------------------
+ *
+ * A builtin form has no callee to recognise it by, so the checker marks the **call node**
+ * and code generation keys on the marker. */
+FuncDef *planParWorker(const Expr *e);
+void     planSetParWorker(Expr *e, FuncDef *wf);
+bool     planDomNew(const Expr *e);
+void     planSetDomNew(Expr *e, bool v);
+bool     planViewOf(const Expr *e);
+void     planSetViewOf(Expr *e, bool v);
+
 /* ---- impl / trait / module facts (T4) ----------------------------------------------
  *
  * All four are read by code generation, so they are plan facts. `trait`/`target` are

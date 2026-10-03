@@ -2014,7 +2014,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             if (f->isBuiltin) {
                 if (isDomSingleDecl(f)) {
-                    e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    planSetDomNew(e, true);          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
                     e->type = f->ret;
                     return f->ret;
                 }
@@ -2101,7 +2101,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return ttError(tt);
                     }
                 }
-                e->parWorker = wf;
+                planSetParWorker(e, wf);
                 wf->isParWorker = true;   /* codegen 据此生成 trampoline */
                 wf->parTlsArena = true;   /* worker 里的 new 走线程本地 arena（③c） */
                 planSetUsed(wf, true);          /* the trampoline names it, so it must be emitted */
@@ -3010,7 +3010,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             if (f->isBuiltin) {
                 if (isDomSingleDecl(f)) {
-                    e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    planSetDomNew(e, true);          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
                     e->type = f->ret;
                     return f->ret;
                 }
@@ -3036,7 +3036,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     if (!ttIsError(tn) && !ttIsInteger(tn))
                         ckError(c, an->line, NULL,
                                 "`extc_viewOf` wants an integer length, found `%s`", typeStr(c, tn));
-                    e->viewOf = true;              /* codegen 认这个标记（声明没有函数体，没 func 可认） */
+                    planSetViewOf(e, true);              /* codegen 认这个标记（声明没有函数体，没 func 可认） */
                     e->type = f->ret;
                     return f->ret;
                 }
@@ -3132,7 +3132,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return ttError(tt);
                     }
                 }
-                e->parWorker = wf;
+                planSetParWorker(e, wf);
                 wf->isParWorker = true;
                 wf->parTlsArena = true;
                 planSetUsed(wf, true);
@@ -3551,7 +3551,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             if (f->isBuiltin) {
                 if (isDomSingleDecl(f)) {
-                    e->domNew = true;          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
+                    planSetDomNew(e, true);          /* codegen 认这个标记，不认 e->func（那里是 NULL） */
                     e->type = f->ret;
                     return f->ret;
                 }
@@ -3635,7 +3635,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         return ttError(tt);
                     }
                 }
-                e->parWorker = wf;
+                planSetParWorker(e, wf);
                 wf->isParWorker = true;
                 wf->parTlsArena = true;
                 planSetUsed(wf, true);

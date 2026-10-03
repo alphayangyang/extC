@@ -2374,11 +2374,11 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
              * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
             /* `domain::single()`：造一个域（不透明指针）。按 checker 盖的**节点标记**认 —— 见 ast.h。 */
-            if (e->domNew) { g->needDomain = true; return "extc_dom_new()"; }
+            if (planDomNew(e)) { g->needDomain = true; return "extc_dom_new()"; }
             /* The plate layer's one primitive: a call to the helper the declaration triggers
              * (`src/plate.c`). The callee is a `@builtin` with no body, so there is no `FuncDef` to
              * name -- hence the flag, exactly as `domNew` above. */
-            if (e->viewOf) {
+            if (planViewOf(e)) {
                 Buf vb;
                 bufInit(&vb, g->arena);
                 bufPuts(&vb, "extc_viewOf(");
@@ -2389,11 +2389,11 @@ static const char *genExprInner(CG *g, Expr *e) {
                 bufPutc(&vb, ')');
                 return bufCstr(&vb);
             }
-            if (e->parWorker) {
+            if (planParWorker(e)) {
                 /* `parallel::run(worker, 视图们…, n, threads)`：ctx 是 trampoline 那个"每视图一个字段"的
                  * 结构体，只读视图原样带过去、输出的那一份在 trampoline 里按 [lo,hi) 切段；每个实参
                  * **只求值一次**。chunk 传 0 让运行期自己取（≈每线程 8 块，动态取块实测优于静态切分）。 */
-                FuncDef *wf = e->parWorker;
+                FuncDef *wf = planParWorker(e);
                 size_t nViews = wf->params.len - 3, mutIdx = 0;
                 for (size_t i = 0; i < nViews; i++)
                     if ((*(Param **)vecAt(&wf->params, 3 + i))->type->mut) mutIdx = i;
@@ -2655,7 +2655,7 @@ static const char *genExprInner(CG *g, Expr *e) {
 
         case EX_ASSOC: {
             /* 模块限定的调用走 assoc 节点 ⇒ 域构造这条也要在这里（同 EX_CALL 那条，认标记）。 */
-            if (e->domNew) { g->needDomain = true; return "extc_dom_new()"; }
+            if (planDomNew(e)) { g->needDomain = true; return "extc_dom_new()"; }
             /* An associated function decorates its C name with the instance
              * name (`option_i64_some`), which is the same decoration rule
              * methods follow, so cMethodName is reused directly. */

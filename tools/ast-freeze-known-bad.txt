@@ -19,7 +19,6 @@ src/check_expr.c:callee	2 处（行 2435, 3381）	R1 AST 冻结的施工单：P2
 src/check_expr.c:cname	3 处（行 854, 888, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:contMask	2 处（行 1201, 1208）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:convCheck	2 处（行 2257, 2282）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:domNew	3 处（行 2017, 3013, 3554）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynRecvViaRef	1 处（行 3447）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTable	1 处（行 664）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTrait	1 处（行 3506）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -47,7 +46,6 @@ src/check_expr.c:needOp	1 处（行 176）	R1 AST 冻结的施工单：P2 把它
 src/check_expr.c:obj	1 处（行 3375）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:operand	1 处（行 986）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:parTlsArena	4 处（行 150, 2106, 3137, 3640）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:parWorker	3 处（行 2104, 3135, 3638）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:payloadType	1 处（行 3347）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:recv	2 处（行 1694, 2787）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:refDepth	3 处（行 2356, 2563, 2565）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -57,7 +55,6 @@ src/check_expr.c:sym	2 处（行 1299, 1300）	R1 AST 冻结的施工单：P2 �
 src/check_expr.c:tname	1 处（行 1016）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:type	25 处（行 860, 972, 974, 982, 987）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:typeName	6 处（行 1609, 1979, 2487, 2832, 2962）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:viewOf	1 处（行 3039）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_lookup.c:cname	1 处（行 229）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_lookup.c:ival	1 处（行 756）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_lookup.c:refDepth	1 处（行 237）	R1 AST 冻结的施工单：P2 把它降到 0
