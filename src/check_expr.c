@@ -7,12 +7,60 @@
  * borrow rules themselves live in check_escape.c.
  */
 
-#include "modules.h"
-#include "modules.h"   /* modulesMethodHint: "no method" says which module to import */
-#include "plate.h"     /* plateIsViewOfName: the plate layer's one primitive */
 #include <stdlib.h>
 #include "check_internal.h"
 #include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
+/* The module that declares `impl` method `method`, read from `stdlib/INDEX`; NULL when the
+ * index is missing or does not know the name.
+ *
+ * Why this exists: an `impl` block is only visible once its module is **imported** (semantic
+ * import), so "no method `parseJSON` on `string`" almost always means "you did not import the
+ * module that declares it" -- the single most useful thing a diagnostic can add. Loading
+ * candidate modules to find out would undo the isolation that makes imports semantic, so the
+ * answer is precomputed by `tools/gen_index.py`, committed as `stdlib/INDEX`, and read here
+ * **once, on the first miss, on an error path only**. `check.sh` fails when the file is stale.
+ *
+ * It lives here, on the checker's side, and not in `modules.c`: it is a diagnostic aid, and
+ * the module loader (a later layer) is the one that resolves the directory -- so the loader
+ * calls **down** into `hintIndexSetStdDir` instead of the checker reaching **up** into
+ * `modules.h` for the answer. */
+static const char *stdDirSeen = NULL;
+void hintIndexSetStdDir(const char *stdDir) { stdDirSeen = stdDir; }
+
+const char *modulesMethodHint(const char *method) {
+    static char names[256][96];
+    static char mods[256][96];
+    static int  n = -1;
+    if (n < 0) {
+        n = 0;
+        if (stdDirSeen && method) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s/INDEX", stdDirSeen);
+            FILE *f = fopen(path, "rb");
+            if (f) {
+                char line[256];
+                while (n < 256 && fgets(line, sizeof line, f)) {
+                    if (line[0] == '#') continue;
+                    char *tab1 = strchr(line, '\t'); if (!tab1) continue; *tab1++ = '\0';
+                    char *tab2 = strchr(tab1, '\t'); if (!tab2) continue; *tab2++ = '\0';
+                    /* Columns past the module name (visibility, kind) belong to the manual's
+                     * coverage tooling, not to this diagnostic. */
+                    char *tab3 = strchr(tab2, '\t'); if (tab3) *tab3 = '\0';
+                    char *nl = strchr(tab2, '\n');   if (nl) *nl = '\0';
+                    snprintf(names[n], sizeof names[n], "%.95s", line);
+                    snprintf(mods[n],  sizeof mods[n],  "%.95s", tab2);
+                    n++;
+                }
+                fclose(f);
+            }
+        }
+    }
+    if (!method) return NULL;
+    for (int i = 0; i < n; i++) if (strcmp(names[i], method) == 0) return mods[i];
+    return NULL;
+}
+
+
 
 /* The inclusive range of a **builtin integer** type, by name.
  *

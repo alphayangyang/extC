@@ -2,9 +2,5 @@
 #
 # 这两条是**层序**违规（P3.0 准备阶段新增的规则抓到的），都是"检查器在一个诊断/校验点需要
 # 上层的一个纯函数"。它们不是耦合到上层的**状态**，只是名字表：
-#   · `modules.h` 的 `modulesMethodHint`：报"这个类型没有这个方法"时要说明该 `use` 哪个模块；
-#   · `plate.h` 的 `plateIsViewOfName`：板层的那个原语名要在检查器里认出来。
 # 两条都写在 `check_expr.c` 顶部并带说明。要清掉它们，正确做法是把这两个**查询**下沉到
 # `typelayer`（它们都是纯函数：吃名字、答问题），而不是把检查器的状态搬上去。
-src/check_expr.c -> modules.h	层序：检查器在诊断"没有那个方法"时需要模块名提示（`modulesMethodHint`，纯查询）⇒ 应下沉到 typelayer	R3 只读边界的施工单
-src/check_expr.c -> plate.h	层序：检查器要认出板层的那个原语名（`plateIsViewOfName`，纯查询）⇒ 应下沉到 typelayer	R3 只读边界的施工单

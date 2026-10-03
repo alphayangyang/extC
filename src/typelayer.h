@@ -59,6 +59,26 @@ FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs);
 /* Does this enum have a variant with a payload? */
 bool enumHasPayload(TypeDef *td);
 
+/* Is this declaration the plate layer's one primitive (`extc_viewOf`)?
+ *
+ * One spelling, two askers: the checker (which types the call) and codegen (which decides whether the
+ * three lines of C are emitted). The declared name carries the module prefix
+ * (`sys$heap$extc_viewOf`), so the test is on the **last** segment -- `$` cannot appear in an extC
+ * identifier, so a `$` can only come from the loader's module mangling, which is the same argument
+ * `exportName` in codegen.c uses. */
+static inline const char *plateDeclTail(const char *name) {
+    const char *d = name ? strrchr(name, '$') : NULL;
+    return d ? d + 1 : name;
+}
+
+static inline bool plateIsViewOfName(const char *name) {
+    return name && strcmp(plateDeclTail(name), "extc_viewOf") == 0;
+}
+
+static inline bool plateIsMemCopyName(const char *name) {
+    return name && strcmp(plateDeclTail(name), "extc_memCopy") == 0;
+}
+
 /* ---- the pool questions -------------------------------------------------------------
  *
  * "Can this statement reach `extc_pool_new`?" `descendBlocks` is the difference between the

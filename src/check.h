@@ -28,4 +28,10 @@
  */
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
 
+/* Hand the checker the stdlib directory to read `INDEX` from, for the "no method" hint.
+ * The loader (a later layer) resolves the directory; the hint itself lives on the checker's
+ * side, next to the diagnostic that uses it -- so the call goes **down**, through this
+ * published view, instead of the checker reaching up into the module layer's header. */
+void hintIndexSetStdDir(const char *stdDir);
+
 #endif /* EXTC_CHECK_H */
