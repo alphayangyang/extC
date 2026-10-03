@@ -24,10 +24,23 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-static const void  **g_nodes;     /* id -> node (the id is the index) */
-static NodeResults  *g_results;   /* id -> result slot */
+/* id -> node, and id -> result slot, as **tables of pointers to fixed blocks**.
+ *
+ * These used to be two arrays that grew with `realloc`, which is a latent bug with teeth:
+ * `realloc` can move the array, so every `NodeResults *` handed out before the growth
+ * dangles -- and the accessors do exactly the thing that walks into it ("read the old value,
+ * then write the new one": `r->an.arenaSites = v`, where `v` was read out of `r`).
+ *
+ * Fixing it in the accessors was not an option: every one of them would have to re-look-up
+ * its slot after any operation that might grow the table, and "remember to re-look-up" is a
+ * rule nobody keeps. A stable table makes the pointer valid for the life of the process,
+ * which is what the rest of this file already assumes. */
+#define ID_BLOCK 1024
+
+static const void ***g_nodes;     /* block table: g_nodes[id / ID_BLOCK][id % ID_BLOCK] */
+static NodeResults **g_results;
 static size_t        g_len;       /* ids handed out so far */
-static size_t        g_cap;
+static size_t        g_cap;       /* ids the blocks can hold */
 
 static const void **h_keys;       /* pointer -> id hash */
 static NodeId      *h_vals;
@@ -39,18 +52,20 @@ static size_t hashPtr(const void *p) {
     return h;
 }
 
+#define NODE_AT(id) (g_nodes[(id) / ID_BLOCK][(id) % ID_BLOCK])
+#define SLOT_AT(id) (g_results[(id) / ID_BLOCK][(id) % ID_BLOCK])
+
 static void growIds(void) {
-    size_t ncap = g_cap ? g_cap * 2 : 256;
-    const void **nn = realloc((void *)g_nodes, ncap * sizeof *nn);
-    NodeResults *nr = realloc(g_results, ncap * sizeof *nr);
-    if (!nn || !nr) abort();
-    g_nodes = nn;
-    g_results = nr;
-    for (size_t i = g_cap; i < ncap; i++) {
-        g_nodes[i] = NULL;
-        g_results[i] = (NodeResults){0};
-    }
-    g_cap = ncap;
+    size_t nblocks = (g_cap ? g_cap / ID_BLOCK : 0) + 1;
+    const void ***nb = realloc((void *)g_nodes, nblocks * sizeof *nb);
+    NodeResults **rb = realloc((void *)g_results, nblocks * sizeof *rb);
+    if (!nb || !rb) abort();
+    g_nodes = nb;
+    g_results = rb;
+    g_nodes[nblocks - 1] = calloc(ID_BLOCK, sizeof *g_nodes[0]);
+    g_results[nblocks - 1] = calloc(ID_BLOCK, sizeof *g_results[0]);
+    if (!g_nodes[nblocks - 1] || !g_results[nblocks - 1]) abort();
+    g_cap = nblocks * ID_BLOCK;
 }
 
 static void growHash(void) {
@@ -84,7 +99,7 @@ NodeId nodeIdOf(const void *node, bool create) {
     if (!create) return 0;
     if (g_len + 1 >= g_cap) growIds();
     NodeId id = (NodeId)(g_len + 1);        /* 0 stays "no id" */
-    g_nodes[id] = node;
+    NODE_AT(id) = node;
     g_len++;
     h_keys[j] = node;
     h_vals[j] = id;
@@ -114,12 +129,12 @@ static bool ownerReportOn(void) {
 
 NodeResults *resultsById(NodeId id) {
     if (id == 0 || id > g_len) return NULL;
-    return &g_results[id];
+    return &SLOT_AT(id);
 }
 
 NodeResults *resultsOf(const void *node, bool create) {
     NodeId id = nodeIdOf(node, create);
-    return id ? &g_results[id] : NULL;
+    return id ? &SLOT_AT(id) : NULL;
 }
 
 static const char *kindName(ResultKind k) {

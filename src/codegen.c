@@ -235,12 +235,12 @@ typedef struct {
      * A site table plus a lookup is used instead of writing an index into the
      * AST: one body is visited once per generic instance, so an index stored in
      * the AST would be overwritten by the next instance. See `owIndex`. */
-    Vec         owSites;
+    Vec         owSitesOwn;     /* this function's sites: code generation's own table */
     /* Call sites in this function whose callee needs cells (`Expr*`, in order
      * of discovery). Each of them passes one `void *` cell per callee site, so
      * the callee reuses the caller's storage when it is itself @overwrite. */
     Vec         owCalls;
-    bool        owLocal;   /* Does the current function keep its @overwrite cells in
+    bool        owLocalOwn; /* Does the current function keep its @overwrite cells in
                             * its own frame? See FuncDef.owLocal. */
     Vec         insts;          /* Type* - generic instances, deduplicated by C name (see below) */
 
@@ -3545,7 +3545,7 @@ static void collectOwSites(Stmt *s, Vec *out) {
 /* Return the index of one `@overwrite` site within the current function.
  *
  * Returns:
- *   Its position in `g->owSites`, or -1 when it is not registered.
+ *   Its position in `g->owSitesOwn`, or -1 when it is not registered.
  *
  * Notes:
  *   - The prologue emits the cells in the same order, so the two sides agree.
@@ -3554,8 +3554,8 @@ static void collectOwSites(Stmt *s, Vec *out) {
  *     by the next instance.
  */
 static int owIndex(CG *g, Stmt *s) {
-    for (size_t i = 0; i < g->owSites.len; i++)
-        if (*(Stmt **)vecAt(&g->owSites, i) == s) return (int)i;
+    for (size_t i = 0; i < g->owSitesOwn.len; i++)
+        if (*(Stmt **)vecAt(&g->owSitesOwn, i) == s) return (int)i;
     return -1;
 }
 
@@ -3693,7 +3693,7 @@ static int owCallIndex(CG *g, Expr *e) {
  * alive; FuncDef.owLocal carries the answer. The statement argument is unused,
  * because the answer is a property of the function.
  */
-static bool f_owLocal(CG *g, Stmt *s) { (void)s; return g->owLocal; }
+static bool f_owLocal(CG *g, Stmt *s) { (void)s; return g->owLocalOwn; }
 
 /* Append the cell arguments of one call site whose callee needs `@overwrite`
  * storage.
@@ -4915,16 +4915,16 @@ static void genFunc(CG *g, FuncDef *f) {
      * functions in real programs are pure computation. cgReleaseLevel skips the
      * release for them as well. */
     bool savedNoArena = g->noArena;
-    bool savedOwLocal = g->owLocal;
-    g->owLocal = f->owLocal;
+    bool savedOwLocal = g->owLocalOwn;
+    g->owLocalOwn = f->owLocal;
     /* The @overwrite storage cells, one per site, declared in the prologue.
      * The order matters: a cell is initialized with `&__extc_a[1]` (see `home`
      * below), so the list of sites has to be collected before the decision
      * whether to emit the arena array at all can be taken. */
-    Vec savedOw = g->owSites;              /* by value: no arena exists for the first function */
+    Vec savedOw = g->owSitesOwn;              /* by value: no arena exists for the first function */
     Vec owNow; vecInit(&owNow, g->arena, sizeof(Stmt *));
     collectOwSites(f->body, &owNow);
-    g->owSites = owNow;
+    g->owSitesOwn = owNow;
     Vec savedOwCalls = g->owCalls;
     Vec owcNow; vecInit(&owcNow, g->arena, sizeof(Expr *));
     collectOwCallsStmt(f->body, &owcNow);
@@ -5114,9 +5114,9 @@ static void genFunc(CG *g, FuncDef *f) {
         g->inMain  = false;
         g->tmpSeq = savedSeq;
         g->noArena = savedNoArena;
-        g->owSites = savedOw;
+        g->owSitesOwn = savedOw;
         g->owCalls = savedOwCalls;
-        g->owLocal = savedOwLocal;
+        g->owLocalOwn = savedOwLocal;
         g->coroFunc  = NULL;
         g->coroFrame = NULL;
         g->indent--;
@@ -5218,9 +5218,9 @@ static void genFunc(CG *g, FuncDef *f) {
     g->tmpSeq = savedSeq;
     g->uncheckedIdx = savedUnchecked;
     g->noArena = savedNoArena;
-    g->owSites = savedOw;          /* restored last, see the note above */
+    g->owSitesOwn = savedOw;          /* restored last, see the note above */
     g->owCalls = savedOwCalls;
-    g->owLocal = savedOwLocal;
+    g->owLocalOwn = savedOwLocal;
     g->indent--;
     cgLine(g, "}");
 }

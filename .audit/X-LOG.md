@@ -1044,3 +1044,41 @@ main 的收尾，导致 `parrun` **提前返回**、`tests/run.sh` 的算术报�
 **验收**：`check.sh` 完整 **71/0**（T4a、T4b 各跑过一次完整模式）；tests **326/0**
 （发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；`tests/coro` **29/0**；`check.sh quick` **60/0**；
 六道老闸门全绿；四条棘轮（`[ast-freeze]` 125 · `[layering]` 2 · `[plan-seam]` · `[callsite]` 基线 0）ok。
+
+## 解耦 T4 第七族（`FuncDef` 的 13 个字段）：**未通过，已整体撤回** —— 记下证据与结论
+
+这一族按前六族的同一套路做（存储 + 访问器 → 迁移读写 → 删字段 → 棘轮），
+结果 **`tests/run.sh` 1/41**（基线与前六族都是 326/0）。我花了很长时间定位，**没有找到根因**，
+按"不许带着半成品前进"的纪律**整体撤回**；只留下两项**独立价值已验证**的改进。
+
+**撤回前的实测证据（都记下来，接力的人不用重跑）**：
+
+1. **症状**：`stdlib/std/io.extc:182` 与 `stdlib/std/dl.extc:52` 报
+   `this return value would hold a reference to a local variable that dies first (borrowed from depth 1,
+   but this can only hold up to depth 0)` —— 即**转义检查器把合法代码判成错**，且发生在**标准库**里。
+2. **不是悬垂指针**（我最初的猜测）：把结果表初值调到 1M（永不 `realloc`）**不改变失败数**。
+   （不过这条排查独立发现了**真实的潜在缺陷**，见下，已修。）
+3. **不是"槽位与字段不同步"这么简单**：让**全部 12 个访问器直读原字段**、setter 只写槽位
+   ⇒ 141 个失败（符合预期，因为没人写字段）；让**读写都走字段** ⇒ 仍 41 个失败
+   （**这一条最反常**：字段路径是迁移前的原始语义，本该全绿）。
+4. **探针抓到的具体形状**：在 setter 里对拍 `f->isAssoc == v`（v=1）时，`f->isAssoc` 读出来是 **0**，
+   而同一次调用里 `f->name` 正常（`withStream`）。反汇编确认：写的是 `NodeResults+0xcf`（= `an.isAssoc`，
+   与 `offsetof` 一致）、置位 `btsq $0x34`、随后 `cmp %bpl,0x2e0(%rbx)`（= `FuncDef.isAssoc`）
+   ⇒ **槽位写对了，但字段是 0**。而该字段在全仓**只有 setter 一处写**（`grep '->isAssoc\s*=[^=]'` 为空）。
+   ⇒ 有一条我**还没找到的路径**在写这个字段或改这个对象。
+5. **`gdb` 现场**：`checkMethodShape`（`check_top.c:338`）调 `anSetIsAssoc(f, true)`，
+   `f=0x555555a46fe8`、`f->name="withStream"`、`f->isAssoc=false`。
+6. **消歧已完成（保留）**：`CG`（codegen 自己的发射状态）**也有** `owSites`/`owLocal`，
+   与 `FuncDef` 的同名字段撞名；已把 `CG` 的改名为 `owSitesOwn`/`owLocalOwn`（7 + 5 处）。
+   这是本族的前置条件，**独立提交**。
+
+**保留的两项（各自独立可验收）**：
+* `CG` 的 `owSitesOwn`/`owLocalOwn` 改名 —— 消掉"同名不同属"的歧义；
+* **结果表改为"非移动"**（指针块表，`ID_BLOCK=1024`）：原来用 `realloc` 增长，
+  **增长时所有 `NodeResults*` 立即悬垂**，而访问器的写法正是"先读旧值、再写新值"
+  （`r->an.arenaSites = v`，`v` 从 `r` 里取）⇒ 这是一个**真实的潜在缺陷**（本族第一次把 `Vec`
+   放进槽位才暴露）。改成块表后指针终生有效。已过全套验收。
+
+**下一步的建议（给接力的人）**：从"为什么 `f->isAssoc` 会是 0"这个**单点**入手，
+用一个最小复现（只迁 `isAssoc` 一个字段）而不是整族；本族的其余 12 个字段与它同批，
+其中 `needsHome`/`arenaSites` 直接决定转义检查的宽严，**先把单点问题解决再整族推进**。
