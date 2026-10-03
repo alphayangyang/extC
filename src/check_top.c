@@ -9,6 +9,7 @@
 
 #include "dbg.h"
 #include "check_internal.h"
+#include "typelayer.h"   /* the pool questions below are shared with codegen */
 #include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
 /* Defined further down; the call-site publication needs it (INV-K / audit P0-16). */
 static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
@@ -683,170 +684,6 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed);   /* defin
  * Two callers ask two different questions with it:
  *   - the fixed-point closure below asks the transitive one ("can this function create a
  *     pool at all?"), and walks nested blocks, which each have a zone of their own;
- *   - codegen asks the block-local one ("can *this* block's direct statements create one
- *     here?"), and stops at a nested block, because that block's own hook covers it.
- * `descendBlocks` picks between them.
- *
- * Unknown callees count as creating a pool, so the answer errs towards emitting a hook.
- */
-static bool exprMakesPool(Expr *e, bool descendBlocks);
-
-/* 解析钩子：checker 这一侧问不到"某个实例的具体方法是谁"。
- *
- * `#57` 让泛型体里对**类型参数**的协议方法调用在模板上**故意不写被调者**（一份模板体
- * 有多个实例，写上去就是给别的实例写错方法）。不解析时 `exprMakesPool` 只能保守算真 ——
- * 而 `hashMap::find` 里正好有 `k.hash()`，于是整条链（find/get/put/remove/contains）全被
- * 标成"会建池"，循环体每轮压/弹一次 zone。
- *
- * codegen 生成某个实例时知道该解析成谁（`genMethodCall` 走的就是这一句）；闭包的实例那一轮
- * 也知道（拿这个实例的实参代入，`runMethodCheck` 是同一套）。解析不出来 ⇒ 仍旧保守。 */
-static FuncDef *(*poolCalleeResolve)(Expr *e) = NULL;
-void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
-
-/* 闭包实例那一轮的代入上下文。 */
-static TypeTable *instResTT = NULL;
-static Vec *instResParams = NULL;
-static Vec *instResTargs = NULL;
-static FuncDef *resolveOnInstance(Expr *e) {
-    if (!instResTT || !instResParams || !instResTargs) return NULL;
-    if (!e || e->kind != EX_METHOD || !e->u.method.recv) return NULL;
-    Type *rt = ttSubstitute(instResTT, e->u.method.recv->type, instResParams, instResTargs);
-    return findMethod(ttBase(rt), e->u.method.name);
-}
-bool stmtMakesPool(Stmt *s, bool descendBlocks) {
-    if (!s) return false;
-    switch (s->kind) {
-    case ST_YIELD:  return exprMakesPool(s->u.yield_.value, descendBlocks);
-    case ST_TRAP:   return exprMakesPool(s->u.trap_.msg, descendBlocks);
-    case ST_VAR:    return exprMakesPool(s->u.var.init, descendBlocks);
-    case ST_ASSIGN: return exprMakesPool(s->u.assign.value, descendBlocks) ||
-                           exprMakesPool(s->u.assign.target, descendBlocks);
-    case ST_IF:     return exprMakesPool(s->u.ifs.cond, descendBlocks) ||
-                           stmtMakesPool(s->u.ifs.thenBody, descendBlocks) ||
-                           stmtMakesPool(s->u.ifs.elseBody, descendBlocks);
-    case ST_DOMAIN:
-        /* A domain block is a place of its own, exactly like a block: what happens inside is that
-         * block's business, and the transitive question walks in. */
-        if (!descendBlocks) return false;
-        return exprMakesPool(s->u.domain_.callee, descendBlocks) ||
-               stmtMakesPool(s->u.domain_.body, descendBlocks);
-    case ST_WHILE:  return exprMakesPool(s->u.whiles.cond, descendBlocks) ||
-                           stmtMakesPool(s->u.whiles.body, descendBlocks);
-    case ST_RETURN: return exprMakesPool(s->u.ret.value, descendBlocks);
-    case ST_EXPR:   return exprMakesPool(s->u.expr.expr, descendBlocks);
-    case ST_BLOCK:
-        /* A block is a `place` of its own with its own zone, so the block-local question
-         * stops here: whatever happens inside is that block's business. The transitive
-         * question walks in. */
-        if (!descendBlocks) return false;
-        for (size_t i = 0; i < s->u.block.stmts.len; i++)
-            if (stmtMakesPool(*(Stmt **)vecAt(&s->u.block.stmts, i), descendBlocks)) return true;
-        return false;
-    case ST_MATCH:
-        if (exprMakesPool(s->u.match.scrutinee, descendBlocks)) return true;
-        for (size_t i = 0; i < s->u.match.arms.len; i++)
-            if (stmtMakesPool((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, descendBlocks)) return true;
-        return false;
-    default: return false;
-    }
-}
-static bool exprMakesPool(Expr *e, bool descendBlocks) {
-    if (!e) return false;
-    /* The three shapes a resolved call takes. `EX_ASSOC` belongs here for the reason its
-     * counterpart in `exprCallsNeedsHome` documents: an associated function records its
-     * callee through `planCallee` too, and leaving it out is how a summary quietly becomes wrong. */
-    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
-        /* `flush()` / `print(x)` / `println(x)` are builtins dispatched by name, and the
-         * checker leaves `e->func` null for them (it returns before resolving a callee).
-         * They cannot create a pool; naming them here keeps the conservative branch below
-         * from spreading `makesPool` over half the library. Measured before this case
-         * existed: `io::flushOut`, `io::writeBytesRaw` and `io::errWrite` were all marked,
-         * purely because each of them calls `flush()`. */
-        if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
-            const char *bn = e->u.call.callee->u.ident.name;
-            if (bn && (strcmp(bn, "flush") == 0 || strcmp(bn, "print") == 0 ||
-                       strcmp(bn, "println") == 0))
-                return false;
-        }
-        /* 这里问的是"**这一次调用能不能走到 `extc_pool_new`**"（zone 的决定，以及
-         * `makesPool` 闭包本身），不是"结果会不会住在池上" —— 后者是 `calleeMakesPool`
-         * 的问题（逃逸与提权那两处用它）。两者的差别与实测代价见 `calleeCreatesPool`。
-         *
-         * `#57`：泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
-         * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
-        FuncDef *cf = planCallee(e);
-        if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
-        if (calleeCreatesPool(cf)) return true;
-    }
-    switch (e->kind) {
-    case EX_BIN: return exprMakesPool(e->u.bin.left, descendBlocks) ||
-                       exprMakesPool(e->u.bin.right, descendBlocks);
-    case EX_UN:  return exprMakesPool(e->u.un.operand, descendBlocks);
-    case EX_REF: return exprMakesPool(e->u.ref.operand, descendBlocks);
-    case EX_EXT: return exprMakesPool(e->u.ext_.call, descendBlocks);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
-    case EX_DEREF: return exprMakesPool(e->u.deref.operand, descendBlocks);
-    case EX_SIGN:  return exprMakesPool(e->u.sign.operand, descendBlocks);
-    case EX_CONV:  return exprMakesPool(e->u.conv.operand, descendBlocks);
-    case EX_TRY:   return exprMakesPool(e->u.try_.operand, descendBlocks);
-    case EX_INDEX: return exprMakesPool(e->u.index.obj, descendBlocks) ||
-                          exprMakesPool(e->u.index.index, descendBlocks);
-    /* The bounds are expressions too, and every walker in this file that forgot them had a
-     * real defect (see the note on `exprUsesCname`); a call in a bound can create a pool. */
-    case EX_SLICE: return exprMakesPool(e->u.slice.obj, descendBlocks) ||
-                          exprMakesPool(e->u.slice.lo, descendBlocks) ||
-                          exprMakesPool(e->u.slice.hi, descendBlocks);
-    case EX_FIELD: return exprMakesPool(e->u.field.obj, descendBlocks);
-    case EX_COALESCE:
-        return exprMakesPool(e->u.coalesce.main, descendBlocks) ||
-               exprMakesPool(e->u.coalesce.fallback, descendBlocks);
-    case EX_METHOD: {
-        if (exprMakesPool(e->u.method.recv, descendBlocks)) return true;
-        for (size_t i = 0; i < e->u.method.args.len; i++)
-            if (exprMakesPool(*(Expr **)vecAt(&e->u.method.args, i), descendBlocks)) return true;
-        return false;
-    }
-    case EX_CALL: {
-        /* The callee as well: `f()()` is not legal today, but the walk costs nothing and a
-         * shape left out is exactly how a summary goes wrong. */
-        if (exprMakesPool(e->u.call.callee, descendBlocks)) return true;
-        for (size_t i = 0; i < e->u.call.args.len; i++)
-            if (exprMakesPool(*(Expr **)vecAt(&e->u.call.args, i), descendBlocks)) return true;
-        return false;
-    }
-    case EX_ASSOC: {
-        for (size_t i = 0; i < e->u.assoc.args.len; i++)
-            if (exprMakesPool(*(Expr **)vecAt(&e->u.assoc.args, i), descendBlocks)) return true;
-        return false;
-    }
-    case EX_NEW: return exprMakesPool(e->u.new_.count, descendBlocks);
-    case EX_STRUCTLIT:
-        for (size_t i = 0; i < e->u.lit.inits.len; i++)
-            if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, descendBlocks)) return true;
-        return false;
-    /* A lambda's value is its environment: the field values are the reads that happen here;
-     * the body belongs to the generated `call` method and is analysed there. */
-    case EX_LAMBDA:
-        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
-            if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
-                              descendBlocks)) return true;
-        return false;
-    case EX_ARRAYLIT:
-        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
-            if (exprMakesPool(*(Expr **)vecAt(&e->u.arraylit.elems, i), descendBlocks)) return true;
-        return false;
-    case EX_ENUMVAL:
-        for (size_t i = 0; i < e->u.enumval.args.len; i++)
-            if (exprMakesPool(*(Expr **)vecAt(&e->u.enumval.args, i), descendBlocks)) return true;
-        return false;
-    case EX_GENCALL:
-        for (size_t i = 0; i < e->u.gencall.args.len; i++)
-            if (exprMakesPool(*(Expr **)vecAt(&e->u.gencall.args, i), descendBlocks)) return true;
-        return false;
-    /* The payload may build a pool of its own, and then the enclosing call needs a zone. */
-    case EX_DYN: return exprMakesPool(e->u.dynv.payload, descendBlocks);
-    default: return false;
-    }
-}
 
 /* Count the `@overwrite` sites in a body.
  *
@@ -1622,12 +1459,19 @@ bool calleeMakesPool(FuncDef *f) {
  * 剩下三条覆盖"建池"的全部入口：闭包（`makesPool`）覆盖一切能走到 `extc_pool_new` 的函数体；
  * `extc_pool_new*` 自己按名字认（extern 没有函数体）；构造器那一族按 `makesPoolAny` 认
  * （模板/实例两份 FuncDef 的口子）。未解析的被调者仍然**保守为真**。 */
-bool calleeCreatesPool(FuncDef *f) {
-    if (!f) return true;                       /* 未解析 ⇒ 保守 */
-    if (planMakesPool(f)) return true;
-    if (f->body == NULL && isPoolCtorName(f->name)) return true;
-    return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
+/* 闭包实例那一轮的代入上下文。 */
+static TypeTable *instResTT = NULL;
+static Vec *instResParams = NULL;
+static Vec *instResTargs = NULL;
+static FuncDef *resolveOnInstance(Expr *e) {
+    if (!instResTT || !instResParams || !instResTargs) return NULL;
+    if (!e || e->kind != EX_METHOD || !e->u.method.recv) return NULL;
+    Type *rt = ttSubstitute(instResTT, e->u.method.recv->type, instResParams, instResTargs);
+    return findMethod(ttBase(rt), e->u.method.name);
 }
+
+
+static bool exprMakesPool(Expr *e, bool descendBlocks);   /* defined with the pool questions at the end */
 
 void setCallZoneArg(Checker *c, Expr *e) {
     if (!e) return;
@@ -4428,7 +4272,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * point. It reads the tree and writes only the depths, so every later reader sees a
      * value that no longer depends on the order branches were visited.
      *
-     * See `docs/topics/ARENA-SOUNDNESS.md` section 9.3, item 3-a, and `src/dataflow.c`. */
+     * See `docs/topics/ARENA-SOUNDNESS.md` section 9.3, item 3-a, and `src/check_dataflow.c`. */
     {
         DfResult dfr;
         dfAnalyze(c, f, &dfr);
@@ -7164,5 +7008,168 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
                 f->coroFrame.len, f->params.len, f->params.len == 1 ? "" : "s",
                 f->coroFrame.len - f->params.len,
                 f->coroFrame.len - f->params.len == 1 ? "" : "s");
+    }
+}
+
+/* The pool questions, shared with code generation (R3).
+ *
+ * `stmtMakesPool` / `exprMakesPool` walk a tree asking "can this reach `extc_pool_new`?" --
+ * codegen asks the block-local form to decide whether a block needs a zone bracket, the
+ * checker asks the transitive form for the `makesPool` closure. One spelling, two askers
+ * (review F11).
+ *
+ * **The resolver hook is the checker's extension point, and it is the reason this is not in
+ * `typelayer.c`**: a generic body's protocol method on a *type parameter* deliberately has
+ * no callee recorded (one template body, many instances), so the pure AST answer is "no",
+ * while the conservative answer is "yes". The checker installs a resolver that substitutes
+ * the instance's type arguments; codegen gets the resolved callee from `planCallee`. With no
+ * resolver installed the answer stays conservative. */
+/* 解析钩子：checker 这一侧问不到"某个实例的具体方法是谁"（见本文件末尾那段说明）。 */
+static FuncDef *(*poolCalleeResolve)(Expr *e) = NULL;
+void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
+
+bool calleeCreatesPool(FuncDef *f) {
+    if (!f) return true;                       /* unresolved => conservative */
+    if (planMakesPool(f)) return true;
+    if (f->body == NULL && isPoolCtorName(f->name)) return true;
+    return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
+}
+
+
+static bool exprMakesPool(Expr *e, bool descendBlocks);
+
+bool stmtMakesPool(Stmt *s, bool descendBlocks) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_YIELD:  return exprMakesPool(s->u.yield_.value, descendBlocks);
+    case ST_TRAP:   return exprMakesPool(s->u.trap_.msg, descendBlocks);
+    case ST_VAR:    return exprMakesPool(s->u.var.init, descendBlocks);
+    case ST_ASSIGN: return exprMakesPool(s->u.assign.value, descendBlocks) ||
+                           exprMakesPool(s->u.assign.target, descendBlocks);
+    case ST_IF:     return exprMakesPool(s->u.ifs.cond, descendBlocks) ||
+                           stmtMakesPool(s->u.ifs.thenBody, descendBlocks) ||
+                           stmtMakesPool(s->u.ifs.elseBody, descendBlocks);
+    case ST_DOMAIN:
+        /* A domain block is a place of its own, exactly like a block: what happens inside is that
+         * block's business, and the transitive question walks in. */
+        if (!descendBlocks) return false;
+        return exprMakesPool(s->u.domain_.callee, descendBlocks) ||
+               stmtMakesPool(s->u.domain_.body, descendBlocks);
+    case ST_WHILE:  return exprMakesPool(s->u.whiles.cond, descendBlocks) ||
+                           stmtMakesPool(s->u.whiles.body, descendBlocks);
+    case ST_RETURN: return exprMakesPool(s->u.ret.value, descendBlocks);
+    case ST_EXPR:   return exprMakesPool(s->u.expr.expr, descendBlocks);
+    case ST_BLOCK:
+        /* A block is a `place` of its own with its own zone, so the block-local question
+         * stops here: whatever happens inside is that block's business. The transitive
+         * question walks in. */
+        if (!descendBlocks) return false;
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (stmtMakesPool(*(Stmt **)vecAt(&s->u.block.stmts, i), descendBlocks)) return true;
+        return false;
+    case ST_MATCH:
+        if (exprMakesPool(s->u.match.scrutinee, descendBlocks)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++)
+            if (stmtMakesPool((*(MatchArm **)vecAt(&s->u.match.arms, i))->body, descendBlocks)) return true;
+        return false;
+    default: return false;
+    }
+}
+
+static bool exprMakesPool(Expr *e, bool descendBlocks) {
+    if (!e) return false;
+    /* The three shapes a resolved call takes. `EX_ASSOC` belongs here for the reason its
+     * counterpart in `exprCallsNeedsHome` documents: an associated function records its
+     * callee through `planCallee` too, and leaving it out is how a summary quietly becomes wrong. */
+    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+        /* `flush()` / `print(x)` / `println(x)` are builtins dispatched by name, and the
+         * checker leaves `e->func` null for them (it returns before resolving a callee).
+         * They cannot create a pool; naming them here keeps the conservative branch below
+         * from spreading `makesPool` over half the library. Measured before this case
+         * existed: `io::flushOut`, `io::writeBytesRaw` and `io::errWrite` were all marked,
+         * purely because each of them calls `flush()`. */
+        if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+            const char *bn = e->u.call.callee->u.ident.name;
+            if (bn && (strcmp(bn, "flush") == 0 || strcmp(bn, "print") == 0 ||
+                       strcmp(bn, "println") == 0))
+                return false;
+        }
+        /* 这里问的是"**这一次调用能不能走到 `extc_pool_new`**"（zone 的决定，以及
+         * `makesPool` 闭包本身），不是"结果会不会住在池上" —— 后者是 `calleeMakesPool`
+         * 的问题（逃逸与提权那两处用它）。两者的差别与实测代价见 `calleeCreatesPool`。
+         *
+         * `#57`：泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
+         * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
+        FuncDef *cf = planCallee(e);
+        if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
+        if (calleeCreatesPool(cf)) return true;
+    }
+    switch (e->kind) {
+    case EX_BIN: return exprMakesPool(e->u.bin.left, descendBlocks) ||
+                       exprMakesPool(e->u.bin.right, descendBlocks);
+    case EX_UN:  return exprMakesPool(e->u.un.operand, descendBlocks);
+    case EX_REF: return exprMakesPool(e->u.ref.operand, descendBlocks);
+    case EX_EXT: return exprMakesPool(e->u.ext_.call, descendBlocks);   /* `ext f(x)`: spawned call (cloned from EX_REF) */
+    case EX_DEREF: return exprMakesPool(e->u.deref.operand, descendBlocks);
+    case EX_SIGN:  return exprMakesPool(e->u.sign.operand, descendBlocks);
+    case EX_CONV:  return exprMakesPool(e->u.conv.operand, descendBlocks);
+    case EX_TRY:   return exprMakesPool(e->u.try_.operand, descendBlocks);
+    case EX_INDEX: return exprMakesPool(e->u.index.obj, descendBlocks) ||
+                          exprMakesPool(e->u.index.index, descendBlocks);
+    /* The bounds are expressions too, and every walker in this file that forgot them had a
+     * real defect (see the note on `exprUsesCname`); a call in a bound can create a pool. */
+    case EX_SLICE: return exprMakesPool(e->u.slice.obj, descendBlocks) ||
+                          exprMakesPool(e->u.slice.lo, descendBlocks) ||
+                          exprMakesPool(e->u.slice.hi, descendBlocks);
+    case EX_FIELD: return exprMakesPool(e->u.field.obj, descendBlocks);
+    case EX_COALESCE:
+        return exprMakesPool(e->u.coalesce.main, descendBlocks) ||
+               exprMakesPool(e->u.coalesce.fallback, descendBlocks);
+    case EX_METHOD: {
+        if (exprMakesPool(e->u.method.recv, descendBlocks)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.method.args, i), descendBlocks)) return true;
+        return false;
+    }
+    case EX_CALL: {
+        /* The callee as well: `f()()` is not legal today, but the walk costs nothing and a
+         * shape left out is exactly how a summary goes wrong. */
+        if (exprMakesPool(e->u.call.callee, descendBlocks)) return true;
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.call.args, i), descendBlocks)) return true;
+        return false;
+    }
+    case EX_ASSOC: {
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.assoc.args, i), descendBlocks)) return true;
+        return false;
+    }
+    case EX_NEW: return exprMakesPool(e->u.new_.count, descendBlocks);
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, descendBlocks)) return true;
+        return false;
+    /* A lambda's value is its environment: the field values are the reads that happen here;
+     * the body belongs to the generated `call` method and is analysed there. */
+    case EX_LAMBDA:
+        for (size_t i = 0; i < e->u.lambda.inits.len; i++)
+            if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value,
+                              descendBlocks)) return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.arraylit.elems, i), descendBlocks)) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.enumval.args, i), descendBlocks)) return true;
+        return false;
+    case EX_GENCALL:
+        for (size_t i = 0; i < e->u.gencall.args.len; i++)
+            if (exprMakesPool(*(Expr **)vecAt(&e->u.gencall.args, i), descendBlocks)) return true;
+        return false;
+    /* The payload may build a pool of its own, and then the enclosing call needs a zone. */
+    case EX_DYN: return exprMakesPool(e->u.dynv.payload, descendBlocks);
+    default: return false;
     }
 }

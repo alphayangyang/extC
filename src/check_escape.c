@@ -1944,46 +1944,9 @@ Type *viewElemOf(Type *t) {
     return *(Type **)vecAt(&t->targs, 0);
 }
 
-/* Whether C itself can compare this type: numbers, `bool`, and enums.
- *
- * `str` is deliberately not in this set, because its `==` would degrade into a pointer
- * comparison, and an `eq` method is required instead.
- *
- * Returns:
- *   True when a C `==` on this type compares values rather than addresses. */
-bool cmpIsNative(Type *t) {
-    if (!t) return false;
-    if (ttIsError(t)) return true;
-    if (ttIsInteger(t) || ttIsFloat(t) || ttIs(t, "bool")) return true;
-    /* An enum with no payload is an integer in C, so it can be compared directly.
-     *
-     * One with a payload cannot: in C it is a `struct { tag; union }`, and C structs do not
-     * support `==`. Use `match` instead. A derived `_eq` would have to compare the payloads
-     * recursively and is not done for now. */
-    if (ttBase(t)->kind == TY_ENUM) return !enumHasPayload(ttBase(t)->edef);
-    return false;
-}
 
-/* Find an operator method defined on a type.
- *
- * `!=` is the special case: when there is no `!=` method, the lookup falls back to `==`
- * and negates it, which codegen does.
- *
- * Params:
- *   tt       - the type table (a generic receiver's arguments are substituted)
- *   b        - the type, with any wrapper already stripped
- *   sym      - the operator name to look for (`==`, `<`, `<<`, ...)
- *   rhs      - the type of the right operand; operators are matched on it exactly, and
- *              this is what makes a name being defined more than once decidable
- *   fallback - operator name to try when `sym` is absent, or NULL for none
- *
- * Returns:
- *   The method definition, or NULL when the type defines neither name for that operand. */
-FuncDef *findOp(TypeTable *tt, Type *b, const char *sym, Type *rhs, const char *fallback) {
-    FuncDef *m = findOperator(tt, b, sym, rhs);
-    if (!m && fallback) m = findOperator(tt, b, fallback, rhs);
-    return m;
-}
+
+
 
 /* Check the signature of an operator method at its definition site.
  *
@@ -2117,51 +2080,7 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
      * operand's exact type at every use. */
 }
 
-/* Whether this type supports the overloadable operator `op`, natively or through a
- * method whose name is the operator.
- *
- * This is the deferred per-instance rule, and it is deliberately the *same* predicate the
- * concrete-type path in check_expr.c applies: two copies of one rule drift, and the drift
- * would show up as a generic accepting what its own instance rejects. Each family answers
- * "native" differently, exactly as the concrete path does:
- *   - `==` / `!=` are native for numbers, `bool` and payload-free enums;
- *   - the ordering operators are native for numbers only;
- *   - the arithmetic operators are native for numbers, and `%` for integers.
- * A user method is accepted for any of them, and an array's `==` is derived by the
- * compiler as long as its elements have one.
- *
- * The signature of a user method was already validated at its definition site
- * (checkOperatorSig), so finding it by name is enough here.
- *
- * Params:
- *   t  - the type the operator is applied to
- *   op - the operator name, one of `==` `!=` `<` `<=` `>` `>=` `+` `-` `*` `/` `%`
- *
- * Returns:
- *   True when the operator is available for this type. */
-bool typeSupportsOp(TypeTable *tt, Type *t, const char *op, Type *rhs) {
-    if (!t) return false;
-    if (ttIsError(t)) return true;
-    bool isEq = isEqualityOp(op);
 
-    if (isEq ? cmpIsNative(t) : ttIsNumeric(t)) {
-        if (strcmp(op, "%") != 0 || ttIsInteger(t)) return true;
-    }
-    /* The compiler derives `==` for arrays, provided the elements can be compared -- and only
-     * against the **same** array type. This used to recurse into the element and ask whether the
-     * element compares with `rhs`, so `[1]i64 == i32` was approved at instantiation time (the
-     * deferred re-check runs once `T` is known and the element `i64` does compare with `i32`);
-     * the emitted descriptor comparison then read 8 bytes out of a 4-byte operand.
-     * ASan: stack-buffer-overflow in `extc_eq`, found by tools/fuzz.py in a mutation of
-     * examples/generic-free-fn.extc (docs/topics/HARDENING.md 三点七). */
-    if (isEq && t->kind == TY_ARRAY)
-        return rhs && ttEquals(ttBase(t), ttBase(rhs)) &&
-               typeSupportsOp(tt, t->inner, op, t->inner);
-
-    Type *b = ttBase(t);
-    if (!structOf(b)) return false;
-    return findOp(tt, b, op, rhs, isEq && strcmp(op, "!=") == 0 ? "==" : NULL) != NULL;
-}
 
 /* `?` is legal in only three places, so those three go through this entry point;
  * anywhere else an EX_TRY node is an error. */
@@ -2450,30 +2369,7 @@ Type *checkMaybeTry(Checker *c, Expr *e) {
 /* `==` inside a generic body is checked when the generic is instantiated rather than
  * here. */
 
-/* Whether a type is one of the two prelude containers that carry real semantics,
- * recognised by name and argument count.
- *
- * They are reserved definitions that a user may not redefine, so recognising them by
- * name is safe. `?` needs their tag field names, which is the same division of labour
- * as the view protocol of `data` plus `len`: the language knows the protocol, and the
- * library provides the structure.
- *
- * Params:
- *   t     - the type to test
- *   name  - the reserved container name (`option` or `result`)
- *   nargs - the number of type arguments it must carry
- *
- * Returns:
- *   True when `t` is that container with exactly that many type arguments. */
-bool isProtoType(Type *t, const char *name, size_t nargs) {
-    if (!t || t->targs.len != nargs) return false;
-    /* a generic struct: `slice<T>`, `varArray<T>` */
-    if (t->kind == TY_GENERIC && t->sdef) return strcmp(t->sdef->name, name) == 0;
-    /* A generic enum: `option<T>` and `result<T,E>` are enums, and an instance has the
-     * type `TY_ENUM` carrying concrete type arguments. */
-    if (t->kind == TY_ENUM && t->edef)    return strcmp(t->edef->name, name) == 0;
-    return false;
-}
+
 
 /* Check `e?`, which forwards a failure to the caller.
  *

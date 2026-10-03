@@ -9,6 +9,7 @@
  */
 
 #include "check.h"
+#include "typelayer.h"   /* the read-only type questions, shared with codegen */
 
 /* **编译计划不在这棵 AST 上**（X 批次）：存储与读写口都在 `src/plan.c` / `src/plan.h`
  * （按节点寻址的侧表 + 访问器/setter），codegen 只经访问器读；`tools/check_plan_seam.py`
@@ -1017,23 +1018,11 @@ int valDepthForStore (Checker *, Expr *);
  * 漏登记一个名字的后果（实测）：`extc_pool_new_table` 拿不到 zone ⇒
  * `extc_pool_new_at(parent, extc_zoneTop)` 撞上 `extc_zoneTop == -1` ⇒ **返回 -1**，
  * 表现成"对象表池作为程序里第一只池时创建失败"。判据：`tests/pool/rt_table_first.extc`。 */
-static inline bool isPoolCtorName(const char *n) {
-    return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_at") == 0 ||
-                 strcmp(n, "extc_pool_new_table") == 0);
-}
-static inline bool poolCtorNeedsZone(const char *n) {
-    return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_table") == 0);
-}
 
 /* The six pool primitives: `check_expr.c`'s `checkPoolPrim` validates their arity, `codegen.c`
  * lowers them by hand. **One list, one spelling** -- the two files used to write the six names out
  * separately (review F11), so a name added on one side would leave the other reading arguments it
  * never checked and re-deriving an arity of its own. */
-static inline bool isPoolPrimitiveName(const char *n) {
-    return n && (strcmp(n, "poolSlice") == 0 || strcmp(n, "poolSliceRaw") == 0 ||
-                 strcmp(n, "poolResize") == 0 || strcmp(n, "poolResizeRaw") == 0 ||
-                 strcmp(n, "poolGive") == 0 || strcmp(n, "copyInto") == 0);
-}
 
 bool calleeCreatesPool (FuncDef *f);
  void setPoolCalleeResolver (FuncDef *(*fn)(Expr *e));

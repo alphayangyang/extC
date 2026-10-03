@@ -172,7 +172,7 @@ parser ──► AST（冻结：构造后只读） ──► checker ──► R
 
 1. `codegen.c -> check_internal.h` —— 去掉它 14 个编译错误 ⇒ 真正依赖的是
    `isProtoType` / `isOverloadableOp` / `findOperator` / `findMethod` 这几个**类型层谓词**（P3：抽成共享只读模块）；
-2. `dataflow.c -> check_internal.h` —— 数据流助手写在检查器的 `Stmt` 事实上（P3 同批）；
+2. ~~`dataflow.c -> check_internal.h`~~ —— **P3 已解决**：那不是耦合，是文件名把工具骗了（`dataflow.h` 本就在检查器层）⇒ 改名 `check_dataflow.c`，见第 25 节；
 3. `parser.c -> plan.h` —— parser 反向依赖计划层（`for` 的步进今天记在 plan 上）（P2：`forStep` 归 parser）。
 
 **判据自己的诚实说明（写进脚本头注释，也写在这里）**
@@ -879,3 +879,54 @@ static void vecGrow(Vec *v) { ... }
 
 **棘轮**：`[ast-freeze]` **72 → 69**；其余四条不动。
 **验收**：构建零告警；tests **327/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0；quick 60/0。
+
+---
+
+## 25. P3 落地：`typelayer`（只读类型层）—— `[layering]` 基线归零
+
+### 25.1 做了什么
+
+`codegen.c` 原来 include `check_internal.h`（检查器的私有头），为的是 11 个谓词。
+现在有一个**只读类型层模块** `src/typelayer.h` / `typelayer.c`：
+
+| 类别 | 内容 |
+|---|---|
+| 运算符 | `isCmpOp` `isLogicOp` `isEqualityOp` `isOverloadableOp` `isArithOp` `cmpIsNative` |
+| 类型谓词 | `isProtoType` `mentionsParam` `typeSupportsOp` `structOf` |
+| 成员查找 | `findMethod` `findOperator` `findOp` |
+| 枚举 | `enumHasPayload` |
+| 池名（三处 inline，原来在 `check_internal.h`） | `isPoolCtorName` `poolCtorNeedsZone` `isPoolPrimitiveName` |
+| 池问题 | `stmtMakesPool`（定义在 `check_top.c`，见下） |
+
+**入模块的规则写在文件头**：函数只吃类型与节点、只回答问题、什么都不改 ——
+没有 `Checker`、没有侧表、没有 memo。任何需要检查器状态的都留在 `check_internal.h`。
+`check_internal.h` 现在**转发** `typelayer.h`，所以检查器各文件的 include 不用动。
+
+### 25.2 唯一一处"不纯"的，如实标注
+
+`stmtMakesPool` / `exprMakesPool` 问"这棵树能不能走到 `extc_pool_new`"，而**泛型体里对类型参数
+的协议方法故意没有记录被调者**（一份模板体、多个实例），所以纯 AST 答案是"否"、
+保守答案是"是"。检查器会装一个解析钩子（代入实例的类型实参）⇒ 这两个函数**不是纯函数**，
+不能按上面的规则入 `typelayer.c`。处理方式：**留在 `check_top.c`**，在 `typelayer.h` 里声明并
+写明"它为什么不是纯的"。**规则不为一个例外让路，例外被标注出来。**
+
+### 25.3 `dataflow.c` → `check_dataflow.c`：不是耦合，是文件名误导了工具
+
+第二条违规是 `dataflow.c -> check_internal.h`。查过之后：`dataflow.h` **本来就在阶段 4**
+（检查器层），也就是说这个 include 是**同层包含**，不是跨层。工具报它，是因为
+`dataflow.c` 这个名字让工具把它算进了别的阶段。
+⇒ 修的是**名字**（`git mv` + 工具的表 + `check_walkers.py` 的键 + 两处注释），**不是规则**。
+
+### 25.4 判据与反向验证
+
+```
+[layering] ok（全部违规都在基线里）      ← tools/layering-known-bad.txt 现在是空文件
+```
+
+反向验证：把 `codegen.c` 的 `#include "typelayer.h"` 临时改回 `check_internal.h`
+⇒ 立刻报 `NEW src/codegen.c -> check_internal.h`。**规则仍然生效**，不是被放行。
+
+### 25.5 验收
+
+**棘轮**：`[layering]` **2 → 0**（基线文件清空）；`[ast-freeze]` 67 不动；其余不动。
+**验收**：构建零告警；tests **327/0**；`tests/coro` 29/0。

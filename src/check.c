@@ -227,63 +227,19 @@ Type *tsub(Checker *c, Type *t) {
     return ttSubstitute(c->tt, t, c->substParams, c->substArgs);
 }
 
-/* Report whether a type mentions a type parameter, directly or inside a field.
- *
- * Params:
- *   t - the type to inspect
- *
- * Returns:
- *   True when the type cannot be judged yet, so the check has to be deferred until the
- *   instance is known.
- */
-bool mentionsParam(Type *t) {
-    return t && (t->kind == TY_PARAM || ttHasParam(t));
-}
+
 
 /* ---------------------------------------------------------------- helpers */
 
-/* Report whether `op` is one of the six comparison operators. */
-bool isCmpOp(const char *op) {
-    return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
-           strcmp(op, "<")  == 0 || strcmp(op, "<=") == 0 ||
-           strcmp(op, ">")  == 0 || strcmp(op, ">=") == 0;
-}
 
-/* Report whether `op` is `&&` or `||`. */
-bool isLogicOp(const char *op) {
-    return strcmp(op, "&&") == 0 || strcmp(op, "||") == 0;
-}
 
-/* Report whether `op` is `==` or `!=`.
- *
- * The pair shares everything that is special about it: one native rule, the `!=` -> `==`
- * fallback, and the diagnostics that talk about comparability rather than ordering. The
- * test used to be spelled out at each of those places. */
-bool isEqualityOp(const char *op) {
-    return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0;
-}
 
-/* Report whether this name is an operator that a type may define more than once.
- *
- * The overloadable set is the language's operator set, which is exactly the set the parser
- * allows as a method name. Kept in one function so the parser, the duplicate check and the
- * lookup cannot disagree about which names are operators.
- *
- * Returns:
- *   True for the comparison operators, the arithmetic ones and the stream operators. */
-bool isOverloadableOp(const char *name) {
-    return isCmpOp(name) || isArithOp(name) ||
-           strcmp(name, "<<") == 0 || strcmp(name, ">>") == 0;
-}
 
-/* Report whether `op` is one of the five arithmetic operators that can be overloaded.
- *
- * `-` is here as binary subtraction only: extC has no unary operator overloading, so a
- * method named `-` is reached by `a - b` and never by `-a`. */
-bool isArithOp(const char *op) {
-    return strcmp(op, "+") == 0 || strcmp(op, "-") == 0 || strcmp(op, "*") == 0 ||
-           strcmp(op, "/") == 0 || strcmp(op, "%") == 0;
-}
+
+
+
+
+
 
 /* Report whether an expression is an integer or floating-point literal.
  *

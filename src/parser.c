@@ -39,7 +39,7 @@ typedef struct {
 
 /* The compiler's nesting budget for blocks and expressions.
  *
- * The parser, the checker, the dataflow pass and the emitter all recurse once per nesting level,
+ * The parser, the checker, the dataflow helper and the emitter all recurse once per nesting level,
  * and C's stack is finite: 16000 nested parentheses and 1000 nested blocks used to take the whole
  * process down with SIGSEGV (audit P0-10) -- no diagnostic, and the driver could not tell "too
  * deep" from "crashed". Measured thresholds for **block** nesting, where the frames are fattest:

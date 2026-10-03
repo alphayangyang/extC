@@ -39,7 +39,7 @@ ALLOW = {
     # records it here with the reason; the gate then prints `allowed` instead of `MISSING`. This
     # only became visible after `dfStmt` was tagged `/*@@all-kinds*/` -- before that the gate did
     # not even look at it (it is mutually recursive with `dfBlock`).
-    "dataflow.c:dfStmt": "`ST_YIELD` carries only an expression, and dfStmt tracks binding depths "
+    "check_dataflow.c:dfStmt": "`ST_YIELD` carries only an expression, and dfStmt tracks binding depths "
                          "without descending into expressions (its `ST_EXPR` case is a leaf too)",
 }
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.

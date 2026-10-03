@@ -20,7 +20,7 @@
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
  * `isProtoType` and `enumHasPayload` were duplicated here as static copies of the
  * checker's - the same hazard in a smaller form - and are gone. */
-#include "check_internal.h"
+#include "typelayer.h"   /* the read-only type questions (R3: no checker header here) */
 #include "time.h"
 
 #include <assert.h>     /* the entry-point contracts below */
