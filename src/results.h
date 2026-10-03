@@ -108,6 +108,13 @@ typedef struct {
         int  homeDepth;
         int  lexicalLevel;
         int  storedAt;
+        /* operator / comparison facts (T4, sixth family) */
+        int  minAt;            /* the block level a borrow must outlive */
+        bool reuse;            /* the value may be reused at the same site */
+        bool borrowed;         /* the value is borrowed (mirrors `Sym.borrowed`) */
+        bool qualified;        /* the user wrote a qualified name (`a::b`) */
+        bool convCheck;        /* a narrowing conversion whose runtime check is emitted */
+        bool needOp;           /* a comparison over a type parameter, resolved at instantiation */
     } an;
     /* which of the fields above were written; an unset field reads as its default */
     uint64_t setMask;   /* a plain enum cannot hold bits above 31 in C11 */

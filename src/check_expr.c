@@ -173,7 +173,7 @@ static bool exprHasAnyCall(Expr *e);            /* the syntactic question; see i
  *     required to be a constant, and the comparison there is reported on its own terms.
  */
 static void deferOp(Checker *c, Expr *e, const char *op) {
-    e->needOp = true;
+    planSetNeedOp(e, true);
     if (!c->curFunc) return;
     OpCheck *oc = (OpCheck *)arenaAllocZero(c->arena, sizeof(OpCheck));
     oc->node  = e;
@@ -1247,7 +1247,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
         case EX_IDENT: {
             Sym *s = lookup(c, e->u.ident.name);
-            if (s && s->modName && !e->qualified)
+            if (s && s->modName && !anQualified(e))
                 requireQualified(c, e->u.ident.name, s->modName, false, e->line);
             if (!s) {
                 /* A **function name used as a value**: `var f: fn(i64) -> i64 = double_it`.
@@ -2254,7 +2254,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (ttIs(t, "u64") || ttIs(t, "i64")) {
                     /* `convCheck = false`: there is nothing to check -- the bits are the same width,
                      * and a pointer's value is whatever the machine put there. */
-                    e->convCheck = false;
+                    planSetConvCheck(e, false);
                     return t;
                 }
                 ckError(c, e->line,
@@ -2279,7 +2279,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * so it is not checked either. Everything else -- narrowing, a sign change, float
              * to integer -- is checked. */
             bool lossless = (si && ti && ttCanWiden(src, t)) || (sf && tf);
-            e->convCheck = !lossless;
+            planSetConvCheck(e, !lossless);
             return t;
         }
 
@@ -2336,16 +2336,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * complete. */
             if (planArenaLevel(e) == 0)
                 planSetArenaLevel(e, (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
-                              : (e->reuse ? 1 : (int)c->scopes.len));
+                              : (anReuse(e) ? 1 : (int)c->scopes.len));
             c->allocSites++;
             /* Keep the lexical level in its own field: the branch above may have replaced
              * `arenaLevel` with the `ARENA_HOME` sentinel, while the solver still needs to
              * know which block the site started in. */
             if (anLexicalLevel(e) == 0)
-                anSetLexicalLevel(e, e->reuse ? 1 : (int)c->scopes.len);
+                anSetLexicalLevel(e, anReuse(e) ? 1 : (int)c->scopes.len);
             /* Initial value: no constraint has touched this site yet. Relying on the 0 from
              * `arenaAllocZero` would be wrong, because 0 means "must outlive the frame". */
-            e->minAt = -1;
+            anSetMinAt(e, -1);
         *(Expr **)vecPush(&c->curArenaSites) = e;
             /* `refDepth` follows `arenaLevel`: the two must always be the same number. The
              * only exception is `ARENA_HOME`, whose sentinel is -1 while `refDepth` speaks of
@@ -2434,7 +2434,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->kind = EX_CALL;
                     e->u.call.callee = id;
                     e->u.call.args   = args;
-                    e->qualified     = true;      /* do not trigger the qualification check */
+                    anSetQualified(e, true);      /* do not trigger the qualification check */
                     planSetCallee(e, inst);
                     /* Hand the written type arguments to the EX_CALL path below through a side
                      * table: without it that path inferred from scratch, so `f<i64>(x)` was pure
@@ -2573,7 +2573,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `new` does. Without the line, the `inner` of `examples/alloc-in-block` was taken
              * to outlive the frame and was emitted as `__extc_home` although it has no home
              * arena, so the generated C did not compile. */
-            e->minAt = -1;
+            anSetMinAt(e, -1);
             /* `alloc` has to be registered as an allocation site, the same way `new` is
              * registered in the EX_NEW case above with `vecPush(&c->curArenaSites)`. Without
              * the registration, the rewrite pass that runs after the closure cannot see it, so
@@ -2909,7 +2909,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * way. The test is simply whether the name contains `$`: the character is not legal
              * in an extC identifier, so when it appears the name must be one the loader mangled,
              * and only then is the function really missing. */
-            if (!f && name && !strchr(name, '$') && !e->qualified) {
+            if (!f && name && !strchr(name, '$') && !anQualified(e)) {
                 for (size_t i = 0; i < c->m->funcs.len; i++) {
                     FuncDef *cand = *(FuncDef **)vecAt(&c->m->funcs, i);
                     const char *d = cand->name ? strchr(cand->name, '$') : NULL;
@@ -2919,7 +2919,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
             }
-            if (f && !f->reserved && f->modName && !e->qualified)
+            if (f && !f->reserved && f->modName && !anQualified(e))
                 requireQualified(c, shownName, f->modName, false, e->line);
             if (!f) {
                 /* A bare enum constructor. The error has to point the way instead of saying

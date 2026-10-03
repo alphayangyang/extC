@@ -74,6 +74,17 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- operator / comparison facts (T4) -----------------------------------------------
+ *
+ * `planConvCheck` / `planNeedOp` are read by code generation; the `anXxx` entries are the
+ * checker's own state (see `planAnalysisFields` in plan.c). */
+int  anMinAt(const void *node);        void anSetMinAt(void *node, int v);
+bool anReuse(const void *node);        void anSetReuse(void *node, bool v);
+bool anBorrowed(const void *node);     void anSetBorrowed(void *node, bool v);
+bool anQualified(const void *node);    void anSetQualified(void *node, bool v);
+bool planConvCheck(const Expr *e);     void planSetConvCheck(Expr *e, bool v);
+bool planNeedOp(const Expr *e);        void planSetNeedOp(Expr *e, bool v);
+
 /* ---- call / receiver facts (T4) -----------------------------------------------------
  *
  * All read by code generation: where a task is handed (`EX_EXT`), which field an `EX_FIELD`

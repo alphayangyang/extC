@@ -1173,7 +1173,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         if (dbgOn("EXTC_DBG_FACT"))
             fprintf(stderr, "[fact] %-8s at=%d kind=%d minAt=%d lexi=%d line=%d\n",
                     c->curFunc?c->curFunc->name:"?", at, (int)val->kind,
-                    val->minAt, anLexicalLevel(val), val->line);
+                    anMinAt(val), anLexicalLevel(val), val->line);
         recordLvlFact(c, val, at); applyLvlFact(c, val, at);
     }
     switch (val->kind) {
@@ -1207,7 +1207,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * to outlive the frame. `nb = new item[cap*2]` only has to live until the end of the
          * current frame, so treating it as "goes home" would make `main`, which has no home, emit
          * `__extc_home`. */
-        if (val->minAt < 0 || at < val->minAt) val->minAt = at;
+        if (anMinAt(val) < 0 || at < anMinAt(val)) anSetMinAt(val, at);
         /* Already in the home arena: the home lives longest, so there is
          * nothing to promote. */
         if (planArenaLevel(val) == ARENA_HOME) return true;
@@ -1439,7 +1439,7 @@ void recordLvlFact(Checker *c, Expr *val, int at) {
 static void applyLvlFact(Checker *c, Expr *val, int at) {
     (void)c;
     if (!val || at < 0) return;
-    if (val->minAt < 0 || at < val->minAt) val->minAt = at;
+    if (anMinAt(val) < 0 || at < anMinAt(val)) anSetMinAt(val, at);
 }
 
 /* Find the root origin of a value.
@@ -1674,7 +1674,7 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
      * Computing it later instead was a dead end: by instantiation time the function scope
      * is gone, the depth comes out as 0, and the check silently stops firing. */
     rc->depth    = targetDepth(c, val);
-    rc->borrowed = exprBorrowed(c, val);
+    anSetBorrowed(rc, exprBorrowed(c, val));
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 

@@ -1,7 +1,11 @@
-# 分析侧字段（只有检查器读写；codegen 一读就必须搬走）
+# 分析侧字段（只有检查器读写；codegen 一读就必须搬走并配 planXxx 访问器）
+borrowed
 homeDepth
 lamSig
 lexicalLevel
 makesPoolAny
+minAt
+qualified
 refDepth
+reuse
 storedAt

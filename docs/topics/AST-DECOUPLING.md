@@ -571,3 +571,29 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
 **过程教训（第三次同类，必须记死）**：`u.<variant>.<member>->field` 与 `<expr>->field`
 是**两种形状**，用一条正则处理会互相咬（我这次叠了两次补丁，反而多坏了 5 行，最后只能
 **逐行手写**）。规矩：**只要一条替换的"形状"不唯一，就不许用脚本 —— 逐行手改**。
+
+## 18. T4 第六族：`Expr` 的"运算符/比较"组（6 个字段）
+
+| 字段 | 桶 | 依据 |
+|---|---|---|
+| `minAt` `reuse` `borrowed` `qualified` | **ANALYSIS** | codegen 读点 0 |
+| `convCheck` `needOp` | **PLAN** | codegen 各读 1/3（`needOp`：deferred 运算符要重解析；`convCheck`：窄化转换要发运行期检查） |
+
+**改动**：`results.h` 加 6 个槽位；`plan.c` 加位（41–46）+ 宏生成 4 组整数/布尔访问器
++ 手写 `planConvCheck`/`planNeedOp`（它们只打在表达式上，签名取 `Expr *` 更诚实）；
+`planAnalysisFields` 加 4 个名字；18 处写、30 处读改经访问器；`ast.h` 删 6 个字段。
+
+**新闸门第一次抓到"自己"**：搬完之后 `[plan-seam]` 立刻红 ——
+`新增分析侧字段 reuse —— 若 codegen 读它，必须改成 planXxx 访问器`。
+这正是它存在的意义：**换桶必须登记**。补登记后 ok（清单从 6 个变 10 个）。
+
+**棘轮**：`[ast-freeze]` **110 → 102**；`[layering]`/`[callsite]`/`[tmpl-owners]` 不动。
+
+**验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
+
+**过程（第四次同类形状问题，规矩已定死）**：写点替换再次咬到 `s->u.var.init->reuse`
+（正则只吃到 `init`），读点替换这次**按字段逐个做并立刻核对**才没有扩大伤害。
+本批次累计四次同类事故，规矩确定为：
+1. **一条替换的"形状"不唯一 ⇒ 不许用脚本，逐行手改**；
+2. 修复必须**从快照取原文**，不许叠补丁（叠补丁已两次把 5–6 行改得更坏）；
+3. 每改完一批**立刻**跑 `tests/run.sh`，不要攒着（这次正是立刻跑才只坏了 39 个用例就停住）。

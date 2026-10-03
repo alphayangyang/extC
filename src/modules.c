@@ -40,6 +40,7 @@
 #include "modules.h"
 #include "lexer.h"
 #include "parser.h"
+#include "plan.h"      /* the qualified-name flag the loader records on a node */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -982,7 +983,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         if (rwQualifiedTypeName(L, self, tn, &mangled) && mangled) {
             e->u.ident.name = mangled;             /* the union changes: take the name out first */
             e->kind = EX_IDENT;
-            e->qualified = true;                   /* the source wrote a qualified name */
+            anSetQualified(e, true);                   /* the source wrote a qualified name */
             return;
         }
         (void)0;
@@ -1058,17 +1059,17 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
          * `std::sys::process::exit`), the call was rewritten to that local name, i.e. to
          * **itself**: unbounded recursion at run time, with no diagnostic at all
          * (PLAN.md section 0.4, `#56`). */
-        id->qualified   = true;
+        anSetQualified(id, true);
         e->kind = EX_CALL;
         e->u.call.callee = id;
         e->u.call.args   = args;
-        e->qualified     = true;               /* already qualified: the checker stops asking */
+        anSetQualified(e, true);               /* already qualified: the checker stops asking */
         return;
     }
     if (g) {
         e->kind = EX_IDENT;
         e->u.ident.name = g->name;
-        e->qualified    = true;                /* the source wrote a qualified name */
+        anSetQualified(e, true);                /* the source wrote a qualified name */
         return;
     }
     /* The third thing a qualified name can be is a **type**, and `mod::Type` reaches this
@@ -1098,7 +1099,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
             const char *ren = renOfTarget(target, nm);
             e->kind = EX_IDENT;
             e->u.ident.name = ren;
-            e->qualified    = true;            /* the source wrote a qualified name */
+            anSetQualified(e, true);            /* the source wrote a qualified name */
             return;
         }
     }
@@ -1159,7 +1160,7 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
         const char *m = NULL;
         if (e->u.ident.name && rwQualifiedTypeName(L, self, e->u.ident.name, &m) && m) {
             e->u.ident.name = m;
-            e->qualified = true;     /* written qualified: stop asking for a qualifier */
+            anSetQualified(e, true);     /* written qualified: stop asking for a qualifier */
         } else {
             rwExprName(self, e);     /* the `color` of `color.green` becomes `e1$color` */
         }
@@ -1590,7 +1591,7 @@ static void rwExprName(ModUnit *self, Expr *e) {
     /* A name that a qualified reference already resolved belongs to another module:
      * renaming it by **this** module's table would bind it to a local declaration of the
      * same spelling, which compiles and means something else. */
-    if (e->qualified) return;
+    if (anQualified(e)) return;
     /* Does this unit declare the name itself? A unit's own declaration wins over
      * anything an opened module offers, so this is asked first.
      *
@@ -1607,7 +1608,7 @@ static void rwExprName(ModUnit *self, Expr *e) {
      * rewritten to the flat one and marked qualified, which is exactly what writing
      * `mod::name` produces -- so the rest of the pipeline needs no second rule. */
     const char *open = (self && nm) ? openLookup(self, nm, e->line) : NULL;
-    if (open) { e->u.ident.srcName = nm; e->u.ident.name = open; e->qualified = true; }
+    if (open) { e->u.ident.srcName = nm; e->u.ident.name = open; anSetQualified(e, true); }
 }
 
 /* Merge one unit's declarations into the program module.

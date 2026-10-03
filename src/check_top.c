@@ -3283,8 +3283,8 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
     switch (val->kind) {
     case EX_NEW:
     case EX_GENCALL:
-        /* The site this whole walk was looking for. */        if (target < LEVEL_INF && (val->minAt < 0 || target < val->minAt)) {
-            val->minAt = target;
+        /* The site this whole walk was looking for. */        if (target < LEVEL_INF && (anMinAt(val) < 0 || target < anMinAt(val))) {
+            anSetMinAt(val, target);
         }
         return target;
     case EX_IDENT: {
@@ -3590,7 +3590,7 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
     }
     case EX_NEW:
     case EX_GENCALL:
-        return val->minAt >= 0 ? val->minAt : anLexicalLevel(val);
+        return anMinAt(val) >= 0 ? anMinAt(val) : anLexicalLevel(val);
     default:
         return LEVEL_INF;
     }
@@ -4557,7 +4557,7 @@ static bool isConstInit(Expr *e) {
      * (`((uint64_t)extc_narrowU((uint64_t)(4096), ...))`, measured with `let PAGE: u64 = u64(4096)`),
      * and gcc refuses that in a static initializer. Saying so here means the user gets "must be
      * initialized with a constant" instead of a gcc error in the product. */
-    case EX_CONV: return !e->convCheck && isConstInit(e->u.conv.operand);
+    case EX_CONV: return !planConvCheck(e) && isConstInit(e->u.conv.operand);
     default: return false;
     }
 }
@@ -5097,7 +5097,7 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
                     " dies first (depth %d, but this can only hold up to %d)",
                     instName, rc->target ? "this assignment" : rc->what,
                     rc->depth, rc->at);
-        } else if (rc->target && rc->at == 0 && rc->borrowed
+        } else if (rc->target && rc->at == 0 && anBorrowed(rc)
                    && !valTracesToParam(c, rc->func, rc->val)) {   /* not parameter-backed */
             ckError(c, rc->line,
                     "A generic body is checked once on the template, where `T` is"
@@ -6343,20 +6343,20 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                      * same shape with an inlined container needed only 50 MB. */
                     if (dbgOn("EXTC_DBG_MINAT"))
                         fprintf(stderr, "[minAt] %-8s line=%-4d minAt=%-3d arena=%d\n",
-                                f->name ? f->name : "?", site->line, site->minAt, planArenaLevel(site));
+                                f->name ? f->name : "?", site->line, anMinAt(site), planArenaLevel(site));
                     if (dbgOn("EXTC_DBG_SITE2"))
                         fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
-                                f->name?f->name:"?", site->minAt, anLexicalLevel(site),
+                                f->name?f->name:"?", anMinAt(site), anLexicalLevel(site),
                                 planArenaLevel(site), f->needsHome?1:0, (int)site->kind);
                     if (dbgOn("EXTC_DBG_S3"))
                         fprintf(stderr, "[s3] %-8s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
-                                f->name?f->name:"?", site->minAt, anLexicalLevel(site),
+                                f->name?f->name:"?", anMinAt(site), anLexicalLevel(site),
                                 planArenaLevel(site), f->needsHome?1:0, (int)site->kind);
                     int want;                            /* the arena it finally belongs to */
-                    if (site->minAt == 0) {
+                    if (anMinAt(site) == 0) {
                         want = ARENA_HOME;              /* must outlive this frame => home arena */
-                    } else if (site->minAt >= 1) {
-                        want = site->minAt;             /* must live to level k => block arena k */
+                    } else if (anMinAt(site) >= 1) {
+                        want = anMinAt(site);             /* must live to level k => block arena k */
                     } else {
                         /* No constraint touched it, so use its own level.
                          * `arenaLevel` cannot be consulted here: the provisional pass already
@@ -6669,7 +6669,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                             f->name ? f->name : "?", anRefDepth(site), planArenaLevel(site), want);
                     bad++;
                 }
-                if (site->minAt == 0 && planArenaLevel(site) != ARENA_HOME) {
+                if (anMinAt(site) == 0 && planArenaLevel(site) != ARENA_HOME) {
                     fprintf(stderr, "[selfcheck] site at line %d of %s: minAt=0 (must outlive"
                             " this frame) but it was not placed in the home arena\n",
                             site->line, f->name ? f->name : "?");

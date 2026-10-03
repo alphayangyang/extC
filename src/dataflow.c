@@ -182,7 +182,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
          * the `new node` behind `mid` to level 1, while this reported depth 2 for `head`,
          * `mid` and `cell` alike -- and the data flow may only raise a depth, so the wrong
          * answer survived the write-back. */
-        if (e->minAt >= 0) return e->minAt;
+        if (anMinAt(e) >= 0) return anMinAt(e);
         return anLexicalLevel(e) > 0 ? anLexicalLevel(e) : 0;
     case EX_FIELD: {
         Sym *root = dfRootOf(c, e);

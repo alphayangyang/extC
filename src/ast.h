@@ -206,12 +206,11 @@ struct Expr {
      * `EX_EXT` task is handed to, the field an `EX_FIELD` resolved to, and the instance type an
      * `EX_ASSOC` resolved to (kept so the C name can be mangled). Storage is the plan side
      * table: `planExtDom`, `planField`, `planAssocOwner` in plan.h. */
-    bool      needOp;   /* a comparison whose operand mentions a type parameter, so the
-                         * check waits until the generic is instantiated. Set for every
-                         * overloadable operator (`==` `!=` `<` `<=` `>` `>=` and the
-                         * arithmetic ones), not only `==`: the deferral is one mechanism
-                         * and code generation re-resolves whichever operator this node
-                         * carries. */
+    /* Those in the analysis side: the block level a borrow must outlive, whether the value
+     * may be reused at the same site, whether it is borrowed, whether the source wrote a
+     * qualified name, whether a narrowing conversion gets a runtime check, and whether a
+     * comparison over a type parameter still has to be resolved at instantiation (that last
+     * one is read by codegen: `planNeedOp`). See `planAnalysisFields` in plan.c. */
     bool      deref;    /* The expression sits in value position while its type is
                          * `ref T`, so code generation emits `*(...)`.
                          * The checker treats a `ref T` as the `T` itself -- what may
@@ -247,7 +246,6 @@ struct Expr {
      * `nb = new item[cap * 2]` only has to live until the end of the current frame,
      * but treating "touched" as "goes into the home arena" made `main` emit a
      * `__extc_home` it does not have, and the generated C did not compile. */
-    int       minAt;
     /* The shallowest level at which this value has been observed being published (stored
      * into a place, returned, or handed to a call that may keep it). `-1` means the
      * question has not been asked yet. Recording is the only thing the checking pass
@@ -258,13 +256,11 @@ struct Expr {
      * storage: it is allocated lazily in the function frame and cleared before every
      * reuse. The level therefore follows the function body rather than the block the
      * statement sits in. */
-    bool      reuse;
     /* Are the references inside this value borrowed from outside this call, that is,
      * do they come from a parameter or from a call that returned them? A borrowed
      * value may not be stored anywhere that outlives this call, because the compiler
      * does not know how long it really lives: it may point into a local of the
      * caller's frame that dies before the destination does. */
-    bool      borrowed;
     /* Which arena should this call pass to a callee that has a home arena? The answer
      * follows the shallowest `mut ref` argument: newly allocated objects live as long
      * as the storage that argument points into.
@@ -284,12 +280,10 @@ struct Expr {
      * its flat form? The loader sets this flag on that path only, which is how the
      * checker tells "the user wrote a qualified name" apart from "the user forgot the
      * module prefix". */
-    bool      qualified;
     /* Explicit conversion: is a runtime check needed? Integer narrowing, a sign
      * change, and float to integer may all lose the value, while a conversion whose
      * result provably fits is not checked. What the compiler can prove at compile
      * time leaves no trace at runtime. */
-    bool      convCheck;
 
     union {
         long long ival;

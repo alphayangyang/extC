@@ -327,7 +327,7 @@ void checkStmt(Checker *c, Stmt *s) {
                             " allocation");
                     return;
                 }
-                s->u.var.init->reuse = true;
+                anSetReuse(s->u.var.init, true);
             }
 
             /* `let x = new T` leaves that storage zero forever. The claim is

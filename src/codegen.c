@@ -1320,7 +1320,7 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
  * An overloadable operator that the checker already resolved carries the method
  * to call in `planCallee(e)`: that covers `==` `!=` and the ordering and arithmetic
  * operators. The same operators are emitted from here
- * when the operand was a type parameter inside a generic: `e->needOp` says the
+ * when the operand was a type parameter inside a generic: `planNeedOp(e)` says the
  * decision was deferred, and the instance context is what makes `T` resolvable
  * now.
  *
@@ -1367,7 +1367,7 @@ static const char *genBin(CG *g, Expr *e) {
      * implementation. The semantics are unchanged: recurse element by element,
      * and call the user's `fn ==` for a struct element.
      *
-     * The condition must not also require `!e->needOp`: a comparison inside a
+     * The condition must not also require `!planNeedOp(e)`: a comparison inside a
      * generic is resolved at instantiation, and after substitution the element
      * type can well turn out to be an array - comparing two rows of a
      * `slice<[6]i32>` is that case. That guard used to be here, so such a
@@ -1383,7 +1383,7 @@ static const char *genBin(CG *g, Expr *e) {
         }
     }
 
-    if (planCallee(e) || e->needOp) {
+    if (planCallee(e) || planNeedOp(e)) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         FuncDef *m = planCallee(e)
                      ? planCallee(e)
@@ -2681,7 +2681,7 @@ static const char *genExprInner(CG *g, Expr *e) {
         case EX_CONV: {
             Type *t = subst(g, e->u.conv.type);          /* target type, from the checker */
             const char *x = genExpr(g, e->u.conv.operand);
-            if (!e->convCheck)
+            if (!planConvCheck(e))
                 return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
 
             /* A checked conversion: look the range up in a table and go
