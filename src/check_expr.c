@@ -639,8 +639,8 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
     /* The uniform tables are emitted only for a trait that is actually dispatched through -- this
      * is also what keeps an object-unsafe method (no receiver, generic, or returning `Self`) from
      * having to appear in one. */
-    tr->usedDyn = true;
-    c->m->usesDyn = true;
+    planSetUsedDyn(tr, true);
+    planSetUsesDyn(c->m, true);
     Type *pt = ttBase(payT);
     bool impl = false;
     for (size_t i = 0; i < c->m->impls.len && !impl; i++) {
@@ -649,8 +649,8 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
          * the same is what counts -- comparing the types themselves never matches `pair<i64>`
          * against `pair<T>`, which is what rejected `dyn Tag(p)` with "`pair_i64` does not
          * implement `Tag`" (tools/attack.py F1). */
-        Type *it = im->target ? ttBase(im->target) : NULL;
-        impl = im->trait == tr && it && pt &&
+        Type *it = planImplTarget(im) ? ttBase(planImplTarget(im)) : NULL;
+        impl = planImplTrait(im) == tr && it && pt &&
                (ttEquals(it, pt) || (it->sdef && it->sdef == pt->sdef));
         /* A **generic** impl (`impl<T> Tag for pair<T>`) is matched by declaration, and its methods
          * are shared by every instance -- so mark them used here: that is what makes the per-instance

@@ -38,7 +38,10 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        PLAN_CNAME = 1u << 19,
        /* struct-definition facts (first family of the analysis side) */
        PLAN_BUILTIN_HOLDER = 1u << 20, PLAN_CORO_OF = 1u << 21,
-       AN_LAM_SIG = 1u << 22, AN_MAKES_POOL_ANY = 1u << 23 };
+       AN_LAM_SIG = 1u << 22, AN_MAKES_POOL_ANY = 1u << 23,
+       /* impl / trait / module facts (T4, second family) */
+       PLAN_IMPL_TRAIT = 1u << 24, PLAN_IMPL_TARGET = 1u << 25,
+       PLAN_USED_DYN = 1u << 26, PLAN_USES_DYN = 1u << 27 };
 
 /* The analysis half of the slot, by name: the checker's own working state, which no later
  * phase reads. Named here so the two audiences cannot quietly merge -- a field that code
@@ -270,6 +273,52 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
     r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
+}
+
+/* ---- impl / trait / module facts (T4, second family) -------------------------------- */
+
+TraitDef *planImplTrait(const ImplDef *im) {
+    NodeResults *r = resultsOf(im, false);
+    return (r && (r->setMask & PLAN_IMPL_TRAIT)) ? r->implTrait : NULL;
+}
+void planSetImplTrait(ImplDef *im, TraitDef *tr) {
+    if (!im) return;
+    NodeResults *r = resultsAs(im, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->implTrait = tr; r->setMask |= PLAN_IMPL_TRAIT;
+}
+
+Type *planImplTarget(const ImplDef *im) {
+    NodeResults *r = resultsOf(im, false);
+    return (r && (r->setMask & PLAN_IMPL_TARGET)) ? r->implTarget : NULL;
+}
+void planSetImplTarget(ImplDef *im, Type *t) {
+    if (!im) return;
+    NodeResults *r = resultsAs(im, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->implTarget = t; r->setMask |= PLAN_IMPL_TARGET;
+}
+
+bool planUsedDyn(const TraitDef *tr) {
+    NodeResults *r = resultsOf(tr, false);
+    return r && (r->setMask & PLAN_USED_DYN) ? r->usedDyn : false;
+}
+void planSetUsedDyn(TraitDef *tr, bool v) {
+    if (!tr) return;
+    NodeResults *r = resultsAs(tr, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->usedDyn = v; r->setMask |= PLAN_USED_DYN;
+}
+
+bool planUsesDyn(const Module *m) {
+    NodeResults *r = resultsOf(m, false);
+    return r && (r->setMask & PLAN_USES_DYN) ? r->usesDyn : false;
+}
+void planSetUsesDyn(Module *m, bool v) {
+    if (!m) return;
+    NodeResults *r = resultsAs(m, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->usesDyn = v; r->setMask |= PLAN_USES_DYN;
 }
 
 bool planUsed(const FuncDef *f) {

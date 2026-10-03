@@ -74,6 +74,20 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- impl / trait / module facts (T4) ----------------------------------------------
+ *
+ * All four are read by code generation, so they are plan facts. `trait`/`target` are
+ * resolved by the checker while it interns type names; `usedDyn`/`usesDyn` are set the
+ * moment a `dyn` form is seen, and decide whether the dyn runtime is emitted. */
+TraitDef *planImplTrait(const ImplDef *im);
+void      planSetImplTrait(ImplDef *im, TraitDef *tr);
+Type     *planImplTarget(const ImplDef *im);
+void      planSetImplTarget(ImplDef *im, Type *t);
+bool      planUsedDyn(const TraitDef *tr);
+void      planSetUsedDyn(TraitDef *tr, bool v);
+bool      planUsesDyn(const Module *m);
+void      planSetUsesDyn(Module *m, bool v);
+
 /* The template this instance was materialized from (NULL when `f` is not an instance).
  * Writer: instance materialization, which is the only place an instance is created.
  * Stale: names and type arguments are taken from the wrong function. */

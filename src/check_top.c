@@ -230,30 +230,30 @@ static void checkDeclarations(Checker *c) {
     for (size_t i = 0; i < m->impls.len; i++) {
         if (i + 8 < m->impls.len) __builtin_prefetch(*(ImplDef **)vecAt(&m->impls, i + 8), 0, 0);
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
-        if (!im->trait || !im->target) continue;
-        StructDef *sd = structOf(im->target);
+        if (!planImplTrait(im) || !planImplTarget(im)) continue;
+        StructDef *sd = structOf(planImplTarget(im));
         if (!sd) continue;
         Vec selfParams, selfArgs;
         vecInit(&selfParams, c->arena, sizeof(const char *));
         vecInit(&selfArgs,   c->arena, sizeof(Type *));
         *(const char **)vecPush(&selfParams) = "Self";
-        *(Type **)vecPush(&selfArgs) = im->target;
+        *(Type **)vecPush(&selfArgs) = planImplTarget(im);
         /* `impl Codec<i64> for box`: the trait's **own** parameters substitute through the same
          * pair of parallel lists, so a declared signature that mentions `T` is compared against
          * the implementation as `i64`. Without this the conformance check compared `T` with `i64`
          * and rejected every explicit-parameter trait. */
-        for (size_t pi = 0; pi < im->traitArgs.len && pi < im->trait->typeParams.len; pi++) {
+        for (size_t pi = 0; pi < im->traitArgs.len && pi < planImplTrait(im)->typeParams.len; pi++) {
             *(const char **)vecPush(&selfParams) =
-                *(const char **)vecAt(&im->trait->typeParams, pi);
+                *(const char **)vecAt(&planImplTrait(im)->typeParams, pi);
             /* Resolved, not as written: the parser hands back an unresolved `i64`, and substituting
              * that in produces a look-alike node that `ttEquals` (interning identity) rejects --
              * the check then reported "is `i64`, but the trait declares `i64`". */
             *(Type **)vecPush(&selfArgs) =
                 ttResolve(c->tt, c->ctx, *(Type **)vecAt(&im->traitArgs, pi), im->line, NULL);
         }
-        for (size_t k = 0; k < im->trait->methods.len; k++) {
-            if (k + 8 < im->trait->methods.len) __builtin_prefetch(*(FuncDef **)vecAt(&im->trait->methods, k + 8), 0, 0);
-            FuncDef *want = *(FuncDef **)vecAt(&im->trait->methods, k);
+        for (size_t k = 0; k < planImplTrait(im)->methods.len; k++) {
+            if (k + 8 < planImplTrait(im)->methods.len) __builtin_prefetch(*(FuncDef **)vecAt(&planImplTrait(im)->methods, k + 8), 0, 0);
+            FuncDef *want = *(FuncDef **)vecAt(&planImplTrait(im)->methods, k);
             FuncDef *have = NULL;
             for (size_t j = 0; j < sd->methods.len && !have; j++) {
                 FuncDef *cand = *(FuncDef **)vecAt(&sd->methods, j);
@@ -266,7 +266,7 @@ static void checkDeclarations(Checker *c) {
                         "The implementation repeats the trait's signature exactly, including"
                         " whether the method takes a receiver.",
                         "`%s`: `%s` does not match the signature the trait declares",
-                        im->trait->name, want->name);
+                        planImplTrait(im)->name, want->name);
                 continue;
             }
             for (size_t j = 1; j < want->params.len; j++) {
@@ -284,7 +284,7 @@ static void checkDeclarations(Checker *c) {
                             "A trait method's parameter types are part of the contract and must"
                             " match exactly (`Self` stands for the implementing type).",
                             "`%s`: parameter %zu of `%s` is `%s`, but the trait declares `%s`",
-                            im->trait->name, j + 1, want->name,
+                            planImplTrait(im)->name, j + 1, want->name,
                             typeStr(c, ttBase(hp->type)), typeStr(c, wantT));
             }
             Type *wantR = want->ret && mentionsParam(want->ret)
@@ -296,7 +296,7 @@ static void checkDeclarations(Checker *c) {
                         "A trait method's return type is part of the contract and must match"
                         " exactly (`Self` stands for the implementing type).",
                         "`%s`: `%s` returns `%s`, but the trait declares `%s`",
-                        im->trait->name, want->name, typeStr(c, haveR), typeStr(c, wantR));
+                        planImplTrait(im)->name, want->name, typeStr(c, haveR), typeStr(c, wantR));
         }
     }
 
@@ -5555,7 +5555,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                              "`%s` is already implemented for `%s` (first at line %d)",
                              im->traitName, im->typeName, prev->line);
             }
-            im->trait = tr;
+            planSetImplTrait(im, tr);
             /* Completeness. Whether the signatures agree is a question for the types, and is
              * answered once those are resolved; this half asks whether the names are there. */
             for (size_t k = 0; k < tr->methods.len; k++) {
@@ -5683,12 +5683,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * the operand types, which is only meaningful then). */
         for (size_t j = 0; j < im->methods.len; j++) {
             FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
-            im->target = t;                 /* resolved here, read by the conformance pass and codegen */
+            planSetImplTarget(im, t);                 /* resolved here, read by the conformance pass and codegen */
             /* Orphan rule: the block must live where the trait is declared or where the type is
              * declared. Anywhere else it has no home -- and because a type has exactly one method
              * set, a competing implementation from a third module would surface as an unrelated
              * duplicate-method error far from its cause. */
-            if (im->trait && !sameModule(im->modName, im->trait->modName) &&
+            if (planImplTrait(im) && !sameModule(im->modName, planImplTrait(im)->modName) &&
                               !sameModule(im->modName, sd ? sd->modName : NULL)) {
                 ctxError(ctx, im->line, 1,
                          "Implement a trait in the module that declares the trait, or in the one"

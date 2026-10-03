@@ -1016,8 +1016,6 @@ typedef struct {
     const char *traitName;  /* `impl Trait for Type`: the trait, or NULL for an inherent impl */
     const char *modName;    /* the module this block came from; NULL for the root file. The
                              * orphan rule compares it with the trait's and the type's. */
-    Type       *target;     /* the resolved implementing type (`Self` substitutes to this) */
-    TraitDef   *trait;      /* the resolved trait; NULL for an inherent impl */
     int         line;
     Vec         typeParams; /* const char*: the block's own type parameters (`impl<T> pair<T>`).
                              * The methods attach to the generic declaration's body, whose
@@ -1046,9 +1044,6 @@ typedef struct {
 struct TraitDef {
     const char *name;
     const char *modName;    /* the module that declares it; NULL for the root file */
-    bool        usedDyn;    /* set by the checker when a `dyn` form names it: only then are the
-                             * uniform method tables emitted (a trait used only statically needs no
-                             * table at all, and an object-unsafe method would make one invalid C) */
     int         line;
     Vec         typeParams; /* const char*: `trait Codec<T>`. `Self` is the trait's **implicit**
                              * type parameter (TRAITS.md decision 2); these are the explicit ones,
@@ -1062,8 +1057,6 @@ typedef struct {
     Vec funcs;                   /* FuncDef* */
     Vec globals;                 /* GlobalDef*: top-level let / var */
     Vec traits;                  /* TraitDef*: `trait Name { ... }` declarations */
-    bool usesDyn;                /* a `dyn` form was seen: the dyn runtime and the handle type are
-                                  * emitted only then, so a pool-only program stays unchanged */
     Vec impls;                   /* ImplDef*: `impl Type { ... }` blocks, attached by the
                                   * checker (each module attaches its own; the *effect* on a
                                   * type is global, which is what enforces coherence) */

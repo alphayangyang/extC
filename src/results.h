@@ -77,6 +77,10 @@ typedef struct {
     /* ---- plan facts about a struct definition ---- */
     bool        builtinHolder; /* the struct behind a builtin name needs no C definition */
     FuncDef    *coroOf;        /* this frame struct belongs to that coroutine */
+    TraitDef   *implTrait;     /* the trait an `impl` block implements (NULL = inherent) */
+    Type       *implTarget;    /* the type an `impl` block resolves to */
+    bool        usedDyn;       /* a trait named by a `dyn` form (only then is its vtable emitted) */
+    bool        usesDyn;       /* a module that saw a `dyn` form (the runtime is needed) */
 
     /* ---- the checker's own analysis facts (code generation never reads these) ----
      *

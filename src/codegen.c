@@ -6883,8 +6883,8 @@ static bool inTraitTable(Module *m, FuncDef *f) {
     if (!f->owner) return false;
     for (size_t i = 0; i < m->impls.len; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
-        if (!im->trait || !im->target) continue;
-        Type *bt = ttBase(im->target);
+        if (!planImplTrait(im) || !planImplTarget(im)) continue;
+        Type *bt = ttBase(planImplTarget(im));
         if (!bt || methodSetOf(bt) != f->owner) continue;
         for (size_t j = 0; j < im->methods.len; j++) {
             FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
@@ -7275,7 +7275,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * be repeated when it names the same type, so the runtime keeps its own copy. Gated on
      * `makesPool` so a program that cannot use dyn or a pool is byte-for-byte unchanged. */
     {
-        if (m->usesDyn)
+        if (planUsesDyn(m))
             bufPuts(out,
                 "#define EXTC_DYN_HANDLE_DEFINED 1\n"
                 "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; };\n"
@@ -8319,7 +8319,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     bufInit(&g.vtDecls, arena);
     for (size_t ti = 0; ti < m->traits.len; ti++) {
         TraitDef *tr = *(TraitDef **)vecAt(&m->traits, ti);
-        if (!tr->usedDyn) continue;
+        if (!planUsedDyn(tr)) continue;
         bufPrintf(&g.vtDecls, "struct extc_vt$%s_t {", tr->name);
         for (size_t k = 0; k < tr->methods.len; k++) {
             FuncDef *want = *(FuncDef **)vecAt(&tr->methods, k);
@@ -8335,8 +8335,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         bufPuts(&g.vtDecls, " };\n");
         for (size_t i = 0; i < m->impls.len; i++) {
             ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
-            if (im->trait != tr || !im->target) continue;
-            Type *bt = ttBase(im->target);
+            if (planImplTrait(im) != tr || !planImplTarget(im)) continue;
+            Type *bt = ttBase(planImplTarget(im));
             /* The methods of `bt` live in **its own** method set: `Type.mholder` when the type has
              * no body of its own -- a builtin scalar (`impl Codec for i64`) or a generic
              * **instance** (`impl Codec for slice<u8>`) -- and `sdef` otherwise. Reading `sdef`
@@ -8677,7 +8677,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         domainEmitRuntime(arena, out);
     }
     /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
-    if (m->usesDyn) poolsEmitDynRuntime(arena, out);
+    if (planUsesDyn(m)) poolsEmitDynRuntime(arena, out);
     if (g.needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches

@@ -471,3 +471,30 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
 
 **验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；
 `tests/coro` 29/0；`check.sh quick` 60/0。
+
+## 15. T4 第二族已落地：`impl` / `trait` / `module` 的 4 个字段
+
+同一套路（先加存储与 API → 改读写 → 删字段 → 棘轮），第二个家族：
+
+| 字段 | 属主 | 写者 | codegen 读 | 桶 |
+|---|---|---|---|---|
+| `target` | `ImplDef` | 检查器（解析类型名时 1 处） | 4 | **PLAN** |
+| `trait` | `ImplDef` | 检查器（1 处） | 2 | **PLAN** |
+| `usedDyn` | `TraitDef` | 检查器（`dyn` 出现那一刻，1 处） | 1 | **PLAN** |
+| `usesDyn` | `Module` | 检查器（同上，1 处） | 2 | **PLAN** |
+
+**同名陷阱又出现两次**（这轮的直接证据）：`->target` 在 `StoreSite`/`RefCheck`（检查器自己的记录）
+上也有，`->trait` 只在 `ImplDef` 上——所以批量替换时**必须限定基座**（`im->target`），
+不能按字段名扫。这也解释了为什么 `[ast-freeze]` 那 131 → 128 只降了 3 而不是 4：
+`TraitDef.usedDyn` 与 `Module.usesDyn` 各只有 1 处写，而 `target` 的另外几处写属于别的结构体。
+
+**改动**：`results.h` 加 4 个槽位；`plan.c` 加 4 组 setter/访问器
+（`planImplTrait`/`planSetImplTrait`、`planImplTarget`/`planSetImplTarget`、
+`planUsedDyn`/`planSetUsedDyn`、`planUsesDyn`/`planSetUsesDyn`）；
+4 处写、27 处读改经访问器（check_expr 3 · check_top 15 · codegen 9）；
+`ast.h` 删 4 个字段（其中两处是多行注释的尾巴，删字段时留下**悬空注释**、当场语法错——
+又是一次"删字段要连注释一起看"）。
+
+**棘轮**：`[ast-freeze]` **131 → 128**；其余四条不动。
+
+**验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
