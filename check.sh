@@ -209,9 +209,9 @@ if out=$(timeout 900 ./tests/hash/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'sha256 [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · uuid5 与 Python 逐字节一致）"
 else bad "tests/hash/run.sh"; echo "$out"; fi
 
-echo "== JSON（与 Python 规范形对拍 · 坏输入必拒 · 零拷贝证据 · 吞吐与内存）=="
+echo "== JSON（与 Python 规范形对拍 · 坏输入必拒 · 攻击自己 fuzz · 零拷贝证据 · 吞吐与内存）=="
 if out=$(timeout 900 ./tests/json/run.sh 2>&1); then
-    ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒）"
+    ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒 · 2 万轮变异零崩溃）"
 else bad "tests/json/run.sh"; echo "$out"; fi
 
 echo "== 包工具全链路（extpkg fetch/vendor/build：假 registry 走 file://，不联网）=="

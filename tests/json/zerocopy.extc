@@ -1,7 +1,7 @@
 // expect: zerocopy ok
 // **零拷贝的证据**：解析之后改输入缓冲，`strOf` 看到的跟着变 ⇒ 它是输入上的视图，不是副本。
 // （这条判据比"跑得对"更强：它钉住了"内存少"的那个机制本身。）
-use std::json::{node, parsed, parse, find, strOf}
+use std::json::{parsed, parse, isOk, rootOf, errAt, find, strOf}
 use std::io
 
 fn main() -> i32 {
@@ -12,10 +12,10 @@ fn main() -> i32 {
         body[i] = src[i]
         i = i + 1
     }
-    var pool: [16]node
+    var pool: [16]json::node
     var r: parsed = parse(body[0..src.len], pool[..])
-    if r.root < i64(0) { return 1 }
-    let v: i64 = find(body[0..src.len], pool[..], r.root, "k")
+    if !isOk(r) { return 1 }
+    let v: i64 = find(body[0..src.len], pool[..], rootOf(r), "k")
     if v < i64(0) { return 2 }
     var sb: [16]u8
     let before: slice<u8> = strOf(body[0..src.len], pool[..], v, sb[..])

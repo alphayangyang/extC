@@ -1,30 +1,24 @@
-/* std/json.extc —— JSON：**零拷贝解析** + **零分配写入**。
+/* std/json.extc —— JSON：**零拷贝解析** + **零分配写入**；节点是**带载荷枚举**。
  *
- * 为"最快 + 内存少"选的形状：
+ * 为什么是枚举而不是"kind 字段 + 平铺字段"的结构体：那形状**能表示非法状态**（数字节点上也
+ * 有 `esc`/`first`/`next`），读错字段是静默给错答案；而且 56 字节 vs 40 字节（实测 sizeof：
+ * `tag + union`）。枚举版取载荷前**必须先 match 该变体**（编译器强制），漏一个变体编不过。
  *
- *   1. **解析不分配**：节点池由调用方给（`var pool: [256]json::node`），解析器只往里写下标。
- *      一个协议消息（几 KB、几十个字段）用 256 个节点绰绰有余；池子满了就**报错**，不是静默截断。
- *   2. **字符串零拷贝**：`str` 是**输入上的视图**（`text[off..off+len]`），不复制、不解码。
- *      JSON 里绝大多数字符串没有转义 ⇒ 热路径上一次 memcpy 都没有；真要解码才调 `unescape`
- *      （写进调用方缓冲）。`esc` 标志告诉你需不需要。
- *   3. **写入不分配**：`builder` 直接往调用方缓冲里拼，不需要先建 DOM 再序列化。
- *   4. 解析器**递归深度有上限**（`MAXDEPTH`），所以来自网络的消息炸不了栈。
+ * 形状（为"最快 + 内存少"选的，`tests/json/` 里两条都量了）：
+ *   1. **解析不分配**：节点池由调用方给；池子满了**报错**，不静默截断。
+ *   2. **字符串零拷贝**：`str` 是输入上的视图；`esc` 标志说它要不要先解码。
+ *   3. **写入不分配**：`builder` 直接往调用方缓冲里拼。
+ *   4. 递归深度有上限（`MAXDEPTH`）；来自网络的消息炸不了栈（判据 `tests/json/fuzz`）。
  *
  * 用法：
- *     var pool: [256]json::node
- *     var p: json::parsed = json::parse(body, pool[..])
- *     if p.root < i64(0) { ... p.at 是出错位置 ... }
- *     let id: i64 = json::find(body, pool[..], p.root, "d.author.member_openid")
- *     if id >= i64(0) { let s: slice<u8> = json::strOf(body, pool[..], id) ... }
- *
- *     var buf: [1024]u8
- *     var w: json::builder
- *     w.init(buf[..])
- *     w.beginObj()
- *     w.key("content"); w.str("你好")
- *     w.key("msg_seq"); w.int(i64(3))
- *     w.endObj()
- *     if !w.ok() { ... 缓冲不够 ... }
+ *     var pool: [256]node
+ *     match parse(body, pool[..]) {
+ *         ok(root) => { ... }
+ *         err(at)  => { ... 出错字节位置 ... }
+ *     }
+ *     let c: i64 = find(body, pool[..], root, "d.content")
+ *     var scratch: [64]u8
+ *     io::cout << strOf(body, pool[..], c, scratch[..])
  */
 
 let OBJ: u8 = 1
@@ -35,26 +29,20 @@ let BOOL: u8 = 5
 let NUL: u8 = 6
 let MAXDEPTH: i32 = 64
 
-struct node {
-    kind: u8
-    esc: bool          /* 字符串：含反斜杠转义 ⇒ 要 unescape 才是真值 */
-    off: i64           /* 字符串/数字在输入里的起点（零拷贝） */
-    len: i64
-    first: i64         /* 对象：第一个 **key** 节点；数组：第一个元素节点（-1 = 空） */
-    next: i64          /* 同层下一个节点（key 链 / 元素链）；-1 = 链尾。
-                        * 为什么是链而不是连续区间：节点按**深度优先**写入池子，
-                        * 嵌套容器的子节点就夹在成员之间 —— 连续区间根本不成立。 */
-    count: i64         /* 对象/数组的成员/元素个数（O(1) 读长度） */
-    num: f64
-    b: bool
-}
+/* 节点。载荷是**位置式**的（语言如此），所以每个变体后面标了字段顺序。
+ * `next` 是同层链（key 链 / 元素链）：节点按深度优先写入池子，嵌套容器的子节点夹在成员之间，
+ * 所以"连续区间"这种布局根本不成立。 */
+type node = | obj(i64, i64, i64)             /* first, count, next */
+            | arr(i64, i64, i64)             /* first, count, next */
+            | text(i64, i64, bool, i64)      /* off, len, esc, next */
+            | number(f64, i64, i64, i64)     /* val, off, len, next */
+            | flag(bool, i64)                /* val, next */
+            | nul(i64)                       /* next */
 
-struct parsed {
-    root: i64          /* -1 = 失败 */
-    at: i64            /* 失败位置（字节偏移）；成功时 -1 */
-}
+type parsed = | ok(i64) | err(i64)
 
-/* 十六进制位（解析 \uXXXX 用）。 */
+/* ---- 十六进制与 UTF-8（解析 \uXXXX 与代理对用）---- */
+
 @private
 fn pHex(c: u8) -> i32 {
     if c >= u8(48) && c <= u8(57) { return i32(c) - 48 }
@@ -63,7 +51,6 @@ fn pHex(c: u8) -> i32 {
     return i32(-1)
 }
 
-/* 一个 UTF-8 码点写进 out；返回写入字节数（缓冲不够返回 -1）。 */
 @private
 fn pUtf8(cp: i64, out: mut slice<u8>, o: i64) -> i64 {
     if cp < i64(0x80) {
@@ -92,9 +79,64 @@ fn pUtf8(cp: i64, out: mut slice<u8>, o: i64) -> i64 {
     return i64(4)
 }
 
+/* ---- 投影：把枚举读回标量（parser 与访问器共用）---- */
+
+@private
+fn pNext(nodes: slice<node>, idx: i64) -> i64 {
+    if idx < i64(0) || idx >= nodes.len { return i64(-1) }
+    match nodes[idx] {
+        obj(a, b, c)     => { return c }
+        arr(a, b, c)     => { return c }
+        text(a, b, c, d) => { return d }
+        number(a, b, c, d) => { return d }
+        flag(a, b)       => { return b }
+        nul(a)           => { return a }
+    }
+}
+
+@private
+fn pFirst(nodes: slice<node>, idx: i64) -> i64 {
+    if idx < i64(0) || idx >= nodes.len { return i64(-1) }
+    match nodes[idx] {
+        obj(a, b, c)     => { return a }
+        arr(a, b, c)     => { return a }
+        text(a, b, c, d) => { return i64(-1) }
+        number(a, b, c, d) => { return i64(-1) }
+        flag(a, b)       => { return i64(-1) }
+        nul(a)           => { return i64(-1) }
+    }
+}
+
+@private
+fn pCount(nodes: slice<node>, idx: i64) -> i64 {
+    if idx < i64(0) || idx >= nodes.len { return i64(-1) }
+    match nodes[idx] {
+        obj(a, b, c)     => { return b }
+        arr(a, b, c)     => { return b }
+        text(a, b, c, d) => { return i64(-1) }
+        number(a, b, c, d) => { return i64(-1) }
+        flag(a, b)       => { return i64(-1) }
+        nul(a)           => { return i64(-1) }
+    }
+}
+
+@private
+fn pSetNext(nodes: mut slice<node>, idx: i64, nxt: i64) -> void {
+    if idx >= i64(0) && idx < nodes.len {
+    match nodes[idx] {
+        obj(a, b, c)     => { nodes[idx] = node.obj(a, b, nxt) }
+        arr(a, b, c)     => { nodes[idx] = node.arr(a, b, nxt) }
+        text(a, b, c, d) => { nodes[idx] = node.text(a, b, c, nxt) }
+        number(a, b, c, d) => { nodes[idx] = node.number(a, b, c, nxt) }
+        flag(a, b)       => { nodes[idx] = node.flag(a, nxt) }
+        nul(a)           => { nodes[idx] = node.nul(nxt) }
+    }
+    }
+}
+
+/* ---- 解析器：状态只有标量（含引用的结构体没有零值）---- */
+
 @noCopy
-/* 解析器的**状态只有标量**（含引用的结构体没有零值，也就没法 `var p: json::parser`）。
- * 文本与节点池走参数 —— 顺带让"零拷贝视图存进结构体字段"这类寿命问题根本不存在。 */
 struct parser {
     pos: i64
     used: i64
@@ -134,27 +176,22 @@ struct parser {
     @private
     fn newStr(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
         let start: i64 = self.pos
-        self.pos = self.pos + i64(1)                 /* 开引号 */
+        self.pos = self.pos + i64(1)
         var esc: bool = false
         while self.pos < text.len {
             let c: u8 = text[self.pos]
-            if c == u8(34) {                          /* " */
+            if c == u8(34) {
                 let idx: i64 = self.used
                 if idx >= nodes.len {
                     self.fail(start)
                     return i64(-1)
                 }
-                nodes[idx].kind = STR
-                nodes[idx].esc = esc
-                nodes[idx].off = start + i64(1)
-                nodes[idx].len = self.pos - start - i64(1)
-                nodes[idx].first = i64(0)
-                nodes[idx].count = i64(0)
+                nodes[idx] = node.text(start + i64(1), self.pos - start - i64(1), esc, i64(-1))
                 self.used = self.used + i64(1)
                 self.pos = self.pos + i64(1)
                 return idx
             }
-            if c == u8(92) {                          /* \ */
+            if c == u8(92) {
                 esc = true
                 if self.pos + i64(1) >= text.len {
                     self.fail(self.pos)
@@ -184,7 +221,7 @@ struct parser {
                     self.pos = self.pos + i64(2)
                 }
             } else {
-                if c < u8(32) {                       /* 未转义的控制字符：JSON 不允许 */
+                if c < u8(32) {
                     self.fail(self.pos)
                     return i64(-1)
                 }
@@ -219,15 +256,13 @@ struct parser {
             self.fail(start)
             return i64(-1)
         }
-        /* RFC 8259：不允许前导零（`01` 不是数字）。与 Python 的 json 一致 —— 严格比宽容好：
-         * 协议里出现 `01` 多半是两端有人写错了，早报早好。 */
         if leadZero && digits > i64(1) {
             self.fail(start + i64(1))
             return i64(-1)
         }
-        var frac: i64 = 0
         if self.pos < text.len && text[self.pos] == u8(46) {
             self.pos = self.pos + i64(1)
+            var frac: i64 = 0
             while self.pos < text.len {
                 let c: u8 = text[self.pos]
                 if c >= u8(48) && c <= u8(57) {
@@ -277,7 +312,7 @@ struct parser {
         while i < span.len {
             let c: u8 = span[i]
             if c == u8(45) {
-                if i == i64(0) { v = f64(0) } else { expSign = i64(-1) }
+                if i != i64(0) { expSign = i64(-1) }
             } else if c == u8(46) {
                 seenDot = true
             } else if c == u8(101) || c == u8(69) {
@@ -309,14 +344,7 @@ struct parser {
             }
         }
         if neg { v = f64(0) - v }
-        nodes[idx].kind = NUM
-        nodes[idx].esc = false
-        nodes[idx].off = start
-        nodes[idx].len = self.pos - start
-        nodes[idx].first = i64(-1)
-        nodes[idx].next = i64(-1)
-        nodes[idx].count = i64(0)
-        nodes[idx].num = v
+        nodes[idx] = node.number(v, start, self.pos - start, i64(-1))
         self.used = self.used + i64(1)
         return idx
     }
@@ -341,10 +369,7 @@ struct parser {
             if self.lit(text, "true") {
                 let idx: i64 = self.used
                 if idx >= nodes.len { self.fail(at)  return i64(-1) }
-                nodes[idx].kind = BOOL
-                nodes[idx].b = true
-                nodes[idx].off = at
-                nodes[idx].len = self.pos - at
+                nodes[idx] = node.flag(true, i64(-1))
                 self.used = self.used + i64(1)
                 return idx
             }
@@ -356,10 +381,7 @@ struct parser {
             if self.lit(text, "false") {
                 let idx: i64 = self.used
                 if idx >= nodes.len { self.fail(at)  return i64(-1) }
-                nodes[idx].kind = BOOL
-                nodes[idx].b = false
-                nodes[idx].off = at
-                nodes[idx].len = self.pos - at
+                nodes[idx] = node.flag(false, i64(-1))
                 self.used = self.used + i64(1)
                 return idx
             }
@@ -371,9 +393,7 @@ struct parser {
             if self.lit(text, "null") {
                 let idx: i64 = self.used
                 if idx >= nodes.len { self.fail(at)  return i64(-1) }
-                nodes[idx].kind = NUL
-                nodes[idx].off = at
-                nodes[idx].len = self.pos - at
+                nodes[idx] = node.nul(i64(-1))
                 self.used = self.used + i64(1)
                 return idx
             }
@@ -388,7 +408,7 @@ struct parser {
     @private
     fn pObject(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
         let at: i64 = self.pos
-        self.pos = self.pos + i64(1)                 /* { */
+        self.pos = self.pos + i64(1)
         let idx: i64 = self.used
         if idx >= nodes.len { self.fail(at)  return i64(-1) }
         self.used = self.used + i64(1)
@@ -399,10 +419,7 @@ struct parser {
         self.skipWs(text)
         if self.pos < text.len && text[self.pos] == u8(125) {
             self.pos = self.pos + i64(1)
-            nodes[idx].kind = OBJ
-            nodes[idx].first = i64(-1)
-            nodes[idx].next = i64(-1)
-            nodes[idx].count = i64(0)
+            nodes[idx] = node.obj(i64(-1), i64(0), i64(-1))
             self.depth = self.depth - i32(1)
             return idx
         }
@@ -414,7 +431,7 @@ struct parser {
             }
             let kn: i64 = self.newStr(text, nodes)
             if kn < i64(0) { return i64(-1) }
-            if prev < i64(0) { first = kn } else { nodes[prev].next = kn }
+            if prev < i64(0) { first = kn } else { pSetNext(nodes, prev, kn) }
             prev = kn
             self.skipWs(text)
             if self.pos >= text.len || text[self.pos] != u8(58) {
@@ -440,10 +457,7 @@ struct parser {
                 return i64(-1)
             }
         }
-        nodes[idx].kind = OBJ
-        nodes[idx].first = first
-        nodes[idx].next = i64(-1)
-        nodes[idx].count = members
+        nodes[idx] = node.obj(first, members, i64(-1))
         self.depth = self.depth - i32(1)
         return idx
     }
@@ -451,7 +465,7 @@ struct parser {
     @private
     fn pArray(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
         let at: i64 = self.pos
-        self.pos = self.pos + i64(1)                 /* [ */
+        self.pos = self.pos + i64(1)
         let idx: i64 = self.used
         if idx >= nodes.len { self.fail(at)  return i64(-1) }
         self.used = self.used + i64(1)
@@ -462,17 +476,14 @@ struct parser {
         self.skipWs(text)
         if self.pos < text.len && text[self.pos] == u8(93) {
             self.pos = self.pos + i64(1)
-            nodes[idx].kind = ARR
-            nodes[idx].first = i64(-1)
-            nodes[idx].next = i64(-1)
-            nodes[idx].count = i64(0)
+            nodes[idx] = node.arr(i64(-1), i64(0), i64(-1))
             self.depth = self.depth - i32(1)
             return idx
         }
         while true {
             let vn: i64 = self.value(text, nodes)
             if vn < i64(0) { return i64(-1) }
-            if prev < i64(0) { first = vn } else { nodes[prev].next = vn }
+            if prev < i64(0) { first = vn } else { pSetNext(nodes, prev, vn) }
             prev = vn
             count = count + i64(1)
             self.skipWs(text)
@@ -491,72 +502,108 @@ struct parser {
                 return i64(-1)
             }
         }
-        nodes[idx].kind = ARR
-        nodes[idx].first = first
-        nodes[idx].next = i64(-1)
-        nodes[idx].count = count
+        nodes[idx] = node.arr(first, count, i64(-1))
         self.depth = self.depth - i32(1)
         return idx
     }
 
-    /* 解析整段文本。成功：`root` >= 0、`at` = -1；失败：`root` = -1、`at` = 出错字节位置。 */
     fn run(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> parsed {
-        text = text
-        nodes = nodes
         self.pos = i64(0)
         self.used = i64(0)
         self.errAt = i64(-1)
         self.depth = i32(0)
         let r: i64 = self.value(text, nodes)
-        if r < i64(0) {
-            return parsed { root: i64(-1), at: self.errAt }
-        }
+        if r < i64(0) { return parsed.err(self.errAt) }
         self.skipWs(text)
-        if self.pos != text.len {                     /* 尾随垃圾：拒绝 */
-            return parsed { root: i64(-1), at: self.pos }
-        }
-        return parsed { root: r, at: i64(-1) }
+        if self.pos != text.len { return parsed.err(self.pos) }
+        return parsed.ok(r)
     }
 }
 
+/* ---- 入口 ---- */
 
-/* 解析整段文本：成功 `root >= 0`、`at == -1`；失败 `root == -1`、`at` 是出错字节位置。
- * 节点池由调用方给（零分配）；池子不够会失败，不静默截断。 */
 fn parse(text: slice<u8>, nodes: mut slice<node>) -> parsed {
     var pr: parser
     return pr.run(text, nodes)
 }
 
-/* ---- 访问器（全部零分配；`idx < 0` 一律返回"没有"）---- */
+/* 投影（读 `parsed`）：想按类型分支就用 `match`，这里只是省几行。 */
+fn isOk(p: parsed) -> bool {
+    match p {
+        ok(r)  => { return true }
+        err(a) => { return false }
+    }
+}
+
+fn rootOf(p: parsed) -> i64 {
+    match p {
+        ok(r)  => { return r }
+        err(a) => { return i64(-1) }
+    }
+}
+
+fn errAt(p: parsed) -> i64 {
+    match p {
+        ok(r)  => { return i64(-1) }
+        err(a) => { return a }
+    }
+}
+
+/* ---- 访问器（全部零分配；越界 / 类型不符一律给"没有"）---- */
 
 fn kindOf(nodes: slice<node>, idx: i64) -> u8 {
     if idx < i64(0) || idx >= nodes.len { return u8(0) }
-    return nodes[idx].kind
+    match nodes[idx] {
+        obj(a, b, c)     => { return OBJ }
+        arr(a, b, c)     => { return ARR }
+        text(a, b, c, d) => { return STR }
+        number(a, b, c, d) => { return NUM }
+        flag(a, b)       => { return BOOL }
+        nul(a)           => { return NUL }
+    }
 }
 
 fn countOf(nodes: slice<node>, idx: i64) -> i64 {
     if idx < i64(0) || idx >= nodes.len { return i64(-1) }
-    let k: u8 = nodes[idx].kind
-    if k != OBJ && k != ARR { return i64(-1) }
-    return nodes[idx].count
+    match nodes[idx] {
+        obj(a, b, c)     => { return b }
+        arr(a, b, c)     => { return b }
+        text(a, b, c, d) => { return i64(-1) }
+        number(a, b, c, d) => { return i64(-1) }
+        flag(a, b)       => { return i64(-1) }
+        nul(a)           => { return i64(-1) }
+    }
 }
 
-/* 字符串/数字的**原文视图**（零拷贝：指向输入）。含转义时它是转义后的原文。 */
+/* 字符串/数字的**原文视图**（零拷贝：指向输入）。 */
 fn rawOf(text: slice<u8>, nodes: slice<node>, idx: i64) -> slice<u8> {
     if idx < i64(0) || idx >= nodes.len { return text[0..0] }
-    return text[nodes[idx].off..nodes[idx].off + nodes[idx].len]
+    match nodes[idx] {
+        obj(a, b, c)     => { return text[0..0] }
+        arr(a, b, c)     => { return text[0..0] }
+        text(off, len, e, n) => { return text[off..off + len] }
+        number(v, off, len, n) => { return text[off..off + len] }
+        flag(a, b)       => { return text[0..0] }
+        nul(a)           => { return text[0..0] }
+    }
 }
 
 fn escOf(nodes: slice<node>, idx: i64) -> bool {
     if idx < i64(0) || idx >= nodes.len { return false }
-    return nodes[idx].esc
+    match nodes[idx] {
+        text(off, len, e, n) => { return e }
+        obj(a, b, c)     => { return false }
+        arr(a, b, c)     => { return false }
+        number(a, b, c, d) => { return false }
+        flag(a, b)       => { return false }
+        nul(a)           => { return false }
+    }
 }
 
-/* 把字符串解码进 `out`（处理 \n \t \uXXXX 与代理对）；返回写入字节数，缓冲不够返回 -1。
- * 没有转义时就是一次拷贝；`strOf` 在无转义时直接给零拷贝视图。 */
+/* 把字符串解码进 `out`（`\n` `\t` `\uXXXX` 与代理对）；返回写入字节数，缓冲不够/非法返回 -1。 */
 fn unescape(text: slice<u8>, nodes: slice<node>, idx: i64, out: mut slice<u8>) -> i64 {
-    if idx < i64(0) || idx >= nodes.len { return i64(-1) }
     let raw: slice<u8> = rawOf(text, nodes, idx)
+    if raw.len == i64(0) && kindOf(nodes, idx) != STR { return i64(-1) }
     var o: i64 = 0
     var i: i64 = 0
     while i < raw.len {
@@ -606,7 +653,6 @@ fn unescape(text: slice<u8>, nodes: slice<node>, idx: i64, out: mut slice<u8>) -
                     k = k + 1
                 }
                 i = i + i64(5)
-                /* 代理对：高代理 D800-DBFF 后面必须跟低代理 DC00-DFFF */
                 if cp >= i64(0xd800) && cp <= i64(0xdbff) {
                     if i + i64(5) < raw.len && raw[i] == u8(92) && raw[i + i64(1)] == u8(117) {
                         var lo: i64 = i64(0)
@@ -653,11 +699,10 @@ fn unescape(text: slice<u8>, nodes: slice<node>, idx: i64, out: mut slice<u8>) -
     return o
 }
 
-/* 字符串的**真值**：无转义 ⇒ 零拷贝视图；有转义 ⇒ 解码进 `scratch`。
- * 缓冲太小（或解码失败）返回空视图 —— 要区分失败就自己调 `unescape`。 */
+/* 字符串的**真值**：无转义 ⇒ 零拷贝视图；有转义 ⇒ 解码进 `scratch`。 */
 fn strOf(text: slice<u8>, nodes: slice<node>, idx: i64, scratch: mut slice<u8>) -> slice<u8> {
-    if idx < i64(0) || idx >= nodes.len { return text[0..0] }
-    if !nodes[idx].esc { return rawOf(text, nodes, idx) }
+    if kindOf(nodes, idx) != STR { return text[0..0] }
+    if !escOf(nodes, idx) { return rawOf(text, nodes, idx) }
     let n: i64 = unescape(text, nodes, idx, scratch)
     if n < i64(0) { return text[0..0] }
     return scratch[0..n]
@@ -665,7 +710,7 @@ fn strOf(text: slice<u8>, nodes: slice<node>, idx: i64, scratch: mut slice<u8>) 
 
 @private
 fn pKeyEq(text: slice<u8>, nodes: slice<node>, idx: i64, key: slice<u8>) -> bool {
-    if !nodes[idx].esc {
+    if !escOf(nodes, idx) {
         let raw: slice<u8> = rawOf(text, nodes, idx)
         if raw.len != key.len { return false }
         var i: i64 = 0
@@ -686,62 +731,54 @@ fn pKeyEq(text: slice<u8>, nodes: slice<node>, idx: i64, key: slice<u8>) -> bool
     return true
 }
 
-/* 对象成员的值节点下标（没有就 -1）。线性扫描：QQ 的对象都很小，
- * 为它们建哈希表不值当（要分配、要时间）。 */
 fn member(text: slice<u8>, nodes: slice<node>, idx: i64, key: slice<u8>) -> i64 {
     if kindOf(nodes, idx) != OBJ { return i64(-1) }
-    let n: i64 = nodes[idx].count
-    var k: i64 = nodes[idx].first
+    let n: i64 = pCount(nodes, idx)
+    var k: i64 = pFirst(nodes, idx)
     var i: i64 = 0
     while i < n && k >= i64(0) {
-        if pKeyEq(text, nodes, k, key) { return k + i64(1) }   /* 值永远紧跟在 key 后面 */
-        k = nodes[k].next
+        if pKeyEq(text, nodes, k, key) { return k + i64(1) }
+        k = pNext(nodes, k)
         i = i + 1
     }
     return i64(-1)
 }
 
-/* 同层第 i 个节点（走链；i 通常是 0 或很小的数）。 */
 @private
 fn pNth(nodes: slice<node>, first: i64, i: i64) -> i64 {
     var k: i64 = first
     var n: i64 = i
     while n > i64(0) && k >= i64(0) {
-        k = nodes[k].next
+        k = pNext(nodes, k)
         n = n - i64(1)
     }
     return k
 }
 
-/* 第 i 个成员的名字（对象）。 */
 fn keyAt(text: slice<u8>, nodes: slice<node>, idx: i64, i: i64) -> slice<u8> {
-    if kindOf(nodes, idx) != OBJ || i < i64(0) || i >= nodes[idx].count { return text[0..0] }
-    let k: i64 = pNth(nodes, nodes[idx].first, i)
+    if kindOf(nodes, idx) != OBJ || i < i64(0) || i >= pCount(nodes, idx) { return text[0..0] }
+    let k: i64 = pNth(nodes, pFirst(nodes, idx), i)
     if k < i64(0) { return text[0..0] }
     return rawOf(text, nodes, k)
 }
 
-/* 第 i 个成员的值（对象）；数组元素用 `elem`。 */
 fn valueAt(nodes: slice<node>, idx: i64, i: i64) -> i64 {
-    if kindOf(nodes, idx) != OBJ || i < i64(0) || i >= nodes[idx].count { return i64(-1) }
-    let k: i64 = pNth(nodes, nodes[idx].first, i)
+    if kindOf(nodes, idx) != OBJ || i < i64(0) || i >= pCount(nodes, idx) { return i64(-1) }
+    let k: i64 = pNth(nodes, pFirst(nodes, idx), i)
     if k < i64(0) { return i64(-1) }
     return k + i64(1)
 }
 
 fn elem(nodes: slice<node>, idx: i64, i: i64) -> i64 {
-    if kindOf(nodes, idx) != ARR || i < i64(0) || i >= nodes[idx].count { return i64(-1) }
-    return pNth(nodes, nodes[idx].first, i)
+    if kindOf(nodes, idx) != ARR || i < i64(0) || i >= pCount(nodes, idx) { return i64(-1) }
+    return pNth(nodes, pFirst(nodes, idx), i)
 }
 
-/* 点分路径查找：`"d.author.member_openid"`；数字段走数组（`"items.0.id"`）。
- * 一次调用拿到嵌套字段 —— 机器人代码里 90% 的 JSON 访问就是这个形状。 */
 fn find(text: slice<u8>, nodes: slice<node>, root: i64, path: slice<u8>) -> i64 {
     var cur: i64 = root
     var i: i64 = 0
     while i <= path.len {
         if i == path.len { return cur }
-        /* 取一段（到 '.' 或结束） */
         var j: i64 = i
         while j < path.len && path[j] != u8(46) {
             j = j + 1
@@ -772,11 +809,17 @@ fn find(text: slice<u8>, nodes: slice<node>, root: i64, path: slice<u8>) -> i64 
 
 fn numOf(nodes: slice<node>, idx: i64) -> f64 {
     if kindOf(nodes, idx) != NUM { return f64(0) }
-    return nodes[idx].num
+    match nodes[idx] {
+        number(v, off, len, n) => { return v }
+        obj(a, b, c)     => { return f64(0) }
+        arr(a, b, c)     => { return f64(0) }
+        text(a, b, c, d) => { return f64(0) }
+        flag(a, b)       => { return f64(0) }
+        nul(a)           => { return f64(0) }
+    }
 }
 
-/* 整数：**只在能精确表示时**给值（位数 ≤ 18 位十进制），否则 0。
- * 原因：JSON 没有整数类型，QQ 的大 ID 也一律是字符串 —— 拿到 19 位的"数字"本来就该当字符串处理。 */
+/* 整数：只在能精确表示时给值（≤ 18 位十进制），否则 0。QQ 的大 ID 本来就是字符串。 */
 fn intOf(text: slice<u8>, nodes: slice<node>, idx: i64) -> i64 {
     if kindOf(nodes, idx) != NUM { return i64(0) }
     let raw: slice<u8> = rawOf(text, nodes, idx)
@@ -790,9 +833,9 @@ fn intOf(text: slice<u8>, nodes: slice<node>, idx: i64) -> i64 {
     var digits: i64 = 0
     while i < raw.len {
         let c: u8 = raw[i]
-        if c < u8(48) || c > u8(57) { return i64(0) }        /* 小数/指数：不是整数 */
+        if c < u8(48) || c > u8(57) { return i64(0) }
         v = v * i64(10) + i64(i32(c) - 48)
-        digits = digits + i64(1)
+        digits = digits + 1
         i = i + 1
     }
     if digits == i64(0) || digits > i64(18) { return i64(0) }
@@ -802,7 +845,14 @@ fn intOf(text: slice<u8>, nodes: slice<node>, idx: i64) -> i64 {
 
 fn boolOf(nodes: slice<node>, idx: i64) -> bool {
     if kindOf(nodes, idx) != BOOL { return false }
-    return nodes[idx].b
+    match nodes[idx] {
+        flag(v, n)       => { return v }
+        obj(a, b, c)     => { return false }
+        arr(a, b, c)     => { return false }
+        text(a, b, c, d) => { return false }
+        number(a, b, c, d) => { return false }
+        nul(a)           => { return false }
+    }
 }
 
 /* ================================================================ 写入（零分配）

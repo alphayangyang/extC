@@ -1,0 +1,175 @@
+// expect: fuzz ok
+// **攻击自己**：超大 / 超深 / 病态输入。判据只有一条 —— 要么给出答案，要么**明确报错**，
+// 永不 trap、永不崩、永不越界写。每条用例都打印一行，最后 `fuzz ok`。
+use std::json::{parsed, parse, isOk, rootOf, errAt, kindOf, countOf, rawOf, strOf, intOf, unescape, elem, member, valueAt, keyAt, boolOf, numOf, builder}
+use std::io
+
+/* 一个自带的确定性 PRNG（不依赖任何外部状态 ⇒ 失败可复现） */
+var RSEED: u64 = 88172645463325252
+
+fn nextRand() -> u64 {
+    RSEED = RSEED * u64(6364136223846793005) + u64(1442695040888963407)
+    return RSEED
+}
+
+/* 对整池节点调用**每一个**访问器：树再畸形也不许 trap（访问器自己必须校验种类与下标） */
+fn walkAll(text: slice<u8>, nodes: slice<json::node>) -> i64 {
+    var acc: i64 = 0
+    var tmp: [16]u8
+    var i: i64 = 0
+    while i < nodes.len {
+        acc = acc + i64(kindOf(nodes, i)) + countOf(nodes, i)
+        acc = acc + rawOf(text, nodes, i).len + strOf(text, nodes, i, tmp[..]).len
+        acc = acc + intOf(text, nodes, i) + elem(nodes, i, i64(0)) + member(text, nodes, i, "x")
+        acc = acc + valueAt(nodes, i, i64(0)) + keyAt(text, nodes, i, i64(0)).len
+        acc = acc + unescape(text, nodes, i, tmp[..])
+        if boolOf(nodes, i) { acc = acc + i64(1) }
+        acc = acc + i64(numOf(nodes, i))
+        i = i + 1
+    }
+    return acc
+}
+
+fn main() -> i32 {
+    /* ---------- ① 超深：20 万层嵌套（深度护栏必须挡住） ---------- */
+    var deep: mut slice<u8> = new u8[400001]
+    var i: i64 = 0
+    while i < i64(200000) {
+        deep[i] = u8(91)                   /* 20 万个 '[' */
+        deep[i + i64(200001)] = u8(93)     /* 20 万个 ']' 跟在后面 */
+        i = i + 1
+    }
+    deep[i] = u8(49)                       /* 正中间那个 1（下标 200000） */
+    var pool1: mut slice<json::node> = new json::node[64]
+    var rd: parsed = parse(deep[0..400001], pool1)
+    if isOk(rd) { io::cout << "deep200k ACCEPTED\n"  return 1 }
+    if errAt(rd) < i64(0) { io::cout << "deep200k NO-POSITION\n"  return 1 }
+    io::cout << "deep: 20 万层 ⇒ 明确报错于字节 " << errAt(rd) << "\n"
+
+    /* ---------- ② 超宽：20 万个兄弟元素 ---------- */
+    var wide: mut slice<u8> = new u8[400002]
+    wide[0] = u8(91)
+    i = i64(1)
+    var k: i64 = 0
+    while k < i64(200000) {
+        wide[i] = u8(49)                   /* 20 万个数 */
+        wide[i + i64(1)] = u8(44)
+        i = i + i64(2)
+        k = k + 1
+    }
+    wide[i - i64(1)] = u8(93)              /* 把最后一个逗号换成 ']' */
+    var pool2: mut slice<json::node> = new json::node[200002]
+    var rw: parsed = parse(wide[0..i], pool2)
+    if !isOk(rw) { io::cout << "wide200k REJECTED at " << errAt(rw) << "\n"  return 2 }
+    let wroot: i64 = rootOf(rw)
+    if countOf(pool2, wroot) != i64(200000) { io::cout << "wide200k COUNT-WRONG\n"  return 2 }
+    io::cout << "wide: 20 万个元素 ⇒ ok（count=" << countOf(pool2, wroot) << "）\n"
+
+    /* ---------- ③ 池子边界：恰好 / 差一个 ---------- */
+    let body: slice<u8> = "{\"a\":[1,2,3]}"
+    /* 这份文档正好 6 个节点：对象 · key "a" · 数组 · 三个数字 */
+    var exact: mut slice<json::node> = new json::node[6]
+    if !isOk(parse(body, exact)) { io::cout << "pool-exact FAILED\n"  return 3 }
+    var small: mut slice<json::node> = new json::node[5]
+    let rs: parsed = parse(body, small)
+    if isOk(rs) { io::cout << "pool-small ACCEPTED\n"  return 3 }
+    io::cout << "pool: 恰好 6 个节点 ok · 只给 5 个 ⇒ 报错于字节 " << errAt(rs) << "\n"
+
+    /* ---------- ④ 超长数字（10 万位）与指数极值 ---------- */
+    var num: mut slice<u8> = new u8[100002]
+    i = 0
+    while i < i64(100000) {
+        num[i] = u8(55)
+        i = i + 1
+    }
+    num[i] = u8(93)                        /* 无所谓，下面直接用前缀 */
+    var pool3: mut slice<json::node> = new json::node[8]
+    var rn: parsed = parse(num[0..100000], pool3)
+    if !isOk(rn) { io::cout << "longnum REJECTED\n"  return 4 }
+    if intOf(num[0..100000], pool3, rootOf(rn)) != i64(0) { io::cout << "longnum INT-BAD\n"  return 4 }
+    io::cout << "longnum: 10 万位数字 ⇒ ok（intOf 如实给 0：超过 18 位不当整数）\n"
+
+    if !isOk(parse("1e999999", pool3)) { io::cout << "huge-exp REJECTED\n"  return 5 }
+    if !isOk(parse("-1e-999999", pool3)) { io::cout << "tiny-exp REJECTED\n"  return 5 }
+    io::cout << "exponent: 1e999999 / -1e-999999 ⇒ ok（不崩）\n"
+
+    /* ---------- ⑤ 转义洪水 + 空白洪水 ---------- */
+    var esc: mut slice<u8> = new u8[600003]
+    esc[0] = u8(34)
+    i = i64(1)
+    k = 0
+    while k < i64(100000) {
+        esc[i] = u8(92); esc[i+i64(1)] = u8(117); esc[i+i64(2)] = u8(48)
+        esc[i+i64(3)] = u8(48); esc[i+i64(4)] = u8(52); esc[i+i64(5)] = u8(49)
+        i = i + i64(6)
+        k = k + 1
+    }
+    esc[i] = u8(34)
+    var pool4: mut slice<json::node> = new json::node[8]
+    let re: parsed = parse(esc[0..i + i64(1)], pool4)
+    if !isOk(re) { io::cout << "esc-flood REJECTED\n"  return 6 }
+    var dec: mut slice<u8> = new u8[100001]
+    let dn: i64 = unescape(esc[0..i + i64(1)], pool4, rootOf(re), dec)
+    if dn != i64(100000) { io::cout << "esc-flood DECODE-WRONG n=" << dn << "\n"  return 6 }
+    io::cout << "escapes: 10 万个 \\u0041 ⇒ 解码出 " << dn << " 字节 A\n"
+
+    var ws: mut slice<u8> = new u8[1048577]
+    i = 0
+    while i < i64(1048576) {
+        ws[i] = u8(32)
+        i = i + 1
+    }
+    ws[i] = u8(49)
+    if !isOk(parse(ws[0..i + i64(1)], pool4)) { io::cout << "ws-flood REJECTED\n"  return 7 }
+    io::cout << "whitespace: 1 MiB 空白 + 一个 1 ⇒ ok\n"
+
+    /* ---------- ⑥ 截断 fuzz：每一段前缀都必须给答案 ---------- */
+    var trunc: parsed = parse(body, pool3)
+    if !isOk(trunc) { return 8 }
+    var cut: i64 = 0
+    while cut <= body.len {
+        var r2: parsed = parse(body[0..cut], pool3)
+        if isOk(r2) {
+            let acc: i64 = walkAll(body[0..cut], pool3)
+            if acc == i64(-999999) { return 8 }        /* 只是用一下 acc，别被优化掉 */
+        }
+        cut = cut + i64(1)
+    }
+    io::cout << "truncate: " << (body.len + i64(1)) << " 个前缀全部给答案（ok 或报错）\n"
+
+    /* ---------- ⑦ 随机变异 fuzz（种子固定 ⇒ 可复现） ---------- */
+    var mut_: mut slice<u8> = new u8[4096]
+    let seedDoc: slice<u8> = "{\"d\":{\"author\":{\"member_openid\":\"ABC123\"},\"content\":\"hello\\nworld\",\"n\":42,\"xs\":[1,2,3],\"ok\":true,\"z\":null}}"
+    var pool5: mut slice<json::node> = new json::node[64]
+    var okCount: i64 = 0
+    var errCount: i64 = 0
+    var round: i64 = 0
+    while round < i64(20000) {
+        var j: i64 = 0
+        while j < seedDoc.len {
+            mut_[j] = seedDoc[j]
+            j = j + 1
+        }
+        /* 每个 round 改动 1..4 个字节 */
+        let nMut: i64 = i64(nextRand() % u64(4)) + i64(1)
+        var m: i64 = 0
+        while m < nMut {
+            let pos: i64 = i64(nextRand() % u64(seedDoc.len))
+            mut_[pos] = u8(nextRand() % u64(256))
+            m = m + 1
+        }
+        var rr: parsed = parse(mut_[0..seedDoc.len], pool5)
+        if isOk(rr) {
+            okCount = okCount + 1
+            let acc: i64 = walkAll(mut_[0..seedDoc.len], pool5)
+            if acc == i64(-999999) { return 9 }
+        } else {
+            errCount = errCount + 1
+        }
+        round = round + 1
+    }
+    io::cout << "mutate: 2 万轮随机变异 ⇒ 接受 " << okCount << " · 拒绝 " << errCount << "（都没崩）\n"
+
+    io::cout << "fuzz ok\n"
+    return 0
+}

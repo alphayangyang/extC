@@ -1,6 +1,6 @@
 // expect: bench ok
 // 解析与写入的吞吐（同一台机器量；RSS 由 run.sh 的 /usr/bin/time -v 钉住）。
-use std::json::{node, parsed, parse, builder}
+use std::json::{parsed, parse, isOk, rootOf, errAt, countOf, builder}
 use std::io
 use std::time
 
@@ -29,15 +29,15 @@ fn main() -> i32 {
     io::cout << "doc=" << n << " bytes\n"
 
     /* 解析：同样的文本 N 次 */
-    var pool: [512]node
+    var pool: [512]json::node
     let rounds: i64 = 20000
     var t0: i64 = time::now()
     var r: i64 = 0
     var sink: i64 = 0
     while r < rounds {
         var p: parsed = parse(big[0..n], pool[..])
-        if p.root < i64(0) { return 2 }
-        sink = sink + p.root + pool[p.root].count
+        if rootOf(p) < i64(0) { return 2 }
+        sink = sink + rootOf(p) + countOf(pool[..], rootOf(p))
         r = r + 1
     }
     var dt: i64 = time::now() - t0

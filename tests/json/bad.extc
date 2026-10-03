@@ -1,15 +1,15 @@
 // expect: bad ok
 // 坏输入必须**报错**（root < 0 且给位置），不许崩、不许静默接受。池子不够、嵌套过深同样。
-use std::json::{node, parsed, parse, member, unescape}
+use std::json::{parsed, parse, isOk, rootOf, errAt, member, unescape}
 use std::io
 
-fn rejects(label: slice<u8>, body: slice<u8>, pool: mut slice<node>) -> i32 {
+fn rejects(label: slice<u8>, body: slice<u8>, pool: mut slice<json::node>) -> i32 {
     var r: parsed = parse(body, pool)
-    if r.root >= i64(0) {
+    if isOk(r) {
         io::cout << label << " ACCEPTED (should reject)\n"
         return 1
     }
-    if r.at < i64(0) {
+    if errAt(r) < i64(0) {
         io::cout << label << " FAIL-WITHOUT-POSITION\n"
         return 1
     }
@@ -17,7 +17,7 @@ fn rejects(label: slice<u8>, body: slice<u8>, pool: mut slice<node>) -> i32 {
 }
 
 fn main() -> i32 {
-    var pool: [64]node
+    var pool: [64]json::node
     /* 截断 / 缺括号 / 缺引号 / 尾随垃圾 */
     if rejects("t1", "{\"a\":1", pool[..]) != 0 { return 1 }
     if rejects("t2", "{\"a\" 1}", pool[..]) != 0 { return 2 }
@@ -32,8 +32,8 @@ fn main() -> i32 {
     /* 孤立代理：**语法合法**（RFC 8259 只在语法层要求 4 位十六进制），解码时才失败。
      * 所以这条判据查的是 `unescape` 返回 -1，而不是 parse 拒绝。 */
     var lone: parsed = parse("{\"a\":\"\\ud83d\"}", pool[..])
-    if lone.root < i64(0) { io::cout << "t10 SHOULD-PARSE\n"  return 10 }
-    let lv: i64 = member("{\"a\":\"\\ud83d\"}", pool[..], lone.root, "a")
+    if !isOk(lone) { io::cout << "t10 SHOULD-PARSE\n"  return 10 }
+    let lv: i64 = member("{\"a\":\"\\ud83d\"}", pool[..], rootOf(lone), "a")
     var out: [16]u8
     if unescape("{\"a\":\"\\ud83d\"}", pool[..], lv, out[..]) >= i64(0) {
         io::cout << "t10 LONE-SURROGATE-DECODED\n"
@@ -47,7 +47,7 @@ fn main() -> i32 {
     if rejects("t14", "", pool[..]) != 0 { return 14 }
     if rejects("t15", "   ", pool[..]) != 0 { return 15 }
     /* 池子不够：256 个节点的文档塞进 4 个节点的池 ⇒ 报错，不是越界写 */
-    var tiny: [4]node
+    var tiny: [4]json::node
     if rejects("t16", "{\"a\":[1,2,3,4,5,6,7,8]}", tiny[..]) != 0 { return 16 }
     /* 深嵌套（500 层）⇒ 深度护栏挡住，不炸栈 */
     var deep: [1024]u8

@@ -43,6 +43,13 @@ else
     bad zero-copy "$(echo "$out" | tail -2 | tr '\n' '|')"
 fi
 
+echo "== 攻击自己：超大 / 超深 / 病态输入（fuzz）=="
+if out=$(run fuzz) && echo "$out" | grep -q 'fuzz ok'; then
+    ok fuzz "$(echo "$out" | grep -E 'deep:|wide:|mutate:' | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-150)"
+else
+    bad fuzz "$(echo "$out" | tail -3 | tr '\n' '|')"
+fi
+
 echo "== 吞吐与内存 =="
 if "$EXTC" -w -I "$STD" --build -o "$tmp/jbench" tests/json/bench.extc >/dev/null 2>&1; then
     if out=$(/usr/bin/time -v "$tmp/jbench" 2>"$tmp/tv") && echo "$out" | grep -q 'bench ok'; then

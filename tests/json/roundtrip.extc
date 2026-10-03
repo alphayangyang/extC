@@ -1,10 +1,10 @@
 // expect: roundtrip ok
 // 解析 → 用 builder 重新序列化（规范形）→ 与 Python json.dumps(..., separators=(',',':')) 对拍。
 // 一条判据同时压到解析器、访问器与写入器三件东西。
-use std::json::{node, parsed, parse, kindOf, countOf, keyAt, valueAt, elem, rawOf, intOf, boolOf, strOf, builder, OBJ, ARR, STR, NUM, BOOL, NUL}
+use std::json::{parsed, parse, isOk, rootOf, errAt, kindOf, countOf, keyAt, valueAt, elem, rawOf, intOf, boolOf, strOf, builder, OBJ, ARR, STR, NUM, BOOL, NUL}
 use std::io
 
-fn emit(w: mut ref builder, text: slice<u8>, nodes: slice<node>, idx: i64, scratch: mut slice<u8>) -> void {
+fn emit(w: mut ref builder, text: slice<u8>, nodes: slice<json::node>, idx: i64, scratch: mut slice<u8>) -> void {
     let k: u8 = kindOf(nodes, idx)
     if k == OBJ {
         w.beginObj()
@@ -34,14 +34,14 @@ fn emit(w: mut ref builder, text: slice<u8>, nodes: slice<node>, idx: i64, scrat
     }
 }
 
-fn one(label: slice<u8>, body: slice<u8>, pool: mut slice<node>, buf: mut slice<u8>, scratch: mut slice<u8>) -> i32 {
+fn one(label: slice<u8>, body: slice<u8>, pool: mut slice<json::node>, buf: mut slice<u8>, scratch: mut slice<u8>) -> i32 {
     var r: parsed = parse(body, pool)
-    if r.root < i64(0) {
-        io::cout << label << " PARSE-FAIL at " << r.at << "\n"
+    if !isOk(r) {
+        io::cout << label << " PARSE-FAIL at " << errAt(r) << "\n"
         return 1
     }
     var w: builder = builder::open(buf)!
-    emit(ref w, body, pool, r.root, scratch)
+    emit(ref w, body, pool, rootOf(r), scratch)
     if !w.ok() {
         io::cout << label << " BUILD-FAIL\n"
         return 1
@@ -51,7 +51,7 @@ fn one(label: slice<u8>, body: slice<u8>, pool: mut slice<node>, buf: mut slice<
 }
 
 fn main() -> i32 {
-    var pool: [256]node
+    var pool: [256]json::node
     var buf: [1024]u8
     var scratch: [256]u8
     if one("a", "{\"content\":\"hi\\nthere\",\"msg_seq\":3,\"xs\":[1,2]}", pool[..], buf[..], scratch[..]) != 0 { return 1 }
