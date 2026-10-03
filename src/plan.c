@@ -17,38 +17,51 @@
 #include "results.h"
 #include <stdlib.h>
 
-enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
-       PLAN_ARENA_ARG = 1u << 2, PLAN_NEED_TEMP = 1u << 3,
-       /* function-summary family */
-       PLAN_USES_HOME = 1u << 4, PLAN_MAY_USE_ARENA = 1u << 5, PLAN_MAKES_POOL = 1u << 6,
-       /* statement family (`forStep` is half syntax and stays on the AST) */
-       PLAN_COND_ALLOCS = 1u << 7,
-       /* coroutine family */
-       PLAN_IS_CORO = 1u << 8, PLAN_YIELD_TYPE = 1u << 9, PLAN_CORO_FRAME_TYPE = 1u << 10,
-       PLAN_CORO_NEEDS_ZONE = 1u << 11, PLAN_CORO_PROTO = 1u << 12,
-       /* instance C name, the instance -> template back pointer, and "a handle of it was
-        * made somewhere" (which makes it get a task even when never spawned) */
-       PLAN_INST_NAME = 1u << 13, PLAN_TEMPLATE = 1u << 14, PLAN_CORO_BOXED = 1u << 15,
-       /* the result-side half of the `for` step: the parser owns the statement, the
-        * checker only ever says "that step is gone" */
-       PLAN_FOR_STEP_DROPPED = 1u << 16,
-       /* the resolved callee, and the emission gate ("was this function called?") */
-       PLAN_CALLEE = 1u << 17, PLAN_USED = 1u << 18,
-       /* the generated-C name of a binding or a variable statement */
-       PLAN_CNAME = 1u << 19,
-       /* struct-definition facts (first family of the analysis side) */
-       PLAN_BUILTIN_HOLDER = 1u << 20, PLAN_CORO_OF = 1u << 21,
-       AN_LAM_SIG = 1u << 22, AN_MAKES_POOL_ANY = 1u << 23,
-       /* impl / trait / module facts (T4, second family) */
-       PLAN_IMPL_TRAIT = 1u << 24, PLAN_IMPL_TARGET = 1u << 25,
-       PLAN_USED_DYN = 1u << 26, PLAN_USES_DYN = 1u << 27,
-       /* call-site markers for the builtin forms that have no callee to point at */
-       PLAN_PAR_WORKER = 1u << 28, PLAN_DOM_NEW = 1u << 29, PLAN_VIEW_OF = 1u << 30 };
+/* One bit per stored field. Macros, not an enum: a pedantic C11 compiler rejects
+ * enumerator values above 31, and the analysis side has already grown past 32. */
+#define PLAN_ARENA_LEVEL         (1ull << 0)
+#define PLAN_ZONE_LEVEL          (1ull << 1)
+#define PLAN_ARENA_ARG           (1ull << 2)
+#define PLAN_NEED_TEMP           (1ull << 3)
+#define PLAN_USES_HOME           (1ull << 4)
+#define PLAN_MAY_USE_ARENA       (1ull << 5)
+#define PLAN_MAKES_POOL          (1ull << 6)
+#define PLAN_COND_ALLOCS         (1ull << 7)
+#define PLAN_IS_CORO             (1ull << 8)
+#define PLAN_YIELD_TYPE          (1ull << 9)
+#define PLAN_CORO_FRAME_TYPE     (1ull << 10)
+#define PLAN_CORO_NEEDS_ZONE     (1ull << 11)
+#define PLAN_CORO_PROTO          (1ull << 12)
+#define PLAN_INST_NAME           (1ull << 13)
+#define PLAN_TEMPLATE            (1ull << 14)
+#define PLAN_CORO_BOXED          (1ull << 15)
+#define PLAN_FOR_STEP_DROPPED    (1ull << 16)
+#define PLAN_CALLEE              (1ull << 17)
+#define PLAN_USED                (1ull << 18)
+#define PLAN_CNAME               (1ull << 19)
+#define PLAN_BUILTIN_HOLDER      (1ull << 20)
+#define PLAN_CORO_OF             (1ull << 21)
+#define AN_LAM_SIG               (1ull << 22)
+#define AN_MAKES_POOL_ANY        (1ull << 23)
+#define PLAN_IMPL_TRAIT          (1ull << 24)
+#define PLAN_IMPL_TARGET         (1ull << 25)
+#define PLAN_USED_DYN            (1ull << 26)
+#define PLAN_USES_DYN            (1ull << 27)
+#define PLAN_PAR_WORKER          (1ull << 28)
+#define PLAN_DOM_NEW             (1ull << 29)
+#define PLAN_VIEW_OF             (1ull << 30)
+#define AN_REF_DEPTH             (1ull << 31)
+#define AN_HOME_DEPTH            (1ull << 32)
+#define AN_LEXICAL_LEVEL         (1ull << 33)
+#define AN_STORED_AT             (1ull << 34)
+
 
 /* The analysis half of the slot, by name: the checker's own working state, which no later
  * phase reads. Named here so the two audiences cannot quietly merge -- a field that code
  * generation starts reading must move out of this list (and get a `planXxx` accessor). */
-static const char *ANALYSIS_FIELDS[] = { "lamSig", "makesPoolAny" };
+const char *const planAnalysisFields[] = { "lamSig", "makesPoolAny",
+                                           "refDepth", "homeDepth", "lexicalLevel", "storedAt" };
+const size_t planAnalysisFieldCount = sizeof planAnalysisFields / sizeof planAnalysisFields[0];
 
 /* ---- setters (called by the checker) ----------------------------------------------- */
 
@@ -276,6 +289,35 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     if (!r) return;
     r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
 }
+
+/* ---- depth and origin facts (T4, fourth family) -------------------------------------
+ *
+ * `void *` on purpose: `refDepth` lives on an `Expr` **and** on the checker's `Sym`, and one
+ * accessor answers both. */
+#define AN_D_GET(fn, field, bit, dflt)                                     \
+    int fn(const void *node) {                                             \
+        NodeResults *r = resultsOf((node), false);                         \
+        return (r && (r->setMask & (bit))) ? r->an.field : (dflt);         \
+    }
+/* One kind for the whole group: `refDepth` is stamped on an `Expr` **and** on the checker's
+ * `Sym`, and a slot has one kind. Both are pointer-stable, so nothing else collides --
+ * `RKIND_EXPR` is the honest label (`Sym` is not an AST node, but it is not a `Stmt` either,
+ * and a slot is written as one kind for its whole life). */
+#define AN_D_SET(fn, field, bit)                                           \
+    void fn(void *node, int v) {                                           \
+        if (!node) return;                                                 \
+        NodeResults *r = resultsAs(node, true, RKIND_EXPR, __LINE__);      \
+        if (!r) return;                                                    \
+        r->an.field = v; r->setMask |= (bit);                              \
+    }
+AN_D_GET(anRefDepth, refDepth, AN_REF_DEPTH, 0)
+AN_D_SET(anSetRefDepth, refDepth, AN_REF_DEPTH)
+AN_D_GET(anHomeDepth, homeDepth, AN_HOME_DEPTH, 0)
+AN_D_SET(anSetHomeDepth, homeDepth, AN_HOME_DEPTH)
+AN_D_GET(anLexicalLevel, lexicalLevel, AN_LEXICAL_LEVEL, 0)
+AN_D_SET(anSetLexicalLevel, lexicalLevel, AN_LEXICAL_LEVEL)
+AN_D_GET(anStoredAt, storedAt, AN_STORED_AT, 0)
+AN_D_SET(anSetStoredAt, storedAt, AN_STORED_AT)
 
 /* ---- call-site markers (T4, third family) -------------------------------------------
  *

@@ -226,7 +226,6 @@ struct Expr {
      *        covered by that callee's own return check
      *   >0 = the block depth of some local
      * Only meaningful when the type contains a reference. */
-    int       refDepth;
     /* 这个节点的**编译计划**（arena/zone 层、实参 arena、是否需要临时量）不在这棵 AST 上：
      * 它的存储与读写口都在 `src/plan.c` / `src/plan.h`（X2：按节点寻址的侧表）。
      * 这样 AST 只剩语法事实与身份，而"计划何时有效、谁写谁读"由 plan.h 逐字段写明。*/
@@ -236,7 +235,6 @@ struct Expr {
      * a function that has a home arena, which erases the level the site really needs.
      * Once the constraints have been solved, a site that nothing pulled out of the
      * frame goes back to its own block, which is the level recorded here. */
-    int       lexicalLevel;
     bool      boxedCoro;         /* a coroutine call whose value is stored as a handle (codegen boxes it) */
     /* The strongest requirement escape analysis placed on this site: the smallest
      * level that satisfies every constraint it takes part in.
@@ -258,7 +256,6 @@ struct Expr {
      * does about levels: deciding which arena a site goes to is a separate pass over
      * these records, so that no decision depends on the order the checker happens to
      * walk the tree in. */
-    int       storedAt;
     /* This `new` belongs to an `@overwrite` site, so there is only one block of
      * storage: it is allocated lazily in the function frame and cleared before every
      * reuse. The level therefore follows the function body rather than the block the
@@ -278,7 +275,6 @@ struct Expr {
      * at level 0 is looked up as depth 0, so it may reject a program that is in fact
      * safe. Code generation does not read it: it reads `arenaArg`, which is already
      * resolved. */
-    int       homeDepth;
     /* This call site is not settled yet. While the body is being checked the answer
      * can only be "the current block", because "pass my home arena if I have one"
      * depends on the transitive `needsHome` closure, which is known only after every

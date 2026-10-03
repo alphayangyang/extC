@@ -282,7 +282,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * just above. Its references therefore point at depth 0, which is not
                  * the depth of the slot -- using the slot depth would falsely reject
                  *   var a: [2]?ref node  a[0] = ref *p  return a */
-                if (s->type && typeContainsRef(c->tt, s->type)) sym->refDepth = 0;
+                if (s->type && typeContainsRef(c->tt, s->type)) anSetRefDepth(sym, 0);
                 planSetCName(s, sym->cname, RKIND_STMT);
                 return;
             }
@@ -456,7 +456,7 @@ void checkStmt(Checker *c, Stmt *s) {
              * Only the call site knows where the references in the result live, since
              * the call site picks `arenaArg`, and the field table filled in below only
              * covers a struct literal. Without this, the field `t.p` has no entry,
-             * `targetDepth(t)` falls back to `sym->refDepth` and gets 0, and a later
+             * `targetDepth(t)` falls back to `anRefDepth(sym)` and gets 0, and a later
              * `b = t` with a shallower `b` looks safe while the block exit frees the
              * node. The sanitizer reports a heap use after free, and running it once
              * does not even crash: only building inside a block and storing outside it
@@ -479,9 +479,9 @@ void checkStmt(Checker *c, Stmt *s) {
                  * an unsigned C function; see `Sym.outOfFrame` and `slotDepth`. */
                 if (exprOutOfFrame(c, ini)) {
                     sym->outOfFrame = true;
-                    sym->refDepth   = 0;
+                    anSetRefDepth(sym, 0);
                 } else {
-                    sym->refDepth = d;
+                    anSetRefDepth(sym, d);
                 }
             }
             /* A struct literal records a depth for each field it writes. A field that
@@ -729,7 +729,7 @@ void checkStmt(Checker *c, Stmt *s) {
                     if (s->u.assign.target->kind == EX_IDENT) {
                         Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);
                         if (slot0 && slot0->type && slot0->type->kind == TY_REF)
-                            slot0->refDepth = targetDepth(c, v);
+                            anSetRefDepth(slot0, targetDepth(c, v));
                         /* The origin moves with it: after `mid = n` the origin of `mid`
                          * is `n`, so the intermediate bindings on a promotion walk stay
                          * reachable.
@@ -1203,7 +1203,7 @@ void checkStmt(Checker *c, Stmt *s) {
                      * depth 2)" for a plain copy of a C pointer, which left `!` (the unchecked
                      * signature) as the only way to write it. */
                     if (bt && typeContainsRef(c->tt, bt))
-                        bs->refDepth = targetDepth(c, s->u.match.scrutinee);
+                        anSetRefDepth(bs, targetDepth(c, s->u.match.scrutinee));
                     /* Write the resolved C name back into the arm, the same treatment
                      * `Param.cname` and a declaration's `cname` get. Without it, two
                      * `match` statements in one scope binding the same name would declare

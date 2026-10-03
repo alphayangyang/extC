@@ -498,3 +498,41 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
 **棘轮**：`[ast-freeze]` **131 → 128**；其余四条不动。
 
 **验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
+
+## 16. T4 第四族：`Expr` 的"深度/来源"组（`refDepth`/`homeDepth`/`lexicalLevel`/`storedAt`）
+
+`Expr` 与 `FuncDef` 是最后两大族（各 26 个字段），按**主题**分组推进。第一组是"深度/来源"，
+也是最"宽"的一组：`refDepth` 的写点散在 5 个文件（28 写 / 36 读）。
+
+**两个结构性决定**：
+
+1. **`setMask` 从 `unsigned` 扩成 `uint64_t`**：32 位在这一组用满了（新增 4 个位到 35），
+   而 C11 的枚举**不允许超过 `int` 的值**（`-Wpedantic` 会红）⇒ 位定义从 `enum` 改成
+   `#define ... (1ull << n)` 宏。这条是编译器教的，不是设计时想到的。
+2. **`refDepth` 一个访问器服务两个属主**：它在 `Expr` 上，也在检查器自己的 `Sym` 上（同一个问题）。
+   访问器取 `void *`，槽位 kind 统一 `RKIND_EXPR` —— 槽位一生只有一个 kind，而两者都是指针稳定、
+   不按值拷贝的结构。这条**先被属主看守抓住过**（`Sym` 的写用 `RKIND_OTHER`、`Expr` 的读用
+   `RKIND_EXPR`，`EXTC_DBG=1` 立刻 abort）⇒ 看守在真实改动里第一次抓到真问题。
+
+**改动**：`results.h` 加 4 个槽位（`an.refDepth/homeDepth/lexicalLevel/storedAt`）与 `uint64_t setMask`；
+`plan.c` 把位定义改成宏并加 4 组 setter/访问器（`anRefDepth`/`anSetRefDepth` …）；
+`planAnalysisFields` 从 `static` 改成**外部可见**（`tools/check_plan_seam.py` 要读它，见下）；
+37 处写、71 处读改经访问器；`ast.h` 删 4 个字段、`check_internal.h` 删 `Sym.refDepth`。
+
+**新增判据（下一条要接的线）**：`planAnalysisFields` 变成外部符号之后，`check_plan_seam.py`
+可以打印"分析侧字段清单"，从而让**"一个字段从分析侧搬到计划侧"变成一次可见的 diff**，
+而不是悄悄发生。本轮先把清单暴露出来，接进棘轮是紧接着的一步。
+
+**棘轮**：`[ast-freeze]` **125 → 116**（9 条：`refDepth` 28 写里 4 个文件的 key、`storedAt` 2 处等）；
+`[layering]`/`[plan-seam]`/`[callsite]`/`[tmpl-owners]` 不动。
+
+**验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0；quick 60/0。
+
+**过程记录（两条自伤，都值得记）**：
+* 第一次写迁移脚本用 `([^;]+)` 抓右值 ⇒ 把 `if (X->refDepth == 0) X->refDepth = depth;`
+  从 `==` 处切开，产生 `anSetRefDepth(val, = 0)` 这种垃圾。**修法：右值模式必须是
+  `=(?!=)` 且不许跨语句**。
+* 第二次读点替换用 `([A-Za-z_]\w*)->field` ⇒ 把 `s->u.trap_.msg->lexicalLevel` 里的
+  `msg->...` 拆坏（正则只吃到最后一个标识符）。**修法：`u.<variant>.<member>->field`
+  是另一种形状，必须单独一条规则**；而且修的时候要从**快照取原文**，不要叠补丁
+  （我叠了两次补丁，反而多坏了 6 行）。

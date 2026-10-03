@@ -37,6 +37,8 @@
 #ifndef EXTC_RESULTS_H
 #define EXTC_RESULTS_H
 
+#include <stdint.h>
+
 #include "ast.h"
 
 /* A dense node index. 0 is never handed out, so it doubles as "no id". */
@@ -94,9 +96,15 @@ typedef struct {
     struct {
         const char *lamSig;    /* a lambda's written signature, for diagnostics */
         bool        makesPoolAny; /* some site of it builds a pool */
+        /* depth and origin facts. `refDepth` exists on an `Expr` **and** on the checker's
+         * `Sym`: one question, one slot, one accessor for both. */
+        int  refDepth;
+        int  homeDepth;
+        int  lexicalLevel;
+        int  storedAt;
     } an;
     /* which of the fields above were written; an unset field reads as its default */
-    unsigned setMask;
+    uint64_t setMask;   /* a plain enum cannot hold bits above 31 in C11 */
     ResultKind kind;           /* which kind of node this slot belongs to (see ResultKind) */
     const FuncDef *owner;      /* the body whose results this slot holds (NULL = module level) */
     bool shared;               /* more than one body legitimately reaches this slot */

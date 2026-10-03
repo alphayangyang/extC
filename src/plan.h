@@ -74,6 +74,15 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- depth and origin facts (T4) ----------------------------------------------------
+ *
+ * `void *` on purpose: `refDepth` lives on an `Expr` **and** on the checker's `Sym`, and one
+ * accessor answers both (two spellings of one fact is what this batch removes). */
+int  anRefDepth(const void *node);      void anSetRefDepth(void *node, int v);
+int  anHomeDepth(const void *node);     void anSetHomeDepth(void *node, int v);
+int  anLexicalLevel(const void *node);  void anSetLexicalLevel(void *node, int v);
+int  anStoredAt(const void *node);      void anSetStoredAt(void *node, int v);
+
 /* ---- call-site markers for builtin forms (T4) --------------------------------------
  *
  * A builtin form has no callee to recognise it by, so the checker marks the **call node**

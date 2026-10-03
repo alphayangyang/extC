@@ -234,7 +234,7 @@ Sym *declare(Checker *c, const char *name, Type *t, bool mut,
      * the conservative answer. Whoever knows the initializer narrows this to the real
      * depth afterwards, so `var cur: ?ref node = head` ends up at 0, since the cursor
      * points at something on the caller's side. */
-    s->refDepth = (t && typeContainsRef(c->tt, t)) ? depth : 0;
+    anSetRefDepth(s, (t && typeContainsRef(c->tt, t)) ? depth : 0);
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
     *(Sym **)vecPush(&c->allSyms) = s;      /* also recorded for the self-check mode */

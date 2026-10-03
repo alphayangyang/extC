@@ -1546,7 +1546,7 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if (!v) return;
     if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !planCallee(v)) return;
     if (!planCallee(v)->needsHome) return;
-    v->homeDepth = (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len;
+    anSetHomeDepth(v, (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len);
     setCallArenaArg(c, v);          /* always keep `homeDepth` and `arenaArg` in step */
 }
 
@@ -1640,11 +1640,11 @@ void setCallZoneArg(Checker *c, Expr *e) {
 
 void setCallArenaArg(Checker *c, Expr *e) {
     if (!e) return;
-    if (e->homeDepth == -1) {                 /* destination at the home level: my home arena */
+    if (anHomeDepth(e) == -1) {                 /* destination at the home level: my home arena */
         planSetArenaArg(e, ARENA_HOME);
         e->arenaArgPending = false;
-    } else if (e->homeDepth >= 1) {           /* an explicit block level: use that arena */
-        planSetArenaArg(e, e->homeDepth);
+    } else if (anHomeDepth(e) >= 1) {           /* an explicit block level: use that arena */
+        planSetArenaArg(e, anHomeDepth(e));
         e->arenaArgPending = false;
     } else {
         /* No `mut ref` argument gave a reason, so the old rule applies: pass my home
@@ -1824,14 +1824,14 @@ static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
         if (loopId && exprHasNew(s->u.trap_.msg)) {
             *(int *)vecPush(sites) = s->u.trap_.msg->line;
             *(int *)vecPush(sites) = loopId;
-            *(int *)vecPush(sites) = s->u.trap_.msg->lexicalLevel;
+            *(int *)vecPush(sites) = anLexicalLevel(s->u.trap_.msg);
         }
         return;
     case ST_YIELD:
         if (loopId && exprHasNew(s->u.yield_.value)) {
             *(int *)vecPush(sites) = s->u.yield_.value->line;
             *(int *)vecPush(sites) = loopId;
-            *(int *)vecPush(sites) = s->u.yield_.value->lexicalLevel;
+            *(int *)vecPush(sites) = anLexicalLevel(s->u.yield_.value);
         }
         return;
     case ST_DOMAIN:
@@ -1850,28 +1850,28 @@ static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
         if (loopId && exprHasNew(s->u.var.init)) {
             *(int *)vecPush(sites) = s->u.var.init->line;
             *(int *)vecPush(sites) = loopId;
-            *(int *)vecPush(sites) = s->u.var.init->lexicalLevel;
+            *(int *)vecPush(sites) = anLexicalLevel(s->u.var.init);
         }
         return;
     case ST_ASSIGN:
         if (loopId && exprHasNew(s->u.assign.value)) {
             *(int *)vecPush(sites) = s->u.assign.value->line;
             *(int *)vecPush(sites) = loopId;
-            *(int *)vecPush(sites) = s->u.assign.value->lexicalLevel;
+            *(int *)vecPush(sites) = anLexicalLevel(s->u.assign.value);
         }
         return;
     case ST_EXPR:
         if (loopId && exprHasNew(s->u.expr.expr)) {
             *(int *)vecPush(sites) = s->u.expr.expr->line;
             *(int *)vecPush(sites) = loopId;
-            *(int *)vecPush(sites) = s->u.expr.expr->lexicalLevel;
+            *(int *)vecPush(sites) = anLexicalLevel(s->u.expr.expr);
         }
         return;
     case ST_RETURN:
         if (loopId && exprHasNew(s->u.ret.value)) {
             *(int *)vecPush(sites) = s->u.ret.value->line;
             *(int *)vecPush(sites) = loopId;
-            *(int *)vecPush(sites) = s->u.ret.value->lexicalLevel;
+            *(int *)vecPush(sites) = anLexicalLevel(s->u.ret.value);
         }
         return;
     case ST_IF:
@@ -1944,7 +1944,7 @@ static void reportMemory(Checker *c, Vec *all) {
             bool inLoop = loopIdOf(&sites, site->line) != 0;
             if (inLoop) nLoop++;
             fprintf(stderr, "    line %-5d level %-3d lexical %-3d  %s\n",
-                    site->line, planArenaLevel(site), site->lexicalLevel,
+                    site->line, planArenaLevel(site), anLexicalLevel(site),
                     inLoop ? "allocated once per round of a loop" : "allocated outside any loop");
         }
     }
@@ -2353,8 +2353,8 @@ static void refreshRootDepth(Sym *s) {
      * erase the pointer still live in the first field, so a later whole-value copy or
      * return is accepted. Three counterexamples of that shape reproduced as an ASan
      * heap-use-after-free. */
-    if (s->refDepth > m) m = s->refDepth;
-    s->refDepth = m;
+    if (anRefDepth(s) > m) m = anRefDepth(s);
+    anSetRefDepth(s, m);
 }
 
 /* Record the depth of a store into a place reached through a binding.
@@ -2438,7 +2438,7 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
      * lowered. A struct binding that is not a reference may still drop, and that is
      * exactly what the strong update is for. */
     bool isRefRoot = root->type && tsub(c, root->type)->kind == TY_REF;
-    int  before    = root->refDepth;
+    int  before    = anRefDepth(root);
     if (!field) {                                  /* whole-object assignment or element write */
         /* An element write invalidates no other element or field, so it must neither
          * clear the field table nor overwrite `otherDepth`. The old behavior cleared the
@@ -2446,7 +2446,7 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
          * escape through. */
         if (d2 > root->otherDepth) root->otherDepth = d2;
         refreshRootDepth(root);
-        if (isRefRoot && root->refDepth < before) root->refDepth = before;   /* keep the pointee */
+        if (isRefRoot && anRefDepth(root) < before) anSetRefDepth(root, before);   /* keep the pointee */
         return;
     }
     int *slot = fieldDepthEntry(c, root, field, true);
@@ -2467,8 +2467,8 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
             if (root->fields[i].name && strcmp(root->fields[i].name, field) == 0) continue;
             if (root->fields[i].depth > m) m = root->fields[i].depth;
         }
-        root->refDepth = m;
-        if (isRefRoot && root->refDepth < before) root->refDepth = before;   /* keep the pointee */
+        anSetRefDepth(root, m);
+        if (isRefRoot && anRefDepth(root) < before) anSetRefDepth(root, before);   /* keep the pointee */
         return;
     } else {
         /* An incomplete field table forbids any drop: the missing slots may hold values.
@@ -2481,7 +2481,7 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     refreshRootDepth(root);
     /* Do not forget what a reference-typed binding points at: the field table only
      * describes what is stored inside the pointee, so `refDepth` is restored here. */
-    if (isRefRoot && root->refDepth < before) root->refDepth = before;
+    if (isRefRoot && anRefDepth(root) < before) anSetRefDepth(root, before);
 }
 
 /* Record a whole aggregate assignment without throwing away its per-field provenance.
@@ -2505,7 +2505,7 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
         int m = dst->otherDepth;
         for (int i = 0; i < dst->nfields; i++)
             if (dst->fields[i].depth > m) m = dst->fields[i].depth;
-        dst->refDepth = m;
+        anSetRefDepth(dst, m);
         return;
     }
 
@@ -3042,7 +3042,7 @@ static int solvedDepth(Expr *e) {
         * contradict the arena level. */
         return arenaDepthOf(planArenaLevel(e));
     case EX_IDENT: case EX_FIELD: case EX_INDEX:
-        return e->refDepth > 0 ? e->refDepth : 0;
+        return anRefDepth(e) > 0 ? anRefDepth(e) : 0;
     /* The payload is copied into the pool: its depth is this value's depth (family E). */
     case EX_DYN:      return solvedDepth(e->u.dynv.payload);
     case EX_SIGN:     return solvedDepth(e->u.sign.operand);
@@ -3590,7 +3590,7 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
     }
     case EX_NEW:
     case EX_GENCALL:
-        return val->minAt >= 0 ? val->minAt : val->lexicalLevel;
+        return val->minAt >= 0 ? val->minAt : anLexicalLevel(val);
     default:
         return LEVEL_INF;
     }
@@ -4475,7 +4475,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
                     Sym *sy = *(Sym **)vecAt(&c->allSyms, i);
                     if (!sy || sy->line < 0) continue;
                     int d = dfLookup(&dfr, sy->cname);
-                    if (d > sy->refDepth) sy->refDepth = d;
+                    if (d > anRefDepth(sy)) anSetRefDepth(sy, d);
                 }
             } else {
                 for (int i = 0; i < dfr.nvars; i++) {
@@ -4486,7 +4486,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
                     if (!b) continue;
                     for (size_t k = 0; k < b->syms.len; k++) {
                         Sym *sy = *(Sym **)vecAt(&b->syms, k);
-                        if (sy && sy->line >= 0 && d > sy->refDepth) sy->refDepth = d;
+                        if (sy && sy->line >= 0 && d > anRefDepth(sy)) anSetRefDepth(sy, d);
                     }
                 }
             }
@@ -6346,11 +6346,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                                 f->name ? f->name : "?", site->line, site->minAt, planArenaLevel(site));
                     if (dbgOn("EXTC_DBG_SITE2"))
                         fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
-                                f->name?f->name:"?", site->minAt, site->lexicalLevel,
+                                f->name?f->name:"?", site->minAt, anLexicalLevel(site),
                                 planArenaLevel(site), f->needsHome?1:0, (int)site->kind);
                     if (dbgOn("EXTC_DBG_S3"))
                         fprintf(stderr, "[s3] %-8s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
-                                f->name?f->name:"?", site->minAt, site->lexicalLevel,
+                                f->name?f->name:"?", site->minAt, anLexicalLevel(site),
                                 planArenaLevel(site), f->needsHome?1:0, (int)site->kind);
                     int want;                            /* the arena it finally belongs to */
                     if (site->minAt == 0) {
@@ -6362,11 +6362,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                          * `arenaLevel` cannot be consulted here: the provisional pass already
                          * rewrote every site in a function that needs a home arena to the
                          * not-yet-decided value. */
-                        want = site->lexicalLevel >= 1 ? site->lexicalLevel : 1;
+                        want = anLexicalLevel(site) >= 1 ? anLexicalLevel(site) : 1;
                     }
                     if (planArenaLevel(site) != want) {
                         planSetArenaLevel(site, want);
-                        site->refDepth   = arenaDepthOf(want);   /* the single conversion point */
+                        anSetRefDepth(site, arenaDepthOf(want));   /* the single conversion point */
                         if (want == ARENA_HOME) fixed++; else keptBlock++;
                     }
                 } else if (site->arenaArgPending) {
@@ -6418,7 +6418,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * changed.
          *
          * Why (measured with gdb on `tests/arena-promoted/C2_if_join_refbinding`): the
-         * `site->refDepth = ...` in the placement loop above sits inside
+         * `anSetRefDepth(site, ...` in the placement loop above sits inside
          * `if (planArenaLevel(site) != want)`. For a site that the provisional pass had already
          * set to `ARENA_HOME` and the solver also placed in `ARENA_HOME`, the level did not
          * change, so that assignment never ran and `refDepth` kept a value that had been
@@ -6434,7 +6434,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             for (size_t j = 0; j < f->arenaSites.len; j++) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
-                site->refDepth = arenaDepthOf(planArenaLevel(site));   /* keep the two in sync */
+                anSetRefDepth(site, arenaDepthOf(planArenaLevel(site)));   /* keep the two in sync */
             }
         }
         /* `EXTC_DBG_HOME=1` prints, for every function, the two home flags and the arena
@@ -6648,9 +6648,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * it immediately, so the predicate itself needs checking too. */
             if (sy->origin && (sy->origin->kind == EX_NEW || sy->origin->kind == EX_GENCALL)) {
                 int siteD = arenaDepthOf(planArenaLevel(sy->origin));
-                if (sy->refDepth < siteD) {
+                if (anRefDepth(sy) < siteD) {
                     fprintf(stderr, "[selfcheck] binding `%s` has refDepth=%d, shallower than"
-                            " its site (level %d => %d)\n", sy->name, sy->refDepth,
+                            " its site (level %d => %d)\n", sy->name, anRefDepth(sy),
                             planArenaLevel(sy->origin), siteD);
                     bad++;
                 }
@@ -6663,10 +6663,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
                 int want = arenaDepthOf(planArenaLevel(site));
-                if (site->refDepth != want) {
+                if (anRefDepth(site) != want) {
                     fprintf(stderr, "[selfcheck] site at line %d of %s: refDepth=%d but"
                             " arenaLevel=%d (should be %d)\n", site->line,
-                            f->name ? f->name : "?", site->refDepth, planArenaLevel(site), want);
+                            f->name ? f->name : "?", anRefDepth(site), planArenaLevel(site), want);
                     bad++;
                 }
                 if (site->minAt == 0 && planArenaLevel(site) != ARENA_HOME) {

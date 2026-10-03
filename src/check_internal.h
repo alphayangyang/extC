@@ -145,7 +145,6 @@ typedef struct {
      * on where the references inside a reference-carrying value point. The default is
      * the slot depth, the conservative answer; a declaration or a retarget narrows it
      * to the real depth of the value. */
-    int         refDepth;
     /* Set when this binding was initialized from an expression whose storage is provably **not**
      * in any frame: a chain rooted at a global, or a call whose declaration says `effects Ret=0`
      * (the plate's views; `mmap`-style handles). Then a **view**-typed binding answers with

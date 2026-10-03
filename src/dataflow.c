@@ -169,7 +169,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
         if (v) return v->depth;
         /* No fact: the binding is not one this analysis tracks, so fall back to what
          * the checker recorded, which is an upper bound. */
-        return sy->refDepth > 0 ? sy->refDepth : 0;
+        return anRefDepth(sy) > 0 ? anRefDepth(sy) : 0;
     }
     case EX_NEW:
     case EX_GENCALL:
@@ -183,7 +183,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
          * `mid` and `cell` alike -- and the data flow may only raise a depth, so the wrong
          * answer survived the write-back. */
         if (e->minAt >= 0) return e->minAt;
-        return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
+        return anLexicalLevel(e) > 0 ? anLexicalLevel(e) : 0;
     case EX_FIELD: {
         Sym *root = dfRootOf(c, e);
         if (root) {
@@ -206,7 +206,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
             int vd = factDepthOf(f, root->cname);
             if (vd > 0) return vd;
         }
-        return root && root->refDepth > 0 ? root->refDepth : 0;
+        return root && anRefDepth(root) > 0 ? anRefDepth(root) : 0;
     }
     case EX_INDEX:  return dfExprDepth(c, f, e->u.index.obj, hops + 1);
     case EX_DEREF:  return dfExprDepth(c, f, e->u.deref.operand, hops + 1);
@@ -224,7 +224,7 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
         int b = dfExprDepth(c, f, e->u.bin.right, hops + 1);
         return a > b ? a : b;
     }
-    case EX_REF:    return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
+    case EX_REF:    return anLexicalLevel(e) > 0 ? anLexicalLevel(e) : 0;
     case EX_COALESCE: {
         int a = dfExprDepth(c, f, e->u.coalesce.main, hops + 1);
         int b = dfExprDepth(c, f, e->u.coalesce.fallback, hops + 1);

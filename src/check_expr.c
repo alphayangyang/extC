@@ -2122,7 +2122,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* An associated function needs its arena argument computed too: it may
              * allocate, or it may return a reference. Omitting this generated a call with one
              * argument too few, so `Type::make()` did not compile. */
-            e->homeDepth = callHomeDepth(c, &e->u.assoc.args, &f->params, e);
+            anSetHomeDepth(e, callHomeDepth(c, &e->u.assoc.args, &f->params, e));
             setCallArenaArg(c, e);      /* resolve which arena the call finally passes */
             setCallZoneArg(c, e);       /* 建池的调用：池生在哪一层地方 */
             /* The reference checking is moved to the end of this case, after the arguments
@@ -2163,7 +2163,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* The reference check applies to an associated function as well, once its
              * arguments have been checked. */
-            checkCallRefArgs(c, f, &e->u.assoc.args, &f->params, e->homeDepth,
+            checkCallRefArgs(c, f, &e->u.assoc.args, &f->params, anHomeDepth(e),
                              e->line, e->u.assoc.name);
             return f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
         }
@@ -2341,8 +2341,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* Keep the lexical level in its own field: the branch above may have replaced
              * `arenaLevel` with the `ARENA_HOME` sentinel, while the solver still needs to
              * know which block the site started in. */
-            if (e->lexicalLevel == 0)
-                e->lexicalLevel = e->reuse ? 1 : (int)c->scopes.len;
+            if (anLexicalLevel(e) == 0)
+                anSetLexicalLevel(e, e->reuse ? 1 : (int)c->scopes.len);
             /* Initial value: no constraint has touched this site yet. Relying on the 0 from
              * `arenaAllocZero` would be wrong, because 0 means "must outlive the frame". */
             e->minAt = -1;
@@ -2353,7 +2353,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * the scope the caller chose, which is depth 0. */
             {
                 int depth = arenaDepthOf(planArenaLevel(e));    /* the one conversion point */
-                if (e->refDepth == 0 || e->refDepth > depth) e->refDepth = depth;
+                if (anRefDepth(e) == 0 || anRefDepth(e) > depth) anSetRefDepth(e, depth);
             }
 
             if (!e->u.new_.count) {
@@ -2560,13 +2560,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * arena gives `ARENA_HOME` and depth 0, "the level outside this frame". */
             if (c->curFunc && c->curFunc->needsHome) {
                 planSetArenaLevel(e, ARENA_HOME);
-                e->refDepth   = 0;
+                anSetRefDepth(e, 0);
             } else {
-                e->refDepth   = c->scopes.len;
+                anSetRefDepth(e, c->scopes.len);
                 planSetArenaLevel(e, (int)c->scopes.len);
             }
             c->allocSites++;
-            if (e->lexicalLevel == 0) e->lexicalLevel = (int)c->scopes.len;   /* lexical level */
+            if (anLexicalLevel(e) == 0) anSetLexicalLevel(e, (int)c->scopes.len);   /* lexical level */
             /* Initial value: no constraint has touched this site yet. Relying on the 0 from
              * `arenaAllocZero` would be wrong, because 0 means "must outlive the frame".
              * `alloc` is an allocation site too, so it needs this initialisation as much as
@@ -3242,7 +3242,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return f->ret ? f->ret : ttVoid(tt);
             }
             /* The arena for this call comes from the shallowest `mut ref` argument. */
-            e->homeDepth = callHomeDepth(c, &e->u.call.args, &f->params, e);
+            anSetHomeDepth(e, callHomeDepth(c, &e->u.call.args, &f->params, e));
             setCallArenaArg(c, e);      /* decide which arena the call finally passes */
             setCallZoneArg(c, e);       /* 建池的调用：池生在哪一层地方 */
             /* The reference check has to run after the arguments are checked: until then
@@ -3286,7 +3286,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * nothing to do with the home arena.
              * The position matters as well: after the arguments are checked, because
              * `targetDepth` reads their types. */
-            checkCallRefArgs(c, f, &e->u.call.args, &f->params, e->homeDepth, e->line, name);
+            checkCallRefArgs(c, f, &e->u.call.args, &f->params, anHomeDepth(e), e->line, name);
             return f->ret ? f->ret : ttVoid(tt);
         }
 
@@ -3722,7 +3722,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * and ASan caught the resulting use-after-free. */
                     const char *rrn = placeRootName(e->u.method.recv);
                     if (d != 0 && rrn && isEscapeeName(c, rrn)) d = -1;
-                    e->homeDepth = (d == 0) ? -1 : d;
+                    anSetHomeDepth(e, (d == 0) ? -1 : d);
                     /* This receiver branch depends on the escape information as well, and that
                      * information is not final while the body is being checked: it is complete
                      * only once the closure of the call graph is closed. So the site is recorded
@@ -3743,7 +3743,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         *(EArenaSite **)vecPush(&c->eSites) = rec;
                     }
                 } else {
-                    e->homeDepth = callHomeDepth(c, &e->u.method.args, &f->params, e);
+                    anSetHomeDepth(e, callHomeDepth(c, &e->u.method.args, &f->params, e));
                 }
                 /* Resolve which arena the call finally passes; both numbers are decided here. */
                 setCallArenaArg(c, e);
@@ -3868,7 +3868,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 *(Expr **)vecPush(&margs) = e->u.method.recv;
                 for (size_t ai = 0; ai < e->u.method.args.len; ai++)
                     *(Expr **)vecPush(&margs) = *(Expr **)vecAt(&e->u.method.args, ai);
-                checkCallRefArgs(c, f, &margs, &f->params, e->homeDepth,
+                checkCallRefArgs(c, f, &margs, &f->params, anHomeDepth(e),
                                  e->line, e->u.method.name);
             }
             return rt;

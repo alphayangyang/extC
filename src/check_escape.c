@@ -130,7 +130,7 @@ int slotDepth(Checker *c, Expr *e) {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy && sy->type) {
             Type *st = tsub(c, sy->type);
-            if (st && st->kind == TY_REF) return sy->refDepth;
+            if (st && st->kind == TY_REF) return anRefDepth(sy);
             /* A **view** whose storage is out of this frame denotes that storage, not the slot it
              * sits in: `var v = pl.view(off, n)!` is a two-word handle whose bytes point into the
              * plate, so `v.data` must not be read as "a pointer into this frame". `outOfFrame` is
@@ -138,7 +138,7 @@ int slotDepth(Checker *c, Expr *e) {
              * `effects Ret=0` (the plate signed it once); a view over frame storage, a `new` block
              * or an arena allocation keeps the slot depth, which is what the conservative rule
              * needs. */
-            if (st && ttIsViewType(st) && sy->outOfFrame) return sy->refDepth;
+            if (st && ttIsViewType(st) && sy->outOfFrame) return anRefDepth(sy);
         }
         return sy ? sy->depth : 0;
     }
@@ -226,7 +226,7 @@ int valDepthStructural(Checker *c, Expr *e) {
     switch (e->kind) {
     case EX_IDENT: {
         Sym *sy = lookup(c, e->u.ident.name);
-        if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy->refDepth;
+        if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return anRefDepth(sy);
         /* 注意轴不同：这里是"**结构里有没有引用**"（`valDepthStructural`），不是"活多久"。
          * 非引用绑定结构上没有引用 ⇒ 0 是**语义**，不是兜底。*/
         return 0;
@@ -433,11 +433,11 @@ int targetDepth(Checker *c, Expr *e) {
      * structure. Consulting the node here would return the pre-fixed-point answer, which
      * is exactly how a struct holding an allocation was reported as holding nothing live
      * and the allocation stayed in a block arena. */
-    if (!c->substParams && !mentionsParam(e->type) && e->refDepth) {
-        if (e->kind != EX_IDENT) return e->refDepth;
+    if (!c->substParams && !mentionsParam(e->type) && anRefDepth(e)) {
+        if (e->kind != EX_IDENT) return anRefDepth(e);
         Sym *syc = identBindOf(e);
         if (!syc || !syc->type || tsub(c, syc->type)->kind != TY_REF ||
-            syc->refDepth >= e->refDepth) return e->refDepth;
+            anRefDepth(syc) >= anRefDepth(e)) return anRefDepth(e);
     }
 
     int d = 0;
@@ -464,7 +464,7 @@ int targetDepth(Checker *c, Expr *e) {
     case EX_GENCALL:
         /* A freshly allocated object lives until the end of the enclosing block, so
          * its depth is the number the checker recorded for the site. */
-        d = e->refDepth;
+        d = anRefDepth(e);
         break;
     case EX_COALESCE:
         /* Either side can become the result, so take the deeper one. The deeper
@@ -503,7 +503,7 @@ int targetDepth(Checker *c, Expr *e) {
          * The slot depth is still the right answer for storing into the binding, which
          * is what `slotDepth` computes. The two questions are kept separate. */
         Sym *sy = lookup(c, e->u.ident.name);
-        if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = sy->refDepth;
+        if (sy && sy->type && typeContainsRef(c->tt, tsub(c, sy->type))) d = anRefDepth(sy);
         else d = slotDepth(c, e);
         /* Do not stop at the `typeContainsRef` answer above: it says false for an aggregate
          * whose field types are themselves references. A binding of
@@ -603,7 +603,7 @@ int targetDepth(Checker *c, Expr *e) {
                     c->ctx && c->ctx->path ? c->ctx->path : "?", e->line, (int)e->kind, d, pure,
                     pure > d ? "UNDER" : "OVER");
     }
-    if (!c->substParams && !mentionsParam(e->type)) e->refDepth = d;
+    if (!c->substParams && !mentionsParam(e->type)) anSetRefDepth(e, d);
     return d;
 }
 
@@ -965,7 +965,7 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
  */
 void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
     if (!c || !val || at < 0) return;
-    if (val->storedAt >= 0 && val->storedAt <= at) {
+    if (anStoredAt(val) >= 0 && anStoredAt(val) <= at) {
         /* The value was already published at a level at least this shallow, so a record of
          * its own would add no lifetime requirement -- but only for the same destination.
          *
@@ -982,7 +982,7 @@ void recordStore(Checker *c, Expr *val, Expr *target, int at, int line) {
         }
         if (!target) return;
     }
-    val->storedAt = at;
+    anSetStoredAt(val, at);
     StoreSite *st = (StoreSite *)arenaAllocZero(c->arena, sizeof(StoreSite));
     st->value  = val;
     st->target = target;
@@ -1173,7 +1173,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         if (dbgOn("EXTC_DBG_FACT"))
             fprintf(stderr, "[fact] %-8s at=%d kind=%d minAt=%d lexi=%d line=%d\n",
                     c->curFunc?c->curFunc->name:"?", at, (int)val->kind,
-                    val->minAt, val->lexicalLevel, val->line);
+                    val->minAt, anLexicalLevel(val), val->line);
         recordLvlFact(c, val, at); applyLvlFact(c, val, at);
     }
     switch (val->kind) {
@@ -1216,8 +1216,8 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         /* The one place where a level is converted back into a depth is
          * here. */
         int depth = arenaDepthOf(planArenaLevel(val));
-        if (val->refDepth > depth || val->refDepth == 0)
-            val->refDepth = depth;
+        if (anRefDepth(val) > depth || anRefDepth(val) == 0)
+            anSetRefDepth(val, depth);
         return true;
     }
 
@@ -1275,9 +1275,9 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         if (!promoteFieldsAt(c, sy, at, hops + 1)) ok = false;
         if (!ok) return false;
         if (slotDeepEnough) return true;
-        if (sy->type && typeContainsRef(c->tt, tsub(c, sy->type)) && sy->refDepth > at)
-            sy->refDepth = at;
-        if (val->refDepth > at || val->refDepth == 0) val->refDepth = at;
+        if (sy->type && typeContainsRef(c->tt, tsub(c, sy->type)) && anRefDepth(sy) > at)
+            anSetRefDepth(sy, at);
+        if (anRefDepth(val) > at || anRefDepth(val) == 0) anSetRefDepth(val, at);
         return true;
     }
 
@@ -1315,7 +1315,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         for (size_t i = 0; i < val->u.lit.inits.len; i++)
             if (!promoteInto2(c, (*(FieldInit **)vecAt(&val->u.lit.inits, i))->value, at, hops + 1))
                 ok = false;
-        if (ok && val->refDepth > at) val->refDepth = at;     /* tighten the cached depth too */
+        if (ok && anRefDepth(val) > at) anSetRefDepth(val, at);     /* tighten the cached depth too */
         return ok;
     }
 
@@ -1323,7 +1323,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         bool ok = true;
         for (size_t i = 0; i < val->u.arraylit.elems.len; i++)
             if (!promoteInto2(c, *(Expr **)vecAt(&val->u.arraylit.elems, i), at, hops + 1)) ok = false;
-        if (ok && val->refDepth > at) val->refDepth = at;
+        if (ok && anRefDepth(val) > at) anSetRefDepth(val, at);
         return ok;
     }
 
@@ -1331,7 +1331,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         bool ok = true;
         for (size_t i = 0; i < val->u.enumval.args.len; i++)
             if (!promoteInto2(c, *(Expr **)vecAt(&val->u.enumval.args, i), at, hops + 1)) ok = false;
-        if (ok && val->refDepth > at) val->refDepth = at;
+        if (ok && anRefDepth(val) > at) anSetRefDepth(val, at);
         return ok;
     }
 
@@ -1362,7 +1362,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                             (void *)val, planZoneLevel(val), want, at);
                 planSetZoneLevel(val, want);
             }
-            if (val->refDepth > at) val->refDepth = at;
+            if (anRefDepth(val) > at) anSetRefDepth(val, at);
             return true;
         }
         return false;
@@ -2605,7 +2605,7 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     case EX_GENCALL:
         /* The block the site was born in. `lexicalLevel` is set the first time the node
          * is checked and does not move afterwards. */
-        return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
+        return anLexicalLevel(e) > 0 ? anLexicalLevel(e) : 0;
     case EX_IDENT: {
         /* Follow the origin to the site it came from; a binding on its own carries no
          * depth that is independent of where that site ends up. */
@@ -2636,7 +2636,7 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
                                                        : e->u.sign.operand, hops + 1, seen);
     case EX_REF:
         /* A reference created here points into the current block. */
-        return e->lexicalLevel > 0 ? e->lexicalLevel : 0;
+        return anLexicalLevel(e) > 0 ? anLexicalLevel(e) : 0;
     case EX_SLICE:
         /* A view carved out of a place lives as long as that place's block. */
         return targetDepthPure(c, e->u.slice.obj, hops + 1, seen);
