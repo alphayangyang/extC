@@ -8,7 +8,6 @@ src/check_expr.c:args	4 处（行 1698, 2438, 2791, 3384）	R1 AST 冻结的施�
 src/check_expr.c:call	1 处（行 3741）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:callee	2 处（行 2437, 3383）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:cname	3 处（行 854, 888, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:dynTable	1 处（行 664）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTrait	1 处（行 3508）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:fields	1 处（行 997）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:hasEffects	1 处（行 1199）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -49,8 +48,6 @@ src/check_top.c:coroRetProto	1 处（行 4336）	R1 AST 冻结的施工单：P2 
 src/check_top.c:index	9 处（行 6973, 6973, 6976, 6989, 6989）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:init	2 处（行 6988, 7059）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:modName	3 处（行 4103, 4154, 4647）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:owLocal	1 处（行 6522）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:owSites	1 处（行 6511）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:sym	1 处（行 3525）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:target	1 处（行 3274）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:type	23 处（行 82, 4115, 4120, 4166, 4176）	R1 AST 冻结的施工单：P2 把它降到 0

@@ -89,6 +89,10 @@
 #define PLAN_DEREF               (1ull << 63)
 #define PLAN_BOXED_CORO          (1ull << 64)
 #define PLAN_CORO_KIND           (1ull << 65)
+#define PLAN_DYN_TABLE           (1ull << 72)
+#define PLAN_CORO_RET_PROTO      (1ull << 73)
+#define PLAN_OW_SITES            (1ull << 75)
+#define PLAN_OW_LOCAL            (1ull << 76)
 #define AN_DUMMY_PAST_64         (1ull << 65)
 #define AN_ADDR_FROM_LOCAL       (1ull << 64)
 
@@ -486,6 +490,50 @@ void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl) {
 
 /* `deref` / `boxedCoro` are stamped on an **expression** (the three above are stamped on a
  * function), so they take an `Expr *` rather than going through the `FuncDef` macros. */
+/* The write-once pass's two facts. (The AST still carries a `callees` vector: it is a
+ * mutable call graph grown in place, and `vecPush`'s contract forbids holding a `Vec *`
+ * across a push -- an accessor handing one back invites exactly that. See the note in
+ * `ast.h`.) */
+void planSetOwSites(FuncDef *f, int v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.owSites = v; resultsSetBit(r, PLAN_OW_SITES);
+}
+void planSetOwLocal(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.owLocal = v; resultsSetBit(r, PLAN_OW_LOCAL);
+}
+int planOwSites(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_OW_SITES) ? r->an.owSites : 0;
+}
+bool planOwLocal(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_OW_LOCAL) ? r->an.owLocal : false;
+}
+bool planDynTable(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_DYN_TABLE) ? r->dynTable : false;
+}
+void planSetDynTable(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->dynTable = v; resultsSetBit(r, PLAN_DYN_TABLE);
+}
+Type *planCoroRetProto(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_CORO_RET_PROTO) ? r->coroRetProto : NULL;
+}
+void planSetCoroRetProto(FuncDef *f, Type *t) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->coroRetProto = t; resultsSetBit(r, PLAN_CORO_RET_PROTO);
+}
 int planCoroKind(const FuncDef *f) {
     NodeResults *r = resultsOf(f, false);
     return r && resultsBit(r, PLAN_CORO_KIND) ? r->coroKind : 0;

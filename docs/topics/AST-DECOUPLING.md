@@ -838,3 +838,44 @@ void resultsSetBit(NodeResults *r, uint64_t bit);
 | 结果层 | 无 | `results.h`/`results.c`：稠密 id、非移动块表、两个字掩码、plan/analysis 两受众 |
 | 分析侧清单 | 无 | `planAnalysisFields` + `tools/plan-analysis-fields.txt` 棘轮 |
 | AST 上的字段 | 计划/分析混住 | 只留**语法 + 类型层 + 有意保留的三类** |
+
+---
+
+## 24. T4 第十一族：`owSites`/`owLocal` 的收尾、`dynTable`/`coroRetProto`，以及 **`callees` 为什么不搬**
+
+### 24.1 三个**死字段**（这一族最值得记的发现）
+
+`FuncDef` 上还留着 `owSites` / `owLocal` / `freshCount` 三个**普通字段**——它们**已经没有任何
+读者**（所有调用点都在第十族之前就走访问器了）。这类"迁移做完但字段没删"的残留，
+`[ast-freeze]` **看不见**（它只统计"读写 AST 字段"的地方，而没人读就不违规）。
+⇒ 记一条：**迁移之后要专门找一次死字段**（`grep '->字段'` 为空 + 字段还在 `ast.h`），
+不能只依赖棘轮。三个删掉，`[ast-freeze]` 从 72 → 69。
+
+### 24.2 两个正常迁移的字段
+
+| 字段 | 桶 | 说明 |
+|---|---|---|
+| `dynTable` | **PLAN** | codegen 读 1（"函数体由 `dyn` 表的 thunk 从外部命名"）——注意 codegen 里**也有**一个 `DeadFunc.dynTable`，同名不同属，第一版把两者混了，编译器报 `incompatible pointer type` |
+| `coroRetProto` | **PLAN** | 只在检查器里读写（协程声明的返回类型，替换前），归计划侧 |
+
+### 24.3 `callees` **不搬**，理由是 `vecPush` 的契约
+
+`callees` 是效果闭包要走的**调用图**（`Vec`，`Vec` 里存 `FuncDef*`）。我按"访问器交回 `Vec*`"
+的做法迁了，**`examples/arrays.extc` 段错误**（`tests` 3/327）。查 `base.c` 的契约：
+
+```c
+/* Double the capacity and move the live elements into the new block.
+ *   - Every element pointer handed out earlier becomes dangling here. Nothing may
+ *     hold a vecPush or vecAt result across a push on the same vector. */
+static void vecGrow(Vec *v) { ... }
+```
+
+⇒ **"交回 `Vec *`"正是一个诱人踩这条契约的接口**：调用方拿到 `Vec*` 后自然会在循环里
+`vecPush`，而 `vecGrow` 会换掉 `data`。而且它本质上是**原地增长的可变表（构建器输出）**，
+不是"某个节点的一个结果"。**留在 AST 上**，并在 `ast.h`/`plan.c` 写明理由 ——
+这条比"少一条 key"重要。
+
+### 24.4 验收
+
+**棘轮**：`[ast-freeze]` **72 → 69**；其余四条不动。
+**验收**：构建零告警；tests **327/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0；quick 60/0。

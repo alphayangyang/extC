@@ -6508,7 +6508,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         Vec all; allFunctions(arena, m, &all);
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
-            f->owSites = countOwSites(f->body);
+            planSetOwSites(f, countOwSites(f->body));
             /* Set `owLocal` even when there are no sites: otherwise the signature of a
              * function with no parameters and no home arena loses its `void` (a golden test
              * caught this immediately). */
@@ -6519,13 +6519,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * parameters instead of `void`), which is why the flag is still read in four places in
              * `codegen.c` -- and why `funcReachesItself` is not called here any more: the decision
              * it was meant to feed is a constant for this pass's functions. */
-            f->owLocal = true;
+            planSetOwLocal(f, true);
         }
         if (getenv("EXTC_DUMP_OW"))
             for (size_t i = 0; i < all.len; i++) {
                 FuncDef *f = *(FuncDef **)vecAt(&all, i);
-                if (f->owSites) fprintf(stderr, "[ow] %-18s sites=%d local=%d\n",
-                                        f->name, f->owSites, (int)f->owLocal);
+                if (planOwSites(f)) fprintf(stderr, "[ow] %-18s sites=%d local=%d\n",
+                                            f->name, planOwSites(f), (int)planOwLocal(f));
             }
     }
 

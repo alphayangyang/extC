@@ -3582,20 +3582,20 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
         collectOwCallsExpr(e->u.dynv.payload, out);
         return;
     case EX_CALL:
-        if (planCallee(e) && planCallee(e)->owSites > 0 && !planCallee(e)->owLocal)
+        if (planCallee(e) && planOwSites(planCallee(e)) > 0 && !planOwLocal(planCallee(e)))
             *(Expr **)vecPush(out) = e;
         for (size_t i = 0; i < e->u.call.args.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.call.args, i), out);
         return;
     case EX_METHOD:
-        if (planCallee(e) && planCallee(e)->owSites > 0 && !planCallee(e)->owLocal)
+        if (planCallee(e) && planOwSites(planCallee(e)) > 0 && !planOwLocal(planCallee(e)))
             *(Expr **)vecPush(out) = e;
         collectOwCallsExpr(e->u.method.recv, out);
         for (size_t i = 0; i < e->u.method.args.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.method.args, i), out);
         return;
     case EX_ASSOC:
-        if (planCallee(e) && planCallee(e)->owSites > 0 && !planCallee(e)->owLocal)
+        if (planCallee(e) && planOwSites(planCallee(e)) > 0 && !planOwLocal(planCallee(e)))
             *(Expr **)vecPush(out) = e;
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             collectOwCallsExpr(*(Expr **)vecAt(&e->u.assoc.args, i), out);
@@ -3709,10 +3709,10 @@ static bool f_owLocal(CG *g, Stmt *s) { (void)s; return g->owLocalOwn; }
  *     fallback for that, so the program stays defined.
  */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome) {
-    if (!planCallee(e) || planCallee(e)->owSites == 0 || planCallee(e)->owLocal) return;
+    if (!planCallee(e) || planOwSites(planCallee(e)) == 0 || planOwLocal(planCallee(e))) return;
     int j = owCallIndex(g, e);
     if (j < 0) return;                       /* not registered; the callee has a fallback */
-    for (int k = 0; k < planCallee(e)->owSites; k++)
+    for (int k = 0; k < planOwSites(planCallee(e)); k++)
         bufPrintf(b, "%s&__extc_owc%d_%d", (nargs || hasHome || k) ? ", " : "", j, k);
 }
 
@@ -4461,7 +4461,7 @@ static const char *cgParamList(CG *g, FuncDef *f) {
         bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
         return bufCstr(&sig);
     }
-    if (f->params.len == 0 && !planUsesHome(f) && !planMakesPool(f) && f->owLocal) {   /* no hidden parameters follow */
+    if (f->params.len == 0 && !planUsesHome(f) && !planMakesPool(f) && planOwLocal(f)) {   /* no hidden parameters follow */
         bufPuts(&sig, "void"); return bufCstr(&sig);
     }
     for (size_t i = 0; i < f->params.len; i++) {
@@ -4480,8 +4480,8 @@ static const char *cgParamList(CG *g, FuncDef *f) {
      * opaque `extc_owcell *`: opaque means a caller does not need to know the
      * types of the callee's sites, and a generic instance needs no special
      * case. */
-    if (!f->owLocal) {
-        for (int i = 0; i < f->owSites; i++) {
+    if (!planOwLocal(f)) {
+        for (int i = 0; i < planOwSites(f); i++) {
             if (f->params.len || planUsesHome(f) || planMakesPool(f) || i) bufPuts(&sig, ", ");
             bufPrintf(&sig, "extc_owcell *__extc_owarg%d", i);
         }
@@ -4916,7 +4916,7 @@ static void genFunc(CG *g, FuncDef *f) {
      * release for them as well. */
     bool savedNoArena = g->noArena;
     bool savedOwLocal = g->owLocalOwn;
-    g->owLocalOwn = f->owLocal;
+    g->owLocalOwn = planOwLocal(f);
     /* The @overwrite storage cells, one per site, declared in the prologue.
      * The order matters: a cell is initialized with `&__extc_a[1]` (see `home`
      * below), so the list of sites has to be collected before the decision
@@ -5039,7 +5039,7 @@ static void genFunc(CG *g, FuncDef *f) {
         g->indent--;
         cgLine(g, "}");
     }
-    if (f->owLocal)
+    if (planOwLocal(f))
         for (size_t i = 0; i < owNow.len; i++)
             /* `home` says which arena the storage belongs to: with a home, the
              * home arena, which outlives this call and therefore really is
@@ -5837,7 +5837,7 @@ static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
          * `examples/out-param.extc` kept its warning. */
         df->off = off;
         df->len = len;
-        df->dynTable = f->dynTable;   /* see the field */
+        df->dynTable = planDynTable(f);   /* see the field */
         return;
     }
 }
@@ -7403,11 +7403,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     bool needOw = false;
     {
         for (size_t i = 0; i < m->funcs.len && !needOw; i++)
-            if ((*(FuncDef **)vecAt(&m->funcs, i))->owSites > 0) needOw = true;
+            if (planOwSites(*(FuncDef **)vecAt(&m->funcs, i)) > 0) needOw = true;
         for (size_t i = 0; i < m->structs.len && !needOw; i++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
             for (size_t j = 0; j < sd->methods.len; j++)
-                if ((*(FuncDef **)vecAt(&sd->methods, j))->owSites > 0) { needOw = true; break; }
+                if (planOwSites(*(FuncDef **)vecAt(&sd->methods, j)) > 0) { needOw = true; break; }
         }
         (void)needOw;   /* the typedef needs extc_arena, so it comes later */
     }

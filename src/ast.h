@@ -675,7 +675,8 @@ struct FuncDef {
     /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
      * `pc`, the return slot and (when `makesPool`) the zone id come first, then these by value.
      * See docs/topics/CONCURRENCY.md 4.4. */
-    Vec         coroFrame;       /* Param* */
+    Vec         coroFrame;
+    Vec         callees;      /* TEMP 二分 */       /* Param* */
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* the struct a method belongs to; NULL for a free function */
     /* An external declaration, `extern!("libc") fn ...`. The C side is a black box, so
@@ -787,8 +788,6 @@ struct FuncDef {
      *     an opaque hidden `void **` parameter. That is the only way a loop in the caller
      *     can really reuse a `new` that happens inside the callee, which is the leak
      *     shape this feature exists to remove */
-    int         owSites;
-    bool        owLocal;
     /* Does this function allocate, directly or through the functions it calls?
      *
      * The answer is needed while a caller's own body is being checked, because the call
@@ -836,15 +835,17 @@ struct FuncDef {
      * silent-loss case cannot arise. Widening to an array is the escape hatch if a real program
      * ever needs more. */
 #define EFF_MAX_PARAMS 64
-    unsigned    freshCount;                         /* count only: fresh locals seen this round */
     /* State of the transitive closure of the effect summary:
      *   0 = not computed, 1 = computed (`effComplete` says whether it can be trusted),
      *   3 = being computed, which breaks cycles.
      * `effUnknown` records whether any call could not be resolved; such a summary is
      * never complete, so it is treated conservatively. */
 
-    Vec         callees;      /* FuncDef*: the functions it calls, used to build the
-                               * call graph and find its strongly connected components */
+    /* FuncDef*: the call graph the effect closure walks. **Deliberately not in the plan side
+     * table**: it is a vector grown in place, and `vecPush`'s contract (base.c) forbids holding
+     * a `Vec *` across a push -- an accessor that hands one back invites exactly that, and the
+     * first attempt segfaulted on `examples/arrays.extc`. A mutable builder output is not "a
+     * result attached to a node". */
     /* Which file does this declaration come from, and which module?
      *   ctx       - the Ctx of that file; a diagnostic has to go through it so that it
      *               names the right file and quotes the right source line

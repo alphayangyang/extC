@@ -97,6 +97,11 @@ uint64_t anHomeAddrMask(const FuncDef *f);  void anSetHomeAddrMask(FuncDef *f, u
 uint64_t anHomeContMask(const FuncDef *f);  void anSetHomeContMask(FuncDef *f, uint64_t v);
 bool     anAddrFromLocal(const FuncDef *f); void anSetAddrFromLocal(FuncDef *f, bool v);
 int      planCoroKind(const FuncDef *f);    void planSetCoroKind(FuncDef *f, int v);
+bool     planDynTable(const FuncDef *f);    void planSetDynTable(FuncDef *f, bool v);
+int      planOwSites(const FuncDef *f);     void planSetOwSites(FuncDef *f, int v);
+bool     planOwLocal(const FuncDef *f);     void planSetOwLocal(FuncDef *f, bool v);
+Type    *planCoroRetProto(const FuncDef *f);
+void     planSetCoroRetProto(FuncDef *f, Type *t);
 bool     planDeref(const Expr *e);          void planSetDeref(Expr *e, bool v);
 bool     planBoxedCoro(const Expr *e);      void planSetBoxedCoro(Expr *e, bool v);
 bool     planIsExtTarget(const FuncDef *f); void planSetIsExtTarget(FuncDef *f, bool v);

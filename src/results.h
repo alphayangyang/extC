@@ -89,6 +89,8 @@ typedef struct {
     bool        parTlsArena;   /* a worker that may use the thread-local arena */
     bool        deref;         /* value position, but the type is `ref T`: emit `*(…)` */
     int         coroKind;      /* the index codegen's prepass gave this coroutine */
+    bool        dynTable;      /* its body is named by a `dyn` vtable thunk, from outside */
+    Type       *coroRetProto;  /* the declared return type of a coroutine, before substitution */
     bool        boxedCoro;     /* a coroutine call stored as a handle: codegen boxes it */
     uint64_t    addrMask;
     /* ---- call / receiver facts (T4, fifth family) ---- */
@@ -134,6 +136,8 @@ typedef struct {
         uint64_t addrMask, contMask, otherMask;
         uint64_t homeAddrMask, homeContMask;
         bool     addrFromLocal;
+        int  owSites;          /* sites the write-once pass recorded */
+        bool owLocal;          /* the write-once local pass applies to this function */
         /* The effect closure's state (T4, tenth family). `effState` is **work state**: it is
          * written and read only while the closure runs (`EFF_IN_PROGRESS` marks a cycle on the
          * way down), and nothing outside `computeEffectsTransitive` reads it. It lives here

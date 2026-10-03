@@ -661,7 +661,7 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
             for (size_t k = 0; k < im->methods.len; k++) {
                 FuncDef *mf = *(FuncDef **)vecAt(&im->methods, k);
                 planSetUsed(mf, true);
-                mf->dynTable = true;   /* its body is named by the vt thunk, from outside */
+                planSetDynTable(mf, true);   /* its body is named by the vt thunk, from outside */
             }
     }
     if (pt && pt->sdef && !impl)
