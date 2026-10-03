@@ -1,0 +1,63 @@
+// expect: bench ok
+// 解析与写入的吞吐（同一台机器量；RSS 由 run.sh 的 /usr/bin/time -v 钉住）。
+use std::json::{node, parsed, parse, builder}
+use std::io
+use std::time
+
+fn main() -> i32 {
+    /* 先用 builder 造一份 ~4 KiB 的真实形状消息（顺便也是写入路径的判据） */
+    var big: [8192]u8
+    var w: builder = builder::open(big[..])!
+    w.beginObj()
+    w.key("content")
+    w.str("这是一条足够长的消息，用来让解析器有正经的活干；QQ 的群消息大致就是这个量级。")
+    w.key("items")
+    w.beginArr()
+    var i: i64 = 0
+    while i < i64(40) {
+        w.beginObj()
+        w.key("id"); w.int(i)
+        w.key("name"); w.str("piano-room-号")
+        w.key("ok"); w.boolean(true)
+        w.endObj()
+        i = i + 1
+    }
+    w.endArr()
+    w.endObj()
+    if !w.ok() { io::cout << "build failed\n"  return 1 }
+    let n: i64 = w.len()
+    io::cout << "doc=" << n << " bytes\n"
+
+    /* 解析：同样的文本 N 次 */
+    var pool: [512]node
+    let rounds: i64 = 20000
+    var t0: i64 = time::now()
+    var r: i64 = 0
+    var sink: i64 = 0
+    while r < rounds {
+        var p: parsed = parse(big[0..n], pool[..])
+        if p.root < i64(0) { return 2 }
+        sink = sink + p.root + pool[p.root].count
+        r = r + 1
+    }
+    var dt: i64 = time::now() - t0
+    let mbps: i64 = (rounds * n * i64(1000)) / dt
+    io::cout << "parse " << mbps << " MB/s（" << rounds << " 次 × " << n << " B，dt=" << (dt / i64(1000000)) << "ms，sink=" << sink << "）\n"
+
+    /* 写入：同样的消息 N 次 */
+    t0 = time::now()
+    r = 0
+    while r < rounds {
+        var w2: builder = builder::open(big[..])!
+        w2.beginObj()
+        w2.key("content"); w2.str("这是一条足够长的消息，用来让解析器有正经的活干；QQ 的群消息大致就是这个量级。")
+        w2.endObj()
+        if !w2.ok() { return 3 }
+        sink = sink + w2.len()
+        r = r + 1
+    }
+    dt = time::now() - t0
+    io::cout << "build " << ((rounds * i64(200) * i64(1000)) / dt) << " MB/s（粗算，dt=" << (dt / i64(1000000)) << "ms）\n"
+    io::cout << "bench ok\n"
+    return 0
+}

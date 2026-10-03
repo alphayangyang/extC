@@ -43,12 +43,16 @@ def members(path, rel):
     out = []
     # struct 体：字段与方法
     for m in re.finditer(r'^struct\s+(\w+)', src, re.M):
-        ty, i, depth = m.group(1), src.index('{', m.end()), 1
+        open_brace = src.index('{', m.end())
+        # 从 `{` 的**下一个**字符开始扫描：否则这个开括号会被数两次，结构体的"体"就一直
+        # 延伸到下一个同层 `}` —— 后面 struct 之前的自由函数、甚至下一个 struct 的字段
+        # 都会被算成它的成员（实测：`std::json` 的 `parse`/`member` 挂到了 `parser` 上）。
+        ty, i, depth = m.group(1), open_brace + 1, 1
         while i < len(src) and depth:
             if src[i] == '{': depth += 1
             elif src[i] == '}': depth -= 1
             i += 1
-        body = src[src.index('{', m.end())+1:i-1]
+        body = src[open_brace+1:i-1]
         for fm in re.finditer(r'^\s*(@private\s+)?([a-z]\w*)\s*:\s*(?!:)', body, re.M):
             if fm.group(1): continue
             out.append((ty, fm.group(2), 'field'))

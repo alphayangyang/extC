@@ -1,0 +1,32 @@
+// expect: zerocopy ok
+// **零拷贝的证据**：解析之后改输入缓冲，`strOf` 看到的跟着变 ⇒ 它是输入上的视图，不是副本。
+// （这条判据比"跑得对"更强：它钉住了"内存少"的那个机制本身。）
+use std::json::{node, parsed, parse, find, strOf}
+use std::io
+
+fn main() -> i32 {
+    var body: [16]u8
+    let src: slice<u8> = "{\"k\":\"abcd\"}"
+    var i: i64 = 0
+    while i < src.len {
+        body[i] = src[i]
+        i = i + 1
+    }
+    var pool: [16]node
+    var r: parsed = parse(body[0..src.len], pool[..])
+    if r.root < i64(0) { return 1 }
+    let v: i64 = find(body[0..src.len], pool[..], r.root, "k")
+    if v < i64(0) { return 2 }
+    var sb: [16]u8
+    let before: slice<u8> = strOf(body[0..src.len], pool[..], v, sb[..])
+    if before.len != i64(4) { return 3 }
+    let b0: u8 = before[0]                /* 先**快照**一个字节：视图会跟着输入变，这也正是要证明的 */
+    body[6] = u8(90)                      /* 'a' → 'Z'：只动输入，不碰解析结果 */
+    let after: slice<u8> = strOf(body[0..src.len], pool[..], v, sb[..])
+    if after.len != i64(4) { return 4 }
+    if b0 != u8(97) { return 5 }
+    if before[0] != u8(90) { return 6 }   /* 同一个视图：输入变了，它跟着变 ⇒ 零拷贝 */
+    if after[0] != u8(90) { return 7 }
+    io::cout << "zerocopy ok（视图随输入变化 ⇒ 没有副本）\n"
+    return 0
+}

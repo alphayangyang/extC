@@ -1,0 +1,68 @@
+// expect: bad ok
+// 坏输入必须**报错**（root < 0 且给位置），不许崩、不许静默接受。池子不够、嵌套过深同样。
+use std::json::{node, parsed, parse, member, unescape}
+use std::io
+
+fn rejects(label: slice<u8>, body: slice<u8>, pool: mut slice<node>) -> i32 {
+    var r: parsed = parse(body, pool)
+    if r.root >= i64(0) {
+        io::cout << label << " ACCEPTED (should reject)\n"
+        return 1
+    }
+    if r.at < i64(0) {
+        io::cout << label << " FAIL-WITHOUT-POSITION\n"
+        return 1
+    }
+    return 0
+}
+
+fn main() -> i32 {
+    var pool: [64]node
+    /* 截断 / 缺括号 / 缺引号 / 尾随垃圾 */
+    if rejects("t1", "{\"a\":1", pool[..]) != 0 { return 1 }
+    if rejects("t2", "{\"a\" 1}", pool[..]) != 0 { return 2 }
+    if rejects("t3", "{\"a\":}", pool[..]) != 0 { return 3 }
+    if rejects("t4", "{\"a\":1}xyz", pool[..]) != 0 { return 4 }
+    if rejects("t5", "[1,2,]", pool[..]) != 0 { return 5 }
+    if rejects("t6", "{\"a\":\"unterminated", pool[..]) != 0 { return 6 }
+    /* 非法转义 / 裸控制字符 / 坏 \u / 孤立代理 */
+    if rejects("t7", "{\"a\":\"\\x41\"}", pool[..]) != 0 { return 7 }
+    if rejects("t8", "{\"a\":\"line\nbreak\"}", pool[..]) != 0 { return 8 }
+    if rejects("t9", "{\"a\":\"\\u12g4\"}", pool[..]) != 0 { return 9 }
+    /* 孤立代理：**语法合法**（RFC 8259 只在语法层要求 4 位十六进制），解码时才失败。
+     * 所以这条判据查的是 `unescape` 返回 -1，而不是 parse 拒绝。 */
+    var lone: parsed = parse("{\"a\":\"\\ud83d\"}", pool[..])
+    if lone.root < i64(0) { io::cout << "t10 SHOULD-PARSE\n"  return 10 }
+    let lv: i64 = member("{\"a\":\"\\ud83d\"}", pool[..], lone.root, "a")
+    var out: [16]u8
+    if unescape("{\"a\":\"\\ud83d\"}", pool[..], lv, out[..]) >= i64(0) {
+        io::cout << "t10 LONE-SURROGATE-DECODED\n"
+        return 10
+    }
+    /* 数字形态 */
+    if rejects("t11", "01", pool[..]) != 0 { return 11 }
+    if rejects("t12", "-", pool[..]) != 0 { return 12 }
+    if rejects("t13", "1.", pool[..]) != 0 { return 13 }
+    /* 空输入 / 只有空白 */
+    if rejects("t14", "", pool[..]) != 0 { return 14 }
+    if rejects("t15", "   ", pool[..]) != 0 { return 15 }
+    /* 池子不够：256 个节点的文档塞进 4 个节点的池 ⇒ 报错，不是越界写 */
+    var tiny: [4]node
+    if rejects("t16", "{\"a\":[1,2,3,4,5,6,7,8]}", tiny[..]) != 0 { return 16 }
+    /* 深嵌套（500 层）⇒ 深度护栏挡住，不炸栈 */
+    var deep: [1024]u8
+    var i: i64 = 0
+    while i < i64(400) {
+        deep[i] = u8(91)
+        i = i + 1
+    }
+    deep[i] = u8(49)
+    i = i + 1
+    while i < i64(800) {
+        deep[i] = u8(93)
+        i = i + 1
+    }
+    if rejects("t17", deep[0..800], pool[..]) != 0 { return 17 }
+    io::cout << "bad ok\n"
+    return 0
+}

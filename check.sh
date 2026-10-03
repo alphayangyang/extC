@@ -209,6 +209,11 @@ if out=$(timeout 900 ./tests/hash/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'sha256 [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · uuid5 与 Python 逐字节一致）"
 else bad "tests/hash/run.sh"; echo "$out"; fi
 
+echo "== JSON（与 Python 规范形对拍 · 坏输入必拒 · 零拷贝证据 · 吞吐与内存）=="
+if out=$(timeout 900 ./tests/json/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒）"
+else bad "tests/json/run.sh"; echo "$out"; fi
+
 echo "== 包工具全链路（extpkg fetch/vendor/build：假 registry 走 file://，不联网）=="
 if out=$(timeout 900 ./tests/extpkg/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（首次 fetch 写锁 · --offline 命中缓存 · 改锁一个字节必红 · 空缓存必红且消息可执行 · vendor 后清缓存仍能离线 build · 锁逐字节决定论 · build 自动补 vendor）"

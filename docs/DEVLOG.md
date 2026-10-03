@@ -96,9 +96,24 @@ Top-1 风险就此变成判据）· API 失败面（缓冲不够 ⇒ `false`/`-1
 Python 的 OpenSSL（4518 MB/s）差一个数量级；对 QQBot 的负载（签几 KB、算主键）不是瓶颈（4 KB ≈ 9 µs）。
 真要硬件速度，路是**包**：`std::hash` 配一个带 SHA-NI 的 C shim 包（包机制已就位）。
 
-路上记一笔工具账：`tools/manual_surface.py` 把 struct **之后**的自由函数算成该 struct 的方法
-（brace 深度的 off-by-one）；既有 stdlib 文件靠"自由函数写在 struct 之前"绕过（`heap.extc` 就是）。
-本次守了这个约定，工具本身待修。
+路上记一笔工具账：`tools/manual_surface.py` 把 struct **之后**的自由函数算成该 struct 的方法、
+甚至把下一个 struct 的字段算成上一个的（brace 深度的 off-by-one）。本次写 `std::json` 时把它**修了**：
+扫描从 `{` 的**下一个**字符开始。修完公开面清单从 1333 掉到 **686** —— 也就是说此前**近一半是幽灵成员**。
+（`std::json` 之前为了绕它，自由函数只能写在 struct 之前，现在不必了。）
+
+**同日的第七刀：L2 第二块 —— `std::json`（零拷贝解析 + 零分配写入）**。解析把节点写进**调用方给的
+池子**，字符串是**输入上的视图**（`tests/json/zerocopy.extc` 用"改输入 ⇒ 视图跟着变"证明它没有副本）；
+写入直接拼进缓冲，不建 DOM。量的结果：解析 **1266–1287 MB/s**（1.9 KB 文档 × 2 万次）· 写入约 1.2 GB/s ·
+峰值 **RSS 1452 KB**。判据 5 项：与 Python `json.dumps(separators=(',',':'))` 的规范形**逐字节对拍**
+（含中文、代理对 😀、转义引号/反斜杠、空容器、null、大整数）· **17 条坏输入必须拒绝** · 零拷贝证据 ·
+RSS < 8 MB · 吞吐下限。`check.sh quick` 66 → **67/0**。
+
+路上撞到三个真 bug（都在自测里现形，值得记）：
+① 节点是**深度优先**写的，我却按"成员对连续区间"布局 ⇒ 嵌套之后全部错位；改成**链式**（`next` 字段）。
+② `newNum` 的 `used++` 被一次机械替换吃掉 ⇒ 数字节点根本没分配（`msg_seq` 读成 0）。
+③ 写入器 `str` 同时被 `key` 复用 ⇒ 成员名后面的值多一个逗号；拆成 `pStr`（只写）与 `str`（分隔+写）。
+另外记两条语言/工具观察：**数组元素类型不接受限定名**（`[4]mod::type` 报 unknown type ——
+零分配池正是这个形状，暂时靠 `use mod::{type}` 绕），以及 `-w` 不抑制"参数未使用"告警。
 
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的

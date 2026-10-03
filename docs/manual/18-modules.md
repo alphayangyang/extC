@@ -674,6 +674,60 @@ API 失败面（缓冲不够 ⇒ `false` / `-1`，不 trap）· 峰值 RSS < 8 M
 **uuid5 与 Python `uuid.uuid5` 逐字节对拍**（含中文名字）—— 主键对不上 = 历史数据全对不上，
 这条判据就是钉它的。
 
+### 12.5e JSON：`std::json`（2026-10-04）
+
+**零拷贝解析 + 零分配写入**（"最快 + 内存少"的两条都量了，判据在 `tests/json/`）：
+
+```extc
+use std::json::{node, parsed, parse, find, strOf, builder}
+
+var pool: [256]node                       // 节点池由调用方给：解析器一次堆分配都没有
+let body: slice<u8> = "{\"d\":{\"content\":\"你好\"}}"
+var r: parsed = parse(body, pool[..])
+if r.root < i64(0) { /* r.at 是出错字节位置 */ }
+
+let c: i64 = find(body, pool[..], r.root, "d.content")   // 点分路径；数字段走数组
+var scratch: [64]u8
+io::cout << strOf(body, pool[..], c, scratch[..]) << "\n"    // 无转义 ⇒ 零拷贝视图
+
+var buf: [512]u8                          // 写入同样不分配
+var w: builder = builder::open(buf[..])!
+w.beginObj()
+w.key("content"); w.str("你好")
+w.key("msg_seq"); w.int(i64(3))
+w.endObj()
+if !w.ok() { /* 缓冲不够：w.len() 是已写字节数 */ }
+```
+
+| 名字 | 作用 |
+|---|---|
+| `parse(text, nodes)` → `parsed` | 解析；`parsed` 的 `root` < 0 表示失败，`at` 是出错位置。**池子不够 / 嵌套超过 `MAXDEPTH`（64）会失败**，不截断、不炸栈 |
+| `node` | 节点：`kind` · `esc`（字符串含转义）· `off`/`len`（原文在输入里的位置）· `first`（对象的第一个 key / 数组的第一个元素）· `next`（同层链）· `count`（成员数）· `num` · `b` |
+| `OBJ` `ARR` `STR` `NUM` `BOOL` `NUL` | `kind` 的取值（`MAXDEPTH` · `WTAGSZ` 也在这里） |
+| `kindOf` `countOf` `rawOf` `escOf` | 读一个节点：种类 / 长度 / 原文视图 / 是否含转义 |
+| `strOf(text, nodes, idx, scratch)` | 字符串的**真值**：无转义 ⇒ 零拷贝视图；有转义 ⇒ 解码进 `scratch` |
+| `unescape(text, nodes, idx, out)` | 显式解码（`\n` `\t` `\uXXXX` 与代理对）；缓冲不够或非法返回 `-1` |
+| `member(text, nodes, idx, key)` · `keyAt` · `valueAt` · `elem(nodes, idx, i)` | 对象按名字取成员 / 第 i 个成员名 / 第 i 个成员值 / 数组第 i 个元素（都在链上走） |
+| `find(text, nodes, root, path)` | 点分路径（`"d.author.member_openid"`、`"items.0.id"`）；没有返回 `-1` |
+| `numOf` · `intOf` · `boolOf` | 数字（`f64`）/ 整数（**只在能精确表示时**给值）/ 布尔 |
+| `builder` | 写入器：`open(buf)` → `?builder`（含引用的结构体没有零值，所以用工厂）；`ok()` · `len()` · `beginObj` · `endObj` · `beginArr` · `endArr` · `key` · `str` · `int` · `boolean` · `nul` · `raw`（原样写一段合法 JSON）· `flt`（6 位小数，要精确就自己 `raw`） |
+
+**内部状态**（正常用法不必碰）：`parser` 只存标量（`pos` · `used` · `errAt` · `depth`），
+入口是 `run`；`builder` 的字段是 `failed` · `afterKey` · `commaMask` · `depth`。
+
+**为什么快**：解析是**单遍**、节点写进调用方给的池子、字符串是输入上的视图；写入直接拼进缓冲，
+不需要先建 DOM。改输入缓冲，`strOf` 的视图跟着变 —— 判据 `tests/json/zerocopy.extc` 就是钉这个的。
+
+**量的结果**：解析 **1266–1287 MB/s**（1.9 KB 文档 × 2 万次）· 写入约 1.2 GB/s · 峰值 RSS **1452 KB**。
+
+**判据**（`tests/json/run.sh`，5 项，进 `check.sh`）：与 Python `json.dumps(..., separators=(',',':'))`
+的规范形**逐字节对拍**（含中文、代理对 😀、转义引号/反斜杠、空容器、`null`、大整数）·
+**17 条坏输入必须拒绝**（截断、缺括号/冒号/逗号、尾随垃圾、非法转义、裸控制字符、坏 `\u`、
+孤立代理、前导零、池子不够、400 层嵌套）· 零拷贝证据 · 峰值 RSS < 8 MB · 吞吐下限 200 MB/s。
+
+**边界**：孤立代理在**语法**上合法（RFC 8259 只要求 4 位十六进制），解码时才失败（`unescape` 返回 `-1`）；
+`intOf` 对超过 18 位十进制的数字返回 0（QQ 的大 ID 本来就是字符串，这不该当数字处理）。
+
 ### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
 
 `@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和

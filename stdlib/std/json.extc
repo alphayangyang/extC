@@ -1,0 +1,1029 @@
+/* std/json.extc —— JSON：**零拷贝解析** + **零分配写入**。
+ *
+ * 为"最快 + 内存少"选的形状：
+ *
+ *   1. **解析不分配**：节点池由调用方给（`var pool: [256]json::node`），解析器只往里写下标。
+ *      一个协议消息（几 KB、几十个字段）用 256 个节点绰绰有余；池子满了就**报错**，不是静默截断。
+ *   2. **字符串零拷贝**：`str` 是**输入上的视图**（`text[off..off+len]`），不复制、不解码。
+ *      JSON 里绝大多数字符串没有转义 ⇒ 热路径上一次 memcpy 都没有；真要解码才调 `unescape`
+ *      （写进调用方缓冲）。`esc` 标志告诉你需不需要。
+ *   3. **写入不分配**：`builder` 直接往调用方缓冲里拼，不需要先建 DOM 再序列化。
+ *   4. 解析器**递归深度有上限**（`MAXDEPTH`），所以来自网络的消息炸不了栈。
+ *
+ * 用法：
+ *     var pool: [256]json::node
+ *     var p: json::parsed = json::parse(body, pool[..])
+ *     if p.root < i64(0) { ... p.at 是出错位置 ... }
+ *     let id: i64 = json::find(body, pool[..], p.root, "d.author.member_openid")
+ *     if id >= i64(0) { let s: slice<u8> = json::strOf(body, pool[..], id) ... }
+ *
+ *     var buf: [1024]u8
+ *     var w: json::builder
+ *     w.init(buf[..])
+ *     w.beginObj()
+ *     w.key("content"); w.str("你好")
+ *     w.key("msg_seq"); w.int(i64(3))
+ *     w.endObj()
+ *     if !w.ok() { ... 缓冲不够 ... }
+ */
+
+let OBJ: u8 = 1
+let ARR: u8 = 2
+let STR: u8 = 3
+let NUM: u8 = 4
+let BOOL: u8 = 5
+let NUL: u8 = 6
+let MAXDEPTH: i32 = 64
+
+struct node {
+    kind: u8
+    esc: bool          /* 字符串：含反斜杠转义 ⇒ 要 unescape 才是真值 */
+    off: i64           /* 字符串/数字在输入里的起点（零拷贝） */
+    len: i64
+    first: i64         /* 对象：第一个 **key** 节点；数组：第一个元素节点（-1 = 空） */
+    next: i64          /* 同层下一个节点（key 链 / 元素链）；-1 = 链尾。
+                        * 为什么是链而不是连续区间：节点按**深度优先**写入池子，
+                        * 嵌套容器的子节点就夹在成员之间 —— 连续区间根本不成立。 */
+    count: i64         /* 对象/数组的成员/元素个数（O(1) 读长度） */
+    num: f64
+    b: bool
+}
+
+struct parsed {
+    root: i64          /* -1 = 失败 */
+    at: i64            /* 失败位置（字节偏移）；成功时 -1 */
+}
+
+/* 十六进制位（解析 \uXXXX 用）。 */
+@private
+fn pHex(c: u8) -> i32 {
+    if c >= u8(48) && c <= u8(57) { return i32(c) - 48 }
+    if c >= u8(97) && c <= u8(102) { return i32(c) - 87 }
+    if c >= u8(65) && c <= u8(70) { return i32(c) - 55 }
+    return i32(-1)
+}
+
+/* 一个 UTF-8 码点写进 out；返回写入字节数（缓冲不够返回 -1）。 */
+@private
+fn pUtf8(cp: i64, out: mut slice<u8>, o: i64) -> i64 {
+    if cp < i64(0x80) {
+        if o + i64(1) > out.len { return i64(-1) }
+        out[o] = u8(cp)
+        return i64(1)
+    }
+    if cp < i64(0x800) {
+        if o + i64(2) > out.len { return i64(-1) }
+        out[o] = u8(0xc0 | (cp >> 6))
+        out[o + i64(1)] = u8(0x80 | (cp & i64(0x3f)))
+        return i64(2)
+    }
+    if cp < i64(0x10000) {
+        if o + i64(3) > out.len { return i64(-1) }
+        out[o] = u8(0xe0 | (cp >> 12))
+        out[o + i64(1)] = u8(0x80 | ((cp >> 6) & i64(0x3f)))
+        out[o + i64(2)] = u8(0x80 | (cp & i64(0x3f)))
+        return i64(3)
+    }
+    if o + i64(4) > out.len { return i64(-1) }
+    out[o] = u8(0xf0 | (cp >> 18))
+    out[o + i64(1)] = u8(0x80 | ((cp >> 12) & i64(0x3f)))
+    out[o + i64(2)] = u8(0x80 | ((cp >> 6) & i64(0x3f)))
+    out[o + i64(3)] = u8(0x80 | (cp & i64(0x3f)))
+    return i64(4)
+}
+
+@noCopy
+/* 解析器的**状态只有标量**（含引用的结构体没有零值，也就没法 `var p: json::parser`）。
+ * 文本与节点池走参数 —— 顺带让"零拷贝视图存进结构体字段"这类寿命问题根本不存在。 */
+struct parser {
+    pos: i64
+    used: i64
+    errAt: i64
+    depth: i32
+
+    @private
+    fn skipWs(self: mut ref parser, text: slice<u8>) -> void {
+        var go: bool = true
+        while go && self.pos < text.len {
+            let c: u8 = text[self.pos]
+            if c == u8(32) || c == u8(9) || c == u8(10) || c == u8(13) {
+                self.pos = self.pos + i64(1)
+            } else {
+                go = false
+            }
+        }
+    }
+
+    @private
+    fn fail(self: mut ref parser, where: i64) -> void {
+        if self.errAt < i64(0) { self.errAt = where }
+    }
+
+    @private
+    fn lit(self: mut ref parser, text: slice<u8>, w: slice<u8>) -> bool {
+        if self.pos + w.len > text.len { return false }
+        var i: i64 = 0
+        while i < w.len {
+            if text[self.pos + i] != w[i] { return false }
+            i = i + 1
+        }
+        self.pos = self.pos + w.len
+        return true
+    }
+
+    @private
+    fn newStr(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
+        let start: i64 = self.pos
+        self.pos = self.pos + i64(1)                 /* 开引号 */
+        var esc: bool = false
+        while self.pos < text.len {
+            let c: u8 = text[self.pos]
+            if c == u8(34) {                          /* " */
+                let idx: i64 = self.used
+                if idx >= nodes.len {
+                    self.fail(start)
+                    return i64(-1)
+                }
+                nodes[idx].kind = STR
+                nodes[idx].esc = esc
+                nodes[idx].off = start + i64(1)
+                nodes[idx].len = self.pos - start - i64(1)
+                nodes[idx].first = i64(0)
+                nodes[idx].count = i64(0)
+                self.used = self.used + i64(1)
+                self.pos = self.pos + i64(1)
+                return idx
+            }
+            if c == u8(92) {                          /* \ */
+                esc = true
+                if self.pos + i64(1) >= text.len {
+                    self.fail(self.pos)
+                    return i64(-1)
+                }
+                let e: u8 = text[self.pos + i64(1)]
+                if !(e == u8(34) || e == u8(92) || e == u8(47) || e == u8(98) ||
+                     e == u8(102) || e == u8(110) || e == u8(114) || e == u8(116) || e == u8(117)) {
+                    self.fail(self.pos)
+                    return i64(-1)
+                }
+                if e == u8(117) {
+                    if self.pos + i64(5) >= text.len {
+                        self.fail(self.pos)
+                        return i64(-1)
+                    }
+                    var k: i64 = 0
+                    while k < i64(4) {
+                        if pHex(text[self.pos + i64(2) + k]) < i32(0) {
+                            self.fail(self.pos)
+                            return i64(-1)
+                        }
+                        k = k + 1
+                    }
+                    self.pos = self.pos + i64(6)
+                } else {
+                    self.pos = self.pos + i64(2)
+                }
+            } else {
+                if c < u8(32) {                       /* 未转义的控制字符：JSON 不允许 */
+                    self.fail(self.pos)
+                    return i64(-1)
+                }
+                self.pos = self.pos + i64(1)
+            }
+        }
+        self.fail(start)
+        return i64(-1)
+    }
+
+    @private
+    fn newNum(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
+        let start: i64 = self.pos
+        var neg: bool = false
+        if self.pos < text.len && text[self.pos] == u8(45) {
+            neg = true
+            self.pos = self.pos + i64(1)
+        }
+        var digits: i64 = 0
+        var leadZero: bool = false
+        while self.pos < text.len {
+            let c: u8 = text[self.pos]
+            if c >= u8(48) && c <= u8(57) {
+                if digits == i64(0) && c == u8(48) { leadZero = true }
+                digits = digits + i64(1)
+                self.pos = self.pos + i64(1)
+            } else {
+                break
+            }
+        }
+        if digits == i64(0) {
+            self.fail(start)
+            return i64(-1)
+        }
+        /* RFC 8259：不允许前导零（`01` 不是数字）。与 Python 的 json 一致 —— 严格比宽容好：
+         * 协议里出现 `01` 多半是两端有人写错了，早报早好。 */
+        if leadZero && digits > i64(1) {
+            self.fail(start + i64(1))
+            return i64(-1)
+        }
+        var frac: i64 = 0
+        if self.pos < text.len && text[self.pos] == u8(46) {
+            self.pos = self.pos + i64(1)
+            while self.pos < text.len {
+                let c: u8 = text[self.pos]
+                if c >= u8(48) && c <= u8(57) {
+                    frac = frac + i64(1)
+                    self.pos = self.pos + i64(1)
+                } else {
+                    break
+                }
+            }
+            if frac == i64(0) {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+        }
+        if self.pos < text.len && (text[self.pos] == u8(101) || text[self.pos] == u8(69)) {
+            self.pos = self.pos + i64(1)
+            if self.pos < text.len && (text[self.pos] == u8(43) || text[self.pos] == u8(45)) {
+                self.pos = self.pos + i64(1)
+            }
+            var ed: i64 = 0
+            while self.pos < text.len {
+                let c: u8 = text[self.pos]
+                if c >= u8(48) && c <= u8(57) {
+                    ed = ed + i64(1)
+                    self.pos = self.pos + i64(1)
+                } else {
+                    break
+                }
+            }
+            if ed == i64(0) {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+        }
+        let idx: i64 = self.used
+        if idx >= nodes.len {
+            self.fail(start)
+            return i64(-1)
+        }
+        let span: slice<u8> = text[start..self.pos]
+        var v: f64 = f64(0)
+        var i: i64 = 0
+        var seenDot: bool = false
+        var expSign: i64 = 1
+        var expVal: i64 = 0
+        var inExp: bool = false
+        while i < span.len {
+            let c: u8 = span[i]
+            if c == u8(45) {
+                if i == i64(0) { v = f64(0) } else { expSign = i64(-1) }
+            } else if c == u8(46) {
+                seenDot = true
+            } else if c == u8(101) || c == u8(69) {
+                inExp = true
+            } else if c >= u8(48) && c <= u8(57) {
+                let d: f64 = f64(i32(c) - 48)
+                if inExp {
+                    expVal = expVal * i64(10) + i64(i32(c) - 48)
+                } else if seenDot {
+                    var scale: f64 = f64(1)
+                    var k: i64 = i
+                    while k < span.len {
+                        let cc: u8 = span[k]
+                        if cc >= u8(48) && cc <= u8(57) { scale = scale * f64(10) } else { break }
+                        k = k + 1
+                    }
+                    v = v + d / scale
+                } else {
+                    v = v * f64(10) + d
+                }
+            }
+            i = i + 1
+        }
+        if inExp {
+            var e: i64 = expVal
+            while e > i64(0) {
+                if expSign > i64(0) { v = v * f64(10) } else { v = v / f64(10) }
+                e = e - i64(1)
+            }
+        }
+        if neg { v = f64(0) - v }
+        nodes[idx].kind = NUM
+        nodes[idx].esc = false
+        nodes[idx].off = start
+        nodes[idx].len = self.pos - start
+        nodes[idx].first = i64(-1)
+        nodes[idx].next = i64(-1)
+        nodes[idx].count = i64(0)
+        nodes[idx].num = v
+        self.used = self.used + i64(1)
+        return idx
+    }
+
+    @private
+    fn value(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
+        if self.depth > MAXDEPTH {
+            self.fail(self.pos)
+            return i64(-1)
+        }
+        self.skipWs(text)
+        if self.pos >= text.len {
+            self.fail(self.pos)
+            return i64(-1)
+        }
+        let c: u8 = text[self.pos]
+        if c == u8(34) { return self.newStr(text, nodes) }
+        if c == u8(123) { return self.pObject(text, nodes) }
+        if c == u8(91) { return self.pArray(text, nodes) }
+        if c == u8(116) {
+            let at: i64 = self.pos
+            if self.lit(text, "true") {
+                let idx: i64 = self.used
+                if idx >= nodes.len { self.fail(at)  return i64(-1) }
+                nodes[idx].kind = BOOL
+                nodes[idx].b = true
+                nodes[idx].off = at
+                nodes[idx].len = self.pos - at
+                self.used = self.used + i64(1)
+                return idx
+            }
+            self.fail(at)
+            return i64(-1)
+        }
+        if c == u8(102) {
+            let at: i64 = self.pos
+            if self.lit(text, "false") {
+                let idx: i64 = self.used
+                if idx >= nodes.len { self.fail(at)  return i64(-1) }
+                nodes[idx].kind = BOOL
+                nodes[idx].b = false
+                nodes[idx].off = at
+                nodes[idx].len = self.pos - at
+                self.used = self.used + i64(1)
+                return idx
+            }
+            self.fail(at)
+            return i64(-1)
+        }
+        if c == u8(110) {
+            let at: i64 = self.pos
+            if self.lit(text, "null") {
+                let idx: i64 = self.used
+                if idx >= nodes.len { self.fail(at)  return i64(-1) }
+                nodes[idx].kind = NUL
+                nodes[idx].off = at
+                nodes[idx].len = self.pos - at
+                self.used = self.used + i64(1)
+                return idx
+            }
+            self.fail(at)
+            return i64(-1)
+        }
+        if c == u8(45) || (c >= u8(48) && c <= u8(57)) { return self.newNum(text, nodes) }
+        self.fail(self.pos)
+        return i64(-1)
+    }
+
+    @private
+    fn pObject(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
+        let at: i64 = self.pos
+        self.pos = self.pos + i64(1)                 /* { */
+        let idx: i64 = self.used
+        if idx >= nodes.len { self.fail(at)  return i64(-1) }
+        self.used = self.used + i64(1)
+        self.depth = self.depth + i32(1)
+        var first: i64 = i64(-1)
+        var prev: i64 = i64(-1)
+        var members: i64 = 0
+        self.skipWs(text)
+        if self.pos < text.len && text[self.pos] == u8(125) {
+            self.pos = self.pos + i64(1)
+            nodes[idx].kind = OBJ
+            nodes[idx].first = i64(-1)
+            nodes[idx].next = i64(-1)
+            nodes[idx].count = i64(0)
+            self.depth = self.depth - i32(1)
+            return idx
+        }
+        while true {
+            self.skipWs(text)
+            if self.pos >= text.len || text[self.pos] != u8(34) {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+            let kn: i64 = self.newStr(text, nodes)
+            if kn < i64(0) { return i64(-1) }
+            if prev < i64(0) { first = kn } else { nodes[prev].next = kn }
+            prev = kn
+            self.skipWs(text)
+            if self.pos >= text.len || text[self.pos] != u8(58) {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+            self.pos = self.pos + i64(1)
+            if self.value(text, nodes) < i64(0) { return i64(-1) }
+            members = members + i64(1)
+            self.skipWs(text)
+            if self.pos >= text.len {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+            let d: u8 = text[self.pos]
+            if d == u8(44) {
+                self.pos = self.pos + i64(1)
+            } else if d == u8(125) {
+                self.pos = self.pos + i64(1)
+                break
+            } else {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+        }
+        nodes[idx].kind = OBJ
+        nodes[idx].first = first
+        nodes[idx].next = i64(-1)
+        nodes[idx].count = members
+        self.depth = self.depth - i32(1)
+        return idx
+    }
+
+    @private
+    fn pArray(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> i64 {
+        let at: i64 = self.pos
+        self.pos = self.pos + i64(1)                 /* [ */
+        let idx: i64 = self.used
+        if idx >= nodes.len { self.fail(at)  return i64(-1) }
+        self.used = self.used + i64(1)
+        self.depth = self.depth + i32(1)
+        var first: i64 = i64(-1)
+        var prev: i64 = i64(-1)
+        var count: i64 = 0
+        self.skipWs(text)
+        if self.pos < text.len && text[self.pos] == u8(93) {
+            self.pos = self.pos + i64(1)
+            nodes[idx].kind = ARR
+            nodes[idx].first = i64(-1)
+            nodes[idx].next = i64(-1)
+            nodes[idx].count = i64(0)
+            self.depth = self.depth - i32(1)
+            return idx
+        }
+        while true {
+            let vn: i64 = self.value(text, nodes)
+            if vn < i64(0) { return i64(-1) }
+            if prev < i64(0) { first = vn } else { nodes[prev].next = vn }
+            prev = vn
+            count = count + i64(1)
+            self.skipWs(text)
+            if self.pos >= text.len {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+            let d: u8 = text[self.pos]
+            if d == u8(44) {
+                self.pos = self.pos + i64(1)
+            } else if d == u8(93) {
+                self.pos = self.pos + i64(1)
+                break
+            } else {
+                self.fail(self.pos)
+                return i64(-1)
+            }
+        }
+        nodes[idx].kind = ARR
+        nodes[idx].first = first
+        nodes[idx].next = i64(-1)
+        nodes[idx].count = count
+        self.depth = self.depth - i32(1)
+        return idx
+    }
+
+    /* 解析整段文本。成功：`root` >= 0、`at` = -1；失败：`root` = -1、`at` = 出错字节位置。 */
+    fn run(self: mut ref parser, text: slice<u8>, nodes: mut slice<node>) -> parsed {
+        text = text
+        nodes = nodes
+        self.pos = i64(0)
+        self.used = i64(0)
+        self.errAt = i64(-1)
+        self.depth = i32(0)
+        let r: i64 = self.value(text, nodes)
+        if r < i64(0) {
+            return parsed { root: i64(-1), at: self.errAt }
+        }
+        self.skipWs(text)
+        if self.pos != text.len {                     /* 尾随垃圾：拒绝 */
+            return parsed { root: i64(-1), at: self.pos }
+        }
+        return parsed { root: r, at: i64(-1) }
+    }
+}
+
+
+/* 解析整段文本：成功 `root >= 0`、`at == -1`；失败 `root == -1`、`at` 是出错字节位置。
+ * 节点池由调用方给（零分配）；池子不够会失败，不静默截断。 */
+fn parse(text: slice<u8>, nodes: mut slice<node>) -> parsed {
+    var pr: parser
+    return pr.run(text, nodes)
+}
+
+/* ---- 访问器（全部零分配；`idx < 0` 一律返回"没有"）---- */
+
+fn kindOf(nodes: slice<node>, idx: i64) -> u8 {
+    if idx < i64(0) || idx >= nodes.len { return u8(0) }
+    return nodes[idx].kind
+}
+
+fn countOf(nodes: slice<node>, idx: i64) -> i64 {
+    if idx < i64(0) || idx >= nodes.len { return i64(-1) }
+    let k: u8 = nodes[idx].kind
+    if k != OBJ && k != ARR { return i64(-1) }
+    return nodes[idx].count
+}
+
+/* 字符串/数字的**原文视图**（零拷贝：指向输入）。含转义时它是转义后的原文。 */
+fn rawOf(text: slice<u8>, nodes: slice<node>, idx: i64) -> slice<u8> {
+    if idx < i64(0) || idx >= nodes.len { return text[0..0] }
+    return text[nodes[idx].off..nodes[idx].off + nodes[idx].len]
+}
+
+fn escOf(nodes: slice<node>, idx: i64) -> bool {
+    if idx < i64(0) || idx >= nodes.len { return false }
+    return nodes[idx].esc
+}
+
+/* 把字符串解码进 `out`（处理 \n \t \uXXXX 与代理对）；返回写入字节数，缓冲不够返回 -1。
+ * 没有转义时就是一次拷贝；`strOf` 在无转义时直接给零拷贝视图。 */
+fn unescape(text: slice<u8>, nodes: slice<node>, idx: i64, out: mut slice<u8>) -> i64 {
+    if idx < i64(0) || idx >= nodes.len { return i64(-1) }
+    let raw: slice<u8> = rawOf(text, nodes, idx)
+    var o: i64 = 0
+    var i: i64 = 0
+    while i < raw.len {
+        let c: u8 = raw[i]
+        if c != u8(92) {
+            if o >= out.len { return i64(-1) }
+            out[o] = c
+            o = o + i64(1)
+            i = i + i64(1)
+        } else {
+            i = i + i64(1)
+            if i >= raw.len { return i64(-1) }
+            let e: u8 = raw[i]
+            if e == u8(110) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(10)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(116) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(9)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(114) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(13)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(98) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(8)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(102) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(12)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(117) {
+                if i + i64(4) >= raw.len { return i64(-1) }
+                var cp: i64 = i64(0)
+                var k: i64 = 0
+                while k < i64(4) {
+                    let h: i32 = pHex(raw[i + i64(1) + k])
+                    if h < i32(0) { return i64(-1) }
+                    cp = cp * i64(16) + i64(h)
+                    k = k + 1
+                }
+                i = i + i64(5)
+                /* 代理对：高代理 D800-DBFF 后面必须跟低代理 DC00-DFFF */
+                if cp >= i64(0xd800) && cp <= i64(0xdbff) {
+                    if i + i64(5) < raw.len && raw[i] == u8(92) && raw[i + i64(1)] == u8(117) {
+                        var lo: i64 = i64(0)
+                        k = 0
+                        while k < i64(4) {
+                            let h2: i32 = pHex(raw[i + i64(2) + k])
+                            if h2 < i32(0) { return i64(-1) }
+                            lo = lo * i64(16) + i64(h2)
+                            k = k + 1
+                        }
+                        if lo >= i64(0xdc00) && lo <= i64(0xdfff) {
+                            cp = i64(0x10000) + ((cp - i64(0xd800)) * i64(0x400)) + (lo - i64(0xdc00))
+                            i = i + i64(6)
+                        } else {
+                            return i64(-1)
+                        }
+                    } else {
+                        return i64(-1)
+                    }
+                }
+                let n: i64 = pUtf8(cp, out, o)
+                if n < i64(0) { return i64(-1) }
+                o = o + n
+            } else if e == u8(34) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(34)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(92) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(92)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else if e == u8(47) {
+                if o >= out.len { return i64(-1) }
+                out[o] = u8(47)
+                o = o + i64(1)
+                i = i + i64(1)
+            } else {
+                return i64(-1)
+            }
+        }
+    }
+    return o
+}
+
+/* 字符串的**真值**：无转义 ⇒ 零拷贝视图；有转义 ⇒ 解码进 `scratch`。
+ * 缓冲太小（或解码失败）返回空视图 —— 要区分失败就自己调 `unescape`。 */
+fn strOf(text: slice<u8>, nodes: slice<node>, idx: i64, scratch: mut slice<u8>) -> slice<u8> {
+    if idx < i64(0) || idx >= nodes.len { return text[0..0] }
+    if !nodes[idx].esc { return rawOf(text, nodes, idx) }
+    let n: i64 = unescape(text, nodes, idx, scratch)
+    if n < i64(0) { return text[0..0] }
+    return scratch[0..n]
+}
+
+@private
+fn pKeyEq(text: slice<u8>, nodes: slice<node>, idx: i64, key: slice<u8>) -> bool {
+    if !nodes[idx].esc {
+        let raw: slice<u8> = rawOf(text, nodes, idx)
+        if raw.len != key.len { return false }
+        var i: i64 = 0
+        while i < raw.len {
+            if raw[i] != key[i] { return false }
+            i = i + 1
+        }
+        return true
+    }
+    var tmp: [128]u8
+    let n: i64 = unescape(text, nodes, idx, tmp[..])
+    if n < i64(0) || n != key.len { return false }
+    var i: i64 = 0
+    while i < n {
+        if tmp[i] != key[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+/* 对象成员的值节点下标（没有就 -1）。线性扫描：QQ 的对象都很小，
+ * 为它们建哈希表不值当（要分配、要时间）。 */
+fn member(text: slice<u8>, nodes: slice<node>, idx: i64, key: slice<u8>) -> i64 {
+    if kindOf(nodes, idx) != OBJ { return i64(-1) }
+    let n: i64 = nodes[idx].count
+    var k: i64 = nodes[idx].first
+    var i: i64 = 0
+    while i < n && k >= i64(0) {
+        if pKeyEq(text, nodes, k, key) { return k + i64(1) }   /* 值永远紧跟在 key 后面 */
+        k = nodes[k].next
+        i = i + 1
+    }
+    return i64(-1)
+}
+
+/* 同层第 i 个节点（走链；i 通常是 0 或很小的数）。 */
+@private
+fn pNth(nodes: slice<node>, first: i64, i: i64) -> i64 {
+    var k: i64 = first
+    var n: i64 = i
+    while n > i64(0) && k >= i64(0) {
+        k = nodes[k].next
+        n = n - i64(1)
+    }
+    return k
+}
+
+/* 第 i 个成员的名字（对象）。 */
+fn keyAt(text: slice<u8>, nodes: slice<node>, idx: i64, i: i64) -> slice<u8> {
+    if kindOf(nodes, idx) != OBJ || i < i64(0) || i >= nodes[idx].count { return text[0..0] }
+    let k: i64 = pNth(nodes, nodes[idx].first, i)
+    if k < i64(0) { return text[0..0] }
+    return rawOf(text, nodes, k)
+}
+
+/* 第 i 个成员的值（对象）；数组元素用 `elem`。 */
+fn valueAt(nodes: slice<node>, idx: i64, i: i64) -> i64 {
+    if kindOf(nodes, idx) != OBJ || i < i64(0) || i >= nodes[idx].count { return i64(-1) }
+    let k: i64 = pNth(nodes, nodes[idx].first, i)
+    if k < i64(0) { return i64(-1) }
+    return k + i64(1)
+}
+
+fn elem(nodes: slice<node>, idx: i64, i: i64) -> i64 {
+    if kindOf(nodes, idx) != ARR || i < i64(0) || i >= nodes[idx].count { return i64(-1) }
+    return pNth(nodes, nodes[idx].first, i)
+}
+
+/* 点分路径查找：`"d.author.member_openid"`；数字段走数组（`"items.0.id"`）。
+ * 一次调用拿到嵌套字段 —— 机器人代码里 90% 的 JSON 访问就是这个形状。 */
+fn find(text: slice<u8>, nodes: slice<node>, root: i64, path: slice<u8>) -> i64 {
+    var cur: i64 = root
+    var i: i64 = 0
+    while i <= path.len {
+        if i == path.len { return cur }
+        /* 取一段（到 '.' 或结束） */
+        var j: i64 = i
+        while j < path.len && path[j] != u8(46) {
+            j = j + 1
+        }
+        let seg: slice<u8> = path[i..j]
+        var isNum: bool = seg.len > i64(0)
+        var num: i64 = i64(0)
+        var k: i64 = 0
+        while k < seg.len {
+            let c: u8 = seg[k]
+            if c < u8(48) || c > u8(57) { isNum = false }
+            num = num * i64(10) + i64(i32(c) - 48)
+            k = k + 1
+        }
+        let kk: u8 = kindOf(nodes, cur)
+        if kk == OBJ {
+            cur = member(text, nodes, cur, seg)
+        } else if kk == ARR && isNum {
+            cur = elem(nodes, cur, num)
+        } else {
+            return i64(-1)
+        }
+        if cur < i64(0) { return i64(-1) }
+        i = j + i64(1)
+    }
+    return cur
+}
+
+fn numOf(nodes: slice<node>, idx: i64) -> f64 {
+    if kindOf(nodes, idx) != NUM { return f64(0) }
+    return nodes[idx].num
+}
+
+/* 整数：**只在能精确表示时**给值（位数 ≤ 18 位十进制），否则 0。
+ * 原因：JSON 没有整数类型，QQ 的大 ID 也一律是字符串 —— 拿到 19 位的"数字"本来就该当字符串处理。 */
+fn intOf(text: slice<u8>, nodes: slice<node>, idx: i64) -> i64 {
+    if kindOf(nodes, idx) != NUM { return i64(0) }
+    let raw: slice<u8> = rawOf(text, nodes, idx)
+    var i: i64 = 0
+    var neg: bool = false
+    if raw.len > i64(0) && raw[0] == u8(45) {
+        neg = true
+        i = i64(1)
+    }
+    var v: i64 = i64(0)
+    var digits: i64 = 0
+    while i < raw.len {
+        let c: u8 = raw[i]
+        if c < u8(48) || c > u8(57) { return i64(0) }        /* 小数/指数：不是整数 */
+        v = v * i64(10) + i64(i32(c) - 48)
+        digits = digits + i64(1)
+        i = i + 1
+    }
+    if digits == i64(0) || digits > i64(18) { return i64(0) }
+    if neg { return i64(0) - v }
+    return v
+}
+
+fn boolOf(nodes: slice<node>, idx: i64) -> bool {
+    if kindOf(nodes, idx) != BOOL { return false }
+    return nodes[idx].b
+}
+
+/* ================================================================ 写入（零分配）
+ *
+ *     var buf: [1024]u8
+ *     var w: json::builder
+ *     w.init(buf[..])
+ *     w.beginObj()
+ *     w.key("content"); w.str("你好")
+ *     w.key("msg_seq"); w.int(i64(3))
+ *     w.endObj()
+ *     if !w.ok() { ... 缓冲不够（`w.len()` 是已写字节数）... }
+ */
+
+let WTAGSZ: i64 = 32
+
+@noCopy
+struct builder {
+    buf: mut slice<u8>
+    n: i64
+    depth: i32
+    failed: bool
+    /* 刚写完一个成员名：紧跟的那个值**不再要**分隔符（否则会写出 `"k":,1`）。 */
+    afterKey: bool
+    /* 每层"已经写过一项了吗"：一位一层（32 层足够；超了就是 failed，不越界写）。
+     * 用位图而不是 `[32]bool`：数组字段要常量初始化，位图是标量，零值天然可用。 */
+    commaMask: u64
+
+    /* 工厂（与 `heap::plate::open` 同一形状）：含引用的结构体没有零值，
+     * 所以"声明 + 构造"必须一次完成。缓冲永远合法 ⇒ 调用点写 `!` 是如实的。 */
+    fn open(buf: mut slice<u8>) -> ?builder {
+        return some(builder { buf: buf, n: i64(0), depth: i32(0), failed: false, afterKey: false, commaMask: u64(0) })
+    }
+
+    fn ok(self: ref builder) -> bool { return !self.failed }
+    fn len(self: ref builder) -> i64 { return self.n }
+
+    @private
+    /* 一旦 `failed`，后面所有写入都是 no-op（所以下面的守卫不必 `return`）——
+     * 这样"缓冲不够"是一条单向状态，而不是每处都判一次。 */
+    fn put(self: mut ref builder, c: u8) -> void {
+        if !self.failed && self.n < self.buf.len {
+            self.buf[self.n] = c
+            self.n = self.n + i64(1)
+        } else {
+            self.failed = true
+        }
+    }
+
+    @private
+    fn puts(self: mut ref builder, s: slice<u8>) -> void {
+        var i: i64 = 0
+        while i < s.len {
+            self.put(s[i])
+            i = i + 1
+        }
+    }
+
+    /* 写分隔逗号（值/成员之前调用） */
+    @private
+    fn sep(self: mut ref builder) -> void {
+        if self.afterKey {
+            self.afterKey = false          /* 这是成员名后面的那个值 */
+        } else if self.depth < i32(0) || self.depth > i32(WTAGSZ) {
+            self.failed = true
+        } else if self.depth > i32(0) {
+            let d: i32 = self.depth - i32(1)
+            let bit: u64 = u64(1) << u64(d)
+            if (self.commaMask & bit) != u64(0) {
+                self.put(u8(44))
+            } else {
+                self.commaMask = self.commaMask | bit
+            }
+        }
+    }
+
+    fn beginObj(self: mut ref builder) -> void {
+        self.sep()
+        self.put(u8(123))
+        if self.depth >= i32(WTAGSZ) {
+            self.failed = true
+        } else {
+            self.commaMask = self.commaMask & ~(u64(1) << u64(self.depth))
+        }
+        self.depth = self.depth + i32(1)
+    }
+
+    fn endObj(self: mut ref builder) -> void {
+        self.put(u8(125))
+        if self.depth > i32(0) { self.depth = self.depth - i32(1) }
+    }
+
+    fn beginArr(self: mut ref builder) -> void {
+        self.sep()
+        self.put(u8(91))
+        if self.depth >= i32(WTAGSZ) {
+            self.failed = true
+        } else {
+            self.commaMask = self.commaMask & ~(u64(1) << u64(self.depth))
+        }
+        self.depth = self.depth + i32(1)
+    }
+
+    fn endArr(self: mut ref builder) -> void {
+        self.put(u8(93))
+        if self.depth > i32(0) { self.depth = self.depth - i32(1) }
+    }
+
+    /* 成员名（自己带引号与转义）。 */
+    fn key(self: mut ref builder, k: slice<u8>) -> void {
+        self.sep()
+        self.pStr(k)
+        self.put(u8(58))
+        self.afterKey = true
+    }
+
+    /* 字符串值：分隔 + 写。只转义 JSON 要求的那些（`"` `\` 与控制字符），非 ASCII 原样写。 */
+    fn str(self: mut ref builder, s: slice<u8>) -> void {
+        self.sep()
+        self.pStr(s)
+    }
+
+    /* 只写（不管分隔）：`key` 复用它 —— 成员名自己已经分隔过了。 */
+    @private
+    fn pStr(self: mut ref builder, s: slice<u8>) -> void {
+        self.put(u8(34))
+        var i: i64 = 0
+        while i < s.len {
+            let c: u8 = s[i]
+            if c == u8(34) {
+                self.put(u8(92))
+                self.put(u8(34))
+            } else if c == u8(92) {
+                self.put(u8(92))
+                self.put(u8(92))
+            } else if c == u8(10) {
+                self.put(u8(92))
+                self.put(u8(110))
+            } else if c == u8(13) {
+                self.put(u8(92))
+                self.put(u8(114))
+            } else if c == u8(9) {
+                self.put(u8(92))
+                self.put(u8(116))
+            } else if c < u8(32) {
+                self.put(u8(92))
+                self.put(u8(117))
+                self.put(u8(48))
+                self.put(u8(48))
+                let hi: u8 = (c >> 4) & u8(0x0f)
+                let lo: u8 = c & u8(0x0f)
+                if hi < u8(10) { self.put(u8(48) + hi) } else { self.put(u8(87) + hi) }
+                if lo < u8(10) { self.put(u8(48) + lo) } else { self.put(u8(87) + lo) }
+            } else {
+                self.put(c)
+            }
+            i = i + 1
+        }
+        self.put(u8(34))
+    }
+
+    fn int(self: mut ref builder, v: i64) -> void {
+        self.sep()
+        var tmp: [24]u8
+        var u: i64 = v
+        var neg: bool = v < i64(0)
+        if neg { u = i64(0) - u }
+        var k: i64 = 0
+        if u == i64(0) {
+            tmp[0] = u8(48)
+            k = i64(1)
+        }
+        while u > i64(0) {
+            tmp[k] = u8(48) + u8(u % i64(10))
+            u = u / i64(10)
+            k = k + 1
+        }
+        if neg { self.put(u8(45)) }
+        while k > i64(0) {
+            k = k - i64(1)
+            self.put(tmp[k])
+        }
+    }
+
+    fn boolean(self: mut ref builder, b: bool) -> void {
+        self.sep()
+        if b { self.puts("true") } else { self.puts("false") }
+    }
+
+    fn nul(self: mut ref builder) -> void {
+        self.sep()
+        self.puts("null")
+    }
+
+    /* 原样写入一段已经合法的 JSON（数字、或从解析结果里零拷贝转写的原文）。 */
+    fn raw(self: mut ref builder, s: slice<u8>) -> void {
+        self.sep()
+        self.puts(s)
+    }
+
+    /* 两位数以内的小数（6 位有效小数）；要精确表示就自己 `raw` 一段文本。 */
+    fn flt(self: mut ref builder, v: f64) -> void {
+        self.sep()
+        var x: f64 = v
+        if x < f64(0) {
+            self.put(u8(45))
+            x = f64(0) - x
+        }
+        let ip: i64 = i64(x)
+        self.int(ip)
+        var fr: f64 = x - f64(ip)
+        if fr > f64(0) {
+            self.put(u8(46))
+            var d: i64 = 0
+            while d < i64(6) {
+                fr = fr * f64(10)
+                let dig: i64 = i64(fr)
+                self.put(u8(48) + u8(dig))
+                fr = fr - f64(dig)
+                d = d + 1
+            }
+        }
+    }
+}

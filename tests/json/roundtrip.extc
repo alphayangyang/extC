@@ -1,0 +1,64 @@
+// expect: roundtrip ok
+// 解析 → 用 builder 重新序列化（规范形）→ 与 Python json.dumps(..., separators=(',',':')) 对拍。
+// 一条判据同时压到解析器、访问器与写入器三件东西。
+use std::json::{node, parsed, parse, kindOf, countOf, keyAt, valueAt, elem, rawOf, intOf, boolOf, strOf, builder, OBJ, ARR, STR, NUM, BOOL, NUL}
+use std::io
+
+fn emit(w: mut ref builder, text: slice<u8>, nodes: slice<node>, idx: i64, scratch: mut slice<u8>) -> void {
+    let k: u8 = kindOf(nodes, idx)
+    if k == OBJ {
+        w.beginObj()
+        var i: i64 = 0
+        while i < countOf(nodes, idx) {
+            w.key(keyAt(text, nodes, idx, i))
+            emit(w, text, nodes, valueAt(nodes, idx, i), scratch)
+            i = i + 1
+        }
+        w.endObj()
+    } else if k == ARR {
+        w.beginArr()
+        var i: i64 = 0
+        while i < countOf(nodes, idx) {
+            emit(w, text, nodes, elem(nodes, idx, i), scratch)
+            i = i + 1
+        }
+        w.endArr()
+    } else if k == STR {
+        w.str(strOf(text, nodes, idx, scratch))
+    } else if k == NUM {
+        w.int(intOf(text, nodes, idx))
+    } else if k == BOOL {
+        w.boolean(boolOf(nodes, idx))
+    } else {
+        w.nul()
+    }
+}
+
+fn one(label: slice<u8>, body: slice<u8>, pool: mut slice<node>, buf: mut slice<u8>, scratch: mut slice<u8>) -> i32 {
+    var r: parsed = parse(body, pool)
+    if r.root < i64(0) {
+        io::cout << label << " PARSE-FAIL at " << r.at << "\n"
+        return 1
+    }
+    var w: builder = builder::open(buf)!
+    emit(ref w, body, pool, r.root, scratch)
+    if !w.ok() {
+        io::cout << label << " BUILD-FAIL\n"
+        return 1
+    }
+    io::cout << label << " " << buf[0..w.len()] << "\n"
+    return 0
+}
+
+fn main() -> i32 {
+    var pool: [256]node
+    var buf: [1024]u8
+    var scratch: [256]u8
+    if one("a", "{\"content\":\"hi\\nthere\",\"msg_seq\":3,\"xs\":[1,2]}", pool[..], buf[..], scratch[..]) != 0 { return 1 }
+    if one("b", "{\"d\":{\"author\":{\"member_openid\":\"ABC\"},\"content\":\"hello\"},\"t\":true,\"n\":null,\"e\":[]}", pool[..], buf[..], scratch[..]) != 0 { return 2 }
+    if one("c", "{\"unicode\":\"\\u4f60\\u597d\\u4e16\\u754c\",\"pair\":\"\\ud83d\\ude00\",\"q\":\"a\\\"b\\\\c\"}", pool[..], buf[..], scratch[..]) != 0 { return 3 }
+    if one("d", "[[1,2],[3,[4]]]", pool[..], buf[..], scratch[..]) != 0 { return 4 }
+    if one("e", "{\"big\":123456789012345,\"neg\":-42,\"z\":0}", pool[..], buf[..], scratch[..]) != 0 { return 5 }
+    io::cout << "roundtrip ok\n"
+    return 0
+}

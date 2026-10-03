@@ -6,26 +6,17 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 1161 个成员，其中内部 339 个：
+公开面共 686 个成员，其中内部 200 个：
 
 ## prelude
 
-- `coroutine.buf`（字段）
-- `coroutine.cap`（字段）
-- `coroutine.inc`（字段）
-- `pcg32.buf`（字段）
-- `pcg32.cap`（字段）
 - `pcg32.inc`（字段）
-- `unit.buf`（字段）
-- `unit.cap`（字段）
-- `unit.inc`（字段）
 - `varArray.buf`（字段）
 - `varArray.cap`（字段）
 
 ## std::coro::scheduler
 
 - `loop.ep`（字段）
-- `row.ep`（字段）
 
 ## std::hash::sha1
 
@@ -47,13 +38,6 @@
 
 - `conn.buf`（字段）
 - `conn.buf`（字段）
-- `conn.buf`（字段）
-- `request.buf`（字段）
-- `request.buf`（字段）
-- `request.buf`（字段）
-- `response.buf`（字段）
-- `response.buf`（字段）
-- `response.buf`（字段）
 - `session.buf`（字段）
 
 ## std::io
@@ -67,39 +51,20 @@
 - `-.isSpaceByte`（方法）
 - `-.nextI64State`（方法）
 - `-.pairsReady`（方法）
-- `errStream.errWrite`（方法）
-- `istream.errWrite`（方法）
-- `istream.flushCout`（方法）
-- `istream.fmtI64`（方法）
-- `istream.fmtI64Fast`（方法）
-- `istream.pairsReady`（方法）
-- `ostream.errWrite`（方法）
-- `ostream.flushCout`（方法）
-- `ostream.fmtI64`（方法）
-- `ostream.fmtI64Fast`（方法）
-- `ostream.pairsReady`（方法）
 - `reader.chunk`（字段）
-- `reader.errWrite`（方法）
-- `reader.flushCout`（方法）
-- `reader.fmtI64`（方法）
-- `reader.fmtI64Fast`（方法）
-- `reader.isSpaceByte`（方法）
 - `reader.newlineAfter`（方法）
-- `reader.pairsReady`（方法）
-- `writer.accDigit`（方法）
 - `writer.buf`（字段）
 - `writer.cap`（方法）
-- `writer.chunk`（字段）
-- `writer.errWrite`（方法）
-- `writer.fillState`（方法）
-- `writer.flushCout`（方法）
-- `writer.fmtI64`（方法）
-- `writer.fmtI64Fast`（方法）
-- `writer.got`（字段）
-- `writer.isSpaceByte`（方法）
-- `writer.newlineAfter`（方法）
-- `writer.nextI64State`（方法）
-- `writer.pairsReady`（方法）
+
+## std::json
+
+- `-.pHex`（方法）
+- `-.pKeyEq`（方法）
+- `-.pNth`（方法）
+- `-.pUtf8`（方法）
+- `builder.buf`（字段）
+- `builder.n`（字段）
+- `parsed.root`（字段）
 
 ## std::term
 
@@ -115,14 +80,10 @@
 - `hashMap.dead`（字段）
 - `hashMap.dead`（字段）
 - `hashMap.deadOf`（方法）
-- `hashMap.deadOf`（方法）
 - `hashMap.denseLen`（方法）
-- `hashMap.denseLen`（方法）
-- `hashMap.keyAtDense`（方法）
 - `hashMap.keyAtDense`（方法）
 - `hashMap.keys`（字段）
 - `hashMap.keys`（字段）
-- `hashMap.liveAt`（方法）
 - `hashMap.liveAt`（方法）
 - `hashMap.n`（字段）
 - `hashMap.n`（字段）
@@ -133,10 +94,7 @@
 - `hashMap.pidGen`（字段）
 - `hashMap.pidGen`（字段）
 - `hashMap.pidOf`（方法）
-- `hashMap.pidOf`（方法）
 - `hashMap.tagCensus`（方法）
-- `hashMap.tagCensus`（方法）
-- `hashMap.valAtDense`（方法）
 - `hashMap.valAtDense`（方法）
 - `hashMap.vals`（字段）
 - `hashMap.vals`（字段）
@@ -147,13 +105,6 @@
 - `hashMapI64.pidOf`（方法）
 - `hashMapI64.tagCensus`（方法）
 - `hashMapI64.valAtDense`（方法）
-- `i64Key.deadOf`（方法）
-- `i64Key.denseLen`（方法）
-- `i64Key.keyAtDense`（方法）
-- `i64Key.liveAt`（方法）
-- `i64Key.pidOf`（方法）
-- `i64Key.tagCensus`（方法）
-- `i64Key.valAtDense`（方法）
 
 ## stl::hashSet
 
@@ -175,66 +126,12 @@
 
 ## stl::map
 
-- `bnode.bn`（方法）
-- `bnode.borrowLeft`（方法）
-- `bnode.borrowRight`（方法）
-- `bnode.childSlot`（方法）
 - `bnode.cnt`（字段）
-- `bnode.cntOf`（方法）
-- `bnode.dropChild`（方法）
-- `bnode.firstKey`（方法）
-- `bnode.freeHead`（字段）
-- `bnode.freeNode`（方法）
-- `bnode.growStores`（方法）
-- `bnode.height`（方法）
-- `bnode.kd`（方法）
-- `bnode.keys`（字段）
-- `bnode.keys`（字段）
-- `bnode.keys`（字段）
 - `bnode.keys`（字段）
 - `bnode.kids`（字段）
-- `bnode.kids`（字段）
-- `bnode.kids`（字段）
-- `bnode.kids`（字段）
-- `bnode.kidsCnt`（方法）
-- `bnode.kn`（方法）
-- `bnode.lastKey`（方法）
 - `bnode.leaf`（字段）
-- `bnode.leafFor`（方法）
-- `bnode.leafOf`（方法）
-- `bnode.lowerIn`（方法）
-- `bnode.mergeLeft`（方法）
-- `bnode.mergeRight`（方法）
 - `bnode.n`（字段）
-- `bnode.n`（字段）
-- `bnode.n`（字段）
-- `bnode.ncap`（字段）
-- `bnode.newNode`（方法）
-- `bnode.nnodes`（字段）
-- `bnode.nnodes`（字段）
-- `bnode.nodeCount`（方法）
-- `bnode.nodes`（字段）
-- `bnode.nodes`（字段）
-- `bnode.nx`（方法）
-- `bnode.pPoison`（方法）
-- `bnode.pStale`（方法）
-- `bnode.pid`（字段）
-- `bnode.pid`（字段）
-- `bnode.pidGen`（字段）
-- `bnode.root`（字段）
-- `bnode.setCnt`（方法）
-- `bnode.setKey`（方法）
-- `bnode.setKid`（方法）
-- `bnode.setN`（方法）
-- `bnode.setNext`（方法）
-- `bnode.setVal`（方法）
-- `bnode.side`（字段）
-- `bnode.subMinKey`（方法）
 - `bnode.vals`（字段）
-- `bnode.vals`（字段）
-- `bnode.vals`（字段）
-- `bnode.vals`（字段）
-- `bnode.vn`（方法）
 - `map.bn`（方法）
 - `map.borrowLeft`（方法）
 - `map.borrowRight`（方法）
@@ -292,41 +189,8 @@
 
 ## stl::pool
 
-- `handle.atDense`（方法）
-- `handle.cap`（字段）
-- `handle.cap`（字段）
-- `handle.cursor`（字段）
-- `handle.cursor`（字段）
-- `handle.ent`（字段）
-- `handle.ent`（字段）
 - `handle.ep`（字段）
-- `handle.epoch`（字段）
-- `handle.epoch`（字段）
-- `handle.gather`（方法）
 - `handle.gen`（字段）
-- `handle.handleAtDense`（方法）
-- `handle.holeHead`（字段）
-- `handle.holeHead`（字段）
-- `handle.n`（字段）
-- `handle.n`（字段）
-- `handle.pDense`（方法）
-- `handle.pEp`（方法）
-- `handle.pEpMask`（方法）
-- `handle.pFree`（方法）
-- `handle.pGen`（方法）
-- `handle.pLive`（方法）
-- `handle.pLow`（方法）
-- `handle.pPack`（方法）
-- `handle.pPoisonSelf`（方法）
-- `handle.pStaleSelf`（方法）
-- `handle.pid`（字段）
-- `handle.pid`（字段）
-- `handle.pidGen`（字段）
-- `handle.pidGen`（字段）
-- `handle.slots`（字段）
-- `handle.slots`（字段）
-- `handle.vals`（字段）
-- `handle.vals`（字段）
 - `pool.atDense`（方法）
 - `pool.cap`（字段）
 - `pool.cap`（字段）
