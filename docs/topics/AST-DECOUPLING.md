@@ -536,3 +536,38 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
   `msg->...` 拆坏（正则只吃到最后一个标识符）。**修法：`u.<variant>.<member>->field`
   是另一种形状，必须单独一条规则**；而且修的时候要从**快照取原文**，不要叠补丁
   （我叠了两次补丁，反而多坏了 6 行）。
+
+## 17. T4 第五族：`Expr` 的"调用/接收者"组（5 个字段，1 个被退回）
+
+**本组原定 7 个，实测退回 2 个** —— 两个都是分类问题，不是实现问题：
+
+| 字段 | 实测结论 |
+|---|---|
+| `extDom` | 检查器写、**codegen 读 2** ⇒ **PLAN**（搬） |
+| `field`（`FieldDef *`） | 检查器写、codegen 通过调用点读 ⇒ **PLAN**（搬） |
+| `assocOwner` | 检查器写、codegen 读 2 ⇒ **PLAN**（搬） |
+| `dynRecvViaRef` | 检查器写、codegen 读 1 ⇒ **PLAN**（搬） |
+| `callViaFn` | 检查器写、codegen 读 1 ⇒ **PLAN**（搬） |
+| **`dynTrait`** | **parser 写**（`check_expr.c` 也写，但 parser 在把 `dyn Trait(x).m(…)` 脱糖成方法调用节点时写它） ⇒ **SYNTAX，退回 AST** |
+| `operand` | 是 `un`/`ref`/`deref`/`sign`/`conv`/`try_` **六个 union 变体各自的成员名**（按名字统计会算成一个字段，实际是六个） ⇒ 留给"union 成员"专项，本轮不动 |
+
+**`dynTrait` 是怎么被抓住的**：改了 `parser.c` 之后编译报 `implicit declaration of planSetDynTrait`。
+`parser.c` **不许 include plan.h** —— 这正是 `[layering]` 那条棘轮存在的意义（"括号里能加回来"
+的诱惑），它当场把"这个字段其实是语法"这个事实推到我脸上。**判据替我做了一次分类**。
+
+**`operand` 的发现值得单记**：按字段名统计时它算 1 个字段，按属主看它是 **6 个不同 union 的成员**。
+⇒ 之前所有"按名字算字段数"的结论都要打折；`[ast-freeze]` 的 key 数才是可信的计数。
+
+**改动**：`results.h` 加 5 个槽位；`plan.c` 加位（35–40）+ 5 组 setter/访问器
+（`planExtDom`/`planField`/`planAssocOwner`/`planDynRecvViaRef`/`planCallViaFn`）；
+12 处写、22 处读改经访问器（含 codegen；`->u.call.callee->field` 这类是另一种形状，单独一条规则）；
+`ast.h` 删 5 个字段（其中 `extDom`/`field`/`assocOwner` 上方是三行合并注释，删字段后留下
+孤儿注释行、当场语法错 —— 本批次**第三次**同类，已改成一段指向 plan.h 的说明）。
+
+**棘轮**：`[ast-freeze]` **116 → 110**；其余四条不动。
+
+**验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
+
+**过程教训（第三次同类，必须记死）**：`u.<variant>.<member>->field` 与 `<expr>->field`
+是**两种形状**，用一条正则处理会互相咬（我这次叠了两次补丁，反而多坏了 5 行，最后只能
+**逐行手写**）。规矩：**只要一条替换的"形状"不唯一，就不许用脚本 —— 逐行手改**。

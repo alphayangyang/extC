@@ -74,6 +74,17 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- call / receiver facts (T4) -----------------------------------------------------
+ *
+ * All read by code generation: where a task is handed (`EX_EXT`), which field an `EX_FIELD`
+ * resolved to, the instance type an `EX_ASSOC` resolved to, and how a `dyn` call reaches its
+ * receiver. */
+Expr     *planExtDom(const Expr *e);        void planSetExtDom(Expr *e, Expr *v);
+FieldDef *planField(const Expr *e);         void planSetField(Expr *e, FieldDef *fd);
+Type     *planAssocOwner(const Expr *e);    void planSetAssocOwner(Expr *e, Type *t);
+bool     planDynRecvViaRef(const Expr *e);  void planSetDynRecvViaRef(Expr *e, bool v);
+bool     planCallViaFn(const Expr *e);      void planSetCallViaFn(Expr *e, bool v);
+
 /* ---- depth and origin facts (T4) ----------------------------------------------------
  *
  * `void *` on purpose: `refDepth` lives on an `Expr` **and** on the checker's `Sym`, and one

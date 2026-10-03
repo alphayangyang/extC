@@ -2049,7 +2049,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
              * compiler accepted `ref dyn Tag` and emitted C that did not build
              * (`incompatible type for argument 1 of 'extc_dyn_slot'`). */
             const char *handleC = recvC;
-            if (e->dynRecvViaRef)
+            if (planDynRecvViaRef(e))
                 handleC = arenaPrintf(g->arena, "(*%s)", recvC);
             const char *dynS = arenaPrintf(g->arena, "__extc_ds%d", g->tmpSeq++);
             pfLine(g, "ExtcDynSlot *%s = extc_dyn_slot(%s, \"%s\", %d);",
@@ -2203,7 +2203,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * void (the checker says so): the取件单 lands with the driving loop. */
             Expr *in = e->u.ext_.call;
             FuncDef *cf = (in && in->kind == EX_CALL) ? planCallee(in) : NULL;
-            if (!cf || !planIsCoro(cf) || !e->extDom || g->coroFunc) {
+            if (!cf || !planIsCoro(cf) || !planExtDom(e) || g->coroFunc) {
                 ctxError(g->ctx, e->line, 1, NULL,
                          "domain task: only a plain-function context with a coroutine callee is"
                          " implemented so far (nesting a task inside a coroutine is the next step)");
@@ -2237,7 +2237,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             if (planCoroNeedsZone(cf)) cgLine(g, "extc_zoneTop = %s;", sv);
             g->needDomain = true;
             flushPrefix(g);
-            cgLine(g, "extc_dom_add(%s, (void *)&%s, %s$domstep);", genExpr(g, e->extDom), tmp, cn);
+            cgLine(g, "extc_dom_add(%s, (void *)&%s, %s$domstep);", genExpr(g, planExtDom(e)), tmp, cn);
             return "(void)0";
         }
         case EX_LAMBDA: {
@@ -2512,7 +2512,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * argument against the signature the type carries (C-ABI.md section 9 step 1); this only
              * prints the expression. The parentheses are not decoration: a callee that is a compound
              * expression or a dereference must not bind to the argument list. */
-            if (e->callViaFn) {
+            if (planCallViaFn(e)) {
                 Buf fb;
                 bufInit(&fb, g->arena);
                 bufPutc(&fb, '(');
@@ -2661,7 +2661,7 @@ static const char *genExprInner(CG *g, Expr *e) {
              * methods follow, so cMethodName is reused directly. */
             Buf b;
             bufInit(&b, g->arena);
-            bufPuts(&b, cMethodName(g, e->assocOwner, planCallee(e)));
+            bufPuts(&b, cMethodName(g, planAssocOwner(e), planCallee(e)));
             bufPutc(&b, '(');
             for (size_t i = 0; i < e->u.assoc.args.len; i++) {
                 if (i) bufPuts(&b, ", ");
@@ -2969,7 +2969,7 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* The instantiated name of a generic enum (`maybe_i64`) is not in
              * the type table, so the type the checker resolved, recorded in
              * `assocOwner`, is preferred. */
-            Type *et = e->assocOwner;
+            Type *et = planAssocOwner(e);
             if (!et && g->tt) et = ttFromName(g->tt, tn);
             /* Inside a generic instance `tn` is the template's name
              * (`option_T`), while the instance's C name is `option_i32`. With

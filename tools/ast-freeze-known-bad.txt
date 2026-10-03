@@ -10,19 +10,14 @@ src/check_escape.c:target	2 处（行 988, 1664）	R1 AST 冻结的施工单：P
 src/check_escape.c:type	2 处（行 2514, 2552）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:addrMask	2 处（行 1200, 1208）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:args	4 处（行 1696, 2436, 2789, 3382）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:assocOwner	4 处（行 1611, 1958, 2835, 3411）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:call	1 处（行 3739）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:callViaFn	1 处（行 1213）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:callee	2 处（行 2435, 3381）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:cname	3 处（行 854, 888, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:contMask	2 处（行 1201, 1208）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:convCheck	2 处（行 2257, 2282）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:dynRecvViaRef	1 处（行 3447）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTable	1 处（行 664）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTrait	1 处（行 3506）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:effComplete	1 处（行 1193）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:extDom	1 处（行 3329）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:field	1 处（行 1652）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:fields	1 处（行 997）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:hasEffects	1 处（行 1199）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:hi	1 处（行 1793）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -55,7 +50,6 @@ src/check_lookup.c:ival	1 处（行 756）	R1 AST 冻结的施工单：P2 把它
 src/check_lookup.c:type	2 处（行 230, 757）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:ann	3 处（行 239, 242, 254）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:args	1 处（行 588）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_stmt.c:assocOwner	1 处（行 78）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:bindAnn	1 处（行 922）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:bindCName	1 处（行 944）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_stmt.c:cond	2 处（行 156, 191）	R1 AST 冻结的施工单：P2 把它降到 0

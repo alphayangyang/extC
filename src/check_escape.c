@@ -106,11 +106,11 @@ bool exprOutOfFrame(Checker *c, Expr *e) {
         /* A return value the declaration vouched for. A slot on a table field carries the same
          * clause, so a table entry is covered by the same test. */
         if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_FIELD) {
-            FieldDef *fd = e->u.call.callee->field;
+            FieldDef *fd = planField(e->u.call.callee);
             if (fd && fd->hasEffects && fd->effRetFresh) return true;
         }
         if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_FIELD) {
-            FieldDef *fd = e->u.method.recv->field;
+            FieldDef *fd = planField(e->u.method.recv);
             if (fd && fd->hasEffects && fd->effRetFresh) return true;
         }
         return planCallee(e) && planCallee(e)->extRetFresh;

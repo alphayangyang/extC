@@ -1193,7 +1193,7 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
     sig->effComplete = true;
     {
         FieldDef *fd = (e->u.call.callee && e->u.call.callee->kind == EX_FIELD)
-                           ? e->u.call.callee->field : NULL;
+                           ? planField(e->u.call.callee) : NULL;
         if (fd && fd->hasEffects) {
             sig->name     = fd->name;
             sig->hasEffects = true;
@@ -1210,7 +1210,7 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
     }
     checkCallRefArgs(c, sig, &e->u.call.args, &ps, 0, e->line, sig->name);
 
-    e->callViaFn = true;
+    planSetCallViaFn(e, true);
     return ft->ret;
 }
 
@@ -1608,7 +1608,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->kind = EX_ENUMVAL;
                         e->u.enumval.typeName = et->name;
                         e->u.enumval.variant  = v->name;
-                        e->assocOwner = et;      /* the resolved type; instances need it */
+                        planSetAssocOwner(e, et);      /* the resolved type; instances need it */
                         return et;
                     }
                 }
@@ -1649,7 +1649,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
             }
-            e->field = fd;
+            planSetField(e, fd);
             /* A field type may mention type parameters; substitute the receiver's type
              * arguments for them. */
             Type *ftype = (bt->kind == TY_GENERIC)
@@ -1955,7 +1955,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             raw->targs = e->u.assoc.targs;
             Type *t = ttResolve(tt, c->ctx, raw, e->line, c->curParams);
             if (ttIsError(t)) return ttError(tt);
-            e->assocOwner = t;
+            planSetAssocOwner(e, t);
 
             /* Constructing an enum variant goes through this path as well:
              * `option<i64>::some(3)` and `maybe<i64>::nothing`. So `::` has two readings for
@@ -2737,7 +2737,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* An instance of a generic enum (`maybe<i64>`) is not in the type table's by-name
              * map: it is produced by instantiation. Constructing it through the EX_ASSOC path
              * therefore records the resolved type on `assocOwner`, which is preferred here. */
-            Type *et = e->assocOwner ? e->assocOwner : ttFromName(tt, e->u.enumval.typeName);
+            Type *et = planAssocOwner(e) ? planAssocOwner(e) : ttFromName(tt, e->u.enumval.typeName);
             if (!et || et->kind != TY_ENUM || !et->edef) return ttError(tt);
             Variant *v = findVariant(et->edef, e->u.enumval.variant);
             if (!v) return ttError(tt);
@@ -2832,7 +2832,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         e->u.enumval.typeName = et->name;
                         e->u.enumval.variant  = v->name;
                         e->u.enumval.args     = args;
-                        e->assocOwner = et;
+                        planSetAssocOwner(e, et);
                         return checkExprInner(c, e);    /* the rest is EX_ENUMVAL's job */
                     }
                 }
@@ -3326,7 +3326,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         planCallee(in) ? planCallee(in)->name : "this");
                 return ttError(tt);
             }
-            e->extDom = c->curDom;          /* codegen 把任务登记到这个域上 */
+            planSetExtDom(e, c->curDom);          /* codegen 把任务登记到这个域上 */
             planCallee(in)->isExtTarget = true;   /* ⇒ 为它生成域用的适配器（只为它，别的产物不受影响） */
             /* The value is **void on purpose**: `let h = ext f(x)` is refused by the type system
              * rather than by a special rule, and the handle (the取件单) lands with the driving
@@ -3408,7 +3408,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->u.enumval.typeName = et->name;
                     e->u.enumval.variant  = v->name;
                     e->u.enumval.args     = args;
-                    e->assocOwner = et;
+                    planSetAssocOwner(e, et);
                     return checkExprInner(c, e);
                 }
             }
@@ -3444,7 +3444,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * `r: ref dyn Tag`). `ttBase` unwraps it here, so record the fact for codegen:
                      * it has to dereference the C expression when it hands the handle to
                      * `extc_dyn_slot`. */
-                    e->dynRecvViaRef = (recvT && recvT->kind == TY_REF);
+                    planSetDynRecvViaRef(e, (recvT && recvT->kind == TY_REF));
                     const char *traitName = ttBase(recvT)->name;
                     TraitDef *tr = NULL;
                     for (size_t i = 0; i < c->m->traits.len && !tr; i++) {

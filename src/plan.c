@@ -54,6 +54,11 @@
 #define AN_HOME_DEPTH            (1ull << 32)
 #define AN_LEXICAL_LEVEL         (1ull << 33)
 #define AN_STORED_AT             (1ull << 34)
+#define PLAN_EXT_DOM             (1ull << 35)
+#define PLAN_FIELD               (1ull << 36)
+#define PLAN_ASSOC_OWNER         (1ull << 37)
+#define PLAN_DYN_RECV_VIA_REF    (1ull << 39)
+#define PLAN_CALL_VIA_FN         (1ull << 40)
 
 
 /* The analysis half of the slot, by name: the checker's own working state, which no later
@@ -289,6 +294,36 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     if (!r) return;
     r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
 }
+
+/* ---- call / receiver facts (T4, fifth family) ---------------------------------------
+ *
+ * All six are read by code generation (that is why they are here and not in `an`): where a
+ * task is handed (`extDom`), which field an `EX_FIELD` resolved to, the instance type an
+ * `EX_ASSOC` resolved to, and how a `dyn` call reaches its receiver. */
+
+#define PLAN_GET(fn, type, field, bit, dflt)                               \
+    type fn(const Expr *e) {                                               \
+        NodeResults *r = resultsOf(e, false);                              \
+        return (r && (r->setMask & (bit))) ? r->field : (dflt);            \
+    }
+#define PLAN_SET(fn, type, field, bit)                                     \
+    void fn(Expr *e, type v) {                                             \
+        if (!e) return;                                                    \
+        NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);         \
+        if (!r) return;                                                    \
+        r->field = v; r->setMask |= (bit);                                 \
+    }
+
+PLAN_GET(planExtDom, Expr *, extDom, PLAN_EXT_DOM, NULL)
+PLAN_SET(planSetExtDom, Expr *, extDom, PLAN_EXT_DOM)
+PLAN_GET(planField, FieldDef *, field, PLAN_FIELD, NULL)
+PLAN_SET(planSetField, FieldDef *, field, PLAN_FIELD)
+PLAN_GET(planAssocOwner, Type *, assocOwner, PLAN_ASSOC_OWNER, NULL)
+PLAN_SET(planSetAssocOwner, Type *, assocOwner, PLAN_ASSOC_OWNER)
+PLAN_GET(planDynRecvViaRef, bool, dynRecvViaRef, PLAN_DYN_RECV_VIA_REF, false)
+PLAN_SET(planSetDynRecvViaRef, bool, dynRecvViaRef, PLAN_DYN_RECV_VIA_REF)
+PLAN_GET(planCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN, false)
+PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
 
 /* ---- depth and origin facts (T4, fourth family) -------------------------------------
  *

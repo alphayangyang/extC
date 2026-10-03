@@ -2767,9 +2767,9 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
          * basis for believing it is that the author wrote it. */
         FieldDef *sfd = NULL;
         if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_FIELD)
-            sfd = e->u.call.callee->field;
+            sfd = planField(e->u.call.callee);
         else if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_FIELD)
-            sfd = e->u.method.recv->field;
+            sfd = planField(e->u.method.recv);
         if (sfd && sfd->hasEffects) {
             Vec *args = (e->kind == EX_CALL)  ? &e->u.call.args :
                         (e->kind == EX_METHOD) ? &e->u.method.args : &e->u.assoc.args;

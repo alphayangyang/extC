@@ -84,6 +84,12 @@ typedef struct {
     FuncDef    *parWorker;     /* `parallel::run(worker, ...)`: the worker, for the trampoline */
     bool        domNew;        /* `sys::domain::single()`: the assoc builtin with no callee */
     bool        viewOf;        /* `std::sys::heap::extc_viewOf`: the plate layer's primitive */
+    /* ---- call / receiver facts (T4, fifth family) ---- */
+    Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */
+    FieldDef   *field;         /* the field an `EX_FIELD` resolved to */
+    Type       *assocOwner;    /* `EX_ASSOC`: the instance type it resolved to */
+    bool        dynRecvViaRef; /* the receiver of a `dyn` call arrives through a reference */
+    bool        callViaFn;     /* the call goes through a function value, not a declaration */
     bool        usedDyn;       /* a trait named by a `dyn` form (only then is its vtable emitted) */
     bool        usesDyn;       /* a module that saw a `dyn` form (the runtime is needed) */
 

@@ -242,7 +242,7 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
      * binding, so it is a child like any other. Without this the binding looks unread: the
      * used-parameter question below reported `fn apply(f: fn(i64) -> i64, ...)`'s own parameter as
      * never used, on a body whose only statement calls it. */
-    case EX_CALL:    return (!e->callViaFn || !e->u.call.callee || visitExpr(v, e->u.call.callee)) &&
+    case EX_CALL:    return (!planCallViaFn(e) || !e->u.call.callee || visitExpr(v, e->u.call.callee)) &&
                             visitExprList(v, &e->u.call.args);
     case EX_ASSOC:   return visitExprList(v, &e->u.assoc.args);
     case EX_GENCALL: return visitExprList(v, &e->u.gencall.args);

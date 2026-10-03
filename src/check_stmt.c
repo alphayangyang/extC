@@ -75,7 +75,7 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     e->u.enumval.typeName = want->name;
     e->u.enumval.variant  = nm;
     e->u.enumval.args     = args;
-    e->assocOwner = want;
+    planSetAssocOwner(e, want);
 }
 
 

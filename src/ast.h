@@ -202,12 +202,10 @@ struct Expr {
      * builtin), and `std::sys::heap::extc_viewOf(p, n)` (the plate layer's one primitive,
      * whose declaration has `@builtin` and therefore no body). The markers live in the plan
      * side table: `planParWorker`, `planDomNew`, `planViewOf` in plan.h. */
-    /* `EX_EXT`: the domain this task is handed to (the nearest `d.run { … }` receiver, resolved by
-     * the checker). Codegen registers the task there. */
-    Expr     *extDom;
-    FieldDef *field;    /* the field an EX_FIELD resolved to */
-    Type     *assocOwner; /* EX_ASSOC: the instance type it resolved to, kept so the
-                           * C name can be mangled */
+    /* Three more resolutions the checker records on the node and codegen reads: the domain an
+     * `EX_EXT` task is handed to, the field an `EX_FIELD` resolved to, and the instance type an
+     * `EX_ASSOC` resolved to (kept so the C name can be mangled). Storage is the plan side
+     * table: `planExtDom`, `planField`, `planAssocOwner` in plan.h. */
     bool      needOp;   /* a comparison whose operand mentions a type parameter, so the
                          * check waits until the generic is instantiated. Set for every
                          * overloadable operator (`==` `!=` `<` `<=` `>` `>=` and the
@@ -390,7 +388,6 @@ struct Expr {
      * the handle while `extc_dyn_slot` takes the handle by value, so codegen has to dereference --
      * this flag is what tells it. (Without it the compiler accepted `ref dyn Tag` and emitted C
      * that did not build.) */
-    bool dynRecvViaRef;
     /* `f(x)` where `f` is a **value** of function type and not a declaration: the call goes through
      * the code pointer, so there is no `FuncDef` for codegen to name.
      *
@@ -398,7 +395,6 @@ struct Expr {
      * carries (`docs/topics/C-ABI.md` section 9 step 1). Without the flag, codegen's call path would
      * look for `e->func`, find NULL, and drop the call on the floor -- `if (!e->func) return "0"`
      * turns a missing call into a valid-looking product, which is worse than invalid C. */
-    bool callViaFn;
 };
 
 typedef struct { const char *name; Expr *value; } FieldInit;
