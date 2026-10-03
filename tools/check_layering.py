@@ -53,6 +53,21 @@ PUBLISHED = {"plan.h", "check.h", "codegen.h", "parser.h", "modules.h", "types.h
              "base.h", "dbg.h", "coroutine.h", "pools.h", "plate.h", "domain.h",
              "memfind.h", "prelude.h", "lexer.h", "time.h", "dataflow.h"}
 PRIVATE = {"check_internal.h"}
+# The checker's own headers, in-layer for `check_*.c` by construction.
+CHECKER_OWN_HEADERS = frozenset({"check.h", "check_internal.h", "dataflow.h"})
+
+# The include order, measured from the headers' own DAG (`ast.h -> base.h`,
+# `plan.h -> ast.h results.h`, `check_internal.h -> check.h typelayer.h`, ...). A `.c` sits
+# at its own header's layer; the checker's files have no header and sit with the checker.
+LAYER_OF_H = {
+    "base.h": 0, "dbg.h": 0, "lexer.h": 0, "time.h": 0,
+    "ast.h": 1, "results.h": 1,
+    "types.h": 2, "parser.h": 2, "typelayer.h": 2,
+    "plan.h": 3,
+    "check.h": 4, "check_internal.h": 4, "dataflow.h": 4,
+    "codegen.h": 5, "coroutine.h": 5, "modules.h": 5, "pools.h": 5, "plate.h": 5,
+    "domain.h": 5, "memfind.h": 5, "prelude.h": 5,
+}
 
 
 def layer_of(name, is_c):
@@ -92,6 +107,37 @@ def main():
             violations["src/%s -> %s" % (name, inc)] = (
                 "包了另一个阶段的私有头（去掉它会有编译错误 ⇒ 说明真正依赖的是里面的谓词，"
                 "见 docs/topics/AST-DECOUPLING.md P3）")
+        # ---- layer order (added with P3.0's preparation) --------------------------------
+        # The rule above only looks at **private** headers, so an upward include of a
+        # *published* header is invisible to it. That is exactly how `ast.c` (layer 1) came
+        # to include `plan.h` (layer 3) and read/write the plan's storage for months: the
+        # published-views list (`PUBLISHED`) contains **every** header, so "is it published"
+        # answers "yes" for anything and the check would skip everything. The rule below
+        # therefore uses the layer table, not the published list, and names its few
+        # deliberate exceptions explicitly.
+        #
+        # A `.c` file's layer is its own header's when it has one; the checker's files
+        # (`check_*.c`) have no header of their own and sit at the checker's layer. The
+        # three headers they are allowed to reach (their own subsystem's) are not counted.
+        own = name[:-2] + ".h"
+        if os.path.exists(os.path.join(src, own)):
+            my_layer, skip = LAYER_OF_H.get(own), frozenset()
+        elif name.startswith("check_"):
+            my_layer, skip = LAYER_OF_H["check_internal.h"], CHECKER_OWN_HEADERS
+        else:
+            my_layer, skip = None, frozenset()
+        if my_layer is not None:
+            for m in re.finditer(r'#\s*include\s+"([A-Za-z_]+\.h)"', text):
+                inc = m.group(1)
+                if inc in skip:
+                    continue
+                inc_layer = LAYER_OF_H.get(inc)
+                if inc_layer is not None and inc_layer > my_layer:
+                    key = "src/%s -> %s" % (name, inc)
+                    violations.setdefault(key,
+                        "包含了比自己更高的层（%s 在第 %d 层，本文件在第 %d 层）—— 依赖只能向下；"
+                        "确实需要时把它写进工具的例外表并说明理由" % (inc, inc_layer, my_layer))
+
         # The reverse edge that the plan wants removed: the parser reaching into the plan.
         if name == "parser.c" and re.search(r'#\s*include\s+"plan\.h"', text):
             violations["src/parser.c -> plan.h"] = (

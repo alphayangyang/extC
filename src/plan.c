@@ -664,6 +664,25 @@ PLAN_SET(planSetDynRecvViaRef, bool, dynRecvViaRef, PLAN_DYN_RECV_VIA_REF)
 PLAN_GET(planCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN, false)
 PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
 
+/* `storedAt` is the one field of this group whose **unset value is not the type's zero**:
+ * "has this value been seen being published?" is answered `-1` (not yet) or a level `>= 0`
+ * (the level it was published at), and `0` is a real answer. It used to be seeded by
+ * `exprNew` -- which made the AST constructor reach into the plan's storage, an upward edge
+ * from `ast.c` (layer 1) to `plan.c` (layer 3). The default belongs to the reader, not to
+ * the constructor: a node nothing has published is "not yet published", always. */
+#define AN_STORED_AT_GET(fn)                                               \
+    int fn(const void *node) {                                             \
+        NodeResults *r = resultsOf((node), false);                         \
+        return (r && resultsBit(r, AN_STORED_AT)) ? r->an.storedAt : -1;   \
+    }
+AN_STORED_AT_GET(anStoredAt)
+void anSetStoredAt(void *node, int v) {
+    if (!node) return;
+    NodeResults *r = resultsAs(node, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->an.storedAt = v; resultsSetBit(r, AN_STORED_AT);
+}
+
 /* ---- depth and origin facts (T4, fourth family) -------------------------------------
  *
  * `void *` on purpose: `refDepth` lives on an `Expr` **and** on the checker's `Sym`, and one
@@ -690,8 +709,6 @@ AN_D_GET(anHomeDepth, homeDepth, AN_HOME_DEPTH, 0)
 AN_D_SET(anSetHomeDepth, homeDepth, AN_HOME_DEPTH)
 AN_D_GET(anLexicalLevel, lexicalLevel, AN_LEXICAL_LEVEL, 0)
 AN_D_SET(anSetLexicalLevel, lexicalLevel, AN_LEXICAL_LEVEL)
-AN_D_GET(anStoredAt, storedAt, AN_STORED_AT, 0)
-AN_D_SET(anSetStoredAt, storedAt, AN_STORED_AT)
 
 /* ---- call-site markers (T4, third family) -------------------------------------------
  *

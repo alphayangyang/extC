@@ -5,8 +5,6 @@
  * unchanged -- same code, a name that says who may call it. */
 #include "typelayer.h"
 
-#include "plan.h"     /* isEmpty: the plan side table is not consultable here, only AST/type facts */
-
 /* Report whether `op` is one of the six comparison operators. */
 bool isCmpOp(const char *op) {
     return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||

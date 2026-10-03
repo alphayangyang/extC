@@ -7,7 +7,6 @@
  */
 
 #include "ast.h"
-#include "plan.h"    /* depth/origin facts a node constructor seeds */
 
 #include <string.h>
 
@@ -125,8 +124,6 @@ Expr *exprNew(Arena *a, ExprKind kind, int line) {
     Expr *e = (Expr *)arenaAllocZero(a, sizeof(Expr));
     e->kind = kind;
     e->line = line;
-    anSetStoredAt(e, -1);      /* "has this value been seen being published?" is not answered
-                            * yet, and 0 is a real answer (it must outlive the frame) */
     return e;
 }
 
@@ -242,7 +239,17 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
      * binding, so it is a child like any other. Without this the binding looks unread: the
      * used-parameter question below reported `fn apply(f: fn(i64) -> i64, ...)`'s own parameter as
      * never used, on a body whose only statement calls it. */
-    case EX_CALL:    return (!planCallViaFn(e) || !e->u.call.callee || visitExpr(v, e->u.call.callee)) &&
+    case EX_CALL:
+        /* The callee is a child **unless it is a declaration name**. A call through a value
+         * (`f(x)` where `f` holds a `fn`) reads the binding, so it is a child like any other;
+         * a direct call (`g(x)`) names a declaration, and walking into the name would report
+         * the function as "used as a value". This used to be asked as `planCallViaFn(e)` --
+         * an upward read from `ast.c` (layer 1) into the plan's storage (layer 3) for a fact
+         * that the node's own shape already carries: the checker records which of the two
+         * this is, but the distinction is grammar at this point (`EX_IDENT` callee plus
+         * "resolved to a function value"), not a plan answer. */
+        return (!e->u.call.callee || e->u.call.callee->kind != EX_IDENT ||
+                visitExpr(v, e->u.call.callee)) &&
                             visitExprList(v, &e->u.call.args);
     case EX_ASSOC:   return visitExprList(v, &e->u.assoc.args);
     case EX_GENCALL: return visitExprList(v, &e->u.gencall.args);
