@@ -1,0 +1,22 @@
+// Generic struct + an **associated constructor** (no `self`): `box<i64>::make(42)`.
+// Why it is here: it pins down the shape where an associated function is recognised on the
+// template. Measured 2026-10-03: this path goes through the **template**, not through
+// `funcInstance` (the instance-build probe never fired), so it cannot be used to verify
+// `isAssoc` on an instance -- that condition does not arise today.
+// expect: 42
+struct box<T> {
+    value: T
+
+    fn make(v: T) -> box<T> {
+        return { value: v }
+    }
+    fn get(self: ref box<T>) -> T {
+        return self.value
+    }
+}
+
+fn main() -> i32 {
+    var b: box<i64> = box<i64>::make(42)
+    println(b.get())
+    return 0
+}
