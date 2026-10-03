@@ -1,0 +1,15 @@
+// expect: stdlib-via-I ok
+// 正例：标准库用 `-I <abs>/stdlib` **显式指路**时也必须能编。
+// 修复前的形状：`L.stdDir` 是 `<exe>/../stdlib`，`-I` 给的是另一种拼法，前缀比较失配 ⇒
+// `std/heap.extc` 自己那句 `use std::sys::heap` 被当成"程序在偷特权层"，报一个**假**错。
+use std::heap
+use std::io
+
+fn main() -> i32 {
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(64))!
+    v[0] = u8(65)
+    io::cout << "stdlib-via-I ok（plate 可用 · 首字节 " << i32(v[0]) << "）\n"
+    pl.close()
+    return 0
+}

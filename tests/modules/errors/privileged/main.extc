@@ -1,0 +1,5 @@
+/* 反例：程序**不许**直接 import 特权层（`std::sys::*` 能把任意 (指针, 长度) 变成视图）。
+ * 这条保护是安全边界的一部分 —— 修 isStdlibFile 的路径比较时**必须**留着它。 */
+use std::sys::heap
+
+fn main() -> i32 { return 0 }

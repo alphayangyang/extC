@@ -42,6 +42,15 @@ for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello t
     fi
 done
 
+echo "== 标准库用 -I 显式指路（同一个目录的另一种拼法）=="
+tmpi=$(mktemp -d)
+if out=$("$EXTC" -w -I "$PWD/stdlib" --build -o "$tmpi/x" tests/modules/stdlib-via-include/main.extc 2>&1); then
+    echo "  ok   stdlib-via-I  ->  显式 -I <stdlib> 照样能编（特权层检查按**规范化路径**判断）"
+else
+    echo "  FAIL stdlib-via-I  ->  $(echo "$out" | head -1)"; fail=1
+fi
+rm -rf "$tmpi"
+
 echo "== 反例（必须编译期挡住，而且消息要指对文件）=="
 check_err() {   # check_err 目录名 消息里必须出现的关键字...
     local d=$1 want=$2 out
@@ -60,6 +69,7 @@ check_err cycle          "import cycle"
 check_err missing-file   "cannot find module"
 check_err main-in-module "must live in the entry file"
 check_err ambiguous-type  "ambiguous type \`pair\`"
+check_err privileged      "privileged layer"
 # ⭐ **判据④（PLAN #54）：模块体内的诊断必须指到模块文件**（不是入口文件）——
 #    关键字就是**模块的路径**：位置错了这一条一定会响 ✓
 #    （为什么单独抓：指错文件比没有位置更坏，读的人会被带到完全无关的一行 ✗）

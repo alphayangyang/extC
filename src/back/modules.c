@@ -1735,11 +1735,50 @@ static bool isPrivilegedImport(const char *modPath) {
     return false;
 }
 
-/* Whether `file` lives inside the standard library tree. Both the std directory and the resolved
- * module paths are built from the same string (`L.stdDir`), so a prefix comparison is exact. */
+/* Collapse `.` / `..` / duplicate separators **textually** (no syscalls, no I/O).
+ *
+ * Why it is needed: the same directory can be spelled two ways. `L.stdDir` is
+ * `<dir of extc>/../stdlib`, while `-I /abs/path/stdlib` yields `/abs/path/stdlib/...` for the
+ * very same tree. The old prefix test assumed one spelling, so passing the standard library
+ * through `-I` made `std/heap.extc` look like an ordinary program file -- and its own
+ * `use std::sys::heap` was then rejected with "only the standard library may", which is a lie
+ * about a file that *is* the standard library. */
+static char *pathNorm(Arena *a, const char *p) {
+    size_t n = strlen(p);
+    char *out = (char *)arenaAlloc(a, n + 2);
+    size_t o = 0, i = 0;
+    if (n > 0 && p[0] == '/') { out[o++] = '/'; i = 1; }
+    while (i < n) {
+        size_t j = i;
+        while (j < n && p[j] != '/') j++;
+        size_t len = j - i;
+        if (len == 1 && p[i] == '.') {
+            /* `.`: nothing to add */
+        } else if (len == 2 && p[i] == '.' && p[i + 1] == '.') {
+            /* `..`: drop the previous segment (never past the root) */
+            while (o > 1 && out[o - 1] != '/') o--;
+            if (o > 1) o--;
+        } else if (len > 0) {
+            if (o > 0 && out[o - 1] != '/') out[o++] = '/';
+            memcpy(out + o, p + i, len);
+            o += len;
+        }
+        i = j + 1;
+    }
+    if (o == 0) out[o++] = '.';
+    out[o] = '\0';
+    return out;
+}
+
+/* Whether `file` lives inside the standard library tree. Compares **normalized** paths and
+ * requires a directory boundary, so `/x/stdlib2` does not count as inside `/x/stdlib`. */
 static bool isStdlibFile(Loader *L, const char *file) {
     if (!L->stdDir || !file) return false;
-    return strncmp(file, L->stdDir, strlen(L->stdDir)) == 0;
+    char *nFile = pathNorm(L->a, file);
+    char *nStd = pathNorm(L->a, L->stdDir);
+    size_t n = strlen(nStd);
+    if (strncmp(nFile, nStd, n) != 0) return false;
+    return nFile[n] == '\0' || nFile[n] == '/';
 }
 
 static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFile, int line) {
