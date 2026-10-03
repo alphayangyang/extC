@@ -85,8 +85,6 @@ src/codegen.c:coroFrame	1 处（行 5121）	R1 AST 冻结的施工单：P2 把�
 src/codegen.c:coroKind	1 处（行 6991）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:count	2 处（行 6480, 6488）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:dynTable	1 处（行 5840）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:owLocal	3 处（行 4919, 5119, 5223）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:owSites	3 处（行 4927, 5117, 5221）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:path	1 处（行 6933）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:payload	1 处（行 3233）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:text	11 处（行 966, 4414, 5569, 6363, 6627）	R1 AST 冻结的施工单：P2 把它降到 0
