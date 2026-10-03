@@ -4333,7 +4333,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * 后者两个。协议方法各自取哪个参数见下面合成那段。 */
     planSetIsCoro(f, f->ret && (isProtoType(f->ret, "coroutine", 1)
                            || isProtoType(f->ret, "coroutine", 2)));
-    f->coroRetProto = planIsCoro(f) ? f->ret : NULL;
+    planSetCoroRetProto(f, planIsCoro(f) ? f->ret : NULL);
     /* `coroutine<A, B>`：`B`（最后一个参数）是 yield 出来的类型。简写 `coroutine<T>` 只有一个
      * 参数，那个就是它。 */
     planSetYieldType(f, planIsCoro(f)
@@ -4778,8 +4778,8 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
         in->params = newParams;
     }
     if (in->ret) in->ret = ttSubstitute(c->tt, in->ret, &tmpl->typeParams, targs);
-    if (tmpl->coroRetProto) {
-        in->ret = ttSubstitute(c->tt, tmpl->coroRetProto, &tmpl->typeParams, targs);
+    if (planCoroRetProto(tmpl)) {
+        in->ret = ttSubstitute(c->tt, planCoroRetProto(tmpl), &tmpl->typeParams, targs);
         planSetCoroFrameType(in, NULL);
         planSetIsCoro(in, false);
     }

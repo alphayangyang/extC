@@ -92,8 +92,12 @@ typedef struct {
     size_t      off, len;   /* where it sits in `g.body`, until `body` is filled in */
     /* Named from **outside** its instance -- a `dyn` table's thunk calls it, and the table is spliced
      * in **after** the "definitions nothing names" pass has run, so that pass cannot see the mention
-     * and would remove a method instance nothing else calls. */
-    bool        dynTable;
+     * and would remove a method instance nothing else calls.
+     *
+     * Named `namedByDynTable`, not `dynTable`: `FuncDef` has a `dynTable` of its own (now in the plan
+     * side table), and the two are different facts on different structs. The textual freeze checker
+     * cannot tell them apart, so the name has to. */
+    bool        namedByDynTable;
 } DeadFunc;
 
 /* A local declaration that may never be read.
@@ -5837,7 +5841,7 @@ static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
          * `examples/out-param.extc` kept its warning. */
         df->off = off;
         df->len = len;
-        df->dynTable = planDynTable(f);   /* see the field */
+        df->namedByDynTable = planDynTable(f);   /* see the field */
         return;
     }
 }
@@ -6547,7 +6551,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (i + 8 < g->deadFuncs.len) __builtin_prefetch(*(DeadFunc **)vecAt(&g->deadFuncs, i + 8), 0, 0);
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;                                   /* no definition emitted */
-        if (df->dynTable) continue;   /* named by a `dyn` table, which is spliced in later */
+        if (df->namedByDynTable) continue;   /* named by a `dyn` table, which is spliced in later */
         if (countGet(&counts, df->name, strlen(df->name)) != 2) continue;   /* someone calls it */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of

@@ -44,19 +44,17 @@ src/check_top.c:ann	4 处（行 4597, 4598, 4610, 4638）	R1 AST 冻结的施工
 src/check_top.c:arenaArgPending	6 处（行 1646, 1649, 1663, 6284, 6304）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:call	1 处（行 1715）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:cname	13 处（行 3927, 4109, 4119, 4160, 4172）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:coroRetProto	1 处（行 4336）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:index	9 处（行 6973, 6973, 6976, 6989, 6989）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:init	2 处（行 6988, 7059）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:modName	3 处（行 4103, 4154, 4647）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:sym	1 处（行 3525）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:target	1 处（行 3274）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:type	23 处（行 82, 4115, 4120, 4166, 4176）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:coroFrame	1 处（行 5121）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:count	2 处（行 6480, 6488）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:dynTable	1 处（行 5840）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:path	1 处（行 6933）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:payload	1 处（行 3233）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:text	11 处（行 966, 4414, 5569, 6363, 6627）	R1 AST 冻结的施工单：P2 把它降到 0
+src/codegen.c:coroFrame	1 处（行 5125）	R1 AST 冻结的施工单：P2 把它降到 0
+src/codegen.c:count	2 处（行 6484, 6492）	R1 AST 冻结的施工单：P2 把它降到 0
+src/codegen.c:path	1 处（行 6937）	R1 AST 冻结的施工单：P2 把它降到 0
+src/codegen.c:payload	1 处（行 3237）	R1 AST 冻结的施工单：P2 把它降到 0
+src/codegen.c:text	11 处（行 970, 4418, 5573, 6367, 6631）	R1 AST 冻结的施工单：P2 把它降到 0
 src/dataflow.c:cname	3 处（行 76, 468, 485）	R1 AST 冻结的施工单：P2 把它降到 0
 src/main.c:reserved	3 处（行 279, 282, 284）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:args	1 处（行 1065）	R1 AST 冻结的施工单：P2 把它降到 0
