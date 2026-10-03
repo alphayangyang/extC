@@ -72,10 +72,11 @@ def check(path):
 
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else 'src'
-    files = sorted(glob.glob(os.path.join(root, '*.h')))
-    if not files:
-        print(f'  no headers found under {root}')
-        return 1
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cscan
+    # Recursive, and it refuses to return nothing: a flat glob over `src/` finds **no**
+    # headers once they live in subdirectories, and "0 headers, 0 broken" reads as success.
+    files = cscan.src_files('.', ('.h',), subdir=root)
     bad = 0
     for f in files:
         problems = check(f)

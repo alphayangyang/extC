@@ -365,7 +365,7 @@ def main() -> int:
             list(cscan.src_files(ROOT))
     structs = {}
     type_names = set()
-    for p in sorted((ROOT / "src").glob("*.h")):
+    for p in [pathlib.Path(x) for x in cscan.src_files(ROOT, (".h",))]:
         text = p.read_text(encoding="utf-8")
         for name, members, line in all_structs(text):
             type_names.add(name)
