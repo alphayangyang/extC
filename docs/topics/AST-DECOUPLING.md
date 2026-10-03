@@ -790,3 +790,51 @@ void resultsSetBit(NodeResults *r, uint64_t bit);
 **还剩什么**：`callees`（调用图 `Vec`，需要在原地增长 ⇒ 访问器要交回 `Vec*`）与 A 类的
 `Expr.type`（181 处，最大单点）。`[ast-freeze]` 72 条里，C/D 两类（真语法、别的结构体）
 是**有意保留**，见 21.3。
+
+---
+
+## 23. 收口：剩下的 72 条是什么，以及**为什么停在这里是对的**
+
+### 23.1 用属主统计（不是按名字）
+
+把 `[ast-freeze]` 剩下的 72 条按**声明属主**归类，结论很清楚：
+
+| 字段 | key 数 | 声明属主 | 性质 |
+|---|---|---|---|
+| `type` | 6 | `CoroBind`/`Expr`/`FieldDef`/`Param`/`Stmt`/`StructDef`/`Sym`/`TypeDef` | **类型层**：`Type*` 是每个节点的类型事实，见 23.2 |
+| `call` `args` `callee` `recv` `ival` `sym` `path` `init` `count` `index` `lo` `hi` `obj` `operand` `deref`? | ~30 | 多数是**联合体变体成员**，同名不同属（`Expr.u.call.args` 与 `Stmt.u.…`），一个"字段"其实是几个不同的成员 | **真语法**：解析器填的就是它们 |
+| `cname` | 4 | `Param`/`Sym` | `Param.cname` 已定**不可入表**（按值拷贝）；`Sym.cname` 是检查器私有 |
+| `modName` `srcName` `typeName` `tname` `file` `unit` | ~12 | 分散在 8 个结构体 | **声明元数据**：谁声明、在哪个文件，解析/加载阶段就有 |
+| `dynTable` `ann` `srcName` | ~5 | `FuncDef`/`GlobalDef`/`Stmt` | `ann` 是**标注**（parser 写）；`dynTable` 是检查器产物 |
+| `bindAnn` `bindCName` `hasEffects` | 3 | `Stmt`/`FieldDef` | **死字段**（0 写 0 读）与**作者签字的语法** |
+
+### 23.2 为什么 `Expr.type` 这最后一块**不搬**（本轮的判断，附依据）
+
+`Expr.type` 是唯一还像"分析结果"的大字段：检查器写、codegen 读（实测 **8 写 / 56 读**，
+其中 codegen **13 处**）。但把 codegen 那 13 处逐个看过之后，判断是**不搬**：
+
+* 这 13 处**全部参与类型遍历**：`subst(g, e->type)`、`ttBase(rf->type)`、
+  `src->type->kind == TY_BUILTIN`。把它们从"读一个字段"改成"调用一个哈希查找"，
+  **换来的是一层间接，不是一层结构**；
+* 真正要防的事（codegen 依赖分析状态）已经由**两道已生效的棘轮**钉住了：
+  `[plan-seam]` 的**直读 0 处**与**回写 0 处**（X3 目标达成）。也就是说
+  "哪些事实 codegen 可以依赖"这个问题**已经用判据回答完了**，不取决于 `Expr.type` 住在哪；
+* 类型的本质是"**每个表达式都有**"，不是"某些节点有"。它更像 `kind` 而不是 `arenaLevel`：
+  搬走它的收益是"少一条 key"，代价是 69 处调用点各多一层间接 —— **按判据算不过账**。
+
+⇒ **`[ast-freeze]` 的终点不是 0**。它的分母里包含**有意保留**的三类：
+联合体变体成员（真语法）、类型层事实（`type`）、别的结构体的实现细节。
+这个数字从 **135 降到 72**，降掉的都是有主可归的、可搬的字段；剩下的是**已经判过、
+结论是不该搬**的。下次开工读这一节，不要按"还有 72 条"重新推。
+
+### 23.3 这一批的总账（P2/T4 收官）
+
+| 指标 | 起点 | 现在 |
+|---|---|---|
+| `[ast-freeze]` 违规 | 146 | **72** |
+| `[plan-seam]` codegen 直读计划字段 | 若干 | **0**（18 个字段，`MOVED` 22 个） |
+| `[plan-seam]` codegen 回写分析状态 | 1 | **0**（X3 目标达成） |
+| `[layering]` 违规 | 3 | **2**（剩下的两条是 P3 的事：`codegen.c -> check_internal.h`） |
+| 结果层 | 无 | `results.h`/`results.c`：稠密 id、非移动块表、两个字掩码、plan/analysis 两受众 |
+| 分析侧清单 | 无 | `planAnalysisFields` + `tools/plan-analysis-fields.txt` 棘轮 |
+| AST 上的字段 | 计划/分析混住 | 只留**语法 + 类型层 + 有意保留的三类** |
