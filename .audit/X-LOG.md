@@ -1012,3 +1012,35 @@ main 的收尾，导致 `parrun` **提前返回**、`tests/run.sh` 的算术报�
 备份点**（把 `Expr`/`Stmt` 那半也一起回退，工作区回到 `52471db`）。重放时先把设计改正
 （`Param` 留字段）再一次通过。教训：**回滚点要按"这次改动的起点"取，不按"最近一次快照"取** ——
 这次两处快照（`t2_base` 与 `t2_wip`）的差别正是这个。
+
+## 解耦 T4（本轮完成三族）：分析侧落地 —— `[ast-freeze]` **135 → 125**
+
+**T4 的做法**：给结果层分出"**分析侧**"受众（`NodeResults.an`），装**只有检查器读写**的字段；
+与 plan 字段同槽、不同受众。界线由 `plan.c` 的 `ANALYSIS_FIELDS`（具名清单）钉住：
+**一个字段一旦被 codegen 读，就必须移出该清单并配 `planXxx` 访问器**。
+三族都用同一套路：加存储与 API → 改读写（编译器点名补漏）→ 删字段（连注释一起看）→ 棘轮。
+
+| 族 | 字段 | 桶 | 提交 |
+|---|---|---|---|
+| `StructDef` | `builtinHolder` `coroOf`（PLAN）· `lamSig` `makesPoolAny`（ANALYSIS） | 4 | `ee08b6c` |
+| `impl`/`trait`/`module` | `ImplDef.target` `ImplDef.trait` `TraitDef.usedDyn` `Module.usesDyn` | 4 | `c9a720c` |
+| `Expr` 调用点标记 | `parWorker` `domNew` `viewOf` | 3 | `1ab3525` |
+
+**分类被实测纠正的三处**（都记在文档里）：
+* `StructDef.srcName` 是 **parser/模块层**写的"声明名" ⇒ **语法，不动**（按名字统计会把它算成 ANALYSIS）；
+* `ImplDef.target` 与 `StoreSite/RefCheck.target` **同名不同属** ⇒ 批量替换必须限定基座 `im->target`
+  （本批次第 7 次同类陷阱）；
+* `TraitDef.usedDyn` / `Module.usesDyn` 各只有 1 处写，所以"按 key 数"看这一族只降 3 而不是 4。
+
+**删字段连带注释**：第二族删字段时留下**多行注释的尾巴**（`* uniform method tables emitted …`），
+当场语法错 —— 又一次印证"删字段要连注释一起看"（第一次是 X4 的 `ast.h`）。
+
+**当前基线构成（125 条）**：`check_expr.c` 45 · `check_top.c` 31 · `check_stmt.c` 13 ·
+`modules.c` 9 · `codegen.c` 9 · `check_escape.c` 7 · `check_lookup.c` 4 · `check.c` 4 · 其余 3。
+**剩下的主体就是两大族**：`Expr`（26 个字段，最大的是 `refDepth` 28 写/36 读）与
+`FuncDef`（26 个字段，含六个效果掩码与 `effState`/`effComplete`/`needsHome`），
+外加 `Sym` 上的 6 个（`nfields`/`fieldsComplete`/`callSrc`/`callSrcDepth`/`callMinReq`/`refDepth`）。
+
+**验收**：`check.sh` 完整 **71/0**（T4a、T4b 各跑过一次完整模式）；tests **326/0**
+（发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；`tests/coro` **29/0**；`check.sh quick` **60/0**；
+六道老闸门全绿；四条棘轮（`[ast-freeze]` 125 · `[layering]` 2 · `[plan-seam]` · `[callsite]` 基线 0）ok。
