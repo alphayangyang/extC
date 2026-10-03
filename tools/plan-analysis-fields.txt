@@ -1,0 +1,7 @@
+# 分析侧字段（只有检查器读写；codegen 一读就必须搬走）
+homeDepth
+lamSig
+lexicalLevel
+makesPoolAny
+refDepth
+storedAt

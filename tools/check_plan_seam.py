@@ -6,6 +6,11 @@
   2. **归属**：那些字段**不得再出现在 AST 上** —— X2 已把存储搬到 `src/plan.c` 的侧表，
      `Expr`/`Stmt`/`FuncDef` 上再出现同名字段就是把耦合加回来。
 
+第三条检查（T4 起）：**分析侧的字段清单**（`planAnalysisFields`，由 `src/plan.c` 导出）
+与冻结在 `tools/plan-analysis-fields.txt` 的清单一致。分析侧字段是"只有检查器读写"的
+工作状态；一旦 codegen 开始读它，它就必须搬出分析侧、配上 `planXxx` 访问器 —— 那份清单的
+变化因此必须**看得见**，而不是悄悄发生。
+
 只判**读**：写点本来就不该在 codegen 里（codegen 回写分析状态属于 X3，见
 docs/topics/AST-ANNOTATIONS.md 第 3 节）。
 """
@@ -16,6 +21,38 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CODEGEN = ROOT / "src" / "codegen.c"
 AST = [ROOT / "src" / "ast.h"]
+
+ANALYSIS_LIST = ROOT / "tools" / "plan-analysis-fields.txt"
+PLAN_C = ROOT / "src" / "plan.c"
+
+
+def analysis_fields():
+    """The analysis-side field names, read out of `src/plan.c` (the single source)."""
+    src = PLAN_C.read_text(encoding="utf-8")
+    m = re.search(r"planAnalysisFields\[\]\s*=\s*\{(.*?)\};", src, re.S)
+    if not m:
+        return None
+    return sorted(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+def check_analysis_list():
+    got = analysis_fields()
+    if got is None:
+        return ["在 src/plan.c 里找不到 planAnalysisFields —— 分析侧的清单没了"]
+    if ANALYSIS_LIST.exists():
+        want = [l.strip() for l in ANALYSIS_LIST.read_text(encoding="utf-8").splitlines()
+                if l.strip() and not l.startswith("#")]
+    else:
+        ANALYSIS_LIST.write_text("# 分析侧字段（只有检查器读写；codegen 一读就必须搬走）\n"
+                                 + "\n".join(got) + "\n", encoding="utf-8")
+        return []   # 第一次运行：写下基线
+    bad = []
+    for f in sorted(set(got) - set(want)):
+        bad.append("新增分析侧字段 %s —— 若 codegen 读它，必须改成 planXxx 访问器" % f)
+    for f in sorted(set(want) - set(got)):
+        bad.append("分析侧字段 %s 已消失（搬去计划侧了？请更新 %s）" % (f, ANALYSIS_LIST.name))
+    return bad
+
 
 PLAN_FIELDS = {
     "func": "planCallee", "tmpl": "planTemplate", "instName": "planInstName",
@@ -115,6 +152,12 @@ def main() -> int:
         print(f"[plan-seam] AST 上又出现了已搬走的计划字段 {len(m)} 处 —— 存储属于 src/plan.c：")
         for f, i, field, txt in m[:20]:
             print(f"  src/{f}:{i}  {field}   {txt}")
+        return 1
+    a = check_analysis_list()
+    if a:
+        print("[plan-seam] 分析侧字段清单变了：")
+        for line in a:
+            print(f"  {line}")
         return 1
     print(f"[plan-seam] ok：codegen 直读计划字段 0 处（{len(PLAN_FIELDS)} 个字段）；"
           f"AST 上已无 {'/'.join(MOVED)}；codegen 回写 {total} 处（基线 {base}，X3 目标 0）")
