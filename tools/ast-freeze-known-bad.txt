@@ -36,7 +36,6 @@ src/check_expr.c:isParWorker	3 处（行 2105, 3136, 3639）	R1 AST 冻结的施
 src/check_expr.c:ival	3 处（行 2111, 3141, 3644）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:lamChecked	1 处（行 1004）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:lamInferRet	2 处（行 895, 897）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:lamSig	1 处（行 878）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:left	1 处（行 417）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:lexicalLevel	2 处（行 2345, 2569）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:lo	1 处（行 1792）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -84,11 +83,9 @@ src/check_top.c:allocState	3 处（行 607, 6773, 6779）	R1 AST 冻结的施工
 src/check_top.c:ann	4 处（行 4591, 4592, 4604, 4632）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:arenaArgPending	6 处（行 1645, 1648, 1662, 6272, 6292）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:arenaSites	2 处（行 4412, 6187）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:builtinHolder	2 处（行 5600, 5659）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:call	1 处（行 1714）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:cname	13 处（行 3925, 4107, 4117, 4158, 4170）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:contMask	6 处（行 2634, 2784, 2903, 2911, 6080）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:coroOf	1 处（行 4135）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:coroRetProto	1 处（行 4334）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:effComplete	5 处（行 1154, 1173, 2913, 6084, 6101）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:effState	4 处（行 1155, 1174, 6084, 6101）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -100,7 +97,6 @@ src/check_top.c:homeDepth	1 处（行 1549）	R1 AST 冻结的施工单：P2 把
 src/check_top.c:index	9 处（行 6956, 6956, 6959, 6972, 6972）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:init	2 处（行 6971, 7042）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:isAssoc	1 处（行 338）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:makesPoolAny	1 处（行 6566）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:minAt	1 处（行 3287）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:modName	3 处（行 4101, 4152, 4641）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:nParamSyms	2 处（行 4372, 4381）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -123,7 +119,7 @@ src/codegen.c:path	1 处（行 6933）	R1 AST 冻结的施工单：P2 把它降�
 src/codegen.c:payload	1 处（行 3233）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:text	11 处（行 966, 4414, 5569, 6363, 6627）	R1 AST 冻结的施工单：P2 把它降到 0
 src/dataflow.c:cname	3 处（行 76, 468, 485）	R1 AST 冻结的施工单：P2 把它降到 0
-src/main.c:reserved	3 处（行 278, 281, 283）	R1 AST 冻结的施工单：P2 把它降到 0
+src/main.c:reserved	3 处（行 279, 282, 284）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:args	1 处（行 1064）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:callee	1 处（行 1063）	R1 AST 冻结的施工单：P2 把它降到 0
 src/modules.c:file	2 处（行 1883, 1968）	R1 AST 冻结的施工单：P2 把它降到 0

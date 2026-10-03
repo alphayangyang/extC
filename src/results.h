@@ -74,6 +74,20 @@ typedef struct {
     FuncDef    *func;          /* the callee a call site / function value resolves to */
     bool        used;          /* was this function called? the emission gate reads it */
     const char *cname;         /* the C name a binding is emitted under */
+    /* ---- plan facts about a struct definition ---- */
+    bool        builtinHolder; /* the struct behind a builtin name needs no C definition */
+    FuncDef    *coroOf;        /* this frame struct belongs to that coroutine */
+
+    /* ---- the checker's own analysis facts (code generation never reads these) ----
+     *
+     * Same storage shape, different audience: these are working state the checker needs to
+     * carry between its passes, and no later phase may depend on them. Keeping them in the
+     * same slot keeps one id space and one arena; the field list in `plan.c`
+     * (ANALYSIS_FIELDS) is what keeps the two audiences from quietly merging. */
+    struct {
+        const char *lamSig;    /* a lambda's written signature, for diagnostics */
+        bool        makesPoolAny; /* some site of it builds a pool */
+    } an;
     /* which of the fields above were written; an unset field reads as its default */
     unsigned setMask;
     ResultKind kind;           /* which kind of node this slot belongs to (see ResultKind) */

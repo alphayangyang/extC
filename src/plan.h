@@ -60,6 +60,20 @@ void planSetUsed(FuncDef *f, bool v);
 const char *planCName(const void *node);
 void planSetCName(void *node, const char *name, ResultKind kind);
 
+/* ---- struct-definition facts (T4) ---------------------------------------------------
+ *
+ * `builtinHolder` and `coroOf` are read by code generation, so they are plan facts. The
+ * two `anXxx` entries are the checker's own working state (no later phase reads them);
+ * they share the slot but not the audience -- see `ANALYSIS_FIELDS` in plan.c. */
+bool     planBuiltinHolder(const StructDef *sd);
+void     planSetBuiltinHolder(StructDef *sd, bool v);
+FuncDef *planCoroOf(const StructDef *sd);
+void     planSetCoroOf(StructDef *sd, FuncDef *f);
+const char *anLamSig(const StructDef *sd);
+void        anSetLamSig(StructDef *sd, const char *sig);
+bool        anMakesPoolAny(const StructDef *sd);
+void        anSetMakesPoolAny(StructDef *sd, bool v);
+
 /* The template this instance was materialized from (NULL when `f` is not an instance).
  * Writer: instance materialization, which is the only place an instance is created.
  * Stale: names and type arguments are taken from the wrong function. */

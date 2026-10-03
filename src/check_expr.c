@@ -875,7 +875,7 @@ static Type *checkLambda(Checker *c, Expr *e) {
             bufPrintf(&sig, "%s%s", i ? ", " : "", typeStr(c, p->type));
         }
         bufPrintf(&sig, ") -> %s", cf->ret ? typeStr(c, cf->ret) : "?");
-        sd->lamSig = bufCstr(&sig);
+        anSetLamSig(sd, bufCstr(&sig));
     }
 
     /* (1) the parameters in scope, so the body's names resolve by the ordinary rules -- shadowing
@@ -2780,7 +2780,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
                 Sym *sy = lookup(c, e->u.call.callee->u.ident.name);
                 if (sy && sy->type && sy->type->kind == TY_STRUCT && sy->type->sdef
-                    && sy->type->sdef->lamSig) {
+                    && anLamSig(sy->type->sdef)) {
                     Expr *recv = e->u.call.callee;      /* read before `u.method` overwrites them */
                     Vec   args = e->u.call.args;
                     e->kind = EX_METHOD;

@@ -436,3 +436,38 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
 我用快照回滚时**取早了一个备份点**，把 `Expr`/`Stmt` 那半也一起回退了。重放时把设计改正
 （Param 留字段）后一次通过 —— 教训：**回滚点要按"这次改动的起点"取，不是按"最近一次快照"取**；
 两次快照（`/tmp/rev/t2_base` 与 `/tmp/rev/t2_wip`）的差别正是这个。
+
+---
+
+## 14. T4 第一族已落地：`StructDef` 的 4 个字段 + 结果层分出的"分析侧"
+
+**分类的修正**：`StructDef` 那一族按"名字"算是 5 个，逐个看写者后是 **4 个**：
+
+| 字段 | 谁写 | 结论 |
+|---|---|---|
+| `builtinHolder` | 检查器（2 处） | **PLAN**（codegen 读 1 处） |
+| `coroOf` | 检查器（1 处） | **PLAN**（codegen 读 4 处） |
+| `lamSig` | 检查器（1 处） | **ANALYSIS**（codegen 读点 0） |
+| `makesPoolAny` | 检查器（1 处） | **ANALYSIS**（codegen 读点 0） |
+| ~~`srcName`~~ | **parser**（1 处）+ 模块层（2 处） | **SYNTAX**：它是"声明写的名字"，不是分析结果 ⇒ **不动**（记在这里，免得下次又按名字算进 ANALYSIS） |
+
+**结果层分出的两个受众（本轮的结构性改动）**：`NodeResults` 里现在有一块 `an`（analysis），
+装**只有检查器读写**的字段，和 plan 字段同槽但**不同受众**。两者的界线由 `plan.c` 里的
+`ANALYSIS_FIELDS`（具名清单）钉住：**一个字段一旦被 codegen 读，就必须从这张清单里移出、
+并配一个 `planXxx` 访问器**。这样"两个受众"不会悄悄合并 —— 这正是上一轮 `[ast-freeze]`
+暴露出来的问题（分析状态与计划状态在 AST 上混住）。
+
+**为什么第一族选它**：它是拓扑序上**依赖最少**的一族（按值传递风险没有、跨实例风险没有、
+`used`/`func` 那种不动点耦合没有），正好用来验证"分析侧"这个形状；形状一旦站住，
+`Expr`（26 个）与 `FuncDef`（26 个）两大族就按同一套路推。
+
+**改动**：`results.h` 加 4 个槽位 + `an` 块；`plan.c` 加 4 个 setter/访问器
+（`planBuiltinHolder`/`planSetBuiltinHolder`、`planCoroOf`/`planSetCoroOf`、`anLamSig`/`anSetLamSig`、
+`anMakesPoolAny`/`anSetMakesPoolAny`）与 `ANALYSIS_FIELDS`；5 处写、15 处读改经访问器
+（check.c 5 · check_expr 1 · check_stmt 1 · check_top 3 · codegen 5 · main.c 1）；
+`ast.h` 删 4 个字段并改掉两处提到它们的注释；`main.c` 补 `#include "plan.h"`。
+
+**棘轮**：`[ast-freeze]` **135 → 131**；`[layering]`/`[plan-seam]`/`[callsite]`/`[tmpl-owners]` 不动。
+
+**验收**：构建零告警；tests **326/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；
+`tests/coro` 29/0；`check.sh quick` 60/0。

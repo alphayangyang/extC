@@ -35,7 +35,15 @@ enum { PLAN_ARENA_LEVEL = 1u << 0, PLAN_ZONE_LEVEL = 1u << 1,
        /* the resolved callee, and the emission gate ("was this function called?") */
        PLAN_CALLEE = 1u << 17, PLAN_USED = 1u << 18,
        /* the generated-C name of a binding or a variable statement */
-       PLAN_CNAME = 1u << 19 };
+       PLAN_CNAME = 1u << 19,
+       /* struct-definition facts (first family of the analysis side) */
+       PLAN_BUILTIN_HOLDER = 1u << 20, PLAN_CORO_OF = 1u << 21,
+       AN_LAM_SIG = 1u << 22, AN_MAKES_POOL_ANY = 1u << 23 };
+
+/* The analysis half of the slot, by name: the checker's own working state, which no later
+ * phase reads. Named here so the two audiences cannot quietly merge -- a field that code
+ * generation starts reading must move out of this list (and get a `planXxx` accessor). */
+static const char *ANALYSIS_FIELDS[] = { "lamSig", "makesPoolAny" };
 
 /* ---- setters (called by the checker) ----------------------------------------------- */
 
@@ -216,6 +224,52 @@ void planSetCName(void *node, const char *name, ResultKind kind) {
     if (!r) return;
     r->cname = name;
     r->setMask |= PLAN_CNAME;
+}
+
+/* ---- struct-definition facts (T4, first family) ---- */
+
+bool planBuiltinHolder(const StructDef *sd) {
+    NodeResults *r = resultsOf(sd, false);
+    return r && (r->setMask & PLAN_BUILTIN_HOLDER) ? r->builtinHolder : false;
+}
+void planSetBuiltinHolder(StructDef *sd, bool v) {
+    if (!sd) return;
+    NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->builtinHolder = v; r->setMask |= PLAN_BUILTIN_HOLDER;
+}
+
+FuncDef *planCoroOf(const StructDef *sd) {
+    NodeResults *r = resultsOf(sd, false);
+    return (r && (r->setMask & PLAN_CORO_OF)) ? r->coroOf : NULL;
+}
+void planSetCoroOf(StructDef *sd, FuncDef *f) {
+    if (!sd) return;
+    NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->coroOf = f; r->setMask |= PLAN_CORO_OF;
+}
+
+const char *anLamSig(const StructDef *sd) {
+    NodeResults *r = resultsOf(sd, false);
+    return (r && (r->setMask & AN_LAM_SIG)) ? r->an.lamSig : NULL;
+}
+void anSetLamSig(StructDef *sd, const char *sig) {
+    if (!sd) return;
+    NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->an.lamSig = sig; r->setMask |= AN_LAM_SIG;
+}
+
+bool anMakesPoolAny(const StructDef *sd) {
+    NodeResults *r = resultsOf(sd, false);
+    return r && (r->setMask & AN_MAKES_POOL_ANY) ? r->an.makesPoolAny : false;
+}
+void anSetMakesPoolAny(StructDef *sd, bool v) {
+    if (!sd) return;
+    NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
 }
 
 bool planUsed(const FuncDef *f) {

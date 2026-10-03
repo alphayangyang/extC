@@ -346,7 +346,7 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
          * type it stands for (`impl i64` -> `self: ref i64`). Every other owner is a real
          * declaration and is matched by definition, which is also what lets a generic method
          * write `ref Pair<A, B>` and still belong to `Pair`. */
-        bool selfOk = f->owner->builtinHolder
+        bool selfOk = planBuiltinHolder(f->owner)
                         ? (p0->type->kind == TY_REF && p0->type->inner == f->owner->type)
                         : (p0->type->kind == TY_REF && sb && sb->sdef == f->owner);
         if (!selfOk)
@@ -1602,7 +1602,7 @@ bool calleeMakesPool(FuncDef *f) {
      * 库里的容器没这个毛病，只因为库函数"对地方透明"；用户的文件不是库，
      * 于是那条隐藏的差别就露出来了。 */
     if (f->body == NULL && isPoolCtorName(f->name)) return true;
-    return f->isAssoc && f->owner && f->owner->makesPoolAny;
+    return f->isAssoc && f->owner && anMakesPoolAny(f->owner);
 }
 
 /* 「**这一次调用能不能走到 `extc_pool_new`**」—— 与 `calleeMakesPool` 问的**不是同一个问题**。
@@ -1625,7 +1625,7 @@ bool calleeCreatesPool(FuncDef *f) {
     if (!f) return true;                       /* 未解析 ⇒ 保守 */
     if (planMakesPool(f)) return true;
     if (f->body == NULL && isPoolCtorName(f->name)) return true;
-    return f->isAssoc && f->owner && f->owner->makesPoolAny;
+    return f->isAssoc && f->owner && anMakesPoolAny(f->owner);
 }
 
 void setCallZoneArg(Checker *c, Expr *e) {
@@ -4132,7 +4132,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
         const char *frameOwner = (planInstName(f) && planInstName(f)[0]) ? planInstName(f)
                                 : (f->name ? f->name : "coro");
         cfd->name = arenaPrintf(c->arena, "%s$frame", frameOwner);
-        cfd->coroOf = f;
+        planSetCoroOf(cfd, f);
         vecInit(&cfd->typeParams, c->arena, sizeof(const char *));
         vecInit(&cfd->fields, c->arena, sizeof(FieldDef *));
         vecInit(&cfd->methods, c->arena, sizeof(FuncDef *));
@@ -5597,7 +5597,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 sd = (StructDef *)arenaAllocZero(arena, sizeof(StructDef));
                 sd->name = im->typeName;
                 sd->line = im->line;
-                sd->builtinHolder = true;
+                planSetBuiltinHolder(sd, true);
                 sd->type = t;
                 vecInit(&sd->typeParams, arena, sizeof(void *));
                 vecInit(&sd->fields, arena, sizeof(void *));
@@ -5656,7 +5656,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                      * the prelude). The mangled name of the instance is unique by construction. */
                     ih->name = (t->name && t->name[0]) ? t->name : "$inst";
                     ih->line = im->line;
-                    ih->builtinHolder = true;   /* no C struct of its own: the instance has one */
+                    planSetBuiltinHolder(ih, true);   /* no C struct of its own: the instance has one */
                     ih->type = t;
                     vecInit(&ih->typeParams, arena, sizeof(void *));
                     vecInit(&ih->fields, arena, sizeof(void *));
@@ -6563,7 +6563,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-            if (f && planMakesPool(f)) { sd->makesPoolAny = true; break; }
+            if (f && planMakesPool(f)) { anSetMakesPoolAny(sd, true); break; }
         }
     }
     /* ---- 调用点的 zone 层级：也要在 `makesPool` 闭包之后才能定 ----

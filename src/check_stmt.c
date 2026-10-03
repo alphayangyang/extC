@@ -146,7 +146,7 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
      * evaluating it twice has no side effects. */
     {
         Type *sb0 = ttBase(tsub(c, st));
-        if (sb0 && sb0->sdef && sb0->sdef->coroOf) {
+        if (sb0 && sb0->sdef && planCoroOf(sb0->sdef)) {
             Stmt *inner0 = w->u.whiles.body;
             Stmt *elemDecl0 = *(Stmt **)vecAt(&inner0->u.block.stmts, 0);
             if (!elemDecl0 || elemDecl0->kind != ST_VAR) return false;

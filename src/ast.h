@@ -587,16 +587,15 @@ struct StructDef {
     bool        reserved;        /* came from the prelude: the user may neither redefine it
                                   * nor add methods to it */
     /* Non-NULL when this struct is a **coroutine frame** the compiler synthesized: a call to that
-     * coroutine evaluates to this type, and codegen derives `$frame` / `$step` from `coroOf`
+     * coroutine evaluates to this type, and codegen derives `$frame` / `$step` from the
+ * coroutine function it belongs to (`planCoroOf` in plan.h)
      * (docs/topics/CONCURRENCY.md 4.4). */
-    FuncDef    *coroOf;
     /* Synthetic holder for a **builtin scalar** that an `impl` block attached methods to.
      * It is pushed into the module's struct list so that every "struct x method" pass
      * (signature resolution, body checks, escape/borrow rules, operator collection, code
      * generation) reaches those methods with no pass changed at all, but it is NOT interned
      * under its name (so `i64` still resolves to the builtin, never to a struct) and code
      * generation never emits a C struct for it. */
-    bool        builtinHolder;
     /* `@noCopy`: this type may not be copied by value -- it may only be passed as
      * `ref` / `mut ref`. A type whose state has an **identity** is the reason: copying a
      * `reader` (or an `ifstream`) gives two objects over one buffer with two independent
@@ -644,7 +643,6 @@ struct StructDef {
      * 而调用点上 `e->func` 可能是模板 ⇒ 读取处光看 `f->makesPool` 会看到假
      *（实测：`[promote] call new owner=vector$vector makesPool=0`，而 codegen 那一侧为真）。
      * 只给**关联函数**（构造函数那一族）放宽，免得波及其它方法。 */
-    bool        makesPoolAny;
     /* Which file it came from, which module, and whether it is `@private`. */
     Ctx        *ctx;
     const char *modName;
@@ -659,7 +657,6 @@ struct StructDef {
     /* A lambda's environment struct: the signature it was written as, `fn(i64) -> i64`, so a
      * diagnostic shows what the user wrote instead of the generated `$lam$f$3`. NULL otherwise
      * (docs/topics/LAMBDA.md). */
-    const char *lamSig;
 };
 
 struct FuncDef {
@@ -991,7 +988,8 @@ static inline bool funcTakesHomeArena(const FuncDef *f) { return f && planUsesHo
  *
  * **Known divergence, not yet fixed** (review F9): the checker promotes on the richer
  * `calleeMakesPool` (`check_top.c`), which is also true for `@poolObject` methods, extern
- * constructor names and `isAssoc && owner->makesPoolAny`; this accessor reads the raw flag, which
+ * constructor names and `isAssoc` on an owner whose body builds a pool anywhere
+ * (`anMakesPoolAny`); this accessor reads the raw flag, which
  * those three do not set. So a site can be promoted to the zone level and still have no argument
  * emitted -- the same shape as the home-arena bug that was fixed. Closing it means teaching both
  * sides the same question, which needs the pool-constructor name list to be shared instead of

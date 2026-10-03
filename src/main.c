@@ -23,6 +23,7 @@
 #include "base.h"
 #include "check.h"
 #include "codegen.h"
+#include "plan.h"      /* planBuiltinHolder: a builtin-name struct needs no C definition */
 #include "lexer.h"
 #include "parser.h"
 #include "modules.h"
@@ -274,7 +275,7 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
          * it has no fields and no name of its own in the type table, and the program is allowed
          * to add more methods to the same builtin. `reserved` means "the user may not redefine
          * this nor add methods to it", which would be the wrong thing to say here. */
-        if (psd->builtinHolder) continue;
+        if (planBuiltinHolder(psd)) continue;
         psd->reserved = true;
     }
     for (size_t i = 0; i < pm.types.len; i++)

@@ -78,7 +78,7 @@ void ckWarn(Checker *c, int line, const char *note, const char *fmt, ...) {
 const char *typeStr(Checker *c, Type *t) {
     /* A lambda's type is a generated environment struct; the user wrote a signature, so that is
      * what a diagnostic shows. */
-    if (t && t->sdef && t->sdef->lamSig) return t->sdef->lamSig;
+    if (t && t->sdef && anLamSig(t->sdef)) return anLamSig(t->sdef);
     Buf b;
     bufInit(&b, c->arena);
     ttRender(t, &b);
@@ -446,14 +446,14 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
      * the value is a *frame* (the type the checker synthesized for that coroutine) and the expected
      * type is the handle, so the frame moves into the task's own place and codegen emits the handle.
      * The yield types must agree. */
-    if (want && got && isProtoType(want, "coroutine", 1) && got->sdef && got->sdef->coroOf &&
+    if (want && got && isProtoType(want, "coroutine", 1) && got->sdef && planCoroOf(got->sdef) &&
         node && node->kind == EX_CALL) {
         Type *yt = want->targs.len ? *(Type **)vecAt(&want->targs, 0) : NULL;
-        Type *ft = planYieldType(got->sdef->coroOf);
+        Type *ft = planYieldType(planCoroOf(got->sdef));
         if (yt && ft && strcmp(typeStr(c, yt), typeStr(c, ft)) == 0) {
             node->boxedCoro = true;
             node->type = want;
-            planSetCoroBoxed(got->sdef->coroOf, true);
+            planSetCoroBoxed(planCoroOf(got->sdef), true);
             return true;
         }
     }

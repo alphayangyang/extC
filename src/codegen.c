@@ -501,8 +501,8 @@ static const char *cType(CG *g, Type *t) {
             if (t->sdef && isProtoType(t, "coroutine", 1)) { g->needCoroHandle = true; return "extc_coro"; }
             /* A synthesized coroutine frame: `struct <cname>$frame`, with the function's C name (so
              * methods and generic instances mangle the same way everywhere). */
-            if (t->sdef && t->sdef->coroOf)
-                return arenaPrintf(g->arena, "struct %s$frame", cFuncName(g, t->sdef->coroOf));
+            if (t->sdef && planCoroOf(t->sdef))
+                return arenaPrintf(g->arena, "struct %s$frame", cFuncName(g, planCoroOf(t->sdef)));
             return t->name;
         /* A `dyn` value is the runtime's handle: the same `{pid, slot, gen}` triple the pool
          * runtime defines, which is what `extc_dyn_put` returns and `extc_dyn_slot` checks. */
@@ -1977,7 +1977,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
         return arenaPrintf(g->arena, "extc_coro_value_%s(%s%s, \"%s\", %d)",
                            cType(g, yt), viaRef ? "" : "&", rr, g->path, e->line);
     }
-    if (f && planCoroProto(f) && f->owner && f->owner->coroOf) {
+    if (f && planCoroProto(f) && f->owner && planCoroOf(f->owner)) {
         /* Driving a coroutine. The two protocol methods are the state machine's calling convention,
          * so they are emitted inline -- and whether the receiver is the frame itself or a reference
          * to it decides `&x`/`x.ret` versus `x`/`x->ret`. That is what lets a coroutine be driven
@@ -1995,7 +1995,7 @@ static const char *genMethodCall(CG *g, Expr *e) {
         if (planCoroProto(f) == 1 || planCoroProto(f) == 5) {
             /* With a task place the step is driven through the driver (it owns the place); without
              * one there is nothing to set up, so the step itself is the driver. */
-            FuncDef *cf = f->owner->coroOf;
+            FuncDef *cf = planCoroOf(f->owner);
             return planCoroNeedsZone(cf)
                        ? arenaPrintf(g->arena, "%s$next(%s%s)", cFuncName(g, cf), viaRef ? "" : "&", rc)
                        : arenaPrintf(g->arena, "%s$step(%s%s)", cFuncName(g, cf), viaRef ? "" : "&", rc);
@@ -7197,7 +7197,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * layout, so there is nothing to declare. Its methods are emitted like any other
          * function -- the loop below still walks them -- which is the whole point of attaching
          * them to a holder instead of teaching five passes about builtins. */
-        if (!sd->builtinHolder) *(StructDef **)vecPush(&g.structs) = sd;
+        if (!planBuiltinHolder(sd)) *(StructDef **)vecPush(&g.structs) = sd;
         /* Methods are functions too and share the prototype and definition table. */
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
