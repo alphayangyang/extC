@@ -855,3 +855,36 @@ C 侧就是包里的 `shim.c`），同一条判据跑在两份实现上，结论
 
 **sqlite 包明确没绑的**：`sqlite3_exec` 的回调（回调机制未落地）⇒ 建表也走 `prepare`/`step`；
 `SQLITE_STATIC` 语义（包选 TRANSIENT：拷贝载荷，调用方不必保命）；任何 `sqlite3**` 原样入口。
+
+
+## 9.23 包的获取与构建：`extpkg fetch / vendor / build`（2026-10-03）
+
+**边界**：联网只发生在 `fetch`（以及会顺手 fetch 的 `build`）里。编译器 `extc` **永远不联网** ——
+它只读本地的 `-I` 目录与 `<module>.link`（§9.20.1）。理由是三条硬约束：可复现构建、编译器的
+隐式副作用为零、以及"生产机器不参与构建"（2C2G 的服务器上只有运行期库）。
+
+**四层**：
+
+    packages.toml    需求（精确版本 + 来源；`path = "vendor/x"` 表示本地包，不下载）
+    extc.lock        解析结果（归档 sha256 / 目录指纹 + 文件清单）—— 生成物，不要手改
+    ~/.cache/extpkg  下载缓存（`$EXTPKG_CACHE` 可改）
+    <项目>/vendor/   落地到项目里的包（可提交 ⇒ 断网机器 clone 即可构建）
+
+**判据**（`tests/extpkg/run.sh`，7 项，进 `check.sh quick`；假 registry 走 `file://`，**不联网**）：
+
+| 判据 | 钉住什么 |
+|---|---|
+| 首次 `fetch` | 下载 → 校验 → 写 `extc.lock`（首次打印 sha256） |
+| 第二次 `--offline` | 命中缓存（要联网就会报错 ⇒ "过"就是"没联网"的证据） |
+| 改 lock 里**一个字节** | 必须红，且打印期望/实际哈希 |
+| 空缓存 + `--offline` | 必须红，且消息给出下一步 |
+| `vendor` 后**清空缓存**仍能 `build` | vendor 目录自足（断网机器靠它） |
+| 两次干净 fetch | `extc.lock` 逐字节相同（构建可复现的前提） |
+| 缺 vendor 时 `build` | 自己补齐（有锁就不联网） |
+
+**真包**：`~/qqbot-extc/vendor/sqlite/` 走 **vendored 模式**（上游 amalgamation 的 `sqlite3.c`
+编进二进制）。部署独立性因此从口号变成判据：`ldd build/sqlite-demo` 里**没有 libsqlite3**，
+只剩 libc（`scripts/check-deploy.sh` 钉住它）。包台账里同时记上游 URL 与 zip 的 sha256。
+
+**明确不做（v0）**：semver 求解（只写精确版本）、传递依赖（包是叶子）、开放 registry
+（策展：包是我们自己写/审的）——下载来的包是**可执行材料**（C 源码 + `.link` 里的 ccflag）。

@@ -40,6 +40,10 @@ extc --pkg-config openssl --run tls.extc          # pkg-config --cflags --libs
 `--check-c` 与 `--run` 都接受这些开关：前者需要 cflags 才能找到头文件，后者需要 cflags 与 libs
 才能编译并链接。
 
+`--build` 与 `--run` 走同一条编译路径（同样的 flag 处理、同样读每个模块的 `.link`），但**不执行**结果：
+二进制写到 `-o <file>`（没给就 `build/<name>`）。包的构建步骤要的就是这个形状
+（`extpkg build` 用它，见 `tools/extpkg.py` 与 `C-ABI.md` §9.23）。
+
 **链接需求写进生成物**（只在用到时出现；同一组库按名字排序去重，与书写顺序无关）：
 
 ```c

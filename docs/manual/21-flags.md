@@ -2,7 +2,7 @@
 
 本页由编译器自身的 `--help` 生成（`tools/gen_flags.py`），因此与实现同步：`check.sh` 在本页与 `extc --help` 不一致时会失败。
 
-开关共 21 个：`--ccflag` · `--cflags` · `--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-line-map` · `--pkg-config` · `--run` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
+开关共 22 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-line-map` · `--pkg-config` · `--run` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
 
 ```text
 extC compiler
@@ -13,6 +13,9 @@ options:
   -o <file>        write the generated C to this file (default: stdout)
   --run            write generated C to build/<name>.c, compile it, run it
                    (uses $CC, default `cc`; creates ./build/ in the CWD)
+  --build          same, but stop before running: the binary is `-o <file>` if
+                   given, otherwise build/<name> (this is what a package's build
+                   step wants: link flags from <module>.link, no execution)
   --check-c        syntax-check the generated C with `$CC -fsyntax-only`
   -w               suppress warnings
   -I <dir>         add a module search directory (for `use a::b`)

@@ -86,6 +86,7 @@ extc --ccflag -l:libsqlite3.so.0 --run q.extc     # soname 形式（-l 拼不出
 extc --pkg-config openssl --run tls.extc          # pkg-config --cflags --libs</code></pre>
 <table><thead><tr><th>开关</th><th>作用</th><th>备注</th></tr></thead><tbody><tr><td><code>-l &lt;name&gt;</code></td><td>交给 cc 一个 <code>-l&lt;name&gt;</code></td><td>可重复</td></tr><tr><td><code>-L &lt;dir&gt;</code></td><td>交给 cc 一个 <code>-L&lt;dir&gt;</code></td><td>可重复</td></tr><tr><td><code>--ccflag &lt;flag&gt;</code></td><td>把<strong>一个</strong> flag 原样交给 cc</td><td>逃生舱：<code>-I…</code>、<code>-Wl,-rpath,…</code>、<code>-l:libX.so.N</code></td></tr><tr><td><code>--pkg-config &lt;name&gt;</code></td><td>把 <code>pkg-config --cflags --libs &lt;name&gt;</code> 的输出按空白切成若干 flag</td><td>可重复</td></tr></tbody></table>
 <p><code>--check-c</code> 与 <code>--run</code> 都接受这些开关：前者需要 cflags 才能找到头文件，后者需要 cflags 与 libs 才能编译并链接。</p>
+<p><code>--build</code> 与 <code>--run</code> 走同一条编译路径（同样的 flag 处理、同样读每个模块的 <code>.link</code>），但<strong>不执行</strong>结果： 二进制写到 <code>-o &lt;file&gt;</code>（没给就 <code>build/&lt;name&gt;</code>）。包的构建步骤要的就是这个形状 （<code>extpkg build</code> 用它，见 <code>tools/extpkg.py</code> 与 <code>C-ABI.md</code> §9.23）。</p>
 <p><strong>链接需求写进生成物</strong>（只在用到时出现；同一组库按名字排序去重，与书写顺序无关）：</p>
 <pre class="lang-extc"><code><span class="c">/* extc-libs: ssl z */</span>
 <span class="c">/* extc-pkg-config: openssl */</span></code></pre>

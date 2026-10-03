@@ -58,6 +58,18 @@
 1 不适用。工具**有牙**——把 shim 的 TRANSIENT 改成 STATIC（改成"留指针"），verify 当场报被证伪
 （rc=255，隔离页上的硬缺页）。
 
+**同日的第五刀：L1.5 收尾（包的获取与构建）**。driver 加 `--build`（与 `--run` 同一条编译路径、
+同样的 flag 处理，只是不执行）；`tools/extpkg.py` 从"只验"扩成四件事：`verify` / `fetch` / `vendor`
+/ `build`。判据 `tests/extpkg/`（7 项，假 registry 走 `file://`，**不联网**）：首次 fetch 写锁 ·
+`--offline` 命中缓存 · **改锁里一个字节必须红** · 空缓存 + `--offline` 必须红且消息可执行 ·
+`vendor` 后清空缓存仍能 `build` · 两次 fetch 的锁逐字节相同 · 缺 vendor 时 build 自己补齐。
+真包（sqlite）转 **vendored 模式**：上游 amalgamation 编进二进制，`ldd` 里**没有 libsqlite3**
+（只剩 libc）——"2C2G 服务器零依赖"这条从口号变成判据（`scripts/check-deploy.sh`）。
+包台账里还记了上游 URL 与 zip 的 sha256，出问题能回溯。
+
+路上踩到两件（都记在代码注释里）：归档的顶层目录要**摊平**（否则 vendor 出来是 `vendor/x/x/`）；
+本地包（`path = "vendor/x"`）的锁要用**目录指纹**（路径 + 每个文件的 sha256），否则本地改动逃过校验。
+
 **工具本身也进了闸门**：`tests/pkg/` 放一对自足靶子（诚实包 / 食言包，不依赖任何外部库），
 `check.sh quick` 里钉住"诚实包必须三态同现、食言包必须被证伪"——哪天 `quarantine` 不再隔离，
 或者 extpkg 把失败当成功，闸门会红。`check.sh quick` 因此从 62 节到 **64 节**。

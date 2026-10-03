@@ -337,6 +337,9 @@ static void usage(const char *argv0) {
         "  -o <file>        write the generated C to this file (default: stdout)\n"
         "  --run            write generated C to build/<name>.c, compile it, run it\n"
         "                   (uses $CC, default `cc`; creates ./build/ in the CWD)\n"
+        "  --build          same, but stop before running: the binary is `-o <file>` if\n"
+        "                   given, otherwise build/<name> (this is what a package's build\n"
+        "                   step wants: link flags from <module>.link, no execution)\n"
         "  --check-c        syntax-check the generated C with `$CC -fsyntax-only`\n"
         "  -w               suppress warnings\n"
         "  -I <dir>         add a module search directory (for `use a::b`)\n"
@@ -510,6 +513,10 @@ int main(int argc, char **argv) {
                                       * portability for speed */
     bool dumpTokens = false;
     bool doRun = false;
+    /* `--build`: compile and link, but do not execute. A package manager needs exactly
+     * this -- the same flag handling as `--run` (including each module's `<module>.link`)
+     * without running the program. */
+    bool doBuild = false;
     /* `--check-c`: syntax-check the generated C before handing it over. Generated C
      * that does not compile is the worst class of bug this compiler can have, because
      * its promise is that a program which type-checks will build. The check needs
@@ -564,6 +571,8 @@ int main(int argc, char **argv) {
             doCheckC = true;          /* syntax-check the generated C afterwards */
         } else if (strcmp(argv[i], "--run") == 0) {
             doRun = true;
+        } else if (strcmp(argv[i], "--build") == 0) {
+            doBuild = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
             lineMap = false;
         } else if (strcmp(argv[i], "-I") == 0) {
@@ -912,7 +921,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (!doRun) {
+    if (!doRun && !doBuild) {
         if (outPath) {
             char *text = bufCstr(&c);
             if (!writeFile(outPath, text, c.len)) {
@@ -934,7 +943,10 @@ int main(int argc, char **argv) {
     }
 
     const char *cPath = arenaPrintf(&arena, "build/%s.c", base);
-    const char *binPath = arenaPrintf(&arena, "build/%s", base);
+    /* With `--build`, `-o` names the **binary** (with `--run` it still names the generated
+     * C, because there is no other output to name). Without `-o`, both modes use
+     * `build/<name>` the way `--run` always has. */
+    const char *binPath = (doBuild && outPath) ? outPath : arenaPrintf(&arena, "build/%s", base);
     char *text = bufCstr(&c);
     if (!writeFile(cPath, text, c.len)) {
         fprintf(stderr, "extc: cannot write `%s`\n", cPath);
@@ -1001,6 +1013,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "extc: C compiler failed (exit %d) on `%s`\n", rc, cPath);
         return 1;
     }
+
+    if (doBuild) return 0;              /* the binary is the output; do not run it */
 
     char *runArgv[] = { (char *)binPath, NULL };
     return runCmd(runArgv);

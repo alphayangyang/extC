@@ -204,6 +204,11 @@ else
     else bad "食言包：输出里没有被证伪"; echo "$out" | tail -8; fi
 fi
 
+echo "== 包工具全链路（extpkg fetch/vendor/build：假 registry 走 file://，不联网）=="
+if out=$(timeout 900 ./tests/extpkg/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（首次 fetch 写锁 · --offline 命中缓存 · 改锁一个字节必红 · 空缓存必红且消息可执行 · vendor 后清缓存仍能离线 build · 锁逐字节决定论 · build 自动补 vendor）"
+else bad "tests/extpkg/run.sh"; echo "$out"; fi
+
 echo "== 绑定生成器（tools/cbindgen.py：类型映射 · 零 effects · 生成物能编译并真调用）=="
 if out=$(timeout 600 ./tests/cbindgen/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（8 条声明逐条对拍 · 零 effects · --check · 生成的绑定真 dlopen libc 调 getpid）"
