@@ -74,6 +74,23 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- effect summary (T4) ------------------------------------------------------------
+ *
+ * The transitively closed masks: "a call to this function may store that parameter's
+ * address/contents into the caller's frames (`Addr`/`Cont`), into this function's home arena
+ * (`home…`), or somewhere else (`otherMask`)". Only the checker reads them. The closure's
+ * own state (`effState`/`effComplete`/`effUnknown`) and its call graph (`callees`) are pass
+ * state and move separately. */
+uint64_t anAddrMask(const FuncDef *f);      void anSetAddrMask(FuncDef *f, uint64_t v);
+uint64_t anContMask(const FuncDef *f);      void anSetContMask(FuncDef *f, uint64_t v);
+uint64_t anOtherMask(const FuncDef *f);     void anSetOtherMask(FuncDef *f, uint64_t v);
+uint64_t anHomeAddrMask(const FuncDef *f);  void anSetHomeAddrMask(FuncDef *f, uint64_t v);
+uint64_t anHomeContMask(const FuncDef *f);  void anSetHomeContMask(FuncDef *f, uint64_t v);
+bool     anAddrFromLocal(const FuncDef *f); void anSetAddrFromLocal(FuncDef *f, bool v);
+bool     planIsExtTarget(const FuncDef *f); void planSetIsExtTarget(FuncDef *f, bool v);
+bool     planIsParWorker(const FuncDef *f); void planSetIsParWorker(FuncDef *f, bool v);
+bool     planParTlsArena(const FuncDef *f); void planSetParTlsArena(FuncDef *f, bool v);
+
 /* ---- per-function analysis facts (T4) ----------------------------------------------
  *
  * Staged: the accessors prefer the slot and fall back to the field; the setters write both.

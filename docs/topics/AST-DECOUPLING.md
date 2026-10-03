@@ -666,3 +666,33 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
 里确实在实例上问过 `anIsAssoc`，但那时模板的值恰好也是 false，所以看不出差别）。
 ⇒ 钩子是**按语义保留的**（位表必须与字段同语义），但**它需要一条判据**：
 一个"泛型 struct 的关联构造函数"用例，断言实例上的 `isAssoc` 为真。这条记进待办。
+
+---
+
+## 20. T4 第八族：效果摘要的"纯结果"部分（6 个掩码 + `addrFromLocal` + 3 个 ABI 标志）
+
+效果摘要按**能不能算"结果"**拆成两半，这一族只做能算的那一半：
+
+| 字段 | 桶 | 依据 |
+|---|---|---|
+| `addrMask` `contMask` `otherMask` `homeAddrMask` `homeContMask` `addrFromLocal` | **ANALYSIS** | codegen 读点 0 |
+| `isExtTarget` `isParWorker` `parTlsArena` | **PLAN** | codegen 各读 1 |
+
+**剩下的四个是"过程状态"，明确留给下一步**：`effState` / `effComplete` / `effUnknown`
+（闭包的三态机与可信度）与 `callees`（闭包要走的调用图）。它们**不是**"某个节点的结果"，
+而是**某个 pass 的工作变量**：`effState` 的生命周期就是闭包本身（`EFF_IN_PROGRESS` 只在递归里
+有意义），把它放进按节点的表里等于给"一次计算"发一个永久住址。这一族因此**不碰**它们。
+
+**改动**：`results.h` 加槽位；`plan.c` 加 10 位 + 7 组 `an` 侧访问器 + 3 组 `PLF_`（plan 侧）；
+27 处写、70 处读改经访问器；`ast.h` 删 9 个字段。
+
+**这一族特有的迁移坑（第五次同类，值得单记）**：掩码是**用 `|=` 累积**的，而访问器返回**值**。
+`anAddrMask(f) |= x` 在替换后变成 `void` 表达式赋值 —— 编译器直接报
+`lvalue required as left operand of assignment`。18 处复合赋值逐条改成
+`anSetAddrMask(f, anAddrMask(f) | x)`；其中 2 处是**逗号表达式里连着两个 `|=`**、
+2 处是**嵌套三连**（`a = b = c = 0` 风格），脚本都改错了，最后逐行手写。
+⇒ 记进迁移清单：**`|=`/`&=`/`++` 这类"读-改-写"形状必须单独一条规则，不能和普通赋值混**。
+
+**棘轮**：`[ast-freeze]` **90 → 79**；其余四条不动。
+
+**验收**：构建零告警；tests **327/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。

@@ -663,7 +663,6 @@ struct FuncDef {
      * table needs -- `bool (*)(void *)` while `$next` takes a concrete frame pointer, and calling one
      * through the other's type is undefined -- is emitted **only** for these, so a program that never
      * starts a task carries nothing extra. */
-    bool        isExtTarget;
     /* A lambda's `call` method: its body was already checked **in place**, in the scope the lambda
      * was written in (that is where the capture set comes from), so the pass that checks struct
      * methods must not check it a second time. */
@@ -739,11 +738,9 @@ struct FuncDef {
     bool        isExport;
     /* 被 `parallel::run` 用过一次的 worker：codegen 要给它生成一个 static trampoline
      * （语言层没有函数指针，所以这份"取地址"只能由编译器写出来）。 */
-    bool        isParWorker;
     /* 这个函数（worker 或它调用链上的辅助函数）里的 `new` 要用**线程本地** arena：
      * worker 的签名固定（只写 out、只返回 i64）⇒ 分配逃不出去 ⇒ 线程本地是安全的；
      * 而帧 arena 是主线程的，两个 worker 同时用就是数据竞争 ⇒ 必须换。 */
-    bool        parTlsArena;
     const char *externLib;       /* the name in `extern!("libc")`, used in diagnostics */
     bool        hasEffects;
     unsigned    extAddrMask, extContMask;
@@ -842,8 +839,6 @@ struct FuncDef {
      * silent-loss case cannot arise. Widening to an array is the escape hatch if a real program
      * ever needs more. */
 #define EFF_MAX_PARAMS 64
-    uint64_t    addrMask, contMask, otherMask;      /* destination: a parameter's container */
-    uint64_t    homeAddrMask, homeContMask;         /* destination: memory allocated here */
     unsigned    freshCount;                         /* count only: fresh locals seen this round */
     /* State of the transitive closure of the effect summary:
      *   0 = not computed, 1 = computed (`effComplete` says whether it can be trusted),
@@ -854,7 +849,6 @@ struct FuncDef {
     bool        effComplete;
     bool        effUnknown;
 
-    bool        addrFromLocal;
     Vec         callees;      /* FuncDef*: the functions it calls, used to build the
                                * call graph and find its strongly connected components */
     /* Which file does this declaration come from, and which module?

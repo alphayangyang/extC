@@ -84,6 +84,9 @@ typedef struct {
     FuncDef    *parWorker;     /* `parallel::run(worker, ...)`: the worker, for the trampoline */
     bool        domNew;        /* `sys::domain::single()`: the assoc builtin with no callee */
     bool        viewOf;        /* `std::sys::heap::extc_viewOf`: the plate layer's primitive */
+    bool        isExtTarget;   /* an extern target the ABI calls directly */
+    bool        isParWorker;   /* used as a `parallel::run` worker */
+    bool        parTlsArena;   /* a worker that may use the thread-local arena */
     /* ---- call / receiver facts (T4, fifth family) ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */
     FieldDef   *field;         /* the field an `EX_FIELD` resolved to */
@@ -119,6 +122,14 @@ typedef struct {
         bool isAssoc; bool lamChecked; bool lamInferRet; bool needsHome;
         int  allocState; int mayPrintState; int freshCount;
         Vec  arenaSites; int nParamSyms; void *paramSyms[64];
+        /* The effect summary itself (T4, eighth family): one bit per parameter, "a call to
+         * this function may store that parameter's address / contents into the caller's
+         * frames (`…Addr` / `…Cont`), into this function's home arena (`home…`), or
+         * somewhere else (`otherMask`)". `addrFromLocal` is the same question for a value
+         * whose storage is a local. Read only by the checker. */
+        uint64_t addrMask, contMask, otherMask;
+        uint64_t homeAddrMask, homeContMask;
+        bool     addrFromLocal;
     } an;
     /* which of the fields above were written; an unset field reads as its default */
     uint64_t setMask;   /* a plain enum cannot hold bits above 31 in C11 */

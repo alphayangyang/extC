@@ -1161,12 +1161,12 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
         if (c->fxOn) c->fxEffEdges++;  /* one callee edge merged */
         if (g == f) { complete = false; continue; }                   /* self-call: conservative */
         if (computeEffectsTransitive(c, g)) {                         /* merge the callee summary */
-            f->addrMask     |= g->addrMask;
-            f->contMask     |= g->contMask;
-            f->homeAddrMask |= g->homeAddrMask;
-            f->homeContMask |= g->homeContMask;
-            f->otherMask    |= g->otherMask;
-            f->addrFromLocal |= g->addrFromLocal;
+            anSetAddrMask(f, anAddrMask(f) | anAddrMask(g));
+            anSetContMask(f, anContMask(f) | anContMask(g));
+            anSetHomeAddrMask(f, anHomeAddrMask(f) | anHomeAddrMask(g));
+            anSetHomeContMask(f, anHomeContMask(f) | anHomeContMask(g));
+            anSetOtherMask(f, anOtherMask(f) | anOtherMask(g));
+            anSetAddrFromLocal(f, anAddrFromLocal(f) || anAddrFromLocal(g));
         } else {
             complete = false;
         }
@@ -1175,8 +1175,8 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     f->effState = EFF_DONE;
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%llx Cont=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] other=0x%llx\n",
-                FN(f), (int)f->effComplete, (unsigned long long)f->addrMask, (unsigned long long)f->contMask,
-                (unsigned long long)f->homeAddrMask, (unsigned long long)f->homeContMask, (unsigned long long)f->otherMask);
+                FN(f), (int)f->effComplete, (unsigned long long)anAddrMask(f), (unsigned long long)anContMask(f),
+                (unsigned long long)anHomeAddrMask(f), (unsigned long long)anHomeContMask(f), (unsigned long long)anOtherMask(f));
     return complete;
 }
 
@@ -1220,7 +1220,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * at all, which is what makes such a declaration usable.
      */
     if (callee && callee->isExtern) {
-        uint64_t stored = callee->addrMask | callee->contMask | callee->otherMask;
+        uint64_t stored = anAddrMask(callee) | anContMask(callee) | anOtherMask(callee);
         if (stored == 0) return;                 /* the signature says nothing is stored */
         for (size_t j = 0; j < params->len && j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((stored >> j) & 1u)) continue;
@@ -1248,11 +1248,11 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         fprintf(stderr, "[refargs] %-16s mod=%-8s line=%-5d complete=%d"
                         " addr=0x%llx cont=0x%llx other=0x%llx homeAddr=0x%llx homeCont=0x%llx homeDepth=%d\n",
                 fname, callee && callee->modName ? callee->modName : "-", callee ? callee->line : -1,
-                (int)complete, callee ? (unsigned long long)callee->addrMask : 0,
-                callee ? (unsigned long long)callee->contMask : 0,
-                callee ? (unsigned long long)callee->otherMask : 0,
-                callee ? (unsigned long long)callee->homeAddrMask : 0,
-                callee ? (unsigned long long)callee->homeContMask : 0, homeDepth);
+                (int)complete, callee ? (unsigned long long)anAddrMask(callee) : 0,
+                callee ? (unsigned long long)anContMask(callee) : 0,
+                callee ? (unsigned long long)anOtherMask(callee) : 0,
+                callee ? (unsigned long long)anHomeAddrMask(callee) : 0,
+                callee ? (unsigned long long)anHomeContMask(callee) : 0, homeDepth);
     /* The two checks decide independently whether to run; do not give them one shared
      * early return. Sharing that return already cost a bug: a `Cont` bit on `push` made
      * the address-flow check run as well, and `examples/list-return` was wrongly rejected
@@ -1261,12 +1261,12 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * argument.
      */
     bool addrMaybe = !complete || !callee
-                   || callee->addrMask != 0 || callee->homeAddrMask != 0
-                   || callee->addrFromLocal || callee->otherMask != 0;
+                   || anAddrMask(callee) != 0 || anHomeAddrMask(callee) != 0
+                   || anAddrFromLocal(callee) || anOtherMask(callee) != 0;
     bool contMaybe = !complete || !callee
-                   || callee->contMask != 0 || callee->homeContMask != 0
-                   || callee->addrMask != 0 || callee->homeAddrMask != 0
-                   || callee->otherMask != 0;
+                   || anContMask(callee) != 0 || anHomeContMask(callee) != 0
+                   || anAddrMask(callee) != 0 || anHomeAddrMask(callee) != 0
+                   || anOtherMask(callee) != 0;
     if (!addrMaybe && !contMaybe) return;
     /* The bound is the DESTINATION's own measured depth (below), falling back to the
      * caller's body depth. The old `needsHome => 0` and `homeDepth < 0 => 0` guesses are
@@ -1366,7 +1366,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * be the same as allowing a dangling reference. That is the lesson from the earlier
      * attempt to narrow the argument-lifetime rule.
      */
-    if (contMaybe && (!complete || (callee && callee->otherMask != 0))) {
+    if (contMaybe && (!complete || (callee && anOtherMask(callee) != 0))) {
         for (size_t j = 0; j < args->len; j++) {
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;                  /* generic: defer */
@@ -1400,8 +1400,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
          * Checking only the content-flow bits used to accept `names.push(buf[..])` with
          * `buf` declared in a deeper block. That is a real dangling pointer, and the
          * tests caught it at once. */
-        uint64_t cont = callee->contMask | callee->homeContMask
-                      | callee->addrMask | callee->homeAddrMask;
+        uint64_t cont = anContMask(callee) | anHomeContMask(callee)
+                      | anAddrMask(callee) | anHomeAddrMask(callee);
         for (size_t j = 0; j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((cont >> j) & 1u)) continue;
             Param *pj = *(Param **)vecAt(params, j);
@@ -1469,8 +1469,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * to lower it. No `recordStore` here: it constrains the level solver and was the suspected
      * source of two false rejections (R1R3-LOG 补8/补9). */
     if (callee && (addrMaybe || contMaybe)) {
-        uint64_t stored = callee->addrMask | callee->homeAddrMask
-                        | callee->contMask | callee->homeContMask;
+        uint64_t stored = anAddrMask(callee) | anHomeAddrMask(callee)
+                        | anContMask(callee) | anHomeContMask(callee);
         for (size_t j = 0; stored && j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((stored >> j) & 1u)) continue;
             Expr *src = *(Expr **)vecAt(args, j);
@@ -2149,9 +2149,9 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
         case EX_CALL: case EX_METHOD: case EX_ASSOC: {
             FuncDef *cf = planCallee(se);
             if (!cf) return false;
-            uint64_t pub = cf->addrMask | cf->contMask | cf->otherMask
-                         | cf->homeAddrMask | cf->homeContMask;
-            if (cf->addrFromLocal) pub |= 1u;
+            uint64_t pub = anAddrMask(cf) | anContMask(cf) | anOtherMask(cf)
+                         | anHomeAddrMask(cf) | anHomeContMask(cf);
+            if (anAddrFromLocal(cf)) pub |= 1u;
             /* An incomplete summary must never be read as proof that nothing is
              * stored: when the body contains a call that cannot be resolved,
              * `effComplete` stays false forever. So a callee with any `mut ref`
@@ -2592,10 +2592,10 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     if (e->kind == EX_REF) {
         int j = paramIndexOfExpr(c, f, e->u.ref.operand);
         if (j >= 0) {
-            if (intoHome) f->homeAddrMask |= ((uint64_t)1 << j);
-            else if (i >= 0) f->addrMask |= ((uint64_t)1 << j);
+            if (intoHome) anSetHomeAddrMask(f, anHomeAddrMask(f) | (((uint64_t)1 << j)));
+            else if (i >= 0) anSetAddrMask(f, anAddrMask(f) | (((uint64_t)1 << j)));
         } else {
-            f->addrFromLocal = true;              /* local address: a different problem */
+            anSetAddrFromLocal(f, true);              /* local address: a different problem */
         }
         return;
     }
@@ -2629,11 +2629,11 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
                          (e->type->kind == TY_REF || ttIsViewType(e->type));
             if (carrier) {
                 if (isPtr) {                      /* address flow: the caller's pointer is stored */
-                    if (intoHome) f->homeAddrMask |= ((uint64_t)1 << j);
-                    else if (i >= 0) f->addrMask |= ((uint64_t)1 << j);
+                    if (intoHome) anSetHomeAddrMask(f, anHomeAddrMask(f) | (((uint64_t)1 << j)));
+                    else if (i >= 0) anSetAddrMask(f, anAddrMask(f) | (((uint64_t)1 << j)));
                 } else {                          /* content flow: pointer read from a container */
-                    if (intoHome) f->homeContMask |= ((uint64_t)1 << j);
-                    else if (i >= 0) f->contMask |= ((uint64_t)1 << j);
+                    if (intoHome) anSetHomeContMask(f, anHomeContMask(f) | (((uint64_t)1 << j)));
+                    else if (i >= 0) anSetContMask(f, anContMask(f) | (((uint64_t)1 << j)));
                 }
             }
             return;
@@ -2654,7 +2654,7 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     { const char *vr = placeRootName(e);          /* `l.head = n`: the source is a fresh local */
       if (vr && vecHasName(fresh, vr)) return; }
     if (c && e->type && !typeContainsRef(c->tt, e->type)) return;   /* scalar, trivially safe */
-    if (i >= 0) f->otherMask |= ((uint64_t)1 << i);        /* not sure, so stay conservative */
+    if (i >= 0) anSetOtherMask(f, anOtherMask(f) | (((uint64_t)1 << i)));        /* not sure, so stay conservative */
 }
 
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
@@ -2782,13 +2782,13 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
                 if (a && a->kind == EX_REF) a = a->u.ref.operand; /* `f(ref x)` stores `&x` */
                 int pi = paramIndexByName(f, placeRootName(a));
                 if (pi >= 0) {
-                    if ((addr >> j) & 1u) f->addrMask |= ((uint64_t)1 << pi);
-                    if ((cont >> j) & 1u) f->contMask |= ((uint64_t)1 << pi);
+                    if ((addr >> j) & 1u) anSetAddrMask(f, anAddrMask(f) | (((uint64_t)1 << pi)));
+                    if ((cont >> j) & 1u) anSetContMask(f, anContMask(f) | (((uint64_t)1 << pi)));
                 } else {
                     /* It keeps something that does not trace back to a parameter of mine: say so
                      * in the one way the summary has (`otherMask` = "not attributable"), which the
                      * call site reads as the strictest case. */
-                    f->otherMask |= 1u;
+                    anSetOtherMask(f, anOtherMask(f) | (1u));
                 }
             }
         } else {
@@ -2901,19 +2901,19 @@ static void collectEffects(Checker *c, FuncDef *f) {
     * "stores nothing" and would accept a dangling pointer. */
     if (f->isExtern) {
         if (f->hasEffects) {
-            f->addrMask = f->extAddrMask;
-            f->contMask = f->extContMask;
+            anSetAddrMask(f, f->extAddrMask);
+            anSetContMask(f, f->extContMask);
         } else {
             /* No clause means every parameter may be stored. That is nearly unusable, and it
             * is what a safe default should look like: sign the declaration to make it
             * usable. */
             uint64_t all = 0;
             for (size_t i = 0; i < f->params.len && i < EFF_MAX_PARAMS; i++) all |= ((uint64_t)1 << i);
-            f->addrMask = all;
-            f->contMask = all;
+            anSetAddrMask(f, all);
+            anSetContMask(f, all);
         }
         f->effComplete = true;      /* the declaration is authoritative, as a body would be */
-        f->otherMask   = 0;
+        anSetOtherMask(f, 0);
         return;
     }
     /* `FuncDef` comes from `arenaAllocZero`, so `callees` has no arena yet; without an
@@ -2932,10 +2932,10 @@ static void collectEffects(Checker *c, FuncDef *f) {
     collectEffectsStmt(c, f, f->body, &fresh);
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects] %-22s toParam[Addr=0x%llx Cont=0x%llx Other=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] localAddr=%d fresh=%u callees=%zu\n",
-                FN(f), (unsigned long long)f->addrMask, (unsigned long long)f->contMask,
-                (unsigned long long)f->otherMask,
-                (unsigned long long)f->homeAddrMask, (unsigned long long)f->homeContMask,
-                (int)f->addrFromLocal, anFreshCount(f), f->callees.len);
+                FN(f), (unsigned long long)anAddrMask(f), (unsigned long long)anContMask(f),
+                (unsigned long long)anOtherMask(f),
+                (unsigned long long)anHomeAddrMask(f), (unsigned long long)anHomeContMask(f),
+                (int)anAddrFromLocal(f), anFreshCount(f), f->callees.len);
 }
 
 /* Is the depth of this value decided by an allocation site?
@@ -6083,9 +6083,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (!fi || !fi->body || fi->isExtern) continue;
         c.substParams = &planTemplate(fi)->typeParams;
         c.substArgs   = &fi->targs;
-        fi->addrMask = fi->contMask = fi->otherMask = 0;
-        fi->homeAddrMask = fi->homeContMask = 0;
-        fi->addrFromLocal = false;
+        anSetAddrMask(fi, 0);
+        anSetContMask(fi, 0);
+        anSetOtherMask(fi, 0);
+        anSetHomeAddrMask(fi, 0);
+        anSetHomeContMask(fi, 0);
+        anSetAddrFromLocal(fi, false);
         anSetFreshCount(fi, 0);
         fi->effState = EFF_NONE;  fi->effComplete = false;  fi->effUnknown = false;
         vecInit(&fi->callees, c.arena, sizeof(FuncDef *));
@@ -6100,9 +6103,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (!f || !f->body || f->isExtern) continue;
             c.substParams = &sd->typeParams;
             c.substArgs   = &inst->targs;
-            f->addrMask = f->contMask = f->otherMask = 0;
-            f->homeAddrMask = f->homeContMask = 0;
-            f->addrFromLocal = false;
+            anSetAddrMask(f, 0);
+            anSetContMask(f, 0);
+            anSetOtherMask(f, 0);
+            anSetHomeAddrMask(f, 0);
+            anSetHomeContMask(f, 0);
+            anSetAddrFromLocal(f, false);
             anSetFreshCount(f, 0);
             f->effState = EFF_NONE;  f->effComplete = false;  f->effUnknown = false;
             vecInit(&f->callees, c.arena, sizeof(FuncDef *));

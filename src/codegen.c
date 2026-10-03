@@ -5070,7 +5070,7 @@ static void genFunc(CG *g, FuncDef *f) {
     const char *savedFuncName = g->curFuncName;
     g->curFuncName = cFuncName(g, f);
     bool savedParTls = g->parTls;
-    g->parTls = f->parTlsArena;
+    g->parTls = planParTlsArena(f);
     if (isMain && planUsesHome(f)) {
         size_t hb = g->out->len;
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
@@ -8427,7 +8427,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         bool parAny = false;
         for (size_t i = 0; i < g.funcs.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&g.funcs, i);
-            if (!f->isParWorker) continue;
+            if (!planIsParWorker(f)) continue;
             if (!parAny) {
                 cgLine(&g, "/* ---- parallel::run trampolines (stdlib/std/parallel.extc) ---- */");
                 parAny = true;
@@ -8664,7 +8664,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
          * some `ext` actually starts get one. */
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
-            if (!cf->isExtTarget || !planIsCoro(cf)) continue;
+            if (!planIsExtTarget(cf) || !planIsCoro(cf)) continue;
             const char *cn = cFuncName(&g, cf);
             bufPrintf(out, "typedef struct %s$frame %s$frame;\n", cn, cn);
             bufPrintf(out, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);\n", cn, cn);

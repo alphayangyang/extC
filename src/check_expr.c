@@ -147,7 +147,7 @@ static const char *parBodyProblem(Checker *c, FuncDef *f, int depth) {
         if (!astWalkStmtChildren(f->body, &v))
             return q.why ? q.why : "an unsupported construct";
     }
-    f->parTlsArena = true;        /* 这条链上的每个人：`new` 都走线程本地 arena（③c） */
+    planSetParTlsArena(f, true);        /* 这条链上的每个人：`new` 都走线程本地 arena（③c） */
     return NULL;
 }
 
@@ -1197,15 +1197,17 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
         if (fd && fd->hasEffects) {
             sig->name     = fd->name;
             sig->hasEffects = true;
-            sig->addrMask = fd->effAddrMask;
-            sig->contMask = fd->effContMask;
+            anSetAddrMask(sig, fd->effAddrMask);
+            anSetContMask(sig, fd->effContMask);
         } else {
             /* Named after the slot when there is one: "argument 1 of `copy` may be kept by C
              * forever" points at the line to sign. The message wraps this in backticks, so it has to
              * be a bare word. */
             sig->name = fd ? fd->name : "fn";
-            for (size_t i = 0; i < ps.len && i < 32; i++)
-                sig->addrMask |= (1u << i), sig->contMask |= (1u << i);
+            for (size_t i = 0; i < ps.len && i < 32; i++) {
+                anSetAddrMask(sig, anAddrMask(sig) | (1u << i));
+                anSetContMask(sig, anContMask(sig) | (1u << i));
+            }
         }
     }
     checkCallRefArgs(c, sig, &e->u.call.args, &ps, 0, e->line, sig->name);
@@ -2102,8 +2104,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 planSetParWorker(e, wf);
-                wf->isParWorker = true;   /* codegen 据此生成 trampoline */
-                wf->parTlsArena = true;   /* worker 里的 new 走线程本地 arena（③c） */
+                planSetIsParWorker(wf, true);   /* codegen 据此生成 trampoline */
+                planSetParTlsArena(wf, true);   /* worker 里的 new 走线程本地 arena（③c） */
                 planSetUsed(wf, true);          /* the trampoline names it, so it must be emitted */
                 {
                     /* 第一个实参不是表达式，是函数名：换成一个 i64 字面量，后面的实参照常走。 */
@@ -3133,8 +3135,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 planSetParWorker(e, wf);
-                wf->isParWorker = true;
-                wf->parTlsArena = true;
+                planSetIsParWorker(wf, true);
+                planSetParTlsArena(wf, true);
                 planSetUsed(wf, true);
                 {
                     Expr *lit = exprNew(c->arena, EX_INT, wa->line);
@@ -3327,7 +3329,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttError(tt);
             }
             planSetExtDom(e, c->curDom);          /* codegen 把任务登记到这个域上 */
-            planCallee(in)->isExtTarget = true;   /* ⇒ 为它生成域用的适配器（只为它，别的产物不受影响） */
+            planSetIsExtTarget(planCallee(in), true);   /* ⇒ 为它生成域用的适配器（只为它，别的产物不受影响） */
             /* The value is **void on purpose**: `let h = ext f(x)` is refused by the type system
              * rather than by a special rule, and the handle (the取件单) lands with the driving
              * loop (docs/topics/CONCURRENCY.md「`ext` 与调度域」). */
@@ -3636,8 +3638,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 planSetParWorker(e, wf);
-                wf->isParWorker = true;
-                wf->parTlsArena = true;
+                planSetIsParWorker(wf, true);
+                planSetParTlsArena(wf, true);
                 planSetUsed(wf, true);
                 {
                     Expr *lit = exprNew(c->arena, EX_INT, wa->line);

@@ -75,6 +75,15 @@
 #define AN_ARENA_SITES           (1ull << 54)
 #define AN_N_PARAM_SYMS          (1ull << 55)
 #define AN_PARAM_SYMS            (1ull << 56)
+#define PLAN_IS_EXT_TARGET       (1ull << 57)
+#define PLAN_IS_PAR_WORKER       (1ull << 58)
+#define AN_ADDR_MASK             (1ull << 59)
+#define AN_CONT_MASK             (1ull << 60)
+#define AN_OTHER_MASK            (1ull << 61)
+#define AN_HOME_ADDR_MASK        (1ull << 62)
+#define AN_HOME_CONT_MASK        (1ull << 63)
+#define PLAN_PAR_TLS_ARENA       (1ull << 62)
+#define AN_ADDR_FROM_LOCAL       (1ull << 64)
 
 
 /* The analysis half of the slot, by name: the checker's own working state, which no later
@@ -312,6 +321,39 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
 }
 
+/* ---- effect summary (T4, eighth family) --------------------------------------------
+ *
+ * Pure results (the checker writes them, only the checker reads them): the transitively
+ * closed masks and `addrFromLocal`. The **state** that drives the closure
+ * (`effState`/`effComplete`/`effUnknown`) and the call graph it walks (`callees`) are a
+ * different question -- they are pass state, not a per-node result, and they move in their
+ * own step. */
+#define AEF_GET(fn, type, field, bit, dflt)                                \
+    type fn(const FuncDef *f) {                                            \
+        NodeResults *r = resultsOf(f, false);                              \
+        return (r && (r->setMask & (bit))) ? r->an.field : (dflt);         \
+    }
+#define AEF_SET(fn, type, field, bit)                                      \
+    void fn(FuncDef *f, type v) {                                          \
+        if (!f) return;                                                    \
+        NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);         \
+        if (!r) return;                                                    \
+        r->an.field = v; r->setMask |= (bit);                              \
+    }
+
+AEF_GET(anAddrMask, uint64_t, addrMask, AN_ADDR_MASK, 0)
+AEF_SET(anSetAddrMask, uint64_t, addrMask, AN_ADDR_MASK)
+AEF_GET(anContMask, uint64_t, contMask, AN_CONT_MASK, 0)
+AEF_SET(anSetContMask, uint64_t, contMask, AN_CONT_MASK)
+AEF_GET(anOtherMask, uint64_t, otherMask, AN_OTHER_MASK, 0)
+AEF_SET(anSetOtherMask, uint64_t, otherMask, AN_OTHER_MASK)
+AEF_GET(anHomeAddrMask, uint64_t, homeAddrMask, AN_HOME_ADDR_MASK, 0)
+AEF_SET(anSetHomeAddrMask, uint64_t, homeAddrMask, AN_HOME_ADDR_MASK)
+AEF_GET(anHomeContMask, uint64_t, homeContMask, AN_HOME_CONT_MASK, 0)
+AEF_SET(anSetHomeContMask, uint64_t, homeContMask, AN_HOME_CONT_MASK)
+AEF_GET(anAddrFromLocal, bool, addrFromLocal, AN_ADDR_FROM_LOCAL, false)
+AEF_SET(anSetAddrFromLocal, bool, addrFromLocal, AN_ADDR_FROM_LOCAL)
+
 /* ---- per-function analysis facts (T4, seventh family) -------------------------------
  *
  * **Instances**: `funcInstance` builds an instance with `*in = *tmpl` -- a shallow copy.
@@ -381,6 +423,29 @@ void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl) {
                                  AN_FRESH_COUNT | AN_ARENA_SITES | AN_N_PARAM_SYMS |
                                  AN_PARAM_SYMS));
 }
+
+/* The three that are read outside the checker (the ABI and the parallel runtime) live in
+ * the plan half of the slot, so they need their own accessors -- the `an.` macros cannot
+ * reach them. */
+#define PLF_GET(fn, type, field, bit, dflt)                                \
+    type fn(const FuncDef *f) {                                            \
+        NodeResults *r = resultsOf(f, false);                              \
+        return (r && (r->setMask & (bit))) ? r->field : (dflt);            \
+    }
+#define PLF_SET(fn, type, field, bit)                                      \
+    void fn(FuncDef *f, type v) {                                          \
+        if (!f) return;                                                    \
+        NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);         \
+        if (!r) return;                                                    \
+        r->field = v; r->setMask |= (bit);                                 \
+    }
+
+PLF_GET(planIsExtTarget, bool, isExtTarget, PLAN_IS_EXT_TARGET, false)
+PLF_SET(planSetIsExtTarget, bool, isExtTarget, PLAN_IS_EXT_TARGET)
+PLF_GET(planIsParWorker, bool, isParWorker, PLAN_IS_PAR_WORKER, false)
+PLF_SET(planSetIsParWorker, bool, isParWorker, PLAN_IS_PAR_WORKER)
+PLF_GET(planParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA, false)
+PLF_SET(planSetParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA)
 
 /* ---- operator / comparison facts (T4, sixth family) ---------------------------------
  *
