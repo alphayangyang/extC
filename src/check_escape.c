@@ -1192,7 +1192,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * That tier is represented by `ARENA_HOME` rather than by 0, because in the current
          * encoding 0 means "not yet decided", so the value has to be translated before it is
          * written back. */
-        if (at == 0 && !(c->curFunc && c->curFunc->needsHome)) return false;
+        if (at == 0 && !(c->curFunc && anNeedsHome(c->curFunc))) return false;
         /* Reaching this point means the escape analysis has met this site by walking the
          * carriers of a value, rather than the fallback of "the enclosing function has a home". A
          * site met this way really has been required to outlive the frame, so mark it.
@@ -1567,7 +1567,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
          * returning `i32` (no home arena at all) was correctly rejected (audit P0-6b). Ask where the
          * destination lives instead of assuming: a global target falls through to the error. */
         Sym *destRoot = target ? placeRoot(c, target) : NULL;
-        if (c->curFunc && c->curFunc->needsHome && !(destRoot && isGlobalSym(c, destRoot)))
+        if (c->curFunc && anNeedsHome(c->curFunc) && !(destRoot && isGlobalSym(c, destRoot)))
             return bad;
         ckError(c, line,
                 "A borrowed value may not be stored where it outlives the call: its real "
@@ -2028,7 +2028,7 @@ FuncDef *findOp(TypeTable *tt, Type *b, const char *sym, Type *rhs, const char *
  *     associated function and may return whatever it likes.
  */
 void checkCtorSig(Checker *c, FuncDef *f) {
-    if (!f->isAssoc || !f->owner || strcmp(f->name, "new") != 0) return;
+    if (!anIsAssoc(f) || !f->owner || strcmp(f->name, "new") != 0) return;
     Type *ret = f->ret;
     if (ret && (ret->kind == TY_STRUCT || ret->kind == TY_GENERIC) && ret->sdef == f->owner) return;
     /* `result<T, E>`: an enum whose first type argument is the owner. */

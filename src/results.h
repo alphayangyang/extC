@@ -115,6 +115,10 @@ typedef struct {
         bool qualified;        /* the user wrote a qualified name (`a::b`) */
         bool convCheck;        /* a narrowing conversion whose runtime check is emitted */
         bool needOp;           /* a comparison over a type parameter, resolved at instantiation */
+        /* per-function facts (T4, seventh family; staged: call sites still use the fields) */
+        bool isAssoc; bool lamChecked; bool lamInferRet; bool needsHome;
+        int  allocState; int mayPrintState; int freshCount;
+        Vec  arenaSites; int nParamSyms; void *paramSyms[64];
     } an;
     /* which of the fields above were written; an unset field reads as its default */
     uint64_t setMask;   /* a plain enum cannot hold bits above 31 in C11 */

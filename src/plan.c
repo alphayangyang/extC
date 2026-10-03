@@ -65,6 +65,16 @@
 #define AN_QUALIFIED             (1ull << 44)
 #define AN_CONV_CHECK            (1ull << 45)
 #define AN_NEED_OP               (1ull << 46)
+#define AN_IS_ASSOC              (1ull << 47)
+#define AN_LAM_CHECKED           (1ull << 48)
+#define AN_LAM_INFER_RET         (1ull << 49)
+#define AN_NEEDS_HOME            (1ull << 50)
+#define AN_ALLOC_STATE           (1ull << 51)
+#define AN_MAY_PRINT_STATE       (1ull << 52)
+#define AN_FRESH_COUNT           (1ull << 53)
+#define AN_ARENA_SITES           (1ull << 54)
+#define AN_N_PARAM_SYMS          (1ull << 55)
+#define AN_PARAM_SYMS            (1ull << 56)
 
 
 /* The analysis half of the slot, by name: the checker's own working state, which no later
@@ -300,6 +310,76 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
     r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
+}
+
+/* ---- per-function analysis facts (T4, seventh family) -------------------------------
+ *
+ * **Instances**: `funcInstance` builds an instance with `*in = *tmpl` -- a shallow copy.
+ * Plain fields travel with that copy; a slot keyed by node pointer does not. So every fact
+ * here is inherited explicitly in one place (`planInheritFuncFacts`, right after the copy).
+ *
+ * Staged on purpose: the accessors **prefer the slot and fall back to the field**, and the
+ * setters write both. That keeps the two representations in step while the call sites move
+ * over one at a time -- the same order that worked for `Expr.func` / `FuncDef.used` (T1). */
+#define ANF_GET(fn, type, side, field, bit, dflt)                          \
+    type fn(const FuncDef *f) {                                            \
+        NodeResults *r = resultsOf(f, false);                              \
+        return (r && (r->setMask & (bit))) ? r->side . field : (dflt);     \
+    }
+#define ANF_SET(fn, type, side, field, bit)                                \
+    void fn(FuncDef *f, type v) {                                          \
+        if (!f) return;                                                    \
+        NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);         \
+        if (!r) return;                                                    \
+        r->side . field = v; r->setMask |= (bit);                          \
+    }
+
+ANF_GET(anIsAssoc, bool, an, isAssoc, AN_IS_ASSOC, false)
+ANF_SET(anSetIsAssoc, bool, an, isAssoc, AN_IS_ASSOC)
+ANF_GET(anLamChecked, bool, an, lamChecked, AN_LAM_CHECKED, false)
+ANF_SET(anSetLamChecked, bool, an, lamChecked, AN_LAM_CHECKED)
+ANF_GET(anLamInferRet, bool, an, lamInferRet, AN_LAM_INFER_RET, false)
+ANF_SET(anSetLamInferRet, bool, an, lamInferRet, AN_LAM_INFER_RET)
+ANF_GET(anNeedsHome, bool, an, needsHome, AN_NEEDS_HOME, false)
+ANF_SET(anSetNeedsHome, bool, an, needsHome, AN_NEEDS_HOME)
+ANF_GET(anAllocState, int, an, allocState, AN_ALLOC_STATE, 0)
+ANF_SET(anSetAllocState, int, an, allocState, AN_ALLOC_STATE)
+ANF_GET(anMayPrintState, int, an, mayPrintState, AN_MAY_PRINT_STATE, 0)
+ANF_SET(anSetMayPrintState, int, an, mayPrintState, AN_MAY_PRINT_STATE)
+ANF_GET(anFreshCount, int, an, freshCount, AN_FRESH_COUNT, 0)
+ANF_SET(anSetFreshCount, int, an, freshCount, AN_FRESH_COUNT)
+ANF_GET(anParamSymCount, int, an, nParamSyms, AN_N_PARAM_SYMS, 0)
+ANF_SET(anSetParamSymCount, int, an, nParamSyms, AN_N_PARAM_SYMS)
+Vec anArenaSites(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return (r && (r->setMask & AN_ARENA_SITES)) ? r->an.arenaSites : (Vec){0};
+}
+void anSetArenaSites(FuncDef *f, Vec v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.arenaSites = v; r->setMask |= AN_ARENA_SITES;
+}
+void **anParamSyms(FuncDef *f) {
+    if (!f) return NULL;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return NULL;
+    r->setMask |= AN_PARAM_SYMS;
+    return r->an.paramSyms;
+}
+
+/* The one place that carries per-function facts across `*in = *tmpl`. */
+void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl) {
+    if (!in || !tmpl) return;
+    NodeResults *t = resultsOf(tmpl, false);
+    if (!t) return;
+    NodeResults *r = resultsAs(in, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an = t->an;
+    r->setMask |= (t->setMask & (AN_IS_ASSOC | AN_LAM_CHECKED | AN_LAM_INFER_RET |
+                                 AN_NEEDS_HOME | AN_ALLOC_STATE | AN_MAY_PRINT_STATE |
+                                 AN_FRESH_COUNT | AN_ARENA_SITES | AN_N_PARAM_SYMS |
+                                 AN_PARAM_SYMS));
 }
 
 /* ---- operator / comparison facts (T4, sixth family) ---------------------------------

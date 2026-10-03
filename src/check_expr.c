@@ -892,9 +892,9 @@ static Type *checkLambda(Checker *c, Expr *e) {
     resultsEnterOwner(cf);   /* a lambda body is its own scope */
     /* With no `->` written the result type is decided by the first `return <value>` in the body; the
      * ST_RETURN case fills it in (check_stmt.c). */
-    cf->lamInferRet = (cf->ret == NULL);
+    anSetLamInferRet(cf, (cf->ret == NULL));
     checkStmt(c, e->u.lambda.body);
-    cf->lamInferRet = false;
+    anSetLamInferRet(cf, false);
     c->curFunc = saveCur;
     resultsEnterOwner(saveCur);
     popScope(c);
@@ -1001,7 +1001,7 @@ static Type *checkLambda(Checker *c, Expr *e) {
 
     cf->owner = sd;
     cf->body = e->u.lambda.body;
-    cf->lamChecked = true;                   /* checked above, in the scope it was written in */
+    anSetLamChecked(cf, true);                   /* checked above, in the scope it was written in */
     *(FuncDef **)vecPush(&sd->methods) = cf;
     /* The struct has to be reachable from the module: codegen collects struct types and the methods
      * to emit from `m->structs` (codegen.c). */
@@ -1987,7 +1987,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (sd) {
                 for (size_t i = 0; i < sd->methods.len; i++) {
                     FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
-                    if (m->isAssoc && strcmp(m->name, e->u.assoc.name) == 0) { f = m; break; }
+                    if (anIsAssoc(m) && strcmp(m->name, e->u.assoc.name) == 0) { f = m; break; }
                 }
             }
             if (!f) {
@@ -1998,7 +1998,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     bool any = false;
                     for (size_t i = 0; i < sd->methods.len; i++) {
                         FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
-                        if (!m->isAssoc) continue;
+                        if (!anIsAssoc(m)) continue;
                         bufPrintf(&note, " %s", m->name);
                         any = true;
                     }
@@ -2335,7 +2335,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * decided again by `checkModule`, using `FuncDef.arenaSites`, once the closure is
              * complete. */
             if (planArenaLevel(e) == 0)
-                planSetArenaLevel(e, (c->curFunc && c->curFunc->needsHome) ? ARENA_HOME
+                planSetArenaLevel(e, (c->curFunc && anNeedsHome(c->curFunc)) ? ARENA_HOME
                               : (anReuse(e) ? 1 : (int)c->scopes.len));
             c->allocSites++;
             /* Keep the lexical level in its own field: the branch above may have replaced
@@ -2472,7 +2472,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         FuncDef *ctor = NULL;
                         for (size_t i = 0; i < gsd->methods.len && !ctor; i++) {
                             FuncDef *m = *(FuncDef **)vecAt(&gsd->methods, i);
-                            if (m->isAssoc && strcmp(m->name, "new") == 0) ctor = m;
+                            if (anIsAssoc(m) && strcmp(m->name, "new") == 0) ctor = m;
                         }
                         if (ctor) {
                             /* Every field is read out **before** the union is written: the
@@ -2558,7 +2558,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * passed -- and the error text told the user to write `new`.
              * Being symmetric with `new` removes that whole family of false rejections: a home
              * arena gives `ARENA_HOME` and depth 0, "the level outside this frame". */
-            if (c->curFunc && c->curFunc->needsHome) {
+            if (c->curFunc && anNeedsHome(c->curFunc)) {
                 planSetArenaLevel(e, ARENA_HOME);
                 anSetRefDepth(e, 0);
             } else {
@@ -2953,7 +2953,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         if (csd) {
                             for (size_t i = 0; i < csd->methods.len && !ctor; i++) {
                                 FuncDef *m = *(FuncDef **)vecAt(&csd->methods, i);
-                                if (m->isAssoc && strcmp(m->name, "new") == 0) ctor = m;
+                                if (anIsAssoc(m) && strcmp(m->name, "new") == 0) ctor = m;
                             }
                         }
                         if (ctor) {
@@ -4113,12 +4113,12 @@ static bool stmtMayPrint(Checker *c, Stmt *s) {
  */
 static bool funcMayPrint(Checker *c, FuncDef *f) {
     if (!f) return true;                       /* unresolved: assume it prints */
-    if (f->mayPrintState == 1) return true;
-    if (f->mayPrintState == 2) return false;
-    if (f->mayPrintState == 3) return true;    /* a cycle: assume it prints */
-    f->mayPrintState = 3;
+    if (anMayPrintState(f) == 1) return true;
+    if (anMayPrintState(f) == 2) return false;
+    if (anMayPrintState(f) == 3) return true;    /* a cycle: assume it prints */
+    anSetMayPrintState(f, 3);
     bool r = stmtMayPrint(c, f->body);
-    f->mayPrintState = r ? 1 : 2;
+    anSetMayPrintState(f, r ? 1 : 2);
     return r;
 }
 

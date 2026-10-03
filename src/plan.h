@@ -74,6 +74,23 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- per-function analysis facts (T4) ----------------------------------------------
+ *
+ * Staged: the accessors prefer the slot and fall back to the field; the setters write both.
+ * `planInheritFuncFacts` must run right after `*in = *tmpl` in `funcInstance` -- a plain
+ * field travels with the shallow copy, a slot keyed by node pointer does not. */
+void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl);
+bool anIsAssoc(const FuncDef *f);         void anSetIsAssoc(FuncDef *f, bool v);
+bool anLamChecked(const FuncDef *f);      void anSetLamChecked(FuncDef *f, bool v);
+bool anLamInferRet(const FuncDef *f);     void anSetLamInferRet(FuncDef *f, bool v);
+bool anNeedsHome(const FuncDef *f);       void anSetNeedsHome(FuncDef *f, bool v);
+int  anAllocState(const FuncDef *f);      void anSetAllocState(FuncDef *f, int v);
+int  anMayPrintState(const FuncDef *f);   void anSetMayPrintState(FuncDef *f, int v);
+int  anFreshCount(const FuncDef *f);      void anSetFreshCount(FuncDef *f, int v);
+Vec  anArenaSites(const FuncDef *f);      void anSetArenaSites(FuncDef *f, Vec v);
+int  anParamSymCount(const FuncDef *f);   void anSetParamSymCount(FuncDef *f, int v);
+void **anParamSyms(FuncDef *f);
+
 /* ---- operator / comparison facts (T4) -----------------------------------------------
  *
  * `planConvCheck` / `planNeedOp` are read by code generation; the `anXxx` entries are the

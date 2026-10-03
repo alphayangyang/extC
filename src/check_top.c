@@ -335,7 +335,7 @@ static void checkMethodShape(Checker *c, FuncDef *f) {
          * how a container exposes its constructors. Such a call is explicit: the
          * call site writes the full type name (`option<i64>::some`), so nothing is
          * inferred from the expected type. */
-        f->isAssoc = true;
+        anSetIsAssoc(f, true);
     } else {
         /* Compare the struct definition rather than the type node: the `self` of a
          * method on a generic struct is written `ref Pair<A, B>`, so its type node
@@ -490,7 +490,7 @@ typedef struct { bool (*takesHomeArena)(const FuncDef *); } HomeQ;
 
 /* "does the callee **reach** a function that takes one?" -- the conservative, transitive question,
  * which decides whether *this* body needs a home arena of its own (`needsHome`). */
-static bool reachesHomeArenaTaker(const FuncDef *f) { return f && f->needsHome; }
+static bool reachesHomeArenaTaker(const FuncDef *f) { return f && anNeedsHome(f); }
 
 static bool needsHomeInStmt(void *ctx, Stmt *s);
 
@@ -592,9 +592,9 @@ typedef struct { Module *m; TypeTable *tt; Checker *c; } CloseCtx;
 
 static bool getReach(const FuncDef *f, ReachKind k) {
     switch (k) {
-    case REACH_HOME:  return f->needsHome;
+    case REACH_HOME:  return anNeedsHome(f);
     case REACH_POOL:  return planMakesPool(f);
-    case REACH_ALLOC: return f->allocState == 1;
+    case REACH_ALLOC: return anAllocState(f) == 1;
     case REACH_USES_HOME: return planUsesHome(f);
     }
     return false;
@@ -602,9 +602,9 @@ static bool getReach(const FuncDef *f, ReachKind k) {
 
 static void setReach(FuncDef *f, ReachKind k, bool v) {
     switch (k) {
-    case REACH_HOME:  f->needsHome = v; break;
+    case REACH_HOME:  anSetNeedsHome(f, v); break;
     case REACH_POOL:  planSetMakesPool(f, v); break;
-    case REACH_ALLOC: f->allocState = v ? 1 : 2; break;
+    case REACH_ALLOC: anSetAllocState(f, v ? 1 : 2); break;
     case REACH_USES_HOME: planSetUsesHome(f, v); break;
     }
 }
@@ -623,8 +623,9 @@ static bool bodyReaches(FuncDef *f, ReachKind k) {
          * in the home arena counts, as does handing this function's home on to a callee. Measured:
          * `examples/out-param.extc` used to carry a parameter nobody read, and gcc said so. */
         if (callsUsesHome(f->body)) return true;
-        for (size_t i = 0; i < f->arenaSites.len; i++)
-            if (planArenaLevel(*(Expr **)vecAt(&f->arenaSites, i)) == ARENA_HOME) return true;
+        Vec as_ = anArenaSites(f);
+        for (size_t i = 0; i < as_.len; i++)
+            if (planArenaLevel(*(Expr **)vecAt(&as_, i)) == ARENA_HOME) return true;
         return false;
     }
     return false;
@@ -1545,7 +1546,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
 void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if (!v) return;
     if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !planCallee(v)) return;
-    if (!planCallee(v)->needsHome) return;
+    if (!anNeedsHome(planCallee(v))) return;
     anSetHomeDepth(v, (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len);
     setCallArenaArg(c, v);          /* always keep `homeDepth` and `arenaArg` in step */
 }
@@ -1602,7 +1603,7 @@ bool calleeMakesPool(FuncDef *f) {
      * 库里的容器没这个毛病，只因为库函数"对地方透明"；用户的文件不是库，
      * 于是那条隐藏的差别就露出来了。 */
     if (f->body == NULL && isPoolCtorName(f->name)) return true;
-    return f->isAssoc && f->owner && anMakesPoolAny(f->owner);
+    return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
 
 /* 「**这一次调用能不能走到 `extc_pool_new`**」—— 与 `calleeMakesPool` 问的**不是同一个问题**。
@@ -1625,7 +1626,7 @@ bool calleeCreatesPool(FuncDef *f) {
     if (!f) return true;                       /* 未解析 ⇒ 保守 */
     if (planMakesPool(f)) return true;
     if (f->body == NULL && isPoolCtorName(f->name)) return true;
-    return f->isAssoc && f->owner && anMakesPoolAny(f->owner);
+    return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
 
 void setCallZoneArg(Checker *c, Expr *e) {
@@ -1931,14 +1932,15 @@ static void reportMemory(Checker *c, Vec *all) {
             (c->ctx && c->ctx->path) ? c->ctx->path : "?");
     for (size_t i = 0; i < all->len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(all, i);
-        if (!f->arenaSites.len) continue;
+        if (!anArenaSites(f).len) continue;
         Vec sites;
         vecInit(&sites, c->arena, sizeof(int));
         int nextLoop = 1;
         collectLoopSites(f->body, 0, &nextLoop, &sites);
         fprintf(stderr, "\n  %s\n", f->name ? f->name : "?");
-        for (size_t j = 0; j < f->arenaSites.len; j++) {
-            Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+        Vec as_ = anArenaSites(f);
+        for (size_t j = 0; j < as_.len; j++) {
+            Expr *site = *(Expr **)vecAt(&as_, j);
             if (!site) continue;
             nSite++;
             bool inLoop = loopIdOf(&sites, site->line) != 0;
@@ -2550,9 +2552,9 @@ static int paramIndexOfExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!f || !e) return -1;
     Sym *root = rootSymNoScope(e);
     if (!root) return -1;
-    EXTC_DBG_ASSERT(f->nParamSyms <= 64);         /* must equal the array the struct declares */
-    for (int i = 0; i < f->nParamSyms; i++)
-        if ((Sym *)f->paramSyms[i] == root) return i;
+    EXTC_DBG_ASSERT(anParamSymCount(f) <= 64);         /* must equal the array the struct declares */
+    for (int i = 0; i < anParamSymCount(f); i++)
+        if ((Sym *)anParamSyms(f)[i] == root) return i;
     return -1;
 }
 
@@ -2926,14 +2928,14 @@ static void collectEffects(Checker *c, FuncDef *f) {
     if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", FN(f));
     Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
     collectFreshLocals(c->arena, &fresh, f->body);
-    f->freshCount = (unsigned)fresh.len;
+    anSetFreshCount(f, (unsigned)fresh.len);
     collectEffectsStmt(c, f, f->body, &fresh);
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects] %-22s toParam[Addr=0x%llx Cont=0x%llx Other=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] localAddr=%d fresh=%u callees=%zu\n",
                 FN(f), (unsigned long long)f->addrMask, (unsigned long long)f->contMask,
                 (unsigned long long)f->otherMask,
                 (unsigned long long)f->homeAddrMask, (unsigned long long)f->homeContMask,
-                (int)f->addrFromLocal, f->freshCount, f->callees.len);
+                (int)f->addrFromLocal, anFreshCount(f), f->callees.len);
 }
 
 /* Is the depth of this value decided by an allocation site?
@@ -4191,7 +4193,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     if (f->isBuiltin && !f->body) return;
     /* A lambda's `call` method: its body was checked where the lambda was written, because that is
      * where the capture set comes from (check_expr.c, checkLambda). */
-    if (f->lamChecked) return;
+    if (anLamChecked(f)) return;
 
     /* The coroutine protocols (`next`/`value`/`send`) have no body: they are checked inline at
      * their call sites. Checking one here walked a null body. */
@@ -4218,7 +4220,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * below). */
     if (f->isExtern) {
         planSetMayUseArena(f, false);
-        f->needsHome   = false;
+        anSetNeedsHome(f, false);
         /* Only scalars and single pointers may cross the boundary. A `slice<T>` would
         * become two C arguments (data and length), so the names would not match, and a
         * struct has no frozen layout; the stdlib wrappers pass `s.data` and `s.len`
@@ -4320,7 +4322,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     * does not: its allocations stay in its own block. */
     if (!f->isExtern && stmtHasNew(f->body) &&
         ((f->ret && typeContainsRef(c->tt, f->ret)) || stmtStoresThroughDeref(c, f->body, f)))
-        f->needsHome = true;
+        anSetNeedsHome(f, true);
 
     Vec     *savedParams = c->curParams;
 
@@ -4369,7 +4371,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * generated names are identical and do not drift. */
     c->nameUses.len = 0;
 
-    f->nParamSyms = 0;                    /* a generic body may be walked more than once */
+    anSetParamSymCount(f, 0);                    /* a generic body may be walked more than once */
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
         /* A parameter is mutable: it is a local copy handed over by the caller, as in C,
@@ -4378,7 +4380,11 @@ static void checkFunc(Checker *c, FuncDef *f) {
         p->cname = sym->cname;
         /* Record the binding now, while the scope exists: the effect summary runs later, with no
          * scope at all, and needs the identity to attribute a store to the right parameter. */
-        if (f->nParamSyms < EFF_MAX_PARAMS) f->paramSyms[f->nParamSyms++] = sym;
+        if (anParamSymCount(f) < EFF_MAX_PARAMS) {
+            int at = anParamSymCount(f);
+            anParamSyms(f)[at] = sym;
+            anSetParamSymCount(f, at + 1);
+        }
     }
     /* The body does not open a scope of its own: parameters and body locals share one.
      * Shadowing a parameter with `let a = ...` is therefore only a new name, which is
@@ -4409,7 +4415,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     }
 
     collectEffects(c, f);      /* compute the effect summary; it is only recorded here */
-    f->arenaSites = c->curArenaSites;   /* handed to the pass that runs after the analysis closes */
+    anSetArenaSites(f, c->curArenaSites);   /* handed to the pass that runs after the analysis closes */
 
     /* Reference depths, recomputed as a monotone data-flow fixed point over the body.
      *
@@ -6080,7 +6086,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         fi->addrMask = fi->contMask = fi->otherMask = 0;
         fi->homeAddrMask = fi->homeContMask = 0;
         fi->addrFromLocal = false;
-        fi->freshCount = 0;
+        anSetFreshCount(fi, 0);
         fi->effState = EFF_NONE;  fi->effComplete = false;  fi->effUnknown = false;
         vecInit(&fi->callees, c.arena, sizeof(FuncDef *));
         collectEffects(&c, fi);
@@ -6097,7 +6103,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             f->addrMask = f->contMask = f->otherMask = 0;
             f->homeAddrMask = f->homeContMask = 0;
             f->addrFromLocal = false;
-            f->freshCount = 0;
+            anSetFreshCount(f, 0);
             f->effState = EFF_NONE;  f->effComplete = false;  f->effUnknown = false;
             vecInit(&f->callees, c.arena, sizeof(FuncDef *));
             collectEffects(&c, f);
@@ -6184,7 +6190,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * site (the level it computes does not depend on how often it runs). */
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
-            if (planTemplate(f)) f->arenaSites = planTemplate(f)->arenaSites;
+            if (planTemplate(f)) anSetArenaSites(f, anArenaSites(planTemplate(f)));
         }
 
         /* Recompute the direct `needsHome` criterion for every function, uniformly.
@@ -6219,7 +6225,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 rt = ttSubstitute(c.tt, rt, &f->typeParams, &f->targs);
             if (stmtHasNew(f->body) &&
                 ((rt && typeContainsRef(c.tt, rt)) || stmtStoresThroughDeref(&c, f->body, f)))
-                f->needsHome = true;
+                anSetNeedsHome(f, true);
         }
 
         /* Recompute the escape-sensitive home-arena decision: the analysis writes last and
@@ -6327,8 +6333,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         int fixed = 0, keptBlock = 0;
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
-            for (size_t j = 0; j < f->arenaSites.len; j++) {
-                Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+            Vec as_ = anArenaSites(f);
+            for (size_t j = 0; j < as_.len; j++) {
+                Expr *site = *(Expr **)vecAt(&as_, j);
                 if (site->kind == EX_NEW || site->kind == EX_GENCALL) {
                     /* The solver has finished, so place the site as the single authority:
                      *   - `escaped` (some path that touched it demanded a lifetime beyond
@@ -6347,11 +6354,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                     if (dbgOn("EXTC_DBG_SITE2"))
                         fprintf(stderr, "[site2] %-10s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", anMinAt(site), anLexicalLevel(site),
-                                planArenaLevel(site), f->needsHome?1:0, (int)site->kind);
+                                planArenaLevel(site), anNeedsHome(f)?1:0, (int)site->kind);
                     if (dbgOn("EXTC_DBG_S3"))
                         fprintf(stderr, "[s3] %-8s minAt=%d lexi=%d arena=%d home=%d kind=%d\n",
                                 f->name?f->name:"?", anMinAt(site), anLexicalLevel(site),
-                                planArenaLevel(site), f->needsHome?1:0, (int)site->kind);
+                                planArenaLevel(site), anNeedsHome(f)?1:0, (int)site->kind);
                     int want;                            /* the arena it finally belongs to */
                     if (anMinAt(site) == 0) {
                         want = ARENA_HOME;              /* must outlive this frame => home arena */
@@ -6406,8 +6413,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * nothing and the field is not read. */
     for (size_t i = 0; i < all.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&all, i);
-        for (size_t j = 0; j < f->arenaSites.len; j++) {
-            Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+        Vec as_ = anArenaSites(f);
+        for (size_t j = 0; j < as_.len; j++) {
+            Expr *site = *(Expr **)vecAt(&as_, j);
             if (!site->arenaArgPending || !planCallee(site) || !planUsesHome(planCallee(site))) continue;
             planSetArenaArg(site, ARENA_HOME);
             site->arenaArgPending = false;
@@ -6431,8 +6439,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * two ways of stating the same number, so sync them unconditionally after placement. */
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
-            for (size_t j = 0; j < f->arenaSites.len; j++) {
-                Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+            Vec as_ = anArenaSites(f);
+            for (size_t j = 0; j < as_.len; j++) {
+                Expr *site = *(Expr **)vecAt(&as_, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
                 anSetRefDepth(site, arenaDepthOf(planArenaLevel(site)));   /* keep the two in sync */
             }
@@ -6449,11 +6458,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 FuncDef *ft = planTemplate(f);
                 const char *ftName = !ft ? "-" : (planInstName(ft) ? planInstName(ft) : ft->name);
                 fprintf(stderr, "[home] %-24s uses=%d needs=%d tmpl=%-12s sites=%zu",
-                        planInstName(f) ? planInstName(f) : f->name, (int)planUsesHome(f), (int)f->needsHome,
+                        planInstName(f) ? planInstName(f) : f->name, (int)planUsesHome(f), (int)anNeedsHome(f),
                         ftName,
-                        f->arenaSites.len);
-                for (size_t j = 0; j < f->arenaSites.len; j++)
-                    fprintf(stderr, " L%d", planArenaLevel(*(Expr **)vecAt(&f->arenaSites, j)));
+                        anArenaSites(f).len);
+                Vec as_ = anArenaSites(f);
+                for (size_t j = 0; j < as_.len; j++)
+                    fprintf(stderr, " L%d", planArenaLevel(*(Expr **)vecAt(&as_, j)));
                 fprintf(stderr, "\n");
             }
 
@@ -6659,8 +6669,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         Vec allF; allFunctions(arena, m, &allF);
         for (size_t i = 0; i < allF.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&allF, i);
-            for (size_t j = 0; j < f->arenaSites.len; j++) {
-                Expr *site = *(Expr **)vecAt(&f->arenaSites, j);
+            Vec as_ = anArenaSites(f);
+            for (size_t j = 0; j < as_.len; j++) {
+                Expr *site = *(Expr **)vecAt(&as_, j);
                 if (site->kind != EX_NEW && site->kind != EX_GENCALL) continue;
                 int want = arenaDepthOf(planArenaLevel(site));
                 if (anRefDepth(site) != want) {
@@ -6748,7 +6759,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
  * answered lazily: that closure only runs after every function has been checked, while a
  * caller checking its own body already needs to know whether the call it is looking at puts
  * new storage into its container. `varArray::push` does not allocate itself, the `grow` it
- * calls does, so looking at `f->needsHome` alone misses a callee one hop away.
+ * calls does, so looking at `anNeedsHome(f)` alone misses a callee one hop away.
  *
  * Params:
  *   c - checker
@@ -6767,16 +6778,16 @@ static bool allocInStmt(void *ctx, Stmt *s);
 static bool funcAllocates(Checker *c, FuncDef *f) {
     if (!f) return true;                     /* unknown, so assume it allocates */
     if (f->isExtern) return false;           /* an extern function does not touch our arenas */
-    if (f->allocState == 1) return true;
-    if (f->allocState == 2) return false;
-    if (f->allocState == 3) return true;     /* on the cycle being computed => conservative */
-    f->allocState = 3;
+    if (anAllocState(f) == 1) return true;
+    if (anAllocState(f) == 2) return false;
+    if (anAllocState(f) == 3) return true;     /* on the cycle being computed => conservative */
+    anSetAllocState(f, 3);
     /* The same per-node criterion the closures use (`bodyReaches`), plus the callee half that only
      * this lazy path can afford to ask: it runs while a body is being checked, before the closures
      * exist, and it counts a function already on the stack as allocating, which is the
      * conservative direction for a question asked mid-check. */
     bool r = bodyReaches(f, REACH_ALLOC) || stmtCallsAllocator(c, f->body);
-    f->allocState = r ? 1 : 2;
+    anSetAllocState(f, r ? 1 : 2);
     return r;
 }
 

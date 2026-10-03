@@ -470,7 +470,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 int d = targetDepth(c, s->u.var.init);
                 Expr *ini = s->u.var.init;
                 if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
-                    && planCallee(ini) && planCallee(ini)->needsHome && (int)c->scopes.len > d)
+                    && planCallee(ini) && anNeedsHome(planCallee(ini)) && (int)c->scopes.len > d)
                     d = (int)c->scopes.len;      /* a callee with a home arena uses mine */
                 /* Storage the initializer signed as out-of-frame (`effects Ret=0`, or a chain
                  * rooted at a global) is not in a frame at all, so the home-arena heuristic above
@@ -1033,9 +1033,9 @@ void checkStmt(Checker *c, Stmt *s) {
                 /* A lambda may leave its result type out (docs/topics/LAMBDA.md section 2): the first
                  * `return <value>` decides it. Filling it in here is what lets the rest of the body --
                  * and every later return -- be checked against a real type. */
-                if (c->curFunc && c->curFunc->lamInferRet && got && !ttIsError(got)) {
+                if (c->curFunc && anLamInferRet(c->curFunc) && got && !ttIsError(got)) {
                     c->curFunc->ret = got;
-                    c->curFunc->lamInferRet = false;
+                    anSetLamInferRet(c->curFunc, false);
                     return;
                 }
                 ckError(c, s->line, NULL, "`%s` does not return a value",

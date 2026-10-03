@@ -658,8 +658,6 @@ struct FuncDef {
      * parameter (legal, documented): audit P0-6(d) declared `var s: slice<u8> = q`, the store was
      * attributed to parameter `s`, and the call site checked the wrong argument. Identity has to be
      * recorded while the scope is still there (INV-I). */
-    void       *paramSyms[64];   /* must equal EFF_MAX_PARAMS, the summary mask width */
-    int         nParamSyms;
     Type       *ret;             /* NULL when the function returns nothing */
     /* Some `ext f(x)` starts this coroutine as a task. The stable adapter that the domain's task
      * table needs -- `bool (*)(void *)` while `$next` takes a concrete frame pointer, and calling one
@@ -669,10 +667,8 @@ struct FuncDef {
     /* A lambda's `call` method: its body was already checked **in place**, in the scope the lambda
      * was written in (that is where the capture set comes from), so the pass that checks struct
      * methods must not check it a second time. */
-    bool        lamChecked;
     /* A lambda whose result type was left out: the first `return <value>` decides it, and this flag
      * is what lets that return through before the type is known (check_stmt.c, ST_RETURN). */
-    bool        lamInferRet;
     Type       *coroRetProto;
     /* Named from **outside** its instance: a `dyn` table's thunk calls it, so its body must survive
      * the "definitions nothing names" pass (which cannot see that reference). */
@@ -686,7 +682,6 @@ struct FuncDef {
     Vec         coroFrame;       /* Param* */
     Stmt       *body;            /* ST_BLOCK */
     StructDef  *owner;           /* the struct a method belongs to; NULL for a free function */
-    bool        isAssoc;         /* declared inside a struct body but without `self` */
     /* An external declaration, `extern!("libc") fn ...`. The C side is a black box, so
      * whoever calls it has to vouch for it:
      *   hasEffects - the declaration carries `effects Addr=... Cont=...`, which is the
@@ -775,7 +770,6 @@ struct FuncDef {
      *
      * A caller needs something to pass, so the property is transitive: it is computed
      * as a fixed point over the call graph. */
-    bool        needsHome;
     /* Nodes in this body whose arena answer has to wait for the transitive `needsHome`
      * closure, in the order they were checked (`Expr*`):
      *   - an `EX_NEW` site: with a home arena, `arenaLevel` becomes ARENA_HOME, so every
@@ -789,7 +783,6 @@ struct FuncDef {
      * expression visitor: a switch over the shape of the AST is exactly the code that is
      * forgotten when a node kind is added, and this compiler already has several.
      * Recording the sites while the body is checked costs no extra traversal. */
-    Vec         arenaSites;
     /* `@overwrite`: how many reuse sites this body has, and where their storage lives.
      * The storage has to outlive the whole period over which a site is reused:
      *   - the site is in `main`, or this function can reach itself, that is, it recurses:
@@ -812,14 +805,12 @@ struct FuncDef {
      *   0 = not computed, 1 = allocates, 2 = does not, 3 = being computed.
      * State 3 breaks cycles, and a function on a cycle is conservatively treated as
      * allocating. See `funcAllocates` in check_top.c. */
-    int         allocState;
     /* Does this function print, directly or through the functions it calls?
      *
      * Used to decide whether an earlier call in the same statement has an observable
      * effect that the temporary variable for `??` would end up jumping ahead of.
      *   0 = not computed, 1 = prints, 2 = does not, 3 = being computed (a cycle is
      *   treated as "prints"). */
-    int         mayPrintState;
     /* Has this method or function ever been called?
      *
      * Generic instantiation rechecks and emits only the methods that are actually
