@@ -845,5 +845,13 @@ callee **自己的表**（局部）都被判"活得不够久" ✗（实测 `pl.v
 **工具要有牙**：把 shim 里的 `SQLITE_TRANSIENT` 改成 `SQLITE_STATIC`（改成"留指针"），
 `verify` 当场报 **被证伪**（rc=255 = 被信号杀死，隔离页上的硬缺页）——这一步实测过。
 
+**工具自己也在闸门里**（`check.sh quick`）：`tests/pkg/` 放了一对**自足靶子**（不依赖任何外部库，
+C 侧就是包里的 `shim.c`），同一条判据跑在两份实现上，结论必须相反：
+
+    tests/pkg/honest   ⇒ 通过（1 通过 + 1 不可验证 —— 三态在同一份输出里出现）
+    tests/pkg/keeper   ⇒ 被证伪（rc=1 · 隔离页上的硬缺页）
+
+这条判据钉住的是**工具本身**：哪天 `quarantine` 不再隔离、或 extpkg 把失败当成功，闸门会红。
+
 **sqlite 包明确没绑的**：`sqlite3_exec` 的回调（回调机制未落地）⇒ 建表也走 `prepare`/`step`；
 `SQLITE_STATIC` 语义（包选 TRANSIENT：拷贝载荷，调用方不必保命）；任何 `sqlite3**` 原样入口。

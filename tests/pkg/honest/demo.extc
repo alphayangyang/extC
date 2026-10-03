@@ -1,0 +1,4 @@
+/* 自足包（诚实版）：契约写在 effects 里，判据用隔离页去**证伪**它。
+ * 这个包不依赖任何外部库 —— 靶子（C 侧）就是包自己的 shim.c。 */
+extern!("extc-demo-honest") fn extc_demo_consume(p: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0

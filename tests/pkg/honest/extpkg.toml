@@ -1,0 +1,20 @@
+# 自足包（诚实版）：声明台账 —— 一条可验证、一条不可验证（三态输出要能同时出现两态）。
+[package]
+name = "honest"
+version = "1"
+
+[sources]
+c = ["shim.c"]
+
+[[claim]]
+id = "no-retain"
+statement = "shim 只在调用期间读载荷 ⇒ 不留调用方的指针"
+test = "contract_no_retain"
+state = "verifiable"
+
+[[claim]]
+id = "handle-ownership"
+statement = "释放由调用方负责（本包没有需要释放的资源）"
+test = ""
+state = "unverifiable"
+reason = "判据观察不到「谁该释放」；台账的作用就是把它摆出来而不是当成验过"

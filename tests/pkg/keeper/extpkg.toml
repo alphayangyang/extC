@@ -1,0 +1,20 @@
+# 自足包（食言版）：台账与诚实版逐字相同（声明的状态不因实现撒谎而改变）。
+[package]
+name = "keeper"
+version = "1"
+
+[sources]
+c = ["shim.c"]
+
+[[claim]]
+id = "no-retain"
+statement = "shim 只在调用期间读载荷 ⇒ 不留调用方的指针（**这是假的**）"
+test = "contract_no_retain"
+state = "verifiable"
+
+[[claim]]
+id = "handle-ownership"
+statement = "释放由调用方负责（本包没有需要释放的资源）"
+test = ""
+state = "unverifiable"
+reason = "判据观察不到「谁该释放」；台账的作用就是把它摆出来而不是当成验过"

@@ -78,20 +78,22 @@ def run_claim(extc: Path, pkg: Path, sources: list[str], claim: dict, workdir: P
     return True, want or "rc=0"
 
 
-def check_libs(pkg: Path, name: str) -> list[str]:
-    """`.link` 里声明的库在本机找不找得到（找不到不是失败，但要说出来）。"""
-    link = pkg / f"{name}.link"
-    if not link.is_file():
-        return [f"没有 {name}.link（链接需求未声明）"]
+def check_libs(pkg: Path) -> list[str]:
+    """包目录里每个 `.link` 声明的库，在本机找不找得到（找不到不是失败，但要说出来）。
+    按目录扫而不是按包名拼：包名与模块名不必相同（`honest` 包里的模块可以叫 `demo`）。"""
+    links = sorted(pkg.glob("*.link"))
+    if not links:
+        return ["没有 .link（链接需求未声明）"]
     notes = []
-    for line in link.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line.startswith("lib "):
-            continue
-        lib = line[4:].strip()
-        probe = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True)
-        found = lib.lstrip(":") in probe.stdout
-        notes.append(f"{lib}：{'本机有' if found else '**本机找不到**'}")
+    probe = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True)
+    for link in links:
+        for line in link.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line.startswith("lib "):
+                continue
+            lib = line[4:].strip()
+            found = lib.lstrip(":") in probe.stdout
+            notes.append(f"{link.name}: {lib}：{'本机有' if found else '**本机找不到**'}")
     return notes
 
 
@@ -114,7 +116,7 @@ def main() -> int:
     claims = man.get("claim", [])
 
     print(f"包 {name} {version} · 契约验证（{len(claims)} 条声明）")
-    for note in check_libs(pkg, name):
+    for note in check_libs(pkg):
         print(f"  链接  {note}")
     print()
 

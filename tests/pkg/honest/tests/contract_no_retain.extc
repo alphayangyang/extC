@@ -1,0 +1,23 @@
+// expect: contract=holds
+// 契约：`extc_demo_consume` 只在调用期间读 ⇒ 返回后立刻隔离那块内存，它也不该再碰。
+use demo
+use std::io
+use std::heap
+
+fn main() -> i32 {
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(4096))!
+    v[0] = u8(3)
+    let s: i64 = demo::extc_demo_consume(v.data, i64(1))
+    if !pl.quarantine(v.data, u64(4096)) {
+        io::cout << "contract=setup-failed\n"
+        return 1
+    }
+    pl.close()
+    if s != i64(3) {
+        io::cout << "contract=bad-sum\n"
+        return 1
+    }
+    io::cout << "contract=holds\n"
+    return 0
+}

@@ -1,0 +1,25 @@
+// expect: contract=holds
+// 同一个判据用在食言包上：调用后立刻隔离，再调 `read_later` —— 它若真留了指针就是硬缺页，
+// extpkg verify 因此报"被证伪"（rc=255）。判据本身不变，变的是被验的对象。
+use demo
+use std::io
+use std::heap
+
+fn main() -> i32 {
+    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var v: mut slice<u8> = pl.alloc(u64(4096))!
+    v[0] = u8(3)
+    let s: i64 = demo::extc_demo_take(v.data, i64(1))
+    if !pl.quarantine(v.data, u64(4096)) {
+        io::cout << "contract=setup-failed\n"
+        io::flushCout()
+        flush()
+        return 1
+    }
+    io::cout << "contract=armed\n"
+    io::flushCout()
+    flush()
+    let later: i64 = demo::extc_demo_read_later()      /* 留了指针 ⇒ 读隔离页 ⇒ 硬缺页 */
+    io::cout << "contract=holds " << s << " " << later << "\n"
+    return 0
+}

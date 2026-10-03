@@ -191,6 +191,19 @@ if out=$(timeout 600 ./tests/contract/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（诚实库 contract=holds · 食言库 + 隔离 rc=139 · 毒化路径 falsified · 对照组 silent=stale）"
 else bad "tests/contract/run.sh"; echo "$out"; fi
 
+echo "== 包验证工具（tools/extpkg.py：三态输出 · 工具自己有牙 —— 食言包必须被证伪）=="
+if out=$(timeout 600 python3 tools/extpkg.py verify tests/pkg/honest 2>&1) \
+   && echo "$out" | grep -q '通过 .*no-retain' && echo "$out" | grep -q '不可验证  handle-ownership'; then
+    ok "诚实包：1 通过 + 1 不可验证（三态同现 · 台账不把「没验」说成「验过」）"
+else bad "extpkg verify tests/pkg/honest"; echo "$out" | tail -8; fi
+if out=$(timeout 600 python3 tools/extpkg.py verify tests/pkg/keeper 2>&1); then
+    bad "食言包：应当被证伪（rc=1），实得 rc=0"; echo "$out" | tail -8
+else
+    if echo "$out" | grep -q '被证伪'; then
+        ok "食言包：当场被证伪（rc=1 · 隔离页上的硬缺页）"
+    else bad "食言包：输出里没有被证伪"; echo "$out" | tail -8; fi
+fi
+
 echo "== 绑定生成器（tools/cbindgen.py：类型映射 · 零 effects · 生成物能编译并真调用）=="
 if out=$(timeout 600 ./tests/cbindgen/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（8 条声明逐条对拍 · 零 effects · --check · 生成的绑定真 dlopen libc 调 getpid）"

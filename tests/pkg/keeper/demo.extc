@@ -1,0 +1,6 @@
+/* 自足包（食言版）：签名与诚实版**一模一样**（Addr=0 Cont=0），实现却留了指针。
+ * 语言侧看不出区别 —— 这正是"签字是信任不是证明"，也正是 extpkg verify 存在的理由。 */
+extern!("extc-demo-keeper") fn extc_demo_take(p: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-demo-keeper") fn extc_demo_read_later() -> i64
+    effects Addr=0 Cont=0

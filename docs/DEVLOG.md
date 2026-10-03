@@ -58,6 +58,10 @@
 1 不适用。工具**有牙**——把 shim 的 TRANSIENT 改成 STATIC（改成"留指针"），verify 当场报被证伪
 （rc=255，隔离页上的硬缺页）。
 
+**工具本身也进了闸门**：`tests/pkg/` 放一对自足靶子（诚实包 / 食言包，不依赖任何外部库），
+`check.sh quick` 里钉住"诚实包必须三态同现、食言包必须被证伪"——哪天 `quarantine` 不再隔离，
+或者 extpkg 把失败当成功，闸门会红。`check.sh quick` 因此从 62 节到 **64 节**。
+
 路上修了一个真 bug：**链接顺序**。模块带来的 `-l` 原本排在命令行给的 flag 之前，而
 `--as-needed` 会把"需要它的人还没出现"的库丢掉 ⇒ shim 里的 `sqlite3_*` 全成未定义引用。
 改成"命令行在前、模块库在后"（objects before libraries），并加了判据 `auto-link-order`——
