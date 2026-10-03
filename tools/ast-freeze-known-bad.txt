@@ -10,7 +10,6 @@ src/check_expr.c:callee	2 处（行 2437, 3383）	R1 AST 冻结的施工单：P2
 src/check_expr.c:cname	3 处（行 854, 888, 1127）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTable	1 处（行 664）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:dynTrait	1 处（行 3508）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_expr.c:effComplete	1 处（行 1193）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:fields	1 处（行 997）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:hasEffects	1 处（行 1199）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:hi	1 处（行 1795）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -47,9 +46,6 @@ src/check_top.c:arenaArgPending	6 处（行 1646, 1649, 1663, 6284, 6304）	R1 A
 src/check_top.c:call	1 处（行 1715）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:cname	13 处（行 3927, 4109, 4119, 4160, 4172）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:coroRetProto	1 处（行 4336）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:effComplete	5 处（行 1155, 1174, 2915, 6093, 6113）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:effState	4 处（行 1156, 1175, 6093, 6113）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_top.c:effUnknown	3 处（行 2795, 6093, 6113）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:index	9 处（行 6973, 6973, 6976, 6989, 6989）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:init	2 处（行 6988, 7059）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:modName	3 处（行 4103, 4154, 4647）	R1 AST 冻结的施工单：P2 把它降到 0
@@ -59,7 +55,6 @@ src/check_top.c:sym	1 处（行 3525）	R1 AST 冻结的施工单：P2 把它降
 src/check_top.c:target	1 处（行 3274）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_top.c:type	23 处（行 82, 4115, 4120, 4166, 4176）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:coroFrame	1 处（行 5121）	R1 AST 冻结的施工单：P2 把它降到 0
-src/codegen.c:coroKind	1 处（行 6991）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:count	2 处（行 6480, 6488）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:dynTable	1 处（行 5840）	R1 AST 冻结的施工单：P2 把它降到 0
 src/codegen.c:path	1 处（行 6933）	R1 AST 冻结的施工单：P2 把它降到 0

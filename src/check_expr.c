@@ -1190,7 +1190,7 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
      * given no arena at all, so that bound does not exist). */
     FuncDef *sig = (FuncDef *)arenaAllocZero(c->arena, sizeof(FuncDef));
     sig->isExtern    = true;        /* "a black box whose signature is the whole basis" */
-    sig->effComplete = true;
+    anSetEffComplete(sig, true);
     {
         FieldDef *fd = (e->u.call.callee && e->u.call.callee->kind == EX_FIELD)
                            ? planField(e->u.call.callee) : NULL;

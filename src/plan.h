@@ -74,6 +74,15 @@ void        anSetLamSig(StructDef *sd, const char *sig);
 bool        anMakesPoolAny(const StructDef *sd);
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
+/* ---- the effect closure's state (T4) ------------------------------------------------
+ *
+ * `effState` is the closure's work state (0 = not computed, 1 = done, 3 = being computed);
+ * `effComplete`/`effUnknown` are the results ("can the summary be trusted?"). None is read
+ * by code generation. */
+int  anEffState(const FuncDef *f);        void anSetEffState(FuncDef *f, int v);
+bool anEffComplete(const FuncDef *f);     void anSetEffComplete(FuncDef *f, bool v);
+bool anEffUnknown(const FuncDef *f);      void anSetEffUnknown(FuncDef *f, bool v);
+
 /* ---- effect summary (T4) ------------------------------------------------------------
  *
  * The transitively closed masks: "a call to this function may store that parameter's
@@ -87,6 +96,7 @@ uint64_t anOtherMask(const FuncDef *f);     void anSetOtherMask(FuncDef *f, uint
 uint64_t anHomeAddrMask(const FuncDef *f);  void anSetHomeAddrMask(FuncDef *f, uint64_t v);
 uint64_t anHomeContMask(const FuncDef *f);  void anSetHomeContMask(FuncDef *f, uint64_t v);
 bool     anAddrFromLocal(const FuncDef *f); void anSetAddrFromLocal(FuncDef *f, bool v);
+int      planCoroKind(const FuncDef *f);    void planSetCoroKind(FuncDef *f, int v);
 bool     planDeref(const Expr *e);          void planSetDeref(Expr *e, bool v);
 bool     planBoxedCoro(const Expr *e);      void planSetBoxedCoro(Expr *e, bool v);
 bool     planIsExtTarget(const FuncDef *f); void planSetIsExtTarget(FuncDef *f, bool v);

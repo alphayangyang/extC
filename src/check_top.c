@@ -1151,11 +1151,11 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
      * summary.
      */
     if (f->isExtern) return true;
-    if (f->effState == EFF_DONE) { if (c->fxOn) c->fxEffCached++; return f->effComplete; }
-    if (f->effState == EFF_IN_PROGRESS) { f->effComplete = false; return false; }   /* a cycle => incomplete */
-    f->effState = EFF_IN_PROGRESS;
+    if (anEffState(f) == EFF_DONE) { if (c->fxOn) c->fxEffCached++; return anEffComplete(f); }
+    if (anEffState(f) == EFF_IN_PROGRESS) { anSetEffComplete(f, false); return false; }   /* a cycle => incomplete */
+    anSetEffState(f, EFF_IN_PROGRESS);
     if (c->fxOn) c->fxEffCalls++;      /* one body entered (a memo hit returned above) */
-    bool complete = !f->effUnknown;
+    bool complete = !anEffUnknown(f);
     for (size_t i = 0; i < f->callees.len; i++) {
         FuncDef *g = *(FuncDef **)vecAt(&f->callees, i);
         if (c->fxOn) c->fxEffEdges++;  /* one callee edge merged */
@@ -1171,11 +1171,11 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
             complete = false;
         }
     }
-    f->effComplete = complete;
-    f->effState = EFF_DONE;
+    anSetEffComplete(f, complete);
+    anSetEffState(f, EFF_DONE);
     if (getenv("EXTC_DUMP_EFFECTS"))
         fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%llx Cont=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] other=0x%llx\n",
-                FN(f), (int)f->effComplete, (unsigned long long)anAddrMask(f), (unsigned long long)anContMask(f),
+                FN(f), (int)anEffComplete(f), (unsigned long long)anAddrMask(f), (unsigned long long)anContMask(f),
                 (unsigned long long)anHomeAddrMask(f), (unsigned long long)anHomeContMask(f), (unsigned long long)anOtherMask(f));
     return complete;
 }
@@ -2157,7 +2157,7 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
              * `effComplete` stays false forever. So a callee with any `mut ref`
              * parameter, which is an entry point for a store, is treated as one that may
              * store. The direction is safe: marking more only costs memory. */
-            if (!cf->effComplete) {
+            if (!anEffComplete(cf)) {
                 for (size_t pi = 0; pi < cf->params.len; pi++) {
                     Param *pp = *(Param **)vecAt(&cf->params, pi);
                     if (pp->type && pp->type->kind == TY_REF && pp->type->mut) { pub |= 1u; break; }
@@ -2740,7 +2740,7 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
 *   e - expression to walk; NULL is allowed
 *
 * Notes:
-*   - A call that could not be resolved sets `f->effUnknown`, which keeps the summary
+*   - A call that could not be resolved sets `anEffUnknown(f)`, which keeps the summary
 *     incomplete forever, so no check may be relaxed on the strength of it.
 *   - The recorded edges are the call graph of this function: they are what
 *     `computeEffectsTransitive` later closes the summary over.
@@ -2792,7 +2792,7 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
                 }
             }
         } else {
-            f->effUnknown = true;   /* nothing to go on -> incomplete, conservatively */
+            anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
         }
     }
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e)) {
@@ -2912,7 +2912,7 @@ static void collectEffects(Checker *c, FuncDef *f) {
             anSetAddrMask(f, all);
             anSetContMask(f, all);
         }
-        f->effComplete = true;      /* the declaration is authoritative, as a body would be */
+        anSetEffComplete(f, true);      /* the declaration is authoritative, as a body would be */
         anSetOtherMask(f, 0);
         return;
     }
@@ -6090,7 +6090,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         anSetHomeContMask(fi, 0);
         anSetAddrFromLocal(fi, false);
         anSetFreshCount(fi, 0);
-        fi->effState = EFF_NONE;  fi->effComplete = false;  fi->effUnknown = false;
+        anSetEffState(fi, EFF_NONE);  anSetEffComplete(fi, false);  anSetEffUnknown(fi, false);
         vecInit(&fi->callees, c.arena, sizeof(FuncDef *));
         collectEffects(&c, fi);
     }
@@ -6110,7 +6110,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             anSetHomeContMask(f, 0);
             anSetAddrFromLocal(f, false);
             anSetFreshCount(f, 0);
-            f->effState = EFF_NONE;  f->effComplete = false;  f->effUnknown = false;
+            anSetEffState(f, EFF_NONE);  anSetEffComplete(f, false);  anSetEffUnknown(f, false);
             vecInit(&f->callees, c.arena, sizeof(FuncDef *));
             collectEffects(&c, f);
         }

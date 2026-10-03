@@ -670,7 +670,6 @@ struct FuncDef {
     /* Named from **outside** its instance: a `dyn` table's thunk calls it, so its body must survive
      * the "definitions nothing names" pass (which cannot see that reference). */
     bool        dynTable;
-    int         coroKind;           /* codegen prepass: this coroutine's index, for handle dispatch */
     /* "a handle of it was made somewhere" (which makes it get a task even when it is never
      * spawned) is a plan fact: see `planCoroBoxed` in plan.h. */
     /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
@@ -843,9 +842,6 @@ struct FuncDef {
      *   3 = being computed, which breaks cycles.
      * `effUnknown` records whether any call could not be resolved; such a summary is
      * never complete, so it is treated conservatively. */
-    EffState    effState;
-    bool        effComplete;
-    bool        effUnknown;
 
     Vec         callees;      /* FuncDef*: the functions it calls, used to build the
                                * call graph and find its strongly connected components */

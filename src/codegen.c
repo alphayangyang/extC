@@ -2493,7 +2493,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                 g->needCoroHandle = true;
                 return arenaPrintf(g->arena,
                                    "((extc_coro){ .frame = __extc_czf%d, .kind = %d,"
-                                   " .task = __extc_czh%d })", sq, cf->coroKind, sq);
+                                   " .task = __extc_czh%d })", sq, planCoroKind(cf), sq);
             }
             if (planCallee(e) && planIsCoro(planCallee(e))) {
                 /* A coroutine call that is neither boxed nor driven: still a loud failure at the C
@@ -3963,7 +3963,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                     bufPrintf(&bx, " };");
                     cgLine(g, "%s", bufCstr(&bx));
                     cgLine(g, "extc_coro %s = (extc_coro){ .frame = __extc_czf%d, .kind = %d,"
-                              " .task = __extc_czh%d };", planCName(s), sq, cf->coroKind, sq);
+                              " .task = __extc_czh%d };", planCName(s), sq, planCoroKind(cf), sq);
                     g->needCoroHandle = true;
                     g->needPool = true;      /* the task table brings the zone runtime with it */
                     return;
@@ -4703,7 +4703,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
         if (!coroEmitted(cf)) continue;
         const char *cn = cFuncName(g, cf);
         cgLine(g, "    case %d: return %s%s((struct %s$frame *)h->frame);",
-               cf->coroKind, cn, planCoroNeedsZone(cf) ? "$next" : "$step", cn);
+               planCoroKind(cf), cn, planCoroNeedsZone(cf) ? "$next" : "$step", cn);
     }
     cgLine(g, "    }");
     cgLine(g, "    return false;");
@@ -4731,7 +4731,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
             if (!coroEmitted(ck2) || !planYieldType(ck2)) continue;
             if (strcmp(cType(g, planYieldType(ck2)), yt) != 0) continue;
             const char *cn2 = cFuncName(g, ck2);
-            cgLine(g, "    case %d: return ((struct %s$frame *)h->frame)->ret;", ck2->coroKind, cn2);
+            cgLine(g, "    case %d: return ((struct %s$frame *)h->frame)->ret;", planCoroKind(ck2), cn2);
         }
         cgLine(g, "    }");
         /* Unreachable in type-safe code (a handle's kind always matches its `T`); written as the
@@ -4750,7 +4750,7 @@ static void genCoroHandleDecls(CG *g, Module *m) {
             const char *cn3 = cFuncName(g, ck3);
             cgLine(g, "    case %d: ((struct %s$frame *)h->frame)->in = v; return %s%s("
                       "(struct %s$frame *)h->frame);",
-                   ck3->coroKind, cn3, cn3, planCoroNeedsZone(ck3) ? "$next" : "$step", cn3);
+                   planCoroKind(ck3), cn3, cn3, planCoroNeedsZone(ck3) ? "$next" : "$step", cn3);
         }
         cgLine(g, "    }");
         cgLine(g, "    return false;");
@@ -6988,7 +6988,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
              * "谁在什么时候写"依赖；现在就地推导，语义等价（实例自己的标记仍算数）。*/
             bool boxed = planCoroBoxed(cf)
                       || (planTemplate(cf) && planCoroBoxed(planTemplate(cf)));
-            cf->coroKind = ck++;
+            planSetCoroKind(cf, ck++);
             if (boxed) g.needCoroHandle = true;
         }
         /* The event layer is needed if anything used calls one of its entry points. */

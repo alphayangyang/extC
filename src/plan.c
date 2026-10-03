@@ -75,6 +75,9 @@
 #define AN_ARENA_SITES           (1ull << 54)
 #define AN_N_PARAM_SYMS          (1ull << 55)
 #define AN_PARAM_SYMS            (1ull << 56)
+#define AN_EFF_STATE             (1ull << 66)
+#define AN_EFF_COMPLETE          (1ull << 67)
+#define AN_EFF_UNKNOWN           (1ull << 68)
 #define PLAN_IS_EXT_TARGET       (1ull << 57)
 #define PLAN_IS_PAR_WORKER       (1ull << 58)
 #define AN_ADDR_MASK             (1ull << 59)
@@ -85,6 +88,7 @@
 #define PLAN_PAR_TLS_ARENA       (1ull << 62)
 #define PLAN_DEREF               (1ull << 63)
 #define PLAN_BOXED_CORO          (1ull << 64)
+#define PLAN_CORO_KIND           (1ull << 65)
 #define AN_DUMMY_PAST_64         (1ull << 65)
 #define AN_ADDR_FROM_LOCAL       (1ull << 64)
 
@@ -324,6 +328,41 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
     r->an.makesPoolAny = v; resultsSetBit(r, AN_MAKES_POOL_ANY);
 }
 
+/* ---- the effect closure's state (T4, tenth family) ----------------------------------
+ *
+ * `effState` is work state (see results.h); `effComplete`/`effUnknown` are results. None of
+ * the three is read by code generation, so all three sit on the analysis side. */
+bool anEffComplete(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, AN_EFF_COMPLETE) ? r->an.effComplete : false;
+}
+void anSetEffComplete(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.effComplete = v; resultsSetBit(r, AN_EFF_COMPLETE);
+}
+bool anEffUnknown(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, AN_EFF_UNKNOWN) ? r->an.effUnknown : false;
+}
+void anSetEffUnknown(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.effUnknown = v; resultsSetBit(r, AN_EFF_UNKNOWN);
+}
+int anEffState(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, AN_EFF_STATE) ? r->an.effState : 0;
+}
+void anSetEffState(FuncDef *f, int v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.effState = v; resultsSetBit(r, AN_EFF_STATE);
+}
+
 /* ---- effect summary (T4, eighth family) --------------------------------------------
  *
  * Pure results (the checker writes them, only the checker reads them): the transitively
@@ -447,6 +486,16 @@ void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl) {
 
 /* `deref` / `boxedCoro` are stamped on an **expression** (the three above are stamped on a
  * function), so they take an `Expr *` rather than going through the `FuncDef` macros. */
+int planCoroKind(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_CORO_KIND) ? r->coroKind : 0;
+}
+void planSetCoroKind(FuncDef *f, int v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->coroKind = v; resultsSetBit(r, PLAN_CORO_KIND);
+}
 bool planDeref(const Expr *e) {
     NodeResults *r = resultsOf(e, false);
     return r && resultsBit(r, PLAN_DEREF) ? r->deref : false;

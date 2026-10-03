@@ -88,7 +88,9 @@ typedef struct {
     bool        isParWorker;   /* used as a `parallel::run` worker */
     bool        parTlsArena;   /* a worker that may use the thread-local arena */
     bool        deref;         /* value position, but the type is `ref T`: emit `*(…)` */
+    int         coroKind;      /* the index codegen's prepass gave this coroutine */
     bool        boxedCoro;     /* a coroutine call stored as a handle: codegen boxes it */
+    uint64_t    addrMask;
     /* ---- call / receiver facts (T4, fifth family) ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */
     FieldDef   *field;         /* the field an `EX_FIELD` resolved to */
@@ -132,6 +134,16 @@ typedef struct {
         uint64_t addrMask, contMask, otherMask;
         uint64_t homeAddrMask, homeContMask;
         bool     addrFromLocal;
+        /* The effect closure's state (T4, tenth family). `effState` is **work state**: it is
+         * written and read only while the closure runs (`EFF_IN_PROGRESS` marks a cycle on the
+         * way down), and nothing outside `computeEffectsTransitive` reads it. It lives here
+         * rather than in a local table because the closure is a memoised recursion over a
+         * shared call graph -- the variant a per-call table would need is a `FuncDef*` hash,
+         * which is what this slot already is. `effComplete`/`effUnknown` are real results:
+         * later passes (and the closure itself) ask whether the summary can be trusted. */
+        int  effState;
+        bool effComplete;
+        bool effUnknown;
     } an;
     /* which of the fields above were written; an unset field reads as its default */
     /* Which fields of this slot were written. **Two words on purpose**: the plan side alone

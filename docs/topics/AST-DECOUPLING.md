@@ -746,3 +746,47 @@ void resultsSetBit(NodeResults *r, uint64_t bit);
 **结论**：`[ast-freeze]` 从 **135 降到 77** 之后，**按节点表的机械化迁移已经走到尾声**：
 剩下的 A 类是一个大单点（`Expr.type`），B 类是另一刀（pass 状态），C/D 类是**有意保留**。
 下一次开工前先读这一节，不要从"还有 77 条要搬"重新推。
+
+---
+
+## 22. T4 第十族：pass 状态（`effState`/`effComplete`/`effUnknown`/`coroKind`）—— **X3 目标达成**
+
+### 22.1 按"谁读"定归属，而不是按"像不像状态"
+
+这一族原计划做成"每 owner 一个结果对象"（`FuncResults`）。真量了读者之后，**不需要新形状**：
+
+| 字段 | 读者 | 桶 | 结论 |
+|---|---|---|---|
+| `coroKind` | **codegen 6 处** | **PLAN** | 搬进计划侧槽位，访问器 `planCoroKind` |
+| `effState` | 只有闭包自己 | **ANALYSIS** | 它是**工作状态**：写和读都发生在 `computeEffectsTransitive` 内部（`EFF_IN_PROGRESS` 标记下行遇到的环）。留在槽位而不是局部表，是因为闭包是**对共享调用图的记忆化递归**——局部表需要的正是"`FuncDef*` → 状态"这张表，而这个槽位已经是它了 |
+| `effComplete` `effUnknown` | 闭包 + 之后的阶段 | **ANALYSIS** | **真结果**（"这份摘要可不可信"），后置阶段会问 |
+
+⇒ **"pass 状态"不是一种存储类别，而是"生命周期"的描述**。`effState` 生命周期短，但它的
+**键**是 `FuncDef*`，而结果层提供的正是这样一个键空间 ⇒ 用现成的槽位是对的，
+新开一个 `FuncResults` 只会把同一张表再写一遍。**这条把上一轮"要做 B 类那一刀"的判断推翻了**，
+依据是实测的读者分布，不是设计偏好。
+
+### 22.2 X3 目标达成：`[plan-seam]` 的 codegen 回写 = **0**
+
+```
+[plan-seam] ok：codegen 直读计划字段 0 处（18 个字段）；AST 上已无 …/coroKind/effState/…
+            codegen 回写 0 处（基线 0，X3 目标 0）
+```
+
+`coroKind` 原来是"codegen 的 prepass 把下标写进 `FuncDef`，再在 6 处读回来"——**codegen 回写
+分析状态**，正是 X3 要清掉的反向耦合。现在 codegen 仍然写它自己的下标，但**写的是存储，
+不是 AST 字段**。
+
+
+### 22.3 改动与验收
+
+`results.h` 加 4 个槽位（`coroKind` 在计划侧，其余三个在分析侧）；`plan.c` 加 4 位
+（65–68）+ 4 组访问器；14 处写、12 处读改经访问器；`ast.h` 删 4 个字段；
+`[plan-seam]` 的 `MOVED` 扩到 22 个字段、`WRITE_BACK_BASELINE` **1 → 0**。
+
+**棘轮**：`[ast-freeze]` **77 → 72**；`[plan-seam]` 回写**基线 1 → 0**（X3 目标）。
+**验收**：构建零告警；tests **327/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
+
+**还剩什么**：`callees`（调用图 `Vec`，需要在原地增长 ⇒ 访问器要交回 `Vec*`）与 A 类的
+`Expr.type`（181 处，最大单点）。`[ast-freeze]` 72 条里，C/D 两类（真语法、别的结构体）
+是**有意保留**，见 21.3。

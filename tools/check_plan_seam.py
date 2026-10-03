@@ -70,7 +70,8 @@ PLAN_FIELDS = {
 MOVED = ["arenaLevel", "zoneLevel", "arenaArg", "needTemp",
          "usesHome", "mayUseArena", "makesPool", "condAllocs",
          "isCoro", "yieldType", "coroFrameType", "coroNeedsZone", "coroProto",
-         "coroBoxed", "instName", "tmpl"]
+         "coroBoxed", "instName", "tmpl", "coroKind",
+         "effState", "effComplete", "effUnknown", "deref", "boxedCoro"]
 
 WRITE = r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 
@@ -86,10 +87,12 @@ WRITE = r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 # 教训：按字段名跨结构体计数会张冠李戴 —— 归属必须按声明所在的**结构体**确认。
 # 因此真实基线是 31；下面每一条都是"codegen 写共享状态"（`used` 还被检查器读）。
 WRITE_BACK_BASELINE = {
-    # X3 第四步：`coroBoxed` 的**那处回写已被切断** —— 原来 codegen 把模板的标记写进实例的
-    # `FuncDef`，再在下一行读出来；现在就地推导（`planCoroBoxed(cf) || 模板的`），语义等价。
-    # 剩下的这一处是 codegen 的 prepass 下标（只读它自己的发射顺序），当前驱动顺序下无害。
-    "coroKind": 1,
+    # **X3 目标达成（2026-10-03）**：基线从 1 降到 0。
+    #   · `coroBoxed`：原来 codegen 把模板的标记写进实例的 `FuncDef` 再读回来；改成就地推导。
+    #   · `coroKind`：原来是 codegen 的 prepass 把下标写进 `FuncDef` 再在 5 处读回来（T4 第十族
+    #     把它搬进计划侧槽位，访问器 `planCoroKind`/`planSetCoroKind`）—— codegen 仍然"写"它
+    #     自己的下标，但**写的是存储，不是 AST 字段**，所以这条棘轮现在是 0。
+    # 规矩不变：只能降，不能升。
 }
 
 
