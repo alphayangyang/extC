@@ -87,12 +87,12 @@ def main():
 
     violations = {}
     src = os.path.join(ROOT, "src")
-    for name in sorted(os.listdir(src)):
-        if not name.endswith((".c", ".h")):
-            continue
+    for path in cscan.src_files(ROOT):
+        name = os.path.basename(path)
+        rel = cscan.rel(ROOT, path)
         # `#include "..."` is a directive, not a string literal: read the raw text, not
         # the stripped one (`cscan.strip` blanks what is inside the quotes).
-        text = open(os.path.join(src, name), encoding="utf-8").read()
+        text = open(path, encoding="utf-8").read()
         for m in re.finditer(r'#\s*include\s+"([A-Za-z_]+\.h)"', text):
             inc = m.group(1)
             if inc not in PRIVATE:
@@ -104,7 +104,7 @@ def main():
                 continue
             if name == "check.c" and inc == "check_internal.h":
                 continue
-            violations["src/%s -> %s" % (name, inc)] = (
+            violations["%s -> %s" % (rel, inc)] = (
                 "包了另一个阶段的私有头（去掉它会有编译错误 ⇒ 说明真正依赖的是里面的谓词，"
                 "见 docs/topics/AST-DECOUPLING.md P3）")
         # ---- layer order (added with P3.0's preparation) --------------------------------
@@ -120,7 +120,7 @@ def main():
         # (`check_*.c`) have no header of their own and sit at the checker's layer. The
         # three headers they are allowed to reach (their own subsystem's) are not counted.
         own = name[:-2] + ".h"
-        if os.path.exists(os.path.join(src, own)):
+        if os.path.exists(os.path.join(os.path.dirname(path), own)):
             my_layer, skip = LAYER_OF_H.get(own), frozenset()
         elif name.startswith("check_"):
             my_layer, skip = LAYER_OF_H["check_internal.h"], CHECKER_OWN_HEADERS
@@ -133,7 +133,7 @@ def main():
                     continue
                 inc_layer = LAYER_OF_H.get(inc)
                 if inc_layer is not None and inc_layer > my_layer:
-                    key = "src/%s -> %s" % (name, inc)
+                    key = "%s -> %s" % (rel, inc)
                     violations.setdefault(key,
                         "包含了比自己更高的层（%s 在第 %d 层，本文件在第 %d 层）—— 依赖只能向下；"
                         "确实需要时把它写进工具的例外表并说明理由" % (inc, inc_layer, my_layer))

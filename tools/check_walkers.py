@@ -24,6 +24,9 @@ import re
 import sys
 import pathlib
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cscan   # src_files: one recursive discovery, refuses to return nothing
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # Kinds that carry no child expression/statement: a walker may skip them (it has nothing to
@@ -149,7 +152,7 @@ def main() -> int:
     }
     bad = 0
     hand_written = 0        # recursive *and* untagged: the copies still to be migrated
-    for path in sorted((ROOT / "src").glob("*.c")):
+    for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
         raw = path.read_text(encoding="utf-8")
         text = strip_comments_and_strings(raw)
         for pos, block in switch_blocks(text):

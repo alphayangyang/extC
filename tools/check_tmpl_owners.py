@@ -37,6 +37,9 @@ import re
 import sys
 import pathlib
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cscan   # src_files: one recursive discovery, refuses to return nothing
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIELD = "tmpl"          # default; `--fields a,b,c` asks about several
 
@@ -359,8 +362,7 @@ def main() -> int:
             fields = a.split("=", 1)[1].split(",")
             argv.remove(a)
     files = [a for a in argv if not a.startswith("--")] or \
-            sorted(str(p) for p in (ROOT / "src").glob("*.c")) + \
-            sorted(str(p) for p in (ROOT / "src").glob("*.h"))
+            list(cscan.src_files(ROOT))
     structs = {}
     type_names = set()
     for p in sorted((ROOT / "src").glob("*.h")):

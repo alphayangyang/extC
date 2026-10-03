@@ -18,7 +18,9 @@ scanner that looks for *member accesses* must blank them instead, or a generated
 literal like `"a->top->used"` would be read as an access. Same file, two purposes, two
 rules -- hence this module rather than a shared function.
 """
+import os
 import re
+import sys
 
 WRITE_OPS = r"(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)"
 WRITE = re.compile(r"\s*" + WRITE_OPS)
@@ -153,3 +155,35 @@ class Ratchet:
             for k in sorted(violations):
                 f.write("%s\t%s\t%s\n" % (k, violations[k], reason))
         print("wrote %s (%d entries)" % (self.path, len(violations)))
+
+
+# ---------------------------------------------------------------- source discovery
+
+def src_files(root, exts=(".c", ".h"), subdir="src"):
+    """Every source file under `<root>/<subdir>`, **recursively**, sorted by path.
+
+    Why this exists: every tool here used to spell the discovery out itself
+    (a flat `glob` over `src/`), which was correct only while `src/` was flat.
+    When the tree grows subdirectories, a flat glob does not fail -- it finds **nothing**,
+    and a checker that scans nothing prints "ok". That is the failure mode this batch's
+    P3.0 preparation is about, so the discovery lives in one place and refuses to return an
+    empty list: a tool that finds no sources must fail loudly, not report success.
+    """
+    base = os.path.join(root, subdir)
+    found = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if name.endswith(exts):
+                found.append(os.path.join(dirpath, name))
+    found.sort()
+    if not found:
+        sys.stderr.write("cscan.src_files: no %s files under %s -- the tree moved?\n"
+                         % ("/".join(exts), base))
+        raise SystemExit(2)
+    return found
+
+
+def rel(root, path):
+    """Path relative to `root`, with forward slashes (what the baselines key on)."""
+    return os.path.relpath(path, root).replace(os.sep, "/")

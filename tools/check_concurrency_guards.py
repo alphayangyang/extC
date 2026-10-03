@@ -32,6 +32,9 @@ import sys
 import pathlib
 import tempfile
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cscan   # src_files: one recursive discovery, refuses to return nothing
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXTC = ROOT / "build" / "extc"
 
@@ -243,7 +246,7 @@ def check_pool_funnel():
         ("codegen.c", "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; }"),
     }
     pat = re.compile(r"(pgen|->gen\b|->pid\b|->slots\b|\.slots\b)")
-    for path in sorted((ROOT / "src").glob("*.c")):
+    for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
         if path.name == "pools.c":
             continue
         for n, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):

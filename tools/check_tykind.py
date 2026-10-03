@@ -10,7 +10,11 @@ wrong answer. This turns "remember to update every switch" into a gate.
 Usage:  python3 tools/check_tykind.py [--list]
 Exit:   0 when every kind-switch handles every kind it could see, 1 otherwise.
 """
+import os
 import re, sys, glob
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cscan   # src_files: one recursive discovery, refuses to return nothing
 
 KINDS = []
 src = open('src/ast.h', encoding='utf-8').read()
@@ -48,7 +52,7 @@ def switches(path):
     return out
 
 bad = 0; rows = []
-for f in sorted(glob.glob('src/*.c')):
+for f in cscan.src_files('.', ('.c',)):
     for path, line, cases, dflt, size, just in switches(f):
         if not cases: continue
         missing = [k for k in KINDS if k not in cases]

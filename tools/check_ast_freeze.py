@@ -73,16 +73,18 @@ def main():
     members = node_members() - AMBIGUOUS_NAMES
     violations = collections.Counter()
     detail = collections.defaultdict(list)
-    files = sorted(n for n in os.listdir(os.path.join(ROOT, "src"))
-                   if n.endswith(".c") and n not in BUILDERS)
-    for name in files:
-        code = cscan.strip(open(os.path.join(ROOT, "src", name), encoding="utf-8").read())
+    for path in cscan.src_files(ROOT, (".c",)):
+        name = os.path.basename(path)
+        if name in BUILDERS:
+            continue
+        rel = cscan.rel(ROOT, path)
+        code = cscan.strip(open(path, encoding="utf-8").read())
         for m in re.finditer(r"(?:->|\.)\s*([A-Za-z_]\w*)\b", code):
             field = m.group(1)
             if field not in members or not cscan.WRITE.match(code[m.end():m.end() + 4]):
                 continue
             line = code[:m.start()].count("\n") + 1
-            key = "src/%s:%s" % (name, field)
+            key = "%s:%s" % (rel, field)
             violations[key] += 1
             detail[key].append("%d" % line)
             if a.verbose:

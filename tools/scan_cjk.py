@@ -8,8 +8,12 @@ character inside a string literal is reported separately from one in a comment:
   - comments must be ASCII-only (COMMENT-STYLE.md rule 1)
   - string literals are compiler output and are reported as "output" instead
 """
+import os
 import glob
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cscan   # src_files: one recursive discovery, refuses to return nothing
 
 HERE = __import__('os').path.dirname(__file__)
 
@@ -60,7 +64,7 @@ def scan(src):
 def main():
     args = [a for a in sys.argv[1:] if a != '-v']
     verbose = '-v' in sys.argv[1:]
-    files = args or sorted(glob.glob('src/*.c') + glob.glob('src/*.h'))
+    files = args or cscan.src_files('.')
     total_c = total_o = 0
     for f in files:
         with open(f, encoding='utf-8', errors='replace') as fh:

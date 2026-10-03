@@ -8,6 +8,9 @@
 """
 import re, subprocess, sys, pathlib
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cscan   # src_files: one recursive discovery, refuses to return nothing
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # 读得到、但还没写进 `--help` 的开关。**只能减，不能增**：加新开关时请直接写进 `--help`。
@@ -49,7 +52,7 @@ OUTPUT_AFFECTING = ["EXTC_NO_LEVELPASS", "EXTC_SELFCHECK"]
 
 def switches_in_code() -> set:
     found = set()
-    for path in sorted((ROOT / "src").glob("*.c")):
+    for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
         found |= set(re.findall(r'"(EXTC_[A-Z0-9_]+)"', path.read_text(encoding="utf-8")))
     return found
 
