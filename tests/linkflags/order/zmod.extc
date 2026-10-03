@@ -1,0 +1,2 @@
+/* 只为让 zmod.link 生效（`use` 到了才会被读）。 */
+fn marker() -> i32 { return 7 }

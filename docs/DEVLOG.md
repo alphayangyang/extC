@@ -51,6 +51,18 @@
 记了边界：只能证伪**落在观察窗口内**的食言，所以 `extpkg verify` 的输出必须是三态
 （通过 / 被证伪 / 不可验证）。
 
+**同日的第四刀：第一个包 `sqlite` + `tools/extpkg.py verify`**。包长这样：绑定（契约就在
+`effects` 里）+ `.link`（模块自带链接需求，L1 那刀让 `use sqlite` 零 flag）+ 一个 80 行的 C shim
+（`sqlite3**` 出参换成 i64 句柄、`SQLITE_TRANSIENT` 哨兵、手写原型）+ 判据 + 声明台账。
+`extpkg verify` 输出**三态**（通过 / 被证伪 / 不可验证），第一次跑就说实话：1 通过、2 不可验证、
+1 不适用。工具**有牙**——把 shim 的 TRANSIENT 改成 STATIC（改成"留指针"），verify 当场报被证伪
+（rc=255，隔离页上的硬缺页）。
+
+路上修了一个真 bug：**链接顺序**。模块带来的 `-l` 原本排在命令行给的 flag 之前，而
+`--as-needed` 会把"需要它的人还没出现"的库丢掉 ⇒ shim 里的 `sqlite3_*` 全成未定义引用。
+改成"命令行在前、模块库在后"（objects before libraries），并加了判据 `auto-link-order`——
+拿旧写法验证过它会红。**这一步是 `extpkg` 存在的意义之一：包的作者不必知道这些，包自己带着。**
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。

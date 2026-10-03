@@ -793,6 +793,11 @@ callee **自己的表**（局部）都被判"活得不够久" ✗（实测 `pl.v
 
 未知指令是 rc=2 的硬错误：一条被静默忽略的链接需求正是这张表要防的事。
 
+**链接顺序（踩过一次）**：命令行给的 flag 排在模块带来的 flag **之前**。`--as-needed` 会把
+"需要它的人还没出现"的库丢掉 —— 把 `--ccflag shim.c`（源文件）放到模块的 `-l` 后面，shim 里的
+符号就全成了未定义引用（第一次跑 sqlite 包时正是这么撞的）。判据 `auto-link-order` 钉住它，
+拿旧写法验证过它会红。
+
 **实测**（`tests/linkflags/` 的 `auto-link-*` 六项）：`use zmod` + `zmod.link` 的 `lib z`，在
 **不给任何命令行 flag** 时链上并跑通；把 `zmod.link` 拿掉，同一个程序链不上（判据承重）；没被
 `use` 的模块就算写着不存在的库也不参与链接；`lib :libsqlite3.so.0` 让 soname 形式也能写进模块。
@@ -818,3 +823,27 @@ callee **自己的表**（局部）都被判"活得不够久" ✗（实测 `pl.v
 **边界（诚实记账）**：它只能证伪**落在观察窗口内**的食言 —— 库把指针存进全局、而隔离之后你
 再也不碰那段内存，判据看不见。所以 `extpkg verify` 的输出必须是三态：**通过 / 被证伪 / 不可验证**，
 而不是"通过 = 安全"。这与 §9.15"库签一次、用户零签字"的分工一致：签字的责任在包，证伪的手段在判据。
+
+
+## 9.22 包与 `extpkg verify`：第一个包 `sqlite`（2026-10-03）
+
+**包的形状**（`tools/extpkg.py`，第一个包在 `~/qqbot-extc/vendor/sqlite/`）：
+
+    <包>/extpkg.toml     声明台账：每条声明 + 状态（verifiable / unverifiable / not-applicable）+ 判据名
+    <包>/<名字>.extc     绑定 —— **契约就在这里**（`extern!` + `effects`）
+    <包>/<名字>.link     链接需求（`lib` / `pkgconfig` / `ccflag`），driver 直接读（§9.20.1）
+    <包>/<C 源>          包自带的 C 侧：extC 表达不了的形状（`sqlite3**` → i64 句柄、`SQLITE_TRANSIENT`
+                         哨兵、手写原型）
+    <包>/tests/*.extc    判据；文件头 `// expect: <标记>` 声明期望输出
+
+**`extpkg verify <包>` 的输出是三态**，不是"通过 = 安全"：
+
+    通过    bind-text-no-retain        contract=holds
+    不可验证  handle-ownership           释放纪律要靠调用方与 ASan 长跑；判据观察不到"谁该释放"
+    不适用   column-text-lifetime       本包不暴露 SQLite 内部指针 ⇒ 这条寿命问题在 API 上不存在
+
+**工具要有牙**：把 shim 里的 `SQLITE_TRANSIENT` 改成 `SQLITE_STATIC`（改成"留指针"），
+`verify` 当场报 **被证伪**（rc=255 = 被信号杀死，隔离页上的硬缺页）——这一步实测过。
+
+**sqlite 包明确没绑的**：`sqlite3_exec` 的回调（回调机制未落地）⇒ 建表也走 `prepare`/`step`；
+`SQLITE_STATIC` 语义（包选 TRANSIENT：拷贝载荷，调用方不必保命）；任何 `sqlite3**` 原样入口。

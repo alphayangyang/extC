@@ -895,10 +895,10 @@ int main(int argc, char **argv) {
         /* The link/include flags go in here too: a header the program needs must be
          * findable at syntax-check time, or the check would fail on code that compiles
          * perfectly well under `--run`. */
-        for (size_t k = 0; k < vecLen(&modExtra); k++)
-            *(char **)vecPush(&checkArgv) = *(char **)vecAt(&modExtra, k);
         for (size_t k = 0; k < vecLen(&ccExtra); k++)
             *(char **)vecPush(&checkArgv) = *(char **)vecAt(&ccExtra, k);
+        for (size_t k = 0; k < vecLen(&modExtra); k++)
+            *(char **)vecPush(&checkArgv) = *(char **)vecAt(&modExtra, k);
         *(char **)vecPush(&checkArgv) = (char *)"-x";
         *(char **)vecPush(&checkArgv) = (char *)"c";
         *(char **)vecPush(&checkArgv) = tmp;
@@ -985,13 +985,16 @@ int main(int argc, char **argv) {
     *(char **)vecPush(&ccArgv) = (char *)"-o";
     *(char **)vecPush(&ccArgv) = (char *)binPath;
     *(char **)vecPush(&ccArgv) = (char *)cPath;
-    /* The user's link/include flags come last, the way a link line reads: inputs and
-     * libraries after the object. `pkg-config`'s cflags are position-independent; its
-     * `-l` entries are not, which is why nothing here reorders them. */
-    for (size_t k = 0; k < vecLen(&modExtra); k++)
-        *(char **)vecPush(&ccArgv) = *(char **)vecAt(&modExtra, k);
+    /* Order on the link line: **what the user wrote, then what the modules need**.
+     * The linker resolves left to right with `--as-needed`, so a library placed before
+     * the object that needs it is dropped: `app.c --ccflag shim.c` (a source the user
+     * passed) must come before a module's `-l`, or the shim's undefined symbols survive
+     * the library. This is the classic "objects before libraries" rule, and module flags
+     * keep load order among themselves (the loader loads dependencies first). */
     for (size_t k = 0; k < vecLen(&ccExtra); k++)
         *(char **)vecPush(&ccArgv) = *(char **)vecAt(&ccExtra, k);
+    for (size_t k = 0; k < vecLen(&modExtra); k++)
+        *(char **)vecPush(&ccArgv) = *(char **)vecAt(&modExtra, k);
     *(char **)vecPush(&ccArgv) = NULL;
     int rc = runCmd((char *const *)vecAt(&ccArgv, 0));
     if (rc != 0) {

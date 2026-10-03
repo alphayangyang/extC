@@ -152,6 +152,20 @@ else
     bad auto-link-bad-directive "rc=$rc：$(head -1 "$tmp/e")"
 fi
 
+# 链接顺序：命令行给的**源文件**必须排在模块带来的库之前（源文件是"需要符号的人"）。
+# 这条判据的来历是一个真 bug：模块的 `-l` 排在前面时，`--as-needed` 把它丢掉，
+# shim 里的 sqlite3_* 全变未定义引用。
+if [ -e /usr/lib/x86_64-linux-gnu/libz.so ] || pkg-config --exists zlib 2>/dev/null; then
+    if in_tmp "$EXTC" -w -I "$(src order)" --ccflag "$(src order/shim.c)" \
+                 --run "$(src order/app.extc)" >"$tmp/o" 2>"$tmp/e"; then
+        ok auto-link-order "命令行源文件排在模块库之前（--as-needed 不会丢掉那个 -lz）"
+    else
+        bad auto-link-order "$(head -1 "$tmp/e")"
+    fi
+else
+    skipf auto-link-order "本机没有 libz.so 开发软链"
+fi
+
 echo "== ④ 命令行错误要报清楚（不是静默链不上）=="
 "$EXTC" -l >/dev/null 2>"$tmp/e"; rc=$?
 if [ "$rc" = 2 ] && grep -q 'needs a library name' "$tmp/e"; then

@@ -1,0 +1,12 @@
+use zmod
+
+extern!("extc-order") fn extc_order_ver() -> ?ref u8 effects Addr=0 Cont=0
+
+fn main() -> i32 {
+    if zmod::marker() != i32(7) { return 1 }
+    let p: ?ref u8 = extc_order_ver()
+    if p == null { return 2 }
+    let q: ref u8 = p
+    if *q == u8(49) { return 0 }   /* zlib 版本串以 '1' 开头 */
+    return 3
+}
