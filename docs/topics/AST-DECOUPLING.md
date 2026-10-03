@@ -696,3 +696,53 @@ check_stmt 3 · check_top 12 · codegen 12 · dataflow 2）改经 `planCName`；
 **棘轮**：`[ast-freeze]` **90 → 79**；其余四条不动。
 
 **验收**：构建零告警；tests **327/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
+
+---
+
+## 21. T4 第九族：`deref` / `boxedCoro` + **掩码扩成两个字**；以及"剩余 77 条"的收口判断
+
+### 21.1 本族
+
+| 字段 | 桶 | 依据 |
+|---|---|---|
+| `deref` | **PLAN** | codegen 读 1（`*(…)` 形状） |
+| `boxedCoro` | **PLAN** | codegen 读 1（协程返回值装箱） |
+
+两者的基座是**表达式**（不是函数），所以访问器取 `Expr *`，不能走 `FuncDef` 那套宏 ——
+第一版复用了 `FuncDef` 宏，编译器直接报 `conflicting types`。
+
+### 21.2 掩码扩成两个字（结构性改动）
+
+`PLAN_DEREF` 正好是**第 63 位**，`PLAN_BOXED_CORO` 就要到 64 —— 一个字用满了。
+改成 **`loMask` + `hiMask` 两个字**，位号 `n` 落在 `n < 64 ? lo : hi`，两个问题各一个拼写：
+
+```c
+bool resultsBit(const NodeResults *r, uint64_t bit);
+void resultsSetBit(NodeResults *r, uint64_t bit);
+```
+
+这样下一个事实位**不需要再改一次存储**。转换是机械的（`(r->setMask & BIT)` → `resultsBit(r, BIT)`、
+`r->setMask |= BIT` → `resultsSetBit(r, BIT)`），**77 处**；但宏体里的位测试（`bit` 是参数）
+与"整块继承"（`planInheritFuncFacts` 要搬运整个 `an` 块）必须单独手写 ——
+前者正则抓不到参数，后者不是"设置某一位"而是"并进两个字"。
+
+**教训（第六次同类）**：这次我**没有**用"通用补括号"硬修，而是发现 10 处三元表达式
+（`return (r && resultsBit(...) ? A : B;)`）后**按形状重写**，一次通过。上几族的教训在这轮生效了。
+
+**棘轮**：`[ast-freeze]` **79 → 77**；其余四条不动。
+**验收**：构建零告警；tests **327/0**（发布与 `EXTC_DBG=1`）；`tests/coro` 29/0。
+
+### 21.3 "剩余 77 条"是什么：收口判断（下次不要重新推一遍）
+
+我按"谁写、谁读"把剩下的 77 条分成四类，**只有第一类还适合按本批的套路做**：
+
+| 类 | 例子 | 判断 |
+|---|---|---|
+| **A. 检查器写、codegen 读的"类型事实"** | **`Expr.type`**（60 写 / **121 读 / codegen 84**）、`u.field.typeName`、`u.conv.type` | **应该搬**，但 `Expr.type` 是全仓最大的单点（181 处）。**实测纠正了一个旧分类**：parser **不写** `Expr.type`（它写的是 `FuncDef.type`/`Param.type`），所以按 P0 的标准它是**计划字段**，不是语法 |
+| **B. pass 过程状态** | `effState` `effComplete` `effUnknown` `callees` `coroKind` | **不该进按节点的表**：`effState` 的生命周期就是闭包本身。归"检查器 per-function 状态"那一刀（形状 = `FuncResults` 式每-owner 结构体） |
+| **C. 真正的语法** | `dynTrait`（parser 脱糖时写）、`srcName`（parser/模块层写"声明名"）、union 变体成员（`operand` `obj` `init` `path` … 各有多个属主） | **不动**，它们是"解析出来就是这样" |
+| **D. 别的结构体** | `Sym.*`（5 个）、`Type.*`、`Param.cname`、`FieldDef.eff*`/`hasEffects` | 按属主各自判断：`Sym` 是检查器私有（可入分析侧），`Param.cname` 已定**不可入**（按值拷贝），`FieldDef` 的签字是**语法**（作者写的） |
+
+**结论**：`[ast-freeze]` 从 **135 降到 77** 之后，**按节点表的机械化迁移已经走到尾声**：
+剩下的 A 类是一个大单点（`Expr.type`），B 类是另一刀（pass 状态），C/D 类是**有意保留**。
+下一次开工前先读这一节，不要从"还有 77 条要搬"重新推。

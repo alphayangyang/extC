@@ -451,7 +451,7 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         Type *yt = want->targs.len ? *(Type **)vecAt(&want->targs, 0) : NULL;
         Type *ft = planYieldType(planCoroOf(got->sdef));
         if (yt && ft && strcmp(typeStr(c, yt), typeStr(c, ft)) == 0) {
-            node->boxedCoro = true;
+            planSetBoxedCoro(node, true);
             node->type = want;
             planSetCoroBoxed(planCoroOf(got->sdef), true);
             return true;

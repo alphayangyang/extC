@@ -83,6 +83,9 @@
 #define AN_HOME_ADDR_MASK        (1ull << 62)
 #define AN_HOME_CONT_MASK        (1ull << 63)
 #define PLAN_PAR_TLS_ARENA       (1ull << 62)
+#define PLAN_DEREF               (1ull << 63)
+#define PLAN_BOXED_CORO          (1ull << 64)
+#define AN_DUMMY_PAST_64         (1ull << 65)
 #define AN_ADDR_FROM_LOCAL       (1ull << 64)
 
 
@@ -99,98 +102,98 @@ const size_t planAnalysisFieldCount = sizeof planAnalysisFields / sizeof planAna
 void planSetArenaLevel(Expr *e, int v) {
     if (!e) return;
     NodeResults *s = resultsAs(e, true, RKIND_EXPR, __LINE__);
-    s->arenaLevel = v; s->setMask |= PLAN_ARENA_LEVEL;
+    s->arenaLevel = v; resultsSetBit(s, PLAN_ARENA_LEVEL);
 }
 void planSetZoneLevel(Expr *e, int v) {
     if (!e) return;
     NodeResults *s = resultsAs(e, true, RKIND_EXPR, __LINE__);
-    s->zoneLevel = v; s->setMask |= PLAN_ZONE_LEVEL;
+    s->zoneLevel = v; resultsSetBit(s, PLAN_ZONE_LEVEL);
 }
 void planSetArenaArg(Expr *e, int v) {
     if (!e) return;
     NodeResults *s = resultsAs(e, true, RKIND_EXPR, __LINE__);
-    s->arenaArg = v; s->setMask |= PLAN_ARENA_ARG;
+    s->arenaArg = v; resultsSetBit(s, PLAN_ARENA_ARG);
 }
 void planSetNeedTemp(Expr *e, bool v) {
     if (!e) return;
     NodeResults *s = resultsAs(e, true, RKIND_EXPR, __LINE__);
-    s->needTemp = v; s->setMask |= PLAN_NEED_TEMP;
+    s->needTemp = v; resultsSetBit(s, PLAN_NEED_TEMP);
 }
 
 void planSetUsesHome(FuncDef *f, bool v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->usesHome = v; s->setMask |= PLAN_USES_HOME;
+    s->usesHome = v; resultsSetBit(s, PLAN_USES_HOME);
 }
 void planSetMayUseArena(FuncDef *f, bool v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->mayUseArena = v; s->setMask |= PLAN_MAY_USE_ARENA;
+    s->mayUseArena = v; resultsSetBit(s, PLAN_MAY_USE_ARENA);
 }
 void planSetMakesPool(FuncDef *f, bool v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->makesPool = v; s->setMask |= PLAN_MAKES_POOL;
+    s->makesPool = v; resultsSetBit(s, PLAN_MAKES_POOL);
 }
 void planSetCondAllocs(Stmt *st, bool v) {
     if (!st) return;
     NodeResults *s = resultsAs(st, true, RKIND_STMT, __LINE__);
-    s->condAllocs = v; s->setMask |= PLAN_COND_ALLOCS;
+    s->condAllocs = v; resultsSetBit(s, PLAN_COND_ALLOCS);
 }
 
 void planSetIsCoro(FuncDef *f, bool v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->isCoro = v; s->setMask |= PLAN_IS_CORO;
+    s->isCoro = v; resultsSetBit(s, PLAN_IS_CORO);
 }
 void planSetYieldType(FuncDef *f, Type *v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->yieldType = v; s->setMask |= PLAN_YIELD_TYPE;
+    s->yieldType = v; resultsSetBit(s, PLAN_YIELD_TYPE);
 }
 void planSetCoroFrameType(FuncDef *f, Type *v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->coroFrameType = v; s->setMask |= PLAN_CORO_FRAME_TYPE;
+    s->coroFrameType = v; resultsSetBit(s, PLAN_CORO_FRAME_TYPE);
 }
 void planSetCoroNeedsZone(FuncDef *f, bool v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->coroNeedsZone = v; s->setMask |= PLAN_CORO_NEEDS_ZONE;
+    s->coroNeedsZone = v; resultsSetBit(s, PLAN_CORO_NEEDS_ZONE);
 }
 void planSetInstName(FuncDef *f, const char *name) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->instName = name; s->setMask |= PLAN_INST_NAME;
+    s->instName = name; resultsSetBit(s, PLAN_INST_NAME);
 }
 
 void planSetTemplate(FuncDef *f, FuncDef *tmpl) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->tmpl = tmpl; s->setMask |= PLAN_TEMPLATE;
+    s->tmpl = tmpl; resultsSetBit(s, PLAN_TEMPLATE);
 }
 
 void planSetCoroProto(FuncDef *f, int v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->coroProto = v; s->setMask |= PLAN_CORO_PROTO;
+    s->coroProto = v; resultsSetBit(s, PLAN_CORO_PROTO);
 }
 
 void planSetCoroBoxed(FuncDef *f, bool v) {
     if (!f) return;
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
-    s->coroBoxed = v; s->setMask |= PLAN_CORO_BOXED;
+    s->coroBoxed = v; resultsSetBit(s, PLAN_CORO_BOXED);
 }
 
 /* ---- accessors (signatures are the public surface) --------------------------------- */
 
 FuncDef *planTemplate(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_TEMPLATE) ? s->tmpl : NULL;
+    return s && resultsBit(s, PLAN_TEMPLATE) ? s->tmpl : NULL;
 }
 const char *planInstName(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_INST_NAME) ? s->instName : NULL;
+    return s && resultsBit(s, PLAN_INST_NAME) ? s->instName : NULL;
 }
 
 /* ---- the resolved callee, per enclosing instance -----------------------------------
@@ -235,7 +238,7 @@ FuncDef *planCallee(const Expr *e) {
         }
     }
     NodeResults *r = resultsOf(e, false);
-    return (r && (r->setMask & PLAN_CALLEE)) ? r->func : NULL;
+    return (r && resultsBit(r, PLAN_CALLEE)) ? r->func : NULL;
 }
 
 void planSetCallee(Expr *e, FuncDef *callee) {
@@ -243,7 +246,7 @@ void planSetCallee(Expr *e, FuncDef *callee) {
     NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
     if (r) {
         r->func = callee;
-        r->setMask |= PLAN_CALLEE;
+        resultsSetBit(r, PLAN_CALLEE);
     }
 }
 
@@ -260,7 +263,7 @@ void planSetCallee(Expr *e, FuncDef *callee) {
  * parameter identifier and the generated C stopped compiling. */
 const char *planCName(const void *node) {
     NodeResults *r = resultsOf(node, false);
-    if (!r || !(r->setMask & PLAN_CNAME)) return NULL;
+    if (!r || !resultsBit(r, PLAN_CNAME)) return NULL;
     /* An empty name means "no name of its own": callers fall back to the declaration's name
      * (`planCName(x) ? planCName(x) : x->name`), and the checker does write "" for a binding
      * it cannot name. Returning "" would win that fallback and emit C with no identifier. */
@@ -272,53 +275,53 @@ void planSetCName(void *node, const char *name, ResultKind kind) {
     NodeResults *r = resultsAs(node, true, kind, __LINE__);
     if (!r) return;
     r->cname = name;
-    r->setMask |= PLAN_CNAME;
+    resultsSetBit(r, PLAN_CNAME);
 }
 
 /* ---- struct-definition facts (T4, first family) ---- */
 
 bool planBuiltinHolder(const StructDef *sd) {
     NodeResults *r = resultsOf(sd, false);
-    return r && (r->setMask & PLAN_BUILTIN_HOLDER) ? r->builtinHolder : false;
+    return r && resultsBit(r, PLAN_BUILTIN_HOLDER) ? r->builtinHolder : false;
 }
 void planSetBuiltinHolder(StructDef *sd, bool v) {
     if (!sd) return;
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->builtinHolder = v; r->setMask |= PLAN_BUILTIN_HOLDER;
+    r->builtinHolder = v; resultsSetBit(r, PLAN_BUILTIN_HOLDER);
 }
 
 FuncDef *planCoroOf(const StructDef *sd) {
     NodeResults *r = resultsOf(sd, false);
-    return (r && (r->setMask & PLAN_CORO_OF)) ? r->coroOf : NULL;
+    return (r && resultsBit(r, PLAN_CORO_OF)) ? r->coroOf : NULL;
 }
 void planSetCoroOf(StructDef *sd, FuncDef *f) {
     if (!sd) return;
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->coroOf = f; r->setMask |= PLAN_CORO_OF;
+    r->coroOf = f; resultsSetBit(r, PLAN_CORO_OF);
 }
 
 const char *anLamSig(const StructDef *sd) {
     NodeResults *r = resultsOf(sd, false);
-    return (r && (r->setMask & AN_LAM_SIG)) ? r->an.lamSig : NULL;
+    return (r && resultsBit(r, AN_LAM_SIG)) ? r->an.lamSig : NULL;
 }
 void anSetLamSig(StructDef *sd, const char *sig) {
     if (!sd) return;
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->an.lamSig = sig; r->setMask |= AN_LAM_SIG;
+    r->an.lamSig = sig; resultsSetBit(r, AN_LAM_SIG);
 }
 
 bool anMakesPoolAny(const StructDef *sd) {
     NodeResults *r = resultsOf(sd, false);
-    return r && (r->setMask & AN_MAKES_POOL_ANY) ? r->an.makesPoolAny : false;
+    return r && resultsBit(r, AN_MAKES_POOL_ANY) ? r->an.makesPoolAny : false;
 }
 void anSetMakesPoolAny(StructDef *sd, bool v) {
     if (!sd) return;
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->an.makesPoolAny = v; r->setMask |= AN_MAKES_POOL_ANY;
+    r->an.makesPoolAny = v; resultsSetBit(r, AN_MAKES_POOL_ANY);
 }
 
 /* ---- effect summary (T4, eighth family) --------------------------------------------
@@ -331,14 +334,14 @@ void anSetMakesPoolAny(StructDef *sd, bool v) {
 #define AEF_GET(fn, type, field, bit, dflt)                                \
     type fn(const FuncDef *f) {                                            \
         NodeResults *r = resultsOf(f, false);                              \
-        return (r && (r->setMask & (bit))) ? r->an.field : (dflt);         \
+        return (r && resultsBit(r, bit)) ? r->an.field : (dflt);         \
     }
 #define AEF_SET(fn, type, field, bit)                                      \
     void fn(FuncDef *f, type v) {                                          \
         if (!f) return;                                                    \
         NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);         \
         if (!r) return;                                                    \
-        r->an.field = v; r->setMask |= (bit);                              \
+        r->an.field = v; resultsSetBit(r, bit);                              \
     }
 
 AEF_GET(anAddrMask, uint64_t, addrMask, AN_ADDR_MASK, 0)
@@ -366,14 +369,14 @@ AEF_SET(anSetAddrFromLocal, bool, addrFromLocal, AN_ADDR_FROM_LOCAL)
 #define ANF_GET(fn, type, side, field, bit, dflt)                          \
     type fn(const FuncDef *f) {                                            \
         NodeResults *r = resultsOf(f, false);                              \
-        return (r && (r->setMask & (bit))) ? r->side . field : (dflt);     \
+        return (r && resultsBit(r, bit)) ? r->side . field : (dflt);     \
     }
 #define ANF_SET(fn, type, side, field, bit)                                \
     void fn(FuncDef *f, type v) {                                          \
         if (!f) return;                                                    \
         NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);         \
         if (!r) return;                                                    \
-        r->side . field = v; r->setMask |= (bit);                          \
+        r->side . field = v; resultsSetBit(r, bit);                          \
     }
 
 ANF_GET(anIsAssoc, bool, an, isAssoc, AN_IS_ASSOC, false)
@@ -394,19 +397,19 @@ ANF_GET(anParamSymCount, int, an, nParamSyms, AN_N_PARAM_SYMS, 0)
 ANF_SET(anSetParamSymCount, int, an, nParamSyms, AN_N_PARAM_SYMS)
 Vec anArenaSites(const FuncDef *f) {
     NodeResults *r = resultsOf(f, false);
-    return (r && (r->setMask & AN_ARENA_SITES)) ? r->an.arenaSites : (Vec){0};
+    return (r && resultsBit(r, AN_ARENA_SITES)) ? r->an.arenaSites : (Vec){0};
 }
 void anSetArenaSites(FuncDef *f, Vec v) {
     if (!f) return;
     NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
     if (!r) return;
-    r->an.arenaSites = v; r->setMask |= AN_ARENA_SITES;
+    r->an.arenaSites = v; resultsSetBit(r, AN_ARENA_SITES);
 }
 void **anParamSyms(FuncDef *f) {
     if (!f) return NULL;
     NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
     if (!r) return NULL;
-    r->setMask |= AN_PARAM_SYMS;
+    resultsSetBit(r, AN_PARAM_SYMS);
     return r->an.paramSyms;
 }
 
@@ -417,11 +420,13 @@ void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl) {
     if (!t) return;
     NodeResults *r = resultsAs(in, true, RKIND_FUNC, __LINE__);
     if (!r) return;
+    /* The `an` block is copied wholesale (it is one struct), so its bits come along too --
+     * which is exactly what "a slot keyed by node pointer does not travel with the shallow
+     * copy, so inherit it here" means in practice. */
+    uint64_t lo = t->loMask, hi = t->hiMask;
     r->an = t->an;
-    r->setMask |= (t->setMask & (AN_IS_ASSOC | AN_LAM_CHECKED | AN_LAM_INFER_RET |
-                                 AN_NEEDS_HOME | AN_ALLOC_STATE | AN_MAY_PRINT_STATE |
-                                 AN_FRESH_COUNT | AN_ARENA_SITES | AN_N_PARAM_SYMS |
-                                 AN_PARAM_SYMS));
+    r->loMask |= lo;
+    r->hiMask |= hi;
 }
 
 /* The three that are read outside the checker (the ABI and the parallel runtime) live in
@@ -430,16 +435,40 @@ void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl) {
 #define PLF_GET(fn, type, field, bit, dflt)                                \
     type fn(const FuncDef *f) {                                            \
         NodeResults *r = resultsOf(f, false);                              \
-        return (r && (r->setMask & (bit))) ? r->field : (dflt);            \
+        return (r && resultsBit(r, bit)) ? r->field : (dflt);            \
     }
 #define PLF_SET(fn, type, field, bit)                                      \
     void fn(FuncDef *f, type v) {                                          \
         if (!f) return;                                                    \
         NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);         \
         if (!r) return;                                                    \
-        r->field = v; r->setMask |= (bit);                                 \
+        r->field = v; resultsSetBit(r, bit);                                 \
     }
 
+/* `deref` / `boxedCoro` are stamped on an **expression** (the three above are stamped on a
+ * function), so they take an `Expr *` rather than going through the `FuncDef` macros. */
+bool planDeref(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r && resultsBit(r, PLAN_DEREF) ? r->deref : false;
+}
+void planSetDeref(Expr *e, bool v) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->deref = v;
+    resultsSetBit(r, PLAN_DEREF);
+}
+bool planBoxedCoro(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r && resultsBit(r, PLAN_BOXED_CORO) ? r->boxedCoro : false;
+}
+void planSetBoxedCoro(Expr *e, bool v) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->boxedCoro = v;
+    resultsSetBit(r, PLAN_BOXED_CORO);
+}
 PLF_GET(planIsExtTarget, bool, isExtTarget, PLAN_IS_EXT_TARGET, false)
 PLF_SET(planSetIsExtTarget, bool, isExtTarget, PLAN_IS_EXT_TARGET)
 PLF_GET(planIsParWorker, bool, isParWorker, PLAN_IS_PAR_WORKER, false)
@@ -455,48 +484,48 @@ PLF_SET(planSetParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA)
 #define AN_I_GET(fn, field, bit, dflt)                                     \
     int fn(const void *node) {                                             \
         NodeResults *r = resultsOf((node), false);                         \
-        return (r && (r->setMask & (bit))) ? r->an.field : (dflt);         \
+        return (r && resultsBit(r, bit)) ? r->an.field : (dflt);         \
     }
 #define AN_I_SET(fn, field, bit)                                           \
     void fn(void *node, int v) {                                           \
         if (!node) return;                                                 \
         NodeResults *r = resultsAs(node, true, RKIND_EXPR, __LINE__);      \
         if (!r) return;                                                    \
-        r->an.field = v; r->setMask |= (bit);                              \
+        r->an.field = v; resultsSetBit(r, bit);                              \
     }
 #define AN_B_GET(fn, field, bit, dflt)                                     \
     bool fn(const void *node) {                                            \
         NodeResults *r = resultsOf((node), false);                         \
-        return (r && (r->setMask & (bit))) ? r->an.field : (dflt);         \
+        return (r && resultsBit(r, bit)) ? r->an.field : (dflt);         \
     }
 #define AN_B_SET(fn, field, bit)                                           \
     void fn(void *node, bool v) {                                          \
         if (!node) return;                                                 \
         NodeResults *r = resultsAs(node, true, RKIND_EXPR, __LINE__);      \
         if (!r) return;                                                    \
-        r->an.field = v; r->setMask |= (bit);                              \
+        r->an.field = v; resultsSetBit(r, bit);                              \
     }
 /* `convCheck` / `needOp` take an `Expr *` (they are only ever stamped on an expression),
  * so they are written out rather than generated by the macros above. */
 bool planConvCheck(const Expr *e) {
     NodeResults *r = resultsOf(e, false);
-    return r && (r->setMask & AN_CONV_CHECK) ? r->an.convCheck : false;
+    return r && resultsBit(r, AN_CONV_CHECK) ? r->an.convCheck : false;
 }
 void planSetConvCheck(Expr *e, bool v) {
     if (!e) return;
     NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
     if (!r) return;
-    r->an.convCheck = v; r->setMask |= AN_CONV_CHECK;
+    r->an.convCheck = v; resultsSetBit(r, AN_CONV_CHECK);
 }
 bool planNeedOp(const Expr *e) {
     NodeResults *r = resultsOf(e, false);
-    return r && (r->setMask & AN_NEED_OP) ? r->an.needOp : false;
+    return r && resultsBit(r, AN_NEED_OP) ? r->an.needOp : false;
 }
 void planSetNeedOp(Expr *e, bool v) {
     if (!e) return;
     NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
     if (!r) return;
-    r->an.needOp = v; r->setMask |= AN_NEED_OP;
+    r->an.needOp = v; resultsSetBit(r, AN_NEED_OP);
 }
 
 AN_I_GET(anMinAt, minAt, AN_MIN_AT, 0)
@@ -517,14 +546,14 @@ AN_B_SET(anSetQualified, qualified, AN_QUALIFIED)
 #define PLAN_GET(fn, type, field, bit, dflt)                               \
     type fn(const Expr *e) {                                               \
         NodeResults *r = resultsOf(e, false);                              \
-        return (r && (r->setMask & (bit))) ? r->field : (dflt);            \
+        return (r && resultsBit(r, bit)) ? r->field : (dflt);            \
     }
 #define PLAN_SET(fn, type, field, bit)                                     \
     void fn(Expr *e, type v) {                                             \
         if (!e) return;                                                    \
         NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);         \
         if (!r) return;                                                    \
-        r->field = v; r->setMask |= (bit);                                 \
+        r->field = v; resultsSetBit(r, bit);                                 \
     }
 
 PLAN_GET(planExtDom, Expr *, extDom, PLAN_EXT_DOM, NULL)
@@ -545,7 +574,7 @@ PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
 #define AN_D_GET(fn, field, bit, dflt)                                     \
     int fn(const void *node) {                                             \
         NodeResults *r = resultsOf((node), false);                         \
-        return (r && (r->setMask & (bit))) ? r->an.field : (dflt);         \
+        return (r && resultsBit(r, bit)) ? r->an.field : (dflt);         \
     }
 /* One kind for the whole group: `refDepth` is stamped on an `Expr` **and** on the checker's
  * `Sym`, and a slot has one kind. Both are pointer-stable, so nothing else collides --
@@ -556,7 +585,7 @@ PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
         if (!node) return;                                                 \
         NodeResults *r = resultsAs(node, true, RKIND_EXPR, __LINE__);      \
         if (!r) return;                                                    \
-        r->an.field = v; r->setMask |= (bit);                              \
+        r->an.field = v; resultsSetBit(r, bit);                              \
     }
 AN_D_GET(anRefDepth, refDepth, AN_REF_DEPTH, 0)
 AN_D_SET(anSetRefDepth, refDepth, AN_REF_DEPTH)
@@ -576,86 +605,86 @@ AN_D_SET(anSetStoredAt, storedAt, AN_STORED_AT)
 
 FuncDef *planParWorker(const Expr *e) {
     NodeResults *r = resultsOf(e, false);
-    return (r && (r->setMask & PLAN_PAR_WORKER)) ? r->parWorker : NULL;
+    return (r && resultsBit(r, PLAN_PAR_WORKER)) ? r->parWorker : NULL;
 }
 void planSetParWorker(Expr *e, FuncDef *wf) {
     if (!e) return;
     NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
     if (!r) return;
-    r->parWorker = wf; r->setMask |= PLAN_PAR_WORKER;
+    r->parWorker = wf; resultsSetBit(r, PLAN_PAR_WORKER);
 }
 
 bool planDomNew(const Expr *e) {
     NodeResults *r = resultsOf(e, false);
-    return r && (r->setMask & PLAN_DOM_NEW) ? r->domNew : false;
+    return r && resultsBit(r, PLAN_DOM_NEW) ? r->domNew : false;
 }
 void planSetDomNew(Expr *e, bool v) {
     if (!e) return;
     NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
     if (!r) return;
-    r->domNew = v; r->setMask |= PLAN_DOM_NEW;
+    r->domNew = v; resultsSetBit(r, PLAN_DOM_NEW);
 }
 
 bool planViewOf(const Expr *e) {
     NodeResults *r = resultsOf(e, false);
-    return r && (r->setMask & PLAN_VIEW_OF) ? r->viewOf : false;
+    return r && resultsBit(r, PLAN_VIEW_OF) ? r->viewOf : false;
 }
 void planSetViewOf(Expr *e, bool v) {
     if (!e) return;
     NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
     if (!r) return;
-    r->viewOf = v; r->setMask |= PLAN_VIEW_OF;
+    r->viewOf = v; resultsSetBit(r, PLAN_VIEW_OF);
 }
 
 /* ---- impl / trait / module facts (T4, second family) -------------------------------- */
 
 TraitDef *planImplTrait(const ImplDef *im) {
     NodeResults *r = resultsOf(im, false);
-    return (r && (r->setMask & PLAN_IMPL_TRAIT)) ? r->implTrait : NULL;
+    return (r && resultsBit(r, PLAN_IMPL_TRAIT)) ? r->implTrait : NULL;
 }
 void planSetImplTrait(ImplDef *im, TraitDef *tr) {
     if (!im) return;
     NodeResults *r = resultsAs(im, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->implTrait = tr; r->setMask |= PLAN_IMPL_TRAIT;
+    r->implTrait = tr; resultsSetBit(r, PLAN_IMPL_TRAIT);
 }
 
 Type *planImplTarget(const ImplDef *im) {
     NodeResults *r = resultsOf(im, false);
-    return (r && (r->setMask & PLAN_IMPL_TARGET)) ? r->implTarget : NULL;
+    return (r && resultsBit(r, PLAN_IMPL_TARGET)) ? r->implTarget : NULL;
 }
 void planSetImplTarget(ImplDef *im, Type *t) {
     if (!im) return;
     NodeResults *r = resultsAs(im, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->implTarget = t; r->setMask |= PLAN_IMPL_TARGET;
+    r->implTarget = t; resultsSetBit(r, PLAN_IMPL_TARGET);
 }
 
 bool planUsedDyn(const TraitDef *tr) {
     NodeResults *r = resultsOf(tr, false);
-    return r && (r->setMask & PLAN_USED_DYN) ? r->usedDyn : false;
+    return r && resultsBit(r, PLAN_USED_DYN) ? r->usedDyn : false;
 }
 void planSetUsedDyn(TraitDef *tr, bool v) {
     if (!tr) return;
     NodeResults *r = resultsAs(tr, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->usedDyn = v; r->setMask |= PLAN_USED_DYN;
+    r->usedDyn = v; resultsSetBit(r, PLAN_USED_DYN);
 }
 
 bool planUsesDyn(const Module *m) {
     NodeResults *r = resultsOf(m, false);
-    return r && (r->setMask & PLAN_USES_DYN) ? r->usesDyn : false;
+    return r && resultsBit(r, PLAN_USES_DYN) ? r->usesDyn : false;
 }
 void planSetUsesDyn(Module *m, bool v) {
     if (!m) return;
     NodeResults *r = resultsAs(m, true, RKIND_OTHER, __LINE__);
     if (!r) return;
-    r->usesDyn = v; r->setMask |= PLAN_USES_DYN;
+    r->usesDyn = v; resultsSetBit(r, PLAN_USES_DYN);
 }
 
 bool planUsed(const FuncDef *f) {
     NodeResults *r = resultsOf(f, false);
-    return r && (r->setMask & PLAN_USED) ? r->used : false;
+    return r && resultsBit(r, PLAN_USED) ? r->used : false;
 }
 
 void planSetUsed(FuncDef *f, bool v) {
@@ -663,7 +692,7 @@ void planSetUsed(FuncDef *f, bool v) {
     NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
     if (r) {
         r->used = v;
-        r->setMask |= PLAN_USED;
+        resultsSetBit(r, PLAN_USED);
     }
 }
 
@@ -696,36 +725,36 @@ void planLeaveInst(void) { g_emitInst = NULL; }
 
 int planArenaLevel(const Expr *e) {
     NodeResults *s = resultsAs(e, false, RKIND_EXPR, __LINE__);
-    return (s && (s->setMask & PLAN_ARENA_LEVEL)) ? s->arenaLevel : 0;
+    return (s && resultsBit(s, PLAN_ARENA_LEVEL)) ? s->arenaLevel : 0;
 }
 int planZoneLevel(const Expr *e) {
     NodeResults *s = resultsAs(e, false, RKIND_EXPR, __LINE__);
-    return (s && (s->setMask & PLAN_ZONE_LEVEL)) ? s->zoneLevel : 0;
+    return (s && resultsBit(s, PLAN_ZONE_LEVEL)) ? s->zoneLevel : 0;
 }
 int planArenaArg(const Expr *e) {
     NodeResults *s = resultsAs(e, false, RKIND_EXPR, __LINE__);
-    return (s && (s->setMask & PLAN_ARENA_ARG)) ? s->arenaArg : 0;
+    return (s && resultsBit(s, PLAN_ARENA_ARG)) ? s->arenaArg : 0;
 }
 bool planNeedTemp(const Expr *e) {
     NodeResults *s = resultsAs(e, false, RKIND_EXPR, __LINE__);
-    return (s && (s->setMask & PLAN_NEED_TEMP)) ? s->needTemp : false;
+    return (s && resultsBit(s, PLAN_NEED_TEMP)) ? s->needTemp : false;
 }
 
 bool planUsesHome(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_USES_HOME) ? s->usesHome : false;
+    return s && resultsBit(s, PLAN_USES_HOME) ? s->usesHome : false;
 }
 bool planMayUseArena(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_MAY_USE_ARENA) ? s->mayUseArena : false;
+    return s && resultsBit(s, PLAN_MAY_USE_ARENA) ? s->mayUseArena : false;
 }
 bool planMakesPool(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_MAKES_POOL) ? s->makesPool : false;
+    return s && resultsBit(s, PLAN_MAKES_POOL) ? s->makesPool : false;
 }
 bool planCondAllocs(const Stmt *st) {
     NodeResults *s = resultsAs(st, false, RKIND_STMT, __LINE__);
-    return s && (s->setMask & PLAN_COND_ALLOCS) ? s->condAllocs : false;
+    return s && resultsBit(s, PLAN_COND_ALLOCS) ? s->condAllocs : false;
 }
 /* The step statement of a desugared `for` -- **syntax**, written by the parser on the loop
  * body, because `continue` has to reach it (C's `for` runs the step on the way out of a
@@ -738,7 +767,7 @@ bool planCondAllocs(const Stmt *st) {
 Stmt *planForStep(const Stmt *s) {
     if (!s) return NULL;
     NodeResults *r = resultsOf(s, false);
-    if (r && (r->setMask & PLAN_FOR_STEP_DROPPED) && r->forStepDropped) return NULL;
+    if (r && resultsBit(r, PLAN_FOR_STEP_DROPPED) && r->forStepDropped) return NULL;
     return s->forStep;
 }
 
@@ -747,30 +776,30 @@ void planSetForStepDropped(Stmt *s) {
     NodeResults *r = resultsAs(s, true, RKIND_STMT, __LINE__);
     if (!r) return;
     r->forStepDropped = true;
-    r->setMask |= PLAN_FOR_STEP_DROPPED;
+    resultsSetBit(r, PLAN_FOR_STEP_DROPPED);
 }
 
 bool planIsCoro(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_IS_CORO) ? s->isCoro : false;
+    return s && resultsBit(s, PLAN_IS_CORO) ? s->isCoro : false;
 }
 Type *planYieldType(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_YIELD_TYPE) ? s->yieldType : NULL;
+    return s && resultsBit(s, PLAN_YIELD_TYPE) ? s->yieldType : NULL;
 }
 Type *planCoroFrameType(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_CORO_FRAME_TYPE) ? s->coroFrameType : NULL;
+    return s && resultsBit(s, PLAN_CORO_FRAME_TYPE) ? s->coroFrameType : NULL;
 }
 bool planCoroNeedsZone(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_CORO_NEEDS_ZONE) ? s->coroNeedsZone : false;
+    return s && resultsBit(s, PLAN_CORO_NEEDS_ZONE) ? s->coroNeedsZone : false;
 }
 int planCoroProto(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_CORO_PROTO) ? s->coroProto : 0;
+    return s && resultsBit(s, PLAN_CORO_PROTO) ? s->coroProto : 0;
 }
 bool planCoroBoxed(const FuncDef *f) {
     NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
-    return s && (s->setMask & PLAN_CORO_BOXED) ? s->coroBoxed : false;
+    return s && resultsBit(s, PLAN_CORO_BOXED) ? s->coroBoxed : false;
 }

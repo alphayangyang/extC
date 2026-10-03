@@ -211,12 +211,11 @@ struct Expr {
      * qualified name, whether a narrowing conversion gets a runtime check, and whether a
      * comparison over a type parameter still has to be resolved at instantiation (that last
      * one is read by codegen: `planNeedOp`). See `planAnalysisFields` in plan.c. */
-    bool      deref;    /* The expression sits in value position while its type is
-                         * `ref T`, so code generation emits `*(...)`.
-                         * The checker treats a `ref T` as the `T` itself -- what may
-                         * be done to it is decided by `ref` versus `mut ref` -- and the
-                         * dereference is added back here, once, where the value is
-                         * actually needed. */
+    /* `deref` and `boxedCoro` are two more facts code generation reads: "the expression sits
+     * in value position while its type is `ref T`, so emit `*(...)`" (the checker treats a
+     * `ref T` as the `T` itself and adds the dereference back once, where the value is
+     * needed), and "this coroutine call is stored as a handle, so box it". Storage is the
+     * plan side table: `planDeref` / `planBoxedCoro` in plan.h. */
     /* For the escape check: how deep does the storage live that the references in
      * this expression point at?
      *   0  = a parameter, static data, or unknown; a reference returned by a callee is
@@ -232,7 +231,6 @@ struct Expr {
      * a function that has a home arena, which erases the level the site really needs.
      * Once the constraints have been solved, a site that nothing pulled out of the
      * frame goes back to its own block, which is the level recorded here. */
-    bool      boxedCoro;         /* a coroutine call whose value is stored as a handle (codegen boxes it) */
     /* The strongest requirement escape analysis placed on this site: the smallest
      * level that satisfies every constraint it takes part in.
      *     -1  = no constraint touched it, so it keeps its own level (`lexicalLevel`)

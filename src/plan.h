@@ -87,6 +87,8 @@ uint64_t anOtherMask(const FuncDef *f);     void anSetOtherMask(FuncDef *f, uint
 uint64_t anHomeAddrMask(const FuncDef *f);  void anSetHomeAddrMask(FuncDef *f, uint64_t v);
 uint64_t anHomeContMask(const FuncDef *f);  void anSetHomeContMask(FuncDef *f, uint64_t v);
 bool     anAddrFromLocal(const FuncDef *f); void anSetAddrFromLocal(FuncDef *f, bool v);
+bool     planDeref(const Expr *e);          void planSetDeref(Expr *e, bool v);
+bool     planBoxedCoro(const Expr *e);      void planSetBoxedCoro(Expr *e, bool v);
 bool     planIsExtTarget(const FuncDef *f); void planSetIsExtTarget(FuncDef *f, bool v);
 bool     planIsParWorker(const FuncDef *f); void planSetIsParWorker(FuncDef *f, bool v);
 bool     planParTlsArena(const FuncDef *f); void planSetParTlsArena(FuncDef *f, bool v);

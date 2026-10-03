@@ -2464,7 +2464,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                                        g->path, e->line);
                 }
             }
-            if (planCallee(e) && planIsCoro(planCallee(e)) && e->boxedCoro) {
+            if (planCallee(e) && planIsCoro(planCallee(e)) && planBoxedCoro(e)) {
                 /* **Boxing**: this coroutine value is stored somewhere that outlives the current C
                  * scope, so its frame goes into the task's own place and the value is a
                  * `{frame, kind, task}` handle -- plain value, 24 bytes, safe to copy and to store in
@@ -3027,7 +3027,7 @@ static const char *genExpr(CG *g, Expr *e) {
      * invariant visible to readers and to static analysers alike. */
     assert(e != NULL);
     const char *s = genExprInner(g, e);
-    if (e->deref) return arenaPrintf(g->arena, "*(%s)", s);
+    if (planDeref(e)) return arenaPrintf(g->arena, "*(%s)", s);
     return s;
 }
 

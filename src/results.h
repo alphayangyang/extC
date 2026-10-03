@@ -87,6 +87,8 @@ typedef struct {
     bool        isExtTarget;   /* an extern target the ABI calls directly */
     bool        isParWorker;   /* used as a `parallel::run` worker */
     bool        parTlsArena;   /* a worker that may use the thread-local arena */
+    bool        deref;         /* value position, but the type is `ref T`: emit `*(…)` */
+    bool        boxedCoro;     /* a coroutine call stored as a handle: codegen boxes it */
     /* ---- call / receiver facts (T4, fifth family) ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */
     FieldDef   *field;         /* the field an `EX_FIELD` resolved to */
@@ -132,7 +134,11 @@ typedef struct {
         bool     addrFromLocal;
     } an;
     /* which of the fields above were written; an unset field reads as its default */
-    uint64_t setMask;   /* a plain enum cannot hold bits above 31 in C11 */
+    /* Which fields of this slot were written. **Two words on purpose**: the plan side alone
+     * has grown past 64 facts (`PLAN_DEREF` is bit 63), and a single word means the next fact
+     * cannot be added without rewriting every bit test. Bits are `(hi << 6) | lo` -- see
+     * `resultsBit` / `resultsSetBit` in results.c. */
+    uint64_t loMask, hiMask;
     ResultKind kind;           /* which kind of node this slot belongs to (see ResultKind) */
     const FuncDef *owner;      /* the body whose results this slot holds (NULL = module level) */
     bool shared;               /* more than one body legitimately reaches this slot */
@@ -187,6 +193,10 @@ NodeResults *resultsOf(const void *node, bool create);
  * touched under another is a compiler bug: it aborts under `EXTC_DBG=1` and is ignored
  * in a release build (the value is still returned, so behaviour does not change). */
 NodeResults *resultsAs(const void *node, bool create, ResultKind kind, int line);
+
+/* The mask's two words, behind one question. `bit` is the same constant the setters use. */
+bool resultsBit(const NodeResults *r, uint64_t bit);
+void resultsSetBit(NodeResults *r, uint64_t bit);
 
 /* The result slot of an id, or NULL for id 0 / an id out of range. */
 NodeResults *resultsById(NodeId id);

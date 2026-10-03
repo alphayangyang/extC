@@ -1,9 +1,7 @@
 src/base.c:path	1 处（行 418）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check.c:boxedCoro	1 处（行 454）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check.c:call	1 处（行 433）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check.c:count	2 处（行 179, 183）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check.c:type	4 处（行 382, 390, 392, 455）	R1 AST 冻结的施工单：P2 把它降到 0
-src/check_escape.c:deref	1 处（行 2271）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_escape.c:target	2 处（行 988, 1664）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_escape.c:type	2 处（行 2514, 2552）	R1 AST 冻结的施工单：P2 把它降到 0
 src/check_expr.c:args	4 处（行 1698, 2438, 2791, 3384）	R1 AST 冻结的施工单：P2 把它降到 0

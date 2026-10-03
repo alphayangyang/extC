@@ -23,6 +23,7 @@
 #include "dbg.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include "results.h"
 
 /* id -> node, and id -> result slot, as **tables of pointers to fixed blocks**.
  *
@@ -36,6 +37,16 @@
  * rule nobody keeps. A stable table makes the pointer valid for the life of the process,
  * which is what the rest of this file already assumes. */
 #define ID_BLOCK 1024
+
+/* Bit `n` of a slot's mask: `n < 64` lives in `loMask`, the rest in `hiMask`. One spelling
+ * for "test bit", one for "set bit", so a caller never has to know which word it lands in. */
+bool resultsBit(const NodeResults *r, uint64_t bit) {
+    return bit < 64 ? (r->loMask >> bit) & 1u : (r->hiMask >> (bit - 64)) & 1u;
+}
+void resultsSetBit(NodeResults *r, uint64_t bit) {
+    if (bit < 64) r->loMask |= 1ull << bit;
+    else          r->hiMask |= 1ull << (bit - 64);
+}
 
 static const void ***g_nodes;     /* block table: g_nodes[id / ID_BLOCK][id % ID_BLOCK] */
 static NodeResults **g_results;

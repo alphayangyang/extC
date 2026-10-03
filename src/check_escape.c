@@ -2268,7 +2268,7 @@ Type *checkInto(Checker *c, Type *want, Expr *e) {
 Type *checkPrintArg(Checker *c, Expr *e) {
     Type *t = checkExpr(c, e);
     if (t && t->kind == TY_REF) {
-        e->deref = true;
+        planSetDeref(e, true);
         return t->inner;
     }
     return t;
