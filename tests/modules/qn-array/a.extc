@@ -1,0 +1,5 @@
+/* 被**限定名**引用的类型 */
+struct point { x: i32  y: i32 }
+
+fn origin() -> point { return point { x: i32(0), y: i32(0) } }
+fn sum(p: point) -> i32 { return p.x + p.y }

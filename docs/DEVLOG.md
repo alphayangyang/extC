@@ -101,6 +101,14 @@ Python 的 OpenSSL（4518 MB/s）差一个数量级；对 QQBot 的负载（签�
 扫描从 `{` 的**下一个**字符开始。修完公开面清单从 1333 掉到 **686** —— 也就是说此前**近一半是幽灵成员**。
 （`std::json` 之前为了绕它，自由函数只能写在 struct 之前，现在不必了。）
 
+**同日修掉一个语言缺陷（数组元素类型不接受限定名）**：`var pool: [256]json::node` 报
+`unknown type`，而 `slice<json::node>` / `?json::node` / `ref json::node` 都是好的。根因在加载器的
+类型改写 `rwType`：它只递归 `TY_REF` 的 `inner` 与 `targs`，而**数组把元素存在 `inner` 里** ⇒
+`a::T` 从没被改写成模块内的 mangled 名，类型表里找不到，于是报"unknown type `a::T`"。
+修法：`inner`（以及 `fn` 类型的参数/返回）一律递归。判据 `tests/modules/qn-array`：
+`[N]a::point` · `[2][3]a::point` · `?a::point` · `ref a::point` · `fn(a::point)->i32` 五种位置全过；
+全语料 414 份产物**零变化**（只有用限定名的程序受影响）。
+
 **同日的第七刀：L2 第二块 —— `std::json`（零拷贝解析 + 零分配写入）**。解析把节点写进**调用方给的
 池子**，字符串是**输入上的视图**（`tests/json/zerocopy.extc` 用"改输入 ⇒ 视图跟着变"证明它没有副本）；
 写入直接拼进缓冲，不建 DOM。量的结果：解析 **1266–1287 MB/s**（1.9 KB 文档 × 2 万次）· 写入约 1.2 GB/s ·

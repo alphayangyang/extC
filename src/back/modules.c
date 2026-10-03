@@ -717,7 +717,19 @@ static const char *rwTypeName(Loader *L, ModUnit *self, const char *name) {
 
 static void rwType(Loader *L, ModUnit *self, Type *t) {
     if (!t) return;
-    if (t->kind == TY_REF) { rwType(L, self, t->inner); return; }
+    /* **Every** composite type keeps its element/pointee in `inner` -- `[N]T`, `ref T`,
+     * `ptr T`, `dyn T` and (for some spellings) `slice T`. Recursing only into
+     * `TY_REF` plus `targs` left `[4]mod::Type` unrewritten: the name kept its `::`
+     * spelling, the type table had only the mangled `mod$Type`, and the user got
+     * "unknown type `mod::Type`" for a spelling that works in every other position
+     * (`slice<mod::Type>`, `?mod::Type` and `ref mod::Type` all go through `targs`/the
+     * `TY_REF` arm and did work). Found by writing `std::json`, whose natural API is
+     * `var pool: [256]json::node`. */
+    if (t->inner) rwType(L, self, t->inner);
+    if (t->kind == TY_FN) {
+        for (size_t i = 0; i < t->params.len; i++) rwType(L, self, *(Type **)vecAt(&t->params, i));
+        rwType(L, self, t->ret);
+    }
     for (size_t i = 0; i < t->targs.len; i++) rwType(L, self, *(Type **)vecAt(&t->targs, i));
     if (t->kind != TY_UNRESOLVED || !t->name) return;
     /* The name rules live in `rwTypeName`: this node is the one caller that carries a Type

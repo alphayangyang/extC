@@ -1,0 +1,37 @@
+// expect: array = 7|nested = 5|opt = 3|ref = 9|fnptr = 9
+// ⭐ 判据：**限定名出现在复合类型里**也必须能解析。
+//   修复前 `rwType` 只递归 `TY_REF` 与 `targs`，漏了 `inner` ⇒ `[N]a::point` 报
+//   "unknown type `a::point`"（同样的拼法在 `slice<a::point>` / `?a::point` / `ref a::point`
+//   里却是好的，因为那三个走 targs）。发现于写 `std::json`：它的自然 API 是
+//   `var pool: [256]json::node`。
+use a
+use std::io
+
+fn take(p: a::point) -> i32 { return a::sum(p) }
+
+fn main() -> i32 {
+    var grid: [4]a::point                       /* 元素走 inner ⇒ 曾经失败的那一格 */
+    grid[0].x = i32(3)
+    grid[0].y = i32(4)
+    io::cout << "array = " << grid[0].x + grid[0].y << "\n"
+
+    var nested: [2][3]a::point                  /* 嵌套数组：两次 inner */
+    nested[1][2].x = i32(2)
+    nested[1][2].y = i32(3)
+    io::cout << "nested = " << nested[1][2].x + nested[1][2].y << "\n"
+
+    var opt: ?a::point = some(a::point { x: i32(1), y: i32(2) })
+    match opt {
+        some(p) => { io::cout << "opt = " << p.x + p.y << "\n" }
+        none    => { io::cout << "opt = none\n" }
+    }
+
+    var base: a::point = a::origin()
+    base.x = i32(4)
+    base.y = i32(5)
+    var r: mut ref a::point = ref base
+    io::cout << "ref = " << r.x + r.y << "\n"
+
+    io::cout << "fnptr = " << take(base) << "\n"
+    return 0
+}
