@@ -57,7 +57,7 @@ BUILDERS = {"parser.c": "builds the tree", "lexer.c": "builds tokens", "ast.c": 
 
 
 def node_members():
-    code = cscan.strip(open(os.path.join(ROOT, "src", "ast.h"), encoding="utf-8").read())
+    code = cscan.strip(open(cscan.src_file(ROOT, "ast.h"), encoding="utf-8").read())
     on_node, elsewhere = set(), set()
     for name, members in cscan.structs(code):
         (on_node if name in NODE_STRUCTS else elsewhere).update(members)

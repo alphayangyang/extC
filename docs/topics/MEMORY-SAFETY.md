@@ -248,7 +248,7 @@ codegen 发 `extc_pool_new_at(parent, __extc_home_zone)`。实测 `vector<vector
 2. **守卫**：碰板块的方法先比 `pidGen`（一次 compare），命中 `extc_trapMsg` ⇒ 把"证明不了"的那些
    静默变响亮（`return` / 跨块 / `release` 后使用）。
 3. **提权**：容器构造成为逃逸站点 ⇒ 池在**调用者选的地方**出生（`extc_pool_new_at(parent, zone)`，
-   zone id 就是深度，O(1)）。arena 的 `needsHome` 已经有了这套形状（`src/ast.h` 的 `ARENA_HOME`），
+   zone id 就是深度，O(1)）。arena 的 `needsHome` 已经有了这套形状（`src/ast/ast.h` 的 `ARENA_HOME`），
    池这边是把它镜像一份，**不是新机制**。
 4. **拷贝语义**（见下一条）：§6"代价"里已经写明**不做别名分析** ⇒ `let b = a` 编译器不管，
    所以这一条必须由库的语义定死。

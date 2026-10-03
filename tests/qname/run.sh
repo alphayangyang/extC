@@ -61,7 +61,9 @@ fi
 
 # ⚠️ 结构判据：`as` 别名必须**只换 shortName**、不许动 `path`
 # （`path` 是"全名对全名"匹配的依据 —— 动它深层限定名就再也解不开了 ✗）
-if grep -q 'u->shortName = alias ? alias : shortName;' src/parser.c; then
+# 按文件名找，不按目录：`src/` 是分层的树（front/ back/ check/ …），路径会变，文件名不会。
+PARSER=$(find src -name parser.c | head -1)
+if grep -q 'u->shortName = alias ? alias : shortName;' "$PARSER"; then
     echo "  ok   别名只换 shortName（path 保持全名 ✓）"
 else
     echo "  FAIL 别名把 path 也改了 ⇒ 深层全名会解不开 ✗"; fail=1

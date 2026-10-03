@@ -36,7 +36,7 @@ fn main() -> i32 {
 
 - **分辨率 ≠ 精度**。在这台机器上，连续两次 `time::now()` 的最小正差值是 **11 ns**（走 vDSO 的
   `CLOCK_MONOTONIC`）。这是"读数能细到多少"，不是"计时准到多少" —— 后面那个取决于操作系统与硬件。
-- 时钟在**运行期**（`src/time.c`，按需发射）：`clock_gettime` 要一个 `struct timespec`，而本项目的
+- 时钟在**运行期**（`src/base/extctime.c`，按需发射）：`clock_gettime` 要一个 `struct timespec`，而本项目的
   边界规矩是**平台结构体的布局不让 extC 知道**（`std::sys::net` 对 `epoll_event` 也是这么办的）。
   所以布局留在 C 里，extC 这边只看见一个 `i64`。不问时间的程序，产物里一行都不带。
 - 产物用 `-std=c11`（严格 ISO）编译，而 `clock_gettime` / `nanosleep` 是 POSIX ⇒ 用到时间时，

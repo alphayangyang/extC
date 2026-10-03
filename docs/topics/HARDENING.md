@@ -20,7 +20,7 @@ views 16 **0** ✓ · dyn 16 **0** ✓ · arena 12 **0** ✓ · extern 13 **0** 
 
 主人在"报错"与"按无符号环绕"之间选了**报错** ✓，理由很实在：**不报错的话边界条件会铺得到处都是** ✓。
 
-**实现**（`src/check_expr.c` ✓）：新助手 `intLitRange`（按类型名给出 `i8/i16/i32/i64/u8/u16/u32/u64` 的范围 ✓）+
+**实现**（`src/check/check_expr.c` ✓）：新助手 `intLitRange`（按类型名给出 `i8/i16/i32/i64/u8/u16/u32/u64` 的范围 ✓）+
 在**字面量适配分支之前**（关键 ✓：那两个分支会先 `return` ✗）对"两个整数字面量 + `+`/`-`/`*`"做折叠 ✓，
 **先判后算**（`long long` 的加减乘各自带溢出探测 ✓ —— 一版用 `__int128` 被 `-Wpedantic` 拦下 ✗ ⇒ 换掉 ✓），
 越界就 `ckError` ✓：
@@ -314,7 +314,7 @@ events 12 ✓ · deep 14（剩 Y6 ✓）· time 20（剩 X7/Y8 ✓）· match 14
    `body/off/len/proto` ✓，确认是"条目没被 `deadFuncBody` 认领（`body` 为空 ✓）"还是
    "认领了但定位失败（`funcDefStart` 找不到 ✓）" ✓ —— 两者都很容易补 ✓。
 
-   （历史）**下一轮的正确做法** ✓：先找 `g.deadFuncs` 的**创建处**（`grep -n "DeadFunc" src/codegen.c` ✓ ——
+   （历史）**下一轮的正确做法** ✓：先找 `g.deadFuncs` 的**创建处**（`grep -n "DeadFunc" src/back/codegen.c` ✓ ——
    我只找到读处与 `deadFuncBody` 的**匹配**处 `:5205` ✓，所以创建必在别处 ✓），用它登记实例方法 ✓，
    而不要手搓条目 ✓。
 
@@ -824,13 +824,13 @@ EXTC_UNUSED static bool gen$step(struct gen$frame *f);      /* 模板的 step �
    "检查泛型实例会把同一个 body 再走一遍" ✓（同一顺序 ⇒ 生成的 C 名不会漂移 ✓）；
 3. ✗ **还差**：① 该帧结构没进**单元列表**（"用了没定义" ⇒ 早先那次"给帧收集补一趟 `g.funcs`"的
    尝试 ✗ 当时失败是因为帧还不存在 ✓，现在帧真的存在了 ✓ ⇒ 这两块可以合起来 ✓）；
-   ② 协程**运行期文本**（`extc_coro` / `extc_task_*` ✓，来自 `src/coroutine.c` ✓）没被触发 ✓
+   ② 协程**运行期文本**（`extc_coro` / `extc_task_*` ✓，来自 `src/back/coroutine.c` ✓）没被触发 ✓
    （`unknown type name 'extc_coro'` ✓）⇒ 要找到它的触发条件并让"有协程实例"也算数 ✓。
 
 **第 11 轮：四块补丁一起落 ⇒ 只剩两个精确的阻碍** ✓（都已定位 ✓、都已回退 ✓）
 
 - ✗ **F4**：`unknown type name 'extc_coro'` ⇒ 协程的 **typedef 与运行期文本**（`codegen.c:6496` 的
-  `typedef struct ExtcCoroS extc_coro;` + `src/coroutine.c` 的 `extc_task_*`）**没被发出** ✓
+  `typedef struct ExtcCoroS extc_coro;` + `src/back/coroutine.c` 的 `extc_task_*`）**没被发出** ✓
   ⇒ 触发条件要找到并让"有协程实例"也算数 ✓；
 - ✗ **B7**：`redefinition of 'struct gen$frame'` ⇒ 说明实例的 `coroFrameType` **仍然指向模板的帧** ✓
   （否则我的"帧单元也收实例"那趟不会把模板帧登记两遍 ✓）⇒ 也就是**建帧那段对这个实例没跑/没生效** ✓
@@ -1012,7 +1012,7 @@ parameter list" 消失 ✓。剩下两条，都已定位到行 ✓：
 **下一阶段的入口（照此继续即可 ✓）**：
 1. `$step` 声明共 **三处**：`codegen.c:4145`（✓ 已改口径）、`:4252`（✓ 已改）、以及**尚未找到的第三处**
    （第 36 轮实测：即使前两处都收实例、跳过泛型模板与临时实例 ✓，`gen$step` 仍被声明 ✗）
-   ⇒ 用 `grep -n '\$step' src/codegen.c` 逐个确认，或给**泛型模板**加"永不发射"的统一判据 ✓；
+   ⇒ 用 `grep -n '\$step' src/back/codegen.c` 逐个确认，或给**泛型模板**加"永不发射"的统一判据 ✓；
 2. 取值助手：把"按 yield 类型"的登记从**模板**改为**实例**（`codegen.c:4189-4194` ✓ 的
    `cType(ck2->yieldType)` ✓ 口径与 `:4183` 的 `yt` 要对齐 ✓）；
 3. 判据：`tools/attack.py generics` 里的 **B7 + F4** 两条 ✓（现在 47 题剩 3 条 ✓）。
@@ -1397,7 +1397,7 @@ gcc：`value computed is not used [-Werror=unused-value]` ✗。**官方测试 `
 2. 收窄到"**非调用**"（`kind != EX_CALL && != EX_METHOD` ✓）✗ ⇒ 仍 **178 份** ✓ —— 因为
    `io::cout << …` 这类**二元**表达式也是非调用 ✓；
 3. 需要的精确判据是"**这个值来自解包（`!`/`?`）的载荷**" ✓ —— `?` 走的是 `EX_TRY` 的专门分支
-   （`:3785` ✓，本来就不发裸值 ✓），而 `!` 的节点种类**尚未确认** ✓（`grep -E "EX_TRY|'!'" src/parser.c`
+   （`:3785` ✓，本来就不发裸值 ✓），而 `!` 的节点种类**尚未确认** ✓（`grep -E "EX_TRY|'!'" src/front/parser.c`
    只找到 `:2418` 的 `EX_TRY` ✓）⇒ 下一步：在 parser 里找 `!` 后缀的造节点处 ✓（token 名可能是
    `TK_BANG` ✓），或给那个节点加一个"丢弃时发 `(void)`"的标记 ✓。
 
@@ -1679,7 +1679,7 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
 （`codegen.c:6318-6324` ✓）⇒ **这条链本身**就是攻击面 ✓。运行期导出与签名 ✓：
 `extc_epoll_new()` ✓、`extc_epoll_add(ep, fd, readable)` ✓、`extc_epoll_wait(ep, timeout_ms)` ✓、
 `extc_sock_pair(out: mut ref i64)` ✓、`extc_sock_read/write(fd, buf: ref u8, n)` ✓、
-`extc_sock_nonblock(fd)` ✓（都在 `src/coroutine.c:106` 的 `eventEmitRuntime` 里 ✓）。
+`extc_sock_nonblock(fd)` ✓（都在 `src/back/coroutine.c:106` 的 `eventEmitRuntime` 里 ✓）。
 
 覆盖 12 题 ✓：`epoll_new` 拿到 fd ✓ · 空 epoll 上 `wait(0)` ✓ · **socket 对写一字节再读回** ✓ ·
 `epoll_add` 用**负 fd** ✓ · `wait` 用**坏 ep 号** ✓ · `sock_read` 读 **0 字节** ✓ ·

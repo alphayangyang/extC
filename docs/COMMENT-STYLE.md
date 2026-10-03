@@ -108,7 +108,7 @@ revisions (comments removed, literals preserved) and compares it byte for byte. 
 to prove a comment rewrite changed nothing:
 
 ```sh
-python3 tools/comment_neutral.py HEAD src/check_escape.c
+python3 tools/comment_neutral.py HEAD src/check/check_escape.c
 ```
 
 It must print `ok ... (comments only)` for every file. A comment rewrite is only

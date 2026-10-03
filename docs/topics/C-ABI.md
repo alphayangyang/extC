@@ -464,11 +464,11 @@ reserve=4096MB rss_delta=4 commit=1024KB stored=11 holds=true outside=false copy
    而板手里是 `ref u8` 视图的 `data`。擦掉 pointee 类型不丢权限（`ref void` 什么都解引用不了）。
 2. **视图造不出来** —— 这是第 ② 块。`slice<u8> { … }` 写不出（泛型实例没有结构体字面量，实测
    被当成"类型出现在表达式位置"拒绝），而 `ref void` → `ref T` 又故意不开。所以
-   `extc_viewOf(p, n)` 由**编译器**给三行 C（`src/plate.c`，`@builtin` + `needPlateView` 触发）。
+   `extc_viewOf(p, n)` 由**编译器**给三行 C（`src/back/plate.c`，`@builtin` + `needPlateView` 触发）。
    它是"指针 + 长度 ⇒ 视图"的唯一入口，**不做任何检查**：谁调用谁负责（板用 `holds`，C 边界用
    声明处的签字）。
 3. **`memcpy` 也需要一道门**：它的签名里有 `const void *` 与 `size_t`，而手写声明会与
-   `<string.h>` 撞（`src/memfind.c` 的文件头记过同一件事）。`extc_memCopy` 与 `extc_viewOf`
+   `<string.h>` 撞（`src/back/memfind.c` 的文件头记过同一件事）。`extc_memCopy` 与 `extc_viewOf`
    同一块发射，**按声明触发**（一个声明一个标志）—— 这一条是被闸门逼出来的：最初把它加进
    `extern!("extc-mem")` 那一块，`std::string` 的用户全都声明它 ⇒ **21 个产物逐字节变化**，
    golden 当场抓住。
@@ -588,7 +588,7 @@ error: argument 1 of `inner` points into a deeper scope (depth 1) than the arena
 调用点有一个"活到帧外"的目的地（深度 0，比如从 C 回来的指针、指向全局的指针），实参里的本帧局部
 就被拒。cairo 那次就是这么被逼着把画图的调用一行行摊在 `main` 里的。
 
-**修法**（`src/check_top.c` 的 `collectEffectsExpr`）：经 `fn` 值调用时，如果那个值来自**带
+**修法**（`src/check/check_top.c` 的 `collectEffectsExpr`）：经 `fn` 值调用时，如果那个值来自**带
 `effects` 的槽**，就把槽的掩码并进本函数的总结，并**保持 complete** —— 它与 `extern!` 上的子句
 是同一件事（同一个解析器、同一套键，调用点的签名本来就是从它建出来的）：
 

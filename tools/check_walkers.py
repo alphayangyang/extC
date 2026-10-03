@@ -145,7 +145,7 @@ def switch_blocks(text: str):
 
 def main() -> int:
     listing = "--list" in sys.argv
-    header = (ROOT / "src/ast.h").read_text(encoding="utf-8")
+    header = pathlib.Path(cscan.src_file(ROOT, "ast.h")).read_text(encoding="utf-8")
     kinds = {
         "EX": [k for k in enum_kinds(header, "ExprKind")],
         "ST": [k for k in enum_kinds(header, "StmtKind")],

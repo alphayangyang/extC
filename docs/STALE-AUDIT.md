@@ -35,7 +35,7 @@
 ## 二、专题页（`docs/topics/`）
 
 8. **`CONCURRENCY.md:134`** 把调度器模块写成 `stdlib/std/sched.extc`，实际是 `stdlib/std/coro/scheduler.extc`。
-9. **`CONCURRENCY.md:276`** 引用 `tests/arena-soundness/H2_home_zone_depth2.extc`，该目录不存在。  —— **2026-09-28 已修**：该文件已在 `f3b0c13` 改名为 `H2_home_zone_two_hops.extc`；`src/check_top.c` 的两处注释已跟着改（`CONCURRENCY.md` 里其实已无旧引用）。
+9. **`CONCURRENCY.md:276`** 引用 `tests/arena-soundness/H2_home_zone_depth2.extc`，该目录不存在。  —— **2026-09-28 已修**：该文件已在 `f3b0c13` 改名为 `H2_home_zone_two_hops.extc`；`src/check/check_top.c` 的两处注释已跟着改（`CONCURRENCY.md` 里其实已无旧引用）。
 10. **`POOLS.md:332`** 写 `stdlib/std/pool.extc`，实际是 `stdlib/std/sys/pool.extc`。
 11. **`DYN.md` 有 13 处引用了不存在的夹具名**（`dyn_in_container` · `dyn_object_safety` · `dyn_not_object_safe` ·
     `dyn_bind_rejected` · `dyn_no_wrong_dispatch` · `dyn_stale_stored` · `dyn_rt_p1.c` …）—— 要么改名没跟，
@@ -58,7 +58,7 @@
 | `DYN.md:89-91` | 无 `self` 的关联函数"调用语法上不可达，写不出 `dyn T(x).assoc()`" | 写得出，但**随后段错误**（见下"代码 bug"第 1 条）|
 | `DYN.md:92-93` | 泛型方法"会被签名比对拦下，当前不需要第二条诊断" | 声明期就报 `unknown type T`；`check_expr.c:2266` 的专门诊断成了死代码 |
 | `DYN.md:104-106` | 阶段 1"只实现构造即调用，不引入新 kind" | `EX_DYN`/`TY_DYN` 已在（`ast.h:139/:327`、`parser.c:1240`）|
-| `DYN.md:175,235` | 派发前校验叫 `extc_dyn_vt(h, file, line)` | 符号是 `extc_dyn_slot`（`src/pools.c:785`；改名见提交 `3c4191e`）|
+| `DYN.md:175,235` | 派发前校验叫 `extc_dyn_vt(h, file, line)` | 符号是 `extc_dyn_slot`（`src/back/pools.c:785`；改名见提交 `3c4191e`）|
 | `DYN.md:264-268` | 判据三条：`dyn_no_wrong_dispatch.extc` · `dyn_stale_trap.extc` | 两个夹具名全仓不存在；现用 `dyn_o5_stale_trap`、`dyn_object_table` |
 | `DYN.md:270-278` | 生成物形状里有 `extc_dyn_put(…)` | 立即形式 `put`/`slot` 计数都是 0（直接查表调用）|
 | `DYN.md:292-295` | 判据 7 条；`dyn_pool_dispatch` 断言 `put`/`slot` 各 2 处 | 现共 22 条；该判据已翻面成"立即形式不碰池：put=0 slot=0" |
@@ -116,7 +116,7 @@
 | `16-unimplemented.md:52` | "第二期阶段 1、2 已落地" | 阶段 3（存储面）也已落地 |
 | `16-unimplemented.md:53` | "`tests/dyn` 9 条判据" | 13 个夹具 / 22 条判据 |
 | `16-unimplemented.md:54-55` | "仍缺：保存 dyn 值与字段/容器元素" | 四个存储类判据全部通过（`dyn_stored`/`dyn_in_field`/`dyn_in_array`/`dyn_in_varArray`）|
-| `16-unimplemented.md:55-56` | "仍缺：孤儿规则与跨 trait 撞名的专门诊断" | 孤儿规则已落地（`src/check_top.c:4793` 发出 `is an orphan`，`tests/impl` 常设断言）；只剩撞名一条 |
+| `16-unimplemented.md:55-56` | "仍缺：孤儿规则与跨 trait 撞名的专门诊断" | 孤儿规则已落地（`src/check/check_top.c:4793` 发出 `is an orphan`，`tests/impl` 常设断言）；只剩撞名一条 |
 | `08-struct.md:39` | `fn hash(self: ref i64) -> i64 { return self * i64(…) }` | 编译报 `` `ref i64` is a reference, not a value -- dereference it first: `*p` ``；改 `*self` 后编过 |
 | `08-struct.md:79-82` | `fn moveBy(self: ref point, …) { self.x = … }` | 需要 `mut ref`（同一个文件 §7.0 的 `bump(self: mut ref …)` 才是对的）|
 | `08-struct.md:100` | "接收者是 `ref T`、`self` 是值类型会自动解引用" | 接收者必须是 `ref T`/`mut ref T`（`fn get(self: point)` 直接报错）|
@@ -127,7 +127,7 @@
 | `16-unimplemented.md:30` | "`region` 显式命名…A4 待定…死了" | 与 `PLAN.md:340` 的"判据 `tests/region/`"对不上（该目录不存在）；`region` 也不是关键字 —— 两处要一起对账 |
 | `16-unimplemented.md:34` | "已完成 —— 五子棋能真的跟人下" | 仓库里只有 `examples/gomoku-board.extc`（棋盘），没有对局程序；输入侧确实通了，但这句话没有产物支撑 |
 
-**顺带（代码侧也有过时文案）**：`src/check_top.c:292` 的诊断说 "`self` is only allowed in a method
+**顺带（代码侧也有过时文案）**：`src/check/check_top.c:292` 的诊断说 "`self` is only allowed in a method
 declared inside a `struct`" —— `impl` 块里的方法早已合法。
 
 ## 二之二、`IO.md` / `MODULES.md` / `BOOTSTRAP.md` / `SPEC.md` / `LIBS.md` / `SOUNDNESS.md`
@@ -149,14 +149,14 @@ declared inside a `struct`" —— `impl` 块里的方法早已合法。
 | `MODULES.md:537` | "`tests/qname/` 6 正例" | 7 个 |
 | `BOOTSTRAP.md:178` | 文件 IO 白名单 = `fopen`/`fread`/`fwrite`/`fclose` | 实际是 `read`/`write`/`open`/`close`（POSIX 原语）|
 | `BOOTSTRAP.md:196-198` | "`option<ref T>` 今天造不出来" | 编得过（`examples/option-ref-payload.extc`）|
-| `BOOTSTRAP.md:231-234` | "后缀 `!` 还没实现" | 已实现（`src/parser.c` 有 `at(p, "!")`）|
+| `BOOTSTRAP.md:231-234` | "后缀 `!` 还没实现" | 已实现（`src/front/parser.c` 有 `at(p, "!")`）|
 | `BOOTSTRAP.md:668-670,790,794-800` | 靶子清单里一堆 `- [ ]`（输入/argv、算术 UB、全局常量、带载荷枚举、模块系统） | 都已落地（同文件 §6 自己写着"三处全部还清"）|
 | `BOOTSTRAP.md:1080-1086`、`SPEC.md:381,384` | "`let v = m  return v` 被挡住（保守）" | 已修（`Sym.depth` 与 `refDepth` 已分开）|
 | `SPEC.md:56,629,501-502` | "用户永远不写 `close`" / "`open()` 返回 `mut ref file`（帧 arena 里的槽位）" | 定案 79：句柄**按值**返回（`fs.extc:242` `result<ifstream, io::ioError>`），**关文件是程序的事**（`close()` 是提交点，`tests/fs/close-twice.extc`）|
 | `SPEC.md:78,679,648,688-690` | "零值毒标记…欠" / "还是 struct + bool 标签" / "要补 `allocSlice<T>`" / "`option<slice<u8>>` 编不过" | 都已了结（`prelude.extc:48/60`、定案 81 已删 `allocSlice`）|
 | `SPEC.md:137` | "`alloc<T>(n)` 是裸 bump 分配（不清零）" | 分配器里已 `memset(p, 0, n)`（`codegen.c:6264`）|
 | `SOUNDNESS.md:4,51` | "今天 4 条成立、3 条缺" / "## 2. 今天缺的三条" | 同文件 `:45` 已写"**7 条**（O1–O7 全部）" —— 自己前后矛盾 |
-| `SOUNDNESS.md:55,62,68` | "`extc_pool_reset` 不换代" / "位置：不存在" / "没有 dyn 的派发键" | 三条都已修（`src/pools.c` 有 `generation++`、`extc_pool_new_table`、dyn 句柄四段校验）|
+| `SOUNDNESS.md:55,62,68` | "`extc_pool_reset` 不换代" / "位置：不存在" / "没有 dyn 的派发键" | 三条都已修（`src/back/pools.c` 有 `generation++`、`extc_pool_new_table`、dyn 句柄四段校验）|
 | `SOUNDNESS.md:43,46,114` | "ARENA 7 个 + POOL 1 个反例" / "16 条 dyn 判据" | 实际 `tests/arena-soundness` 3 个、`tests/pool-soundness` 4 个、`tests/dyn` 23 条 |
 | `SPEC.md:13-14,682` · `LIBS.md:231` · `MODULES.md:189` · `BOOTSTRAP.md:135,204` | 测试计数 255 / 116 / 257 / 82 | 当前语料 **274**（examples 97 + errors 167 + traps 10）；`check.sh` 节数 **43** —— 每处都要带日期与命令重填 |
 
@@ -200,13 +200,13 @@ declared inside a `struct`" —— `impl` 块里的方法早已合法。
 
 | 位置 | 过时说法 | 代码现状 |
 |---|---|---|
-| `ARENA-SOUNDNESS.md:511` | "3-a…合流处什么都不做（后写覆盖前写）⇒ 改成 max" 还是待办 | 已落地：`src/dataflow.c` + `check_top.c:3839 dfAnalyze`（单调前向分析、join=max、迭代到不动点）|
+| `ARENA-SOUNDNESS.md:511` | "3-a…合流处什么都不做（后写覆盖前写）⇒ 改成 max" 还是待办 | 已落地：`src/check/check_dataflow.c` + `check_top.c:3839 dfAnalyze`（单调前向分析、join=max、迭代到不动点）|
 | `ARENA-SOUNDNESS.md:520` | "**P0**（不做就不 sound）档 0 四条 + 1-a + 1-c…256 通过 / 1 失败" | 全部已落地（`refreshRootDepth` 取 max、元素写不再清表、`closeReach`/`bodyReaches` 收成一处；`tools/check_walkers.py` 通过；`check.sh` 的误拒白名单已是空的）|
 | `ARENA.md:221` | "### 8.6 今天（`new` 还没做）能凑合到什么程度" | `new` 早已实现（`examples/new.extc` 编过；`EX_NEW` 在 `ast.h:117`）|
 | `ARENA.md:318,329` | "改成：不做 E2，改做 **甲′**…落地：`raiseMutRefTargets`" | 该符号在 `src/` 里不存在（`PLAN.md:216` 记明"甲′ 的 `raiseMutRefTargets` 已删"）；现在走效果摘要 `Addr`/`Cont` + E 选家 |
 | `MIGRATION.md:9`（含 11-22） | "机制（已落地，见 T4b）" —— 说是 `build/stdlib.c` 那种两阶段 | `build/stdlib.c` 不存在；实际机制是**把 `stdlib/prelude.extc` 文本内嵌**（`Makefile:18` 的 `prelude_data.c` + `tools/embed.c`）|
-| `MEMORY-SAFETY.md:253` | "不做别名分析 ⇒ `let b = a` 编译器不管" | 现在会警告："copies by value but **shares storage**"（`src/check_escape.c` 的 `warnSharedCopy`；判据 `tests/stl/clone_warn.extc`）|
-| `AST-WALKERS.md:140,156` | "修法（已落地**一半**）" / "**根治**（仍未做）" | 通用访问器已落地（`src/ast.c:185/223`），`tools/check_walkers.py` 报"every recursive kind-walker handles every kind"，棘轮 29→23 |
+| `MEMORY-SAFETY.md:253` | "不做别名分析 ⇒ `let b = a` 编译器不管" | 现在会警告："copies by value but **shares storage**"（`src/check/check_escape.c` 的 `warnSharedCopy`；判据 `tests/stl/clone_warn.extc`）|
+| `AST-WALKERS.md:140,156` | "修法（已落地**一半**）" / "**根治**（仍未做）" | 通用访问器已落地（`src/ast/ast.c:185/223`），`tools/check_walkers.py` 报"every recursive kind-walker handles every kind"，棘轮 29→23 |
 | `ARENA-MEMORY.md:11` | "峰值 98 MB 对 50 MB"（复现物在 `/tmp/rg/r1.extc`） | 复现物不在仓库，而且它量的是**已删掉的无条件兜底**那版 ⇒ 数字要加"旧兜底版（2026-09-24 前）"限定，或把探针放进 `build/tmp` 重测 |
 
 **这一片核过、不算过时的**：`ARENA-SOUNDNESS.md:615`（`@overwrite` 的跨调用复用确实还没做，生成物里格子在本帧）·
@@ -263,7 +263,7 @@ declared inside a `struct`" —— `impl` 块里的方法早已合法。
 
 1. **P0 段错误：`dyn` 派发一个没有 `self` 的 trait 方法。**
    复现：trait 里加 `fn zero() -> i64`，然后 `dyn Tag(b).zero()`（立即形式）→ `./build/extc` **退出码 139**，
-   无任何诊断。成因（审计员 `gdb` 定位）：`src/check_expr.c` 的 object-safety 诊断（`:2260`）只 `ckError`
+   无任何诊断。成因（审计员 `gdb` 定位）：`src/check/check_expr.c` 的 object-safety 诊断（`:2260`）只 `ckError`
    不致命，随后走到"`mut ref` 接收者"检查，对零参函数取 `params[0]` 拿到 NULL。
    修法：那一支 `ckError` 之后直接返回错误类型，或把接收者检查包在 `params.len > 0` 里。**必须配判据**
    （`tests/errors/`）与一条 `dyn` 正例防回归。

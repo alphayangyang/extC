@@ -17,13 +17,17 @@ docs/topics/AST-ANNOTATIONS.md 第 3 节）。
 import re
 import sys
 import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cscan
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-CODEGEN = ROOT / "src" / "codegen.c"
-AST = [ROOT / "src" / "ast.h"]
+CODEGEN = pathlib.Path(cscan.src_file(ROOT, "codegen.c"))
+AST = [pathlib.Path(cscan.src_file(ROOT, "ast.h"))]
 
 ANALYSIS_LIST = ROOT / "tools" / "plan-analysis-fields.txt"
-PLAN_C = ROOT / "src" / "plan.c"
+PLAN_C = pathlib.Path(cscan.src_file(ROOT, "plan.c"))
 
 
 def analysis_fields():

@@ -2,7 +2,7 @@
      大纲（按作者指定）：1 Arena 是什么 · 2 Arena 提权机制与正确性证明 · 3 Arena 的优劣 ·
      4 Pool 是什么、为什么需要 · 5 Pool 与 Arena 如何联动 · 6 应用（无栈协程 / dyn Trait / …）
      取材：ARENA-FORMAL.md（形式模型与定理）· ARENA-SOUNDNESS.md（判据与反例）· POOLS.md ·
-     CONCURRENCY.md · DYN.md · src/codegen.c 注释 · tests/*。数字都是实测；未修的一律写"未修"。 -->
+     CONCURRENCY.md · DYN.md · src/back/codegen.c 注释 · tests/*。数字都是实测；未修的一律写"未修"。 -->
 
 # extC 的内存管理模型：Arena 与 Pool（原理篇）
 
@@ -23,7 +23,7 @@
 | **区域（region）** | 一个**寿命**的抽象 —— **是地址的属性**，不是"一块内存" | `reg(a)` 一旦分配就定了（`ARENA-FORMAL.md` §1.4）|
 
 **层号 = 词法层**：一个函数调用里 arena **入口建一次**、所有分配点共用，`__extc_a[]` 的
-下标就是词法层号（`CONCURRENCY.md` §2.1，`src/codegen.c`）：
+下标就是词法层号（`CONCURRENCY.md` §2.1，`src/back/codegen.c`）：
 
 ```c
 static int32_t fill(int64_t n) {
@@ -618,5 +618,5 @@ EXTC=$PWD/build/extc ./tests/dyn/run.sh        # dyn（表进池 + 世代校验�
 | pool 模型 · 边界三条 · arena-vs-pool 实测 · 染色两层 | `docs/topics/POOLS.md` §1/§2/§7 |
 | 无栈 · 帧寿命 · `resume` 的 home 规则 · `coroutine<A,B>` 欠账 | `docs/topics/CONCURRENCY.md` §1/§2/§4 |
 | dyn 值形状 · object safety · 五条义务 · 留门 | `docs/topics/DYN.md` §2/§4/§10 |
-| 生成物形状（`__extc_a[]`、层号、spare 块）| `src/codegen.c` |
+| 生成物形状（`__extc_a[]`、层号、spare 块）| `src/back/codegen.c` |
 | 反例与判据 | `tests/arena-soundness/`、`tests/arena-promoted/`、`tests/pool/`、`tests/pool-soundness/`、`tests/coro/`、`tests/dyn/`、`tests/asan/`、`tests/attacks/`、`tests/nocopy/` |

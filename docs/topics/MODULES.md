@@ -81,9 +81,9 @@
 | 事实 | 出处 | 对模块设计的约束 |
 |---|---|---|
 | **只吐一个 .c**，所有非 `main` 函数加 `static` | PLAN #37（换向量化 3.2×）| 真·多 TU 会**破坏那个优化** ⇒ 要么保持单 TU，要么只对跨模块的符号放开 `static` |
-| prelude **嵌在编译器二进制里**（`tools/embed`）| `Makefile` / `src/prelude.c` | stdlib 变成"普通模块"之后，**内建 prelude 这一层要重新定位**（Rust 的 prelude / Haskell 的 `Prelude` 就是那个角色：**默认导入 + 可覆盖**）|
+| prelude **嵌在编译器二进制里**（`tools/embed`）| `Makefile` / `src/back/prelude.c` | stdlib 变成"普通模块"之后，**内建 prelude 这一层要重新定位**（Rust 的 prelude / Haskell 的 `Prelude` 就是那个角色：**默认导入 + 可覆盖**）|
 | **没有 C 互操作**（`extern!` 未实现）| `SPEC.md` §8.1 档 3 | 库碰不到系统调用 ⇒ IO 必须**要么**是语言原语（`IO.md` 档 1）**要么**等 `extern!` |
-| `reserved`（prelude 的符号不许重定义）| `src/check_top.c` | 那是"内建模块"的雏形 —— 模块系统只是把它** generalize** |
+| `reserved`（prelude 的符号不许重定义）| `src/check/check_top.c` | 那是"内建模块"的雏形 —— 模块系统只是把它** generalize** |
 | **parser 不查符号表** | DECISIONS #23（`T(x)` 而非 `(T)x` 就是这个原因）| 模块路径必须**纯语法可解析** ⇒ `use std.io`（点号路径）比 Rust 2018 那套 `crate::` / `self::` / `super::`（要靠符号表分流）**更适合 extC** |
 | arena / 无 free / 深度 0 = 全局 | `ARENA-FORMAL` | 模块级可变状态 = **深度 0** ⇒ 跨模块全局会被模块系统放大 |
 | **(S3) 记账不变式** | `ARENA-FORMAL` §6.6 | 模块化引入的"跨模块可变状态"**必须先过 (S3) 检查**（"这一步会不会让谁的记数变小"）|
@@ -470,7 +470,7 @@ extc -I libs --run app/main.extc  # 也可以把库放在别的目录
 
 ### 11.2 实现方式（**检查器与 codegen 几乎没动** 这是刻意的）
 
-全部机制在**装载器**（`src/modules.c`）：
+全部机制在**装载器**（`src/back/modules.c`）：
 
 | 步骤 | 干什么 |
 |---|---|

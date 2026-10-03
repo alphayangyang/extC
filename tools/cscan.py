@@ -187,3 +187,21 @@ def src_files(root, exts=(".c", ".h"), subdir="src"):
 def rel(root, path):
     """Path relative to `root`, with forward slashes (what the baselines key on)."""
     return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def src_file(root, name, subdir="src"):
+    """The one source file called `name` anywhere under `<root>/<subdir>`.
+
+    Tools that need *a particular* file (`ast.h`, `plan.c`, `codegen.c`) used to spell the
+    path out. That breaks the moment the tree grows a level, and it breaks **loudly** -- but
+    the point of this helper is that the path is a name, not a layout: the caller asks for
+    `ast.h` and does not care which subdirectory it sits in. Two matches is an error (the
+    caller wanted one file, and silently picking the first is how a checker ends up reading
+    the wrong one).
+    """
+    hits = [p for p in src_files(root, subdir=subdir) if os.path.basename(p) == name]
+    if len(hits) != 1:
+        sys.stderr.write("cscan.src_file: %s matched %d files under %s/%s\n"
+                         % (name, len(hits), root, subdir))
+        raise SystemExit(2)
+    return hits[0]

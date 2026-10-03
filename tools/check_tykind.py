@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cscan   # src_files: one recursive discovery, refuses to return nothing
 
 KINDS = []
-src = open('src/ast.h', encoding='utf-8').read()
+src = open(cscan.src_file('.', 'ast.h'), encoding='utf-8').read()
 m = re.search(r'typedef enum \{(.*?)\} TypeKind;', src, re.S)
 for line in m.group(1).split('\n'):
     mm = re.match(r'\s*(TY_\w+)', line)

@@ -93,7 +93,7 @@ dyn Tag(b).tag()        /* 阶段 1：构造 + 立即调用（不碰池） */
   因此当前不需要第二条诊断；等阶段 2 放开后再看是否需要更早、更准的报错。
 
 **原先记录的落点（保留）**：
-落点：`src/check_expr.c` 的 `EX_METHOD` 分支里**方法解析之后**（`e->func` 已定）。
+落点：`src/check/check_expr.c` 的 `EX_METHOD` 分支里**方法解析之后**（`e->func` 已定）。
 需要按 `e->dynTrait` 在 `c->m->traits` 里找到 `TraitDef`，再对它声明的那个方法判三条：
 ① 必须带 `self`（`funcIsMethod`）；② 不能是泛型（`typeParams.len` 只有 `Self` 一个）；
 ③ 返回类型不得提到 `Self`（`mentionsParam`）。三条各配一条反例判据。
@@ -116,26 +116,26 @@ box __extc_dyn0 = b;                     /* 载荷的一份拷贝：没有寿命
 extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间接调用 */
 ```
 
-**锚点（已勘察，下一轮不必再找）**：`parseType` = `src/parser.c:1225`；方法调用节点在
-`src/check_expr.c:835` 构造 `EX_METHOD`，检查在 `:2008`；codegen 走 `genMethodCall`
-（`src/codegen.c:2167` 分派）；第一期的表在 `generateC` 收尾处发出（`extc_vt$…`）。
+**锚点（已勘察，下一轮不必再找）**：`parseType` = `src/front/parser.c:1225`；方法调用节点在
+`src/check/check_expr.c:835` 构造 `EX_METHOD`，检查在 `:2008`；codegen 走 `genMethodCall`
+（`src/back/codegen.c:2167` 分派）；第一期的表在 `generateC` 收尾处发出（`extc_vt$…`）。
 
 **第二次勘察的发现（让实现缩到两处 + 一个字段）**：解析器**本来就会直接构造 `EX_METHOD` 节点**
-（`src/parser.c:2190` 的 `.name(args)` 分支：`recv` / `name` / `args`），而第一期的 trait 实现方法
+（`src/front/parser.c:2190` 的 `.name(args)` 分支：`recv` / `name` / `args`），而第一期的 trait 实现方法
 **已经挂进了类型的方法集** ⇒ 既有的 `EX_METHOD` 检查路径（方法存在性、实参类型与个数、`self` 形状）
 **一行都不用改**。dyn 额外需要的四条检查（trait 存在 · object safety 三条 · 载荷类型已实现该 trait ·
 记住 dyn 标记供 codegen 用）挂在这条既有路径上即可。
 
 于是实现只剩两处 + 一个字段：
 - **解析器**：识别 `dyn Trait(expr)` 前缀，照常构造 `EX_METHOD`，并把 trait 名写进新字段
-  `Expr.dynTrait`（`src/ast.h:319` 的 `method` 联合体旁）；
-- **codegen**：`genMethodCall`（`src/codegen.c:1647`，分派在 `:2167`）加一个分支 —— 有 `dynTrait`
+  `Expr.dynTrait`（`src/ast/ast.h:319` 的 `method` 联合体旁）；
+- **codegen**：`genMethodCall`（`src/back/codegen.c:1647`，分派在 `:2167`）加一个分支 —— 有 `dynTrait`
   就**取表字段调用**（`extc_vt$Trait$Type.method(&tmp)`），否则照旧直接调用。
 
 **第三次勘察：两处细节定下来了，一处需要选择**
 
 - **标记怎么活下来**：`dyn Tag(x)` 的载荷由 `parsePrimary` 产出，而 `.tag(args)` 是 `parsePostfix`
-  里的循环**新建**一个 `EX_METHOD` 节点（`src/parser.c:2190`）—— 所以 trait 名必须在那一步
+  里的循环**新建**一个 `EX_METHOD` 节点（`src/front/parser.c:2190`）—— 所以 trait 名必须在那一步
   **从接收者拷到新节点**（一行）。AST 侧新字段放在 `Expr` 的 `} u;` **之后**（联合体之外），
   这样既有代码读 `u.method` 不受影响。
 - **`genMethodCall` 的 dyn 分支**：接收者类型是 `subst(g, e->u.method.recv->type)`（模板内可能是 `T`），
@@ -166,7 +166,7 @@ extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间�
 
 #### 运行期一半：**已落地**（2026-09-26，本轮）
 
-`src/pools.c` 追加了一个**独立分块**（不动任何既有字符串），随池运行期一起按需发出：
+`src/back/pools.c` 追加了一个**独立分块**（不动任何既有字符串），随池运行期一起按需发出：
 
 | 名字 | 作用 |
 |---|---|
@@ -183,7 +183,7 @@ extc_vt$Tag$box.tag(&__extc_dyn0)        /* 从表里取字段 ⇒ 受控的间�
 **为什么这样 O5 就成立**：`vt` 存在**槽**里、不在值里 ⇒ 槽被复用成另一个实现时，**世代检查先失败** ⇒
 旧值永远读不到新实现的表，E3 式类型混淆被结构性排除。
 
-**教训（第三次同类）**：往 `src/pools.c` 追加内容时，**不能按行边界插入** —— 那里的 `bufPuts` 是
+**教训（第三次同类）**：往 `src/back/pools.c` 追加内容时，**不能按行边界插入** —— 那里的 `bufPuts` 是
 **跨行的一条语句**（`bufPuts(out, "…" \n "…")`），按 `\n` 定位会插进语句中间。正确锚点是**发出函数的
 收尾大括号**，而且转义交给脚本做（不手写）。
 
@@ -211,7 +211,7 @@ dyn 值的载荷是**一份拷贝**，它必须有个拥有者。选择**当前 
 **③ 派发前的校验（O5 的核心）**
 
 ```c
-/* 运行期两个新助手（放进 src/pools.c 的池运行期文本里，与既有 extc_pool_* 同区） */
+/* 运行期两个新助手（放进 src/back/pools.c 的池运行期文本里，与既有 extc_pool_* 同区） */
 ExtcDynHandle extc_dyn_put(const void *payload, int64_t size, const void *vt);
 ExtcDynSlot  *extc_dyn_slot(ExtcDynHandle h, const char *file, int line);  /* 不合法就 trap */
 
@@ -241,7 +241,7 @@ const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
 
 **④之一 · 接线方案（2026-09-26 第二次勘察，**上一轮那条"codegen 没有此机制"是错的**）**
 
-**更正**：codegen **已经有**"表达式需要前置语句"的机制 —— `pfLine(CG *g, fmt, …)`（`src/codegen.c:335`）
+**更正**：codegen **已经有**"表达式需要前置语句"的机制 —— `pfLine(CG *g, fmt, …)`（`src/back/codegen.c:335`）
 把一条完整语句（带缩进）写进 `g->prefix`，由语句发出点统一 flush；既有用法见 `__extc_pn%d` 那处
 （`:2129`，`e->needTemp` 的临时量就是这么发的）。所以**不需要**新造 `Buf pre`，也**不需要** GNU 语句
 表达式。（上一轮我 grep 的关键词是 `prelude|preStmt|tmpDecl`，漏掉了 `pfLine` —— 教训：查"有没有某机制"
@@ -255,7 +255,7 @@ const void *__extc_vt0 = extc_dyn_vt(__extc_dyn0, "file.extc", 12);
    因为既有代码把调用印成 `"%s(%s"`，所以这两处替换后**自然**得到
    `((const struct …_t *)__extc_ds0->vt)->tag(__extc_ds0->addr, …)` 其余参数（home/池/`@overwrite`）
    一律不动；
-3. 源位置照 `cgLine(g, "extc_trapMsg(\"%s\", %d, …)", <file>, <line>)`（`src/codegen.c:2559`）
+3. 源位置照 `cgLine(g, "extc_trapMsg(\"%s\", %d, …)", <file>, <line>)`（`src/back/codegen.c:2559`）
    的既有写法取；
 4. 生成物要能编过，还需**发出两个助手的 C 原型**（函数体在它们的定义之前）—— 与函数原型同一区。
 
@@ -326,7 +326,7 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 | 卸载墓碑 / 开放注册 | ⏳ 第三期 | —— |
 
 **两条实现要点（本轮）**
-1. **dyn 分流放在"方法查找失败"处**（`src/check_expr.c` 的 `if(!f) {` 内），不是在 `case EX_METHOD` 开头：
+1. **dyn 分流放在"方法查找失败"处**（`src/check/check_expr.c` 的 `if(!f) {` 内），不是在 `case EX_METHOD` 开头：
    那里接收者**已经被检查过** ⇒ 任何接收者形状（`d`、`h.d`、`xs[i]`）都能走 dyn 路径，
    且接收者节点的类型已就位供 codegen 用。第一版只认标识符、且**提前检查接收者**，打乱了整个检查趟
    的顺序（把一个无关的 stdlib 用例弄坏）；
@@ -336,11 +336,11 @@ callee 与接收者 —— 其余参数（home / 池 / `@overwrite`）一行未�
 
 #### 实施设计（2026-09-26 勘察，锚点已备）
 
-**① 给 `dyn Trait` 一个类型**：在 `TypeKind`（`src/ast.h:28`）加 **`TY_DYN`**，`t->name` 存 **trait 名**
-（与 `TY_STRUCT` 存结构体名同形）。三处映射：`cType`（`src/codegen.c:397`）加
+**① 给 `dyn Trait` 一个类型**：在 `TypeKind`（`src/ast/ast.h:28`）加 **`TY_DYN`**，`t->name` 存 **trait 名**
+（与 `TY_STRUCT` 存结构体名同形）。三处映射：`cType`（`src/back/codegen.c:397`）加
 `case TY_DYN: return "ExtcDynHandle";`；`ttEquals` 对同名 trait 视为相同；类型打印走 trait 名。
 
-**② 解析器**：`parseType`（`src/parser.c:1225`）加 `dyn <TraitName>` 分支（trait 名按第一期的规则：
+**② 解析器**：`parseType`（`src/front/parser.c:1225`）加 `dyn <TraitName>` 分支（trait 名按第一期的规则：
 首字母大写、**不是**保留字形状 —— 与表达式侧同样的纪律：按"形状"判定，别霸占标识符）。
 
 **③ 检查器**：`dyn Trait(x)` 这个**值**的类型是 `TY_DYN`；载荷类型必须**已实现**该 trait（复用第一期
@@ -463,7 +463,7 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 共同教训：**"静态已知"是第一期的隐含前提，存储面一旦打开就会失效**。
 
 **改动清单（下一轮）**
-1. `src/codegen.c` 的表发出（`generateC` 收尾处）：改成"每 trait 一个 struct + 每(trait,类型,方法) 一个 thunk +
+1. `src/back/codegen.c` 的表发出（`generateC` 收尾处）：改成"每 trait 一个 struct + 每(trait,类型,方法) 一个 thunk +
    每(trait,类型) 一个实例"；thunk 名 `extc_th$<Trait>$<Type>$<method>`，表实例名与键**保持不变**
 （`extc_vt$<Trait>$<Type>`，稳定键与槽位顺序都不变 ⇒ 与第一期的规则一致）；
 2. `genMethodCall`：`dynTrait` 分支里，若接收者不是 `EX_DYN`（存储值）⇒ **只发** `extc_dyn_slot(<值>, "file", line)`，
@@ -474,17 +474,17 @@ static const struct extc_vt$Tag_t __attribute__((unused))
    `dyn_stored_call`（存储值派发，输出与立即形式一致）· `dyn_stale_stored`（语言级 O5）。
 
 **两个实现细节（2026-09-26 勘察，动手前必读）**
-- **`ttEquals` 的语义**（`src/types.c:743`）：注释写明"除引用、类型参数、泛型实例外，**都靠 interning**"。
+- **`ttEquals` 的语义**（`src/types/types.c:743`）：注释写明"除引用、类型参数、泛型实例外，**都靠 interning**"。
   `dyn Trait` 类型没有声明点（解析器随写随造）⇒ 它属于"按结构比较"那一类 ⇒ 必须在 `ttEquals` 里加一条
   **按名字比较**的分支（`TY_DYN`），否则同一个 trait 的两个 `dyn` 类型会因指针不同而不相等，
   形参/字段赋值全会失败；
-- **表达式检查入口**是 `checkExprInner(Checker *c, Expr *e)`（`src/check_expr.c:383`）；
+- **表达式检查入口**是 `checkExprInner(Checker *c, Expr *e)`（`src/check/check_expr.c:383`）；
   dyn 的新分支加在 `case EX_METHOD:` 之前，载荷用 `checkExprInner` 递归检查，
   "载荷实现了该 trait"那段**抽成一个助手**，让 `EX_DYN` 与 `EX_METHOD`（dyn 派发）共用（避免写两份规则）。
 
 **下一轮要一起做的三处（它们互相耦合，拆开会让构建半坏）**：
 1. `EX_DYN`（`dyn Trait(x)` 作值）—— 解析器构造 + 检查器定型 `TY_DYN`（"载荷实现了该 trait"的检查已在
-   `src/check_expr.c` 的 dyn 块里可复用）+ codegen 发 `extc_dyn_put` 表达式；
+   `src/check/check_expr.c` 的 dyn 块里可复用）+ codegen 发 `extc_dyn_put` 表达式；
 2. **`genMethodCall` 分两种载荷来源**：接收者是 `EX_DYN` ⇒ 走今天那条（put → slot → 派发）；
    接收者类型是 `TY_DYN` ⇒ **只发 `extc_dyn_slot(<值>, "file", line)`**，接收者取 `->addr`；
 3. 检查器：`TY_DYN` 接收者的方法在 trait 签名里找（`funcIsMethod`/object safety 的检查同样适用）。
@@ -495,14 +495,14 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 
 ### 原计划记录（含已被推翻的 `-Wswitch` 判断）
 
-1. `src/ast.h:28` 的 `TypeKind` 加 **`TY_DYN`**（`t->name` 存 trait 名，与 `TY_STRUCT` 同形）；
+1. `src/ast/ast.h:28` 的 `TypeKind` 加 **`TY_DYN`**（`t->name` 存 trait 名，与 `TY_STRUCT` 同形）；
     **新增枚举值会让每个穷举 `TypeKind` 的 switch 触发 `-Wswitch`**（在 `-Wall` 里）⇒
    **必须一次性改完所有 switch**，否则构建带告警、违反零告警约定 —— 这是它不能分批落地的原因；
-2. `src/codegen.c:397` 的 `cType` 加 `case TY_DYN: return "ExtcDynHandle";`；
-3. `src/types.c` 的 `ttEquals` 对同名 trait 视为相同（另需类型打印走 trait 名）；
-4. `src/parser.c:1225` 的 `parseType` 加 `dyn <TraitName>` 分支（按**形状**判定，`dyn` 不是保留字）；
+2. `src/back/codegen.c:397` 的 `cType` 加 `case TY_DYN: return "ExtcDynHandle";`；
+3. `src/types/types.c` 的 `ttEquals` 对同名 trait 视为相同（另需类型打印走 trait 名）；
+4. `src/front/parser.c:1225` 的 `parseType` 加 `dyn <TraitName>` 分支（按**形状**判定，`dyn` 不是保留字）；
 5. 检查器：`dyn Trait(x)` 的类型是 `TY_DYN`；`EX_METHOD` 的接收者若是 `TY_DYN`，方法在 **trait 签名**里找
-（载荷"实现了该 trait"的检查已在 `src/check_expr.c` 的 dyn 块里，可直接复用）；
+（载荷"实现了该 trait"的检查已在 `src/check/check_expr.c` 的 dyn 块里，可直接复用）；
 6. codegen 分两种载荷来源：**立即形式照旧**（`extc_dyn_put` → `extc_dyn_slot` → 派发），
    **存储形式只发 `extc_dyn_slot(<值>, "file", line)`** 一步，接收者取 `->addr`。
 （`genMethodCall` 的 dyn 分支现在就是这两种的来源点；"表达式需要前置语句"用既有的 `pfLine`。）
@@ -514,7 +514,7 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 ### 三条纪律（本期踩出来的，动手前先读）
 
 1. **`dyn` 不是保留字**（`examples/slices.extc` 里 `let dyn = a[lo..hi]`）⇒ 新语法必须按**形状**判定；
-2. **往 `src/pools.c` 追加文本不能按行边界插入** —— 那里的 `bufPuts` 是**跨行的一条语句**，
+2. **往 `src/back/pools.c` 追加文本不能按行边界插入** —— 那里的 `bufPuts` 是**跨行的一条语句**，
    正确锚点是**发出函数的收尾大括号**，转义交给脚本；
 3. **新增结构体字段必须同时找它的初始化点**（`Module.traits` 忘 `vecInit` 曾导致段错误）；
    凡是"发出决定发生在体生成之前"的东西（运行期文本、place 进入），必须由**检查器**在类型已知处标记
@@ -542,7 +542,7 @@ static const struct extc_vt$Tag_t __attribute__((unused))
 **问题**：dyn 运行期原先塞在**池运行期文本**里 ⇒ 每个"用池但不用 dyn"的程序都多带那 76 行
 （而且它是非 static 的，`extern!` 要用，链接器不会丢）。
 
-**修法**：拆出 `poolsEmitDynRuntime(a, out)`（`src/pools.c` + `pools.h` 声明），由 codegen 在
+**修法**：拆出 `poolsEmitDynRuntime(a, out)`（`src/back/pools.c` + `pools.h` 声明），由 codegen 在
 `m->usesDyn` 时发出（新增 `Module.usesDyn`，检查器在 `dynTraitOf` 里置位）；序言那 3 行句柄声明同样门控。
 
 **验证（A/B，用 `git worktree` 建上一提交的编译器）**：对 `examples` + `tests/{pool,stl,impl,dyn}` 共 **170** 个程序
@@ -598,8 +598,8 @@ sum=14000 live=2000      ← live 应是小常数；证明今天的槽没有被�
    句柄同时带 **槽世代 `gen`** 与 **池世代 `pgen`**：两种"变陈旧"的路径都各有一条检查。
 
 **已把修正后的完整运行期文本存盘**（下一轮**直接粘贴**，不要再做文本手术）：
-~~`/tmp/dyn_rt_p1.c` 与 `/tmp/dyn_rt_p2.c`~~ ⇒ 这两个临时文件已不在（内容早已落进 `src/pools.c`）。
-替换方法：定位 `src/pools.c` 里**全部**含 `dyn values(DYN.md` 或 `extc_dynTrap` 的 `bufPuts` 语句，
+~~`/tmp/dyn_rt_p1.c` 与 `/tmp/dyn_rt_p2.c`~~ ⇒ 这两个临时文件已不在（内容早已落进 `src/back/pools.c`）。
+替换方法：定位 `src/back/pools.c` 里**全部**含 `dyn values(DYN.md` 或 `extc_dynTrap` 的 `bufPuts` 语句，
 整体替换为两条新语句 —— **注意保留 `bufPuts(out, "...");` 外壳**（本轮我两次只写了转义内容、
 丢掉外壳，把文件写坏；这也是"不要再做文本手术"的原因）。替换后必须验证：
 `-Woverlength-strings`（两块都 <4095）、生成物合同编译、`make` 零告警。

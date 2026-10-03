@@ -8,7 +8,7 @@
  * A failed `clock_gettime` returns -1 rather than 0: 0 is a legitimate value for "the epoch" on the
  * realtime clock, and a wrong 0 would look like a valid timestamp.
  */
-#include "time.h"
+#include "extctime.h"
 
 void timeEmitRuntime(Arena *a, Buf *out) {
     (void)a;

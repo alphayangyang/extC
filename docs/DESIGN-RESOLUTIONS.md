@@ -825,7 +825,7 @@ golden 降级后，"大规模行为漂移"少了一道粗网——由 R7 的四�
 | D12 | `manual/05-vars.md`、`15-errors.md` | "对 `let` 取引用是错误" | 与 `09-ref.md` 及实测冲突 |
 | D13 | `manual/04-types.md` | 未写**窄类型算术的结果宽度** | R5.1 补：按声明宽度回绕 |
 | D14 | `manual/09-ref.md` | "收窄不认路径" | 代码已实现路径收窄（`examples/path-narrowing.extc`） |
-| D15 | `src/modules.c:26-39` 头注释 | "per-module namespace 是 future work" | 定案 70/76 已落地 |
+| D15 | `src/back/modules.c:26-39` 头注释 | "per-module namespace 是 future work" | 定案 70/76 已落地 |
 | D16 | `CONCURRENCY.md:712/713` | "ext+调度域一行代码都没有"、"`coroutine<A,B>` 不支持" | 均已实现 |
 | D17 | `PLUGINS.md:26`、`HEAP.md:321` | `@export`/`fn` 未落地 | 已落地 |
 | D18 | `POOLS.md:321-324` | 段文本损坏（提取时不可读） | 重写该段 |

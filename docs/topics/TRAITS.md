@@ -29,11 +29,11 @@
 
 | 步骤 | 位置 | 要点 |
 |---|---|---|
-| 1 | `src/ast.h` | `TraitDef { name, line, Vec methods }`；`Module.traits`；`ImplDef.traitName`（固有 impl 为 NULL）。**先打印 `ImplDef` 与 `Module` 的现有结构再改**（上一轮凭记忆改，锚点不匹配） |
-| 2 | `src/parser.c` | 顶层分发加 `trait` 分支；`parseTrait`：名字用 `expectIdent` + 要求首字母大写（trait 是**第三种名字**，与类型/类型参数都不冲突）；方法用现成开关 **`p->noBody = true`** 走 `parseFunc`（这就是 `extern!` 只发签名的同一开关，已核实）；`parseImpl` 在目标名之后接受 `for Type` |
-| 3 | `src/modules.c` | `mergeUnit` 增加 traits 循环（每个单元把自己的 trait 推给 `L->out`）。 根文件现在也走 `mergeUnit`（本会话已合并），所以**只需改一处** —— 这正是当初合并那两处路径的收益 |
-| 4 | `src/check_top.c` | `impl` 挂载趟：若 `im->traitName` 非空 ⇒ 在 `m->traits` 里找同名 trait，找不到报"unknown trait"；找到则照旧把方法挂进类型的方法集（调用因此可用） |
-| 5 | `src/codegen.c` | 发静态方法表（声明顺序、稳定键）；~~本期不生成任何引用它的代码~~ ⇒ 现在 `dyn` 会引用它 |
+| 1 | `src/ast/ast.h` | `TraitDef { name, line, Vec methods }`；`Module.traits`；`ImplDef.traitName`（固有 impl 为 NULL）。**先打印 `ImplDef` 与 `Module` 的现有结构再改**（上一轮凭记忆改，锚点不匹配） |
+| 2 | `src/front/parser.c` | 顶层分发加 `trait` 分支；`parseTrait`：名字用 `expectIdent` + 要求首字母大写（trait 是**第三种名字**，与类型/类型参数都不冲突）；方法用现成开关 **`p->noBody = true`** 走 `parseFunc`（这就是 `extern!` 只发签名的同一开关，已核实）；`parseImpl` 在目标名之后接受 `for Type` |
+| 3 | `src/back/modules.c` | `mergeUnit` 增加 traits 循环（每个单元把自己的 trait 推给 `L->out`）。 根文件现在也走 `mergeUnit`（本会话已合并），所以**只需改一处** —— 这正是当初合并那两处路径的收益 |
+| 4 | `src/check/check_top.c` | `impl` 挂载趟：若 `im->traitName` 非空 ⇒ 在 `m->traits` 里找同名 trait，找不到报"unknown trait"；找到则照旧把方法挂进类型的方法集（调用因此可用） |
+| 5 | `src/back/codegen.c` | 发静态方法表（声明顺序、稳定键）；~~本期不生成任何引用它的代码~~ ⇒ 现在 `dyn` 会引用它 |
 | 6 | 判据 | 正例：trait + 两个 `impl … for` + 直接调用；反例六条（缺方法 / 签名不符 / 重复实现 / `Self` 越界 / 跨 trait 撞名 / 与固有方法撞名）+ 一条"生成物里没有函数指针调用" |
 | 7 | 手册 | 语言页新增「trait 与实现」一节（第一期口径）；`docs/manual/16-unimplemented.md` 里 `dyn` 的状态同步更新 |
 
@@ -51,7 +51,7 @@
 ### A. codegen 静态方法表 —— **已落地（2026-09-26，第五次尝试）**
 
 **发在哪**：全部函数定义之后、`main` 之前（与其它静态数据同一区）。参照现成的原型发出点
-`src/codegen.c:6131`：它已经解决了三件难事 —— 返回类型用 `cType(&g, f->ret)`、参数列表必须用
+`src/back/codegen.c:6131`：它已经解决了三件难事 —— 返回类型用 `cType(&g, f->ret)`、参数列表必须用
 **同一个 `cgParamList`**（注释里写着：漏掉隐藏的 home 参数曾造成真实的 C 类型不匹配）、名字走同一个
 mangling 助手。方法表只是把这三样再用于"字段类型 + 函数名"。
 
@@ -87,12 +87,12 @@ static const struct { int64_t(*tag)(circle *); } __attribute__((unused))
 （`'box_zeta' undeclared`）。
 
 **真因（第三种机制，逐层剥出来的）**：`g.funcs` 不是"模块的全部函数"，而是**可达性播种**的结果
-（`src/codegen.c:5291`/`5320` 两处入列）。第一期的表**没有任何调用者**，所以那些方法既不入列、也就不会
+（`src/back/codegen.c:5291`/`5320` 两处入列）。第一期的表**没有任何调用者**，所以那些方法既不入列、也就不会
 被发出 —— 与死代码消除无关，是"从没被收录"。
 
 **第四次尝试（2026-09-26）**：按上一条把"表引用的方法"加进**自由函数**那处播种过滤
 （`if(!f->used && !cgIsMain(f) && !inTraitTable(m, f)) continue;`）—— 头部仍然完好，但方法**依旧**没被发出。
-⇒ **播种过滤有两个点，我只改了一个**：`src/codegen.c` 里方法（`sd->methods`）与自由函数（`m->funcs`）
+⇒ **播种过滤有两个点，我只改了一个**：`src/back/codegen.c` 里方法（`sd->methods`）与自由函数（`m->funcs`）
 各自有一处 `!f->used` 过滤（前者的入列语句是 `*(FuncDef **)vecPush(&g.funcs) = md;`，约在 5291 行）。
 **下一轮只需把同一条件加到方法那一处**（复用 `inTraitTable`，不要写第二份规则）。
 

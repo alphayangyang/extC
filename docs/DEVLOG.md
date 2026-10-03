@@ -710,8 +710,8 @@ cachegrind `--branch-sim=yes`（简化预测器，会**高估**误判）：
 ### 三、做了什么
 
 1. **编译器**：新内建 `poolResizeRaw<T>(rid, s, n)` —— 与 `poolResize` 同形，只是**新长出来那一段
-   不清零**（`src/check_expr.c` 两处名单、`src/codegen.c` 发射 `extc_pool_resize_raw`、
-   `src/pools.c` 运行期文本）。`poolSliceRaw` 早就有了，缺的就是增长这一侧。
+   不清零**（`src/check/check_expr.c` 两处名单、`src/back/codegen.c` 发射 `extc_pool_resize_raw`、
+   `src/back/pools.c` 运行期文本）。`poolSliceRaw` 早就有了，缺的就是增长这一侧。
 2. **stdlib 逐列判**（哪些能去、哪些必须留）：
    - 去：`map` 四列 + `shrink` 的新块、`vector`/`string` 的缓冲、`hashMap` 的
      `keys`/`slot`/`bucketOfDense`、`linMap` 的 `keys`/`vals`。
@@ -786,7 +786,7 @@ PLAN 自己就记着**六次**"这张表被抓出过时"，所以这次不读正
 | `#75` | 未修完、代码已退回 | `rt_zone`/`rt_reuse`/`rt_container` 全过；churn 1724→1720 KB **平** |
 | `#78` | 要补 hashMap 泛型键 + 有序 map | `struct hashMap<K,V>`（键走协议）+ `struct map<K,V>`（B+ 树）都在 |
 | `#79` | 仍欠"返回类型与实参的实例期检查" | 返回：`-> i32 { return x.hash() }` ⇒ `expects i32, found i64`；实参：`g(v.hash())` 也报 ⇒ **两半都落了** |
-| `#85` | 行内写"已落地"但没划线 | `extc_pool_take`/`_take_raw`/`_give`/`_resize` 都在 `src/pools.c` |
+| `#85` | 行内写"已落地"但没划线 | `extc_pool_take`/`_take_raw`/`_give`/`_resize` 都在 `src/back/pools.c` |
 | `#87` | 🆕 无状态 | `vector<vector<i32>>` 循环里建内层 + `outer.push(inner)` 编过跑出 `3 1` |
 | `#89` | "这一族 API 全是视图（违规）" | `pool`/`string`/`vector` 只剩**拷贝**的 `toSlice`；视图只剩 arena 底的 `varArray::asSlice`（合法那档） |
 | `#90` `#91` `#88附注` | 已定/已落 | `ref vector<i32>` 跑出 `3`；`varArray<ref node>` 互指跑出 `11`（判据 `tests/stl/vararray_ref.extc` 已在） |
@@ -800,7 +800,7 @@ extC 放行、生成的 C 报 `too few arguments to 'box_add'; expected 3, have 
 **808 行** = **9.92×**，与原文 9.5× 同量级 ⇒ 没变好）· `#73`（仍是**警告**；语料 **390 文件 /
 943 处**）· `#86`（哈希**原地增量扩容**没做，`rebuild` 仍旧开新四列 + 还旧列）· §0.4.1 ⑤
 （**正好 53 处**中文串，数字准确）· §2 本表 9（`alloc<i32>(4)` 仍不能索引）· §2 11b/`@main`
-（`src/parser.c:1211` 明说未实现）；**可选** `#48`（无产物缓存）。
+（`src/front/parser.c:1211` 明说未实现）；**可选** `#48`（无产物缓存）。
 
 **③ 两条非待办别当活儿数**：`#14`（已知边界 —— 正例跑通、反例被明确拒）· `#30`（设计备选，
 原文"记着，不选"）。
@@ -1076,7 +1076,7 @@ vector"是经典事故）；Java/C#/Go/Python 是**共享存储**（靠口口相
 `tests/stl/clone_warn.extc`（该报的 2 条）· `tests/stl/clone_ok.extc`（不该报的 0 条）。
 
 **连带的两个修**：`tests/pool/run.sh` 的 `rt_run` 改用 `-w`（那一节判运行期行为，编译期警告
-会搅坏逐字比较；警告本身另有判据）；`src/check_internal.h` 的声明放进了 include guard 里面
+会搅坏逐字比较；警告本身另有判据）；`src/check/check_internal.h` 的声明放进了 include guard 里面
 （放到 `#endif` 之后 ⇒ `tools/check_guards.py` 直接红）。
 
 ---
@@ -1263,7 +1263,7 @@ canary 仍会响 · ASan 与 gcc/clang `-Werror` 干净。
 而作者本人描述它时用的就是「池」。三层名字定死：arena（栈式，块边界整块释放）·
 pool（等大元素、槽位复用、手动 reset/close）· zone（一个地方里的一组 pool，本身也是栈式）。
 
-**动了什么**：`src/regions.c/h` -> `src/pools.c/h`；运行期 `extc_region_*` -> `extc_pool_*`、
+**动了什么**：`src/regions.c/h` -> `src/back/pools.c/h`；运行期 `extc_region_*` -> `extc_pool_*`、
 `ExtcRegion` -> `ExtcPool`、`needRegion` -> `needPool`；库模块 `std/sys/region.extc` ->
 `std/sys/pool.extc`；用例并入既有的 `tests/pool/`（`rt_basic` · `rt_blockexit` · `rt_churn` ·
 `rt_stale` · `rt_alloc`），`check.sh` 不再单开一节（池那一节同时覆盖期 0 与期 1）；
@@ -2063,7 +2063,7 @@ grep 只匹配到 `rtDie`(3631) / `rtCout`(3646) / `rtRaw`(3668) / `rt`(4011) / 
 ### ㉖ 第一刀的脚本把 codegen 改坏了 ⇒ **回退**（两条错法记清楚）
 
 按 ㉕ 的设计写脚本一次做完（挪进 `rtHelp` + 按组切 + 装配拼接 + 置标志），结果 `codegen.c`
-**编不过** 按纪律立刻 `git checkout src/codegen.c` 回退（没留半成品）两条错法：
+**编不过** 按纪律立刻 `git checkout src/back/codegen.c` 回退（没留半成品）两条错法：
 
 1. **切块时忘了给上一块收尾**：每个切点要写的是 `");` + 换行 + `if(g->flag) bufPuts(&g.rtHelp,`
    我只写了后半句 ⇒ 上一个 `bufPuts(` 没关 ⇒ `expected ')' before 'if'`
@@ -2585,7 +2585,7 @@ for(size_t i = 0; i < c->stores.len; i++) {    /* … 可这一支的分支数 =
 **归因**：拿 `b48a609`（运算符重载那几刀**之前**）的 worktree 跑同一个文件 ⇒ **一样挂** ⇒ 早就有了，
 不是当天那几刀引入的
 
-### 修法（两处，都在 `src/check_top.c`）
+### 修法（两处，都在 `src/check/check_top.c`）
 
 1. **剪环**：`LvlState` 加一条当前链的 `(值, 层号)` 记录（`LvlVisit`），重复即返回 `LEVEL_INF`。
    **为什么剪得对**：层号只降不升，而这一趟本来就跑到不动点（两处 64 轮）⇒ 被剪掉的**更强要求
@@ -3194,7 +3194,7 @@ main.extc:3:21: error: expected an expression, found `::`
    而 prelude 也走那条路 ⇒ 我以为 `k` 是 2、其实那次打印是**别的调用**
    ⇒ 教训：探针要打**能唯一定位这次调用**的东西（比如 `t->text` + `k` + 当前文件），
      不能只看一个字符串就下结论
-2. **改坏了 prelude 两次**，每次都是靠 `git checkout src/parser.c` 回来
+2. **改坏了 prelude 两次**，每次都是靠 `git checkout src/front/parser.c` 回来
    ⇒ 教训：碰 `parsePrimary` 之前，**先把"一次只改一处 + 立刻跑 prelude 自检"当规矩** ——
      `./build/extc <空文件> -o /dev/null` 就是最快的 prelude 自检
 
@@ -3282,7 +3282,7 @@ for(int j = 0; j < k; j += 2)   // ← 应该是 k/2
 ⇒ 说明我对 `parsePrimary` 的**模型整体不可靠**，不是"差一行"。
 在这种状态下继续打补丁，只会第 N 次弄坏 prelude
 
-⇒ 恢复干净（`git checkout src/parser.c`）257 全过 / tests/io 10/10
+⇒ 恢复干净（`git checkout src/front/parser.c`）257 全过 / tests/io 10/10
 
 ### 下一次该怎么做（**换武器，不是再来一轮**）
 
@@ -3435,7 +3435,7 @@ t12.extc:3:36: error: expected an expression, found `::`
 * `writer` + 修一个**真缺陷**（`println` 与 `writeBytes` 混用顺序会乱）
 * 文件 I/O 不需要新机制（`open`/`close`/`O_*` 四个原语就够）
 
-**当前状态**：`src/parser.c` **回到干净状态**（`git checkout`）；
+**当前状态**：`src/front/parser.c` **回到干净状态**（`git checkout`）；
 `tests/run.sh` 257 全过、`tests/io` 10/10、`make` 零告警
 ⇒ 没有半成品留在树上（这条规矩这次也救了场）
 
@@ -3615,8 +3615,8 @@ println("()")     // 正常
 
 ### 核对（写文档时逐条验的）
 
-* `src/codegen.c:2687` = `cap = n > 4096 ? n : 4096`
-* `src/codegen.c:2662` = `struct extc_arena { extc_ablock *top; }`（**真的没有块大小字段**）
+* `src/back/codegen.c:2687` = `cap = n > 4096 ? n : 4096`
+* `src/back/codegen.c:2662` = `struct extc_arena { extc_ablock *top; }`（**真的没有块大小字段**）
 * `grep -rn "coroutine\|generator\|yield" src/ stdlib/prelude.extc` = **0**（一个字都没实现）
 * 文档接进了 `README.md` 的索引
 
@@ -4472,7 +4472,7 @@ use lib::util                            // 顶层语义导入（不是文本包
 fn helper() -> i32 { return util::total(util::make(1, 2)) }   // 跨模块写限定名
 ```
 
-### 实现：**全部机制塞在装载器**（`src/modules.c`），检查器/codegen 一行没改
+### 实现：**全部机制塞在装载器**（`src/back/modules.c`），检查器/codegen 一行没改
 
 ① 找文件（项目根 / `-I` / `$EXTC_STD`）② 递归装载 + 状态机查环 ③ **后序 = 拓扑序**合并
 ④ **在检查之前**把限定名解析成平名字（`io::readLine(…)` ⇒ `EX_CALL(readLine)`）
@@ -7008,7 +7008,7 @@ if(at(p, "{") && isUpperCase(t->text)) return parseStructLit(p, t->text);
 
 另外交代清楚了一件奶昔一直没说明白的事：
 **`region` / arena / 逃逸检查现在一个都没实现**，它们全是设计文档里的东西（week-4）。
-编译器 `src/base.h` 里那个 `Arena` 是编译器**自己**的内存管理器（C 写的），
+编译器 `src/base/base.h` 里那个 `Arena` 是编译器**自己**的内存管理器（C 写的），
 跟 extC 语言层的 arena 同名但无关。
 
 ### 定案（主人选 B）
@@ -8034,7 +8034,7 @@ clang 21.1 -Wall -Wextra  72 条 = 26 unused-variable · 22 **parentheses-equali
 （表达式自带一层括号 + `if(` 再加一层 ⇒ 双重括号）例：生成物 590 行、609 行
    `if(((self->fd == io$STDOUT) ||(self->fd == io$STDERR)))`
    ⇒ 这是**多打两个字符**，一个"整串被一对小括号包住就剥掉"的 `cgCond()` 助手就能消掉
-   发射点在 `src/codegen.c` 的 `cgLine(g, "if(%s) {", cnd)`（2664 行附近）那一族
+   发射点在 `src/back/codegen.c` 的 `cgLine(g, "if(%s) {", cnd)`（2664 行附近）那一族
 
 **这轮一行代码都没改** —— 量出来的方向跟上一轮的假设不一样：按项目规矩「**先量再改**」
 （树绿 · 语料未跑是因为没有改动 下一轮从上面两个靶子里挑，靶子 1 是大头、靶子 2 是最便宜的）
@@ -8042,7 +8042,7 @@ clang 21.1 -Wall -Wextra  72 条 = 26 unused-variable · 22 **parentheses-equali
 ### 2026-09-25 · 第二刀补记：**双括号 + 3 行描述符**（两个小刀，都不靠属性闭嘴）
 
 **① clang 独有 22 条 `-Wparentheses-equality` ⇒ 0**：生成物原来写 `if((bound == 0))`
-（表达式打印器给比较自带一对括号，语句又给了一对）⇒ 加 `cgCond()`（`src/codegen.c`，
+（表达式打印器给比较自带一对括号，语句又给了一对）⇒ 加 `cgCond()`（`src/back/codegen.c`，
 "整串被一对小括号包住就剥掉那一对"只剥**恰好收尾**的那种：字符串字面量里的 `)` 收不了尾 ⇒ 原样返回，
 最多留一对多余括号、绝不改变语义）接到两个发射点：`ST_IF` 与 `ST_WHILE`
 **实测** `tests/io/stream-file.extc`：clang `-Wall -Wextra` **69 → 47 条**（22 条双括号全消）、
@@ -8067,7 +8067,7 @@ C89 风格 / `-Wunsafe-buffer-usage` 指针运算必然触发）⇒ 按既定方
 
 ### 2026-09-25 · **第三刀落地：没人引用的定义按"全文内容判据"不发**（gcc 28→16 · stream 14→3）
 
-**机制**（`src/codegen.c`：`DeadDef` + `dropUnreferenced()`）：
+**机制**（`src/back/codegen.c`：`DeadDef` + `dropUnreferenced()`）：
 发射时把那一行的**原文**记下来（`DeadDef{name, text}`），**整份 TU 拼装完**再判：
 **名字在最终文本里只出现 1 次、且那一次就在这行里 ⇒ 整行删掉**
 - **为什么不记字节偏移**：TU 是"原型 → 描述符 → 函数体"几块缓冲区**拼**出来的 发射时的偏移到不了最终位置；
@@ -9373,13 +9373,13 @@ STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文
 试过的最小改法（返回接收者类型 `K` 而不是错误类型）也不行：`return v.hash()` 会被「有损转换」挡住（实测）。
 正确解法是给推迟调用一个**通配/依赖类型**并在**实例期把包含它的整条语句重检**，这条记进 PLAN #79 与下一轮。
 
-处置：`stdlib/stl/hashMap.extc` 与 `src/codegen.c` 都已回退到提交状态，`tests/generics` · `tests/hashmap` ·
+处置：`stdlib/stl/hashMap.extc` 与 `src/back/codegen.c` 都已回退到提交状态，`tests/generics` · `tests/hashmap` ·
 `tests/stl` · `tests/pool` · `tests/linmap` 全绿。同族的另一条证据也写进 #79：② 池底化时 `pool<i32>` 的部分方法
 没被实例化（`pool$pool_i32_remove` implicit declaration）——「泛型体内部实例化另一个泛型」这条链同样没走全。
 
 ### 周期 17（第 17 轮）：#79 的下标错误恢复 ⇒ `hashMap<K, V>` 一次跑通（结构体键可用）
 
-根因精确到一行：`src/check_expr.c` 的 `EX_INDEX` 里
+根因精确到一行：`src/check/check_expr.c` 的 `EX_INDEX` 里
 `if(ttIsError(ot) || ttIsError(it)) return ttError(tt);` —— 索引类型失败时，把**元素类型**也一起吞成错误类型。
 修法是标准的错误恢复：对象类型仍然可索引时照样给出元素类型（索引自己的错已经在它自己的位置报过），只有
 对象类型是错误类型才不可恢复。
@@ -9859,12 +9859,12 @@ extc_pool_zoneLeaveTo(__extc_zm2);
 **改法**：加一个传递摘要 `FuncDef.makesPool`（"这个函数能不能直接/间接建池"），只在这个摘要为真的
 地方压/弹 zone。
 
-- `src/ast.h`：`FuncDef.makesPool` 一个 bool，注释写清它为什么是**最小**不动点。
-- `src/check_top.c`：`exprMakesPool` / `stmtMakesPool` 两个遍历器（照 `exprCallsNeedsHome` /
+- `src/ast/ast.h`：`FuncDef.makesPool` 一个 bool，注释写清它为什么是**最小**不动点。
+- `src/check/check_top.c`：`exprMakesPool` / `stmtMakesPool` 两个遍历器（照 `exprCallsNeedsHome` /
   `stmtCallsNeedsHome` 那套写，表达式形态一个不落），加 `checkModule` 末尾的 worklist 迭代。
-- `src/codegen.c`：`blockMakesPool(block)` 只看这个块**自己的直接语句**；块入口按它决定压不压 zone；
+- `src/back/codegen.c`：`blockMakesPool(block)` 只看这个块**自己的直接语句**；块入口按它决定压不压 zone；
   `CG.zoneMark[64]` 记"这一层到底压没压"，`cgReleaseLevel` 与尾声弹出都查这张表。
-- `src/check_internal.h`：`stmtMakesPool` 的跨文件原型（codegen 要用）。
+- `src/check/check_internal.h`：`stmtMakesPool` 的跨文件原型（codegen 要用）。
 - 运行期 `extc_pool_zoneEnter/LeaveTo` **一个字没改**，池注册表也没动。
 
 **最小不动点的规则**：`makesPool(f)` = f 的语句里直接调用 `extc_pool_new`，**或**调用了某个
@@ -9957,7 +9957,7 @@ extc_pool_zoneLeaveTo(__extc_zm2);
 `struct gnode<K> { keys: [4]K }` 被直接拒（`cannot make a fixed array of the type parameter 'K'`）
 ⇒ 泛型 `pool<bnode<K,V>>` 的节点不能内联键数组，两条出路（实例化期定尺寸 / 节点继续用视图）待裁决。
 
-**一、运行期：块链就是板块**（`src/pools.c`）
+**一、运行期：块链就是板块**（`src/back/pools.c`）
 
 `ExtcPool` 加 `blocks`（块链）与 `bytes`；块头 16 字节放在载荷前 ⇒ 载荷最大对齐。四个原语：
 
@@ -10161,7 +10161,7 @@ place the callee may store it(depth 1)`）。也就是说连 arena 都还没提�
 （`if(d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);`），
 而摘要完整那一支**没有这一句**，直接报错。两支的差别从来没人补平。
 
-**改法**：把那一句补到第二支（一处，`src/check_top.c`）。语义正是 `promoteInto` 的契约：
+**改法**：把那一句补到第二支（一处，`src/check/check_top.c`）。语义正是 `promoteInto` 的契约：
 
 - **新分配**没有别的所有者 ⇒ 站点可以移到目的地那一层 ⇒ 提权成功 ⇒ 接受；
 - **借用**移不动（`names.push(buf[..])` 里 `buf` 是别人的存储）⇒ `promoteInto` 返回 false ⇒ 错误照旧。
@@ -10239,7 +10239,7 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 
 ⇒ 池站点的提权**一次都没落地**。算法本身没错，是**标志就位得太晚**。
 
-**改法**（`src/check_top.c` 三处）：
+**改法**（`src/check/check_top.c` 三处）：
 
 1. 闭包里补**实例那一轮**：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
    而在类型表的 `tt->instances` 上 —— 只标模板等于没标；
@@ -10312,7 +10312,7 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 
 ### 周期 44：撤回编译器里的"池底容器不许装引用" —— 策略不该进编译器
 
-**撤回的是实现，不是判断的诚实性**：这条禁令我上一轮做进了 `src/types.c` 的类型解析处，
+**撤回的是实现，不是判断的诚实性**：这条禁令我上一轮做进了 `src/types/types.c` 的类型解析处，
 判据是"结构体有没有 `pid` 字段"。作者口径：
 
 > 不是，认池底容器不是应该看它是否使用了 Pool 对象嘛……就是禁令不要随便改编译器啊，
@@ -10324,7 +10324,7 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 **危险的那一档由借用检查负责**（`argument 2 of push carries a reference into a deeper scope`），
 这条禁令是**策略**而非漏洞，把策略塞进编译器是错的方向。
 
-**撤回动作**：删掉 `src/types.c` 里的检查与两个辅助函数（`typeStructHasPoolField` /
+**撤回动作**：删掉 `src/types/types.c` 里的检查与两个辅助函数（`typeStructHasPoolField` /
 `typeCarriesRef`）、删掉 `tests/errors/pool_elem_ref_ban.extc`，
 把 `qa/r6` 换成 `qa/r6b_pool_elem_ref_deeper_scope.extc`（`expect: REJECT` —— 钉住**真正**
 要挡的那一档：内层块局部变量的引用塞进外层容器）。

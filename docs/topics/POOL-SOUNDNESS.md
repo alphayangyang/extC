@@ -5,7 +5,7 @@
 > 今天 extC 只有**池粒度**的陈旧检查（`live` + `generation`），而 dyn 需要**元素/块粒度**的；
 > 两条粒度之间的缝里，本文件给出 3 个反例（1 个 **实测 ASan UAF**、1 个结构性、1 个设计期）。
 >
-> 基准版本：`ee5b0e4`（`src/` 干净；池运行期在 `src/pools.c` 里是**一段 C 字符串**，
+> 基准版本：`ee5b0e4`（`src/` 干净；池运行期在 `src/back/pools.c` 里是**一段 C 字符串**，
 > 所以本文引 `extc_pool_*` 的函数名而不引行号）
 >
 > **补记（2026-09-25，同日修）**：**E1 也已修** —— `string.sub` 改为**拷贝**（同文件 `toSlice` 一直是拷贝），
@@ -270,7 +270,7 @@ gcc -O1 -g -fsanitize=address -fwrapv /tmp/ps/v2.c -o /tmp/ps/v2 && /tmp/ps/v2
 
 # 对照 2：reset / freeSelf 都不换代（结构证据）
 python3 - <<'PY'
-s=open('src/pools.c',encoding='utf-8').read()
+s=open('src/back/pools.c',encoding='utf-8').read()
 print('generation++ 出现次数:', s.count('generation++'))     # => 2（new_at 与 reset，2026-09-25 起）
 i=s.find('extc_pool_freeSelf(int64_t rid)'); print(s[i:i+120])
 PY

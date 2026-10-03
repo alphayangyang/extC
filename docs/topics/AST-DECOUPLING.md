@@ -114,7 +114,7 @@ parser ──► AST（冻结：构造后只读） ──► checker ──► R
 | 期 | 做什么 | 判据 | 为什么这个顺序 |
 |---|---|---|---|
 | **P0** | **立判据**：`check_ast_freeze.py`（R1）、`check_layering.py`（R3），进 `check.sh`；先把当前违规数**冻结成基线**（棘轮只减不增） | 两个脚本能报出"现在有多少处违规"，基线入档 | 与"判据先行"一致：**先能看见，再动手**；否则换层过程本身就是新的不可见风险 |
-| **P1** | **结果层落地**：`src/results.h/.c` —— 按 owner（`FuncDef*`/`Module*`）一份结果包 + arena + 稠密 ID；先只搬**已经很干净的一族**（协程族 + arena/zone 族，即 `plan.c` 现在那批），`plan.c` 变成它的薄封装 | 行为不变（326/0 + 六道闸门 + 两道棘轮）；`plan.c` 的侧表实现下沉到 `results.c` | 先搬"已经收口、无反向写"的一族，**用最小风险验证新层的形状** |
+| **P1** | **结果层落地**：`src/plan/results.h/.c` —— 按 owner（`FuncDef*`/`Module*`）一份结果包 + arena + 稠密 ID；先只搬**已经很干净的一族**（协程族 + arena/zone 族，即 `plan.c` 现在那批），`plan.c` 变成它的薄封装 | 行为不变（326/0 + 六道闸门 + 两道棘轮）；`plan.c` 的侧表实现下沉到 `results.c` | 先搬"已经收口、无反向写"的一族，**用最小风险验证新层的形状** |
 | **P2** | **AST 冻结前置**：把 parser 之外对 AST 的写**逐条处理**（`forStep` 归 parser、身份绑定改成"写一次"或进 Results） | `check_ast_freeze.py` 基线降到 0（或每条都有书面豁免） | R1 是"彻底"的前提：不冻结，任何 Results 都会被节点上的第二份污染 |
 | **P3** | **codegen 换视图**：`codegen.c` 不再 include `check_internal.h`；把那 14 处借用的谓词抽成共享只读模块（`typequery.*`）；`exprRefDepth` 之类"检查器概念"不许进 codegen | `check_layering.py` 绿；生成物逐字节不变（`tools/golden.sh` 的观察项 + 全语料 `--check-c`） | 这条边是**当前最脏的一条**，而且改动面大 ⇒ 放 P3，等 Results 就位后有干净的落点 |
 | **P4** | **`Expr.func` / `forStep` 收尾**：`Expr.func` 进 Results（按（调用点，实例）已是现状，改成 ID 寻址的只读视图）；`forStep` 归 parser 侧的语法结构 | 闸门⑥ 仍绿；`check_ast_freeze.py` 与 `check_plan_seam.py` 全绿 | 这两件是 P1–P3 的**验收对象**，不是起点 |
@@ -199,9 +199,9 @@ tests **326/0**（发布与 `EXTC_DBG=1`，断言/兜底 0 命中）；`[plan-se
 
 | 部件 | 内容 |
 |---|---|
-| `src/results.h` | `NodeId`（稠密整数，0 = 无）、`ResultKind`、`NodeResults`（**一个节点一份结果槽**）、三个入口：`nodeIdOf` / `resultsOf` / `resultsById`、`resultsAs`（带属主看守） |
-| `src/results.c` | 两个数组 + 一个指针→id 的哈希：`g_nodes[id]`、`g_results[id]`。id **就是下标** ⇒ 查表是数组索引，不再是"裸指针哈希"。id 在**首次需要结果时**分配（parser 一行不用改），分配后**永不变** |
-| `src/plan.c` | 原来的 `PlanSlot` 结构体与 `slotFor` 指针哈希表**删除**，全部改走 `resultsAs(...)`；`plan.c` 只剩"每个字段什么意思 + 怎么记 + 两个替代表" |
+| `src/plan/results.h` | `NodeId`（稠密整数，0 = 无）、`ResultKind`、`NodeResults`（**一个节点一份结果槽**）、三个入口：`nodeIdOf` / `resultsOf` / `resultsById`、`resultsAs`（带属主看守） |
+| `src/plan/results.c` | 两个数组 + 一个指针→id 的哈希：`g_nodes[id]`、`g_results[id]`。id **就是下标** ⇒ 查表是数组索引，不再是"裸指针哈希"。id 在**首次需要结果时**分配（parser 一行不用改），分配后**永不变** |
+| `src/plan/plan.c` | 原来的 `PlanSlot` 结构体与 `slotFor` 指针哈希表**删除**，全部改走 `resultsAs(...)`；`plan.c` 只剩"每个字段什么意思 + 怎么记 + 两个替代表" |
 
 **为什么 id 不是指针**（写进 `results.h` 的理由）：指针一旦被回收，按地址查表会**静默命中旧条目**——
 LLVM 的 pass manager 文档自己写了这个坑（"If a function is deleted in a module pass, its address is
@@ -887,7 +887,7 @@ static void vecGrow(Vec *v) { ... }
 ### 25.1 做了什么
 
 `codegen.c` 原来 include `check_internal.h`（检查器的私有头），为的是 11 个谓词。
-现在有一个**只读类型层模块** `src/typelayer.h` / `typelayer.c`：
+现在有一个**只读类型层模块** `src/types/typelayer.h` / `typelayer.c`：
 
 | 类别 | 内容 |
 |---|---|
@@ -924,7 +924,7 @@ static void vecGrow(Vec *v) { ... }
 ```
 
 反向验证：把 `codegen.c` 的 `#include "typelayer.h"` 临时改回 `check_internal.h`
-⇒ 立刻报 `NEW src/codegen.c -> check_internal.h`。**规则仍然生效**，不是被放行。
+⇒ 立刻报 `NEW src/back/codegen.c -> check_internal.h`。**规则仍然生效**，不是被放行。
 
 ### 25.5 验收
 
@@ -961,8 +961,8 @@ static void vecGrow(Vec *v) { ... }
 ### 26.3 新规则抓到的两条真违规（已登记，未修）
 
 ```
-src/check_expr.c -> modules.h   层序：诊断"没有那个方法"时需要模块名提示（modulesMethodHint，纯查询）
-src/check_expr.c -> plate.h     层序：检查器要认出板层的原语名（plateIsViewOfName，纯查询）
+src/check/check_expr.c -> modules.h   层序：诊断"没有那个方法"时需要模块名提示（modulesMethodHint，纯查询）
+src/check/check_expr.c -> plate.h     层序：检查器要认出板层的原语名（plateIsViewOfName，纯查询）
 ```
 
 两条都是**检查器在上层要一个纯查询**，不是耦合到上层的状态。正解是把这两个查询**下沉到
@@ -973,7 +973,7 @@ src/check_expr.c -> plate.h     层序：检查器要认出板层的原语名（
 
 * 干净状态：`[layering] 违规 2（已知 2 / 新增 0）`，两条都是上面登记的有理由例外；
 * **反向验证**：给 `check_lookup.c`（层 4）加一行 `#include "coroutine.h"`（层 5）
-  ⇒ 立刻报 `NEW src/check_lookup.c -> coroutine.h`。规则真的在查。
+  ⇒ 立刻报 `NEW src/check/check_lookup.c -> coroutine.h`。规则真的在查。
 
 ### 26.5 验收
 

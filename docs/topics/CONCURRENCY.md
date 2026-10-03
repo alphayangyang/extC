@@ -73,9 +73,9 @@
 
 | 事实 | 出处 |
 |---|---|
-| arena 的**块是 4096 字节起**：`cap = n > 4096 ? n : 4096` | `src/codegen.c:2687` |
-| arena **目前没有块大小字段**：`struct extc_arena { extc_ablock *top; }` | `src/codegen.c:2662` |
-| 一个函数调用里 **arena 是入口建一次、所有分配点共用**；`__extc_a[]` 的下标 = **词法层号** | `src/codegen.c` 生成的代码 |
+| arena 的**块是 4096 字节起**：`cap = n > 4096 ? n : 4096` | `src/back/codegen.c:2687` |
+| arena **目前没有块大小字段**：`struct extc_arena { extc_ablock *top; }` | `src/back/codegen.c:2662` |
+| 一个函数调用里 **arena 是入口建一次、所有分配点共用**；`__extc_a[]` 的下标 = **词法层号** | `src/back/codegen.c` 生成的代码 |
 
 第三条尤其重要。它长的样子是：
 
@@ -563,7 +563,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 **运行期分两层，和池完全一样**（作者问得对：只放 `src/` 里是不够的）：
 
     stdlib/std/sys/coroutine.extc    特权层：extern!("extc-runtime") 声明任务表原语（extC 能调）
-    src/coroutine.c                  运行期：任务的实现，按需发射进生成物
+    src/back/coroutine.c                  运行期：任务的实现，按需发射进生成物
     stdlib/prelude.extc              coroutine<T> 这个**标记**（返回值着色，不是存储类型）
 
 `stdlib/std/sys/pool.extc` 就是前者的样板（"用户不写这个模块，`std::stl` 那一类容器用它"），所以协程也照办：**用 extC 写的调度器（§5 第 5 步）能直接调 `syscoro::extc_task_live()` / `extc_task_end()`**；普通程序连这些名字都不该出现。判据 `tests/coro/coro_tasks.extc` 就是这条路的证明：extC 侧读到 before=0 · mid=1 · after=0。
@@ -794,7 +794,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
 arena ✓ 解掉唯一的真洞 ✓）⇒ 再 5（任务表长起来 + `accept` ✓）⇒ 之后才是 `ext`/域 ✓ `coroutine<A,B>`
 ✓ trampoline ✓ 预算。**可移植性抽象要等这套地基定型再做**（否则白抽一遍 ✗）。
 
-**`src/coroutine.c`（任务表，运行时的归属地）**：与 `pools.c` 同构 —— 编译器管的部分（`yield` 脱糖、帧、step）留在编译器里，**运行期**的部分归这个文件。它是**按需发射**的：不 spawn 带任务 place 的协程的程序，一行都不带。
+**`src/back/coroutine.c`（任务表，运行时的归属地）**：与 `pools.c` 同构 —— 编译器管的部分（`yield` 脱糖、帧、step）留在编译器里，**运行期**的部分归这个文件。它是**按需发射**的：不 spawn 带任务 place 的协程的程序，一行都不带。
 
     int64_t extc_task_begin(int64_t *idOut);   /* 懒进入任务的地方，登记，回 zone 与 id */
     void    extc_task_end(int64_t id);         /* 跑完与显式 drop 是**同一次释放** */
@@ -802,7 +802,7 @@ arena ✓ 解掉唯一的真洞 ✓）⇒ 再 5（任务表长起来 + `accept` 
 
 帧于是有两个字段：`zone`（step 用它做分配，规则 1：只读字段）与 `task`（表的所有权凭据）。驱动器的结尾从 `extc_pool_zoneLeaveTo(f->zone)` 改成 `extc_task_end(f->task)` —— 释放点从"协程自己"移到"表"，这正是作者 B 方案里"由任务表拥有"的那一半。
 
-：① **显式 drop**：今天回收发生在"任务跑完"，作者 B 方案里的另一半（由调度器/任务表在放弃时回收）要等任务表；② **`src/coroutine.c`**：任务表与驱动器现在是内联发射的文本，按作者的意思应该像 `pools.c` 一样有一个库运行时的归属地。
+：① **显式 drop**：今天回收发生在"任务跑完"，作者 B 方案里的另一半（由调度器/任务表在放弃时回收）要等任务表；② **`src/back/coroutine.c`**：任务表与驱动器现在是内联发射的文本，按作者的意思应该像 `pools.c` 一样有一个库运行时的归属地。
 
 **切片 C 的第一轮尝试（未落地，教训记在这里）**：任务 place 的设计已经写清（spawn 进入任务 zone、帧里存 zone、每步从帧恢复、跑完一次性 `zoneLeaveTo`、规则 ③ 的池半边放宽、规则 ② 改成"自己拥有存储才许跨挂起点"），但发射落地时连撞四堵墙，回退了。下一轮从这四条开始：
 
@@ -1107,7 +1107,7 @@ arena 池 / 线程池 / 帧池 / size-class 块池，**没有一处**是 `{pid, 
 |---|---|
 | **J1**（规则 1 前身） | **两个隐藏实参都查**：zone 只许**转发** `__extc_home_zone` / **本帧记号** `__extc_zm<k>` / **整数字面量** / **`extc_zoneTop`**（运行期自己的"当前地方"，见下）；arena 只许**转发** `__extc_home` 或**钉死** `&__extc_a[k]` |
 | **J2**（规则 3 前身） | 地方边界自洽：`extc_arena_release(&__extc_a[k])` 的 `k` 必须小于该函数声明的 `__extc_a[N]`；`__extc_zm<k>` 必须先由 `= extc_pool_zoneEnter()` 定义、后使用。**把"边界在哪、几层"变成可核对的事实**，`yield` 落地后规则 3 就是"挂起点不得落在这些配对之间" |
-| **J3**（规则 4/7 前身） | 池的元数据（`pid`/`gen`/`pgen`/槽表）只允许在 `src/pools.c` 里读写 ⇒ 将来把"取槽 + 校验世代"做成原子，只有一个地方可改（今天已成立，判据把它锁住） |
+| **J3**（规则 4/7 前身） | 池的元数据（`pid`/`gen`/`pgen`/槽表）只允许在 `src/back/pools.c` 里读写 ⇒ 将来把"取槽 + 校验世代"做成原子，只有一个地方可改（今天已成立，判据把它锁住） |
 
 **J1 抓到的现成实例，2026-09-26 已改造**：`H2_home_zone_two_hops` 的生成物里 `wrap(...)` 的
 zone 实参曾是 **`(extc_pool_zoneDepth() - 1)`** —— 一步**派生算术**，来自 `codegen.c` 那条
