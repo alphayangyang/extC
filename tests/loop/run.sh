@@ -7,3 +7,8 @@ if out=$(./build/extc -w --run tests/loop/main.extc 2>&1) && echo "$out" | grep 
 else
     echo "  FAIL timers   ->  $(echo "$out" | tail -3 | tr '\n' '|')"; exit 1
 fi
+if out=$(./build/extc -w --run tests/loop/io.extc 2>&1) && echo "$out" | grep -q 'loop-io ok'; then
+    echo "  ok   reactor  ->  $(echo "$out" | tr '\n' '|')"
+else
+    echo "  FAIL reactor  ->  $(echo "$out" | tail -3 | tr '\n' '|')"; exit 1
+fi

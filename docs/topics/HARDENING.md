@@ -1677,7 +1677,7 @@ W9（第 19 轮修 ✓）是"局部声明里的类型实例 intern 太晚" ✓�
 事件层（`epoll` + `AF_UNIX` socket）**没有 stdlib 包装** ✓，只能用 `extern!("extc")` 触达 ✓ ——
 而 codegen 置 `needEvent` 靠的正是"**名字前缀**（`extc_epoll_` / `extc_sock_`）+ **被调用**" ✓
 （`codegen.c:6318-6324` ✓）⇒ **这条链本身**就是攻击面 ✓。运行期导出与签名 ✓：
-`extc_epoll_new()` ✓、`extc_epoll_add(ep, fd, readable)` ✓、`extc_epoll_wait(ep, timeout_ms)` ✓、
+`extc_epoll_new()` ✓、`extc_epoll_add(ep, fd, readable)` ✓、`extc_epoll_wait_into(ep, timeout_ms)` ✓、
 `extc_sock_pair(out: mut ref i64)` ✓、`extc_sock_read/write(fd, buf: ref u8, n)` ✓、
 `extc_sock_nonblock(fd)` ✓（都在 `src/back/coroutine.c:106` 的 `eventEmitRuntime` 里 ✓）。
 

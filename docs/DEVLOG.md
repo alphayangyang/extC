@@ -135,6 +135,21 @@ RSS < 8 MB · 吞吐下限。`check.sh quick` 66 → **67/0**。
 另外记两条语言/工具观察：**数组元素类型不接受限定名**（`[4]mod::type` 报 unknown type ——
 零分配池正是这个形状，暂时靠 `use mod::{type}` 绕），以及 `-w` 不抑制"参数未使用"告警。
 
+**同日的第九刀：L0 另一半 —— 把事件循环里最后一段隐藏状态删掉**。运行时那条
+`extc_epoll_wait(ep, timeout)` 每次吐一个 tag、靠函数级 `static int64_t pending[64]` 环形队列
+记剩下的 —— **一个进程因此只能有一个事件循环**，而且既不可重入也不可观察。换成
+`extc_epoll_wait_into(ep, out, cap, timeout_ms) -> n`：一轮就绪**写进调用方给的缓冲**、返回个数
+（0 = 超时、<0 = 出错 —— 从前"出错"与"超时"同归 -2，分不出来）。
+
+- 调度器 `pump` 迁到批量 API（保留"一次 accept 一批"的逻辑），`tests/coro` **29/29** 全过；
+- `std::loop::runOnce(ep, t, tags, now, capMs)` 把"算超时 → 等就绪"接起来；
+- 判据 `tests/loop/io.extc`（真事件源，进 `check.sh`）：**一轮拿回 3 个 tag**（不是一次一个）·
+  **先写后注册照样报出来**（level-triggered ⇒ 不丢唤醒，那条经典竞态）· **两个独立 epoll
+  实例并行工作**（static 在时做不到）· **`runOnce` 等的 25ms 就是 deadline 表算出来的**
+  （时间就是 `epoll_wait` 的超时参数，没有第二个事件源）。
+
+`check.sh quick` **69/0**（loop 一节从 1 项变 2 项：策略离线判据 + 真事件源判据）。
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。

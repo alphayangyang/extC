@@ -703,7 +703,7 @@ while c.next() { … c.value() … }             // ② 显式：next/value 与�
     就地改写复用 ✓（原先那版是 `[32]` 固定数组 + `freelist` ✓ 已换掉 ✓）✓ 事件层加了
    `listen/connect/accept/nonblock`（AF_UNIX **抽象命名空间** ⇒ 不落盘、不用清理、不碰 `<unistd.h>`）✓
    调度器加了 `init(s, listener)` 与 `pump(s, timeout_ms)`（一轮事件循环；listener 可读时 accept 一个
-   并把 fd **交回调用者** —— 库里因此不需要函数值 ✓）✓ `extc_epoll_wait` 改成"一次一个 fd + 运行期
+   并把 fd **交回调用者** —— 库里因此不需要函数值 ✓）✓ `extc_epoll_wait_into`（2026-10-04 改名/改形：写进调用方缓冲、返回个数） 改成"一次一个 fd + 运行期
    内部待处理队列" ⇒ 事件循环**零分配** ✓
    判据 `tests/coro/coro_accept.extc`：**一个 listener accept 出 40 条连接**（容量只有 32 ⇒ 非靠槽位
    复用跑不完 ✓），单线程回显，退出码 52（= 1+…+40 截断 ✓），常驻有界，ASan 干净 ✓ 105 ms ✓

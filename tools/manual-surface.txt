@@ -315,6 +315,7 @@ std::json	parser	errAt	field	public
 std::json	parser	pos	field	public
 std::json	parser	run	method	public
 std::json	parser	used	field	public
+std::loop	-	runOnce	fn	public
 std::loop	timers	add	method	public
 std::loop	timers	at	field	public
 std::loop	timers	cancel	method	public

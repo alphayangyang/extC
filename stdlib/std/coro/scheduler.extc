@@ -159,30 +159,33 @@ struct tasks<T> {
             self.rqHead = i64(0)
         }
 
-        /* ② 等一个事件（listener 在 `init` 里注册过一次，tag = -1）*/
-        var tag: i64 = net::extc_epoll_wait(s.ep, waitMs)
-        if tag == i64(-100) { return i64(-2) }          /* 队列空：超时 */
+        /* ② 等**一批**就绪（listener 在 `init` 里注册过一次，tag = -1）。
+         * 从前是"每次一个 tag"、靠运行时里的 static 环形队列 —— 那条隐藏状态让一个进程
+         * 只能有一个循环。现在缓冲在这里（栈上 32 个），多实例、可重入、容量自己定。 */
+        var tags: [32]i64
+        let n: i64 = net::extc_epoll_wait_into(s.ep, tags[..].data, i64(32), waitMs)
+        if n == i64(0) { return i64(-2) }               /* 超时（队列空） */
+        if n < i64(0) { return i64(-3) }                /* 出错：从前与超时同归 -2，分不出来 */
         var accepted: i64 = i64(-1)
-        var draining: bool = true
-        while draining {
+        var k: i64 = 0
+        while k < n {
+            var tag: i64 = tags[k]
             if tag == i64(-1) {
                 /* **一次 accept 一批**（上限 64，别把别的事件饿死 ✓）。从前是"一轮只 accept 一个" ✗
                  * —— 建连风暴时 accept 速率被"每轮 ~20µs"卡在 ~50k/s：实测 10k 忙连接的 p50 就有
                  * 1.05s ✗，50k 直接排队到测量窗口之外（0 响应 ✗）。多出来的先入队，由 `pump` 开头
                  * 依次还回去 ⇒ 调用方的 `while { fd = pump(); if fd >= 0 add(fd) }` 一个字不改 ✓。 */
-                var k: i64 = 0
-                while s.listener >= i64(0) && k < i64(64) {
+                var j: i64 = 0
+                while s.listener >= i64(0) && j < i64(64) {
                     var cfd: i64 = net::extc_sock_accept(s.listener)
                     if cfd < i64(0) { break }
                     if accepted < i64(0) { accepted = cfd } else { self.acceptq.push(cfd) }
-                    k = k + i64(1)
+                    j = j + i64(1)
                 }
-                draining = false
             } else if tag >= i64(0) && tag < self.rows.len() {
-                self.resumeRow(s, tag, true)        /* 就绪恢复 ⇒ 之后可能是负请求/结束，都归它管 ✓ */
+                self.resumeRow(s, tag, true)            /* 就绪恢复 ⇒ 之后可能是负请求/结束，都归它管 ✓ */
             }
-            tag = net::extc_epoll_wait(s.ep, i64(0))
-            if tag == i64(-100) { draining = false }
+            k = k + 1
         }
         return accepted
     }

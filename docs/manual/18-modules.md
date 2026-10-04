@@ -758,6 +758,11 @@ let fired: i64 = t.popDue(std::time::now(), out[..])  // 到期的 tag，每个�
 | `timeoutMs(now, cap)` | `epoll_wait` 的超时：空表给 `cap`；已到期给 `0`；其余**向上取整**（绝不早于 deadline 醒）并封顶 |
 | `popDue(now, out)` | 把 `now` 之前（含）到期的 tag 写进 `out`，返回个数；**每个 deadline 恰好取出一次** |
 | `cancel(tag)` | 取消一个未到期的登记（命中 true） |
+| `runOnce(ep, t, tags, now, capMs)` | 一轮：算超时（`timeoutMs`）→ 等就绪，**写进调用方给的 `tags`**；返回事件数（0 = 超时，<0 = 出错）。到期的定时器另用 `popDue` 取 |
+
+**多实例**：就绪缓冲由调用方拥有（`runOnce` 的 `tags`），运行时里不留任何 static ——
+从前那条 `static pending[64]` 的环形队列让**一个进程只能有一个事件循环**，而且既不可重入
+也不可观察。现在两个独立的 epoll + 各自的缓冲可以同时工作（判据 `tests/loop/io.extc` 里有一条）。
 
 **设计要点**：**时间不引入第二个事件源** —— `epoll_wait` 的超时参数本身就是定时器，
 所以不需要 `timerfd`（毫秒分辨率对心跳 30s、每天 21:00 播报这种负载绰绰有余；真要高频高精度

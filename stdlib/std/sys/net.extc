@@ -20,8 +20,9 @@ extern!("extc-runtime") fn extc_epoll_add(ep: i64, fd: i64, readable: i64, tag: 
     effects Addr=0 Cont=0
 /* 等事件：返回**一个**就绪的 fd（内部留着一个待处理队列 ⇒ 事件循环零分配），
  * -1 = 超时/没有事件。 */
-/* 每次返回一个就绪的 **tag**；队列空返回 **-100**（tag 本身 >= -1，-1 是 listener） */
-extern!("extc-runtime") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64
+/* 一轮就绪事件写进调用方缓冲：返回个数（0 = 超时，<0 = 出错）。
+ * 取代了从前"每次一个 tag + 运行时里的 static 队列"那条 —— 那条让一个进程只能有一个循环。 */
+extern!("extc-runtime") fn extc_epoll_wait_into(ep: i64, out: ref i64, cap: i64, timeout_ms: i64) -> i64
     effects Addr=0 Cont=0
 /* 一对已连接的 AF_UNIX socket：fd 写进 `out[0]` 与 `out[1]`。返回 0 成功。 */
 extern!("extc-runtime") fn extc_sock_pair(out: ref i64) -> i64

@@ -1,3 +1,5 @@
+use std::sys::net as sysnet
+
 /* std/loop.extc —— 事件循环的**策略层**：定时（deadline 表）与"下一次该等多久"。
  *
  * 这一层**没有任何系统调用、没有 C**：它是一张按 deadline 排好序的表 + 三个纯函数。
@@ -99,4 +101,12 @@ struct timers {
         }
         return false
     }
+}
+
+/* 一轮：算超时 → 等就绪。`tags` 由调用方拥有（多实例、可重入；容量自己定）。
+ * 返回就绪事件数：0 = 超时，<0 = 出错。到期的定时器用 `timers.popDue` 另取 ——
+ * 因为**时间就是 epoll_wait 的超时参数**，这里不需要第二个事件源。 */
+fn runOnce(ep: i64, t: mut ref timers, tags: mut slice<i64>, now: i64, capMs: i64) -> i64 {
+    let w: i64 = t.timeoutMs(now, capMs)
+    return sysnet::extc_epoll_wait_into(ep, tags.data, tags.len, w)
 }

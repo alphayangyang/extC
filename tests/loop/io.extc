@@ -1,0 +1,76 @@
+// expect: loop-io ok
+// 真事件源判据（这四条里"多实例"只有把运行时那条 static 队列删掉之后才可能成立）：
+//   ① 一次等**一批**：写 3 条连接 ⇒ 一轮拿回 3 个 tag（不是一次一个）；
+//   ② **不丢唤醒**：先写、后注册（level-triggered）⇒ 照样报出来 —— 这就是那条经典竞态；
+//   ③ **多实例**：两个独立的 epoll + 各自的 tag 缓冲同时工作（旧 API 有 static ⇒ 做不到）；
+//   ④ 时间就是超时参数：没有 fd 就绪时，`runOnce` 的等待时间 = deadline 表算出来的值。
+use std::loop
+use std::sys::net
+use std::time
+use std::io
+
+fn main() -> i32 {
+    /* ① 批量 */
+    var ep: i64 = net::extc_epoll_new()
+    if ep < i64(0) { return 1 }
+    var fds: [8]i64
+    var i: i64 = 0
+    while i < i64(3) {
+        var sp: [2]i64
+        if net::extc_sock_pair(sp[..].data) != i64(0) { return 2 }
+        fds[i] = sp[0]
+        fds[i + i64(3)] = sp[1]
+        i = i + 1
+    }
+    i = 0
+    while i < i64(3) {
+        if net::extc_epoll_add(ep, fds[i], i64(1), i) != i64(0) { return 3 }
+        var one: [1]u8
+        one[0] = u8(65) + u8(i)
+        if net::extc_sock_write(fds[i + i64(3)], one[..].data, i64(1)) != i64(1) { return 4 }
+        i = i + 1
+    }
+    var tags: [8]i64
+    var n: i64 = net::extc_epoll_wait_into(ep, tags[..].data, i64(8), i64(1000))
+    if n != i64(3) { io::cout << "batch n=" << n << "\n"  return 5 }
+
+    /* ② 不丢唤醒：先写、后注册 */
+    var sp2: [2]i64
+    if net::extc_sock_pair(sp2[..].data) != i64(0) { return 6 }
+    var m: [1]u8
+    m[0] = u8(90)
+    if net::extc_sock_write(sp2[1], m[..].data, i64(1)) != i64(1) { return 7 }   /* 先写 */
+    var ep2: i64 = net::extc_epoll_new()
+    if ep2 < i64(0) { return 8 }
+    if net::extc_epoll_add(ep2, sp2[0], i64(1), i64(77)) != i64(0) { return 9 }  /* 后注册 */
+    var t2: [4]i64
+    n = net::extc_epoll_wait_into(ep2, t2[..].data, i64(4), i64(1000))
+    if n != i64(1) || t2[0] != i64(77) { io::cout << "lost-wakeup n=" << n << "\n"  return 10 }  /* 级别触发 ⇒ 不丢 */
+
+    /* ③ 多实例：两个 epoll 各自的缓冲同时工作 */
+    var t3: [4]i64
+    n = net::extc_epoll_wait_into(ep, tags[..].data, i64(8), i64(0))
+    if n < i64(1) { return 11 }                       /* 第一个实例仍有就绪（还没读） */
+    n = net::extc_epoll_wait_into(ep2, t3[..].data, i64(4), i64(1000))
+    if n != i64(1) || t3[0] != i64(77) { return 12 }  /* 第二个实例也照常工作 */
+
+    /* ④ 时间就是超时参数：25ms 后到期，runOnce 就该等 ~25ms 然后返回 0（无 fd 就绪） */
+    var idle: i64 = net::extc_epoll_new()
+    if idle < i64(0) { return 13 }
+    var tm: loop::timers
+    tm.init()
+    let t0: i64 = time::now()
+    if tm.add(t0 + i64(25000000), i64(5)) < i64(0) { return 14 }
+    var buf: [4]i64
+    let before: i64 = time::now()
+    let r: i64 = loop::runOnce(idle, ref tm, buf[..], before, i64(5000))
+    let dt: i64 = time::now() - before
+    if r != i64(0) { io::cout << "runOnce r=" << r << "\n"  return 15 }
+    if dt < i64(20000000) || dt > i64(2000000000) { io::cout << "dt=" << (dt / i64(1000000)) << "ms\n"  return 16 }
+    var fired: [4]i64
+    if tm.popDue(time::now(), fired[..]) != i64(1) { return 17 }
+    if fired[0] != i64(5) { return 18 }
+
+    io::cout << "loop-io ok（批量 3 个一轮拿回 · 先写后注册不丢 · 两个实例并行 · runOnce 等 " << (dt / i64(1000000)) << "ms = deadline 算出来的）\n"
+    return 0
+}
