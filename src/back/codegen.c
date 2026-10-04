@@ -4032,6 +4032,11 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* `cname` is the name the checker decided on; a shadowed one
              * carries a `__2` suffix. */
             const char *nm = planCName(s) ? planCName(s) : s->u.var.name;
+            /* `global var x: T` / `global let x: T = c`：发 **C 的块作用域 `static`** ——
+             * 静态存储期 + 名字只在这个块里可见，语义正好对上（docs/topics/GLOBAL.md）。
+             * 额外的两个好处：这个声明被**重复执行**也没关系（循环、协程 resume 都跳到语句中间），
+             * C 保证静态对象只在程序启动时初始化一次 ✓。初始化式必须是常量，检查器已经拦住。 */
+            const char *stg = s->u.var.isGlobal ? "static " : "";
             /* `@overwrite` keeps exactly one block of storage. It is allocated
              * the first time this statement runs and only cleared and reused
              * afterwards. What comes out is a few lines of inline C,
@@ -4135,7 +4140,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 TryInfo ti = genTryHead(g, s->u.var.init);
                 flushPrefix(g);
                 size_t lb = g->out->len;
-                cgLine(g, "%s %s = %s;", cType(g, s->type), nm, tryPayloadPath(g, &ti));
+                cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, tryPayloadPath(g, &ti));
                 localDef(g, lb, nm, 1);
                 return;
             }
@@ -4143,7 +4148,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                                              : zeroInit(g, s->type);
             flushPrefix(g);
             size_t lb = g->out->len;
-            cgLine(g, "%s %s = %s;", cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
+            cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
             localDef(g, lb, nm, 1);
             return;
         }

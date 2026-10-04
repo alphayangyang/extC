@@ -35,6 +35,9 @@ typedef struct {
      * The counters are what turn "too deep to parse" into a diagnostic instead of a crash. */
     int    depth;
     int    typeDepth;
+    /* Set by the `global` soft keyword just before a declaration and consumed by `parseVarDecl`
+     * (`ST_VAR.isGlobal`). Soft, not a lexer keyword: `global` stays a legal identifier. */
+    bool   sawGlobal;
 } Parser;
 
 /* The compiler's nesting budget for blocks and expressions.
@@ -759,7 +762,9 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!td) return false;
             td->isPrivate = isPrivate;
             *(TypeDef **)vecPush(&out->types) = td;
-        } else if (at(&p, "let") || at(&p, "var")) {
+        } else if (at(&p, "global") || at(&p, "let") || at(&p, "var")) {
+            /* 顶层写 `global var` 冗余但合法：顶层本来就是全局（同一件事，允许自文档化）。 */
+            (void)accept(&p, "global");
             if (exported) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "A global is a C object, and this language has no `@export` for objects yet"
@@ -2079,6 +2084,13 @@ static Stmt *parseStmt(Parser *p) {
         s->u.yield_.value = parseExpr(p);
         return s->u.yield_.value ? s : NULL;
     }
+    /* `global var x: T` / `global let x: T = c` —— **软关键字**（`global` 仍是合法标识符，
+     * 不动词法表：把它变成保留字会破坏现有代码里拿它当名字的地方）。语义见
+     * docs/topics/GLOBAL.md：存储是全局的（深度 0），名字留在这个块里。 */
+    if (at(p, "global")) {
+        if (!accept(p, "global")) return NULL;
+        p->sawGlobal = true;
+    }
     if (at(p, "let") || at(p, "var"))  return parseVarDecl(p);
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);
@@ -2278,6 +2290,8 @@ static Stmt *parseVarDecl(Parser *p) {
     s->u.var.ann = ann;
     s->u.var.init = init;
     s->u.var.mut = (strcmp(kw->text, "var") == 0);
+    s->u.var.isGlobal = p->sawGlobal;      /* 由 `global` 前缀置位，见 parseStmt */
+    p->sawGlobal = false;
     return s;
 }
 

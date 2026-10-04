@@ -233,6 +233,10 @@ bool planMakesPool(const FuncDef *f);
  * per-iteration arena so each round's allocation is reclaimed at the end of the round.
  * Writer: the checker. */
 bool planCondAllocs(const Stmt *s);
+/* Does this declaration's initializer name storage that outlives every frame? Recorded by the
+ * checker while the scopes are live (see `NodeResults.varInitOO`). */
+void planSetVarInitOutOfFrame(Stmt *s, bool v);
+bool planVarInitOutOfFrame(const Stmt *s);
 /* The step statement of a desugared `for`, carried on the loop body because `continue`
  * has to reach it. **Syntax**: the parser writes it, and the checker only ever decides
  * that the step is gone (recorded as a result, see the setter below). */

@@ -93,6 +93,7 @@
 #define PLAN_CORO_RET_PROTO      (1ull << 73)
 #define PLAN_OW_SITES            (1ull << 75)
 #define PLAN_OW_LOCAL            (1ull << 76)
+#define PLAN_VAR_INIT_OO         (1ull << 77)
 #define AN_DUMMY_PAST_64         (1ull << 65)
 #define AN_ADDR_FROM_LOCAL       (1ull << 64)
 
@@ -869,6 +870,15 @@ bool planMakesPool(const FuncDef *f) {
 bool planCondAllocs(const Stmt *st) {
     NodeResults *s = resultsAs(st, false, RKIND_STMT, __LINE__);
     return s && resultsBit(s, PLAN_COND_ALLOCS) ? s->condAllocs : false;
+}
+void planSetVarInitOutOfFrame(Stmt *st, bool v) {
+    if (!st) return;
+    NodeResults *s = resultsAs(st, true, RKIND_STMT, __LINE__);
+    s->varInitOO = v; resultsSetBit(s, PLAN_VAR_INIT_OO);
+}
+bool planVarInitOutOfFrame(const Stmt *st) {
+    NodeResults *s = resultsAs(st, false, RKIND_STMT, __LINE__);
+    return s && resultsBit(s, PLAN_VAR_INIT_OO) ? s->varInitOO : false;
 }
 /* The step statement of a desugared `for` -- **syntax**, written by the parser on the loop
  * body, because `continue` has to reach it (C's `for` runs the step on the way out of a

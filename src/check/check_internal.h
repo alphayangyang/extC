@@ -937,6 +937,10 @@ int valDepthForStore (Checker *, Expr *);
 /* Does this expression's storage provably live outside every frame? (`effects Ret=0` calls, and
  * chains rooted at a global.) Used where a binding is initialized, to mark it (`Sym.outOfFrame`). */
  bool exprOutOfFrame (Checker *c, Expr *e);
+/* Is this a C static initializer -- a literal, a constant expression, or a struct literal whose
+ * fields are all constants? Used by the globals pass and by `global` declarations inside a
+ * function (both are initialized once, when the program starts). */
+ bool isConstInit (Expr *e);
 /* Arena level at which the storage of a place lives, which is a different question from
  * `slotDepth`. */
  int storeLayer (Checker *c, Expr *e);

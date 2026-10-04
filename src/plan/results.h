@@ -62,6 +62,12 @@ typedef struct {
     bool usesHome, mayUseArena, makesPool;
     /* statements: this loop's condition allocates (released per round) */
     bool condAllocs;
+    /* This declaration's initializer names storage that outlives every frame (a global, a
+     * `global` declaration, an `effects Ret=0` result, a string literal). A **result**, not
+     * syntax: the checker computes it while the scopes are live, and `coroCheckDeferred` reads it
+     * after the body -- by then a function-local name can no longer be resolved, so asking
+     * `exprOutOfFrame` again would answer "no". */
+    bool varInitOO;
     /* A desugared `for` carries its step statement as **syntax** (`Stmt.forStep`, written by
      * the parser). The checker drops that step when it retargets the loop onto an iterator,
      * and that decision is a result, not syntax -- so it is recorded here. */

@@ -59,4 +59,4 @@ error: array length must be an integer literal, found `N`
 
 | 项 | 一句话 | 文档 |
 |---|---|---|
-| **`global`** | 函数内的持久存储：`global var x: T` —— 与顶层 `var` 同一种东西，只是名字写在这里 | [`GLOBAL.md`](../topics/GLOBAL.md) |
+| ~~**`global`**~~ | **2026-10-04 已实现**（`tests/coro/coro_global.extc`） | [`GLOBAL.md`](../topics/GLOBAL.md) |

@@ -229,6 +229,19 @@ static void checkBlockBody(Checker *c, Stmt *block) {
  *     into a temporary only while nothing before it in the same statement has a side
  *     effect, because that temporary is evaluated at the top of the statement.
  */
+/* `global var x: T` / `global let x: T = c`: mark the binding as living outside every frame
+ * (docs/topics/GLOBAL.md). Called from **both** declaration paths -- with and without an
+ * initializer -- because the zero-init path returns early: marking only the with-init path left
+ * `global var buf: [8]u8` unmarked, and a view of it was then rejected as "someone else's
+ * storage" (measured). Codegen emits these as C block-scope `static`. */
+static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
+    if (!sym || !s->u.var.isGlobal) return;
+    (void)c;
+    sym->outOfFrame = true;   /* depth 0: the storage outlives every frame */
+    sym->depth = 0;
+    anSetRefDepth(sym, 0);
+}
+
 void checkStmt(Checker *c, Stmt *s) {
     c->stmtFx = 0;      /* count side effects from the start of each statement */
     switch (s->kind) {
@@ -277,6 +290,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 s->type = s->u.var.ann ? s->u.var.ann : ttError(c->tt);
                 Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                    !s->u.var.mut, s->line, c->scopes.len);
+                pMarkGlobal(c, s, sym);
                 /* A zero-initialized value that can hold references can only hold
                  * nulls: a non-nullable reference has no zero value and was rejected
                  * just above. Its references therefore point at depth 0, which is not
@@ -466,6 +480,25 @@ void checkStmt(Checker *c, Stmt *s) {
              * this call passes, which is the level `markCallHomeIfEscaping` decided from
              * `at` just above, so the result has depth `at`. Here `at` is
              * `c->scopes.len`, the level the binding lives at. */
+            /* `global var x: T` / `global let x: T = c`（docs/topics/GLOBAL.md）：
+             * 存储**不在任何帧里**（代码生成发的是 C 的块作用域 `static`）⇒ 深度 0、`outOfFrame`
+             * 置位。于是"视图能不能跨 `yield`"这个问题自动得到正确回答 —— `slotDepth` 与
+             * `coroCheckDeferred` 问的本来就是同一个问题（这块存储活不活得过帧）。
+             * 初始化式必须是常量：静态存储期的对象在程序启动时初始化一次，而 C 的静态初始化式
+             * 只允许常量表达式。 */
+            if (sym && s->u.var.isGlobal) {
+                /* 这里**不查** `@overwrite` 与 `global` 冲突：那种组合在语法上写不出来
+                 * （注解在 `var` 之前，而 `global` 也必须在 `var` 之前 ⇒ `@overwrite global var`
+                 * 被解析器直接拒）。**不可达的检查只会给假信心**，所以删掉。 */
+                if (s->u.var.init && !isConstInit(s->u.var.init)) {
+                    ckError(c, s->line,
+                            "a `global` is initialized once, when the program starts, so its"
+                            " initializer has to be a **constant**: a literal, a constant"
+                            " expression, or a struct literal whose fields are all constants",
+                            "`%s` is `global`, but its initializer is not a constant", s->u.var.name);
+                }
+                pMarkGlobal(c, s, sym);
+            }
             if (s->type && typeContainsRef(c->tt, s->type)) {
                 int d = targetDepth(c, s->u.var.init);
                 Expr *ini = s->u.var.init;
@@ -477,7 +510,11 @@ void checkStmt(Checker *c, Stmt *s) {
                  * does not apply and the depth is 0 -- authoritatively, not "not decided yet".
                  * That is what lets a **view** binding keep working when its `.data` is handed to
                  * an unsigned C function; see `Sym.outOfFrame` and `slotDepth`. */
-                if (exprOutOfFrame(c, ini)) {
+                /* 结论写进 **plan 侧表**（分析结果的正规住处，AST 冻结闸门要求的层次）：
+                 * 此刻作用域还活着，而 `coroCheckDeferred` 是函数体检查完之后才跑的。 */
+                bool oo = exprOutOfFrame(c, ini);
+                planSetVarInitOutOfFrame(s, oo);
+                if (oo) {
                     sym->outOfFrame = true;
                     anSetRefDepth(sym, 0);
                 } else {

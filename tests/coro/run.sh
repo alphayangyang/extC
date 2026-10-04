@@ -545,5 +545,34 @@ else
     fi
 fi
 
+# `global`：函数里的持久存储（视图跨 yield · 跨调用持久 · 一处声明一个实例）
+ngl=$tmp/coro_global
+if "$EXTC" -w --run tests/coro/coro_global.extc >"$tmp/gl.out" 2>&1; then
+    printf 't1:A\nt2:B\nt1:B\nt2:B\n' > "$tmp/gl.want"
+    if diff -q <(head -4 "$tmp/gl.out") "$tmp/gl.want" >/dev/null 2>&1; then
+        echo "  ok   coro_global         ->  t1:A · t2:B（挂起前）· t1:B · t2:B（挂起后 + 共享同一块存储）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_global         ->  输出不对：$(head -4 "$tmp/gl.out" | tr '\n' '|')"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_global         ->  $(tail -2 "$tmp/gl.out" | tr '\n' '|')"; fail=$((fail+1))
+fi
+# 反例 1：`global` 的初始化式必须是常量（静态存储期对象在程序启动时初始化一次）
+cat > "$tmp/gnc.extc" <<'G1EOF'
+fn f() -> i64 { return i64(1) }
+fn main() -> i32 { global var x: i64 = f()  return i32(0) }
+G1EOF
+if out=$("$EXTC" -w --no-line-map -o "$tmp/gnc.c" "$tmp/gnc.extc" 2>&1); then
+    echo "  FAIL global_nonconst       ->  **非常量初始化式编过了**（应当被拒）"; fail=$((fail+1))
+else
+    if echo "$out" | grep -q 'not a constant'; then
+        echo "  ok   global_nonconst       ->  非常量初始化式被拒（静态存储期的对象只在启动时初始化一次）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL global_nonconst       ->  报错信息不对：$(echo "$out" | head -1)"; fail=$((fail+1))
+    fi
+fi
+
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ] || exit 1

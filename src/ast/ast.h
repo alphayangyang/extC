@@ -454,7 +454,11 @@ struct Stmt {
                   * allocated once in the function frame, lazily on first use, and
                   * cleared before every later execution of this statement. Legal only
                   * for `new`, which the checker enforces. */
-                 bool overwrite; } var;
+                 bool overwrite;
+                 /* `global var x: T` / `global let x: T = c`: the **storage** lives outside every
+                  * frame (a C block-scope `static`), while the **name** stays in this block.
+                  * Depth 0 ⇒ a view of it may cross a `yield`; see docs/topics/GLOBAL.md. */
+                 bool isGlobal; } var;
         /* `op` is NULL for a plain `=` and the operator text (`"+="` ...) for a compound
          * assignment; `opExpr` is the `EX_BIN` the checker resolved for it, which codegen
          * needs when the operator is a user-defined method (`x += y` is then

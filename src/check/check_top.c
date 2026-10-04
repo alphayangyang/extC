@@ -392,6 +392,11 @@ typedef struct {
     const char *cname;
     Expr       *init;
     int         line;
+    /* Did the initializer name storage that outlives every frame? Recorded while the scopes were
+     * live (`ST_VAR.initOutOfFrame`): by the time `coroCheckDeferred` runs, `lookup` can no longer
+     * find a function-local name, so asking `exprOutOfFrame` again would answer "no" for a view of
+     * a `global` declaration. */
+    bool        outOfFrame;
 } CoroDeferred;
 
 static bool hasNewInStmt(void *ctx, Stmt *s);
@@ -4363,7 +4368,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
  *     `let A = 1 + 2` is accepted because both operands are literals, while a call is
  *     rejected however simple it looks.
  */
-static bool isConstInit(Expr *e) {
+bool isConstInit(Expr *e) {
     if (!e) return false;
     switch (e->kind) {
     case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: return true;
@@ -6713,7 +6718,7 @@ static void coroCheckDeferred(Checker *c, Module *m) {
          * (Measured cost of not having it: a literal slice bound with `let` could not cross a
          * `yield`, so the workaround was to inline the literal at every call site.) */
         if (d->init && (exprMakesPool(d->init, true) || d->init->kind == EX_NEW ||
-                        exprOutOfFrame(c, d->init))) continue;
+                        d->outOfFrame || exprOutOfFrame(c, d->init))) continue;
         ckError(c, d->line,
                 "A local that lives across a `yield` may not point at someone else's storage: the C"
                 " stack of this call is gone when the coroutine yields. Two fixes: allocate it"
@@ -6775,6 +6780,14 @@ typedef struct {
     Type       *type;
     Expr       *init;
     int         index;
+    /* A `global` declaration's storage is not in any frame, so it must **not** go into the
+     * frame: its C form is a block-scope `static` that already lives to the end of the process.
+     * Putting it in the frame would make every resume read and write a frame field instead. */
+    /* The statement itself, so the layout pass can **read** the syntax facts it needs
+     * (`st->u.var.isGlobal`) and the plan results (`planVarInitOutOfFrame(st)`) instead of
+     * copying them into this descriptor -- one source of truth, and no field name that the
+     * AST-freeze scan has to tell apart from an AST node member. */
+    const Stmt *st;
 } CoroDecl;
 typedef struct {
     int index;
@@ -6837,6 +6850,7 @@ static bool coroScanStmt(void *ctx, Stmt *s) {
         d->cname = planCName(s);
         d->type = s->type;
         d->init = s->u.var.init;
+        d->st = s;
         d->index = sc->index++;
     } else if (s->kind == ST_YIELD) {
         CoroYield *y = (CoroYield *)vecPush(&sc->yields);
@@ -6900,6 +6914,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             if (d->index < y->index && coroLiveAcross(&s, d, y)) { live = true; line = y->line; }
         }
         if (!live) continue;                        /* stays an ordinary C local ✓ */
+        if (d->st && d->st->u.var.isGlobal) continue;   /* `global`: storage is already out of frame ✓ */
         if (typeContainsRef(c->tt, d->type)) {
             /* Safe or not depends on who owns the storage, which the pool fixpoint only settles
              * later; the decision is made in `coroCheckDeferred`. **No `continue`**: the local still
@@ -6908,6 +6923,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
                 vecInit(&c->coroDeferred, c->arena, sizeof(CoroDeferred *));
             CoroDeferred *dl = arenaAllocZero(c->arena, sizeof *dl);
             dl->cname = d->cname; dl->init = d->init; dl->line = line;
+            dl->outOfFrame = d->st ? planVarInitOutOfFrame(d->st) : false;
             *(CoroDeferred **)vecPush(&c->coroDeferred) = dl;
         }
         if (0 && typeContainsRef(c->tt, d->type)) {
