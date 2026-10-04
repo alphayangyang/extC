@@ -214,6 +214,11 @@ if out=$(timeout 900 ./tests/json/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒 · 2 万轮变异零崩溃）"
 else bad "tests/json/run.sh"; echo "$out"; fi
 
+echo "== 裸 return 在 void 函数里（方法那一格曾经报假错）=="
+if out=$(timeout 300 ./tests/voidret/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（方法/自由函数的裸 return 合法 · 非 void 的裸 return 仍然报错）"
+else bad "tests/voidret/run.sh"; echo "$out"; fi
+
 echo "== 包工具全链路（extpkg fetch/vendor/build：假 registry 走 file://，不联网）=="
 if out=$(timeout 900 ./tests/extpkg/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（首次 fetch 写锁 · --offline 命中缓存 · 改锁一个字节必红 · 空缓存必红且消息可执行 · vendor 后清缓存仍能离线 build · 锁逐字节决定论 · build 自动补 vendor）"

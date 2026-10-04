@@ -1014,7 +1014,17 @@ void checkStmt(Checker *c, Stmt *s) {
                  * `return e` inside a coroutine stays an error -- yielding is how a coroutine hands a
                  * value out. */
                 if (c->curFunc && planIsCoro(c->curFunc)) return;
-                if (want && !ttIs(want, "void")) {
+                /* `void` is spelled two ways by the time a body is checked: the canonical
+                 * built-in (free functions -- `resolveSignature` also nulls it) and a *named*
+                 * type that is still unresolved (a method's `-> void`; it prints as "void" but
+                 * `ttIs` wants `TY_BUILTIN`, so the old guard rejected a bare `return` with the
+                 * self-contradicting message "must return a value of type `void`").
+                 * Accept both spellings: a bare `return` means "no more values", which is exactly
+                 * what a void function promises. */
+                Type *wbase = ttBase(want);
+                bool isVoid = want && (ttIs(want, "void") ||
+                                       (wbase && wbase->name && strcmp(wbase->name, "void") == 0));
+                if (want && !isVoid) {
                     ckError(c, s->line, NULL, "`%s` must return a value of type `%s`",
                             c->curFunc->name, typeStr(c, want));
                 }

@@ -1,0 +1,51 @@
+// expect: voidret ok
+// 裸 `return`（"没有更多值了"）在**所有** void 函数里都必须合法：
+//   · 自由函数 `-> void`；
+//   · **方法** `-> void` —— 这一格曾经报假错：
+//     `error: 'voidRet' must return a value of type 'void'`
+//     （方法签名的 `-> void` 在检查函数体时还是个"名叫 void 的具名类型"，而旧判断只认
+//       `TY_BUILTIN` 的规范 void ⇒ 自己打自己脸的消息。）
+//   · 没写返回类型的方法（本来就是 void）；
+//   · 还有别的返回类型时的裸 `return` **仍然**要报错（这是本判据的反例面，见 run.sh）。
+use std::io
+
+struct box {
+    n: i64
+
+    fn noRet(self: mut ref box) -> void {
+        if self.n > i64(1) { return }
+        self.n = self.n + i64(1)
+    }
+
+    fn voidRet(self: mut ref box) -> void {
+        if self.n > i64(0) { return }
+        self.n = self.n + i64(10)
+    }
+
+    fn implicitVoid(self: mut ref box) {
+        if self.n > i64(0) { return }
+        self.n = self.n + i64(100)
+    }
+
+    fn hasRet(self: mut ref box) -> i64 {
+        if self.n > i64(5) { return i64(5) }
+        return self.n
+    }
+}
+
+fn freeVoid() -> void {
+    if true { return }
+}
+
+fn main() -> i32 {
+    var b: box
+    b.n = i64(0)
+    b.noRet()           /* n = 1 */
+    b.voidRet()         /* n > 0 ⇒ 立刻 return ⇒ 仍是 1 */
+    b.implicitVoid()    /* 同上 ⇒ 仍是 1 */
+    freeVoid()
+    if b.n != i64(1) { return 1 }
+    if b.hasRet() != i64(1) { return 2 }
+    io::cout << "voidret ok（方法/自由函数的裸 return 都合法，且语义正确）\n"
+    return 0
+}
