@@ -490,8 +490,8 @@ static bool lexPunct(Lexer *lx, Vec *out, int line, int col) {
  *     ctx->hasError; the caller renders it and does not parse the tokens.  The
  *     tokens produced so far stay in `out` and TK_EOF may be missing.
  */
-void lexAll(Ctx *ctx, Vec *out) {
-    Lexer lx = { ctx, ctx->src, ctx->srcLen, 0, 1, 1 };
+void lexRange(Ctx *ctx, const char *src, size_t len, int line0, int col0, Vec *out) {
+    Lexer lx = { ctx, src, len, 0, line0, col0 };
 
     while (lx.pos < lx.len) {
         char c = lxPeek(&lx, 0);
@@ -530,7 +530,20 @@ void lexAll(Ctx *ctx, Vec *out) {
         }
 
         if (isDigit(c))                      { lexNumber(&lx, out); if (ctx->hasError) return; continue; }
-        if (isAlpha(c))                      { lexIdent(&lx, out, line, col); continue; }
+        /* `f"…"`：标识符恰好是 `f` 且**紧挨着**引号 ⇒ 格式串。`f` 本身仍是合法标识符
+         * （`f "x"` 有空格就是两个 token），这条与 Python 一致。 */
+        if (isAlpha(c)) {
+            if (c == 'f' && lx.pos + 1 < lx.len && lx.src[lx.pos + 1] == '"') {
+                lxAdvance(&lx);
+                lexString(&lx, out, line, col);
+                if (ctx->hasError) return;
+                Token *ft = lxLast(out);
+                if (ft && ft->kind == TK_STRING) ft->kind = TK_FSTRING;
+                continue;
+            }
+            lexIdent(&lx, out, line, col);
+            continue;
+        }
         if (c == '"')                        { lexString(&lx, out, line, col); if (ctx->hasError) return; continue; }
         if (c == '\'')                      { lexChar(&lx, out, line, col); if (ctx->hasError) return; continue; }
         if (!lexPunct(&lx, out, line, col))  { return; }
@@ -541,6 +554,11 @@ void lexAll(Ctx *ctx, Vec *out) {
     if (!last || last->kind != TK_NEWLINE)
         lxPushAt(&lx, out, TK_NEWLINE, "\n", 1, lx.line, lx.col);
     lxPushAt(&lx, out, TK_EOF, "", 0, lx.line, lx.col);
+}
+
+/* 整个文件：`lexRange` 的薄壳（原来就是它，抽出来是为了让 `f"…"` 能扫子串）。 */
+void lexAll(Ctx *ctx, Vec *out) {
+    lexRange(ctx, ctx->src, ctx->srcLen, 1, 1, out);
 }
 
 /* ================================================================ display */

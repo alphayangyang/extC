@@ -2750,6 +2750,118 @@ static bool atShift(Parser *p, const char *ch, const char **op) {
     return true;
 }
 
+/* ---------------------------------------------------------------- f"…"（格式拼接）
+ *
+ * `lhs << f"t1{e1}t2"` **在解析器里就展开**成 `((lhs << "t1") << e1) << "t2"` —— 用的是与手写
+ * 链**同一个** `mkBin`，所以展开出来的 AST 与手写 `<<` 链逐字节相同 ⇒ 检查、发射一行都不用改，
+ * 而"这个类型能不能打印"就等于"有没有 `<<` 重载"（复用既有重载解析，不引入第二套定义）。
+ *
+ * 词法已经把 `f"…"` 认成 TK_FSTRING（见 lexer.c）；这里负责切段、解转义、**子解析**槽里的表达式。
+ * 槽里的表达式是用**真解析器**在片段上跑出来的（L.lexRange 带真实行列 ⇒ 诊断指得到文件里）。
+ */
+static Expr *fmtStr(Parser *p, const char *s, size_t len, int line) {
+    Expr *e = exprNew(p->arena, EX_STR, line);
+    char *cp = (char *)arenaAlloc(p->arena, len + 1);
+    memcpy(cp, s, len);
+    cp[len] = 0;
+    e->u.str.text = cp;
+    return e;
+}
+
+static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
+    const char *src = ft->text;
+    const Expr *before = *lhs;
+    const size_t n = ft->len;
+    char *txt = (char *)arenaAlloc(p->arena, n + 1);   /* 解码缓冲：转义只让文本变短 ⇒ 够 */
+    size_t tl = 0;
+    int col = ft->col + 2;                              /* 跳过 `f"` */
+    size_t i = 0;
+    while (i < n) {
+        char c = src[i];
+        if (c == '{' && i + 1 < n && src[i + 1] == '{') { txt[tl++] = '{'; i += 2; col += 2; continue; }
+        if (c == '}' && i + 1 < n && src[i + 1] == '}') { txt[tl++] = '}'; i += 2; col += 2; continue; }
+        if (c == '}') {
+            ctxError(p->ctx, ft->line, col,
+                     "write `}}` for a literal brace",
+                     "an f-string has a `}` with no matching `{`");
+            return false;
+        }
+        if (c != '{') { txt[tl++] = c; i += 1; col += 1; continue; }
+        /* 槽：先把累积的文字段冲成 `lhs << "…"` */
+        if (tl > 0) { *lhs = mkBin(p, "<<", *lhs, fmtStr(p, txt, tl, ft->line), ft->line); tl = 0; }
+        size_t j = i + 1;
+        int depth = 1;
+        bool inStr = false;
+        while (j < n) {
+            char d = src[j];
+            if (inStr) {
+                if (d == '\\') j += 1;
+                else if (d == '"') inStr = false;
+            } else if (d == '"') inStr = true;
+            else if (d == '{') depth += 1;
+            else if (d == '}') { depth -= 1; if (depth == 0) break; }
+            j += 1;
+        }
+        if (depth != 0) {
+            ctxError(p->ctx, ft->line, col,
+                     "close the slot with `}`",
+                     "an f-string has a `{` with no matching `}`");
+            return false;
+        }
+        size_t innerLen = j - (i + 1);
+        if (innerLen == 0) {
+            ctxError(p->ctx, ft->line, col + 1, NULL, "an f-string slot cannot be empty");
+            return false;
+        }
+        /* 顶层的 `:` ⇒ 格式说明符：**v2**（先明确拒绝，别让它静默变成表达式的一部分） */
+        {
+            int d2 = 0; bool st = false;
+            for (size_t q = i + 1; q < j; q++) {
+                char d = src[q];
+                if (st) { if (d == '\\') q += 1; else if (d == '"') st = false; continue; }
+                if (d == '"') { st = true; continue; }
+                if (d == '(' || d == '[' || d == '{') d2 += 1;
+                else if (d == ')' || d == ']' || d == '}') d2 -= 1;
+                else if (d == ':' && d2 == 0) {
+                    ctxError(p->ctx, ft->line, col,
+                             "format specs (`{x:>8}`) are v2; v1 prints the value as `<<` would",
+                             "format specifiers are not implemented yet");
+                    return false;
+                }
+            }
+        }
+        /* 槽里的表达式：**真解析器**跑在片段上（行列保持真实） */
+        Vec toks;
+        vecInit(&toks, p->arena, sizeof(Token));   /* token 是**按值**存的（见 lxPushAt）*/
+        lexRange(p->ctx, src + i + 1, innerLen, ft->line, col + 1, &toks);
+        if (p->ctx->hasError) return false;
+        Parser sub = *p;
+        sub.toks = &toks;
+        sub.pos = 0;
+        sub.inCond = false;          /* 表达式位置：`{` 是结构体字面量，不是块 */
+        Expr *e = parseExpr(&sub);
+        if (!e) return false;
+        skipNl(&sub);                 /* 片段扫描会在末尾补一个 NEWLINE（见 lexRange）*/
+        if (cur(&sub)->kind != TK_EOF) {
+            ctxError(p->ctx, cur(&sub)->line, cur(&sub)->col,
+                     "one expression per slot", "unexpected `%s` inside an f-string slot",
+                     cur(&sub)->text);
+            return false;
+        }
+        *lhs = mkBin(p, "<<", *lhs, e, ft->line);
+        col += (int)(innerLen + 2);
+        i = j + 1;
+    }
+    if (tl > 0) *lhs = mkBin(p, "<<", *lhs, fmtStr(p, txt, tl, ft->line), ft->line);
+    /* 一个部件都没有（`f""`）：不报错的话 `<<` 会被静默吃掉 ✗ */
+    if (*lhs == before) {
+        ctxError(p->ctx, ft->line, ft->col + 2, NULL,
+                 "an f-string with nothing in it has nothing to splice");
+        return false;
+    }
+    return true;
+}
+
 /* Parse `<<` and `>>`, which are recognized as two adjacent `<` / `>` tokens. */
 static Expr *parseShift(Parser *p) {
     Expr *e = parseTerm(p);
@@ -2761,6 +2873,17 @@ static Expr *parseShift(Parser *p) {
         take(p);
         take(p);
         skipNl(p);
+        /* `x << f"…"`：在这里展开成同一条 `<<` 链（用 `mkBin`，与手写的一模一样） */
+        if (cur(p)->kind == TK_FSTRING) {
+            if (strcmp(op, "<<") != 0) {
+                ctxError(p->ctx, cur(p)->line, cur(p)->col,
+                         "an f-string is concatenated with `<<`",
+                         "an f-string cannot be the right-hand side of `%s`", op);
+                return NULL;
+            }
+            if (!fmtSplice(p, &e, take(p))) return NULL;
+            continue;
+        }
         Expr *r = parseTerm(p);
         if (!r) return NULL;
         e = mkBin(p, op, e, r, line);
@@ -3263,6 +3386,13 @@ static Expr *parsePrimary(Parser *p) {
         Expr *e = exprNew(p->arena, EX_STR, t->line);
         e->u.str.text = t->text;
         return e;
+    }
+    if (t->kind == TK_FSTRING) {
+        ctxError(p->ctx, t->line, t->col,
+                 "an f-string is expanded at compile time into a `<<` chain, so it has to be the"
+                 " right-hand side of `<<`: `io::cout << f\"…\"`",
+                 "an f-string is only valid as the right-hand side of `<<`");
+        return NULL;
     }
     /* `null` is a contextual keyword, recognized in expression position only,
      * like `ref` and `mut`.  Its type comes entirely from the context:

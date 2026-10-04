@@ -1,0 +1,23 @@
+// 与 main.extc **逐字节相同**的生成物：手写 `<<` 链版本（去掉 f-string 的语法糖）。
+use std::io
+
+var CALLS: i64
+
+fn tick() -> i64 {
+    CALLS = CALLS + 1
+    return CALLS
+}
+
+fn main() -> i32 {
+    let n: i64 = 42
+    let who: slice<u8> = "世界"
+    let b: bool = true
+    let f: f64 = 1.5
+    io::cout << "n=" << n << " who=" << who << " b=" << b << " f=" << f << "\n"
+    io::cout << "esc {} and " << n << "\n"
+    io::cout << tick() << " " << tick() << " " << tick() << "\n"
+    io::cout << "only text\n"
+    io::cout << n << " ← 单个槽（没有文本段）\n"
+    io::cout << "手写对照：" << "n=" << n << " who=" << who << "\n"
+    return 0
+}

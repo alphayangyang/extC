@@ -214,6 +214,11 @@ if out=$(timeout 900 ./tests/json/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒 · 2 万轮变异零崩溃）"
 else bad "tests/json/run.sh"; echo "$out"; fi
 
+echo "== f\"…\" 编译期格式拼接（输出 · 与手写 << 链逐字节相同 · 六条反例）=="
+if out=$(timeout 300 ./tests/fstring/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（多槽/转义/每槽求值一次 · 生成物与手写链**逐字节相同** · 六条反例）"
+else bad "tests/fstring/run.sh"; echo "$out"; fi
+
 echo "== WebSocket（RFC 6455：握手向量 · 拒绝面 · 变异 fuzz · 帧 vs Python）=="
 if out=$(timeout 300 ./tests/ws/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（握手向量 · 拒绝面 · 往返 · 变异 2 万次 · 24 帧与 Python 逐字节一致）"

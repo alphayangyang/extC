@@ -17,6 +17,9 @@ typedef enum {
     TK_INT,
     TK_FLOAT,
     TK_STRING,
+    /* `f"…"`：**编译期格式拼接**（见 docs/topics/…）。词法上它就是一个字符串，
+     * 区别只在解析器会把它展开成 `<<` 链 —— 所以没有运行时成本。 */
+    TK_FSTRING,
     TK_KEYWORD,
     TK_TYPE,
     TK_PUNCT
@@ -63,6 +66,11 @@ bool lexIsPunct(const char *value);
  *     `out` then holds whatever was tokenized up to that point.
  */
 void lexAll(Ctx *ctx, Vec *out);
+/* The same scanner over a **sub-range**, starting at a given line/column. `f"…"` needs it: the
+ * expressions inside the braces are parsed by running the real parser over the fragment, and the
+ * positions have to stay true to the file (a diagnostic inside a slot must point at the file, not
+ * at offset 0 of a fragment). */
+void lexRange(Ctx *ctx, const char *src, size_t len, int line, int col, Vec *out);
 
 /* Name a token kind for diagnostics and `--dump-tokens`, e.g. TK_IDENT -> "IDENT". */
 const char *tokenKindName(TokenKind k);

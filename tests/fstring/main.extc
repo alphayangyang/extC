@@ -1,0 +1,25 @@
+// expect: fstring ok
+// `f"…"`：**编译期展开成 `<<` 链**。判据覆盖：多槽 · 各种可打印类型 · `{{`/`}}` 转义 ·
+// 槽里的表达式**只求值一次** · 空文本段。与手写链**逐字节相同**那条在 run.sh 里。
+use std::io
+
+var CALLS: i64
+
+fn tick() -> i64 {
+    CALLS = CALLS + 1
+    return CALLS
+}
+
+fn main() -> i32 {
+    let n: i64 = 42
+    let who: slice<u8> = "世界"
+    let b: bool = true
+    let f: f64 = 1.5
+    io::cout << f"n={n} who={who} b={b} f={f}\n"
+    io::cout << f"esc {{}} and {n}\n"
+    io::cout << f"{tick()} {tick()} {tick()}\n"
+    io::cout << f"only text\n"
+    io::cout << f"{n}" << " ← 单个槽（没有文本段）\n"
+    io::cout << "手写对照：" << "n=" << n << " who=" << who << "\n"
+    return 0
+}
