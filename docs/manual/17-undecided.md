@@ -66,3 +66,4 @@ error: array length must be an integer literal, found `N`
 | 项 | 一句话 | 文档 |
 |---|---|---|
 | **协程协议层** | 地基好（内存/唤醒有数字），协议层是"一串猜出来的负数 + 覆盖式 tag"；三条修法 A/B/C 与代价 | [`CORO-PROTOCOL.md`](../topics/CORO-PROTOCOL.md) |
+| **普通语法的差距（手感）** | 拿真代码量：Python ~25 行 → extC 78 行（3×）；四条主因 + 优先级（格式串 → 表达式位置构造 → stdlib 补齐 → 容器字面量 → 默认参数） | [`ERGONOMICS.md`](../topics/ERGONOMICS.md) |
