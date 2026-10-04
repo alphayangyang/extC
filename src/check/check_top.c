@@ -6706,7 +6706,14 @@ static void coroCheckDeferred(Checker *c, Module *m) {
          *     (`arenaRefAt` puts every block level in the frame), which lives as long as the task does.
          * Everything else -- a parameter, a `ref` into the caller, a view handed in -- still gets the
          * error below, because that storage really is gone when the step returns. */
-        if (d->init && (exprMakesPool(d->init, true) || d->init->kind == EX_NEW)) continue;
+        /* A third shape joins the two above: storage that **provably outlives every frame**.
+         * A global, a `effects Ret=0` result, and a **string literal** (static storage) are all
+         * outside the frame by construction -- `exprOutOfFrame` is the predicate that already
+         * answers that question, so the rule generalizes instead of growing a case list.
+         * (Measured cost of not having it: a literal slice bound with `let` could not cross a
+         * `yield`, so the workaround was to inline the literal at every call site.) */
+        if (d->init && (exprMakesPool(d->init, true) || d->init->kind == EX_NEW ||
+                        exprOutOfFrame(c, d->init))) continue;
         ckError(c, d->line,
                 "A local that lives across a `yield` may not point at someone else's storage: the C"
                 " stack of this call is gone when the coroutine yields. Two fixes: allocate it"

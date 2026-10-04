@@ -516,5 +516,34 @@ else
     echo "  FAIL coro_waitw          ->  $(head -2 "$tmp/nww.e" 2>/dev/null | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 字面量切片的深度：**正例必须过、反例必须仍被拒**（放宽规则时反例比正例重要）
+nlt=$tmp/coro_literal
+if "$EXTC" -w --run tests/coro/coro_literal.extc >"$tmp/lit.out" 2>&1 && grep -q 'literal ok' "$tmp/lit.out"; then
+    echo "  ok   coro_literal        ->  字面量切片跨 yield 合法（$(grep -c 'hello from a literal' "$tmp/lit.out") 行输出）"
+    pass=$((pass+1))
+else
+    echo "  FAIL coro_literal        ->  $(tail -2 "$tmp/lit.out" | tr '\n' '|')"; fail=$((fail+1))
+fi
+cat > "$tmp/neg.extc" <<'NEGEOF'
+use std::coro::scheduler as sched
+fn w(fd: i64, s: mut ref sched::loop) -> coroutine<i64> {
+    var arr: [8]u8
+    let v: slice<u8> = arr[0..8]
+    yield fd
+    yield i64(-1) - i64(v.len)
+}
+fn main() -> i32 { return 0 }
+NEGEOF
+if out=$("$EXTC" -w --no-line-map -o "$tmp/neg.c" "$tmp/neg.extc" 2>&1); then
+    echo "  FAIL coro_literal_neg    ->  **局部数组的视图跨 yield 编过了**（应当被拒）"; fail=$((fail+1))
+else
+    if echo "$out" | grep -q 'lives across a `yield`'; then
+        echo "  ok   coro_literal_neg    ->  局部数组的视图跨 yield 仍被拒（反例守住）"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_literal_neg    ->  报错信息不对：$(echo "$out" | head -1)"; fail=$((fail+1))
+    fi
+fi
+
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ] || exit 1

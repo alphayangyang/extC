@@ -81,6 +81,10 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen);
 bool exprOutOfFrame(Checker *c, Expr *e) {
     if (!e) return false;
     switch (e->kind) {
+    /* **字符串字面量住在静态存储里**：与全局同寿（C 的字符串字面量就是静态存储期）⇒ 深度 0。
+     * 从前这里落到默认分支（false），于是 `let k: slice<u8> = "…"` 跨 `yield` 被当成
+     * "指向别人的栈"拒掉 ✗ —— 它压根不在任何帧里（实测为此绕了两次路：只能内联传字面量）。 */
+    case EX_STR:   return true;
     case EX_SIGN:  return exprOutOfFrame(c, e->u.sign.operand);      /* `p!` 只去掉可空 */
     case EX_TRY:   return exprOutOfFrame(c, e->u.try_.operand);
     case EX_CONV:  return exprOutOfFrame(c, e->u.conv.operand);
