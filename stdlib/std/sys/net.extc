@@ -32,7 +32,13 @@ extern!("extc-runtime") fn extc_sock_pair(out: ref i64) -> i64
     effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
 /* 读一次：返回字节数，0 是对方关了，负数出错。 */
 extern!("extc-runtime") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64
-    effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */
+    effects Addr=0 Cont=0 Thread=0
+/* errno 感知的读写：`-1000` = 现在没数据/缓冲满（等就绪再试）· `-1001` = 连接坏了。
+ * 裸 `extc_sock_read` 把这两种都压成负数，会让"对端已死"看起来像"再等等" ✗。 */
+extern!("extc-runtime") fn extc_sock_read_why(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0 Thread=0
+extern!("extc-runtime") fn extc_sock_write_why(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0 Thread=0
 /* 写一次：返回写了几个字节。 */
 extern!("extc-runtime") fn extc_sock_write(fd: i64, buf: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0 Thread=0   /* 只碰实参（fd/缓冲区），不碰任何跨线程共享状态 ⇒ worker 里可用 */

@@ -10584,3 +10584,22 @@ members all count"。**一条过期的诊断会把使用者推向错误的解法
 还缺的是它的推广：不是全局、但**被 plate 拥有**的存储（同进程寿命，但不是 C static）。
 那要类型系统能表达"这个引用指向谁拥有的存储"（现在 arena 是**按作用域**的，不是**按归属**的）。
 已记进 `docs/topics/BOUNDED-TABLE.md` 附录（判据：等"重取视图"的样板开始反复出现就该做）。
+
+**同日的第十六刀：明文 socket 的"还没数据"与"连接已死"分开了（errno 感知的读写）**。
+写 WebSocket 会话层时撞到：对端 RST/退出之后，`extc_sock_read` 只给一个负数，会话层只能把它
+当成"等就绪" ⇒ epoll 每轮立刻报可读、recv 每轮报错、客户端**原地空转**（判据当场从"挂死"变成
+`STUCK rounds=500` ✗）。加两个 errno 感知的原语：
+
+    extc_sock_read_why / extc_sock_write_why
+      > 0 字节数 · 0 对端干净关闭 · -1000 = 现在没数据/缓冲满（等就绪再试）· -1001 = 连接坏了
+
+判据 `vendor/ws/tests/dead.extc`（在 qqbot 仓库）：握手后对端立刻消失 ⇒ `recv` 必须给 `CLOSED`，
+**不许空等**。旧写法在这条判据上必然超时，新写法 200 ✓。
+
+**这轮踩的坑（都是"补丁打在注解旁边"这一类）**：我把两个新 extern 声明插进了
+`extc_sock_read` 与它的 `effects Addr=0 Cont=0` **之间** ⇒ 原声明丢了签名、新声明白捡了一个，
+`tests/coro` 三个用 socket 的夹具当场编译失败（检查器的报错很准："argument 2 of `extc_sock_read`
+may be kept by C forever"）。**教训**：跨行的注解用文本补丁插入时必须整块替换，别插在中间 ——
+这已经和 `.link` 格式、`#include` 位置、`sed` 锚点一起，构成同一类"文本手术"风险。
+
+`check.sh quick` **71/0**（全语料 414 份产物、164 份观察项均无变化）。
