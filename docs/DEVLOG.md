@@ -150,6 +150,21 @@ RSS < 8 MB · 吞吐下限。`check.sh quick` 66 → **67/0**。
 
 `check.sh quick` **69/0**（loop 一节从 1 项变 2 项：策略离线判据 + 真事件源判据）。
 
+**同日的第十刀：给 `sys` 定个判据，并把放错的三处搬出来**。判据一句话：**`std::sys::*` 不是"用 C 实现的"，
+而是"能绕过检查器某条保证"的**（任意指针↔视图、任意地址 mmap/mprotect、裸 fd
+读写、fork 一类进程模型原语）。按这把尺子搬了三处：`std::sys::mem` 整个文件删掉 →
+**`std::mem`**（`find`/`contains`/`eq`/`copy` + 两个原语）；两个 HTTP 日期函数
+`std::sys::file` → **`std::http`**；用户级套接字/名字解析 → 新建 **`std::net`** 门面
+（`sockPair`/`accept`/`read`/`write`/`tcpListen`/`tcpListenShared`（SO_REUSEPORT）/`tcpConnectTo`/
+`dnsLookup`/`resolve`…；**epoll 三件不进**，那是 `std::loop` 与调度器的内部齿轮）。
+
+搬家过程中撞了一次：`stl::string` 直接调 `extc_memFind`/`extc_memEq`，而我先把它们标了
+`@private` ⇒ `tests/stl` 整片编译失败（连带 ASan 那格也报错）。改成公开即恢复 —— 这也正是
+"它们无害、所以属于 std"的原意。
+
+**诚实记账**：`PRIVILEGED_MODULES` 仍然只有 `std::sys::heap`；`sys::io`/`sys::file`/`sys::proc`/
+`sys::term` 还没被挡住。扩名单是下一步，且必须先有 std 门面（这次搬的三处就是那个前提）。
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。

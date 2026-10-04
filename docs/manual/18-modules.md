@@ -772,6 +772,37 @@ let fired: i64 = t.popDue(std::time::now(), out[..])  // 到期的 tag，每个�
 向上取整/上限封顶/上限为 0）· 到期**恰好一次** · 等值**稳定** · 表满**响亮失败** · 取消命中与
 未命中 · **500 个乱序 deadline 交错登记/取出，全部恰好取出一次**。
 
+### 12.5g `std::net` 与 `std::mem`：把"有用但不危险"的从 `sys` 里提出来（2026-10-04）
+
+**判据（新增）**：`std::sys::*` 的定义**不是**"用 C 实现的"，而是**"能让调用方绕过检查器的某条
+保证"** —— 任意指针↔视图（`extc_viewOf`）、任意地址 `mmap`/`mprotect`、裸 fd 读写、`fork` 一类
+改变进程模型的东西。一句话判据：**能不能绕过一条保证**。能 ⇒ `sys`（并应进
+`PRIVILEGED_MODULES`）；不能 ⇒ 普通公开面，**哪怕实现是 C**。
+
+按这条尺子搬了三处（从前是"实现是 C 就放 sys"的误置）：
+
+| 从 | 到 | 内容 |
+|---|---|---|
+| `std::sys::mem`（整个文件删掉） | **`std::mem`** | `extc_memFind` · `extc_memEq`（原语）· `find` · `contains` · `eq` · `copy` |
+| `std::sys::file` | **`std::http`** | `extc_http_date` · `extc_http_parse_date`（RFC 7231 日期，纯函数） |
+| `std::sys::net`（原语仍留 sys） | **`std::net`**（新门面） | 见下表 |
+
+**`std::net` 门面**（`epoll` 三件**不进**这里 —— 那是 `std::loop` 与协程调度器的内部齿轮）：
+
+| 名字 | 作用 |
+|---|---|
+| `sockPair(out)` | 一对已连接的 `AF_UNIX` 套接字（写进 `out[0]`/`out[1]`） |
+| `accept` · `read` · `write` | 接受 / 收 / 发（`read(fd, mut slice)` · `write(fd, slice)`） |
+| `nonblock` · `nodelay` · `timeout` · `shutdownWr` · `localPort` | 套接字属性与半关闭 |
+| `tcpListen(port, backlog)` | 监听 |
+| `tcpListenShared(port, backlog)` | **`SO_REUSEPORT`**：每个进程各听一条、内核按连接分发 —— 2C2G 上用多进程吃满两核靠它（每进程一条 epoll、一个线程 ⇒ 循环里一个锁都不用） |
+| `tcpConnectTo(ip, port)` · `dnsLookup(host, out)` · `resolve(addr, out)` | 连接与名字解析 |
+
+**诚实记账**：`PRIVILEGED_MODULES` 目前**仍然只有 `std::sys::heap`**（编译器名单）—— 也就是说
+`std::sys::io`（裸 fd 读写）、`std::sys::file`（`sendfile`）、`std::sys::proc`（`fork`/亲和性）、
+`std::sys::term` 这些**还没被挡住**。把它们加进名单是下一步，而且必须**先**把用户真正需要的
+东西提到 `std`（否则一扩名单就把测试与用户挡住 —— 这次搬的三处正是那个前提）。
+
 ### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
 
 `@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和

@@ -23,7 +23,7 @@
  * 还能再装 16 个字节 —— 写入路径 `push` / `append` 先看 `n < 16` 就地写，装不下才升级。
  */
 use std::sys::pool as syspool
-use std::sys::mem as sysmem
+use std::mem as sysmem
 
 @sharesStorage        /* **升级到池之后**按值拷贝 ⇒ 两份共用同一块板块，编译器在这里报警告；
                        * 要独立副本用 `clone()`（内联态其实各拿各的 16 字节，但检查器一律保守） */
@@ -265,7 +265,7 @@ struct string {
      * absent, on a 1 MB string): `find` took 3172.7 ms against libstdc++'s 138.8 ms, and the two
      * things libstdc++ has that a byte-at-a-time extC loop does not are `memchr`/`memcmp` being
      * vectorised and the absence of a per-byte check. So the search is handed to libc's `memmem`
-     * (two-way inside glibc, with a `memchr` first-byte scan), through `std::sys::mem` -- the
+     * (two-way inside glibc, with a `memchr` first-byte scan), through `std::mem` -- the
      * same door `read`/`write` go through, integers only, on the byte-search runtime
      * (`src/memfind.c`, emitted on demand).
      *
@@ -281,7 +281,7 @@ struct string {
         let hay = self.subView(i64(0), m)
         /* `hay.data` is the first byte, `needle.data` the first pattern byte; `m` is the whole
          * string and `n <= m` holds from the line above, so the runtime sees a range it can use. */
-        let r = sysmem::extc_memFind(hay.data, m, needle.data, n)
+        let r = std::mem::extc_memFind(hay.data, m, needle.data, n)
         if r < i64(0) { return none }
         return some(r)
     }
@@ -303,7 +303,7 @@ struct string {
         if p.len > self.n { return false }
         if p.len == i64(0) { return true }
         let v = self.subView(i64(0), p.len)
-        return sysmem::extc_memEq(v.data, p.data, p.len) == i64(1)
+        return std::mem::extc_memEq(v.data, p.data, p.len) == i64(1)
     }
 
     fn endsWith(self: ref string, p: slice<u8>) -> bool {
@@ -311,7 +311,7 @@ struct string {
         if p.len == i64(0) { return true }
         let off = self.n - p.len
         let v = self.subView(off, self.n)
-        return sysmem::extc_memEq(v.data, p.data, p.len) == i64(1)
+        return std::mem::extc_memEq(v.data, p.data, p.len) == i64(1)
     }
 
     /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。

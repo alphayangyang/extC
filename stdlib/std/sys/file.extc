@@ -17,7 +17,5 @@ extern!("extc-runtime") fn extc_file_close(fd: i64) -> i64
 extern!("extc-runtime") fn extc_sendfile(outFd: i64, inFd: i64, off: i64, n: i64) -> i64
     effects Addr=0 Cont=0
 /* HTTP 日期：正确性交给 libc（`strftime`/`strptime` 打过仗），extC 只拿长度与秒数。 */
-extern!("extc-runtime") fn extc_http_date(epoch: i64, out: ref u8) -> i64
     effects Addr=0 Cont=0
-extern!("extc-runtime") fn extc_http_parse_date(s: ref u8, len: i64) -> i64
     effects Addr=0 Cont=0

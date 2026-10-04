@@ -1,0 +1,46 @@
+/* std/mem.extc —— 字节块的**查找**与**比较**（公开面）。
+ *
+ * 从前这两个声明在 `std::sys::mem` 里 —— 那是"因为实现是 C 所以放 sys"的典型误置：
+ * 它们**不绕过任何保证**（不构造视图、不碰地址空间、不碰 fd），只是 libc 级的快实现。
+ * 按 `sys` 的判据（**能不能绕过检查器的一条保证**）它们属于公开面 —— 答案是"不能"。
+ *
+ *     let at: i64 = mem::find(hay, needle)     // 最左匹配的偏移；没有 = -1
+ *     if mem::eq(a, b) { }                     // 整块比较
+ *     if mem::contains(hay, needle) { }
+ *
+ * 用户通常不需要直接调它们：`stl::string` 的 `find` / `contains` / `startsWith` / `endsWith`
+ * 就建在这上面（实测：改用 libc 的 memmem 后 `bench/string_vs_cpp` 的 find 一格从 3173ms
+ * 掉到与 C++ 同量级 —— 纯 extC 的 Two-Way 逐字节走边界检查太贵）。
+ */
+
+/* 原语（`stl::string` 直接用它们；用户通常用下面的 `find`/`contains`/`eq`）：
+ * 在 `hay` 里找 `needle` 的第一个（最左）匹配，返回偏移；没有返回 -1；空模式返回 0。 */
+extern!("extc-mem") fn extc_memFind(hay: ref u8, hayLen: i64, needle: ref u8, needleLen: i64) -> i64
+    effects Addr=0 Cont=0
+/* 这 `n` 个字节是否逐字节相同：1 = 相同，0 = 不同；`n <= 0` 算相同。 */
+extern!("extc-mem") fn extc_memEq(a: ref u8, b: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0
+
+fn find(hay: slice<u8>, needle: slice<u8>) -> i64 {
+    return extc_memFind(hay.data, hay.len, needle.data, needle.len)
+}
+
+fn contains(hay: slice<u8>, needle: slice<u8>) -> bool {
+    return extc_memFind(hay.data, hay.len, needle.data, needle.len) >= i64(0)
+}
+
+fn eq(a: slice<u8>, b: slice<u8>) -> bool {
+    if a.len != b.len { return false }
+    return extc_memEq(a.data, b.data, a.len) != i64(0)
+}
+
+/* 原地整块拷贝（两边都是可写视图时用；跨界拷贝见 `heap::copyIn`）。 */
+fn copy(dst: mut slice<u8>, src: slice<u8>) -> i64 {
+    if src.len > dst.len { return i64(-1) }
+    var i: i64 = 0
+    while i < src.len {
+        dst[i] = src[i]
+        i = i + 1
+    }
+    return src.len
+}

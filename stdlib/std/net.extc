@@ -1,0 +1,54 @@
+/* std/net.extc —— 套接字与名字解析的**公开门面**。
+ *
+ * 底下是 `std::sys::net` 的原语（那是"绕过保证"的那一层：裸 fd、直接 epoll）。这一层只把
+ * **用户真正需要**的东西摆正：连、听、收发、非阻塞、超时、DNS、SO_REUSEPORT。
+ * epoll 三件**不进这里** —— 它属于 `std::loop` 与协程调度器。
+ *
+ *     var sp: [2]i64
+ *     if net::sockPair(sp[..].data) != 0 { }        // 一对已连接的 fd（测试与唤醒常用）
+ *     let l: i64 = net::tcpListenShared(i64(8080), i64(128))   // 多进程分片的关键
+ *     let c: i64 = net::tcpConnectTo(net::dnsLookup(host, ipbuf[..]), i64(443))
+ *
+ * 约定与内核一致：失败给**负数**，`>= 0` 是 fd / 字节数（`dnsLookup` 返回主机序 IPv4）。
+ */
+use std::sys::net as sysnet
+
+/* 一对已连接的 AF_UNIX 套接字（写进 `out[0]`/`out[1]`）。 */
+fn sockPair(out: mut slice<i64>) -> i64 { return sysnet::extc_sock_pair(out.data) }
+
+fn accept(listener: i64) -> i64 { return sysnet::extc_sock_accept(listener) }
+fn read(fd: i64, buf: mut slice<u8>) -> i64 { return sysnet::extc_sock_read(fd, buf.data, buf.len) }
+fn write(fd: i64, buf: slice<u8>) -> i64 { return sysnet::extc_sock_write(fd, buf.data, buf.len) }
+fn nonblock(fd: i64) -> i64 { return sysnet::extc_sock_nonblock(fd) }
+fn nodelay(fd: i64) -> i64 { return sysnet::extc_sock_nodelay(fd) }
+fn shutdownWr(fd: i64) -> i64 { return sysnet::extc_sock_shutdown_wr(fd) }
+fn timeout(fd: i64, ms: i64) -> i64 { return sysnet::extc_sock_timeout(fd, ms) }
+fn localPort(fd: i64) -> i64 { return sysnet::extc_sock_local_port(fd) }
+
+fn tcpListen(port: i64, backlog: i64) -> i64 { return sysnet::extc_tcp_listen(port, backlog) }
+
+/* `SO_REUSEPORT`：**每个进程各听一条**，内核按连接分发 —— 2C2G 上用多进程吃满两核靠它
+ * （每进程一条 epoll、一个线程 ⇒ 循环里一个锁都不用）。 */
+fn tcpListenShared(port: i64, backlog: i64) -> i64 { return sysnet::extc_tcp_listen_shared(port, backlog) }
+
+fn tcpConnectTo(ip: slice<u8>, port: i64) -> i64 {
+    return sysnet::extc_tcp_connect_to(ip.data, ip.len, port)
+}
+
+/* 主机名 → IPv4（写进 `out`，返回**点数**；失败负数）。 */
+fn dnsLookup(host: slice<u8>, out: mut slice<u8>) -> i64 {
+    return sysnet::extc_dns_lookup(host.data, host.len, out.data, out.len)
+}
+
+/* 把 `addr`（形如 "1.2.3.4" 或 "localhost"）解析成一个 IPv4 字面量。 */
+fn resolve(addr: slice<u8>, out: mut slice<u8>) -> i64 {
+    let n: i64 = dnsLookup(addr, out)
+    if n >= i64(1) { return n }
+    /* 已经是字面量：原样拷过去（`dnsLookup` 只接受主机名） */
+    var i: i64 = 0
+    while i < addr.len && i < out.len {
+        out[i] = addr[i]
+        i = i + 1
+    }
+    return i
+}

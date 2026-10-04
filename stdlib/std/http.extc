@@ -561,3 +561,11 @@ struct session {
         return self.exchange("POST", host, path, extraHeaders, body)
     }
 }
+
+/* ---- HTTP 头里的日期（RFC 7231 IMF-fixdate）----------------------------------------
+ * 从前这两个声明在 `std::sys::file` 里（"实现是 C 就放 sys"的又一处误置）：它们是**纯函数**，
+ * 不绕过任何保证。写 HTTP 响应头、解析 `If-Modified-Since`/`Retry-After` 都用得上。 */
+extern!("extc-runtime") fn extc_http_date(epoch: i64, out: ref u8) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_http_parse_date(s: ref u8, len: i64) -> i64
+    effects Addr=0 Cont=0
