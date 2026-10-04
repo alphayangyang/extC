@@ -1,0 +1,44 @@
+/* 判据：**定时等待**（L1）。每个任务睡 1..5ms（写 `s.pendingUntil` 再 `yield WAIT_UNTIL`）。
+ * 三条断言：200 个任务**全部醒**（`live == 0`）· 醒来后**没有残留的定时登记**
+ * （`pendingTimers == 0`，否则座位复用会撞上幽灵定时器）· **真的等了**（总时长 ≥ 4ms，
+ * 免得"立刻醒"也能过）。退出码 = 200；live 非零 96 · 有残留 97 · 等得太短 98 · init 失败 95。
+ *
+ * 注意收尾：协程最后一次 `yield` 必须是**负数**（驱动把 `>= 0` 读成"等这个 fd 可读"）。 */
+use std::coro::scheduler as sched
+use std::time
+use std::io
+
+fn napper(id: i64, s: mut ref sched::loop) -> coroutine<i64> {
+    let deadline: i64 = time::now() + (id % i64(5) + i64(1)) * i64(1000000)
+    var go: bool = true
+    while go {
+        if time::now() >= deadline {
+            go = false
+        } else {
+            s.pendingUntil = deadline
+            yield sched::WAIT_UNTIL
+        }
+    }
+    yield i64(-1) - id
+}
+
+fn main() -> i32 {
+    var s: sched::loop
+    if !sched::init(ref s, i64(-1)) { return i32(95) }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+    let n: i64 = 200
+    let t0: i64 = time::now()
+    var k: i64 = 0
+    while k < n {
+        tasks.add(ref s, napper(k, ref s))
+        k = k + 1
+    }
+    tasks.runEpoll(ref s, i64(50))
+    let dt: i64 = time::now() - t0
+    if s.live != i64(0) { io::cout << "live=" << s.live << "\n"  return i32(96) }
+    let left: i64 = sched::pendingTimers(ref s)
+    if left != i64(0) { io::cout << "leaked=" << left << "\n"  return i32(97) }
+    if dt < i64(4000000) { io::cout << "too-fast=" << (dt / i64(1000)) << "us\n"  return i32(98) }
+    io::cout << "coro_sleep ok（200 个任务各睡 1..5ms · 全部醒 · 无残留登记 · 用时 " << (dt / i64(1000000)) << "ms）\n"
+    return i32(200)
+}

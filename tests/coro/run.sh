@@ -486,5 +486,20 @@ else
     echo "  FAIL coro_shorthand     ->  $(head -2 "$tmp/she" 2>/dev/null | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# L1：**定时等待**（sleep）。200 个任务各睡 1..5ms：全部醒、无残留定时登记、真的等了。
+nsl=$tmp/coro_sleep
+if "$EXTC" -w --no-line-map -o "$nsl.c" tests/coro/coro_sleep.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -O2 -o "$nsl" "$nsl.c" 2>"$tmp/nsl.e"; then
+    out=$("$nsl" 2>&1); rc=$?
+    if [ "$rc" = 200 ] && echo "$out" | grep -q 'coro_sleep ok'; then
+        echo "  ok   coro_sleep          ->  $(echo "$out" | tr '\n' '|')"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_sleep          ->  退出码 $rc：$(echo "$out" | tr '\n' '|')"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_sleep          ->  $(head -2 "$tmp/nsl.e" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ] || exit 1

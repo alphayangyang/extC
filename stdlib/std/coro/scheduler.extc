@@ -23,6 +23,8 @@
  *      `-1` = 处理了事件但没有新连接；`-2` = 超时。 */
 
 use std::sys::net
+use std::loop as ltimers
+use std::time
 use stl::vector
 
 /* 一行任务：句柄 + 两个标记 + **它当前注册在 epoll 里的 fd**（-2 = 没注册）。 */
@@ -35,10 +37,18 @@ struct row {
 
 /* 调度器状态：**只有标量** —— 这不是风格，是语言规则：含引用的结构体没有零值，
  * `var s: sched::loop` 就写不出来了 ✗（实测）。队列因此住在 `tasks<T>` 里（调用者自己的容器 ✓）。 */
+let WAIT_UNTIL: i64 = -3
+
+/* 协程**最后一次** `yield` 的值必须是**负数**：驱动把 `>= 0` 读成"等这个 fd 可读"，
+ * 拿正数收尾会被当成新的等待请求（实测：任务"跑完了"却永远不停，`live` 不降）。
+ * 收尾用负数之后，驱动会走"其它负数"那条路 `send` 一次，`send` 返回 false ⇒ `finish` ✓ */
+
 struct loop {
-    ep: i64                 /* epoll 实例 */
-    listener: i64           /* -1 = 没有 listener */
-    live: i64               /* 还没跑完的任务数 */
+    ep: i64
+    listener: i64
+    live: i64
+    timers: ltimers::timers
+    pendingUntil: i64
 }
 
 struct tasks<T> {
@@ -103,6 +113,13 @@ struct tasks<T> {
                 continue
             }
             var req: i64 = self.rows.vals[i].h.value()
+            if req == WAIT_UNTIL {
+                let nowDl: i64 = time::now()
+                let dl: i64 = s.pendingUntil
+                if dl > nowDl && s.timers.add(dl, i) >= i64(0) { return }
+                if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
+                continue
+            }
             if req >= i64(0) {
                 /* 等这个 fd 可读；**行号就是 epoll 的 tag** ⇒ 回来时不用查任何表 ✓ */
                 if self.rows.vals[i].fd != req {
@@ -120,6 +137,7 @@ struct tasks<T> {
     fn finish(self: mut ref tasks<T>, s: mut ref loop, i: i64) {
         if self.rows.vals[i].done { return }
         self.rows.vals[i].done = true
+        s.timers.cancel(i)
         self.rows.vals[i].fd = i64(-2)
         self.freeq.push(i)
         s.live = s.live - i64(1)
@@ -146,6 +164,7 @@ struct tasks<T> {
         }
         var waitMs: i64 = timeout_ms
         if waitMs < i64(0) { waitMs = i64(0) }          /* 负超时 = 不阻塞 */
+        waitMs = s.timers.timeoutMs(time::now(), waitMs)
         if s.ep < i64(0) { return i64(-2) }
 
         /* ① runq：要立刻推进的行。一个行可能连着推进多次（`yield 负数` = 别等，再来一轮）*/
@@ -164,8 +183,8 @@ struct tasks<T> {
          * 只能有一个循环。现在缓冲在这里（栈上 32 个），多实例、可重入、容量自己定。 */
         var tags: [32]i64
         let n: i64 = net::extc_epoll_wait_into(s.ep, tags[..].data, i64(32), waitMs)
-        if n == i64(0) { return i64(-2) }               /* 超时（队列空） */
-        if n < i64(0) { return i64(-3) }                /* 出错：从前与超时同归 -2，分不出来 */
+        if n < i64(0) { return i64(-3) }                /* 出错 */
+        /* 超时（n == 0）**不能提前返回**：超时正是定时等待到期的时刻 */
         var accepted: i64 = i64(-1)
         var k: i64 = 0
         while k < n {
@@ -187,6 +206,16 @@ struct tasks<T> {
             }
             k = k + 1
         }
+        /* **到期的定时等待**：tag 就是行号（与 epoll 的 tag 同一套）。
+         * 这一段必须在超时路径上也走到 —— 超时正是定时等待到期的时刻。 */
+        var due: [32]i64
+        let nd: i64 = s.timers.popDue(time::now(), due[..])
+        var d: i64 = 0
+        while d < nd {
+            if due[d] >= i64(0) && due[d] < self.rows.len() { self.resumeRow(s, due[d], true) }
+            d = d + 1
+        }
+        if n == i64(0) && nd == i64(0) { return i64(-2) }   /* 既没就绪也没到期 = 真的超时 */
         return accepted
     }
 
@@ -194,7 +223,7 @@ struct tasks<T> {
     fn runEpoll(self: mut ref tasks<T>, s: mut ref loop, timeout_ms: i64) -> i64 {
         while s.live > i64(0) {
             var r: i64 = self.pump(s, timeout_ms)
-            if r == i64(-2) { break }                   /* 超时：不再空转 */
+            if r == i64(-2) && s.timers.count() == i64(0) { break }
         }
         return s.live
     }
@@ -216,9 +245,13 @@ fn newQ() -> vector<i64> { return vector<i64>::new() }
 fn init(s: mut ref loop, listener: i64) -> bool {
     s.listener = listener
     s.live = i64(0)
+    s.timers.init()
+    s.pendingUntil = i64(0)
     s.ep = net::extc_epoll_new()
     if s.ep < i64(0) { return false }
     /* listener **只注册一次**（从前每轮都 `epoll_ctl(ADD)` 一次 = 每轮一个白费的系统调用 ✗）*/
     if listener >= i64(0) { net::extc_epoll_add(s.ep, listener, i64(1), i64(-1)) }
     return true
 }
+
+fn pendingTimers(s: ref loop) -> i64 { return s.timers.count() }

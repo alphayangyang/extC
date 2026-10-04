@@ -165,6 +165,25 @@ RSS < 8 MB · 吞吐下限。`check.sh quick` 66 → **67/0**。
 **诚实记账**：`PRIVILEGED_MODULES` 仍然只有 `std::sys::heap`；`sys::io`/`sys::file`/`sys::proc`/
 `sys::term` 还没被挡住。扩名单是下一步，且必须先有 std 门面（这次搬的三处就是那个前提）。
 
+**同日的第十一刀：L1 落地 —— 协程的定时等待（`yield WAIT_UNTIL`）**。挂起协议多了一格：
+`req >= 0` 等 fd · `WAIT_UNTIL`（-3）等 `loop.pendingUntil` 那个 deadline · 其它负数表示立刻重新推进。
+`loop` 加 `timers` + `pendingUntil`（请求通道只有一个 i64，deadline 走暂存槽；单线程 ⇒ 安全），
+`finish` 里 `timers.cancel(i)` 撤登记，`waitMs = timers.timeoutMs(now, 调用方给的)` ⇒ **时间就是
+epoll_wait 的超时参数**。判据 `tests/coro/coro_sleep.extc`：200 个任务各睡 1..5ms ⇒ 全部醒 ·
+**无残留登记** · 真的等了（`tests/coro` 29 → **30/30**）。
+
+**这轮一共修掉四个真 bug**（前三个在上一轮定位、这轮落地）：
+① `popDue` 在 `out` 满时"弹掉但不报" ⇒ 等它的任务永不醒（改成满了就停手）；
+② `pump` 超时（`n == 0`）直接返回 ⇒ **跳过"取到期定时器"那一步**（而超时正是定时到期的时刻）；
+③ `runEpoll` 见超时就 `break` ⇒ 定时等待的第一轮本来就超时，任务永不醒（改成"没有挂着的
+   定时登记才 break"）；
+④ **收尾的 `yield` 必须是负数** —— 驱动把 `>= 0` 读成"等这个 fd 可读"，用正数收尾会被当成新的
+   等待请求：任务跑完了却永远不停（实测 `live=200`）。这条规则**以前没人写下来**，现在写进
+   调度器注释与手册；定位靠的是"用探针把唤醒链打断点"（两轮探针就抓到了），不是猜。
+
+**已知遗留**：`runEpoll` 一轮的最长等待仍由调用方给的 timeout 决定（这次 200 个任务的用例
+总耗时 460ms，而理论下界 ~5ms）—— 唤醒粒度值得再压，但不影响正确性，记在账上。
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。
