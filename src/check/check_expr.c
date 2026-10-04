@@ -1333,7 +1333,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             e->u.ident.name, DN(owner), DN(owner), e->u.ident.name);
                     return ttError(tt);
                 }
-                ckError(c, e->line, "every name must be declared first (extC has no globals yet)",
+                ckError(c, e->line, "every name must be declared first: locals, parameters, globals,"
+                                " and imported module members all count",
                         "undefined name `%s`", e->u.ident.name);
                 return ttError(tt);
             }

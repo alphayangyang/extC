@@ -32,3 +32,20 @@
    需要一条滞后（比如连续 N 轮为空才缩）。
 4. **它和 arena/zone 的关系**：容器内的内存在哪个 zone？协程里第一次触发溢出，那块内存属于谁？
    这一条不解决，两层结构在协程里会踩到与 `VECTOR-GC.md` 同一个问题。
+
+## 附：与协程挂起的关系（2026-10-04 补充）
+
+写 `wss` 夹具时撞到"**跨 `yield` 的局部视图不能指向别人的存储**"（C 栈在挂起时没了）。
+查代码才发现：**这条限制的最小版本语言里早就解了** ——
+
+> `check_top.c:4416`：*A global is depth 0: it outlives every frame. Two consequences follow from
+> that one fact without any special rule for globals: the escape rule already rejects storing
+> something local into a global, and a global of fixed size needs no arena, because it is a C static.*
+
+也就是说：**global（或任何 depth-0 的存储）的视图本来就能跨 `yield`**。我们撞墙是因为把会话缓冲
+挂在了 `main` 的局部结构体上（那是"别人的栈"）。**正解不是"重取视图"那套样板，而是把进程寿命的
+状态真的声明成进程寿命的**（全局）。
+
+真正还缺的是它的**推广**：不是全局、但**被 plate 拥有**的存储（同一进程寿命，但不是 C static）。
+那需要类型系统能表达"这个引用指向谁拥有的存储"（现在的 arena 模型是**按作用域**的，不是**按归属**的）。
+判据：等"重取视图"的样板开始反复出现，就该做这一格。

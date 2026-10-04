@@ -10567,3 +10567,20 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
   `tests/coro` 30 → **31/31**，`check.sh quick` **71/0**。
 
 **下一步**：`Suspend` 效应签名（趁 `std::tls` 还没写，避免 ~30 处签名返工），然后 `std::tls` 包 → `wss` 判据。
+
+**同日的第十五刀：一条过期诊断 + 一个被忽略的事实（globals 已经是 depth 0）**。写 `wss` 夹具时
+撞到"跨 `yield` 的局部视图不能指向别人的存储"，查代码才发现**这条限制的最小版本早就解了**：
+`check_top.c:4416` 写着"**A global is depth 0: it outlives every frame**" —— global 的视图
+本来就可以跨 `yield`。我们撞墙是因为把会话缓冲挂在了 `main` 的局部结构体上（那是别人的栈）。
+
+**正解不是"重取视图"那套样板，而是把进程寿命的状态真的声明成进程寿命的**（全局）。
+教训：我在诊断信息的误导下差点把"重取视图"当成唯一出路 —— 而那条诊断是**过期文案**：
+
+    "every name must be declared first (extC has no globals yet)"     ← globals 早就有
+
+已改成"every name must be declared first: locals, parameters, globals, and imported module
+members all count"。**一条过期的诊断会把使用者推向错误的解法** —— 这比它本身写错更贵。
+
+还缺的是它的推广：不是全局、但**被 plate 拥有**的存储（同进程寿命，但不是 C static）。
+那要类型系统能表达"这个引用指向谁拥有的存储"（现在 arena 是**按作用域**的，不是**按归属**的）。
+已记进 `docs/topics/BOUNDED-TABLE.md` 附录（判据：等"重取视图"的样板开始反复出现就该做）。
