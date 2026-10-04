@@ -60,3 +60,9 @@ error: array length must be an integer literal, found `N`
 | 项 | 一句话 | 文档 |
 |---|---|---|
 | ~~**`global`**~~ | **2026-10-04 已实现**（`tests/coro/coro_global.extc`） | [`GLOBAL.md`](../topics/GLOBAL.md) |
+
+## 研究材料（未定案）
+
+| 项 | 一句话 | 文档 |
+|---|---|---|
+| **协程协议层** | 地基好（内存/唤醒有数字），协议层是"一串猜出来的负数 + 覆盖式 tag"；三条修法 A/B/C 与代价 | [`CORO-PROTOCOL.md`](../topics/CORO-PROTOCOL.md) |

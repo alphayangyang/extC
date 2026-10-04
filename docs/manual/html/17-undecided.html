@@ -92,6 +92,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <table><thead><tr><th>设想</th><th>一句话</th><th>文档</th></tr></thead><tbody><tr><td><strong>定长热路径 + 溢出冷路径</strong></td><td>热路径定长零分配，溢出走容器，成批回填；按 deadline 的溢出必须是优先级</td><td><a href="../topics/BOUNDED-TABLE.html"><code>BOUNDED-TABLE.md</code></a></td></tr><tr><td><strong>容器的半自动回收</strong></td><td><code>vector</code> 缺的不是 GC，而是"什么时候可以缩"的可证明回收点</td><td><a href="../topics/VECTOR-GC.html"><code>VECTOR-GC.md</code></a></td></tr></tbody></table>
 <h2 id="已定案-待实现">已定案、待实现</h2>
 <table><thead><tr><th>项</th><th>一句话</th><th>文档</th></tr></thead><tbody><tr><td>~~<strong><code>global</code></strong>~~</td><td><strong>2026-10-04 已实现</strong>（<code>tests/coro/coro_global.extc</code>）</td><td><a href="../topics/GLOBAL.html"><code>GLOBAL.md</code></a></td></tr></tbody></table>
+<h2 id="研究材料-未定案">研究材料（未定案）</h2>
+<table><thead><tr><th>项</th><th>一句话</th><th>文档</th></tr></thead><tbody><tr><td><strong>协程协议层</strong></td><td>地基好（内存/唤醒有数字），协议层是"一串猜出来的负数 + 覆盖式 tag"；三条修法 A/B/C 与代价</td><td><a href="../topics/CORO-PROTOCOL.html"><code>CORO-PROTOCOL.md</code></a></td></tr></tbody></table>
 <div class="pn"><a href="16-unimplemented.html">← 10. 已定案、但还没实现</a> <a href="18-modules.html">12. 库与模块（2026-09-22 新增） →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
