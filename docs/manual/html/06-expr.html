@@ -192,10 +192,13 @@ io::cout &lt;&lt; f<span class="c">"n={n} who={who}\n"</span>
 <p>细节：<code>{{</code> / <code>}}</code> 是字面花括号；一个槽<strong>只能放一个表达式</strong>；<code>f"…"</code> 只能出现在 <code>&lt;&lt;</code> 右侧 （写成别的会报错，不会静默）。<strong>v1 没有格式说明符</strong>：<code>f"{x:&gt;8}"</code> 会被明确拒绝（不是静默忽略）， v2 再补。</p>
 <p><strong>一条已知</strong>：槽按<strong>从右往左</strong>求值（C 的实参求值顺序），Python 是左到右 —— 槽里放带副作用的 表达式要留意（判据里 <code>3 2 1</code> 就是这个顺序）。</p>
 <p>边界情况会<strong>响亮报错</strong>（都有反例判据）：空槽 <code>f"{}"</code> · 未闭合的 <code>{</code> · 多余的 <code>}</code> · <strong>空格式串 <code>f""</code></strong>（"nothing to splice"，否则 <code>&lt;&lt;</code> 会被静默吃掉）· 格式说明符 <code>{x:&gt;8}</code>（v2）· 出现在 <code>&lt;&lt;</code> 右侧之外的地方。</p>
-<h3 id="v2-格式说明符-待办-但有一条已经查清的规则">v2：格式说明符（待办 —— 但有一条已经查清的规则）</h3>
-<p><strong>查清的规则：普通方法不能重载</strong>（只有 <code>&lt;&lt;</code> 这类<strong>运算符</strong>由运算符解析处理）。 后果很直接：<code>{x:&gt;8}</code> 该调文本版还是整数版的输出方法，取决于槽的<strong>静态类型</strong>，而 <strong>解析器不看类型</strong> ⇒ v2 的语法那一步只能放在<strong>检查器</strong>（解析器造"带说明符的槽"标记节点， 检查器按槽的类型选目标方法并改写调用；或者走 <code>impl</code> + 泛型把选择交给单态化）。</p>
-<p><strong>另一条记账</strong>：宽度按<strong>字节</strong>算（中文按字节计数）；列宽需要显示宽度表，v2 不做。 <code>f"…"</code> 里出现格式说明符目前<strong>明确拒绝</strong>（不是静默忽略）。</p>
-<p><strong>还没落地</strong>：<code>std::io</code> 的格式化原语（<code>padText</code> / <code>padInt</code> / <code>padF</code>：宽度 · 填充 · 左/右/居中 · 精度 · 零填充符号在前）写过一版，但**加进 <code>io.extc</code> 后 <code>coro_*</code> 判据全部报 <code>extc_print</code> defined but not used（-Werror=unused-function）<strong>，真因未查清，已</strong>回退**（套件保持绿）。 下一轮：先弄清"往 <code>io.extc</code> 加 helper 为什么会让 <code>extc_print</code> 变成"发射了却没人用"， 再落原语 —— 那一步之前 v2 的语法改动没有意义。</p>
+<h3 id="v2-格式说明符-原语已就位-语法那一步要检查器">v2：格式说明符 —— 原语已就位，语法那一步要检查器</h3>
+<p>原语在 <code>std::io</code> 里并有判据（<code>tests/fstring/pad.extc</code>）：</p>
+<pre class="lang-extc"><code>io::cout.<span class="f">padText</span>(<span class="c">"abc"</span>, <span class="t">i64</span>(<span class="n">6</span>), <span class="t">u8</span>(<span class="n">46</span>), io::LEFT)                 <span class="c">/* abc... */</span>
+io::cout.<span class="f">padInt</span>(<span class="t">i64</span>(-<span class="n">5</span>), <span class="t">i64</span>(<span class="n">4</span>), <span class="t">u8</span>(<span class="n">48</span>), io::RIGHT)               <span class="c">/* -005：零填充**符号在前** */</span>
+io::cout.<span class="f">padF</span>(<span class="t">f64</span>(<span class="n">3</span>.<span class="n">14159</span>), <span class="t">i64</span>(<span class="n">8</span>), <span class="t">i64</span>(<span class="n">2</span>), <span class="t">u8</span>(<span class="n">32</span>), io::RIGHT)    <span class="c">/* "    3.14" */</span></code></pre>
+<p><strong>三个名字而不是一个重载</strong>，这里有一条真规则：<strong>普通方法不能重载</strong>（只有 <code>&lt;&lt;</code> 这类<strong>运算符</strong> 由运算符解析处理）⇒ "<code>{x:&gt;8}</code> 该调文本版还是整数版"取决于槽的<strong>静态类型</strong>，而<strong>解析器不看类型</strong> ⇒ v2 的语法那一步只能放在<strong>检查器</strong>（解析器造标记节点，检查器按槽的类型选方法； 或者走 <code>impl</code> + 泛型把选择交给单态化）。</p>
+<p><strong>记账</strong>：宽度按<strong>字节</strong>算（中文按字节计数；列宽需要显示宽度表，v2 不做）；<code>|v| &gt;= 1e15</code> 的浮点 定点格式化直接 <strong>trap</strong>（改用 <code>&lt;&lt;</code>）；<code>f"…"</code> 里出现格式说明符目前仍<strong>明确拒绝</strong>（不静默忽略）。</p>
 <div class="pn"><a href="05-vars.html">← 4. 变量与声明</a> <a href="07-stmt.html">6. 语句 →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));

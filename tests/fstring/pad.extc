@@ -1,0 +1,25 @@
+// expect: pad ok
+// v2 的**原语**判据：宽度 / 填充 / 对齐 / 精度。`f"{x:>8}"` 将来就展开到这几个方法
+// （`padText` / `padInt` / `padF` —— **三个名字不是重载**：普通方法不能重载，见手册 §6）。
+use std::io
+
+fn main() -> i32 {
+    var o: io::ostream = io::cout
+    o = io::cout.padText("abc", i64(6), u8(46), io::LEFT)
+    io::cout << "|\n"
+    o = io::cout.padInt(i64(42), i64(5), u8(32), io::RIGHT)
+    io::cout << "|\n"
+    o = io::cout.padInt(i64(42), i64(5), u8(48), io::RIGHT)
+    io::cout << "|\n"
+    o = io::cout.padInt(i64(-5), i64(4), u8(48), io::RIGHT)
+    io::cout << "|\n"
+    o = io::cout.padF(f64(1.5), i64(0), i64(2), u8(32), io::LEFT)
+    io::cout << "|\n"
+    o = io::cout.padF(f64(3.14159), i64(8), i64(2), u8(32), io::RIGHT)
+    io::cout << "|\n"
+    o = io::cout.padF(f64(-2.0), i64(6), i64(1), u8(32), io::RIGHT)
+    io::cout << "|\n"
+    o = io::cout.padText("中", i64(4), u8(45), io::CENTER)
+    io::cout << "|\n"
+    return 0
+}

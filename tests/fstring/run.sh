@@ -19,6 +19,16 @@ else
     echo "  FAIL fstring-out       ->  $(tr '\n' '|' < "$tmp/out")"; fail=$((fail+1))
 fi
 
+# ①b v2 的原语（宽度/填充/对齐/精度）
+"$EXTC" -w --run tests/fstring/pad.extc > "$tmp/pad" 2>&1
+printf 'abc...|\n   42|\n00042|\n-005|\n1.50|\n    3.14|\n  -2.0|\n中-|\n' > "$tmp/padwant"
+if diff -q "$tmp/pad" "$tmp/padwant" >/dev/null 2>&1; then
+    echo "  ok   pad-primitives    ->  左/右/居中 · 零填充（符号在前）· 精度 · 宽度+精度（v2 的展开目标）"
+    pass=$((pass+1))
+else
+    echo "  FAIL pad-primitives    ->  $(tr '\n' '|' < "$tmp/pad")"; fail=$((fail+1))
+fi
+
 # ② 与手写链逐字节相同
 "$EXTC" -w --no-line-map -o "$tmp/a.c" tests/fstring/main.extc >/dev/null 2>&1
 "$EXTC" -w --no-line-map -o "$tmp/b.c" tests/fstring/plain.extc >/dev/null 2>&1

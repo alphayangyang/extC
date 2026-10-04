@@ -74,7 +74,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h1 id="内部成员一览-透明清单">内部成员一览（透明清单）</h1>
 <p>标准库成员<strong>缺省公开</strong>，编译器不阻止任何访问。本页列出<strong>按约定属于内部</strong>的成员：它们可达， 但不受兼容性承诺保护，重构时不预告。是否使用、如何承担风险，由使用者自行判断 —— 本手册的职责是把它们<strong>列清楚</strong>，而不是把它们锁起来。</p>
 <p>生成方式：<code>tools/manual_surface.py</code>；<code>check.sh</code> 保证本页与源码一致。</p>
-<p>公开面共 738 个成员，其中内部 210 个：</p>
+<p>公开面共 744 个成员，其中内部 213 个：</p>
 <h2 id="prelude">prelude</h2>
 <ul><li><code>pcg32.inc</code>（字段）</li><li><code>varArray.buf</code>（字段）</li><li><code>varArray.cap</code>（字段）</li></ul>
 <h2 id="std-b64">std::b64</h2>
@@ -90,7 +90,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 <h2 id="std-http">std::http</h2>
 <ul><li><code>conn.buf</code>（字段）</li><li><code>conn.buf</code>（字段）</li><li><code>session.buf</code>（字段）</li></ul>
 <h2 id="std-io">std::io</h2>
-<ul><li><code>-.accDigit</code>（方法）</li><li><code>-.errWrite</code>（方法）</li><li><code>-.fillState</code>（方法）</li><li><code>-.flushCout</code>（方法）</li><li><code>-.fmtI64</code>（方法）</li><li><code>-.fmtI64Fast</code>（方法）</li><li><code>-.isSpaceByte</code>（方法）</li><li><code>-.nextI64State</code>（方法）</li><li><code>-.pairsReady</code>（方法）</li><li><code>reader.chunk</code>（字段）</li><li><code>reader.newlineAfter</code>（方法）</li><li><code>writer.buf</code>（字段）</li><li><code>writer.cap</code>（方法）</li></ul>
+<ul><li><code>-.accDigit</code>（方法）</li><li><code>-.errWrite</code>（方法）</li><li><code>-.fillState</code>（方法）</li><li><code>-.flushCout</code>（方法）</li><li><code>-.fmtI64</code>（方法）</li><li><code>-.fmtI64Fast</code>（方法）</li><li><code>-.isSpaceByte</code>（方法）</li><li><code>-.nextI64State</code>（方法）</li><li><code>-.pFillBytes</code>（方法）</li><li><code>-.pFmtF</code>（方法）</li><li><code>-.pPadText</code>（方法）</li><li><code>-.pairsReady</code>（方法）</li><li><code>reader.chunk</code>（字段）</li><li><code>reader.newlineAfter</code>（方法）</li><li><code>writer.buf</code>（字段）</li><li><code>writer.cap</code>（方法）</li></ul>
 <h2 id="std-json">std::json</h2>
 <ul><li><code>-.pCount</code>（方法）</li><li><code>-.pFirst</code>（方法）</li><li><code>-.pHex</code>（方法）</li><li><code>-.pKeyEq</code>（方法）</li><li><code>-.pNext</code>（方法）</li><li><code>-.pNth</code>（方法）</li><li><code>-.pSetNext</code>（方法）</li><li><code>-.pUtf8</code>（方法）</li><li><code>builder.buf</code>（字段）</li><li><code>builder.n</code>（字段）</li></ul>
 <h2 id="std-loop">std::loop</h2>

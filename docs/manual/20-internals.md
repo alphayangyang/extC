@@ -6,7 +6,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 738 个成员，其中内部 210 个：
+公开面共 744 个成员，其中内部 213 个：
 
 ## prelude
 
@@ -57,6 +57,9 @@
 - `-.fmtI64Fast`（方法）
 - `-.isSpaceByte`（方法）
 - `-.nextI64State`（方法）
+- `-.pFillBytes`（方法）
+- `-.pFmtF`（方法）
+- `-.pPadText`（方法）
 - `-.pairsReady`（方法）
 - `reader.chunk`（字段）
 - `reader.newlineAfter`（方法）

@@ -248,6 +248,9 @@ std::io	-	inSave	fn	public
 std::io	-	inSync	fn	public
 std::io	-	isSpaceByte	fn	internal
 std::io	-	nextI64State	fn	internal
+std::io	-	pFillBytes	fn	internal
+std::io	-	pFmtF	fn	internal
+std::io	-	pPadText	fn	internal
 std::io	-	pairsReady	fn	internal
 std::io	-	readSome	fn	public
 std::io	-	readerOf	fn	public
@@ -258,6 +261,9 @@ std::io	istream	bad	method	public
 std::io	istream	clear	method	public
 std::io	istream	fd	field	public
 std::io	ostream	fd	field	public
+std::io	ostream	padF	method	public
+std::io	ostream	padInt	method	public
+std::io	ostream	padText	method	public
 std::io	reader	avail	method	public
 std::io	reader	buffered	method	public
 std::io	reader	chunk	field	internal

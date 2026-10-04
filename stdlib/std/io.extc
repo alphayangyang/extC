@@ -628,6 +628,43 @@ struct ostream { fd: i32
         if v.len > i64(0) { extc_cout_put(v.data, v.len) }
         return { fd: self.fd }
     }
+    /* `f"{s:>8}"` / `{s:<8}` / `{s:^8}` / `{s:*^8}`：宽度按**字节**算。
+     * **三个名字而不是重载**：普通方法**不能重载**（只有 `<<` 这类运算符由运算符解析处理）
+     * —— 这条决定了 v2 的形状：选哪个名字要看槽的**静态类型**，而解析器不看类型
+     * ⇒ 类型定向那一步只能放在检查器（见手册 §6 的 v2 说明）。 */
+    @inline
+    fn padText(self: ref ostream, v: slice<u8>, width: i64, fill: u8, align: i64) -> ostream {
+        pPadText(v, width, fill, align)
+        return { fd: self.fd }
+    }
+    /* 整数：零填充时**符号在前**（`-5` 宽 4 ⇒ `-005`，不是 `0-5`）*/
+    @inline
+    fn padInt(self: ref ostream, v: i64, width: i64, fill: u8, align: i64) -> ostream {
+        pairsReady()
+        let st = fmtI64Fast(v)
+        let n = i64(24) - st
+        if fill == u8(48) && align == RIGHT && width > n {
+            if FMT[st] == u8(45) {
+                extc_cout_put(FMT[st..st + i64(1)].data, i64(1))
+                pFillBytes(width - n, fill)
+                extc_cout_put(FMT[st + i64(1)..i64(24)].data, n - i64(1))
+            } else {
+                pFillBytes(width - n, fill)
+                extc_cout_put(FMT[st..i64(24)].data, n)
+            }
+        } else {
+            pPadText(FMT[st..i64(24)], width, fill, align)
+        }
+        return { fd: self.fd }
+    }
+    /* 浮点：`{:.2f}` / `{:8.2f}`（`prec` 必须 >= 0）*/
+    @inline
+    fn padF(self: ref ostream, v: f64, width: i64, prec: i64, fill: u8, align: i64) -> ostream {
+        var text: [48]u8
+        let n: i64 = pFmtF(v, prec, text[..])
+        pPadText(text[0..n], width, fill, align)
+        return { fd: self.fd }
+    }
 }
 
 let cout: ostream = ostream { fd: 1 }
@@ -807,6 +844,85 @@ fn fmtI64Fast(v: i64) -> i64 {
 }
 
 @inline
+/* ---------------------------------------------------------------- 格式化输出（f"…" v2 的展开目标）
+ *
+ * `f"{s:>8}"` / `f"{n:04}"` / `f"{x:.2f}"` 将来展开到下面这些原语。**宽度按字节算**，不按显示列
+ * （中文按字节计数）—— 列宽需要显示宽度表，v2 不做，如实记账。
+ * 零填充（`{:04}`）等价于 `padInt(v, w, u8(48), RIGHT)`，但**符号在前**：`-5` 宽 4 ⇒ `-005`。 */
+let LEFT: i64 = 0
+let RIGHT: i64 = 1
+let CENTER: i64 = 2
+
+@inline
+fn pFillBytes(n: i64, fill: u8) -> void {
+    var pad: [64]u8
+    var i: i64 = 0
+    while i < i64(64) { pad[i] = fill  i = i + 1 }
+    var left: i64 = n
+    while left > i64(0) {
+        var k: i64 = left
+        if k > i64(64) { k = i64(64) }
+        extc_cout_put(pad[0..k].data, k)
+        left = left - k
+    }
+}
+
+/* 已经格式化好的文本按 宽度/填充/对齐 写出去。 */
+@inline
+fn pPadText(t: slice<u8>, width: i64, fill: u8, align: i64) -> void {
+    var n: i64 = width - t.len
+    if n <= i64(0) {
+        extc_cout_put(t.data, t.len)
+    } else if align == CENTER {
+        let l: i64 = n / i64(2)
+        pFillBytes(l, fill)
+        extc_cout_put(t.data, t.len)
+        pFillBytes(n - l, fill)
+    } else if align == LEFT {
+        extc_cout_put(t.data, t.len)
+        pFillBytes(n, fill)
+    } else {
+        pFillBytes(n, fill)
+        extc_cout_put(t.data, t.len)
+    }
+}
+
+/* 定点格式化 `v` 到 `out`（`prec` 位小数，四舍五入，负号在前）。返回长度。
+ * 边界：`|v| >= 1e15` 直接 **trap**（改用 `<<`）—— 与其安静地打出错的数，不如响亮。
+ * 注意范围检查用 **float 字面量**：`f64(1000000000000000)` 里那个整数字面量会先按默认整型走
+ * ⇒ 溢出绕回，判断就失真了（实测：`1.5` 也被判成超范围 ✗）。 */
+@inline
+fn pFmtF(v: f64, prec: i64, out: mut slice<u8>) -> i64 {
+    if v >= 1.0e15 || v <= -1.0e15 {
+        trap("io::pFmtF: |value| >= 1e15 is out of range for the fixed-point formatter")
+    }
+    var o: i64 = 0
+    var x: f64 = v
+    if x < f64(0) { out[o] = u8(45)  o = o + i64(1)  x = f64(0) - x }
+    var scale: f64 = f64(1)
+    var i: i64 = 0
+    while i < prec { scale = scale * f64(10)  i = i + 1 }
+    x = x * scale + f64(0.5)
+    let ip: i64 = i64(x / scale)
+    var fp: i64 = i64(x - f64(ip) * scale)
+    var digits: [24]u8
+    var nd: i64 = 0
+    var q: i64 = ip
+    if q == i64(0) { digits[0] = u8(48)  nd = i64(1) }
+    while q > i64(0) { digits[nd] = u8(48) + u8(q % i64(10))  q = q / i64(10)  nd = nd + i64(1) }
+    var k: i64 = nd
+    while k > i64(0) { k = k - i64(1)  out[o] = digits[k]  o = o + i64(1) }
+    if prec > i64(0) {
+        out[o] = u8(46)  o = o + i64(1)
+        var fd: [12]u8
+        var j: i64 = 0
+        while j < prec { fd[j] = u8(48) + u8(fp % i64(10))  fp = fp / i64(10)  j = j + i64(1) }
+        var m: i64 = prec
+        while m > i64(0) { m = m - i64(1)  out[o] = fd[m]  o = o + i64(1) }
+    }
+    return o
+}
+
 fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
     if v == i64(0) { out[0] = u8(48)  return i64(1) }
     var u: i64 = v

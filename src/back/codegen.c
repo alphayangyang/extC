@@ -7706,7 +7706,15 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " * the `_debug` helpers it replaces; the truth table lives in\n"
         " * tools/print-formats.txt (floats use %g, [N]u8 prints numerically, and\n"
         " * slice<u8> prints as text). */\n"
-        "static void extc_print(const void *p, const ExtcDesc *d) {\n"
+        /* `__attribute__((unused))`：这一段运行时是**整块发射**的，而这个函数只有"程序真的打印了
+         * 结构化类型"时才被调用 ⇒ 凡是因为别的理由需要运行时块、又不打印结构化类型的程序，都会
+         * 撞上 `-Werror=unused-function`（实测：往 `stdlib/std/io.extc` 加几个 helper 就让
+         * `tests/coro` 六个夹具全灭 ✗）。
+         * **两个编译器对"没用上"的看法不同**：GCC 用 `static inline` 就安静了，而 Clang 反过来报
+         * `-Wunneeded-internal-declaration`（"static inline 却没人用 ⇒ 干脆不发射"）✗ ——
+         * `__attribute__((unused))` 是两边都认的那个写法。
+         * **不动"什么时候发射"那个判定**：它注释里就写着真出过 bug（漏发 = 生成物坏掉）。 */
+        "static __attribute__((unused)) void extc_print(const void *p, const ExtcDesc *d) {\n"
         "    switch (d->kind) {\n"
         "    case EXTC_D_I8:   printf(\"%d\", (int)*(const int8_t *)p); return;\n"
         "    case EXTC_D_I16:  printf(\"%d\", (int)*(const int16_t *)p); return;\n"
