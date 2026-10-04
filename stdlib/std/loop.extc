@@ -69,8 +69,10 @@ struct timers {
     /* 把 `now` 之前（含）到期的 tag 写进 `out`，返回个数。**每个 deadline 恰好取出一次。 */
     fn popDue(self: mut ref timers, now: i64, out: mut slice<i64>) -> i64 {
         var k: i64 = i64(0)
-        while self.n > i64(0) && self.at[0] <= now {
-            if k < out.len { out[k] = self.tag[0] }
+        /* **`out` 满了就停手**：从前是"继续弹、只是不写"，于是超出缓冲的那些定时器被
+         * 悄悄丢掉 ⇒ 等它的任务永远不醒（这类调度器最脏的一种 bug）。剩下的留到下一轮。 */
+        while self.n > i64(0) && self.at[0] <= now && k < out.len {
+            out[k] = self.tag[0]
             k = k + i64(1)
             var i: i64 = i64(0)
             while i + i64(1) < self.n {
