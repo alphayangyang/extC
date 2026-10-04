@@ -7630,7 +7630,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * ================================================================== */
     bufPuts(&g.rt,
         "/* ---- Type descriptor table ----\n"
-        " * One static entry per type; `extc_print` exists once per program.\n"
+        /* 这一段注释里**不要写出那个打印函数的名字**：它在运行时块文本里是按"没人提到就删"裁的，而那个判定是**文本**计数 —— 注释里提一次就等于"有人用"（实测踩过）。 */
+        " * One static entry per type; the printer exists once per program.\n"
         " * Meaning of `size`: for a scalar or struct it is sizeof(T); for an array or\n"
         " * view it is the element stride. A view always has the C layout\n"
         " * `{ T *data; int64_t len; }`.\n"
