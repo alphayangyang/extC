@@ -1,0 +1,100 @@
+// expect: b64 ok
+// Base64 判据：RFC 4648 §10 的向量 · URL 安全表 · **拒绝面**（长度/非法字符/填充位置）·
+// 往返 · 并打印固定语料供 run.sh 与 Python 的 base64 逐字节对拍。
+use std::b64
+use std::io
+
+fn ck(cond: bool, code: i32) -> i32 {
+    if cond { return i32(0) }
+    return code
+}
+
+fn main() -> i32 {
+    var out: [64]u8
+    var back: [64]u8
+
+    /* ① RFC 4648 §10 向量（长度 0..6，覆盖三种余数） */
+    var r: i32 = i32(0)
+    var s: [8]u8
+    s[0] = u8(102)                                  /* f */
+    r = ck(b64::encode(s[0..0], out[..]) == i64(0), 1); if r != i32(0) { return r }
+    r = ck(b64::encode(s[0..1], out[..]) == i64(4), 2); if r != i32(0) { return r }
+    r = ck(out[0] == u8(90) && out[1] == u8(103) && out[2] == u8(61) && out[3] == u8(61), 3); if r != i32(0) { return r }
+    s[1] = u8(111)                                  /* fo */
+    r = ck(b64::encode(s[0..2], out[..]) == i64(4), 4); if r != i32(0) { return r }
+    r = ck(out[0] == u8(90) && out[1] == u8(109) && out[2] == u8(56) && out[3] == u8(61), 5); if r != i32(0) { return r }
+    s[2] = u8(111)                                  /* foo */
+    r = ck(b64::encode(s[0..3], out[..]) == i64(4), 6); if r != i32(0) { return r }
+    r = ck(out[0] == u8(90) && out[1] == u8(109) && out[2] == u8(57) && out[3] == u8(118), 7); if r != i32(0) { return r }
+    s[3] = u8(98)                                   /* foob */
+    r = ck(b64::encode(s[0..4], out[..]) == i64(8), 8); if r != i32(0) { return r }
+    r = ck(out[4] == u8(89) && out[5] == u8(103) && out[6] == u8(61) && out[7] == u8(61), 9); if r != i32(0) { return r }
+
+    /* ② 往返（含 0 长度） */
+    var k: i64 = 0
+    while k <= i64(6) {
+        let el: i64 = b64::encode(s[0..k], out[..])
+        if el < i64(0) { return 10 }
+        let dl: i64 = b64::decode(out[0..el], back[..])
+        if dl != k { return 11 }
+        var j: i64 = 0
+        while j < k {
+            if back[j] != s[j] { return 12 }
+            j = j + 1
+        }
+        k = k + 1
+    }
+
+    /* ③ URL 安全表：全 1 字节 ⇒ 标准 "////"、URL "____" */
+    var ones: [3]u8
+    ones[0] = u8(255)
+    ones[1] = u8(255)
+    ones[2] = u8(255)
+    if b64::encode(ones[..], out[..]) != i64(4) { return 13 }
+    if out[0] != u8(47) || out[3] != u8(47) { return 14 }
+    if b64::encodeUrl(ones[..], out[..]) != i64(4) { return 15 }
+    if out[0] != u8(95) || out[3] != u8(95) { return 16 }
+    if b64::decodeUrl(out[0..4], back[..]) != i64(3) { return 17 }
+    if back[0] != u8(255) || back[2] != u8(255) { return 18 }
+    /* 标准表**不接受** URL 字符（`_` 非法）—— 两张表不许混用 */
+    if b64::decode(out[0..4], back[..]) >= i64(0) { return 19 }
+
+    /* ④ 拒绝面：长度不是 4 的倍数 · 非法字符 · 填充在中间 · 填充过多 · 填充单独出现 */
+    var bad0: [8]u8
+    bad0[0] = u8(90)  bad0[1] = u8(103)  bad0[2] = u8(61)          /* "Zg=" 长度 3 */
+    if b64::decode(bad0[0..3], back[..]) >= i64(0) { return 20 }
+    bad0[0] = u8(90)  bad0[1] = u8(109)  bad0[2] = u8(57)  bad0[3] = u8(33)   /* "Zm9!" */
+    if b64::decode(bad0[0..4], back[..]) >= i64(0) { return 21 }
+    bad0[0] = u8(90)  bad0[1] = u8(61)  bad0[2] = u8(57)  bad0[3] = u8(118)   /* "Z=9v" */
+    if b64::decode(bad0[0..4], back[..]) >= i64(0) { return 22 }
+    bad0[0] = u8(90)  bad0[1] = u8(103)  bad0[2] = u8(61)  bad0[3] = u8(61)
+    var bad1: [8]u8
+    bad1[0] = u8(61)  bad1[1] = u8(61)  bad1[2] = u8(61)  bad1[3] = u8(61)    /* "====" */
+    if b64::decode(bad1[0..4], back[..]) >= i64(0) { return 23 }
+    /* 长度/缓冲大小助手 */
+    if b64::encodedLen(i64(0)) != i64(0) || b64::encodedLen(i64(1)) != i64(4) { return 24 }
+    if b64::encodedLen(i64(3)) != i64(4) || b64::encodedLen(i64(4)) != i64(8) { return 25 }
+    if b64::decodedMax(i64(8)) != i64(6) { return 26 }
+    /* 缓冲不够 ⇒ 响亮失败（-1），不越界写 */
+    var tiny: [2]u8
+    if b64::encode(ones[..], tiny[..]) != i64(-1) { return 27 }
+    if b64::decode(out[0..4], tiny[..]) != i64(-1) { return 28 }
+
+    /* ⑤ 固定语料：打印出来给 run.sh 与 Python 的 base64 逐字节对拍 */
+    var pat: [32]u8
+    var i: i64 = 0
+    while i < i64(32) {
+        pat[i] = u8((i * i64(7) + i64(3)) % i64(256))
+        i = i + 1
+    }
+    var n: i64 = 0
+    var enc: [64]u8
+    while n <= i64(24) {
+        let el: i64 = b64::encode(pat[0..n], enc[..])
+        if el < i64(0) { return 29 }
+        io::cout << "enc " << n << " " << enc[0..el] << "\n"
+        n = n + 1
+    }
+    io::cout << "b64 ok\n"
+    return 0
+}

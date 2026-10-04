@@ -32,6 +32,16 @@ prelude	varArray	push	method	public
 prelude	varArray	set	method	public
 prelude	varArray	size	method	public
 prelude	varArray	withCap	method	public
+std::b64	-	decode	fn	public
+std::b64	-	decodeUrl	fn	public
+std::b64	-	decodedMax	fn	public
+std::b64	-	encode	fn	public
+std::b64	-	encodeUrl	fn	public
+std::b64	-	encodedLen	fn	public
+std::b64	-	pDec	fn	internal
+std::b64	-	pDec6	fn	internal
+std::b64	-	pEnc	fn	internal
+std::b64	-	pEnc6	fn	internal
 std::coro::scheduler	-	init	fn	public
 std::coro::scheduler	-	newQ	fn	public
 std::coro::scheduler	-	newRows	fn	public

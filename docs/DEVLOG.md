@@ -187,6 +187,20 @@ timeout 就是调用方的参数，实测 5ms 与 50ms 只差 415ms vs 460ms。�
 容量提到 **1024**（16 KB/循环）覆盖现实负载；真修法是把表搬进 `tasks<T>`（像 `runq`/`freeq`
 一样会长）—— 那要容器、`loop` 会失去零值，记账待办。
 
+**同日的第十二刀：归档两份设想 + L2 第一件（Base64）**。设想归档进
+`docs/topics/BOUNDED-TABLE.md`（定长热路径 + 溢出冷路径：关键区分是**按 deadline 的溢出必须是
+优先级而不是 FIFO**，不变式是"inline 装最小的那批"，且回填要**成批**才摊还）与
+`docs/topics/VECTOR-GC.md`（容器缺的不是 GC，而是"**什么时候可以缩**"的可证明回收点；
+`BOUNDED-TABLE` 依赖它）—— 两份都标"设想，未定案"，并在 `17-undecided.md` 登记。
+
+L2 第一件：`std::b64`（RFC 4648 §4/§5）。手写而非 vendor 的理由是形状：零分配、调用方给缓冲
+（与 `strInto` 同一惯用法）。**两张表不许混用** —— `decode` 把 `_` 当非法输入，让混用响亮失败
+而不是静默错。判据 `tests/b64/`：§10 向量 · 拒绝面（长度/非法字符/填充位置/填充过多）· 往返 ·
+**25 组固定语料与 Python `base64` 逐字节对拍**。`check.sh quick` → **70/0**。
+
+**下一步**：`std::ws`（握手用它算 `Sec-WebSocket-Accept`，然后帧编解码 + 对拍 Python
+`websockets`，最后 `wss://` 走 TLS shim）。
+
 **下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
 `use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
 `LANGUAGE-FEEDBACK.md`（F1 因此关闭）。

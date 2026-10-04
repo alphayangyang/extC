@@ -1,0 +1,138 @@
+/* std/b64.extc —— Base64（RFC 4648 §4 标准表 / §5 URL 安全表）。
+ *
+ * 手写而不是 vendor：它没有 ABI 面、没有"库"可言，而且我们要的是**零分配**的
+ * "调用方给缓冲"形状 —— 与 `std::json` 的 `strInto` 同一惯用法（跨界只传值 + 缓冲）。
+ *
+ *     var out: [64]u8
+ *     let n: i64 = b64::encode(key, out[..])       // 返回写入长度；缓冲不够 -1
+ *     let m: i64 = b64::decode(accept, buf[..])    // 非法字符 / 长度不对 -1
+ *
+ * 用在哪：WebSocket 握手的 `Sec-WebSocket-Accept = base64(SHA1(key + GUID))`、HTTP Basic、
+ * 以后 QQ 富媒体的分片上传。**不做流式**：这些负载都是几十字节，缓冲直接给够最省事。
+ *
+ * 分工：标准表给 `encode`/`decode`，URL 安全表（`-` `_`）给 `encodeUrl`/`decodeUrl` ——
+ * 不让调用方自己换字符（换了之后 `decode` 会把 `-` 当非法输入，错得静默）。
+ * 两种都**带 `=` 填充**（RFC 4648 §5 的 URL 安全表也是带填充的；"无填充"是 JWT 自己的约定，
+ * 要它就在调用方 `trimEnd('=')`）。
+ */
+
+let PAD: u8 = 61            /* '=' */
+
+/* 6 bit → 输出字符 */
+@private
+fn pEnc6(v: i64, url: bool) -> u8 {
+    if v < i64(26) { return u8(i32(65) + i32(v)) }
+    if v < i64(52) { return u8(i32(97) + i32(v) - i32(26)) }
+    if v < i64(62) { return u8(i32(48) + i32(v) - i32(52)) }
+    if v == i64(62) {
+        if url { return u8(45) }
+        return u8(43)
+    }
+    if url { return u8(95) }
+    return u8(47)
+}
+
+/* 输入字符 → 6 bit；非法给 -1（`=` 由调用方在分组层处理，不进这里） */
+@private
+fn pDec6(c: u8, url: bool) -> i64 {
+    if c >= u8(65) && c <= u8(90) { return i64(i32(c) - i32(65)) }
+    if c >= u8(97) && c <= u8(122) { return i64(i32(c) - i32(97) + i32(26)) }
+    if c >= u8(48) && c <= u8(57) { return i64(i32(c) - i32(48) + i32(52)) }
+    if url {
+        if c == u8(45) { return i64(62) }
+        if c == u8(95) { return i64(63) }
+        return i64(-1)
+    }
+    if c == u8(43) { return i64(62) }
+    if c == u8(47) { return i64(63) }
+    return i64(-1)
+}
+
+/* `n` 字节编码后要多长（含填充）。调用方用它算缓冲大小。 */
+fn encodedLen(n: i64) -> i64 {
+    if n <= i64(0) { return i64(0) }
+    return ((n + i64(2)) / i64(3)) * i64(4)
+}
+
+/* `n` 个 base64 字符最多解出多少字节（上界，用来算缓冲大小）。 */
+fn decodedMax(n: i64) -> i64 {
+    if n <= i64(0) { return i64(0) }
+    return (n / i64(4)) * i64(3)
+}
+
+@private
+fn pEnc(src: slice<u8>, out: mut slice<u8>, url: bool) -> i64 {
+    let need: i64 = encodedLen(src.len)
+    if out.len < need { return i64(-1) }
+    var i: i64 = 0
+    var o: i64 = 0
+    while i + i64(3) <= src.len {
+        let n: i64 = i64(src[i]) * i64(65536) + i64(src[i + i64(1)]) * i64(256) + i64(src[i + i64(2)])
+        out[o] = pEnc6(n / i64(262144), url)
+        out[o + i64(1)] = pEnc6((n / i64(4096)) % i64(64), url)
+        out[o + i64(2)] = pEnc6((n / i64(64)) % i64(64), url)
+        out[o + i64(3)] = pEnc6(n % i64(64), url)
+        i = i + i64(3)
+        o = o + i64(4)
+    }
+    let rem: i64 = src.len - i
+    if rem == i64(1) {
+        let n: i64 = i64(src[i]) * i64(65536)
+        out[o] = pEnc6(n / i64(262144), url)
+        out[o + i64(1)] = pEnc6((n / i64(4096)) % i64(64), url)
+        out[o + i64(2)] = PAD
+        out[o + i64(3)] = PAD
+    } else if rem == i64(2) {
+        let n: i64 = i64(src[i]) * i64(65536) + i64(src[i + i64(1)]) * i64(256)
+        out[o] = pEnc6(n / i64(262144), url)
+        out[o + i64(1)] = pEnc6((n / i64(4096)) % i64(64), url)
+        out[o + i64(2)] = pEnc6((n / i64(64)) % i64(64), url)
+        out[o + i64(3)] = PAD
+    }
+    return need
+}
+
+@private
+fn pDec(src: slice<u8>, out: mut slice<u8>, url: bool) -> i64 {
+    let n: i64 = src.len
+    if n == i64(0) { return i64(0) }
+    if n % i64(4) != i64(0) { return i64(-1) }        /* 长度必须是 4 的倍数 */
+    var pad: i64 = i64(0)
+    if n >= i64(1) && src[n - i64(1)] == PAD { pad = pad + i64(1) }
+    if n >= i64(2) && src[n - i64(2)] == PAD { pad = pad + i64(1) }
+    if pad > i64(2) { return i64(-1) }
+    let total: i64 = (n / i64(4)) * i64(3) - pad
+    if out.len < total { return i64(-1) }
+    var o: i64 = i64(0)
+    var g: i64 = i64(0)
+    while g < n {
+        let last: bool = g + i64(4) >= n
+        let c0: i64 = pDec6(src[g], url)
+        let c1: i64 = pDec6(src[g + i64(1)], url)
+        if c0 < i64(0) || c1 < i64(0) { return i64(-1) }
+        var c2: i64 = i64(0)
+        var c3: i64 = i64(0)
+        if src[g + i64(2)] == PAD {
+            if !last || src[g + i64(3)] != PAD { return i64(-1) }   /* 填充只能出现在最后一组，且连用 */
+        } else if src[g + i64(3)] == PAD {
+            if !last { return i64(-1) }
+            c2 = pDec6(src[g + i64(2)], url)
+            if c2 < i64(0) { return i64(-1) }
+        } else {
+            c2 = pDec6(src[g + i64(2)], url)
+            c3 = pDec6(src[g + i64(3)], url)
+            if c2 < i64(0) || c3 < i64(0) { return i64(-1) }
+        }
+        let v: i64 = c0 * i64(262144) + c1 * i64(4096) + c2 * i64(64) + c3
+        if o < total { out[o] = u8((v / i64(65536)) % i64(256))  o = o + i64(1) }
+        if o < total { out[o] = u8((v / i64(256)) % i64(256))  o = o + i64(1) }
+        if o < total { out[o] = u8(v % i64(256))  o = o + i64(1) }
+        g = g + i64(4)
+    }
+    return total
+}
+
+fn encode(src: slice<u8>, out: mut slice<u8>) -> i64 { return pEnc(src, out, false) }
+fn decode(src: slice<u8>, out: mut slice<u8>) -> i64 { return pDec(src, out, false) }
+fn encodeUrl(src: slice<u8>, out: mut slice<u8>) -> i64 { return pEnc(src, out, true) }
+fn decodeUrl(src: slice<u8>, out: mut slice<u8>) -> i64 { return pDec(src, out, true) }

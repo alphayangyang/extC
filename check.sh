@@ -214,6 +214,11 @@ if out=$(timeout 900 ./tests/json/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒 · 2 万轮变异零崩溃）"
 else bad "tests/json/run.sh"; echo "$out"; fi
 
+echo "== Base64（RFC 4648 向量 · 拒绝面 · 与 Python 逐字节对拍）=="
+if out=$(timeout 300 ./tests/b64/run.sh 2>&1); then
+    ok "$(echo "$out" | grep -c '^  ok') 项（RFC 向量 · URL 表 · 拒绝面 · 往返 · 25 组 vs Python）"
+else bad "tests/b64/run.sh"; echo "$out"; fi
+
 echo "== 事件循环（定时策略离线判据 + 真事件源：批量/不丢唤醒/多实例）=="
 if out=$(timeout 300 ./tests/loop/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（超时计算五边界 · 到期恰好一次 · 等值稳定 · 表满响亮 · 500 个乱序 deadline；真事件源：一轮拿回 3 个 · 先写后注册不丢 · 两个实例并行 · runOnce 等 25ms）"
