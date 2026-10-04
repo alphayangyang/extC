@@ -64,9 +64,10 @@ neg fstring-not-shift   "$H
     let s: slice<u8> = f\"x\"
     return 0
 }" "only valid as the right-hand side"
-# **已知缺口（不在判据里）**：`f""`（空格式串）目前**编得过**，而且不退化成任何部件 ——
-# `<<` 会被静默吃掉（生成物里只剩 `io$cout;`）。我的"什么都没有就不许拼"检查没生效，
-# 真因还没查清（余量用尽）。下一轮第一件事：查 `f""` 的 token 文本/长度，并补上这条反例。
+neg fstring-empty       "$H
+    io::cout << f\"\"
+    return 0
+}" "nothing to splice"
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

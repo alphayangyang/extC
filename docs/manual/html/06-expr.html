@@ -190,8 +190,8 @@ io::cout &lt;&lt; f<span class="c">"n={n} who={who}\n"</span>
 <p>三条性质（都有判据）：</p>
 <ul><li><strong>零运行时成本</strong>：展开物与手写 <code>&lt;&lt;</code> 链<strong>逐字节相同</strong>（<code>tests/fstring/</code> 直接 diff 两份生成物）；</li><li><strong>能不能打印 = 有没有 <code>&lt;&lt;</code> 重载</strong>：不引第二套规则，报错还会给出"在这个类型上定义 <code>&lt;&lt;</code>"的改法；</li><li><strong>语法糖只加在解析器里</strong>：整个特性只动了词法与解析器，检查器与代码生成一行未改。</li></ul>
 <p>细节：<code>{{</code> / <code>}}</code> 是字面花括号；一个槽<strong>只能放一个表达式</strong>；<code>f"…"</code> 只能出现在 <code>&lt;&lt;</code> 右侧 （写成别的会报错，不会静默）。<strong>v1 没有格式说明符</strong>：<code>f"{x:&gt;8}"</code> 会被明确拒绝（不是静默忽略）， v2 再补。</p>
-<p><strong>两条已知</strong>（写在这里免得踩）：</p>
-<ul><li>槽按<strong>从右往左</strong>求值（C 的实参求值顺序），Python 是左到右；所以槽里放带副作用的表达式要留意；</li><li><code>f""</code>（空格式串）目前<strong>编得过</strong>且不退化成任何部件 —— <code>&lt;&lt;</code> 会被静默吃掉。这是待修的洞 （记在 <code>tests/fstring/run.sh</code> 与 DEVLOG 里）。</li></ul>
+<p><strong>一条已知</strong>：槽按<strong>从右往左</strong>求值（C 的实参求值顺序），Python 是左到右 —— 槽里放带副作用的 表达式要留意（判据里 <code>3 2 1</code> 就是这个顺序）。</p>
+<p>边界情况会<strong>响亮报错</strong>（都有反例判据）：空槽 <code>f"{}"</code> · 未闭合的 <code>{</code> · 多余的 <code>}</code> · <strong>空格式串 <code>f""</code></strong>（"nothing to splice"，否则 <code>&lt;&lt;</code> 会被静默吃掉）· 格式说明符 <code>{x:&gt;8}</code>（v2）· 出现在 <code>&lt;&lt;</code> 右侧之外的地方。</p>
 <div class="pn"><a href="05-vars.html">← 4. 变量与声明</a> <a href="07-stmt.html">6. 语句 →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
