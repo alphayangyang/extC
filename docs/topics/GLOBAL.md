@@ -86,3 +86,21 @@ fn exchange(...) -> coroutine<i64> {
 
 `docs/manual/16-unimplemented.md` 里那句 **"`static` 关键字因此消失"** 说的是**模块级**；
 函数级的持久存储当时没被考虑到。定案落地后这句要改成"顶层与 `global` 是同一种东西"。
+
+## 扫描结果（2026-10-04，实现前的实测落点）
+
+| 落点 | 位置 | 说明 |
+|---|---|---|
+| 语句级声明入口 | `src/front/parser.c:2082` | `if (at(p, "let") \|\| at(p, "var")) return parseVarDecl(p);` —— `global` 在这里做**软关键字**（`at(p,"global")` 再看下一个词），**不要动词法表**：把 `global` 变成保留字会破坏现有代码里用它当普通名字的地方 |
+| 顶层声明入口 | `src/front/parser.c:762` | 同样的 `let`/`var` 判定；顶层 `global` 当作无操作（冗余但合法） |
+| `ST_VAR` 的构造点 | `src/front/parser.c:2280` | `s->u.var.mut = (strcmp(kw->text, "var") == 0);` —— `isGlobal` 标记就加在这附近 |
+| AST 载荷 | `src/ast/ast.h` 的 `u.var`（`mut` 字段附近，约 436 行是 `type`） | 加 `bool isGlobal` |
+| 逃逸判定（**已验过的地基**） | `src/check/check_escape.c` 的 `exprOutOfFrame` | ①已经把 `EX_STR → true` 加进去；`global` 的"存储活过帧"直接复用它 ✓ |
+| 检查器的绑定登记点 | `src/check/check_stmt.c:470-485` | 现有逻辑：`if (exprOutOfFrame(c, ini)) { sym->outOfFrame = true; anSetRefDepth(sym, 0); }` ⇒ `global` 要**无条件**走这一支（它的存储本来就是帧外），并且 `sy->depth = 0`（`slotDepth` 对非视图绑定读的是 `sy->depth`） |
+| 常量初始化式 | `src/check/check_top.c:4366` `isConstInit` | 现为 `static` ⇒ 导出（`check_internal.h`）给 `ST_VAR` 分支用 |
+| **协程帧的构建** | **还没找到** | `coroDeferred` 只用于**报错**（`check_top.c:6701`），**不是**帧的构建来源 ⇒ 下一轮第一件事：定位帧布局那一遍（`grep -n "frame" src/back/codegen.c`），确认"哪些局部进帧"，然后把 `isGlobal` 的排除掉 |
+
+## 为什么必须一次做完
+
+只加 parser 的话，`global var x: T` 会被**静默当成普通局部**：单任务里看起来"能用"（帧在任务存活期内一直有效），
+但**跨调用/跨协程的持久性没了** —— 而这正是这个特性的全部意义。**静默错 > 没有**，所以宁可不做。
