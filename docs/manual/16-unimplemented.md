@@ -31,6 +31,8 @@
 | ~~**动态数组 `varArray<T>`**~~ | prelude 里用 extC 写：`{ buf: mut slice<T>, len: i64, cap: i64 }`（`len` 是字段；取长度的方法叫 `size`） + `new`/`push`/`get`(→`option<T>`)/`len`。**名字定案**：`array<T>` 会被误读成定长（主人原话「wc不要叫array啊，md我以为是定长的」），`vector` 太抽象 ⇒ **`varArray`** | arena 之后 |
 | ~~**算术 UB 三处**~~ | 除零 trap 带位置、移位超宽取模（溢出已用 `-fwrapv` 兜住） | **已做**（`tests/traps/`：`div_zero` / `shift_too_big` / `index_out_of_range` / 两个转换 trap）|
 | ~~**全局常量 / 全局变量**~~ | 全局 = 深度 0 的 arena；`static` 关键字因此消失。**定长全局不需要分配** | **已完成**（见 `examples/globals.extc`） |
+| **函数内的持久存储 `global`** | **`global var x: T` / `global let x: T = c`** —— 与顶层 `var`/`let` **是同一种东西**（深度 0、常量初始化、活到进程结束），区别只是**名字写在这里**。它要的是"函数作用域 + 进程寿命"这一格，模块级全局顶不上（命名污染、一个会话占四个名字、库没法用）。**叫 `global` 不叫 `static`**：关键字要命名检查器真正管的那条性质（深度 0），而 C 的 `static` 混了三种意思；且 extC 的既有术语就是 *"A global is depth 0"* | **定案，未实现** —— 见 [`docs/topics/GLOBAL.md`](../topics/GLOBAL.md)（含四处落点与判据清单）。**必须成套做**：parser + AST + checker + codegen + 协程帧排除，半套会静默降级成普通局部 ✗ |
+| **字面量切片的深度** | 绑成 `let` 的**字符串字面量**切片跨 `yield` 现在会被拒（"别人的存储"）—— **偏保守**：字面量在静态存储里，本来就是深度 0。放宽它是小改，与 `global` 互补（一个管命名，一个管字面量的深度） | 待办 |
 | **输入（`reader` / `argv`）** | 全通了：**整块读（64KB）+ 内存里切**（`nextInt` / `nextLine` / `nextToken`）· `std::fs` 三个名字 · `close()` = 提交点 + **编译期查泄漏**（定案 79）· `main(args)` | 已完成 —— 五子棋能真的跟人下 |
 | **格式串 `{}`** | **编译期展开**，不是运行时解析；必须是字面量 | 中 |
 | ~~**`for` 四种形态**~~ | `for d in dirs` / `for i in 0..n` / `for d in -2..3` / C-style | **2026-09-26 完成**（定案 93；生成物就是 `var` + `while` 判据 `examples/for-loops.extc`）|

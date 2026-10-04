@@ -54,3 +54,9 @@ error: array length must be an integer literal, found `N`
 |---|---|---|
 | **定长热路径 + 溢出冷路径** | 热路径定长零分配，溢出走容器，成批回填；按 deadline 的溢出必须是优先级 | [`BOUNDED-TABLE.md`](../topics/BOUNDED-TABLE.md) |
 | **容器的半自动回收** | `vector` 缺的不是 GC，而是"什么时候可以缩"的可证明回收点 | [`VECTOR-GC.md`](../topics/VECTOR-GC.md) |
+
+## 已定案、待实现
+
+| 项 | 一句话 | 文档 |
+|---|---|---|
+| **`global`** | 函数内的持久存储：`global var x: T` —— 与顶层 `var` 同一种东西，只是名字写在这里 | [`GLOBAL.md`](../topics/GLOBAL.md) |
