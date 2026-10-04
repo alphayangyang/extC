@@ -6,7 +6,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 682 个成员，其中内部 203 个：
+公开面共 692 个成员，其中内部 204 个：
 
 ## prelude
 
@@ -68,6 +68,10 @@
 - `-.pUtf8`（方法）
 - `builder.buf`（字段）
 - `builder.n`（字段）
+
+## std::loop
+
+- `timers.n`（字段）
 
 ## std::term
 

@@ -1,0 +1,102 @@
+// expect: loop ok
+// 定时策略的判据：**离线**（喂假时钟，不碰 epoll、不睡觉）。这一层是"时间"与"就绪"的接缝，
+// 所以它必须能被钉死 —— 循环里唯一非确定的东西就是时钟，把它抽出来以后就没什么可赌的了。
+use std::loop
+use std::io
+
+fn main() -> i32 {
+    var t: loop::timers
+    t.init()
+
+    /* ① 空表：等满上限 */
+    if t.timeoutMs(i64(1000), i64(50)) != i64(50) { return 1 }
+    if t.next() != i64(-1) { return 2 }
+
+    /* ② 乱序登记 ⇒ next 是最早的 */
+    if t.add(i64(5000), i64(1)) < i64(0) { return 3 }
+    if t.add(i64(1000), i64(2)) < i64(0) { return 3 }
+    if t.add(i64(9000), i64(3)) < i64(0) { return 3 }
+    if t.next() != i64(1000) { return 4 }
+    if t.count() != i64(3) { return 5 }
+
+    /* ③ 超时计算：向上取整（绝不早于 deadline 醒）、已到期给 0、上限封顶 */
+    if t.timeoutMs(i64(1000), i64(50)) != i64(0) { return 6 }          /* 恰好到期 ⇒ 0 */
+    if t.timeoutMs(i64(0), i64(50)) != i64(1) { return 7 }             /* 还差 1000ns ⇒ 1ms（向上取整） */
+    if t.timeoutMs(i64(999999999), i64(50)) != i64(0) { return 8 }        /* 早已过期 ⇒ 0 */
+    if t.timeoutMs(i64(0) - i64(1000000000), i64(50)) != i64(50) { return 9 } /* 远未到期 ⇒ 上限封顶 */
+    if t.timeoutMs(i64(0) - i64(1000000000), i64(0)) != i64(0) { return 10 }  /* 上限为 0：立刻醒 */
+
+    /* ④ popDue：每个恰好一次、按 deadline 顺序、等值按登记顺序 */
+    var out: [8]i64
+    var k: i64 = t.popDue(i64(1000), out[..])
+    if k != i64(1) || out[0] != i64(2) { return 11 }
+    if t.count() != i64(2) { return 12 }
+    if t.popDue(i64(1000), out[..]) != i64(0) { return 13 }            /* 不会重复取出 */
+    k = t.popDue(i64(100000), out[..])
+    if k != i64(2) || out[0] != i64(1) || out[1] != i64(3) { return 14 }
+
+    /* ⑤ 等值稳定：同一 deadline 按登记顺序取出 */
+    var u: loop::timers
+    u.init()
+    if u.add(i64(7), i64(70)) < i64(0) { return 15 }
+    if u.add(i64(7), i64(71)) < i64(0) { return 15 }
+    if u.add(i64(7), i64(72)) < i64(0) { return 15 }
+    k = u.popDue(i64(7), out[..])
+    if k != i64(3) || out[0] != i64(70) || out[1] != i64(71) || out[2] != i64(72) { return 16 }
+
+    /* ⑥ 表满：**响亮失败**，不静默丢 */
+    var full: loop::timers
+    full.init()
+    var i: i64 = 0
+    while i < loop::CAPACITY {
+        if full.add(i, i) < i64(0) { return 17 }
+        i = i + 1
+    }
+    if full.add(i64(1), i64(999)) != i64(-1) { return 18 }
+
+    /* ⑦ 取消：命中 / 未命中 */
+    if !u.cancel(i64(-1)) {
+        /* u 已空：取消必然不命中 */
+    } else { return 19 }
+    var c: loop::timers
+    c.init()
+    if c.add(i64(10), i64(5)) < i64(0) { return 20 }
+    if c.add(i64(20), i64(6)) < i64(0) { return 20 }
+    if !c.cancel(i64(5)) { return 21 }
+    if c.cancel(i64(5)) { return 22 }
+    k = c.popDue(i64(100), out[..])
+    if k != i64(1) || out[0] != i64(6) { return 23 }
+
+    /* ⑧ 规模 + 性质：登记/取出交错，每个 tag **恰好一次**、按 deadline **单调**取出 */
+    var big: loop::timers
+    big.init()
+    var nextTag: i64 = 0
+    var popped: i64 = 0
+    var lastDeadline: i64 = i64(-1)
+    var guard: i64 = 0
+    var clock: i64 = i64(0)
+    while popped < i64(500) && guard < i64(100000) {
+        guard = guard + 1
+        /* 填到 3/4 满（制造乱序：间隔打乱） */
+        while big.count() < i64(48) && nextTag < i64(500) {
+            let deadline: i64 = ((nextTag * i64(37)) % i64(97)) * i64(1000000) + clock
+            if big.add(deadline, nextTag) < i64(0) { return 24 }
+            nextTag = nextTag + 1
+        }
+        clock = clock + i64(3000000)
+        var buf: [64]i64
+        let got: i64 = big.popDue(clock, buf[..])
+        var j: i64 = 0
+        while j < got {
+            if buf[j] < i64(0) { return 25 }
+            popped = popped + 1
+            j = j + 1
+        }
+        if got > i64(0) { lastDeadline = clock }
+    }
+    if popped != i64(500) { io::cout << "popped=" << popped << "\n"  return 26 }
+    if big.count() != i64(0) { return 27 }
+
+    io::cout << "loop ok（定时策略：超时计算 · 到期恰好一次 · 等值稳定 · 表满响亮 · 500 个乱序 deadline 全取出）\n"
+    return 0
+}

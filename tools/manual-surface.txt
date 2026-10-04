@@ -315,6 +315,16 @@ std::json	parser	errAt	field	public
 std::json	parser	pos	field	public
 std::json	parser	run	method	public
 std::json	parser	used	field	public
+std::loop	timers	add	method	public
+std::loop	timers	at	field	public
+std::loop	timers	cancel	method	public
+std::loop	timers	count	method	public
+std::loop	timers	init	method	public
+std::loop	timers	n	field	internal
+std::loop	timers	next	method	public
+std::loop	timers	popDue	method	public
+std::loop	timers	tag	field	public
+std::loop	timers	timeoutMs	method	public
 std::parallel	-	run	fn	public
 std::proc	-	exit	fn	public
 std::proc	-	pin	fn	public

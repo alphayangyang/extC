@@ -1,0 +1,102 @@
+/* std/loop.extc —— 事件循环的**策略层**：定时（deadline 表）与"下一次该等多久"。
+ *
+ * 这一层**没有任何系统调用、没有 C**：它是一张按 deadline 排好序的表 + 三个纯函数。
+ * 为什么这样切：循环里唯一需要"现在几点"的地方就是超时计算，把它抽出来以后，
+ * **定时语义可以完全离线判据**（喂假时钟，不需要 I/O、不需要 epoll）。
+ *
+ * 形状（比"timerfd + 堆"少一套机制）：
+ *
+ *     let w = timers::timeoutMs(now, CAP)   // 下一个 deadline 之前该等多久（毫秒）
+ *     n = epoll_wait(ep, buf, w)            // **唯一一个阻塞点**，超时就是定时器的唤醒
+ *     let fired = t.popDue(now2, out[..])   // 到期的 tag（每个恰好一次）
+ *
+ * 也就是说：**时间不引入第二个事件源** —— `epoll_wait` 的超时参数本身就是定时器。
+ * （毫秒分辨率对心跳 30s、每日播报 21:00 这种负载绰绰有余；真要高频高精度再加 timerfd，
+ * 那时它是有理由的，而不是默认。）
+ *
+ * 约定：deadline 是**单调时钟的纳秒**（`std::time::now()`），tag 是调用方自己的标识
+ * （循环里通常是"哪个协程/哪条 fd"）。表满了 `add` 返回 -1（**响亮失败**，不静默丢）。
+ */
+
+let CAPACITY: i64 = 64
+
+@noCopy
+struct timers {
+    at: [64]i64        /* deadline（纳秒，按序） */
+    tag: [64]i64       /* 调用方的标识 */
+    n: i64
+
+    /* 只把计数清零。数组里的旧值无所谓（`n` 之外的位置不会被读到）。 */
+    fn init(self: mut ref timers) -> void { self.n = i64(0) }
+
+    /* 登记一个 deadline。表满返回 -1。相同 deadline 按**登记顺序**保持稳定。 */
+    fn add(self: mut ref timers, deadline: i64, tag: i64) -> i64 {
+        if self.n >= CAPACITY { return i64(-1) }
+        var i: i64 = self.n
+        /* 从后往前挪，稳定插入（`>` 而不是 `>=`：等值的排在新来的前面） */
+        while i > i64(0) && self.at[i - i64(1)] > deadline {
+            self.at[i] = self.at[i - i64(1)]
+            self.tag[i] = self.tag[i - i64(1)]
+            i = i - i64(1)
+        }
+        self.at[i] = deadline
+        self.tag[i] = tag
+        self.n = self.n + i64(1)
+        return i
+    }
+
+    fn count(self: ref timers) -> i64 { return self.n }
+
+    /* 最近的 deadline；空表返回 -1。 */
+    fn next(self: ref timers) -> i64 {
+        if self.n == i64(0) { return i64(-1) }
+        return self.at[0]
+    }
+
+    /* `epoll_wait` 该等多久（毫秒）：空表给 `cap`；已到期给 0；其余按剩余时间，**上限 cap**。
+     * 这一个函数就是"时间"与"就绪"的接缝 —— 也因此它是本模块最该被钉住的判据。 */
+    fn timeoutMs(self: ref timers, now: i64, cap: i64) -> i64 {
+        if self.n == i64(0) { return cap }
+        let left: i64 = self.at[0] - now
+        if left <= i64(0) { return i64(0) }
+        let ms: i64 = (left + i64(999999)) / i64(1000000)     /* 向上取整：绝不早于 deadline 醒 */
+        if ms > cap { return cap }
+        return ms
+    }
+
+    /* 把 `now` 之前（含）到期的 tag 写进 `out`，返回个数。**每个 deadline 恰好取出一次。 */
+    fn popDue(self: mut ref timers, now: i64, out: mut slice<i64>) -> i64 {
+        var k: i64 = i64(0)
+        while self.n > i64(0) && self.at[0] <= now {
+            if k < out.len { out[k] = self.tag[0] }
+            k = k + i64(1)
+            var i: i64 = i64(0)
+            while i + i64(1) < self.n {
+                self.at[i] = self.at[i + i64(1)]
+                self.tag[i] = self.tag[i + i64(1)]
+                i = i + i64(1)
+            }
+            self.n = self.n - i64(1)
+        }
+        return k
+    }
+
+    /* 取消一个还没到期的 tag：命中返回 true，并把后面的元素前移。 */
+    fn cancel(self: mut ref timers, tag: i64) -> bool {
+        var i: i64 = i64(0)
+        while i < self.n {
+            if self.tag[i] == tag {
+                var j: i64 = i
+                while j + i64(1) < self.n {
+                    self.at[j] = self.at[j + i64(1)]
+                    self.tag[j] = self.tag[j + i64(1)]
+                    j = j + i64(1)
+                }
+                self.n = self.n - i64(1)
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+}

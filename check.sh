@@ -214,6 +214,11 @@ if out=$(timeout 900 ./tests/json/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（$(echo "$out" | grep -o 'parse [0-9]* MB/s' | head -1) · $(echo "$out" | grep -o '峰值 RSS [0-9]* KB' | head -1) · 17 条坏输入全拒 · 2 万轮变异零崩溃）"
 else bad "tests/json/run.sh"; echo "$out"; fi
 
+echo "== 事件循环的定时层（deadline 表 + epoll_wait 超时计算，离线判据）=="
+if out=$(timeout 300 ./tests/loop/run.sh 2>&1); then
+    ok "1 项（超时计算五个边界 · 到期恰好一次 · 等值稳定 · 表满响亮 · 500 个乱序 deadline 全取出）"
+else bad "tests/loop/run.sh"; echo "$out"; fi
+
 echo "== 裸 return 在 void 函数里（方法那一格曾经报假错）=="
 if out=$(timeout 300 ./tests/voidret/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（方法/自由函数的裸 return 合法 · 非 void 的裸 return 仍然报错）"
