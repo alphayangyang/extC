@@ -1,0 +1,184 @@
+// expect: ws ok
+// WebSocket 判据：RFC 6455 §1.3 握手向量 · 帧字节（打印出来给 run.sh 对拍 Python）·
+// 拒绝面（RSV/未知 opcode/分片控制帧/控制帧超长/非最短长度/64 位最高位）· 往返 · 变异 fuzz。
+use std::ws
+use std::io
+
+fn pHex(b: slice<u8>) -> void {
+    let T: slice<u8> = "0123456789abcdef"
+    var i: i64 = 0
+    while i < b.len {
+        let v: u8 = b[i]
+        let hi: i64 = i64(v / u8(16))
+        let lo: i64 = i64(v % u8(16))
+        io::cout << T[hi..hi + i64(1)]
+        io::cout << T[lo..lo + i64(1)]
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    /* ① RFC 6455 §1.3 握手向量：key → accept 是钉死的 */
+    var acc: [64]u8
+    let key: slice<u8> = "dGhlIHNhbXBsZSBub25jZQ=="
+    let an: i64 = ws::acceptFor(key, acc[..])
+    if an != i64(28) { io::cout << "an=" << an << "\n"  return 1 }
+    let want: slice<u8> = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    var i: i64 = 0
+    while i < want.len {
+        if acc[i] != want[i] { return 2 }
+        i = i + 1
+    }
+
+    /* ② 升级请求：含 key、以空行结尾 */
+    var req: [512]u8
+    let rn: i64 = ws::requestInto("api.example.com", "/ws", key, req[..])
+    if rn < i64(0) { return 3 }
+    if req[0] != u8(71) || req[1] != u8(69) || req[2] != u8(84) { return 4 }        /* "GET" */
+    if req[rn - i64(1)] != u8(10) || req[rn - i64(2)] != u8(13) { return 5 }         /* CRLF CRLF */
+    if req[rn - i64(3)] != u8(10) || req[rn - i64(4)] != u8(13) { return 6 }
+
+    /* ③ 帧字节：固定掩码 ⇒ 结果确定，打印出来给 run.sh 与 Python 对拍 */
+    var mask: [4]u8
+    mask[0] = u8(1)  mask[1] = u8(2)  mask[2] = u8(3)  mask[3] = u8(4)
+    var big: mut slice<u8> = new u8[70000]
+    var out: mut slice<u8> = new u8[70100]
+    var k: i64 = 0
+    while k < big.len {
+        big[k] = u8((k * i64(7) + i64(3)) % i64(256))
+        k = k + 1
+    }
+    var ops: [5]i64
+    ops[0] = ws::OP_TEXT  ops[1] = ws::OP_BIN  ops[2] = ws::OP_CLOSE  ops[3] = ws::OP_PING  ops[4] = ws::OP_PONG
+    var lens: [7]i64
+    lens[0] = i64(0)  lens[1] = i64(1)  lens[2] = i64(125)  lens[3] = i64(126)
+    lens[4] = i64(127)  lens[5] = i64(1000)  lens[6] = i64(65535)
+    var oi: i64 = 0
+    while oi < i64(5) {
+        let op: i64 = ops[oi]
+        var li: i64 = 0
+        while li < i64(7) {
+            let n: i64 = lens[li]
+            /* 控制帧（8/9/10）不许超过 125 字节 —— 那是拒绝面，不是编码面 */
+            if (op >= i64(8) && n <= i64(125)) || op < i64(8) {
+                let f: i64 = ws::frameInto(op, true, big[0..n], mask[..], out[..])
+                if f != i64(0) && f != n + i64(6) && f != n + i64(8) && f != n + i64(14) { return 7 }
+                io::cout << "fr " << op << " " << n << " "
+                pHex(out[0..f])
+                io::cout << "\n"
+            }
+            li = li + 1
+        }
+        oi = oi + 1
+    }
+    /* 64 位长度那一格单独来一条（65536） */
+    let fbig: i64 = ws::frameInto(ws::OP_TEXT, true, big[0..65536], mask[..], out[..])
+    if fbig != i64(65536) + i64(14) { return 8 }
+    io::cout << "fr 1 65536 "
+    pHex(out[0..fbig])
+    io::cout << "\n"
+
+    /* ④ 往返：编码 → 头解析 → 解掩码 → 与原负载逐字节相同 */
+    let f: i64 = ws::frameInto(ws::OP_BIN, true, big[0..300], mask[..], out[..])
+    if f != i64(300) + i64(8) { return 9 }
+    if ws::hdrLen(out[0..f]) != i64(8) { return 10 }
+    if ws::opOf(out[0..f]) != ws::OP_BIN { return 11 }
+    if !ws::finOf(out[0..f]) { return 12 }
+    if ws::lenOf(out[0..f]) != i64(300) { return 13 }
+    if ws::maskAt(out[0..f]) != i64(4) { return 14 }
+    var body: mut slice<u8> = new u8[400]
+    i = 0
+    while i < i64(300) {
+        body[i] = out[i64(8) + i]
+        i = i + 1
+    }
+    ws::unmask(body[0..300], mask[..])
+    i = 0
+    while i < i64(300) {
+        if body[i] != big[i] { return 15 }
+        i = i + 1
+    }
+
+    /* ⑤ 拒绝面（每条都必须被挡住） */
+    var bad: [16]u8
+    /* RSV1 置位 */
+    bad[0] = u8(0xC1)  bad[1] = u8(0x00)
+    if ws::hdrLen(bad[0..2]) != i64(-1) { return 16 }
+    /* 未知 opcode（3） */
+    bad[0] = u8(0x83)  bad[1] = u8(0x00)
+    if ws::hdrLen(bad[0..2]) != i64(-1) { return 17 }
+    /* 分片控制帧（PING 且 FIN=0） */
+    bad[0] = u8(0x09)  bad[1] = u8(0x00)
+    if ws::hdrLen(bad[0..2]) != i64(-1) { return 18 }
+    /* 控制帧长度 126 */
+    bad[0] = u8(0x89)  bad[1] = u8(126)  bad[2] = u8(0)  bad[3] = u8(126)
+    if ws::hdrLen(bad[0..4]) != i64(-1) { return 19 }
+    /* 非最短编码：len7=126 但扩展长度 < 126 */
+    bad[0] = u8(0x81)  bad[1] = u8(126)  bad[2] = u8(0)  bad[3] = u8(5)
+    if ws::hdrLen(bad[0..4]) != i64(-1) { return 20 }
+    /* 64 位长度最高位为 1（RFC 禁止） */
+    bad[0] = u8(0x82)  bad[1] = u8(127)
+    i = i64(2)
+    while i < i64(10) { bad[i] = u8(0)  i = i + 1 }
+    bad[2] = u8(0x80)
+    if ws::hdrLen(bad[0..10]) != i64(-1) { return 21 }
+    /* 数据不够：0 字节 / 1 字节 / 只给了长度扩展的一半 */
+    if ws::hdrLen(bad[0..0]) != i64(0) { return 22 }
+    if ws::hdrLen(bad[0..1]) != i64(0) { return 23 }
+    bad[0] = u8(0x81)  bad[1] = u8(126)  bad[2] = u8(1)
+    if ws::hdrLen(bad[0..3]) != i64(0) { return 24 }
+    /* 掩码位：客户端帧必须带掩码（这里确认解析器认得出来） */
+    bad[0] = u8(0x81)  bad[1] = u8(0x80)
+    bad[2] = u8(1)  bad[3] = u8(2)  bad[4] = u8(3)  bad[5] = u8(4)
+    if ws::hdrLen(bad[0..6]) != i64(6) { return 25 }        /* 掩码帧的头 = 2 + 4 */
+    if !ws::maskedOf(bad[0..6]) { return 26 }
+    if ws::maskAt(bad[0..6]) != i64(2) { return 27 }
+    if ws::hdrLen(bad[0..2]) != i64(0) { return 32 }        /* 只给 2 字节 ⇒ 掩码键还没到 */
+
+    /* ⑥ 变异 fuzz：2 万次随机改动，只要求不炸 + 结论自洽 */
+    let base: i64 = ws::frameInto(ws::OP_TEXT, true, big[0..40], mask[..], out[..])
+    var seed: i64 = i64(12345)
+    var accepted: i64 = i64(0)
+    var rejected: i64 = i64(0)
+    var need: i64 = i64(0)
+    var round: i64 = 0
+    while round < i64(20000) {
+        seed = (seed * i64(1103515245) + i64(12345)) % i64(2147483648)
+        let pos: i64 = seed % base
+        let bit: i32 = i32((seed / i64(7)) % i64(8))
+        var mut2: mut slice<u8> = new u8[64]
+        var c: i64 = 0
+        while c < base {
+            mut2[c] = out[c]
+            c = c + 1
+        }
+        mut2[pos] = u8(i32(mut2[pos]) ^ (i32(1) * pShift(bit)))
+        let h: i64 = ws::hdrLen(mut2[0..base])
+        if h == i64(-1) { rejected = rejected + i64(1) }
+        else if h == i64(0) { need = need + i64(1) }
+        else {
+            accepted = accepted + i64(1)
+            /* 头合法就必须能把三个访问器都读出来（不越界、不给负） */
+            if ws::lenOf(mut2[0..base]) < i64(0) { return 28 }
+            if ws::opOf(mut2[0..base]) < i64(0) || ws::opOf(mut2[0..base]) > i64(15) { return 29 }
+            /* 掩码位可能被变异清掉 —— 没掩码的帧在解析层是合法的（服务端帧），
+             * 只要给不出**非法**的掩码偏移就行 */
+            let ms: i64 = ws::maskAt(mut2[0..base])
+            if ms != i64(-1) && ms < i64(2) { return 30 }
+        }
+        round = round + i64(1)
+    }
+    if accepted + rejected + need != i64(20000) { return 31 }
+    io::cout << "ws ok（握手向量 · 帧字节 · 拒绝面 · 往返 · 变异 2 万次：" << accepted << " 合法 / " << rejected << " 拒绝 / " << need << " 待续）\n"
+    return 0
+}
+
+fn pShift(b: i32) -> i32 {
+    var v: i32 = i32(1)
+    var i: i32 = i32(0)
+    while i < b {
+        v = v * i32(2)
+        i = i + i32(1)
+    }
+    return v
+}

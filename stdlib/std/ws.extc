@@ -1,0 +1,191 @@
+/* std/ws.extc —— WebSocket（RFC 6455）的**握手**与**帧编解码**。
+ *
+ * 手写而不是 vendor：WS 没有"库"可言（协议本身不到十页），而我们要的形状是零分配 +
+ * 调用方给缓冲 —— 与 `json::strInto` / `b64` 同一惯用法。上层（连接、心跳、resume）
+ * 归 QQ 协议层，这里只管**字节**。
+ *
+ *     let a: i64 = ws::acceptFor(key, out[..])            // 握手：Sec-WebSocket-Accept
+ *     let h: i64 = ws::requestInto(host, path, key, out[..])  // 客户端升级请求
+ *     let f: i64 = ws::frameInto(ws::OP_TEXT, true, payload, mask, out[..])
+ *
+ * 帧解析是**增量**的（数据分片到达）：`hdrLen(buf)` 给 0 = 还不够一个头、-1 = 协议错、
+ * 否则是头长度；再配合 `opOf` / `finOf` / `lenOf` / `maskAt` / `unmask`。
+ * 客户端发出的帧**必须**掩码（RFC 6455 §5.1），服务端发来的**必须不掩码** —— 两边都查。
+ */
+
+use std::b64
+use std::hash::sha1
+
+let OP_CONT: i64 = 0
+let OP_TEXT: i64 = 1
+let OP_BIN: i64 = 2
+let OP_CLOSE: i64 = 8
+let OP_PING: i64 = 9
+let OP_PONG: i64 = 10
+
+/* RFC 6455 §1.3 的魔术串（拼在客户端 key 后面做 SHA-1） */
+let GUID: slice<u8> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+/* 握手应答：`base64(SHA1(key + GUID))`。`key` 是客户端发来的 `Sec-WebSocket-Key`。 */
+fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
+    if key.len + GUID.len > i64(256) { return i64(-1) }
+    var cat: [256]u8
+    var i: i64 = 0
+    while i < key.len {
+        cat[i] = key[i]
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < GUID.len {
+        cat[key.len + j] = GUID[j]
+        j = j + 1
+    }
+    var digest: [20]u8
+    if !sha1::sum(cat[0..key.len + GUID.len], digest[..]) { return i64(-1) }
+    return b64::encode(digest[..], out)
+}
+
+/* 客户端升级请求（不含结尾空行）。返回写入长度；缓冲不够 -1。 */
+/* 追加一段到缓冲；缓冲不够给 -1。 */
+@private
+fn pAppend(out: mut slice<u8>, o: i64, seg: slice<u8>) -> i64 {
+    if o + seg.len > out.len { return i64(-1) }
+    var k: i64 = 0
+    while k < seg.len {
+        out[o + k] = seg[k]
+        k = k + 1
+    }
+    return o + seg.len
+}
+
+/* 客户端升级请求（已含结尾空行）。返回写入长度；缓冲不够 -1。 */
+fn requestInto(host: slice<u8>, path: slice<u8>, key: slice<u8>, out: mut slice<u8>) -> i64 {
+    var o: i64 = pAppend(out, i64(0), "GET ")
+    if o < i64(0) { return i64(-1) }
+    o = pAppend(out, o, path)
+    if o < i64(0) { return i64(-1) }
+    o = pAppend(out, o, " HTTP/1.1\r\nHost: ")
+    if o < i64(0) { return i64(-1) }
+    o = pAppend(out, o, host)
+    if o < i64(0) { return i64(-1) }
+    o = pAppend(out, o, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ")
+    if o < i64(0) { return i64(-1) }
+    o = pAppend(out, o, key)
+    if o < i64(0) { return i64(-1) }
+    return pAppend(out, o, "\r\nSec-WebSocket-Version: 13\r\n\r\n")
+}
+
+/* 编码一个帧（客户端：**总是带掩码**）。`mask` 必须是 4 字节。返回写入长度。 */
+fn frameInto(op: i64, fin: bool, payload: slice<u8>, mask: slice<u8>, out: mut slice<u8>) -> i64 {
+    if !((op >= i64(0) && op <= i64(2)) || (op >= i64(8) && op <= i64(10))) || mask.len != i64(4) { return i64(-1) }
+    let n: i64 = payload.len
+    if op >= i64(8) && (n > i64(125) || !fin) { return i64(-1) }
+    var h: i64 = i64(2) + i64(4)
+    if n >= i64(126) && n <= i64(65535) { h = h + i64(2) }
+    else if n > i64(65535) { h = h + i64(8) }
+    if out.len < h + n { return i64(-1) }
+    if fin { out[0] = u8(128 + i32(op)) } else { out[0] = u8(i32(op)) }
+    var p: i64 = i64(2)
+    if n < i64(126) {
+        out[1] = u8(128 + i32(n))
+    } else if n <= i64(65535) {
+        out[1] = u8(128 + 126)
+        out[2] = u8((n / i64(256)) % i64(256))
+        out[3] = u8(n % i64(256))
+        p = i64(4)
+    } else {
+        out[1] = u8(128 + 127)
+        var sh: i64 = i64(56)
+        var q: i64 = i64(0)
+        while q < i64(8) {
+            out[2 + q] = u8((n / pPow2(sh)) % i64(256))
+            sh = sh - i64(8)
+            q = q + i64(1)
+        }
+        p = i64(10)
+    }
+    out[p] = mask[0]
+    out[p + i64(1)] = mask[1]
+    out[p + i64(2)] = mask[2]
+    out[p + i64(3)] = mask[3]
+    var i: i64 = 0
+    while i < n {
+        out[p + i64(4) + i] = u8(i32(payload[i]) ^ i32(mask[i % i64(4)]))
+        i = i + 1
+    }
+    return h + n
+}
+
+@private
+fn pPow2(e: i64) -> i64 {
+    var v: i64 = i64(1)
+    var i: i64 = 0
+    while i < e {
+        v = v * i64(2)
+        i = i + 1
+    }
+    return v
+}
+
+/* 帧头长度：**0 = 数据还不够**（增量解析）、**-1 = 协议错**、否则是头字节数。 */
+fn hdrLen(buf: slice<u8>) -> i64 {
+    if buf.len < i64(2) { return i64(0) }
+    let b0: i64 = i64(buf[0])
+    let b1: i64 = i64(buf[1])
+    let op: i64 = b0 % i64(16)
+    if b0 / i64(16) % i64(8) != i64(0) { return i64(-1) }        /* RSV 必须为 0（未协商扩展） */
+    if !((op >= i64(0) && op <= i64(2)) || (op >= i64(8) && op <= i64(10))) { return i64(-1) }
+    if op >= i64(8) && (b0 / i64(128) != i64(1) || b1 % i64(128) > i64(125)) { return i64(-1) }
+    let masked: bool = b1 / i64(128) == i64(1)
+    var h: i64 = i64(2)
+    let len7: i64 = b1 % i64(128)
+    if len7 == i64(126) {
+        h = h + i64(2)
+        if buf.len < h { return i64(0) }
+        let e: i64 = i64(buf[2]) * i64(256) + i64(buf[3])
+        if e < i64(126) { return i64(-1) }                       /* 非最短编码：拒绝 */
+    } else if len7 == i64(127) {
+        h = h + i64(8)
+        if buf.len < h { return i64(0) }
+        if i64(buf[2]) / i64(128) != i64(0) { return i64(-1) }   /* 最高位必须为 0 */
+    }
+    if masked { h = h + i64(4) }
+    if buf.len < h { return i64(0) }
+    return h
+}
+
+fn opOf(buf: slice<u8>) -> i64 { return i64(buf[0]) % i64(16) }
+fn finOf(buf: slice<u8>) -> bool { return i64(buf[0]) / i64(128) == i64(1) }
+fn maskedOf(buf: slice<u8>) -> bool { return i64(buf[1]) / i64(128) == i64(1) }
+
+/* 负载长度（不含掩码键）。要求 `hdrLen(buf) > 0`。 */
+fn lenOf(buf: slice<u8>) -> i64 {
+    let len7: i64 = i64(buf[1]) % i64(128)
+    if len7 < i64(126) { return len7 }
+    if len7 == i64(126) { return i64(buf[2]) * i64(256) + i64(buf[3]) }
+    var v: i64 = i64(0)
+    var i: i64 = i64(2)
+    while i < i64(10) {
+        v = v * i64(256) + i64(buf[i])
+        i = i + 1
+    }
+    return v
+}
+
+/* 掩码键在头里的偏移；没有掩码给 -1。 */
+fn maskAt(buf: slice<u8>) -> i64 {
+    if !maskedOf(buf) { return i64(-1) }
+    let len7: i64 = i64(buf[1]) % i64(128)
+    if len7 < i64(126) { return i64(2) }
+    if len7 == i64(126) { return i64(4) }
+    return i64(10)
+}
+
+/* 就地解掩码（客户端发的帧用它还原；服务端的帧没有掩码，不用调）。 */
+fn unmask(payload: mut slice<u8>, mask: slice<u8>) -> void {
+    var i: i64 = 0
+    while i < payload.len {
+        payload[i] = u8(i32(payload[i]) ^ i32(mask[i % i64(4)]))
+        i = i + 1
+    }
+}

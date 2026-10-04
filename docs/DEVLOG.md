@@ -10536,3 +10536,23 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
 | 整个容器值 | —— | `ref` / `mut ref` 都允许（`qa/r4`）|
 
 验证：语料 263/0 · `check.sh quick` 26/0 · `tools/memsafe` 43/0。
+
+**同日的第十三刀：L2 主体 —— `std::ws`（RFC 6455 握手 + 帧）**。手写而非 vendor（协议不到十页），
+形状照旧零分配 + 调用方给缓冲；只管**字节**，连接/心跳/resume 归 QQ 协议层。
+- `acceptFor`（`base64(SHA1(key + GUID))`）· `requestInto` · `frameInto`（客户端总是带掩码）·
+  **增量解析** `hdrLen`（0 = 数据还不够 / -1 = 协议错）· `opOf`/`finOf`/`maskedOf`/`lenOf`/`maskAt` ·
+  `unmask`；
+- 拒绝面：RSV 非零 · 未知 opcode · 分片控制帧 · 控制帧长度 > 125 · **非最短长度编码** ·
+  64 位长度最高位为 1 · 数据不够给 0 而不是错；
+- 判据 `tests/ws/`：RFC §1.3 握手向量 · 拒绝面 · 往返 · **2 万次变异 fuzz（19740 合法 / 260 拒绝，
+  零崩溃）** · **24 个帧与 Python 独立实现逐字节对拍**（126/127/65536 三种长度编码全覆盖）。
+  `check.sh quick` 70 → **71/0**。
+
+**这轮踩到的两处坑（都值得记）**：
+1. **判据错了四处，模块一次没错**（`f64` 撞内建名、CRLF 顺序写反、掩码帧头长算错、fuzz 里把
+   "无掩码"当成错）—— 判据先把自己的假设咬了一遍，这正是它的价值；
+2. **`manual_surface.py` 把"一行 `fn` 上的 `@private`"记成了 public**（`isCtrl`/`isKnownOp`
+   因此被覆盖率闸门要求进手册）。处理办法是把这两个一行谓词**内联掉**，而不是给内部函数补文档
+   —— 工具与源码不一致时，先让源码无歧义。
+
+**下一步**：`wss://`（走 TLS shim 的 `WANT_READ/WRITE` → `awaitFd`），然后才是 QQ 网关协议层。
