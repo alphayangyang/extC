@@ -49,11 +49,13 @@ std::coro::scheduler	-	pendingTimers	fn	public
 std::coro::scheduler	loop	ep	field	internal
 std::coro::scheduler	loop	listener	field	public
 std::coro::scheduler	loop	live	field	public
+std::coro::scheduler	loop	pendingFd	field	public
 std::coro::scheduler	loop	pendingUntil	field	public
 std::coro::scheduler	loop	timers	field	public
 std::coro::scheduler	row	done	field	public
 std::coro::scheduler	row	fd	field	public
 std::coro::scheduler	row	h	field	public
+std::coro::scheduler	row	mode	field	public
 std::coro::scheduler	row	started	field	public
 std::coro::scheduler	tasks	acceptq	field	public
 std::coro::scheduler	tasks	add	method	public

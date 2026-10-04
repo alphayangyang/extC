@@ -1,0 +1,41 @@
+/* 判据：**等可写**（`yield WAIT_FD_W`，L2 的前置）。TLS 的 `SSL_write`/`SSL_read` 都会返回
+ * `WANT_WRITE`，而没有这一格就只能等可读 —— 那是错的等待方向。
+ *
+ * 一条任务走三步：① 等可写 → ② **再**等可写（同一个 fd，走运行时 `extc_epoll_arm` 的 MOD 路径）
+ * → ③ 切回**等可读**（模式切换）。三条都必须在同一套 tag 机制下正确恢复。
+ * 退出码 = 200；live 没归零 = 96、步骤数不对 = 97。 */
+use std::coro::scheduler as sched
+use std::sys::net
+use std::io
+
+fn waiter(fd: i64, rfd: i64, s: mut ref sched::loop) -> coroutine<i64> {
+    var k: i64 = i64(0)
+    while k < i64(2) {
+        s.pendingFd = fd
+        yield sched::WAIT_FD_W              /* 等可写 */
+        k = k + i64(1)
+    }
+    yield rfd                               /* 等可读（同一个调度器里的另一种兴趣） */
+    yield i64(-1) - k
+}
+
+fn main() -> i32 {
+    var s: sched::loop
+    if !sched::init(ref s, i64(-1)) { return i32(95) }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+    var sp: [2]i64
+    if net::extc_sock_pair(sp[..].data) != i64(0) { return i32(96) }
+    /* 先写一个字节进去：内核缓冲 ⇒ `sp[0]` **立刻可读**（确定性，不靠 sleep）*/
+    var one: [1]u8
+    one[0] = u8(7)
+    if net::extc_sock_write(sp[1], one[..].data, i64(1)) != i64(1) { return i32(96) }
+    tasks.add(ref s, waiter(sp[0], sp[0], ref s))
+    var rounds: i64 = i64(0)
+    while rounds < i64(12) && s.live > i64(0) {
+        var _r: i64 = tasks.pump(ref s, i64(20))
+        rounds = rounds + i64(1)
+    }
+    if s.live != i64(0) { io::cout << "live=" << s.live << " rounds=" << rounds << "\n"  return i32(96) }
+    io::cout << "coro_waitw ok（等可写 ×2（含 MOD 路径）· 切回等可读 · " << rounds << " 轮内跑完）\n"
+    return i32(200)
+}

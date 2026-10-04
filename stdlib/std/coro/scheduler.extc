@@ -33,11 +33,16 @@ struct row {
     done: bool
     started: bool
     fd: i64
+    mode: i64               /* 0 = 没登记 · 1 = 等可读 · 2 = 等可写（同一个 fd 会来回切） */
 }
 
 /* 调度器状态：**只有标量** —— 这不是风格，是语言规则：含引用的结构体没有零值，
  * `var s: sched::loop` 就写不出来了 ✗（实测）。队列因此住在 `tasks<T>` 里（调用者自己的容器 ✓）。 */
 let WAIT_UNTIL: i64 = -3
+
+/* 等 `s.pendingFd` **可写**（TLS 的 `SSL_write`/`SSL_read` 都会返回 WANT_WRITE）。
+ * 与 `WAIT_UNTIL` 同一套路：请求通道只有一个 i64，所以 fd 走暂存槽。 */
+let WAIT_FD_W: i64 = -4
 
 /* 协程**最后一次** `yield` 的值必须是**负数**：驱动把 `>= 0` 读成"等这个 fd 可读"，
  * 拿正数收尾会被当成新的等待请求（实测：任务"跑完了"却永远不停，`live` 不降）。
@@ -49,6 +54,7 @@ struct loop {
     live: i64
     timers: ltimers::timers
     pendingUntil: i64
+    pendingFd: i64          /* `yield WAIT_FD_W` 之前，协程把 fd 放这里 */
 }
 
 struct tasks<T> {
@@ -120,11 +126,26 @@ struct tasks<T> {
                 if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
                 continue
             }
+            if req == WAIT_FD_W {
+                let fdw: i64 = s.pendingFd
+                if fdw < i64(0) {
+                    /* 没给 fd：立刻再推一轮（别把任务卡死） */
+                    if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
+                    continue
+                }
+                if self.rows.vals[i].fd != fdw || self.rows.vals[i].mode != i64(2) {
+                    net::extc_epoll_arm(s.ep, fdw, i64(0), i)     /* readable=0 ⇒ EPOLLOUT */
+                    self.rows.vals[i].fd = fdw
+                    self.rows.vals[i].mode = i64(2)
+                }
+                return
+            }
             if req >= i64(0) {
                 /* 等这个 fd 可读；**行号就是 epoll 的 tag** ⇒ 回来时不用查任何表 ✓ */
-                if self.rows.vals[i].fd != req {
-                    net::extc_epoll_add(s.ep, req, i64(1), i)
+                if self.rows.vals[i].fd != req || self.rows.vals[i].mode != i64(1) {
+                    net::extc_epoll_arm(s.ep, req, i64(1), i)
                     self.rows.vals[i].fd = req
+                    self.rows.vals[i].mode = i64(1)
                 }
                 return
             }
@@ -139,6 +160,7 @@ struct tasks<T> {
         self.rows.vals[i].done = true
         s.timers.cancel(i)
         self.rows.vals[i].fd = i64(-2)
+        self.rows.vals[i].mode = i64(0)
         self.freeq.push(i)
         s.live = s.live - i64(1)
     }
@@ -247,6 +269,7 @@ fn init(s: mut ref loop, listener: i64) -> bool {
     s.live = i64(0)
     s.timers.init()
     s.pendingUntil = i64(0)
+    s.pendingFd = i64(-1)
     s.ep = net::extc_epoll_new()
     if s.ep < i64(0) { return false }
     /* listener **只注册一次**（从前每轮都 `epoll_ctl(ADD)` 一次 = 每轮一个白费的系统调用 ✗）*/

@@ -596,6 +596,7 @@ var fd: i64 = tasks.pump(ref s, i64(50))
 | `>= 0` | 等这个 fd 可读（驱动把它登记进 epoll，tag = 任务行号） |
 | `WAIT_UNTIL`（= `-3`） | 等 `loop.pendingUntil` 那个 deadline（驱动登记进 `loop.timers`，tag 同样是行号） |
 | 其它负数 | 不等，立刻重新推进（`send` 返回 false 即收尾） |
+| `WAIT_FD_W`（= `-4`） | 等 `loop.pendingFd` **可写**（TLS 的 `SSL_write`/`SSL_read` 都会返回 `WANT_WRITE`） |
 
 **两条容易踩的规则**（都有实测来源）：
 1. **收尾的 `yield` 必须是负数**：驱动把 `>= 0` 读成"等这个 fd 可读"，拿正数收尾会被当成新的
@@ -604,9 +605,9 @@ var fd: i64 = tasks.pump(ref s, i64(50))
    所以**超时那一轮正是定时到期的时刻**，`pump` 在超时路径上也必须取 `popDue` ——
    从前它超时就直接返回，等定时的任务永远不醒。
 
-`loop` 的自有状态：`timers`（定时等待表）· `pendingUntil`（暂存槽 —— 请求通道只有一个 i64，
+`loop` 的自有状态：`pendingFd`（`yield WAIT_FD_W` 之前协程把 fd 放这里）· `timers`（定时等待表）· `pendingUntil`（暂存槽 —— 请求通道只有一个 i64，
 deadline 走这里；单线程、一行一次只跑一个协程 ⇒ 安全）。`pendingTimers(s)` 返回还挂着的登记数：
-**判据用它收尾时必须为 0**（否则座位复用会撞上幽灵定时器）。
+**判据用它收尾时必须为 0**（否则座位复用会撞上幽灵定时器）。 任务的等待模式记在 `row` 的 `mode` 字段（0 = 没登记 / 1 = 等可读 / 2 = 等可写），同一个 fd 来回切读/写时靠运行时的 `extc_epoll_arm`（**第一次 ADD、之后 MOD**）。
 
 判据 `tests/coro/coro_sleep.extc`：200 个任务各睡 1..5ms ⇒ 全部醒 · 无残留登记 · 真的等了。
 

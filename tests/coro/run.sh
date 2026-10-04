@@ -501,5 +501,20 @@ else
     echo "  FAIL coro_sleep          ->  $(head -2 "$tmp/nsl.e" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 等可写（WAIT_FD_W）：TLS 的 WANT_WRITE 没有它就等错方向。
+nww=$tmp/coro_waitw
+if "$EXTC" -w --no-line-map -o "$nww.c" tests/coro/coro_waitw.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -O2 -o "$nww" "$nww.c" 2>"$tmp/nww.e"; then
+    out=$("$nww" 2>&1); rc=$?
+    if [ "$rc" = 200 ] && echo "$out" | grep -q 'coro_waitw ok'; then
+        echo "  ok   coro_waitw          ->  $(echo "$out" | tr '\n' '|')"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_waitw          ->  退出码 $rc：$(echo "$out" | tr '\n' '|')"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_waitw          ->  $(head -2 "$tmp/nww.e" 2>/dev/null | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ] || exit 1

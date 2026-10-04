@@ -10556,3 +10556,14 @@ $ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
    —— 工具与源码不一致时，先让源码无歧义。
 
 **下一步**：`wss://`（走 TLS shim 的 `WANT_READ/WRITE` → `awaitFd`），然后才是 QQ 网关协议层。
+
+**同日的第十四刀：等可写（`WAIT_FD_W`）—— `wss` 的硬前置**。TLS 的 `SSL_write`/`SSL_read` 都会
+返回 `WANT_WRITE`，而没有这一格就只能等可读（**等错方向**，TLS 握手的某个阶段会直接卡死）。
+- 挂起协议第三格：`req >= 0` 等可读 · `WAIT_UNTIL` 等 deadline · **`WAIT_FD_W` 等 `loop.pendingFd` 可写**；
+- 底层补了一个干净原语 **`extc_epoll_arm`**（第一次 `ADD`、之后 `MOD`）—— TLS 会在**同一个 fd 上
+  来回切读/写等待**，只有 ADD 的话第二次 `EEXIST`；顺带把可读路径也换成了 `arm`；
+- 任务的等待模式记在 `row.mode`（0 没登记 / 1 等可读 / 2 等可写）；
+- 判据 `tests/coro/coro_waitw.extc`：等可写 ×2（含 MOD 路径）→ 切回等可读，全部正确恢复。
+  `tests/coro` 30 → **31/31**，`check.sh quick` **71/0**。
+
+**下一步**：`Suspend` 效应签名（趁 `std::tls` 还没写，避免 ~30 处签名返工），然后 `std::tls` 包 → `wss` 判据。

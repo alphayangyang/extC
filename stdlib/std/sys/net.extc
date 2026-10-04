@@ -20,6 +20,9 @@ extern!("extc-runtime") fn extc_epoll_add(ep: i64, fd: i64, readable: i64, tag: 
     effects Addr=0 Cont=0
 /* 等事件：返回**一个**就绪的 fd（内部留着一个待处理队列 ⇒ 事件循环零分配），
  * -1 = 超时/没有事件。 */
+/* 登记兴趣：第一次 ADD、之后 MOD（同一个 fd 上切换读/写等待要用它）。 */
+extern!("extc-runtime") fn extc_epoll_arm(ep: i64, fd: i64, readable: i64, tag: i64) -> i64
+
 /* 一轮就绪事件写进调用方缓冲：返回个数（0 = 超时，<0 = 出错）。
  * 取代了从前"每次一个 tag + 运行时里的 static 队列"那条 —— 那条让一个进程只能有一个循环。 */
 extern!("extc-runtime") fn extc_epoll_wait_into(ep: i64, out: ref i64, cap: i64, timeout_ms: i64) -> i64
