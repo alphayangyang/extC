@@ -68,3 +68,4 @@ error: array length must be an integer literal, found `N`
 | **协程协议层** | 地基好（内存/唤醒有数字），协议层是"一串猜出来的负数 + 覆盖式 tag"；三条修法 A/B/C 与代价 | [`CORO-PROTOCOL.md`](../topics/CORO-PROTOCOL.md) |
 | **普通语法的差距（手感）** | 拿真代码量：Python ~25 行 → extC 78 行（3×）；四条主因 + 优先级（格式串 → 表达式位置构造 → stdlib 补齐 → 容器字面量 → 默认参数） | [`ERGONOMICS.md`](../topics/ERGONOMICS.md) |
 | **运行时块的按需发射** | `extc_print` 住在 `rtPrint` 里被**整块**发出（`needRuntime` 很粗），而"没人用就删"的 pass 只扫 `primText` ⇒ 它没被看见。规则本身是对的，方案 A：把扫描文本改成参数、两个缓冲区各扫一遍 | [`PRIM-DROP.md`](../topics/PRIM-DROP.md) |
+| **CodeGen 重构（按它自己的逻辑）** | 契约是"代码生成不做决定"，但它现在**自己决定"什么该存在"**（文本计数 + 行形识别 + 15 个粗旗子）⇒ 三层重构：需求闭包 → 发射时登记 → 只做装配 | [`CODEGEN-ARCH.md`](../topics/CODEGEN-ARCH.md) |
