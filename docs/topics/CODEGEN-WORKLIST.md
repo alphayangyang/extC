@@ -176,6 +176,22 @@ while W 非空:
 **顺手修的真 bug**：`dropRuntimeDefs` 的窗口从 anchor 量 `strlen(primText)` 而**不夹到产物末尾**；
 W2 把裁短交给闭包后越界变大 ⇒ `memchr` SIGSEGV（gate 用例的绝对路径复现）。窗口按 `text + len` 夹一次。
 
+## 六之八、W2b-1 已落：BG-1 修好（`rtPrint` 独立按需，2026-10-05）
+
+`needRuntime` 拆成 `needRuntime`（要那张描述符表 `rt`）与 `needPrint`（真的调用了 `extc_print`）。
+`needPrint` 只在两个调用点置位（`genPrint` 的结构化分支、`?` 在 `main` 里失败时印载荷）；
+`trap(msg)` 那处 `needRuntime = true` **整条删掉**（它只用原语 `extc_trapMsg`/`extc_die` —— 这就是 BG-1 的根因）。
+`extc_print` 只在有人调用时发射 ⇒ `static __attribute__((unused))` **摘掉** ✓。
+
+| 读数 | 值 |
+|---|---|
+| 生成物总字节（414 份）| 13,734,285 → **12,957,327**（−777 KB / −5%）|
+| 指纹 | 351 份变（63 份不变）⇒ 重取基线 `tools/codegen-baseline-2026-10-05-w2.sha256` |
+| 变化性质 | 351 份**全是纯删除**（没人调用的描述符表 + `extc_print`）；184 份另有属性那一行 |
+| `tools/gate_checkc.py --scope full` | 1,035 份 gcc+clang `-c -O2`：**失败 0** ✓ |
+| `./check.sh quick` | **72/0** ✓ |
+| `[wl]`/`[dce] prim`/`prim-out`/`func`/`scoped` | 8,323 / **0** / 2 / 5,466 / 125 不变 |
+
 ## 七、验收（定稿口径）
 
 * **指纹**：414/414 逐字节不变（W2 除外：只允许"旗子判错"的产物变化，且必须逐条解释 ✓）；

@@ -333,7 +333,13 @@ typedef struct {
      * loses `extc_print` and `extc_desc_text`. That bug really happened - the
      * most ordinary line there is, `println("x = ", n)`, failed to compile.
      * genPrint raises this flag directly instead. */
+    /* BG-1（2026-10-05）：`rt`（描述符类型 + 共享标量描述符）与 `rtPrint`（`extc_print`）曾是
+     * **同一个** `needRuntime`，于是一个只需要描述符表的程序也会把 `extc_print` 发出去，
+     * 而它没人调用 ⇒ `-Werror=unused-function`（clang 另报 `-Wunneeded-internal-declaration`）。
+     * 两个需求不同：`needPrint` 只在**真的调用 `extc_print`** 的地方置位（结构化打印、`?` 在 main
+     * 里失败时印载荷），`needRuntime` 表示"需要那张表"。 */
     bool        needRuntime;
+    bool        needPrint;      /* `extc_print` 被调用过 ⇒ 才发 rtPrint */
     bool        needPar;      /* par::run/par::map 用到了线程运行期 */
     bool        needParRegion; /* 有 worker 会 new ⇒ 区域共享 arena 那半套要参与编译 */
     bool        parTls;     /* 当前函数在 parallel::run 的调用链上 ⇒ new 走 extc_tls_arena */
@@ -1845,7 +1851,8 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
          * "incompatible types". */
         if (bt->kind == TY_ENUM || isByteView(bt) || bt->kind == TY_STRUCT ||
             bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
-            g->needRuntime = true;              /* the print runtime must be emitted too */
+            g->needRuntime = true;              /* the descriptor table must be emitted too */
+            g->needPrint   = true;              /* ... and `extc_print`, which it calls */
             if (printArgIsPlace(a)) {
                 bufPrintf(&b, "extc_print(&(%s), %s)", code, descRef(g, bt));
             } else {
@@ -3304,7 +3311,8 @@ static TryInfo genTryHead(CG *g, Expr *e) {
          * which fd failed rather than "something failed" ✓ A `none` has no payload. */
         if (!ti.isOpt) {
             Type *et = subst(g, *(Type **)vecAt(&ot->targs, 1));
-            g->needRuntime = true;               /* extc_print lives in the print runtime */
+            g->needRuntime = true;               /* the descriptor table ... */
+            g->needPrint   = true;               /* ... and `extc_print`, called just below */
             cgLine(g, "fprintf(stderr, \"%%s:%%d: trap: a step in `main` failed: \","
                       " \"%s\", %d);", g->path, e->line);
             cgLine(g, "extc_print(&(%s.u.%s._0), %s);", ti.tmp, ti.failVar, descRef(g, et));
@@ -3920,7 +3928,9 @@ static void genStmtInner(CG *g, Stmt *s) {
              * （临终钩子照跑 ⇒ 缓冲输出不丢，定案 80）。也就是说"程序坏了"在这门语言里
              * 只有一种说法，不管那句话是编译器说的还是写代码的人说的。 */
             Expr *m = s->u.trap_.msg;
-            g->needRuntime = true;                  /* extc_trapMsg 住在 trap 运行时里 */
+            /* Nothing from `rt`/`rtPrint` here: `extc_trapMsg` and `extc_die` are primitives of
+             * the runtime block, and `trap` prints no structured payload. Setting `needRuntime`
+             * here was what pulled `extc_print` into every program that traps (BG-1). */
             if (m->kind == EX_STR) {
                 /* 字面量：走短路径，消息作为**参数**而不是格式串（用户的消息里有 `%` 也安全）。 */
                 cgLine(g, "extc_trapMsg(\"%s\", %d, \"%s\");", g->path, s->line, m->u.str.text);
@@ -7725,15 +7735,14 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         " * the `_debug` helpers it replaces; the truth table lives in\n"
         " * tools/print-formats.txt (floats use %g, [N]u8 prints numerically, and\n"
         " * slice<u8> prints as text). */\n"
-        /* `__attribute__((unused))`：这一段运行时是**整块发射**的，而这个函数只有"程序真的打印了
-         * 结构化类型"时才被调用 ⇒ 凡是因为别的理由需要运行时块、又不打印结构化类型的程序，都会
-         * 撞上 `-Werror=unused-function`（实测：往 `stdlib/std/io.extc` 加几个 helper 就让
-         * `tests/coro` 六个夹具全灭 ✗）。
-         * **两个编译器对"没用上"的看法不同**：GCC 用 `static inline` 就安静了，而 Clang 反过来报
-         * `-Wunneeded-internal-declaration`（"static inline 却没人用 ⇒ 干脆不发射"）✗ ——
-         * `__attribute__((unused))` 是两边都认的那个写法。
-         * **不动"什么时候发射"那个判定**：它注释里就写着真出过 bug（漏发 = 生成物坏掉）。 */
-        "static __attribute__((unused)) void extc_print(const void *p, const ExtcDesc *d) {\n"
+        /* 这里曾经挂着 `__attribute__((unused))`：这一段是**整块发射**的，而 `extc_print`
+         * 只有"程序真的打印了结构化类型"时才被调用 ⇒ 凡是因为别的理由需要运行时块、又不打印
+         * 结构化类型的程序都会撞 `-Werror=unused-function`（实测：往 `stdlib/std/io.extc` 加几个
+         * helper 就让 `tests/coro` 六个夹具全灭）；而 `static inline` 不是解（GCC 认、Clang 反手报
+         * `-Wunneeded-internal-declaration`）✗。
+         * BG-1 的**正解**是让这一段**按需发射**：`rtPrint` 现在只在真的有 `extc_print` 调用点时
+         * 发出去（`needPrint`），所以属性可以摘了 —— 没人调用的函数根本不进产物 ✓。 */
+        "static void extc_print(const void *p, const ExtcDesc *d) {\n"
         "    switch (d->kind) {\n"
         "    case EXTC_D_I8:   printf(\"%d\", (int)*(const int8_t *)p); return;\n"
         "    case EXTC_D_I16:  printf(\"%d\", (int)*(const int16_t *)p); return;\n"
@@ -8679,8 +8688,12 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
             "}\n");
     }
 
-    if (g.needRuntime || g.eqNeed.len) bufPuts(out, bufCstr(&g.rt));
-    if (g.needRuntime)                 bufPuts(out, bufCstr(&g.rtPrint));
+    /* The table is what the descriptors `emitDescRegion` may have written are made of, so it
+     * goes out whenever anything could name it: a print, a structural `==`, or a descriptor row
+     * that exists at all (`descs`). `rtPrint` goes out only where `extc_print` is actually
+     * called -- that separation is BG-1's fix. */
+    if (g.needRuntime || g.eqNeed.len || g.descs.len) bufPuts(out, bufCstr(&g.rt));
+    if (g.needPrint)                                  bufPuts(out, bufCstr(&g.rtPrint));
     if (g.needCout) bufPuts(out, bufCstr(&g.rtCout));
     if (g.needCoutF64) bufPuts(out, bufCstr(&g.rtCoutF64));
     if (g.needPool && !g.poolDone) poolsEmitRuntime(arena, out);

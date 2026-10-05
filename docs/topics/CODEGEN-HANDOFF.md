@@ -45,7 +45,8 @@
 | **W0 ✅ 已落** | 三个删除点按 `EXTC_DBG_DCE` 打一行（零行为变化）| — | **13,923**（基线）|
 | **W1 ✅ 已落** | 登记 API：发射实体时就地登记 `{name, kind, block, span}`；删除端**优先用登记信息**，行形识别降级兜底 | **不变** ✓ | 不变 ✓ |
 | **W2a ✅ 已落** | 原语块**按需发射**：闭包在块进产物**之前**决定谁存在；旧 pass 变预言机（块内必须 0）+ 兜底 | **不变** ✓ | **块内 0** ✓（`[wl]` 8,323）|
-| **W2b** | 其余运行时块进闭包（pool 运行期 + 15 个 `need*` 旗子 ⇒ 修 BG-1）| 见 §4.4 | `prim-out` → 0 |
+| **W2b-1 ✅ 已落** | BG-1 修好：`needPrint` 与 `needRuntime` 分开 ⇒ `extc_print` 按需；摘掉 `unused` 属性 | **351 份变**（全是删死机器，见 §4.4）| 不变（0）|
+| **W2b-2** | pool 运行期 + 其余 `need*` 旗子进闭包 | 见 §4.5 | `prim-out` → 0 |
 | **W3** | worklist 覆盖**函数/实例/描述符** ⇒ 删除 pass 的函数段、描述符段退场 | **不变** | `func` → 0 |
 | **W4** | 删掉 `dropRuntimeDefs` 的行形识别与 anchor 技巧（`dropUnusedLocals` **留着**）| **不变** | 全 0 |
 
@@ -124,15 +125,34 @@ W2 的验收必须**逐条解释**这 2 份的变化。
 修法：窗口按 `text + len` 夹一次（越界处本来也没有可删的东西，`span` 检查早就拦着）。
 这是审计 §7 闸门③（差分 fuzz）抓到的，不是判据覆盖率问题 —— 是**真崩**。
 
-### 4.4 下一步（W2b）：其余运行时块 + 15 个 `need*` 旗子
+### 4.4 W2b-1 已落（2026-10-05）：BG-1 修好 —— `rtPrint` 独立按需
 
-`[dce] prim-out` = 2 说明**只有 pool 运行期的头部**还在旧 pass 手里。W2b 要做两件事：
+**`needRuntime` 拆成两个**：`needRuntime` = 「要那张描述符表（`rt`）」，`needPrint` = 「真的调用了
+`extc_print`（`rtPrint`）」。`needPrint` 只在**两个**调用点置位（`genPrint` 的结构化分支、
+`?` 在 `main` 里失败时印载荷）；`trap(msg)` 那处**整条删掉**（它只用 `extc_trapMsg`/`extc_die`，
+两个都在原语块里，跟描述符表无关 —— **那正是 BG-1 的根因**）。于是：
+`extc_print` 只在有人调用时发射 ⇒ `static __attribute__((unused))` **摘掉** ✓（评审文档 §8 的准入条件达成）。
 
-1. **pool 运行期**（`poolsEmitRuntime` + `poolsEmitDynRuntime`）纳入登记/闭包。注意：一旦**整块**纳入，
-   `tests/stl/clone_warn` 这类产物会多掉 **11 个**没人调用的 `extc_pool_*`（实测）；那是**对的**
-   （它们就是死代码，用户前提 §1.3），但**指纹会变** ⇒ 必须逐条解释、并重取基线。
-2. **15 个 `need*` 旗子**换成需求边：首先把 **BG-1** 修掉（`rtPrint` 与 `rt` 分开按需发射 ⇒
-   `extc_print` 不再被连带发出 ⇒ 才能删 `__attribute__((unused))`）。
+| 读数 | 值 |
+|---|---|
+| 生成物总字节（414 份）| 13,734,285 → **12,957,327**（**−777 KB，−5%**；按 M2 的 3ms/KB ≈ 省 2.3s gcc）|
+| 指纹 | **351 份变**（63 份不变）—— 已重取基线 `tools/codegen-baseline-2026-10-05-w2.sha256` |
+| 变化性质（逐份差分核过）| 351 份**全是纯删除**（没人调用的描述符表 + `extc_print`）；其中 **184 份**另有一行变化：`static __attribute__((unused)) void extc_print` → `static void extc_print`（那份**真的**打印结构化类型，属性本来就该摘）|
+| `tools/gate_checkc.py --scope full` | **1,035 份 gcc+clang `-c -O2`：失败 0** ✓ |
+| `./check.sh quick` | **72/0** ✓ |
+| `[wl] prim` / `[dce] prim` / `prim-out` / `func` / `scoped` | 8,323 / **0** / 2 / 5,466 / 125 **不变** |
+
+⇒ 这正是 W2 行里说的"只允许**旗子判错**的产物变"：变的就是 `trap(msg)` 把整张描述符表连带拖出来的那 351 份。
+**新基线**：`tools/codegen-baseline-2026-10-05-w2.sha256`（W1/W2a 期间的对照基线是
+`tools/codegen-baseline-2026-10-05.sha256`，留在仓库里当历史）。
+
+### 4.5 下一步（W2b-2 / W3）
+
+1. **pool 运行期**纳入登记/闭包（`[dce] prim-out` = 2 ⇒ 只剩它的头部在旧 pass 手里）。注意：**整块**纳入后
+   `tests/stl/clone_warn` 这类产物会多掉 **11 个**没人调用的 `extc_pool_*`（实测），那是**对的**，
+   但要逐条解释、要重取基线。
+2. **其余 14 个 `need*` 旗子**换成需求边（BG-1 已经用同样的手法修好一格，剩下的照做）。
+3. **W3**：worklist 覆盖函数/实例/描述符（`func` → 0）。
 
 ## 5. 动手前的问题——**全部已答**（读代码所得，别再猜）
 
@@ -158,15 +178,21 @@ W2 的验收必须**逐条解释**这 2 份的变化。
 ```sh
 # ① 行为不变（纯重构步）：414 份产物哈希 diff
 cd ~/extC_Compiler
+#    基线：W1/W2a 期间用 tools/codegen-baseline-2026-10-05.sha256；
+#          W2b-1 起（BG-1 有意改产物）用 tools/codegen-baseline-2026-10-05-w2.sha256
 while read -r h f; do ./build/extc -w --no-line-map -o /tmp/o.c "$f" 2>/dev/null && \
-  printf '%s %s\n' "$(sha256sum /tmp/o.c|cut -d' ' -f1)" "$f"; done < tools/golden.sha256 > /tmp/fp-new.txt
+  printf '%s %s\n' "$(sha256sum /tmp/o.c|cut -d' ' -f1)" "$f"; done < tools/codegen-baseline-2026-10-05.sha256 > /tmp/fp-new.txt
 diff /tmp/leadchk/fp-before.sha256 /tmp/fp-new.txt | head
 
-# ② 预言机读数
-EXTC_DBG_DCE=1 ./build/extc -w --no-line-map -o /tmp/o.c <产物> 2>&1 | grep -c '^\[dce\]'
+# ①b 单开关回退（W2a 的登记路径整段关掉 ⇒ 回到 W1 行为，指纹应与上面的基线一致）
+#    EXTC_DBG_PRIMSCAN=1 <同上>
+
+# ② 预言机读数（W2a 之后：`[dce] prim` 必须是 0；`[wl] prim` 是新机制的数字）
+EXTC_DBG_DCE=1 ./build/extc -w --no-line-map -o /tmp/o.c <产物> 2>&1 | grep -E '^\[(wl|dce)\]'
 
 # ③ 闸门（安全网，不是质量依据）
 ./check.sh quick          # 期望 72/0
+python3 tools/gate_checkc.py --scope full   # 全语料 gcc+clang -c -O2（改了发射内容时必跑）
 tools/golden.sh --strict-bytes
 ```
 
