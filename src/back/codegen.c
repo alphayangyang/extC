@@ -6052,6 +6052,7 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                             fprintf(stderr, "[prim] %-22s total=%zu inside=%zu span=%zu %s\n",
                                     name, total, inside, span, total == inside ? "DROP" : "keep");
                         if (total == inside) {
+                            if (dbgOn("EXTC_DBG_DCE")) fprintf(stderr, "[dce] prim %s\n", name);
                             memmove(ln, ln + span, len - (size_t)(ln - text) - span + 1);
                             len -= span;
                             rl  -= span;
@@ -6533,6 +6534,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
         size_t at = g->bodyOff + d->off;
         if (at + tl > len || memcmp(text + at, d->text, tl) != 0) continue;   /* be sure */
         memmove(text + at, text + at + tl, len - at - tl + 1);
+        if (dbgOn("EXTC_DBG_DCE")) fprintf(stderr, "[dce] scoped %s\n", d->name);
         len -= tl;
         out->len = len;
     }
@@ -6575,6 +6577,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
         len -= pl;
         if (g->bodyOff > (size_t)(pt - text)) g->bodyOff -= pl;
         out->len = len;
+        if (dbgOn("EXTC_DBG_DCE")) fprintf(stderr, "[dce] func %s\n", df->name);
         df->body = NULL;
     }
     /* The runtime primitives come after the functions and before the globals: a
