@@ -371,9 +371,7 @@ static void usage(const char *argv0) {
         "  EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena\n"
         "                       placement in 2 of the 414 golden programs\n"
         "  EXTC_SELFCHECK=1     run the checker's self-check -- **CAN FAIL THE BUILD** (exit 1)\n"
-        "  EXTC_DBG_PRIMSCAN=1  decide the runtime primitive block by the old line-shape scan\n"
-        "                       instead of the emission-time registry (rollback switch for the\n"
-        "                       codegen worklist refactor; the output is meant to be identical)\n"
+
         "\n"
         "  -h, --help       show this help\n",
         argv0);

@@ -22,7 +22,6 @@
  * checker's - the same hazard in a smaller form - and are gone. */
 #include "typelayer.h"   /* the read-only type questions (R3: no checker header here) */
 #include "extctime.h"
-#include "dbg.h"         /* EXTC_DBG_ASSERT: internal invariants, not user errors */
 
 #include <assert.h>     /* the entry-point contracts below */
 #include <stdarg.h>
@@ -395,22 +394,13 @@ typedef struct {
     const char *mainFuncName;
     const char *mainBody;
     size_t      mainOff, mainLen;
-    /* The runtime primitive block, captured whole as it is emitted. clang reports an
-     * unused `static inline` where gcc does not, so this is the one place where the two
-     * compilers disagree about the same text. The block is emitted piece by piece through
-     * `PRIM_BLOCK` (one row per definition, one per piece of scaffolding), and each
-     * definition registers itself in `primEnts` as it goes out -- see PrimEnt. The text is
-     * still kept whole because the fallback pass and the oracle work on it. */
-    const char *primText;
-    /* Where the primitive block starts in the assembled unit. Nothing before it is ever
-     * removed (it is the preamble plus the dying hook's comment), so the offset is stable
-     * through every pass, which is what lets the registry carry spans instead of text. */
-    size_t      primA;
+    /* The runtime primitive block is a table (`PRIM_BLOCK`): one row per definition, one per
+     * piece of scaffolding. `primEmit` registers each definition in `primEnts` as the block is
+     * assembled, and `primSplice` decides -- from that registry, before the block is part of
+     * the unit -- which of them the program uses. clang reports an unused `static inline` where
+     * gcc does not, which is why a definition nobody uses may not be emitted at all. */
+    size_t      primA;          /* where the block is spliced into the unit */
     Vec         primEnts;       /* PrimEnt* - the block's definitions, in emission order */
-    Buf         prim;           /* the block, assembled before it is spliced in */
-    size_t      primBlockLen;   /* bytes the block still occupies at `primA`: the length
-                                 * drops by each definition removed, so `primA + primBlockLen`
-                                 * is always the block's current end */
     /* Where the body buffer ended up in the finished output: a definition inside a
      * body is recorded as an offset into that buffer, and this turns it into a
      * position in the assembled unit. */
@@ -5945,210 +5935,6 @@ static const char *macroDefineName(const char *ln, size_t ll) {
     return (i < ll) ? ln + i : NULL;
 }
 
-/* Drop the runtime definitions nothing uses.
- *
- * The block is captured as one piece of text and scanned in the style it was written:
- * a definition starts at column zero and ends with a `}` at column zero, a variable is
- * one line ending in `;`. The test for every candidate is the same sound one: *every*
- * mention of the name in the finished unit lies inside the candidate itself. A first
- * attempt used "no mention outside this whole block", which is unsound - a call from
- * another primitive inside the block counts as inside, yet that caller is still there
- * (dropping `extc_trap` while `extc_checkedIndex` still called it turned a clean
- * translation unit into one that did not compile, and a compile error stops clang from
- * reporting warnings at all, so the damage first looked like a win).
- *
- * This function no longer decides the block: `primSplice` does, from the registry, before the
- * block becomes part of the unit. What it still does is the one thing the registry does not
- * cover - and, with `EXTC_DBG_PRIMSCAN=1`, the whole job again, which is the single switch the
- * worklist step can be rolled back with. Its window is `strlen(primText)` from the anchor and
- * it is reset on every restart, so once the block is short it reaches past the block's end: the
- * deletions it reports as `[dce] prim-out` are that reach (the head of the pool runtime), and
- * the ones it reports as `[dce] prim` are inside the block -- which must be none. */
-static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
-    char  *text = *textp;
-    size_t len  = *lenp;
-    if (!g->primText) return;
-    const char *nl = strchr(g->primText, '\n');
-    size_t al = nl ? (size_t)(nl - g->primText) : strlen(g->primText);
-    char anchor[256];
-    if (al == 0 || al >= sizeof anchor) return;
-    memcpy(anchor, g->primText, al);
-    anchor[al] = 0;
-    size_t rl0 = strlen(g->primText);
-    for (;;) {
-        char  *rp = strstr(text, anchor);
-        if (!rp) break;
-        /* The window is the length the block had when it was captured, measured from the
-         * anchor -- and the text can be shorter than that now, because the block it starts has
-         * been cut down since (`primSplice` leaves out everything nothing uses before the block
-         * is ever spliced in). Without this clamp the scan reads past the end of the unit:
-         * measured as a SIGSEGV inside `memchr` on a program whose block is most of the unit.
-         * Clamping costs nothing: past the end there is nothing to delete, and the `span` check
-         * below already refused to remove anything that reached there. */
-        size_t rl = rl0;
-        if ((size_t)(text + len - rp) < rl) rl = (size_t)(text + len - rp);
-        bool   cut = false;
-        for (char *ln = rp; ln < rp + rl && !cut; ) {
-            char  *eol = memchr(ln, '\n', (size_t)(rp + rl - ln));
-            size_t ll  = eol ? (size_t)(eol - ln) : (size_t)(rp + rl - ln);
-            /* A definition opens a body, and a short one fits on a single line, which
-             * ends with `}` instead - `extc_arena_init` is written that way, and it was
-             * skipped until the debug switch showed it never reached the decision. */
-            bool   opensBody = (ll > 8 && ln[ll - 1] == '{' && memchr(ln, '(', ll));
-            bool   wholeBody = (ll > 8 && ln[ll - 1] == '}' && memchr(ln, '(', ll));
-            /* A long parameter list wraps, so the opening line can end with a comma:
-             * `extc_checkedRange` is written that way, and it never reached the decision
-             * either - the debug switch showed an empty log for it. */
-            bool   wrapsHead = (ll > 8 && ln[ll - 1] == ',' && memchr(ln, '(', ll));
-            bool   isDef = (opensBody || wholeBody || wrapsHead) &&
-                           ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' && ln[0] != '*';
-            bool   isVar = (ll > 8 && ln[0] != ' ' && ln[0] != '/' && ln[0] != '#' &&
-                            ln[0] != '*' && ln[ll - 1] == ';' && !memchr(ln, '(', ll));
-            /* A prelude macro is emitted with the machinery that needs it, and that machinery
-             * is dropped when nothing uses it - leaving `#define EXTC_REC_LIMIT 100000` behind
-             * for clang to report as an unused macro. A macro is the same kind of candidate:
-             * its name appears in its own line, and anywhere else means something uses it. */
-            bool   isMacro = (ll > 10 && macroDefineName(ln, ll) != NULL);
-            if (isDef || isVar || isMacro) {
-                /* The name: the identifier before the first `(`, or the last one before
-                 * the `;` / `=` of a variable. */
-                char *ns, *ne;
-                if (isMacro) {
-                    ns = (char *)macroDefineName(ln, ll);
-                    ne = ns;
-                    while (ne < ln + ll && identByte(*ne)) ne++;
-                } else if (isDef) {
-                    ne = memchr(ln, '(', ll);
-                    ns = ne;
-                    while (ns > ln && identByte(ns[-1])) ns--;
-                } else {
-                    /* The name of a variable: before the `=` of an initializer, else
-                     * before the `;`. Reading back from the `;` would pick up the
-                     * initializer (`static int64_t __extc_rec_depth = 0;` has `0` there). */
-                    char *eq = memchr(ln, '=', ll);
-                    ne = eq ? eq : ln + ll - 1;
-                    while (ne > ln && (ne[-1] == ' ' || ne[-1] == '=')) ne--;
-                    ns = ne;
-                    while (ns > ln && identByte(ns[-1])) ns--;
-                }
-                size_t nlen = (size_t)(ne - ns);
-                long   totalOverride = -1;      /* macros: guard lines do not count as uses */
-                long   insideOverride = -1;     /* macros: every `#define` of the name is a piece */
-                char   name[128];
-                if (nlen > 5 && nlen < sizeof name &&
-                    (strncmp(ns, "extc_", 5) == 0 || strncmp(ns, "__extc_", 7) == 0 ||
-                     strncmp(ns, "EXTC_", 5) == 0)) {
-                    memcpy(name, ns, nlen);
-                    name[nlen] = 0;
-                    size_t span = (isDef && !wholeBody) ? 0 : ll + 1;   /* a variable, a macro, or a one-liner */
-                    if (wholeBody) span = ll + 1;           /* one line: the whole definition */
-                    if (isMacro) {
-                        /* Only the `#define` line is the candidate. Taking the whole guard block
-                         * would be wrong twice over: a shared `#if defined(__GNUC__)` block holds
-                         * several macros at once (`EXTC_INLINE` and `EXTC_UNUSED` live in the same
-                         * one), so removing it for an unused macro deleted a macro that was still
-                         * in use - five C errors, `expected ';' before 'static'`. Leaving
-                         * `#ifndef X`/`#endif` behind is harmless: an empty conditional is valid.
-                         *
-                         * The guard line mentions the name only to ask whether it is defined, which
-                         * is not a use, so those lines are subtracted from the count. */
-                        /* A macro can be defined more than once in the same conditional block -
-                         * `EXTC_INLINE` is defined once for GNU compilers and once for the rest,
-                         * in the `#if`/`#else` of one block - and every one of those lines is a
-                         * piece of the same macro, so they all count as "its own mentions" and all
-                         * of them go together. */
-                        size_t guards = 0, defs = 0;
-                        for (char *p = rp; p < rp + rl; ) {
-                            char *el = memchr(p, '\n', (size_t)(rp + rl - p));
-                            size_t l2 = el ? (size_t)(el - p) : (size_t)(rp + rl - p);
-                            if (l2 > 8 && (strncmp(p, "#ifndef ", 8) == 0 || strncmp(p, "#ifdef ", 7) == 0))
-                                guards += countMentionsIn(g, p, l2, name);
-                            const char *mn = (l2 > 8) ? macroDefineName(p, l2) : NULL;
-                            if (mn && strncmp(mn, name, strlen(name)) == 0 &&
-                                !identByte(mn[strlen(name)]))
-                                defs += countMentionsIn(g, p, l2, name);
-                            if (!el) break;
-                            p = el + 1;
-                        }
-                        totalOverride  = (long)countMentions(text, name) - (long)guards;
-                        insideOverride = (long)defs;
-                        /* Not this macro's own line: skip it -- but **advance the cursor first**.
-                         * This `continue` belongs to the line loop at the top of the anchor scan,
-                         * whose only advance is at its bottom (`ln = eol + 1`). Jumping back
-                         * without moving `ln` spins on the same line forever, and the state that
-                         * triggers it is one this pass can create itself: an earlier round may
-                         * leave a *truncated* `#define` line behind (audit P0-22: a fragment
-                         * `#define EXTC_ZON` made `stdlib/stl/hashSet.extc` burn >15 minutes with
-                         * no diagnostic). So do exactly what the loop bottom would have done. */
-                        if (!defs) {
-                            if (!eol) break;
-                            ln = eol + 1;
-                            continue;
-                        }
-                    }
-                    if (isDef && !wholeBody) {              /* to the `}` at column zero */
-                        char *p = ln;
-                        /* Pair braces instead of trusting "the first `}` in column zero": the runtime
-                         * block can already have lost part of its text by the time a later round of
-                         * this pipeline runs, and then that rule walks past the definition and stops
-                         * at some **user** function's closing brace. With depth counting an intact
-                         * definition ends at its own brace, and one whose tail is gone never comes
-                         * back to zero -- `span` stays 0 and nothing is removed, which is the safe
-                         * direction (docs/topics/HARDENING.md section 2). */
-                        {
-                            int depth = 0;
-                            for (; p < rp + rl && p < text + len; p++) {
-                                if (p[0] == '{') depth++;
-                                else if (p[0] == '}') {
-                                    depth--;
-                                    if (depth <= 0) { span = (size_t)(p - ln) + 1; break; }
-                                }
-                            }
-                        }
-                    }
-                    /* And never delete past the end of the text: `rp + rl` still starts from the
-                     * **original** runtime length, so in a later round it can point past the
-                     * buffer. A `span` measured out there made the `memmove` length
-                     * (`len - (ln - text) - span + 1`) underflow to a huge `size_t` and copy over
-                     * the rest of the file -- that is how `examples/prelude.extc` lost a call
-                     * inside `main` while no single deletion appeared to cover it. */
-                    if (ln + span > text + len) span = 0;
-                    if (span) {
-                        /* every mention inside the candidate itself? */
-                        size_t total  = countMentions(text, name);
-                        if (totalOverride >= 0) total = (size_t)totalOverride;
-                        size_t inside = (insideOverride >= 0) ? (size_t)insideOverride
-                                                             : countMentionsIn(g, ln, span, name);
-                        if (dbgOn("EXTC_DBG_PRIM"))
-                            fprintf(stderr, "[prim] %-22s total=%zu inside=%zu span=%zu %s\n",
-                                    name, total, inside, span, total == inside ? "DROP" : "keep");
-                        if (total == inside) {
-                            /* Inside the block this must never happen again: `primSplice` has
-                             * already left out every definition nothing uses. Anything it does
-                             * delete lies past the block's end - see the note above. */
-                            bool inBlock = ((size_t)(ln - text) < g->primA + g->primBlockLen);
-                            if (dbgOn("EXTC_DBG_DCE"))
-                                fprintf(stderr, "[dce] %s %s\n", inBlock ? "prim" : "prim-out", name);
-                            memmove(ln, ln + span, len - (size_t)(ln - text) - span + 1);
-                            len -= span;
-                            rl  -= span;
-                            out->len = len;
-                            text = bufCstr(out);
-                            cut = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (!eol) break;
-            ln = eol + 1;
-        }
-        if (!cut) break;      /* nothing left to drop: the block is settled */
-    }
-    *textp = text;
-    *lenp = len;
-}
-
 /* Drop local declarations that nothing reads. The stage is the whole function body: a name
  * that occurs there exactly once is the declaration itself. */
 /* A statement to remove, or to shorten to its right-hand side. */
@@ -6217,7 +6003,8 @@ static void bodyMapPut(BodyMap *m, const char *name, const char *body) {
     }
 }
 /* Content-search results, cached per function name. `DeadFunc.body` is a pointer from emission
- * time and the text has been rewritten since (`dropRuntimeDefs` runs first), so it is usually
+ * time and the text has been rewritten since (a definition removed by an earlier phase moves
+ * everything after it), so it is usually
  * stale and the lookup falls back to strstr(text, body) -- for **every local** of that function.
  * callgrind put that site at 71.67% of all instructions (117,643 calls, 9.33 G instructions).
  * All locals of one function resolve the same body, so one search per name is enough: the cached
@@ -6656,12 +6443,9 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (dbgOn("EXTC_DBG_DCE")) fprintf(stderr, "[dce] func %s\n", df->name);
         df->body = NULL;
     }
-    /* The runtime primitives are not decided here any more: the block is assembled beside the
-     * unit and decided from the registry (`primSplice`, called from generateC once the rest of
-     * the pipeline has settled). `EXTC_DBG_PRIMSCAN=1` puts the old call back, which is the
-     * single switch this step rolls back with. */
-    if (getenv("EXTC_DBG_PRIMSCAN"))
-        CGACC("cg-runtime-scan", dropRuntimeDefs(g, out, &text, &len));
+    /* The runtime primitive block is not decided here: it is assembled beside the unit and
+     * decided from the registry (`primSplice`, called from generateC once the rest of the
+     * pipeline has settled). Nothing below this line scans for a definition. */
     /* Then the top-level definitions, to a fixed point: a definition can be the only
      * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
      * which no program refers to either), so one pass leaves a chain behind. Each
@@ -7064,7 +6848,6 @@ static const PrimPiece PRIM_BLOCK[] = {
 static void primEmit(CG *g) {
     for (size_t i = 0; i < sizeof PRIM_BLOCK / sizeof *PRIM_BLOCK; i++) {
         const PrimPiece *p = &PRIM_BLOCK[i];
-        bufPuts(&g->prim, p->text);
         /* A macro's row carries no name: it is read from the `#define` line itself, which is
          * the one thing every macro row has. (Keeping it out of the table also keeps a bare
          * `EXTC_*` string literal out of the source: `tools/check_switches.py` reads any of
@@ -7188,7 +6971,6 @@ static void primSplice(CG *g, Buf *out) {
     bufPuts(&nb, bufCstr(&blk));
     bufPutn(&nb, out->data + g->primA, out->len - g->primA);
     *out = nb;
-    g->primBlockLen = blk.len;
 }
 
 /* One row per piece of the runtime primitive block, in emission order.
@@ -7376,7 +7158,6 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.deadFuncs, arena, sizeof(DeadFunc *));
     vecInit(&g.deadLocals, arena, sizeof(DeadLocal *));
     vecInit(&g.primEnts, arena, sizeof(PrimEnt *));
-    bufInit(&g.prim, arena);
     bufInit(&g.desc, arena);
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
@@ -7601,34 +7382,6 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     g.primA = out->len;                 /* where the block will be spliced in */
     primEmit(&g);
 
-    /* The whole block as a C string: `dropRuntimeDefs` (the oracle and the fallback) finds it
-     * by this text, and `strlen` is the window it used before the registry existed. */
-    g.primText = bufCstr(&g.prim);
-    /* Rollback (`EXTC_DBG_PRIMSCAN=1`): the block goes straight into the unit and the
-     * line-shape pass decides it, exactly as it did before this step. */
-    if (getenv("EXTC_DBG_PRIMSCAN")) {
-        bufPuts(out, g.primText);
-        g.primBlockLen = g.prim.len;
-        /* The dying hook's storage is a definition like any other, and the line-shape pass has
-         * never been able to see it (the declaration has parentheses, so it is neither a
-         * function header nor a variable). Before the registry existed it was registered by
-         * hand, and the rollback path keeps that: without it the rollback product would carry
-         * one line the previous step did not. */
-        for (char *p = out->data; p < out->data + out->len; p++) {
-            if (p != out->data && p[-1] != '\n') continue;
-            if (strncmp(p, "static ", 7) != 0 || !strstr(p, "__extc_dying")) continue;
-            char *le = memchr(p, '\n', (size_t)((out->data + out->len) - p));
-            if (!le) break;
-            Buf t;
-            bufInit(&t, arena);
-            bufPutn(&t, p, (size_t)(le - p) + 1);
-            DeadDef *d = arenaAllocZero(arena, sizeof *d);
-            d->name = "__extc_dying";
-            d->text = bufCstr(&t);
-            *(DeadDef **)vecPush(&g.deadDefs) = d;
-            break;
-        }
-    }
 
     g.coroDefPrinted = g.needCoroHandle;
     g.coroDefA = out->len;              /* the coroutine runtime goes after the block */
@@ -8829,20 +8582,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         cgReport();
         if (out->len == before) break;
     }
-    if (!getenv("EXTC_DBG_PRIMSCAN")) {
-        /* The runtime primitive block is decided here, from the registry, and only then becomes
-         * part of the unit: what nothing uses never reaches the generated C. The rest of the
-         * pipeline has settled, so "does anything name it?" is asked once, of the finished text.
-         * Nothing before `primA` is ever removed, so that offset is still exact. */
-        primSplice(&g, out);
-        /* The text pass then runs once more over the unit, as the oracle for the block it was
-         * written for (it must find nothing left to delete inside it) and as the fallback for
-         * the text the registry does not cover -- the head of the pool runtime, which its window
-         * reaches past the block's end. Those deletions are reported as `[dce] prim-out`. */
-        char *text = bufCstr(out);
-        size_t len = out->len;
-        CGACC("cg-runtime", dropRuntimeDefs(&g, out, &text, &len));
-    }
+    /* The runtime primitive block is decided here, from the registry, and only then does it
+     * become part of the unit: what nothing uses never reaches the generated C. The rest of the
+     * pipeline has settled, so "does anything name it?" is asked once, of the finished text.
+     * Nothing before `primA` is ever removed, so that offset is still exact. */
+    primSplice(&g, out);
     /* A function nothing calls says so; then the parameters a body never reads. */
     markUncalledFunctions(&g, out);
     markUnusedParams(&g, out);

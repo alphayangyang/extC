@@ -192,6 +192,28 @@ W2 把裁短交给闭包后越界变大 ⇒ `memchr` SIGSEGV（gate 用例的绝
 | `./check.sh quick` | **72/0** ✓ |
 | `[wl]`/`[dce] prim`/`prim-out`/`func`/`scoped` | 8,323 / **0** / 2 / 5,466 / 125 不变 |
 
+## 六之九、W4 已落：行形删除 pass 退场（2026-10-05）
+
+**删掉**：`dropRuntimeDefs` 整个函数（**204 行**：anchor 技巧 / 6 条行形规则 / 大括号配对 /
+`span=0` 语义 / 游标推进陷阱 / 每轮重启的窗口重扫），以及 `EXTC_DBG_PRIMSCAN` 开关（连同 `--help`
+条目、开关棘轮里的 `EXTC_DBG_PRIM`）、`g.primText`、`g.prim`、`g.primBlockLen`、只为它加的 `dbg.h`。
+**流水线里不再有任何"按行形认定义"的代码。**
+
+| 读数 | 值 |
+|---|---|
+| 指纹 vs W2b-1 基线 | **412 不变 / 2 变** ⇒ 新基线 `tools/codegen-baseline-2026-10-05-w4.sha256` |
+| 生成物总字节 | 12,957,327 → 12,957,443（+116 B，即那 2 份各多一行）|
+| `[dce] prim` / `prim-out` | 随 pass 消失 |
+| `[wl] prim` / `func` / `scoped` | 8,323 / 5,466 / 125 不变 |
+| 编译器自身耗时（414 份 best of 3）| 4.46s |
+| 闸门 | check.sh quick **72/0** · gate_checkc full **0/1035** · gate_asan_corpus full **0/219** · difffuzz **0** · golden 414/414 合法 |
+
+**那 2 份变的**（`tests/stl/clone_warn`、`tests/pool/rt_stale_alias`）：旧 pass 的窗口越界伸进 pool 运行期
+头部、顺手删掉 `extc_pool_capacity`（§六之六 的巧合）；pass 没了，它留下。**这是修正**：
+运行期入点是**接口**。证据 —— W4 第一版顺手把 pool/dyn blob 也登记了，`tests/dyn/run.sh` 的
+`dyn_o5_stale_trap` 立刻编不过（它**手写** C 调 `extc_dyn_put`）⇒ 教训：**"没人提到" ≠ "没人用"**，
+生成的 C 与手写/链接进来的代码同处一个 TU。
+
 ## 七、验收（定稿口径）
 
 * **指纹**：414/414 逐字节不变（W2 除外：只允许"旗子判错"的产物变化，且必须逐条解释 ✓）；
