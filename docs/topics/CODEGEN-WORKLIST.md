@@ -78,6 +78,35 @@ while W 非空:
 * 仍未答（动手前必须）：**Q1 入口集合**（`main`/`@export`/模块 init/驱动）· **Q2 原型与定义的发射点**
   · **Q4 发射顺序的隐含依赖** · **Q5 `dyn` 表/方法实例这些"删除之后才拼接"的入口** · **Q6 模块级 `let`/init**。
 
+## 六之四、剩余 5 问已答（2026-10-05，读代码所得）
+
+**Q1 入口集合**：`main`（`cgIsMain`，571/4865）· **`@export` 函数**（`f->isExport` ⇒ 外部链接、
+不做 static，4888）· **被 `dyn` 表点名的函数**（见 Q5）· 以及**模块级全局的初始化式**里引用到的实体 ✓。
+
+**Q2 原型与定义分开发射，最后拼接**：函数的定义头在 4885–4888（按 `isExport`/`isInline` 决定链接性），
+原型是另一遍；8279 的注释写明"**Everything is spliced together at the end as prototypes, then …**"，
+1063/1138 也说明原型/描述符是**先发、再拼回**的 ⇒ **worklist 必须同时管住原型与定义两遍** ✓
+（现在的删除 pass 正是两处都删 ✓）。
+
+**Q5 `dyn` 表是"删除之后才拼接"的**（这是最危险的一格 ✓）：`namedByDynTable = planDynTable(f)`（5849）
+—— 事实**来自 plan 侧表** ✓；函数删除那遍**显式跳过**它们（6561）✓。⇒ worklist 必须把
+**被 dyn 表点名的函数当根** ✓，否则会删掉活代码 ✗（而这正是"最危险的方向"）。
+
+**Q6 没有模块 init 函数**（grep 无 `initState/moduleInit`）⇒ 模块级 `let` 就是 C 全局 ✓；
+其**初始化式**里引用到的函数/描述符要进闭包 ✓。
+
+**Q4 发射顺序**：三段——原型/typedef →（描述符）→ **body pool**（"definitions from here on"）→
+收尾拼接运行时块与 dyn 表 ⇒ worklist 的"任意顺序发射"只在**同一段内**成立 ✓，
+跨段顺序（原型先于定义、描述符先于使用）保持不变 ✓。
+
+## 六之五、与 AST/parser 的对接（用户特别提示，已核）
+
+* **codegen 只读 AST** ✓：它不写任何 AST 节点成员（写了会撞 AST 冻结闸门 ✗）；
+* **需要的新事实来自 plan 侧表** ✓：`planDynTable(f)`（5849）就是活例子，另有 `used` / `makesPool` /
+  `coroNeedsZone` 等既有事实 ✓；
+* **worklist 本身是 codegen 内部结构**（发射期的需求集合）⇒ **不需要动 AST、plan 或 parser** ✓✓
+  —— 若将来某个事实要跨 pass 存活，规矩是先例说的那条：**进 plan 侧表**，不进 AST 字段 ✗。
+
 ## 六之三、W0 已落：仪表 + 基线读数（2026-10-05）
 
 **仪表**：在三个删除点按 `EXTC_DBG_DCE` 打一行（`[dce] func|prim|scoped <名字>`），
