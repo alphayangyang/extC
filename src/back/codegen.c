@@ -22,6 +22,7 @@
  * checker's - the same hazard in a smaller form - and are gone. */
 #include "typelayer.h"   /* the read-only type questions (R3: no checker header here) */
 #include "extctime.h"
+#include "dbg.h"         /* EXTC_DBG_ASSERT: internal invariants, not user errors */
 
 #include <assert.h>     /* the entry-point contracts below */
 #include <stdarg.h>
@@ -132,6 +133,47 @@ typedef struct {
     size_t      off, scopeA, scopeB;
     bool        scoped;  /* true when the two offsets above are the stage to count on */
 } DeadDef;
+
+/* ---- The runtime primitive block is emitted piece by piece ----
+ *
+ * It used to be four string literals that one text pass later took apart again, deciding
+ * what was a definition by the *shape* of each line (ends with `{`, has a `(`, starts at
+ * column zero, ...). Two places knew what a definition looks like, and nothing made them
+ * agree: a change on the emitting side could silently make the pass stop recognizing a
+ * definition (it simply stayed in the product) or recognize something that was not one.
+ *
+ * Now the block is a table of pieces. Every definition is registered with its name, its
+ * kind and its exact span as it is emitted, and the dead-code decision reads that registry
+ * instead of guessing. What is left in a product is decided from facts recorded at
+ * emission time, and a line whose shape changes cannot silently change the answer. */
+typedef enum {
+    PRIM_SCAFFOLD = 0,  /* a comment, a blank line, or a `#if/#else/#endif` skeleton:
+                         * always emitted, so a dropped definition leaves exactly what the
+                         * text pass used to leave behind */
+    PRIM_FUNC,          /* a function definition */
+    PRIM_VAR,           /* a variable or typedef: one line */
+    PRIM_MACRO          /* a `#define` line (one piece per line: the same macro may be
+                         * defined once per branch of an `#if`) */
+} PrimKind;
+
+typedef struct {
+    PrimKind    kind;
+    const char *name;   /* NULL for scaffolding */
+    const char *text;
+} PrimPiece;
+
+/* One registered definition of the primitive block. `off`/`span` are relative to the
+ * start of the block, which is what makes the span survive: nothing before the block is
+ * ever removed, so the block's position in the unit is fixed. */
+typedef struct {
+    const char *name;
+    size_t      off, span;   /* inside the primitive block */
+    PrimKind    kind;
+    /* The W0 instrument never counted this one: it has parentheses, so the line-shape
+     * scan could not see it and it was registered by hand instead. Keeping it out of the
+     * `[dce] prim` count keeps that count comparable with the 8,332 measured baseline. */
+    bool        quiet;
+} PrimEnt;
 
 typedef struct {
     Arena      *arena;
@@ -279,7 +321,6 @@ typedef struct {
     Buf         rtCoutF64;
     bool        needCoutF64;
     bool        needCout;
-    Buf         rtDie;          /* `extc_die`, the dying hook - ahead of the trap bodies */
     /* Structural `==` also goes through a descriptor table; this vector lists
      * the types for which `extc_eq` is needed. The closure propagates inwards:
      * a container that needs equality needs it for its elements too, so a
@@ -349,11 +390,19 @@ typedef struct {
     size_t      mainOff, mainLen;
     /* The runtime primitive block, captured whole as it is emitted. clang reports an
      * unused `static inline` where gcc does not, so this is the one place where the two
-     * compilers disagree about the same text. The block is scanned afterwards instead of
-     * being recorded definition by definition: its primitives share three long string
-     * literals with the arena code between them, and splitting those is the text surgery
-     * that has failed here before. */
+     * compilers disagree about the same text. The block is emitted piece by piece through
+     * `PRIM_BLOCK` (one row per definition, one per piece of scaffolding), and each
+     * definition registers itself in `primEnts` as it goes out -- see PrimEnt. The text is
+     * still kept whole because the fallback pass and the oracle work on it. */
     const char *primText;
+    /* Where the primitive block starts in the assembled unit. Nothing before it is ever
+     * removed (it is the preamble plus the dying hook's comment), so the offset is stable
+     * through every pass, which is what lets the registry carry spans instead of text. */
+    size_t      primA;
+    Vec         primEnts;       /* PrimEnt* - the block's definitions, in emission order */
+    size_t      primBlockLen;   /* bytes the block still occupies at `primA`: the length
+                                 * drops by each definition removed, so `primA + primBlockLen`
+                                 * is always the block's current end */
     /* Where the body buffer ended up in the finished output: a definition inside a
      * body is recorded as an offset into that buffer, and this turns it into a
      * position in the assembled unit. */
@@ -5896,11 +5945,10 @@ static const char *macroDefineName(const char *ln, size_t ll) {
  * translation unit into one that did not compile, and a compile error stops clang from
  * reporting warnings at all, so the damage first looked like a win).
  *
- * Dropping a definition removes the calls it makes, so the counts fall as the scan goes
- * on and chains (`extc_arena_destroy` calls `extc_arena_release`) unravel by themselves.
- *
- * Only the `extc_`/`__extc_` namespace is touched: user code and the library are not this
- * pass's business. */
+ * `dropPrimReg` below answers the same question from the registry `primEmit` fills in, and
+ * is the path that runs; this function is kept as the rollback switch (`EXTC_DBG_PRIMSCAN=1`)
+ * until the last step of the worklist refactor deletes it. The anchor trick, the six line
+ * shapes and the brace pairing all exist only here. */
 static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
     char  *text = *textp;
     size_t len  = *lenp;
@@ -6068,6 +6116,94 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
             ln = eol + 1;
         }
         if (!cut) break;      /* nothing left to drop: the block is settled */
+    }
+    *textp = text;
+    *lenp = len;
+}
+
+/* How often does `name` appear in the block's preprocessor lines?
+ *
+ * `guards` counts the `#ifndef X` / `#ifdef X` lines: asking whether a macro is defined is
+ * not a use of it. `defs` counts the `#define X` lines, which are the pieces the macro
+ * consists of - a macro may be defined once per branch of an `#if`, and all of those lines
+ * are one definition. Both are what the line-shape pass computed while scanning
+ * (`totalOverride` / `insideOverride`); the registry path computes the same numbers, but
+ * over the block it knows the bounds of. */
+static void primMacroCounts(CG *g, const char *text, size_t blockEnd,
+                            const char *name, size_t *guards, size_t *defs) {
+    size_t nlen = strlen(name);
+    *guards = 0;
+    *defs   = 0;
+    for (size_t p = g->primA; p < blockEnd; ) {
+        const char *ln = text + p;
+        const char *nl = memchr(ln, '\n', blockEnd - p);
+        size_t ll = nl ? (size_t)(nl - ln) : (blockEnd - p);
+        if (ll > 8 && (strncmp(ln, "#ifndef ", 8) == 0 || strncmp(ln, "#ifdef ", 7) == 0))
+            *guards += countMentionsIn(g, ln, ll, name);
+        const char *mn = (ll > 8) ? macroDefineName(ln, ll) : NULL;
+        if (mn && strncmp(mn, name, nlen) == 0 && !identByte(mn[nlen]))
+            *defs += countMentionsIn(g, ln, ll, name);
+        if (!nl) break;
+        p += ll + 1;
+    }
+}
+
+/* Drop the runtime definitions nothing uses -- from the registry, not from the text.
+ *
+ * `primEmit` registered every definition of the block with its name, kind and exact span,
+ * so the candidate and its bounds are facts recorded at emission time rather than a guess
+ * made from the shape of a line. What is left is the decision itself, which is unchanged:
+ * a definition goes when every mention of its name in the finished unit lies inside the
+ * definition (for a macro: inside its `#define` lines, with `#ifdef` guards not counting as
+ * uses). Deleting one definition removes the calls it makes, so the counts fall and chains
+ * unravel - hence the loop around the scan.
+ *
+ * The block's position is stable: nothing before it is ever removed, and `off`/`span` are
+ * relative to it. When a definition goes, only the offsets of the definitions after it move,
+ * and they move by its span. */
+static void dropPrimReg(CG *g, Buf *out, char **textp, size_t *lenp) {
+    char  *text = *textp;
+    size_t len  = *lenp;
+    if (!g->primEnts.len) return;
+    size_t blockEnd = g->primA + g->primBlockLen;
+    EXTC_DBG_ASSERT_MSG(blockEnd <= len, "the primitive block is not where it was emitted");
+    if (blockEnd > len) return;
+    for (;;) {
+        bool cut = false;
+        for (size_t i = 0; i < g->primEnts.len; i++) {
+            PrimEnt *e = *(PrimEnt **)vecAt(&g->primEnts, i);
+            if (!e->span) continue;                       /* already dropped */
+            size_t at = g->primA + e->off;
+            if (at + e->span > len) { e->span = 0; continue; }
+            size_t total, inside;
+            if (e->kind == PRIM_MACRO) {
+                size_t guards = 0, defs = 0;
+                primMacroCounts(g, text, blockEnd, e->name, &guards, &defs);
+                total  = countMentions(text, e->name);
+                total  = (total > guards) ? total - guards : 0;
+                inside = defs;
+            } else {
+                total  = countMentions(text, e->name);
+                inside = countMentionsIn(g, text + at, e->span, e->name);
+            }
+            if (total != inside) continue;                /* someone outside names it: keep */
+            if (!e->quiet && dbgOn("EXTC_DBG_DCE"))
+                fprintf(stderr, "[dce] prim %s\n", e->name);
+            memmove(text + at, text + at + e->span, len - at - e->span + 1);
+            len -= e->span;
+            out->len = len;
+            for (size_t k = i + 1; k < g->primEnts.len; k++) {
+                PrimEnt *o = *(PrimEnt **)vecAt(&g->primEnts, k);
+                o->off -= e->span;                        /* the text before it shrank */
+            }
+            blockEnd -= e->span;
+            g->primBlockLen -= e->span;               /* the block is shorter now */
+            e->span = 0;
+            text = bufCstr(out);
+            cut = true;
+            break;                                        /* the text moved: start over */
+        }
+        if (!cut) break;
     }
     *textp = text;
     *lenp = len;
@@ -6583,8 +6719,20 @@ static void dropUnreferenced(CG *g, Buf *out) {
     /* The runtime primitives come after the functions and before the globals: a
      * primitive can be called only from code that the function phase has just removed
      * (`extc_modU` is called by dead library functions), and its own calls disappear as
-     * it goes, so this is the point where the counts mean what they should. */
-    CGACC("cg-runtime", dropRuntimeDefs(g, out, &text, &len));
+     * it goes, so this is the point where the counts mean what they should.
+     *
+     * The registry path is the default; `EXTC_DBG_PRIMSCAN=1` puts the line-shape scan
+     * back, which is the single switch this step can be rolled back with. */
+    if (!getenv("EXTC_DBG_PRIMSCAN"))
+        CGACC("cg-runtime", dropPrimReg(g, out, &text, &len));
+    /* The line-shape scan stays as the fallback, for text the registry does not cover. It
+     * currently decides the head of the pool runtime: its window is `rl0 = strlen(primText)`
+     * bytes from the anchor and is reset on every restart, so as the block shrinks it reaches
+     * past the block's end into what follows. That reach is incidental (it is why
+     * `extc_pool_capacity` is dropped in two products) and W2 is where the runtime blocks come
+     * under the registry; until then the fallback keeps the products byte-identical.
+     * `EXTC_DBG_PRIMSCAN=1` skips the registry entirely: the one switch this step rolls back with. */
+    CGACC("cg-runtime-scan", dropRuntimeDefs(g, out, &text, &len));
     /* Then the top-level definitions, to a fixed point: a definition can be the only
      * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
      * which no program refers to either), so one pass leaves a chain behind. Each
@@ -6907,6 +7055,125 @@ static bool inTraitTable(Module *m, FuncDef *f) {
     return false;
 }
 
+
+static const PrimPiece PRIM_BLOCK[] = {
+    { PRIM_SCAFFOLD, NULL, "/* Every path that ends the process on purpose goes through here. A trap path is\n * the only code that still runs when a program dies, so this is where anything the\n * process has to give back is given back. Today that is the terminal: a program\n * that traps in raw mode would otherwise leave the user's shell unable to echo\n * what they type. The hook is installed by `extc_raw_enter` (emitted only when the\n * program uses the raw-terminal primitives) and cleared before it runs, so it\n * cannot run twice. */\n" },
+    { PRIM_VAR, "__extc_dying", "static int32_t (*__extc_dying)(void);\n" },
+    { PRIM_SCAFFOLD, NULL, "#if defined(__GNUC__) || defined(__clang__)\n" },
+    { PRIM_MACRO, NULL, "#  define EXTC_NORETURN __attribute__((noreturn))\n" },
+    { PRIM_SCAFFOLD, NULL, "#else\n" },
+    { PRIM_MACRO, NULL, "#  define EXTC_NORETURN _Noreturn\n" },
+    { PRIM_SCAFFOLD, NULL, "#endif\n" },
+    { PRIM_FUNC, "extc_die", "EXTC_NORETURN static inline void extc_die(int code) {\n    if (__extc_dying) { int32_t (*f)(void) = __extc_dying; __extc_dying = 0; (void)f(); }\n    exit(code);\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* Every primitive below is `static inline`, and that is not a style choice:\n * without inlining, gcc at -O1 cannot see the body of a check, so it can neither\n * eliminate the check nor turn `i % 7` into a multiply and shift. Measured: the\n * remainder operator was 4.6x slower and a matrix multiply 1.5x slower; with\n * inlining both match C. */\n/* Out-of-range trap; the position comes from the call site via `#line`. */\n" },
+    { PRIM_FUNC, "extc_trap", "EXTC_NORETURN static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n            file, line, (long long)i, (long long)n);\n    extc_die(1);\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* Arithmetic failures must be loud: division by zero, the overflowing division, and\n * an over-wide shift are all undefined behaviour in C. Each one traps with a\n * source position instead of computing a wrong answer or leaving UB behind. */\n" },
+    { PRIM_FUNC, "extc_trapMsg", "EXTC_NORETURN static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n    extc_die(1);\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n#ifndef EXTC_REC_LIMIT\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_REC_LIMIT 100000\n" },
+    { PRIM_SCAFFOLD, NULL, "#endif\n" },
+    { PRIM_VAR, "__extc_rec_depth", "static int64_t __extc_rec_depth = 0;\n" },
+    { PRIM_FUNC, "extc_rec_enter", "static inline void extc_rec_enter(const char *f, int l) {\n    if (++__extc_rec_depth > EXTC_REC_LIMIT)\n        extc_trapMsg(f, l, \"recursion too deep (unbounded recursion?)\");\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_divI", "static inline int64_t extc_divI(int64_t a, int64_t b, const char *f, int l) {\n    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n    if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, \"integer overflow in division\");\n    return a / b;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_modI", "static inline int64_t extc_modI(int64_t a, int64_t b, const char *f, int l) {\n    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n    if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, \"integer overflow in division\");\n    return a % b;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_divU", "static inline uint64_t extc_divU(uint64_t a, uint64_t b, const char *f, int l) {\n    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n    return a / b;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_modU", "static inline uint64_t extc_modU(uint64_t a, uint64_t b, const char *f, int l) {\n    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n    return a % b;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* Shifts: shifting by the width or more, or by a negative amount, is undefined\n * behaviour in C, so the count is checked and returned (evaluated once). */\n" },
+    { PRIM_FUNC, "extc_shiftCount", "static inline int64_t extc_shiftCount(int64_t b, int64_t w, const char *f, int l) {\n    if (b < 0 || b >= w) extc_trapMsg(f, l, \"shift count out of range\");\n    return b;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* Checked index: the index is returned, so the caller evaluates it only once. */\n" },
+    { PRIM_FUNC, "extc_checkedIndex", "static inline int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {\n    if (i < 0 || i >= n) extc_trap(file, line, i, n);\n    return i;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* Checked slice: requires 0 <= lo <= hi <= n, and returns `lo`. */\n" },
+    { PRIM_FUNC, "extc_checkedRange", "static inline int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,\n                          const char *file, int line) {\n    if (lo < 0 || hi < lo || hi > n) {\n        fprintf(stderr, \"%s:%d: trap: slice %lld..%lld is out of range (length %lld)\\n\",\n                file, line, (long long)lo, (long long)hi, (long long)n);\n        extc_die(1);\n    }\n    return lo;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n\n" },
+    { PRIM_VAR, "extc_ablock", "typedef struct extc_ablock { struct extc_ablock *prev; int fresh; int64_t cap, used; char data[1]; } extc_ablock;\n" },
+    { PRIM_VAR, "extc_arena", "typedef struct extc_arena { extc_ablock *top; extc_ablock *spare; } extc_arena;\n" },
+    { PRIM_SCAFFOLD, NULL, "#ifndef EXTC_ARENA_SPARE_MAX\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_ARENA_SPARE_MAX (1 << 20)\n" },
+    { PRIM_SCAFFOLD, NULL, "#endif\n" },
+    { PRIM_FUNC, "extc_arena_init", "static inline void extc_arena_init(extc_arena *a) { a->top = NULL; a->spare = NULL; }\n" },
+    { PRIM_FUNC, "extc_arena_release", "static inline void extc_arena_release(extc_arena *a) {\n    while (a->top) {\n        extc_ablock *p = a->top->prev;\n        /* Always keep one block back. Guarding this with \"the arena had more\n         * than one block\" looked like a saving and was the opposite: the\n         * block that pays off is precisely the single-block arena of a tight\n         * loop, and skipping it put the churn shape back to its old time\n         * (measured: 139.9ms -> 389.9ms). */\n        if (!a->spare && a->top->cap <= EXTC_ARENA_SPARE_MAX) {\n            a->spare = a->top; a->spare->prev = NULL; a->spare->fresh = 0;\n        } else {\n            free(a->top);\n        }\n        a->top = p;\n    }\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_arena_destroy", "static inline void extc_arena_destroy(extc_arena *a) {\n    extc_arena_release(a);\n    if (a->spare) { free(a->spare); a->spare = NULL; }\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* Explicit conversions: narrowing, sign change, or float-to-integer. A value that\n * does not fit traps, reporting the source position. */\n" },
+    { PRIM_FUNC, "extc_narrowI", "static inline int64_t extc_narrowI(int64_t v, int64_t lo, int64_t hi, const char *f, int l) {\n    if (v < lo || v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n    return v;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_narrowU", "static inline uint64_t extc_narrowU(uint64_t v, uint64_t hi, const char *f, int l) {\n    if (v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n    return v;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n" },
+    { PRIM_FUNC, "extc_convFloat", "static inline int64_t extc_convFloat(double v, int64_t lo, int64_t hi, const char *f, int l) {\n    if (!(v >= (double)lo && v <= (double)hi)) extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n    return (int64_t)v;   /* truncation toward zero, as in C */\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* float -> u64: the range cannot be expressed with the int64_t bounds above\n * (UINT64_MAX does not fit in int64_t), so it is its own helper. 2^64 is\n * exactly representable as a double, which is why the upper test is `<`. */\n" },
+    { PRIM_FUNC, "extc_convFloatU", "static inline uint64_t extc_convFloatU(double v, const char *f, int l) {\n    if (!(v >= 0.0 && v < 18446744073709551616.0)) extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n    return (uint64_t)v;\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n#if defined(__GNUC__) || defined(__clang__)\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_INLINE static inline __attribute__((always_inline))\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_UNUSED __attribute__((unused))\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_MALLOC __attribute__((malloc))\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_NOINLINE __attribute__((noinline))\n" },
+    { PRIM_SCAFFOLD, NULL, "#else\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_INLINE static inline\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_MALLOC\n" },
+    { PRIM_MACRO, NULL, "#define EXTC_NOINLINE\n" },
+    { PRIM_SCAFFOLD, NULL, "#endif\n" },
+    { PRIM_FUNC, "extc_arena_alloc", "static EXTC_MALLOC EXTC_NOINLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n    if (n <= 0) n = 1;\n    n = (n + 7) & ~(int64_t)7;\n    /* Adopt the spare only when the arena is empty.\n     *\n     * This is one test on a pointer that is NULL in the common case, which\n     * matters: an allocation in a loop runs this code millions of times, and\n     * an earlier version that asked 'is the spare big enough for n' on every\n     * call cost about 20% more instructions over the whole program (measured\n     * with callgrind on the rebuild shape) for no benefit at all -- the spare\n     * is a whole block, so `cap >= n` is already true whenever the arena is\n     * empty enough to want it. */\n    if (!a->top && a->spare) { a->top = a->spare; a->spare = NULL; a->top->used = 0; }\n    if (!a->top || a->top->cap - a->top->used < n) {\n        /* Block size: the request, grown by doubling, with a small floor.\n         *\n         * It used to be a flat 4096 floor, and that is 4 KB per **task**: a coroutine's frame\n         * is ~100 bytes, so 10000 live tasks cost 41.8 MB instead of ~1.5 MB (measured,\n         * bench/coro/liveN). Doubling keeps the malloc count of an allocation loop the same\n         * after a few blocks while a one-shot allocation (the common case in a coroutine)\n         * pays only for what it asks. */\n        int64_t cap = n > 64 ? n : 64;\n        if (a->top && a->top->cap < (INT64_C(1) << 20) && cap < a->top->cap * 2)\n            cap = a->top->cap * 2;\n        extc_ablock *b = (extc_ablock *)calloc(1, sizeof(extc_ablock) + (size_t)cap);\n        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n                        \" (this allocation wanted %lld bytes)\\n\",\n                        f, l, (long long)n); extc_die(1); }\n        b->prev = a->top; b->cap = cap; b->used = 0; b->fresh = 1;\n        /* `fresh` goes before `cap`/`used`: right before `data` it pushed the payload to\n         * offset 28, every allocation became 4-byte aligned, and storing an int64_t there\n         * is a misaligned store (UBSan: arena R1..R6, deep W1..W13). */\n        a->top = b;\n    }\n    {\n        void *p = a->top->data + a->top->used;\n        a->top->used += n;\n        /* A block straight from `calloc` is zero **throughout**, and only the bytes not yet\n         * handed out are ever looked at again, so those need no clearing; a block that came\n         * back from the spare was written to in its previous life and does. The promise is\n         * unchanged either way: a byte read after its lifetime ends is an initialized byte\n         * (SPEC section 0.6). Skipping it matters for the one-shot large buffer: a 32 MiB\n         * `new` used to touch all 32 MiB even when the program wrote a few pages, and now\n         * it only pays for what it touches. */\n        if (!a->top->fresh) memset(p, 0, (size_t)n);\n        return p;\n    }\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n\n" },
+};
+
+/* Emit the runtime primitive block at the current end of `out`, registering every
+ * definition it contains.
+ *
+ * `PRIM_BLOCK` is the block itself, in emission order: scaffolding and definitions
+ * alternating. Emitting it here, piece by piece, is what replaces "write the whole block
+ * and find the definitions again later by the shape of their lines": every definition
+ * carries its name and kind, so the dead-code decision can read them instead of guessing.
+ *
+ * `g->primA` must already be the offset this will write at; the registered spans are
+ * relative to it. Nothing before the block is ever removed, which is what keeps that
+ * offset valid through the whole pass pipeline.
+ */
+static void primEmit(CG *g, Buf *out) {
+    size_t base = out->len;
+    for (size_t i = 0; i < sizeof PRIM_BLOCK / sizeof *PRIM_BLOCK; i++) {
+        const PrimPiece *p = &PRIM_BLOCK[i];
+        size_t off = out->len - base;
+        bufPuts(out, p->text);
+        /* A macro's row carries no name: it is read from the `#define` line itself, which is
+         * the one thing every macro row has. (Keeping it out of the table also keeps a bare
+         * `EXTC_*` string literal out of the source: `tools/check_switches.py` reads any of
+         * those as a compiler switch that has to be documented, and a macro of the *generated
+         * C* is not one.) A function or variable row spells its name out. */
+        const char *name = p->name;
+        if (p->kind == PRIM_MACRO) {
+            const char *mn = macroDefineName(p->text, strlen(p->text));
+            size_t nl = 0;
+            if (mn) while (identByte(mn[nl])) nl++;
+            if (nl) {
+                char *cp = arenaAlloc(g->arena, nl + 1);
+                memcpy(cp, mn, nl);
+                cp[nl] = '\0';
+                name = cp;
+            }
+        }
+        if (!name) continue;
+        PrimEnt *e = arenaAllocZero(g->arena, sizeof *e);
+        e->name = name;
+        e->off  = off;
+        e->span = out->len - base - off;
+        e->kind = p->kind;
+        e->quiet = strcmp(name, "__extc_dying") == 0;
+        *(PrimEnt **)vecPush(&g->primEnts) = e;
+    }
+    g->primBlockLen = out->len - base;
+}
+
+/* One row per piece of the runtime primitive block, in emission order.
+ * A row with `name` is a definition the worklist may leave out; a row without
+ * one is scaffolding (comments, `#if/#else/#endif` skeletons) that is always
+ * emitted, so a product whose primitive is unused looks exactly as it did when
+ * the text-level pass removed the definition afterwards. Generated once from the
+ * block that used to be four string literals; verified byte-for-byte. */
+
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
     /* A generated instance's C name is `<template>_<argument>...` (`pair` + `i64` = `pair_i64`).
      * Nothing stopped the program from defining that very name, and then the emitted unit held two
@@ -7084,34 +7351,11 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.deadDefs, arena, sizeof(DeadDef *));
     vecInit(&g.deadFuncs, arena, sizeof(DeadFunc *));
     vecInit(&g.deadLocals, arena, sizeof(DeadLocal *));
+    vecInit(&g.primEnts, arena, sizeof(PrimEnt *));
     bufInit(&g.desc, arena);
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
     bufInit(&g.rtEq, arena);
-    bufInit(&g.rtDie, arena);
-    bufPuts(&g.rtDie,
-        "/* Every path that ends the process on purpose goes through here. A trap path is\n"
-        " * the only code that still runs when a program dies, so this is where anything the\n"
-        " * process has to give back is given back. Today that is the terminal: a program\n"
-        " * that traps in raw mode would otherwise leave the user's shell unable to echo\n"
-        " * what they type. The hook is installed by `extc_raw_enter` (emitted only when the\n"
-        " * program uses the raw-terminal primitives) and cleared before it runs, so it\n"
-        " * cannot run twice. */\n"
-        "static int32_t (*__extc_dying)(void);\n"
-        /* The three functions that end a program never come back, and saying so is not
-         * decoration: it is what lets the C compiler see that the path below a check
-         * cannot be reached, which removes both `-Wmissing-noreturn` and the
-         * `-Wunreachable-code` warnings that follow every trap. */
-        "#if defined(__GNUC__) || defined(__clang__)\n"
-        "#  define EXTC_NORETURN __attribute__((noreturn))\n"
-        "#else\n"
-        "#  define EXTC_NORETURN _Noreturn\n"
-        "#endif\n"
-        "EXTC_NORETURN static inline void extc_die(int code) {\n"
-        "    if (__extc_dying) { int32_t (*f)(void) = __extc_dying; __extc_dying = 0; (void)f(); }\n"
-        "    exit(code);\n"
-        "}\n"
-);
     bufInit(&g.rtCout, arena);
     bufPuts(&g.rtCout,
         "/* Buffered console output (ruling 90). The buffer lives in the runtime rather than\n"
@@ -7308,104 +7552,6 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * concerned: when the traps that call it are dropped, it becomes dead itself, and a first
      * version of that pass left it behind because it was captured from a later point
      * (`unused function 'extc_die'`). */
-    size_t primA = out->len;        /* the runtime primitive block, captured below */
-    bufPuts(out, bufCstr(&g.rtDie));
-    {
-        /* The dying hook's storage is a definition like any other: once the traps that call it are
-         * dropped, nothing mentions it. It is registered here, where its text is at hand, because
-         * the primitive pass does not recognize a function-pointer declaration as a variable (`static
-         * int32_t (*__extc_dying)(void);` has parentheses in it). */
-        for (char *p = out->data; p < out->data + out->len; p++) {
-            if (p != out->data && p[-1] != '\n') continue;
-            if (strncmp(p, "static ", 7) != 0 || !strstr(p, "__extc_dying")) continue;
-            char *le = memchr(p, '\n', (size_t)((out->data + out->len) - p));
-            if (!le) break;
-            Buf t;
-            bufInit(&t, arena);
-            bufPutn(&t, p, (size_t)(le - p) + 1);
-            DeadDef *d = arenaAllocZero(arena, sizeof *d);
-            d->name = "__extc_dying";
-            d->text = bufCstr(&t);
-            *(DeadDef **)vecPush(&g.deadDefs) = d;
-            break;
-        }
-    }
-    bufPuts(out,
-        "/* Every primitive below is `static inline`, and that is not a style choice:\n"
-        " * without inlining, gcc at -O1 cannot see the body of a check, so it can neither\n"
-        " * eliminate the check nor turn `i % 7` into a multiply and shift. Measured: the\n"
-        " * remainder operator was 4.6x slower and a matrix multiply 1.5x slower; with\n"
-        " * inlining both match C. */\n"
-        "/* Out-of-range trap; the position comes from the call site via `#line`. */\n"
-        "EXTC_NORETURN static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n"
-        "    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n"
-        "            file, line, (long long)i, (long long)n);\n"
-        "    extc_die(1);\n"
-        "}\n"
-        "/* Arithmetic failures must be loud: division by zero, the overflowing division, and\n"
-        " * an over-wide shift are all undefined behaviour in C. Each one traps with a\n"
-        " * source position instead of computing a wrong answer or leaving UB behind. */\n"
-        "EXTC_NORETURN static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n"
-        "    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n"
-        "    extc_die(1);\n"
-        "}\n"
-        /* The recursion depth guard, used only by self-recursive functions.
-         * Runaway recursion used to be hard to diagnose: gcc folded it into a
-         * loop that printed nothing, or the stack really overflowed and the OS
-         * reported a segmentation fault, which is neither an extC message nor
-         * carries a position. A depth counter maintained on entry and exit of a
-         * self-recursive function now traps with a position, and it triggers far
-         * earlier than a real overflow: with the default 8 MB stack and frames
-         * of a few hundred bytes, a hundred thousand levels are comfortable. */
-         "#ifndef EXTC_REC_LIMIT\n"
-         "#define EXTC_REC_LIMIT 100000\n"
-         "#endif\n"
-         "static int64_t __extc_rec_depth = 0;\n"
-        /* Called by the prologue of a self-recursive function; it traps with
-         * the position of the call site, which points at the offending line. */
-        "static inline void extc_rec_enter(const char *f, int l) {\n"
-        "    if (++__extc_rec_depth > EXTC_REC_LIMIT)\n"
-        "        extc_trapMsg(f, l, \"recursion too deep (unbounded recursion?)\");\n"
-        "}\n"
-        "static inline int64_t extc_divI(int64_t a, int64_t b, const char *f, int l) {\n"
-        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
-        "    if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, \"integer overflow in division\");\n"
-        "    return a / b;\n"
-        "}\n"
-        "static inline int64_t extc_modI(int64_t a, int64_t b, const char *f, int l) {\n"
-        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
-        "    if (a == INT64_MIN && b == -1) extc_trapMsg(f, l, \"integer overflow in division\");\n"
-        "    return a % b;\n"
-        "}\n"
-        "static inline uint64_t extc_divU(uint64_t a, uint64_t b, const char *f, int l) {\n"
-        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
-        "    return a / b;\n"
-        "}\n"
-        "static inline uint64_t extc_modU(uint64_t a, uint64_t b, const char *f, int l) {\n"
-        "    if (b == 0) extc_trapMsg(f, l, \"division by zero\");\n"
-        "    return a % b;\n"
-        "}\n"
-        "/* Shifts: shifting by the width or more, or by a negative amount, is undefined\n"
-        " * behaviour in C, so the count is checked and returned (evaluated once). */\n"
-        "static inline int64_t extc_shiftCount(int64_t b, int64_t w, const char *f, int l) {\n"
-        "    if (b < 0 || b >= w) extc_trapMsg(f, l, \"shift count out of range\");\n"
-        "    return b;\n"
-        "}\n"
-        "/* Checked index: the index is returned, so the caller evaluates it only once. */\n"
-        "static inline int64_t extc_checkedIndex(int64_t i, int64_t n, const char *file, int line) {\n"
-        "    if (i < 0 || i >= n) extc_trap(file, line, i, n);\n"
-        "    return i;\n"
-        "}\n"
-        "/* Checked slice: requires 0 <= lo <= hi <= n, and returns `lo`. */\n"
-        "static inline int64_t extc_checkedRange(int64_t lo, int64_t hi, int64_t n,\n"
-        "                          const char *file, int line) {\n"
-        "    if (lo < 0 || hi < lo || hi > n) {\n"
-        "        fprintf(stderr, \"%s:%d: trap: slice %lld..%lld is out of range (length %lld)\\n\",\n"
-        "                file, line, (long long)lo, (long long)hi, (long long)n);\n"
-        "        extc_die(1);\n"
-        "    }\n"
-        "    return lo;\n"
-        "}\n\n");
     /* The @overwrite cell type is emitted only when it is really used: emitted
      * unconditionally it would add a line to the generated C of every program
      * and fill the golden files with noise. The type contains an
@@ -7423,188 +7569,21 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         }
         (void)needOw;   /* the typedef needs extc_arena, so it comes later */
     }
-    bufPuts(out,
-        /* ------------------------------------------------------------------
-         * The arena: one per frame, and allocations go through a handle.
-         *
-         * An arena is one lexical scope, implemented as a linked list of blocks:
-         * allocating pushes space in the current block, releasing hands the whole
-         * chain back to the system.
-         *
-         * A handle, an `extc_arena *`, rather than "the current arena" is what
-         * lets a container remember which arena it was born in and ask that one
-         * for room when it grows. Memory a method allocates therefore outlives
-         * the method call, which is the rule that a container allocates into the
-         * pool where the container itself lives.
-         *
-         * There is no shared state in the process, since every frame has its own
-         * object, so threading will not have to change this structure.
-         * ------------------------------------------------------------------ */
-        "typedef struct extc_ablock { struct extc_ablock *prev; int fresh; int64_t cap, used; char data[1]; } extc_ablock;\n"
-        /* `spare` is one released block kept for the next round.
-         *
-         * The cost of an arena is now one `malloc` per **block**, so a block that
-         * is allocated and released once per loop iteration makes the arena do one
-         * `malloc` plus one `free` per iteration -- it degenerates into
-         * per-object allocation and loses the point of having an arena at all.
-         * Measured on the churn shape: 32e6 allocations across 32e6 iterations
-         * produced 32e6 `malloc` and 32e6 `free` calls, while the same program
-         * with a block that survives the release ran about 50x faster.
-         *
-         * Keeping exactly one block per arena bounds the cost: the memory is
-         * already in the cache when the next round asks for it, and the arena
-         * cannot hold more than one block it does not need. A block larger than
-         * `EXTC_ARENA_SPARE_MAX` is not kept, so an arena that once served a huge
-         * array does not hold that memory for the rest of the frame. */
-        "typedef struct extc_arena { extc_ablock *top; extc_ablock *spare; } extc_arena;\n"
-        "#ifndef EXTC_ARENA_SPARE_MAX\n"
-        "#define EXTC_ARENA_SPARE_MAX (1 << 20)\n"
-        "#endif\n"
-
-        "static inline void extc_arena_init(extc_arena *a) { a->top = NULL; a->spare = NULL; }\n"
-        /* Release everything except the spare, which becomes the next block to be
-         * handed out. The spare is zeroed lazily, by `extc_arena_alloc` only for
-         * the bytes it actually hands out, so the "fresh allocations are always
-         * zero" promise costs the same as before. */
-        "static inline void extc_arena_release(extc_arena *a) {\n"
-        "    while (a->top) {\n"
-        "        extc_ablock *p = a->top->prev;\n"
-        "        /* Always keep one block back. Guarding this with \"the arena had more\n"
-        "         * than one block\" looked like a saving and was the opposite: the\n"
-        "         * block that pays off is precisely the single-block arena of a tight\n"
-        "         * loop, and skipping it put the churn shape back to its old time\n"
-        "         * (measured: 139.9ms -> 389.9ms). */\n"
-        "        if (!a->spare && a->top->cap <= EXTC_ARENA_SPARE_MAX) {\n"
-        "            a->spare = a->top; a->spare->prev = NULL; a->spare->fresh = 0;\n"
-        "        } else {\n"
-        "            free(a->top);\n"
-        "        }\n"
-        "        a->top = p;\n"
-        "    }\n"
-        "}\n");
-
-
-    /* The frame is over: the spare has to go too, or it outlives its purpose. */
-    bufPuts(out,
-        "static inline void extc_arena_destroy(extc_arena *a) {\n"
-        "    extc_arena_release(a);\n"
-        "    if (a->spare) { free(a->spare); a->spare = NULL; }\n"
-        "}\n"
-        "/* Explicit conversions: narrowing, sign change, or float-to-integer. A value that\n"
-        " * does not fit traps, reporting the source position. */\n"
-        "static inline int64_t extc_narrowI(int64_t v, int64_t lo, int64_t hi, const char *f, int l) {\n"
-        "    if (v < lo || v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n"
-        "    return v;\n"
-        "}\n"
-        "static inline uint64_t extc_narrowU(uint64_t v, uint64_t hi, const char *f, int l) {\n"
-        "    if (v > hi) extc_trapMsg(f, l, \"value does not fit in the target type\");\n"
-        "    return v;\n"
-        "}\n"
-        "static inline int64_t extc_convFloat(double v, int64_t lo, int64_t hi,"
-        " const char *f, int l) {\n"
-        "    if (!(v >= (double)lo && v <= (double)hi))"
-        " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
-        "    return (int64_t)v;   /* truncation toward zero, as in C */\n"
-        "}\n"
-        "/* float -> u64: the range cannot be expressed with the int64_t bounds above\n"
-        " * (UINT64_MAX does not fit in int64_t), so it is its own helper. 2^64 is\n"
-        " * exactly representable as a double, which is why the upper test is `<`. */\n"
-        "static inline uint64_t extc_convFloatU(double v, const char *f, int l) {\n"
-        "    if (!(v >= 0.0 && v < 18446744073709551616.0))"
-        " extc_trapMsg(f, l, \"float does not fit in the target integer type\");\n"
-        "    return (uint64_t)v;\n"
-        "}\n"
-        /* Getting this function inlined is worth a lot: it has one call site per program
-         * and that site is usually inside a loop, so an out-of-line call costs a call and a
-         * return per object. Measured on `bench/gc/src/rebuild.extc`: 100.0ms out of line
-         * against 25.8ms inlined, a factor of 3.9, and the binary came out 80 bytes smaller
-         * inlined. The error path below is what makes the compiler refuse on its own.
-         *
-         * Asking for it needs a compiler extension: ISO C has `inline`, but nothing that
-         * *requires* inlining, so `always_inline` is a GNU/Clang attribute. The generated C
-         * was otherwise strict ISO C99 (`cc -std=c99 -pedantic-errors` accepted it), so the
-         * attribute is guarded and the code stays ISO C everywhere else. The guard names
-         * `__GNUC__` rather than using `__has_attribute`, which is itself an extension. */
-        "#if defined(__GNUC__) || defined(__clang__)\n"
-        "#define EXTC_INLINE static inline __attribute__((always_inline))\n"
-        /* 生成物里"定义了但没人调"是正常的：库/预置按需发射，而按需比实际需要更宽 ✓
-         * 函数那一族由 DeadFunc 逐对剪枝（原型+定义一起删），但**剪不到的那些**（只被死代码提到）
-         * 仍然需要这个属性，否则 gcc 会为每个这样的定义报一条 unused-function ✗ */
-        "#define EXTC_UNUSED __attribute__((unused))\n"
-        /* `malloc` + **不内联**，缺一不可：属性告诉 GCC 返回值是不与别的东西别名的新内存，而
-         * `always_inline` 会把函数体折进调用者、让数组基址退化成"arena 块 + 偏移"、属性随之失效。
-         * 实测（bench/runtime/analysis/，i-k-j 矩阵乘法、同次序同开关）：只加属性 8.2~8.9 GFLOP/s
-         * （内层不被向量化 ✗）；属性 + noinline 16.7~22.6（被向量化 ✓）⇒ 2.2 倍。 */
-        "#define EXTC_MALLOC __attribute__((malloc))\n"
-        "#define EXTC_NOINLINE __attribute__((noinline))\n"
-    );
-    /* 这一段运行期文本到这里已经贴着 C99 的 4095 字节上限（相邻字符串拼接后算一个字面量）⇒ 从这里
-     * 拆成第二次 bufPuts。拆开只是把长字面量分成两处，**生成物逐字节不变**（闸门会核这一点）。 */
-    bufPuts(out,
-        "#else\n"
-        "#define EXTC_INLINE static inline\n"
-        "#define EXTC_MALLOC\n"
-        "#define EXTC_NOINLINE\n"
-        "#endif\n"
-        "static EXTC_MALLOC EXTC_NOINLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n"
-        "    if (n <= 0) n = 1;\n"
-        "    n = (n + 7) & ~(int64_t)7;\n"
-        "    /* Adopt the spare only when the arena is empty.\n"
-        "     *\n"
-        "     * This is one test on a pointer that is NULL in the common case, which\n"
-        "     * matters: an allocation in a loop runs this code millions of times, and\n"
-        "     * an earlier version that asked 'is the spare big enough for n' on every\n"
-        "     * call cost about 20% more instructions over the whole program (measured\n"
-        "     * with callgrind on the rebuild shape) for no benefit at all -- the spare\n"
-        "     * is a whole block, so `cap >= n` is already true whenever the arena is\n"
-        "     * empty enough to want it. */\n"
-        "    if (!a->top && a->spare) { a->top = a->spare; a->spare = NULL; a->top->used = 0; }\n"
-        "    if (!a->top || a->top->cap - a->top->used < n) {\n"
-        "        /* Block size: the request, grown by doubling, with a small floor.\n"
-        "         *\n"
-        "         * It used to be a flat 4096 floor, and that is 4 KB per **task**: a coroutine's frame\n"
-        "         * is ~100 bytes, so 10000 live tasks cost 41.8 MB instead of ~1.5 MB (measured,\n"
-        "         * bench/coro/liveN). Doubling keeps the malloc count of an allocation loop the same\n"
-        "         * after a few blocks while a one-shot allocation (the common case in a coroutine)\n"
-        "         * pays only for what it asks. */\n"
-        "        int64_t cap = n > 64 ? n : 64;\n"
-        "        if (a->top && a->top->cap < (INT64_C(1) << 20) && cap < a->top->cap * 2)\n"
-        "            cap = a->top->cap * 2;\n"
-        "        extc_ablock *b = (extc_ablock *)calloc(1, sizeof(extc_ablock) + (size_t)cap);\n"
-        /* Like every other trap, this one carries a source position. It used to
-         * print a bare "out of arena memory" and exit, which breaks the rule
-         * that a failure the compiler can locate must say where it happened. */
-        "        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n"
-        "                        \" (this allocation wanted %lld bytes)\\n\",\n"
-        "                        f, l, (long long)n); extc_die(1); }\n"
-        "        b->prev = a->top; b->cap = cap; b->used = 0; b->fresh = 1;\n"
-        "        /* `fresh` goes before `cap`/`used`: right before `data` it pushed the payload to\n"
-        "         * offset 28, every allocation became 4-byte aligned, and storing an int64_t there\n"
-        "         * is a misaligned store (UBSan: arena R1..R6, deep W1..W13). */\n"
-        "        a->top = b;\n"
-        "    }\n"
-        "    {\n"
-        "        void *p = a->top->data + a->top->used;\n"
-        "        a->top->used += n;\n"
-        "        /* A block straight from `calloc` is zero **throughout**, and only the bytes not yet\n"
-        "         * handed out are ever looked at again, so those need no clearing; a block that came\n"
-        "         * back from the spare was written to in its previous life and does. The promise is\n"
-        "         * unchanged either way: a byte read after its lifetime ends is an initialized byte\n"
-        "         * (SPEC section 0.6). Skipping it matters for the one-shot large buffer: a 32 MiB\n"
-        "         * `new` used to touch all 32 MiB even when the program wrote a few pages, and now\n"
-        "         * it only pays for what it touches. */\n"
-        "        if (!a->top->fresh) memset(p, 0, (size_t)n);\n"
-        "        return p;\n"
-        "    }\n"
-        "}\n\n");
+    /* The runtime primitive block: the dying hook first (every trap below calls it),
+     * then the primitives themselves. `primEmit` writes it piece by piece and
+     * registers each definition; see PrimEnt. */
+    g.primA = out->len;
+    primEmit(&g, out);
 
     g.coroDefPrinted = g.needCoroHandle;
     g.coroDefA = out->len;
 
-    {   /* Kept as text: dropRuntimeDefs scans it for definitions nothing names. */
+    {   /* The same bytes as text, NUL-terminated: the fallback pass and the oracle scan
+         * the finished unit, and a `strstr` needs a C string. Capturing it from `out`
+         * rather than concatenating the table also proves the two agree. */
         Buf pb;
         bufInit(&pb, arena);
-        bufPutn(&pb, out->data + primA, out->len - primA);
+        bufPutn(&pb, out->data + g.primA, g.primBlockLen);
         g.primText = bufCstr(&pb);
     }
 
