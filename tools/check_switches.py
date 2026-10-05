@@ -30,6 +30,9 @@ UNDOCUMENTED = {
     "EXTC_DBG_MOD",
     "EXTC_DBG_PAR",
     "EXTC_DBG_PRIM",
+    # W0 仪表（2026-10-05）：删除 pass 每次删除打一行 `[dce] func|prim|scoped <名字>`；
+    # 用途是**当预言机** —— 按需发射做对之后这个数会掉到 0（见 docs/topics/CODEGEN-HANDOFF.md）。
+    "EXTC_DBG_DCE",
     "EXTC_DBG_REFARGS",
     "EXTC_DBG_RET3",
     "EXTC_DBG_RHO",
