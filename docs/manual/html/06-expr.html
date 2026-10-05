@@ -192,13 +192,20 @@ io::cout &lt;&lt; f<span class="c">"n={n} who={who}\n"</span>
 <p>细节：<code>{{</code> / <code>}}</code> 是字面花括号；一个槽<strong>只能放一个表达式</strong>；<code>f"…"</code> 只能出现在 <code>&lt;&lt;</code> 右侧 （写成别的会报错，不会静默）。<strong>v1 没有格式说明符</strong>：<code>f"{x:&gt;8}"</code> 会被明确拒绝（不是静默忽略）， v2 再补。</p>
 <p><strong>一条已知</strong>：槽按<strong>从右往左</strong>求值（C 的实参求值顺序），Python 是左到右 —— 槽里放带副作用的 表达式要留意（判据里 <code>3 2 1</code> 就是这个顺序）。</p>
 <p>边界情况会<strong>响亮报错</strong>（都有反例判据）：空槽 <code>f"{}"</code> · 未闭合的 <code>{</code> · 多余的 <code>}</code> · <strong>空格式串 <code>f""</code></strong>（"nothing to splice"，否则 <code>&lt;&lt;</code> 会被静默吃掉）· 格式说明符 <code>{x:&gt;8}</code>（v2）· 出现在 <code>&lt;&lt;</code> 右侧之外的地方。</p>
-<h3 id="v2-格式说明符-原语已就位-语法那一步要检查器">v2：格式说明符 —— 原语已就位，语法那一步要检查器</h3>
-<p>原语在 <code>std::io</code> 里并有判据（<code>tests/fstring/pad.extc</code>）：</p>
-<pre class="lang-extc"><code>io::cout.<span class="f">padText</span>(<span class="c">"abc"</span>, <span class="t">i64</span>(<span class="n">6</span>), <span class="t">u8</span>(<span class="n">46</span>), io::LEFT)                 <span class="c">/* abc... */</span>
-io::cout.<span class="f">padInt</span>(<span class="t">i64</span>(-<span class="n">5</span>), <span class="t">i64</span>(<span class="n">4</span>), <span class="t">u8</span>(<span class="n">48</span>), io::RIGHT)               <span class="c">/* -005：零填充**符号在前** */</span>
-io::cout.<span class="f">padF</span>(<span class="t">f64</span>(<span class="n">3</span>.<span class="n">14159</span>), <span class="t">i64</span>(<span class="n">8</span>), <span class="t">i64</span>(<span class="n">2</span>), <span class="t">u8</span>(<span class="n">32</span>), io::RIGHT)    <span class="c">/* "    3.14" */</span></code></pre>
-<p><strong>三个名字而不是一个重载</strong>，这里有一条真规则：<strong>普通方法不能重载</strong>（只有 <code>&lt;&lt;</code> 这类<strong>运算符</strong> 由运算符解析处理）⇒ "<code>{x:&gt;8}</code> 该调文本版还是整数版"取决于槽的<strong>静态类型</strong>，而<strong>解析器不看类型</strong> ⇒ v2 的语法那一步只能放在<strong>检查器</strong>（解析器造标记节点，检查器按槽的类型选方法； 或者走 <code>impl</code> + 泛型把选择交给单态化）。</p>
-<p><strong>记账</strong>：宽度按<strong>字节</strong>算（中文按字节计数；列宽需要显示宽度表，v2 不做）；<code>|v| &gt;= 1e15</code> 的浮点 定点格式化直接 <strong>trap</strong>（改用 <code>&lt;&lt;</code>）；<code>f"…"</code> 里出现格式说明符目前仍<strong>明确拒绝</strong>（不静默忽略）。</p>
+<h3 id="v2-格式说明符-落点已定-不新增-ast-节点">v2：格式说明符 —— 落点已定（<strong>不新增 AST 节点</strong>）</h3>
+<p><strong>为什么不能用"新增 AST 节点"这条路</strong>（2026-10-05 实测）：<code>case EX_</code> 在 8 个文件里共约 <strong>462 处</strong> （<code>check_escape.c</code> 101 · <code>check_top.c</code> 158 · <code>check_expr.c</code> 85 · <code>codegen.c</code> 53 · <code>modules.c</code> 26 …） ⇒ 新节点必须在<strong>每一处</strong>都处理，而漏一处的后果是<strong>静默</strong>的（逃逸/效果/plan 默默漏掉一个表达式 ✗）。</p>
+<p><strong>采用的落法（复用现有机器，零新节点）</strong>：</p>
+<pre class="lang-extc"><code>解析器：`{x:&gt;<span class="n">8</span>}` ⇒ 造一个**保留名的方法调用**标记
+        EX_METHOD(recv = 左操作数, name = <span class="c">"__extc_pad"</span>,
+                  args = [槽表达式, 宽度, 填充字节, 对齐, 精度])
+检查器：方法解析**遇到保留名就短路** —— 不查方法表；按槽的**静态类型**把<span class="c">"该用哪个原语"</span>
+        记进 **plan 侧表**（`<span class="f">planSetPadKind</span>(e, PAD_TEXT|PAD_INT|PAD_FLOAT)` ✓ 正规住处），
+        调用类型 = ostream
+代码生成：方法调用的发射处遇到同一保留名 ⇒ 按 plan 里那个事实发
+        `padText` / `padInt` / `padF`（对齐按名字发 `io::LEFT|RIGHT|CENTER`，不硬编码 <span class="n">0</span>/<span class="n">1</span>/<span class="n">2</span>）</code></pre>
+<p><strong>为什么这样最省</strong>：① <strong>不碰</strong>那 462 处 <code>case</code> ✓；② 类型定向发生在<strong>检查器</strong>（解析器不看类型 ✓， 这正是"普通方法不能重载"逼出来的那条规则 ✓）；③ "能不能打印"仍然等于"有没有 <code>&lt;&lt;</code>" ✓ （未带说明符的槽照旧走 <code>&lt;&lt;</code>，v1 的逐字节相同性质不变 ✓）。</p>
+<p><strong>语义</strong>：<code>{x:&gt;8}</code> ≡ <code>io::cout.padText(x, 8, u8(32), io::LEFT)</code> ✓ · <code>{n:04}</code> ≡ 零填充（<strong>符号在前</strong> ✓ 由 <code>padInt</code> 保证）· <code>{v:.2f}</code> ≡ <code>padF(v, 0, 2, u8(32), io::RIGHT)</code> ✓ · 宽度按<strong>字节</strong>算 ✓（中文按字节）。</p>
+<p><strong>判据（先写）</strong>：正例 <code>{:&gt;8}</code>/<code>{:&lt;8}</code>/<code>{:*^8}</code>/<code>{:04}</code>（含负数 ⇒ <code>-005</code>）/<code>{:.2f}</code>/<code>{:8.2f}</code>/混合槽； 反例：未知对齐符 ✗ · 宽度非数字 ✗ · 精度用在整数上 ✗（或按文档明确允许）· 保留名被用户直接调用 ✗ · <code>|v|&gt;=1e15</code> 的浮点 ⇒ <strong>trap</strong>（改用 <code>&lt;&lt;</code>）✓。</p>
 <div class="pn"><a href="05-vars.html">← 4. 变量与声明</a> <a href="07-stmt.html">6. 语句 →</a></div></main>
 <script>(function(){var q=document.getElementById('q');if(!q)return;
 var items=[].slice.call(document.querySelectorAll('.side li'));
