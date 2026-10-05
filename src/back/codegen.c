@@ -162,12 +162,13 @@ typedef struct {
     const char *text;
 } PrimPiece;
 
-/* One registered definition of the primitive block. `off`/`span` are relative to the
- * start of the block, which is what makes the span survive: nothing before the block is
- * ever removed, so the block's position in the unit is fixed. */
+/* One registered definition of the primitive block: its name, the text it consists of, and
+ * what kind of definition it is. Everything the dead-code decision needs is here, so it never
+ * has to look at the shape of a line to find out where a definition begins or ends. */
 typedef struct {
     const char *name;
-    size_t      off, span;   /* inside the primitive block */
+    const char *text;        /* the definition, exactly as the table spells it: this *is* its
+                              * span, because the block is a table of exact pieces */
     PrimKind    kind;
     /* The W0 instrument never counted this one: it has parentheses, so the line-shape
      * scan could not see it and it was registered by hand instead. Keeping it out of the
@@ -400,6 +401,7 @@ typedef struct {
      * through every pass, which is what lets the registry carry spans instead of text. */
     size_t      primA;
     Vec         primEnts;       /* PrimEnt* - the block's definitions, in emission order */
+    Buf         prim;           /* the block, assembled before it is spliced in */
     size_t      primBlockLen;   /* bytes the block still occupies at `primA`: the length
                                  * drops by each definition removed, so `primA + primBlockLen`
                                  * is always the block's current end */
@@ -5945,10 +5947,13 @@ static const char *macroDefineName(const char *ln, size_t ll) {
  * translation unit into one that did not compile, and a compile error stops clang from
  * reporting warnings at all, so the damage first looked like a win).
  *
- * `dropPrimReg` below answers the same question from the registry `primEmit` fills in, and
- * is the path that runs; this function is kept as the rollback switch (`EXTC_DBG_PRIMSCAN=1`)
- * until the last step of the worklist refactor deletes it. The anchor trick, the six line
- * shapes and the brace pairing all exist only here. */
+ * This function no longer decides the block: `primSplice` does, from the registry, before the
+ * block becomes part of the unit. What it still does is the one thing the registry does not
+ * cover - and, with `EXTC_DBG_PRIMSCAN=1`, the whole job again, which is the single switch the
+ * worklist step can be rolled back with. Its window is `strlen(primText)` from the anchor and
+ * it is reset on every restart, so once the block is short it reaches past the block's end: the
+ * deletions it reports as `[dce] prim-out` are that reach (the head of the pool runtime), and
+ * the ones it reports as `[dce] prim` are inside the block -- which must be none. */
 static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
     char  *text = *textp;
     size_t len  = *lenp;
@@ -5963,7 +5968,15 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
     for (;;) {
         char  *rp = strstr(text, anchor);
         if (!rp) break;
+        /* The window is the length the block had when it was captured, measured from the
+         * anchor -- and the text can be shorter than that now, because the block it starts has
+         * been cut down since (`primSplice` leaves out everything nothing uses before the block
+         * is ever spliced in). Without this clamp the scan reads past the end of the unit:
+         * measured as a SIGSEGV inside `memchr` on a program whose block is most of the unit.
+         * Clamping costs nothing: past the end there is nothing to delete, and the `span` check
+         * below already refused to remove anything that reached there. */
         size_t rl = rl0;
+        if ((size_t)(text + len - rp) < rl) rl = (size_t)(text + len - rp);
         bool   cut = false;
         for (char *ln = rp; ln < rp + rl && !cut; ) {
             char  *eol = memchr(ln, '\n', (size_t)(rp + rl - ln));
@@ -6100,7 +6113,12 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
                             fprintf(stderr, "[prim] %-22s total=%zu inside=%zu span=%zu %s\n",
                                     name, total, inside, span, total == inside ? "DROP" : "keep");
                         if (total == inside) {
-                            if (dbgOn("EXTC_DBG_DCE")) fprintf(stderr, "[dce] prim %s\n", name);
+                            /* Inside the block this must never happen again: `primSplice` has
+                             * already left out every definition nothing uses. Anything it does
+                             * delete lies past the block's end - see the note above. */
+                            bool inBlock = ((size_t)(ln - text) < g->primA + g->primBlockLen);
+                            if (dbgOn("EXTC_DBG_DCE"))
+                                fprintf(stderr, "[dce] %s %s\n", inBlock ? "prim" : "prim-out", name);
                             memmove(ln, ln + span, len - (size_t)(ln - text) - span + 1);
                             len -= span;
                             rl  -= span;
@@ -6116,94 +6134,6 @@ static void dropRuntimeDefs(CG *g, Buf *out, char **textp, size_t *lenp) {
             ln = eol + 1;
         }
         if (!cut) break;      /* nothing left to drop: the block is settled */
-    }
-    *textp = text;
-    *lenp = len;
-}
-
-/* How often does `name` appear in the block's preprocessor lines?
- *
- * `guards` counts the `#ifndef X` / `#ifdef X` lines: asking whether a macro is defined is
- * not a use of it. `defs` counts the `#define X` lines, which are the pieces the macro
- * consists of - a macro may be defined once per branch of an `#if`, and all of those lines
- * are one definition. Both are what the line-shape pass computed while scanning
- * (`totalOverride` / `insideOverride`); the registry path computes the same numbers, but
- * over the block it knows the bounds of. */
-static void primMacroCounts(CG *g, const char *text, size_t blockEnd,
-                            const char *name, size_t *guards, size_t *defs) {
-    size_t nlen = strlen(name);
-    *guards = 0;
-    *defs   = 0;
-    for (size_t p = g->primA; p < blockEnd; ) {
-        const char *ln = text + p;
-        const char *nl = memchr(ln, '\n', blockEnd - p);
-        size_t ll = nl ? (size_t)(nl - ln) : (blockEnd - p);
-        if (ll > 8 && (strncmp(ln, "#ifndef ", 8) == 0 || strncmp(ln, "#ifdef ", 7) == 0))
-            *guards += countMentionsIn(g, ln, ll, name);
-        const char *mn = (ll > 8) ? macroDefineName(ln, ll) : NULL;
-        if (mn && strncmp(mn, name, nlen) == 0 && !identByte(mn[nlen]))
-            *defs += countMentionsIn(g, ln, ll, name);
-        if (!nl) break;
-        p += ll + 1;
-    }
-}
-
-/* Drop the runtime definitions nothing uses -- from the registry, not from the text.
- *
- * `primEmit` registered every definition of the block with its name, kind and exact span,
- * so the candidate and its bounds are facts recorded at emission time rather than a guess
- * made from the shape of a line. What is left is the decision itself, which is unchanged:
- * a definition goes when every mention of its name in the finished unit lies inside the
- * definition (for a macro: inside its `#define` lines, with `#ifdef` guards not counting as
- * uses). Deleting one definition removes the calls it makes, so the counts fall and chains
- * unravel - hence the loop around the scan.
- *
- * The block's position is stable: nothing before it is ever removed, and `off`/`span` are
- * relative to it. When a definition goes, only the offsets of the definitions after it move,
- * and they move by its span. */
-static void dropPrimReg(CG *g, Buf *out, char **textp, size_t *lenp) {
-    char  *text = *textp;
-    size_t len  = *lenp;
-    if (!g->primEnts.len) return;
-    size_t blockEnd = g->primA + g->primBlockLen;
-    EXTC_DBG_ASSERT_MSG(blockEnd <= len, "the primitive block is not where it was emitted");
-    if (blockEnd > len) return;
-    for (;;) {
-        bool cut = false;
-        for (size_t i = 0; i < g->primEnts.len; i++) {
-            PrimEnt *e = *(PrimEnt **)vecAt(&g->primEnts, i);
-            if (!e->span) continue;                       /* already dropped */
-            size_t at = g->primA + e->off;
-            if (at + e->span > len) { e->span = 0; continue; }
-            size_t total, inside;
-            if (e->kind == PRIM_MACRO) {
-                size_t guards = 0, defs = 0;
-                primMacroCounts(g, text, blockEnd, e->name, &guards, &defs);
-                total  = countMentions(text, e->name);
-                total  = (total > guards) ? total - guards : 0;
-                inside = defs;
-            } else {
-                total  = countMentions(text, e->name);
-                inside = countMentionsIn(g, text + at, e->span, e->name);
-            }
-            if (total != inside) continue;                /* someone outside names it: keep */
-            if (!e->quiet && dbgOn("EXTC_DBG_DCE"))
-                fprintf(stderr, "[dce] prim %s\n", e->name);
-            memmove(text + at, text + at + e->span, len - at - e->span + 1);
-            len -= e->span;
-            out->len = len;
-            for (size_t k = i + 1; k < g->primEnts.len; k++) {
-                PrimEnt *o = *(PrimEnt **)vecAt(&g->primEnts, k);
-                o->off -= e->span;                        /* the text before it shrank */
-            }
-            blockEnd -= e->span;
-            g->primBlockLen -= e->span;               /* the block is shorter now */
-            e->span = 0;
-            text = bufCstr(out);
-            cut = true;
-            break;                                        /* the text moved: start over */
-        }
-        if (!cut) break;
     }
     *textp = text;
     *lenp = len;
@@ -6716,23 +6646,12 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (dbgOn("EXTC_DBG_DCE")) fprintf(stderr, "[dce] func %s\n", df->name);
         df->body = NULL;
     }
-    /* The runtime primitives come after the functions and before the globals: a
-     * primitive can be called only from code that the function phase has just removed
-     * (`extc_modU` is called by dead library functions), and its own calls disappear as
-     * it goes, so this is the point where the counts mean what they should.
-     *
-     * The registry path is the default; `EXTC_DBG_PRIMSCAN=1` puts the line-shape scan
-     * back, which is the single switch this step can be rolled back with. */
-    if (!getenv("EXTC_DBG_PRIMSCAN"))
-        CGACC("cg-runtime", dropPrimReg(g, out, &text, &len));
-    /* The line-shape scan stays as the fallback, for text the registry does not cover. It
-     * currently decides the head of the pool runtime: its window is `rl0 = strlen(primText)`
-     * bytes from the anchor and is reset on every restart, so as the block shrinks it reaches
-     * past the block's end into what follows. That reach is incidental (it is why
-     * `extc_pool_capacity` is dropped in two products) and W2 is where the runtime blocks come
-     * under the registry; until then the fallback keeps the products byte-identical.
-     * `EXTC_DBG_PRIMSCAN=1` skips the registry entirely: the one switch this step rolls back with. */
-    CGACC("cg-runtime-scan", dropRuntimeDefs(g, out, &text, &len));
+    /* The runtime primitives are not decided here any more: the block is assembled beside the
+     * unit and decided from the registry (`primSplice`, called from generateC once the rest of
+     * the pipeline has settled). `EXTC_DBG_PRIMSCAN=1` puts the old call back, which is the
+     * single switch this step rolls back with. */
+    if (getenv("EXTC_DBG_PRIMSCAN"))
+        CGACC("cg-runtime-scan", dropRuntimeDefs(g, out, &text, &len));
     /* Then the top-level definitions, to a fixed point: a definition can be the only
      * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
      * which no program refers to either), so one pass leaves a chain behind. Each
@@ -7132,12 +7051,10 @@ static const PrimPiece PRIM_BLOCK[] = {
  * relative to it. Nothing before the block is ever removed, which is what keeps that
  * offset valid through the whole pass pipeline.
  */
-static void primEmit(CG *g, Buf *out) {
-    size_t base = out->len;
+static void primEmit(CG *g) {
     for (size_t i = 0; i < sizeof PRIM_BLOCK / sizeof *PRIM_BLOCK; i++) {
         const PrimPiece *p = &PRIM_BLOCK[i];
-        size_t off = out->len - base;
-        bufPuts(out, p->text);
+        bufPuts(&g->prim, p->text);
         /* A macro's row carries no name: it is read from the `#define` line itself, which is
          * the one thing every macro row has. (Keeping it out of the table also keeps a bare
          * `EXTC_*` string literal out of the source: `tools/check_switches.py` reads any of
@@ -7158,13 +7075,110 @@ static void primEmit(CG *g, Buf *out) {
         if (!name) continue;
         PrimEnt *e = arenaAllocZero(g->arena, sizeof *e);
         e->name = name;
-        e->off  = off;
-        e->span = out->len - base - off;
+        e->text = p->text;
         e->kind = p->kind;
         e->quiet = strcmp(name, "__extc_dying") == 0;
         *(PrimEnt **)vecPush(&g->primEnts) = e;
     }
-    g->primBlockLen = out->len - base;
+}
+
+/* Mentions of `name` in one piece of scaffolding.
+ *
+ * A guard line (`#ifndef X` / `#ifdef X`) asks whether a macro is defined, which is not a use
+ * of it, so those lines are skipped when `skipGuards`. That is the one asymmetry the old pass
+ * had between macros and everything else (`totalOverride` / `insideOverride`), and it is kept:
+ * `#ifndef EXTC_REC_LIMIT` must not keep the macro alive. */
+static size_t primScaffoldMentions(CG *g, const char *text, const char *name, bool skipGuards) {
+    size_t n = 0, len = strlen(text);
+    for (size_t p = 0; p < len; ) {
+        const char *ln = text + p;
+        const char *nl = memchr(ln, '\n', len - p);
+        size_t ll = nl ? (size_t)(nl - ln) : (len - p);
+        bool guard = (ll > 8 && (strncmp(ln, "#ifndef ", 8) == 0 || strncmp(ln, "#ifdef ", 7) == 0));
+        if (!(skipGuards && guard)) n += countMentionsIn(g, ln, ll, name);
+        if (!nl) break;
+        p += ll + 1;
+    }
+    return n;
+}
+
+/* Decide which definitions of the runtime primitive block this program uses, and splice the
+ * surviving text into the unit at `primA` -- the step that makes the block emit on demand.
+ *
+ * The block was assembled beside the unit (`primEmit`), so the test runs **before** it is part
+ * of the generated C: the unit is searched for each name, the block's scaffolding is searched,
+ * and the definitions still standing are searched against each other, to a fixed point. A
+ * definition whose name appears nowhere but inside itself is dropped, which is exactly the test
+ * the text pass applied - it is now a question asked of the registry instead of a scan that
+ * guessed where each definition began and ended.
+ *
+ * Scaffolding (comments, blank lines, `#if/#else/#endif` skeletons) is always emitted: that is
+ * what the text pass left behind when it removed a definition, so a product whose definitions
+ * are unused is byte for byte what it was before. */
+static void primSplice(CG *g, Buf *out) {
+    const size_t ntab = sizeof PRIM_BLOCK / sizeof *PRIM_BLOCK;
+    const size_t np   = g->primEnts.len;
+    if (!np) return;
+    char *unit = bufCstr(out);                       /* the unit, without the block */
+    bool *live = arenaAllocZero(g->arena, np * sizeof *live);
+    for (size_t i = 0; i < np; i++) live[i] = true;
+    for (;;) {
+        bool changed = false;
+        for (size_t i = 0; i < np; i++) {
+            PrimEnt *e = *(PrimEnt **)vecAt(&g->primEnts, i);
+            if (!live[i]) continue;
+            size_t total = countMentions(unit, e->name);
+            for (size_t p = 0; p < ntab; p++) {      /* the scaffolding is always there */
+                if (PRIM_BLOCK[p].kind != PRIM_SCAFFOLD) continue;
+                total += primScaffoldMentions(g, PRIM_BLOCK[p].text, e->name, e->kind == PRIM_MACRO);
+            }
+            for (size_t j = 0; j < np; j++) {
+                if (!live[j]) continue;
+                PrimEnt *o = *(PrimEnt **)vecAt(&g->primEnts, j);
+                total += countMentionsIn(g, o->text, strlen(o->text), e->name);
+            }
+            size_t inside;
+            if (e->kind == PRIM_MACRO) {
+                /* What the macro consists of: every `#define` line of that name still standing
+                 * (a macro may be defined once per branch of an `#if`). */
+                inside = 0;
+                for (size_t j = 0; j < np; j++) {
+                    if (!live[j]) continue;
+                    PrimEnt *o = *(PrimEnt **)vecAt(&g->primEnts, j);
+                    if (o->kind != PRIM_MACRO || strcmp(o->name, e->name) != 0) continue;
+                    inside += countMentionsIn(g, o->text, strlen(o->text), e->name);
+                }
+            } else {
+                inside = countMentionsIn(g, e->text, strlen(e->text), e->name);
+            }
+            if (total != inside) continue;           /* something outside names it: keep */
+            live[i] = false;
+            changed = true;
+            if (!e->quiet && dbgOn("EXTC_DBG_DCE"))
+                fprintf(stderr, "[wl] prim %s\n", e->name);
+        }
+        if (!changed) break;
+    }
+    /* The block as it will be written: scaffolding plus the definitions that survived. */
+    Buf blk;
+    bufInit(&blk, g->arena);
+    for (size_t p = 0, ei = 0; p < ntab; p++) {
+        /* `kind` decides, not `name`: a macro row carries no name of its own (primEmit reads
+         * it from the `#define` line), and reading `name == NULL` as scaffolding would emit
+         * every macro unconditionally and shift every index after it. */
+        if (PRIM_BLOCK[p].kind == PRIM_SCAFFOLD) { bufPuts(&blk, PRIM_BLOCK[p].text); continue; }
+        if (live[ei++]) bufPuts(&blk, PRIM_BLOCK[p].text);
+    }
+    /* Splice it in at `primA`: the preamble before it, everything else after. The coroutine
+     * runtime was spliced at the same offset earlier, so the block ends up in front of it --
+     * the order the unit always had. */
+    Buf nb;
+    bufInit(&nb, g->arena);
+    bufPutn(&nb, out->data, g->primA);
+    bufPuts(&nb, bufCstr(&blk));
+    bufPutn(&nb, out->data + g->primA, out->len - g->primA);
+    *out = nb;
+    g->primBlockLen = blk.len;
 }
 
 /* One row per piece of the runtime primitive block, in emission order.
@@ -7352,6 +7366,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     vecInit(&g.deadFuncs, arena, sizeof(DeadFunc *));
     vecInit(&g.deadLocals, arena, sizeof(DeadLocal *));
     vecInit(&g.primEnts, arena, sizeof(PrimEnt *));
+    bufInit(&g.prim, arena);
     bufInit(&g.desc, arena);
     bufInit(&g.rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g.rtPrint, arena);
@@ -7569,23 +7584,44 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         }
         (void)needOw;   /* the typedef needs extc_arena, so it comes later */
     }
-    /* The runtime primitive block: the dying hook first (every trap below calls it),
-     * then the primitives themselves. `primEmit` writes it piece by piece and
-     * registers each definition; see PrimEnt. */
-    g.primA = out->len;
-    primEmit(&g, out);
+    /* The runtime primitive block: the dying hook first (every trap below calls it), then
+     * the primitives themselves. It is assembled **beside** the unit, not into it: whether a
+     * definition is used is decided from the registry (`primEmit`), just before the block is
+     * spliced in, so a definition nothing uses never becomes part of the generated C. */
+    g.primA = out->len;                 /* where the block will be spliced in */
+    primEmit(&g);
+
+    /* The whole block as a C string: `dropRuntimeDefs` (the oracle and the fallback) finds it
+     * by this text, and `strlen` is the window it used before the registry existed. */
+    g.primText = bufCstr(&g.prim);
+    /* Rollback (`EXTC_DBG_PRIMSCAN=1`): the block goes straight into the unit and the
+     * line-shape pass decides it, exactly as it did before this step. */
+    if (getenv("EXTC_DBG_PRIMSCAN")) {
+        bufPuts(out, g.primText);
+        g.primBlockLen = g.prim.len;
+        /* The dying hook's storage is a definition like any other, and the line-shape pass has
+         * never been able to see it (the declaration has parentheses, so it is neither a
+         * function header nor a variable). Before the registry existed it was registered by
+         * hand, and the rollback path keeps that: without it the rollback product would carry
+         * one line the previous step did not. */
+        for (char *p = out->data; p < out->data + out->len; p++) {
+            if (p != out->data && p[-1] != '\n') continue;
+            if (strncmp(p, "static ", 7) != 0 || !strstr(p, "__extc_dying")) continue;
+            char *le = memchr(p, '\n', (size_t)((out->data + out->len) - p));
+            if (!le) break;
+            Buf t;
+            bufInit(&t, arena);
+            bufPutn(&t, p, (size_t)(le - p) + 1);
+            DeadDef *d = arenaAllocZero(arena, sizeof *d);
+            d->name = "__extc_dying";
+            d->text = bufCstr(&t);
+            *(DeadDef **)vecPush(&g.deadDefs) = d;
+            break;
+        }
+    }
 
     g.coroDefPrinted = g.needCoroHandle;
-    g.coroDefA = out->len;
-
-    {   /* The same bytes as text, NUL-terminated: the fallback pass and the oracle scan
-         * the finished unit, and a `strstr` needs a C string. Capturing it from `out`
-         * rather than concatenating the table also proves the two agree. */
-        Buf pb;
-        bufInit(&pb, arena);
-        bufPutn(&pb, out->data + g.primA, g.primBlockLen);
-        g.primText = bufCstr(&pb);
-    }
+    g.coroDefA = out->len;              /* the coroutine runtime goes after the block */
 
     /* The @overwrite cell type, emitted on demand: emitted unconditionally it
      * would change every golden file. It must come after `extc_arena`, because
@@ -8779,6 +8815,20 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
         CGACC("cg-prune", dropUnreferenced(&g, out));
         cgReport();
         if (out->len == before) break;
+    }
+    if (!getenv("EXTC_DBG_PRIMSCAN")) {
+        /* The runtime primitive block is decided here, from the registry, and only then becomes
+         * part of the unit: what nothing uses never reaches the generated C. The rest of the
+         * pipeline has settled, so "does anything name it?" is asked once, of the finished text.
+         * Nothing before `primA` is ever removed, so that offset is still exact. */
+        primSplice(&g, out);
+        /* The text pass then runs once more over the unit, as the oracle for the block it was
+         * written for (it must find nothing left to delete inside it) and as the fallback for
+         * the text the registry does not cover -- the head of the pool runtime, which its window
+         * reaches past the block's end. Those deletions are reported as `[dce] prim-out`. */
+        char *text = bufCstr(out);
+        size_t len = out->len;
+        CGACC("cg-runtime", dropRuntimeDefs(&g, out, &text, &len));
     }
     /* A function nothing calls says so; then the parameters a body never reads. */
     markUncalledFunctions(&g, out);
