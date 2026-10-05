@@ -6408,7 +6408,21 @@ static void dropUnreferenced(CG *g, Buf *out) {
     /* Functions nobody calls. Both halves are located by their own text, so what is
      * removed is exactly what was captured - never a piece of a function. The
      * definition sits after the declaration, so it goes first and the declaration's
-     * position stays valid. */
+     * position stays valid.
+     *
+     * "Nobody calls it" is asked of the two pieces, not of the whole unit: a function whose
+     * **only** mention besides its declaration and its head is a call to itself was counted as
+     * used by the `== 2` test, because the self-call adds a third occurrence. A recursive
+     * helper whose single caller was removed therefore stayed in the product, and gcc still
+     * paid for it. Repro (the corpus does not hit it today - the 414 products are byte-for-byte
+     * what they were before this change):
+     *     fn helper(x: i64) -> i64 { if x <= 1 { return 1 } return x * helper(x - 1) }
+     *     fn deadA() -> i64 { return helper(3) }      // emitted by nobody
+     *     fn main() -> i32 { return 0 }
+     * `helper` is in the product for the self-call alone; with the pieces test it goes.
+     * What counts as a use is a mention *outside* the declaration and the definition - the
+     * self-call is inside them. A mutually recursive pair with no entry point is still kept,
+     * which is the conservative direction. */
     CountTable counts;
     countInit(&counts, g->arena, g->deadFuncs.len + 1);
     for (size_t k = 0; k < g->deadFuncs.len; k++) {
@@ -6422,7 +6436,9 @@ static void dropUnreferenced(CG *g, Buf *out) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (!df->body) continue;                                   /* no definition emitted */
         if (df->namedByDynTable) continue;   /* named by a `dyn` table, which is spliced in later */
-        if (countGet(&counts, df->name, strlen(df->name)) != 2) continue;   /* someone calls it */
+        size_t nlen = strlen(df->name);
+        long   total = countGet(&counts, df->name, nlen);
+        if (total < 2) continue;                                   /* no declaration + definition */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of
          * bodies, so the copy taken at generation time often no longer matches - and every function
@@ -6432,6 +6448,14 @@ static void dropUnreferenced(CG *g, Buf *out) {
         char  *bd = funcDefStart(text, df, &blen);
         if (!pt || !bd || bd < pt || !blen) continue;               /* not both, in order */
         size_t bl = blen, pl = strlen(df->proto);
+        /* `total == 2` is the fast path: declaration and definition, nothing else names it. A
+         * larger count only reaches the decision when the extra mentions are all inside the two
+         * pieces - that is the self-call case above. */
+        if (total != 2) {
+            size_t inside = countMentionsIn(g, bd, bl, df->name)
+                          + countMentionsIn(g, pt, pl, df->name);
+            if ((size_t)total != inside) continue;                 /* someone else names it */
+        }
         countSpan(&counts, text, (size_t)(bd - text), bl, -1);
         countSpan(&counts, text, (size_t)(pt - text), pl, -1);
         memmove(bd, bd + bl, len - (size_t)(bd - text) - bl + 1);    /* definition first */
