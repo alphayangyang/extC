@@ -59,7 +59,8 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "            extc_taskLive[i] = 0;\n"
         "            extc_taskArena[i].top = NULL; extc_taskArena[i].spare = NULL;\n"
         "        }\n"
-        "        extc_taskCap = cap;\n"
+        "        extc_taskCap = cap;\n");
+    bufPuts(out,
         "    }\n"
         "    extc_taskZone[extc_taskNext] = zone;\n"
         "    extc_taskLive[extc_taskNext] = 1;\n"
@@ -180,7 +181,8 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "    return -1001;\n"
         "}\n\n"        "int64_t extc_sock_pair(int64_t *out) {\n"
         "    int sv[2];\n"
-        "    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;\n"
+        "    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;\n");
+    bufPuts(out,
         "    out[0] = (int64_t)sv[0];\n"
         "    out[1] = (int64_t)sv[1];\n"
         "    return 0;\n"
@@ -294,7 +296,8 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         " * the pool registry and the task table stay per-process for free, and a dying worker takes\n"
         " * only its own connections with it.\n"
         " *\n"
-        " * Measured (2026-09-28, 8 P-cores, loopback, 256 connections, HTTP keep-alive, the same\n"
+        " * Measured (2026-09-28, 8 P-cores, loopback, 256 connections, HTTP keep-alive, the same\n");
+    bufPuts(out,
         " * 50-line extC responder): 8 single-threaded processes did 1,317,455 req/s at 15 MB RSS,\n"
         " * against nginx 1.28.3 with 8 workers tuned to the teeth at 1,064,775 req/s and 249 MB.\n"
         " *\n"

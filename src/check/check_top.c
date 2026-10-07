@@ -689,7 +689,7 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed);   /* defin
  * Two callers ask two different questions with it:
  *   - the fixed-point closure below asks the transitive one ("can this function create a
  *     pool at all?"), and walks nested blocks, which each have a zone of their own;
-
+ */
 /* Count the `@overwrite` sites in a body.
  *
  * Params:
