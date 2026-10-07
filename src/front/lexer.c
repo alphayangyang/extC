@@ -571,7 +571,8 @@ const char *tokenKindName(TokenKind k) {
         case TK_IDENT:   return "IDENT";
         case TK_INT:     return "INT";
         case TK_FLOAT:   return "FLOAT";
-        case TK_STRING:  return "STRING";
+        case TK_STRING:  return "STRING";        case TK_FSTRING: return "FSTRING";
+
         case TK_KEYWORD: return "KEYWORD";
         case TK_TYPE:    return "TYPE";
         case TK_PUNCT:   return "PUNCT";

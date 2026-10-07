@@ -19,85 +19,83 @@
 
 /* One bit per stored field. Macros, not an enum: a pedantic C11 compiler rejects
  * enumerator values above 31, and the analysis side has already grown past 32. */
-#define PLAN_ARENA_LEVEL         (1ull << 0)
-#define PLAN_ZONE_LEVEL          (1ull << 1)
-#define PLAN_ARENA_ARG           (1ull << 2)
-#define PLAN_NEED_TEMP           (1ull << 3)
-#define PLAN_USES_HOME           (1ull << 4)
-#define PLAN_MAY_USE_ARENA       (1ull << 5)
-#define PLAN_MAKES_POOL          (1ull << 6)
-#define PLAN_COND_ALLOCS         (1ull << 7)
-#define PLAN_IS_CORO             (1ull << 8)
-#define PLAN_YIELD_TYPE          (1ull << 9)
-#define PLAN_CORO_FRAME_TYPE     (1ull << 10)
-#define PLAN_CORO_NEEDS_ZONE     (1ull << 11)
-#define PLAN_CORO_PROTO          (1ull << 12)
-#define PLAN_INST_NAME           (1ull << 13)
-#define PLAN_TEMPLATE            (1ull << 14)
-#define PLAN_CORO_BOXED          (1ull << 15)
-#define PLAN_FOR_STEP_DROPPED    (1ull << 16)
-#define PLAN_CALLEE              (1ull << 17)
-#define PLAN_USED                (1ull << 18)
-#define PLAN_CNAME               (1ull << 19)
-#define PLAN_BUILTIN_HOLDER      (1ull << 20)
-#define PLAN_CORO_OF             (1ull << 21)
-#define AN_LAM_SIG               (1ull << 22)
-#define AN_MAKES_POOL_ANY        (1ull << 23)
-#define PLAN_IMPL_TRAIT          (1ull << 24)
-#define PLAN_IMPL_TARGET         (1ull << 25)
-#define PLAN_USED_DYN            (1ull << 26)
-#define PLAN_USES_DYN            (1ull << 27)
-#define PLAN_PAR_WORKER          (1ull << 28)
-#define PLAN_DOM_NEW             (1ull << 29)
-#define PLAN_VIEW_OF             (1ull << 30)
-#define AN_REF_DEPTH             (1ull << 31)
-#define AN_HOME_DEPTH            (1ull << 32)
-#define AN_LEXICAL_LEVEL         (1ull << 33)
-#define AN_STORED_AT             (1ull << 34)
-#define PLAN_EXT_DOM             (1ull << 35)
-#define PLAN_FIELD               (1ull << 36)
-#define PLAN_ASSOC_OWNER         (1ull << 37)
-#define PLAN_DYN_RECV_VIA_REF    (1ull << 39)
-#define PLAN_CALL_VIA_FN         (1ull << 40)
-#define AN_MIN_AT                (1ull << 41)
-#define AN_REUSE                 (1ull << 42)
-#define AN_BORROWED              (1ull << 43)
-#define AN_QUALIFIED             (1ull << 44)
-#define AN_CONV_CHECK            (1ull << 45)
-#define AN_NEED_OP               (1ull << 46)
-#define AN_IS_ASSOC              (1ull << 47)
-#define AN_LAM_CHECKED           (1ull << 48)
-#define AN_LAM_INFER_RET         (1ull << 49)
-#define AN_NEEDS_HOME            (1ull << 50)
-#define AN_ALLOC_STATE           (1ull << 51)
-#define AN_MAY_PRINT_STATE       (1ull << 52)
-#define AN_FRESH_COUNT           (1ull << 53)
-#define AN_ARENA_SITES           (1ull << 54)
-#define AN_N_PARAM_SYMS          (1ull << 55)
-#define AN_PARAM_SYMS            (1ull << 56)
-#define AN_EFF_STATE             (1ull << 66)
-#define AN_EFF_COMPLETE          (1ull << 67)
-#define AN_EFF_UNKNOWN           (1ull << 68)
-#define PLAN_IS_EXT_TARGET       (1ull << 57)
-#define PLAN_IS_PAR_WORKER       (1ull << 58)
-#define AN_ADDR_MASK             (1ull << 59)
-#define AN_CONT_MASK             (1ull << 60)
-#define AN_OTHER_MASK            (1ull << 61)
-#define AN_HOME_ADDR_MASK        (1ull << 62)
-#define AN_HOME_CONT_MASK        (1ull << 63)
-#define PLAN_PAR_TLS_ARENA       (1ull << 62)
-#define PLAN_DEREF               (1ull << 63)
-#define PLAN_BOXED_CORO          (1ull << 64)
-#define PLAN_CORO_KIND           (1ull << 65)
-#define PLAN_DYN_TABLE           (1ull << 72)
-#define PLAN_CORO_RET_PROTO      (1ull << 73)
-#define PLAN_OW_SITES            (1ull << 75)
-#define PLAN_OW_LOCAL            (1ull << 76)
-#define PLAN_VAR_INIT_OO         (1ull << 77)
-#define AN_DUMMY_PAST_64         (1ull << 65)
-#define AN_ADDR_FROM_LOCAL       (1ull << 64)
-
-
+#define PLAN_ARENA_LEVEL         0
+#define PLAN_ZONE_LEVEL          1
+#define PLAN_ARENA_ARG           2
+#define PLAN_NEED_TEMP           3
+#define PLAN_USES_HOME           4
+#define PLAN_MAY_USE_ARENA       5
+#define PLAN_MAKES_POOL          6
+#define PLAN_COND_ALLOCS         7
+#define PLAN_IS_CORO             8
+#define PLAN_YIELD_TYPE          9
+#define PLAN_CORO_FRAME_TYPE     10
+#define PLAN_CORO_NEEDS_ZONE     11
+#define PLAN_CORO_PROTO          12
+#define PLAN_INST_NAME           13
+#define PLAN_TEMPLATE            14
+#define PLAN_CORO_BOXED          15
+#define PLAN_FOR_STEP_DROPPED    16
+#define PLAN_CALLEE              17
+#define PLAN_USED                18
+#define PLAN_CNAME               19
+#define PLAN_BUILTIN_HOLDER      20
+#define PLAN_CORO_OF             21
+#define AN_LAM_SIG               22
+#define AN_MAKES_POOL_ANY        23
+#define PLAN_IMPL_TRAIT          24
+#define PLAN_IMPL_TARGET         25
+#define PLAN_USED_DYN            26
+#define PLAN_USES_DYN            27
+#define PLAN_PAR_WORKER          28
+#define PLAN_DOM_NEW             29
+#define PLAN_VIEW_OF             30
+#define AN_REF_DEPTH             31
+#define AN_HOME_DEPTH            32
+#define AN_LEXICAL_LEVEL         33
+#define AN_STORED_AT             34
+#define PLAN_EXT_DOM             35
+#define PLAN_FIELD               36
+#define PLAN_ASSOC_OWNER         37
+#define PLAN_DYN_RECV_VIA_REF    39
+#define PLAN_CALL_VIA_FN         40
+#define AN_MIN_AT                41
+#define AN_REUSE                 42
+#define AN_BORROWED              43
+#define AN_QUALIFIED             44
+#define AN_CONV_CHECK            45
+#define AN_NEED_OP               46
+#define AN_IS_ASSOC              47
+#define AN_LAM_CHECKED           48
+#define AN_LAM_INFER_RET         49
+#define AN_NEEDS_HOME            50
+#define AN_ALLOC_STATE           51
+#define AN_MAY_PRINT_STATE       52
+#define AN_FRESH_COUNT           53
+#define AN_ARENA_SITES           54
+#define AN_N_PARAM_SYMS          55
+#define AN_PARAM_SYMS            56
+#define AN_EFF_STATE             66
+#define AN_EFF_COMPLETE          67
+#define AN_EFF_UNKNOWN           68
+#define PLAN_IS_EXT_TARGET       57
+#define PLAN_IS_PAR_WORKER       58
+#define AN_ADDR_MASK             59
+#define AN_CONT_MASK             60
+#define AN_OTHER_MASK            61
+#define AN_HOME_ADDR_MASK        62
+#define AN_HOME_CONT_MASK        63
+#define PLAN_PAR_TLS_ARENA       62
+#define PLAN_DEREF               63
+#define PLAN_BOXED_CORO          64
+#define PLAN_CORO_KIND           65
+#define PLAN_DYN_TABLE           72
+#define PLAN_CORO_RET_PROTO      73
+#define PLAN_OW_SITES            75
+#define PLAN_OW_LOCAL            76
+#define PLAN_VAR_INIT_OO         77
+#define AN_DUMMY_PAST_64         65
+#define AN_ADDR_FROM_LOCAL       64
 /* The analysis half of the slot, by name: the checker's own working state, which no later
  * phase reads. Named here so the two audiences cannot quietly merge -- a field that code
  * generation starts reading must move out of this list (and get a `planXxx` accessor). */

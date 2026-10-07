@@ -526,7 +526,7 @@ static FuncDef *parseExtern(Parser *p) {
  *   set, in which case `out` holds what was parsed up to that point.
  */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
-    Parser p = { ctx, arena, toks, 0, false, false, false, 0, 0 };   /* 末两位 = depth, typeDepth */
+    Parser p = { ctx, arena, toks, 0, false, false, false, 0, 0 , false};   /* 末两位 = depth, typeDepth */
     p.sawBuiltin = false;                 /* 位置初始化列表不动，免得顺序一变就错位 */
     skipJunk(&p);
 
