@@ -50,6 +50,11 @@ if out=$("$EXTC" --run tests/real-lib/cairo-logo.extc 2>&1); then
     want=$(grep -o '// expect:.*' tests/real-lib/cairo-logo.extc | sed 's|// expect: *||' | head -1)
     IFS=' ' read -ra parts <<< "$want"
     for p in "${parts[@]}"; do echo "$out" | grep -qF -- "$p" || { ok=0; echo "  FAIL 输出里缺「$p」"; }; done
+    # 版本判据只看**形状**：具体版本随机器变（CI 上的 cairo 就不是本机这个），
+    # 当判据用会让"环境不同"伪装成"缺陷" ✗ —— 而 `cairo=` 这个形状必须出现。
+    if ! echo "$out" | grep -qE 'cairo=[0-9]+\.[0-9]+'; then
+        echo "  FAIL 输出里没有 cairo=<主>.<次>（版本号形状是判据，具体版本不是）"; ok=0
+    fi
     # 数字判据（阈值才是判据）
     green=$(echo "$out" | grep -o 'green=[0-9]*' | cut -d= -f2)
     white=$(echo "$out" | grep -o 'white=[0-9]*' | cut -d= -f2)
