@@ -28,4 +28,17 @@ jobs:
           ! grep -q warning /tmp/build.log
 
       - name: quick acceptance suite
-        run: ./check.sh quick
+        # 失败要**能从 API 读到**：本机没有 gh，看不了 Actions 日志；
+        # 而 `::error::` 会变成 GitHub 注解，注解对公开仓库**无需认证**即可读
+        # （/commits/<sha>/check-runs → annotations_url）。
+        run: |
+          set +e
+          ./check.sh quick > /tmp/quick.log 2>&1
+          rc=$?
+          tail -30 /tmp/quick.log
+          if [ "$rc" -ne 0 ]; then
+            grep -a "FAIL" -A 2 /tmp/quick.log | head -80 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$rc"
