@@ -44,3 +44,6 @@ prototype-python/
 # prototype-heap 的产物（run.sh 会重新编）
 prototype-heap/host
 prototype-heap/plugin.so
+# 基准数据与编译产物：**生成的**，不该进版本库（2026-10-07 从历史里剔除，224MB 的文件曾挡住 push）
+bench/io/data/
+bench/io/bin/
