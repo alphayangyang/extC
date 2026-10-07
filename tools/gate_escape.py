@@ -24,6 +24,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gatecommon as G
 
+# 闸门必须**自己**保证工作目录存在：/tmp 被清掉之后，原来这里会把“写不进去”
+# 误报成逃逸健全性回归（实测 2026-10-07：3 条 NEW ✗）。红必须等价于真缺陷。
+REV = os.environ.get('EXTC_ESCAPE_REV', '/tmp/extc-escape-rev')
+os.makedirs(REV, exist_ok=True)
+
 CORPUS = os.path.join(G.ROOT, "tools", "escape-corpus")
 ALLOW = os.path.join(G.ROOT, "tools", "gate-escape-known-bad.txt")
 
@@ -40,7 +45,7 @@ def expectation(path):
 def check_one(path):
     """None when the program behaves as its gate-expect says, else the reason."""
     exp, want_out = expectation(path)
-    out_c = "/dev/null" if exp == "reject" else "/tmp/rev/esc.c"
+    out_c = "/dev/null" if exp == "reject" else REV + "/esc.c"
     rc, out = G.run([G.EXTC, "-w", path, "-o", out_c], timeout=90)
     if exp == "reject":
         if rc == 124:
@@ -53,10 +58,10 @@ def check_one(path):
     if rc != 0:
         return "被拒绝了（应当接受）: " + " ".join(out.split())[:140]
     rc2, log = G.run(["gcc", "-std=c11", "-O1", "-g", "-fwrapv", "-fsanitize=address,undefined",
-                      "-fno-sanitize-recover=all", "/tmp/rev/esc.c", "-o", "/tmp/rev/esc"], timeout=180)
+                      "-fno-sanitize-recover=all", REV + "/esc.c", "-o", REV + "/esc"], timeout=180)
     if rc2 != 0:
         return "生成的 C 编不过: " + " ".join(log.split())[-140:]
-    rc3, run_out = G.run(["/tmp/rev/esc"], timeout=60, cwd=G.ROOT, env=G.asan_env())
+    rc3, run_out = G.run([REV + "/esc"], timeout=60, cwd=G.ROOT, env=G.asan_env())
     for bad in ("AddressSanitizer", "runtime error:", "LeakSanitizer", "trap:"):
         if bad in run_out:
             return "跑起来不干净(" + bad + "): " + " ".join(run_out.split())[:140]
