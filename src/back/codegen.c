@@ -369,6 +369,12 @@ typedef struct {
      * the answer is per function: the flag is the whole granularity the annotation
      * promises. */
     bool        uncheckedBody;
+    /* Is the expression being generated the **target of an assignment**? Then a
+     * construct whose checked form is a comma expression must not be used: a comma
+     * expression is not an lvalue in C. `EX_SIGN` reads this and moves its assertion
+     * into the statement prefix, returning the payload itself as the lvalue
+     * (`o! = v` must keep working -- the checker lists `EX_SIGN` as a place). */
+    bool        inAssignTarget;
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
@@ -3130,6 +3136,21 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (isRef) return v;
                 return arenaPrintf(g->arena, "(%s).u.%s._0", v, var);
             }
+            /* `o! = v` writes the payload, so the comma expression below cannot be
+             * used: C11 6.5.17p3 says its result is not an lvalue. The assertion goes
+             * into the statement prefix (the same mechanism `??` uses) and the payload
+             * itself is returned as the lvalue. The operand of an assignment target is
+             * a place, so this never evaluates anything twice. */
+            if (g->inAssignTarget) {
+                if (isRef) {
+                    pfLine(g, "(void)extc_refAssert((void *)(%s), \"%s\", %d);",
+                           v, g->path, e->line);
+                    return v;
+                }
+                pfLine(g, "(void)extc_tagAssert((int)(%s).tag, %s_%s, \"%s\", %d);",
+                       v, cType(g, ot), var, g->path, e->line);
+                return arenaPrintf(g->arena, "(%s).u.%s._0", v, var);
+            }
             if (isRef)
                 return arenaPrintf(g->arena,
                     "((%s)extc_refAssert((void *)(%s), \"%s\", %d))",
@@ -4448,12 +4469,16 @@ static void genStmtInner(CG *g, Stmt *s) {
              * path has already returned by then. */
             if (s->u.assign.value && s->u.assign.value->kind == EX_TRY) {
                 TryInfo ti = genTryHead(g, s->u.assign.value);
+                g->inAssignTarget = true;
                 const char *at = genExpr(g, s->u.assign.target);
+                g->inAssignTarget = false;
                 flushPrefix(g);
                 cgLine(g, "%s = %s;", at, tryPayloadPath(g, &ti));
                 return;
             }
+            g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);
+            g->inAssignTarget = false;
             const char *val = genExpr(g, s->u.assign.value);
             flushPrefix(g);
             /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
