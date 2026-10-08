@@ -3,8 +3,9 @@
 #
 # 每个攻击配一个宿主，run.sh 钉住**失败模式**，而不是"有没有崩"：
 #   · 设计赢的：门挡住（forged）· 板内 containment（overrun_plate）· 硬缺页不是静默（keeper_plate）
+#               · `!` 是**运行期**断言：缺符号在断言那一行就带位置 trap，跳 null 走不到（missym_call）
 #   · 攻击赢的：签名是信任不是证明（keeper_frame）· 一道门挡不住 remap · 表是可写的（tablewrite）
-#               · 越界写栈（栈保护器终止）· `!` 不检查运行期（缺符号直接调 ⇒ 跳 null）
+#               · 越界写栈（栈保护器终止）
 # 故意把"攻击赢"的那些也写成判据：模型的边界要写在明处，而不是假装没有。
 set -u
 cd "$(dirname "$0")/../.."
@@ -51,13 +52,13 @@ echo "== 设计赢的那几个 =="
 run   forger          'forged=rejected'          # 一次区间检查挡住伪造的板外指针
 run   overrun_plate   'canary=ok'                # 越界写只能踩在板里，宿主帧的哨兵完好
 crash keeper_plate 139 'closed'                  # 关板之后再写 = 硬缺页（不是静默）
+crash missym_call    1 'trap:'                   # `!` 检查运行期：缺符号在断言处带位置 trap（rc=1）
 
 echo "== 攻击赢的那几个（模型的边界，写在明处）=="
 run   keeper_frame    'keep=write-succeeded'     # 签名是信任不是证明：食言的库写进了死掉的帧
 crash overrun_stack 134 'stack smashing detected'  # `Addr=0` 只说"不留"，不说"不越界"
 run   remap           'hijacked=65'              # munmap+同址重映射 ⇒ 区间检查照样通过
 run   tablewrite      'slot-hijacked=1042'       # 表按 mut ref 交出去 ⇒ 模块能改槽
-crash missym_call  139 ''                        # `!` 不检查运行期：缺符号直接调 ⇒ 跳 null
 
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

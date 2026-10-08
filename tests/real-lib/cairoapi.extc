@@ -8,8 +8,8 @@
 //     var oc: ?api = api::open("libcairo.so.2")
 //     if oc == none { trap("libcairo 没装上") }
 //     var c: api = oc!
-// 缺符号是**逐个人工判空**的：extC 的 `!` 是纯编译期签名（没有运行期检查，实测 `null!`
-// 拿到 0），靠它就会得到一张全是空指针的表、第一次调用跳 null。
+// 缺符号是**逐个人工判空**的（`api::open` 把缺的名字说出来）：`!` 只断言"有值" ——
+// 签错了是一个带位置的 trap（2026-10-08 起），但它不会告诉你缺的是哪个符号。
 // 结构体指针一律 `ref void`：不假装布局（要读字段就自己写 @frozen 镜像，§9.8）。
 use std::dl
 use std::io

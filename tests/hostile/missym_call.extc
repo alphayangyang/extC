@@ -1,14 +1,23 @@
-// expect-crash: 139
-// 攻击 ⓪b：缺符号**还照调**会怎么爆。`dl::sym` 给回 null，extC 的 `!` 是**纯编译期签字**
-// （没有运行期检查 —— 实测 `null!` 拿到 0），于是那句转换把一个空指针当函数调 ⇒ **跳 null**。
-// 这就是生成器为什么要逐个人工判空（`api::needSym`）：不判，你得到的是一张全是空指针的表。
+// expect-trap: 1
+// 攻击 ⓪b：缺符号**还照调**会怎么爆。
+//
+// 2026-10-08 之前：`dl::sym` 给回 `none`，而 `!` 是**纯编译期签字**（没有运行期检查 ——
+// 实测 `null!` 拿到 0），于是那句转换把一个空指针当函数调 ⇒ **跳 null**（rc=139）。
+//
+// 2026-10-08 起：`!` 是**运行期断言**，所以 `dl::sym(h, "no_such_symbol")!` 在那一行就
+// 带位置 trap、rc=1 —— 攻击在"声明缺符号"处就被挡下，走不到跳 null 那一步。
+// 这条判据钉住这个新的（更响的）失败模式；C-ABI 那层"签名是信任不是证明"仍由
+// keeper_frame / tablewrite / remap 那几个宿主钉着。
+//
+// 生成器仍然逐个人工判空（`api::needSym`）：要的是"缺哪个符号"那句话，而 `!` 只给一次
+// 泛泛的 trap。
 use std::io
 use std::dl
 fn main() -> i32 {
     var h: ?ref void = dl::open("build/hostile-empty.so")!
-    var p: ref void = dl::sym(h, "no_such_symbol")!   /* `!` 只是**编译期**签字 ⇒ 这里是 null */
+    var p: ref void = dl::sym(h, "no_such_symbol")!   /* 这里就 trap：符号不在 ⇒ option = none */
     var f: fn() -> i64 = fn() -> i64(p)
-    var r: i64 = f()                  /* 跳到 null */
+    var r: i64 = f()                  /* 到不了这里 */
     io::cout << "unreachable " << r << "\n"
     return 0
 }

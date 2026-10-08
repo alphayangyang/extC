@@ -1,6 +1,6 @@
 // expect: missing-symbol-reported
 // 生成器对"缺符号"的回答：`api::open` **逐个人工判空**并把缺的名字说出来。
-// （`!` 是纯编译期签字，没有运行期检查 —— 实测 `null!` 拿到 0，靠它就会得到一张全是空指针的表。）
+// （`!` 只断言"有值"：签错了带位置 trap（2026-10-08 起），但不会说出缺的是哪个符号。）
 // 这里用一个少了 `getpid` 的假库（tests/hostile/fakelib.c），看报错对不对。
 use std::io
 use libcmini

@@ -56,7 +56,7 @@ fn cstr(s: slice<u8>) -> mut slice<u8> {
  * 失败返回 `null`（要问为什么就 `dlerror()`）。 */
 /* 返回 **`option`**（不是可空引用）：这样两条路都在调用方手里 ——
  *     var h: ref void = dl::open("x.so")?     // `?`：失败就早退（**编译器强制**处理）
- *     var h: ref void = dl::open("x.so")!     // `!`：我签字（**不检查**，失败就是空值）
+ *     var h: ref void = dl::open("x.so")!     // `!`：短写法（签错了 = 带位置 trap、rc=1）
  * 可空引用（`?ref void`）只有 `!` 一条路 —— 语言里 `?` 只认 `option`/`result`（实测的报错原文：
  * "needs an `option<...>` or `result<...>`, found `?ref void`"）。
  * 两条都不合适时（"库没装就不是能继续的事"）用 `trap("…")`：它不返回、印位置、退出码 1。 */
@@ -68,7 +68,8 @@ fn open(path: slice<u8>) -> option<ref void> {
 
 /* 取一个符号。**给的是地址，不是类型** —— 把它变成可调用的值要调用方写一次显式转换：
  *     var f: fn(i64) -> i64 = fn(i64) -> i64(raw!)
- * 这就是作者的签字：C 的 `dlsym` 回来的是 `void *`，谁也不知道它到底是什么。 */
+ * 这就是作者的签字：C 的 `dlsym` 回来的是 `void *`，谁也不知道它到底是什么。
+ * （`raw!` 的 `!` 只断言"非空"：真的为 null 时它带位置 trap，不替签名背书。） */
 fn sym(h: ?ref void, name: slice<u8>) -> option<ref void> {
     var p: ?ref void = dlsym(h, name.data)
     if p == null { return none }
