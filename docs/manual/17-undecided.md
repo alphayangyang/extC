@@ -70,3 +70,4 @@ error: array length must be an integer literal, found `N`
 | **运行时块的按需发射** | `extc_print` 住在 `rtPrint` 里被**整块**发出（`needRuntime` 很粗），而"没人用就删"的 pass 只扫 `primText` ⇒ 它没被看见。规则本身是对的，方案 A：把扫描文本改成参数、两个缓冲区各扫一遍 | [`PRIM-DROP.md`](../topics/PRIM-DROP.md) |
 | **CodeGen 重构（按它自己的逻辑）** | 契约是"代码生成不做决定"，但它现在**自己决定"什么该存在"**（文本计数 + 行形识别 + 15 个粗旗子）⇒ 三层重构：需求闭包 → 发射时登记 → 只做装配 | [`CODEGEN-ARCH.md`](../topics/CODEGEN-ARCH.md) |
 | **CodeGen 按需发射（施工中）** | **交接入口**：[`CODEGEN-HANDOFF.md`](../topics/CODEGEN-HANDOFF.md) —— W0 已落（仪表 + 基线 13923 条），W1–W4 待做；含前提、实测数据、已答 6 问、危险格（dyn 表）、验证配方、AST/plan 对接规则 | [`CODEGEN-HANDOFF.md`](../topics/CODEGEN-HANDOFF.md) |
+| **失败处理：收缩 trap** | 实测目标产物 21 处 trap，其中 **10 处是"输入相关可恢复"**（窄化 2 · 除零/溢出 4 · 移位 1 · 空视图 3）✗；缺口：slice/数组只有会 trap 的 `[]`、没有 checked 窄化/除法、**`?` 要求错误类型完全一致**。方案：S1 补 checked（零语言改动）→ S2 `?` 允许错误转换（痛感最大）→ S3 `recover` 设想 | [`ERR-ERGONOMICS.md`](../topics/ERR-ERGONOMICS.md) |
