@@ -3026,10 +3026,11 @@ static Expr *parsePostfix(Parser *p) {
 
     for (;;) {
         /* `e!` is the programmer's assertion that the value is present: it
-         * unwraps an option or a result, or drops the nullability of a `?ref T`,
-         * and the checker emits no test for it.  Being wrong is undefined
-         * behaviour rather than a checked error.  Position alone separates it
-         * from the prefix `!` (`!x` negates, `x!` asserts), and `!=` is a single
+         * unwraps an option or a result, or drops the nullability of a `?ref T`.
+         * The assertion is **checked at runtime** (2026-10-08) -- a wrong one
+         * traps with a source position -- and only a function marked
+         * `@unchecked` signs the check away. Position alone separates it from
+         * the prefix `!` (`!x` negates, `x!` asserts), and `!=` is a single
          * token, so neither collides with it. */
         if (at(p, "!")) {
             Token *b = take(p);

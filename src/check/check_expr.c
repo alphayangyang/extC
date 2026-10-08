@@ -2724,16 +2724,48 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_SIGN: {
-            /* `e!` is the user's signature: what the compiler cannot prove, the user takes
-             * responsibility for, and not one check is generated. It has three uses:
+            /* `e!` is the user's signature: what the compiler cannot prove, the user vouches
+             * for. The voucher is **checked at runtime** (2026-10-08): a wrong signature
+             * traps with a source position instead of being undefined behaviour, and the one
+             * way to sign the check away is `@unchecked` on the function. Three uses:
              *   `opt!` (`option<T>`)  -> the payload T
-             *   `r!` (`result<T,E>`)  -> the payload T; on failure the behaviour is whatever the
-             *                            user signed for, and the undefined behaviour is theirs
-             *   `p!` (`?ref T`)       -> `ref T`, the escape hatch for "I know it is not null"
+             *   `r!` (`result<T,E>`)  -> the payload T
+             *   `p!` (`?ref T`)       -> `ref T`, the "I know it is not null" form
              * Anything else is an error: a signature has to be written where it means something. */
+            /* Read before the operand is checked: a subject that is itself a call raises the
+             * flag while it is checked (same accounting as the subject of `??`). */
+            bool priorFx = c->stmtFx != 0;
             Type *ot = checkExpr(c, e->u.sign.operand);
             if (ttIsError(ot)) return ttError(tt);
             if (isProtoType(ot, "option", 1) || isProtoType(ot, "result", 2)) {
+                /* The generated C reads the operand twice (`x.tag` and `x.u.some._0`), so an
+                 * impure operand (`f()!`) would run twice. It is computed into a temporary in
+                 * the statement prefix first -- exactly the `??` subject. Two positions have no
+                 * prefix; they are reported instead of silently reordering. */
+                if (!repeatablePure(e->u.sign.operand)) {
+                    if (priorFx && !c->noHoist) {
+                        ckError(c, e->line,
+                                "The operand of `!` is computed into a temporary **before the whole"
+                                " statement** (that is what makes it run only once). So an earlier"
+                                " side effect in the same statement would run *after* it -- the"
+                                " opposite of what the line reads like. Split the statement in two"
+                                " (`let t = f()!` then use `t`).",
+                                "`!` here would run **before** the call that comes earlier in this"
+                                " statement; split the line so the order you read is the order it runs");
+                        return ttError(tt);
+                    }
+                    if (c->noHoist) {
+                        ckError(c, e->line,
+                                "`while` re-evaluates its condition every round, but a temporary"
+                                " can only be computed once, before the loop. Bind it inside the"
+                                " loop body: `while true { let r = f()  if ... { break } }`",
+                                "`!` here cannot be evaluated ahead of time -- the temporary"
+                                " would run once instead of every round");
+                        return ttError(tt);
+                    }
+                    planSetNeedTemp(e, true);        /* codegen reads the temp, not the call */
+                    c->stmtFx = priorFx ? 1 : 0;
+                }
                 return *(Type **)vecAt(&ot->targs, 0);      /* the payload type */
             }
             if (ot->kind == TY_REF) {
@@ -4349,7 +4381,8 @@ static bool exprHasCall(Checker *c, Expr *e) {
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
-    if (exprHasCall(c, e) && !(e->kind == EX_COALESCE && planNeedTemp(e))) c->stmtFx = 1;
+    if (exprHasCall(c, e) &&
+        !((e->kind == EX_COALESCE || e->kind == EX_SIGN) && planNeedTemp(e))) c->stmtFx = 1;
     if (!t) t = ttError(c->tt);
     e->type = t;
     return t;

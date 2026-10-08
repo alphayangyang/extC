@@ -3098,17 +3098,45 @@ static const char *genExprInner(CG *g, Expr *e) {
          * effects do not run when the value is present. */
         case EX_COALESCE: return exCoalesce(g, e);
 
-        /* `e!` asserts that the value is present and leaves no runtime trace:
-         *   - `opt!` and `r!` read the payload, a union member, without testing
-         *     the tag
-         *   - `p!` on a `?ref T` is that pointer itself; nothing is emitted */
+        /* `e!` asserts that the value is present -- the author signs for it, but
+         * the signature itself is **checked at runtime** (2026-10-08): the merit
+         * of `!` is that it is short, not that it is silent. So:
+         *   - `p!` on a `?ref T` calls `extc_refAssert` and yields the pointer;
+         *   - `opt!` / `r!` call `extc_tagAssert` first and only then read the
+         *     payload, so a `none` / failed arm traps with a position instead of
+         *     handing back a zero value.
+         * The helpers return what they checked, so the operand is evaluated once;
+         * when the checker marked it `needTemp` (an impure operand, as in `f()!`)
+         * the temporary is read instead -- naming `x` twice would run `f` twice.
+         * A function marked `@unchecked` keeps the old raw behaviour: it is the
+         * one signed road to undefined behaviour (manual 0.5 / 12.5). */
         case EX_SIGN: {
-            Type *ot = e->u.sign.operand->type;
-            if (ot && ot->kind == TY_REF) return genExpr(g, e->u.sign.operand);
-            bool isOpt = isProtoType(ot, "option", 1);
+            Type *ot = subst(g, e->u.sign.operand->type);
+            const char *v;
+            if (planNeedTemp(e)) {
+                const char *tmp = arenaPrintf(g->arena, "__extc_s%d", g->tmpSeq++);
+                /* The temporary holds the **operand** (the option / result), not the
+                 * payload `e->type` is: declaring it as the payload was a C type error
+                 * inside a generic instance. */
+                pfLine(g, "%s %s = %s;", cType(g, ot), tmp, genExpr(g, e->u.sign.operand));
+                v = tmp;
+            } else {
+                v = genExpr(g, e->u.sign.operand);
+            }
+            bool isRef = ot && ot->kind == TY_REF;
+            bool isOpt = !isRef && isProtoType(ot, "option", 1);
             const char *var = isOpt ? "some" : "success";
-            return arenaPrintf(g->arena, "(%s).u.%s._0",
-                               genExpr(g, e->u.sign.operand), var);
+            if (g->uncheckedBody) {
+                if (isRef) return v;
+                return arenaPrintf(g->arena, "(%s).u.%s._0", v, var);
+            }
+            if (isRef)
+                return arenaPrintf(g->arena,
+                    "((%s)extc_refAssert((void *)(%s), \"%s\", %d))",
+                    cType(g, e->type), v, g->path, e->line);
+            return arenaPrintf(g->arena,
+                "(extc_tagAssert((int)(%s).tag, %s_%s, \"%s\", %d), (%s).u.%s._0)",
+                v, cType(g, ot), var, g->path, e->line, v, var);
         }
 
         /* `null`, the zero value of a nullable reference, is a null pointer in
@@ -6893,6 +6921,9 @@ static const PrimPiece PRIM_BLOCK[] = {
     { PRIM_FUNC, "extc_trap", "EXTC_NORETURN static inline void extc_trap(const char *file, int line, int64_t i, int64_t n) {\n    fprintf(stderr, \"%s:%d: trap: index %lld out of range (length %lld)\\n\",\n            file, line, (long long)i, (long long)n);\n    extc_die(1);\n}" },
     { PRIM_SCAFFOLD, NULL, "\n/* Arithmetic failures must be loud: division by zero, the overflowing division, and\n * an over-wide shift are all undefined behaviour in C. Each one traps with a\n * source position instead of computing a wrong answer or leaving UB behind. */\n" },
     { PRIM_FUNC, "extc_trapMsg", "EXTC_NORETURN static inline void extc_trapMsg(const char *file, int line, const char *msg) {\n    fprintf(stderr, \"%s:%d: trap: %s\\n\", file, line, msg);\n    extc_die(1);\n}" },
+    { PRIM_SCAFFOLD, NULL, "\n/* `!` is the author's signature, but signing does **not** buy undefined\n * behaviour: the two helpers below turn a wrong signature into a located trap.\n * They return the value they checked, so the operand is evaluated exactly once\n * (naming `x` twice -- `.tag` and `.u.some._0` -- would run a call twice).\n * `@unchecked` bodies never call them: that is the signed road to raw C. */\n" },
+    { PRIM_FUNC, "extc_refAssert", "static inline void *extc_refAssert(void *p, const char *file, int line) {\n    if (!p) extc_trapMsg(file, line, \"the nullable reference was asserted non-null but is null\");\n    return p;\n}" },
+    { PRIM_FUNC, "extc_tagAssert", "static inline int extc_tagAssert(int tag, int want, const char *file, int line) {\n    if (tag != want) extc_trapMsg(file, line, \"the variant was asserted to hold a value but is none or failure\");\n    return tag;\n}" },
     { PRIM_SCAFFOLD, NULL, "\n#ifndef EXTC_REC_LIMIT\n" },
     { PRIM_MACRO, NULL, "#define EXTC_REC_LIMIT 100000\n" },
     { PRIM_SCAFFOLD, NULL, "#endif\n" },
