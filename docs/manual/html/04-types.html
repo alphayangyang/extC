@@ -380,12 +380,12 @@ c.retries = <span class="f">some</span>(<span class="n">3</span>)               
 <span class="k">let</span> v = <span class="f">find</span>()?          <span class="c">// 成功 → v 是里面的值；失败/没有 → 顺着往上抛</span>
                          <span class="c">//   （本函数的返回类型必须装得下那个失败）</span></code></pre>
 <h4 id="读值的三个记号-那一族-全是-编译器-提供的语法-不是库">读值的三个记号（<code>?</code> 那一族，全是<strong>编译器</strong>提供的语法，不是库）</h4>
-<table><thead><tr><th>记号</th><th>意思</th><th>代价</th></tr></thead><tbody><tr><td><code>match</code></td><td>分支，穷尽检查</td><td>零</td></tr><tr><td><code>e?</code></td><td>不成功就顺着往上抛</td><td>零</td></tr><tr><td><strong><code>e ?? 兜底</code></strong></td><td>可能没有就兜底（<code>?ref</code> 也能用：null 就换一个）</td><td>零（C 三元，<strong>只算一边</strong>）</td></tr><tr><td><strong><code>e!</code></strong></td><td><strong>调用者签字</strong>：直接取值（无值或为 null 即视为断言失败）</td><td>零（<strong>不生成任何检查</strong>）</td></tr></tbody></table>
+<table><thead><tr><th>记号</th><th>意思</th><th>代价</th></tr></thead><tbody><tr><td><code>match</code></td><td>分支，穷尽检查</td><td>零</td></tr><tr><td><code>e?</code></td><td>不成功就顺着往上抛</td><td>零</td></tr><tr><td><strong><code>e ?? 兜底</code></strong></td><td>可能没有就兜底（<code>?ref</code> 也能用：null 就换一个）</td><td>零（C 三元，<strong>只算一边</strong>）</td></tr><tr><td><strong><code>e!</code></strong></td><td><strong>调用者签字</strong>：取值前断言有值（没有值 / 为 null ⇒ 带位置 trap，rc=1）</td><td>一次 tag / 非空比较（放进 <code>@unchecked</code> 的函数体里才是零）</td></tr></tbody></table>
 <pre class="lang-extc"><code><span class="k">let</span> v = opt ?? -<span class="n">1</span>                 <span class="c">// valueOr 就是它 —— 而且对所有 T 通用</span>
-<span class="f">println</span>(opt! + <span class="n">1</span>)                 <span class="c">// 我保证有值（签字，无检查）</span>
+<span class="f">println</span>(opt! + <span class="n">1</span>)                 <span class="c">// 我保证有值（签错了 = 带 file:行号 的 trap）</span>
 <span class="f">println</span>(p!.value)                 <span class="c">// ?ref：我知道非空</span></code></pre>
 <p>⇒ 所以 <strong>prelude 里不需要 <code>unwrap()</code> / <code>valueOr</code> / <code>has</code> / <code>ok</code></strong> —— 那些名字当年存在，只是因为当时 <code>match</code> 不了、也没有 <code>??</code> / <code>!</code> （也因此<strong>不用</strong>去给枚举加方法、也不用泛型自由函数：语法糖把这件事解决掉了）</p>
-<p><code>!</code> 表示"<strong>断言由调用者负责</strong>"，不是"检查的宽松版本"：确实没有值即为 UB。 需要可报错的版本时，改写为 <code>match</code> 并给出所需的失败处理</p>
+<p><code>!</code> 表示"<strong>断言由调用者负责</strong>"：它比 <code>?</code> 短，但签错了<strong>仍然响亮</strong> —— 没有值就是一个带 <code>file:行号</code> 的 trap、退出码 1（2026-10-08 起；此前它是静默 UB）。想连这次断言也省掉，才把整段放进 <code>@unchecked</code> 的函数体（那才是唯一的 UB 入口，§<a href="18-modules.html">12.5</a>）。需要自己处理失败时， 改写为 <code>match</code> 或 <code>??</code>。</p>
 <p><code>?</code> 的语义是「<strong>不成功即向上返回</strong>」。它在<strong>四个位置</strong>合法（见下节）。</p>
 <p>用<strong>关联函数</strong>构造：写在 <code>struct</code> 体内但<strong>不带 <code>self</code></strong> 的函数， 调用时类型写全（不靠上下文猜，见 <a href="../DECISIONS.html"><code>DECISIONS.md</code></a> 定案 27/29）：</p>
 <pre class="lang-extc"><code><span class="k">struct</span> box&lt;T&gt; {

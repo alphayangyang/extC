@@ -258,7 +258,7 @@ struct err { code: i64  file: slice<u8>  line: i64 }   /* 字面量 slice 深度
 
 | 序 | 事 | 变化 |
 |---|---|---|
-| **S0（新增，最急）** | **`p!` 编成检查解引用（失败 trap 带 file:line）** | 修"静默 UB" ✓ 独立小修 ✓ |
+| **S0（新增，最急）** | **`p!` 编成检查解引用（失败 trap 带 file:line）** | 修"静默 UB" ✓ 独立小修 ✓ —— **已修** 2026-10-08（`1249024`，判据见文末）|
 | S1 | checked 原语（落点改为 `prelude` / 自由函数 ✓ + **统一 `at` 语义** ✓）| 落点修正 ✓ |
 | S1b | A/B 分类改在**编译器侧**（下标来源分析 ✓）| 机制修正 ✓ |
 | S2 | `if let`（`partial` 字段 + 4 处 codegen 审查 + `else` 方案 ✓）| 补审计面 ✓ |
@@ -302,9 +302,33 @@ struct err { code: i64  file: slice<u8>  line: i64 }   /* 字面量 slice 深度
 它们语义一清楚，作者就不用背那一大套（mayFail / effects / checked 家族 ✗）：
 **默认什么都不用写 ✓；想省钱用 `!`，想要极限性能用 `@unchecked`** ✓ —— 复杂度继续留在编译器里 ✓。
 
-## 修复计划：`!` 改成"插检查 + trap"，`@unchecked` 成为**唯一** UB 通道
+## 修复计划：`!` 改成"插检查 + trap"，`@unchecked` 成为**唯一** UB 通道 —— **已修**（2026-10-08）
 
-### 冒烟的枪（2026-10-08 读码所得）
+> **状态：已修 ✓**（判据先行，红 → 绿）
+>
+> | commit | 内容 |
+> |---|---|
+> | `67a7aa6` | 判据（红）：G1–G4 先钉住修复前行为 |
+> | `4e23606` | `@unchecked` 关掉**全部**检查（除零/移位/窄化/范围/copyInto，不再只关下标）|
+> | `1249024` | 后缀 `!` 改成"先断言再取值"：`extc_refAssert` / `extc_tagAssert`，签错带位置 trap |
+>
+> **判据证据**（本机 2026-10-08，`build/extc`）：
+>
+> | # | 命令 | 实测 |
+> |---|---|---|
+> | G1 | `./build/extc -w --run tests/traps/sign_nullref.extc` | **rc=1**，`tests/traps/sign_nullref.extc:9: trap: the nullable reference was asserted non-null but is null`（修复前 rc=255、stderr 空）|
+> | G2 | `... tests/traps/sign_option_none.extc` | **rc=1**，`...:8: trap: the variant was asserted to hold a value but is none or failure`（修复前 rc=0、无 trap）|
+> | G2' | `... tests/traps/sign_result_failure.extc` | **rc=1**，同上（修复前 rc=9、把失败载荷当成功值返回）|
+> | G3 | `tests/annot/unchecked_trap_{oob,div0,nullref,narrow}.extc` 的 `@unchecked` 产物 | `extc_trap` · `extc_narrow*` · `extc_checkedIndex` · `extc_checkedRange` · `extc_div*` · `extc_shiftCount` · `extc_refAssert` · `extc_tagAssert` · `_index(` **全为 0**（修复前 div0 有 `extc_divI`、narrow 有 `extc_narrowI`）|
+> | G4 | 同上四份的孪生（`sed 's/^@unchecked$//'`）运行 | 四类**都** trap 且 **rc=1**（修复前 nullref 孪生 rc=255）|
+>
+> **套件**：`tests/annot/run.sh` **27/0**；`tests/run.sh` **330/0**；构建 **0 warning**。
+> **手册已改口**：[01-safety.md](01-safety.md) §5 与 §154（`@unchecked` = 全部检查；`!` 从 UB 出口
+> 表里删掉，改为带位置的 trap）、[18-modules.md](18-modules.md) §12.5（覆盖全部检查 + 新判据）、
+> [04-types.md](04-types.md)（`!` 那一行）、[C-ABI.md](C-ABI.md) §9.18 的历史注记。
+> **下面"冒烟的枪"与判据表保留为修复前记录。**
+
+### 冒烟的枪（2026-10-08 读码所得，修复前）
 
 | 位置 | 内容 |
 |---|---|
