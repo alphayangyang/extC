@@ -301,3 +301,39 @@ struct err { code: i64  file: slice<u8>  line: i64 }   /* 字面量 slice 深度
 这两个正是**作者仅有的两个逃生门** ✓：一个**响亮** ✓（`!`）、一个**快** ✓（`@unchecked`）。
 它们语义一清楚，作者就不用背那一大套（mayFail / effects / checked 家族 ✗）：
 **默认什么都不用写 ✓；想省钱用 `!`，想要极限性能用 `@unchecked`** ✓ —— 复杂度继续留在编译器里 ✓。
+
+## 修复计划：`!` 改成"插检查 + trap"，`@unchecked` 成为**唯一** UB 通道
+
+### 冒烟的枪（2026-10-08 读码所得）
+
+| 位置 | 内容 |
+|---|---|
+| `src/front/parser.c:3028` | 注释明文：*"`e!` … the checker emits no test for it. **Being wrong is undefined behaviour rather than a checked error.**"* ✗ |
+| `src/back/codegen.c:3085` `case EX_SIGN` | `?ref` ⇒ **裸解引用**（`return genExpr(g, operand)`）✗；`option`/`result` ⇒ **直接读 `.u.X._0`**（没读 tag ⇒ 垃圾值 ✗ 那正是 G2 的 rc=0）|
+| `docs/manual/01-safety.md` §154 | 把 `!` 列为 UB 通道（*"不用 `!` 硬闯"*）✗ ⇒ **手册也要改** ✓ |
+| `src/back/codegen.c:366/2569` | `g->uncheckedIdx` 目前**只**用来关掉**下标**检查 ✗ ⇒ G3：它应当关掉**全部**检查 ✓ |
+
+### 补丁形状（小，但跨 3–4 处）
+
+1. **运行时加两个小断言助手**（都是 `EXTC_NORETURN` 失败路径 + 带 file/line ✓）：
+   `extc_refAssert(void *p, const char *file, int line)` 与
+   `extc_tagAssert(int tag, int want, const char *file, int line)`；
+2. **`codegen.c` 的 `case EX_SIGN`**：
+   * `?ref` ⇒ `(extc_refAssert((void *)&(x), "file", line), x)` ✓
+   * `option`/`result` ⇒ `(extc_tagAssert((x).tag, <mangled>_some, "file", line), (x).u.some._0)` ✓
+     （tag 常量名按类型的 mangle 名生成 ✓ 例如 `option_val_some` ✓）
+   * **两处都要先查"当前函数是否 `@unchecked`"** ✓ —— 是 ⇒ 保持今天的裸行为 ✓（= 唯一 UB 通道 ✓）
+3. **把 `uncheckedIdx` 升级成语义正确的 `uncheckedBody`**（或加一个同值的新标志 ✓），并让**所有**检查发射点都查它：
+   下标 ✓（已有）· 除零/整除溢出 ✓ · 移位 ✓ · 窄化 ✓ · 可空 ✓ · 空视图 ✓。
+4. **手册改口**：§5 的"`@unchecked` 只关下标"扩成"**关全部检查**" ✓；§154 改成"**只有 `@unchecked`** 通往 UB；`!` 是**带位置的 trap**" ✓。
+
+### 判据（先写，放进现有 `tests/annot/` 与 `tests/`）
+
+| # | 判据 | 断言 |
+|---|---|---|
+| G1 | `p!.v`（`?ref` = null）| **rc=1** + stderr 含 `file:line` + `trap` ✓（今天 rc=255 无消息 ✗）|
+| G2 | `o!`（`option` = `none`）| **rc=1** + stderr 带位置 ✓（今天 rc=0 无 trap ✗）|
+| G3 | `@unchecked` 函数体里 (a) 越界下标 (b) 除零 (c) 可空解引用 (d) 窄化 | 产物里**不出现**任何检查调用 ✓（扫 `extc_trap`/`extc_narrow` ✓）；运行 = 原样 UB/裸行为 ✓ |
+| G4 | 反向：**不带 `@unchecked`** 的孪生文件 | 上述四类**都 trap 且 rc=1** ✓（`tests/annot/unchecked_mixed.extc` 已有这个"孪生文件"套路 ✓ 照用 ✓）|
+
+**验收**：`tests/annot/run.sh` + `tests/run.sh` 全绿 ✓；**产物变化**只应出现在用到 `!`/`@unchecked` 的夹具 ✓（全语料指纹要逐条解释 ✓）。
