@@ -1,0 +1,15 @@
+// G1：`!` 是"我担保这里有值"的签字，但**签错了必须响亮**：trap 带 file:line、rc=1。
+//
+// 今天实测（修复前）：编译通过、rc=255、stderr 空 —— `?ref` 的 `!` 是裸解引用 ⇒ SIGSEGV。
+// 修好之后：`!` 先断言非空再取值，所以这里必须看到
+//   `.../sign_nullref.extc:行号: trap: ...`
+struct box { v: i64 }
+
+fn pick(p: ?ref box) -> i64 {
+    return p!.v
+}
+
+fn main() -> i32 {
+    let n: ?ref box = null
+    return i32(pick(n))
+}

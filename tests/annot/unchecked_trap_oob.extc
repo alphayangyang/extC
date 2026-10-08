@@ -1,0 +1,20 @@
+// G3/G4 判据（下标）：同一个程序，只差一行 `@unchecked`。
+//
+//   · 标注版：产物里**不出现**任何检查调用（生成物判据）；越界 = 签字放弃的 UB；
+//   · 孪生版（`sed 's/^@unchecked$//'`）：`a[i]` 走 `extc_checkedIndex` ⇒ 越界必须
+//     **trap 带 file:line，rc=1**（不是静默读到别的内存）。
+//
+// 下标走变量（`i = 9`），所以编译器证明不了它越界 —— 这条判据测的是**运行期**检查，
+// 不是编译期能证明的那一类。`main` 里不写窄化转换（那会自己带一个 `extc_narrowI`，
+// 把"整份产物零检查"这条判据污染掉）。
+@unchecked
+fn hazard(a: ref [4]i64, i: i64) -> i64 { return a[i] }
+
+@unchecked
+fn main() -> i32 {
+    var a: [4]i64 = [1, 2, 3, 4]
+    var i: i64 = 9
+    let v: i64 = hazard(ref a, i)
+    if v == i64(1) { return 0 }
+    return 1
+}

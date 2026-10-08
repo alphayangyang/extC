@@ -1,0 +1,8 @@
+// G2 的姊妹条：`r!`（`result` = `failure`）必须 trap 带 file:line、rc=1。
+//
+// 今天实测（修复前）：rc=9、无 trap —— 直接读 `.u.success._0`（不读 tag）⇒ 把失败载荷
+// 当成功值返回。修好之后：`!` 先断言 tag 再读载荷。
+fn main() -> i32 {
+    var r: result<i64, i64> = result<i64, i64>::failure(9)
+    return i32(r!)
+}

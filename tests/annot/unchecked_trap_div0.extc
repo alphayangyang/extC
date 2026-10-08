@@ -1,0 +1,14 @@
+// G3/G4 判据（除零）：同一个程序，只差一行 `@unchecked`。
+//
+//   · 标注版：产物里**不出现** `extc_divI` / `extc_modI`（除数直接进 C 的 `/`）⇒ 除零 = UB；
+//   · 孪生版：除零必须 **trap 带 file:line，rc=1**（`trap: division by zero`）。
+@unchecked
+fn hazard(d: i64) -> i64 { return i64(7) / d }
+
+@unchecked
+fn main() -> i32 {
+    var d: i64 = 0
+    let v: i64 = hazard(d)
+    if v == i64(7) { return 0 }
+    return 1
+}

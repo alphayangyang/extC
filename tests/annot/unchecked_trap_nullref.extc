@@ -1,0 +1,17 @@
+// G3/G4 判据（可空解引用）：同一个程序，只差一行 `@unchecked`。
+//
+//   · 标注版：产物里**不出现** `extc_refAssert` ⇒ `null!` 是裸解引用 = 签字放弃的 UB；
+//   · 孪生版：`!` 先断言再取值 ⇒ 必须 **trap 带 file:line，rc=1**（今天实测 rc=255 且 stderr 空）。
+struct box { v: i64 }
+
+@unchecked
+fn hazard(p: ?ref box) -> i64 { return p!.v }
+
+@unchecked
+fn main() -> i32 {
+    var b: box = { v: 1 }
+    let p: ?ref box = null
+    let v: i64 = hazard(p)
+    if v == i64(1) { return 0 }
+    return 1
+}

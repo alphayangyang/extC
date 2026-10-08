@@ -102,6 +102,67 @@ else
     bad "@unchecked 生成物判据：编译失败"
 fi
 
+echo "== G1/G2：\`!\` 签错了必须 trap 且 rc=1（带 file:line）=="
+# 修复前：`?ref` 的 `!` 是裸解引用（rc=255、stderr 空）；`option`/`result` 的 `!` 直读载荷
+# （rc=0 / rc=载荷，无 trap）✗。判据比 tests/traps 更严：不但要有 `trap:`，rc 还必须正好是 1。
+for f in tests/traps/sign_nullref.extc tests/traps/sign_option_none.extc tests/traps/sign_result_failure.extc; do
+    n=$(basename "$f" .extc)
+    out=$(timeout 60 "$EXTC" -w --run "$f" 2>&1); rc=$?
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qE "^$f:[0-9]+: trap: "; then
+        ok "G1/G2 $n  ->  rc=1，$(printf '%s' "$out" | head -1 | cut -c1-72)"
+    else
+        bad "G1/G2 $n （rc=$rc；期望 rc=1 且 \"$f:行号: trap: ...\"）"
+        printf '%s\n' "$out" | head -2 | sed 's/^/        /'
+    fi
+done
+
+echo "== G3/G4：@unchecked 关掉**全部**检查；孪生（只少注解）四类都 trap 且 rc=1 =="
+# G3 是生成物判据：标注过的产物里不许留下任何一类检查调用。
+# G4 是孪生判据：把同一份文件里那一行 `@unchecked` 删掉，四类危险都必须 trap 且 rc=1
+# —— 同时孪生产物里必须**有**那些检查，否则"标注版没有检查"可能只是"检查本来就没发"。
+CHECK_RE='extc_trap|extc_narrow|extc_checkedIndex|extc_checkedRange|extc_divI|extc_modI|extc_divU|extc_modU|extc_shiftCount|extc_refAssert|extc_tagAssert|_index\('
+for t in oob div0 nullref narrow; do
+    f=tests/annot/unchecked_trap_$t.extc
+    sed 's/^@unchecked$//' "$f" > "$TMPA/plain_trap_$t.extc"
+    if ! "$EXTC" -w --no-line-map -o "$TMPA/ann_trap_$t.c" "$f" 2>"$TMPA/ann_trap_$t.err"; then
+        bad "G3 $t：@unchecked 版编不过"; head -3 "$TMPA/ann_trap_$t.err" | sed 's/^/        /'; continue
+    fi
+    left=$(grep -oE "$CHECK_RE" "$TMPA/ann_trap_$t.c" | sort -u | tr '\n' ' ')
+    if [ -n "$left" ]; then
+        bad "G3 $t：@unchecked 产物里仍有检查：$left"
+    else
+        ok "G3 $t：@unchecked 产物零检查调用"
+    fi
+    if ! "$EXTC" -w --no-line-map -o "$TMPA/plain_trap_$t.c" "$TMPA/plain_trap_$t.extc" 2>"$TMPA/plain_trap_$t.err"; then
+        bad "G4 $t：孪生编不过"; head -3 "$TMPA/plain_trap_$t.err" | sed 's/^/        /'; continue
+    fi
+    if ! grep -qE "$CHECK_RE" "$TMPA/plain_trap_$t.c"; then
+        bad "G4 $t：孪生产物里没有检查 ⇒ G3 那条判据是空的"
+    fi
+    out=$(timeout 60 "$EXTC" -w --run "$TMPA/plain_trap_$t.extc" 2>&1); rc=$?
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qE ":[0-9]+: trap: "; then
+        ok "G4 $t：孪生 trap 且 rc=1  ->  $(printf '%s' "$out" | head -1 | cut -c1-72)"
+    else
+        bad "G4 $t：孪生没有 trap 或 rc≠1（rc=$rc）"
+        printf '%s\n' "$out" | head -2 | sed 's/^/        /'
+    fi
+done
+
+echo "== G3（行为侧）：@unchecked 与孪生输出逐字节相同 —— 注解不许改变结果 =="
+sed 's/^@unchecked$//' tests/annot/unchecked_checks.extc > "$TMPA/plain_checks.extc"
+if "$EXTC" -w --run tests/annot/unchecked_checks.extc > "$TMPA/checks_with.out" 2>&1 \
+   && "$EXTC" -w --run "$TMPA/plain_checks.extc" > "$TMPA/checks_plain.out" 2>&1; then
+    if cmp -s "$TMPA/checks_with.out" "$TMPA/checks_plain.out" \
+       && grep -q 'r=61' "$TMPA/checks_with.out"; then
+        ok "unchecked_checks：六类检查都关掉，输出仍是 $(cat "$TMPA/checks_with.out")"
+    else
+        bad "unchecked_checks：注解改变了输出（期望逐字节相同且含 r=61）"
+        diff "$TMPA/checks_with.out" "$TMPA/checks_plain.out" | head -4 | sed 's/^/        /'
+    fi
+else
+    bad "unchecked_checks：编译或运行失败"
+fi
+
 echo "== 反例：错的注解必须编译期报错 =="
 for f in tests/annot/no_*.extc; do
     n=$(basename "$f" .extc)

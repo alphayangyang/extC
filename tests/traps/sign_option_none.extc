@@ -1,0 +1,9 @@
+// G2：`o!`（`option` = `none`）必须 trap 带 file:line、rc=1。
+//
+// 今天实测（修复前）：rc=0、无 trap —— 直接读 `.u.some._0`（不读 tag）⇒ 静默拿到零值。
+// 修好之后：`!` 先断言 tag 再读载荷，所以这里必须看到
+//   `.../sign_option_none.extc:行号: trap: ...`
+fn main() -> i32 {
+    var o: option<i64> = option<i64>::none()
+    return i32(o!)
+}

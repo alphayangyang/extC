@@ -1,0 +1,16 @@
+// G3/G4 判据（窄化）：同一个程序，只差一行 `@unchecked`。
+//
+//   · 标注版：产物里**不出现** `extc_narrowI`（`i8(n)` 退化成裸 C 转换）⇒ 放不下 = UB；
+//   · 孪生版：300 放不进 i8 ⇒ 必须 **trap 带 file:line，rc=1**
+//     （`trap: value does not fit in the target type`）。
+// `i64(v)` 是 i8 -> i64 的**加宽**（无损、本来就没有检查），不会污染"零检查"判据。
+@unchecked
+fn hazard(n: i64) -> i8 { return i8(n) }
+
+@unchecked
+fn main() -> i32 {
+    var n: i64 = 300
+    let v: i8 = hazard(n)
+    if i64(v) == i64(44) { return 0 }
+    return 1
+}

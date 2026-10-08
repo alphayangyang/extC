@@ -1,0 +1,49 @@
+// G3 判据（行为侧）：`@unchecked` 的函数体**不插任何检查**，但结果必须与不加注解一字不差。
+//
+// `tests/annot/run.sh` 用 sed 现生成"只少那一行 `@unchecked`"的孪生文件，断言：
+//   · 两份的输出逐字节相同（注解只许影响生成的 C，不许影响结果）；
+//   · 标注版的函数体里不出现任何检查调用（下标 / 除零 / 移位 / 窄化 / 可空 / 范围）；
+//   · 孪生版里那几类检查**都在**（否则"本来就没发"也能骗过上面那条）。
+//
+// 六条路各覆盖一类检查：
+//   idx    —— 边界下标（`[N]T` 的 array 路径）
+//   divz   —— 除零 / 整除溢出（`extc_divI`）
+//   unref  —— 可空解引用（`!` 的 `extc_refAssert`）
+//   narrow —— 窄化转换（`extc_narrowI`）
+//   shifty —— 移位计数（`extc_shiftCount`）
+//   rang   —— 范围 `x[a..b]`（`extc_checkedRange`）
+use std::io
+
+struct box { v: i64 }
+
+@unchecked
+fn idx(a: ref [4]i64, i: i64) -> i64 { return a[i] }
+
+@unchecked
+fn divz(d: i64) -> i64 { return i64(7) / d }
+
+@unchecked
+fn unref(p: ?ref box) -> i64 { return p!.v }
+
+@unchecked
+fn narrow(n: i64) -> i8 { return i8(n) }
+
+@unchecked
+fn shifty(n: i64, k: i64) -> i64 { return n << k }
+
+@unchecked
+fn rang(v: slice<u8>, lo: i64) -> slice<u8> { return v[lo..i64(8)] }
+
+fn main() -> i32 {
+    var a: [4]i64 = [10, 20, 30, 40]
+    var b: box = { v: 5 }
+    let s: slice<u8> = "abcdefgh"
+    var r: i64 = idx(ref a, i64(2))
+    r = r + divz(i64(2))
+    r = r + unref(ref b)
+    r = r + i64(narrow(i64(7)))
+    r = r + shifty(i64(1), i64(3))
+    r = r + i64(rang(s, i64(0)).len)
+    io::cout << "r=" << r << "\n"
+    return 0
+}
