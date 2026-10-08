@@ -153,10 +153,10 @@ sed 's/^@unchecked$//' tests/annot/unchecked_checks.extc > "$TMPA/plain_checks.e
 if "$EXTC" -w --run tests/annot/unchecked_checks.extc > "$TMPA/checks_with.out" 2>&1 \
    && "$EXTC" -w --run "$TMPA/plain_checks.extc" > "$TMPA/checks_plain.out" 2>&1; then
     if cmp -s "$TMPA/checks_with.out" "$TMPA/checks_plain.out" \
-       && grep -q 'r=61' "$TMPA/checks_with.out"; then
-        ok "unchecked_checks：六类检查都关掉，输出仍是 $(cat "$TMPA/checks_with.out")"
+       && grep -q 'r=65' "$TMPA/checks_with.out"; then
+        ok "unchecked_checks：七类检查都关掉，输出仍是 $(cat "$TMPA/checks_with.out")"
     else
-        bad "unchecked_checks：注解改变了输出（期望逐字节相同且含 r=61）"
+        bad "unchecked_checks：注解改变了输出（期望逐字节相同且含 r=65）"
         diff "$TMPA/checks_with.out" "$TMPA/checks_plain.out" | head -4 | sed 's/^/        /'
     fi
 else

@@ -5,13 +5,14 @@
 //   · 标注版的函数体里不出现任何检查调用（下标 / 除零 / 移位 / 窄化 / 可空 / 范围）；
 //   · 孪生版里那几类检查**都在**（否则"本来就没发"也能骗过上面那条）。
 //
-// 六条路各覆盖一类检查：
+// 七条路各覆盖一类检查：
 //   idx    —— 边界下标（`[N]T` 的 array 路径）
 //   divz   —— 除零 / 整除溢出（`extc_divI`）
 //   unref  —— 可空解引用（`!` 的 `extc_refAssert`）
 //   narrow —— 窄化转换（`extc_narrowI`）
 //   shifty —— 移位计数（`extc_shiftCount`）
 //   rang   —— 范围 `x[a..b]`（`extc_checkedRange`）
+//   copy4  —— `copyInto` 的计数与空视图（`<view>_copy`）
 use std::io
 
 struct box { v: i64 }
@@ -34,16 +35,22 @@ fn shifty(n: i64, k: i64) -> i64 { return n << k }
 @unchecked
 fn rang(v: slice<u8>, lo: i64) -> slice<u8> { return v[lo..i64(8)] }
 
+@unchecked
+fn copy4(d: mut slice<i32>, s: slice<i32>) -> i64 { return copyInto<i32>(d, s, i64(4)) }
+
 fn main() -> i32 {
     var a: [4]i64 = [10, 20, 30, 40]
     var b: box = { v: 5 }
     let s: slice<u8> = "abcdefgh"
+    var src: [4]i32 = [1, 2, 3, 4]
+    var dst: [4]i32
     var r: i64 = idx(ref a, i64(2))
     r = r + divz(i64(2))
     r = r + unref(ref b)
     r = r + i64(narrow(i64(7)))
     r = r + shifty(i64(1), i64(3))
     r = r + i64(rang(s, i64(0)).len)
+    r = r + copy4(dst[..], src[..])
     io::cout << "r=" << r << "\n"
     return 0
 }
