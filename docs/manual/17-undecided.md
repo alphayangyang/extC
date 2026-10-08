@@ -72,3 +72,4 @@ error: array length must be an integer literal, found `N`
 | **CodeGen 按需发射（施工中）** | **交接入口**：[`CODEGEN-HANDOFF.md`](../topics/CODEGEN-HANDOFF.md) —— W0 已落（仪表 + 基线 13923 条），W1–W4 待做；含前提、实测数据、已答 6 问、危险格（dyn 表）、验证配方、AST/plan 对接规则 | [`CODEGEN-HANDOFF.md`](../topics/CODEGEN-HANDOFF.md) |
 | **失败处理：收缩 trap** | 实测目标产物 21 处 trap，其中 **10 处是"输入相关可恢复"**（窄化 2 · 除零/溢出 4 · 移位 1 · 空视图 3）✗；缺口：slice/数组只有会 trap 的 `[]`、没有 checked 窄化/除法、**`?` 要求错误类型完全一致**。方案：S1 补 checked（零语言改动）→ S2 `?` 允许错误转换（痛感最大）→ S3 `recover` 设想 | [`ERR-ERGONOMICS.md`](../topics/ERR-ERGONOMICS.md) |
 | **当前未决事项地图** | 收敛成"两个母题（可见性 vs 书写负担 · 默认行为 + 逃生门）+ 纯增量 + 内部事项"；建议一次只开一个 | [`OPEN-MAP.md`](../topics/OPEN-MAP.md) |
+| **语言设计交接（所有未决事项）** | **新对话入口**：两大母题（可见性 vs 书写负担 · 默认行为 + 逃生门）+ 纯增量 + 内部事项 + 已定案（不要重开）+ 建议第一步 | [`DESIGN-HANDOFF.md`](../topics/DESIGN-HANDOFF.md) |
