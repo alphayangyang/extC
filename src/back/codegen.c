@@ -204,6 +204,7 @@ typedef struct {
      * may not hold. */
     Vec         viewIdx;        /* Type *: view instances whose index primitive is needed */
     Vec         viewCpy;        /* Type *: view instances whose bulk-copy primitive is needed */
+    Vec         viewCpyU;       /* Type *: the `@unchecked` (unchecked) copier of those */
     Buf         body;
 
     /* Used by `?` expansion: the return type of the current function (a
@@ -360,10 +361,14 @@ typedef struct {
     bool        needPlateView;    /* `extc_viewOf`：板把保留区当视图用的唯一入口 */
     bool        needPlateCopy;    /* `extc_memCopy`：板 copyIn/copyOut 的整块拷贝 */
     bool        needTime;     /* 程序用了 `extern!("extc-time")` ⇒ 发射时钟与 sleep */
-    /* Is the function being generated marked `@unchecked`? Then its element indexes are lowered
-     * without the bounds check (see `FuncDef.isUnchecked`). Saved and restored around every body,
-     * so the answer is per function: the flag is the whole granularity the annotation promises. */
-    bool        uncheckedIdx;
+    /* Is the function being generated marked `@unchecked`? Then **no check at all** is
+     * emitted for its body -- not just the element indexes: bounds, division, shift,
+     * narrowing, `!`'s null/tag assertion, slice ranges and the bulk-copy count. That is
+     * the whole point of the annotation, and the one signed road to undefined behaviour
+     * (`FuncDef.isUnchecked`, manual 0.5 / 12.5). Saved and restored around every body, so
+     * the answer is per function: the flag is the whole granularity the annotation
+     * promises. */
+    bool        uncheckedBody;
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
@@ -866,22 +871,28 @@ static void genViewIndexer(CG *g, Type *inst) {
  * guard, for every byte). `memmove` rather than `memcpy`: the common caller shifts a buffer
  * onto itself (`string::removeFront`), where the ranges overlap.
  *
- * The count check traps with a source position, like every other out-of-range access. */
-static void genViewCopier(CG *g, Type *inst) {
+ * The count check traps with a source position, like every other out-of-range access.
+ * `unchecked` is the `@unchecked` variant: `memmove` runs on the count as written,
+ * with neither the length check nor the storage check, under the `..._copyU` name. */
+static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
     substEnter(g, inst);
-    cgLine(g, "static inline int64_t %s_copy(%s d, %s s, int64_t n, const char *file, int line) {",
-           inst->name, inst->name, inst->name);
+    cgLine(g, "static inline int64_t %s_copy%s(%s d, %s s, int64_t n, const char *file, int line) {",
+           inst->name, unchecked ? "U" : "", inst->name, inst->name);
     g->indent++;
-    cgLine(g, "if (n < 0 || n > d.len || n > s.len)");
-    cgLine(g, "    extc_trapMsg(file, line, \"copyInto: the count is beyond a slice length\");");
-    /* A view whose storage is gone has no byte to copy. The index primitive above has had this
-     * guard for a while; the copier did not, so `copyInto(d, deadView, 1)` moved from a NULL base
-     * -- a SIGSEGV at -O0, and at -O2 gcc deleted the UB call so the program looked like it
-     * worked (audit P0-8). Conditional on `n > 0`: copying zero elements from an empty view is
-     * legal and must stay legal. */
-    cgLine(g, "if (n > 0 && (!d.data || !s.data))");
-    cgLine(g, "    extc_trapMsg(file, line, \"the view has no storage\");");
+    if (!unchecked) {
+        cgLine(g, "if (n < 0 || n > d.len || n > s.len)");
+        cgLine(g, "    extc_trapMsg(file, line, \"copyInto: the count is beyond a slice length\");");
+        /* A view whose storage is gone has no byte to copy. The index primitive above has had this
+         * guard for a while; the copier did not, so `copyInto(d, deadView, 1)` moved from a NULL base
+         * -- a SIGSEGV at -O0, and at -O2 gcc deleted the UB call so the program looked like it
+         * worked (audit P0-8). Conditional on `n > 0`: copying zero elements from an empty view is
+         * legal and must stay legal. */
+        cgLine(g, "if (n > 0 && (!d.data || !s.data))");
+        cgLine(g, "    extc_trapMsg(file, line, \"the view has no storage\");");
+    } else {
+        cgLine(g, "(void)file; (void)line;");
+    }
     cgLine(g, "if (n > 0) memmove((void *)d.data, (const void *)s.data, (size_t)n * sizeof(%s));",
            cType(g, elem));
     cgLine(g, "return n;");
@@ -918,12 +929,15 @@ static const char *viewIndexer(CG *g, Type *inst) {
     return name;
 }
 
-/* Same on-demand story as `viewIndexer`, for the bulk-copy primitive. */
-static const char *viewCopier(CG *g, Type *inst) {
-    const char *name = arenaPrintf(g->arena, "%s_copy", inst->name);
-    for (size_t i = 0; i < g->viewCpy.len; i++)
-        if (strcmp((*(Type **)vecAt(&g->viewCpy, i))->name, inst->name) == 0) return name;
-    *(Type **)vecPush(&g->viewCpy) = inst;
+/* Same on-demand story as `viewIndexer`, for the bulk-copy primitive. The
+ * `@unchecked` form gets its own name (`..._copyU`) and its own list: a checked
+ * call site of the same view type must keep the checked definition. */
+static const char *viewCopier(CG *g, Type *inst, bool unchecked) {
+    const char *name = arenaPrintf(g->arena, "%s_copy%s", inst->name, unchecked ? "U" : "");
+    Vec *list = unchecked ? &g->viewCpyU : &g->viewCpy;
+    for (size_t i = 0; i < list->len; i++)
+        if (strcmp((*(Type **)vecAt(list, i))->name, inst->name) == 0) return name;
+    *(Type **)vecPush(list) = inst;
     return name;
 }
 
@@ -1491,8 +1505,11 @@ static const char *genBin(CG *g, Expr *e) {
      * they trap with a source position instead of passing silently. Each
      * operand is evaluated exactly once, which is why they go through a helper
      * rather than a comma expression such as `(check(r), l op r)` that would
-     * evaluate one operand twice. */
-    {
+     * evaluate one operand twice.
+     *
+     * `@unchecked` signs the checks away: the raw C operator is emitted and the
+     * helper is never named (so it is not even defined in the product). */
+    if (!g->uncheckedBody) {
         Type *lt   = ttBase(subst(g, e->u.bin.left->type));
         bool  sint = lt && lt->kind == TY_BUILTIN && lt->name && lt->name[0] == 'i';
         bool  uint = lt && lt->kind == TY_BUILTIN && lt->name && lt->name[0] == 'u';
@@ -2566,7 +2583,7 @@ static const char *exIndex(CG *g, Expr *e) {
          * for the range, so the index is used as written. No `extc_checkedIndex` call
          * means no trap position -- that is the cost of the annotation, and the manual
          * says so (18-modules.md 12.5). */
-        if (g->uncheckedIdx)
+        if (g->uncheckedBody)
             return arenaPrintf(g->arena, "%s.data[%s]", obj, idx);
         return arenaPrintf(g->arena,
             "%s.data[extc_checkedIndex((int64_t)(%s), %lld, \"%s\", %d)]",
@@ -2583,7 +2600,7 @@ static const char *exIndex(CG *g, Expr *e) {
      * the `file`/`line` arguments have nowhere to go because there is no check. The
      * primitive is *not* emitted for this body: nothing in it names the checked one,
      * which is what the generated-C criterion in tests/annot greps for. */
-    if (g->uncheckedIdx)
+    if (g->uncheckedBody)
         return arenaPrintf(g->arena, "(*((%s).data + (int64_t)(%s)))", obj, idx);
 
     /* The primitive returns a pointer and the dereference is an
@@ -2625,7 +2642,9 @@ static const char *exAssoc(CG *g, Expr *e) {
 static const char *exConv(CG *g, Expr *e) {
     Type *t = subst(g, e->u.conv.type);          /* target type, from the checker */
     const char *x = genExpr(g, e->u.conv.operand);
-    if (!planConvCheck(e))
+    /* `@unchecked` signs the conversion check away as well: the value is cast the
+     * way C casts it, and `extc_narrowI` / `extc_convFloat` are not named. */
+    if (!planConvCheck(e) || g->uncheckedBody)
         return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
 
     /* A checked conversion: look the range up in a table and go
@@ -2785,12 +2804,13 @@ static const char *exGencall(CG *g, Expr *e) {
             /* `copyInto<T>(dst, src, n)`: one checked `memmove`. The view type comes
              * from the DESTINATION argument, not from `e->type` -- this call's type is
              * `i64` (the count it returns), so the slice has to be read off the argument
-             * the checker already typed. */
+             * the checker already typed. `@unchecked` names the `..._copyU` variant,
+             * which checks neither the count nor the storage. */
             Expr *dArg = *(Expr **)vecAt(&e->u.gencall.args, 0);
             Type *vt = subst(g, dArg->type);
             return arenaPrintf(g->arena,
                 "%s((%s)(%s), (%s)(%s), (int64_t)(%s), \"%s\", %d)",
-                viewCopier(g, vt), cType(g, vt),
+                viewCopier(g, vt, g->uncheckedBody), cType(g, vt),
                 genExpr(g, dArg),
                 cType(g, vt),
                 genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)),
@@ -5007,8 +5027,8 @@ static void genFunc(CG *g, FuncDef *f) {
     /* `@unchecked` is a property of **this body**, so it is set on entry and restored on the way
      * out. A coroutine's step function is generated from its own `FuncDef` (the one the
      * annotation sits on), so the flag covers `yield`-split bodies as well. */
-    bool savedUnchecked = g->uncheckedIdx;
-    g->uncheckedIdx = f->isUnchecked;
+    bool savedUnchecked = g->uncheckedBody;
+    g->uncheckedBody = f->isUnchecked;
     /* ---- One arena per block level ----
      * The number of levels is known at compile time, being the maximum nesting
      * depth of the blocks, so the array has a fixed length and lives on the
@@ -5330,7 +5350,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->retType = savedRet;
     g->inMain  = false;
     g->tmpSeq = savedSeq;
-    g->uncheckedIdx = savedUnchecked;
+    g->uncheckedBody = savedUnchecked;
     g->noArena = savedNoArena;
     g->owSitesOwn = savedOw;          /* restored last, see the note above */
     g->owCalls = savedOwCalls;
@@ -5637,6 +5657,10 @@ static void unitBody(CG *g, SUnit *u) {
  *   st   - resulting slice type
  *   tail - true for "slice to the end" (`s[lo..]`), where the omitted bound is
  *          the length of the base
+ *   unchecked - true when the caller's body is `@unchecked`: the helper then
+ *          skips `extc_checkedRange` and takes `lo` as written. It gets its own
+ *          name (`...U_...`) so a checked caller of the same base type keeps the
+ *          checked helper: the two must not share one definition.
  *
  * Returns:
  *   The helper name, `extc_slice` or `extc_sliceTo` plus the C name of the base.
@@ -5645,9 +5669,9 @@ static void unitBody(CG *g, SUnit *u) {
  *   a repository-wide check rejects the C name pattern of a slice type in the
  *   source, comments included.
  */
-static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
-    const char *name = arenaPrintf(g->arena, "extc_slice%s_%s",
-                                   tail ? "To" : "", ob->name);
+static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail, bool unchecked) {
+    const char *name = arenaPrintf(g->arena, "extc_slice%s%s_%s",
+                                   tail ? "To" : "", unchecked ? "U" : "", ob->name);
     for (size_t i = 0; i < g->helpers.len; i++)
         if (strcmp(((SliceHelper *)vecAt(&g->helpers, i))->name, name) == 0)
             return name;
@@ -5660,21 +5684,30 @@ static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail) {
         bufPrintf(&b, "static %s %s(%s *a, int64_t lo, int64_t hi,\n",
                   ret, name, ob->name);
         bufPrintf(&b, "                       const char *f, int ln) {\n");
-        bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, %lld, f, ln);\n",
-                  (long long)ob->asize);
+        if (unchecked)
+            bufPrintf(&b, "    int64_t s = lo;\n    (void)f; (void)ln;\n");
+        else
+            bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, %lld, f, ln);\n",
+                      (long long)ob->asize);
         bufPrintf(&b, "    return (%s){ .data = &a->data[s], .len = hi - lo };\n}\n", ret);
     } else if (tail) {
         /* Slicing to the end: hi is v.len. It is taken as a parameter instead
          * of being expanded in place, so the view is evaluated once. */
         bufPrintf(&b, "static %s %s(%s v, int64_t lo, const char *f, int ln) {\n",
                   ret, name, ob->name);
-        bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, v.len, v.len, f, ln);\n");
+        if (unchecked)
+            bufPrintf(&b, "    int64_t s = lo;\n    (void)f; (void)ln;\n");
+        else
+            bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, v.len, v.len, f, ln);\n");
         bufPrintf(&b, "    return (%s){ .data = v.data + s, .len = v.len - lo };\n}\n", ret);
     } else {
         bufPrintf(&b, "static %s %s(%s v, int64_t lo, int64_t hi,\n",
                   ret, name, ob->name);
         bufPrintf(&b, "                       const char *f, int ln) {\n");
-        bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, v.len, f, ln);\n");
+        if (unchecked)
+            bufPrintf(&b, "    int64_t s = lo;\n    (void)f; (void)ln;\n");
+        else
+            bufPrintf(&b, "    int64_t s = extc_checkedRange(lo, hi, v.len, f, ln);\n");
         bufPrintf(&b, "    return (%s){ .data = v.data + s, .len = hi - lo };\n}\n", ret);
     }
 
@@ -5730,11 +5763,11 @@ static const char *genSlice(CG *g, Expr *e) {
     if (!hi) {
         /* Only a view base can reach here: for an array base the checker has
          * already filled the omitted bound in as a literal. */
-        const char *fn = sliceHelper(g, ob, st, true);
+        const char *fn = sliceHelper(g, ob, st, true, g->uncheckedBody);
         return arenaPrintf(g->arena, "%s(%s, (int64_t)(%s), \"%s\", %d)",
                            fn, arg, loS, g->path, e->line);
     }
-    const char *fn = sliceHelper(g, ob, st, false);
+    const char *fn = sliceHelper(g, ob, st, false, g->uncheckedBody);
     const char *hiS = genExpr(g, hi);
     return arenaPrintf(g->arena, "%s(%s, (int64_t)(%s), (int64_t)(%s), \"%s\", %d)",
                        fn, arg, loS, hiS, g->path, e->line);
@@ -7922,6 +7955,7 @@ static void initRuntimeText(CG *g, Arena *arena) {
     vecInit(&g->helpers, arena, sizeof(SliceHelper));
     vecInit(&g->viewIdx, arena, sizeof(Type *));
     vecInit(&g->viewCpy, arena, sizeof(Type *));
+    vecInit(&g->viewCpyU, arena, sizeof(Type *));
     vecInit(&g->descs, arena, sizeof(void *));
     vecInit(&g->eqNeed, arena, sizeof(void *));
     vecInit(&g->deadDefs, arena, sizeof(DeadDef *));
@@ -8533,7 +8567,7 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         Buf *save = g->out;
         g->out = &tmp;
         substEnter(g, inst);
-        genViewCopier(g, inst);
+        genViewCopier(g, inst, false);
         substLeave(g);
         g->out = save;
         size_t bio = out->len;
@@ -8543,6 +8577,28 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufPutn(&it, out->data + bio, out->len - bio);
         DeadDef *cdd = arenaAllocZero(arena, sizeof *cdd);
         cdd->name = arenaPrintf(arena, "%s_copy", inst->name);
+        cdd->text = bufCstr(&it);
+        *(DeadDef **)vecPush(&g->deadDefs) = cdd;
+    }
+    /* The `@unchecked` copiers: same shape, no count/storage check. They get their
+     * own names so a checked call site of the same view type keeps the checked one. */
+    for (size_t i = 0; i < g->viewCpyU.len; i++) {
+        Type *inst = *(Type **)vecAt(&g->viewCpyU, i);
+        Buf tmp;
+        bufInit(&tmp, arena);
+        Buf *save = g->out;
+        g->out = &tmp;
+        substEnter(g, inst);
+        genViewCopier(g, inst, true);
+        substLeave(g);
+        g->out = save;
+        size_t bio = out->len;
+        bufPuts(out, bufCstr(&tmp));
+        Buf it;
+        bufInit(&it, arena);
+        bufPutn(&it, out->data + bio, out->len - bio);
+        DeadDef *cdd = arenaAllocZero(arena, sizeof *cdd);
+        cdd->name = arenaPrintf(arena, "%s_copyU", inst->name);
         cdd->text = bufCstr(&it);
         *(DeadDef **)vecPush(&g->deadDefs) = cdd;
     }
