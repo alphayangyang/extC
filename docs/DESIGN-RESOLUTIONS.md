@@ -1,5 +1,8 @@
 # extC 设计裁定（Design Resolutions）
 
+> **角色：档案（2026-09-30 审计期裁定 R1–R18）。** 当前状态见 [`STATUS.md`](STATUS.md)，
+> 未决设计见 [`DESIGN-OPEN.md`](DESIGN-OPEN.md)。
+
 > **这份文档是什么**：2026-09-30 全量审计（[`docs/reviews/COMPILER-AUDIT-2026-09-30.md`](reviews/COMPILER-AUDIT-2026-09-30.md)，
 > 173 条问题、22 条 P0）里，有一批问题**不是"写错了"，而是"没定过"或"定过但已经过时"**。
 > 本文把这些点一次性裁定，作为后续修复的准绳。

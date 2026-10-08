@@ -6,6 +6,7 @@
 
 # 11. 还没定的
 
+工程层面的状态与未决事项不在此页重复维护：当前状态见 [`STATUS.md`](../STATUS.md)，未决设计见 [`DESIGN-OPEN.md`](../DESIGN-OPEN.md)。
 `result<void,E>` 还是 `result<(),E>`、`@main` 和 `module main` 的优先关系、`&&`/`||` vs `and`/`or`、无返回值函数要不要强制 `-> void`、要不要做多错误报告。
 
 **`==` 右边的裸 `{}` 不推**（已定，见 [`DECISIONS.md`](../DECISIONS.md) 定案 27）：
@@ -67,9 +68,9 @@ error: array length must be an integer literal, found `N`
 |---|---|---|
 | **协程协议层** | 地基好（内存/唤醒有数字），协议层是"一串猜出来的负数 + 覆盖式 tag"；三条修法 A/B/C 与代价 | [`CORO-PROTOCOL.md`](../topics/CORO-PROTOCOL.md) |
 | **普通语法的差距（手感）** | 拿真代码量：Python ~25 行 → extC 78 行（3×）；四条主因 + 优先级（格式串 → 表达式位置构造 → stdlib 补齐 → 容器字面量 → 默认参数） | [`ERGONOMICS.md`](../topics/ERGONOMICS.md) |
-| **运行时块的按需发射** | `extc_print` 住在 `rtPrint` 里被**整块**发出（`needRuntime` 很粗），而"没人用就删"的 pass 只扫 `primText` ⇒ 它没被看见。规则本身是对的，方案 A：把扫描文本改成参数、两个缓冲区各扫一遍 | [`PRIM-DROP.md`](../topics/PRIM-DROP.md) |
-| **CodeGen 重构（按它自己的逻辑）** | 契约是"代码生成不做决定"，但它现在**自己决定"什么该存在"**（文本计数 + 行形识别 + 15 个粗旗子）⇒ 三层重构：需求闭包 → 发射时登记 → 只做装配 | [`CODEGEN-ARCH.md`](../topics/CODEGEN-ARCH.md) |
-| **CodeGen 按需发射（施工中）** | **交接入口**：[`CODEGEN-HANDOFF.md`](../topics/CODEGEN-HANDOFF.md) —— W0 已落（仪表 + 基线 13923 条），W1–W4 待做；含前提、实测数据、已答 6 问、危险格（dyn 表）、验证配方、AST/plan 对接规则 | [`CODEGEN-HANDOFF.md`](../topics/CODEGEN-HANDOFF.md) |
 | **失败处理：收缩 trap** | 实测目标产物 21 处 trap，其中 **10 处是"输入相关可恢复"**（窄化 2 · 除零/溢出 4 · 移位 1 · 空视图 3）✗；缺口：slice/数组只有会 trap 的 `[]`、没有 checked 窄化/除法、**`?` 要求错误类型完全一致**。方案：S1 补 checked（零语言改动）→ S2 `?` 允许错误转换（痛感最大）→ S3 `recover` 设想 | [`ERR-ERGONOMICS.md`](../topics/ERR-ERGONOMICS.md) |
-| **当前未决事项地图** | 收敛成"两个母题（可见性 vs 书写负担 · 默认行为 + 逃生门）+ 纯增量 + 内部事项"；建议一次只开一个 | [`OPEN-MAP.md`](../topics/OPEN-MAP.md) |
-| **语言设计交接（所有未决事项）** | **新对话入口**：两大母题（可见性 vs 书写负担 · 默认行为 + 逃生门）+ 纯增量 + 内部事项 + 已定案（不要重开）+ 建议第一步 | [`DESIGN-HANDOFF.md`](../topics/DESIGN-HANDOFF.md) |
+| **未决设计（完整清单）** | 两大母题（可见性 vs 书写负担 · 默认行为 + 逃生门）+ 纯增量 + 内部事项 | [`DESIGN-OPEN.md`](../DESIGN-OPEN.md) |
+
+
+CodeGen 按需发射（W0–W4）已于 2026-10-05 完工，生成物减 5.7%，414 份产物指纹逐字节核过；完整记录见 [`CODEGEN.md`](../topics/CODEGEN.md)。
+原 [`PRIM-DROP.md`](../topics/PRIM-DROP.md) 所述的 `extc_print` 整块发射问题，已由 W2b-1（`needPrint` 与 `needRuntime` 分开按需）解决。

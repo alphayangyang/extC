@@ -58,10 +58,14 @@ fn main() -> i32 {
 ```sh
 make -j"$(nproc)"                        # 只依赖 C11 标准库，产出 build/extc
 ./build/extc --run examples/hello.extc   # 生成 C、编译并运行
-./tests/run.sh                           # 用例：326 通过 / 0 失败
-./check.sh quick                         # 快速验收：58 节（完整模式另含黄金闸门与基准）
+./tests/run.sh                           # 回归用例
+./check.sh quick                         # 快速验收（完整模式另含黄金闸门与基准）
 ./check.sh                               # 完整验收：另含基准
+make status                              # 重取上面两条的通过/失败数
 ```
+
+**通过/失败数不写在这里** —— 手抄的副本一定会漂，本仓库以前每一份过期的状态都是在别处手抄的一份。
+当前实测数只有一处：[`docs/STATUS.md`](docs/STATUS.md)。
 
 | 目标 | 依赖 |
 |---|---|
@@ -83,11 +87,13 @@ make -j"$(nproc)"                        # 只依赖 C11 标准库，产出 buil
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/PLAN.md`](docs/PLAN.md) | 路线图与缺陷清单（状态的唯一权威） |
+| [`docs/STATUS.md`](docs/STATUS.md) | **当前状态（唯一入口）**：实测数、未决、下一步 |
+| [`docs/DESIGN-OPEN.md`](docs/DESIGN-OPEN.md) | 未决设计（两个母题 + 纯增量） |
 | [`docs/MANUAL.md`](docs/MANUAL.md) | 语言手册（只描述已实现的部分） |
 | [`docs/SPEC.md`](docs/SPEC.md) | 设计文档：定位、原则、内存模型、代价与损失 |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 决策库：已定案 / 尚欠 |
-| [`docs/DEVLOG.md`](docs/DEVLOG.md) | 开发记录（倒序） |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 决策登记册（档案：已定案 / 尚欠） |
+| [`docs/DEVLOG.md`](docs/DEVLOG.md) | 开发记录（档案，倒序） |
+| [`docs/PLAN.md`](docs/PLAN.md) | 缺陷编号权威（`PLAN #NN`）与里程碑（档案） |
 | [`docs/topics/`](docs/topics/) | 专题：内存安全、arena、引用、数组、IO、模块、库、并发设想 |
 
 文档口径与维护规矩见 [`docs/PLAN.md`](docs/PLAN.md) 第 8 节；`src/` 与 `stdlib/` 的注释标准见
