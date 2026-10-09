@@ -1,0 +1,32 @@
+// `!`（后缀断言）在**任意表达式位置**都成立，且操作数**只求值一次**（审计 P0 批次）。
+//
+// 三组判据：
+//   ① 条件位：`while more()!` —— 断言不许被提到语句前缀（否则塞不进 while 条件，
+//      编译器只能拒绝：修前实测「不能在这里取临时量」）；而且**每轮都要重新求值**
+//      （evals=3，不是进循环前算一次的 1）。
+//   ② 普通表达式位：`g() + five()!` —— 操作数是调用，只许调一次（calls=1）。
+//      修前逗号表达式把调用写了两遍 ⇒ 会算两次。
+//   ③ 回归（101b338）：载荷作赋值目标 `o! = v` 仍是左值 ⇒ 写进去读回来是 9。
+// expect: evals=3 loops=2 calls=1 sum=12 payload=9
+use std::io
+
+var evals: i64 = 0
+fn more() -> ?bool { evals = evals + 1  return some(evals < 3) }
+
+var calls: i64 = 0
+fn five() -> ?i64 { calls = calls + 1  return some(5) }
+fn g() -> i64 { return 7 }
+
+fn main() -> i32 {
+    var loops: i64 = 0
+    while more()! { loops = loops + 1 }
+
+    var sum: i64 = g() + five()!
+
+    var o: ?i64 = some(1)
+    o! = i64(9)
+    var payload: i64 = o ?? -1
+
+    io::cout << "evals=" << evals << " loops=" << loops << " calls=" << calls << " sum=" << sum << " payload=" << payload << "\n"
+    return 0
+}

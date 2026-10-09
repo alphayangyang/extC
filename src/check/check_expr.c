@@ -2732,40 +2732,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *   `r!` (`result<T,E>`)  -> the payload T
              *   `p!` (`?ref T`)       -> `ref T`, the "I know it is not null" form
              * Anything else is an error: a signature has to be written where it means something. */
-            /* Read before the operand is checked: a subject that is itself a call raises the
-             * flag while it is checked (same accounting as the subject of `??`). */
-            bool priorFx = c->stmtFx != 0;
+            /* No `priorFx` bookkeeping any more: it existed because the operand used to be
+             * computed into a **statement-prefix temporary**, which could run before an
+             * earlier call on the same line and could not live in a `while` condition. The
+             * codegen now passes the operand as the argument of a per-instance unwrap
+             * helper, so it is evaluated once, in place, in any expression position. */
             Type *ot = checkExpr(c, e->u.sign.operand);
             if (ttIsError(ot)) return ttError(tt);
             if (isProtoType(ot, "option", 1) || isProtoType(ot, "result", 2)) {
-                /* The generated C reads the operand twice (`x.tag` and `x.u.some._0`), so an
-                 * impure operand (`f()!`) would run twice. It is computed into a temporary in
-                 * the statement prefix first -- exactly the `??` subject. Two positions have no
-                 * prefix; they are reported instead of silently reordering. */
-                if (!repeatablePure(e->u.sign.operand)) {
-                    if (priorFx && !c->noHoist) {
-                        ckError(c, e->line,
-                                "The operand of `!` is computed into a temporary **before the whole"
-                                " statement** (that is what makes it run only once). So an earlier"
-                                " side effect in the same statement would run *after* it -- the"
-                                " opposite of what the line reads like. Split the statement in two"
-                                " (`let t = f()!` then use `t`).",
-                                "`!` here would run **before** the call that comes earlier in this"
-                                " statement; split the line so the order you read is the order it runs");
-                        return ttError(tt);
-                    }
-                    if (c->noHoist) {
-                        ckError(c, e->line,
-                                "`while` re-evaluates its condition every round, but a temporary"
-                                " can only be computed once, before the loop. Bind it inside the"
-                                " loop body: `while true { let r = f()  if ... { break } }`",
-                                "`!` here cannot be evaluated ahead of time -- the temporary"
-                                " would run once instead of every round");
-                        return ttError(tt);
-                    }
-                    planSetNeedTemp(e, true);        /* codegen reads the temp, not the call */
-                    c->stmtFx = priorFx ? 1 : 0;
-                }
                 return *(Type **)vecAt(&ot->targs, 0);      /* the payload type */
             }
             if (ot->kind == TY_REF) {
@@ -4381,8 +4355,10 @@ static bool exprHasCall(Checker *c, Expr *e) {
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
+    /* `!` is deliberately absent here: its operand is the argument of an unwrap helper, so
+     * a call inside it runs in place and the flag is set like any other call (2026-10-09). */
     if (exprHasCall(c, e) &&
-        !((e->kind == EX_COALESCE || e->kind == EX_SIGN) && planNeedTemp(e))) c->stmtFx = 1;
+        !(e->kind == EX_COALESCE && planNeedTemp(e))) c->stmtFx = 1;
     if (!t) t = ttError(c->tt);
     e->type = t;
     return t;

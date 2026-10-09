@@ -57,6 +57,7 @@
 | `yield ref <帧内局部>` 被前端接受、生成物是畸形 C | [`tools/gate-escape-known-bad.txt`](../tools/gate-escape-known-bad.txt) | 闸门基线上**还剩 1 条**，未修 |
 | AST 冻结 R1 施工单（parser 之外写 AST）| [`tools/ast-freeze-known-bad.txt`](../tools/ast-freeze-known-bad.txt) | **67 条**，P2 卫生债 |
 | ASan / 差分 / callsite / scale / golden / layering 闸门 | 各自 `tools/*-known-bad.txt` | **全部为空** ✓ |
+| **赋值目标里的指针表达式会被求值两次** | 实测 `(*f()).field = v`（两侧编译器都一样）| f 调用 2 次。既有缺陷；`f()!.field = v`（`?mut ref`）修前同样是 2 次，现改为**拒绝**。彻底修法：赋值目标路径对"非 place 的指针表达式"用**指针临时量**（单次求值）——那样这条能力可重新开放 |
 | **产物指纹基线已过期** | [`tools/codegen-baseline-2026-10-05-w4.sha256`](../tools/codegen-baseline-2026-10-05-w4.sha256) | **本次改动之前就与 HEAD 差 410/414**（`!`/`@unchecked` 等改产物的工作没重取基线）⇒ **它已不能当"我改了没有"的预言机**。要么重取，要么明确放弃它 |
 
 ## 5. 下一步（只做一件）
@@ -64,12 +65,12 @@
 **已完成**：① pool 的**非头序删除 O(k²)** —— 判据先行（红 → 绿），两条链加 `prev`，产物的实际半径
 **162/414 份变**（全是发 pool 运行期块的程序；性质 = 两个字段 + 注释 + `_Static_assert`，已逐份核过）。
 
-**下一件（在飞）**：② `!` 的 hoist —— **一修两治**（无故拒绝 `while f()! {}` + `p.get(h)!.x = v` 静默丢弃）。
-施工单已备好：**检查器**的可写性检查要**递归 base 链**（`EX_SIGN` 要求操作数是 place）；**codegen** 把
-语句 hoist 换成**每实例 unwrap 助手**（纯 C11 —— `-Wpedantic` 会拒 GNU 语句表达式，这是对 §1.4② 原方案的修正）。
+**已完成**：② `!` 的 hoist + 可赋值性 —— **判据先行**（静默丢弃 / `while f()!` 先红）：
+检查器改成**递归 base 链**的可写性检查（`EX_FIELD/INDEX/SLICE` 要求 base 是 place；`EX_SIGN` 要求操作数是 place），
+codegen 把语句 hoist 换成**每实例 unwrap 助手**（纯 C11；`-Wpedantic` 拒 GNU 语句表达式 ⇒ 修正 §1.4② 的原方案）。
+产物半径 **43/414**（worktree A/B，不用过期基线）。判据：`tests/run.sh` **333/0** · `check.sh quick` **72/0**。
 
-**排队的（顺序已定）**：
-1. ② 修完 → 2. **`view<T>` 改名**（纯机械 commit，等没别的改动在飞时做）→
+**下一件**：**`view<T>` 改名**（纯机械 commit，等没别的改动在飞时做）→
 3. **S1 checked 原语 + S1b trap 统计** → 4. **A′ 的红判据**（`tools/escape-corpus/` 加 mut 洗白形状）→
 5. heap 的 `free` 那一半从 [`prototype-heap/`](../prototype-heap/README.md) 搬进 `std::heap` → 6. 账本收缩（删状态句 + `check_status.py` 闸门）。
 

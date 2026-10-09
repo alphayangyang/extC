@@ -1,0 +1,13 @@
+// `arr.get(i)!.x = v`：`!` 的操作数是**调用** ⇒ 不是 place（`!` 只把 place 的载荷透出来）。
+// 修前（2026-10-09 红）：**静默 no-op** —— 编译、运行、无诊断，值写进临时量被丢掉。
+// expect: not a place
+struct cell {
+    x: i64
+}
+
+fn main() -> i32 {
+    var arr: varArray<cell> = varArray<cell>::withCap(2)
+    arr.push(cell { x: 1 })
+    arr.get(0)!.x = i64(9)
+    return 0
+}

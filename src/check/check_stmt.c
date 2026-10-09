@@ -242,6 +242,45 @@ static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
     anSetRefDepth(sym, 0);
 }
 
+/* True when an expression has storage that an assignment may write through.
+ *
+ * This is a question about the whole **base chain**, not about the outermost form: `f().x`
+ * has a field access on the outside, but a field of a call is a field of a temporary, so
+ * the store would vanish into a value that is dead the moment it is written (the codegen
+ * for an impure base even materialises it into a local, so the store provably lands
+ * nowhere). The same holds for `!`: `p.get(h)!.x` unwraps the payload of a *temporary*
+ * option. `!` is only a place when its operand is one -- that is the rule the old
+ * top-level-kind test was missing, and it is what let the silent no-op through.
+ *
+ *   EX_IDENT                        -> place (a binding)
+ *   EX_FIELD / EX_INDEX / EX_SLICE  -> place iff the object it selects from is one
+ *   EX_DEREF                        -> place (any `*p` names an object)
+ *   EX_SIGN                         -> place iff the unwrapped operand is one
+ *   anything else                   -> no storage
+ *
+ * One shape this syntactic walk cannot decide is `s[i]` where `s` is a **view**
+ * (`slice<T>`): the element lives at `s.data + i`, so it is real storage even when the view
+ * value itself is a temporary. `a.asMutSlice()[i] = v` is kept working by the caller
+ * (`ST_ASSIGN`), which resolves the base's type when this walk says no; that is also where a
+ * fixed array (`f()[i]` with an array-returning `f`) is told apart from a view.
+ *
+ * The error this produces is extC's own, with a source position. Leaving the case to C
+ * would surface as gcc's "lvalue required as left operand of assignment" inside generated
+ * code the user never wrote (measured on `mk().x = v`, 2026-10-09).
+ */
+static bool assignTargetWritable(const Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_IDENT: return true;
+    case EX_DEREF: return true;
+    case EX_FIELD: return assignTargetWritable(e->u.field.obj);
+    case EX_INDEX: return assignTargetWritable(e->u.index.obj);
+    case EX_SLICE: return assignTargetWritable(e->u.slice.obj);
+    case EX_SIGN:  return assignTargetWritable(e->u.sign.operand);
+    default:       return false;
+    }
+}
+
 void checkStmt(Checker *c, Stmt *s) {
     c->stmtFx = 0;      /* count side effects from the start of each statement */
     switch (s->kind) {
@@ -543,20 +582,16 @@ void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_ASSIGN: {
-            /* The left side has to be a **place** -- a binding, a field, an index or a `*`
-             * dereference. Nothing required that, so the fuzzer's mutation of an identifier into a
-             * literal (`18446744073709551615 = total + p.val`, tools/fuzz.py) was accepted and the
+            /* The left side has to be a **place** -- a binding, a field/index/slice of a place,
+             * a `*` dereference, or the payload `o!` of a place. Nothing required this at all
+             * once, so the fuzzer's mutation of an identifier into a literal
+             * (`18446744073709551615 = total + p.val`, tools/fuzz.py) was accepted and the
              * generated C said `9223372036854775807 = (total + p->val);`, which gcc rejects with
-             * "lvalue required as left operand of assignment". `isPlace` is the predicate the rest
-             * of the checker already uses for exactly this question. */
-            /* Whether the left side may be written is a question about its **outermost** form,
-             * exactly as in C: `f().x = v` is a valid store because the member access is the
-             * lvalue, even though the call inside it is not. So the check is a list of the five
-             * chain forms, and everything else -- a literal, an arithmetic or comparison
-             * expression, a call -- has no storage. (Nothing required this at all, so the fuzzer's
-             * mutation of an identifier into a literal, `18446744073709551615 = total + p.val`,
-             * was accepted and the generated C said `9223372036854775807 = ...`, which gcc rejects
-             * with "lvalue required as left operand of assignment".) */
+             * "lvalue required as left operand of assignment". The predicate is
+             * `assignTargetWritable` above: it walks the whole **base chain**, unlike the
+             * outermost-kind list it replaces, which accepted `f().x = v` (gcc then rejected the
+             * generated C) and `p.get(h)!.x = v` (the store went into the codegen temporary and
+             * silently vanished). See that function for the rule and its view-element exception. */
             Expr *tgt0 = s->u.assign.target;
             /* A binding that was marked "my storage is out of this frame" stops being trusted the
              * moment it is written again: `if c { v = mem[..] } else { v = buf[..] }` would
@@ -567,16 +602,26 @@ void checkStmt(Checker *c, Stmt *s) {
                 Sym *tsy = lookup(c, tgt0->u.ident.name);
                 if (tsy) tsy->outOfFrame = false;
             }
-            bool targetWritable = tgt0 && (tgt0->kind == EX_IDENT || tgt0->kind == EX_FIELD ||
-                                           tgt0->kind == EX_INDEX || tgt0->kind == EX_SLICE ||
-                                           tgt0->kind == EX_DEREF || tgt0->kind == EX_SIGN);
-            if (s->u.assign.target && !targetWritable) {
-                ckError(c, s->line,
-                        "The left side of an assignment must be a place: a variable, a field, an"
-                        " index, or a `*` dereference. A literal or an expression has no storage to"
-                        " write.",
-                        "cannot assign to this expression: it is not a place");
-                return;
+            Type *idxBaseT = NULL;    /* the base of an index target, once its type is known */
+            if (!assignTargetWritable(tgt0)) {
+                /* The strict walk failed. There is one shape it cannot decide without the
+                 * base's type: `s[i]` where `s` is a view. Resolving the base here (only on
+                 * this path, so valid code is not re-checked) answers that, and the answer is
+                 * kept for the `[]=` rewrite below so the base is checked at most once more. */
+                bool viewElem = false;
+                if (tgt0 && tgt0->kind == EX_INDEX) {
+                    idxBaseT = checkExpr(c, tgt0->u.index.obj);
+                    viewElem = idxBaseT && !ttIsError(idxBaseT) && ttIsViewType(idxBaseT);
+                }
+                if (!viewElem) {
+                    ckError(c, s->line,
+                            "The left side of an assignment must be a place with storage: a variable,"
+                            " a field/index/slice **of a place**, a `*` dereference, or the payload"
+                            " `o!` of a place. A call, literal, or arithmetic expression has no storage"
+                            " to write.",
+                            "cannot assign to this expression: it is not a place");
+                    return;
+                }
             }
             /* `x += y` is `x = x + y` (定案 92). Which operator that is, and whether it
              * applies to these two types at all, is decided by the same function a written
@@ -613,7 +658,9 @@ void checkStmt(Checker *c, Stmt *s) {
              * diagnostic below says why the assignment is unavailable. */
             if (s->u.assign.target && s->u.assign.target->kind == EX_INDEX) {
                 Expr *tgt = s->u.assign.target;
-                Type *ot = checkExpr(c, tgt->u.index.obj);
+                /* `idxBaseT` is set only when the writability walk above had to resolve the
+                 * base already; reusing it keeps that base from being checked twice. */
+                Type *ot = idxBaseT ? idxBaseT : checkExpr(c, tgt->u.index.obj);
                 if (!ttIsError(ot) && findMethod(ttBase(ot), "[]=")) {
                     Vec args;
                     vecInit(&args, c->arena, sizeof(void *));

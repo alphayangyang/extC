@@ -197,6 +197,11 @@ typedef struct {
      * only while generating, so bodies go into `body` first and the output is
      * assembled at the end as prototypes -> helpers -> bodies. */
     Vec         helpers;        /* SliceHelper */
+    /* The `!` unwrap helpers; see the comment on UnwrapHelper. Registered on
+     * demand from `genExpr` and assembled with the slice helpers, for the same
+     * reason: a `!` in a `while` condition has no statement prefix to hoist a
+     * temporary into, and the operand must still be evaluated exactly once. */
+    Vec         unwraps;        /* UnwrapHelper */
     /* Names of the view index primitives already emitted (`<view>_index`). They
      * are emitted on demand, at the first subscript that needs one, for the same
      * reason slice helpers are: the need is discovered while generating, and a
@@ -433,6 +438,23 @@ typedef struct {
     char       *text;
 } SliceHelper;
 
+/* One `!` unwrap helper: the runtime variant check plus the payload read, collected into a
+ * function so the operand is an **argument** and is therefore evaluated exactly once.
+ *
+ * Why a function and not the comma expression this used to be: `(extc_tagAssert((x).tag,
+ * …), (x).u.some._0)` names `x` twice, so an impure operand (`f()!`) would call `f` twice.
+ * The old codegen answered that with a temporary in the **statement prefix**, which has no
+ * place to live in a `while` condition (the checker rejected it: "cannot be evaluated ahead
+ * of time"). Passing the option as a function argument evaluates it once and works in any
+ * expression position, which is what `!` is: a postfix operator on a value.
+ *
+ * The helper is per `option`/`result` instance, so the C type of the tag constant is known
+ * when its text is built (inside the substitution context) and no template survives. */
+typedef struct {
+    const char *name;
+    char       *text;
+} UnwrapHelper;
+
 /* Format one line into a freshly allocated arena string -- **with no length limit**.
  *
  * There used to be a `char tmp[4096]` here whose comment claimed "every caller stays far below
@@ -537,6 +559,11 @@ static void substLeave(CG *g) {
  *   only matters for a program that has already failed to check.
  */
 static const char *cFuncName(CG *g, FuncDef *f);   /* defined below; `cType` needs it */
+
+/* Register the `!` unwrap helper of one option/result instance; defined with the other
+ * on-demand helpers, below `cgLine`. A `!` can appear in a body generated before that
+ * point, so the name is declared here. */
+static const char *unwrapHelper(CG *g, Type *ot, bool isOpt, Type *pay);
 
 static const char *cType(CG *g, Type *t) {
     if (!t) return "void";
@@ -3112,36 +3139,30 @@ static const char *genExprInner(CG *g, Expr *e) {
          *     payload, so a `none` / failed arm traps with a position instead of
          *     handing back a zero value.
          * The helpers return what they checked, so the operand is evaluated once;
-         * when the checker marked it `needTemp` (an impure operand, as in `f()!`)
-         * the temporary is read instead -- naming `x` twice would run `f` twice.
+         * `opt!` / `r!` go one step further and become a call to a per-instance
+         * **unwrap helper** (`unwrapHelper`), so the operand is a function argument
+         * and is named exactly once. That is what lets `!` stand in a `while`
+         * condition, where a statement-prefix temporary cannot live.
          * A function marked `@unchecked` keeps the old raw behaviour: it is the
          * one signed road to undefined behaviour (manual 0.5 / 12.5). */
         case EX_SIGN: {
             Type *ot = subst(g, e->u.sign.operand->type);
-            const char *v;
-            if (planNeedTemp(e)) {
-                const char *tmp = arenaPrintf(g->arena, "__extc_s%d", g->tmpSeq++);
-                /* The temporary holds the **operand** (the option / result), not the
-                 * payload `e->type` is: declaring it as the payload was a C type error
-                 * inside a generic instance. */
-                pfLine(g, "%s %s = %s;", cType(g, ot), tmp, genExpr(g, e->u.sign.operand));
-                v = tmp;
-            } else {
-                v = genExpr(g, e->u.sign.operand);
-            }
             bool isRef = ot && ot->kind == TY_REF;
             bool isOpt = !isRef && isProtoType(ot, "option", 1);
             const char *var = isOpt ? "some" : "success";
             if (g->uncheckedBody) {
+                const char *v = genExpr(g, e->u.sign.operand);
                 if (isRef) return v;
                 return arenaPrintf(g->arena, "(%s).u.%s._0", v, var);
             }
             /* `o! = v` writes the payload, so the comma expression below cannot be
              * used: C11 6.5.17p3 says its result is not an lvalue. The assertion goes
              * into the statement prefix (the same mechanism `??` uses) and the payload
-             * itself is returned as the lvalue. The operand of an assignment target is
-             * a place, so this never evaluates anything twice. */
+             * itself is returned as the lvalue. The checker guarantees the operand of
+             * an assignment target is a place (check_stmt.c, `assignTargetWritable`),
+             * so no temporary is needed and nothing is evaluated twice. */
             if (g->inAssignTarget) {
+                const char *v = genExpr(g, e->u.sign.operand);
                 if (isRef) {
                     pfLine(g, "(void)extc_refAssert((void *)(%s), \"%s\", %d);",
                            v, g->path, e->line);
@@ -3151,13 +3172,17 @@ static const char *genExprInner(CG *g, Expr *e) {
                        v, cType(g, ot), var, g->path, e->line);
                 return arenaPrintf(g->arena, "(%s).u.%s._0", v, var);
             }
-            if (isRef)
+            if (isRef) {
+                /* A nullable reference is a plain pointer: the assert itself returns what
+                 * it checked, so a single mention of the operand is already evaluated once
+                 * and no helper is needed. */
                 return arenaPrintf(g->arena,
                     "((%s)extc_refAssert((void *)(%s), \"%s\", %d))",
-                    cType(g, e->type), v, g->path, e->line);
-            return arenaPrintf(g->arena,
-                "(extc_tagAssert((int)(%s).tag, %s_%s, \"%s\", %d), (%s).u.%s._0)",
-                v, cType(g, ot), var, g->path, e->line, v, var);
+                    cType(g, e->type), genExpr(g, e->u.sign.operand), g->path, e->line);
+            }
+            const char *fn = unwrapHelper(g, ot, isOpt, e->type);
+            return arenaPrintf(g->arena, "%s(%s, \"%s\", %d)",
+                               fn, genExpr(g, e->u.sign.operand), g->path, e->line);
         }
 
         /* `null`, the zero value of a nullable reference, is a null pointer in
@@ -5700,6 +5725,47 @@ static void unitBody(CG *g, SUnit *u) {
  * lines, 32% of the generated C, for 200 types in a stress program.
  */
 
+/* Register the unwrap helper of one `option`/`result` instance and return its name.
+ *
+ * Registration deduplicates on the C name of the option type: every `!` on the same
+ * instance names the same function, and exactly one definition is emitted.
+ *
+ * Params:
+ *   g    - generator state
+ *   ot   - the operand type, an `option<T>` or `result<T, E>` instance
+ *   isOpt- true for `option` (tag `some`), false for `result` (tag `success`)
+ *   pay  - the payload type `T`, the helper's return type
+ *
+ * Returns:
+ *   The helper name; the call site passes the operand, the extC path and the line.
+ *
+ * Notes:
+ *   `@unchecked` bodies never get here (they take the raw payload path), so a helper is
+ *   only ever born from a checked `!`.
+ */
+static const char *unwrapHelper(CG *g, Type *ot, bool isOpt, Type *pay) {
+    const char *otName = cType(g, ot);
+    const char *name = arenaPrintf(g->arena, "extc_unwrap$%s", otName);
+    for (size_t i = 0; i < g->unwraps.len; i++)
+        if (strcmp(((UnwrapHelper *)vecAt(&g->unwraps, i))->name, name) == 0)
+            return name;
+
+    const char *var = isOpt ? "some" : "success";
+    Buf b;
+    bufInit(&b, g->arena);
+    /* The payload type is rendered **here**, inside the instance's substitution context:
+     * at assembly time the context is long gone and a `T` would print as `int`. */
+    bufPrintf(&b, "static %s %s(%s o, const char *f, int l) {\n",
+              cType(g, pay), name, otName);
+    bufPrintf(&b, "    (void)extc_tagAssert((int)o.tag, %s_%s, f, l);\n", otName, var);
+    bufPrintf(&b, "    return o.u.%s._0;\n}\n", var);
+
+    UnwrapHelper *h = (UnwrapHelper *)vecPush(&g->unwraps);
+    h->name = name;
+    h->text = bufCstr(&b);
+    return name;
+}
+
 /* Register the slice helper of one base type and return its name.
  *
  * Registration deduplicates: the same base and kind registered twice yields the
@@ -8012,6 +8078,7 @@ static void scanUnitNeeds(CG *g, Module *m) {
 static void initRuntimeText(CG *g, Arena *arena) {
     vecInit(&g->funcs, arena, sizeof(void *));
     vecInit(&g->helpers, arena, sizeof(SliceHelper));
+    vecInit(&g->unwraps, arena, sizeof(UnwrapHelper));
     vecInit(&g->viewIdx, arena, sizeof(Type *));
     vecInit(&g->viewCpy, arena, sizeof(Type *));
     vecInit(&g->viewCpyU, arena, sizeof(Type *));
@@ -8584,6 +8651,17 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
          * function). The attribute that used to silence that warning is gone: with this
          * in place it was not only unnecessary, clang reports a warning *about* using it. */
         SliceHelper *h = (SliceHelper *)vecAt(&g->helpers, i);
+        DeadDef *d = arenaAllocZero(arena, sizeof *d);
+        d->name = h->name;
+        d->text = h->text;
+        *(DeadDef **)vecPush(&g->deadDefs) = d;
+        bufPuts(out, h->text);
+    }
+    /* The `!` unwrap helpers, registered in the order they were first needed. Same
+     * placement rule as the slice helpers: a definition has to precede its uses, and the
+     * need is discovered while the bodies are generated. */
+    for (size_t i = 0; i < g->unwraps.len; i++) {
+        UnwrapHelper *h = (UnwrapHelper *)vecAt(&g->unwraps, i);
         DeadDef *d = arenaAllocZero(arena, sizeof *d);
         d->name = h->name;
         d->text = h->text;
