@@ -32,15 +32,21 @@
 | **codegen 按需发射** W0/W1/W2a/W2b-1/W4 + 大函数拆分（1621→157 行）| 414 份产物指纹逐字节核过 · 生成物 −5.7% |
 | **`!` / `@unchecked` 语义修复**：`!` = 插检查 + 带 `file:line` 的 trap；`@unchecked` = 唯一 UB 通道 | `tests/annot` 27/0 · 新增 `tests/traps/sign_*` |
 | 2026-09-30 全量审阅的 P0 批次（22 条）| 四道闸门 known-bad 基线**已清空** |
+| **池"非头序删除 O(k²)"**（2026-10-09 修）| 判据 [`tests/pool/zt_drop_order.extc`](../tests/pool/zt_drop_order.extc) 先红后绿（1805→9.3 ns/池）；两条链加 `prev`，记录 88B→104B，`_Static_assert` 钉住 |
 
 ## 3. 未决
 
 **全部未决设计只在 [`docs/DESIGN-OPEN.md`](DESIGN-OPEN.md) 里。** 一屏概览：
 
-| 母题 | 待拍 |
+**2026-10-09 走完一轮问答，只剩一件没定：**
+
+| 事项 | 结论 |
 |---|---|
-| **可见性 vs 书写负担** | 大对象值/句柄语义 · `slice<T>`→`view<T>` 改名 · `mut` 权限模型 A′/B′/C′ · `!` 收尾四问 |
-| **默认行为 + 逃生门** | 失败处理 S1/S1b/S2/S3/S4（已定：不用 effects · 放弃 longjmp · 纯值 `err` 载体 · mayFail 进 fn 类型）|
+| **大对象值/句柄语义** | **搁置**（作者再想）——**唯一未决** |
+| `slice<T>` → `view<T>` | **已定**：改，单独一个纯机械 commit |
+| `mut` 权限模型 | **已定**：方向 A′，**以红判据为门槛**（无判据不实现——健全性风险在"判根"，见 DESIGN-OPEN §1.3）|
+| `!` / `@unchecked` 收尾四问 | **已定**：`@unchecked` **全关、无例外清单**（作者改判）；`!` hoist **要修**（一修两治）|
+| 失败处理 S1–S4 | **已定**：先 **S1 + S1b**（S1 零语言改动不会作废；S1b 的数字是 S4 的输入）|
 | **纯增量**（可插队）| `f"…"` v2 · stdlib 补齐 · `if let` |
 | **编译器内部**（可搁置）| 多文件输出/运行时独立 TU · 协程协议换枚举 · `dropUnusedLocals` |
 
@@ -51,14 +57,23 @@
 | `yield ref <帧内局部>` 被前端接受、生成物是畸形 C | [`tools/gate-escape-known-bad.txt`](../tools/gate-escape-known-bad.txt) | 闸门基线上**还剩 1 条**，未修 |
 | AST 冻结 R1 施工单（parser 之外写 AST）| [`tools/ast-freeze-known-bad.txt`](../tools/ast-freeze-known-bad.txt) | **67 条**，P2 卫生债 |
 | ASan / 差分 / callsite / scale / golden / layering 闸门 | 各自 `tools/*-known-bad.txt` | **全部为空** ✓ |
+| **产物指纹基线已过期** | [`tools/codegen-baseline-2026-10-05-w4.sha256`](../tools/codegen-baseline-2026-10-05-w4.sha256) | **本次改动之前就与 HEAD 差 410/414**（`!`/`@unchecked` 等改产物的工作没重取基线）⇒ **它已不能当"我改了没有"的预言机**。要么重取，要么明确放弃它 |
 
 ## 5. 下一步（只做一件）
 
-1. **push 那 17 个 commit** —— 零风险、让 CI 验证、保住成果；
-2. 然后**只挑一件**：
-   - 想立刻手感变好 ⇒ **`f"…"` v2**（纯增量，落点已定）；
-   - 想把"太容易 trap"变成数字 ⇒ **S1 + S1b**（便宜）；
-   - 想先把语义定下来 ⇒ **只写规则表**，`mut`/`string` 那边留到想清楚。
+**已完成**：① pool 的**非头序删除 O(k²)** —— 判据先行（红 → 绿），两条链加 `prev`，产物的实际半径
+**162/414 份变**（全是发 pool 运行期块的程序；性质 = 两个字段 + 注释 + `_Static_assert`，已逐份核过）。
+
+**下一件（在飞）**：② `!` 的 hoist —— **一修两治**（无故拒绝 `while f()! {}` + `p.get(h)!.x = v` 静默丢弃）。
+施工单已备好：**检查器**的可写性检查要**递归 base 链**（`EX_SIGN` 要求操作数是 place）；**codegen** 把
+语句 hoist 换成**每实例 unwrap 助手**（纯 C11 —— `-Wpedantic` 会拒 GNU 语句表达式，这是对 §1.4② 原方案的修正）。
+
+**排队的（顺序已定）**：
+1. ② 修完 → 2. **`view<T>` 改名**（纯机械 commit，等没别的改动在飞时做）→
+3. **S1 checked 原语 + S1b trap 统计** → 4. **A′ 的红判据**（`tools/escape-corpus/` 加 mut 洗白形状）→
+5. heap 的 `free` 那一半从 [`prototype-heap/`](../prototype-heap/README.md) 搬进 `std::heap` → 6. 账本收缩（删状态句 + `check_status.py` 闸门）。
+
+**还有一件零风险的事没做**：**push 那 18 个 commit**（远端仍落后）。
 
 > 一次只开一个母题。本仓库的混乱史里，每一次都是同时追多个主题造成的。
 
