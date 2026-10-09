@@ -319,6 +319,43 @@ else
     echo "  FAIL 真收缩   -> 编不过"; fail=1
 fi
 
+echo "== 摘链必须 O(1)：非头序删除（最老先）与头序删除（最新先）同价，且不随池数涨 =="
+# 形状见 tests/pool/zt_drop_order.extc：同一个 zone 里一只 parent + M 只 child（两条链都在：
+# zone 寿命链与 parent 的 firstChild 逻辑链），mode=0 按**创建顺序**（最老先）逐个 drop，
+# mode=1 按**链序**（最新先）逐个 drop。只计 drop 阶段（程序内的单调钟），best of 5。
+# 判据：
+#   ① 顺序无关：nspp(mode=0) ≤ 1.5 × nspp(mode=1)，两个 M 各判一次；
+#   ② 近线性：nspp(mode=0) 从 M=1e3 到 M=1e4 的增长 ≤ 3×（摘链线性扫会给出 ~10×）。
+# 修前实测（本判据在 run.sh 里 best of 5）：M=1e3 最老先 1805.16 / 最新先 8.91 ns/池；
+# M=1e4 最老先 18723.09 / 最新先 9.33 ns/池 ⇒ 红（每池成本随 M 涨 10.4 倍）。
+# 修后：M=1e3 9.22 / 9.15；M=1e4 12.07 / 11.66 ns/池 ⇒ 绿（顺序比 ~1.0，增长 1.3 倍）。
+build_one zt-drop-order zt_drop_order
+if [ -x build/zt-drop-order ]; then
+    nspp() {   # M mode -> 每池纳秒（best of 5）
+        local m=$1 mo=$2 b="" out ns k
+        for k in 1 2 3 4 5; do
+            out=$(./build/zt-drop-order "$m" "$mo")
+            ns=$(printf '%s' "$out" | sed -n 's/.*dropns=\([0-9]*\).*/\1/p')
+            if [ -z "$ns" ]; then echo ""; return; fi
+            if [ -z "$b" ] || [ "$ns" -lt "$b" ]; then b=$ns; fi
+        done
+        awk -v a="$b" -v m="$m" 'BEGIN{printf "%.2f", a/m}'
+    }
+    d1o=$(nspp 1000 0); d1n=$(nspp 1000 1)
+    d2o=$(nspp 10000 0); d2n=$(nspp 10000 1)
+    line="M=1e3: 最老先 ${d1o} / 最新先 ${d1n} ns/池 · M=1e4: 最老先 ${d2o} / 最新先 ${d2n} ns/池"
+    if [ -n "$d1o" ] && [ -n "$d2o" ] \
+       && awk -v a="$d1o" -v b="$d1n" 'BEGIN{exit !(a <= b*1.5 + 1.0)}' \
+       && awk -v a="$d2o" -v b="$d2n" 'BEGIN{exit !(a <= b*1.5 + 1.0)}' \
+       && awk -v a="$d1o" -v b="$d2o" 'BEGIN{exit !(b <= a*3.0 + 1.0)}'; then
+        echo "  ok   摘链 O(1) ->  $line ⇒ 与删除顺序无关、随 M 近线性 ✓"
+    else
+        echo "  FAIL 摘链 O(1) ->  $line ⇒ 非头序删除还在从链头线性扫（应当同价，且 M 涨 10 倍不该涨 ~10 倍）✗"; fail=1
+    fi
+else
+    echo "  FAIL 摘链 O(1) -> 编不过"; fail=1
+fi
+
 echo "== raw 列的读未写金丝雀（两层：毒化快扫大形状 · memcheck 直接抓读未初始化）=="
 # 背景（2026-09-26「零初始化收窄」那一刀）：容器的列/缓冲里，**每个槽都先写后读**的那些
 # 改成了不清零（`poolSliceRaw` / `poolResizeRaw`），省掉纯多余的 memset 与"提交用不到的页"。
