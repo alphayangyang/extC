@@ -36,10 +36,10 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `unit` | 空载荷：`result<unit, E>` 的"成功但没有值"那一格 |
 | `option<T>` | `\| none \| some(T)`；零值 = `none`；取值的路只有 `match` 与 `?` |
 | `result<T, E>` | `\| failure(E) \| success(T)`；零值 = `failure(E 的零值)` |
-| `slice<T>` | `{ data: ref T, len: i64 }`；`s[i]` 是语言语法，越界带位置 trap |
+| `slice<T>` | `{ data: ref T, len: i64 }`；`s[i]` 是语言语法，越界带位置 trap；`hasAt(i)` 只问边界、不取值 |
 | `varArray<T>` | arena 底的动态数组（见下） |
-| `pcg32` | 显式状态的随机数引擎：`pcg32::seeded(42)` |
-| `nextFloat` / `shuffleI32` | 0.0–1.0 的浮点、i32 视图洗牌 | 、|
+| `pcg32` | 显式状态的随机数引擎：`pcg32::seeded(42)` · `pcg32::withStream(seed, stream)` · `next()` · `nextBounded(bound)`（0 到 bound−1，用拒绝采样避开取模偏置）|
+| `nextFloat` / `shuffleI32` | 0.0–1.0 的浮点、i32 视图洗牌 |
 | `coroutine<A, B>` | 协程的**接口标记**（帧由编译器按协程函数合成，不要拿它当变量类型） |
 | `domain` | 域的**接口标记**，方法由编译器合成，库侧在 `std::sys::domain` |
 
@@ -685,6 +685,10 @@ fn main() -> i32 {
 | `decode(src, dst)` | 百分号解码 |
 | `conn::open` / `send` / `readResponse` / `exchange` / `get` / `post` / `close` | 一条连接上的往返 |
 | `session::make` / `ok` / `exchange` / `get` / `post` / `close` | 会自己重连的那种 |
+| `request` 的字段 | `method` · `target` · `version` · `headers` · `body` · `complete`（请求行 + 头是否读全）|
+| `response` 的字段 | `version` · `status` · `reason` · `headers` · `body` · `complete` |
+| `conn` 的字段 | `fd` · `rest`（keep-alive 下还剩多少字节没被上一条响应消费）|
+| `session` 的字段 | `c`（一条连接）· `out`（请求头缓冲）· `buf`（接收缓冲，响应里的切片指向它）|
 
 解析与拼字节都**离线可跑**（判据 ）：
 

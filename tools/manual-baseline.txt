@@ -1,12 +1,11 @@
 # tools/check_manual.py 的基线：各模块**尚未被手册覆盖**的公开成员计数。
 # 只许变少：补齐一批就把数字改小；新加公开成员而不写手册会被闸门挡住。
-prelude	3
 std::coro::scheduler	5
 std::fs	3
 std::hash::sha1	1
 std::hash::sha256	1
 std::heap	1
-std::http	21
+std::http	14
 std::io	4
 std::json	4
 std::sys::domain	1
