@@ -18,6 +18,16 @@
  */
 #include "coroutine.h"
 
+/**
+ * @brief 把任务表追加到生成的编译单元。
+ *
+ * 任务是协程存储所挂靠的那个**位置**：`spawn` 惰性进入它并在这里登记，每个 step 把它设为
+ * 当前，任务结束时整块释放。记在本表里使任务成为**拥有**而非仅受作用域约束：运行到完成与
+ * 显式 drop 是同一次释放（`extc_task_end`），调度器也能枚举还活着的东西（`extc_task_live`）。
+ *
+ * @param a    arena（本函数不用，为与其他发射口同形保留）。
+ * @param out  正在写的生成 C。
+ */
 void coroutineEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     bufPuts(out,
@@ -111,10 +121,16 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
 
 }
 
-/* ---- The event layer: epoll + AF_UNIX sockets (the scheduler's real event source) ----
- * Only scalars and one pointer cross the boundary: the `epoll_event` buffer lives in here, so a
- * platform struct never crosses into extC. Emitted on its own (not with the task table) because a
- * program may drive fds without ever spawning a coroutine. */
+/**
+ * @brief 追加事件层（epoll + AF_UNIX socket）。
+ *
+ * 只有标量与一个指针过边界：`epoll_event` 缓冲区留在这边，平台结构体不跨进 extC。它是
+ * 调度器真正的事件来源（the scheduler's real event source），独立发射（不跟着任务表），
+ * 因为程序可以只驱动 fd、从不孵化协程。
+ *
+ * @param arena  arena，给临时缓冲区用。
+ * @param out    正在写的生成 C。
+ */
 void eventEmitRuntime(Arena *arena, Buf *out) {
     (void)arena;
     bufPuts(out,
@@ -354,8 +370,15 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "}\n");
 }
 
-/* DNS 那一小块单独发射：它跟协程/epoll 没关系（同步 `getaddrinfo` ✓），而运行时是**按需发射**的
- * ⇒ 放进协程块里，一个"只想解析域名"的程序会链接失败（实测 `undefined reference` ✗）。 */
+/**
+ * @brief 追加 DNS 那一小块（同步 `getaddrinfo`）。
+ *
+ * 它跟协程 / epoll 没关系，而运行期是按需发射的，所以放进协程块会让"只想解析域名"的程序
+ * 链接失败。这一块单独发射。
+ *
+ * @param a    arena（本函数不用，为与其他发射口同形保留）。
+ * @param out  正在写的生成 C。
+ */
 void dnsEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     bufPuts(out,
@@ -388,8 +411,15 @@ void dnsEmitRuntime(Arena *a, Buf *out) {
         "}\n\n");
 }
 
-/* 文件层：最小 HTTP 服务器要的那几个 shim。**独立发射**（按需，跟着声明走），
- * 不搭协程表的车 —— 那辆车的最终发射还被 `needCoroHandle` 之类的条件门着，实测拉不动 ✗。 */
+/**
+ * @brief 追加文件层的 shim。
+ *
+ * `struct stat`、`off_t` 与路径的 NUL 终止都留在 C 侧，extC 只拿标量。它独立发射（按需，
+ * 跟着声明走），不搭协程表的车：协程表的最终发射还被别的条件门着，拉不动这一块。
+ *
+ * @param a    arena（本函数不用，为与其他发射口同形保留）。
+ * @param out  正在写的生成 C。
+ */
 void fileLayerEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     /* 一个 `bufPuts` 字符串不许超 4095 字节（C99 保证）⇒ 分块。 */

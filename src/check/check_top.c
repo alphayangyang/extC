@@ -22,21 +22,35 @@ static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
 #include <stdlib.h>   /* getenv (the EXTC_DUMP_EFFECTS debug switch) */
 #include <time.h>
 
+/**
+ * @brief 计时开关是否打开（环境变量 `EXTC_DBG_TIME`），只读一次环境。
+ *
+ * @return  打开时为 1，关闭时为 0。
+ */
 static int ctOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+
+/**
+ * @brief 进程 CPU 时间，秒。
+ *
+ * @return  自进程启动以来消耗的 CPU 秒数。
+ */
 static double ctNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+
+/**
+ * @brief 打一行阶段耗时；开关关着时什么都不做。
+ *
+ * @param n   阶段名。
+ * @param t0  阶段开始时的 CPU 秒数。
+ */
 static void ctPhase(const char *n, double t0) { if (ctOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ctNow() - t0); }
 
-/* Type parameters visible inside a function.
+/**
+ * @brief 取一个函数或方法可见的类型参数列表。
  *
- * A method declared inside a struct sees the struct's type parameters; a free
- * function sees its own. Both cases are returned from here, so that every site that
- * resolves a type inside a function body asks exactly one place.
+ * 方法看它所在 struct 的类型参数，自由函数看自己的；函数体里解析类型的地方都只问这一处。
  *
- * Params:
- *   f - function or method to inspect; NULL is allowed
- *
- * Returns:
- *   The parameter list to instantiate, or NULL when the function is not generic.
+ * @param f  函数或方法；NULL 允许。
+ * @return   要实例化的参数表；不是泛型时返回 NULL。
  */
 Vec *funcTParams(FuncDef *f) {
     if (!f) return NULL;
@@ -47,8 +61,13 @@ Vec *funcTParams(FuncDef *f) {
 
 /* Forward declarations: the effect-summary walk and the escape analysis call each
  * other, so one of them has to be declared ahead of its definition. */
-/* Do two declarations come from the same module? NULL means the root file (or the prelude),
- * and "the same" for two NULLs: that is this program, where an implementation may always live. */
+/**
+ * @brief 判断两个声明是否来自同一个模块。
+ *
+ * @param a  模块名；NULL 表示根文件（或 prelude）。
+ * @param b  模块名；NULL 表示根文件（或 prelude）。
+ * @return   两个都为 NULL、或名字相同时返回 true；否则 false。
+ */
 static bool sameModule(const char *a, const char *b) {
     if (a == b) return true;
     if (!a || !b) return false;
@@ -60,14 +79,14 @@ static bool exprIsFresh(Expr *e);   /* used by the call-site publication (INV-K)
 
 /* ------------------------------------------------------------------- top level */
 
-/* Resolve every type written in a signature.
+/**
+ * @brief 就地解析一个签名里写到的所有类型。
  *
- * Runs before any body is checked, so the rest of the pass never has to resolve a
- * type name again.
+ * 在任何函数体被检查之前跑完，之后的检查不必再解析类型名。签名里的类型名属于声明它的文件，
+ * 因此在那个文件的上下文（`FuncDef.ctx`）下解析。
  *
- * Params:
- *   c - checker (type table and module context used for resolution)
- *   f - function whose parameter and return types are resolved in place
+ * @param c  checker（类型表与解析用的模块上下文）。
+ * @param f  参数与返回类型就地解析的函数。
  */
 void resolveSignature(Checker *c, FuncDef *f) {
     /* A method sees the type parameters of the struct it belongs to; a free function
@@ -87,14 +106,13 @@ void resolveSignature(Checker *c, FuncDef *f) {
     c->ctx = savedCtx;
 }
 
-/* Reject duplicate names among the module's declarations.
+/**
+ * @brief 拒绝模块声明之间的重名。
  *
- * Names are looked up by string in the scope tables, so a duplicate would silently
- * shadow the other definition instead of being reported. Each declaration kind is
- * compared on its own, which is what makes the diagnostic name the colliding pair.
+ * 名字在作用域表里按字符串查找，重名会静默遮蔽另一条定义而不是被报告；每类声明各自比较，
+ * 诊断才能点出冲突的那一对。错误报在较晚那条声明的行上。
  *
- * Params:
- *   c - checker; every error is reported at the line of the later declaration
+ * @param c  checker。
  */
 static void checkDeclarations(Checker *c) {
     Module *m = c->m;
@@ -303,16 +321,14 @@ static void checkDeclarations(Checker *c) {
 
 }
 
-/* Check the shape of a method: where it is declared, and what `self` is.
+/**
+ * @brief 检查方法的形状：声明在哪里、`self` 是什么。
  *
- * Params:
- *   c - checker
- *   f - function to check; `f->owner` is NULL for a free function
+ * 作用于值的函数必须声明在 struct 里；`==` 这类运算符就是这种函数，写在 struct 外是错误，
+ * 而不是一个恰好叫 `==` 的自由函数。
  *
- * Notes:
- *   - A function that acts on a value must be declared inside a struct. An operator
- *     such as `==` is such a function, so declaring it outside a struct is an error
- *     rather than a free function that happens to be named `==`.
+ * @param c  checker。
+ * @param f  要检查的函数；自由函数的 `f->owner` 为 NULL。
  */
 static void checkMethodShape(Checker *c, FuncDef *f) {
     if (!f->owner) {
@@ -400,13 +416,15 @@ typedef struct {
 } CoroDeferred;
 
 static bool hasNewInStmt(void *ctx, Stmt *s);
-/* Does this expression contain `new`, or `alloc<T>(n)` (which is the same thing)?
+/**
+ * @brief 判断表达式里是否含 `new` 或 `alloc<T>(n)`。
  *
- * The walk lives in `astWalkExprChildren` / `astWalkStmtChildren` (`ast.c`): the AST kinds are
- * listed **once** there, so this question cannot fall behind the AST. `new` and a generic
- * allocation are the answer; every other node is answered by its children.
+ * 遍历走 `astWalkExprChildren` / `astWalkStmtChildren`，AST 种类只在那里列一次。
  *
- * A callback returns false to stop the walk, so "found" travels as that early exit. */
+ * @param ctx  未使用。
+ * @param e    表达式。
+ * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ */
 static bool hasNewInExpr(void *ctx, Expr *e) {
     (void)ctx;
     if (e->kind == EX_NEW || e->kind == EX_GENCALL) return false;   /* found */
@@ -414,17 +432,36 @@ static bool hasNewInExpr(void *ctx, Expr *e) {
     return astWalkExprChildren(e, &v);
 }
 
+/**
+ * @brief `hasNewInExpr` 的语句版遍历回调。
+ *
+ * @param ctx  未使用；本问题不需要上下文。
+ * @param s    语句。
+ * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ */
 static bool hasNewInStmt(void *ctx, Stmt *s) {
     (void)ctx;                              /* this question needs no context */
     AstVisit v = { hasNewInExpr, hasNewInStmt, NULL };
     return astWalkStmtChildren(s, &v);
 }
 
+/**
+ * @brief 判断表达式里是否含 `new` 或 `alloc<T>(n)`。
+ *
+ * @param e  表达式；NULL 返回 false。
+ * @return   含则 true。
+ */
 static bool exprHasNew(Expr *e) {
     if (!e) return false;
     return !hasNewInExpr(NULL, e);
 }
 
+/**
+ * @brief 判断语句里是否含 `new` 或 `alloc<T>(n)`。
+ *
+ * @param s  语句；NULL 返回 false。
+ * @return   含则 true。
+ */
 static bool stmtHasNew(Stmt *s) {
     if (!s) return false;
     return !hasNewInStmt(NULL, s);
@@ -490,12 +527,28 @@ static bool stmtHasNew(Stmt *s) {
  * only places that pick one. */
 typedef struct { bool (*takesHomeArena)(const FuncDef *); } HomeQ;
 
-/* "does the callee **reach** a function that takes one?" -- the conservative, transitive question,
- * which decides whether *this* body needs a home arena of its own (`needsHome`). */
+/**
+ * @brief 这个函数是否会（传递地）走到某个接收 home arena 的被调者。
+ *
+ * 保守的那一问，决定本函数体是否需要自己的 home arena。
+ *
+ * @param f  函数定义。
+ * @return   需要时为 `true`；`f` 为 NULL 时为 `false`。
+ */
 static bool reachesHomeArenaTaker(const FuncDef *f) { return f && anNeedsHome(f); }
 
 static bool needsHomeInStmt(void *ctx, Stmt *s);
 
+/**
+ * @brief 判断表达式是否调用到满足给定谓词的被调者。
+ *
+ * 谓词由调用方给出：`reachesHomeArenaTaker` 问“能否到达需要 home arena 的被调者”，
+ * `funcTakesHomeArena` 问“被调者自己是否收 home arena”。
+ *
+ * @param ctx  `HomeQ *`，携带被调者谓词。
+ * @param e    表达式。
+ * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ */
 static bool needsHomeInExpr(void *ctx, Expr *e) {
     HomeQ *q = (HomeQ *)ctx;
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e) &&
@@ -505,11 +558,27 @@ static bool needsHomeInExpr(void *ctx, Expr *e) {
     return astWalkExprChildren(e, &v);
 }
 
+/**
+ * @brief `needsHomeInExpr` 的语句版遍历回调。
+ *
+ * @param ctx  `HomeQ *`，携带被调者谓词。
+ * @param s    语句。
+ * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ */
 static bool needsHomeInStmt(void *ctx, Stmt *s) {
     AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
     return astWalkStmtChildren(s, &v);
 }
 
+/**
+ * @brief 判断语句里是否有调用满足给定的 `takesHomeArena` 谓词。
+ *
+ * 只在调用已解析后有效：遍历读 `planCallee(e)`，由 checker 在解析调用时填入。
+ *
+ * @param s               语句；NULL 返回 false。
+ * @param takesHomeArena  被调者谓词。
+ * @return                找到则 true。
+ */
 static bool stmtCallsNeedsHome(Stmt *s, bool (*takesHomeArena)(const FuncDef *)) {
     if (!s) return false;
     HomeQ q = { takesHomeArena };
@@ -536,6 +605,13 @@ typedef struct { const char *cname; } CnameCtx;
 
 static bool cnameInStmt(void *ctx, Stmt *s);
 
+/**
+ * @brief 判断表达式是否引用生成名为 `cname` 的绑定。
+ *
+ * @param ctx  `CnameCtx *`，携带要比较的生成名。
+ * @param e    表达式。
+ * @return     回调语义：命中返回 false 以停止遍历，否则返回 true。
+ */
 static bool cnameInExpr(void *ctx, Expr *e) {
     CnameCtx *c = (CnameCtx *)ctx;
     if (e->kind == EX_IDENT)
@@ -544,19 +620,50 @@ static bool cnameInExpr(void *ctx, Expr *e) {
     return astWalkExprChildren(e, &v);
 }
 
+/**
+ * @brief `cnameInExpr` 的语句版遍历回调。
+ *
+ * @param ctx  `CnameCtx *`，携带要比较的生成名。
+ * @param s    语句。
+ * @return     回调语义：命中返回 false 以停止遍历，否则返回 true。
+ */
 static bool cnameInStmt(void *ctx, Stmt *s) {
     AstVisit v = { cnameInExpr, cnameInStmt, ctx };
     return astWalkStmtChildren(s, &v);
 }
 
+/**
+ * @brief 判断语句是否读取了生成名为 `cname` 的绑定。
+ *
+ * 只用于一个问题：某个参数是否被读过。比较的是**生成名**，因此遮蔽参数的同名局部
+ * （生成名带 `__2` 后缀）不会被误认。
+ *
+ * @param s      语句；NULL 返回 false。
+ * @param cname  生成 C 名。
+ * @return       读取过则 true。
+ */
 static bool stmtUsesCname(Stmt *s, const char *cname) {
     if (!s) return false;
     CnameCtx c = { cname };
     return !cnameInStmt(&c, s);
 }
 
+/**
+ * @brief 这条语句里是否有调用会（传递地）走到接收 home arena 的被调者。
+ *
+ * @param body  语句。
+ * @return      有则 `true`。
+ */
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, reachesHomeArenaTaker); }
-/* 精确那一问直接用共享 accessor（`ast.h`）—— 与 codegen 的主人问的是同一处拼写。 */
+
+/**
+ * @brief 精确那一问：这条语句里是否**直接**调用接收 home arena 的函数。
+ *
+ * 用的是共享 accessor `funcTakesHomeArena`，与代码生成问的是同一处拼写。
+ *
+ * @param body  语句。
+ * @return      有则 `true`。
+ */
 static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, funcTakesHomeArena); }
 
 /* ---- how a "reaches X through its calls" property is closed over the call graph ----
@@ -590,6 +697,13 @@ typedef enum {
  * pointer is here for one reason only: `EXTC_DBG_FX` counts the rounds this driver runs. */
 typedef struct { Module *m; TypeTable *tt; Checker *c; } CloseCtx;
 
+/**
+ * @brief 读取一个函数在给定 reach 性质上的标志。
+ *
+ * @param f  函数定义。
+ * @param k  要读的性质。
+ * @return   该性质当前的值。
+ */
 static bool getReach(const FuncDef *f, ReachKind k) {
     switch (k) {
     case REACH_HOME:  return anNeedsHome(f);
@@ -600,6 +714,13 @@ static bool getReach(const FuncDef *f, ReachKind k) {
     return false;
 }
 
+/**
+ * @brief 写入一个函数在给定 reach 性质上的标志。
+ *
+ * @param f  函数定义。
+ * @param k  要写的性质。
+ * @param v  新值。
+ */
 static void setReach(FuncDef *f, ReachKind k, bool v) {
     switch (k) {
     case REACH_HOME:  anSetNeedsHome(f, v); break;
@@ -609,7 +730,15 @@ static void setReach(FuncDef *f, ReachKind k, bool v) {
     }
 }
 
-/* Does this body **directly** reach a callee of that kind? The transitive part is `closeReach`. */
+/**
+ * @brief 判断函数体是否**直接**触达给定性质的被调者。
+ *
+ * 传递部分由 `closeReach` 的固定点负责。
+ *
+ * @param f  函数定义。
+ * @param k  要问的性质。
+ * @return   直接触达则 true。
+ */
 static bool bodyReaches(FuncDef *f, ReachKind k) {
     switch (k) {
     case REACH_HOME:  return callsNeedsHome(f->body);
@@ -632,8 +761,15 @@ static bool bodyReaches(FuncDef *f, ReachKind k) {
     return false;
 }
 
-/* A round raises the flag on the functions its caller considers; the driver repeats rounds until
- * one changes nothing. */
+/**
+ * @brief 反复跑同一轮闭包，直到某一轮什么都没改。
+ *
+ * 规则单调、格有限，所以得到的是**最小**不动点，而不只是某个一致解。
+ *
+ * @param cx     闭包上下文。
+ * @param k      要闭合的属性。
+ * @param round  跑一轮的函数；这一轮有变化就由它把 `*changed` 置真。
+ */
 static void closeReach(CloseCtx *cx, ReachKind k,
                        void (*round)(CloseCtx *cx, ReachKind k, bool *changed)) {
     for (bool changed = true; changed; ) {
@@ -643,8 +779,14 @@ static void closeReach(CloseCtx *cx, ReachKind k,
     }
 }
 
-/* The two rounds most closures share: the module's functions, then the methods of its structs.
- * `skipExtern` is for the properties an extern cannot have -- it has no body to walk. */
+/**
+ * @brief 对模块的自由函数与各 struct 的方法做一轮 reach 传播。
+ *
+ * @param cx          关闭上下文。
+ * @param k           要传播的性质。
+ * @param changed     本轮有改动时置 true。
+ * @param skipExtern  跳过 `extern!`：它没有函数体可走。
+ */
 static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipExtern) {
     Module *m = cx->m;
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -664,10 +806,24 @@ static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipE
     }
 }
 
+/**
+ * @brief `needsHome` 的一轮传播：走模块的自由函数与方法，跳过 extern。
+ *
+ * @param cx       关闭上下文。
+ * @param k        性质（`REACH_HOME`）。
+ * @param changed  本轮有改动时置 true。
+ */
 static void roundNeedsHome(CloseCtx *cx, ReachKind k, bool *changed) {
     roundOverModule(cx, k, changed, true);      /* an extern has no body to walk */
 }
 
+/**
+ * @brief `usesHome` 的一轮传播：走模块的自由函数与方法，跳过 extern。
+ *
+ * @param cx       关闭上下文。
+ * @param k        性质（`REACH_USES_HOME`）。
+ * @param changed  本轮有改动时置 true。
+ */
 static void roundUsesHome(CloseCtx *cx, ReachKind k, bool *changed) {
     roundOverModule(cx, k, changed, true);
 }
@@ -685,17 +841,14 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed);   /* defin
  *   - the fixed-point closure below asks the transitive one ("can this function create a
  *     pool at all?"), and walks nested blocks, which each have a zone of their own;
  */
-/* Count the `@overwrite` sites in a body.
+/**
+ * @brief 数一个函数体里 `@overwrite` 站点的个数。
  *
- * Params:
- *   s - function body to walk
+ * 顺序必须与 codegen 的 `collectOwSites` 一致：两边按源码序遍历同一棵树，第 n 个站点对应
+ * 第 n 个格子。
  *
- * Returns:
- *   Number of `@overwrite` bindings in the body.
- *
- * Notes:
- *   - The order must match codegen's `collectOwSites`: both walk the same tree in
- *     source order, so the n-th site here is the n-th cell there.
+ * @param s  函数体。
+ * @return   `@overwrite` 绑定的个数。
  */
 static int countOwSites(Stmt *s) {
 
@@ -720,26 +873,17 @@ static int countOwSites(Stmt *s) {
     }
 }
 
-/* Report whether the function can reach itself through its callees.
+/**
+ * @brief 判断函数是否能通过被调者回到自身。
  *
- * A function that can re-enter itself needs one `@overwrite` cell per activation:
- * with a single shared cell a nested call overwrites the storage of the activation
- * that is still running, and the outer activation then reads the inner call's data
- * after it returns.
+ * 能重入自身的函数需要每个激活一个 `@overwrite` 格子：共用一个格子时，嵌套调用会覆盖仍在
+ * 运行的那个激活的存储。保守方向是“是”：被调者记录为 NULL 也答 true，代价只是每个激活多
+ * 一个格子；走超过 64 跳即停并答 true，环不会溢出栈。
  *
- * Params:
- *   c     - unused; the walk reads only the call graph recorded in `FuncDef`
- *   f     - function to test
- *   depth - call-graph hops this walk has already taken, used by the cycle guard
- *
- * Returns:
- *   True when `f` can reach itself, or when the walk cannot decide.
- *
- * Notes:
- *   - The conservative direction is "yes": a callee entry that is NULL answers true,
- *     which costs at most one extra cell per activation.
- *   - The walk stops at `depth > 64` and answers true, so a cyclic call graph cannot
- *     overflow the stack.
+ * @param c      未使用；遍历只读 `FuncDef` 里记录的调用图。
+ * @param f      要测的函数。
+ * @param depth  已走过的调用图跳数，用于环守卫。
+ * @return       能回到自身或无法判定时 true。
  */
 static bool funcReachesItself(Checker *c, FuncDef *f, int depth) {
     if (depth > 64) return true;                      /* guard against a cycle: assume re-entrant */
@@ -752,29 +896,14 @@ static bool funcReachesItself(Checker *c, FuncDef *f, int depth) {
     return false;
 }
 
-/* Does the body write through a `*p`? The out-parameter shape is
- * `fn push(head: mut ref ?ref node) { *head = cell }`. If it does, the function needs
- * a home arena (the arena the caller passes in), so that what it allocates lands on
- * the argument side.
- */
-/* Return the name of the identifier a place expression is rooted at.
+/**
+ * @brief 取一个 place 表达式根标识符的名字。
  *
- * The checker asks whether a store target is a place on the parameter side, and
- * `*head = cell`, `l.head = cell`, and `l.buf[i] = cell` all count. Walking down to the
- * root identifier is what makes that decidable.
+ * 需要它才能判定 `*head = cell`、`l.head = cell`、`l.buf[i] = cell` 是否落在参数侧。
+ * 引用型绑定（`?ref node`）不能再借出，所以出参约定上包一层 struct。
  *
- * Params:
- *   e - place expression; NULL is allowed
- *
- * Returns:
- *   The root identifier's name, or NULL when the expression is not a place (a literal,
- *   a call, and so on).
- *
- * Notes:
- *   - A reference-typed binding such as `?ref node` cannot be borrowed again, so an
- *     out-parameter is conventionally wrapped in a struct; `varArray<T>` already has
- *     that shape, which is why `l.buf[i] = cell` is the usual way to write into a
- *     parameter.
+ * @param e  place 表达式；NULL 允许。
+ * @return   根标识符的名字；不是 place（字面量、调用等）时 NULL。
  */
 const char *placeRootName(Expr *e) {
     /* 问题④：根的**语法名字**（诊断与老接口）。掩码 = FIELD|INDEX|DEREF，不解析 ——
@@ -782,14 +911,12 @@ const char *placeRootName(Expr *e) {
     Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_DEREF, 0);
     return leaf ? leaf->u.ident.name : NULL;
 }
-/* True when `n` names a parameter of `f`.
+/**
+ * @brief 判断名字 `n` 是否为 `f` 的参数。
  *
- * Params:
- *   f - function whose parameter list is searched
- *   n - name to look for
- *
- * Returns:
- *   True when some parameter is called `n`.
+ * @param f  要搜索的函数。
+ * @param n  要查找的名字。
+ * @return   有同名参数则 true。
  */
 static bool isParamName(FuncDef *f, const char *n) {
     for (size_t i = 0; i < f->params.len; i++)
@@ -797,47 +924,15 @@ static bool isParamName(FuncDef *f, const char *n) {
     return false;
 }
 
-/* A value copy does not extend the lifetime of what it copies.
+/**
+ * @brief 判断一个值表达式是否可能携带引用。
  *
- * Storing a value into the place a parameter points at does not always mean that
- * something has to outlive the frame; there are two cases:
+ * 不要写成两个互相调用的函数：两个问题（类型能否带引用 / 表达式的结果能否带引用）都由这
+ * 一个递归函数回答，每种表达式只在自己的分支里递归。
  *
- *   - a reference or a view is stored (`dst.p = ref x`, `dst.p = q`), so that storage
- *     has to live long enough => yes;
- *   - a plain value is stored (`dst.v = *p`), so the bytes are copied: how long the
- *     source object lives is irrelevant, and nothing inside the copy can outlive it
- *     => no.
- *
- * The criterion is the one `check_escape.c` uses in `typeCannotCarryRef`, including its
- * `mentionsParam` half: a type that mentions a type parameter may carry a reference, so
- * the decision is deferred to the instantiation.
- *
- * This is what decides the memory of a long-running program. The body of
- * `varArray<T>::push` is `self.buf[self.len] = v`, so the old criterion answered yes for
- * every call: every function that called `push` was marked as needing a home arena,
- * `main` needed one too, and every `new` in `main` landed in the home arena (the arena
- * the caller passes in, which lives until the process ends), so nothing was ever
- * reclaimed. The value-copy path needs not a single byte to stay behind. Measured on
- * the mixed 50/25/25 workload (half the iterations do nothing, a quarter append, a
- * quarter overwrite): 98 MB => 1 MB.
- */
-/* Report whether a value expression may carry a reference.
- *
- * Do not write this as two functions that fall back to each other: the first version
- * had `valueMayCarryRef` fall back to `exprMayCarryRef` and `exprMayCarryRef` fall back
- * again, and it segfaulted on the spot (stack overflow; gdb showed 260,000 frames of
- * `valueMayCarryRef`). The structure is one recursive function answering two questions
- * ("can this type hold a reference" / "can the result of this expression"), where every
- * expression kind recurses only in its own branch, and neither question falls back to
- * the other.
- *
- * Params:
- *   v - value expression; NULL answers false
- *
- * Returns:
- *   True when the value may carry a live reference. The answer over-approximates: an
- *   opaque shape such as a binding answers true, which can cost an extra home arena but
- *   can never miss a reference that is really there.
+ * @param v  值表达式；NULL 答 false。
+ * @return   可能携带活引用时 true。答案过近似：不透明形状答 true，最多多要一个 home arena，
+ *           但不会漏掉真正存在的引用。
  */
 static bool valueMayCarryRef(Expr *v) {
     if (!v) return false;
@@ -884,21 +979,16 @@ static bool valueMayCarryRef(Expr *v) {
     }
 }
 
-/* Does the body store into a place reached through a parameter?
+/**
+ * @brief 判断函数体是否向经由参数到达的地方写入。
  *
- * Together with `valueMayCarryRef` this decides whether the function needs a home arena:
- * a store through an out-parameter such as
- * `fn push(head: mut ref ?ref node) { *head = cell }` has to place its allocation in the
- * caller's arena, so the callee must be handed one.
+ * 与 `valueMayCarryRef` 一起决定函数是否需要 home arena：经由出参的写入
+ * （`fn push(head: mut ref ?ref node) { *head = cell }`）必须把分配放进调用者的 arena。
  *
- * Params:
- *   c - checker
- *   s - statement to walk; may be NULL
- *   f - function whose parameters name the targets a store may go through
- *
- * Returns:
- *   True when an assignment targets a place rooted at a parameter and stores a value that
- *   may carry a reference.
+ * @param c  checker。
+ * @param s  要遍历的语句；可为 NULL。
+ * @param f  其参数名界定写入目标的函数。
+ * @return   有赋值命中以参数为根的地方、且存入值可能携带引用时 true。
  */
 static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
     if (!s) return false;
@@ -925,17 +1015,6 @@ static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
     }
 }
 
-/* Which arena should a call site pass in?
- *
- * The basis is where the object the shallowest `mut ref` argument points at lives:
- *
- *   - the argument is one of my own locals, fields, or elements => pass
- *     `&__extc_a[its block depth]`, which is exact: the new object follows it;
- *   - the argument is one of my own parameters => pass my home arena (the arena my
- *     caller chose for this frame);
- *   - there is no `mut ref` argument => pass 0, which falls back to the old rule: pass
- *     the home arena when there is one, otherwise the current block.
- */
 /* The argument-lifetime rule: whatever an argument points at must live at least as long
  * as the home arena of the call (the arena the caller passes in).
  *
@@ -951,34 +1030,16 @@ static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
  *                                                   // call site reports an error
  */
 
-/* The transitive closure of the effect summary.
+/**
+ * @brief 闭合并缓存一个函数的效应摘要。
  *
- * Why it has to exist: skipping the argument-lifetime rule is allowed only when every
- * `Addr` bit is clear, but when the callee passes the value on to another function that
- * also stores addresses, a direct scan cannot see it. "Every `Addr` bit clear" is then
- * false, so narrowing the rule would be the same as allowing a dangling reference. This
- * was caught by `tests/errors/ref_arg_too_deep` going from "must report an error" to
- * passing.
+ * 三条纪律：惰性 + 记忆化（`effState`）；环守卫（`EFF_IN_PROGRESS` 视为环，标为不完整）；
+ * 未解析的调用（`effUnknown`）同样标为不完整。只有本函数返回 true，才允许据摘要放宽检查。
  *
- * Three disciplines:
- *   - lazy plus memoized (`effState`): computed only when it is really needed, and
- *     cached once computed;
- *   - cycle guard: a function that is being computed right now (`effState == EFF_IN_PROGRESS`) is in
- *     a cycle, so it is marked "incomplete" (conservative);
- *   - uncertainty marks it incomplete as well: `effUnknown` (a call that cannot be
- *     resolved) means never complete.
- * => Skipping a check on the strength of the summary is allowed only when
- *    `computeEffectsTransitive` returns true.
- *
- * Params:
- *   c - checker
- *   f - function whose summary is closed and cached; NULL is not usable
- *
- * Returns:
- *   True when the summary is complete: every callee was analyzed and its summary merged
- *   in. False when a cycle, an unresolved call, or an incomplete callee leaves the
- *   summary unknown, in which case a callee has to be treated as possibly storing
- *   everything.
+ * @param c  checker。
+ * @param f  摘要被闭合并缓存的函数；NULL 不可用。
+ * @return   摘要完整时 true；有环、未解析调用或不完整的被调者时 false，此时被调者必须当作
+ *           可能存下任何东西。
  */
 bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     if (!f) return false;
@@ -1017,6 +1078,22 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     return complete;
 }
 
+/**
+ * @brief 检查一次调用的引用实参能否活过这次调用，并据此定下 arena 的层。
+ *
+ * 实参与形参个数不一致时直接返回。extern 被调者是 C 侧的黑盒：按签名里的 effects 位
+ * 逐位判断哪个参数可能被保存，被保存的引用实参必须活到层 0。有函数体的被调者先做效果
+ * 闭包，再分别判地址流与内容流，两个判据各自决定是否运行；可提升的值先尝试提升，提不动
+ * 才报错。`mut ref` 实参是写权限，其非空证明在这里作废。
+ *
+ * @param c          检查器。
+ * @param callee     被调函数定义；NULL 表示被调者未解析，按保守处理。
+ * @param args       实参表达式表。
+ * @param params     被调函数的形参表，顺序与 `args` 一致。
+ * @param homeDepth  被调者声明的 arena 层；小于等于 0 表示没有显式声明。
+ * @param line       报错用的源码行。
+ * @param fname      被调者的名字，用于诊断。
+ */
 void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int homeDepth,
                        int line, const char *fname) {
     if (params->len != args->len) return;
@@ -1345,34 +1422,16 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
 
 }
 
-/* Choose the arena for a call result by asking whether the result escapes this block.
+/**
+ * @brief 按调用结果是否离开本块来为该调用选定 arena。
  *
- * The callee allocates into the arena it is handed. Passing my home arena (the arena
- * the caller of this function passes) for every call makes a call inside a loop
- * accumulate one round of data per iteration, with nothing reclaimed until the frame
- * ends.
+ * 结果存在当前块里传当前块的 arena，每轮随块回收、峰值恒定；存在更浅的地方或返回时传本函数
+ * 的 home arena；实参位置刻意不标记，回落到 home arena。`homeDepth` 与 `arenaArg` 必须一起
+ * 更新：codegen 只读 `arenaArg`。
  *
- * The rule looks at how deep the result is stored:
- *   - stored in the current block (`var l = build(...)` in the loop body): pass the
- *     current block's arena, so each round is reclaimed when the block ends and the
- *     peak stays constant;
- *   - stored in a shallower place or handed back (`return build(...)`, assignment to an
- *     outer local): pass my home arena;
- *   - an argument position (`g(build(...))`) is deliberately left unmarked and falls
- *     back to the old rule, which passes the home arena.
- *
- * Params:
- *   c  - checker (scope stack)
- *   v  - the call expression whose result is being stored; anything else is ignored
- *   at - scope depth of the place that receives the result; 0 = the result is returned,
- *        so it must outlive this frame
- *
- * Notes:
- *   - A destination shallower than the current scope count means the result outlives
- *     this block, and `homeDepth` is set to -1, which makes `setCallArenaArg` pass
- *     ARENA_HOME. Otherwise `homeDepth` is the depth of the block the result stays in.
- *   - `homeDepth` and `arenaArg` must be updated together; codegen reads `arenaArg`
- *     only, so run `setCallArenaArg` right after setting `homeDepth`.
+ * @param c   checker（作用域栈）。
+ * @param v   结果被存下的调用表达式；其它形状忽略。
+ * @param at  接收结果的 place 的作用域深度；0 表示结果被返回，必须活过本帧。
  */
 void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if (!v) return;
@@ -1382,44 +1441,16 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     setCallArenaArg(c, v);          /* always keep `homeDepth` and `arenaArg` in step */
 }
 
-/* Resolve `homeDepth` into the arena the call actually passes (`Expr.arenaArg`).
+/**
+ * @brief 判断一个被调者会不会创建池（读取处统一走这里）。
  *
- * The checker decides this value here; codegen only has to print it.
+ * 泛型方法的模板与实例是两份 `FuncDef`，闭包只走到模板那一份，而调用点上 `e->func` 可能是
+ * 模板。`@poolObject` 声明优先于推断；结构体的 `makesPoolAny` 只对关联函数（`new` /
+ * `withCap` / `withParent` 那一族）放宽，别的库方法不进这一族，免得把不可提权的值误判成站点。
  *
- * Why two fields: `homeDepth` is the criterion used by the reference-argument check,
- * and there the out-of-this-frame case is deliberately looked up as depth 0, which
- * prefers a false rejection. `arenaArg` is the real choice: -1 passes my home arena
- * (the arena the caller of this function passes), a positive value passes that block's
- * arena, and 0 passes the current block, which is tighter and uses less memory.
- *
- * Params:
- *   c - checker (scope stack)
- *   e - call expression whose `homeDepth` has already been set
- *
- * Notes:
- *   - Both fields are written here so they cannot drift apart. Codegen must not fall
- *     back to a per-function home flag: that would be a second authority for one
- *     decision, so the choice is made here only.
- *   - The 0 case has no `mut ref` argument to reason from, so the site is recorded with
- *     `arenaArgPending` set and resolved by the final pass.
+ * @param f  被调者；NULL 返回 false。
+ * @return   可能创建池时 true。
  */
-/* 建池的调用点：池该生在**哪一层地方**（与 `setCallArenaArg` 平行的一格）。
- *
- * 规则两条：
- *   - 我在**库函数**里（`modName` 非空）⇒ 库函数对"地方"是透明的（它自己不压 zone），
- *     所以这里没有"我的地方"可言：把选择权交给调用者（`ZONE_HOME`，隐藏参数往下传）。
- *     `vector<i32>::new` → `withCap` → 运行期那一句 `extc_pool_new_at` 因此拿到的是
- *     **用户**选的那个地方。
- *   - 我在入口文件的函数里 ⇒ 默认是当前这个块（今天的语义：池生在建它的那个块里）；
- *     提权（`promoteInto`）之后这个数会被改小，池就生到更长寿的地方去。
- */
-/* 这个被调者会不会建池 —— 读取处统一走这里。
- *
- * 为什么不能只看 `planMakesPool(f)`：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只走到
- * 模板那一份，而调用点上 `e->func` 可能是模板（实测 `owner=vector$vector makesPool=0`，
- * 同一处 codegen 读到的实例却是真）。结构体那一格 `makesPoolAny` 是闭包顺手算的，
- * 只对**关联函数**（构造函数那一族：`new` / `withCap` / `withParent`）放宽 ——
- * 别的库方法（`get` / `asSlice` 之类）不进这一族，免得把"不可提权"的值误判成站点。 */
 bool calleeMakesPool(FuncDef *f) {
     if (!f) return false;
     /* **声明优先**（作者口径 2026-09-26）：`@poolObject` 标在 struct 上，说"这个类型拥有一个池"。
@@ -1437,24 +1468,16 @@ bool calleeMakesPool(FuncDef *f) {
     return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
 
-/* 「**这一次调用能不能走到 `extc_pool_new`**」—— 与 `calleeMakesPool` 问的**不是同一个问题**。
- *
- * 两个问题一直挤在同一只谓词里：
- *   ① 「这个类型**拥有**池」是**类型**的性质（`@poolObject` 声明）；
- *   ② 「这一次调用**会不会建**池」是**被调者**的性质（`planMakesPool(f)` + 构造器那一族）。
- * `calleeMakesPool` 要回答①（"结果会不会住在池上" ⇒ 逃逸深度与提权站点），所以它对
- * `@poolObject` 类型**一律**放宽 —— 在那里这是对的（保守方向）。
- * 但**块级的 zone 钩子**只需要②：一个池只在建它的那个块的 zone 上登记。拿①回答②的代价
- * 很大（`bench/app/session.extc`，active=1M）：`hashMap::get` 被当成"会建池" ⇒ 循环体
- * **每轮压/弹一次 zone**，端到端慢约 14.5%。
- *
- * 剩下三条覆盖"建池"的全部入口：闭包（`makesPool`）覆盖一切能走到 `extc_pool_new` 的函数体；
- * `extc_pool_new*` 自己按名字认（extern 没有函数体）；构造器那一族按 `makesPoolAny` 认
- * （模板/实例两份 FuncDef 的口子）。未解析的被调者仍然**保守为真**。 */
 /* 闭包实例那一轮的代入上下文。 */
 static TypeTable *instResTT = NULL;
 static Vec *instResParams = NULL;
 static Vec *instResTargs = NULL;
+/**
+ * @brief 在闭包实例那一轮的代入上下文里重新解析一个方法调用点。
+ *
+ * @param e  调用表达式。
+ * @return   代入后找到的方法定义；没有实例上下文、或不是带接收者的方法调用时返回 NULL。
+ */
 static FuncDef *resolveOnInstance(Expr *e) {
     if (!instResTT || !instResParams || !instResTargs) return NULL;
     if (!e || e->kind != EX_METHOD || !e->u.method.recv) return NULL;
@@ -1465,6 +1488,16 @@ static FuncDef *resolveOnInstance(Expr *e) {
 
 static bool exprMakesPool(Expr *e, bool descendBlocks);   /* defined with the pool questions at the end */
 
+/**
+ * @brief 确定一个建池调用点所在的 zone 层。
+ *
+ * 库函数（`modName` 非空）对“地方”透明，没有自己的地方可言，把选择权交给调用者
+ * （`ZONE_HOME`）；否则默认当前块。只往下调、不往上抬：同一节点可能被检查多次，而提权已经
+ * 把它改小，再按当前块覆盖就会抹掉提权（越小越长寿）。
+ *
+ * @param c  checker（作用域栈）。
+ * @param e  调用表达式；NULL 忽略。
+ */
 void setCallZoneArg(Checker *c, Expr *e) {
     if (!e) return;
     int lvl = (c->curFunc && c->curFunc->modName && *c->curFunc->modName)
@@ -1475,6 +1508,15 @@ void setCallZoneArg(Checker *c, Expr *e) {
     if (planZoneLevel(e) == 0 || lvl < planZoneLevel(e)) planSetZoneLevel(e, lvl);
 }
 
+/**
+ * @brief 把 `homeDepth` 解成调用实际传入的 arena（`Expr.arenaArg`）。
+ *
+ * 决策只在这里做，codegen 只打印，不得回落到按函数计的 home 标志。没有 `mut ref` 实参给出
+ * 理由时，把该站点按当前块记下并置 `arenaArgPending`，由末轮落定。
+ *
+ * @param c  checker（作用域栈）。
+ * @param e  已设好 `homeDepth` 的调用表达式；NULL 忽略。
+ */
 void setCallArenaArg(Checker *c, Expr *e) {
     if (!e) return;
     if (anHomeDepth(e) == -1) {                 /* destination at the home level: my home arena */
@@ -1500,23 +1542,17 @@ void setCallArenaArg(Checker *c, Expr *e) {
     }
 }
 
-/* Depth of the arena a call must pass, read off its `mut ref` arguments.
+/**
+ * @brief 从 `mut ref` 实参读出调用要传的 arena 深度。
  *
- * The callee's allocations must live at least as long as anything it can store them into,
- * so the shallowest object a `mut ref` argument points at decides the arena. An argument
- * that is one of my own parameters, or a global, already lives beyond this frame, so the
- * caller's home arena is passed instead.
+ * 被调者的分配至少要活过它能存进去的任何东西，所以最浅的 `mut ref` 实参所指对象决定 arena。
+ * 实参是自身参数或全局时已经活过本帧，改传调用者的 home arena。
  *
- * Params:
- *   c        - checker
- *   args     - argument expressions in call order
- *   params   - declared parameters of the callee, same order
- *   callNode - the call expression, recorded when the answer depends on the escape
- *              analysis; may be NULL, and then nothing is recorded
- *
- * Returns:
- *   Depth of the arena to pass; 0 when no `mut ref` argument was found, -1 when the
- *   caller's home arena has to be passed.
+ * @param c         checker。
+ * @param args      按调用顺序排列的实参表达式。
+ * @param params    被调者的声明参数，顺序相同。
+ * @param callNode  调用表达式；答案依赖逃逸分析时记录它，可为 NULL（不记录）。
+ * @return          要传的 arena 深度；没有 `mut ref` 实参时 0，必须传调用者 home arena 时 -1。
  */
 int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
     int best = 0;                       /* 0 = no `mut ref` argument was found */
@@ -1565,36 +1601,27 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
 }
 
 
-/* True when the vector holds the given name.
+/**
+ * @brief 判断名字向量里是否有某个名字。
  *
- * Params:
- *   v - vector of `const char *`
- *   n - name to look for
- *
- * Returns:
- *   True when some element compares equal to `n`.
+ * @param v  `const char *` 向量。
+ * @param n  要查找的名字。
+ * @return   任一元素与之相等时 true。
  */
 static bool vecHasName(Vec *v, const char *n) {
     for (size_t i = 0; i < v->len; i++)
         if (strcmp(*(const char **)vecAt(v, i), n) == 0) return true;
     return false;
 }
-/* Is this expression a block out of a **pool plate**?
+/**
+ * @brief 判断表达式是否为池 plate 切出的块。
  *
- * `poolSlice<T>(rid, n)` / `poolSliceRaw<T>(rid, n)` take a fresh block; `poolResize<T>` /
- * `poolResizeRaw<T>` grow or shrink the block already held. Either way the memory belongs to
- * the pool the *container* owns, not to anything the caller passed: storing such a block
- * publishes no caller reference, so it constrains no argument's lifetime -- the same
- * exemption `new` gets. SSO `string` is what needs it: `grow` stores the block into
- * `self.big`, and without this the whole `push`/`append` chain acquires `otherMask`
- * ("stores something unattributable"), after which **every** call site of a function that
- * appends to a string is required to pass arguments that live outside the frame.
+ * `poolSlice` / `poolSliceRaw` 取新块，`poolResize` / `poolResizeRaw` 调整已有块，内存都属于
+ * 容器自己拥有的池，不发布调用者的引用；SSO `string` 的 `grow` 依赖这条豁免，否则整条
+ * `push`/`append` 链都会背上 `otherMask`。
  *
- * Params:
- *   e - expression; may be NULL
- *
- * Returns:
- *   True when the value is a pool plate block.
+ * @param e  表达式；可为 NULL。
+ * @return   是池 plate 块时 true。
  */
 static bool exprIsPoolBlock(Expr *e) {
     if (!e || e->kind != EX_GENCALL || !e->u.gencall.name) return false;
@@ -1603,16 +1630,14 @@ static bool exprIsPoolBlock(Expr *e) {
            strcmp(n, "poolResize")    == 0 || strcmp(n, "poolResizeRaw") == 0;
 }
 
-/* Is the initial value something freshly allocated in this frame?
+/**
+ * @brief 判断初始值是否本帧新分配。
  *
- * A `new` counts, a block out of a pool plate counts (see `exprIsPoolBlock`), and so does a
- * struct literal whose every field is itself fresh or a scalar.
+ * `new` 算、池 plate 块算（见 `exprIsPoolBlock`），每个字段本身是新的或标量的 struct 字面量
+ * 也算。
  *
- * Params:
- *   e - initializer expression; may be NULL
- *
- * Returns:
- *   True when the value is a fresh allocation, or a literal built only from such values.
+ * @param e  初始化表达式；可为 NULL。
+ * @return   是新分配、或只由这类值构成的字面量时 true。
  */
 static bool exprIsFresh(Expr *e) {
     if (!e) return false;
@@ -1625,33 +1650,18 @@ static bool exprIsFresh(Expr *e) {
     }
     return false;
 }
-/* Collect the names of locals whose initializer is a fresh allocation.
+/**
+ * @brief 记录每个分配行所在的最近循环与循环体的块层级。
  *
- * Params:
- *   a     - unused; only forwarded to the recursive calls
- *   fresh - output: collected names are appended here
- *   s     - statement to walk; blocks, if/else, while, and match arms are followed
+ * 层级必须取**循环体**的层级，而不是 `new` 恰好写在哪一层块里：分配落在循环体 arena 或更深
+ * 才每轮回收，更浅的会跨轮存活、随迭代增长。循环体的层级取该循环内站点的最小
+ * `lexicalLevel`，因为嵌套块只会报告更深的值。
  *
- * Notes:
- *   - Only the direct form `var x = new ...` counts. Alias propagation is deliberately
- *     left out, so a name that is fresh only through an alias is not recognized, which
- *     is the conservative direction: a missing name only keeps a requirement that could
- *     have been dropped.
+ * @param s         要遍历的语句。
+ * @param loopId    当前循环 id；0 表示不在循环里，此时不记录。
+ * @param nextLoop  下一个可用的循环 id。
+ * @param sites     输出：追加 `(line, loopId, lexicalLevel)` 三元组。
  */
-/* The innermost loop each allocation line sits in, and the block level of that loop body.
- *
- * `--explain-memory` needs both, and the level has to be the level of the **loop body**,
- * not of the block the `new` happens to be written in. An allocation is released once per
- * round exactly when it lands in the loop body's arena or deeper; anything shallower is
- * still live when the next round starts, so its memory grows with the iteration count.
- *
- * Measuring against the worst level read as growing although its peak stays at 13 MB,
- * because its `new` sits in a nested block one level below the loop body and that block
- * still ends within the round. The loop body's level is taken as the smallest
- * `lexicalLevel` among the sites in that loop, since a nested block only ever reports a
- * deeper one.
- *
- * Records are (line, loopId) per site and (loopId, level) per loop. */
 static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
     if (!s) return;
     switch (s->kind) {
@@ -1725,32 +1735,29 @@ static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
     }
 }
 
-/* Where an allocation site ends up, in words a reader can use.
+/**
+ * @brief 取含该行的循环 id。
  *
- * The levels are the same numbers the checker decided with; naming them is the point of
- * the report, because "level 0" alone does not tell a reader whether that is good news. */
-
-/* `--explain-memory`: one line per allocation site, with the numbers behind the decision.
- *
- * The report exists because the checker knows all of this and none of it is visible: a
- * program that holds memory does so because of a specific allocation site, and nothing in
- * the source says which. Every site the checker decided on is listed with the level it
- * landed at, the shallowest level it was ever published to, and whether it sits in a loop.
- *
- * `minAt == 0` means the site was stored into something that outlives the frame. That is
- * the one verdict the numbers support on their own, and it is what `@overwrite` is for, so
- * those lines are called out; the rest are printed as data. The level a site lands at and
- * the point where its block is released are decided by different rules, so the report
- * claims nothing about growth. */
-/* The loop that holds this line, or 0 when no loop does.
- *
- * The site table is (line, loopId, lexicalLevel) triples. */
+ * @param sites  `(line, loopId, lexicalLevel)` 三元组表。
+ * @param line   源码行号。
+ * @return       包含该行的循环 id；没有循环时为 0。
+ */
 static int loopIdOf(const Vec *sites, int line) {
     for (size_t i = 0; i + 2 < sites->len; i += 3)
         if (*(int *)vecAt((Vec *)sites, i) == line) return *(int *)vecAt((Vec *)sites, i + 1);
     return 0;
 }
 
+/**
+ * @brief 打印 `--explain-memory` 报告：每个分配站点一行，附决策用的数字。
+ *
+ * 层级用的是 checker 决策时的同一批数字，把它们说出来正是报告的意义。站点按落到的层级、曾被
+ * 发布到的最浅层级、是否在循环里列出。`minAt == 0` 表示站点被存进活过本帧的东西，这是数字
+ * 自身唯一能支撑的结论；站点落到的层级与块释放点由不同规则决定，报告不对增长下结论。
+ *
+ * @param c    checker。
+ * @param all  全部分配站点。
+ */
 static void reportMemory(Checker *c, Vec *all) {
     int nSite = 0, nLoop = 0;
     fprintf(stderr, "extC memory report\n");
@@ -1797,8 +1804,14 @@ static void reportMemory(Checker *c, Vec *all) {
     fprintf(stderr, "  (this report prints facts only: it does not yet say which sites grow)\n");
 }
 
-/* Drop a name from the fresh set. The set is a plain name vector and stays small (locals of one
- * function), so a compaction is cheaper than any index. */
+/**
+ * @brief 从 fresh 集合里删掉一个名字。
+ *
+ * 集合是普通名字向量且始终很小（一个函数的局部），压缩比任何索引都便宜。
+ *
+ * @param fresh  名字向量。
+ * @param name   要删的名字。
+ */
 static void freshDrop(Vec *fresh, const char *name) {
     if (!fresh || !name) return;
     size_t w = 0;
@@ -1810,6 +1823,16 @@ static void freshDrop(Vec *fresh, const char *name) {
     fresh->len = w;
 }
 
+/**
+ * @brief 收集初始值是新分配的本帧局部名。
+ *
+ * 只认 `var x = new ...` 的直接形式；别名传播刻意不做，缺名字只会保留本可去掉的要求，这是
+ * 保守方向。
+ *
+ * @param a      未使用，只转发给递归调用。
+ * @param fresh  输出：收集到的名字追加到这里。
+ * @param s      要遍历的语句；块、if/else、while、match 分支都会跟进。
+ */
 static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
     if (!s) return;
     switch (s->kind) {
@@ -1852,29 +1875,15 @@ static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
 }
 
 
-/* Escape analysis: which locals can be moved out of this function?
+/**
+ * @brief 判断一个名字是否在逃逸集合 E 里。
  *
- * Why it exists: what a callee allocates lives in its home arena (the arena the caller
- * passes), and that arena has to live longer than anywhere the contents of a container
- * can go. The call site therefore has to know whether an argument can leave this
- * function.
+ * 规则（过近似：多一个名字只多花内存，少一个名字会留下悬空指针）：`return e` 里出现过的名字
+ * 进 E；赋给已在 E 的绑定、或存进参数指向的容器的名字进 E。E 按不动点闭合。
  *
- * Rules (the conservative direction is to over-approximate: an extra name only costs
- * memory, a missing name leaves a dangling pointer):
- *   - `return e`: every name appearing in `e` enters E, whether or not it is really
- *     copied out;
- *   - `x = e` or `var x = e` where `x` is already in E: the names in `e` enter E;
- *   - anything stored into a container a parameter points at: those names enter E,
- *     because that container lives longer.
- * E is closed as a fixpoint: the body is walked until the set stops growing, which
- * terminates because the body is finite.
- *
- * Params:
- *   c - checker; the escape set is `c->escapees`
- *   n - name of a binding
- *
- * Returns:
- *   True when the name is in E, so what it holds may leave this frame.
+ * @param c  checker；E 存在 `c->escapees`。
+ * @param n  绑定名。
+ * @return   在 E 里（其内容可能离开本帧）时 true。
  */
 bool isEscapeeName(Checker *c, const char *n) {
     if (!n) return false;
@@ -1882,14 +1891,12 @@ bool isEscapeeName(Checker *c, const char *n) {
         if (strcmp(*(const char **)vecAt(&c->escapees, i), n) == 0) return true;
     return false;
 }
-/* Add a name to the escape set.
+/**
+ * @brief 把一个名字加进逃逸集合。
  *
- * Params:
- *   c - checker
- *   n - name to add; may be NULL
- *
- * Returns:
- *   True when the name was not present yet, which is what drives the fixpoint iteration.
+ * @param c  checker。
+ * @param n  要加的名字；可为 NULL。
+ * @return   之前不在集合里时 true，用于驱动不动点迭代。
  */
 static bool addEscapee(Checker *c, const char *n) {
     if (!n || isEscapeeName(c, n)) return false;
@@ -1900,6 +1907,14 @@ static bool addEscapee(Checker *c, const char *n) {
 /* Add every name appearing in the expression to E; true when a new name was added,
  * which is what the fixpoint loop uses. */
 static bool markNamesInExpr(Checker *c, Expr *e);
+/**
+ * @brief 把一条语句里出现的名字加进逃逸集合。
+ *
+ * @param c  checker。
+ * @param f  正在算逃逸集合的函数。
+ * @param s  语句；可为 NULL。
+ * @return   至少加进一个新名字时 true。
+ */
 static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     if (!s) return false;
     bool grew = false;
@@ -2012,14 +2027,12 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     default: return false;
     }
 }
-/* Add every name occurring in an expression to the escape set.
+/**
+ * @brief 把表达式里出现的名字加进逃逸集合。
  *
- * Params:
- *   c - checker
- *   e - expression to walk; may be NULL
- *
- * Returns:
- *   True when at least one new name was added.
+ * @param c  checker。
+ * @param e  表达式；可为 NULL。
+ * @return   至少加进一个新名字时 true。
  */
 static bool markNamesInExpr(Checker *c, Expr *e) {
     if (!e) return false;
@@ -2090,6 +2103,13 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
 
 /* Fixpoint closure: whatever is moved out takes its contents with it. */
 static void computeEscapes(Checker *c, FuncDef *f);
+/**
+ * @brief 以求不动点的方式算出函数体的逃逸集合。
+ *
+ * @param c          checker；集合存在 `c->escapees`。
+ * @param f          要分析的函数。
+ * @param unionMode  true 时保留已收集的名字（并集），false 先清空。
+ */
 static void computeEscapesMode(Checker *c, FuncDef *f, bool unionMode) {
     if (!c->escapees.arena) vecInit(&c->escapees, c->arena, sizeof(const char *));
     if (!unionMode) c->escapees.len = 0;     /* union mode: keep the names already collected */
@@ -2111,41 +2131,25 @@ static void computeEscapesMode(Checker *c, FuncDef *f, bool unionMode) {
     }
 }
 
+/**
+ * @brief 算出函数体会转义出哪些绑定（非静默模式）。
+ *
+ * @param c  检查器。
+ * @param f  函数定义。
+ */
 static void computeEscapes(Checker *c, FuncDef *f) { computeEscapesMode(c, f, false); }
 
-/* Field-level depth: the small per-field table that tracks the references inside a
- * binding.
+/**
+ * @brief 取绑定字段级深度表里某字段的槽，必要时新建。
  *
- * The problem: `Sym.refDepth` is a single number, an upper bound on where the
- * references inside the binding point. With one number, `h.p = null` can only be a weak
- * update (take the maximum), so a stale depth 1 stayed recorded and `return h` was
- * falsely rejected.
+ * 表最多 4 槽，放不下的记进 `otherDepth` 作保守兜底；根的有效深度是 `otherDepth` 与各字段槽
+ * 的最大值。槽里的名字来自 AST，活得比绑定记录久，因此不会悬空。
  *
- * The fix keeps a small field table per binding, at most 4 slots, with whatever does not
- * fit going into `otherDepth` as a conservative fallback:
- *   - the effective depth of the root is max(otherDepth, depth of each field), which is
- *     what reading `h` uses;
- *   - reading `h.p` reads that slot directly;
- *   - writing `h.p = v` is a strong update (the slot is overwritten) when the address of
- *     the binding was never taken, and a weak update (maximum) when it was;
- *   - a whole-object assignment (`h = ...`) clears the table and refills it, falling
- *     back to the conservative path when the address was taken.
- * `otherDepth` holds what cannot be attributed to one slot (element writes, more than 4
- * fields) and only ever grows.
- *
- * Params:
- *   c      - unused; kept to match the checker argument convention
- *   s      - the binding whose field table is consulted
- *   field  - field name to look up or create
- *   create - true to add a slot when the field is not in the table yet
- *
- * Returns:
- *   Pointer to the depth slot for that field, or NULL when there is no slot and `create`
- *   is false or the table is full.
- *
- * Notes:
- *   - The name stored in a slot comes from the AST, which outlives the binding record,
- *     so the pointer cannot dangle.
+ * @param c      未使用；保留以符合 checker 参数的惯例。
+ * @param s      要查字段表的绑定。
+ * @param field  要查或新建的字段名。
+ * @param create 表里还没有该字段时是否新建槽。
+ * @return       该字段的深度槽指针；没有槽且 `create` 为 false、或表已满时返回 NULL。
  */
 int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
     (void)c;                                       /* long unused; this silences the old warning */
@@ -2160,19 +2164,12 @@ int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
     return &s->fields[s->nfields++].depth;
 }
 
-/* Recompute a binding's effective depth after one of its field slots changed.
+/**
+ * @brief 字段槽变化后重算绑定的有效深度。
  *
- * Why:
- *   The field table splits the depth of a binding into one slot per field, and a write
- *   updates a single slot. Reading the binding has to report the deepest reference it
- *   can still carry, which is the max of the fallback slot and every field slot.
+ * 读到的是绑定仍可能携带的最深引用，即兜底槽与所有字段槽的最大值；它是上界，只能变大。
  *
- * Params:
- *   s - binding whose field table was just updated; NULL is allowed and ignored
- *
- * Notes:
- *   - The result is an upper bound, so it may only grow. See the note inside the
- *     function for the failure that a drop causes.
+ * @param s  刚更新过字段表的绑定；NULL 允许且忽略。
  */
 static void refreshRootDepth(Sym *s) {
     if (!s) return;
@@ -2189,40 +2186,17 @@ static void refreshRootDepth(Sym *s) {
     anSetRefDepth(s, m);
 }
 
-/* Record the depth of a store into a place reached through a binding.
+/**
+ * @brief 保留下写入某个字段槽的来源表达式。
  *
- * Params:
- *   c     - checker; `c->curStoreVal` is the expression being stored
- *   root  - binding whose field table is updated; may be NULL
- *   field - field name, or NULL for a whole-value or element write
- *   d2    - depth of the stored value
+ * 只对能指向站点的形状记录：`null` 与字面量不记录，记录会顶掉先前真正的来源。比较基准是本
+ * 次写入的深度 `srcDepth`，而不是做弱更新的 `depth`（后者取最大值，晚来的 `null` 会显得更
+ * 深并清掉来源）。
  *
- * Notes:
- *   - A field write on a reference-typed binding (`n: mut ref node`) writes into the
- *     fields of the object it points at, while `refreshRootDepth` recomputes the effective
- *     depth as the maximum over the fields. That overwrote "who I point at" (depth 2) with
- *     "what the object I point at contains" (field depth 0), so `keeper = n` was accepted
- *     afterwards although the pointer dangled, as ASan confirmed. A reference-typed
- *     binding's `refDepth` may therefore only be raised, never lowered; an ordinary struct
- *     binding may still be lowered, which is what the field-slot update needs.
- */
-/* Keep the source expression of a field slot, so a later pass can walk from a container
- * back to the allocation site that filled it.
- *
- * Params:
- *   root  - binding whose field table is updated; may be NULL
- *   field - field name, or NULL for a whole-object or element write; may be NULL
- *   d2    - depth of the write
- *   src   - the stored expression; may be NULL
- *
- * Notes:
- *   - Two rules, both learned by measurement:
- *   - Record a source only for a shape that names a site. `null` and a literal name no
- *     allocation, and recording one would displace the real source recorded earlier:
- *     `if c == 1 { h.q = x } else { h.q = null }` lost its source exactly that way.
- *   - Compare against the depth of this write (`srcDepth`), never against `depth`.
- *     `depth` is a weak update that takes the max, so a later `null` store looks deeper
- *     than the real one and would clear the source.
+ * @param root   要更新字段表的绑定；可为 NULL。
+ * @param field  字段名；整个对象或元素写入时为 NULL。
+ * @param d2     本次写入的深度。
+ * @param src    存下的表达式；可为 NULL。
  */
 static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
     if (!root || !field || !src) return;
@@ -2241,22 +2215,16 @@ static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
     }
 }
 
-/* Record the depth of a store into a place reached through a binding.
+/**
+ * @brief 记录一次经由绑定到达的写入的深度。
  *
- * Params:
- *   c     - checker; `c->curStoreVal` is the expression being stored
- *   root  - binding whose field table is updated; may be NULL
- *   field - field name, or NULL for a whole-value or element write
- *   d2    - depth of the stored value
+ * 引用型绑定（`n: mut ref node`）的 `refDepth` 只能升、不能降：降会把“指向谁”覆盖成“所指
+ * 对象含什么”，让悬空指针被接受。普通 struct 绑定可以降，字段槽的强更新需要这一点。
  *
- * Notes:
- *   - A field write on a reference-typed binding (`n: mut ref node`) writes into the
- *     fields of the object it points at, while `refreshRootDepth` recomputes the effective
- *     depth as the maximum over the fields. That overwrote "who I point at" (depth 2) with
- *     "what the object I point at contains" (field depth 0), so `keeper = n` was accepted
- *     afterwards although the pointer dangled, which ASan confirmed. A reference-typed
- *     binding's `refDepth` may therefore only be raised, never lowered; an ordinary struct
- *     binding may still be lowered, which is what the field-slot update needs.
+ * @param c      checker；`c->curStoreVal` 是存入的表达式。
+ * @param root   要更新字段表的绑定；可为 NULL。
+ * @param field  字段名；整个对象或元素写入时为 NULL。
+ * @param d2     存入值的深度。
  */
 void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     if (!root) return;
@@ -2316,13 +2284,16 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     if (isRefRoot && anRefDepth(root) < before) anSetRefDepth(root, before);
 }
 
-/* Record a whole aggregate assignment without throwing away its per-field provenance.
+/**
+ * @brief 记录整聚合赋值，同时保留逐字段来源。
  *
- * A plain `h = t` copies the fields by value. Recording only `h.otherDepth = depth(t)` loses
- * the allocation site stored in `t.fields[i].src`; a later `return h` can still promote the
- * site through `t`, but cannot lower the stale aggregate depth left on `h`, so a safe value is
- * rejected. A complete source table can be copied exactly. An exposed destination or an
- * incomplete source keeps the existing conservative aggregate update.
+ * 只记 `h.otherDepth = depth(t)` 会丢掉 `t` 的逐字段分配站点，之后安全的 `return h` 会被拒。
+ * 来源表完整时精确复制；目标已暴露或来源不完整时退回保守的聚合更新。
+ *
+ * @param c      checker。
+ * @param dst    赋值目标绑定。
+ * @param value  被赋的聚合值。
+ * @param d2     该值的深度。
  */
 void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
     if (!dst) return;
@@ -2343,17 +2314,16 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
 
     noteFieldDepthWrite(c, dst, NULL, d2);
 }
-/* Position of a named parameter, or -1.
+/**
+ * @brief 按名字取参数位置。
  *
- * Params:
- *   f    - function to search; may be NULL
- *   name - parameter name; may be NULL
+ * 参数遮蔽是合法语言特性，按名字匹配会认错人；手上已有表达式时应改用 `paramIndexOfExpr`
+ * （按符号判断）。
  *
- * Returns:
- *   Zero-based index of the parameter, or -1 when it is not a parameter.
+ * @param f     要搜索的函数；可为 NULL。
+ * @param name  参数名；可为 NULL。
+ * @return      从 0 开始的参数下标；不是参数时 -1。
  */
-/* **按名字**找参数：只在调用点手上只有名字时才用（`paramIndexOfExpr` 才是身份版）。
- * 参数遮蔽是合法语言特性，按名字匹配会认错人（）—— 所以有了表达式就不要再走这个。*/
 static int paramIndexByName(FuncDef *f, const char *name) {
     if (!name) return -1;
     for (size_t i = 0; i < f->params.len; i++)
@@ -2361,11 +2331,15 @@ static int paramIndexByName(FuncDef *f, const char *name) {
     return -1;
 }
 
-/* The binding an expression's root resolved to, **without a scope lookup**.
+/**
+ * @brief 不经作用域查找，取表达式根解析到的绑定。
  *
- * `placeRoot` answers the same question by walking the checker's scopes, and those only exist while
- * a body is being checked; the effect summary runs afterwards. The `Sym` is already on the
- * `EX_IDENT` node, put there by resolution, so this needs no scope. */
+ * `placeRoot` 也回答同一个问题，但它走 checker 的作用域，而作用域只在检查函数体时存在；
+ * 效应摘要在那之后才跑。`Sym` 已由解析挂在 `EX_IDENT` 节点上，所以这里不需要作用域。
+ *
+ * @param e  表达式。
+ * @return   根标识符的绑定；不是标识符或未解析时 NULL。
+ */
 static Sym *rootSymNoScope(Expr *e) {
     /* 问题③的**无作用域**版本（摘要 pass 在所有函数体检查完之后才跑，那时没有作用域可查，
      * 这是  的根因）。掩码含 `SIGN`、保留 16 跳上限 —— 差异来自历史，现在写在掩码里。*/
@@ -2373,10 +2347,17 @@ static Sym *rootSymNoScope(Expr *e) {
     return leaf ? identBindOf(leaf) : NULL;
 }
 
-/* Which parameter of `f` does the value `e` come from? **By symbol, not by spelling.**
+/**
+ * @brief 按符号（而不是拼写）判断值 `e` 来自 `f` 的哪个参数。
  *
- * The summary records "argument j was stored" and the call site checks argument j, so this answer
- * has to survive shadowing. `paramIndex` by name stays for callers that only have a name. */
+ * 摘要记录“第 j 个实参被存下”，调用点据此只检查该实参，所以答案必须经得起遮蔽；只有名字的
+ * 调用方用 `paramIndexByName`。
+ *
+ * @param c  checker。
+ * @param f  函数。
+ * @param e  值表达式。
+ * @return   参数下标；不来自参数时 -1。
+ */
 static int paramIndexOfExpr(Checker *c, FuncDef *f, Expr *e) {
     (void)c;
     if (!f || !e) return -1;
@@ -2388,26 +2369,19 @@ static int paramIndexOfExpr(Checker *c, FuncDef *f, Expr *e) {
     return -1;
 }
 
-/* Record which effect-summary bit the stored value `e` sets for `f`.
+/**
+ * @brief 记录存入值 `e` 为 `f` 置上的效应摘要位。
  *
- * Why:
- *   An assignment through a `mut ref` parameter, or into an object allocated in this
- *   frame, can hand a pointer to the caller. The summary of `f` records, per parameter,
- *   whether an address coming from the argument is stored (address flow) or a pointer
- *   read out of the argument's contents is stored (content flow); the call site then
- *   checks only the bits that are set.
+ * 经由 `mut ref` 参数、或存进本帧新分配对象的赋值，可能把指针交给调用者。摘要按参数分别
+ * 记录：存进来自实参的地址（地址流）还是从实参内容里读出的指针（内容流），调用点只检查被置
+ * 上的位。
  *
- * Params:
- *   c        - checker; NULL is allowed, and then the type test is skipped
- *   f        - function whose effect summary is being filled in
- *   e        - the value being stored
- *   i        - index of the destination container parameter, or -1 when the destination
- *              is not a parameter of `f`
- *   intoHome - true when the destination is an object freshly allocated in this frame
- *              (the home arena, which the caller chooses), false for a `mut ref`
- *              parameter
- *   fresh    - names allocated in this frame; a value coming from one of them needs no
- *              constraint at the call site
+ * @param c         checker；NULL 时跳过类型判断。
+ * @param f         正在填摘要的函数。
+ * @param e         被存入的值。
+ * @param i         目标容器参数的下标；目标不是 `f` 的参数时 -1。
+ * @param intoHome  目标为本帧新分配对象时为 true，目标为 `mut ref` 参数时为 false。
+ * @param fresh     本帧分配的名字；来自它们的值在调用点不需要约束。
  */
 static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool intoHome, Vec *fresh) {
     if (!e || !f) return;
@@ -2487,20 +2461,15 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
 
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
 
-/* Record every store into a place that this statement can perform.
+/**
+ * @brief 记录一条语句可能执行的全部“存入”。
  *
- * Why:
- *   The effect summary of a function is the union of what its body and its callees may
- *   store: which parameter receives an address, which receives a pointer read out of
- *   another parameter, and which one is unknown. The call site then constrains only the
- *   arguments whose bits are set.
+ * 摘要按参数记录：哪个参数收到地址、哪个收到从另一参数读出的指针、哪个未知。
  *
- * Params:
- *   c     - checker
- *   f     - function whose summary is being filled in
- *   s     - statement to walk; NULL is allowed
- *   fresh - names allocated in this frame; a value coming from one of them is safe, so
- *           nothing is recorded for it
+ * @param c      checker。
+ * @param f      正在填摘要的函数。
+ * @param s      要遍历的语句；NULL 允许。
+ * @param fresh  本帧分配的名字；来自它们的值安全，不记录。
  */
 static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
     if (!s) return;
@@ -2560,19 +2529,16 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
     }
 }
 
-/* Record the calls inside an expression and the callees they reach.
-*
-* Params:
-*   c - checker
-*   f - function whose callee list and summary are being filled in
-*   e - expression to walk; NULL is allowed
-*
-* Notes:
-*   - A call that could not be resolved sets `anEffUnknown(f)`, which keeps the summary
-*     incomplete forever, so no check may be relaxed on the strength of it.
-*   - The recorded edges are the call graph of this function: they are what
-*     `computeEffectsTransitive` later closes the summary over.
-*/
+/**
+ * @brief 记录表达式里的调用及其到达的被调者。
+ *
+ * 解析不了的调用会置 `anEffUnknown(f)`，摘要永久不完整，不能据此放宽任何检查；记录的边就是
+ * 该函数的调用图，`computeEffectsTransitive` 之后在它上面闭合。
+ *
+ * @param c  checker。
+ * @param f  正在填被调者表与摘要的函数。
+ * @param e  要遍历的表达式；NULL 允许。
+ */
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!e) return;
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !planCallee(e)) {
@@ -2696,32 +2662,14 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     }
 }
 
-/* Effect summary of a function: what does it store into the containers it was handed?
+/**
+ * @brief 算出一个函数的效应摘要：它往被交到手里的容器里存了什么。
  *
- * That question decides how long the `mut ref` arguments of a call have to live. The
- * earlier rule treated every callee as if it might store an address, which rejected
- * ordinary code that only pushes fresh values into a container. The summary is built from
- * three sources, and only the first two constrain an argument:
- *   - address flow `Addr(j)`: the body stores `ref param_j` or `ref param_j.field`, so
- *     the storage of argument `j` must outlive the destination;
- *   - content flow `Cont(j)`: the body stores a pointer read *out of* parameter `j`
- *     (such as `l.head`), so the data argument `j` points at must outlive the destination;
- *   - fresh data: a `new` allocation, a literal, or a scalar imposes nothing.
+ * 只有地址流 `Addr(j)` 与内容流 `Cont(j)` 会约束实参；`new`、字面量、标量不约束。
+ * `extern!` 声明按 `effects` 子句总结：没有子句时 32 以下每个参数都记为“已存”（安全默认）。
  *
- * Storing the address of a local of this frame is recorded separately (`addrFromLocal`),
- * because the call site rejects that on its own.
- *
- * Params:
- *   c - checker
- *   f - function to summarize
- *
- * Notes:
- *   - The summary is computed here but not yet used, so this step changes no behaviour;
- *     `checkCallRefArgs` is what reads it.
- *   - An `extern!` declaration is summarized from its `effects` clause instead of from a
- *     body. Without a clause every parameter below 32 is marked as stored, which is nearly
- *     unusable and is exactly what a safe default should look like; signing
- *     `effects Addr=0 Cont=0` is how a declaration becomes usable.
+ * @param c  checker。
+ * @param f  要总结的函数。
  */
 static void collectEffects(Checker *c, FuncDef *f) {
     /* An extern declaration has no body, so the summary comes from the signed clause or
@@ -2766,60 +2714,19 @@ static void collectEffects(Checker *c, FuncDef *f) {
                 (int)anAddrFromLocal(f), anFreshCount(f), f->callees.len);
 }
 
-/* Is the depth of this value decided by an allocation site?
-*
-* The depth recorded while the template body was checked is a snapshot of a world the
-* level solver later changes: some sites move from the home arena back to a block level,
-* so the recorded number can be too deep. Recomputing is therefore the right answer for a
-* value whose depth a site decides. Measured: `varArray<T>::withCap` records `depth = 1`
-* for `return v` while the `new T[cap]` inside it has been placed in the home arena, and
-* the instance check then reported "depth 1, but this can only hold up to 0" although the
-* real answer is 0.
-*
-* Recomputing is only allowed for the shapes whose depth the solver decides. A binding
-* gets its depth from `checkStmt` in whatever scope was current at the time, which has
-* nothing to do with the solver: recomputing answered 0 for the local in
-* `tests/errors/generic_return_local.extc`, whose site was still undecided (and an
-* undecided site has `refDepth` 0), so the instance check accepted a real dangling
-* pointer. Everything that is not a site (a binding, a call result, a value derived from a
-* parameter) keeps its recorded depth, which errs towards rejection.
-*
-* `targetDepth` cannot replace this: it calls `lookup` for a binding, and `runRefCheck`
-* runs in the scope of a different module, so the binding it finds is not the original
-* one. This walk reads the levels already fixed on the nodes, which do not depend on the
-* scope.
-*
-* Params:
-*   c    - checker
-*   e    - expression to classify; may be NULL
-*   hops - number of indirections followed so far; the walk stops at 32
-*
-* Returns:
-*   True when the value traces back to a `new` or a builtin generic allocation.
-*/
-/* Recomputing is only allowed for the shapes whose depth the solver decides.
-*
-* Recomputing can only lower `rc->depth`, that is, only relax the check, while a binding
-* gets its depth from `checkStmt` in the scope that was current, which has nothing to do
-* with the solver. A real case: `tests/errors/generic_return_local.extc` returns a local
-* from a generic body with `T = slice<u8>`; the template recorded `depth = 1`, which is
-* correct, and recomputation answered 0 for that binding because its site was still
-* undecided and an undecided site has `refDepth` 0. The instance check then accepted a
-* real dangling pointer.
-*
-* The correct test is whether the depth of the value really is decided by an allocation
-* site, because that is the case the recomputation exists for: the solver can move a site
-* from the home arena back to a block level. Every other shape (a binding, a call result,
-* a value derived from a parameter) keeps its depth, which errs towards rejection.
-*
-* Params:
-*   c    - checker
-*   e    - expression to classify; may be NULL
-*   hops - number of indirections followed so far; the walk stops at 32
-*
-* Returns:
-*   True when the value traces back to a `new` or a builtin generic allocation.
-*/
+/**
+ * @brief 判断一个值的深度是否由分配站点决定。
+ *
+ * 只有这类形状允许重算深度：模板期记录的是快照，电平求解器之后可能把站点从 home arena 移回
+ * 块层级。重算只能调小 `rc->depth`（放宽检查），所以绑定、调用结果、来自参数的值一律按记录
+ * 值处理（偏拒绝）。`targetDepth` 不能替代它：它为绑定调用 `lookup`，而 `runRefCheck` 在别
+ * 的模块作用域里跑，找到的不是原来那条绑定。
+ *
+ * @param c     checker。
+ * @param e     要分类的表达式；可为 NULL。
+ * @param hops  已跟随的间接层数；走超过 32 即停。
+ * @return      值可追溯到 `new` 或内建泛型分配时 true。
+ */
 static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
     if (!e || hops > 32) return false;
     switch (e->kind) {
@@ -2864,6 +2771,15 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
 }
 
 
+/**
+ * @brief 读取一个值最终定下的深度。
+ *
+ * 分配站点读 `planArenaLevel`（不要回落到 `refDepth`，那个数可能已过期并跟 arena 层级矛盾）；
+ * 绑定、字段、下标读 `refDepth`；`dyn` 载荷与容器形状取所含值的最大深度。
+ *
+ * @param e  表达式；NULL 返回 0。
+ * @return   该值的深度；无要求时为 0。
+ */
 static int solvedDepth(Expr *e) {
     if (!e) return 0;
     switch (e->kind) {
@@ -2931,51 +2847,6 @@ static int solvedDepth(Expr *e) {
     }
 }
 
-/* Check one function: its signature, its home-arena requirement, and its body.
- *
- * Params:
- *   c - checker
- *   f - function to check
- *
- * Notes:
- *   - A function that allocates and also hands back something useful (a reference or a
- *     view, or a store through an out-parameter) needs a home arena. A function that only
- *     returns `i32` does not: its allocations stay in its own block.
- *   - The escape set has to be computed before the body is walked, because the walk uses
- *     it to choose the arena of each call; computing it afterwards is the same as not
- *     computing it.
- *   - An `extern!` declaration is checked for shape only: a C function takes scalars and
- *     single pointers. A `slice<T>` would become two C arguments (pointer and length), so
- *     the names would not match, and a struct has no frozen layout. The stdlib wrappers
- *     pass `s.data` and `s.len` explicitly instead.
- */
-/* Level pass: settle every allocation site's requirement from the recorded publications.
- *
- * A publication `(value, at)` says "this value ends up somewhere that lives `at` levels
- * deep". Following the value to the allocation sites it can reach, each of those sites
- * is then required to live to `at` as well. Following a value means:
- *
- *   binding      through `Sym.origin`, the expression its storage came from
- *   reference,   through the carrier: `ref x`/`*p`/`p!` name the same storage, a slice
- *   deref, sign  names part of its object, and a field or element lives inside its
- *   slice, field, object
- *   index
- *   aggregate    every element of a struct literal, array literal, or enum payload
- *   call         nothing: what a callee publishes is the callee's own business, and a
- *                call's result reaches a site only through a parameter it was handed
- *
- * This is a fold over data, so it is order-independent and can be run again: every step
- * only ever lowers `minAt`, that is, only strengthens a requirement, which is the
- * direction the solver needs. It replaces the previous scheme, where the same traversal
- * mutated site levels while the checker was still running, so a decision could depend on
- * which branch had been visited first.
- *
- * Params:
- *   c      - checker
- *   val    - the value being published
- *   target - arena level the destination lives at; 0 = beyond this frame
- *   hops   - recursion guard, since bindings may form cycles (`a = b  b = a`)
- */
 /* The level a requirement carries when there is none: a literal, a call result, or the
  * value of a binding this analysis has no level for. It must be a number rather than a
  * sentinel, because requirements are combined with `min`, and it must be large enough
@@ -3074,11 +2945,19 @@ static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
  *     pass that calls this runs to a fixed point over them. */
 static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops);
 
-/* The walk, with the cycle cut and the work budget around it.
+/**
+ * @brief 走一层值到分配站点的层级求解，带环切与步数预算。
  *
- * Every recursive edge in the body goes through this wrapper, so the path it keeps is the
- * chain being walked and the budget counts every pair the walk reaches -- including the
- * ones reached twice, which is the case the cut exists for. */
+ * 体内每条递归边都经过这个包装，所以它维护的路径就是正在走的链，预算统计到达的每一对
+ * （包括重复到达的，那正是环切存在的理由）。
+ *
+ * @param c       checker。
+ * @param ls      电平求解状态（路径与步数预算）。
+ * @param val     要解的值。
+ * @param target  目的地要求的层级。
+ * @param hops    已跟随的跳数；超过 32 返回 `LEVEL_INF`。
+ * @return        值需要活到的层级；无要求时为 `LEVEL_INF`。
+ */
 static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
     for (size_t i = 0; i < ls->path.len; i++) {
@@ -3105,6 +2984,21 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
     return r;
 }
 
+/**
+ * @brief 电平求解的主体：沿载体把一次发布追到它能触及的分配站点。
+ *
+ * 一次发布 `(value, at)` 说“这个值会落进活 `at` 层深的地方”，沿值能到达的每个分配站点也被
+ * 要求活到 `at`。跟随关系：绑定走 `Sym.origin`；`ref` / `*` / `!` 走同一份存储；
+ * slice/deref/sign 认对象的一部分；字段与下标住在对象/数组里；聚合走每个元素；调用不跟随
+ * （被调者发布什么是它自己的事）。这是一个对数据的折叠，与顺序无关。
+ *
+ * @param c       checker。
+ * @param ls      电平求解状态。
+ * @param val     被发布的值。
+ * @param target  目的地所在的 arena 层级；0 = 本帧之外。
+ * @param hops    递归守卫：绑定可能成环（`a = b  b = a`）。
+ * @return        值需要活到的层级。
+ */
 static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
     if (dbgOn("EXTC_DBG_LV"))
@@ -3316,13 +3210,16 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
     }
 }
 
-/* The level a binding has to live at, as the pass currently knows it.
+/**
+ * @brief 读取一个绑定当前已知需要活到的层级。
  *
- * A binding's level is not something a single statement decides: what it holds now may
- * have arrived from several statements, and where it is published may demand more
- * lifetime than the value alone would. Both are edges between publication records, and
- * this table is where they meet. */
-
+ * 绑定的层级不是单条语句决定的：它现在持有的值可能来自多条语句，它被发布到哪里也可能要求比
+ * 值本身更长的寿命。两者都是发布记录之间的边，这张表就是它们相遇的地方。
+ *
+ * @param ls  电平求解状态。
+ * @param sy  绑定。
+ * @return    该绑定的层级。
+ */
 static int symLevel(LvlState *ls, Sym *sy) {
     if (!ls || !sy) return LEVEL_INF;
     if (ls->fx) ls->c->fxSymCalls++;
@@ -3334,8 +3231,16 @@ static int symLevel(LvlState *ls, Sym *sy) {
     return LEVEL_INF;
 }
 
-/* Lower a binding's level, and report whether that moved it. Only the lowering direction
- * exists: a level is a requirement, and requirements accumulate. */
+/**
+ * @brief 调低一个绑定的层级，并报告是否真的动了。
+ *
+ * 只有调低这一个方向：层级是要求，要求只会累积。
+ *
+ * @param ls  电平求解状态。
+ * @param sy  绑定。
+ * @param lv  新层级。
+ * @return    层级因此变小时 true。
+ */
 static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
     if (!ls || !sy || lv >= LEVEL_INF) return false;
     if (ls->fx) ls->c->fxSymCalls++;
@@ -3354,11 +3259,18 @@ static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
     return true;
 }
 
-/* The level a stored value carries, read from the bindings it names.
+/**
+ * @brief 读取一个被存值从它命名的绑定上带来的层级。
  *
- * This is the other half of `levelOfValue`: that one walks a value down to the allocation
- * sites inside it, this one walks it up to the bindings it is made of. The two are run
- * together until the numbers stop moving. */
+ * 这是 `levelOfValue` 的另一半：那一个把值往下走到它里面的分配站点，这一个把值往上走到构成
+ * 它的绑定；两者一起迭代到数字不再移动。
+ *
+ * @param c     checker。
+ * @param ls    电平求解状态。
+ * @param val   值表达式。
+ * @param hops  递归守卫跳数。
+ * @return      该值携带的层级；无要求时为 `LEVEL_INF`。
+ */
 static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
     /* `dest` is the level of the place this value is being handed to, and it takes part in
@@ -3425,38 +3337,15 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
     }
 }
 
-/* Run the level pass: fold the publications recorded while the body was checked.
+/**
+ * @brief 跑电平遍历：折叠检查函数体时记录的发布。
  *
- * Params:
- *   c   - checker
+ * 它**不**取数据流的不动点：电平求解读自己的表（由函数体遍历时的发布播种），并在 DFA 的数字
+ * 被写回 `Sym.refDepth` **之前**跑。
  *
- * It does **not** take the data-flow fixed point: the level solve reads its own table, seeded from
- * the publications recorded while the body was walked, and it runs *before* the DFA's numbers are
- * copied into `Sym.refDepth`. So the "decision sees the final depths" claim does not hold for this
- * pass; making it hold means moving the write-back above this call, which changes arena placement
- * and is a change of its own, not a comment fix.
- *
- * Returns:
- *   Nothing. The result is written to each allocation site's `minAt`.
- *
- * The pass answers one question -- how long must each allocation site live -- and it
- * answers it by replaying two kinds of edge until nothing moves:
- *
- *   - a value's carrier chain, from a publication down to the sites inside it, so the
- *     sites are lowered to the level the publication demands;
- *   - the bindings, whose level is the smallest level among the values stored into them
- *     and the stores that publish them onwards.
- *
- * The second kind is what a walk along one carrier chain cannot express. Where two arms
- * of an `if` write the same binding, the binding can hold either value, and only the join
- * over both records sees the one that demands the longer lifetime. Measured on
- * `tests/arena-promoted/C3_if_join_wholevalue`: the walk followed the arm holding the
- * empty box, the `alloc` in the other arm was never told it had to outlive the frame, and
- * the struct carrying it was returned after the block arena had been released.
- *
- * Every step only lowers a number, so the iteration is monotone and the answer does not
- * depend on the order the records are visited in. The round cap is the same shape as the
- * other fixed points in this file. */
+ * @param c  checker。
+ * @param f  要跑电平遍历的函数。
+ */
 static void levelPass(Checker *c, FuncDef *f) {
     LvlState ls;
     vecInit(&ls.tbl, c->arena, sizeof(SymLevel));
@@ -3611,7 +3500,12 @@ typedef struct {
     Vec         aliases;   /* const char*: `let g = f` shares one obligation */
 } FdOblig;
 
-/* True when the type declares a `close` method: the resource protocol. */
+/**
+ * @brief 判断类型是否声明了 `close` 方法（资源协议）。
+ *
+ * @param t  类型。
+ * @return   其 struct 上声明了 `close` 时 true。
+ */
 static bool typeIsResource(Type *t) {
     Type *b = t ? ttBase(t) : NULL;
     if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return false;
@@ -3622,6 +3516,13 @@ static bool typeIsResource(Type *t) {
     return false;
 }
 
+/**
+ * @brief 在资源义务表里按生成名找义务（别名也算）。
+ *
+ * @param obs    义务表（`FdOblig *`）。
+ * @param cname  生成 C 名；NULL 返回 NULL。
+ * @return       找到的义务；没有则 NULL。
+ */
 static FdOblig *obligFind(Vec *obs, const char *cname) {
     if (!cname) return NULL;
     for (size_t i = 0; i < obs->len; i++) {
@@ -3633,14 +3534,27 @@ static FdOblig *obligFind(Vec *obs, const char *cname) {
     return NULL;
 }
 
-/* Every obligation is out of our hands. Used for a shape this walk does not know: a
- * missed leak is a missing diagnostic, a wrong one rejects a correct program, so the
- * unknown direction is silence. */
+/**
+ * @brief 把所有义务标成“已交出”。
+ *
+ * 用于本遍历不认识的形状：漏报只是少一条诊断，误报会拒绝正确程序，所以未知方向选择沉默。
+ *
+ * @param obs  义务表。
+ */
 static void obligEscapeAll(Vec *obs) {
     for (size_t i = 0; i < obs->len; i++) (*(FdOblig **)vecAt(obs, i))->escaped = true;
 }
 
-/* `escape` says whether the value in this position leaves the function's hands. */
+/**
+ * @brief 在表达式里追踪资源义务：被关闭还是被交出。
+ *
+ * `f.close()` 是履行；接收者本身不算交出（`f.put(x)` 只是通过句柄写入）。
+ *
+ * @param c       checker。
+ * @param e       表达式；NULL 忽略。
+ * @param obs     义务表。
+ * @param escape  该位置的值离开本函数时为 true。
+ */
 static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
     if (!e) return;
     switch (e->kind) {
@@ -3728,6 +3642,13 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
     }
 }
 
+/**
+ * @brief 在语句里追踪资源义务，走遍其表达式。
+ *
+ * @param c    checker。
+ * @param s    语句；NULL 忽略。
+ * @param obs  义务表。
+ */
 static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     if (!s) return;
     switch (s->kind) {
@@ -3794,13 +3715,15 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     }
 }
 
-/* Warn about every descriptor this function opens and never closes.
+/**
+ * @brief 警告函数里打开却从未关闭的每个描述符。
  *
- * The walk is flow-insensitive on purpose: a `close` anywhere in the function counts.
- * Proving that a particular *path* closes it needs a path-sensitive analysis, and
- * rejecting a program that closes its file on one of two paths would be a false alarm.
- * The accepted shapes are still really closed at run time, because a second `close` is a
- * no-op in the library (the handle's `open` flag is already false).
+ * 刻意做成流不敏感：函数里任何一处 `close` 都算数。要证明某条**路径**会关闭需要路径敏感分析，
+ * 而拒绝一个在两条路径之一关闭文件的程序是误报。第二次 `close` 在库里是空操作，所以接受的
+ * 形状在运行期确实已关闭。
+ *
+ * @param c  checker。
+ * @param f  要检查的函数。
  */
 static void checkOpenHandles(Checker *c, FuncDef *f) {
     if (!f || !f->body || f->isExtern) return;
@@ -3840,11 +3763,24 @@ static Arena *g_sbArena;
 static const Sym *g_sbFirst;
 static int g_sbBad;
 
+/**
+ * @brief 用 FNV-1a 哈希一个 C 名字。
+ *
+ * @param p  以 NUL 结尾的名字。
+ * @return   哈希值。
+ */
 static size_t sgHash(const char *p) {
     size_t h = 1469598103934665603u;
     for (const char *q = p; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211u; }
     return h;
 }
+/**
+ * @brief 在符号索引里找一个桶，必要时新建。
+ *
+ * @param name    要查找的生成名。
+ * @param create  没有时是否新建。
+ * @return        桶；16 步线性探测内没有空位时 NULL，调用方退回线性查找。
+ */
 static SymBucket *symBucket(const char *name, int create) {
     size_t h = sgHash(name) & (g_sbCap - 1);
     for (int step = 0; step < 16; step++, h = (h + 1) & (g_sbCap - 1)) {
@@ -3860,6 +3796,14 @@ static SymBucket *symBucket(const char *name, int create) {
     }
     return NULL;                                   /* window full: caller falls back */
 }
+/**
+ * @brief 把自上次以来新增的符号追加进符号索引。
+ *
+ * 只增量追加（每次摊还 O(1)）。一旦发现索引不再与 `c->allSyms` 完全一致（表窗口满、列表缩小、
+ * arena 或首符号不同），就把 `g_sbBad` 置位，此后整轮永久退回线性查找。
+ *
+ * @param c  checker。
+ */
 static void symIdxSync(Checker *c) {
     const Sym *first = c->allSyms.len ? *(Sym **)vecAt(&c->allSyms, 0) : NULL;
     if (g_sbArena != c->arena || g_sbFirst != first || c->allSyms.len < g_sbBuilt) {
@@ -3879,14 +3823,15 @@ static void symIdxSync(Checker *c) {
     g_sbBuilt = c->allSyms.len;
 }
 
-/* The coroutine setup for one function: the **handle** protocol (emitted once per program) and,
- * for this function, the frame type a call produces plus the protocol methods on it.
+/**
+ * @brief 为一个函数做协程设置：句柄协议（每程序一次），以及该函数调用会产生的帧类型及其协议方法。
  *
- * Extracted from `checkFunc` so it can also be run for an **instance created late**: a call inside a
- * generic body is deferred (`fn run<T>() { gen(v) }`), so `funcInstance` for `gen<i64>` runs after
- * the body-checking pass, which is not the only place this setup is needed. Running it for that
- * instance is what keeps `<name>$frame` defined and `value()` on the substituted `T`
- * (tools/attack.py F4 + B7). */
+ * 对**迟到创建的实例**也要跑：泛型体里的调用会被推迟，实例的设置在函数体检查之后才发生。
+ * 为那个实例跑一遍，`<name>$frame` 才会被定义，`value()` 也才落在代入后的 `T` 上。
+ *
+ * @param c  checker。
+ * @param f  函数定义。
+ */
 static void coroSetup(Checker *c, FuncDef *f) {
 
         /* ---- The **handle** protocol, once per program ----
@@ -4011,6 +3956,16 @@ static void coroSetup(Checker *c, FuncDef *f) {
     
 }
 
+/**
+ * @brief 检查一个函数：签名、home arena 需求与函数体。
+ *
+ * 既分配又交回有用东西（引用、view、经出参的写入）的函数需要 home arena；只返回 `i32` 的不
+ * 需要。逃逸集合必须在遍历函数体之前算出，因为遍历用它选择每个调用的 arena。`extern!` 只查
+ * 形状：C 函数收标量与单指针，`slice<T>` 会变成两个 C 实参，struct 没有冻结布局。
+ *
+ * @param c  checker。
+ * @param f  要检查的函数。
+ */
 static void checkFunc(Checker *c, FuncDef *f) {
     /* `@builtin` 声明只有签名、没有函数体（与 `extern!` 同款），而这条路后面会直接遍历
      * `f->body` ⇒ 无体声明一进来就段错误（2026-09-28 实测：exit 139，bt 落在下面那行 for）。
@@ -4116,6 +4071,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
                     " information in a struct if the entry point needs more.",
                     "`main` takes at most one parameter, `slice<slice<u8>>`; %zu were declared",
                     f->params.len);
+        /* @brief 入口点带一个参数时，参数形状必须是 slice<slice<u8>>。 */
         else if (f->params.len == 1) {
             Param *p = *(Param **)vecAt(&f->params, 0);
             /* The shape is judged by shape and not through `ttBase`: resolving a view
@@ -4326,18 +4282,14 @@ static void checkFunc(Checker *c, FuncDef *f) {
     c->storeBase = savedStoreBase;
 }
 
-/* Is this initializer a constant expression?
+/**
+ * @brief 判断初始化表达式是否为常量表达式。
  *
- * Params:
- *   e - initializer expression; may be NULL
+ * 没有常量折叠器，所以看形状：字面量、取负的字面量、枚举常量、以及它们之间的算术；调用一律
+ * 拒绝。
  *
- * Returns:
- *   True for a literal, a negated literal, an enum constant, or arithmetic over those.
- *
- * Notes:
- *   - There is no constant folder, so the shape of the expression is what counts:
- *     `let A = 1 + 2` is accepted because both operands are literals, while a call is
- *     rejected however simple it looks.
+ * @param e  初始化表达式；可为 NULL。
+ * @return   是常量表达式时 true。
  */
 bool isConstInit(Expr *e) {
     if (!e) return false;
@@ -4387,19 +4339,14 @@ bool isConstInit(Expr *e) {
     default: return false;
     }
 }
-/* Check the top-level `let` and `var` declarations.
+/**
+ * @brief 检查顶层的 `let` 与 `var` 声明。
  *
- * A global is depth 0: it outlives every frame. Two consequences follow from that one fact
- * without any special rule for globals: the escape rule already rejects storing something
- * local into a global, and a global of fixed size needs no arena, because it is a C static
- * object.
+ * 全局量是深度 0，活过每一帧；由此不需要任何专门规则就有两个后果：逃逸规则已经拒绝把局部量
+ * 存进全局量，固定大小的全局量是 C 静态对象、不需要 arena。初始化式必须是常量，因为 C 的静态
+ * 初始化式只能含常量表达式。
  *
- * Params:
- *   c - checker
- *
- * Notes:
- *   - An initializer has to be a constant, because C's static initializer may only contain
- *     constant expressions.
+ * @param c  checker。
  */
 static void checkGlobals(Checker *c) {
     Module *m = c->m;
@@ -4512,8 +4459,14 @@ static void checkGlobals(Checker *c) {
  * (the attack suite's A4 uses 10) and far below anything that can exhaust memory. */
 #define TYPE_DEPTH_LIMIT 64
 
-/* Nesting depth of a type's instantiation arguments (a plain type is 0). The recursion is cut
- * defensively: this runs on types the compiler built itself. */
+/**
+ * @brief 数类型实例化参数的嵌套深度（普通类型为 0）。
+ *
+ * 递归防御性截断：它跑在编译器自己造出来的类型上。
+ *
+ * @param t  类型。
+ * @return   嵌套深度。
+ */
 static int typeDepth(Type *t) {
     if (!t) return 0;
     int best = 0;
@@ -4524,21 +4477,18 @@ static int typeDepth(Type *t) {
     return best + (t->targs.len ? 1 : 0);
 }
 
-/* Create or find the concrete instance of a free generic function.
+/**
+ * @brief 创建或找到自由泛型函数的具体实例。
  *
- * A type instance (`varArray<i32>`) is decided by the type, but the type arguments of a
- * free function are read off the call, so an instance can only be created there.
+ * 类型实例（`varArray<i32>`）由类型决定，而自由函数的类型实参是从调用点读出来的，所以实例
+ * 只能在那里创建。同一个 `targs` 列表总是映射到同一个实例。
  *
- * Params:
- *   c     - checker; instances are appended to `c->funcInsts` and to the module
- *   tmpl  - the generic template; NULL yields NULL
- *   targs - concrete type arguments; the same list always maps to the same instance
- *   line  - source line of the call; unused, kept for the call shape
- *
- * Returns:
- *   An independent `FuncDef` whose `tmpl` points back at the template, whose `targs` and
- *   `instName` are filled in, and whose parameter and return types are substituted.
- *   Codegen emits it like an ordinary function.
+ * @param c      checker；实例追加进 `c->funcInsts` 与模块。
+ * @param tmpl   泛型模板；NULL 得到 NULL。
+ * @param targs  具体类型实参。
+ * @param line   调用的源码行；未使用，保持调用形状。
+ * @return       独立的 `FuncDef`：`tmpl` 指回模板，`targs` 与 `instName` 填好，参数与返回
+ *               类型已代入；codegen 像普通函数一样发出它。
  */
 FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     if (!tmpl) return NULL;
@@ -4619,23 +4569,17 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     return in;
 }
 
-/* Fill `targs` in with the type parameters found in a parameter type.
+/**
+ * @brief 从实参类型反推并填入类型参数。
  *
- * Why:
- *   A call to `f<T>(x)` has to infer `T` from the argument types, which is what matching
- *   `slice<T>` against `slice<u8>` does.
+ * 对 `f<T>(x)` 这样的调用，从实参类型推断 `T`，就是把 `slice<T>` 与 `slice<u8>` 匹配起来。
  *
- * Params:
- *   tt    - type table
- *   tp    - names of the type parameters, in the order `targs` uses
- *   targs - one slot per type parameter, filled in as unification proceeds; a slot that
- *           is already filled has to agree with the new type
- *   want  - the parameter type, which may mention type parameters
- *   got   - the type of the argument
- *
- * Returns:
- *   false when the parameters cannot be inferred, for example when `T` appears only in
- *   the return type; the call then has to spell them out, as in `f<i32>(...)`.
+ * @param tt     类型表。
+ * @param tp     类型参数名，顺序与 `targs` 一致。
+ * @param targs  每个类型参数一格，推断过程中填入；已填的格必须与新类型一致。
+ * @param want   参数类型，可以提到类型参数。
+ * @param got    实参的类型。
+ * @return       推断不出时为 false（例如 `T` 只出现在返回类型里），此时调用必须写明 `f<i32>`。
  */
 bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
     if (!want || !got) return true;
@@ -4662,24 +4606,20 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
     return true;
 }
 
-/* Re-check one deferred operator use for one concrete instance.
+/**
+ * @brief 为一个具体实例重查一条被推迟的运算符使用。
  *
- * Both batches of checks that are deferred to instantiation -- this operator batch and the
- * reference-rule batch below -- are driven the same way for type instances and for
- * free-function instances, so they share helpers instead of a second copy for `fn f<T>`.
+ * 推迟到实例化的两批检查（本运算符批与引用规则批）对类型实例和自由函数实例走同一条路，所以
+ * 共用辅助函数，而不是为 `fn f<T>` 再写一份。
  *
- * Params:
- *   c - checker
- *   ec - the recorded check, whose operand types still mention type parameters
- *   params - the instance's type parameters
- *   targs - the instance's type arguments, positionally matching `params`
- *   instName - instance name to report in the diagnostic
+ * @param c         checker。
+ * @param ec        记录下来的检查，其操作数类型仍提到类型参数。
+ * @param params    实例的类型参数。
+ * @param targs     实例的类型实参，与 `params` 位置对应。
+ * @param instName  诊断里用的实例名。
  *
- * Notes:
- *   - The caller must have set `c.substParams` / `c.substArgs` to this instance before
- *     the call: `runRefCheck` reads them through `tsub`.
- *   - The diagnostic names the operator that was recorded, never a fixed `==`: this one
- *     function serves `==`, the ordering operators and the arithmetic ones.
+ * 调用方必须先把 `c.substParams` / `c.substArgs` 设为该实例（`runRefCheck` 经 `tsub` 读它们）。
+ * 诊断报的是记录下来的运算符，不是固定的 `==`。
  */
 static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const char *instName) {
     TypeTable *tt = c->tt;
@@ -4742,21 +4682,25 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
     if (m) planSetUsed(m, true);
 }
 
-/* Re-check one recorded USE of a deferred call's result (`#79`).
+/**
+ * @brief 复核一条延迟调用结果的 USE 记录。
  *
- * The template accepted it because the value's type was the error type; here the receiver's type is
- * concrete, so the method's real return type is known and the expected type recorded at the use
- * site can finally be enforced. `what` is the instance name, so the diagnostic reads
- * "`f_i32` expects `i8`, found `i64`" -- naming the instance is the whole point of doing this at
- * instantiation instead of on the template. */
+ * 模板当时接受它，是因为值的类型就是错误类型；这里接收者类型已经具体，方法真正的返回类型
+ * 可知，记录在使用点上的期望类型终于能落实。`instName` 是实例名，诊断因此读作
+ * “`f_i32` expects `i8`, found `i64`”——在实例化时做、而不是在模板上做，意义就在这里。
+ *
+ * @param c         检查器。
+ * @param du        记录下来的使用点。
+ * @param params    实例的类型参数名。
+ * @param targs     实例的类型实参。
+ * @param instName  实例名，进诊断。
+ */
 static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
                            const char *instName) {
     TypeTable *tt = c->tt;
-    /* Anything that is not a late method carries its own type: substitute the expression's type and
-     * compare. That is the path a **type-parameter-typed value** takes -- `s = s + c.value()` inside
-     * `fn run<T>` records the sum, whose type is `T` on the template (tools/attack.py B8). Reading
-     * `u.method.recv` here for such a node is what crashed the compiler when this generalization was
-     * first attempted (the union member is not an `EX_METHOD`). */
+    /* 不是延迟方法的节点自带类型：把表达式类型代换后比较。类型参数类型的值走的就是这条路
+     * （`fn run<T>` 里的 `s = s + c.value()` 记下的是和，它在模板上的类型是 `T`）。这种节点上
+     * 读 `u.method.recv` 会读错：那个 union 成员不是 `EX_METHOD`。 */
     if (du->call->kind != EX_METHOD || planCallee(du->call)) {
         Type *vt = ttSubstitute(tt, du->call->type, params, targs);
         /* **Both** sides: `want` is very often the template's own parameter too (an argument checked
@@ -4778,26 +4722,23 @@ static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
     checkAssignable(c, du->want, ret, du->call, arenaPrintf(c->arena, "`%s`", instName));
 }
 
-/* Resolve one deferred method call for a concrete instance (`#57`).
+/**
+ * @brief 为一个具体实例重新检查一条延迟的方法调用。
  *
- * On the template the receiver's type was a type parameter, so no method could be found and the
- * call was recorded instead (see `MethodCheck`). Here the receiver type is concrete: the method
- * either exists -- and then it is marked used so code generation emits it -- or the instance
- * cannot support the call, which is the error this whole deferral exists to report.
+ * 模板上接收者类型是类型参数，找不到方法，于是把这次调用记下来；这里接收者类型已经具体：
+ * 方法存在就标成已用，好让代码生成发出它；不存在就是这次延迟存在的意义——报出该实例
+ * 不支持这次调用。
  *
- * Params:
- *   c        - checker
- *   mc       - the deferred call: the node, the method name, its arity
- *   params   - type parameters of the instance
- *   targs    - type arguments of the instance
- *   instName - instance name, reported in the diagnostic
+ * 节点**故意不记 `func`**：一个模板体有多个实例，记下的 `func` 对其它实例都是错的方法；
+ * 代码生成会在代换后的接收者类型上重新解析，和解析运算符一样。实参个数在这里查，因为
+ * 别处看不见它：模板没有签名可比，放过去只会在生成的 C 里炸开。
  *
- * Notes:
- *   - The node is deliberately NOT given a `func`: one template body has many instances, and a
- *     `func` stored here would be the wrong method for every other one. Code generation
- *     re-resolves the method on the substituted receiver type, the way it resolves operators.
- *   - Arity is checked here because nothing else can see it: the template had no signature to
- *     compare against, and letting it through would surface as a C error in generated code. */
+ * @param c         检查器。
+ * @param mc        延迟的调用：节点、方法名、实参个数。
+ * @param params    实例的类型参数名。
+ * @param targs     实例的类型实参。
+ * @param instName  实例名，进诊断。
+ */
 static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
                            const char *instName) {
     TypeTable *tt = c->tt;
@@ -4825,15 +4766,13 @@ static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
     planSetUsed(f, true);
 }
 
-/* Does this deferred reference check belong to this free-function instance?
+/**
+ * @brief 判断一条被推迟的引用检查是否属于这个自由函数实例。
  *
- * Params:
- *   rc - a check deferred from a template body
- *   fi - the instance being replayed
- *
- * Returns:
- *   True when the check came from this instance's own template and that template is
- *   generic. A method takes the type-instance path instead, so it answers false here.
+ * @param rc  从模板体推迟下来的检查。
+ * @param fi  正在重放的实例。
+ * @return    该检查来自本实例自己的模板、且模板是泛型时 true；方法走类型实例那条路，返回
+ *            false。
  */
 static bool refCheckApplies(RefCheck *rc, FuncDef *fi) {
     FuncDef *tmpl = planTemplate(fi);
@@ -4842,24 +4781,17 @@ static bool refCheckApplies(RefCheck *rc, FuncDef *fi) {
     return tmpl->typeParams.len > 0;
 }
 
-/* Re-check one deferred reference rule for a concrete instance.
+/**
+ * @brief 为一个具体实例重查一条被推迟的引用规则。
  *
- * A generic body is checked once on the template, where `T` is opaque, so every rule whose
- * outcome depends on `T` is deferred and replayed here per instance.
+ * 泛型体在模板上只检查一次，那时 `T` 不透明，所以结果依赖 `T` 的规则都推迟到这里按实例重放。
  *
- * Params:
- *   c        - checker
- *   rc       - the deferred check: the value, its depth, the depth it has to fit into, and
- *              what the reference rule applies to
- *   instName - name of the instance, used in the diagnostics
+ * @param c         checker。
+ * @param rc        推迟的检查：值、它的深度、它必须装进多深、以及引用规则作用于什么。
+ * @param instName  实例名，用于诊断。
  *
- * Notes:
- *   - The depth recorded at template time is a snapshot of a world the level solver later
- *     changes, so it is recomputed here for the shapes whose depth an allocation site
- *     decides, and only downwards. Recomputing a binding is not allowed: that answers 0
- *     for a local whose site is still undecided and accepts a real dangling pointer.
- *   - A check whose value must trace back to a parameter is skipped when it does not, since
- *     the rule is about parameters.
+ * 模板期记录的深度是电平求解器之后会改变的世界快照，所以对**分配站点决定深度**的形状在这里
+ * 重算，且只往下调；重算绑定不允许——它的站点还没定，答 0 会接受真正的悬空指针。
  */
 static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
     TypeTable *tt = c->tt;
@@ -4934,22 +4866,15 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         }
 }
 
-/* Is this instance **provisional** (a placeholder) rather than real?
+/**
+ * @brief 把函数体里作为**局部声明类型**出现的类型实例 intern 一遍。
  *
- * A generic call inside a generic body has to build one -- `less<T>` calling `less` with `T`
- * itself produces the instance `less_T` -- so that the enclosing template body can still be
- * type-checked (`T` stays opaque there). At instantiation every real call site is repointed to
- * a concrete instance (`less_i64`), so the placeholder is a thing the checker owns and code
- * generation never emits (`funcSignatureMentionsParam` skips it for exactly this reason).
+ * 只需语句遍历：出问题的形状是泛型函数里的 `var p: pair<T>`，而 interning 是代入本身的副
+ * 作用。
  *
- * The deferred re-checks must skip it too. Asking a placeholder "does this type have `<`?" is
- * asking the one question that cannot be answered on a template -- it is the price of having
- * no traits, and the concrete instance answers it instead.
+ * @param c  checker。
+ * @param f  函数定义。
  */
-/* Intern the type instances that appear as **local declaration types** in a body (`s->u.var.ann`).
- *
- * Only the statement walk is needed: the shape that broke was `var p: pair<T>` inside a generic
- * function (tools/attack.py W9), and interning is a side effect of the substitution itself. */
 static void internLocalTypes(Checker *c, FuncDef *f) {
     if (!f || !f->body) return;
     Vec *params = f->typeParams.len ? &f->typeParams
@@ -4995,26 +4920,35 @@ static void internLocalTypes(Checker *c, FuncDef *f) {
     }
 }
 
+/**
+ * @brief 判断一个实例是**临时占位**还是真实实例。
+ *
+ * 泛型体里的泛型调用必须造一个占位，外层模板体才能继续类型检查（`T` 在那里不透明）。实例化
+ * 时每个真实调用点都会重指到具体实例，占位是 checker 自己拥有的东西，codegen 从不发出它；
+ * 被推迟的重查也要跳过它——向占位问“这个类型有 `<` 吗”正是模板上答不了的那个问题，由具体
+ * 实例来答。
+ *
+ * @param targs  类型实参。
+ * @return       任一实参仍提到类型参数时 true。
+ */
 static bool provisionalInstance(Vec *targs) {
     for (size_t i = 0; i < targs->len; i++)
         if (ttHasParam(*(Type **)vecAt(targs, i))) return true;
     return false;
 }
 
-/* Re-resolve one deferred call site into a concrete instance under the substitution
- * of the enclosing instance.
+/**
+ * @brief 在外层实例的代换下，把一条延迟调用点重新解析成具体实例。
  *
- * Params:
- *   c - checker
- *   cc - the recorded call site, whose type arguments still mention type parameters
- *   params - the enclosing instance's type parameters
- *   targs - the enclosing instance's type arguments, positionally matching `params`
+ * 三步：代换类型实参、把那个具体实例驻留（或创建）出来、把调用表达式的 `func` 指向它
+ * （`cc->node->func`）。实例是驻留的（`funcInstance` 去重），所以一种实参组合只有一个实例。
  *
- * Notes:
- *   - Three steps: substitute the type arguments, intern (or create) that concrete
- *     instance, then point the call expression's `func` at it (`cc->node->func`).
- *   - Instances are interned (`funcInstance` de-duplicates), so one argument
- *     combination has exactly one instance.
+ * @param c             检查器。
+ * @param cc            记录下来的调用点，其类型实参里还带着类型参数。
+ * @param enclosing     外层实例的函数定义。
+ * @param enclosingInst 外层实例的类型；作为代替解析结果回落到指针。
+ * @param params        外层实例的类型参数名。
+ * @param targs         外层实例的类型实参，与 `params` 按位置对应。
  */
 static void resolveDeferredCall(Checker *c, CallCheck *cc, FuncDef *enclosing,
                                 const Type *enclosingInst, Vec *params, Vec *targs) {
@@ -5043,44 +4977,17 @@ static void resolveDeferredCall(Checker *c, CallCheck *cc, FuncDef *enclosing,
     planSetAltCallee(cc->node, enclosing, enclosingInst, inst);
 }
 
-/* Check a whole module.
+/**
+ * @brief `makesPool` 闭包的一轮。
  *
- * This is the entry point of the pass. It runs in stages, in this order:
- *   1. intern the names of every struct and type, so that signatures can be compared;
- *   2. resolve the types written in signatures, fields, and enum payloads;
- *   3. check the declarations for duplicate names;
- *   4. check the global variables and constants;
- *   5. check every function body;
- *   6. replay the checks that were deferred to instantiation, once per concrete instance;
- *   7. close the analyses: the transitive closure of `needsHome`, the escape sets, the
- *      effect summaries, the level solver, and the arena every call passes;
- *   8. hand codegen the finished decisions.
+ * 泛型 struct 的**模板**那一轮刻意跳过：模板与实例共用同一份 `FuncDef`，模板被检查时
+ * `k.hash()` 还解析不出来，在那里标 true 会被冻结，实例那一轮再也改不回来。extern 没有函数
+ * 体可走——`stmtMakesPool` 在调用点找被调者，`extc_pool_new` 正是这种情况。
  *
- * Params:
- *   ctx   - compilation context; `hasError` is set when any diagnostic was reported
- *   arena - arena for everything this pass allocates
- *   tt    - type table
- *   m     - module to check
- *
- * Returns:
- *   True when the module is free of errors.
- *
- * Notes:
- *   - The order is not free. Instances are created while the bodies are checked, so the
- *     pass that closes over every function can only run after stage 5, and `needsHome` is
- *     only final after that closure. The escape sets have to be known before the arena of
- *     each call is chosen, which is why stage 7 recomputes them instead of reusing the
- *     per-function result.
- *   - `refDepth` and `arenaLevel` describe the same fact, so every site's `refDepth` is
- *     resynchronised from its final `arenaLevel` after the solver has run. A site whose
- *     level does not change would otherwise keep the value the provisional pass left
- *     behind, and the two fields would contradict each other.
+ * @param cx       关闭上下文。
+ * @param k        性质（`REACH_POOL`）。
+ * @param changed  本轮有改动时置 true。
  */
-/* One round of the `makesPool` closure. A generic struct's *template* round is skipped on
- * purpose: a template and its instances share the same `FuncDef`, and while the template is being
- * checked `k.hash()` cannot be resolved, so marking it there would freeze a conservative `true`
- * that the per-instance round could then never refine. Externs have no body to walk --
- * `stmtMakesPool` finds the callee at the call site, and `extc_pool_new` is exactly that case. */
 static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
     Module *m = cx->m;
     TypeTable *tt = cx->tt;
@@ -5131,17 +5038,16 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
 }
 
 
-/* ---- the function list every arena analysis walks: **one owner** ----
+/**
+ * @brief 收集 arena 分析要走的函数名单：自由函数、各 struct 的方法、以及 `impl` 块挂上的方法。
  *
- * The home/zone passes (the transitive closure, the settle pass) all need "every function of this
- * module": its free functions, every struct's methods, and the methods attached by `impl` blocks.
- * The `impl` group belongs here even though an `impl` block normally lives in a *different* module
- * from the type it extends (`impl ostream` in `stl::stringio`, the type in `std::io`): the module
- * carrying the block is the entry module.
+ * `impl` 组也算在内，即便 `impl` 块通常住在与被扩展类型**不同**的模块（`impl ostream` 在
+ * `stl::stringio`，类型在 `std::io`）：携带该块的模块才是入口模块。名单只在这一处拼写。
  *
- * Spelling it out in one place is the point: it was written out four times (twice as `all`, twice
- * as `allF`), which is how one copy quietly falls out of step with the others. Sites are moved over
- * one at a time, each verified against the byte-identical baseline. */
+ * @param arena  分配用的 arena。
+ * @param m      模块。
+ * @param out    输出：追加各 `FuncDef *`。
+ */
 static void allFunctions(Arena *arena, Module *m, Vec *out) {
     vecInit(out, arena, sizeof(FuncDef *));
     for (size_t i = 0; i < m->funcs.len; i++)
@@ -5158,17 +5064,16 @@ static void allFunctions(Arena *arena, Module *m, Vec *out) {
     }
 }
 
-/* 调用点的"**目的地有多浅**"决策 —— arena 与 zone 两条通道共用这一份（U4）。
+/**
+ * @brief 调用点的“目的地有多浅”决策，arena 与 zone 两条通道共用这一份。
  *
- * 语义与极性（见 check_internal.h 的极性契约）：返回的是**深度**，数越小活得越久；
- * 调用方看到 `<= 0` 就取自己的 HOME（`ARENA_HOME` / `ZONE_HOME`）。
- *   · `rec->overflow`（实参没记全）⇒ 按"活得最久"算（-1），这是安全方向；
- *   · 深度 0 的实参（参数/全局）本身就让结果是 0；
- *   · 逃逸集合命中的实参按 -1 算（它活过本帧）。
+ * 返回的是**深度**，数越小活得越久；调用方看到 `<= 0` 就取自己的 HOME。`rec->overflow`
+ * （实参没记全）按活得最久（-1）算；深度 0 的实参本身就是 0；命中逃逸集合的实参按 -1 算。
  *
- * 为什么要共享：两条通道各写一遍就会漂——某个哨兵 bug（`nd == 0` 既表示"还没见过"
- * 又表示"活得最久"⇒ 循环求成了最大值）会**在两条里各有一份**，修一条不会修另一条。
- * `seen` 把两义分开，`EXTC_DBG_ASSERT` 让这个分离在调试构建里被看守。*/
+ * @param c    checker。
+ * @param rec  记录的调用点信息。
+ * @return     目的地深度。
+ */
 static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
     if (rec->overflow) return -1;
     bool seen = false;
@@ -5184,6 +5089,24 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
     return nd;
 }
 
+/**
+ * @brief 检查整个模块，是本趟的入口。
+ *
+ * 按固定顺序分阶段跑：intern 名字 → 解析签名、字段与枚举载荷里的类型 → 查声明重名 → 查全局
+ * 量 → 查每个函数体 → 按具体实例重放被推迟的检查 → 关闭各分析（`needsHome` 传递闭包、逃逸
+ * 集合、效应摘要、电平求解、每个调用传的 arena）→ 把决定交给 codegen。
+ *
+ * 顺序不自由：实例在检查函数体时创建，闭包必须在查体之后；`needsHome` 在闭包之后才定稿；
+ * 逃逸集合必须在选择每个调用的 arena 之前已知，所以关闭阶段重算而不是复用按函数的结果。
+ * `refDepth` 与 `arenaLevel` 描述同一件事，求解器跑完后每个站点的 `refDepth` 都要从最终的
+ * `arenaLevel` 重新同步，否则两个字段会互相矛盾。
+ *
+ * @param ctx   编译上下文；有诊断时 `hasError` 被置位。
+ * @param arena 本趟分配用的 arena。
+ * @param tt    类型表。
+ * @param m     要检查的模块。
+ * @return      模块没有错误时 true。
+ */
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     /* 阶段 = 显式状态（见 check_internal.h 的阶段契约）。*/
 
@@ -6571,28 +6494,20 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     return !ctx->hasError;
 }
 
-/* Does this function allocate, directly or through the functions it calls?
- *
- * This is the same question the transitive closure of `needsHome` answers, but it has to be
- * answered lazily: that closure only runs after every function has been checked, while a
- * caller checking its own body already needs to know whether the call it is looking at puts
- * new storage into its container. `varArray::push` does not allocate itself, the `grow` it
- * calls does, so looking at `anNeedsHome(f)` alone misses a callee one hop away.
- *
- * Params:
- *   c - checker
- *   f - function to classify; null means "unknown"
- *
- * Returns:
- *   true when the function may allocate: its body has a `new`, or a callee allocates.
- *
- * Notes:
- *   - A function that is already being computed counts as allocating. That is the
- *     conservative direction, and it is what breaks a cycle.
- *   - The result is cached in `FuncDef.allocState`, so a repeated query is free.
- */
 static bool stmtCallsAllocator(Checker *c, Stmt *s);   /* defined below; mutually recursive */
 static bool allocInStmt(void *ctx, Stmt *s);
+/**
+ * @brief 判断函数是否直接或经由被调者分配。
+ *
+ * 与 `needsHome` 传递闭包问的是同一个问题，但必须惰性回答：闭包只在每个函数都检查完之后才跑，
+ * 而检查自身函数体的调用方已经需要知道眼前这个调用会不会往容器里放新存储（`varArray::push`
+ * 自己不分配，它调的 `grow` 分配）。结果缓存在 `FuncDef.allocState`；正在计算中的函数算作会
+ * 分配，这是保守方向也是打破环的办法。
+ *
+ * @param c  checker。
+ * @param f  要分类的函数；NULL 表示未知。
+ * @return   函数体有 `new`、或被调者会分配时 true。
+ */
 static bool funcAllocates(Checker *c, FuncDef *f) {
     if (!f) return true;                     /* unknown, so assume it allocates */
     if (f->isExtern) return false;           /* an extern function does not touch our arenas */
@@ -6609,19 +6524,18 @@ static bool funcAllocates(Checker *c, FuncDef *f) {
     return r;
 }
 
-/* Does this statement or expression call a function that needs a home arena?
- *
- * The two walkers are mutually recursive and share the per-function cache, so this is only
- * meaningful after the callee has been checked: `e->func` is filled in by then.
- */
-/* Can evaluating this expression reach an allocator?
- *
- * `alloc<T>(n)` **is** an allocation, the same as `new`; a call counts when the callee may
- * allocate (`funcAllocates`, memoised because it recurses through the call graph); everything
- * else is answered by the children. The walk is `astWalkExprChildren`, the one place that lists
- * the kinds. */
 typedef struct { Checker *c; } AllocCtx;
 
+/**
+ * @brief 判断求值这个表达式是否能到达分配器。
+ *
+ * `alloc<T>(n)` 与 `new` 一样是分配；调用按被调者是否可能分配算（`funcAllocates`，带记忆化，
+ * 因为要递归调用图）；其余交给子节点。遍历走 `astWalkExprChildren`。
+ *
+ * @param ctx  `AllocCtx *`，携带 checker。
+ * @param e    表达式。
+ * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ */
 static bool allocInExpr(void *ctx, Expr *e) {
     AllocCtx *a = (AllocCtx *)ctx;
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) &&
@@ -6631,22 +6545,41 @@ static bool allocInExpr(void *ctx, Expr *e) {
     return astWalkExprChildren(e, &v);
 }
 
+/**
+ * @brief `allocInExpr` 的语句版遍历回调。
+ *
+ * @param ctx  `AllocCtx *`，携带 checker。
+ * @param s    语句。
+ * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ */
 static bool allocInStmt(void *ctx, Stmt *s) {
     AstVisit v = { allocInExpr, allocInStmt, ctx };
     return astWalkStmtChildren(s, &v);
 }
 
+/**
+ * @brief 判断语句里是否有调用可能到达分配器。
+ *
+ * 两个遍历函数互相递归并共用按函数的缓存，所以只有被调者检查过之后才有意义。
+ *
+ * @param c  checker。
+ * @param s  语句；NULL 返回 false。
+ * @return   会分配则 true。
+ */
 static bool stmtCallsAllocator(Checker *c, Stmt *s) {
     if (!s) return false;
     AllocCtx a = { c };
     return !allocInStmt(&a, s);
 }
 
-/* Will codegen bracket this block with a place (`zoneEnter`/`zoneLeaveTo` + `arena_release`)?
+/**
+ * @brief 为协程收尾：算出哪些协程需要自己的 place，并拒绝活过 `yield` 却携带外部存储的局部。
  *
- * The checker needs a **conservative superset**: saying "no" for a block that codegen does bracket
- * would let a `yield` sit inside a reclaimed block (rule 3, docs/topics/CONCURRENCY.md 12), so it
- * asks the two predicates it already has. Codegen's own decision is finer, and finer is safe here.
+ * 模板与实例都要算 `coroNeedsZone`：实例与模板共用函数体，漏算会让泛型协程的分配落进**调用
+ * 者**的 zone，任务永不释放。
+ *
+ * @param c  checker。
+ * @param m  模块。
  */
 static void coroCheckDeferred(Checker *c, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -6693,6 +6626,17 @@ static void coroCheckDeferred(Checker *c, Module *m) {
     c->coroDeferred.len = 0;
 }
 
+/**
+ * @brief 判断 codegen 是否会用 place 把这条语句包起来
+ *        （`zoneEnter`/`zoneLeaveTo` + `arena_release`）。
+ *
+ * checker 需要的是**保守超集**：对会被 codegen 包起来的块答“否”，会让 `yield` 落在已回收的块
+ * 里，所以它只问手上已有的两个谓词；codegen 自己的判断更细，更细在这里是安全的。
+ *
+ * @param s       语句；NULL 返回 false。
+ * @param inCoro  语句在协程体内时为 true，此时恒返回 false。
+ * @return        需要 place 边界时 true。
+ */
 bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro) {
     if (!s) return false;
     /* A coroutine body has no place boundary, for two reasons:
@@ -6769,19 +6713,49 @@ typedef struct {
     Vec      yields;            /* CoroYield* */
 } CoroScan;
 
+/**
+ * @brief 把循环 id 压进当前循环链。
+ *
+ * 链条过深时置哨兵值，`coroSharesLoop` 便答“共享”。
+ *
+ * @param s   扫描状态。
+ * @param id  循环 id。
+ */
 static void coroPushLoop(CoroScan *s, int id) {
     if (s->nchain < CORO_CHAIN_MAX) s->chain[s->nchain++] = id;
     else s->nchain = CORO_CHAIN_MAX + 1;      /* too deep: `coroSharesLoop` then says yes */
 }
+/**
+ * @brief 弹出当前循环链的栈顶。
+ *
+ * @param s  扫描状态。
+ */
 static void coroPopLoop(CoroScan *s) {
     if (s->nchain == CORO_CHAIN_MAX + 1) s->nchain = CORO_CHAIN_MAX;
     else if (s->nchain > 0) s->nchain--;
 }
+/**
+ * @brief 复制当前的循环链。
+ *
+ * @param s      扫描状态。
+ * @param chain  输出缓冲，至少 `CORO_CHAIN_MAX` 个 int。
+ * @param n      输出：实际复制了多少个。
+ */
 static void coroCopyChain(CoroScan *s, int *chain, int *n) {
     *n = s->nchain > CORO_CHAIN_MAX ? CORO_CHAIN_MAX : s->nchain;
     for (int i = 0; i < *n; i++) chain[i] = s->chain[i];
 }
-/* Do these two nodes share an enclosing loop? (`a.nchain` too deep means "assume yes".) */
+/**
+ * @brief 判断两个节点是否共享外层循环。
+ *
+ * 链长超过 `CORO_CHAIN_MAX` 表示“假定共享”。
+ *
+ * @param ac  第一个节点的循环链。
+ * @param an  第一个节点链长。
+ * @param bc  第二个节点的循环链。
+ * @param bn  第二个节点链长。
+ * @return    有共同循环 id 时 true。
+ */
 static bool coroSharesLoop(const int *ac, int an, const int *bc, int bn) {
     for (int i = 0; i < an; i++)
         for (int j = 0; j < bn; j++)
@@ -6792,6 +6766,13 @@ static bool coroSharesLoop(const int *ac, int an, const int *bc, int bn) {
 static bool coroScanStmt(void *ctx, Stmt *s);
 static bool coroScanExpr(void *ctx, Expr *e);
 
+/**
+ * @brief 扫描回调：记录表达式里对绑定的读取及其循环链。
+ *
+ * @param ctx  `CoroScan *`。
+ * @param e    表达式。
+ * @return     继续遍历返回 true。
+ */
 static bool coroScanExpr(void *ctx, Expr *e) {
     CoroScan *s = (CoroScan *)ctx;
     if (e->kind == EX_IDENT && planCName(e)) {
@@ -6806,6 +6787,13 @@ static bool coroScanExpr(void *ctx, Expr *e) {
     return astWalkExprChildren(e, &v);
 }
 
+/**
+ * @brief 扫描回调：记录局部声明与 `yield`，并维护循环链。
+ *
+ * @param ctx  `CoroScan *`。
+ * @param s    语句。
+ * @return     继续遍历返回 true。
+ */
 static bool coroScanStmt(void *ctx, Stmt *s) {
     CoroScan *sc = (CoroScan *)ctx;
     if (s->kind == ST_VAR && planCName(s)) {
@@ -6831,7 +6819,14 @@ static bool coroScanStmt(void *ctx, Stmt *s) {
     return ok;
 }
 
-/* Is `d` live across the yield `y`? Either used after it, or used in a loop they share. */
+/**
+ * @brief 判断声明 `d` 是否活过 yield `y`。
+ *
+ * @param s  扫描状态。
+ * @param d  局部声明。
+ * @param y  yield 站点。
+ * @return   在 `y` 之后被使用、或与它共享循环时 true。
+ */
 static bool coroLiveAcross(const CoroScan *s, const CoroDecl *d, const CoroYield *y) {
     for (size_t i = 0; i < s->uses.len; i++) {
         const CoroUse *u = (const CoroUse *)vecAt((Vec *)&s->uses, i);
@@ -6843,8 +6838,15 @@ static bool coroLiveAcross(const CoroScan *s, const CoroDecl *d, const CoroYield
     return false;
 }
 
-/* Lay out the frame of a coroutine, and refuse what may not go in it. Runs after the body has been
- * checked, so every declaration's type is final. */
+/**
+ * @brief 排出协程的帧，并拒绝不能放进帧里的东西。
+ *
+ * 在函数体检查完之后跑，此时每个声明的类型都已定稿。扫描结果按值存进向量：向量在填充过程中
+ * 会增长，持有元素指针会立刻悬空。
+ *
+ * @param c  checker。
+ * @param f  协程函数；不是协程或没有函数体时直接返回。
+ */
 static void coroFrameLay(Checker *c, FuncDef *f) {
     if (!f || !planIsCoro(f) || !f->body) return;
     CoroScan s;
@@ -7010,10 +7012,28 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
  * while the conservative answer is "yes". The checker installs a resolver that substitutes
  * the instance's type arguments; codegen gets the resolved callee from `planCallee`. With no
  * resolver installed the answer stays conservative. */
-/* 解析钩子：checker 这一侧问不到"某个实例的具体方法是谁"（见本文件末尾那段说明）。 */
+/* 解析钩子；默认没有，判定保持保守。 */
 static FuncDef *(*poolCalleeResolve)(Expr *e) = NULL;
+/**
+ * @brief 装一个被调用者解析钩子：让池新建判定在模板实例上问到具体被调者。
+ *
+ * checker 这一侧问不到“某个实例的具体方法是谁”：一个模板体、多个实例，纯 AST 答案永远是
+ * “否”，而保守答案是“是”。装上钩子后按实例的类型实参代换；没装时保持保守。
+ *
+ * @param fn  解析函数；传 `NULL` 回到保守行为。
+ */
 void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
 
+/**
+ * @brief 判断“这一次调用能不能走到 `extc_pool_new`”。
+ *
+ * 与 `calleeMakesPool` 问的不是同一个问题：那一个问“结果会不会住在池上”（逃逸与提权），对
+ * `@poolObject` 类型一律放宽；块级的 zone 钩子只需要“这次会不会建池”。未解析的被调者保守为
+ * 真。
+ *
+ * @param f  被调者；NULL（未解析）返回 true。
+ * @return   这次调用可能建池时 true。
+ */
 bool calleeCreatesPool(FuncDef *f) {
     if (!f) return true;                       /* unresolved => conservative */
     if (planMakesPool(f)) return true;
@@ -7024,6 +7044,14 @@ bool calleeCreatesPool(FuncDef *f) {
 
 static bool exprMakesPool(Expr *e, bool descendBlocks);
 
+/**
+ * @brief 判断语句里是否有表达式可能创建池。
+ *
+ * @param s              语句；NULL 返回 false。
+ * @param descendBlocks  是否走进嵌套块与 domain：它们是独立的 place、有自己的 zone，块级问题
+ *                       在那里停止。
+ * @return               可能创建池时 true。
+ */
 bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     if (!s) return false;
     switch (s->kind) {
@@ -7062,6 +7090,17 @@ bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     }
 }
 
+/**
+ * @brief 判断表达式是否可能创建池。
+ *
+ * 解析后的三种调用形状都要查（含 `EX_ASSOC`）。`flush` / `print` / `println` 是按名字分派的
+ * 内建，checker 没有为它们解析被调者，必须在这里点名排除，否则保守分支会把 `makesPool` 扩散
+ * 到半个库。
+ *
+ * @param e              表达式；NULL 返回 false。
+ * @param descendBlocks  是否走进嵌套块与 domain。
+ * @return               可能创建池时 true。
+ */
 static bool exprMakesPool(Expr *e, bool descendBlocks) {
     if (!e) return false;
     /* The three shapes a resolved call takes. `EX_ASSOC` belongs here for the reason its

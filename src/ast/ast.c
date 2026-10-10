@@ -10,16 +10,13 @@
 
 #include <string.h>
 
-/* Create an unresolved type name.
+/**
+ * @brief 造一个未解析的类型名（TY_UNRESOLVED）。
  *
- * Params:
- *   a    - arena that owns the node
- *   name - the type name as written in the source; the pointer is kept as it is,
- *          the text is not copied
- *
- * Returns:
- *   A TY_UNRESOLVED type. Resolving it into an interned type, including any type
- *   arguments the parser attaches afterwards, is the checker's job.
+ * @param a     拥有节点的 arena。
+ * @param name  源码里写的类型名；指针原样保留，文本不拷贝。
+ * @return      一个 TY_UNRESOLVED 类型。把它连同解析器随后挂上的类型实参一起解析成驻留类型
+ *              是检查器的事。
  */
 Type *typeNamed(Arena *a, const char *name) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -28,15 +25,13 @@ Type *typeNamed(Arena *a, const char *name) {
     return t;
 }
 
-/* Create `ref inner`, the plain reference type.
+/**
+ * @brief 造 `ref inner`，普通的引用类型。
  *
- * Params:
- *   a     - arena that owns the node
- *   inner - the referenced type
- *
- * Returns:
- *   A TY_REF type that is neither writable nor nullable; the parser sets `mut` or
- *   `nullable` when the source says `mut ref` or `?ref`.
+ * @param a      拥有节点的 arena。
+ * @param inner  被引用的类型。
+ * @return       既不 writable 也不 nullable 的 TY_REF；源码写 `mut ref` / `?ref` 时由解析器
+ *               设置 `mut` / `nullable`。
  */
 Type *typeRef(Arena *a, Type *inner) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -45,16 +40,15 @@ Type *typeRef(Arena *a, Type *inner) {
     return t;
 }
 
-/* Create the fixed array type `[n]elem`.
+/**
+ * @brief 造定长数组类型 `[n]elem`（TY_ARRAY）。
  *
- * Params:
- *   a    - arena that owns the node
- *   n    - element count; it is a compile-time constant and part of the type, so
- *          `[3]i32` and `[4]i32` are different types
- *   elem - element type
+ * 长度是编译期常量，也是类型的一部分，所以 `[3]i32` 与 `[4]i32` 是两个不同的类型。
  *
- * Returns:
- *   A TY_ARRAY type.
+ * @param a     拥有节点的 arena。
+ * @param n     元素个数。
+ * @param elem  元素类型。
+ * @return      一个 TY_ARRAY 类型。
  */
 Type *typeArray(Arena *a, int64_t n, Type *elem) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -64,21 +58,16 @@ Type *typeArray(Arena *a, int64_t n, Type *elem) {
     return t;
 }
 
-/* Build the function type `fn(params...) -> ret` as the parser wrote it.
+/**
+ * @brief 按解析器给的碎片造函数类型 `fn(params...) -> ret`（TY_FN）。
  *
- * Params:
- *   a      - arena that owns the node and the parameter vector
- *   params - parameter types, in order (`Type *` entries); the vector is copied
- *   ret    - the return type; never NULL, `void` is passed as a real type
+ * 参数与返回类型可能还是 `TY_UNRESOLVED` 名字，所以这里只搭形状：驻留发生在 `ttResolve` /
+ * `ttFn` 里（the split that keeps `ast.c`'s constructors out of the type table）。
  *
- * Returns:
- *   A TY_FN type whose parts may still be unresolved names.
- *
- * Notes:
- *   - The shape is built here, but the interned type is not: `ttResolve` resolves the parameter
- *     and return types and calls `ttFn`, which is the only place a TY_FN is interned. This split is
- *     the same one `typeNamed` / `ttResolve` already have for every other type constructor, and it
- *     is what keeps `ast.c` free of the type table.
+ * @param a       拥有节点与参数向量的 arena。
+ * @param params  参数类型，按顺序（`Type *` 元素）；向量会被复制。
+ * @param ret     返回类型；不能是 NULL，`void` 也要传一个真正的类型。
+ * @return        一个 TY_FN 类型，它的各部分可能仍是未解析的名字。
  */
 Type *typeFn(Arena *a, Vec *params, Type *ret) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -90,15 +79,15 @@ Type *typeFn(Arena *a, Vec *params, Type *ret) {
     return t;
 }
 
-/* Create a reference to a generic parameter by name.
+/**
+ * @brief 造一个类型参数（TY_PARAM）。
  *
- * Params:
- *   a    - arena that owns the node
- *   name - the parameter name, such as "T"
- *   idx  - its position in the enclosing parameter list
+ * `param` 与 `name` 都记这个名字；判类型相等、打印类型都按 `param` 认它。
  *
- * Returns:
- *   A TY_PARAM type.
+ * @param a     拥有节点的 arena。
+ * @param name  参数名，例如 `"T"`。
+ * @param idx   它在所在参数表里的位置。
+ * @return      一个 TY_PARAM 类型。
  */
 Type *typeParam(Arena *a, const char *name, int idx) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -109,16 +98,16 @@ Type *typeParam(Arena *a, const char *name, int idx) {
     return t;
 }
 
-/* Create an expression node.
+/**
+ * @brief 造一个表达式节点。
  *
- * Params:
- *   a    - arena that owns the node
- *   kind - the expression kind; only the matching member of the union may be used
- *   line - 1-based source line, kept for diagnostics
+ * 节点取自 arena 且已清零，只设 `kind` 与行号，所以解析器没填的字段是零而不是未定值。解析的
+ * 结果（`type`、`func`、`field`，以及逃逸分析的深度）随后由检查器填。
  *
- * Returns:
- *   A zeroed Expr. The fields that hold the results of resolution -- type, func,
- *   field, and the escape-analysis depths -- are filled in later by the checker.
+ * @param a     拥有节点的 arena。
+ * @param kind  表达式种类；联合体只有对应那个成员可用。
+ * @param line  源码行号（1 起），留给诊断。
+ * @return      清零的 Expr。
  */
 Expr *exprNew(Arena *a, ExprKind kind, int line) {
     Expr *e = (Expr *)arenaAllocZero(a, sizeof(Expr));
@@ -127,15 +116,15 @@ Expr *exprNew(Arena *a, ExprKind kind, int line) {
     return e;
 }
 
-/* Create a statement node.
+/**
+ * @brief 造一个语句节点。
  *
- * Params:
- *   a    - arena that owns the node
- *   kind - the statement kind; only the matching member of the union may be used
- *   line - 1-based source line, kept for diagnostics
+ * 节点取自 arena 且已清零，只设 `kind` 与行号。
  *
- * Returns:
- *   A zeroed Stmt.
+ * @param a     拥有节点的 arena。
+ * @param kind  语句种类；联合体只有对应那个成员可用。
+ * @param line  源码行号（1 起），留给诊断。
+ * @return      清零的 Stmt。
  */
 Stmt *stmtNew(Arena *a, StmtKind kind, int line) {
     Stmt *s = (Stmt *)arenaAllocZero(a, sizeof(Stmt));
@@ -144,16 +133,14 @@ Stmt *stmtNew(Arena *a, StmtKind kind, int line) {
     return s;
 }
 
-/* Prepare an empty module.
+/**
+ * @brief 准备一个空模块。
  *
- * Params:
- *   m - module to initialise; the caller owns the storage
- *   a - arena the vectors allocate from
+ * 声明随着解析器与加载器发现它们而追加，所以一个 Module 最终可以按序装着 prelude、用户的
+ * 文件、然后是该文件导入的每个模块。
  *
- * Notes:
- *   - Declarations are appended as the parser and the loader find them, so one
- *     Module can end up holding the prelude, then the user's file, then every
- *     module that file imported, in that order.
+ * @param m  要初始化的模块；存储由调用方拥有。
+ * @param a  向量分配所用的 arena。
  */
 void moduleInit(Module *m, Arena *a) {
     vecInit(&m->structs, a, sizeof(void *));
@@ -166,46 +153,86 @@ void moduleInit(Module *m, Arena *a) {
     vecInit(&m->opens, a, sizeof(Open));
 }
 
-/* Is this function a method?
+/**
+ * @brief 造一个 `EX_IDENT`：标识符写出来是什么就记什么。
  *
- * Returns:
- *   True when the first parameter is named `self`. That name is the entire rule:
- *   nothing else in a declaration distinguishes a method from a free function.
+ * `name` 与 `srcName` 一起设，此刻两者是同一个指针；改名发生在解析器之后。
  *
- * Notes:
- *   - The const is cast away only because vecAt takes a non-const Vec; the element
- *     is read and never written.
+ * @param a     拥有节点的 arena。
+ * @param name  写出来的名字。
+ * @param line  源码行号（1 起）。
+ * @return      清零并填好两个名字的标识符节点。
  */
 Expr *exprIdent(Arena *a, const char *name, int line) {
     Expr *e = exprNew(a, EX_IDENT, line);
     e->u.ident.name = name;
-    e->u.ident.srcName = name;      /* the parser's `forIdent` set both; one builder sets both */
+    e->u.ident.srcName = name;
     return e;
 }
 
+/**
+ * @brief 判断一个函数是不是方法。
+ *
+ * 规则就是名字：第一个参数名为 `self` 就是方法，声明里没有别的东西区分方法与自由函数。
+ *
+ * @param f  要看的函数。
+ * @return   第一个参数名为 `self` 则 `true`；`f` 为 NULL 或没有参数时 `false`。
+ */
 bool funcIsMethod(const FuncDef *f) {
     if (!f || f->params.len == 0) return false;
+    /* vecAt 取非 const 的 Vec；这里只读元素，不写它。 */
     Param *p0 = *(Param **)vecAt((Vec *)&f->params, 0);
     return strcmp(p0->name, "self") == 0;
 }
 
 /* ---------------------------------------------------------------- walking */
 
+/**
+ * @brief 对一个子表达式调用表达式回调；没有回调或子表达式为空时视为通过。
+ *
+ * @param v  回调与它的上下文。
+ * @param e  要访问的子表达式；NULL 或没设表达式回调时直接返回 `true`。
+ * @return   回调的结果；`false` 表示停下整趟走。
+ */
 static bool visitExpr(const AstVisit *v, Expr *e) {
     if (!e || !v->expr) return true;
-    return v->expr(v->ctx, e);          /* false = stop the whole walk */
+    return v->expr(v->ctx, e);
 }
+/**
+ * @brief 对一个子语句调用语句回调；没设语句回调时继续往下走它的子节点。
+ *
+ * @param v  回调与它的上下文。
+ * @param s  要访问的子语句；NULL 时直接返回 `true`。
+ * @return   回调的结果；`false` 表示停下整趟走。
+ */
 static bool visitStmt(const AstVisit *v, Stmt *s) {
     if (!s) return true;
     if (v->stmt) return v->stmt(v->ctx, s);
-    return astWalkStmtChildren(s, v);   /* no statement callback: keep descending */
+    return astWalkStmtChildren(s, v);
 }
+/**
+ * @brief 按顺序对一个表达式向量里的每个元素调用表达式回调。
+ *
+ * @param v   回调与它的上下文。
+ * @param xs  表达式向量（`Expr *` 元素）。
+ * @return    全部走完返回 `true`；某个回调返回 `false` 时立刻返回 `false`。
+ */
 static bool visitExprList(const AstVisit *v, Vec *xs) {
     for (size_t i = 0; i < xs->len; i++)
         if (!visitExpr(v, *(Expr **)vecAt(xs, i))) return false;
     return true;
 }
 
+/**
+ * @brief 访问表达式 `e` 的直接子节点。
+ *
+ * 回调访问的是**子**节点，从不访问被调用它的那个节点；回调返回 false 表示停下整趟走。没有
+ * 设表达式回调时直接返回 `true`（跳过）。
+ *
+ * @param e  要走的表达式；NULL 直接返回 `true`。
+ * @param v  回调与它的上下文。
+ * @return   走完了返回 `true`；某个回调返回 false 时返回 `false`。
+ */
 /*@@all-kinds*/   bool astWalkExprChildren(Expr *e, const AstVisit *v) {
     if (!e) return true;
     switch (e->kind) {
@@ -224,30 +251,16 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     case EX_FIELD: return visitExpr(v, e->u.field.obj);
     case EX_NEW:   return visitExpr(v, e->u.new_.count);
     case EX_DYN:   return visitExpr(v, e->u.dynv.payload);
-    case EX_EXT:   return visitExpr(v, e->u.ext_.call);   /* the spawned call is the only child */
-    case EX_LAMBDA:                                          /* the body, plus the environment's
-                                                             * field values: those are the reads that
-                                                             * happen where the lambda is written */
+    case EX_EXT:   return visitExpr(v, e->u.ext_.call);
+    case EX_LAMBDA:   /* 体，加上环境字段值：那些读发生在 lambda 写出来的地方 */
         for (size_t i = 0; i < e->u.lambda.inits.len; i++)
             if (!visitExpr(v, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value)) return false;
         return visitStmt(v, e->u.lambda.body);
     /* a receiver, or a list */
     case EX_METHOD:  return visitExpr(v, e->u.method.recv) && visitExprList(v, &e->u.method.args);
-    /* The callee of a call is normally a **name**, not an expression: nothing can be read through it
-     * and every walker would only ever report the function it resolved to. A call through a **value**
-     * (`f(x)` where `f` holds a `fn`) is the exception -- there the callee really is a read of a
-     * binding, so it is a child like any other. Without this the binding looks unread: the
-     * used-parameter question below reported `fn apply(f: fn(i64) -> i64, ...)`'s own parameter as
-     * never used, on a body whose only statement calls it. */
+    /* 被调方只在不是**声明名**时才是子节点：直接调用 `g(x)` 走进去会把函数报成"当值用"；
+     * 通过值调用 `f(x)`（`f` 持有一个 `fn`）读了这个绑定，必须像别的子节点一样走。 */
     case EX_CALL:
-        /* The callee is a child **unless it is a declaration name**. A call through a value
-         * (`f(x)` where `f` holds a `fn`) reads the binding, so it is a child like any other;
-         * a direct call (`g(x)`) names a declaration, and walking into the name would report
-         * the function as "used as a value". Asking `planCallViaFn(e)` would be an upward read
-         * from `ast.c` (layer 1) into the plan's storage (layer 3) for a fact
-         * that the node's own shape already carries: the checker records which of the two
-         * this is, but the distinction is grammar at this point (`EX_IDENT` callee plus
-         * "resolved to a function value"), not a plan answer. */
         return (!e->u.call.callee || e->u.call.callee->kind != EX_IDENT ||
                 visitExpr(v, e->u.call.callee)) &&
                             visitExprList(v, &e->u.call.args);
@@ -268,6 +281,16 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     return true;
 }
 
+/**
+ * @brief 访问语句 `s` 的直接子节点。
+ *
+ * 与 `astWalkExprChildren` 同一条约定：回调访问子节点，返回 false 停下整趟走。没有设语句
+ * 回调时继续往下走它的子节点。
+ *
+ * @param s  要走的语句；NULL 直接返回 `true`。
+ * @param v  回调与它的上下文。
+ * @return   走完了返回 `true`；某个回调返回 false 时返回 `false`。
+ */
 /*@@all-kinds*/   bool astWalkStmtChildren(Stmt *s, const AstVisit *v) {
     if (!s) return true;
     switch (s->kind) {

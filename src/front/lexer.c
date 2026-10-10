@@ -43,20 +43,15 @@ static const char *PUNCTS[] = {
     NULL
 };
 
-/* Test whether the first `n` bytes of `s` spell one of the NUL-terminated
- * strings in `list`.
+/**
+ * @brief 判断 `s` 的前 `n` 个字节是否逐字节等于 `list` 中的某个拼法。
  *
- * Params:
- *   list - NULL-terminated table of spellings, e.g. KEYWORDS
- *   s    - bytes to test; need not be NUL-terminated
- *   n    - how many bytes of `s` are part of the candidate spelling
+ * 长度比较必须在前：`s` 是源文本的一段切片，`s[n]` 处不保证有 NUL。
  *
- * Returns:
- *   true when some entry has length `n` and matches byte for byte.
- *
- * Notes:
- *   - The length test has to come first: the caller passes a slice of the
- *     source, so a NUL is not guaranteed at `s[n]`.
+ * @param list  NUL 结尾的拼法表，例如 KEYWORDS。
+ * @param s     要测的字节；不要求 NUL 结尾。
+ * @param n     参与比较的字节数。
+ * @return      存在某个长度恰为 `n` 且逐字节相同的条目时返回 true。
  */
 static bool inList(const char **list, const char *s, size_t n) {
     for (size_t i = 0; list[i]; i++) {
@@ -65,24 +60,56 @@ static bool inList(const char **list, const char *s, size_t n) {
     return false;
 }
 
-/* Report whether `s` is a reserved word. */
+/**
+ * @brief 判断 `s` 是不是保留字（`fn`、`let`、`if` …）。
+ *
+ * @param s  要测的拼法。
+ * @return   是保留字则返回 true（保留字记作 TK_KEYWORD）。
+ */
 bool isKeyword(const char *s)     { return inList(KEYWORDS, s, strlen(s)); }
 
-/* Report whether `s` is a builtin scalar type name. */
+/**
+ * @brief 判断 `s` 是不是内建标量类型名（`i32`、`f64`、`bool`、`void` …）。
+ *
+ * @param s  要测的拼法。
+ * @return   是内建类型名则返回 true。
+ */
 bool isBuiltinType(const char *s) { return inList(BUILTIN_TYPES, s, strlen(s)); }
 
 /* ================================================================ character classes */
 
-/* ASCII digit, and deliberately nothing else: the source language is ASCII. */
+/**
+ * @brief 判断 `c` 是不是 ASCII 数字。
+ *
+ * 只认 ASCII，别的数字一律不算：源语言就是 ASCII。
+ *
+ * @param c  要测的字符。
+ * @return   处于 0 到 9 则返回 true。
+ */
 static bool isDigit(char c) { return c >= '0' && c <= '9'; }
 
-/* Hex digit, either case; used by the 0x integer path. */
+/**
+ * @brief 判断 `c` 是不是十六进制数字，大小写均可。
+ *
+ * @param c  要测的字符。
+ * @return   是十六进制数字则返回 true。
+ */
 static bool isHex(char c)   { return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
-/* Identifier start character: a letter or an underscore. */
+/**
+ * @brief 判断 `c` 是不是标识符起始字符：字母或下划线。
+ *
+ * @param c  要测的字符。
+ * @return   是标识符起始字符则返回 true。
+ */
 static bool isAlpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 
-/* Identifier continuation character. */
+/**
+ * @brief 判断 `c` 是不是标识符后续字符。
+ *
+ * @param c  要测的字符。
+ * @return   是字母、数字或下划线则返回 true。
+ */
 static bool isAlnum(char c) { return isAlpha(c) || isDigit(c); }
 
 /* ================================================================ Lexer */
@@ -100,27 +127,25 @@ typedef struct {
     int         line, col;
 } Lexer;
 
-/* Return the character `k` positions ahead without consuming it.
+/**
+ * @brief 返回游标前方第 `k` 个字符，不消费它。
  *
- * Params:
- *   k - lookahead distance in bytes; 0 is the current character
- *
- * Returns:
- *   The character, or '\0' past the end of the source.
+ * @param lx  词法状态。
+ * @param k   向前看的字节数；0 是当前字符。
+ * @return    该字符；越过源末尾时返回 '\0'。
  */
 static char lxPeek(const Lexer *lx, size_t k) {
     size_t j = lx->pos + k;
     return j < lx->len ? lx->src[j] : '\0';
 }
 
-/* Consume one character, keeping the line and column counters in step.
+/**
+ * @brief 消费一个字符，并让行、列计数同步前进。
  *
- * Returns:
- *   The character that was consumed.
+ * 游标只能经这里移动：`pos` 与 `line`/`col` 必须一起走，否则之后每条诊断都指向错的位置。
  *
- * Notes:
- *   - Do not advance the cursor any other way.  `pos` and `line`/`col` have to
- *     move together or every later diagnostic points at the wrong place.
+ * @param lx  词法状态。
+ * @return    被消费的字符。
  */
 static char lxAdvance(Lexer *lx) {
     char c = lx->src[lx->pos++];
@@ -129,22 +154,20 @@ static char lxAdvance(Lexer *lx) {
     return c;
 }
 
-/* Append a token built from `text[0..n)` to `out`.
+/**
+ * @brief 追加一个由 `text[0..n)` 构成的 token 到 `out`。
  *
- * Params:
- *   out  - token vector to append to
- *   kind - token kind to record
- *   text - bytes of the token; they are copied, so the caller may reuse the buffer
- *   n    - token length; 0 is legal and yields an empty text
- *   line - 1-based line of the token's first character
- *   col  - 1-based column of the token's first character
+ * 文本拷进上下文 arena 并补 NUL。The token's length is kept separately because a literal's
+ * contents may contain a NUL byte, so the caller's buffer may be reused.
  *
- * Returns:
- *   The freshly pushed token, so the caller can fill in ival or fval.
- *
- * Notes:
- *   - The copy is arena-owned and NUL-terminated; the length is kept separately
- *     because a string literal's contents may contain a NUL byte.
+ * @param lx    词法状态，提供 token 文本拷进去的 arena。
+ * @param out   追加到的 token 向量。
+ * @param kind  要记录的 token 种类。
+ * @param text  token 的字节；会被拷贝，调用方可以复用缓冲区。
+ * @param n     token 长度；0 合法，得到空文本。
+ * @param line  token 首字符的 1 起行号。
+ * @param col   token 首字符的 1 起列号。
+ * @return      刚压入的 token，供调用方填 ival 或 fval。
  */
 static Token *lxPushAt(Lexer *lx, Vec *out, TokenKind kind,
                        const char *text, size_t n, int line, int col) {
@@ -159,27 +182,27 @@ static Token *lxPushAt(Lexer *lx, Vec *out, TokenKind kind,
     return t;
 }
 
-/* Return the most recent token in `out`, or NULL when it is still empty. */
+/**
+ * @brief 返回 `out` 中最近压入的 token。
+ *
+ * @param out  token 向量。
+ * @return     最后一个 token；向量仍为空时返回 NULL。
+ */
 static Token *lxLast(Vec *out) {
     return out->len ? (Token *)vecAt(out, out->len - 1) : NULL;
 }
 
 /* ---------------------------------------------------------------- token kinds */
 
-/* Lex one number into `out`: decimal or 0x hexadecimal integer, or a float with
- * a fractional part and/or an exponent.
+/**
+ * @brief 把一个数字词法化进 `out`：十进制或 0x 十六进制整数，或带小数部分与/或指数部分的浮点数。
  *
- * Params:
- *   lx  - cursor, positioned on the first digit
- *   out - token vector to append to
+ * 这里产出的数一律非负：前导 `-` 是独立 token，由解析器的 parseUnary 消费。
+ * `.` 只有后面跟着数字时才是数字的一部分（`1..2` 是区间，`1.foo` 是对 1 取字段）。
+ * 值用累加求，而不是 strtoll：文本要拷过之后才 NUL 结尾。
  *
- * Notes:
- *   - Numbers are always non-negative here.  A leading `-` is a separate token,
- *     consumed by parseUnary in the parser.
- *   - A `.` is part of the number only when a digit follows it (`1..2` is a
- *     range, and `1.foo` is a field access on 1).
- *   - The value is evaluated with accumulation rather than strtoll, because the
- *     text is not NUL-terminated until it has been copied.
+ * @param lx   游标，停在第一个数字上。
+ * @param out  追加到的 token 向量。
  */
 static void lexNumber(Lexer *lx, Vec *out) {
     int line = lx->line, col = lx->col;
@@ -243,17 +266,15 @@ static void lexNumber(Lexer *lx, Vec *out) {
     }
 }
 
-/* Lex one identifier, keyword, or builtin type name into `out`.
+/**
+ * @brief 把一个标识符、关键字或内建类型名词法化进 `out`。
  *
- * Params:
- *   lx   - cursor, positioned on the first identifier character
- *   out  - token vector to append to
- *   line - line of the first character, already captured by the caller
- *   col  - column of the first character, already captured by the caller
+ * 关键字与内建类型名记成各自的种类（TK_KEYWORD、TK_TYPE），其余标识符记成 TK_IDENT。
  *
- * Notes:
- *   - Keyword and builtin type names are recorded with their own kinds
- *     (TK_KEYWORD, TK_TYPE); identifiers get TK_IDENT.
+ * @param lx    游标，停在第一个标识符字符上。
+ * @param out   追加到的 token 向量。
+ * @param line  首字符的行号，由调用方先取好。
+ * @param col   首字符的列号，由调用方先取好。
  */
 static void lexIdent(Lexer *lx, Vec *out, int line, int col) {
     size_t start = lx->pos;
@@ -261,10 +282,8 @@ static void lexIdent(Lexer *lx, Vec *out, int line, int col) {
     size_t n = lx->pos - start;
     const char *text = lx->src + start;
 
-    /* `__` is reserved for what the compiler generates (C reserves it for the implementation for
-     * the same reason). Every name codegen invents -- instances, method holders, view helpers,
-     * tables, the runtime -- is spelled with that prefix, so a program cannot collide with one.
-     * The token is still pushed: one clear error beats a cascade from a missing name. */
+    /* `__` 留给编译器生成的名字（C 也把它留给实现），所以程序不得使用；报错后仍压入 token，
+     * 让用户只看到这一条，而不是随后一串找不到名字的连带错误。 */
     if (n >= 2 && text[0] == '_' && text[1] == '_')
         ctxError(lx->ctx, line, col,
                  "The compiler gives its own generated names the `__` prefix (C reserves it for the"
@@ -278,29 +297,23 @@ static void lexIdent(Lexer *lx, Vec *out, int line, int col) {
     lxPushAt(lx, out, kind, text, n, line, col);
 }
 
-/* Lex one string literal into `out`, storing the contents without the quotes.
- *
- * Params:
- *   lx   - cursor, positioned on the opening quote
- *   out  - token vector to append to
- *   line - line of the opening quote, already captured by the caller
- *   col  - column of the opening quote, already captured by the caller
- *
- * Notes:
- *   - A newline inside the literal is an error rather than part of the string,
- *     so a missing closing quote does not swallow the rest of the file.
- *   - Escape sequences are validated by `lexEscape` (the same list character literals use)
- *     and then copied through verbatim for the C backend to emit; the parser and the type
- *     checker never look inside them.
- *   - The stored text is unquoted, which is why the parser must ask lexIsPunct
- *     before comparing token text with a punctuation spelling.
- */
-/* Defined just below: the escape list is shared with the character literals, so `lexString`
- * needs the prototype. */
+/* `lexEscape` 定义在下面，而转义表与字符字面量共用，所以 `lexString` 需要这个前置原型。 */
 static long lexEscape(Lexer *lx, int line, int col, const char *what);
 
+/**
+ * @brief 把一个字符串字面量词法化进 `out`，存下的内容不含两侧引号。
+ *
+ * 字面量里出现换行即报错，而不是并入字符串：缺右引号不会吞掉文件余下部分。
+ * 转义序列由 `lexEscape` 校验后原样拷给 C 后端，解析器与类型检查器不看其内容。
+ * 存下的文本去掉了引号，所以解析器拿 token 文本比较标点拼法之前必须先问 `lexIsPunct`。
+ *
+ * @param lx    游标，停在起始引号上。
+ * @param out   追加到的 token 向量。
+ * @param line  起始引号的行号，由调用方先取好。
+ * @param col   起始引号的列号，由调用方先取好。
+ */
 static void lexString(Lexer *lx, Vec *out, int line, int col) {
-    lxAdvance(lx);                              /* opening quote */
+    lxAdvance(lx);
     size_t start = lx->pos;
 
     while (lx->pos < lx->len && lxPeek(lx, 0) != '"') {
@@ -309,14 +322,10 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
             return;
         }
         if (lxPeek(lx, 0) == '\\') {
-            /* The same validator the character literals use -- one authority for "which escapes
-             * exist". Copying escapes through verbatim let `"\u64"` reach the C backend, which
-             * then refused the whole file with "incomplete universal character name \u64"
-             * (found by tools/fuzz.py: a mutation of tests/pool/rt_nest_promote.extc).
-             * `lexEscape` consumes the escape and its arguments, so this iteration must not
-             * advance again -- doing so ate one extra character of every literal and changed
-             * 197 of the 413 generated files. */
-            lxAdvance(lx);                                        /* the backslash */
+            /* 转义必须经 `lexEscape` 校验（"which escapes exist" 的唯一判据）：原样漏给 C 后端
+             * 会被它整个拒绝，例如 `"\u64"` 报 "incomplete universal character name \u64"。
+             * `lexEscape` 已消费掉转义及其参数，这里不能再前进一次，否则会多吃一个字面量字符。 */
+            lxAdvance(lx);
             if (lexEscape(lx, line, col, "a string literal") < 0) return;
             continue;
         }
@@ -329,12 +338,21 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
 
     size_t n = lx->pos - start;
     lxPushAt(lx, out, TK_STRING, lx->src + start, n, line, col);
-    lxAdvance(lx);                              /* closing quote */
+    lxAdvance(lx);                              /* 连同右引号一起消费 */
 }
 
-/* The byte value of one escape sequence inside a character literal, or -1 after
- * reporting it. Kept next to `lexChar` so the two lists (escapes, error wording) stay in
- * one place. `\0` is the NUL byte; `\xHH` takes one or two hex digits. */
+/**
+ * @brief 解出一个转义序列的字节值；出错时报错并返回 -1。
+ *
+ * 与 `lexChar` 相邻，好让「有哪些转义」与错误措辞只留一处。`\0` 是 NUL 字节；
+ * `\xHH` 接受一或两个十六进制数字。
+ *
+ * @param lx    游标，停在反斜杠之后待解码的那个字符上。
+ * @param line  转义所在行号，用于诊断。
+ * @param col   转义所在列号，用于诊断。
+ * @param what  错误措辞里的上下文名（如 `string literal`）。
+ * @return      该转义代表的字节值；未知转义或十六进制转义缺数字时报错并返回 -1。
+ */
 static long lexEscape(Lexer *lx, int line, int col, const char *what) {
     int c = lxPeek(lx, 0);
     lxAdvance(lx);
@@ -376,18 +394,22 @@ static long lexEscape(Lexer *lx, int line, int col, const char *what) {
     }
 }
 
-/* One character literal: `'a'`, `'\n'`, `'\x41'`, `'\''`.
+/**
+ * @brief 词法化一个字符字面量：`'a'`、`'\n'`、`'\x41'`、`'\''`。
  *
- * It becomes an ordinary **integer literal** carrying the byte value, so the parser and the
- * type checker need no new case at all: `'a'` is `u8(97)` without the noise, and the manual's
- * rule ("no `char`; a type name carries its width") stays true.
+ * 它产出的是普通**整数字面量**，携带字节值，于是解析器与类型检查器都不用新增分支：
+ * `'a'` 就是 `u8(97)` 去掉了噪音，the manual's rule ("no `char`; a type name carries its width")
+ * 也因此保持成立。扫描先在本行内找右引号（跳过 `\\`），以此区分 "unterminated" 与
+ * "more than one byte"，然后才解码内容。
+ * token 文本是源码拼法，`--dump-tokens` 显示的就是写下的样子；其中只有 `ival` 对解析器有意义。
  *
- * Shape of the scan: first find the closing quote **on this line** (honouring `\\`), because
- * that is what tells "unterminated" from "more than one byte"; only then decode the contents.
- * The token text is the source spelling so `--dump-tokens` shows the literal as written;
- * only `ival` is meaningful to the parser. */
+ * @param lx    游标，停在起始引号上。
+ * @param out   追加到的 token 向量。
+ * @param line  起始引号的行号，由调用方先取好。
+ * @param col   起始引号的列号，由调用方先取好。
+ */
 static void lexChar(Lexer *lx, Vec *out, int line, int col) {
-    size_t start = lx->pos;                        /* the opening quote */
+    size_t start = lx->pos;
     size_t p = start + 1;
     size_t close = 0;
     bool closed = false;
@@ -407,7 +429,7 @@ static void lexChar(Lexer *lx, Vec *out, int line, int col) {
     }
     long v;
     if (lx->src[start + 1] == '\\') {
-        lx->pos = start + 2;                       /* decode from just after the backslash */
+        lx->pos = start + 2;                       /* 跳过反斜杠，lexEscape 从它后面解码 */
         v = lexEscape(lx, line, col, "a character literal");
         if (v < 0) return;
         if (lx->pos != close) {
@@ -424,13 +446,21 @@ static void lexChar(Lexer *lx, Vec *out, int line, int col) {
                  " multi-byte text");
         return;
     }
-    lx->pos = close + 1;                           /* consume through the closing quote */
+    lx->pos = close + 1;                           /* 连同右引号一起消费 */
     Token *t = lxPushAt(lx, out, TK_INT, lx->src + start, close + 1 - start, line, col);
     t->ival = v;
 }
 
-/* See lexer.h for the contract: a string literal's text can equal a punctuation
- * spelling, so the parser uses this to reject tokens that are not punctuation. */
+/**
+ * @brief 判断一个拼法是不是语言的标点 token 之一。
+ *
+ * 字符串 token 存的是去掉引号后的内容（a string literal's text），于是源码里一个内容为右括号
+ * 的字符串 token，其文本与标点 `)` 相等；解析器比较 token 文本前必须先问这一句，否则
+ * `println` 里那个右括号会被当成参数结束，而内容为 `x)` 的字符串没事 —— 差别只是一个字节。
+ *
+ * @param value  要测的拼法，例如 `)` 或 `=>` 这样的符号串；NULL 与空串不是标点。
+ * @return       `value` 出现在 PUNCTS 里则返回 true。
+ */
 bool lexIsPunct(const char *value) {
     if (!value || !*value) return false;
     for (size_t i = 0; PUNCTS[i]; i++)
@@ -438,24 +468,18 @@ bool lexIsPunct(const char *value) {
     return false;
 }
 
-/* Lex one punctuation token into `out` by first match in the table.
+/**
+ * @brief 按表中首个匹配把一段标点词法化进 `out`。
  *
- * Params:
- *   lx   - cursor, positioned on the first character of the symbol
- *   out  - token vector to append to
- *   line - line of that character, already captured by the caller
- *   col  - column of that character, already captured by the caller
+ * 表按顺序试，所以长符号必须排在被它开头的短符号之前，多字符条目才能最长匹配。
+ * `<<` 与 `>>` 有意不在表里：解析器把它们认作相邻的两个 `<` / `>` token，
+ * `box<box<i32>>` 才能合上泛型参数。
  *
- * Returns:
- *   true when a symbol was matched and consumed; false after reporting an
- *   "unexpected character" error through ctxError.
- *
- * Notes:
- *   - The table is tried in order, so it has to list longer symbols first; the
- *     multi-character entries rely on that for longest-match behaviour.
- *   - `<<` and `>>` are deliberately absent from the table.  The parser
- *     recognizes them as two adjacent `<` / `>` tokens, which is what lets
- *     `box<box<i32>>` close its generic arguments.
+ * @param lx    游标，停在符号首字符上。
+ * @param out   追加到的 token 向量。
+ * @param line  该字符的行号，由调用方先取好。
+ * @param col   该字符的列号，由调用方先取好。
+ * @return      匹配到并消费了一个符号则返回 true；否则经 ctxError 报 "unexpected character" 后返回 false。
  */
 static bool lexPunct(Lexer *lx, Vec *out, int line, int col) {
     for (size_t i = 0; PUNCTS[i]; i++) {
@@ -472,23 +496,21 @@ static bool lexPunct(Lexer *lx, Vec *out, int line, int col) {
 
 /* ---------------------------------------------------------------- main loop */
 
-/* Scan the whole source and append its tokens to `out`.
+/**
+ * @brief 扫描一段源，把 token 追加到 `out`，末尾是 TK_EOF。
  *
- * Params:
- *   ctx - compilation context: supplies ctx->src, the arena for token text, and
- *         the error slot (ctxError sets ctx->hasError, which the loop rechecks
- *         after the steps that can fail)
- *   out - token vector to append to, already initialized by the caller
+ * 格式串（`f` 后紧跟引号）用它扫花括号里的片段：位置从给定的行/列起算，片段里的诊断才能指回文件，
+ * 而不是片段的偏移 0。换行是真的 token 而不是空白：语句在换行处结束，只有解析器能说它在哪里
+ * 有意义；连续的换行折成一个 TK_NEWLINE，末尾总有一个，解析器就不必特判文件结尾。
+ * 行注释与块注释在这里跳过，从不进解析器。词法出错时经 `ctxError` 报错并提前返回，
+ * `out` 里留的是出错前切出的 token，TK_EOF 可能缺席。
  *
- * Notes:
- *   - A newline is significant, so it becomes a TK_NEWLINE token; consecutive
- *     newlines collapse into one, and a trailing one is always appended so that
- *     the parser never has to special-case the end of the file.
- *   - Line comments and block comments are skipped here and never reach the
- *     parser.
- *   - After a lexical error the scan stops early and the error is left on
- *     ctx->hasError; the caller renders it and does not parse the tokens.  The
- *     tokens produced so far stay in `out` and TK_EOF may be missing.
+ * @param ctx    编译上下文：提供源文本，以及每个 token 文本都拷进去的 arena；错误经 ctxError 置 ctx->hasError。
+ * @param src    要扫描的字节起点。
+ * @param len    要扫描的字节数。
+ * @param line0  起点行号（1 起）。
+ * @param col0   起点列号（1 起）。
+ * @param out    追加到的向量；初始化由调用方负责。
  */
 void lexRange(Ctx *ctx, const char *src, size_t len, int line0, int col0, Vec *out) {
     Lexer lx = { ctx, src, len, 0, line0, col0 };
@@ -531,7 +553,7 @@ void lexRange(Ctx *ctx, const char *src, size_t len, int line0, int col0, Vec *o
 
         if (isDigit(c))                      { lexNumber(&lx, out); if (ctx->hasError) return; continue; }
         /* `f"…"`：标识符恰好是 `f` 且**紧挨着**引号 ⇒ 格式串。`f` 本身仍是合法标识符
-         * （`f "x"` 有空格就是两个 token），这条与 Python 一致。 */
+         * （`f "x"` 带空格就是两个 token）。 */
         if (isAlpha(c)) {
             if (c == 'f' && lx.pos + 1 < lx.len && lx.src[lx.pos + 1] == '"') {
                 lxAdvance(&lx);
@@ -549,21 +571,34 @@ void lexRange(Ctx *ctx, const char *src, size_t len, int line0, int col0, Vec *o
         if (!lexPunct(&lx, out, line, col))  { return; }
     }
 
-    /* Guarantee a statement terminator at the end of the file. */
+    /* 文件末尾总补一个语句终止符，解析器不必特判结尾。 */
     Token *last = lxLast(out);
     if (!last || last->kind != TK_NEWLINE)
         lxPushAt(&lx, out, TK_NEWLINE, "\n", 1, lx.line, lx.col);
     lxPushAt(&lx, out, TK_EOF, "", 0, lx.line, lx.col);
 }
 
-/* 整个文件：`lexRange` 的薄壳（原来就是它，抽出来是为了让 `f"…"` 能扫子串）。 */
+/**
+ * @brief 把整个 `ctx->src` 词法化，token 追加到 `out`。
+ *
+ * `lexRange` 的薄壳：`f"…"` 需要扫子串，真正干活的扫描器收的是区间；整个文件只是
+ * 从第 1 行第 1 列开始的那个特例。
+ *
+ * @param ctx  提供源文本，以及每个 token 文本都拷进去的 arena。
+ * @param out  追加到的向量；初始化由调用方负责。
+ */
 void lexAll(Ctx *ctx, Vec *out) {
     lexRange(ctx, ctx->src, ctx->srcLen, 1, 1, out);
 }
 
 /* ================================================================ display */
 
-/* Return the spelling of a token kind as used by diagnostics and --dump-tokens. */
+/**
+ * @brief 给出 token 种类的拼法，供诊断与 `--dump-tokens` 用，例如 TK_IDENT -> `IDENT`。
+ *
+ * @param k  token 种类。
+ * @return   它的名字；未知种类返回 `?`。
+ */
 const char *tokenKindName(TokenKind k) {
     switch (k) {
         case TK_EOF:     return "EOF";
@@ -580,12 +615,13 @@ const char *tokenKindName(TokenKind k) {
     return "?";
 }
 
-/* Append one --dump-tokens line for `t` to `out`.
+/**
+ * @brief 追加一行描述 `t` 的可读文本到 `out`，供 `--dump-tokens` 用。
  *
- * Notes:
- *   - The numeric value is printed according to the token kind, so a TK_INT
- *     shows ival rather than the source spelling; this is the token stream the
- *     parser actually sees.
+ * 数值按 token 种类打印（TK_INT 打 ival 而不是源码拼法），打出来的就是解析器看到的 token 流。
+ *
+ * @param t    要描述的 token。
+ * @param out  接收文本的缓冲区。
  */
 void tokenDescribe(const Token *t, Buf *out) {
     bufPrintf(out, "%4d:%-3d %-8s ", t->line, t->col, tokenKindName(t->kind));

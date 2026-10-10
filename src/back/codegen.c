@@ -449,13 +449,17 @@ typedef struct {
     char       *text;
 } UnwrapHelper;
 
-/* Format one line into a freshly allocated arena string -- **with no length limit**.
+/**
+ * @brief 按 printf 格式渲染一行，返回 arena 中的新字符串，行长不限。
  *
- * The line is sized first (`vsnprintf(NULL, 0, ...)`) and then allocated, the same shape
- * `arenaPrintf` uses, so no length limit exists to move or raise. A fixed-size buffer would
- * not truncate loudly: a 5000-byte string literal would produce a 4099-byte line, the
- * compiler would exit **0 with no diagnostic**, and gcc would then report `missing terminating
- * " character` -- invalid C behind a successful exit, which no corpus program exercised. */
+ * 先量长度（`vsnprintf(NULL, 0, ...)`）再分配，因此没有行长上限；固定大小的缓冲区
+ * 不会响亮地截断，超长行会静默产出无效 C 而后仍然退出 0。
+ *
+ * @param g   generator 状态；字符串分配在 g->arena
+ * @param fmt printf 风格格式串
+ * @param ap  参数列表；本函数会消耗它（内部先 va_copy 一份用于第二次 vsnprintf）
+ * @return    NUL 结尾的 arena 字符串，随 arena 存活
+ */
 static char *cgFormat(CG *g, const char *fmt, va_list ap) {
     va_list ap2;
     va_copy(ap2, ap);
@@ -467,11 +471,11 @@ static char *cgFormat(CG *g, const char *fmt, va_list ap) {
     return p;
 }
 
-/* Append one formatted line to the generated output at the current indent.
+/**
+ * @brief 按当前缩进把一行格式化文本追加到生成输出。
  *
- * Params:
- *   g   - generator state; supplies the output buffer, the indent and the arena
- *   fmt - printf-style format
+ * @param g   generator 状态；提供输出缓冲、缩进与 arena
+ * @param fmt printf 风格格式串
  */
 static void cgLine(CG *g, const char *fmt, ...) {
     va_list ap;
@@ -484,12 +488,15 @@ static void cgLine(CG *g, const char *fmt, ...) {
     bufPutc(g->out, '\n');
 }
 
-/* Append one formatted line to the pending statement prefix.
- *
- * The text is buffered rather than written to the output, because a prefix must
- * appear before the statement that needs it; see flushPrefix.
- */
 
+/**
+ * @brief 按当前缩进把一行格式化文本追加到待发语句前缀缓冲。
+ *
+ * 文本先进缓冲而不直接写输出：前缀必须出现在需要它的语句之前，见 flushPrefix。
+ *
+ * @param g   generator 状态；提供前缀缓冲、缩进与 arena
+ * @param fmt printf 风格格式串
+ */
 static void pfLine(CG *g, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -500,43 +507,53 @@ static void pfLine(CG *g, const char *fmt, ...) {
     bufPutc(&g->prefix, '\n');
 }
 
-/* Emit the buffered statement prefix and clear it.
- *
- * Must be called before the first line of the statement the prefix belongs to:
- * those lines compute the temporaries the statement then reads, and that
- * ordering is the whole point of the prefix.
- */
 
+/**
+ * @brief 写出缓冲着的语句前缀并清空它。
+ *
+ * 必须在它所属语句的第一行之前调用：前缀里的行算的正是该语句随后要读的临时量，
+ * 这个先后顺序就是前缀存在的理由。
+ *
+ * @param g generator 状态
+ */
 static void flushPrefix(CG *g) {
     if (g->prefix.len == 0) return;
     bufPuts(g->out, bufCstr(&g->prefix));
     bufInit(&g->prefix, g->arena);
 }
 
-/* Substitute the TY_PARAM types of the current instance context.
+/**
+ * @brief 用当前实例化上下文替换类型中的 TY_PARAM。
  *
- * Returns:
- *   The substituted type, or t itself when no instance context is active.
+ * @param g generator 状态；上下文取自 g->substParams 与 g->substArgs
+ * @param t 待替换的类型
+ * @return  替换后的类型；没有生效的实例化上下文时返回 t 本身
  */
 static Type *subst(CG *g, Type *t) {
     if (!g->substParams || !g->substArgs) return t;
     return ttSubstitute(g->tt, t, g->substParams, g->substArgs);
 }
 
-/* Enter the monomorphization context of one generic instance.
+/**
+ * @brief 进入一个泛型实例的单态化替换上下文。
  *
- * Params:
- *   inst - the instance type; a generic enum instance has no `sdef`, its owner
- *          is `edef`, so both cases are handled here
+ * 泛型 enum 实例没有 `sdef`，其属主是 `edef`，两种情形都在这里处理。
+ *
+ * @param g    generator 状态；上下文写入 g->substParams、g->substArgs 与 g->ownerPrefix
+ * @param inst 实例类型
  */
 static void substEnter(CG *g, Type *inst) {
-    /* A generic enum instance has no `sdef`; its owner is `edef`. */
+
     g->substParams = inst->sdef ? &inst->sdef->typeParams : &inst->edef->typeParams;
     g->substArgs   = &inst->targs;
     g->ownerPrefix = inst->name;
 }
 
-/* Leave the substitution context entered by substEnter. */
+/**
+ * @brief 退出 substEnter 进入的替换上下文：清空类型形参、类型实参与 ownerPrefix。
+ *
+ * @param g generator 状态
+ */
 static void substLeave(CG *g) {
     g->substParams = NULL;
     g->substArgs   = NULL;
@@ -544,13 +561,6 @@ static void substLeave(CG *g) {
 }
 
 
-/* Return the C spelling of an extC type.
- *
- * Returns:
- *   A string such as "int32_t" or "pair_i32_u8 *"; a composite spelling is built
- *   in the generator's arena. An error or unresolved type yields "int", which
- *   only matters for a program that has already failed to check.
- */
 static const char *cFuncName(CG *g, FuncDef *f);   /* defined below; `cType` needs it */
 
 /* Register the `!` unwrap helper of one option/result instance; defined with the other
@@ -558,6 +568,17 @@ static const char *cFuncName(CG *g, FuncDef *f);   /* defined below; `cType` nee
  * point, so the name is declared here. */
 static const char *unwrapHelper(CG *g, Type *ot, bool isOpt, Type *pay);
 
+/**
+ * @brief 给出 extC 类型对应的 C 拼写。
+ *
+ * 组合拼写分配在 g->arena。函数类型只以 typedef 名字出现：每个调用点把结果与名字拼
+ * 成 `%s %s`，而 C 函数指针会把名字包进 declarator。
+ *
+ * @param g generator 状态；结果分配在 g->arena
+ * @param t 待拼写的类型；NULL 视为 void
+ * @return  C 类型拼写，如 `int32_t`、`pair_i32_u8 *`；错误或未解析的类型返回 `int`，
+ *          只在程序已经过不了检查时出现
+ */
 static const char *cType(CG *g, Type *t) {
     if (!t) return "void";
 
@@ -606,7 +627,7 @@ static const char *cType(CG *g, Type *t) {
          * of `cType` concatenates the result with a name ("%s %s"), and a C function pointer wraps
          * that name inside the declarator (`int64_t (*f)(int64_t)`). `t->name` is the mangle
          * (`extc_fn_i64__i64`), and the typedef itself is emitted once, ahead of every struct
-         * definition; see `C-ABI.md` section 9.5. */
+         * definition. */
         case TY_FN:    return t->name ? t->name : "void *";
         case TY_ENUM:  return t->name;      /* a plain enum typedef in C */
         case TY_ERROR: return "int";
@@ -622,11 +643,16 @@ static const char *cType(CG *g, Type *t) {
     return "int";
 }
 
-/* The C parameter list of a function type: `int64_t, uint8_t *`, or `void` when there is none.
+/**
+ * @brief 给出函数类型的 C 形参列表文本。
  *
- * `void` rather than an empty pair of parentheses, because `()` in a C declaration means
- * "unspecified arguments" -- a different type, which would let a call through the pointer pass
- * anything at all. */
+ * 无参时返回 `void` 而不是空括号：C 声明里的 `()` 表示「参数未指定」，是另一种类型，
+ * 会放过穿过函数指针的任意实参。
+ *
+ * @param g  generator 状态；结果分配在 g->arena
+ * @param ft 函数类型
+ * @return   形参类型用逗号连接的字符串；无参时为 `void`
+ */
 static const char *fnParamList(CG *g, Type *ft) {
     if (ft->params.len == 0) return "void";
     Buf b;
@@ -652,31 +678,17 @@ static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-
 
     
 
-/* Map an extC symbol name to a fragment usable inside a C identifier.
+/**
+ * @brief 把 extC 符号名映射成能放进 C 标识符的片段。
  *
- * An operator is spelled `==` in extC but cannot be spelled that way in C, so
- * every operator that can be a method name is renamed here. The set below has
- * to cover every operator the language lets a method be named after: a name
- * that fell through would be pasted into the generated C as-is, and `ver_<`
- * does not compile. The error would then point into the generated C, where the
- * user cannot see their own source - the failure mode this function exists to
- * prevent.
+ * 运算符（如 `==`）在 extC 里是合法方法名，却不能直接进 C 标识符，所以在这里改名；
+ * 映射表必须覆盖语言允许当方法名的每一个运算符，漏掉的名字会原样粘进生成 C 而编不过。
+ * 用户名字可能撞上 C 关键字（`double` 在 extC 里不是关键字），这类名字加 `__c` 后缀；
+ * 关键字集合由 `cIdentIsKeyword` 提供，与 checker 共用。
  *
- * A user name can also collide with a C keyword; writing tests hit this with
- * `fn double(...)`. In extC `double` is not a keyword (the float types are
- * `f32` and `f64`), so it is a perfectly legal user name, yet the generated
- * `int32_t double(int32_t);` does not compile - and the error points into the
- * generated C, where the user cannot see their own source. A `__c` suffix
- * avoids that without changing a single character of the extC source. The
- * keyword set lives in `cIdentIsKeyword` (base.c) and is shared with the
- * checker.
- *
- * Params:
- *   name - the extC symbol or identifier
- *
- * Returns:
- *   The C identifier fragment; freshly built names live in the generator's
- *   arena, so the result outlives the call.
+ * @param g    generator 状态；新名字分配在 g->arena
+ * @param name extC 符号名或标识符
+ * @return     可放进 C 标识符的片段；无映射且不是关键字时返回 name 本身，否则返回 arena 中的新名字
  */
 static const char *cSymName(CG *g, const char *name) {
     static const struct { const char *extc, *c; } MAP[] = {
@@ -694,52 +706,40 @@ static const char *cSymName(CG *g, const char *name) {
     return name;
 }
 
-/* The C symbol of an `@export`ed function: **the name the author wrote**.
+/**
+ * @brief 取 `@export` 函数对外的 C 符号名，即作者写下的那个名字。
  *
- * `$` is not legal in an extC identifier, so a `$` in `f->name` can only be the loader's module
- * prefix (`plugin$init`); the symbol is what follows it. This is why an export writes its own name
- * instead of going through `cSymName`: an exported symbol is a contract with the C side, and a name
- * this compiler would have to rename (`fn double`) is refused where it is written rather than
- * quietly becoming `double__c`, which the C side could never guess. */
+ * extC 标识符里不允许 `$`，所以 `f->name` 中的 `$` 只可能是加载器的模块前缀
+ * （`plugin$init`），符号名是它后面的部分。导出符号是与 C 侧的约定：本编译器需要改名
+ * 的名字（如 `fn double`）在书写处就被拒绝，而不是悄悄变成 `double__c`。
+ *
+ * @param f 函数定义；NULL 或 name 为空时取 `?`
+ * @return  模块前缀之后的符号名；没有 `$` 时是整个名字
+ */
 static const char *exportName(const FuncDef *f) {
     const char *n = (f && f->name) ? f->name : "?";
     const char *d = strrchr(n, '$');
     return d ? d + 1 : n;
 }
 
-/* Name of a function in the generated C.
+/**
+ * @brief 给出运算符 C 名字在属主重复定义该运算符时所需的类型后缀。
  *
- * A method name is prefixed with its owner so that `Point_eq` and `Board_eq`
- * cannot collide; in extC they were already two distinct names.
+ * 同一运算符可以按右操作数类型各定义一次，所以操作数类型必须进 C 名字，否则多个定义
+ * 会塌成同一个符号。定义侧（`cFuncName`）与每个调用点（`cMethodName`）都要用同一份
+ * 计算，因此放在一个函数里。
  *
- * Returns:
- *   The C name, allocated in the generator's arena.
+ * 后缀必须在**被调方**的单态化上下文里算：`subst` 读的是 ambient 上下文，调用点若
+ * 没有上下文，`T` 仍是 `T`，算出的名字就会和定义侧不一致。调用点因此显式传入被调方
+ * 自己的类型实参。
+ *
+ * @param g      生成器状态；结果分配在 g->arena
+ * @param f      运算符方法定义
+ * @param params 用于替换的类型形参；NULL 表示用 ambient 上下文
+ * @param args   与 params 等长的类型实参；params 为 NULL 时同为 NULL
+ * @return       `_<mangled 操作数类型>`（可写视图另加 `mut_` 前缀）；属主只定义一份、
+ *               形参不足两个或名字不是可重载运算符时返回空串
  */
-/* The suffix an operator's C name needs when a type defines it more than once.
- *
- * An operator may be defined once per right-operand type, so the operand type has to be
- * part of the C name or the definitions collapse into one symbol. This lives in one
- * function because both the definition side (`cFuncName`) and every call site
- * (`cMethodName`) have to agree -- they did not, once: the definition was emitted as
- * `out_shl_i64` while the call asked for `out_shl`, and the C compiler reported the
- * missing function rather than anything about operators.
- *
- * Returns:
- *   `_<mangled operand type>` when the owner defines this operator more than once, and an
- *   empty string otherwise, so a single definition keeps the name it always had.
- *
- * Params:
- *   params - substitution parameters to use, or NULL for the ambient context
- *   args   - their arguments (same length); NULL with `params`
- *
- * Notes:
- *   - The suffix must be computed in the **callee's** monomorphization context, never the
- *     caller's. `subst` reads whatever context is ambient, and at a call site inside a
- *     non-generic function there is none: `T` stayed `T`, so the call was emitted as
- *     `w_i32_eq_T` while the definition (emitted inside the instance's context) was
- *     `w_i32_eq_i32` -- the generated C did not compile at all (). Call sites
- *     therefore pass the callee's own context: the method instance's type arguments, or
- *     the receiver instance's. */
 static const char *opOverloadSuffixIn(CG *g, FuncDef *f, Vec *params, Vec *args) {
     if (!f->owner || f->params.len < 2 || !isOverloadableOp(f->name)) return "";
     size_t same = 0;
@@ -750,26 +750,38 @@ static const char *opOverloadSuffixIn(CG *g, FuncDef *f, Vec *params, Vec *args)
     Type *rt = (params && args) ? ttSubstitute(g->tt, p1->type, params, args) : subst(g, p1->type);
     /* A writable view and the read-only one are **different types** to the operator
      * rule (`ttEquals` compares `mut`) but the **same C struct**, so `ttMangle` gives
-     * both the name `slice_u8` and two overloads of `<<` collided in C:
-     *     redefinition of `fs$outStream_shl_slice_u8`
-     * The suffix has to carry the mutability itself, or the exact-type dispatch that
-     * makes overloading decidable is not expressible in C. */
+     * both the name `slice_u8`; the suffix has to carry the mutability itself, or the
+     * exact-type dispatch that makes overloading decidable is not expressible in C. */
     const char *mangled = ttMangle(g->tt, rt);
     if (rt && rt->mut) mangled = arenaPrintf(g->arena, "mut_%s", mangled);
     return arenaPrintf(g->arena, "_%s", mangled);
 }
 
-/* The definition side: the ambient context *is* the instance's, because `substEnterInst` /
- * `substEnterFunc` put it there before the body is emitted. */
+/**
+ * @brief 定义侧取运算符类型后缀：此时的 ambient 上下文就是该实例的。
+ *
+ * @param g 生成器状态
+ * @param f 运算符方法定义
+ * @return  同 opOverloadSuffixIn
+ */
 static const char *opOverloadSuffix(CG *g, FuncDef *f) {
     return opOverloadSuffixIn(g, f, NULL, NULL);
 }
 
+/**
+ * @brief 给出函数在生成 C 里的名字。
+ *
+ * 判定有先后：导出函数先返回作者写下的名字（调用点必须与 C 侧查找的符号一致），
+ * 泛型自由函数的实例返回自己的 C 名字，然后才是运算符后缀与属主前缀。方法名带属主
+ * 前缀，使 `Point_eq` 与 `Board_eq` 不会撞名。
+ *
+ * @param g 生成器状态；结果分配在 g->arena
+ * @param f 函数定义
+ * @return  C 名字，分配在 generator 的 arena
+ */
 static const char *cFuncName(CG *g, FuncDef *f) {
-    /* An exported function answers with its own source name, **first**: the call sites inside this
-     * program have to agree with the symbol C will look up, and neither the module prefix
-     * (`plugin$init`) nor an instance prefix (`pair_i64_init`) nor a keyword rename may come
-     * between. */
+    /* 导出名必须**最先**判定：调用点要与 C 侧查找的符号一致，模块前缀、实例前缀、
+     * 关键字重命名都不能插进来。 */
     if (f->isExport) return exportName(f);
     /* An instance of a generic free function carries its own C name (eq2_i32). */
     if (planInstName(f)) return planInstName(f);
@@ -781,29 +793,22 @@ static const char *cFuncName(CG *g, FuncDef *f) {
     return arenaPrintf(g->arena, "%s%s", cSymName(g, f->name), suffix);
 }
 
-/* Name of a method in the generated C, at a call site.
+/**
+ * @brief 给出调用点上方法在生成 C 里的名字。
  *
- * The receiver picks the prefix: a generic instance uses its own name
- * (`Pair_i32_u8_getFirst`), anything else uses the owner of the method.
+ * 前缀由接收者决定：泛型实例用自己的名字（如 `Pair_i32_u8_getFirst`），其余用方法
+ * 属主。这里不能用 `cFuncName`：它加的是当前正在生成的实例前缀，而被调方可能属于另
+ * 一个类型——在 `Wrapper<Point>` 里调 `Point.==` 正是这种情形。
  *
- * Params:
- *   recvType - static type of the receiver
- *
- * Returns:
- *   The C name, allocated in the generator's arena.
- *
- * Notes:
- *   - cFuncName must not be used here: it prefixes the instance currently being
- *     generated, whereas the callee may belong to a different type - calling
- *     Point.== from inside Wrapper<Point> is exactly that case.
+ * @param g        生成器状态；结果分配在 g->arena
+ * @param recvType 接收者的静态类型
+ * @param f        方法定义
+ * @return         C 名字，分配在 generator 的 arena
  */
 static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     Type *rb = ttBase(subst(g, recvType));
-    /* The overload suffix comes from the **callee's** context, not from whatever happens to be
-     * ambient here (fixing the suffix with the caller's context emitted
-     * `w_i32_eq_T` at the call and `w_i32_eq_i32` at the definition, and the generated C did not
-     * compile). A method instance carries its own type arguments; otherwise the receiver
-     * instance does -- `cMethodName` is exactly the place that knows the receiver. */
+    /* 后缀必须取自**被调方**的上下文，而不是这里的 ambient：方法实例有自己的
+     * typeArgs，否则用接收者实例的；本处正是知道接收者的地方。 */
     Vec *sp = NULL, *sa = NULL;
     if (planTemplate(f)) {
         sp = &planTemplate(f)->typeParams;
@@ -815,57 +820,49 @@ static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     const char *suffix = opOverloadSuffixIn(g, f, sp, sa);
     if (rb && rb->kind == TY_GENERIC)
         return arenaPrintf(g->arena, "%s_%s%s", rb->name, cSymName(g, f->name), suffix);
-    /* cFuncName cannot be used here: it prefixes the instance currently being
-     * generated, but the callee may belong to another type (calling Point.==
-     * from inside Wrapper<Point>). */
+
     if (f->owner)
         return arenaPrintf(g->arena, "%s_%s%s", f->owner->name, cSymName(g, f->name), suffix);
     return cSymName(g, f->name);
 }
 
-/* Is this type a slice instance?
+/**
+ * @brief 判断类型是不是恰好一个类型实参的 `slice` 实例。
  *
- * This is the only thing the compiler knows about slices, and it is an output
- * convention rather than knowledge of the container: a view of bytes prints as
- * text, which is basic output, not a property of the container. The definition,
- * fields and methods of the container all live in stdlib/prelude.extc.
+ * 这是编译器对视图唯一知道的事，而且只是一条输出约定，不是容器的知识：字节视图按
+ * 文本打印属于基本输出；容器的定义、字段与方法由标准库提供。
  *
- * Returns:
- *   true for `slice<T>` with exactly one type argument.
+ * @param t 待判断的类型
+ * @return  是只有一个类型实参的 `slice<T>` 时为 true
  */
 static bool isView(Type *t) {
     return t && t->kind == TY_GENERIC && t->sdef
         && strcmp(t->sdef->name, "slice") == 0 && t->targs.len == 1;
 }
 
-/* Is this a view of bytes, that is `slice<u8>`?
+/**
+ * @brief 判断类型是不是字节视图，即 `slice<u8>`。
  *
- * Returns:
- *   true when the element type is `u8`; `println` then prints the view as text
- *   instead of as a list of numbers.
+ * @param t 待判断的类型
+ * @return  元素类型是 `u8` 时为 true；此时 `println` 按文本而不是数字列表打印该视图
  */
 static bool isByteView(Type *t) {
     return isView(t) && ttIs(*(Type **)vecAt(&t->targs, 0), "u8");
 }
 
-/* Emit the index primitive of one view type: `<C name>_index(v, i, file, line)`.
+/**
+ * @brief 发出一个视图类型的下标原语 `<C 名>_index(v, i, file, line)`。
  *
- * The view is taken by value, so a subscript expression evaluates its operands
- * exactly once and there is no second code path for values and references. The
- * primitive bounds-checks and traps with the extC position when the index is
- * out of range. The `get`, `==` and `find` functions of the prelude all reach
- * it through `self[i]`, which is what keeps pointer arithmetic and hand-written
- * bounds checks out of the library entirely.
+ * 视图按值传入，所以下标表达式里的操作数只求值一次，值与引用没有第二条代码路径。原语自己做
+ * 区间检查，越界时带 extC 源码位置 trap。prelude 的 `get`、`==`、`find` 都经 `self[i]` 走到
+ * 这里，指针算术与手写检查因此留在库外。
  *
- * Notes:
- *   - The emitted function returns a pointer to the element and the call site
- *     dereferences it. Returning the element by value would break two things: a
- *     `ref` parameter needs an lvalue, so `slice<struct>::==` - written as
- *     `self[i] != other[i]` with `self: ref T` - would not compile at all (a
- *     bug that really happened), and an assignment such as `s[i] = x` or
- *     `s[i].field = x` needs an lvalue as well. Returning a pointer covers
- *     both, and a view has reference semantics anyway: that is the `ref` in
- *     `data: ref T`.
+ * 发出的函数返回元素指针，由调用点解引用。返回元素值会弄坏两件事：`ref` 形参需要左值，
+ * `slice<struct>::==`（写成 `self[i] != other[i]`，且 `self: ref T`）会直接编不过；`s[i] = x`
+ * 与 `s[i].field = x` 这类赋值同样需要左值。视图本来就有引用语义，即 `data: ref T` 里的 `ref`。
+ *
+ * @param g     生成器。
+ * @param inst  视图实例；`targs` 至少有一个元素，即元素类型。
  */
 static void genViewIndexer(CG *g, Type *inst) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
@@ -873,12 +870,10 @@ static void genViewIndexer(CG *g, Type *inst) {
     cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
-    /* A view whose storage is gone has no `i` that could be in range: the `!v.data` test below
-     * traps before the index test, since `data == NULL` with a non-zero `len` would otherwise pass
-     * the bounds check and store straight through the null pointer (UBSan: "store to null pointer of
-     * type 'int32_t'", found by tools/fuzz.py in a mutation of
-     * tests/pool/rt_promote.extc: a pool take returned nothing while the slice still claimed
-     * length 4). The message says what actually happened instead of blaming the index. */
+    /* A view whose storage is gone has no `i` that could be in range: the `!v.data` test must
+     * come before the index test, since `data == NULL` with a non-zero `len` would otherwise pass
+     * the bounds check and store straight through the null pointer. The message names what
+     * happened instead of blaming the index. */
     cgLine(g, "if (!v.data) extc_trapMsg(file, line, \"the view has no storage\");");
     cgLine(g, "if (i < 0 || i >= v.len) extc_trap(file, line, i, v.len);");
     cgLine(g, "return &v.data[i];");
@@ -888,17 +883,20 @@ static void genViewIndexer(CG *g, Type *inst) {
     substLeave(g);
 }
 
-/* Emit the bulk-copy primitive of a view type on demand (`copyInto`).
+/**
+ * @brief 按需发出一个视图类型的整块拷贝原语（供 `copyInto` 使用）。
  *
- * One call checks the count ONCE and then moves the bytes with `memmove`, so the check is
- * paid per **call** rather than per element -- which is the whole reason this primitive
- * exists (a byte-at-a-time loop pays a bounds check, and in the containers also a stale-pool
- * guard, for every byte). `memmove` rather than `memcpy`: the common caller shifts a buffer
- * onto itself (`string::removeFront`), where the ranges overlap.
+ * 一次调用只检查一次计数，再用 `memmove` 搬字节，所以检查按**调用**付费而不是按元素付费：
+ * 逐字节的循环要为每个字节付一次区间检查，容器里还要多付一次陈旧池守卫。用 `memmove` 而不是
+ * `memcpy`，因为常见的调用者把缓冲搬到与自身重叠的位置（`string::removeFront`）。
  *
- * The count check traps with a source position, like every other out-of-range access.
- * `unchecked` is the `@unchecked` variant: `memmove` runs on the count as written,
- * with neither the length check nor the storage check, under the `..._copyU` name. */
+ * 计数检查与其他越界访问一样带源码位置 trap。`unchecked` 是 `@unchecked` 变体：按写下的计数
+ * 直接 `memmove`，长度检查与存储检查都不做，函数名带 `..._copyU`。
+ *
+ * @param g          生成器。
+ * @param inst       视图实例；`targs` 至少有一个元素，即元素类型。
+ * @param unchecked  为 `true` 时发出不做任何检查、名为 `<C 名>_copyU` 的变体。
+ */
 static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
     substEnter(g, inst);
@@ -908,11 +906,8 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     if (!unchecked) {
         cgLine(g, "if (n < 0 || n > d.len || n > s.len)");
         cgLine(g, "    extc_trapMsg(file, line, \"copyInto: the count is beyond a slice length\");");
-        /* A view whose storage is gone has no byte to copy. The index primitive above has had this
-         * guard for a while; the copier did not, so `copyInto(d, deadView, 1)` moved from a NULL base
-         * -- a SIGSEGV at -O0, and at -O2 gcc deleted the UB call so the program looked like it
-         * worked (). Conditional on `n > 0`: copying zero elements from an empty view is
-         * legal and must stay legal. */
+        /* A view whose storage is gone has no byte to copy, so it traps. Conditional on `n > 0`:
+         * copying zero elements from an empty view is legal and must stay legal. */
         cgLine(g, "if (n > 0 && (!d.data || !s.data))");
         cgLine(g, "    extc_trapMsg(file, line, \"the view has no storage\");");
     } else {
@@ -927,24 +922,18 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     substLeave(g);
 }
 
-/* Emit the index primitive of a view type on demand and return its name.
+/**
+ * @brief 按需登记一个视图类型的下标原语，并返回它的名字。
  *
- * This primitive is emitted on demand: the list of type instances alone is not enough, because an
- * index inside a generic body is lowered with the *instance's* name (`slice_slice_u8_index`),
- * while the list may not carry that instance -- a view whose element type came from a type
- * parameter is not in it, so the generated C would call a function nobody had emitted and would
- * not compile at all.
+ * 只能按需发出：单看类型实例表不够，泛型体里的下标用的是**实例**的名字
+ * （`slice_slice_u8_index`），而表里未必有这个实例 —— 元素类型来自类型参数的视图就不在表里，
+ * 那样生成的 C 会调用一个没人发出的函数，根本编不过。谁需要这个原语就由谁发出
+ * （`sliceHelper` 同样按需），依赖集中在一处，名字去重后一个视图类型只产出一个函数。
  *
- * Emitting on demand is what this file already does for slice helpers (`sliceHelper`), and it
- * keeps the dependency in one place: whoever needs the primitive emits it, and the name is
- * deduplicated so one view type yields one function.
- *
- * Params:
- *   g    - generator
- *   inst - the view instance, already substituted by the caller
- *
- * Returns:
- *   The name of the primitive, `<view name>_index`. */
+ * @param g     生成器；去重表是 `g->viewIdx`，新实例追加在末尾。
+ * @param inst  视图实例，调用方已完成替换。
+ * @return      原语的名字 `<视图实例名>_index`。
+ */
 static const char *viewIndexer(CG *g, Type *inst) {
     const char *name = arenaPrintf(g->arena, "%s_index", inst->name);
     for (size_t i = 0; i < g->viewIdx.len; i++)
@@ -953,9 +942,18 @@ static const char *viewIndexer(CG *g, Type *inst) {
     return name;
 }
 
-/* Same on-demand story as `viewIndexer`, for the bulk-copy primitive. The
- * `@unchecked` form gets its own name (`..._copyU`) and its own list: a checked
- * call site of the same view type must keep the checked definition. */
+/**
+ * @brief 按需登记一个视图类型的整块拷贝原语，并返回它的名字。
+ *
+ * 与 `viewIndexer` 一样按需登记。`@unchecked` 形式有自己的名字（`..._copyU`）和自己的表
+ * `g->viewCpyU`：同一视图类型的受检调用点必须继续拿到受检定义。
+ *
+ * @param g          生成器。
+ * @param inst       视图实例，调用方已完成替换。
+ * @param unchecked  为 `true` 时登记 `..._copyU` 变体（表 `g->viewCpyU`），否则登记受检变体
+ *                   （表 `g->viewCpy`）。
+ * @return           原语的名字 `<视图实例名>_copy`；`unchecked` 时为 `<视图实例名>_copyU`。
+ */
 static const char *viewCopier(CG *g, Type *inst, bool unchecked) {
     const char *name = arenaPrintf(g->arena, "%s_copy%s", inst->name, unchecked ? "U" : "");
     Vec *list = unchecked ? &g->viewCpyU : &g->viewCpy;
@@ -986,11 +984,14 @@ static const char *viewCopier(CG *g, Type *inst, bool unchecked) {
  *     tentative definition for every descriptor, which makes the definition
  *     order irrelevant.
  */
-/* Register that this type needs a descriptor of its own.
+/**
+ * @brief 登记一个类型需要自己的描述符。
  *
- * Deduplication is by C name, because a mutable and a read-only view are the
- * same C struct and share one descriptor. Scalars, `ref` and `slice<u8>` use
- * the shared descriptors and are not registered.
+ * 按 C 名去重：可变视图与只读视图是同一个 C 结构体，共用一个描述符。标量、`ref` 与
+ * `slice<u8>` 用共享描述符，不登记。
+ *
+ * @param g  生成器；登记表是 `g->descs`，新类型追加在末尾。
+ * @param t  类型；`NULL` 或没有 C 名时直接返回。
  */
 static void needDesc(CG *g, Type *t) {
     if (!t || !t->name) return;
@@ -1000,11 +1001,14 @@ static void needDesc(CG *g, Type *t) {
     *(Type **)vecPush(&g->descs) = t;
 }
 
-/* Register that this type needs `extc_eq`.
+/**
+ * @brief 登记一个类型需要 `extc_eq`。
  *
- * Deduplication is by C name. Comparing a container compares its elements, so
- * the elements are registered as well and the closure is closed in
- * emitDescRegion.
+ * 按 C 名去重。比较容器会比较它的元素，所以元素也一并登记，这组需求由 `emitDescRegion` 收拢
+ * 成闭包。
+ *
+ * @param g  生成器；登记表是 `g->eqNeed`，新类型追加在末尾。
+ * @param t  类型；`NULL` 或没有 C 名时直接返回。
  */
 static void needEq(CG *g, Type *t) {
     if (!t || !t->name) return;
@@ -1013,18 +1017,18 @@ static void needEq(CG *g, Type *t) {
     *(Type **)vecPush(&g->eqNeed) = t;
 }
 
-/* Return the C expression denoting the descriptor of a type.
+/**
+ * @brief 返回表示某个类型的描述符的 C 表达式。
  *
- * Every type this descriptor refers to is registered on the way out, which is
- * what makes the demand set a closure.
+ * 往外走时会把该描述符引用到的每个类型都登记上，这正是需求集成为闭包的原因。
  *
- * Returns:
- *   A string such as `&extc_desc_i32` or `&list_i32_desc`, allocated in the
- *   generator's arena.
+ * @param g  生成器。
+ * @param t  类型；`NULL` 时返回 `&extc_desc_i32`。
+ * @return   形如 `&extc_desc_i32` 或 `&list_i32_desc` 的字符串，分配在生成器的 arena 里。
  */
 static const char *descRef(CG *g, Type *t) {
     if (!t) return "&extc_desc_i32";
-    needDesc(g, t);                       /* registering the dependency closes the set */
+    needDesc(g, t);
     if (t->kind == TY_BUILTIN) return arenaPrintf(g->arena, "&extc_desc_%s", t->name);
     if (t->kind == TY_REF)     return "&extc_desc_ref";
     if (isByteView(t))         return "&extc_desc_text";
@@ -1033,21 +1037,16 @@ static const char *descRef(CG *g, Type *t) {
     return arenaPrintf(g->arena, "&%s_desc", t->name);
 }
 
-/* Emit the descriptor of a struct: field names plus `offsetof`.
+/**
+ * @brief 记下刚发进当前缓冲的一段顶层定义，供之后判断有没有人引用它。
  *
- * `offsetof` instead of a hand-computed layout means a forgotten field or a
- * wrong layout fails to compile rather than printing garbage.
+ * 用写完之后的全文本判断有没有人点这个名字，和全局量一样。描述符池要靠它：那里的定义按需
+ * 产生，但不是每个都会被引用。声明与定义是两段独立文本，注册在同一个名字下。
  *
- * Params:
- *   cname - C name of the struct, which is also the prefix of its descriptor
- *   disp  - name to display; a generic instance displays its template name
- *           (`varArray { ... }`), as it always did
- *   eqFn  - C name of the equality adapter, or NULL when the type has none
+ * @param g       生成器；记录追加到 `g->deadDefs`。
+ * @param name    该定义登记用的 C 符号名。
+ * @param before  该定义在 `g->out` 里的起始偏移。
  */
-/* Remember a top-level definition emitted into the current buffer; `before` is where it
- * started. The finished text decides whether anything names it, exactly like a global. Used in
- * the descriptor pool - definitions that are asked for on demand but not always referenced -
- * and a declaration and a definition are two separate pieces, registered under one name. */
 static void deadDefAdd(CG *g, const char *name, size_t before) {
     Buf l;
     bufInit(&l, g->arena);
@@ -1058,6 +1057,17 @@ static void deadDefAdd(CG *g, const char *name, size_t before) {
     *(DeadDef **)vecPush(&g->deadDefs) = d;
 }
 
+/**
+ * @brief 发出一个结构体的描述符：字段名加 `offsetof`。
+ *
+ * 用 `offsetof` 而不是自己算布局：漏字段或布局算错会在编译期失败，而不是打印出垃圾。
+ *
+ * @param g      生成器。
+ * @param cname  结构体的 C 名，也是它描述符与字段表的前缀。
+ * @param disp   显示用的名字；泛型实例用模板名（`varArray { ... }`）。
+ * @param sd     结构体定义；写字段表时字段类型会先替换再取描述符。
+ * @param eqFn   相等适配器的 C 名；该类型没有适配器时为 `NULL`。
+ */
 static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef *sd,
                           const char *eqFn) {
     size_t n = sd->fields.len;
@@ -1082,9 +1092,13 @@ static void genStructDesc(CG *g, const char *cname, const char *disp, StructDef 
     deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", cname), sdb);
 }
 
-/* Emit the descriptor of an array: an element count and an element descriptor.
+/**
+ * @brief 发出一个数组的描述符：元素个数加元素描述符。
  *
- * An array has no field names, so it prints as `[1, 2, 3]`.
+ * 数组没有字段名，所以打印成 `[1, 2, 3]`。
+ *
+ * @param g    生成器。
+ * @param arr  数组类型；`name` 是它的 C 名，`inner` 是元素类型。
  */
 static void genArrayDesc(CG *g, Type *arr) {
     size_t adb = g->out->len;
@@ -1094,9 +1108,13 @@ static void genArrayDesc(CG *g, Type *arr) {
     deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", arr->name), adb);
 }
 
-/* Emit the descriptor of a non-byte view, which prints as `[a, b]`.
+/**
+ * @brief 发出一个非字节视图的描述符，它打印成 `[a, b]`。
  *
- * A byte view never reaches here: it shares `extc_desc_text`.
+ * 字节视图到不了这里：它共用 `extc_desc_text`。
+ *
+ * @param g  生成器。
+ * @param v  视图实例；`targs` 的第一个元素是元素类型，取描述符前先替换。
  */
 static void genViewDesc(CG *g, Type *v) {
     Type *elem = subst(g, *(Type **)vecAt(&v->targs, 0));
@@ -1106,11 +1124,15 @@ static void genViewDesc(CG *g, Type *v) {
     deadDefAdd(g, arenaPrintf(g->arena, "%s_desc", v->name), vdb);
 }
 
-/* Emit the descriptor of an enum: its variant names, and `<type name>` for a
- * value outside the table.
+/**
+ * @brief 发出一个枚举的描述符：变体名表，表外的值打印成 `<类型名>`。
  *
- * Only the variant name is printed, never the payload, and the text is
- * byte-for-byte what the previous per-type name function produced.
+ * 只打印变体名，从不打印负载。
+ *
+ * @param g      生成器。
+ * @param cname  枚举的 C 名，也是它描述符与变体表的前缀。
+ * @param disp   显示用的名字。
+ * @param td     枚举定义；没有变体时不发变体表，描述符里那一格为 `NULL`。
  */
 static void genEnumDesc(CG *g, const char *cname, const char *disp, TypeDef *td) {
     size_t n = td->variants.len;
@@ -1161,15 +1183,14 @@ static void closeEqNeeds(CG *g);
 static FuncDef *findOpMethod(TypeTable *tt, Type *t, const char *sym, Type *rhs, const char *fallback);
 static void genEqAdapter(CG *g, Type *t, FuncDef *m);
 
-/* Emit the definition of every registered descriptor.
+/**
+ * @brief 发出每个已登记描述符的定义。
  *
- * Notes:
- *   - The loop condition rereads `len` on purpose: `descRef` appends new
- *     dependencies while the definitions are written.
+ * 循环条件每次重读 `len` 是刻意的：写定义的过程中 `descRef` 会追加新的依赖。
+ *
+ * @param g  生成器；读 `g->descs`，把定义写进 `g->out`。
  */
 static void emitDescDefs(CG *g) {
-    /* The condition rereads `len` on purpose: `descRef` appends dependencies
-     * while the definitions are written. */
     for (size_t i = 0; i < g->descs.len; i++) {
         Type *t = *(Type **)vecAt(&g->descs, i);
         /* Only a struct that `extc_eq` really recurses into fills this slot; others stay NULL. */
@@ -1196,7 +1217,15 @@ static void emitDescDefs(CG *g) {
     }
 }
 
-/* Does this type need `eq` generated or filled in? The lookup is by C name. */
+/**
+ * @brief 判断一个类型是否需要生成或填入 `eq`。
+ *
+ * 按 C 名查。
+ *
+ * @param g  生成器；查询表是 `g->eqNeed`。
+ * @param t  类型；`NULL` 或没有 C 名时为 `false`。
+ * @return   登记过则 `true`。
+ */
 static bool eqNeeded(CG *g, Type *t) {
     if (!t || !t->name) return false;
     for (size_t i = 0; i < g->eqNeed.len; i++)
@@ -1204,11 +1233,12 @@ static bool eqNeeded(CG *g, Type *t) {
     return false;
 }
 
-/* Close the `eq` set inwards: a container that needs equality needs it for its
- * elements too.
+/**
+ * @brief 把 `eq` 集合向内收拢：需要相等性的容器，它的元素也需要。
  *
- * A struct ends the walk, because its equality is delegated through `d->eq` to
- * the `fn ==` the user wrote.
+ * 结构体终止这趟遍历，因为它的相等性经 `d->eq` 交给用户写的 `fn ==`。
+ *
+ * @param g  生成器；遍历 `g->eqNeed`，循环中会往里追加元素。
  */
 static void closeEqNeeds(CG *g) {
     for (size_t i = 0; i < g->eqNeed.len; i++) {   /* reread: entries are appended */
@@ -1219,10 +1249,13 @@ static void closeEqNeeds(CG *g) {
     }
 }
 
-/* Write the descriptor pool into `g->desc`.
+/**
+ * @brief 把描述符池写进 `g->desc`。
  *
- * The pool holds the equality adapters and the descriptor definitions and is
- * spliced in between the prototypes and the function bodies.
+ * 池里装相等适配器与描述符定义，插在原型与函数体之间。`g->descs` 与 `g->eqNeed` 都空时，
+ * 整块产物都不需要。
+ *
+ * @param g  生成器；临时把 `g->out` 指向 `g->desc`，写完还原。
  */
 static void emitDescRegion(CG *g) {
     /* Nothing structured was printed and no array was compared, so the whole
@@ -1282,25 +1315,26 @@ static void emitDescRegion(CG *g) {
  * user cannot read.
  */
 
-/* Find the user-defined operator method of a type.
+/**
+ * @brief 找一个类型上用户定义的运算符方法。
  *
- * Params:
- *   sym      - symbol to look for, for example "=="
- *   fallback - symbol to accept when `sym` is absent, for example "==" when
- *              looking for "!=" (whose result is then negated); NULL to accept
- *              `sym` only
+ * 走检查器自己的查找 `findOperator`，不在这里再抄一份：手写的扫描不替换泛型接收者的类型
+ * 实参，遇到 `slice<u8> == slice<u8>` 会漏掉方法，让调用方退到裸 C `==` 去比较两个结构体。
  *
- * Returns:
- *   The method, or NULL when neither symbol is defined for this type.
+ * @param tt        类型表，方法查找在其中进行。
+ * @param t         运算符的接收者类型；`ttBase(t)` 不是结构体或泛型实例时返回 `NULL`。
+ * @param sym       要找的符号，例如 `"=="`。
+ * @param rhs       右操作数的类型，参与重载解析。
+ * @param fallback  `sym` 不存在时改试的符号，例如找 `"!="` 时试 `"=="`（结果由调用方取反）；
+ *                  `NULL` 表示只接受 `sym`。
+ * @return          找到的方法；两个符号都没定义时为 `NULL`。
  */
 static FuncDef *findOpMethod(TypeTable *tt, Type *t, const char *sym, Type *rhs, const char *fallback) {
     Type *b = ttBase(t);
     if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return NULL;
-    /* The checker's lookup, not a second copy of it. Scanning the method list here and
-     * comparing the operand type without substituting a generic receiver's arguments would
-     * disagree with the checker's own lookup, which does substitute them: for `slice<u8> ==
-     * slice<u8>` this path misses the method, takes the "native" branch and emits a bare C
-     * `==` on two structs. One lookup, one answer. */
+    /* Use the checker's own lookup rather than scanning the method list here: a hand-rolled scan
+     * that compares the operand type without substituting a generic receiver's arguments would
+     * miss `slice<u8> == slice<u8>` and let the caller fall back to a bare C `==` on two structs. */
     FuncDef *m = findOperator(tt, b, sym, rhs);
     if (!m && fallback) m = findOperator(tt, b, fallback, rhs);
     return m;
@@ -1323,19 +1357,18 @@ static FuncDef *findOpMethod(TypeTable *tt, Type *t, const char *sym, Type *rhs,
  * operand that is not one is first stored in a temporary through the statement
  * prefix, for the same reason `println` does it.
  */
-/* Return the address of an operand to pass to `extc_eq`.
+/**
+ * @brief Return the address of an operand to pass to `extc_eq`.
  *
- * Params:
- *   x - the operand expression
- *   t - its static type, needed when a temporary must be declared
+ * `extc_eq` takes addresses, so the operand must be a place. One that is not a place is copied
+ * into a fresh temporary through the statement prefix, which is what makes the copy happen
+ * before the enclosing statement runs.
  *
- * Returns:
- *   A C expression of type pointer to t: `&(code)` for a place, the address of
- *   a fresh temporary `__extc_q<N>` otherwise.
- *
- * Notes:
- *   - The temporary goes through the statement prefix, so it is computed before
- *     the enclosing statement runs.
+ * @param g  The generator; it supplies the temporary counter.
+ * @param x  The operand expression.
+ * @param t  The static type of `x`; it types the temporary.
+ * @return A C expression of pointer-to-`t` type: `&(code)` for a place, otherwise the address
+ *         of the temporary.
  */
 static const char *eqOperand(CG *g, Expr *x, Type *t) {
     const char *code = genExpr(g, x);
@@ -1345,40 +1378,35 @@ static const char *eqOperand(CG *g, Expr *x, Type *t) {
     return arenaPrintf(g->arena, "&%s", tmp);
 }
 
-/* Emit a structural equality test as one `extc_eq` call.
+/**
+ * @brief Emit a structural equality test as one `extc_eq` call.
  *
- * Params:
- *   e   - the binary `==` or `!=` expression
- *   arr - static type of the operands, that is the type being compared
+ * Both sides are evaluated exactly once and in source order, temporaries included.
  *
- * Returns:
- *   The call expression; the caller negates it for `!=`.
- *
- * Notes:
- *   - Both sides are evaluated exactly once and in source order, including the
- *     temporaries that land in the statement prefix.
+ * @param g    The generator.
+ * @param e    The binary `==` or `!=` expression.
+ * @param arr  The static type of the operands, that is the type being compared.
+ * @return The call expression; the caller negates it for `!=`.
  */
 static const char *genEqCall(CG *g, Expr *e, Type *arr) {
-    /* Both sides are evaluated once each, in source order, temporaries included. */
     const char *l = eqOperand(g, e->u.bin.left, arr);
     const char *r = eqOperand(g, e->u.bin.right, arr);
     return arenaPrintf(g->arena, "extc_eq(%s, %s, %s)", l, r, descRef(g, arr));
 }
 
-/* Emit the equality adapter of a struct.
+/**
+ * @brief Emit the equality adapter of a struct.
  *
- * It connects the user-written `fn ==` to the `bool (*)(const void *, const
- * void *)` shape that `extc_eq` expects. Only a struct needs an adapter,
- * because its comparison is arbitrary user code that can only be delegated to.
+ * The adapter connects the user-written `fn ==` to the `bool (*)(const void *, const void *)`
+ * shape `extc_eq` expects. Only a struct needs one: its comparison is arbitrary user code that
+ * can only be delegated to.
  *
- * Params:
- *   t - the struct type
- *   m - its `==` method; its first two parameters are the operands
+ * Taking the address of an operand must follow the method signature exactly: each of the first
+ * two parameters is passed by address when it is declared `ref`, and by value otherwise.
  *
- * Notes:
- *   - Taking the address of an operand must follow the method signature exactly:
- *     each of the first two parameters is passed by address when it is declared
- *     `ref`, and by value otherwise.
+ * @param g  The generator.
+ * @param t  The struct type.
+ * @param m  Its `==` method; its first two parameters are the operands.
  */
 static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
     const char *tn = cType(g, t);
@@ -1418,17 +1446,22 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
 static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site, size_t nargs,
                            bool forSignature);
 
-/* Wrap an emitted integer expression back to its declared width when that width is narrower
- * than C's `int`.
+/**
+ * @brief Wrap an emitted integer expression back to its declared width when that width is
+ *        narrower than C's `int`.
  *
- * The checker types `a + a` for `a: i8` as **`i8`** (`var x: u16 = a + a` reports "found `i8`"),
- * but C promotes both operands to `int`, so the value was 200 while storing it gave -56 and
- * `a + a == x` was **false** -- the type system and the value disagreed (). Narrow
- * arithmetic therefore wraps at its own width, the same rule the 32/64-bit widths already get
- * from `-fwrapv`.
+ * The checker types `a + a` for `a: i8` as `i8`, but C promotes both operands to `int`, so the
+ * arithmetic value and the stored value would disagree and `a + a == x` would be false. Narrow
+ * arithmetic therefore wraps at its own width, the rule the 32/64-bit widths already get from
+ * `-fwrapv`.
  *
  * Only 8- and 16-bit results are touched: wider types are handled by `-fwrapv`, and a
- * comparison's type is `bool`, so it never reaches this. The cast is free in C.
+ * comparison's type is `bool`, so it never reaches here. The cast is free in C.
+ *
+ * @param g     The generator.
+ * @param t     The declared result type; NULL and non-integer types pass through unchanged.
+ * @param code  The C expression to wrap.
+ * @return `code` cast to the declared type, or `code` unchanged when no wrap is needed.
  */
 static const char *narrowWrap(CG *g, Type *t, const char *code) {
     t = t ? subst(g, t) : NULL;
@@ -1441,23 +1474,27 @@ static const char *narrowWrap(CG *g, Type *t, const char *code) {
     return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), code);
 }
 
+/**
+ * @brief Emit a binary operation.
+ *
+ * An overloadable operator the checker already resolved carries the method to call in
+ * `planCallee(e)`, which covers `==` `!=` and the ordering and arithmetic operators. The same
+ * operators are emitted from here when the operand was a type parameter inside a generic:
+ * `planNeedOp(e)` says the decision was deferred, and the instance context is what makes `T`
+ * resolvable now. Array equality becomes one generic `extc_eq` call; integer division, modulo
+ * and shifts go through the trapping helpers unless `@unchecked` is in effect.
+ *
+ * @param g  The generator.
+ * @param e  The binary expression.
+ * @return A C expression; the caller supplies the surrounding syntax.
+ */
 static const char *genBin(CG *g, Expr *e) {
     const char *op = e->u.bin.op;
-    /* Arrays: the compiler provides `==` and `!=`, because an array has no
-     * `sdef` and therefore no method to find.
-     *
-     * Since the descriptor table exists, no `_eq` function is derived per array
-     * type any more; the comparison becomes the generic
-     * `extc_eq(&a, &b, &arr_desc)`, one descriptor plus one recursive
-     * implementation. The semantics are unchanged: recurse element by element,
-     * and call the user's `fn ==` for a struct element.
-     *
-     * The condition must not also require `!planNeedOp(e)`: a comparison inside a
-     * generic is resolved at instantiation, and after substitution the element
-     * type can well turn out to be an array - comparing two rows of a
-     * `slice<[6]i32>` is that case. Adding `!planNeedOp(e)` to the condition would make such
-     * a comparison fall through to the method lookup below and report
-     * "`array_6_i32` needs to define `!=`" -- a false error. */
+    /* An array has no `sdef` and therefore no method: `==` and `!=` on arrays are emitted here
+     * through `extc_eq`. The condition must not also require `!planNeedOp(e)`: a comparison
+     * inside a generic is resolved at instantiation, and after substitution the element type
+     * can well turn out to be an array - comparing two rows of a `slice<[6]i32>` is that case -
+     * and adding it would report "`array_6_i32` needs to define `!=`" instead. */
     if (!planCallee(e)) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         if (lt && lt->kind == TY_ARRAY &&
@@ -1476,11 +1513,9 @@ static const char *genBin(CG *g, Expr *e) {
                                     strcmp(op, "!=") == 0 ? "==" : NULL);
 
         if (!m) {
-            /* No method: either C compares the instance natively, or the instance cannot
-             * take this operator at all. `typeSupportsOp` is the checker's own predicate
-             * for both halves, so this file does not decide the operator rules again.
-             * `m` was NULL and the lookup above already tried the `!=` -> `==` fallback,
-             * so a true answer here means "native". */
+            /* `typeSupportsOp` is the checker's own predicate for both halves, so the
+             * operator rules are not decided again here. `m` is NULL and the lookup already
+             * tried the `!=` -> `==` fallback, so a true answer here means "native". */
             if (typeSupportsOp(g->tt, lt, op, ttBase(subst(g, e->u.bin.right->type))))
                 return arenaPrintf(g->arena, "(%s %s %s)",
                                    genExpr(g, e->u.bin.left), op,
@@ -1498,18 +1533,15 @@ static const char *genBin(CG *g, Expr *e) {
         Param *p1 = *(Param **)vecAt(&m->params, 1);
         const char *l = genExpr(g, e->u.bin.left);
         const char *r = genExpr(g, e->u.bin.right);
-        /* The left operand is the object, exactly as a method receiver is, so it goes
-         * through the same rule -- a value it must materialize (a chained `<<` passes the
-         * result of the previous one is not a place) cannot be addressed directly. */
+        /* The left operand is the method receiver, so it obeys the receiver rule: a value
+         * that is not a place, such as the result of a chained `<<`, has to be materialized. */
         l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
         if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
 
-        /* The hidden arguments: an operator **is** a method call, so it asks the same single owner
-         * everything else asks (`cgImplicitArgs`) -- the checker already decided the level for it
-         * (`setOpCallArgs`). It emits both halves: without the arena half,
-         * an operator that allocated and returned the value failed loudly in the C compiler
-         * (`too few arguments to function ...`) instead of silently leaking. Emitting both is what
-         * closed #83 -- and it is what makes the operator path stop being "the one exception". */
+        /* An operator is a method call, so it asks the same single owner for the hidden
+         * arguments (`cgImplicitArgs`); the checker already decided the level for it
+         * (`setOpCallArgs`). Both halves must be emitted, or the generated C calls the method
+         * with too few arguments. */
         Buf cb;
         bufInit(&cb, g->arena);
         bufPrintf(&cb, "%s(%s, %s", cMethodName(g, e->u.bin.left->type, m), l, r);
@@ -1568,26 +1600,20 @@ static const char *genBin(CG *g, Expr *e) {
  */
 static const char *zeroValue(CG *g, Type *t);
 
-/* Does this type contain a `ref`, directly or nested inside a struct?
+/**
+ * @brief Report whether a type contains a `ref`, directly or nested inside a struct.
  *
- * Such a type must not be zero-initialized with `{0}`, which would build a null
- * reference. This is the defensive branch that lets the C compiler report the
- * mistake instead.
+ * Such a type must not be zero-initialized with `{0}`, which would build a null reference.
  *
- * Returns:
- *   true when a `ref` appears anywhere inside the type.
+ * @param t  The type to inspect; NULL contains no reference.
+ * @return true when a `ref` appears anywhere inside the type.
  */
 static bool needsExplicitZero(Type *t) {
     if (!t) return false;
     if (t->kind == TY_REF) return true;
-    /* An enum's zero is one of its variants, not the integer 0, so a struct that starts with an
-     * enum has to be initialized field by field (`board b = (board){0};` is an `int`-to-enum
-     * conversion, which clang reports as `-Wimplicit-int-enum-cast`). */
-    /* Naming the enum's first variant instead of writing 0 removes clang's
-     * `-Wimplicit-int-enum-cast`. The initializer is nested deeper in exchange -
-     *     board b = (board){ .cell = (array_4_array_4_color){ { (array_4_color){ { color_red } } } }, ... };
-     * against `(board){0}`, which is harder to read. The warning is in the documented
-     * list instead (docs/WARNINGS.md section 3.1). */
+    /* An enum's zero is one of its variants, not the integer 0. Naming that variant would
+     * remove clang's `-Wimplicit-int-enum-cast`, at the cost of nesting the initializer one
+     * level deeper, so the warning is documented and accepted instead. */
     if (t->kind == TY_ENUM || t->kind == TY_ARRAY) return false;
     if (t->kind != TY_STRUCT || !t->sdef) return false;
     for (size_t i = 0; i < t->sdef->fields.len; i++) {
@@ -1597,19 +1623,19 @@ static bool needsExplicitZero(Type *t) {
     return false;
 }
 
-/* Enter the substitution context of the fields of a generic instance.
+/**
+ * @brief Enter the substitution context of the fields of a generic instance.
  *
- * The fields must be substituted with that instance's own type arguments, never
- * with whatever context the caller happens to leave behind: `subst` would then
- * return the type unchanged, and zero-value generation would recurse into
- * itself until the stack overflows.
+ * The fields must be substituted with that instance's own type arguments, never with whatever
+ * context the caller happens to leave behind: `subst` would then return the type unchanged, and
+ * zero-value generation would recurse into itself until the stack overflows.
  *
- * Params:
- *   sd    - the generic struct definition
- *   targs - its type arguments in this instance
- *   saveP - out: the previous `substParams`
- *   saveA - out: the previous `substArgs`
- *   saveN - out: the previous `ownerPrefix`
+ * @param g      The generator; the previous context is saved into the out parameters.
+ * @param sd     The generic struct definition.
+ * @param targs  Its type arguments in this instance.
+ * @param saveP  Out: the previous `substParams`.
+ * @param saveA  Out: the previous `substArgs`.
+ * @param saveN  Out: the previous `ownerPrefix`.
  */
 static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **saveA, const char **saveN) {
     *saveP = g->substParams;
@@ -1619,16 +1645,16 @@ static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **
     g->substArgs   = targs;
 }
 
-/* Enter the substitution context of a generic free function instance.
+/**
+ * @brief Enter the substitution context of a generic free function instance.
  *
- * Without it a `T` in the body of the instance - the `T` of `a == b`, say -
- * stays TY_PARAM forever, which either reports a false error or generates wrong
- * C.
+ * Without it a `T` in the body of the instance - the `T` of `a == b`, say - stays `TY_PARAM`,
+ * which either reports a false error or generates wrong C.
  *
- * Params:
- *   f     - the instance; without a template this is a no-op
- *   saveP - out: the previous `substParams`
- *   saveA - out: the previous `substArgs`
+ * @param g      The generator; the previous context is saved into the out parameters.
+ * @param f      The instance; without a template this changes nothing.
+ * @param saveP  Out: the previous `substParams`.
+ * @param saveA  Out: the previous `substArgs`.
  */
 static void substEnterFunc(CG *g, FuncDef *f, Vec **saveP, Vec **saveA) {
     *saveP = g->substParams;
@@ -1638,13 +1664,26 @@ static void substEnterFunc(CG *g, FuncDef *f, Vec **saveP, Vec **saveA) {
         g->substArgs   = &f->targs;
     }
 }
-/* Restore the substitution context saved by substEnterFunc. */
+/**
+ * @brief Restore the substitution context saved by `substEnterFunc`.
+ *
+ * @param g      The generator.
+ * @param saveP  The previous `substParams`.
+ * @param saveA  The previous `substArgs`.
+ */
 static void substLeaveFunc(CG *g, Vec *saveP, Vec *saveA) {
     g->substParams = saveP;
     g->substArgs   = saveA;
 }
 
-/* Restore the substitution context saved by substEnterInst. */
+/**
+ * @brief Restore the substitution context saved by `substEnterInst`.
+ *
+ * @param g      The generator.
+ * @param saveP  The previous `substParams`.
+ * @param saveA  The previous `substArgs`.
+ * @param saveN  The previous `ownerPrefix`.
+ */
 static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
     g->substParams = saveP;
     g->substArgs   = saveA;
@@ -1656,31 +1695,36 @@ static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
  * This is the recursive implementation; the declaration above records why a
  * `{0}` is not always good enough.
  */
-/* A null pointer with the type the context wants.
+/**
+ * @brief Emit a null pointer with the type the context expects.
  *
- * `((void *)0)` is a perfectly good null in C, and clang's `-Weverything` reports every place one
- * is assigned to a typed pointer: `implicit conversion when initializing 'node *' with an
- * expression of type 'void *' ... is not permitted in C++`. Twenty-six of those across the corpus
- * came from this one spelling. Emitting `(node *)0` says the same thing and says it in the type
+ * `((void *)0)` is a fine null in C, but assigning it to a typed pointer is an implicit `void *`
+ * conversion that clang's `-Weverything` reports; `(node *)0` says the same thing in the type
  * the reader expects.
+ *
+ * @param g  The generator.
+ * @param t  The reference type; a non-reference type yields the untyped null.
+ * @return `((inner *)0)` for a reference to `inner`, `((void *)0)` otherwise.
  */
 static const char *nullValue(CG *g, Type *t) {
     if (t && t->kind == TY_REF && t->inner) return arenaPrintf(g->arena, "((%s *)0)", cType(g, t->inner));
     return "((void *)0)";
 }
 
-/* The braces a zero value of type `t` needs when it sits *inside* another initializer.
+/**
+ * @brief Return the braces a zero value of type `t` needs when it sits inside another
+ *        initializer.
  *
- * An array type is a struct wrapping `T data[N]`, so it brings two levels here (its own braces and
- * the member array's); a struct brings one. The outermost level costs nothing: it is the compound
- * literal's own brace, which is why `zeroValue` writes `(T){ { ... } }` for an array.
+ * An array type is a struct wrapping `T data[N]`, so it brings two levels here (its own braces
+ * and the member array's); a struct brings one. The outermost level costs nothing: it is the
+ * compound literal's own brace, which is why `zeroValue` writes `(T){ { ... } }` for an array.
  *
- * The brace counts answer gcc's `-Wmissing-braces`, which is enabled by `-Wall` and asks
- * for a brace per aggregate:
- *     [1025]i64      -> (T){ { 0 } }
- *     [4]?i64        -> (T){ { { 0 } } }
- *     [3][8]i32      -> (T){ { { { 0 } } } }
- *     [5]cell        -> (T){ { { 0 } } }
+ * The counts answer gcc's `-Wmissing-braces`, which `-Wall` enables and which asks for a brace
+ * per aggregate; clang accepts any of them.
+ *
+ * @param g  The generator.
+ * @param t  The element type; NULL yields the scalar `0`.
+ * @return A C initializer fragment for one element of type `t`.
  */
 static const char *elemBraces(CG *g, Type *t) {
     if (!t) return "0";
@@ -1699,13 +1743,23 @@ static const char *elemBraces(CG *g, Type *t) {
     return "0";                /* scalar, enum, bool, a reference: the element itself */
 }
 
+/**
+ * @brief Emit the zero value of a type.
+ *
+ * `{0}` is not always a valid initializer: a type that carries a non-nullable `ref` would get a
+ * null reference, so it is spelled out field by field instead. A generic instance is always
+ * spelled out, because its field types have to be substituted with that instance's own type
+ * arguments.
+ *
+ * @param g  The generator.
+ * @param t  The type to zero-initialize; it is substituted before it is inspected.
+ * @return A C initializer expression allocated in the generator's arena.
+ */
 static const char *zeroValue(CG *g, Type *t) {
-    /* Substitute first, exactly as `cType` does. A local declared inside a generic function
-     * carries the **template** type (`box<T>`, whose `targs` is `[T]`), so entering "the instance
-     * context" below substituted `T` with `T` -- a no-op -- and the initializer came out as
-     * `(box_T){ .v = 0 }` while the declaration beside it said `box_i64`: gcc then stopped at
-     * "`box_T` undeclared" (tools/attack.py B14, a generic function returning `box<T>`; A4 and F4
-     * are the same family). */
+    /* Substitute first, exactly as `cType` does: `t` can still carry the template type of a
+     * generic function (`box<T>`, whose `targs` is `[T]`), and the instance context below would
+     * substitute `T` with `T`, leaving the initializer named after an undeclared type while the
+     * declaration beside it names the instance. */
     t = subst(g, t);
     if (!t) return "0";
     /* The zero value of an enum with payloads is tag 0 with a cleared payload,
@@ -1715,12 +1769,9 @@ static const char *zeroValue(CG *g, Type *t) {
      * cannot be zero-initialized. */
     if (t->kind == TY_ENUM)
         return enumHasPayload(t->edef) ? arenaPrintf(g->arena, "(%s){0}", t->name) : "0";
-    /* An array is a struct wrapping `data[N]`, so the braces have to follow the nesting or gcc
-     * asks for them (`-Wmissing-braces`, gcc only - clang takes any of these):
-     *   `[N]i64`  -> `{{0}}`   one brace for the struct, one for `data`, then the first element
-     *   `[N][M]i32` -> the element is an array itself, so its own zero value goes inside:
-     *                  `{{{0}}}` and so on. The element's zero value is the ordinary one, which is
-     *   already braced for structs by the cases below. */
+    /* An array is a struct wrapping `data[N]`, so its braces have to follow the nesting or gcc
+     * asks for them (`-Wmissing-braces`; clang takes any of these). The element's zero value is
+     * the ordinary one, already braced for structs by the cases below. */
     if (t->kind == TY_ARRAY)
         return arenaPrintf(g->arena, "(%s){ { %s } }", t->name, elemBraces(g, t->inner));
 
@@ -1773,51 +1824,44 @@ static const char *zeroValue(CG *g, Type *t) {
 
     if (ttIs(t, "bool")) return "false";
 
-    /* Defensive: a `ref` has no zero value. The checker guarantees that this
-     * line is unreachable - a struct containing a `ref` cannot be
-     * zero-initialized and such a field cannot be omitted - but should a later
-     * path slip through, an identifier that does not exist is emitted and the C
-     * compiler reports it, rather than a null reference being inserted quietly.
-     */
-    /* The zero value of a `?ref T` is `null`, because a nullable reference does
-     * have one. Treating every reference as valueless would make the
-     * zero-initialization of a struct with a `?ref` field emit the
-     * non-existent identifier above (a real bug, found when `var l: list` failed
-     * to compile). */
+    /* Defensive: a non-nullable `ref` has no zero value, so an identifier that does not exist
+     * is emitted and the C compiler reports it instead of a null reference being inserted
+     * quietly. The checker refuses zero-initialization of a struct that contains such a field,
+     * so this is unreachable unless another path slips through. A `?ref T` does have one: `null`. */
     if (t->kind == TY_REF) return t->nullable ? nullValue(g, t)
                                               : "__extc_reference_has_no_zero_value__";
 
-    /* Same defensive shape as the `ref` line above, for a stronger reason: the `0` that would fall
-     * out below is a **null function pointer**, and calling one jumps to address zero. The checker
-     * refuses to zero-initialize a `fn` (`typeLacksZeroValue` says a function type has no zero
-     * value), so this line is unreachable; if a later path slips through, the C compiler names the
-     * missing identifier instead of the program jumping to 0. */
+    /* Same defensive shape as the `ref` case, for a stronger reason: the `0` that would fall out
+     * below is a null function pointer, and calling one jumps to address zero. The checker
+     * refuses to zero-initialize a `fn`, so this is unreachable; the C compiler names the
+     * missing identifier instead. */
     if (t->kind == TY_FN) return "__extc_fn_has_no_zero_value__";
 
     return "0";
 }
 
-/* Return the zero value of a type as an initializer; see zeroValue. */
+/**
+ * @brief Return the zero value of a type as an initializer.
+ *
+ * @param g  The generator.
+ * @param t  The type to zero-initialize.
+ * @return The initializer expression produced by `zeroValue`.
+ */
 static const char *zeroInit(CG *g, Type *t) {
     return zeroValue(g, t);
 }
 
-/* Is the generated C expression of a `println` argument an lvalue, that is, can
- * its address be taken?
+/**
+ * @brief Report whether the generated C expression of a `println` argument is an lvalue.
  *
- * This is the **one** owner of that question (`selfOperandAsParam` asks it too).
- * Confusing the two breaks code:
- *   - the slice expression `s[0..5]` is a place in extC, but its C form is
- *     `slice_u8_slice(s, 0, 5, "...", 54)`, a function call, and `&` on a call
- *     is illegal. That really happened: examples/slices.extc and
- *     euler-sieve.extc stopped compiling.
- *   - the enum variant `color.red` looks like a field access in extC, but the
- *     checker has already replaced it with a constructor, which is not a place,
- *     so this correctly answers false.
+ * This is the one owner of that question, and it answers for the C form, not the extC form: the
+ * slice expression `s[0..5]` is a place in extC, but its C form is a function call, and `&` on
+ * a call is illegal; an enum variant such as `color.red` has already been replaced by a
+ * constructor. `selfOperandAsParam` asks the same question.
  *
- * Returns:
- *   false whenever the answer is uncertain. A wrong false merely costs one
- *   extra copy, while a wrong true produces C that does not compile.
+ * @param e  The argument expression.
+ * @return false whenever the answer is uncertain: a wrong false merely costs one extra copy,
+ *         while a wrong true produces C that does not compile.
  */
 static bool printArgIsPlace(const Expr *e) {
     switch (e->kind) {
@@ -1828,27 +1872,23 @@ static bool printArgIsPlace(const Expr *e) {
     }
 }
 
-/* Emit the expression that implements one `print` call.
+/**
+ * @brief Emit the expression that implements one `print` call.
  *
- * A structured argument - enum, byte view, struct, generic instance or array -
- * is printed through its descriptor as `extc_print(&x, &x_desc)`. That removes
- * per-type print code entirely and leaves one descriptor per type instead. The
- * call needs an address, so an argument that is not a place is first stored in
- * a temporary through the statement prefix: `println("literal")` and
- * `println(makePoint())` both take that path. A C compound literal cannot be
- * used instead, because C refuses to initialize an aggregate from an expression
- * of the same type and gcc answers "incompatible types".
+ * A structured argument - enum, byte view, struct, generic instance or array - is printed
+ * through its descriptor as `extc_print(&x, &x_desc)`, so per-type print code disappears and
+ * one descriptor per type is left. That call needs an address, so an argument that is not a
+ * place is first stored in a temporary through the statement prefix. A C compound literal
+ * cannot be used instead: C refuses to initialize an aggregate from an expression of the same
+ * type.
  *
- * Params:
- *   args    - the argument expressions of the call
- *   newline - append a trailing newline as well
+ * @param g        The generator.
+ * @param args     The argument expressions of the call.
+ * @param newline  Append a trailing newline as well.
+ * @return The generated expression, allocated in the generator's arena.
  *
- * Returns:
- *   The generated expression, allocated in the generator's arena.
- *
- * Notes:
- *   - Sets `needRuntime` as a side effect; that flag is what pulls the print
- *     runtime into the output.
+ * Sets `needRuntime` and `needPrint`, which pull the descriptor table and `extc_print` into the
+ * output.
  */
 static const char *genPrint(CG *g, Vec *args, bool newline) {
     Buf b;
@@ -1863,21 +1903,10 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
         if (i) bufPuts(&b, ", ");
         if (!bt) { bufPuts(&b, "0"); continue; }
 
-        /* Structured types - enum, byte view, struct, generic instance, array -
-         * all print through their descriptor: `extc_print(&x, &x_desc)`. That
-         * is what removes per-type print code and leaves only per-type data.
-         *
-         * The call takes an address, so the argument must be a place. When it is
-         * not - `println("literal")` or `println(makePoint())` - the value is
-         * first stored in a temporary and that line is emitted before the
-         * enclosing statement through the statement prefix. A compound literal
-         * `(T){expr}` was tried and does not work: C will not initialize an
-         * aggregate from an expression of the same type, and gcc reports
-         * "incompatible types". */
         if (bt->kind == TY_ENUM || isByteView(bt) || bt->kind == TY_STRUCT ||
             bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
-            g->needRuntime = true;              /* the descriptor table must be emitted too */
-            g->needPrint   = true;              /* ... and `extc_print`, which it calls */
+            g->needRuntime = true;
+            g->needPrint   = true;
             if (printArgIsPlace(a)) {
                 bufPrintf(&b, "extc_print(&(%s), %s)", code, descRef(g, bt));
             } else {
@@ -1932,9 +1961,29 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
  * zone's). Returns nothing: `cgHasImplicitArgs` is the predicate the `@overwrite` cell pass needs.
  *
  */
+/**
+ * @brief Report whether a function takes the implicit trailing arguments.
+ *
+ * @param callee  The function definition; NULL takes none.
+ * @return true when `cgImplicitArgs` would append a home arena or a zone argument.
+ */
 static bool cgHasImplicitArgs(const FuncDef *callee) {
     return callee && (funcTakesHomeArena(callee) || funcTakesHomeZone(callee));
 }
+/**
+ * @brief 按被调用者的声明追加隐式尾参：家 arena 与家 zone。
+ *
+ * 两侧必须用同一个判定：声明侧（`forSignature`）写参数声明，调用侧写实参表达式，都按
+ * `cgHasImplicitArgs` 给出的结论追加，否则生成的 C 会因参数个数不符而编译不过。
+ *
+ * @param g  生成器。
+ * @param b  正在拼的调用/声明文本。
+ * @param callee  被调用者；为 NULL 时不追加任何东西。
+ * @param site  调用点表达式，决定 arena 层级与 zone 实参；声明侧可以是 NULL。
+ * @param nargs  已经发出的**源**实参个数，用来决定分隔逗号。
+ * @param forSignature  true 写参数声明拼写（`extc_arena *__extc_home` /
+ *   `int64_t __extc_home_zone`），false 写调用实参。
+ */
 static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site,
                            size_t nargs, bool forSignature) {
     if (!callee) return;
@@ -1954,52 +2003,38 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
 static bool f_owLocal(CG *g, Stmt *s);
 static const char *zoneArgRef(CG *g, Expr *e);
 
-/* Emit a method call as a plain function call on its receiver.
+/**
+ * @brief 把调用或运算符的第一个操作数变成其 `self` 参数要求的形态。
  *
- * `a.f(x)` means exactly `f(a, x)`; the only work is making the receiver match
- * the first parameter, which may be a `ref` or a value.
+ * `a.f(x)` 就是 `f(a, x)`、`a << b` 就是 `(<<)(a, b)`，两处都把对象作为第一个实参：
+ * 参数是引用要交出地址，是值就交出值。
  *
- * Returns:
- *   The call expression, or "0" when the checker left no resolved method.
+ * 临时值取不了地址（`&(f())` 不是合法 C），所以先物化成单元素数组的复合字面量：
+ * `(T[]){ f() }` 的类型是 `T *`（数组退化成指针）。这正是链式调用能工作的原因：
+ * `cout << a << b` 里第二个 `<<` 拿到第一个 `<<` 的返回值。
+ *
+ * **不要改成 `&((T){ f() })`**：`(T){ x }` 在 C 里不是拷贝，它用 x 初始化第一个成员，
+ * 于是会得到 `_Bool has = <option_i64>` 这类莫名其妙的错误；数组初始化才是逐元素进行，
+ * `{ f() }` 真正是「用 T 初始化第 0 个元素」。
+ *
+ * 是地方（place）的操作数必须保住地址：对拷贝取地址会把写参数变成写临时。
+ *
+ * @param g  生成器。
+ * @param operand  作为第一个实参传出的表达式。
+ * @param code  它已生成的 C 文本。
+ * @param p0  接收它的参数。
+ * @param want  操作数的静态类型，物化临时时用来取 C 类型。
+ * @return  该传出去的 C 文本。
  */
-/* Turn the first operand of a call into what its `self` parameter demands.
- *
- * `a.f(x)` is `f(a, x)` and `a << b` is `(<<)(a, b)`, so both pass the object as the first
- * argument, and both have to make it an address when the parameter is a reference.
- *
- * A temporary operand cannot be addressed -- `&(f())` is not legal C -- so it is
- * materialized first as a compound literal of a one-element array: `(T[]){ f() }` has type
- * `T *`, because the array decays to a pointer. This is what makes a chained call work
- * (`cout << a << b`: the second `<<` receives the value the first one returned), the same
- * trick Rust plays for `next().unwrap()`.
- *
- * Do not write `&((T){ f() })` instead: `(T){ x }` is not a copy in C, it initializes the
- * first member from x, which produces nonsense errors such as `_Bool has = <option_i64>`.
- * Array initialization does go element by element, so `{ f() }` really is "initialize
- * element 0 with one T".
- *
- * A place operand keeps its address, and that matters: taking an address of a copy would
- * turn a write through the parameter into a write into a temporary.
- *
- * Params:
- *   g      - generator
- *   operand- the expression being passed as the first argument
- *   code   - its generated C text
- *   p0     - the receiving parameter
- *   want   - the operand's static type, used when a temporary has to be materialized
- *
- * Returns:
- *   The C text to pass. */
 static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
                                       Param *p0, Type *want) {
     bool wantRef = p0->type && p0->type->kind == TY_REF;
     bool haveRef = want && want->kind == TY_REF;
     if (wantRef && !haveRef) {
-        /* The question is "is the **generated C** an lvalue", not "is this a place in extC":
-         * `printArgIsPlace` owns it (see its comment -- a slice expression is a place in extC but
-         * its C form is a call, and taking `&` of that is what broke `examples/slices.extc` and
-         * `euler-sieve.extc`). Asking `isPlaceExpr` here emitted `&(slice_i32_slice(...))`, which
-         * gcc rejects while the compiler still exited 0. */
+        /* The question is whether the **generated C** is an lvalue, not whether the operand is a
+         * place in extC: a slice expression is a place in extC while its C form is a call. That is
+         * `printArgIsPlace`'s question, so `isPlaceExpr` must not be asked here -- it would emit
+         * `&(slice_i32_slice(...))`, which C rejects. */
         if (printArgIsPlace(operand)) return arenaPrintf(g->arena, "&(%s)", code);
         return arenaPrintf(g->arena, "(%s[]){ %s }", cType(g, subst(g, want)), code);
     }
@@ -2007,12 +2042,17 @@ static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
     return code;
 }
 
-/* `dyn Trait(x)` as a value: copy the payload into the dyn pool and hand back the handle.
+/**
+ * @brief 生成 `EX_DYN`：把 `dyn Trait(x)` 变成值——载荷拷进 dyn 池，交出句柄。
  *
- * The payload goes through a temporary so an rvalue works as well as an lvalue -- this is what
- * `pfLine`, the existing prefix-statement mechanism, is for. The type comes from the checker
- * (`payloadType`): this node's own type is `dyn Trait` by now, and the temporary has to be the
- * payload's C type. */
+ * 载荷先过一个临时，rvalue 与 lvalue 都能用；`pfLine` 就是把语句放进当前前缀的机制。
+ * 载荷的 C 类型取自 checker 记下的 `payloadType`：这个节点自身的类型此时已是 `dyn Trait`，
+ * 临时必须是载荷的类型。
+ *
+ * @param g  生成器。
+ * @param e  `EX_DYN` 节点。
+ * @return   `extc_dyn_put` 的调用表达式（池里的句柄）。
+ */
 static const char *genDynValue(CG *g, Expr *e) {
     const char *payC = genExpr(g, e->u.dynv.payload);
     Type *pt = subst(g, e->u.dynv.payloadType);
@@ -2024,21 +2064,38 @@ static const char *genDynValue(CG *g, Expr *e) {
                        tmp, ct, e->u.dynv.traitName, ct);
 }
 
+/**
+ * @brief 把方法调用生成成对接收者的普通函数调用。
+ *
+ * `a.f(x)` 就是 `f(a, x)`：接收者要变成第一个参数要求的形态（引用取地址、值直接传），
+ * 其余实参按原样展开，最后补上被调用者声明里的隐式尾参与 `@overwrite` 单元。
+ *
+ * 在泛型体内，写下来的接收者类型可能还带着 `T`，checker 延迟解析的调用节点上干脆没有
+ * `func`：方法在这里按**替换后**的类型解析。一个模板体有多个实例，把 `func` 记在节点上
+ * 对其余实例就是错的方法。
+ *
+ * 接收者是协程句柄（`coroutine<T>`）时走 `next`/`value`/`send` 的句柄协议；被调用者属于
+ * 协程时走驱动协议；接收者来自 `dyn Trait` 时从 trait 的统一表里取函数指针。
+ *
+ * @param g  生成器。
+ * @param e  `EX_METHOD` 节点。
+ * @return   C 调用表达式；checker 没解析出方法或该方法没有参数时返回 "0"。
+ */
 static const char *genMethodCall(CG *g, Expr *e) {
     /* The receiver's type as this instance sees it. Inside a generic body the written type may
-     * still mention `T`, and for a call the checker deferred (`#57`, a method on a type
-     * parameter) the node carries no `func` at all: the method is resolved here, on the
-     * substituted type, the same way the operators are resolved a few functions down. The
-     * checker deliberately leaves `planCallee(e)` alone -- one template body has many instances, so a
-     * `func` stored there would be the wrong method for all but the last one. */
+     * still mention `T`, and for a deferred call (a method on a type parameter) the node carries
+     * no `func` at all: the method is resolved here, on the substituted type, the same way the
+     * operators are resolved. The checker deliberately leaves `planCallee(e)` alone -- one
+     * template body has many instances, so a `func` stored there would be the wrong method for
+     * all but the last one. */
     Type *recvT = subst(g, e->u.method.recv->type);
     FuncDef *f = planCallee(e);
     if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
-    /* ---- The **handle** protocol ----
-     * The receiver is a `coroutine<T>` (the marker type, whatever the resolved method's owner looks
-     * like -- instantiated copies carry a decorated name) and the emitted call dispatches on `kind`.
-     * The frame protocol below is unaffected: a frame's type is not a coroutine marker. Placed here,
-     * before this function's other early returns, so nothing else can claim the call. */
+    /* The **handle** protocol: the receiver is a `coroutine<T>` (the marker type, whatever the
+     * resolved method's owner looks like -- instantiated copies carry a decorated name) and the
+     * emitted call dispatches on `kind`. The frame protocol below is unaffected: a frame's type is
+     * not a coroutine marker. This test comes before the other early returns so nothing else can
+     * claim the call. */
     if (e->u.method.name && f &&
         (strcmp(e->u.method.name, "next") == 0 || strcmp(e->u.method.name, "value") == 0 ||
          strcmp(e->u.method.name, "send") == 0) &&
@@ -2065,11 +2122,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
                            cType(g, yt), viaRef ? "" : "&", rr, g->path, e->line);
     }
     if (f && planCoroProto(f) && f->owner && planCoroOf(f->owner)) {
-        /* Driving a coroutine. The two protocol methods are the state machine's calling convention,
-         * so they are emitted inline -- and whether the receiver is the frame itself or a reference
-         * to it decides `&x`/`x.ret` versus `x`/`x->ret`. That is what lets a coroutine be driven
-         * through a `mut ref` parameter (`fn drive<C>(c: mut ref C)`), which is the shape the
-         * generic machinery resolves at instantiation. */
+        /* Driving a coroutine: the two protocol methods are the state machine's calling
+         * convention, emitted inline. Whether the receiver is the frame itself or a reference to
+         * it decides `&x`/`x.ret` versus `x`/`x->ret`, which is what lets a coroutine be driven
+         * through a `mut ref` parameter. */
         Type *rt0 = ttBase(subst(g, e->u.method.recv->type));
         bool viaRef = rt0 && rt0->kind == TY_REF;
         const char *rc = genExpr(g, e->u.method.recv);
@@ -2091,50 +2147,37 @@ static const char *genMethodCall(CG *g, Expr *e) {
     }
     if (!f) return "0";
 
-    /* The checker refuses a receiver-less method through `dyn` (that is where the diagnostic can
-     * name it), so this only keeps the generator from indexing an empty parameter list if some
-     * future path reaches here first. */
+    /* The checker refuses a receiver-less method through `dyn`, so this only keeps the generator
+     * from indexing an empty parameter list. */
     if (f->params.len == 0) return "0";
     Param *p0 = *(Param **)vecAt(&f->params, 0);
     const char *recvC = genExpr(g, e->u.method.recv);
 
-    /* A stored `dyn` value is a handle, not a payload: it is not re-materialised, and its callee is
-     * named by the trait's uniform table instead of a per-type C name. */
-    /* Which source is it? By the receiver's **type**, not its node kind: the parser rewrites the
-     * immediate form's receiver to the payload, so both forms arrive as ordinary expressions and
-     * only the type tells them apart (`dyn Tag` is the stored value). */
+    /* A stored `dyn` value is a handle, not a payload: it is not re-materialised, and its callee
+     * is named by the trait's uniform table instead of a per-type C name. Which source it is is
+     * decided by the receiver's **type**, not its node kind: the parser rewrites the immediate
+     * form's receiver to the payload, so both forms arrive as ordinary expressions and only the
+     * type tells them apart (`dyn Tag` is the stored value). */
     bool dynStored = e->dynTrait && ttBase(recvT) && ttBase(recvT)->kind == TY_DYN;
     if (!dynStored)
         recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
 
     const char *fname = dynStored ? NULL : cMethodName(g, recvT, f);
-    /* `dyn Trait(x).m(...)`: the callee comes from the trait's table instead of a per-type C
-     * name. The field **is** the implementation, so the call keeps the same signature --
+    /* `dyn Trait(x).m(...)`: the callee comes from the trait's uniform table instead of a per-type
+     * C name. The field **is** the implementation, so the call keeps the same signature --
      * including hidden parameters, which the table's field types picked up when it was emitted.
-     * Nothing else in this function changes: same receiver, same arguments, same extra
-     * parameters, a different callee expression. */
+     * Same receiver, same arguments, same extra parameters, a different callee expression.
+     *
+     * Two sources: `dyn Trait(x).m(...)` copies the payload into the pool here; `d.m(...)` on a
+     * stored value **is** a handle already, so only the checked slot lookup is emitted. Either way
+     * the table and the receiver both come from the **checked slot**. */
     if (e->dynTrait) {
-        /* Dispatch through the trait's uniform table (see the table emitter). Two sources:
-         *   - `dyn Trait(x).m(...)`: the payload is copied into the pool here;
-         *   - `d.m(...)` on a stored value: it **is** a handle already, so only the checked slot
-         *     lookup is emitted.
-         * Either way the table and the receiver both come from the **checked slot**. */
-        /* Two sources, two costs (DYN.md §11, route C):
-         *   - `dyn Trait(x).m(...)`: the payload is a **temporary of this expression**, so it
-         *     needs no owner at all -- the table is a compile-time address and the receiver is
-         *     that temporary. No pool put, no slot, no generation checks: nothing can be stale
-         *     inside one expression, and nothing can escape into another (the method takes the
-         *     receiver by reference, so the depth rules already forbid storing it).
-         *   - `d.m(...)` on a stored value: the value **is** a handle, so the table and the
-         *     receiver both come from the **checked slot**. */
         Buf dynSym;
         bufInit(&dynSym, g->arena);
         if (dynStored) {
             /* The receiver may be reached **through a reference** (`fn f(r: ref dyn Tag)`), in
-             * which case the C expression is a pointer to the handle: `extc_dyn_slot` takes the
-             * handle **by value**, so the pointer has to be dereferenced here. Without this the
-             * compiler accepted `ref dyn Tag` and emitted C that did not build
-             * (`incompatible type for argument 1 of 'extc_dyn_slot'`). */
+             * which case the C expression is a pointer to the handle while `extc_dyn_slot` takes
+             * the handle **by value**: the pointer has to be dereferenced here. */
             const char *handleC = recvC;
             if (planDynRecvViaRef(e))
                 handleC = arenaPrintf(g->arena, "(*%s)", recvC);
@@ -2148,12 +2191,11 @@ static const char *genMethodCall(CG *g, Expr *e) {
             const char *dynT = cType(g, ttBase(recvT));
             bufPrintf(&dynSym, "((const struct extc_vt$%s_t *)&extc_vt$%s$%s)->%s",
                       e->dynTrait, e->dynTrait, dynT, e->u.method.name);
-            /* **The boundary of route C.** The payload must be copied into a stack temporary
-             * before the call, even though nothing owns it: a method that mutates its receiver
-             * (`mut ref Self`) would otherwise write through to the **source object**, while the
-             * stored form mutates the pool's copy -- the same expression `dyn Tag(b)` would mean
-             * two different things. `recvC` is already a pointer to the payload, so this is one
-             * copy of `sizeof(T)`; the optimiser removes it when the payload is a literal. */
+            /* The payload is copied into a stack temporary before the call even though nothing
+             * owns it: a method that mutates its receiver (`mut ref Self`) would otherwise write
+             * through to the **source object**, while the stored form mutates the pool's copy, so
+             * the same expression `dyn Tag(b)` would mean two different things. `recvC` is already
+             * a pointer to the payload, so this is one copy of `sizeof(T)`. */
             const char *slot = arenaPrintf(g->arena, "__extc_dynp%d", g->tmpSeq++);
             pfLine(g, "%s %s = *(%s);", dynT, slot, recvC);
             recvC = arenaPrintf(g->arena, "(void *)&%s", slot);
@@ -2166,21 +2208,20 @@ static const char *genMethodCall(CG *g, Expr *e) {
     bufPrintf(&b, "%s(%s", fname, recvC);
     for (size_t i = 0; i < e->u.method.args.len; i++)
         bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
-    /* A method passes the home arena too; the receiver counts as the
-     * shallowest mutable reference argument. */
-    cgImplicitArgs(g, &b, f, e, e->u.method.args.len + 1, false);   /* +1: the receiver */
-    /* A method passes the @overwrite cells as well; the receiver counts as the
-     * first argument, and the comma handling follows that. */
+    /* The receiver counts as the shallowest mutable reference argument, so it is the first
+     * argument for both the implicit tail parameters and the `@overwrite` cells. */
+    cgImplicitArgs(g, &b, f, e, e->u.method.args.len + 1, false);
     owPassCells(g, &b, e, e->u.method.args.len + 1, cgHasImplicitArgs(f));
     bufPutc(&b, ')');
     return bufCstr(&b);
 }
 
-/* Find the value written for one field of a struct literal.
+/**
+ * @brief 在结构体字面量里找出某个字段写下的初始化表达式。
  *
- * Returns:
- *   The initializer expression, or NULL when the literal omits the field; the
- *   caller then uses the field's zero value.
+ * @param lit  结构体字面量节点。
+ * @param fname  字段名，逐字比较。
+ * @return  该字段的初始化表达式；字面量省略该字段时返回 NULL，调用方改用该字段的零值。
  */
 static Expr *litValueFor(Expr *lit, const char *fname) {
     for (size_t i = 0; i < lit->u.lit.inits.len; i++) {
@@ -2190,36 +2231,26 @@ static Expr *litValueFor(Expr *lit, const char *fname) {
     return NULL;
 }
 
-/* Emit a struct literal as a C compound literal.
+/**
+ * @brief 生成结构体字面量的 C 文本：复合字面量或花括号初始化列表。
  *
- * Every field is spelled out, an omitted one as its zero value: leaving it to
- * C's implicit zero-fill would turn an omitted `str` field into NULL.
+ * 每个字段都写出来，省略的写成零值：留给 C 去隐式补零会把省略的 `str` 字段变成 NULL。
  *
- * Returns:
- *   The compound literal, allocated in the generator's arena; `(int){0}` when
- *   the type is not a struct at all.
- */
-/* The body of a struct literal, as either a compound literal or a brace
- * initializer.
+ * 类型先整体替换：泛型实例里的字面量记的还是模板类型（`result<T,E>`），其类型实参是参数；
+ * 直接用它会让零值那条路拿到光秃秃的 `T`，退化成 `0`，最后写出 `.value = 0`。
+ * 字段类型同理，要用实例自己的类型实参替换。
  *
- * Params:
- *   g          - generator
- *   e          - the EX_STRUCTLIT node
- *   staticInit - true when this stands as the initializer of a C static object (a
- *                global), where the `(T)` cast is not allowed: C wants a constant
- *                initializer there, and a compound literal is not one. The brace
- *                form is the same list, so the spelling differs by exactly that
- *                prefix.
- *
- * Returns:
- *   The C text, allocated in the generator's arena.
+ * @param g  生成器。
+ * @param e  `EX_STRUCTLIT` 节点。
+ * @param staticInit  true 表示这是 C 静态对象（全局）的初始化式：此时不能写 `(T)` 复合
+ *   字面量，C 要求常量初始化式，而复合字面量不是；花括号形式与它内容相同，只差这个前缀。
+ * @return  C 文本，分配在生成器的 arena 里；类型不是结构体时返回 `(int){0}`。
  */
 static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
-    /* Substitute over the whole type first: inside a generic instance the
-     * literal still records the template type (`result<T,E>`), whose type
-     * arguments are parameters. Taking that type as it is sends the zero-value
-     * path a bare `T`, which degrades to `0` and ends up as `.value = 0` in the
-     * generated C. This really happened with `result<unit, E>::failure`. */
+    /* Substitute over the whole type first: inside a generic instance the literal still records
+     * the template type (`result<T,E>`), whose type arguments are parameters. Taking that type as
+     * it is sends the zero-value path a bare `T`, which degrades to `0` and ends up as
+     * `.value = 0` in the generated C. */
     Type *t = subst(g, e->type);
     StructDef *sd = (t && (t->kind == TY_STRUCT || t->kind == TY_GENERIC)) ? t->sdef : NULL;
     if (!sd) return "(int){0}";
@@ -2237,8 +2268,6 @@ static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
         g->substArgs   = &t->targs;
     }
 
-    /* Every field is written out, an omitted one as its zero value: letting C
-     * zero-fill it would turn an omitted `str` field into NULL. */
     Buf b;
     bufInit(&b, g->arena);
     if (staticInit) bufPuts(&b, "{");
@@ -2259,12 +2288,28 @@ static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
     return bufCstr(&b);
 }
 
+/**
+ * @brief 把结构体字面量生成为一个 C 复合字面量表达式。
+ *
+ * 与全局初始化的写法共用 `genStructLitAs`，区别只在 `staticInit` 为假：未写出的字段
+ * 用 `zeroValue` 补零。
+ *
+ * @param g  代码生成状态。
+ * @param e  结构体字面量表达式。
+ * @return   形如 `(T){ .field = v, ... }` 的 C 文本，分配在 arena 中。
+ */
 static const char *genStructLit(CG *g, Expr *e) { return genStructLitAs(g, e, false); }
 
-/* The initializer of a global, which is a C static object: its initializer has to be
- * one C can fold at compile time. A struct literal is emitted as a brace initializer
- * for that reason (see genStructLitAs); everything else that reaches here was already
- * restricted to constants by the checker. */
+/**
+ * @brief 生成全局变量（C 静态对象）的初始化式。
+ *
+ * 初始化式必须是 C 能在编译期折叠的常量。结构体字面量因此写成花括号初始化列表
+ * （见 `genStructLitAs`）；其余走到这里的表达式已被 checker 限制为常量。
+ *
+ * @param g  生成器。
+ * @param e  初始化表达式。
+ * @return  初始化式的 C 文本。
+ */
 static const char *genGlobalInit(CG *g, Expr *e) {
     return e->kind == EX_STRUCTLIT ? genStructLitAs(g, e, true) : genExpr(g, e);
 }
@@ -2280,14 +2325,22 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is
  * Returns:
  *   A C expression, or "0" for a node that must not reach a value position.
  */
-/* `EX_EXT`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_EXT`：把一次协程调用作为一个任务交给调度域。
+ *
+ * 帧按普通帧的路径建成本函数的局部变量——域在所属块结束前就把它驱动完，所以它活得恰好
+ * 够久——然后以 `(帧, step)` 交给域。整个表达式的值是 void。
+ *
+ * `genExprInner` 的 `EX_EXT` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_EXT` 节点。
+ * @return   固定返回 `"(void)0"`；不满足前置条件时报编译错误。
+ */
 static const char *exExt(CG *g, Expr *e) {
-    /* `ext f(x)`: **start one task** -- build the frame (the same plain-frame path
-     * `let c = counter(args)` uses; the frame is a local of this function, and the domain
-     * drives it before the block ends, so it stays alive for exactly as long as it is
-     * needed), then hand it to the domain as `(frame, step)`. The expression's value is
-     * void (the checker says so): the取件单 lands with the driving loop. */
+    /* `ext f(x)`: start one task -- build the frame as a plain local (the domain drives it
+     * before the enclosing block ends, so it stays alive exactly as long as it is needed), then
+     * hand it to the domain as `(frame, step)`. The expression's value is void. */
     Expr *in = e->u.ext_.call;
     FuncDef *cf = (in && in->kind == EX_CALL) ? planCallee(in) : NULL;
     if (!cf || !planIsCoro(cf) || !planExtDom(e) || g->coroFunc) {
@@ -2328,20 +2381,34 @@ static const char *exExt(CG *g, Expr *e) {
     return "(void)0";
 }
 
-/* `EX_IDENT`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_IDENT`：发出标识符，或在协程体内发出帧字段访问。
+ *
+ * 用作值的函数取其**地址**：C 本来也会把函数指示符转成指针，但写出 `&` 才能让表达式的
+ * C 类型正是 `fn` 类型承诺的指针。
+ *
+ * 带隐藏家 arena/zone 的函数在这里被拒绝而不是照发：它比类型声明的参数多一个，而这两个
+ * 标记（传递闭包）要等所有函数体检查完才最终确定，这里是答案第一次确定的地方。
+ *
+ * 协程里跨 `yield` 存活的参数与局部变量住在帧（一个普通结构体）里，对它们的每一次提及
+ * 都变成字段访问；`FuncDef.coroFrame` 是 checker 排好的那张表。
+ *
+ * `genExprInner` 的 `EX_IDENT` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_IDENT` 节点。
+ * @return  C 表达式；带隐藏实参的函数返回 "0"。
+ */
 static const char *exIdent(CG *g, Expr *e) {
-    /* A function used as a value: the expression is its **address** (C-ABI.md section 9 step
-     * 1). C would also convert a function designator to a pointer by itself, but writing the
-     * `&` out is what makes the expression's C type the pointer the `fn` type promises, and it
-     * keeps a reader from having to know that rule to see what crosses the boundary.
+    /* A function used as a value: the expression is its **address**. C would also convert a
+     * function designator to a pointer by itself, but writing the `&` out is what makes the
+     * expression's C type the pointer the `fn` type promises.
      *
-     * Two functions whose C signature cannot be the type's are refused here rather than
-     * emitted: a function that takes a hidden home arena or zone has one parameter more than
-     * the type says, and those two flags are settled only after every body has been checked
-     * (they are transitive closures), so this is the first place the answer is final. It is a
-     * compile error, and the alternative -- a differing pointer type -- is one gcc reports
-     * against generated code instead of against the line the author wrote. */
+     * A function whose C signature cannot be the type's is refused here rather than emitted: a
+     * function that takes a hidden home arena or zone has one parameter more than the type says,
+     * and those two flags are settled only after every body has been checked (they are transitive
+     * closures), so this is the first place the answer is final. A differing pointer type would
+     * otherwise be reported against generated code instead of against the line the author wrote. */
     if (planCallee(e)) {
         if (funcTakesHomeArena(planCallee(e)) || funcTakesHomeZone(planCallee(e))) {
             ctxError(g->ctx, e->line, 1,
@@ -2356,9 +2423,9 @@ static const char *exIdent(CG *g, Expr *e) {
         return arenaPrintf(g->arena, "&%s", cFuncName(g, planCallee(e)));
     }
     const char *cn = planCName(e) ? planCName(e) : e->u.ident.name;
-    /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which
-     * is a plain struct: every mention of them becomes a field access ✓ (one place decides
-     * this, `FuncDef.coroFrame` is the list the checker laid out). */
+    /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which is a
+     * plain struct: every mention of one becomes a field access (`FuncDef.coroFrame` is the list
+     * the checker laid out). */
     if (g->coroFunc && cn) {
         for (size_t i = 0; i < g->coroFunc->coroFrame.len; i++) {
             const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
@@ -2369,16 +2436,25 @@ static const char *exIdent(CG *g, Expr *e) {
     return cn;
 }
 
-/* `EX_CALL`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_CALL`：按被调用者与实参形态分派到各条调用发射路径。
+ *
+ * 依次处理：`domain::single()` 的域构造、板的 `viewOf` 门、`parallel::run`、协程句柄协议、
+ * 装箱的协程调用、函数值调用，最后是普通函数（含被调用者声明的隐式尾参与 `@overwrite`
+ * 单元）。
+ *
+ * `genExprInner` 的 `EX_CALL` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_CALL` 节点。
+ * @return  调用表达式；没有解析出被调用者或形态不被支持时返回 "0"。
+ */
 static const char *exCall(CG *g, Expr *e) {
-    /* `parallel::run` 的 codegen 还没落地。**必须报错**：否则会出现"调用被悄悄丢掉、
-     * 产物仍然合法"的情形 ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
-    /* `domain::single()`：造一个域（不透明指针）。按 checker 盖的**节点标记**认 —— 见 ast.h。 */
+    /* `domain::single()`：造一个域（不透明指针）。按 checker 盖的**节点标记**认。 */
     if (planDomNew(e)) { g->needDomain = true; return "extc_dom_new()"; }
-    /* The plate layer's one primitive: a call to the helper the declaration triggers
-     * (`src/plate.c`). The callee is a `@builtin` with no body, so there is no `FuncDef` to
-     * name -- hence the flag, exactly as `domNew` above. */
+    /* The plate layer's one primitive: a call to the helper the declaration triggers. The callee
+     * is a `@builtin` with no body, so there is no `FuncDef` to name -- hence the flag, exactly as
+     * `domNew` above. */
     if (planViewOf(e)) {
         Buf vb;
         bufInit(&vb, g->arena);
@@ -2393,7 +2469,7 @@ static const char *exCall(CG *g, Expr *e) {
     if (planParWorker(e)) {
         /* `parallel::run(worker, 视图们…, n, threads)`：ctx 是 trampoline 那个"每视图一个字段"的
          * 结构体，只读视图原样带过去、输出的那一份在 trampoline 里按 [lo,hi) 切段；每个实参
-         * **只求值一次**。chunk 传 0 让运行期自己取（≈每线程 8 块，动态取块实测优于静态切分）。 */
+         * **只求值一次**。chunk 传 0 让运行期自己取（约每线程 8 块，动态取块）。 */
         FuncDef *wf = planParWorker(e);
         size_t nViews = wf->params.len - 3, mutIdx = 0;
         for (size_t i = 0; i < nViews; i++)
@@ -2409,8 +2485,8 @@ static const char *exCall(CG *g, Expr *e) {
         pfLine(g, "%s %s = { %s };", ctn, tmp, bufCstr(&init));
         pfLine(g, "int64_t %s = (int64_t)(%s);", ntmp,
                genExpr(g, *(Expr **)vecAt(&e->u.call.args, 1 + nViews)));
-        /* 分区按 [lo,hi) 切 ⇒ 输出比 n 短的话会切到界外。在这里挡住（worker 里那些检查是
-         * 另一道防线，`@unchecked` 的 worker 没有它们）。 */
+        /* 分区按 [lo,hi) 切 ⇒ 输出比 n 短的话会切到界外。在这里挡住（worker 里的检查是另一
+         * 道防线，`@unchecked` 的 worker 没有它们）。 */
         pfLine(g, "if (%s > 0 && %s.v%zu.len < %s)"
                   " extc_trapMsg(\"%s\", %d, \"parallel::run: the output view is shorter than n\");",
                ntmp, tmp, mutIdx, ntmp, g->path, e->line);
@@ -2423,10 +2499,6 @@ static const char *exCall(CG *g, Expr *e) {
             wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp,
             genExpr(g, *(Expr **)vecAt(&e->u.call.args, 2 + nViews)));
     }
-    /* Calling a coroutine is slice B2 (the `coroutine<T>` representation and its
-     * `next`/`value`). Until then this is a loud failure at the C compiler, never a silent
-     * miscompile -- and a coroutine *definition* alone still compiles, which is what the
-     * slice-B1 test drives from a small C harness. */
     /* A handle-protocol call can arrive here too (a `ref coroutine<T>` receiver resolves as
      * an ordinary call, not as EX_METHOD), so both paths share the dispatch. */
     if (planCallee(e) && !planIsCoro(planCallee(e)) && e->u.call.callee->kind == EX_FIELD) {
@@ -2466,11 +2538,11 @@ static const char *exCall(CG *g, Expr *e) {
         }
     }
     if (planCallee(e) && planIsCoro(planCallee(e)) && planBoxedCoro(e)) {
-        /* **Boxing**: this coroutine value is stored somewhere that outlives the current C
-         * scope, so its frame goes into the task's own place and the value is a
-         * `{frame, kind, task}` handle -- plain value, 24 bytes, safe to copy and to store in
-         * a container. The setup statements must precede the statement that reads the handle,
-         * so they go to the prefix (C11 has no statement expressions). */
+        /* **Boxing**: this coroutine value is stored somewhere that outlives the current C scope,
+         * so its frame goes into the task's own place and the value is a `{frame, kind, task}`
+         * handle -- a plain value, safe to copy and to store in a container. The setup statements
+         * must precede the statement that reads the handle, so they go to the prefix (C11 has no
+         * statement expressions). */
         FuncDef *cf = planCallee(e);
         const char *cn = cFuncName(g, cf);
         int sq = g->coroSeq++;
@@ -2497,10 +2569,9 @@ static const char *exCall(CG *g, Expr *e) {
                            " .task = __extc_czh%d })", sq, planCoroKind(cf), sq);
     }
     if (planCallee(e) && planIsCoro(planCallee(e))) {
-        /* A coroutine call that is neither boxed nor driven: still a loud failure at the C
-         * compiler rather than a silent miscompile -- except under `EXTC_CORO_B1_HARNESS`,
-         * which the slice-B1 judge defines so it can drive the generated `$step` from a small
-         * C harness. */
+        /* A coroutine call that is neither boxed nor driven is a loud failure at the C compiler
+         * rather than a silent miscompile -- except under `EXTC_CORO_B1_HARNESS`, which a small C
+         * harness defines so it can drive the generated `$step` itself. */
         cgLine(g, "#ifndef EXTC_CORO_B1_HARNESS");
         cgLine(g, "#error \"calling a coroutine lands in slice B2"
                    " (docs/topics/CONCURRENCY.md 4.4)\"");
@@ -2508,9 +2579,8 @@ static const char *exCall(CG *g, Expr *e) {
         return "0";
     }
     /* A call **through a value** of function type: the callee is an expression holding a code
-     * pointer, so there is no C name to print -- and none is needed, because the pointer is
-     * the callee and C calls through it directly. The checker has already matched every
-     * argument against the signature the type carries (C-ABI.md section 9 step 1); this only
+     * pointer, so there is no C name to print -- C calls through the pointer directly. The
+     * checker has already matched every argument against the signature the type carries; this only
      * prints the expression. The parentheses are not decoration: a callee that is a compound
      * expression or a dereference must not bind to the argument list. */
     if (planCallViaFn(e)) {
@@ -2533,17 +2603,11 @@ static const char *exCall(CG *g, Expr *e) {
     /* `flush()` becomes `fflush(NULL)`; <stdio.h> is already included
      * by the runtime. */
     if (strcmp(name, "flush") == 0) return "fflush((void *)0)";
-    /* There is no `ownFd`/`closeFd` here any more: a file descriptor is not owned
-     * by the block, so nothing registers one and nothing closes one behind the
-     * program's back. `std::fs` closes with the `close(2)` it declares itself (see
-     * `docs/topics/IO.md` section 5, decision 79). */
     if (!planCallee(e)) return "0";
 
-    /* Only `cSymName` is used, without the owner prefix: a call site
-     * names the callee itself, whereas `ownerPrefix` is the instance
-     * currently being generated. cFuncName has to tell the two apart,
-     * as its comment explains. This also renames a name that collides
-     * with a C keyword (`fn double`). */
+    /* Only `cSymName` is used, without the owner prefix: a call site names the callee itself,
+     * whereas `ownerPrefix` is the instance currently being generated. This also renames a name
+     * that collides with a C keyword (`fn double`). */
     name = (planCallee(e) && planInstName(planCallee(e))) ? planInstName(planCallee(e)) : cSymName(g, name);
     /* 运行期那一层：库里的 `extc_pool_new(parent)` 在收「家 zone」的函数里换成
      * `extc_pool_new_at(parent, __extc_home_zone)` —— 池因此生到**调用者选的
@@ -2560,14 +2624,11 @@ static const char *exCall(CG *g, Expr *e) {
         if (i) bufPuts(&b, ", ");
         bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.call.args, i)));
     }
-    /* The callee needs a home arena, so mine is passed down; the
-     * current block's arena would be tighter. */
-    /* 问主人**一次**就够：它把 home 与 zone 都发。分两次问（先 home，再 zone）会让两者
-     * 都需要的函数各发两遍 —— 实测产物里长成
-     * `put(st, k, __extc_home, __extc_home_zone, __extc_home, __extc_home_zone)`。
-     * `poolNewAt` 那条路是**例外**：名字已经换成 `extc_pool_new_at` 那一扇门，只补它的
-     * 第二个实参，而且别写成 `planMakesPool(planCallee(e))` —— `extc_pool_new` 是 extern，工作清单
-     * 不遍历没有函数体的函数 ⇒ 它的 `makesPool` 是假，只能按名字认它。 */
+    /* 问主人**一次**就够：它把 home 与 zone 都发。分两次问（先 home，再 zone）会让两者都
+     * 需要的函数各发两遍。`poolNewAt` 那条路是**例外**：名字已经换成 `extc_pool_new_at`
+     * 那一扇门，只补它的第二个实参；而且别写成 `planMakesPool(planCallee(e))` ——
+     * `extc_pool_new` 是 extern，工作清单不遍历没有函数体的函数 ⇒ 它的 `makesPool` 是假，
+     * 只能按名字认它。 */
     cgImplicitArgs(g, &b, planCallee(e), e, e->u.call.args.len, false);
     if (poolNewAt && g->funcHasZoneParam) {
         bufPuts(&b, ", ");
@@ -2578,8 +2639,22 @@ static const char *exCall(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
-/* `EX_INDEX`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_INDEX`：数组下标与视图下标。
+ *
+ * 数组的长度是编译期常量，生成的检查直接带上长度。视图走 `viewIndexer` 选出的检查原语，
+ * 它返回指针，解引用后是左值——读、取地址传给 `ref` 参数、赋值都能用；在这里索要它也是
+ * 保证该原语定义存在的方式。
+ *
+ * `@unchecked` 的函数体里两边都省掉检查：数组直接 `obj.data[idx]`，视图写成
+ * `*((v).data + i)` 这样的左值形态。
+ *
+ * `genExprInner` 的 `EX_INDEX` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_INDEX` 节点。
+ * @return  C 表达式；基类型既不是数组也不是视图时返回 "0"。
+ */
 static const char *exIndex(CG *g, Expr *e) {
     Type *ot = e->u.index.obj->type;
     Type *ob = ttBase(subst(g, ot));
@@ -2589,16 +2664,13 @@ static const char *exIndex(CG *g, Expr *e) {
     /* Arrays: the length is a compile-time constant, so obj appears
      * exactly once and cannot be evaluated twice. */
     if (ob && ob->kind == TY_ARRAY) {
-        /* With a `ref [N]T` base, `obj` is a pointer in C and must be
-         * dereferenced one level first. Otherwise `p[..]` or `p[i]` on
-         * a `ref [8]u8` produced `p.data[..]`, and gcc answered
-         * "'p' is a pointer; did you mean to use '->'?" */
+        /* With a `ref [N]T` base, `obj` is a pointer in C and must be dereferenced one level
+         * first, or `p.data[..]` would be a subscript on a pointer. */
         if (ot && ot->kind == TY_REF)
             obj = arenaPrintf(g->arena, "(*%s)", obj);
-        /* `@unchecked`: the length is still known here, but the programmer has signed
-         * for the range, so the index is used as written. No `extc_checkedIndex` call
-         * means no trap position -- that is the cost of the annotation, and the manual
-         * says so (18-modules.md 12.5). */
+        /* `@unchecked`: the length is still known here, but the programmer has signed for the
+         * range, so the index is used as written. No `extc_checkedIndex` call means no trap
+         * position -- that is the cost of the annotation. */
         if (g->uncheckedBody)
             return arenaPrintf(g->arena, "%s.data[%s]", obj, idx);
         return arenaPrintf(g->arena,
@@ -2610,29 +2682,39 @@ static const char *exIndex(CG *g, Expr *e) {
      * dereferenced. */
     if (ot && ot->kind == TY_REF) obj = arenaPrintf(g->arena, "*(%s)", obj);
 
-    /* `@unchecked`: the view's element is reached through its data pointer directly.
-     * The shape is the checked primitive's, `&v.data[i]` written out as an lvalue
-     * (`*(p + i)`), so a read, an assignment and a `ref` argument all still work, and
-     * the `file`/`line` arguments have nowhere to go because there is no check. The
-     * primitive is *not* emitted for this body: nothing in it names the checked one,
-     * which is what the generated-C criterion in tests/annot greps for. */
+    /* `@unchecked`: the view's element is reached through its data pointer directly. The shape is
+     * the checked primitive's, `&v.data[i]` written out as an lvalue (`*(p + i)`), so a read, an
+     * assignment and a `ref` argument all still work, and the `file`/`line` arguments have nowhere
+     * to go because there is no check. The checked primitive is *not* emitted for this body:
+     * nothing in it names that one. */
     if (g->uncheckedBody)
         return arenaPrintf(g->arena, "(*((%s).data + (int64_t)(%s)))", obj, idx);
 
-    /* The primitive returns a pointer and the dereference is an
-     * lvalue: it can be read, addressed for a `ref` parameter, and
-     * assigned to. Asking for it here is what guarantees the definition
-     * exists: an index inside a generic body names the instance, while
-     * the list of instances is not necessarily complete. */
+    /* The primitive returns a pointer and the dereference is an lvalue: it can be read, addressed
+     * for a `ref` parameter, and assigned to. Asking for the primitive here is also what guarantees
+     * its definition exists: an index inside a generic body names the instance, and the list of
+     * instances is not necessarily complete otherwise. */
     const char *ix = viewIndexer(g, ob);
     return arenaPrintf(g->arena, "(*%s(%s, (int64_t)(%s), \"%s\", %d))",
                        ix, obj, idx, g->path, e->line);
 }
 
-/* `EX_ASSOC`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_ASSOC`：模块限定的关联函数调用。
+ *
+ * 关联函数的 C 名按实例名修饰（`option_i64_some`），与方法同一条修饰规则，所以直接复用
+ * `cMethodName`；随后补上隐式尾参与 `@overwrite` 单元。
+ *
+ * 模块限定的调用走 assoc 节点，所以域构造那条也要在这里认一次节点标记（与 `exCall` 相同）。
+ *
+ * `genExprInner` 的 `EX_ASSOC` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_ASSOC` 节点。
+ * @return  C 调用表达式。
+ */
 static const char *exAssoc(CG *g, Expr *e) {
-    /* 模块限定的调用走 assoc 节点 ⇒ 域构造这条也要在这里（同 EX_CALL 那条，认标记）。 */
+    /* 模块限定的调用走 assoc 节点 ⇒ 域构造这条也要在这里（与 `exCall` 相同，认节点标记）。 */
     if (planDomNew(e)) { g->needDomain = true; return "extc_dom_new()"; }
     /* An associated function decorates its C name with the instance
      * name (`option_i64_some`), which is the same decoration rule
@@ -2653,8 +2735,20 @@ static const char *exAssoc(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
-/* `EX_CONV`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_CONV`：带检查或不带检查的数值转换。
+ *
+ * `@unchecked`、或 checker 没给这个转换标检查时，就是 C 的强制转换。否则查目标类型的
+ * 范围，走 `extc_narrowI` / `extc_narrowU` / `extc_convFloat` 这些 `static inline` 原语，
+ * 越界在运行期 trap。范围来自 checker 用的同一张表（`ttIntBits` / `ttIntSigned`）。
+ * 目标是浮点时，检查通过的原语结果直接使用，不加多余的转换（见函数体说明）。
+ *
+ * `genExprInner` 的 `EX_CONV` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_CONV` 节点。
+ * @return  转换表达式的 C 文本。
+ */
 static const char *exConv(CG *g, Expr *e) {
     Type *t = subst(g, e->u.conv.type);          /* target type, from the checker */
     const char *x = genExpr(g, e->u.conv.operand);
@@ -2668,14 +2762,10 @@ static const char *exConv(CG *g, Expr *e) {
     const char *tn = t->name;
     bool isF = ttIsFloat(subst(g, e->u.conv.operand->type));
     if (isF) {
-        /* The range comes from the same table the checker uses (`ttIntBits` /
-         * `ttIntSigned`, src/types.c) instead of a hand-written chain per type name.
-         * That chain had `i64` as `lo = 1; hi = 0`, so **every** float-to-`i64`
-         * conversion trapped at runtime ("float does not fit in the target integer
-         * type") and `u64` was capped at INT64_MAX; two of the eight cases were wrong
-         * and no corpus program converted a float to a 64-bit integer, which is why the
-         * suite stayed green. The two 64-bit ends cannot be written as `%lldLL` (`INT64_MIN`
-         * / `INT64_MAX` / `UINT64_MAX` are macros), so they take the macro spelling. */
+        /* The range comes from the same table the checker uses (`ttIntBits` / `ttIntSigned`)
+         * instead of a hand-written chain per type name. The two 64-bit ends cannot be written as
+         * `%lldLL` (`INT64_MIN` / `INT64_MAX` / `UINT64_MAX` are macros), so they take the macro
+         * spelling. */
         int bits = ttIntBits(t);
         if (bits == 0)                          /* not an integer: the plain cast is the whole conversion */
             return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
@@ -2709,17 +2799,16 @@ static const char *exConv(CG *g, Expr *e) {
             "((%s)extc_narrowI((int64_t)(%s), %lldLL, %lldLL, \"%s\", %d))",
             cType(g, t), x, (long long)lo, (long long)hi, g->path, e->line);
     }
-    /* When the target is a float, the checked call's result is used directly: the context
-     * already asks for a `double`, so the conversion happens implicitly and the explicit
-     * cast would be one applied straight to a function call - which clang reports as
-     * `-Wbad-function-cast` (a cast around a call does not do what a reader expects). */
+    /* When the target is a float, the checked call's result is used directly: the context already
+     * asks for a `double`, so the conversion happens implicitly, and an explicit cast applied
+     * straight to a function call is what clang reports as `-Wbad-function-cast`. */
     bool toFloat = (strcmp(tn, "f32") == 0 || strcmp(tn, "f64") == 0);
     unsigned long long hi = 0;
     if (toFloat) {
-        /* The conversion has to be spelled out (`-Wimplicit-int-float-conversion` is right
-         * that a u64 does not become a double without losing something), but it must not be
-         * applied straight to the call (`-Wbad-function-cast`). The intermediate cast names
-         * the type the call already returns, which is exactly what it is for. */
+        /* The conversion has to be spelled out (`-Wimplicit-int-float-conversion` is right that a
+         * u64 does not become a double without losing something), but it must not be applied
+         * straight to the call (`-Wbad-function-cast`). The intermediate cast names the type the
+         * call already returns. */
         const char *ct = cType(g, t);
         return arenaPrintf(g->arena,
             "((%s)(uint64_t)extc_narrowU((uint64_t)(%s), UINT64_MAX, \"%s\", %d))",
@@ -2737,14 +2826,24 @@ static const char *exConv(CG *g, Expr *e) {
         cType(g, t), x, hi, g->path, e->line);
 }
 
-/* `EX_NEW`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_NEW`：在 checker 算出的层级上分配。
+ *
+ * 层级可能因为值被存进活得更久的地方而被提升，这是带自动清理的内存真正被取走的地方。
+ * 带计数时生成 `slice<T>` 视图，计数只求值一次：不纯的计数被 checker 标成 `needTemp`，
+ * 先存进临时。
+ *
+ * `genExprInner` 的 `EX_NEW` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_NEW` 节点。
+ * @return  分配表达式或视图字面量的 C 文本。
+ */
 static const char *exNew(CG *g, Expr *e) {
     Type *w = subst(g, e->u.new_.type);
-    /* Allocate at the level the checker computed, which may have been
-     * promoted because the value is stored into a place that lives
-     * further out. This is where memory with automatic cleanup is
-     * actually taken. */
+    /* Allocate at the level the checker computed, which may have been promoted because the value
+     * is stored into a place that lives further out. This is where memory with automatic cleanup
+     * is taken. */
     if (dbgOn("EXTC_DBG_ARENA")) arenaDriftCheck(g, e, "new");
     const char *ar = arenaRefAt(g, planArenaLevel(e));
     if (!e->u.new_.count) {
@@ -2771,26 +2870,34 @@ static const char *exNew(CG *g, Expr *e) {
         cType(g, st), cType(g, w), ar, n, cType(g, w), g->path, e->line, n);
 }
 
-/* `EX_GENCALL`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_GENCALL`：`alloc<T>(n)` 与池的那几个原语调用。
+ *
+ * `alloc<T>(n)` 向 checker 选定的 arena 层级要 n 个 T 的地，交回指针。置零不是这条路的
+ * 事：`extc_arena_alloc` 给每次分配置零，语言的承诺正靠它——生命周期结束后读到的字节
+ * 总是已初始化的字节。`poolSlice` / `poolResize` / `poolGive` / `copyInto` 以及它们的
+ * `Raw` 变体形状相同，只是内存属于池自己的板。
+ *
+ * `genExprInner` 的 `EX_GENCALL` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_GENCALL` 节点。
+ * @return  调用表达式的 C 文本。
+ */
 static const char *exGencall(CG *g, Expr *e) {
-    /* `alloc<T>(n)`: ask the arena of the level the checker chose for the place of
-     * n values of T, and hand back a pointer to it.
+    /* `alloc<T>(n)`: ask the arena of the level the checker chose for the place of n values of T,
+     * and hand back a pointer to it.
      *
-     * Zeroing is not this path's job: `extc_arena_alloc` zeroes every
-     * allocation, and that is what makes the language's promise hold -- a byte read
-     * after its lifetime ends is always an initialized byte (SPEC section 0.6). It
-     * does so for the cheapest sufficient set of bytes: a block obtained from
-     * `calloc` is zero throughout, so only blocks that came back from the spare
-     * (where a previous life wrote) need the `memset`. */
-    /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory
-     * belongs to the pool's own plate rather than to an arena (POOLS.md 2.1, PLAN
-     * #85). `poolGive` is how `grow` hands the replaced buffer back, so a doubling
-     * container stops leaving every old generation behind.
-     * `poolSliceRaw` / `poolResizeRaw` are the same two calls with the zeroing left
-     * out, for a column whose every slot is written before it is read -- see the
-     * long note on `checkPoolPrim` in check_expr.c for what may and may not use
-     * them, and what the two canaries in tests/pool/run.sh pin down. */
+     * Zeroing is not this path's job: `extc_arena_alloc` zeroes every allocation, and that is what
+     * makes the language's promise hold -- a byte read after its lifetime ends is always an
+     * initialized byte. It does so for the cheapest sufficient set of bytes: a block obtained from
+     * `calloc` is zero throughout, so only a reused block (one the spare handed back) needs the
+     * `memset`. */
+    /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory belongs to
+     * the pool's own plate rather than to an arena. `poolGive` is how `grow` hands the replaced
+     * buffer back, so a doubling container stops leaving every old generation behind.
+     * `poolSliceRaw` / `poolResizeRaw` are the same two calls with the zeroing left out, for a
+     * column whose every slot is written before it is read. */
     const char *gcName = e->u.gencall.name;
     if (isPoolPrimitiveName(gcName)) {
         const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
@@ -2856,16 +2963,25 @@ static const char *exGencall(CG *g, Expr *e) {
         tn, ar, n, tn, g->path, e->line);
 }
 
-/* `EX_COALESCE`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_COALESCE`：`??` 的空值判断与备选值。
+ *
+ * 主语不纯时（`f() ?? -1`）先求值进临时再判断，避免读两次有副作用。备选值那一侧按结果
+ * 类型显式转型，因为 C 的 `?:` 会对两臂做通常算术转换（见函数体说明）。
+ *
+ * `genExprInner` 的 `EX_COALESCE` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_COALESCE` 节点。
+ * @return  条件表达式的 C 文本。
+ */
 static const char *exCoalesce(CG *g, Expr *e) {
     Type *mt = e->u.coalesce.main->type;
     const char *m;
     if (planNeedTemp(e)) {
-        /* An impure subject (`f() ?? -1`) is computed once into a
-         * temporary, and the conditional then reads that variable;
-         * reading one twice has no side effect. flushPrefix emits these
-         * lines before the enclosing statement. */
+        /* An impure subject (`f() ?? -1`) is computed once into a temporary, and the conditional
+         * then reads that variable, so nothing is evaluated twice. `flushPrefix` emits these lines
+         * before the enclosing statement. */
         const char *tmp = arenaPrintf(g->arena, "__extc_c%d", g->tmpSeq++);
         pfLine(g, "%s %s = %s;", cType(g, mt), tmp, genExpr(g, e->u.coalesce.main));
         m = tmp;
@@ -2874,20 +2990,16 @@ static const char *exCoalesce(CG *g, Expr *e) {
     }
     const char *fb = genExpr(g, e->u.coalesce.fallback);
 
-    /* The fallback side is cast to the result type explicitly, because
-     * C's `?:` applies the usual arithmetic conversions to its two
-     * arms: an `int64_t` and an `int` together can silently widen the
-     * result, an f32 payload next to a double literal being the typical
-     * case. The checker already guarantees that the fallback fits the
-     * result type, so this is belt and braces that also makes the
-     * intended type visible in the generated C.
+    /* The fallback side is cast to the result type explicitly, because C's `?:` applies the usual
+     * arithmetic conversions to its two arms: an `int64_t` and an `int` together can silently widen
+     * the result, an f32 payload next to a double literal being the typical case. The checker
+     * already guarantees that the fallback fits the result type, so this only makes the intended
+     * type visible in the generated C.
      *
-     * Only a builtin scalar is cast this way: C cannot cast to an array
-     * type, so `option<[3]i32> ?? arr` would stop compiling.
+     * Only a builtin scalar is cast this way: C cannot cast to an array type, so
+     * `option<[3]i32> ?? arr` would stop compiling.
      *
-     * The cast goes to the result type, the payload T, not to
-     * `option<T>` itself. Casting by the option's type is wrong and was
-     * the first version of this code, which produced no cast at all. */
+     * The cast goes to the result type, the payload T, not to `option<T>` itself. */
     Type *rt = mt;
     if (mt && mt->kind != TY_REF && mt->targs.len > 0)
         rt = *(Type **)vecAt(&mt->targs, 0);
@@ -2905,8 +3017,21 @@ static const char *exCoalesce(CG *g, Expr *e) {
                        m, cType(g, mt), tag, m, tag, rhs);
 }
 
-/* `EX_ENUMVAL`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim. */
+/**
+ * @brief 生成 `EX_ENUMVAL`：枚举变体值的构造。
+ *
+ * 无载荷的枚举就是 C 枚举，变体自身是常量；带载荷的枚举在 C 里是 `struct { tag; union }`，
+ * 所以连无载荷变体也要构造，带载荷的按 `._0`、`._1`… 填入 union。
+ *
+ * 类型名要认泛型实例：实例化后枚举的 C 名（`maybe_i64`）不在类型表里，checker 解析出的
+ * 类型记在 `assocOwner` 里，优先用它。
+ *
+ * `genExprInner` 的 `EX_ENUMVAL` 分支落到这里。
+ *
+ * @param g  生成器。
+ * @param e  `EX_ENUMVAL` 节点。
+ * @return  枚举常量或构造表达式的 C 文本。
+ */
 static const char *exEnumval(CG *g, Expr *e) {
     const char *tn = e->u.enumval.typeName;
     const char *vn = e->u.enumval.variant;
@@ -2915,11 +3040,9 @@ static const char *exEnumval(CG *g, Expr *e) {
      * `assocOwner`, is preferred. */
     Type *et = planAssocOwner(e);
     if (!et && g->tt) et = ttFromName(g->tt, tn);
-    /* Inside a generic instance `tn` is the template's name
-     * (`option_T`), while the instance's C name is `option_i32`. With
-     * an `assocOwner` present, `subst` plus `cType` gives the real
-     * name; without that, `varArray<i32>::get()` referred to the
-     * non-existent type `option_T`, which was a real bug. */
+    /* Inside a generic instance `tn` is the template's name (`option_T`), while the instance's C
+     * name is `option_i32`. With an `assocOwner` present, `subst` plus `cType` gives the real name;
+     * without it the emitted name does not exist. */
     if (et) {
         Type *rt = subst(g, et);
         if (rt && rt->name) tn = rt->name;
@@ -2937,8 +3060,6 @@ static const char *exEnumval(CG *g, Expr *e) {
     if (e->u.enumval.args.len == 0)
         return arenaPrintf(g->arena, "(%s){ .tag = %s_%s }", tn, tn, vn);
 
-    /* Construction with a payload:
-     * `(shape){ .tag = shape_circle, .u.circle = { ._0 = 2.0 } }`. */
     Buf b;
     bufInit(&b, g->arena);
     bufPrintf(&b, "(%s){ .tag = %s_%s, .u.%s = {", tn, tn, vn, vn);
@@ -2950,14 +3071,23 @@ static const char *exEnumval(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
+/**
+ * @brief 按表达式节点分派，生成该节点对应的一段 C 表达式文本。
+ *
+ * 每个 `case` 返回的都是一段可嵌入更外层表达式的 C 代码；未覆盖的节点落到末尾返回
+ * `"0"`，所以新增 Expr 种类必须在这里补一支。
+ *
+ * @param g  生成器状态：arena 与缓冲区从这里取，错误也报给它。
+ * @param e  要生成的表达式节点；调用方保证非 NULL。
+ * @return   生成出来的 C 表达式文本，内存属于 `g->arena`。
+ */
 static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
         case EX_EXT: return exExt(g, e);
         case EX_LAMBDA: {
-            /* The environment, built where the lambda is written. The checker put the field values on
-             * the node (check_expr.c, checkLambda), so this is a struct literal written out by hand:
-             * the name-based literal path cannot be used, because a lambda's type has no name in the
-             * source to look up. */
+            /* The environment, built where the lambda is written: checker 把字段值放在节点
+             * 上，所以这里手写一个 struct 字面量。按名字走的字面量路径用不了 —— lambda 的
+             * 类型在源码里没有名字可查。 */
             StructDef *sd = e->type ? e->type->sdef : NULL;
             if (!sd) {
                 ctxError(g->ctx, e->line, 1, NULL, "lambda: the checker left no environment type");
@@ -2975,39 +3105,35 @@ static const char *genExprInner(CG *g, Expr *e) {
         }
         case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
         case EX_FLOAT:
-            /* An `f32` literal is written as the float it is: `%g` prints a `double`, and assigning
-             * that to a `float` is an implicit narrowing conversion clang reports
-             * (`-Wimplicit-float-conversion`; `float e = 3.14;` in `examples/types.extc`). The value
-             * is the same either way - the cast just says so. */
+            /* `f32` 字面量写成它本来的 float：`%g` 印出的是 `double`，把它赋给 `float` 是
+             * 隐式收窄，clang 以 `-Wimplicit-float-conversion` 报出来。值不变，转换只是
+             * 把这件事写明白。 */
             {
                 bool isF32 = e->type && e->type->kind == TY_BUILTIN && e->type->name &&
                              strcmp(e->type->name, "f32") == 0;
-                /* A literal that overflows a `double` -- `tools/fuzz.py` writes `1e400` -- has no
-                 * C literal to be written as, and `%g` prints it as `inf`, which is an **undeclared
-                 * identifier** in C: `-1e400` came out as `-inf` and gcc stopped there (found by the
-                 * fuzzer on two programs). The builtins say the same thing without pulling in
-                 * `<math.h>`, whose include would change the bytes of every emitted file. */
+                /* 溢出 `double` 的字面量（`1e400`）没有对应的 C 字面量，而 `%g` 会把它印成
+                 * `inf` —— 在 C 里那是个**未声明标识符**（`-1e400` 印成 `-inf`，gcc 就此报错）。
+                 * `__builtin_inf()` / `__builtin_nan("")` 说同样的话，又不必拉进 `<math.h>`：
+                 * 那个 include 会改掉每一个产出文件的字节。 */
                 const char *special = NULL;
                 if (e->u.fval != e->u.fval)                       special = "__builtin_nan(\"\")";
                 else if (e->u.fval != 0.0 && e->u.fval * 0.5 == e->u.fval)
                     special = e->u.fval < 0 ? "-__builtin_inf()" : "__builtin_inf()";
                 if (special)
                     return isF32 ? arenaPrintf(g->arena, "(float)%s", special) : (char *)special;
-                /* **Round-trippable**, not `%g`: `%g` keeps six significant digits, which silently
-                 * changes the value of any literal that needs more (`4294967295.0` would print as
-                 * `4.29497e+09`, so `x - 4294967296.0` gives 0 instead of -1, and a conversion of
-                 * that literal then traps on a range it is inside). 17 digits
-                 * round-trip a `double` and 9 a `float` (the cast below is what makes the f32
-                 * literal a float, so its digits only need to survive that). `%g` still drops
-                 * trailing zeros, so ordinary literals (`2.5`, `0.5`) are unchanged. */
+                /* 要**可往返**，不能用 `%g`：`%g` 只留六位有效数字，会悄悄改掉任何需要更多
+                 * 位数的字面量的值（`4294967295.0` 印成 `4.29497e+09`，于是
+                 * `x - 4294967296.0` 得 0 而不是 -1，对该字面量的转换随后会在它本来落在的
+                 * 区间的边界外触发陷阱）。17 位足以往返一个 `double`，9 位足以往返一个
+                 * `float`（下面的转换才让 f32 字面量变成 float，所以它的位数只需撑过那一
+                 * 步）。`%g` 仍会去掉尾随零，所以普通字面量（`2.5`、`0.5`）不变。 */
                 if (isF32) return arenaPrintf(g->arena, "(float)%.9g", e->u.fval);
-                /* An **integral** `f64` prints without a decimal point or an exponent
-                 * (`1.0` -> `1`, `-0.0` -> `-0`), and in C that is an *integer* constant: the
-                 * literal changes type, so `1.0 / 2.0` became the integer division `(1 / 2)` = 0,
-                 * `1e9 * 1e9` overflowed `int`, and `-0.0` lost its sign (`1.0 / z` printed `inf`
-                 * instead of `-inf`) -- all with no diagnostic anywhere (). Force the
-                 * constant to be a floating one whenever the text would not be. The f32 branch
-                 * above is immune because its `(float)` cast already fixes the type. */
+                /* 整数值的 `f64` 印出来没有小数点也没有指数（`1.0` -> `1`，`-0.0` -> `-0`），
+                 * 在 C 里那是个*整数*常量：字面量换了类型，于是 `1.0 / 2.0` 变成整数除法
+                 * `(1 / 2)` = 0、`1e9 * 1e9` 溢出 `int`、`-0.0` 丢掉符号（`1.0 / z` 印成
+                 * `inf` 而不是 `-inf`），而且这些都没有任何诊断。文本本身不是浮点常量时
+                 * 就强制补成浮点常量。上面的 f32 分支不受影响：它的 `(float)` 转换已经定死
+                 * 了类型。 */
                 {
                     char *txt = arenaPrintf(g->arena, "%.17g", e->u.fval);
                     if (!strpbrk(txt, ".eE"))
@@ -3177,22 +3303,23 @@ static const char *genExprInner(CG *g, Expr *e) {
     return "0";
 }
 
-/* Add the automatic dereference of a value position.
+/**
+ * @brief 生成一个值位置上的表达式，并在需要时补上自动解引用。
  *
- * The checker treats a `ref T` in value position as a `T` and marks that node
- * with `deref`; the dereference itself is added here. So `let y = p` copies the
- * value and `p + 1` adds values, while whether the target may be written stays
- * with `ref` versus `mut ref` in the type.
+ * checker 把一个值位置上的 `ref T` 当成 `T` 用，并给该节点打上 `deref`；那一步解引用
+ * 在这里补上。于是 `let y = p` 复制值、`p + 1` 做数值加法，而目标能不能写仍由类型里的
+ * `ref` 与 `mut ref` 决定。
  *
- * Wrapping genExprInner is what makes this complete: every path that generates
- * an expression, recursive calls included, goes through this function, so no
- * path can forget the dereference.
+ * 包在 genExprInner 外面是这条规则完整的原因：每一条生成表达式值的路径（含递归调用）
+ * 都经过这里，没有哪条路径会漏掉解引用。
+ *
+ * @param g  生成器状态。
+ * @param e  表达式节点，不得为 NULL（调用方违反即为调用方的 bug）。
+ * @return   生成出来的 C 表达式文本，内存属于 `g->arena`。
  */
 static const char *genExpr(CG *g, Expr *e) {
-    /* The contract is that every caller passes an expression node. Every path that
-     * generates a value goes through here, and no field of the AST is optional in
-     * that position, so a NULL would be a caller bug; stating it makes the
-     * invariant visible to readers and to static analysers alike. */
+    /* 每一个调用者都传一个表达式节点：这个值位置上 AST 没有可选字段，NULL 就是调用方的
+     * bug。写出来让这个不变量对读代码的人和静态分析器都可见。 */
     assert(e != NULL);
     const char *s = genExprInner(g, e);
     if (planDeref(e)) return arenaPrintf(g->arena, "*(%s)", s);
@@ -3220,11 +3347,18 @@ static void genStmt(CG *g, Stmt *s);
  * (see DeadLocal): the definition sits with the other unreferenced-definition helpers. */
 static void localDef(CG *g, size_t before, const char *name, size_t own);
 
-/* A value on its way into an `f32` slot, written as the float it is.
+/**
+ * @brief 把要放进 `f32` 槽位的值写成真正的 float。
  *
- * `let e: f32 = 3.14` emits `float e = 3.14;`: the literal is a `double`, so the assignment narrows
- * it, and clang says so (`-Wimplicit-float-conversion`, `examples/types.extc`). The value is the same
- * with the cast - it only stops being implicit. */
+ * `let e: f32 = 3.14` 直接发 `float e = 3.14;`：字面量是 `double`，赋值处发生隐式收窄，
+ * clang 会为此报 `-Wimplicit-float-conversion`。加一个显式转换后值不变，只是不再隐式。
+ *
+ * @param g       生成器状态，用于在 arena 上拼转换文本。
+ * @param target  目标槽位的类型；只有它是内建 `f32` 才会加转换。
+ * @param src     源表达式，用它的类型判断是否需要转换；NULL 表示按原样返回。
+ * @param val     已经生成好的源值文本，必须只求值一次。
+ * @return        `(float)val`，或原样返回 `val`（目标不是 `f32`，或源不是 `f64` 时）。
+ */
 static const char *asF32(CG *g, Type *target, Expr *src, const char *val) {
     if (!target || target->kind != TY_BUILTIN || !target->name || strcmp(target->name, "f32") != 0)
         return val;
@@ -3233,19 +3367,30 @@ static const char *asF32(CG *g, Type *target, Expr *src, const char *val) {
     return arenaPrintf(g->arena, "(float)%s", val);
 }
 
-/* -------------------------------------------------------------- conditions
- * A statement brings its own parentheses, and the expression printer adds a pair
- * around a comparison: `if x == y` therefore came out as `if ((x == y))`, which
- * clang reports as `-Wparentheses-equality`. Strip a pair that wraps the whole
- * condition, and only such a pair: a `)` that does not close at the very end
- * (one inside a string literal, say) leaves the text alone, which costs one
- * redundant pair and never changes what the condition means.
+/**
+ * @brief 去掉恰好包住整条条件的多余一对圆括号。
+ *
+ * 语句自己带括号，表达式打印又会给比较加一对，于是 `if x == y` 印成 `if ((x == y))`，
+ * clang 以 `-Wparentheses-equality` 报出来。
+ *
+ * 只剥包住整条条件的那一对：在字符串字面量里遇到、并不在末尾闭合的 `)` 会让原文原样返回
+ * ——代价是一对多余括号，含义不变。
+ *
+ * @param g  生成器状态，剥括号时借它的 arena 拼新串。
+ * @param e  条件文本；NULL 或首字符不是 `(` 时原样返回。
+ * @return   剥掉外层括号后的文本，或原样返回 `e`。
  */
 static const char *cgCond(CG *g, const char *e) {
     if (!e || e[0] != '(') return e;
     int depth = 0;
     for (size_t i = 0; e[i]; i++) {
         if (e[i] == '(') depth++;
+/**
+ * @brief 找到一个恰好闭合最外层 `(` 的 `)`，即条件的末尾。
+ *
+ * 这个 `)` 之后若还有字符，说明这一对括号并不包住整条条件，原样返回；否则去掉这对
+ * 括号并交回余下文本。
+ */
         else if (e[i] == ')' && --depth == 0) {
             if (e[i + 1]) return e;                  /* not the whole condition */
             Buf b;
@@ -3296,21 +3441,30 @@ typedef struct {
  *   true for a generic struct (`slice<T>`, `varArray<T>`) or a generic enum
  *   (`option<T>`, `result<T,E>`) with that name and arity.
  */
-/* Return the C path of the payload on the success side: `x.u.some._0` or
- * `x.u.success._0`.
+/**
+ * @brief 给出成功侧 payload 的 C 路径。
+ *
+ * 就是 `x.u.some._0` 或 `x.u.success._0`：`option` 与 `result` 在 C 里都是
+ * `struct { tag; union }`，payload 固定放在 `u.<成功变体>._0`。
+ *
+ * @param g   生成器状态。
+ * @param ti  已被 genTryHead 填好的描述符：用 `tmp` 与 `okVar` 拼路径。
+ * @return    该 payload 的 C 左值表达式。
  */
 static const char *tryPayloadPath(CG *g, TryInfo *ti) {
     return arenaPrintf(g->arena, "%s.u.%s._0", ti->tmp, ti->okVar);
 }
 
-/* Build the value to return when the operand of `?` failed.
+/**
+ * @brief 构造 `?` 的操作数失败时应当返回的值。
  *
- * The failure value is constructed in the return type of the enclosing function.
- * For an `option` that is its zero value, which is `none`; for a `result` it is
- * a failure variant carrying the inner error.
+ * 失败值按外层函数的返回类型构造。对 `option` 就是它的零值，也就是 `none`；对 `result`
+ * 是一个携带内层错误的失败变体。
  *
- * Returns:
- *   A C expression of that return type, or "0" when there is no return type.
+ * @param g   生成器状态。
+ * @param ti  `?` 操作数的描述符；`isOpt` 区分 `option` 与 `result`，`tmp` / `failVar`
+ *            用来搬内层错误。
+ * @return    返回类型上的 C 表达式；外层函数没有返回类型时返回 `"0"`。
  */
 static const char *genTryFail(CG *g, TryInfo *ti) {
     Type *rt = subst(g, g->retType);
@@ -3324,46 +3478,33 @@ static const char *genTryFail(CG *g, TryInfo *ti) {
                        ti->tmp, ti->failVar);
 }
 
-/* Decrement the recursion depth counter on one exit path.
+/**
+ * @brief 在一条退出路径上递减递归深度计数器。
  *
- * Params:
- *   g - generator state; emits nothing when the function is not self-recursive
+ * 递减必须排在返回值计算之后，绝不能排在它前面：先递减会把 `return spin(n)` 变成
+ * `--depth; return spin(n);`，于是尾调用每一帧都把计数器归零，守卫永远不触发（-O0 下
+ * gcc 会把这种形状折成尾调用，程序立刻无输出退出）。
  *
- * Notes:
- *   - The decrement must follow the computation of the return value, never
- *     precede it. Writing it first turned `return spin(n)` into
- *     `--depth; return spin(n);`, which resets the counter to zero in every
- *     frame of a tail call, so the guard never fires. At -O0 gcc really does
- *     fold that into a tail call and the program exits at once with no output,
- *     and at -O2 it loops forever; both are wrong.
- *   - A `return` statement is not the only exit. Hanging the decrement on
- *     cgReturn alone missed the implicit return at the end of a function body:
- *     the function `cdq` of bench/oi/p3810.extc has no explicit return, so its
- *     depth only ever grew and a legitimate program reported "recursion too
- *     deep" after a hundred thousand frames. The end of the body therefore
- *     decrements as well, and an explicit return that already decremented
- *     through cgReturn does not do it a second time.
+ * `return` 不是唯一的出口：函数体末尾的隐式返回也是出口，所以函数体结束处也要递减；
+ * 已经通过 cgReturn 递减过的显式 return 不再减第二次。
+ *
+ * @param g  生成器状态；函数不是自递归时不发任何东西。
  */
 static void cgRecLeave(CG *g) {
     if (g->isRecursive) cgLine(g, "--__extc_rec_depth;");
 }
 
-/* Return a value from the current function.
+/**
+ * @brief 从当前函数返回一个值。
  *
- * Every exit goes through one shared epilogue rather than repeating the release
- * sequence of the arenas at each return. The value is stored in `__extc_ret_v`,
- * the recursion depth is decremented, and control jumps to `__extc_ret`, where
- * that sequence appears once. Repeating it at every exit costs gcc time on the
- * stress programs, because each copy has to be analysed on its own.
+ * 每条出口都汇到同一个尾声，而不是在每个 return 处重抄一遍 arena 释放序列：值先存进
+ * `__extc_ret_v`，递减递归深度，然后跳到 `__extc_ret`，那段释放序列在那里只出现一次。
  *
- * Params:
- *   val - C expression of the value to return, or NULL to return nothing
+ * 值在 arena 释放之前算出来，比“先释放再求值”略保守。
  *
- * Notes:
- *   - A function with `noArena` returns directly: it allocates nothing and has
- *     no arena array to release.
- *   - The value is computed before the arenas are released, which is slightly
- *     more conservative than releasing first and evaluating afterwards.
+ * @param g    生成器状态。
+ * @param val  要返回的值的 C 表达式；NULL 表示返回空（`void` 出口）。带 `noArena` 的
+ *             函数直接返回，它不分配，也没有 arena 数组要释放。
  */
 static void cgReturn(CG *g, const char *val) {
     /* The buffered console tail leaves here (ruling 90): every `return` of `main` is a
@@ -3383,12 +3524,15 @@ static void cgReturn(CG *g, const char *val) {
     cgLine(g, "goto __extc_ret;");
 }
 
-/* Emit the statements that evaluate the operand of `?` once and return on
- * failure, and describe the result to the caller.
+/**
+ * @brief 发出“把 `?` 的操作数求值一次、失败即返回”的语句，并把结果描述给调用者。
  *
- * Returns:
- *   A TryInfo holding the temporary with the operand, the C name of its type and
- *   the variant names; the caller reads the payload through it.
+ * 失败分支的 return 已经写在这一步发出的行里，所以“释放掉所有外层 arena 层级”这件事
+ * 必须在这行之前定下来。
+ *
+ * @param g  `?` 所在的生成器状态。
+ * @param e  `EX_TRY` 节点。
+ * @return   描述操作数临时量、其类型的 C 名与变体名的 TryInfo，调用者随后由它读 payload。
  */
 static TryInfo genTryHead(CG *g, Expr *e) {
     TryInfo ti;
@@ -3436,9 +3580,11 @@ static TryInfo genTryHead(CG *g, Expr *e) {
 }
 
 
-/* Emit a `#line` directive pointing back at the .extC source of a statement.
+/**
+ * @brief 发一条 `#line` 指令，指回该语句对应的 .extC 源位置。
  *
- * Emits nothing when line mapping is off or the statement carries no line.
+ * @param g  生成器状态；行映射关闭时不发任何东西。
+ * @param s  语句；`s->line` 为 0（语句不带行号）时同样不发。
  */
 static void lineMark(CG *g, Stmt *s) {
     if (g->lineMap && s->line > 0)
@@ -3456,22 +3602,36 @@ static void lineMark(CG *g, Stmt *s) {
  * Returns:
  *   A C expression denoting the arena, usable as a function argument.
  */
-/* 这个调用点要把哪个 zone 递给被调者 —— 也就是"池该生在哪个地方"。
+/**
+ * @brief 给出这个调用点要递给被调者的 zone 实参，也就是“池该生在哪个地方”。
  *
- * 与 homeArg 平行的一条：arena 那边递的是"调用者选的那只 arena"，
- * 这里递的是"调用者选的那个地方的 zone 下标"。
+ * 与 homeArg 平行的一条：arena 那边递的是“调用者选的那只 arena”，这里递的是“调用者选
+ * 的那个地方的 zone 下标”。
  *
- *   - 我自己就收了这个参数（`funcHasZoneParam`）⇒ 把它原样往下传：
+ *   - 本函数自己就收了这个参数（`funcHasZoneParam`）⇒ 原样往下传：
  *     `vector<i32>::new` → `withCap` → `pool<V>::withParent` → `extc_pool_new_at`
  *     这条链上，用户在最外面选的那个地方一路传到运行期；
- *   - 否则（入口文件里的 main / 普通函数）⇒ 递当前这个地方的 zone，
- *     也就是最近一层压过的 `__extc_zm<lvl>` —— 这与"池生在建它的那个块里"完全一致。
+ *   - 否则（入口文件里的 main / 普通函数）⇒ 递当前这个地方的 zone，也就是最近一层压过的
+ *     `__extc_zm<lvl>` —— 与“池生在建它的那个块里”完全一致。
  *
- * 兜底用 `extc_pool_zoneDepth() - 1`（当前顶）：只有 `noArena` 的函数才会走到
- * （它没有压过任何 zone），那正是今天的行为。 */
+ * 站点自己记了层级（checker 的 `zoneLevel`）：`ZONE_HOME` = 用本函数收到的家 zone（一路
+ * 往下传），k>=1 = 第 k 层那个地方的 `__extc_zm<k>`。
+ *
+ * 兜底是运行期自己的“我此刻所在的地方” `extc_zoneTop`：它与
+ * `(extc_pool_zoneDepth() - 1)` 完全等价（运行期里 `zoneDepth() = zoneTop + 1`），但它
+ * 的含义是直接的，不像后者随 `zoneDepth()` 的定义漂移。单栈下它就是调用者所在的地方。
+ * 只有 `noArena` 的函数会走到这里（它没压过任何 zone）；`stmtMakesPool` 对“未解析的被调者”
+ * 保守算真时也会走到这里，而那个函数其实不建池，于是既没有 zone 也没有运行期，调用点
+ * 仍然要凑出第二个实参。这一支会引用运行期的 zone 表，所以这里把池运行期标成需要；
+ * 运行期文本在函数体之后才发（`if (g->needPool) poolsEmitRuntime(...)`），来得及。
+ *
+ * @param g  生成器状态。
+ * @param e  调用点表达式；NULL 或没有 zone 层级时走兜底。
+ * @return   可以直接当函数实参用的 C 表达式，命名一只 zone。
+ */
 static const char *zoneArgRef(CG *g, Expr *e) {
-    /* 站点自己记了层级（checker 的 `zoneLevel`）就按它发：`ZONE_HOME` = 用我这个函数收到的
-     * 家 zone（一路往下传），k>=1 = 第 k 层那个地方的 `__extc_zm<k>`（提权之后这里会变小）。 */
+    /* 站点自己记了层级（checker 的 `zoneLevel`）就按它发：`ZONE_HOME` = 用本函数收到的家
+     * zone（一路往下传），k>=1 = 第 k 层那个地方的 `__extc_zm<k>`。 */
     if (getenv("EXTC_DBG_ZONE"))
         fprintf(stderr, "[zonearg] %s node=%p lvl=%d mark1=%d mark2=%d blk=%d\n",
                 g->curFuncName ? g->curFuncName : "-", (void *)e, e ? planZoneLevel(e) : 0,
@@ -3505,54 +3665,51 @@ static const char *zoneArgRef(CG *g, Expr *e) {
         if (lvl < g->levelCap && g->zoneMark[lvl])
             return arenaPrintf(g->arena, "__extc_zm%d", lvl);
     }
-    /* 兜底 = "我此刻所在的那个地方"，运行期自己的名字就是 `extc_zoneTop` ——
-     * 与 `(extc_pool_zoneDepth() - 1)` **完全等价**（运行期里 `zoneDepth() = zoneTop + 1`），
-     * 但不再是一步**派生算术**：`extc_zoneTop` 的含义是直接的，`zoneDepth() - 1` 的含义随
-     * `zoneDepth()` 的定义漂移。规则 1 关心的正是这种"从环境现算"的形状：
-     * 单栈下它就是调用者所在的地方 ✓；**任务体内则不许用它**（那时必须从帧字段读）——
-     * `tools/check_concurrency_guards.py` 的 J1 记账并把计数钉住 ✓ */
-    /* 兜底会引用运行期的那张 zone 表，所以这里要把池运行期标成"需要" ——
-     * 运行期文本在函数体之后才发（`if (g.needPool) poolsEmitRuntime(...)`），还来得及。
-     * 走到这一支的典型情形是 `stmtMakesPool` 对"未解析的被调者"保守算真：那个函数其实
-     * 不建池，于是既没有 zone 也没有运行期，而调用点仍然要凑出第二个实参。 */
+    /* 兜底会引用运行期的那张 zone 表，所以这里要把池运行期标成"需要" —— 运行期文本在函数体
+     * 之后才发（`if (g.needPool) poolsEmitRuntime(...)`），还来得及。走到这一支的典型情形是
+     * `stmtMakesPool` 对"未解析的被调者"保守算真：那个函数其实不建池，于是既没有 zone 也没
+     * 有运行期，而调用点仍然要凑出第二个实参。 */
     g->needPool = true;
     return "extc_zoneTop";
 }
 
+/**
+ * @brief 把 checker 选定的 arena 层级写成一个 arena 实参。
+ *
+ * 这个结果是要当实参递出去的指针本身，别和 arenaRefAt 混：后者的结果还会被调用处套上
+ * `&`，所以它给的是 `(*__extc_home)` 这种解引用形式。
+ *
+ * @param g         生成器状态，借它的 arena 拼下标形式。
+ * @param arenaArg  arena 层级：`ARENA_HOME`（函数自己的家 arena），或 1 以上的块层级。
+ * @return          `__extc_home` 或 `&__extc_a[arenaArg]`。
+ */
 static const char *homeArg(CG *g, int arenaArg) {
-    /* Passed as an argument, so this is the pointer itself. Do not confuse it
-     * with arenaRefAt, whose result is wrapped in `&` and which therefore
-     * returns `(*__extc_home)`. */
     if (arenaArg == ARENA_HOME) return "__extc_home";
     return arenaPrintf(g->arena, "&__extc_a[%d]", arenaArg);
 }
 
-/* Return the arena that an allocation site at a given level refers to.
+/**
+ * @brief 给出某个层级上的分配点所指的那只 arena。
  *
- * The level is computed by the checker and recorded in `Expr.arenaLevel`. It
- * starts as the block the statement lives in and has already been promoted when
- * the value is stored into a place that lives further out; inside a function that
- * has a home arena every site is `ARENA_HOME` already.
+ * 层级由 checker 算好并记在 `Expr.arenaLevel` 上：起点是语句所在的块，值被存进活得更久的
+ * 位置时已经提升过；在有家 arena 的函数里，每个站点都已经是 `ARENA_HOME`。
  *
- * Params:
- *   level - ARENA_HOME, or a block level of 1 or more
+ * 这里没有一处兜底去替 checker 重新判断层级：如果函数有家 arena 就一律返回
+ * `(*__extc_home)`，那就成了第二个权威——checker 算一个层级、codegen 又定一个。
+ * checker 在闭包建好后按 `FuncDef.arenaSites` 重写每个站点，这里不需要做决定。
  *
- * Returns:
- *   `(*__extc_home)`, the arena the caller chose and the longest lived one, or
- *   `__extc_a[level]`, which is released when block `level` ends.
+ * 调用处会在这个结果外面加 `&`，所以这里给的是 `extc_arena *` 的解引用形式。
  *
- * Notes:
- *   - No fallback second-guesses the level: a fallback that returned
- *     `(*__extc_home)` whenever the function had a home arena would be a second
- *     authority on the level, with the checker computing one and code generation
- *     deciding another. The checker rewrites every site from `FuncDef.arenaSites`
- *     once the closure is built, so nothing here has to decide.
+ * @param g      生成器状态。
+ * @param level  `ARENA_HOME`，或 1 以上的块层级。
+ * @return       `(*__extc_home)`（调用者选的、活得最久的那只），或 `__extc_a[level]`
+ *               （第 `level` 层块结束时释放）；平行线程链上用线程本地的
+ *               `(*extc_tls_arena)`，协程的 step 用帧里的 `arena<level>`。
  */
 static const char *arenaRefAt(CG *g, int level) {
     /* parallel::run 的调用链上（worker 与它调用的每个函数）⇒ 用**线程本地** arena：
      * 帧 arena（`__extc_a[]`）属于主线程，两个 worker 同时用就是数据竞争；而 worker 的签名
      * 固定（只写 out、只返回 i64）⇒ 分配逃不出这个 worker ⇒ 线程本地是安全的。 */
-    /* 调用处会在这个结果外面加 `&`（见 arenaRefAt 的约定）⇒ 这里给的是 `extc_arena*` 的解引用形式 */
     if (g->parTls) return "(*extc_tls_arena)";
     if (level == ARENA_HOME) return "(*__extc_home)";
     /* A step has no C-stack arena array: the block arenas live **in the frame** (one field per level,
@@ -3563,19 +3720,20 @@ static const char *arenaRefAt(CG *g, int level) {
     return arenaPrintf(g->arena, "__extc_a[%d]", level);
 }
 
-/* Report a disagreement between the arena level and the block being generated.
+/**
+ * @brief 报告 arena 层级与当前正在生成的块之间的一致性问题。
  *
- * This is a drift detector for the level the checker computed: it must agree
- * with the block code generation is currently inside, and a disagreement means
- * the two have started computing the level separately again. It is active only
- * when EXTC_DBG_ARENA is set in the environment, and it changes no output.
+ * 这是给 checker 算出的层级用的漂移探测器：它必须与 codegen 此刻所在的块一致，不一致
+ * 就说明两边又开始分头计算层级了。只在环境变量 `EXTC_DBG_ARENA` 置上时生效，不改变任何
+ * 输出。
  *
- * The two conditions are one-directional and deliberately loose:
- *   - the level must not be 0, which means "not yet decided" and would show
- *     that the checker missed a site
- *   - the level must not be deeper than the current block; promotion only ever
- *     moves an allocation towards a longer lifetime, so a level shallower than
- *     the current block is legal
+ * 两条判据是单向的、故意放松的：
+ *   - 层级不能是 0：0 表示“还没定”，出现就说明 checker 漏了一个站点；
+ *   - 层级不能比当前块更深。提升只把分配移向更长的寿命，所以比当前块更浅是合法的。
+ *
+ * @param g     生成器状态，提供当前块层级与路径。
+ * @param e     被检查的分配站点表达式。
+ * @param what  站点名字，只用于打印诊断。
  */
 static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
     if (dbgOn("EXTC_DBG_ARENA_VERBOSE"))
@@ -3588,32 +3746,26 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
                 what, planArenaLevel(e), g->blkLevel, g->path, e->line);
 }
 
-/* Does this block need a zone of its own?
+/**
+ * @brief 判断一个块是不是需要有自己的 zone。
  *
- * A zone is the head of the side chain of pools created in one `place`. The only thing
- * that needs one is `extc_pool_new`, which registers the new pool in the zone current at
- * the call and returns -1 when there is none - and a pool that was never registered is
- * never dropped, so its slot is never reused and `extc_pool_live()` counts a record that
- * nothing can reach. The question is therefore "can this block's code reach
- * `extc_pool_new`?".
+ * zone 是一个 `place` 里建出来的池的侧链头。唯一需要它的是 `extc_pool_new`：它把新池
+ * 登记到调用时当前的那个 zone 上，没有 zone 就返回 -1 ——而没登记过的池永远不会被丢弃，
+ * 它的槽位也永远不会被重用，`extc_pool_live()` 就一直数着一条谁都够不着的记录。所以问题
+ * 就是“这个块的代码能不能走到 `extc_pool_new`？”。
  *
- * Params:
- *   b - the block statement about to be emitted
+ * 只问块自己的语句，不往里走嵌套块：嵌套块本身就是一个地方、有自己的 zone，它为自己
+ * 回答。循环体就是这样一个块，好处正在这里 —— 一个只调 `v.push` 的循环体不必每轮迭代
+ * 都要自己的 zone。
  *
- * Returns:
- *   True when a `zoneEnter` / `zoneLeaveTo` pair has to bracket the block.
+ * 结论对被调者是可传递的（`FuncDef.makesPool`，由 checker 按最小不动点算出）：库函数对
+ * `place` 是透明的 —— 调 `extc_pool_new` 的正是 `vector<i32>::withCap`，而它把池登记到
+ * 调用*它*的那个块的 zone 上。
  *
- * Notes:
- *   - Only the block's *own* statements are asked about, and a nested block is not walked
- *     into: a nested block is a place of its own with its own zone, and it answers for
- *     itself. A loop body is such a block, which is where the win is - a body that only
- *     calls `v.push` needs no zone of its own per iteration.
- *   - The summary is transitive through the callee (`FuncDef.makesPool`, computed by the
- *     checker as a least fixed point), because a library function is transparent to
- *     `place`: `vector<i32>::withCap` is what calls `extc_pool_new`, and it registers its
- *     pool in the zone of the block that called *it*.
- *   - Over-emitting is the safe direction, under-emitting is not; see `stmtMakesPool` in
- *     check_top.c for how an unresolved callee is treated.
+ * 多发是安全方向，少发不是。
+ *
+ * @param b  即将发出的块语句；NULL 或不是 `ST_BLOCK` 时为假。
+ * @return   真表示这个块需要用 `zoneEnter` / `zoneLeaveTo` 对夹起来。
  */
 static bool blockMakesPool(Stmt *b) {
     if (!b || b->kind != ST_BLOCK) return false;
@@ -3622,20 +3774,29 @@ static bool blockMakesPool(Stmt *b) {
     return false;
 }
 
-/* Release block arenas down to and including one level.
+/**
+ * @brief 把块 arena 释放到某一层（含该层）。
  *
- * Params:
- *   lvl - innermost level to release; 0 or less releases nothing, since level 0
- *         is not a block arena
+ * 离开一个地方时弹回它开始时的深度（mark），而不是盲目弹一个：早退路径
+ * （return/break/continue）因此不会把 zone 栈弄歪。
  *
- * Notes:
- *   - A function with `noArena` emits nothing: it never allocated.
+ * 发射与弹出靠 `zoneMark` 配对，`zoneHere` 只说明“这个函数是个地方”：块的 zone 是按需压
+ * 的，所以某层没压却弹一次，弹掉的就是**外层**的 zone —— 外层建的池随后就没有 zone，
+ * `extc_pool_new` 返回 -1，记录不再被回收。表在进入块时写、这里读，两者是同一份事实。
+ *
+ * 区域先放、arena 后放：池的内存是它自己的 malloc 块，两者独立，但释放属于这个块的池
+ * 正是这个块的释放点要做的事。只关内存，文件是程序自己的事，所以这个唯一的块释放点
+ * 没有任何东西要关。
+ *
+ * @param g    生成器状态。
+ * @param lvl  要释放到的最内层；0 或更小什么都不释放 —— 层级 0 不是块 arena。带
+ *             `noArena` 的函数（协程 step 除外）什么都不发：它从不分配。
  */
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
     /* A step keeps `noArena` (its prologue has no `__extc_a` and its returns take the direct path),
      * but it still releases block levels -- out of the frame's per-level arenas. */
-    if (g->noArena && !g->coroFunc) return;   /* never allocates, so nothing to release */
+    if (g->noArena && !g->coroFunc) return;
     /* Memory only: files are the program's business (decision 79), so the one place a
      * block release is emitted has nothing to close. */
     /* Regions first, then the arena: a pool's memory is its own malloc block, so the two are
@@ -3659,13 +3820,13 @@ static void cgReleaseLevel(CG *g, int lvl) {
         cgLine(g, "extc_arena_release(&__extc_a[%d]);", lvl);
 }
 
-/* Destroy the frame's block arenas, at the one point where a coroutine is finished.
+/**
+ * @brief 在一个协程结束处销毁它帧里各块层的 arena。
  *
- * A step never reaches the shared epilogue (it returns `true` at every yield), and the body's own
- * level lives until the task ends rather than until the step returns -- so the levels a finished
- * coroutine still holds have to go here, **before** the driver's `extc_task_end` frees the frame
- * itself. A dropped, never-finished coroutine leaks the blocks its frame arenas still hold; that is
- * bounded by the deferral and noted in docs/topics/CONCURRENCY.md 4.4. */
+ * 步骤函数每次 `yield` 都 `return true`，从不走共享尾声；协程体自己那一层活到任务结束而不是活到步骤返回，所以跑完的协程仍持有的层必须在这里释放，且要在驱动的 `extc_task_end` 释放帧本身**之前**。中途被丢弃、从未跑完的协程不会走到这里，它帧 arena 仍持有的块不会在此释放，泄漏量受延迟上界的限制。
+ *
+ * @param g  代码生成状态；`g->coroFunc` 为空（当前不是协程体）时什么都不发。
+ */
 static void cgCoroArenaDestroy(CG *g) {
     if (!g->coroFunc) return;
     int n = 1 + blkMaxOfBlock(((FuncDef *)g->coroFunc)->body);
@@ -3681,6 +3842,14 @@ static void cgCoroArenaDestroy(CG *g) {
 /* Defined below; `collectOwSites` walks a domain block's receiver with it. */
 static void collectOwCallsExpr(Expr *e, Vec *out);
 
+/**
+ * @brief 按源码顺序收集一个函数体里的全部 `@overwrite` 站点。
+ *
+ * **顺序**是编号稳定的前提：序言按同一顺序为每个站点发一个存储单元，`owIndex` 按位置查站点。域块 `d.run { … }` 的接收者是表达式，交给 `collectOwCallsExpr` 收集。
+ *
+ * @param s    要遍历的语句；为 NULL 时直接返回。
+ * @param out  依次追加每个站点的 `Stmt *`。
+ */
 static void collectOwSites(Stmt *s, Vec *out) {
     if (!s) return;
     switch (s->kind) {
@@ -3706,16 +3875,14 @@ static void collectOwSites(Stmt *s, Vec *out) {
     }
 }
 
-/* Return the index of one `@overwrite` site within the current function.
+/**
+ * @brief 返回一个 `@overwrite` 站点在当前函数里的序号。
  *
- * Returns:
- *   Its position in `g->owSitesOwn`, or -1 when it is not registered.
+ * 序号是**查**出来的，不存进 AST：同一个函数体每实例化一个泛型就重走一遍，存下来的序号会被下一个实例覆盖。序言按 `g->owSitesOwn` 的顺序发单元，两侧因此一致。
  *
- * Notes:
- *   - The prologue emits the cells in the same order, so the two sides agree.
- *     The index is looked up rather than stored in the AST, because one body is
- *     visited once per generic instance and a stored index would be overwritten
- *     by the next instance.
+ * @param g  代码生成状态，查其中的 `g->owSitesOwn`。
+ * @param s  站点语句。
+ * @return   它在 `g->owSitesOwn` 里的位置；没有登记时为 -1。
  */
 static int owIndex(CG *g, Stmt *s) {
     for (size_t i = 0; i < g->owSitesOwn.len; i++)
@@ -3733,15 +3900,18 @@ static int owIndex(CG *g, Stmt *s) {
 static void collectOwCallsExpr(Expr *e, Vec *out);
 static void collectOwCallsStmt(Stmt *s, Vec *out);
 
-/* Collect the cell-needing call sites of one expression tree; the declaration
- * above records why every expression kind must be covered.
+/**
+ * @brief 收集一棵表达式里被调函数需要 `@overwrite` 单元的调用站点。
+ *
+ * **每一种表达式都要走到**：漏掉一种，那个调用站点就没有单元，被调函数收到 NULL —— 它有兜底，程序仍然有定义，但存储会在每次调用时重新分配而不是复用。`dyn Trait(x)` 的载荷是子表达式，必须进去；各分支以 `default:` 收尾，所以漏掉一种不会触发 `-Wswitch`。
+ *
+ * @param e    要遍历的表达式；为 NULL 时直接返回。
+ * @param out  依次追加每个站点的 `Expr *`。
  */
 static void collectOwCallsExpr(Expr *e, Vec *out) {
     if (!e) return;
     switch (e->kind) {
-/* `dyn Trait(x)`: the payload is a child expression (ast.h: `dynv.payload`), so every
-     * walker has to look inside it -- the walkers end in `default:`, which is why `-Wswitch`
-     * never pointed at the omission. */
+
     case EX_DYN:
         collectOwCallsExpr(e->u.dynv.payload, out);
         return;
@@ -3807,10 +3977,13 @@ static void collectOwCallsExpr(Expr *e, Vec *out) {
     }
 }
 
-/* Collect the call sites of one statement tree whose callee needs cells.
+/**
+ * @brief 收集一棵语句树里被调函数需要单元的调用站点。
  *
- * Params:
- *   out - receives the Expr* of every such call site, in discovery order
+ * 表达式（含 `d.run { … }` 的接收者、条件与被匹配表达式）交给 `collectOwCallsExpr`，语句体继续递归；哪些表达式种类必须走到由 `collectOwCallsExpr` 负责。
+ *
+ * @param s    要遍历的语句；为 NULL 时直接返回。
+ * @param out  依次追加每个站点的 `Expr *`。
  */
 static void collectOwCallsStmt(Stmt *s, Vec *out) {
     if (!s) return;
@@ -3839,11 +4012,14 @@ static void collectOwCallsStmt(Stmt *s, Vec *out) {
     }
 }
 
-/* Return the index of one call site within the current function.
+/**
+ * @brief 返回一个调用站点在当前函数里的序号。
  *
- * Returns:
- *   Its position in `g->owCalls`, or -1 when it is not registered. The prologue
- *   emits the cells in the same order, so the two sides agree.
+ * 序言按 `g->owCalls` 的顺序发单元，两侧因此一致；站点没有登记时返回 -1，调用点便不传单元，被调函数走兜底。
+ *
+ * @param g  代码生成状态，查其中的 `g->owCalls`。
+ * @param e  调用站点表达式。
+ * @return   它在 `g->owCalls` 里的位置；没有登记时为 -1。
  */
 static int owCallIndex(CG *g, Expr *e) {
     for (size_t i = 0; i < g->owCalls.len; i++)
@@ -3851,26 +4027,27 @@ static int owCallIndex(CG *g, Expr *e) {
     return -1;
 }
 
-/* Does the current function keep its `@overwrite` cells in its own frame?
+/**
+ * @brief 判断当前函数的 `@overwrite` 单元是否留在自己的栈帧里。
  *
- * Yes for `main` and for recursive functions, whose frame is the one that stays
- * alive; FuncDef.owLocal carries the answer. The statement argument is unused,
- * because the answer is a property of the function.
+ * `main` 与递归函数为真：它们的帧一直活着，答案记在 FuncDef.owLocal。
+ *
+ * @param g  代码生成状态，读 `g->owLocalOwn`。
+ * @param s  未使用；答案属于整具函数，与具体语句无关。
+ * @return   单元在本帧内为 true，否则为 false。
  */
 static bool f_owLocal(CG *g, Stmt *s) { (void)s; return g->owLocalOwn; }
 
-/* Append the cell arguments of one call site whose callee needs `@overwrite`
- * storage.
+/**
+ * @brief 把一个调用站点的 `@overwrite` 单元实参追加到实参表尾部。
  *
- * Params:
- *   b       - buffer holding the argument list, without the closing parenthesis
- *   e       - the call site
- *   nargs   - number of arguments already in the list, used for the comma
- *   hasHome - whether a home arena argument was already appended
+ * 站点没有登记时什么都不追加：被调函数对此有兜底，程序仍然有定义。
  *
- * Notes:
- *   - A call site that was not registered passes nothing; the callee has a
- *     fallback for that, so the program stays defined.
+ * @param g        代码生成状态，用来查站点序号。
+ * @param b        正在拼的实参表缓冲，不含右括号。
+ * @param e        调用站点表达式。
+ * @param nargs    表里已有的实参数，决定要不要前置逗号。
+ * @param hasHome  是否已经追加过 home arena 实参；它也影响逗号。
  */
 static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome) {
     if (!planCallee(e) || planOwSites(planCallee(e)) == 0 || planOwLocal(planCallee(e))) return;
@@ -3887,30 +4064,30 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome) {
  */
 int blkMaxLevel(Stmt *s);
 
-/* Return the deepest block level inside one statement that is a block.
+/**
+ * @brief 返回一个块内部最深的块层号。
  *
- * Returns:
- *   The deepest level reached inside the block, not counting the level the block
- *   itself adds; 0 when there is no block.
+ * @param block  块语句；`NULL` 或不是 `ST_BLOCK` 时结果同 `blkMaxLevel(block)`，也就是 0。
+ * @return       块内部达到的最深层号，不含块自己加的那一层；没有块时为 0。
  */
 int blkMaxOfBlock(Stmt *block) {
     int m = 0;
     if (!block || block->kind != ST_BLOCK) return blkMaxLevel(block);
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
-        /* One call per statement, into a local. Calling `blkMaxLevel` twice in the same
-         * condition (once to compare, once to assign) doubles the work at **every** level, so
-         * a chain of n nested blocks costs 2^n -- n=30 already takes seconds and n=40 never returns.
-         * One call makes it linear in the statement count. */
+        /* One call per statement, into a local: calling `blkMaxLevel` twice (once to compare,
+         * once to assign) doubles the work at **every** level, so n nested blocks cost 2^n. */
         int d = blkMaxLevel(*(Stmt **)vecAt(&block->u.block.stmts, i));
         if (d > m) m = d;
     }
     return m;
 }
-/* Return the deepest block level reached inside one statement.
+/**
+ * @brief 返回一条语句内部达到的最深块层号。
  *
- * A block counts as one level, and the loops, conditionals and matches inside it
- * add their own, so the result is the number of arena slots the enclosing
- * function needs.
+ * 块自己算一层，其中的循环、条件与 `match` 各自再加层，所以返回值就是包住它的函数需要的 arena 槽数（`__extc_a` 的长度由此决定）。
+ *
+ * @param s  语句；为 NULL 时为 0。
+ * @return   块为 `1 + blkMaxOfBlock(s)`；`if`/`match` 取各分支的最大值；条件会分配空间的 `while` 比它的体块多一层。
  */
 int blkMaxLevel(Stmt *s) {
     if (!s) return 0;
@@ -3929,12 +4106,9 @@ int blkMaxLevel(Stmt *s) {
         /* A condition that allocates gets a level of its own (see the emitter), so that shape
          * needs one more than the body's own block. */
         return (planCondAllocs(s) ? 2 : 1) + blkMaxOfBlock(s->u.whiles.body);
-    /* `d.run { ... }` is a statement that opens a block, and `genStmtInner` emits its body
-     * through `genBlockBody`, which takes one arena level (`codegen.c` ST_DOMAIN). This case
-     * was missing, so the level count came out one short and the emitted
-     * `extc_arena __extc_a[maxLv + 1]` was too small: the body used `&__extc_a[k+1]` while the
-     * array stopped at `k` -- ASan stack-buffer-overflow in `extc_arena_release`, and a frame
-     * field (`f->arenaN`) that did not exist in the coroutine variant (). */
+    /* `d.run { ... }` opens a block and `genStmtInner` emits its body through `genBlockBody`,
+     * which takes one arena level; the count has to include that level, or `__extc_a[maxLv + 1]`
+     * is too small for the `&__extc_a[k+1]` the body uses. */
     case ST_DOMAIN: return 1 + blkMaxOfBlock(s->u.domain_.body);
     case ST_MATCH: {
         int m = 0;
@@ -3949,16 +4123,13 @@ int blkMaxLevel(Stmt *s) {
     }
 }
 
-/* Emit the body of one block, clearing its arena on entry and releasing it on
- * exit.
+/**
+ * @brief 发出一个块的体：进入时清掉它那一层的 arena，退出时释放。
  *
- * Params:
- *   block - the block statement; its statements are generated in order
+ * 循环体也是块，所以每一轮进入都清一次 —— 循环占用的内存因此被限制在一轮，而不是迭代次数。
  *
- * Notes:
- *   - A loop body is a block too, so every iteration clears the arena on entry.
- *     That is what bounds the memory of a loop by a single iteration instead of
- *     by the number of iterations.
+ * @param g      代码生成状态。
+ * @param block  块语句，其语句按顺序发出；调用点保证它是 `ST_BLOCK`（有断言）。
  */
 static void genBlockBody(CG *g, Stmt *block) {
     /* Only functions with a body reach here (`genFunc` returns early for an
@@ -3966,8 +4137,8 @@ static void genBlockBody(CG *g, Stmt *block) {
      * block statement it just inspected. */
     assert(block != NULL && block->kind == ST_BLOCK);
     g->blkLevel++;
-    /* `zoneMark`, `loopLevel` and `loopStep` were sized for this depth in `genFunc`
-     * (`levelCap` slots). Say so rather than walk off the array if that ever stops being true. */
+    /* `genFunc` sizes `zoneMark`, `loopLevel` and `loopStep` by `levelCap`; state the bound
+     * here rather than walk off the array. */
     assert(g->blkLevel < g->levelCap);
     /* Entering a block overwrites this level's mark, so the one that was there is saved
      * and put back on the way out. Level 1 is the function body, whose mark the prologue
@@ -3981,7 +4152,7 @@ static void genBlockBody(CG *g, Stmt *block) {
             cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
         /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）。
          * 只在这个块**可能建池**时才压（`blockMakesPool`）：只调用 `v.push` 这类不建池的
-         * 库函数的循环体不需要自己的 zone，而每个循环体压/弹一次正是这轮要消掉的开销。
+         * 库函数的循环体不需要自己的 zone，省下每轮一次的压/弹。
          * 弹出发射与否记进 `zoneMark`，`cgReleaseLevel` 查同一张表。 */
         g->zoneMark[g->blkLevel] = false;
         if (g->zoneHere && g->blkLevel > 1 && blockMakesPool(block)) {
@@ -4007,11 +4178,13 @@ static void genBlockBody(CG *g, Stmt *block) {
 
 static void genStmtInner(CG *g, Stmt *s);
 
-/* Emit one statement, with a statement prefix allowed around it.
+/**
+ * @brief 发出一条语句，允许在它前后带语句前缀。
  *
- * Everything the statement needs evaluated early is written to the prefix here,
- * before the statement itself, and the prefix block counter tells the prefix
- * mechanism that it is inside a statement and may emit lines at all.
+ * 语句需要提前求值的东西写进前缀；`prefixBlk` 非零表示正处在一条语句内部，前缀机制据此允许往那里发代码。语句本身由 `genStmtInner` 发出。
+ *
+ * @param g  代码生成状态。
+ * @param s  要发出的语句。
  */
 static void genStmt(CG *g, Stmt *s) {
     lineMark(g, s);
@@ -4020,9 +4193,14 @@ static void genStmt(CG *g, Stmt *s) {
     g->prefixBlk--;
 }
 
-/* Emit the statement itself; the prefix bookkeeping lives in genStmt. */
-/* `ST_VAR`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim (its trailing `return`/`break` becomes the function's). */
+/**
+ * @brief 发出 `ST_VAR`：普通声明、协程 spawn、`@overwrite` 单元与 `f()?` 初始化的声明。
+ *
+ * 协程 spawn 分支把帧当成本地的普通值，参数就地初始化形参（恢复时没有参数可再传一次）；带 `var h: coroutine<T>` 注解时帧放进任务自己的地方，普通写法把帧留在调用者栈上、零分配。`@overwrite` 分支只保留一块存储：首次执行时惰性分配，之后只清零复用。协程体内变量不是 C 局部量而是帧的字段，所以初始化发成赋值。
+ *
+ * @param g  代码生成状态。
+ * @param s  变量语句。
+ */
 static void stVar(CG *g, Stmt *s) {
 /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
  * arguments initialize the parameters -- a resume has none to pass them again. */
@@ -4076,9 +4254,7 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
     }
     /* `var d = inner(args)` **inside a coroutine**: the nested frame is a *field* of this
      * frame, not a C local -- a resume jumps past the declaration, so the initializer has
-     * to be an assignment to the field (same rule as every other frame-field local
-     * below). Emitting a local here left the field uninitialized and drew an
-     * "unused variable" warning from the generated C. */
+     * to be an assignment to the field (same rule as every other frame-field local below). */
     bool framed = false;
     if (g->coroFunc) {
         for (size_t i = 0; i < g->coroFunc->coroFrame.len && !framed; i++) {
@@ -4106,8 +4282,8 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
     return;
 }
 /* A frame field is not declared here: the frame struct holds it, and the assignment is
- * what a resume re-runs (the initializer runs on every execution, exactly like the C
- * local it replaces). */
+ * what a resume re-runs -- the initializer runs on every execution, as a C local's
+ * would. */
 if (g->coroFunc && planCName(s)) {
     bool framed = false;
     for (size_t i = 0; i < g->coroFunc->coroFrame.len && !framed; i++) {
@@ -4127,7 +4303,7 @@ if (g->coroFunc && planCName(s)) {
  * carries a `__2` suffix. */
 const char *nm = planCName(s) ? planCName(s) : s->u.var.name;
 /* `global var x: T` / `global let x: T = c`：发 **C 的块作用域 `static`** ——
- * 静态存储期 + 名字只在这个块里可见，语义正好对上（docs/topics/GLOBAL.md）。
+ * 静态存储期 + 名字只在这个块里可见，语义正好对上。
  * 额外的两个好处：这个声明被**重复执行**也没关系（循环、协程 resume 都跳到语句中间），
  * C 保证静态对象只在程序启动时初始化一次 ✓。初始化式必须是常量，检查器已经拦住。 */
 const char *stg = s->u.var.isGlobal ? "static " : "";
@@ -4141,7 +4317,7 @@ if (s->u.var.overwrite) {
      * its capacity, covers all three shapes - a single value, a
      * fixed-size buffer and a runtime length. The first execution
      * allocates and lazily at that, every later one clears and
-     * reuses, and the zero-value contract of `new` is unchanged.
+     * reuses, and a reused cell reads as the zero value `new` promises.
      *
      * Where the cell comes from: a site of this function uses a cell
      * in its own frame, a site of a callee uses the cell passed in
@@ -4159,10 +4335,7 @@ if (s->u.var.overwrite) {
          * level 1 of this frame. `arenaRefAt(planArenaLevel(nx))` must
          * not be used here: that number is the callee's own level,
          * while the cell lives elsewhere, and the two do not share a
-         * lifetime. Using it made a later call memset a block that
-         * had already been freed - an ASan use-after-free, and
-         * without ASan glibc handed the block back and the program
-         * merely looked as if it worked. */
+         * lifetime. */
         const char *owcv = arenaPrintf(g->arena, "__owc%d", k);
         const char *ar = arenaPrintf(g->arena, "(*%s->home)", owcv);
         (void)planArenaLevel(nx);
@@ -4181,8 +4354,7 @@ if (s->u.var.overwrite) {
             /* The temporary must not be named `p`: with
              * `@overwrite var p = ...` a `void *p` would shadow the
              * outer `array_T *p`, turning `p = (array_T *)p` into a
-             * self-assignment and leaving the binding null, which
-             * showed up as an ASan segmentation fault. */
+             * self-assignment and leaving the binding null. */
             const char *owtp = arenaPrintf(g->arena, "__owp%d", k);
             cgLine(g, "if (!%s || !%s->p) { void *%s = extc_arena_alloc(&%s,"
                       " (int64_t)sizeof(%s), \"%s\", %d);  if (%s) %s->p = %s;"
@@ -4224,11 +4396,7 @@ if (s->u.var.overwrite) {
     }
 }
 /* `let q = f()?` and `var q = f()?` are one of the legal positions
- * of `?`. This case was missing once: the checker allowed it while
- * code generation expanded `?` only in an assignment, a return and
- * an expression statement, so it fell through to the EX_TRY branch
- * of genExpr and reported an internal error, which reproduced every
- * time. The shape matches the assignment case, because the generated
+ * of `?`. The shape matches the assignment case, because the generated
  * C is a declaration followed by an initialization. */
 if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
     TryInfo ti = genTryHead(g, s->u.var.init);
@@ -4247,19 +4415,28 @@ localDef(g, lb, nm, 1);
 return;
 }
 
-/* `ST_WHILE`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim (its trailing `return`/`break` becomes the function's). */
+/**
+ * @brief 发出 `ST_WHILE`：普通 `while (...)` 或自占一层的 `while (1)` 形状。
+ *
+ * 条件求值可能把临时量写进语句前缀（数组 `==` 的右操作数、接收者或 `??` 主语）。把前缀冲在 `while (...)` **前面**只会求值一次，而条件每轮都读那个临时量，`while a == mk()` 就会永远拿第一次的值比较；有前缀时条件因此挪进循环体，求值次数与源码一致，体不动。无前缀（绝大多数情况）保持 `while (cond) {`。
+ *
+ * 条件自己会分配空间时它单独占一层 arena，在每轮开头释放；`g->blkLevel` 在整个循环期间抬高，让条件与体和检查器分配到的层一致（`blkMaxLevel` 对这种形状多算一层）。
+ *
+ * `for` 的步进语句记在体块上；步进仍在体内时给这个循环一个标签 id，`genBlockBody` 发标签、`ST_CONTINUE` 跳过去。
+ *
+ * @param g  代码生成状态。
+ * @param s  `while` 语句；体必须是块。
+ */
 static void stWhile(CG *g, Stmt *s) {
 const char *cnd = cgCond(g, genExpr(g, s->u.whiles.cond));
 /* Generating the condition may have written temporaries to the statement prefix:
  * `eqOperand` materializes the right operand of an array `==` there, and a receiver or a
  * `??` subject can do the same. Flushing that prefix **in front of** `while (...)` runs it
- * once, while the condition reads the temporary on every round -- so `while a == mk()`
- * compared against the first call's value forever and ran 101 rounds instead of 1
- * (). When there is a prefix, put the condition inside the loop instead: the
- * same number of evaluations as the source, and the body is untouched. No prefix (the
- * overwhelmingly common case) keeps the plain `while (cond) {` shape, so the generated
- * bytes of everything else stay where they were. */
+ * once, while the condition reads the temporary on every round -- `while a == mk()` would
+ * compare against the first call's value forever. When there is a prefix, put the condition
+ * inside the loop instead: the same number of evaluations as the source, and the body is
+ * untouched. No prefix (the overwhelmingly common case) keeps the plain `while (cond) {`
+ * shape. */
 const bool condTemps = g->prefix.len != 0;
 /* A `for` loop records its step on the body block; give this loop a label id if that
  * step is still part of the body (the iterator retargeting clears it, see
@@ -4299,8 +4476,16 @@ cgLine(g, "}");
 return;
 }
 
-/* `ST_MATCH`: one arm of the dispatch below, moved out so the switch reads as a table.
- * The body is the case body verbatim (its trailing `return`/`break` becomes the function's). */
+/**
+ * @brief 发出 `ST_MATCH`：分支发成 if/else 链，需要时先绑定载荷。
+ *
+ * 被匹配表达式只求值一次（枚举带载荷时先落进临时量），因为分支体读 `.u.<variant>`，第二次求值会有副作用。泛型实例里先把记录的类型 `subst` 成实例类型，否则分支会拿模板类型去比一个不存在的常量。
+ *
+ * 用 if/else 链而**不是**变体常量上的 `switch`：分支体里的 `break`/`continue` 属于外层循环，在 `switch` 里只会跳出 switch。检查器保证 match 穷尽，所以不需要收尾的 `else`。
+ *
+ * @param g  代码生成状态。
+ * @param s  `match` 语句。
+ */
 static void stMatch(CG *g, Stmt *s) {
 /* The scrutinee is evaluated exactly once, into a temporary when
  * the enum has a payload, because an arm reads `.u.<variant>` and
@@ -4308,10 +4493,10 @@ static void stMatch(CG *g, Stmt *s) {
  * `match f() { ... }` - would be wrong. */
 /* `subst` matters here for the same reason it does on the construction side
  * (`EX_ENUMVAL`): inside the body of a generic instance the scrutinee's
- * recorded type is the *template's* type, so `et->name` was `option_V` and the
- * arm compared against `option_V_none`, a constant that does not exist -- the
- * generated C did not compile at all. Substituting first gives the instance's
- * name (`option_i64`), and the payload types below are then already concrete. */
+ * recorded type is the *template's* type, so `et->name` would be `option_V` and the
+ * arm would compare against `option_V_none`, a constant that does not exist.
+ * Substituting first gives the instance's name (`option_i64`), and the payload types
+ * below are then already concrete. */
 Type *et = ttBase(subst(g, s->u.match.scrutinee->type));
 bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
 const char *subj = genExpr(g, s->u.match.scrutinee);
@@ -4325,7 +4510,7 @@ if (payload) {
  * over the variant constants: a `break` or `continue` in an arm
  * body belongs to the enclosing loop, but inside a `switch` it
  * would only leave the switch, so a `while true` with a `break`
- * would never terminate. A read loop hung on exactly that.
+ * would never terminate.
  *
  * No final `else` is needed: the checker guarantees that the match
  * is exhaustive, and a missing variant would not compile at all. */
@@ -4377,10 +4562,8 @@ for (size_t i = 0; i < s->u.match.arms.len; i++) {
     size_t bodyA = g->out->len;
     genBlockBody(g, arm->body);
     size_t bodyB = g->out->len;
-    /* Only the bindings of *this* arm: the body may contain nested matches whose
-     * bindings already know their own stage, and overwriting theirs with this
-     * larger one made a nested `e` count as mentioned as soon as a sibling nested
-     * arm used its own `e` - which kept lines that nothing reads. */
+    /* Only the bindings of *this* arm: a nested match's bindings already know their own
+     * stage, and a larger scope here would count them as mentioned. */
     for (size_t k = firstBind; k < firstBind + arm->binds.len && k < g->deadDefs.len; k++) {
         DeadDef *bd = *(DeadDef **)vecAt(&g->deadDefs, k);
         bd->scopeA = bodyA;      /* what could read the binding: this arm body */
@@ -4392,6 +4575,14 @@ cgLine(g, "}");
 return;
 }
 
+/**
+ * @brief 发出语句本身，是真正的分派表；前缀记账在 `genStmt` 里。
+ *
+ * `ST_VAR`、`ST_WHILE`、`ST_MATCH` 分别由 `stVar`、`stWhile`、`stMatch` 发出，这张表因此读起来像一张表。
+ *
+ * @param g  代码生成状态。
+ * @param s  要发出的语句。
+ */
 static void genStmtInner(CG *g, Stmt *s) {
     switch (s->kind) {
         case ST_TRAP: {
@@ -4401,8 +4592,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * 只有一种说法，不管那句话是编译器说的还是写代码的人说的。 */
             Expr *m = s->u.trap_.msg;
             /* Nothing from `rt`/`rtPrint` here: `extc_trapMsg` and `extc_die` are primitives of
-             * the runtime block, and `trap` prints no structured payload. Setting `needRuntime`
-             * here was what pulled `extc_print` into every program that traps (BG-1). */
+             * the runtime block, and `trap` prints no structured payload. */
             if (m->kind == EX_STR) {
                 /* 字面量：走短路径，消息作为**参数**而不是格式串（用户的消息里有 `%` 也安全）。 */
                 cgLine(g, "extc_trapMsg(\"%s\", %d, \"%s\");", g->path, s->line, m->u.str.text);
@@ -4439,9 +4629,8 @@ static void genStmtInner(CG *g, Stmt *s) {
              * domain drive them to completion -- "the block cannot end while a task it started is
              * still unfinished" is exactly this order, and it is also why the drive call belongs
              * **inside** the block: each `ext` declares its frame as a local of this block
-             * (`EX_EXT`), so running after the closing brace handed the domain pointers to stack
-             * slots that had already gone out of scope (ASan `stack-use-after-scope` in
-             * `tests/ext/domain_runs.extc`, found by the ASan gate). */
+             * (`EX_EXT`), so running after the closing brace would hand the domain pointers to
+             * stack slots that are already out of scope. */
             Stmt *body = s->u.domain_.body;
             if (body && body->kind == ST_BLOCK) {
                 cgLine(g, "{");
@@ -4580,7 +4769,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             for (int lv = g->blkLevel; lv >= to; lv--) cgReleaseLevel(g, lv);
             if (s->kind == ST_BREAK) { cgLine(g, "break;"); return; }
             /* `continue` in a `for` must still run the step (C's `for` does); the desugared
-             * `while` has it at the end of the body, behind a label (). */
+             * `while` has it at the end of the body, behind a label. */
             int step = g->loopLen ? g->loopStep[g->loopLen - 1] : 0;
             if (step) cgLine(g, "goto __extc_forstep_%d;", step);
             else      cgLine(g, "continue;");
@@ -4599,12 +4788,11 @@ static void genStmtInner(CG *g, Stmt *s) {
             flushPrefix(g);
             /* A discarded **unwrap** (`f()!` as a statement) is the one shape that needs `(void)`:
              * it lowers to a union field read (`(g()).u.success._0;`), which gcc reports as
-             * `unused-value` -- an error under `-Werror`. `tests/fs/close-twice.extc:16` writes
-             * exactly that. The parser builds `x!` as an `EX_SIGN` node, the same node the prefix
-             * `!x` uses, distinguished only by position (parser.c:2400-2412); here the **type** tells
-             * them apart: a negation always yields `bool`, an unwrap never does. Wrapping every
-             * discarded value instead would rewrite most generated files for nothing, and
-             * narrowing to "not a call" would still touch `io::cout << x`, a binary expression. */
+             * `unused-value` -- an error under `-Werror`. The parser builds `x!` as an `EX_SIGN`
+             * node, the same node the prefix `!x` uses, distinguished only by position; here the
+             * **type** tells them apart: a negation always yields `bool`, an unwrap never does.
+             * Wrapping every discarded value instead would rewrite most generated files for
+             * nothing. */
             Type *xt = s->u.expr.expr->type;
             bool isBool = xt && xt->kind == TY_BUILTIN && xt->name && strcmp(xt->name, "bool") == 0;
             bool unwrap = s->u.expr.expr->kind == EX_SIGN && xt && xt->kind != TY_VOID && !isBool;
@@ -4625,16 +4813,16 @@ static void genStmtInner(CG *g, Stmt *s) {
 
 /* ---------------------------------------------------------------- top level */
 
-/* Build the C parameter list of a function.
+/**
+ * @brief 拼出一个函数的 C 形参表。
  *
- * A function whose allocations may escape takes one hidden arena pointer at the
- * end: the `new` expressions inside it allocate into the arena chosen by the
- * caller. `@overwrite` cells are passed in the same way, as opaque
- * `extc_owcell *`, so a caller does not need to know their types and a generic
- * instance needs no special case.
+ * 分配可能逃逸的函数在末尾多收一个隐藏的 arena 指针：其中的 `new` 分配到调用者选定的 arena。`@overwrite` 单元以不透明的 `extc_owcell *` 同样从末尾传进来，调用者因此不必知道被调函数站点的类型，泛型实例也不需要特例。`main` 的 C 签名固定，不收隐藏形参；语言写的参数（`main(args)`）也不是 C 形参。
  *
- * Returns:
- *   The parameter list text, without the surrounding parentheses.
+ * 隐式形参只在 `cgImplicitArgs` 里发**一次**（`usesHome` 与 `makesPool` 各一个）；这里再补一手会让只建池的函数多出一个形参。
+ *
+ * @param g  代码生成状态。
+ * @param f  要拼形参表的函数定义。
+ * @return   形参表文本，不含外层圆括号。
  */
 static const char *cgParamList(CG *g, FuncDef *f) {
     Buf sig;
@@ -4642,8 +4830,8 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     /* C fixes the signature of `main`, so it takes no hidden parameter; its
      * home arena is the local `extc_arena *__extc_home = &__extc_a[1]` in its
      * own body. A parameter the language wrote is not a C parameter either:
-     * `main(args)` (docs/topics/IO.md section 7) is built from `argc`/`argv` in
-     * the prologue, so C still sees exactly the two arguments it insists on. */
+     * `main(args)` is built from `argc`/`argv` in the prologue, so C still sees
+     * exactly the two arguments it insists on. */
     if (!f->owner && strcmp(f->name, "main") == 0) {
         bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
         return bufCstr(&sig);
@@ -4661,8 +4849,8 @@ static const char *cgParamList(CG *g, FuncDef *f) {
      *（`makesPool` 是可传递的最小不动点，所以整条链上每个函数都收得到）。
      * 容器"生在哪里"因此由**调用者**决定，而不是由库内部那一层词法块决定。 */
     /* 注意：**不要**在这里再补一次 `makesPool` —— 上面那一次 `cgImplicitArgs` 已经把两种隐式形参
-     * 都发了（`usesHome` 与 `makesPool` 各一次）。这里多写一手就是"只建池的函数多一个形参"，
-     * 实测当场 116 个产物变非法 C —— 这正是"约定没有主人"会长出来的东西。 */
+     * 都发了（`usesHome` 与 `makesPool` 各一次）；这里多写一手就是"只建池的函数多一个形参"，
+     * 产物会变成非法 C。 */
     /* @overwrite cells live in the frame of the call site and are passed in as
      * opaque `extc_owcell *`: opaque means a caller does not need to know the
      * types of the callee's sites, and a generic instance needs no special
@@ -4676,16 +4864,13 @@ static const char *cgParamList(CG *g, FuncDef *f) {
     return bufCstr(&sig);
 }
 
-/* Does this statement always return?
+/**
+ * @brief 判断一条语句是否**一定**会返回。
  *
- * Only the simplest shapes are recognized: a `return`, or a block whose last
- * statement is one.
+ * 只认最简单的形状：`return` 本身，或最后一条语句是这种形状的块。
  *
- * Returns:
- *   true only when the statement definitely returns; an unsure case answers
- *   false. That is deliberately conservative: a false negative merely emits one
- *   more `return`, which is dead code but compiles, whereas the opposite mistake
- *   leaves a missing return that gcc reports as an error.
+ * @param s  语句；为 NULL 时为 false。
+ * @return   确定会返回时为 true；拿不准一律 false。这个方向是刻意的：漏判只多发一个 `return`（死代码但能编译），反过来会留下缺失的 return，gcc 报错。
  */
 static bool stmtIsDefiniteReturn(Stmt *s) {
     if (!s) return false;
@@ -4724,17 +4909,50 @@ static bool stmtIsDefiniteReturn(Stmt *s) {
  * question with the same result -- only the lookup changes, never the verdict. */
 typedef struct { FuncDef **slot; size_t cap, len; } FuncSet;
 
+/**
+ * @brief 初始化一个空的函数指针集合，槽数组取自 arena。
+ *
+ * 容量固定为 64，且必须是 2 的幂：查找与插入都用 `cap - 1` 做掩码定位。
+ * 集合本身不释放；扩容换下来的旧槽数组留在同一个 arena 里。
+ *
+ * @param s  要初始化的集合，原有内容被覆盖。
+ * @param a  分配槽数组的 arena。
+ */
 static void funcSetInit(FuncSet *s, Arena *a) {
     s->cap = 64; s->len = 0;
     s->slot = arenaAllocZero(a, s->cap * sizeof *s->slot);
 }
+/**
+ * @brief 把一个函数指针散列成集合的散列值。
+ *
+ * 指针按 16 字节对齐，先右移 4 位丢掉恒定为零的低位，再乘一个奇数散开。
+ *
+ * @param p  函数定义指针。
+ * @return   散列值；调用方用 `cap - 1` 掩码截成槽下标。
+ */
 static size_t funcSetHash(FuncDef *p) { return ((size_t)(uintptr_t)p >> 4) * 2654435761u; }
+/**
+ * @brief 判断某个函数指针是否已在集合里。
+ *
+ * 开放寻址加线性探测：走到空槽就说明不在。前提是 `s` 已由 `funcSetInit`
+ * 初始化，且表里始终有空槽——`funcSetAdd` 在装载率达到一半时就会扩容来保证。
+ *
+ * @param s  已初始化的集合。
+ * @param p  要找的函数指针。
+ * @return   在集合里为 true，否则 false。
+ */
 static bool funcSetHas(FuncSet *s, FuncDef *p) {
     for (size_t i = funcSetHash(p) & (s->cap - 1); ; i = (i + 1) & (s->cap - 1)) {
         if (!s->slot[i]) return false;
         if (s->slot[i] == p) return true;
     }
 }
+/**
+ * @brief 把集合容量翻倍，并把全部元素重新散列进新槽数组。
+ *
+ * @param s  已初始化的集合，容量与槽数组就地更新。
+ * @param a  分配新槽数组的 arena；旧数组不回收。
+ */
 static void funcSetGrow(FuncSet *s, Arena *a) {
     FuncSet bigger;
     funcSetInit(&bigger, a);
@@ -4748,6 +4966,15 @@ static void funcSetGrow(FuncSet *s, Arena *a) {
     }
     *s = bigger;
 }
+/**
+ * @brief 把一个函数指针加入集合；已经在集合里就什么都不做。
+ *
+ * 容量到一半满时先扩容，所以探测总能遇到空槽。
+ *
+ * @param s  已初始化的集合。
+ * @param a  扩容时用的 arena。
+ * @param p  要加入的函数指针。
+ */
 static void funcSetAdd(FuncSet *s, Arena *a, FuncDef *p) {
     if (s->len * 2 >= s->cap) funcSetGrow(s, a);
     for (size_t i = funcSetHash(p) & (s->cap - 1); ; i = (i + 1) & (s->cap - 1))
@@ -4765,6 +4992,17 @@ static FuncSet g_cycSeen, g_cycOn, g_cycGrey, g_cycBlack;
 static int    g_cycReady;
 static Vec    g_cycStack;
 
+/**
+ * @brief 从 `f` 出发深度优先遍历调用图，把落在环上的函数标进 `g_cycOn`。
+ *
+ * 灰色表示还在当前递归栈上，黑色表示已结束。一条指向灰色节点的边就是回边，
+ * 此时把 `g_cycStack` 里从该节点到栈顶的整段都标成「在环上」。颜色跨根节点
+ * 保留，对判环是安全的：一个环要么已被更早的根找到，要么所有节点仍是白色。
+ * `g_cycStack` 必须已由 `cycleSaysRecursive` 初始化。
+ *
+ * @param g  代码生成上下文，同时提供 arena。
+ * @param f  遍历起点；为 NULL 或没有函数体（extern 声明）时直接返回。
+ */
 static void cycDfs(CG *g, FuncDef *f) {
     if (!f || !f->body) return;
     if (funcSetHas(&g_cycSeen, f)) return;
@@ -4790,6 +5028,16 @@ static void cycDfs(CG *g, FuncDef *f) {
     funcSetAdd(&g_cycBlack, g->arena, f);                     /* black: finished, never a back edge */
 }
 
+/**
+ * @brief 判断一个函数是否落在调用图的某个环上，即直接或间接递归到自己。
+ *
+ * 首次调用初始化四个集合与遍历栈，之后对没见过的 `f` 补一次从它出发的遍历；
+ * 查询本身只是查 `g_cycOn`。状态保存在文件级静态变量里，都从 `g->arena` 分配。
+ *
+ * @param g  代码生成上下文，同时提供 arena。
+ * @param f  要查询的函数。
+ * @return   落在环上为 true，否则 false。
+ */
 static bool cycleSaysRecursive(CG *g, FuncDef *f) {
     if (!g_cycReady) {
         g_cycReady = 1;
@@ -4803,10 +5051,19 @@ static bool cycleSaysRecursive(CG *g, FuncDef *f) {
     return funcSetHas(&g_cycOn, f);
 }
 
+/**
+ * @brief 判断一个函数是否会直接或间接调用到自己。
+ *
+ * 答案决定要不要发递归深度守卫。判定只用检查期已记好的调用图（`f->callees`），
+ * 不再走一遍 AST，而且是传递的：互相递归的 `g -> h -> g` 里，`g` 与 `h` 都算。
+ *
+ * @param g  代码生成上下文。
+ * @param f  要判断的函数。
+ * @return   有路径回到自身为 true；`f` 为 NULL 或没有函数体时为 false。
+ */
 static bool funcCallsItself(CG *g, FuncDef *f) {
     if (!f || !f->body) return false;
-    /* Exact: the DFS sees the whole reachable subgraph of f, so a cycle through f is found in f's
-     * own run, and no fallback walk is needed. */
+    /* One DFS from `f` covers its whole reachable subgraph: a cycle through `f` needs no second walk. */
     return cycleSaysRecursive(g, f);
 }
 
@@ -4827,8 +5084,15 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
  * registers the generic instances its body calls (docs/topics/CONCURRENCY.md 4.4, slice C). */
 /* The handle type and its two helpers. Emitted only when a handle exists somewhere; the helpers are
  * EXTC_UNUSED so that a `value` helper for an unused yield type stays quiet under -Werror. */
-/* A **provisional** instance (`gen_T`, arguments still `T`) is never emitted; same test as the
- * checker's `provisionalInstance`, which is static to check_top.c. */
+/**
+ * @brief 判断一组类型实参是否还提到类型参数，即实例尚未具体化。
+ *
+ * 口径与检查期判 provisional instance 的一致：只要有一个实参提到类型参数，
+ * 这个实例（`gen_T`）就不发射。
+ *
+ * @param targs  类型实参列表；为 NULL 视为不含类型参数。
+ * @return       有实参提到类型参数为 true，否则 false。
+ */
 static bool coroProvisional(Vec *targs) {
     if (!targs) return false;
     for (size_t i = 0; i < targs->len; i++)
@@ -4836,16 +5100,33 @@ static bool coroProvisional(Vec *targs) {
     return false;
 }
 
-/* The coroutines that are actually emitted: instances of a coroutine, never a generic template and
- * never a provisional instance (`gen_T`). A loop that `continue`s on `planTemplate(cf)` skips
- * exactly the wrong set -- the instance is what `genFunc` emits, and a template never is
- * (tools/attack.py F4 + B7). */
+/**
+ * @brief 判断一个协程是否真的会发射成 C 函数。
+ *
+ * 只有具体实例才发射：自身还有类型参数的泛型模板不发射，类型实参仍提到类型参数的
+ * provisional 实例（`gen_T`）也不发射。实例必须发射——`genFunc` 生成的就是实例，
+ * 句柄调度表按它生成的 `$step`/`$next` 分派。
+ *
+ * @param f  候选函数。
+ * @return   是协程且已具体化为 true；`f` 为 NULL、不是协程或还是模板时为 false。
+ */
 static bool coroEmitted(FuncDef *f) {
     if (!f || !planIsCoro(f)) return false;
     if (!planTemplate(f)) return f->typeParams.len == 0;
     return planTemplate(f)->typeParams.len == 0 ? true : !coroProvisional(&f->targs);
 }
 
+/**
+ * @brief 发射协程句柄类型所需的前置声明与两族辅助函数。
+ *
+ * `g->needCoroHandle` 为假时什么都不发。发出：任务存活查询的原型；每个已发射协程的
+ * `$step` 原型，需要 zone 时再加 `$next` 原型；共享的 `extc_trap_dead_handle` 与
+ * `extc_coro_next` 分派器；最后按 yield 类型各发一份 `value`/`send` 辅助函数
+ * （同一种 yield 类型只发一份）。驱动一个任务已结束的句柄会走 trap，而不是读已释放的帧。
+ *
+ * @param g  代码生成上下文。
+ * @param m  当前模块；从 `m->funcs` 里挑已发射的协程。
+ */
 static void genCoroHandleDecls(CG *g, Module *m) {
     if (!g->needCoroHandle) return;
     cgLine(g, "/* The coroutine **handle**: one struct for every `coroutine<T>`, which is what lets");
@@ -4939,6 +5220,17 @@ static void genCoroHandleDecls(CG *g, Module *m) {
     }
 }
 
+/**
+ * @brief 按需发射协程运行时与任务表，并声明每个协程的步骤函数。
+ *
+ * 先判断任务表要不要：有需要 zone 的协程，或 extC 侧声明了 `extc_task_*` 外部函数，
+ * 都算要——需要时顺带拉进池 zone 运行时并发出协程运行时。随后调用
+ * `genCoroHandleDecls`，再给每个具体协程发 `$step` 原型；需要 zone 的还就地定义
+ * `$next`：它把帧里的 place 设为当前再进步骤，返回后恢复，步骤报告完成时整份释放。
+ *
+ * @param g  代码生成上下文。
+ * @param m  当前模块。
+ */
 static void genCoroDecls(CG *g, Module *m) {
     bool taskTable = false;
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -4963,10 +5255,10 @@ static void genCoroDecls(CG *g, Module *m) {
     genCoroHandleDecls(g, m);
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        /* Instances emit too: skipping `planTemplate(f)` here would leave a generic coroutine with no
-         * `$next` at all -- the handle dispatcher would then call `$step` directly, which neither makes
-         * the task's place current nor ends the task (). A *template* still has type
-         * parameters left, which is what the second test excludes. */
+        /* Instances emit too: skipping `planTemplate(f)` here would leave a generic coroutine
+         * with no `$next` at all, and the handle dispatcher would then call `$step` directly,
+         * which neither makes the task's place current nor ends the task. A *template* still has
+         * type parameters left, which is what the second test excludes. */
         if (!f || !planIsCoro(f) || f->typeParams.len > 0) continue;
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);",
                cFuncName(g, f), cFuncName(g, f));
@@ -4992,10 +5284,29 @@ static void genCoroDecls(CG *g, Module *m) {
 /* Sub-phase timers for codegen, off unless EXTC_DBG_TIME=1. The front-end timers say codegen
  * is 91% of a big build; these say which part of it, because the profile's leaf shares (vecAt
  * 60%) do not name the loop behind the calls. Accumulated per name and reported once. */
+/**
+ * @brief 判断是否打开 codegen 子阶段计时。
+ *
+ * @return   `EXTC_DBG_TIME` 已设置时为真；环境变量只读一次并缓存。
+ */
 static int cgTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+/**
+ * @brief 取计时用的当前时钟读数。
+ *
+ * @return   进程 CPU 时间，单位秒。
+ */
 static double cgNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 typedef struct { const char *name; double sec; } CgAcc;
 static CgAcc cgAccs[8];
+/**
+ * @brief 把一次子阶段耗时累加进按名字索引的计时表。
+ *
+ * `EXTC_DBG_TIME` 没开时直接返回。表最多 8 项；新名字占用第一个空槽，放不下就丢弃。
+ * 表里只存 `name` 指针，不拷贝字符串，所以调用点传的是字面量。
+ *
+ * @param name  阶段名。
+ * @param sec   本次耗时，单位秒。
+ */
 static void cgAcc(const char *name, double sec) {
     if (!cgTimeOn()) return;
     for (size_t i = 0; i < 8; i++) {
@@ -5009,11 +5320,22 @@ static void strReport(void);   /* defined with the scan counters, below */
  * the per-local work is all O(body), which should be linear -- so one of these four counters must
  * be growing with the program. */
 static long g_locN, g_locCopy, g_locRead, g_locLine, g_cuts;
+/**
+ * @brief 把局部变量扫描的计数器打到 stderr。
+ *
+ * `EXTC_DBG_TIME` 没开时什么都不做。
+ */
 static void locReport(void) {
     if (!cgTimeOn()) return;
     fprintf(stderr, "[locals] n=%ld copy=%lld reads=%lld lines=%lld cuts=%ld\n",
             g_locN, (long long)g_locCopy, (long long)g_locRead, (long long)g_locLine, g_cuts);
 }
+/**
+ * @brief 打出代码生成的计时与扫描计数报告。
+ *
+ * `EXTC_DBG_TIME` 没开时什么都不做。依次输出字符串扫描计数、局部变量计数，
+ * 以及每个已累计的子阶段耗时。
+ */
 static void cgReport(void) {
     if (!cgTimeOn()) return;
     strReport(); locReport();
@@ -5021,6 +5343,17 @@ static void cgReport(void) {
         fprintf(stderr, "[time] %-9s %.3f s\n", cgAccs[i].name, cgAccs[i].sec);
 }
 
+/**
+ * @brief 发射一个完整的函数定义：序言、函数体与共享的收尾。
+ *
+ * 序言备好块 arena 数组、`@overwrite` 的存储单元、返回值经过的槽和递归守卫，然后生成
+ * 函数体，最后由同一段收尾释放每层 arena 并返回。改到的每项 per-function 状态都在入口
+ * 保存、出口恢复，因为一个泛型会连着生成多具函数。入口有三种形状：`main` 用 C 固定的
+ * 签名（`argc`/`argv` 在序言里包成语言声明的视图），协程步骤发成 `$step`，其余为普通函数。
+ *
+ * @param g  代码生成上下文。
+ * @param f  要发射的函数。
+ */
 static void genFunc(CG *g, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`) have no body: they are emitted inline at their call
      * sites (see genMethodCall). Never emit one as a function, whichever path got here. */
@@ -5083,9 +5416,8 @@ static void genFunc(CG *g, FuncDef *f) {
      * an `extc_arena` holds only a `top` pointer and NULL means empty. The
      * function body itself is level 1; genBlockBody increments on entry. */
     int maxLv = 1 + blkMaxOfBlock(f->body);
-    /* One table slot per block level, exactly like `__extc_a[maxLv + 1]` below. Arena-allocated
-     * rather than `[64]` on the CG struct: the count is a property of this function, and a fixed
-     * 64 was wrong for both a deeply nested legal program and a shallow one (). */
+    /* One table slot per block level, exactly like `__extc_a[maxLv + 1]` below. Allocated per
+     * function because the level count is a property of this body. */
     g->levelCap = maxLv + 2;
     g->zoneMark  = (bool *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(bool));
     g->loopLevel = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
@@ -5110,10 +5442,8 @@ static void genFunc(CG *g, FuncDef *f) {
     Vec owcNow; vecInit(&owcNow, g->arena, sizeof(Expr *));
     collectOwCallsStmt(f->body, &owcNow);
     g->owCalls = owcNow;
-    /* A cell is initialized with `&__extc_a[1]`, so the arena array must be
-     * emitted whenever there is any cell, even in a function that allocates
-     * nothing. An @overwrite variable in `main` is exactly that case, and
-     * missing it left `__extc_a` undeclared. */
+    /* A cell is initialized with `&__extc_a[1]`, so the arena array must be emitted whenever
+     * there is any cell, even in a function that allocates nothing. */
     g->noArena = !planMayUseArena(f) && !(owNow.len > 0 || owcNow.len > 0);
     /* A step owns no arena array: it is not a place, and what it allocates belongs to the task's own
      * place (docs/topics/CONCURRENCY.md 4.4, slice C). Emitting one also made it unused, which
@@ -5124,12 +5454,9 @@ static void genFunc(CG *g, FuncDef *f) {
      * prints its arguments is exactly that case. */
     if (mainArgs) g->noArena = false;
     /* `main`'s home arena **is** `&__extc_a[1]` (emitted below): it has no caller to hand
-     * one in, so the storage is its own body. When `main` only passes that arena down -
-     * `fn main() -> i32 { return caller() }` over a generic that allocates - its body holds
-     * no `new` of its own, `mayUseArena` is false, and the prologue still pointed at an
-     * array that was never declared: gcc reported ``__extc_a' undeclared` on
-     * `tests/arena-promoted/R2a_generic_instance_first.extc`. Every other function receives
-     * `__extc_home` as a parameter and needs no array of its own. */
+     * one in. When `main` only passes that arena down, its body holds no `new` of its own and
+     * `mayUseArena` is false while the prologue still points at the array -- so force it here.
+     * Every other function receives `__extc_home` as a parameter and needs no array of its own. */
     if (isMain && planUsesHome(f)) g->noArena = false;
     /* Same reason, for pools: the frame mark and the per-block release hooks hang off the
      * arena's lifetime, so a `main` that only *uses* a pool (it allocates nothing itself)
@@ -5152,7 +5479,7 @@ static void genFunc(CG *g, FuncDef *f) {
                     f->name ? f->name : "-", f->modName ? f->modName : "-",
                     planInstName(f) ? planInstName(f) : "-", f->owner ? "yes" : "-", f->line);
         /* 「一个地方」= 入口文件里的函数。`modName` 是 loader 给的模块名：
-         * 库方法有它（实测 `withCap` 是 `mod=pool`），入口文件为空，所以库函数对地方透明 ——
+         * 库方法有它，入口文件为空，所以库函数对地方透明 ——
          * `pool<T>::withCap` 里建的池属于它的调用者所在的地方。 */
         (void)lib;
         g->zoneHere = g->needPool && (!f->modName || !*f->modName);
@@ -5198,8 +5525,8 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "%s %s;   /* built from argc/argv below */", at, nm);
         cgLine(g, "{");
         g->indent++;
-        /* `self` 常常用不到（库里 16 处 ✓）⇒ 明确 `(void)` 掉：接收者是**签名**的一部分，
-         * 用不用是函数体的事 ✓ 生成物不该因此刷警告 ✗ */
+        /* `self` 常常用不到 ⇒ 明确 `(void)` 掉：接收者是**签名**的一部分，
+         * 用不用是函数体的事，生成物不该因此刷警告。 */
         if (f->params.len > 0 && strcmp((*(Param **)vecAt(&f->params, 0))->name, "self") == 0)
             cgLine(g, "(void)self;");
         cgLine(g, "int64_t __extc_argn = (int64_t)argc;");
@@ -5237,11 +5564,9 @@ static void genFunc(CG *g, FuncDef *f) {
      * function really releases an arena on the way out. */
     bool retVoid = !g->retType || g->retType->kind == TY_VOID;
     /* `main` returns through it as well, and that is the point: its value is the process
-     * exit code, so it has to survive the release sequence like any other return. It used
-     * to be thrown away here - `fn main() -> i32 { var p = new i32  return i32(*p) }`
-     * emitted `(void)(*p)` and the process exited 0 - which CONTRADICTS the manual ("`main`
-     * 的返回值就是进程退出码"). The slot is skipped only for `noArena`, where `cgReturn`
-     * returns the value directly and the declaration would be unused. */
+     * exit code, so it has to survive the release sequence like any other return. The slot is
+     * skipped only for `noArena`, where `cgReturn` returns the value directly and the
+     * declaration would be unused. */
     bool retSlot = !g->noArena && !retVoid;
     if (retSlot)
         cgLine(g, "%s __extc_ret_v;", cType(g, g->retType));
@@ -5257,15 +5582,11 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
         localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */
     }
-    /* The buffered console tail has one guaranteed exit.
-     *
-     * `main` flushes on every explicit `return` and in the arena epilogue, but a body that
-     * simply runs off its end passes through neither: a program whose last statement is
-     * `io::cout << "qw\n"` printed nothing at all. A trap exits from wherever it stands,
-     * and so does `sys::proc::exit`. One `atexit` covers every way out, including those
-     * two, and the explicit flushes stay for the ordering they give inside the program.
-     * Registered only when the program uses that console at all (`needCout`), so a program
-     * without it does not pull the flush function in. */
+    /* The buffered console tail has one guaranteed exit: `main` flushes on every explicit
+     * `return` and in the arena epilogue, but a body that runs off its end passes through
+     * neither. A trap exits from wherever it stands, and so does `sys::proc::exit`; one
+     * `atexit` covers every way out, and the explicit flushes stay for the ordering they give
+     * inside the program. Registered only when the program uses that console (`needCout`). */
     if (isMain && g->needCout) cgLine(g, "atexit(extc_cout_flush);");
     /* Only a self-recursive function needs the depth guard; see
      * funcCallsItself. Entering increments, every exit decrements, and
@@ -5331,25 +5652,17 @@ static void genFunc(CG *g, FuncDef *f) {
             else         cgLine(g, "return __extc_ret_v;");
         }
     }
-    /* A function without an arena has no epilogue below, so nothing catches a body
-     * that runs off its end - and a non-void one would then return whatever the
-     * register happened to hold. clang reports exactly that as `-Wreturn-type`, and
-     * one shape it cannot see through is a `match` whose arms all return: the arms
-     * become an `if / else if` chain, which says nothing about being exhaustive.
-     * The trap is the honest answer for the path that no arm matched, and because
-     * `extc_trapMsg` is `noreturn` the C compiler stops asking for a value there.
-     *
-     * It applies to a function with an arena as much as to one without: the arena only
-     * changes where the value is parked on the way out, and without the trap that path
-     * returned the slot the return statements never wrote. Measured on
-     * `fn f(x: bool) -> i32 { var p = new i32  if x { return i32(*p) } }` called with
-     * `false`: the caller received whatever the stack held. */
+    /* A body that runs off its end must not fall through: a non-void one would return whatever
+     * the register happened to hold, or -- with an arena -- the return slot that no return
+     * statement ever wrote. clang reports that as `-Wreturn-type`, and one shape it cannot see
+     * through is a `match` whose arms all return: the arms become an `if / else if` chain,
+     * which says nothing about being exhaustive. `extc_trapMsg` is `noreturn`, so the C
+     * compiler stops asking for a value there. */
     if (fallsOff && !retVoid) {
-        /* `main` is the one function C gives an implicit `return 0` for, and the checker's rule for
-         * it says as much ("the return type may be absent or `i32`"). Trapping there killed a program
-         * every C programmer expects to exit 0: the trap sat at the end of `main` right after its
-         * output (tools/attack.py coro K4 -- the coroutine itself was fine, the program died on the
-         * way out). Still a trap everywhere else: the value there is genuinely undefined. */
+        /* `main` is the one function C gives an implicit `return 0` for, and the checker's rule
+         * for it says as much ("the return type may be absent or `i32`"): trapping there would
+         * kill a program every C programmer expects to exit 0. Still a trap everywhere else:
+         * the value there is genuinely undefined. */
         if (g->mainFuncName && f->name && strcmp(g->mainFuncName, f->name) == 0)
             cgLine(g, "return 0;");
         else
@@ -5418,24 +5731,21 @@ static void genFunc(CG *g, FuncDef *f) {
  * This is not style but performance. extC emits a single .c file, one
  * translation unit, so external linkage buys nothing while forcing gcc to assume
  * that other code may call the function and that pointers may alias, which makes
- * it reject outer-loop vectorization outright.
- *
- * Measured on a matrix multiply of size n=1000 at OI scale, 10^9 multiply-adds,
- * with the same code differing only in linkage:
- *     static 208 ms   vs   extern 660 ms   => 3.2x
- * The reports from -fopt-info-vec-missed were "unsupported outerloop form" for
- * the extern version and "outer-loop already vectorized" for the static one.
- * Internal linkage also brings cross-function inlining and stronger constant
- * propagation for free, and `-Wl,--gc-sections` stops being the only safety net.
+ * it reject outer-loop vectorization outright. Internal linkage also brings
+ * cross-function inlining and stronger constant propagation for free, and
+ * `-Wl,--gc-sections` stops being the only safety net.
  *
  * Should extC ever support several translation units, which it does not today,
  * this has to become "export only what another unit uses".
  */
 
-/* Is this function the entry point of the program?
+/**
+ * @brief 判断一个函数是不是程序的入口点。
  *
- * Returns:
- *   true for a free function named `main`.
+ * 判据是自由函数（没有 owner）且名字逐字为 `main`。
+ *
+ * @param f  候选函数；可以为 NULL。
+ * @return   是入口点为 true，否则 false。
  */
 static bool cgIsMain(const FuncDef *f) {
     return f && !f->owner && f->name && strcmp(f->name, "main") == 0;
@@ -5444,14 +5754,18 @@ static bool cgIsMain(const FuncDef *f) {
 /* Emit the forward declaration of one function, so that definitions may appear
  * in any order.
  */
-/* `parallel::run` 的 trampoline：语言层没有函数指针，所以这份"取 worker 的地址"只能由编译器
- * 写出来。worker 的第四个形参是一个 view（`{data, len}`）；这里按 [lo, hi) 切出**它自己那一段**
- * 再调用 —— 分区是"读只共享、写必分区"里"写"的那一半，所以不需要任何新的可发送性分析。 */
-/* `parallel::run` 的 trampoline 与它的 ctx 类型。
+/**
+ * @brief 发射 `parallel::run` worker 的 trampoline 和它的 ctx 类型。
  *
- * worker 形参是 `(id, lo, hi, 视图们…)`，其中**恰好一个** `mut slice<T>` 是输出：它按 `[lo,hi)`
- * 分区，每个 worker 只碰自己那一段；其余是**只读**视图，原样共享给每个 worker（谁都不写它们 ⇒
- * 不需要分区，也不需要新的可发送性分析）。ctx 就是"每个视图一个字段"的结构体，按值带过去。 */
+ * worker 的形参是 `(id, lo, hi, 视图们…)`，其中恰好一个 `mut slice<T>` 是输出：
+ * trampoline 按 `[lo, hi)` 把它切成只属于本 worker 的 `sub`，其余视图原样共享——
+ * 谁都不写它们，所以不需要分区。ctx 是每个视图一个字段的结构体，按值传进去。
+ * worker 需要家 arena（体内有分配）时尾参补一个线程本地 arena：它的分配逃不出这次
+ * 调用，两个 worker 也不会去抢主线程的帧 arena。
+ *
+ * @param g  代码生成上下文。
+ * @param f  worker 函数；形参前三个是 `id`/`lo`/`hi`，其后全是视图。
+ */
 static void genParTramp(CG *g, FuncDef *f) {
     size_t nViews = f->params.len - 3;
     size_t mutIdx = 0;
@@ -5480,45 +5794,58 @@ static void genParTramp(CG *g, FuncDef *f) {
         for (size_t i = 0; i < nViews; i++)
             bufPrintf(&args, "%s%s", i ? ", " : "",
                       i == mutIdx ? "sub" : arenaPrintf(g->arena, "c->v%zu", i));
-        /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参）—— 实测报过
-         * "too few arguments to function 'w'; expected 5, have 4"。这里补传 **线程本地 arena**：
-         * worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出这个 worker ⇒ 线程本地安全，而且两个
-         * worker 不会去抢主线程的帧 arena。 */
+        /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参），
+         * 所以这里补传 **线程本地 arena**：worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出
+         * 这个 worker ⇒ 线程本地安全，而且两个 worker 不会去抢主线程的帧 arena。 */
         if (planUsesHome(f)) bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
         cgLine(g, "    return (int64_t)%s(id, lo, hi, %s);", f->name, bufCstr(&args));
     }
     cgLine(g, "}");
 }
 
+/**
+ * @brief 生成一个函数的前置声明，使函数定义的先后顺序不受限制。
+ *
+ * 协程不发同名原型：它的产物是 `name$frame` 与 `name$step`，两者一起输出，frame 必然先于使用；
+ * 发一个没有定义的 `name` 原型还会破坏后续按字节偏移做的扫描——`name` 会匹配到 `name$step`
+ * 里面，把中间那段文本抹掉。`@inline` 必须同时写在原型和定义上。
+ *
+ * @param g  生成器状态，输出与分配都取自它。
+ * @param f  要声明的函数；`main` 与导出函数不加 `static`。
+ */
 static void genFuncProto(CG *g, FuncDef *f) {
-    /* A coroutine emits no prototype for its own name: there is no C function called `counter`, the
-     * artifact is `counter$frame` + `counter$step` (emitted together, so the frame is defined before
-     * it is used). Emitting an undefined prototype also poisons the byte-offset passes later on --
-     * `counter` matches inside `counter$step` and they blank the text in between. */
     if (planIsCoro(f)) return;
     Buf sig;
     bufInit(&sig, g->arena);
-    /* `@inline` has to appear on the prototype as well as on the definition. */
     bufPrintf(&sig, "%s%s %s(%s);",
               (cgIsMain(f) || f->isExport) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
               cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
 
-/* Emit the prototype of every function a **global's initializer** names.
+/**
+ * @brief 为全局变量初始化式里提到的每个函数补发前置声明。
  *
- * A function's address is a constant, so `var t: api = api { alloc: hostAlloc }` is a legal global
- * (that is how a table is built: `C-ABI.md` section 9.9 -- a table of `fn` fields cannot be
- * zero-initialized, so it must be initialized where it is declared, and it belongs at the top level
- * because a module may hold on to it). C, however, still needs to have **seen** the declaration: the
- * globals are emitted before the prototype pool, so `static api t = { .alloc = &hostAlloc };` came
- * out as "`hostAlloc` undeclared here". Emitting that prototype here is the whole fix; the pool
- * repeats it later, and C allows repeated declarations. */
+ * 函数地址是常量，所以 `var t: api = api { alloc: hostAlloc }` 是合法的全局初始化式；但 C 要求
+ * 先见过声明：全局变量在原型池之前输出，缺少这里的声明，`static api t = { .alloc = &hostAlloc };`
+ * 就会报 `hostAlloc` 未声明。原型池之后还会再发一次，C 允许重复声明。
+ *
+ * @param ctx  生成器状态 `CG *`；用 `void *` 传是为了适配访问回调的签名。
+ * @param e    访问到的表达式；只处理 `EX_IDENT` 且能解析出被调函数的节点。
+ * @return     恒为 true，让子节点遍历继续。
+ */
 static bool globalFnProto(void *ctx, Expr *e) {
     if (e->kind == EX_IDENT && planCallee(e)) genFuncProto((CG *)ctx, planCallee(e));
     return true;
 }
 
+/**
+ * @brief 遍历一条语句的子节点，把其中的函数引用交给 globalFnProto 处理。
+ *
+ * @param ctx  生成器状态 `CG *`，原样转交给表达式回调。
+ * @param s    要遍历子节点的语句。
+ * @return     astWalkStmtChildren 的返回值：子节点遍历是否未被打断。
+ */
 static bool globalFnProtoStmt(void *ctx, Stmt *s) {
     AstVisit v = { globalFnProto, globalFnProtoStmt, ctx };
     return astWalkStmtChildren(s, &v);
@@ -5545,11 +5872,12 @@ typedef struct {
     bool       done;
 } SUnit;
 
-/* Return the C name of one definition unit.
+/**
+ * @brief 取一个定义单元（结构体、实例、数组或带载荷的枚举）的 C 名字。
  *
- * Returns:
- *   The instance name of a generic instance or array, including a generic enum
- *   instance, the name of a non-generic enum with payloads, or the struct name.
+ * @param u  定义单元；泛型结构体实例与泛型枚举实例上 `inst` 和 `sd`/`td` 会同时有值。
+ * @return   `inst` 非空时优先用实例名（数组与泛型枚举实例都走这条），否则 `td` 非空时用带载荷
+ *           枚举的名字，再否则用结构体名。
  */
 static const char *unitName(const SUnit *u) {
     if (u->inst) return u->inst->name;      /* instance or array, enum instances included */
@@ -5557,31 +5885,22 @@ static const char *unitName(const SUnit *u) {
     return u->sd->name;
 }
 
-/* Find the unit that defines a type.
+/**
+ * @brief 找出定义某个类型的单元在 `units` 中的下标。
  *
- * Returns:
- *   The index of that unit in `units`, or -1 when there is none.
+ * 泛型实例按 C 名匹配而不是按指针：`mut slice<T>` 是与只读视图同名、同 C 结构体的影子类型，
+ * 比指针永远找不到它，依赖排序就会漏掉它，`struct reader { chunk: mut slice<u8> }` 因此栽在
+ * 类型不完整上；而且一个 C 名可能对应两个实例，一个可写视图、一个只读视图。
  *
- * Notes:
- *   - A generic instance is matched by C name, not by pointer, for two reasons.
- *     A `mut slice<T>` is a shadow sharing its name and its C struct with the
- *     read-only view, so comparing pointers never finds it, the dependency
- *     ordering misses it, and `struct reader { chunk: mut slice<u8> }` fails
- *     with an incomplete type. And one C name can have two instances, one for
- *     the writable and one for the read-only view.
+ * @param units  单元列表，元素是 `SUnit *`。
+ * @param t      要查找的类型；为 NULL 时直接返回 -1。
+ * @return       该单元的下标；`units` 里没有对应单元时返回 -1。
  */
 static int unitFind(Vec *units, Type *t) {
     if (!t) return -1;
     for (size_t i = 0; i < units->len; i++) {
         SUnit *u = *(SUnit **)vecAt(units, i);
         if (t->kind == TY_ENUM && u->td && t->edef == u->td) return (int)i;
-        /* A generic instance is matched by C name, not by pointer. A `mut
-         * slice<T>` is a shadow sharing its name and its C struct with the
-         * read-only view, so comparing pointers never finds it and the
-         * dependency ordering misses it, which made
-         * `struct reader { chunk: mut slice<u8> }` fail with an incomplete
-         * type. And one C name can have two instances, one for the writable and
-         * one for the read-only view. */
         if ((t->kind == TY_GENERIC || t->kind == TY_ARRAY) && u->inst &&
             strcmp(u->inst->name, t->name) == 0) return (int)i;
         if (t->kind == TY_STRUCT && !u->inst && u->sd == t->sdef) return (int)i;
@@ -5589,15 +5908,14 @@ static int unitFind(Vec *units, Type *t) {
     return -1;
 }
 
-/* Emit the definition of one struct, array or enum.
+/**
+ * @brief 输出一个结构体、数组或枚举的 C 定义。
  *
- * An enum with payloads becomes `struct { tag; union }` and takes part in the
- * dependency ordering like any other struct, because a payload may contain
- * another struct: a variant holding a `slice<u8>` that was emitted before
- * `slice_u8` made gcc report an unknown type name, a trap that was hit for real.
+ * 带载荷的枚举输出成 `struct { tag; union }`，并且和其他结构体一样参与依赖排序：载荷里可以
+ * 含别的结构体，漏掉排序就会让生成的 C 出现未知类型名。
  *
- * Params:
- *   u - the unit to emit
+ * @param g  生成器状态；泛型实例与泛型枚举实例会先进入替换上下文，输出完再退出。
+ * @param u  要输出的定义单元。
  */
 static void unitBody(CG *g, SUnit *u) {
     if (u->td) {
@@ -5657,19 +5975,15 @@ static void unitBody(CG *g, SUnit *u) {
     g->indent--;
     cgLine(g, "};");
 
-    /* `@frozen`: the promise is that this struct's bytes are laid out the way C lays out this field
-     * list -- declaration order, C's alignment and padding, and nothing else inside. Two
-     * platform-independent assertions pin the two halves of that promise, so a future change to this
-     * compiler that reordered a field or slipped a hidden one in makes the **product** fail to
-     * compile instead of a call reading the wrong bytes (C-ABI.md section 9.8):
-     *   - neighbours are in increasing offset order: declaration order, never sorted by size;
-     *   - `sizeof` is no larger than the end of the last field plus the struct's own alignment, which
-     *     is exactly the trailing padding C is allowed to add -- so an added field shows up as a
-     *     larger size, unless it fits in that padding (in which case the layout did not change and
-     *     there is nothing to catch).
-     * Every number is derived from C itself (`offsetof`, `sizeof`, `_Alignof`) rather than written
-     * down: a hard-coded `== 8` would break a legitimate build on a platform whose alignment rules
-     * differ, and that is the opposite of what a frozen layout is for. */
+    /* `@frozen`: the struct's bytes are laid out exactly as C lays out this field list --
+     * declaration order, C's alignment and padding, nothing else inside. The two assertions below
+     * make a reordered or slipped-in field fail in the **generated** C instead of at a call site
+     * reading the wrong bytes: neighbours come out in increasing offset order (declaration order,
+     * never sorted by size), and `sizeof` stays within the end of the last field plus the struct's
+     * own alignment, which is the trailing padding C may add -- so an added field shows up as a
+     * larger size unless it fits in that padding. Every number is derived from C (`offsetof`,
+     * `sizeof`, `_Alignof`); a hard-coded `== 8` would break a legitimate build on a platform with
+     * different alignment rules. */
     if (u->sd && u->sd->frozen && u->sd->fields.len > 0) {
         const char *tn = unitName(u);
         for (size_t i = 1; i < u->sd->fields.len; i++) {
@@ -5694,23 +6008,17 @@ static void unitBody(CG *g, SUnit *u) {
  * lines, 32% of the generated C, for 200 types in a stress program.
  */
 
-/* Register the unwrap helper of one `option`/`result` instance and return its name.
+/**
+ * @brief 登记一个 `option` / `result` 实例的解包辅助函数，返回它的名字。
  *
- * Registration deduplicates on the C name of the option type: every `!` on the same
- * instance names the same function, and exactly one definition is emitted.
+ * 以 option 类型的 C 名去重：同一实例上的每个 `!` 都指向同一个辅助函数，只生成一份定义。
+ * `@unchecked` 的函数体不走这里（它们直接取载荷），所以辅助函数只可能来自带检查的 `!`。
  *
- * Params:
- *   g    - generator state
- *   ot   - the operand type, an `option<T>` or `result<T, E>` instance
- *   isOpt- true for `option` (tag `some`), false for `result` (tag `success`)
- *   pay  - the payload type `T`, the helper's return type
- *
- * Returns:
- *   The helper name; the call site passes the operand, the extC path and the line.
- *
- * Notes:
- *   `@unchecked` bodies never get here (they take the raw payload path), so a helper is
- *   only ever born from a checked `!`.
+ * @param g      生成器状态。
+ * @param ot     操作数类型，一个 `option<T>` 或 `result<T, E>` 实例。
+ * @param isOpt  true 表示 `option`（标签 `some`），false 表示 `result`（标签 `success`）。
+ * @param pay    载荷类型 `T`，也是辅助函数的返回类型。
+ * @return       辅助函数名；调用点用它来传操作数、extC 源路径与行号。
  */
 static const char *unwrapHelper(CG *g, Type *ot, bool isOpt, Type *pay) {
     const char *otName = cType(g, ot);
@@ -5735,27 +6043,19 @@ static const char *unwrapHelper(CG *g, Type *ot, bool isOpt, Type *pay) {
     return name;
 }
 
-/* Register the slice helper of one base type and return its name.
+/**
+ * @brief 登记某个基类型上的切片辅助函数，返回它的名字。
  *
- * Registration deduplicates: the same base and kind registered twice yields the
- * same name and one emitted function.
+ * 相同基类型、相同种类重复登记会得到同一个名字，只输出一份函数。`unchecked` 的辅助函数单独
+ * 命名，带检查的调用者仍旧用带检查的那一个：两者不能共用一份定义。
  *
- * Params:
- *   ob   - type being sliced: an array or a view
- *   st   - resulting slice type
- *   tail - true for "slice to the end" (`s[lo..]`), where the omitted bound is
- *          the length of the base
- *   unchecked - true when the caller's body is `@unchecked`: the helper then
- *          skips `extc_checkedRange` and takes `lo` as written. It gets its own
- *          name (`...U_...`) so a checked caller of the same base type keeps the
- *          checked helper: the two must not share one definition.
- *
- * Returns:
- *   The helper name, `extc_slice` or `extc_sliceTo` plus the C name of the base.
- *   One base type is only ever sliced into one kind of slice, so the names
- *   cannot collide. The concatenated name is deliberately not spelled out here:
- *   a repository-wide check rejects the C name pattern of a slice type in the
- *   source, comments included.
+ * @param g          生成器状态。
+ * @param ob         被切的类型：一个数组或一个视图。
+ * @param st         结果切片类型。
+ * @param tail       true 表示切到末尾（`s[lo..]`），省略的上界取基类型的长度。
+ * @param unchecked  调用者函数体是 `@unchecked` 时为 true：辅助函数跳过 `extc_checkedRange`，
+ *                   直接采用 `lo` 的写法。
+ * @return           辅助函数名，由基类型与种类拼成；同一基类型只会切成同一种切片，名字不会撞车。
  */
 static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail, bool unchecked) {
     const char *name = arenaPrintf(g->arena, "extc_slice%s%s_%s",
@@ -5805,20 +6105,17 @@ static const char *sliceHelper(CG *g, Type *ob, Type *st, bool tail, bool unchec
     return name;
 }
 
-/* Emit the view produced by `a[lo..hi]`.
+/**
+ * @brief 生成 `a[lo..hi]` 得到的视图表达式。
  *
- * What the compiler can prove leaves no trace at runtime, and that splits this
- * in two:
- *   1. The base is a fixed-size array and both bounds are literals, with the
- *      checker filling in an omitted bound. The range is then known when the
- *      program is checked and an out-of-range one was reported there, so the
- *      generated C is `&a.data[2]` with `.len = 3` and contains no check at all.
- *   2. Anything else gets a helper that checks at runtime and traps with the
- *      extC position.
+ * 编译期能证明的切片不留运行时痕迹：基是定长数组、两个边界都是字面量时（省略的边界由检查器
+ * 补上），范围在检查阶段就已知、越界早已报错，生成的 C 直接是 `&a.data[2]` 加 `.len = 3`；
+ * 其余情况交给辅助函数在运行时检查范围，并以 extC 源位置捕获错误。
  *
- * Returns:
- *   The expression for the view, or "0" after reporting an error when the types
- *   make no sense.
+ * @param g  生成器状态。
+ * @param e  切片表达式；`e->type` 是结果视图类型，基是 `ref [N]T` 时它在 C 里是指针，取 `.data`
+ *           要多一次解引用。
+ * @return   视图表达式；类型无法生成时先报错，再返回占位表达式 "0"。
  */
 static const char *genSlice(CG *g, Expr *e) {
     Type *ob = ttBase(subst(g, e->u.slice.obj->type));
@@ -5875,15 +6172,12 @@ static const char *genSlice(CG *g, Expr *e) {
  * iteration count is capped, and passing the cap is reported loudly rather than
  * quietly generating too little.
  */
-/* Add the unit of a generic instance that a type mentions, if it is missing.
+/**
+ * @brief 把一个类型提到的泛型实例补进单元列表，已有的按 C 名跳过。
  *
- * Params:
- *   units - the unit list, appended to in place
- *   t     - a type; anything that is not an instance is ignored
- *
- * Notes:
- *   - Deduplication is by C name and cannot use unitFind; see the comment at the
- *     lookup below.
+ * @param arena  分配新单元用的 arena。
+ * @param units  单元列表，就地追加。
+ * @param t      要检查的类型；不是结构体或枚举的泛型实例时直接返回。
  */
 static void addInstanceUnit(Arena *arena, Vec *units, Type *t) {
     if (!t) return;
@@ -5894,8 +6188,7 @@ static void addInstanceUnit(Arena *arena, Vec *units, Type *t) {
      * compares a generic enum instance by its template: `option_i64` would match
      * an existing `option_i32`, since the two share the template, be considered
      * already present, and never be generated, leaving the generated C with an
-     * unknown type name. The original collection path walked the instance list
-     * of the type table and so never exposed this. */
+     * unknown type name. */
     for (size_t i = 0; i < units->len; i++) {
         SUnit *u = *(SUnit **)vecAt(units, i);
         if (u->inst && t->name && strcmp(u->inst->name, t->name) == 0) return;
@@ -5908,13 +6201,17 @@ static void addInstanceUnit(Arena *arena, Vec *units, Type *t) {
     *(SUnit **)vecPush(units) = u;
 }
 
-/* Scan one type, adding every instance it mentions.
+/**
+ * @brief 扫描一个类型，把它提到的每个泛型实例补进单元列表。
  *
- * References, slice and array elements, and generic arguments are all followed.
+ * 顺着 `inner` 与泛型实参走，`ref`、slice 与数组元素都能跟到。函数类型的各部分在 `params` /
+ * `ret` 上而不在 `inner` / `targs` 上，所以还要单独走一遍：`fn(pair<i32, u8>) -> void` 写在
+ * 结构体里就是对 `pair<i32, u8>` 实例的一次提及，漏掉它那个结构体就没人输出。
  *
- * Params:
- *   depth - recursion guard: nesting deeper than 12 stops the walk, which is
- *           what bounds a self-referential type
+ * @param arena  分配新单元用的 arena。
+ * @param units  单元列表，就地追加。
+ * @param t      要扫描的类型；为 NULL 时直接返回。
+ * @param depth  递归深度，从 0 起；超过 12 就停下，用来兜住自引用类型。
  */
 static void scanTypeForUnits(Arena *arena, Vec *units, Type *t, int depth) {
     if (!t || depth > 12) return;                                    /* bounds self-reference */
@@ -5922,11 +6219,10 @@ static void scanTypeForUnits(Arena *arena, Vec *units, Type *t, int depth) {
     if (t->inner) scanTypeForUnits(arena, units, t->inner, depth + 1);
     for (size_t i = 0; i < t->targs.len; i++)
         scanTypeForUnits(arena, units, *(Type **)vecAt(&t->targs, i), depth + 1);
-    /* A function type mentions its parts through `params` / `ret` and not through `inner` /
+    /* A function type mentions its parts through `params` / `ret`, not through `inner` /
      * `targs`, so it needs its own walk: `f: fn(pair<i32, u8>) -> void` inside a struct is a
-     * mention of the instance `pair_i32_u8`, and without this walk nothing ever emitted that
-     * struct. (It cannot be reached today -- a `fn` signature only carries scalars -- but a
-     * walker that walks half a type is exactly how the next change breaks silently.) */
+     * mention of the instance `pair_i32_u8`, and without this walk that struct is never
+     * emitted. */
     if (t->kind == TY_FN) {
         scanTypeForUnits(arena, units, t->ret, depth + 1);
         for (size_t i = 0; i < t->params.len; i++)
@@ -5934,12 +6230,16 @@ static void scanTypeForUnits(Arena *arena, Vec *units, Type *t, int depth) {
     }
 }
 
-/* Scan everything one unit mentions and add the instances found.
+/**
+ * @brief 扫描一个单元提到的所有类型，把它依赖的泛型实例补进单元列表。
  *
- * Three places are walked: the fields, the signatures of the methods - both the
- * parameters and the return type, which is where an instance can hide - and the
- * payloads of an enum's variants. A generic instance substitutes its own type
- * arguments first.
+ * 走三处：字段；方法签名（形参与返回类型都算，实例就藏在这里）；枚举变体的载荷。单元本身是
+ * 泛型实例时，先把自己的类型实参替换进去。
+ *
+ * @param arena  分配新单元用的 arena。
+ * @param tt     类型表，用来做泛型参数替换。
+ * @param units  单元列表，就地追加。
+ * @param u      要扫描的单元。
  */
 static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) {
     Vec *tps = NULL; Vec *tas = NULL;
@@ -5951,7 +6251,7 @@ static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) 
         if (tps && ft) ft = ttSubstitute(tt, ft, tps, tas);
         scanTypeForUnits(arena, units, ft, 0);
     }
-    /* 2. method signatures, parameters and return type: the place that was missed */
+    /* 2. method signatures: parameters and return type */
     if (sd) for (size_t i = 0; i < sd->methods.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&sd->methods, i);
         /* The coroutine protocols (`next`/`value`, on the frame and on the handle) are emitted
@@ -5988,17 +6288,14 @@ static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) 
  *   consistency problem never stops generation, so that the caller sees the
  *   error count and not a damaged output buffer.
  */
-/* Does this instance's signature still mention a type parameter?
+/**
+ * @brief 判断一个实例的签名里是否还残留类型参数。
  *
- * Such a FuncDef is a checker artifact -- a generic call inside a generic body creates an
- * instance with `T` itself as the argument, so the body can be checked -- and never a C
- * function. The emission loop below skips these; see the comment there.
+ * 这种 FuncDef 是检查器的产物：泛型体里的泛型调用会造出一个以 `T` 自身为实参的实例，好让函数
+ * 体能被检查，它从来不是 C 函数，发射循环会跳过它。
  *
- * Params:
- *   f - the function instance to inspect
- *
- * Returns:
- *   true when any parameter type or the return type still mentions a type parameter.
+ * @param f  要检查的函数实例。
+ * @return   形参类型或返回类型里还提到类型参数时为 true，否则为 false。
  */
 static bool funcSignatureMentionsParam(FuncDef *f) {
     if (f->ret && mentionsParam(f->ret)) return true;
@@ -6016,9 +6313,15 @@ static bool funcSignatureMentionsParam(FuncDef *f) {
  * the definition (a body, or the descriptor table).
  */
 
-/* Does this byte continue a C name? Used to tell a mention of `e` from the `e`
- * inside `self` or `true`: a one-letter local is counted by name, so a plain
- * substring search would find it everywhere and never drop anything. */
+/**
+ * @brief 判断一个字节能否续接 C 标识符。
+ *
+ * 用来把 `e` 这个名字和 `self`、`true` 里的 `e` 区分开：单字母局部变量按名字计数，纯子串
+ * 查找会到处命中，一个定义都丢不掉。
+ *
+ * @param c  要判断的字节。
+ * @return   是字母、数字、`_` 或 `$` 时为 true，否则为 false。
+ */
 static bool identByte(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
            (c >= '0' && c <= '9') || c == '_' || c == '$';
@@ -6033,16 +6336,34 @@ static bool identByte(char c) {
  * phase timers). These counters answer it directly under EXTC_DBG_TIME=1. */
 static long g_scanCalls, g_scanBytes;
 static const char *g_scanWho;
+/**
+ * @brief 记下一次文本扫描的扫描点与字节数，只在计时打开时累加。
+ *
+ * @param who  扫描点名字，覆盖式地记为最近一次扫描的来源。
+ * @param n    本次扫描的字节数，累加进总量。
+ */
 static void strAccount(const char *who, size_t n) {
     if (!cgTimeOn()) return;
     g_scanCalls++; g_scanBytes += (long)n; g_scanWho = who;
 }
+/**
+ * @brief 在 stderr 上报告累计的扫描调用次数、字节数与最近一次扫描点。
+ */
 static void strReport(void) {
     if (!cgTimeOn()) return;
     fprintf(stderr, "[scan] calls=%ld bytes=%lld (last site: %s)\n",
             g_scanCalls, (long long)g_scanBytes, g_scanWho ? g_scanWho : "-");
 }
 
+/**
+ * @brief 统计 `needle` 在 `hay` 里作为完整标识符出现的次数。
+ *
+ * 字符串字面量里的出现也计入，那只会让一个定义多活一会儿。
+ *
+ * @param hay     要扫描的文本。
+ * @param needle  要计数的名字。
+ * @return        `needle` 作为完整名字出现的次数。
+ */
 static size_t countMentions(const char *hay, const char *needle) {
     strAccount("countMentions", strlen(hay));
     size_t n = 0, len = strlen(needle);
@@ -6054,22 +6375,25 @@ static size_t countMentions(const char *hay, const char *needle) {
     return n;
 }
 
-/* Pair a definition with the declaration already recorded for the same function. The
- * key is the C name: a `FuncDef*` is not unique per emission (an instance method is
- * emitted once per instance), while a name is - two emitted definitions sharing one
- * name would not compile. A definition with no declaration to pair with is dropped
- * from consideration: keeping a function nobody calls costs a warning, never
- * correctness. */
+/**
+ * @brief 把一处已生成的函数定义与同一 C 名的声明配对，记下它在正文缓冲里的偏移与长度。
+ *
+ * 键取 C 名而不是 `FuncDef` 指针：同一个泛型函数的实例方法会按实例各生成一份，指针不唯一；
+ * 两个已生成的同名定义又无法编译，所以名字在这批定义里唯一。找不到同名声明时直接返回，
+ * 该定义保持未配对，后续阶段不会删它：留下一个没人调用的函数只花一条编译告警，不影响正确性。
+ *
+ * @param g    生成上下文；`deadFuncs` 是配对表，名字与 `f` 相同的那条就是配对对象。
+ * @param f    参与配对的函数定义。
+ * @param off  该定义在正文缓冲里的起始偏移，调用点从当前输出缓冲的末尾算出。
+ * @param len  该定义的字节长度。
+ */
 static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
     const char *name = cFuncName(g, f);
     for (size_t i = 0; i < g->deadFuncs.len; i++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, i);
         if (df->body || df->len || strcmp(df->name, name) != 0) continue;
-        /* Only offsets are recorded here. The text is taken from `g.body` once that buffer is
-         * complete: a view-index helper emitted in the middle of a body points the generator at
-         * another buffer for a moment, so a slice cut now is not contiguous in the finished unit
-         * and `strstr` never finds it again. That is why the home-arena parameter of
-         * `examples/out-param.extc` kept its warning. */
+        /* 只记偏移、不在这里切文本：正文中途可能临时指向别的缓冲区，此刻切下的片段在最终
+         * 单元里不连续，之后按内容再也找不到。文本等 `g.body` 收齐后再从那里取。 */
         df->off = off;
         df->len = len;
         df->namedByDynTable = planDynTable(f);   /* see the field */
@@ -6080,7 +6404,17 @@ static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle);
 static char  *funcDefStart(char *text, DeadFunc *df, size_t *lenOut);
 
-/* Remember a local declaration: `before` is where its line started in the current buffer. */
+/**
+ * @brief 登记一处刚生成的局部声明，供随后判断它有没有被读过。
+ *
+ * 文本从 `before` 一直取到当前输出缓冲的末尾，调用点要保证那里正是这条声明的剩余部分。
+ * 所属函数取 `g->curFuncName`。
+ *
+ * @param g       生成上下文；记录追加到 `g->deadLocals`。
+ * @param before  这条声明所在行在 `g->out` 中的起始偏移。
+ * @param name    局部变量的 C 名，指向比缓冲活得更久的存储。
+ * @param own     声明位置：1 在函数体内，0 在函数体之前的序言里（`__extc_home` 就是这样）。
+ */
 static void localDef(CG *g, size_t before, const char *name, size_t own) {
     Buf l;
     bufInit(&l, g->arena);
@@ -6093,11 +6427,16 @@ static void localDef(CG *g, size_t before, const char *name, size_t own) {
     *(DeadLocal **)vecPush(&g->deadLocals) = d;
 }
 
-/* Is this line a `#define`, and where does the macro name start?
+/**
+ * @brief 判断一行是不是 `#define`，是则返回宏名在行内的起点。
  *
- * `#define X` and `#  define X` are the same directive - the prelude pads them for alignment - and
- * recognizing only the unspaced form left `EXTC_NORETURN` behind in every program whose traps had
- * all been dropped (`macro is not used`). */
+ * `#define X` 与 `#  define X` 是同一条指令（前奏会把 `#` 与 `define` 之间补上空格做对齐），
+ * 两种写法都要认；`define` 与宏名之间至少要有一个空格或制表符。
+ *
+ * @param ln  一行的起始处，不要求以 NUL 结尾。
+ * @param ll  这一行的字节数。
+ * @return    宏名在这行里的指针；不是 `#define`、或行里没有宏名时为 `NULL`。
+ */
 static const char *macroDefineName(const char *ln, size_t ll) {
     size_t i = 0;
     if (i >= ll || ln[i] != '#') return NULL;
@@ -6118,16 +6457,33 @@ typedef struct {
     const char *repl;         /* what takes its place, or NULL to drop it entirely */
 } LocalCut;
 
-/* Does this text call something? A statement whose right-hand side calls a function must not be
- * dropped: the call is the point of it (`uint64_t skip = pcg32_next(&r)` in `examples/rng.extc`
- * advances the generator, and the value it returns is what nobody reads). */
+/**
+ * @brief 判断这段文本里是否出现调用（只看有没有 `(`）。
+ *
+ * 右值带调用的赋值语句不能整条删掉：调用本身就是它存在的意义，返回值没人读也一样
+ * （`uint64_t skip = pcg32_next(&r)` 会推进生成器）。括号不等于调用，字面量或注释里的
+ * `(` 也会算数，这样只会多留语句，不会改语义。
+ *
+ * @param s  待检查的文本片段。
+ * @param n  片段字节数，不要求以 NUL 结尾。
+ * @return   出现 `(` 时为 `true`，否则 `false`。
+ */
 static bool textHasCall(const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) if (s[i] == '(') return true;
     return false;
 }
 
-/* How many times is `name` *read* here? Literals and comments are skipped, and a mention that is
- * the target of an assignment (`name =`, a single `=`) is a write, not a read. */
+/**
+ * @brief 数 `name` 在这段文本里被读取的次数。
+ *
+ * 字符串/字符字面量与注释整段跳过；紧跟单个 `=`（且不是 `==`）的出现是写入，不算读，
+ * 所以 `name += 1` 这类复合赋值计为读。判名要求两侧都不是标识符字节。
+ *
+ * @param hay   待扫描的文本片段。
+ * @param n     片段字节数，不要求以 NUL 结尾。
+ * @param name  变量名，以 NUL 结尾。
+ * @return      读取次数；只被写或不出现时为 0。
+ */
 static size_t countReads(const char *hay, size_t n, const char *name) {
     size_t len = strlen(name), reads = 0;
     for (size_t i = 0; i < n; ) {
@@ -6159,17 +6515,43 @@ static size_t countReads(const char *hay, size_t n, const char *name) {
  * later strstr(text, body) is applied to. */
 typedef struct { const char *name; const char *body; } NameBody;
 typedef struct { NameBody *slot; size_t mask; } BodyMap;
+/**
+ * @brief 算 NUL 结尾字符串的 FNV-1a 散列，供 `BodyMap`、`BpMap` 的开放寻址取槽。
+ *
+ * @param p  以 NUL 结尾的 C 字符串。
+ * @return   散列值，调用方再与掩码相与定槽。
+ */
 static size_t bodyHash(const char *p) {
     size_t h = 1469598103934665603u;
     for (; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211u; }
     return h;
 }
+/**
+ * @brief 初始化 `BodyMap` 的槽数组，容量取不小于 `2n` 的 2 的幂。
+ *
+ * 槽由 arena 清零分配，空槽以 `name` 为 `NULL` 认；容量必须是 2 的幂，`mask = cap - 1`
+ * 的定槽才成立。表不扩容。
+ *
+ * @param m  待初始化的表。
+ * @param a  分配槽数组的 arena。
+ * @param n  预计装入的条目数，调用点给 `g->deadFuncs.len + 1`。
+ */
 static void bodyMapInit(BodyMap *m, Arena *a, size_t n) {
     size_t cap = 16;
     while (cap < n * 2) cap <<= 1;
     m->slot = arenaAllocZero(a, cap * sizeof *m->slot);
     m->mask = cap - 1;
 }
+/**
+ * @brief 往 `BodyMap` 里放一条 `name -> body`，同名只留第一次放进去的那条。
+ *
+ * 先到先得：调用点按 `deadFuncs` 的顺序插入，第一条正是要留下的那条。名字已存在时直接
+ * 返回，不覆盖。
+ *
+ * @param m     目标表。
+ * @param name  C 名，以 NUL 结尾；表只存指针，它必须比表活得久。
+ * @param body  该名字对应的定义正文指针。
+ */
 static void bodyMapPut(BodyMap *m, const char *name, const char *body) {
     for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
         NameBody *s = &m->slot[i];
@@ -6186,12 +6568,31 @@ static void bodyMapPut(BodyMap *m, const char *name, const char *body) {
  * value is exactly what the search would return while the text is unchanged. */
 typedef struct { const char *name; char *bp; size_t bl; int filled; } BpEntry;
 typedef struct { BpEntry *slot; size_t mask; } BpMap;
+/**
+ * @brief 初始化 `BpMap` 的槽数组，容量取不小于 `2n` 的 2 的幂。
+ *
+ * 与 `BodyMap` 同构：槽由 arena 清零分配，空槽以 `name` 为 `NULL` 认，表不扩容。
+ *
+ * @param m  待初始化的表。
+ * @param a  分配槽数组的 arena。
+ * @param n  预计装入的函数名个数。
+ */
 static void bpMapInit(BpMap *m, Arena *a, size_t n) {
     size_t cap = 16;
     while (cap < n * 2) cap <<= 1;
     m->slot = arenaAllocZero(a, cap * sizeof *m->slot);
     m->mask = cap - 1;
 }
+/**
+ * @brief 取（没有就新建）`name` 在 `BpMap` 里的缓存条目。
+ *
+ * 新建的条目 `filled == 0`、`bp == NULL`，调用方填好搜索结果后自己把 `filled` 置 1。表不
+ * 扩容，返回的条目地址在表的生命期内稳定。
+ *
+ * @param m     目标表。
+ * @param name  函数 C 名，以 NUL 结尾；表只存指针，它必须比表活得久。
+ * @return      指向表内条目的指针，随表存活。
+ */
 static BpEntry *bpMapAt(BpMap *m, const char *name) {
     for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
         BpEntry *s = &m->slot[i];
@@ -6200,6 +6601,16 @@ static BpEntry *bpMapAt(BpMap *m, const char *name) {
     }
 }
 
+/**
+ * @brief 在 `BodyMap` 里查 `name` 对应的定义正文。
+ *
+ * 返回的是发射时记下的指针，文本一旦被重写就可能不再指向当前内容：调用方必须再用 `strstr`
+ * 在当前文本里确认它还在，找不到就退化为整段搜索。
+ *
+ * @param m     目标表。
+ * @param name  C 名，以 NUL 结尾。
+ * @return      正文指针；表里没有这个名字时为 `NULL`。
+ */
 static const char *bodyMapGet(BodyMap *m, const char *name) {
     for (size_t i = bodyHash(name) & m->mask; ; i = (i + 1) & m->mask) {
         NameBody *s = &m->slot[i];
@@ -6208,14 +6619,25 @@ static const char *bodyMapGet(BodyMap *m, const char *name) {
     }
 }
 
+/**
+ * @brief 就地删除当前文本里没人读取的局部声明及其赋值。
+ *
+ * 判定以整个函数体为单位：某个名字在那段正文里只出现一次时，那一次就是声明本身。
+ * `own == 0` 的声明坐在序言里（第一个函数体之前），不归属任何函数体，另按序言范围找。
+ *
+ * 每轮只删一处，删完从头重扫：重写会让此前的偏移全部失效。被删语句的右值若含调用，调用
+ * 必须留下并显式丢弃它的值，否则 `-Werror` 会因 `unused-value` 失败。
+ *
+ * @param g      生成上下文；读 `deadLocals`、`deadFuncs`、`mainBody`。
+ * @param out    文本所在的缓冲区；每处删除都重建它的内容。
+ * @param textp  进入时是文本起点（`out->data`），返回时换成重写后的起点。
+ * @param lenp   进入时是文本字节数，返回时换成重写后的字节数。
+ */
 static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     char  *text = *textp;
     size_t len  = *lenp;
-    /* `DeadFunc.body` points into the current text and an `own == 0` declaration sits in the
-     * prologue before the first body -- both hold only while nothing has been rewritten, and each
-     * local otherwise pays a full-text search per round. After the first cut the text has moved
-     * and every round falls back to exactly the searches the old code made, so the decisions --
-     * and the emitted C -- are unchanged. */
+    /* `own == 0` 的声明坐在序言里（第一个函数体之前），firstBody 就是那个上界；
+     * `DeadFunc.body` 也只在文本尚未被重写时才指向当前文本。 */
     size_t firstBody = len;
     for (size_t k = 0; k < g->deadFuncs.len; k++) {
         DeadFunc *df = *(DeadFunc **)vecAt(&g->deadFuncs, k);
@@ -6236,9 +6658,8 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     for (;;) {
         bool cut = false;
         for (size_t i = 0; i < g->deadLocals.len && !cut; i++) {
-            /* Prefetch the next elements' objects: this walk's cost is memory latency, and the
-             * pointer chase into a fresh DeadLocal is what stalls. The base pointer is re-read
-             * through vecAt (so a resize could not go unnoticed). */
+            /* 这一趟的代价在内存延迟上，真正的停顿是追指针进一个新的 DeadLocal；基指针仍经
+             * `vecAt` 重读，vecPush 触发的扩容不会被漏掉。 */
             if (i + 8 < g->deadLocals.len)
                 __builtin_prefetch(*(DeadLocal **)vecAt(&g->deadLocals, i + 8), 0, 0);
             DeadLocal *d = *(DeadLocal **)vecAt(&g->deadLocals, i);
@@ -6266,15 +6687,12 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                 if (!e->filled) { e->bp = strstr(text, body); e->bl = strlen(body); e->filled = 1; }
                 bp = e->bp; bl = e->bl;
             } else {
-                bp = strstr(text, body);           /* text moved: the old behaviour, exactly */
+                bp = strstr(text, body);           /* 文本已被重写：每轮重新按内容搜索 */
                 bl = strlen(body);
             }
-            /* `g->mainBody` is a copy of `main` taken **before** these passes, and every cut rebuilds
-             * the text -- so after the first cut in `main` the search below cannot find it any more and
-             * `continue` skipped the local. That is why, with two adjacent unread locals, the **second**
-             * one always survived (`-Werror=unused-variable`, tools/attack.py W12; `a`/`b`, `aa`/`bb`,
-             * `alpha`/`beta` all showed it). Searching the whole unit is safe here: a local's name is
-             * only in scope in its own function, so an over-wide scope can only keep a local alive. */
+            /* `g->mainBody` 是取好的 `main` 副本，而每次删除都会重建文本：删过之后按内容可能
+             * 再也找不到它，于是退化为在整个单元里搜。整单元搜索在这里是安全的 —— 局部变量名
+             * 只在自己函数的作用域内有效，范围放宽只会多留一个局部。 */
             if (!bp) { bp = (char *)text; bl = len; }
             if (dbgOn("EXTC_DBG_LOCAL"))
                 fprintf(stderr, "[local] %-14s bp=%s cnt=%zu own=%zu\n", d->name,
@@ -6302,8 +6720,7 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
             if (countReads(bufCstr(&bm), bm.len, d->name) != 0) continue;   /* it is read */
             (void)declInside;
             (void)declAt;
-            /* Collect what goes: the declaration, and every assignment to it. A right-hand side
-             * that calls something leaves the call behind; anything else disappears. */
+            /* 收集要删的片段：声明本身，以及每一处对它的赋值（右值含调用时只留下调用）。 */
             Vec cuts;
             vecInit(&cuts, g->arena, sizeof(LocalCut));
             char *dl;
@@ -6338,11 +6755,8 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
                     size_t rhs = (size_t)(assign - text) + 1;
                     while (rhs < le && (text[rhs] == ' ' || text[rhs] == '\t')) rhs++;
                     if (textHasCall(text + rhs, le - rhs)) {
-                        /* Keep the call, but **discard its value explicitly**: the right-hand side is
-                         * often an unwrap (`var f = fs::openWrite(p)!`), and the text left behind was
-                         * a bare payload read -- `(fs$openWrite(...)).u.success._0;` -- which gcc
-                         * reports as `unused-value`, an error under `-Werror`. That is both the A4
-                         * residue and the fs group's S11. */
+                        /* 保留调用，但必须显式丢弃它的值：右值常是解包（`var f = fs::openWrite(p)!`），
+                         * 剩下的裸载荷表达式会被 gcc 判为 `unused-value`，在 `-Werror` 下直接失败。 */
                         size_t re = le;
                         while (re > rhs && (text[re - 1] == ';' || text[re - 1] == '\n' ||
                                             text[re - 1] == ' ' || text[re - 1] == '\t')) re--;
@@ -6417,10 +6831,17 @@ static void dropUnusedLocals(CG *g, Buf *out, char **textp, size_t *lenp) {
     *lenp = len;
 }
 
-/* Count mentions of `name` in generated *code*: string and character literals and comments are
- * skipped. A one-letter local otherwise matches what is inside a string literal - `"v = "`
- * counted as a use of `v`, which kept declarations that nothing reads, and the same held for
- * `e`, `n` and `d` all over the corpus. */
+/**
+ * @brief 数 `name` 在生成的代码里作为整名出现的次数。
+ *
+ * 字符串/字符字面量与注释整段跳过：单字母局部名也会出现在字面量里（例如字符串里写
+ * `v = `），那不是使用。判名要求两侧都不是标识符字节，所以 `e` 不会命中 `self` 里那个 `e`。
+ *
+ * @param hay   待扫描的文本片段。
+ * @param n     片段字节数，不要求以 NUL 结尾。
+ * @param name  要数的名字，以 NUL 结尾。
+ * @return      出现次数。
+ */
 static size_t countCodeMentions(const char *hay, size_t n, const char *name) {
     strAccount("countCodeMentions", n);
     size_t len = strlen(name), count = 0;
@@ -6457,27 +6878,43 @@ static size_t countCodeMentions(const char *hay, size_t n, const char *name) {
     return count;
 }
 
-/* The same count, over one piece of the body buffer, which is not terminated. */
+/**
+ * @brief 在一段不以 NUL 结尾的文本里数 `name` 的出现次数，按代码计。
+ *
+ * 字面量与注释跳过，判名要求两侧不是标识符字节；名字是一段字节而不是 C 字符串，
+ * 所以正文缓冲可以直接切片传进来。
+ *
+ * @param g       生成上下文；本函数不使用它。
+ * @param hay     待扫描的文本片段。
+ * @param n       片段字节数，不要求以 NUL 结尾。
+ * @param needle  要数的名字，以 NUL 结尾。
+ * @return        出现次数。
+ */
 static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *needle) {
     strAccount("countMentionsIn", n);
     (void)g;
     return countCodeMentions(hay, n, needle);
 }
 
-/* How many times does `name` appear in this text *outside* the given spans?
+/**
+ * @brief 数 `name` 出现在这些区间之外的次数。
  *
- * This is the question the descriptor phase asks. Walking the text once and skipping the spans
- * answers it; copying the whole unit, cutting the pieces out of the copy and counting what is
- * left would cost one full copy per candidate (a hundred candidates against a hundred kilobytes).
+ * 走一遍 `strstr` 并跳过给定区间，比复制整个单元、把片段挖掉再数便宜。区间是右开的
+ * `[starts[k], ends[k])`；名字按整名判定，字面量与注释里的提及也计入 —— 那只会多留
+ * 定义，是安全的方向。
  *
- * Literals and comments are skipped, as everywhere else: a name inside a string is not a use. */
+ * @param hay     以 NUL 结尾的整段文本。
+ * @param name    要数的名字，以 NUL 结尾。
+ * @param starts  区间起点数组。
+ * @param ends    区间终点数组，右开。
+ * @param nspans  区间个数。
+ * @return        落在所有区间之外的整名出现次数。
+ */
 static size_t countMentionsOutside(const char *hay, const char *name,
                                    const size_t *starts, const size_t *ends, size_t nspans) {
     size_t len = strlen(name), count = 0;
-    /* `strstr` jumps from one occurrence to the next (it is vectorized); walking byte by byte and
-     * calling `strncmp` at every position was 4x the whole program's instructions, which a profile
-     * showed immediately. A mention inside a string literal or comment counts here - that only ever
-     * keeps a definition, which is the safe direction. */
+    /* `strstr` 从一个出现直接跳到下一个（向量化），逐字节配 `strncmp` 要贵得多。字面量或注释
+     * 里的提及也计入 —— 这只会多留定义，是安全的方向。 */
     for (const char *p = hay; (p = strstr(p, name)) != NULL; p += len) {
         size_t i = (size_t)(p - hay);
         if (i > 0 && identByte(hay[i - 1])) continue;
@@ -6510,17 +6947,46 @@ static size_t countMentionsOutside(const char *hay, const char *name,
  * live in the table, so a scan never inserts and the table cannot fill up. */
 typedef struct { const char *name; size_t len; long count; } NameCount;
 typedef struct { NameCount *slot; size_t mask; } CountTable;
+/**
+ * @brief 对一段字节算 FNV-1a 散列，供 `CountTable` 的开放寻址取槽。
+ *
+ * 长度由 `n` 给出，不要求以 NUL 结尾，所以名字可以是文本里的一段。
+ *
+ * @param p  字节起点。
+ * @param n  字节数。
+ * @return   散列值，调用方再与掩码相与定槽。
+ */
 static size_t countHash(const char *p, size_t n) {
     size_t h = 1469598103934665603u;
     for (size_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211u; }
     return h;
 }
+/**
+ * @brief 初始化 `CountTable` 的槽数组，容量取不小于 `2n` 的 2 的幂。
+ *
+ * 槽由 arena 清零分配，空槽以 `name` 为 `NULL` 认。表只装调用方先登记过的名字，之后计数
+ * 不再插入，所以不会填满。
+ *
+ * @param t  待初始化的表。
+ * @param a  分配槽数组的 arena。
+ * @param n  预计登记的名字个数。
+ */
 static void countInit(CountTable *t, Arena *a, size_t n) {
     size_t cap = 16;
     while (cap < n * 2) cap <<= 1;
     t->slot = arenaAllocZero(a, cap * sizeof *t->slot);
     t->mask = cap - 1;
 }
+/**
+ * @brief 把一个名字登记进名字计数表，计数从 0 开始。
+ *
+ * 表在 `countInit` 时按候选名字数一次性开好，所以这里只探测空槽，绝不会填满；
+ * 表项直接存调用者的名字指针，不拷贝文本，该指针必须比表活得久。
+ *
+ * @param t  名字计数表；必须以 `countInit` 初始化过。
+ * @param p  名字文本，长度 `n`，不必以 `\0` 结尾。
+ * @param n  名字的字节数。
+ */
 static void countPut(CountTable *t, const char *p, size_t n) {
     for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
         NameCount *s = &t->slot[i];
@@ -6528,6 +6994,16 @@ static void countPut(CountTable *t, const char *p, size_t n) {
         if (s->len == n && memcmp(s->name, p, n) == 0) return;
     }
 }
+/**
+ * @brief 把某个名字的计数加上 `delta`。
+ *
+ * 名字不在表里就直接返回：表里只有被问到过的名字，扫描不会插入新项。
+ *
+ * @param t      名字计数表。
+ * @param p      名字文本，长度 `n`。
+ * @param n      名字的字节数。
+ * @param delta  计数增量，可为负（文本被删掉时减去其中的出现次数）。
+ */
 static void countBump(CountTable *t, const char *p, size_t n, long delta) {
     for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
         NameCount *s = &t->slot[i];
@@ -6535,6 +7011,14 @@ static void countBump(CountTable *t, const char *p, size_t n, long delta) {
         if (s->len == n && memcmp(s->name, p, n) == 0) { s->count += delta; return; }
     }
 }
+/**
+ * @brief 取某个名字当前的计数。
+ *
+ * @param t  名字计数表。
+ * @param p  名字文本，长度 `n`。
+ * @param n  名字的字节数。
+ * @return   表里的计数；名字不在表里返回 0。
+ */
 static long countGet(CountTable *t, const char *p, size_t n) {
     for (size_t i = countHash(p, n) & t->mask; ; i = (i + 1) & t->mask) {
         NameCount *s = &t->slot[i];
@@ -6542,6 +7026,18 @@ static long countGet(CountTable *t, const char *p, size_t n) {
         if (s->len == n && memcmp(s->name, p, n) == 0) return s->count;
     }
 }
+/**
+ * @brief 按 `delta` 调整一段文本里出现过的每个名字的计数。
+ *
+ * 只按标识符切分：被切在区间两端的名字不算，它属于区间外的那个标识符。
+ * 用于从计数里减去一段即将被删掉的文本。
+ *
+ * @param t      名字计数表。
+ * @param text  整段文本，至少要覆盖 `[start, start + len)`。
+ * @param start 区间的起始偏移。
+ * @param len   区间的字节数。
+ * @param delta 计数增量，可为负。
+ */
 static void countSpan(CountTable *t, const char *text, size_t start, size_t len, long delta) {
     size_t i = 0;
     while (i < len) {
@@ -6554,15 +7050,25 @@ static void countSpan(CountTable *t, const char *text, size_t start, size_t len,
     }
 }
 
+/**
+ * @brief 从拼好的生成单元里删掉不再被引用的定义、原型和局部声明。
+ *
+ * 名字在成品文本里只出现在自己的定义处，就算没人用；判断做成不动点，一轮可以有
+ * 定义只被另一个即将被删的定义提到，一轮删不干净。偏移会随删除移动，所以每一趟
+ * 都重新按文本定位。判在保守一侧：任何别的提及都留下定义，哪怕那段代码自己也是死的。
+ *
+ * @param g    代码生成状态，`deadDefs` / `deadFuncs` / `deadLocals` 里的记录是判断依据。
+ * @param out  生成的 C 单元；就地删除，`out->len` 随之缩短。
+ */
 static void dropUnreferenced(CG *g, Buf *out) {
     char  *text = bufCstr(out);              /* terminate: the searches below are C strings */
     size_t len  = out->len;
     /* Definitions inside a body first, from the end backwards, so that removing one
-     * leaves the offsets of the ones still to come untouched. What can name such a
-     * definition is the enclosing piece of code and nothing else - a payload binding
-     * is read by its arm - so the count happens inside that scope: `e` and `n` are
-     * common names, and counting them across the whole unit would always find more
-     * than one. */
+    * leaves the offsets of the ones still to come untouched. What can name such a
+    * definition is the enclosing piece of code and nothing else - a payload binding
+    * is read by its arm - so the count happens inside that scope: `e` and `n` are
+    * common names, and counting them across the whole unit would always find more
+    * than one. */
     for (size_t i = g->deadDefs.len; i-- > 0; ) {
         DeadDef *d = *(DeadDef **)vecAt(&g->deadDefs, i);
         if (!d->scoped) continue;                                      /* top-level: later */
@@ -6580,23 +7086,13 @@ static void dropUnreferenced(CG *g, Buf *out) {
      * decision). */
     CGACC("cg-locals", dropUnusedLocals(g, out, &text, &len));
     /* Functions nobody calls. Both halves are located by their own text, so what is
-     * removed is exactly what was captured - never a piece of a function. The
-     * definition sits after the declaration, so it goes first and the declaration's
-     * position stays valid.
-     *
-     * "Nobody calls it" is asked of the two pieces, not of the whole unit: a function whose
-     * **only** mention besides its declaration and its head is a call to itself was counted as
-     * used by the `== 2` test, because the self-call adds a third occurrence. A recursive
-     * helper whose single caller was removed therefore stayed in the product, and gcc still
-     * paid for it. Repro (the corpus does not hit it today - the 414 products are byte-for-byte
-     * what they were before this change):
-     *     fn helper(x: i64) -> i64 { if x <= 1 { return 1 } return x * helper(x - 1) }
-     *     fn deadA() -> i64 { return helper(3) }      // emitted by nobody
-     *     fn main() -> i32 { return 0 }
-     * `helper` is in the product for the self-call alone; with the pieces test it goes.
-     * What counts as a use is a mention *outside* the declaration and the definition - the
-     * self-call is inside them. A mutually recursive pair with no entry point is still kept,
-     * which is the conservative direction. */
+    * removed is exactly what was captured - never a piece of a function. The
+    * definition sits after the declaration, so it goes first and the declaration's
+    * position stays valid.
+    *
+    * A use is a mention *outside* the declaration and the definition, so a function
+    * whose only other mention is a call to itself is not used. A mutually recursive
+    * pair with no entry point has no such mention either way and is kept. */
     CountTable counts;
     countInit(&counts, g->arena, g->deadFuncs.len + 1);
     for (size_t k = 0; k < g->deadFuncs.len; k++) {
@@ -6615,9 +7111,7 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (total < 2) continue;                                   /* no declaration + definition */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of
-         * bodies, so the copy taken at generation time can stop matching the text. Without this
-         * second lookup, a function whose body was rewritten would survive this phase -- exactly
-         * the shape of the remaining dead code (`fs$outPut`, `pcg32_withStream`, `io$reader_fill`). */
+        * bodies, so the copy taken at generation time can stop matching the text. */
         size_t blen = 0;
         char  *bd = funcDefStart(text, df, &blen);
         if (!pt || !bd || bd < pt || !blen) continue;               /* not both, in order */
@@ -6642,24 +7136,15 @@ static void dropUnreferenced(CG *g, Buf *out) {
         df->body = NULL;
     }
     /* The runtime primitive block is not decided here: it is assembled beside the unit and
-     * decided from the registry (`primSplice`, called from generateC once the rest of the
-     * pipeline has settled). Nothing below this line scans for a definition. */
-    /* Then the top-level definitions, to a fixed point: a definition can be the only
-     * thing that names another one (`io$STDIN` is the sole mention of `io$STDIN_FD`,
-     * which no program refers to either), so one pass leaves a chain behind. Each
-     * round is safe for the same reason a single pass is: a name is dropped only when
-     * the finished text mentions it exactly once. */
+    * decided from the registry (`primSplice`, called from generateC once the rest of the
+    * pipeline has settled). Nothing below this line scans for a definition. */
     /* Top-level definitions, one name at a time.
-     *
-     * The test is done on a scratch copy of the unit: every piece registered under the name is
-     * cut out of the copy, and if the name is not mentioned anywhere else, the pieces are the
-     * only places it appears - so nothing uses it and they can go. Counting pieces against
-     * mentions (an earlier attempt) cannot tell a registration from a use: a descriptor with a
-     * declaration and a definition was dropped while its call site stayed, and the C compiler
-     * reported `undeclared`.
-     *
-     * A piece that is not found, or a name mentioned elsewhere, keeps everything: the answer is
-     * conservative in the one direction that matters. */
+    *
+    * The test is on a scratch copy of the unit: every piece registered under the name is cut
+    * out of the copy, and if the name is not mentioned anywhere else, the pieces are the only
+    * places it appears - so nothing uses it and they can go.
+    *
+    * Everything the name appears in is its own pieces: nothing uses it. */
     bool dropped = true;
     while (dropped) {
         dropped = false;
@@ -6704,13 +7189,17 @@ static void dropUnreferenced(CG *g, Buf *out) {
     out->data[len] = '\0';
 }
 
-/* Make sure the attribute macro the insertions below rely on is defined.
+/**
+ * @brief 确保 `EXTC_UNUSED` 属性宏还定义在待插入属性的缓冲区里。
  *
- * The macro pruning pass runs before them and sees no use of `EXTC_UNUSED` at all, so it drops the
- * definition - and then the attribute inserted here names a macro that does not exist
- * (`expected ';' before 'static'`, five errors in one program). The definition is put back inside
- * the same `#if defined(__GNUC__)` block it came from; if that block is gone too, the insertion is
- * abandoned by the caller rather than emitting an attribute no compiler understands. */
+ * 属性宏的裁剪先于这里跑，看不到任何使用就会把定义删掉，之后插入的属性会指向一个
+ * 不存在的宏。定义插回它原本所在的 `#if defined(__GNUC__)` 块里；连锚点都不在了就
+ * 返回 false，由调用方放弃插入，而不是发出编译器不认识的属性。
+ *
+ * @param g   代码生成状态，提供临时缓冲区的 arena。
+ * @param nb  待插入属性的单元文本；就地插入定义。
+ * @return    定义已在文本里或本次插入成功为 true；三个锚点一个都找不到为 false。
+ */
 static bool ensureUnusedMacro(CG *g, Buf *nb) {
     if (strstr(nb->data, "#define EXTC_UNUSED")) return true;
     const char *anchors[3];
@@ -6735,13 +7224,18 @@ static bool ensureUnusedMacro(CG *g, Buf *nb) {
     return false;
 }
 
-/* Where does this function's definition start, and where does it end?
+/**
+ * @brief 在生成文本里定位一个函数的定义起点和终点。
  *
- * Found by its *signature line*, not by the whole captured text: the passes that remove
- * unreferenced definitions and rewrite dead assignments change the inside of bodies, so comparing
- * against a copy taken before them fails exactly for the functions that were touched - which is
- * why a first attempt at this silently skipped `pcg32_withStream`. The body ends at the `}` that
- * sits in column zero, which is how every generated definition is closed. */
+ * 先整段匹配记下的函数文本；它被前面的改写趟动过时，退回按签名行找。定义结束在
+ * 第零列的那个 `}` —— 生成的每个定义都这么收尾。定位不到的返回 NULL，调用方
+ * 因此跳过该函数而不是删错东西。
+ *
+ * @param text    拼好的生成单元文本，可写。
+ * @param df      函数记录；`df->body` 为 NULL（定义没发出）时返回 NULL。
+ * @param lenOut  输出定义文本的字节数，从起点到收尾的 `}`。
+ * @return        定义起点；没找到返回 NULL。
+ */
 static char *funcDefStart(char *text, DeadFunc *df, size_t *lenOut) {
     if (!df->body) return NULL;
     char *at = strstr(text, df->body);              /* untouched: the whole text is the key */
@@ -6763,17 +7257,15 @@ static char *funcDefStart(char *text, DeadFunc *df, size_t *lenOut) {
     return at;
 }
 
-/* Mark the functions nothing calls.
+/**
+ * @brief 给没有任何调用点的函数声明加上 `EXTC_UNUSED`。
  *
- * Every emitted function carries `EXTC_UNUSED` on its declaration today, and clang says what that
- * means: the attribute is a statement about a function nobody calls, and putting it on one that
- * *is* called is wrong (`-Wused-but-marked-unused` reports exactly those, one per call site).
+ * 属性是对“没人调用”的断言，加在被调用的函数上 clang 会报 `-Wused-but-marked-unused`，
+ * 一个调用点一条。名字在成品文本里只出现于自己的声明和定义就满足条件。
+ * 插入点先全部收集、从尾到头应用，插入本身在最后做，否则先插一个会挪掉后面所有偏移。
  *
- * The honest answer is only known once everything that could be dropped has been: a function
- * whose name appears nowhere but in its own declaration and definition is a survivor of the
- * pruning that nothing calls - either because the only callers were dropped, or because it was
- * kept for a reference the analysis could not resolve. Those, and only those, get the attribute
- * inserted into their declaration.
+ * @param g    代码生成状态，`deadFuncs` 是候选来源。
+ * @param out  生成的 C 单元；就地插入属性。
  */
 static void markUncalledFunctions(CG *g, Buf *out) {
     char  *text = out->data;
@@ -6806,18 +7298,15 @@ static void markUncalledFunctions(CG *g, Buf *out) {
         if (bd) (void)blen;
         if (((size_t)countGet(&counts, df->name, strlen(df->name))) != own) continue;   /* something calls it: leave it alone */
         /* The attribute goes at the start of the declaration. Looking for the literal `static `
-         * would miss every `@inline` function: those are declared through the `EXTC_INLINE` macro,
-         * so no `static` is spelled out (`io$pairsReady` in `tests/io/stream-file.extc` kept its
-         * warning that way). */
+        * would miss every `@inline` function: those are declared through the `EXTC_INLINE` macro,
+        * so no `static` is spelled out. */
         char *decl = pt ? pt : bd;
         while (*decl == ' ') decl++;
         if (decl >= text + len) continue;
         *(size_t *)vecPush(&at) = (size_t)(decl - text);
     }
     if (!at.len) return;
-    /* Whether the macro can be put back is checked here, but acted on at the end: inserting it
-     * now would shift every offset collected below (that produced `EXEXTC_UNUSED TC_INLINE` - two
-     * insertions fighting over one offset). */
+
     if (!strstr(text, "#define EXTC_UNUSED") && !strstr(text, "#define EXTC_INLINE") &&
         !strstr(text, "#if defined(__GNUC__)")) return;
     Buf nb;
@@ -6839,18 +7328,17 @@ static void markUncalledFunctions(CG *g, Buf *out) {
     out->cap  = nb.len + 1;
 }
 
-/* Mark the parameters a body never reads.
+/**
+ * @brief 给函数体从不读取的参数加上 `EXTC_UNUSED`。
  *
- * A parameter cannot be dropped - it is part of the signature - so the attribute is the only way
- * to say "this one is deliberately unused". `-Wunused-parameter` is in `-Wextra`, and taking an
- * argument a function does not need is legitimate: `examples/borrowing.extc` and
- * `examples/out-param.extc` both do it.
+ * 参数删不掉，它是签名的一部分，属性是唯一能说明“这个参数是故意不用的”的办法。
+ * 参数表的范围是定义里第一个 `(` 到配对的 `)`，按顶层逗号切分，每个名字只在**本**
+ * 函数的函数体里计数 —— 数到文件尾会把别的函数同名参数算成使用。属性写在参数的
+ * 起始处而不是名字前，写在前面的类型后会把属性挂到指针类型上，gcc 照样报参数未用。
+ * 插入点先收集、从尾到头应用，插入本身在最后做。
  *
- * The answer is only known once the body exists, so this runs on the finished text: the parameter
- * list is delimited by the first `(` after the definition and its matching `)`, split on top-level
- * commas, and each parameter's name is counted in the body that follows. Every insertion point is
- * collected first and applied from the end backwards, so no offset is invalidated on the way; the
- * result is assembled in a scratch buffer and handed back to the output.
+ * @param g    代码生成状态，`deadFuncs` 的每个函数体是要检查的文本。
+ * @param out  生成的 C 单元；就地插入属性。
  */
 static void markUnusedParams(CG *g, Buf *out) {
     char  *text = out->data;
@@ -6904,9 +7392,7 @@ static void markUnusedParams(CG *g, Buf *out) {
         }
     }
     if (!at.len) return;
-    /* Whether the macro can be put back is checked here, but acted on at the end: inserting it
-     * now would shift every offset collected below (that produced `EXEXTC_UNUSED TC_INLINE` - two
-     * insertions fighting over one offset). */
+
     if (!strstr(text, "#define EXTC_UNUSED") && !strstr(text, "#define EXTC_INLINE") &&
         !strstr(text, "#if defined(__GNUC__)")) return;
     Buf nb;
@@ -6939,17 +7425,33 @@ static void markUnusedParams(CG *g, Buf *out) {
  * The owner is compared first, which keeps a same-named method of another type out; the name
  * comparison is there because codegen can hold its own copy of a declaration (instances,
  * substituted signatures). */
-/* **The** method set of a type: `Type.mholder` when the type has no body of its own -- a builtin
- * scalar (`impl i64 { ... }`) or a generic **instance** (`impl slice<u8> { ... }`) -- and the
- * declaration's body otherwise. Every pass that asks "does this type have this method" must come
- * through here: reading `sdef` alone silently missed both cases, and each miss showed up as a
- * different bug (a table of `{ NULL }`, a pruned method that a `dyn` dispatch needed, a thunk
- * calling a function nobody emitted). */
+/**
+ * @brief 给出一个类型的方法集合（方法表挂靠的那个结构体）。
+ *
+ * 类型自己没有函数体时用 `Type.mholder` —— 内建标量（`impl i64 { ... }`）和泛型**实例**
+ * （`impl slice<u8> { ... }`）都属于这种；否则用声明的 `sdef`。凡是问“这个类型有没有
+ * 这个方法”的趟都必须走这里，少看 `mholder` 会把这两类方法漏掉。
+ *
+ * @param t  类型；可为 NULL。
+ * @return   方法集合的结构体定义；`t` 为 NULL 或两者都为空时返回 NULL。
+ */
 static StructDef *methodSetOf(Type *t) {
     if (!t) return NULL;
     return t->mholder ? t->mholder : t->sdef;
 }
 
+/**
+ * @brief 判断一个函数是否被某个 trait impl 的方法表点到。
+ *
+ * 这类函数是可达性分析的根：程序里没有调用点，但有表引用它，所以必须发出、不能被当作
+ * 没人用裁掉。先比方法集合（`methodSetOf`），把同名的、别的类型的方法挡在外面；名字
+ * 再比一次，因为 codegen 可能持有声明自己的副本（实例、替换后的签名）。方法表和函数
+ * 相同就算命中。
+ *
+ * @param m  trait impl 所在的模块，方法表从 `m->impls` 取。
+ * @param f  候选函数；`f->owner` 为 NULL（自由函数）时直接返回 false。
+ * @return   方法表里点到 `f` 时为 true。
+ */
 static bool inTraitTable(Module *m, FuncDef *f) {
     if (!f->owner) return false;
     for (size_t i = 0; i < m->impls.len; i++) {
@@ -7037,17 +7539,13 @@ static const PrimPiece PRIM_BLOCK[] = {
     { PRIM_SCAFFOLD, NULL, "\n\n" },
 };
 
-/* Emit the runtime primitive block at the current end of `out`, registering every
- * definition it contains.
+/**
+ * @brief 把运行期原语块登记成一张按发射顺序排列的表。
  *
- * `PRIM_BLOCK` is the block itself, in emission order: scaffolding and definitions
- * alternating. Emitting it here, piece by piece, is what replaces "write the whole block
- * and find the definitions again later by the shape of their lines": every definition
- * carries its name and kind, so the dead-code decision can read them instead of guessing.
+ * `PRIM_BLOCK` 是块本身：脚手架与定义交替。这里逐条登记，每条定义带上名字与种类，
+ * 后面的死活判定读登记而不是按行形状猜；宏行的名字从 `#define` 行本身读出来。
  *
- * `g->primA` must already be the offset this will write at; the registered spans are
- * relative to it. Nothing before the block is ever removed, which is what keeps that
- * offset valid through the whole pass pipeline.
+ * @param g  代码生成状态，登记写进 `g->primEnts`。
  */
 static void primEmit(CG *g) {
     for (size_t i = 0; i < sizeof PRIM_BLOCK / sizeof *PRIM_BLOCK; i++) {
@@ -7079,12 +7577,18 @@ static void primEmit(CG *g) {
     }
 }
 
-/* Mentions of `name` in one piece of scaffolding.
+/**
+ * @brief 数出一个名字在一片脚手架文本里出现了几次。
  *
- * A guard line (`#ifndef X` / `#ifdef X`) asks whether a macro is defined, which is not a use
- * of it, so those lines are skipped when `skipGuards`. That is the one asymmetry the old pass
- * had between macros and everything else (`totalOverride` / `insideOverride`), and it is kept:
- * `#ifndef EXTC_REC_LIMIT` must not keep the macro alive. */
+ * 守卫行（`#ifndef X` / `#ifdef X`）只是问一个宏有没有定义，不算使用，所以
+ * `skipGuards` 为真时这些行整行跳过：`#ifndef EXTC_REC_LIMIT` 不能把宏保活。
+ *
+ * @param g           代码生成状态，透传给 `countMentionsIn`。
+ * @param text        一片脚手架文本。
+ * @param name        要数的标识符，按整个标识符匹配。
+ * @param skipGuards  是否跳过 `#ifndef` / `#ifdef` 行。
+ * @return            出现次数。
+ */
 static size_t primScaffoldMentions(CG *g, const char *text, const char *name, bool skipGuards) {
     size_t n = 0, len = strlen(text);
     for (size_t p = 0; p < len; ) {
@@ -7099,19 +7603,17 @@ static size_t primScaffoldMentions(CG *g, const char *text, const char *name, bo
     return n;
 }
 
-/* Decide which definitions of the runtime primitive block this program uses, and splice the
- * surviving text into the unit at `primA` -- the step that makes the block emit on demand.
+/**
+ * @brief 决定运行期原语块里哪些定义本程序用得上，并把留下的文本拼进单元。
  *
- * The block was assembled beside the unit (`primEmit`), so the test runs **before** it is part
- * of the generated C: the unit is searched for each name, the block's scaffolding is searched,
- * and the definitions still standing are searched against each other, to a fixed point. A
- * definition whose name appears nowhere but inside itself is dropped, which is exactly the test
- * the text pass applied - it is now a question asked of the registry instead of a scan that
- * guessed where each definition began and ended.
+ * 块在单元之外组装，所以判定发生在它成为生成 C 的一部分**之前**：单元、块的脚手架、
+ * 还活着的定义彼此都搜一遍，做成不动点。名字只出现在自己里面的定义被丢掉 —— 与文本
+ * 层那趟相同的判据，只是改为问登记表。脚手架（注释、空行、`#if/#else/#endif` 骨架）
+ * 永远发射，产物因此与“先整块发出、再删定义”的结果逐字节一致。
  *
- * Scaffolding (comments, blank lines, `#if/#else/#endif` skeletons) is always emitted: that is
- * what the text pass left behind when it removed a definition, so a product whose definitions
- * are unused is byte for byte what it was before. */
+ * @param g    代码生成状态，`primEmit` 填好的 `primEnts` 是判定依据。
+ * @param out  生成的 C 单元；块插在 `g->primA`，其前其后原样保留。
+ */
 static void primSplice(CG *g, Buf *out) {
     const size_t ntab = sizeof PRIM_BLOCK / sizeof *PRIM_BLOCK;
     const size_t np   = g->primEnts.len;
@@ -7166,9 +7668,8 @@ static void primSplice(CG *g, Buf *out) {
         if (PRIM_BLOCK[p].kind == PRIM_SCAFFOLD) { bufPuts(&blk, PRIM_BLOCK[p].text); continue; }
         if (live[ei++]) bufPuts(&blk, PRIM_BLOCK[p].text);
     }
-    /* Splice it in at `primA`: the preamble before it, everything else after. The coroutine
-     * runtime was spliced at the same offset earlier, so the block ends up in front of it --
-     * the order the unit always had. */
+    /* Splice it in at `primA`: the preamble before it, everything else after, so the block
+    * lands in front of the coroutine runtime. */
     Buf nb;
     bufInit(&nb, g->arena);
     bufPutn(&nb, out->data, g->primA);
@@ -7184,7 +7685,19 @@ static void primSplice(CG *g, Buf *out) {
  * the text-level pass removed the definition afterwards. Generated from the
  * primitive text; verified byte-for-byte. */
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 发出生成文件的开头：特性宏、标准头文件、以及原型要用到的那几个 C 类型。
+ *
+ * 特性宏只认**第一个 include 之前**的位置，所以它们必须写在这里、头文件块之上，并且
+ * 只给真正需要那套 POSIX/GNU 接口的程序开：`g->needTime` / `g->needDns` 决定
+ * `_POSIX_C_SOURCE`，`g->needHttpFile` 决定 `_GNU_SOURCE`（`clock_gettime`、`nanosleep`、
+ * `getaddrinfo` 在严格 c11 下不可见）。dyn 句柄与协程句柄的 typedef 也在这里声明：
+ * 原型和实例结构体会先提到它们，而运行期在最终拼装时才接进来。
+ *
+ * @param g    代码生成状态；`needTime`、`needDns`、`needHttpFile`、`needCoroHandle` 是发射开关。
+ * @param out  生成的 C 单元，从头往后写。
+ * @param m    模块；`planUsesDyn` 由此判断要不要发 dyn 句柄类型。
+ */
 static void emitPreamble(CG *g, Buf *out, Module *m) {
     /* `-std=c11` is strict ISO, so the POSIX half of `<time.h>` (`clockid_t`, `CLOCK_MONOTONIC`,
      * `nanosleep`) is hidden. A feature-test macro only counts **before the first include** --
@@ -7192,11 +7705,11 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
      * program that actually asks for the time (`needTime` is set by the declaration scan above,
      * which is why that scan has to run first). */
     /* `clock_gettime`/`nanosleep` 是 POSIX；`getaddrinfo`/`inet_ntop` 也是（严格 c11 下 `struct
-     * addrinfo` 直接不可见 ✗ 实测）。宏必须在**第一个 include 之前** ✓。 */
+    * addrinfo` 直接不可见）。宏必须在**第一个 include 之前**。 */
     if (g->needTime || g->needDns)
         bufPuts(out, "#define _POSIX_C_SOURCE 200809L   /* clock_gettime/nanosleep/getaddrinfo */\n");
     /* 文件层的 HTTP 日期用 `strptime`/`timegm`/`gmtime_r`：前两个不是 ISO C ⇒ 要 `_GNU_SOURCE`
-     * （`timegm` 连 POSIX 都不是）。只在这个程序真的声明了那几个 shim 时才开，golden 不受影响 ✓ */
+    * （`timegm` 连 POSIX 都不是）。只在这个程序真的声明了那几个 shim 时才开。 */
     if (g->needHttpFile)
         bufPuts(out, "#define _GNU_SOURCE 1   /* strptime/timegm/gmtime_r：HTTP 日期那三个 */\n");
     bufPuts(out,
@@ -7212,10 +7725,9 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
         "#include <stdlib.h>\n\n");
 
     /* The dyn handle's C type is needed by **prototypes**: a `dyn Trait` parameter is a value of
-     * this type, and prototypes are emitted before the runtime that defines it (the pool runtime is
-     * spliced in during final assembly). Declaring it here closes that gap; C11 allows a typedef to
-     * be repeated when it names the same type, so the runtime keeps its own copy. Gated on
-     * `makesPool` so a program that cannot use dyn or a pool is byte-for-byte unchanged. */
+    * this type, and prototypes are emitted before the runtime that defines it (the pool runtime is
+    * spliced in during final assembly). Declaring it here closes that gap; C11 allows a typedef to
+    * be repeated when it names the same type, so the runtime keeps its own copy. */
     {
         if (planUsesDyn(m))
             bufPuts(out,
@@ -7232,16 +7744,25 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 记录运行期块的拼接点，并在单元末尾发出 `@overwrite` 信元类型。
+ *
+ * 原语块（`primEmit`）与协程运行期**紧接在单元之后**组装，它们进不进产物由后面的
+ * `primSplice` 决定，所以这里只记下拼接点 `g->primA`：块之前的字节没有任何一趟会删，
+ * 这个偏移到扫描时仍然准确。`@overwrite` 的信元类型含 `extc_arena *home`，必须排在
+ * arena 之后，所以本函数里只算 `needOw`，类型本身发在 arena 那一段。
+ *
+ * @param g    代码生成状态。
+ * @param out  生成的 C 单元；这里可能追加信元类型。
+ * @param m    模块。
+ */
 static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
     /* The dying hook goes between the includes and the trap paths that call it: `int32_t`
      * has to be known, and the definition has to precede every use. It is its own block
      * because the prologue around it is already at the 4095-byte limit C99 guarantees for
      * a string literal. */
-    /* The dying hook is part of the same block as far as the unreferenced-definition pass is
-     * concerned: when the traps that call it are dropped, it becomes dead itself, and a first
-     * version of that pass left it behind because it was captured from a later point
-     * (`unused function 'extc_die'`). */
+    /* The dying hook is captured here, with the block, so the unreferenced-definition pass
+    * can drop it together with the traps that call it: it must be part of the same block. */
     /* The @overwrite cell type is emitted only when it is really used: emitted
      * unconditionally it would add a line to the generated C of every program
      * and fill the golden files with noise. The type contains an
@@ -7270,32 +7791,29 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
     g->coroDefPrinted = g->needCoroHandle;
     g->coroDefA = out->len;              /* the coroutine runtime goes after the block */
 
-    /* The @overwrite cell type, emitted on demand: emitted unconditionally it
-     * would change every golden file. It must come after `extc_arena`, because
-     * its `home` field says which arena the storage belongs to. */
+
     if (needOw)
         bufPuts(out, "typedef struct extc_owcell { void *p; int64_t cap; extc_arena *home; } extc_owcell;\n");
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 组装描述符表、通用打印器与结构相等比较的运行期文本。
+ *
+ * 文本写进各自的缓冲（`g->rt`、`g->rtPrint`、`g->rtEq`）而不是直接写进单元：
+ * 只有标量描述符行登记进 `deadDefs`，没人提到的行到后面才被删；`rtPrint` 只在程序
+ * 真的调用打印时才发出去；超长字符串字面量按 C99 的 4095 字符上限拆成多次 `bufPuts`。
+ *
+ * @param g  代码生成状态，运行期缓冲挂在它上面。
+ */
 static void buildRuntimeText(CG *g) {
     /* ==================================================================
-     * The descriptor table and the single generic printer.
-     *
-     * Before, one `_debug` print function was derived per type used: a synthetic
-     * stress program of N=1000 had 2028 of them, 22.9% of the generated C, and
-     * never printed a single struct. Now every type costs one compile-time
-     * constant in .rodata, the printing logic exists once for the whole program,
-     * and whether to emit it at all is decided on demand, by the reachability
-     * closure of the descriptors.
-     *
-     * This is not runtime reflection: the descriptors are static data, and the
-     * types, field offsets and variant names in them are compile-time constants
-     * that gcc can see throughout, so nothing is weakened about a failure being
-     * loud when it cannot be proven impossible.
-     *
-     * The same table can later feed structural `==`, serialization or hashing.
-     * ================================================================== */
+    * The descriptor table and the single generic printer.
+    *
+    * One static descriptor per type, and the printing logic exists once per program:
+    * this is not runtime reflection. The types, field offsets and variant names in the
+    * descriptors are compile-time constants gcc can see through, so nothing is weakened
+    * about a failure being loud when it cannot be proven impossible.
+    * ================================================================== */
     bufPuts(&g->rt,
         "/* ---- Type descriptor table ----\n"
         /* 这一段注释里**不要写出那个打印函数的名字**：它在运行时块文本里是按"没人提到就删"裁的，而那个判定是**文本**计数 —— 注释里提一次就等于"有人用"（实测踩过）。 */
@@ -7375,13 +7893,12 @@ static void buildRuntimeText(CG *g) {
         " * the `_debug` helpers it replaces; the truth table lives in\n"
         " * tools/print-formats.txt (floats use %g, [N]u8 prints numerically, and\n"
         " * slice<u8> prints as text). */\n"
-        /* 这里不挂 `__attribute__((unused))`：这一段是**整块发射**的，而 `extc_print`
-         * 只有"程序真的打印了结构化类型"时才被调用 ⇒ 凡是因为别的理由需要运行时块、又不打印
-         * 结构化类型的程序都会撞 `-Werror=unused-function`（实测：往 `stdlib/std/io.extc` 加几个
-         * helper 就让 `tests/coro` 六个夹具全灭）；而 `static inline` 不是解（GCC 认、Clang 反手报
-         * `-Wunneeded-internal-declaration`）✗。
-         * BG-1 的**正解**是让这一段**按需发射**：`rtPrint` 现在只在真的有 `extc_print` 调用点时
-         * 发出去（`needPrint`），所以属性可以摘了 —— 没人调用的函数根本不进产物 ✓。 */
+        /* 这里不挂 `__attribute__((unused))`：这一段是**整块发射**的，而那个打印函数
+        * 只有程序真的打印了结构化类型时才会被调用 ⇒ 凡是因为别的理由需要运行时块、又不打印
+        * 结构化类型的程序都会撞 `-Werror=unused-function`；而 `static inline` 不是解
+        * （GCC 认、Clang 反手报 `-Wunneeded-internal-declaration`）。
+        * 这一段**按需发射**：`rtPrint` 只在真的有它的调用点时发出去（`needPrint`），
+        * 所以属性可以摘 —— 没人调用的函数根本不进产物。 */
         "static void extc_print(const void *p, const ExtcDesc *d) {\n"
         "    switch (d->kind) {\n"
         "    case EXTC_D_I8:   printf(\"%d\", (int)*(const int8_t *)p); return;\n"
@@ -7509,17 +8026,25 @@ static void buildRuntimeText(CG *g) {
         "}\n\n");
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 以依赖顺序发出本单元需要的全部 C 类型定义。
+ *
+ * 枚举先于使用它的结构体：C11 无法前向声明 enum tag。带载荷的枚举只先发 tag 常量，
+ * `struct { tag; union }` 定义留到按依赖排序的那一段，因为载荷可以按值含另一个结构体。
+ * 泛型实例的闭包在这里展开到不动点，超过 64 轮即以错误退出，而不是少发类型。
+ *
+ * @param g     代码生成上下文，类型文本写进它的输出缓冲并登记待剪枝项。
+ * @param m     当前模块，提供 `types`、`structs`、`funcs`。
+ * @param tt    类型表，提供 `instances`、`enumInstances`、`fnTypes`。
+ * @param arena 暂存分配器，用于收集本轮的类型单元与临时文本。
+ */
 static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
-    /* Enums come first: C11 cannot forward-declare an enum tag, so a struct
-     * field of enum type needs the definition to be there already. */
     for (size_t i = 0; i < m->types.len; i++) {
         TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
 
         Buf b;
         bufInit(&b, arena);
         if (!enumHasPayload(td)) {
-            /* Without payloads: still a plain C enum, unchanged. */
             bufPuts(&b, "typedef enum { ");
             for (size_t j = 0; j < td->variants.len; j++) {
                 Variant *v = *(Variant **)vecAt(&td->variants, j);
@@ -7561,12 +8086,10 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
      * instances, arrays, and enums with payloads. */
     Vec units;
     vecInit(&units, arena, sizeof(void *));
-    /* Deduplicated by C name: a writable and a read-only view are the same C
-     * struct - `slice<mut slice<T>>` and `slice<slice<T>>` are both
-     * `slice_slice_T` - while `ttEquals` counts `mut` as part of the identity,
-     * so the type table can hold two instances under one name. Without
-     * deduplication the generated C would hold two identical `struct`
-     * definitions and gcc would report a redefinition. */
+    /* Deduplicated by C name: `slice<mut slice<T>>` and `slice<slice<T>>` are
+     * both `slice_slice_T`, while `ttEquals` counts `mut` as part of the
+     * identity, so two instances can share one name - emitting both would
+     * redefine the struct. */
     for (size_t i = 0; i < g->structs.len; i++) {
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->sd = *(StructDef **)vecAt(&g->structs, i);
@@ -7602,10 +8125,9 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
         vecInit(&u->deps, arena, sizeof(int));
         *(SUnit **)vecPush(&units) = u;
     }
-    /* Coroutine frames: synthesized structs, but real types. Their fields say what a coroutine's
-     * storage is made of, and scanning them here is what makes the instances those fields mention
-     * (`vector<i32>`, behind a container) get generated at all -- without this a step called
-     * `vector$vector_i32_withCap` and nothing ever emitted it (docs/topics/CONCURRENCY.md 4.4). */
+    /* Coroutine frames are synthesized structs but real types: scanning their
+     * fields is what makes the instances those fields mention (`vector<i32>`,
+     * behind a container) get generated at all. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
         if (!cf || !planIsCoro(cf) || planTemplate(cf) || !planCoroFrameType(cf) || !planCoroFrameType(cf)->sdef) continue;
@@ -7650,12 +8172,8 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
             }
         }
         if (grew) {
-            /* The cap does not guard against a broken loop; it guards against
-             * instances that nest without end, which every monomorphizing
-             * language has to guard against - C++ has `-ftemplate-depth` and
-             * rustc has `recursion_limit`. Those only report that the limit was
-             * passed, while this one also names which instance expanded into
-             * which, which makes the problem easy to locate. */
+            /* The cap guards against instances that nest without end; passing
+             * it also names which instance expanded into which. */
             fprintf(stderr,
                     "extc: error: generic instance closure did not settle in 64 rounds.\n"
                     "      last expansion: `%s` mentions `%s`, which needs more instances.\n"
@@ -7674,36 +8192,20 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     }
     if (units.len) cgLine(g, "");
 
-    /* ---- the function types (`fn(A) -> R`), one C typedef each ------------------------------
-     *
-     * Right here, and the position is the whole argument: **after** the enum typedefs and the struct
-     * forward typedefs, because a signature names the types it takes and returns; **before** the
-     * struct definitions, because a field of function type names its typedef.
-     *
-     * A function type cannot be spelled as a prefix of a declaration the way every other type here
-     * is. C wraps the declared name *inside* the pointer declarator -- `int64_t (*)(int64_t)` is a
-     * type, `int64_t (*f)(int64_t)` is not "type plus name" -- while every call site of `cType`
-     * concatenates its answer with a name. So a signature is spelled by a **typedef**, and `cType`
-     * answers with the typedef's name (`C-ABI.md` section 9.5).
-     *
-     * There is no "collect the demand" pass: `tt->fnTypes` **is** the demand set. Every function type
-     * the program mentions went through `ttFn` -- written in a field, a parameter, a local, or
-     * produced by substituting a generic -- so a program with no `fn` in it leaves the table empty and
-     * this block emits nothing at all.
-     *
-     * Signatures are emitted in creation order, and a nested one (`fn(fn(i64) -> i64) -> void`) is
-     * always created before the one that mentions it: the parser and `ttSubstitute` both build the
-     * parts before the whole, so the inner typedef is already there when the outer one names it. */
+    /* The function-type typedefs (`fn(A) -> R`), one per signature, go after the
+     * enum typedefs and the struct forward typedefs (a signature names the types
+     * it takes and returns) and before the struct definitions (a field of
+     * function type names its typedef). A function type cannot be spelled as a
+     * prefix of a declaration, so it is spelled by a typedef and `cType` answers
+     * with the typedef's name. `tt->fnTypes` is the demand set, and a nested
+     * signature is always interned before the one that mentions it. */
     if (tt->fnTypes.len) {
         cgLine(g, "/* ---- function types (`fn(A) -> R`): one typedef per signature ---- */");
         for (size_t i = 0; i < tt->fnTypes.len; i++) {
             Type *ft = *(Type **)vecAt(&tt->fnTypes, i);
             if (!ft->name) continue;
-            /* Two distinct signatures must never share one C name: the mangle separates the parts
-             * with `__`, which no mangle produces unless a source name itself contains a double
-             * underscore. Rather than assume that never happens, a collision is **reported** -- the
-             * same "say which name is needed instead of emitting C that does not compile" the
-             * generic-instance name check at the top of `generateC` does. */
+            /* Two distinct signatures must never share one C name; a collision is
+             * reported rather than emitted as C that does not compile. */
             bool clash = false;
             for (size_t j = 0; j < i && !clash; j++)
                 clash = strcmp((*(Type **)vecAt(&tt->fnTypes, j))->name, ft->name) == 0;
@@ -7784,10 +8286,6 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
         if (!u->done) { unitBody(g, u); u->done = true; }
     }
 
-    /* The variant names live in the `table` of the descriptor, so no `<Type>_name`
-     * function is emitted for an enum with payloads and nothing here has to come
-     * after the definitions. The tag constants of an enum are emitted where
-     * the enum itself is emitted and are unaffected. */
 
     for (size_t i = 0; i < tt->enumInstances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->enumInstances, i);
@@ -7808,15 +8306,21 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 为模块里的全局与常量发出 `static` 定义，并把每行登记进未引用剪枝表。
+ *
+ * 定长全局不需要 arena；C 自己把静态存储清零，所以没有初始化式的全局不写初始化式。
+ * `static` 是有意为之：外部链接会让 gcc 放弃外层循环向量化。全局初始化式里可以出现
+ * 函数名（`fn` 字段表），C 要求它们先声明，所以先走一遍初始化式发原型。
+ *
+ * @param g 代码生成上下文，`out` 接收定义文本，`deadDefs` 接收可剪枝条目。
+ * @param m 当前模块，`globals` 是待发全局列表。
+ */
 static void emitGlobals(CG *g, Module *m) {
     /* Globals and constants are plain C static objects; a global of fixed size
-     * needs no arena. C zeroes a static object by itself, so a global without an
-     * initializer needs no initializer expression at all.
-     *
-     * The `static` here is a performance decision, for the reason given above
-     * cgIsMain: external linkage makes gcc reject outer-loop vectorization,
-     * which made a matrix multiply at OI scale 3.2x slower. */
+     * needs no arena, and C zeroes a static object by itself. `static` is
+     * required for performance: external linkage makes gcc reject outer-loop
+     * vectorization. */
     for (size_t i = 0; i < m->globals.len; i++) {
         GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
         if (ttIsError(gd->ann)) continue;
@@ -7830,7 +8334,6 @@ static void emitGlobals(CG *g, Module *m) {
         if (gd->init) {
             cgLine(g, "static %s %s = %s;", ct, gd->name, genGlobalInit(g, gd->init));
         } else {
-            /* No initializer: C zeroes static storage by itself. */
             cgLine(g, "static %s %s;", ct, gd->name);
         }
         /* A global the program never names costs a warning in every translation
@@ -7848,25 +8351,26 @@ static void emitGlobals(CG *g, Module *m) {
     if (m->globals.len) cgLine(g, "");
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 发出全单元的原型池：所有函数体之前、且只能出现原型。
+ *
+ * 这里绝不能出现定义：定义先于被调函数的原型时，C 会把它当成隐式声明的 `int()`，
+ * 后面的真原型就成了冲突类型。参数表必须与定义用同一个 `cgParamList`：带 home arena
+ * 的函数多一个隐藏参数，少了它 C 类型对不上。实例方法只发被调用的（`planUsed`），
+ * 协程协议不在这里发，它们在调用点内联。
+ *
+ * @param g     代码生成上下文，`out` 接收原型，`deadFuncs` 接收可剪枝条目。
+ * @param m     当前模块。
+ * @param arena 暂存分配器，用于拼装签名文本。
+ */
 static void emitProtos(CG *g, Module *m, Arena *arena) {
-    /* ------------------------------------------------------------------
-     * The prototype pool: every function is declared before any body.
+    /* The prototype pool: every function is declared before any body, and only
+     * a prototype may appear here. A definition emitted before the prototype of
+     * a function it calls makes C take that function as implicitly declared
+     * `int()`, and the later real prototype is then a conflicting type.
      *
-     * Only prototypes may appear here, never a definition. The reason is a trap
-     * that was hit for real: the comparison of an array is generated by the
-     * compiler, and its loop calls the `fn ==` of the element type, `point_eq`
-     * among others. When the definition of the array comparison came before the
-     * prototype of `point_eq`, C took `point_eq` to be implicitly declared as
-     * `int()`, and the real prototype that followed produced "conflicting types
-     * for 'point_eq'". Example code caught that bug.
-     *
-     * The lesson is the same as for the ordering of struct definitions: never
-     * rely on an ordering that happens to work, rule it out by construction.
-     * ---------------------------------------------------------------- */
-    /* The prototypes of `_debug`, `_writeText`, `_name` and the array `_eq` are
-     * gone: printing and structural `==` go through the descriptor table, so no
-     * derived function needs a forward declaration. */
+     * Printing and structural `==` go through the descriptor table, so none of
+     * the derived functions needs a forward declaration here. */
     /* The prototypes of instance methods; an array has no sdef and no methods. */
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
@@ -7881,12 +8385,10 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
              * emitting too much is the safe direction. */
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!planUsed(md)) continue;
-            /* Instance methods are candidates too. Leaving them out is exactly where
-             * `unused function` warnings come from: a library method of a generic instance
-             * (`slice<i32>::isEmpty`) is marked used by the checker even when the only thing
-             * that mentions it is dead code, and without a candidate here nothing takes it
-             * back out. The pairing is by name, so the trap of #64 - one node, many
-             * instances - does not apply. */
+            /* Instance methods are candidates too: a library method of a generic
+             * instance is marked used even when only dead code mentions it, and
+             * without an entry here nothing takes it back out. The pairing is by
+             * name, so one node backing several instances is not a problem. */
             size_t pb = g->out->len;
             genFuncProto(g, md);
             {
@@ -7938,15 +8440,24 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
     if (g->structs.len || g->insts.len || g->funcs.len) cgLine(g, "");
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 初始化代码生成状态：实例表、协程 kind 预扫与事件层标志。
+ *
+ * 每个被发射的协程函数拿到递增的 `kind`（装箱点与 handle 分发必须一致），只要有一个
+ * 协程的帧被提升为 handle，`needCoroHandle` 就置位。事件层只在这个程序用到
+ * `extc_epoll_*`、`extc_sock_*` 或 `extc_tcp_*` 之一时进场。
+ *
+ * @param g     代码生成上下文，其向量与缓冲在这里初始化。
+ * @param m     当前模块，`funcs` 是协程预扫的来源。
+ * @param tt    类型表，`instances` 里仍提到类型参数的实例不发 C。
+ * @param arena 分配器，CG 内所有向量与缓冲都从它分配。
+ */
 static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->structs, arena, sizeof(void *));
     bufInit(&g->prefix, arena);          /* statement prefix; uninitialized, it segfaults */
-    /* Deduplicate by C name: a writable and a read-only view are the same C
-     * struct - `slice<mut slice<T>>` and `slice<slice<T>>` are both
-     * `slice_slice_T` - while `ttEquals` counts `mut` as part of the identity,
-     * so the type table can hold two instances under one name. Deduplicating by
-     * name keeps every later piece from being generated twice. */
+    /* The instance table is deduplicated by C name: a writable and a read-only
+     * view are one C struct, so the type table can hold two instances under one
+     * name and neither may be generated twice. */
     /* Coroutine handle prepass: one `kind` per coroutine function (the boxing site and the handle
      * dispatch must agree on it), and whether this program needs the handle type at all -- the
      * checker records the "a frame was coerced into a handle" fact through `planSetCoroBoxed`. */
@@ -7955,9 +8466,8 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
         for (size_t i = 0; i < m->funcs.len; i++) {
             FuncDef *cf = *(FuncDef **)vecAt(&m->funcs, i);
             if (!coroEmitted(cf)) continue;
-            /* X3：这里**不再**把模板的标记写回实例（codegen 不回写共享分析状态）。
-             * 原来的写法是"写进 FuncDef，再在下一行读出来"，于是多了一条隐式的
-             * "谁在什么时候写"依赖；现在就地推导，语义等价（实例自己的标记仍算数）。*/
+            /* Derived here rather than written back into the shared analysis
+             * state: the instance's own flag counts, and so does the template's. */
             bool boxed = planCoroBoxed(cf)
                       || (planTemplate(cf) && planCoroBoxed(planTemplate(cf)));
             planSetCoroKind(cf, ck++);
@@ -7975,10 +8485,9 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->insts, arena, sizeof(void *));
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->instances, i);
-        /* A type that still mentions a type parameter gets no C: `[2]box<T>` inside a generic body is
-         * interned unconditionally, and emitting its struct named the undefined `box_T`
-         * (tools/attack.py X4, X3, X7, X8, X9). gdb put the entry point here: the provisional array was
-         * already in `units` when `scanUnitForUnits` first saw it, i.e. it came from this loop. */
+        /* A type that still mentions a type parameter gets no C: `[2]box<T>`
+         * inside a generic body is interned unconditionally, and emitting its
+         * struct would name the undefined `box_T`. */
         if (!it || mentionsParam(it)) continue;
         bool dup = false;
         for (size_t k = 0; k < g->insts.len && !dup; k++)
@@ -7987,7 +8496,18 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 扫描模块里的声明，决定运行期哪些可选块需要发射。
+ *
+ * 触发点是声明而不是调用：`extern!` 或 `@builtin` 原语出现在模块里，就说明程序用了对应的
+ * 运行期。池还多一条来源：检查器算好的 `makesPool`，因为 `extc_pool_*` 的声明在库模块里，
+ * 入口模块的函数表看不到。这个扫描必须在 preamble 之前跑，`_GNU_SOURCE` 只对第一个
+ * include 之前有效。
+ *
+ * @param g 代码生成上下文，置位 `needRawTerm`、`needPool`、`needCout`、`needMemFind`、
+ *          `needPlateCopy`、`needPlateView`、`needTime`、`needHttpFile`、`needDns`。
+ * @param m 当前模块，`funcs` 与 `structs` 的声明是全部来源。
+ */
 static void scanUnitNeeds(CG *g, Module *m) {
     /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
      * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
@@ -8041,7 +8561,16 @@ static void scanUnitNeeds(CG *g, Module *m) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 初始化 CG 的各运行期缓冲，并把固定的运行期文本写进对应缓冲。
+ *
+ * 这些文本在这里一次写好；是否进入最终产物由各自的 `need*` 标志或需求表决定，例如
+ * `rt` 只在有打印、结构相等或描述符行时才拼接。控制台缓冲、`%g` 格式化器与原始终端
+ * 恢复块各自带静态状态，必须整块发射。
+ *
+ * @param g     代码生成上下文，其缓冲在这里初始化并预填。
+ * @param arena 分配器，缓冲存储来自它。
+ */
 static void initRuntimeText(CG *g, Arena *arena) {
     vecInit(&g->funcs, arena, sizeof(void *));
     vecInit(&g->helpers, arena, sizeof(SliceHelper));
@@ -8099,16 +8628,14 @@ static void initRuntimeText(CG *g, Arena *arena) {
         "    memcpy(extc_cout_buf + extc_cout_len, p, (size_t)n);\n"
         "    extc_cout_len += n;\n"
         "}\n");
-    /* The one formatter the library cannot write itself: `%g`. extC has no variadics,
-     * so `snprintf` is unreachable from extC, and this is the fixed-arity door to it.
-     * The format is **the same one the retired builtin uses** (`extc_print`'s `f64`
-     * case above), so migrating a program off `println` cannot change a byte of its
-     * output; `%g` also fits `char[32]` for every double, and `snprintf` truncates
-     * rather than overruns if it ever did not.
+    /* The one formatter the library cannot write itself: extC has no variadics,
+     * so `snprintf` is unreachable and this is the fixed-arity door to it. `%g`
+     * fits `char[32]` for every double, and `snprintf` truncates rather than
+     * overruns if it does not.
      *
-     * It lives in a buffer of its own because it is appended only when a call site
-     * reaches it (see `needCoutF64`): the library's `<<(f64)` is its one user, and a
-     * program that never prints a float should not carry the formatter. */
+     * It lives in a buffer of its own because it is appended only when a call
+     * site reaches it (`needCoutF64`): a program that never prints a float
+     * should not carry the formatter. */
     bufInit(&g->rtCoutF64, arena);
     bufPuts(&g->rtCoutF64,
         "void extc_cout_f64(double v) {\n"
@@ -8151,25 +8678,31 @@ static void initRuntimeText(CG *g, Arena *arena) {
     g->tmpSeq = 0;
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 用可达性剪枝筛出真正要发射的结构体、方法与自由函数。
+ *
+ * 判据是检查器在调用点打下的 `used`，加上几类根：`main`、`@export` 与 trait 表里的成员。
+ * 三类东西不发：泛型模板本身（`T` 未替换会生成编不过的 C）、签名里仍提到类型参数的临时
+ * 实例，以及只由协程协议表示的 `next`/`value`（它们在调用点内联）。
+ *
+ * @param g 代码生成上下文，筛选结果推进 `structs` 与 `funcs`。
+ * @param m 当前模块，`structs` 与 `funcs` 是候选来源。
+ */
 static void collectEmitted(CG *g, Module *m) {
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         if (sd->typeParams.len > 0) continue;   /* generic: generated per instance */
-        /* A synthetic holder for `impl i64 { ... }` is not a C struct: it has no fields and no
-         * layout, so there is nothing to declare. Its methods are emitted like any other
-         * function -- the loop below still walks them -- which is the whole point of attaching
-         * them to a holder instead of teaching five passes about builtins. */
+        /* A synthetic holder for `impl i64 { ... }` has no fields and no layout,
+         * so it is no C struct; its methods are emitted by the loop below like
+         * any other function. */
         if (!planBuiltinHolder(sd)) *(StructDef **)vecPush(&g->structs) = sd;
         /* Methods are functions too and share the prototype and definition table. */
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
             if (planCoroProto(md)) continue;      /* emitted inline at the call site, not here */
-            /* ⚡ 可达性剪枝：**没人调用的方法不发射** ✓
-             * 检查器早就在每个调用点打 `used`（`e->func = f; planUsed(f) = true;` ✓
-             * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓
-             * 为什么重要：一个小程序会带出 prelude + 库的**整片**代码 ✗
-             * （实测 `tests/io/stream-file.extc` 曾生成 **2437 行 / 169 个静态函数** ✓）*/
+            /* Reachability pruning: a method nobody calls is not emitted. The
+             * checker already marks every call site with `planUsed`, so a small
+             * program does not drag in the whole prelude and library. */
             if ((!planUsed(md)) && !inTraitTable(m, md)) continue;
             *(FuncDef **)vecPush(&g->funcs) = md;
         }
@@ -8177,29 +8710,17 @@ static void collectEmitted(CG *g, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         /* The generic template itself is not generated: `T` is still a
-         * parameter, so the result would be wrong C that does not compile. Only
-         * the instances are emitted, those with `planTemplate(f) != NULL`. Without this
-         * `continue`, both the template and its instances were emitted and the
-         * unsubstituted `T` in the template produced a false error. */
+         * parameter, so the result would not compile. Only the instances of a
+         * template (`planTemplate(f) != NULL`) are emitted. */
         if (f->typeParams.len > 0) continue;
-        /* Nor is an instance whose *signature* still mentions a type parameter.
-         *
-         * A generic call inside a generic body creates one of those -- `firstTwice<T>`
-         * calling `firstOr<T>` builds `firstOr_T` with `T` itself as the argument -- so
-         * that the template body can be checked at all. It exists for the checker: at
-         * instantiation every real call site is repointed to a concrete instance
-         * (`firstOr_i64`), and nothing calls the provisional one.
-         *
-         * Emitting it produced a function whose parameter and return types have no C
-         * name: `static option_T firstOr_T(slice_T xs)` referred to types that do not
-         * exist, so the generated C did not compile. It stayed hidden because a lone `T`
-         * degenerates to `int` (`static int idOf_T(int x)` compiled fine as dead code),
-         * so only a signature with a *constructed* type around the parameter broke. */
+        /* Nor is an instance whose signature still mentions a type parameter.
+         * A generic call inside a generic body builds one (`firstOr_T` with `T`
+         * as the argument) so the template body can be checked at all; every
+         * real call site is repointed to a concrete instance at instantiation,
+         * and the provisional one has parameter and return types with no C name. */
         if (planTemplate(f) && funcSignatureMentionsParam(f)) continue;
-        /* 同上：自由函数/库函数/预置也按可达性剪枝 ✓
-         * `main` 永远留（它是入口 ✓）；`used` 由检查器在每个调用点打 ✓
-         * `extern!` 没人调就只留声明也无妨 —— 没有引用就不会进生成的 C ✓ */
-        /* `@export` 也是根：extC 侧没人提它的名字，剪枝看的就是"有没有人提" ⇒ 不豁免就没定义。 */
+        /* Free functions are pruned the same way; `main` is always kept, and
+         * `@export` is a root too because nothing on the extC side names it. */
         if (!planUsed(f) && !cgIsMain(f) && !f->isExport && !inTraitTable(m, f)) continue;
         /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
          * body of their own -- emitting one here hit genBlockBody with a null body. */
@@ -8208,9 +8729,17 @@ static void collectEmitted(CG *g, Module *m) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 发出泛型实例的方法体，并把每段登记进未引用剪枝表。
+ *
+ * 只发被调用的方法（`planUsed`）；`planEnterInst` 告诉计划层当前发的是哪个实例，因为
+ * 泛型体里的一个调用点由所有实例共享。方法体总是登记：原型循环已经建好带 `proto` 的
+ * 条目，`deadFuncBody` 只补 `off`/`len`，缺了体会让 `markUnusedParams` 跳过它，
+ * 于是忽略 `self` 的方法在 `-Werror=unused-parameter` 下编不过。
+ *
+ * @param g 代码生成上下文，`insts` 是待发实例，`out` 接收方法体。
+ */
 static void emitInstanceBodies(CG *g) {
-    /* method definitions of the instances */
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
@@ -8223,11 +8752,9 @@ static void emitInstanceBodies(CG *g) {
             size_t fb = g->out->len;
             CGACC("cg-emit", genFunc(g, md));
             planLeaveInst();
-            /* A method named by a **`dyn` table's thunk** is referenced from outside its own scope, and
-             * the "definitions nothing names" pass cannot see that reference: registering it dropped
-             * `pair_i64_tag` and left the thunk calling a function nobody emitted (tools/attack.py F1).
-             * Everything else keeps the previous treatment -- exempting all instance methods rewrote
-             * 73 corpus files for nothing. */
+            /* A method named by a `dyn` table's thunk is referenced from outside
+             * its own scope, and the "definitions nothing names" pass cannot see
+             * that reference, so it has to be registered. */
             /* Always register the body: the prototype loop above already created this entry (with
              * `proto`), and `deadFuncBody` only fills `off`/`len` on it. An entry left without a
              * body makes `markUnusedParams` skip it, so a method that ignores `self` makes the
@@ -8239,24 +8766,32 @@ static void emitInstanceBodies(CG *g) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 为 checker 见过 `dyn` 形式的每个 trait 生成统一方法表。
+ *
+ * 接收者被擦成 `void *`，这是存储的 `dyn` 值能通过表调用的前提：调用点不知道具体类型。
+ * 每个 (trait, 类型, 方法) 生成一个适配实现的 thunk，表名按具体类型的 `cType` 拼出，
+ * 所以一个泛型目标的每个实例各有一张表。无法分发的槽（无接收者、泛型、返回 `Self`）
+ * 保留位置（顺序即 ABI），类型写成 `void *` 且填 NULL，checker 不会从它分发。
+ * 声明写进 `vtDecls` 随原型一起发出（分发点需要结构体在作用域内），定义留在 `vtDefs`，
+ * 由 `finishUnit` 在所有按字节偏移重写的趟之后追加。
+ *
+ * @param g     代码生成上下文，`vtDecls`/`vtDefs` 是输出缓冲。
+ * @param out   单位文本，本函数把 `vtDecls` 追加到它末尾。
+ * @param m     当前模块，提供 `traits` 与 `impls`。
+ * @param arena 分配器，用于拼装 thunk 名与声明文本。
+ */
 static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
-    /* Uniform method tables, one **per trait** (DYN.md stage 3).
+    /* Uniform method tables, one per trait. The receiver is erased to `void *`,
+     * which is what lets a stored `dyn` value call through a table at all: its
+     * concrete type is not known at the call site. Each (trait, type, method)
+     * gets a thunk adapting the implementation to the uniform signature, and the
+     * instance keeps the stable key `extc_vt$Trait$Type`.
      *
-     * The receiver is erased to `void *`, and that is what lets a stored `dyn` value call through a
-     * table at all: its concrete type is not known at the call site. The per-type field types the
-     * first version used (`__typeof__(impl) *`) only worked because the immediate form knows the
-     * type statically. Each (trait, type, method) gets a thunk adapting the implementation to the
-     * uniform signature; the instance keeps the stable key `extc_vt$Trait$Type` and the trait's
-     * declaration order, so the phase-1 contract is unchanged.
-     *
-     * Only traits the checker saw in a `dyn` form (`usedDyn`) get a table: a statically used trait
-     * needs none. A method that cannot be dispatched (no receiver, generic, or returning `Self`)
-     * keeps its slot -- order is ABI -- but gets a `void *` type and a NULL entry, and the checker
-     * refuses to dispatch through it, so the slot is unreachable rather than miscompiled.
-     *
-     * Declarations are emitted with the prototypes (a body that dispatches needs the struct in
-     * scope); definitions are appended after every pass that rewrites the unit by offset. */
+     * Only traits the checker saw in a `dyn` form (`usedDyn`) get a table. A
+     * method that cannot be dispatched (no receiver, generic, or returning
+     * `Self`) keeps its slot -- order is ABI -- but gets a `void *` type and a
+     * NULL entry, which the checker refuses to dispatch through. */
     bufInit(&g->vtDefs, arena);
     bufInit(&g->vtDecls, arena);
     for (size_t ti = 0; ti < m->traits.len; ti++) {
@@ -8279,24 +8814,20 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
             ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
             if (planImplTrait(im) != tr || !planImplTarget(im)) continue;
             Type *bt = ttBase(planImplTarget(im));
-            /* The methods of `bt` live in **its own** method set: `Type.mholder` when the type has
-             * no body of its own -- a builtin scalar (`impl Codec for i64`) or a generic
-             * **instance** (`impl Codec for slice<u8>`) -- and `sdef` otherwise. Reading `sdef`
-             * alone skipped both: `impl Codec for i64` produced no table at all, and
-             * `impl Codec for slice<u8>` produced `{ NULL }` (an empty table dispatches to NULL). */
+            /* The methods of `bt` live in **its own** method set: `Type.mholder`
+             * when the type has no body of its own -- a builtin scalar
+             * (`impl Codec for i64`) or a generic instance (`impl Codec for
+             * slice<u8>`) -- and `sdef` otherwise. */
             StructDef *tsd = bt ? (bt->mholder ? bt->mholder : bt->sdef) : NULL;
             if (!tsd) continue;
-            /* The **same** derivation the construction and dispatch sites use (`cType`), because
-             * they name the table after the concrete type: `extc_vt$Codec$slice_u8`. Naming it
-             * after `sdef->name` produced `extc_vt$Codec$slice` -- one table, two names, and the
-             * generated C did not compile (`extc_vt$Codec$slice_u8` undeclared). */
-            /* A generic target is spelled once per **instance**. The construction site names the
-             * table after the concrete type (`cType`), so `impl<T> Tag for pair<T>` needs
-             * `extc_vt$Tag$pair_i64` for every used instance of `pair` -- and emitting the thunk
-             * inside `substEnter` is also what makes the body pool name `pair_i64_tag`, which in
-             * turn keeps that body alive (a definition nothing names is dropped). Without this the
-             * `dyn` handle pointed at a table nobody declared: `extc_vt$Tag$pair_i64` undeclared
-             * (tools/attack.py F1). */
+            /* The **same** derivation the construction and dispatch sites use
+             * (`cType`): the table is named after the concrete type
+             * (`extc_vt$Codec$slice_u8`), not after `sdef->name`. */
+            /* A generic target is spelled once per instance, so
+             * `impl<T> Tag for pair<T>` needs `extc_vt$Tag$pair_i64` for every
+             * used instance of `pair`; emitting the thunk inside `substEnter` is
+             * also what makes the body pool name `pair_i64_tag` and keeps that
+             * body alive. */
             Vec spellings;
             vecInit(&spellings, arena, sizeof(Type *));
             if (bt->kind == TY_GENERIC && bt->sdef) {
@@ -8361,13 +8892,20 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
     bufPuts(out, bufCstr(&g->vtDecls));
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 为 `parallel::run` 的 worker 发出 trampoline 与原型，并置位 `needPar`。
+ *
+ * 位置是这段的关键：产物顺序是 includes → 原型 → 运行期 → 函数体，trampoline 既要
+ * 在调用点的声明之前，又要在 worker 原型之后，所以函数体循环的开头是唯一正确的位置。
+ * worker 的原型用同一个 `genFuncProto` 补一份，重复声明合法且文本一致。
+ *
+ * @param g 代码生成上下文，`funcs` 里 `planIsParWorker` 为真的函数各得一份 trampoline。
+ */
 static void emitParTramps(CG *g) {
-    /* `parallel::run` 的 trampoline 必须落在**任何函数体之前**：调用点要看到它的声明，它自己要看到
-     * worker 的原型。产物的顺序是 includes → 原型 → 运行期 → 函数体，所以函数体循环的开头就是唯一
-     * 正确的位置（挂钩挂在"按函数发原型"的循环里是错的：那个循环只走模板与
-     * 实例方法，普通函数根本不到 ⇒ 产物里少了 __extc_par_* ⇒ gcc 报 undeclared）。worker 的原型用
-     * 同一个 genFuncProto 补一份：重复声明合法，而且文本与后一份完全一致。 */
+    /* `parallel::run` 的 trampoline 必须落在**任何函数体之前**：调用点要看到它的声明，
+     * 它自己要看到 worker 的原型。产物顺序是 includes → 原型 → 运行期 → 函数体，
+     * 所以函数体循环的开头是唯一正确的位置；worker 原型用同一个 genFuncProto 补一份，
+     * 重复声明合法且文本一致。 */
     {
         bool parAny = false;
         for (size_t i = 0; i < g->funcs.len; i++) {
@@ -8385,7 +8923,14 @@ static void emitParTramps(CG *g) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 发出 `funcs` 里每个非 extern 函数的函数体。
+ *
+ * 发之前先 `substEnterFunc`（实例需要替换）与 `planEnterFunc`（泛型体里的调用点由当前
+ * 实例决定调到什么），发完把这个字节区间交给 `deadFuncBody` 登记。
+ *
+ * @param g 代码生成上下文，`funcs` 已由 `collectEmitted` 筛过，`out` 接收文本。
+ */
 static void emitFuncBodies(CG *g) {
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
@@ -8404,7 +8949,18 @@ static void emitFuncBodies(CG *g) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 把协程 handle 定义、池运行期与协程运行期拼进单位文本的协程段。
+ *
+ * 只在需要 handle、协程段存在、且尚未拼全时动作：先取 `coroDefA` 之前的文本，依次插入
+ * handle 结构、池运行期（若还没发）与协程运行期，再接上 `coroDefA` 之后的部分。拼接后
+ * 文本变长，所以整个 `Buf` 重新组出来，不能就地写回 `out->data`。
+ *
+ * @param g     代码生成上下文，`needCoroHandle`/`coroDefA`/`coroDefPrinted`/`taskTableDone`
+ *              决定拼什么，`poolDone` 与 `needPool` 会被就地更新。
+ * @param out   单位文本，整体被替换为拼接结果。
+ * @param arena 分配器，拼接用临时缓冲从它分配。
+ */
 static void assembleCoroutineRuntime(CG *g, Buf *out, Arena *arena) {
     if (g->needCoroHandle && g->coroDefA && (!g->coroDefPrinted || !g->taskTableDone)) {
         Buf nb;
@@ -8430,15 +8986,25 @@ static void assembleCoroutineRuntime(CG *g, Buf *out, Arena *arena) {
             g->needPool = true;
         }
         bufPutn(&nb, out->data + g->coroDefA, out->len - g->coroDefA);
-        /* Rebuild through `Buf` instead of `memcpy`-ing into `out->data`: the spliced text makes the
-         * unit **longer**, so writing it in place ran past the buffer's end and corrupted whatever
-         * followed it -- the symptom was a wild pointer inside `dropUnreferenced` and a compiler
-         * SIGSEGV on a generic coroutine (caught by tests/instimpl/t_generic_coro.extc). */
+        /* Rebuild through `Buf` instead of `memcpy`-ing into `out->data`: the
+         * spliced text makes the unit longer, so writing it in place runs past
+         * the buffer's end. */
         *out = nb;
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 按需把 `par::run` / `par::map` 的并行运行期文本追加到单位末尾。
+ *
+ * 语言没有函数指针，回调来自生成的静态 trampoline，这段只知道普通 C 函数指针。范围由
+ * 一个原子 chunk 计数器分发，所以互不重叠；每个 worker 拿自己的 arena
+ * （`extc_tls_arena`），所以一个 region 只有一个所有者。`withRegion` 为真时开 region，
+ * 下一次运行会关掉上一次的。线程创建失败不是错误：范围由更少的 worker 干完。
+ *
+ * @param g   代码生成上下文，`needParRegion` 决定是否发 `EXTC_PAR_REGION`，`needPar`
+ *            （或环境变量 `EXTC_DBG_PAR`）决定是否发整块运行期。
+ * @param out 单位文本，运行期文本追加到这里。
+ */
 static void emitParallelRuntime(CG *g, Buf *out) {
     if (g->needParRegion) bufPuts(out, "#define EXTC_PAR_REGION 1\n");
     if (g->needPar || getenv("EXTC_DBG_PAR"))
@@ -8559,7 +9125,20 @@ static void emitParallelRuntime(CG *g, Buf *out) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 把按需运行期块、辅助函数与视图原语追加到单位文本，并登记可剪枝条目。
+ *
+ * 拼接顺序就是 C 的定义先于使用：描述符表、打印/相等运行期、控制台、池、文件层、DNS、
+ * memfind、板视图/拷贝、时间、事件、域、dyn 运行期、原始终端，再是各 helper 与视图
+ * 索引器/拷贝器。helper 与视图原语的需求是保守的，所以它们和描述符一样登记进
+ * `deadDefs`，由 `dropUnreferenced` 收回没人命名的部分。
+ *
+ * @param g     代码生成上下文，各 `need*` 标志与 `helpers`/`unwraps`/`viewIdx`/`viewCpy`/
+ *              `viewCpyU`/`descs` 决定发什么。
+ * @param out   单位文本，追加目标。
+ * @param m     当前模块，域适配器按 `funcs` 里的 `ext` 目标生成。
+ * @param arena 分配器，生成视图原语用的临时缓冲与登记文本从它分配。
+ */
 static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     /* The table is what the descriptors `emitDescRegion` may have written are made of, so it
      * goes out whenever anything could name it: a print, a structural `==`, or a descriptor row
@@ -8609,12 +9188,10 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     if (g->eqNeed.len)                  bufPuts(out, bufCstr(&g->rtEq));
     bufPuts(out, bufCstr(&g->desc));
     for (size_t i = 0; i < g->helpers.len; i++) {
-        /* A slice helper is emitted on demand, and the demand is conservative: a helper
-         * whose only user is itself unused is still emitted. It is a definition like any
-         * other, so it is registered here and dropUnreferenced takes it back out when the
-         * finished unit does not name it (which is what gcc and clang report as an unused
-         * function). No `unused` attribute is needed for that, and clang reports a warning
-         * *about* using one. */
+        /* A slice helper is emitted on demand, and the demand is conservative: a
+         * helper whose only user is unused is still emitted. It is registered
+         * here, and dropUnreferenced takes it back out when the finished unit
+         * does not name it. */
         SliceHelper *h = (SliceHelper *)vecAt(&g->helpers, i);
         DeadDef *d = arenaAllocZero(arena, sizeof *d);
         d->name = h->name;
@@ -8633,12 +9210,10 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         *(DeadDef **)vecPush(&g->deadDefs) = d;
         bufPuts(out, h->text);
     }
-    /* The view index primitives, in the order they were first needed. They go here,
-     * before the bodies, for the same reason the slice helpers do: a definition has to
-     * precede its uses, and the need for one is discovered while the bodies are
-     * generated. Emitting them at the call site instead wrote a function definition into
-     * whichever buffer was current -- the prototypes -- and produced C that did not
-     * compile. */
+    /* The view index primitives, in the order they were first needed. They go
+     * here, before the bodies, for the same reason the slice helpers do: a
+     * definition has to precede its uses, and the need for one is discovered
+     * while the bodies are generated. */
     for (size_t i = 0; i < g->viewIdx.len; i++) {
         Type *inst = *(Type **)vecAt(&g->viewIdx, i);
         Buf tmp;
@@ -8706,7 +9281,18 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     }
 }
 
-/* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
+/**
+ * @brief 收尾整个单元：接上函数体、反复剪掉没人命名的定义、再补上协程与方法表定义。
+ *
+ * 未引用剪枝要跑到文本长度稳定为止：掉一个定义会让下一个定义也变成没人命名。运行时原语块
+ * （`primSplice`）在剪枝之后才拼进文本，因为这个问题只能对定稿文本问一次。
+ * `coroDefs` 与 `vtDefs` 最后追加：必须在所有按字节偏移重写的趟之后，且帧类型要排在
+ * 用到它的 `$step` 之前。`g->bodyOff` 记录函数体起点。
+ *
+ * @param g     代码生成上下文，`body`/`deadFuncs`/`mainOff`/`mainLen` 在这里被消费。
+ * @param out   单位文本，函数体与尾部定义追加到这里。
+ * @param arena 分配器，切分定义文本用的临时缓冲从它分配。
+ */
 static void finishUnit(CG *g, Buf *out, Arena *arena) {
     g->bodyOff = out->len;                    /* where the bodies start in the finished unit */
     bufPuts(out, bufCstr(&g->body));
@@ -8729,55 +9315,66 @@ static void finishUnit(CG *g, Buf *out, Arena *arena) {
         g->mainBody = bufCstr(&b);
     }
 
-    /* The unit is complete: now the definitions that nobody names can go - repeatedly, until the
-     * text stops shrinking. One pass is not enough: dropping `pcg32_withStream` is what makes
-     * `pcg32_next` dead, and the pass that would have caught it has already gone by. The
-     * offset-based phase inside simply finds its spans changed and skips them, which is safe. */
+    /* The unit is complete: the definitions nobody names can go, repeatedly
+     * until the text stops shrinking. One pass is not enough, because dropping
+     * one definition makes the next one unnamed. */
     for (int round = 0; round < 8; round++) {
         size_t before = out->len;
         CGACC("cg-prune", dropUnreferenced(g, out));
         cgReport();
         if (out->len == before) break;
     }
-    /* The runtime primitive block is decided here, from the registry, and only then does it
-     * become part of the unit: what nothing uses never reaches the generated C. The rest of the
-     * pipeline has settled, so "does anything name it?" is asked once, of the finished text.
-     * Nothing before `primA` is ever removed, so that offset is still exact. */
+    /* The runtime primitive block is decided here from the registry, and only
+     * then becomes part of the unit: this question is asked once, of the settled
+     * text. Nothing before `primA` is ever removed, so that offset is still
+     * exact. */
     primSplice(g, out);
     /* A function nothing calls says so; then the parameters a body never reads. */
     markUncalledFunctions(g, out);
     markUnusedParams(g, out);
 
-    /* The method-table **definitions** built before the bodies (see there): they come last so
-     * that no pass which rewrites the unit by byte offset ever sees them, and the declarations
-     * emitted earlier are what lets a dispatch site in a body refer to them. */
-    /* Coroutine frames and step functions: appended here, after every byte-offset pass, for the
-     * same reason as `vtDefs` right below -- and before it, so the frame type a step function uses
-     * is defined above it in the file. */
+    /* The method-table definitions come last so no pass that rewrites the unit
+     * by byte offset sees them; the declarations emitted earlier are what lets a
+     * dispatch site in a body refer to them. Coroutine frames and step functions
+     * go before them, so a frame type is defined above the step function using
+     * it. */
     bufPuts(out, bufCstr(&g->coroDefs));
     bufPuts(out, bufCstr(&g->vtDefs));
 }
 
+/**
+ * @brief 把已检查的模块生成一份完整的 C 翻译单元。
+ *
+ * 顺序固定：初始化状态 → 扫描需要哪些运行期 → 类型定义 → 全局 → 原型 → 函数体（写进
+ * 临时缓冲）→ 协程/描述符/运行期按需拼接 → 未引用剪枝 → 尾部定义。入口处先做两项命名
+ * 检查：泛型实例名不得与用户声明的结构体重名；`@export` 的名字不得带隐藏参数、不得是
+ * C 关键字、两个导出不得同名。任一失败即报错并返回 false。
+ *
+ * @param ctx     编译上下文，错误经它报告，`hasError` 决定返回值。
+ * @param arena   分配器，CG 状态与产物缓冲都从它分配。
+ * @param tt      类型表，提供实例与函数类型。
+ * @param m       当前模块。
+ * @param lineMap 为真时在产物里保留行号映射。
+ * @param out     产物缓冲，完整 C 文本写到这里。
+ * @return        没有报错时为 true；命名冲突或导出契约被破坏时报告错误并返回 false。
+ */
 bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, Buf *out) {
-    /* A generated instance's C name is `<template>_<argument>...` (`pair` + `i64` = `pair_i64`).
-     * Nothing stopped the program from defining that very name, and then the emitted unit held two
-     * definitions of `struct pair_i64` -- gcc refused the whole file (tools/attack.py A5, a
-     * three-line program). The compiler cannot rename one side without changing every emitted
-     * file, so it says which name it needs. Checked **here** rather than in the checker: the last
-     * instantiation wave happens after the checker's passes (putting it there never fired). */
+    /* A generated instance's C name is `<template>_<argument>...` (`pair` + `i64`
+     * = `pair_i64`). A program may define that very name, and the unit would then
+     * hold two definitions of `struct pair_i64`. The compiler cannot rename one
+     * side, so it says which name it needs. Checked here rather than in the
+     * checker: the last instantiation wave happens after the checker's passes. */
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *inst = *(Type **)vecAt(&tt->instances, i);
         if (!inst || inst->kind != TY_GENERIC || !inst->sdef || !inst->name) continue;
         for (size_t j = 0; j < m->structs.len; j++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, j);
-            /* Skip the holders the compiler builds for generic instances itself: they carry the
-             * very name being checked (`pair<i64>`'s method holder is `pair_i64`) and are not
-             * user declarations. Without this the check rejected `impl pair<i64> { … }` and any
-             * generic receiver (attack suite D3 and F2). */
+            /* Skip the holders the compiler builds for generic instances itself:
+             * they carry the very name being checked (`pair<i64>`'s method holder
+             * is `pair_i64`) and are not user declarations. */
             if (sd == inst->sdef || !sd->name) continue;
-            /* A compiler-built holder points at the **instance** as its type; a user declaration
-             * points at itself. (Checking `mholder` was not enough: for nested instances the
-             * holder chain differs and the check misfired on attack suite A4.) */
+            /* A compiler-built holder points at the **instance** as its type; a
+             * user declaration points at itself. */
             if (sd->type && sd->type->sdef != sd) continue;
             if (strcmp(sd->name, inst->name) != 0) continue;
             ctxError(ctx, sd->line ? sd->line : 1, 1,
@@ -8858,12 +9455,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     /* Coroutine frames and step prototypes, before any body that may spawn one or drive it. */
     genCoroDecls(&g, m);
 
-    /* The index primitives of the views are not emitted here any more: they are
-     * emitted on demand, at the first subscript that needs one (`viewIndexer`).
-     * That is also what fixes a missing definition when an index inside a generic
-     * body names an instance this list never held -- the generated C called a
-     * function nobody emitted. Printing and comparison derive no function at all,
-     * see the descriptor table. */
+    /* The index primitives of the views are emitted on demand, at the first
+     * subscript that needs one (`viewIndexer`). Printing and comparison derive no
+     * function at all, see the descriptor table. */
 
     emitInstanceBodies(&g);
     emitVtTables(&g, out, m, arena);
@@ -8880,36 +9474,24 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     if (g.needCoroHandle && !g.coroDeclsDone) genCoroHandleDecls(&g, m);
     /* Descriptor types and shared scalar descriptors: needed by printing or by
      * comparison, whichever comes first. */
-    /* ==================================================================
-     * Parallel execution over a range: the runtime half of `par::run` / `par::map`.
+    /* Parallel execution over a range: the runtime half of `par::run` / `par::map`.
      *
-     * The language has no function pointers, so the callback will come from a **generated
-     * static trampoline** (step 3 of the plan); this block only knows a plain C function
-     * pointer. It is emitted on demand (`needPar`, or `EXTC_DBG_PAR=1` while it is being
-     * built), so every existing product stays byte-identical.
+     * The language has no function pointers, so the callback comes from a generated
+     * static trampoline; this block only knows a plain C function pointer. It is
+     * emitted on demand (`needPar`, or `EXTC_DBG_PAR=1` while it is being built).
      *
      * What the caller and this runtime keep between them:
-     *   - ranges are disjoint by construction: one atomic chunk counter hands out [lo,hi)
-     *     and a worker only writes what it was handed. Dynamic chunking is also better
-     *     than a static split, because the scheduler is not fair;
-     *   - every worker gets its **own arena** (`extc_tls_arena`), so "one region, one
-     *     owner" stays true and two threads never touch the same block; the arena is
-     *     released whole when the worker ends;
+     *   - ranges are disjoint by construction: one atomic chunk counter hands out
+     *     [lo,hi) and a worker only writes what it was handed;
+     *   - every worker gets its own arena (`extc_tls_arena`), released whole when the
+     *     worker ends, so two threads never touch the same block;
      *   - nothing here is shared mutable state, so the block is re-entrant.
      *
-     * POSIX only, and deliberately without `pthread.h`: generated C carries only the few
-     * headers it wants (see the note near codegen.c:6432), and these two prototypes match
-     * the glibc ABI (`pthread_t` is `unsigned long` there, and the attribute may be NULL).
-     * Threads pay only for compute-bound work: 8 P-cores give 7.3x on a
-     * matrix multiply, while an echo server *loses* 45% going from 1 to 8 threads.
-     *
-     * This block on its own, self-tested 2026-09-28 (a chain of 80M integer mixes handed out
-     * in 500 chunks, pinned to the 8 P-cores, best of 3): 1 thread 69 ms, 2 36 ms, 4 20 ms,
-     * 8 and 16 both 13 ms -- 5.31x at 8 threads, and the checksum is identical at 1, 8 and
-     * 16 threads. `gcc -std=c11 -fwrapv -O2` links it without `-pthread` (glibc >= 2.34 has
-     * pthreads in libc), so the language's compile contract does not change. */
-    /* One source text, two configurations: without the define the region half is not compiled at
-     * all (not dead code). Chosen over keeping two spellings of the runtime. */
+     * POSIX only, and deliberately without `pthread.h`: generated C carries only the
+     * few headers it wants, and these two prototypes match the glibc ABI
+     * (`pthread_t` is `unsigned long` there, and the attribute may be NULL). */
+    /* One source text, two configurations: without the define the region half is not
+     * compiled at all. */
     emitParallelRuntime(&g, out);
     emitLateRuntime(&g, out, m, arena);
     finishUnit(&g, out, arena);

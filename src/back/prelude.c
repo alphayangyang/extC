@@ -10,14 +10,11 @@
 extern const unsigned char extc_prelude[];
 extern const unsigned long extc_prelude_len;
 
-/* Return the embedded prelude text.
+/**
+ * @brief 返回编译进二进制的 prelude 文本。
  *
- * Params:
- *   len - receives the length in bytes; the text is not NUL-terminated
- *
- * Returns:
- *   A pointer to the byte array linked into the compiler. It lives in static storage
- *   for the whole run, so the caller must neither free it nor expect a terminator.
+ * @param len  接收字节数（必须非 NULL）；文本不以 NUL 结尾。
+ * @return     指向链接进来的字节数组；它活在整个运行期间，调用方不要释放，也不要指望结尾 NUL。
  */
 const char *preludeSource(size_t *len) {
     *len = (size_t)extc_prelude_len;

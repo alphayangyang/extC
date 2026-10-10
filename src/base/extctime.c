@@ -10,6 +10,12 @@
  */
 #include "extctime.h"
 
+/**
+ * @brief 发出时间运行时的 C 代码：单调钟、墙上钟与睡眠，都用 i64 纳秒表示。
+ *
+ * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
+ * @param out  追加生成代码的输出缓冲。
+ */
 void timeEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     bufPuts(out,

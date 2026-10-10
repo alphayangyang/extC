@@ -16,6 +16,15 @@
  */
 #include "domain.h"
 
+/**
+ * @brief 发出调度域运行时的 C 代码：域拥有块内启动的任务，并把它们驱动到完成。
+ *
+ * 任务是一对（帧，推进它的 `step`）；这一层从不看进帧里，只管住这一对并驱动它。
+ * 程序里没有启动任务时这段运行时不出现。
+ *
+ * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
+ * @param out  追加生成代码的输出缓冲。
+ */
 void domainEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     bufPuts(out,

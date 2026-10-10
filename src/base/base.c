@@ -9,11 +9,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A debug switch, read once.
+/**
+ * @brief 判断某个 `EXTC_DBG_*` 开关是否打开；每个名字只查一次环境。
  *
- * These switches sit in exactly the loops that run per local, per candidate and per level - `getenv`
- * there was three percent of the compile time (a callgrind profile of `examples/stream-sum.extc` said
- * so). The environment cannot change while the compiler runs, so the answer is cached.
+ * 这些开关所在的循环按局部变量、候选与层级反复运行，`getenv` 在那里是实打实的开销。
+ * 环境在编译期间不会变，所以答案缓存下来。缓存最多记 16 个名字，满了就不再记新的；
+ * 没记下的名字每次仍照常查环境，结果不变。
+ *
+ * @param name  开关名（环境变量名，例如 `EXTC_DBG_ARENA`）。
+ * @return      环境里设置了该变量则为 `true`（值是什么无所谓）。
  */
 bool dbgOn(const char *name) {
     static struct { const char *name; int on; } cache[16];
@@ -41,48 +45,39 @@ struct ArenaBlock {
 
 #define ARENA_ALIGN 16
 
-/* Round a size up to the arena's alignment.
+/**
+ * @brief 把字节数向上取整到 arena 的对齐。
  *
- * Params:
- *   n - requested size in bytes
+ * 传 0 得 0：把 0 变成真实大小是调用方的事。
  *
- * Returns:
- *   The smallest multiple of ARENA_ALIGN that is >= n. A zero request stays zero,
- *   so the caller is responsible for having turned 0 into a real size already.
+ * @param n  请求的字节数。
+ * @return   不小于 `n` 的最小 ARENA_ALIGN 倍数。
  */
 static size_t alignUp(size_t n) {
     return (n + (ARENA_ALIGN - 1)) & ~(size_t)(ARENA_ALIGN - 1);
 }
 
-/* Prepare an arena that owns no blocks yet.
+/**
+ * @brief 初始化一只 arena；此刻它还不拥有任何块。
  *
- * Params:
- *   a         - arena to initialise
- *   blockSize - default block size in bytes; 0 selects 64 KiB
+ * 第一块由第一次分配惰性创建，所以从不使用的 arena 不花代价。
  *
- * Notes:
- *   - The first block is created lazily by the first allocation, so an arena that
- *     is never used costs nothing.
+ * @param a          要初始化的 arena。
+ * @param blockSize  每次向系统要的块大小（字节）；传 0 选 64 KiB。
  */
 void arenaInit(Arena *a, size_t blockSize) {
     a->head = NULL;
     a->blockSize = blockSize ? blockSize : 65536;
 }
 
-/* Take a fresh block from the system allocator and push it onto the arena.
+/**
+ * @brief 向系统要一块新块，并把它压到 arena 顶上。
  *
- * Params:
- *   a    - arena to extend
- *   need - number of bytes the caller is about to bump-allocate; the block is
- *          never made smaller than this, or the request would not fit in it
+ * 内存耗尽即致命：没有渠道报给用户，也没有能继续下去的状态，于是打印一行并 `exit(1)`。
  *
- * Returns:
- *   The new block, which is also the arena's head and therefore the block the
- *   next allocation comes out of.
- *
- * Notes:
- *   - Running out of memory is fatal. There is no way to report it to the user and
- *     no sensible state to continue from, so this prints one line and exits 1.
+ * @param a     要扩展的 arena。
+ * @param need  调用方马上要 bump 分配的字节数；块绝不小于它，否则这次请求装不下。
+ * @return      新块，同时也是 arena 的头，下一次分配就从它里面出。
  */
 static ArenaBlock *arenaNewBlock(Arena *a, size_t need) {
     size_t cap = a->blockSize;
@@ -100,20 +95,15 @@ static ArenaBlock *arenaNewBlock(Arena *a, size_t need) {
     return b;
 }
 
-/* Bump-allocate bytes from the arena.
+/**
+ * @brief 从 arena 分配 `n` 字节，**不清零**。
  *
- * Params:
- *   a - arena to allocate from
- *   n - size in bytes; 0 is rounded up to 1
+ * 单块内存从不单独释放，所以 arena 只适合活到进程结束的数据。对齐来自块自身的对齐，
+ * 由 malloc 保证。
  *
- * Returns:
- *   n bytes aligned to ARENA_ALIGN, uninitialised: arenaAllocZero is the zeroing
- *   variant.
- *
- * Notes:
- *   - Nothing is ever freed individually, so the arena is only usable for data
- *     that lives until the end of the process.
- *   - The alignment comes from the block's own alignment, which malloc provides.
+ * @param a  arena。
+ * @param n  字节数；传 0 按 1 处理。
+ * @return   指向 `n` 字节的指针，按 ARENA_ALIGN 对齐；要清零用 arenaAllocZero。
  */
 void *arenaAlloc(Arena *a, size_t n) {
     n = alignUp(n ? n : 1);
@@ -126,14 +116,12 @@ void *arenaAlloc(Arena *a, size_t n) {
     return p;
 }
 
-/* Bump-allocate n bytes and clear them.
+/**
+ * @brief 从 arena 分配 `n` 字节并清零。
  *
- * Params:
- *   a - arena to allocate from
- *   n - size in bytes; the aligned size may be larger, but only n bytes are cleared
- *
- * Returns:
- *   A pointer to n zeroed bytes.
+ * @param a  arena。
+ * @param n  字节数；对齐后可能占更多，但只清 `n` 个字节。
+ * @return   指向已清零的 `n` 字节的指针。
  */
 void *arenaAllocZero(Arena *a, size_t n) {
     void *p = arenaAlloc(a, n);
@@ -141,15 +129,13 @@ void *arenaAllocZero(Arena *a, size_t n) {
     return p;
 }
 
-/* Copy a byte range into the arena and terminate the copy.
+/**
+ * @brief 把 `s` 的前 `n` 个字节拷进 arena，并补一个 NUL 结尾。
  *
- * Params:
- *   a - arena to allocate from
- *   s - source bytes; need not be NUL-terminated
- *   n - number of bytes to copy
- *
- * Returns:
- *   An arena-owned NUL-terminated string.
+ * @param a  arena。
+ * @param s  源字节串（不必以 NUL 结尾）。
+ * @param n  拷贝的字节数。
+ * @return   以 NUL 结尾的副本。
  */
 char *arenaStrndup(Arena *a, const char *s, size_t n) {
     char *p = (char *)arenaAlloc(a, n + 1);
@@ -158,19 +144,15 @@ char *arenaStrndup(Arena *a, const char *s, size_t n) {
     return p;
 }
 
-/* Format text into the arena, measuring first so the buffer is exactly sized.
+/**
+ * @brief 按格式串在 arena 里拼一个字符串（与 `printf` 同族的格式）。
  *
- * Params:
- *   a   - arena to allocate from
- *   fmt - printf format
- *   ... - arguments for fmt
+ * 先量长度再写，缓冲区大小刚好。`va_list` 只能走一遍，所以量长度用 `ap`，写入用先前
+ * `va_copy` 出来的副本；重复使用 `ap` 是未定义行为。
  *
- * Returns:
- *   An arena-owned NUL-terminated string holding the formatted text.
- *
- * Notes:
- *   - A va_list can be walked only once, so the measuring call runs on `ap` and
- *     the writing call on a copy made beforehand; reusing `ap` would be undefined.
+ * @param a    arena。
+ * @param fmt  格式串。
+ * @return      拼接结果，以 NUL 结尾。
  */
 char *arenaPrintf(Arena *a, const char *fmt, ...) {
     va_list ap;
@@ -193,14 +175,13 @@ char *arenaPrintf(Arena *a, const char *fmt, ...) {
  * holds raw bytes in the meantime: nothing but bufCstr maintains a terminator.
  */
 
-/* Prepare an empty buffer.
+/**
+ * @brief 用一只 arena 初始化一个空的缓冲。
  *
- * Params:
- *   b - buffer to initialise
- *   a - arena that owns the storage and receives the abandoned blocks on growth
+ * 这里不分配存储：第一次追加之前 `data` 一直是 NULL。增长时丢下的旧块归 arena 所有。
  *
- * Notes:
- *   - No storage is allocated here: data stays NULL until the first append.
+ * @param b  要初始化的缓冲。
+ * @param a  提供内存的 arena。
  */
 void bufInit(Buf *b, Arena *a) {
     b->arena = a;
@@ -209,17 +190,14 @@ void bufInit(Buf *b, Arena *a) {
     b->cap = 0;
 }
 
-/* Make room for `extra` more bytes after the current length.
+/**
+ * @brief 为当前长度之后再多 `extra` 个字节腾出空间。
  *
- * Params:
- *   b     - buffer to grow
- *   extra - number of bytes about to be appended
+ * 容量从 256 字节起翻倍到装得下为止，所以分配次数是输出大小的对数。容量之外还多要
+ * 一个字节，让 bufCstr 总能写下结尾 NUL，不必再增长一次。
  *
- * Notes:
- *   - Capacity starts at 256 bytes and doubles until it fits, so the number of
- *     allocations is logarithmic in the output size.
- *   - One byte past the capacity is allocated as well, so bufCstr can always write
- *     its terminator without a second growth step.
+ * @param b      要增长的缓冲。
+ * @param extra  马上要追加的字节数。
  */
 static void bufReserve(Buf *b, size_t extra) {
     if (b->len + extra <= b->cap) return;
@@ -234,23 +212,23 @@ static void bufReserve(Buf *b, size_t extra) {
     /* The old block is not given back -- the arena owns it. */
 }
 
-/* Append one byte.
+/**
+ * @brief 追加一个字节。
  *
- * Params:
- *   b - buffer
- *   c - byte to append; a NUL byte is stored as ordinary content
+ * @param b  缓冲。
+ * @param c  要追加的字节；NUL 也按普通内容存下。
  */
 void bufPutc(Buf *b, char c) {
     bufReserve(b, 1);
     b->data[b->len++] = c;
 }
 
-/* Append a byte range.
+/**
+ * @brief 追加 `s` 的前 `n` 个字节。
  *
- * Params:
- *   b - buffer
- *   s - bytes to append; may contain NUL and need not be terminated
- *   n - number of bytes; 0 leaves the buffer untouched
+ * @param b  缓冲。
+ * @param s  源字节串；可以含 NUL，不必以 NUL 结尾。
+ * @param n  字节数；传 0 不动缓冲。
  */
 void bufPutn(Buf *b, const char *s, size_t n) {
     if (!n) return;
@@ -259,29 +237,25 @@ void bufPutn(Buf *b, const char *s, size_t n) {
     b->len += n;
 }
 
-/* Append a NUL-terminated string without its terminator.
+/**
+ * @brief 追加一个以 NUL 结尾的字符串（不含结尾的 NUL）。
  *
- * Params:
- *   b - buffer
- *   s - string to append
+ * @param b  缓冲。
+ * @param s  源字符串。
  */
 void bufPuts(Buf *b, const char *s) {
     bufPutn(b, s, strlen(s));
 }
 
-/* Format text and append it.
+/**
+ * @brief 按格式串把内容追加进缓冲。
  *
- * Params:
- *   b   - buffer
- *   fmt - printf format
- *   ... - arguments for fmt
+ * 先算长度、再用 `va_copy` 的副本写第二遍，因为 `va_list` 不能走两遍。
+ * vsnprintf 拿到 `n + 1` 字节：结尾 NUL 落在 bufReserve 预留的那个空字节里；它不计入
+ * `len`，下一次追加直接覆盖。
  *
- * Notes:
- *   - The length is computed first and the text written by a second vsnprintf from
- *     a va_copy, because a va_list cannot be walked twice.
- *   - vsnprintf is handed n + 1 bytes: it writes the terminator into the spare byte
- *     that bufReserve keeps past the capacity. That byte is outside `len`, so the
- *     next append simply overwrites it.
+ * @param b    缓冲。
+ * @param fmt  格式串。
  */
 void bufPrintf(Buf *b, const char *fmt, ...) {
     va_list ap;
@@ -297,15 +271,14 @@ void bufPrintf(Buf *b, const char *fmt, ...) {
     b->len += (size_t)n;
 }
 
-/* Return the contents as a NUL-terminated string.
+/**
+ * @brief 把缓冲内容当作 C 字符串：确保以 NUL 结尾，并返回首地址。
  *
- * Returns:
- *   The buffer's own storage with a NUL written at data[len]; no copy is made.
+ * 返回的是缓冲自己的存储，不复制。之后的任何追加都让这个指针失效（覆盖结尾 NUL，
+ * 还可能把数据搬到新块），所以在文本拼完的那一刻调一次。
  *
- * Notes:
- *   - Any later append invalidates the pointer: it overwrites the terminator and
- *     may move the data to a new block. Call this once, at the point the text is
- *     complete.
+ * @param b  缓冲。
+ * @return    以 NUL 结尾的内容首地址。
  */
 char *bufCstr(Buf *b) {
     bufReserve(b, 1);
@@ -319,13 +292,12 @@ char *bufCstr(Buf *b) {
  * not know the element type: callers cast the pointers vecPush and vecAt return.
  */
 
-/* Prepare an empty vector.
+/**
+ * @brief 初始化一个空向量。
  *
- * Params:
- *   v        - vector to initialise
- *   a        - arena that owns the storage
- *   elemSize - size of one element in bytes; 0 would make every element alias the
- *              same address, so callers always pass sizeof of a real type
+ * @param v         要初始化的向量。
+ * @param a         提供内存的 arena。
+ * @param elemSize  单个元素的字节数；传 0 会让每个元素都落在同一地址，调用方总是传 sizeof。
  */
 void vecInit(Vec *v, Arena *a, size_t elemSize) {
     v->arena = a;
@@ -335,12 +307,13 @@ void vecInit(Vec *v, Arena *a, size_t elemSize) {
     v->elemSize = elemSize;
 }
 
-/* Double the capacity and move the live elements into the new block.
+/**
+ * @brief 容量翻倍，并把活元素搬进新块。
  *
- * Notes:
- *   - Capacity starts at 8 elements when the vector is empty.
- *   - Every element pointer handed out earlier becomes dangling here. Nothing may
- *     hold a vecPush or vecAt result across a push on the same vector.
+ * 空向量从 8 个元素起。这里交出去的每个元素指针都会悬空：任何 vecPush / vecAt 的结果
+ * 都不能跨同一向量上的下一次 push 使用。
+ *
+ * @param v  要增长的向量。
  */
 static void vecGrow(Vec *v) {
     size_t ncap = v->cap ? v->cap * 2 : 8;
@@ -355,15 +328,13 @@ static void vecGrow(Vec *v) {
      * worth remembering for a long-running program. */
 }
 
-/* Append one element.
+/**
+ * @brief 追加一个**未初始化**的元素并返回它的地址。
  *
- * Returns:
- *   A pointer to the new element, aligned for the element type and left
- *   uninitialised: the caller writes the element through it.
+ * 指针在下一次 push 时失效（增长会搬走元素）：要读就趁早读出来。
  *
- * Notes:
- *   - The pointer dies at the next push on this vector, because growth moves the
- *     elements. Read the element out before pushing again.
+ * @param v  向量。
+ * @return   新元素的地址，按元素类型对齐；调用者负责写满 `elemSize` 个字节。
  */
 void *vecPush(Vec *v) {
     if (v->len == v->cap) vecGrow(v);
@@ -372,21 +343,25 @@ void *vecPush(Vec *v) {
     return p;
 }
 
-/* Return a pointer to element i.
+/**
+ * @brief 取第 `i` 个元素的地址。
  *
- * Params:
- *   v - vector
- *   i - index; the caller guarantees i < vecLen(v)
+ * 不检查越界：越界读到的是元素之后的内存。
  *
- * Notes:
- *   - Out-of-range indices are not checked: they read whatever follows the
- *     elements.
+ * @param v  向量。
+ * @param i  下标（从 0 起，必须小于当前长度）。
+ * @return   元素地址。
  */
 void *vecAt(Vec *v, size_t i) {
     return v->data + i * v->elemSize;
 }
 
-/* Number of elements currently stored. */
+/**
+ * @brief 当前元素个数。
+ *
+ * @param v  向量。
+ * @return   元素个数。
+ */
 size_t vecLen(const Vec *v) {
     return v->len;
 }
@@ -399,19 +374,17 @@ size_t vecLen(const Vec *v) {
  * consequence.
  */
 
-/* Prepare the diagnostic context for one source file.
+/**
+ * @brief 初始化诊断上下文。
  *
- * Params:
- *   c      - context to initialise
- *   a      - arena the context belongs to
- *   path   - file name shown in diagnostics; PRELUDE_PATH for the bundled prelude
- *   src    - the whole source text, kept so a diagnostic can quote the line
- *   srcLen - length of src in bytes, without any terminator
+ * 这里不设 `warnCount` 与 `noWarn`：driver 紧接着的那句才赋 `noWarn`，还想关心警告
+ * 计数的调用方得自己先把上下文清零。
  *
- * Notes:
- *   - warnCount and noWarn are not set here. The driver assigns noWarn just after
- *     this call; a caller that also cares about the count has to zero the context
- *     itself first.
+ * @param c       要初始化的上下文。
+ * @param a       arena。
+ * @param path    源文件路径（出现在诊断里；自带 prelude 用 PRELUDE_PATH）。
+ * @param src     源文本；留着让诊断能摘出那一行。
+ * @param srcLen  源文本字节数（不含结尾 NUL）。
  */
 void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen) {
     c->arena = a;
@@ -425,22 +398,18 @@ void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen)
     c->errNote[0] = '\0';
 }
 
-/* Record the first error of this compilation and ignore every later one.
+/**
+ * @brief 记一条错误：只留本次编译的第一条，后面的全部忽略。
  *
- * Params:
- *   c    - context
- *   line - 1-based source line; <= 0 means the error has no position
- *   col  - 1-based column; <= 0 is rendered as column 1
- *   note - optional one-line explanation printed under the message; NULL for none
- *   fmt  - printf format for the message
- *   ...  - arguments for fmt
+ * 只留第一条，一个错误才不会把用户埋在后续诊断的雪崩里。这里不打印：文本由
+ * ctxRenderDiag 稍后渲染，错误因此与当时正往流里写什么无关。消息与说明都截断到
+ * EXTC_MAXERR 字节。
  *
- * Notes:
- *   - Only the first error survives, so one mistake does not bury the user under a
- *     cascade of follow-up diagnostics.
- *   - Nothing is printed here; the text is rendered later by ctxRenderDiag. That
- *     keeps the error independent of whatever else is being written to the streams.
- *   - Message and note are truncated at EXTC_MAXERR bytes.
+ * @param c     上下文。
+ * @param line  源行号（从 1 起）；<= 0 表示这条错误没有位置。
+ * @param col   源列号（从 1 起）；<= 0 渲染成第 1 列。
+ * @param note  打印在消息下面的一行说明；没有就传 `NULL`。
+ * @param fmt   消息格式串。
  */
 void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...) {
     if (c->hasError) return;            /* keep only the first error */
@@ -457,24 +426,17 @@ void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...)
     else c->errNote[0] = '\0';
 }
 
-/* Print a warning to stderr immediately, in the same shape as an error.
+/**
+ * @brief 记一条警告：**不置** `hasError`，编译继续；立刻打到 stderr。
  *
- * Params:
- *   c    - context
- *   line - 1-based source line; a line past the end of the file prints only the
- *          header line
- *   col  - 1-based column the caret is placed under; <= 0 is treated as 1
- *   note - optional explanation printed after the source line; NULL for none
- *   fmt  - printf format for the message
- *   ...  - arguments for fmt
+ * 与错误同样的格式。`-w`（`Ctx.noWarn`）在计数之前就返回，被压掉的警告也不计入。
+ * 源行靠从文件开头扫描找到，所以每条警告的代价是到它自己那一行为止的一遍文本。
  *
- * Notes:
- *   - A warning never sets hasError: compilation continues and the exit code is
- *     unchanged. That is the whole point of the channel.
- *   - `-w` (Ctx.noWarn) returns before the count is bumped, so suppressed warnings
- *     are not counted either.
- *   - The source line is found by scanning from the beginning of the file, so each
- *     warning costs a pass over the text up to its own line.
+ * @param c     上下文。
+ * @param line  源行号；超出文件末尾时只打印头部一行。
+ * @param col   插入符所在的列（从 1 起）；<= 0 当 1 处理。
+ * @param note  源行之后的一行说明；没有就传 `NULL`。
+ * @param fmt   消息格式串。
  */
 void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) {
     if (c->noWarn) return;
@@ -506,18 +468,14 @@ void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) 
     if (note) fprintf(stderr, "  note: %s\n", note);
 }
 
-/* Render the recorded error into a buffer: header, source line, caret.
+/**
+ * @brief 把记录下来的诊断渲染成文本：头部、源行、插入符。
  *
- * Params:
- *   c   - context holding the error
- *   out - buffer the text is appended to; the caller picks the stream
+ * 解析之前产生的错误没有行号，渲染成 `path: error: message`，不给源码摘录。
+ * 源行靠从文件开头扫描找到；每次运行只报一条错误，所以这个线性代价可以接受。
  *
- * Notes:
- *   - An error raised before parsing has no line number, so it renders as
- *     `path: error: message` with no source excerpt.
- *   - The source line is reached by scanning from the start of the file. That is
- *     linear in the file size, which is acceptable because only one error is ever
- *     reported per run.
+ * @param c    上下文。
+ * @param out  接收文本的缓冲；由调用方决定它最终去哪个流。
  */
 void ctxRenderDiag(Ctx *c, Buf *out) {
     /* An error raised before parsing has no line number. */
@@ -556,28 +514,18 @@ void ctxRenderDiag(Ctx *c, Buf *out) {
 
 /* ------------------------------------------------------- C identifier names */
 
-/* True when this extC name cannot be copied into the generated C unchanged.
+/**
+ * @brief 这个标识符是不是 C 关键字，或者 `bool`/`true`/`false`，或者 GNU 的 `asm`/`typeof`？
  *
- * Most names are copied verbatim, since the generated C is meant to stay
- * readable. Three groups collide and have to be renamed:
- *   1. C keywords: `fn double(...)` is perfectly legal extC (extC's float type is
- *      `f64`), but the generated C would contain `int32_t double(int32_t);`, which
- *      does not compile -- and the error would point into generated code the user
- *      never wrote.
- *   2. `bool`, `true`, and `false` from <stdbool.h>: they are macros in the
- *      generated C, so a collision would damage the code that follows.
- *   3. GNU C's `asm` and `typeof`, which gcc accepts by default under gnu11.
+ * extC 的名字要能当作 C 名用，所以必须避开它们。三组会撞：C 关键字（extC 允许写
+ * `fn double(...)`，生成的 C 却编不过，而报错会指进用户没写过的生成代码）、
+ * `<stdbool.h>` 的 `bool`/`true`/`false`（在生成的 C 里是宏）、以及 gnu11 默认放行的
+ * GNU `asm`/`typeof`。规则：extC 源码里的名字从不改写，只有生成的 C 里的名字会加后缀。
  *
- * Params:
- *   name - the extC name to test
+ * 表以 NULL 结尾、线性扫描；它足够小，加查找结构只会多出代码。
  *
- * Returns:
- *   True when the generated C needs a modified name (codegen appends a suffix).
- *   The name in the extC source is never rewritten.
- *
- * Notes:
- *   - The table is NULL-terminated and scanned linearly; it is small enough that a
- *     lookup structure would only add code.
+ * @param name  要判断的标识符。
+ * @return      生成的 C 需要改名（codegen 加后缀）时为 `true`。
  */
 bool cIdentIsKeyword(const char *name) {
     static const char *KW[] = {
@@ -596,6 +544,17 @@ bool cIdentIsKeyword(const char *name) {
     return false;
 }
 
+/**
+ * @brief 把一个文件整份读进 arena，并以 NUL 结尾。
+ *
+ * 按 `ftell` 报的长度要 `n + 1` 字节；短读时按实际读到的字节数收尾，`outLen` 报的也是
+ * 实际值。
+ *
+ * @param a       提供内存的 arena。
+ * @param path    要读的文件。
+ * @param outLen  接收读到的字节数（不含结尾的 NUL）；可以传 `NULL`。
+ * @return        缓冲区；文件打不开、定位不了或量不出长度时返回 `NULL`。
+ */
 char *readWholeFile(Arena *a, const char *path, size_t *outLen) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;

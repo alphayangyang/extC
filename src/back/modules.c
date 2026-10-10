@@ -51,11 +51,38 @@
 /* Time-based split of the loader: it is the steepest phase (x5.8 per doubling) and callgrind's
  * instruction ranking does not explain it (strstr is 71% of instructions but SIMD-cheap, getenv
  * 1.6% and free in time). So measure time: mergeUnit per unit against everything else. */
+/**
+ * @brief Report whether `EXTC_DBG_TIME` is set, reading the environment once and caching it.
+ *
+ * `getenv` would otherwise sit in loops that run per local, per candidate and per level; the
+ * environment cannot change while the compiler runs, so the cached answer is stable.
+ *
+ * @return  true when the variable is set.
+ */
 static int ldTimeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
+
+/**
+ * @brief Return the process CPU time in seconds, for the phase timings.
+ *
+ * @return  `clock()` converted to seconds.
+ */
 static double ldNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+
+/**
+ * @brief Print one phase's elapsed seconds when `EXTC_DBG_TIME` is set.
+ *
+ * @param n   phase name.
+ * @param t0  start time, from `ldNow`.
+ */
 static void ldPhase(const char *n, double t0) { if (ldTimeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ldNow() - t0); }
 static long g_renCalls, g_renEarly, g_renCmps, g_usCalls, g_usCmps, g_utCalls, g_utCmps;
 static long g_stN, g_exN;
+
+/**
+ * @brief Print the walk counters to stderr when `EXTC_DBG_TIME` is set.
+ *
+ * Read-only: it reports the counters and changes nothing.
+ */
 static void ldCount(void) {
     if (ldTimeOn()) {
         fprintf(stderr, "[walk] rwStmt=%ld rwExpr=%ld | renLookup=%ld early=%ld cmps=%ld",
@@ -66,6 +93,16 @@ static void ldCount(void) {
 }
 typedef struct { const char *name; double sec; } LdAcc;
 static LdAcc ldAccs[8];
+
+/**
+ * @brief Add the elapsed seconds of one phase to the debug breakdown table.
+ *
+ * Entries with the same name are summed; once the eight-entry table is full the call is
+ * dropped, which only affects the debug output.
+ *
+ * @param n    breakdown name, compared by content rather than by pointer.
+ * @param sec  elapsed seconds of this call.
+ */
 static void ldAcc(const char *n, double sec) {
     if (!ldTimeOn()) return;
     for (size_t i = 0; i < 8; i++) {
@@ -73,6 +110,9 @@ static void ldAcc(const char *n, double sec) {
         if (strcmp(ldAccs[i].name, n) == 0) { ldAccs[i].sec += sec; return; }
     }
 }
+/**
+ * @brief Print the summed breakdown when `EXTC_DBG_TIME` is set.
+ */
 static void ldReport(void) {
     if (!ldTimeOn()) return;
     for (size_t i = 0; i < 8 && ldAccs[i].name; i++)
@@ -81,26 +121,12 @@ static void ldReport(void) {
 
 /* -------------------------------------------------------------- small helpers */
 
-/* Read a whole file into the arena, NUL-terminated.
+/**
+ * @brief Report whether `path` can be opened for reading.
  *
- * Params:
- *   a      - arena that owns the buffer
- *   path   - file to read
- *   outLen - receives the number of bytes actually read
- *
- * Returns:
- *   The file contents, or NULL when it cannot be opened, seeked, or sized.
- *
- * Notes:
- *   - The length must be reported back. An early version dropped it, and callers
- *     that lex from a length then treated the module as an empty file - a failure
- *     that shows up far away from its cause.
- *   - The length is the byte count `fread` returned, not the size reported by the
- *     file system, so a file that shrinks mid-read is still terminated correctly.
+ * @param path  file to try.
+ * @return      true when it opens; false otherwise.
  */
-
-
-/* Report whether `path` can be opened for reading. */
 static bool fileExists(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -108,7 +134,15 @@ static bool fileExists(const char *path) {
     return true;
 }
 
-/* Take the module short name out of a path: `dir/io.extc` -> `io`. */
+/**
+ * @brief Take the module short name out of a path: `dir/io.extc` -> `io`.
+ *
+ * Only a trailing `.extc` is stripped; any other suffix is kept.
+ *
+ * @param a     arena that owns the result.
+ * @param path  file path.
+ * @return      the short name, owned by the arena.
+ */
 static const char *baseNameNoExt(Arena *a, const char *path) {
     const char *slash = strrchr(path, '/');
     const char *base = slash ? slash + 1 : path;
@@ -117,7 +151,13 @@ static const char *baseNameNoExt(Arena *a, const char *path) {
     return arenaStrndup(a, base, n);
 }
 
-/* Turn a module path into a relative file path: `std::io` -> `std/io`. */
+/**
+ * @brief Turn a module path into a relative file path: `std::io` -> `std/io`.
+ *
+ * @param a        arena that owns the result.
+ * @param modPath  module path with `::` separators.
+ * @return         the path with every `::` replaced by `/`.
+ */
 static char *pathToRel(Arena *a, const char *modPath) {
     Buf b;
     bufInit(&b, a);
@@ -128,7 +168,13 @@ static char *pathToRel(Arena *a, const char *modPath) {
     return bufCstr(&b);
 }
 
-/* Directory part of a path: `dir/io.extc` -> `dir`; no slash means `.`. */
+/**
+ * @brief Take the directory part of a path: `dir/io.extc` -> `dir`; no slash means `.`.
+ *
+ * @param a     arena that owns the result.
+ * @param path  file path.
+ * @return      the directory part, owned by the arena.
+ */
 static char *dirOf(Arena *a, const char *path) {
     const char *slash = strrchr(path, '/');
     if (!slash) return arenaStrndup(a, ".", 1);
@@ -174,11 +220,19 @@ typedef struct {
     int         errors;     /* number of errors reported; non-zero means the load failed */
 } Loader;
 
-/* The name a module is **called by** is not the path it is imported with: `use std::sys::domain`
+/**
+ * @brief Find an import path that would really work, or NULL when none does.
+ *
+ * The name a module is **called by** is not the path it is imported with: `use std::sys::domain`
  * brings that module in as `domain`, so suggesting "add `use sys::domain`" tells the reader to
  * import something that does not exist -- the standard library lives under `std/`.
  * Look the file up quietly and suggest the path that would really work; if nothing matches, say
- * nothing about a path and state the rule instead of inventing one. */
+ * nothing about a path and state the rule instead of inventing one.
+ *
+ * @param L        loader, supplying the search directories and the standard library directory.
+ * @param spelled  one segment of a qualified name; NULL or empty returns NULL.
+ * @return         the `use` path that works (with a `std::` prefix when needed), or NULL.
+ */
 static const char *suggestImportPath(Loader *L, const char *spelled) {
     if (!spelled || !*spelled) return NULL;
     Buf rel;
@@ -188,10 +242,9 @@ static const char *suggestImportPath(Loader *L, const char *spelled) {
         else bufPutc(&rel, *s);
     }
     const char *relC = bufCstr(&rel);
-    /* Two kinds of root: the `-I` directories (a module sits right under one of them) and the
-     * standard library root -- `stdDir` is the directory that *holds* `std/…`, so the interesting
-     * candidates there are `<stdDir>/<rel>` and `<stdDir>/std/<rel>`, the second of which is where
-     * `sys::domain` really lives (`…/std/sys/domain.extc` ⇒ `use std::sys::domain`). */
+    /* `stdDir` is the directory that *holds* `std/…`, so the candidates under it are
+     * `<stdDir>/<rel>` and `<stdDir>/std/<rel>`; `sys::domain` really lives in the second
+     * (`…/std/sys/domain.extc` ⇒ `use std::sys::domain`). */
     for (int pass = 0; pass < 2; pass++) {
         if (pass == 1 && !L->stdDir) break;
         size_t n = (pass == 0) ? L->searchDirs.len : 1;
@@ -205,7 +258,7 @@ static const char *suggestImportPath(Loader *L, const char *spelled) {
                 FILE *fp = fopen(bufCstr(&b), "r");
                 if (!fp) continue;
                 fclose(fp);
-                /* The suggestion is spelled with `::` -- which is exactly the caller's own
+                /* The suggestion is spelled with `::`, which is exactly the caller's own
                  * spelling (`relC` is only that with `/` for the file system). */
                 if (subs[k][0] == '\0') return spelled;
                 Buf u;
@@ -219,48 +272,40 @@ static const char *suggestImportPath(Loader *L, const char *spelled) {
 }
 
 
-/* Prefix a declaration name with its module name: `readLine` -> `io$readLine`.
+/**
+ * @brief Prefix a declaration name with its module name: `readLine` -> `io$readLine`.
  *
- * Params:
- *   L    - loader whose arena owns the built string
- *   u    - the declaration's unit; a NULL or empty module name leaves `name` alone,
- *          which is how the root file keeps its names and stays the entry point
- *   name - the source name
+ * `$` is legal in a C identifier and illegal in an extC identifier, so a generated name can
+ * never collide with a name the user wrote. The result lives in the arena, and another
+ * `arenaPrintf` may reuse that buffer: compute every name first and only then store the
+ * pointers (see `mangleUnitDecls`).
  *
- * Returns:
- *   The prefixed name, or `name` unchanged for the root module.
- *
- * Notes:
- *   - `$` is legal in a C identifier and illegal in an extC identifier, so a
- *     generated name can never collide with a name the user wrote.
- *   - The result lives in the arena, and another `arenaPrintf` may reuse that buffer.
- *     Compute every name first and only then store the pointers (see
- *     `mangleUnitDecls`).
+ * @param L     loader whose arena owns the built string.
+ * @param u     the declaration's unit; a NULL or empty module name leaves `name` alone,
+ *              which is how the root file keeps its names.
+ * @param name  the source name.
+ * @return      the prefixed name, or `name` unchanged for the root module.
  */
-
 static const char *mangleName(Loader *L, ModUnit *u, const char *name) {
     if (!u->modName || !*u->modName) return name;
     return arenaPrintf(L->a, "%s$%s", u->modName, name);
 }
 
-/* Report whether `name` is declared by an `extern!` in this module.
+/**
+ * @brief Report whether `name` is declared by an `extern!` in this module.
  *
- * An `extern!` name is the symbol the linker has to find, so it must never be
- * prefixed: `extern!("libc") fn read(...)` declared as `sys$read` only produces
+ * An `extern!` name is the symbol the linker has to find, so it must never be prefixed:
+ * `extern!("libc") fn read(...)` declared as `sys$read` only produces
  * `undefined reference to sys$read`, reported by the linker and hard to trace back to
- * module renaming. Every libc primitive in the standard library's system module hit
- * this, which made the whole io test suite fail to link.
+ * module renaming. This is why every libc primitive in the standard library's system
+ * module keeps its own name.
  *
- * Params:
- *   src  - the module to search
- *   name - the function name to look for
- *
- * Returns:
- *   True when the module declares `name` as an external function, in which case the
- *   name is kept and its return ticket maps it to itself, so references inside the
- *   module need no rewrite either.
+ * @param src   the module to search.
+ * @param name  the function name to look for.
+ * @return      true when the module declares `name` as an external function; the name is
+ *              then kept and its return ticket maps it to itself, so references inside the
+ *              module need no rewrite either.
  */
-
 static bool externKeepsName(Module *src, const char *name) {
     for (size_t i = 0; i < src->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&src->funcs, i);
@@ -268,21 +313,17 @@ static bool externKeepsName(Module *src, const char *name) {
     }
     return false;
 }
-/* Look up the name a declaration received, in the unit that declares it.
+/**
+ * @brief Look up the name a declaration received, in the unit that declares it.
  *
- * Params:
- *   target - the unit whose rename table is consulted
- *   name   - the source name
+ * The lookup must use the *target* unit and not the caller: the root file has a NULL module
+ * name, so a lookup keyed on the caller would return early and leave every reference from
+ * the root file unrenamed.
  *
- * Returns:
- *   The generated name, or `name` when the unit has no rename for it.
- *
- * Notes:
- *   - The lookup must use the *target* unit and not the caller. The root file has a
- *     NULL module name, so a lookup keyed on the caller would return early and leave
- *     every reference from the root file unrenamed.
+ * @param target  the unit whose rename table is consulted.
+ * @param name    the source name.
+ * @return        the generated name, or `name` when the unit has no rename for it.
  */
-
 static const char *renOfTarget(ModUnit *target, const char *name) {
     if (!target || !target->modName || !*target->modName) return name;
     for (size_t i = 0; i < target->ren.len; i++) {
@@ -291,21 +332,17 @@ static const char *renOfTarget(ModUnit *target, const char *name) {
     }
     return name;
 }
-/* Look up `name` in a unit's own rename table.
+/**
+ * @brief Look up `name` in a unit's own rename table.
  *
- * Params:
- *   u    - the unit whose own declarations are searched
- *   name - the source name written in that unit
+ * Only names this unit itself declares are mapped. Mapping "any name any module exports"
+ * would silently rewrite a local reference to another module's declaration, which compiles
+ * and quietly means something else.
  *
- * Returns:
- *   The generated name, or NULL when this unit declares nothing of that name.
- *
- * Notes:
- *   - Only names this unit itself declares are mapped. Mapping "any name any module
- *     exports" would silently rewrite a local reference to another module's
- *     declaration, which compiles and quietly means something else.
+ * @param u     the unit whose own declarations are searched.
+ * @param name  the source name written in that unit.
+ * @return      the generated name, or NULL when this unit declares nothing of that name.
  */
-
 static const char *renLookup(ModUnit *u, const char *name) {
     g_renCalls++;
     if (!u || !u->modName || !*u->modName) { g_renEarly++; return name; }
@@ -317,16 +354,13 @@ static const char *renLookup(ModUnit *u, const char *name) {
     return NULL;
 }
 
-/* Find the unit already loaded from `file`.
+/**
+ * @brief Find the unit already loaded from `file`.
  *
- * Params:
- *   L    - loader
- *   file - the resolved path, which is the unique key of a unit
- *
- * Returns:
- *   The unit, or NULL when this file has not been loaded.
+ * @param L     loader.
+ * @param file  the resolved path, which is the unique key of a unit.
+ * @return      the unit, or NULL when this file has not been loaded.
  */
-
 static ModUnit *findUnit(Loader *L, const char *file) {
     for (size_t i = 0; i < L->units.len; i++) {
         ModUnit *u = *(ModUnit **)vecAt(&L->units, i);
@@ -335,23 +369,19 @@ static ModUnit *findUnit(Loader *L, const char *file) {
     return NULL;
 }
 
-/* Find the file a `use` names, searching the closest directory first.
+/**
+ * @brief Find the file a `use` names, searching the closest directory first.
  *
- * The search order is the project root, then the `-I` directories in the order they
- * were given, then the standard library directory. The first hit wins, so a project
- * library shadows a standard one of the same name.
+ * The search order is the project root, then the `-I` directories in the order they were
+ * given, then the standard library directory. The first hit wins, so a project library
+ * shadows a standard one of the same name.
  *
- * Params:
- *   L            - loader (supplies the root and search directories)
- *   modPath      - the module path as written, e.g. `std::io`
- *   importerFile - the file containing the `use`, named in the diagnostic
+ * @param L        loader, supplying the root and the search directories.
+ * @param modPath  the module path as written, e.g. `std::io`.
+ * @return         the resolved path, or NULL when nothing matched.
  *
- * Returns:
- *   The resolved path, or NULL after reporting an error. The diagnostic lists every
- *   path that was tried, because otherwise the user can only guess where the loader
- *   looked.
+ * Diagnostics belong to the caller `resolveModFile`, which lists every path that was tried.
  */
-
 static char *findModFile(Loader *L, const char *modPath) {
     char *rel  = pathToRel(L->a, modPath);
     char *cand = arenaPrintf(L->a, "%s.extc", rel);
@@ -371,21 +401,30 @@ static char *findModFile(Loader *L, const char *modPath) {
     return NULL;
 }
 
+/**
+ * @brief Resolve a module path to a file, reporting a diagnostic that lists every path tried.
+ *
+ * Before giving up it says what the reader most likely meant: the last segment may be a
+ * **name** of the module named by the path before it, and `use` resolves module paths only.
+ *
+ * @param L             loader.
+ * @param modPath       the module path as written.
+ * @param importerFile  the file containing the `use`, named in the diagnostic.
+ * @return              the resolved path; NULL after reporting the error (`L->errors` counts it).
+ */
 static char *resolveModFile(Loader *L, const char *modPath, const char *importerFile) {
     char *found = findModFile(L, modPath);
     if (found) return found;
 
-    /* Nothing there. Before giving up, say what the reader most likely meant: the last
-     * segment may be a **name** of the module named by the path before it, and `use`
-     * resolves module paths only. `use std::io::cin` is the shape this is about -- it
-     * reads like "bring `cin` in", which is what a brace list does, and the reader is
-     * owed that spelling rather than a list of directories that were tried. */
+    /* Nothing there. The last segment may be a **name** rather than a module:
+     * `use std::io::cin` reads like "bring `cin` in", which is what a brace list does,
+     * while `use` resolves module paths only -- the reader is owed that spelling, not a
+     * list of directories that were tried. */
     const char *lastSep = strrchr(modPath, ':');
     if (lastSep && lastSep > modPath) {
         /* `lastSep` is the **second** colon of the final `::`, so the name starts right
-         * after it and the parent path ends right before it. Taking one character too
-         * many reported ``in`` for `std::io::cin`, which reads like a different name
-         * altogether. */
+         * after it and the parent path ends right before it (one character too many
+         * reports ``in`` for `std::io::cin`, which reads like a different name). */
         size_t parentLen = (size_t)(lastSep - modPath - 1);   /* drop the trailing `::` */
         char *parent = (char *)arenaAlloc(L->a, parentLen + 1);
         memcpy(parent, modPath, parentLen);
@@ -418,17 +457,15 @@ static char *resolveModFile(Loader *L, const char *modPath, const char *importer
     return NULL;
 }
 
-/* Report whether `name` is a type this module declares itself.
+/**
+ * @brief Report whether `name` is a type this module declares itself.
  *
- * Params:
- *   self - the unit being rewritten
- *   name - the left-hand side of a `a::b` form
+ * When it is, `a::b` is an associated item of that type and not a module reference at all.
  *
- * Returns:
- *   True when the module declares a struct or enum of that name, in which case `a::b`
- *   is an associated item of that type and not a module reference at all.
+ * @param self  the unit being rewritten.
+ * @param name  the left-hand side of an `a::b` form.
+ * @return      true when the module declares a struct or enum of that name.
  */
-
 static bool isOwnType(ModUnit *self, const char *name) {
     for (size_t i = 0; i < self->mod.structs.len; i++)
         if (strcmp((*(StructDef **)vecAt(&self->mod.structs, i))->name, name) == 0) return true;
@@ -437,22 +474,18 @@ static bool isOwnType(ModUnit *self, const char *name) {
     return false;
 }
 
-/* Report whether a file for `modPath` exists anywhere on the search path.
+/**
+ * @brief Report whether a file for `modPath` exists anywhere on the search path.
  *
- * Params:
- *   L       - loader (supplies the search directories)
- *   modPath - the module path as written
+ * Silent on purpose, and the two cases it separates need different messages: a module that
+ * exists but was not imported is a missing `use`, while a name that matches no file at all
+ * is not a module. Reporting "not imported" for the second case sends the user looking in
+ * the wrong place.
  *
- * Returns:
- *   True when some search directory holds the file.
- *
- * Notes:
- *   - Silent on purpose, and the two cases it separates need different messages: a
- *     module that exists but was not imported is a missing `use`, while a name that
- *     matches no file at all is not a module. Reporting "not imported" for the second
- *     case sends the user looking in the wrong place.
+ * @param L        loader, supplying the search directories.
+ * @param modPath  the module path as written.
+ * @return         true when some search directory holds the file.
  */
-
 static bool moduleExists(Loader *L, const char *modPath) {
     char *cand = arenaPrintf(L->a, "%s.extc", pathToRel(L->a, modPath));
     char *p = arenaPrintf(L->a, "%s/%s", L->rootDir, cand);
@@ -468,22 +501,17 @@ static bool moduleExists(Loader *L, const char *modPath) {
 
 /* ------------------------------------------------------- declaration lookup */
 
-/* Find a function declared by this unit.
+/**
+ * @brief Find a function declared by this unit.
  *
- * Params:
- *   u    - the unit to search
- *   name - the source name the caller wrote
+ * The caller always passes a source name, while a declaration may already carry its
+ * generated name, so the rename table is consulted first.
  *
- * Returns:
- *   The declaration, or NULL when the unit declares nothing of that name.
- *
- * Notes:
- *   - The caller always passes a source name, while a declaration may already carry
- *     its generated name, so the rename table is consulted first.
+ * @param u     the unit to search.
+ * @param name  the source name the caller wrote.
+ * @return      the declaration, or NULL when the unit declares nothing of that name.
  */
-
 static FuncDef *unitFunc(ModUnit *u, const char *name) {
-    /* The caller passes a source name, the declaration may be renamed: try the table. */
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.funcs.len; i++) {
@@ -493,18 +521,16 @@ static FuncDef *unitFunc(ModUnit *u, const char *name) {
     return NULL;
 }
 
-/* Find a global declared by this unit.
+/**
+ * @brief Find a global declared by this unit.
  *
- * Params:
- *   u    - the unit to search
- *   name - the source name the caller wrote
+ * Same as `unitFunc`: a source name goes in, a possibly renamed declaration comes out.
  *
- * Returns:
- *   The declaration, or NULL when the unit declares nothing of that name.
+ * @param u     the unit to search.
+ * @param name  the source name the caller wrote.
+ * @return      the declaration, or NULL when the unit declares nothing of that name.
  */
-
 static GlobalDef *unitGlobal(ModUnit *u, const char *name) {
-    /* Same as `unitFunc`: a source name in, a possibly renamed declaration out. */
     const char *want = renLookup(u, name);
     if (!want) want = name;
     for (size_t i = 0; i < u->mod.globals.len; i++) {
@@ -514,24 +540,20 @@ static GlobalDef *unitGlobal(ModUnit *u, const char *name) {
     return NULL;
 }
 
-/* Find a struct declared by this unit, accepting either of its names.
+/**
+ * @brief Find a struct declared by this unit, accepting either of its names.
  *
  * `mergeUnit` renames declarations in place, and the root file's qualified names are
- * resolved after that merge, so by the time this runs the table already holds
- * `e1$color` and a search keyed on the source name `color` alone finds nothing:
- * `e1::color` is then rejected as "the module has nothing named color", which blames
- * a name that is nowhere near the real cause.
+ * resolved after that merge, so by the time this runs the table already holds `e1$color`
+ * and a search keyed on the source name `color` alone finds nothing: `e1::color` is then
+ * rejected as "the module has nothing named color", which blames a name that is nowhere
+ * near the real cause.
  *
- * Params:
- *   u    - the unit to search
- *   name - the source name the caller wrote
- *
- * Returns:
- *   The declaration, or NULL when the unit has no struct of either name.
+ * @param u     the unit to search.
+ * @param name  the source name the caller wrote.
+ * @return      the declaration, or NULL when the unit has no struct of either name.
  */
-
 static StructDef *unitStruct(ModUnit *u, const char *name) {
-    /* The caller passes a source name, the declaration may be renamed: try both. */
     g_usCalls++;
     const char *want = renLookup(u, name);
     if (!want) want = name;
@@ -543,21 +565,16 @@ static StructDef *unitStruct(ModUnit *u, const char *name) {
     return NULL;
 }
 
-/* Find a type declaration of this unit, accepting either of its names.
+/**
+ * @brief Find a type declaration of this unit, accepting either of its names.
  *
- * Params:
- *   u    - the unit to search
- *   name - the source name the caller wrote
+ * Renaming behaves exactly as in `unitStruct`.
  *
- * Returns:
- *   The declaration, or NULL when the unit has no enum of either name.
- *
- * Notes:
- *   - Renaming behaves exactly as in `unitStruct`.
+ * @param u     the unit to search.
+ * @param name  the source name the caller wrote.
+ * @return      the declaration, or NULL when the unit has no enum of either name.
  */
-
 static TypeDef *unitType(ModUnit *u, const char *name) {
-    /* Same as `unitStruct`. */
     g_utCalls++;
     const char *want = renLookup(u, name);
     if (!want) want = name;
@@ -569,27 +586,22 @@ static TypeDef *unitType(ModUnit *u, const char *name) {
     return NULL;
 }
 
-/* Find the module this unit imports under the full path `qname`.
+/**
+ * @brief Find the module this unit imports under the full path `qname`.
  *
- * Params:
- *   L     - loader
- *   self  - the unit whose `use` list is searched
- *   qname - a full module path as written, e.g. `std::sys::io`
+ * This has to exist next to the short-name lookup because a `UseDecl` carries two names:
+ * `path`, the full path the user wrote (`std::sys::io`), and `shortName`, its last segment
+ * (`io`). Matching on the short name alone means a reference written as
+ * `std::sys::io::STDOUT` asks with a full path that never matches, and the user is told
+ * `std` is not imported even though `use std::sys::io` is right there in the file. So one
+ * rule: a short name matches a short name, a full path matches a full path, and both forms
+ * must resolve to the same module.
  *
- * Returns:
- *   The imported unit, or NULL when no import names that path.
- *
- * Notes:
- *   - This has to exist next to the short-name lookup because a `UseDecl` carries two
- *     names: `path`, the full path the user wrote (`std::sys::io`), and `shortName`,
- *     its last segment (`io`). Matching on the short name alone means a reference
- *     written as `std::sys::io::STDOUT` asks with a full path that never matches, and
- *     the user is told `std` is not imported even though `use std::sys::io` is right
- *     there in the file.
- *   - So one rule: a short name matches a short name, a full path matches a full
- *     path, and both forms must resolve to the same module.
+ * @param L      loader.
+ * @param self   the unit whose `use` list is searched.
+ * @param qname  a full module path as written, e.g. `std::sys::io`.
+ * @return       the imported unit, or NULL when no import names that path.
  */
-
 static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
     for (size_t i = 0; i < self->mod.uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
@@ -599,18 +611,15 @@ static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
     return NULL;
 }
 
-/* Find the module this unit imports under the short name `shortName`.
+/**
+ * @brief Find the module this unit imports under the short name `shortName`.
  *
- * Params:
- *   L         - loader
- *   self      - the unit whose `use` list is searched
- *   shortName - the last segment of an imported path, e.g. `io`
- *
- * Returns:
- *   The imported unit, or NULL when nothing is imported under that name, which is
- *   what makes "modules must be imported explicitly" enforceable.
+ * @param L          loader.
+ * @param self       the unit whose `use` list is searched.
+ * @param shortName  the last segment of an imported path, e.g. `io`.
+ * @return           the imported unit, or NULL when nothing is imported under that name,
+ *                   which is what makes "modules must be imported explicitly" enforceable.
  */
-
 static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
     for (size_t i = 0; i < self->mod.uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
@@ -627,33 +636,13 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s);
 static void rwExpr(Loader *L, ModUnit *self, Expr *e);
 static void rwExprName(ModUnit *self, Expr *e);
 
-/* Rewrite a type written in a declaration: `io::File` becomes the name of the
- * declaration in the merged module, and visibility is checked on the way.
+/**
+ * @brief Rewrite one type **name** (a plain string, not a Type node) into the flat module's naming.
  *
- * Params:
- *   L    - loader
- *   self - the unit the type was written in
- *   t    - the type to rewrite in place
- *
- * Notes:
- *   - A bare name that this module itself declares is renamed too. Left alone, it
- *     would reach the checker as the source name `pair` while the flat table holds
- *     two structs of that name, and the checker would have to pick one through the
- *     alias table - silently binding whichever module registered first, which
- *     compiles and has the wrong type.
- *   - A `use` suggestion in a diagnostic may only name a module: the remainder of a
- *     path can contain `::` itself (`alpha::pair` inside `lib::box<alpha::pair>`), so
- *     the first segment after the module name is what gets printed. Suggesting
- *     `use alpha::pair` tells the user to import a module that does not exist.
- */
-
-/* Rewrite one type **name** (a plain string, not a Type node) into the flat module's naming.
- *
- * `rwType` did this inline for `TY_UNRESOLVED` nodes; an `impl` block's target is a string, so
+ * `rwType` does this inline for `TY_UNRESOLVED` nodes; an `impl` block's target is a string, so
  * it needs exactly the same treatment -- including the **qualified** form (`io::istream` ->
  * `io$istream`), which the *loader* rewrites and which therefore never reaches the checker in
- * its written shape. Found by attaching `>>` to `io::istream` from `stl/stringio.extc`:
- * without this, the checker was asked to resolve `io::istream` and answered "unknown type".
+ * its written shape.
  *
  * Two rules, and the reason the bare one exists at all:
  *   - a bare name is renamed only when **this unit declares it** (`pair` -> `liba$pair`).
@@ -664,6 +653,12 @@ static void rwExprName(ModUnit *self, Expr *e);
  *     module declares itself is rewritten;
  *   - a qualified name resolves through this unit's imports, and both a `@private` target and
  *     a missing one are errors here rather than later.
+ *
+ * @param L     loader whose arena owns the result.
+ * @param self  the unit the name was written in.
+ * @param name  the type name; NULL is returned unchanged.
+ * @return      the rewritten name, or `name` when it is not a declaration of this unit or of
+ *              an imported module.
  */
 static const char *rwTypeName(Loader *L, ModUnit *self, const char *name) {
     if (!name) return name;
@@ -677,14 +672,14 @@ static const char *rwTypeName(Loader *L, ModUnit *self, const char *name) {
     /* A `use` suggestion may only name a module, and `rest` can still contain `::`:
      * `alpha::pair` inside `lib::box<alpha::pair>` leaves `rest` as `pair`, but a
      * three-segment path would fold `b::c` into the suggestion. A message reading
-     * "add `use alpha::pair`" tells the user to import a module that does not exist. */
+     * "add `use alpha::pair`" would name a module that does not exist. */
     const char *restSep = strstr(rest, "::");
     const char *restTop = restSep ? arenaStrndup(L->a, rest, (size_t)(restSep - rest)) : rest;
     ModUnit *target = importedAs(L, self, shortName);
     if (!target) {
-        /* 说清楚**规则**，并且在能找到文件时给出**真能用的那条 `use`** —— 源码里的写法
-         * （`sys::domain`）只是它被**叫**的名字，不是导入路径（实测：stdlib 在 `std/` 下，
-         * 「add `use sys::domain`」照做会失败）。 */
+        /* State the **rule**, and give the **`use` line that really works** when a file can
+         * be found: the spelling in the source (`sys::domain`) is only the name it is
+         * **called** by, not the import path. */
         const char *sug1 = suggestImportPath(L, shortName);
         const char *msg1 = sug1
             ? arenaPrintf(L->a, "`%s` is not imported here -- add `use %s` and call it `%s::Name`",
@@ -715,16 +710,22 @@ static const char *rwTypeName(Loader *L, ModUnit *self, const char *name) {
     return renOfTarget(target, rest);
 }
 
+/**
+ * @brief Rewrite the qualified names inside a type, in place: `io::File` becomes the name of
+ * the declaration in the merged module.
+ *
+ * **Every** composite type keeps its element/pointee in `inner` -- `[N]T`, `ref T`, `ptr T`,
+ * `dyn T` and (for some spellings) `slice T` -- so the recursion must walk `inner`: `TY_REF`
+ * plus `targs` alone leaves `[4]mod::Type` unrewritten, and the name keeps its `::` spelling
+ * while the type table holds only the mangled `mod$Type`, which reports "unknown type
+ * `mod::Type`" for a spelling that works in every other position.
+ *
+ * @param L     loader.
+ * @param self  the unit the type was written in.
+ * @param t     the type, rewritten in place; NULL returns immediately.
+ */
 static void rwType(Loader *L, ModUnit *self, Type *t) {
     if (!t) return;
-    /* **Every** composite type keeps its element/pointee in `inner` -- `[N]T`, `ref T`,
-     * `ptr T`, `dyn T` and (for some spellings) `slice T`. Recursing only into
-     * `TY_REF` plus `targs` left `[4]mod::Type` unrewritten: the name kept its `::`
-     * spelling, the type table had only the mangled `mod$Type`, and the user got
-     * "unknown type `mod::Type`" for a spelling that works in every other position
-     * (`slice<mod::Type>`, `?mod::Type` and `ref mod::Type` all go through `targs`/the
-     * `TY_REF` arm and did work). Found by writing `std::json`, whose natural API is
-     * `var pool: [256]json::node`. */
     if (t->inner) rwType(L, self, t->inner);
     if (t->kind == TY_FN) {
         for (size_t i = 0; i < t->params.len; i++) rwType(L, self, *(Type **)vecAt(&t->params, i));
@@ -732,43 +733,37 @@ static void rwType(Loader *L, ModUnit *self, Type *t) {
     }
     for (size_t i = 0; i < t->targs.len; i++) rwType(L, self, *(Type **)vecAt(&t->targs, i));
     if (t->kind != TY_UNRESOLVED || !t->name) return;
-    /* The name rules live in `rwTypeName`: this node is the one caller that carries a Type
-     * instead of a string. */
+    /* `rwTypeName` holds the name rules; this node is the one caller with a Type. */
     t->name = rwTypeName(L, self, t->name);
 }
 
 
-/* Resolve a type name written in expression position: `mod::Type { ... }` and
+/**
+ * @brief Resolve a type name written in expression position: `mod::Type { ... }` and
  * `mod::Type.variant`.
  *
- * The single test is whether `rest` names a *type* of the module `short`: those two
- * forms are the only way to write a type that another module declares under a name
- * that is also declared here, because the bare name is ambiguous and the loader
- * therefore records no return ticket for it. Without this pass such a type has no
- * writable spelling, and a struct literal or a variant of it cannot be named at all.
- * Both symptoms have been seen: `expected \`{\`` because the parser does not accept a
- * qualified name in a literal, and "module `e1` has nothing named `color`" because
- * the type name was being looked up as a function or a constant.
+ * The single test is whether `rest` names a *type* of the module `short`: those two forms
+ * are the only way to write a type that another module declares under a name that is also
+ * declared here, because the bare name is ambiguous and the loader therefore records no
+ * return ticket for it. Without this pass such a type has no writable spelling, and a struct
+ * literal or a variant of it cannot be named at all: the parser does not accept a qualified
+ * name in a literal, and a lookup that treats the name as a function or a constant reports
+ * "module `e1` has nothing named `color`".
  *
- * Params:
- *   L     - loader
- *   self  - the unit the expression was written in
- *   qname - the qualified name to resolve
- *   out   - receives the resolved declaration name
+ * A qualified name that points at the current module is left alone. The prelude itself
+ * contains `pcg32::withStream(...)` where `pcg32` is a struct of that same file, and the
+ * prelude is one module: rewriting it to `prelude$pcg32` produces a name the type table never
+ * saw, because the type table snapshots the prelude before module loading starts, and the
+ * call is then reported as undefined.
  *
- * Returns:
- *   True when `qname` names a type of an imported module and `out` was filled. False
- *   means "not a qualified type name", so the caller leaves the expression to the
- *   ordinary path.
- *
- * Notes:
- *   - A qualified name that points at the current module is left alone. The prelude
- *     itself contains `pcg32::withStream(...)` where `pcg32` is a struct of that same
- *     file, and the prelude is one module: rewriting it to `prelude$pcg32` produces a
- *     name the type table never saw, because the type table snapshots the prelude
- *     before module loading starts, and the call is then reported as undefined.
+ * @param L      loader.
+ * @param self   the unit the expression was written in.
+ * @param qname  the qualified name to resolve.
+ * @param out    receives the resolved declaration name.
+ * @return       true when `qname` names a type of an imported module and `out` was filled;
+ *               false means "not a qualified type name", so the caller leaves the expression
+ *               to the ordinary path.
  */
-
 static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, const char **out) {
     if (!qname || !out) return false;
     const char *sep = strstr(qname, "::");
@@ -778,11 +773,11 @@ static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, con
     if (strstr(rest, "::")) return false;          /* `a::b::c` is not supported here */
     ModUnit *target = importedAs(L, self, shortName);
     if (!target) return false;
-    /* A qualified name that points at this very unit is never rewritten (see the
-     * block above): the prelude writes `pcg32::withStream(...)` for a struct of its
-     * own file, and `pcg32` is registered before module loading, so a rewritten
-     * `prelude$pcg32` names nothing. `rwQualified` guards the same case by letting a
-     * name that equals this file's own name through. */
+    /* A qualified name that points at this very unit is never rewritten (see above): the
+     * prelude writes `pcg32::withStream(...)` for a struct of its own file, and `pcg32` is
+     * registered before module loading, so a rewritten `prelude$pcg32` names nothing.
+     * `rwQualified` guards the same case by letting a name that equals this file's own
+     * name through. */
     if (target == self) return false;              /* pointing at itself: leave it alone */
     StructDef *sd = unitStruct(target, rest);
     TypeDef   *td = sd ? NULL : unitType(target, rest);
@@ -799,35 +794,23 @@ static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, con
     return true;
 }
 
-/* Resolve the module part of a deep qualified name such as `std::sys::io::STDOUT`.
+/**
+ * @brief Resolve the module part of a deep qualified name such as `std::sys::io::STDOUT`.
  *
- * The parser splits that into the prefix `std::sys::io` and the symbol `STDOUT` and
- * passes the prefix here, so the only question left is whether that prefix is
- * imported.
+ * The parser splits that into the prefix `std::sys::io` and the symbol `STDOUT` and passes
+ * the prefix here, so the only question left is whether that prefix is imported. The split
+ * is positional -- every segment but the last is a module and the last one is the symbol --
+ * so this side has exactly one job: match a full path against the full path recorded by a
+ * `use`.
  *
- * The parser can do the split on its own, and it does not need a symbol table to do
- * it, because the split is positional: every segment but the last is a module and the
- * last one is the symbol. So this side has exactly one job - match a full path against
- * the full path recorded by a `use`.
- *
- * Params:
- *   L     - loader
- *   self  - the unit the name was written in
- *   qname - the module prefix, e.g. `std::sys::io`
- *
- * Returns:
- *   The imported unit, or NULL when the prefix is not imported.
+ * @param L      loader.
+ * @param self   the unit the name was written in.
+ * @param qname  the module prefix, e.g. `std::sys::io`.
+ * @return       the imported unit, or NULL when the prefix is not imported.
  */
-
 static ModUnit *rwDeepQName(Loader *L, ModUnit *self, const char *qname) {
-    /* The longest candidate comes from cutting at the separators, and the prefix the
-     * parser handed over is already a whole number of segments, so complete names
-     * need no repair. A candidate is always cut at a `::`, which keeps its tail a
-     * whole segment instead of half of one. */
-    /* Full path first: `std::sys::io` is matched against `use std::sys::io` written
-     * the same way. The short-name form (`io::read`) is covered by `importedAs`. The
-     * order matters, because a short name can collide with another module's while a
-     * full path cannot. */
+    /* Full path first: a short name can collide with another module's while a full path
+     * cannot. The short-name form (`io::read`) is covered by `importedAs`. */
     ModUnit *u = importedAsPath(L, self, qname);
     if (!u) u = importedAs(L, self, qname);
     /* Debug switch `EXTC_DBG_QN=1` reports a deep qualified name that matched no
@@ -838,18 +821,16 @@ static ModUnit *rwDeepQName(Loader *L, ModUnit *self, const char *qname) {
     return u;
 }
 
-/* Resolve `a::b` in expression position, where the parser has built an EX_ASSOC node.
+/**
+ * @brief Resolve `a::b` in expression position, where the parser has built an EX_ASSOC node.
  *
- * Params:
- *   L    - loader
- *   self - the unit the expression was written in
- *   e    - the expression, rewritten in place, possibly into another kind
+ * The node is read in full before anything is written back: rewriting changes the kind and
+ * therefore the union, so `args` and the flags are saved first.
  *
- * Notes:
- *   - The node is read in full before anything is written back: rewriting changes the
- *     kind and therefore the union, so `args` and the flags are saved first.
+ * @param L     loader.
+ * @param self  the unit the expression was written in.
+ * @param e     the expression, rewritten in place, possibly into another kind.
  */
-
 static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     const char *modPrefix = e->u.assoc.modPrefix;
     const char *symName   = e->u.assoc.name;
@@ -872,27 +853,24 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
             /* The resolved unit must be bound to `target` directly. The
              * `importedAs(tn)` below matches short names only, and `tn` here is the
              * full path `std::sys::io`, so it would find nothing and report the module
-             * as not imported one line after it was found. */
+             * as not imported right after finding it. */
             e->u.assoc.typeName = modPrefix;
         } else if (rwQualifiedTypeName(L, self, modPrefix, &mangledType) && mangledType) {
             /* `fs::ofstream::new(...)`: the middle of the path is a **type**, not a
              * module, so the deep-path lookup above found nothing. The type name is what
              * the checker needs; the symbol after it (`new`) is resolved from there.
-             * Without this the user got "`fs::ofstream` is not imported here -- add
+             * Without this the error is "`fs::ofstream` is not imported here -- add
              * `use fs::ofstream`", which is about a module that does not exist. */
             e->u.assoc.typeName = mangledType;
             return;
         } else {
-            /* Report it with a full path and an instruction the user can follow. A
-             * first version printed the segment before the first `::`, producing
-             * "`std` is not imported -- add `use std`", which tells the user to import
-             * a module that does not exist (`std` is only a path prefix). Calling
-             * `resolveModFile` to separate "does not exist" from "not imported" is
-             * wrong here as well: it prints its own message when it fails, so the user
-             * would get two errors. Just say "not imported" and name the `use` to add;
-             * if the file really is missing, the loader says so once the `use` exists
-             * and lists every path it searched. */
-            /* 同上一处：给真能用的路径，找不到就别瞎猜。 */
+            /* Report the full path with an instruction the user can follow, and name only
+             * a module: `std` alone is just a path prefix, so "add `use std`" would point
+             * at something that does not exist. `resolveModFile` is not called to tell
+             * "does not exist" from "not imported": it prints its own message when it
+             * fails, which would give two errors. Just say "not imported" and name the
+             * `use` to add; a file that really is missing is reported once that `use`
+             * exists, with every path that was tried. */
             const char *sug2 = suggestImportPath(L, modPrefix);
             const char *note = "Modules are imported explicitly (semantic import, not a textual include).";
             const char *msg2 = sug2
@@ -1023,12 +1001,11 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
         Expr *id  = exprNew(L->a, EX_IDENT, e->line);
         id->u.ident.name = renOfTarget(target, nm);
         /* The name is **finished**: it is the target module's declaration, and the
-         * local-name rewrite must not touch it again. Without this flag the callee was
+         * local-name rewrite must not touch it again. Without this flag the callee is
          * looked up in the *calling* module's rename table one pass later -- and when the
          * calling module declares a function of the same name (`std::proc::exit` wrapping
-         * `std::sys::process::exit`), the call was rewritten to that local name, i.e. to
-         * **itself**: unbounded recursion at run time, with no diagnostic at all
-         * (PLAN.md section 0.4, `#56`). */
+         * `std::sys::process::exit`), the call is rewritten to that local name, i.e. to
+         * **itself**: unbounded recursion at run time, with no diagnostic at all. */
         anSetQualified(id, true);
         e->kind = EX_CALL;
         e->u.call.callee = id;
@@ -1052,8 +1029,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
      * the bare, renamed type name - because that is the shape the checker's variant path is
      * written against. Without this branch the value lookup above finds neither a function
      * nor a `let`/`var` and reports the type as a missing export: `module `io` has nothing
-     * named `ioError``, read from the standard library, where the name is declared three
-     * lines above the use. */
+     * named `ioError``. */
     if (!f && !g) {
         TypeDef *td = unitType(target, nm);
         if (td) {
@@ -1080,26 +1056,21 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     L->errors++;
 }
 
-/* Rewrite the qualified names inside an expression.
+/**
+ * @brief Rewrite the qualified names inside an expression.
  *
- * Params:
- *   L    - loader
- *   self - the unit the expression was written in
- *   e    - the expression, rewritten in place
+ * An expression carries names of its own, not only children, so every type name is
+ * rewritten here, including the one in `EX_CONV` (`mod::T(x)`). Missing the literal's own
+ * type name is the worst hole in this pass: with two modules declaring `pair`, the name
+ * `liba::pair { ... }` reaches the checker unchanged, the checker looks a bare name up and
+ * finds whichever struct was registered first, and the value is silently bound to the wrong
+ * type - it compiles without a word when the field names line up. The error names a type
+ * that is not in the source, `struct \`alpha$pair\` has no field \`s\``.
  *
- * Notes:
- *   - An expression carries names of its own, not only children, and missing them was
- *     the worst hole in this pass: the initializers of a struct literal were visited
- *     while the literal's own type name was not. With two modules declaring `pair`,
- *     the name `liba::pair { ... }` reached the checker unchanged, the checker looked
- *     a bare name up and found whichever struct was registered first, and the value
- *     was silently bound to the wrong type - it compiled without a word when the
- *     field names happened to line up. The symptom was
- *     `struct \`alpha$pair\` has no field \`s\``, naming a type that is not in the
- *     source. Every type name is therefore rewritten here, including the one in
- *     `EX_CONV` (`mod::T(x)`).
+ * @param L     loader.
+ * @param self  the unit the expression was written in.
+ * @param e     the expression, rewritten in place.
  */
-
 static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     g_exN++;
     if (!e) return;
@@ -1215,14 +1186,13 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
     }
 }
 
-/* Rewrite the qualified names inside a statement and everything nested in it.
+/**
+ * @brief Rewrite the qualified names inside a statement and everything nested in it.
  *
- * Params:
- *   L    - loader
- *   self - the unit the statement was written in
- *   s    - the statement, rewritten in place
+ * @param L     loader.
+ * @param self  the unit the statement was written in.
+ * @param s     the statement, rewritten in place.
  */
-
 static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     g_stN++;
     if (!s) return;
@@ -1262,40 +1232,31 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
 
 /* ------------------------------------------------------------------ merging */
 
-/* Rename the declarations of a unit and record a return ticket for each of them.
+/**
+ * @brief Rename the declarations of a unit and record a return ticket for each of them.
  *
- * The root module is left completely alone. For every other unit, each declaration
- * name is prefixed with the module name and entered in `u->ren`, so that a reference
- * written inside the module can be mapped to the name that was actually emitted.
- * `extern!` declarations keep their names, because their names are linker symbols.
+ * The root module is left completely alone. For every other unit, each declaration name is
+ * prefixed with the module name and entered in `u->ren`, so that a reference written inside
+ * the module can be mapped to the name that was actually emitted. `extern!` declarations
+ * keep their names, because their names are linker symbols.
  *
- * Params:
- *   L - loader whose arena owns the generated names
- *   u - the unit to rename in place
+ * Every name is computed and its rename recorded in the same pass. `mangleName` returns a
+ * pointer into an arena buffer that a later allocation may reuse, so computing and storing
+ * one name at a time would overwrite the previous one.
  *
- * Notes:
- *   - Every name is computed before any of them is stored. `mangleName` returns a
- *     pointer into an arena buffer that a later allocation may reuse, so computing
- *     and storing one name at a time overwrites the previous one. The symptom was
- *     ugly and silent: the alias table printed `pair=>make`, meaning the target of
- *     `pair` had been overwritten by the name computed for `make`, so the bare name
- *     `pair` stopped resolving and the error was `unknown type pair` with the real
- *     cause in memory reuse, not in any lookup.
- *   - `srcName` is filled here, while `d->name` is still the source name. Filling it
- *     in `mergeUnit` would build `alpha::alpha$pair`, because by then the name has
- *     already been renamed.
+ * `srcName` is filled here, while `d->name` is still the source name. Filling it in
+ * `mergeUnit` would build `alpha::alpha$pair`, because by then the name is already renamed.
+ *
+ * @param L  loader whose arena owns the generated names.
+ * @param u  the unit to rename in place.
  */
-
 static void mangleUnitDecls(Loader *L, ModUnit *u) {
     if (!u->modName || !*u->modName) return;              /* the root module: never renamed */
     Module *src = &u->mod;
     /* One pass per list: compute a declaration's new name and record the rename **right away**.
-     *
-     * There is no cap on the number of declarations here: `arenaAlloc` is a pure bump allocator
-     * (nothing is ever recycled) and `arenaPrintf` allocates `n + 1` fresh bytes per call, so every
-     * name stays valid for the life of the process. Computing a name and storing it in the same pass
-     * is what keeps the two from disagreeing, so no limit has to be kept in step with the number of
-     * declarations a module renames. */
+     * `arenaPrintf` allocates fresh bytes per call and the arena never recycles, so every name
+     * stays valid for the life of the process and no cap has to be kept in step with the number
+     * of declarations a module renames. */
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *d = *(StructDef **)vecAt(&src->structs, i);
         d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
@@ -1345,41 +1306,16 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
     }
 }
 
-/* Rewrite a bare name written inside a module to the name that module declares.
+/**
+ * @brief Report whether this unit exports this name, publicly.
  *
- * A bare name is what a module writes for its own declarations: `color` in
- * `color.green`, `twice` in a call from `shout`. Once the declarations are renamed,
- * a bare name points at nothing: the error is
- * `call to undefined function \`twice\`` while `greet$twice` is right there in the
- * table.
+ * `@private` is checked here rather than left to the checker, because the rewrite happens
+ * before any visibility rule runs: opening a module must not become a way to reach a
+ * private name.
  *
- * Only names this unit declares itself are rewritten, never "any name some module
- * exports". With the wider rule, a bare name that another module also declares would
- * be quietly rewritten to that other declaration, so the program compiles and means
- * something else - far worse than a rejection.
- *
- * A bare name that this unit declares means this unit's declaration, including a
- * `@private` one: visibility is checked separately, at the point where a qualified
- * reference is required.
- *
- * Params:
- *   self - the unit whose rename table is consulted
- *   e    - an identifier expression, updated in place
- */
-
-/* Does this unit export this name, publicly?
- *
- * Params:
- *   u    - the unit
- *   name - the name as written in the source
- *
- * Returns:
- *   True when a top-level declaration of that name exists and is not `@private`.
- *
- * Notes:
- *   - `@private` is checked here rather than left to the checker, because the rewrite
- *     happens before any visibility rule runs: opening a module must not become a way
- *     to reach a private name.
+ * @param u     the unit.
+ * @param flat  the name as the declarations of the unit carry it.
+ * @return      true when a top-level declaration of that name exists and is not `@private`.
  */
 static bool unitExports(ModUnit *u, const char *flat) {
     if (!u || !flat) return false;
@@ -1406,15 +1342,15 @@ static bool unitExports(ModUnit *u, const char *flat) {
     return false;
 }
 
-/* Does this `use` list this name (`use mod::{a, b}`)?
+/**
+ * @brief Report whether this `use` lists this name (`use mod::{a, b}`).
  *
- * Params:
- *   u    - the use declaration
- *   name - the bare name being resolved
+ * A wildcard `use mod::*` answers false here: it is handled by its own flag, so that the
+ * two forms stay distinguishable.
  *
- * Returns:
- *   True when the name is one of the listed ones. A wildcard `use mod::*` answers false
- *   here: it is handled by its own flag, so that the two forms stay distinguishable.
+ * @param u     the use declaration.
+ * @param name  the bare name being resolved.
+ * @return      true when the name is one of the listed ones.
  */
 static bool useListHas(UseDecl *u, const char *name) {
     for (size_t i = 0; i < u->names.len; i++)
@@ -1422,38 +1358,41 @@ static bool useListHas(UseDecl *u, const char *name) {
     return false;
 }
 
-/* Does this unit declare this name at its top level?
- *
- * Params:
- *   u    - the unit
- *   name - the name as written
- *
- * Returns:
- *   True when a declaration of that name exists in the unit.
- *
- * Notes:
- *   - For the **root file and the prelude** only, whose declarations are never renamed.
- *     A loaded module is asked through its rename table instead.
- */
 /* Memo for the ownership test below. `unitOwns` is asked 102,383,988 times at N=3200 (call-site
  * histogram of strcmp/strstr via LD_PRELOAD + addr2line) and each call scans all four declaration
  * lists of the unit -- for the root unit that is the whole program, so the rewrite walk is O(N^2)
  * (the load phase x5.8 per doubling, and the source of the 63% of instructions inside strcmp).
  *
- * The answer depends on the four list lengths: they grow while a unit is being merged (that is
- * what made an unguarded memo change the generated C earlier). Every entry therefore records all
- * four and is re-scanned the moment one of them moves, and a miss -- empty slot, evicted entry, or
- * a full probe window -- falls back to the original scan. Fixed size: nothing to allocate. */
+ * The answer depends on the four list lengths: they grow while a unit is being merged, and an
+ * unguarded memo changes the generated C. Every entry therefore records all four and is re-scanned
+ * the moment one of them moves, and a miss -- empty slot, evicted entry, or a full probe window --
+ * falls back to the original scan. Fixed size: nothing to allocate. */
 typedef struct {
     const ModUnit *u; const char *name; size_t n0, n1, n2, n3; char val; int filled, done;
 } OwnMemo;
 static OwnMemo g_ownMemo[1 << 16];
 
+/**
+ * @brief Hash a unit/name pair into the probe window of the ownership memo.
+ *
+ * @param u     the unit.
+ * @param name  the name to hash.
+ * @return      a slot index in the fixed memo table.
+ */
 static size_t ownHash(const ModUnit *u, const char *name) {
     size_t h = (size_t)(uintptr_t)u * 1000003u + 1469598103934665603u;
     for (const char *q = name; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211u; }
     return h & 0xFFFFu;
 }
+/**
+ * @brief Look up, or claim, the memo entry for a unit/name pair.
+ *
+ * @param u       the unit.
+ * @param name    the name.
+ * @param create  non-zero to claim an empty slot for this pair.
+ * @return        the entry, or NULL when the pair is absent (no `create`) or the probe
+ *                window is full.
+ */
 static OwnMemo *ownMemoFind(const ModUnit *u, const char *name, int create) {
     size_t h = ownHash(u, name);
     for (int step = 0; step < 8; step++, h = (h + 1) & 0xFFFFu) {
@@ -1469,6 +1408,17 @@ static OwnMemo *ownMemoFind(const ModUnit *u, const char *name, int create) {
     return NULL;
 }
 
+/**
+ * @brief Report whether this unit declares this name at its top level.
+ *
+ * For the **root file and the prelude** only, whose declarations are never renamed; a loaded
+ * module is asked through its rename table instead. The answer is memoized, and a memo entry
+ * is re-scanned the moment one of the four declaration-list lengths moves.
+ *
+ * @param u     the unit.
+ * @param name  the name as written.
+ * @return      true when a declaration of that name exists in the unit.
+ */
 static bool unitOwns(ModUnit *u, const char *name) {
     Module *m = &u->mod;
     OwnMemo *memo = ownMemoFind(u, name, 1);
@@ -1492,22 +1442,19 @@ static bool unitOwns(ModUnit *u, const char *name) {
     return false;
 }
 
-/* Resolve a bare name through this unit's `use mod::*` imports.
+/**
+ * @brief Resolve a bare name through this unit's `use mod::*` imports.
  *
- * Params:
- *   self - the unit the name was written in
- *   name - the bare name
+ * Only `use mod::*` is consulted: a plain `use mod` deliberately does not put anything in
+ * scope, and that rule is not weakened here. The first match wins among the opened modules
+ * only when the flat names are equal, which cannot happen for two different modules.
  *
- * Returns:
- *   The flat name of the exported declaration, or NULL when no opened module has it.
- *   An error is reported (and NULL returned) when two opened modules both have it:
- *   picking one silently would compile and mean the other.
- *
- * Notes:
- *   - Only `use mod::*` is consulted. A plain `use mod` deliberately does not put
- *     anything in scope, and that rule is not weakened here.
- *   - The first match wins among the opened modules only when the flat names are
- *     equal, which cannot happen for two different modules.
+ * @param self  the unit the name was written in.
+ * @param name  the bare name.
+ * @param line  source line, blamed by an error about `@private` or about two opened modules.
+ * @return      the flat name of the exported declaration, or NULL when no opened module has
+ *              it. An error is reported (and NULL returned) when two opened modules both
+ *              have it: picking one silently would compile and mean the other.
  */
 static const char *openLookup(ModUnit *self, const char *name, int line) {
     const char *found = NULL;
@@ -1546,6 +1493,26 @@ static const char *openLookup(ModUnit *self, const char *name, int line) {
     return found;
 }
 
+/**
+ * @brief Rewrite a bare name written inside a module to the name that module declares.
+ *
+ * A bare name is what a module writes for its own declarations: `color` in `color.green`,
+ * `twice` in a call from `shout`. Once the declarations are renamed, a bare name points at
+ * nothing: the error is `call to undefined function \`twice\`` while `greet$twice` is right
+ * there in the table.
+ *
+ * Only names this unit declares itself are rewritten, never "any name some module exports".
+ * With the wider rule, a bare name that another module also declares would be quietly
+ * rewritten to that other declaration, so the program compiles and means something else -
+ * far worse than a rejection.
+ *
+ * A bare name that this unit declares means this unit's declaration, including a `@private`
+ * one: visibility is checked separately, at the point where a qualified reference is
+ * required.
+ *
+ * @param self  the unit whose rename table is consulted.
+ * @param e     an identifier expression, updated in place.
+ */
 static void rwExprName(ModUnit *self, Expr *e) {
     if (!e || e->kind != EX_IDENT) return;
     const char *nm = e->u.ident.name;
@@ -1564,8 +1531,8 @@ static void rwExprName(ModUnit *self, Expr *e) {
      * The two cases cannot share one lookup: a loaded module's declarations are already
      * renamed, so its own names are found in the rename table (`cout` -> `io$cout`),
      * while the root file and the prelude are never renamed and their names are searched
-     * as written. Reading `renLookup` alone was wrong for the root: it answers the name
-     * itself when the unit has no module name, which looks exactly like a match. */
+     * as written. `renLookup` alone is wrong for the root: it answers the name itself when
+     * the unit has no module name, which looks exactly like a match. */
     const char *own = NULL;
     if (self && self->modName && *self->modName) own = nm ? renLookup(self, nm) : NULL;
     else if (self && nm) own = unitOwns(self, nm) ? nm : NULL;
@@ -1577,29 +1544,17 @@ static void rwExprName(ModUnit *self, Expr *e) {
     if (open) { e->u.ident.srcName = nm; e->u.ident.name = open; anSetQualified(e, true); }
 }
 
-/* Merge one unit's declarations into the program module.
- *
- * Declarations are renamed first, then every type annotation, expression, and
- * statement in them has its qualified names resolved, and finally the declarations are
- * appended to the merged module. Units are merged in topological order, so a
- * dependency is already present when the declarations that use it arrive.
- *
- * Params:
- *   L - loader owning the merged module
- *   u - the unit to merge
- *
- * Notes:
- *   - The declarations are rewritten while they still live in `u->mod`, before they
- *     are appended, so the rewrite passes see the unit's own name table.
- *   - Merging mutates the declarations in place; they are the same objects afterwards.
- */
-
-/* Rewrite one method of a unit into the flat module's naming.
+/**
+ * @brief Rewrite one method of a unit into the flat module's naming.
  *
  * Factored out because methods arrive two ways: inside a type's body, and in an `impl` block,
- * which is a declaration of its own until the checker attaches it (so it is not reachable from
- * any struct yet when a unit is merged). Both need the same three rewrites, and a second copy
- * would drift.
+ * which is a declaration of its own until the checker attaches it (so it is not reachable
+ * from any struct yet when a unit is merged). Both need the same three rewrites, and a
+ * second copy would drift.
+ *
+ * @param L  loader.
+ * @param u  the unit the method was written in.
+ * @param m  the method, rewritten in place.
  */
 static void rwUnitMethod(Loader *L, ModUnit *u, FuncDef *m) {
     m->modName = u->modName;
@@ -1610,6 +1565,21 @@ static void rwUnitMethod(Loader *L, ModUnit *u, FuncDef *m) {
     rwStmt(L, u, m->body);
 }
 
+/**
+ * @brief Merge one unit's declarations into the program module.
+ *
+ * Declarations are renamed first, then every type annotation, expression, and statement in
+ * them has its qualified names resolved, and finally the declarations are appended to the
+ * merged module. Units are merged in topological order, so a dependency is already present
+ * when the declarations that use it arrive.
+ *
+ * The declarations are rewritten while they still live in `u->mod`, before they are
+ * appended, so the rewrite passes see the unit's own name table. Merging mutates them in
+ * place: they are the same objects afterwards.
+ *
+ * @param L  loader owning the merged module.
+ * @param u  the unit to merge.
+ */
 static void mergeUnit(Loader *L, ModUnit *u) {
     Module *src = &u->mod;
     mangleUnitDecls(L, u);
@@ -1687,30 +1657,6 @@ static void mergeUnit(Loader *L, ModUnit *u) {
 
 /* --------------------------------------------------------- recursive loading */
 
-/* Load a module and everything it imports, or return the unit already loaded.
- *
- * Params:
- *   L            - loader
- *   modPath      - the module path as written in the `use`
- *   importerFile - file containing that `use`, which resolves the path and is blamed
- *   line         - line of the `use`, blamed by the cycle diagnostic
- *
- * Returns:
- *   The unit for this module, or NULL when its file could not be resolved or read; all
- *   diagnostics are already reported in that case.
- *
- * Notes:
- *   - The unit is registered before its source is parsed, and its state says
- *     "loading". A `use` that reaches a module in that state is a cycle, which is
- *     refused because each module's types are needed to check the other. The message
- *     suggests moving the shared part into a third module.
- *   - A module that is already loaded is returned as it is, so a diamond of imports
- *     loads each file once and the unit list stays a duplicate check.
- *   - Dependencies are loaded after the module itself is parsed, and each is pushed
- *     onto `order` on the way out, which makes `order` a post-order and therefore a
- *     topological order.
- */
-
 /* Modules that may be imported **only from inside the standard library**.
  *
  * Every entry is a hole. `std::sys::heap` can turn any (pointer, length) into a view
@@ -1720,25 +1666,37 @@ static void mergeUnit(Loader *L, ModUnit *u) {
  * indexed at 999,999, dies with SIGSEGV -- and reads silently wrong bytes when the address
  * happens to be mapped).
  *
- * The list is deliberately short ("特殊权限不能给太多") and every entry gets a negative test
- * (`tests/errors/privileged_import.extc`). What a program normally needs is `std::heap`: the plate's
- * doors are **checked** (`open` / `alloc` / `view(off, n)` / `viewAt(p, n)` / `holds(p)`). */
+ * The list is deliberately short, and every entry has a negative test. What a program
+ * normally needs is `std::heap`: the plate's doors are **checked** (`open` / `alloc` /
+ * `view(off, n)` / `viewAt(p, n)` / `holds(p)`). */
 static const char *PRIVILEGED_MODULES[] = { "std::sys::heap", NULL };
 
+/**
+ * @brief Report whether a module path names one of the privileged standard-library modules.
+ *
+ * @param modPath  the module path as written.
+ * @return         true when the path is listed in `PRIVILEGED_MODULES`.
+ */
 static bool isPrivilegedImport(const char *modPath) {
     for (int i = 0; PRIVILEGED_MODULES[i]; i++)
         if (strcmp(modPath, PRIVILEGED_MODULES[i]) == 0) return true;
     return false;
 }
 
-/* Collapse `.` / `..` / duplicate separators **textually** (no syscalls, no I/O).
+/**
+ * @brief Collapse `.` / `..` / duplicate separators **textually** (no syscalls, no I/O).
  *
- * Why it is needed: the same directory can be spelled two ways. `L.stdDir` is
- * `<dir of extc>/../stdlib`, while `-I /abs/path/stdlib` yields `/abs/path/stdlib/...` for the
- * very same tree. The old prefix test assumed one spelling, so passing the standard library
- * through `-I` made `std/heap.extc` look like an ordinary program file -- and its own
- * `use std::sys::heap` was then rejected with "only the standard library may", which is a lie
- * about a file that *is* the standard library. */
+ * The same directory can be spelled two ways: `L.stdDir` is `<dir of extc>/../stdlib`, while
+ * `-I /abs/path/stdlib` yields `/abs/path/stdlib/...` for the very same tree. The prefix test
+ * in `isStdlibFile` therefore compares normalized paths; with one fixed spelling, passing the
+ * standard library through `-I` makes `std/heap.extc` look like an ordinary program file, and
+ * its own `use std::sys::heap` is rejected with "only the standard library may", which is a
+ * lie about a file that *is* the standard library.
+ *
+ * @param a  arena that owns the result.
+ * @param p  path to normalize.
+ * @return   the normalized path, owned by the arena.
+ */
 static char *pathNorm(Arena *a, const char *p) {
     size_t n = strlen(p);
     char *out = (char *)arenaAlloc(a, n + 2);
@@ -1766,8 +1724,16 @@ static char *pathNorm(Arena *a, const char *p) {
     return out;
 }
 
-/* Whether `file` lives inside the standard library tree. Compares **normalized** paths and
- * requires a directory boundary, so `/x/stdlib2` does not count as inside `/x/stdlib`. */
+/**
+ * @brief Report whether `file` lives inside the standard library tree.
+ *
+ * Compares **normalized** paths and requires a directory boundary, so `/x/stdlib2` does not
+ * count as inside `/x/stdlib`.
+ *
+ * @param L     loader, supplying the standard library directory.
+ * @param file  path to test; NULL is never inside the tree.
+ * @return      true when `file` sits under the standard library directory.
+ */
 static bool isStdlibFile(Loader *L, const char *file) {
     if (!L->stdDir || !file) return false;
     char *nFile = pathNorm(L->a, file);
@@ -1777,6 +1743,24 @@ static bool isStdlibFile(Loader *L, const char *file) {
     return nFile[n] == '\0' || nFile[n] == '/';
 }
 
+/**
+ * @brief Load a module and everything it imports, or return the unit already loaded.
+ *
+ * The unit is registered before its source is parsed, and its state says "loading". A `use`
+ * that reaches a module in that state is a cycle, which is refused because each module's
+ * types are needed to check the other; the message suggests moving the shared part into a
+ * third module. A module that is already loaded is returned as it is, so a diamond of imports
+ * loads each file once and the unit list stays a duplicate check. Dependencies are loaded
+ * after the module itself is parsed, and each is pushed onto `order` on the way out, which
+ * makes `order` a post-order and therefore a topological order.
+ *
+ * @param L             loader.
+ * @param modPath       the module path as written in the `use`.
+ * @param importerFile  file containing that `use`, which resolves the path and is blamed.
+ * @param line          line of the `use`, blamed by the cycle diagnostic.
+ * @return              the unit for this module, or NULL when its file could not be resolved or
+ *                      read; all diagnostics are already reported in that case.
+ */
 static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFile, int line) {
     char *file = resolveModFile(L, modPath, importerFile);
     if (!file) return NULL;
@@ -1839,9 +1823,9 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
 
     /* `@builtin` = "the runtime has a function with this signature" -- that is, **naming a
      * primitive**. Only the standard library may: one such declaration hands a program a
-     * pointer or a length the rest of the language cannot forge (before this check
-     * existed: `@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>` plus a length of
-     * 1,000,000 over an 8-byte global compiled and ran, rc=139). */
+     * pointer or a length the rest of the language cannot forge (`@builtin fn extc_viewOf(p:
+     * ref u8, n: i64) -> mut slice<u8>` plus a length of 1,000,000 over an 8-byte global
+     * would otherwise compile and run). */
     for (size_t i = 0; i < u->mod.funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&u->mod.funcs, i);
         if (f->isBuiltin && !isStdlibFile(L, u->file)) {
@@ -1896,30 +1880,24 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
 
 /* ------------------------------------------------------------------- entry */
 
-/* Load every module the root file imports and merge them into `out`.
+/**
+ * @brief Load every module the root file imports and merge them into `out`.
  *
- * Params:
- *   a          - arena that owns every loaded module
- *   out        - the merged module; the prelude must already be in it
- *   rootm      - the root file's own parsed module
- *   rootCtx    - the root file's source context, which blames errors in that file
- *   rootPath   - path of the root file; its directory becomes the project root
- *   searchDirs - directories from `-I`, or NULL
- *   outCtxs    - receives the Ctx of every loaded module so the caller can render
- *                their diagnostics afterwards, or NULL when the caller does not need
- *                them
+ * `rootCtx` is stored by pointer, never copied: a copy would swallow the diagnostics
+ * reported through it. `outCtxs` is used by pointer as well, because its length has to
+ * reach the caller.
  *
- * Returns:
- *   False when any error was reported; the diagnostics are already printed and
- *   compilation must stop.
- *
- * Notes:
- *   - `rootCtx` is stored by pointer, never copied. A copy would swallow the
- *     diagnostics reported through it.
- *   - `outCtxs` is used by pointer as well, because its length has to reach the
- *     caller.
+ * @param a           arena that owns every loaded module.
+ * @param out         the merged module; the prelude must already be in it.
+ * @param rootm       the root file's own parsed module.
+ * @param rootCtx     the root file's source context, which blames errors in that file.
+ * @param rootPath    path of the root file; its directory becomes the project root.
+ * @param searchDirs  directories from `-I`, or NULL.
+ * @param outCtxs     receives the Ctx of every loaded module so the caller can render their
+ *                    diagnostics afterwards, or NULL when the caller does not need them.
+ * @return            false when any error was reported; the diagnostics are already printed
+ *                    and compilation must stop.
  */
-
 bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
                  const char *rootPath, Vec *searchDirs, Vec *outCtxs) {
     Loader L;

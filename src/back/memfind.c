@@ -18,10 +18,19 @@
 
 #include "memfind.h"
 
+/**
+ * @brief 发出字节搜索与整块比较的运行时代码（`extc_memFind` / `extc_memEq`）。
+ *
+ * 走 libc 的 `memmem`/`memcmp`，而不是逐字节的 extC 实现：语义不变（最左匹配、空模式
+ * 返回 0、偏移返回 -1），但每个字节少过一次边界检查。
+ *
+ * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
+ * @param out  追加生成代码的输出缓冲。
+ */
 void memfindEmitRuntime(Arena *a, Buf *out) {
     (void)a;
-    /* 第一个字面量：头部注释 + `extc_memFind`。分开写是因为 C99 只保证 4095 字符的字面量
-     * （`-Woverlength-strings`），pools.c 那边踩过同一个坑。 */
+    /* 第一个字面量：头部注释 + `extc_memFind`。分开写是因为 C99 只保证 4095 字符的
+     * 字面量（`-Woverlength-strings`）。 */
     bufPuts(out,
         "\n/* ---- byte search (`std::sys::mem`) ----\n"
         " * `memmem` under a door the language can declare: extC has no `const` and no `size_t`,\n"
