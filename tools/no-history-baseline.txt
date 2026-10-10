@@ -36,10 +36,3 @@ src/check/check_top.c	plan-number	recordLvlFact(c, a, h);         /* 同上：�
 src/front/parser.c	decision-number	* Four forms, one implementation (定案 12 / 93): every one of them is turned into
 src/front/parser.c	decision-number	/* The **upper bound is evaluated once**, when the loop is entered (定案 101).
 src/front/parser.c	decision-number	/* `=` and the five compound forms. `+=` and friends mean `x = x + y` (定案 92), so
-tools/check_no_history.py	decision-number	行内代码**不剥**：C 注释里的反引号不是代码跨度，剥了会把 ``定案 88`` 这类真违规藏起来。
-tools/check_no_history.py	history-word	("history-word", r"以前|曾经|(?<!往)(?<!标记)回退|一开始|那次|一度|原先是|本来是|旧版|旧的实现"),
-tools/check_no_history.py	measure-narrative	("measure-narrative", r"实测(过|出)|量过|测过|量出来"),
-tools/check_switches.py	history-word	`--help` 曾经写着"这些开关从不改变输出"，而实测有两个会改（`EXTC_NO_LEVELPASS` 动竞技场放置、
-tools/fuzz.py	history-word	# 正常现象），曾经把 tests/traps/arena_oom.extc 又误报了一次。
-tools/fuzz.py	history-word	行结构不被破坏（一开始用空格重排，几乎全变成语法错，根本走不到 codegen）。"""
-tools/parrun.py	plan-number	tail = f"（另有 {nDep} 处 `print`/`println` 弃置提醒，迁移中 ⇒ PLAN #67）" if nDep else ""

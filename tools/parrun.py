@@ -285,7 +285,7 @@ def main():
             print(f"{label}里有 {len(rel)} 处吐了 `{token}`：" + " ".join(rel))
             return 1
         # 弃置提醒单列：它不是误报，但**要看得见**（每搬一处少一条，搬完这条附注就该消失）✓
-        tail = f"（另有 {nDep} 处 `print`/`println` 弃置提醒，迁移中 ⇒ PLAN #67）" if nDep else ""
+        tail = f"（另有 {nDep} 处 `print`/`println` 弃置提醒）" if nDep else ""
         print(f"{len(files)} 个{label}：{verdict} ✓{tail}")
 
     groups = collect(args.filter)

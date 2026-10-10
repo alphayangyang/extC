@@ -35,7 +35,7 @@ def tokens(s): return TOK.findall(s)
 
 def split_src(s):
     """把源码切成 (间隔, token) 序列 —— 间隔里保留换行与缩进，所以变异只动 token 本身，
-    行结构不被破坏（一开始用空格重排，几乎全变成语法错，根本走不到 codegen）。"""
+    行结构不被破坏（用空格重排会几乎全变成语法错，根本走不到 codegen）。"""
     parts, last = [], 0
     for m in TOK.finditer(s):
         parts.append([s[last:m.start()], m.group(0)])
@@ -251,7 +251,7 @@ def one(args):
                         err = p.stderr.decode('utf-8', 'replace')
                         # `ERROR: AddressSanitizer` 才算，`WARNING:` 不算 —— 后者是
                         # "failed to allocate N bytes"（配 allocator_may_return_null=1 就是
-                        # 正常现象），曾经把 tests/traps/arena_oom.extc 又误报了一次。
+                        # 正常现象），不排除它就会把 tests/traps/arena_oom.extc 误报成失败。
                         hit = [l for l in err.splitlines()
                                if 'runtime error' in l or 'ERROR: AddressSanitizer' in l]
                         if hit:

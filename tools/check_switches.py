@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """每个 `EXTC_*` 开关：写进 `--help`，或者在 `UNDOCUMENTED` 里挂着（棘轮：只能降，不能升）。
 
-`--help` 曾经写着"这些开关从不改变输出"，而实测有两个会改（`EXTC_NO_LEVELPASS` 动竞技场放置、
-`EXTC_SELFCHECK` 能把构建弄红）—— 文档与代码打架比没有文档更坏。这条闸门把"诚实的文档"变成可检验的：
+"这些开关从不改变输出"这句话是**假的**：`EXTC_NO_LEVELPASS` 会动竞技场放置、`EXTC_SELFCHECK`
+能把构建弄红 —— 文档与代码打架比没有文档更坏。这条闸门把"诚实的文档"变成可检验的：
 新加一个开关却忘了写进 `--help`，就红；而**改产物/改接受**的开关必须在 `--help` 里点名。
-挂着的那些是历史存量，迁移一个就从 `UNDOCUMENTED` 划掉一个（和 `check_walkers.py` 的 RATCHET 同一形状）。
+`UNDOCUMENTED` 里挂着的是还没补进 `--help` 的那些，补一个就划掉一个（棘轮）。
 """
 import re, subprocess, sys, pathlib
 

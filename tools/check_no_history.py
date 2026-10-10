@@ -42,6 +42,8 @@ def files():
         for p in sorted(ROOT.glob(pattern)):
             if not p.is_file():
                 continue
+            if p.name == "check_no_history.py":
+                continue          # 闸门自己的词表与说明里就是这些词
             if p.suffix == ".md":
                 if DOC_SKIP_PARTS & set(p.parts) or p.name in DOC_SKIP_NAMES:
                     continue
