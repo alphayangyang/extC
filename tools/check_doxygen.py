@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""头文件里的函数声明必须有 Doxygen 说明 —— 棘轮，只许变好。
+"""函数声明与函数定义必须有 Doxygen 说明 —— 棘轮，只许变好。
 
 规范见 `docs/COMMENT-STYLE.md`：说明 · 参数 · 返回值 · 使用例。
 
@@ -7,11 +7,13 @@
     tools/check_doxygen.py --gate      未覆盖计数比基线涨了就失败（check.sh 调用）
     tools/check_doxygen.py --write-baseline
 
-判据：`src/**/*.h` 里的函数声明，其**紧邻上方的注释块**里要有 `@brief`。
+判据：`src/**/*.h` 里的函数声明、以及 `src/**/*.c` 里的函数定义，
+其**紧邻上方的注释块**里要有 `@brief`。
 基线 `tools/doxygen-baseline.txt` 按文件记未覆盖数，**只许变少**。
 
 已知的计数口径（不是精确度量，是进度棘轮）：
-* 只算**原型**（以 `;` 结尾、带行尾注释的先剥掉注释）；带头文件的 `static inline` 函数体不算。
+* `.h` 只算**原型**（以 `;` 结尾、带行尾注释的先剥掉注释）；`static inline` 函数体不算。
+* `.c` 只算**顶格或缩进的函数定义**（以 `{` 结尾或下一行是 `{`、且不以 `;` 结尾）。
 * **跨多行**的声明算在它的最后一行上，因此其上方注释块可能找不到 —— 会偏保守（多算欠账）。
 """
 import re
@@ -53,12 +55,47 @@ def blocks_and_decls(path):
     return total, covered
 
 
+DEF = re.compile(r"^\s*(?:static\s+|extern\s+|inline\s+)*[A-Za-z_][\w \t*]*\s+\**\w+\s*\([^;{]*\)\s*\{?\s*$")
+
+
+def defs_in_c(path):
+    """`.c` 里的函数定义：以 `{` 结尾（或下一行是 `{`）的签名行。"""
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    total = covered = 0
+    for i, l in enumerate(lines):
+        if l.strip().endswith(";") or not DEF.match(l):
+            continue
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if not (l.rstrip().endswith("{") or nxt.startswith("{")):
+            continue
+        total += 1
+        j = i - 1
+        while j >= 0 and lines[j].strip() == "":
+            j -= 1
+        if j < 0:
+            continue
+        if lines[j].strip().endswith("*/"):
+            k = j
+            while k >= 0 and "/*" not in lines[k]:
+                k -= 1
+            chunk = "\n".join(lines[k:j + 1]) if k >= 0 else ""
+            if "@brief" in chunk:
+                covered += 1
+    return total, covered
+
+
 def scan():
     out = {}
     for h in sorted(ROOT.glob("src/**/*.h")):
         t, c = blocks_and_decls(h)
         if t:
             out[h.relative_to(ROOT).as_posix()] = (t, c)
+    for c in sorted(ROOT.glob("src/**/*.c")):
+        t, cv = defs_in_c(c)
+        if t:
+            k = c.relative_to(ROOT).as_posix()
+            prev = out.get(k, (0, 0))
+            out[k] = (prev[0] + t, prev[1] + cv)
     return out
 
 
