@@ -78,6 +78,11 @@
   标准库的约定是"成员缺省公开，`@private` 才是内部"，所以 `inSync` / `depth` / `isSpace` 这类
   也算进了公开面。两条路：真对外的补进 `stdlib.md`（`hashMap::rebuild` / `hashI64` /
   `string::bytesEq` / `bytesLt` 已补）；其余**标 `@private`** 收口，让清单反映真实 API。
+- **函数体内的注释瘦身**：objective 要求函数体内**只留不显然的不变量**。Doxygen 结构已经就位
+  （1195/1195），但体内的叙述式注释还有约 **5732 行**（缩进 ≥4 空格的那些），
+  最集中的是 `check_top.c` 1649 · `codegen.c` 1496 · `check_expr.c` 710 · `parser.c` 444。
+  这一批是**判断题**：删复述、删举例、删设计论证，保留"不写就会有人改错"的不变量。
+  当前 `src/*.c` 的注释占 40%（比改造前还高 —— Doxygen 的 `@brief`/`@param` 结构行换掉了叙述）。
 - **代码注释引用已归档的文档**：`src/` 与 `stdlib/` 的注释里有 **197 处** `.md` 路径
   （`POOLS.md` 43 · `docs/topics/CONCURRENCY.md` 33 · `C-ABI.md` 31 · `docs/DECISIONS.md` 11 …）——
   那些文档都已归档，**链接全是死的**，而且引文档本身对维护不利。要逐处改成"直接说清那个事实"。
