@@ -21,6 +21,18 @@
  *
  * 内联态的容量：字段 `cap` 是 0（`capacity()` 因此对零值/短串如实回答"没有池"），但**物理上**
  * 还能再装 16 个字节 —— 写入路径 `push` / `append` 先看 `n < 16` 就地写，装不下才升级。
+ *
+ * @code
+ * use std::io
+ * use stl::string
+ *
+ * fn main() -> i32 {
+ *     var s: string = string::withCap(i64(8))
+ *     s.append("hello")
+ *     io::cout << s.toSlice() << " len=" << s.len() << "\n"
+ *     return 0
+ * }
+ * @endcode
  */
 use std::sys::pool as syspool
 use std::mem as sysmem

@@ -5,6 +5,19 @@
  * probe. Random access is the common case, so key -> value wants a hash table and stable
  * identity wants `std::pool`; neither replaces the other.
  *
+ * @code
+ * use std::io
+ * use stl::hashMap
+ *
+ * fn main() -> i32 {
+ *     var m = hashMapI64<i32>::withCap(4)
+ *     let isNew: bool = m.put(1, i32(11))        // false = 新键；true = 键本来就在
+ *     let v: i32 = m.get(1) ?? i32(-1)
+ *     io::cout << "new=" << isNew << " v=" << v << " len=" << m.len() << "\n"
+ *     return 0
+ * }
+ * @endcode
+ *
  * ⚠️ The key is `i64` and the **value** is the generic parameter. extC has no traits, so a
  * generic `K` could not be hashed here: there is no way to call `k.hash()` on a type
  * parameter, and a hash "witness" struct would hit the same wall (`H::hash` on a type
