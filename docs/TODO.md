@@ -78,6 +78,10 @@
   标准库的约定是"成员缺省公开，`@private` 才是内部"，所以 `inSync` / `depth` / `isSpace` 这类
   也算进了公开面。两条路：真对外的补进 `stdlib.md`（`hashMap::rebuild` / `hashI64` /
   `string::bytesEq` / `bytesLt` 已补）；其余**标 `@private`** 收口，让清单反映真实 API。
+- **代码注释引用已归档的文档**：`src/` 与 `stdlib/` 的注释里有 **197 处** `.md` 路径
+  （`POOLS.md` 43 · `docs/topics/CONCURRENCY.md` 33 · `C-ABI.md` 31 · `docs/DECISIONS.md` 11 …）——
+  那些文档都已归档，**链接全是死的**，而且引文档本身对维护不利。要逐处改成"直接说清那个事实"。
+  （`tools/` 里另有 40 处，其中一部分是**正当**的：闸门确实要读写 `docs/usage/*.md`，不要一刀切。）
 - **英文注释里的历史叙述**：中文词已清零，但英文里还有一大批（同一类东西，只是语言不同，
   词表已加进闸门，存量锁在基线里）：
   ```
