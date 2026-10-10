@@ -1,0 +1,90 @@
+# 存量的历史词（棘轮：只许变短）。键 = 文件<TAB>规则<TAB>整行文字
+src/ast/ast.h	decision-number	* The default is what 定案 70 settled on -- a name from another module is written
+src/ast/ast.h	plan-number	/* 「家 zone」的哨兵（池的提权，见 PLAN #87）。与 ARENA_HOME 平行：
+src/back/codegen.c	decision-number	* round: the checker put its sites one scope deeper for exactly this (定案 101②). Without
+src/back/codegen.c	decision-number	* （临终钩子照跑 ⇒ 缓冲输出不丢，定案 80）。也就是说"程序坏了"在这门语言里
+src/back/codegen.c	history-word	* 同一个 genFuncProto 补一份：重复声明合法，而且文本与后面那次完全一致。 */
+src/back/codegen.c	history-word	* 这里以前直接落到下面那条"最近一层压过的 zone"，而那是个**错的地方**：
+src/back/codegen.c	history-word	/* 这里曾经挂着 `__attribute__((unused))`：这一段是**整块发射**的，而 `extc_print`
+src/back/codegen.c	measure-narrative	* 正确的位置（2026-09-28 实测过一次错误的挂钩：挂在"按函数发原型"的循环里，而那个循环只走模板与
+src/back/codegen.c	measure-narrative	/* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
+src/back/codegen.c	plan-number	* (`setOpCallArgs`). This used to emit only the zone half; the arena half was PLAN #83, and
+src/back/codegen.c	plan-number	* 那个地方**去（POOLS.md §3.1 的提权落点，PLAN #87）。库侧一个字都不用改。 */
+src/back/codegen.c	plan-number	/* ⚡ 可达性剪枝（PLAN #69）：**没人调用的方法不发射** ✓
+src/back/coroutine.c	decision-number	"     * exactly one frame block per task). 定案 99 says destroy. */\n"
+src/back/coroutine.c	decision-number	"     * its own storage whenever that happens (定案 99: a task's lifetime is not LIFO). */\n"
+src/back/memfind.c	history-word	*      朴素回退（慢，但语义相同）。
+src/back/memfind.c	measure-narrative	* gcc 报 `conflicting types for 'memcmp'` —— 实测过）。所以它被封在这个整数出口后面。 */
+src/back/memfind.c	measure-narrative	* 为什么要有这一层（量出来的理由，见 `bench/string_vs_cpp/`）：extC 的 `string::find` 原来是
+src/back/modules.c	decision-number	*     anything in scope (定案 70), and that rule is not weakened here.
+src/back/modules.c	decision-number	* module is that type's constructor -- `T(...)` is `T::new(...)` (定案 86), and from
+src/back/modules.c	decision-number	* primitive**. Only the standard library may (定案 96): one such declaration hands a program a
+src/back/pools.c	decision-number	bufPuts(out, "/* 色宽：3 位。位宽**只是检测强度**（命中 1/8），不参与正确性 —— 色只做否决，\n * 活性权威永远是 n / 空洞链 / 世代（POOLS.md 7.4 第 2 条与 7.6 第 4 条）。 */\n#ifndef EXTC_ZONE_COLOR_BITS\n#define EXTC_ZONE_COLOR_BITS 3\n#endif\nstatic ExtcZone *extc_zones        = NULL;\nstatic int64_t   extc_zoneCap      = 0;\nstatic int64_t   extc_zoneTop      = -1;\n/* Zone **slots**: a zone id is a slot index, not a stack depth, and the stack order lives in\n * the `parent` chain. That is what lets a place be released without being the topmost one -- a\n * task's place is released when the task ends, whenever that is (定案 99). Slots are recycled\n * through a free list, so a program that spawns tasks for a long time does not grow the table. */\nstatic int64_t   extc_zoneNext     = 0;\nstatic int64_t   extc_zoneFree     = -1;\nint64_t extc_pool_live(void) { return extc_poolLiveN; }\nint64_t extc_pool_capacity(void) { return extc_poolCap; }\n/* Entering a place: push the head of a side chain and hand back its mark. */\nstatic int64_t extc_zoneAllocSlot(void) {\n    int64_t id;\n    if (extc_zoneFree >= 0) {\n        id = extc_zoneFree;\n        extc_zoneFree = extc_zones[id].parent;      /* the free list threads through `parent` */\n    } else {\n        if (extc_zoneNext >= extc_zoneCap) {\n            int64_t want = extc_zoneCap ? extc_zoneCap * 2 : 64;\n            ExtcZone *grown = (ExtcZone *)realloc(extc_zones, (size_t)want * sizeof *grown);\n            if (!grown) return -1;\n            memset(grown + extc_zoneCap, 0, (size_t)(want - extc_zoneCap) * sizeof *grown);\n            extc_zones = grown; extc_zoneCap = want;\n        }\n        id = extc_zoneNext++;\n    }\n    /* 染色：翻一位。同一个槽位会被不同的地方复用（循环体每轮、后来结束的任务）⇒ 上一轮出生\n     * 在这儿的池颜色必然对不上，一次比较就作废整棵树。全新的一格从 1 开始，与「从未用过」区分。 */\n    extc_zones[id].color = (extc_zones[id].color + 1) & ((1 << EXTC_ZONE_COLOR_BITS) - 1);\n    if (extc_zones[id].color == 0) extc_zones[id].color = 1;\n    extc_zones[id].firstPool = -1;\n    extc_zones[id].parent    = -1;\n    extc_zones[id].live      = 1;\n    extc_zones[id].depth     = 0;\n    return id;\n}\n/* Push a place on the current stack: the mark it hands back is its slot id. */\nstatic int64_t extc_zonePush(void) {\n    int64_t id = extc_zoneAllocSlot();\n    if (id < 0) return -1;\n    extc_zones[id].parent = extc_zoneTop;\n    extc_zones[id].depth  = (extc_zoneTop >= 0) ? extc_zones[extc_zoneTop].depth + 1 : 1;\n    extc_zoneTop = id;\n    return id;\n}\n/* Entering a place: allocate a slot and push it. */\n");
+src/back/pools.c	decision-number	bufPuts(out, "int64_t extc_pool_zoneEnter(void) { return extc_zonePush(); }\n/* The release walks a zone's pools; `extc_pool_drop` is defined further down. */\nvoid extc_pool_drop(int64_t rid);\n/* Drop one slot pools and give the slot back: a leave and a task ending are the same release. */\nstatic void extc_zoneRelease(int64_t zi) {\n    if (zi < 0 || zi >= extc_zoneCap || !extc_zones[zi].live) return;\n    {\n        int64_t rid = extc_zones[zi].firstPool;\n        while (rid >= 0) { int64_t next = extc_pools[rid].zoneNext; extc_pool_drop(rid); rid = next; }\n    }\n    extc_zones[zi].firstPool = -1;\n    extc_zones[zi].live      = 0;\n    /* 这里**不**翻色：翻色发生在下一个用到这个槽位的地方**进入**时（`extc_zoneAllocSlot`），\n     * 与槽位化之前逐位一致 —— 释放时翻色会让「同一个槽位每轮复用的循环」每次跳两格（实测\n     * c1=1 c2=3 c3=5，而判据是 1/2/3）。返回空闲链的槽位在下一次分配时自然会翻。 */\n    extc_zones[zi].parent = extc_zoneFree;\n    extc_zoneFree = zi;\n}\n/* The place a task owns: a slot that is NOT on the block stack, so ending the task releases\n * exactly its own storage and never pops a place that is still alive (定案 99). While the task is\n * stepped, extc_zoneTop points at it, so block places inside the step nest above it normally. */\nint64_t extc_pool_zoneNewRoot(void) { return extc_zoneAllocSlot(); }\nvoid extc_pool_zoneFreeRoot(int64_t zi) { extc_zoneRelease(zi); }\n/* The outer place of the current one: what a promotion names when it hands storage outwards. */\nint64_t extc_pool_zoneOuter(void) { return (extc_zoneTop >= 0) ? extc_zones[extc_zoneTop].parent : -1; }\n/* How deep the place stack is right now: a count, not an id. */\nint64_t extc_pool_zoneDepth(void) { return (extc_zoneTop >= 0) ? extc_zones[extc_zoneTop].depth : 0; }\nstatic void extc_pool_releaseBlocks(ExtcPool *r) {\n    ExtcBlock *b = r->blocks;\n    while (b) { ExtcBlock *next = b->next; extc_poolBytesAll -= b->size; free(b); b = next; }\n    r->blocks = NULL; r->bytes = 0;\n}\nstatic void extc_pool_freeSelf(int64_t rid) {\n    ExtcPool *r = &extc_pools[rid];\n    /* The plate goes back here, and this is the real release: the arena only ever takes\n     * whole blocks back at a place boundary, the pool hands its own memory back at once. */\n    extc_pool_releaseBlocks(r);\n    r->live = 0; r->parent = -1; r->firstChild = -1;\n    r->zonePrev = -1; r->siblingPrev = -1;\n    r->freeNext = extc_poolFreeHead;\n    extc_poolFreeHead = rid;\n    extc_poolLiveN--;\n}\nstatic void extc_pool_unlinkZone(int64_t rid) {\n    int64_t zi = extc_pools[rid].zone;\n    if (zi < 0) return;\n");
+src/back/pools.c	plan-number	bufPuts(out, "/* ---- the plate: a pool's own memory (POOLS.md 2.1, PLAN #85) ----\n *\n * The container asks for a block here, not for arena memory, and gives the old block back\n * when it replaces it. That is the whole reason a doubling buffer no longer leaves every\n * old generation behind (the 9,900 KB reading in POOLS.md 1): the arena can only take whole\n * blocks back at a place boundary, a pool plate takes a block back the moment it is free.\n *\n * Every block is zeroed on the way out, so a fresh allocation still reads as zero -- the\n * promise the language makes about `new`, kept here without the arena. */\nvoid *extc_pool_take(int64_t rid, int64_t bytes) {\n    ExtcBlock *b;\n    if (rid < 0 || rid >= extc_poolCap || !extc_pools[rid].live) return NULL;\n    if (bytes <= 0) bytes = 1;\n    b = (ExtcBlock *)malloc(sizeof(ExtcBlock) + (size_t)bytes);\n    if (!b) { fprintf(stderr, \"trap: out of pool memory (this allocation wanted %lld bytes)\\n\",\n                      (long long)bytes); extc_die(1); }\n    memset((void *)(b + 1), 0, (size_t)bytes);\n    b->next  = extc_pools[rid].blocks;\n    b->size  = bytes;\n    extc_pools[rid].blocks  = b;\n    extc_pools[rid].bytes  += bytes;\n    extc_poolBytesAll      += bytes;\n    return (void *)(b + 1);\n}\n/* Give one block back. The block is found by its address -- the caller holds a view, not a\n * block id -- and the walk is over this pool's own chain, which is short: a container that\n * grows by 1.5x has one live block plus whatever it has not replaced yet. */\n");
+src/check/check.c	plan-number	* pair is recorded and re-checked per instance (PLAN #79). */
+src/check/check_escape.c	history-word	* `unNarrow`，调试构建当场响（P0-17 就是这一类，只不过那次漏的是"被调方改写"）。*/
+src/check/check_escape.c	plan-number	/* 「建池的调用」这个值活到多深（池的提权，PLAN #87）。
+src/check/check_expr.c	plan-number	* (PLAN #54). The message for a name that really is unknown comes from `ttResolve`,
+src/check/check_expr.c	plan-number	* (POOLS.md 2.1 "a pool has two faces", PLAN #85).
+src/check/check_expr.c	plan-number	* became 32-bit (PLAN #92). SPEC §3.4 says only lossless widening is implicit and
+src/check/check_expr.c	plan-number	* compiler was the first to notice, on two structs (PLAN #79). */
+src/check/check_internal.h	decision-number	* shape (定案 101②). */
+src/check/check_internal.h	history-word	* 这个检查器里"这个值活多深 / 它是谁"被问了一百多次，曾经由**三套各写一遍的根遍历**回答，
+src/check/check_internal.h	history-word	/* 这一格是**池的提权**专用的：绑定由一次"建池的调用"初始化时，把那次调用的
+src/check/check_internal.h	plan-number	* 表达式记在这里（PLAN #87）。
+src/check/check_stmt.c	decision-number	/* The condition is its own **place** (定案 101②): pushed as a scope so the allocation
+src/check/check_stmt.c	decision-number	/* `x += y` is `x = x + y` (定案 92). Which operator that is, and whether it
+src/check/check_top.c	history-word	* 为什么要共享：这两条通道曾经**各写一遍**，而 P0-2 的哨兵 bug（`nd == 0` 既表示"还没见过"
+src/check/check_top.c	history-word	/* 这里曾经写 `c->escapeesFor = (int)(size_t)f;` —— 把指针截断成 `int` 当"已算过"的键，
+src/check/check_top.c	measure-narrative	* 实测过（`bench/app/session.extc`，active=1M）：`hashMap::get` 被当成"会建池" ⇒ 循环体
+src/check/check_top.c	plan-number	* line was the module's, the file was not (PLAN #54). */
+src/check/check_top.c	plan-number	* pool born at the destination's place (POOLS.md 3.1, PLAN #87). */
+src/check/check_top.c	plan-number	recordLvlFact(c, a, h);         /* 同上：先记事实，末轮重放时再提（PLAN #87） */
+src/front/parser.c	decision-number	* Four forms, one implementation (定案 12 / 93): every one of them is turned into
+src/front/parser.c	decision-number	/* The **upper bound is evaluated once**, when the loop is entered (定案 101).
+src/front/parser.c	decision-number	/* `=` and the five compound forms. `+=` and friends mean `x = x + y` (定案 92), so
+stdlib/std/coro/scheduler.extc	history-word	* 上下文）才不受参数生命周期规则的限制。这条限制以前更凶（连库函数 `stash(ref v, h)` 都拒），
+stdlib/std/fs.extc	decision-number	* `fin >> n >> line >> b` —— 链式读，与 `cin >> x` 同一个形状（定案 88）✓
+stdlib/std/fs.extc	decision-number	* 打开一次（在 `main` 里，失败当场 trap —— 定案 89 ✓）：
+stdlib/std/fs.extc	decision-number	* （`T(...)` 就是 `T::new(...)` 的写法，见定案 86）✓
+stdlib/std/fs.extc	decision-number	/* ⚠️ `mut slice<u8>` 与 `slice<u8>` 在"按右操作数**精确**类型分派"（定案 82）眼里
+stdlib/std/fs.extc	decision-number	/* 空结构体当句柄：常量初始化 ✓（定案 65 才让这条成立 —— `outStream { }` 每个字段都是常量 ✓）*/
+stdlib/std/fs.extc	history-word	* 字节，两套位置会互相跳过 ✗（这条以前写在注释里求人别混用，现在结构上就一个 ✓）*/
+stdlib/std/fs.extc	plan-number	* annotation is (PLAN #54 fixed this: it used to need `var f: ifstream = { .. }`). */
+stdlib/std/heap.extc	decision-number	* `extc_viewOf` 本身关在 `std::sys::heap` 里（用户导不进来，见定案 96），所以门外那句话
+stdlib/std/heap.extc	measure-narrative	* 大输入用它替代拷贝：原型量过（`prototype-heap/README.md` 4b）只读借出读 21.6 GB/s 零拷贝，
+stdlib/std/heap.extc	measure-narrative	/* commit 的粒度。原型量过：一次 commit 1 MiB 最省（`prototype-heap/README.md`）。 */
+stdlib/std/http.extc	measure-narrative	* 为什么这次能行（探针量过 ✓）：`new` 出来的**容器**装进结构体、结构体整体从函数返回是
+stdlib/std/http.extc	measure-narrative	* （实测过 `use std::io` + 自定义 `fn open` ⇒ "duplicate function `open`" ✓）⇒ 方法有名字空间 ✓。
+stdlib/std/http.extc	measure-narrative	/* 方法从**自己的字段**派生视图 ✓（探针量过合法 ✓；自由函数用 `self` 会被拒 ✗）*/
+stdlib/std/io.extc	history-word	* 以前这里借内建 `print`（它写 stdio ✗），得先 `flushCout()` 才不会两边打架 ——
+stdlib/std/io.extc	history-word	/* 打印 `i64` 的最小值曾经会 trap（2026-09-28 修）：`fmtI64Fast` 里的 `i64(0) - v` 在
+stdlib/std/io.extc	history-word	/* 热路径：**每个数只调一次 `nextInt`** ✓（旧版还先 `skipSpace` 再 `eof` ⇒ 三次调用 ✗）
+stdlib/std/io.extc	history-word	var nd: i64 = 0                 /* 已收的位数（前 18 位不可能溢出 ⇒ 那次检查可以省 ✓）*/
+stdlib/std/io.extc	measure-narrative	* 全部一字不改 ✓ 这就是 cachegrind 量出来的真因：分支 2.7× ✗（指令只 1.29× ✓
+stdlib/std/io.extc	measure-narrative	* （量过：`println` 的输出在 `>/dev/null` 时消失、在 `2>/dev/null` 时还在 ✓）
+stdlib/std/io.extc	plan-number	/* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持（PLAN #66）⇒
+stdlib/std/loop.extc	measure-narrative	/* 表的容量。**实测过一次悬崖**：64 项时，200 个同时在睡的任务里超出部分走 `add` 失败
+stdlib/std/sys/io.extc	decision-number	/* 控制台**缓冲**输出（定案 90）：格式化在库里、缓冲在运行期。
+stdlib/std/sys/pool.extc	history-word	* 池的寿命挂在"地方"上：zone 是一条独立旁链，地方退出时按标记回退、整批回收
+stdlib/std/sys/pool.extc	history-word	* 这里曾经有一句 `extc_pool_alloc(rid, bytes) -> mut ref u8` 的悬空声明（没有实现、也没有谁
+stdlib/std/sys/pool.extc	plan-number	* 调的动它 —— `extern!` 不许返回 `slice<T>`）—— 2026-09-26 删掉，正是 PLAN #85 里写着
+stdlib/stl/hashMap.extc	plan-number	* 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分（出路见 PLAN #86：两块表 + 按簇增量）。
+stdlib/stl/map.extc	history-word	* 曾经无条件拷满 17/17/18 —— 多出来的那些槽**从没被写过**，清零时读作 0 无害，
+stdlib/stl/map.extc	history-word	* 曾经无条件拷满 18（后来改成 `sn+1`，一样错）—— 清零时读到 0 无害（0 恰好是个
+stdlib/stl/map.extc	history-word	* 这里曾经走"新四块 + 逐元素拷 + 旧四块丢掉"：那份拷贝不但 O(n)，还要在最长的一跳里
+stdlib/stl/pool.extc	history-word	* 天然全空闲。（这里曾经写一整圈 `ent[i] = pPack(0, low)`：容量 10 万时每次构造写
+stdlib/stl/pool.extc	measure-narrative	/* ⚠️ `@inline` 的取舍是**量出来的**，别一刀切（2026-09-24，`-O2`，3 次取最好）：
+stdlib/stl/string.extc	history-word	* 与内联缓冲等大 —— 池态缩到 16 之后仍是池态，不往回退（退回内联会让 `capacity()`
+stdlib/stl/string.extc	measure-narrative	/* `acc` 到 `2^63` 时直接给常量：那个值正是 `i64` 的最小值。这里不需要绕开什么（单测过
+stdlib/stl/string.extc	plan-number	* leaked the buffer into an arena nothing reclaims (PLAN #83). The operator path has to pick
+stdlib/stl/stringio.extc	history-word	* `impl` 方法的那次 body 检查有没有走到种子那一步；结算遍在 `check_top.c:5948`（`site->func->usesHome`
+stdlib/stl/stringio.extc	history-word	/* 注意：这里**曾经**试过用 `impl ostream { fn <<(self: ref ostream, v: string) }` 补一个 `string`
+tools/check_no_history.py	decision-number	行内代码**不剥**：C 注释里的反引号不是代码跨度，剥了会把 ``定案 88`` 这类真违规藏起来。
+tools/check_no_history.py	history-word	("history-word", r"以前|曾经|回退|一开始|那次|一度|原先是|本来是|旧版|旧的实现"),
+tools/check_no_history.py	measure-narrative	("measure-narrative", r"实测(过|出)|量过|测过|量出来"),
+tools/check_switches.py	history-word	`--help` 曾经写着"这些开关从不改变输出"，而实测有两个会改（`EXTC_NO_LEVELPASS` 动竞技场放置、
+tools/fuzz.py	history-word	# 正常现象），曾经把 tests/traps/arena_oom.extc 又误报了一次。
+tools/fuzz.py	history-word	行结构不被破坏（一开始用空格重排，几乎全变成语法错，根本走不到 codegen）。"""
+tools/parrun.py	plan-number	tail = f"（另有 {nDep} 处 `print`/`println` 弃置提醒，迁移中 ⇒ PLAN #67）" if nDep else ""
