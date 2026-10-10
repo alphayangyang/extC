@@ -78,8 +78,12 @@
   标准库的约定是"成员缺省公开，`@private` 才是内部"，所以 `inSync` / `depth` / `isSpace` 这类
   也算进了公开面。两条路：真对外的补进 `stdlib.md`（`hashMap::rebuild` / `hashI64` /
   `string::bytesEq` / `bytesLt` 已补）；其余**标 `@private`** 收口，让清单反映真实 API。
-- **注释里的审计/评审编号**：`P0-…` 一类在 `src/` 注释里有上百处（`check_top.c` / `codegen.c` / `check_escape.c`
-  最集中），还有 `R1` / `F9` / `W9` / `BG-1` / 审计批次的说法。这些属于历史，要逐处清掉，
+- **英文注释里的历史叙述**：中文词已清零，但英文里还有一大批 —— `used to` **130 处**、
+  `measured` **87 处**、`no longer` 24、`before this` 17、`earlier version` 6。
+  这些是同一类东西（"以前/实测"），只是语言不同；`codegen.c` 的**生成物字符串**里最集中
+  （那是用户能看到的 C 源码）。要逐处改写成现状，再把英文词加进闸门词表。
+- **注释里的复核批次编号**：`P0-…` 一类在 `src/` 注释里有上百处（`check_top.c` / `codegen.c` / `check_escape.c`
+  最集中），还有 `R1` / `F9` / `W9` / `BG-1` 这类编号。这些属于历史，要逐处清掉，
   同时**把闸门的词表补上**（现在的词表只认 `定案 N` 与 `PLAN #N`，认不出这些编号）。
   注意区分：`tools/attack.py` 里的 `R1`/`W9` 是**攻击用例的编号**，
   `tools/escape-corpus/P0-3_generic_zero.extc` 这类是**文件名**——它们不是文档叙述，别误伤。

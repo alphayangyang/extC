@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gate 3 · 常驻差分 fuzz：同一段语义，extC 与等价 C 必须给出同样的结论。
 
-这是审计 §7 闸门 ③。为什么用"自检程序 + 退出码"而不是比 stdout：
+为什么用"自检程序 + 退出码"而不是比 stdout：
 extC 的 `io::cout` 与 C 的 `printf` 在浮点格式上本来就可能不同，比格式会把真信号淹掉。
 每个用例都是**断言式**程序：全部成立返回 0，否则返回非 0；两边都返回 0 才算一致。
 
@@ -121,7 +121,7 @@ int main(void) { int64_t a = 300; uint8_t b = (uint8_t)a;
     if ((int64_t)b != 300) return 1;
     int32_t c = -5;
     return (int64_t)c != -5; }"""),
-    # --- 浮点：整数值字面量（审计 P0-12） ---
+    # --- 浮点：整数值字面量 ---
     ("f_literal_div", """
 fn main() -> i32 {
     if 1.0 / 2.0 != 0.5 { return 1 }
@@ -155,7 +155,7 @@ fn main() -> i32 {
     return 0
 }""", """
 int main(void) { double x = 1000000000.0; return x * 1000000000.0 != 1.0e18; }"""),
-    # --- 窄类型：按声明宽度回绕（审计 P0-18；修好前会在基线里） ---
+    # --- 窄类型：按声明宽度回绕 ---
     ("i8_wrap", """
 fn main() -> i32 {
     var a: i8 = 100
@@ -179,7 +179,7 @@ fn main() -> i32 {
 #include <stdint.h>
 int main(void) { uint16_t u = 60000; uint16_t y = (uint16_t)(u + u);
     return y != 54464; }"""),
-    # --- 窄类型的其它形态：u16 移位、一元负、窄除法（审计 P0-18 的同族） ---
+    # --- 窄类型的其它形态：u16 移位、一元负、窄除法 ---
     ("narrow_ops", """
 fn main() -> i32 {
     var a: u16 = u16(1) << u16(15)
@@ -220,8 +220,8 @@ int main(void) { int32_t a[4] = {1,2,3,4};
     if (d[0] != 2) return 1;
     if (d[1] != 3) return 1;
     return 0; }"""),
-    # --- 求值次数（审计 P0-7 的同族，但用 if 而不是 while） ---
-    # --- 循环条件里的临时量不得提升到循环外（审计 P0-7） ---
+    # --- 求值次数 ---
+    # --- 循环条件里的临时量不得提升到循环外 ---
     ("while_eq_temp", """
 var g: i32 = 0
 fn mk() -> [2]i32 { g = g + 1  return [g, 0] }
@@ -243,7 +243,7 @@ int main(void) {
     int32_t n = 0;
     while (eq(a, mk())) { n = n + 1; if (n > 100) break; }
     return n != 1; }"""),
-    # --- 运行期：for + continue 必须仍然推进（审计 P0-15，修好前在基线里） ---
+    # --- 运行期：for + continue 必须仍然推进 ---
     ("for_continue", """
 fn main() -> i32 {
     var i: i32 = 0

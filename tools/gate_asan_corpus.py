@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Gate 2 · 正例生成物在 ASan+UBSan 下真的跑干净。
 
-这是审计 §7 闸门 ②。为什么需要它：`--run` 默认 `-O2`，会把"从 NULL memmove"这类 UB
-直接优化掉，测试反而变绿（审计 P0-8 就是这样藏的）。本闸门用 `-O1 -fno-sanitize-recover=all`
+为什么需要它：`--run` 默认 `-O2`，会把"从 NULL memmove"这类 UB
+直接优化掉，测试反而变绿。本闸门用 `-O1 -fno-sanitize-recover=all`
 把 UB 变成**必须报**。
 
 用法：

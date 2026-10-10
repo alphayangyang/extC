@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for the four audit gates (see docs/reviews/COMPILER-AUDIT-2026-09-30.md §7).
+"""Shared helpers for the four corpus gates.
 
 Why a module and not four copies: every gate needs the same three things -- the corpus
 definition, "generate C for this file", and "compile that C and tell me what went wrong".
@@ -234,7 +234,7 @@ def write_allow(path, failures):
     with open(path, "w", encoding="utf-8") as f:
         f.write("# <key>\t<原因>\t<跟踪>\n")
         for k in sorted(failures):
-            f.write(f"{k}\tbaseline 2026-09-30\t审计 P0 批次\n")
+            f.write(f"{k}\tbaseline 2026-09-30\t未记录\n")
     print(f"wrote {rel(path)} ({len(failures)} entries)")
 
 

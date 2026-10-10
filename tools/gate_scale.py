@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gate 4 · 规模与嵌套：编译器对任何输入都必须**在有限时间内给出结论**。
 
-这是审计 §7 闸门 ④。审计 §6 的九个性能问题有同一个形状：递归/循环没有预算，
+这九个性能问题有同一个形状：递归/循环没有预算，
 输入稍大就从"慢"变成"挂住"或"栈溢出"（P0-10 两类栈溢出、P0-22 死循环、blkMax 指数）。
 本闸门不要求快，只要求**有结论**：退出码 ∈ {0,1}，且在各自的时间预算内。
 
@@ -58,21 +58,21 @@ def nested_types(n):
 # 预算按"最慢的合法路径"定，不是按当前实现的性能；内存上限保证闸门不会把机器拖垮
 # （实测：2000 个局部变量就吃 1.3GB，20000 个不设限会 OOM 掉整个会话）。
 CASES = [
-    ("blocks30", nested_blocks(30), 2.0, 2048),        # blkMax 指数（审计 P2-1）
+    ("blocks30", nested_blocks(30), 2.0, 2048),        # blkMax 指数
     ("blocks60", nested_blocks(60), 2.0, 2048),        # 预算内必须能编译（P0-10 的边界正例）
     ("blocks200", nested_blocks(200), 5.0, 2048),      # 同上（指数）→ 修好后应达预算
-    ("blocks1000", nested_blocks(1000), 10.0, 2048),   # dataflow 栈溢出（审计 P0-10）
+    ("blocks1000", nested_blocks(1000), 10.0, 2048),   # dataflow 栈溢出
     ("parens2000", nested_parens(2000), 5.0, 2048),
-    ("parens16000", nested_parens(16000), 10.0, 2048),  # parser 递归（审计 P0-10）
+    ("parens16000", nested_parens(16000), 10.0, 2048),  # parser 递归
     ("expr5000", long_expr(5000), 5.0, 2048),
     ("stmts2000", many_stmts(2000), 8.0, 4096),        # 实测 1.6s / 1.3GB
     ("stmts20000", many_stmts(20000), 20.0, 4096),     # 实测给 "out of memory" 诊断（rc=1）
     ("instances3000", many_instances(3000), 10.0, 2048),
-    # 审计 P0-22：dropRuntimeDefs 的 continue 不推进 ⇒ 52 行的 stdlib 文件让编译器
+    # dropRuntimeDefs 的 continue 不推进 ⇒ 52 行的 stdlib 文件让编译器
     # 100% CPU 永不返回（>15 分钟，无诊断）。修好后应在毫秒级完成。
     ("hashset_root", ("file", "stdlib/stl/hashSet.extc"), 3.0, 2048),
     ("types64", nested_types(64), 5.0, 2048),
-    ("types65", nested_types(65), 5.0, 2048),          # 超限必须报错而不是 SIGSEGV（审计 P0-4）
+    ("types65", nested_types(65), 5.0, 2048),          # 超限必须报错而不是 SIGSEGV
 ]
 
 
